@@ -1,0 +1,15 @@
+# 사내 자격증명 / SSO 세션 — 절대 커밋 금지
+jira_state.json
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
