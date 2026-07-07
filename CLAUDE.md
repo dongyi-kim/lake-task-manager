@@ -14,18 +14,21 @@ Claude Code가 작업 시 이 맥락을 항상 우선한다.
 **코드 완성보다 먼저, 상위권자에게 UI 기능 컨펌을 받는 것이 최우선이다.**
 그래서 가상의 조직 데이터를 만들고, 이를 시각화하는 self-contained 데모 페이지를 먼저 낸다.
 
-### 데모-우선 로드맵
-1. **[현재] Mock 데이터 데모** — 가상 Module/WBS/Epic/Story 데이터를 생성해
-   단일 HTML 데모로 렌더. UI 컨셉을 상위권자에게 컨펌받는다. (Jira 불필요)
-2. **[후속] Jira docker 실데이터 연동** — 로컬 Docker Jira 8.20.8 + Postgres를 띄우고
-   REST seed로 같은 형태의 데이터를 심어, 데모가 실제 롤업으로 동작하게 한다.
-3. **[후속] 운영 SSO 승격** — 사내 Jira에 Playwright SSO 세션으로 연결 → 반자동 스냅샷.
-   가치 검증되면 PAT/서비스계정 정식 요청으로 무인 자동화 전환(§11).
+### 로드맵 (상세 진행/TODO 는 `PROGRESS.md`)
+1. **[완료] Mock 데이터 데모** — `demo/` 단일 HTML Gantt 로 UI 컨셉 확정.
+2. **[진행] 실서비스화** — FastAPI 백엔드 + 정적 프론트의 로컬 웹앱으로 승격.
+   - **Phase A [완료]**: 인프라(docker/exe 패키징)·config·백엔드 스캐폴드·mock 모드·기능1 API/프론트.
+   - **Phase B**: 기능1 WBS Dashboard 를 실 Jira 데이터로.
+   - **Phase C**: 기능2 PMO_VIT 현안 트래킹 (MVP → 인터뷰).
+   - **Phase D**: 기능3 인력 워크로드/활동 (MVP → 인터뷰).
+3. **[후속] 운영 SSO 승격** — 사내 Jira에 Playwright SSO 세션 연결 → 반자동 스냅샷.
+   검증되면 PAT/서비스계정 정식 요청으로 무인 자동화 전환(§11).
 
-**확정된 데모 결정:**
-- 데모 형태: **단일 self-contained HTML** (빌드/서버 없이 `file://`로 열림).
-- 데이터 소스: 생성한 **mock JSON 먼저**. Jira docker+seed는 후속 태스크로 분리.
-- 데이터는 `demo/data.js`(`window.LAKE_DEMO`)로만 주입. 외부 네트워크 요청 0.
+**확정된 설계 결정:**
+- 구조: **FastAPI 백엔드 + 정적 프론트**. git 공유 로컬 웹앱 (공개 웹서비스 없음).
+- 실행: `docker compose up` 또는 **단일 exe**(`lake.spec`) — 최종 사용자 무의존.
+- 저장: 매핑/인력/가중치 = **YAML config**(커밋), Jira 캐시/스냅샷 = **SQLite**(gitignore).
+- 3 환경(`JIRA_ENV=mock|local|prod`)에서 **동일 계산 코드**가 돈다.
 
 ---
 
@@ -220,6 +223,9 @@ progress = Σ(SP where statusCategory.key == "done") / Σ(SP 전체)
 - **SP=0 자동 제외**: 버그/운영 티켓에 SP=0을 주면 분자·분모 양쪽에 0을 더하므로
   진척률에 영향이 없다. 별도 필터 없이 수학적으로 빠진다.
   단 실수 방지용으로 이슈타입(Bug/Ops) 기반 제외를 **이중 안전장치**로 둔다.
+- **SP 누락(None) 기본값**: SP 필드가 비어 있는 티켓은 기본값으로 계산한다.
+  **Bug → 0, 나머지 → 1** (`progress.sp_of`). *명시적으로 0* 이 입력된 티켓은 그대로 0이며,
+  '누락'과 '명시적 0'을 구분한다. (정규화에서 `sp=None`을 보존해야 이 규칙이 동작한다.)
 - **Mock 티켓**: 아직 안 쪼갠 미래 작업. `mock` 라벨 필수.
   - 추정 SP 부여 + 상태 To Do → 분모에만 들어가 "아직 안 됨"이 정확히 반영됨.
   - 집계 시 mock SP를 **별도 항목으로 리포트**(검증용 가시성).
@@ -227,66 +233,91 @@ progress = Σ(SP where statusCategory.key == "done") / Σ(SP 전체)
     → 실제 티켓 생성 시 mock SP를 깎거나 0으로 내리는 reconciliation은 **사람이 판단**.
     도구가 mock을 자동 삭제하지 않는다.
 - **부분 크레딧 금지**: In Progress에 0.5 같은 가중은 노이즈만 크다. **Done/Total 이진**만.
+- **기능2(현안, PMO_VIT) 진척은 예외적으로 "자손 티켓 개수 기반"**: Root 현안의 모든 자손
+  (Epic→Ticket→Sub-ticket) 중 `statusCategory=done` 개수 / 전체 개수. 데일리 트래킹용 빠른 지표라
+  WBS/Epic 롤업의 **SP 기반과 목적이 다르다**(둘을 섞지 말 것). 중복 노출 방지: 상위(조상)가 이미
+  PMO_VIT면 그 자손 현안은 스킵.
 
 ---
 
-## 7. 로컬 재현 환경 (Docker) — [후속 단계]
+## 7. 로컬 재현 환경 — Fake Jira/Confluence 서버
 
-사내 Jira를 건드리지 않고 로컬에 **동일 버전(8.20.8)**을 띄워 개발·테스트한다.
+이 PC는 사내 VDI/VBS로 **Docker·WSL2 불가**, Jira DC **deprecation으로 신규 평가 라이선스 발급도 중단**.
+→ 실 Jira 없이 **Fake Jira/Confluence REST 서버**(`src/tools/fake_jira`, :8080)로 개발·테스트한다.
+무설치·무라이선스·무가상화. `local` provider가 **진짜 HTTP**로 붙어 REST+인증+캐시 경로를 그대로 검증한다.
 
 ```bash
-# docker-compose.yml: atlassian/jira-software:8.20.8 + postgres:13
-docker compose up -d
-docker compose logs -f jira    # 부팅 2~5분
-# http://localhost:8080 → 설치 마법사 → "I'll set it up myself"
-#   → DB 자동/수동 입력 → 평가판 라이선스(my.atlassian.com 무료) → 관리자 계정
+cd src && python run_fake.py                     # :8080 (FAKE_LATENCY_MS 로 지연 주입)
+LAKE_DOTENV=.env.dev python run.py               # 앱(local) → fake
 ```
 
-주의:
-- 8.20.x는 JDK8/11 기반 → 이미지 태그는 `8.20.8` (jdk17 suffix 없음).
-- 8.20.x는 EOL이라 Docker Hub 최신 태그 목록엔 안 뜰 수 있음.
-  `docker manifest inspect atlassian/jira-software:8.20.8`로 존재 확인.
-- Jira 8.20 최소 메모리 2GB 권장 → Docker Desktop 메모리 4GB+ 할당.
-- **사내 라이선스 키를 로컬에 넣지 말 것.** 평가판으로 충분.
-
-테스트 데이터: Scrum 프로젝트 1개 + Epic 여러 개 + Story에 SP 입력(일부 Done),
-`mock` 라벨 티켓, SP=0 버그 티켓으로 엣지케이스 재현.
-(데모 단계의 `demo/generate_demo.py`가 만드는 가상 데이터와 같은 형태를 REST seed로 심는다.)
+- 테스트 데이터는 **전부 fake API 레벨**(`app/world.py`, 결정적). Jira·DB·seed 불필요.
+- fake 는 실 Jira DC 8.20.8 형태를 흉내 — statusCategory `new/indeterminate/done`, 사내 status(Open/In Progress/Resolved/Closed/Reopened)·type(Bug/Epic/Improvement/New Feature/Story/Task/Sub-Task), 티켓 키 `DL-xxxx`.
+- **같은 `world` 를 mock 도 in-process 로 소비** → `mock` 출력과 `local`(fake) 출력이 100% 일치(회귀 기준).
+- 한계: 실 Jira 고유 quirk(워크플로 미묘동작 등)는 못 잡음 → 사내 **prod(SSO)**에서 소수 대조.
 
 ---
 
 ## 8. 프로젝트 구조
 
+**실서비스화 형태** (FastAPI 백엔드 + 정적 프론트, git 공유 로컬 웹앱).
+**루트는 최종 사용자 파일(exe·.env·config)만**, 나머지 코드/도구는 `src/`.
+진행 상황·TODO·History 는 **`src/PROGRESS.md`** 로 관리한다.
+
 ```
-lake-task-manager/
-├── CLAUDE.md                   # 이 문서
-├── .gitignore                  # jira_state.json, .env*, __pycache__ 제외
-├── demo/                       # [현재 단계] mock 데이터 데모
-│   ├── index.html              # self-contained PMO 대시보드 (빌드 없이 file://로 열림)
-│   ├── data.js                 # 생성된 mock 데이터 (window.LAKE_DEMO)
-│   └── generate_demo.py        # 가상 데이터 생성기 (stdlib only, 고정 seed) → data.js
-├── docker-compose.yml          # [후속] 로컬 Jira DC 8.20.8 + Postgres
-├── .env.local / .env.prod      # [후속] 환경 분리 (git 제외)
-├── src/                        # [후속] 실제 파이프라인
-│   ├── auth/
-│   │   ├── base.py             # AuthProvider 인터페이스
-│   │   ├── basic.py            # 로컬: PAT/basic auth
-│   │   └── sso_session.py      # 운영: Playwright storage_state 재사용
-│   ├── jira_client.py          # REST 호출 (AuthProvider 주입받음, 인증 종류 모름)
-│   ├── progress.py             # SP 롤업 — 순수 계산, 환경/네트워크 의존성 0
-│   ├── rollup.py               # Module/WBS 가중치 조합 (다운스트림; 매핑 config 소비)
-│   └── config.py               # 환경별 설정 (JIRA_BASE, 필드ID, auth 종류)
-└── tests/
-    └── test_progress.py        # fixture 기반 유닛테스트 (Jira 불필요)
+lake-task-manager/               # repo 루트 = 최종 사용자 파일만
+├── CLAUDE.md                    # 프로젝트 지침 (루트 관례 유지)
+├── .env.example / .env.prod     # prod/사용자 설정 (→ .env). 노출됨. .env 는 git 제외
+├── config/                      # prod/dev 공용 (전 환경 동일). 사용자 편집 · git 커밋
+│   ├── wbs_config.yaml          # 기능1: module → WBS task → epic(ticket=DL-xxxx, weight 정수)
+│   └── people.yaml              # 기능3: module → [jira user id]
+├── (lake-task-manager.exe)      # 배포 시 여기 (빌드 산출물) — config/.env 와 나란히
+└── src/                         # 코드·도구 일체 (개발자 영역)
+    ├── .env.dev                 # dev 전용 env (fake:8080). LAKE_DOTENV=.env.dev 로 로드
+    ├── PROGRESS.md              # TODO / 진행 History
+    ├── run.py / run_fake.py     # 앱 런처 / Fake Jira 서버 런처
+    ├── lake.spec                # PyInstaller — 단일 exe 빌드
+    ├── requirements.txt / requirements-sso.txt
+    ├── app/                     # FastAPI 백엔드 + 정적 프론트
+    │   ├── main.py              # 라우트(/api/wbs·vit·workload·activity·health·refresh) + static
+    │   ├── settings.py          # .env + wbs_config 로더/검증, frozen(exe)·컨테이너 경로 인식
+    │   ├── world.py             # ★ 단일 결정적 데이터 세계 (이슈·설명·코멘트·활동·confluence)
+    │   ├── worldcontent.py      # description/comment/activity 다양성 풀
+    │   ├── mockdata.py          # mock 어댑터 (world 를 in-process 소비)
+    │   ├── progress.py          # 순수 SP 롤업 (Epic 단위)
+    │   ├── rollup.py            # WBS/Module/PMO 가중 조합 (상대 가중치 자동 정규화) — 순수
+    │   ├── vit.py / workload.py # 기능2 현안 / 기능3 워크로드 조합
+    │   ├── cache.py             # SQLite TTL 캐시(티켓 단위) + snapshot
+    │   ├── jira_client.py       # REST 호출 (AuthProvider 주입, 캐시 경유)
+    │   ├── auth/{base,basic,sso_session}.py
+    │   └── static/             # index.html(WBS Gantt) · vit.html · workload.html
+    ├── tools/fake_jira/         # ★ Fake Jira/Confluence REST 서버 (world 를 HTTP 로 서빙)
+    │   └── {server,jql,atom,__main__}.py
+    ├── lake.spec / requirements-sso.txt  # exe 빌드 / prod SSO(playwright)
+    └── tests/                   # world/jql/atom/progress/rollup/config 유닛테스트
 ```
 
+### 환경 3종 (`JIRA_ENV`)
+- **mock**: Jira 없이 `app/world.py` 를 in-process 로 소비 (UI 확인 기본값).
+- **local**: **Fake Jira 서버(`tools/fake_jira`, :8080)** 에 실제 HTTP 로 붙음. **같은 world** 를 서빙하므로 mock 출력과 100% 일치 — REST+인증+캐시 경로 검증용.
+  - Docker/WSL2 불가 + DC 라이선스 발급 중단 → 네이티브 Jira 대신 **Fake 서버가 로컬 dev 기본**. (`seed`/native 가이드는 실 Jira 확보 시 옵션으로 보존)
+- **prod**: 사내 Jira DC (Playwright SSO 세션 재사용). Fake 와 **동일 파서**를 그대로 씀.
+
+`settings.py` 는 `config/`·`.env` 를 **repo 루트(dev) / exe 옆(frozen) / /srv(컨테이너)** 어디에 있든 자동으로 찾는다.
+
+### 실행 방식 (dev = Fake, `src/` 기준)
+- mock: `cd src && python run.py`  (또는 `uvicorn app.main:app`).
+- **local(fake)**: 터미널1 `cd src && python run_fake.py` (:8080, `FAKE_LATENCY_MS` 로 지연 주입 가능) → 터미널2 `LAKE_DOTENV=.env.dev python run.py`.
+- 최종 사용자: **단일 exe** (`cd src && pyinstaller lake.spec`). prod SSO 는 설치된 Chrome 재사용(Chromium 미번들).
+
 ### 아키텍처 규칙
-1. `progress.py`는 **순수 함수**. 입력=이슈 리스트, 출력=Epic 진척률 dict. 네트워크/인증 의존 금지.
-2. `rollup.py`(다운스트림)는 Epic 진척률 + 매핑 config를 받아 WBS/Module/PMO를 조합. 역시 순수.
-3. 인증은 `AuthProvider` 인터페이스 뒤로 숨긴다. 구현체를 갈아끼워 환경 전환.
-4. `JiraClient`는 `AuthProvider`를 주입받아 REST 호출. **어떤 인증인지 몰라야 한다.**
-5. 환경 선택은 `config.py` + 환경변수(`JIRA_ENV=local|prod`)로만. 코드 하드코딩 금지.
-6. **데모의 롤업 로직(`generate_demo.py`)은 §5.4/§6 규칙을 그대로 따른다** — 나중에 `progress.py`/`rollup.py`로 승격할 때 산식이 일치하도록.
+1. `progress.py`는 **순수 함수**. 입력=정규화 이슈 리스트, 출력=Epic 진척률 dict. 네트워크/인증 의존 금지.
+2. `rollup.py`(다운스트림)는 Epic 진척률 + `plan.yaml`을 받아 WBS/Module/PMO를 조합. 역시 순수.
+3. 인증은 `AuthProvider` 인터페이스(`app/auth`) 뒤로 숨긴다. 구현체 교체로 환경 전환.
+4. `JiraClient`는 `AuthProvider`를 주입받아 REST 호출. **어떤 인증인지 몰라야 한다.** 모든 호출은 `cache` 경유.
+5. 환경 선택은 `.env`(`JIRA_ENV`)로만. 커스텀 필드 ID·매핑 하드코딩 금지.
+6. **mock/실 Jira 어댑터는 동일한 정규화 이슈 형태**를 반환 → `progress.py`가 양쪽을 그대로 소비.
+7. **테스트 데이터는 `app/world.py` 단일 소스**. mock(in-process)·fake 서버(HTTP)가 이를 공유 → 두 경로 출력 일치.
 
 ---
 

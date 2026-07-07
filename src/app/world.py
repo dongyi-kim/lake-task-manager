@@ -1,0 +1,319 @@
+"""
+Fake world — 단일 결정적 Jira/Confluence 데이터 세계.
+fake 서버(HTTP)와 mock 모드(in-process)가 이 world 를 공유한다.
+
+- config/plan.yaml(epics/wbs) + people.yaml 로부터 결정적으로 생성.
+- 모든 이슈(Epic/Story/Task/Bug/Sub-task)는 world.issues 에 canonical 형태로 존재.
+- 인덱스: by_label, by_assignee, epic_children.
+- Jira REST 직렬화 + Confluence/activity 소스 제공.
+"""
+
+import hashlib
+import random
+from datetime import date, timedelta
+from functools import lru_cache
+
+from . import worldcontent as wc
+from .settings import get_settings, load_people, load_plan
+
+# 사내 워크플로 상태 (Open/In Progress/Resolved/Closed/Reopened) → 내부 cat
+_STATUS_NAMES = {"todo": ["Open", "Open", "Reopened"],
+                 "inprogress": ["In Progress"],
+                 "done": ["Resolved", "Resolved", "Closed"]}
+_STATUS_ID = {"Open": "1", "In Progress": "3", "Reopened": "4", "Resolved": "5", "Closed": "6"}
+# 내부 cat → 실 Jira DC statusCategory (key=new/indeterminate/done). prod 와 동일해야 함.
+_JIRA_CAT = {
+    "todo": {"id": 2, "key": "new", "colorName": "blue-gray", "name": "To Do"},
+    "inprogress": {"id": 4, "key": "indeterminate", "colorName": "yellow", "name": "In Progress"},
+    "done": {"id": 3, "key": "done", "colorName": "green", "name": "Done"},
+}
+# 사내 이슈타입: Bug, Epic, Improvement, New Feature, Story, Task, Sub-Task
+SUBTASK_TYPE = "Sub-Task"
+_STORYLIKE = {"Story", "Task", "Improvement", "New Feature"}   # SP 보유 + subtask 가능
+_CHILD_TYPES = ["Story", "Task", "Bug", "Improvement", "New Feature"]
+_VIT_ROOT_TYPES = ["Epic", "Task", "Story", "Improvement"]
+_VIT_SIZES = [5, 2, 4, 0, 6, 3, 1]          # 모듈별 PMO_VIT 현안 개수(다양성)
+_CHILD_TYPES_W = [6, 4, 2, 2, 1]            # 가중치
+
+
+def _rng(*parts):
+    seed = int(hashlib.md5("|".join(map(str, parts)).encode()).hexdigest()[:8], 16)
+    return random.Random(seed)
+
+
+def _cat(rng, maturity):
+    return "done" if rng.random() < maturity else ("inprogress" if rng.random() < 0.5 else "todo")
+
+
+class World:
+    def __init__(self, plan, people, today):
+        self.today = today
+        self.plan = plan
+        self.people = people
+        self.project = plan.get("project_key", "LAKE")
+        s = get_settings()
+        self.sp_field = s.sp_field_id
+        self.epic_link_field = s.epic_link_field_id
+
+        self.modules = list(plan["modules"])
+        self.users = self._make_users()
+        self.issues = {}                 # key -> canonical issue
+        self._counter = 5000             # 생성 키 DL-5001+ (config epic id DL-1xx 와 충돌 회피)
+
+        self._build_wbs_epics()
+        self._build_vit()
+        self._build_voc()
+        self._index()
+        self._build_activity()
+        self._build_confluence()
+
+    # ── 사용자 ──
+    def _make_users(self):
+        users = {"pmo": {"name": "pmo", "displayName": "PMO Office"},
+                 "lead": {"name": "lead", "displayName": "Team Lead"}}
+        for module, ids in self.people.items():
+            for uid in ids:
+                users[uid] = {"name": uid, "displayName": f"{uid} ({module})"}
+        return users
+
+    def _pool(self, module):
+        return self.people.get(module, []) or ["pmo"]
+
+    def _newkey(self):
+        self._counter += 1
+        return f"{self.project}-{self._counter}"
+
+    def _dt(self, d):
+        return d.isoformat() + "T09:00:00.000+0000"
+
+    # ── 이슈 생성 헬퍼 ──
+    def _make_issue(self, rng, itype, module, epic_key=None, parent_key=None,
+                    label_pmo=False, summary=None, component=None, assignee=None):
+        pool = self._pool(module)
+        assignee = assignee or pool[rng.randrange(len(pool))]
+        reporter = rng.choice(["pmo", "lead"] + pool)
+        maturity = rng.uniform(0.15, 0.85)
+        cat = _cat(rng, maturity)
+        created = self.today - timedelta(days=rng.randint(5, 160))
+        updated = created + timedelta(days=rng.randint(0, 20))
+        resolved = (self.today - timedelta(days=rng.randint(0, 20))) if cat == "done" else None
+        due = None if rng.random() < 0.25 else (created + timedelta(days=rng.randint(40, 160)))
+        status_name = rng.choice(_STATUS_NAMES[cat])
+        # SP: story-like 는 값 or 누락(None), Bug 는 0, Epic/Sub-Task 는 None
+        if itype in _STORYLIKE:
+            sp = None if rng.random() < 0.12 else rng.choice([1, 2, 3, 5, 8])
+        elif itype == "Bug":
+            sp = 0
+        else:
+            sp = None
+        labels = []
+        if itype in _STORYLIKE and rng.random() < 0.15:
+            labels.append("mock")
+        if label_pmo:
+            labels.append("PMO_VIT")
+
+        key = epic_key if itype == "Epic" and epic_key else self._newkey()
+        ncom = rng.randint(0, 4) if itype != SUBTASK_TYPE else rng.randint(0, 1)
+        comments = [{"author": rng.choice(pool + ["pmo", "lead"]),
+                     "kind": k, "text": t,
+                     "created": self.today - timedelta(days=rng.randint(0, 13))}
+                    for (k, t) in wc.comments(rng, pool, ncom)]
+        worklog = []
+        if cat != "todo":
+            for _ in range(rng.randint(0, 3)):
+                worklog.append({"author": assignee,
+                                "date": self.today - timedelta(days=rng.randint(0, 7)),
+                                "seconds": 3600 * rng.randint(1, 6)})
+
+        self.issues[key] = {
+            "key": key, "project": self.project, "type": itype,
+            "summary": summary or self._summary(rng, itype, module),
+            "description": wc.description(rng, itype),
+            "module": module, "component": component or module,
+            "assignee": assignee, "reporter": reporter,
+            "statusCategory": cat, "statusName": status_name,
+            "labels": labels, "sp": sp,
+            "epicKey": epic_key if itype != "Epic" else None,
+            "parentKey": parent_key,
+            "created": created, "updated": updated, "resolved": resolved, "due": due,
+            "comments": comments, "worklog": worklog, "subtasks": [],
+        }
+        return key
+
+    _SUMMARY = {
+        "Epic": ["실시간 처리 안정화", "메타데이터 표준화", "대용량 적재 최적화", "쿼리 성능 개선"],
+        "Story": ["신규 커넥터 추가", "대시보드 위젯", "API 스펙 확정", "캐시 전략 적용"],
+        "Task": ["환경 구성", "배포 파이프라인 개선", "데이터 품질 룰 추가", "스키마 마이그레이션"],
+        "Bug": ["NPE 수정", "경계값 오류 수정", "동시성 이슈 해결", "타임아웃 조정"],
+        "Improvement": ["로그 포맷 개선", "쿼리 튜닝", "리트라이 정책 보강", "에러 메시지 개선"],
+        "New Feature": ["증분 CDC 지원", "롤백 API", "실시간 알림", "셀프서비스 조회"],
+        "Sub-Task": ["단위 테스트", "코드 리뷰 반영", "QA 확인", "릴리스 노트"],
+    }
+
+    def _summary(self, rng, itype, module):
+        return f"[{module}] " + rng.choice(self._SUMMARY.get(itype, ["작업"]))
+
+    def _add_subtasks(self, rng, parent_key, module, n):
+        for _ in range(n):
+            sk = self._make_issue(rng, SUBTASK_TYPE, module, parent_key=parent_key)
+            self.issues[parent_key]["subtasks"].append(sk)
+
+    # ── WBS epics + 자식 ──
+    def _build_wbs_epics(self):
+        epic_module = {}
+        for w in self.plan["wbs"]:
+            for e in w["epics"]:
+                epic_module.setdefault(e["key"], w["module"])
+        for ekey, module in epic_module.items():
+            rng = _rng("epic", ekey)
+            self._make_issue(rng, "Epic", module, epic_key=ekey)   # Epic 이름은 생성 풀에서(=Jira)
+            for _ in range(rng.randint(4, 9)):
+                ct = rng.choices(_CHILD_TYPES, weights=_CHILD_TYPES_W)[0]
+                ck = self._make_issue(rng, ct, module, epic_key=ekey)
+                if ct in _STORYLIKE and rng.random() < 0.4:
+                    self._add_subtasks(rng, ck, module, rng.randint(1, 2))
+
+    # ── PMO_VIT 현안 (모듈별 다양 개수, 조상/자손 dedup 케이스 포함) ──
+    def _build_vit(self):
+        dedup_done = False
+        for mi, module in enumerate(self.modules):
+            size = _VIT_SIZES[mi % len(_VIT_SIZES)]
+            for i in range(size):
+                rng = _rng("vit", module, i)
+                rtype = rng.choices(_VIT_ROOT_TYPES, weights=[5, 3, 2, 2])[0]
+                if rtype == "Epic":
+                    ekey = self._newkey()               # Epic 루트 key = LAKE-#
+                    root = self._make_issue(rng, "Epic", module, epic_key=ekey, label_pmo=True)
+                    # 자식들 (epicKey=root)
+                    child_keys = []
+                    for _ in range(rng.randint(3, 8)):
+                        ct = rng.choices(_CHILD_TYPES, weights=_CHILD_TYPES_W)[0]
+                        ck = self._make_issue(rng, ct, module, epic_key=root)
+                        child_keys.append(ck)
+                        if ct in _STORYLIKE and rng.random() < 0.5:
+                            self._add_subtasks(rng, ck, module, rng.randint(1, 2))
+                    # dedup 케이스: 자식 하나도 PMO_VIT (조상이 이미 VIT → 스킵되어야 함)
+                    if not dedup_done and child_keys:
+                        self.issues[child_keys[0]]["labels"].append("PMO_VIT")
+                        dedup_done = True
+                else:
+                    root = self._make_issue(rng, rtype, module, label_pmo=True)
+                    for _ in range(rng.randint(2, 5)):
+                        self._add_subtasks(rng, root, module, 1)
+
+    # ── VoC 티켓 (Component=VoC, 고객의 소리성 업무) ──
+    def _build_voc(self):
+        for module in self.modules:
+            for pid in self._pool(module):
+                rng = _rng("voc", pid)
+                for _ in range(rng.randint(0, 5)):
+                    self._make_issue(rng, rng.choice(["Task", "Bug", "Story"]), module,
+                                     component="VoC", assignee=pid)
+
+    # ── 인덱스 ──
+    def _index(self):
+        self.by_label = {}
+        self.by_assignee = {}
+        self.epic_children = {}
+        for k, it in self.issues.items():
+            for lb in it["labels"]:
+                self.by_label.setdefault(lb, []).append(k)
+            self.by_assignee.setdefault(it["assignee"], []).append(k)
+            if it["epicKey"]:
+                self.epic_children.setdefault(it["epicKey"], []).append(k)
+
+    # ── 활동(activity) : 이슈 이벤트를 인력별로 집계 ──
+    def _build_activity(self):
+        ev = {}
+        def add(user, date_, kind, key, summary):
+            ev.setdefault(user, []).append({"date": date_, "kind": kind, "key": key, "summary": summary})
+        for it in self.issues.values():
+            add(it["reporter"], it["created"], "created", it["key"], it["summary"])
+            for c in it["comments"]:
+                add(c["author"], c["created"], "commented", it["key"], it["summary"])
+            for w in it["worklog"]:
+                add(w["author"], w["date"], "logged work", it["key"], it["summary"])
+            if it["resolved"]:
+                add(it["assignee"], it["resolved"], "resolved", it["key"], it["summary"])
+                add(it["assignee"], it["resolved"], "transitioned", it["key"], it["summary"])
+        for u in ev:
+            ev[u].sort(key=lambda e: e["date"], reverse=True)
+        self.activity = ev
+
+    def _build_confluence(self):
+        conf = {}
+        for module, ids in self.people.items():
+            for uid in ids:
+                rng = _rng("conf", uid)
+                pages = []
+                for _ in range(rng.randint(0, 4)):
+                    pages.append({"title": wc.conf_title(rng), "space": wc.conf_space(rng),
+                                  "action": wc.conf_action(rng),
+                                  "date": self.today - timedelta(days=rng.randint(0, 13))})
+                pages.sort(key=lambda p: p["date"], reverse=True)
+                conf[uid] = pages
+        self.confluence = conf
+
+    # ── Jira REST 직렬화 (실 Jira DC 8.20.8 형태) ──
+    def _status_obj(self, cat, name):
+        jc = _JIRA_CAT[cat]
+        return {"id": _STATUS_ID.get(name, "1"), "name": name,
+                "statusCategory": {"id": jc["id"], "key": jc["key"],
+                                   "colorName": jc["colorName"], "name": jc["name"]}}
+
+    def _user_obj(self, uid):
+        u = self.users.get(uid, {"name": uid, "displayName": uid})
+        return {"name": u["name"], "key": u["name"], "displayName": u["displayName"],
+                "emailAddress": f"{u['name']}@example.com", "active": True}
+
+    def jira_fields(self, it):
+        f = {
+            "summary": it["summary"], "description": it["description"],
+            "issuetype": {"name": it["type"], "subtask": it["type"] == SUBTASK_TYPE},
+            "status": self._status_obj(it["statusCategory"], it["statusName"]),
+            "assignee": self._user_obj(it["assignee"]),
+            "reporter": self._user_obj(it["reporter"]),
+            "components": [{"name": it["component"]}],
+            "labels": it["labels"],
+            "created": self._dt(it["created"]), "updated": self._dt(it["updated"]),
+            "resolutiondate": self._dt(it["resolved"]) if it["resolved"] else None,
+            "duedate": it["due"].isoformat() if it["due"] else None,
+            self.sp_field: it["sp"],
+            self.epic_link_field: it["epicKey"],
+        }
+        if it["parentKey"]:
+            p = self.issues.get(it["parentKey"])
+            if p:
+                f["parent"] = {"key": p["key"], "fields": {
+                    "summary": p["summary"],
+                    "status": self._status_obj(p["statusCategory"], p["statusName"]),
+                    "issuetype": {"name": p["type"]}}}
+        f["subtasks"] = [{"key": sk, "fields": {
+            "summary": self.issues[sk]["summary"],
+            "status": self._status_obj(self.issues[sk]["statusCategory"], self.issues[sk]["statusName"]),
+            "issuetype": {"name": SUBTASK_TYPE, "subtask": True}}}
+            for sk in it["subtasks"] if sk in self.issues]
+        return f
+
+    def jira_issue(self, key):
+        it = self.issues.get(key)
+        return {"key": key, "fields": self.jira_fields(it)} if it else None
+
+    def jira_comments(self, key):
+        it = self.issues.get(key)
+        if not it:
+            return []
+        out = []
+        for i, c in enumerate(it["comments"]):
+            au = self.users.get(c["author"], {"name": c["author"], "displayName": c["author"]})
+            out.append({"id": f"{key}-c{i}",
+                        "author": {"name": au["name"], "displayName": au["displayName"]},
+                        "body": f"({c['kind']}) {c['text']}",
+                        "created": self._dt(c["created"]), "updated": self._dt(c["created"])})
+        out.sort(key=lambda c: c["created"], reverse=True)
+        return out
+
+
+@lru_cache(maxsize=1)
+def get_world():
+    return World(load_plan(), load_people(), date.today())

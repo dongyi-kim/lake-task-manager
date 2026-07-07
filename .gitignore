@@ -10,6 +10,9 @@ __pycache__/
 .venv/
 venv/
 
+# SQLite 캐시 (생성물)
+*.sqlite3
+
 # OS / editor
 .DS_Store
 Thumbs.db

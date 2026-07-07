@@ -3,9 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lake Task Manager — PMO Gantt Demo</title>
+<title>Lake Task Manager — WBS Dashboard</title>
 <style>
-  /* palette snapped to the dataviz reference (validated status/surface/ink tokens) */
   :root {
     --bg: #f9f9f7; --panel: #fcfcfb; --panel-2: #f2f1ee; --border: #e1e0d9;
     --text: #0b0b0b; --muted: #52514e; --accent: #2a78d6;
@@ -34,7 +33,6 @@
     --mock: #c98500; --today: #d03b3b;
     --shadow: 0 1px 3px rgba(11,11,11,.08), 0 1px 2px rgba(11,11,11,.04);
   }
-  /* module categorical colors — dataviz reference palette, fixed order (7 of 8 slots) */
   :root {
     --c1: #2a78d6; --c2: #1baf7a; --c3: #eda100; --c4: #008300;
     --c5: #4a3aa7; --c6: #e34948; --c7: #e87ba4;
@@ -59,10 +57,13 @@
     font-family: "Segoe UI", "Malgun Gothic", system-ui, -apple-system, sans-serif;
     font-size: 14px; line-height: 1.5;
   }
-  .wrap { max-width: 1280px; margin: 0 auto; padding: 22px 18px 60px; }
+  .wrap { max-width: none; margin: 0; padding: 22px 28px 60px; }
   header.top { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
   h1 { font-size: 20px; margin: 0; letter-spacing: -.2px; }
   h1 .sub { color: var(--muted); font-weight: 500; font-size: 13px; margin-left: 8px; }
+  nav.tabs { display: flex; gap: 4px; margin: 10px 0 14px; }
+  nav.tabs a { font-size: 13px; color: var(--muted); text-decoration: none; padding: 5px 12px; border-radius: 8px; border: 1px solid transparent; }
+  nav.tabs a.on { color: var(--text); border-color: var(--border); background: var(--panel); font-weight: 600; }
   .meta { color: var(--muted); font-size: 12px; }
   .note { color: var(--muted); font-size: 12px; margin: 2px 0 16px; }
 
@@ -93,7 +94,6 @@
          border-radius: 8px; padding: 5px 11px; cursor: pointer; }
   .btn:hover { color: var(--text); }
 
-  /* ===== Gantt ===== */
   .gantt { display: flex; border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
            background: var(--panel); box-shadow: var(--shadow); }
   .g-labels { flex: 0 0 262px; width: 262px; border-right: 1px solid var(--border); background: var(--panel); z-index: 3; }
@@ -116,7 +116,6 @@
   .lrow.wbs .tag { font-size: 9.5px; color: var(--muted); background: var(--track); border-radius: 4px;
                    padding: 1px 5px; margin-left: 6px; flex: 0 0 auto; }
   .lrow.epic { padding: 0 10px 0 44px; font-size: 11.5px; color: var(--text); position: relative; }
-  /* ㄴ자 트리 연결선 (WBS → 하위 Epic) */
   .lrow.epic::before { content: ""; position: absolute; left: 22px; top: 0; bottom: 0;
                        border-left: 1.5px solid var(--grid2); }
   .lrow.epic.lastchild::before { bottom: auto; height: 50%; }
@@ -159,7 +158,6 @@
   .gbar.epic-bar .bn { font-size: 11px; } .gbar.epic-bar .bp { font-size: 9.5px; }
   .gbar.epic-bar .gfill { opacity: .82; }
 
-  /* 타임라인 트리 연결선 (WBS 바 → 하위 Epic 바) */
   .tconn-v, .tconn-stub, .tconn-h { position: absolute; z-index: 0; pointer-events: none; }
   .tconn-v { top: 0; bottom: 0; width: 0; border-left: 1.5px solid var(--grid2); }
   .tconn-stub { top: 50%; bottom: 0; width: 0; border-left: 1.5px solid var(--grid2); }
@@ -168,19 +166,23 @@
 
   .legend { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 14px; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
-  .swatch { width: 22px; height: 11px; border-radius: 3px; display: inline-block; border: 1px solid var(--grid2); position: relative; }
-  .swatch i { position: absolute; left: 0; top: 0; bottom: 0; width: 55%; background: var(--done); border-radius: 3px 0 0 3px; }
   .tline { width: 2px; height: 13px; background: var(--today); display: inline-block; }
   .footer { margin-top: 20px; color: var(--muted); font-size: 11.5px; line-height: 1.7; }
   .footer code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+  #err { color: var(--today); padding: 20px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header class="top">
-    <h1>Lake Task Manager <span class="sub">Data Lake · PMO Gantt (Demo)</span></h1>
+    <h1>Lake Task Manager <span class="sub">Data Lake · WBS Dashboard</span></h1>
     <div class="meta" id="meta"></div>
   </header>
+  <nav class="tabs">
+    <a href="/" class="on">WBS Dashboard</a>
+    <a href="/vit.html">현안 (PMO_VIT)</a>
+    <a href="/workload.html">인력 워크로드</a>
+  </nav>
   <p class="note" id="scope"></p>
 
   <div class="pmo">
@@ -209,6 +211,7 @@
       </div>
       <button class="btn" id="expandAll">전체 Epic 펼치기</button>
       <button class="btn" id="collapseAll">전체 접기</button>
+      <button class="btn" id="refresh">↻ 새로고침</button>
     </div>
   </div>
 
@@ -228,35 +231,30 @@
     <span>바 가로 = WBS 일정, 채운 부분 = 완료 진척, <b>색 = 소속 모듈</b></span>
     <span><i class="tline"></i> 오늘</span>
     <span>Epic = 점선 바</span>
-    <span><b style="color:var(--accent)">0.6</b> = WBS 내 Epic 가중치</span>
+    <span><b style="color:var(--accent)">6</b> = WBS 내 Epic 가중치(상대값·자동정규화)</span>
     <span><i style="border:1px solid var(--mock);color:var(--mock);padding:0 4px;border-radius:4px;font-size:10px">shared</i> 공유 Epic (N:M)</span>
   </div>
 
   <div class="footer" id="footer"></div>
 </div>
 
-<script src="data.js"></script>
 <script>
-(function () {
-  var D = window.LAKE_DEMO;
-  if (!D) { document.body.innerHTML = "<p style='padding:24px'>data.js 를 불러오지 못했습니다. generate_demo.py 를 먼저 실행하세요.</p>"; return; }
-
+function renderGantt(D) {
   var pct = function (n) { return (Math.round(n * 10) / 10) + "%"; };
   var el = function (tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
   var pd = function (s) { var a = s.split("-"); return new Date(+a[0], +a[1] - 1, +a[2]); };
   var DAY = 86400000;
   var days = function (a, b) { return Math.round((b - a) / DAY); };
   var md = function (d) { return (d.getMonth() + 1) + "/" + d.getDate(); };
-  var TODAY = pd("2026-07-06");
+  var now = new Date(); var TODAY = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  // ---- header / summary ----
   var pmo = D.rollup.pmo, T = D.timeline;
   var projStart = pd(T.start), projEnd = pd(T.end);
   var totalDays = days(projStart, projEnd);
 
-  document.getElementById("meta").textContent = "project " + D.projectKey + " · 생성 " + D.generatedAt;
+  document.getElementById("meta").textContent = "project " + D.projectKey + " · 갱신 " + D.generatedAt;
   document.getElementById("scope").textContent =
-    "가상 데이터 — Modules " + pmo.moduleCount + " · WBS Task " + pmo.wbsCount + " · Epic " + pmo.epicCount +
+    "Modules " + pmo.moduleCount + " · WBS Task " + pmo.wbsCount + " · Epic " + pmo.epicCount +
     " · 일정 " + T.start + " ~ " + T.end +
     ". Epic 진척률(Σ완료SP/Σ총SP)만 이 도구의 산출물이며, WBS/Module/PMO 는 이를 가중치로 조합한 롤업입니다.";
 
@@ -265,7 +263,7 @@
   arc.setAttribute("stroke-dasharray", circ);
   arc.setAttribute("stroke-dashoffset", circ * (1 - pmo.progressPct / 100));
 
-  var kbox = document.getElementById("kpis");
+  var kbox = document.getElementById("kpis"); kbox.innerHTML = "";
   [{ v: pmo.rawTotalSp, k: "총 Story Point" }, { v: pmo.rawDoneSp, k: "완료 SP" },
    { v: pct(pmo.progressPct), k: "진척률" }, { v: pmo.rawMockSp, k: "mock SP (추정)", mock: 1 }
   ].forEach(function (x) {
@@ -280,14 +278,13 @@
   var wbsById = {}; D.wbs.forEach(function (w) { wbsById[w.id] = w; });
   var moduleRollup = {}; D.rollup.modules.forEach(function (m) { moduleRollup[m.id] = m; });
 
-  // ---- Gantt render ----
   var glabels = document.getElementById("glabels");
   var gscroll = document.getElementById("gscroll");
   var taxis = document.getElementById("taxis");
   var tgrid = document.getElementById("tgrid");
   var trows = document.getElementById("trows");
 
-  var expanded = {};                 // wbsId -> bool
+  var expanded = {};
   var unit = "month";
   var H = { mod: 40, wbs: 46, epic: 34 };
 
@@ -295,11 +292,10 @@
     var fit = avail / totalDays;
     if (unit === "month") return fit;
     if (unit === "week") return Math.max(fit, 3.4);
-    return Math.max(fit, 9);         // day
+    return Math.max(fit, 9);
   }
 
   function render() {
-    // clear (keep the l-head / axis containers)
     while (glabels.childNodes.length > 1) glabels.removeChild(glabels.lastChild);
     taxis.innerHTML = ""; tgrid.innerHTML = ""; trows.innerHTML = "";
 
@@ -309,7 +305,6 @@
     document.getElementById("gtime").style.width = W + "px";
     var xpx = function (d) { return days(projStart, d) * ppd; };
 
-    // ----- axis ticks + gridlines -----
     var addLine = function (x, major) {
       var g = el("div", "gl" + (major ? " major" : "")); g.style.left = x + "px"; tgrid.appendChild(g);
     };
@@ -330,7 +325,7 @@
         if (i % ((ppd * 7 >= 46) ? 1 : 2) === 0) addTick(xpx(w), md(w), false);
         w = new Date(w.getTime() + 7 * DAY); i++;
       }
-    } else { // day
+    } else {
       var dd = new Date(projStart), j = 0;
       while (dd <= projEnd) {
         var isWeek = (j % 7 === 0);
@@ -339,18 +334,15 @@
         dd = new Date(dd.getTime() + DAY); j++;
       }
     }
-    // today marker
     if (TODAY >= projStart && TODAY <= projEnd) {
       var tl = el("div", "today"); tl.style.left = xpx(TODAY) + "px"; tgrid.appendChild(tl);
       var tt = el("div", "tk", "오늘"); tt.style.left = xpx(TODAY) + "px"; tt.style.color = "var(--today)";
       tt.style.fontWeight = "700"; taxis.appendChild(tt);
     }
 
-    // ----- rows -----
     function addRow(level, labelEl, item) {
       labelEl.style.height = H[level] + "px";
       glabels.appendChild(labelEl);
-
       var tr = el("div", "trow " + level); tr.style.height = H[level] + "px";
       var left = xpx(pd(item.start));
       var w = Math.max(xpx(pd(item.end)) - left, 4);
@@ -363,7 +355,6 @@
       var fill = el("div", "gfill"); fill.style.width = item.progressPct + "%";
       if (item.color) fill.style.background = item.color;
       bar.appendChild(fill);
-      // 바 안에 Task 이름 + 기간
       var period = md(pd(item.start)) + "–" + md(pd(item.end));
       var lab = el("div", "blabel",
         "<span class='bn'>" + item.name + "</span><span class='bp'>" + period + "</span>");
@@ -379,8 +370,7 @@
 
     D.modules.forEach(function (mod, mi) {
       var m = moduleRollup[mod.id];
-      var cvar = "var(--c" + (mi + 1) + ")";
-      // 모듈 = 그룹 헤더만 (일정/진척률 없음 — 모듈은 기한이 없음)
+      var cvar = "var(--c" + (mi % 7 + 1) + ")";
       var ml = el("div", "lrow mod",
         "<span class='mdot' style='background:" + cvar + "'></span>" +
         "<span class='nm'>" + mod.name + "</span><span class='mc'>" + m.wbsIds.length + " WBS</span>");
@@ -392,13 +382,12 @@
       m.wbsIds.forEach(function (wid) {
         var w = wbsById[wid];
         var open = !!expanded[wid];
-        var originX = xpx(pd(w.start));   // 연결선 세로축 = WBS 바 좌측
+        var originX = xpx(pd(w.start));
         var wl = el("div", "lrow wbs" + (open ? " open" : ""),
           "<span class='chev'>▸</span><span class='nm'>" + w.name + "</span><span class='tag'>" + w.id + "</span>");
         var rowPair = addRow("wbs", wl, { name: w.name, start: w.start, end: w.end, progressPct: w.progressPct, color: cvar,
           title: w.name + "  " + w.start + " ~ " + w.end + "  (" + pct(w.progressPct) + ")" });
 
-        // WBS 바 하단 → 첫 Epic 으로 내려가는 세로 stub
         var stub = el("div", "tconn-stub"); stub.style.left = originX + "px";
         if (!open) stub.style.display = "none";
         rowPair.trow.appendChild(stub);
@@ -408,11 +397,10 @@
           var ep = D.epics[p.epicKey];
           var shared = epicWbsCount[p.epicKey] > 1 ? "<span class='shared'>shared ×" + epicWbsCount[p.epicKey] + "</span>" : "";
           var elx = el("div", "lrow epic",
-            "<span class='wt'>" + p.weight.toFixed(1) + "</span><span class='nm'>" + ep.name + "</span>" + shared);
+            "<span class='wt'>" + p.weight + "</span><span class='nm'>" + ep.name + "</span>" + shared);
           var mk = ep.mockSp > 0 ? ", mock " + ep.mockSp : "";
           var pr = addRow("epic", elx, { name: ep.name, start: p.start, end: p.end, progressPct: ep.progressPct, color: cvar,
             title: ep.name + "  " + p.start + " ~ " + p.end + "  " + ep.doneSp + "/" + ep.totalSp + " SP (" + pct(ep.progressPct) + ")" + mk });
-          // 타임라인 트리 연결선: originX 세로선 + Epic 바 좌측으로 가로 tick
           var epLeft = xpx(pd(p.start));
           var v = el("div", "tconn-v"); v.style.left = originX + "px";
           var h = el("div", "tconn-h"); h.style.left = originX + "px"; h.style.width = Math.max(epLeft - originX, 0) + "px";
@@ -453,22 +441,36 @@
   var rt;
   window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(render, 150); });
 
-  // module color legend
-  var modLegend = document.getElementById("modLegend");
+  var modLegend = document.getElementById("modLegend"); modLegend.innerHTML = "";
   D.modules.forEach(function (mod, mi) {
-    var s = el("span", null,
-      "<i class='mdot' style='width:11px;height:11px;border-radius:3px;display:inline-block;background:var(--c" +
-      (mi + 1) + ")'></i> " + mod.name);
-    modLegend.appendChild(s);
+    modLegend.appendChild(el("span", null,
+      "<i style='width:11px;height:11px;border-radius:3px;display:inline-block;background:var(--c" +
+      (mi % 7 + 1) + ")'></i> " + mod.name));
   });
 
   render();
 
   document.getElementById("footer").innerHTML =
-    "완료 판정 = <code>statusCategory.key == \"done\"</code> (상태명 하드코딩 금지). " +
+    "완료 판정 = <code>statusCategory == \"done\"</code> (상태명 하드코딩 금지). " +
     "Bug/Ops 이슈타입 및 SP=0 은 진척률에서 제외. mock 라벨 SP 는 분모에만 포함(reconcile 는 사람 판단). " +
-    "데이터 재생성: <code>python demo/generate_demo.py</code>.";
-})();
+    "매핑/일정은 <code>config/plan.yaml</code>.";
+}
+
+function load() {
+  fetch("/api/wbs").then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }).then(renderGantt).catch(function (e) {
+    document.querySelector(".wrap").insertAdjacentHTML("beforeend",
+      "<div id='err'>데이터를 불러오지 못했습니다: " + e.message + "<br>백엔드(/api/wbs)가 떠 있는지 확인하세요.</div>");
+  });
+}
+
+document.getElementById("refresh").addEventListener("click", function () {
+  fetch("/api/refresh", { method: "POST" }).then(function () { location.reload(); });
+});
+
+load();
 </script>
 </body>
 </html>

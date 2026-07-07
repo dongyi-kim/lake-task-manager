@@ -1,0 +1,122 @@
+# Lake Task Manager — WBS 구성 (기능1)  ★ [DEV/FAKE] src/config = 개발용
+# fake 서버가 이 DL-xxxx epic 들을 생성한다. prod 실데이터는 repo 루트 config/ 에 있다.
+#
+# 구조: wbs → (module 별) → tasks → 각 task(name, 기간) → 소속 epic(ticket + weight)
+#   - ticket = 실제 Jira Epic 티켓 키 (DL-xxxx). Epic 이름/상태/자식은 Jira 에 있음(여기 안 적음).
+#   - 같은 Epic 을 여러 task 가 다른 weight 로 참조 = N:M 공유.
+#   - weight = 상대 가중치(정수 권장). 합이 1이 아니어도 자동 정규화됨. 예) 6/4 == 60%/40%, 3/1 == 75%/25%.
+#   - start/end 는 간트차트용 (일정은 PMO 계획 산출물이라 여기서 관리).
+
+project_key: DL
+
+wbs:
+  - module: ETL
+    tasks:
+      - name: 실시간 수집 체계
+        start: 2026-01-06
+        end:   2026-05-29
+        epics:
+          - {ticket: DL-101, weight: 6}
+          - {ticket: DL-103, weight: 4}   # 공유(Runtime 과)
+      - name: 배치 적재 표준화
+        start: 2026-03-02
+        end:   2026-08-14
+        epics:
+          - {ticket: DL-102, weight: 7}
+          - {ticket: DL-105, weight: 3}   # 공유(Catalog/Observability 와)
+
+  - module: DevOps
+    tasks:
+      - name: 플랫폼 IaC
+        start: 2026-01-05
+        end:   2026-06-05
+        epics:
+          - {ticket: DL-115, weight: 6}
+          - {ticket: DL-114, weight: 4}   # 공유(인증/권한)
+      - name: CI/CD
+        start: 2026-04-06
+        end:   2026-10-09
+        epics:
+          - {ticket: DL-116, weight: 7}
+          - {ticket: DL-115, weight: 3}
+
+  - module: Observability
+    tasks:
+      - name: 모니터링 스택
+        start: 2026-03-02
+        end:   2026-08-31
+        epics:
+          - {ticket: DL-117, weight: 6}
+          - {ticket: DL-105, weight: 4}
+      - name: 로그/리니지
+        start: 2026-06-01
+        end:   2026-12-11
+        epics:
+          - {ticket: DL-118, weight: 5}
+          - {ticket: DL-106, weight: 5}   # 공유(리니지)
+
+  - module: Workbench
+    tasks:
+      - name: 쿼리 워크스페이스
+        start: 2026-03-16
+        end:   2026-09-15
+        epics:
+          - {ticket: DL-110, weight: 7}
+          - {ticket: DL-109, weight: 3}   # 공유(API GW)
+      - name: 대시보드
+        start: 2026-06-15
+        end:   2026-12-15
+        epics:
+          - {ticket: DL-111, weight: 6}
+          - {ticket: DL-114, weight: 4}
+
+  - module: Runtime
+    tasks:
+      - name: 쿼리 실행 엔진
+        start: 2026-01-19
+        end:   2026-06-30
+        epics:
+          - {ticket: DL-107, weight: 7}
+          - {ticket: DL-103, weight: 3}
+      - name: 쿼리 가속
+        start: 2026-04-01
+        end:   2026-09-30
+        epics:
+          - {ticket: DL-108, weight: 6}
+          - {ticket: DL-107, weight: 4}
+      - name: API 게이트웨이
+        start: 2026-06-01
+        end:   2026-11-30
+        epics:
+          - {ticket: DL-109, weight: 8}
+          - {ticket: DL-107, weight: 2}
+
+  - module: Catalog
+    tasks:
+      - name: 카탈로그 구축
+        start: 2026-02-02
+        end:   2026-07-31
+        epics:
+          - {ticket: DL-104, weight: 6}
+          - {ticket: DL-105, weight: 4}
+      - name: 리니지 연동
+        start: 2026-05-04
+        end:   2026-10-30
+        epics:
+          - {ticket: DL-106, weight: 5}
+          - {ticket: DL-105, weight: 5}
+
+  - module: DataOps
+    tasks:
+      - name: 데이터 품질 파이프라인
+        start: 2026-02-16
+        end:   2026-07-17
+        epics:
+          - {ticket: DL-112, weight: 7}
+          - {ticket: DL-109, weight: 3}
+      - name: 오케스트레이션
+        start: 2026-05-18
+        end:   2026-11-13
+        epics:
+          - {ticket: DL-113, weight: 6}
+          - {ticket: DL-114, weight: 4}

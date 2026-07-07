@@ -1,0 +1,9 @@
+# Lake Task Manager — core app deps
+fastapi>=0.110
+uvicorn[standard]>=0.29
+requests>=2.31
+PyYAML>=6.0
+python-dotenv>=1.0
+
+# 운영(SSO) 경로는 별도:  pip install -r requirements-sso.txt
+#   playwright>=1.44  (+ playwright install chromium)

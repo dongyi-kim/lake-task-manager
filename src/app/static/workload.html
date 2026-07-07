@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lake Task Manager — 인력 워크로드</title>
+<style>
+  :root {
+    --bg:#f9f9f7; --panel:#fcfcfb; --panel-2:#f2f1ee; --border:#e1e0d9; --text:#0b0b0b;
+    --muted:#52514e; --accent:#2a78d6; --done:#0ca30c; --shadow:0 1px 3px rgba(11,11,11,.08);
+    --c1:#2a78d6; --c2:#1baf7a; --c3:#eda100; --c4:#008300; --c5:#4a3aa7; --c6:#e34948; --c7:#e87ba4;
+    --grid:#e1e0d9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d0d0d; --panel:#1a1a19; --panel-2:#232322; --border:#2c2c2a; --text:#fff;
+      --muted:#c3c2b7; --accent:#3987e5; --done:#0ca30c; --shadow:0 1px 3px rgba(0,0,0,.4);
+      --c1:#3987e5; --c2:#199e70; --c3:#c98500; --c4:#2f9e2f; --c5:#9085e9; --c6:#e66767; --c7:#d55181;
+      --grid:#2c2c2a; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:"Segoe UI","Malgun Gothic",system-ui,sans-serif; font-size:14px; line-height:1.5; }
+  .wrap { max-width:none; margin:0; padding:22px 28px 60px; }
+  h1 { font-size:20px; margin:0; } h1 .sub { color:var(--muted); font-weight:500; font-size:13px; margin-left:8px; }
+  .meta { color:var(--muted); font-size:12px; float:right; margin-top:6px; }
+  nav { display:flex; gap:4px; margin:12px 0 14px; }
+  nav a { font-size:13px; color:var(--muted); text-decoration:none; padding:5px 12px; border-radius:8px; border:1px solid transparent; }
+  nav a.on { color:var(--text); border-color:var(--border); background:var(--panel); font-weight:600; }
+  .lnk { color:var(--accent); text-decoration:none; } .lnk:hover { text-decoration:underline; }
+
+  .summary { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:8px; }
+  .schip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:5px 12px; font-size:12.5px; box-shadow:var(--shadow); }
+  .schip b { font-variant-numeric:tabular-nums; }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:6px; font-size:12px; color:var(--muted); }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .sw { width:13px; height:13px; border-radius:3px; display:inline-block; }
+  .sw.ipTask{background:var(--c1)} .sw.ipVoc{background:var(--c6)}
+  .sw.doneTask{background:var(--c1); opacity:.45} .sw.doneVoc{background:var(--c6); opacity:.45}
+  .axisnote { color:var(--muted); font-size:11.5px; margin-bottom:14px; }
+
+  .mod { background:var(--panel); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); margin-bottom:10px; overflow:hidden; }
+  .mod-head { display:flex; align-items:center; gap:9px; padding:11px 16px; cursor:pointer; user-select:none; }
+  .mod-head:hover { background:rgba(127,127,127,.04); }
+  .mod-head .chev { color:var(--muted); font-size:12px; transition:transform .15s; }
+  .mod.open .mod-head .chev { transform:rotate(90deg); }
+  .mod-head .dot { width:12px; height:12px; border-radius:3px; }
+  .mod-head b { font-size:14.5px; } .mod-head .pc { color:var(--muted); font-size:12px; }
+  .mod-head .agg { margin-left:auto; color:var(--muted); font-size:12.5px; }
+  .mod-head .agg b { color:var(--text); font-variant-numeric:tabular-nums; }
+  .mod-body { display:none; border-top:1px solid var(--border); }
+  .mod.open .mod-body { display:block; }
+
+  .whead, .prow { display:grid; grid-template-columns:150px 176px 1fr 44px; align-items:center; gap:14px; padding:8px 16px; }
+  .whead { padding:6px 16px 5px; background:var(--panel-2); border-top:1px solid var(--border); }
+  .whead .hl { font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
+  .prow { border-top:1px solid var(--border); }
+  .prow:hover { background:rgba(127,127,127,.03); }
+  .pid { font-weight:600; } .pid::before { content:"\1F464  "; font-weight:400; }
+
+  .cnt { font-size:11.5px; }
+  .wtbl { display:grid; grid-template-columns:56px 44px 44px; gap:2px 8px; font-variant-numeric:tabular-nums; align-items:center; }
+  .wtbl .h { color:var(--muted); font-size:10px; text-align:center; font-weight:600; }
+  .wtbl .rl { color:var(--muted); }
+  .wtbl .v { text-align:center; font-weight:700; }
+  .wtbl .v.tTask { color:var(--c1); } .wtbl .v.tVoc { color:var(--c6); }
+  .wtbl .v.done { opacity:.5; }                  /* 완료 열 = 반투명 */
+
+  .wbar { height:22px; background:var(--track,#e5e4de); border-radius:5px; overflow:hidden; display:flex;
+          background-image:linear-gradient(to right,var(--grid) 0 1px,transparent 1px); background-size:25% 100%; }
+  .wbar .seg { height:100%; display:flex; align-items:center; justify-content:center; color:#fff;
+               font-size:10.5px; font-weight:700; overflow:hidden; min-width:0; }
+  .seg.ipTask{background:var(--c1)} .seg.ipVoc{background:var(--c6)}
+  .seg.doneTask{background:var(--c1)} .seg.doneVoc{background:var(--c6)}
+  .seg.doneTask, .seg.doneVoc { opacity:.45; }   /* 완료 = 반투명 */
+  .plus { background:var(--panel-2); border:1px solid var(--border); color:var(--muted); border-radius:7px; width:30px; height:26px; cursor:pointer; font-size:14px; }
+  .plus:hover { color:var(--text); }
+  .empty { color:var(--muted); font-size:12px; padding:8px 16px; }
+
+  .act { display:none; grid-column:1 / -1; padding:6px 16px 12px 40px; background:var(--panel-2); }
+  .act.open { display:block; }
+  .acols { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+  @media (max-width:900px){ .acols { grid-template-columns:1fr; } }
+  .sec-t { font-size:11px; color:var(--muted); margin:2px 0 5px; }
+  .aev { display:grid; grid-template-columns:46px 74px 1fr; gap:8px; align-items:baseline; font-size:12.5px; padding:2px 0; }
+  .aev .d { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+  .aev .kd { color:var(--muted); font-size:11px; }
+  .amuted { color:var(--muted); font-size:12px; }
+  #err { color:#d03b3b; padding:20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="meta" id="meta"></div>
+  <h1>Lake Task Manager <span class="sub">인력 워크로드 / 활동</span></h1>
+  <nav>
+    <a href="/">WBS Dashboard</a>
+    <a href="/vit.html">현안 (PMO_VIT)</a>
+    <a href="/workload.html" class="on">인력 워크로드</a>
+  </nav>
+  <div class="summary" id="summary"></div>
+  <div class="legend">
+    <span><i class="sw ipTask"></i> 진행중 Task</span>
+    <span><i class="sw ipVoc"></i> 진행중 VoC</span>
+    <span><i class="sw doneTask"></i> 7일 완료 Task</span>
+    <span><i class="sw doneVoc"></i> 7일 완료 VoC</span>
+    <span style="color:var(--muted)">· 색 = Task/VoC, 반투명 = 완료</span>
+  </div>
+  <div class="axisnote" id="axisnote"></div>
+  <div id="mods"></div>
+</div>
+
+<script>
+var MODCOL = {}, JB = "", ACTCACHE = {}, GMAX = 1;
+var CATS = ["ipTask","ipVoc","doneTask","doneVoc"];
+function el(t,c,h){ var e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e; }
+function esc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function mdISO(s){ if(!s) return ""; var p=s.split("-"); return (+p[1])+"/"+(+p[2]); }
+function tkt(key){ if(!key) return ""; return JB ? "<a class='lnk' target='_blank' rel='noopener' href='"+JB+"/browse/"+key+"'>"+key+"</a>" : key; }
+function vals(p){ return {ipTask:p.inProgress.task, ipVoc:p.inProgress.voc, doneTask:p.done7d.task, doneVoc:p.done7d.voc}; }
+
+function render(D){
+  JB = D.jiraBase || ""; GMAX = D.maxTotal || 1;
+  document.getElementById("meta").textContent = "project "+D.projectKey+" · 갱신 "+D.generatedAt;
+  D.modules.forEach(function(m,i){ MODCOL[m.module]="var(--c"+(i%7+1)+")"; });
+
+  var tp=0, tip=0, td=0;
+  D.modules.forEach(function(m){ tp+=m.peopleCount; tip+=m.inProgressTotal; td+=m.done7dTotal; });
+  var sum=document.getElementById("summary"); sum.innerHTML="";
+  sum.appendChild(el("div","schip","인력 <b>"+tp+"</b>명"));
+  sum.appendChild(el("div","schip","진행중 <b>"+tip+"</b>건"));
+  sum.appendChild(el("div","schip","최근 7일 완료 <b>"+td+"</b>건"));
+  document.getElementById("axisnote").textContent =
+    "가로 막대는 모든 인력이 같은 x축(최대 "+GMAX+"건)을 공유 — 색 영역 = [진행중 Task·VoC / 완료 Task·VoC] 누적. 눈금 25% 간격.";
+
+  var box=document.getElementById("mods"); box.innerHTML="";
+  D.modules.forEach(function(m){ box.appendChild(moduleBlock(m)); });
+}
+
+function moduleBlock(m){
+  var wrap=el("div","mod open");
+  var head=el("div","mod-head",
+    "<span class='chev'>▸</span><span class='dot' style='background:"+MODCOL[m.module]+"'></span>"
+    +"<b>"+m.module+"</b><span class='pc'>인력 "+m.peopleCount+"</span>"
+    +"<span class='agg'>진행중 <b>"+m.inProgressTotal+"</b> · 최근7일 완료 <b>"+m.done7dTotal+"</b></span>");
+  head.addEventListener("click",function(){ wrap.classList.toggle("open"); });
+  wrap.appendChild(head);
+
+  var body=el("div","mod-body");
+  if(!m.people.length){ body.appendChild(el("div","empty","등록된 인력이 없습니다 (config/people.yaml)")); wrap.appendChild(body); return wrap; }
+
+  // 컬럼 헤더 (모듈당 1회): 진행중 / 7일완료
+  body.appendChild(el("div","whead",
+    "<div class='hl'>인력</div>"
+    +"<div class='wtbl'><div></div><div class='h'>진행중</div><div class='h'>7일완료</div></div>"
+    +"<div class='hl'>워크로드 (진행중·완료 누적)</div><div></div>"));
+
+  m.people.forEach(function(p){
+    var row=el("div","prow"), v=vals(p);
+    row.appendChild(el("span","pid", p.id));
+
+    // 수치 (바 왼쪽) — 행: Task성 / VoC성, 열: 진행중 / 7일완료(반투명)
+    row.appendChild(el("div","cnt",
+      "<div class='wtbl'>"
+      +"<div class='rl'>Task성</div><div class='v tTask'>"+v.ipTask+"</div><div class='v tTask done'>"+v.doneTask+"</div>"
+      +"<div class='rl'>VoC성</div><div class='v tVoc'>"+v.ipVoc+"</div><div class='v tVoc done'>"+v.doneVoc+"</div>"
+      +"</div>"));
+
+    // 누적 스택 바 (공유 x축 = GMAX), 각 영역 안에 숫자
+    var bar=el("div","wbar");
+    CATS.forEach(function(c){
+      if(v[c]>0){ var s=el("div","seg "+c); s.style.width=(v[c]/GMAX*100)+"%"; s.title=c+": "+v[c]; s.textContent=v[c]; bar.appendChild(s); }
+    });
+    row.appendChild(bar);
+
+    var btn=el("button","plus","+"); row.appendChild(btn);
+    var act=el("div","act"); row.appendChild(act);
+    btn.addEventListener("click",function(){ toggleActivity(p.id, act, btn); });
+    body.appendChild(row);
+  });
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function toggleActivity(id, act, btn){
+  if(act.classList.contains("open")){ act.classList.remove("open"); btn.textContent="+"; return; }
+  act.classList.add("open"); btn.textContent="−";
+  if(ACTCACHE[id]){ fillActivity(act, ACTCACHE[id]); return; }
+  act.innerHTML="<div class='amuted'>불러오는 중…</div>";
+  fetch("/api/activity/"+encodeURIComponent(id)).then(function(r){ return r.json(); })
+    .then(function(a){ ACTCACHE[id]=a; fillActivity(act, a); })
+    .catch(function(e){ act.innerHTML="<div class='amuted'>활동을 불러오지 못했습니다: "+e.message+"</div>"; });
+}
+
+var KIND={created:"생성",updated:"수정",transitioned:"상태변경",commented:"코멘트","logged work":"작업기록",resolved:"해결"};
+function fillActivity(act, a){
+  var cols=el("div","acols");
+  var jc=el("div",null,"<div class='sec-t'>Jira 최근 활동</div>");
+  if(a.jira && a.jira.length){
+    a.jira.forEach(function(e){ jc.appendChild(el("div","aev",
+      "<span class='d'>"+mdISO(e.date)+"</span><span class='kd'>"+(KIND[e.kind]||e.kind)+"</span>"
+      +"<span>"+tkt(e.key)+" "+esc(e.summary||"")+"</span>")); });
+  } else { jc.appendChild(el("div","amuted","최근 활동 없음")); }
+  var cc=el("div",null,"<div class='sec-t'>Confluence 최근</div>");
+  if(a.confluence && a.confluence.length){
+    a.confluence.forEach(function(e){ cc.appendChild(el("div","aev",
+      "<span class='d'>"+mdISO(e.date)+"</span><span>"+esc(e.title||"")+" <span class='kd'>["+(e.space||"")+"]</span></span>")); });
+  } else { cc.appendChild(el("div","amuted","최근 활동 없음")); }
+  cols.appendChild(jc); cols.appendChild(cc);
+  act.innerHTML=""; act.appendChild(cols);
+}
+
+fetch("/api/workload").then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+  .then(render)
+  .catch(function(e){ document.querySelector(".wrap").insertAdjacentHTML("beforeend",
+    "<div id='err'>워크로드 데이터를 불러오지 못했습니다: "+e.message+"</div>"); });
+</script>
+</body>
+</html>
