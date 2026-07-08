@@ -45,10 +45,10 @@
       core: "막대 = 진행중 / 7일완료 × Task성 / VoC성  (건수)",
       pre:
         "진행중 Task성 = 담당 & 진행중 & (Task 또는 Sub-Task) 개수\n" +
-        "진행중 VoC성  = 담당 & 진행중 & Component=VoC 개수\n" +
+        "진행중 VoC성  = 담당 & 진행중 & Component=사용자 VoC 개수\n" +
         "7일완료 Task/VoC = 위와 같되 최근 7일 내 완료(Done)",
       notes: [
-        "<b>Task성</b> = 이슈타입 Task+Sub-Task. <b>VoC성</b> = Component가 VoC.",
+        "<b>Task성</b> = 이슈타입 Task+Sub-Task. <b>VoC성</b> = Component가 사용자 VoC.",
         "<b>완료 건은 반투명</b>으로 진행중과 구분. 담당(Assignee) 기준 카운트.",
       ],
     },

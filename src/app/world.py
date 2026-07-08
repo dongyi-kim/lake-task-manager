@@ -270,7 +270,7 @@ class World:
                 rng = _rng("voc", pid)
                 for _ in range(rng.randint(0, 5)):
                     self._make_issue(rng, rng.choice(["Task", "Bug", "Story"]), module,
-                                     component="VoC", assignee=pid)
+                                     component="사용자 VoC", assignee=pid)
 
     # ── 인덱스 ──
     def _index(self):

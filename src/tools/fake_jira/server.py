@@ -130,14 +130,14 @@ def project(key: str, req: Request):
     w = get_world()
     return {"id": "10000", "key": w.project, "name": "Lake Task Manager",
             "projectTypeKey": "software",
-            "components": [{"name": m} for m in list(w.modules) + ["VoC"]],
+            "components": [{"name": m} for m in list(w.modules) + ["사용자 VoC"]],
             "issueTypes": ISSUE_TYPES}
 
 
 @app.get("/rest/api/2/project/{key}/components")
 def components(key: str):
     w = get_world()
-    names = list(w.modules) + ["VoC"]      # VoC = 고객의 소리성 업무 컴포넌트
+    names = list(w.modules) + ["사용자 VoC"]      # 사용자 VoC = 고객의 소리성 업무 컴포넌트
     return [{"id": str(100 + i), "name": m} for i, m in enumerate(names)]
 
 

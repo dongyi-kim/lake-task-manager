@@ -108,9 +108,9 @@ def vit_issues(plan, people, epic_prog=None):
 
 
 # ── 기능3: 워크로드 (Task성 / VoC성 × 진행중 / 최근7일 완료) ──
-# Epic 은 카운트 무의미 → 제외. VoC = Component 가 "VoC" 인 티켓(고객의 소리성).
+# Epic 은 카운트 무의미 → 제외. VoC성 = Component 가 "사용자 VoC" 인 티켓(고객의 소리성).
 def wl_category(component, itype):
-    if component == "VoC":
+    if component == "사용자 VoC":
         return "voc"
     if itype in ("Task", "Sub-Task"):
         return "task"

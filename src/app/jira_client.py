@@ -375,7 +375,7 @@ class JiraClient:
                 for it in self._search(jql, max_results=300):   # write-through: 각 티켓 캐시
                     f = it.get("fields", {}) or {}
                     comps = [c.get("name") for c in (f.get("components") or [])]
-                    comp = "VoC" if "VoC" in comps else (comps[0] if comps else "")
+                    comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
                     t = (f.get("issuetype") or {}).get("name", "")
                     c = mockdata.wl_category(comp, t)
                     if c:
