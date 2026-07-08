@@ -1,5 +1,5 @@
 // VitView.js — 기능2 현안(PMO_VIT). 요약 목록 + [자세히] 지연로딩(자손 트리·코멘트).
-// 트리: 안내선 + 상태정렬(진행중→ToDo→완료) + 타입/상황/번호/제목 컬럼. updated: 2026-07-08
+// 트리: 안내선 + 상태정렬(진행중→ToDo→완료) + 타입/번호/제목/담당자/상태 컬럼. updated: 2026-07-08
 import { api } from "../../lib/api.js";
 import { moduleColor, STATUS_ORDER, STATUS_VAR, typeLabel } from "../../lib/colors.js";
 import { esc, mdISO, ymd, ymdhm, tkt } from "../../lib/fmt.js";
@@ -54,6 +54,7 @@ export default {
         + `<span class='tbadge v-plain'>${typeLabel(n.type)}</span>`
         + `<span class='ky'>${tkt(n.key, this.d.jiraBase)}</span>`
         + `<span class='sm'>${esc(n.summary || "")}</span>`
+        + (n.assignee ? `<span class='asg'>${esc(n.assignee)}</span>` : "")
         + `<span class='pill' style='color:${col};border-color:${col}'>${esc(n.status || n.statusCategory)}</span>`
         + `</span>`
         + `<span class='pg'>${prog}</span>`;

@@ -8,6 +8,7 @@ mock 모드 어댑터 — app/world.py 의 단일 world 를 in-process 로 소�
 from datetime import timedelta
 
 from . import world as worldmod
+from .names import real_name
 
 
 def _w():
@@ -61,6 +62,7 @@ def _node(w, key):
     it = w.issues[key]
     node = {
         "key": key, "summary": it["summary"], "type": it["type"],
+        "assignee": real_name(_dispname(w, it["assignee"])),
         "statusCategory": it["statusCategory"], "status": it["statusName"],
         "created": w._dt(it["created"], it.get("tcreated")),
         "resolved": w._dt(it["resolved"], it.get("tresolved")) if it["resolved"] else None,

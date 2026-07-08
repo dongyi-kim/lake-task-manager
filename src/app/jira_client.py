@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 from . import mockdata, progress
+from .names import real_name
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -312,6 +313,8 @@ class JiraClient:
             "key": issue.get("key", ""),
             "summary": f.get("summary", ""),
             "type": (f.get("issuetype") or {}).get("name", ""),
+            "assignee": real_name((f.get("assignee") or {}).get("displayName")
+                                  or (f.get("assignee") or {}).get("name")),
             "statusCategory": _norm_cat(((f.get("status") or {}).get("statusCategory") or {}).get("key")),
             "status": ((f.get("status") or {}).get("name") or ""),
             "created": f.get("created") or None,          # 전체 datetime 유지(뉴스 시간표시)
