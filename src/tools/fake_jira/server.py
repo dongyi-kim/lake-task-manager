@@ -205,14 +205,21 @@ def activity(req: Request, streams: str = "", maxResults: int = 20):
 
 # ── Confluence CQL ──
 @app.get("/rest/api/content/search")
-def content_search(cql: str = "", limit: int = 25):
+def content_search(cql: str = "", limit: int = 25, expand: str = ""):
+    # 실 Confluence 처럼 expand 에 명시된 것만 확장(version/space/history). 없으면 최소 형태.
     w = get_world()
+    exp = {e.strip() for e in expand.split(",") if e.strip()}
     m = re.search(r'contributor\s*=\s*"?([^"\s]+)"?', cql, re.I)
     user = m.group(1) if m else ""
     pages = w.confluence.get(user, [])
-    results = [{"id": str(9000 + i), "type": "page", "title": p["title"],
-                "space": {"key": p["space"]},
-                "version": {"when": w._dt(p["date"], p.get("time"))},
-                "history": {"createdBy": {"username": user}}}
-               for i, p in enumerate(pages[:limit])]
+    results = []
+    for i, p in enumerate(pages[:limit]):
+        r = {"id": str(9000 + i), "type": "page", "status": "current", "title": p["title"]}
+        if "space" in exp:
+            r["space"] = {"key": p["space"], "name": p["space"]}
+        if "version" in exp:
+            r["version"] = {"when": w._dt(p["date"], p.get("time")), "number": 1}
+        if "history" in exp:
+            r["history"] = {"createdBy": {"username": user}}
+        results.append(r)
     return {"results": results, "start": 0, "limit": limit, "size": len(results)}

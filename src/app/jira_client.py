@@ -462,8 +462,10 @@ class JiraClient:
         if not self.s.confluence_base:
             return []
         try:
+            # expand 필수: 실 Confluence 는 expand 없으면 version/space 를 안 준다(당시 date/space 누락).
             data = self.provider.get_json("/rest/api/content/search", params={
-                "cql": f'contributor = "{user}" and lastmodified >= now("-14d")', "limit": 25})
+                "cql": f'contributor = "{user}" and lastmodified >= now("-14d")',
+                "expand": "version,space", "limit": 25})
             return [{"date": ((r.get("version") or {}).get("when") or ""),
                      "title": r.get("title", ""),
                      "space": ((r.get("space") or {}).get("key") or "")}
