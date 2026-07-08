@@ -9,6 +9,8 @@
 
 from datetime import date, datetime, timedelta
 
+from .names import real_name
+
 
 def _flatten(nodes):
     out = []
@@ -45,26 +47,21 @@ def build_vit(client, plan, people, epic_prog=None, generated_at=None, news_days
         flat = _flatten(it.get("tree") or [])
         total = len(flat)
         done = sum(1 for n in flat if n.get("statusCategory") == "done")
+        inprog = sum(1 for n in flat if n.get("statusCategory") == "inprogress")
         counts = {}
         for n in flat:
             counts[n["type"]] = counts.get(n["type"], 0) + 1
-        it["progress"] = {"done": done, "total": total,
-                          "pct": round(done / total * 100, 1) if total else 0.0}
-        it["counts"] = counts
-        # 하위티켓 상태별 개수 (Open=To Do / In Progress / Done=Resolved·Closed)
-        it["statusCounts"] = {
-            "open": sum(1 for n in flat if n.get("statusCategory") == "todo"),
-            "inprogress": sum(1 for n in flat if n.get("statusCategory") == "inprogress"),
-            "done": sum(1 for n in flat if n.get("statusCategory") == "done"),
-        }
-        it["news"] = _news_from(flat, cutoff)
-        # 세분화: 목록엔 미리보기만(상위 몇 개) — 전체 트리/코멘트는 /api/vit/{key} 로 lazy.
-        it["subsPreview"] = [{"key": n.get("key"), "type": n["type"], "summary": n.get("summary"),
-                              "status": n.get("status"), "statusCategory": n.get("statusCategory")}
-                             for n in flat[:4]]
-        it.pop("tree", None)
-        it.pop("comments", None)
-        issues.append(it)
+        # 요약 dict 를 새로 구성(원본 it 은 캐시 공유 대상이라 변형 금지). tree/comments 는 /api/vit/{key} lazy.
+        issues.append({
+            "key": it["key"], "summary": it["summary"], "type": it["type"], "module": it.get("module"),
+            "assignee": real_name(it.get("assignee")), "start": it.get("start"), "created": it.get("created"),
+            "started": it.get("started"), "updated": it.get("updated"), "due": it.get("due"),
+            "statusCategory": it["statusCategory"], "status": it["status"], "ancestors": it.get("ancestors"),
+            "progress": {"done": done, "total": total, "pct": round(done / total * 100, 1) if total else 0.0},
+            "counts": counts,
+            "statusCounts": {"open": total - done - inprog, "inprogress": inprog, "done": done},
+            "news": _news_from(flat, cutoff),
+        })
 
     groups = {}
     for it in issues:
@@ -88,9 +85,13 @@ def build_vit(client, plan, people, epic_prog=None, generated_at=None, news_days
 
 
 def vit_detail(client, plan, people, key, epic_prog=None):
-    """단일 현안의 전체 자손 트리 + 코멘트 (프론트 [자세히] 지연 로딩용).
-    티켓 단위 캐시를 그대로 재사용 → 추가 상위호출 거의 없음."""
+    """단일 현안의 자손 트리 + 코멘트 ([자세히] 지연 로딩). 조립된 VIT 목록(캐시) 재사용.
+    코멘트는 리스트 경로에서 안 받으므로 여기서 해당 key 만 lazy 조회(mock/local 공용)."""
     for it in client.vit_issues(plan, people, epic_prog):
         if it.get("key") == key:
-            return {"key": key, "tree": it.get("tree") or [], "comments": it.get("comments") or []}
+            comments = it.get("comments")
+            if comments is None:                       # local/prod: 리스트에서 코멘트 미조회 → lazy
+                comments = client.issue_comments(key)
+            comments = [dict(c, author=real_name(c.get("author"))) for c in (comments or [])]
+            return {"key": key, "tree": it.get("tree") or [], "comments": comments}
     return {"key": key, "tree": [], "comments": []}

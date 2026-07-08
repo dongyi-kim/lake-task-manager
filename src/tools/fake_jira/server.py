@@ -77,6 +77,16 @@ def myself():
             "displayName": "Administrator", "active": True, "timeZone": "Asia/Seoul"}
 
 
+@app.get("/rest/api/2/user")
+def user(username: str = ""):
+    # displayName "{본명} {소속회사명}" 반환 (워크로드 본명 표시용). 미등록 id 는 최소 형태로.
+    w = get_world()
+    u = w.users.get(username)
+    if u:
+        return w._user_obj(username)
+    return {"name": username, "key": username, "displayName": username, "active": True}
+
+
 @app.get("/rest/api/2/field")
 def fields():
     w = get_world()
@@ -202,7 +212,7 @@ def content_search(cql: str = "", limit: int = 25):
     pages = w.confluence.get(user, [])
     results = [{"id": str(9000 + i), "type": "page", "title": p["title"],
                 "space": {"key": p["space"]},
-                "version": {"when": p["date"].isoformat() + "T09:00:00.000+09:00"},
+                "version": {"when": w._dt(p["date"], p.get("time"))},
                 "history": {"createdBy": {"username": user}}}
                for i, p in enumerate(pages[:limit])]
     return {"results": results, "start": 0, "limit": limit, "size": len(results)}

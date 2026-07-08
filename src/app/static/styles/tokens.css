@@ -1,0 +1,42 @@
+/* tokens.css — 디자인 토큰 단일 소스 (색·간격). 모든 화면/컴포넌트가 이 변수만 참조한다.
+ * 색을 바꾸려면 여기 한 곳만 고친다. (모듈 컬러 c1~c7, 상태색, Task/VoC색, 테마 변수)
+ * updated: 2026-07-08 */
+:root {
+  --bg:#f9f9f7; --panel:#fcfcfb; --panel-2:#f2f1ee; --border:#e1e0d9;
+  --text:#0b0b0b; --muted:#52514e; --accent:#6d4fc0; --done:#147a52;
+  --track:#e5e4de; --today:#d03b3b; --grid2:#d3d2ca; --grid:#e6e5df; --mock:#c98500;
+  --shadow:0 1px 3px rgba(11,11,11,.08), 0 1px 2px rgba(11,11,11,.04);
+
+  /* 모듈 팔레트(파스텔) — 검정 글씨 가독성 위주. 라이트/다크 공통 */
+  --c1:#b49ae4; --c2:#74c08a; --c3:#e9c46a; --c4:#67c2ba; --c5:#93b8ec; --c6:#eda1a8; --c7:#d29bd6;
+
+  /* 상태색 (statusCategory) */
+  --st-todo:#8a8a86; --st-prog:#2f8fe0; --st-done:#147a52;
+  /* 워크로드 Task성/VoC성 (부드러운 색) */
+  --wl-task:#8fb5e2; --wl-voc:#eaa9a4;
+  /* 인력 구분 뱃지 (개발=파랑 / 운영=주황) */
+  --dev-fg:#1d4ed8; --dev-bg:rgba(37,99,235,.13); --ops-fg:#b45309; --ops-bg:rgba(217,119,6,.15);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0d0d0d; --panel:#1a1a19; --panel-2:#232322; --border:#2c2c2a;
+    --text:#ffffff; --muted:#c3c2b7; --accent:#8f74e0; --done:#1aa06a;
+    --track:#2c2c2a; --today:#e66767; --grid2:#34342f; --grid:#232322; --mock:#e6b352;
+    --shadow:0 1px 3px rgba(0,0,0,.4);
+    --st-prog:#5aa6ee;
+    --dev-fg:#93c5fd; --dev-bg:rgba(59,130,246,.20); --ops-fg:#fbbf24; --ops-bg:rgba(245,158,11,.18);
+  }
+}
+:root[data-theme="dark"] {
+  --bg:#0d0d0d; --panel:#1a1a19; --panel-2:#232322; --border:#2c2c2a;
+  --text:#ffffff; --muted:#c3c2b7; --accent:#8f74e0; --done:#1aa06a;
+  --track:#2c2c2a; --today:#e66767; --grid2:#34342f; --grid:#232322; --mock:#e6b352; --shadow:0 1px 3px rgba(0,0,0,.4);
+  --st-prog:#5aa6ee;
+  --dev-fg:#93c5fd; --dev-bg:rgba(59,130,246,.20); --ops-fg:#fbbf24; --ops-bg:rgba(245,158,11,.18);
+}
+:root[data-theme="light"] {
+  --bg:#f9f9f7; --panel:#fcfcfb; --panel-2:#f2f1ee; --border:#e1e0d9;
+  --text:#0b0b0b; --muted:#52514e; --accent:#6d4fc0; --done:#147a52;
+  --track:#e5e4de; --today:#d03b3b; --grid2:#d3d2ca; --st-prog:#2f8fe0;
+  --dev-fg:#1d4ed8; --dev-bg:rgba(37,99,235,.13); --ops-fg:#b45309; --ops-bg:rgba(217,119,6,.15);
+}

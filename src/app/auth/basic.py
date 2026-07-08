@@ -1,4 +1,4 @@
-"""로컬 개발 인증 — basic auth 또는 PAT(bearer). 로컬 Docker Jira 용."""
+"""로컬 개발 인증 — basic auth 또는 PAT(bearer). 로컬 Fake Jira(:8080)/Docker Jira 용."""
 
 import requests
 
@@ -6,6 +6,8 @@ from .base import AuthProvider, SessionExpired
 
 
 class BasicAuthProvider(AuthProvider):
+    supports_parallel = True   # requests.Session 은 스레드 간 동시 GET 안전
+
     def __init__(self, base, user, token, auth="basic"):
         self.base = base.rstrip("/")
         self.session = requests.Session()

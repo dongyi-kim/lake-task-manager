@@ -2,6 +2,9 @@
 
 
 class AuthProvider:
+    # 여러 스레드에서 동시 GET 가능한가 (basic/PAT=True, SSO=Playwright 단일 context=False)
+    supports_parallel = False
+
     def get_json(self, path, params=None):
         raise NotImplementedError
 

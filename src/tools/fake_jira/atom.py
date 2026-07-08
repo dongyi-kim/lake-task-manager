@@ -7,8 +7,8 @@ Jira 활동 스트림 ATOM 피드 생성 — 실 Jira /activity 형태를 흉내
 from xml.sax.saxutils import escape
 
 
-def _dt(d):
-    return d.isoformat() + "T09:00:00.000+0000"
+def _dt(d, hm=None):
+    return d.isoformat() + "T" + (hm or "09:00") + ":00.000+0000"
 
 
 def feed(base_url, user, events, limit=20):
@@ -20,7 +20,7 @@ def feed(base_url, user, events, limit=20):
         f'<id>urn:jira:activity:{escape(user)}</id>',
     ]
     if events:
-        parts.append(f'<updated>{_dt(events[0]["date"])}</updated>')
+        parts.append(f'<updated>{_dt(events[0]["date"], events[0].get("time"))}</updated>')
     for i, e in enumerate(events[:limit]):
         key, kind, summ = e["key"], e["kind"], e.get("summary", "")
         title = f'{user} {kind} {key} - {summ}'
@@ -29,8 +29,8 @@ def feed(base_url, user, events, limit=20):
             '<entry>',
             f'<id>urn:jira:activity:{escape(user)}:{i}</id>',
             f'<title type="html">{escape(title)}</title>',
-            f'<published>{_dt(e["date"])}</published>',
-            f'<updated>{_dt(e["date"])}</updated>',
+            f'<published>{_dt(e["date"], e.get("time"))}</published>',
+            f'<updated>{_dt(e["date"], e.get("time"))}</updated>',
             f'<author><name>{escape(user)}</name></author>',
             f'<category term="{escape(kind)}"/>',
             f'<link rel="alternate" href="{escape(href)}"/>',

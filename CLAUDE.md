@@ -17,7 +17,7 @@ Claude Code가 작업 시 이 맥락을 항상 우선한다.
 ### 로드맵 (상세 진행/TODO 는 `PROGRESS.md`)
 1. **[완료] Mock 데이터 데모** — `demo/` 단일 HTML Gantt 로 UI 컨셉 확정.
 2. **[진행] 실서비스화** — FastAPI 백엔드 + 정적 프론트의 로컬 웹앱으로 승격.
-   - **Phase A [완료]**: 인프라(docker/exe 패키징)·config·백엔드 스캐폴드·mock 모드·기능1 API/프론트.
+   - **Phase A [완료]**: 인프라(exe 패키징)·config·백엔드 스캐폴드·mock 모드·기능1 API/프론트.
    - **Phase B**: 기능1 WBS Dashboard 를 실 Jira 데이터로.
    - **Phase C**: 기능2 PMO_VIT 현안 트래킹 (MVP → 인터뷰).
    - **Phase D**: 기능3 인력 워크로드/활동 (MVP → 인터뷰).
@@ -26,7 +26,7 @@ Claude Code가 작업 시 이 맥락을 항상 우선한다.
 
 **확정된 설계 결정:**
 - 구조: **FastAPI 백엔드 + 정적 프론트**. git 공유 로컬 웹앱 (공개 웹서비스 없음).
-- 실행: `docker compose up` 또는 **단일 exe**(`lake.spec`) — 최종 사용자 무의존.
+- 실행: **단일 exe**(`lake.spec`) — 최종 사용자 무의존. (dev = Fake Jira 서버 `run_fake.py`)
 - 저장: 매핑/인력/가중치 = **YAML config**(커밋), Jira 캐시/스냅샷 = **SQLite**(gitignore).
 - 3 환경(`JIRA_ENV=mock|local|prod`)에서 **동일 계산 코드**가 돈다.
 
@@ -117,7 +117,7 @@ Module (팀/파트, 6개)
 
 | 구분 | 개발/테스트 (로컬) | 운영 (사내) |
 |------|-------------------|------------|
-| Jira | Docker 로컬 8.20.8 | 사내 Jira DC 8.20.8 |
+| Jira | Fake Jira 서버(:8080) / Docker 로컬 8.20.8 | 사내 Jira DC 8.20.8 |
 | 인증 | PAT 또는 basic auth | SSO(사내 인증서/인증프로그램) |
 | 접근 방식 | localhost 자유 호출 | 사람이 브라우저로 1회 수동 로그인 → 세션 재사용 |
 | 네트워크 | 제약 없음 | 사내망/방화벽 제약 |
@@ -190,7 +190,7 @@ def get_json(context, path):
   로그인 때와 **동일한 user_agent**를 `new_context`에 명시하면 대개 해결.
 
 ### 5.2 개발 인증: PAT / basic auth (로컬)
-로컬 Docker Jira는 SSO가 없으므로 basic auth나 PAT로 바로 REST 호출.
+로컬 Fake Jira(:8080)/Docker Jira는 SSO가 없으므로 basic auth나 PAT로 바로 REST 호출.
 Playwright 경로를 타지 않아 개발 반복이 훨씬 빠르다.
 
 ### 5.3 필드 ID 조회
@@ -290,7 +290,7 @@ lake-task-manager/               # repo 루트 = 최종 사용자 파일만
     │   ├── cache.py             # SQLite TTL 캐시(티켓 단위) + snapshot
     │   ├── jira_client.py       # REST 호출 (AuthProvider 주입, 캐시 경유)
     │   ├── auth/{base,basic,sso_session}.py
-    │   └── static/             # index.html(WBS Gantt) · vit.html · workload.html
+    │   └── static/             # Vue 3 무빌드 SPA: index.html(셸)+app.js+components/(app-root·ui·views)+lib/(api·fmt·colors)+styles/(tokens·base·components·뷰별)+vendor/(vue.esm)
     ├── tools/fake_jira/         # ★ Fake Jira/Confluence REST 서버 (world 를 HTTP 로 서빙)
     │   └── {server,jql,atom,__main__}.py
     ├── lake.spec / requirements-sso.txt  # exe 빌드 / prod SSO(playwright)
@@ -312,7 +312,7 @@ lake-task-manager/               # repo 루트 = 최종 사용자 파일만
 
 ### 아키텍처 규칙
 1. `progress.py`는 **순수 함수**. 입력=정규화 이슈 리스트, 출력=Epic 진척률 dict. 네트워크/인증 의존 금지.
-2. `rollup.py`(다운스트림)는 Epic 진척률 + `plan.yaml`을 받아 WBS/Module/PMO를 조합. 역시 순수.
+2. `rollup.py`(다운스트림)는 Epic 진척률 + `wbs_config.yaml`(정규화 plan)을 받아 WBS/Module/PMO를 조합. 역시 순수.
 3. 인증은 `AuthProvider` 인터페이스(`app/auth`) 뒤로 숨긴다. 구현체 교체로 환경 전환.
 4. `JiraClient`는 `AuthProvider`를 주입받아 REST 호출. **어떤 인증인지 몰라야 한다.** 모든 호출은 `cache` 경유.
 5. 환경 선택은 `.env`(`JIRA_ENV`)로만. 커스텀 필드 ID·매핑 하드코딩 금지.
@@ -324,7 +324,7 @@ lake-task-manager/               # repo 루트 = 최종 사용자 파일만
 ## 9. 테스트 원칙
 
 - `progress.py`/`rollup.py`는 가짜 이슈 리스트(fixture)로 유닛테스트. Jira 없이 계산 로직 검증.
-- 통합테스트는 **로컬 Docker Jira 상대로만**. 사내 Jira에 자동 테스트 절대 금지.
+- 통합테스트는 **로컬 Fake Jira(:8080)/Docker Jira 상대로만**. 사내 Jira에 자동 테스트 절대 금지.
 - 운영 SSO 경로(`SsoSessionProvider`)는 세션 만료·headless 감지 이슈로 **수동 검증**.
 - 첫 검증: 로컬에서 Epic 하나의 집계 숫자가 Jira Scrum 보드의 Epic Report와 일치하는지 대조.
 - 데모 검증: 생성기가 손계산 가능한 Epic 하나의 `done/total`과 일치하는지 self-assert.

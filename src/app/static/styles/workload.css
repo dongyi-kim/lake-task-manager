@@ -1,0 +1,38 @@
+/* workload.css — 인력 워크로드 화면 고유 레이아웃 (행 그리드·두 막대·활동패널). 공통색은 tokens.css.
+ * updated: 2026-07-08 */
+.wl-legend .sw.task { background: var(--wl-task); }
+.wl-legend .sw.voc { background: var(--wl-voc); }
+
+.whead, .prow { display: grid; grid-template-columns: 150px 1fr 40px; align-items: center; gap: 14px; padding: 8px 16px; }
+.whead { padding: 6px 16px 5px; background: var(--panel-2); }
+.whead .hl { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.prow { border-top: 1px solid var(--border); }
+.prow:hover { background: rgba(127,127,127,.03); }
+.pname { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pname::before { content: "\1F464"; font-weight: 400; opacity: .55; flex: none; }
+.pname > b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kbadge { flex: none; font-size: 10px; font-weight: 700; line-height: 1; padding: 3px 6px; border-radius: 999px; letter-spacing: .2px; }
+.kbadge.dev { color: var(--dev-fg); background: var(--dev-bg); }
+.kbadge.ops { color: var(--ops-fg); background: var(--ops-bg); }
+
+.wbars { display: flex; gap: 18px; min-width: 0; }
+.wbars > .wside { flex: 1; min-width: 0; }        /* ProgressBar(.pbar-wrap) 또는 헤더 라벨 */
+
+/* 모듈 평균 — 모듈 전체 막대를 관통하는 단일 세로선 + 헤더행 평균 수치(위치 정렬) */
+.mod-body { position: relative; }
+.mavg-line { position: absolute; bottom: 0; width: 2px; z-index: 3; background: #1f2937; box-shadow: 0 0 0 1px rgba(255,255,255,.8); pointer-events: none; }
+.mavg-line::after { content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: #1f2937; }
+.mavg-num { position: absolute; transform: translate(-50%, -50%); z-index: 4; font-size: 10.5px; font-weight: 700; color: var(--text);
+            background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; white-space: nowrap; pointer-events: none; }
+
+.plus { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); border-radius: 7px; width: 30px; height: 26px; cursor: pointer; font-size: 14px; }
+.plus:hover { color: var(--text); }
+.act { padding: 6px 16px 12px 40px; background: var(--panel-2); border-top: 1px solid var(--border); }
+.acols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+@media (max-width: 900px) { .acols { grid-template-columns: 1fr; } }
+.sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 5px; }
+.aev { display: grid; grid-template-columns: 100px 58px 1fr; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 2px 0; }
+.aev.conf { grid-template-columns: 100px 1fr; }   /* Confluence: 날짜시간 + 제목(줄바꿈 방지) */
+.aev .d { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.aev .kd { color: var(--muted); font-size: 11px; }
+.aev > span:last-child { overflow: hidden; text-overflow: ellipsis; }

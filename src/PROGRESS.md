@@ -7,6 +7,9 @@
 ## 현재 상태
 
 - **기능 1·2·3 mock + local(Fake Jira) 로 end-to-end 완료** ✅ (mock==local 패리티 검증)
+- **프론트 = Vue 3 무빌드 SPA**(`static/{app.js,index.html,components/,lib/,styles/,vendor/}`). `/` 진입 = SPA(해시 라우팅 `#/wbs #/vit #/workload`). 옛 3개 HTML/auth.js/callout.js 은퇴.
+- **API 리소스 세분화 + lazy**: `/api/wbs`(스켈레톤+롤업), `/api/epic/{key}/tree`·`/api/vit/{key}`·`/api/activity/{user}` 지연. keep-alive + GET memo 로 탭 전환 재fetch 없음.
+- **성능**: local(basic-auth) 백엔드 fan-out(epic/vit/workload) **ThreadPool 병렬**(SSO 는 순차 폴백). VIT 조립 결과 캐시.
 - dev 환경 = **Fake Jira/Confluence 서버**(무설치·무라이선스·무가상화). Docker/WSL2 불가 + DC 라이선스 중단 대응.
 - 남은 것: 기능2·3 인터뷰 반영 잔여 + 사내 **prod(SSO)** 소수 대조.
 
@@ -51,18 +54,15 @@ python -m pytest src/tests -q                      # 21 passed
 
 ---
 
-## Phase B — 기능1~3 실 Jira 검증 (Docker 불가 → 네이티브 H2)  ⬜ 다음
+## Phase B — 기능1~3 local 검증  ✅ (Fake Jira 로 대체 — 네이티브/Docker/seed 폐기)
 
-> 이 PC 는 사내 VDI/VBS 로 **Docker·WSL2 불가**(중첩 가상화 막힘). → **네이티브 Jira 8.20.8 + 내장 H2**.
-> 상세 절차: **`src/DEV_JIRA_NATIVE.md`**
+> Docker·WSL2 불가 + DC 라이선스 발급 중단 → 네이티브 H2/`seed_jira`/`DEV_JIRA_NATIVE.md` 접근을 폐기하고
+> **Fake Jira/Confluence 서버(`tools/fake_jira`, :8080)** 로 대체. `local` 이 실제 HTTP+인증+캐시 경로를 검증.
 
-- [ ] Jira 8.20.8 Windows Installer 설치 → 마법사에서 **Built-in H2** + eval 라이선스 + admin + Scrum 프로젝트(키 `LAKE`)
-- [ ] repo 루트 `.env`: `JIRA_ENV=local`, `JIRA_USER/JIRA_TOKEN`(admin)
-- [ ] `python src/seed/preflight.py` → 연결·인증 확인 + **SP/Epic 필드 ID 발견** → `.env` 반영
-- [ ] (권장) Story Points 필드를 Create/Edit 화면에 추가
-- [ ] `python src/seed/seed_jira.py` → 데이터 심기 + `config/epic_map.json`
-- [ ] `/api/wbs`·`/api/vit`·`/api/workload` 가 실 Jira 로 동작 (손계산 Epic 1개 done/total 대조)
-- [ ] 캐시 동작 확인(2회차 티켓 단위 히트, `/api/refresh` 후 갱신), 워크로드 JQL·활동 ATOM 파싱 점검
+- [x] `python run_fake.py`(:8080) + `LAKE_DOTENV=.env.dev` 앱 → `/api/*` local(fake) end-to-end
+- [x] mock==local 패리티(같은 `world`), 티켓 단위 캐시 cold→warm, `FAKE_LATENCY_MS` 지연 실측
+- [x] 워크로드 JQL 카운트·활동 ATOM 파싱·Confluence CQL 파싱 검증
+- [ ] 사내 **prod(SSO)** 소수 대조 (실 Jira 확보 시)
 
 ## Phase C — 기능2: PMO_VIT 현안 트래킹 (MVP mock 완료 → 인터뷰)  🟡
 
@@ -94,9 +94,8 @@ python -m pytest src/tests -q                      # 21 passed
 
 ## Backlog / 검토 필요
 
-- [ ] exe 실제 빌드/배포 검증 (`pyinstaller lake.spec`, uvicorn dynamic import 누락 점검)
-- [ ] prod SSO: 설치된 Chrome 재사용(`channel="chrome"`) 경로 실장 (현재 `SsoSessionProvider` 는 storage_state 방식)
-- [ ] `demo/generate_demo.py` 를 `config/plan.yaml` 소비형으로 리팩터(단일 소스화)
+- [x] exe 실제 빌드/배포 (`pyinstaller lake.spec` → 루트 `lake-task-manager.exe`, static 번들 포함, 추적)
+- [ ] prod SSO: 설치된 Chrome 재사용(`channel="chrome"`) 경로 실장 (현재 `SsoSessionProvider` 는 storage_state 방식) + 병렬화 SSO 폴백(순차) 실검증
 - [ ] 캐시 백그라운드 워밍 / 스냅샷 스케줄(반자동)
 
 ## 결정 로그 (요약)
@@ -110,6 +109,10 @@ python -m pytest src/tests -q                      # 21 passed
 
 ## History (append-only)
 
+- **2026-07-09** — **정리/성능**: 죽은 코드 제거(`_ptotal`, `subsPreview`, ProgressBar marker/`.pbar-mark`, `.mini .tb`, fmt 미사용 export), 스테일 문서 현행화(plan.yaml→wbs_config.yaml, docker/seed/native 폐기 반영). **성능**: local 백엔드 fan-out(epic/vit/workload) **ThreadPool 병렬**(`_pmap`, `supports_parallel`; SSO 순차 폴백), VIT 조립 캐시(`vit_build:`)+코멘트 lazy(리스트에서 미조회), 프론트 **keep-alive**+GET memo(탭 재fetch 제거)+간트 렌더 coalesce.
+- **2026-07-09** — **Vue 3 무빌드 SPA 전환 완료**: 3개 self-contained HTML → 단일 SPA(`static/{index.html,app.js,components/,lib/,styles/,vendor(vue.esm)}`), 해시 라우팅. 색/헬퍼/컴포넌트(`tokens.css`,`colors.js`,`fmt.js`,`ProgressBar`,`StatusPill`,`TypeBadge`) 단일 소스화. `auth.js`→`LoginOverlay`, `callout.js`→`FormulaCallout`. `/` = SPA(옛 페이지 은퇴). 폰트 Pretendard(CDN).
+- **2026-07-08** — **world 시간·VoC**: 이슈 created/updated/resolved + 활동/Confluence 에 결정적 hh:MM 부여(뉴스·활동 시간표시). VoC 판정 Component `VoC`→**`사용자 VoC`**. world 대규모 보강(비-WBS epic·독립 task·1~6월 과거 데이터).
+- **2026-07-08** — **SSO 로그인 UX**: lazy AuthProvider + 세션없음/만료 시 401 `needLogin` + 웹 로그인(설치 Chrome 폴링). README(PM/모듈리더용).
 - **2026-07-07** — **Fake Jira/Confluence API 서버** 구축(`tools/fake_jira`, :8080) + **단일 world 생성기**(`app/world.py`, mock·fake 공유). 우리가 쓰는 전 엔드포인트(search/issue/comment/agile/activity ATOM/Confluence CQL/field/status/issuetype/project·statuses/workflow) 서빙. mock==local 패리티·티켓단위 캐시(cold 5.4s→warm 0.03s)·21 tests 검증. 사내 fidelity 반영: status(Open/In Progress/Resolved/Closed/Reopened)→statusCategory(new/indeterminate/done), type(Bug/Epic/Improvement/New Feature/Story/Task/Sub-Task).
 - **2026-07-07** — config 재설계: `plan.yaml`→**`wbs_config.yaml`**(module→WBS task→epic `ticket`+weight). **논리 epic id 제거**(실 티켓 `DL-xxxx` 사용, Epic 이름은 Jira 에서). **가중치 정수·상대값 자동 정규화**(합=1 강제 폐지). PROJECT_KEY=DL.
 - **2026-07-07** — dev 환경 결정: 이 PC 는 Docker/WSL2 불가(VDI/VBS, 중첩가상화 막힘) → **네이티브 Jira 8.20.8 + 내장 H2** 로 로컬 검증. 설치 가이드 `src/DEV_JIRA_NATIVE.md` + 씨딩 전 진단 `src/seed/preflight.py` 추가.

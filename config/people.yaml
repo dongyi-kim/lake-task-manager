@@ -1,27 +1,31 @@
 # Lake Task Manager - 모듈별 인력 (기능3)
 # module(=Jira Component) -> 소속 인력의 Jira user id 목록.
 # 이 id 로 워크로드 카운트(진행중/최근7일 done) 및 활동 요약(/activity, Confluence CQL)을 조회.
+#
+# 사내 Jira id 포맷: "{회사코드}.{사번}"  (예: skcc.x1042)
+#   · 사번 x* = 개발 인력, i* = 운영 인력  (워크로드 화면의 개발/운영 뱃지 근거)
+# 표시 이름(본명)은 Jira displayName "{본명} {소속회사명}" 에서 가져온다(화면엔 본명만).
 
 ETL:
-  - jdoe
-  - klee
-  - spark_kim
+  - skcc.x1042
+  - skcc.x1103
+  - skcc.i2011
 Catalog:
-  - mjcho
-  - iceberg_lee
+  - skcc.x1210
+  - skcc.i2044
 Runtime:
-  - rt_han
-  - query_park
-  - jvm_seo
+  - skcc.x1315
+  - skcc.x1327
+  - skcc.i2088
 Workbench:
-  - wb_yoon
-  - nb_jang
+  - skcc.x1402
+  - skcc.x1450
 DataOps:
-  - dops_oh
-  - sched_yang
+  - skcc.i2101
+  - skcc.i2130
 DevOps:
-  - devops_ryu
-  - iac_baek
+  - skcc.x1501
+  - skcc.i2155
 Observability:
-  - obs_moon
-  - trace_hwang
+  - skcc.i2200
+  - skcc.x1560

@@ -1,4 +1,4 @@
-"""config 로더/검증 (실제 plan.yaml + 검증 규칙)."""
+"""config 로더/검증 (실제 wbs_config.yaml + 검증 규칙)."""
 import os
 import sys
 

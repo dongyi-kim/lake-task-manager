@@ -1,6 +1,6 @@
 """
 다운스트림 롤업 — 순수 계산.
-Epic 진척률(재료) + plan.yaml(매핑/가중치/일정) → WBS/Module/PMO 조합 + Gantt JSON.
+Epic 진척률(재료) + wbs_config.yaml(매핑/가중치/일정) → WBS/Module/PMO 조합 + Gantt JSON.
 
 출력 형태는 데모 프론트(window.LAKE_DEMO)와 동일해 `app/static` 의 Gantt 를 그대로 재사용한다.
 """
@@ -41,7 +41,7 @@ def _epic_occurrence_dates(w_start, w_end, i, n):
 
 def build(plan, epic_prog, generated_at=None):
     """
-    plan       : plan.yaml dict (project_key, modules, epics{id:name}, wbs[])
+    plan       : 정규화된 plan dict (wbs_config.yaml → project_key, modules, epics{id:name}, wbs[])
     epic_prog  : {epic_key -> {doneSp,totalSp,mockSp,progressPct, name?}}
     """
     epic_names = plan.get("epics", {}) or {}

@@ -2,7 +2,7 @@
 Fake world — 단일 결정적 Jira/Confluence 데이터 세계.
 fake 서버(HTTP)와 mock 모드(in-process)가 이 world 를 공유한다.
 
-- config/plan.yaml(epics/wbs) + people.yaml 로부터 결정적으로 생성.
+- config/wbs_config.yaml(module→WBS→epic) + people.yaml 로부터 결정적으로 생성.
 - 모든 이슈(Epic/Story/Task/Bug/Sub-task)는 world.issues 에 canonical 형태로 존재.
 - 인덱스: by_label, by_assignee, epic_children.
 - Jira REST 직렬화 + Confluence/activity 소스 제공.
@@ -45,6 +45,23 @@ def _cat(rng, maturity):
     return "done" if rng.random() < maturity else ("inprogress" if rng.random() < 0.5 else "todo")
 
 
+# 사용자 표시이름 합성 풀 — displayName "{본명} {소속회사명}". 회사는 SKCC 다수 + 협력사 소수
+# (공백 포함 'SK주식회사 C&C' 로 본명 파싱[names.real_name=첫어절]의 다어절 회사 견고성도 커버).
+_SURNAMES = ["김", "이", "박", "최", "정", "강", "조", "윤", "장", "임",
+             "한", "오", "서", "신", "권", "황", "안", "송", "류", "홍"]
+_GIVEN = ["도윤", "서준", "하준", "지호", "예준", "민재", "수아", "지우", "서연", "하은",
+          "은우", "지훈", "현우", "유진", "다은", "준서", "시우", "민서", "채원", "지안"]
+_COMPANIES = ["SKCC", "SKCC", "SKCC", "SKCC", "코어씨앤아이", "데이터메이커", "SK주식회사 C&C"]
+
+
+def _shash(s):
+    """id → 결정적 정수(PYTHONHASHSEED 무관). 본명/회사 배정용."""
+    h = 0
+    for ch in s:
+        h = (h * 131 + ord(ch)) & 0xFFFFFFFF
+    return h
+
+
 class World:
     def __init__(self, plan, people, today):
         self.today = today
@@ -72,11 +89,22 @@ class World:
 
     # ── 사용자 ──
     def _make_users(self):
+        # 사내 관례: displayName = "{본명} {소속회사명}", id = "{회사코드}.{사번}"(x*=개발/i*=운영).
+        # 본명·회사는 id 로 결정적 배정(같은 사람=항상 같은 이름). 회사명은 대부분 SKCC + 협력사 소수.
         users = {"pmo": {"name": "pmo", "displayName": "PMO Office"},
-                 "lead": {"name": "lead", "displayName": "Team Lead"}}
-        for module, ids in self.people.items():
-            for uid in ids:
-                users[uid] = {"name": uid, "displayName": f"{uid} ({module})"}
+                 "lead": {"name": "lead", "displayName": "정한울 SKCC"}}
+        taken = {"정한울"}                       # 본명 중복 방지(데모 가독성) — id 정렬로 결정적
+        for uid in sorted({u for ids in self.people.values() for u in ids}):
+            h = _shash(uid)
+            g = h // 7
+            nm = _SURNAMES[h % len(_SURNAMES)] + _GIVEN[g % len(_GIVEN)]
+            while nm in taken:                    # 충돌 시 given 을 결정적으로 다음 후보로
+                g += 1
+                nm = _SURNAMES[h % len(_SURNAMES)] + _GIVEN[g % len(_GIVEN)]
+            taken.add(nm)
+            co = _COMPANIES[(h // 3) % len(_COMPANIES)]
+            users[uid] = {"name": uid, "realName": nm, "company": co,
+                          "displayName": f"{nm} {co}"}
         return users
 
     def _pool(self, module):
@@ -287,19 +315,19 @@ class World:
     # ── 활동(activity) : 이슈 이벤트를 인력별로 집계 ──
     def _build_activity(self):
         ev = {}
-        def add(user, date_, kind, key, summary):
-            ev.setdefault(user, []).append({"date": date_, "kind": kind, "key": key, "summary": summary})
+        def add(user, date_, time_, kind, key, summary):
+            ev.setdefault(user, []).append({"date": date_, "time": time_, "kind": kind, "key": key, "summary": summary})
         for it in self.issues.values():
-            add(it["reporter"], it["created"], "created", it["key"], it["summary"])
+            add(it["reporter"], it["created"], it.get("tcreated"), "created", it["key"], it["summary"])
             for c in it["comments"]:
-                add(c["author"], c["created"], "commented", it["key"], it["summary"])
+                add(c["author"], c["created"], it.get("tupdated"), "commented", it["key"], it["summary"])
             for w in it["worklog"]:
-                add(w["author"], w["date"], "logged work", it["key"], it["summary"])
+                add(w["author"], w["date"], it.get("tupdated"), "logged work", it["key"], it["summary"])
             if it["resolved"]:
-                add(it["assignee"], it["resolved"], "resolved", it["key"], it["summary"])
-                add(it["assignee"], it["resolved"], "transitioned", it["key"], it["summary"])
+                add(it["assignee"], it["resolved"], it.get("tresolved"), "resolved", it["key"], it["summary"])
+                add(it["assignee"], it["resolved"], it.get("tresolved"), "transitioned", it["key"], it["summary"])
         for u in ev:
-            ev[u].sort(key=lambda e: e["date"], reverse=True)
+            ev[u].sort(key=lambda e: (e["date"].isoformat(), e.get("time") or ""), reverse=True)
         self.activity = ev
 
     def _build_confluence(self):
@@ -311,7 +339,8 @@ class World:
                 for _ in range(rng.randint(0, 4)):
                     pages.append({"title": wc.conf_title(rng), "space": wc.conf_space(rng),
                                   "action": wc.conf_action(rng),
-                                  "date": self.today - timedelta(days=rng.randint(0, 13))})
+                                  "date": self.today - timedelta(days=rng.randint(0, 13)),
+                                  "time": "%02d:%02d" % (rng.randint(8, 19), rng.choice([0, 15, 30, 45]))})
                 pages.sort(key=lambda p: p["date"], reverse=True)
                 conf[uid] = pages
         self.confluence = conf

@@ -5,6 +5,7 @@ JiraClient — AuthProvider 를 주입받아 REST 호출 (어떤 인증인지 �
 Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 Phase 에서 확장)
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 from . import mockdata, progress
@@ -239,15 +240,25 @@ class JiraClient:
         except Exception:
             return epic_key
 
+    def _pmap(self, items, fn):
+        """items 를 fn 으로 매핑 — provider 가 병렬 안전(basic/PAT)이면 스레드풀, 아니면 순차.
+        (SSO/mock 은 순차. cache.get_or_set 은 producer 중 lock 을 안 잡아 네트워크 병렬 유효.)"""
+        items = list(items)
+        prov = self.provider
+        if prov is not None and getattr(prov, "supports_parallel", False) and len(items) > 1:
+            with ThreadPoolExecutor(max_workers=min(8, len(items))) as ex:
+                return list(ex.map(fn, items))
+        return [fn(x) for x in items]
+
     def epic_progress_map(self, plan):
-        """plan 의 모든 Epic 에 대해 진척률 dict 반환 {key -> {...,name}}."""
-        out = {}
+        """plan 의 모든 Epic 에 대해 진척률 dict 반환 {key -> {...,name}}. Epic 단위 병렬 조회."""
+        keys, seen = [], set()
         for w in plan["wbs"]:
             for e in w["epics"]:
-                k = e["key"]
-                if k not in out:
-                    out[k] = self.epic_progress_one(k)
-        return out
+                if e["key"] not in seen:
+                    seen.add(e["key"]); keys.append(e["key"])
+        results = self._pmap(keys, self.epic_progress_one)
+        return {k: r for k, r in zip(keys, results)}
 
     # ── 기능2: PMO_VIT 현안 ──
     # 진척 = Root 현안의 자손 티켓 "개수 기반"(done/total). 시작·마감·소식·코멘트 포함.
@@ -255,20 +266,20 @@ class JiraClient:
     def vit_issues(self, plan, people, epic_prog=None):
         if self.env == "mock":
             return mockdata.vit_issues(plan, people, epic_prog)
-        return self._fetch_vit()   # 내부에서 목록·루트 티켓 "단위로" 캐시
+        # 조립 결과를 캐시 → /api/vit·/api/vit/{key} 가 매번 forest 를 재조립하지 않음
+        data, _ = self.cache.get_or_set(f"vit_build:{self.env}", self.s.cache_ttl_seconds, self._fetch_vit)
+        return data
 
     def _fetch_vit(self):
-        # 1) PMO_VIT 목록 — 검색 결과를 티켓 단위 캐시로 write-through
+        # PMO_VIT 목록 — 검색 결과를 티켓 단위 캐시로 write-through. 루트 단위 병렬 조립.
         roots = self._search(
             f'project={self.s.project_key} AND labels="PMO_VIT" ORDER BY updated DESC',
             cache_key=f"vit_list:{self.env}")
-        out = []
-        for it in roots:
+        def build(it):
             base = self._vit_base(it)
-            base["tree"] = self._vit_tree(base["key"], base["type"])   # 자손 = 티켓 단위 캐시
-            base["comments"] = self._issue_comments(base["key"])       # 코멘트 = 티켓 단위 캐시
-            out.append(base)
-        return out
+            base["tree"] = self._vit_tree(base["key"], base["type"])   # 자손(카운트용). 코멘트는 [자세히]에서 lazy
+            return base
+        return self._pmap(roots, build)
 
     def _vit_base(self, issue):
         f = issue.get("fields", {}) or {}
@@ -355,6 +366,16 @@ class JiraClient:
             return mockdata.issue_comments(key, limit)
         return self._issue_comments(key, limit)
 
+    def _display_name(self, pid):
+        """Jira 사용자 displayName('{본명} {회사}') — `user:{env}:{pid}` 캐시. 실패 시 id 폴백."""
+        def do():
+            try:
+                u = self.provider.get_json("/rest/api/2/user", params={"username": pid})
+                return u.get("displayName") or pid
+            except Exception:
+                return pid
+        return self.cache.get_or_set(f"user:{self.env}:{pid}", self.s.cache_ttl_seconds, do)[0]
+
     def epic_progress_one(self, key):
         """단일 Epic 진척률 {doneSp,totalSp,mockSp,progressPct,name}."""
         pr = progress.epic_progress(self.epic_issues(key))
@@ -383,19 +404,19 @@ class JiraClient:
             except Exception:
                 pass
             return by
-        out = {}
-        for module in plan["modules"]:
-            rows = []
-            for pid in people.get(module, []):
-                key = f'workload:{self.env}:{pid}'
-                bundle, _ = self.cache.get_or_set(key, self.s.cache_ttl_seconds, lambda pid=pid: {
-                    "id": pid,
-                    "inProgress": counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
-                    "done7d": counts(f'assignee = "{pid}" AND statusCategory = Done AND resolved >= -7d'),
-                })
-                rows.append(bundle)
-            out[module] = rows
-        return out
+        def person(pid):
+            key = f'workload:{self.env}:{pid}'
+            bundle, _ = self.cache.get_or_set(key, self.s.cache_ttl_seconds, lambda: {
+                "id": pid,
+                "displayName": self._display_name(pid),
+                "inProgress": counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
+                "done7d": counts(f'assignee = "{pid}" AND statusCategory = Done AND resolved >= -7d'),
+            })
+            return bundle
+        pids = [pid for module in plan["modules"] for pid in people.get(module, [])]
+        by_pid = {b["id"]: b for b in self._pmap(pids, person)}   # 인력 단위 병렬
+        return {module: [by_pid[pid] for pid in people.get(module, []) if pid in by_pid]
+                for module in plan["modules"]}
 
     def activity(self, user):
         if self.env == "mock":
@@ -428,7 +449,7 @@ class JiraClient:
                         if m:
                             key = m.group(1)
                 out.append({
-                    "date": (e.findtext(f"{ns}updated") or "")[:10],
+                    "date": (e.findtext(f"{ns}updated") or ""),
                     "kind": cat.get("term") if cat is not None else "",
                     "key": key,
                     "summary": title.split(" - ", 1)[1] if " - " in title else title,
@@ -443,7 +464,7 @@ class JiraClient:
         try:
             data = self.provider.get_json("/rest/api/content/search", params={
                 "cql": f'contributor = "{user}" and lastmodified >= now("-14d")', "limit": 25})
-            return [{"date": ((r.get("version") or {}).get("when") or "")[:10],
+            return [{"date": ((r.get("version") or {}).get("when") or ""),
                      "title": r.get("title", ""),
                      "space": ((r.get("space") or {}).get("key") or "")}
                     for r in data.get("results", [])]

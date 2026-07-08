@@ -135,7 +135,7 @@ def workload_people(plan, people):
                     ip[c] += 1
                 elif it["statusCategory"] == "done" and it["resolved"] and (today - it["resolved"]).days <= 7:
                     dn[c] += 1
-            rows.append({"id": pid, "inProgress": ip, "done7d": dn})
+            rows.append({"id": pid, "displayName": _dispname(w, pid), "inProgress": ip, "done7d": dn})
         out[module] = rows
     return out
 
@@ -143,8 +143,8 @@ def workload_people(plan, people):
 # ── 기능3: 인력 활동 (Jira 이벤트 + Confluence) ──
 def activity(user):
     w = _w()
-    jira = [{"date": e["date"].isoformat(), "kind": e["kind"], "key": e["key"], "summary": e["summary"]}
+    jira = [{"date": w._dt(e["date"], e.get("time")), "kind": e["kind"], "key": e["key"], "summary": e["summary"]}
             for e in w.activity.get(user, [])[:12]]
-    conf = [{"date": p["date"].isoformat(), "title": p["title"], "space": p["space"]}
+    conf = [{"date": w._dt(p["date"], p.get("time")), "title": p["title"], "space": p["space"]}
             for p in w.confluence.get(user, [])]
     return {"user": user, "jira": jira, "confluence": conf}
