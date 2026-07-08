@@ -1,0 +1,17 @@
+# 바이너리 — EOL 변환/텍스트 취급 금지 (다른 머신 clone 시 exe 손상 방지)
+*.exe        binary
+*.sqlite3    binary
+*.png        binary
+*.ico        binary
+
+# 텍스트 — 저장소엔 LF, 크로스플랫폼 일관 (autocrlf 설정 무관하게 고정)
+*.py         text eol=lf
+*.js         text eol=lf
+*.css        text eol=lf
+*.html       text eol=lf
+*.md         text eol=lf
+*.yaml       text eol=lf
+*.yml        text eol=lf
+*.txt        text eol=lf
+*.spec       text eol=lf
+.env*        text eol=lf
