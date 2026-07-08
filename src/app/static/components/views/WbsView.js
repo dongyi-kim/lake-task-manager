@@ -37,7 +37,7 @@ export default {
     },
   },
   methods: {
-    pctStr(n) { return (Math.round(n * 10) / 10) + "%"; },
+    pctStr(n) { return Number(n).toFixed(1) + "%"; },   // 진척률 소수점 1자리 고정
     mcolor(i) { return moduleColor(i); },
     unitLabel(u) { return { day: "일", week: "주", month: "월" }[u]; },
     setUnit(u) { this.unit = u; this.renderGantt(); },
@@ -66,7 +66,7 @@ export default {
       if (!glabels) return;
       const expanded = this.expanded, epicTree = this.epicTree, unit = this.unit;
 
-      const pct = (n) => (Math.round(n * 10) / 10) + "%";
+      const pct = (n) => Number(n).toFixed(1) + "%";   // 진척률 소수점 1자리 고정
       const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
       const pd = (s) => { const a = s.split("-"); return new Date(+a[0], +a[1] - 1, +a[2]); };
       const DAY = 86400000;
