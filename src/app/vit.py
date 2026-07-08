@@ -51,7 +51,19 @@ def build_vit(client, plan, people, epic_prog=None, generated_at=None, news_days
         it["progress"] = {"done": done, "total": total,
                           "pct": round(done / total * 100, 1) if total else 0.0}
         it["counts"] = counts
+        # 하위티켓 상태별 개수 (Open=To Do / In Progress / Done=Resolved·Closed)
+        it["statusCounts"] = {
+            "open": sum(1 for n in flat if n.get("statusCategory") == "todo"),
+            "inprogress": sum(1 for n in flat if n.get("statusCategory") == "inprogress"),
+            "done": sum(1 for n in flat if n.get("statusCategory") == "done"),
+        }
         it["news"] = _news_from(flat, cutoff)
+        # 세분화: 목록엔 미리보기만(상위 몇 개) — 전체 트리/코멘트는 /api/vit/{key} 로 lazy.
+        it["subsPreview"] = [{"key": n.get("key"), "type": n["type"], "summary": n.get("summary"),
+                              "status": n.get("status"), "statusCategory": n.get("statusCategory")}
+                             for n in flat[:4]]
+        it.pop("tree", None)
+        it.pop("comments", None)
         issues.append(it)
 
     groups = {}
@@ -73,3 +85,12 @@ def build_vit(client, plan, people, epic_prog=None, generated_at=None, news_days
             "byModule": {g["module"]: len(g["issues"]) for g in modules},
         },
     }
+
+
+def vit_detail(client, plan, people, key, epic_prog=None):
+    """단일 현안의 전체 자손 트리 + 코멘트 (프론트 [자세히] 지연 로딩용).
+    티켓 단위 캐시를 그대로 재사용 → 추가 상위호출 거의 없음."""
+    for it in client.vit_issues(plan, people, epic_prog):
+        if it.get("key") == key:
+            return {"key": key, "tree": it.get("tree") or [], "comments": it.get("comments") or []}
+    return {"key": key, "tree": [], "comments": []}

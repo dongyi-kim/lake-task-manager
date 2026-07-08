@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Lake Task Manager — 인력 워크로드</title>
+<link rel="stylesheet" href="fonts.css">
 <style>
   :root {
     --bg:#f9f9f7; --panel:#fcfcfb; --panel-2:#f2f1ee; --border:#e1e0d9; --text:#0b0b0b;
@@ -19,7 +20,8 @@
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
-         font-family:"Segoe UI","Malgun Gothic",system-ui,sans-serif; font-size:14px; line-height:1.5; }
+         font-family:"Pretendard Variable",Pretendard,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
+         -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; font-size:14px; line-height:1.5; }
   .wrap { max-width:none; margin:0; padding:22px 28px 60px; }
   h1 { font-size:20px; margin:0; } h1 .sub { color:var(--muted); font-weight:500; font-size:13px; margin-left:8px; }
   .meta { color:var(--muted); font-size:12px; float:right; margin-top:6px; }
@@ -34,8 +36,7 @@
   .legend { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:6px; font-size:12px; color:var(--muted); }
   .legend span { display:inline-flex; align-items:center; gap:6px; }
   .sw { width:13px; height:13px; border-radius:3px; display:inline-block; }
-  .sw.ipTask{background:var(--c1)} .sw.ipVoc{background:var(--c6)}
-  .sw.doneTask{background:var(--c1); opacity:.45} .sw.doneVoc{background:var(--c6); opacity:.45}
+  .sw.task{background:#8fb5e2} .sw.voc{background:#eaa9a4}
   .axisnote { color:var(--muted); font-size:11.5px; margin-bottom:14px; }
 
   .mod { background:var(--panel); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); margin-bottom:10px; overflow:hidden; }
@@ -50,28 +51,29 @@
   .mod-body { display:none; border-top:1px solid var(--border); }
   .mod.open .mod-body { display:block; }
 
-  .whead, .prow { display:grid; grid-template-columns:150px 176px 1fr 44px; align-items:center; gap:14px; padding:8px 16px; }
+  .whead, .prow { display:grid; grid-template-columns:150px 1fr 40px; align-items:center; gap:14px; padding:8px 16px; }
   .whead { padding:6px 16px 5px; background:var(--panel-2); border-top:1px solid var(--border); }
   .whead .hl { font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
   .prow { border-top:1px solid var(--border); }
   .prow:hover { background:rgba(127,127,127,.03); }
   .pid { font-weight:600; } .pid::before { content:"\1F464  "; font-weight:400; }
 
-  .cnt { font-size:11.5px; }
-  .wtbl { display:grid; grid-template-columns:56px 44px 44px; gap:2px 8px; font-variant-numeric:tabular-nums; align-items:center; }
-  .wtbl .h { color:var(--muted); font-size:10px; text-align:center; font-weight:600; }
-  .wtbl .rl { color:var(--muted); }
-  .wtbl .v { text-align:center; font-weight:700; }
-  .wtbl .v.tTask { color:var(--c1); } .wtbl .v.tVoc { color:var(--c6); }
-  .wtbl .v.done { opacity:.5; }                  /* 완료 열 = 반투명 */
-
-  .wbar { height:22px; background:var(--track,#e5e4de); border-radius:5px; overflow:hidden; display:flex;
-          background-image:linear-gradient(to right,var(--grid) 0 1px,transparent 1px); background-size:25% 100%; }
-  .wbar .seg { height:100%; display:flex; align-items:center; justify-content:center; color:#fff;
+  /* 두 막대: 왼쪽 진행중 | 오른쪽 7일완료. 컬럼엔 total, 막대 안에 Task성(파랑)·VoC성(빨강) 숫자(0 생략) */
+  .wbars { display:flex; gap:18px; min-width:0; }
+  .wside { flex:1; min-width:0; display:flex; align-items:center; gap:8px; }
+  .wside .hl { font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
+  .wtot { flex:0 0 auto; width:20px; text-align:right; font-weight:700; font-size:12.5px; font-variant-numeric:tabular-nums; }
+  .wbar { position:relative; flex:1; min-width:0; height:22px; background:var(--track,#e5e4de);
+          border:1px solid var(--border); border-radius:5px; overflow:hidden; display:flex; }
+  .wbar .seg { height:100%; display:flex; align-items:center; justify-content:center; color:#14243a;
                font-size:10.5px; font-weight:700; overflow:hidden; min-width:0; }
-  .seg.ipTask{background:var(--c1)} .seg.ipVoc{background:var(--c6)}
-  .seg.doneTask{background:var(--c1)} .seg.doneVoc{background:var(--c6)}
-  .seg.doneTask, .seg.doneVoc { opacity:.45; }   /* 완료 = 반투명 */
+  .wbar .seg.task { background:#8fb5e2; } .wbar .seg.voc { background:#eaa9a4; }   /* 부드러운 파랑 / 코랄 */
+  .wbar .z { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:10px; }
+  /* 모듈 평균 — 눈에 띄는 세로선 + 상단 ▼ 마커 */
+  .wbar .mavg { position:absolute; top:0; bottom:0; width:2px; z-index:3; background:#1f2937;
+                box-shadow:0 0 0 1px rgba(255,255,255,.8); }
+  .wbar .mavg::after { content:""; position:absolute; top:0; left:50%; transform:translateX(-50%);
+                       border:4px solid transparent; border-top-color:#1f2937; }
   .plus { background:var(--panel-2); border:1px solid var(--border); color:var(--muted); border-radius:7px; width:30px; height:26px; cursor:pointer; font-size:14px; }
   .plus:hover { color:var(--text); }
   .empty { color:var(--muted); font-size:12px; padding:8px 16px; }
@@ -99,27 +101,40 @@
   </nav>
   <div class="summary" id="summary"></div>
   <div class="legend">
-    <span><i class="sw ipTask"></i> 진행중 Task</span>
-    <span><i class="sw ipVoc"></i> 진행중 VoC</span>
-    <span><i class="sw doneTask"></i> 7일 완료 Task</span>
-    <span><i class="sw doneVoc"></i> 7일 완료 VoC</span>
-    <span style="color:var(--muted)">· 색 = Task/VoC, 반투명 = 완료</span>
+    <span><i class="sw task"></i> Task성 (Task·Sub-Task)</span>
+    <span><i class="sw voc"></i> VoC성 (Component VoC)</span>
+    <span style="color:var(--muted)">· 왼쪽=진행 중, 오른쪽=최근 7일 완료 · 세로선 = 모듈 평균</span>
   </div>
   <div class="axisnote" id="axisnote"></div>
   <div id="mods"></div>
 </div>
 
+<script src="auth.js"></script>
+<script src="callout.js"></script>
 <script>
-var MODCOL = {}, JB = "", ACTCACHE = {}, GMAX = 1;
-var CATS = ["ipTask","ipVoc","doneTask","doneVoc"];
+var MODCOL = {}, JB = "", ACTCACHE = {}, SIP = 1, SDONE = 1;
 function el(t,c,h){ var e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e; }
 function esc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function mdISO(s){ if(!s) return ""; var p=s.split("-"); return (+p[1])+"/"+(+p[2]); }
 function tkt(key){ if(!key) return ""; return JB ? "<a class='lnk' target='_blank' rel='noopener' href='"+JB+"/browse/"+key+"'>"+key+"</a>" : key; }
-function vals(p){ return {ipTask:p.inProgress.task, ipVoc:p.inProgress.voc, doneTask:p.done7d.task, doneVoc:p.done7d.voc}; }
+// 한 컬럼(진행중 또는 완료) 막대: total 숫자 + Task/VoC 색 세그먼트(0 생략) + 모듈평균 세로선
+function sideBar(task, voc, scale, mavg){
+  var side=el("div","wside"), total=task+voc;
+  side.appendChild(el("div","wtot", total));
+  var bar=el("div","wbar");
+  if(mavg>0){ var ln=el("div","mavg"); ln.style.left=Math.min(mavg/scale*100,100)+"%"; bar.appendChild(ln); }
+  if(total<=0){ bar.appendChild(el("div","z","0")); }
+  else {
+    var denom=Math.max(total, scale);   // 평균 초과 시 막대 꽉참(Task:VoC 비율 유지)
+    if(task>0){ var t=el("div","seg task"); t.style.width=(task/denom*100)+"%"; t.textContent=task; t.title="Task성 "+task; bar.appendChild(t); }
+    if(voc>0){ var vv=el("div","seg voc"); vv.style.width=(voc/denom*100)+"%"; vv.textContent=voc; vv.title="VoC성 "+voc; bar.appendChild(vv); }
+  }
+  side.appendChild(bar);
+  return side;
+}
 
 function render(D){
-  JB = D.jiraBase || ""; GMAX = D.maxTotal || 1;
+  JB = D.jiraBase || ""; SIP = D.scaleInProgress || 1; SDONE = D.scaleDone7d || 1;
   document.getElementById("meta").textContent = "project "+D.projectKey+" · 갱신 "+D.generatedAt;
   D.modules.forEach(function(m,i){ MODCOL[m.module]="var(--c"+(i%7+1)+")"; });
 
@@ -130,7 +145,7 @@ function render(D){
   sum.appendChild(el("div","schip","진행중 <b>"+tip+"</b>건"));
   sum.appendChild(el("div","schip","최근 7일 완료 <b>"+td+"</b>건"));
   document.getElementById("axisnote").textContent =
-    "가로 막대는 모든 인력이 같은 x축(최대 "+GMAX+"건)을 공유 — 색 영역 = [진행중 Task·VoC / 완료 Task·VoC] 누적. 눈금 25% 간격.";
+    "막대 최대값 = 전체 최대(진행중 "+SIP+"건 / 완료 "+SDONE+"건). 세로선 = 해당 모듈 평균. Task성=파랑, VoC성=코랄 (0 생략).";
 
   var box=document.getElementById("mods"); box.innerHTML="";
   D.modules.forEach(function(m){ box.appendChild(moduleBlock(m)); });
@@ -148,30 +163,21 @@ function moduleBlock(m){
   var body=el("div","mod-body");
   if(!m.people.length){ body.appendChild(el("div","empty","등록된 인력이 없습니다 (config/people.yaml)")); wrap.appendChild(body); return wrap; }
 
-  // 컬럼 헤더 (모듈당 1회): 진행중 / 7일완료
+  // 컬럼 헤더 (모듈당 1회): 진행 중 / 최근 7일 완료
   body.appendChild(el("div","whead",
     "<div class='hl'>인력</div>"
-    +"<div class='wtbl'><div></div><div class='h'>진행중</div><div class='h'>7일완료</div></div>"
-    +"<div class='hl'>워크로드 (진행중·완료 누적)</div><div></div>"));
+    +"<div class='wbars'>"
+    +"<div class='wside'><div class='wtot'></div><div class='hl'>진행 중 (건)</div></div>"
+    +"<div class='wside'><div class='wtot'></div><div class='hl'>최근 7일 완료 (건)</div></div>"
+    +"</div><div></div>"));
 
   m.people.forEach(function(p){
-    var row=el("div","prow"), v=vals(p);
+    var row=el("div","prow");
     row.appendChild(el("span","pid", p.id));
-
-    // 수치 (바 왼쪽) — 행: Task성 / VoC성, 열: 진행중 / 7일완료(반투명)
-    row.appendChild(el("div","cnt",
-      "<div class='wtbl'>"
-      +"<div class='rl'>Task성</div><div class='v tTask'>"+v.ipTask+"</div><div class='v tTask done'>"+v.doneTask+"</div>"
-      +"<div class='rl'>VoC성</div><div class='v tVoc'>"+v.ipVoc+"</div><div class='v tVoc done'>"+v.doneVoc+"</div>"
-      +"</div>"));
-
-    // 누적 스택 바 (공유 x축 = GMAX), 각 영역 안에 숫자
-    var bar=el("div","wbar");
-    CATS.forEach(function(c){
-      if(v[c]>0){ var s=el("div","seg "+c); s.style.width=(v[c]/GMAX*100)+"%"; s.title=c+": "+v[c]; s.textContent=v[c]; bar.appendChild(s); }
-    });
-    row.appendChild(bar);
-
+    var wbars=el("div","wbars");
+    wbars.appendChild(sideBar(p.inProgress.task, p.inProgress.voc, SIP, m.avgInProgress));
+    wbars.appendChild(sideBar(p.done7d.task, p.done7d.voc, SDONE, m.avgDone7d));
+    row.appendChild(wbars);
     var btn=el("button","plus","+"); row.appendChild(btn);
     var act=el("div","act"); row.appendChild(act);
     btn.addEventListener("click",function(){ toggleActivity(p.id, act, btn); });

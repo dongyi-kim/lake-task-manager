@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Lake Task Manager — 현안(PMO_VIT)</title>
+<link rel="stylesheet" href="fonts.css">
 <style>
   :root {
     --bg:#f9f9f7; --panel:#fcfcfb; --panel-2:#f2f1ee; --border:#e1e0d9; --text:#0b0b0b;
@@ -19,7 +20,8 @@
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
-         font-family:"Segoe UI","Malgun Gothic",system-ui,sans-serif; font-size:14px; line-height:1.5; }
+         font-family:"Pretendard Variable",Pretendard,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
+         -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; font-size:14px; line-height:1.5; }
   .wrap { max-width:none; margin:0; padding:22px 28px 60px; }
   h1 { font-size:20px; margin:0; } h1 .sub { color:var(--muted); font-weight:500; font-size:13px; margin-left:8px; }
   .meta { color:var(--muted); font-size:12px; float:right; margin-top:6px; }
@@ -43,7 +45,7 @@
 
   /* 테이블(그리드) */
   .tbl { background:var(--panel); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); overflow:hidden; }
-  .vhead, .vrow { display:grid; grid-template-columns:minmax(260px,2.4fr) 120px minmax(150px,1.3fr) minmax(210px,2fr) minmax(230px,2.2fr) 64px; gap:14px; }
+  .vhead, .vrow { display:grid; grid-template-columns:minmax(260px,2.4fr) 120px minmax(150px,1.3fr) minmax(116px,0.9fr) minmax(230px,2.3fr) 64px; gap:14px; }
   .vhead { padding:8px 16px; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; background:var(--panel-2); border-bottom:1px solid var(--border); }
   .vrow { padding:11px 16px; border-top:1px solid var(--border); align-items:start; }
   .vrow:first-child { border-top:none; }
@@ -58,8 +60,12 @@
   .c-info .summ { font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .c-info .who { color:var(--muted); font-size:11.5px; margin-top:2px; } .c-info .who::before { content:"\1F464  "; }
 
-  .c-date { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .c-date { font-size:12px; color:var(--text); font-variant-numeric:tabular-nums; line-height:1.75; }
+  .c-date .dl { display:inline-block; width:58px; color:var(--muted); font-size:10.5px; }
   .c-date .nodue { color:var(--today); font-weight:700; }
+  .c-subs .scnt { display:flex; align-items:center; gap:6px; font-size:12px; padding:2px 0; }
+  .c-subs .scnt .lbl { flex:0 0 84px; text-align:right; }   /* pill 우측정렬 → 숫자 세로 정렬 + 간격 일정 */
+  .c-subs .scnt b { font-variant-numeric:tabular-nums; }
 
   .c-prog .bar { height:8px; background:var(--track); border-radius:999px; overflow:hidden; }
   .c-prog .bar>i { display:block; height:100%; border-radius:999px; }
@@ -89,11 +95,24 @@
   .dcols { display:grid; grid-template-columns:1.3fr 1fr; gap:24px; }
   @media (max-width:1000px){ .dcols { grid-template-columns:1fr; } }
   .sec-t { font-size:11px; color:var(--muted); margin:0 0 5px; }
-  .tnode { display:flex; align-items:center; gap:7px; font-size:12px; padding:2px 0; }
-  .tnode .tsum { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .tnode .tprog { margin-left:auto; color:var(--muted); font-size:11px; flex:0 0 auto; }
+  /* 소속 티켓 트리: 타입아이콘 | 상황 | 번호 | 제목 | 진척 — 상황·번호·제목 가로위치 고정 */
+  .tnode { display:grid; grid-template-columns:58px 70px 46px 168px auto; column-gap:4px;
+           align-items:stretch; font-size:12px; min-height:22px; justify-content:start; }
+  .tnode .typc { display:flex; align-items:stretch; min-width:0; overflow:hidden; }
+  .tnode .typc .tb { align-self:center; margin-left:2px; flex:0 0 auto; font-size:9px; color:var(--muted);
+                     border:1px solid var(--border); border-radius:3px; padding:0 3px; white-space:nowrap; }
+  .tnode .st, .tnode .ky, .tnode .sm, .tnode .pg { align-self:center; min-width:0; }
+  .tnode .ky { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .tnode .sm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tnode .pg { color:var(--muted); font-size:11px; text-align:right; white-space:nowrap; }
+  /* 소속 티켓 트리 안내선 */
+  .tg { flex:0 0 auto; width:12px; align-self:stretch; position:relative; }
+  .tg.v::before, .tg.node::before { content:""; position:absolute; left:7px; top:0; bottom:0; border-left:1px solid color-mix(in srgb, var(--muted) 50%, transparent); }
+  .tg.node.last::before { bottom:auto; height:50%; }
+  .tg.node::after { content:""; position:absolute; left:7px; top:50%; width:8px; border-top:1px solid color-mix(in srgb, var(--muted) 50%, transparent); }
   .cmt { font-size:12px; padding:3px 0; border-top:1px solid var(--border); }
   .cmt .h { color:var(--muted); font-size:11px; } .cmt .h b { color:var(--text); }
+  .cmt .txt { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #err { color:var(--today); padding:20px; }
 </style>
 </head>
@@ -111,13 +130,20 @@
   <div id="mods"></div>
 </div>
 
+<script src="auth.js"></script>
+<script src="callout.js"></script>
 <script>
 var MODCOL = {}, JB = "";
 var ROWCAP = 4;   // 하위티켓/소식 행에 보이는 최대 개수 (나머지는 [자세히])
 var KLAB = {created:"생성됨", done:"완료됨", resolved:"해결됨"};   // 활동 설명
+// 티켓 타입 배지 (WBS Dashboard 와 동일 스타일 재활용)
+var TBADGE={Epic:"Epic",Story:"Story",Task:"Task",Bug:"Bug","Sub-Task":"Sub",Improvement:"Impr","New Feature":"Feat"};
+function tybadge(t){ return "<span class='tb'>"+(TBADGE[t]||t)+"</span>"; }   // news 와 동일 무색 배지
 function el(t,c,h){ var e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e; }
 function esc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-function mdISO(s){ if(!s) return ""; var p=s.split("-"); return (+p[1])+"/"+(+p[2]); }
+function mdISO(s){ if(!s) return ""; var p=s.substring(0,10).split("-"); return (+p[1])+"/"+(+p[2]); }
+function dtmin(iso){ if(!iso) return ""; var m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso);
+  return m ? ((+m[2])+"/"+(+m[3])+" "+m[4]+":"+m[5]) : mdISO(iso); }   // M/D HH:MM (24h)
 function pctOf(p){ return (Math.round((p||0)*10)/10)+"%"; }
 function tkt(key){ if(!key) return ""; return JB ? "<a class='lnk' target='_blank' rel='noopener' href='"+JB+"/browse/"+key+"'>"+key+"</a>" : key; }
 function flatten(ns,out){ out=out||[]; (ns||[]).forEach(function(n){ out.push(n); flatten(n.children,out); }); return out; }
@@ -125,7 +151,7 @@ function newsLine(ev){
   // 활동 설명: [날짜] [무엇을 했는지] [대상 티켓 타입·키·제목]
   var typ = ev.type ? "<span class='tb'>"+ev.type+"</span>" : "";
   return el("div","mini "+ev.kind,
-    "<span class='d'>"+mdISO(ev.date)+"</span><span class='act "+ev.kind+"'>"+(KLAB[ev.kind]||ev.kind)+"</span>"
+    "<span class='d'>"+dtmin(ev.date)+"</span><span class='act "+ev.kind+"'>"+(KLAB[ev.kind]||ev.kind)+"</span>"
     +typ+tkt(ev.key)+" <span class='sm'>"+esc(ev.title||"")+"</span>");
 }
 
@@ -148,7 +174,7 @@ function render(D){
     if(!m.issues.length){ box.appendChild(el("div","empty","· 현안 없음")); return; }
     var tbl=el("div","tbl");
     tbl.appendChild(el("div","vhead",
-      "<div>티켓</div><div>시작 ~ 마감</div><div>진척(자손)</div><div>하위 티켓</div><div>최근 하위 소식</div><div></div>"));
+      "<div>티켓</div><div>작업 일정</div><div>진척률 (전체 하위 티켓 기준)</div><div>하위 티켓 수</div><div>최근 하위 소식</div><div></div>"));
     m.issues.forEach(function(it){ tbl.appendChild(row(it)); });
     box.appendChild(tbl);
   });
@@ -156,7 +182,6 @@ function render(D){
 
 function row(it){
   var r=el("div","vrow"), col=MODCOL[it.module]||"var(--accent)";
-  var flat=flatten(it.tree);
 
   // 1) 티켓 정보
   var info=el("div","c-info");
@@ -168,8 +193,10 @@ function row(it){
   r.appendChild(info);
 
   // 2) 시작 ~ 마감
-  var due = it.due ? mdISO(it.due) : "<span class='nodue'>마감 미정</span>";
-  r.appendChild(el("div","c-date","시작 "+(mdISO(it.start)||"?")+"<br>마감 "+due));
+  r.appendChild(el("div","c-date",
+    "<span class='dl'>Created</span>"+(mdISO(it.created)||"?")+"<br>"+
+    "<span class='dl'>Started</span>"+(it.started?mdISO(it.started):"—")+"<br>"+
+    "<span class='dl'>Updated</span>"+(it.updated?mdISO(it.updated):"?")));
 
   // 3) 진척 (자손 개수 기반)
   var p=it.progress||{done:0,total:0,pct:0};
@@ -178,43 +205,54 @@ function row(it){
   pc.appendChild(el("div","n","<b>"+p.done+"/"+p.total+"</b> ("+pctOf(p.pct)+")"));
   r.appendChild(pc);
 
-  // 4) 하위 티켓 (상태점 · 타입 · 키 · 제목)
+  // 4) 하위 티켓 — 상태별 개수 (Open / In Progress / Done)
+  var sc=it.statusCounts||{open:0,inprogress:0,done:0};
   var subs=el("div","c-subs");
-  flat.slice(0,ROWCAP).forEach(function(n){
-    subs.appendChild(el("div","mini",
-      "<span class='spill "+n.statusCategory+"'>"+esc(n.status||n.statusCategory)+"</span><span class='tb'>"+n.type+"</span>"
-      +tkt(n.key)+" <span class='sm'>"+esc(n.summary||"")+"</span>"));
-  });
-  if(flat.length>ROWCAP) subs.appendChild(el("div","mini muted","+ "+(flat.length-ROWCAP)+" 더 …"));
-  if(!flat.length) subs.appendChild(el("div","mini muted","-"));
+  subs.appendChild(el("div","scnt","<span class='lbl'><span class='spill todo'>Open</span></span><b>"+sc.open+"</b>"));
+  subs.appendChild(el("div","scnt","<span class='lbl'><span class='spill inprogress'>In Progress</span></span><b>"+sc.inprogress+"</b>"));
+  subs.appendChild(el("div","scnt","<span class='lbl'><span class='spill done'>Done</span></span><b>"+sc.done+"</b>"));
   r.appendChild(subs);
 
   // 5) 최근 하위 소식 (활동 설명: 날짜 · 무엇을 했는지 · 대상 티켓)
-  var news=el("div","c-news");
-  (it.news||[]).slice(0,ROWCAP).forEach(function(ev){ news.appendChild(newsLine(ev)); });
-  if((it.news||[]).length>ROWCAP) news.appendChild(el("div","mini muted","+ "+(it.news.length-ROWCAP)+" 더 …"));
+  var news=el("div","c-news"), NC=3;
+  (it.news||[]).slice(0,NC).forEach(function(ev){ news.appendChild(newsLine(ev)); });
   if(!(it.news||[]).length) news.appendChild(el("div","mini muted","-"));
   r.appendChild(news);
 
   // 6) [자세히]
   var det=el("div","detail");
   var xc=el("div","c-x"); var btn=el("button","xbtn","자세히 ▾"); xc.appendChild(btn); r.appendChild(xc);
-  det.appendChild(detail(it, flat));
   r.appendChild(det);
-  btn.addEventListener("click",function(){ det.classList.toggle("open");
-    btn.textContent = det.classList.contains("open") ? "접기 ▴" : "자세히 ▾"; });
+  var loaded=false;
+  btn.addEventListener("click",function(){
+    var open=!det.classList.contains("open");
+    det.classList.toggle("open",open);
+    btn.textContent = open ? "접기 ▴" : "자세히 ▾";
+    if(open && !loaded){                                  // [자세히] 최초 펼침 시에만 상세 로딩
+      loaded=true;
+      det.innerHTML="<div class='mini muted'>· 불러오는 중…</div>";
+      fetch("/api/vit/"+encodeURIComponent(it.key)).then(function(rs){ return rs.ok?rs.json():{tree:[],comments:[]}; })
+        .then(function(d){ det.innerHTML=""; det.appendChild(detail(it,d)); })
+        .catch(function(){ det.innerHTML="<div class='mini muted'>상세를 불러오지 못했습니다</div>"; });
+    }
+  });
   return r;
 }
 
-function detail(it, flat){
+function detail(it, d){
   var wrap=el("div","dcols");
+  var flat=flatten(d.tree);
   // 왼쪽: 소속 티켓 트리
   var left=el("div",null,"<div class='sec-t'>소속 티켓 트리 ("+flat.length+"개 · 상태·최근 진척)</div>");
-  left.appendChild(treeRows(it.tree||[],0));
-  // 오른쪽: 코멘트 + 전체 소식
+  left.appendChild(treeRows(d.tree||[]));
+  // 오른쪽: 코멘트 + 전체 소식 (코멘트는 줄바꿈→공백, 길면 한 줄로 생략)
   var right=el("div",null,"<div class='sec-t'>코멘트 (현안 티켓 기준)</div>");
-  if(it.comments && it.comments.length){
-    it.comments.forEach(function(x){ right.appendChild(el("div","cmt","<div class='h'><b>"+esc(x.author||"?")+"</b> · "+mdISO(x.date)+"</div>"+esc(x.text))); });
+  if(d.comments && d.comments.length){
+    d.comments.forEach(function(x){
+      var t=esc((x.text||"").replace(/\s*[\r\n]+\s*/g," ").trim());
+      right.appendChild(el("div","cmt","<div class='h'><b>"+esc(x.author||"?")+"</b> · "+mdISO(x.date)
+        +"</div><div class='txt'>"+t+"</div>"));
+    });
   } else { right.appendChild(el("div","mini muted","코멘트 없음")); }
   if((it.news||[]).length>ROWCAP){
     right.appendChild(el("div","sec-t","전체 최근 소식"));
@@ -224,16 +262,27 @@ function detail(it, flat){
   return wrap;
 }
 
-function treeRows(nodes, depth){
+var TORD={inprogress:0, todo:1, done:2};   // 정렬순: 파랑(진행중) → 회색(To Do) → 초록(완료)
+function treeRows(nodes, anc){
+  anc = anc || [];
   var frag=document.createDocumentFragment();
-  nodes.forEach(function(n){
-    var row=el("div","tnode"); row.style.paddingLeft=(depth*16)+"px";
-    var prog = n.resolved ? ("완료 "+mdISO(n.resolved)) : (n.created ? ("생성 "+mdISO(n.created)) : "");
-    row.innerHTML="<span class='spill "+n.statusCategory+"'>"+esc(n.status||n.statusCategory)+"</span><span class='tb'>"+n.type+"</span>"
-      +"<span class='key'>"+tkt(n.key)+"</span><span class='tsum'>"+esc(n.summary||"")+"</span>"
-      +"<span class='tprog'>"+prog+"</span>";
+  var arr=(nodes||[]).slice().sort(function(a,b){
+    var oa=TORD[a.statusCategory], ob=TORD[b.statusCategory];
+    return (oa==null?9:oa)-(ob==null?9:ob);
+  });
+  arr.forEach(function(n,i){
+    var isLast=(i===arr.length-1);
+    var g=""; anc.forEach(function(c){ g+="<span class='tg"+(c?" v":"")+"'></span>"; });
+    g+="<span class='tg node"+(isLast?" last":"")+"'></span>";
+    var prog = n.resolved ? ("완료 "+dtmin(n.resolved)) : (n.created ? ("생성 "+dtmin(n.created)) : "");
+    var row=el("div","tnode",
+      "<span class='typc'>"+g+tybadge(n.type)+"</span>"
+      +"<span class='st'><span class='spill "+n.statusCategory+"'>"+esc(n.status||n.statusCategory)+"</span></span>"
+      +"<span class='ky'>"+tkt(n.key)+"</span>"
+      +"<span class='sm'>"+esc(n.summary||"")+"</span>"
+      +"<span class='pg'>"+prog+"</span>");
     frag.appendChild(row);
-    if(n.children && n.children.length) frag.appendChild(treeRows(n.children, depth+1));
+    if(n.children && n.children.length) frag.appendChild(treeRows(n.children, anc.concat(!isLast)));
   });
   return frag;
 }

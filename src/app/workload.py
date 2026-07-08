@@ -10,26 +10,35 @@ def _ptotal(p):
     return p["inProgress"]["task"] + p["inProgress"]["voc"] + p["done7d"]["task"] + p["done7d"]["voc"]
 
 
+def _avg(xs):
+    return round(sum(xs) / len(xs), 2) if xs else 0.0
+
+
 def build_workload(client, plan, people, jira_base="", generated_at=None):
     data = client.workload(plan, people)     # module -> [person dict]
     modules = []
-    gmax = 0
+    all_ip, all_done = [], []
     for m in plan["modules"]:
         rows = data.get(m, [])
-        for p in rows:
-            gmax = max(gmax, _ptotal(p))
+        ip = [p["inProgress"]["task"] + p["inProgress"]["voc"] for p in rows]
+        dn = [p["done7d"]["task"] + p["done7d"]["voc"] for p in rows]
+        all_ip += ip
+        all_done += dn
         modules.append({
             "module": m,
             "people": rows,
             "peopleCount": len(rows),
-            "inProgressTotal": sum(p["inProgress"]["task"] + p["inProgress"]["voc"] for p in rows),
-            "done7dTotal": sum(p["done7d"]["task"] + p["done7d"]["voc"] for p in rows),
+            "inProgressTotal": sum(ip),
+            "done7dTotal": sum(dn),
+            "avgInProgress": _avg(ip),      # 모듈 평균 (세로선)
+            "avgDone7d": _avg(dn),
         })
     return {
         "generatedAt": generated_at or datetime.now().strftime("%Y-%m-%d %H:%M"),
         "projectKey": plan.get("project_key", "DL"),
         "jiraBase": jira_base,
-        "maxTotal": gmax or 1,        # 모든 인력 공유 x축 최대값
-        "categories": ["ipTask", "ipVoc", "doneTask", "doneVoc"],
+        # 막대 최대값 = 데이터별 전체 최대값 (진행중/완료 각각). 모듈 평균은 막대 안 세로선으로 표시.
+        "scaleInProgress": max(all_ip) if all_ip else 1,
+        "scaleDone7d": max(all_done) if all_done else 1,
         "modules": modules,
     }

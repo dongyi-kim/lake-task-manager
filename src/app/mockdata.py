@@ -5,6 +5,8 @@ mock 모드 어댑터 — app/world.py 의 단일 world 를 in-process 로 소�
 공개 함수 시그니처는 유지: epic_issues / vit_issues / workload_people / activity.
 """
 
+from datetime import timedelta
+
 from . import world as worldmod
 
 
@@ -32,14 +34,36 @@ def epic_issues(epic_key):
     return out
 
 
+def epic_raw_children(epic_key):
+    """Epic 직속 자식(Story/Task/Bug 등)을 raw Jira 이슈 형태로 — subtasks(상태 포함) 그대로.
+    local/prod 의 search 결과와 동일 형태 → 같은 _display_node 로 트리를 만든다(파리티)."""
+    w = _w()
+    return [w.jira_issue(ck) for ck in w.epic_children.get(epic_key, [])]
+
+
+def raw_issue(key):
+    """단일 티켓 raw Jira 형태 (없으면 None) — 범용 /api/issue/{key} 용."""
+    return _w().jira_issue(key)
+
+
+def issue_comments(key, limit=5):
+    """단일 티켓 코멘트 — _issue_comments(비-mock) 와 동일 정규화 형태."""
+    cs = _w().jira_comments(key) or []
+    return [{
+        "date": (c.get("created") or "")[:10],
+        "author": ((c.get("author") or {}).get("displayName") or (c.get("author") or {}).get("name")),
+        "text": (c.get("body") or "")[:200],
+    } for c in cs[:limit]]
+
+
 # ── 기능2: PMO_VIT 현안 (tree/ancestors/comments — build_vit 가 계산) ──
 def _node(w, key):
     it = w.issues[key]
     node = {
         "key": key, "summary": it["summary"], "type": it["type"],
         "statusCategory": it["statusCategory"], "status": it["statusName"],
-        "created": it["created"].isoformat(),
-        "resolved": it["resolved"].isoformat() if it["resolved"] else None,
+        "created": w._dt(it["created"], it.get("tcreated")),
+        "resolved": w._dt(it["resolved"], it.get("tresolved")) if it["resolved"] else None,
         "children": [_node(w, sk) for sk in it["subtasks"] if sk in w.issues],
     }
     return node
@@ -62,10 +86,17 @@ def vit_issues(plan, people, epic_prog=None):
             ancestors.append(it["parentKey"])
         if it["epicKey"]:
             ancestors.append(it["epicKey"])
+        cat = it["statusCategory"]
+        started = None
+        if cat != "todo":
+            started = it["created"] + timedelta(days=max((it["updated"] - it["created"]).days, 0) // 3)
         out.append({
             "key": key, "summary": it["summary"], "type": it["type"], "module": it["module"],
             "assignee": _dispname(w, it["assignee"]),
             "start": it["created"].isoformat()[:10],
+            "created": it["created"].isoformat()[:10],
+            "started": started.isoformat()[:10] if started else None,
+            "updated": it["updated"].isoformat()[:10],
             "due": it["due"].isoformat() if it["due"] else None,
             "statusCategory": it["statusCategory"], "status": it["statusName"],
             "ancestors": [a for a in ancestors if a],

@@ -13,6 +13,13 @@ venv/
 # SQLite 캐시 (생성물)
 *.sqlite3
 
+# 빌드 산출물 (PyInstaller)
+*.exe
+/build/
+/dist/
+src/build/
+src/dist/
+
 # OS / editor
 .DS_Store
 Thumbs.db

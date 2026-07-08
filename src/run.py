@@ -34,6 +34,13 @@ def _sso_login(s):
 
 
 def main():
+    # Windows 콘솔(cp949)에서도 유니코드 출력이 크래시하지 않도록 utf-8 로 강제.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     s = get_settings()
 
     # prod SSO 1회 로그인:  run.py login  /  exe login
@@ -41,14 +48,16 @@ def main():
         _sso_login(s)
         return
 
-    # prod 인데 세션 파일이 없으면 안내(로그인 먼저)
+    # prod 인데 세션 파일이 없어도 앱은 안전하게 뜬다(provider 는 lazy).
+    # 브라우저 화면의 "SSO 로그인" 버튼(→ POST /api/login) 으로 로그인하거나, CLI: <실행파일> login
     if s.jira_env == "prod":
         state = APP_ROOT / s.jira_state_path
         if not state.exists():
-            print(f"[prod] SSO 세션이 없습니다({state}). 먼저 로그인:  <실행파일> login")
+            print(f"[prod] SSO 세션이 없습니다({state}). "
+                  f"브라우저 화면의 'SSO 로그인' 버튼을 누르거나, CLI:  <실행파일> login")
 
     url = f"http://localhost:{s.app_port}/"
-    print(f"Lake Task Manager — {url}  (env={s.jira_env})")
+    print(f"Lake Task Manager - {url}  (env={s.jira_env})")
     threading.Thread(target=_open_browser, args=(url,), daemon=True).start()
     uvicorn.run("app.main:app", host=s.app_host, port=s.app_port, log_level="info")
 

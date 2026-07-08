@@ -1,0 +1,3 @@
+/* Pretendard Variable — 대시보드용 한글/라틴 통합 폰트. SIL OFL 1.1 (상용 무료).
+   CDN(jsdelivr) 로드. 오프라인/사내망 차단 시 아래 시스템 폰트로 폴백(body font-family). */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/packages/pretendard/dist/web/variable/pretendardvariable.css");

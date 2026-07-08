@@ -61,6 +61,9 @@ class World:
         self._counter = 5000             # 생성 키 DL-5001+ (config epic id DL-1xx 와 충돌 회피)
 
         self._build_wbs_epics()
+        self._build_extra_epics()     # WBS 밖 일반 epic
+        self._build_standalone()      # epic 소속 아닌 독립 task/story
+        self._build_history()         # 1~6월 생성·종료된 과거 완료 이슈 (대량)
         self._build_vit()
         self._build_voc()
         self._index()
@@ -83,21 +86,31 @@ class World:
         self._counter += 1
         return f"{self.project}-{self._counter}"
 
-    def _dt(self, d):
-        return d.isoformat() + "T09:00:00.000+0000"
+    def _dt(self, d, hm=None):
+        return d.isoformat() + "T" + (hm or "09:00") + ":00.000+0000"
 
     # ── 이슈 생성 헬퍼 ──
     def _make_issue(self, rng, itype, module, epic_key=None, parent_key=None,
-                    label_pmo=False, summary=None, component=None, assignee=None):
+                    label_pmo=False, summary=None, component=None, assignee=None,
+                    created=None, resolved=None, force_cat=None):
         pool = self._pool(module)
         assignee = assignee or pool[rng.randrange(len(pool))]
         reporter = rng.choice(["pmo", "lead"] + pool)
         maturity = rng.uniform(0.15, 0.85)
-        cat = _cat(rng, maturity)
-        created = self.today - timedelta(days=rng.randint(5, 160))
-        updated = created + timedelta(days=rng.randint(0, 20))
-        resolved = (self.today - timedelta(days=rng.randint(0, 20))) if cat == "done" else None
+        created = created or (self.today - timedelta(days=rng.randint(5, 175)))
+        if resolved is not None:                       # 과거 종료 override
+            cat = "done"
+        else:
+            cat = force_cat or _cat(rng, maturity)
+            if cat == "done":                          # 완료일을 created~today 전체에 분산
+                span = max((self.today - created).days, 1)
+                resolved = created + timedelta(days=rng.randint(1, span))
+        updated = resolved or (created + timedelta(days=rng.randint(0, max((self.today - created).days, 1))))
+        if updated > self.today:
+            updated = self.today
         due = None if rng.random() < 0.25 else (created + timedelta(days=rng.randint(40, 160)))
+        def _tm():   # 결정적 업무시간 hh:MM (뉴스/활동 시간표시용)
+            return "%02d:%02d" % (rng.randint(8, 20), rng.choice([0, 10, 15, 20, 30, 40, 45, 50]))
         status_name = rng.choice(_STATUS_NAMES[cat])
         # SP: story-like 는 값 or 누락(None), Bug 는 0, Epic/Sub-Task 는 None
         if itype in _STORYLIKE:
@@ -136,6 +149,7 @@ class World:
             "epicKey": epic_key if itype != "Epic" else None,
             "parentKey": parent_key,
             "created": created, "updated": updated, "resolved": resolved, "due": due,
+            "tcreated": _tm(), "tresolved": _tm(), "tupdated": _tm(),
             "comments": comments, "worklog": worklog, "subtasks": [],
         }
         return key
@@ -172,6 +186,54 @@ class World:
                 ck = self._make_issue(rng, ct, module, epic_key=ekey)
                 if ct in _STORYLIKE and rng.random() < 0.4:
                     self._add_subtasks(rng, ck, module, rng.randint(1, 2))
+
+    # ── WBS 밖 일반 Epic (현안 아님) + 자식 ──
+    def _build_extra_epics(self):
+        for module in self.modules:
+            rng = _rng("xepic", module)
+            for _ in range(rng.randint(2, 5)):
+                ek = self._newkey()
+                self._make_issue(rng, "Epic", module, epic_key=ek)
+                for _ in range(rng.randint(5, 12)):
+                    ct = rng.choices(_CHILD_TYPES, weights=_CHILD_TYPES_W)[0]
+                    ck = self._make_issue(rng, ct, module, epic_key=ek)
+                    if ct in _STORYLIKE and rng.random() < 0.4:
+                        self._add_subtasks(rng, ck, module, rng.randint(1, 2))
+
+    # ── Epic 소속 아닌 독립 Task/Story (진행중·완료 혼합) ──
+    def _build_standalone(self):
+        for module in self.modules:
+            pool = self._pool(module)
+            rng = _rng("solo", module)
+            for i in range(rng.randint(8, 16)):
+                t = rng.choices(_CHILD_TYPES, weights=_CHILD_TYPES_W)[0]
+                k = self._make_issue(rng, t, module, assignee=pool[i % len(pool)])
+                if t in _STORYLIKE and rng.random() < 0.35:
+                    self._add_subtasks(rng, k, module, rng.randint(1, 2))
+
+    # ── 1~6월에 생성·종료된 과거 완료 이슈 (대량, Closed/Resolved) ──
+    def _build_history(self):
+        jan1 = date(2026, 1, 1)
+        for module in self.modules:
+            pool = self._pool(module)
+            rng = _rng("hist", module)
+            for i in range(rng.randint(12, 24)):
+                created = jan1 + timedelta(days=rng.randint(0, 120))       # Jan~중순 May
+                resolved = created + timedelta(days=rng.randint(5, 110))   # 종료
+                if resolved >= self.today:
+                    resolved = self.today - timedelta(days=rng.randint(15, 150))
+                if resolved <= created:
+                    resolved = created + timedelta(days=7)
+                t = rng.choices(["Task", "Story", "Bug", "Improvement"], weights=[5, 4, 3, 2])[0]
+                k = self._make_issue(rng, t, module, assignee=pool[i % len(pool)],
+                                     created=created, resolved=resolved)
+                if t in _STORYLIKE and rng.random() < 0.45:
+                    for _ in range(rng.randint(1, 3)):
+                        scr = created + timedelta(days=rng.randint(0, 15))
+                        srv = min(scr + timedelta(days=rng.randint(3, 60)), resolved)
+                        sk = self._make_issue(rng, SUBTASK_TYPE, module, parent_key=k,
+                                              assignee=pool[i % len(pool)], created=scr, resolved=srv)
+                        self.issues[k]["subtasks"].append(sk)
 
     # ── PMO_VIT 현안 (모듈별 다양 개수, 조상/자손 dedup 케이스 포함) ──
     def _build_vit(self):
@@ -275,8 +337,9 @@ class World:
             "reporter": self._user_obj(it["reporter"]),
             "components": [{"name": it["component"]}],
             "labels": it["labels"],
-            "created": self._dt(it["created"]), "updated": self._dt(it["updated"]),
-            "resolutiondate": self._dt(it["resolved"]) if it["resolved"] else None,
+            "created": self._dt(it["created"], it.get("tcreated")),
+            "updated": self._dt(it["updated"], it.get("tupdated")),
+            "resolutiondate": self._dt(it["resolved"], it.get("tresolved")) if it["resolved"] else None,
             "duedate": it["due"].isoformat() if it["due"] else None,
             self.sp_field: it["sp"],
             self.epic_link_field: it["epicKey"],

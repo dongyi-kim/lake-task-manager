@@ -1,9 +1,14 @@
-# Lake Task Manager — core app deps
+# Lake Task Manager - core app deps
 fastapi>=0.110
 uvicorn[standard]>=0.29
 requests>=2.31
 PyYAML>=6.0
 python-dotenv>=1.0
+
+# 빌드(단일 exe) - PyInstaller. 앱 런타임엔 불필요, exe 패키징 시에만 사용.
+#   pyinstaller lake.spec   ->  dist/lake-task-manager.exe
+#   (altgraph / pefile / pyinstaller-hooks-contrib / pywin32-ctypes 는 자동 설치되는 하위 의존)
+pyinstaller>=6.0
 
 # 운영(SSO) 경로는 별도:  pip install -r requirements-sso.txt
 #   playwright>=1.44  (+ playwright install chromium)

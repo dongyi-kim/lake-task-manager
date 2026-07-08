@@ -13,7 +13,9 @@
 playwright 는 선택 의존(requirements-sso.txt). import 는 지연.
 """
 
-from .base import AuthProvider, SessionExpired
+import os
+
+from .base import AuthProvider, LoginRequired, SessionExpired
 
 _CHANNEL = "chrome"          # 설치된 Chrome (Chromium 미번들). 안 되면 아래 폴백 안내.
 
@@ -30,8 +32,11 @@ def _launch(p, headless):
 
 class SsoSessionProvider(AuthProvider):
     def __init__(self, base, state_path, user_agent=None):
-        from playwright.sync_api import sync_playwright   # 지연 import
         self.base = base.rstrip("/")
+        # 세션 파일이 없으면 브라우저를 띄우기 전에 명확히 실패 → 라우트가 needLogin 으로 안내.
+        if not state_path or not os.path.exists(state_path):
+            raise LoginRequired(f"SSO 세션 파일이 없습니다({state_path}). 최초 로그인이 필요합니다.")
+        from playwright.sync_api import sync_playwright   # 지연 import
         self._p = sync_playwright().start()
         # 사내 SSO 는 headless 를 거부하기도 함 → 우선 headless, 로그인 때와 동일 UA 권장.
         self._browser = _launch(self._p, headless=True)
@@ -60,9 +65,23 @@ class SsoSessionProvider(AuthProvider):
             pass
 
 
+def _authed(context, base):
+    """현재 컨텍스트가 인증됐는지 — /myself 200 + name(비익명) 이면 True."""
+    try:
+        resp = context.request.get(base + "/rest/api/2/myself")
+        if resp.status == 200:
+            body = resp.json()
+            name = body.get("name") or body.get("key")
+            return bool(name) and name != "anonymous"
+    except Exception:
+        pass
+    return False
+
+
 def login(base, state_path):
-    """headed Chrome 으로 수동 SSO 로그인 후 세션 저장."""
+    """[CLI] headed Chrome 으로 수동 SSO 로그인 후 세션 저장 (터미널 Enter 대기)."""
     from playwright.sync_api import sync_playwright
+    base = base.rstrip("/")
     with sync_playwright() as p:
         browser = _launch(p, headless=False)
         context = browser.new_context()
@@ -72,6 +91,34 @@ def login(base, state_path):
         context.storage_state(path=state_path)
         browser.close()
         print(f"세션 저장 완료: {state_path}")
+
+
+def login_wait(base, state_path, timeout=300, poll=2.0):
+    """[웹/자동] headed Chrome 을 띄우고, 로그인 완료를 폴링으로 감지해 세션 저장.
+
+    터미널 Enter 없이 동작 → 웹 버튼(/api/login)에서 호출 가능.
+    사용자가 브라우저에서 SSO 를 끝내면 /myself 200 을 감지하고 storage_state 저장 후 닫는다.
+    반환: 성공 True / 타임아웃 False.
+    """
+    import time
+    from playwright.sync_api import sync_playwright
+    base = base.rstrip("/")
+    with sync_playwright() as p:
+        browser = _launch(p, headless=False)
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto(base, wait_until="domcontentloaded")
+        deadline = time.monotonic() + timeout
+        ok = False
+        while time.monotonic() < deadline:
+            if _authed(context, base):
+                ok = True
+                break
+            time.sleep(poll)
+        if ok:
+            context.storage_state(path=state_path)
+        browser.close()
+        return ok
 
 
 if __name__ == "__main__":

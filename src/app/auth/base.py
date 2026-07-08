@@ -15,3 +15,7 @@ class AuthProvider:
 
 class SessionExpired(RuntimeError):
     """401/403/5xx — 세션 만료 가능. (prod SSO 는 login 재실행 필요)"""
+
+
+class LoginRequired(SessionExpired):
+    """세션 파일이 아직 없음 — 최초 SSO 로그인이 필요. (SessionExpired 로 함께 처리됨)"""

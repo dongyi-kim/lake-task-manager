@@ -5,6 +5,8 @@ JiraClient — AuthProvider 를 주입받아 REST 호출 (어떤 인증인지 �
 Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 Phase 에서 확장)
 """
 
+from datetime import date, timedelta
+
 from . import mockdata, progress
 
 
@@ -14,6 +16,17 @@ _CAT_MAP = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undef
 
 def _norm_cat(key):
     return _CAT_MAP.get((key or "").lower(), "todo")
+
+
+def _started_from(created, updated, cat):
+    """착수일(Started) 추정 — 진행중/완료면 created~updated 사이 1/3 지점, To Do 면 None. (결정적)"""
+    if cat == "todo" or not created or not updated:
+        return None
+    try:
+        da, db = date.fromisoformat(created[:10]), date.fromisoformat(updated[:10])
+        return (da + timedelta(days=max((db - da).days, 0) // 3)).isoformat()
+    except Exception:
+        return None
 
 
 def _normalize_issue(raw, sp_field):
@@ -31,12 +44,51 @@ def _normalize_issue(raw, sp_field):
     }
 
 
+def _display_node(raw, sp_field, with_subs=False):
+    """WBS Gantt 트리 표시용 상세 노드(요약·타입·상태·일정·SP + Sub-Task). progress 계산과 별개."""
+    f = raw.get("fields", {}) or {}
+    st = f.get("status") or {}
+    node = {
+        "key": raw.get("key"),
+        "type": (f.get("issuetype") or {}).get("name", ""),
+        "summary": f.get("summary") or raw.get("key"),
+        "statusName": st.get("name", ""),
+        "statusCat": _norm_cat((st.get("statusCategory") or {}).get("key")),
+        "start": (f.get("created") or "")[:10] or None,
+        "end": (f.get("duedate") or f.get("resolutiondate") or f.get("updated") or "")[:10] or None,
+        "sp": f.get(sp_field),
+    }
+    if with_subs:
+        subs = []
+        for s in (f.get("subtasks") or []):
+            sf = s.get("fields", {}) or {}
+            sst = sf.get("status") or {}
+            subs.append({
+                "key": s.get("key"),
+                "type": (sf.get("issuetype") or {}).get("name", "Sub-Task"),
+                "summary": sf.get("summary") or s.get("key"),
+                "statusName": sst.get("name", ""),
+                "statusCat": _norm_cat((sst.get("statusCategory") or {}).get("key")),
+            })
+        node["children"] = subs
+    return node
+
+
 class JiraClient:
     def __init__(self, settings, cache):
         self.s = settings
         self.cache = cache
         self.env = settings.jira_env
-        self.provider = self._make_provider()
+        # provider 는 lazy 생성 — 임포트/기동 시 Chrome 을 띄우거나 세션 없음으로 크래시하지 않는다.
+        self._provider = None
+        self._provider_built = False
+
+    @property
+    def provider(self):
+        if not self._provider_built:
+            self._provider = self._make_provider()
+            self._provider_built = True
+        return self._provider
 
     def _make_provider(self):
         if self.env == "local":
@@ -44,9 +96,44 @@ class JiraClient:
             return BasicAuthProvider(self.s.jira_base, self.s.jira_user,
                                      self.s.jira_token, self.s.jira_auth)
         if self.env == "prod":
+            # 세션 없으면 SsoSessionProvider 가 LoginRequired 를 던짐 → 라우트가 needLogin 처리.
             from .auth.sso_session import SsoSessionProvider
-            return SsoSessionProvider(self.s.jira_base, self.s.jira_state_path)
+            return SsoSessionProvider(self.s.jira_base, self._state_path())
         return None   # mock
+
+    def _state_path(self):
+        """세션 파일 절대 경로 (상대면 APP_ROOT 기준 — run.py 의 존재검사와 일치)."""
+        from pathlib import Path
+        from .settings import APP_ROOT
+        p = Path(self.s.jira_state_path)
+        return str(p if p.is_absolute() else APP_ROOT / p)
+
+    def needs_login(self):
+        """prod 이고 세션 파일이 없으면 True (mock/local 은 항상 False)."""
+        if self.env != "prod":
+            return False
+        from pathlib import Path
+        return not Path(self._state_path()).exists()
+
+    def reset_provider(self):
+        """세션 갱신 후 다음 호출 때 새 세션으로 provider 를 재생성하도록 초기화."""
+        if self._provider is not None:
+            try:
+                self._provider.close()
+            except Exception:
+                pass
+        self._provider = None
+        self._provider_built = False
+
+    def login(self, timeout=300):
+        """[prod] 설치된 Chrome 을 띄워 SSO 로그인(폴링 감지) 후 세션 저장. 성공 시 provider 재설정."""
+        if self.env != "prod":
+            return True
+        from .auth.sso_session import login_wait
+        ok = login_wait(self.s.jira_base, self._state_path(), timeout=timeout)
+        if ok:
+            self.reset_provider()
+        return ok
 
     def _resolve(self, epic_key):
         """epic 키 그대로 (wbs_config 가 실 티켓 DL-xxxx 사용 — 논리 id 매핑 없음)."""
@@ -117,6 +204,31 @@ class JiraClient:
                 pass
         return [_normalize_issue(it, sp) for it in raw]
 
+    def epic_tree(self, epic_key):
+        """Epic 자식(Story/Task/Bug) + 각 자식의 Sub-Task — WBS Gantt 다계층 트리(표시용).
+        같은 티켓 단위 캐시(epic_children/issue)를 재사용하므로 추가 상위호출 거의 없음."""
+        real = self._resolve(epic_key)
+        return self.cache.get_or_set(
+            f"epic_tree:{self.env}:{real}", self.s.cache_ttl_seconds,
+            lambda: self._build_epic_tree(real))[0]
+
+    def _build_epic_tree(self, epic_key):
+        sp = self.s.sp_field_id
+        if self.env == "mock":
+            raws = mockdata.epic_raw_children(epic_key)
+        else:
+            raws = self._search(f'"Epic Link" = {epic_key}',
+                                cache_key=f"epic_children:{self.env}:{epic_key}")
+            if not raws:
+                try:  # 폴백: Agile API
+                    data = self.provider.get_json(
+                        f"/rest/agile/1.0/epic/{epic_key}/issue",
+                        params={"fields": self._issue_fields(), "maxResults": 100})
+                    raws = data.get("issues", [])
+                except Exception:
+                    raws = []
+        return [_display_node(it, sp, with_subs=True) for it in raws]
+
     def epic_name(self, epic_key):
         """Epic 이름(summary) — Jira/world 에서. (config 엔 이름 없음)"""
         if self.env == "mock":
@@ -133,11 +245,8 @@ class JiraClient:
         for w in plan["wbs"]:
             for e in w["epics"]:
                 k = e["key"]
-                if k in out:
-                    continue
-                pr = progress.epic_progress(self.epic_issues(k))
-                pr["name"] = self.epic_name(k)
-                out[k] = pr
+                if k not in out:
+                    out[k] = self.epic_progress_one(k)
         return out
 
     # ── 기능2: PMO_VIT 현안 ──
@@ -166,6 +275,9 @@ class JiraClient:
         comps = f.get("components") or []
         status = f.get("status") or {}
         assignee = f.get("assignee") or {}
+        cat = _norm_cat((status.get("statusCategory") or {}).get("key"))
+        created = (f.get("created") or "")[:10] or None
+        updated = (f.get("updated") or "")[:10] or None
         ancestors = []
         if f.get("parent"):
             ancestors.append(f["parent"].get("key"))
@@ -176,10 +288,10 @@ class JiraClient:
             "type": (f.get("issuetype") or {}).get("name", ""),
             "module": comps[0]["name"] if comps else "Module 미지정",
             "assignee": assignee.get("displayName") or assignee.get("name"),
-            "start": (f.get("created") or "")[:10] or None,
+            "start": created, "created": created,
+            "started": _started_from(created, updated, cat), "updated": updated,
             "due": f.get("duedate"),
-            "statusCategory": _norm_cat((status.get("statusCategory") or {}).get("key")),
-            "status": status.get("name", ""),
+            "statusCategory": cat, "status": status.get("name", ""),
             "ancestors": [a for a in ancestors if a],
         }
 
@@ -191,8 +303,8 @@ class JiraClient:
             "type": (f.get("issuetype") or {}).get("name", ""),
             "statusCategory": _norm_cat(((f.get("status") or {}).get("statusCategory") or {}).get("key")),
             "status": ((f.get("status") or {}).get("name") or ""),
-            "created": (f.get("created") or "")[:10] or None,
-            "resolved": (f.get("resolutiondate") or "")[:10] or None,
+            "created": f.get("created") or None,          # 전체 datetime 유지(뉴스 시간표시)
+            "resolved": f.get("resolutiondate") or None,
             "children": [],
         }
         # 하위(Sub-task)도 개별 티켓으로 조회 → 티켓 단위 캐시
@@ -230,6 +342,24 @@ class JiraClient:
                 "text": (c.get("body") or "")[:200],
             } for c in data.get("comments", [])[:limit]]
         return self.cache.get_or_set(f"comments:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+
+    # ── 범용 단일 리소스 (env 무관 — /api/issue·/api/epic 리소스 엔드포인트용) ──
+    def issue_detail(self, key):
+        """단일 티켓 상세 노드(요약·타입·상태·일정·SP + Sub-Task). 없으면 None."""
+        raw = mockdata.raw_issue(key) if self.env == "mock" else self.get_issue(key)
+        return _display_node(raw, self.s.sp_field_id, with_subs=True) if raw else None
+
+    def issue_comments(self, key, limit=5):
+        """단일 티켓 코멘트 — mock/local/prod 동일 형태."""
+        if self.env == "mock":
+            return mockdata.issue_comments(key, limit)
+        return self._issue_comments(key, limit)
+
+    def epic_progress_one(self, key):
+        """단일 Epic 진척률 {doneSp,totalSp,mockSp,progressPct,name}."""
+        pr = progress.epic_progress(self.epic_issues(key))
+        pr["name"] = self.epic_name(key)
+        return pr
 
     # ── 기능3: 인력 워크로드 / 활동 ──
     def workload(self, plan, people):
