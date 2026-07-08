@@ -49,16 +49,16 @@
 .cmt .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* 소속 티켓 트리: 각 티켓 = 하나의 라운딩 박스(카드) [타입·번호·이름·상태]. 레벨별 계단식 들여쓰기 + 안내선 */
-.tnode { display: flex; align-items: stretch; font-size: 12px; min-height: 26px; }
+.tnode { display: flex; align-items: stretch; font-size: 12px; min-height: 34px; }
 .tnode .typc { display: flex; align-items: stretch; flex: 0 0 auto; }   /* 안내선 (레벨 들여쓰기) */
 .tcard { display: inline-flex; align-items: center; gap: 7px; align-self: center; min-width: 0;
-         padding: 2px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); box-shadow: var(--shadow); }
+         padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); box-shadow: var(--shadow); }
 .tcard .tbadge { flex: 0 0 auto; }
 .tcard .ky { flex: 0 0 auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .tcard .sm { flex: 0 1 auto; min-width: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .tcard .pill { flex: 0 0 auto; }
 .tnode .pg { align-self: center; margin-left: 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
-.tg { flex: 0 0 auto; width: 12px; align-self: stretch; position: relative; }
-.tg.v::before, .tg.node::before { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; border-left: 1px solid color-mix(in srgb, var(--muted) 50%, transparent); }
+.tg { flex: 0 0 auto; width: 22px; align-self: stretch; position: relative; }   /* 레벨당 들여쓰기 폭 */
+.tg.v::before, .tg.node::before { content: ""; position: absolute; left: 9px; top: 0; bottom: 0; border-left: 1px solid color-mix(in srgb, var(--muted) 50%, transparent); }
 .tg.node.last::before { bottom: auto; height: 50%; }
-.tg.node::after { content: ""; position: absolute; left: 7px; top: 50%; width: 8px; border-top: 1px solid color-mix(in srgb, var(--muted) 50%, transparent); }
+.tg.node::after { content: ""; position: absolute; left: 9px; right: 0; top: 50%; border-top: 1px solid color-mix(in srgb, var(--muted) 50%, transparent); }   /* 엘보 → 카드까지 닿음 */
