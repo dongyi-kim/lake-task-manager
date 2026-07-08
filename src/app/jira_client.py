@@ -431,28 +431,38 @@ class JiraClient:
                 "confluence": self._fetch_confluence(user)}
 
     def _parse_activity(self, user, limit=20):
+        """실 Jira Activity Streams ATOM 파싱: category term=kind, alternate link=/browse/KEY,
+        activity:object/summary=요약, updated=일시. (title 은 HTML 이라 요약원이 아님 — object/summary 사용)"""
         import re as _re
         import xml.etree.ElementTree as ET
-        ns = "{http://www.w3.org/2005/Atom}"
+        A = "{http://www.w3.org/2005/Atom}"          # Atom
+        V = "{http://activitystrea.ms/spec/1.0/}"    # activity
         out = []
         try:
             xml = self.provider.get_text("/activity",
                                          params={"maxResults": limit, "streams": f"user IS {user}"})
             root = ET.fromstring(xml)
-            for e in root.findall(f"{ns}entry"):
-                title = (e.findtext(f"{ns}title") or "").strip()
-                cat = e.find(f"{ns}category")
+            for e in root.findall(f"{A}entry"):
+                cat = e.find(f"{A}category")
+                kind = cat.get("term") if cat is not None else ""
                 key = ""
-                for ln in e.findall(f"{ns}link"):
+                for ln in e.findall(f"{A}link"):
                     if ln.get("rel") == "alternate":
-                        m = _re.search(r"/browse/([A-Z0-9-]+)", ln.get("href") or "")
+                        m = _re.search(r"/browse/([A-Z][A-Z0-9]+-\d+)", ln.get("href") or "")
                         if m:
                             key = m.group(1)
+                obj = e.find(f"{V}object")
+                summary = ""
+                if obj is not None:
+                    summary = (obj.findtext(f"{A}summary") or "").strip()
+                    if not key:                       # 폴백: activity:object/title = KEY
+                        key = (obj.findtext(f"{A}title") or "").strip()
+                if not summary:                       # 폴백: HTML title 태그 제거
+                    t = _re.sub(r"<[^>]+>", "", (e.findtext(f"{A}title") or ""))
+                    summary = t.split(" - ", 1)[1].strip() if " - " in t else t.strip()
                 out.append({
-                    "date": (e.findtext(f"{ns}updated") or ""),
-                    "kind": cat.get("term") if cat is not None else "",
-                    "key": key,
-                    "summary": title.split(" - ", 1)[1] if " - " in title else title,
+                    "date": (e.findtext(f"{A}updated") or e.findtext(f"{A}published") or ""),
+                    "kind": kind, "key": key, "summary": summary,
                 })
         except Exception:
             pass

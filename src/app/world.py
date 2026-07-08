@@ -27,7 +27,9 @@ _JIRA_CAT = {
     "inprogress": {"id": 4, "key": "indeterminate", "colorName": "yellow", "name": "In Progress"},
     "done": {"id": 3, "key": "done", "colorName": "green", "name": "Done"},
 }
-# 사내 이슈타입: Bug, Epic, Improvement, New Feature, Story, Task, Sub-Task
+# 사내 이슈타입: Bug, Epic, Improvement, New Feature, Story, Task, Sub-Task (id 는 fake /issuetype 와 일치)
+_TYPE_ID = {"Bug": "1", "Epic": "2", "Improvement": "3", "New Feature": "4",
+            "Story": "5", "Task": "6", "Sub-Task": "7"}
 SUBTASK_TYPE = "Sub-Task"
 _STORYLIKE = {"Story", "Task", "Improvement", "New Feature"}   # SP 보유 + subtask 가능
 _CHILD_TYPES = ["Story", "Task", "Bug", "Improvement", "New Feature"]
@@ -62,6 +64,11 @@ def _shash(s):
     return h
 
 
+def _iid(key):
+    """이슈 키 → 결정적 숫자 id(실 Jira issue.id 형태). fake server 의 _iid 와 동일 규칙."""
+    return str(int(hashlib.md5(key.encode()).hexdigest()[:8], 16))
+
+
 class World:
     def __init__(self, plan, people, today):
         self.today = today
@@ -73,6 +80,8 @@ class World:
         self.epic_link_field = s.epic_link_field_id
 
         self.modules = list(plan["modules"])
+        # 컴포넌트 id 맵 (fake /project/{k}/components 의 id 규칙 100+idx 와 일치)
+        self._comp_ids = {m: str(100 + i) for i, m in enumerate(self.modules + ["사용자 VoC"])}
         self.users = self._make_users()
         self.issues = {}                 # key -> canonical issue
         self._counter = 5000             # 생성 키 DL-5001+ (config epic id DL-1xx 와 충돌 회피)
@@ -348,23 +357,42 @@ class World:
     # ── Jira REST 직렬화 (실 Jira DC 8.20.8 형태) ──
     def _status_obj(self, cat, name):
         jc = _JIRA_CAT[cat]
-        return {"id": _STATUS_ID.get(name, "1"), "name": name,
-                "statusCategory": {"id": jc["id"], "key": jc["key"],
+        sid = _STATUS_ID.get(name, "1")
+        return {"self": f"/rest/api/2/status/{sid}", "description": "",
+                "iconUrl": f"/images/icons/statuses/{jc['key']}.png",
+                "name": name, "id": sid,
+                "statusCategory": {"self": f"/rest/api/2/statuscategory/{jc['id']}",
+                                   "id": jc["id"], "key": jc["key"],
                                    "colorName": jc["colorName"], "name": jc["name"]}}
+
+    def _issuetype_obj(self, name):
+        tid = _TYPE_ID.get(name, "0")
+        slug = name.lower().replace(" ", "").replace("-", "")
+        return {"self": f"/rest/api/2/issuetype/{tid}", "id": tid, "description": "",
+                "iconUrl": f"/secure/viewavatar?avatarType=issuetype&avatarId=10300&type={slug}",
+                "name": name, "subtask": name == SUBTASK_TYPE, "avatarId": 10300}
 
     def _user_obj(self, uid):
         u = self.users.get(uid, {"name": uid, "displayName": uid})
-        return {"name": u["name"], "key": u["name"], "displayName": u["displayName"],
-                "emailAddress": f"{u['name']}@example.com", "active": True}
+        n = u["name"]
+        return {"self": f"/rest/api/2/user?username={n}",
+                "name": n, "key": n, "emailAddress": f"{n}@example.com",
+                "avatarUrls": {
+                    "48x48": f"/secure/useravatar?ownerId={n}&avatarId=10122",
+                    "32x32": f"/secure/useravatar?size=medium&ownerId={n}&avatarId=10122",
+                    "24x24": f"/secure/useravatar?size=small&ownerId={n}&avatarId=10122",
+                    "16x16": f"/secure/useravatar?size=xsmall&ownerId={n}&avatarId=10122"},
+                "displayName": u["displayName"], "active": True, "timeZone": "Asia/Seoul"}
 
     def jira_fields(self, it):
         f = {
             "summary": it["summary"], "description": it["description"],
-            "issuetype": {"name": it["type"], "subtask": it["type"] == SUBTASK_TYPE},
+            "issuetype": self._issuetype_obj(it["type"]),
             "status": self._status_obj(it["statusCategory"], it["statusName"]),
             "assignee": self._user_obj(it["assignee"]),
             "reporter": self._user_obj(it["reporter"]),
-            "components": [{"name": it["component"]}],
+            "components": [{"self": f"/rest/api/2/component/{self._comp_ids.get(it['component'], '0')}",
+                            "id": self._comp_ids.get(it["component"], "0"), "name": it["component"]}],
             "labels": it["labels"],
             "created": self._dt(it["created"], it.get("tcreated")),
             "updated": self._dt(it["updated"], it.get("tupdated")),
@@ -376,14 +404,14 @@ class World:
         if it["parentKey"]:
             p = self.issues.get(it["parentKey"])
             if p:
-                f["parent"] = {"key": p["key"], "fields": {
+                f["parent"] = {"id": _iid(p["key"]), "key": p["key"], "fields": {
                     "summary": p["summary"],
                     "status": self._status_obj(p["statusCategory"], p["statusName"]),
-                    "issuetype": {"name": p["type"]}}}
-        f["subtasks"] = [{"key": sk, "fields": {
+                    "issuetype": self._issuetype_obj(p["type"])}}
+        f["subtasks"] = [{"id": _iid(sk), "key": sk, "fields": {
             "summary": self.issues[sk]["summary"],
             "status": self._status_obj(self.issues[sk]["statusCategory"], self.issues[sk]["statusName"]),
-            "issuetype": {"name": SUBTASK_TYPE, "subtask": True}}}
+            "issuetype": self._issuetype_obj(self.issues[sk]["type"])}}
             for sk in it["subtasks"] if sk in self.issues]
         return f
 
@@ -397,11 +425,12 @@ class World:
             return []
         out = []
         for i, c in enumerate(it["comments"]):
-            au = self.users.get(c["author"], {"name": c["author"], "displayName": c["author"]})
-            out.append({"id": f"{key}-c{i}",
-                        "author": {"name": au["name"], "displayName": au["displayName"]},
+            au = self._user_obj(c["author"])
+            when = self._dt(c["created"])
+            out.append({"self": f"/rest/api/2/issue/{key}/comment/{key}-c{i}",
+                        "id": f"{key}-c{i}", "author": au, "updateAuthor": au,
                         "body": f"({c['kind']}) {c['text']}",
-                        "created": self._dt(c["created"]), "updated": self._dt(c["created"])})
+                        "created": when, "updated": when})
         out.sort(key=lambda c: c["created"], reverse=True)
         return out
 

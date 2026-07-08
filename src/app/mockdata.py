@@ -143,8 +143,9 @@ def workload_people(plan, people):
 # ── 기능3: 인력 활동 (Jira 이벤트 + Confluence) ──
 def activity(user):
     w = _w()
+    # 캡 20 = 클라이언트 _parse_activity limit (local 파리티). 프론트가 다시 [:10] 로 자른다.
     jira = [{"date": w._dt(e["date"], e.get("time")), "kind": e["kind"], "key": e["key"], "summary": e["summary"]}
-            for e in w.activity.get(user, [])[:12]]
+            for e in w.activity.get(user, [])[:20]]
     conf = [{"date": w._dt(p["date"], p.get("time")), "title": p["title"], "space": p["space"]}
             for p in w.confluence.get(user, [])]
     return {"user": user, "jira": jira, "confluence": conf}
