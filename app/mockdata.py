@@ -142,6 +142,26 @@ def workload_people(plan, people):
     return out
 
 
+def workload_tickets(user):
+    """인력 상세용: 진행중 / 최근7일 완료 티켓 리스트 (카운트와 동일 필터·기준)."""
+    w = _w()
+    today = w.today
+    ip, dn = [], []
+    for k in w.by_assignee.get(user, []):
+        it = w.issues[k]
+        if wl_category(it["component"], it["type"]) is None:
+            continue
+        row = {"key": k, "summary": it["summary"], "type": it["type"],
+               "status": it["statusName"], "statusCategory": it["statusCategory"],
+               "due": it["due"].isoformat() if it.get("due") else None, "resolved": None}
+        if it["statusCategory"] == "inprogress":
+            ip.append(row)
+        elif it["statusCategory"] == "done" and it["resolved"] and (today - it["resolved"]).days <= 7:
+            row["resolved"] = w._dt(it["resolved"], it.get("tresolved"))
+            dn.append(row)
+    return {"user": user, "inProgress": ip, "done7d": dn}
+
+
 # ── 기능3: 인력 활동 (Jira 이벤트 + Confluence) ──
 def activity(user):
     w = _w()

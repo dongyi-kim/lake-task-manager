@@ -29,5 +29,6 @@ export const api = {
   vit: () => get("/api/vit"),
   vitDetail: (key) => get("/api/vit/" + encodeURIComponent(key)),
   workload: () => get("/api/workload"),
+  workloadDetail: (user) => get("/api/workload/" + encodeURIComponent(user)),
   activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
 };

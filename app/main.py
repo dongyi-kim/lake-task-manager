@@ -111,6 +111,12 @@ def api_workload():
     return JSONResponse(workload.build_workload(_client, plan, load_people(), jira_base=_settings.jira_base))
 
 
+@app.get("/api/workload/{user}")
+def api_workload_tickets(user: str):
+    """인력 상세 — 진행중 / 최근7일 완료 티켓 리스트 (프론트 [+] 확장)."""
+    return JSONResponse(_client.workload_tickets(user))
+
+
 @app.get("/api/activity/{user}")
 def api_activity(user: str):
     return JSONResponse(_client.activity(user))

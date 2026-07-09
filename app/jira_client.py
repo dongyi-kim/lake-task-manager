@@ -434,6 +434,40 @@ class JiraClient:
         return {module: [by_pid[pid] for pid in people.get(module, []) if pid in by_pid]
                 for module in plan["modules"]}
 
+    def _wl_ticket(self, it):
+        """워크로드 상세용 티켓 투영: 번호·제목·타입·상태·마감·완료일시."""
+        f = it.get("fields", {}) or {}
+        st = f.get("status") or {}
+        return {
+            "key": it.get("key", ""),
+            "summary": f.get("summary", ""),
+            "type": (f.get("issuetype") or {}).get("name", ""),
+            "status": st.get("name", ""),
+            "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
+            "due": f.get("duedate") or None,
+            "resolved": f.get("resolutiondate") or None,
+        }
+
+    def workload_tickets(self, user):
+        """인력 상세: 진행중 / 최근7일 완료 **티켓 리스트** (카운트 화면의 [+] 확장용)."""
+        if self.env == "mock":
+            return mockdata.workload_tickets(user)
+        key = f"workload_tickets:{self.env}:{user}"
+        return self.cache.get_or_set(key, self.s.cache_ttl_seconds,
+                                     lambda: self._fetch_workload_tickets(user))[0]
+
+    def _fetch_workload_tickets(self, user):
+        def keep(it):   # 카운트와 동일 필터: Task성/VoC성만 (Epic·Story·Bug 제외)
+            f = it.get("fields", {}) or {}
+            comps = [c.get("name") for c in (f.get("components") or [])]
+            comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
+            return mockdata.wl_category(comp, (f.get("issuetype") or {}).get("name", "")) is not None
+        ip = self._search(f'assignee = "{user}" AND statusCategory = "In Progress"', max_results=200)
+        dn = self._search(f'assignee = "{user}" AND statusCategory = Done AND resolved >= -7d', max_results=200)
+        return {"user": user,
+                "inProgress": [self._wl_ticket(it) for it in ip if keep(it)],
+                "done7d": [self._wl_ticket(it) for it in dn if keep(it)]}
+
     def activity(self, user):
         if self.env == "mock":
             return mockdata.activity(user)

@@ -27,12 +27,20 @@
 
 .plus { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); border-radius: 7px; width: 30px; height: 26px; cursor: pointer; font-size: 14px; }
 .plus:hover { color: var(--text); }
-.act { padding: 6px 16px 12px 40px; background: var(--panel-2); border-top: 1px solid var(--border); }
-.acols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
-@media (max-width: 900px) { .acols { grid-template-columns: 1fr; } }
-.sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 5px; }
-.aev { display: grid; grid-template-columns: 100px 58px 1fr; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 2px 0; }
-.aev.conf { grid-template-columns: 100px 1fr; }   /* Confluence: 날짜시간 + 제목(줄바꿈 방지) */
-.aev .d { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.aev .kd { color: var(--muted); font-size: 11px; }
-.aev > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.act { padding: 8px 16px 14px 40px; background: var(--panel-2); border-top: 1px solid var(--border); }
+.tcols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+@media (max-width: 900px) { .tcols { grid-template-columns: 1fr; } }
+.sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .3px; }
+.sec-t > b { color: var(--text); }
+
+/* 티켓 카드 — 현안(VIT) 트리 카드와 유사한 디자인 */
+.wtk { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 6px 9px; margin-bottom: 6px; }
+.wtk.done { opacity: .82; }
+.wtk .l1 { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.wtk .ky { font-weight: 600; flex: none; }
+.wtk .ky .lnk { font-weight: 600; }
+.wtk .sm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.wtk .pill { flex: none; white-space: nowrap; }
+.wtk .meta { margin-top: 3px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.wtk .meta.nodue { font-style: italic; opacity: .8; }
+.wtk .meta .doneat { color: var(--st-done); }

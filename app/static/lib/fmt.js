@@ -17,6 +17,15 @@ export function ymdhm(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso);
   return m ? (m[1].slice(2) + "." + m[2] + "." + m[3] + " " + m[4] + ":" + m[5]) : ymd(iso);
 }
+// 마감까지 남은 일정 → "D-Day" | "D-N"(남음) | "D+N"(초과)
+export function dday(iso) {
+  if (!iso) return "";
+  const due = new Date(iso.substring(0, 10) + "T00:00:00");
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((due - today) / 86400000);
+  if (isNaN(diff)) return "";
+  return diff === 0 ? "D-Day" : (diff > 0 ? "D-" + diff : "D+" + (-diff));
+}
 // Jira 티켓 링크 (jiraBase 있으면 <a>, 없으면 키 텍스트)
 export function tkt(key, base) {
   if (!key) return "";

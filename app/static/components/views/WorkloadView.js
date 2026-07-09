@@ -3,15 +3,15 @@
 // 인력 = 본명(displayName 첫 어절) + 개발/운영 뱃지(id 사번 x*/i*). ProgressBar 공유. updated: 2026-07-08
 import { api } from "../../lib/api.js";
 import { moduleColor } from "../../lib/colors.js";
-import { ymdhm, esc, tkt } from "../../lib/fmt.js";
+import { ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";
 import ProgressBar from "../ui/ProgressBar.js";
-
-const KIND = { created: "생성", updated: "수정", transitioned: "상태변경", commented: "코멘트", "logged work": "작업기록", resolved: "해결" };
+import TypeBadge from "../ui/TypeBadge.js";
+import StatusPill from "../ui/StatusPill.js";
 
 export default {
   name: "WorkloadView",
-  components: { ProgressBar },
-  data() { return { d: null, err: "", open: {}, act: {}, actOpen: {}, linePos: {} }; },
+  components: { ProgressBar, TypeBadge, StatusPill },
+  data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {} }; },
   created() { this.bodyRefs = {}; },   // 비반응 DOM 참조(모듈 body)
   async mounted() {
     try { this.d = await api.workload(); this.d.modules.forEach((m) => { this.open[m.module] = true; }); this.scheduleMeasure(); }
@@ -69,17 +69,14 @@ export default {
     },
     async toggleAct(id) {
       this.actOpen[id] = !this.actOpen[id];
-      if (this.actOpen[id] && !this.act[id]) {
-        try { this.act[id] = await api.activity(id); } catch (e) { this.act[id] = { jira: [], confluence: [], error: e.message }; }
+      if (this.actOpen[id] && !this.tkd[id]) {
+        try { this.tkd[id] = await api.workloadDetail(id); }
+        catch (e) { this.tkd[id] = { inProgress: [], done7d: [], error: e.message }; }
       }
     },
-    jiraLine(e) {
-      return "<span class='d'>" + ymdhm(e.date) + "</span><span class='kd'>" + (KIND[e.kind] || e.kind) + "</span>"
-        + "<span>" + tkt(e.key, this.d.jiraBase) + " " + esc(e.summary || "") + "</span>";
-    },
-    confLine(e) {
-      return "<span class='d'>" + ymdhm(e.date) + "</span><span>" + esc(e.title || "") + " <span class='kd'>[" + esc(e.space || "") + "]</span></span>";
-    },
+    tk(key) { return tkt(key, this.d && this.d.jiraBase); },
+    dueLine(t) { return t.due ? ("Due Date : " + ymd(t.due) + " (" + dday(t.due) + ")") : "마감 설정되지 않음"; },
+    doneLine(t) { return t.resolved ? ("완료 " + ymdhm(t.resolved)) : ""; },
   },
   template: `
   <div>
@@ -127,21 +124,32 @@ export default {
                 <button class="plus" @click="toggleAct(p.id)">{{ actOpen[p.id] ? "−" : "+" }}</button>
               </div>
               <div v-if="actOpen[p.id]" class="act">
-                <div v-if="!act[p.id]" class="loading">불러오는 중…</div>
-                <div v-else class="acols">
+                <div v-if="!tkd[p.id]" class="loading">불러오는 중…</div>
+                <div v-else-if="tkd[p.id].error" class="muted">불러오지 못했습니다: {{ tkd[p.id].error }}</div>
+                <div v-else class="tcols">
                   <div>
-                    <div class="sec-t">Jira 최근 활동</div>
-                    <div v-if="act[p.id].jira && act[p.id].jira.length">
-                      <div v-for="(e, k) in act[p.id].jira.slice(0, 10)" :key="k" class="aev" v-html="jiraLine(e)"></div>
+                    <div class="sec-t">진행 중 <b>{{ tkd[p.id].inProgress.length }}</b></div>
+                    <div v-for="t in tkd[p.id].inProgress" :key="t.key" class="wtk">
+                      <div class="l1">
+                        <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
+                        <span class="sm">{{ t.summary }}</span>
+                        <StatusPill :cat="t.statusCategory" :label="t.status" />
+                      </div>
+                      <div class="meta" :class="{ nodue: !t.due }">{{ dueLine(t) }}</div>
                     </div>
-                    <div v-else class="muted">최근 활동 없음</div>
+                    <div v-if="!tkd[p.id].inProgress.length" class="muted">진행 중 티켓 없음</div>
                   </div>
                   <div>
-                    <div class="sec-t">Confluence 최근</div>
-                    <div v-if="act[p.id].confluence && act[p.id].confluence.length">
-                      <div v-for="(e, k) in act[p.id].confluence" :key="k" class="aev conf" v-html="confLine(e)"></div>
+                    <div class="sec-t">최근 7일 완료 <b>{{ tkd[p.id].done7d.length }}</b></div>
+                    <div v-for="t in tkd[p.id].done7d" :key="t.key" class="wtk done">
+                      <div class="l1">
+                        <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
+                        <span class="sm">{{ t.summary }}</span>
+                        <StatusPill :cat="t.statusCategory" :label="t.status" />
+                      </div>
+                      <div class="meta" :class="{ nodue: !t.due }">{{ dueLine(t) }} <span class="doneat">· {{ doneLine(t) }}</span></div>
                     </div>
-                    <div v-else class="muted">최근 활동 없음</div>
+                    <div v-if="!tkd[p.id].done7d.length" class="muted">최근 7일 완료 티켓 없음</div>
                   </div>
                 </div>
               </div>
