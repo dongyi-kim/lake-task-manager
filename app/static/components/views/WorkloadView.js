@@ -69,9 +69,22 @@ export default {
     async toggleAct(id) {
       this.actOpen[id] = !this.actOpen[id];
       if (this.actOpen[id] && !this.tkd[id]) {
-        try { this.tkd[id] = await api.workloadDetail(id); }
-        catch (e) { this.tkd[id] = { inProgress: [], done7d: [], error: e.message }; }
+        try {
+          const d = await api.workloadDetail(id);
+          // 진행중: 마감 임박/초과일수록 상위(D-day 오름차순, 마감없음은 맨 뒤)
+          d.inProgress.sort((a, b) => this.dueRank(a) - this.dueRank(b));
+          // 완료: 최근 완료일수록 상위(resolved 내림차순)
+          d.done7d.sort((a, b) => (b.resolved || "").localeCompare(a.resolved || ""));
+          this.tkd[id] = d;
+        } catch (e) { this.tkd[id] = { inProgress: [], done7d: [], error: e.message }; }
       }
+    },
+    dueRank(t) {
+      // 남은 일수(D-day). 음수(초과)일수록 작아 상위. 마감 없으면 맨 뒤.
+      if (!t.due) return Infinity;
+      const due = new Date(t.due.substring(0, 10) + "T00:00:00");
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      return Math.round((due - today) / 86400000);
     },
     tk(key) { return tkt(key, this.d && this.d.jiraBase); },
     fy(s) { return ymd(s); },
@@ -118,8 +131,8 @@ export default {
             <template v-if="linePos[m.module]">
               <div class="mavg-line" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].top + 'px' }"></div>
               <div class="mavg-line" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].top + 'px' }"></div>
-              <div class="mavg-num" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].hy + 'px' }">평균 {{ m.avgInProgress }}</div>
-              <div class="mavg-num" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].hy + 'px' }">평균 {{ m.avgDone7d }}</div>
+              <div class="mavg-num" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ m.avgInProgress }}</div>
+              <div class="mavg-num" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ m.avgDone7d }}</div>
             </template>
             <template v-for="p in m.people" :key="p.id">
               <div class="prow">

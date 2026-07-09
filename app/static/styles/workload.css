@@ -18,10 +18,12 @@
 .wbars { display: flex; gap: 18px; min-width: 0; }
 .wbars > .wside { flex: 1; min-width: 0; }        /* ProgressBar(.pbar-wrap) 또는 헤더 라벨 */
 
-/* 모듈 평균 — 모듈 전체 막대를 관통하는 단일 세로선 + 헤더행 평균 수치(위치 정렬) */
+/* 모듈 평균 — 헤더행 평균 수치 + 세로 가이드선. 선은 progress bar 채움(.pbar-seg) 뒤에 둔다
+ * (빈 트랙 위에는 보이고, 색 채움은 선을 덮음 → 막대를 가로지르지 않게). 라벨(.mavg-num)은 맨 위. */
 .mod-body { position: relative; }
-.mavg-line { position: absolute; bottom: 0; width: 2px; z-index: 3; background: #1f2937; box-shadow: 0 0 0 1px rgba(255,255,255,.8); pointer-events: none; }
-.mavg-line::after { content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: #1f2937; }
+.mavg-line { position: absolute; bottom: 0; width: 2px; z-index: 1; background: var(--muted); opacity: .55; pointer-events: none; }
+.mavg-line::after { content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: var(--muted); }
+.prow .pbar-seg { position: relative; z-index: 2; }   /* 채움이 가이드선을 덮음 */
 .mavg-num { position: absolute; transform: translate(-50%, -50%); z-index: 4; font-size: 10.5px; font-weight: 700; color: var(--text);
             background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; white-space: nowrap; pointer-events: none; }
 
