@@ -68,28 +68,39 @@ def _do_login_in_window(s, page, context, appmain, timeout=300):
 
 
 def _run_app_window(s, headless=False):
-    """앱 창(Playwright Chromium)으로 실행. 로그인도 같은 창에서. 창 닫으면 서버 종료 후 반환."""
+    """앱 창(Playwright Chromium, --app 모드=주소창 없는 앱 창)으로 실행. 로그인도 같은 창에서.
+    창 닫으면 서버 종료 후 반환. 프로필은 임시폴더(정리)라 실행 폴더(cwd)에 아무것도 안 남긴다."""
+    import shutil
+    import tempfile
     url = f"http://localhost:{s.app_port}/"
     server = _serve_bg(s)
     import app.main as appmain
     appmain._window_login = True                       # /api/login 이 이 창에서 로그인하도록
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
-    browser = p.chromium.launch(
+    udd = tempfile.mkdtemp(prefix="ltm-appwin-")       # 앱 창 전용 임시 프로필 (cwd 오염 방지)
+    context = p.chromium.launch_persistent_context(
+        user_data_dir=udd,
         headless=headless,
         ignore_default_args=["--enable-automation"],   # '자동화 제어 중' 안내바 제거
-        args=["--no-first-run", "--no-default-browser-check"],
+        args=["--no-first-run", "--no-default-browser-check", f"--app={url}"],   # 앱 모드
     )
-    context = browser.new_context(no_viewport=True)    # 창 크기에 맞춰 렌더
-    page = context.new_page()
-    page.goto(url, wait_until="domcontentloaded")
+    page = context.pages[0] if context.pages else context.wait_for_event("page")
+    try:
+        page.wait_for_load_state("domcontentloaded")
+    except Exception:
+        pass
     print(f"Lake Task Manager - {url}  (env={s.jira_env})  [이 창을 닫으면 종료됩니다]")
     # 창이 닫힐 때까지 대기. 로그인 요청(_login_requested)이 오면 같은 창에서 SSO 구동.
     try:
-        while browser.is_connected():
-            page.wait_for_timeout(500)
+        while not page.is_closed():
             if appmain._login_requested.is_set():
                 _do_login_in_window(s, page, context, appmain)
+            page.wait_for_timeout(500)
+    except Exception:
+        pass
+    try:
+        context.close()
     except Exception:
         pass
     try:
@@ -97,6 +108,7 @@ def _run_app_window(s, headless=False):
     except Exception:
         pass
     server.should_exit = True
+    shutil.rmtree(udd, ignore_errors=True)             # 임시 프로필 정리
 
 
 def _run_plain(s):
