@@ -61,12 +61,16 @@
 .xbtn:hover { color: var(--text); }
 
 .detail { grid-column: 1 / -1; margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 9px; }
-.dcols { display: grid; grid-template-columns: 1.3fr 1fr; gap: 24px; }
+/* 트리 컬럼은 최소폭 유지(항목 없어도) → 코멘트가 범람하지 않게. 코멘트 컬럼은 0까지 축소 허용 */
+.dcols { display: grid; grid-template-columns: minmax(240px, 1.3fr) minmax(0, 1fr); gap: 24px; }
 @media (max-width: 1000px) { .dcols { grid-template-columns: 1fr; } }
 .sec-t { font-size: 11px; color: var(--muted); margin: 0 0 5px; }
-.cmt { font-size: 12px; padding: 3px 0; border-top: 1px solid var(--border); }
-.cmt .h { color: var(--muted); font-size: 11px; } .cmt .h b { color: var(--text); }
-.cmt .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 코멘트: 이름 · 날짜/시간 · 내용 을 한 흐름으로, 최대 2줄 클램프. (HTML 태그는 스크립트에서 평문 추출) */
+.cmt { font-size: 12px; padding: 4px 0; border-top: 1px solid var(--border); line-height: 1.45;
+       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.cmt .au { color: var(--text); font-weight: 600; margin-right: 5px; }
+.cmt .dt { color: var(--muted); font-size: 11px; margin-right: 6px; font-variant-numeric: tabular-nums; }
+.cmt .tx { color: var(--text); }
 
 /* 소속 티켓 트리: 각 티켓 = 하나의 라운딩 박스(카드) [타입·번호·이름·상태]. 레벨별 계단식 들여쓰기 + 안내선 */
 .tnode { display: flex; align-items: stretch; font-size: 12px; min-height: 34px; }

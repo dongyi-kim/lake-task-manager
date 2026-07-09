@@ -77,7 +77,12 @@ export default {
         + `</span>`
         + `<span class='pg'>${prog}</span>`;
     },
-    cmtText(x) { return esc((x.text || "").replace(/\s*[\r\n]+\s*/g, " ").trim()); },
+    cdate(s) { return ymdhm(s); },
+    cmtText(x) {   // HTML 태그를 렌더도 노출도 안 되게 — 평문만 추출(textContent) + 줄바꿈 접기
+      const d = document.createElement("div");
+      d.innerHTML = x.text || "";
+      return (d.textContent || d.innerText || "").replace(/\s*[\r\n]+\s*/g, " ").trim();
+    },
   },
   template: `
   <div>
@@ -144,10 +149,7 @@ export default {
                 <div>
                   <div class="sec-t">코멘트 (현안 티켓 기준)</div>
                   <template v-if="detail[it.key].comments && detail[it.key].comments.length">
-                    <div v-for="(x, k) in detail[it.key].comments" :key="k" class="cmt">
-                      <div class="h"><b>{{ x.author || "?" }}</b> · {{ md(x.date) }}</div>
-                      <div class="txt" v-html="cmtText(x)"></div>
-                    </div>
+                    <div v-for="(x, k) in detail[it.key].comments" :key="k" class="cmt"><b class="au">{{ x.author || "?" }}</b><span class="dt">{{ cdate(x.date) }}</span><span class="tx">{{ cmtText(x) }}</span></div>
                   </template>
                   <div v-else class="mini muted">코멘트 없음</div>
                 </div>
