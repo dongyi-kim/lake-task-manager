@@ -370,14 +370,26 @@ class JiraClient:
         return self._issue_comments(key, limit)
 
     def _display_name(self, pid):
-        """Jira 사용자 displayName('{본명} {회사}') — `user:{env}:{pid}` 캐시. 실패 시 id 폴백."""
-        def do():
-            try:
-                u = self.provider.get_json("/rest/api/2/user", params={"username": pid})
-                return u.get("displayName") or pid
-            except Exception:
-                return pid
-        return self.cache.get_or_set(f"user:{self.env}:{pid}", self.s.cache_ttl_seconds, do)[0]
+        """Jira 사용자 displayName('{본명} {회사}').
+
+        **성공만 캐시**(user:{env}:{pid}). 실패하면 로그 남기고 id 폴백하되 **캐시하지 않는다**
+        → 일시적 실패(예: 세션 만료)로 username 이 15분간 굳는 문제 방지(다음 호출에 재시도).
+        """
+        ck = f"user:{self.env}:{pid}"
+        hit = self.cache.get(ck)
+        if hit is not None:
+            return hit
+        dn = None
+        try:
+            u = self.provider.get_json("/rest/api/2/user", params={"username": pid})
+            dn = u.get("displayName")
+        except Exception as e:
+            import sys
+            print(f"[workload] displayName lookup failed pid={pid}: {e}", file=sys.stderr)
+        if dn:
+            self.cache.set(ck, dn, self.s.cache_ttl_seconds)
+            return dn
+        return pid
 
     def epic_progress_one(self, key):
         """단일 Epic 진척률 {doneSp,totalSp,mockSp,progressPct,name}."""
@@ -411,11 +423,12 @@ class JiraClient:
             key = f'workload:{self.env}:{pid}'
             bundle, _ = self.cache.get_or_set(key, self.s.cache_ttl_seconds, lambda: {
                 "id": pid,
-                "displayName": self._display_name(pid),
                 "inProgress": counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
                 "done7d": counts(f'assignee = "{pid}" AND statusCategory = Done AND resolved >= -7d'),
             })
-            return bundle
+            # displayName 은 카운트 번들과 분리해 별도 해석(자체 캐시·실패 자가치유)
+            # → 카운트가 캐시돼 있어도 이름은 매번 재해석되어 username 이 굳지 않는다.
+            return dict(bundle, displayName=self._display_name(pid))
         pids = [pid for module in plan["modules"] for pid in people.get(module, [])]
         by_pid = {b["id"]: b for b in self._pmap(pids, person)}   # 인력 단위 병렬
         return {module: [by_pid[pid] for pid in people.get(module, []) if pid in by_pid]
