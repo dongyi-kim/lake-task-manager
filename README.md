@@ -88,34 +88,22 @@ python -m pytest tests/test_rollup.py -q   # 한 파일만
 
 ---
 
-## 5. 빌드 (단일 exe)
+## 5. 배포 (소스 실행)
 
-exe 는 **하나**(`lake-task-manager.exe`)로 통일 — mock·local·prod 를 모두 커버한다(playwright 항상 번들).
-산출·배포는 **배포 repo** `dongyi-kim/lake-task-manager-deploy` 가 관리한다(이 repo 를 submodule 로 핀). 배포 repo 의 `build/` 스크립트를 쓰는 게 정석:
+**exe 빌드는 없다.** 최종 배포는 **배포 repo** `dongyi-kim/lake-task-manager-deploy`(이 repo 를 submodule 로 핀)에서
+**소스를 그대로 실행**한다 — 배포 repo 의 `run.bat` 이 최초 1회 venv + 의존성 + Chromium 을 자동 구성하고 `run.py` 를 띄운다.
 
-```bash
-# 배포 repo 루트에서 (의존성 자동 설치)
-python build/build.py                  # → ./lake-task-manager.exe
-```
-
-submodule 안에서 직접 빌드할 수도 있다:
-
-```powershell
-pip install -r requirements-sso.txt    # playwright 포함(빌드에 필요)
-pyinstaller lake.spec                  # → dist/lake-task-manager.exe
-```
-
-- `static`·코드·playwright 는 exe 내부 번들 / `config/`·cache 는 **exe 옆 외부 파일**.
-- prod 최초 1회 SSO: `lake-task-manager.exe login` (사내 SSO 통과 → `jira_state.json` 저장).
+> 회사 관리형 Chrome 이 SSO 자동화를 막아 exe(playwright channel=chrome) 방식이 깨졌다 →
+> **Playwright 전용 Chromium**(`playwright install chromium`)을 쓰는 소스 실행으로 전환. Chromium 은 프로즌 exe 로 안정적으로 번들하기 어려워 소스 실행이 정석.
 
 ## 6. 릴리즈 (배포 repo)
 
-배포 repo 루트에서 submodule 핀을 옮기고 exe 를 함께 커밋한다:
+배포 repo 루트에서 submodule 핀만 옮겨 커밋한다(빌드 산출물 없음):
 
 ```bash
-python build/build.py --pull                       # 최신 소스로 핀 이동 + 빌드
-git add lake-task-manager lake-task-manager.exe
-git commit -m "release: exe rebuild @<sha>" && git push
+git -C lake-task-manager pull origin main          # 최신 소스로 핀 이동
+git add lake-task-manager
+git commit -m "release: bump source @<sha>" && git push
 ```
 
 ---

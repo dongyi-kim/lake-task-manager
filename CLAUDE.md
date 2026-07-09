@@ -26,7 +26,7 @@ Claude Code가 작업 시 이 맥락을 항상 우선한다.
 
 **확정된 설계 결정:**
 - 구조: **FastAPI 백엔드 + 정적 프론트**. git 공유 로컬 웹앱 (공개 웹서비스 없음).
-- 실행: **단일 exe**(`lake.spec`) — 최종 사용자 무의존. (dev = Fake Jira 서버 `run_fake.py`)
+- 실행: **소스 실행**(배포 repo 의 `run.bat` 이 venv+의존성+Chromium 자동 구성 후 `run.py`). exe 빌드 없음. (dev = Fake Jira 서버 `run_fake.py`)
 - 저장: 매핑/인력/가중치 = **YAML config**(커밋), Jira 캐시/스냅샷 = **SQLite**(gitignore).
 - 3 환경(`JIRA_ENV=mock|local|prod`)에서 **동일 계산 코드**가 돈다.
 

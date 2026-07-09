@@ -1,13 +1,8 @@
-# Lake Task Manager - core app deps
+# Lake Task Manager - core app deps (mock / local)
 fastapi>=0.110
 uvicorn[standard]>=0.29
 requests>=2.31
 PyYAML>=6.0
 
-# Build (single exe) - PyInstaller. Not needed at app runtime, only for packaging.
-#   pyinstaller lake.spec   ->  dist/lake-task-manager.exe
-#   (altgraph / pefile / pyinstaller-hooks-contrib / pywin32-ctypes are pulled in automatically)
-pyinstaller>=6.0
-
-# Prod (SSO) path is separate:  pip install -r requirements-sso.txt
-#   playwright>=1.44  (Chromium not bundled; reuses installed Chrome)
+# Prod (corporate SSO) path additionally needs Playwright:
+#   pip install -r requirements-sso.txt   (then `playwright install chromium`)

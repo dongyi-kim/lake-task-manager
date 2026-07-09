@@ -30,7 +30,7 @@ def _open_browser(url, delay=1.5):
 
 def _sso_login(s):
     from app.auth.sso_session import login
-    login(s.jira_base, s.jira_state_path, s.chrome_user_data_dir, s.chrome_profile)
+    login(s.jira_base, s.jira_state_path)
 
 
 def main():

@@ -132,8 +132,7 @@ class JiraClient:
         if self.env != "prod":
             return True
         from .auth.sso_session import login_wait
-        ok = login_wait(self.s.jira_base, self._state_path(), timeout=timeout,
-                        user_data_dir=self.s.chrome_user_data_dir, profile=self.s.chrome_profile)
+        ok = login_wait(self.s.jira_base, self._state_path(), timeout=timeout)
         if ok:
             self.reset_provider()
         return ok

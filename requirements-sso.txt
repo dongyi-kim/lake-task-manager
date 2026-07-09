@@ -1,4 +1,9 @@
-# Prod (corporate SSO) path only - Playwright session reuse
+# Prod (corporate SSO) path only - Playwright bundled Chromium
 -r requirements.txt
-playwright>=1.44
-# After install: `playwright install chromium` is NOT required (reuses installed Chrome)
+# Pinned for a deterministic Chromium build (so an offline browser copy matches).
+playwright==1.61.0
+# After install: `playwright install chromium`
+# If the corporate network blocks the download CDN, provision the browser offline:
+#   1) On any PC with internet:  pip install playwright==1.61.0 && playwright install chromium
+#   2) Copy  %LOCALAPPDATA%\ms-playwright  to the SAME path on the target PC.
+# Or use a proxy:  set HTTPS_PROXY=http://<proxy>:<port>   before running.
