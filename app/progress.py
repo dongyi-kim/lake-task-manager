@@ -14,6 +14,7 @@ Epic 진척률 — 순수 계산. 네트워크/인증 의존 0.
 """
 
 EXCLUDE_ISSUETYPES = {"Bug", "Ops", "운영"}
+VOC_COMPONENT = "사용자 VoC"     # VoC 성 티켓 — 진척률 계산에서 항상 제외
 MOCK_LABEL = "mock"
 
 
@@ -33,7 +34,10 @@ def epic_progress(issues):
     excluded = 0
     for it in issues:
         itype = it.get("type", "")
-        if itype in EXCLUDE_ISSUETYPES:      # 이중 안전장치
+        if itype in EXCLUDE_ISSUETYPES:      # Bug/Ops (이중 안전장치)
+            excluded += 1
+            continue
+        if it.get("component") == VOC_COMPONENT:   # VoC 성 항상 제외
             excluded += 1
             continue
         sp = sp_of(it)                       # 누락 시 기본값(Bug=0, 나머지=1)

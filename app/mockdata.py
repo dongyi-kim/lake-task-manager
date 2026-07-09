@@ -31,7 +31,8 @@ def epic_issues(epic_key):
     for ck in w.epic_children.get(epic_key, []):
         it = w.issues[ck]
         out.append({"key": ck, "type": it["type"], "sp": it["sp"],
-                    "statusCategory": it["statusCategory"], "labels": it["labels"]})
+                    "statusCategory": it["statusCategory"], "labels": it["labels"],
+                    "component": it.get("component")})
     return out
 
 

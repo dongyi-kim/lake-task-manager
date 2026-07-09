@@ -6,7 +6,7 @@ import { moduleColor } from "../../lib/colors.js";
 
 export default {
   name: "WbsView",
-  data() { return { D: null, err: "", unit: "month", expanded: {}, epicTree: {}, _rt: null, _onResize: null }; },
+  data() { return { D: null, err: "", unit: "month", expanded: {}, epicTree: {}, hideBugVoc: true, _rt: null, _onResize: null }; },
   async mounted() {
     try { this.D = await api.wbs(); this.$nextTick(() => this.renderGantt()); }
     catch (e) { this.err = e.message; }
@@ -41,6 +41,7 @@ export default {
     mcolor(i) { return moduleColor(i); },
     unitLabel(u) { return { day: "일", week: "주", month: "월" }[u]; },
     setUnit(u) { this.unit = u; this.renderGantt(); },
+    toggleBugVoc() { this.hideBugVoc = !this.hideBugVoc; this.renderGantt(); },   // 시각 숨김(계산엔 영향 없음)
     expandAll() { this.D.wbs.forEach((w) => { this.expanded[w.id] = true; }); this.renderGantt(); },
     collapseAll() { this.expanded = {}; this.renderGantt(); },
     async refresh() {
@@ -65,6 +66,8 @@ export default {
       const glabels = R.glabels, gscroll = R.gscroll, taxis = R.taxis, tgrid = R.tgrid, trows = R.trows, gtime = R.gtime;
       if (!glabels) return;
       const expanded = this.expanded, epicTree = this.epicTree, unit = this.unit;
+      const hideBV = this.hideBugVoc;
+      const keep = (n) => !hideBV || (n.type !== "Bug" && n.component !== "사용자 VoC");   // Bug/VoC 시각 숨김
 
       const pct = (n) => Number(n).toFixed(1) + "%";   // 진척률 소수점 1자리 고정
       const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
@@ -130,7 +133,7 @@ export default {
       }
       if (TODAY >= projStart && TODAY <= projEnd) {
         const tl = el("div", "today"); tl.style.left = xpx(TODAY) + "px"; tgrid.appendChild(tl);
-        const tt = el("div", "tk", "오늘"); tt.style.left = xpx(TODAY) + "px"; tt.style.color = "var(--today)"; tt.style.fontWeight = "700"; taxis.appendChild(tt);
+        const tt = el("div", "tk todaylbl", "오늘"); tt.style.left = xpx(TODAY) + "px"; tt.style.color = "var(--today)"; tt.style.fontWeight = "700"; taxis.appendChild(tt);
       }
 
       function schedCells(lr, dates) {
@@ -216,10 +219,14 @@ export default {
       D.modules.forEach((mod, mi) => {
         const m = moduleRollup[mod.id];
         const cvar = "var(--c" + (mi % 7 + 1) + ")";
+        // 모듈 진척률 = 소속 WBS Task 진척률의 단순 평균
+        const mpct = m.wbsIds.length
+          ? m.wbsIds.reduce((a, wid) => a + (wbsById[wid] ? wbsById[wid].progressPct : 0), 0) / m.wbsIds.length : 0;
         const ml = el("div", "lrow mod"); ml.style.height = H.mod + "px";
         ml.appendChild(el("div", "lname",
           "<span class='lc'><span class='mdot' style='background:" + cvar + "'></span>" +
-          "<span class='nm'>" + mod.name + "</span><span class='mc'>" + m.wbsIds.length + " WBS</span></span>"));
+          "<span class='nm'>" + mod.name + "</span><span class='mpct'>" + pct(mpct) + "</span>" +
+          "<span class='mc'>" + m.wbsIds.length + " WBS</span></span>"));
         ml.appendChild(el("div", "lpct", "")); schedCells(ml, null);
         glabels.appendChild(ml);
         const mtr = el("div", "trow mod"); mtr.style.height = H.mod + "px"; trows.appendChild(mtr);
@@ -267,11 +274,13 @@ export default {
             if (tree === undefined) { self.loadEpicTree(p.epicKey); msgRow("task", "· 불러오는 중…", { anc: [!lastE], conn: eConn }); return; }
             if (tree === "loading") { msgRow("task", "· 불러오는 중…", { anc: [!lastE], conn: eConn }); return; }
             if (!tree.length) { msgRow("task", "· 하위 티켓 없음", { anc: [!lastE], conn: eConn }); return; }
+            const vtree = tree.filter(keep);
+            if (!vtree.length) { msgRow("task", "· 표시할 하위 티켓 없음 (Bug/VoC 숨김)", { anc: [!lastE], conn: eConn }); return; }
 
-            const nt = tree.length;
-            tree.forEach((t, ti) => {
+            const nt = vtree.length;
+            vtree.forEach((t, ti) => {
               const tpath = epath + "/" + t.key;
-              const subs = t.children || [];
+              const subs = (t.children || []).filter(keep);
               const tOpen = !!expanded[tpath];
               const lastT = (ti === nt - 1);
               const taskX = xpx(pd(t.start));
@@ -332,6 +341,7 @@ export default {
           <div class="seg"><button v-for="u in ['day','week','month']" :key="u" :class="{ on: unit === u }" @click="setUnit(u)">{{ unitLabel(u) }}</button></div>
           <button class="btn" @click="expandAll">전체 Epic 펼치기</button>
           <button class="btn" @click="collapseAll">전체 접기</button>
+          <button class="btn" :class="{ on: hideBugVoc }" @click="toggleBugVoc" title="Bug·VoC 티켓을 트리에서 숨김 (진척률 계산은 원래 제외)">{{ hideBugVoc ? '☑' : '☐' }} Bug/VoC 숨김</button>
           <button class="btn" @click="refresh">↻ 새로고침</button>
         </div>
       </div>

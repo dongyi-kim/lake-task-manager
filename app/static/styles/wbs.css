@@ -18,6 +18,7 @@
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .seg button { background: var(--panel); border: 0; border-left: 1px solid var(--border); color: var(--muted); font-size: 12px; padding: 5px 12px; cursor: pointer; }
 .seg button:first-child { border-left: 0; } .seg button.on { background: var(--accent); color: #fff; }
+.controls .btn.on { color: var(--accent); border-color: var(--accent); font-weight: 600; }
 
 .gantt { display: flex; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--panel); box-shadow: var(--shadow); }
 .g-labels { flex: 0 0 384px; width: 384px; border-right: 1px solid var(--border); background: var(--panel); z-index: 3; }
@@ -53,6 +54,7 @@
 
 .lrow.mod { background: var(--panel-2); font-weight: 700; font-size: 13px; }
 .lrow.mod .lname { padding-left: 14px; align-items: center; } .lrow.mod .lc { gap: 8px; }
+.lrow.mod .mpct { font-weight: 700; font-size: 12px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; font-variant-numeric: tabular-nums; }
 .lrow.mod .mc { color: var(--muted); font-weight: 400; font-size: 11px; }
 .lrow.mod .mdot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: 0 0 auto; }
 .lrow.wbs { font-size: 12.5px; } .lrow.epic { font-size: 11.5px; }
@@ -72,8 +74,10 @@
 .spill.sDone { color: var(--done); border-color: var(--done); }
 
 .t-axis { position: relative; border-bottom: 1px solid var(--border); z-index: 2; }
-.t-axis .tk { position: absolute; top: 12px; font-size: 10.5px; color: var(--muted); white-space: nowrap; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
-.t-axis .mlabel { top: 4px; font-weight: 600; color: var(--text); }
+.t-axis .tk { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: 10.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.t-axis .mlabel { font-weight: 600; color: var(--text); }
+/* '오늘' 라벨은 축 맨 위(헤더쪽)에 작게 — 월 라벨(가운데 정렬)과 안 겹치게 */
+.t-axis .todaylbl { top: 1px; transform: translateX(-50%); font-size: 9.5px; padding: 0 4px; border-radius: 999px; background: var(--panel); }
 .t-grid { position: absolute; top: 40px; left: 0; right: 0; bottom: 0; z-index: 0; pointer-events: none; }
 .t-grid .gl { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); } .t-grid .gl.major { background: var(--grid2); }
 .t-grid .today { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--today); z-index: 1; }

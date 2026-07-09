@@ -31,6 +31,12 @@ def _started_from(created, updated, cat):
         return None
 
 
+def _comp_of(f):
+    """대표 Component 이름. VoC 성 판정을 위해 '사용자 VoC' 가 있으면 그걸, 없으면 첫 컴포넌트."""
+    comps = [c.get("name") for c in (f.get("components") or [])]
+    return "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else None)
+
+
 def _normalize_issue(raw, sp_field):
     f = raw.get("fields", {}) or {}
     status = (f.get("status") or {})
@@ -41,6 +47,7 @@ def _normalize_issue(raw, sp_field):
         "sp": f.get(sp_field),          # None 이면 누락 → progress.sp_of 가 기본값 적용
         "statusCategory": cat,          # todo | inprogress | done
         "labels": f.get("labels", []) or [],
+        "component": _comp_of(f),       # VoC 성 판정용 (progress 에서 항상 제외)
         "assignee": ((f.get("assignee") or {}).get("name")),
         "updated": f.get("updated"),
     }
@@ -59,6 +66,7 @@ def _display_node(raw, sp_field, with_subs=False):
         "start": (f.get("created") or "")[:10] or None,
         "end": (f.get("duedate") or f.get("resolutiondate") or f.get("updated") or "")[:10] or None,
         "sp": f.get(sp_field),
+        "component": _comp_of(f),        # Bug/VoC '보지 않기' 시각 토글용
     }
     if with_subs:
         subs = []
@@ -71,6 +79,7 @@ def _display_node(raw, sp_field, with_subs=False):
                 "summary": sf.get("summary") or s.get("key"),
                 "statusName": sst.get("name", ""),
                 "statusCat": _norm_cat((sst.get("statusCategory") or {}).get("key")),
+                "component": _comp_of(sf),
             })
         node["children"] = subs
     return node
