@@ -30,6 +30,7 @@ export default {
       return s > c ? s : c;
     },
     tk(key) { return tkt(key, this.d && this.d.jiraBase); },
+    jiraUrl(key) { return (this.d && this.d.jiraBase) ? this.d.jiraBase + "/browse/" + key : "#"; },
     prog(it) { return it.progress || { done: 0, total: 0, pct: 0 }; },
     newsHtml(ev) {
       return `<span class='d'>${ymdhm(ev.date)}</span><span class='act ${ev.kind}'>${KLAB[ev.kind] || ev.kind}</span>`
@@ -89,17 +90,17 @@ export default {
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.issues.length }} 현안</span></div>
         <div v-if="!m.issues.length" class="empty">· 현안 없음</div>
         <div v-else class="tbl">
-          <div class="vhead"><div>티켓</div><div>진척률 (전체 하위 티켓 기준)</div><div>하위 티켓 수</div><div>최근 하위 소식</div><div></div></div>
+          <div class="vhead"><div>티켓</div><div>하위 티켓 수</div><div>직계 하위 티켓</div><div>최근 하위 소식</div><div></div></div>
           <template v-for="it in m.issues" :key="it.key">
             <div class="vrow">
               <div class="c-info">
                 <div class="l1">
                   <StatusPill :cat="it.statusCategory" :label="it.status" />
-                  <span class="key" v-html="tk(it.key)"></span>
+                  <TypeBadge :type="it.type" />
                   <span class="who">{{ it.assignee || "미지정" }}</span>
                 </div>
                 <div class="l2">
-                  <TypeBadge :type="it.type" /><span class="summ">{{ it.summary }}</span>
+                  <span class="key" v-html="tk(it.key)"></span><span class="summ">{{ it.summary }}</span>
                 </div>
                 <div class="l3">
                   <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
@@ -107,14 +108,18 @@ export default {
                   <span class="dt"><span class="dl">Due</span>{{ it.due ? fy(it.due) : "—" }}<span v-if="it.due" class="dchip" :class="ddCls(it.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(it.due) }}</span></span>
                 </div>
               </div>
-              <div class="c-prog">
-                <div class="bar"><i :style="{ width: prog(it).pct + '%', background: mcolor(i) }"></i></div>
-                <div class="n"><b>{{ prog(it).done }}/{{ prog(it).total }}</b> ({{ prog(it).pct }}%)</div>
-              </div>
               <div class="c-subs">
                 <div class="scnt"><span class="lbl"><StatusPill cat="todo" label="Open" /></span><b>{{ (it.statusCounts||{}).open || 0 }}</b></div>
                 <div class="scnt"><span class="lbl"><StatusPill cat="inprogress" label="In Progress" /></span><b>{{ (it.statusCounts||{}).inprogress || 0 }}</b></div>
                 <div class="scnt"><span class="lbl"><StatusPill cat="done" label="Done" /></span><b>{{ (it.statusCounts||{}).done || 0 }}</b></div>
+              </div>
+              <div class="c-children">
+                <a v-for="c in (it.children || [])" :key="c.key" class="ccard" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
+                  <TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span>
+                  <span v-if="c.assignee" class="asg">{{ c.assignee }}</span>
+                  <StatusPill :cat="c.statusCategory" :label="c.status" />
+                </a>
+                <div v-if="!(it.children || []).length" class="mini muted">직계 하위 티켓 없음</div>
               </div>
               <div class="c-news">
                 <div v-for="(ev, k) in (it.news || []).slice(0, 3)" :key="k" class="mini" v-html="newsHtml(ev)"></div>
