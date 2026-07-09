@@ -7,7 +7,7 @@
 
 .tbl { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
 .vhead, .vrow { display: grid;
-  grid-template-columns: minmax(280px,2.3fr) minmax(110px,0.85fr) minmax(250px,2.6fr) minmax(190px,1.9fr) 64px; gap: 14px; }
+  grid-template-columns: minmax(240px,1.8fr) minmax(105px,0.7fr) minmax(430px,4fr) 64px; gap: 14px; }
 .vhead { padding: 8px 16px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
 .vrow { padding: 11px 16px; border-top: 1px solid var(--border); align-items: start; }
 .vrow:first-child { border-top: none; } .vrow:hover { background: rgba(127,127,127,.035); }
@@ -21,17 +21,20 @@
 .c-info .l3 { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 12px; font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; }
 .c-info .l3 .dt { display: inline-flex; align-items: center; gap: 4px; }
 .c-info .l3 .dl { color: var(--muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: .3px; }
+.c-info .l3 .overdue { color: var(--danger); font-weight: 700; }
 
-/* 직계 하위 티켓 카드 리스트 — {타입} {제목} {담당자} {상태}, 클릭 시 Jira 로 이동. 많으면 스크롤 */
-.c-children { display: flex; flex-direction: column; gap: 5px; max-height: 210px; overflow-y: auto; }
-.ccard { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 4px 9px; border: 1px solid var(--border);
-         border-radius: 8px; background: var(--panel-2); text-decoration: none; color: inherit; }
-.ccard:hover { border-color: var(--accent); background: rgba(127,127,127,.05); }
-.ccard .tbadge { flex: 0 0 auto; }
-.ccard .sm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: 12px; }
-.ccard .asg { flex: 0 0 auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
-.ccard .asg::before { content: "\1F464"; opacity: .55; margin-right: 3px; font-size: 10px; }
-.ccard .pill { flex: 0 0 auto; }
+/* 직계 하위 티켓 = 미니 표 (티켓·상태·시작일·종료일·담당자). 행 클릭 시 Jira 로 이동. 많으면 스크롤 */
+.c-children .ctbl { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; max-height: 220px; overflow-y: auto; }
+.cth, .ctr { display: grid; grid-template-columns: minmax(120px,2.4fr) minmax(84px,1fr) 62px 62px minmax(64px,1fr); gap: 8px; align-items: center; padding: 4px 10px; }
+.cth { font-size: 9.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; background: var(--panel-2); position: sticky; top: 0; z-index: 1; }
+.ctr { border-top: 1px solid var(--border); font-size: 12px; text-decoration: none; color: inherit; }
+.ctr:hover { background: rgba(127,127,127,.05); }
+.ctr .ct-tkt { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ctr .ct-tkt .tbadge { flex: 0 0 auto; }
+.ctr .ct-tkt .sm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.ctr .dt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ctr .asg { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctr .pill { justify-self: start; }
 
 .c-subs .scnt { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 0; }
 .c-subs .scnt .lbl { flex: 0 0 84px; text-align: right; }

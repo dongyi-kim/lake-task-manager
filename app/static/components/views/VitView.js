@@ -19,10 +19,10 @@ export default {
     fy(s) { return ymd(s); },
     fdt(s) { return ymdhm(s); },
     dd(s) { return dday(s); },
-    ddCls(iso) {
+    dueOverdue(iso) {   // D-Day 당일 또는 그 이후(초과) → 붉게
       const due = new Date(iso.substring(0, 10) + "T00:00:00");
       const today = new Date(); today.setHours(0, 0, 0, 0);
-      return Math.round((due - today) / 86400000) >= 4 ? "warn" : "danger";
+      return Math.round((due - today) / 86400000) <= 0;
     },
     startedAt(it) {   // Created 와 Started 중 늦은 것 (ISO 문자열 사전순 = 시간순)
       const c = it.created || "", s = it.started || "";
@@ -90,7 +90,7 @@ export default {
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.issues.length }} 현안</span></div>
         <div v-if="!m.issues.length" class="empty">· 현안 없음</div>
         <div v-else class="tbl">
-          <div class="vhead"><div>티켓</div><div>하위 티켓 수</div><div>직계 하위 티켓</div><div>최근 하위 소식</div><div></div></div>
+          <div class="vhead"><div>티켓</div><div>하위 티켓 수</div><div>직계 하위 티켓</div><div></div></div>
           <template v-for="it in m.issues" :key="it.key">
             <div class="vrow">
               <div class="c-info">
@@ -104,8 +104,7 @@ export default {
                 </div>
                 <div class="l3">
                   <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
-                  <span class="dt"><span class="dl">Updated</span>{{ it.updated ? fdt(it.updated) : "—" }}</span>
-                  <span class="dt"><span class="dl">Due</span>{{ it.due ? fy(it.due) : "—" }}<span v-if="it.due" class="dchip" :class="ddCls(it.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(it.due) }}</span></span>
+                  <span class="dt"><span class="dl">Due</span><span v-if="it.due" :class="{ overdue: dueOverdue(it.due) }">{{ fy(it.due) }} ({{ dd(it.due) }})</span><span v-else>—</span></span>
                 </div>
               </div>
               <div class="c-subs">
@@ -114,16 +113,17 @@ export default {
                 <div class="scnt"><span class="lbl"><StatusPill cat="done" label="Done" /></span><b>{{ (it.statusCounts||{}).done || 0 }}</b></div>
               </div>
               <div class="c-children">
-                <a v-for="c in (it.children || [])" :key="c.key" class="ccard" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
-                  <TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span>
-                  <span v-if="c.assignee" class="asg">{{ c.assignee }}</span>
-                  <StatusPill :cat="c.statusCategory" :label="c.status" />
-                </a>
-                <div v-if="!(it.children || []).length" class="mini muted">직계 하위 티켓 없음</div>
-              </div>
-              <div class="c-news">
-                <div v-for="(ev, k) in (it.news || []).slice(0, 3)" :key="k" class="mini" v-html="newsHtml(ev)"></div>
-                <div v-if="!(it.news || []).length" class="mini muted">-</div>
+                <div v-if="(it.children || []).length" class="ctbl">
+                  <div class="cth"><div>티켓</div><div>상태</div><div>시작일</div><div>종료일</div><div>담당자</div></div>
+                  <a v-for="c in it.children" :key="c.key" class="ctr" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
+                    <div class="ct-tkt"><TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span></div>
+                    <div><StatusPill :cat="c.statusCategory" :label="c.status" /></div>
+                    <div class="dt">{{ fy(c.created) || "—" }}</div>
+                    <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
+                    <div class="asg">{{ c.assignee || "—" }}</div>
+                  </a>
+                </div>
+                <div v-else class="mini muted">직계 하위 티켓 없음</div>
               </div>
               <div class="c-x"><button class="xbtn" @click="toggleDetail(it)">{{ detailOpen[it.key] ? "접기 ▴" : "자세히 ▾" }}</button></div>
             </div>

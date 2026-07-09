@@ -51,10 +51,12 @@ def build_vit(client, plan, people, epic_prog=None, generated_at=None, news_days
         counts = {}
         for n in flat:
             counts[n["type"]] = counts.get(n["type"], 0) + 1
-        # 직계 자식(트리 최상위)만 카드 리스트용으로 투영
+        # 직계 자식(트리 최상위)만 표 리스트용으로 투영 (티켓·상태·시작일·종료일·담당자)
         children = [{"key": n.get("key"), "type": n.get("type"), "summary": n.get("summary"),
                      "assignee": n.get("assignee"), "status": n.get("status"),
-                     "statusCategory": n.get("statusCategory")} for n in (it.get("tree") or [])]
+                     "statusCategory": n.get("statusCategory"),
+                     "created": n.get("created"), "resolved": n.get("resolved")}
+                    for n in (it.get("tree") or [])]
         # 요약 dict 를 새로 구성(원본 it 은 캐시 공유 대상이라 변형 금지). tree/comments 는 /api/vit/{key} lazy.
         issues.append({
             "key": it["key"], "summary": it["summary"], "type": it["type"], "module": it.get("module"),
