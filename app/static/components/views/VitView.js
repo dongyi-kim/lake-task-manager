@@ -2,7 +2,7 @@
 //   하위 티켓 수 · 직계 하위 티켓(표: 티켓·상태·시작일·종료일·담당자, 행 클릭→Jira) + [자세히] 트리/코멘트.
 // '완료 작업 안 보기' 토글로 직계 완료 티켓 숨김. updated: 2026-07-09
 import { api } from "../../lib/api.js";
-import { moduleColor, STATUS_ORDER, STATUS_VAR, typeLabel } from "../../lib/colors.js";
+import { moduleColor, STATUS_ORDER, STATUS_VAR, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { esc, mdISO, ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import StatusPill from "../ui/StatusPill.js";
@@ -69,7 +69,7 @@ export default {
       const prog = n.resolved ? ("완료 " + ymdhm(n.resolved)) : (n.created ? ("생성 " + ymdhm(n.created)) : "");
       return `<span class='typc'>${g}</span>`
         + `<span class='tcard'>`
-        + `<span class='tbadge v-plain'>${typeLabel(n.type)}</span>`
+        + `<span class='tbadge v-solid' style='background:${TYPE_BG[n.type] || "#3568c4"}'>${typeLabel(n.type)}</span>`
         + `<span class='ky'>${tkt(n.key, this.d.jiraBase)}</span>`
         + `<span class='sm'>${esc(n.summary || "")}</span>`
         + (n.assignee ? `<span class='asg'>${esc(n.assignee)}</span>` : "")
