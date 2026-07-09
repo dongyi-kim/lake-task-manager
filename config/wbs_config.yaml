@@ -1,6 +1,5 @@
-# Lake Task Manager — WBS 구성 (기능1)  ★ [PROD] repo 루트 = 배포/실 Jira 용
-# dev(fake/샘플)용 별도 파일은 src/config/wbs_config.yaml. prod 에는 실제 Jira Epic 티켓 키를 채운다.
-# 손으로 관리하는 소스. git 커밋/PR 리뷰 대상.
+# Lake Task Manager — WBS 구성 (기능1)  ★ [DEV/FAKE] src/config = 개발용
+# fake 서버가 이 DL-xxxx epic 들을 생성한다. prod 실데이터는 repo 루트 config/ 에 있다.
 #
 # 구조: wbs → (module 별) → tasks → 각 task(name, 기간) → 소속 epic(ticket + weight)
 #   - ticket = 실제 Jira Epic 티켓 키 (DL-xxxx). Epic 이름/상태/자식은 Jira 에 있음(여기 안 적음).

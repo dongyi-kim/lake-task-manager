@@ -12,11 +12,10 @@ venv/
 # SQLite 캐시 (생성물)
 *.sqlite3
 
-# 빌드 중간산출물 (PyInstaller) — exe 자체는 커밋(추적)
+# 빌드 산출물 (PyInstaller) — exe 는 배포 repo(lake-task-manager-deploy)에서 관리
 /build/
 /dist/
-src/build/
-src/dist/
+*.exe
 
 # OS / editor
 .DS_Store

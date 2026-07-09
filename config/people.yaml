@@ -1,4 +1,4 @@
-# Lake Task Manager - 모듈별 인력 (기능3)
+# Lake Task Manager - 모듈별 인력 (기능3)  ★ [DEV/FAKE] src/config = 개발용
 # module(=Jira Component) -> 소속 인력의 Jira user id 목록.
 # 이 id 로 워크로드 카운트(진행중/최근7일 done) 및 활동 요약(/activity, Confluence CQL)을 조회.
 #

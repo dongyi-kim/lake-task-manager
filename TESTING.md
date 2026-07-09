@@ -1,8 +1,8 @@
 <!-- updated: 2026-07-08 — dev 실행/테스트 가이드 (fake 서버 + 앱 3환경 + pytest) -->
 # 테스트 & 로컬 실행 가이드
 
-Lake Task Manager 를 로컬에서 **구동·검증**하는 방법. 모든 명령은 `src/` 기준.
-(배경/설계는 `../CLAUDE.md`, 진행/TODO 는 `PROGRESS.md`.)
+Lake Task Manager 를 로컬에서 **구동·검증**하는 방법. 모든 명령은 **repo 루트** 기준.
+(배경/설계는 `CLAUDE.md`, 진행/TODO 는 `PROGRESS.md`. 이 repo 는 개발용 — exe/배포는 `lake-task-manager-deploy`.)
 
 > Windows 는 **PowerShell** 기준으로 적는다. bash(Git Bash/WSL) 명령은 각 절 끝에 병기.
 > **macOS/Linux 는 §0.5** 로 따로 묶었다 (dev 만 — prod SSO/exe 는 Windows 배포 대상이라 제외).
@@ -17,7 +17,7 @@ Lake Task Manager 를 로컬에서 **구동·검증**하는 방법. 모든 명�
 | **UI만 빠르게** (Jira 불필요) | `python run.py` — 브라우저 자동 오픈, `env=mock` |
 | **실 HTTP 경로 검증** (fake Jira) | 터미널1 `python run_fake.py` → 터미널2 `$env:LAKE_DOTENV=".env.dev"; python run.py` |
 | **유닛테스트** | `python -m pytest -q` → `21 passed` |
-| **단일 exe** | `python -m PyInstaller lake.spec --distpath ..` → `../lake-task-manager.exe` |
+| **단일 exe** | `python -m PyInstaller lake.spec` → `dist/lake-task-manager.exe` (배포는 `lake-task-manager-deploy` repo) |
 
 ---
 
@@ -25,7 +25,7 @@ Lake Task Manager 를 로컬에서 **구동·검증**하는 방법. 모든 명�
 
 코드는 순수 Python(FastAPI/uvicorn/requests) 이라 맥에서 그대로 돈다. **dev(mock·local)+pytest 만** — prod SSO 와 exe 빌드는 Windows 배포용이라 맥에선 다루지 않는다.
 
-**최초 1회 — 가상환경 + 의존성** (`src/` 에서):
+**최초 1회 — 가상환경 + 의존성** (repo 루트에서):
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
