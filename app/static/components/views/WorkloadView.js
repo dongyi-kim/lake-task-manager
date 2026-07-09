@@ -139,7 +139,6 @@ export default {
         <span><i class="sw voc"></i> VoC성 (Component 사용자 VoC)</span>
         <span class="muted">· 왼쪽=진행 중, 오른쪽=최근 7일 완료 · 세로선 = 모듈 평균</span>
       </div>
-      <div class="note">진행 중 = 티켓 수(건) · 완료 = {{ metric === 'hr' ? '소요시간 합(Time Tracking)' : '티켓 수(건)' }} · 최대값 = 전체 최대(진행중 {{ scale.ip }}건 / 완료 {{ scale.dn }}{{ doneUnit }}). 세로선 = 해당 모듈 평균. 0은 생략.</div>
 
       <div v-for="(m, i) in d.modules" :key="m.module" class="mod">
         <div class="mod-head" :class="{ open: open[m.module] }" @click="toggleMod(m.module)">

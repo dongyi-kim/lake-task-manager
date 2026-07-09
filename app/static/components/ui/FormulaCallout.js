@@ -23,13 +23,16 @@ const PAGES = {
     ],
   },
   workload: {
-    core: "막대 = 진행 중 / 7일완료 × Task성 / VoC성  (건수)",
-    pre: "진행중 Task성 = 담당 & 진행중 & (Task 또는 Sub-Task) 개수\n"
-       + "진행중 VoC성  = 담당 & 진행중 & Component=사용자 VoC 개수\n"
-       + "7일완료 Task/VoC = 위와 같되 최근 7일 내 완료(Done)",
+    core: "진행 중 = 티켓 수(건) · 완료 실적 = Task 수 또는 소요시간(Time Tracking) 선택",
+    pre: "진행 중   = 담당 & 진행중 티켓 수 (Task성 / VoC성)\n"
+       + "완료(7일) = 담당 & 최근 7일 내 완료(Done)\n"
+       + "  · Task 수  = 완료 티켓 개수\n"
+       + "  · 소요시간 = 완료 티켓의 Time Tracking(timespent) 합",
     notes: [
-      "<b>Task성</b> = 이슈타입 Task+Sub-Task. <b>VoC성</b> = Component가 사용자 VoC.",
-      "막대 최대값 = 전체 최대. <b>세로선 = 해당 모듈 평균</b>. 담당(Assignee) 기준.",
+      "<b>완료 실적 계산식</b>(우측하단 플로팅) — Task 수 / 소요시간 전환. <b>진행 중은 항상 티켓 수</b>(timespent 없음).",
+      "<b>소요시간</b> = 표준 Time Tracking 필드(<code>timespent</code>, 예 2d 3h → 시간 환산). 커스텀필드 아님.",
+      "<b>Task성</b> = 이슈타입 Task+Sub-Task. <b>VoC성</b> = Component가 사용자 VoC. 담당(Assignee) 기준.",
+      "막대 최대값 = 전체 인력 최대(진행중·완료 각각). <b>세로선 = 해당 모듈 평균</b>. 0은 생략.",
     ],
   },
 };
