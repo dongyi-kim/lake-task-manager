@@ -11,7 +11,7 @@ import TypeBadge from "../ui/TypeBadge.js";
 export default {
   name: "WorkloadView",
   components: { ProgressBar, TypeBadge },
-  data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {} }; },
+  data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {}, metric: "count" }; },
   created() { this.bodyRefs = {}; },   // 비반응 DOM 참조(모듈 body)
   async mounted() {
     try { this.d = await api.workload(); this.d.modules.forEach((m) => { this.open[m.module] = true; }); this.scheduleMeasure(); }
@@ -27,13 +27,39 @@ export default {
       if (this.d) this.d.modules.forEach((m) => { t.p += m.peopleCount; t.ip += m.inProgressTotal; t.dn += m.done7dTotal; });
       return t;
     },
+    // 완료 실적 계산식은 '완료' 막대에만 적용(진행중은 timespent 가 없어 항상 티켓 수).
+    doneUnit() { return this.metric === "hr" ? "h" : "건"; },
+    // 막대 스케일 = 전체 인력 최대값. 진행중은 count 고정, 완료는 선택 메트릭.
+    scale() {
+      let ip = 1, dn = 1;
+      if (this.d) this.d.modules.forEach((m) => m.people.forEach((p) => {
+        ip = Math.max(ip, this.barVal(p.inProgress, "count"));
+        dn = Math.max(dn, this.barVal(p.done7d, this.metric));
+      }));
+      return { ip, dn };
+    },
+    // 모듈 평균(세로선/수치) — 진행중 count, 완료 선택 메트릭
+    avgByMod() {
+      const out = {};
+      const avg = (xs) => xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length * 10) / 10 : 0;
+      if (this.d) this.d.modules.forEach((m) => {
+        out[m.module] = { ip: avg(m.people.map((p) => this.barVal(p.inProgress, "count"))),
+                          dn: avg(m.people.map((p) => this.barVal(p.done7d, this.metric))) };
+      });
+      return out;
+    },
   },
   methods: {
     mcolor(i) { return moduleColor(i); },
-    seg(task, voc) {
+    mv(bar, kind, metric) { return (bar[metric] || {})[kind] || 0; },   // kind: 'task'|'voc'
+    barVal(bar, metric) { return this.mv(bar, "task", metric) + this.mv(bar, "voc", metric); },
+    setMetric(mk) { this.metric = mk; this.scheduleMeasure(); },
+    seg(bar, metric) {
+      const u = metric === "hr" ? "h" : "건";
+      const t = this.mv(bar, "task", metric), v = this.mv(bar, "voc", metric);
       return [
-        { value: task, color: "var(--wl-task)", title: "Task성 " + task },
-        { value: voc, color: "var(--wl-voc)", title: "VoC성 " + voc },
+        { value: t, color: "var(--wl-task)", title: "Task성 " + t + u },
+        { value: v, color: "var(--wl-voc)", title: "VoC성 " + v + u },
       ];
     },
     toggleMod(m) { this.open[m] = !this.open[m]; this.scheduleMeasure(); },
@@ -52,15 +78,15 @@ export default {
         if (bars.length < 2) continue;
         const bRect = body.getBoundingClientRect();
         const wRect = whead.getBoundingClientRect();
-        const m = this.d.modules.find((x) => x.module === mod);
-        const xOf = (bar, avg, scale) => {
+        const avg = this.avgByMod[mod] || { ip: 0, dn: 0 };
+        const xOf = (bar, av, scale) => {
           const r = bar.getBoundingClientRect();
-          const ratio = scale > 0 ? Math.min(avg / scale, 1) : 0;
+          const ratio = scale > 0 ? Math.min(av / scale, 1) : 0;
           return (r.left - bRect.left) + ratio * r.width;
         };
         pos[mod] = {
-          ipX: xOf(bars[0], m.avgInProgress, this.d.scaleInProgress),
-          doneX: xOf(bars[1], m.avgDone7d, this.d.scaleDone7d),
+          ipX: xOf(bars[0], avg.ip, this.scale.ip),
+          doneX: xOf(bars[1], avg.dn, this.scale.dn),
           top: wRect.bottom - bRect.top,                       // 선 시작 y(헤더 아래)
           hy: (wRect.top + wRect.height / 2) - bRect.top,      // 수치 y(헤더 중앙)
         };
@@ -113,7 +139,7 @@ export default {
         <span><i class="sw voc"></i> VoC성 (Component 사용자 VoC)</span>
         <span class="muted">· 왼쪽=진행 중, 오른쪽=최근 7일 완료 · 세로선 = 모듈 평균</span>
       </div>
-      <div class="note">막대 최대값 = 전체 최대(진행중 {{ d.scaleInProgress }}건 / 완료 {{ d.scaleDone7d }}건). 세로선 = 해당 모듈 평균. 0은 생략.</div>
+      <div class="note">진행 중 = 티켓 수(건) · 완료 = {{ metric === 'hr' ? '소요시간 합(Time Tracking)' : '티켓 수(건)' }} · 최대값 = 전체 최대(진행중 {{ scale.ip }}건 / 완료 {{ scale.dn }}{{ doneUnit }}). 세로선 = 해당 모듈 평균. 0은 생략.</div>
 
       <div v-for="(m, i) in d.modules" :key="m.module" class="mod">
         <div class="mod-head" :class="{ open: open[m.module] }" @click="toggleMod(m.module)">
@@ -126,21 +152,21 @@ export default {
           <template v-else>
             <div class="whead">
               <div class="hl">인력</div>
-              <div class="wbars"><div class="wside"><div class="hl">진행 중 (건)</div></div><div class="wside"><div class="hl">최근 7일 완료 (건)</div></div></div>
+              <div class="wbars"><div class="wside"><div class="hl">진행 중 (건)</div></div><div class="wside"><div class="hl">최근 7일 완료 ({{ doneUnit }})</div></div></div>
               <div></div>
             </div>
             <template v-if="linePos[m.module]">
               <div class="mavg-line" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].top + 'px' }"></div>
               <div class="mavg-line" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].top + 'px' }"></div>
-              <div class="mavg-num" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ m.avgInProgress }}</div>
-              <div class="mavg-num" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ m.avgDone7d }}</div>
+              <div class="mavg-num" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ avgByMod[m.module].ip }}건</div>
+              <div class="mavg-num" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ avgByMod[m.module].dn }}{{ doneUnit }}</div>
             </template>
             <template v-for="p in m.people" :key="p.id">
               <div class="prow">
                 <span class="pname" :title="p.id"><b>{{ p.name }}</b><span v-if="p.kind" class="kbadge" :class="p.kind">{{ p.kind === 'dev' ? '개발' : '운영' }}</span></span>
                 <div class="wbars">
-                  <ProgressBar class="wside" :segments="seg(p.inProgress.task, p.inProgress.voc)" :scale="d.scaleInProgress" show-total dark-text />
-                  <ProgressBar class="wside" :segments="seg(p.done7d.task, p.done7d.voc)" :scale="d.scaleDone7d" show-total dark-text />
+                  <ProgressBar class="wside" :segments="seg(p.inProgress, 'count')" :scale="scale.ip" show-total dark-text />
+                  <ProgressBar class="wside" :segments="seg(p.done7d, metric)" :scale="scale.dn" show-total dark-text />
                 </div>
                 <button class="plus" @click="toggleAct(p.id)">{{ actOpen[p.id] ? "−" : "+" }}</button>
               </div>
@@ -177,6 +203,15 @@ export default {
               </div>
             </template>
           </template>
+        </div>
+      </div>
+      <div class="fab">
+        <div class="fab-panel">
+          <div class="t">완료 실적 계산식</div>
+          <div class="fab-seg">
+            <button :class="{ on: metric === 'count' }" @click="setMetric('count')">Task 수</button>
+            <button :class="{ on: metric === 'hr' }" @click="setMetric('hr')">소요시간</button>
+          </div>
         </div>
       </div>
     </template>

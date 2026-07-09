@@ -404,6 +404,7 @@ class World:
             "updated": self._dt(it["updated"], it.get("tupdated")),
             "resolutiondate": self._dt(it["resolved"], it.get("tresolved")) if it["resolved"] else None,
             "duedate": it["due"].isoformat() if it["due"] else None,
+            "timespent": sum(wl.get("seconds", 0) for wl in it.get("worklog", [])) or None,   # 표준 Time Tracking(초)
             self.sp_field: it["sp"],
             self.epic_link_field: it["epicKey"],
         }

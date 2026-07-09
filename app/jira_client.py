@@ -153,7 +153,7 @@ class JiraClient:
     # ── 티켓 단위 캐시 레이어 (모든 이슈/하위이슈를 key 단위로 캐싱) ──
     def _issue_fields(self):
         return ("summary,description,issuetype,status,assignee,reporter,components,created,duedate,"
-                "resolutiondate,updated,labels,parent,subtasks,"
+                "resolutiondate,updated,labels,parent,subtasks,timespent,"
                 + self.s.sp_field_id + "," + self.s.epic_link_field_id)
 
     def get_issue(self, key):
@@ -415,7 +415,8 @@ class JiraClient:
     def _fetch_workload(self, plan, people):
         """인력별 Task성/VoC성 × 진행중/최근7일완료 티켓 수."""
         def counts(jql):
-            by = {"task": 0, "voc": 0}
+            # count(티켓수) · hr(소요시간, 표준 timespent 초→시). hr 은 완료 실적 계산식 전용.
+            by = {"count": {"task": 0, "voc": 0}, "hr": {"task": 0, "voc": 0}}
             try:
                 for it in self._search(jql, max_results=300):   # write-through: 각 티켓 캐시
                     f = it.get("fields", {}) or {}
@@ -423,8 +424,10 @@ class JiraClient:
                     comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
                     t = (f.get("issuetype") or {}).get("name", "")
                     c = mockdata.wl_category(comp, t)
-                    if c:
-                        by[c] += 1
+                    if not c:
+                        continue
+                    by["count"][c] += 1
+                    by["hr"][c] += round((f.get("timespent") or 0) / 3600.0, 1)
             except Exception:
                 pass
             return by

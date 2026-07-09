@@ -120,6 +120,17 @@ def wl_category(component, itype):
     return None                       # Epic·기타(Story/Bug/…)는 워크로드 카운트 제외
 
 
+def _zero_metrics():
+    # count(티켓수) · hr(소요시간, 시). hr 은 완료 실적 계산식에만 쓰임(진행중은 timespent 없음).
+    return {"count": {"task": 0, "voc": 0}, "hr": {"task": 0, "voc": 0}}
+
+
+def _accum(m, cat, it):
+    m["count"][cat] += 1
+    secs = sum(wl.get("seconds", 0) for wl in it.get("worklog", []))   # jira_client 의 timespent 파리티
+    m["hr"][cat] += round(secs / 3600.0, 1)
+
+
 def workload_people(plan, people):
     w = _w()
     today = w.today
@@ -127,17 +138,17 @@ def workload_people(plan, people):
     for module in plan["modules"]:
         rows = []
         for pid in people.get(module, []):
-            ip = {"task": 0, "voc": 0}
-            dn = {"task": 0, "voc": 0}
+            ip = _zero_metrics()
+            dn = _zero_metrics()
             for k in w.by_assignee.get(pid, []):
                 it = w.issues[k]
                 c = wl_category(it["component"], it["type"])
                 if not c:
                     continue
                 if it["statusCategory"] == "inprogress":
-                    ip[c] += 1
+                    _accum(ip, c, it)
                 elif it["statusCategory"] == "done" and it["resolved"] and (today - it["resolved"]).days <= 7:
-                    dn[c] += 1
+                    _accum(dn, c, it)
             rows.append({"id": pid, "displayName": _dispname(w, pid), "inProgress": ip, "done7d": dn})
         out[module] = rows
     return out

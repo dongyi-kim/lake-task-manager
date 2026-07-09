@@ -341,7 +341,6 @@ export default {
           <div class="seg"><button v-for="u in ['day','week','month']" :key="u" :class="{ on: unit === u }" @click="setUnit(u)">{{ unitLabel(u) }}</button></div>
           <button class="btn" @click="expandAll">전체 Epic 펼치기</button>
           <button class="btn" @click="collapseAll">전체 접기</button>
-          <button class="btn" :class="{ on: hideBugVoc }" @click="toggleBugVoc" title="Bug·VoC 티켓을 트리에서 숨김 (진척률 계산은 원래 제외)">{{ hideBugVoc ? '☑' : '☐' }} Bug/VoC 숨김</button>
           <button class="btn" @click="refresh">↻ 새로고침</button>
         </div>
       </div>
@@ -359,6 +358,9 @@ export default {
         <span><i class="tb bEpic">Epic</i> <i class="tb bStory">Story</i> <i class="tb bTask">Task</i> <i class="tb bBug">Bug</i> <i class="tb bSub">Sub</i> 이슈타입</span>
       </div>
       <div class="footer">완료 판정 = <code>statusCategory == "done"</code>. Bug/Ops·SP=0 은 진척률 제외. mock 라벨 SP 는 분모에만 포함(reconcile 는 사람 판단). 매핑/일정 = <code>config/wbs_config.yaml</code>.</div>
+      <div class="fab">
+        <button class="fab-btn" :class="{ on: hideBugVoc }" @click="toggleBugVoc" title="Bug·VoC 티켓을 트리에서 숨김 (진척률 계산은 원래 제외)">{{ hideBugVoc ? '☑' : '☐' }} Bug/VoC 숨김</button>
+      </div>
     </template>
     <div v-else class="loading">불러오는 중…</div>
   </div>`,

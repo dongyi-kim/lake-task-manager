@@ -20,8 +20,9 @@ def build_workload(client, plan, people, jira_base="", generated_at=None):
         # 본명(displayName 첫 어절) + 개발/운영(id 사번 접두) 파생 — 원본 비변형(캐시 공유 안전)
         rows = [dict(p, name=real_name(p.get("displayName") or p["id"]), kind=staff_kind(p["id"]))
                 for p in data.get(m, [])]
-        ip = [p["inProgress"]["task"] + p["inProgress"]["voc"] for p in rows]
-        dn = [p["done7d"]["task"] + p["done7d"]["voc"] for p in rows]
+        # 헤더/칩 합계는 티켓 수(count) 기준. 막대 메트릭(SP·소요시간) 전환·스케일·모듈평균은 프론트에서 계산.
+        ip = [p["inProgress"]["count"]["task"] + p["inProgress"]["count"]["voc"] for p in rows]
+        dn = [p["done7d"]["count"]["task"] + p["done7d"]["count"]["voc"] for p in rows]
         all_ip += ip
         all_done += dn
         modules.append({

@@ -17,6 +17,18 @@ nav.tabs a.on { color: var(--text); border-color: var(--border); background: var
 .lnk { color: var(--accent); text-decoration: none; } .lnk:hover { text-decoration: underline; }
 .muted { color: var(--muted); }
 
+/* 우측하단 플로팅 컨트롤 (FAB) — 화면별 옵션. 활성 뷰만 keep-alive 로 DOM 에 있어 겹치지 않음 */
+.fab { position: fixed; right: 20px; bottom: 20px; z-index: 50; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.fab-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 9px 15px; cursor: pointer; box-shadow: var(--shadow); }
+.fab-btn:hover { background: var(--panel-2); }
+.fab-btn.on { color: var(--accent); border-color: var(--accent); }
+.fab-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 9px 11px; box-shadow: var(--shadow); }
+.fab-panel .t { color: var(--muted); font-size: 11px; margin-bottom: 6px; font-weight: 600; }
+.fab-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.fab-seg button { background: var(--panel); border: 0; border-left: 1px solid var(--border); color: var(--muted); font-size: 12px; padding: 6px 11px; cursor: pointer; white-space: nowrap; }
+.fab-seg button:first-child { border-left: 0; } .fab-seg button.on { background: var(--accent); color: #fff; }
+
 .chips { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
 .chip { background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; box-shadow: var(--shadow); }
 .chip b { font-variant-numeric: tabular-nums; }

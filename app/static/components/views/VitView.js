@@ -94,12 +94,7 @@ export default {
           <span class="sw" :style="{ background: mcolor(i) }"></span> {{ m.module }} <b>{{ m.issues.length }}</b>
         </div>
       </div>
-      <div class="vctl">
-        <button class="toggle-btn" :class="{ on: hideDone }" @click="hideDone = !hideDone">
-          <span class="tick">{{ hideDone ? '☑' : '☐' }}</span> 완료 작업 안 보기
-        </button>
-        <span class="note" v-if="d.summary.skippedDup">· 상위가 이미 PMO_VIT 인 자손 현안 {{ d.summary.skippedDup }}건은 중복으로 숨김</span>
-      </div>
+      <div class="note" v-if="d.summary.skippedDup">상위가 이미 PMO_VIT 인 자손 현안 {{ d.summary.skippedDup }}건은 중복으로 숨김</div>
 
       <div v-for="(m, i) in d.modules" :key="m.module" class="vgroup">
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.issues.length }} 현안</span></div>
@@ -157,6 +152,9 @@ export default {
             </div></div>
           </template>
         </div>
+      </div>
+      <div class="fab">
+        <button class="fab-btn" :class="{ on: hideDone }" @click="hideDone = !hideDone">{{ hideDone ? '☑' : '☐' }} 완료 작업 안 보기</button>
       </div>
     </template>
     <div v-else class="loading">불러오는 중…</div>
