@@ -14,4 +14,3 @@
 *.yml        text eol=lf
 *.txt        text eol=lf
 *.spec       text eol=lf
-.env*        text eol=lf

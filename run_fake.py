@@ -1,8 +1,8 @@
 """
 Fake Jira/Confluence 서버 런처 (dev 용).
-    cd src && python run_fake.py            # :8080
+    python run_fake.py                      # :8080
     FAKE_LATENCY_MS=800 python run_fake.py  # 지연 주입(캐시 실측)
-그 다음 앱: LAKE_DOTENV=.env.dev python run.py  (JIRA_ENV=local → 이 서버로 붙음)
+그 다음 앱: JIRA_ENV=local python run.py  (local → 이 서버로 붙음)
 """
 import os
 

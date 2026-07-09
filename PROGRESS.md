@@ -22,13 +22,13 @@ python src/run.py                                  # http://localhost:8000
 
 # (B) local — Fake Jira 로 실제 HTTP 경로 검증
 cd src && python run_fake.py                       # 터미널1: Fake Jira :8080
-LAKE_DOTENV=.env.dev python src/run.py             # 터미널2: 앱(local → fake)
+JIRA_ENV=local python src/run.py                   # 터미널2: 앱(local → fake)
 #   FAKE_LATENCY_MS=150 python run_fake.py  → 캐시 실측(1회차 느림, 2회차 즉시)
 
 python -m pytest src/tests -q                      # 21 passed
 ```
 
-> 디렉터리: **루트 = 사용자 파일(.env·config·exe)**, **`src/` = 코드/도구**.
+> 디렉터리: 설정·매핑은 **`config/`(jira.yml·wbs_config.yaml·people.yaml)**, 배포 exe 는 config/ 와 나란히.
 > config: **`config/wbs_config.yaml`**(module→WBS task→epic ticket `DL-xxxx`+정수 weight), `config/people.yaml`.
 
 ---

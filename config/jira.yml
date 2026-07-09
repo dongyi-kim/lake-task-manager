@@ -1,0 +1,34 @@
+# === 개발(dev) 설정 ===
+# 기본은 mock — Jira 없이 결정적 가상 데이터로 전체 앱 구동.  `python run.py`
+# fake Jira 서버(:8080)로 실 HTTP 경로를 검증하려면 local 모드로 override:
+#   터미널1:  python run_fake.py                 # :8080
+#   터미널2:  JIRA_ENV=local python run.py        # local → fake 로 붙음
+#   (PowerShell:  $env:JIRA_ENV="local"; python run.py)
+#
+# ※ 환경변수(JIRA_ENV 등)가 아래 값보다 우선한다(override).
+
+env: mock                                  # mock | local | prod
+
+jira:
+  base: http://localhost:8080              # fake Jira 서버
+  project_key: DL
+  # fake 는 아무 basic auth 나 수용. PAT 를 쓰면 token 에 토큰 넣고 auth: bearer.
+  auth: basic                              # basic | bearer
+  user: admin
+  token: admin
+  state_path: jira_state.json
+  # fake /rest/api/2/field 가 주는 값과 일치
+  fields:
+    story_point: customfield_10004
+    epic_link:   customfield_10008
+
+confluence:
+  base: http://localhost:8080              # fake 가 Confluence CQL 도 같은 호스트로 서빙
+
+cache:
+  db_path: cache-dev.sqlite3
+  ttl_seconds: 900
+
+server:
+  host: 127.0.0.1
+  port: 8000

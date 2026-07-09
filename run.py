@@ -7,7 +7,7 @@ Lake Task Manager — 로컬 실행 런처.
   3) prod SSO:    python run.py login  /  lake-task-manager.exe login
                   → 설치된 Chrome 으로 사내 SSO 1회 로그인 후 세션 저장. 이후 일반 실행.
 
-설정은 exe(또는 repo) 옆의 .env, 매핑은 config/*.yaml.
+설정은 exe(또는 repo) 옆 config/jira.yml, 매핑은 config/*.yaml.
 """
 
 import sys

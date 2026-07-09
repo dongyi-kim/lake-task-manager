@@ -1,7 +1,5 @@
 # SSO 세션 — 실 크리덴셜, 절대 커밋 금지
 jira_state.json
-# .env(dev/prod/example)는 추적한다(사용자 요청). 실값이 담기는 exe-옆 런타임 .env 만 제외.
-.env
 
 # Python
 __pycache__/

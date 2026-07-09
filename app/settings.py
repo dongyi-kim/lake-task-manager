@@ -1,6 +1,7 @@
 """
-환경설정(.env) + config(YAML) 로더/검증.
-- 코드에 하드코딩 금지. 모든 환경값은 .env, 모든 매핑은 config/*.yaml.
+환경설정(config/jira.yml) + 매핑 config(YAML) 로더/검증.
+- 코드에 하드코딩 금지. 모든 환경값은 config/jira.yml, 모든 매핑은 config/*.yaml.
+- 환경변수(JIRA_ENV·JIRA_BASE 등)가 있으면 jira.yml 값보다 우선(override) — 테스트·빠른 전환용.
 """
 
 import os
@@ -9,21 +10,20 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
 
 # 디렉터리 구조:
-#   <repo>/                 ← 최종 사용자 파일: .env, config/  (배포 시 exe 도 여기)
-#     ├── config/{plan,people}.yaml
-#     └── src/app/…         ← 코드/리소스(static 번들)
+#   <repo>/                 ← 최종 사용자 파일: config/  (배포 시 exe 도 여기)
+#     ├── config/{jira.yml,wbs_config.yaml,people.yaml}
+#     └── app/…             ← 코드/리소스(static 번들)
 #
-# frozen(.exe): 외부 파일(.env, config, cache)은 exe 옆, 번들 리소스(static)는 내부(_MEIPASS).
-SRC_DIR = Path(__file__).resolve().parent.parent          # src/
+# frozen(.exe): 외부 파일(config, cache)은 exe 옆, 번들 리소스(static)는 내부(_MEIPASS).
+SRC_DIR = Path(__file__).resolve().parent.parent          # repo 루트(=app 의 부모)
 
 
 def _find_app_root(candidates):
-    """config/ 또는 .env 가 있는 첫 디렉터리 = 사용자 파일 루트 (dev·컨테이너 모두 대응)."""
+    """config/ 가 있는 첫 디렉터리 = 사용자 파일 루트 (dev·컨테이너 모두 대응)."""
     for c in candidates:
-        if (c / "config").is_dir() or (c / ".env").exists():
+        if (c / "config").is_dir():
             return c
     return candidates[0]
 
@@ -36,7 +36,7 @@ else:
     APP_ROOT = _find_app_root([SRC_DIR.parent, SRC_DIR, Path.cwd()])
     RESOURCE_DIR = SRC_DIR
 
-BASE_DIR = APP_ROOT                    # 외부 파일 기준 (.env, cache)
+BASE_DIR = APP_ROOT                    # 외부 파일 기준 (config, cache)
 STATIC_DIR = RESOURCE_DIR / "app" / "static"   # 번들 리소스
 
 # config 는 prod/dev 분리:
@@ -51,36 +51,47 @@ elif not getattr(sys, "frozen", False) and (SRC_DIR / "config").is_dir():
 else:
     CONFIG_DIR = APP_ROOT / "config"   # prod / exe
 
-# env 파일 선택: LAKE_DOTENV 로 지정, 없으면 .env
-#   - prod/사용자: .env(.example/.prod) 는 repo 루트(=exe 옆) — 노출되는 사용자 설정
-#   - dev 전용:   .env.dev 는 src/ — LAKE_DOTENV=.env.dev 로 지정
-# 루트에서 먼저 찾고 없으면 src/ 에서 찾는다.
-_dotenv = os.getenv("LAKE_DOTENV", ".env")
-for _base in (APP_ROOT, SRC_DIR):
-    _p = _base / _dotenv
-    if _p.exists():
-        load_dotenv(_p)
-        break
-else:
-    load_dotenv(APP_ROOT / _dotenv)
+
+def _load_jira_config():
+    """config/jira.yml 로드. 없으면 {} (→ 전부 기본값 = mock)."""
+    p = CONFIG_DIR / "jira.yml"
+    if not p.exists():
+        return {}
+    with open(p, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 class Settings:
+    """config/jira.yml(중첩) 을 읽어 평면 속성으로 노출. 환경변수가 있으면 우선."""
+
     def __init__(self):
-        self.jira_env = os.getenv("JIRA_ENV", "mock").strip()
-        self.jira_base = os.getenv("JIRA_BASE", "http://localhost:8080").rstrip("/")
-        self.project_key = os.getenv("PROJECT_KEY", "DL")
-        self.jira_user = os.getenv("JIRA_USER", "admin")
-        self.jira_token = os.getenv("JIRA_TOKEN", "admin")
-        self.jira_auth = os.getenv("JIRA_AUTH", "basic").strip()   # basic | bearer
-        self.jira_state_path = os.getenv("JIRA_STATE_PATH", "jira_state.json")
-        self.sp_field_id = os.getenv("SP_FIELD_ID", "customfield_10004")
-        self.epic_link_field_id = os.getenv("EPIC_LINK_FIELD_ID", "customfield_10008")
-        self.confluence_base = os.getenv("CONFLUENCE_BASE", "").rstrip("/")
-        self.cache_db_path = os.getenv("CACHE_DB_PATH", str(BASE_DIR / "cache.sqlite3"))
-        self.cache_ttl_seconds = int(os.getenv("CACHE_TTL_SECONDS", "900"))
-        self.app_host = os.getenv("APP_HOST", "0.0.0.0")
-        self.app_port = int(os.getenv("APP_PORT", "8000"))
+        cfg = _load_jira_config()
+        j = cfg.get("jira") or {}
+        f = j.get("fields") or {}
+        conf = cfg.get("confluence") or {}
+        cache = cfg.get("cache") or {}
+        server = cfg.get("server") or {}
+
+        def pick(env_key, value, default):
+            v = os.getenv(env_key)
+            if v is None:
+                v = value if value is not None else default
+            return v
+
+        self.jira_env = str(pick("JIRA_ENV", cfg.get("env"), "mock")).strip()
+        self.jira_base = str(pick("JIRA_BASE", j.get("base"), "http://localhost:8080")).rstrip("/")
+        self.project_key = str(pick("PROJECT_KEY", j.get("project_key"), "DL"))
+        self.jira_user = str(pick("JIRA_USER", j.get("user"), "admin"))
+        self.jira_token = str(pick("JIRA_TOKEN", j.get("token"), "admin"))
+        self.jira_auth = str(pick("JIRA_AUTH", j.get("auth"), "basic")).strip()   # basic | bearer
+        self.jira_state_path = str(pick("JIRA_STATE_PATH", j.get("state_path"), "jira_state.json"))
+        self.sp_field_id = str(pick("SP_FIELD_ID", f.get("story_point"), "customfield_10004"))
+        self.epic_link_field_id = str(pick("EPIC_LINK_FIELD_ID", f.get("epic_link"), "customfield_10008"))
+        self.confluence_base = str(pick("CONFLUENCE_BASE", conf.get("base"), "")).rstrip("/")
+        self.cache_db_path = str(pick("CACHE_DB_PATH", cache.get("db_path"), str(BASE_DIR / "cache.sqlite3")))
+        self.cache_ttl_seconds = int(pick("CACHE_TTL_SECONDS", cache.get("ttl_seconds"), 900))
+        self.app_host = str(pick("APP_HOST", server.get("host"), "0.0.0.0"))
+        self.app_port = int(pick("APP_PORT", server.get("port"), 8000))
 
 
 @lru_cache

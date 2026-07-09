@@ -3,7 +3,6 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 requests>=2.31
 PyYAML>=6.0
-python-dotenv>=1.0
 
 # 빌드(단일 exe) - PyInstaller. 앱 런타임엔 불필요, exe 패키징 시에만 사용.
 #   pyinstaller lake.spec   ->  dist/lake-task-manager.exe

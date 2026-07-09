@@ -10,8 +10,8 @@
 #     LAKE_BUILD=prod pyinstaller lake.spec → dist/lake-task-manager-prod.exe
 #     (Windows PowerShell:  $env:LAKE_BUILD="prod"; pyinstaller lake.spec)
 #
-# 실행: exe 를 config/ 와 .env 가 있는 폴더에 두고 더블클릭.
-#   static·코드는 exe 내부 번들 / config·.env·cache 는 exe 옆 외부 파일.
+# 실행: exe 를 config/(jira.yml·wbs_config.yaml·people.yaml) 가 있는 폴더에 두고 더블클릭.
+#   static·코드는 exe 내부 번들 / config·cache 는 exe 옆 외부 파일.
 #   prod 최초 1회:  lake-task-manager-prod.exe login  (사내 SSO 통과 → 세션 저장)
 
 import os

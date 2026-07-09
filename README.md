@@ -1,160 +1,161 @@
-# Lake Task Manager 사용 안내
+# Lake Task Manager — 개발자 가이드
 
-Data Lake 사업의 **PMO 대시보드**입니다. 여러분이 **Jira에 등록·관리하는 티켓(Epic/Story/Task/Bug 등)** 을
-source of truth로 두고, 그 위에 **모듈 → WBS Task → Epic 진척률**을 자동으로 굴려서 사업 전체를 한눈에 보여줍니다.
+Data Lake SI 사업용 **읽기전용 PMO 대시보드**. 사내 **Jira DC 8.20.8** 을 source of truth 로 두고,
+그 위에 **Module → WBS Task → Epic 진척률 롤업**을 얇게 얹는다. **FastAPI 백엔드 + Vue3 무빌드 SPA**, 단일 exe 배포.
 
-> 이 도구는 **Jira를 대체하지 않습니다.** 티켓 생성·상태 변경·Story Point 입력은 **평소처럼 Jira에서** 하시면 되고,
-> 이 앱은 그 데이터를 **읽어서 집계만** 합니다. 즉 **여러분이 Jira를 어떻게 세팅하느냐에 따라 여기 숫자가 결정**됩니다.
-> 아래 [Jira 티켓 작성 규칙](#4-jira-티켓-작성-규칙-가장-중요)이 이 문서에서 가장 중요합니다.
-
-대상 사용자: **PM(전체 조망)** 과 **각 모듈 리더(자기 모듈 진척·인력 확인)**.
-
-> 각 화면에도 **`ⓘ 이 화면의 산식`** callout이 있어, 보고 중에 바로 펼쳐 참고할 수 있습니다.
+> 최종 사용자용 사용 안내는 배포 repo 루트 README(사용자 가이드)에 있다.
+> 설계·도메인 규칙 상세는 [`CLAUDE.md`](CLAUDE.md), 진행/백로그는 [`PROGRESS.md`](PROGRESS.md).
+> 명령은 모두 **repo 루트** 기준. Windows 는 **PowerShell**, 그 외는 bash 를 병기한다.
 
 ---
 
-## 1. 실행 방법
+## 1. 3 환경 (`JIRA_ENV`)
 
-1. `lake-task-manager.exe` 를 더블클릭합니다. (설치 불필요, 단일 실행 파일)
-2. 잠시 후 브라우저가 자동으로 열립니다. (`http://localhost:8000`)
-3. 상단 탭으로 3개 화면을 오갑니다: **WBS Dashboard · 현안(PMO_VIT) · 인력 워크로드**.
+같은 계산 코드가 세 환경에서 동일하게 돈다. 환경은 `config/jira.yml` 의 `env:` 로 정하고, **환경변수 `JIRA_ENV` 로 override** 한다.
 
-### 최초 1회 — 사내 Jira SSO 로그인 (운영 환경)
-사내 Jira는 SSO/인증서 로그인이라, 앱이 처음 실 데이터를 읽으려면 **한 번 로그인**이 필요합니다.
+| 환경 | 설명 | Jira | 인증 |
+|------|------|------|------|
+| `mock` | Jira 없이 결정적 가상 데이터(`app/world.py`)를 in-process 소비. **개발 기본값, 제일 빠름.** | 불필요 | 없음 |
+| `local` | Fake Jira 서버(`tools/fake_jira`, :8080)에 **실 HTTP**. REST+인증+캐시 경로 검증. | Fake(:8080) | basic auth |
+| `prod` | 사내 Jira DC, Playwright SSO 세션 재사용. 실데이터(수동 검증만). | 사내 DC | SSO 세션 |
 
-- 화면에 **"사내 Jira SSO 로그인 필요"** 안내가 뜨면 **[SSO 로그인]** 버튼을 누르세요.
-- **크롬 창이 하나 열립니다.** 평소처럼 사내 SSO/인증서 로그인을 끝까지 완료하세요.
-- 로그인이 감지되면 창이 닫히고 **화면이 자동으로 새로고침**됩니다. 이후로는 다시 뜨지 않습니다.
-- 세션은 몇 시간~하루 지나면 만료됩니다. 만료되면 같은 안내가 다시 뜨니 **[SSO 로그인]** 만 한 번 더 누르면 됩니다.
-
-> 데모/미리보기 모드에서는 로그인 없이 가상 데이터로 바로 열립니다.
+> **핵심 불변식**: 같은 `world` 를 mock(in-process)·local(fake HTTP)이 공유 → **mock 출력 == local 출력**. 다르면 회귀.
 
 ---
 
-## 2. 데이터 계층 한눈에
+## 2. 개발 셋업
 
-```
-모듈 (팀/파트)              예: ETL · Catalog · Runtime · Workbench · DataOps · DevOps · Observability
-  └─ WBS Task (연간 계획)   모듈당 2~3개, 시작~종료 일정 보유            ← 이 앱의 config(계획)
-       └─ Epic             하나의 WBS가 여러 Epic으로 구성 (N:M 공유)   ← Jira
-            └─ Story/Task/Bug/Sub-Task (Story Point 보유)              ← Jira
+```bash
+git clone git@github.com:dongyi-kim/lake-task-manager.git
+cd lake-task-manager
+pip install -r requirements.txt        # 최초 1회 (app + pyinstaller)
+# 운영(SSO) 경로까지 만지려면:  pip install -r requirements-sso.txt
 ```
 
-- **핵심 진짜 계산은 "Epic별 SP 진척률" 하나**입니다. WBS·모듈·PMO 숫자는 전부 이 Epic 진척률을 **가중치로 조합**한 결과입니다.
-- **N:M 공유**: 하나의 Epic을 여러 모듈/여러 WBS Task가 **각자 다른 가중치로** 참조할 수 있습니다.
-  (같은 Epic이라도 A모듈엔 60%, B모듈엔 30% 비중일 수 있음)
+**macOS / Linux**: 코드는 순수 Python(FastAPI/uvicorn/requests)이라 그대로 돈다. dev(mock·local)+pytest 만 — prod SSO·exe 빌드는 Windows 배포용.
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt        # dev 전부 커버 (requirements-sso 는 prod 전용, 불필요)
+```
+
+- 설정은 **`config/jira.yml`**(중첩 YAML), 매핑은 `config/{wbs_config.yaml,people.yaml}`. dev 체크아웃에선 `config/` 가 자동으로 잡힌다.
 
 ---
 
-## 3. 탭별 사용법
+## 3. 실행
 
-### 3-1. WBS Dashboard (간트차트)
+```powershell
+# mock (기본) — 바로 UI 확인. http://localhost:8000 자동 오픈
+python run.py
 
-**무엇을 보나** — 모듈별 WBS Task를 간트차트로. 막대의 **가로 길이 = 기간(시작~종료)**, **채워진 정도 = 진척률(%)**.
+# local (fake 서버 상대 실 HTTP 경로 검증) — 터미널 2개
+python run_fake.py                     # 터미널1 — Fake Jira :8080
+$env:JIRA_ENV="local"; python run.py   # 터미널2 — 앱(local → fake)
 
-**어떻게 읽나**
-- 각 막대는 하나의 **WBS Task**입니다. 막대 안에 Task 이름·기간·진척률이 표시됩니다.
-- 막대를 펼치면 그 Task를 구성하는 **Epic들**과 각 Epic의 진척률·가중치가 트리로 보입니다.
-- 상단에 **PMO 전체 진척률**, 모듈 헤더에 **모듈 진척률**이 롤업으로 표시됩니다.
-- **Mock(추정) SP** 는 별도로 표기됩니다 — "아직 안 쪼갠 미래 작업"이 얼마나 분모에 잡혀 있는지 보여주는 검증용 수치입니다.
-
-**산식**
+# 핫리로드 (개발 중)
+uvicorn app.main:app --reload
 ```
-① Epic 진척률 = Σ(자식 SP, 상태=Done) / Σ(자식 SP, 전체)
-② WBS Task 진척률(모듈별) = Σ(Epic 진척률 × weight) / Σ(weight)
-③ 모듈 / PMO 전체 = 하위(WBS·Epic) 진척률의 상위 집계
-```
-- **완료 판정 = statusCategory=Done**(Resolved/Closed). 상태 *이름* 이 아니라 카테고리로 판정 → 커스텀 워크플로에도 견고.
-- **부분 크레딧 없음**: In Progress는 완료로 안 침. Done이냐 아니냐 **이진**.
-- **weight는 상대 정수**면 됩니다. 합이 1이 아니어도 자동 정규화. 예) weight 6·4 → 60% : 40%.
-- **예시**: ETL "실시간 수집 체계" = DL-101(비중 6) + DL-103(비중 4). DL-101이 50%, DL-103이 100%면 → `(50×6 + 100×4)/(6+4) = 70%`.
 
-**리더가 할 일** — 진척률이 이상하면 대개 **Jira 세팅 문제**입니다. Epic Link 미연결, SP 빈칸, 상태 미전이. → [4장](#4-jira-티켓-작성-규칙-가장-중요) 확인.
+bash: `JIRA_ENV=local python run.py` / 지연 주입: `FAKE_LATENCY_MS=800 python run_fake.py`
+
+- `config/jira.yml` 의 dev 기본이 `env: mock` 이라 `python run.py` 는 mock. fake 검증만 `JIRA_ENV=local` 로 켠다.
+- 콘솔에 `Lake Task Manager - http://localhost:8000/  (env=mock)`. 종료 `Ctrl+C`.
+- **검증 포인트**: mock 화면과 local 화면의 숫자(PMO 진척률 등)가 **완전히 같아야** 한다. 다르면 회귀.
+
+### API 스모크 (앱이 뜬 상태에서)
+```bash
+curl http://localhost:8000/api/health
+curl http://localhost:8000/api/wbs
+curl http://localhost:8000/api/vit
+curl http://localhost:8000/api/workload
+curl http://localhost:8000/api/refresh      # 캐시 + 프론트 memo 무효화
+```
+- 리소스 단위 `/api/epic/{key}/tree`·`/api/vit/{key}`·`/api/activity/{user}` 는 화면에서 펼칠 때 lazy 호출.
+- **캐시 확인**: 같은 엔드포인트 2번째 호출이 급격히 빨라지면 warm hit. `/api/refresh` 후 다시 느려지면 정상.
 
 ---
 
-### 3-2. 현안 (PMO_VIT)
+## 4. 테스트
 
-**무엇을 보나** — PMO가 데일리로 챙기는 **핵심 현안**들을 한 줄씩. 구성: `현안 티켓 | 시작~마감 | 진척 | 하위티켓 | 최근 하위소식`.
-
-**어떻게 읽나**
-- 각 행 = **`PMO_VIT` 라벨이 붙은 하나의 현안 티켓**(Epic이든 Task든 상관없음).
-- **하위티켓** 칸: 자손 티켓들의 상태를 색깔 텍스트로. **최근 하위소식** 칸: 자손에서 최근 일어난 활동(생성됨/완료됨/해결됨 + 티켓).
-- 각 티켓 제목·키를 클릭하면 **해당 Jira 티켓으로 바로 이동**합니다.
-- 항목이 많으면 3~5개만 보이고 **[자세히]** 로 펼칩니다.
-
-**산식** — **개수(count) 기반**입니다 (WBS의 SP 기반과 목적이 다름 — 데일리 트래킹용 빠른 지표. 섞지 말 것).
+```bash
+python -m pytest -q                    # 유닛테스트 (계산 로직·config·jql·world 등). 현재 27 passed
+python -m pytest tests/test_rollup.py -q   # 한 파일만
 ```
-현안 진척률 = (자손 티켓 중 상태=Done 개수) / (자손 티켓 전체 개수)
-```
-- 자손 = 그 현안 티켓 아래 **모든 자손**(Epic→티켓→하위티켓).
-- **중복 방지**: 조상에 이미 `PMO_VIT`가 있으면 그 자손 현안은 자동 스킵됩니다.
 
-**리더가 할 일** — 현안으로 띄우고 싶은 **최상위 티켓 하나에만 `PMO_VIT` 라벨**을 답니다. 자손이 자동 집계됩니다.
+- `progress.py`/`rollup.py` 는 순수 함수 → fixture 로 검증. 커버: `test_world`·`test_jql`/`test_atom`(fake 파서)·`test_progress`(SP 롤업)·`test_rollup`(가중조합)·`test_config`(로더/검증)·`test_names`.
+- 통합은 **로컬 Fake Jira 상대로만**. 사내 **prod(SSO) Jira 에 자동 테스트 절대 금지**.
 
 ---
 
-### 3-3. 인력 워크로드 / 활동
+## 5. 빌드 (단일 exe)
 
-**무엇을 보나** — 모듈별 인력 각자의 업무량을 **하나의 가로 막대**로. 모든 인력이 **같은 x축**을 써서 서로 비교됩니다.
+exe 산출·배포는 **배포 repo** `dongyi-kim/lake-task-manager-deploy` 가 관리한다(이 repo 를 submodule 로 핀). 배포 repo 의 `build/` 스크립트를 쓰는 게 정석:
 
-**어떻게 읽나**
-- 막대는 **4개 영역**이 색으로 구분됩니다: `진행중 Task성` · `진행중 VoC성` · `최근 7일 완료 Task성` · `최근 7일 완료 VoC성`.
-- **완료 건은 반투명**으로 표시되어 진행중과 구분됩니다. 막대 왼쪽에 `Task N, VoC M` 수치가 붙습니다.
-- 인력을 클릭하면 그 사람의 **최근 Jira/Confluence 활동 요약**이 펼쳐집니다.
-
-**산식** — **건수(count)** 집계입니다.
+```bash
+# 배포 repo 루트에서
+python build/build.py                  # 기본 → ./lake-task-manager.exe
+python build/build.py --prod           # prod(SSO) → ./lake-task-manager-prod.exe
 ```
-진행중 Task성 = 담당 & 상태 진행중 & (이슈타입 Task 또는 Sub-Task) 개수
-진행중 VoC성  = 담당 & 상태 진행중 & Component=VoC 개수
-7일완료 Task성 / VoC성 = 위와 같되 최근 7일 내 완료(Done) 된 것
+
+submodule 안에서 직접 빌드할 수도 있다:
+
+```powershell
+pyinstaller lake.spec                              # → dist/lake-task-manager.exe
+$env:LAKE_BUILD="prod"; pyinstaller lake.spec      # → dist/lake-task-manager-prod.exe  (bash: LAKE_BUILD=prod)
 ```
-- **Task성** = 이슈 타입 **Task + Sub-Task**. **VoC성** = **Component가 `VoC`**(고객의 소리성 업무).
-- **담당(Assignee)** 기준으로 셉니다.
 
-**리더가 할 일** — 사람이 안 뜨거나 0이면, 인력의 **Jira user id가 명단(config)에 등록됐는지** + 티켓 **Assignee**를 확인하세요.
+- `static`·코드는 exe 내부 번들 / `config/`·cache 는 **exe 옆 외부 파일**.
+- prod 최초 1회 SSO: `lake-task-manager-prod.exe login` (사내 SSO 통과 → `jira_state.json` 저장).
 
----
+## 6. 릴리즈 (배포 repo)
 
-## 4. Jira 티켓 작성 규칙 (가장 중요)
+배포 repo 루트에서 submodule 핀을 옮기고 exe 를 함께 커밋한다:
 
-이 앱의 숫자는 **여러분이 만든 Jira 티켓**에서 나옵니다. 아래 규칙대로 세팅해야 진척률이 정확합니다.
-
-| 항목 | 규칙 | 왜 |
-|---|---|---|
-| **Story Point** | 실제 작업 티켓에 SP를 입력 | Epic 진척률의 분모/분자가 됩니다 |
-| **Epic Link** | 모든 Story/Task/Bug를 **소속 Epic에 Epic Link로 연결** | 연결 안 되면 그 티켓은 Epic 집계에서 **빠집니다** |
-| **상태(Status)** | 완료되면 **Resolved/Closed** 로 전이 | 완료 판정은 상태 이름이 아니라 **statusCategory=Done** 기준 |
-| **버그/운영 티켓** | **SP = 0** 으로 입력 | 진척률에 영향 없이(분자·분모 0) 티켓만 남김 |
-| **SP 빈칸(미입력)** | 자동 기본값: **Bug → 0, 그 외 → 1** | 실수로 비워도 최소값으로 계산. *명시적 0* 과 *빈칸* 은 구분됩니다 |
-| **아직 안 쪼갠 미래 작업** | **Mock 티켓**: `mock` 라벨 + 추정 SP + 상태 To Do | 분모에 미리 잡혀 "아직 안 됨"이 정확히 반영. 별도 표기됨 |
-| **현안 등록** | 최상위 티켓에 **`PMO_VIT` 라벨** | 현안 탭에 뜨고 자손이 자동 집계 (조상에 이미 있으면 자식엔 달지 말 것) |
-| **VoC성 업무** | **Component = `VoC`** 지정 | 워크로드에서 VoC성으로 분류 |
-| **담당자** | Assignee 정확히 지정 | 워크로드·활동 집계 대상 |
-
-> **Mock 티켓 주의(이중 계산):** 나중에 실제 티켓을 쪼개 만들면 mock SP와 겹칩니다.
-> 이때 mock의 SP를 깎거나 0으로 내리는 판단은 **사람이 직접** 합니다 — 도구가 mock을 자동 삭제하지 않습니다.
+```bash
+python build/build.py --pull                       # 최신 소스로 핀 이동 + 빌드
+git add lake-task-manager lake-task-manager.exe
+git commit -m "release: exe rebuild @<sha>" && git push
+```
 
 ---
 
-## 5. 데이터 갱신 (캐시)
+## 7. 프로젝트 구조 (요약)
 
-- Jira 조회는 느려서 **티켓 단위로 캐시**합니다. 화면이 즉시 뜨는 건 캐시 덕분입니다.
-- **최신 상태를 강제로 다시 읽으려면** 화면의 **[새로고침]** 버튼을 누르세요(캐시 비우고 Jira 재조회).
-- 방금 Jira에서 바꾼 내용이 안 보이면 → [새로고침] 을 눌러 주세요.
+```
+lake-task-manager/
+├── config/{jira.yml,wbs_config.yaml,people.yaml}   # 환경설정 + 매핑 (git 커밋, 사용자 편집)
+├── run.py / run_fake.py            # 앱 런처 / Fake Jira 서버 런처
+├── lake.spec                       # PyInstaller 단일 exe 스펙
+├── requirements.txt / requirements-sso.txt
+├── app/                            # FastAPI 백엔드 + 정적 프론트
+│   ├── main.py                     # 라우트(/api/wbs·vit·workload·activity·health·refresh) + static
+│   ├── settings.py                 # config/jira.yml + YAML 로더/검증, frozen(exe)·컨테이너 경로 인식
+│   ├── progress.py / rollup.py     # 순수 계산 (Epic SP 롤업 / WBS·Module·PMO 가중 조합)
+│   ├── jira_client.py / cache.py   # REST 클라이언트(AuthProvider 주입) / SQLite TTL 캐시
+│   ├── vit.py / workload.py        # 기능2 현안 / 기능3 워크로드
+│   ├── world.py / worldcontent.py / mockdata.py   # 단일 결정적 데이터 세계 (+ mock 어댑터)
+│   ├── auth/{base,basic,sso_session}.py            # 인증 추상화 (basic / SSO)
+│   └── static/                     # Vue 3 무빌드 SPA
+├── tools/fake_jira/                # Fake Jira/Confluence REST 서버 (world 를 HTTP 로 서빙)
+└── tests/                          # world/jql/atom/progress/rollup/config/names 유닛테스트
+```
+
+### 아키텍처 규칙 (요약 — 상세는 `CLAUDE.md`)
+- `progress.py`/`rollup.py` 는 **순수 함수**. 네트워크·인증 의존 금지.
+- 인증은 `AuthProvider`(`app/auth`) 뒤로 추상화 → 구현체 교체로 환경 전환. `JiraClient` 는 어떤 인증인지 몰라야 한다.
+- 환경 선택은 `config/jira.yml`(`env`, 환경변수 `JIRA_ENV` override) 로만. **커스텀 필드 ID·매핑 하드코딩 금지** (전부 config).
+- 완료 판정은 상태명이 아니라 **`statusCategory.key == "done"`**.
 
 ---
 
-## 6. 자주 겪는 상황
+## 8. 자주 막히는 것
 
 | 증상 | 원인 / 조치 |
 |---|---|
-| Epic/WBS 진척률이 예상보다 낮음 | 자식 티켓이 **Epic Link 미연결**이거나 **SP 빈칸/누락**. Jira에서 연결·SP 확인 후 [새로고침] |
-| 완료했는데 진척에 반영 안 됨 | 상태가 **Resolved/Closed(=Done)** 로 전이됐는지 확인 (In Progress는 미완료로 봄) |
-| 현안 탭에 티켓이 중복으로 안 뜸 | 정상 — 조상에 이미 `PMO_VIT`면 자손은 스킵됩니다 |
-| 워크로드에 사람이 없음/0 | 인력 명단(config) 등록 여부 + 티켓 **Assignee** 확인 |
-| "SSO 로그인 필요" 안내가 뜸 | 세션 만료 — **[SSO 로그인]** 한 번 더 (1장 참고) |
-
----
-
-*문의: config(WBS 매핑·가중치·인력 명단) 변경이나 새 모듈 추가는 PMO/관리자에게 요청하세요.*
+| `:8080` 안 붙음 | fake 서버(터미널1)부터 띄웠는지, 앱 터미널에 `JIRA_ENV=local` 줬는지 확인 |
+| mock/local 숫자 다름 | 회귀 — `world.py` 한 소스인데 갈라짐. `python -m pytest -q` 부터 |
+| 포트 점유 | PowerShell: `Get-NetTCPConnection -LocalPort 8000,8080 \| Select -Expand OwningProcess -Unique \| % { Stop-Process -Id $_ -Force }` / mac·linux: `lsof -ti:8000 -ti:8080 \| xargs kill -9` |
+| 콘솔 한글 깨짐 | `run.py` 가 utf-8 강제하지만, 그래도면 `PYTHONIOENCODING=utf-8` |
+| prod 세션 만료 | 화면의 "SSO 로그인" 버튼 또는 `<exe> login` 재실행 (SSO 는 반자동이 한계) |
+| exe 가 옛 화면 | 프론트 번들 캐시 — 브라우저 `Ctrl+Shift+R`, exe/서버 재시작 |

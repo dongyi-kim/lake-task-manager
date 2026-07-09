@@ -247,8 +247,8 @@ progress = Σ(SP where statusCategory.key == "done") / Σ(SP 전체)
 무설치·무라이선스·무가상화. `local` provider가 **진짜 HTTP**로 붙어 REST+인증+캐시 경로를 그대로 검증한다.
 
 ```bash
-cd src && python run_fake.py                     # :8080 (FAKE_LATENCY_MS 로 지연 주입)
-LAKE_DOTENV=.env.dev python run.py               # 앱(local) → fake
+python run_fake.py                               # :8080 (FAKE_LATENCY_MS 로 지연 주입)
+JIRA_ENV=local python run.py                     # 앱(local) → fake
 ```
 
 - 테스트 데이터는 **전부 fake API 레벨**(`app/world.py`, 결정적). Jira·DB·seed 불필요.
@@ -261,26 +261,27 @@ LAKE_DOTENV=.env.dev python run.py               # 앱(local) → fake
 ## 8. 프로젝트 구조
 
 **실서비스화 형태** (FastAPI 백엔드 + 정적 프론트, git 공유 로컬 웹앱).
-**루트는 최종 사용자 파일(exe·.env·config)만**, 나머지 코드/도구는 `src/`.
-진행 상황·TODO·History 는 **`src/PROGRESS.md`** 로 관리한다.
+설정·매핑은 **`config/`**(jira.yml·wbs_config.yaml·people.yaml), 나머지는 코드/도구.
+진행 상황·TODO·History 는 **`PROGRESS.md`** 로 관리한다.
+
+> ⚠️ 아래 트리는 과거 `src/` 레이아웃 기준으로 **일부 낡음** — 현재 코드는 **repo 루트**에 있다(`src/` 없음). 구조 전면 갱신은 별도 예정.
 
 ```
-lake-task-manager/               # repo 루트 = 최종 사용자 파일만
+lake-task-manager/               # repo 루트
 ├── CLAUDE.md                    # 프로젝트 지침 (루트 관례 유지)
-├── .env.example / .env.prod     # prod/사용자 설정 (→ .env). 노출됨. .env 는 git 제외
-├── config/                      # prod/dev 공용 (전 환경 동일). 사용자 편집 · git 커밋
+├── config/                      # 환경설정 + 매핑. 사용자 편집 · git 커밋
+│   ├── jira.yml                 # 환경설정(env·jira·confluence·cache·server). 중첩 YAML
 │   ├── wbs_config.yaml          # 기능1: module → WBS task → epic(ticket=DL-xxxx, weight 정수)
 │   └── people.yaml              # 기능3: module → [jira user id]
-├── (lake-task-manager.exe)      # 배포 시 여기 (빌드 산출물) — config/.env 와 나란히
-└── src/                         # 코드·도구 일체 (개발자 영역)
-    ├── .env.dev                 # dev 전용 env (fake:8080). LAKE_DOTENV=.env.dev 로 로드
+├── (lake-task-manager.exe)      # 배포 시 여기 (빌드 산출물) — config/ 와 나란히
+└── src/                         # (과거 레이아웃 — 실제론 아래가 전부 repo 루트에 있음)
     ├── PROGRESS.md              # TODO / 진행 History
     ├── run.py / run_fake.py     # 앱 런처 / Fake Jira 서버 런처
     ├── lake.spec                # PyInstaller — 단일 exe 빌드
     ├── requirements.txt / requirements-sso.txt
     ├── app/                     # FastAPI 백엔드 + 정적 프론트
     │   ├── main.py              # 라우트(/api/wbs·vit·workload·activity·health·refresh) + static
-    │   ├── settings.py          # .env + wbs_config 로더/검증, frozen(exe)·컨테이너 경로 인식
+    │   ├── settings.py          # config/jira.yml + wbs_config 로더/검증, frozen(exe)·컨테이너 경로 인식
     │   ├── world.py             # ★ 단일 결정적 데이터 세계 (이슈·설명·코멘트·활동·confluence)
     │   ├── worldcontent.py      # description/comment/activity 다양성 풀
     │   ├── mockdata.py          # mock 어댑터 (world 를 in-process 소비)
@@ -303,19 +304,19 @@ lake-task-manager/               # repo 루트 = 최종 사용자 파일만
   - Docker/WSL2 불가 + DC 라이선스 발급 중단 → 네이티브 Jira 대신 **Fake 서버가 로컬 dev 기본**. (`seed`/native 가이드는 실 Jira 확보 시 옵션으로 보존)
 - **prod**: 사내 Jira DC (Playwright SSO 세션 재사용). Fake 와 **동일 파서**를 그대로 씀.
 
-`settings.py` 는 `config/`·`.env` 를 **repo 루트(dev) / exe 옆(frozen) / /srv(컨테이너)** 어디에 있든 자동으로 찾는다.
+`settings.py` 는 `config/`(jira.yml 포함)를 **repo 루트(dev) / exe 옆(frozen) / /srv(컨테이너)** 어디에 있든 자동으로 찾는다.
 
-### 실행 방식 (dev = Fake, `src/` 기준)
-- mock: `cd src && python run.py`  (또는 `uvicorn app.main:app`).
-- **local(fake)**: 터미널1 `cd src && python run_fake.py` (:8080, `FAKE_LATENCY_MS` 로 지연 주입 가능) → 터미널2 `LAKE_DOTENV=.env.dev python run.py`.
-- 최종 사용자: **단일 exe** (`cd src && pyinstaller lake.spec`). prod SSO 는 설치된 Chrome 재사용(Chromium 미번들).
+### 실행 방식 (dev = Fake)
+- mock: `python run.py`  (또는 `uvicorn app.main:app`). dev `config/jira.yml` 기본이 `env: mock`.
+- **local(fake)**: 터미널1 `python run_fake.py` (:8080, `FAKE_LATENCY_MS` 로 지연 주입 가능) → 터미널2 `JIRA_ENV=local python run.py`.
+- 최종 사용자: **단일 exe** (`pyinstaller lake.spec`). prod SSO 는 설치된 Chrome 재사용(Chromium 미번들).
 
 ### 아키텍처 규칙
 1. `progress.py`는 **순수 함수**. 입력=정규화 이슈 리스트, 출력=Epic 진척률 dict. 네트워크/인증 의존 금지.
 2. `rollup.py`(다운스트림)는 Epic 진척률 + `wbs_config.yaml`(정규화 plan)을 받아 WBS/Module/PMO를 조합. 역시 순수.
 3. 인증은 `AuthProvider` 인터페이스(`app/auth`) 뒤로 숨긴다. 구현체 교체로 환경 전환.
 4. `JiraClient`는 `AuthProvider`를 주입받아 REST 호출. **어떤 인증인지 몰라야 한다.** 모든 호출은 `cache` 경유.
-5. 환경 선택은 `.env`(`JIRA_ENV`)로만. 커스텀 필드 ID·매핑 하드코딩 금지.
+5. 환경 선택은 `config/jira.yml`(`env`, 환경변수 `JIRA_ENV` 로 override)로만. 커스텀 필드 ID·매핑 하드코딩 금지.
 6. **mock/실 Jira 어댑터는 동일한 정규화 이슈 형태**를 반환 → `progress.py`가 양쪽을 그대로 소비.
 7. **테스트 데이터는 `app/world.py` 단일 소스**. mock(in-process)·fake 서버(HTTP)가 이를 공유 → 두 경로 출력 일치.
 
@@ -333,7 +334,7 @@ lake-task-manager/               # repo 루트 = 최종 사용자 파일만
 
 ## 10. 하지 말 것
 
-- 사내 자격증명/세션 파일(`jira_state.json`, `.env.prod`) git 커밋 금지 → `.gitignore`.
+- 사내 SSO 세션 파일(`jira_state.json`) git 커밋 금지 → `.gitignore`. (`config/jira.yml` 은 placeholder 템플릿이라 커밋 대상 — 실 비밀은 세션 파일에만.)
 - 상태명(status name) 하드코딩 금지 → `statusCategory.key` 사용.
 - 커스텀 필드 ID 하드코딩 금지 → `config`에서 환경별 주입.
 - 사내 Jira에 대한 **무인 CronJob 가정 금지** → SSO 세션 만료로 반자동이 한계.
