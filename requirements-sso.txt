@@ -1,4 +1,4 @@
-# 운영(사내 SSO) 경로 전용 — Playwright 세션 재사용
+# Prod (corporate SSO) path only - Playwright session reuse
 -r requirements.txt
 playwright>=1.44
-# 설치 후: playwright install chromium
+# After install: `playwright install chromium` is NOT required (reuses installed Chrome)

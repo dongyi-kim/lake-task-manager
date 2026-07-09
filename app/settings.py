@@ -39,22 +39,17 @@ else:
 BASE_DIR = APP_ROOT                    # 외부 파일 기준 (config, cache)
 STATIC_DIR = RESOURCE_DIR / "app" / "static"   # 번들 리소스
 
-# config 위치 결정 (우선순위):
-#   1) `CONFIG_DIR` 환경변수 → 강제 지정.
-#   2) dev(소스 체크아웃) → `src/config/` (fake/샘플 데이터).
-#   3) frozen(exe): exe 옆 `config/` 가 있으면 그걸(외부 override), 없으면 exe 내부 번들 config.
-#      → exe **하나만** 있어도 번들 config 로 자립 실행(기본 mock). 외부 config 로 덮어쓰기 가능.
-#   4) 그 외(컨테이너 등) → `APP_ROOT/config`.
+# config 는 prod/dev 분리:
+#   - prod(exe·배포) → repo 루트 `config/`  (사용자 노출, 실제 데이터)
+#   - dev(소스 체크아웃) → `src/config/`     (fake/샘플 데이터)
+#   - `CONFIG_DIR` 환경변수로 강제 지정 가능.
 _cfg_env = os.getenv("CONFIG_DIR")
 if _cfg_env:
     CONFIG_DIR = Path(_cfg_env) if os.path.isabs(_cfg_env) else (APP_ROOT / _cfg_env)
 elif not getattr(sys, "frozen", False) and (SRC_DIR / "config").is_dir():
     CONFIG_DIR = SRC_DIR / "config"    # dev 체크아웃
-elif getattr(sys, "frozen", False):
-    _ext = APP_ROOT / "config"         # exe 옆 외부 config (있으면 override)
-    CONFIG_DIR = _ext if _ext.is_dir() else (RESOURCE_DIR / "config")   # 없으면 번들 config
 else:
-    CONFIG_DIR = APP_ROOT / "config"   # 컨테이너 등
+    CONFIG_DIR = APP_ROOT / "config"   # prod / exe
 
 
 def _load_jira_config():

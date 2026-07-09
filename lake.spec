@@ -10,9 +10,8 @@
 #     LAKE_BUILD=prod pyinstaller lake.spec → dist/lake-task-manager-prod.exe
 #     (Windows PowerShell:  $env:LAKE_BUILD="prod"; pyinstaller lake.spec)
 #
-# 실행: exe 더블클릭만으로 자립 실행(기본 config 번들 = mock 데모).
-#   static·코드·기본 config 는 exe 내부 번들. exe 옆에 config/ 를 두면 그걸로 override(prod/실데이터).
-#   cache(sqlite) 는 exe 옆에 생성되는 외부 파일.
+# 실행: exe 를 config/(jira.yml·wbs_config.yaml·people.yaml) 가 있는 폴더에 두고 더블클릭.
+#   static·코드는 exe 내부 번들 / config·cache 는 exe 옆 외부 파일.
 #   prod 최초 1회:  lake-task-manager-prod.exe login  (사내 SSO 통과 → 세션 저장)
 
 import os
@@ -25,10 +24,7 @@ hiddenimports = collect_submodules("uvicorn") + [
     "app.cache", "app.mockdata", "app.vit", "app.workload", "app.settings",
     "app.auth.base", "app.auth.basic",
 ]
-datas = [
-    ("app/static", "app/static"),   # 프론트(무빌드 SPA)
-    ("config", "config"),           # 기본 config 번들 → exe 하나만으로 자립 실행. 옆에 config/ 두면 override
-]
+datas = [("app/static", "app/static")]
 binaries = []
 excludes = []
 

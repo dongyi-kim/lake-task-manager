@@ -4,10 +4,10 @@ uvicorn[standard]>=0.29
 requests>=2.31
 PyYAML>=6.0
 
-# 빌드(단일 exe) - PyInstaller. 앱 런타임엔 불필요, exe 패키징 시에만 사용.
+# Build (single exe) - PyInstaller. Not needed at app runtime, only for packaging.
 #   pyinstaller lake.spec   ->  dist/lake-task-manager.exe
-#   (altgraph / pefile / pyinstaller-hooks-contrib / pywin32-ctypes 는 자동 설치되는 하위 의존)
+#   (altgraph / pefile / pyinstaller-hooks-contrib / pywin32-ctypes are pulled in automatically)
 pyinstaller>=6.0
 
-# 운영(SSO) 경로는 별도:  pip install -r requirements-sso.txt
-#   playwright>=1.44  (+ playwright install chromium)
+# Prod (SSO) path is separate:  pip install -r requirements-sso.txt
+#   playwright>=1.44  (Chromium not bundled; reuses installed Chrome)
