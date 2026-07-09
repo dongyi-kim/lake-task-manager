@@ -16,6 +16,8 @@
   --wl-task:#8fb5e2; --wl-voc:#eaa9a4;
   /* 인력 구분 뱃지 (개발=파랑 / 운영=주황) */
   --dev-fg:#1d4ed8; --dev-bg:rgba(37,99,235,.13); --ops-fg:#b45309; --ops-bg:rgba(217,119,6,.15);
+  /* 마감 임박도 (D-day): 여유=노랑 / 임박·초과=빨강 */
+  --warn:#b45309; --warn-bg:rgba(217,119,6,.14); --danger:#c62828; --danger-bg:rgba(198,40,40,.12);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -25,6 +27,7 @@
     --shadow:0 1px 3px rgba(0,0,0,.4);
     --st-prog:#5aa6ee;
     --dev-fg:#93c5fd; --dev-bg:rgba(59,130,246,.20); --ops-fg:#fbbf24; --ops-bg:rgba(245,158,11,.18);
+    --warn:#fbbf24; --warn-bg:rgba(245,158,11,.20); --danger:#f87171; --danger-bg:rgba(239,68,68,.22);
   }
 }
 :root[data-theme="dark"] {
@@ -33,10 +36,12 @@
   --track:#2c2c2a; --today:#e66767; --grid2:#34342f; --grid:#232322; --mock:#e6b352; --shadow:0 1px 3px rgba(0,0,0,.4);
   --st-prog:#5aa6ee;
   --dev-fg:#93c5fd; --dev-bg:rgba(59,130,246,.20); --ops-fg:#fbbf24; --ops-bg:rgba(245,158,11,.18);
+  --warn:#fbbf24; --warn-bg:rgba(245,158,11,.20); --danger:#f87171; --danger-bg:rgba(239,68,68,.22);
 }
 :root[data-theme="light"] {
   --bg:#f9f9f7; --panel:#fcfcfb; --panel-2:#f2f1ee; --border:#e1e0d9;
   --text:#0b0b0b; --muted:#52514e; --accent:#6d4fc0; --done:#147a52;
   --track:#e5e4de; --today:#d03b3b; --grid2:#d3d2ca; --st-prog:#2f8fe0;
   --dev-fg:#1d4ed8; --dev-bg:rgba(37,99,235,.13); --ops-fg:#b45309; --ops-bg:rgba(217,119,6,.15);
+  --warn:#b45309; --warn-bg:rgba(217,119,6,.14); --danger:#c62828; --danger-bg:rgba(198,40,40,.12);
 }

@@ -12,15 +12,25 @@ function currentRoute() { return location.hash.replace("#/", "") || "wbs"; }
 export default {
   name: "AppRoot",
   components: { FormulaCallout, LoginOverlay },
-  data() { return { route: currentRoute() }; },
+  data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light" }; },
   computed: { view() { return ROUTES[this.route] || ROUTES.wbs; } },
   mounted() {
     window.addEventListener("hashchange", () => { this.route = currentRoute(); });
+  },
+  methods: {
+    toggleTheme() {
+      this.theme = this.theme === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", this.theme);
+      try { localStorage.setItem("theme", this.theme); } catch (e) {}
+    },
   },
   template: `
     <div class="wrap">
       <header class="top">
         <h1>Lake Task Manager <span class="sub">Data Lake · PMO</span></h1>
+        <button class="theme-btn" @click="toggleTheme" :title="theme === 'dark' ? '라이트 모드로' : '다크 모드로'">
+          <span v-if="theme === 'dark'">☀ Light</span><span v-else>🌙 Dark</span>
+        </button>
       </header>
       <nav class="tabs">
         <a :class="{ on: route === 'wbs' }" href="#/wbs">WBS Dashboard</a>

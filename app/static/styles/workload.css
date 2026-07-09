@@ -34,14 +34,22 @@
 .sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .3px; }
 .sec-t > b { color: var(--text); }
 
-/* 티켓 카드 — 현안(VIT) 트리 카드와 유사한 디자인 */
-.wtk { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 6px 9px; margin-bottom: 6px; }
-.wtk.done { opacity: .82; }
-.wtk .l1 { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.wtk .ky { font-weight: 600; flex: none; }
-.wtk .ky .lnk { font-weight: 600; }
-.wtk .sm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
-.wtk .pill { flex: none; white-space: nowrap; }
-.wtk .meta { margin-top: 3px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.wtk .meta.nodue { font-style: italic; opacity: .8; }
-.wtk .meta .doneat { color: var(--st-done); }
+/* 티켓 카드 — 타입뱃지 + 번호 + 제목 + 일정 뱃지. 공간 남으면 한 줄, 좁으면 일정만 아래로 줄바꿈 */
+.wtk { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px;
+       border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 6px 9px; margin-bottom: 6px; }
+.wtk.done { opacity: .85; }
+.wtk .tbadge { flex: none; }
+.wtk .ky, .wtk .ky .lnk { font-weight: 600; flex: none; }
+.wtk .sm { flex: 1 1 8em; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.wtk .sched { flex: 0 1 auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+
+/* 일정 뱃지 (Due / Finished) + 마감 임박도 칩(D-day) */
+.dbadge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px;
+          border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.dbadge.nodue { font-style: italic; opacity: .85; }
+.dbadge.fin { color: var(--st-done); border-color: var(--st-done); background: transparent; }
+.dchip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px;
+         font-size: 11px; font-weight: 800; white-space: nowrap; border: 1px solid currentColor; }
+.dchip.warn { color: var(--warn); background: var(--warn-bg); }
+.dchip.danger { color: var(--danger); background: var(--danger-bg); }
+.dbadge .ic, .dchip .ic { width: 12px; height: 12px; flex: none; }

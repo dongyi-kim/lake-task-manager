@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Lake Task Manager</title>
+<script>
+  // 테마 초기화 (paint 전 실행 → 깜빡임 방지). 저장값 우선, 없으면 시스템값을 '고정'.
+  (function () {
+    try {
+      var t = localStorage.getItem("theme") ||
+        (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  })();
+</script>
 <link rel="stylesheet" href="fonts.css">
 <link rel="stylesheet" href="styles/tokens.css">
 <link rel="stylesheet" href="styles/base.css">

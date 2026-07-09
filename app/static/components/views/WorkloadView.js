@@ -6,11 +6,10 @@ import { moduleColor } from "../../lib/colors.js";
 import { ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";
 import ProgressBar from "../ui/ProgressBar.js";
 import TypeBadge from "../ui/TypeBadge.js";
-import StatusPill from "../ui/StatusPill.js";
 
 export default {
   name: "WorkloadView",
-  components: { ProgressBar, TypeBadge, StatusPill },
+  components: { ProgressBar, TypeBadge },
   data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {} }; },
   created() { this.bodyRefs = {}; },   // 비반응 DOM 참조(모듈 body)
   async mounted() {
@@ -75,8 +74,16 @@ export default {
       }
     },
     tk(key) { return tkt(key, this.d && this.d.jiraBase); },
-    dueLine(t) { return t.due ? ("Due Date : " + ymd(t.due) + " (" + dday(t.due) + ")") : "마감 설정되지 않음"; },
-    doneLine(t) { return t.resolved ? ("완료 " + ymdhm(t.resolved)) : ""; },
+    fy(s) { return ymd(s); },
+    fdt(s) { return ymdhm(s); },
+    dd(s) { return dday(s); },
+    ddCls(iso) {
+      // D-4 이상(여유) = 노랑(warn), D-3~D+(임박·초과) = 빨강(danger)
+      const due = new Date(iso.substring(0, 10) + "T00:00:00");
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const days = Math.round((due - today) / 86400000);
+      return days >= 4 ? "warn" : "danger";
+    },
   },
   template: `
   <div>
@@ -130,24 +137,25 @@ export default {
                   <div>
                     <div class="sec-t">진행 중 <b>{{ tkd[p.id].inProgress.length }}</b></div>
                     <div v-for="t in tkd[p.id].inProgress" :key="t.key" class="wtk">
-                      <div class="l1">
-                        <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
-                        <span class="sm">{{ t.summary }}</span>
-                        <StatusPill :cat="t.statusCategory" :label="t.status" />
-                      </div>
-                      <div class="meta" :class="{ nodue: !t.due }">{{ dueLine(t) }}</div>
+                      <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
+                      <span class="sm">{{ t.summary }}</span>
+                      <span class="sched">
+                        <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
+                        <span v-else class="dbadge nodue">마감 설정되지 않음</span>
+                        <span v-if="t.due" class="dchip" :class="ddCls(t.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(t.due) }}</span>
+                      </span>
                     </div>
                     <div v-if="!tkd[p.id].inProgress.length" class="muted">진행 중 티켓 없음</div>
                   </div>
                   <div>
                     <div class="sec-t">최근 7일 완료 <b>{{ tkd[p.id].done7d.length }}</b></div>
                     <div v-for="t in tkd[p.id].done7d" :key="t.key" class="wtk done">
-                      <div class="l1">
-                        <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
-                        <span class="sm">{{ t.summary }}</span>
-                        <StatusPill :cat="t.statusCategory" :label="t.status" />
-                      </div>
-                      <div class="meta" :class="{ nodue: !t.due }">{{ dueLine(t) }} <span class="doneat">· {{ doneLine(t) }}</span></div>
+                      <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
+                      <span class="sm">{{ t.summary }}</span>
+                      <span class="sched">
+                        <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
+                        <span class="dbadge fin"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5 11-11"/></svg>Finished {{ fdt(t.resolved) }}</span>
+                      </span>
                     </div>
                     <div v-if="!tkd[p.id].done7d.length" class="muted">최근 7일 완료 티켓 없음</div>
                   </div>
