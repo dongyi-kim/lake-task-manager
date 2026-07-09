@@ -27,7 +27,8 @@
 
 .plus { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); border-radius: 7px; width: 30px; height: 26px; cursor: pointer; font-size: 14px; }
 .plus:hover { color: var(--text); }
-.act { padding: 8px 16px 14px 40px; background: var(--panel-2); border-top: 1px solid var(--border); }
+/* position/z-index: 모듈 평균 세로선(.mavg-line, z-index:3)이 펼친 상세 위로 지나가지 않게 덮는다 */
+.act { position: relative; z-index: 5; padding: 8px 16px 14px 40px; background: var(--panel-2); border-top: 1px solid var(--border); }
 .tcols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
 @media (max-width: 900px) { .tcols { grid-template-columns: 1fr; } }
 .sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .3px; }
