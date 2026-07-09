@@ -11,6 +11,8 @@ Lake Task Manager — FastAPI 진입점.
 JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 """
 
+import threading
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +28,11 @@ app = FastAPI(title="Lake Task Manager")
 _settings = get_settings()
 _cache = Cache(_settings.cache_db_path)
 _client = JiraClient(_settings, _cache)
+
+# 앱 창 모드(run.py)에서 SSO 로그인을 '같은 창'으로 처리하기 위한 in-process 신호.
+#   run.py 가 _window_login=True 로 설정하고 _login_requested 를 폴링해 앱 창에서 로그인 구동.
+_login_requested = threading.Event()
+_window_login = False
 
 
 @app.exception_handler(SessionExpired)
@@ -45,10 +52,15 @@ def health():
 
 @app.post("/api/login")
 def api_login():
-    """[prod] 설치된 Chrome 을 띄워 SSO 로그인(폴링 감지) 후 세션 저장.
+    """[prod] SSO 로그인.
+    - 앱 창 모드(run.py): 같은 창에서 로그인하도록 신호만 보내고 즉시 반환(pending).
+    - 그 외(폴백): 별도 Chromium 창을 띄워 로그인 폴링(login_wait).
     mock/local 은 로그인 불필요 → 즉시 ok."""
     if _settings.jira_env != "prod":
         return {"ok": True, "note": f"env={_settings.jira_env}: 로그인 불필요"}
+    if _window_login:
+        _login_requested.set()                       # run.py 가 앱 창에서 구동
+        return {"ok": True, "pending": True}
     ok = _client.login()
     return JSONResponse({"ok": ok}, status_code=200 if ok else 504)
 

@@ -12,10 +12,11 @@ export default {
   methods: {
     async doLogin() {
       this.busy = true;
-      this.msg = "브라우저 창에서 사내 SSO/인증서 로그인을 끝까지 완료하세요. 완료를 감지하면 자동으로 새로고침합니다…";
+      this.msg = "잠시 후 이 창이 사내 SSO 로그인 페이지로 이동합니다. 로그인을 끝까지 완료하면 자동으로 앱으로 돌아옵니다…";
       try {
         const r = await api.login();
-        if (r && r.ok) { location.reload(); return; }
+        if (r && r.pending) return;                    // 앱 창 모드: 이 창이 Jira 로 이동됨(대기)
+        if (r && r.ok) { location.reload(); return; }  // 폴백(별도 창): 성공 시 새로고침
         this.msg = "로그인이 완료되지 않았습니다(시간 초과/취소). 다시 시도하세요.";
       } catch (e) { this.msg = "로그인 실패: " + e.message; }
       this.busy = false;

@@ -39,10 +39,40 @@ def _serve_bg(s):
     return server
 
 
+def _do_login_in_window(s, page, context, appmain, timeout=300):
+    """[prod] 같은 앱 창에서 사내 SSO 로그인 구동: Jira 로 이동 → 인증 감지 → 세션 저장 → 앱 복귀."""
+    from app.auth.sso_session import _authed
+    appmain._login_requested.clear()
+    base = s.jira_base.rstrip("/")
+    home = f"http://localhost:{s.app_port}/"
+    try:
+        page.goto(base, wait_until="domcontentloaded")
+        deadline = time.monotonic() + timeout
+        ok = False
+        while time.monotonic() < deadline and not page.is_closed():
+            if _authed(context, base):
+                context.storage_state(path=appmain._client._state_path())   # 세션 저장
+                appmain._client.reset_provider()                            # 백엔드가 새 세션 사용
+                ok = True
+                break
+            page.wait_for_timeout(1500)
+        print("[login] " + ("완료 — 세션 저장" if ok else "미완료(시간초과/취소)"))
+    except Exception:
+        pass
+    finally:
+        try:
+            if not page.is_closed():
+                page.goto(home, wait_until="domcontentloaded")             # 앱으로 복귀
+        except Exception:
+            pass
+
+
 def _run_app_window(s, headless=False):
-    """앱 창(Playwright Chromium)으로 실행. 창을 닫으면 서버 종료 후 반환."""
+    """앱 창(Playwright Chromium)으로 실행. 로그인도 같은 창에서. 창 닫으면 서버 종료 후 반환."""
     url = f"http://localhost:{s.app_port}/"
     server = _serve_bg(s)
+    import app.main as appmain
+    appmain._window_login = True                       # /api/login 이 이 창에서 로그인하도록
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
     browser = p.chromium.launch(
@@ -50,13 +80,16 @@ def _run_app_window(s, headless=False):
         ignore_default_args=["--enable-automation"],   # '자동화 제어 중' 안내바 제거
         args=["--no-first-run", "--no-default-browser-check"],
     )
-    page = browser.new_page(no_viewport=True)          # 창 크기에 맞춰 렌더
+    context = browser.new_context(no_viewport=True)    # 창 크기에 맞춰 렌더
+    page = context.new_page()
     page.goto(url, wait_until="domcontentloaded")
     print(f"Lake Task Manager - {url}  (env={s.jira_env})  [이 창을 닫으면 종료됩니다]")
-    # 창(페이지)이 닫힐 때까지 대기 — wait_for_timeout 이 이벤트를 펌프하고, 닫히면 예외.
+    # 창이 닫힐 때까지 대기. 로그인 요청(_login_requested)이 오면 같은 창에서 SSO 구동.
     try:
         while browser.is_connected():
             page.wait_for_timeout(500)
+            if appmain._login_requested.is_set():
+                _do_login_in_window(s, page, context, appmain)
     except Exception:
         pass
     try:
