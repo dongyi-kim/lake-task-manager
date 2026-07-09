@@ -1,9 +1,10 @@
 """
 Lake Task Manager — FastAPI 진입점.
 - /api/wbs            : 기능1 WBS Dashboard (wbs_config.yaml + Jira Epic 진척률, 캐시)
-- /api/vit            : 기능2 PMO_VIT 현안 (Component별 그룹 + 자손 트리/소식/코멘트)
+- /api/vit            : 기능2 PMO_VIT 현안 (모듈별 그룹 + 직계 하위 티켓 + 자손 트리/코멘트 lazy)
 - /api/workload       : 기능3 인력 워크로드 (모듈별 인력 진행중/최근7일 완료 수)
-- /api/activity/{user}: 기능3 인력 최근 Jira/Confluence 활동 요약 (캐시)
+- /api/workload/{user}: 기능3 인력 상세 (진행중/최근7일 완료 티켓 리스트 — 프론트 [+] 확장)
+- /api/activity/{user}: 인력 최근 Jira/Confluence 활동 요약 (캐시, 현재 UI 미사용/보존)
 - /api/health         : 헬스체크
 - /api/refresh        : 캐시 무효화(수동 갱신)
 - /                   : 정적 프론트 (app/static)

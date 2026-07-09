@@ -1,6 +1,7 @@
 // WorkloadView.js — 기능3 인력 워크로드. 두 막대(진행 중 / 최근 7일 완료), Task성·VoC성 색 구분,
-// 모듈 평균 = 모듈 전체 막대를 관통하는 단일 세로선(오버레이) + 헤더행 평균수치, [+] 최근활동.
-// 인력 = 본명(displayName 첫 어절) + 개발/운영 뱃지(id 사번 x*/i*). ProgressBar 공유. updated: 2026-07-08
+// 모듈 평균 = 막대 뒤 세로 가이드선 + 헤더행 평균수치. [+] 확장 = 진행중/완료 티켓 리스트
+//   (Due·D-day, 완료일시; 진행중=임박순·완료=최근순 정렬).
+// 인력 = 본명(displayName 첫 어절) + 개발/운영 뱃지(id 사번 x+숫자/i+숫자). updated: 2026-07-09
 import { api } from "../../lib/api.js";
 import { moduleColor } from "../../lib/colors.js";
 import { ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";

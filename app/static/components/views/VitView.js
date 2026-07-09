@@ -1,5 +1,6 @@
-// VitView.js — 기능2 현안(PMO_VIT). 요약 목록 + [자세히] 지연로딩(자손 트리·코멘트).
-// 트리: 안내선 + 상태정렬(진행중→ToDo→완료) + 타입/번호/제목/담당자/상태 컬럼. updated: 2026-07-08
+// VitView.js — 기능2 현안(PMO_VIT). 컬럼: 티켓(상태·타입·담당자/번호·이름/Started·Due(D-day)) ·
+//   하위 티켓 수 · 직계 하위 티켓(표: 티켓·상태·시작일·종료일·담당자, 행 클릭→Jira) + [자세히] 트리/코멘트.
+// '완료 작업 안 보기' 토글로 직계 완료 티켓 숨김. updated: 2026-07-09
 import { api } from "../../lib/api.js";
 import { moduleColor, STATUS_ORDER, STATUS_VAR, typeLabel } from "../../lib/colors.js";
 import { esc, mdISO, ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";

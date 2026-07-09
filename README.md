@@ -79,7 +79,7 @@ curl http://localhost:8000/api/refresh      # 캐시 + 프론트 memo 무효화
 ## 4. 테스트
 
 ```bash
-python -m pytest -q                    # 유닛테스트 (계산 로직·config·jql·world 등). 현재 27 passed
+python -m pytest -q                    # 유닛테스트 (계산 로직·config·jql·world·names 등). 현재 28 passed
 python -m pytest tests/test_rollup.py -q   # 한 파일만
 ```
 
@@ -117,7 +117,7 @@ lake-task-manager/
 ├── lake.spec                       # PyInstaller 단일 exe 스펙
 ├── requirements.txt / requirements-sso.txt
 ├── app/                            # FastAPI 백엔드 + 정적 프론트
-│   ├── main.py                     # 라우트(/api/wbs·vit·workload·activity·health·refresh) + static
+│   ├── main.py                     # 라우트(/api/wbs·vit·workload[/{user}]·login·health·refresh) + static
 │   ├── settings.py                 # config/jira.yml + YAML 로더/검증, frozen(exe)·컨테이너 경로 인식
 │   ├── progress.py / rollup.py     # 순수 계산 (Epic SP 롤업 / WBS·Module·PMO 가중 조합)
 │   ├── jira_client.py / cache.py   # REST 클라이언트(AuthProvider 주입) / SQLite TTL 캐시

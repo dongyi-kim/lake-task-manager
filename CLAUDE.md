@@ -178,10 +178,13 @@ def get_json(context, path):
     return resp.json()
 ```
 
-**기존 크롬 프로필 재사용 옵션** (인증서가 프로필에 있으면 로그인 자체가 생략될 수 있음):
-- `launch_persistent_context(user_data_dir=..., channel="chrome")` 로 실제 크롬 프로필 사용.
-- 실행 전 크롬 완전 종료 필수(프로필 잠금 회피).
-- 회사 관리형 크롬은 정책으로 막힐 수 있어, 안 되면 별도 컨텍스트 수동 로그인으로 폴백.
+**[현행 결정] 설치된 Chrome(`channel="chrome"`)·프로필 재사용은 폐기 — 번들 Chromium 사용.**
+- 시도했던 `channel="chrome"`(설치 Chrome) 및 `launch_persistent_context`(실 프로필 재사용)는
+  **회사 관리형 Chrome 정책이 자동화/인증서 흐름을 차단**해 SSO 가 깨짐(검증 실패).
+- → **Playwright 번들 Chromium**(`p.chromium.launch()`, channel 없음)으로 사람이 직접 로그인하는
+  방식으로 복귀(초기 PoC 방식). Chromium 은 `playwright install chromium` 으로 준비(런처 자동).
+- **로그인은 앱 창 하나로 통합**(§8 실행 방식): 앱 창을 Jira 로 이동 → 로그인 → `/myself` 감지 →
+  storage_state 저장 → `reset_provider` → 앱 복귀. (`app/auth/sso_session.py`, `run.py`)
 
 **알려진 약점 (반드시 인지):**
 - SSO 세션은 만료가 짧음(수 시간~하루). → **무인 CronJob 불가, 반자동이 한계.**
@@ -273,14 +276,13 @@ lake-task-manager/               # repo 루트
 │   ├── jira.yml                 # 환경설정(env·jira·confluence·cache·server). 중첩 YAML
 │   ├── wbs_config.yaml          # 기능1: module → WBS task → epic(ticket=DL-xxxx, weight 정수)
 │   └── people.yaml              # 기능3: module → [jira user id]
-├── (lake-task-manager.exe)      # 배포 시 여기 (빌드 산출물) — config/ 와 나란히
+│                                # (exe 빌드 없음 — 배포는 배포 repo 의 run.bat 소스실행)
 └── src/                         # (과거 레이아웃 — 실제론 아래가 전부 repo 루트에 있음)
     ├── PROGRESS.md              # TODO / 진행 History
-    ├── run.py / run_fake.py     # 앱 런처 / Fake Jira 서버 런처
-    ├── lake.spec                # PyInstaller — 단일 exe 빌드
-    ├── requirements.txt / requirements-sso.txt
+    ├── run.py / run_fake.py     # 앱 런처(앱 창) / Fake Jira 서버 런처
+    ├── requirements.txt / requirements-sso.txt   # 앱 deps / +playwright(prod SSO)
     ├── app/                     # FastAPI 백엔드 + 정적 프론트
-    │   ├── main.py              # 라우트(/api/wbs·vit·workload·activity·health·refresh) + static
+    │   ├── main.py              # 라우트(/api/wbs·vit·workload[/{user}]·login·health·refresh) + static
     │   ├── settings.py          # config/jira.yml + wbs_config 로더/검증, frozen(exe)·컨테이너 경로 인식
     │   ├── world.py             # ★ 단일 결정적 데이터 세계 (이슈·설명·코멘트·활동·confluence)
     │   ├── worldcontent.py      # description/comment/activity 다양성 풀
@@ -294,8 +296,7 @@ lake-task-manager/               # repo 루트
     │   └── static/             # Vue 3 무빌드 SPA: index.html(셸)+app.js+components/(app-root·ui·views)+lib/(api·fmt·colors)+styles/(tokens·base·components·뷰별)+vendor/(vue.esm)
     ├── tools/fake_jira/         # ★ Fake Jira/Confluence REST 서버 (world 를 HTTP 로 서빙)
     │   └── {server,jql,atom,__main__}.py
-    ├── lake.spec / requirements-sso.txt  # exe 빌드 / prod SSO(playwright)
-    └── tests/                   # world/jql/atom/progress/rollup/config 유닛테스트
+    └── tests/                   # world/jql/atom/progress/rollup/config/names 유닛테스트
 ```
 
 ### 환경 3종 (`JIRA_ENV`)
@@ -309,7 +310,9 @@ lake-task-manager/               # repo 루트
 ### 실행 방식 (dev = Fake)
 - mock: `python run.py`  (또는 `uvicorn app.main:app`). dev `config/jira.yml` 기본이 `env: mock`.
 - **local(fake)**: 터미널1 `python run_fake.py` (:8080, `FAKE_LATENCY_MS` 로 지연 주입 가능) → 터미널2 `JIRA_ENV=local python run.py`.
-- 최종 사용자: **단일 exe** (`pyinstaller lake.spec`). prod SSO 는 설치된 Chrome 재사용(Chromium 미번들).
+- 최종 사용자: **소스 실행** (배포 repo `run.bat` → venv·의존성·Chromium 자동 구성 후 앱 창. 창 닫으면 전체 종료).
+  prod SSO 는 **같은 앱 창**에서 로그인 → 세션 저장 → 앱 복귀. (Playwright **번들 Chromium** — 회사 관리형 Chrome 자동화 차단 회피)
+- 앱 창 대신 기본 브라우저+수동종료: `LAKE_NO_WINDOW=1 python run.py` / playwright 없으면 자동 폴백.
 
 ### 아키텍처 규칙
 1. `progress.py`는 **순수 함수**. 입력=정규화 이슈 리스트, 출력=Epic 진척률 dict. 네트워크/인증 의존 금지.
