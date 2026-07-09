@@ -98,7 +98,7 @@ def vit_issues(plan, people, epic_prog=None):
             "start": it["created"].isoformat()[:10],
             "created": it["created"].isoformat()[:10],
             "started": started.isoformat()[:10] if started else None,
-            "updated": it["updated"].isoformat()[:10],
+            "updated": w._dt(it["updated"], it.get("tupdated")),   # 시간까지(Updated At)
             "due": it["due"].isoformat() if it["due"] else None,
             "statusCategory": it["statusCategory"], "status": it["statusName"],
             "ancestors": [a for a in ancestors if a],

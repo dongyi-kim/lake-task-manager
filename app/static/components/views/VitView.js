@@ -2,7 +2,7 @@
 // 트리: 안내선 + 상태정렬(진행중→ToDo→완료) + 타입/번호/제목/담당자/상태 컬럼. updated: 2026-07-08
 import { api } from "../../lib/api.js";
 import { moduleColor, STATUS_ORDER, STATUS_VAR, typeLabel } from "../../lib/colors.js";
-import { esc, mdISO, ymd, ymdhm, tkt } from "../../lib/fmt.js";
+import { esc, mdISO, ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import StatusPill from "../ui/StatusPill.js";
 
@@ -17,6 +17,18 @@ export default {
     mcolor(i) { return moduleColor(i); },
     md(s) { return mdISO(s); },
     fy(s) { return ymd(s); },
+    fdt(s) { return ymdhm(s); },
+    dd(s) { return dday(s); },
+    ddCls(iso) {
+      const due = new Date(iso.substring(0, 10) + "T00:00:00");
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      return Math.round((due - today) / 86400000) >= 4 ? "warn" : "danger";
+    },
+    startedAt(it) {   // Created 와 Started 중 늦은 것 (ISO 문자열 사전순 = 시간순)
+      const c = it.created || "", s = it.started || "";
+      if (!c) return s; if (!s) return c;
+      return s > c ? s : c;
+    },
     tk(key) { return tkt(key, this.d && this.d.jiraBase); },
     prog(it) { return it.progress || { done: 0, total: 0, pct: 0 }; },
     newsHtml(ev) {
@@ -77,21 +89,23 @@ export default {
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.issues.length }} 현안</span></div>
         <div v-if="!m.issues.length" class="empty">· 현안 없음</div>
         <div v-else class="tbl">
-          <div class="vhead"><div>티켓</div><div>작업 일정</div><div>진척률 (전체 하위 티켓 기준)</div><div>하위 티켓 수</div><div>최근 하위 소식</div><div></div></div>
+          <div class="vhead"><div>티켓</div><div>진척률 (전체 하위 티켓 기준)</div><div>하위 티켓 수</div><div>최근 하위 소식</div><div></div></div>
           <template v-for="it in m.issues" :key="it.key">
             <div class="vrow">
               <div class="c-info">
                 <div class="l1">
-                  <TypeBadge :type="it.type" /><span class="key" v-html="tk(it.key)"></span>
                   <StatusPill :cat="it.statusCategory" :label="it.status" />
+                  <span class="key" v-html="tk(it.key)"></span>
+                  <span class="who">{{ it.assignee || "미지정" }}</span>
                 </div>
-                <div class="summ">{{ it.summary }}</div>
-                <div class="who">{{ it.assignee || "미지정" }}</div>
-              </div>
-              <div class="c-date">
-                <span class="dl">Created</span>{{ fy(it.created) || "?" }}<br>
-                <span class="dl">Started</span>{{ it.started ? fy(it.started) : "—" }}<br>
-                <span class="dl">Updated</span>{{ it.updated ? fy(it.updated) : "?" }}
+                <div class="l2">
+                  <TypeBadge :type="it.type" /><span class="summ">{{ it.summary }}</span>
+                </div>
+                <div class="l3">
+                  <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
+                  <span class="dt"><span class="dl">Updated</span>{{ it.updated ? fdt(it.updated) : "—" }}</span>
+                  <span class="dt"><span class="dl">Due</span>{{ it.due ? fy(it.due) : "—" }}<span v-if="it.due" class="dchip" :class="ddCls(it.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(it.due) }}</span></span>
+                </div>
               </div>
               <div class="c-prog">
                 <div class="bar"><i :style="{ width: prog(it).pct + '%', background: mcolor(i) }"></i></div>

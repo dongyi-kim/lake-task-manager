@@ -289,7 +289,7 @@ class JiraClient:
         assignee = f.get("assignee") or {}
         cat = _norm_cat((status.get("statusCategory") or {}).get("key"))
         created = (f.get("created") or "")[:10] or None
-        updated = (f.get("updated") or "")[:10] or None
+        updated = f.get("updated") or None          # 전체 datetime 유지 → Updated At 시간표시
         ancestors = []
         if f.get("parent"):
             ancestors.append(f["parent"].get("key"))
