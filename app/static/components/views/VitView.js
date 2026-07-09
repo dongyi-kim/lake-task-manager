@@ -90,7 +90,7 @@ export default {
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.issues.length }} 현안</span></div>
         <div v-if="!m.issues.length" class="empty">· 현안 없음</div>
         <div v-else class="tbl">
-          <div class="vhead"><div>티켓</div><div>하위 티켓 수</div><div>직계 하위 티켓</div><div></div></div>
+          <div class="vhead"><div>티켓</div><div>하위 티켓 수</div><div class="ch-head"><span>티켓</span><span>상태</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
           <template v-for="it in m.issues" :key="it.key">
             <div class="vrow">
               <div class="c-info">
@@ -113,17 +113,14 @@ export default {
                 <div class="scnt"><span class="lbl"><StatusPill cat="done" label="Done" /></span><b>{{ (it.statusCounts||{}).done || 0 }}</b></div>
               </div>
               <div class="c-children">
-                <div v-if="(it.children || []).length" class="ctbl">
-                  <div class="cth"><div>티켓</div><div>상태</div><div>시작일</div><div>종료일</div><div>담당자</div></div>
-                  <a v-for="c in it.children" :key="c.key" class="ctr" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
-                    <div class="ct-tkt"><TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span></div>
-                    <div><StatusPill :cat="c.statusCategory" :label="c.status" /></div>
-                    <div class="dt">{{ fy(c.created) || "—" }}</div>
-                    <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
-                    <div class="asg">{{ c.assignee || "—" }}</div>
-                  </a>
-                </div>
-                <div v-else class="mini muted">직계 하위 티켓 없음</div>
+                <a v-for="c in (it.children || [])" :key="c.key" class="ctr" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
+                  <div class="ct-tkt"><TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span></div>
+                  <div><StatusPill :cat="c.statusCategory" :label="c.status" /></div>
+                  <div class="dt">{{ fy(c.created) || "—" }}</div>
+                  <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
+                  <div class="asg">{{ c.assignee || "—" }}</div>
+                </a>
+                <div v-if="!(it.children || []).length" class="mini muted">직계 하위 티켓 없음</div>
               </div>
               <div class="c-x"><button class="xbtn" @click="toggleDetail(it)">{{ detailOpen[it.key] ? "접기 ▴" : "자세히 ▾" }}</button></div>
             </div>
