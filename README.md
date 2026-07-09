@@ -90,23 +90,23 @@ python -m pytest tests/test_rollup.py -q   # 한 파일만
 
 ## 5. 빌드 (단일 exe)
 
-exe 산출·배포는 **배포 repo** `dongyi-kim/lake-task-manager-deploy` 가 관리한다(이 repo 를 submodule 로 핀). 배포 repo 의 `build/` 스크립트를 쓰는 게 정석:
+exe 는 **하나**(`lake-task-manager.exe`)로 통일 — mock·local·prod 를 모두 커버한다(playwright 항상 번들).
+산출·배포는 **배포 repo** `dongyi-kim/lake-task-manager-deploy` 가 관리한다(이 repo 를 submodule 로 핀). 배포 repo 의 `build/` 스크립트를 쓰는 게 정석:
 
 ```bash
-# 배포 repo 루트에서
-python build/build.py                  # 기본 → ./lake-task-manager.exe
-python build/build.py --prod           # prod(SSO) → ./lake-task-manager-prod.exe
+# 배포 repo 루트에서 (의존성 자동 설치)
+python build/build.py                  # → ./lake-task-manager.exe
 ```
 
 submodule 안에서 직접 빌드할 수도 있다:
 
 ```powershell
-pyinstaller lake.spec                              # → dist/lake-task-manager.exe
-$env:LAKE_BUILD="prod"; pyinstaller lake.spec      # → dist/lake-task-manager-prod.exe  (bash: LAKE_BUILD=prod)
+pip install -r requirements-sso.txt    # playwright 포함(빌드에 필요)
+pyinstaller lake.spec                  # → dist/lake-task-manager.exe
 ```
 
-- `static`·코드는 exe 내부 번들 / `config/`·cache 는 **exe 옆 외부 파일**.
-- prod 최초 1회 SSO: `lake-task-manager-prod.exe login` (사내 SSO 통과 → `jira_state.json` 저장).
+- `static`·코드·playwright 는 exe 내부 번들 / `config/`·cache 는 **exe 옆 외부 파일**.
+- prod 최초 1회 SSO: `lake-task-manager.exe login` (사내 SSO 통과 → `jira_state.json` 저장).
 
 ## 6. 릴리즈 (배포 repo)
 
