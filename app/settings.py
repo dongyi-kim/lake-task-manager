@@ -68,6 +68,7 @@ class Settings:
         cfg = _load_jira_config()
         j = cfg.get("jira") or {}
         f = j.get("fields") or {}
+        chrome = j.get("chrome") or {}
         conf = cfg.get("confluence") or {}
         cache = cfg.get("cache") or {}
         server = cfg.get("server") or {}
@@ -92,6 +93,9 @@ class Settings:
         self.cache_ttl_seconds = int(pick("CACHE_TTL_SECONDS", cache.get("ttl_seconds"), 900))
         self.app_host = str(pick("APP_HOST", server.get("host"), "0.0.0.0"))
         self.app_port = int(pick("APP_PORT", server.get("port"), 8000))
+        # 사내 SSO: 로그인 시 기존 Chrome 프로필 재사용(재로그인 불필요). 빈 dir 이면 OS 기본 경로 자동.
+        self.chrome_user_data_dir = str(pick("CHROME_USER_DATA_DIR", chrome.get("user_data_dir"), "") or "")
+        self.chrome_profile = str(pick("CHROME_PROFILE", chrome.get("profile"), "Default") or "Default")
 
 
 @lru_cache
