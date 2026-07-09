@@ -1,5 +1,12 @@
 /* vit.css — 현안(PMO_VIT) 화면 고유 레이아웃 (행 그리드·진척바·상태카운트·[자세히] 트리·코멘트).
  * 공통 색/컴포넌트는 tokens.css/components.css. updated: 2026-07-08 */
+.vctl { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 6px 0 14px; }
+.toggle-btn { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; cursor: pointer; white-space: nowrap; }
+.toggle-btn:hover { color: var(--text); }
+.toggle-btn.on { color: var(--accent); border-color: var(--accent); }
+.toggle-btn .tick { font-size: 13px; line-height: 1; }
+
 .vgroup { margin-bottom: 18px; }
 .vg-head { display: flex; align-items: center; gap: 8px; margin: 18px 0 6px; }
 .vg-head .dot { width: 12px; height: 12px; border-radius: 3px; }

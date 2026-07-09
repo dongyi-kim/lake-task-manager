@@ -11,9 +11,13 @@ const KLAB = { created: "생성됨", done: "완료됨", resolved: "해결됨" };
 export default {
   name: "VitView",
   components: { TypeBadge, StatusPill },
-  data() { return { d: null, err: "", detail: {}, detailOpen: {} }; },
+  data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false }; },
   async mounted() { try { this.d = await api.vit(); } catch (e) { this.err = e.message; } },
   methods: {
+    kids(it) {   // 직계 하위 티켓 — '완료 작업 안 보기' 시 done 제외
+      const ch = it.children || [];
+      return this.hideDone ? ch.filter((c) => c.statusCategory !== "done") : ch;
+    },
     mcolor(i) { return moduleColor(i); },
     md(s) { return mdISO(s); },
     fy(s) { return ymd(s); },
@@ -84,7 +88,12 @@ export default {
           <span class="sw" :style="{ background: mcolor(i) }"></span> {{ m.module }} <b>{{ m.issues.length }}</b>
         </div>
       </div>
-      <div class="note" v-if="d.summary.skippedDup">상위가 이미 PMO_VIT 인 자손 현안 {{ d.summary.skippedDup }}건은 중복으로 숨김</div>
+      <div class="vctl">
+        <button class="toggle-btn" :class="{ on: hideDone }" @click="hideDone = !hideDone">
+          <span class="tick">{{ hideDone ? '☑' : '☐' }}</span> 완료 작업 안 보기
+        </button>
+        <span class="note" v-if="d.summary.skippedDup">· 상위가 이미 PMO_VIT 인 자손 현안 {{ d.summary.skippedDup }}건은 중복으로 숨김</span>
+      </div>
 
       <div v-for="(m, i) in d.modules" :key="m.module" class="vgroup">
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.issues.length }} 현안</span></div>
@@ -113,14 +122,14 @@ export default {
                 <div class="scnt"><span class="lbl"><StatusPill cat="done" label="Done" /></span><b>{{ (it.statusCounts||{}).done || 0 }}</b></div>
               </div>
               <div class="c-children">
-                <a v-for="c in (it.children || [])" :key="c.key" class="ctr" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
+                <a v-for="c in kids(it)" :key="c.key" class="ctr" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
                   <div class="ct-tkt"><TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span></div>
                   <div><StatusPill :cat="c.statusCategory" :label="c.status" /></div>
                   <div class="dt">{{ fy(c.created) || "—" }}</div>
                   <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
                   <div class="asg">{{ c.assignee || "—" }}</div>
                 </a>
-                <div v-if="!(it.children || []).length" class="mini muted">직계 하위 티켓 없음</div>
+                <div v-if="!kids(it).length" class="mini muted">{{ (it.children || []).length ? '표시할 하위 티켓 없음 (완료 숨김)' : '직계 하위 티켓 없음' }}</div>
               </div>
               <div class="c-x"><button class="xbtn" @click="toggleDetail(it)">{{ detailOpen[it.key] ? "접기 ▴" : "자세히 ▾" }}</button></div>
             </div>
