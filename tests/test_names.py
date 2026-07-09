@@ -31,3 +31,15 @@ def test_staff_kind_none_cases():
     assert staff_kind("pmo") is None           # '.' 없는 시스템 계정
     assert staff_kind("") is None
     assert staff_kind(None) is None
+
+
+def test_staff_kind_legacy_nonconforming_ids():
+    # 규약 미준수 옛 계정: x/i 로 시작해도 뒤가 숫자가 아니면 판정 불가 → None(뱃지 생략).
+    assert staff_kind("skcc.ian") is None      # i + 문자
+    assert staff_kind("skcc.xavier") is None   # x + 문자
+    assert staff_kind("skcc.john") is None     # x/i 아님
+    assert staff_kind("john.doe") is None
+    assert staff_kind("skcc.x") is None        # 숫자 없음
+    # 규약 준수는 그대로 판정.
+    assert staff_kind("skcc.x1") == "dev"
+    assert staff_kind("skcc.i2011") == "ops"
