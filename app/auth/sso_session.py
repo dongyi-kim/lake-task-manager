@@ -15,7 +15,10 @@
 playwright 는 prod 전용 의존(requirements-sso.txt). import 는 지연.
 """
 
+import os
+import queue
 import sys
+import threading
 
 from .base import AuthProvider, LoginRequired, SessionExpired
 
@@ -31,36 +34,93 @@ def _launch(p, headless):
 
 
 class SsoSessionProvider(AuthProvider):
+    """Playwright storage_state 재사용 provider.
+
+    ※ Playwright sync API 는 **스레드 안전하지 않다**(객체는 생성한 스레드에서만 사용 가능).
+      FastAPI 는 요청마다 다른 워커 스레드에서 sync 핸들러를 돌리므로, 싱글턴 provider 를
+      여러 스레드가 공유하면 'greenlet.error: Cannot switch to a different thread' 가 난다.
+      → Playwright 를 **전용 스레드**에 가두고, 모든 호출(get/json/text)을 큐로 그 스레드에
+        마샬링해 실행한다. 단일 context 라 자연히 직렬(supports_parallel=False).
+    """
+
+    supports_parallel = False
+
     def __init__(self, base, state_path, user_agent=None):
         self.base = base.rstrip("/")
         # 세션 파일이 없으면 브라우저를 띄우기 전에 명확히 실패 → 라우트가 needLogin 으로 안내.
-        import os
         if not state_path or not os.path.exists(state_path):
             raise LoginRequired(f"SSO 세션 파일이 없습니다({state_path}). 최초 로그인이 필요합니다.")
-        from playwright.sync_api import sync_playwright   # 지연 import
-        self._p = sync_playwright().start()
-        self._browser = _launch(self._p, headless=True)
-        ctx_kw = {"storage_state": state_path}
-        if user_agent:
-            ctx_kw["user_agent"] = user_agent
-        self._context = self._browser.new_context(**ctx_kw)
+        self._state_path = state_path
+        self._ua = user_agent
+        self._jobs = queue.Queue()
+        self._ready = threading.Event()
+        self._start_error = None
+        self._thread = threading.Thread(target=self._loop, name="playwright-sso", daemon=True)
+        self._thread.start()
+        self._ready.wait()
+        if self._start_error is not None:
+            raise self._start_error
 
-    def _get(self, path, params):
-        resp = self._context.request.get(self.base + path, params=params or {})
-        if resp.status in (401, 403) or resp.status >= 500:
-            raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
-        return resp
-
-    def get_json(self, path, params=None):
-        return self._get(path, params).json()
-
-    def get_text(self, path, params=None):
-        return self._get(path, params).text()
-
-    def close(self):
+    def _loop(self):
+        """이 스레드가 Playwright 객체를 소유하고, 큐로 들어온 작업만 실행한다."""
+        try:
+            from playwright.sync_api import sync_playwright   # 지연 import
+            self._p = sync_playwright().start()
+            self._browser = _launch(self._p, headless=True)
+            ctx_kw = {"storage_state": self._state_path}
+            if self._ua:
+                ctx_kw["user_agent"] = self._ua
+            self._context = self._browser.new_context(**ctx_kw)
+        except BaseException as e:   # noqa: BLE001 - 기동 실패를 __init__ 로 전달
+            self._start_error = e
+            self._ready.set()
+            return
+        self._ready.set()
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                break
+            fn, done, box = job
+            try:
+                box[0] = fn()
+            except BaseException as e:   # noqa: BLE001 - 호출자 스레드로 재전달
+                box[1] = e
+            done.set()
         try:
             self._browser.close()
             self._p.stop()
+        except Exception:
+            pass
+
+    def _submit(self, fn):
+        """fn 을 Playwright 전용 스레드에서 실행하고 결과/예외를 호출자 스레드로 반환."""
+        if not self._thread.is_alive():
+            raise SessionExpired("SSO provider 스레드가 종료됨 — login 재실행 필요.")
+        done = threading.Event()
+        box = [None, None]   # [result, error]
+        self._jobs.put((fn, done, box))
+        done.wait()
+        if box[1] is not None:
+            raise box[1]
+        return box[0]
+
+    def _fetch(self, path, params, as_text):
+        # Playwright 스레드에서 실행 — body 추출(json()/text())도 반드시 이 스레드에서.
+        resp = self._context.request.get(self.base + path, params=params or {})
+        if resp.status in (401, 403) or resp.status >= 500:
+            raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
+        return resp.text() if as_text else resp.json()
+
+    def get_json(self, path, params=None):
+        return self._submit(lambda: self._fetch(path, params, False))
+
+    def get_text(self, path, params=None):
+        return self._submit(lambda: self._fetch(path, params, True))
+
+    def close(self):
+        try:
+            self._jobs.put(None)
+            self._thread.join(timeout=10)
         except Exception:
             pass
 
