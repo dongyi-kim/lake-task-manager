@@ -3,7 +3,7 @@
 // '완료 작업 안 보기' 토글로 직계 완료 티켓 숨김. updated: 2026-07-09
 import { api } from "../../lib/api.js";
 import { moduleColor, STATUS_ORDER, STATUS_VAR, typeLabel, TYPE_BG } from "../../lib/colors.js";
-import { esc, mdISO, ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";
+import { esc, mdISO, ymd, ymdhm, mdhm, tkt, dday } from "../../lib/fmt.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import StatusPill from "../ui/StatusPill.js";
 
@@ -77,7 +77,7 @@ export default {
         + `</span>`
         + `<span class='pg'>${prog}</span>`;
     },
-    cdate(s) { return ymdhm(s); },
+    cdate(s) { return mdhm(s); },   // 댓글: 연도 없이 월일 시분
     cmtText(x) {   // HTML 태그를 렌더도 노출도 안 되게 — 평문만 추출(textContent) + 줄바꿈 접기
       const d = document.createElement("div");
       d.innerHTML = x.text || "";

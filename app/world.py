@@ -164,10 +164,16 @@ class World:
 
         key = epic_key if itype == "Epic" and epic_key else self._newkey()
         ncom = rng.randint(0, 4) if itype != SUBTASK_TYPE else rng.randint(0, 1)
-        comments = [{"author": rng.choice(pool + ["pmo", "lead"]),
-                     "kind": k, "text": t,
-                     "created": self.today - timedelta(days=rng.randint(0, 13))}
-                    for (k, t) in wc.comments(rng, pool, ncom)]
+        comments = []
+        for (k, t) in wc.comments(rng, pool, ncom):
+            # rng 호출 순서(choice→randint)를 원본과 동일하게 유지해 world 결정성 보존.
+            author = rng.choice(pool + ["pmo", "lead"])
+            ccreated = self.today - timedelta(days=rng.randint(0, 13))
+            # 시각은 rng 를 쓰지 않고 결정적으로 파생(업무시간대) → world 시퀀스 불변.
+            hh = 9 + (ccreated.toordinal() + len(comments)) % 9
+            mm = ((ccreated.toordinal() * 3 + len(comments) * 7) % 6) * 10
+            comments.append({"author": author, "kind": k, "text": t,
+                             "created": ccreated, "tcreated": "%02d:%02d" % (hh, mm)})
         worklog = []
         if cat != "todo":
             for _ in range(rng.randint(0, 3)):
@@ -426,7 +432,7 @@ class World:
         out = []
         for i, c in enumerate(it["comments"]):
             au = self._user_obj(c["author"])
-            when = self._dt(c["created"])
+            when = self._dt(c["created"], c.get("tcreated"))
             out.append({"self": f"/rest/api/2/issue/{key}/comment/{key}-c{i}",
                         "id": f"{key}-c{i}", "author": au, "updateAuthor": au,
                         "body": f"({c['kind']}) {c['text']}",

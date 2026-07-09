@@ -104,7 +104,7 @@ def vit_issues(plan, people, epic_prog=None):
             "statusCategory": it["statusCategory"], "status": it["statusName"],
             "ancestors": [a for a in ancestors if a],
             "tree": _tree(w, key),
-            "comments": [{"date": c["created"].isoformat(), "author": _dispname(w, c["author"]),
+            "comments": [{"date": w._dt(c["created"], c.get("tcreated")), "author": _dispname(w, c["author"]),
                           "text": f"({c['kind']}) {c['text']}"} for c in it["comments"]],
         })
     return out

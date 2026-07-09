@@ -11,6 +11,14 @@ export function ymd(iso) {
   const p = iso.substring(0, 10).split("-");
   return p[0].slice(2) + "." + p[1] + "." + p[2];
 }
+// ISO(datetime) → "mm.dd hh:mm" (연도 없이). 시간 없으면 "mm.dd".
+export function mdhm(iso) {
+  if (!iso) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso);
+  if (m) return m[2] + "." + m[3] + " " + m[4] + ":" + m[5];
+  const p = iso.substring(0, 10).split("-");
+  return p.length === 3 ? p[1] + "." + p[2] : iso;
+}
 // ISO(datetime) → "yy.mm.dd hh:mm" (24h). 날짜만이면 ymd 로 폴백.
 export function ymdhm(iso) {
   if (!iso) return "";
