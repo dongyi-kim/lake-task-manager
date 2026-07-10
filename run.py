@@ -82,8 +82,10 @@ def _run_app_window(s, headless=False):
     context = p.chromium.launch_persistent_context(
         user_data_dir=udd,
         headless=headless,
+        no_viewport=True,                              # 뷰포트를 실제 창 크기에 추종(리사이즈 시 흰 여백 방지)
         ignore_default_args=["--enable-automation"],   # '자동화 제어 중' 안내바 제거
-        args=["--no-first-run", "--no-default-browser-check", f"--app={url}"],   # 앱 모드
+        args=["--no-first-run", "--no-default-browser-check",
+              "--window-size=1400,900", f"--app={url}"],   # 앱 모드 + 초기 창 크기
     )
     page = context.pages[0] if context.pages else context.wait_for_event("page")
     try:
