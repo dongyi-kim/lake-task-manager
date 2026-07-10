@@ -422,8 +422,8 @@ class JiraClient:
                     f = it.get("fields", {}) or {}
                     comps = [c.get("name") for c in (f.get("components") or [])]
                     comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
-                    t = (f.get("issuetype") or {}).get("name", "")
-                    c = mockdata.wl_category(comp, t)
+                    itt = f.get("issuetype") or {}
+                    c = mockdata.wl_category(comp, itt.get("name", ""), itt.get("subtask"))
                     if not c:
                         continue
                     by["count"][c] += 1
@@ -450,10 +450,13 @@ class JiraClient:
         """워크로드 상세용 티켓 투영: 번호·제목·타입·상태·마감·완료일시."""
         f = it.get("fields", {}) or {}
         st = f.get("status") or {}
+        itt = f.get("issuetype") or {}
+        # sub-task 는 로케일별 이름이 달라도 뱃지/색이 맞게 "Sub-Task" 로 정규화(issuetype.subtask 기준).
+        tname = "Sub-Task" if itt.get("subtask") else itt.get("name", "")
         return {
             "key": it.get("key", ""),
             "summary": f.get("summary", ""),
-            "type": (f.get("issuetype") or {}).get("name", ""),
+            "type": tname,
             "status": st.get("name", ""),
             "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
             "due": f.get("duedate") or None,
@@ -473,7 +476,8 @@ class JiraClient:
             f = it.get("fields", {}) or {}
             comps = [c.get("name") for c in (f.get("components") or [])]
             comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
-            return mockdata.wl_category(comp, (f.get("issuetype") or {}).get("name", "")) is not None
+            itt = f.get("issuetype") or {}
+            return mockdata.wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
         ip = self._search(f'assignee = "{user}" AND statusCategory = "In Progress"', max_results=200)
         dn = self._search(f'assignee = "{user}" AND statusCategory = Done AND resolved >= -7d', max_results=200)
         return {"user": user,

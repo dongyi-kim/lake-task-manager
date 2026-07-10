@@ -51,8 +51,10 @@ export default {
   },
   methods: {
     mcolor(i) { return moduleColor(i); },
-    mv(bar, kind, metric) { return (bar[metric] || {})[kind] || 0; },   // kind: 'task'|'voc'
-    barVal(bar, metric) { return this.mv(bar, "task", metric) + this.mv(bar, "voc", metric); },
+    mv(bar, kind, metric) { return (bar[metric] || {})[kind] || 0; },   // kind: 'task'|'subtask'|'voc'
+    barVal(bar, metric) {   // 세 카테고리 합 (스케일·모듈평균·막대 총합 일치)
+      return this.mv(bar, "task", metric) + this.mv(bar, "subtask", metric) + this.mv(bar, "voc", metric);
+    },
     setMetric(mk) { this.metric = mk; this.scheduleMeasure(); },
     seg(bar, metric) {
       const u = metric === "hr" ? "h" : "건";
