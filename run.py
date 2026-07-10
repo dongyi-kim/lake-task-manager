@@ -67,6 +67,43 @@ def _do_login_in_window(s, page, context, appmain, timeout=300):
             pass
 
 
+# 앱 페이지(localhost)에서 클릭한 외부 링크(Jira 등)를 캡처해 시스템 기본 브라우저로 넘긴다.
+# guard: location 이 localhost 일 때만 → SSO 로그인(페이지가 Jira 로 이동한 상태)의 팝업은 건드리지 않음.
+_EXT_LINK_JS = r"""
+document.addEventListener('click', function(e){
+  try {
+    var h = location.hostname;
+    if (h !== 'localhost' && h !== '127.0.0.1') return;   // 우리 앱 페이지에서의 클릭만
+    var a = e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    var href = a.href || '';
+    if (!/^https?:/i.test(href)) return;
+    if (a.host === location.host) return;                 // 내부 링크는 그대로
+    if (window._openExternal) { e.preventDefault(); window._openExternal(href); }
+  } catch (_) {}
+}, true);
+"""
+
+
+def _sys_open(url):
+    import webbrowser
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def _wire_external_links(context, page):
+    """외부 링크를 새 Chromium 창 대신 시스템 기본 브라우저로 열도록 바인딩+init 스크립트 설치."""
+    try:
+        context.expose_function("_openExternal", _sys_open)
+        context.add_init_script(_EXT_LINK_JS)
+        page.reload()                                     # 이미 로드된 초기 페이지에 바인딩/리스너 반영
+        page.wait_for_load_state("domcontentloaded")
+    except Exception:
+        pass
+
+
 def _run_app_window(s, headless=False):
     """앱 창(Playwright Chromium, --app 모드=주소창 없는 앱 창)으로 실행. 로그인도 같은 창에서.
     창 닫으면 서버 종료 후 반환. 프로필은 임시폴더(정리)라 실행 폴더(cwd)에 아무것도 안 남긴다."""
@@ -92,6 +129,7 @@ def _run_app_window(s, headless=False):
         page.wait_for_load_state("domcontentloaded")
     except Exception:
         pass
+    _wire_external_links(context, page)                # 외부 링크 → 시스템 기본 브라우저
     print(f"Lake Task Manager - {url}  (env={s.jira_env})  [이 창을 닫으면 종료됩니다]")
     # 창이 닫힐 때까지 대기. 로그인 요청(_login_requested)이 오면 같은 창에서 SSO 구동.
     try:
