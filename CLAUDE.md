@@ -1,8 +1,8 @@
 # Lake Task Manager
 
-Data Lake SI 사업의 **PMO 레벨 Task 관리** 도구.
+구버전 Jira DC 환경에서 SI 프로젝트를 수행할 때 쓰는 **PMO 레벨 Task 관리** 유틸리티.
 현업이 쓰는 **Jira DC 8.20.8**(구버전, SSO 잠금 사내 인스턴스)을 SP/티켓의 source of truth로 두고,
-그 위에 **Module → WBS Task → Epic 진척률 롤업**을 얇게 얹어 PMO가 사업 전체를 조망한다.
+그 위에 **Module → WBS Task → Epic 진척률 롤업**을 얇게 얹어 PMO가 프로젝트 전체를 조망한다.
 
 이 문서는 프로젝트의 배경·목표·설계 원칙·구현 접근법을 담는다.
 Claude Code가 작업 시 이 맥락을 항상 우선한다.
@@ -98,7 +98,7 @@ Module (팀/파트, 6개)
             └─ Story / Bug / Mock (SP 보유)                                              ← Jira
 ```
 
-- **Module (6개, Data Lake 도메인 기준):**
+- **Module (6개, 예시 도메인 기준):**
   `Ingestion` · `Storage (Iceberg)` · `Catalog/Metastore` · `Query Engine` · `Governance/Security` · `Platform/DevOps`.
 - **N:M & 가중치:** 매핑 config가 `(module, wbs, epic, weight)` 관계를 정의한다.
   같은 Epic이 모듈마다 다른 가중치로 참여한다.

@@ -27,7 +27,7 @@ export default {
   template: `
     <div class="wrap">
       <header class="top">
-        <h1>Lake Task Manager <span class="sub">Data Lake · PMO</span></h1>
+        <h1>Lake Task Manager <span class="sub">PMO Dashboard</span></h1>
         <button class="theme-btn" @click="toggleTheme" :title="theme === 'dark' ? '라이트 모드로' : '다크 모드로'">
           <span v-if="theme === 'dark'">☀ Light</span><span v-else>🌙 Dark</span>
         </button>
