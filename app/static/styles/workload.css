@@ -1,6 +1,7 @@
 /* workload.css — 인력 워크로드 화면 고유 레이아웃 (행 그리드·두 막대·활동패널). 공통색은 tokens.css.
  * updated: 2026-07-08 */
 .wl-legend .sw.task { background: var(--wl-task); }
+.wl-legend .sw.subtask { background: var(--wl-subtask); }
 .wl-legend .sw.voc { background: var(--wl-voc); }
 
 .whead, .prow { display: grid; grid-template-columns: 150px 1fr 40px; align-items: center; gap: 14px; padding: 8px 16px; }

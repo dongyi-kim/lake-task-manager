@@ -415,8 +415,8 @@ class JiraClient:
     def _fetch_workload(self, plan, people):
         """인력별 Task성/VoC성 × 진행중/최근7일완료 티켓 수."""
         def counts(jql):
-            # count(티켓수) · hr(소요시간, 표준 timespent 초→시). hr 은 완료 실적 계산식 전용.
-            by = {"count": {"task": 0, "voc": 0}, "hr": {"task": 0, "voc": 0}}
+            # count(티켓수) · hr(소요시간, 표준 timespent 초→시). 카테고리 3분할: task/subtask/voc.
+            by = {"count": {"task": 0, "subtask": 0, "voc": 0}, "hr": {"task": 0, "subtask": 0, "voc": 0}}
             try:
                 for it in self._search(jql, max_results=300):   # write-through: 각 티켓 캐시
                     f = it.get("fields", {}) or {}

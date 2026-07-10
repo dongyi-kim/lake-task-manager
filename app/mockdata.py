@@ -115,14 +115,16 @@ def vit_issues(plan, people, epic_prog=None):
 def wl_category(component, itype):
     if component == "사용자 VoC":
         return "voc"
-    if itype in ("Task", "Sub-Task"):
+    if itype == "Sub-Task":
+        return "subtask"
+    if itype == "Task":
         return "task"
     return None                       # Epic·기타(Story/Bug/…)는 워크로드 카운트 제외
 
 
 def _zero_metrics():
-    # count(티켓수) · hr(소요시간, 시). hr 은 완료 실적 계산식에만 쓰임(진행중은 timespent 없음).
-    return {"count": {"task": 0, "voc": 0}, "hr": {"task": 0, "voc": 0}}
+    # count(티켓수) · hr(소요시간, 시). 카테고리 3분할: task / subtask / voc.
+    return {"count": {"task": 0, "subtask": 0, "voc": 0}, "hr": {"task": 0, "subtask": 0, "voc": 0}}
 
 
 def _accum(m, cat, it):

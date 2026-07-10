@@ -56,10 +56,11 @@ export default {
     setMetric(mk) { this.metric = mk; this.scheduleMeasure(); },
     seg(bar, metric) {
       const u = metric === "hr" ? "h" : "건";
-      const t = this.mv(bar, "task", metric), v = this.mv(bar, "voc", metric);
+      const t = this.mv(bar, "task", metric), s = this.mv(bar, "subtask", metric), v = this.mv(bar, "voc", metric);
       return [
-        { value: t, color: "var(--wl-task)", title: "Task성 " + t + u },
-        { value: v, color: "var(--wl-voc)", title: "VoC성 " + v + u },
+        { value: t, color: "var(--wl-task)", title: "Task " + t + u },
+        { value: s, color: "var(--wl-subtask)", title: "Sub-Task " + s + u },
+        { value: v, color: "var(--wl-voc)", title: "VoC " + v + u },
       ];
     },
     toggleMod(m) { this.open[m] = !this.open[m]; this.scheduleMeasure(); },
@@ -135,8 +136,9 @@ export default {
         <div class="chip">최근 7일 완료 <b>{{ totals.dn }}</b>건</div>
       </div>
       <div class="legend wl-legend">
-        <span><i class="sw task"></i> Task성 (Task·Sub-Task)</span>
-        <span><i class="sw voc"></i> VoC성 (Component 사용자 VoC)</span>
+        <span><i class="sw task"></i> Task</span>
+        <span><i class="sw subtask"></i> Sub-Task</span>
+        <span><i class="sw voc"></i> VoC (Component 사용자 VoC)</span>
         <span class="muted">· 왼쪽=진행 중, 오른쪽=최근 7일 완료 · 세로선 = 모듈 평균</span>
       </div>
 
