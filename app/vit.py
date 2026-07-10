@@ -70,6 +70,10 @@ def build_vit(client, plan, people, epic_prog=None, generated_at=None, news_days
             "news": _news_from(flat, cutoff),
         })
 
+    # 결정적 정렬(updated 내림차순, 동률은 key 오름차순) → 조회 순서와 무관하게 mock==local 일치.
+    issues.sort(key=lambda x: x["key"])
+    issues.sort(key=lambda x: x.get("updated") or "", reverse=True)
+
     groups = {}
     for it in issues:
         groups.setdefault(it.get("module") or "Module 미지정", []).append(it)

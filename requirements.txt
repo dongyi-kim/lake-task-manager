@@ -4,5 +4,8 @@ uvicorn[standard]>=0.29
 requests>=2.31
 PyYAML>=6.0
 
+# local(fake) 서버 = 외부 오픈소스 mock (이 프로젝트 world 주입). PyPI 등록 후 `jira820>=0.1.0` 로 전환.
+jira820 @ git+https://github.com/dongyi-kim/jira820@v0.1.0
+
 # Prod (corporate SSO) path additionally needs Playwright:
 #   pip install -r requirements-sso.txt   (then `playwright install chromium`)
