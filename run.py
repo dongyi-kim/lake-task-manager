@@ -104,6 +104,45 @@ def _wire_external_links(context, page):
         pass
 
 
+def _set_window_icon_win(ico_path):
+    """[Windows] 앱 창(제목에 'Lake Task Manager' 포함)의 아이콘을 우리 .ico 로 직접 지정.
+    Chromium --app 의 favicon 래스터화(작업표시줄 저화질)보다 확실. best-effort."""
+    import sys
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+        IMAGE_ICON, LR_LOADFROMFILE = 1, 0x0010
+        found = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def _enum(hwnd, _lp):
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n and user32.IsWindowVisible(hwnd):
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                if "Lake Task Manager" in buf.value:
+                    found.append(hwnd)
+            return True
+
+        user32.EnumWindows(_enum, 0)
+        if not found:
+            return False
+        big = user32.LoadImageW(None, ico_path, IMAGE_ICON, 48, 48, LR_LOADFROMFILE)   # 고DPI 작업표시줄
+        small = user32.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        for hwnd in found:
+            if big:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
+            if small:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small)
+        return True
+    except Exception:
+        return False
+
+
 def _run_app_window(s, headless=False):
     """앱 창(Playwright Chromium, --app 모드=주소창 없는 앱 창)으로 실행. 로그인도 같은 창에서.
     창 닫으면 서버 종료 후 반환. 프로필은 임시폴더(정리)라 실행 폴더(cwd)에 아무것도 안 남긴다."""
@@ -130,12 +169,19 @@ def _run_app_window(s, headless=False):
     except Exception:
         pass
     _wire_external_links(context, page)                # 외부 링크 → 시스템 기본 브라우저
+    from app.settings import STATIC_DIR
+    ico_path = str(STATIC_DIR / "favicon.ico")
     print(f"Lake Task Manager - {url}  (env={s.jira_env})  [이 창을 닫으면 종료됩니다]")
     # 창이 닫힐 때까지 대기. 로그인 요청(_login_requested)이 오면 같은 창에서 SSO 구동.
+    # 초반 몇 초간 창 아이콘을 우리 .ico 로 재적용(Chromium 이 favicon 으로 덮어쓰는 것 대비).
     try:
+        i = 0
         while not page.is_closed():
             if appmain._login_requested.is_set():
                 _do_login_in_window(s, page, context, appmain)
+            if i < 16:                                  # ~8초 동안 재적용
+                _set_window_icon_win(ico_path)
+            i += 1
             page.wait_for_timeout(500)
     except Exception:
         pass
