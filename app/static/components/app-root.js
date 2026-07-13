@@ -5,6 +5,7 @@ import VitView from "./views/VitView.js";
 import WbsView from "./views/WbsView.js";
 import FormulaCallout from "./ui/FormulaCallout.js";
 import LoginOverlay from "./ui/LoginOverlay.js";
+import { api } from "../lib/api.js";
 
 const ROUTES = { wbs: WbsView, vit: VitView, workload: WorkloadView };
 function currentRoute() { return location.hash.replace("#/", "") || "wbs"; }
@@ -12,10 +13,16 @@ function currentRoute() { return location.hash.replace("#/", "") || "wbs"; }
 export default {
   name: "AppRoot",
   components: { FormulaCallout, LoginOverlay },
-  data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light" }; },
+  // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
+  //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
+  data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
+                    ready: false, needLogin: false }; },
   computed: { view() { return ROUTES[this.route] || ROUTES.wbs; } },
   mounted() {
     window.addEventListener("hashchange", () => { this.route = currentRoute(); });
+    window.addEventListener("need-login", () => { this.needLogin = true; this.ready = true; });
+    api.health().then((h) => { this.needLogin = !!(h && h.needLogin); })
+      .catch(() => {}).finally(() => { this.ready = true; });
   },
   methods: {
     toggleTheme() {
@@ -37,8 +44,11 @@ export default {
         <a :class="{ on: route === 'vit' }" href="#/vit">현안 (PMO_VIT)</a>
         <a :class="{ on: route === 'workload' }" href="#/workload">인력 워크로드</a>
       </nav>
-      <FormulaCallout :route="route" />
-      <keep-alive><component :is="view"></component></keep-alive>
+      <div v-if="!ready" class="loading page">불러오는 중…</div>
+      <template v-else-if="!needLogin">
+        <FormulaCallout :route="route" />
+        <keep-alive><component :is="view"></component></keep-alive>
+      </template>
       <LoginOverlay />
     </div>`,
 };
