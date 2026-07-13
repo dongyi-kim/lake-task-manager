@@ -6,7 +6,9 @@ body { margin: 0; background: var(--bg); color: var(--text);
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; font-size: 14px; line-height: 1.5; }
 .wrap { max-width: none; margin: 0; padding: 22px 28px 60px; }
 header.top { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
-h1 { font-size: 20px; margin: 0; letter-spacing: -.2px; } h1 .sub { color: var(--muted); font-weight: 500; font-size: 13px; margin-left: 8px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -.2px; display: inline-flex; align-items: center; }
+h1 .sub { color: var(--muted); font-weight: 500; font-size: 13px; margin-left: 8px; }
+.app-logo { width: 26px; height: 26px; border-radius: 6px; margin-right: 9px; box-shadow: var(--shadow); }
 .theme-btn { align-self: center; font-size: 12.5px; font-weight: 600; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; cursor: pointer; white-space: nowrap; }
 .theme-btn:hover { background: var(--panel-2); }
 .meta { color: var(--muted); font-size: 12px; }
