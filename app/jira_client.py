@@ -1,6 +1,6 @@
 """
-JiraClient — AuthProvider 를 주입받아 REST 호출 (어떤 인증인지 모름).
-캐시 경유. mock 모드는 HTTP 없이 mockdata 로 동일 형태를 반환.
+JiraClient — AuthProvider 를 주입받아 REST 호출 (어떤 인증인지 모름). 캐시 경유.
+세 환경 모두 동일 REST 경로: mock=jira820 in-process(world 주입) / local=jira820 실HTTP / prod=사내 Jira.
 
 Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 Phase 에서 확장)
 """
@@ -8,12 +8,23 @@ Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 P
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
-from . import mockdata, progress
+from . import progress
 from .names import real_name
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
 _CAT_MAP = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
+
+
+def _wl_category(component, itype, is_subtask=None):
+    """워크로드 카테고리 — VoC성 / Sub-Task / Task. is_subtask=issuetype.subtask(로케일 무관)."""
+    if component == "사용자 VoC":
+        return "voc"
+    if is_subtask if is_subtask is not None else (itype == "Sub-Task"):
+        return "subtask"
+    if itype == "Task":
+        return "task"
+    return None
 
 
 def _norm_cat(key):
@@ -110,7 +121,9 @@ class JiraClient:
             # 세션 없으면 SsoSessionProvider 가 LoginRequired 를 던짐 → 라우트가 needLogin 처리.
             from .auth.sso_session import SsoSessionProvider
             return SsoSessionProvider(self.s.jira_base, self._state_path())
-        return None   # mock
+        # mock: jira820 을 in-process(ASGI)로 — 이 프로젝트 world 주입. HTTP 소켓/run_fake 불필요.
+        from .auth.inprocess import InProcessProvider
+        return InProcessProvider()
 
     def _state_path(self):
         """세션 파일 절대 경로 (상대면 APP_ROOT 기준 — run.py 의 존재검사와 일치)."""
@@ -188,8 +201,6 @@ class JiraClient:
 
     # ── Epic 자식 조회 ──
     def epic_issues(self, epic_key):
-        if self.env == "mock":
-            return mockdata.epic_issues(epic_key)
         real = self._resolve(epic_key)
         cache_key = f"epic_issues:{self.env}:{real}"
         data, _hit = self.cache.get_or_set(
@@ -225,25 +236,20 @@ class JiraClient:
 
     def _build_epic_tree(self, epic_key):
         sp = self.s.sp_field_id
-        if self.env == "mock":
-            raws = mockdata.epic_raw_children(epic_key)
-        else:
-            raws = self._search(f'"Epic Link" = {epic_key}',
-                                cache_key=f"epic_children:{self.env}:{epic_key}")
-            if not raws:
-                try:  # 폴백: Agile API
-                    data = self.provider.get_json(
-                        f"/rest/agile/1.0/epic/{epic_key}/issue",
-                        params={"fields": self._issue_fields(), "maxResults": 100})
-                    raws = data.get("issues", [])
-                except Exception:
-                    raws = []
+        raws = self._search(f'"Epic Link" = {epic_key}',
+                            cache_key=f"epic_children:{self.env}:{epic_key}")
+        if not raws:
+            try:  # 폴백: Agile API
+                data = self.provider.get_json(
+                    f"/rest/agile/1.0/epic/{epic_key}/issue",
+                    params={"fields": self._issue_fields(), "maxResults": 100})
+                raws = data.get("issues", [])
+            except Exception:
+                raws = []
         return [_display_node(it, sp, with_subs=True) for it in raws]
 
     def epic_name(self, epic_key):
-        """Epic 이름(summary) — Jira/world 에서. (config 엔 이름 없음)"""
-        if self.env == "mock":
-            return mockdata.epic_name(epic_key)
+        """Epic 이름(summary) — Jira 에서. (config 엔 이름 없음)"""
         try:
             it = self.get_issue(self._resolve(epic_key))
             return (it.get("fields") or {}).get("summary") or epic_key
@@ -274,8 +280,6 @@ class JiraClient:
     # 진척 = Root 현안의 자손 티켓 "개수 기반"(done/total). 시작·마감·소식·코멘트 포함.
     # (local/prod 경로는 라이브 Jira 대상 Phase B 에서 검증/심화 — 자손 깊이 등)
     def vit_issues(self, plan, people, epic_prog=None):
-        if self.env == "mock":
-            return mockdata.vit_issues(plan, people, epic_prog)
         # 조립 결과를 캐시 → /api/vit·/api/vit/{key} 가 매번 forest 를 재조립하지 않음
         data, _ = self.cache.get_or_set(f"vit_build:{self.env}", self.s.cache_ttl_seconds, self._fetch_vit)
         return data
@@ -369,13 +373,11 @@ class JiraClient:
     # ── 범용 단일 리소스 (env 무관 — /api/issue·/api/epic 리소스 엔드포인트용) ──
     def issue_detail(self, key):
         """단일 티켓 상세 노드(요약·타입·상태·일정·SP + Sub-Task). 없으면 None."""
-        raw = mockdata.raw_issue(key) if self.env == "mock" else self.get_issue(key)
+        raw = self.get_issue(key)
         return _display_node(raw, self.s.sp_field_id, with_subs=True) if raw else None
 
     def issue_comments(self, key, limit=5):
         """단일 티켓 코멘트 — mock/local/prod 동일 형태."""
-        if self.env == "mock":
-            return mockdata.issue_comments(key, limit)
         return self._issue_comments(key, limit)
 
     def _display_name(self, pid):
@@ -408,8 +410,6 @@ class JiraClient:
 
     # ── 기능3: 인력 워크로드 / 활동 ──
     def workload(self, plan, people):
-        if self.env == "mock":
-            return mockdata.workload_people(plan, people)
         return self._fetch_workload(plan, people)
 
     def _fetch_workload(self, plan, people):
@@ -423,7 +423,7 @@ class JiraClient:
                     comps = [c.get("name") for c in (f.get("components") or [])]
                     comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
                     itt = f.get("issuetype") or {}
-                    c = mockdata.wl_category(comp, itt.get("name", ""), itt.get("subtask"))
+                    c = _wl_category(comp, itt.get("name", ""), itt.get("subtask"))
                     if not c:
                         continue
                     by["count"][c] += 1
@@ -465,8 +465,6 @@ class JiraClient:
 
     def workload_tickets(self, user):
         """인력 상세: 진행중 / 최근7일 완료 **티켓 리스트** (카운트 화면의 [+] 확장용)."""
-        if self.env == "mock":
-            return mockdata.workload_tickets(user)
         key = f"workload_tickets:{self.env}:{user}"
         return self.cache.get_or_set(key, self.s.cache_ttl_seconds,
                                      lambda: self._fetch_workload_tickets(user))[0]
@@ -477,7 +475,7 @@ class JiraClient:
             comps = [c.get("name") for c in (f.get("components") or [])]
             comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
             itt = f.get("issuetype") or {}
-            return mockdata.wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
+            return _wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
         ip = self._search(f'assignee = "{user}" AND statusCategory = "In Progress"', max_results=200)
         dn = self._search(f'assignee = "{user}" AND statusCategory = Done AND resolved >= -7d', max_results=200)
         return {"user": user,
@@ -485,8 +483,6 @@ class JiraClient:
                 "done7d": [self._wl_ticket(it) for it in dn if keep(it)]}
 
     def activity(self, user):
-        if self.env == "mock":
-            return mockdata.activity(user)
         key = f"activity:{self.env}:{user}"
         data, _ = self.cache.get_or_set(key, self.s.cache_ttl_seconds, lambda: self._fetch_activity(user))
         return data

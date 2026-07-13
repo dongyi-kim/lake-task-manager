@@ -243,21 +243,26 @@ progress = Σ(SP where statusCategory.key == "done") / Σ(SP 전체)
 
 ---
 
-## 7. 로컬 재현 환경 — Fake Jira/Confluence 서버
+## 7. 로컬 재현 환경 — 외부 오픈소스 mock `jira820`
 
 이 PC는 사내 VDI/VBS로 **Docker·WSL2 불가**, Jira DC **deprecation으로 신규 평가 라이선스 발급도 중단**.
-→ 실 Jira 없이 **Fake Jira/Confluence REST 서버**(`src/tools/fake_jira`, :8080)로 개발·테스트한다.
-무설치·무라이선스·무가상화. `local` provider가 **진짜 HTTP**로 붙어 REST+인증+캐시 경로를 그대로 검증한다.
+→ 실 Jira 없이 **외부 오픈소스 패키지 [`jira820`](https://pypi.org/project/jira820)**(범용 Jira DC 8.20.8 mock)
+에 **이 프로젝트 world 를 주입**(`app/fakebridge.py`)해 개발·테스트한다. 무설치·무라이선스·무가상화.
+
+**dev 데이터 경로가 jira820 하나로 일원화됨** (기존 `tools/fake_jira`·`app/mockdata.py` 제거):
+- **mock**: jira820 을 **in-process(ASGI)** 로 호출(`app/auth/inprocess.py`). 소켓/`run_fake` 불필요. dev 기본값.
+- **local**: `run_fake.py` 가 같은 jira820(world 주입)을 **:8080 실 HTTP** 로 서빙 → REST+인증+캐시 경로 검증.
 
 ```bash
+python run.py                                    # mock = jira820 in-process (기본)
 python run_fake.py                               # :8080 (FAKE_LATENCY_MS 로 지연 주입)
-JIRA_ENV=local python run.py                     # 앱(local) → fake
+JIRA_ENV=local python run.py                     # 앱(local) → :8080 jira820
 ```
 
-- 테스트 데이터는 **전부 fake API 레벨**(`app/world.py`, 결정적). Jira·DB·seed 불필요.
-- fake 는 실 Jira DC 8.20.8 형태를 흉내 — statusCategory `new/indeterminate/done`, 사내 status(Open/In Progress/Resolved/Closed/Reopened)·type(Bug/Epic/Improvement/New Feature/Story/Task/Sub-Task), 티켓 키 `DL-xxxx`.
-- **같은 `world` 를 mock 도 in-process 로 소비** → `mock` 출력과 `local`(fake) 출력이 100% 일치(회귀 기준).
-- 한계: 실 Jira 고유 quirk(워크플로 미묘동작 등)는 못 잡음 → 사내 **prod(SSO)**에서 소수 대조.
+- 테스트 데이터 = 결정적 `app/world.py` (jira820 에 주입). Jira·DB·seed 불필요.
+- jira820 은 실 Jira DC 8.20.8 형태 — statusCategory `new/indeterminate/done`, 사내 status(Open/In Progress/Resolved/Closed/Reopened)·type(Bug/Epic/…/Sub-Task), 티켓 키 `DL-xxxx`.
+- **mock·local 모두 같은 jira820(같은 world·직렬화기)** → 출력 100% 일치(전송만 다름, 회귀 기준). `tests/test_local_parity.py` 가 자동 가드.
+- 한계: 실 Jira 고유 quirk 는 못 잡음 → 사내 **prod(SSO)**에서 소수 대조.
 
 ---
 
@@ -286,30 +291,29 @@ lake-task-manager/               # repo 루트
     │   ├── settings.py          # config/jira.yml + wbs_config 로더/검증, frozen(exe)·컨테이너 경로 인식
     │   ├── world.py             # ★ 단일 결정적 데이터 세계 (이슈·설명·코멘트·활동·confluence)
     │   ├── worldcontent.py      # description/comment/activity 다양성 풀
-    │   ├── mockdata.py          # mock 어댑터 (world 를 in-process 소비)
+    │   ├── fakebridge.py        # world 를 외부 jira820 서버에 주입(mock/local 공용 dev 백엔드)
     │   ├── progress.py          # 순수 SP 롤업 (Epic 단위)
     │   ├── rollup.py            # WBS/Module/PMO 가중 조합 (상대 가중치 자동 정규화) — 순수
     │   ├── vit.py / workload.py # 기능2 현안 / 기능3 워크로드 조합
     │   ├── cache.py             # SQLite TTL 캐시(티켓 단위) + snapshot
-    │   ├── jira_client.py       # REST 호출 (AuthProvider 주입, 캐시 경유)
-    │   ├── auth/{base,basic,sso_session}.py
+    │   ├── jira_client.py       # REST 호출 (AuthProvider 주입, 캐시 경유) — env 무관 단일 경로
+    │   ├── auth/{base,basic,sso_session,inprocess}.py   # inprocess=mock용 jira820 in-process provider
     │   └── static/             # Vue 3 무빌드 SPA: index.html(셸)+app.js+components/(app-root·ui·views)+lib/(api·fmt·colors)+styles/(tokens·base·components·뷰별)+vendor/(vue.esm)
-    ├── tools/fake_jira/         # ★ Fake Jira/Confluence REST 서버 (world 를 HTTP 로 서빙)
-    │   └── {server,jql,atom,__main__}.py
-    └── tests/                   # world/jql/atom/progress/rollup/config/names 유닛테스트
+    └── tests/                   # world/progress/rollup/config/names/local_parity 유닛테스트
 ```
+> dev fake 서버는 **외부 오픈소스 [`jira820`](https://pypi.org/project/jira820)** 패키지(requirements). 이전
+> `tools/fake_jira`·`app/mockdata.py` 는 이 패키지로 대체·제거됨.
 
 ### 환경 3종 (`JIRA_ENV`)
-- **mock**: Jira 없이 `app/world.py` 를 in-process 로 소비 (UI 확인 기본값).
-- **local**: **Fake Jira 서버(`tools/fake_jira`, :8080)** 에 실제 HTTP 로 붙음. **같은 world** 를 서빙하므로 mock 출력과 100% 일치 — REST+인증+캐시 경로 검증용.
-  - Docker/WSL2 불가 + DC 라이선스 발급 중단 → 네이티브 Jira 대신 **Fake 서버가 로컬 dev 기본**. (`seed`/native 가이드는 실 Jira 확보 시 옵션으로 보존)
-- **prod**: 사내 Jira DC (Playwright SSO 세션 재사용). Fake 와 **동일 파서**를 그대로 씀.
+- **mock**: **jira820 in-process**(world 주입, `app/auth/inprocess.py`). Jira·소켓·`run_fake` 불필요. dev 기본값.
+- **local**: `run_fake.py`(:8080, 같은 jira820)에 실제 HTTP. **같은 world·직렬화기** → mock 출력과 100% 일치. REST+인증+캐시 경로 검증.
+- **prod**: 사내 Jira DC (Playwright SSO 세션 재사용). **세 환경 모두 동일 파서/경로** — provider 만 교체.
 
 `settings.py` 는 `config/`(jira.yml 포함)를 **repo 루트(dev) / exe 옆(frozen) / /srv(컨테이너)** 어디에 있든 자동으로 찾는다.
 
-### 실행 방식 (dev = Fake)
-- mock: `python run.py`  (또는 `uvicorn app.main:app`). dev `config/jira.yml` 기본이 `env: mock`.
-- **local(fake)**: 터미널1 `python run_fake.py` (:8080, `FAKE_LATENCY_MS` 로 지연 주입 가능) → 터미널2 `JIRA_ENV=local python run.py`.
+### 실행 방식 (dev = jira820)
+- mock: `python run.py`  (또는 `uvicorn app.main:app`). dev `config/jira.yml` 기본이 `env: mock` → jira820 in-process.
+- **local**: 터미널1 `python run_fake.py` (:8080 jira820, `FAKE_LATENCY_MS` 로 지연 주입 가능) → 터미널2 `JIRA_ENV=local python run.py`.
 - 최종 사용자: **소스 실행** (배포 repo `run.bat` → venv·의존성·Chromium 자동 구성 후 앱 창. 창 닫으면 전체 종료).
   prod SSO 는 **같은 앱 창**에서 로그인 → 세션 저장 → 앱 복귀. (Playwright **번들 Chromium** — 회사 관리형 Chrome 자동화 차단 회피)
 - 앱 창 대신 기본 브라우저+수동종료: `LAKE_NO_WINDOW=1 python run.py` / playwright 없으면 자동 폴백.
@@ -320,8 +324,9 @@ lake-task-manager/               # repo 루트
 3. 인증은 `AuthProvider` 인터페이스(`app/auth`) 뒤로 숨긴다. 구현체 교체로 환경 전환.
 4. `JiraClient`는 `AuthProvider`를 주입받아 REST 호출. **어떤 인증인지 몰라야 한다.** 모든 호출은 `cache` 경유.
 5. 환경 선택은 `config/jira.yml`(`env`, 환경변수 `JIRA_ENV` 로 override)로만. 커스텀 필드 ID·매핑 하드코딩 금지.
-6. **mock/실 Jira 어댑터는 동일한 정규화 이슈 형태**를 반환 → `progress.py`가 양쪽을 그대로 소비.
-7. **테스트 데이터는 `app/world.py` 단일 소스**. mock(in-process)·fake 서버(HTTP)가 이를 공유 → 두 경로 출력 일치.
+6. **세 환경(mock/local/prod) 모두 동일한 REST 파서 경로**(`jira_client`). env 분기 없음 — provider 만 다름.
+7. **테스트 데이터는 `app/world.py` 단일 소스** → `app/fakebridge.py` 로 jira820 에 주입. mock(in-process)·local(HTTP)이
+   같은 jira820 을 소비하므로 출력 일치(회귀 기준, `tests/test_local_parity.py`).
 
 ---
 

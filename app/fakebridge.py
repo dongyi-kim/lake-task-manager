@@ -1,7 +1,7 @@
 """local(fake) 서버를 외부 오픈소스 패키지 jira820 으로 서빙하는 브리지.
 
-핵심: `mock == local` 불변식 유지. mock(in-process, app/mockdata) 과 local(HTTP) 이 **같은**
-`app.world.get_world()` 를 소비하므로 출력이 일치한다 — 전송 방식만 다르다.
+핵심: `mock == local` 불변식 유지. mock(이 앱을 in-process 로 호출) 과 local(실 HTTP) 이 **같은**
+`app.world.get_world()` + 같은 jira820 직렬화기를 쓰므로 출력이 일치한다 — 전송 방식만 다르다.
 
 jira820 은 범용 Jira DC 8.20.8 mock 이라 자체 generic 데이터를 시드하지만, 여기서는 `seed=False` 로
 빈 스토어를 만든 뒤 **이 프로젝트 world 를 주입**해 우리 데이터를 그대로 서빙한다.

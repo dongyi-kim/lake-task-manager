@@ -16,11 +16,12 @@ Jira 를 source of truth 로 두고, 그 위에 **Module → WBS Task → Epic �
 
 | 환경 | 설명 | Jira | 인증 |
 |------|------|------|------|
-| `mock` | Jira 없이 결정적 가상 데이터(`app/world.py`)를 in-process 소비. **개발 기본값, 제일 빠름.** | 불필요 | 없음 |
-| `local` | Fake Jira 서버(`tools/fake_jira`, :8080)에 **실 HTTP**. REST+인증+캐시 경로 검증. | Fake(:8080) | basic auth |
+| `mock` | 외부 mock [`jira820`](https://pypi.org/project/jira820) 을 **in-process**로(이 프로젝트 world 주입, `app/fakebridge.py`). **개발 기본값.** | 불필요 | 없음 |
+| `local` | `run_fake.py`(:8080, 같은 jira820)에 **실 HTTP**. REST+인증+캐시 경로 검증. | jira820(:8080) | basic auth |
 | `prod` | 사내 Jira DC, Playwright SSO 세션 재사용. 실데이터(수동 검증만). | 사내 DC | SSO 세션 |
 
-> **핵심 불변식**: 같은 `world` 를 mock(in-process)·local(fake HTTP)이 공유 → **mock 출력 == local 출력**. 다르면 회귀.
+> **핵심 불변식**: mock(in-process)·local(실 HTTP) 모두 **같은 jira820(같은 world·직렬화기)** → **mock 출력 == local 출력**.
+> 다르면 회귀(`tests/test_local_parity.py` 자동 가드). *(dev fake 는 이전 `tools/fake_jira`·`mockdata.py` → jira820 로 일원화됨.)*
 
 ---
 
@@ -123,11 +124,13 @@ lake-task-manager/
 │   ├── progress.py / rollup.py     # 순수 계산 (Epic SP 롤업 / WBS·Module·PMO 가중 조합)
 │   ├── jira_client.py / cache.py   # REST 클라이언트(AuthProvider 주입) / SQLite TTL 캐시
 │   ├── vit.py / workload.py        # 기능2 현안 / 기능3 워크로드
-│   ├── world.py / worldcontent.py / mockdata.py   # 단일 결정적 데이터 세계 (+ mock 어댑터)
-│   ├── auth/{base,basic,sso_session}.py            # 인증 추상화 (basic / SSO)
+│   ├── world.py / worldcontent.py  # 단일 결정적 데이터 세계
+│   ├── fakebridge.py               # world 를 외부 jira820 서버에 주입 (mock/local 공용 dev 백엔드)
+│   ├── auth/{base,basic,sso_session,inprocess}.py  # 인증 추상화 (inprocess=mock용 jira820 in-process)
 │   └── static/                     # Vue 3 무빌드 SPA
-├── tools/fake_jira/                # Fake Jira/Confluence REST 서버 (world 를 HTTP 로 서빙)
-└── tests/                          # world/jql/atom/progress/rollup/config/names 유닛테스트
+└── tests/                          # world/progress/rollup/config/names/local_parity 유닛테스트
+
+dev fake Jira = 외부 오픈소스 [`jira820`](https://pypi.org/project/jira820) (requirements).
 ```
 
 ### 아키텍처 규칙 (요약 — 상세는 `CLAUDE.md`)
