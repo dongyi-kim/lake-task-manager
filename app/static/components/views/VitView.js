@@ -157,6 +157,6 @@ export default {
         <button class="fab-btn" :class="{ on: hideDone }" @click="hideDone = !hideDone">{{ hideDone ? '☑' : '☐' }} 완료 작업 안 보기</button>
       </div>
     </template>
-    <div v-else class="loading">불러오는 중…</div>
+    <div v-else class="loading page">불러오는 중…</div>
   </div>`,
 };

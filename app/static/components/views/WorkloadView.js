@@ -218,6 +218,6 @@ export default {
         </div>
       </div>
     </template>
-    <div v-else class="loading">불러오는 중…</div>
+    <div v-else class="loading page">불러오는 중…</div>
   </div>`,
 };

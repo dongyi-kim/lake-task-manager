@@ -362,6 +362,6 @@ export default {
         <button class="fab-btn" :class="{ on: hideBugVoc }" @click="toggleBugVoc" title="Bug·VoC 티켓을 트리에서 숨김 (진척률 계산은 원래 제외)">{{ hideBugVoc ? '☑' : '☐' }} Bug/VoC 숨김</button>
       </div>
     </template>
-    <div v-else class="loading">불러오는 중…</div>
+    <div v-else class="loading page">불러오는 중…</div>
   </div>`,
 };

@@ -39,7 +39,19 @@ nav.tabs a.on { color: var(--text); border-color: var(--border); background: var
 .btn { background: var(--panel); border: 1px solid var(--border); color: var(--muted); font-size: 12px; border-radius: 8px; padding: 5px 11px; cursor: pointer; }
 .btn:hover { color: var(--text); }
 .err { color: var(--today); padding: 20px; }
-.loading { color: var(--muted); padding: 16px; }
+
+/* 로딩 표시 — 스피너 + 텍스트. 인라인(하위 지연로딩)엔 작게, .page 는 전체 페이지용으로 크게·중앙정렬 */
+@keyframes ltm-spin { to { transform: rotate(360deg); } }
+.spinner, .loading::before {
+  content: ""; display: inline-block; box-sizing: border-box;
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  animation: ltm-spin .7s linear infinite;
+}
+.loading { color: var(--muted); padding: 16px; display: inline-flex; align-items: center; gap: 8px; }
+.loading.page { display: flex; width: 100%; min-height: 260px; justify-content: center;
+  align-items: center; gap: 12px; font-size: 14px; padding: 24px; }
+.loading.page::before { width: 26px; height: 26px; border-width: 3px; }
 
 /* 모듈 카드(접이식) — 공통 */
 .mod { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); margin-bottom: 10px; overflow: hidden; }
