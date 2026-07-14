@@ -105,6 +105,15 @@ def api_issue_comments(key: str):
     return JSONResponse(_client.issue_comments(key))
 
 
+@app.get("/api/ticket/{key}")
+def api_ticket(key: str):
+    """티켓 상세 다이얼로그 — 요약·상태·담당/보고·일정·라벨·컴포넌트 + 정화된 description(HTML)."""
+    view = _client.ticket_view(key)
+    if view is None:
+        return JSONResponse({"error": "Issue Does Not Exist", "key": key}, status_code=404)
+    return JSONResponse(view)
+
+
 @app.get("/api/vit/{key}")
 def api_vit_detail(key: str):
     """단일 현안 상세 — 자손 트리 + 코멘트 (프론트 [자세히] 지연 로딩)."""

@@ -29,39 +29,131 @@ _SPIKE_Q = [
 ]
 
 
-def description(rng, itype):
+# 티켓 상세 다이얼로그 검증용 이미지 — 앱 static 제공(오프라인 렌더). mock/local 전용, prod 실데이터 무관.
+_IMG = "/ticket-sample.svg"
+# Confluence 링크(뱃지) 검증용 — /display/ 패턴으로 렌더러가 confluence 로 판별.
+_CONF = "https://confluence.example/display/DL"
+
+
+def description(rng, itype, mention=None):
+    """Jira wiki 마크업 description. 티켓 상세 다이얼로그(renderedFields→HTML)에서
+    table/image/code/blockquote/panel/callout/list/heading + 맨션([~user])·Confluence 링크(뱃지)가
+    골고루 나오도록 타입별로 구성. mention: 맨션으로 넣을 사용자 id(있으면)."""
+    at = f"[~{mention}]" if mention else "담당자"
     if itype == "Epic":
-        return (f"[목표] {rng.choice(_STORY_GOALS)}.\n"
-                f"[범위] 관련 파이프라인/스키마/권한 전반. 여러 파트가 가중치로 참여.\n"
-                f"[완료 기준] 하위 티켓 SP 롤업 100% 및 운영 이관.")
+        goal = rng.choice(_STORY_GOALS)
+        return "\n".join([
+            "h2. 목표",
+            f"이 Epic 은 *{goal}* 을(를) 달성한다. 총괄 {at}.",
+            "",
+            "{panel:title=완료 기준}",
+            "* 하위 티켓 SP 롤업 100%",
+            "* 운영 이관 및 런북 작성",
+            "{panel}",
+            "",
+            "h3. 범위 매트릭스",
+            "||모듈||역할||가중치||",
+            "|Ingestion|수집 파이프라인|3|",
+            "|Catalog|메타데이터 등록|2|",
+            "|Governance|권한/감사|1|",
+            "",
+            "{info}",
+            f"설계 배경은 [아키텍처 결정 기록|{_CONF}/architecture] 참고. 담당 {at}.",
+            "{info}",
+        ])
     if itype == "Bug":
-        return (f"[증상] {rng.choice(_BUG_SYMPTOM)}.\n"
-                f"[재현] 1) 데이터 적재 2) 집계 실행 3) 결과 확인\n"
-                f"[기대] 정상 집계  [실제] 불일치/예외\n"
-                f"[환경] Jira DC 8.20.8 / 스테이징")
+        sym = rng.choice(_BUG_SYMPTOM)
+        return "\n".join([
+            "h3. 증상",
+            f"{sym}. 재현 로그는 아래 스택을 확인.",
+            "",
+            "{code:text}",
+            "ERROR c.s.etl.Loader - batch failed",
+            "java.lang.NullPointerException: rows == null",
+            "\tat c.s.etl.Loader.merge(Loader.java:142)",
+            "{code}",
+            "",
+            "h3. 재현 절차",
+            "# 대량 데이터 적재",
+            "# 집계 배치 실행",
+            "# 결과 조회 → 불일치 확인",
+            "",
+            "{warning}",
+            f"운영 반영 전 *반드시* 스테이징에서 회귀 확인. 데이터 유실 위험. {at} 확인 요망.",
+            "{warning}",
+            "",
+            "||항목||값||",
+            "|버전|Jira DC 8.20.8|",
+            "|영역|스테이징|",
+            "",
+            f"런북: [장애 대응 절차|{_CONF}/runbook]  ·  스크린샷: !{_IMG}!",
+        ])
     if itype == "Sub-Task":
-        return f"상위 작업의 세부 단계: {rng.choice(_TASK_ITEMS)}."
+        item = rng.choice(_TASK_ITEMS)
+        return "\n".join([
+            f"상위 작업의 세부 단계: *{item}*. 리뷰어 {at}.",
+            "",
+            "관련 명령:",
+            "{code:bash}",
+            "make deploy ENV=staging",
+            "{code}",
+        ])
     if itype == "Task":
         picks = rng.sample(_TASK_ITEMS, k=min(3, len(_TASK_ITEMS)))
-        return "[체크리스트]\n" + "\n".join(f"- [ ] {p}" for p in picks)
+        return "\n".join([
+            "h3. 체크리스트",
+            *[f"* {p}" for p in picks],
+            "",
+            "{note}",
+            f"설정 값은 {{{{config/jira.yml}}}} 에 외부화한다. 가이드: [설정 가이드|{_CONF}/config]. 담당 {at}.",
+            "{note}",
+        ])
     if itype == "Spike":
-        return f"[조사] {rng.choice(_SPIKE_Q)}.\n[산출물] 결정 기록(ADR) 1건."
+        q = rng.choice(_SPIKE_Q)
+        return "\n".join([
+            f"h3. 조사: {q}",
+            "",
+            "||옵션||장점||리스크||",
+            "|A안|성숙도 높음|비용 큼|",
+            "|B안|가벼움|기능 부족|",
+            "",
+            "{tip}",
+            f"결정은 ADR 1건으로 남긴다. 참고: [벤치마크 노트|{_CONF}/benchmark]. 검토 {at}.",
+            "{tip}",
+        ])
     # Story (기본)
     role = rng.choice(ROLES)
-    return (f"As a {role}, I want {rng.choice(_STORY_GOALS)} "
-            f"so that {rng.choice(_STORY_BENEFIT)}.\n"
-            f"[Acceptance]\n- 정상 경로 검증\n- 예외 처리\n- 관측성 지표 추가")
+    return "\n".join([
+        "{quote}",
+        f"As a {role}, I want {rng.choice(_STORY_GOALS)} so that {rng.choice(_STORY_BENEFIT)}.",
+        "{quote}",
+        "",
+        "h3. 인수 조건",
+        "* 정상 경로 검증",
+        "* 예외 처리 및 재시도",
+        "* 관측성 지표 추가",
+        "",
+        f"기획 문서 [요구사항 정의서|{_CONF}/prd] 참고. 리뷰 {at}.",
+        "",
+        "예시 응답:",
+        "{code:json}",
+        '{"status": "ok", "rows": 128}',
+        "{code}",
+        "",
+        f"와이어프레임: !{_IMG}!",
+    ])
 
 
 # ── comment: 유형 다양 ──
+# 일부 템플릿은 Jira wiki 맨션([~user])·Confluence 링크를 포함 → 상세 다이얼로그에서 뱃지로 렌더.
 _COMMENT_TYPES = [
     ("standup", "데일리: 어제 {a} 진행, 오늘 마무리 예정. 블로커 없음."),
-    ("blocker", "블로커: {m} 모듈 의존 API 대기 중. @{who} 확인 부탁."),
+    ("blocker", "블로커: {m} 모듈 의존 API 대기 중. [~{who}] 확인 부탁."),
     ("question", "질문: 이 케이스 마감일 기준이 스프린트 종료인가요, 릴리스인가요?"),
-    ("review", "리뷰: 로직 OK. 다만 예외 처리와 로그 레벨만 보완 요청."),
+    ("review", "리뷰: 로직 OK. 다만 예외 처리와 로그 레벨만 보완 요청. cc [~{who}]"),
     ("qa", "QA: 회귀 3건 통과, 경계값 1건 재현되어 재수정 필요."),
-    ("decision", "결정: 캐시 TTL 15분으로 합의. ADR 에 반영함."),
-    ("mention", "@{who} 이 부분 스키마 영향 있어 크로스체크 부탁드립니다."),
+    ("decision", "결정: 캐시 TTL 15분으로 합의. 회의록 [스프린트 회의록|https://confluence.example/display/DL/minutes] 에 반영함."),
+    ("mention", "[~{who}] 이 부분 스키마 영향 있어 크로스체크 부탁드립니다. 관련 문서 [설계 노트|https://confluence.example/display/DL/design]."),
     ("dependency", "선행: 카탈로그 등록이 먼저라 순서 조정했습니다."),
     ("transition", "상태 변경: In Progress → 리뷰 대기. PR 링크 첨부."),
 ]

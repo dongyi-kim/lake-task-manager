@@ -5,7 +5,8 @@ requests>=2.31
 PyYAML>=6.0
 
 # local(fake) 서버 = 외부 오픈소스 mock (이 프로젝트 world 주입). https://pypi.org/project/jira820
-jira820>=0.2.0
+# 0.4.0+: 티켓 상세용 renderedFields/renderedBody(위키→HTML) 필요.
+jira820>=0.4.0
 
 # Prod (corporate SSO) path additionally needs Playwright:
 #   pip install -r requirements-sso.txt   (then `playwright install chromium`)

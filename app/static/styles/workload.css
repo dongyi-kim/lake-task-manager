@@ -18,6 +18,10 @@
 
 .wbars { display: flex; gap: 18px; min-width: 0; }
 .wbars > .wside { flex: 1; min-width: 0; }        /* ProgressBar(.pbar-wrap) 또는 헤더 라벨 */
+/* 범례 스와치 — 단색=진행 중, 사선=할당됨(미착수). 색(hue)은 타입이므로 여기선 중립 회색으로 형태만 안내 */
+.wl-legend .sw.solid-sw { background: var(--muted); }
+.wl-legend .sw.hatch { border: 1px solid var(--border);
+  background: repeating-linear-gradient(135deg, var(--muted) 0 2px, transparent 2px 5px), var(--panel-2); }
 
 /* 모듈 평균 — 헤더행 평균 수치 + 세로 가이드선. 선은 progress bar 채움(.pbar-seg) 뒤에 둔다
  * (빈 트랙 위에는 보이고, 색 채움은 선을 덮음 → 막대를 가로지르지 않게). 라벨(.mavg-num)은 맨 위. */
@@ -32,8 +36,10 @@
 .plus:hover { color: var(--text); }
 /* position/z-index: 모듈 평균 세로선(.mavg-line, z-index:3)이 펼친 상세 위로 지나가지 않게 덮는다 */
 .act { position: relative; z-index: 5; padding: 8px 16px 14px 40px; background: var(--panel-2); border-top: 1px solid var(--border); }
-.tcols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
-@media (max-width: 900px) { .tcols { grid-template-columns: 1fr; } }
+.tcols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+@media (max-width: 1180px) { .tcols { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 760px) { .tcols { grid-template-columns: 1fr; } }
+.wtk.todo { border-style: dashed; }   /* 착수 전 = 점선 카드 */
 .sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .3px; }
 .sec-t > b { color: var(--text); }
 

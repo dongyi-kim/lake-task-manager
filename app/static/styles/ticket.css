@@ -1,0 +1,115 @@
+/* ticket.css — 인앱 티켓 상세 다이얼로그 + 정화된 description(HTML) 렌더 스타일.
+ * description 내부 태그는 app/htmlsafe.py allowlist(p/ul/ol/table/pre/code/blockquote/div.panel·callout/img/a/h*)만. */
+
+.tkt { cursor: pointer; }
+.tkt:hover { text-decoration: underline; }
+
+/* ── 오버레이 + 다이얼로그 ── */
+.tkt-ov { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: flex-start; justify-content: center;
+  background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 40px 16px; overflow-y: auto; }
+.tkt-dlg { position: relative; background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, .35); width: min(820px, 100%);
+  padding: 20px 24px; }
+.tkt-dlg > :last-child { margin-bottom: 0; }
+.tkt-x, .tkt-max { position: absolute; top: 12px; width: 30px; height: 30px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; }
+.tkt-x { right: 12px; font-size: 13px; }
+.tkt-max { right: 48px; }
+.tkt-max svg { width: 15px; height: 15px; }
+.tkt-x:hover, .tkt-max:hover { color: var(--text); border-color: var(--accent); }
+
+/* 확장(최대화) — 화면 대부분 차지 */
+.tkt-ov.expanded { padding: 20px; align-items: stretch; }
+.tkt-dlg.expanded { width: 100%; max-width: 1500px; min-height: calc(100vh - 40px); margin: 0 auto; }
+.tkt-load, .tkt-err { padding: 28px 6px; display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.tkt-err { color: var(--today); }
+
+/* ── 헤더 ── */
+.tkt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-right: 34px; }
+.tkt-key { font-weight: 700; font-variant-numeric: tabular-nums; }
+.tkt-status { font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; border: 1px solid currentColor; }
+.tkt-status.st-todo { color: var(--st-todo); }
+.tkt-status.st-inprogress { color: var(--st-prog); }
+.tkt-status.st-done { color: var(--st-done); }
+.tkt-ext { margin-left: auto; font-size: 12.5px; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.tkt-ext:hover { text-decoration: underline; }
+.tkt-summary { font-size: 19px; margin: 12px 0 14px; line-height: 1.35; }
+
+/* ── 메타 그리드 ── */
+.tkt-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 18px;
+  padding: 12px 14px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
+.tkt-meta > div { display: flex; gap: 8px; font-size: 12.5px; }
+.tkt-meta .k { color: var(--muted); flex: 0 0 58px; }
+.tkt-meta .val { color: var(--text); min-width: 0; }
+.tkt-labels { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.tkt-label { font-size: 11px; font-weight: 600; color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; }
+
+.tkt-sec-t { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px;
+  margin: 18px 0 8px; font-weight: 700; }
+
+/* ── description 렌더 ── */
+.tkt-desc { font-size: 13.5px; line-height: 1.65; word-break: break-word; }
+/* 설명 영역을 카드(흰 배경)로 분리해 다른 UI와 구분 */
+.tkt-desc-box { background: #ffffff; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+:root[data-theme="dark"] .tkt-desc-box { background: #202027; }
+.tkt-desc > :last-child { margin-bottom: 0; }        /* 카드/코멘트 하단 여백 낭비 방지 */
+.tkt-desc p { margin: 0 0 10px; }
+.tkt-desc h1, .tkt-desc h2, .tkt-desc h3, .tkt-desc h4 { margin: 16px 0 8px; line-height: 1.3; }
+.tkt-desc h1 { font-size: 17px; } .tkt-desc h2 { font-size: 15.5px; } .tkt-desc h3 { font-size: 14px; }
+.tkt-desc ul, .tkt-desc ol { margin: 0 0 10px; padding-left: 22px; }
+.tkt-desc li { margin: 2px 0; }
+.tkt-desc a { color: var(--accent); text-decoration: none; }
+.tkt-desc a:hover { text-decoration: underline; }
+.tkt-desc img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; }
+.tkt-desc hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+/* 맨션 — 실 Jira DC 프로필 링크(a.user-hover). 뱃지 아님, 볼드+컬러로만 구분(y축 자동 정렬) */
+.tkt-desc a.user-hover { font-weight: 700; color: var(--accent); text-decoration: none; }
+.tkt-desc a.user-hover:hover { text-decoration: underline; }
+/* Confluence 링크 뱃지 — 아이콘+글자 세로 중앙, 텍스트 높이에 맞춤 */
+.tkt-desc .conf-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600;
+  line-height: 1.4; color: var(--st-prog); border: 1px solid var(--border); background: var(--panel-2);
+  border-radius: 6px; padding: 0 8px; text-decoration: none; white-space: nowrap;
+  vertical-align: middle; transform: translateY(-1.5px); }
+.tkt-desc .conf-link::before { content: ""; width: 11px; height: 11px; flex: none; display: block;
+  background: currentColor; -webkit-mask: var(--conf-ic) center/contain no-repeat; mask: var(--conf-ic) center/contain no-repeat; }
+.tkt-desc .conf-link:hover { border-color: var(--st-prog); text-decoration: none; }
+:root { --conf-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z'/><path d='M9 13h6M9 17h4'/></svg>"); }
+.tkt-desc code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12.5px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+.tkt-desc pre.code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; overflow-x: auto; margin: 0 0 12px; }
+.tkt-desc pre.code code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5;
+  white-space: pre; display: block; }
+.tkt-desc blockquote { margin: 0 0 12px; padding: 4px 14px; border-left: 3px solid var(--accent);
+  color: var(--muted); background: var(--panel-2); border-radius: 0 8px 8px 0; }
+
+/* 표 */
+.tkt-desc table { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 12.5px; display: block; overflow-x: auto; }
+.tkt-desc th, .tkt-desc td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+.tkt-desc th { background: var(--panel-2); font-weight: 700; }
+
+/* 패널 */
+.tkt-desc .panel { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 0 0 12px; }
+.tkt-desc .panel-title { background: var(--panel-2); padding: 7px 12px; font-weight: 700; font-size: 12.5px;
+  border-bottom: 1px solid var(--border); }
+.tkt-desc .panel-body { padding: 10px 12px; }
+.tkt-desc .panel-body > :last-child { margin-bottom: 0; }
+
+/* 콜아웃 — 좌측 컬러 바 + 옅은 배경 (타입별 색) */
+.tkt-desc .callout { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px;
+  padding: 9px 13px; margin: 0 0 12px; background: var(--panel-2); }
+.tkt-desc .callout > :last-child { margin-bottom: 0; }
+.tkt-desc .callout-note { border-left-color: #8a8a86; }
+.tkt-desc .callout-info { border-left-color: var(--st-prog); }
+.tkt-desc .callout-tip, .tkt-desc .callout-success { border-left-color: var(--done); }
+.tkt-desc .callout-warning { border-left-color: var(--warn); }
+.tkt-desc .callout-error { border-left-color: var(--danger); }
+
+/* ── 코멘트 ── */
+.tkt-comments { display: flex; flex-direction: column; gap: 8px; }
+.tkt-cmt { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel-2); }
+.tkt-cmt-h { display: flex; gap: 10px; align-items: baseline; font-size: 12.5px; margin-bottom: 3px; }
+.tkt-cmt-h .muted { font-size: 11.5px; }
+.tkt-cmt-b { font-size: 13px; white-space: pre-wrap; word-break: break-word; }

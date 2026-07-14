@@ -34,10 +34,10 @@ export function dday(iso) {
   if (isNaN(diff)) return "";
   return diff === 0 ? "D-Day" : (diff > 0 ? "D-" + diff : "D+" + (-diff));
 }
-// Jira 티켓 링크 (jiraBase 있으면 <a>, 없으면 키 텍스트)
+// Jira 티켓 링크 — 외부 브라우저 대신 **인앱 티켓 다이얼로그**를 여는 트리거.
+// (href 없음 → run.py 외부링크 훅과 충돌 안 함. app-root 의 위임 클릭 핸들러가 data-key 로 다이얼로그 오픈.)
+// base 는 하위호환용으로 받되 무시(다이얼로그가 자체적으로 Jira URL 확보).
 export function tkt(key, base) {
   if (!key) return "";
-  return base
-    ? "<a class='lnk' target='_blank' rel='noopener' href='" + base + "/browse/" + key + "'>" + key + "</a>"
-    : key;
+  return "<a class='lnk tkt' role='button' tabindex='0' data-key='" + esc(key) + "'>" + esc(key) + "</a>";
 }

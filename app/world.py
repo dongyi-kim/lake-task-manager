@@ -172,7 +172,7 @@ class World:
             # 시각은 rng 를 쓰지 않고 결정적으로 파생(업무시간대) → world 시퀀스 불변.
             hh = 9 + (ccreated.toordinal() + len(comments)) % 9
             mm = ((ccreated.toordinal() * 3 + len(comments) * 7) % 6) * 10
-            comments.append({"author": author, "kind": k, "text": t,
+            comments.append({"author": author, "kind": k, "text": t, "body": t,
                              "created": ccreated, "tcreated": "%02d:%02d" % (hh, mm)})
         worklog = []
         if cat != "todo":
@@ -184,7 +184,7 @@ class World:
         self.issues[key] = {
             "key": key, "project": self.project, "type": itype,
             "summary": summary or self._summary(rng, itype, module),
-            "description": wc.description(rng, itype),
+            "description": wc.description(rng, itype, reporter),
             "module": module, "component": component or module,
             "assignee": assignee, "reporter": reporter,
             "statusCategory": cat, "statusName": status_name,

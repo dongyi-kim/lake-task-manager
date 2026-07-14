@@ -12,8 +12,9 @@
 
   /* 상태색 (statusCategory) */
   --st-todo:#8a8a86; --st-prog:#2f8fe0; --st-done:#147a52;
-  /* 워크로드 Task / Sub-Task / VoC (부드러운 색, 서로 구분되는 파랑·라벤더·살몬) */
-  --wl-task:#8fb5e2; --wl-subtask:#b3a8e0; --wl-voc:#eaa9a4;
+  /* 워크로드 Task / Sub-Task / VoC — hue 가 확실히 갈리는 색맹 안전 3색(파랑·앰버·로즈).
+     검정 글씨 가독 위해 채도/명도 유지. 라이트/다크 공통. */
+  --wl-task:#5b9bd5; --wl-subtask:#e6a23c; --wl-voc:#e072a4;
   /* 인력 구분 뱃지 (개발=파랑 / 운영=주황) */
   --dev-fg:#1d4ed8; --dev-bg:rgba(37,99,235,.13); --ops-fg:#b45309; --ops-bg:rgba(217,119,6,.15);
   /* 마감 임박도 (D-day): 여유=노랑 / 임박·초과=빨강 */

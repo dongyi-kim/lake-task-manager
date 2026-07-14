@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 from . import progress
+from .htmlsafe import sanitize_html, text_to_html
 from .names import real_name
 
 
@@ -94,6 +95,48 @@ def _display_node(raw, sp_field, with_subs=False):
             })
         node["children"] = subs
     return node
+
+
+def _build_ticket_view(raw, sp_field, jira_base=""):
+    """티켓 상세 다이얼로그용 리치 뷰(순수 함수 — 테스트 용이).
+    description: prod 의 renderedFields.description(HTML)이 있으면 **sanitize**, 없으면 평문→escape+nl2br.
+    """
+    f = raw.get("fields", {}) or {}
+    rendered = raw.get("renderedFields") or {}
+    rhtml = rendered.get("description")
+    if rhtml and str(rhtml).strip():
+        desc, fmt = sanitize_html(rhtml), "html"
+    else:
+        desc, fmt = text_to_html(f.get("description") or ""), "text"
+    st = f.get("status") or {}
+    itype = f.get("issuetype") or {}
+
+    def _rn(u):
+        u = u or {}
+        return real_name(u.get("displayName") or u.get("name")) if u else None
+
+    key = raw.get("key", "")
+    return {
+        "key": key,
+        "summary": f.get("summary", ""),
+        "type": itype.get("name", ""),
+        "subtask": bool(itype.get("subtask")),
+        "status": st.get("name", ""),
+        "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
+        "priority": (f.get("priority") or {}).get("name") or None,
+        "assignee": _rn(f.get("assignee")),
+        "reporter": _rn(f.get("reporter")),
+        "created": f.get("created") or None,
+        "updated": f.get("updated") or None,
+        "due": f.get("duedate") or None,
+        "resolved": f.get("resolutiondate") or None,
+        "labels": f.get("labels") or [],
+        "components": [c.get("name") for c in (f.get("components") or []) if c.get("name")],
+        "sp": f.get(sp_field),
+        "descriptionHtml": desc,           # 항상 안전(정화됨). 프론트는 그대로 v-html.
+        "descriptionFormat": fmt,          # 'html'(정화됨) | 'text'(평문→nl2br)
+        "url": (jira_base.rstrip("/") + "/browse/" + key) if jira_base else "",
+    }
 
 
 class JiraClient:
@@ -361,13 +404,20 @@ class JiraClient:
     def _issue_comments(self, key, limit=5):
         """코멘트 — `comments:{env}:{key}` 로 티켓 단위 캐시."""
         def do():
-            data = self.provider.get_json(f"/rest/api/2/issue/{key}/comment",
-                                          params={"maxResults": limit, "orderBy": "-created"})
-            return [{
-                "date": (c.get("created") or "")[:10],
-                "author": ((c.get("author") or {}).get("displayName") or (c.get("author") or {}).get("name")),
-                "text": (c.get("body") or "")[:200],
-            } for c in data.get("comments", [])[:limit]]
+            data = self.provider.get_json(
+                f"/rest/api/2/issue/{key}/comment",
+                params={"maxResults": limit, "orderBy": "-created", "expand": "renderedBody"})
+            out = []
+            for c in data.get("comments", [])[:limit]:
+                rb = c.get("renderedBody")
+                html = sanitize_html(rb) if rb and str(rb).strip() else text_to_html(c.get("body") or "")
+                out.append({
+                    "date": c.get("created") or "",     # 전체 datetime(프론트에서 yy.mm.dd hh:mm 포맷)
+                    "author": real_name((c.get("author") or {}).get("displayName")
+                                        or (c.get("author") or {}).get("name")),
+                    "html": html,       # 정화된 코멘트 HTML (맨션·링크·서식 포함)
+                })
+            return out
         return self.cache.get_or_set(f"comments:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
 
     # ── 범용 단일 리소스 (env 무관 — /api/issue·/api/epic 리소스 엔드포인트용) ──
@@ -379,6 +429,25 @@ class JiraClient:
     def issue_comments(self, key, limit=5):
         """단일 티켓 코멘트 — mock/local/prod 동일 형태."""
         return self._issue_comments(key, limit)
+
+    def ticket_view(self, key):
+        """티켓 상세 다이얼로그용 리치 뷰 — 없으면 None. description 은 항상 정화된 안전 HTML."""
+        raw = self._get_issue_view(key)
+        return _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base) if raw else None
+
+    def _get_issue_view(self, key):
+        """상세 뷰용 단일 티켓 원본 — renderedFields(HTML) 포함 요청. `issueview:{env}:{key}` 캐시.
+        prod 은 renderedFields.description(HTML) 반환, mock/local(jira820)도 렌더된 HTML 제공."""
+        ck = f"issueview:{self.env}:{key}"
+        # SessionExpired(401/403/5xx) 는 전파돼 라우트가 needLogin(401) 처리. 404 는 에러 바디(dict) → None.
+        data, _ = self.cache.get_or_set(
+            ck, self.s.cache_ttl_seconds,
+            lambda: self.provider.get_json(
+                f"/rest/api/2/issue/{key}",
+                params={"fields": self._issue_fields(), "expand": "renderedFields"}))
+        if not isinstance(data, dict) or "fields" not in data:
+            return None       # 존재하지 않는 티켓(404 에러 바디)
+        return data
 
     def _display_name(self, pid):
         """Jira 사용자 displayName('{본명} {회사}').
@@ -435,6 +504,8 @@ class JiraClient:
             key = f'workload:{self.env}:{pid}'
             bundle, _ = self.cache.get_or_set(key, self.s.cache_ttl_seconds, lambda: {
                 "id": pid,
+                # 미완료 할당 = 미착수(To Do) + 진행 중(In Progress). 완료는 최근 7일만.
+                "open": counts(f'assignee = "{pid}" AND statusCategory = "To Do"'),
                 "inProgress": counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
                 "done7d": counts(f'assignee = "{pid}" AND statusCategory = Done AND resolved >= -7d'),
             })
@@ -476,9 +547,11 @@ class JiraClient:
             comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
             itt = f.get("issuetype") or {}
             return _wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
+        op = self._search(f'assignee = "{user}" AND statusCategory = "To Do"', max_results=200)
         ip = self._search(f'assignee = "{user}" AND statusCategory = "In Progress"', max_results=200)
         dn = self._search(f'assignee = "{user}" AND statusCategory = Done AND resolved >= -7d', max_results=200)
         return {"user": user,
+                "open": [self._wl_ticket(it) for it in op if keep(it)],
                 "inProgress": [self._wl_ticket(it) for it in ip if keep(it)],
                 "done7d": [self._wl_ticket(it) for it in dn if keep(it)]}
 

@@ -21,6 +21,8 @@ def build_workload(client, plan, people, jira_base="", generated_at=None):
         rows = [dict(p, name=real_name(p.get("displayName") or p["id"]), kind=staff_kind(p["id"]))
                 for p in data.get(m, [])]
         # 헤더/칩 합계는 티켓 수(count) 기준(전 카테고리 합). 막대 메트릭·스케일·모듈평균은 프론트에서 계산.
+        # 미착수(open)는 막대엔 안 섞고 배지·합계로만 노출(진행중 막대/모듈평균은 종전대로 유지).
+        op = [sum(p.get("open", {}).get("count", {}).values()) for p in rows]
         ip = [sum(p["inProgress"]["count"].values()) for p in rows]
         dn = [sum(p["done7d"]["count"].values()) for p in rows]
         all_ip += ip
@@ -29,6 +31,7 @@ def build_workload(client, plan, people, jira_base="", generated_at=None):
             "module": m,
             "people": rows,
             "peopleCount": len(rows),
+            "openTotal": sum(op),           # 미착수(To Do) 합계
             "inProgressTotal": sum(ip),
             "done7dTotal": sum(dn),
             "avgInProgress": _avg(ip),      # 모듈 평균 (세로선)

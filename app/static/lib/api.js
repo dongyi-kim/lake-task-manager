@@ -31,4 +31,6 @@ export const api = {
   workload: () => get("/api/workload"),
   workloadDetail: (user) => get("/api/workload/" + encodeURIComponent(user)),
   activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
+  ticket: (key) => get("/api/ticket/" + encodeURIComponent(key)),
+  ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
 };
