@@ -16,10 +16,27 @@ import os
 import sys
 import threading
 import time
+import urllib.parse
 
 import uvicorn
 
 from app.settings import APP_ROOT, get_settings
+
+
+# 창을 열자마자(서버 준비 전에도) 즉시 보여줄 부팅 로더 — 외부 자원 없는 self-contained data URL.
+# 이렇게 하면 --app 초기 프레임이 '흰 화면 + 타이틀 localhost/' 대신 우리 스피너+제목으로 뜬다.
+# 서버가 실제 응답하면 진짜 앱(http://localhost:PORT)으로 goto 해서 교체한다.
+_BOOT_HTML = """<!doctype html><html lang=ko><head><meta charset=utf-8><title>Lake Task Manager</title>
+<style>html,body{margin:0;height:100%}
+body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+background:#f9f9f7;color:#0b0b0b;font-family:system-ui,"Segoe UI","Malgun Gothic",sans-serif}
+.s{width:34px;height:34px;border-radius:50%;border:3px solid #e1e0d9;border-top-color:#6d4fc0;
+animation:r .8s linear infinite}@keyframes r{to{transform:rotate(360deg)}}
+.t{font-weight:600;font-size:16px;letter-spacing:-.2px}.u{font-size:12.5px;color:#6b778c}
+@media(prefers-color-scheme:dark){body{background:#0f0f0e;color:#f2f2f0}
+.s{border-color:#333;border-top-color:#8f6fe0}.u{color:#9aa4b2}}</style></head>
+<body><div class=s></div><div class=t>Lake Task Manager</div><div class=u>불러오는 중…</div></body></html>"""
+_BOOT_DATA_URL = "data:text/html;charset=utf-8," + urllib.parse.quote(_BOOT_HTML)
 
 
 def _sso_login(s):
@@ -156,29 +173,35 @@ def _run_app_window(s, headless=False):
     import shutil
     import tempfile
     url = f"http://localhost:{s.app_port}/"
-    server = _serve_bg(s)
     import app.main as appmain
     appmain._window_login = True                       # /api/login 이 이 창에서 로그인하도록
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
     udd = tempfile.mkdtemp(prefix="ltm-appwin-")       # 앱 창 전용 임시 프로필 (cwd 오염 방지)
+    # 1) 창을 '부팅 로더 data URL' 로 즉시 연다 → 서버 준비 여부와 무관하게 흰 화면/‘localhost/’ 타이틀 없음.
     context = p.chromium.launch_persistent_context(
         user_data_dir=udd,
         headless=headless,
         no_viewport=True,                              # 뷰포트를 실제 창 크기에 추종(리사이즈 시 흰 여백 방지)
         ignore_default_args=["--enable-automation"],   # '자동화 제어 중' 안내바 제거
         args=["--no-first-run", "--no-default-browser-check",
-              "--window-size=1400,900", f"--app={url}"],   # 앱 모드 + 초기 창 크기
+              "--window-size=1400,900", f"--app={_BOOT_DATA_URL}"],  # 앱 모드 + 즉시 부팅로더
     )
     page = context.pages[0] if context.pages else context.wait_for_event("page")
-    try:
-        page.wait_for_load_state("domcontentloaded")
-        # 초기 --app 로드가 레이스로 비어 있으면(우리 마크업 없음) 한 번 더 로드. 정상이면 no-op.
-        if not page.evaluate("!!(document.querySelector('.app-boot')||document.querySelector('.wrap'))"):
+    _wire_external_links(context, page)                # 외부 링크 훅(goto 전 설치 → 실제 페이지에도 적용)
+    # 2) 서버가 실제로 응답할 때까지 대기(그동안 창엔 부팅로더가 계속 돎).
+    server = _serve_bg(s)
+    # 3) 준비된 서버로 실제 앱 이동. 혹시 비면 잠깐 뒤 재시도(부팅로더 유지).
+    for _ in range(50):
+        try:
             page.goto(url, wait_until="domcontentloaded")
-    except Exception:
-        pass
-    _wire_external_links(context, page)                # 외부 링크 → 시스템 기본 브라우저
+            if page.evaluate("!!(document.querySelector('.app-boot')||document.querySelector('.wrap'))"):
+                break
+        except Exception:
+            pass
+        if page.is_closed():
+            break
+        page.wait_for_timeout(100)
     from app.settings import STATIC_DIR
     ico_path = str(STATIC_DIR / "favicon.ico")
     print(f"Lake Task Manager - {url}  (env={s.jira_env})  [이 창을 닫으면 종료됩니다]")
