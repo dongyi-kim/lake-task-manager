@@ -28,13 +28,21 @@ def _sso_login(s):
 
 
 def _serve_bg(s):
-    """uvicorn 을 백그라운드(데몬) 스레드로 기동하고, 준비될 때까지 대기 후 server 반환."""
+    """uvicorn 을 백그라운드(데몬) 스레드로 기동. **실제 HTTP 응답까지** 확인 후 반환.
+    (server.started 는 소켓 accept 보다 살짝 이를 수 있어, 그대로 창을 열면 --app 초기 로드가
+     connection-refused → 흰 화면 고착. 실 연결 확인으로 이 레이스를 제거한다.)"""
+    import urllib.request
     config = uvicorn.Config("app.main:app", host=s.app_host, port=s.app_port, log_level="warning")
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
-    for _ in range(200):
+    probe = f"http://127.0.0.1:{s.app_port}/api/health"
+    for _ in range(300):                              # 최대 ~30s
         if getattr(server, "started", False):
-            break
+            try:
+                urllib.request.urlopen(probe, timeout=1).read()
+                break                                 # 실제로 응답함 → 창 열어도 안전
+            except Exception:
+                pass
         time.sleep(0.1)
     return server
 
@@ -165,6 +173,9 @@ def _run_app_window(s, headless=False):
     page = context.pages[0] if context.pages else context.wait_for_event("page")
     try:
         page.wait_for_load_state("domcontentloaded")
+        # 초기 --app 로드가 레이스로 비어 있으면(우리 마크업 없음) 한 번 더 로드. 정상이면 no-op.
+        if not page.evaluate("!!(document.querySelector('.app-boot')||document.querySelector('.wrap'))"):
+            page.goto(url, wait_until="domcontentloaded")
     except Exception:
         pass
     _wire_external_links(context, page)                # 외부 링크 → 시스템 기본 브라우저
