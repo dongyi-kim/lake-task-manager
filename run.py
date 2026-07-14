@@ -96,10 +96,9 @@ def _sys_open(url):
 def _wire_external_links(context, page):
     """외부 링크를 새 Chromium 창 대신 시스템 기본 브라우저로 열도록 바인딩+init 스크립트 설치."""
     try:
-        context.expose_function("_openExternal", _sys_open)
-        context.add_init_script(_EXT_LINK_JS)
-        page.reload()                                     # 이미 로드된 초기 페이지에 바인딩/리스너 반영
-        page.wait_for_load_state("domcontentloaded")
+        context.expose_function("_openExternal", _sys_open)   # 현재 페이지에도 바인딩 적용됨
+        context.add_init_script(_EXT_LINK_JS)                 # 이후 네비게이션(SSO 로그인 등)용
+        page.evaluate(_EXT_LINK_JS)                           # 현재 페이지에 즉시 주입 — 리로드 없음(흰 화면 방지)
     except Exception:
         pass
 
