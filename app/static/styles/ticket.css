@@ -91,6 +91,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 :root { --conf-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z'/><path d='M9 13h6M9 17h4'/></svg>"); }
 .tkt-desc code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12.5px;
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+/* 태스크리스트 체크박스(읽기전용) */
+.tkt-desc input[type="checkbox"], .tkt-desc input[type="radio"] { margin: 0 6px 0 0; vertical-align: middle; }
 .tkt-desc pre.code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
   padding: 12px 14px; overflow-x: auto; margin: 0 0 12px; }
 .tkt-desc pre.code code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5;

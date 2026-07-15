@@ -26,12 +26,18 @@ _ALLOWED_TAGS = {
     "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col",
 }
 # 내용까지 통째로 삭제(태그를 지우고 자식 텍스트를 남기면 위험한 것들)
+#  ※ input 은 제외(void 요소라 닫는 태그가 없어 subtree 삭제로 처리하면 뒤 내용이 통째로 잘림).
+#    태스크리스트 체크박스는 _emit_input 에서 읽기전용으로 별도 렌더.
 _DROP_SUBTREE = {
     "script", "style", "iframe", "object", "embed", "noscript", "template",
-    "svg", "math", "form", "input", "button", "textarea", "select", "option",
+    "svg", "math", "form", "button", "textarea", "select", "option",
     "link", "meta", "base", "title", "head", "frame", "frameset", "applet",
 }
-_VOID = {"br", "hr", "img", "col"}
+_VOID = {"br", "hr", "img", "col", "input"}
+# HTML void 요소 전체 — DROP_SUBTREE 에 든 void(embed/link/meta/base/frame 등)가 '닫는 태그 없음'으로
+# 뒤 내용을 삼키지 않도록, 시작 태그에서 subtree 진입 대신 그 태그만 버린다.
+_VOID_ALL = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+             "link", "meta", "param", "source", "track", "wbr", "frame"}
 # 태그별 허용 속성 (그 외 전부 제거; on* 은 어디서도 불허)
 _ALLOWED_ATTRS = {
     "a": {"href", "title"},
@@ -80,13 +86,27 @@ class _Sanitizer(HTMLParser):
         self.out = []
         self._drop_depth = 0     # _DROP_SUBTREE 내부면 >0
 
+    # 태스크리스트 체크박스만 읽기전용으로 렌더(그 외 input 은 제거)
+    def _emit_input(self, attrs):
+        d = {(k or "").lower(): v for k, v in attrs}
+        t = (d.get("type") or "").strip().lower()
+        if t not in ("checkbox", "radio"):
+            return
+        chk = " checked" if "checked" in d else ""
+        self.out.append('<input type="%s"%s disabled />' % (t, chk))
+
     # 위험 서브트리(script 등) 내부는 태그·텍스트 모두 버림
     def handle_starttag(self, tag, attrs):
         if self._drop_depth:
-            if tag in _DROP_SUBTREE:
+            if tag in _DROP_SUBTREE and tag not in _VOID_ALL:   # void 는 subtree 진입 안 함
                 self._drop_depth += 1
             return
+        if tag == "input":
+            self._emit_input(attrs)
+            return
         if tag in _DROP_SUBTREE:
+            if tag in _VOID_ALL:
+                return           # void drop 태그: 그 태그만 버리고 이어감(뒤 내용 안 삼킴)
             self._drop_depth = 1
             return
         if tag not in _ALLOWED_TAGS:
@@ -94,7 +114,12 @@ class _Sanitizer(HTMLParser):
         self.out.append("<" + tag + self._attrs(tag, attrs) + ">")
 
     def handle_startendtag(self, tag, attrs):
-        if self._drop_depth or tag in _DROP_SUBTREE or tag not in _ALLOWED_TAGS:
+        if self._drop_depth:
+            return
+        if tag == "input":
+            self._emit_input(attrs)
+            return
+        if tag in _DROP_SUBTREE or tag not in _ALLOWED_TAGS:
             return
         self.out.append("<" + tag + self._attrs(tag, attrs) + " />")
 

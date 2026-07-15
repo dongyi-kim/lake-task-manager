@@ -121,6 +121,35 @@ def test_comment_and_declaration_removed():
     assert "본문" in out
 
 
+def test_input_checkbox_does_not_truncate_following_content():
+    # ★회귀: <input> 은 void 라 닫는 태그가 없음 → subtree 삭제로 처리하면 뒤 내용이 통째로 잘렸음.
+    src = ('<p>앞 문단</p>'
+           '<ul class="inline-task-list">'
+           '<li><input type="checkbox" checked> 완료 항목</li>'
+           '<li><input type="checkbox"> 미완료 항목</li></ul>'
+           '<p>뒤 문단</p>')
+    out = sanitize_html(src)
+    assert "앞 문단" in out and "완료 항목" in out and "미완료 항목" in out
+    assert "뒤 문단" in out                       # ← 이게 잘리면 안 됨
+    assert out.count("<input") == 2               # 체크박스 렌더
+    assert "disabled" in out                      # 읽기전용
+    assert "checked" in out                        # 완료 항목 체크 유지
+
+
+def test_non_checkbox_input_dropped_but_content_kept():
+    out = sanitize_html('<p>x</p><input type="text" value="secret"><p>y</p>')
+    assert "<input" not in out                     # 텍스트 input 은 렌더 안 함
+    assert "secret" not in out
+    assert "x" in out and "y" in out               # 앞뒤 내용 보존
+
+
+def test_void_drop_elements_do_not_swallow_content():
+    # meta/link/base/embed 도 void → 뒤 내용 삼키면 안 됨
+    for tag in ["<meta charset='utf-8'>", "<link rel='x' href='y'>", "<base href='/'>", "<embed src='x'>"]:
+        out = sanitize_html("<p>before</p>" + tag + "<p>after</p>")
+        assert "before" in out and "after" in out, tag
+
+
 # ── 2. 정상 서식 보존 ───────────────────────────────────────────────
 def test_basic_formatting_preserved():
     src = "<p>문단 <strong>강조</strong> <em>기울임</em></p><ul><li>항목1</li><li>항목2</li></ul>"
