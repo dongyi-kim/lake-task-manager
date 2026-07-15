@@ -58,7 +58,11 @@ export default {
   template: `
     <div class="wrap">
       <header class="top">
-        <h1><img src="icon.png" class="app-logo" alt=""> Lake Task Manager <span class="sub">PMO Dashboard</span></h1>
+        <nav class="tabs">
+          <a :class="{ on: route === 'wbs' }" href="#/wbs">WBS Dashboard</a>
+          <a :class="{ on: route === 'vit' }" href="#/vit">현안 (PMO_VIT)</a>
+          <a :class="{ on: route === 'workload' }" href="#/workload">인력 워크로드</a>
+        </nav>
         <div class="top-actions">
           <button class="search-trig" @click="searchOpen = true" title="통합 검색 ( / )">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -69,11 +73,6 @@ export default {
           </button>
         </div>
       </header>
-      <nav class="tabs">
-        <a :class="{ on: route === 'wbs' }" href="#/wbs">WBS Dashboard</a>
-        <a :class="{ on: route === 'vit' }" href="#/vit">현안 (PMO_VIT)</a>
-        <a :class="{ on: route === 'workload' }" href="#/workload">인력 워크로드</a>
-      </nav>
       <div v-if="!ready" class="loading page">불러오는 중…</div>
       <template v-else-if="!needLogin">
         <FormulaCallout :route="route" />
