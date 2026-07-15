@@ -171,22 +171,24 @@ def text_to_html(text):
 
 # 빈 블록(공백/nbsp/br 만 든 <p>·<div>) — 실 Jira 렌더 HTML 이 만드는 과도한 여백 원인
 _BLANK = r"(?:\s|&nbsp;| |<br\s*/?>)"
-_EMPTY_BLOCK_RE = re.compile(r"<(p|div)(?:\s[^>]*)?>" + _BLANK + r"*</\1>", re.I)
-_LEAD_RE = re.compile(r"^" + _BLANK + r"+", re.I)
-_TRAIL_RE = re.compile(_BLANK + r"+$", re.I)
+_EMPTY_BLOCK = r"<(?:p|div)(?:\s[^>]*)?>" + _BLANK + r"*</(?:p|div)>"
+_BLANK_MARK = '<p class="blank"></p>'
+_EMPTY_RUN_RE = re.compile(r"(?:" + _EMPTY_BLOCK + r"\s*)+", re.I)     # 연속 빈 블록(1개+) → 표식 1개
+_LEAD_RE = re.compile(r"^(?:" + _BLANK + r"|" + re.escape(_BLANK_MARK) + r")+", re.I)
+_TRAIL_RE = re.compile(r"(?:" + _BLANK + r"|" + re.escape(_BLANK_MARK) + r")+$", re.I)
 _MANY_BR_RE = re.compile(r"(?:<br\s*/?>\s*){3,}", re.I)
 
 
 def tidy_html(html):
-    """렌더 HTML 정리 — 빈 문단/블록 제거, 앞뒤 공백·줄바꿈 트림, 과도한 연속 <br> 축소.
-    (실 Jira 코멘트/설명의 `<p>&nbsp;</p>` 같은 빈 줄이 3줄씩 공간 먹는 문제 해결.)"""
+    """렌더 HTML 정리 — 빈 문단은 '유지'하되 컴팩트하게:
+    - 빈 문단/블록(공백·nbsp·br) → 표식 <p class="blank"></p> 로 정규화(연속은 1개로).
+      실제 세로 간격은 CSS(.tkt-desc p.blank)에서 작게 → 3줄씩 먹던 빈 줄 해소.
+    - 콘텐츠 앞/뒤의 빈 문단·공백만 트림. 과도한 연속 <br> 축소.
+    (문단을 지우지 않으므로 글 중간 의도적 빈 줄은 보존.)"""
     if not html:
         return html
-    s, prev = html, None
-    while prev != s:                      # 중첩/연속 빈 블록까지 반복 제거
-        prev = s
-        s = _EMPTY_BLOCK_RE.sub("", s)
-    s = _MANY_BR_RE.sub("<br /><br />", s)
+    s = _MANY_BR_RE.sub("<br /><br />", html)
+    s = _EMPTY_RUN_RE.sub(_BLANK_MARK, s)
     s = _LEAD_RE.sub("", s)
     s = _TRAIL_RE.sub("", s)
     return s.strip()

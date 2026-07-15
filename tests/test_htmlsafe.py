@@ -230,26 +230,31 @@ def test_proxy_none_and_empty():
     assert proxy_images("<p>no image</p>", "https://jira.corp.com", _allow) == "<p>no image</p>"
 
 
-# ── 5. tidy_html — 빈 문단 제거 + 앞뒤 트림 ──────────────────────────
-def test_tidy_removes_empty_paragraphs():
-    out = tidy_html("<p>내용</p><p>&nbsp;</p><p> </p><p><br></p><div>  </div><p>다음</p>")
-    assert out == "<p>내용</p><p>다음</p>"
+# ── 5. tidy_html — 빈 문단 유지(컴팩트 표식)·연속 축소·앞뒤 트림 ────────
+def test_tidy_keeps_single_blank_as_marker():
+    # 글 중간 의도적 빈 문단은 보존하되 표식(p.blank)으로 정규화
+    out = tidy_html("<p>A</p><p>&nbsp;</p><p>B</p>")
+    assert out == '<p>A</p><p class="blank"></p><p>B</p>'
 
 
-def test_tidy_trims_leading_trailing():
-    assert tidy_html("<br><br> <p>본문</p>&nbsp; <br>") == "<p>본문</p>"
-    assert tidy_html("  앞뒤 공백  ") == "앞뒤 공백"
+def test_tidy_collapses_consecutive_blanks_to_one():
+    out = tidy_html("<p>A</p><p>&nbsp;</p><p><br></p><p>B</p>")
+    assert out == '<p>A</p><p class="blank"></p><p>B</p>'
+
+
+def test_tidy_trims_leading_trailing_blanks():
+    assert tidy_html("<p>&nbsp;</p><p>본문</p><p><br></p>") == "<p>본문</p>"
+    assert tidy_html("<br><br> <p>본문</p>&nbsp; <br>") == "<p>본문</p>"
+    assert tidy_html("  앞뒷 공백  ") == "앞뒷 공백"
 
 
 def test_tidy_collapses_excess_br():
-    out = tidy_html("a<br><br><br><br>b")
-    assert out == "a<br /><br />b"
+    assert tidy_html("a<br><br><br><br>b") == "a<br /><br />b"
 
 
 def test_tidy_keeps_real_content_with_nbsp():
-    # 실제 내용이 있는 문단은 유지 (nbsp 가 중간에 있어도)
     out = tidy_html("<p>a&nbsp;b</p>")
-    assert "a" in out and "b" in out and "<p>" in out
+    assert "a" in out and "b" in out and "<p>" in out and "blank" not in out
 
 
 def test_tidy_none_empty():
