@@ -352,8 +352,9 @@ class World:
                 rng = _rng("conf", uid)
                 pages = []
                 for _ in range(rng.randint(0, 4)):
-                    pages.append({"title": wc.conf_title(rng), "space": wc.conf_space(rng),
-                                  "action": wc.conf_action(rng),
+                    _t = wc.conf_title(rng)
+                    pages.append({"title": _t, "space": wc.conf_space(rng),
+                                  "action": wc.conf_action(rng), "body": wc.conf_body(rng, _t),
                                   "date": self.today - timedelta(days=rng.randint(0, 13)),
                                   "time": "%02d:%02d" % (rng.randint(8, 19), rng.choice([0, 15, 30, 45]))})
                 pages.sort(key=lambda p: p["date"], reverse=True)

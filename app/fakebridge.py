@@ -3,8 +3,10 @@
 핵심: `mock == local` 불변식 유지. mock(이 앱을 in-process 로 호출) 과 local(실 HTTP) 이 **같은**
 `app.world.get_world()` + 같은 jira820 직렬화기를 쓰므로 출력이 일치한다 — 전송 방식만 다르다.
 
-jira820 은 범용 Jira DC 8.20.8 mock 이라 자체 generic 데이터를 시드하지만, 여기서는 `seed=False` 로
-빈 스토어를 만든 뒤 **이 프로젝트 world 를 주입**해 우리 데이터를 그대로 서빙한다.
+jira820 은 범용 Jira DC 8.20.8 mock 이라 **자체 샘플(JIRA820 프로젝트 + Confluence 스페이스)** 을
+seed 로 갖는다. 여기서는 그 위에 **이 프로젝트 world(DL) 를 additive 로 주입** → 스토어에
+JIRA820 + DL 이 공존한다. 덕분에 멀티 프로젝트/스페이스 시나리오(통합 검색 등)를 dev 에서 검증할 수 있다.
+(사용자/키가 disjoint: jira820=u01·JIRA820-N / 우리=사번·DL-N → 우리 DL 스코프 쿼리엔 영향 없음.)
 """
 
 import os
@@ -26,20 +28,23 @@ _ISSUE_TYPES = [["Bug", "1"], ["Epic", "2"], ["Improvement", "3"], ["New Feature
 def build_store():
     w = get_world()
     s = get_settings()
+    # jira820 자체 샘플 프로젝트는 'JIRA820'(우리 DL 과 분리). 스킴(상태/타입/필드/모듈)은 우리와 동일하게
+    # 맞춰 두 프로젝트가 같은 직렬화기로 일관 서빙되도록 한다.
     cfg = Config(
-        project_key=w.project, project_name="Lake Task Manager",
-        base_date=w.today, server_version="8.20.8",
+        project_key="JIRA820", project_name="JIRA820 Sample Project",
+        base_date=w.today, server_version="8.20.8", confluence_version="9.2.4",
         sp_field=s.sp_field_id, epic_link_field=s.epic_link_field_id,
         subtask_type="Sub-Task",
         statuses=_STATUSES, issue_types=_ISSUE_TYPES,
         modules=list(w.modules), components_extra=["사용자 VoC"],
         latency_ms=int(os.getenv("FAKE_LATENCY_MS", "0")),
     )
-    store = Store(cfg, seed=False)      # 시드 생략 → 우리 world 주입
-    store.users = w.users
-    store.issues = w.issues             # 내부 이슈 dict 는 jira820 직렬화기와 호환(누락 키는 .get 기본값)
-    store.activity = w.activity
-    store.confluence = w.confluence
+    store = Store(cfg, seed=True)       # jira820 자체 샘플(JIRA820 프로젝트 + confluence) 시드
+    # 이 프로젝트 world(DL) 를 additive 주입 (키/사용자 disjoint → 교체 아님, 공존).
+    store.users.update(w.users)
+    store.issues.update(w.issues)       # 내부 이슈 dict 는 jira820 직렬화기와 호환(누락 키는 .get 기본값)
+    store.activity.update(w.activity)
+    store.confluence.update(w.confluence)
     store.reindex()
     return store
 

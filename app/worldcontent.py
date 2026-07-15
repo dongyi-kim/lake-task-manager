@@ -196,3 +196,16 @@ def conf_space(rng):
 
 def conf_action(rng):
     return rng.choice(_CONF_ACTS)
+
+
+_CONF_BODY = [
+    "{t} 문서. 배경·결정사항·영향 범위(파이프라인/스키마/권한)와 롤백 절차를 정리한다.",
+    "{t} 관련 설계 논의와 대안 비교, 선택 근거(ADR)를 담는다. 후속 액션 아이템 포함.",
+    "{t} 운영 절차와 체크리스트, 장애 시 대응 순서 및 모니터링 지표를 기술한다.",
+    "{t} 스프린트 회고: 잘된 점/개선점/액션. 다음 스프린트 반영 사항을 기록한다.",
+]
+
+
+def conf_body(rng, title):
+    """Confluence 페이지 본문(검색용 text). 제목을 포함해 text~ 검색이 걸리게 한다."""
+    return rng.choice(_CONF_BODY).format(t=title)
