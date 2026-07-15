@@ -433,6 +433,26 @@ class JiraClient:
         """단일 티켓 코멘트 — mock/local/prod 동일 형태."""
         return self._issue_comments(key, limit)
 
+    def ticket_badge(self, key):
+        """티켓 인라인 뱃지용 경량 요약(요약/타입/상태/담당자). 없으면 None. (renderedFields 미포함=가벼움)"""
+        try:
+            raw = self.get_issue(key)
+        except Exception:
+            return None
+        if not isinstance(raw, dict) or "fields" not in raw:
+            return None
+        f = raw.get("fields") or {}
+        st = f.get("status") or {}
+        a = f.get("assignee") or {}
+        return {
+            "key": raw.get("key", key),
+            "summary": f.get("summary", ""),
+            "type": (f.get("issuetype") or {}).get("name", ""),
+            "status": st.get("name", ""),
+            "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
+            "assignee": real_name(a.get("displayName") or a.get("name")) or None,
+        }
+
     def ticket_view(self, key):
         """티켓 상세 다이얼로그용 리치 뷰 — 없으면 None. description 은 항상 정화된 안전 HTML."""
         raw = self._get_issue_view(key)

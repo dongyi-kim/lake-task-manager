@@ -2,8 +2,19 @@
 // description 은 백엔드에서 **정화된 HTML**(app/htmlsafe.py) 이라 v-html 로 그대로 렌더(table/code/quote/panel/callout/img).
 // 코멘트 텍스트는 Vue 기본 이스케이프({{ }})로 안전 표시. Esc/백드롭/X 로 닫기.
 import { api } from "../../lib/api.js";
-import { ymd, ymdhm } from "../../lib/fmt.js";
+import { ymd, ymdhm, esc } from "../../lib/fmt.js";
 import TypeBadge from "./TypeBadge.js";
+
+// Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
+function confTitleFromUrl(u) {
+  try {
+    const path = new URL(u, location.href).pathname;
+    const m = path.match(/\/pages\/\d+\/([^/]+)\/?$/) || path.match(/\/display\/[^/]+\/([^/]+)\/?$/);
+    if (m && m[1]) return decodeURIComponent(m[1].replace(/\+/g, " ")).trim();
+  } catch (e) { /* noop */ }
+  return null;
+}
+const _BROWSE_RE = /\/browse\/([A-Z][A-Z0-9]+-\d+)/;
 
 export default {
   name: "TicketDialog",
@@ -23,8 +34,8 @@ export default {
   unmounted() { window.removeEventListener("keydown", this._onKey); },
   watch: {
     keyId() { this.load(); },
-    v() { this.$nextTick(this.augmentZoomables); },            // 설명 렌더 후 확대버튼 주입
-    comments() { this.$nextTick(this.augmentZoomables); },     // 코멘트 렌더 후
+    v() { this.$nextTick(this.augment); },            // 설명 렌더 후 확대버튼·뱃지 주입
+    comments() { this.$nextTick(this.augment); },     // 코멘트 렌더 후
   },
   methods: {
     async load() {
@@ -54,6 +65,41 @@ export default {
       } else if (table) {
         this.zoom = { type: "table", html: table.outerHTML };
       }
+    },
+    augment() { this.augmentZoomables(); this.augmentLinks(); },
+    // 설명/코멘트 내 링크를 뱃지로: Confluence(문서 제목=URL 슬러그), Jira 티켓(이름/상태/담당자).
+    augmentLinks() {
+      const root = this.$el;
+      if (!root || !root.querySelectorAll) return;
+      // 1) Confluence 뱃지 — 내부 텍스트 무시하고 URL 에서 문서 제목 유도. 없으면 기존 텍스트.
+      root.querySelectorAll(".tkt-desc a.conf-link").forEach((a) => {
+        if (a.dataset.conftitled) return;
+        a.dataset.conftitled = "1";
+        const label = confTitleFromUrl(a.getAttribute("href") || "") || (a.textContent || "").trim() || "Confluence 문서";
+        a.innerHTML = '<span class="conf-title">' + esc(label) + "</span>";
+        a.title = label;
+      });
+      // 2) Jira 티켓 링크(/browse/KEY) → 뱃지. href 제거하고 인앱 다이얼로그로 열기.
+      root.querySelectorAll(".tkt-desc a[href]").forEach((a) => {
+        if (a.dataset.jira) return;
+        const m = _BROWSE_RE.exec(a.getAttribute("href") || "");
+        if (!m) return;
+        a.dataset.jira = "1";
+        const key = m[1];
+        a.classList.add("jira-badge", "tkt");
+        a.setAttribute("data-key", key);
+        a.removeAttribute("href");
+        a.innerHTML = '<span class="jb-dot"></span><b class="jb-key">' + esc(key) + "</b>"
+          + '<span class="jb-name"></span><span class="jb-meta"></span>';
+        api.ticketBadge(key).then((b) => {
+          if (!b) return;
+          a.querySelector(".jb-dot").className = "jb-dot st-" + (b.statusCategory || "todo");
+          a.querySelector(".jb-name").textContent = b.summary || "";
+          const meta = [b.status, b.assignee].filter(Boolean).join(" · ");
+          a.querySelector(".jb-meta").textContent = meta;
+          a.title = key + " " + (b.summary || "") + (meta ? " (" + meta + ")" : "");
+        }).catch(() => { /* 조회 실패 시 키만 표시 */ });
+      });
     },
     // v-html 로 렌더된 이미지/표에 '확대' 버튼을 얹는다(우측 상단). 중복 주입 방지 마커 사용.
     augmentZoomables() {

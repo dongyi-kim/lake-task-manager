@@ -127,6 +127,15 @@ def api_ticket(key: str):
     return JSONResponse(view)
 
 
+@app.get("/api/ticket/{key}/badge")
+def api_ticket_badge(key: str):
+    """티켓 인라인 뱃지 — 요약/타입/상태/담당자 (description/comment 내 Jira 링크 뱃지용, 경량)."""
+    b = _client.ticket_badge(key)
+    if b is None:
+        return JSONResponse({"error": "Issue Does Not Exist", "key": key}, status_code=404)
+    return JSONResponse(b)
+
+
 @app.get("/api/vit/{key}")
 def api_vit_detail(key: str):
     """단일 현안 상세 — 자손 트리 + 코멘트 (프론트 [자세히] 지연 로딩)."""

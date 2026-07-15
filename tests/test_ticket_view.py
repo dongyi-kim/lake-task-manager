@@ -154,6 +154,15 @@ def test_api_img_rejects_disallowed_host():
     assert r.status_code == 404
 
 
+def test_ticket_badge_light():
+    c = _client()
+    b = c.ticket_badge(_key_of_type("Bug"))
+    assert b and b["key"] and b["summary"] and b["type"]
+    assert b["statusCategory"] in ("todo", "inprogress", "done")
+    assert "assignee" in b
+    assert c.ticket_badge("DL-999999") is None
+
+
 def test_ticket_view_none_for_missing():
     assert _client().ticket_view("DL-999999") is None
 

@@ -83,11 +83,24 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* Confluence 링크 뱃지 — 아이콘+글자 세로 중앙, 텍스트 높이에 맞춤 */
 .tkt-desc .conf-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600;
   line-height: 1.4; color: var(--st-prog); border: 1px solid var(--border); background: var(--panel-2);
-  border-radius: 6px; padding: 0 8px; text-decoration: none; white-space: nowrap;
+  border-radius: 6px; padding: 0 8px; text-decoration: none; max-width: 100%; min-width: 0;
   vertical-align: middle; transform: translateY(-1.5px); }
 .tkt-desc .conf-link::before { content: ""; width: 11px; height: 11px; flex: none; display: block;
   background: currentColor; -webkit-mask: var(--conf-ic) center/contain no-repeat; mask: var(--conf-ic) center/contain no-repeat; }
+.tkt-desc .conf-link .conf-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tkt-desc .conf-link:hover { border-color: var(--st-prog); text-decoration: none; }
+
+/* Jira 티켓 인라인 뱃지 — 상태 점 + 키 + 요약(말줄임) + 상태·담당자. 클릭 시 인앱 다이얼로그 */
+.tkt-desc .jira-badge { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0;
+  font-size: 11.5px; font-weight: 600; color: var(--text); border: 1px solid var(--border); background: var(--panel-2);
+  border-radius: 6px; padding: 1px 8px; text-decoration: none; vertical-align: middle; cursor: pointer; line-height: 1.5; }
+.tkt-desc .jira-badge:hover { border-color: var(--accent); }
+.jira-badge .jb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-todo); }
+.jira-badge .jb-dot.st-inprogress { background: var(--st-prog); }
+.jira-badge .jb-dot.st-done { background: var(--st-done); }
+.jira-badge .jb-key { flex: none; color: var(--accent); font-weight: 700; }
+.jira-badge .jb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.jira-badge .jb-meta { flex: none; color: var(--muted); font-size: 10.5px; white-space: nowrap; }
 :root { --conf-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z'/><path d='M9 13h6M9 17h4'/></svg>"); }
 .tkt-desc code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12.5px;
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }

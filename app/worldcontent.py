@@ -31,8 +31,11 @@ _SPIKE_Q = [
 
 # 티켓 상세 다이얼로그 검증용 이미지 — 앱 static 제공(오프라인 렌더). mock/local 전용, prod 실데이터 무관.
 _IMG = "/ticket-sample.svg"
-# Confluence 링크(뱃지) 검증용 — /display/ 패턴으로 렌더러가 confluence 로 판별.
-_CONF = "https://confluence.example/display/DL"
+# Confluence 9.x 신형 링크(뱃지) 검증용 — /spaces/{space}/pages/{id}/{title-slug}.
+#   프론트가 슬러그(마지막 경로)를 문서 제목으로 씀(내부 <a> 텍스트 무시). space 는 jira 와 달라도 됨.
+def _conf(title, pid, space="DATAENG"):
+    slug = title.replace(" ", "+")
+    return f"https://confluence.corp.example/spaces/{space}/pages/{pid}/{slug}"
 
 
 def description(rng, itype, mention=None):
@@ -58,7 +61,7 @@ def description(rng, itype, mention=None):
             "|Governance|권한/감사|1|",
             "",
             "{info}",
-            f"설계 배경은 [아키텍처 결정 기록|{_CONF}/architecture] 참고. 담당 {at}.",
+            f"설계 배경은 [문서 링크|{_conf('아키텍처 결정 기록', 42011)}] 참고. 담당 {at}.",
             "{info}",
         ])
     if itype == "Bug":
@@ -86,7 +89,8 @@ def description(rng, itype, mention=None):
             "|버전|Jira DC 8.20.8|",
             "|영역|스테이징|",
             "",
-            f"런북: [장애 대응 절차|{_CONF}/runbook]  ·  스크린샷: !{_IMG}!",
+            f"상위 Epic [DL-101|https://jira.corp.example/browse/DL-101] · 런북 [장애 대응 절차|{_conf('장애 대응 절차', 42012, 'OPS')}]",
+            f"스크린샷: !{_IMG}!",
         ])
     if itype == "Sub-Task":
         item = rng.choice(_TASK_ITEMS)
@@ -105,7 +109,7 @@ def description(rng, itype, mention=None):
             *[f"* {p}" for p in picks],
             "",
             "{note}",
-            f"설정 값은 {{{{config/jira.yml}}}} 에 외부화한다. 가이드: [설정 가이드|{_CONF}/config]. 담당 {at}.",
+            f"설정 값은 {{{{config/jira.yml}}}} 에 외부화한다. 가이드: [설정 가이드|{_conf('설정 가이드', 42013)}]. 담당 {at}.",
             "{note}",
         ])
     if itype == "Spike":
@@ -118,7 +122,7 @@ def description(rng, itype, mention=None):
             "|B안|가벼움|기능 부족|",
             "",
             "{tip}",
-            f"결정은 ADR 1건으로 남긴다. 참고: [벤치마크 노트|{_CONF}/benchmark]. 검토 {at}.",
+            f"결정은 ADR 1건으로 남긴다. 참고: [벤치마크 노트|{_conf('벤치마크 노트', 42014, 'ARCH')}]. 검토 {at}.",
             "{tip}",
         ])
     # Story (기본)
@@ -133,7 +137,7 @@ def description(rng, itype, mention=None):
         "* 예외 처리 및 재시도",
         "* 관측성 지표 추가",
         "",
-        f"기획 문서 [요구사항 정의서|{_CONF}/prd] 참고. 리뷰 {at}.",
+        f"기획 문서 [요구사항 정의서|{_conf('요구사항 정의서', 42015, 'PMO')}] 참고. 상위 [DL-101|https://jira.corp.example/browse/DL-101]. 리뷰 {at}.",
         "",
         "예시 응답:",
         "{code:json}",
@@ -152,9 +156,9 @@ _COMMENT_TYPES = [
     ("question", "질문: 이 케이스 마감일 기준이 스프린트 종료인가요, 릴리스인가요?"),
     ("review", "리뷰: 로직 OK. 다만 예외 처리와 로그 레벨만 보완 요청. cc [~{who}]"),
     ("qa", "QA: 회귀 3건 통과, 경계값 1건 재현되어 재수정 필요."),
-    ("decision", "결정: 캐시 TTL 15분으로 합의. 회의록 [스프린트 회의록|https://confluence.example/display/DL/minutes] 에 반영함."),
-    ("mention", "[~{who}] 이 부분 스키마 영향 있어 크로스체크 부탁드립니다. 관련 문서 [설계 노트|https://confluence.example/display/DL/design]."),
-    ("dependency", "선행: 카탈로그 등록이 먼저라 순서 조정했습니다."),
+    ("decision", "결정: 캐시 TTL 15분으로 합의. 회의록 [minutes|https://confluence.corp.example/spaces/PMO/pages/42016/스프린트+회의록] 에 반영함."),
+    ("mention", "[~{who}] 이 부분 스키마 영향 있어 크로스체크 부탁드립니다. 관련 문서 [설계 노트|https://confluence.corp.example/spaces/DATAENG/pages/42017/설계+노트]."),
+    ("dependency", "선행: 카탈로그 등록([DL-101|https://jira.corp.example/browse/DL-101])이 먼저라 순서 조정했습니다."),
     ("transition", "상태 변경: In Progress → 리뷰 대기. PR 링크 첨부."),
 ]
 
