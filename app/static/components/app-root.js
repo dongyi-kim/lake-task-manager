@@ -58,6 +58,7 @@ export default {
   template: `
     <div class="wrap">
       <header class="top">
+        <img class="nav-logo" src="icon.png" alt="Lake Task Manager" title="Lake Task Manager" />
         <nav class="tabs">
           <a :class="{ on: route === 'wbs' }" href="#/wbs">WBS Dashboard</a>
           <a :class="{ on: route === 'vit' }" href="#/vit">현안 (PMO_VIT)</a>

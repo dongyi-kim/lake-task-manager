@@ -6,13 +6,14 @@ body { margin: 0; background: var(--bg); color: var(--text);
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; font-size: 14px; line-height: 1.5; }
 .wrap { max-width: none; margin: 0; padding: 22px 28px 60px; }
 /* 상단 바 — 좌: web 스타일 탭 / 우: 검색·테마. 스크롤해도 고정(sticky) */
-header.top { display: flex; align-items: stretch; justify-content: space-between; gap: 10px;
+header.top { display: flex; align-items: stretch; justify-content: flex-start; gap: 10px;
   position: sticky; top: 0; z-index: 40; background: var(--bg); border-bottom: 1px solid var(--border);
   margin: -22px -28px 16px; padding: 0 24px; min-height: 46px; }
+.nav-logo { align-self: center; width: 22px; height: 22px; border-radius: 5px; margin-right: 8px; box-shadow: var(--shadow); }
 .theme-btn { align-self: center; font-size: 12.5px; font-weight: 600; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; cursor: pointer; white-space: nowrap; }
 .theme-btn:hover { background: var(--panel-2); }
 .meta { color: var(--muted); font-size: 12px; }
-.top-actions { align-self: center; }
+.top-actions { align-self: center; margin-left: auto; }
 
 /* web 브라우저 탭처럼 — 각 탭이 셀, 활성 탭은 액센트 밑줄로 하단 보더에 연결 */
 nav.tabs { display: flex; align-items: stretch; gap: 2px; margin-bottom: -1px; }
