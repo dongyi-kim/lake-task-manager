@@ -113,8 +113,9 @@ def api_img(u: str):
     if data is None:
         return JSONResponse({"error": "이미지 없음 또는 허용되지 않은 호스트", "u": u}, status_code=404)
     media = (ctype or "application/octet-stream").split(";")[0].strip()
+    # 첨부는 id 기준 불변 → 길게 캐시(확대 시 재요청 없이 브라우저 캐시 히트).
     return Response(content=data, media_type=media,
-                    headers={"Cache-Control": "private, max-age=300"})
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.get("/api/ticket/{key}")

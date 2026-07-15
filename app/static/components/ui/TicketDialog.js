@@ -10,7 +10,7 @@ export default {
   components: { TypeBadge },
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
-  data() { return { v: null, comments: null, err: "", loading: true, expanded: false, zoom: null }; },
+  data() { return { v: null, comments: null, err: "", loading: true, expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
     this._onKey = (e) => {
@@ -47,8 +47,13 @@ export default {
       const wrap = btn.closest(".zoomable");
       const img = wrap && wrap.querySelector("img");
       const table = wrap && wrap.querySelector("table");
-      if (img) this.zoom = { type: "img", src: img.currentSrc || img.src, alt: img.alt || "" };
-      else if (table) this.zoom = { type: "table", html: table.outerHTML };
+      if (img) {
+        // 이미 완전히 로드된 이미지면 스피너 생략(즉시 표시), 아니면 로딩 표시
+        this.zoomLoading = !(img.complete && img.naturalWidth > 0);
+        this.zoom = { type: "img", src: img.currentSrc || img.src, alt: img.alt || "" };
+      } else if (table) {
+        this.zoom = { type: "table", html: table.outerHTML };
+      }
     },
     // v-html 로 렌더된 이미지/표에 '확대' 버튼을 얹는다(우측 상단). 중복 주입 방지 마커 사용.
     augmentZoomables() {
@@ -123,7 +128,12 @@ export default {
       </div>
 
       <div v-if="zoom" class="tkt-zoom" @click="zoom = null">
-        <img v-if="zoom.type === 'img'" class="tkt-zoom-img" :src="zoom.src" :alt="zoom.alt">
+        <template v-if="zoom.type === 'img'">
+          <div v-if="zoomLoading" class="tkt-zoom-spin"><span class="spinner"></span></div>
+          <img class="tkt-zoom-img" :src="zoom.src" :alt="zoom.alt"
+               :style="{ visibility: zoomLoading ? 'hidden' : 'visible' }"
+               @load="zoomLoading = false" @error="zoomLoading = false">
+        </template>
         <div v-else class="tkt-zoom-table" @click.stop v-html="zoom.html"></div>
         <button class="tkt-zoom-x" @click.stop="zoom = null" aria-label="닫기">✕</button>
       </div>
