@@ -114,4 +114,6 @@
 .tkt-cmt { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel-2); }
 .tkt-cmt-h { display: flex; gap: 10px; align-items: baseline; font-size: 12.5px; margin-bottom: 3px; }
 .tkt-cmt-h .muted { font-size: 11.5px; }
-.tkt-cmt-b { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+/* 코멘트는 이제 HTML(<p>/<br>) 렌더 → white-space:normal. (pre-wrap 이면 태그 사이 개행이
+   실제 줄바꿈으로 렌더돼 문단마다 빈 줄이 겹치는 문제. 코드블록은 pre.code 가 자체 pre 유지) */
+.tkt-cmt-b { font-size: 13px; white-space: normal; word-break: break-word; }
