@@ -87,6 +87,22 @@ class Settings:
         self.jira_state_path = str(pick("JIRA_STATE_PATH", j.get("state_path"), "jira_state.json"))
         # 이미지 프록시 허용 호스트(사내 CDN 등). jira base 호스트·동일 상위도메인은 자동 허용.
         self.image_hosts = [str(h).strip() for h in (j.get("image_hosts") or []) if str(h).strip()]
+        # 통합 검색 기본 스코프 — 모두 복수(list). jira projects / confluence spaces / bitbucket projects.
+        _search = cfg.get("search") or {}
+
+        def _slist(node, *keys, default=None):
+            for k in keys:
+                v = node.get(k)
+                if v is not None:
+                    return [str(x).strip() for x in (v if isinstance(v, list) else [v]) if str(x).strip()]
+            return list(default or [])
+
+        _sj = _search.get("jira") or {}
+        _sc = _search.get("confluence") or {}
+        _sb = _search.get("bitbucket") or {}
+        self.search_jira_projects = _slist(_sj, "projects", "project", default=[self.project_key])
+        self.search_confluence_spaces = _slist(_sc, "spaces", "space")
+        self.search_bitbucket_projects = _slist(_sb, "projects", "project")
         self.sp_field_id = str(pick("SP_FIELD_ID", f.get("story_point"), "customfield_10004"))
         self.epic_link_field_id = str(pick("EPIC_LINK_FIELD_ID", f.get("epic_link"), "customfield_10008"))
         self.confluence_base = str(pick("CONFLUENCE_BASE", conf.get("base"), "")).rstrip("/")

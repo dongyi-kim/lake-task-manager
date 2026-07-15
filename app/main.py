@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import rollup, vit, workload
+from . import rollup, search, vit, workload
 from .auth.base import SessionExpired
 from .cache import Cache
 from .jira_client import JiraClient
@@ -103,6 +103,12 @@ def api_issue(key: str):
 def api_issue_comments(key: str):
     """범용 단일 티켓 코멘트 리소스."""
     return JSONResponse(_client.issue_comments(key))
+
+
+@app.get("/api/search")
+def api_search(q: str = "", scope: str = "scoped", limit: int = 8):
+    """통합 검색 — Jira(JQL text~) + Confluence(CQL) + Bitbucket(mock) 병렬. scope=scoped|all."""
+    return JSONResponse(search.search_all(_client, _settings, q, scope, limit))
 
 
 @app.get("/api/img")

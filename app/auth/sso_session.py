@@ -106,7 +106,9 @@ class SsoSessionProvider(AuthProvider):
 
     def _fetch(self, path, params, as_text):
         # Playwright 스레드에서 실행 — body 추출(json()/text())도 반드시 이 스레드에서.
-        resp = self._context.request.get(self.base + path, params=params or {})
+        # path 가 절대 URL(http…)이면 그대로(Confluence 등 별도 호스트), 아니면 jira base + path.
+        url = path if path.startswith(("http://", "https://")) else self.base + path
+        resp = self._context.request.get(url, params=params or {})
         if resp.status in (401, 403) or resp.status >= 500:
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
         return resp.text() if as_text else resp.json()

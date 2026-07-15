@@ -17,7 +17,8 @@ class BasicAuthProvider(AuthProvider):
             self.session.auth = (user, token)
 
     def _get(self, path, params):
-        r = self.session.get(self.base + path, params=params, timeout=30)
+        url = path if path.startswith(("http://", "https://")) else self.base + path
+        r = self.session.get(url, params=params, timeout=30)
         if r.status_code in (401, 403) or r.status_code >= 500:
             raise SessionExpired(f"HTTP {r.status_code} on {path}")
         r.raise_for_status()

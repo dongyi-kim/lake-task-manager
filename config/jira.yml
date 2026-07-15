@@ -25,6 +25,14 @@ jira:
 confluence:
   base: http://localhost:8080              # fake 가 Confluence CQL 도 같은 호스트로 서빙
 
+# 통합 검색(우상단) 기본 스코프. 모두 복수(list). 화면 상단 확장 옵션에서 전체로 넓힐 수 있다.
+#   dev: mock world 에 DL/PMO/ARCH/OPS 스페이스 + JIRA820 프로젝트(jira820 자체 샘플)가 함께 있어
+#        멀티 프로젝트/스페이스를 그대로 검증 가능.
+search:
+  jira:       { projects: [DL, JIRA820] }
+  confluence: { spaces: [DL, PMO] }
+  bitbucket:  { projects: [DATA] }         # mock (사내 Bitbucket 버전 확인 전까지 가짜 결과)
+
 cache:
   db_path: cache-dev.sqlite3
   ttl_seconds: 900

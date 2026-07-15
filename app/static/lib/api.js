@@ -31,6 +31,7 @@ export const api = {
   workload: () => get("/api/workload"),
   workloadDetail: (user) => get("/api/workload/" + encodeURIComponent(user)),
   activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
+  search: (q, scope) => req("/api/search?q=" + encodeURIComponent(q) + "&scope=" + encodeURIComponent(scope || "scoped")),
   ticket: (key) => get("/api/ticket/" + encodeURIComponent(key)),
   ticketBadge: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/badge"),
   ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
