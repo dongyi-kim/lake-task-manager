@@ -44,8 +44,10 @@ _ALLOWED_ATTRS = {
 }
 _URL_ATTRS = {"href", "src"}
 _SAFE_SCHEMES = ("http://", "https://", "mailto:", "tel:")
-# Confluence(문서) 링크 판별 — 실 Jira/mock 모두 URL 로 판별해 뱃지 class(conf-link) 부여.
-_CONF_RE = re.compile(r"(?:confluence|/wiki/|/display/|/pages/viewpage|/spaces/)", re.I)
+# Confluence(문서) 링크 판별 — **URL 경로 패턴** 기반(호스트/스페이스 이름과 무관).
+#   신형: {base}/spaces/{space}/pages/{id}/{title}?{qs}  (space 는 jira 와 다를 수·여러 곳일 수 있음)
+#   구형(DC): /display/{SPACE}/... · /pages/viewpage.action · Cloud: /wiki/...
+_CONF_RE = re.compile(r"(?:confluence|/wiki/|/display/|/spaces/|/pages/)", re.I)
 # class 는 모든 허용 태그에서 받되, 값은 아래 토큰(또는 lang-*)만 남긴다 — 임의 클래스 주입 차단.
 #   user-hover = 실 Jira DC 의 사용자 맨션 앵커 class(볼드+컬러 스타일 대상). conf-link = 아래에서 부여.
 _ALLOWED_CLASSES = {

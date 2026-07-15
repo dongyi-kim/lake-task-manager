@@ -164,15 +164,19 @@ def test_mention_userhover_class_kept():
 
 def test_confluence_link_gets_conf_link_class_by_url():
     # 소스에 class 가 없어도 Confluence URL 이면 정화기가 conf-link 부여(실 Jira·mock 공통, prod 적용)
-    for url in ["https://confluence.example/display/DL/Page",
-                "https://wiki.corp/wiki/spaces/DL/pages/123",
-                "https://x.test/display/OPS/Runbook"]:
+    for url in [
+        # 실제 사내 신형 패턴: /spaces/{space}/pages/{id}/{title}?{qs} — space 가 여러 곳·jira 와 달라도 OK
+        "https://wiki.corp.com/spaces/DATAENG/pages/123456/My+Doc?focusedCommentId=7",
+        "https://kms.corp.com/spaces/PMO/pages/98765/%ED%9A%8C%EC%9D%98%EB%A1%9D",
+        "https://confluence.example/display/DL/Page",     # 구형 DC
+        "https://x.test/pages/viewpage.action?pageId=42",  # 구형 viewpage
+    ]:
         out = sanitize_html('<a href="' + url + '">문서</a>')
         assert 'class="conf-link"' in out, url
         assert 'href="' + url + '"' in out
-    # 일반 링크(브라우즈 등)는 뱃지 아님
-    out2 = sanitize_html('<a href="https://x.test/browse/DL-1">보통</a>')
-    assert "conf-link" not in out2
+    # 일반 링크(Jira 브라우즈 등)는 뱃지 아님
+    for url in ["https://x.test/browse/DL-1", "https://x.test/secure/attachment/1/a.png"]:
+        assert "conf-link" not in sanitize_html('<a href="' + url + '">보통</a>'), url
 
 
 def test_malformed_html_does_not_crash():
