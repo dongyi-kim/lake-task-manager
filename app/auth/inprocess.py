@@ -32,6 +32,11 @@ class InProcessProvider(AuthProvider):
     def get_text(self, path, params=None):
         return self._get(path, params).text
 
+    def get_bytes(self, path, params=None):
+        # in-process(jira820) 상대 경로만 유효(절대 외부 URL 은 mock 대상 아님)
+        r = self._get(path, params)
+        return r.content, r.headers.get("content-type")
+
     def close(self):
         try:
             self._client.close()

@@ -118,6 +118,42 @@ def test_mock_comments_render_sanitized_html_with_badges():
     assert seen_conf, "Confluence 링크 뱃지 미검출"
 
 
+def test_media_host_allow_and_ssrf_block():
+    c = _client()   # mock: jira_base=http://localhost:8080 → host 'localhost'
+    assert c._media_allowed_host("localhost")
+    assert not c._media_allowed_host("evil.example")
+    # fetch_media 는 허용 안 된 호스트를 즉시 차단(SSRF 방지)
+    assert c.fetch_media("https://evil.example/x.png") == (None, None)
+    assert c.fetch_media("") == (None, None)
+    assert c.fetch_media("ftp://x/y") == (None, None)
+
+
+def test_mock_does_not_proxy_images():
+    # mock/local 은 same-origin static → 프록시 재작성 안 함(_proxy_media no-op)
+    v = _client().ticket_view(_key_of_type("Bug"))
+    assert "/api/img?u=" not in v["descriptionHtml"]
+    assert '<img src="/ticket-sample.svg"' in v["descriptionHtml"]
+
+
+def test_prod_proxy_media_rewrites_images():
+    # prod 분기: description/코멘트의 <img> 가 /api/img 프록시로 재작성돼야 함
+    c = _client()
+    c.env = "prod"
+    try:
+        out = c._proxy_media('<p><img src="/secure/attachment/9/x.png" alt="" /></p>')
+        assert "/api/img?u=" in out and "secure%2Fattachment" in out
+    finally:
+        c.env = "mock"
+
+
+def test_api_img_rejects_disallowed_host():
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    r = TestClient(app).get("/api/img", params={"u": "https://evil.example/x.png"})
+    assert r.status_code == 404
+
+
 def test_ticket_view_none_for_missing():
     assert _client().ticket_view("DL-999999") is None
 

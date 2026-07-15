@@ -12,6 +12,7 @@ allowlist 방식으로 정화해 XSS 를 제거한다. 티켓 상세 다이얼�
 from __future__ import annotations
 
 import re
+import urllib.parse
 from html import escape, unescape
 from html.parser import HTMLParser
 
@@ -166,3 +167,63 @@ def sanitize_html(html):
 def text_to_html(text):
     """평문 description(mock/local, 또는 renderedFields 없음) → 안전 HTML. escape + 줄바꿈 <br>."""
     return escape(text or "", quote=False).replace("\r\n", "\n").replace("\n", "<br>")
+
+
+# 빈 블록(공백/nbsp/br 만 든 <p>·<div>) — 실 Jira 렌더 HTML 이 만드는 과도한 여백 원인
+_BLANK = r"(?:\s|&nbsp;| |<br\s*/?>)"
+_EMPTY_BLOCK_RE = re.compile(r"<(p|div)(?:\s[^>]*)?>" + _BLANK + r"*</\1>", re.I)
+_LEAD_RE = re.compile(r"^" + _BLANK + r"+", re.I)
+_TRAIL_RE = re.compile(_BLANK + r"+$", re.I)
+_MANY_BR_RE = re.compile(r"(?:<br\s*/?>\s*){3,}", re.I)
+
+
+def tidy_html(html):
+    """렌더 HTML 정리 — 빈 문단/블록 제거, 앞뒤 공백·줄바꿈 트림, 과도한 연속 <br> 축소.
+    (실 Jira 코멘트/설명의 `<p>&nbsp;</p>` 같은 빈 줄이 3줄씩 공간 먹는 문제 해결.)"""
+    if not html:
+        return html
+    s, prev = html, None
+    while prev != s:                      # 중첩/연속 빈 블록까지 반복 제거
+        prev = s
+        s = _EMPTY_BLOCK_RE.sub("", s)
+    s = _MANY_BR_RE.sub("<br /><br />", s)
+    s = _LEAD_RE.sub("", s)
+    s = _TRAIL_RE.sub("", s)
+    return s.strip()
+
+
+_IMG_SRC_RE = re.compile(r'(<img\b[^>]*?\bsrc=")([^"]*)("[^>]*>)', re.I)
+
+
+def proxy_images(html, jira_base, allow_host):
+    """정화된 HTML 의 <img src> 를 same-origin 인증 프록시(/api/img?u=)로 재작성.
+    - 상대경로(/secure/..)  → jira_base 기준 절대화 후 프록시
+    - 절대 URL(허용 호스트) → 프록시 (SSO 쿠키 미전달·크로스오리진 문제 회피)
+    - data: / 허용 안 된 호스트 / 상대 파일명 → 그대로 (프록시 안 함)
+    allow_host: host(str) -> bool. prod 에서만 호출(mock/local 이미지는 same-origin static)."""
+    if not html:
+        return html
+    base = (jira_base or "").rstrip("/")
+    scheme = (urllib.parse.urlparse(base).scheme or "https") + ":"
+
+    def _one(src):
+        s = (src or "").strip()
+        if not s or s.startswith("data:"):
+            return src
+        if s.startswith("//"):
+            host = s[2:].split("/")[0]
+            if not allow_host(host):
+                return src
+            absu = scheme + s
+        elif s.startswith("/"):
+            absu = base + s
+        elif s.startswith(("http://", "https://")):
+            host = urllib.parse.urlparse(s).netloc
+            if not allow_host(host):
+                return src
+            absu = s
+        else:
+            return src            # 상대 파일명 등은 건드리지 않음
+        return "/api/img?u=" + urllib.parse.quote(absu, safe="")
+
+    return _IMG_SRC_RE.sub(lambda m: m.group(1) + _one(m.group(2)) + m.group(3), html)

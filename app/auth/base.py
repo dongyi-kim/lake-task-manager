@@ -12,6 +12,11 @@ class AuthProvider:
         """ATOM/XML 응답용 (예: /activity 피드)."""
         raise NotImplementedError
 
+    def get_bytes(self, path, params=None):
+        """원본 바이트 + content-type 반환 (이미지/첨부 프록시용). path 가 http(s) 절대 URL 이면 그대로 사용.
+        return: (bytes, content_type). 인증(쿠키/헤더)은 provider 세션을 그대로 상속."""
+        raise NotImplementedError
+
     def close(self):
         pass
 

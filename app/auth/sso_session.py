@@ -117,6 +117,17 @@ class SsoSessionProvider(AuthProvider):
     def get_text(self, path, params=None):
         return self._submit(lambda: self._fetch(path, params, True))
 
+    def _fetch_bytes(self, path, params):
+        # 이미지/첨부 프록시 — 인증된 브라우저 컨텍스트로 받아 바이트 반환. 절대 URL 도 허용.
+        url = path if path.startswith(("http://", "https://")) else self.base + path
+        resp = self._context.request.get(url, params=params or {})
+        if resp.status in (401, 403) or resp.status >= 500:
+            raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
+        return resp.body(), resp.headers.get("content-type")
+
+    def get_bytes(self, path, params=None):
+        return self._submit(lambda: self._fetch_bytes(path, params))
+
     def close(self):
         try:
             self._jobs.put(None)

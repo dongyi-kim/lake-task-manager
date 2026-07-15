@@ -7,9 +7,10 @@ Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 P
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from urllib.parse import urlparse
 
 from . import progress
-from .htmlsafe import sanitize_html, text_to_html
+from .htmlsafe import proxy_images, sanitize_html, text_to_html, tidy_html
 from .names import real_name
 
 
@@ -105,9 +106,9 @@ def _build_ticket_view(raw, sp_field, jira_base=""):
     rendered = raw.get("renderedFields") or {}
     rhtml = rendered.get("description")
     if rhtml and str(rhtml).strip():
-        desc, fmt = sanitize_html(rhtml), "html"
+        desc, fmt = tidy_html(sanitize_html(rhtml)), "html"
     else:
-        desc, fmt = text_to_html(f.get("description") or ""), "text"
+        desc, fmt = tidy_html(text_to_html(f.get("description") or "")), "text"
     st = f.get("status") or {}
     itype = f.get("issuetype") or {}
 
@@ -411,6 +412,8 @@ class JiraClient:
             for c in data.get("comments", [])[:limit]:
                 rb = c.get("renderedBody")
                 html = sanitize_html(rb) if rb and str(rb).strip() else text_to_html(c.get("body") or "")
+                html = tidy_html(html)              # 빈 문단·앞뒤 공백 정리(과도 여백 제거)
+                html = self._proxy_media(html)      # prod: 코멘트 내 이미지도 프록시
                 out.append({
                     "date": c.get("created") or "",     # 전체 datetime(프론트에서 yy.mm.dd hh:mm 포맷)
                     "author": real_name((c.get("author") or {}).get("displayName")
@@ -433,7 +436,48 @@ class JiraClient:
     def ticket_view(self, key):
         """티켓 상세 다이얼로그용 리치 뷰 — 없으면 None. description 은 항상 정화된 안전 HTML."""
         raw = self._get_issue_view(key)
-        return _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base) if raw else None
+        if not raw:
+            return None
+        view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base)
+        view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
+        return view
+
+    # ── 이미지/첨부 프록시 (prod: 인증 세션으로 받아 same-origin 반환) ──
+    def _media_allowed_host(self, host):
+        """이미지 프록시 허용 호스트 판별 — jira base 호스트·동일 상위도메인·config image_hosts."""
+        host = (host or "").split("@")[-1].split(":")[0].lower()
+        if not host:
+            return False
+        jh = urlparse(self.s.jira_base).netloc.split(":")[0].lower()
+        if host == jh:
+            return True
+        if host in [h.lower() for h in getattr(self.s, "image_hosts", [])]:
+            return True
+        parent = ".".join(jh.split(".")[-2:]) if jh.count(".") >= 1 else jh
+        return host == parent or host.endswith("." + parent)
+
+    def _proxy_media(self, html):
+        """prod 에서만 <img src> 를 /api/img 프록시로 재작성 (mock/local 은 same-origin static)."""
+        if self.env != "prod" or not html:
+            return html
+        return proxy_images(html, self.s.jira_base, self._media_allowed_host)
+
+    def fetch_media(self, u):
+        """이미지 URL(u) 을 인증 provider 로 받아 (bytes, content_type) 반환. 허용 안 되면 (None, None)."""
+        if not u:
+            return None, None
+        if u.startswith("/"):
+            target = u                         # jira 상대경로 → provider 가 base+path
+        elif u.startswith(("http://", "https://")):
+            if not self._media_allowed_host(urlparse(u).netloc):
+                return None, None              # SSRF 방지 — 허용 호스트만
+            target = u
+        else:
+            return None, None
+        try:
+            return self.provider.get_bytes(target)
+        except Exception:
+            return None, None
 
     def _get_issue_view(self, key):
         """상세 뷰용 단일 티켓 원본 — renderedFields(HTML) 포함 요청. `issueview:{env}:{key}` 캐시.

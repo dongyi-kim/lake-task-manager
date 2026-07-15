@@ -85,6 +85,8 @@ class Settings:
         self.jira_token = str(pick("JIRA_TOKEN", j.get("token"), "admin"))
         self.jira_auth = str(pick("JIRA_AUTH", j.get("auth"), "basic")).strip()   # basic | bearer
         self.jira_state_path = str(pick("JIRA_STATE_PATH", j.get("state_path"), "jira_state.json"))
+        # 이미지 프록시 허용 호스트(사내 CDN 등). jira base 호스트·동일 상위도메인은 자동 허용.
+        self.image_hosts = [str(h).strip() for h in (j.get("image_hosts") or []) if str(h).strip()]
         self.sp_field_id = str(pick("SP_FIELD_ID", f.get("story_point"), "customfield_10004"))
         self.epic_link_field_id = str(pick("EPIC_LINK_FIELD_ID", f.get("epic_link"), "customfield_10008"))
         self.confluence_base = str(pick("CONFLUENCE_BASE", conf.get("base"), "")).rstrip("/")

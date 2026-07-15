@@ -10,7 +10,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.htmlsafe import sanitize_html, text_to_html   # noqa: E402
+from app.htmlsafe import proxy_images, sanitize_html, text_to_html, tidy_html   # noqa: E402
 
 
 # ── 1. 위험 요소 제거 ───────────────────────────────────────────────
@@ -196,3 +196,62 @@ def test_text_to_html_escapes_and_nl2br():
 
 def test_text_to_html_none():
     assert text_to_html(None) == ""
+
+
+# ── 4. 이미지 프록시 재작성 (prod: 인증 이미지 same-origin 화) ──────────
+def _allow(h):
+    return h in ("jira.corp.com", "cdn.corp.com")
+
+
+def test_proxy_relative_path_absolutized():
+    out = proxy_images('<img src="/secure/attachment/1/a.png" alt="" />', "https://jira.corp.com", _allow)
+    assert "/api/img?u=" in out
+    assert "https%3A%2F%2Fjira.corp.com%2Fsecure%2Fattachment%2F1%2Fa.png" in out
+
+
+def test_proxy_absolute_allowed_host():
+    out = proxy_images('<img src="https://cdn.corp.com/x.png">', "https://jira.corp.com", _allow)
+    assert "/api/img?u=https%3A%2F%2Fcdn.corp.com%2Fx.png" in out
+
+
+def test_proxy_disallowed_host_untouched():
+    out = proxy_images('<img src="https://evil.example/x.png">', "https://jira.corp.com", _allow)
+    assert "/api/img" not in out and "evil.example" in out
+
+
+def test_proxy_data_and_relative_filename_untouched():
+    for src in ["data:image/png;base64,AAAA", "pic.png"]:
+        out = proxy_images('<img src="' + src + '">', "https://jira.corp.com", _allow)
+        assert "/api/img" not in out
+
+
+def test_proxy_none_and_empty():
+    assert proxy_images("", "https://jira.corp.com", _allow) == ""
+    assert proxy_images("<p>no image</p>", "https://jira.corp.com", _allow) == "<p>no image</p>"
+
+
+# ── 5. tidy_html — 빈 문단 제거 + 앞뒤 트림 ──────────────────────────
+def test_tidy_removes_empty_paragraphs():
+    out = tidy_html("<p>내용</p><p>&nbsp;</p><p> </p><p><br></p><div>  </div><p>다음</p>")
+    assert out == "<p>내용</p><p>다음</p>"
+
+
+def test_tidy_trims_leading_trailing():
+    assert tidy_html("<br><br> <p>본문</p>&nbsp; <br>") == "<p>본문</p>"
+    assert tidy_html("  앞뒤 공백  ") == "앞뒤 공백"
+
+
+def test_tidy_collapses_excess_br():
+    out = tidy_html("a<br><br><br><br>b")
+    assert out == "a<br /><br />b"
+
+
+def test_tidy_keeps_real_content_with_nbsp():
+    # 실제 내용이 있는 문단은 유지 (nbsp 가 중간에 있어도)
+    out = tidy_html("<p>a&nbsp;b</p>")
+    assert "a" in out and "b" in out and "<p>" in out
+
+
+def test_tidy_none_empty():
+    assert tidy_html("") == ""
+    assert tidy_html(None) is None

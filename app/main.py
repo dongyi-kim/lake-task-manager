@@ -15,7 +15,7 @@ JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 import threading
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import rollup, vit, workload
@@ -103,6 +103,18 @@ def api_issue(key: str):
 def api_issue_comments(key: str):
     """범용 단일 티켓 코멘트 리소스."""
     return JSONResponse(_client.issue_comments(key))
+
+
+@app.get("/api/img")
+def api_img(u: str):
+    """이미지 프록시 — 인증(SSO) 세션으로 사내 Jira/CDN 이미지를 받아 same-origin 으로 반환.
+    (localhost 페이지가 크로스오리진 이미지를 직접 못 불러오는 문제 해결. 허용 호스트만.)"""
+    data, ctype = _client.fetch_media(u)
+    if data is None:
+        return JSONResponse({"error": "이미지 없음 또는 허용되지 않은 호스트", "u": u}, status_code=404)
+    media = (ctype or "application/octet-stream").split(";")[0].strip()
+    return Response(content=data, media_type=media,
+                    headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.get("/api/ticket/{key}")

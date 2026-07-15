@@ -28,3 +28,11 @@ class BasicAuthProvider(AuthProvider):
 
     def get_text(self, path, params=None):
         return self._get(path, params).text
+
+    def get_bytes(self, path, params=None):
+        url = path if path.startswith(("http://", "https://")) else self.base + path
+        r = self.session.get(url, params=params, timeout=30)
+        if r.status_code in (401, 403) or r.status_code >= 500:
+            raise SessionExpired(f"HTTP {r.status_code} on {path}")
+        r.raise_for_status()
+        return r.content, r.headers.get("Content-Type")
