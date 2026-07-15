@@ -36,12 +36,16 @@
 .plus:hover { color: var(--text); }
 /* position/z-index: 모듈 평균 세로선(.mavg-line, z-index:3)이 펼친 상세 위로 지나가지 않게 덮는다 */
 .act { position: relative; z-index: 5; padding: 8px 16px 14px 40px; background: var(--panel-2); border-top: 1px solid var(--border); }
-.tcols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
-@media (max-width: 1180px) { .tcols { grid-template-columns: 1fr 1fr; } }
+.tcols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }   /* [진행중·할당됨] | [완료] */
 @media (max-width: 760px) { .tcols { grid-template-columns: 1fr; } }
-.wtk.todo { border-style: dashed; }   /* 착수 전 = 점선 카드 */
+.wtk.todo { border-style: dashed; }   /* 할당됨(미착수) = 점선 카드 */
 .sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .3px; }
 .sec-t > b { color: var(--text); }
+/* 합친 열 안의 소구분 라벨(진행 중 / 할당됨) */
+.sub-lbl { font-size: 11px; color: var(--muted); font-weight: 700; margin: 12px 0 5px; letter-spacing: .2px; }
+.sub-lbl:first-of-type { margin-top: 2px; }
+.sub-lbl.todo { color: var(--muted); }
+.sub-lbl > b { color: var(--text); }
 
 /* 티켓 카드 — 타입뱃지 + 번호 + 제목 + 일정 뱃지. 공간 남으면 한 줄, 좁으면 일정만 아래로 줄바꿈 */
 .wtk { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px;

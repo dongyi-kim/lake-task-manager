@@ -549,7 +549,8 @@ class JiraClient:
             bundle, _ = self.cache.get_or_set(key, self.s.cache_ttl_seconds, lambda: {
                 "id": pid,
                 # 미완료 할당 = 미착수(To Do) + 진행 중(In Progress). 완료는 최근 7일만.
-                "open": counts(f'assignee = "{pid}" AND statusCategory = "To Do"'),
+                # 미착수는 최근 14일내 update 된 것만(할당 후 잊혀진 오래된 티켓=데이터오염 제외).
+                "open": counts(f'assignee = "{pid}" AND statusCategory = "To Do" AND updated >= -14d'),
                 "inProgress": counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
                 "done7d": counts(f'assignee = "{pid}" AND statusCategory = Done AND resolved >= -7d'),
             })
@@ -591,7 +592,7 @@ class JiraClient:
             comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
             itt = f.get("issuetype") or {}
             return _wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
-        op = self._search(f'assignee = "{user}" AND statusCategory = "To Do"', max_results=200)
+        op = self._search(f'assignee = "{user}" AND statusCategory = "To Do" AND updated >= -14d', max_results=200)
         ip = self._search(f'assignee = "{user}" AND statusCategory = "In Progress"', max_results=200)
         dn = self._search(f'assignee = "{user}" AND statusCategory = Done AND resolved >= -7d', max_results=200)
         return {"user": user,

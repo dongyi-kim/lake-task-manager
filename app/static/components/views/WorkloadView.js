@@ -201,30 +201,32 @@ export default {
                 <div v-else-if="tkd[p.id].error" class="muted">불러오지 못했습니다: {{ tkd[p.id].error }}</div>
                 <div v-else class="tcols">
                   <div>
-                    <div class="sec-t">할당됨 (미착수) <b>{{ (tkd[p.id].open || []).length }}</b></div>
-                    <div v-for="t in (tkd[p.id].open || [])" :key="t.key" class="wtk todo">
-                      <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
-                      <span class="sm">{{ t.summary }}</span>
-                      <span class="sched">
-                        <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
-                        <span v-else class="dbadge nodue">마감 설정되지 않음</span>
-                        <span v-if="t.due" class="dchip" :class="ddCls(t.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(t.due) }}</span>
-                      </span>
-                    </div>
-                    <div v-if="!(tkd[p.id].open || []).length" class="muted">할당됨(미착수) 티켓 없음</div>
-                  </div>
-                  <div>
-                    <div class="sec-t">진행 중 <b>{{ tkd[p.id].inProgress.length }}</b></div>
-                    <div v-for="t in tkd[p.id].inProgress" :key="t.key" class="wtk">
-                      <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
-                      <span class="sm">{{ t.summary }}</span>
-                      <span class="sched">
-                        <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
-                        <span v-else class="dbadge nodue">마감 설정되지 않음</span>
-                        <span v-if="t.due" class="dchip" :class="ddCls(t.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(t.due) }}</span>
-                      </span>
-                    </div>
-                    <div v-if="!tkd[p.id].inProgress.length" class="muted">진행 중 티켓 없음</div>
+                    <div class="sec-t">진행 중 · 할당됨 <b>{{ tkd[p.id].inProgress.length + (tkd[p.id].open || []).length }}</b></div>
+                    <template v-if="tkd[p.id].inProgress.length">
+                      <div class="sub-lbl">진행 중 <b>{{ tkd[p.id].inProgress.length }}</b></div>
+                      <div v-for="t in tkd[p.id].inProgress" :key="'ip-' + t.key" class="wtk">
+                        <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
+                        <span class="sm">{{ t.summary }}</span>
+                        <span class="sched">
+                          <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
+                          <span v-else class="dbadge nodue">마감 설정되지 않음</span>
+                          <span v-if="t.due" class="dchip" :class="ddCls(t.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(t.due) }}</span>
+                        </span>
+                      </div>
+                    </template>
+                    <template v-if="(tkd[p.id].open || []).length">
+                      <div class="sub-lbl todo">할당됨 (미착수) <b>{{ (tkd[p.id].open || []).length }}</b></div>
+                      <div v-for="t in (tkd[p.id].open || [])" :key="'op-' + t.key" class="wtk todo">
+                        <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
+                        <span class="sm">{{ t.summary }}</span>
+                        <span class="sched">
+                          <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
+                          <span v-else class="dbadge nodue">마감 설정되지 않음</span>
+                          <span v-if="t.due" class="dchip" :class="ddCls(t.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(t.due) }}</span>
+                        </span>
+                      </div>
+                    </template>
+                    <div v-if="!tkd[p.id].inProgress.length && !(tkd[p.id].open || []).length" class="muted">진행 중·할당됨 티켓 없음</div>
                   </div>
                   <div>
                     <div class="sec-t">최근 7일 완료 <b>{{ tkd[p.id].done7d.length }}</b></div>
