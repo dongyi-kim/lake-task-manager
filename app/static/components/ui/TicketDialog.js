@@ -10,14 +10,22 @@ export default {
   components: { TypeBadge },
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
-  data() { return { v: null, comments: null, err: "", loading: true, expanded: false }; },
+  data() { return { v: null, comments: null, err: "", loading: true, expanded: false, zoom: null }; },
   mounted() {
-    this._onKey = (e) => { if (e.key === "Escape") this.$emit("close"); };
+    // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
+    this._onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (this.zoom) { this.zoom = null; } else { this.$emit("close"); }
+    };
     window.addEventListener("keydown", this._onKey);
     this.load();
   },
   unmounted() { window.removeEventListener("keydown", this._onKey); },
-  watch: { keyId() { this.load(); } },
+  watch: {
+    keyId() { this.load(); },
+    v() { this.$nextTick(this.augmentZoomables); },            // 설명 렌더 후 확대버튼 주입
+    comments() { this.$nextTick(this.augmentZoomables); },     // 코멘트 렌더 후
+  },
   methods: {
     async load() {
       this.loading = true; this.err = ""; this.v = null; this.comments = null;
@@ -31,6 +39,35 @@ export default {
     fy(s) { return ymd(s); },
     fdt(s) { return ymdhm(s); },
     statusClass(cat) { return "st-" + (cat || "todo"); },
+    // 확대 버튼(.zoom-btn)만 반응 — 표는 드래그 복사가 가능해야 하므로 내용 클릭으로는 확대 안 함.
+    onContentClick(e) {
+      const btn = e.target.closest && e.target.closest(".zoom-btn");
+      if (!btn) return;
+      e.preventDefault();
+      const wrap = btn.closest(".zoomable");
+      const img = wrap && wrap.querySelector("img");
+      const table = wrap && wrap.querySelector("table");
+      if (img) this.zoom = { type: "img", src: img.currentSrc || img.src, alt: img.alt || "" };
+      else if (table) this.zoom = { type: "table", html: table.outerHTML };
+    },
+    // v-html 로 렌더된 이미지/표에 '확대' 버튼을 얹는다(우측 상단). 중복 주입 방지 마커 사용.
+    augmentZoomables() {
+      const root = this.$el;
+      if (!root || !root.querySelectorAll) return;
+      root.querySelectorAll(".tkt-desc img, .tkt-desc table").forEach((el) => {
+        if (el.dataset.zoomified) return;
+        el.dataset.zoomified = "1";
+        const wrap = document.createElement(el.tagName === "IMG" ? "span" : "div");
+        wrap.className = "zoomable";
+        el.parentNode.insertBefore(wrap, el);
+        wrap.appendChild(el);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "zoom-btn";
+        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>확대';
+        wrap.appendChild(btn);
+      });
+    },
   },
   template: `
     <div class="tkt-ov" :class="{ expanded }" @click.self="$emit('close')">
@@ -71,18 +108,24 @@ export default {
           </div>
 
           <div class="tkt-sec-t">설명</div>
-          <div class="tkt-desc tkt-desc-box" v-html="v.descriptionHtml || '<p class=&quot;muted&quot;>설명이 없습니다.</p>'"></div>
+          <div class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="v.descriptionHtml || '<p class=&quot;muted&quot;>설명이 없습니다.</p>'"></div>
 
           <div class="tkt-sec-t">코멘트<span v-if="comments"> ({{ comments.length }})</span></div>
           <div v-if="!comments" class="loading">코멘트 불러오는 중…</div>
           <div v-else-if="!comments.length" class="muted">코멘트가 없습니다.</div>
-          <div v-else class="tkt-comments">
+          <div v-else class="tkt-comments" @click="onContentClick">
             <div v-for="(c, i) in comments" :key="i" class="tkt-cmt">
               <div class="tkt-cmt-h"><b>{{ c.author }}</b><span class="muted">{{ fdt(c.date) }}</span></div>
               <div class="tkt-cmt-b tkt-desc" v-html="c.html"></div>
             </div>
           </div>
         </template>
+      </div>
+
+      <div v-if="zoom" class="tkt-zoom" @click="zoom = null">
+        <img v-if="zoom.type === 'img'" class="tkt-zoom-img" :src="zoom.src" :alt="zoom.alt">
+        <div v-else class="tkt-zoom-table" @click.stop v-html="zoom.html"></div>
+        <button class="tkt-zoom-x" @click.stop="zoom = null" aria-label="닫기">✕</button>
       </div>
     </div>`,
 };

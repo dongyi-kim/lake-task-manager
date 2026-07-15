@@ -64,7 +64,16 @@
 .tkt-desc li { margin: 2px 0; }
 .tkt-desc a { color: var(--accent); text-decoration: none; }
 .tkt-desc a:hover { text-decoration: underline; }
-.tkt-desc img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; }
+.tkt-desc img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; display: block; }
+
+/* 이미지/표 '확대' 버튼 (우측 상단) — 명시적 클릭만 확대(표 드래그 복사 보존) */
+.zoomable { position: relative; display: inline-block; max-width: 100%; }
+div.zoomable { display: block; }
+.zoom-btn { position: absolute; top: 6px; right: 6px; z-index: 3; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 700; color: var(--text); background: var(--panel); border: 1px solid var(--border);
+  border-radius: 7px; padding: 3px 8px; cursor: pointer; box-shadow: var(--shadow); opacity: .55; transition: opacity .12s; }
+.zoomable:hover .zoom-btn, .zoom-btn:hover { opacity: 1; }
+.zoom-btn svg { width: 13px; height: 13px; }
 .tkt-desc hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
 /* 맨션 — 실 Jira DC 프로필 링크(a.user-hover). 뱃지 아님, 볼드+컬러로만 구분(y축 자동 정렬) */
 .tkt-desc a.user-hover { font-weight: 700; color: var(--accent); text-decoration: none; }
@@ -108,6 +117,21 @@
 .tkt-desc .callout-tip, .tkt-desc .callout-success { border-left-color: var(--done); }
 .tkt-desc .callout-warning { border-left-color: var(--warn); }
 .tkt-desc .callout-error { border-left-color: var(--danger); }
+
+/* ── 이미지/표 확대(라이트박스) ── */
+.tkt-zoom { position: fixed; inset: 0; z-index: 9500; display: flex; align-items: center; justify-content: center;
+  padding: 28px; background: rgba(10, 12, 18, .82); cursor: zoom-out; }
+.tkt-zoom-img { max-width: 94vw; max-height: 92vh; object-fit: contain; border-radius: 8px;
+  background: #fff; box-shadow: 0 12px 48px rgba(0, 0, 0, .55); }
+.tkt-zoom-table { max-width: 94vw; max-height: 92vh; overflow: auto; cursor: auto;
+  background: var(--panel); color: var(--text); border-radius: 10px; padding: 18px 20px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, .55); }
+.tkt-zoom-table table { border-collapse: collapse; width: 100%; font-size: 15px; }
+.tkt-zoom-table th, .tkt-zoom-table td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; vertical-align: top; }
+.tkt-zoom-table th { background: var(--panel-2); font-weight: 700; }
+.tkt-zoom-x { position: fixed; top: 16px; right: 20px; width: 38px; height: 38px; border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, .3); background: rgba(0, 0, 0, .45); color: #fff; cursor: pointer; font-size: 15px; }
+.tkt-zoom-x:hover { background: rgba(0, 0, 0, .7); }
 
 /* ── 코멘트 ── */
 .tkt-comments { display: flex; flex-direction: column; gap: 8px; }
