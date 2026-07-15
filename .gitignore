@@ -9,6 +9,9 @@ venv/
 
 # SQLite 캐시 (생성물)
 *.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 
 # 빌드 산출물 (PyInstaller) — exe 는 배포 repo(lake-task-manager-deploy)에서 관리
 /build/
