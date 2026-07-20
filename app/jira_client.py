@@ -661,11 +661,15 @@ class JiraClient:
                 fld = (item.get("field") or "").strip()
                 if fld.lower() not in allow:
                     continue                             # 잡음(description 등) 제외
+                frm, to = item.get("fromString"), item.get("toString")
+                if fld.lower() == "assignee":
+                    # 사람 값은 화면 전체와 같은 규칙으로(표시명 첫 어절). prod 의 '홍길동 SKCC' → '홍길동'
+                    frm, to = (real_name(frm) if frm else frm), (real_name(to) if to else to)
                 out.append({"kind": ("child-" if src else "") + fld.lower().replace(" ", "-"),
                             "date": h.get("created"),
                             "author": real_name(who.get("displayName") or who.get("name")),
                             "authorId": who.get("name"), "field": fld,
-                            "from": item.get("fromString"), "to": item.get("toString"),
+                            "from": frm, "to": to,
                             "srcKey": src})
             return out
 

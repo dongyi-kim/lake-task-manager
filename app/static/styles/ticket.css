@@ -9,7 +9,10 @@
   background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 40px 16px; overflow-y: auto; }
 .tkt-dlg { position: relative; background: var(--panel); color: var(--text); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, .38); width: min(1240px, 100%);
-  padding: 20px 24px; }
+  padding: 20px 24px;
+  /* 좌/우 패널은 음수 마진으로 다이얼로그 가장자리까지 채우는 '직각' 배경이라
+     라운드 모서리 밖으로 삐져나온다 → 여기서 잘라낸다. */
+  overflow: hidden; }
 .tkt-dlg > :last-child { margin-bottom: 0; }
 .tkt-x, .tkt-max { position: absolute; top: 12px; width: 30px; height: 30px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); cursor: pointer;

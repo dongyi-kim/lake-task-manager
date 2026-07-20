@@ -119,6 +119,10 @@ class World:
                           "displayName": f"{nm} {co}"}
         return users
 
+    def _dn(self, uid):
+        """사용자 표시이름(displayName). changelog 의 fromString/toString 용."""
+        return (self.users.get(uid) or {}).get("displayName") or uid
+
     def _pool(self, module):
         return self.people.get(module, []) or ["pmo"]
 
@@ -205,9 +209,11 @@ class World:
                  {"field": "resolution", "fieldtype": "jira",
                   "from": None, "fromString": None, "to": "1", "toString": "Done"}])
         if reporter != assignee and _h % 3 == 0:   # 일부 티켓만 담당자 재지정
+            # 실 Jira 규격: from/to = username, fromString/toString = **표시명**
             _cl(created + timedelta(days=1),
                 [{"field": "assignee", "fieldtype": "jira",
-                  "from": reporter, "fromString": reporter, "to": assignee, "toString": assignee}],
+                  "from": reporter, "fromString": self._dn(reporter),
+                  "to": assignee, "toString": self._dn(assignee)}],
                 who=reporter)
         if _h % 4 == 0:                         # 잡음: 설명 수정 — 타임라인에서 제외돼야 한다(필터 검증용)
             _cl(updated, [{"field": "description", "fieldtype": "jira",
