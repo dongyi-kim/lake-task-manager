@@ -463,6 +463,98 @@ class JiraClient:
         view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
         return view
 
+    # ── 계보(좌측 스파인 패널) — 조상 체인 + 형제 ──
+    # 모든 조회는 티켓단위 캐시(get_issue / epic_children write-through)를 재사용하고,
+    # 조립 결과도 ancestors|siblings:{env}:{key} 로 캐시한다.
+    def _lineage_node(self, key, pct=None):
+        b = self.ticket_badge(key)
+        if not b:
+            return None
+        return {"key": b["key"], "summary": b["summary"], "type": b["type"],
+                "status": b["status"], "statusCategory": b["statusCategory"],
+                "assignee": b["assignee"], "pct": pct}
+
+    def _parent_pct(self, key):
+        """부모(Task/Story)의 진척 — 자식 Sub-Task 완료 개수 비율(%). 자식 없으면 None."""
+        try:
+            subs = (self.get_issue(key).get("fields") or {}).get("subtasks") or []
+        except Exception:
+            return None
+        if not subs:
+            return None
+        done = sum(1 for s in subs
+                   if _norm_cat(((((s.get("fields") or {}).get("status") or {})
+                                  .get("statusCategory")) or {}).get("key")) == "done")
+        return round(done * 100 / len(subs))
+
+    def ticket_ancestors(self, key):
+        """조상 체인(위→아래): Sub-Task → [epic, parent] / Story·Task·Bug → [epic] / Epic → [].
+        각 노드에 진척률(pct)까지 얹는다 — Epic 은 SP 롤업, 부모는 Sub-Task 완료 비율."""
+        def build():
+            try:
+                f = self.get_issue(key).get("fields") or {}
+            except Exception:
+                return []
+            parent_key = (f.get("parent") or {}).get("key")
+            epic_key = f.get(self.s.epic_link_field_id)
+            chain = []
+            if parent_key:                      # Sub-Task: 부모의 Epic Link 를 조부모로 함께
+                try:
+                    epic_key = (self.get_issue(parent_key).get("fields")
+                                or {}).get(self.s.epic_link_field_id)
+                except Exception:
+                    epic_key = None
+                if epic_key:
+                    chain.append((epic_key, self._epic_pct(epic_key)))
+                chain.append((parent_key, self._parent_pct(parent_key)))
+            elif epic_key:
+                chain.append((epic_key, self._epic_pct(epic_key)))
+            return [n for n in (self._lineage_node(k, p) for k, p in chain) if n]
+        return self.cache.get_or_set(f"ancestors:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
+    def _epic_pct(self, epic_key):
+        try:
+            return round(self.epic_progress_one(epic_key).get("progressPct") or 0)
+        except Exception:
+            return None
+
+    def ticket_siblings(self, key):
+        """형제 = 같은 부모(Sub-Task) 또는 같은 Epic(Story/Task/Bug)을 공유하는 티켓들.
+        현재 티켓도 포함하고 current=True 로 표시(‘5개 중 2번째’ 위치 파악용). Epic 은 []."""
+        def build():
+            try:
+                f = self.get_issue(key).get("fields") or {}
+            except Exception:
+                return []
+            parent_key = (f.get("parent") or {}).get("key")
+            if parent_key:                      # Sub-Task → 부모의 subtasks (부모 1회 조회로 끝)
+                subs = (self.get_issue(parent_key).get("fields") or {}).get("subtasks") or []
+                rows = [{"key": s.get("key"),
+                         "summary": (s.get("fields") or {}).get("summary") or s.get("key"),
+                         "type": (((s.get("fields") or {}).get("issuetype")) or {}).get("name", "Sub-Task"),
+                         "statusCategory": _norm_cat(((((s.get("fields") or {}).get("status") or {})
+                                                       .get("statusCategory")) or {}).get("key")),
+                         "component": None} for s in subs if s.get("key")]
+            else:
+                epic_key = f.get(self.s.epic_link_field_id)
+                if not epic_key:
+                    return []
+                raws = self._search(f'"Epic Link" = {epic_key}',
+                                    cache_key=f"epic_children:{self.env}:{epic_key}")
+                rows = []
+                for it in raws:
+                    ff = it.get("fields") or {}
+                    rows.append({"key": it.get("key"),
+                                 "summary": ff.get("summary") or it.get("key"),
+                                 "type": (ff.get("issuetype") or {}).get("name", ""),
+                                 "statusCategory": _norm_cat(((ff.get("status") or {})
+                                                              .get("statusCategory") or {}).get("key")),
+                                 "component": _comp_of(ff)})
+            for r in rows:
+                r["current"] = (r["key"] == key)
+            return rows
+        return self.cache.get_or_set(f"siblings:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
     # ── 이미지/첨부 프록시 (prod: 인증 세션으로 받아 same-origin 반환) ──
     def _media_allowed_host(self, host):
         """이미지 프록시 허용 호스트 판별 — jira base 호스트·동일 상위도메인·config image_hosts."""

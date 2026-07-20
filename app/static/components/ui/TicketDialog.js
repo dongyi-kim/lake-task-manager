@@ -3,6 +3,7 @@
 // 코멘트 텍스트는 Vue 기본 이스케이프({{ }})로 안전 표시. Esc/백드롭/X 로 닫기.
 import { api } from "../../lib/api.js";
 import { ymd, ymdhm, esc } from "../../lib/fmt.js";
+import { TYPE_BG } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
@@ -21,7 +22,8 @@ export default {
   components: { TypeBadge },
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
-  data() { return { v: null, comments: null, err: "", loading: true, expanded: false, zoom: null, zoomLoading: false }; },
+  data() { return { v: null, comments: null, ancestors: [], siblings: [], sibOpen: true,
+                    err: "", loading: true, expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
     this._onKey = (e) => {
@@ -32,6 +34,19 @@ export default {
     this.load();
   },
   unmounted() { window.removeEventListener("keydown", this._onKey); },
+  computed: {
+    // 스파인 계보 = [조상…, 현재]. 현재 노드는 v 로 만들어 맨 아래에 붙인다.
+    spine() {
+      if (!this.v) return [];
+      return (this.ancestors || []).concat([{
+        key: this.v.key, summary: this.v.summary, type: this.v.type,
+        statusCategory: this.v.statusCategory, pct: null, current: true }]);
+    },
+    // 형제 중 현재 위치 (1-based, 없으면 0)
+    sibPos() { return (this.siblings || []).findIndex((s) => s.current) + 1; },
+    // 현재 티켓의 대표 컴포넌트(모듈) — 형제 중 타 모듈을 흐리게 하는 기준
+    myComp() { return (this.v && this.v.components && this.v.components[0]) || null; },
+  },
   watch: {
     keyId() { this.load(); },
     v() { this.$nextTick(this.augment); },            // 설명 렌더 후 확대버튼·뱃지 주입
@@ -40,13 +55,20 @@ export default {
   methods: {
     async load() {
       this.loading = true; this.err = ""; this.v = null; this.comments = null;
+      this.ancestors = []; this.siblings = [];
       try {
         this.v = await api.ticket(this.keyId);
+        // 코멘트·계보(조상/형제)는 병렬 lazy — 전부 티켓단위 캐시를 타므로 재방문은 즉시
         api.ticketComments(this.keyId).then((c) => { this.comments = c; }).catch(() => { this.comments = []; });
+        api.ticketAncestors(this.keyId).then((a) => { this.ancestors = a || []; }).catch(() => {});
+        api.ticketSiblings(this.keyId).then((s) => { this.siblings = s || []; }).catch(() => {});
       } catch (e) {
         this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + this.keyId : (e.message || "불러오기 실패");
       } finally { this.loading = false; }
     },
+    typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
+    // 타 모듈 형제 = 흐리게(숨기지는 않는다 — 존재는 알리고 노이즈만 줄임)
+    isOther(s) { return !!(this.myComp && s.component && s.component !== this.myComp); },
     fy(s) { return ymd(s); },
     fdt(s) { return ymdhm(s); },
     statusClass(cat) { return "st-" + (cat || "todo"); },
@@ -134,6 +156,47 @@ export default {
         <div v-else-if="err" class="tkt-err">{{ err }}</div>
 
         <template v-else-if="v">
+        <div class="tkt-cols">
+          <!-- 좌측 세로 스파인 — 계보(조상→현재, 레일+진척) + 형제 목록. 클릭 시 해당 티켓으로 이동 -->
+          <aside v-if="spine.length > 1 || siblings.length" class="tkt-spine">
+            <div class="tkt-mlabel">계보</div>
+            <div v-for="(n, i) in spine" :key="n.key" class="spn-item">
+              <div class="spn-rail">
+                <span class="spn-dot" :class="{ on: n.current }" :style="{ '--tc': typeColor(n.type) }"></span>
+                <span v-if="i < spine.length - 1" class="spn-line"></span>
+              </div>
+              <div class="spn-body" :class="{ cur: n.current, tkt: !n.current }"
+                   :data-key="n.current ? null : n.key"
+                   :title="n.type + ' ' + n.key + ' · ' + n.summary">
+                <div class="spn-top"><TypeBadge :type="n.type" /><span class="spn-key">{{ n.key }}</span></div>
+                <div class="spn-title">{{ n.summary }}</div>
+                <div v-if="n.pct !== null && n.pct !== undefined" class="spn-prog">
+                  <span class="spn-bar"><i :style="{ width: n.pct + '%', background: typeColor(n.type) }"></i></span>
+                  <span class="spn-pct">{{ n.pct }}%</span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="siblings.length" class="spn-sib">
+              <div class="tkt-mlabel spn-sib-h" @click="sibOpen = !sibOpen">
+                <span class="chev" :class="{ open: sibOpen }">▸</span>
+                <span>형제 {{ siblings.length }}</span>
+                <span v-if="sibPos" class="spn-pos">{{ sibPos }}/{{ siblings.length }}</span>
+              </div>
+              <template v-if="sibOpen">
+                <div v-for="s in siblings" :key="s.key" class="spn-sibrow"
+                     :class="{ cur: s.current, other: isOther(s), tkt: !s.current }"
+                     :data-key="s.current ? null : s.key"
+                     :title="s.key + ' · ' + s.summary + (s.component ? ' (' + s.component + ')' : '')">
+                  <span class="spn-sdot" :class="'st-' + (s.statusCategory || 'todo')"></span>
+                  <span class="spn-stitle">{{ s.summary }}</span>
+                  <span v-if="isOther(s)" class="spn-scomp">{{ s.component }}</span>
+                </div>
+              </template>
+            </div>
+          </aside>
+
+          <div class="tkt-main">
           <div class="tkt-head">
             <TypeBadge :type="v.type" />
             <span class="tkt-key">{{ v.key }}</span>
@@ -170,6 +233,8 @@ export default {
               <div class="tkt-cmt-b tkt-desc" v-html="c.html"></div>
             </div>
           </div>
+          </div><!-- /.tkt-main -->
+        </div><!-- /.tkt-cols -->
         </template>
       </div>
 

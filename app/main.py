@@ -142,6 +142,18 @@ def api_ticket_badge(key: str):
     return JSONResponse(b)
 
 
+@app.get("/api/ticket/{key}/ancestors")
+def api_ticket_ancestors(key: str):
+    """계보 스파인 — 조상 체인(epic·parent) + 각 조상 진척률. 티켓단위 캐시 재사용."""
+    return JSONResponse(_client.ticket_ancestors(key))
+
+
+@app.get("/api/ticket/{key}/siblings")
+def api_ticket_siblings(key: str):
+    """계보 스파인 — 형제 티켓(같은 부모/Epic). 현재 티켓 포함(current=true)."""
+    return JSONResponse(_client.ticket_siblings(key))
+
+
 @app.get("/api/vit/{key}")
 def api_vit_detail(key: str):
     """단일 현안 상세 — 자손 트리 + 코멘트 (프론트 [자세히] 지연 로딩)."""

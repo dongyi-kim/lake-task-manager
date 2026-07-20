@@ -8,7 +8,7 @@
 .tkt-ov { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: flex-start; justify-content: center;
   background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 40px 16px; overflow-y: auto; }
 .tkt-dlg { position: relative; background: var(--panel); color: var(--text); border: 1px solid var(--border);
-  border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, .38); width: min(820px, 100%);
+  border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, .38); width: min(1010px, 100%);
   padding: 20px 24px; }
 .tkt-dlg > :last-child { margin-bottom: 0; }
 .tkt-x, .tkt-max { position: absolute; top: 12px; width: 30px; height: 30px; border-radius: 8px;
@@ -24,6 +24,64 @@
 .tkt-dlg.expanded { width: 100%; max-width: 1500px; min-height: calc(100vh - 40px); margin: 0 auto; }
 .tkt-load, .tkt-err { padding: 28px 6px; display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .tkt-err { color: var(--today); }
+
+/* ── 좌측 세로 스파인(계보 + 형제) ── */
+.tkt-cols { display: flex; align-items: flex-start; gap: 0; min-width: 0; }
+.tkt-main { flex: 1; min-width: 0; }
+.tkt-spine { flex: 0 0 224px; width: 224px; align-self: stretch; min-width: 0;
+  margin: -20px 18px -20px -24px; padding: 16px 14px 16px 24px;
+  border-right: 1px solid var(--border); background: var(--bg); }
+/* 마이크로 라벨 — 9.5px 대문자 트래킹(목업 문법) */
+.tkt-mlabel { font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--muted-2); margin-bottom: 11px; }
+
+.spn-item { display: flex; gap: 9px; min-width: 0; }
+.spn-rail { display: flex; flex-direction: column; align-items: center; width: 12px; flex: none; }
+.spn-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex: none;
+  border: 2px solid var(--tc, var(--border-hi)); background: transparent; }
+.spn-dot.on { width: 11px; height: 11px; background: var(--tc, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc, var(--accent)) 22%, transparent); }
+.spn-line { width: 2px; flex: 1; min-height: 22px; background: var(--border); }
+.spn-body { min-width: 0; flex: 1; padding-bottom: 14px; text-decoration: none; color: inherit; }
+.spn-body.tkt { cursor: pointer; }
+.spn-body.tkt:hover { text-decoration: none; }
+.spn-body.tkt:hover .spn-title { color: var(--text); }
+.spn-top { display: flex; align-items: center; gap: 5px; margin-bottom: 2px; min-width: 0; }
+.spn-key { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 10px;
+  letter-spacing: .2px; color: var(--muted-2); }
+.spn-title { font-size: 12px; line-height: 1.35; color: var(--muted); overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.spn-body.cur .spn-title { color: var(--text); font-weight: 600; }
+.spn-prog { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+.spn-bar { flex: 1; height: 4px; border-radius: 99px; background: var(--track); overflow: hidden; }
+.spn-bar i { display: block; height: 100%; border-radius: 99px; }
+.spn-pct { font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; color: var(--muted-2); flex: none; }
+
+/* 형제 목록 */
+.spn-sib { margin-top: 2px; border-top: 1px solid var(--border); padding-top: 11px; }
+.spn-sib-h { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; margin-bottom: 7px; }
+.spn-sib-h .chev { display: inline-block; transition: transform .15s; font-size: 9px; }
+.spn-sib-h .chev.open { transform: rotate(90deg); }
+.spn-pos { margin-left: auto; font-family: ui-monospace, Consolas, monospace; letter-spacing: 0; color: var(--muted); }
+.spn-sibrow { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 5px;
+  margin-bottom: 1px; min-width: 0; border-left: 2px solid transparent; }
+.spn-sibrow.tkt { cursor: pointer; }
+.spn-sibrow.tkt:hover { background: var(--panel-2); text-decoration: none; }
+.spn-sibrow.cur { background: var(--panel-3); border-left-color: var(--accent); }
+.spn-sibrow.other { opacity: .5; }
+.spn-sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--st-todo); }
+.spn-sdot.st-inprogress { background: var(--st-prog); }
+.spn-sdot.st-done { background: var(--st-done); }
+.spn-stitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--muted); }
+.spn-sibrow.cur .spn-stitle { color: var(--text); font-weight: 600; }
+.spn-scomp { flex: none; font-size: 8.5px; color: var(--muted-2); }
+/* 좁은 화면 — 스파인은 위로 접어 가로 배치 해제 */
+@media (max-width: 900px) {
+  .tkt-cols { flex-direction: column; }
+  .tkt-spine { flex: none; width: auto; align-self: auto; margin: -20px -24px 14px; padding: 14px 24px;
+    border-right: 0; border-bottom: 1px solid var(--border); }
+}
 
 /* ── 헤더 ── */
 .tkt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-right: 34px; }
