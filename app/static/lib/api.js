@@ -34,7 +34,5 @@ export const api = {
   search: (q, scope) => req("/api/search?q=" + encodeURIComponent(q) + "&scope=" + encodeURIComponent(scope || "scoped")),
   ticket: (key) => get("/api/ticket/" + encodeURIComponent(key)),
   ticketBadge: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/badge"),
-  ticketAncestors: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/ancestors"),
-  ticketDescendants: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/descendants"),
   ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
 };
