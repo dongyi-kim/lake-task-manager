@@ -76,11 +76,11 @@ export default {
       return { "tkt-lin-main": !!n.main, "tkt-lin-epic": n.type === "Epic",
                "tkt-lin-sub": n.type === "Sub-Task" };
     },
-    // 좌상→우하 계단식 카드 — 위 조상일수록 왼쪽, 현재(dist=0)가 가장 오른쪽·앞(z↑).
-    //   marginLeft = 아래로 갈수록 커지고(우측 이동), marginRight = 위로 갈수록 커진다(좌측 치우침).
+    // 좌상→우하 계단식 — 현재(메인, dist=0)의 x 시작위치는 콘텐츠 좌측에 고정(marginLeft 0).
+    //   상위 조상일수록 왼쪽으로 삐져나가고(음수 marginLeft) 오른쪽은 안으로(양수 marginRight). z: 현재가 앞.
     linStyle(n) {
-      const step = 18, L = this.lineage.length;
-      const s = { marginLeft: ((L - 1 - n.dist) * step) + "px", marginRight: (n.dist * step) + "px",
+      const step = 10;
+      const s = { marginLeft: (-(n.dist * step)) + "px", marginRight: (n.dist * step) + "px",
                   zIndex: 100 - n.dist };
       if (n.type !== "Epic") {
         s["--acc"] = n.type === "Sub-Task" ? "var(--border)" : (TYPE_BG[n.type] || "#3568c4");
