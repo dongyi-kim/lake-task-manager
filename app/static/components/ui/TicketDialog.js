@@ -23,7 +23,7 @@ export default {
   components: { TypeBadge, Avatar },
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
-  data() { return { v: null, comments: null, ancestors: [], siblings: [], sibOpen: true,
+  data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], sibOpen: true,
                     err: "", loading: true, expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
@@ -56,18 +56,31 @@ export default {
   methods: {
     async load() {
       this.loading = true; this.err = ""; this.v = null; this.comments = null;
-      this.ancestors = []; this.siblings = [];
+      this.ancestors = []; this.siblings = []; this.timeline = [];
       try {
         this.v = await api.ticket(this.keyId);
         // 코멘트·계보(조상/형제)는 병렬 lazy — 전부 티켓단위 캐시를 타므로 재방문은 즉시
         api.ticketComments(this.keyId).then((c) => { this.comments = c; }).catch(() => { this.comments = []; });
         api.ticketAncestors(this.keyId).then((a) => { this.ancestors = a || []; }).catch(() => {});
         api.ticketSiblings(this.keyId).then((s) => { this.siblings = s || []; }).catch(() => {});
+        api.ticketTimeline(this.keyId).then((t) => { this.timeline = t || []; }).catch(() => {});
       } catch (e) {
         this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + this.keyId : (e.message || "불러오기 실패");
       } finally { this.loading = false; }
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
+    // 타임라인 한 줄 문구 — 중요 이벤트만 오므로 종류별로 짧게 표현
+    tlText(e) {
+      const f = e.from || "없음", t = e.to || "없음";
+      if (e.kind === "created") return "티켓 생성";
+      if (e.kind === "comment") return "댓글 작성";
+      if (e.kind === "status") return "상태 " + f + " → " + t;
+      if (e.kind === "assignee") return "담당자 " + f + " → " + t;
+      if (e.kind === "resolution") return e.to ? ("해결: " + e.to) : "해결 취소";
+      if (e.kind === "duedate") return "마감일 " + f + " → " + t;
+      if (e.kind === "priority") return "우선순위 " + f + " → " + t;
+      return (e.field || "변경") + " " + f + " → " + t;
+    },
     // 타 모듈 형제 = 흐리게(숨기지는 않는다 — 존재는 알리고 노이즈만 줄임)
     isOther(s) { return !!(this.myComp && s.component && s.component !== this.myComp); },
     fy(s) { return ymd(s); },
@@ -194,6 +207,21 @@ export default {
                   <span v-if="isOther(s)" class="spn-scomp">{{ s.component }}</span>
                 </div>
               </template>
+            </div>
+
+            <!-- 타임라인 — 생성/상태/담당자/해결/댓글 등 중요 이력만(설명 수정 등은 백엔드에서 제외) -->
+            <div v-if="timeline.length" class="spn-tl">
+              <div class="tkt-mlabel">타임라인</div>
+              <div v-for="(e, i) in timeline" :key="i" class="tl-row">
+                <span class="tl-rail">
+                  <span class="tl-dot" :class="'k-' + e.kind"></span>
+                  <span v-if="i < timeline.length - 1" class="tl-line"></span>
+                </span>
+                <span class="tl-body">
+                  <span class="tl-t">{{ tlText(e) }}</span>
+                  <span class="tl-m">{{ e.author || '—' }} · {{ fdt(e.date) }}</span>
+                </span>
+              </div>
             </div>
           </aside>
 

@@ -92,3 +92,39 @@ def test_lineage_reuses_per_ticket_cache():
     assert c.cache.get(f"ancestors:{env}:{sub}") is not None   # 조립 결과 캐시
     c.ticket_siblings(sub)
     assert c.cache.get(f"siblings:{env}:{sub}") is not None
+
+
+# ── 타임라인 ──
+def test_timeline_has_created_and_status_and_comment():
+    """중요 이벤트(생성/상태/댓글)가 최신순으로 나온다."""
+    c = _client()
+    w = get_world()
+    key = next(k for k, it in w.issues.items() if it.get("resolved") and it.get("comments"))
+    tl = c.ticket_timeline(key)
+    kinds = {e["kind"] for e in tl}
+    assert "created" in kinds and "status" in kinds and "comment" in kinds
+    dates = [e["date"] for e in tl if e.get("date")]
+    assert dates == sorted(dates, reverse=True)          # 최신순
+    for e in tl:
+        assert "author" in e and "date" in e
+
+
+def test_timeline_excludes_description_edits():
+    """단순 설명 수정은 제외 — world 에 일부러 description 변경 이력을 심어두었다."""
+    c = _client()
+    w = get_world()
+    # description 변경 이력이 실제로 있는 티켓을 고른다(필터가 무의미해지지 않도록)
+    key = next(k for k, it in w.issues.items()
+               if any(i.get("field") == "description"
+                      for ch in it.get("changelog", []) for i in ch["items"]))
+    tl = c.ticket_timeline(key)
+    assert tl, "타임라인이 비어 필터 검증 불가"
+    assert all((e.get("field") or "").lower() != "description" for e in tl)
+    assert "description" not in {e["kind"] for e in tl}
+
+
+def test_timeline_cached():
+    c = _client()
+    key = _key_of_type("Bug")
+    c.ticket_timeline(key)
+    assert c.cache.get(f"timeline:{c.env}:{key}") is not None

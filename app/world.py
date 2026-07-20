@@ -181,6 +181,35 @@ class World:
                                 "date": self.today - timedelta(days=rng.randint(0, 7)),
                                 "seconds": 3600 * rng.randint(1, 6)})
 
+        # 변경 이력(changelog) — 티켓 다이얼로그 타임라인용.
+        # ★ rng 를 쓰지 않고 이미 정해진 값에서 결정적으로 파생한다(world 시퀀스 불변 → mock==local 유지).
+        changelog = []
+
+        def _cl(day, items, who=None):
+            o = day.toordinal()
+            changelog.append({"author": who or assignee, "date": day,
+                              "time": "%02d:%02d" % (9 + o % 8, (o % 6) * 10), "items": items})
+
+        _h = sum(map(ord, key))
+        if cat != "todo":                       # 착수 = Open → In Progress
+            _cl(created + timedelta(days=max((updated - created).days, 0) // 3),
+                [{"field": "status", "fieldtype": "jira",
+                  "from": "1", "fromString": "Open", "to": "3", "toString": "In Progress"}])
+        if resolved:                            # 완료 = In Progress → (현재 상태) + 해결
+            _cl(resolved,
+                [{"field": "status", "fieldtype": "jira",
+                  "from": "3", "fromString": "In Progress", "to": "5", "toString": status_name},
+                 {"field": "resolution", "fieldtype": "jira",
+                  "from": None, "fromString": None, "to": "1", "toString": "Done"}])
+        if reporter != assignee and _h % 3 == 0:   # 일부 티켓만 담당자 재지정
+            _cl(created + timedelta(days=1),
+                [{"field": "assignee", "fieldtype": "jira",
+                  "from": reporter, "fromString": reporter, "to": assignee, "toString": assignee}],
+                who=reporter)
+        if _h % 4 == 0:                         # 잡음: 설명 수정 — 타임라인에서 제외돼야 한다(필터 검증용)
+            _cl(updated, [{"field": "description", "fieldtype": "jira",
+                           "from": None, "fromString": "(이전 설명)", "to": None, "toString": "(수정된 설명)"}])
+
         self.issues[key] = {
             "key": key, "project": self.project, "type": itype,
             "summary": summary or self._summary(rng, itype, module),
@@ -193,7 +222,7 @@ class World:
             "parentKey": parent_key,
             "created": created, "updated": updated, "resolved": resolved, "due": due,
             "tcreated": _tm(), "tresolved": _tm(), "tupdated": _tm(),
-            "comments": comments, "worklog": worklog, "subtasks": [],
+            "comments": comments, "worklog": worklog, "subtasks": [], "changelog": changelog,
         }
         return key
 

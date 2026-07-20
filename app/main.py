@@ -160,6 +160,12 @@ def api_ticket_ancestors(key: str):
     return JSONResponse(_client.ticket_ancestors(key))
 
 
+@app.get("/api/ticket/{key}/timeline")
+def api_ticket_timeline(key: str):
+    """티켓 타임라인 — 생성/상태/담당자/해결/댓글 등 중요 이력만(설명 수정 등 잡음 제외)."""
+    return JSONResponse(_client.ticket_timeline(key))
+
+
 @app.get("/api/ticket/{key}/siblings")
 def api_ticket_siblings(key: str):
     """계보 스파인 — 형제 티켓(같은 부모/Epic). 현재 티켓 포함(current=true)."""

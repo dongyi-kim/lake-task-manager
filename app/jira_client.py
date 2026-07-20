@@ -559,6 +559,46 @@ class JiraClient:
             return rows
         return self.cache.get_or_set(f"siblings:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
 
+    # ── 티켓 타임라인(변경 이력 + 코멘트) ──
+    # '중요 알림'만 남긴다: 생성 / 상태 / 담당자 / 해결 / 우선순위 / 마감 / 소속 / 스프린트 + 댓글.
+    # description·summary·labels·attachment·Rank 같은 잡음은 제외(설명 수정으로 타임라인이 묻히지 않게).
+    TIMELINE_FIELDS = {"status", "assignee", "resolution", "priority",
+                       "duedate", "epic link", "parent", "sprint"}
+
+    def ticket_timeline(self, key, limit=40):
+        """티켓 이력 — [{kind,date,author,authorId,field,from,to}] 최신순."""
+        def build():
+            ev = []
+            try:
+                raw = self.provider.get_json(
+                    f"/rest/api/2/issue/{key}",
+                    params={"expand": "changelog", "fields": "created,reporter"})
+            except Exception:
+                raw = None
+            if raw:
+                f = raw.get("fields") or {}
+                rep = f.get("reporter") or {}
+                if f.get("created"):
+                    ev.append({"kind": "created", "date": f["created"],
+                               "author": real_name(rep.get("displayName") or rep.get("name")),
+                               "authorId": rep.get("name"), "field": None, "from": None, "to": None})
+                for h in ((raw.get("changelog") or {}).get("histories") or []):
+                    who = h.get("author") or {}
+                    for item in (h.get("items") or []):
+                        fld = (item.get("field") or "").strip()
+                        if fld.lower() not in self.TIMELINE_FIELDS:
+                            continue                     # 잡음 제외
+                        ev.append({"kind": fld.lower().replace(" ", "-"), "date": h.get("created"),
+                                   "author": real_name(who.get("displayName") or who.get("name")),
+                                   "authorId": who.get("name"), "field": fld,
+                                   "from": item.get("fromString"), "to": item.get("toString")})
+            for c in self._issue_comments(key, limit=10):   # 코멘트는 기존 캐시 재사용
+                ev.append({"kind": "comment", "date": c.get("date"), "author": c.get("author"),
+                           "authorId": c.get("authorId"), "field": None, "from": None, "to": None})
+            ev.sort(key=lambda e: e.get("date") or "", reverse=True)   # 최신순
+            return ev[:limit]
+        return self.cache.get_or_set(f"timeline:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
     # ── 사용자 프로필 이미지 ──
     # 아바타는 사실상 불변이라 URL 해석을 아주 길게 캐시(AVATAR_TTL). 바이트는 캐시에 넣지 않고
     # (SQLite 블롭 비대) HTTP Cache-Control(장기·immutable)로 브라우저가 들고 있게 한다.

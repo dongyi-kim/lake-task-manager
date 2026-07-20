@@ -36,5 +36,6 @@ export const api = {
   ticketBadge: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/badge"),
   ticketAncestors: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/ancestors"),
   ticketSiblings: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/siblings"),
+  ticketTimeline: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/timeline"),
   ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
 };
