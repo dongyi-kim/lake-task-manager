@@ -55,7 +55,10 @@ pip install -r requirements.txt        # dev 전부 커버 (requirements-sso 는
 # mock (기본) — 바로 UI 확인. http://localhost:8000 자동 오픈
 python run.py
 
-# local (fake 서버 상대 실 HTTP 경로 검증) — 터미널 2개
+# local 원클릭 — fake(:8080)를 백그라운드로 띄우고 앱(local)을 한 방에. 창 닫으면 fake 까지 함께 종료
+python run_local.py
+
+# local (수동, 터미널 2개) — 위 원클릭과 동일한 경로. 개별 제어가 필요할 때
 python run_fake.py                     # 터미널1 — Fake Jira :8080
 $env:JIRA_ENV="local"; python run.py   # 터미널2 — 앱(local → fake)
 
@@ -63,7 +66,7 @@ $env:JIRA_ENV="local"; python run.py   # 터미널2 — 앱(local → fake)
 uvicorn app.main:app --reload
 ```
 
-bash: `JIRA_ENV=local python run.py` / 지연 주입: `FAKE_LATENCY_MS=800 python run_fake.py`
+bash: `JIRA_ENV=local python run.py` / 지연 주입: `FAKE_LATENCY_MS=800 python run_local.py` (또는 `run_fake.py`)
 
 - `config/jira.yml` 의 dev 기본이 `env: mock` 이라 `python run.py` 는 mock. fake 검증만 `JIRA_ENV=local` 로 켠다.
 - 콘솔에 `Lake Task Manager - http://localhost:8000/  (env=mock)`. 종료 `Ctrl+C`.
