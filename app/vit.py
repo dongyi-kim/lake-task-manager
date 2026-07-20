@@ -33,10 +33,87 @@ def _news_from(flat, cutoff_iso, limit=8):
     return ev[:limit]
 
 
+def _project(it, cutoff):
+    """루트 하나 → 화면용 요약 dict. (원본 it 은 캐시 공유 대상이라 변형 금지 — 새 dict 로 구성.
+    tree/comments 전체는 /api/vit/{key} 에서 lazy)"""
+    flat = _flatten(it.get("tree") or [])
+    total = len(flat)
+    done = sum(1 for n in flat if n.get("statusCategory") == "done")
+    inprog = sum(1 for n in flat if n.get("statusCategory") == "inprogress")
+    counts = {}
+    for n in flat:
+        counts[n["type"]] = counts.get(n["type"], 0) + 1
+    # 직계 자식(트리 최상위)만 표 리스트용으로 투영 (티켓·상태·시작일·종료일·담당자)
+    children = [{"key": n.get("key"), "type": n.get("type"), "summary": n.get("summary"),
+                 "assignee": n.get("assignee"), "status": n.get("status"),
+                 "statusCategory": n.get("statusCategory"),
+                 "created": n.get("created"), "resolved": n.get("resolved")}
+                for n in (it.get("tree") or [])]
+    return {
+        "key": it["key"], "summary": it["summary"], "type": it["type"], "module": it.get("module"),
+        "assignee": real_name(it.get("assignee")), "start": it.get("start"), "created": it.get("created"),
+        "started": it.get("started"), "updated": it.get("updated"), "due": it.get("due"),
+        "statusCategory": it["statusCategory"], "status": it["status"], "ancestors": it.get("ancestors"),
+        "progress": {"done": done, "total": total, "pct": round(done / total * 100, 1) if total else 0.0},
+        "counts": counts,
+        "statusCounts": {"open": total - done - inprog, "inprogress": inprog, "done": done},
+        "children": children,
+        "news": _news_from(flat, cutoff),
+    }
+
+
+def _cutoff(news_days):
+    return (date.today() - timedelta(days=news_days)).isoformat()
+
+
+def _modules_of(plan, extra):
+    """plan 순서 우선 + plan 에 없는 모듈은 뒤에 붙인다(둘 다 결정적)."""
+    out = list(plan["modules"])
+    out += [m for m in sorted(extra) if m not in out]
+    return out
+
+
+def _kept_bases(client):
+    """중복(상위가 이미 PMO_VIT) 제거된 루트 base 목록 + 제외 수."""
+    bases = client.vit_bases()
+    keys = {b["key"] for b in bases}
+    kept = [b for b in bases if not any(a in keys for a in (b.get("ancestors") or []))]
+    return kept, len(bases) - len(kept)
+
+
+def build_vit_shell(client, plan, people, generated_at=None, jira_base=""):
+    """골격만 — 모듈 목록·모듈별 현안 수. **트리 조립 없이 base 만** 보므로 빠르다.
+    프론트가 이걸로 뼈대를 먼저 그리고, 모듈별 본문을 병렬로 채운다."""
+    kept, skipped = _kept_bases(client)
+    counts = {}
+    for b in kept:
+        m = b.get("module") or "Module 미지정"
+        counts[m] = counts.get(m, 0) + 1
+    modules = _modules_of(plan, counts.keys())
+    return {
+        "generatedAt": generated_at or datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "projectKey": plan.get("project_key", "DL"),
+        "jiraBase": jira_base,
+        "modules": [{"module": m, "count": counts.get(m, 0)} for m in modules],
+        "summary": {"total": len(kept), "skippedDup": skipped,
+                    "byModule": {m: counts.get(m, 0) for m in modules}},
+    }
+
+
+def build_vit_module(client, plan, people, module, news_days=21):
+    """모듈 하나만 조립 — 루트 트리는 vit_tree 캐시를 타므로 모듈끼리 겹쳐도 낭비 없음."""
+    kept, _ = _kept_bases(client)
+    mine = [b for b in kept if (b.get("module") or "Module 미지정") == module]
+    issues = [_project(it, _cutoff(news_days)) for it in client.vit_with_trees(mine)]
+    issues.sort(key=lambda x: x["key"])
+    issues.sort(key=lambda x: x.get("updated") or "", reverse=True)
+    return {"module": module, "issues": issues}
+
+
 def build_vit(client, plan, people, epic_prog=None, generated_at=None, news_days=21, jira_base=""):
     raw = client.vit_issues(plan, people, epic_prog)
     vit_keys = {it["key"] for it in raw}
-    cutoff = (date.today() - timedelta(days=news_days)).isoformat()
+    cutoff = _cutoff(news_days)
 
     issues, skipped = [], 0
     for it in raw:
@@ -44,31 +121,7 @@ def build_vit(client, plan, people, epic_prog=None, generated_at=None, news_days
         if any(a in vit_keys for a in (it.get("ancestors") or [])):
             skipped += 1
             continue
-        flat = _flatten(it.get("tree") or [])
-        total = len(flat)
-        done = sum(1 for n in flat if n.get("statusCategory") == "done")
-        inprog = sum(1 for n in flat if n.get("statusCategory") == "inprogress")
-        counts = {}
-        for n in flat:
-            counts[n["type"]] = counts.get(n["type"], 0) + 1
-        # 직계 자식(트리 최상위)만 표 리스트용으로 투영 (티켓·상태·시작일·종료일·담당자)
-        children = [{"key": n.get("key"), "type": n.get("type"), "summary": n.get("summary"),
-                     "assignee": n.get("assignee"), "status": n.get("status"),
-                     "statusCategory": n.get("statusCategory"),
-                     "created": n.get("created"), "resolved": n.get("resolved")}
-                    for n in (it.get("tree") or [])]
-        # 요약 dict 를 새로 구성(원본 it 은 캐시 공유 대상이라 변형 금지). tree/comments 는 /api/vit/{key} lazy.
-        issues.append({
-            "key": it["key"], "summary": it["summary"], "type": it["type"], "module": it.get("module"),
-            "assignee": real_name(it.get("assignee")), "start": it.get("start"), "created": it.get("created"),
-            "started": it.get("started"), "updated": it.get("updated"), "due": it.get("due"),
-            "statusCategory": it["statusCategory"], "status": it["status"], "ancestors": it.get("ancestors"),
-            "progress": {"done": done, "total": total, "pct": round(done / total * 100, 1) if total else 0.0},
-            "counts": counts,
-            "statusCounts": {"open": total - done - inprog, "inprogress": inprog, "done": done},
-            "children": children,
-            "news": _news_from(flat, cutoff),
-        })
+        issues.append(_project(it, cutoff))
 
     # 결정적 정렬(updated 내림차순, 동률은 key 오름차순) → 조회 순서와 무관하게 mock==local 일치.
     issues.sort(key=lambda x: x["key"])

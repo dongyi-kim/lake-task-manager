@@ -12,20 +12,31 @@ import Avatar from "../ui/Avatar.js";
 export default {
   name: "WorkloadView",
   components: { ProgressBar, TypeBadge, Avatar },
-  data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {}, metric: "count" }; },
+  data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {}, metric: "count", mods: {}, modErr: {} }; },
   created() { this.bodyRefs = {}; },   // 비반응 DOM 참조(모듈 body)
   async mounted() {
-    try { this.d = await api.workload(); this.d.modules.forEach((m) => { this.open[m.module] = true; }); this.scheduleMeasure(); }
-    catch (e) { this.err = e.message; }
+    // 모듈별 병렬 로딩: 골격 먼저 → 각 모듈 동시 요청 → 도착하는 대로 채움(느린 모듈이 안 막음).
+    // 막대 스케일/모듈평균은 도착한 모듈까지로 계산되고, 남은 모듈이 오면 자연스럽게 갱신된다.
+    try {
+      this.d = await api.workloadShell();
+      this.d.modules.forEach((m) => { this.open[m.module] = true; });
+      this.d.modules.forEach((m) => {
+        api.workloadModule(m.module)
+          .then((r) => { this.mods[m.module] = r; this.scheduleMeasure(); })
+          .catch((e) => { this.modErr[m.module] = e.message; });
+      });
+    } catch (e) { this.err = e.message; }
     this._onResize = () => this.scheduleMeasure();
     window.addEventListener("resize", this._onResize);
   },
   unmounted() { if (this._onResize) window.removeEventListener("resize", this._onResize); },
   activated() { this.scheduleMeasure(); },   // keep-alive 재활성 시 평균선 재측정
   computed: {
+    // 지금까지 도착한 모듈만 (스케일·평균·합계는 이걸 기준으로 계산)
+    loaded() { return (this.d ? this.d.modules : []).map((m) => this.mods[m.module]).filter(Boolean); },
     totals() {
       const t = { p: 0, op: 0, ip: 0, dn: 0 };
-      if (this.d) this.d.modules.forEach((m) => { t.p += m.peopleCount; t.op += (m.openTotal || 0); t.ip += m.inProgressTotal; t.dn += m.done7dTotal; });
+      this.loaded.forEach((m) => { t.p += m.peopleCount; t.op += (m.openTotal || 0); t.ip += m.inProgressTotal; t.dn += m.done7dTotal; });
       return t;
     },
     // 완료 실적 계산식은 '완료' 막대에만 적용(진행중은 timespent 가 없어 항상 티켓 수).
@@ -33,7 +44,7 @@ export default {
     // 막대 스케일 = 전체 인력 최대값. 진행중은 count 고정, 완료는 선택 메트릭.
     scale() {
       let ip = 1, dn = 1;
-      if (this.d) this.d.modules.forEach((m) => m.people.forEach((p) => {
+      this.loaded.forEach((m) => m.people.forEach((p) => {
         ip = Math.max(ip, this.assignedCount(p));   // 진행중 + 미착수
         dn = Math.max(dn, this.barVal(p.done7d, this.metric));
       }));
@@ -43,7 +54,7 @@ export default {
     avgByMod() {
       const out = {};
       const avg = (xs) => xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length * 10) / 10 : 0;
-      if (this.d) this.d.modules.forEach((m) => {
+      this.loaded.forEach((m) => {
         out[m.module] = { ip: avg(m.people.map((p) => this.assignedCount(p))),
                           dn: avg(m.people.map((p) => this.barVal(p.done7d, this.metric))) };
       });
@@ -119,15 +130,17 @@ export default {
     async toggleAct(id) {
       this.actOpen[id] = !this.actOpen[id];
       if (this.actOpen[id] && !this.tkd[id]) {
-        try {
-          const d = await api.workloadDetail(id);
-          // 진행중·착수전: 마감 임박/초과일수록 상위(D-day 오름차순, 마감없음은 맨 뒤)
-          d.inProgress.sort((a, b) => this.dueRank(a) - this.dueRank(b));
-          (d.open || (d.open = [])).sort((a, b) => this.dueRank(a) - this.dueRank(b));
-          // 완료: 최근 완료일수록 상위(resolved 내림차순)
-          d.done7d.sort((a, b) => (b.resolved || "").localeCompare(a.resolved || ""));
-          this.tkd[id] = d;
-        } catch (e) { this.tkd[id] = { open: [], inProgress: [], done7d: [], error: e.message }; }
+        // 세 리스트(할당됨/진행중/완료)를 **각각 병렬**로 받아 도착하는 대로 렌더한다.
+        const box = { open: null, inProgress: null, done7d: null, err: {} };
+        this.tkd[id] = box;
+        const byDue = (a, b) => this.dueRank(a) - this.dueRank(b);
+        const byResolved = (a, b) => (b.resolved || "").localeCompare(a.resolved || "");
+        const load = (bucket, sorter) => api.workloadBucket(id, bucket)
+          .then((rows) => { box[bucket] = (rows || []).slice().sort(sorter); })
+          .catch((e) => { box[bucket] = []; box.err[bucket] = e.message; });
+        load("inProgress", byDue);
+        load("open", byDue);
+        load("done7d", byResolved);
       }
     },
     dueRank(t) {
@@ -172,10 +185,14 @@ export default {
         <div class="mod-head" :class="{ open: open[m.module] }" @click="toggleMod(m.module)">
           <span class="chev">▸</span><span class="dot" :style="{ background: mcolor(i) }"></span>
           <b>{{ m.module }}</b><span class="pc">인력 {{ m.peopleCount }}</span>
-          <span class="agg">진행중 <b>{{ m.inProgressTotal }}</b> · 할당됨 <b>{{ m.openTotal || 0 }}</b> · 최근7일 완료 <b>{{ m.done7dTotal }}</b></span>
+          <span v-if="mods[m.module]" class="agg">진행중 <b>{{ mods[m.module].inProgressTotal }}</b> · 할당됨 <b>{{ mods[m.module].openTotal || 0 }}</b> · 최근7일 완료 <b>{{ mods[m.module].done7dTotal }}</b></span>
+          <span v-else-if="modErr[m.module]" class="agg">— 불러오기 실패</span>
+          <span v-else class="agg muted">불러오는 중…</span>
         </div>
         <div v-if="open[m.module]" class="mod-body" :ref="(el) => setBody(m.module, el)">
-          <div v-if="!m.people.length" class="empty">등록된 인력이 없습니다 (config/people.yaml)</div>
+          <div v-if="modErr[m.module]" class="err">모듈을 불러오지 못했습니다: {{ modErr[m.module] }}</div>
+          <div v-else-if="!mods[m.module]" class="loading">불러오는 중…</div>
+          <div v-else-if="!mods[m.module].people.length" class="empty">등록된 인력이 없습니다 (config/people.yaml)</div>
           <template v-else>
             <div class="whead">
               <div class="hl">인력</div>
@@ -188,7 +205,7 @@ export default {
               <div class="mavg-num" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ avgByMod[m.module].ip }}건</div>
               <div class="mavg-num" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ avgByMod[m.module].dn }}{{ doneUnit }}</div>
             </template>
-            <template v-for="p in m.people" :key="p.id">
+            <template v-for="p in mods[m.module].people" :key="p.id">
               <div class="prow">
                 <span class="pname" :title="p.id"><Avatar :user="p.id" :name="p.name" :size="20" /><b>{{ p.name }}</b><span v-if="p.kind" class="kbadge" :class="p.kind">{{ p.kind === 'dev' ? '개발' : '운영' }}</span></span>
                 <div v-if="p.error" class="wbars wl-fail" title="이 인력의 집계 조회에 실패했습니다(0 이 아님). 새로고침으로 재시도하세요.">
@@ -205,8 +222,9 @@ export default {
                 <div v-else-if="tkd[p.id].error" class="muted">불러오지 못했습니다: {{ tkd[p.id].error }}</div>
                 <div v-else class="tcols">
                   <div>
-                    <div class="sec-t">진행 중 · 할당됨 <b>{{ tkd[p.id].inProgress.length + (tkd[p.id].open || []).length }}</b></div>
-                    <template v-if="tkd[p.id].inProgress.length">
+                    <div class="sec-t">진행 중 · 할당됨 <b>{{ (tkd[p.id].inProgress || []).length + (tkd[p.id].open || []).length }}</b></div>
+                    <div v-if="tkd[p.id].inProgress === null" class="loading">진행 중 불러오는 중…</div>
+                    <template v-else-if="tkd[p.id].inProgress.length">
                       <div class="sub-lbl">진행 중 <b>{{ tkd[p.id].inProgress.length }}</b></div>
                       <div v-for="t in tkd[p.id].inProgress" :key="'ip-' + t.key" class="wtk tkt"
                            :data-key="t.key" role="button" tabindex="0" :title="t.key + ' · ' + t.summary">
@@ -219,7 +237,8 @@ export default {
                         </span>
                       </div>
                     </template>
-                    <template v-if="(tkd[p.id].open || []).length">
+                    <div v-if="tkd[p.id].open === null" class="loading">할당됨 불러오는 중…</div>
+                    <template v-else-if="tkd[p.id].open.length">
                       <div class="sub-lbl todo">할당됨 (미착수) <b>{{ (tkd[p.id].open || []).length }}</b></div>
                       <div v-for="t in (tkd[p.id].open || [])" :key="'op-' + t.key" class="wtk todo tkt"
                            :data-key="t.key" role="button" tabindex="0" :title="t.key + ' · ' + t.summary">
@@ -232,11 +251,12 @@ export default {
                         </span>
                       </div>
                     </template>
-                    <div v-if="!tkd[p.id].inProgress.length && !(tkd[p.id].open || []).length" class="muted">진행 중·할당됨 티켓 없음</div>
+                    <div v-if="tkd[p.id].inProgress && tkd[p.id].open && !tkd[p.id].inProgress.length && !tkd[p.id].open.length" class="muted">진행 중·할당됨 티켓 없음</div>
                   </div>
                   <div>
-                    <div class="sec-t">최근 7일 완료 <b>{{ tkd[p.id].done7d.length }}</b></div>
-                    <div v-for="t in tkd[p.id].done7d" :key="t.key" class="wtk done tkt"
+                    <div class="sec-t">최근 7일 완료 <b>{{ (tkd[p.id].done7d || []).length }}</b></div>
+                    <div v-if="tkd[p.id].done7d === null" class="loading">불러오는 중…</div>
+                    <div v-for="t in (tkd[p.id].done7d || [])" :key="t.key" class="wtk done tkt"
                          :data-key="t.key" role="button" tabindex="0" :title="t.key + ' · ' + t.summary">
                       <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
                       <span class="sm">{{ t.summary }}</span>
@@ -245,7 +265,7 @@ export default {
                         <span class="dbadge fin"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5 11-11"/></svg>Finished {{ fdt(t.resolved) }}</span>
                       </span>
                     </div>
-                    <div v-if="!tkd[p.id].done7d.length" class="muted">최근 7일 완료 티켓 없음</div>
+                    <div v-if="tkd[p.id].done7d && !tkd[p.id].done7d.length" class="muted">최근 7일 완료 티켓 없음</div>
                   </div>
                 </div>
               </div>

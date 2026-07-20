@@ -157,3 +157,19 @@ def test_timeline_child_changelog_is_cached_per_ticket():
     assert c.cache.get(f"changelog:{c.env}:{child}") is None
     c.ticket_timeline(parent)
     assert c.cache.get(f"changelog:{c.env}:{child}") is not None
+
+
+# ── VIT 모듈 분할 (병렬 로딩용) ──
+def test_vit_module_matches_full_build():
+    """모듈별 조립이 전체 조립의 해당 모듈과 동일해야 한다."""
+    from app import vit
+    from app.settings import load_people, load_plan
+    c = _client()
+    plan, people = load_plan(), load_people()
+    full = vit.build_vit(c, plan, people)
+    shell = vit.build_vit_shell(c, plan, people)
+    assert [m["module"] for m in shell["modules"]] == [m["module"] for m in full["modules"]]
+    assert shell["summary"]["total"] == full["summary"]["total"]
+    for fm in full["modules"]:
+        part = vit.build_vit_module(c, plan, people, fm["module"])
+        assert [i["key"] for i in part["issues"]] == [i["key"] for i in fm["issues"]], fm["module"]

@@ -332,16 +332,30 @@ class JiraClient:
         data, _ = self.cache.get_or_set(f"vit_build:{self.env}", self.s.cache_ttl_seconds, self._fetch_vit)
         return data
 
+    def vit_bases(self):
+        """PMO_VIT 루트의 **경량 base 목록**(트리 없음) — 모듈 분류·중복제거용.
+        모듈별 병렬 조회의 진입점: 이것만 있으면 각 모듈이 자기 루트만 조립할 수 있다."""
+        def do():
+            roots = self._search(
+                f'project={self.s.project_key} AND labels="PMO_VIT" ORDER BY updated DESC',
+                cache_key=f"vit_list:{self.env}")
+            return [self._vit_base(it) for it in roots]
+        return self.cache.get_or_set(f"vit_bases:{self.env}", self.s.cache_ttl_seconds, do)[0]
+
+    def vit_tree_of(self, key, itype):
+        """루트 하나의 자손 트리 — 루트 단위 캐시(모듈별 조회끼리 공유·재사용)."""
+        return self.cache.get_or_set(f"vit_tree:{self.env}:{key}", self.s.cache_ttl_seconds,
+                                     lambda: self._vit_tree(key, itype))[0]
+
+    def vit_with_trees(self, bases):
+        """주어진 base 들에 트리를 붙인다(루트 단위 병렬). 모듈별 엔드포인트가 사용."""
+        def build(b):
+            return dict(b, tree=self.vit_tree_of(b["key"], b["type"]))
+        return self._pmap(bases, build)
+
     def _fetch_vit(self):
-        # PMO_VIT 목록 — 검색 결과를 티켓 단위 캐시로 write-through. 루트 단위 병렬 조립.
-        roots = self._search(
-            f'project={self.s.project_key} AND labels="PMO_VIT" ORDER BY updated DESC',
-            cache_key=f"vit_list:{self.env}")
-        def build(it):
-            base = self._vit_base(it)
-            base["tree"] = self._vit_tree(base["key"], base["type"])   # 자손(카운트용). 코멘트는 [자세히]에서 lazy
-            return base
-        return self._pmap(roots, build)
+        # 전체(비분할) 경로 — 모듈별 경로와 동일한 캐시(vit_bases/vit_tree)를 재사용한다.
+        return self.vit_with_trees(self.vit_bases())
 
     def _vit_base(self, issue):
         f = issue.get("fields", {}) or {}
@@ -819,11 +833,39 @@ class JiraClient:
             "resolved": f.get("resolutiondate") or None,
         }
 
+    # 버킷별 JQL — 세 리스트를 각각 따로 부를 수 있게 분리(프론트에서 병렬 로딩·개별 렌더).
+    WL_BUCKETS = {
+        "open":       'assignee = "{u}" AND statusCategory = "To Do" AND updated >= -14d',
+        "inProgress": 'assignee = "{u}" AND statusCategory = "In Progress"',
+        "done7d":     'assignee = "{u}" AND statusCategory = Done AND resolved >= -7d',
+    }
+
+    def workload_bucket(self, user, bucket):
+        """인력 상세의 **한 버킷만** (open|inProgress|done7d). 버킷 단위 캐시."""
+        jql = self.WL_BUCKETS.get(bucket)
+        if not jql:
+            return None
+        def do():
+            raws = self._search(jql.format(u=user), max_results=200)
+            return [self._wl_ticket(it) for it in raws if self._wl_keep(it)]
+        return self.cache.get_or_set(f"workload_bucket:{self.env}:{user}:{bucket}",
+                                     self.s.cache_ttl_seconds, do)[0]
+
+    def _wl_keep(self, it):
+        """카운트와 동일 필터: Task성/VoC성만 (Epic·Story·Bug 제외)."""
+        f = it.get("fields", {}) or {}
+        comps = [c.get("name") for c in (f.get("components") or [])]
+        comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
+        itt = f.get("issuetype") or {}
+        return _wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
+
     def workload_tickets(self, user):
-        """인력 상세: 진행중 / 최근7일 완료 **티켓 리스트** (카운트 화면의 [+] 확장용)."""
-        key = f"workload_tickets:{self.env}:{user}"
-        return self.cache.get_or_set(key, self.s.cache_ttl_seconds,
-                                     lambda: self._fetch_workload_tickets(user))[0]
+        """인력 상세: 진행중 / 최근7일 완료 **티켓 리스트** (카운트 화면의 [+] 확장용).
+        버킷 캐시를 재사용하므로 개별 호출과 결과가 동일하다."""
+        return {"user": user,
+                "open": self.workload_bucket(user, "open"),
+                "inProgress": self.workload_bucket(user, "inProgress"),
+                "done7d": self.workload_bucket(user, "done7d")}
 
     def _fetch_workload_tickets(self, user):
         def keep(it):   # 카운트와 동일 필터: Task성/VoC성만 (Epic·Story·Bug 제외)

@@ -13,8 +13,19 @@ const KLAB = { created: "생성됨", done: "완료됨", resolved: "해결됨" };
 export default {
   name: "VitView",
   components: { TypeBadge, StatusPill },
-  data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false }; },
-  async mounted() { try { this.d = await api.vit(); } catch (e) { this.err = e.message; } },
+  data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false, mods: {}, modErr: {} }; },
+  // 모듈별 병렬 로딩: 골격(shell)을 먼저 그리고 각 모듈을 동시에 요청해 **도착하는 대로** 채운다.
+  // (전부 모일 때까지 기다리지 않음 — 느린 모듈이 나머지를 막지 않는다)
+  async mounted() {
+    try {
+      this.d = await api.vitShell();
+      this.d.modules.forEach((m) => {
+        api.vitModule(m.module)
+          .then((r) => { this.mods[m.module] = r.issues || []; })
+          .catch((e) => { this.modErr[m.module] = e.message; this.mods[m.module] = []; });
+      });
+    } catch (e) { this.err = e.message; }
+  },
   methods: {
     kids(it) {   // 직계 하위 티켓 — '완료 작업 안 보기' 시 done 제외 + 상태 정렬(Open→진행중→해결)
       const ch = it.children || [];
@@ -103,17 +114,19 @@ export default {
       <div class="chips">
         <div class="chip" style="background:var(--accent);color:#fff;border-color:transparent"><b>{{ d.summary.total }}</b> 현안 (PMO_VIT)</div>
         <div v-for="(m, i) in d.modules" :key="m.module" class="chip">
-          <span class="sw" :style="{ background: mcolor(i) }"></span> {{ m.module }} <b>{{ m.issues.length }}</b>
+          <span class="sw" :style="{ background: mcolor(i) }"></span> {{ m.module }} <b>{{ m.count }}</b>
         </div>
       </div>
       <div class="note" v-if="d.summary.skippedDup">상위가 이미 PMO_VIT 인 자손 현안 {{ d.summary.skippedDup }}건은 중복으로 숨김</div>
 
       <div v-for="(m, i) in d.modules" :key="m.module" class="vgroup">
-        <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.issues.length }} 현안</span></div>
-        <div v-if="!m.issues.length" class="empty">· 현안 없음</div>
+        <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.count }} 현안</span></div>
+        <div v-if="modErr[m.module]" class="err">· 불러오지 못했습니다: {{ modErr[m.module] }}</div>
+        <div v-else-if="!mods[m.module]" class="loading">· 불러오는 중…</div>
+        <div v-else-if="!mods[m.module].length" class="empty">· 현안 없음</div>
         <div v-else class="tbl">
           <div class="vhead"><div>티켓</div><div>하위 티켓 수</div><div class="ch-head"><span>티켓</span><span>상태</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
-          <template v-for="it in m.issues" :key="it.key">
+          <template v-for="it in mods[m.module]" :key="it.key">
             <div class="vrow">
               <div class="c-info">
                 <div class="l1">

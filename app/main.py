@@ -172,6 +172,20 @@ def api_ticket_siblings(key: str):
     return JSONResponse(_client.ticket_siblings(key))
 
 
+@app.get("/api/vit/shell")
+def api_vit_shell():
+    """현안 골격 — 모듈 목록·모듈별 건수(트리 조립 없음). 프론트가 뼈대를 먼저 그린다."""
+    plan = load_plan()
+    return JSONResponse(vit.build_vit_shell(_client, plan, load_people(), jira_base=_settings.jira_base))
+
+
+@app.get("/api/vit/module/{module}")
+def api_vit_module(module: str):
+    """현안 — 모듈 하나만. 프론트가 모듈별로 병렬 호출해 도착하는 대로 렌더한다."""
+    plan = load_plan()
+    return JSONResponse(vit.build_vit_module(_client, plan, load_people(), module))
+
+
 @app.get("/api/vit/{key}")
 def api_vit_detail(key: str):
     """단일 현안 상세 — 자손 트리 + 코멘트 (프론트 [자세히] 지연 로딩)."""
@@ -189,6 +203,30 @@ def api_vit():
 def api_workload():
     plan = load_plan()
     return JSONResponse(workload.build_workload(_client, plan, load_people(), jira_base=_settings.jira_base))
+
+
+@app.get("/api/workload/shell")
+def api_workload_shell():
+    """워크로드 골격 — 모듈·인원 수만(Jira 조회 없음)."""
+    plan = load_plan()
+    return JSONResponse(workload.build_workload_shell(_client, plan, load_people(),
+                                                      jira_base=_settings.jira_base))
+
+
+@app.get("/api/workload/module/{module}")
+def api_workload_module(module: str):
+    """워크로드 — 모듈 하나만(모듈별 병렬 호출용)."""
+    plan = load_plan()
+    return JSONResponse(workload.build_workload_module(_client, plan, load_people(), module))
+
+
+@app.get("/api/workload/{user}/{bucket}")
+def api_workload_bucket(user: str, bucket: str):
+    """인력 상세의 한 버킷(open|inProgress|done7d) — 세 리스트를 각각 병렬 로딩."""
+    rows = _client.workload_bucket(user, bucket)
+    if rows is None:
+        return JSONResponse({"error": "unknown bucket", "bucket": bucket}, status_code=404)
+    return JSONResponse(rows)
 
 
 @app.get("/api/workload/{user}")

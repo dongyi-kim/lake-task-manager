@@ -46,3 +46,26 @@ def build_workload(client, plan, people, jira_base="", generated_at=None):
         "scaleDone7d": max(all_done) if all_done else 1,
         "modules": modules,
     }
+
+def build_workload_shell(client, plan, people, jira_base="", generated_at=None):
+    """골격 — 모듈 목록·인원 수만(Jira 조회 없음, config 기반). 프론트가 뼈대를 먼저 그린다."""
+    return {
+        "generatedAt": generated_at or datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "projectKey": plan.get("project_key", "DL"),
+        "jiraBase": jira_base,
+        "modules": [{"module": m, "peopleCount": len(people.get(m, []))} for m in plan["modules"]],
+    }
+
+
+def build_workload_module(client, plan, people, module):
+    """모듈 하나만 — 인력별 번들은 개별 캐시(workload:{env}:{pid})라 모듈끼리 겹쳐도 낭비 없음."""
+    sub = {module: people.get(module, [])}
+    rows_raw = client.workload({"modules": [module]}, sub).get(module, [])
+    rows = [dict(p, name=real_name(p.get("displayName") or p["id"]), kind=staff_kind(p["id"]))
+            for p in rows_raw]
+    op = [sum(p.get("open", {}).get("count", {}).values()) for p in rows]
+    ip = [sum(p["inProgress"]["count"].values()) for p in rows]
+    dn = [sum(p["done7d"]["count"].values()) for p in rows]
+    return {"module": module, "people": rows, "peopleCount": len(rows),
+            "openTotal": sum(op), "inProgressTotal": sum(ip), "done7dTotal": sum(dn),
+            "avgInProgress": _avg(ip), "avgDone7d": _avg(dn)}
