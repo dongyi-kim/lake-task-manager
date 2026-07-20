@@ -4,6 +4,10 @@
 Jira 를 source of truth 로 두고, 그 위에 **Module → WBS Task → Epic 진척률 롤업**을 얇게 얹는다.
 **FastAPI 백엔드 + Vue3 무빌드 SPA**, 소스 실행 배포(배포 repo `run.bat`).
 
+> **타깃 사내 인스턴스 버전(고정):** Jira DC **8.20.8** + Confluence DC **9.2.4**.
+> 통합 검색(우상단)이 Confluence CQL·9.x URL 스펙에 맞춰 파싱하며, dev mock(jira820)도 같은 버전을 구성한다
+> (`app/fakebridge.py` 의 `confluence_version="9.2.4"`).
+
 > 최종 사용자용 사용 안내는 배포 repo 루트 README(사용자 가이드)에 있다.
 > 설계·도메인 규칙 상세는 [`CLAUDE.md`](CLAUDE.md), 진행/백로그는 [`PROGRESS.md`](PROGRESS.md).
 > 명령은 모두 **repo 루트** 기준. Windows 는 **PowerShell**, 그 외는 bash 를 병기한다.
