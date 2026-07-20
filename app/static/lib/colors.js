@@ -13,9 +13,10 @@ export const TYPE_LABEL = {
   Epic: "Epic", Story: "Story", Task: "Task", Bug: "Bug",
   "Sub-Task": "Sub", Improvement: "Impr", "New Feature": "Feat",
 };
-// 이슈타입 → solid 배지 배경색 (WBS Gantt 스타일)
+// 이슈타입 → solid 배지 배경색. 실제 색값은 tokens.css(--ty-*) — 테마(다크/라이트) 따라감.
+// 색 문법: Epic 보라 / Story 앰버 / Task 파랑 / Sub-Task 청록 / Bug 레드 / Feature·Improvement 그린
 export const TYPE_BG = {
-  Epic: "#7a5af5", Story: "#2f8fe0", Task: "#3568c4", Bug: "#e05353",
-  "Sub-Task": "#8a8a86", Improvement: "#1aa06a", "New Feature": "#1aa06a",
+  Epic: "var(--ty-epic)", Story: "var(--ty-story)", Task: "var(--ty-task)", Bug: "var(--ty-bug)",
+  "Sub-Task": "var(--ty-sub)", Improvement: "var(--ty-feat)", "New Feature": "var(--ty-feat)",
 };
 export function typeLabel(t) { return TYPE_LABEL[t] || t; }

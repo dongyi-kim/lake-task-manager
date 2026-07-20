@@ -65,11 +65,11 @@
 
 /* 이슈타입 배지(solid) */
 .tb { font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 4px; color: #fff; flex: 0 0 auto; letter-spacing: .2px; }
-.tb.bEpic { background: #7a5af5; } .tb.bStory { background: #2f8fe0; } .tb.bTask { background: #3568c4; }
-.tb.bBug { background: #e05353; } .tb.bSub { background: #8a8a86; } .tb.bImp { background: #1aa06a; }
+.tb.bEpic { background: var(--ty-epic); } .tb.bStory { background: var(--ty-story); } .tb.bTask { background: var(--ty-task); }
+.tb.bBug { background: var(--ty-bug); } .tb.bSub { background: var(--ty-sub); } .tb.bImp { background: var(--ty-feat); }
 /* 상태 pill(간트 Task/Sub) */
 .spill { font-size: 9.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid; white-space: nowrap; flex: 0 0 auto; font-weight: 600; }
-.spill.sTodo { color: #8a8a86; border-color: #8a8a86; }
+.spill.sTodo { color: var(--st-todo); border-color: var(--st-todo); }
 .spill.sProg { color: var(--c3); border-color: var(--c3); }
 .spill.sDone { color: var(--done); border-color: var(--done); }
 
@@ -96,7 +96,7 @@
 .gbar.wbs-bar { height: 30px; } .gbar.wbs-bar .bn { font-size: 12.5px; }
 .gbar.epic-bar { height: 22px; border-style: dashed; } .gbar.epic-bar .bn { font-size: 11px; } .gbar.epic-bar .gfill { opacity: .82; }
 .gbar.task-bar { height: 17px; border-style: solid; } .gbar.task-bar .bn { font-size: 10px; }
-.gbar.task-bar.st-todo { background: #ededea; border-color: #cdcdc7; }
+.gbar.task-bar.st-todo { background: var(--panel-2); border-color: var(--border-hi); }
 .gbar.task-bar.st-prog { background: #f6e7bd; border-color: #e3c778; }
 .gbar.task-bar.st-done { background: #d0e9d6; border-color: #8fcf9e; }
 .tpill { position: absolute; top: 50%; transform: translateY(-50%); z-index: 1; }

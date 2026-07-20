@@ -52,8 +52,7 @@
 /* ── description 렌더 ── */
 .tkt-desc { font-size: 13.5px; line-height: 1.65; word-break: break-word; }
 /* 설명 영역을 카드(흰 배경)로 분리해 다른 UI와 구분 */
-.tkt-desc-box { background: #ffffff; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
-:root[data-theme="dark"] .tkt-desc-box { background: #202027; }
+.tkt-desc-box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
 .tkt-desc > :last-child { margin-bottom: 0; }        /* 카드/코멘트 하단 여백 낭비 방지 */
 .tkt-desc p { margin: 0 0 6px; }                     /* 문단 하단 간격 컴팩트 */
 /* 의도적 빈 문단 — 존재는 유지하되 작은 간격만(실 Jira <p>&nbsp;</p> 가 3줄 먹던 문제 해소) */
@@ -129,7 +128,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-desc .callout { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px;
   padding: 9px 13px; margin: 0 0 12px; background: var(--panel-2); }
 .tkt-desc .callout > :last-child { margin-bottom: 0; }
-.tkt-desc .callout-note { border-left-color: #8a8a86; }
+.tkt-desc .callout-note { border-left-color: var(--muted-2); }
 .tkt-desc .callout-info { border-left-color: var(--st-prog); }
 .tkt-desc .callout-tip, .tkt-desc .callout-success { border-left-color: var(--done); }
 .tkt-desc .callout-warning { border-left-color: var(--warn); }

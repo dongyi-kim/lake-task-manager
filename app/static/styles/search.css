@@ -49,9 +49,9 @@
   text-transform: uppercase; letter-spacing: .3px; padding: 8px 10px 4px; }
 .sr-sec-h b { color: var(--text); font-variant-numeric: tabular-nums; }
 .sr-src { font-weight: 800; letter-spacing: 0; text-transform: none; padding: 1px 7px; border-radius: 5px; font-size: 10.5px; }
-.sr-src.jira { color: #1d6fe0; background: rgba(29, 111, 224, .12); }
-.sr-src.conf { color: #147a52; background: rgba(20, 122, 82, .12); }
-.sr-src.bb { color: #7a5bd0; background: rgba(122, 91, 208, .13); }
+.sr-src.jira { color: var(--accent); background: var(--dev-bg); }
+.sr-src.conf { color: var(--good); background: rgba(62, 207, 176, .13); }
+.sr-src.bb { color: var(--epic); background: rgba(167, 139, 250, .14); }
 .sr-mock { text-transform: none; letter-spacing: 0; color: var(--muted); font-size: 10.5px; }
 .sr-serr { text-transform: none; letter-spacing: 0; color: var(--today); font-size: 11px; }
 .sr-none { color: var(--muted); font-size: 12px; padding: 3px 12px 6px; }

@@ -30,12 +30,12 @@
 /* LoginOverlay */
 .login-ov { position: fixed; inset: 0; z-index: 99999; display: flex; align-items: center; justify-content: center;
             background: rgba(17,20,28,.72); backdrop-filter: blur(3px); }
-.login-card { background: #fff; color: #1b2330; border-radius: 14px; padding: 30px 34px; max-width: 420px;
+.login-card { background: var(--panel); color: var(--text); border-radius: 14px; padding: 30px 34px; max-width: 420px;
               box-shadow: 0 18px 60px rgba(0,0,0,.4); text-align: center; }
 .login-ic { font-size: 34px; margin-bottom: 6px; }
 .login-h { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
-.login-msg { font-size: 13.5px; line-height: 1.6; color: #4a5568; margin-bottom: 20px; }
-.login-btn { background: #2f6df5; color: #fff; border: 0; border-radius: 9px; padding: 11px 26px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.login-msg { font-size: 13.5px; line-height: 1.6; color: var(--muted); margin-bottom: 20px; }
+.login-btn { background: var(--accent); color: #fff; border: 0; border-radius: 9px; padding: 11px 26px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .login-btn:disabled { opacity: .6; cursor: default; }
 
 /* FormulaCallout */

@@ -1,48 +1,73 @@
 /* tokens.css — 디자인 토큰 단일 소스 (색·간격). 모든 화면/컴포넌트가 이 변수만 참조한다.
- * 색을 바꾸려면 여기 한 곳만 고친다. (모듈 컬러 c1~c7, 상태색, Task/VoC색, 테마 변수)
- * updated: 2026-07-08 */
-:root {
-  --bg:#f9f9f7; --panel:#fcfcfb; --panel-2:#f2f1ee; --border:#e1e0d9;
-  --text:#0b0b0b; --muted:#52514e; --accent:#6d4fc0; --done:#147a52;
-  --track:#e5e4de; --today:#d03b3b; --grid2:#d3d2ca; --grid:#e6e5df; --mock:#c98500;
-  --shadow:0 1px 3px rgba(11,11,11,.08), 0 1px 2px rgba(11,11,11,.04);
+ * 테마: 차가운 블루그레이 + 저채도 시맨틱 4색 (개발툴 톤). 다크/라이트 동시 지원.
+ *   엘리베이션 4단  : --bg → --panel → --panel-2 → --panel-3
+ *   보더 2단        : --border / --border-hi
+ *   텍스트 3단      : --text / --muted / --muted-2
+ *   시맨틱          : --accent(파랑) --good(청록) --warn(앰버) --epic(보라) --danger(레드)
+ * 색을 바꾸려면 여기 한 곳만 고친다.
+ * updated: 2026-07-20 */
 
-  /* 모듈 팔레트(파스텔) — 검정 글씨 가독성 위주. 라이트/다크 공통 */
-  --c1:#b49ae4; --c2:#74c08a; --c3:#e9c46a; --c4:#67c2ba; --c5:#93b8ec; --c6:#eda1a8; --c7:#d29bd6;
+/* ── 라이트(기본) — 쿨 뉴트럴. 흰 배경 대비 위해 액센트를 어둡게 잡는다 ── */
+:root {
+  --bg:#f6f7fa; --panel:#ffffff; --panel-2:#eef1f6; --panel-3:#e5e9f1;
+  --border:#dde2ec; --border-hi:#c3cad9;
+  --text:#14161c; --muted:#5a6070; --muted-2:#868d9e;
+  --accent:#3266d6; --good:#0f7d66; --warn:#a96c1f; --epic:#6d4dd1; --danger:#c4423f;
+  --done:#0f7d66; --track:#e4e8f0; --today:#c93b3b; --grid:#edf0f5; --grid2:#dce1eb; --mock:#a96c1f;
+  --shadow:0 1px 2px rgba(20,22,28,.06), 0 1px 3px rgba(20,22,28,.05);
+
+  /* 모듈 팔레트 — 검정 글씨 가독성 위주(파스텔). 라이트/다크 공통 */
+  --c1:#a78bfa; --c2:#7fd9c4; --c3:#edc07e; --c4:#93b4f2; --c5:#efa3bf; --c6:#7fcfe8; --c7:#bcd489;
 
   /* 상태색 (statusCategory) */
-  --st-todo:#8a8a86; --st-prog:#2f8fe0; --st-done:#147a52;
-  /* 워크로드 Task / Sub-Task / VoC — hue 가 확실히 갈리는 색맹 안전 3색(파랑·앰버·로즈).
-     검정 글씨 가독 위해 채도/명도 유지. 라이트/다크 공통. */
-  --wl-task:#5b9bd5; --wl-subtask:#e6a23c; --wl-voc:#e072a4;
-  /* 인력 구분 뱃지 (개발=파랑 / 운영=주황) */
-  --dev-fg:#1d4ed8; --dev-bg:rgba(37,99,235,.13); --ops-fg:#b45309; --ops-bg:rgba(217,119,6,.15);
-  /* 마감 임박도 (D-day): 여유=노랑 / 임박·초과=빨강 */
-  --warn:#b45309; --warn-bg:rgba(217,119,6,.14); --danger:#c62828; --danger-bg:rgba(198,40,40,.12);
+  --st-todo:#8a90a0; --st-prog:#3266d6; --st-done:#0f7d66;
+  /* 워크로드 Task / Sub-Task / VoC — hue 가 확실히 갈리는 3색(파랑·앰버·로즈) */
+  --wl-task:#4c7fe0; --wl-subtask:#c98a33; --wl-voc:#c05581;
+  /* 이슈타입 뱃지(solid, 흰 글씨) — 라이트/다크 공통 중간톤 */
+  --ty-epic:#7c5ae0; --ty-story:#b0752b; --ty-task:#3b6bd4; --ty-bug:#c4483f;
+  --ty-sub:#12876f; --ty-feat:#2e8b5e;
+  /* 인력 구분 뱃지 (개발=파랑 / 운영=앰버) */
+  --dev-fg:#2b5fd0; --dev-bg:rgba(50,102,214,.12); --ops-fg:#a96c1f; --ops-bg:rgba(169,108,31,.14);
+  /* 마감 임박도 (D-day) */
+  --warn-bg:rgba(169,108,31,.13); --danger-bg:rgba(196,66,63,.12);
 }
+
+/* ── 다크 — 목업 원본 팔레트 ── */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg:#0d0d0d; --panel:#1a1a19; --panel-2:#232322; --border:#2c2c2a;
-    --text:#ffffff; --muted:#c3c2b7; --accent:#8f74e0; --done:#1aa06a;
-    --track:#2c2c2a; --today:#e66767; --grid2:#34342f; --grid:#232322; --mock:#e6b352;
-    --shadow:0 1px 3px rgba(0,0,0,.4);
-    --st-prog:#5aa6ee;
-    --dev-fg:#93c5fd; --dev-bg:rgba(59,130,246,.20); --ops-fg:#fbbf24; --ops-bg:rgba(245,158,11,.18);
-    --warn:#fbbf24; --warn-bg:rgba(245,158,11,.20); --danger:#f87171; --danger-bg:rgba(239,68,68,.22);
+    --bg:#0e0f13; --panel:#16181f; --panel-2:#1e212b; --panel-3:#262a36;
+    --border:#282c38; --border-hi:#3a4053;
+    --text:#e4e6ec; --muted:#8a8fa0; --muted-2:#5d6273;
+    --accent:#5b8def; --good:#3ecfb0; --warn:#e0a458; --epic:#a78bfa; --danger:#e8706b;
+    --done:#3ecfb0; --track:#282c38; --today:#ef6e6e; --grid:#1e212b; --grid2:#2e3342; --mock:#e0a458;
+    --shadow:0 1px 3px rgba(0,0,0,.5);
+    --st-todo:#6b7183; --st-prog:#5b8def; --st-done:#3ecfb0;
+    --wl-task:#5b8def; --wl-subtask:#e0a458; --wl-voc:#e081a6;
+    --dev-fg:#8fb4f5; --dev-bg:rgba(91,141,239,.18); --ops-fg:#e0a458; --ops-bg:rgba(224,164,88,.16);
+    --warn-bg:rgba(224,164,88,.16); --danger-bg:rgba(232,112,107,.18);
   }
 }
 :root[data-theme="dark"] {
-  --bg:#0d0d0d; --panel:#1a1a19; --panel-2:#232322; --border:#2c2c2a;
-  --text:#ffffff; --muted:#c3c2b7; --accent:#8f74e0; --done:#1aa06a;
-  --track:#2c2c2a; --today:#e66767; --grid2:#34342f; --grid:#232322; --mock:#e6b352; --shadow:0 1px 3px rgba(0,0,0,.4);
-  --st-prog:#5aa6ee;
-  --dev-fg:#93c5fd; --dev-bg:rgba(59,130,246,.20); --ops-fg:#fbbf24; --ops-bg:rgba(245,158,11,.18);
-  --warn:#fbbf24; --warn-bg:rgba(245,158,11,.20); --danger:#f87171; --danger-bg:rgba(239,68,68,.22);
+  --bg:#0e0f13; --panel:#16181f; --panel-2:#1e212b; --panel-3:#262a36;
+  --border:#282c38; --border-hi:#3a4053;
+  --text:#e4e6ec; --muted:#8a8fa0; --muted-2:#5d6273;
+  --accent:#5b8def; --good:#3ecfb0; --warn:#e0a458; --epic:#a78bfa; --danger:#e8706b;
+  --done:#3ecfb0; --track:#282c38; --today:#ef6e6e; --grid:#1e212b; --grid2:#2e3342; --mock:#e0a458;
+  --shadow:0 1px 3px rgba(0,0,0,.5);
+  --st-todo:#6b7183; --st-prog:#5b8def; --st-done:#3ecfb0;
+  --wl-task:#5b8def; --wl-subtask:#e0a458; --wl-voc:#e081a6;
+  --dev-fg:#8fb4f5; --dev-bg:rgba(91,141,239,.18); --ops-fg:#e0a458; --ops-bg:rgba(224,164,88,.16);
+  --warn-bg:rgba(224,164,88,.16); --danger-bg:rgba(232,112,107,.18);
 }
 :root[data-theme="light"] {
-  --bg:#f9f9f7; --panel:#fcfcfb; --panel-2:#f2f1ee; --border:#e1e0d9;
-  --text:#0b0b0b; --muted:#52514e; --accent:#6d4fc0; --done:#147a52;
-  --track:#e5e4de; --today:#d03b3b; --grid2:#d3d2ca; --st-prog:#2f8fe0;
-  --dev-fg:#1d4ed8; --dev-bg:rgba(37,99,235,.13); --ops-fg:#b45309; --ops-bg:rgba(217,119,6,.15);
-  --warn:#b45309; --warn-bg:rgba(217,119,6,.14); --danger:#c62828; --danger-bg:rgba(198,40,40,.12);
+  --bg:#f6f7fa; --panel:#ffffff; --panel-2:#eef1f6; --panel-3:#e5e9f1;
+  --border:#dde2ec; --border-hi:#c3cad9;
+  --text:#14161c; --muted:#5a6070; --muted-2:#868d9e;
+  --accent:#3266d6; --good:#0f7d66; --warn:#a96c1f; --epic:#6d4dd1; --danger:#c4423f;
+  --done:#0f7d66; --track:#e4e8f0; --today:#c93b3b; --grid:#edf0f5; --grid2:#dce1eb; --mock:#a96c1f;
+  --shadow:0 1px 2px rgba(20,22,28,.06), 0 1px 3px rgba(20,22,28,.05);
+  --st-todo:#8a90a0; --st-prog:#3266d6; --st-done:#0f7d66;
+  --wl-task:#4c7fe0; --wl-subtask:#c98a33; --wl-voc:#c05581;
+  --dev-fg:#2b5fd0; --dev-bg:rgba(50,102,214,.12); --ops-fg:#a96c1f; --ops-bg:rgba(169,108,31,.14);
+  --warn-bg:rgba(169,108,31,.13); --danger-bg:rgba(196,66,63,.12);
 }
