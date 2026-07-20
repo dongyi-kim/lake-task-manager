@@ -313,12 +313,12 @@ export default {
           <!-- Sub-Task 는 설명을 대충 쓰는 경우가 많아 상위(부모) 설명을 여기서 바로 볼 수 있게.
                자기 설명이 비어 있으면 자동으로 펼친다. -->
           <div v-if="parentOf" class="pdesc">
-            <button class="pdesc-t" :class="{ open: pdescOpen }" @click="toggleParentDesc">
+            <div class="tkt-sec-t">상위 티켓 설명</div>
+            <button class="pdesc-t" :class="{ open: pdescOpen }" @click="toggleParentDesc"
+                    :title="parentOf.key + ' · ' + parentOf.summary">
               <span class="chev">&#9656;</span>
-              <span>상위 티켓 설명</span>
+              <span>{{ pdescOpen ? '접기' : '상위 티켓 설명 펼쳐 보기' }}</span>
               <span class="pdesc-k">{{ parentOf.key }}</span>
-              <span class="pdesc-s">{{ parentOf.summary }}</span>
-              <span v-if="ownDescEmpty" class="pdesc-hint">이 Sub-Task 에는 설명이 없습니다</span>
             </button>
             <div v-if="pdescOpen">
               <div v-if="pdescErr" class="muted">상위 설명을 불러오지 못했습니다: {{ pdescErr }}</div>
