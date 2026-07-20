@@ -9,8 +9,8 @@
 
 /* 이슈타입 배지 */
 .tbadge { --tc: var(--ty-task);   /* fallback — 인라인 --tc 미지정 시에도 칩이 안 깨지게 */
-          font-size: 9.5px; font-weight: 700; padding: 1.5px 5px; border-radius: 4px; letter-spacing: .4px;
-          flex: 0 0 auto; white-space: nowrap; }
+          font-size: 10px; font-weight: 700; line-height: 16px; padding: 0 7px; border-radius: 5px;
+          letter-spacing: .3px; flex: 0 0 auto; white-space: nowrap; }
 .tbadge.v-plain { color: var(--muted); border: 1px solid var(--border); }
 /* 알파 틴트 칩 — 배경 14% / 보더 34% / 글자 원색. --tc 는 TypeBadge 가 인라인으로 준다 */
 .tbadge.v-solid { color: var(--tc); background: color-mix(in srgb, var(--tc) 14%, transparent);
