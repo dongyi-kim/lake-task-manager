@@ -565,36 +565,72 @@ class JiraClient:
     TIMELINE_FIELDS = {"status", "assignee", "resolution", "priority",
                        "duedate", "epic link", "parent", "sprint"}
 
-    def ticket_timeline(self, key, limit=40):
-        """티켓 이력 — [{kind,date,author,authorId,field,from,to}] 최신순."""
-        def build():
-            ev = []
+    CHILD_SCAN_LIMIT = 20        # 자손 상태변경 스캔 상한(자식 1명당 REST 1회 — cold 비용 방어)
+
+    def _changelog(self, key):
+        """티켓 원본 이력 {created, reporter, histories} — 티켓단위 캐시.
+        본인 타임라인과 '부모의 자손 스캔'이 같은 캐시를 공유한다."""
+        def do():
             try:
                 raw = self.provider.get_json(
                     f"/rest/api/2/issue/{key}",
                     params={"expand": "changelog", "fields": "created,reporter"})
             except Exception:
-                raw = None
-            if raw:
-                f = raw.get("fields") or {}
-                rep = f.get("reporter") or {}
-                if f.get("created"):
-                    ev.append({"kind": "created", "date": f["created"],
-                               "author": real_name(rep.get("displayName") or rep.get("name")),
-                               "authorId": rep.get("name"), "field": None, "from": None, "to": None})
-                for h in ((raw.get("changelog") or {}).get("histories") or []):
-                    who = h.get("author") or {}
-                    for item in (h.get("items") or []):
-                        fld = (item.get("field") or "").strip()
-                        if fld.lower() not in self.TIMELINE_FIELDS:
-                            continue                     # 잡음 제외
-                        ev.append({"kind": fld.lower().replace(" ", "-"), "date": h.get("created"),
-                                   "author": real_name(who.get("displayName") or who.get("name")),
-                                   "authorId": who.get("name"), "field": fld,
-                                   "from": item.get("fromString"), "to": item.get("toString")})
+                return {}
+            f = raw.get("fields") or {}
+            return {"created": f.get("created"), "reporter": f.get("reporter") or {},
+                    "histories": (raw.get("changelog") or {}).get("histories") or []}
+        return self.cache.get_or_set(f"changelog:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+
+    def _child_keys(self, key, limit=None):
+        """직계 자식 키 — Epic 은 Epic Link 자식, 그 외는 subtasks. (둘 다 기존 캐시 재사용)"""
+        limit = self.CHILD_SCAN_LIMIT if limit is None else limit
+        try:
+            f = self.get_issue(key).get("fields") or {}
+        except Exception:
+            return []
+        if (f.get("issuetype") or {}).get("name") == "Epic":
+            kids = self._search(f'"Epic Link" = {key}', cache_key=f"epic_children:{self.env}:{key}")
+            return [k.get("key") for k in kids if k.get("key")][:limit]
+        return [s.get("key") for s in (f.get("subtasks") or []) if s.get("key")][:limit]
+
+    def ticket_timeline(self, key, limit=40):
+        """티켓 이력 — [{kind,date,author,authorId,field,from,to,srcKey}] 최신순.
+        본인 이벤트(생성/중요 필드 변경/댓글) + **직계 자손의 상태 변경**(srcKey 로 출처 표시)."""
+        def ev_of(h, allow, src=None):
+            who = h.get("author") or {}
+            out = []
+            for item in (h.get("items") or []):
+                fld = (item.get("field") or "").strip()
+                if fld.lower() not in allow:
+                    continue                             # 잡음(description 등) 제외
+                out.append({"kind": ("child-" if src else "") + fld.lower().replace(" ", "-"),
+                            "date": h.get("created"),
+                            "author": real_name(who.get("displayName") or who.get("name")),
+                            "authorId": who.get("name"), "field": fld,
+                            "from": item.get("fromString"), "to": item.get("toString"),
+                            "srcKey": src})
+            return out
+
+        def build():
+            ev = []
+            own = self._changelog(key)
+            rep = own.get("reporter") or {}
+            if own.get("created"):
+                ev.append({"kind": "created", "date": own["created"],
+                           "author": real_name(rep.get("displayName") or rep.get("name")),
+                           "authorId": rep.get("name"), "field": None,
+                           "from": None, "to": None, "srcKey": None})
+            for h in own.get("histories") or []:
+                ev.extend(ev_of(h, self.TIMELINE_FIELDS))
             for c in self._issue_comments(key, limit=10):   # 코멘트는 기존 캐시 재사용
                 ev.append({"kind": "comment", "date": c.get("date"), "author": c.get("author"),
-                           "authorId": c.get("authorId"), "field": None, "from": None, "to": None})
+                           "authorId": c.get("authorId"), "field": None,
+                           "from": None, "to": None, "srcKey": None})
+            # 자손은 '상태 변경'만 (요청 범위). 자식별 changelog 는 캐시되어 재방문 시 무료.
+            for ck in self._child_keys(key):
+                for h in (self._changelog(ck).get("histories") or []):
+                    ev.extend(ev_of(h, {"status"}, src=ck))
             ev.sort(key=lambda e: e.get("date") or "", reverse=True)   # 최신순
             return ev[:limit]
         return self.cache.get_or_set(f"timeline:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]

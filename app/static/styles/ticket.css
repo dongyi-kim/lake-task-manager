@@ -93,6 +93,15 @@
 .tl-body { min-width: 0; flex: 1; padding-bottom: 9px; display: flex; flex-direction: column; }
 .tl-t { font-size: 11px; color: var(--text); line-height: 1.35; word-break: break-word; }
 .tl-m { font-size: 9.5px; color: var(--muted-2); margin-top: 1px; }
+/* 자손(하위 티켓)의 상태 변경 — 출처 키를 앞에 붙이고 살짝 눌러 본인 이벤트와 구분. 클릭 시 그 티켓으로 */
+.tl-row.child { cursor: pointer; }
+.tl-row.child:hover { text-decoration: none; }
+.tl-row.child:hover .tl-t { color: var(--accent); }
+.tl-row.child .tl-t { color: var(--muted); }
+.tl-dot.k-child-status { background: transparent; border: 1.5px solid var(--fill-prog); }
+.tl-src { font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; color: var(--accent);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0 4px; margin-right: 4px; white-space: nowrap; }
 /* 좁은 화면 — 스파인은 위로 접어 가로 배치 해제 */
 @media (max-width: 900px) {
   .tkt-cols { flex-direction: column; }

@@ -54,31 +54,44 @@ export default {
     comments() { this.$nextTick(this.augment); },     // 코멘트 렌더 후
   },
   methods: {
+    // 본문(Description)·코멘트·계보(조상/형제)·타임라인을 **동시에 출발**시키고 각자 도착하는 대로
+    // 개별 렌더한다(서로 막지 않음). 느린 타임라인이 본문을 기다리지 않게 하는 게 핵심.
+    // 다이얼로그는 계보/형제/타임라인 클릭으로 티켓을 갈아타므로, 늦게 온 이전 티켓 응답이
+    // 새 티켓 화면을 덮지 않도록 요청 토큰(_req)으로 가드한다.
     async load() {
+      const key = this.keyId;
+      const my = this._req = (this._req || 0) + 1;
+      const fresh = () => my === this._req && this.keyId === key;
       this.loading = true; this.err = ""; this.v = null; this.comments = null;
       this.ancestors = []; this.siblings = []; this.timeline = [];
+
+      api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; })
+        .catch(() => { if (fresh()) this.comments = []; });
+      api.ticketAncestors(key).then((a) => { if (fresh()) this.ancestors = a || []; }).catch(() => {});
+      api.ticketSiblings(key).then((s) => { if (fresh()) this.siblings = s || []; }).catch(() => {});
+      api.ticketTimeline(key).then((t) => { if (fresh()) this.timeline = t || []; }).catch(() => {});
+
       try {
-        this.v = await api.ticket(this.keyId);
-        // 코멘트·계보(조상/형제)는 병렬 lazy — 전부 티켓단위 캐시를 타므로 재방문은 즉시
-        api.ticketComments(this.keyId).then((c) => { this.comments = c; }).catch(() => { this.comments = []; });
-        api.ticketAncestors(this.keyId).then((a) => { this.ancestors = a || []; }).catch(() => {});
-        api.ticketSiblings(this.keyId).then((s) => { this.siblings = s || []; }).catch(() => {});
-        api.ticketTimeline(this.keyId).then((t) => { this.timeline = t || []; }).catch(() => {});
+        const v = await api.ticket(key);
+        if (fresh()) this.v = v;
       } catch (e) {
-        this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + this.keyId : (e.message || "불러오기 실패");
-      } finally { this.loading = false; }
+        if (fresh()) {
+          this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + key : (e.message || "불러오기 실패");
+        }
+      } finally { if (fresh()) this.loading = false; }
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
     // 타임라인 한 줄 문구 — 중요 이벤트만 오므로 종류별로 짧게 표현
     tlText(e) {
       const f = e.from || "없음", t = e.to || "없음";
-      if (e.kind === "created") return "티켓 생성";
-      if (e.kind === "comment") return "댓글 작성";
-      if (e.kind === "status") return "상태 " + f + " → " + t;
-      if (e.kind === "assignee") return "담당자 " + f + " → " + t;
-      if (e.kind === "resolution") return e.to ? ("해결: " + e.to) : "해결 취소";
-      if (e.kind === "duedate") return "마감일 " + f + " → " + t;
-      if (e.kind === "priority") return "우선순위 " + f + " → " + t;
+      const kind = (e.kind || "").replace(/^child-/, "");   // 자손 이벤트도 같은 문구 사용
+      if (kind === "created") return "티켓 생성";
+      if (kind === "comment") return "댓글 작성";
+      if (kind === "status") return "상태 " + f + " → " + t;
+      if (kind === "assignee") return "담당자 " + f + " → " + t;
+      if (kind === "resolution") return e.to ? ("해결: " + e.to) : "해결 취소";
+      if (kind === "duedate") return "마감일 " + f + " → " + t;
+      if (kind === "priority") return "우선순위 " + f + " → " + t;
       return (e.field || "변경") + " " + f + " → " + t;
     },
     // 타 모듈 형제 = 흐리게(숨기지는 않는다 — 존재는 알리고 노이즈만 줄임)
@@ -172,7 +185,9 @@ export default {
         <template v-else-if="v">
         <div class="tkt-cols">
           <!-- 좌측 세로 스파인 — 계보(조상→현재, 레일+진척) + 형제 목록. 클릭 시 해당 티켓으로 이동 -->
-          <aside v-if="spine.length > 1 || siblings.length" class="tkt-spine">
+          <aside v-if="spine.length > 1 || siblings.length || timeline.length" class="tkt-spine">
+            <!-- 조상이 없으면(Epic 등) 자기 자신만 남으므로 계보 블록 자체를 생략 -->
+            <template v-if="spine.length > 1">
             <div class="tkt-mlabel">계보</div>
             <div v-for="(n, i) in spine" :key="n.key" class="spn-item">
               <div class="spn-rail">
@@ -190,6 +205,7 @@ export default {
                 </div>
               </div>
             </div>
+            </template>
 
             <div v-if="siblings.length" class="spn-sib">
               <div class="tkt-mlabel spn-sib-h" @click="sibOpen = !sibOpen">
@@ -212,13 +228,15 @@ export default {
             <!-- 타임라인 — 생성/상태/담당자/해결/댓글 등 중요 이력만(설명 수정 등은 백엔드에서 제외) -->
             <div v-if="timeline.length" class="spn-tl">
               <div class="tkt-mlabel">타임라인</div>
-              <div v-for="(e, i) in timeline" :key="i" class="tl-row">
+              <div v-for="(e, i) in timeline" :key="i" class="tl-row"
+                   :class="{ child: e.srcKey, tkt: !!e.srcKey }" :data-key="e.srcKey || null"
+                   :title="(e.srcKey ? e.srcKey + ' · ' : '') + tlText(e)">
                 <span class="tl-rail">
                   <span class="tl-dot" :class="'k-' + e.kind"></span>
                   <span v-if="i < timeline.length - 1" class="tl-line"></span>
                 </span>
                 <span class="tl-body">
-                  <span class="tl-t">{{ tlText(e) }}</span>
+                  <span class="tl-t"><span v-if="e.srcKey" class="tl-src">{{ e.srcKey }}</span>{{ tlText(e) }}</span>
                   <span class="tl-m">{{ e.author || '—' }} · {{ fdt(e.date) }}</span>
                 </span>
               </div>

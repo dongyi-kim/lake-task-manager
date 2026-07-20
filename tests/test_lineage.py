@@ -128,3 +128,32 @@ def test_timeline_cached():
     key = _key_of_type("Bug")
     c.ticket_timeline(key)
     assert c.cache.get(f"timeline:{c.env}:{key}") is not None
+
+
+def test_timeline_includes_child_status_changes():
+    """자손(하위 티켓)의 상태 변경도 srcKey 로 출처를 달고 합류한다."""
+    c = _client()
+    w = get_world()
+    # 자식이 있고 그 자식이 착수/완료된(=상태 이력이 있는) 부모를 고른다
+    parent = next(k for k, it in w.issues.items()
+                  if it.get("subtasks")
+                  and any(w.issues[s]["statusCategory"] != "todo" for s in it["subtasks"]))
+    tl = c.ticket_timeline(parent)
+    child_ev = [e for e in tl if e.get("srcKey")]
+    assert child_ev, "자손 상태 변경이 타임라인에 없음"
+    assert all(e["kind"] == "child-status" for e in child_ev)      # 자손은 상태 변경만
+    assert {e["srcKey"] for e in child_ev} <= set(w.issues[parent]["subtasks"])
+    assert all(e.get("from") and e.get("to") for e in child_ev)
+    # 본인 이벤트는 srcKey 가 없다
+    assert any(e.get("srcKey") is None for e in tl)
+
+
+def test_timeline_child_changelog_is_cached_per_ticket():
+    """자손 스캔이 티켓단위 changelog 캐시를 남겨, 그 자식을 열 때 재조회하지 않는다."""
+    c = _client()
+    w = get_world()
+    parent = next(k for k, it in w.issues.items() if it.get("subtasks"))
+    child = w.issues[parent]["subtasks"][0]
+    assert c.cache.get(f"changelog:{c.env}:{child}") is None
+    c.ticket_timeline(parent)
+    assert c.cache.get(f"changelog:{c.env}:{child}") is not None
