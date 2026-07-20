@@ -147,7 +147,7 @@ export default {
     // 타 모듈 형제 = 흐리게(숨기지는 않는다 — 존재는 알리고 노이즈만 줄임)
     isOther(s) { return !!(this.myComp && s.component && s.component !== this.myComp); },
     fy(s) { return ymd(s); },
-    fts(s) { return ts(s); },   // 일정 공통 포맷 yyyy.mm.dd HH:mm:ss
+    fts(s) { return ts(s); },   // 일정 공통 포맷 yyyy.mm.dd HH:mm
     fdt(s) { return ymdhm(s); },
     statusClass(cat) { return "st-" + (cat || "todo"); },
     // 확대 버튼(.zoom-btn)만 반응 — 표는 드래그 복사가 가능해야 하므로 내용 클릭으로는 확대 안 함.
