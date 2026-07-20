@@ -173,3 +173,34 @@ def test_vit_module_matches_full_build():
     for fm in full["modules"]:
         part = vit.build_vit_module(c, plan, people, fm["module"])
         assert [i["key"] for i in part["issues"]] == [i["key"] for i in fm["issues"]], fm["module"]
+
+
+# ── 관련문서 중복 제거 ──
+def test_conf_key_dedups_same_document():
+    """같은 Confluence 페이지를 가리키는 서로 다른 URL 형태가 한 키로 묶여야 한다."""
+    from app.jira_client import _conf_key
+    same = [
+        "https://conf/spaces/DL/pages/12345/설계-노트",
+        "https://conf/spaces/DL/pages/12345/설계-노트/",           # 끝 슬래시
+        "https://conf/spaces/DL/pages/12345/제목이-바뀜?src=nav",   # 제목 변경 + 쿼리
+        "https://conf/pages/viewpage.action?pageId=12345#s1",      # 구형 URL + 앵커
+    ]
+    assert len({_conf_key(u) for u in same}) == 1
+    # display 형태는 space+제목으로(대소문자·'+' 정규화)
+    assert _conf_key("https://c/display/DL/설정+가이드") == _conf_key("https://c/display/dl/설정 가이드/")
+    # 다른 문서는 달라야 한다
+    assert _conf_key("https://conf/spaces/DL/pages/999/x") != _conf_key(same[0])
+
+
+def test_documents_are_deduped():
+    c = _client()
+    w = get_world()
+    for k in list(w.issues)[:40]:
+        docs = c.ticket_documents(k)
+        if len(docs) < 2:
+            continue
+        from app.jira_client import _conf_key
+        keys = [_conf_key(d["url"]) for d in docs]
+        assert len(keys) == len(set(keys)), f"{k}: 중복 문서 {keys}"
+        assert all(d["title"] and d["url"] for d in docs)
+        return

@@ -353,23 +353,25 @@ export default {
             <div class="tkt-two-col">
               <div class="tkt-sec-t">첨부파일<span v-if="atts.length"> ({{ atts.length }})</span></div>
               <div v-if="!atts.length" class="muted mini">첨부파일 없음</div>
-              <a v-else v-for="a in atts" :key="a.id" class="att" :href="a.url" target="_blank"
-                 rel="noopener" :title="a.filename + ' · ' + fsize(a.size)">
-                <img v-if="a.isImage && a.thumb" class="att-th" :src="a.thumb" :alt="a.filename" loading="lazy">
-                <span v-else class="att-ic"></span>
-                <span class="att-b">
-                  <span class="att-n">{{ a.filename }}</span>
-                  <span class="att-m">{{ fsize(a.size) }}<template v-if="a.author"> · {{ a.author }}</template></span>
-                </span>
-              </a>
+              <div v-else class="chipwrap">
+                <a v-for="a in atts" :key="a.id" class="fchip" :href="a.url" target="_blank" rel="noopener"
+                   :title="a.filename + ' · ' + fsize(a.size) + (a.author ? ' · ' + a.author : '')">
+                  <span class="fchip-ic" :class="{ img: a.isImage }"></span>
+                  <span class="fchip-n">{{ a.filename }}</span>
+                  <span class="fchip-m">{{ fdt(a.created) }} · {{ fsize(a.size) }}</span>
+                </a>
+              </div>
             </div>
             <div class="tkt-two-col">
               <div class="tkt-sec-t">관련문서<span v-if="docs.length"> ({{ docs.length }})</span></div>
               <div v-if="!docs.length" class="muted mini">언급된 문서 없음</div>
-              <a v-else v-for="(d, i) in docs" :key="i" class="doc" :href="d.url" target="_blank"
-                 rel="noopener" :title="d.url">
-                <span class="doc-ic"></span><span class="doc-n">{{ d.title }}</span>
-              </a>
+              <div v-else class="chipwrap">
+                <a v-for="(d, i) in docs" :key="i" class="fchip doc" :href="d.url" target="_blank"
+                   rel="noopener" :title="d.url">
+                  <span class="fchip-ic conf"></span>
+                  <span class="fchip-n">{{ d.title }}</span>
+                </a>
+              </div>
             </div>
           </div>
 

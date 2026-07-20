@@ -26,6 +26,28 @@ _HREF_RE = re.compile(r'href="([^"]+)"')
 _CONF_TITLE_RE = re.compile(r"/pages/\d+/([^/?#]+)|/display/[^/]+/([^/?#]+)")
 
 
+def _conf_key(url):
+    """같은 문서를 가리키는 서로 다른 URL 을 하나로 묶는 키.
+    Confluence 는 같은 페이지가 여러 형태로 링크된다:
+      /spaces/DL/pages/123/제목 · /pages/viewpage.action?pageId=123 · /display/DL/제목
+      (+ ?src=... 쿼리, #앵커, 끝 슬래시, 제목이 바뀌어도 id 는 그대로)
+    우선순위: 페이지 id > (space, 제목슬러그) > 정규화 URL."""
+    u = (url or "").split("#")[0].rstrip("/")
+    m = re.search(r"[?&]pageId=(\d+)", u)
+    if m:
+        return "id:" + m.group(1)
+    u = u.split("?")[0].rstrip("/")
+    m = re.search(r"/pages/(\d+)", u)
+    if m:
+        return "id:" + m.group(1)
+    m = re.search(r"/display/([^/]+)/([^/]+)$", u)
+    if m:
+        sp = unquote(m.group(1)).strip().lower()
+        ti = unquote(m.group(2)).replace("+", " ").strip().lower()
+        return f"sp:{sp}/{ti}"
+    return "u:" + u.lower()
+
+
 def _conf_title(url):
     m = _CONF_TITLE_RE.search(url or "")
     slug = (m.group(1) or m.group(2)) if m else None
@@ -773,9 +795,12 @@ class JiraClient:
             for h in htmls:
                 for href in _HREF_RE.findall(h or ""):
                     u = unescape(href)
-                    if not _CONF_RE.search(u) or u in seen:
+                    if not _CONF_RE.search(u):
                         continue
-                    seen.add(u)
+                    ck = _conf_key(u)          # URL 이 달라도 같은 문서면 한 번만
+                    if ck in seen:
+                        continue
+                    seen.add(ck)
                     out.append({"title": _conf_title(u), "url": u})
             return out[:limit]
         return self.cache.get_or_set(f"documents:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]

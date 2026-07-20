@@ -281,17 +281,23 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
 @media (max-width: 760px) { .tkt-two { grid-template-columns: 1fr; } }
 .tkt-two .mini { font-size: 11.5px; }
-.att, .doc { display: flex; align-items: center; gap: 8px; min-width: 0; text-decoration: none;
-  color: inherit; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
-  padding: 6px 9px; margin-bottom: 5px; }
-.att:hover, .doc:hover { border-color: var(--accent); text-decoration: none; }
-.att-th { width: 28px; height: 28px; flex: none; object-fit: cover; border-radius: 5px;
-  border: 1px solid var(--border); background: var(--panel); }
-.att-ic, .doc-ic { width: 15px; height: 15px; flex: none; background: var(--muted);
+/* 칩 — 설명/코멘트의 conf-link 배지와 같은 문법(얇게). 세로로 쌓이되 폭은 내용만큼 */
+.chipwrap { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.fchip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0;
+  font-size: 11.5px; font-weight: 600; line-height: 1.4; color: var(--text);
+  border: 1px solid var(--border); background: var(--panel-2); border-radius: 6px;
+  padding: 0 8px; text-decoration: none; }   /* 세로 패딩 0 — 설명 안 conf-link 배지와 동일 높이(18px) */
+.fchip:hover { border-color: var(--accent); text-decoration: none; }
+.fchip.doc { color: var(--st-prog); }
+.fchip-ic { width: 11px; height: 11px; flex: none; display: block; background: var(--muted);
   -webkit-mask: var(--file-ic) center/contain no-repeat; mask: var(--file-ic) center/contain no-repeat; }
-.doc-ic { background: var(--good); -webkit-mask: var(--conf-ic) center/contain no-repeat;
-  mask: var(--conf-ic) center/contain no-repeat; }
-.att-b { display: flex; flex-direction: column; min-width: 0; }
-.att-n, .doc-n { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.att-m { font-size: 10.5px; color: var(--muted-2); }
-:root { --file-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z'/></svg>"); }
+.fchip-ic.img { -webkit-mask: var(--img-ic) center/contain no-repeat; mask: var(--img-ic) center/contain no-repeat; }
+.fchip-ic.conf { background: currentColor;
+  -webkit-mask: var(--conf-ic) center/contain no-repeat; mask: var(--conf-ic) center/contain no-repeat; }
+.fchip-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fchip-m { flex: none; font-weight: 500; font-size: 10.5px; color: var(--muted-2);
+  font-variant-numeric: tabular-nums; }
+:root {
+  --file-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z'/></svg>");
+  --img-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='16' rx='2'/><circle cx='9' cy='10' r='2'/><path d='M21 16l-5-5-4 4-2-2-4 4'/></svg>");
+}
