@@ -40,13 +40,9 @@ export default {
       return (this.descendants || []).reduce(
         (n, x) => n + 1 + ((x.children && x.children.length) || 0), 0);
     },
-    // 계보 카드 스택 = [조상…, 현재]. dist = 현재로부터 거리(0=현재=맨 앞/메인, 클수록 위·뒤로 밀림).
+    // 조상 계보 카드(현재 티켓 제외). depth = 위에서부터 0(Epic=최상위 배너), 아래로 갈수록 좁게.
     lineage() {
-      if (!this.v) return [];
-      const cur = { key: this.v.key, summary: this.v.summary, type: this.v.type, main: true };
-      const arr = (this.ancestors || []).map((a) => ({ ...a, main: false })).concat(cur);
-      const L = arr.length;
-      return arr.map((n, i) => ({ ...n, dist: L - 1 - i }));
+      return (this.ancestors || []).map((a, i) => ({ ...a, depth: i }));
     },
   },
   watch: {
@@ -71,18 +67,16 @@ export default {
     fy(s) { return ymd(s); },
     fdt(s) { return ymdhm(s); },
     statusClass(cat) { return "st-" + (cat || "todo"); },
-    // 계보 카드 색/타입 클래스 — Epic=회색사선, Sub-Task=기본(플레인), 그 외=타입색.
+    // 계보 카드 색/타입 클래스 — Epic=회색사선(상단 배너), Sub-Task=기본(플레인), 그 외=타입색.
     linClass(n) {
-      return { "tkt-lin-main": !!n.main, "tkt-lin-epic": n.type === "Epic",
-               "tkt-lin-sub": n.type === "Sub-Task" };
+      return { "tkt-lin-epic": n.type === "Epic", "tkt-lin-sub": n.type === "Sub-Task" };
     },
-    // 역피라미드 — 위(조상)가 넓고 아래(현재)로 갈수록 가운데로 좁아진다. z: 현재(dist=0)가 앞.
+    // 역피라미드 — 위(Epic=배너, 풀블리드)가 넓고 아래로 갈수록 가운데로 좁아진다. 위 카드가 뒤(z↓).
     //   Epic 은 여백 없이 다이얼로그 상단 풀블리드(머리띠) → 인라인 마진 없이 CSS(.tkt-lin-epic)가 처리.
     linStyle(n) {
-      const s = { zIndex: 100 - n.dist };
+      const s = { zIndex: 90 + n.depth };
       if (n.type === "Epic") return s;
-      const step = 20, top = this.lineage.length - 1;
-      const inset = (top - n.dist) * step;            // 위로 갈수록 넓게, 아래로 갈수록 좁게(가운데)
+      const inset = n.depth * 20;                      // 아래(depth 큼)로 갈수록 가운데로 좁게
       s.marginLeft = inset + "px"; s.marginRight = inset + "px";
       s["--acc"] = n.type === "Sub-Task" ? "var(--border)" : (TYPE_BG[n.type] || "#3568c4");
       return s;
@@ -171,27 +165,24 @@ export default {
         <div v-else-if="err" class="tkt-err">{{ err }}</div>
 
         <template v-else-if="v">
-          <!-- 계보 카드 스택 — 위에서부터 Epic → Task → …, 맨 아래(앞)가 현재 티켓(메인).
-               Epic=시그니처색(없으면 회색 사선) / Task류=타입색 / Sub-Task=기본. 조상 카드 클릭 시 이동. -->
-          <div class="tkt-lineage">
-            <template v-for="n in lineage" :key="n.key">
-              <a v-if="!n.main" class="tkt-lin tkt" :class="linClass(n)" :style="linStyle(n)"
-                 :data-key="n.key" :title="n.type + ' ' + n.key + ' · ' + n.summary">
-                <TypeBadge :type="n.type" />
-                <span class="tkt-lin-key">{{ n.key }}</span>
-                <span class="tkt-lin-sum">{{ n.summary }}</span>
-              </a>
-              <div v-else class="tkt-lin tkt-lin-main" :class="linClass(n)" :style="linStyle(n)">
-                <div class="tkt-lin-top">
-                  <TypeBadge :type="v.type" />
-                  <span class="tkt-lin-key">{{ v.key }}</span>
-                  <span class="tkt-status" :class="statusClass(v.statusCategory)">{{ v.status }}</span>
-                  <a v-if="v.url" class="tkt-ext" :href="v.url" target="_blank" rel="noopener">Jira에서 열기 ↗</a>
-                </div>
-                <h2 class="tkt-summary">{{ v.summary }}</h2>
-              </div>
-            </template>
+          <!-- 조상 계보 카드(현재 티켓 제외) — 맨 위 Epic=상단 배너(머리띠), 아래로 갈수록 좁게.
+               조상 카드 클릭 시 해당 티켓으로 이동. 현재 티켓은 아래에 원래 헤더+타이틀로 표시. -->
+          <div v-if="lineage.length" class="tkt-lineage">
+            <a v-for="n in lineage" :key="n.key" class="tkt-lin tkt" :class="linClass(n)" :style="linStyle(n)"
+               :data-key="n.key" :title="n.type + ' ' + n.key + ' · ' + n.summary">
+              <TypeBadge :type="n.type" />
+              <span class="tkt-lin-key">{{ n.key }}</span>
+              <span class="tkt-lin-sum">{{ n.summary }}</span>
+            </a>
           </div>
+
+          <div class="tkt-head">
+            <TypeBadge :type="v.type" />
+            <span class="tkt-key">{{ v.key }}</span>
+            <span class="tkt-status" :class="statusClass(v.statusCategory)">{{ v.status }}</span>
+            <a v-if="v.url" class="tkt-ext" :href="v.url" target="_blank" rel="noopener">Jira에서 열기 ↗</a>
+          </div>
+          <h2 class="tkt-summary">{{ v.summary }}</h2>
 
           <div class="tkt-meta">
             <div><span class="k">담당자</span><span class="val">{{ v.assignee || '—' }}</span></div>

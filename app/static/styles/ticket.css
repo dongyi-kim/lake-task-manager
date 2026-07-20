@@ -26,7 +26,7 @@
 .tkt-err { color: var(--today); }
 
 /* ── 헤더 ── */
-.tkt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-right: 34px; }
+.tkt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-right: 84px; }
 .tkt-key { font-weight: 700; font-variant-numeric: tabular-nums; }
 .tkt-status { font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; border: 1px solid currentColor; }
 .tkt-status.st-todo { color: var(--st-todo); }
@@ -36,9 +36,10 @@
 .tkt-ext:hover { text-decoration: underline; }
 .tkt-summary { font-size: 19px; margin: 12px 0 14px; line-height: 1.35; }
 
-/* ── 계보 카드 (역피라미드) — 위 Epic(머리띠)→…, 아래로 갈수록 가운데로 좁아지고 맨 아래가 현재(메인) ──
+/* ── 조상 계보 카드(현재 티켓 제외) — 위 Epic(머리띠) 넓고, 아래로 갈수록 가운데로 좁아짐 ──
+   현재 티켓은 이 아래에 원래 헤더(.tkt-head)+타이틀(.tkt-summary)로 표시.
    Epic=회색 사선(시그니처색 없음) / Task류=타입색(--acc) / Sub-Task=기본(플레인). */
-.tkt-lineage { display: flex; flex-direction: column; margin: 0 0 16px; }
+.tkt-lineage { display: flex; flex-direction: column; margin: 0 0 8px; }
 .tkt-lin { --acc: var(--border); position: relative; display: flex; align-items: center; gap: 8px;
   min-width: 0; border: 1px solid var(--border); border-left: 4px solid var(--acc); border-radius: 10px;
   padding: 7px 12px; text-decoration: none; color: var(--text);
@@ -47,8 +48,7 @@
 a.tkt-lin:hover { text-decoration: none; border-color: var(--accent); border-left-color: var(--acc); }
 .tkt-lin-sub { background: var(--panel); }                 /* 기본(플레인) */
 
-/* Epic = 다이얼로그 상단 풀블리드 배너(머리띠) — 위/좌우 여백 없이 꽉. 회색 사선(시그니처색 없음).
-   (.tkt-lin.tkt-lin-epic 로 특이도 ↑ → 현재 티켓이 Epic(=main)이어도 배너 패딩/마진이 이긴다) */
+/* Epic = 다이얼로그 상단 풀블리드 배너(머리띠) — 위/좌우 여백 없이 꽉. 회색 사선(시그니처색 없음). */
 .tkt-lin.tkt-lin-epic { margin: -20px -24px 0; border-width: 0 0 1px 0; border-radius: 13px 13px 0 0;
   padding: 9px 84px 9px 24px;                             /* 우측은 확대/닫기 버튼 피함 */
   background: repeating-linear-gradient(45deg, var(--panel-2), var(--panel-2) 6px, var(--panel) 6px, var(--panel) 12px);
@@ -57,16 +57,6 @@ a.tkt-lin:hover { text-decoration: none; border-color: var(--accent); border-lef
 .tkt-lin-key { flex: none; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 12.5px; }
 .tkt-lin-sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
   font-size: 12.5px; color: var(--muted); }
-
-/* 메인(현재) 카드 — 가장 넓고 앞, 제목이 메인 타이틀 */
-.tkt-lin-main { flex-direction: column; align-items: stretch; gap: 0; padding: 11px 15px 13px;
-  box-shadow: 0 5px 16px rgba(0, 0, 0, .10); }
-.tkt-lin-top { display: flex; align-items: center; gap: 9px; min-width: 0; padding-right: 30px; }
-/* 메인 카드가 맨 위(조상 없음)면 우상단 X/확장 버튼과 겹치지 않게 상단 행 여백 확보.
-   (Epic 배너는 카드 자체 padding-right 로 이미 버튼을 피하므로 제외) */
-.tkt-lineage > .tkt-lin-main:first-child:not(.tkt-lin-epic) .tkt-lin-top { padding-right: 78px; }
-.tkt-lin-main .tkt-lin-key { font-size: 13.5px; }
-.tkt-lin-main .tkt-summary { margin: 9px 0 0; }
 
 /* ── 하위 자손 리스트 (Epic→자식+Sub-Task / Task→Sub-Task) ── */
 .tkt-children { display: flex; flex-direction: column; gap: 5px; }
