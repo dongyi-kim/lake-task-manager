@@ -36,21 +36,30 @@
 .tkt-ext:hover { text-decoration: underline; }
 .tkt-summary { font-size: 19px; margin: 12px 0 14px; line-height: 1.35; }
 
-/* ── 상위 계보 브레드크럼 (제목 위) — 이 티켓의 조상 epic/parent. 칩 → 클릭 시 이동 ── */
-.tkt-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 3px; margin: 12px 0 0; }
-.tkt-crumbs + .tkt-summary { margin-top: 5px; }
-.tkt-crumb { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0;
-  font-size: 11.5px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
-  border-radius: 999px; padding: 2px 10px; text-decoration: none; cursor: pointer; }
-.tkt-crumb:hover { border-color: var(--accent); color: var(--text); text-decoration: none; }
-.tkt-crumb-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--st-todo); }
-.tkt-crumb-dot.st-inprogress { background: var(--st-prog); }
-.tkt-crumb-dot.st-done { background: var(--st-done); }
-.tkt-crumb-type { flex: none; font-weight: 700; letter-spacing: .2px; }
-.tkt-crumb-key { flex: none; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
-.tkt-crumb-sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 280px; }
-.tkt-crumb-sep { color: var(--muted); font-size: 14px; opacity: .55; }
-.tkt-crumbs .tkt-crumb-sep:last-child { color: var(--accent); opacity: .9; }   /* 마지막 › = 현재 티켓 지시 */
+/* ── 계보 카드 스택 (겹친 카드) — 위 Epic→Task→…, 맨 아래(앞)가 현재 티켓(메인) ──
+   Epic=회색 사선(시그니처색 없음) / Task류=타입색(--acc) / Sub-Task=기본(플레인). */
+.tkt-lineage { display: flex; flex-direction: column; margin: 6px 0 16px; }
+.tkt-lin { --acc: var(--border); position: relative; display: flex; align-items: center; gap: 8px;
+  min-width: 0; border: 1px solid var(--border); border-left: 4px solid var(--acc); border-radius: 10px;
+  padding: 7px 12px; text-decoration: none; color: var(--text);
+  background: color-mix(in srgb, var(--acc) 9%, var(--panel)); box-shadow: 0 -2px 6px rgba(0, 0, 0, .05); }
+.tkt-lin + .tkt-lin { margin-top: -8px; }                 /* 카드가 겹쳐 보이게 */
+a.tkt-lin:hover { text-decoration: none; border-color: var(--accent); border-left-color: var(--acc); }
+.tkt-lin-epic { border-left-color: #9a9a96;               /* 시그니처색 없음 → 회색 사선 */
+  background: repeating-linear-gradient(45deg, var(--panel-2), var(--panel-2) 6px, var(--panel) 6px, var(--panel) 12px); }
+.tkt-lin-sub { background: var(--panel); }                 /* 기본(플레인) */
+.tkt-lin-key { flex: none; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 12.5px; }
+.tkt-lin-sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  font-size: 12.5px; color: var(--muted); }
+
+/* 메인(현재) 카드 — 가장 넓고 앞, 제목이 메인 타이틀 */
+.tkt-lin-main { flex-direction: column; align-items: stretch; gap: 0; padding: 11px 15px 13px;
+  box-shadow: 0 5px 16px rgba(0, 0, 0, .10); }
+.tkt-lin-top { display: flex; align-items: center; gap: 9px; min-width: 0; padding-right: 30px; }
+/* 메인 카드가 맨 위(조상 없음)면 우상단 X/확장 버튼과 겹치지 않게 상단 행 여백 확보 */
+.tkt-lineage > .tkt-lin-main:first-child .tkt-lin-top { padding-right: 78px; }
+.tkt-lin-main .tkt-lin-key { font-size: 13.5px; }
+.tkt-lin-main .tkt-summary { margin: 9px 0 0; }
 
 /* ── 하위 자손 리스트 (Epic→자식+Sub-Task / Task→Sub-Task) ── */
 .tkt-children { display: flex; flex-direction: column; gap: 5px; }

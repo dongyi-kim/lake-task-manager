@@ -3,6 +3,7 @@
 // 코멘트 텍스트는 Vue 기본 이스케이프({{ }})로 안전 표시. Esc/백드롭/X 로 닫기.
 import { api } from "../../lib/api.js";
 import { ymd, ymdhm, esc } from "../../lib/fmt.js";
+import { TYPE_BG } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
@@ -39,6 +40,14 @@ export default {
       return (this.descendants || []).reduce(
         (n, x) => n + 1 + ((x.children && x.children.length) || 0), 0);
     },
+    // 계보 카드 스택 = [조상…, 현재]. dist = 현재로부터 거리(0=현재=맨 앞/메인, 클수록 위·뒤로 밀림).
+    lineage() {
+      if (!this.v) return [];
+      const cur = { key: this.v.key, summary: this.v.summary, type: this.v.type, main: true };
+      const arr = (this.ancestors || []).map((a) => ({ ...a, main: false })).concat(cur);
+      const L = arr.length;
+      return arr.map((n, i) => ({ ...n, dist: L - 1 - i }));
+    },
   },
   watch: {
     keyId() { this.load(); },
@@ -62,6 +71,19 @@ export default {
     fy(s) { return ymd(s); },
     fdt(s) { return ymdhm(s); },
     statusClass(cat) { return "st-" + (cat || "todo"); },
+    // 계보 카드 색/타입 클래스 — Epic=회색사선, Sub-Task=기본(플레인), 그 외=타입색.
+    linClass(n) {
+      return { "tkt-lin-main": !!n.main, "tkt-lin-epic": n.type === "Epic",
+               "tkt-lin-sub": n.type === "Sub-Task" };
+    },
+    // 겹친 카드(deck) — dist 만큼 좌우로 들여쓰고 뒤로(z↓). 현재(dist=0)가 가장 넓고 앞.
+    linStyle(n) {
+      const s = { marginLeft: (n.dist * 7) + "px", marginRight: (n.dist * 7) + "px", zIndex: 100 - n.dist };
+      if (n.type !== "Epic") {
+        s["--acc"] = n.type === "Sub-Task" ? "var(--border)" : (TYPE_BG[n.type] || "#3568c4");
+      }
+      return s;
+    },
     // 확대 버튼(.zoom-btn)만 반응 — 표는 드래그 복사가 가능해야 하므로 내용 클릭으로는 확대 안 함.
     onContentClick(e) {
       const btn = e.target.closest && e.target.closest(".zoom-btn");
@@ -146,28 +168,27 @@ export default {
         <div v-else-if="err" class="tkt-err">{{ err }}</div>
 
         <template v-else-if="v">
-          <div class="tkt-head">
-            <TypeBadge :type="v.type" />
-            <span class="tkt-key">{{ v.key }}</span>
-            <span class="tkt-status" :class="statusClass(v.statusCategory)">{{ v.status }}</span>
-            <a v-if="v.url" class="tkt-ext" :href="v.url" target="_blank" rel="noopener">Jira에서 열기 ↗</a>
-          </div>
-
-          <!-- 상위 계보(브레드크럼) — 이 티켓이 속한 epic/parent 를 제목 위에 작게. 클릭 시 해당 티켓으로 이동 -->
-          <div v-if="ancestors.length" class="tkt-crumbs">
-            <template v-for="a in ancestors" :key="a.key">
-              <a class="tkt-crumb tkt" :data-key="a.key"
-                 :title="a.type + ' ' + a.key + ' · ' + a.summary + (a.status ? ' (' + a.status + ')' : '')">
-                <span class="tkt-crumb-dot" :class="statusClass(a.statusCategory)"></span>
-                <span class="tkt-crumb-type">{{ a.type }}</span>
-                <span class="tkt-crumb-key">{{ a.key }}</span>
-                <span class="tkt-crumb-sum">{{ a.summary }}</span>
+          <!-- 계보 카드 스택 — 위에서부터 Epic → Task → …, 맨 아래(앞)가 현재 티켓(메인).
+               Epic=시그니처색(없으면 회색 사선) / Task류=타입색 / Sub-Task=기본. 조상 카드 클릭 시 이동. -->
+          <div class="tkt-lineage">
+            <template v-for="n in lineage" :key="n.key">
+              <a v-if="!n.main" class="tkt-lin tkt" :class="linClass(n)" :style="linStyle(n)"
+                 :data-key="n.key" :title="n.type + ' ' + n.key + ' · ' + n.summary">
+                <TypeBadge :type="n.type" />
+                <span class="tkt-lin-key">{{ n.key }}</span>
+                <span class="tkt-lin-sum">{{ n.summary }}</span>
               </a>
-              <span class="tkt-crumb-sep">›</span>
+              <div v-else class="tkt-lin tkt-lin-main" :class="linClass(n)" :style="linStyle(n)">
+                <div class="tkt-lin-top">
+                  <TypeBadge :type="v.type" />
+                  <span class="tkt-lin-key">{{ v.key }}</span>
+                  <span class="tkt-status" :class="statusClass(v.statusCategory)">{{ v.status }}</span>
+                  <a v-if="v.url" class="tkt-ext" :href="v.url" target="_blank" rel="noopener">Jira에서 열기 ↗</a>
+                </div>
+                <h2 class="tkt-summary">{{ v.summary }}</h2>
+              </div>
             </template>
           </div>
-
-          <h2 class="tkt-summary">{{ v.summary }}</h2>
 
           <div class="tkt-meta">
             <div><span class="k">담당자</span><span class="val">{{ v.assignee || '—' }}</span></div>
