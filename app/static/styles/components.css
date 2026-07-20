@@ -26,10 +26,12 @@
 /* 세그먼트 오른쪽 일부만 사선(할당됨) 오버레이 — 숫자(.pbar-lbl)는 합 세그먼트 중앙에 유지 */
 .pbar-hatch { position: absolute; right: 0; top: 0; bottom: 0; z-index: 0; pointer-events: none;
               background: repeating-linear-gradient(135deg, rgba(255,255,255,.6) 0 2px, rgba(255,255,255,0) 2px 6px); }
-/* 가시성 — 숫자 뒤에 자기 세그먼트 색 테두리(후광). paint-order:stroke 로 테두리를 글자 채움 뒤에 깔아
-   진한 글자 코어는 선명하게, 사선(흰 줄무늬) 위에서도 대비 유지 */
-.pbar-lbl { position: relative; z-index: 1; paint-order: stroke;
-            -webkit-text-stroke: 2.5px var(--seg-col, transparent); }
+/* 가시성 — 숫자를 '표면색 뱃지'로 띄운다. 채움색이 밝든 어둡든, 사선(할당됨) 위에서도
+   대비가 항상 성립한다. (이전의 text-stroke 후광은 채움색에 따라 가독성이 흔들렸다)
+   라이트=흰 뱃지+검은 글자 / 다크=어두운 뱃지+밝은 글자 로 테마를 자동으로 따라간다. */
+.pbar-lbl { position: relative; z-index: 1; background: var(--panel); color: var(--text);
+            border-radius: 4px; padding: 0 5px; line-height: 15px; font-weight: 700;
+            box-shadow: 0 0 0 1px rgba(0, 0, 0, .18); }   /* 밝은 채움(앰버) 위에서도 뱃지 경계 유지 */
 .pbar-zero { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 10px; }
 
 /* LoginOverlay */
