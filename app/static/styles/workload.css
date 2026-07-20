@@ -42,7 +42,7 @@
 .act { position: relative; z-index: 5; padding: 8px 16px 14px 40px; background: var(--panel-2); border-top: 1px solid var(--border); }
 .tcols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }   /* [진행중·할당됨] | [완료] */
 @media (max-width: 760px) { .tcols { grid-template-columns: 1fr; } }
-.wtk.todo { border-style: dashed; }   /* 할당됨(미착수) = 점선 카드 */
+.wtk.todo { border-top-style: dashed; }   /* 할당됨(미착수) = 점선 구분 */
 .sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .3px; }
 .sec-t > b { color: var(--text); }
 /* 합친 열 안의 소구분 라벨(진행 중 / 할당됨) */
@@ -51,14 +51,21 @@
 .sub-lbl.todo { color: var(--muted); }
 .sub-lbl > b { color: var(--text); }
 
-/* 티켓 카드 — 타입뱃지 + 번호 + 제목 + 일정 뱃지. 공간 남으면 한 줄, 좁으면 일정만 아래로 줄바꿈 */
-.wtk { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px;
-       border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 6px 9px; margin-bottom: 6px; }
+/* 티켓 행 — 표 형태(라운딩/간격 없이 구분선으로만). 행 전체가 클릭 대상(.tkt → 인앱 다이얼로그).
+   컬럼: [타입뱃지][번호][제목(가변)][일정 뱃지] */
+.wtk { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 8px; align-items: center;
+       padding: 6px 4px; border-top: 1px solid var(--border); cursor: pointer;
+       text-decoration: none; color: inherit; }
+.sub-lbl + .wtk, .sec-t + .wtk { border-top: none; }   /* 라벨 바로 아래 첫 행은 구분선 생략 */
+.wtk:hover { background: rgba(127, 127, 127, .06); text-decoration: none; }
+.wtk:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.wtk .ky { color: var(--accent); font-weight: 700; font-size: 11.5px;
+           font-family: ui-monospace, "Cascadia Code", Consolas, monospace; letter-spacing: .2px; }
 .wtk.done { opacity: .85; }
-.wtk .tbadge { flex: none; }
-.wtk .ky, .wtk .ky .lnk { font-weight: 600; flex: none; }
-.wtk .sm { flex: 1 1 8em; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
-.wtk .sched { flex: 0 1 auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+.wtk .tbadge { justify-self: start; }
+.wtk .ky { white-space: nowrap; }
+.wtk .sm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.wtk .sched { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 5px; font-variant-numeric: tabular-nums; }
 
 /* 일정 뱃지 (Due / Finished) + 마감 임박도 칩(D-day) */
 .dbadge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 5px;

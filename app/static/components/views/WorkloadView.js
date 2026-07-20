@@ -207,8 +207,9 @@ export default {
                     <div class="sec-t">진행 중 · 할당됨 <b>{{ tkd[p.id].inProgress.length + (tkd[p.id].open || []).length }}</b></div>
                     <template v-if="tkd[p.id].inProgress.length">
                       <div class="sub-lbl">진행 중 <b>{{ tkd[p.id].inProgress.length }}</b></div>
-                      <div v-for="t in tkd[p.id].inProgress" :key="'ip-' + t.key" class="wtk">
-                        <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
+                      <div v-for="t in tkd[p.id].inProgress" :key="'ip-' + t.key" class="wtk tkt"
+                           :data-key="t.key" role="button" tabindex="0" :title="t.key + ' · ' + t.summary">
+                        <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
                         <span class="sm">{{ t.summary }}</span>
                         <span class="sched">
                           <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
@@ -219,8 +220,9 @@ export default {
                     </template>
                     <template v-if="(tkd[p.id].open || []).length">
                       <div class="sub-lbl todo">할당됨 (미착수) <b>{{ (tkd[p.id].open || []).length }}</b></div>
-                      <div v-for="t in (tkd[p.id].open || [])" :key="'op-' + t.key" class="wtk todo">
-                        <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
+                      <div v-for="t in (tkd[p.id].open || [])" :key="'op-' + t.key" class="wtk todo tkt"
+                           :data-key="t.key" role="button" tabindex="0" :title="t.key + ' · ' + t.summary">
+                        <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
                         <span class="sm">{{ t.summary }}</span>
                         <span class="sched">
                           <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
@@ -233,8 +235,9 @@ export default {
                   </div>
                   <div>
                     <div class="sec-t">최근 7일 완료 <b>{{ tkd[p.id].done7d.length }}</b></div>
-                    <div v-for="t in tkd[p.id].done7d" :key="t.key" class="wtk done">
-                      <TypeBadge :type="t.type" /><span class="ky" v-html="tk(t.key)"></span>
+                    <div v-for="t in tkd[p.id].done7d" :key="t.key" class="wtk done tkt"
+                         :data-key="t.key" role="button" tabindex="0" :title="t.key + ' · ' + t.summary">
+                      <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
                       <span class="sm">{{ t.summary }}</span>
                       <span class="sched">
                         <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>

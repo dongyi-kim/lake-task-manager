@@ -1,5 +1,6 @@
 // VitView.js — 기능2 현안(PMO_VIT). 컬럼: 티켓(상태·타입·담당자/번호·이름/Started·Due(D-day)) ·
-//   하위 티켓 수 · 직계 하위 티켓(표: 티켓·상태·시작일·종료일·담당자, 행 클릭→Jira) + [자세히] 트리/코멘트.
+//   하위 티켓 수 · 직계 하위 티켓(표: 티켓·상태·시작일·종료일·담당자) + [자세히] 트리/코멘트.
+//   현안/하위 티켓은 행 전체가 클릭 대상(.tkt[data-key]) → 인앱 티켓 다이얼로그.
 // '완료 작업 안 보기' 토글로 직계 완료 티켓 숨김. updated: 2026-07-09
 import { api } from "../../lib/api.js";
 import { moduleColor, STATUS_ORDER, STATUS_VAR, typeLabel, TYPE_BG } from "../../lib/colors.js";
@@ -79,7 +80,7 @@ export default {
       return `<span class='typc'>${g}</span>`
         + `<span class='tcard'>`
         + `<span class='tbadge v-solid' style='--tc:${TYPE_BG[n.type] || "var(--ty-task)"}'>${typeLabel(n.type)}</span>`
-        + `<span class='ky'>${tkt(n.key, this.d.jiraBase)}</span>`
+        + `<span class='ky'>${esc(n.key)}</span>`
         + `<span class='sm'>${esc(n.summary || "")}</span>`
         + (n.assignee ? `<span class='asg'>${esc(n.assignee)}</span>` : "")
         + `<span class='pill' style='color:${col};border-color:${col}'>${esc(n.status || n.statusCategory)}</span>`
@@ -118,8 +119,9 @@ export default {
                   <TypeBadge :type="it.type" />
                   <span class="who">{{ it.assignee || "미지정" }}</span>
                 </div>
-                <div class="l2">
-                  <span class="key" v-html="tk(it.key)"></span><span class="summ">{{ it.summary }}</span>
+                <div class="l2 tkt" :data-key="it.key" role="button" tabindex="0"
+                     :title="it.key + ' · ' + it.summary">
+                  <span class="key">{{ it.key }}</span><span class="summ">{{ it.summary }}</span>
                 </div>
                 <div class="l3">
                   <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
@@ -141,13 +143,14 @@ export default {
                   <span class="cv-seg s-done" :style="{ flexGrow: kidStats(it).done }"></span>
                 </div>
                 <div class="c-children">
-                  <a v-for="c in kids(it)" :key="c.key" class="ctr" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
+                  <div v-for="c in kids(it)" :key="c.key" class="ctr tkt" :data-key="c.key"
+                       role="button" tabindex="0" :title="c.key + ' · ' + c.summary">
                     <div class="ct-tkt"><TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span></div>
                     <div><StatusPill :cat="c.statusCategory" :label="c.status" /></div>
                     <div class="dt">{{ fy(c.created) || "—" }}</div>
                     <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
                     <div class="asg">{{ c.assignee || "—" }}</div>
-                  </a>
+                  </div>
                   <div v-if="!kids(it).length" class="mini muted">{{ (it.children || []).length ? '표시할 하위 티켓 없음 (완료 숨김)' : '직계 하위 티켓 없음' }}</div>
                 </div>
               </div>
@@ -158,7 +161,9 @@ export default {
               <div v-else class="dcols">
                 <div>
                   <div class="sec-t">소속 티켓 트리 ({{ flatTree(detail[it.key].tree).length }}개 · 상태·최근 진척)</div>
-                  <div v-for="(r, k) in flatTree(detail[it.key].tree)" :key="k" class="tnode" v-html="treeRowHtml(r)"></div>
+                  <div v-for="(r, k) in flatTree(detail[it.key].tree)" :key="k" class="tnode tkt"
+                       :data-key="r.node.key" role="button" tabindex="0"
+                       :title="r.node.key + ' · ' + r.node.summary" v-html="treeRowHtml(r)"></div>
                 </div>
                 <div>
                   <div class="sec-t">코멘트 (현안 티켓 기준)</div>
