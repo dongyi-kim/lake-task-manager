@@ -172,6 +172,10 @@ def _build_ticket_view(raw, sp_field, jira_base=""):
         "reporterId": (f.get("reporter") or {}).get("name"),
         "created": f.get("created") or None,
         "updated": f.get("updated") or None,
+        # 시작일 — 실 Jira 에 필드가 없어 현안 화면과 동일한 파생 규칙(_started_from)을 쓴다
+        "started": _started_from((f.get("created") or "")[:10],
+                                 f.get("updated"),
+                                 _norm_cat((st.get("statusCategory") or {}).get("key"))),
         "due": f.get("duedate") or None,
         "resolved": f.get("resolutiondate") or None,
         "labels": f.get("labels") or [],

@@ -49,6 +49,7 @@ export default {
   },
   unmounted() { window.removeEventListener("keydown", this._onKey); },
   computed: {
+    today() { return ymd(new Date().toISOString()); },   // 기한 초과 판정용
     // 스파인 계보 = [조상…, 현재]. 조상만 도착해도 그릴 수 있어야 하므로 **v 를 기다리지 않는다**
     // (현재 노드는 keyId 로 먼저 그리고, v 가 오면 제목·타입이 채워진다).
     spine() {
@@ -308,20 +309,14 @@ export default {
           <h2 class="tkt-summary">{{ v.summary }}</h2>
 
           <div class="tkt-meta">
-            <div><span class="k">담당자</span><span class="val val-user">
-              <Avatar v-if="v.assigneeId" :user="v.assigneeId" :name="v.assignee" :size="18" />{{ v.assignee || '—' }}</span></div>
-            <div><span class="k">보고자</span><span class="val val-user">
-              <Avatar v-if="v.reporterId" :user="v.reporterId" :name="v.reporter" :size="18" />{{ v.reporter || '—' }}</span></div>
             <div><span class="k">우선순위</span><span class="val">{{ v.priority || '—' }}</span></div>
-            <div><span class="k">생성</span><span class="val">{{ fdt(v.created) || '—' }}</span></div>
-            <div><span class="k">수정</span><span class="val">{{ fdt(v.updated) || '—' }}</span></div>
-            <div><span class="k">마감</span><span class="val">{{ fy(v.due) || '—' }}</span></div>
-            <div v-if="v.resolved"><span class="k">완료</span><span class="val">{{ fdt(v.resolved) }}</span></div>
-            <div v-if="v.components && v.components.length"><span class="k">컴포넌트</span><span class="val">{{ v.components.join(', ') }}</span></div>
-          </div>
-
-          <div v-if="v.labels && v.labels.length" class="tkt-labels">
-            <span v-for="l in v.labels" :key="l" class="tkt-label">{{ l }}</span>
+            <div><span class="k">컴포넌트</span><span class="val">{{ (v.components && v.components.length) ? v.components.join(', ') : '—' }}</span></div>
+            <div class="wide"><span class="k">라벨</span><span class="val">
+              <span v-if="v.labels && v.labels.length" class="tkt-labels">
+                <span v-for="l in v.labels" :key="l" class="tkt-label">{{ l }}</span>
+              </span>
+              <span v-else>—</span>
+            </span></div>
           </div>
 
           <!-- Sub-Task 는 설명을 대충 쓰는 경우가 많아 상위(부모) 설명을 여기서 바로 볼 수 있게.
@@ -392,8 +387,29 @@ export default {
           </div><!-- /.tkt-main -->
 
           <!-- 우측: 타임라인 -->
-          <aside v-if="timeline.length" class="tkt-tl">
-            <div class="tkt-mlabel">타임라인</div>
+          <aside v-if="v || timeline.length" class="tkt-tl">
+            <template v-if="v">
+              <div class="tkt-mlabel">담당</div>
+              <div class="sfield">
+                <span class="sf-k">담당자</span>
+                <span class="sf-v val-user"><Avatar v-if="v.assigneeId" :user="v.assigneeId"
+                  :name="v.assignee" :size="18" />{{ v.assignee || '—' }}</span>
+              </div>
+              <div class="sfield">
+                <span class="sf-k">보고자</span>
+                <span class="sf-v val-user"><Avatar v-if="v.reporterId" :user="v.reporterId"
+                  :name="v.reporter" :size="18" />{{ v.reporter || '—' }}</span>
+              </div>
+
+              <div class="tkt-mlabel sf-gap">일정</div>
+              <div class="sfield"><span class="sf-k">생성일</span><span class="sf-v">{{ fdt(v.created) || '—' }}</span></div>
+              <div class="sfield"><span class="sf-k">시작일</span><span class="sf-v">{{ fy(v.started) || '—' }}</span></div>
+              <div class="sfield"><span class="sf-k">작업 기한</span>
+                <span class="sf-v" :class="{ overdue: v.due && !v.resolved && fy(v.due) < today }">{{ fy(v.due) || '—' }}</span></div>
+              <div class="sfield"><span class="sf-k">완료일</span><span class="sf-v">{{ fdt(v.resolved) || '—' }}</span></div>
+            </template>
+
+            <div v-if="timeline.length" class="tkt-mlabel sf-gap">타임라인</div>
               <div v-for="(e, i) in timeline" :key="i" class="tl-row"
                    :class="{ child: e.srcKey, tkt: !!e.srcKey }" :data-key="e.srcKey || null"
                    :title="(e.srcKey ? e.srcKey + ' · ' : '') + tlText(e)">

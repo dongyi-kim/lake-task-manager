@@ -136,6 +136,7 @@
   padding: 12px 14px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
 .tkt-meta > div { display: flex; gap: 8px; font-size: 12.5px; }
 .tkt-meta .k { color: var(--muted-2); flex: 0 0 58px; font-size: 11px; letter-spacing: .3px; }
+.tkt-meta > div.wide { grid-column: 1 / -1; align-items: flex-start; }
 .tkt-meta .val { color: var(--text); min-width: 0; }
 .tkt-meta .val-user { display: inline-flex; align-items: center; gap: 6px; }
 .tkt-labels { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -301,3 +302,11 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   --file-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z'/></svg>");
   --img-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='16' rx='2'/><circle cx='9' cy='10' r='2'/><path d='M21 16l-5-5-4 4-2-2-4 4'/></svg>");
 }
+
+/* 우측 패널 필드 — 담당/일정 (라벨 + 값 한 줄) */
+.sfield { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 2px 0; font-size: 11.5px; }
+.sf-k { flex: 0 0 54px; color: var(--muted-2); font-size: 10.5px; letter-spacing: .2px; }
+.sf-v { min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.sf-v.overdue { color: var(--danger); font-weight: 700; }
+.tkt-mlabel.sf-gap { margin-top: 14px; }
