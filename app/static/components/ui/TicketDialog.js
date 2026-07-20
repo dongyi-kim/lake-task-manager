@@ -24,7 +24,7 @@ export default {
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], sibOpen: true,
-                    err: "", loading: true, expanded: false, zoom: null, zoomLoading: false }; },
+                    err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
     this._onKey = (e) => {
@@ -36,12 +36,14 @@ export default {
   },
   unmounted() { window.removeEventListener("keydown", this._onKey); },
   computed: {
-    // 스파인 계보 = [조상…, 현재]. 현재 노드는 v 로 만들어 맨 아래에 붙인다.
+    // 스파인 계보 = [조상…, 현재]. 조상만 도착해도 그릴 수 있어야 하므로 **v 를 기다리지 않는다**
+    // (현재 노드는 keyId 로 먼저 그리고, v 가 오면 제목·타입이 채워진다).
     spine() {
-      if (!this.v) return [];
-      return (this.ancestors || []).concat([{
-        key: this.v.key, summary: this.v.summary, type: this.v.type,
-        statusCategory: this.v.statusCategory, pct: null, current: true }]);
+      const anc = this.ancestors || [];
+      if (!anc.length) return [];              // 조상 없으면 계보 블록 자체를 생략
+      const v = this.v;
+      return anc.concat([{ key: this.keyId, summary: v ? v.summary : "", type: v ? v.type : "",
+                           statusCategory: v ? v.statusCategory : "todo", pct: null, current: true }]);
     },
     // 형제 중 현재 위치 (1-based, 없으면 0)
     sibPos() { return (this.siblings || []).findIndex((s) => s.current) + 1; },
@@ -62,7 +64,7 @@ export default {
       const key = this.keyId;
       const my = this._req = (this._req || 0) + 1;
       const fresh = () => my === this._req && this.keyId === key;
-      this.loading = true; this.err = ""; this.v = null; this.comments = null;
+      this.err = ""; this.v = null; this.comments = null;
       this.ancestors = []; this.siblings = []; this.timeline = [];
 
       api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; })
@@ -78,7 +80,7 @@ export default {
         if (fresh()) {
           this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + key : (e.message || "불러오기 실패");
         }
-      } finally { if (fresh()) this.loading = false; }
+      }
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
     // 타임라인 한 줄 문구 — 중요 이벤트만 오므로 종류별로 짧게 표현
@@ -179,10 +181,8 @@ export default {
         </button>
         <button class="tkt-x" @click="$emit('close')" aria-label="닫기">✕</button>
 
-        <div v-if="loading" class="tkt-load"><span class="spinner"></span> 불러오는 중…</div>
-        <div v-else-if="err" class="tkt-err">{{ err }}</div>
-
-        <template v-else-if="v">
+        <!-- 섹션별 독립 렌더: 스파인(계보/형제/타임라인)은 본문(v) 응답을 기다리지 않는다.
+             본문·코멘트도 각자 자기 상태가 채워지는 대로 그려진다. -->
         <div class="tkt-cols">
           <!-- 좌측 세로 스파인 — 계보(조상→현재, 레일+진척) + 형제 목록. 클릭 시 해당 티켓으로 이동 -->
           <aside v-if="spine.length > 1 || siblings.length || timeline.length" class="tkt-spine">
@@ -244,6 +244,10 @@ export default {
           </aside>
 
           <div class="tkt-main">
+          <div v-if="err" class="tkt-err">{{ err }}</div>
+          <div v-else-if="!v" class="tkt-load"><span class="spinner"></span> 불러오는 중…</div>
+
+          <template v-else>
           <div class="tkt-head">
             <TypeBadge :type="v.type" />
             <span class="tkt-key">{{ v.key }}</span>
@@ -272,19 +276,22 @@ export default {
 
           <div class="tkt-sec-t">설명</div>
           <div class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="v.descriptionHtml || '<p class=&quot;muted&quot;>설명이 없습니다.</p>'"></div>
+          </template><!-- /본문(v) -->
 
-          <div class="tkt-sec-t">코멘트<span v-if="comments"> ({{ comments.length }})</span></div>
-          <div v-if="!comments" class="loading">코멘트 불러오는 중…</div>
-          <div v-else-if="!comments.length" class="muted">코멘트가 없습니다.</div>
-          <div v-else class="tkt-comments" @click="onContentClick">
-            <div v-for="(c, i) in comments" :key="i" class="tkt-cmt">
-              <div class="tkt-cmt-h"><Avatar :user="c.authorId" :name="c.author" :size="20" /><b>{{ c.author }}</b><span class="muted">{{ fdt(c.date) }}</span></div>
-              <div class="tkt-cmt-b tkt-desc" v-html="c.html"></div>
+          <!-- 코멘트 — 본문(v)과 무관하게 자기 상태로 렌더 -->
+          <template v-if="!err">
+            <div class="tkt-sec-t">코멘트<span v-if="comments"> ({{ comments.length }})</span></div>
+            <div v-if="!comments" class="loading">코멘트 불러오는 중…</div>
+            <div v-else-if="!comments.length" class="muted">코멘트가 없습니다.</div>
+            <div v-else class="tkt-comments" @click="onContentClick">
+              <div v-for="(c, i) in comments" :key="i" class="tkt-cmt">
+                <div class="tkt-cmt-h"><Avatar :user="c.authorId" :name="c.author" :size="20" /><b>{{ c.author }}</b><span class="muted">{{ fdt(c.date) }}</span></div>
+                <div class="tkt-cmt-b tkt-desc" v-html="c.html"></div>
+              </div>
             </div>
-          </div>
+          </template>
           </div><!-- /.tkt-main -->
         </div><!-- /.tkt-cols -->
-        </template>
       </div>
 
       <div v-if="zoom" class="tkt-zoom" @click="zoom = null">
