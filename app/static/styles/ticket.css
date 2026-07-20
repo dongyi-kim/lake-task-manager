@@ -20,8 +20,10 @@
 .tkt-x:hover, .tkt-max:hover { color: var(--text); border-color: var(--accent); }
 
 /* 확장(최대화) — 화면 대부분 차지 */
-.tkt-ov.expanded { padding: 20px; align-items: stretch; }
-.tkt-dlg.expanded { width: 100%; max-width: 1500px; min-height: calc(100vh - 40px); margin: 0 auto; }
+/* 확장 = '넓게'만. 높이는 내용에 맞춘다.
+   (stretch + min-height:100vh 는 내용이 짧을 때 아래가 빈 패널로 남는다) */
+.tkt-ov.expanded { padding: 20px; align-items: flex-start; }
+.tkt-dlg.expanded { width: 100%; max-width: 1500px; margin: 0 auto; }
 .tkt-load, .tkt-err { padding: 28px 6px; display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .tkt-err { color: var(--today); }
 
