@@ -142,6 +142,18 @@ def api_ticket_badge(key: str):
     return JSONResponse(b)
 
 
+@app.get("/api/avatar/{user}")
+def api_avatar(user: str):
+    """사용자 프로필 이미지 — 인증 세션으로 받아 same-origin 반환. 없으면 404(프론트가 기본 아이콘).
+    아바타는 거의 안 바뀌므로 브라우저 캐시를 아주 길게(30일, immutable) 준다."""
+    data, ctype = _client.user_avatar(user)
+    if data is None:
+        return JSONResponse({"error": "no avatar", "user": user}, status_code=404)
+    media = (ctype or "image/png").split(";")[0].strip()
+    return Response(content=data, media_type=media,
+                    headers={"Cache-Control": "private, max-age=2592000, immutable"})
+
+
 @app.get("/api/ticket/{key}/ancestors")
 def api_ticket_ancestors(key: str):
     """계보 스파인 — 조상 체인(epic·parent) + 각 조상 진척률. 티켓단위 캐시 재사용."""

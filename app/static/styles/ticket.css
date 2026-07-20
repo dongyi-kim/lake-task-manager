@@ -107,6 +107,7 @@
 .tkt-meta > div { display: flex; gap: 8px; font-size: 12.5px; }
 .tkt-meta .k { color: var(--muted-2); flex: 0 0 58px; font-size: 11px; letter-spacing: .3px; }
 .tkt-meta .val { color: var(--text); min-width: 0; }
+.tkt-meta .val-user { display: inline-flex; align-items: center; gap: 6px; }
 .tkt-labels { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .tkt-label { font-size: 10.5px; font-weight: 600; color: var(--muted); background: var(--panel-2);
   border: 1px solid var(--border); border-radius: 5px; padding: 1.5px 7px; }
@@ -221,7 +222,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* ── 코멘트 ── */
 .tkt-comments { display: flex; flex-direction: column; gap: 8px; }
 .tkt-cmt { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel-2); }
-.tkt-cmt-h { display: flex; gap: 10px; align-items: baseline; font-size: 12.5px; margin-bottom: 3px; }
+.tkt-cmt-h { display: flex; gap: 7px; align-items: center; font-size: 12.5px; margin-bottom: 3px; }
 .tkt-cmt-h .muted { font-size: 11.5px; }
 /* 코멘트는 이제 HTML(<p>/<br>) 렌더 → white-space:normal. (pre-wrap 이면 태그 사이 개행이
    실제 줄바꿈으로 렌더돼 문단마다 빈 줄이 겹치는 문제. 코드블록은 pre.code 가 자체 pre 유지) */

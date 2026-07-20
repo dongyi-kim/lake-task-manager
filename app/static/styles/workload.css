@@ -9,8 +9,8 @@
 .whead .hl { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
 .prow { border-top: 1px solid var(--border); }
 .prow:hover { background: rgba(127,127,127,.03); }
-.pname { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.pname::before { content: "\1F464"; font-weight: 400; opacity: .55; flex: none; }
+/* 사람 아이콘은 Avatar 컴포넌트가 담당(프사 없으면 .avt-df 기본 아이콘으로 폴백) */
+.pname { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .pname > b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kbadge { flex: none; font-size: 9.5px; font-weight: 700; line-height: 1; padding: 3px 6px; border-radius: 4px; letter-spacing: .3px; }
 .kbadge.dev { color: var(--dev-fg); background: var(--dev-bg); }

@@ -5,6 +5,7 @@ import { api } from "../../lib/api.js";
 import { ymd, ymdhm, esc } from "../../lib/fmt.js";
 import { TYPE_BG } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
+import Avatar from "./Avatar.js";
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
 function confTitleFromUrl(u) {
@@ -19,7 +20,7 @@ const _BROWSE_RE = /\/browse\/([A-Z][A-Z0-9]+-\d+)/;
 
 export default {
   name: "TicketDialog",
-  components: { TypeBadge },
+  components: { TypeBadge, Avatar },
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], sibOpen: true,
@@ -207,8 +208,10 @@ export default {
           <h2 class="tkt-summary">{{ v.summary }}</h2>
 
           <div class="tkt-meta">
-            <div><span class="k">담당자</span><span class="val">{{ v.assignee || '—' }}</span></div>
-            <div><span class="k">보고자</span><span class="val">{{ v.reporter || '—' }}</span></div>
+            <div><span class="k">담당자</span><span class="val val-user">
+              <Avatar v-if="v.assigneeId" :user="v.assigneeId" :name="v.assignee" :size="18" />{{ v.assignee || '—' }}</span></div>
+            <div><span class="k">보고자</span><span class="val val-user">
+              <Avatar v-if="v.reporterId" :user="v.reporterId" :name="v.reporter" :size="18" />{{ v.reporter || '—' }}</span></div>
             <div><span class="k">우선순위</span><span class="val">{{ v.priority || '—' }}</span></div>
             <div><span class="k">생성</span><span class="val">{{ fdt(v.created) || '—' }}</span></div>
             <div><span class="k">수정</span><span class="val">{{ fdt(v.updated) || '—' }}</span></div>
@@ -229,7 +232,7 @@ export default {
           <div v-else-if="!comments.length" class="muted">코멘트가 없습니다.</div>
           <div v-else class="tkt-comments" @click="onContentClick">
             <div v-for="(c, i) in comments" :key="i" class="tkt-cmt">
-              <div class="tkt-cmt-h"><b>{{ c.author }}</b><span class="muted">{{ fdt(c.date) }}</span></div>
+              <div class="tkt-cmt-h"><Avatar :user="c.authorId" :name="c.author" :size="20" /><b>{{ c.author }}</b><span class="muted">{{ fdt(c.date) }}</span></div>
               <div class="tkt-cmt-b tkt-desc" v-html="c.html"></div>
             </div>
           </div>

@@ -128,6 +128,9 @@ def _build_ticket_view(raw, sp_field, jira_base=""):
         "priority": (f.get("priority") or {}).get("name") or None,
         "assignee": _rn(f.get("assignee")),
         "reporter": _rn(f.get("reporter")),
+        # 프로필 이미지 조회용 사용자 id (displayName 이 아니라 Jira username)
+        "assigneeId": (f.get("assignee") or {}).get("name"),
+        "reporterId": (f.get("reporter") or {}).get("name"),
         "created": f.get("created") or None,
         "updated": f.get("updated") or None,
         "due": f.get("duedate") or None,
@@ -419,6 +422,7 @@ class JiraClient:
                     "date": c.get("created") or "",     # 전체 datetime(프론트에서 yy.mm.dd hh:mm 포맷)
                     "author": real_name((c.get("author") or {}).get("displayName")
                                         or (c.get("author") or {}).get("name")),
+                    "authorId": (c.get("author") or {}).get("name"),   # 프로필 이미지 조회용
                     "html": html,       # 정화된 코멘트 HTML (맨션·링크·서식 포함)
                 })
             return out
@@ -554,6 +558,40 @@ class JiraClient:
                 r["current"] = (r["key"] == key)
             return rows
         return self.cache.get_or_set(f"siblings:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
+    # ── 사용자 프로필 이미지 ──
+    # 아바타는 사실상 불변이라 URL 해석을 아주 길게 캐시(AVATAR_TTL). 바이트는 캐시에 넣지 않고
+    # (SQLite 블롭 비대) HTTP Cache-Control(장기·immutable)로 브라우저가 들고 있게 한다.
+    AVATAR_TTL = 30 * 24 * 3600      # 30일
+
+    def _avatar_url(self, user):
+        """사용자 아바타 URL(큰 것 우선). 없거나 조회 실패면 None. 성공/실패 모두 길게 캐시하지 않도록
+        실패는 캐시하지 않는다(세션 만료 등 일시 실패가 30일 굳는 것 방지)."""
+        ck = f"avatar_url:{self.env}:{user}"
+        hit = self.cache.get(ck)
+        if hit is not None:
+            return hit or None
+        try:
+            u = self.provider.get_json("/rest/api/2/user", params={"username": user})
+        except Exception:
+            return None                                   # 실패는 캐시 안 함 → 다음에 재시도
+        urls = ((u or {}).get("avatarUrls") or {})
+        url = next((urls[s] for s in ("48x48", "32x32", "24x24", "16x16") if urls.get(s)), None)
+        self.cache.set(ck, url or "", self.AVATAR_TTL)    # 없음("")도 캐시 — 매번 재조회 방지
+        return url
+
+    def user_avatar(self, user):
+        """(bytes, content_type). 아바타가 없거나 못 가져오면 (None, None) → 프론트가 기본 아이콘으로."""
+        url = self._avatar_url(user)
+        if not url:
+            return (None, None)
+        try:
+            if url.startswith("http://") or url.startswith("https://"):
+                return self.fetch_media(url)              # 절대 URL 은 허용 호스트만
+            data, ctype = self.provider.get_bytes(url)    # 상대 경로 = Jira 자기 호스트
+            return (data, ctype)
+        except Exception:
+            return (None, None)
 
     # ── 이미지/첨부 프록시 (prod: 인증 세션으로 받아 same-origin 반환) ──
     def _media_allowed_host(self, host):
