@@ -8,7 +8,7 @@
 .tkt-ov { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: flex-start; justify-content: center;
   background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 40px 16px; overflow-y: auto; }
 .tkt-dlg { position: relative; background: var(--panel); color: var(--text); border: 1px solid var(--border);
-  border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, .38); width: min(1010px, 100%);
+  border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, .38); width: min(1240px, 100%);
   padding: 20px 24px; }
 .tkt-dlg > :last-child { margin-bottom: 0; }
 .tkt-x, .tkt-max { position: absolute; top: 12px; width: 30px; height: 30px; border-radius: 8px;
@@ -102,11 +102,17 @@
 .tl-src { font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; color: var(--accent);
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
   padding: 0 4px; margin-right: 4px; white-space: nowrap; }
-/* 좁은 화면 — 스파인은 위로 접어 가로 배치 해제 */
-@media (max-width: 900px) {
+/* 우측 패널 — 타임라인 */
+.tkt-tl { flex: 0 0 220px; width: 220px; align-self: stretch; min-width: 0;
+  margin: -20px -24px -20px 18px; padding: 16px 24px 16px 14px;
+  border-left: 1px solid var(--border); background: var(--bg); }
+/* 좁은 화면 — 좌/우 패널을 위아래로 펼쳐 가로 3단 해제 */
+@media (max-width: 1150px) {
   .tkt-cols { flex-direction: column; }
   .tkt-spine { flex: none; width: auto; align-self: auto; margin: -20px -24px 14px; padding: 14px 24px;
     border-right: 0; border-bottom: 1px solid var(--border); }
+  .tkt-tl { flex: none; width: auto; align-self: auto; margin: 14px -24px -20px; padding: 14px 24px;
+    border-left: 0; border-top: 1px solid var(--border); }
 }
 
 /* ── 헤더 ── */
@@ -263,3 +269,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .pdesc-k { flex: none; font-family: ui-monospace, Consolas, monospace; font-size: 10.5px;
   font-weight: 700; color: var(--accent); }
 .pdesc-box { margin-top: 6px; border-style: dashed; }
+
+/* 관련 Task — 관계 문구(링크) / '언급' 배지 */
+.spn-rel { flex: none; font-size: 8.5px; font-weight: 700; letter-spacing: .2px; white-space: nowrap;
+  padding: 0 4px; border-radius: 4px; border: 1px solid; }
+.spn-rel.link { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.spn-rel.mention { color: var(--muted-2); border-color: var(--border); background: var(--panel-2); }

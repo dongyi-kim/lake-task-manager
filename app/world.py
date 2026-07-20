@@ -92,6 +92,7 @@ class World:
         self._build_history()         # 1~6월 생성·종료된 과거 완료 이슈 (대량)
         self._build_vit()
         self._build_voc()
+        self._build_links()           # 이슈 링크(relates to 등) — '관련 Task' 용
         self._index()
         self._build_activity()
         self._build_confluence()
@@ -223,6 +224,7 @@ class World:
             "created": created, "updated": updated, "resolved": resolved, "due": due,
             "tcreated": _tm(), "tresolved": _tm(), "tupdated": _tm(),
             "comments": comments, "worklog": worklog, "subtasks": [], "changelog": changelog,
+            "links": [],
         }
         # 실무처럼 **Sub-Task 는 설명을 안 쓰는 경우가 흔하다** — 1/3 은 빈 설명으로.
         # (다이얼로그의 '상위 티켓 설명'이 겨냥하는 케이스)
@@ -349,6 +351,28 @@ class World:
                 for _ in range(rng.randint(0, 5)):
                     self._make_issue(rng, rng.choice(["Task", "Bug", "Story"]), module,
                                      component="사용자 VoC", assignee=pid)
+
+    def _build_links(self):
+        """이슈 링크(relates to / blocks / duplicates) — 같은 모듈 안에서 몇 쌍 연결.
+        양방향으로 넣는다: A=outward / 상대 B=inward (실 Jira 와 동일하게 양쪽에서 보인다).
+        ★ rng 를 쓰지 않고 정렬된 키에서 결정적으로 뽑는다 → world 시퀀스 불변."""
+        by_mod = {}
+        for k, it in sorted(self.issues.items()):
+            if it["type"] in ("Epic", SUBTASK_TYPE):
+                continue                      # Epic·Sub-Task 는 제외(계보로 이미 보임)
+            by_mod.setdefault(it["module"], []).append(k)
+        kinds = ["Relates", "Blocks", "Duplicate"]
+        n = 0
+        for mod in sorted(by_mod):
+            ks = by_mod[mod]
+            for i in range(0, len(ks) - 1, 5):        # 모듈 안에서 5개마다 한 쌍
+                a, b = ks[i], ks[(i + 2) % len(ks)]
+                if a == b:
+                    continue
+                kind = kinds[n % len(kinds)]
+                n += 1
+                self.issues[a]["links"].append({"type": kind, "dir": "outward", "key": b})
+                self.issues[b]["links"].append({"type": kind, "dir": "inward", "key": a})
 
     # ── 인덱스 ──
     def _index(self):

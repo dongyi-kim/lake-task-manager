@@ -35,7 +35,7 @@ export default {
   components: { TypeBadge, Avatar },
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
-  data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], sibOpen: true,
+  data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], sibOpen: true,
                     pdesc: null, pdescOpen: false, pdescErr: "",
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
@@ -90,6 +90,7 @@ export default {
       const fresh = () => my === this._req && this.keyId === key;
       this.err = ""; this.v = null; this.comments = null;
       this.ancestors = []; this.siblings = []; this.timeline = [];
+      this.children = []; this.related = [];
       this.pdesc = null; this.pdescOpen = false; this.pdescErr = "";
 
       api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; })
@@ -97,6 +98,8 @@ export default {
       api.ticketAncestors(key).then((a) => { if (fresh()) this.ancestors = a || []; }).catch(() => {});
       api.ticketSiblings(key).then((s) => { if (fresh()) this.siblings = s || []; }).catch(() => {});
       api.ticketTimeline(key).then((t) => { if (fresh()) this.timeline = t || []; }).catch(() => {});
+      api.ticketChildren(key).then((c) => { if (fresh()) this.children = c || []; }).catch(() => {});
+      api.ticketRelated(key).then((r) => { if (fresh()) this.related = r || []; }).catch(() => {});
 
       try {
         const v = await api.ticket(key);
@@ -261,22 +264,25 @@ export default {
               </template>
             </div>
 
-            <!-- 타임라인 — 생성/상태/담당자/해결/댓글 등 중요 이력만(설명 수정 등은 백엔드에서 제외) -->
-            <div v-if="timeline.length" class="spn-tl">
-              <div class="tkt-mlabel">타임라인</div>
-              <div v-for="(e, i) in timeline" :key="i" class="tl-row"
-                   :class="{ child: e.srcKey, tkt: !!e.srcKey }" :data-key="e.srcKey || null"
-                   :title="(e.srcKey ? e.srcKey + ' · ' : '') + tlText(e)">
-                <span class="tl-rail">
-                  <span class="tl-dot" :class="'k-' + e.kind"></span>
-                  <span v-if="i < timeline.length - 1" class="tl-line"></span>
-                </span>
-                <span class="tl-body">
-                  <span class="tl-t"><span v-if="e.srcKey" class="tl-src">{{ e.srcKey }}</span>{{ tlText(e) }}</span>
-                  <span class="tl-m">{{ e.author || '—' }} · {{ fdt(e.date) }}</span>
-                </span>
+            <div v-if="children.length" class="spn-sib">
+              <div class="tkt-mlabel">하위 Task {{ children.length }}</div>
+              <div v-for="c in children" :key="'ch-' + c.key" class="spn-sibrow tkt"
+                   :data-key="c.key" :title="c.type + ' ' + c.key + ' · ' + c.summary">
+                <span class="spn-sdot" :class="'st-' + (c.statusCategory || 'todo')"></span>
+                <span class="spn-stitle">{{ c.summary }}</span>
               </div>
             </div>
+
+            <div v-if="related.length" class="spn-sib">
+              <div class="tkt-mlabel">관련 Task {{ related.length }}</div>
+              <div v-for="r in related" :key="'rel-' + r.key" class="spn-sibrow tkt"
+                   :data-key="r.key" :title="r.rel + ' · ' + r.key + ' · ' + r.summary">
+                <span class="spn-sdot" :class="'st-' + (r.statusCategory || 'todo')"></span>
+                <span class="spn-stitle">{{ r.summary }}</span>
+                <span class="spn-rel" :class="r.via">{{ r.via === 'link' ? r.rel : '언급' }}</span>
+              </div>
+            </div>
+
           </aside>
 
           <div class="tkt-main">
@@ -349,6 +355,23 @@ export default {
             </div>
           </template>
           </div><!-- /.tkt-main -->
+
+          <!-- 우측: 타임라인 -->
+          <aside v-if="timeline.length" class="tkt-tl">
+            <div class="tkt-mlabel">타임라인</div>
+              <div v-for="(e, i) in timeline" :key="i" class="tl-row"
+                   :class="{ child: e.srcKey, tkt: !!e.srcKey }" :data-key="e.srcKey || null"
+                   :title="(e.srcKey ? e.srcKey + ' · ' : '') + tlText(e)">
+                <span class="tl-rail">
+                  <span class="tl-dot" :class="'k-' + e.kind"></span>
+                  <span v-if="i < timeline.length - 1" class="tl-line"></span>
+                </span>
+                <span class="tl-body">
+                  <span class="tl-t"><span v-if="e.srcKey" class="tl-src">{{ e.srcKey }}</span>{{ tlText(e) }}</span>
+                  <span class="tl-m">{{ e.author || '—' }} · {{ fdt(e.date) }}</span>
+                </span>
+              </div>
+          </aside>
         </div><!-- /.tkt-cols -->
       </div>
 

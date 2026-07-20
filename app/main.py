@@ -166,6 +166,18 @@ def api_ticket_timeline(key: str):
     return JSONResponse(_client.ticket_timeline(key))
 
 
+@app.get("/api/ticket/{key}/children")
+def api_ticket_children(key: str):
+    """하위 Task — 직계 자식(Epic→자식 / 그 외→Sub-Task)."""
+    return JSONResponse(_client.ticket_children(key))
+
+
+@app.get("/api/ticket/{key}/related")
+def api_ticket_related(key: str):
+    """관련 Task — 이슈 링크(relates to 등) + 설명·코멘트에서 언급된 티켓."""
+    return JSONResponse(_client.ticket_related(key))
+
+
 @app.get("/api/ticket/{key}/siblings")
 def api_ticket_siblings(key: str):
     """계보 스파인 — 형제 티켓(같은 부모/Epic). 현재 티켓 포함(current=true)."""

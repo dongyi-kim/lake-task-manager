@@ -5,6 +5,7 @@ JiraClient — AuthProvider 를 주입받아 REST 호출 (어떤 인증인지 �
 Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 Phase 에서 확장)
 """
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from urllib.parse import urlparse
@@ -16,6 +17,9 @@ from .names import real_name
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
+# 설명·코멘트 HTML 안의 Jira 티켓 링크 → 언급된 티켓 추출용
+_BROWSE_KEY_RE = re.compile(r"/browse/([A-Z][A-Z0-9]+-\d+)")
+
 _CAT_MAP = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
 
 
@@ -214,7 +218,7 @@ class JiraClient:
     # ── 티켓 단위 캐시 레이어 (모든 이슈/하위이슈를 key 단위로 캐싱) ──
     def _issue_fields(self):
         return ("summary,description,issuetype,status,assignee,reporter,components,created,duedate,"
-                "resolutiondate,updated,labels,parent,subtasks,timespent,"
+                "resolutiondate,updated,labels,parent,subtasks,timespent,issuelinks,"
                 + self.s.sp_field_id + "," + self.s.epic_link_field_id)
 
     def get_issue(self, key):
@@ -648,6 +652,67 @@ class JiraClient:
             ev.sort(key=lambda e: e.get("date") or "", reverse=True)   # 최신순
             return ev[:limit]
         return self.cache.get_or_set(f"timeline:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
+    def ticket_children(self, key):
+        """직계 하위 티켓(Epic→Epic Link 자식 / 그 외→Sub-Task) — ticket_badge 형태.
+        _child_keys·ticket_badge 가 모두 캐시라 재방문은 무료."""
+        def build():
+            return [b for b in (self.ticket_badge(k) for k in self._child_keys(key)) if b]
+        return self.cache.get_or_set(f"children:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
+    def ticket_related(self, key, limit=20):
+        """관련 티켓 — 두 소스를 합친다.
+          (1) Jira 이슈 링크(relates to / blocks / duplicates …)  ← issuelinks 필드
+          (2) 설명·코멘트에서 **언급**된 티켓                      ← /browse/KEY 링크 파싱
+        계보(조상·자식)와 자기 자신은 제외해 좌측 패널의 다른 섹션과 중복되지 않게 한다."""
+        def build():
+            skip = {key}
+            skip |= {a["key"] for a in (self.ticket_ancestors(key) or [])}
+            skip |= {c["key"] for c in (self.ticket_children(key) or [])}
+            found = []          # [(key, rel, via)] — 순서 유지(링크 먼저, 언급 나중)
+            seen = set(skip)
+
+            try:
+                f = self.get_issue(key).get("fields") or {}
+            except Exception:
+                f = {}
+            for ln in (f.get("issuelinks") or []):
+                t = ln.get("type") or {}
+                out_i, in_i = ln.get("outwardIssue"), ln.get("inwardIssue")
+                other = out_i or in_i or {}
+                k = other.get("key")
+                if not k or k in seen:
+                    continue
+                seen.add(k)
+                rel = (t.get("outward") if out_i else t.get("inward")) or t.get("name") or "관련"
+                found.append((k, rel, "link"))
+
+            htmls = []
+            try:
+                v = self.ticket_view(key)
+                if v:
+                    htmls.append(v.get("descriptionHtml") or "")
+            except Exception:
+                pass
+            try:
+                for c in self._issue_comments(key, limit=10):
+                    htmls.append(c.get("html") or "")
+            except Exception:
+                pass
+            for h in htmls:
+                for k in _BROWSE_KEY_RE.findall(h or ""):
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    found.append((k, "본문·코멘트에서 언급", "mention"))
+
+            out = []
+            for k, rel, via in found[:limit]:
+                b = self.ticket_badge(k)
+                if b:
+                    out.append(dict(b, rel=rel, via=via))
+            return out
+        return self.cache.get_or_set(f"related:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
 
     # ── 사용자 프로필 이미지 ──
     # 아바타는 사실상 불변이라 URL 해석을 아주 길게 캐시(AVATAR_TTL). 바이트는 캐시에 넣지 않고

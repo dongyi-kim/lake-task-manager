@@ -42,5 +42,7 @@ export const api = {
   ticketAncestors: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/ancestors"),
   ticketSiblings: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/siblings"),
   ticketTimeline: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/timeline"),
+  ticketChildren: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/children"),
+  ticketRelated: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/related"),
   ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
 };
