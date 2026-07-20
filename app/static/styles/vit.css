@@ -31,12 +31,15 @@
 /* 하위 티켓 = [세로 진척 바][목록]. 목록이 Open→진행중→해결 순이라 바 구간과 행 묶음이 일치 */
 .c-kids { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
 .c-kids .c-children { flex: 1; min-width: 0; }
-.cv-rail { flex: none; width: 6px; align-self: stretch; display: flex; flex-direction: column;
+/* 채움은 --fill-*(그래프용). --st-*(글자용)은 어두운 색끼리 뭉쳐 구간이 안 갈린다. */
+.cv-rail { flex: none; width: 8px; align-self: stretch; display: flex; flex-direction: column;
   border-radius: 99px; overflow: hidden; background: var(--track); }
 .cv-seg { display: block; width: 100%; min-height: 0; flex-basis: 0; }
-.cv-seg.s-todo { background: var(--st-todo); opacity: .3; }
-.cv-seg.s-prog { background: var(--st-prog); }
-.cv-seg.s-done { background: var(--st-done); }
+.cv-seg.s-todo { background: var(--fill-todo); }
+.cv-seg.s-prog { background: var(--fill-prog); }
+.cv-seg.s-done { background: var(--fill-done); }
+/* 구간 경계 — 같은 계열이라도 얇은 분리선으로 확실히 끊어준다 */
+.cv-seg + .cv-seg { box-shadow: 0 -1px 0 var(--panel); }
 
 .c-children { max-height: 220px; overflow-y: auto; }
 .c-children .ctr { padding: 5px 0; border-top: 1px solid var(--border); font-size: 12px; text-decoration: none; color: inherit; }
