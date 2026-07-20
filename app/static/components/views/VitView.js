@@ -22,10 +22,12 @@ export default {
       return arr.sort((a, b) =>
         ((STATUS_ORDER[a.statusCategory] ?? 9) - (STATUS_ORDER[b.statusCategory] ?? 9)));
     },
-    // 세로 진척 바용 — 표시 중인 하위 티켓의 상태별 개수(정렬 순서와 동일: Open→진행중→해결)
+    // 세로 진척 바용 — **직계 하위 티켓 전체** 기준(상태별 개수).
+    // '완료 작업 안 보기'는 목록 표시만 거르는 옵션이므로 진척도는 영향받지 않아야 한다
+    // (완료를 숨겼다고 진척률이 떨어져 보이면 오독을 부른다). → kids() 가 아니라 children 사용.
     kidStats(it) {
       const c = { todo: 0, inprogress: 0, done: 0 };
-      this.kids(it).forEach((k) => { c[k.statusCategory] = (c[k.statusCategory] || 0) + 1; });
+      (it.children || []).forEach((k) => { c[k.statusCategory] = (c[k.statusCategory] || 0) + 1; });
       const total = c.todo + c.inprogress + c.done;
       return { ...c, total, pct: total ? Math.round((c.done * 100) / total) : 0 };
     },
