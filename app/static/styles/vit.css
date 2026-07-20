@@ -28,6 +28,16 @@
  * .ch-head 와 .ctr 은 동일 서브그리드라 같은 위치에 정렬됨. 행 클릭 시 Jira 이동, 많으면 스크롤 */
 .vhead .ch-head, .c-children .ctr {
   display: grid; grid-template-columns: minmax(110px,2.4fr) minmax(80px,1fr) 58px 58px minmax(58px,1fr); gap: 8px; align-items: center; }
+/* 하위 티켓 = [세로 진척 바][목록]. 목록이 Open→진행중→해결 순이라 바 구간과 행 묶음이 일치 */
+.c-kids { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
+.c-kids .c-children { flex: 1; min-width: 0; }
+.cv-rail { flex: none; width: 6px; align-self: stretch; display: flex; flex-direction: column;
+  border-radius: 99px; overflow: hidden; background: var(--track); }
+.cv-seg { display: block; width: 100%; min-height: 0; flex-basis: 0; }
+.cv-seg.s-todo { background: var(--st-todo); opacity: .3; }
+.cv-seg.s-prog { background: var(--st-prog); }
+.cv-seg.s-done { background: var(--st-done); }
+
 .c-children { max-height: 220px; overflow-y: auto; }
 .c-children .ctr { padding: 5px 0; border-top: 1px solid var(--border); font-size: 12px; text-decoration: none; color: inherit; }
 .c-children .ctr:first-child { border-top: none; }

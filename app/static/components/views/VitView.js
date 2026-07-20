@@ -15,9 +15,18 @@ export default {
   data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false }; },
   async mounted() { try { this.d = await api.vit(); } catch (e) { this.err = e.message; } },
   methods: {
-    kids(it) {   // 직계 하위 티켓 — '완료 작업 안 보기' 시 done 제외
+    kids(it) {   // 직계 하위 티켓 — '완료 작업 안 보기' 시 done 제외 + 상태 정렬(Open→진행중→해결)
       const ch = it.children || [];
-      return this.hideDone ? ch.filter((c) => c.statusCategory !== "done") : ch;
+      const arr = this.hideDone ? ch.filter((c) => c.statusCategory !== "done") : ch.slice();
+      return arr.sort((a, b) =>
+        ((STATUS_ORDER[a.statusCategory] ?? 9) - (STATUS_ORDER[b.statusCategory] ?? 9)));
+    },
+    // 세로 진척 바용 — 표시 중인 하위 티켓의 상태별 개수(정렬 순서와 동일: Open→진행중→해결)
+    kidStats(it) {
+      const c = { todo: 0, inprogress: 0, done: 0 };
+      this.kids(it).forEach((k) => { c[k.statusCategory] = (c[k.statusCategory] || 0) + 1; });
+      const total = c.todo + c.inprogress + c.done;
+      return { ...c, total, pct: total ? Math.round((c.done * 100) / total) : 0 };
     },
     mcolor(i) { return moduleColor(i); },
     md(s) { return mdISO(s); },
@@ -122,15 +131,25 @@ export default {
                 <div class="scnt"><span class="lbl"><StatusPill cat="inprogress" label="In Progress" /></span><b>{{ (it.statusCounts||{}).inprogress || 0 }}</b></div>
                 <div class="scnt"><span class="lbl"><StatusPill cat="done" label="Done" /></span><b>{{ (it.statusCounts||{}).done || 0 }}</b></div>
               </div>
-              <div class="c-children">
-                <a v-for="c in kids(it)" :key="c.key" class="ctr" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
-                  <div class="ct-tkt"><TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span></div>
-                  <div><StatusPill :cat="c.statusCategory" :label="c.status" /></div>
-                  <div class="dt">{{ fy(c.created) || "—" }}</div>
-                  <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
-                  <div class="asg">{{ c.assignee || "—" }}</div>
-                </a>
-                <div v-if="!kids(it).length" class="mini muted">{{ (it.children || []).length ? '표시할 하위 티켓 없음 (완료 숨김)' : '직계 하위 티켓 없음' }}</div>
+              <!-- 세로 진척 바(티켓 수 기준) + 하위 티켓 목록. 목록이 Open→진행중→해결 순이라
+                   바의 구간 높이가 각 상태 묶음과 그대로 맞아떨어진다. -->
+              <div class="c-kids">
+                <div v-if="kidStats(it).total" class="cv-rail"
+                     :title="'완료 ' + kidStats(it).done + '/' + kidStats(it).total + ' (' + kidStats(it).pct + '%) · 진행중 ' + kidStats(it).inprogress + ' · Open ' + kidStats(it).todo">
+                  <span class="cv-seg s-todo" :style="{ flexGrow: kidStats(it).todo }"></span>
+                  <span class="cv-seg s-prog" :style="{ flexGrow: kidStats(it).inprogress }"></span>
+                  <span class="cv-seg s-done" :style="{ flexGrow: kidStats(it).done }"></span>
+                </div>
+                <div class="c-children">
+                  <a v-for="c in kids(it)" :key="c.key" class="ctr" :href="jiraUrl(c.key)" target="_blank" rel="noopener" :title="c.key">
+                    <div class="ct-tkt"><TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span></div>
+                    <div><StatusPill :cat="c.statusCategory" :label="c.status" /></div>
+                    <div class="dt">{{ fy(c.created) || "—" }}</div>
+                    <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
+                    <div class="asg">{{ c.assignee || "—" }}</div>
+                  </a>
+                  <div v-if="!kids(it).length" class="mini muted">{{ (it.children || []).length ? '표시할 하위 티켓 없음 (완료 숨김)' : '직계 하위 티켓 없음' }}</div>
+                </div>
               </div>
               <div class="c-x"><button class="xbtn" @click="toggleDetail(it)">{{ detailOpen[it.key] ? "접기 ▴" : "자세히 ▾" }}</button></div>
             </div>

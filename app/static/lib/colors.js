@@ -5,8 +5,9 @@ export function moduleColor(i) { return "var(--c" + ((i % 7) + 1) + ")"; }
 // statusCategory(todo|inprogress|done) → CSS 변수 / 라벨
 export const STATUS_VAR = { todo: "var(--st-todo)", inprogress: "var(--st-prog)", done: "var(--st-done)" };
 export const STATUS_LABEL = { todo: "To Do", inprogress: "In Progress", done: "Done" };
-// 트리 정렬 순서: 진행중 → To Do → 완료
-export const STATUS_ORDER = { inprogress: 0, todo: 1, done: 2 };
+// 하위 티켓 정렬 순서: Open → 진행중 → 해결(완료)
+// (현안 하위 목록·자손 트리 공통. 완료가 맨 아래로 모여 세로 진척 바와 구간이 일치한다)
+export const STATUS_ORDER = { todo: 0, inprogress: 1, done: 2 };
 
 // 이슈타입 → 짧은 라벨 (배지 표기)
 export const TYPE_LABEL = {
