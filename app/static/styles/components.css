@@ -2,14 +2,19 @@
  * updated: 2026-07-08 */
 
 /* 상태 pill */
-.pill { font-size: 9.5px; font-weight: 700; border-radius: 999px; padding: 1px 8px; border: 1px solid;
-        white-space: nowrap; flex: 0 0 auto; }
+.pill { font-size: 9.5px; font-weight: 700; border-radius: 5px; padding: 1.5px 6px; border: 1px solid;
+        white-space: nowrap; flex: 0 0 auto;
+        background: color-mix(in srgb, currentColor 12%, transparent);
+        border-color: color-mix(in srgb, currentColor 32%, transparent); }
 
 /* 이슈타입 배지 */
-.tbadge { font-size: 8.5px; font-weight: 700; padding: 1px 5px; border-radius: 4px; letter-spacing: .2px;
+.tbadge { --tc: var(--ty-task);   /* fallback — 인라인 --tc 미지정 시에도 칩이 안 깨지게 */
+          font-size: 9.5px; font-weight: 700; padding: 1.5px 5px; border-radius: 4px; letter-spacing: .4px;
           flex: 0 0 auto; white-space: nowrap; }
 .tbadge.v-plain { color: var(--muted); border: 1px solid var(--border); }
-.tbadge.v-solid { color: #fff; }
+/* 알파 틴트 칩 — 배경 14% / 보더 34% / 글자 원색. --tc 는 TypeBadge 가 인라인으로 준다 */
+.tbadge.v-solid { color: var(--tc); background: color-mix(in srgb, var(--tc) 14%, transparent);
+                  border: 1px solid color-mix(in srgb, var(--tc) 34%, transparent); }
 
 /* ProgressBar */
 .pbar-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -30,7 +35,7 @@
 /* LoginOverlay */
 .login-ov { position: fixed; inset: 0; z-index: 99999; display: flex; align-items: center; justify-content: center;
             background: rgba(17,20,28,.72); backdrop-filter: blur(3px); }
-.login-card { background: var(--panel); color: var(--text); border-radius: 14px; padding: 30px 34px; max-width: 420px;
+.login-card { background: var(--panel); color: var(--text); border-radius: 12px; padding: 30px 34px; max-width: 420px;
               box-shadow: 0 18px 60px rgba(0,0,0,.4); text-align: center; }
 .login-ic { font-size: 34px; margin-bottom: 6px; }
 .login-h { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
@@ -40,7 +45,7 @@
 
 /* FormulaCallout */
 .fcallout { border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--panel);
-            border-radius: 10px; padding: 9px 13px; margin: 0 0 16px; font-size: 12.5px; box-shadow: var(--shadow); }
+            border-radius: 9px; padding: 9px 13px; margin: 0 0 16px; font-size: 12.5px; }
 .fcallout .fhead { display: flex; align-items: baseline; gap: 8px; cursor: pointer; flex-wrap: wrap; }
 .fcallout .fico { color: var(--accent); font-weight: 700; flex: none; }
 .fcallout .fcore { color: var(--muted); font-family: "Consolas","Menlo",monospace; font-size: 12px; }

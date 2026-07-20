@@ -6,7 +6,7 @@
 .vg-head .dot { width: 12px; height: 12px; border-radius: 3px; }
 .vg-head b { font-size: 15px; } .vg-head .c { color: var(--muted); font-size: 12px; }
 
-.tbl { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.tbl { background: var(--panel); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
 .vhead, .vrow { display: grid;
   grid-template-columns: minmax(240px,1.8fr) minmax(105px,0.7fr) minmax(430px,4fr) 64px; gap: 14px; }
 .vhead { padding: 8px 16px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
@@ -45,7 +45,9 @@
 
 .mini { font-size: 11.5px; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini .d { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
-.mini .act { font-size: 9.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; color: #fff; margin-right: 5px; }
+.mini .act { font-size: 9.5px; font-weight: 700; padding: 1.5px 6px; border-radius: 5px; margin-right: 5px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 34%, transparent); }
 .mini .act.created { background: var(--st-prog); }
 .mini .act.done, .mini .act.resolved { background: var(--done); }
 .mini .sm { color: var(--muted); } .mini.muted { color: var(--muted); }
@@ -70,7 +72,7 @@
 .tnode { display: flex; align-items: stretch; font-size: 12px; min-height: 34px; }
 .tnode .typc { display: flex; align-items: stretch; flex: 0 0 auto; }   /* 안내선 (레벨 들여쓰기) */
 .tcard { display: inline-flex; align-items: center; gap: 7px; align-self: center; min-width: 0;
-         padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); box-shadow: var(--shadow); }
+         padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); }
 .tcard .tbadge { flex: 0 0 auto; }
 .tcard .ky { flex: 0 0 auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .tcard .sm { flex: 0 1 auto; min-width: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }

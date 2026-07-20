@@ -6,10 +6,9 @@ export default {
   props: { type: { type: String, default: "" }, variant: { type: String, default: "solid" } },
   computed: {
     label() { return typeLabel(this.type); },
+    // solid = 알파 틴트 칩. 색은 --tc 로만 넘기고 배경/보더 틴트는 components.css 가 계산.
     style() {
-      return this.variant === "solid"
-        ? { background: TYPE_BG[this.type] || "#3568c4", color: "#fff", borderColor: "transparent" }
-        : {};
+      return this.variant === "solid" ? { "--tc": TYPE_BG[this.type] || "var(--ty-task)" } : {};
     },
   },
   template: `<span class="tbadge" :class="'v-' + variant" :style="style">{{ label }}</span>`,

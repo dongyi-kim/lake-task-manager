@@ -1,6 +1,6 @@
 /* wbs.css — WBS Dashboard(간트) 화면 고유 스타일. 색은 tokens.css. updated: 2026-07-08 */
 .pmo { display: grid; grid-template-columns: 180px 1fr; gap: 18px; background: var(--panel);
-       border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; box-shadow: var(--shadow); margin-bottom: 20px; }
+       border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 18px; }
 @media (max-width: 680px) { .pmo { grid-template-columns: 1fr; } }
 .gauge { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
 .gauge svg { width: 120px; height: 120px; }
@@ -8,7 +8,7 @@
 .gauge .cap { color: var(--muted); font-size: 12px; text-align: center; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-content: center; }
 @media (max-width: 560px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
-.kpi { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; }
+.kpi { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px; }
 .kpi .v { font-size: 21px; font-weight: 700; } .kpi .k { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .kpi .v.mock { color: var(--mock); }
 
@@ -20,7 +20,7 @@
 .seg button:first-child { border-left: 0; } .seg button.on { background: var(--accent); color: #fff; }
 .controls .btn.on { color: var(--accent); border-color: var(--accent); font-weight: 600; }
 
-.gantt { display: flex; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--panel); box-shadow: var(--shadow); }
+.gantt { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--panel); }
 .g-labels { flex: 0 0 384px; width: 384px; border-right: 1px solid var(--border); background: var(--panel); z-index: 3; }
 @media (max-width: 680px) { .g-labels { flex-basis: 250px; width: 250px; } }
 .g-scroll { overflow-x: auto; flex: 1 1 auto; }
@@ -64,9 +64,12 @@
 .lrow.msg .nm { color: var(--muted); font-style: italic; font-size: 10.5px; }
 
 /* 이슈타입 배지(solid) */
-.tb { font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 4px; color: #fff; flex: 0 0 auto; letter-spacing: .2px; }
-.tb.bEpic { background: var(--ty-epic); } .tb.bStory { background: var(--ty-story); } .tb.bTask { background: var(--ty-task); }
-.tb.bBug { background: var(--ty-bug); } .tb.bSub { background: var(--ty-sub); } .tb.bImp { background: var(--ty-feat); }
+.tb { --tc: var(--ty-task);   /* fallback */
+      font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 4px; flex: 0 0 auto; letter-spacing: .3px;
+      color: var(--tc); background: color-mix(in srgb, var(--tc) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--tc) 34%, transparent); }
+.tb.bEpic { --tc: var(--ty-epic); } .tb.bStory { --tc: var(--ty-story); } .tb.bTask { --tc: var(--ty-task); }
+.tb.bBug { --tc: var(--ty-bug); } .tb.bSub { --tc: var(--ty-sub); } .tb.bImp { --tc: var(--ty-feat); }
 /* 상태 pill(간트 Task/Sub) */
 .spill { font-size: 9.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid; white-space: nowrap; flex: 0 0 auto; font-weight: 600; }
 .spill.sTodo { color: var(--st-todo); border-color: var(--st-todo); }

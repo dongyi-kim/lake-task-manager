@@ -69,7 +69,7 @@ export default {
       const prog = n.resolved ? ("완료 " + ymdhm(n.resolved)) : (n.created ? ("생성 " + ymdhm(n.created)) : "");
       return `<span class='typc'>${g}</span>`
         + `<span class='tcard'>`
-        + `<span class='tbadge v-solid' style='background:${TYPE_BG[n.type] || "#3568c4"}'>${typeLabel(n.type)}</span>`
+        + `<span class='tbadge v-solid' style='--tc:${TYPE_BG[n.type] || "var(--ty-task)"}'>${typeLabel(n.type)}</span>`
         + `<span class='ky'>${tkt(n.key, this.d.jiraBase)}</span>`
         + `<span class='sm'>${esc(n.summary || "")}</span>`
         + (n.assignee ? `<span class='asg'>${esc(n.assignee)}</span>` : "")

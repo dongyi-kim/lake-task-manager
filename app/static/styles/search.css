@@ -2,8 +2,7 @@
 
 .top-actions { display: inline-flex; align-items: center; gap: 8px; }
 .search-trig { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted);
-  background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px 5px 11px;
-  cursor: pointer; box-shadow: var(--shadow); }
+  background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 5px 10px 5px 11px; cursor: pointer; }
 .search-trig:hover { color: var(--text); border-color: var(--accent); }
 .search-trig svg { width: 14px; height: 14px; }
 .search-trig kbd { font: 600 10.5px/1 ui-monospace, monospace; color: var(--muted); background: var(--panel-2);
@@ -13,7 +12,7 @@
 .sr-ov { position: fixed; inset: 0; z-index: 9200; display: flex; align-items: flex-start; justify-content: center;
   background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 68px 16px 24px; }
 .sr-box { width: min(760px, 100%); max-height: calc(100vh - 100px); display: flex; flex-direction: column;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--border-hi); border-radius: 12px; overflow: hidden;
   box-shadow: 0 24px 70px rgba(0, 0, 0, .4); }
 
 .sr-top { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
@@ -62,7 +61,8 @@
 .sr-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-todo); }
 .sr-dot.st-inprogress { background: var(--st-prog); }
 .sr-dot.st-done { background: var(--st-done); }
-.sr-key { flex: none; color: var(--accent); font-weight: 700; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.sr-key { flex: none; color: var(--accent); font-weight: 700; font-size: 11.5px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; letter-spacing: .2px; font-variant-numeric: tabular-nums; }
 .sr-title { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
 .sr-excerpt { flex: 1 1 6em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--muted); font-size: 12px; }
