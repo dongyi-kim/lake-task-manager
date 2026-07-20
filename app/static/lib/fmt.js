@@ -25,6 +25,16 @@ export function ymdhm(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso);
   return m ? (m[1].slice(2) + "." + m[2] + "." + m[3] + " " + m[4] + ":" + m[5]) : ymd(iso);
 }
+// ISO → "yyyy.mm.dd HH:mm:ss" (일정 필드 공통 포맷).
+// Jira 가 날짜만 가진 필드(duedate 등)는 없는 시:분:초를 지어내지 않고 "yyyy.mm.dd" 로 둔다.
+export function ts(iso) {
+  if (!iso) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(iso);
+  if (!m) return iso;
+  const d = m[1] + "." + m[2] + "." + m[3];
+  return m[4] ? d + " " + m[4] + ":" + m[5] + ":" + (m[6] || "00") : d;
+}
+
 // 마감까지 남은 일정 → "D-Day" | "D-N"(남음) | "D+N"(초과)
 export function dday(iso) {
   if (!iso) return "";

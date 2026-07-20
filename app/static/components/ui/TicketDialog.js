@@ -2,7 +2,7 @@
 // description 은 백엔드에서 **정화된 HTML**(app/htmlsafe.py) 이라 v-html 로 그대로 렌더(table/code/quote/panel/callout/img).
 // 코멘트 텍스트는 Vue 기본 이스케이프({{ }})로 안전 표시. Esc/백드롭/X 로 닫기.
 import { api } from "../../lib/api.js";
-import { ymd, ymdhm, esc } from "../../lib/fmt.js";
+import { ymd, ymdhm, ts, esc } from "../../lib/fmt.js";
 import { TYPE_BG } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
@@ -147,6 +147,7 @@ export default {
     // 타 모듈 형제 = 흐리게(숨기지는 않는다 — 존재는 알리고 노이즈만 줄임)
     isOther(s) { return !!(this.myComp && s.component && s.component !== this.myComp); },
     fy(s) { return ymd(s); },
+    fts(s) { return ts(s); },   // 일정 공통 포맷 yyyy.mm.dd HH:mm:ss
     fdt(s) { return ymdhm(s); },
     statusClass(cat) { return "st-" + (cat || "todo"); },
     // 확대 버튼(.zoom-btn)만 반응 — 표는 드래그 복사가 가능해야 하므로 내용 클릭으로는 확대 안 함.
@@ -402,11 +403,12 @@ export default {
               </div>
 
               <div class="tkt-mlabel sf-gap">일정</div>
-              <div class="sfield"><span class="sf-k">생성일</span><span class="sf-v">{{ fdt(v.created) || '—' }}</span></div>
-              <div class="sfield"><span class="sf-k">시작일</span><span class="sf-v">{{ fy(v.started) || '—' }}</span></div>
+              <div class="sfield"><span class="sf-k">생성일</span><span class="sf-v">{{ fts(v.created) || '—' }}</span></div>
+              <div class="sfield"><span class="sf-k">시작일</span><span class="sf-v">{{ fts(v.started) || '—' }}</span></div>
               <div class="sfield"><span class="sf-k">작업 기한</span>
-                <span class="sf-v" :class="{ overdue: v.due && !v.resolved && fy(v.due) < today }">{{ fy(v.due) || '—' }}</span></div>
-              <div class="sfield"><span class="sf-k">완료일</span><span class="sf-v">{{ fdt(v.resolved) || '—' }}</span></div>
+                <span class="sf-v" :class="{ overdue: v.due && !v.resolved && fy(v.due) < today }">{{ fts(v.due) || '—' }}</span></div>
+              <div class="sfield"><span class="sf-k">완료일</span><span class="sf-v">{{ fts(v.resolved) || '—' }}</span></div>
+              <div class="sfield"><span class="sf-k">최종 수정일</span><span class="sf-v">{{ fts(v.updated) || '—' }}</span></div>
             </template>
 
             <div v-if="timeline.length" class="tkt-mlabel sf-gap">타임라인</div>
