@@ -190,7 +190,10 @@ export default {
             <template v-for="p in m.people" :key="p.id">
               <div class="prow">
                 <span class="pname" :title="p.id"><b>{{ p.name }}</b><span v-if="p.kind" class="kbadge" :class="p.kind">{{ p.kind === 'dev' ? '개발' : '운영' }}</span></span>
-                <div class="wbars">
+                <div v-if="p.error" class="wbars wl-fail" title="이 인력의 집계 조회에 실패했습니다(0 이 아님). 새로고침으로 재시도하세요.">
+                  <span class="wl-fail-t">집계 조회 실패 — 새로고침으로 재시도</span>
+                </div>
+                <div v-else class="wbars">
                   <ProgressBar class="wside" :segments="segAssigned(p)" :scale="scale.ip" show-total dark-text />
                   <ProgressBar class="wside" :segments="seg(p.done7d, metric)" :scale="scale.dn" show-total dark-text />
                 </div>
