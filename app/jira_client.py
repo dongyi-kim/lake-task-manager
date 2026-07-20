@@ -462,6 +462,49 @@ class JiraClient:
         view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
         return view
 
+    def ticket_ancestors(self, key):
+        """이 티켓의 조상 체인(위→아래 순, [epic, parent]).
+          · Sub-Task → [epic(조부모), parent]   · Story/Task/Bug → [epic]   · Epic → []
+        각 노드 = ticket_badge 형태({key,summary,type,status,statusCategory,assignee}).
+        조상 키 해석은 전부 티켓단위 캐시(get_issue)를 재사용하고, 결과도 ancestors:{env}:{key} 로 캐시."""
+        def build():
+            try:
+                raw = self.get_issue(key)
+            except Exception:
+                return []
+            f = raw.get("fields") or {}
+            parent_key = (f.get("parent") or {}).get("key")
+            epic_key = f.get(self.s.epic_link_field_id)
+            chain = []
+            if parent_key:                      # Sub-Task: parent 의 Epic Link 를 조부모로 함께
+                try:
+                    pe = (self.get_issue(parent_key).get("fields") or {}).get(self.s.epic_link_field_id)
+                except Exception:
+                    pe = None
+                if pe:
+                    chain.append(pe)
+                chain.append(parent_key)
+            elif epic_key:                      # Story/Task/Bug: 소속 Epic
+                chain.append(epic_key)
+            return [b for b in (self.ticket_badge(k) for k in chain) if b]
+        return self.cache.get_or_set(f"ancestors:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
+    def ticket_descendants(self, key):
+        """이 티켓의 자손(표시용 노드).
+          · Epic → 자식(Story/Task/Bug) + 각 자식의 Sub-Task(2단계)   · Story/Task/Bug → Sub-Task   · Sub-Task → []
+        노드 = _display_node 형태({key,type,summary,statusName,statusCat,component, children?}).
+        Epic 은 epic_tree(캐시)를, 그 외는 티켓의 subtasks 필드를 그대로 재사용. 결과도 descendants:{env}:{key} 로 캐시."""
+        def build():
+            try:
+                raw = self.get_issue(key)
+            except Exception:
+                return []
+            itype = ((raw.get("fields") or {}).get("issuetype") or {}).get("name", "")
+            if itype == "Epic":
+                return self.epic_tree(key)      # 이미 2단계·캐시
+            return _display_node(raw, self.s.sp_field_id, with_subs=True).get("children", [])
+        return self.cache.get_or_set(f"descendants:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
     # ── 이미지/첨부 프록시 (prod: 인증 세션으로 받아 same-origin 반환) ──
     def _media_allowed_host(self, host):
         """이미지 프록시 허용 호스트 판별 — jira base 호스트·동일 상위도메인·config image_hosts."""

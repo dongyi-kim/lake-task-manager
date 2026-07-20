@@ -21,7 +21,8 @@ export default {
   components: { TypeBadge },
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
-  data() { return { v: null, comments: null, err: "", loading: true, expanded: false, zoom: null, zoomLoading: false }; },
+  data() { return { v: null, comments: null, ancestors: [], descendants: null,
+                    err: "", loading: true, expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
     this._onKey = (e) => {
@@ -32,6 +33,13 @@ export default {
     this.load();
   },
   unmounted() { window.removeEventListener("keydown", this._onKey); },
+  computed: {
+    // 자손 총 개수(직계 + 하위 sub-task) — "하위 (N)" 헤더용
+    descCount() {
+      return (this.descendants || []).reduce(
+        (n, x) => n + 1 + ((x.children && x.children.length) || 0), 0);
+    },
+  },
   watch: {
     keyId() { this.load(); },
     v() { this.$nextTick(this.augment); },            // 설명 렌더 후 확대버튼·뱃지 주입
@@ -40,9 +48,13 @@ export default {
   methods: {
     async load() {
       this.loading = true; this.err = ""; this.v = null; this.comments = null;
+      this.ancestors = []; this.descendants = null;
       try {
         this.v = await api.ticket(this.keyId);
+        // 조상(상위 epic/parent)·자손(하위 sub-task 등)·코멘트는 병렬 lazy 로드 (전부 티켓단위 캐시)
         api.ticketComments(this.keyId).then((c) => { this.comments = c; }).catch(() => { this.comments = []; });
+        api.ticketAncestors(this.keyId).then((a) => { this.ancestors = a || []; }).catch(() => { this.ancestors = []; });
+        api.ticketDescendants(this.keyId).then((d) => { this.descendants = d || []; }).catch(() => { this.descendants = []; });
       } catch (e) {
         this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + this.keyId : (e.message || "불러오기 실패");
       } finally { this.loading = false; }
@@ -141,6 +153,20 @@ export default {
             <a v-if="v.url" class="tkt-ext" :href="v.url" target="_blank" rel="noopener">Jira에서 열기 ↗</a>
           </div>
 
+          <!-- 상위 계보(브레드크럼) — 이 티켓이 속한 epic/parent 를 제목 위에 작게. 클릭 시 해당 티켓으로 이동 -->
+          <div v-if="ancestors.length" class="tkt-crumbs">
+            <template v-for="a in ancestors" :key="a.key">
+              <a class="tkt-crumb tkt" :data-key="a.key"
+                 :title="a.type + ' ' + a.key + ' · ' + a.summary + (a.status ? ' (' + a.status + ')' : '')">
+                <span class="tkt-crumb-dot" :class="statusClass(a.statusCategory)"></span>
+                <span class="tkt-crumb-type">{{ a.type }}</span>
+                <span class="tkt-crumb-key">{{ a.key }}</span>
+                <span class="tkt-crumb-sum">{{ a.summary }}</span>
+              </a>
+              <span class="tkt-crumb-sep">›</span>
+            </template>
+          </div>
+
           <h2 class="tkt-summary">{{ v.summary }}</h2>
 
           <div class="tkt-meta">
@@ -160,6 +186,30 @@ export default {
 
           <div class="tkt-sec-t">설명</div>
           <div class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="v.descriptionHtml || '<p class=&quot;muted&quot;>설명이 없습니다.</p>'"></div>
+
+          <!-- 하위 자손(Epic→자식+Sub-Task 2단계 / Task→Sub-Task). 클릭 시 해당 티켓으로 이동 -->
+          <template v-if="descendants && descendants.length">
+            <div class="tkt-sec-t">하위 ({{ descCount }})</div>
+            <div class="tkt-children">
+              <div v-for="n in descendants" :key="n.key" class="tkt-child-group">
+                <a class="tkt-child tkt" :data-key="n.key" :title="n.type + ' ' + n.key + ' · ' + n.summary">
+                  <span class="tkt-child-dot" :class="'st-' + (n.statusCat || 'todo')"></span>
+                  <span class="tkt-child-type">{{ n.type }}</span>
+                  <b class="tkt-child-key">{{ n.key }}</b>
+                  <span class="tkt-child-sum">{{ n.summary }}</span>
+                </a>
+                <div v-if="n.children && n.children.length" class="tkt-child-subs">
+                  <a v-for="s in n.children" :key="s.key" class="tkt-child sub tkt" :data-key="s.key"
+                     :title="s.type + ' ' + s.key + ' · ' + s.summary">
+                    <span class="tkt-child-dot" :class="'st-' + (s.statusCat || 'todo')"></span>
+                    <span class="tkt-child-type">{{ s.type }}</span>
+                    <b class="tkt-child-key">{{ s.key }}</b>
+                    <span class="tkt-child-sum">{{ s.summary }}</span>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </template>
 
           <div class="tkt-sec-t">코멘트<span v-if="comments"> ({{ comments.length }})</span></div>
           <div v-if="!comments" class="loading">코멘트 불러오는 중…</div>

@@ -172,3 +172,81 @@ def test_ticket_view_fields_populated():
     assert v["key"] and v["summary"] and v["status"]
     assert v["statusCategory"] in ("todo", "inprogress", "done")
     assert isinstance(v["labels"], list) and isinstance(v["components"], list)
+
+
+# ── 조상(ancestors) / 자손(descendants) + 개별 캐시 ──
+def _subtask_with_epic():
+    """parent 가 있고 그 parent 가 Epic Link 를 가진 Sub-Task 키 → (sub, parent, epic)."""
+    w = get_world()
+    for k, it in w.issues.items():
+        p = it.get("parentKey")
+        if p and w.issues.get(p, {}).get("epicKey"):
+            return k, p, w.issues[p]["epicKey"]
+    raise AssertionError("no subtask→parent→epic chain in world")
+
+
+def test_ancestors_subtask_chain_is_epic_then_parent():
+    sub, parent, epic = _subtask_with_epic()
+    anc = _client().ticket_ancestors(sub)
+    assert [a["key"] for a in anc] == [epic, parent]        # 위→아래: [epic(조부모), parent]
+    for a in anc:
+        assert a["key"] and a["summary"] and a["type"]
+        assert a["statusCategory"] in ("todo", "inprogress", "done")
+
+
+def test_ancestors_story_is_its_epic_only():
+    w = get_world()
+    key = next(k for k, it in w.issues.items()
+               if it.get("epicKey") and not it.get("parentKey") and it.get("type") != "Epic")
+    assert [a["key"] for a in _client().ticket_ancestors(key)] == [w.issues[key]["epicKey"]]
+
+
+def test_ancestors_epic_is_empty():
+    assert _client().ticket_ancestors(_key_of_type("Epic")) == []
+
+
+def test_descendants_epic_has_two_levels():
+    d = _client().ticket_descendants(_key_of_type("Epic"))
+    assert d, "epic 자손 없음"
+    n0 = d[0]
+    assert n0["key"] and n0["summary"] and n0["type"]
+    assert n0["statusCat"] in ("todo", "inprogress", "done")
+    subs = [s for n in d for s in (n.get("children") or [])]
+    assert subs and all(s["key"] and s["summary"] for s in subs)   # 2단계(자식→Sub-Task)
+
+
+def test_descendants_task_returns_its_subtasks():
+    w = get_world()
+    task = next(k for k, it in w.issues.items() if it.get("subtasks"))
+    d = _client().ticket_descendants(task)
+    assert {n["key"] for n in d} == set(w.issues[task]["subtasks"])
+    assert all(not n.get("children") for n in d)                   # Sub-Task 는 leaf
+
+
+def test_descendants_subtask_is_empty():
+    sub, _p, _e = _subtask_with_epic()
+    assert _client().ticket_descendants(sub) == []
+
+
+def test_ancestors_each_ancestor_individually_cached():
+    """조상 조회 시 각 조상 티켓이 개별 티켓 캐시(issue:{env}:{key})로 저장돼야 한다."""
+    sub, parent, epic = _subtask_with_epic()
+    c = _client()
+    env = c.env
+    assert c.cache.get(f"issue:{env}:{epic}") is None          # 조회 전엔 개별 캐시 없음
+    assert c.cache.get(f"issue:{env}:{parent}") is None
+    c.ticket_ancestors(sub)
+    assert c.cache.get(f"issue:{env}:{epic}") is not None       # 조상 각각이 개별 캐시에 존재
+    assert c.cache.get(f"issue:{env}:{parent}") is not None
+    assert c.cache.get(f"ancestors:{env}:{sub}") is not None    # 결과 블롭도 캐시
+
+
+def test_descendants_each_child_individually_cached():
+    """Epic 자손 조회 시 각 자식 티켓이 개별 캐시로 write-through 되어야 한다."""
+    c = _client()
+    env = c.env
+    epic = _key_of_type("Epic")
+    d = c.ticket_descendants(epic)
+    child = d[0]["key"]
+    assert c.cache.get(f"issue:{env}:{child}") is not None      # 자식 개별 write-through
+    assert c.cache.get(f"descendants:{env}:{epic}") is not None

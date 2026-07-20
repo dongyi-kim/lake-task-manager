@@ -36,6 +36,40 @@
 .tkt-ext:hover { text-decoration: underline; }
 .tkt-summary { font-size: 19px; margin: 12px 0 14px; line-height: 1.35; }
 
+/* ── 상위 계보 브레드크럼 (제목 위) — 이 티켓의 조상 epic/parent. 칩 → 클릭 시 이동 ── */
+.tkt-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 3px; margin: 12px 0 0; }
+.tkt-crumbs + .tkt-summary { margin-top: 5px; }
+.tkt-crumb { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0;
+  font-size: 11.5px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 2px 10px; text-decoration: none; cursor: pointer; }
+.tkt-crumb:hover { border-color: var(--accent); color: var(--text); text-decoration: none; }
+.tkt-crumb-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--st-todo); }
+.tkt-crumb-dot.st-inprogress { background: var(--st-prog); }
+.tkt-crumb-dot.st-done { background: var(--st-done); }
+.tkt-crumb-type { flex: none; font-weight: 700; letter-spacing: .2px; }
+.tkt-crumb-key { flex: none; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.tkt-crumb-sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 280px; }
+.tkt-crumb-sep { color: var(--muted); font-size: 14px; opacity: .55; }
+.tkt-crumbs .tkt-crumb-sep:last-child { color: var(--accent); opacity: .9; }   /* 마지막 › = 현재 티켓 지시 */
+
+/* ── 하위 자손 리스트 (Epic→자식+Sub-Task / Task→Sub-Task) ── */
+.tkt-children { display: flex; flex-direction: column; gap: 5px; }
+.tkt-child-group { display: flex; flex-direction: column; gap: 5px; }
+.tkt-child { display: inline-flex; align-items: center; gap: 8px; min-width: 0; text-decoration: none;
+  font-size: 12.5px; color: var(--text); background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 11px; cursor: pointer; }
+.tkt-child:hover { border-color: var(--accent); text-decoration: none; }
+.tkt-child.sub { background: transparent; }
+.tkt-child-subs { display: flex; flex-direction: column; gap: 5px; margin: 1px 0 2px 22px;
+  border-left: 2px solid var(--border); padding-left: 11px; }
+.tkt-child-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-todo); }
+.tkt-child-dot.st-inprogress { background: var(--st-prog); }
+.tkt-child-dot.st-done { background: var(--st-done); }
+.tkt-child-type { flex: none; font-size: 10.5px; font-weight: 700; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 0 6px; }
+.tkt-child-key { flex: none; color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+.tkt-child-sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
 /* ── 메타 그리드 ── */
 .tkt-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 18px;
   padding: 12px 14px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }

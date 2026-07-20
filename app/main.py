@@ -142,6 +142,18 @@ def api_ticket_badge(key: str):
     return JSONResponse(b)
 
 
+@app.get("/api/ticket/{key}/ancestors")
+def api_ticket_ancestors(key: str):
+    """티켓 조상 체인(상위 epic·parent) — 다이얼로그 제목 위 브레드크럼용. 티켓단위 캐시 재사용."""
+    return JSONResponse(_client.ticket_ancestors(key))
+
+
+@app.get("/api/ticket/{key}/descendants")
+def api_ticket_descendants(key: str):
+    """티켓 자손(하위 sub-task/소속 task 등) — Epic 은 2단계 트리. 티켓단위/epic_tree 캐시 재사용."""
+    return JSONResponse(_client.ticket_descendants(key))
+
+
 @app.get("/api/vit/{key}")
 def api_vit_detail(key: str):
     """단일 현안 상세 — 자손 트리 + 코멘트 (프론트 [자세히] 지연 로딩)."""
