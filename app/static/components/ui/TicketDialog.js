@@ -76,15 +76,15 @@ export default {
       return { "tkt-lin-main": !!n.main, "tkt-lin-epic": n.type === "Epic",
                "tkt-lin-sub": n.type === "Sub-Task" };
     },
-    // 좌상→우하 계단식 — 현재(메인, dist=0)의 x 시작위치는 콘텐츠 좌측에 고정(marginLeft 0).
-    //   상위 조상일수록 왼쪽으로 삐져나가고(음수 marginLeft) 오른쪽은 안으로(양수 marginRight). z: 현재가 앞.
+    // 역피라미드 — 위(조상)가 넓고 아래(현재)로 갈수록 가운데로 좁아진다. z: 현재(dist=0)가 앞.
+    //   Epic 은 여백 없이 다이얼로그 상단 풀블리드(머리띠) → 인라인 마진 없이 CSS(.tkt-lin-epic)가 처리.
     linStyle(n) {
-      const step = 10;
-      const s = { marginLeft: (-(n.dist * step)) + "px", marginRight: (n.dist * step) + "px",
-                  zIndex: 100 - n.dist };
-      if (n.type !== "Epic") {
-        s["--acc"] = n.type === "Sub-Task" ? "var(--border)" : (TYPE_BG[n.type] || "#3568c4");
-      }
+      const s = { zIndex: 100 - n.dist };
+      if (n.type === "Epic") return s;
+      const step = 20, top = this.lineage.length - 1;
+      const inset = (top - n.dist) * step;            // 위로 갈수록 넓게, 아래로 갈수록 좁게(가운데)
+      s.marginLeft = inset + "px"; s.marginRight = inset + "px";
+      s["--acc"] = n.type === "Sub-Task" ? "var(--border)" : (TYPE_BG[n.type] || "#3568c4");
       return s;
     },
     // 확대 버튼(.zoom-btn)만 반응 — 표는 드래그 복사가 가능해야 하므로 내용 클릭으로는 확대 안 함.
