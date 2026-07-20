@@ -43,6 +43,7 @@ def build_store():
     # 이 프로젝트 world(DL) 를 additive 주입 (키/사용자 disjoint → 교체 아님, 공존).
     store.users.update(w.users)
     store.issues.update(w.issues)       # 내부 이슈 dict 는 jira820 직렬화기와 호환(누락 키는 .get 기본값)
+    store.attachments.update(w.attachments)   # 첨부(바이트 포함) — 다운로드/썸네일 경로까지 동작
     store.activity.update(w.activity)
     store.confluence.update(w.confluence)
     store.reindex()

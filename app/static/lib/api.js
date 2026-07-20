@@ -44,5 +44,7 @@ export const api = {
   ticketTimeline: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/timeline"),
   ticketChildren: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/children"),
   ticketRelated: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/related"),
+  ticketAttachments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/attachments"),
+  ticketDocuments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/documents"),
   ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
 };

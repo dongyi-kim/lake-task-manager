@@ -84,6 +84,7 @@ class World:
         self._comp_ids = {m: str(100 + i) for i, m in enumerate(self.modules + ["사용자 VoC"])}
         self.users = self._make_users()
         self.issues = {}                 # key -> canonical issue
+        self.attachments = {}            # id -> 첨부(jira820 store.attachments 형태)
         self._counter = 5000             # 생성 키 DL-5001+ (config epic id DL-1xx 와 충돌 회피)
 
         self._build_wbs_epics()
@@ -93,6 +94,7 @@ class World:
         self._build_vit()
         self._build_voc()
         self._build_links()           # 이슈 링크(relates to 등) — '관련 Task' 용
+        self._build_attachments()     # 첨부파일 — '첨부파일' 패널 용
         self._index()
         self._build_activity()
         self._build_confluence()
@@ -351,6 +353,38 @@ class World:
                 for _ in range(rng.randint(0, 5)):
                     self._make_issue(rng, rng.choice(["Task", "Bug", "Story"]), module,
                                      component="사용자 VoC", assignee=pid)
+
+    # 첨부 샘플 — 실제 바이트까지 넣어 다운로드/썸네일 경로도 dev 에서 동작하게 한다(아주 작게).
+    _ATT_SPECS = [("설계_검토.png", "image/png"), ("배포_체크리스트.md", "text/markdown"),
+                  ("성능_측정.csv", "text/csv"), ("화면_시안.svg", "image/svg+xml")]
+    _PNG_1X1 = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154"
+        "789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082")
+
+    def _build_attachments(self):
+        """일부 이슈에 첨부를 단다 — 결정적(키 해시 기반, rng 미사용)."""
+        for key in sorted(self.issues):
+            it = self.issues[key]
+            if it["type"] == "Epic":
+                continue
+            h = _shash(key)
+            n = (h % 5) - 2                       # 대부분 0, 일부 1~2개
+            if n <= 0:
+                continue
+            ids = []
+            for i in range(n):
+                fn, mime = self._ATT_SPECS[(h + i) % len(self._ATT_SPECS)]
+                aid = f"{_iid(key)}{i}"
+                data = self._PNG_1X1 if mime == "image/png" else (
+                    f"# {fn}\n{key} 관련 산출물 (dev 샘플)\n".encode("utf-8"))
+                self.attachments[aid] = {
+                    "id": aid, "issueKey": key, "filename": fn, "mimeType": mime,
+                    "size": len(data), "data": data,
+                    "author": it["assignee"],
+                    "created": it["created"],
+                }
+                ids.append(aid)
+            it["attachments"] = ids
 
     def _build_links(self):
         """이슈 링크(relates to / blocks / duplicates) — 같은 모듈 안에서 몇 쌍 연결.

@@ -8,17 +8,30 @@ Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 P
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
-from urllib.parse import urlparse
+from html import unescape
+from urllib.parse import quote, unquote, urlparse
 
 from . import progress
 from .auth.base import SessionExpired
-from .htmlsafe import proxy_images, sanitize_html, text_to_html, tidy_html
+from .htmlsafe import _CONF_RE, proxy_images, sanitize_html, text_to_html, tidy_html
 from .names import real_name
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
 # 설명·코멘트 HTML 안의 Jira 티켓 링크 → 언급된 티켓 추출용
 _BROWSE_KEY_RE = re.compile(r"/browse/([A-Z][A-Z0-9]+-\d+)")
+# 설명·코멘트 안의 링크 href (관련 문서 추출용)
+_HREF_RE = re.compile(r'href="([^"]+)"')
+# Confluence URL 에서 문서 제목 — /pages/{id}/{slug} 또는 /display/{space}/{slug}
+_CONF_TITLE_RE = re.compile(r"/pages/\d+/([^/?#]+)|/display/[^/]+/([^/?#]+)")
+
+
+def _conf_title(url):
+    m = _CONF_TITLE_RE.search(url or "")
+    slug = (m.group(1) or m.group(2)) if m else None
+    if not slug:
+        return "Confluence 문서"
+    return unquote(slug).replace("+", " ").strip() or "Confluence 문서"
 
 _CAT_MAP = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
 
@@ -218,7 +231,7 @@ class JiraClient:
     # ── 티켓 단위 캐시 레이어 (모든 이슈/하위이슈를 key 단위로 캐싱) ──
     def _issue_fields(self):
         return ("summary,description,issuetype,status,assignee,reporter,components,created,duedate,"
-                "resolutiondate,updated,labels,parent,subtasks,timespent,issuelinks,"
+                "resolutiondate,updated,labels,parent,subtasks,timespent,issuelinks,attachment,"
                 + self.s.sp_field_id + "," + self.s.epic_link_field_id)
 
     def get_issue(self, key):
@@ -714,6 +727,59 @@ class JiraClient:
             return out
         return self.cache.get_or_set(f"related:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
 
+    def ticket_attachments(self, key):
+        """첨부파일 — [{id,filename,size,mime,created,author,url,thumb,isImage}].
+        url/thumb 는 prod 에서 크로스오리진·인증이 걸리므로 이미지 프록시(/api/img)를 태운다."""
+        def build():
+            try:
+                f = self.get_issue(key).get("fields") or {}
+            except Exception:
+                return []
+            out = []
+            for a in (f.get("attachment") or []):
+                mime = a.get("mimeType") or ""
+                is_img = mime.startswith("image/")
+                out.append({
+                    "id": str(a.get("id") or ""),
+                    "filename": a.get("filename") or "(이름 없음)",
+                    "size": int(a.get("size") or 0),
+                    "mime": mime,
+                    "created": a.get("created"),
+                    "author": real_name((a.get("author") or {}).get("displayName")
+                                        or (a.get("author") or {}).get("name")),
+                    "url": self._media_url(a.get("content") or ""),
+                    "thumb": self._media_url(a.get("thumbnail") or "") if is_img else None,
+                    "isImage": is_img,
+                })
+            return out
+        return self.cache.get_or_set(f"attachments:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
+    def ticket_documents(self, key, limit=20):
+        """관련 문서 — 설명·코멘트에서 **언급된 Confluence 문서**. [{title,url}] (URL 기준 중복 제거)."""
+        def build():
+            htmls = []
+            try:
+                v = self.ticket_view(key)
+                if v:
+                    htmls.append(v.get("descriptionHtml") or "")
+            except Exception:
+                pass
+            try:
+                for c in self._issue_comments(key, limit=10):
+                    htmls.append(c.get("html") or "")
+            except Exception:
+                pass
+            out, seen = [], set()
+            for h in htmls:
+                for href in _HREF_RE.findall(h or ""):
+                    u = unescape(href)
+                    if not _CONF_RE.search(u) or u in seen:
+                        continue
+                    seen.add(u)
+                    out.append({"title": _conf_title(u), "url": u})
+            return out[:limit]
+        return self.cache.get_or_set(f"documents:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+
     # ── 사용자 프로필 이미지 ──
     # 아바타는 사실상 불변이라 URL 해석을 아주 길게 캐시(AVATAR_TTL). 바이트는 캐시에 넣지 않고
     # (SQLite 블롭 비대) HTTP Cache-Control(장기·immutable)로 브라우저가 들고 있게 한다.
@@ -761,6 +827,16 @@ class JiraClient:
             return True
         parent = ".".join(jh.split(".")[-2:]) if jh.count(".") >= 1 else jh
         return host == parent or host.endswith("." + parent)
+
+    def _media_url(self, u):
+        """첨부 URL — prod 는 /api/img 프록시(인증·크로스오리진 회피), mock/local 은 same-origin 그대로."""
+        if not u:
+            return None
+        if self.env != "prod":
+            return u
+        base = (self.s.jira_base or "").rstrip("/")
+        absolute = (base + u) if u.startswith("/") else u
+        return "/api/img?u=" + quote(absolute, safe="")
 
     def _proxy_media(self, html):
         """prod 에서만 <img src> 를 /api/img 프록시로 재작성 (mock/local 은 same-origin static)."""

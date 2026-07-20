@@ -166,6 +166,18 @@ def api_ticket_timeline(key: str):
     return JSONResponse(_client.ticket_timeline(key))
 
 
+@app.get("/api/ticket/{key}/attachments")
+def api_ticket_attachments(key: str):
+    """첨부파일 목록(이미지는 프록시 URL 포함)."""
+    return JSONResponse(_client.ticket_attachments(key))
+
+
+@app.get("/api/ticket/{key}/documents")
+def api_ticket_documents(key: str):
+    """관련 문서 — 설명·코멘트에서 언급된 Confluence 문서."""
+    return JSONResponse(_client.ticket_documents(key))
+
+
 @app.get("/api/ticket/{key}/children")
 def api_ticket_children(key: str):
     """하위 Task — 직계 자식(Epic→자식 / 그 외→Sub-Task)."""

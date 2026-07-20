@@ -35,7 +35,7 @@ export default {
   components: { TypeBadge, Avatar },
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
-  data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], sibOpen: true,
+  data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [], sibOpen: true,
                     pdesc: null, pdescOpen: false, pdescErr: "",
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
@@ -90,7 +90,7 @@ export default {
       const fresh = () => my === this._req && this.keyId === key;
       this.err = ""; this.v = null; this.comments = null;
       this.ancestors = []; this.siblings = []; this.timeline = [];
-      this.children = []; this.related = [];
+      this.children = []; this.related = []; this.atts = []; this.docs = [];
       this.pdesc = null; this.pdescOpen = false; this.pdescErr = "";
 
       api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; })
@@ -100,6 +100,8 @@ export default {
       api.ticketTimeline(key).then((t) => { if (fresh()) this.timeline = t || []; }).catch(() => {});
       api.ticketChildren(key).then((c) => { if (fresh()) this.children = c || []; }).catch(() => {});
       api.ticketRelated(key).then((r) => { if (fresh()) this.related = r || []; }).catch(() => {});
+      api.ticketAttachments(key).then((a) => { if (fresh()) this.atts = a || []; }).catch(() => {});
+      api.ticketDocuments(key).then((d) => { if (fresh()) this.docs = d || []; }).catch(() => {});
 
       try {
         const v = await api.ticket(key);
@@ -112,6 +114,12 @@ export default {
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
     descEmpty(html) { return descEmpty(html); },
+    fsize(n) {
+      n = +n || 0;
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      return (n / 1024 / 1024).toFixed(1) + " MB";
+    },
     // 상위 티켓 설명 — 기존 /api/ticket 응답을 그대로 재사용(정화된 HTML + 프론트 memo 캐시)
     async toggleParentDesc() {
       this.pdescOpen = !this.pdescOpen;
@@ -339,6 +347,31 @@ export default {
           <div class="tkt-sec-t">설명</div>
           <div v-if="ownDescEmpty" class="tkt-desc tkt-desc-box"><p class="muted">설명이 없습니다.</p></div>
           <div v-else class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="v.descriptionHtml"></div>
+
+          <!-- 설명 아래 2분할: 첨부파일 | 관련문서(언급된 Confluence 문서) -->
+          <div class="tkt-two">
+            <div class="tkt-two-col">
+              <div class="tkt-sec-t">첨부파일<span v-if="atts.length"> ({{ atts.length }})</span></div>
+              <div v-if="!atts.length" class="muted mini">첨부파일 없음</div>
+              <a v-else v-for="a in atts" :key="a.id" class="att" :href="a.url" target="_blank"
+                 rel="noopener" :title="a.filename + ' · ' + fsize(a.size)">
+                <img v-if="a.isImage && a.thumb" class="att-th" :src="a.thumb" :alt="a.filename" loading="lazy">
+                <span v-else class="att-ic"></span>
+                <span class="att-b">
+                  <span class="att-n">{{ a.filename }}</span>
+                  <span class="att-m">{{ fsize(a.size) }}<template v-if="a.author"> · {{ a.author }}</template></span>
+                </span>
+              </a>
+            </div>
+            <div class="tkt-two-col">
+              <div class="tkt-sec-t">관련문서<span v-if="docs.length"> ({{ docs.length }})</span></div>
+              <div v-if="!docs.length" class="muted mini">언급된 문서 없음</div>
+              <a v-else v-for="(d, i) in docs" :key="i" class="doc" :href="d.url" target="_blank"
+                 rel="noopener" :title="d.url">
+                <span class="doc-ic"></span><span class="doc-n">{{ d.title }}</span>
+              </a>
+            </div>
+          </div>
 
           </template><!-- /본문(v) -->
 
