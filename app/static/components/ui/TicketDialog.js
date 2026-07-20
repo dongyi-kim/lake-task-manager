@@ -18,12 +18,25 @@ function confTitleFromUrl(u) {
 }
 const _BROWSE_RE = /\/browse\/([A-Z][A-Z0-9]+-\d+)/;
 
+// 설명이 "실제로" 비었는지 — HTML 문자열이 아니라 **렌더 텍스트**를 trim 해서 본다.
+// (<p></p>, <p class="blank">, &nbsp; 처럼 태그는 있어도 화면엔 아무것도 안 보이는 경우가 흔함)
+// 글자가 없어도 이미지·표·코드·목록이 있으면 내용이 있는 것으로 본다.
+// 입력 HTML 은 서버에서 이미 정화(app/htmlsafe.py)됐고 여기선 읽기만 한다.
+function descEmpty(html) {
+  if (!html) return true;
+  const d = document.createElement("div");
+  d.innerHTML = html;
+  if (d.querySelector("img, table, pre, code, li, blockquote")) return false;
+  return !(d.textContent || "").replace(/\u00a0/g, " ").trim();
+}
+
 export default {
   name: "TicketDialog",
   components: { TypeBadge, Avatar },
   props: { keyId: { type: String, required: true } },
   emits: ["close"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], sibOpen: true,
+                    pdesc: null, pdescOpen: false, pdescErr: "",
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
@@ -45,6 +58,14 @@ export default {
       return anc.concat([{ key: this.keyId, summary: v ? v.summary : "", type: v ? v.type : "",
                            statusCategory: v ? v.statusCategory : "todo", pct: null, current: true }]);
     },
+    // Sub-Task 의 직계 상위(조상 체인의 마지막) — '상위 설명 보기' 대상
+    parentOf() {
+      if (!this.v || !this.v.subtask) return null;
+      const a = this.ancestors || [];
+      return a.length ? a[a.length - 1] : null;
+    },
+    // 이 티켓 자체에 설명이 비었는지 (실무상 Sub-Task 설명은 대충 쓰는 경우가 많다)
+    ownDescEmpty() { return descEmpty(this.v && this.v.descriptionHtml); },
     // 형제 중 현재 위치 (1-based, 없으면 0)
     sibPos() { return (this.siblings || []).findIndex((s) => s.current) + 1; },
     // 현재 티켓의 대표 컴포넌트(모듈) — 형제 중 타 모듈을 흐리게 하는 기준
@@ -54,6 +75,9 @@ export default {
     keyId() { this.load(); },
     v() { this.$nextTick(this.augment); },            // 설명 렌더 후 확대버튼·뱃지 주입
     comments() { this.$nextTick(this.augment); },     // 코멘트 렌더 후
+    pdesc() { this.$nextTick(this.augment); },        // 상위 설명 렌더 후(확대버튼·뱃지 주입)
+    // 이 Sub-Task 에 설명이 없으면 상위 설명을 자동으로 펼친다(가장 흔한 케이스)
+    parentOf(p) { if (p && this.ownDescEmpty && !this.pdescOpen) this.toggleParentDesc(); },
   },
   methods: {
     // 본문(Description)·코멘트·계보(조상/형제)·타임라인을 **동시에 출발**시키고 각자 도착하는 대로
@@ -66,6 +90,7 @@ export default {
       const fresh = () => my === this._req && this.keyId === key;
       this.err = ""; this.v = null; this.comments = null;
       this.ancestors = []; this.siblings = []; this.timeline = [];
+      this.pdesc = null; this.pdescOpen = false; this.pdescErr = "";
 
       api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; })
         .catch(() => { if (fresh()) this.comments = []; });
@@ -83,6 +108,17 @@ export default {
       }
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
+    descEmpty(html) { return descEmpty(html); },
+    // 상위 티켓 설명 — 기존 /api/ticket 응답을 그대로 재사용(정화된 HTML + 프론트 memo 캐시)
+    async toggleParentDesc() {
+      this.pdescOpen = !this.pdescOpen;
+      if (!this.pdescOpen || this.pdesc || !this.parentOf) return;
+      const pk = this.parentOf.key;
+      try {
+        const d = await api.ticket(pk);
+        if (this.parentOf && this.parentOf.key === pk) this.pdesc = d;
+      } catch (e) { this.pdescErr = (e && e.message) || "불러오기 실패"; }
+    },
     // 타임라인 한 줄 문구 — 중요 이벤트만 오므로 종류별로 짧게 표현
     tlText(e) {
       const f = e.from || "없음", t = e.to || "없음";
@@ -274,8 +310,30 @@ export default {
             <span v-for="l in v.labels" :key="l" class="tkt-label">{{ l }}</span>
           </div>
 
+          <!-- Sub-Task 는 설명을 대충 쓰는 경우가 많아 상위(부모) 설명을 여기서 바로 볼 수 있게.
+               자기 설명이 비어 있으면 자동으로 펼친다. -->
+          <div v-if="parentOf" class="pdesc">
+            <button class="pdesc-t" :class="{ open: pdescOpen }" @click="toggleParentDesc">
+              <span class="chev">&#9656;</span>
+              <span>상위 티켓 설명</span>
+              <span class="pdesc-k">{{ parentOf.key }}</span>
+              <span class="pdesc-s">{{ parentOf.summary }}</span>
+              <span v-if="ownDescEmpty" class="pdesc-hint">이 Sub-Task 에는 설명이 없습니다</span>
+            </button>
+            <div v-if="pdescOpen">
+              <div v-if="pdescErr" class="muted">상위 설명을 불러오지 못했습니다: {{ pdescErr }}</div>
+              <div v-else-if="!pdesc" class="loading">불러오는 중…</div>
+              <div v-else-if="descEmpty(pdesc.descriptionHtml)" class="tkt-desc tkt-desc-box pdesc-box">
+                <p class="muted">상위 티켓에도 설명이 없습니다.</p></div>
+              <div v-else class="tkt-desc tkt-desc-box pdesc-box" @click="onContentClick"
+                   v-html="pdesc.descriptionHtml"></div>
+            </div>
+          </div>
+
           <div class="tkt-sec-t">설명</div>
-          <div class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="v.descriptionHtml || '<p class=&quot;muted&quot;>설명이 없습니다.</p>'"></div>
+          <div v-if="ownDescEmpty" class="tkt-desc tkt-desc-box"><p class="muted">설명이 없습니다.</p></div>
+          <div v-else class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="v.descriptionHtml"></div>
+
           </template><!-- /본문(v) -->
 
           <!-- 코멘트 — 본문(v)과 무관하게 자기 상태로 렌더 -->

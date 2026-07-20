@@ -210,10 +210,16 @@ class World:
             _cl(updated, [{"field": "description", "fieldtype": "jira",
                            "from": None, "fromString": "(이전 설명)", "to": None, "toString": "(수정된 설명)"}])
 
+        # 실무처럼 **Sub-Task 는 설명을 안 쓰는 경우가 흔하다** — 1/3 은 빈 설명으로 둔다.
+        # (다이얼로그의 '상위 티켓 설명 보기'가 겨냥하는 케이스. rng 는 항상 호출해 시퀀스 보존)
+        _desc = wc.description(rng, itype, reporter)
+        if itype == SUBTASK_TYPE and sum(map(ord, key)) % 3 == 0:
+            _desc = ""
+
         self.issues[key] = {
             "key": key, "project": self.project, "type": itype,
             "summary": summary or self._summary(rng, itype, module),
-            "description": wc.description(rng, itype, reporter),
+            "description": _desc,
             "module": module, "component": component or module,
             "assignee": assignee, "reporter": reporter,
             "statusCategory": cat, "statusName": status_name,
