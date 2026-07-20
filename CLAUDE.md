@@ -4,6 +4,10 @@
 현업이 쓰는 **Jira DC 8.20.8**(구버전, SSO 잠금 사내 인스턴스)을 SP/티켓의 source of truth로 두고,
 그 위에 **Module → WBS Task → Epic 진척률 롤업**을 얇게 얹어 PMO가 프로젝트 전체를 조망한다.
 
+> **타깃 사내 인스턴스 버전(고정):** Jira DC **8.20.8** + Confluence DC **9.2.4**.
+> 통합 검색(우상단)이 Confluence CQL 을 이 버전 스펙(9.x URL `/spaces/{space}/pages/{id}/{title}` 등)에
+> 맞춰 파싱한다. dev mock(jira820)도 같은 버전을 구성한다(`app/fakebridge.py` 의 `confluence_version="9.2.4"`).
+
 이 문서는 프로젝트의 배경·목표·설계 원칙·구현 접근법을 담는다.
 Claude Code가 작업 시 이 맥락을 항상 우선한다.
 

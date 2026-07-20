@@ -24,6 +24,7 @@ jira:
 
 confluence:
   base: http://localhost:8080              # fake 가 Confluence CQL 도 같은 호스트로 서빙
+  # 타깃 사내 Confluence DC 버전 = 9.2.4 (통합 검색 CQL·9.x URL 스펙 기준). dev mock 도 동일 버전 구성.
 
 # 통합 검색(우상단) 기본 스코프. 모두 복수(list). 화면 상단 확장 옵션에서 전체로 넓힐 수 있다.
 #   dev: mock world 에 DL/PMO/ARCH/OPS 스페이스 + JIRA820 프로젝트(jira820 자체 샘플)가 함께 있어
