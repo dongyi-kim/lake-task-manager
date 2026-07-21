@@ -64,11 +64,37 @@ def _serve_bg(s):
     return server
 
 
+def _warm_confluence(page, context, conf_base, timeout=40):
+    """Confluence 를 한 번 열어 SSO 쿠키를 같은 컨텍스트에 받아둔다.
+
+    같은 IdP 면 사용자 입력 없이 리다이렉트만으로 끝난다. 별도 로그인이 필요한 경우엔
+    그 화면이 떠 있는 동안 사용자가 마치면 감지된다(timeout 안에서 대기).
+    실패해도 Jira 세션 저장은 그대로 진행한다 — Confluence 는 부가 기능이다.
+    """
+    from app.auth.sso_session import conf_authed
+    if not conf_base:
+        print("[login] Confluence base 미설정 — 건너뜀")
+        return False
+    try:
+        page.goto(conf_base, wait_until="domcontentloaded")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not page.is_closed():
+            if conf_authed(context, conf_base):
+                print("[login] Confluence 세션 확보")
+                return True
+            page.wait_for_timeout(1500)
+        print("[login] Confluence 인증 미확인 — 검색에서 Confluence 만 제외될 수 있음")
+    except Exception as e:
+        print(f"[login] Confluence 훑기 실패({e}) — Jira 세션은 정상 저장")
+    return False
+
+
 def _do_login_in_window(s, page, context, appmain, timeout=300):
     """[prod] 같은 앱 창에서 사내 SSO 로그인 구동: Jira 로 이동 → 인증 감지 → 세션 저장 → 앱 복귀."""
-    from app.auth.sso_session import _authed
+    from app.auth.sso_session import _authed, conf_authed
     appmain._login_requested.clear()
     base = s.jira_base.rstrip("/")
+    conf = (getattr(s, "confluence_base", "") or "").rstrip("/")
     home = f"http://localhost:{s.app_port}/"
     try:
         page.goto(base, wait_until="domcontentloaded")
@@ -76,6 +102,9 @@ def _do_login_in_window(s, page, context, appmain, timeout=300):
         ok = False
         while time.monotonic() < deadline and not page.is_closed():
             if _authed(context, base):
+                # SSO 쿠키는 도메인별 — Jira 로그인만으로는 Confluence 가 401 이다.
+                # 같은 IdP 면 한 번 열어주는 것만으로 리다이렉트가 돌며 쿠키가 붙는다.
+                _warm_confluence(page, context, conf)
                 context.storage_state(path=appmain._client._state_path())   # 세션 저장
                 appmain._client.reset_provider()                            # 백엔드가 새 세션 사용
                 ok = True

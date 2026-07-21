@@ -12,6 +12,7 @@ import hashlib
 import re
 from concurrent.futures import ThreadPoolExecutor
 
+from .auth.base import SessionExpired
 from .names import real_name
 
 _CAT = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
@@ -130,7 +131,13 @@ def _search_confluence(client, s, q, scope, limit):
         cql = "space in (%s) AND %s" % (joined, cql)
     # prod: 별도 호스트 절대 URL / mock·local: jira820 이 같은 호스트로 서빙 → 상대 경로
     url = (base + "/rest/api/search") if (s.jira_env == "prod" and base) else "/rest/api/search"
-    data = client.provider.get_json(url, params={"cql": cql, "limit": limit})
+    try:
+        data = client.provider.get_json(url, params={"cql": cql, "limit": limit})
+    except SessionExpired:
+        # SSO 쿠키는 **도메인별** — Jira 세션이 살아 있어도 Confluence 는 따로 인증이 필요하다.
+        # 원문 메시지("세션 만료")는 Jira 가 끊긴 것처럼 읽혀 오해를 부르므로 바꿔 준다.
+        return {"items": [], "needLogin": True,
+                "error": "로그인 필요 — 상단 [SSO 로그인] 을 다시 실행하세요"}
     items = []
     for r in data.get("results", []):
         c = r.get("content") or {}

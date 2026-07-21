@@ -138,6 +138,26 @@ class SsoSessionProvider(AuthProvider):
             pass
 
 
+def conf_authed(context, base):
+    """Confluence 쪽 세션이 살아 있는지 — 익명이 아닌 current user 를 돌려주면 True.
+
+    SSO 쿠키는 **도메인별**이라 Jira 로그인만으로는 Confluence 가 401 이 난다.
+    같은 IdP 면 Confluence 를 한 번 열어주는 것만으로 리다이렉트가 돌며 쿠키가 붙는다.
+    """
+    b = (base or "").rstrip("/")
+    if not b:
+        return False
+    try:
+        resp = context.request.get(b + "/rest/api/user/current")
+        if resp.status == 200:
+            body = resp.json()
+            name = body.get("username") or body.get("userKey") or body.get("accountId")
+            return bool(name)
+    except Exception:
+        pass
+    return False
+
+
 def _authed(context, base):
     """현재 컨텍스트가 인증됐는지 — /myself 200 + name(비익명) 이면 True."""
     try:

@@ -112,3 +112,26 @@ def test_exact_match_is_not_duplicated():
 def test_unknown_key_does_not_break_search():
     """없는 키를 쳐도 조용히 넘어간다(500 금지)."""
     assert _keys("DL-99999") == []
+
+
+def test_confluence_401_gives_actionable_message():
+    """Confluence 는 도메인이 달라 Jira 세션만으로는 401 이 난다.
+
+    원문 메시지('세션 만료 가능')는 Jira 가 끊긴 것처럼 읽혀 오해를 부른다 →
+    Confluence 전용 안내로 바꾸고 needLogin 플래그를 준다.
+    """
+    from app.auth.base import SessionExpired
+    from app.search import _search_confluence
+    from app.settings import get_settings
+
+    class _P:
+        def get_json(self, *a, **k):
+            raise SessionExpired("HTTP 401 on /rest/api/search — 세션 만료 가능. login 재실행.")
+
+    class _C:
+        provider = _P()
+
+    s = get_settings()
+    out = _search_confluence(_C(), s, "테스트", "scoped", 5)
+    assert out["items"] == [] and out.get("needLogin") is True
+    assert "로그인 필요" in out["error"] and "세션 만료" not in out["error"]
