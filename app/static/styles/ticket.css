@@ -145,20 +145,20 @@
 /* 좁은 화면 — 가로 3단 해제.
    패널을 통째로 쌓으면 '계보 형제 하위 관련' 이 한 줄로 길게 늘어져 읽기 어렵다.
    패널 껍데기를 display:contents 로 없애고 **섹션 단위**로 다시 배치한다:
-       1행  계보        | 하위 Task
-       2행  담당        | 일정
-       3행  티켓 내용(전체 폭)
-       4행  관련 Task   | 히스토리
-             형제       |
-   (히스토리는 4~5행에 걸쳐 좌측의 관련/형제 두 덩이와 나란히 선다) */
+       1행  계보        | 담당        (좌: 계보 아래 하위 / 우: 담당 아래 일정)
+            하위 Task   | 일정
+       2행  티켓 내용(전체 폭)
+       3행  관련 Task   | 히스토리    (좌: 관련 아래 형제)
+            형제        |
+   (히스토리는 두 행에 걸쳐 좌측의 관련/형제 두 덩이와 나란히 선다) */
 @media (max-width: 1150px) {
   .tkt-cols {
     /* minmax(0,·) 필수 — 그냥 1fr 은 minmax(auto,1fr) 이라 긴 내용이 컬럼을 밀어낸다 */
     display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 0 18px; align-items: start;
     grid-template-areas:
-      "lineage  children"
-      "assignee dates"
+      "lineage  assignee"
+      "children dates"
       "main     main"
       "related  history"
       "sib      history";
