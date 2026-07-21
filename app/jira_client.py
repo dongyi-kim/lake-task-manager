@@ -175,6 +175,20 @@ def _display_node(raw, sp_field, with_subs=False):
     return node
 
 
+# 원문이 HTML 인지 — **블록 태그**가 보일 때만 True.
+# 보수적으로 보는 이유 두 가지:
+#   · "a < b" 같은 평문을 HTML 로 오인하면 sanitize 가 내용을 잘라먹는다.
+#   · 평문 설명에 <b>x</b> 처럼 인라인 태그를 그냥 적어 두는 경우가 있다(그대로 보여야 한다).
+# WYSIWYG 로 저장된 HTML 이면 <p> 같은 블록 태그가 반드시 하나는 있다.
+_HTMLISH_RE = re.compile(
+    r"</(?:p|div|ul|ol|li|table|tr|td|h[1-6]|blockquote|pre)>"
+    r"|<br\s*/?>|<(?:p|div|table|ul|ol|blockquote|pre|h[1-6])[\s>]", re.I)
+
+
+def _looks_like_html(s):
+    return bool(s) and bool(_HTMLISH_RE.search(str(s)))
+
+
 def _build_ticket_view(raw, sp_field, jira_base=""):
     """티켓 상세 다이얼로그용 리치 뷰(순수 함수 — 테스트 용이).
     description: prod 의 renderedFields.description(HTML)이 있으면 **sanitize**, 없으면 평문→escape+nl2br.
@@ -184,6 +198,11 @@ def _build_ticket_view(raw, sp_field, jira_base=""):
     rhtml = rendered.get("description")
     if rhtml and str(rhtml).strip():
         desc, fmt = tidy_html(sanitize_html(rhtml)), "html"
+    elif _looks_like_html(f.get("description")):
+        # 사내 인스턴스는 WYSIWYG 에디터(Jira Editor 계열 — 'jePanel_*' class)를 써서
+        # fields.description **원문 자체가 HTML** 이다. 이때 평문 취급하면 태그가
+        # 글자로 보인다(<p>안녕하세요</p>). renderedFields 가 빌 때의 방어.
+        desc, fmt = tidy_html(sanitize_html(f["description"])), "html"
     else:
         desc, fmt = tidy_html(text_to_html(f.get("description") or "")), "text"
     st = f.get("status") or {}

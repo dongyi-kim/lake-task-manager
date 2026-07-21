@@ -172,3 +172,32 @@ def test_ticket_view_fields_populated():
     assert v["key"] and v["summary"] and v["status"]
     assert v["statusCategory"] in ("todo", "inprogress", "done")
     assert isinstance(v["labels"], list) and isinstance(v["components"], list)
+
+
+def test_html_source_description_without_renderedfields():
+    """사내 WYSIWYG 에디터 인스턴스는 fields.description 원문이 HTML 이다.
+
+    renderedFields 가 비었을 때 평문 취급하면 태그가 글자로 보인다(<p>안녕</p>).
+    HTML 로 보이면 sanitize 경로를 타야 한다.
+    """
+    raw = {"fields": {"description": '<p>안녕하세요</p><div class="jePanel_info"><p>정보</p></div>',
+                      "status": {}, "issuetype": {}}}
+    v = _build_ticket_view(raw, "customfield_10001")
+    assert v["descriptionFormat"] == "html"
+    assert "<p>안녕하세요</p>" in v["descriptionHtml"]
+    assert "&lt;p&gt;" not in v["descriptionHtml"]          # 이스케이프되면 안 된다
+    assert 'class="callout callout-info"' in v["descriptionHtml"]   # 벤더 class 정규화도 탄다
+
+
+def test_plain_text_with_angle_bracket_stays_text():
+    """'a < b' 같은 평문을 HTML 로 오인하면 내용이 잘린다."""
+    raw = {"fields": {"description": "조건은 a < b 이고 c > d 이다", "status": {}, "issuetype": {}}}
+    v = _build_ticket_view(raw, "customfield_10001")
+    assert v["descriptionFormat"] == "text"
+    assert "a &lt; b" in v["descriptionHtml"]
+
+
+def test_inline_tag_in_plaintext_is_not_html():
+    """평문에 <b>x</b> 를 적어 둔 경우 — 블록 태그가 없으면 평문으로 본다(그대로 보여야 한다)."""
+    raw = {"fields": {"description": "줄1\n줄2 <b>x</b>", "status": {}, "issuetype": {}}}
+    assert _build_ticket_view(raw, "cf")["descriptionFormat"] == "text"
