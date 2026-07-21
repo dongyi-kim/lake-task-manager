@@ -246,11 +246,16 @@
    다른 뱃지(칩)와 형식을 공유하지 않는다: **직각·테두리 없음·단색 채움·흰 글자**. */
 .tkt-desc h1::before, .tkt-desc h2::before, .tkt-desc h3::before, .tkt-desc h4::before {
   content: var(--hl); white-space: pre;          /* \A 로 두 줄 — H / 레벨 */
-  position: absolute; left: 0; top: .1em;
-  font: 800 8px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-align: center; color: #fff;
+  /* top/bottom 을 함께 고정해 헤딩 높이만큼 늘린다 — h1/h2 는 밑줄에 딱 닿는다
+     (border-bottom 안쪽 = padding box 하단). 글자는 flex 로 세로 가운데. */
+  position: absolute; left: 0; top: 0; bottom: 0;
+  display: flex; align-items: center; justify-content: center;
+  /* 폰트 스택은 프로젝트 표준 — ui-monospace/SFMono/Menlo 만 두면 Windows 에서
+     일반 monospace(Courier New)로 떨어져 고정폭·볼드가 제대로 안 나온다. */
+  font: 700 8.5px/1.05 ui-monospace, "Cascadia Code", Consolas, monospace;
+  letter-spacing: .5px; text-align: center; color: #fff;
   background: var(--hd, var(--hlv-4));
-  border: 0; border-radius: 0; padding: 1px 3px; }
+  border: 0; border-radius: 0; padding: 0 3px; }
 .tkt-desc h1 { --hl: "H\A 1"; --hd: var(--hlv-1); }
 .tkt-desc h2 { --hl: "H\A 2"; --hd: var(--hlv-2); }
 .tkt-desc h3 { --hl: "H\A 3"; --hd: var(--hlv-3); }
