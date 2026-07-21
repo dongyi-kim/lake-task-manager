@@ -233,3 +233,41 @@ def test_real_prod_shape():
     assert [s["title"] for s in r] == ["신청정보", "요청내용", "1 시스템정보", "{%d} 시스템정보"]
     assert len(r[0]["kv"]) == 2 and len(r[3]["kv"]) == 2
     assert r[1]["kv"] is None                      # '안녕하세요.' 는 표 아님
+
+
+# ── {N} 시스템정보 / {N} 테이블정보 페어 ────────────────────────────
+
+def _pairdoc(n="{1}"):
+    return ("<p>=== %s 시스템정보 ===<br/>시스템명 : LAKE<br/>환경 : 운영</p>"
+            "<p>=== %s 테이블정보 ===<br/>스키마 : DW<br/>테이블 : FCT_A</p>" % (n, n))
+
+
+def test_system_table_pair_merged_into_one_row():
+    r = S(_pairdoc())
+    assert len(r) == 1
+    sec = r[0]
+    assert sec["title"] == "{1} 시스템/테이블 정보"
+    assert [c["title"] for c in sec["columns"]] == ["시스템정보", "테이블정보"]
+    assert all(len(c["kv"]) == 2 for c in sec["columns"])
+
+
+def test_pair_number_format_preserved():
+    """실 데이터가 '1 시스템정보' 인지 '{1} 시스템정보' 인지 확정 못 해 원문 표기를 살린다."""
+    assert S(_pairdoc("1"))[0]["title"] == "1 시스템/테이블 정보"
+    assert S(_pairdoc("[3]"))[0]["title"] == "[3] 시스템/테이블 정보"
+
+
+def test_unpaired_section_left_alone():
+    """짝이 없으면 합치지 않는다."""
+    r = S("<p>=== {1} 시스템정보 ===<br/>a : 1<br/>b : 2</p>")
+    assert r[0]["title"] == "{1} 시스템정보" and "columns" not in r[0]
+
+
+def test_multiple_pairs_by_number():
+    r = S(_pairdoc("{1}") + _pairdoc("{2}"))
+    assert [s["title"] for s in r] == ["{1} 시스템/테이블 정보", "{2} 시스템/테이블 정보"]
+
+
+def test_pair_does_not_swallow_other_sections():
+    r = S("<p>=== 신청정보 ===<br/>a : 1<br/>b : 2</p>" + _pairdoc())
+    assert [s["title"] for s in r] == ["신청정보", "{1} 시스템/테이블 정보"]

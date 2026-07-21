@@ -354,8 +354,23 @@ export default {
           <!-- 구분선(=== 제목 ===)으로 나뉜 영역을 각각 제목 달린 카드로. 구분선이 없으면 1개뿐 -->
           <template v-else v-for="(sec, i) in descSections" :key="i">
             <div class="tkt-sec-t">{{ sec.title || '설명' }}</div>
+            <!-- {N} 시스템정보 + {N} 테이블정보 는 항상 짝 → 한 행에 2단으로 -->
+            <div v-if="sec.columns" class="tkt-two secpair">
+              <div v-for="(c, j) in sec.columns" :key="j" class="tkt-two-col">
+                <div class="secpair-t">{{ c.title }}</div>
+                <div class="tkt-desc tkt-desc-box">
+                  <table v-if="c.kv" class="kv-table">
+                    <tr v-for="(r, k) in c.kv" :key="k">
+                      <th>{{ r.k }}</th>
+                      <td @click="onContentClick" v-html="r.html || '&mdash;'"></td>
+                    </tr>
+                  </table>
+                  <div v-else @click="onContentClick" v-html="c.html"></div>
+                </div>
+              </div>
+            </div>
             <!-- 영역 전체가 'key : value' 면 표로 (VoC 시스템 주입 블록) -->
-            <div v-if="sec.kv" class="tkt-desc tkt-desc-box">
+            <div v-else-if="sec.kv" class="tkt-desc tkt-desc-box">
               <table class="kv-table">
                 <tr v-for="(r, j) in sec.kv" :key="j">
                   <th>{{ r.k }}</th>

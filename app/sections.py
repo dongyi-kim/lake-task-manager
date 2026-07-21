@@ -159,7 +159,7 @@ def split_sections(html):
         why = []
         sec["kv"] = _kv_rows(sec["html"], why)   # 표로 그릴 수 있으면 행 목록, 아니면 None
         sec["kvSkip"] = why[0] if why else None  # 아니면 그 이유(진단용)
-    return out
+    return _merge_pairs(out)
 
 
 # 자를 수 있는 컨테이너 — <p>/<div> 중 **class 가 없는** 것.
@@ -195,6 +195,58 @@ def _clean(html):
         h = h2
     h = _LEAD_BR_RE.sub(r"\1", h)
     return _TAIL_BR_RE.sub(r"\1", h).strip()
+
+
+# ── 시스템정보 / 테이블정보 페어 ─────────────────────────────────────
+# VoC 주입 블록의 "{N} 시스템정보" 와 "{N} 테이블정보" 는 **항상 짝**이다.
+# 같은 N 끼리 묶어 한 행에 2단으로 보여준다(제목은 "{N} 시스템/테이블 정보").
+# 번호 표기는 원문을 그대로 살린다 — 실 데이터가 "1 시스템정보" 인지
+# "{1} 시스템정보" 인지 확정할 수 없어서, 있던 형태를 유지하는 편이 안전하다.
+_PAIR_RE = re.compile(
+    r"^(?P<num>[\[\{\(]?\s*\d*\s*[\]\}\)]?)\s*(?P<kind>시스템|테이블)\s*정보\s*$")
+
+
+def _pair_key(title):
+    """'{2} 시스템정보' → ('{2}', '시스템'). 페어 대상이 아니면 None."""
+    m = _PAIR_RE.match((title or "").strip())
+    if not m:
+        return None
+    return m.group("num").strip(), m.group("kind")
+
+
+def _merge_pairs(out):
+    """같은 번호의 시스템/테이블 정보를 한 행(2단)으로 합친다."""
+    idx = {}                                   # (번호) -> {종류: 위치}
+    for i, sec in enumerate(out):
+        pk = _pair_key(sec.get("title"))
+        if pk:
+            idx.setdefault(pk[0], {})[pk[1]] = i
+
+    merged, drop = {}, set()
+    for num, kinds in idx.items():
+        if "시스템" not in kinds or "테이블" not in kinds:
+            continue                           # 짝이 없으면 그대로 둔다
+        a, b = kinds["시스템"], kinds["테이블"]
+        first = min(a, b)
+        merged[first] = {
+            "title": ("%s 시스템/테이블 정보" % num).strip(),
+            "html": "", "kv": None, "kvSkip": None,
+            "columns": [
+                {"title": "시스템정보", "html": out[a]["html"],
+                 "kv": out[a]["kv"], "kvSkip": out[a].get("kvSkip")},
+                {"title": "테이블정보", "html": out[b]["html"],
+                 "kv": out[b]["kv"], "kvSkip": out[b].get("kvSkip")},
+            ],
+        }
+        drop.update({a, b})
+
+    res = []
+    for i, sec in enumerate(out):
+        if i in merged:
+            res.append(merged[i])
+        elif i not in drop:
+            res.append(sec)
+    return res
 
 
 # ── key : value 영역 → 표 ────────────────────────────────────────────
