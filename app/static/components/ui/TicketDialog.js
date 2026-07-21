@@ -3,7 +3,7 @@
 // 코멘트 텍스트는 Vue 기본 이스케이프({{ }})로 안전 표시. Esc/백드롭/X 로 닫기.
 import { api } from "../../lib/api.js";
 import { ymd, ymdhm, ts, esc } from "../../lib/fmt.js";
-import { TYPE_BG } from "../../lib/colors.js";
+import { TYPE_BG, typeLabel } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 
@@ -67,6 +67,12 @@ export default {
     },
     // 이 티켓 자체에 설명이 비었는지 (실무상 Sub-Task 설명은 대충 쓰는 경우가 많다)
     ownDescEmpty() { return descEmpty(this.v && this.v.descriptionHtml); },
+    // 타이틀바 툴팁 — 요청 포맷 그대로 "[타입] [번호] [제목] - 상태"
+    barTitle() {
+      const v = this.v;
+      if (!v) return this.keyId;
+      return `${v.type} ${v.key} ${v.summary}` + (v.status ? ` - ${v.status}` : "");
+    },
     // '=== 제목 ===' 구분선으로 나뉜 영역들. 백엔드가 항상 1개 이상 주지만
     // (구버전 캐시 등) 없으면 통짜 descriptionHtml 하나로 폴백한다.
     descSections() {
@@ -121,6 +127,7 @@ export default {
       }
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
+    typeLabel(t) { return typeLabel(t); },
     descEmpty(html) { return descEmpty(html); },
     fsize(n) {
       n = +n || 0;
@@ -255,12 +262,26 @@ export default {
   template: `
     <div class="tkt-ov" :class="{ expanded }" @click.self="$emit('close')">
       <div class="tkt-dlg" :class="{ expanded }" role="dialog" aria-modal="true">
-        <button class="tkt-max" @click="expanded = !expanded"
-                :aria-label="expanded ? '축소' : '확장'" :title="expanded ? '축소' : '확장'">
-          <svg v-if="!expanded" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
-          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3a2 2 0 0 0 2-2V3M20 8h-3a2 2 0 0 1-2-2V3M4 16h3a2 2 0 0 1 2 2v3M20 16h-3a2 2 0 0 0-2 2v3"/></svg>
-        </button>
-        <button class="tkt-x" @click="$emit('close')" aria-label="닫기">✕</button>
+        <!-- 최상단 타이틀바 — 배경은 티켓 타입 색을 따른다.
+             좌: "[타입] [번호] [제목] - 상태" / 우: Jira에서 열기 · 최대화 · 닫기 -->
+        <div class="tkt-bar" :style="{ '--tc': typeColor(v && v.type) }">
+          <span class="tb-name" :title="barTitle">
+            <span class="tb-type">{{ v ? v.type : '' }}</span>
+            <span class="tb-key">{{ (v && v.key) || keyId }}</span>
+            <span class="tb-sum">{{ v ? v.summary : '불러오는 중…' }}</span>
+            <span v-if="v && v.status" class="tb-st" :class="statusClass(v.statusCategory)">- {{ v.status }}</span>
+          </span>
+          <span class="tb-actions">
+            <a v-if="v && v.url" class="tb-btn" :href="v.url" target="_blank" rel="noopener"
+               title="Jira에서 열기">Jira에서 열기 ↗</a>
+            <button class="tb-btn ico" @click="expanded = !expanded"
+                    :aria-label="expanded ? '축소' : '최대화'" :title="expanded ? '축소' : '최대화'">
+              <svg v-if="!expanded" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+              <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3a2 2 0 0 0 2-2V3M20 8h-3a2 2 0 0 1-2-2V3M4 16h3a2 2 0 0 1 2 2v3M20 16h-3a2 2 0 0 0-2 2v3"/></svg>
+            </button>
+            <button class="tb-btn ico close" @click="$emit('close')" aria-label="닫기" title="닫기">✕</button>
+          </span>
+        </div>
 
         <!-- 섹션별 독립 렌더: 스파인(계보/형제/타임라인)은 본문(v) 응답을 기다리지 않는다.
              본문·코멘트도 각자 자기 상태가 채워지는 대로 그려진다. -->
@@ -334,13 +355,6 @@ export default {
           <div v-else-if="!v" class="tkt-load"><span class="spinner"></span> 불러오는 중…</div>
 
           <template v-else>
-          <div class="tkt-head">
-            <TypeBadge :type="v.type" />
-            <span class="tkt-key">{{ v.key }}</span>
-            <span class="tkt-status" :class="statusClass(v.statusCategory)">{{ v.status }}</span>
-            <a v-if="v.url" class="tkt-ext" :href="v.url" target="_blank" rel="noopener">Jira에서 열기 ↗</a>
-          </div>
-
           <h2 class="tkt-summary">{{ v.summary }}</h2>
 
           <div class="tkt-meta">

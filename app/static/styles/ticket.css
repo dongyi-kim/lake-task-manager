@@ -9,18 +9,43 @@
   background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 40px 16px; overflow-y: auto; }
 .tkt-dlg { position: relative; background: var(--panel); color: var(--text); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, .38); width: min(1240px, 100%);
-  padding: 20px 24px;
+  /* 상단 패딩은 0 — 타이틀바가 모서리까지 꽉 채운다 */
+  padding: 0 24px 20px;
   /* 좌/우 패널은 음수 마진으로 다이얼로그 가장자리까지 채우는 '직각' 배경이라
      라운드 모서리 밖으로 삐져나온다 → 여기서 잘라낸다. */
   overflow: hidden; }
 .tkt-dlg > :last-child { margin-bottom: 0; }
-.tkt-x, .tkt-max { position: absolute; top: 12px; width: 30px; height: 30px; border-radius: 8px;
-  border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; }
-.tkt-x { right: 12px; font-size: 13px; }
-.tkt-max { right: 48px; }
-.tkt-max svg { width: 15px; height: 15px; }
-.tkt-x:hover, .tkt-max:hover { color: var(--text); border-color: var(--accent); }
+/* ── 최상단 타이틀바 ──
+   배경은 티켓 타입 색(--tc)의 옅은 틴트. 타입을 색으로 먼저 알리고, 텍스트로 다시 확인시킨다.
+   다이얼로그 좌우 패딩(24px)을 음수 마진으로 상쇄해 모서리까지 꽉 채운다. */
+.tkt-bar { display: flex; align-items: center; gap: 12px; min-width: 0;
+  margin: 0 -24px 14px; padding: 9px 12px 9px 18px;
+  background: color-mix(in srgb, var(--tc, var(--ty-task)) 15%, var(--panel));
+  border-bottom: 2px solid color-mix(in srgb, var(--tc, var(--ty-task)) 55%, transparent);
+  border-radius: 12px 12px 0 0; }
+.tb-name { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 7px;
+  white-space: nowrap; overflow: hidden; }
+.tb-type { flex: none; font-size: 10px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase;
+  color: color-mix(in srgb, var(--tc, var(--ty-task)) 75%, var(--text)); }
+.tb-key { flex: none; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px; font-weight: 700; color: var(--text); }
+/* 제목만 줄어든다 — 타입·번호·상태는 항상 읽혀야 한다 */
+.tb-sum { flex: 0 1 auto; min-width: 0; font-size: 13px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; }
+.tb-st { flex: none; font-size: 11.5px; font-weight: 700; }
+.tb-st.st-todo { color: var(--st-todo); }
+.tb-st.st-inprogress { color: var(--st-prog); }
+.tb-st.st-done { color: var(--st-done); }
+
+.tb-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.tb-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  height: 26px; padding: 0 9px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+  font-size: 11.5px; font-weight: 600; font-family: inherit; text-decoration: none; white-space: nowrap; }
+.tb-btn:hover { color: var(--text); border-color: var(--accent); text-decoration: none; }
+.tb-btn.ico { width: 26px; padding: 0; }
+.tb-btn.ico svg { width: 14px; height: 14px; }
+.tb-btn.close:hover { color: var(--danger); border-color: var(--danger); }
 
 /* 확장(최대화) — 화면 대부분 차지 */
 /* 확장 = '넓게'만. 높이는 내용에 맞춘다.
@@ -40,9 +65,9 @@
    컬럼 간 18px 간격은 spine/tl 의 margin 이 아니라 main 의 padding 으로 준다.
    (margin 으로 두면 그 틈만 다이얼로그 배경으로 드러나 세로 띠가 생긴다) */
 .tkt-main { flex: 1; min-width: 0; align-self: stretch;
-  margin: -20px 0; padding: 16px 18px; background: var(--bg); }
+  margin: 0 0 -20px; padding: 0 18px 16px; background: var(--bg); }
 .tkt-spine { flex: 0 0 264px; width: 264px; align-self: stretch; min-width: 0;
-  margin: -20px 0 -20px -24px; padding: 16px 14px 16px 24px;
+  margin: 0 0 -20px -24px; padding: 0 14px 16px 24px;
   border-right: 1px solid var(--border); background: var(--panel-2); }
 /* 마이크로 라벨 — 9.5px 대문자 트래킹(목업 문법) */
 .tkt-mlabel { font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
@@ -115,34 +140,21 @@
   padding: 0 4px; margin-right: 4px; white-space: nowrap; }
 /* 우측 패널 — 타임라인 */
 .tkt-tl { flex: 0 0 220px; width: 220px; align-self: stretch; min-width: 0;
-  margin: -20px -24px -20px 0; padding: 16px 24px 16px 14px;
+  margin: 0 -24px -20px 0; padding: 0 24px 16px 14px;
   border-left: 1px solid var(--border); background: var(--panel-2); }
 /* 좁은 화면 — 좌/우 패널을 위아래로 펼쳐 가로 3단 해제 */
 @media (max-width: 1150px) {
   .tkt-cols { flex-direction: column; }
   /* 세로 1단에서는 main 의 가로 음수마진/세로 상쇄를 해제하고 폭만 가장자리까지 */
   .tkt-main { align-self: auto; margin: 0 -24px; padding: 14px 24px; }
-  .tkt-spine { flex: none; width: auto; align-self: auto; margin: -20px -24px 14px; padding: 14px 24px;
+  .tkt-spine { flex: none; width: auto; align-self: auto; margin: 0 -24px 14px; padding: 14px 24px;
     border-right: 0; border-bottom: 1px solid var(--border); }
   .tkt-tl { flex: none; width: auto; align-self: auto; margin: 14px -24px -20px; padding: 14px 24px;
     border-left: 0; border-top: 1px solid var(--border); }
 }
 
-/* ── 헤더 ── */
-/* padding-right: 우상단 플로팅 버튼(닫기 right:12 / 확장 right:48, 각 30px → 테두리 기준 12~78px)
-   회피용. 콘텐츠 우측 끝이 테두리에서 24px 이므로 최소 54px + 여유 = 84px. */
-.tkt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-right: 84px; }
-.tkt-key { font-weight: 700; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 12.5px; letter-spacing: .2px; color: var(--accent); font-variant-numeric: tabular-nums; }
-.tkt-status { font-size: 10.5px; font-weight: 700; line-height: 16px; padding: 0 8px; border-radius: 5px; border: 1px solid;
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: color-mix(in srgb, currentColor 32%, transparent); }
-.tkt-status.st-todo { color: var(--st-todo); }
-.tkt-status.st-inprogress { color: var(--st-prog); }
-.tkt-status.st-done { color: var(--st-done); }
-.tkt-ext { margin-left: auto; font-size: 12.5px; color: var(--accent); text-decoration: none; white-space: nowrap; }
-.tkt-ext:hover { text-decoration: underline; }
-.tkt-summary { font-size: 19px; margin: 12px 0 14px; line-height: 1.35; }
+/* ── 헤더 ── (타입·번호·상태·Jira링크는 최상단 타이틀바로 옮겼다) */
+.tkt-summary { font-size: 19px; margin: 16px 0 14px; line-height: 1.35; }
 
 /* ── 메타 그리드 ── */
 .tkt-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 18px;
