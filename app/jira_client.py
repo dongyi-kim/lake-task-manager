@@ -79,6 +79,21 @@ def _conf_key(url):
     return "u:" + u.lower()
 
 
+def _abs_url(url, base):
+    """상대경로면 base 를 붙여 절대 URL 로.
+
+    사내 Confluence 링크는 본문에 "/display/DL/문서" 처럼 **상대경로**로 들어오는 경우가 있다.
+    그대로 두면 브라우저가 우리 앱(localhost) 기준으로 해석해 엉뚱한 곳(404)으로 가고,
+    같은 호스트로 보이니 run.py 의 외부링크 훅도 타지 않아 시스템 브라우저가 아예 안 뜬다.
+    """
+    u = (url or "").strip()
+    if not u or "://" in u or u.startswith("//") or u.startswith("mailto:"):
+        return u
+    if not u.startswith("/"):
+        return u                                   # 앵커(#…) 등은 손대지 않는다
+    return (base or "").rstrip("/") + u if base else u
+
+
 def _conf_title(url, text=None):
     """문서 제목 — URL 슬러그 우선, 없으면 **링크 텍스트**로 폴백.
     편집(초안) 모드 URL(/pages/resumedraft.action?draftId=...)에는 제목이 없어서
@@ -953,7 +968,9 @@ class JiraClient:
                     if ck in seen:
                         continue
                     seen.add(ck)
-                    out.append({"title": _conf_title(u, text), "url": u})
+                    # 상대경로면 절대화 — 안 그러면 앱(localhost) 기준으로 열려 404
+                    out.append({"title": _conf_title(u, text),
+                                "url": _abs_url(u, self.s.confluence_base)})
             return out[:limit]
         return self.cache.get_or_set(f"documents:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
 

@@ -261,3 +261,22 @@ def test_epic_lineage_unaffected_by_voc_rule():
                if i.get("epicKey") and i.get("component") != "사용자 VoC")
     anc = _client().ticket_ancestors(key)
     assert anc and all(not n.get("virtual") for n in anc)
+
+
+def test_relative_confluence_url_is_absolutized():
+    """사내 본문에는 Confluence 링크가 '/display/DL/문서' 처럼 상대경로로 들어오기도 한다.
+
+    그대로 두면 브라우저가 우리 앱(localhost) 기준으로 해석해 404 로 가고,
+    같은 호스트로 보이니 run.py 외부링크 훅도 안 타서 시스템 브라우저가 아예 안 뜬다.
+    """
+    from app.jira_client import _abs_url
+
+    B = "https://confluence.corp.example"
+    assert _abs_url("/display/DL/문서", B) == B + "/display/DL/문서"
+    assert _abs_url("/pages/viewpage.action?pageId=1", B) == B + "/pages/viewpage.action?pageId=1"
+    # 이미 절대 URL·프로토콜상대·앵커는 손대지 않는다
+    assert _abs_url("https://x.example/a", B) == "https://x.example/a"
+    assert _abs_url("//cdn/x", B) == "//cdn/x"
+    assert _abs_url("#a", B) == "#a"
+    # base 미설정이면 그대로(설정 누락을 조용히 감추지 않는다)
+    assert _abs_url("/display/DL/문서", "") == "/display/DL/문서"
