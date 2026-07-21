@@ -67,6 +67,13 @@ export default {
     },
     // 이 티켓 자체에 설명이 비었는지 (실무상 Sub-Task 설명은 대충 쓰는 경우가 많다)
     ownDescEmpty() { return descEmpty(this.v && this.v.descriptionHtml); },
+    // '=== 제목 ===' 구분선으로 나뉜 영역들. 백엔드가 항상 1개 이상 주지만
+    // (구버전 캐시 등) 없으면 통짜 descriptionHtml 하나로 폴백한다.
+    descSections() {
+      const v = this.v; if (!v) return [];
+      const secs = v.descriptionSections;
+      return (secs && secs.length) ? secs : [{ title: null, html: v.descriptionHtml || "" }];
+    },
     // 형제 중 현재 위치 (1-based, 없으면 0)
     sibPos() { return (this.siblings || []).findIndex((s) => s.current) + 1; },
     // 현재 티켓의 대표 컴포넌트(모듈) — 형제 중 타 모듈을 흐리게 하는 기준
@@ -340,9 +347,15 @@ export default {
             </div>
           </div>
 
-          <div class="tkt-sec-t">설명</div>
-          <div v-if="ownDescEmpty" class="tkt-desc tkt-desc-box"><p class="muted">설명이 없습니다.</p></div>
-          <div v-else class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="v.descriptionHtml"></div>
+          <div v-if="ownDescEmpty">
+            <div class="tkt-sec-t">설명</div>
+            <div class="tkt-desc tkt-desc-box"><p class="muted">설명이 없습니다.</p></div>
+          </div>
+          <!-- 구분선(=== 제목 ===)으로 나뉜 영역을 각각 제목 달린 카드로. 구분선이 없으면 1개뿐 -->
+          <template v-else v-for="(sec, i) in descSections" :key="i">
+            <div class="tkt-sec-t">{{ sec.title || '설명' }}</div>
+            <div class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="sec.html"></div>
+          </template>
 
           <!-- 설명 아래 2분할: 첨부파일 | 관련문서(언급된 Confluence 문서) -->
           <div class="tkt-two">

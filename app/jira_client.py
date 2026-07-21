@@ -15,6 +15,7 @@ from . import progress
 from .auth.base import SessionExpired
 from .htmlsafe import _CONF_RE, proxy_images, sanitize_html, text_to_html, tidy_html
 from .names import real_name
+from .sections import split_sections
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -219,6 +220,9 @@ def _build_ticket_view(raw, sp_field, jira_base=""):
         "sp": f.get(sp_field),
         "descriptionHtml": desc,           # 항상 안전(정화됨). 프론트는 그대로 v-html.
         "descriptionFormat": fmt,          # 'html'(정화됨) | 'text'(평문→nl2br)
+        # '=== 제목 ===' 구분선으로 나눈 영역. 구분선이 없으면 1개(title=None)라
+        # 프론트는 항상 이것만 그리면 된다(descriptionHtml 은 검색·언급스캔용으로 유지).
+        "descriptionSections": split_sections(desc),
         "url": (jira_base.rstrip("/") + "/browse/" + key) if jira_base else "",
     }
 
@@ -558,6 +562,9 @@ class JiraClient:
             return None
         view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base)
         view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
+        # 섹션은 프록시 이전 HTML 에서 잘렸다 — 이미지가 든 섹션도 프록시를 타야 한다
+        for sec in view.get("descriptionSections") or []:
+            sec["html"] = self._proxy_media(sec["html"])
         return view
 
     # ── 계보(좌측 스파인 패널) — 조상 체인 + 형제 ──
