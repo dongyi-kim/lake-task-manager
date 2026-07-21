@@ -103,7 +103,9 @@ document.addEventListener('click', function(e){
     if (!a) return;
     var href = a.href || '';
     if (!/^https?:/i.test(href)) return;
-    if (a.host === location.host) return;                 // 내부 링크는 그대로
+    // data-ext = 같은 호스트라도 시스템 브라우저로 (예: 티켓 '새 창에서 열기' → /browse/KEY).
+    // 이게 없으면 내부 링크라 앱 창(Chromium)에 새 창으로 떠 버린다.
+    if (a.host === location.host && !a.hasAttribute('data-ext')) return;
     if (window._openExternal) { e.preventDefault(); window._openExternal(href); }
   } catch (_) {}
 }, true);

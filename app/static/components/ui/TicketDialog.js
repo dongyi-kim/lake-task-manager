@@ -297,8 +297,10 @@ export default {
                     :title="theme === 'dark' ? '라이트 모드로' : '다크 모드로'">
               <span v-if="theme === 'dark'">☀ Light</span><span v-else>🌙 Dark</span>
             </button>
+            <!-- data-ext: 같은 호스트지만 앱 창(Chromium)이 아니라 시스템 기본 브라우저로.
+                 run.py 의 외부링크 훅이 이 속성을 보고 넘긴다. -->
             <a v-if="!isPage" class="tb-btn ico" :href="pageHref" target="_blank" rel="noopener"
-               aria-label="새 창에서 열기" title="새 창에서 열기">
+               data-ext aria-label="새 창에서 열기" title="새 창에서 열기">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
             </a>
             <button v-if="!isPage" class="tb-btn ico" @click="expanded = !expanded"
