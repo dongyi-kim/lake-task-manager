@@ -383,6 +383,35 @@ class JiraClient:
                                            params={"fields": self._issue_fields()}))
         return data
 
+    ISSUE_BATCH = 50                  # JQL "key in (...)" 한 번에 담을 최대 개수
+
+    def prefetch_issues(self, keys):
+        """여러 티켓 원본을 **검색 한 번**으로 받아 티켓 단위 캐시에 채운다.
+
+        prod(SSO)는 모든 호출이 단일 큐로 직렬화되므로 낱개 GET N 번 = N × 왕복이다.
+        미리 채워두면 이후 get_issue() 들이 전부 캐시 히트라 왕복이 0 이 된다.
+        실패해도 조용히 넘어간다 — 뒤따르는 get_issue 가 개별 조회로 정상 동작한다.
+        """
+        env = self.env
+        miss = [k for k in dict.fromkeys(keys)
+                if k and self.cache.get(f"issue:{env}:{k}") is None]
+        if len(miss) < 2:                 # 1건이면 배치 이득 없음(그냥 개별 조회에 맡긴다)
+            return
+        for i in range(0, len(miss), self.ISSUE_BATCH):
+            chunk = miss[i:i + self.ISSUE_BATCH]
+            try:
+                data = self.provider.get_json("/rest/api/2/search", params={
+                    "jql": "key in (%s)" % ",".join(chunk),
+                    "fields": self._issue_fields(), "maxResults": len(chunk)})
+            except SessionExpired:
+                raise
+            except Exception:
+                return
+            for it in (data.get("issues") or []):
+                k = it.get("key")
+                if k:
+                    self.cache.set(f"issue:{env}:{k}", it, self.s.cache_ttl_seconds)
+
     def _search(self, jql, cache_key=None, max_results=200):
         """JQL 검색 → 원본 이슈 리스트. 결과를 티켓 단위 캐시에 write-through.
         (검색 자체도 cache_key 주면 캐시 — 같은 목록 재조회 절약)."""
@@ -478,6 +507,7 @@ class JiraClient:
             for e in w["epics"]:
                 if e["key"] not in seen:
                     seen.add(e["key"]); keys.append(e["key"])
+        self.prefetch_issues([self._resolve(k) for k in keys])   # epic 원본을 한 번에
         results = self._pmap(keys, self.epic_progress_one)
         return {k: r for k, r in zip(keys, results)}
 
@@ -573,6 +603,7 @@ class JiraClient:
                 return [self._node_from_issue(c) for c in children]
             root = self.get_issue(key)
             subs = ((root.get("fields") or {}).get("subtasks")) or []
+            self.prefetch_issues([s.get("key") for s in subs])       # 자식 원본을 한 번에
             return [self._node_from_issue(self.get_issue(s["key"])) for s in subs if s.get("key")]
         except Exception:
             return []
@@ -749,6 +780,42 @@ class JiraClient:
 
     CHILD_SCAN_LIMIT = 20        # 자손 상태변경 스캔 상한(자식 1명당 REST 1회 — cold 비용 방어)
 
+    def prefetch_changelogs(self, keys):
+        """여러 티켓의 이력을 **검색 한 번**으로 받아 changelog 캐시에 채운다.
+
+        타임라인은 '자손의 상태 변경'까지 모으느라 자식 수만큼 낱개 조회를 했다.
+        prod(SSO)는 직렬이라 자식 20개면 그대로 20 × 왕복이다.
+        검색도 expand=changelog 를 지원하므로 한 번에 받아 채워둔다.
+        """
+        env = self.env
+        miss = [k for k in dict.fromkeys(keys)
+                if k and self.cache.get(f"changelog:{env}:{k}") is None]
+        if len(miss) < 2:
+            return
+        for i in range(0, len(miss), self.ISSUE_BATCH):
+            chunk = miss[i:i + self.ISSUE_BATCH]
+            try:
+                data = self.provider.get_json("/rest/api/2/search", params={
+                    "jql": "key in (%s)" % ",".join(chunk),
+                    "fields": "created,reporter", "expand": "changelog",
+                    "maxResults": len(chunk)})
+            except SessionExpired:
+                raise
+            except Exception:
+                return
+            for raw in (data.get("issues") or []):
+                k = raw.get("key")
+                # ★ changelog 키가 아예 없으면 검색이 expand 를 무시한 것이다.
+                #   그대로 캐시하면 '이력 없음'을 굳혀 자손 상태변경이 통째로 사라진다
+                #   → 채우지 않고 개별 조회(_changelog)에 맡긴다.
+                if not k or raw.get("changelog") is None:
+                    continue
+                f = raw.get("fields") or {}
+                self.cache.set(f"changelog:{env}:{k}", {
+                    "created": f.get("created"), "reporter": f.get("reporter") or {},
+                    "histories": (raw.get("changelog") or {}).get("histories") or [],
+                }, self.s.cache_ttl_seconds)
+
     def _changelog(self, key):
         """티켓 원본 이력 {created, reporter, histories} — 티켓단위 캐시.
         본인 타임라인과 '부모의 자손 스캔'이 같은 캐시를 공유한다."""
@@ -848,7 +915,9 @@ class JiraClient:
                            "authorId": c.get("authorId"), "field": None,
                            "from": None, "to": None, "srcKey": None})
             # 자손은 '상태 변경'만 (요청 범위). 자식별 changelog 는 캐시되어 재방문 시 무료.
-            for ck in self._child_keys(key):
+            child_keys = self._child_keys(key)
+            self.prefetch_changelogs(child_keys)      # 낱개 N 회 → 검색 1 회
+            for ck in child_keys:
                 for h in (self._changelog(ck).get("histories") or []):
                     ev.extend(ev_of(h, {"status"}, src=ck))
             ev.sort(key=lambda e: e.get("date") or "", reverse=True)   # 최신순
@@ -859,7 +928,9 @@ class JiraClient:
         """직계 하위 티켓(Epic→Epic Link 자식 / 그 외→Sub-Task) — ticket_badge 형태.
         _child_keys·ticket_badge 가 모두 캐시라 재방문은 무료."""
         def build():
-            return [b for b in (self.ticket_badge(k) for k in self._child_keys(key)) if b]
+            kids = self._child_keys(key)
+            self.prefetch_issues(kids)          # 자식 원본을 한 번에 → 이후 badge 는 캐시 히트
+            return [b for b in (self.ticket_badge(k) for k in kids) if b]
         return self.cache.get_or_set(f"children:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
 
     def ticket_related(self, key, limit=20):
@@ -908,8 +979,10 @@ class JiraClient:
                     seen.add(k)
                     found.append((k, "본문·코멘트에서 언급", "mention"))
 
+            picked = found[:limit]
+            self.prefetch_issues([k for k, _, _ in picked])   # 관련 티켓 원본을 한 번에
             out = []
-            for k, rel, via in found[:limit]:
+            for k, rel, via in picked:
                 b = self.ticket_badge(k)
                 if b:
                     out.append(dict(b, rel=rel, via=via))
