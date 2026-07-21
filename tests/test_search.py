@@ -56,3 +56,20 @@ def test_endpoint_ok():
     from app.main import app
     j = TestClient(app).get("/api/search", params={"q": "런북", "scope": "all"}).json()
     assert "jira" in j and "confluence" in j and "bitbucket" in j
+
+
+def test_browse_route_serves_spa():
+    """/browse/{key} — Jira 와 같은 URL 로 티켓 단독 페이지를 연다.
+
+    서버는 SPA 진입점만 돌려주고(서버 렌더링 없음), 어떤 티켓인지는 프론트가
+    경로에서 읽는다. 정적 마운트("/")보다 먼저 선언돼야 마운트에 먹히지 않는다.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    c = TestClient(app)
+    r = c.get("/browse/DL-9018")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    # 하위 경로에서도 상대 자산이 루트 기준으로 풀려야 한다
+    assert '<base href="/">' in r.text

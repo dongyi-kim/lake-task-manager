@@ -33,7 +33,9 @@ function descEmpty(html) {
 export default {
   name: "TicketDialog",
   components: { TypeBadge, Avatar },
-  props: { keyId: { type: String, required: true } },
+  // mode: dialog(모달, 기본) | page(새 창 전용 단독 페이지 — 오버레이·닫기 없음)
+  props: { keyId: { type: String, required: true },
+           mode: { type: String, default: "dialog" } },
   emits: ["close"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [], sibOpen: true,
                     pdesc: null, pdescOpen: false, pdescErr: "",
@@ -66,6 +68,9 @@ export default {
       return a.length ? a[a.length - 1] : null;
     },
     // 이 티켓 자체에 설명이 비었는지 (실무상 Sub-Task 설명은 대충 쓰는 경우가 많다)
+    isPage() { return this.mode === "page"; },
+    // 새 창 링크 — Jira 와 같은 /browse/{키} 형태
+    pageHref() { return "/browse/" + encodeURIComponent(this.keyId); },
     ownDescEmpty() { return descEmpty(this.v && this.v.descriptionHtml); },
     // 타이틀바 툴팁 — 요청 포맷 그대로 "[타입] [번호] [제목] - 상태"
     barTitle() {
@@ -260,8 +265,9 @@ export default {
     },
   },
   template: `
-    <div class="tkt-ov" :class="{ expanded }" @click.self="$emit('close')">
-      <div class="tkt-dlg" :class="{ expanded }" role="dialog" aria-modal="true">
+    <div :class="[isPage ? 'tkt-page' : 'tkt-ov', { expanded }]" @click.self="!isPage && $emit('close')">
+      <div class="tkt-dlg" :class="{ expanded, page: isPage }"
+           :role="isPage ? null : 'dialog'" :aria-modal="isPage ? null : 'true'">
         <!-- 최상단 타이틀바 — 배경은 티켓 타입 색을 따른다.
              좌: "[타입] [번호] [제목] - 상태" / 우: Jira에서 열기 · 최대화 · 닫기 -->
         <div class="tkt-bar" :style="{ '--tc': typeColor(v && v.type) }">
@@ -274,12 +280,16 @@ export default {
           <span class="tb-actions">
             <a v-if="v && v.url" class="tb-btn" :href="v.url" target="_blank" rel="noopener"
                title="Jira에서 열기">Jira에서 열기 ↗</a>
-            <button class="tb-btn ico" @click="expanded = !expanded"
+            <a v-if="!isPage" class="tb-btn ico" :href="pageHref" target="_blank" rel="noopener"
+               aria-label="새 창에서 열기" title="새 창에서 열기">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+            </a>
+            <button v-if="!isPage" class="tb-btn ico" @click="expanded = !expanded"
                     :aria-label="expanded ? '축소' : '최대화'" :title="expanded ? '축소' : '최대화'">
               <svg v-if="!expanded" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
               <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3a2 2 0 0 0 2-2V3M20 8h-3a2 2 0 0 1-2-2V3M4 16h3a2 2 0 0 1 2 2v3M20 16h-3a2 2 0 0 0-2 2v3"/></svg>
             </button>
-            <button class="tb-btn ico close" @click="$emit('close')" aria-label="닫기" title="닫기">✕</button>
+            <button v-if="!isPage" class="tb-btn ico close" @click="$emit('close')" aria-label="닫기" title="닫기">✕</button>
           </span>
         </div>
 

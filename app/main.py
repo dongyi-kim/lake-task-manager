@@ -14,8 +14,8 @@ JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 
 import threading
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import rollup, search, vit, workload
@@ -268,6 +268,17 @@ def api_activity(user: str):
 def api_refresh():
     _cache.invalidate()          # 전체 캐시 무효화 (epic/workload/activity)
     return {"status": "refreshed"}
+
+
+# 티켓 단독 페이지 — Jira 와 같은 /browse/{key} URL. SPA 진입점을 그대로 돌려주고
+# 어떤 티켓인지는 프론트가 경로에서 읽는다(서버 렌더링 없음).
+# 정적 마운트("/") 보다 **먼저** 선언해야 마운트에 먹히지 않는다.
+@app.get("/browse/{key}")
+def browse_ticket(key: str):
+    index = STATIC_DIR / "index.html"
+    if not index.exists():
+        raise HTTPException(status_code=404, detail="frontend not built")
+    return FileResponse(str(index))
 
 
 # 정적 프론트 (마지막에 마운트 — /api 라우트가 우선)
