@@ -157,7 +157,7 @@
 /* 좁은 화면 — 가로 3단 해제.
    패널을 통째로 쌓으면 '계보 형제 하위 관련' 이 한 줄로 길게 늘어져 읽기 어렵다.
    패널 껍데기를 display:contents 로 없애고 **열 묶음(.grp) 단위**로 배치한다:
-       1행  [계보 / 하위 Task]  |  [담당 / 일정]
+       1행  [계보 / 하위 Task]  |  [일정]
        2행  티켓 내용(전체 폭)
        3행  [관련 Task / 형제]  |  히스토리
    ★ 묶음을 쓰는 이유 — 섹션을 개별 grid item 으로 두면 같은 '행' 의 두 열이 높이를
@@ -214,6 +214,11 @@
   padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
 .tkt-meta > div { display: flex; gap: 8px; font-size: 12.5px; align-items: baseline; }
 .tkt-meta .k { color: var(--muted-2); flex: 0 0 58px; font-size: 11px; letter-spacing: .3px; }
+/* 상태 값 — 타이틀바(.tb-st)와 같은 색 규칙 */
+.val-st { font-weight: 700; }
+.val-st.st-todo { color: var(--st-todo); }
+.val-st.st-inprogress { color: var(--st-prog); }
+.val-st.st-done { color: var(--st-done); }
 .tkt-meta > div.wide { grid-column: 1 / -1; align-items: flex-start; }
 .tkt-meta .val { color: var(--text); min-width: 0; }
 /* .tkt-meta 안뿐 아니라 우측 패널(.sf-v)에서도 쓰이므로 스코프를 두지 않는다

@@ -389,8 +389,14 @@ export default {
           <div class="tkt-sec-t first">티켓 정보</div>
 
           <div class="tkt-meta">
+            <div><span class="k">상태</span><span class="val"
+              ><span class="val-st" :class="statusClass(v.statusCategory)">{{ v.status || '—' }}</span></span></div>
             <div><span class="k">우선순위</span><span class="val"
               ><span class="prio-b" :class="prioCls(v.priority)">{{ v.priority || '미지정' }}</span></span></div>
+            <div><span class="k">담당자</span><span class="val val-user"><Avatar v-if="v.assigneeId"
+              :user="v.assigneeId" :name="v.assignee" :size="18" />{{ v.assignee || '—' }}</span></div>
+            <div><span class="k">보고자</span><span class="val val-user"><Avatar v-if="v.reporterId"
+              :user="v.reporterId" :name="v.reporter" :size="18" />{{ v.reporter || '—' }}</span></div>
             <div><span class="k">컴포넌트</span><span class="val">{{ (v.components && v.components.length) ? v.components.join(', ') : '—' }}</span></div>
             <div class="wide"><span class="k">라벨</span><span class="val">
               <span v-if="v.labels && v.labels.length" class="tkt-labels">
@@ -501,21 +507,6 @@ export default {
           <aside v-if="v || timeline.length" class="tkt-tl">
             <template v-if="v">
               <div class="grp grp-who">
-              <div class="sec sec-assignee">
-              <div class="tkt-mlabel">담당</div>
-              <div class="sfield">
-                <span class="sf-k">담당자</span>
-                <span class="sf-v val-user"><Avatar v-if="v.assigneeId" :user="v.assigneeId"
-                  :name="v.assignee" :size="18" />{{ v.assignee || '—' }}</span>
-              </div>
-              <div class="sfield">
-                <span class="sf-k">보고자</span>
-                <span class="sf-v val-user"><Avatar v-if="v.reporterId" :user="v.reporterId"
-                  :name="v.reporter" :size="18" />{{ v.reporter || '—' }}</span>
-              </div>
-
-              </div>
-
               <div class="sec sec-dates">
               <div class="tkt-mlabel sf-gap">일정</div>
               <div class="sfield"><span class="sf-k">생성일</span><span class="sf-v">{{ fts(v.created) || '—' }}</span></div>
