@@ -278,6 +278,11 @@ export default {
             <span v-if="v && v.status" class="tb-st" :class="statusClass(v.statusCategory)">- {{ v.status }}</span>
           </span>
           <span class="tb-actions">
+            <!-- 단독 페이지는 nav 가 없어 돌아갈 길이 없다 → Home 링크 -->
+            <a v-if="isPage" class="tb-btn" href="/" title="Home으로 돌아가기">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>
+              Home
+            </a>
             <a v-if="v && v.url" class="tb-btn" :href="v.url" target="_blank" rel="noopener"
                title="Jira에서 열기">Jira에서 열기 ↗</a>
             <a v-if="!isPage" class="tb-btn ico" :href="pageHref" target="_blank" rel="noopener"
