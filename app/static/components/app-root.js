@@ -87,7 +87,8 @@ export default {
       <div v-if="!ready" class="loading page">불러오는 중…</div>
       <!-- 티켓 단독 페이지: 대시보드 뷰 대신 티켓 내용만 -->
       <TicketDialog v-else-if="!needLogin && pageTicket" :key="pageTicket"
-                    :key-id="pageTicket" mode="page" @search="searchOpen = true" />
+                    :key-id="pageTicket" mode="page" :theme="theme"
+                    @search="searchOpen = true" @toggle-theme="toggleTheme" />
       <template v-else-if="!needLogin">
         <FormulaCallout :route="route" />
         <keep-alive><component :is="view"></component></keep-alive>

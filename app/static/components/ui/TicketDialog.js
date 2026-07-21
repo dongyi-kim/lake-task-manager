@@ -35,8 +35,9 @@ export default {
   components: { TypeBadge, Avatar },
   // mode: dialog(모달, 기본) | page(새 창 전용 단독 페이지 — 오버레이·닫기 없음)
   props: { keyId: { type: String, required: true },
-           mode: { type: String, default: "dialog" } },
-  emits: ["close", "search"],
+           mode: { type: String, default: "dialog" },
+           theme: { type: String, default: "light" } },   // 페이지 모드 테마 버튼 표시용
+  emits: ["close", "search", "toggle-theme"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [], sibOpen: true,
                     pdesc: null, pdescOpen: false, pdescErr: "",
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
@@ -278,11 +279,16 @@ export default {
             <span v-if="v && v.status" class="tb-st" :class="statusClass(v.statusCategory)">- {{ v.status }}</span>
           </span>
           <span class="tb-actions">
-            <!-- 단독 페이지는 nav 가 없다 → 검색·Home 을 타이틀바에서 제공
+            <!-- 단독 페이지는 nav 가 없다 → 검색·테마·Home 을 타이틀바에서 제공.
+                 검색·테마는 헤더와 **같은 클래스/마크업**을 써서 모양을 일치시킨다.
                  ('/' 단축키는 app-root 가 document 에 걸어둬 여기서도 그대로 동작) -->
-            <button v-if="isPage" class="tb-btn" @click="$emit('search')" title="통합 검색 ( / )">
+            <button v-if="isPage" class="search-trig" @click="$emit('search')" title="통합 검색 ( / )">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-              검색
+              <span>검색</span><kbd>/</kbd>
+            </button>
+            <button v-if="isPage" class="theme-btn" @click="$emit('toggle-theme')"
+                    :title="theme === 'dark' ? '라이트 모드로' : '다크 모드로'">
+              <span v-if="theme === 'dark'">☀ Light</span><span v-else>🌙 Dark</span>
             </button>
             <a v-if="isPage" class="tb-btn" href="/" title="Home으로 돌아가기">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>
