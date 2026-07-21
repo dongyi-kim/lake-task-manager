@@ -232,10 +232,12 @@ export default {
       });
     },
     // v-html 로 렌더된 이미지/표에 '확대' 버튼을 얹는다(우측 상단). 중복 주입 방지 마커 사용.
+    // kv 표(.kv-table)는 제외 — 본문 표와 달리 '라벨|값' 2단이라 넓힐 이유가 없고,
+    // 영역마다 버튼이 붙으면 오히려 시끄럽다.
     augmentZoomables() {
       const root = this.$el;
       if (!root || !root.querySelectorAll) return;
-      root.querySelectorAll(".tkt-desc img, .tkt-desc table").forEach((el) => {
+      root.querySelectorAll(".tkt-desc img, .tkt-desc table:not(.kv-table)").forEach((el) => {
         if (el.dataset.zoomified) return;
         el.dataset.zoomified = "1";
         const wrap = document.createElement(el.tagName === "IMG" ? "span" : "div");
