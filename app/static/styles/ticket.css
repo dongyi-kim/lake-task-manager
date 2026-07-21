@@ -241,27 +241,19 @@
    세로 바처럼 세운다(폭 30 → 16px). 레벨색은 이 작은 마커에만 쓴다 —
    본문 전체를 물들이지 않으므로 인용·콜아웃의 색과 경쟁하지 않는다. */
 .tkt-desc h1, .tkt-desc h2, .tkt-desc h3, .tkt-desc h4 { position: relative; margin: 18px 0 8px;
-  line-height: 1.3; padding-left: 14px; }
-/* 레벨 뱃지 — 'H' 위 / 숫자 아래로 쌓은 세로 막대.
-   다른 뱃지(칩)와 형식을 공유하지 않는다: **직각·테두리 없음·단색 채움·흰 글자**. */
+  line-height: 1.3; padding-left: 11px; }
+/* 레벨 마커 — 글자 없이 얇은 세로선만. 색으로 레벨을 알린다.
+   top/bottom 을 함께 0 으로 고정해 헤딩 높이만큼 세운다(h1/h2 는 밑줄에 닿는다). */
 .tkt-desc h1::before, .tkt-desc h2::before, .tkt-desc h3::before, .tkt-desc h4::before {
-  content: var(--hl); white-space: pre;          /* \A 로 두 줄 — H / 레벨 */
-  /* top/bottom 을 함께 고정해 헤딩 높이만큼 늘린다 — h1/h2 는 밑줄에 딱 닿는다
-     (border-bottom 안쪽 = padding box 하단). 글자는 flex 로 세로 가운데. */
-  position: absolute; left: 0; top: 0; bottom: 0;
-  display: flex; align-items: center; justify-content: center;
-  /* 폰트 스택은 프로젝트 표준 — ui-monospace/SFMono/Menlo 만 두면 Windows 에서
-     일반 monospace(Courier New)로 떨어져 고정폭·볼드가 제대로 안 나온다. */
-  font: 700 8.5px/1.05 ui-monospace, "Cascadia Code", Consolas, monospace;
-  letter-spacing: .5px; text-align: center; color: #fff;
-  background: var(--hd, var(--hlv-4));
-  border: 0; border-radius: 0; padding: 0 3px; }
-.tkt-desc h1 { --hl: "H\A 1"; --hd: var(--hlv-1); }
-.tkt-desc h2 { --hl: "H\A 2"; --hd: var(--hlv-2); }
-.tkt-desc h3 { --hl: "H\A 3"; --hd: var(--hlv-3); }
-.tkt-desc h4 { --hl: "H\A 4"; --hd: var(--hlv-4); }
-/* 상위 2단계만 밑줄 — 섹션 경계를 크기 말고 형태로도 알린다 */
-.tkt-desc h1, .tkt-desc h2 { border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px; background: var(--hd, var(--muted-2)); }
+/* 흰 글자를 얹지 않으므로 테마 적응형 색을 그대로 쓴다(다크에서 더 잘 보인다) */
+.tkt-desc h1 { --hd: var(--accent); }
+.tkt-desc h2 { --hd: var(--good); }
+.tkt-desc h3 { --hd: var(--warn); }
+.tkt-desc h4 { --hd: var(--muted-2); }
+/* 상위 2단계만 밑줄 — 섹션 경계를 크기 말고 형태로도 알린다. 색은 세로선과 통일 */
+.tkt-desc h1, .tkt-desc h2 { border-bottom: 1px solid var(--hd); padding-bottom: 5px; }
 .tkt-desc h1 { font-size: 17px; } .tkt-desc h2 { font-size: 15.5px; } .tkt-desc h3 { font-size: 14px; }
 .tkt-desc ul, .tkt-desc ol { margin: 0 0 10px; padding-left: 22px; }
 .tkt-desc li { margin: 2px 0; }
