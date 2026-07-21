@@ -18,9 +18,17 @@ export default {
       else if (e.key === "ArrowUp") { e.preventDefault(); this.move(-1); }
       else if (e.key === "Enter") { const f = this.flat[this.active]; if (f) this.pick(f); }
     };
-    window.addEventListener("keydown", this._onKey);
-    this.$nextTick(() => { if (this.$refs.input) this.$refs.input.focus(); });
   },
+  // keep-alive 로 감싸 마지막 검색어·결과를 유지한다(창을 닫았다 열어도 그대로).
+  // ★ 전역 키 리스너는 반드시 activated/deactivated 에서 붙이고 뗀다.
+  //   mounted/unmounted 에 두면 **닫혀 있는 동안에도** 살아 있어서
+  //   ArrowDown/Enter 가 보이지도 않는 목록을 조작하고 티켓을 열어버린다.
+  activated() {
+    window.addEventListener("keydown", this._onKey);
+    // 이전 검색어를 선택 상태로 둔다 — 바로 새로 타이핑하면 덮어써지고, 그대로 두면 결과 유지
+    this.$nextTick(() => { const el = this.$refs.input; if (el) { el.focus(); el.select(); } });
+  },
+  deactivated() { window.removeEventListener("keydown", this._onKey); clearTimeout(this._t); },
   unmounted() { window.removeEventListener("keydown", this._onKey); clearTimeout(this._t); },
   watch: {
     q() { this.schedule(); },

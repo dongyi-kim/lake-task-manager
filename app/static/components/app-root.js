@@ -95,7 +95,10 @@ export default {
       </template>
       <LoginOverlay />
       <TicketDialog v-if="ticketKey" :key-id="ticketKey" @close="ticketKey = null" />
-      <SearchOverlay v-if="searchOpen" @close="searchOpen = false"
-                     @open-ticket="(k) => { ticketKey = k; searchOpen = false; }" />
+      <!-- keep-alive: 같은 창에서 다시 열면 마지막 검색어·결과가 그대로 남는다 -->
+      <keep-alive>
+        <SearchOverlay v-if="searchOpen" @close="searchOpen = false"
+                       @open-ticket="(k) => { ticketKey = k; searchOpen = false; }" />
+      </keep-alive>
     </div>`,
 };
