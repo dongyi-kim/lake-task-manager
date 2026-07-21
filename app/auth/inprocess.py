@@ -26,7 +26,7 @@ class InProcessProvider(AuthProvider):
             raise SessionExpired(f"HTTP {r.status_code} on {path}")
         return r
 
-    def get_json(self, path, params=None):
+    def get_json(self, path, params=None, priority=0):   # priority 무시(큐 없음)
         return self._get(path, params).json()
 
     def get_text(self, path, params=None):

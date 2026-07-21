@@ -1,3 +1,25 @@
+import threading
+
+# 이 스레드에서 나가는 상류 호출의 우선순위(0=사용자, 1=백그라운드 갱신).
+# 호출 지점마다 인자를 넘기지 않으려고 스레드 로컬에 둔다 — provider 가 읽는다.
+_PRIO = threading.local()
+
+
+def upstream_priority():
+    return getattr(_PRIO, "value", 0)
+
+
+class background_upstream:
+    """with 블록 안의 상류 호출을 백그라운드 우선순위로."""
+
+    def __enter__(self):
+        _PRIO.value = 1
+
+    def __exit__(self, *exc):
+        _PRIO.value = 0
+        return False
+
+
 """AuthProvider 인터페이스 — JiraClient 는 어떤 인증인지 몰라야 한다."""
 
 

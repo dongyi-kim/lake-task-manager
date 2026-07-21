@@ -65,6 +65,39 @@ class Cache:
         self.set(key, value, ttl)
         return value, False
 
+    def get_stale(self, key):
+        """TTL 이 지났어도 남아 있으면 값을 준다(SWR 용). 없으면 None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload FROM cache WHERE key = ?", (key,)).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return None
+
+    def get_or_set_swr(self, key, ttl, producer, background):
+        """stale-while-revalidate.
+
+        · 신선하면 그대로
+        · 만료됐지만 값이 남아 있으면 **즉시 그 값을 주고** 갱신은 background(fn) 에 맡긴다
+        · 아예 없으면 producer() 를 동기로 실행(첫 조회는 기다릴 수밖에 없다)
+
+        체감 대기시간을 없애는 게 목적이다 — 재방문 시 화면은 즉시 뜨고,
+        새 데이터는 다음 조회부터 반영된다.
+        """
+        hit = self.get(key)
+        if hit is not None:
+            return hit, "fresh"
+        stale = self.get_stale(key)
+        if stale is not None:
+            background(key, ttl, producer)
+            return stale, "stale"
+        value = producer()
+        self.set(key, value, ttl)
+        return value, "miss"
+
     def invalidate(self, prefix=None):
         with self._lock:
             if prefix:

@@ -16,11 +16,12 @@ playwright 는 prod 전용 의존(requirements-sso.txt). import 는 지연.
 """
 
 import os
+import itertools
 import queue
 import sys
 import threading
 
-from .base import AuthProvider, LoginRequired, SessionExpired
+from .base import AuthProvider, LoginRequired, SessionExpired, upstream_priority
 
 
 def _launch(p, headless):
@@ -52,7 +53,10 @@ class SsoSessionProvider(AuthProvider):
             raise LoginRequired(f"SSO 세션 파일이 없습니다({state_path}). 최초 로그인이 필요합니다.")
         self._state_path = state_path
         self._ua = user_agent
-        self._jobs = queue.Queue()
+        # PriorityQueue — 사용자 요청(0)이 백그라운드 갱신(1)을 앞지른다.
+        # 단일 큐라 백그라운드 작업이 앞에 쌓이면 사용자의 다음 조회가 그만큼 늦어진다.
+        self._jobs = queue.PriorityQueue()
+        self._seq = itertools.count()          # 같은 우선순위는 들어온 순서대로
         self._ready = threading.Event()
         self._start_error = None
         self._thread = threading.Thread(target=self._loop, name="playwright-sso", daemon=True)
@@ -77,7 +81,7 @@ class SsoSessionProvider(AuthProvider):
             return
         self._ready.set()
         while True:
-            job = self._jobs.get()
+            _prio, _seq, job = self._jobs.get()
             if job is None:
                 break
             fn, done, box = job
@@ -92,13 +96,18 @@ class SsoSessionProvider(AuthProvider):
         except Exception:
             pass
 
-    def _submit(self, fn):
-        """fn 을 Playwright 전용 스레드에서 실행하고 결과/예외를 호출자 스레드로 반환."""
+    def _submit(self, fn, priority=0):
+        """fn 을 Playwright 전용 스레드에서 실행하고 결과/예외를 호출자 스레드로 반환.
+
+        priority: 0=사용자 요청(기본) · 1=백그라운드 갱신.
+        단일 큐라 백그라운드 작업이 앞에 쌓이면 사용자의 다음 조회가 그만큼 늦어진다
+        → 낮은 우선순위로 넣어 사용자 요청이 항상 앞지르게 한다.
+        """
         if not self._thread.is_alive():
             raise SessionExpired("SSO provider 스레드가 종료됨 — login 재실행 필요.")
         done = threading.Event()
         box = [None, None]   # [result, error]
-        self._jobs.put((fn, done, box))
+        self._jobs.put((priority, next(self._seq), (fn, done, box)))
         done.wait()
         if box[1] is not None:
             raise box[1]
@@ -113,8 +122,10 @@ class SsoSessionProvider(AuthProvider):
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
         return resp.text() if as_text else resp.json()
 
-    def get_json(self, path, params=None):
-        return self._submit(lambda: self._fetch(path, params, False))
+    def get_json(self, path, params=None, priority=None):
+        if priority is None:
+            priority = upstream_priority()      # 백그라운드 갱신은 사용자 요청 뒤로
+        return self._submit(lambda: self._fetch(path, params, False), priority)
 
     def get_text(self, path, params=None):
         return self._submit(lambda: self._fetch(path, params, True))
@@ -132,7 +143,7 @@ class SsoSessionProvider(AuthProvider):
 
     def close(self):
         try:
-            self._jobs.put(None)
+            self._jobs.put((99, next(self._seq), None))
             self._thread.join(timeout=10)
         except Exception:
             pass

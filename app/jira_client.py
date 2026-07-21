@@ -7,13 +7,14 @@ Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 P
 
 import re
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from html import unescape
 from urllib.parse import quote, unquote, urlparse
 
 from . import progress
-from .auth.base import SessionExpired
+from .auth.base import SessionExpired, background_upstream
 from .htmlsafe import _CONF_RE, proxy_images, sanitize_html, text_to_html, tidy_html
 from .names import real_name
 from .sections import split_sections
@@ -385,6 +386,44 @@ class JiraClient:
 
     ISSUE_BATCH = 50                  # JQL "key in (...)" 한 번에 담을 최대 개수
 
+    def _swr(self, key, producer):
+        """stale-while-revalidate — 만료돼도 남은 값이 있으면 **즉시** 주고 뒤에서 갱신.
+
+        재방문 체감 대기를 없애는 게 목적이다. 갱신은 워커 1개로, 상류 호출은
+        백그라운드 우선순위(사용자 요청이 항상 앞지름)로 돈다 — prod 는 상류가
+        단일 큐라 이걸 안 하면 갱신이 사용자 조회를 밀어낸다.
+        같은 키의 갱신이 이미 돌고 있으면 새로 띄우지 않는다.
+        """
+        value, _how = self.cache.get_or_set_swr(
+            key, self.s.cache_ttl_seconds, producer, self._refresh_bg)
+        return value
+
+    def _refresh_bg(self, key, ttl, producer):
+        self._ensure_bg()
+        with self._bg_lock:
+            if key in self._bg_inflight:
+                return
+            self._bg_inflight.add(key)
+
+        def job():
+            try:
+                with background_upstream():
+                    self.cache.set(key, producer(), ttl)
+            except Exception:
+                pass                     # 갱신 실패는 조용히 — stale 값이 계속 쓰인다
+            finally:
+                with self._bg_lock:
+                    self._bg_inflight.discard(key)
+
+        self._bg_pool.submit(job)
+
+    def _ensure_bg(self):
+        """백그라운드 갱신 자원 — 워커 1개(직렬 상류를 더 붐비게 하지 않는다)."""
+        if getattr(self, "_bg_pool", None) is None:
+            self._bg_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="swr")
+            self._bg_lock = threading.Lock()
+            self._bg_inflight = set()
+
     def prefetch_issues(self, keys):
         """여러 티켓 원본을 **검색 한 번**으로 받아 티켓 단위 캐시에 채운다.
 
@@ -527,12 +566,11 @@ class JiraClient:
                 f'project={self.s.project_key} AND labels="PMO_VIT" ORDER BY updated DESC',
                 cache_key=f"vit_list:{self.env}")
             return [self._vit_base(it) for it in roots]
-        return self.cache.get_or_set(f"vit_bases:{self.env}", self.s.cache_ttl_seconds, do)[0]
+        return self._swr(f"vit_bases:{self.env}", do)
 
     def vit_tree_of(self, key, itype):
         """루트 하나의 자손 트리 — 루트 단위 캐시(모듈별 조회끼리 공유·재사용)."""
-        return self.cache.get_or_set(f"vit_tree:{self.env}:{key}", self.s.cache_ttl_seconds,
-                                     lambda: self._vit_tree(key, itype))[0]
+        return self._swr(f"vit_tree:{self.env}:{key}", lambda: self._vit_tree(key, itype))
 
     def vit_with_trees(self, bases):
         """주어진 base 들에 트리를 붙인다(루트 단위 병렬). 모듈별 엔드포인트가 사용."""
@@ -727,7 +765,7 @@ class JiraClient:
                           "status": None, "statusCategory": None, "assignee": None,
                           "pct": None, "virtual": True}]
             return nodes
-        return self.cache.get_or_set(f"ancestors:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+        return self._swr(f"ancestors:{self.env}:{key}", build)
 
     def _epic_pct(self, epic_key):
         try:
@@ -770,7 +808,7 @@ class JiraClient:
             for r in rows:
                 r["current"] = (r["key"] == key)
             return rows
-        return self.cache.get_or_set(f"siblings:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+        return self._swr(f"siblings:{self.env}:{key}", build)
 
     # ── 티켓 타임라인(변경 이력 + 코멘트) ──
     # '중요 알림'만 남긴다: 생성 / 상태 / 담당자 / 해결 / 우선순위 / 마감 / 소속 / 스프린트 + 댓글.
@@ -788,6 +826,11 @@ class JiraClient:
         검색도 expand=changelog 를 지원하므로 한 번에 받아 채워둔다.
         """
         env = self.env
+        # 검색이 expand=changelog 를 무시하는 인스턴스가 있다(jira820 이 그렇다).
+        # 그런 곳에서 계속 시도하면 매번 **헛도는 왕복**만 늘어난다 → 한 번 확인하고 기억한다.
+        cap = f"cap:search_changelog:{env}"
+        if self.cache.get(cap) is False:
+            return
         miss = [k for k in dict.fromkeys(keys)
                 if k and self.cache.get(f"changelog:{env}:{k}") is None]
         if len(miss) < 2:
@@ -803,7 +846,11 @@ class JiraClient:
                 raise
             except Exception:
                 return
-            for raw in (data.get("issues") or []):
+            got = data.get("issues") or []
+            if got and all(r.get("changelog") is None for r in got):
+                self.cache.set(cap, False, self.STATUS_CATS_TTL)   # 미지원 — 다시 시도하지 않는다
+                return
+            for raw in got:
                 k = raw.get("key")
                 # ★ changelog 키가 아예 없으면 검색이 expand 를 무시한 것이다.
                 #   그대로 캐시하면 '이력 없음'을 굳혀 자손 상태변경이 통째로 사라진다
@@ -922,7 +969,7 @@ class JiraClient:
                     ev.extend(ev_of(h, {"status"}, src=ck))
             ev.sort(key=lambda e: e.get("date") or "", reverse=True)   # 최신순
             return ev[:limit]
-        return self.cache.get_or_set(f"timeline:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+        return self._swr(f"timeline:{self.env}:{key}", build)
 
     def ticket_children(self, key):
         """직계 하위 티켓(Epic→Epic Link 자식 / 그 외→Sub-Task) — ticket_badge 형태.
@@ -931,7 +978,7 @@ class JiraClient:
             kids = self._child_keys(key)
             self.prefetch_issues(kids)          # 자식 원본을 한 번에 → 이후 badge 는 캐시 히트
             return [b for b in (self.ticket_badge(k) for k in kids) if b]
-        return self.cache.get_or_set(f"children:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+        return self._swr(f"children:{self.env}:{key}", build)
 
     def ticket_related(self, key, limit=20):
         """관련 티켓 — 두 소스를 합친다.
@@ -987,7 +1034,7 @@ class JiraClient:
                 if b:
                     out.append(dict(b, rel=rel, via=via))
             return out
-        return self.cache.get_or_set(f"related:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+        return self._swr(f"related:{self.env}:{key}", build)
 
     def ticket_attachments(self, key):
         """첨부파일 — [{id,filename,size,mime,created,author,url,thumb,isImage}].
@@ -1014,7 +1061,7 @@ class JiraClient:
                     "isImage": is_img,
                 })
             return out
-        return self.cache.get_or_set(f"attachments:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+        return self._swr(f"attachments:{self.env}:{key}", build)
 
     def ticket_documents(self, key, limit=20):
         """관련 문서 — 설명·코멘트에서 **언급된 Confluence 문서**. [{title,url}] (URL 기준 중복 제거)."""
@@ -1045,7 +1092,7 @@ class JiraClient:
                     out.append({"title": _conf_title(u, text),
                                 "url": _abs_url(u, self.s.confluence_base)})
             return out[:limit]
-        return self.cache.get_or_set(f"documents:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
+        return self._swr(f"documents:{self.env}:{key}", build)
 
     # ── 사용자 프로필 이미지 ──
     # 아바타는 사실상 불변이라 URL 해석을 아주 길게 캐시(AVATAR_TTL). 바이트는 캐시에 넣지 않고
