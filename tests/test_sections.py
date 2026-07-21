@@ -3,6 +3,12 @@
 from app.sections import split_sections as S
 
 
+def _one(html):
+    """구분선 없이 통짜 1개인지 — (title, html) 로만 비교(kv 등 부가 키는 무시)."""
+    r = S(html)
+    return len(r) == 1 and r[0]["title"] is None and r[0]["html"] == html
+
+
 def _titles(html):
     return [s["title"] for s in S(html)]
 
@@ -22,8 +28,7 @@ def test_block_level_divider():
 
 
 def test_no_divider_returns_original():
-    h = "<p>본문</p><h2>헤딩</h2>"
-    assert S(h) == [{"title": None, "html": h}]
+    assert _one("<p>본문</p><h2>헤딩</h2>")
 
 
 def test_two_equals_is_not_a_divider():
@@ -41,7 +46,7 @@ def test_nested_dividers_are_ignored():
               "<ul><li>=== x ===</li></ul><p>뒤</p>",
               '<div class="panel"><div class="panel-body"><p>=== x ===</p></div></div><p>뒤</p>',
               "<table><tr><td>=== x ===</td></tr></table><p>뒤</p>"):
-        assert S(h) == [{"title": None, "html": h}], h
+        assert _one(h), h
 
 
 def test_toplevel_split_keeps_nested_intact():
@@ -92,7 +97,54 @@ def test_nested_plain_containers_reopened():
 
 def test_div_with_class_is_not_splittable():
     """class 붙은 div(패널·콜아웃) 안에서 자르면 의미가 깨진다 — 열어준 건 '속성 없는' div 뿐."""
-    h = '<div class="callout callout-info"><p>=== x ===</p></div><p>뒤</p>'
-    assert S(h) == [{"title": None, "html": h}]
-    h2 = '<div class="panel"><div class="panel-body"><p>=== x ===</p></div></div>'
-    assert S(h2) == [{"title": None, "html": h2}]
+    assert _one('<div class="callout callout-info"><p>=== x ===</p></div><p>뒤</p>')
+    assert _one('<div class="panel"><div class="panel-body"><p>=== x ===</p></div></div>')
+
+
+# ── key : value 영역 → 표 (VoC 시스템 주입 블록) ──────────────────────
+
+def _voc(body):
+    return ("<p>==================== 신청정보 ====================</p>"
+            "<p>" + body + "</p>")
+
+
+def test_kv_section_becomes_table():
+    r = S(_voc("신청자 : 홍길동<br/>요청 부서 : 데이터플랫폼<br/>희망일 : 2026-08-01"))
+    kv = r[-1]["kv"]
+    assert [x["k"] for x in kv] == ["신청자", "요청 부서", "희망일"]
+    assert [x["html"] for x in kv] == ["홍길동", "데이터플랫폼", "2026-08-01"]
+
+
+def test_kv_value_may_contain_colon():
+    """URL·시각처럼 값에 콜론이 들어가도 첫 콜론에서만 자른다."""
+    kv = S(_voc("URL : http://x.example:8080/a<br/>적재 : 일 1회 (02:00)"))[-1]["kv"]
+    assert kv[0]["html"] == "http://x.example:8080/a"
+    assert kv[1]["html"] == "일 1회 (02:00)"
+
+
+def test_kv_needs_every_line_to_match():
+    """한 줄이라도 key:value 가 아니면 표로 보지 않는다(일반 문장 보호)."""
+    assert S(_voc("신청자 : 홍길동<br/>그냥 문장이다"))[-1]["kv"] is None
+    assert S(_voc("문장인데 콜론이 있다: 이렇게."))[-1]["kv"] is None
+
+
+def test_kv_ignores_rich_blocks():
+    """표·리스트 등이 섞이면 손대지 않는다."""
+    h = ("<p>==================== 신청정보 ====================</p>"
+         "<p>a : 1</p><table><tr><td>x</td></tr></table>")
+    assert S(h)[-1]["kv"] is None
+
+
+def test_kv_single_row_not_a_table():
+    assert S(_voc("신청자 : 홍길동"))[-1]["kv"] is None
+
+
+def test_kv_with_nbsp():
+    """WYSIWYG 의 &nbsp; 가 키/값에 남으면 안 된다."""
+    kv = S(_voc("신청자&nbsp;:&nbsp;홍길동<br/>부서&nbsp;:&nbsp;데이터"))[-1]["kv"]
+    assert [x["k"] for x in kv] == ["신청자", "부서"]
+
+
+def test_kv_present_on_undivided_description():
+    """구분선이 없는 설명도 kv 판정을 탄다(키가 항상 존재)."""
+    assert "kv" in S("<p>본문</p>")[0]

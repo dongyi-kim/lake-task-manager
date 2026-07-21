@@ -362,3 +362,14 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   font-variant-numeric: tabular-nums; }
 .sf-v.overdue { color: var(--danger); font-weight: 700; }
 .tkt-mlabel.sf-gap { margin-top: 14px; }
+
+/* key : value 영역 표 — VoC 시스템 주입 블록(신청정보/시스템정보/테이블정보 등).
+   설명 안의 일반 표(.tkt-desc table)와 달리 '라벨 | 값' 2단이라 테두리를 죽이고
+   행 구분선만 남긴다(메타 그리드와 같은 읽는 느낌). */
+.kv-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.kv-table th, .kv-table td { border: 0; border-bottom: 1px solid var(--border);
+  padding: 5px 8px; text-align: left; vertical-align: top; }
+.kv-table tr:last-child th, .kv-table tr:last-child td { border-bottom: 0; }
+.kv-table th { width: 1%; white-space: nowrap; font-weight: 600; font-size: 11.5px;
+  color: var(--muted-2); background: none; padding-left: 0; }
+.kv-table td { color: var(--text); word-break: break-word; }

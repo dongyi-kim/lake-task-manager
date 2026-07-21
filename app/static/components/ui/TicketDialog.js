@@ -354,7 +354,16 @@ export default {
           <!-- 구분선(=== 제목 ===)으로 나뉜 영역을 각각 제목 달린 카드로. 구분선이 없으면 1개뿐 -->
           <template v-else v-for="(sec, i) in descSections" :key="i">
             <div class="tkt-sec-t">{{ sec.title || '설명' }}</div>
-            <div class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="sec.html"></div>
+            <!-- 영역 전체가 'key : value' 면 표로 (VoC 시스템 주입 블록) -->
+            <div v-if="sec.kv" class="tkt-desc tkt-desc-box">
+              <table class="kv-table">
+                <tr v-for="(r, j) in sec.kv" :key="j">
+                  <th>{{ r.k }}</th>
+                  <td @click="onContentClick" v-html="r.html || '&mdash;'"></td>
+                </tr>
+              </table>
+            </div>
+            <div v-else class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="sec.html"></div>
           </template>
 
           <!-- 설명 아래 2분할: 첨부파일 | 관련문서(언급된 Confluence 문서) -->

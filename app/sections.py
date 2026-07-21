@@ -102,13 +102,17 @@ class _Cutter(HTMLParser):
                 break
 
 
+def _sec(title, html):
+    return {"title": title, "html": html, "kv": _kv_rows(html)}
+
+
 def split_sections(html):
     """정화된 HTML → [{'title': str|None, 'html': str}].
 
     구분선이 없으면 원본 그대로 한 덩어리([{'title': None, 'html': html}]).
     """
     if not html or "===" not in html:
-        return [{"title": None, "html": html or ""}]
+        return [_sec(None, html or "")]
 
     c = _Cutter(html)
     c.feed(html)
@@ -118,7 +122,7 @@ def split_sections(html):
     # 블록 사이([]) 또는 '속 빈 문단 컨테이너' 안에서만 자른다 — 그 외는 태그가 깨진다
     cuts = [x for x in c.cuts if _splittable(x[3])]
     if not cuts:
-        return [{"title": None, "html": html}]
+        return [_sec(None, html)]
 
     out, pos, title, prefix = [], 0, None, ""
     for start, end, t, stack in cuts:
@@ -129,7 +133,10 @@ def split_sections(html):
         title, pos = t, end
     out.append({"title": title, "html": _clean(prefix + html[pos:])})
 
-    return [s for s in out if _has_content(s["html"])] or [{"title": None, "html": html}]
+    out = [s for s in out if _has_content(s["html"])] or [{"title": None, "html": html}]
+    for sec in out:
+        sec["kv"] = _kv_rows(sec["html"])   # 표로 그릴 수 있으면 행 목록, 아니면 None
+    return out
 
 
 # 자를 수 있는 컨테이너 — 속성 없는 순수 문단/래퍼만.
@@ -159,6 +166,67 @@ def _clean(html):
         h = h2
     h = _LEAD_BR_RE.sub(r"\1", h)
     return _TAIL_BR_RE.sub(r"\1", h).strip()
+
+
+# ── key : value 영역 → 표 ────────────────────────────────────────────
+# VoC 티켓은 시스템이 아래 블록을 주입하는데, 내용이 전부 "{key} : {value}" 다.
+#     ==================== 신청정보 ====================
+#     ==================== {2} 시스템정보 ====================
+# 제목으로 알아보지 않고 **내용 모양**으로 판정한다 — {%d} 같은 변형까지 자동으로 걸린다.
+
+# 표로 만들 수 없는 블록(표·리스트·인용·코드·이미지)이 섞여 있으면 손대지 않는다
+_RICH_RE = re.compile(r"<(?:table|ul|ol|pre|blockquote|img|h[1-6])[\s>]", re.I)
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)")
+MIN_KV_ROWS = 2                      # 한 줄짜리를 표로 만들면 오히려 산만하다
+
+
+def _balanced(frag):
+    """조각 안의 태그 짝이 맞는지 — 안 맞으면 잘라 쓰면 안 된다(<b>k : v</b> 같은 경우)."""
+    depth = {}
+    for close, tag in _TAG_RE.findall(frag):
+        t = tag.lower()
+        if t in ("br", "img", "hr"):
+            continue
+        depth[t] = depth.get(t, 0) + (-1 if close else 1)
+        if depth[t] < 0:
+            return False
+    return not any(depth.values())
+
+
+def _split_kv(raw):
+    """한 줄 HTML → (키 평문, 값 HTML). key:value 가 아니면 None."""
+    depth = 0
+    for i, ch in enumerate(raw):
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth = max(0, depth - 1)
+        elif ch == ":" and depth == 0:
+            left, right = raw[:i], raw[i + 1:]
+            if "<" in left:                       # 키에 마크업이 끼면 잘라 쓰기 위험
+                return None
+            key = unescape(left).replace(" ", " ").strip()
+            if not key or len(key) > 60:          # 문장에 콜론이 낀 경우를 걸러낸다
+                return None
+            if not _balanced(right):
+                return None
+            return key, right.strip()
+    return None
+
+
+def _kv_rows(html):
+    """영역 전체가 'key : value' 로만 이뤄졌으면 [{k, html}], 아니면 None."""
+    if not html or _RICH_RE.search(html):
+        return None
+    rows = []
+    for raw in re.split(r"<br\s*/?>|</?(?:p|div)[^>]*>", html):
+        if not unescape(re.sub(r"<[^>]*>", "", raw)).replace(" ", " ").strip():
+            continue                              # 빈 줄은 무시
+        kv = _split_kv(raw)
+        if not kv:
+            return None                           # 한 줄이라도 어긋나면 표로 보지 않는다
+        rows.append({"k": kv[0], "html": kv[1]})
+    return rows if len(rows) >= MIN_KV_ROWS else None
 
 
 def _has_content(html):
