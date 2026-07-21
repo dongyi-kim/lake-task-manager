@@ -35,6 +35,25 @@ _VOID = {"br", "hr", "img"}
 _DIV_RE = re.compile(r"={3,}\s*(.*?)\s*={3,}", re.S)
 
 
+# 화면에 안 보이는 문자들 — WYSIWYG 가 문단 끝에 흘려 넣는다(ZWSP/ZWNJ/BOM 등).
+# str.strip() 은 이것들을 공백으로 보지 않아서, '빈 줄인데 빈 줄이 아닌' 줄이 생긴다.
+# key:value 판정에서는 그 한 줄 때문에 **영역 전체가 표에서 탈락**한다.
+# 잔여 문자는 문서 맨 끝에 붙기 마련이라 '마지막 영역만 표가 안 되는' 형태로 나타난다.
+_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"), None)
+_SPACEY = {0x00a0: " ", 0x3000: " ", 0x2002: " ", 0x2003: " ", 0x2009: " "}
+
+
+def _txt(raw):
+    """HTML 조각 → 판정용 평문(태그 제거 · 엔티티 해제 · 보이지 않는 문자 제거)."""
+    t = unescape(re.sub(r"<[^>]*>", "", raw or ""))
+    return t.translate(_INVISIBLE).translate(_SPACEY).strip()
+
+
+def _txt_inline(text):
+    """이미 태그가 제거된 텍스트용 정규화."""
+    return unescape(text or "").translate(_INVISIBLE).translate(_SPACEY).strip()
+
+
 def _is_divider(line):
     """구분선이면 (True, 제목|None). 제목이 비면 None.
 
@@ -42,7 +61,7 @@ def _is_divider(line):
     `====&nbsp;신청정보&nbsp;====` 가 구분선으로 안 잡히고, 잡혀도 제목에
     `&nbsp;` 가 그대로 남는다.
     """
-    s = unescape(line or "").replace(" ", " ").strip()
+    s = _txt_inline(line)
     if not s or not _DIV_RE.fullmatch(s):
         return False, None
     title = s.strip("=").strip()
@@ -207,7 +226,7 @@ def _split_kv(raw):
             left, right = raw[:i], raw[i + 1:]
             if "<" in left:                       # 키에 마크업이 끼면 잘라 쓰기 위험
                 return None
-            key = unescape(left).replace(" ", " ").strip()
+            key = _txt_inline(left)
             if not key or len(key) > 60:          # 문장에 콜론이 낀 경우를 걸러낸다
                 return None
             if not _balanced(right):
@@ -222,7 +241,7 @@ def _kv_rows(html):
         return None
     rows = []
     for raw in re.split(r"<br\s*/?>|</?(?:p|div)[^>]*>", html):
-        if not unescape(re.sub(r"<[^>]*>", "", raw)).replace(" ", " ").strip():
+        if not _txt(raw):
             continue                              # 빈 줄은 무시
         kv = _split_kv(raw)
         if not kv:

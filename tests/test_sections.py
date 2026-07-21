@@ -167,3 +167,35 @@ def test_kv_blank_lines_inside_block():
         h = "<p>==================== 신청정보 ====================</p>" + body
         kv = S(h)[-1]["kv"]
         assert kv and [x["k"] for x in kv] == ["a", "b"], body
+
+
+def test_kv_survives_invisible_chars():
+    """WYSIWYG 가 흘려 넣는 보이지 않는 문자(ZWSP/ZWNJ/BOM).
+
+    str.strip() 은 이들을 공백으로 보지 않는다 → '빈 줄이 아닌 빈 줄'이 생기고,
+    그 한 줄 때문에 **영역 전체가 표에서 탈락**한다. 잔여 문자는 문서 맨 끝에
+    붙기 마련이라 '마지막 영역만 표가 안 되는' 형태로 나타난다(실제 제보 증상).
+    """
+    D = "<p>==================== {3} 테이블정보 ====================</p>"
+    body = "<p>스키마 : A<br/>테이블명 : B</p>"
+    for tail in ("", "<p>&#8203;</p>", "<p>&#65279;</p>", "<p>&#8204;</p>",
+                 "<p>&#8203;&nbsp;</p>"):
+        kv = S(D + body + tail)[-1]["kv"]
+        assert kv and len(kv) == 2, tail
+
+
+def test_divider_with_invisible_char():
+    """구분선 안에 ZWSP 가 껴도 구분선으로 인식해야 한다."""
+    r = S("<p>====&#8203; 신청정보 ====</p><p>a : 1<br/>b : 2</p>")
+    assert [s["title"] for s in r] == ["신청정보"]
+
+
+def test_kv_when_whole_body_is_one_paragraph():
+    """시스템 주입 내용이 통째로 하나의 <p> 로 묶여 마지막 영역만 진짜 </p> 를 무는 형태."""
+    big = ("<p>==================== {2} 테이블정보 ====================<br/>"
+           "스키마 : DW_MART<br/>테이블명 : FCT_A<br/>"
+           "==================== {3} 테이블정보 ====================<br/>"
+           "스키마 : DW_MART<br/>테이블명 : FCT_B</p>")
+    r = S(big)
+    assert [s["title"] for s in r] == ["{2} 테이블정보", "{3} 테이블정보"]
+    assert all(s["kv"] and len(s["kv"]) == 2 for s in r)
