@@ -120,3 +120,13 @@ wbs:
         epics:
           - {ticket: DL-113, weight: 6}
           - {ticket: DL-114, weight: 4}
+
+  # UI 회귀 검증 픽스처(개발 world 한정) — 화면에서 바로 찾으려고 모듈로 노출한다.
+  # prod 배포 config 에는 없어야 한다.
+  - module: TEST
+    tasks:
+      - name: UI 회귀 검증 픽스처
+        start: 2026-01-05
+        end:   2026-12-31
+        epics:
+          - {ticket: DL-9000, weight: 10}

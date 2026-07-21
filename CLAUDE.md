@@ -286,13 +286,22 @@ world 는 랜덤 생성이라 "설명 없는 Sub-Task", "링크 있는 티켓" �
 | DL-9011 | 라벨 다수 + 미할당 + 설명 없음 |
 | DL-9012~9016 | Sub-Task 부모/형제 — 설명 없음(상위 설명 자동 펼침)·있음(접힘)·완료 정렬 |
 
+**찾는 법 — 화면 3곳 어디서든 도달한다 (`TEST` 모듈 / `FIX_MODULE`):**
+- **WBS**: 모듈 `TEST` → WBS Task "UI 회귀 검증 픽스처" → Epic DL-9000.
+- **현안(PMO_VIT)**: DL-9000 이 `PMO_VIT` 라벨을 달고 있어 모듈 `TEST` 의 현안 루트로 뜬다(자손 16).
+- **인력워크로드**: 모듈 `TEST` → `UI픽스처01` / `UI픽스처02`(`test.ui01/02`).
+
 **규칙 (지켜라):**
-- **대시보드 격리**: Epic 이 `wbs_config` 밖 + `PMO_VIT` 라벨 없음 + 담당자가 `people.yaml` 밖(`pmo`/`lead`)
-  → WBS·현안·워크로드 집계에 **안 섞인다**. `tests/test_ui_fixtures.py` 가 이 격리를 가드한다.
+- **TEST 모듈엔 랜덤 데이터를 넣지 마라.** 랜덤 생성기는 `self.gen_modules`(= modules − TEST)만 돈다.
+  섞이면 픽스처를 눈으로 찾는 의미가 없어진다. `_build_wbs_epics` 도 TEST 모듈 epic 을 건너뛴다
+  (안 그러면 DL-9000 밑에 랜덤 자식이 붙는다).
+- **dev 전용**: `TEST` 모듈은 개발 repo `config/{wbs_config,people}.yaml` 에만 있다.
+  **prod 배포 config(`lake-task-manager-deploy/config/`)에는 넣지 마라** — 테스트가 가드한다.
 - **생성 순서**: `_build_ui_fixtures()` 는 `_build_links()`/`_build_attachments()` **뒤**에 온다.
   앞에 두면 자동 생성기가 픽스처의 링크·첨부를 덮어쓴다.
 - **rng 미사용**: 픽스처는 `_fx()` 로 dict 를 직접 만든다. rng 를 쓰면 **world 전체 시퀀스가 바뀌어** 기존
   데이터가 통째로 달라진다(과거에 실제로 겪은 회귀). 새 픽스처를 추가할 때도 rng 금지.
+- 픽스처 담당자 표시이름은 `_make_users` 에서 **고정**한다(합성 본명을 주면 실제 인력과 구분이 안 된다).
 - 새 UI 검증 포인트가 생기면 **픽스처를 추가**하고 제목에 그 포인트를 적어라.
 
 ---

@@ -31,6 +31,11 @@ _JIRA_CAT = {
 _TYPE_ID = {"Bug": "1", "Epic": "2", "Improvement": "3", "New Feature": "4",
             "Story": "5", "Task": "6", "Sub-Task": "7"}
 SUBTASK_TYPE = "Sub-Task"
+# UI 회귀 검증 픽스처 전용 모듈. 랜덤 생성기는 이 모듈을 건너뛰어,
+# TEST 모듈에는 픽스처만 남는다(= 화면에서 바로 찾을 수 있다).
+FIX_MODULE = "TEST"
+# TEST 모듈 인력(= config/people.yaml 의 TEST). 실 인력과 섞이지 않게 별도 id.
+FIX_USERS = ["test.ui01", "test.ui02"]
 _STORYLIKE = {"Story", "Task", "Improvement", "New Feature"}   # SP 보유 + subtask 가능
 _CHILD_TYPES = ["Story", "Task", "Bug", "Improvement", "New Feature"]
 _VIT_ROOT_TYPES = ["Epic", "Task", "Story", "Improvement"]
@@ -80,6 +85,8 @@ class World:
         self.epic_link_field = s.epic_link_field_id
 
         self.modules = list(plan["modules"])
+        # 랜덤 생성 대상 모듈 — TEST 제외(픽스처만 남기기 위해)
+        self.gen_modules = [m for m in self.modules if m != FIX_MODULE]
         # 컴포넌트 id 맵 (fake /project/{k}/components 의 id 규칙 100+idx 와 일치)
         self._comp_ids = {m: str(100 + i) for i, m in enumerate(self.modules + ["사용자 VoC"])}
         self.users = self._make_users()
@@ -107,8 +114,12 @@ class World:
         # 본명·회사는 id 로 결정적 배정(같은 사람=항상 같은 이름). 회사명은 대부분 SKCC + 협력사 소수.
         users = {"pmo": {"name": "pmo", "displayName": "PMO Office"},
                  "lead": {"name": "lead", "displayName": "정한울 SKCC"}}
+        # UI 픽스처 담당자는 이름을 고정한다 — 합성 본명을 주면 화면에서 실제 인력과 구분이 안 된다.
+        for i, uid in enumerate(FIX_USERS):
+            users[uid] = {"name": uid, "realName": f"UI픽스처{i + 1:02d}", "company": "TEST",
+                          "displayName": f"UI픽스처{i + 1:02d} TEST"}
         taken = {"정한울"}                       # 본명 중복 방지(데모 가독성) — id 정렬로 결정적
-        for uid in sorted({u for ids in self.people.values() for u in ids}):
+        for uid in sorted({u for ids in self.people.values() for u in ids} - set(FIX_USERS)):
             h = _shash(uid)
             g = h // 7
             nm = _SURNAMES[h % len(_SURNAMES)] + _GIVEN[g % len(_GIVEN)]
@@ -269,6 +280,8 @@ class World:
             for e in w["epics"]:
                 epic_module.setdefault(e["key"], w["module"])
         for ekey, module in epic_module.items():
+            if module == FIX_MODULE:       # 픽스처 Epic — _build_ui_fixtures 가 만든다
+                continue
             rng = _rng("epic", ekey)
             self._make_issue(rng, "Epic", module, epic_key=ekey)   # Epic 이름은 생성 풀에서(=Jira)
             for _ in range(rng.randint(4, 9)):
@@ -279,7 +292,7 @@ class World:
 
     # ── WBS 밖 일반 Epic (현안 아님) + 자식 ──
     def _build_extra_epics(self):
-        for module in self.modules:
+        for module in self.gen_modules:
             rng = _rng("xepic", module)
             for _ in range(rng.randint(2, 5)):
                 ek = self._newkey()
@@ -292,7 +305,7 @@ class World:
 
     # ── Epic 소속 아닌 독립 Task/Story (진행중·완료 혼합) ──
     def _build_standalone(self):
-        for module in self.modules:
+        for module in self.gen_modules:
             pool = self._pool(module)
             rng = _rng("solo", module)
             for i in range(rng.randint(8, 16)):
@@ -304,7 +317,7 @@ class World:
     # ── 1~6월에 생성·종료된 과거 완료 이슈 (대량, Closed/Resolved) ──
     def _build_history(self):
         jan1 = date(2026, 1, 1)
-        for module in self.modules:
+        for module in self.gen_modules:
             pool = self._pool(module)
             rng = _rng("hist", module)
             for i in range(rng.randint(12, 24)):
@@ -328,7 +341,7 @@ class World:
     # ── PMO_VIT 현안 (모듈별 다양 개수, 조상/자손 dedup 케이스 포함) ──
     def _build_vit(self):
         dedup_done = False
-        for mi, module in enumerate(self.modules):
+        for mi, module in enumerate(self.gen_modules):
             size = _VIT_SIZES[mi % len(_VIT_SIZES)]
             for i in range(size):
                 rng = _rng("vit", module, i)
@@ -355,7 +368,7 @@ class World:
 
     # ── VoC 티켓 (Component=VoC, 고객의 소리성 업무) ──
     def _build_voc(self):
-        for module in self.modules:
+        for module in self.gen_modules:
             for pid in self._pool(module):
                 rng = _rng("voc", pid)
                 for _ in range(rng.randint(0, 5)):
@@ -406,8 +419,8 @@ class World:
         d0 = self.today - timedelta(days=30)
         it = {
             "key": key, "project": self.project, "type": itype, "summary": summary,
-            "description": "", "module": "UI검증", "component": "UI검증",
-            "assignee": "pmo", "reporter": "lead",
+            "description": "", "module": FIX_MODULE, "component": FIX_MODULE,
+            "assignee": FIX_USERS[0], "reporter": "lead",
             "statusCategory": "inprogress", "statusName": "In Progress",
             "labels": ["ui-fixture"], "sp": None,
             "epicKey": None if itype == "Epic" else self.UI_EPIC, "parentKey": None,
@@ -432,10 +445,12 @@ class World:
 
     def _build_ui_fixtures(self):
         conf = "https://confluence.corp.example"
-        self._fx(self.UI_EPIC, "Epic", "[UI] UI 회귀 검증 픽스처 (대시보드 집계 제외)",
+        self._fx(self.UI_EPIC, "Epic", "[UI] UI 회귀 검증 픽스처",
+                 labels=["ui-fixture", "PMO_VIT"],
                  description=("UI 를 수정할 때 **검증 포인트별로** 열어볼 티켓 모음이다.\n"
-                              "하위 티켓 제목이 곧 검증 항목이므로, 화면을 고친 뒤 해당 티켓만 열어 확인하면 된다.\n"
-                              "이 Epic 은 wbs_config 에 없고 PMO_VIT 라벨도 없어 WBS·현안·워크로드 집계에 섞이지 않는다."))
+                              "하위 티켓 제목이 곧 검증 항목이므로, 화면을 고친 뒤 해당 티켓만 열어 확인하면 된다.\n\n"
+                              "{info}\n찾는 법: WBS 의 *TEST* 모듈 · 현안(PMO_VIT) 목록 · 인력워크로드의 *TEST* 모듈.\n"
+                              "이 모듈에는 랜덤 데이터가 없어 픽스처만 보인다.\n{info}"))
 
         # 1) 설명 리치 요소 총집합
         self._fx("DL-9001", "Task", "[UI] 설명 리치요소 — 표·코드·인용·패널·콜아웃·이미지·링크",
@@ -489,6 +504,7 @@ class World:
 
         # 7) 코멘트 다수
         self._fx("DL-9007", "Task", "[UI] 코멘트 다수 — 멘션·문서링크·긴 본문",
+                 assignee=FIX_USERS[1],
                  description="코멘트 영역의 아바타·간격·링크 뱃지를 본다.",
                  comments=[{"author": a, "kind": "note", "text": t, "body": t,
                             "created": self.today - timedelta(days=i),
@@ -503,25 +519,26 @@ class World:
         # 8) 마감 초과 / 임박
         self._fx("DL-9008", "Task", "[UI] 마감 초과(D+) — 기한 붉은 강조",
                  due=self.today - timedelta(days=9), statusCategory="inprogress", statusName="In Progress")
-        self._fx("DL-9009", "Task", "[UI] 마감 임박(D-2)",
+        self._fx("DL-9009", "Task", "[UI] 마감 임박(D-2)", assignee=FIX_USERS[1],
                  due=self.today + timedelta(days=2))
 
         # 9) 타임라인 — 담당자/상태 변경 이력
         self._fx("DL-9010", "Task", "[UI] 타임라인 — 담당자 변경·상태 변경·해결 이력",
+                 assignee=FIX_USERS[1],
                  statusCategory="done", statusName="Resolved",
                  resolved=self.today - timedelta(days=3), tresolved="16:20",
                  changelog=[
-                     {"author": "lead", "date": self.today - timedelta(days=25), "time": "10:00",
+                     {"author": FIX_USERS[0], "date": self.today - timedelta(days=25), "time": "10:00",
                       "items": [{"field": "assignee", "fieldtype": "jira",
-                                 "from": "lead", "fromString": self._dn("lead"),
-                                 "to": "pmo", "toString": self._dn("pmo")}]},
-                     {"author": "pmo", "date": self.today - timedelta(days=20), "time": "11:30",
+                                 "from": FIX_USERS[0], "fromString": self._dn(FIX_USERS[0]),
+                                 "to": FIX_USERS[1], "toString": self._dn(FIX_USERS[1])}]},
+                     {"author": FIX_USERS[1], "date": self.today - timedelta(days=20), "time": "11:30",
                       "items": [{"field": "status", "fieldtype": "jira", "from": "1",
                                  "fromString": "Open", "to": "3", "toString": "In Progress"}]},
-                     {"author": "pmo", "date": self.today - timedelta(days=18), "time": "09:40",
+                     {"author": FIX_USERS[1], "date": self.today - timedelta(days=18), "time": "09:40",
                       "items": [{"field": "description", "fieldtype": "jira",
                                  "from": None, "fromString": "(이전)", "to": None, "toString": "(수정)"}]},
-                     {"author": "pmo", "date": self.today - timedelta(days=3), "time": "16:20",
+                     {"author": FIX_USERS[1], "date": self.today - timedelta(days=3), "time": "16:20",
                       "items": [{"field": "status", "fieldtype": "jira", "from": "3",
                                  "fromString": "In Progress", "to": "5", "toString": "Resolved"},
                                 {"field": "resolution", "fieldtype": "jira",

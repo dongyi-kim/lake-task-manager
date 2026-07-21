@@ -38,17 +38,42 @@ def test_fixture_data_actually_present():
     assert all(h in w.issues["DL-9002"]["description"] for h in ("h1.", "h2.", "h3.", "h4."))
 
 
-def test_fixtures_excluded_from_dashboards():
-    """대시보드 격리 — Epic 이 wbs_config 밖 + PMO_VIT 라벨 없음 + people.yaml 밖 담당자."""
+def test_fixtures_reachable_from_all_three_dashboards():
+    """찾기 쉬워야 한다 — WBS(TEST 모듈)·현안(PMO_VIT)·워크로드(TEST 인력) 세 경로 모두에서 도달 가능."""
     from app.settings import load_people, load_wbs_config
+    from app.world import FIX_MODULE, FIX_USERS
 
     plan = load_wbs_config()
-    epic_keys = {e["key"] for t in plan["wbs"] for e in t["epics"]}
-    assert "DL-9000" not in epic_keys, "픽스처 Epic 이 WBS 롤업에 들어감"
+    assert FIX_MODULE in plan["modules"], "WBS 에 TEST 모듈이 없음"
+    epic_keys = {e["key"] for t in plan["wbs"] if t["module"] == FIX_MODULE for e in t["epics"]}
+    assert "DL-9000" in epic_keys, "TEST 모듈 WBS 가 픽스처 Epic 을 안 가리킴"
 
+    assert "PMO_VIT" in _w().issues["DL-9000"]["labels"], "픽스처 Epic 이 현안에 안 뜸"
+
+    people = load_people() or {}
+    assert set(people.get(FIX_MODULE) or []) == set(FIX_USERS), "워크로드 TEST 모듈 인력 불일치"
+
+
+def test_test_module_contains_only_fixtures():
+    """TEST 모듈에 랜덤 데이터가 섞이면 픽스처를 찾는 의미가 없다 — 생성기가 이 모듈을 건너뛰어야 한다."""
     w = _w()
-    fx = [i for i in w.issues.values() if i["key"].startswith("DL-90")]
-    assert not any("PMO_VIT" in i["labels"] for i in fx), "픽스처가 현안 트래킹에 노출됨"
+    from app.world import FIX_MODULE
 
-    people = {u for members in (load_people() or {}).values() for u in (members or [])}
-    assert not any(i["assignee"] in people for i in fx), "픽스처가 인력 워크로드에 집계됨"
+    in_test = [i for i in w.issues.values() if i["module"] == FIX_MODULE]
+    assert in_test, "TEST 모듈이 비어 있음"
+    assert all(i["key"].startswith("DL-90") for i in in_test), \
+        "TEST 모듈에 랜덤 생성 티켓이 섞임 — gen_modules 에서 TEST 를 제외했는지 확인"
+
+
+def test_fixtures_absent_from_prod_config():
+    """prod 배포 config 는 별도 파일 — 거기엔 TEST 모듈이 없어야 한다."""
+    import pathlib
+
+    import yaml
+
+    prod = pathlib.Path(__file__).resolve().parents[2] / "config" / "wbs_config.yaml"
+    if not prod.exists():          # 개발 repo 단독 체크아웃이면 스킵
+        return
+    raw = yaml.safe_load(prod.read_text(encoding="utf-8")) or {}
+    mods = {m.get("module") for m in (raw.get("modules") or [])}
+    assert "TEST" not in mods, "운영 배포 config 에 TEST 모듈이 들어감"

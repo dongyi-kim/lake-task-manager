@@ -11,7 +11,8 @@ from app import settings   # noqa: E402
 def test_real_plan_loads_and_validates():
     plan = settings.load_plan()
     assert plan["project_key"] == "DL"
-    assert len(plan["modules"]) == 7
+    # 실 모듈 7 + UI 픽스처용 TEST 1 (dev config 한정 — app.world.FIX_MODULE)
+    assert len([m for m in plan["modules"] if m != "TEST"]) == 7
     assert len(plan["wbs"]) >= 10
     # 가중치는 상대값 — 합=1 강제 아님. 양수이기만 하면 됨. epic 키는 DL-xxxx.
     for w in plan["wbs"]:

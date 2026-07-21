@@ -29,3 +29,8 @@ DevOps:
 Observability:
   - skcc.i2200
   - skcc.x1560
+
+# UI 회귀 검증 픽스처 전용(개발 world 한정). prod 배포 config 에는 없다.
+TEST:
+  - test.ui01
+  - test.ui02
