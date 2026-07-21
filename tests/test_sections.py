@@ -60,3 +60,39 @@ def test_empty_leading_section_dropped():
     r = S("<p>=== 첫영역 ===<br/>내용</p>")
     assert [s["title"] for s in r] == ["첫영역"]
     assert r[0]["html"] == "<p>내용</p>"
+
+
+def test_nbsp_around_divider():
+    """WYSIWYG 에디터는 공백을 &nbsp; 로 낸다.
+
+    엔티티를 풀지 않으면 (1) 구분선으로 아예 안 잡히거나 (2) 제목에 &nbsp; 가 남는다.
+    실제로 prod 에서 안 나뉜 원인.
+    """
+    r = S("<p>앞</p><p>====&nbsp;신청정보&nbsp;====</p><p>뒤</p>")
+    assert [s["title"] for s in r] == [None, "신청정보"]
+    r2 = S("<p>앞</p><p>&nbsp;=== 신청정보 ===&nbsp;</p><p>뒤</p>")
+    assert [s["title"] for s in r2] == [None, "신청정보"]
+
+
+def test_div_containers():
+    """WYSIWYG 은 문단을 <p> 대신 <div> 로 내기도 한다."""
+    r = S("<div>앞</div><div>=== 신청정보 ===</div><div>뒤</div>")
+    assert [s["title"] for s in r] == [None, "신청정보"]
+    assert r[0]["html"] == "<div>앞</div>"
+    assert r[1]["html"] == "<div>뒤</div>"
+
+
+def test_nested_plain_containers_reopened():
+    """<div><p> 중첩도 자른 뒤 원래 태그로 다시 열어야 한다."""
+    r = S("<div><p>앞<br/>=== 신청정보 ===<br/>뒤</p></div>")
+    assert [s["title"] for s in r] == [None, "신청정보"]
+    assert r[0]["html"] == "<div><p>앞</p></div>"
+    assert r[1]["html"] == "<div><p>뒤</p></div>"
+
+
+def test_div_with_class_is_not_splittable():
+    """class 붙은 div(패널·콜아웃) 안에서 자르면 의미가 깨진다 — 열어준 건 '속성 없는' div 뿐."""
+    h = '<div class="callout callout-info"><p>=== x ===</p></div><p>뒤</p>'
+    assert S(h) == [{"title": None, "html": h}]
+    h2 = '<div class="panel"><div class="panel-body"><p>=== x ===</p></div></div>'
+    assert S(h2) == [{"title": None, "html": h2}]

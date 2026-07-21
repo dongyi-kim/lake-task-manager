@@ -22,6 +22,7 @@
 """
 
 import re
+from html import unescape
 from html.parser import HTMLParser
 
 # 줄로 끊어 보는 태그 — 이 경계마다 '한 줄'이 끝난 것으로 본다
@@ -35,8 +36,13 @@ _DIV_RE = re.compile(r"={3,}\s*(.*?)\s*={3,}", re.S)
 
 
 def _is_divider(line):
-    """구분선이면 (True, 제목|None). 제목이 비면 None."""
-    s = line.strip()
+    """구분선이면 (True, 제목|None). 제목이 비면 None.
+
+    WYSIWYG 에디터는 공백을 `&nbsp;` 로 낸다. 엔티티를 먼저 풀지 않으면
+    `====&nbsp;신청정보&nbsp;====` 가 구분선으로 안 잡히고, 잡혀도 제목에
+    `&nbsp;` 가 그대로 남는다.
+    """
+    s = unescape(line or "").replace(" ", " ").strip()
     if not s or not _DIV_RE.fullmatch(s):
         return False, None
     title = s.strip("=").strip()
@@ -77,7 +83,7 @@ class _Cutter(HTMLParser):
         if tag in _LINE_BREAKERS:
             self._flush(s, e)
         if tag not in _VOID:
-            self.stack.append(tag)
+            self.stack.append((tag, self.get_starttag_text() or ("<%s>" % tag)))
 
     def handle_startendtag(self, tag, attrs):
         s = self._off()
@@ -90,11 +96,10 @@ class _Cutter(HTMLParser):
         e = s + len(tag) + 3                        # </tag>
         if tag in _LINE_BREAKERS:
             self._flush(s, e)
-        if tag in self.stack:                       # 짝 안 맞는 닫힘은 무시
-            for i in range(len(self.stack) - 1, -1, -1):
-                if self.stack[i] == tag:
-                    del self.stack[i:]
-                    break
+        for i in range(len(self.stack) - 1, -1, -1):   # 짝 안 맞는 닫힘은 무시
+            if self.stack[i][0] == tag:
+                del self.stack[i:]
+                break
 
 
 def split_sections(html):
@@ -110,19 +115,16 @@ def split_sections(html):
     c.close()
     c._flush(len(html), len(html))                  # 마지막 줄(닫는 태그 없이 끝나는 경우)
 
-    # 문단 안(['p']) 또는 블록 사이([]) 에서만 자른다 — 그 외는 태그가 깨진다
-    cuts = [x for x in c.cuts if x[3] == [] or x[3] == ["p"]]
+    # 블록 사이([]) 또는 '속 빈 문단 컨테이너' 안에서만 자른다 — 그 외는 태그가 깨진다
+    cuts = [x for x in c.cuts if _splittable(x[3])]
     if not cuts:
         return [{"title": None, "html": html}]
 
     out, pos, title, prefix = [], 0, None, ""
     for start, end, t, stack in cuts:
-        chunk = prefix + html[pos:start]
-        if stack == ["p"]:
-            chunk += "</p>"                          # 잘리느라 열린 채 끊긴 문단을 닫고
-            prefix = "<p>"                           # 다음 조각은 문단을 다시 연다
-        else:
-            prefix = ""
+        # 잘리느라 열린 채 끊긴 컨테이너를 역순으로 닫고, 다음 조각에서 원래 태그로 다시 연다
+        chunk = prefix + html[pos:start] + "".join("</%s>" % tg for tg, _ in reversed(stack))
+        prefix = "".join(raw for _, raw in stack)
         out.append({"title": title, "html": _clean(chunk)})
         title, pos = t, end
     out.append({"title": title, "html": _clean(prefix + html[pos:])})
@@ -130,18 +132,33 @@ def split_sections(html):
     return [s for s in out if _has_content(s["html"])] or [{"title": None, "html": html}]
 
 
-_EMPTY_P_RE = re.compile(r"<p>(?:\s|&nbsp;)*</p>")
+# 자를 수 있는 컨테이너 — 속성 없는 순수 문단/래퍼만.
+# class 가 붙은 div(패널·콜아웃)나 표/리스트/인용/코드 안에서 자르면 의미가 깨진다.
+_PLAIN_TAG_RE = re.compile(r"^<(?:p|div)\s*>$", re.I)
+
+
+def _splittable(stack):
+    return all(_PLAIN_TAG_RE.match(raw) for _, raw in stack)
+
+
+_EMPTY_P_RE = re.compile(r"<(p|div)>(?:\s|&nbsp;)*</\1>")
 # 조각 '경계'에 남은 <br> — 구분선을 들어낸 자리라 그대로 두면 빈 줄로 보인다.
 # (문단 중간의 <br> 는 사용자가 의도한 줄바꿈이므로 건드리지 않는다)
-_LEAD_BR_RE = re.compile(r"^(<p>)(?:\s*<br\s*/?>)+")
-_TAIL_BR_RE = re.compile(r"(?:<br\s*/?>\s*)+(</p>)$")
+# 여는 태그가 겹칠 수 있어(<div><p>) 태그 묶음 전체를 하나로 본다.
+_LEAD_BR_RE = re.compile(r"^((?:<(?:p|div)>)+)(?:\s*<br\s*/?>)+")
+_TAIL_BR_RE = re.compile(r"(?:<br\s*/?>\s*)+((?:</(?:p|div)>)+)$")
 
 
 def _clean(html):
     """분할하며 생긴 빈 문단·경계 <br> 제거 + 양끝 공백 정리."""
-    h = _EMPTY_P_RE.sub("", html or "").strip()
+    h = (html or "").strip()
+    while True:                       # <div><p></p></div> 처럼 중첩된 빈 껍데기까지
+        h2 = _EMPTY_P_RE.sub("", h)
+        if h2 == h:
+            break
+        h = h2
     h = _LEAD_BR_RE.sub(r"\1", h)
-    return _TAIL_BR_RE.sub(r"\1", h)
+    return _TAIL_BR_RE.sub(r"\1", h).strip()
 
 
 def _has_content(html):
