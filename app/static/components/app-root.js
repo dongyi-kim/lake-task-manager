@@ -66,8 +66,8 @@ export default {
     },
   },
   template: `
-    <div class="wrap">
-      <header class="top">
+    <div class="wrap" :class="{ 'wrap-bare': pageTicket }">
+      <header v-if="!pageTicket" class="top">
         <img class="nav-logo" src="icon.png" alt="Lake Task Manager" title="Lake Task Manager" />
         <nav class="tabs">
           <a :class="{ on: route === 'wbs' }" href="#/wbs">WBS Dashboard</a>

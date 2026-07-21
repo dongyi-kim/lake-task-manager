@@ -72,3 +72,6 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
 .mod-head .agg b { color: var(--text); font-variant-numeric: tabular-nums; }
 .mod-body { border-top: 1px solid var(--border); }
 .empty { color: var(--muted); font-size: 12.5px; padding: 8px 16px; }
+
+/* 티켓 단독 페이지(/browse/{key}) — nav 없이 내용만 화면을 꽉 채운다 */
+.wrap.wrap-bare { padding: 0; }
