@@ -289,6 +289,9 @@ export default {
           <!-- 좌측 세로 스파인 — 계보(조상→현재, 레일+진척) + 형제 목록. 클릭 시 해당 티켓으로 이동 -->
           <aside v-if="spine.length > 1 || siblings.length || timeline.length" class="tkt-spine">
             <!-- 조상이 없으면(Epic 등) 자기 자신만 남으므로 계보 블록 자체를 생략 -->
+            <!-- 좁은 화면에서 '열 묶음' 단위로 배치된다(.grp). 넓은 화면에선 display:contents 라
+                 구조상 없는 것과 같고, 순서는 CSS order 로 기존과 동일하게 유지한다. -->
+            <div class="grp grp-lineage">
             <div v-if="spine.length > 1" class="sec sec-lineage">
             <div class="tkt-mlabel">계보</div>
             <div v-for="(n, i) in spine" :key="n.key || 'virt-' + i" class="spn-item">
@@ -310,7 +313,26 @@ export default {
               </div>
             </div>
             </div>
+            <div v-if="children.length" class="sec sec-children spn-sib">
+              <div class="tkt-mlabel">하위 Task {{ children.length }}</div>
+              <div v-for="c in children" :key="'ch-' + c.key" class="spn-sibrow tkt"
+                   :data-key="c.key" :title="c.type + ' ' + c.key + ' · ' + c.summary">
+                <span class="spn-sdot" :class="'st-' + (c.statusCategory || 'todo')"></span>
+                <span class="spn-stitle">{{ c.summary }}</span>
+              </div>
+            </div>
+            </div>
 
+            <div class="grp grp-rel">
+            <div v-if="related.length" class="sec sec-related spn-sib">
+              <div class="tkt-mlabel">관련 Task {{ related.length }}</div>
+              <div v-for="r in related" :key="'rel-' + r.key" class="spn-sibrow tkt"
+                   :data-key="r.key" :title="r.rel + ' · ' + r.key + ' · ' + r.summary">
+                <span class="spn-sdot" :class="'st-' + (r.statusCategory || 'todo')"></span>
+                <span class="spn-stitle">{{ r.summary }}</span>
+                <span class="spn-rel" :class="r.via">{{ r.via === 'link' ? r.rel : '언급' }}</span>
+              </div>
+            </div>
             <div v-if="siblings.length" class="sec sec-sib spn-sib">
               <div class="tkt-mlabel spn-sib-h" @click="sibOpen = !sibOpen">
                 <span class="chev" :class="{ open: sibOpen }">▸</span>
@@ -328,24 +350,6 @@ export default {
                 </div>
               </template>
             </div>
-
-            <div v-if="children.length" class="sec sec-children spn-sib">
-              <div class="tkt-mlabel">하위 Task {{ children.length }}</div>
-              <div v-for="c in children" :key="'ch-' + c.key" class="spn-sibrow tkt"
-                   :data-key="c.key" :title="c.type + ' ' + c.key + ' · ' + c.summary">
-                <span class="spn-sdot" :class="'st-' + (c.statusCategory || 'todo')"></span>
-                <span class="spn-stitle">{{ c.summary }}</span>
-              </div>
-            </div>
-
-            <div v-if="related.length" class="sec sec-related spn-sib">
-              <div class="tkt-mlabel">관련 Task {{ related.length }}</div>
-              <div v-for="r in related" :key="'rel-' + r.key" class="spn-sibrow tkt"
-                   :data-key="r.key" :title="r.rel + ' · ' + r.key + ' · ' + r.summary">
-                <span class="spn-sdot" :class="'st-' + (r.statusCategory || 'todo')"></span>
-                <span class="spn-stitle">{{ r.summary }}</span>
-                <span class="spn-rel" :class="r.via">{{ r.via === 'link' ? r.rel : '언급' }}</span>
-              </div>
             </div>
 
           </aside>
@@ -469,6 +473,7 @@ export default {
           <!-- 우측: 타임라인 -->
           <aside v-if="v || timeline.length" class="tkt-tl">
             <template v-if="v">
+              <div class="grp grp-who">
               <div class="sec sec-assignee">
               <div class="tkt-mlabel">담당</div>
               <div class="sfield">
@@ -492,6 +497,7 @@ export default {
                 <span class="sf-v" :class="{ overdue: v.due && !v.resolved && fy(v.due) < today }">{{ fts(v.due) || '—' }}</span></div>
               <div class="sfield"><span class="sf-k">완료일</span><span class="sf-v">{{ fts(v.resolved) || '—' }}</span></div>
               <div class="sfield"><span class="sf-k">최종 수정일</span><span class="sf-v">{{ fts(v.updated) || '—' }}</span></div>
+              </div>
               </div>
             </template>
 

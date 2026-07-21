@@ -142,42 +142,48 @@
 .tkt-tl { flex: 0 0 220px; width: 220px; align-self: stretch; min-width: 0;
   margin: 0 -24px -20px 0; padding: 16px 24px 16px 14px;
   border-left: 1px solid var(--border); background: var(--panel-2); }
+/* 넓은 화면에서 .grp 는 없는 것과 같다(구조만 제공).
+   순서는 order 로 기존과 동일하게: 계보 → 형제 → 하위 → 관련. */
+.tkt-spine { display: flex; flex-direction: column; }
+.grp { display: contents; }
+.sec-lineage { order: 1; } .sec-sib { order: 2; }
+.sec-children { order: 3; } .sec-related { order: 4; }
+
 /* 좁은 화면 — 가로 3단 해제.
    패널을 통째로 쌓으면 '계보 형제 하위 관련' 이 한 줄로 길게 늘어져 읽기 어렵다.
-   패널 껍데기를 display:contents 로 없애고 **섹션 단위**로 다시 배치한다:
-       1행  계보        | 담당        (좌: 계보 아래 하위 / 우: 담당 아래 일정)
-            하위 Task   | 일정
+   패널 껍데기를 display:contents 로 없애고 **열 묶음(.grp) 단위**로 배치한다:
+       1행  [계보 / 하위 Task]  |  [담당 / 일정]
        2행  티켓 내용(전체 폭)
-       3행  관련 Task   | 히스토리    (좌: 관련 아래 형제)
-            형제        |
-   (히스토리는 두 행에 걸쳐 좌측의 관련/형제 두 덩이와 나란히 선다) */
+       3행  [관련 Task / 형제]  |  히스토리
+   ★ 묶음을 쓰는 이유 — 섹션을 개별 grid item 으로 두면 같은 '행' 의 두 열이 높이를
+     공유해서, 한쪽이 길면 반대쪽에 빈 공간이 생긴다(담당 아래가 뜨던 문제).
+     열 묶음 하나가 grid item 이면 각 열이 자기 높이로 독립해 흐른다. */
 @media (max-width: 1150px) {
+  /* 본문 영역 전체가 well(--bg) — 넓은 화면의 색 구조를 그대로 유지한다.
+     (이걸 안 주면 다이얼로그 흰색이 드러나 화면 폭에 따라 색감이 달라진다) */
   .tkt-cols {
     /* minmax(0,·) 필수 — 그냥 1fr 은 minmax(auto,1fr) 이라 긴 내용이 컬럼을 밀어낸다 */
     display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 0 18px; align-items: start;
     grid-template-areas:
-      "lineage  assignee"
-      "children dates"
-      "main     main"
-      "related  history"
-      "sib      history";
+      "lineage who"
+      "main    main"
+      "rel     history";
+    background: var(--bg);
+    margin: 0 -24px -20px; padding: 16px 24px;
   }
-  /* 패널 껍데기 제거 — 자식(.sec)이 .tkt-cols 의 grid item 이 된다 */
+  /* 패널 껍데기 제거 — .grp/.sec 가 .tkt-cols 의 grid item 이 된다 */
   .tkt-spine, .tkt-tl { display: contents; }
-  .tkt-main { grid-area: main; align-self: auto; min-width: 0;
-    margin: 0 -24px; padding: 14px 24px; }
-  .sec-lineage  { grid-area: lineage; }
-  .sec-children { grid-area: children; }
-  .sec-assignee { grid-area: assignee; }
-  .sec-dates    { grid-area: dates; }
-  .sec-related  { grid-area: related; }
-  .sec-sib      { grid-area: sib; }
-  .sec-history  { grid-area: history; }
-  /* 패널 배경이 사라졌으니 각 섹션이 스스로 카드가 된다 */
-  .tkt-cols > .sec { background: var(--panel-2); border: 1px solid var(--border);
+  .grp { display: block; }
+  .tkt-main { grid-area: main; align-self: auto; min-width: 0; margin: 0; padding: 0; }
+  .grp-lineage { grid-area: lineage; }
+  .grp-who     { grid-area: who; }
+  .grp-rel     { grid-area: rel; }
+  .sec-history { grid-area: history; }
+  /* 패널 배경이 사라졌으니 각 섹션이 스스로 카드가 된다(색은 패널과 동일한 --panel-2) */
+  .tkt-cols .sec { background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; min-width: 0; }
-  .sec-sib, .sec-children, .sec-related { margin-top: 0; border-top: 0; padding-top: 12px; }
+  .sec-sib, .sec-children, .sec-related { margin-top: 0; border-top: 0; }
   .sec-dates .sf-gap, .sec-history .sf-gap { margin-top: 0; }
 }
 
@@ -185,7 +191,7 @@
 @media (max-width: 720px) {
   .tkt-cols {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "lineage" "children" "assignee" "dates" "main" "related" "sib" "history";
+    grid-template-areas: "lineage" "who" "main" "rel" "history";
   }
 }
 
