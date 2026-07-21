@@ -62,6 +62,24 @@ _ALLOWED_CLASSES = {
     "callout-success", "callout-error",
 }
 
+# ── 벤더 콜아웃 class 정규화 ──────────────────────────────────────────
+# 실 사내 Jira DC 는 {info} 매크로를 <div class="jePanel_info"> 로 렌더한다(dev mock 은
+# <div class="callout callout-info">). 정규화 없이는 allowlist 에 없는 class 라 통째로
+# 지워져 **prod 에서만 콜아웃이 맨 div 로 보인다**(스타일 0). 여기서 표준형으로 바꿔두면
+# CSS·프론트는 `callout callout-*` 하나만 알면 된다.
+_CALLOUT_TYPES = {"note", "info", "warning", "tip", "success", "error"}
+_VENDOR_CALLOUT_RE = re.compile(r"^jePanel[_-](\w+)$", re.I)
+
+
+def _expand_class(tok):
+    """class 토큰 하나 → 표준 토큰 목록(정규화 대상이 아니면 자기 자신)."""
+    m = _VENDOR_CALLOUT_RE.match(tok)
+    if not m:
+        return [tok]
+    t = m.group(1).lower()
+    # 모르는 타입도 콜아웃 형태는 유지한다(무스타일 div 로 떨어지는 것보다 낫다)
+    return ["callout", "callout-" + (t if t in _CALLOUT_TYPES else "note")]
+
 
 def _safe_url(value, allow_data_image=False):
     """href/src 로 안전한 URL 인지. 안전 scheme 또는 상대경로/앵커만 허용."""
@@ -158,7 +176,8 @@ class _Sanitizer(HTMLParser):
             if k.startswith("on") or k in ("style", "srcset", "formaction", "xlink:href"):
                 continue                 # 이벤트 핸들러·스타일·기타 위험 속성 제거
             if k == "class":             # 허용 클래스 토큰(또는 lang-*)만 유지
-                classes += [t for t in (v or "").split() if t in _ALLOWED_CLASSES or t.startswith("lang-")]
+                toks = [n for t in (v or "").split() for n in _expand_class(t)]
+                classes += [t for t in toks if t in _ALLOWED_CLASSES or t.startswith("lang-")]
                 continue
             if k not in allowed:
                 continue

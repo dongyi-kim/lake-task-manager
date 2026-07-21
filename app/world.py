@@ -458,9 +458,15 @@ class World:
                      "h2. 표\n"
                      "||모듈||역할||가중치||\n|Ingestion|수집|3|\n|Catalog|메타|2|\n\n"
                      "h2. 코드\n{code}\nmake deploy ENV=staging\n{code}\n\n"
-                     "h2. 인용\n{quote}\n인용문은 좌측 컬러 바로 구분된다.\n{quote}\n\n"
+                     "h2. 인용\n{quote}\n인용은 따옴표 글리프로 구분된다(색만으로 구분하지 않는다).\n{quote}\n\n"
                      "h2. 패널/콜아웃\n{panel:title=완료 기준}\n* 하위 SP 롤업 100%\n{panel}\n"
-                     "{warning}\n경고 콜아웃\n{warning}\n{info}\n정보 콜아웃\n{info}\n\n"
+                     # 6종 전부 — 타입별 아이콘이 실제로 다르게 나오는지 한 화면에서 본다
+                     "{note}\n note — 연필 아이콘\n{note}\n"
+                     "{info}\n info — 원 안 i\n{info}\n"
+                     "{tip}\n tip — 전구\n{tip}\n"
+                     "{success}\n success — 전구(tip 과 동일 계열)\n{success}\n"
+                     "{warning}\n warning — 느낌표 삼각형\n{warning}\n"
+                     "{error}\n error — 원 안 X\n{error}\n\n"
                      "h2. 이미지\n!ticket-sample.svg!\n\n"
                      "h2. 링크\n티켓 [DL-5003|" + conf.replace('confluence', 'jira') + "/browse/DL-5003], "
                      "문서 [설계 노트|" + conf + "/spaces/DL/pages/42013/설계+노트], 멘션 [~pmo]."))

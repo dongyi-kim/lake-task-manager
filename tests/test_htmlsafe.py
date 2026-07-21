@@ -293,3 +293,25 @@ def test_tidy_keeps_real_content_with_nbsp():
 def test_tidy_none_empty():
     assert tidy_html("") == ""
     assert tidy_html(None) is None
+
+
+def test_vendor_callout_class_normalized():
+    """사내 Jira DC 는 {info} 를 <div class="jePanel_info"> 로 낸다.
+
+    정규화가 없으면 allowlist 밖 class 라 통째로 지워져 **prod 에서만** 콜아웃이
+    맨 div(스타일 0)로 보인다. 표준형 `callout callout-*` 으로 바뀌어야 한다.
+    """
+    out = sanitize_html('<div class="jePanel_info"><p>정보</p></div>')
+    assert 'class="callout callout-info"' in out
+
+    for t in ("note", "warning", "tip", "success", "error"):
+        assert f'callout-{t}' in sanitize_html(f'<div class="jePanel_{t}"><p>x</p></div>')
+
+    # 모르는 타입도 콜아웃 형태는 유지 (무스타일 div 로 떨어뜨리지 않는다)
+    assert 'class="callout callout-note"' in sanitize_html('<div class="jePanel_weird"><p>x</p></div>')
+
+    # dev mock 형식은 그대로
+    assert 'class="callout callout-tip"' in sanitize_html('<div class="callout callout-tip"><p>x</p></div>')
+
+    # 정규화가 임의 class 주입 구멍이 되면 안 된다
+    assert "evil" not in sanitize_html('<div class="evil jePanel_info"><p>x</p></div>')

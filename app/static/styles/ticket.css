@@ -161,13 +161,19 @@
 .tkt-desc p { margin: 0 0 6px; }                     /* 문단 하단 간격 컴팩트 */
 /* 의도적 빈 문단 — 존재는 유지하되 작은 간격만(실 Jira <p>&nbsp;</p> 가 3줄 먹던 문제 해소) */
 .tkt-desc p.blank { height: 0; margin: 0 0 8px; }
-/* Heading — 텍스트 앞에 레벨별 컬러 바를 둬서 h1/h2/h3 를 눈으로 구분 */
-.tkt-desc h1, .tkt-desc h2, .tkt-desc h3, .tkt-desc h4 { margin: 16px 0 8px; line-height: 1.3;
-  padding-left: 9px; border-left: 3px solid var(--hd, var(--border-hi)); }
-.tkt-desc h1 { --hd: var(--accent); }
-.tkt-desc h2 { --hd: var(--good); }
-.tkt-desc h3 { --hd: var(--warn); }
-.tkt-desc h4 { --hd: var(--muted-2); }
+/* Heading — **무채색**. 레벨은 좌측 'H1' 칩 + h1/h2 밑줄로 구분한다.
+   (레벨별 색을 쓰면 인용·콜아웃의 색과 경쟁해서 오히려 구분이 흐려진다 → 색은 콜아웃 전용) */
+.tkt-desc h1, .tkt-desc h2, .tkt-desc h3, .tkt-desc h4 { position: relative; margin: 18px 0 8px;
+  line-height: 1.3; padding-left: 30px; }
+.tkt-desc h1::before, .tkt-desc h2::before, .tkt-desc h3::before, .tkt-desc h4::before {
+  content: var(--hl); position: absolute; left: 0; top: .2em;
+  font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .02em;
+  color: var(--muted-2); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 4px; padding: 2px 3px; }
+.tkt-desc h1 { --hl: "H1"; } .tkt-desc h2 { --hl: "H2"; }
+.tkt-desc h3 { --hl: "H3"; } .tkt-desc h4 { --hl: "H4"; }
+/* 상위 2단계만 밑줄 — 섹션 경계를 크기 말고 형태로도 알린다 */
+.tkt-desc h1, .tkt-desc h2 { border-bottom: 1px solid var(--border); padding-bottom: 5px; }
 .tkt-desc h1 { font-size: 17px; } .tkt-desc h2 { font-size: 15.5px; } .tkt-desc h3 { font-size: 14px; }
 .tkt-desc ul, .tkt-desc ol { margin: 0 0 10px; padding-left: 22px; }
 .tkt-desc li { margin: 2px 0; }
@@ -219,8 +225,13 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   padding: 12px 14px; overflow-x: auto; margin: 0 0 12px; }
 .tkt-desc pre.code code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5;
   white-space: pre; display: block; }
-.tkt-desc blockquote { margin: 0 0 12px; padding: 4px 14px; border-left: 3px solid var(--accent);
-  color: var(--muted); background: var(--panel-2); border-radius: 0 8px 8px 0; }
+/* 인용 — 큰 따옴표 글리프로 '인용'임을 형태로 알린다(색만으로 구분하지 않음) */
+.tkt-desc blockquote { position: relative; margin: 0 0 12px; padding: 8px 14px 8px 40px;
+  color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
+  border-left: 3px solid var(--border-hi); border-radius: 0 8px 8px 0; }
+.tkt-desc blockquote::before { content: "\201C"; position: absolute; left: 12px; top: 2px;
+  font: 700 30px/1 Georgia, "Times New Roman", serif; color: var(--border-hi); }
+.tkt-desc blockquote > :last-child { margin-bottom: 0; }
 
 /* 표 */
 .tkt-desc table { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 12.5px; display: block; overflow-x: auto; }
@@ -234,15 +245,31 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-desc .panel-body { padding: 10px 12px; }
 .tkt-desc .panel-body > :last-child { margin-bottom: 0; }
 
-/* 콜아웃 — 좌측 컬러 바 + 옅은 배경 (타입별 색) */
-.tkt-desc .callout { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px;
-  padding: 9px 13px; margin: 0 0 12px; background: var(--panel-2); }
+/* 콜아웃 — 타입별 **아이콘 + 색**. 색각이상·흑백 출력에서도 아이콘 모양으로 구분된다.
+   아이콘은 mask 로 칠해 --co(타입색)를 그대로 따라간다(테마 전환에도 자동). */
+.tkt-desc .callout { position: relative; border: 1px solid var(--border);
+  border-left: 3px solid var(--co, var(--muted-2)); border-radius: 8px;
+  padding: 9px 13px 9px 38px; margin: 0 0 12px; background: var(--panel-2); }
 .tkt-desc .callout > :last-child { margin-bottom: 0; }
-.tkt-desc .callout-note { border-left-color: var(--muted-2); }
-.tkt-desc .callout-info { border-left-color: var(--st-prog); }
-.tkt-desc .callout-tip, .tkt-desc .callout-success { border-left-color: var(--done); }
-.tkt-desc .callout-warning { border-left-color: var(--warn); }
-.tkt-desc .callout-error { border-left-color: var(--danger); }
+.tkt-desc .callout::before { content: ""; position: absolute; left: 12px; top: 11px;
+  width: 15px; height: 15px; background-color: var(--co, var(--muted-2));
+  -webkit-mask: var(--ico) center / 15px 15px no-repeat; mask: var(--ico) center / 15px 15px no-repeat; }
+
+/* note — 연필(메모) */
+.tkt-desc .callout-note { --co: var(--muted-2);
+  --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z'/%3E%3C/svg%3E"); }
+/* info — 원 안 i */
+.tkt-desc .callout-info { --co: var(--st-prog);
+  --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E"); }
+/* tip/success — 전구 */
+.tkt-desc .callout-tip, .tkt-desc .callout-success { --co: var(--done);
+  --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 18h6'/%3E%3Cpath d='M10 22h4'/%3E%3Cpath d='M15.1 14c.2-1 .7-1.7 1.4-2.5A4.6 4.6 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.8 1.2 1.5 1.4 2.5'/%3E%3C/svg%3E"); }
+/* warning — 느낌표 삼각형 */
+.tkt-desc .callout-warning { --co: var(--warn);
+  --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'/%3E%3Cpath d='M12 9v4'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E"); }
+/* error — 원 안 X */
+.tkt-desc .callout-error { --co: var(--danger);
+  --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m15 9-6 6'/%3E%3Cpath d='m9 9 6 6'/%3E%3C/svg%3E"); }
 
 /* ── 이미지/표 확대(라이트박스) ── */
 .tkt-zoom { position: fixed; inset: 0; z-index: 9500; display: flex; align-items: center; justify-content: center;
