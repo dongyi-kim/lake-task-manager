@@ -96,6 +96,9 @@ def _conf_title(url, text=None):
 _CAT_MAP = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
 
 
+VOC_COMPONENT = "사용자 VoC"          # 컴포넌트명 = VoC 판정 기준(워크로드·계보 공용)
+
+
 def _wl_category(component, itype, is_subtask=None):
     """워크로드 카테고리 — VoC성 / Sub-Task / Task. is_subtask=issuetype.subtask(로케일 무관)."""
     if component == "사용자 VoC":
@@ -670,7 +673,14 @@ class JiraClient:
                 chain.append((parent_key, self._parent_pct(parent_key)))
             elif epic_key:
                 chain.append((epic_key, self._epic_pct(epic_key)))
-            return [n for n in (self._lineage_node(k, p) for k, p in chain) if n]
+            nodes = [n for n in (self._lineage_node(k, p) for k, p in chain) if n]
+            if not nodes and _comp_of(f) == VOC_COMPONENT:
+                # VoC 는 Epic/부모에 안 붙는 경우가 많아 계보가 통째로 비어 버린다.
+                # 실제 티켓은 아니지만 '어디 소속인지' 는 보여주는 게 낫다 → 가상 상위 노드.
+                nodes = [{"key": None, "summary": VOC_COMPONENT, "type": "VoC",
+                          "status": None, "statusCategory": None, "assignee": None,
+                          "pct": None, "virtual": True}]
+            return nodes
         return self.cache.get_or_set(f"ancestors:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
 
     def _epic_pct(self, epic_key):

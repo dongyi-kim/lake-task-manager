@@ -270,16 +270,18 @@ export default {
             <!-- 조상이 없으면(Epic 등) 자기 자신만 남으므로 계보 블록 자체를 생략 -->
             <template v-if="spine.length > 1">
             <div class="tkt-mlabel">계보</div>
-            <div v-for="(n, i) in spine" :key="n.key" class="spn-item">
+            <div v-for="(n, i) in spine" :key="n.key || 'virt-' + i" class="spn-item">
               <div class="spn-rail">
-                <span class="spn-dot" :class="{ on: n.current }" :style="{ '--tc': typeColor(n.type) }"></span>
+                <span class="spn-dot" :class="{ on: n.current, virt: n.virtual }"
+                      :style="{ '--tc': typeColor(n.type) }"></span>
                 <span v-if="i < spine.length - 1" class="spn-line"></span>
               </div>
-              <div class="spn-body" :class="{ cur: n.current, tkt: !n.current }"
-                   :data-key="n.current ? null : n.key"
-                   :title="n.type + ' ' + n.key + ' · ' + n.summary">
-                <div class="spn-top"><TypeBadge :type="n.type" /><span class="spn-key">{{ n.key }}</span></div>
-                <div class="spn-title">{{ n.summary }}</div>
+              <!-- 가상 노드(실 티켓 아님, 예: '사용자 VoC')는 클릭 대상이 아니다 -->
+              <div class="spn-body" :class="{ cur: n.current, tkt: !n.current && !n.virtual }"
+                   :data-key="(n.current || n.virtual) ? null : n.key"
+                   :title="n.virtual ? n.summary : (n.type + ' ' + n.key + ' · ' + n.summary)">
+                <div v-if="!n.virtual" class="spn-top"><TypeBadge :type="n.type" /><span class="spn-key">{{ n.key }}</span></div>
+                <div class="spn-title" :class="{ virt: n.virtual }">{{ n.summary }}</div>
                 <div v-if="n.pct !== null && n.pct !== undefined" class="spn-prog">
                   <span class="spn-bar"><i :style="{ width: n.pct + '%', background: typeColor(n.type) }"></i></span>
                   <span class="spn-pct">{{ n.pct }}%</span>

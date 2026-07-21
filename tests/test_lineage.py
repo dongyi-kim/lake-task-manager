@@ -233,3 +233,31 @@ def test_conf_draft_url_title_and_key():
     assert _conf_key(u) == _conf_key(u + "&extra=1")          # 부가 쿼리는 무시
     # URL 에 슬러그가 있으면 슬러그 우선(링크 텍스트보다 정확)
     assert _conf_title("https://c/spaces/DL/pages/1/설계-노트", "다른 텍스트") == "설계-노트"
+
+
+def test_voc_ticket_gets_virtual_lineage_node():
+    """VoC 는 Epic/부모에 안 붙는 경우가 많아 계보가 통째로 비어 버린다.
+
+    실 티켓은 아니지만 '어디 소속인지' 는 보여주는 게 낫다 → 가상 상위 노드.
+    virtual=True + key=None 이라 프론트가 클릭 대상에서 뺀다.
+    """
+    from app.world import get_world
+    w = get_world()
+    key = next(k for k, i in w.issues.items()
+               if i.get("component") == "사용자 VoC"
+               and not i.get("epicKey") and not i.get("parentKey"))
+    c = _client()
+    anc = c.ticket_ancestors(key)
+    assert len(anc) == 1
+    assert anc[0]["summary"] == "사용자 VoC"
+    assert anc[0]["virtual"] is True and anc[0]["key"] is None
+
+
+def test_epic_lineage_unaffected_by_voc_rule():
+    """Epic 에 속한 티켓은 기존 계보 그대로(가상 노드가 끼면 안 된다)."""
+    from app.world import get_world
+    w = get_world()
+    key = next(k for k, i in w.issues.items()
+               if i.get("epicKey") and i.get("component") != "사용자 VoC")
+    anc = _client().ticket_ancestors(key)
+    assert anc and all(not n.get("virtual") for n in anc)

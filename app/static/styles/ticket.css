@@ -409,3 +409,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   border-color: color-mix(in srgb, var(--warn) 42%, transparent); background: none; }
 .prio-b.pr-3, .tl-b.pr-3 { color: var(--muted); border-color: var(--border); background: none; }
 .prio-b.pr-4, .tl-b.pr-4 { color: var(--muted-2); border-color: var(--border); background: none; }
+
+/* 계보의 가상 노드 — 실 티켓이 아니라 '소속' 표시(예: 사용자 VoC).
+   점선 테두리로 '실재하지 않는 노드'임을 형태로 알린다(클릭 대상도 아니다). */
+.spn-dot.virt { border-style: dashed; background: transparent; }
+.spn-title.virt { color: var(--muted); font-weight: 600; letter-spacing: .2px; }
