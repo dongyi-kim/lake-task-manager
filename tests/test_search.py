@@ -73,3 +73,42 @@ def test_browse_route_serves_spa():
     assert "text/html" in r.headers["content-type"]
     # 하위 경로에서도 상대 자산이 루트 기준으로 풀려야 한다
     assert '<base href="/">' in r.text
+
+
+def _keys(q):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    r = TestClient(app).get("/api/search", params={"q": q}).json()
+    return [(x["key"], x.get("exact", False)) for x in r["jira"]["items"]]
+
+
+def test_exact_ticket_key_comes_first():
+    """티켓 키를 그대로 치면 그 티켓이 맨 위.
+
+    text~ 검색만으로는 본문에 그 키가 언급된 다른 티켓이 위에 올 수 있다
+    (예: DL-9001 이 코멘트에 적힌 DL-9007). 정확히 그 티켓을 찾는 게 의도다.
+    """
+    ks = _keys("DL-9001")
+    assert ks and ks[0] == ("DL-9001", True)
+
+
+def test_bare_number_resolves_to_project_key():
+    """번호만 쳐도 검색 대상 프로젝트 키를 붙여 찾는다."""
+    ks = _keys("9001")
+    assert ks and ks[0] == ("DL-9001", True)
+
+
+def test_key_match_is_case_insensitive():
+    ks = _keys("dl-9001")
+    assert ks and ks[0] == ("DL-9001", True)
+
+
+def test_exact_match_is_not_duplicated():
+    ks = _keys("DL-9001")
+    assert [k for k, _ in ks].count("DL-9001") == 1
+
+
+def test_unknown_key_does_not_break_search():
+    """없는 키를 쳐도 조용히 넘어간다(500 금지)."""
+    assert _keys("DL-99999") == []

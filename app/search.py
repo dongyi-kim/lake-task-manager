@@ -31,6 +31,39 @@ def _clean_excerpt(s):
     return s[:200]
 
 
+# 검색어가 티켓을 직접 가리키는 형태인지 — "DL-1234"(키) 또는 "1234"(번호만).
+# 번호만 쓴 경우 검색 대상 프로젝트들의 키를 붙여 후보를 만든다.
+_KEY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)-(\d+)$")
+_NUM_RE = re.compile(r"^(\d+)$")
+
+
+def _exact_keys(s, q):
+    m = _KEY_RE.match(q)
+    if m:
+        return ["%s-%s" % (m.group(1).upper(), m.group(2))]
+    m = _NUM_RE.match(q)
+    if m:
+        projects = list(s.search_jira_projects or []) or [s.project_key]
+        return ["%s-%s" % (p, m.group(1)) for p in projects if p]
+    return []
+
+
+def _jira_item(it, base):
+    f = it.get("fields", {}) or {}
+    st = f.get("status") or {}
+    a = f.get("assignee") or {}
+    return {
+        "type": "jira", "key": it.get("key", ""),
+        "title": f.get("summary", ""),
+        "status": st.get("name", ""), "statusCategory": _cat(st),
+        "assignee": real_name(a.get("displayName") or a.get("name")) or None,
+        "issuetype": (f.get("issuetype") or {}).get("name", ""),
+        "project": (f.get("project") or {}).get("key", ""),
+        "updated": f.get("updated"),
+        "url": (base + "/browse/" + it.get("key", "")) if base else "",
+    }
+
+
 def search_all(client, settings, q, scope="scoped", limit=8):
     q = (q or "").strip()
     base = {"query": q, "scope": scope,
@@ -54,6 +87,20 @@ def search_all(client, settings, q, scope="scoped", limit=8):
 
 
 def _search_jira(client, s, q, scope, limit):
+    # 티켓 키/번호를 그대로 친 경우 그 티켓을 먼저 조회해 맨 앞에 둔다.
+    # text~ 검색만으로는 본문에 그 키가 언급된 다른 티켓이 위에 올 수 있다
+    # (예: "DL-9001" 이 코멘트에 적힌 DL-9007). 정확히 그 티켓을 찾는 게 의도다.
+    exact = []
+    for key in _exact_keys(s, q):
+        try:
+            raw = client.provider.get_json(
+                "/rest/api/2/issue/" + key,
+                params={"fields": "summary,status,issuetype,assignee,updated,project"})
+        except Exception:
+            continue                                  # 없는 키 — 조용히 건너뛴다
+        if raw and raw.get("key"):
+            exact.append(raw)
+
     jql = 'text ~ "%s"' % _q_escape(q)
     if scope == "scoped" and s.search_jira_projects:
         jql = "project in (%s) AND %s" % (", ".join(s.search_jira_projects), jql)
@@ -62,22 +109,15 @@ def _search_jira(client, s, q, scope, limit):
         "jql": jql, "fields": "summary,status,issuetype,assignee,updated,project",
         "maxResults": limit})
     base = (s.jira_base or "").rstrip("/")
-    items = []
+    items = [dict(_jira_item(it, base), exact=True) for it in exact]
+    seen = {x["key"] for x in items}
     for it in data.get("issues", []):
-        f = it.get("fields", {}) or {}
-        st = f.get("status") or {}
-        a = f.get("assignee") or {}
-        items.append({
-            "type": "jira", "key": it.get("key", ""),
-            "title": f.get("summary", ""),
-            "status": st.get("name", ""), "statusCategory": _cat(st),
-            "assignee": real_name(a.get("displayName") or a.get("name")) or None,
-            "issuetype": (f.get("issuetype") or {}).get("name", ""),
-            "project": (f.get("project") or {}).get("key", ""),
-            "updated": f.get("updated"),
-            "url": (base + "/browse/" + it.get("key", "")) if base else "",
-        })
-    return {"items": items}
+        row = _jira_item(it, base)
+        if row["key"] in seen:                        # 정확 일치와 중복 제거
+            continue
+        seen.add(row["key"])
+        items.append(row)
+    return {"items": items[:max(limit, len(exact))]}
 
 
 def _search_confluence(client, s, q, scope, limit):
