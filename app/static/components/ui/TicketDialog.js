@@ -139,6 +139,29 @@ export default {
       } catch (e) { this.pdescErr = (e && e.message) || "불러오기 실패"; }
     },
     // 타임라인 한 줄 문구 — 중요 이벤트만 오므로 종류별로 짧게 표현
+    // 우선순위 등급 — 사내 체계는 P0-Blocker … P4-Trivial, 그리고 Unclassified.
+    // **접두사 숫자**로 등급을 뽑는다(영문 이름 하드코딩 회피 — 이름이 바뀌어도 견딘다).
+    // 숫자가 작을수록 중요. 못 읽으면 중립 칩.
+    prioCls(name) {
+      if (!name) return "unset";
+      const m = /^\s*P(\d+)/i.exec(name);
+      return m ? "pr-" + Math.min(+m[1], 4) : "";
+    },
+    // 상태/우선순위 변경은 값 부분을 뱃지로 — 텍스트보다 눈에 빨리 들어온다
+    tlKind(e) { return (e.kind || "").replace(/^child-/, ""); },
+    tlBadged(e) { return ["status", "priority"].includes(this.tlKind(e)); },
+    tlLabel(e) { return this.tlKind(e) === "status" ? "상태" : "우선순위"; },
+    // 뱃지 색: 상태는 statusCategory(인스턴스 조회), 우선순위는 P 등급
+    tlBCls(e, v) {
+      if (this.tlKind(e) === "priority") return this.prioCls(v);
+      const cat = (v === e.from) ? e.fromCat : e.toCat;
+      return cat ? "st-" + cat : "";
+    },
+    tlVal(e, v) {
+      if (v) return v;
+      // 우선순위 미설정은 백엔드가 null 로 정규화(사내 Jira 의 'Unclassified')
+      return this.tlKind(e) === "priority" ? "미지정" : "없음";
+    },
     tlText(e) {
       const f = e.from || "없음", t = e.to || "없음";
       const kind = (e.kind || "").replace(/^child-/, "");   // 자손 이벤트도 같은 문구 사용
@@ -148,7 +171,7 @@ export default {
       if (kind === "assignee") return "담당자 " + f + " → " + t;
       if (kind === "resolution") return e.to ? ("해결: " + e.to) : "해결 취소";
       if (kind === "duedate") return "마감일 " + f + " → " + t;
-      if (kind === "priority") return "우선순위 " + f + " → " + t;
+      if (kind === "priority") return "우선순위 " + (e.from || "미지정") + " → " + (e.to || "미지정");
       return (e.field || "변경") + " " + f + " → " + t;
     },
     // 타 모듈 형제 = 흐리게(숨기지는 않는다 — 존재는 알리고 노이즈만 줄임)
@@ -317,7 +340,8 @@ export default {
           <h2 class="tkt-summary">{{ v.summary }}</h2>
 
           <div class="tkt-meta">
-            <div><span class="k">우선순위</span><span class="val">{{ v.priority || '—' }}</span></div>
+            <div><span class="k">우선순위</span><span class="val"
+              ><span class="prio-b" :class="prioCls(v.priority)">{{ v.priority || '미지정' }}</span></span></div>
             <div><span class="k">컴포넌트</span><span class="val">{{ (v.components && v.components.length) ? v.components.join(', ') : '—' }}</span></div>
             <div class="wide"><span class="k">라벨</span><span class="val">
               <span v-if="v.labels && v.labels.length" class="tkt-labels">
@@ -457,7 +481,12 @@ export default {
                   <span v-if="i < timeline.length - 1" class="tl-line"></span>
                 </span>
                 <span class="tl-body">
-                  <span class="tl-t"><span v-if="e.srcKey" class="tl-src">{{ e.srcKey }}</span>{{ tlText(e) }}</span>
+                  <span class="tl-t"><span v-if="e.srcKey" class="tl-src">{{ e.srcKey }}</span
+                    ><template v-if="tlBadged(e)">{{ tlLabel(e) }}
+                      <span class="tl-b" :class="tlBCls(e, e.from)">{{ tlVal(e, e.from) }}</span
+                      ><span class="tl-arw">→</span
+                      ><span class="tl-b on" :class="tlBCls(e, e.to)">{{ tlVal(e, e.to) }}</span>
+                    </template><template v-else>{{ tlText(e) }}</template></span>
                   <span class="tl-m">{{ e.author || '—' }} · {{ fdt(e.date) }}</span>
                 </span>
               </div>

@@ -186,6 +186,17 @@ _HTMLISH_RE = re.compile(
     r"|<br\s*/?>|<(?:p|div|table|ul|ol|blockquote|pre|h[1-6])[\s>]", re.I)
 
 
+# 우선순위 '미지정' — 사내 Jira 는 미설정을 'Unclassified' 로 준다.
+# 화면엔 '미지정' 으로 보여야 하므로 여기서 None 으로 정규화하고, 표기는 프론트가 정한다.
+_UNSET_PRIORITY = {"unclassified", "none", "not set", "undefined", "-", ""}
+
+
+def _prio(name):
+    n = (name or "").strip()
+    return None if n.lower() in _UNSET_PRIORITY else n
+
+
+
 def _looks_like_html(s):
     return bool(s) and bool(_HTMLISH_RE.search(str(s)))
 
@@ -246,7 +257,7 @@ def _build_ticket_view(raw, sp_field, jira_base=""):
         "subtask": bool(itype.get("subtask")),
         "status": st.get("name", ""),
         "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
-        "priority": (f.get("priority") or {}).get("name") or None,
+        "priority": _prio((f.get("priority") or {}).get("name")),
         "assignee": _rn(f.get("assignee")),
         "reporter": _rn(f.get("reporter")),
         # 프로필 이미지 조회용 사용자 id (displayName 이 아니라 Jira username)
@@ -740,9 +751,36 @@ class JiraClient:
             return [k.get("key") for k in kids if k.get("key")][:limit]
         return [s.get("key") for s in (f.get("subtasks") or []) if s.get("key")][:limit]
 
+    STATUS_CATS_TTL = 24 * 3600           # 상태 정의는 거의 안 바뀐다
+
+    def _status_cats(self):
+        """상태명(소문자) → todo|inprogress|done.
+
+        타임라인 상태 뱃지에 색을 주려면 카테고리가 필요한데, **상태명 하드코딩은 금지**다
+        (사내 커스텀 워크플로가 많아 이름을 신뢰할 수 없다 — CLAUDE.md §10).
+        그래서 인스턴스의 /rest/api/2/status 를 받아 매핑한다. 실패하면 빈 맵 →
+        프론트는 색 없는 중립 뱃지로 그린다(기능은 그대로).
+        """
+        def do():
+            try:
+                data = self.provider.get_json("/rest/api/2/status")
+            except SessionExpired:
+                raise
+            except Exception:
+                return {}
+            out = {}
+            for st in (data or []):
+                nm = (st.get("name") or "").strip()
+                if nm:
+                    out[nm.lower()] = _norm_cat((st.get("statusCategory") or {}).get("key"))
+            return out
+        return self.cache.get_or_set(f"statuscats:{self.env}", self.STATUS_CATS_TTL, do)[0]
+
     def ticket_timeline(self, key, limit=40):
         """티켓 이력 — [{kind,date,author,authorId,field,from,to,srcKey}] 최신순.
         본인 이벤트(생성/중요 필드 변경/댓글) + **직계 자손의 상태 변경**(srcKey 로 출처 표시)."""
+        cats = self._status_cats()
+
         def ev_of(h, allow, src=None):
             who = h.get("author") or {}
             out = []
@@ -751,15 +789,22 @@ class JiraClient:
                 if fld.lower() not in allow:
                     continue                             # 잡음(description 등) 제외
                 frm, to = item.get("fromString"), item.get("toString")
-                if fld.lower() == "assignee":
+                low = fld.lower()
+                if low == "assignee":
                     # 사람 값은 화면 전체와 같은 규칙으로(표시명 첫 어절). prod 의 '홍길동 SKCC' → '홍길동'
                     frm, to = (real_name(frm) if frm else frm), (real_name(to) if to else to)
-                out.append({"kind": ("child-" if src else "") + fld.lower().replace(" ", "-"),
-                            "date": h.get("created"),
-                            "author": real_name(who.get("displayName") or who.get("name")),
-                            "authorId": who.get("name"), "field": fld,
-                            "from": frm, "to": to,
-                            "srcKey": src})
+                elif low == "priority":
+                    frm, to = _prio(frm), _prio(to)      # 'Unclassified' → None(화면은 '미지정')
+                ev = {"kind": ("child-" if src else "") + low.replace(" ", "-"),
+                      "date": h.get("created"),
+                      "author": real_name(who.get("displayName") or who.get("name")),
+                      "authorId": who.get("name"), "field": fld,
+                      "from": frm, "to": to,
+                      "srcKey": src}
+                if low == "status":                      # 뱃지 색용 카테고리(없으면 중립)
+                    ev["fromCat"] = cats.get((frm or "").lower())
+                    ev["toCat"] = cats.get((to or "").lower())
+                out.append(ev)
             return out
 
         def build():
