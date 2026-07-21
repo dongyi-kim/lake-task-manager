@@ -162,18 +162,21 @@ export default {
     },
     // 상태/우선순위 변경은 값 부분을 뱃지로 — 텍스트보다 눈에 빨리 들어온다
     tlKind(e) { return (e.kind || "").replace(/^child-/, ""); },
-    tlBadged(e) { return ["status", "priority"].includes(this.tlKind(e)); },
-    tlLabel(e) { return this.tlKind(e) === "status" ? "상태" : "우선순위"; },
+    tlBadged(e) { return ["status", "priority", "duedate"].includes(this.tlKind(e)); },
+    tlLabel(e) { return { status: "상태", priority: "우선순위", duedate: "마감일" }[this.tlKind(e)]; },
     // 뱃지 색: 상태는 statusCategory(인스턴스 조회), 우선순위는 P 등급
     tlBCls(e, v) {
-      if (this.tlKind(e) === "priority") return this.prioCls(v);
+      const k = this.tlKind(e);
+      if (k === "priority") return this.prioCls(v);
+      if (k === "duedate") return "";                 // 마감일은 의미색 없음 — 중립 칩
       const cat = (v === e.from) ? e.fromCat : e.toCat;
       return cat ? "st-" + cat : "";
     },
     tlVal(e, v) {
-      if (v) return v;
+      const k = this.tlKind(e);
+      if (v) return k === "duedate" ? (this.fy(v) || v) : v;
       // 우선순위 미설정은 백엔드가 null 로 정규화(사내 Jira 의 'Unclassified')
-      return this.tlKind(e) === "priority" ? "미지정" : "없음";
+      return k === "priority" ? "미지정" : "없음";
     },
     tlText(e) {
       const f = e.from || "없음", t = e.to || "없음";
@@ -533,7 +536,9 @@ export default {
                 </span>
                 <span class="tl-body">
                   <span class="tl-t"><span v-if="e.srcKey" class="tl-src">{{ e.srcKey }}</span
-                    ><template v-if="tlBadged(e)">{{ tlLabel(e) }}
+                    ><template v-if="tlKind(e) === 'comment'"
+                      ><span class="tl-b on">{{ e.author || '—' }}</span> 댓글 작성</template
+                    ><template v-else-if="tlBadged(e)">{{ tlLabel(e) }}
                       <span class="tl-b" :class="tlBCls(e, e.from)">{{ tlVal(e, e.from) }}</span
                       ><span class="tl-arw">→</span
                       ><span class="tl-b on" :class="tlBCls(e, e.to)">{{ tlVal(e, e.to) }}</span>

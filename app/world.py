@@ -544,6 +544,11 @@ class World:
                      {"author": FIX_USERS[1], "date": self.today - timedelta(days=18), "time": "09:40",
                       "items": [{"field": "description", "fieldtype": "jira",
                                  "from": None, "fromString": "(이전)", "to": None, "toString": "(수정)"}]},
+                     # 마감일 변경 — world 전체에 duedate 이벤트가 0건이라 타임라인 표기를 검증할 수 없었다
+                     {"author": FIX_USERS[0], "date": self.today - timedelta(days=12), "time": "14:05",
+                      "items": [{"field": "duedate", "fieldtype": "jira",
+                                 "from": "2026-07-31", "fromString": "2026-07-31",
+                                 "to": "2026-08-14", "toString": "2026-08-14"}]},
                      {"author": FIX_USERS[1], "date": self.today - timedelta(days=3), "time": "16:20",
                       "items": [{"field": "status", "fieldtype": "jira", "from": "3",
                                  "fromString": "In Progress", "to": "5", "toString": "Resolved"},
