@@ -31,15 +31,19 @@
 .tkt-err { color: var(--today); }
 
 /* ── 좌측 세로 스파인(계보 + 형제) ── */
+/* 3단 명암: 좌/우 패널(--panel-2) │ 본문 well(--bg) │ 그 위 내용 카드(--panel).
+   패널과 본문이 같은 색이면 경계가 1px 보더뿐이라 구분이 안 된다.
+   ※ 패널 '안'에서 --panel-2 를 쓰던 요소(형제 hover·tl-src·mention 배지)는
+     배경과 같아져 사라지므로 --panel 로 옮겼다. */
 .tkt-cols { display: flex; align-items: flex-start; gap: 0; min-width: 0; }
-/* 가운데 본문도 좌/우 패널과 같은 눌린 배경(--bg) — 그 위에 설명/코멘트 '카드'가 흰색으로 뜬다.
+/* 가운데 본문 = 내용 카드를 담는 well(--bg). 좌/우 패널(--panel-2)과는 한 단계 다르다.
    컬럼 간 18px 간격은 spine/tl 의 margin 이 아니라 main 의 padding 으로 준다.
-   (margin 으로 두면 세 컬럼이 --bg 라 그 틈만 다이얼로그 흰색으로 드러나 흰 띠가 생긴다) */
+   (margin 으로 두면 그 틈만 다이얼로그 배경으로 드러나 세로 띠가 생긴다) */
 .tkt-main { flex: 1; min-width: 0; align-self: stretch;
   margin: -20px 0; padding: 16px 18px; background: var(--bg); }
 .tkt-spine { flex: 0 0 264px; width: 264px; align-self: stretch; min-width: 0;
   margin: -20px 0 -20px -24px; padding: 16px 14px 16px 24px;
-  border-right: 1px solid var(--border); background: var(--bg); }
+  border-right: 1px solid var(--border); background: var(--panel-2); }
 /* 마이크로 라벨 — 9.5px 대문자 트래킹(목업 문법) */
 .tkt-mlabel { font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
   color: var(--muted-2); margin-bottom: 11px; }
@@ -75,7 +79,7 @@
 .spn-sibrow { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 5px;
   margin-bottom: 1px; min-width: 0; border-left: 2px solid transparent; }
 .spn-sibrow.tkt { cursor: pointer; }
-.spn-sibrow.tkt:hover { background: var(--panel-2); text-decoration: none; }
+.spn-sibrow.tkt:hover { background: var(--panel); text-decoration: none; }
 .spn-sibrow.cur { background: var(--panel-3); border-left-color: var(--accent); }
 .spn-sibrow.other { opacity: .5; }
 .spn-sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--st-todo); }
@@ -107,12 +111,12 @@
 .tl-row.child .tl-t { color: var(--muted); }
 .tl-dot.k-child-status { background: transparent; border: 1.5px solid var(--fill-prog); }
 .tl-src { font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; color: var(--accent);
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
   padding: 0 4px; margin-right: 4px; white-space: nowrap; }
 /* 우측 패널 — 타임라인 */
 .tkt-tl { flex: 0 0 220px; width: 220px; align-self: stretch; min-width: 0;
   margin: -20px -24px -20px 0; padding: 16px 24px 16px 14px;
-  border-left: 1px solid var(--border); background: var(--bg); }
+  border-left: 1px solid var(--border); background: var(--panel-2); }
 /* 좁은 화면 — 좌/우 패널을 위아래로 펼쳐 가로 3단 해제 */
 @media (max-width: 1150px) {
   .tkt-cols { flex-direction: column; }
@@ -142,7 +146,7 @@
 
 /* ── 메타 그리드 ── */
 .tkt-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 18px;
-  padding: 12px 14px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
+  padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
 .tkt-meta > div { display: flex; gap: 8px; font-size: 12.5px; }
 .tkt-meta .k { color: var(--muted-2); flex: 0 0 58px; font-size: 11px; letter-spacing: .3px; }
 .tkt-meta > div.wide { grid-column: 1 / -1; align-items: flex-start; }
@@ -309,7 +313,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* 상위 티켓 설명 (Sub-Task) — '설명'과 같은 섹션 헤더 + 짧은 토글. 설명 섹션 바로 위에 온다 */
 .pdesc .tkt-sec-t { margin-top: 18px; }
 .pdesc-t { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; cursor: pointer;
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 7px;
   padding: 4px 10px; font-size: 11.5px; color: var(--muted); font-family: inherit; }
 .pdesc-t:hover { border-color: var(--accent); color: var(--text); }
 .pdesc-t .chev { transition: transform .15s; font-size: 10px; flex: none; }
@@ -324,7 +328,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   padding: 0 4px; border-radius: 4px; border: 1px solid; }
 .spn-rel.link { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 34%, transparent);
   background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.spn-rel.mention { color: var(--muted-2); border-color: var(--border); background: var(--panel-2); }
+.spn-rel.mention { color: var(--muted-2); border-color: var(--border); background: var(--panel); }
 
 /* 설명 아래 2분할 — 첨부파일 | 관련문서 */
 .tkt-two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
@@ -334,7 +338,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .chipwrap { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .fchip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0;
   font-size: 11.5px; font-weight: 600; line-height: 1.4; color: var(--text);
-  border: 1px solid var(--border); background: var(--panel-2); border-radius: 6px;
+  border: 1px solid var(--border); background: var(--panel); border-radius: 6px;
   padding: 0 8px; text-decoration: none; }   /* 세로 패딩 0 — 설명 안 conf-link 배지와 동일 높이(18px) */
 .fchip:hover { border-color: var(--accent); text-decoration: none; }
 .fchip.doc { color: var(--st-prog); }
