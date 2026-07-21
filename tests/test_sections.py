@@ -148,3 +148,22 @@ def test_kv_with_nbsp():
 def test_kv_present_on_undivided_description():
     """구분선이 없는 설명도 kv 판정을 탄다(키가 항상 존재)."""
     assert "kv" in S("<p>본문</p>")[0]
+
+
+def test_kv_fullwidth_colon():
+    """한글 IME 로 전각 콜론(：)이 섞여 들어오는 경우."""
+    kv = S(_voc("시스템명 ： LAKE<br/>환경 : 운영"))[-1]["kv"]
+    assert [(x["k"], x["html"]) for x in kv] == [("시스템명", "LAKE"), ("환경", "운영")]
+
+
+def test_kv_blank_lines_inside_block():
+    """블록 '안쪽'에 빈 줄이 섞여도 표가 되어야 한다(빈 줄 인코딩 여러 형태)."""
+    for body in ("<p>a : 1</p><p></p><p>b : 2</p>",
+                 "<p>a : 1</p><p>&nbsp;</p><p>b : 2</p>",
+                 "<p>a : 1<br/><br/>b : 2</p>",
+                 "<p>a : 1<br/>&nbsp;<br/>b : 2</p>",
+                 "<div>a : 1</div><div><br></div><div>b : 2</div>",
+                 "<p>a : 1</p><p><br/></p><p>b : 2</p>"):
+        h = "<p>==================== 신청정보 ====================</p>" + body
+        kv = S(h)[-1]["kv"]
+        assert kv and [x["k"] for x in kv] == ["a", "b"], body

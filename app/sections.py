@@ -178,6 +178,8 @@ def _clean(html):
 _RICH_RE = re.compile(r"<(?:table|ul|ol|pre|blockquote|img|h[1-6])[\s>]", re.I)
 _TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)")
 MIN_KV_ROWS = 2                      # 한 줄짜리를 표로 만들면 오히려 산만하다
+# 반각/전각 콜론 — 사내 문서는 한글 IME 로 전각(：)이 섞여 들어오는 경우가 있다
+_COLONS = (":", "：")
 
 
 def _balanced(frag):
@@ -201,7 +203,7 @@ def _split_kv(raw):
             depth += 1
         elif ch == ">":
             depth = max(0, depth - 1)
-        elif ch == ":" and depth == 0:
+        elif ch in _COLONS and depth == 0:
             left, right = raw[:i], raw[i + 1:]
             if "<" in left:                       # 키에 마크업이 끼면 잘라 쓰기 위험
                 return None
