@@ -204,3 +204,32 @@ def test_documents_are_deduped():
         assert len(keys) == len(set(keys)), f"{k}: 중복 문서 {keys}"
         assert all(d["title"] and d["url"] for d in docs)
         return
+
+
+# ── 링크 관계 라벨 / Confluence 편집(초안) URL ──
+def test_rel_label_shortens_verbose_jira_text():
+    """사내 Jira 의 서술형 문구를 짧은 표준어로 — prod 피드백."""
+    from app.jira_client import _rel_label
+    verbose = {"name": "Blocks",
+               "outward": "Linked issue cannot finish until this issue finishes",
+               "inward": "This issue cannot finish until linked issue finishes"}
+    assert _rel_label(verbose, True) == "blocks"
+    assert _rel_label(verbose, False) == "is blocked by"
+    # 매핑에 없는 타입인데 문구가 길면 타입 이름으로 대체
+    unknown = {"name": "Escalates", "outward": "a" * 40, "inward": "b" * 40}
+    assert _rel_label(unknown, True) == "Escalates"
+    # 짧은 문구는 그대로
+    ok = {"name": "Custom", "outward": "supersedes", "inward": "is superseded by"}
+    assert _rel_label(ok, True) == "supersedes"
+
+
+def test_conf_draft_url_title_and_key():
+    """편집(초안) 모드 URL 은 제목이 없어 링크 텍스트로 폴백하고, draftId 로 중복 판정."""
+    from app.jira_client import _conf_key, _conf_title
+    u = "https://conf/pages/resumedraft.action?draftId=98765&draftShareId=abc-def"
+    assert _conf_title(u, "<b>배포 계획서</b>") == "배포 계획서"
+    assert _conf_title(u, None) == "Confluence 문서"          # 텍스트도 없으면 기본값
+    assert _conf_key(u) == "draft:98765"
+    assert _conf_key(u) == _conf_key(u + "&extra=1")          # 부가 쿼리는 무시
+    # URL 에 슬러그가 있으면 슬러그 우선(링크 텍스트보다 정확)
+    assert _conf_title("https://c/spaces/DL/pages/1/설계-노트", "다른 텍스트") == "설계-노트"

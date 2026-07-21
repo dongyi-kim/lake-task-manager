@@ -21,9 +21,35 @@ from .names import real_name
 # 설명·코멘트 HTML 안의 Jira 티켓 링크 → 언급된 티켓 추출용
 _BROWSE_KEY_RE = re.compile(r"/browse/([A-Z][A-Z0-9]+-\d+)")
 # 설명·코멘트 안의 링크 href (관련 문서 추출용)
-_HREF_RE = re.compile(r'href="([^"]+)"')
+_ANCHOR_RE = re.compile(r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 # Confluence URL 에서 문서 제목 — /pages/{id}/{slug} 또는 /display/{space}/{slug}
 _CONF_TITLE_RE = re.compile(r"/pages/\d+/([^/?#]+)|/display/[^/]+/([^/?#]+)")
+
+
+# 이슈 링크 관계 문구 — 사내 Jira 는 inward/outward 에 서술형 장문을 넣기도 한다
+# (예: "Linked issue cannot finish until this issue finishes"). 타입 이름으로 짧은 표준어를 쓴다.
+_LINK_LABEL = {                       # type.name → (outward, inward)
+    "blocks": ("blocks", "is blocked by"),
+    "duplicate": ("duplicates", "is duplicated by"),
+    "cloners": ("clones", "is cloned by"),
+    "relates": ("relates to", "relates to"),
+    "dependency": ("depends on", "is depended on by"),
+}
+_REL_MAXLEN = 22                      # 이보다 길면 서술형으로 보고 잘라낸다
+
+
+def _rel_label(type_obj, outward):
+    """관계 라벨 — 타입 이름 매핑 우선, 없으면 Jira 문구(길면 축약)."""
+    name = (type_obj.get("name") or "").strip().lower()
+    pair = _LINK_LABEL.get(name)
+    if pair:
+        return pair[0] if outward else pair[1]
+    txt = ((type_obj.get("outward") if outward else type_obj.get("inward")) or "").strip()
+    if not txt:
+        return (type_obj.get("name") or "관련").strip()
+    if len(txt) > _REL_MAXLEN:        # 서술형 장문 → 타입 이름으로 대체, 그것도 없으면 축약
+        return (type_obj.get("name") or txt[:_REL_MAXLEN - 1] + "…").strip()
+    return txt
 
 
 def _conf_key(url):
@@ -33,6 +59,9 @@ def _conf_key(url):
       (+ ?src=... 쿼리, #앵커, 끝 슬래시, 제목이 바뀌어도 id 는 그대로)
     우선순위: 페이지 id > (space, 제목슬러그) > 정규화 URL."""
     u = (url or "").split("#")[0].rstrip("/")
+    m = re.search(r"[?&]draftId=(\d+)", u)     # 편집(초안) 모드 — resumedraft.action?draftId=...
+    if m:
+        return "draft:" + m.group(1)
     m = re.search(r"[?&]pageId=(\d+)", u)
     if m:
         return "id:" + m.group(1)
@@ -48,12 +77,19 @@ def _conf_key(url):
     return "u:" + u.lower()
 
 
-def _conf_title(url):
+def _conf_title(url, text=None):
+    """문서 제목 — URL 슬러그 우선, 없으면 **링크 텍스트**로 폴백.
+    편집(초안) 모드 URL(/pages/resumedraft.action?draftId=...)에는 제목이 없어서
+    링크 텍스트가 유일한 단서다."""
     m = _CONF_TITLE_RE.search(url or "")
     slug = (m.group(1) or m.group(2)) if m else None
-    if not slug:
-        return "Confluence 문서"
-    return unquote(slug).replace("+", " ").strip() or "Confluence 문서"
+    if slug:
+        t = unquote(slug).replace("+", " ").strip()
+        if t:
+            return t
+    t = re.sub(r"<[^>]+>", "", text or "").strip()      # 앵커 안 텍스트(태그 제거)
+    t = unescape(t)
+    return t or "Confluence 문서"
 
 _CAT_MAP = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
 
@@ -727,7 +763,7 @@ class JiraClient:
                 if not k or k in seen:
                     continue
                 seen.add(k)
-                rel = (t.get("outward") if out_i else t.get("inward")) or t.get("name") or "관련"
+                rel = _rel_label(t, bool(out_i))
                 found.append((k, rel, "link"))
 
             htmls = []
@@ -801,7 +837,7 @@ class JiraClient:
                 pass
             out, seen = [], set()
             for h in htmls:
-                for href in _HREF_RE.findall(h or ""):
+                for href, text in _ANCHOR_RE.findall(h or ""):
                     u = unescape(href)
                     if not _CONF_RE.search(u):
                         continue
@@ -809,7 +845,7 @@ class JiraClient:
                     if ck in seen:
                         continue
                     seen.add(ck)
-                    out.append({"title": _conf_title(u), "url": u})
+                    out.append({"title": _conf_title(u, text), "url": u})
             return out[:limit]
         return self.cache.get_or_set(f"documents:{self.env}:{key}", self.s.cache_ttl_seconds, build)[0]
 
