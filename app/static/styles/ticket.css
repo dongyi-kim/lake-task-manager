@@ -19,7 +19,7 @@
    배경은 티켓 타입 색(--tc)의 옅은 틴트. 타입을 색으로 먼저 알리고, 텍스트로 다시 확인시킨다.
    다이얼로그 좌우 패딩(24px)을 음수 마진으로 상쇄해 모서리까지 꽉 채운다. */
 .tkt-bar { display: flex; align-items: center; gap: 12px; min-width: 0;
-  margin: 0 -24px 14px; padding: 9px 12px 9px 18px;
+  margin: 0 -24px; padding: 9px 12px 9px 18px;
   background: color-mix(in srgb, var(--tc, var(--ty-task)) 15%, var(--panel));
   border-bottom: 2px solid color-mix(in srgb, var(--tc, var(--ty-task)) 55%, transparent);
   border-radius: 12px 12px 0 0; }
@@ -65,9 +65,9 @@
    컬럼 간 18px 간격은 spine/tl 의 margin 이 아니라 main 의 padding 으로 준다.
    (margin 으로 두면 그 틈만 다이얼로그 배경으로 드러나 세로 띠가 생긴다) */
 .tkt-main { flex: 1; min-width: 0; align-self: stretch;
-  margin: 0 0 -20px; padding: 0 18px 16px; background: var(--bg); }
+  margin: 0 0 -20px; padding: 16px 18px; background: var(--bg); }
 .tkt-spine { flex: 0 0 264px; width: 264px; align-self: stretch; min-width: 0;
-  margin: 0 0 -20px -24px; padding: 0 14px 16px 24px;
+  margin: 0 0 -20px -24px; padding: 16px 14px 16px 24px;
   border-right: 1px solid var(--border); background: var(--panel-2); }
 /* 마이크로 라벨 — 9.5px 대문자 트래킹(목업 문법) */
 .tkt-mlabel { font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
@@ -140,7 +140,7 @@
   padding: 0 4px; margin-right: 4px; white-space: nowrap; }
 /* 우측 패널 — 타임라인 */
 .tkt-tl { flex: 0 0 220px; width: 220px; align-self: stretch; min-width: 0;
-  margin: 0 -24px -20px 0; padding: 0 24px 16px 14px;
+  margin: 0 -24px -20px 0; padding: 16px 24px 16px 14px;
   border-left: 1px solid var(--border); background: var(--panel-2); }
 /* 좁은 화면 — 좌/우 패널을 위아래로 펼쳐 가로 3단 해제 */
 @media (max-width: 1150px) {
@@ -154,7 +154,7 @@
 }
 
 /* ── 헤더 ── (타입·번호·상태·Jira링크는 최상단 타이틀바로 옮겼다) */
-.tkt-summary { font-size: 19px; margin: 16px 0 14px; line-height: 1.35; }
+.tkt-summary { font-size: 19px; margin: 0 0 14px; line-height: 1.35; }
 
 /* ── 메타 그리드 ── */
 .tkt-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 18px;
