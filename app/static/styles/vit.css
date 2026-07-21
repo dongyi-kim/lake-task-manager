@@ -8,7 +8,7 @@
 
 .tbl { background: var(--panel); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
 .vhead, .vrow { display: grid;
-  grid-template-columns: minmax(240px,1.8fr) minmax(105px,0.7fr) minmax(430px,4fr) 64px; gap: 14px; }
+  grid-template-columns: minmax(240px,1.8fr) minmax(430px,4fr) 64px; gap: 14px; }
 .vhead { padding: 8px 16px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
 .vrow { padding: 11px 16px; border-top: 1px solid var(--border); align-items: start; }
 .vrow:first-child { border-top: none; } .vrow:hover { background: rgba(127,127,127,.035); }
@@ -56,9 +56,6 @@
 .c-children .asg { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-children .pill { justify-self: start; }
 
-.c-subs .scnt { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 0; }
-.c-subs .scnt .lbl { flex: 0 0 84px; text-align: right; }
-.c-subs .scnt b { font-variant-numeric: tabular-nums; }
 
 .mini { font-size: 11.5px; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini .d { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }

@@ -1,5 +1,5 @@
 // VitView.js — 기능2 현안(PMO_VIT). 컬럼: 티켓(상태·타입·담당자/번호·이름/Started·Due(D-day)) ·
-//   하위 티켓 수 · 직계 하위 티켓(표: 티켓·상태·시작일·종료일·담당자) + [자세히] 트리/코멘트.
+//   직계 하위 티켓(표: Sub Task·상태·시작일·종료일·담당자) + [자세히] 트리/코멘트.
 //   현안/하위 티켓은 행 전체가 클릭 대상(.tkt[data-key]) → 인앱 티켓 다이얼로그.
 // '완료 작업 안 보기' 토글로 직계 완료 티켓 숨김. updated: 2026-07-09
 import { api } from "../../lib/api.js";
@@ -125,7 +125,7 @@ export default {
         <div v-else-if="!mods[m.module]" class="loading">· 불러오는 중…</div>
         <div v-else-if="!mods[m.module].length" class="empty">· 현안 없음</div>
         <div v-else class="tbl">
-          <div class="vhead"><div>티켓</div><div>하위 티켓 수</div><div class="ch-head"><span>티켓</span><span>상태</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
+          <div class="vhead"><div>티켓</div><div class="ch-head"><span>Sub Task</span><span>상태</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
           <template v-for="it in mods[m.module]" :key="it.key">
             <div class="vrow">
               <div class="c-info">
@@ -142,11 +142,6 @@ export default {
                   <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
                   <span class="dt"><span class="dl">Due</span><span v-if="it.due" :class="{ overdue: dueOverdue(it.due) }">{{ fy(it.due) }} ({{ dd(it.due) }})</span><span v-else>—</span></span>
                 </div>
-              </div>
-              <div class="c-subs">
-                <div class="scnt"><span class="lbl"><StatusPill cat="todo" label="Open" /></span><b>{{ (it.statusCounts||{}).open || 0 }}</b></div>
-                <div class="scnt"><span class="lbl"><StatusPill cat="inprogress" label="In Progress" /></span><b>{{ (it.statusCounts||{}).inprogress || 0 }}</b></div>
-                <div class="scnt"><span class="lbl"><StatusPill cat="done" label="Done" /></span><b>{{ (it.statusCounts||{}).done || 0 }}</b></div>
               </div>
               <!-- 세로 진척 바(티켓 수 기준) + 하위 티켓 목록. 목록이 Open→진행중→해결 순이라
                    바의 구간 높이가 각 상태 묶음과 그대로 맞아떨어진다. -->
