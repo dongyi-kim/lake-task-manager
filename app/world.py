@@ -95,6 +95,8 @@ class World:
         self._build_voc()
         self._build_links()           # 이슈 링크(relates to 등) — '관련 Task' 용
         self._build_attachments()     # 첨부파일 — '첨부파일' 패널 용
+        # ★ 픽스처는 맨 마지막 — 위 자동 생성기들이 픽스처 내용을 덮어쓰지 않게
+        self._build_ui_fixtures()     # UI 회귀 검증용 Epic + 하위 티켓
         self._index()
         self._build_activity()
         self._build_confluence()
@@ -391,6 +393,162 @@ class World:
                 }
                 ids.append(aid)
             it["attachments"] = ids
+
+    # ── UI 회귀 검증 픽스처 ──────────────────────────────────────────
+    # 목적: UI 를 손볼 때마다 "이 케이스를 볼 수 있는 티켓"을 world 에서 뒤지지 않도록,
+    #       검증 포인트별 티켓을 고정 키(DL-9000~)로 만들어 둔다. 제목이 곧 검증 항목이다.
+    # 격리: wbs_config 에 없는 Epic + PMO_VIT 라벨 없음 + people.yaml 밖 담당자
+    #       → WBS·현안·워크로드 집계에 섞이지 않는다(검색·티켓 다이얼로그에서만 보임).
+    UI_EPIC = "DL-9000"
+
+    def _fx(self, key, itype, summary, **over):
+        """픽스처 이슈 한 건 — 기본값 채우고 over 로 덮어쓴다(rng 미사용 = world 시퀀스 불변)."""
+        d0 = self.today - timedelta(days=30)
+        it = {
+            "key": key, "project": self.project, "type": itype, "summary": summary,
+            "description": "", "module": "UI검증", "component": "UI검증",
+            "assignee": "pmo", "reporter": "lead",
+            "statusCategory": "inprogress", "statusName": "In Progress",
+            "labels": ["ui-fixture"], "sp": None,
+            "epicKey": None if itype == "Epic" else self.UI_EPIC, "parentKey": None,
+            "created": d0, "updated": self.today, "resolved": None, "due": None,
+            "tcreated": "09:00", "tupdated": "18:00", "tresolved": None,
+            "comments": [], "worklog": [], "subtasks": [], "changelog": [],
+            "links": [], "attachments": [],
+        }
+        it.update(over)
+        self.issues[key] = it
+        return it
+
+    def _fx_attach(self, key, filename, mime, data, created=None, size=None):
+        aid = f"fx{_iid(key)}{len(self.issues[key]['attachments'])}"
+        self.attachments[aid] = {
+            "id": aid, "issueKey": key, "filename": filename, "mimeType": mime,
+            "size": size or len(data), "data": data,
+            "author": self.issues[key]["assignee"],
+            "created": created or self.issues[key]["created"],
+        }
+        self.issues[key]["attachments"].append(aid)
+
+    def _build_ui_fixtures(self):
+        conf = "https://confluence.corp.example"
+        self._fx(self.UI_EPIC, "Epic", "[UI] UI 회귀 검증 픽스처 (대시보드 집계 제외)",
+                 description=("UI 를 수정할 때 **검증 포인트별로** 열어볼 티켓 모음이다.\n"
+                              "하위 티켓 제목이 곧 검증 항목이므로, 화면을 고친 뒤 해당 티켓만 열어 확인하면 된다.\n"
+                              "이 Epic 은 wbs_config 에 없고 PMO_VIT 라벨도 없어 WBS·현안·워크로드 집계에 섞이지 않는다."))
+
+        # 1) 설명 리치 요소 총집합
+        self._fx("DL-9001", "Task", "[UI] 설명 리치요소 — 표·코드·인용·패널·콜아웃·이미지·링크",
+                 description=(
+                     "h2. 표\n"
+                     "||모듈||역할||가중치||\n|Ingestion|수집|3|\n|Catalog|메타|2|\n\n"
+                     "h2. 코드\n{code}\nmake deploy ENV=staging\n{code}\n\n"
+                     "h2. 인용\n{quote}\n인용문은 좌측 컬러 바로 구분된다.\n{quote}\n\n"
+                     "h2. 패널/콜아웃\n{panel:title=완료 기준}\n* 하위 SP 롤업 100%\n{panel}\n"
+                     "{warning}\n경고 콜아웃\n{warning}\n{info}\n정보 콜아웃\n{info}\n\n"
+                     "h2. 이미지\n!ticket-sample.svg!\n\n"
+                     "h2. 링크\n티켓 [DL-5003|" + conf.replace('confluence', 'jira') + "/browse/DL-5003], "
+                     "문서 [설계 노트|" + conf + "/spaces/DL/pages/42013/설계+노트], 멘션 [~pmo]."))
+
+        # 2) Heading 레벨 구분
+        self._fx("DL-9002", "Task", "[UI] Heading 1~4 레벨 구분 바",
+                 description="h1. H1 제목\n본문\n\nh2. H2 제목\n본문\n\nh3. H3 제목\n본문\n\nh4. H4 제목\n본문")
+
+        # 3) 긴 제목 말줄임
+        self._fx("DL-9003", "Task",
+                 "[UI] 아주 긴 제목 말줄임 확인 — " + ("가나다라마바사아자차카타파하 " * 6).strip(),
+                 description="제목이 헤더·계보·형제·검색 결과에서 어떻게 잘리는지 본다.")
+
+        # 4) 관련 Task — 서술형 링크 문구 + 언급 티켓
+        self._fx("DL-9004", "Task", "[UI] 관련 Task — 서술형 링크문구 축약 + 본문 언급 티켓",
+                 description=("사내 Jira 는 링크 문구를 서술형으로 준다. 배지가 'blocks' 로 짧게 나와야 한다.\n"
+                              "본문 언급: [DL-5005|" + conf.replace('confluence', 'jira') + "/browse/DL-5005]"),
+                 links=[{"type": "Blocks", "dir": "outward", "key": "DL-9005"},
+                        {"type": "Duplicate", "dir": "inward", "key": "DL-9006"},
+                        {"type": "Relates", "dir": "outward", "key": "DL-9001"}])
+
+        # 5) 관련문서 — 초안(edit) 링크 · 같은 문서 중복 URL · display 형태
+        self._fx("DL-9005", "Task", "[UI] 관련문서 — 편집(초안) 링크 · 중복 URL · display 형태",
+                 description=(
+                     "초안(편집) 링크: [배포 계획서|" + conf + "/pages/resumedraft.action?draftId=98765&draftShareId=a-b]\n"
+                     "같은 문서 3형태(1건으로 합쳐져야 함):\n"
+                     "* [설계 노트|" + conf + "/spaces/DL/pages/42013/설계+노트]\n"
+                     "* [제목이 바뀐 링크|" + conf + "/spaces/DL/pages/42013/changed-title?src=nav]\n"
+                     "* [구형 URL|" + conf + "/pages/viewpage.action?pageId=42013#s1]\n"
+                     "display 형태: [운영 가이드|" + conf + "/display/DL/운영+가이드]"))
+
+        # 6) 첨부파일
+        fx6 = self._fx("DL-9006", "Task", "[UI] 첨부파일 — 이미지·문서·큰 용량",
+                       description="첨부 칩의 파일명·업로드일시·용량 표기와 이미지/문서 아이콘 구분을 본다.")
+        self._fx_attach("DL-9006", "화면_시안.png", "image/png", self._PNG_1X1)
+        self._fx_attach("DL-9006", "배포_절차서.md", "text/markdown", b"# deploy\nsteps\n" * 40)
+        # 큰 용량 '표기' 검증 — 실제 바이트를 들고 있을 이유가 없어 size 만 크게 준다
+        self._fx_attach("DL-9006", "성능_측정_대용량.csv", "text/csv",
+                        b"a,b,c\n" * 20, size=2_487_193)
+        fx6["updated"] = self.today
+
+        # 7) 코멘트 다수
+        self._fx("DL-9007", "Task", "[UI] 코멘트 다수 — 멘션·문서링크·긴 본문",
+                 description="코멘트 영역의 아바타·간격·링크 뱃지를 본다.",
+                 comments=[{"author": a, "kind": "note", "text": t, "body": t,
+                            "created": self.today - timedelta(days=i),
+                            "tcreated": "1%d:0%d" % (i % 10, i % 10)}
+                           for i, (a, t) in enumerate([
+                               ("pmo", "리뷰 부탁드립니다. [~lead] 확인 후 회신 주세요."),
+                               ("lead", "문서 참고: [설계 노트|" + conf + "/spaces/DL/pages/42013/설계+노트]"),
+                               ("pmo", "관련 티켓 [DL-9001|" + conf.replace('confluence', 'jira') + "/browse/DL-9001] 도 함께 보세요."),
+                               ("lead", "긴 본문 확인용. " + ("문장이 길어질 때 줄바꿈과 여백을 본다. " * 12)),
+                           ])])
+
+        # 8) 마감 초과 / 임박
+        self._fx("DL-9008", "Task", "[UI] 마감 초과(D+) — 기한 붉은 강조",
+                 due=self.today - timedelta(days=9), statusCategory="inprogress", statusName="In Progress")
+        self._fx("DL-9009", "Task", "[UI] 마감 임박(D-2)",
+                 due=self.today + timedelta(days=2))
+
+        # 9) 타임라인 — 담당자/상태 변경 이력
+        self._fx("DL-9010", "Task", "[UI] 타임라인 — 담당자 변경·상태 변경·해결 이력",
+                 statusCategory="done", statusName="Resolved",
+                 resolved=self.today - timedelta(days=3), tresolved="16:20",
+                 changelog=[
+                     {"author": "lead", "date": self.today - timedelta(days=25), "time": "10:00",
+                      "items": [{"field": "assignee", "fieldtype": "jira",
+                                 "from": "lead", "fromString": self._dn("lead"),
+                                 "to": "pmo", "toString": self._dn("pmo")}]},
+                     {"author": "pmo", "date": self.today - timedelta(days=20), "time": "11:30",
+                      "items": [{"field": "status", "fieldtype": "jira", "from": "1",
+                                 "fromString": "Open", "to": "3", "toString": "In Progress"}]},
+                     {"author": "pmo", "date": self.today - timedelta(days=18), "time": "09:40",
+                      "items": [{"field": "description", "fieldtype": "jira",
+                                 "from": None, "fromString": "(이전)", "to": None, "toString": "(수정)"}]},
+                     {"author": "pmo", "date": self.today - timedelta(days=3), "time": "16:20",
+                      "items": [{"field": "status", "fieldtype": "jira", "from": "3",
+                                 "fromString": "In Progress", "to": "5", "toString": "Resolved"},
+                                {"field": "resolution", "fieldtype": "jira",
+                                 "from": None, "fromString": None, "to": "1", "toString": "Done"}]},
+                 ])
+
+        # 10) 라벨/컴포넌트 다수 · 미할당 · 설명 없음
+        self._fx("DL-9011", "Task", "[UI] 라벨 다수 + 미할당 + 설명 없음",
+                 labels=["ui-fixture", "mock", "backend", "hotfix", "needs-review", "long-label-example"],
+                 assignee=None, description="")
+
+        # 11) Sub-Task 세트 — 설명 없음(상위 설명 자동 펼침) + 형제 목록
+        parent = self._fx("DL-9012", "Task", "[UI] Sub-Task 부모 — 형제 목록/하위 Task 확인",
+                          description=("h3. 부모 설명\n이 설명이 하위 Sub-Task 의 '상위 티켓 설명' 에 나와야 한다.\n"
+                                       "{info}\n상위 설명 자동 펼침은 DL-9013 에서 확인.\n{info}"))
+        subs = [
+            ("DL-9013", "[UI] Sub-Task 설명 없음 — 상위 설명 자동 펼침", "", "todo", "Open"),
+            ("DL-9014", "[UI] Sub-Task 설명 있음 — 상위 설명 접힘", "자체 설명이 있으므로 접혀 있어야 한다.", "inprogress", "In Progress"),
+            ("DL-9015", "[UI] Sub-Task 완료 — 형제 정렬(완료 뒤로)", "완료 상태.", "done", "Resolved"),
+            ("DL-9016", "[UI] Sub-Task 미착수", "", "todo", "Open"),
+        ]
+        for k, title, desc, cat, st in subs:
+            self._fx(k, SUBTASK_TYPE, title, description=desc, parentKey="DL-9012",
+                     epicKey=None, statusCategory=cat, statusName=st,
+                     resolved=(self.today - timedelta(days=2)) if cat == "done" else None,
+                     tresolved="15:00" if cat == "done" else None)
+            parent["subtasks"].append(k)
 
     def _build_links(self):
         """이슈 링크(relates to / blocks / duplicates) — 같은 모듈 안에서 몇 쌍 연결.
