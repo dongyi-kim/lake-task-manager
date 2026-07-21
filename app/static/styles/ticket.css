@@ -242,19 +242,19 @@
    본문 전체를 물들이지 않으므로 인용·콜아웃의 색과 경쟁하지 않는다. */
 .tkt-desc h1, .tkt-desc h2, .tkt-desc h3, .tkt-desc h4 { position: relative; margin: 18px 0 8px;
   line-height: 1.3; padding-left: 14px; }
-/* 레벨 뱃지 — 'H' 위 / 숫자 아래로 쌓은 세로 막대. 알파 틴트 배경 + 같은 색 테두리 */
+/* 레벨 뱃지 — 'H' 위 / 숫자 아래로 쌓은 세로 막대.
+   다른 뱃지(칩)와 형식을 공유하지 않는다: **직각·테두리 없음·단색 채움·흰 글자**. */
 .tkt-desc h1::before, .tkt-desc h2::before, .tkt-desc h3::before, .tkt-desc h4::before {
   content: var(--hl); white-space: pre;          /* \A 로 두 줄 — H / 레벨 */
   position: absolute; left: 0; top: .1em;
   font: 800 8px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-align: center; color: var(--hd, var(--muted-2));
-  background: color-mix(in srgb, var(--hd, var(--muted-2)) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--hd, var(--muted-2)) 45%, transparent);
-  border-radius: 3px; padding: 1px 2px; }
-.tkt-desc h1 { --hl: "H\A 1"; --hd: var(--accent); }
-.tkt-desc h2 { --hl: "H\A 2"; --hd: var(--good); }
-.tkt-desc h3 { --hl: "H\A 3"; --hd: var(--warn); }
-.tkt-desc h4 { --hl: "H\A 4"; --hd: var(--muted-2); }
+  text-align: center; color: #fff;
+  background: var(--hd, var(--hlv-4));
+  border: 0; border-radius: 0; padding: 1px 3px; }
+.tkt-desc h1 { --hl: "H\A 1"; --hd: var(--hlv-1); }
+.tkt-desc h2 { --hl: "H\A 2"; --hd: var(--hlv-2); }
+.tkt-desc h3 { --hl: "H\A 3"; --hd: var(--hlv-3); }
+.tkt-desc h4 { --hl: "H\A 4"; --hd: var(--hlv-4); }
 /* 상위 2단계만 밑줄 — 섹션 경계를 크기 말고 형태로도 알린다 */
 .tkt-desc h1, .tkt-desc h2 { border-bottom: 1px solid var(--border); padding-bottom: 5px; }
 .tkt-desc h1 { font-size: 17px; } .tkt-desc h2 { font-size: 15.5px; } .tkt-desc h3 { font-size: 14px; }
