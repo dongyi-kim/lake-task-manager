@@ -6,6 +6,7 @@ Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 P
 """
 
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from html import unescape
@@ -187,6 +188,31 @@ _HTMLISH_RE = re.compile(
 
 def _looks_like_html(s):
     return bool(s) and bool(_HTMLISH_RE.search(str(s)))
+
+
+def _log_sections(key, view):
+    """영역 분할/표 판정 결과를 콘솔(stderr)에 한 줄로.
+
+    prod 데이터는 반출할 수 없으니 화면 대신 **로그로** 원인을 본다.
+    구분선이 하나도 없는 평범한 티켓에서는 조용하다(불필요한 잡음 방지).
+    """
+    secs = view.get("descriptionSections") or []
+    titled = [s for s in secs if s.get("title")]
+    if not titled:
+        # 구분선이 있을 법한데 못 잘랐다면 그것도 알려준다
+        if "===" in (view.get("descriptionHtml") or ""):
+            print("[sections] %s: 구분선 미검출 (=== 은 있으나 영역으로 안 갈림)" % key,
+                  file=sys.stderr)
+        return
+    parts = []
+    for s in secs:
+        name = s.get("title") or "(머리말)"
+        if s.get("kv"):
+            parts.append("'%s' 표%d행" % (name, len(s["kv"])))
+        else:
+            why = s.get("kvSkip") or "-"
+            parts.append("'%s' 본문(%s)" % (name, why))
+    print("[sections] %s: %s" % (key, " | ".join(parts)), file=sys.stderr)
 
 
 def _build_ticket_view(raw, sp_field, jira_base=""):
@@ -584,6 +610,7 @@ class JiraClient:
         # 섹션은 프록시 이전 HTML 에서 잘렸다 — 이미지가 든 섹션도 프록시를 타야 한다
         for sec in view.get("descriptionSections") or []:
             sec["html"] = self._proxy_media(sec["html"])
+        _log_sections(key, view)
         return view
 
     # ── 계보(좌측 스파인 패널) — 조상 체인 + 형제 ──

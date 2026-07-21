@@ -122,7 +122,9 @@ class _Cutter(HTMLParser):
 
 
 def _sec(title, html):
-    return {"title": title, "html": html, "kv": _kv_rows(html)}
+    why = []
+    return {"title": title, "html": html, "kv": _kv_rows(html, why),
+            "kvSkip": (why[0] if why else None)}
 
 
 def split_sections(html):
@@ -154,7 +156,9 @@ def split_sections(html):
 
     out = [s for s in out if _has_content(s["html"])] or [{"title": None, "html": html}]
     for sec in out:
-        sec["kv"] = _kv_rows(sec["html"])   # 표로 그릴 수 있으면 행 목록, 아니면 None
+        why = []
+        sec["kv"] = _kv_rows(sec["html"], why)   # 표로 그릴 수 있으면 행 목록, 아니면 None
+        sec["kvSkip"] = why[0] if why else None  # 아니면 그 이유(진단용)
     return out
 
 
@@ -241,19 +245,38 @@ def _split_kv(raw):
     return None
 
 
-def _kv_rows(html):
-    """영역 전체가 'key : value' 로만 이뤄졌으면 [{k, html}], 아니면 None."""
-    if not html or _RICH_RE.search(html):
+def _kv_rows(html, why=None):
+    """영역 전체가 'key : value' 로만 이뤄졌으면 [{k, html}], 아니면 None.
+
+    why: 리스트를 주면 '표로 안 만든 이유'를 한 줄 담아 준다(진단용).
+         실 데이터를 밖으로 내보내지 않고 원인을 짚기 위한 장치다.
+    """
+    def no(reason):
+        if why is not None:
+            why.append(reason)
         return None
+
+    if not html:
+        return no("내용 없음")
+    m = _RICH_RE.search(html)
+    if m:
+        return no("표로 만들 수 없는 블록이 섞임: <%s>" % m.group(0).strip("<> "))
+
     rows = []
-    for raw in re.split(r"<br\s*/?>|</?(?:p|div)[^>]*>", html):
-        if not _txt(raw):
+    for n, raw in enumerate(re.split(r"<br\s*/?>|</?(?:p|div)[^>]*>", html), 1):
+        text = _txt(raw)
+        if not text:
             continue                              # 빈 줄은 무시
         kv = _split_kv(raw)
         if not kv:
-            return None                           # 한 줄이라도 어긋나면 표로 보지 않는다
+            # 왜 어긋났는지까지 — 콜론이 아예 없는지 / 키가 이상한지
+            if not any(c in text for c in _COLONS):
+                return no("%d번째 줄에 콜론이 없음: %.40s" % (n, text))
+            return no("%d번째 줄을 key:value 로 못 나눔(키에 마크업/길이 초과 등): %.40s" % (n, text))
         rows.append({"k": kv[0], "html": kv[1]})
-    return rows if len(rows) >= MIN_KV_ROWS else None
+    if len(rows) < MIN_KV_ROWS:
+        return no("key:value 줄이 %d개뿐(최소 %d개 필요)" % (len(rows), MIN_KV_ROWS))
+    return rows
 
 
 def _has_content(html):
