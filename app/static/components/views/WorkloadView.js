@@ -131,8 +131,12 @@ export default {
       this.actOpen[id] = !this.actOpen[id];
       if (this.actOpen[id] && !this.tkd[id]) {
         // 세 리스트(할당됨/진행중/완료)를 **각각 병렬**로 받아 도착하는 대로 렌더한다.
-        const box = { open: null, inProgress: null, done7d: null, err: {} };
-        this.tkd[id] = box;
+        this.tkd[id] = { open: null, inProgress: null, done7d: null, err: {} };
+        // ★ 반드시 this.tkd[id](= 리액티브 프록시)를 통해 쓴다.
+        //   지역 변수(원본 객체)에 바로 쓰면 프록시의 set 트랩을 건너뛰어 **리렌더가 안 걸린다**.
+        //   데이터는 들어와 있는데 화면은 '불러오는 중…' 인 채로 멈추고,
+        //   접었다 펴서 리렌더가 일어나야 그제야 보였다.
+        const box = this.tkd[id];
         const byDue = (a, b) => this.dueRank(a) - this.dueRank(b);
         const byResolved = (a, b) => (b.resolved || "").localeCompare(a.resolved || "");
         const load = (bucket, sorter) => api.workloadBucket(id, bucket)
