@@ -477,8 +477,11 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* ── 티켓 단독 페이지(mode=page) — '새 창에서 열기' 로 뜨는 화면 ──
    모달이 아니라 문서다: 오버레이·그림자·높이 제한 없이 페이지가 스크롤된다.
    타이틀바는 그대로 두되(제목·Jira 링크) 창 스크롤에 sticky 로 붙는다. */
-.tkt-page { padding: 0 16px 28px; }
-.tkt-dlg.page { width: 100%; max-width: 1240px; margin: 0 auto;
+/* 창 폭을 그대로 쓴다 — 모달이 아니라 페이지이므로 가운데 좁게 묶을 이유가 없다 */
+.tkt-page { padding: 0 0 28px; }
+.tkt-dlg.page { width: 100%; max-width: none; margin: 0;
   max-height: none; overflow: visible;         /* 페이지 자체가 스크롤 주체 */
-  box-shadow: none; border-top: 0; border-radius: 0 0 12px 12px; }
+  box-shadow: none; border: 0; border-radius: 0; }
 .tkt-dlg.page .tkt-bar { border-radius: 0; }
+/* 확장 버튼이 없는 페이지에서는 .expanded 폭 제한도 무의미 */
+.tkt-dlg.page.expanded { max-width: none; }
