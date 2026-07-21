@@ -553,7 +553,10 @@ class World:
 
         # 10) 라벨/컴포넌트 다수 · 미할당 · 설명 없음
         self._fx("DL-9011", "Task", "[UI] 라벨 다수 + 미할당 + 설명 없음",
-                 labels=["ui-fixture", "mock", "backend", "hotfix", "needs-review", "long-label-example"],
+                 # 줄바꿈까지 유발할 만큼 — 접혔을 때 '라벨' 키가 첫 줄에 붙는지 확인용
+                 labels=["ui-fixture", "mock", "backend", "hotfix", "needs-review",
+                         "long-label-example", "regression", "ui-verification",
+                         "another-fairly-long-label", "q3-2026", "pmo-review"],
                  assignee=None, description="")
 
         # 11) Sub-Task 세트 — 설명 없음(상위 설명 자동 펼침) + 형제 목록
