@@ -158,20 +158,26 @@ def split_sections(html):
     return out
 
 
-# 자를 수 있는 컨테이너 — 속성 없는 순수 문단/래퍼만.
-# class 가 붙은 div(패널·콜아웃)나 표/리스트/인용/코드 안에서 자르면 의미가 깨진다.
-_PLAIN_TAG_RE = re.compile(r"^<(?:p|div)\s*>$", re.I)
+# 자를 수 있는 컨테이너 — <p>/<div> 중 **class 가 없는** 것.
+# 판정 기준이 'class 유무'인 이유: 패널·콜아웃 같은 의미는 class 로만 표현된다.
+#   <div class="callout callout-info"> 안에서 자르면 콜아웃이 두 개로 쪼개진다 → 거부.
+#   <p dir="auto"> 처럼 표현용 속성은 의미가 없다 → 허용.
+# (실 사내 Jira 는 <p dir="auto"> 를 쓴다. sanitizer 가 dir 을 떼주긴 하지만,
+#  '속성이 아예 없을 것'을 조건으로 두면 sanitizer 정책이 바뀌는 순간 분할이 조용히 멈춘다.)
+_PLAIN_TAG_RE = re.compile(r"^<(?:p|div)(?:\s[^>]*)?>$", re.I)
+_HAS_CLASS_RE = re.compile(r"\sclass\s*=", re.I)
 
 
 def _splittable(stack):
-    return all(_PLAIN_TAG_RE.match(raw) for _, raw in stack)
+    return all(_PLAIN_TAG_RE.match(raw) and not _HAS_CLASS_RE.search(raw)
+               for _, raw in stack)
 
 
-_EMPTY_P_RE = re.compile(r"<(p|div)>(?:\s|&nbsp;)*</\1>")
+_EMPTY_P_RE = re.compile(r"<(p|div)(?:\s[^>]*)?>(?:\s|&nbsp;)*</\1>")
 # 조각 '경계'에 남은 <br> — 구분선을 들어낸 자리라 그대로 두면 빈 줄로 보인다.
 # (문단 중간의 <br> 는 사용자가 의도한 줄바꿈이므로 건드리지 않는다)
 # 여는 태그가 겹칠 수 있어(<div><p>) 태그 묶음 전체를 하나로 본다.
-_LEAD_BR_RE = re.compile(r"^((?:<(?:p|div)>)+)(?:\s*<br\s*/?>)+")
+_LEAD_BR_RE = re.compile(r"^((?:<(?:p|div)(?:\s[^>]*)?>)+)(?:\s*<br\s*/?>)+")
 _TAIL_BR_RE = re.compile(r"(?:<br\s*/?>\s*)+((?:</(?:p|div)>)+)$")
 
 

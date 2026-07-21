@@ -199,3 +199,37 @@ def test_kv_when_whole_body_is_one_paragraph():
     r = S(big)
     assert [s["title"] for s in r] == ["{2} 테이블정보", "{3} 테이블정보"]
     assert all(s["kv"] and len(s["kv"]) == 2 for s in r)
+
+
+def test_paragraph_with_attributes_is_splittable():
+    """실 사내 Jira 는 <p dir="auto"> 를 쓴다.
+
+    sanitizer 가 dir 을 떼주긴 하지만, '속성이 아예 없을 것'을 조건으로 두면
+    sanitizer 정책이 바뀌는 순간 분할이 조용히 멈춘다. 판정 기준은 class 유무다.
+    """
+    r = S('<p dir="auto">=== 신청정보 ===<br/>a : 1<br/>b : 2<br/></p>')
+    assert [s["title"] for s in r] == ["신청정보"]
+    assert r[0]["html"] == '<p dir="auto">a : 1<br/>b : 2</p>'   # 경계 br 정리도 동작
+    assert len(r[0]["kv"]) == 2
+
+
+def test_class_bearing_container_still_rejected():
+    """class 는 패널·콜아웃의 '의미'를 담으므로 여전히 자르지 않는다."""
+    assert _one('<div class="callout callout-info"><p>=== x ===</p></div><p>뒤</p>')
+
+
+def test_real_prod_shape():
+    """제보된 실제 prod HTML 구조 — 한 문단에 구분선 2개, 내용은 다음 문단."""
+    from app.htmlsafe import sanitize_html, tidy_html
+    raw = ('<p dir="auto">==================== 신청정보 ====================<br />\n'
+           '신청자 : 홍길동<br />\n부서 : 데이터<br />\n'
+           '==================== 요청내용 ====================</p>\n\n'
+           '<p dir="auto"> 안녕하세요.</p>\n\n'
+           '<p dir="auto">==================== 1 시스템정보 ====================<br />\n'
+           '시스템명 : LAKE<br />\n\n'
+           '==================== {%d} 시스템정보 ====================<br />\n'
+           '스키마 : DW <br />\n테이블 : FCT_A</p>')
+    r = S(tidy_html(sanitize_html(raw)))
+    assert [s["title"] for s in r] == ["신청정보", "요청내용", "1 시스템정보", "{%d} 시스템정보"]
+    assert len(r[0]["kv"]) == 2 and len(r[3]["kv"]) == 2
+    assert r[1]["kv"] is None                      # '안녕하세요.' 는 표 아님
