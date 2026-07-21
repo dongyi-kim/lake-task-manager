@@ -174,12 +174,17 @@
       "main    main"
       "rel     history";
     background: var(--bg);
-    margin: 0 -24px -20px; padding: 16px 24px;
+    /* 아래 padding 34 = 여백 14 + margin-bottom -20 상쇄분.
+       안 그러면 마지막 내용(코멘트 등)이 바닥에 딱 붙는다. */
+    margin: 0 -24px -20px; padding: 16px 24px 34px;
   }
   /* 패널 껍데기 제거 — .grp/.sec 가 .tkt-cols 의 grid item 이 된다 */
   .tkt-spine, .tkt-tl { display: contents; }
   .grp { display: block; }
-  .tkt-main { grid-area: main; align-self: auto; min-width: 0; margin: 0; padding: 0; }
+  /* 전체 폭 영역이라 위아래 2단과 경계가 흐릿하다 → 앞뒤 수평선으로 끊는다 */
+  .tkt-main { grid-area: main; align-self: auto; min-width: 0;
+    margin: 0 0 14px; padding: 16px 0 22px;
+    border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
   .grp-lineage { grid-area: lineage; }
   .grp-who     { grid-area: who; }
   .grp-rel     { grid-area: rel; }
