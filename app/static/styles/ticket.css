@@ -6,19 +6,22 @@
 
 /* ── 오버레이 + 다이얼로그 ── */
 .tkt-ov { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: flex-start; justify-content: center;
-  background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 40px 16px; overflow-y: auto; }
+  background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 40px 16px; overflow: hidden; }
 .tkt-dlg { position: relative; background: var(--panel); color: var(--text); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, .38); width: min(1240px, 100%);
   /* 상단 패딩은 0 — 타이틀바가 모서리까지 꽉 채운다 */
   padding: 0 24px 20px;
   /* 좌/우 패널은 음수 마진으로 다이얼로그 가장자리까지 채우는 '직각' 배경이라
-     라운드 모서리 밖으로 삐져나온다 → 여기서 잘라낸다. */
-  overflow: hidden; }
+     라운드 모서리 밖으로 삐져나온다 → overflow-x 로 잘라낸다.
+     세로는 auto — **다이얼로그가 스크롤 주체**여야 타이틀바 sticky 가 여기에 붙는다.
+     (오버레이가 스크롤 주체면 바가 화면 최상단까지 올라가 다이얼로그와 따로 논다) */
+  max-height: calc(100vh - 80px); overflow: hidden auto; }
 .tkt-dlg > :last-child { margin-bottom: 0; }
 /* ── 최상단 타이틀바 ──
    배경은 티켓 타입 색(--tc)의 옅은 틴트. 타입을 색으로 먼저 알리고, 텍스트로 다시 확인시킨다.
    다이얼로그 좌우 패딩(24px)을 음수 마진으로 상쇄해 모서리까지 꽉 채운다. */
-.tkt-bar { display: flex; align-items: center; gap: 12px; min-width: 0;
+.tkt-bar { position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 12px; min-width: 0;
   margin: 0 -24px; padding: 9px 12px 9px 18px;
   background: color-mix(in srgb, var(--tc, var(--ty-task)) 15%, var(--panel));
   border-bottom: 2px solid color-mix(in srgb, var(--tc, var(--ty-task)) 55%, transparent);
@@ -28,9 +31,9 @@
 .tb-type { flex: none; font-size: 10px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase;
   color: color-mix(in srgb, var(--tc, var(--ty-task)) 75%, var(--text)); }
 .tb-key { flex: none; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 12px; font-weight: 700; color: var(--text); }
+  font-size: 13px; font-weight: 700; color: var(--text); }
 /* 제목만 줄어든다 — 타입·번호·상태는 항상 읽혀야 한다 */
-.tb-sum { flex: 0 1 auto; min-width: 0; font-size: 13px; color: var(--text);
+.tb-sum { flex: 0 1 auto; min-width: 0; font-size: 15px; font-weight: 600; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; }
 .tb-st { flex: none; font-size: 11.5px; font-weight: 700; }
 .tb-st.st-todo { color: var(--st-todo); }
@@ -51,6 +54,7 @@
 /* 확장 = '넓게'만. 높이는 내용에 맞춘다.
    (stretch + min-height:100vh 는 내용이 짧을 때 아래가 빈 패널로 남는다) */
 .tkt-ov.expanded { padding: 20px; align-items: flex-start; }
+.tkt-ov.expanded .tkt-dlg { max-height: calc(100vh - 40px); }
 .tkt-dlg.expanded { width: 100%; max-width: 1500px; margin: 0 auto; }
 .tkt-load, .tkt-err { padding: 28px 6px; display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .tkt-err { color: var(--today); }
@@ -196,7 +200,8 @@
 }
 
 /* ── 헤더 ── (타입·번호·상태·Jira링크는 최상단 타이틀바로 옮겼다) */
-.tkt-summary { font-size: 19px; margin: 0 0 14px; line-height: 1.35; }
+/* 본문 첫 섹션 헤딩('티켓 정보') — 타이틀바 바로 아래라 위 여백을 없앤다 */
+.tkt-sec-t.first { margin-top: 0; }
 
 /* ── 메타 그리드 ── */
 .tkt-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 18px;

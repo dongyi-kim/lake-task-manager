@@ -359,7 +359,8 @@ export default {
           <div v-else-if="!v" class="tkt-load"><span class="spinner"></span> 불러오는 중…</div>
 
           <template v-else>
-          <h2 class="tkt-summary">{{ v.summary }}</h2>
+          <!-- 티켓 제목은 타이틀바가 담당한다. 이 자리는 아래 메타 영역의 헤딩 -->
+          <div class="tkt-sec-t first">티켓 정보</div>
 
           <div class="tkt-meta">
             <div><span class="k">우선순위</span><span class="val"
