@@ -32,9 +32,13 @@
 
 /* ── 좌측 세로 스파인(계보 + 형제) ── */
 .tkt-cols { display: flex; align-items: flex-start; gap: 0; min-width: 0; }
-.tkt-main { flex: 1; min-width: 0; }
+/* 가운데 본문도 좌/우 패널과 같은 눌린 배경(--bg) — 그 위에 설명/코멘트 '카드'가 흰색으로 뜬다.
+   컬럼 간 18px 간격은 spine/tl 의 margin 이 아니라 main 의 padding 으로 준다.
+   (margin 으로 두면 세 컬럼이 --bg 라 그 틈만 다이얼로그 흰색으로 드러나 흰 띠가 생긴다) */
+.tkt-main { flex: 1; min-width: 0; align-self: stretch;
+  margin: -20px 0; padding: 16px 18px; background: var(--bg); }
 .tkt-spine { flex: 0 0 264px; width: 264px; align-self: stretch; min-width: 0;
-  margin: -20px 18px -20px -24px; padding: 16px 14px 16px 24px;
+  margin: -20px 0 -20px -24px; padding: 16px 14px 16px 24px;
   border-right: 1px solid var(--border); background: var(--bg); }
 /* 마이크로 라벨 — 9.5px 대문자 트래킹(목업 문법) */
 .tkt-mlabel { font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
@@ -107,11 +111,13 @@
   padding: 0 4px; margin-right: 4px; white-space: nowrap; }
 /* 우측 패널 — 타임라인 */
 .tkt-tl { flex: 0 0 220px; width: 220px; align-self: stretch; min-width: 0;
-  margin: -20px -24px -20px 18px; padding: 16px 24px 16px 14px;
+  margin: -20px -24px -20px 0; padding: 16px 24px 16px 14px;
   border-left: 1px solid var(--border); background: var(--bg); }
 /* 좁은 화면 — 좌/우 패널을 위아래로 펼쳐 가로 3단 해제 */
 @media (max-width: 1150px) {
   .tkt-cols { flex-direction: column; }
+  /* 세로 1단에서는 main 의 가로 음수마진/세로 상쇄를 해제하고 폭만 가장자리까지 */
+  .tkt-main { align-self: auto; margin: 0 -24px; padding: 14px 24px; }
   .tkt-spine { flex: none; width: auto; align-self: auto; margin: -20px -24px 14px; padding: 14px 24px;
     border-right: 0; border-bottom: 1px solid var(--border); }
   .tkt-tl { flex: none; width: auto; align-self: auto; margin: 14px -24px -20px; padding: 14px 24px;
@@ -156,7 +162,8 @@
 .tkt-desc { font-size: 13.5px; line-height: 1.65; word-break: break-word; }
 /* 설명 영역을 카드(흰 배경)로 분리해 다른 UI와 구분 */
 /* 다이얼로그 중앙(--panel)과 같은 색이면 영역 구분이 안 된다 → 한 단계 눌러서(inset surface) */
-.tkt-desc-box { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+/* 내용 카드는 흰색(--panel) — 눌린 본문 배경(--bg) 위로 떠 보이게 */
+.tkt-desc-box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
 .tkt-desc > :last-child { margin-bottom: 0; }        /* 카드/코멘트 하단 여백 낭비 방지 */
 .tkt-desc p { margin: 0 0 6px; }                     /* 문단 하단 간격 컴팩트 */
 /* 의도적 빈 문단 — 존재는 유지하되 작은 간격만(실 Jira <p>&nbsp;</p> 가 3줄 먹던 문제 해소) */
@@ -292,7 +299,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 
 /* ── 코멘트 ── */
 .tkt-comments { display: flex; flex-direction: column; gap: 8px; }
-.tkt-cmt { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel-2); }
+.tkt-cmt { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel); }
 .tkt-cmt-h { display: flex; gap: 7px; align-items: center; font-size: 12.5px; margin-bottom: 3px; }
 .tkt-cmt-h .muted { font-size: 11.5px; }
 /* 코멘트는 이제 HTML(<p>/<br>) 렌더 → white-space:normal. (pre-wrap 이면 태그 사이 개행이
