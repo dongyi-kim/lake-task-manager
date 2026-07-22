@@ -6,7 +6,7 @@ PyYAML>=6.0
 
 # local(fake) 서버 = 외부 오픈소스 mock (이 프로젝트 world 주입). https://pypi.org/project/jira820
 # 0.5.0+: 멀티프로젝트(이슈별 project) + 통합검색(JQL text~ / Confluence CQL) 필요.
-jira820>=0.6.0
+jira820>=0.7.0
 
 # Prod (corporate SSO) path additionally needs Playwright:
 #   pip install -r requirements-sso.txt   (then `playwright install chromium`)

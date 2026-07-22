@@ -280,3 +280,21 @@ def test_relative_confluence_url_is_absolutized():
     assert _abs_url("#a", B) == "#a"
     # base 미설정이면 그대로(설정 누락을 조용히 감추지 않는다)
     assert _abs_url("/display/DL/문서", "") == "/display/DL/문서"
+
+
+def test_documents_merge_remote_links_and_dedupe():
+    """관련 문서 = 본문 언급 + Jira remote link, URL 기준 중복 제거.
+
+    remote link 는 티켓뿐 아니라 Confluence 문서·Web link 도 가리킨다.
+    본문에 이미 언급된 Confluence 문서가 remote link 로도 걸려 있으면 한 번만 나와야 하고,
+    remote link 로만 있는 Web link 는 새로 추가돼야 한다.
+    """
+    from app.world import get_world
+    w = get_world()
+    key = next(k for k, i in w.issues.items() if i.get("remotelinks"))
+    docs = _client().ticket_documents(key)
+    urls = [d["url"] for d in docs]
+    # 같은 URL 이 두 번 나오지 않는다
+    assert len(urls) == len(set(urls))
+    # Web link(비 Confluence)도 포함된다
+    assert any("wiki.corp.example" in u for u in urls)

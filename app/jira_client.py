@@ -1063,8 +1063,32 @@ class JiraClient:
             return out
         return self._swr(f"attachments:{self.env}:{key}", build)
 
+    def _remote_links(self, key):
+        """이슈의 원격 링크 — [{title, url}]. 실 Jira: /issue/{key}/remotelink.
+        Confluence 문서 + 외부 Web link 가 섞여 온다. `remotelinks:{env}:{key}` 로 캐시."""
+        def do():
+            try:
+                data = self.provider.get_json(f"/rest/api/2/issue/{key}/remotelink")
+            except SessionExpired:
+                raise
+            except Exception:
+                return []
+            out = []
+            for r in (data or []):
+                obj = r.get("object") or {}
+                url = (obj.get("url") or "").strip()
+                if url:
+                    out.append({"title": (obj.get("title") or "").strip(), "url": url})
+            return out
+        return self.cache.get_or_set(f"remotelinks:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+
     def ticket_documents(self, key, limit=20):
-        """관련 문서 — 설명·코멘트에서 **언급된 Confluence 문서**. [{title,url}] (URL 기준 중복 제거)."""
+        """관련 문서 — 두 소스를 합친다(URL 기준 중복 제거):
+          (1) 설명·코멘트에서 **언급된 Confluence 문서**  ← 본문 앵커 파싱
+          (2) Jira **remote link**(Confluence 문서 · Web link)  ← /remotelink
+
+        Web link 는 Confluence 가 아니어도 포함한다(사용자가 이슈에 건 '문서/링크'다).
+        본문 언급과 remote link 가 같은 문서를 가리키면 한 번만 나온다."""
         def build():
             htmls = []
             try:
@@ -1079,18 +1103,28 @@ class JiraClient:
             except Exception:
                 pass
             out, seen = [], set()
+
+            def add(u, title, is_conf):
+                u = _abs_url(u, self.s.confluence_base)     # 상대경로면 절대화(안 그러면 404)
+                # Confluence 는 문서 정규화 키로, Web link 는 URL 로 중복 판정
+                ck = _conf_key(u) if is_conf else ("web:" + u.rstrip("/").lower())
+                if ck in seen:
+                    return
+                seen.add(ck)
+                out.append({"title": title, "url": u})
+
+            # (1) 본문 언급 Confluence 문서
             for h in htmls:
                 for href, text in _ANCHOR_RE.findall(h or ""):
                     u = unescape(href)
-                    if not _CONF_RE.search(u):
-                        continue
-                    ck = _conf_key(u)          # URL 이 달라도 같은 문서면 한 번만
-                    if ck in seen:
-                        continue
-                    seen.add(ck)
-                    # 상대경로면 절대화 — 안 그러면 앱(localhost) 기준으로 열려 404
-                    out.append({"title": _conf_title(u, text),
-                                "url": _abs_url(u, self.s.confluence_base)})
+                    if _CONF_RE.search(u):
+                        add(u, _conf_title(u, text), True)
+            # (2) Jira remote link — Confluence 든 Web 이든 포함(같은 문서면 위와 중복 제거됨)
+            for r in self._remote_links(key):
+                u = r["url"]
+                is_conf = bool(_CONF_RE.search(u))
+                title = r["title"] or (_conf_title(u) if is_conf else u)
+                add(u, title, is_conf)
             return out[:limit]
         return self._swr(f"documents:{self.env}:{key}", build)
 

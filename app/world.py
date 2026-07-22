@@ -245,7 +245,7 @@ class World:
             "created": created, "updated": updated, "resolved": resolved, "due": due,
             "tcreated": _tm(), "tresolved": _tm(), "tupdated": _tm(),
             "comments": comments, "worklog": worklog, "subtasks": [], "changelog": changelog,
-            "links": [],
+            "links": [], "remotelinks": [],
         }
         # 실무처럼 **Sub-Task 는 설명을 안 쓰는 경우가 흔하다** — 1/3 은 빈 설명으로.
         # (다이얼로그의 '상위 티켓 설명'이 겨냥하는 케이스)
@@ -427,7 +427,7 @@ class World:
             "created": d0, "updated": self.today, "resolved": None, "due": None,
             "tcreated": "09:00", "tupdated": "18:00", "tresolved": None,
             "comments": [], "worklog": [], "subtasks": [], "changelog": [],
-            "links": [], "attachments": [],
+            "links": [], "attachments": [], "remotelinks": [],
         }
         it.update(over)
         self.issues[key] = it
@@ -496,7 +496,14 @@ class World:
                      "* [설계 노트|" + conf + "/spaces/DL/pages/42013/설계+노트]\n"
                      "* [제목이 바뀐 링크|" + conf + "/spaces/DL/pages/42013/changed-title?src=nav]\n"
                      "* [구형 URL|" + conf + "/pages/viewpage.action?pageId=42013#s1]\n"
-                     "display 형태: [운영 가이드|" + conf + "/display/DL/운영+가이드]"))
+                     "display 형태: [운영 가이드|" + conf + "/display/DL/운영+가이드]"),
+                 # Jira remote link — 본문 언급과 별개 경로. '설계 노트'는 본문에도 있어 중복 제거 대상,
+                 # Web link 는 새로 추가돼야 한다.
+                 remotelinks=[
+                     {"url": conf + "/spaces/DL/pages/42013/설계+노트", "title": "설계 노트(remote)",
+                      "application": {"type": "com.atlassian.confluence", "name": "Confluence"}},
+                     {"url": "https://wiki.corp.example/runbook/deploy", "title": "배포 런북 (Web)"},
+                 ])
 
         # 6) 첨부파일
         fx6 = self._fx("DL-9006", "Task", "[UI] 첨부파일 — 이미지·문서·큰 용량",
