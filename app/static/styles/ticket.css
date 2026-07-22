@@ -531,7 +531,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* CommentEditor (Toast UI 래퍼) */
 .cmt-editor { margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
   background: var(--panel); }
-.cmt-ed-host { min-height: 230px; }
+.cmt-ed-host { max-height: 420px; overflow: auto; }
+/* Milkdown Crepe 본문 높이 — 내용 따라 늘되 최소 높이 확보 */
+.cmt-ed-host .milkdown { min-height: 200px; }
+.cmt-ed-host .milkdown .ProseMirror { padding: 12px 14px; }
 .cmt-ed-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
   border-top: 1px solid var(--border); background: var(--panel-2); }
 .cmt-ed-msg { font-size: 12px; color: #d1425c; margin-right: auto; }
@@ -544,5 +547,3 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-ed-btn.primary:hover { filter: brightness(1.06); }
 .cmt-ed-btn:disabled { opacity: .55; cursor: default; }
 .cmt-ed-err { padding: 14px; font-size: 12.5px; color: #d1425c; display: flex; gap: 10px; align-items: center; }
-/* Toast UI 가 앱 폰트를 따르도록(에디터 CSS 는 자체 폰트) */
-.cmt-ed-host .toastui-editor-defaultUI { border: 0; }
