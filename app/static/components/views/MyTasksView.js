@@ -259,6 +259,7 @@ export default {
     <div v-else-if="view === 'time'" class="mt-list">
       <div v-for="b in buckets" :key="b.k" class="mt-bucket">
         <div class="mt-bh" :class="b.k"><span class="mt-bdot"></span>{{ b.label }}<b>{{ b.rows.length }}</b></div>
+        <div class="mt-grid">
         <div v-for="a in b.rows" :key="a.key" class="mt-row tkt" :data-key="a.key" :class="{ done: a.statusCategory === 'done' }">
           <span class="mt-pri" :class="a.priBand" :title="'우선순위: ' + a.pri"></span>
           <span class="mt-dot" :class="'st-' + a.statusCategory"></span>
@@ -280,11 +281,12 @@ export default {
             <span class="mt-due" :class="dueBand(a.dueDays)">{{ dueLabel(a.dueDays) || '—' }}</span>
           </span>
         </div>
+        </div>
       </div>
     </div>
 
     <!-- ── 부모 클러스터 ── -->
-    <div v-else-if="view === 'cluster'" class="mt-list">
+    <div v-else-if="view === 'cluster'" class="mt-list mt-grid cards">
       <div v-for="g in visibleGroups" :key="g.key" class="mt-cl"
            :class="{ urgent: urgent(g), notmine: !g.mine, solo: g.standalone }">
         <!-- 하위가 없는 내 Task 는 부모 헤더가 곧 그 일감이다 — 헤더+행으로 두 번 그리지 않는다 -->
@@ -351,6 +353,7 @@ export default {
           <span class="mt-epn">{{ s.groups.length }}</span>
         </div>
         <template v-if="epicOpen(s.key)">
+          <div class="mt-grid cards">
           <div v-for="g in s.groups" :key="g.key" class="mt-hg" :class="{ notmine: !g.mine }">
             <div class="mt-hgh tkt" :data-key="g.key">
               <span class="mt-key">{{ g.key }}</span>
@@ -382,6 +385,7 @@ export default {
                 </div>
               </div>
             </div>
+          </div>
           </div>
         </template>
       </div>
