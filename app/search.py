@@ -26,10 +26,24 @@ def _q_escape(q):
     return q.replace("\\", "\\\\").replace('"', '\\"')
 
 
+from html import escape as _esc
+
+
 def _clean_excerpt(s):
-    s = re.sub(r"@@@(?:end)?hl@@@", "", s or "")          # Confluence 하이라이트 마커 제거
-    s = re.sub(r"\s+", " ", s).strip()
-    return s[:200]
+    """검색 스니펫 → 안전한 강조 HTML.
+    Confluence 하이라이트 마커(@@@hl@@@…@@@endhl@@@)를 **검색어 강조**로 살린다.
+    평문을 먼저 escape 하고 마커만 <mark> 로 바꾸므로 XSS 안전(프론트는 v-html 로 렌더)."""
+    s = (s or "")
+    s = re.sub(r"\s+", " ", s).strip()[:220]
+    # 자른 뒤 짝이 안 맞는 마커 제거(열림만/닫힘만 남는 경우)
+    if s.count("@@@hl@@@") != s.count("@@@endhl@@@"):
+        s = s.replace("@@@hl@@@", "").replace("@@@endhl@@@", "")
+    parts = s.split("@@@hl@@@")
+    out = _esc(parts[0])
+    for seg in parts[1:]:
+        a, _, b = seg.partition("@@@endhl@@@")
+        out += "<mark>" + _esc(a) + "</mark>" + _esc(b)
+    return out
 
 
 # 검색어가 티켓을 직접 가리키는 형태인지 — "DL-1234"(키) 또는 "1234"(번호만).

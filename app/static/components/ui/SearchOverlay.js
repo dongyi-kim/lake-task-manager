@@ -128,11 +128,11 @@ export default {
                   <span class="sr-title">{{ it.title }}</span>
                   <span class="sr-path" :title="(it.path || []).slice().reverse().join(' ‹ ')">
                     <template v-for="(seg, j) in confPath(it.path)" :key="j"
-                      ><span v-if="j" class="sr-sep">‹</span><span class="sr-seg" :class="{ ell: seg === '…' }">{{ seg }}</span
+                      ><span v-if="j" class="sr-psep">‹</span><span class="sr-pseg" :class="{ ell: seg === '…' }">{{ seg }}</span
                     ></template>
                   </span>
                 </div>
-                <div v-if="it.excerpt" class="sr-r2">{{ it.excerpt }}</div>
+                <div v-if="it.excerpt" class="sr-r2" v-html="it.excerpt"></div>
               </div>
             </div>
             <div v-if="!cnt('confluence') && !res.confluence.error" class="sr-none">결과 없음</div>

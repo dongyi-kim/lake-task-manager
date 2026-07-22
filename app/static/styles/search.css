@@ -85,10 +85,14 @@
 .sr-path { flex: 0 1 auto; min-width: 0; margin-left: auto; padding-left: 12px;
   display: flex; align-items: baseline; gap: 4px; justify-content: flex-end;
   overflow: hidden; white-space: nowrap; color: var(--muted-2); font-size: 10.5px; }
-.sr-path .sr-seg { overflow: hidden; text-overflow: ellipsis; }
-.sr-path .sr-seg:last-child { flex: none; font-weight: 600; }   /* 스페이스(루트)는 강조 */
-.sr-path .sr-seg.ell { flex: none; }
-.sr-path .sr-sep { flex: none; opacity: .55; margin: 0 3px; }
+/* 경로 세그먼트 — 뱃지 아님, 그냥 텍스트(스코프 토글의 .sr-seg 와 이름 겹치지 않게 .sr-pseg) */
+.sr-path .sr-pseg { overflow: hidden; text-overflow: ellipsis; }
+.sr-path .sr-pseg:last-child { flex: none; color: var(--muted); }   /* 스페이스(루트) 살짝 진하게 */
+.sr-path .sr-pseg.ell { flex: none; }
+.sr-path .sr-psep { flex: none; opacity: .5; margin: 0 3px; }
 /* 미리보기 — 제목과 확실히 구분: 한 단계 들여쓰고 눌린 색 */
 .sr-r2 { margin-top: 3px; padding-left: 20px; color: var(--muted); font-size: 12px; line-height: 1.4;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 검색어 강조 — 스니펫에서 매칭 부분(배경 없이 색+볼드로, 뱃지 느낌 안 나게) */
+.sr-r2 mark { background: none; color: var(--accent); font-weight: 700; }

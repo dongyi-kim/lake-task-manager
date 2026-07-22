@@ -157,3 +157,16 @@ def test_confluence_result_has_path():
     deep = [it for it in items if len(it["path"]) >= 2]
     assert deep, "폴더 계층이 있는 문서가 없음"
     assert all(len(it["path"]) >= 1 for it in items)
+
+
+def test_excerpt_highlight_is_safe_html():
+    """검색 스니펫의 하이라이트를 <mark> 로 살리되 XSS 안전(평문 escape 후 마커만 태그화)."""
+    from app.search import _clean_excerpt
+    assert _clean_excerpt("앞 @@@hl@@@쿼리@@@endhl@@@ 뒤") == "앞 <mark>쿼리</mark> 뒤"
+    # 스크립트 주입은 escape
+    out = _clean_excerpt("@@@hl@@@<script>x</script>@@@endhl@@@")
+    assert "<script>" not in out and "&lt;script&gt;" in out and "<mark>" in out
+    # 잘려서 짝이 안 맞으면 마커 제거(깨진 태그 방지)
+    assert "@@@" not in _clean_excerpt("잘린 @@@hl@@@쿼리")
+    # 마커 없는 평문도 escape
+    assert _clean_excerpt("<b>x</b>") == "&lt;b&gt;x&lt;/b&gt;"
