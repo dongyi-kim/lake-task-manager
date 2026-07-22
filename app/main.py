@@ -31,6 +31,14 @@ from .wikihtml import html_to_wiki
 class _CommentBody(BaseModel):
     html: str = ""
 
+
+class _RecentBody(BaseModel):
+    """최근 열어본 항목 기록 — 검색창을 빈 상태로 열었을 때 보여줄 목록."""
+    url: str
+    kind: str = "web"                 # jira | confluence | web
+    title: str = ""
+    meta: str = ""                    # 부제(티켓 상태·스페이스명·도메인 등)
+
 app = FastAPI(title="Lake Task Manager")
 
 _settings = get_settings()
@@ -239,6 +247,27 @@ def api_issue(key: str):
 def api_issue_comments(key: str, limit: int = 100):
     """범용 단일 티켓 코멘트 리소스. 프론트가 최신순/오래된순으로 정렬하므로 넉넉히 준다."""
     return JSONResponse(_client.issue_comments(key, limit))
+
+
+@app.get("/api/recent")
+def api_recent(limit: int = 20, kind: str = ""):
+    """최근 열어본 Jira/Confluence/웹 링크 — 검색창을 빈 상태로 열었을 때의 기본 목록.
+    **서버에 둔다**: 백엔드는 상주하고 사용자는 앱 창·크롬 등 여러 브라우저로 같은 백엔드를
+    연다(브라우저별로 목록이 갈리면 안 된다). 브라우저 히스토리는 웹페이지가 못 읽으므로
+    앱에서 연 것을 앱이 기록한다."""
+    return JSONResponse(_cache.recent_items(max(1, min(limit, 100)), kind or None))
+
+
+@app.post("/api/recent")
+def api_recent_add(body: _RecentBody):
+    _cache.touch_recent(body.url, body.kind, body.title, body.meta)
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/recent")
+def api_recent_clear(url: str = ""):
+    _cache.forget_recent(url or None)
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/search")

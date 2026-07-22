@@ -7,6 +7,8 @@ import { TYPE_BG, typeLabel, sigColor } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
+import SettingsMenu from "./SettingsMenu.js";
+import { recordOpen } from "../../lib/recent.js";
 import { highlightIn as hljsHighlight, ensureHljsTheme } from "../../lib/hljs.js";
 import { loadTiptap } from "../../lib/tiptap.js";
 
@@ -35,7 +37,7 @@ function descEmpty(html) {
 
 export default {
   name: "TicketDialog",
-  components: { TypeBadge, Avatar, CommentEditor },
+  components: { TypeBadge, Avatar, CommentEditor, SettingsMenu },
   // mode: dialog(모달, 기본) | page(새 창 전용 단독 페이지 — 오버레이·닫기 없음)
   props: { keyId: { type: String, required: true },
            mode: { type: String, default: "dialog" },
@@ -145,6 +147,12 @@ export default {
       try {
         const v = await api.ticket(key);
         if (fresh()) this.v = v;
+        // 검색창을 빈 상태로 열었을 때 보여줄 '최근 열어본 항목'에 남긴다.
+        if (fresh() && v) {
+          recordOpen({ url: v.url || ("/browse/" + key), kind: "jira",
+                       title: key + " " + (v.summary || ""),
+                       meta: [v.type, v.status].filter(Boolean).join(" · ") });
+        }
       } catch (e) {
         if (fresh()) {
           this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + key : (e.message || "불러오기 실패");
@@ -249,6 +257,19 @@ export default {
     statusClass(cat) { return "st-" + (cat || "todo"); },
     // 확대 버튼(.zoom-btn)만 반응 — 표는 드래그 복사가 가능해야 하므로 내용 클릭으로는 확대 안 함.
     onContentClick(e) {
+      // 본문의 문서/웹 링크를 열면 '최근 열어본 항목'에 남긴다(Jira 뱃지는 다이얼로그가 기록).
+      const a = e.target.closest && e.target.closest("a[href]");
+      if (a) {
+        const href = a.getAttribute("href") || "";
+        if (/^https?:/i.test(href)) {
+          let host = "";
+          try { host = new URL(href).host; } catch (_) { /* noop */ }
+          recordOpen({ url: href,
+                       kind: a.classList.contains("conf-link") ? "confluence" : "web",
+                       title: (a.getAttribute("title") || a.textContent || href).trim(),
+                       meta: host });
+        }
+      }
       const btn = e.target.closest && e.target.closest(".zoom-btn");
       if (!btn) return;
       e.preventDefault();
@@ -360,10 +381,9 @@ export default {
             </button>
             <a v-if="v && v.url" class="tb-btn" :href="v.url" target="_blank" rel="noopener"
                title="Jira에서 열기">Jira에서 열기 ↗</a>
-            <button v-if="isPage" class="theme-btn" @click="$emit('toggle-theme')"
-                    :title="theme === 'dark' ? '라이트 모드로' : '다크 모드로'">
-              <span v-if="theme === 'dark'">☀ Light</span><span v-else>🌙 Dark</span>
-            </button>
+            <!-- 티켓 단독 페이지도 Home 과 같은 우상단 구성 — 테마 토글은 설정 메뉴 안에 있다
+                 (SSO 상태·Dev Tools·rev 도 여기서 함께 본다). -->
+            <SettingsMenu v-if="isPage" :theme="theme" @toggle-theme="$emit('toggle-theme')" />
             <!-- data-ext: 같은 호스트지만 앱 창(Chromium)이 아니라 시스템 기본 브라우저로.
                  run.py 의 외부링크 훅이 이 속성을 보고 넘긴다. -->
             <a v-if="!isPage" class="tb-btn ico" :href="pageHref" target="_blank" rel="noopener"

@@ -72,6 +72,17 @@
 .sr-pageic { -webkit-mask: var(--conf-ic) center/contain no-repeat; mask: var(--conf-ic) center/contain no-repeat; }
 .sr-repoic { border-radius: 3px; background: var(--muted); -webkit-mask: none; mask: none; opacity: .5; }
 
+/* 최근 열어본 항목 — 검색어가 없을 때의 기본 목록 */
+.sr-src.recent { color: var(--muted); background: var(--panel-2); }
+.sr-webic { width: 11px; height: 11px; flex: none; border-radius: 50%;
+  border: 2px solid var(--muted); opacity: .55; }
+.sr-recent .sr-meta { overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+/* 지우기 버튼 — 평소엔 숨고 그 줄에 커서가 올 때만 보인다(목록이 시끄러워지지 않게) */
+.sr-forget { flex: none; margin-left: 6px; visibility: hidden; border: 0; background: none;
+  color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; padding: 3px 4px; border-radius: 5px; }
+.sr-recent:hover .sr-forget, .sr-recent.active .sr-forget { visibility: visible; }
+.sr-forget:hover { color: var(--today); background: var(--panel); }
+
 /* Confluence 결과 — 2줄.
    1행: [아이콘 제목] ────────── [경로(우측정렬)]
    2행: 미리보기(눌린 색·작은 크기로 제목과 구분) */

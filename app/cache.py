@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS snapshot (
     taken_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_snapshot_ref ON snapshot(entity, ref, taken_at);
+CREATE TABLE IF NOT EXISTS recent (
+    url       TEXT PRIMARY KEY,      -- 같은 대상은 한 줄만(다시 열면 시각만 갱신)
+    kind      TEXT NOT NULL,         -- jira | confluence | web
+    title     TEXT NOT NULL,
+    meta      TEXT NOT NULL DEFAULT '',
+    opened_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_recent_at ON recent(opened_at DESC);
 """
 
 
@@ -123,3 +131,45 @@ class Cache:
                 (entity, ref, limit),
             ).fetchall()
         return [{"metric": json.loads(m), "takenAt": t} for m, t in rows]
+
+    # ── 최근 열어본 항목 ──
+    # 왜 서버에 두나: 이 백엔드는 상주하고 사용자는 앱 창·크롬·엣지 등 **여러 브라우저**로 같은
+    # 백엔드를 연다. localStorage 에 두면 브라우저마다 목록이 갈린다. (브라우저 히스토리·캐시는
+    # 웹페이지가 읽을 수 없으므로, 우리가 연 것을 우리가 기록하는 수밖에 없다.)
+    RECENT_KEEP = 200                       # 이 개수만 남기고 오래된 것부터 버린다
+
+    def touch_recent(self, url, kind, title, meta=""):
+        if not url:
+            return
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO recent(url, kind, title, meta, opened_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(url) DO UPDATE SET opened_at=excluded.opened_at, "
+                "title=excluded.title, meta=excluded.meta, kind=excluded.kind",
+                (url, kind or "web", title or url, meta or "", time.time()),
+            )
+            self._conn.execute(
+                "DELETE FROM recent WHERE url NOT IN "
+                "(SELECT url FROM recent ORDER BY opened_at DESC LIMIT ?)", (self.RECENT_KEEP,))
+            self._conn.commit()
+
+    def recent_items(self, limit=20, kind=None):
+        sql = "SELECT url, kind, title, meta, opened_at FROM recent"
+        args = []
+        if kind:
+            sql += " WHERE kind=?"
+            args.append(kind)
+        sql += " ORDER BY opened_at DESC LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [{"url": u, "kind": k, "title": t, "meta": m, "openedAt": at}
+                for u, k, t, m, at in rows]
+
+    def forget_recent(self, url=None):
+        with self._lock:
+            if url:
+                self._conn.execute("DELETE FROM recent WHERE url=?", (url,))
+            else:
+                self._conn.execute("DELETE FROM recent")
+            self._conn.commit()

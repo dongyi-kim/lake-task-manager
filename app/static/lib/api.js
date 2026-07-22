@@ -56,6 +56,12 @@ export const api = {
   ticketDocuments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/documents"),
   ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
 
+  // ── 최근 열어본 항목(서버 저장 — 브라우저가 달라도 같은 목록) ──
+  recent: (limit) => req("/api/recent" + (limit ? "?limit=" + limit : "")),   // memo 제외(자주 바뀜)
+  recentAdd: (item) => jsonReq("/api/recent", "POST", item),
+  recentClear: (url) => req("/api/recent" + (url ? "?url=" + encodeURIComponent(url) : ""),
+                            { method: "DELETE" }),
+
   // ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 이미지 첨부. 성공 후 그 티켓 memo 무효화 ──
   me: () => get("/api/me"),                                             // 본인 댓글 판정
   mentionUsers: (q, key) => req("/api/mention/users?q=" + encodeURIComponent(q || "")   // @사람 자동완성
