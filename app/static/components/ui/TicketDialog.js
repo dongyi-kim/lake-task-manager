@@ -6,6 +6,7 @@ import { ymd, ymdhm, ts, esc } from "../../lib/fmt.js";
 import { TYPE_BG, typeLabel } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
+import CommentEditor from "./CommentEditor.js";
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
 function confTitleFromUrl(u) {
@@ -32,7 +33,7 @@ function descEmpty(html) {
 
 export default {
   name: "TicketDialog",
-  components: { TypeBadge, Avatar },
+  components: { TypeBadge, Avatar, CommentEditor },
   // mode: dialog(모달, 기본) | page(새 창 전용 단독 페이지 — 오버레이·닫기 없음)
   props: { keyId: { type: String, required: true },
            mode: { type: String, default: "dialog" },
@@ -40,6 +41,7 @@ export default {
   emits: ["close", "search", "toggle-theme"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [], sibOpen: true,
                     pdesc: null, pdescOpen: false, pdescErr: "",
+                    me: null, composing: false, editingId: null, editInitial: "", editErr: "",
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
@@ -53,6 +55,7 @@ export default {
   unmounted() { window.removeEventListener("keydown", this._onKey); },
   computed: {
     today() { return ymd(new Date().toISOString()); },   // 기한 초과 판정용
+    tk() { return (this.v && this.v.key) || this.keyId; },   // 쓰기 대상 티켓 키
     // 스파인 계보 = [조상…, 현재]. 조상만 도착해도 그릴 수 있어야 하므로 **v 를 기다리지 않는다**
     // (현재 노드는 keyId 로 먼저 그리고, v 가 오면 제목·타입이 채워진다).
     spine() {
@@ -112,7 +115,9 @@ export default {
       this.ancestors = []; this.siblings = []; this.timeline = [];
       this.children = []; this.related = []; this.atts = []; this.docs = [];
       this.pdesc = null; this.pdescOpen = false; this.pdescErr = "";
+      this.composing = false; this.editingId = null; this.editInitial = ""; this.editErr = "";
 
+      if (!this.me) api.me().then((m) => { this.me = m || {}; }).catch(() => { this.me = {}; });
       api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; })
         .catch(() => { if (fresh()) this.comments = []; });
       api.ticketAncestors(key).then((a) => { if (fresh()) this.ancestors = a || []; }).catch(() => {});
@@ -140,6 +145,35 @@ export default {
       if (n < 1024) return n + " B";
       if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
       return (n / 1024 / 1024).toFixed(1) + " MB";
+    },
+    // ── 코멘트 작성/수정/삭제 (첫 쓰기 기능) ──
+    canEdit(c) { return !!(this.me && this.me.id && c && c.authorId === this.me.id); },
+    reloadComments() {
+      const key = this.keyId;
+      return api.ticketComments(key)
+        .then((c) => { if (this.keyId === key) this.comments = c || []; })
+        .catch(() => {});
+    },
+    startCompose() { this.editingId = null; this.editErr = ""; this.composing = true; },
+    cancelCompose() { this.composing = false; },
+    submitNew(md) { return api.commentCreate(this.tk, md); },     // CommentEditor 가 await
+    onComposed() { this.composing = false; this.reloadComments(); },
+    async startEdit(c) {
+      // 원본(markdown)을 먼저 받아온 뒤 editingId 를 켠다 — 에디터는 마운트 시 initialValue 만 읽으므로.
+      this.composing = false; this.editErr = "";
+      try {
+        const src = await api.commentSource(this.tk, c.id);
+        this.editInitial = (src && src.markdown) || "";
+        this.editingId = c.id;
+      } catch (e) { this.editErr = "댓글 원본을 불러오지 못했습니다."; }
+    },
+    cancelEdit() { this.editingId = null; this.editInitial = ""; },
+    submitEdit(c, md) { return api.commentUpdate(this.tk, c.id, md); },
+    onEdited() { this.editingId = null; this.editInitial = ""; this.reloadComments(); },
+    async delComment(c) {
+      if (!window.confirm("이 댓글을 삭제할까요?")) return;
+      try { await api.commentDelete(this.tk, c.id); await this.reloadComments(); }
+      catch (e) { window.alert("삭제 실패: " + ((e && e.message) || e)); }
     },
     // 상위 티켓 설명 — 기존 /api/ticket 응답을 그대로 재사용(정화된 HTML + 프론트 memo 캐시)
     async toggleParentDesc() {
@@ -499,13 +533,33 @@ export default {
           <template v-if="!err">
             <div class="tkt-sec-t">코멘트<span v-if="comments"> ({{ comments.length }})</span></div>
             <div v-if="!comments" class="loading">코멘트 불러오는 중…</div>
-            <div v-else-if="!comments.length" class="muted">코멘트가 없습니다.</div>
-            <div v-else class="tkt-comments" @click="onContentClick">
-              <div v-for="(c, i) in comments" :key="i" class="tkt-cmt">
-                <div class="tkt-cmt-h"><Avatar :user="c.authorId" :name="c.author" :size="20" /><b>{{ c.author }}</b><span class="muted">{{ fdt(c.date) }}</span></div>
-                <div class="tkt-cmt-b tkt-desc" v-html="c.html"></div>
+            <template v-else>
+              <div v-if="!comments.length" class="muted">코멘트가 없습니다.</div>
+              <div v-else class="tkt-comments">
+                <div v-for="(c, i) in comments" :key="c.id || i" class="tkt-cmt">
+                  <div class="tkt-cmt-h">
+                    <Avatar :user="c.authorId" :name="c.author" :size="20" /><b>{{ c.author }}</b>
+                    <span class="muted">{{ fdt(c.date) }}</span>
+                    <span v-if="c.updated && c.updated !== c.date" class="muted tkt-cmt-edited">· 수정됨</span>
+                    <span v-if="canEdit(c) && editingId !== c.id" class="tkt-cmt-acts">
+                      <button class="tkt-cmt-act" @click="startEdit(c)">수정</button>
+                      <button class="tkt-cmt-act" @click="delComment(c)">삭제</button>
+                    </span>
+                  </div>
+                  <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :initial="editInitial"
+                    submit-label="저장" :submit-fn="(md) => submitEdit(c, md)"
+                    @submitted="onEdited" @cancel="cancelEdit" />
+                  <div v-else class="tkt-cmt-b tkt-desc" @click="onContentClick" v-html="c.html"></div>
+                </div>
               </div>
-            </div>
+              <!-- 작성 -->
+              <div class="tkt-cmt-compose" v-if="me && me.id">
+                <button v-if="!composing" class="tkt-cmt-addbtn" @click="startCompose">＋ 댓글 달기</button>
+                <CommentEditor v-else :ticket-key="tk" submit-label="등록" :submit-fn="submitNew"
+                  @submitted="onComposed" @cancel="cancelCompose" />
+              </div>
+              <div v-if="editErr" class="tkt-cmt-err">{{ editErr }}</div>
+            </template>
           </template>
           </div><!-- /.tkt-main -->
 

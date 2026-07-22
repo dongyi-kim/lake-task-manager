@@ -2,7 +2,8 @@
 
 import requests
 
-from .base import AuthProvider, SessionExpired, UpstreamError, WRITE_HEADERS, XSRF_HEADER
+from .base import (AuthProvider, MULTIPART_HEADERS, SessionExpired, UpstreamError,
+                   WRITE_HEADERS, XSRF_HEADER)
 
 
 class BasicAuthProvider(AuthProvider):
@@ -50,6 +51,19 @@ class BasicAuthProvider(AuthProvider):
 
     def delete(self, path, params=None):
         return self._write("delete", path, None, params, want_json=False)
+
+    def post_multipart(self, path, filename, data, content_type=None, field="file", params=None):
+        url = path if path.startswith(("http://", "https://")) else self.base + path
+        files = {field: (filename, data, content_type or "application/octet-stream")}
+        r = self.session.post(url, files=files, params=params, timeout=60, headers=MULTIPART_HEADERS)
+        if r.status_code == 401:
+            raise SessionExpired(f"HTTP 401 on {path}")
+        if r.status_code >= 400:
+            raise UpstreamError(r.status_code, path, r.text)
+        try:
+            return r.json()
+        except Exception:
+            return {}
 
     def get_text(self, path, params=None):
         return self._get(path, params).text

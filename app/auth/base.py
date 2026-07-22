@@ -30,6 +30,9 @@ class background_upstream:
 # 이 헤더는 세 제품 모두 동일하게 통한다(제품별 분기 불필요).
 XSRF_HEADER = {"X-Atlassian-Token": "no-check"}
 WRITE_HEADERS = {**XSRF_HEADER, "Content-Type": "application/json", "Accept": "application/json"}
+# 멀티파트 업로드(첨부)용 — Content-Type 은 멀티파트 인코더가 boundary 와 함께 직접 지정하므로
+# **여기서 넣으면 안 된다**(boundary 누락 → 400). XSRF·Accept 만 유지.
+MULTIPART_HEADERS = {**XSRF_HEADER, "Accept": "application/json"}
 
 
 class AuthProvider:
@@ -48,6 +51,12 @@ class AuthProvider:
     def delete(self, path, params=None):
         """DELETE. 삭제용. XSRF 필수. 응답 본문이 없을 수 있어 상태만 확인."""
         raise NotImplementedError("이 provider 는 DELETE 를 지원하지 않습니다")
+
+    def post_multipart(self, path, filename, data, content_type=None, field="file", params=None):
+        """multipart/form-data 단일 파일 업로드(첨부). XSRF 필수, Content-Type 은 인코더가 지정.
+        여러 파일은 호출 측에서 파일당 한 번씩 부른다(Playwright multipart 가 같은 필드 반복 불가).
+        return: 파싱된 JSON 응답(첨부 객체 리스트 등)."""
+        raise NotImplementedError("이 provider 는 멀티파트 업로드를 지원하지 않습니다")
 
     def get_json(self, path, params=None):
         raise NotImplementedError

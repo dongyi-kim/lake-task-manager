@@ -6,7 +6,7 @@ mock 도 local 과 동일하게 jira820(이 프로젝트 world 주입, app/fakeb
 
 import threading
 
-from .base import AuthProvider, SessionExpired, UpstreamError, WRITE_HEADERS
+from .base import AuthProvider, MULTIPART_HEADERS, SessionExpired, UpstreamError, WRITE_HEADERS
 
 
 class InProcessProvider(AuthProvider):
@@ -55,6 +55,19 @@ class InProcessProvider(AuthProvider):
 
     def delete(self, path, params=None):
         return self._write("delete", path, None, params, want_json=False)
+
+    def post_multipart(self, path, filename, data, content_type=None, field="file", params=None):
+        with self._lock:
+            files = {field: (filename, data, content_type or "application/octet-stream")}
+            r = self._client.post(path, files=files, params=params or {}, headers=MULTIPART_HEADERS)
+        if r.status_code == 401:
+            raise SessionExpired(f"HTTP 401 on {path}")
+        if r.status_code >= 400:
+            raise UpstreamError(r.status_code, path, r.text)
+        try:
+            return r.json()
+        except Exception:
+            return {}
 
     def get_text(self, path, params=None):
         return self._get(path, params).text

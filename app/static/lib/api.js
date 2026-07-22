@@ -19,6 +19,13 @@ function get(path) {
   _memo.set(path, p);
   return p;
 }
+// 쓰기 후 그 티켓 관련 GET memo 를 비워 다음 조회가 최신을 읽게 한다(코멘트·첨부·타임라인 등).
+function evict(sub) { for (const k of Array.from(_memo.keys())) if (k.includes(sub)) _memo.delete(k); }
+
+function jsonReq(path, method, body) {
+  return req(path, { method, headers: { "Content-Type": "application/json" },
+                     body: JSON.stringify(body || {}) });
+}
 
 export const api = {
   health: () => req("/api/health"),                                    // 로그인 상태 — memo 제외
@@ -48,4 +55,27 @@ export const api = {
   ticketAttachments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/attachments"),
   ticketDocuments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/documents"),
   ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
+
+  // ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 이미지 첨부. 성공 후 그 티켓 memo 무효화 ──
+  me: () => get("/api/me"),                                             // 본인 댓글 판정
+  commentCreate: (key, markdown) =>
+    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST", { markdown })
+      .then((r) => { evict(encodeURIComponent(key)); return r; }),
+  commentUpdate: (key, cid, markdown) =>
+    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment/" + encodeURIComponent(cid), "PUT", { markdown })
+      .then((r) => { evict(encodeURIComponent(key)); return r; }),
+  commentDelete: (key, cid) =>
+    req("/api/ticket/" + encodeURIComponent(key) + "/comment/" + encodeURIComponent(cid), { method: "DELETE" })
+      .then((r) => { evict(encodeURIComponent(key)); return r; }),
+  commentSource: (key, cid) =>                                         // 수정 로드(markdown), memo 제외
+    req("/api/ticket/" + encodeURIComponent(key) + "/comment/" + encodeURIComponent(cid) + "/source"),
+  attachmentUpload: (key, file) => {                                   // multipart — Content-Type 자동
+    const fd = new FormData();
+    fd.append("file", file, file.name || "paste.png");
+    return req("/api/ticket/" + encodeURIComponent(key) + "/attachment", { method: "POST", body: fd })
+      .then((r) => { evict(encodeURIComponent(key)); return r; });
+  },
+  attachmentDelete: (key, aid) =>                                      // 롤백
+    req("/api/ticket/" + encodeURIComponent(key) + "/attachment/" + encodeURIComponent(aid), { method: "DELETE" })
+      .then((r) => { evict(encodeURIComponent(key)); return r; }),
 };

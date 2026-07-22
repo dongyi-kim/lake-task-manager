@@ -128,8 +128,9 @@ class SsoSessionProvider(AuthProvider):
             priority = upstream_priority()      # 백그라운드 갱신은 사용자 요청 뒤로
         return self._submit(lambda: self._fetch(path, params, False), priority)
 
-    def _xsrf_headers(self, url):
-        """이 URL(도메인)에 맞는 XSRF 쓰기 헤더.
+    def _xsrf_headers(self, url, multipart=False):
+        """이 URL(도메인)에 맞는 XSRF 쓰기 헤더. multipart=True 면 Content-Type 을 뺀다
+        (멀티파트 인코더가 boundary 와 함께 직접 지정 — 여기서 넣으면 boundary 누락).
 
         Bitbucket DC 의 XSRF 는 **Origin/Referer 로 same-origin 을 검증**한다. 그리고
         no-check 헤더는 '비브라우저 클라이언트' 에만 적용되고, **세션 쿠키를 든 브라우저 요청은
@@ -142,9 +143,10 @@ class SsoSessionProvider(AuthProvider):
         · X-Requested-With: XMLHttpRequest
         """
         from urllib.parse import urlsplit
+        from .base import MULTIPART_HEADERS
         u = urlsplit(url)
         origin = f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else None
-        headers = dict(WRITE_HEADERS)
+        headers = dict(MULTIPART_HEADERS if multipart else WRITE_HEADERS)
         headers["X-Requested-With"] = "XMLHttpRequest"
         if origin:
             headers["Origin"] = origin
@@ -191,6 +193,34 @@ class SsoSessionProvider(AuthProvider):
 
     def delete(self, path, params=None):
         return self._submit(lambda: self._write("delete", path, None, params, want_json=False))
+
+    def _write_multipart(self, path, field, filename, data, content_type):
+        """멀티파트 단일 파일 업로드 — Playwright context.request.post(multipart=...).
+        multipart 는 필드명→{name,mimeType,buffer} dict. XSRF 는 Content-Type 없는 헤더로."""
+        url = path if path.startswith(("http://", "https://")) else self.base + path
+        resp = self._context.request.post(
+            url,
+            multipart={field: {"name": filename,
+                               "mimeType": content_type or "application/octet-stream",
+                               "buffer": data}},
+            headers=self._xsrf_headers(url, multipart=True),
+        )
+        if resp.status == 401:
+            raise SessionExpired(f"HTTP 401 on {path} — 세션 만료. login 재실행.")
+        if resp.status >= 400:
+            try:
+                body = resp.text()
+            except Exception:
+                body = ""
+            raise UpstreamError(resp.status, path, body)
+        try:
+            return resp.json()
+        except Exception:
+            return {}
+
+    def post_multipart(self, path, filename, data, content_type=None, field="file", params=None):
+        # params 는 첨부 업로드에선 쓰지 않으나 인터페이스 통일용으로 받는다.
+        return self._submit(lambda: self._write_multipart(path, field, filename, data, content_type))
 
     def get_text(self, path, params=None):
         return self._submit(lambda: self._fetch(path, params, True))

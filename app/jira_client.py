@@ -659,10 +659,12 @@ class JiraClient:
                 html = tidy_html(html)              # 빈 문단·앞뒤 공백 정리(과도 여백 제거)
                 html = self._proxy_media(html)      # prod: 코멘트 내 이미지도 프록시
                 out.append({
+                    "id": str(c.get("id") or ""),       # 수정/삭제용
                     "date": c.get("created") or "",     # 전체 datetime(프론트에서 yy.mm.dd hh:mm 포맷)
+                    "updated": c.get("updated") or "",  # 수정 표시용(created 와 다르면 '수정됨')
                     "author": real_name((c.get("author") or {}).get("displayName")
                                         or (c.get("author") or {}).get("name")),
-                    "authorId": (c.get("author") or {}).get("name"),   # 프로필 이미지 조회용
+                    "authorId": (c.get("author") or {}).get("name"),   # 프로필 이미지·본인 판정용
                     "html": html,       # 정화된 코멘트 HTML (맨션·링크·서식 포함)
                 })
             return out
@@ -677,6 +679,73 @@ class JiraClient:
     def issue_comments(self, key, limit=5):
         """단일 티켓 코멘트 — mock/local/prod 동일 형태."""
         return self._issue_comments(key, limit)
+
+    # ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 첨부 업로드 ────────────────────
+    # 앱 최초의 쓰기 경로. body 는 **Jira wiki markup**(라우트에서 markdown→wiki 변환 후 전달).
+    # 성공 시 해당 티켓 캐시를 비워 다음 조회가 최신을 읽게 한다. XSRF 는 provider 가 처리.
+    def _invalidate_ticket(self, key, *, comments=False, attachments=False):
+        if comments:
+            self.cache.invalidate(f"comments:{self.env}:{key}")
+        if attachments:
+            self.cache.invalidate(f"issue:{self.env}:{key}")        # attachment 필드가 여기 캐시됨
+            self.cache.invalidate(f"attachments:{self.env}:{key}")
+
+    def add_comment(self, key, body):
+        """코멘트 작성 (body = Jira wiki markup). 반환: 생성된 코멘트 객체."""
+        res = self.provider.post_json(f"/rest/api/2/issue/{key}/comment", {"body": body})
+        self._invalidate_ticket(key, comments=True)
+        return res
+
+    def update_comment(self, key, comment_id, body):
+        """코멘트 수정 (본인 것). body = Jira wiki markup."""
+        res = self.provider.put_json(
+            f"/rest/api/2/issue/{key}/comment/{comment_id}", {"body": body})
+        self._invalidate_ticket(key, comments=True)
+        return res
+
+    def delete_comment(self, key, comment_id):
+        """코멘트 삭제 (본인 것)."""
+        self.provider.delete(f"/rest/api/2/issue/{key}/comment/{comment_id}")
+        self._invalidate_ticket(key, comments=True)
+        return {"ok": True}
+
+    def upload_attachment(self, key, filename, data, content_type=None):
+        """첨부 단일 파일 업로드. 반환: 첨부 객체 리스트(확정 파일명·id — !파일명! 참조에 사용).
+        이미지 붙여넣기 제출 시 파일당 한 번씩 호출한다."""
+        res = self.provider.post_multipart(
+            f"/rest/api/2/issue/{key}/attachments", filename, data, content_type)
+        self._invalidate_ticket(key, attachments=True)
+        return res
+
+    def delete_attachment(self, attachment_id, key=None):
+        """첨부 삭제 (제출 취소·부분실패 롤백용). key 주면 그 티켓 첨부 캐시도 무효화."""
+        self.provider.delete(f"/rest/api/2/attachment/{attachment_id}")
+        if key:
+            self._invalidate_ticket(key, attachments=True)
+        return {"ok": True}
+
+    def comment_source(self, key, comment_id):
+        """코멘트 원본(wiki) → 에디터용 markdown. 수정 로드 시 사용. 없으면 None.
+        (단일 코멘트 GET 은 일부 서버에서 미지원 → 리스트에서 id 로 찾아 견고하게.)"""
+        from .wikimd import wiki_to_md
+        data = self.provider.get_json(
+            f"/rest/api/2/issue/{key}/comment",
+            params={"maxResults": 1000, "orderBy": "-created"})
+        for c in data.get("comments", []):
+            if str(c.get("id")) == str(comment_id):
+                return {"id": str(comment_id), "markdown": wiki_to_md(c.get("body") or "")}
+        return None
+
+    def current_user(self):
+        """세션 사용자 — 본인 댓글(수정/삭제 노출) 판정용. {id, name}. 캐시."""
+        def do():
+            try:
+                u = self.provider.get_json("/rest/api/2/myself")
+            except Exception:
+                return {}
+            return {"id": u.get("name") or u.get("key") or "",
+                    "name": real_name(u.get("displayName") or u.get("name")) or ""}
+        return self.cache.get_or_set(f"myself:{self.env}", self.s.cache_ttl_seconds, do)[0]
 
     def ticket_badge(self, key):
         """티켓 인라인 뱃지용 경량 요약(요약/타입/상태/담당자). 없으면 None. (renderedFields 미포함=가벼움)"""

@@ -15,15 +15,21 @@ JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 
 import threading
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from . import rollup, search, vit, workload
 from .auth.base import SessionExpired
 from .cache import Cache
 from .jira_client import JiraClient
 from .settings import STATIC_DIR, get_settings, load_plan, load_people
+from .wikimd import md_to_wiki
+
+
+class _CommentBody(BaseModel):
+    markdown: str = ""
 
 app = FastAPI(title="Lake Task Manager")
 
@@ -318,6 +324,62 @@ def api_ticket_related(key: str):
 def api_ticket_siblings(key: str):
     """계보 스파인 — 형제 티켓(같은 부모/Epic). 현재 티켓 포함(current=true)."""
     return JSONResponse(_client.ticket_siblings(key))
+
+
+# ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 이미지 첨부 ─────────────────────────
+# 앱 최초의 쓰기 경로. 프론트는 **markdown** 을 보내고, 여기서 Jira wiki 로 변환해 저장한다.
+# 이미지는 제출 시 파일당 /attachment 로 올려 확정 파일명을 받아 !파일명! 로 본문에 참조한다.
+# mock/local/prod 동일 경로(jira820 이 쓰기 지원 → 로컬 검증 가능). XSRF 는 provider 가 처리.
+@app.post("/api/ticket/{key}/comment")
+def api_comment_create(key: str, body: _CommentBody):
+    wiki = md_to_wiki(body.markdown or "")
+    if not wiki.strip():
+        return JSONResponse({"error": "빈 코멘트"}, status_code=400)
+    return JSONResponse(_client.add_comment(key, wiki), status_code=201)
+
+
+@app.put("/api/ticket/{key}/comment/{cid}")
+def api_comment_update(key: str, cid: str, body: _CommentBody):
+    wiki = md_to_wiki(body.markdown or "")
+    if not wiki.strip():
+        return JSONResponse({"error": "빈 코멘트"}, status_code=400)
+    return JSONResponse(_client.update_comment(key, cid, wiki))
+
+
+@app.delete("/api/ticket/{key}/comment/{cid}")
+def api_comment_delete(key: str, cid: str):
+    return JSONResponse(_client.delete_comment(key, cid))
+
+
+@app.get("/api/ticket/{key}/comment/{cid}/source")
+def api_comment_source(key: str, cid: str):
+    """수정 로드용 — 코멘트 원본(wiki)을 markdown 으로 변환해 반환. 없으면 404."""
+    src = _client.comment_source(key, cid)
+    if src is None:
+        return JSONResponse({"error": "코멘트 없음", "key": key, "cid": cid}, status_code=404)
+    return JSONResponse(src)
+
+
+@app.post("/api/ticket/{key}/attachment")
+async def api_attachment_upload(key: str, file: UploadFile = File(...)):
+    """이미지/파일 첨부(제출 시). 확정 {id, filename} 반환 → 프론트가 !파일명! 로 참조·롤백."""
+    data = await file.read()
+    res = _client.upload_attachment(key, file.filename or "paste.png", data, file.content_type)
+    att = res[0] if isinstance(res, list) and res else (res or {})
+    return JSONResponse({"id": str(att.get("id") or ""),
+                         "filename": att.get("filename") or (file.filename or "")})
+
+
+@app.delete("/api/ticket/{key}/attachment/{aid}")
+def api_attachment_delete(key: str, aid: str):
+    """첨부 삭제 — 제출 취소·부분실패 롤백용."""
+    return JSONResponse(_client.delete_attachment(aid, key=key))
+
+
+@app.get("/api/me")
+def api_me():
+    """세션 사용자 — 본인 댓글(수정/삭제) 판정용."""
+    return JSONResponse(_client.current_user())
 
 
 @app.get("/api/vit/shell")
