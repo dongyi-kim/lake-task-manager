@@ -99,23 +99,30 @@ def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
 
 
 def _do_login_in_window(s, page, context, appmain, per_timeout=300):
-    """[prod] 앱 창에서 Jira → Confluence → Bitbucket(설정된 것만) 을 **하나씩** 열어 SSO 로그인.
+    """[prod] **별도 임시 창**을 열어 Jira → Confluence → Bitbucket(설정된 것만) SSO 로그인.
+
+    앱 창(page)은 건드리지 않는다 — 로그인 전용 페이지(창)를 새로 열어 거기서 IdP 로그인하고,
+    끝나면 그 창만 닫는다. 쿠키/헤더는 context 공유라 로그인 결과가 앱에 그대로 반영된다.
+    (init 스크립트·_openExternal 도 context 레벨이라 새 페이지에 자동 적용된다.)
 
     각 서비스는 도메인이 달라 SSO 쿠키가 따로 필요하다(하나만 로그인하면 나머지는 401).
     셋 중 하나라도 인증이 안 되면 세션은 저장하되 로그인 미완료로 남긴다
     (앱은 '로그인 필요' 를 다시 띄운다 — 부분 인증이라도 되는 기능은 동작).
+    이미 인증된 서비스는 창을 열지 않고 통과 → 자동 취득 시 불필요한 창이 안 뜬다.
     """
     from app.auth.sso_session import service_probe
     appmain._login_requested.clear()
-    home = f"http://localhost:{s.app_port}/"
     targets = getattr(s, "auth_targets", None) or [("Jira", s.jira_base.rstrip("/"), ["/rest/api/2/myself"])]
+    login_page = None
     results = []
     try:
         for name, base, paths in targets:
-            # 이미 세션이 살아 있으면(직전 로그인·리다이렉트) 페이지를 새로 열지 않고 통과
+            # 이미 세션이 살아 있으면(직전 로그인·리다이렉트) 창을 열지 않고 통과
             ok, why = service_probe(context, base, paths)
             if not ok:
-                ok, why = _login_one_service(page, context, name, base, paths, per_timeout, appmain)
+                if login_page is None or login_page.is_closed():
+                    login_page = context.new_page()      # 로그인 전용 임시 창 (앱 창과 별개)
+                ok, why = _login_one_service(login_page, context, name, base, paths, per_timeout, appmain)
             results.append((name, ok))
             print(f"[login] {name}: {'OK' if ok else '실패'} — {why}")
         # 하나라도 됐으면 세션 저장(부분 인증이라도 그 기능은 쓰게), provider 갱신
@@ -129,8 +136,8 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300):
         print(f"[login] 오류: {e}")
     finally:
         try:
-            if not page.is_closed():
-                page.goto(home, wait_until="domcontentloaded")            # 앱으로 복귀
+            if login_page is not None and not login_page.is_closed():
+                login_page.close()                        # 임시 로그인 창만 닫기 (앱 창은 그대로)
         except Exception:
             pass
 
@@ -250,6 +257,10 @@ def _run_app_window(s, headless=False):
     from app.settings import STATIC_DIR
     ico_path = str(STATIC_DIR / "favicon.ico")
     print(f"Lake Task Manager - {url}  (env={s.jira_env})  [이 창을 닫으면 종료됩니다]")
+    # [prod] 시작하면 3개 서비스 SSO 를 자동 취득 — 아래 while 루프가 신호를 받아 임시 창에서 구동.
+    # 이미 인증돼 있으면 service_probe 로 스킵돼 창이 안 뜬다(세션 유효 시 무음). 앱 창은 그대로.
+    if s.jira_env == "prod":
+        appmain._login_requested.set()
     # 창이 닫힐 때까지 대기. 로그인 요청(_login_requested)이 오면 같은 창에서 SSO 구동.
     # 초반 몇 초간 창 아이콘을 우리 .ico 로 재적용(Chromium 이 favicon 으로 덮어쓰는 것 대비).
     try:
