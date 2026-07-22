@@ -43,4 +43,4 @@ server:
   port: 8000
 
 # 개발자용 진단(로컬 확인용). 사내 API 는 로컬에서 못 붙지만 프레임워크·게이팅 확인 가능.
-dev_tools: [bitbucket_probe]
+dev_tools: [bitbucket_probe, sso_status]

@@ -101,6 +101,31 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
                 "bitbucket_base": _BB or "(미설정)"}
 
 
+if _devtools.enabled(_settings, "sso_status"):
+    @app.get("/api/dev/sso")
+    def _dev_sso_status():
+        """각 서비스 인증 상태 — 지금 provider 세션으로 실제 호출해 확인.
+        로그인 순회 후 Confluence 만 X 로 뜨면 그 도메인 SSO 가 안 붙은 것."""
+        rows = []
+        for name, base, paths in getattr(_settings, "auth_targets", []):
+            ok, detail = False, ""
+            from app.auth.sso_session import _extract_user
+            for path in paths:
+                try:
+                    body = _client.provider.get_json(base.rstrip("/") + path)
+                    who = _extract_user(body)
+                    if who:
+                        ok, detail = True, f"{path} → {who}"
+                        break
+                    detail = f"{path}: 200 이나 사용자 없음"
+                except Exception as e:
+                    detail = f"{path}: {getattr(e, 'status', '')} {str(e)[:80]}"
+            rows.append({"service": name, "base": base, "authenticated": ok, "detail": detail})
+        return {"targets": rows,
+                "note": "authenticated=false 인 서비스는 그 도메인 SSO 로그인이 안 된 것. "
+                        "상단 [SSO 로그인] 재실행 시 그 창에서 해당 서비스에 직접 로그인."}
+
+
 @app.get("/api/health")
 def _build_rev():
     """실행 중인 코드의 git 커밋 — 앱이 최신 배포본인지 눈으로 확인하기 위함.

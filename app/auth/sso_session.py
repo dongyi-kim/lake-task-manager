@@ -21,7 +21,8 @@ import queue
 import sys
 import threading
 
-from .base import AuthProvider, LoginRequired, SessionExpired, UpstreamError, upstream_priority
+from .base import (AuthProvider, LoginRequired, SessionExpired, UpstreamError,
+                   WRITE_HEADERS, upstream_priority)
 
 
 def _launch(p, headless):
@@ -127,16 +128,16 @@ class SsoSessionProvider(AuthProvider):
             priority = upstream_priority()      # 백그라운드 갱신은 사용자 요청 뒤로
         return self._submit(lambda: self._fetch(path, params, False), priority)
 
-    def _post(self, path, json_body, params):
+    def _write(self, method, path, json_body, params, want_json=True):
+        """쓰기(POST/PUT/DELETE) 공통 — XSRF 헤더(WRITE_HEADERS) + JSON 명시 직렬화 + 진단 예외.
+        편집 기능이 전부 이 경로를 탄다. 제품(Jira/Confluence/Bitbucket) 구분 없이 동일."""
         import json as _json
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        # Atlassian(Jira/Confluence/Bitbucket)은 POST 에 XSRF 토큰이 없으면 403 이다(GET 은 면제).
-        # body 는 **명시적으로 JSON 문자열**로 보낸다 — data=dict 로 넘기면 인코딩이
-        # 어긋날 수 있어 Content-Type: application/json 과 함께 직렬화해 준다.
-        resp = self._context.request.post(
-            url, data=_json.dumps(json_body or {}), params=params or {},
-            headers={"X-Atlassian-Token": "no-check", "Content-Type": "application/json",
-                     "Accept": "application/json"})
+        fn = getattr(self._context.request, method)     # post/put/delete
+        kw = {"params": params or {}, "headers": WRITE_HEADERS}
+        if json_body is not None:
+            kw["data"] = _json.dumps(json_body)          # data=dict 인코딩 어긋남 방지 → 명시 직렬화
+        resp = fn(url, **kw)
         if resp.status == 401:
             raise SessionExpired(f"HTTP 401 on {path} — 세션 만료. login 재실행.")
         if resp.status >= 400:
@@ -144,11 +145,22 @@ class SsoSessionProvider(AuthProvider):
                 body = resp.text()
             except Exception:
                 body = ""
-            raise UpstreamError(resp.status, path, body)   # status·본문을 진단에 담는다
-        return resp.json()
+            raise UpstreamError(resp.status, path, body)
+        if not want_json:
+            return resp.status
+        try:
+            return resp.json()
+        except Exception:
+            return {}                                    # 204 No Content 등
 
     def post_json(self, path, json_body=None, params=None):
-        return self._submit(lambda: self._post(path, json_body, params))
+        return self._submit(lambda: self._write("post", path, json_body, params))
+
+    def put_json(self, path, json_body=None, params=None):
+        return self._submit(lambda: self._write("put", path, json_body, params))
+
+    def delete(self, path, params=None):
+        return self._submit(lambda: self._write("delete", path, None, params, want_json=False))
 
     def get_text(self, path, params=None):
         return self._submit(lambda: self._fetch(path, params, True))

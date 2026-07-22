@@ -14,6 +14,8 @@
 DEV_TOOLS = {
     "bitbucket_probe": "사내 Bitbucket 실제 REST 응답의 필드 구조를 확인(값 마스킹). "
                        "code/repo 검색 mock 을 실물에 맞추기 위한 일회성 진단.",
+    "sso_status": "각 서비스(Jira/Confluence/Bitbucket)가 지금 인증됐는지 확인. "
+                  "앱 로그인 순회 후 어느 서비스가 통과/실패했는지 화면에서 본다.",
 }
 
 

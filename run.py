@@ -72,11 +72,23 @@ def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
     """
     from app.auth.sso_session import service_probe
     try:
+        # networkidle — SSO 리다이렉트 체인(앱→IdP→앱)이 끝날 때까지 기다린다.
+        # domcontentloaded 는 중간 리다이렉트 페이지에서 일찍 끝나 판정이 헛돈다.
         page.goto(base, wait_until="domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass                                          # 아이들 안 돼도 아래 재시도 루프가 커버
     except Exception as e:
         return False, f"페이지 열기 실패({e})"
+    landed = ""
+    try:
+        landed = page.url
+    except Exception:
+        pass
+    print(f"[login]   {name} 창 착지: {landed}")           # IdP 로그인 페이지인지 서비스 홈인지 구분용
     deadline = time.monotonic() + per_timeout
-    last = "대기 시간 초과"
+    last = "대기 시간 초과(사용자 로그인 대기)"
     while time.monotonic() < deadline and not page.is_closed():
         ok, why = service_probe(context, base, paths)
         if ok:

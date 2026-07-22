@@ -6,7 +6,7 @@ mock 도 local 과 동일하게 jira820(이 프로젝트 world 주입, app/fakeb
 
 import threading
 
-from .base import AuthProvider, SessionExpired
+from .base import AuthProvider, SessionExpired, UpstreamError, WRITE_HEADERS
 
 
 class InProcessProvider(AuthProvider):
@@ -29,12 +29,32 @@ class InProcessProvider(AuthProvider):
     def get_json(self, path, params=None, priority=0):   # priority 무시(큐 없음)
         return self._get(path, params).json()
 
-    def post_json(self, path, json_body=None, params=None):
+    def _write(self, method, path, json_body, params, want_json=True):
         with self._lock:
-            r = self._client.post(path, json=json_body or {}, params=params or {})
-        if r.status_code in (401, 403) or r.status_code >= 500:
-            raise SessionExpired(f"HTTP {r.status_code} on {path}")
-        return r.json()
+            fn = getattr(self._client, method)
+            kw = {"params": params or {}, "headers": WRITE_HEADERS}
+            if json_body is not None:
+                kw["json"] = json_body
+            r = fn(path, **kw)
+        if r.status_code == 401:
+            raise SessionExpired(f"HTTP 401 on {path}")
+        if r.status_code >= 400:
+            raise UpstreamError(r.status_code, path, r.text)
+        if not want_json:
+            return r.status_code
+        try:
+            return r.json()
+        except Exception:
+            return {}
+
+    def post_json(self, path, json_body=None, params=None):
+        return self._write("post", path, json_body or {}, params)
+
+    def put_json(self, path, json_body=None, params=None):
+        return self._write("put", path, json_body or {}, params)
+
+    def delete(self, path, params=None):
+        return self._write("delete", path, None, params, want_json=False)
 
     def get_text(self, path, params=None):
         return self._get(path, params).text

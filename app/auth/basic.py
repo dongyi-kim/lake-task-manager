@@ -2,7 +2,7 @@
 
 import requests
 
-from .base import AuthProvider, SessionExpired
+from .base import AuthProvider, SessionExpired, UpstreamError, WRITE_HEADERS, XSRF_HEADER
 
 
 class BasicAuthProvider(AuthProvider):
@@ -27,16 +27,29 @@ class BasicAuthProvider(AuthProvider):
     def get_json(self, path, params=None, priority=0):   # priority 무시(큐 없음)
         return self._get(path, params).json()
 
-    def post_json(self, path, json_body=None, params=None):
+    def _write(self, method, path, json_body, params, want_json=True):
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        r = self.session.post(url, json=json_body or {}, params=params, timeout=30,
-                              headers={"X-Atlassian-Token": "no-check", "Accept": "application/json"})
+        fn = getattr(self.session, method)
+        r = fn(url, json=json_body, params=params, timeout=30, headers=WRITE_HEADERS)
         if r.status_code == 401:
             raise SessionExpired(f"HTTP 401 on {path}")
         if r.status_code >= 400:
-            from .base import UpstreamError
             raise UpstreamError(r.status_code, path, r.text)
-        return r.json()
+        if not want_json:
+            return r.status_code
+        try:
+            return r.json()
+        except Exception:
+            return {}
+
+    def post_json(self, path, json_body=None, params=None):
+        return self._write("post", path, json_body or {}, params)
+
+    def put_json(self, path, json_body=None, params=None):
+        return self._write("put", path, json_body or {}, params)
+
+    def delete(self, path, params=None):
+        return self._write("delete", path, None, params, want_json=False)
 
     def get_text(self, path, params=None):
         return self._get(path, params).text

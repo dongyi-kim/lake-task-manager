@@ -23,14 +23,31 @@ class background_upstream:
 """AuthProvider 인터페이스 — JiraClient 는 어떤 인증인지 몰라야 한다."""
 
 
+# ── XSRF (Atlassian 공통) ────────────────────────────────────────────
+# Jira/Confluence/Bitbucket DC 는 **쓰기 요청(POST/PUT/DELETE)** 에 XSRF 토큰이 없으면 403 이다.
+# (GET/HEAD 는 면제.) 'no-check' 헤더로 우회한다 — Atlassian 공식 방식.
+# 향후 편집 기능(티켓 코멘트·필드 수정, 상태 전이 등)이 전부 이 경로를 타므로 **한 곳에서 관리**한다.
+# 이 헤더는 세 제품 모두 동일하게 통한다(제품별 분기 불필요).
+XSRF_HEADER = {"X-Atlassian-Token": "no-check"}
+WRITE_HEADERS = {**XSRF_HEADER, "Content-Type": "application/json", "Accept": "application/json"}
+
+
 class AuthProvider:
     # 여러 스레드에서 동시 GET 가능한가 (basic/PAT=True, SSO=Playwright 단일 context=False)
     supports_parallel = False
 
     def post_json(self, path, json_body=None, params=None):
-        """POST + JSON 응답. dev 프로브(Bitbucket code search 등)용.
-        기본 미지원 — 필요한 provider 만 구현한다."""
+        """POST + JSON 응답. 쓰기(생성)·검색(Bitbucket code) 공용.
+        기본 미지원 — 필요한 provider 만 구현한다. XSRF 헤더는 구현체가 WRITE_HEADERS 로 붙인다."""
         raise NotImplementedError("이 provider 는 POST 를 지원하지 않습니다")
+
+    def put_json(self, path, json_body=None, params=None):
+        """PUT + JSON 응답. 편집(필드·코멘트 수정 등)용. XSRF 필수."""
+        raise NotImplementedError("이 provider 는 PUT 을 지원하지 않습니다")
+
+    def delete(self, path, params=None):
+        """DELETE. 삭제용. XSRF 필수. 응답 본문이 없을 수 있어 상태만 확인."""
+        raise NotImplementedError("이 provider 는 DELETE 를 지원하지 않습니다")
 
     def get_json(self, path, params=None):
         raise NotImplementedError
