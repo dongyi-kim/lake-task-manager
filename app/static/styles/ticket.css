@@ -271,7 +271,9 @@
 .tkt-desc li { margin: 2px 0; }
 .tkt-desc a { color: var(--accent); text-decoration: none; }
 .tkt-desc a:hover { text-decoration: underline; }
-.tkt-desc img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; display: block; }
+/* 이미지는 인라인 + 상단 정렬 — 같은 줄의 글자가 아래로 밀리지 않게(에디터와 동일한 배치) */
+.tkt-desc img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border);
+  margin: 4px 0; display: inline-block; vertical-align: top; }
 
 /* 이미지/표 '확대' 버튼 — 명시적 클릭만 확대(표 드래그 복사 보존) */
 .zoomable { position: relative; display: inline-block; max-width: 100%; }
@@ -611,7 +613,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-ed-host .ProseMirror pre code { background: none; border: 0; padding: 0; font-size: 12.5px; }
 .cmt-ed-host .ProseMirror img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; }
 /* 이미지 크기 조절 — 모서리 드래그 핸들(선택/hover 시 노출) */
-.cmt-ed-host .ProseMirror .img-wrap { position: relative; display: inline-block; line-height: 0; max-width: 100%; }
+/* vertical-align:top — 같은 줄에 글자와 사진이 있으면 baseline 정렬 탓에 글자가 아래로 밀린다.
+   상단을 맞춰 글자가 사진 위쪽에 나란히 오게 한다(렌더 .tkt-desc img 도 동일). */
+.cmt-ed-host .ProseMirror .img-wrap { position: relative; display: inline-block; line-height: 0;
+  max-width: 100%; vertical-align: top; }
 .cmt-ed-host .ProseMirror .img-wrap img { display: block; }
 .cmt-ed-host .ProseMirror .img-wrap .img-resize { position: absolute; right: -5px; bottom: -1px;
   width: 14px; height: 14px; border: 2px solid var(--panel); border-radius: 4px;

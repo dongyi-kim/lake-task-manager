@@ -375,7 +375,8 @@ export default {
         firstBlockEscapeExt(T),
         T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
-        imageResizeExt(T), linkBadgeExt(T),
+        // inline:true — 이미지가 같은 줄에 글자와 나란히 놓이게(TipTap 기본은 블록이라 줄이 갈린다)
+        imageResizeExt(T).configure({ inline: true }), linkBadgeExt(T),
         T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 없이 바로 마크다운(#, -, ``` )·@멘션 사용" }),
       ],
       content: this.initial || "",
