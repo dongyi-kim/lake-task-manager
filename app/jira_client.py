@@ -725,16 +725,30 @@ class JiraClient:
         return {"ok": True}
 
     def comment_source(self, key, comment_id):
-        """코멘트 원본(wiki) → 에디터용 markdown. 수정 로드 시 사용. 없으면 None.
+        """코멘트 원본(wiki) → 에디터용 HTML. 수정 로드 시 사용. 없으면 None.
         (단일 코멘트 GET 은 일부 서버에서 미지원 → 리스트에서 id 로 찾아 견고하게.)"""
-        from .wikimd import wiki_to_md
+        from .wikihtml import wiki_to_html
         data = self.provider.get_json(
             f"/rest/api/2/issue/{key}/comment",
             params={"maxResults": 1000, "orderBy": "-created"})
         for c in data.get("comments", []):
             if str(c.get("id")) == str(comment_id):
-                return {"id": str(comment_id), "markdown": wiki_to_md(c.get("body") or "")}
+                return {"id": str(comment_id),
+                        "html": wiki_to_html(c.get("body") or "", self._mention_name)}
         return None
+
+    def _mention_name(self, uid):
+        """멘션 라벨 — 사번 uid → 본명(best-effort, 캐시). 실패 시 uid 그대로."""
+        def do():
+            try:
+                u = self.provider.get_json("/rest/api/2/user", params={"username": uid})
+                return real_name(u.get("displayName") or uid) or uid
+            except Exception:
+                return uid
+        try:
+            return self.cache.get_or_set(f"uname:{self.env}:{uid}", self.s.cache_ttl_seconds, do)[0]
+        except Exception:
+            return uid
 
     def current_user(self):
         """세션 사용자 — 본인 댓글(수정/삭제 노출) 판정용. {id, name}. 캐시."""

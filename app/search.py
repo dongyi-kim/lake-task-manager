@@ -184,6 +184,27 @@ _BB_REPOS = ["etl-pipeline", "catalog-service", "query-engine", "platform-infra"
 _BB_KINDS = [("code", "코드"), ("pullrequest", "PR"), ("repository", "저장소")]
 
 
+def search_users(client, s, q, limit=8):
+    """@사람 멘션 자동완성 — Jira 유저 검색. [{id, name, avatar}].
+    id 는 사번(username) → 본문에 [~id] 로 직렬화(실 Jira 가 사용자 링크로 렌더).
+    (문서/웹 링크는 멘션이 아니라 '붙여넣기 시 뱃지'로 처리 — 프론트가 담당.)"""
+    q = (q or "").strip()
+    try:
+        data = client.provider.get_json(
+            "/rest/api/2/user/search", params={"username": q or ".", "maxResults": limit})
+    except Exception:
+        return []
+    out = []
+    for u in (data or [])[:limit]:
+        uid = u.get("name") or u.get("key") or ""
+        if not uid:
+            continue
+        out.append({"id": uid,
+                    "name": real_name(u.get("displayName") or uid),
+                    "avatar": "/api/avatar/" + uid})
+    return out
+
+
 def _search_bitbucket(s, q, limit):
     """mock — 사내 Bitbucket 버전/연동 확인 전까지 결정적 가짜 결과. 여러 project 지원."""
     projs = s.search_bitbucket_projects or ["DATA"]

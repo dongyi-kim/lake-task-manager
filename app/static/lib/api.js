@@ -58,11 +58,12 @@ export const api = {
 
   // ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 이미지 첨부. 성공 후 그 티켓 memo 무효화 ──
   me: () => get("/api/me"),                                             // 본인 댓글 판정
-  commentCreate: (key, markdown) =>
-    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST", { markdown })
+  mentionUsers: (q) => req("/api/mention/users?q=" + encodeURIComponent(q || "")),   // @사람 자동완성
+  commentCreate: (key, html) =>
+    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST", { html })
       .then((r) => { evict(encodeURIComponent(key)); return r; }),
-  commentUpdate: (key, cid, markdown) =>
-    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment/" + encodeURIComponent(cid), "PUT", { markdown })
+  commentUpdate: (key, cid, html) =>
+    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment/" + encodeURIComponent(cid), "PUT", { html })
       .then((r) => { evict(encodeURIComponent(key)); return r; }),
   commentDelete: (key, cid) =>
     req("/api/ticket/" + encodeURIComponent(key) + "/comment/" + encodeURIComponent(cid), { method: "DELETE" })

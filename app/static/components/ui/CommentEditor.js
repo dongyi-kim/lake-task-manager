@@ -1,86 +1,186 @@
-// CommentEditor.js — Milkdown Crepe 기반 댓글 작성/수정 에디터.
-// · 신버전 위키/노션식 WYSIWYG: '# '·'- '·'1. '·'> '·백틱3개 등 마크다운 입력이 실시간 변환.
-//   슬래시(/) 블록 메뉴 · 플로팅 툴바 · 표 행/열 편집 · 코드블록(언어) 내장.
-// · 이미지 붙여넣기/드래그드롭 = **제출 시 업로드**(upload-on-submit): 붙여넣는 순간엔 로컬
-//   objectURL 미리보기만, 제출할 때 첨부로 올려 실제 파일명으로 !파일명! 치환. 저장 실패/취소
-//   시 이번에 올린 첨부는 롤백(삭제) → 취소/실패 시 서버에 흔적이 안 남는다. 창 닫으면 draft 소멸.
-// 부모는 submitFn(finalMarkdown) 만 넘긴다(작성=commentCreate / 수정=commentUpdate 를 부모가 선택).
-import { loadCrepe } from "../../lib/milkdown.js";
+// CommentEditor.js — TipTap 기반 댓글 작성/수정 에디터 (모던 Confluence/Jira 스타일).
+// · 마크다운 input rule: '# '·'## '·'- '·'1. '·'> '·백틱3개 실시간 변환 (StarterKit)
+// · 고정 툴바: 굵게/기울임/취소선/코드 · H1~3 · 불릿/번호/인용/코드블록 · 링크/표/이미지
+// · @사람 멘션: '@' 입력 → 유저 자동완성 팝업 → [~사번] 으로 저장(읽기 시 사용자 링크)
+// · 링크 붙여넣기: URL 붙여넣으면 자동 링크(문서/웹 뱃지는 읽기 렌더에서 앱이 처리)
+// · 이미지 붙여넣기/드롭 = 제출 시 업로드: 로컬 objectURL 미리보기 → 제출 때 첨부 업로드·롤백
+// 부모는 submitFn(finalHTML) 만 넘긴다(작성/수정은 부모가 선택). 출력은 HTML(서버가 wiki 로 변환).
+import { loadTiptap } from "../../lib/tiptap.js";
 import { api } from "../../lib/api.js";
+
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+// @사람 멘션 자동완성 팝업 (tippy 없이 순수 DOM) — TipTap suggestion.render 핸들러.
+function mentionSuggestion() {
+  return {
+    char: "@",
+    items: ({ query }) => api.mentionUsers(query).then((r) => r || []).catch(() => []),
+    render: () => {
+      let el = null, items = [], sel = 0, command = null;
+      const paint = () => {
+        if (!el) return;
+        if (!items.length) { el.innerHTML = '<div class="mn-empty">사용자 없음</div>'; return; }
+        el.innerHTML = items.map((u, i) =>
+          `<div class="mn-item${i === sel ? " sel" : ""}" data-i="${i}">`
+          + `<img class="mn-av" src="${esc(u.avatar)}" onerror="this.style.visibility='hidden'">`
+          + `<span class="mn-nm">${esc(u.name)}</span><span class="mn-id">${esc(u.id)}</span></div>`).join("");
+        el.querySelectorAll(".mn-item").forEach((row) => {
+          row.addEventListener("mousedown", (e) => { e.preventDefault(); pick(+row.dataset.i); });
+        });
+      };
+      const pick = (i) => { const u = items[i]; if (u && command) command({ id: u.id, label: u.name }); };
+      const place = (rectFn) => {
+        if (!el || !rectFn) return; const r = rectFn(); if (!r) return;
+        el.style.left = Math.round(r.left) + "px";
+        el.style.top = Math.round(r.bottom + 4) + "px";
+      };
+      return {
+        onStart: (p) => {
+          items = p.items || []; sel = 0; command = p.command;
+          el = document.createElement("div"); el.className = "mention-popup";
+          document.body.appendChild(el); paint(); place(p.clientRect);
+        },
+        onUpdate: (p) => { items = p.items || []; command = p.command; if (sel >= items.length) sel = 0; paint(); place(p.clientRect); },
+        onKeyDown: (p) => {
+          const k = p.event.key, n = items.length;
+          if (k === "ArrowDown") { sel = n ? (sel + 1) % n : 0; paint(); return true; }
+          if (k === "ArrowUp") { sel = n ? (sel - 1 + n) % n : 0; paint(); return true; }
+          if (k === "Enter") { if (n) { pick(sel); return true; } }
+          if (k === "Escape") { return true; }
+          return false;
+        },
+        onExit: () => { if (el) el.remove(); el = null; },
+      };
+    },
+  };
+}
 
 export default {
   name: "CommentEditor",
   props: {
     ticketKey: { type: String, required: true },
-    initial: { type: String, default: "" },            // 수정 시 기존 markdown
+    initial: { type: String, default: "" },            // 수정 시 기존 HTML
     submitLabel: { type: String, default: "등록" },
-    submitFn: { type: Function, required: true },       // async (markdown) => any (실패 시 throw)
+    submitFn: { type: Function, required: true },       // async (html) => any (실패 시 throw)
   },
   emits: ["submitted", "cancel"],
-  data() { return { ready: false, loadErr: "", busy: false, err: "" }; },
+  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0 }; },
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
-    let mod;
-    try {
-      mod = await loadCrepe(document.documentElement.getAttribute("data-theme") === "dark");
-    } catch (e) {
-      this.loadErr = "에디터를 불러오지 못했습니다(네트워크/CDN 차단). 잠시 후 다시 시도하세요.";
-      return;
-    }
-    if (this._dead) return;           // 로드 도중 언마운트되면 중단
-    const { Crepe, CrepeFeature } = mod;
-    const featureConfigs = {};
-    // 이미지: 붙여넣기/드롭 시 호출됨 — 지금은 로컬 objectURL 만 돌려주고(미리보기), 추적해뒀다
-    //          제출 때 실제 업로드한다.
-    featureConfigs[CrepeFeature.ImageBlock] = {
-      onUpload: async (file) => {
-        const ext = ((file.type || "").split("/")[1] || "png").replace("jpeg", "jpg");
-        const name = "paste-" + Date.now() + "-" + (++this._seq) + "." + ext;
-        const url = URL.createObjectURL(file);
-        this._pending.set(url, { blob: file, name });
-        return url;
-      },
+    let T;
+    try { T = await loadTiptap(); }
+    catch (e) { this.loadErr = "에디터를 불러오지 못했습니다(네트워크/CDN 차단). 잠시 후 다시 시도."; return; }
+    if (this._dead) return;
+    const self = this;
+    // 붙여넣기/드롭 이미지 → objectURL 삽입 + 추적(제출 시 업로드)
+    const handleFiles = (files, view) => {
+      let any = false;
+      for (const f of files) {
+        if (!f.type || !f.type.startsWith("image/")) continue;
+        any = true;
+        const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
+        const name = "paste-" + Date.now() + "-" + (++self._seq) + "." + ext;
+        const url = URL.createObjectURL(f);
+        self._pending.set(url, { blob: f, name });
+        self._ed.chain().focus().setImage({ src: url, alt: name }).run();
+      }
+      return any;
     };
-    this.crepe = new Crepe({ root: this.$refs.ed, defaultValue: this.initial || "", featureConfigs });
-    await this.crepe.create();
-    if (this._dead) { try { this.crepe.destroy(); } catch (e) { /* noop */ } return; }
+    this._ed = new T.Editor({
+      element: this.$refs.ed,
+      extensions: [
+        T.StarterKit,
+        T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion() }),
+        T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
+        T.Image, T.Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
+        T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 없이 바로 마크다운(#, -, ``` )·@멘션 사용" }),
+      ],
+      content: this.initial || "",
+      autofocus: true,
+      editorProps: {
+        handlePaste: (view, event) => {
+          const files = event.clipboardData && event.clipboardData.files;
+          if (files && files.length && handleFiles(files, view)) { event.preventDefault(); return true; }
+          return false;
+        },
+        handleDrop: (view, event) => {
+          const files = event.dataTransfer && event.dataTransfer.files;
+          if (files && files.length && handleFiles(files, view)) { event.preventDefault(); return true; }
+          return false;
+        },
+      },
+      onSelectionUpdate: () => { self.tick++; },
+      onTransaction: () => { self.tick++; },
+    });
+    if (this._dead) { try { this._ed.destroy(); } catch (e) { /* noop */ } return; }
     this.ready = true;
   },
   beforeUnmount() {
     this._dead = true;
     try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
-    try { if (this.crepe) this.crepe.destroy(); } catch (e) { /* noop */ }
+    try { if (this._ed) this._ed.destroy(); } catch (e) { /* noop */ }
   },
   methods: {
+    active(name, attrs) { this.tick; return this._ed && this._ed.isActive(name, attrs); },
+    cmd(fn) { if (this._ed) { fn(this._ed.chain().focus()); this._ed.commands.focus(); } },
+    tbBold() { this.cmd((c) => c.toggleBold().run()); },
+    tbItalic() { this.cmd((c) => c.toggleItalic().run()); },
+    tbStrike() { this.cmd((c) => c.toggleStrike().run()); },
+    tbCode() { this.cmd((c) => c.toggleCode().run()); },
+    tbH(l) { this.cmd((c) => c.toggleHeading({ level: l }).run()); },
+    tbBullet() { this.cmd((c) => c.toggleBulletList().run()); },
+    tbOrdered() { this.cmd((c) => c.toggleOrderedList().run()); },
+    tbQuote() { this.cmd((c) => c.toggleBlockquote().run()); },
+    tbCodeBlock() { this.cmd((c) => c.toggleCodeBlock().run()); },
+    tbTable() { this.cmd((c) => c.insertTable({ rows: 2, cols: 2, withHeaderRow: true }).run()); },
+    tbLink() {
+      const prev = this._ed.getAttributes("link").href || "";
+      const url = window.prompt("링크 URL", prev);
+      if (url === null) return;
+      if (url === "") { this.cmd((c) => c.unsetLink().run()); return; }
+      this.cmd((c) => c.extendMarkRange("link").setLink({ href: url }).run());
+    },
+    tbImage() { this.$refs.file && this.$refs.file.click(); },
+    onFile(e) {
+      const files = e.target.files;
+      if (files && files.length && this._ed) {
+        for (const f of files) {
+          if (!f.type || !f.type.startsWith("image/")) continue;
+          const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
+          const name = "paste-" + Date.now() + "-" + (++this._seq) + "." + ext;
+          const url = URL.createObjectURL(f);
+          this._pending.set(url, { blob: f, name });
+          this._ed.chain().focus().setImage({ src: url, alt: name }).run();
+        }
+      }
+      e.target.value = "";
+    },
     async submit() {
-      if (this.busy || !this.crepe) return;
-      let md = (this.crepe.getMarkdown() || "").trim();
-      if (!md) { this.err = "내용을 입력하세요."; return; }
+      if (this.busy || !this._ed) return;
+      let html = this._ed.getHTML();
+      const text = (this._ed.getText() || "").trim();
+      const hasImg = /<img\b/i.test(html);
+      if (!text && !hasImg) { this.err = "내용을 입력하세요."; return; }
       this.busy = true; this.err = "";
-      const uploaded = [];             // 이번에 올린 첨부 id (실패 시 롤백)
+      const uploaded = [];
       try {
-        // 본문에 남아있는 붙여넣기 이미지만 업로드 → 실제 파일명으로 치환.
         for (const [url, info] of this._pending) {
-          if (!md.includes(url)) continue;      // 중간에 지운 이미지는 업로드 안 함
+          if (!html.includes(url)) continue;            // 지운 이미지는 업로드 안 함
           const file = new File([info.blob], info.name, { type: info.blob.type || "image/png" });
           const res = await api.attachmentUpload(this.ticketKey, file);
           uploaded.push(res.id);
-          md = md.split("(" + url + ")").join("(" + res.filename + ")");   // (objectURL)→(파일명)
+          html = html.split(url).join(res.filename);    // objectURL → 실제 파일명
         }
-        await this.submitFn(md);
+        await this.submitFn(html);
         for (const u of this._pending.keys()) URL.revokeObjectURL(u);
         this._pending.clear();
         this.$emit("submitted");
       } catch (e) {
-        // 롤백: 이번 제출에서 올린 첨부만 삭제(취소/실패 시 흔적 제거)
-        for (const id of uploaded) {
-          try { await api.attachmentDelete(this.ticketKey, id); } catch (_) { /* best effort */ }
-        }
+        for (const id of uploaded) { try { await api.attachmentDelete(this.ticketKey, id); } catch (_) { /* noop */ } }
         this.err = "저장 실패: " + ((e && e.message) || e);
-      } finally {
-        this.busy = false;
-      }
+      } finally { this.busy = false; }
     },
   },
   template: `
@@ -89,6 +189,26 @@ export default {
       <button class="cmt-ed-btn" @click="$emit('cancel')">닫기</button>
     </div>
     <template v-else>
+      <div class="cmt-tb" v-show="ready">
+        <button type="button" class="tb-b" :class="{on:active('bold')}" @click="tbBold" title="굵게"><b>B</b></button>
+        <button type="button" class="tb-b" :class="{on:active('italic')}" @click="tbItalic" title="기울임"><i>I</i></button>
+        <button type="button" class="tb-b" :class="{on:active('strike')}" @click="tbStrike" title="취소선"><s>S</s></button>
+        <button type="button" class="tb-b" :class="{on:active('code')}" @click="tbCode" title="인라인 코드">&lt;/&gt;</button>
+        <span class="tb-sep"></span>
+        <button type="button" class="tb-b" :class="{on:active('heading',{level:1})}" @click="tbH(1)" title="제목1">H1</button>
+        <button type="button" class="tb-b" :class="{on:active('heading',{level:2})}" @click="tbH(2)" title="제목2">H2</button>
+        <button type="button" class="tb-b" :class="{on:active('heading',{level:3})}" @click="tbH(3)" title="제목3">H3</button>
+        <span class="tb-sep"></span>
+        <button type="button" class="tb-b" :class="{on:active('bulletList')}" @click="tbBullet" title="불릿">•</button>
+        <button type="button" class="tb-b" :class="{on:active('orderedList')}" @click="tbOrdered" title="번호">1.</button>
+        <button type="button" class="tb-b" :class="{on:active('blockquote')}" @click="tbQuote" title="인용">❝</button>
+        <button type="button" class="tb-b" :class="{on:active('codeBlock')}" @click="tbCodeBlock" title="코드블록">{ }</button>
+        <span class="tb-sep"></span>
+        <button type="button" class="tb-b" :class="{on:active('link')}" @click="tbLink" title="링크">🔗</button>
+        <button type="button" class="tb-b" @click="tbTable" title="표 삽입">▦</button>
+        <button type="button" class="tb-b" @click="tbImage" title="이미지">🖼</button>
+        <input ref="file" type="file" accept="image/*" multiple style="display:none" @change="onFile">
+      </div>
       <div ref="ed" class="cmt-ed-host"></div>
       <div class="cmt-ed-bar">
         <span v-if="err" class="cmt-ed-msg">{{ err }}</span>

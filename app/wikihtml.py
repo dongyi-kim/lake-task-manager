@@ -1,0 +1,375 @@
+"""HTML(에디터=TipTap) ↔ Jira wiki markup 양방향 변환.
+
+TipTap 은 HTML 을 다루고 Jira DC 8.20 댓글은 wiki markup 으로 저장·렌더한다.
+- 제출: 에디터 HTML → html_to_wiki → 저장
+- 수정 로드: 저장된 wiki → wiki_to_html → 에디터
+
+사람 멘션:  <span data-type="mention" data-id="사번">@이름</span>  <->  [~사번]
+링크/문서·웹 뱃지는 멘션이 아니라 일반 링크로 저장([text|url]) — 읽기 렌더에서 앱이 뱃지화한다.
+
+지원: h1~6 · 굵게/기울임/취소선/인라인코드 · 코드블록(언어) · 불릿/번호 리스트(중첩) ·
+      인용 · 링크 · 이미지 · 표 · 수평선 · 사람 멘션.
+"""
+
+from __future__ import annotations
+
+import re
+from html import escape, unescape
+from html.parser import HTMLParser
+
+# ────────────────────────── HTML → Jira wiki ──────────────────────────
+
+_VOID = {"br", "img", "hr"}
+_BLOCK = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li",
+          "blockquote", "pre", "table", "thead", "tbody", "tr", "td", "th", "hr", "div"}
+
+
+class _Node:
+    __slots__ = ("tag", "attrs", "children", "text")
+
+    def __init__(self, tag=None, attrs=None, text=None):
+        self.tag = tag
+        self.attrs = dict(attrs or [])
+        self.children = []
+        self.text = text
+
+
+class _Tree(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _Node("root")
+        self.stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        n = _Node(tag, attrs)
+        self.stack[-1].children.append(n)
+        if tag not in _VOID:
+            self.stack.append(n)
+
+    def handle_startendtag(self, tag, attrs):
+        self.stack[-1].children.append(_Node(tag, attrs))
+
+    def handle_endtag(self, tag):
+        for i in range(len(self.stack) - 1, 0, -1):
+            if self.stack[i].tag == tag:
+                del self.stack[i:]
+                return
+
+    def handle_data(self, data):
+        self.stack[-1].children.append(_Node(text=data))
+
+
+def _is_mention(n):
+    return n.tag == "span" and (n.attrs.get("data-type") == "mention" or "data-mention" in n.attrs)
+
+
+def _inline(node):
+    """인라인 노드/자식들을 wiki 문자열로."""
+    out = []
+    for c in node.children:
+        if c.text is not None:
+            out.append(c.text)
+            continue
+        t = c.tag
+        if _is_mention(c):
+            uid = c.attrs.get("data-id") or _txt(c).lstrip("@")
+            out.append("[~" + uid + "]")
+        elif t in ("strong", "b"):
+            out.append("*" + _inline(c) + "*")
+        elif t in ("em", "i"):
+            out.append("_" + _inline(c) + "_")
+        elif t in ("s", "del", "strike"):
+            out.append("-" + _inline(c) + "-")
+        elif t == "code":
+            out.append("{{" + _txt(c) + "}}")
+        elif t == "a":
+            href = (c.attrs.get("href") or "").strip()
+            label = _inline(c).strip()
+            out.append(("[" + label + "|" + href + "]") if href and label and label != href
+                       else ("[" + href + "]" if href else label))
+        elif t == "img":
+            src = (c.attrs.get("src") or "").strip()
+            if src:
+                out.append("!" + src + "!")
+        elif t == "br":
+            out.append("\n")
+        else:
+            out.append(_inline(c))
+    return "".join(out)
+
+
+def _txt(node):
+    if node.text is not None:
+        return node.text
+    return "".join(_txt(c) for c in node.children)
+
+
+def _blocks(node, lines, depth=0):
+    for c in node.children:
+        if c.text is not None:
+            if c.text.strip():                       # 벌거벗은 텍스트 → 문단
+                lines.append(_inline_wrap(c.text))
+                lines.append("")
+            continue
+        t = c.tag
+        if t == "p" or t == "div":
+            inner = _inline(c).strip()
+            if inner:
+                lines.append(inner)
+                lines.append("")
+        elif t in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            lines.append("h" + t[1] + ". " + _inline(c).strip())
+            lines.append("")
+        elif t in ("ul", "ol"):
+            _list(c, lines, "#" if t == "ol" else "*")
+            lines.append("")
+        elif t == "blockquote":
+            inner = []
+            _blocks(c, inner)
+            body = [x for x in inner if x.strip()]
+            if len(body) <= 1:
+                lines.append("bq. " + (body[0] if body else ""))
+            else:
+                lines.append("{quote}")
+                lines.extend(body)
+                lines.append("{quote}")
+            lines.append("")
+        elif t == "pre":
+            code = c.children[0] if c.children and c.children[0].tag == "code" else c
+            lang = ""
+            m = re.search(r"language-([A-Za-z0-9+#._-]+)", code.attrs.get("class", ""))
+            if m:
+                lang = m.group(1)
+            lines.append("{code:" + lang + "}" if lang else "{code}")
+            lines.append(_txt(code).rstrip("\n"))
+            lines.append("{code}")
+            lines.append("")
+        elif t == "table":
+            _table(c, lines)
+            lines.append("")
+        elif t == "hr":
+            lines.append("----")
+            lines.append("")
+        else:
+            _blocks(c, lines, depth)
+
+
+def _inline_wrap(text):
+    return text.strip()
+
+
+def _list(node, lines, marker):
+    for li in node.children:
+        if li.tag != "li":
+            continue
+        # li 의 인라인 텍스트(중첩 리스트 제외)
+        inline_parts, nested = [], []
+        for ch in li.children:
+            if ch.tag in ("ul", "ol"):
+                nested.append(ch)
+            else:
+                tmp = _Node("span")
+                tmp.children = [ch]
+                inline_parts.append(_inline(tmp))
+        text = "".join(inline_parts).strip()
+        if text:
+            lines.append(marker + " " + text)
+        for nl in nested:
+            _list(nl, lines, (marker + ("#" if nl.tag == "ol" else "*")))
+
+
+def _cells(tr):
+    return [ch for ch in tr.children if ch.tag in ("td", "th")]
+
+
+def _table(node, lines):
+    rows = []
+
+    def collect(n):
+        for ch in n.children:
+            if ch.tag == "tr":
+                rows.append(ch)
+            elif ch.tag in ("thead", "tbody", "tfoot"):
+                collect(ch)
+    collect(node)
+    for tr in rows:
+        cells = _cells(tr)
+        if cells and all(c.tag == "th" for c in cells):
+            lines.append("||" + "||".join(_inline(c).strip() for c in cells) + "||")
+        else:
+            lines.append("|" + "|".join(_inline(c).strip() or " " for c in cells) + "|")
+
+
+def html_to_wiki(html: str) -> str:
+    if not html:
+        return ""
+    tb = _Tree()
+    tb.feed(html)
+    tb.close()
+    lines = []
+    _blocks(tb.root, lines)
+    out = "\n".join(lines)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
+# ────────────────────────── Jira wiki → HTML ──────────────────────────
+# TipTap 이 파싱 가능한 표준 HTML 로. 사람 멘션 [~id] → <span data-type=mention>.
+# 이름 해석기(mr)를 주면 라벨을 본명으로.
+
+_WIKI_MONO = re.compile(r"\{\{(.+?)\}\}")
+_WIKI_MENTION = re.compile(r"\[~([^\]]+)\]")
+_WIKI_IMG = re.compile(r"!([^!\n|]+)(?:\|[^!\n]*)?!")
+_WIKI_LINK = re.compile(r"\[(?:([^\]|]+)\|)?([^\]]+)\]")
+
+
+def _wiki_inline_html(text, mr=None):
+    s = escape(text or "", quote=False)
+    spans = []
+
+    def stash(m):
+        spans.append(escape(m.group(1), quote=False))
+        return "\x00%d\x00" % (len(spans) - 1)
+
+    s = _WIKI_MONO.sub(stash, s)                                     # {{code}} 보호
+    # 멘션 [~id] (이미지·링크보다 먼저)
+    def _men(m):
+        uid = m.group(1).strip()
+        nm = (mr(uid) if mr else uid) or uid
+        u = escape(uid, quote=True)
+        lbl = escape(nm, quote=True)
+        return f'<span data-type="mention" data-id="{u}" data-label="{lbl}">@{escape(nm, quote=False)}</span>'
+    s = _WIKI_MENTION.sub(_men, s)
+    s = _WIKI_IMG.sub(lambda m: f'<img src="{escape(m.group(1).strip(), quote=True)}">', s)
+    s = _WIKI_LINK.sub(
+        lambda m: f'<a href="{escape(m.group(2).strip(), quote=True)}">'
+                  f'{escape(m.group(1), quote=False) if m.group(1) else escape(m.group(2).strip(), quote=False)}</a>', s)
+    s = re.sub(r"(?<![\w*])\*(\S(?:.*?\S)?)\*(?![\w*])", r"<strong>\1</strong>", s)
+    s = re.sub(r"(?<![\w_])_(\S(?:.*?\S)?)_(?![\w_])", r"<em>\1</em>", s)
+    s = re.sub(r"(?<![\w-])-(\S(?:.*?\S)?)-(?![\w-])", r"<s>\1</s>", s)
+
+    def pop(m):
+        return "<code>" + spans[int(m.group(1))] + "</code>"
+    return re.sub(r"\x00(\d+)\x00", pop, s)
+
+
+def wiki_to_html(wiki: str, mr=None) -> str:
+    if not wiki:
+        return "<p></p>"
+    lines = str(wiki).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    html, i, n = [], 0, len(lines)
+    while i < n:
+        line = lines[i]
+        st = line.strip()
+        m = re.match(r"^\{(code|noformat)(?::([^}]*))?\}\s*$", st)
+        if m:
+            lang = ""
+            if m.group(1) == "code" and m.group(2):
+                lm = re.search(r"(?:^|\|)\s*([A-Za-z0-9+#._-]+)\s*(?:$|\|)", m.group(2))
+                if lm and "=" not in lm.group(1):
+                    lang = lm.group(1)
+            body, i = [], i + 1
+            while i < n and not re.match(r"^\{" + m.group(1) + r"\}\s*$", lines[i].strip()):
+                body.append(lines[i])
+                i += 1
+            i += 1
+            cls = f' class="language-{escape(lang, quote=True)}"' if lang else ""
+            html.append(f"<pre><code{cls}>" + escape("\n".join(body)) + "</code></pre>")
+            continue
+        if st == "{quote}":
+            body, i = [], i + 1
+            while i < n and lines[i].strip() != "{quote}":
+                body.append(lines[i].strip())
+                i += 1
+            i += 1
+            html.append("<blockquote>" + "".join(
+                "<p>" + _wiki_inline_html(b, mr) + "</p>" for b in body if b) + "</blockquote>")
+            continue
+        if st.startswith("bq. "):
+            html.append("<blockquote><p>" + _wiki_inline_html(st[4:], mr) + "</p></blockquote>")
+            i += 1
+            continue
+        m = re.match(r"^h([1-6])\.\s+(.*)$", st)
+        if m:
+            html.append(f"<h{m.group(1)}>" + _wiki_inline_html(m.group(2), mr) + f"</h{m.group(1)}>")
+            i += 1
+            continue
+        if re.match(r"^-{4,}$", st):
+            html.append("<hr>")
+            i += 1
+            continue
+        if st.startswith("|"):
+            rows, i = [], i
+            while i < n and lines[i].strip().startswith("|"):
+                rows.append(lines[i].strip())
+                i += 1
+            html.append(_wiki_table_html(rows, mr))
+            continue
+        m = re.match(r"^([*#]+)\s+", st)
+        if m:
+            block, i = [], i
+            while i < n and re.match(r"^[*#]+\s+", lines[i].strip()):
+                block.append(lines[i].strip())
+                i += 1
+            html.append(_wiki_list_html(block, mr))
+            continue
+        if st == "":
+            i += 1
+            continue
+        # 문단 — 연속 비블록 줄
+        para, i = [], i
+        while i < n:
+            s2 = lines[i].strip()
+            if (s2 == "" or s2.startswith(("|", "{code", "{noformat", "{quote", "bq. "))
+                    or re.match(r"^h[1-6]\.\s", s2) or re.match(r"^[*#]+\s", s2)
+                    or re.match(r"^-{4,}$", s2)):
+                break
+            para.append(s2)
+            i += 1
+        if para:
+            html.append("<p>" + "<br>".join(_wiki_inline_html(p, mr) for p in para) + "</p>")
+    return "".join(html) or "<p></p>"
+
+
+def _wiki_list_html(items, mr=None):
+    def build(idx, depth):
+        first = re.match(r"^([*#]+)", items[idx]).group(1)
+        tag = "ol" if first[-1] == "#" else "ul"
+        out, i = [], idx
+        while i < len(items):
+            marks = re.match(r"^([*#]+)\s+(.*)$", items[i])
+            lvl, text = len(marks.group(1)), marks.group(2)
+            cur = "ol" if marks.group(1)[-1] == "#" else "ul"
+            if lvl < depth or (lvl == depth and cur != tag):
+                break
+            if lvl > depth:
+                inner, i = build(i, depth + 1)
+                if out:
+                    out[-1] = out[-1][:-5] + inner + "</li>"
+                continue
+            out.append("<li>" + _wiki_inline_html(text, mr) + "</li>")
+            i += 1
+        return "<" + tag + ">" + "".join(out) + "</" + tag + ">", i
+
+    frags, i = [], 0
+    while i < len(items):
+        f, i = build(i, 1)
+        frags.append(f)
+    return "".join(frags)
+
+
+def _wiki_table_html(rows, mr=None):
+    out = ["<table><tbody>"]
+    for r in rows:
+        r = r.strip()
+        if r.startswith("||"):
+            cells = [c for c in r.split("||") if c != ""]
+            tag = "th"
+        else:
+            inner = r[1:-1] if r.endswith("|") else r[1:]
+            cells = inner.split("|")
+            tag = "td"
+        out.append("<tr>" + "".join(f"<{tag}>" + _wiki_inline_html(c.strip(), mr) + f"</{tag}>"
+                                    for c in cells) + "</tr>")
+    out.append("</tbody></table>")
+    return "".join(out)

@@ -25,11 +25,11 @@ from .auth.base import SessionExpired
 from .cache import Cache
 from .jira_client import JiraClient
 from .settings import STATIC_DIR, get_settings, load_plan, load_people
-from .wikimd import md_to_wiki
+from .wikihtml import html_to_wiki
 
 
 class _CommentBody(BaseModel):
-    markdown: str = ""
+    html: str = ""
 
 app = FastAPI(title="Lake Task Manager")
 
@@ -241,6 +241,12 @@ def api_search(q: str = "", scope: str = "scoped", limit: int = 8):
     return JSONResponse(search.search_all(_client, _settings, q, scope, limit))
 
 
+@app.get("/api/mention/users")
+def api_mention_users(q: str = "", limit: int = 8):
+    """@사람 멘션 자동완성 — [{id, name, avatar}]. 에디터가 @ 입력 시 호출."""
+    return JSONResponse(search.search_users(_client, _settings, q, limit))
+
+
 @app.get("/api/img")
 def api_img(u: str):
     """이미지 프록시 — 인증(SSO) 세션으로 사내 Jira/CDN 이미지를 받아 same-origin 으로 반환.
@@ -332,7 +338,7 @@ def api_ticket_siblings(key: str):
 # mock/local/prod 동일 경로(jira820 이 쓰기 지원 → 로컬 검증 가능). XSRF 는 provider 가 처리.
 @app.post("/api/ticket/{key}/comment")
 def api_comment_create(key: str, body: _CommentBody):
-    wiki = md_to_wiki(body.markdown or "")
+    wiki = html_to_wiki(body.html or "")
     if not wiki.strip():
         return JSONResponse({"error": "빈 코멘트"}, status_code=400)
     return JSONResponse(_client.add_comment(key, wiki), status_code=201)
@@ -340,7 +346,7 @@ def api_comment_create(key: str, body: _CommentBody):
 
 @app.put("/api/ticket/{key}/comment/{cid}")
 def api_comment_update(key: str, cid: str, body: _CommentBody):
-    wiki = md_to_wiki(body.markdown or "")
+    wiki = html_to_wiki(body.html or "")
     if not wiki.strip():
         return JSONResponse({"error": "빈 코멘트"}, status_code=400)
     return JSONResponse(_client.update_comment(key, cid, wiki))

@@ -528,13 +528,68 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-cmt-addbtn:hover { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
 .tkt-cmt-err { margin-top: 8px; font-size: 12px; color: #d1425c; }
 
-/* CommentEditor (Toast UI 래퍼) */
+/* CommentEditor (TipTap) */
 .cmt-editor { margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
   background: var(--panel); }
-.cmt-ed-host { max-height: 420px; overflow: auto; }
-/* Milkdown Crepe 본문 높이 — 내용 따라 늘되 최소 높이 확보 */
-.cmt-ed-host .milkdown { min-height: 200px; }
-.cmt-ed-host .milkdown .ProseMirror { padding: 12px 14px; }
+/* 툴바 */
+.cmt-tb { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 8px;
+  border-bottom: 1px solid var(--border); background: var(--panel-2); }
+.cmt-tb .tb-b { min-width: 28px; height: 26px; padding: 0 6px; border: 1px solid transparent;
+  border-radius: 6px; background: none; color: var(--muted); cursor: pointer; font-size: 12.5px;
+  line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+.cmt-tb .tb-b:hover { color: var(--text); background: var(--panel); border-color: var(--border); }
+.cmt-tb .tb-b.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); border-color: var(--accent); }
+.cmt-tb .tb-sep { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
+.cmt-ed-host { max-height: 440px; overflow: auto; }
+
+/* 본문 타이포 — 렌더된 댓글/설명(.tkt-desc)과 동일한 CSS·글자크기로 맞춘다(WYSIWYG 일치) */
+.cmt-ed-host .ProseMirror { padding: 12px 15px; font-size: 13.5px; line-height: 1.65;
+  color: var(--text); outline: none; word-break: break-word; min-height: 150px; }
+.cmt-ed-host .ProseMirror:focus { outline: none; }
+.cmt-ed-host .ProseMirror > :last-child { margin-bottom: 0; }
+.cmt-ed-host .ProseMirror p { margin: 0 0 6px; }
+.cmt-ed-host .ProseMirror h1, .cmt-ed-host .ProseMirror h2,
+.cmt-ed-host .ProseMirror h3, .cmt-ed-host .ProseMirror h4 { margin: 18px 0 8px; font-weight: 700; line-height: 1.3; }
+.cmt-ed-host .ProseMirror h1 { font-size: 17px; border-bottom: 1px solid var(--accent); padding-bottom: 5px; }
+.cmt-ed-host .ProseMirror h2 { font-size: 15.5px; border-bottom: 1px solid var(--good); padding-bottom: 5px; }
+.cmt-ed-host .ProseMirror h3 { font-size: 14px; }
+.cmt-ed-host .ProseMirror ul, .cmt-ed-host .ProseMirror ol { margin: 0 0 10px; padding-left: 22px; }
+.cmt-ed-host .ProseMirror li { margin: 2px 0; }
+.cmt-ed-host .ProseMirror li > p { margin: 0; }
+.cmt-ed-host .ProseMirror a { color: var(--accent); text-decoration: none; }
+.cmt-ed-host .ProseMirror blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--border); color: var(--muted); }
+.cmt-ed-host .ProseMirror code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12.5px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+.cmt-ed-host .ProseMirror pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; margin: 0 0 10px; overflow: auto; }
+.cmt-ed-host .ProseMirror pre code { background: none; border: 0; padding: 0; font-size: 12.5px; }
+.cmt-ed-host .ProseMirror img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; }
+.cmt-ed-host .ProseMirror hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+.cmt-ed-host .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder);
+  color: var(--muted-2); float: left; height: 0; pointer-events: none; }
+/* 표 */
+.cmt-ed-host .ProseMirror table { border-collapse: collapse; margin: 0 0 10px; width: auto; }
+.cmt-ed-host .ProseMirror th, .cmt-ed-host .ProseMirror td { border: 1px solid var(--border);
+  padding: 5px 9px; min-width: 40px; vertical-align: top; }
+.cmt-ed-host .ProseMirror th { background: var(--panel-2); font-weight: 700; }
+.cmt-ed-host .ProseMirror .selectedCell:after { background: color-mix(in srgb, var(--accent) 18%, transparent);
+  content: ""; position: absolute; inset: 0; pointer-events: none; }
+.cmt-ed-host .ProseMirror .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: 0;
+  width: 3px; background: var(--accent); pointer-events: none; }
+/* 멘션 칩 */
+.cmt-ed-host .ProseMirror .mention { color: var(--accent); font-weight: 700; background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 4px; padding: 0 3px; }
+/* @멘션 자동완성 팝업 (body 에 append) */
+.mention-popup { position: fixed; z-index: 100000; min-width: 200px; max-width: 320px; max-height: 240px;
+  overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.22); padding: 4px; font-size: 13px; }
+.mention-popup .mn-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; cursor: pointer; }
+.mention-popup .mn-item.sel, .mention-popup .mn-item:hover { background: var(--panel-2); }
+.mention-popup .mn-av { width: 20px; height: 20px; border-radius: 50%; flex: none; object-fit: cover; }
+.mention-popup .mn-nm { color: var(--text); font-weight: 600; }
+.mention-popup .mn-id { color: var(--muted-2); font-size: 11px; margin-left: auto; }
+.mention-popup .mn-empty { padding: 8px 10px; color: var(--muted); }
+
 .cmt-ed-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
   border-top: 1px solid var(--border); background: var(--panel-2); }
 .cmt-ed-msg { font-size: 12px; color: #d1425c; margin-right: auto; }

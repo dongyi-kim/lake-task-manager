@@ -163,7 +163,7 @@ export default {
       this.composing = false; this.editErr = "";
       try {
         const src = await api.commentSource(this.tk, c.id);
-        this.editInitial = (src && src.markdown) || "";
+        this.editInitial = (src && src.html) || "";
         this.editingId = c.id;
       } catch (e) { this.editErr = "댓글 원본을 불러오지 못했습니다."; }
     },
