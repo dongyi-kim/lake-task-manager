@@ -3,6 +3,7 @@
 //   · 테마(다크/라이트) 토글 · Dev Tools · rev
 // 백엔드: /api/health · /api/dev/sso/{service}(서비스별) · /api/dev/tools · /api/login
 import { api } from "../../lib/api.js";
+import { TYPEAHEAD_PRESETS, typeaheadDelay, setTypeaheadDelay } from "../../lib/typeahead.js";
 
 const SERVICES = ["Jira", "Confluence", "Bitbucket"];
 
@@ -15,9 +16,11 @@ export default {
       open: false, rev: "", tools: null, loggingIn: false,
       // 서비스별 독립 상태 — loading|ok|no|off|err. 각자 도착하는 대로 렌더된다.
       services: SERVICES.map((name) => ({ name, status: "loading", detail: "", configured: null })),
+      taMs: typeaheadDelay(),          // 자동완성 대기(ms) — 검색·문서/티켓 링크·@멘션 공통
     };
   },
   computed: {
+    taPresets() { return TYPEAHEAD_PRESETS; },
     needsAuth() { return this.services.some((s) => s.status === "no" || s.status === "err"); },
   },
   mounted() {
@@ -32,6 +35,7 @@ export default {
   },
   methods: {
     toggle() { this.open ? this.close() : this.openMenu(); },
+    setTa(ms) { this.taMs = ms; setTypeaheadDelay(ms); },
     openMenu() {
       this.open = true;
       api.health().then((h) => { this.rev = (h && h.rev) || ""; }).catch(() => {});
@@ -95,6 +99,15 @@ export default {
                   :aria-checked="theme === 'dark'" @click="$emit('toggle-theme')" title="다크/라이트">
             <span class="sm-knob"></span>
           </button>
+        </div>
+        <!-- 자동완성 대기 — 통합검색·티켓/문서 링크·@멘션 공통. 얼마나 멈춰야 갱신할지. -->
+        <div class="sm-ta">
+          <div class="sm-ta-l">⌨ 자동완성 반응 속도<span class="sm-ta-ms">{{ taMs }}ms</span></div>
+          <div class="sm-ta-seg">
+            <button v-for="o in taPresets" :key="o.ms" :class="{ on: taMs === o.ms }"
+                    @click="setTa(o.ms)" :title="o.hint">{{ o.label }}</button>
+          </div>
+          <div class="sm-ta-h">타이핑을 이만큼 멈추면 검색어를 갱신합니다. 느린 망에선 길게.</div>
         </div>
       </div>
 

@@ -15,6 +15,6 @@ from app.fakebridge import build_injected_app
 
 if __name__ == "__main__":
     port = int(os.getenv("FAKE_PORT", "8080"))
-    print("Fake Jira DC 8.20.8 (jira820, world 주입) - http://localhost:%d  (latency=%sms)"
+    print("Fake Jira DC 8.20.8 (jira820, world 주입) - http://127.0.0.1:%d  (latency=%sms)"
           % (port, os.getenv("FAKE_LATENCY_MS", "0")))
     uvicorn.run(build_injected_app(), host="127.0.0.1", port=port, log_level="info")

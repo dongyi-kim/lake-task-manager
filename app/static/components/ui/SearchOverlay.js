@@ -4,6 +4,7 @@
 import { api } from "../../lib/api.js";
 import { ymdhm } from "../../lib/fmt.js";
 import { recordOpen, stripTags } from "../../lib/recent.js";
+import { createTypeahead } from "../../lib/typeahead.js";
 
 export default {
   name: "SearchOverlay",
@@ -11,6 +12,11 @@ export default {
   data() {
     return { q: "", scope: "scoped", res: null, loading: false, err: "",
              active: -1, optsOpen: false, recent: [] };
+  },
+  created() {
+    this._ta = createTypeahead(
+      (q) => api.search(q, this.scope).catch((e) => ({ error: e.message || "검색 실패" })),
+      { minLen: 2, cacheMs: 12000, emptyValue: null });
   },
   mounted() {
     this._onKey = (e) => {
@@ -30,8 +36,8 @@ export default {
     // 이전 검색어를 선택 상태로 둔다 — 바로 새로 타이핑하면 덮어써지고, 그대로 두면 결과 유지
     this.$nextTick(() => { const el = this.$refs.input; if (el) { el.focus(); el.select(); } });
   },
-  deactivated() { window.removeEventListener("keydown", this._onKey); clearTimeout(this._t); },
-  unmounted() { window.removeEventListener("keydown", this._onKey); clearTimeout(this._t); },
+  deactivated() { window.removeEventListener("keydown", this._onKey); this._ta.cancel(); },
+  unmounted() { window.removeEventListener("keydown", this._onKey); this._ta.cancel(); },
   watch: {
     q() { this.schedule(); },
     scope() { if (this.q.trim()) this.run(); },
@@ -50,15 +56,20 @@ export default {
     scopeLabel() { return this.scope === "scoped" ? "소속 프로젝트/스페이스" : "전체"; },
   },
   methods: {
-    schedule() { clearTimeout(this._t); this._t = setTimeout(() => this.run(), 280); },
-    async run() {
+    // 디바운스·응답 역전 방어·같은 질의 캐시는 typeahead 가 맡는다(대기 시간은 설정값).
+    schedule() {
       const q = this.q.trim();
-      if (!q) { this.res = null; this.err = ""; this.active = -1; return; }
-      this.loading = true; this.err = "";
-      try { this.res = await api.search(q, this.scope); this.active = this.flat.length ? 0 : -1; }
-      catch (e) { this.err = e.message || "검색 실패"; this.res = null; }
-      finally { this.loading = false; }
+      if (!q) { this._ta.cancel(); this.res = null; this.err = ""; this.loading = false; this.active = -1; return; }
+      this.loading = true;
+      this._ta.run(q).then((r) => {
+        if (r === null) return;                 // 낡은 응답 — 버린다(목록이 튀는 원인)
+        this.loading = false;
+        if (r && r.error) { this.err = r.error; this.res = null; return; }
+        this.err = ""; this.res = r;
+        this.active = this.flat.length ? 0 : -1;
+      });
     },
+    run() { this.schedule(); },                 // scope 변경 등 즉시 재조회도 같은 경로로
     move(d) { const n = this.flat.length; if (!n) return; this.active = (this.active + d + n) % n; this.scrollActive(); },
     scrollActive() { this.$nextTick(() => { const el = this.$el.querySelector(".sr-item.active"); if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" }); }); },
     idx(src, i) { return this.flat.findIndex((f) => f.src === src && f.it === (this.res[src].items[i])); },

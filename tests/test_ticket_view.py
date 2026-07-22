@@ -119,8 +119,10 @@ def test_mock_comments_render_sanitized_html_with_badges():
 
 
 def test_media_host_allow_and_ssrf_block():
-    c = _client()   # mock: jira_base=http://localhost:8080 → host 'localhost'
-    assert c._media_allowed_host("localhost")
+    # dev jira_base 는 127.0.0.1:8080 (localhost 는 Windows 에서 ::1 폴백으로 요청마다 ~2초)
+    c = _client()
+    from urllib.parse import urlparse
+    assert c._media_allowed_host(urlparse(c.s.jira_base).hostname)
     assert not c._media_allowed_host("evil.example")
     # fetch_media 는 허용 안 된 호스트를 즉시 차단(SSRF 방지)
     assert c.fetch_media("https://evil.example/x.png") == (None, None)

@@ -10,6 +10,7 @@ import { ensureHljsTheme } from "../../lib/hljs.js";
 import { saveDraft, loadDraft, clearDraft, purgeExpired } from "../../lib/draft.js";
 import { api } from "../../lib/api.js";
 import { sigColor, initialOf } from "../../lib/colors.js";
+import { debouncedItems } from "../../lib/typeahead.js";
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
@@ -415,9 +416,14 @@ function singleLineHeadingExt(T) {
 // @사람 멘션 자동완성 팝업 (tippy 없이 순수 DOM) — TipTap suggestion.render 핸들러.
 // ticketKey: 빈 쿼리 시 이 티켓 관련 사람(리포터/담당/댓글작성/멘션)·모듈 사람을 우선 표시.
 function mentionSuggestion(ticketKey) {
+  // 디바운스 없이 두면 **한 글자마다** 요청이 나간다(한글은 자모 단위라 더 심하다).
+  // 대기 중이던 호출은 최신 결과로 함께 해소한다 — 취소해 버리면 팝업이 멎는다.
+  // ★ TipTap 은 items 에 **객체**({ query, editor, … })를 넘긴다. 문자열로 받으면
+  //   질의가 "[object Object]" 가 돼 팝업이 늘 비어 보인다.
+  const fetchUsers = debouncedItems((q) => api.mentionUsers(q, ticketKey));
   return {
     char: "@",
-    items: ({ query }) => api.mentionUsers(query, ticketKey).then((r) => r || []).catch(() => []),
+    items: ({ query }) => fetchUsers(query || ""),
     render: () => {
       let el = null, items = [], sel = 0, command = null;
       const paint = () => {

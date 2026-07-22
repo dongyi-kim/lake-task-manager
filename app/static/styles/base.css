@@ -126,6 +126,16 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
 /* 테마 토글 스위치 */
 .sm-toggle-row { display: flex; align-items: center; justify-content: space-between; }
 .sm-tg-label { font-size: 13px; color: var(--text); }
+/* 자동완성 반응 속도 — 통합검색·링크 팝오버·@멘션 공통 대기시간 */
+.sm-ta { margin-top: 11px; }
+.sm-ta-l { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); margin-bottom: 6px; }
+.sm-ta-ms { margin-left: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--muted); }
+.sm-ta-seg { display: flex; gap: 3px; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 2px; }
+.sm-ta-seg button { flex: 1 1 0; border: 0; background: none; color: var(--muted); cursor: pointer;
+  font-size: 11.5px; padding: 4px 2px; border-radius: 6px; white-space: nowrap; }
+.sm-ta-seg button.on { background: var(--panel); color: var(--text); font-weight: 600; }
+.sm-ta-h { font-size: 10.5px; color: var(--muted-2); margin-top: 5px; line-height: 1.45; }
 .sm-switch { position: relative; width: 42px; height: 24px; border-radius: 999px; flex: none;
   border: 1px solid var(--border); background: var(--panel-2); cursor: pointer; padding: 0;
   transition: background .15s, border-color .15s; }

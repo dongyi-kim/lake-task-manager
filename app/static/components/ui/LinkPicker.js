@@ -6,6 +6,7 @@
 // 둘 다 Jira 의 링크 기능이다(전자=issue link, 후자=remote link). 저장은 부모가 emit 을 받아
 // api.linkAdd / api.documentAdd 로 처리한다 — 이 컴포넌트는 '무엇을 붙일지' 고르는 역할만 한다.
 import { api } from "../../lib/api.js";
+import { createTypeahead } from "../../lib/typeahead.js";
 
 const _URL_RE = /^https?:\/\/\S+$/i;
 
@@ -39,6 +40,12 @@ export default {
     },
     relKey() { return this.type + "|" + this.direction; },
   },
+  created() {
+    this._ta = createTypeahead(
+      (q) => api.search(q, "all", this.isJira ? "jira" : "confluence")
+               .catch((e) => ({ error: e.message || "검색 실패" })),
+      { minLen: 2, cacheMs: 12000, emptyValue: { jira: { items: [] }, confluence: { items: [] } } });
+  },
   mounted() {
     this.$nextTick(() => { const el = this.$refs.input; if (el) el.focus(); });
     this._onDoc = (e) => { if (this.$el && !this.$el.contains(e.target)) this.$emit("close"); };
@@ -57,29 +64,30 @@ export default {
   unmounted() {
     document.removeEventListener("click", this._onDoc);
     document.removeEventListener("keydown", this._onEsc, true);
-    clearTimeout(this._t);
+    this._ta.cancel();
   },
   watch: {
-    q() { clearTimeout(this._t); this._t = setTimeout(() => this.run(), 280); },
+    q() { this.run(); },
   },
   methods: {
     setRel(e) {
       const o = this.typeOpts[+e.target.value];
       if (o) { this.type = o.name; this.direction = o.direction; }
     },
-    async run() {
+    run() {
       const q = this.q.trim();
-      if (!q || this.rawUrl) { this.items = []; this.active = -1; return; }
+      if (!q || this.rawUrl) { this._ta.cancel(); this.items = []; this.loading = false; this.active = -1; return; }
       this.loading = true; this.serr = "";
-      try {
-        const r = await api.search(q, "all", this.isJira ? "jira" : "confluence");
-        const src = this.isJira ? r.jira : r.confluence;
+      this._ta.run(q).then((r) => {
+        if (r === null) return;                 // 낡은 응답 — 버린다
+        this.loading = false;
+        if (r && r.error) { this.serr = r.error; this.items = []; return; }
+        const src = (this.isJira ? (r || {}).jira : (r || {}).confluence) || {};
         const skip = new Set((this.excludeKeys || []).map((k) => String(k).toUpperCase()));
         this.items = (src.items || []).filter((it) => !this.isJira || !skip.has((it.key || "").toUpperCase()));
         this.serr = src.error || "";
         this.active = this.items.length ? 0 : -1;
-      } catch (e) { this.serr = e.message || "검색 실패"; this.items = []; }
-      finally { this.loading = false; }
+      });
     },
     onKey(e) {
       if (e.key === "ArrowDown") { e.preventDefault(); this.move(1); }
