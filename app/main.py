@@ -49,15 +49,19 @@ def _on_session_expired(request: Request, exc: SessionExpired):
 from app import devtools as _devtools   # noqa: E402
 
 
-def _probe_result(label, fn):
-    """fn() 상류 호출 결과의 **필드 구조만**(값 마스킹) 돌려준다 — 화면에 찍어 확인용."""
+def _probe_result(label, fn, kind=None, full=False):
+    """fn() 상류 호출 결과에서 **필요한 필드만**(값 마스킹) 추려 돌려준다.
+    kind 가 있으면 digest(결과배열 위치 + 첫 항목 핵심 구조)만. full=1 이면 전체 스키마도."""
     try:
         raw = fn()
     except Exception as e:
         return {"label": label, "error": str(e)}
-    return {"label": label,
-            "keys": _devtools.key_tree(_devtools.schema_of(raw)),
-            "schema": _devtools.schema_of(raw)}
+    out = {"label": label}
+    if kind:
+        out["digest"] = _devtools.bitbucket_digest(raw, kind)
+    if full or not kind:
+        out["schema"] = _devtools.schema_of(raw)
+    return out
 
 
 if _devtools.enabled(_settings, "bitbucket_probe"):
@@ -65,20 +69,22 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
     _BB = (_settings.bitbucket_base or "").rstrip("/")
 
     @app.get("/api/dev/bitbucket/repos")
-    def _dev_bb_repos(name: str = "", limit: int = 3):
+    def _dev_bb_repos(name: str = "", limit: int = 3, full: bool = False):
         base = _BB
         return _probe_result(
             "GET /rest/api/1.0/repos",
             lambda: _client.provider.get_json(base + "/rest/api/1.0/repos",
-                                              params={"name": name, "limit": limit}))
+                                              params={"name": name, "limit": limit}),
+            kind="repo", full=full)
 
     @app.get("/api/dev/bitbucket/code")
-    def _dev_bb_code(q: str = "test", limit: int = 3):
+    def _dev_bb_code(q: str = "test", limit: int = 3, full: bool = False):
         base = _BB
         body = {"query": q, "entities": {"code": {"start": 0, "limit": limit}}}
         return _probe_result(
             "POST /rest/search/latest/search",
-            lambda: _client.provider.post_json(base + "/rest/search/latest/search", body))
+            lambda: _client.provider.post_json(base + "/rest/search/latest/search", body),
+            kind="code", full=full)
 
     @app.get("/api/dev/tools")
     def _dev_tools_list():

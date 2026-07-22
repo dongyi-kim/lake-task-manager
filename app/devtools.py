@@ -90,3 +90,78 @@ def key_tree(value, _prefix="", _out=None):
     else:
         _out.append(f"{_prefix} : {value}")
     return _out
+
+
+# ── 필요한 필드만 추리는 digest ──────────────────────────────────────
+# 전체 스키마는 너무 크다. mock/렌더에 실제 쓰는 것만 찾아 '경로 = 샘플' 로 압축한다.
+
+def _find_first_list(value, _path=""):
+    """응답에서 '결과 배열'로 보이는 첫 리스트를 찾는다 — (경로, 항목들)."""
+    if isinstance(value, list) and value and isinstance(value[0], (dict,)):
+        return _path, value
+    if isinstance(value, dict):
+        # values/results/hits 를 우선, 없으면 아무 dict 리스트
+        for pref in ("values", "results", "hits"):
+            if isinstance(value.get(pref), list) and value[pref] and isinstance(value[pref][0], dict):
+                return (_path + "." + pref).lstrip("."), value[pref]
+        for k, v in value.items():
+            got = _find_first_list(v, (_path + "." + k).lstrip("."))
+            if got[1]:
+                return got
+    return _path, None
+
+
+def _dig(item, names, _prefix="", _depth=0):
+    """dict 를 3단까지 훑어 이름 후보와 맞는 첫 스칼라 필드를 찾는다 — (경로, 값).
+    스칼라 직접 매칭을 우선하고(같은 깊이에서), 없으면 중첩으로 내려간다."""
+    if not isinstance(item, dict) or _depth > 3:
+        return None, None
+    for k, v in item.items():                       # 이 깊이의 스칼라 먼저
+        if k.lower() in names and not isinstance(v, (dict, list)):
+            return (f"{_prefix}.{k}".lstrip("."), v)
+    for k, v in item.items():                       # 그다음 중첩
+        if isinstance(v, dict):
+            got = _dig(v, names, f"{_prefix}.{k}".lstrip("."), _depth + 1)
+            if got[0]:
+                return got
+    return None, None
+
+
+def _sample(v):
+    if isinstance(v, str):
+        return v[:40] + ("…" if len(v) > 40 else "")
+    return v
+
+
+# 렌더/검색에 무의미한 잡음 키 — digest 에서 뺀다(읽을 게 확 줄어든다)
+_NOISE_KEYS = {"links", "_links", "self", "avatarurl", "avatarurl16x16", "iconurl",
+               "iconcssclass", "scope", "scmid", "statusmessage", "hierarchyid",
+               "public", "forkable", "id"}
+
+
+def _prune(value, _depth=0):
+    """스키마에서 노이즈 키 제거 + 깊이 제한. mock 에 쓸 구조만 남긴다."""
+    if _depth > 4:
+        return "…"
+    if isinstance(value, dict):
+        return {k: _prune(v, _depth + 1) for k, v in value.items()
+                if k.lower() not in _NOISE_KEYS}
+    if isinstance(value, list):
+        return [_prune(v, _depth + 1) for v in value[:2]]
+    return value
+
+
+def bitbucket_digest(resp, kind):
+    """code/repo 검색 응답에서 **필요한 것만** — 결과 배열 위치 + 첫 항목의 (잡음 뺀) 구조.
+
+    kind 는 라벨용. 첫 항목 하나의 구조만 보면 mock 을 맞출 수 있다.
+    """
+    path, items = _find_first_list(resp)
+    out = {"종류": kind,
+           "결과배열_경로": path or "(못 찾음)",
+           "결과_개수": len(items) if items else 0,
+           "최상위_키": list(resp.keys()) if isinstance(resp, dict) else "(dict 아님)"}
+    if items:
+        # 첫 항목의 구조(값 마스킹 + 노이즈 제거) — 이것만 읽어주면 됨
+        out["첫_항목_구조"] = _prune(schema_of(items[0]))
+    return out

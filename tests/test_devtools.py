@@ -40,14 +40,32 @@ def test_enabled_flag():
     assert not dt.any_enabled(S2)
 
 
-def test_dev_routes_absent_by_default():
-    """dev_tools 가 비면 /api/dev/* 라우트 자체가 없다."""
+def test_dev_routes_gated_by_flag(monkeypatch):
+    """dev_tools 가 비면 /api/dev/* 라우트 자체가 없고, 켜면 붙는다.
+
+    config 값에 의존하지 않게 env(LAKE_DEV_TOOLS)로 강제한다.
+    """
     import importlib
-    import app.settings
-    import app.main
-    importlib.reload(app.settings)
-    importlib.reload(app.main)
     from fastapi.testclient import TestClient
+
+    # 꺼짐 — env 로 빈 목록 강제
+    monkeypatch.setenv("LAKE_DEV_TOOLS", "__none__")
+    import app.settings
+    importlib.reload(app.settings)
+    import app.main
+    importlib.reload(app.main)
     c = TestClient(app.main.app)
     assert c.get("/api/dev/tools").status_code == 404
     assert c.get("/api/health").status_code == 200
+
+    # 켜짐 — env 로 활성화하면 라우트가 생긴다
+    monkeypatch.setenv("LAKE_DEV_TOOLS", "bitbucket_probe")
+    importlib.reload(app.settings)
+    importlib.reload(app.main)
+    c2 = TestClient(app.main.app)
+    assert c2.get("/api/dev/tools").status_code == 200
+
+    # 원상복구 — 다른 테스트에 영향 없게 기본으로 리로드
+    monkeypatch.delenv("LAKE_DEV_TOOLS", raising=False)
+    importlib.reload(app.settings)
+    importlib.reload(app.main)
