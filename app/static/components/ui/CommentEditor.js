@@ -227,9 +227,14 @@ function updateBadgeTitle(editor, href, title, expect) {
   editor.view.dispatch(editor.state.tr.setNodeMarkup(at, undefined, { href, title }));
 }
 
+// 앱 화면 이름 — app-root 의 해시 라우트/nav 라벨과 맞춘다(기본 라우트는 wbs).
+const _APP_PAGES = {
+  wbs: "WBS Dashboard", vit: "현안 (PMO_VIT)", workload: "인력 워크로드", devtools: "Dev Tools",
+};
+
 // 우리 앱 URL 을 붙여넣은 경우의 정규화. 외부 URL 이면 null.
 //  · {앱}/browse/KEY  → **실 Jira 티켓 주소**(그게 정본) + 제목은 티켓 키
-//  · 그 외 앱 URL     → 'Lake Task Manager' 뱃지 (localhost 링크로 보이지 않게)
+//  · 그 외 앱 URL     → 'Lake Task Manager - {화면 이름}' 뱃지 (localhost 링크로 보이지 않게)
 function normalizeAppUrl(url, jiraBase) {
   try {
     const u = new URL(url, location.href);
@@ -240,7 +245,9 @@ function normalizeAppUrl(url, jiraBase) {
       const base = (jiraBase || "").replace(/\/+$/, "");
       return { href: (base || location.origin) + "/browse/" + key, title: key, key };
     }
-    return { href: url, title: "Lake Task Manager" };
+    const route = (u.hash || "").replace(/^#\/?/, "").split(/[?/]/)[0] || "wbs";
+    const page = _APP_PAGES[route] || route || "";
+    return { href: url, title: "Lake Task Manager" + (page ? " - " + page : "") };
   } catch (e) { return null; }
 }
 
