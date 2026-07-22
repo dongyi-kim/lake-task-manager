@@ -114,3 +114,50 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
 .sm-refresh { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border);
   background: var(--panel); color: var(--muted); cursor: pointer; font-size: 14px; }
 .sm-refresh:hover { color: var(--text); border-color: var(--accent); }
+
+/* 미설정 서비스 */
+.sm-dot.off { background: var(--muted-2); }
+.sm-state.off { color: var(--muted-2); }
+
+/* 테마 토글 스위치 */
+.sm-toggle-row { display: flex; align-items: center; justify-content: space-between; }
+.sm-tg-label { font-size: 13px; color: var(--text); }
+.sm-switch { position: relative; width: 42px; height: 24px; border-radius: 999px; flex: none;
+  border: 1px solid var(--border); background: var(--panel-2); cursor: pointer; padding: 0;
+  transition: background .15s, border-color .15s; }
+.sm-switch.on { background: var(--accent); border-color: var(--accent); }
+.sm-knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .15s; }
+.sm-switch.on .sm-knob { transform: translateX(18px); }
+.sm-devgo { text-decoration: none; display: block; }
+
+/* ── Dev Tools 페이지(#/devtools) ── */
+.devtools-page { max-width: 900px; }
+.dt-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+.dt-head h1 { font-size: 22px; margin: 0; }
+.dt-rev { font-size: 12px; color: var(--muted-2);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+.dt-intro { color: var(--muted); font-size: 13px; margin: 4px 0 18px; line-height: 1.5; }
+.dt-empty { color: var(--muted); padding: 20px; }
+.dt-card { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; overflow: hidden;
+  background: var(--panel); }
+.dt-card-h { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; }
+.dt-card-t { min-width: 0; }
+.dt-label { display: block; font-size: 14px; font-weight: 600; color: var(--text); }
+.dt-path { display: block; font-size: 11.5px; color: var(--muted-2); margin-top: 2px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; word-break: break-all; }
+.dt-method { color: var(--accent); font-weight: 700; }
+.dt-actions { display: flex; gap: 8px; flex: none; }
+.dt-run, .dt-open { font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 7px;
+  border: 1px solid var(--border); cursor: pointer; text-decoration: none; white-space: nowrap; }
+.dt-run { background: var(--accent); border-color: var(--accent); color: #fff; }
+.dt-run:disabled { opacity: .6; cursor: default; }
+.dt-open { background: var(--panel); color: var(--muted); }
+.dt-open:hover { color: var(--text); border-color: var(--accent); }
+.dt-result { margin: 0; padding: 12px 14px; border-top: 1px solid var(--border);
+  background: var(--panel-2); font-size: 12px; line-height: 1.5; max-height: 360px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+.dt-note { margin-top: 16px; font-size: 12px; color: var(--muted); }
+.dt-note code { font-family: ui-monospace, Consolas, monospace; }

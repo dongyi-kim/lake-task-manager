@@ -115,17 +115,19 @@ class Settings:
         self.dev_tools = set(_devtools.DEV_TOOLS)
         # SSO 로그인 순회 대상 — base 가 있는 서비스만. run.py 가 앱 창에서 하나씩 연다.
         #   (이름, base URL, 인증 판정용 REST 경로 후보들)
-        self.auth_targets = [("Jira", self.jira_base, ["/rest/api/2/myself"])]
-        if self.confluence_base:
-            self.auth_targets.append(
-                ("Confluence", self.confluence_base,
-                 ["/rest/api/user/current", "/rest/api/user/current.json"]))
-        if self.bitbucket_base:
-            # inbox count 는 인증 필요 + JSON({count}) — 익명은 401. repos 처럼 관리자 권한 불필요.
-            # (users?limit=1 은 관리자 전용이라 일반 계정이 401, whoami 는 plain text 라 오판)
-            self.auth_targets.append(
-                ("Bitbucket", self.bitbucket_base,
-                 ["/rest/api/1.0/inbox/pull-requests/count", "/rest/api/1.0/repos?limit=1"]))
+        # 서비스 정의 — base 미설정이면 configured=False. 인증 판정 경로:
+        #   Jira /myself · Confluence /user/current · Bitbucket inbox count(인증 필요+JSON, 권한 불필요)
+        #   (Bitbucket 의 /users 는 관리자 전용, whoami 는 plain text 라 오판 → 안 씀)
+        self.services = [
+            {"name": "Jira", "base": self.jira_base, "configured": bool(self.jira_base),
+             "paths": ["/rest/api/2/myself"]},
+            {"name": "Confluence", "base": self.confluence_base, "configured": bool(self.confluence_base),
+             "paths": ["/rest/api/user/current", "/rest/api/user/current.json"]},
+            {"name": "Bitbucket", "base": self.bitbucket_base, "configured": bool(self.bitbucket_base),
+             "paths": ["/rest/api/1.0/inbox/pull-requests/count", "/rest/api/1.0/repos?limit=1"]},
+        ]
+        # SSO 로그인 순회·판정에는 **설정된 것만** (base 없는 서비스는 창을 못 연다).
+        self.auth_targets = [(s["name"], s["base"], s["paths"]) for s in self.services if s["configured"]]
         self.cache_db_path = str(pick("CACHE_DB_PATH", cache.get("db_path"), str(BASE_DIR / "cache.sqlite3")))
         self.cache_ttl_seconds = int(pick("CACHE_TTL_SECONDS", cache.get("ttl_seconds"), 900))
         self.app_host = str(pick("APP_HOST", server.get("host"), "0.0.0.0"))

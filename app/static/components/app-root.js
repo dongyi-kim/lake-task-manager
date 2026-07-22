@@ -3,6 +3,7 @@
 import WorkloadView from "./views/WorkloadView.js";
 import VitView from "./views/VitView.js";
 import WbsView from "./views/WbsView.js";
+import DevToolsView from "./views/DevToolsView.js";
 import FormulaCallout from "./ui/FormulaCallout.js";
 import LoginOverlay from "./ui/LoginOverlay.js";
 import TicketDialog from "./ui/TicketDialog.js";
@@ -10,7 +11,7 @@ import SearchOverlay from "./ui/SearchOverlay.js";
 import SettingsMenu from "./ui/SettingsMenu.js";
 import { api } from "../lib/api.js";
 
-const ROUTES = { wbs: WbsView, vit: VitView, workload: WorkloadView };
+const ROUTES = { wbs: WbsView, vit: VitView, workload: WorkloadView, devtools: DevToolsView };
 function currentRoute() { return location.hash.replace("#/", "") || "wbs"; }
 // /browse/DL-1234 — 그 티켓만의 단독 페이지("새 창에서 열기" 대상).
 // Jira 와 같은 URL 형태라 주소만 보고도 어느 티켓인지 안다.

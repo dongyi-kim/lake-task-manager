@@ -64,35 +64,35 @@ export default {
         <div v-if="!sso || !sso.targets" class="sm-note">{{ loading ? '확인 중…' : '상태를 불러오지 못했습니다.' }}</div>
         <template v-else>
           <div v-for="t in sso.targets" :key="t.service" class="sm-row" :title="t.detail">
-            <span class="sm-dot" :class="t.authenticated ? 'ok' : 'no'"></span>
+            <span class="sm-dot" :class="t.configured === false ? 'off' : (t.authenticated ? 'ok' : 'no')"></span>
             <span class="sm-svc">{{ t.service }}</span>
-            <span class="sm-state" :class="t.authenticated ? 'ok' : 'no'">
-              {{ t.authenticated ? '인증됨' : '미인증' }}</span>
+            <span class="sm-state" :class="t.configured === false ? 'off' : (t.authenticated ? 'ok' : 'no')">
+              {{ t.configured === false ? '미설정' : (t.authenticated ? '인증됨' : '미인증') }}</span>
           </div>
-          <button v-if="sso.targets.some(t => !t.authenticated)" class="sm-btn primary"
+          <button v-if="sso.targets.some(t => t.configured !== false && !t.authenticated)" class="sm-btn primary"
                   :disabled="loggingIn" @click="authenticate">
             {{ loggingIn ? '인증 창 진행 중…' : '인증하기 (SSO 로그인)' }}
           </button>
         </template>
       </div>
 
-      <!-- 테마 -->
+      <!-- 테마 (토글 스위치) -->
       <div class="sm-sec">
         <div class="sm-h">화면</div>
-        <button class="sm-btn" @click="$emit('toggle-theme')">
-          <span v-if="theme === 'dark'">☀ 라이트 모드로</span><span v-else>🌙 다크 모드로</span>
-        </button>
+        <div class="sm-toggle-row">
+          <span class="sm-tg-label">🌙 다크 모드</span>
+          <button class="sm-switch" :class="{ on: theme === 'dark' }" role="switch"
+                  :aria-checked="theme === 'dark'" @click="$emit('toggle-theme')" title="다크/라이트">
+            <span class="sm-knob"></span>
+          </button>
+        </div>
       </div>
 
-      <!-- Dev Tools -->
+      <!-- Dev Tools — 별도 페이지로 이동 -->
       <div class="sm-sec">
         <div class="sm-h">Dev Tools</div>
-        <div v-if="!tools || !tools.endpoints" class="sm-note">개발용 API 없음</div>
-        <a v-for="e in (tools && tools.endpoints) || []" :key="e.path" class="sm-devlink"
-           :href="e.path" target="_blank" rel="noopener" :title="e.method + ' ' + e.path">
-          <span class="sm-devlabel">{{ e.label }}</span>
-          <span class="sm-devpath">{{ e.path }}</span>
-        </a>
+        <a class="sm-btn sm-devgo" href="#/devtools" @click="open = false">
+          개발용 API 열기 →</a>
       </div>
 
       <!-- 버전 -->
