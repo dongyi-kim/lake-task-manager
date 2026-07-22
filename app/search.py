@@ -29,12 +29,13 @@ def _q_escape(q):
 from html import escape as _esc
 
 
-def _clean_excerpt(s):
-    """검색 스니펫 → 안전한 강조 HTML.
-    Confluence 하이라이트 마커(@@@hl@@@…@@@endhl@@@)를 **검색어 강조**로 살린다.
-    평문을 먼저 escape 하고 마커만 <mark> 로 바꾸므로 XSS 안전(프론트는 v-html 로 렌더)."""
+def _hl(s, maxlen=220):
+    """Confluence 하이라이트 마커(@@@hl@@@…@@@endhl@@@) → <mark> 강조 HTML.
+    **title·excerpt 둘 다** 이 마커가 붙어 온다(검색어가 제목에 맞으면 제목에도). 그래서
+    제목도 이걸 태워야 raw 마커가 화면에 안 뜬다. 평문 escape 후 마커만 <mark> 로 치환하므로
+    XSS 안전(프론트는 해당 필드를 v-html 로 렌더)."""
     s = (s or "")
-    s = re.sub(r"\s+", " ", s).strip()[:220]
+    s = re.sub(r"\s+", " ", s).strip()[:maxlen]
     # 자른 뒤 짝이 안 맞는 마커 제거(열림만/닫힘만 남는 경우)
     if s.count("@@@hl@@@") != s.count("@@@endhl@@@"):
         s = s.replace("@@@hl@@@", "").replace("@@@endhl@@@", "")
@@ -44,6 +45,10 @@ def _clean_excerpt(s):
         a, _, b = seg.partition("@@@endhl@@@")
         out += "<mark>" + _esc(a) + "</mark>" + _esc(b)
     return out
+
+
+def _clean_excerpt(s):
+    return _hl(s, 220)
 
 
 # 검색어가 티켓을 직접 가리키는 형태인지 — "DL-1234"(키) 또는 "1234"(번호만).
@@ -163,7 +168,9 @@ def _search_confluence(client, s, q, scope, limit):
         path += [a.get("title", "") for a in (c.get("ancestors") or []) if a.get("title")]
         items.append({
             "type": "confluence",
-            "title": r.get("title") or c.get("title", ""),
+            # title 도 하이라이트 마커가 붙어 오므로 _hl 로 정제(raw @@@hl@@@ 방지 + 제목 강조).
+            # 프론트는 이 필드를 v-html 로 렌더한다(_hl 이 escape+<mark> 만 내므로 안전).
+            "title": _hl(r.get("title") or c.get("title", ""), 200),
             "excerpt": _clean_excerpt(r.get("excerpt", "")),
             "space": sp.get("key", ""),
             "path": [p for p in path if p],     # 예: ["데이터플랫폼","엔지니어링","파이프라인"]

@@ -125,7 +125,7 @@ export default {
               <div class="sr-body">
                 <div class="sr-r1">
                   <span class="sr-pageic"></span>
-                  <span class="sr-title">{{ it.title }}</span>
+                  <span class="sr-title" v-html="it.title"></span>
                   <span class="sr-path" :title="(it.path || []).slice().reverse().join(' ‹ ')">
                     <template v-for="(seg, j) in confPath(it.path)" :key="j"
                       ><span v-if="j" class="sr-psep">‹</span><span class="sr-pseg" :class="{ ell: seg === '…' }">{{ seg }}</span
