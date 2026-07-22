@@ -590,6 +590,15 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   padding: 6px 10px; margin: 0 0 10px; overflow: auto; }
 .cmt-ed-host .ProseMirror pre code { background: none; border: 0; padding: 0; font-size: 12.5px; }
 .cmt-ed-host .ProseMirror img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; }
+/* 이미지 크기 조절 — 모서리 드래그 핸들(선택/hover 시 노출) */
+.cmt-ed-host .ProseMirror .img-wrap { position: relative; display: inline-block; line-height: 0; max-width: 100%; }
+.cmt-ed-host .ProseMirror .img-wrap img { display: block; }
+.cmt-ed-host .ProseMirror .img-wrap .img-resize { position: absolute; right: -5px; bottom: -1px;
+  width: 14px; height: 14px; border: 2px solid var(--panel); border-radius: 4px;
+  background: var(--accent); cursor: nwse-resize; opacity: 0; transition: opacity .12s; }
+.cmt-ed-host .ProseMirror .img-wrap:hover .img-resize,
+.cmt-ed-host .ProseMirror .ProseMirror-selectednode .img-resize { opacity: 1; }
+.cmt-ed-host .ProseMirror .ProseMirror-selectednode img { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cmt-ed-host .ProseMirror hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
 .cmt-ed-host .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder);
   color: var(--muted-2); float: left; height: 0; pointer-events: none; }

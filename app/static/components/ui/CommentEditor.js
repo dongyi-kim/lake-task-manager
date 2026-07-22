@@ -23,6 +23,84 @@ function mnAvatar(name, id) {
 }
 const _URL_RE = /^https?:\/\/\S+$/i;
 
+// 이미지 삽입 시 세로가 너무 길지 않도록 기본 높이 상한(px). 원본이 이보다 작으면 원본 유지.
+const IMG_MAX_H = 320;
+
+// 이미지의 자연 크기를 재서, 높이가 상한을 넘으면 비율 유지한 width(px)를 돌려준다(아니면 null).
+function fitWidth(url) {
+  return new Promise((resolve) => {
+    const im = new Image();
+    im.onload = () => {
+      const h = im.naturalHeight || 0, w = im.naturalWidth || 0;
+      resolve(h > IMG_MAX_H && w ? Math.round((w * IMG_MAX_H) / h) : null);
+    };
+    im.onerror = () => resolve(null);
+    im.src = url;
+  });
+}
+
+// 크기 조절 가능한 이미지 — width 속성(→ wiki !파일|width=N!) + 모서리 드래그 핸들 NodeView.
+function imageResizeExt(T) {
+  return T.Image.extend({
+    addAttributes() {
+      const parent = this.parent ? this.parent() : {};
+      return Object.assign({}, parent, {
+        width: {
+          default: null,
+          parseHTML: (el) => el.getAttribute("width") || null,
+          renderHTML: (attrs) => (attrs.width ? { width: attrs.width } : {}),
+        },
+      });
+    },
+    addNodeView() {
+      return ({ node, editor, getPos }) => {
+        const wrap = document.createElement("span");
+        wrap.className = "img-wrap";
+        const img = document.createElement("img");
+        img.src = node.attrs.src;
+        if (node.attrs.alt) img.alt = node.attrs.alt;
+        if (node.attrs.width) img.setAttribute("width", node.attrs.width);
+        wrap.appendChild(img);
+        const handle = document.createElement("span");
+        handle.className = "img-resize";
+        handle.title = "드래그해서 크기 조절";
+        wrap.appendChild(handle);
+        handle.addEventListener("mousedown", (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const startX = e.clientX, startW = img.getBoundingClientRect().width;
+          const move = (ev) => {
+            img.setAttribute("width", String(Math.max(48, Math.round(startW + ev.clientX - startX))));
+          };
+          const up = () => {
+            document.removeEventListener("mousemove", move);
+            document.removeEventListener("mouseup", up);
+            const w = parseInt(img.getAttribute("width") || "0", 10);
+            if (w && typeof getPos === "function") {
+              editor.chain().focus().command(({ tr }) => {
+                tr.setNodeMarkup(getPos(), undefined, Object.assign({}, node.attrs, { width: w }));
+                return true;
+              }).run();
+            }
+          };
+          document.addEventListener("mousemove", move);
+          document.addEventListener("mouseup", up);
+        });
+        return {
+          dom: wrap,
+          ignoreMutation: () => true,
+          update: (n) => {
+            if (n.type !== node.type) return false;
+            img.src = n.attrs.src;
+            if (n.attrs.width) img.setAttribute("width", n.attrs.width);
+            else img.removeAttribute("width");
+            return true;
+          },
+        };
+      };
+    },
+  });
+}
+
 // 하이퍼링크를 favicon 칩(뱃지)으로 렌더 — href 로 /api/favicon URL 을 만들어 CSS 변수(--fav)로 전달.
 // 저장은 그대로 [텍스트|url] (class/style 은 html_to_wiki 가 무시). favicon 이 없으면 기본 사각형.
 function linkBadgeExt(T) {
@@ -172,6 +250,7 @@ export default {
         const url = URL.createObjectURL(f);
         self._pending.set(url, { blob: f, name });
         self._ed.chain().focus().setImage({ src: url, alt: name }).run();
+        self.applyFitWidth(url);                 // 세로가 너무 길면 기본 상한으로 축소
       }
       return any;
     };
@@ -185,7 +264,7 @@ export default {
         firstBlockEscapeExt(T),
         T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
-        T.Image, linkBadgeExt(T),
+        imageResizeExt(T), linkBadgeExt(T),
         T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 없이 바로 마크다운(#, -, ``` )·@멘션 사용" }),
       ],
       content: this.initial || "",
@@ -269,9 +348,38 @@ export default {
           const url = URL.createObjectURL(f);
           this._pending.set(url, { blob: f, name });
           this._ed.chain().focus().setImage({ src: url, alt: name }).run();
+          this.applyFitWidth(url);
         }
       }
       e.target.value = "";
+    },
+    // 삽입된 이미지의 자연 크기를 재서 세로 상한을 넘으면 비율 유지로 width 지정.
+    applyFitWidth(url) {
+      fitWidth(url).then((w) => {
+        if (!w || !this._ed || this._dead) return;
+        const state = this._ed.state;
+        let at = null;
+        state.doc.descendants((n, pos) => {
+          if (at === null && n.type.name === "image" && n.attrs.src === url && !n.attrs.width) at = pos;
+        });
+        if (at === null) return;
+        const n = state.doc.nodeAt(at);
+        if (!n) return;
+        this._ed.view.dispatch(state.tr.setNodeMarkup(at, undefined,
+          Object.assign({}, n.attrs, { width: w })));
+      });
+    },
+    inImage() { this.tick; return !!(this._ed && this._ed.isActive("image")); },
+    // 툴바 크기 조절 — 에디터 폭 대비 비율. pct 가 null 이면 원본(width 해제).
+    imgWidth(pct) {
+      if (!this._ed) return;
+      let w = null;
+      if (pct) {
+        const host = this.$refs.ed && this.$refs.ed.querySelector(".ProseMirror");
+        const base = host ? Math.max(120, host.clientWidth - 30) : 600;
+        w = Math.max(48, Math.round(base * pct));
+      }
+      this._ed.chain().focus().updateAttributes("image", { width: w }).run();
     },
     async submit() {
       if (this.busy || !this._ed) return;
@@ -331,6 +439,16 @@ export default {
           <option value="">(자동 감지)</option>
           <option v-for="l in languages" :key="l" :value="l">{{ l }}</option>
         </select>
+      </div>
+      <div class="cmt-tb cmt-tb-tbl" v-show="ready && inImage()">
+        <span class="tb-lbl">이미지</span>
+        <button type="button" class="tb-b" @click="imgWidth(0.25)" title="작게 (폭 25%)">25%</button>
+        <button type="button" class="tb-b" @click="imgWidth(0.5)" title="보통 (폭 50%)">50%</button>
+        <button type="button" class="tb-b" @click="imgWidth(0.75)" title="크게 (폭 75%)">75%</button>
+        <button type="button" class="tb-b" @click="imgWidth(1)" title="가득 (폭 100%)">100%</button>
+        <span class="tb-sep"></span>
+        <button type="button" class="tb-b" @click="imgWidth(null)" title="원본 크기로">원본</button>
+        <span class="tb-lbl" style="margin-left:auto">모서리 드래그로도 조절</span>
       </div>
       <div class="cmt-tb cmt-tb-tbl" v-show="ready && inTable()">
         <span class="tb-lbl">표</span>

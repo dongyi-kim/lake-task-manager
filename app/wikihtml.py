@@ -96,7 +96,13 @@ def _inline(node):
         elif t == "img":
             src = (c.attrs.get("src") or "").strip()
             if src:
-                out.append("!" + src + "!")
+                # 크기 유지 — Jira wiki 이미지 파라미터 !파일|width=300!
+                w = (c.attrs.get("width") or "").strip()
+                if not w:
+                    m = re.search(r"width\s*:\s*(\d+)", c.attrs.get("style") or "")
+                    w = m.group(1) if m else ""
+                w = re.sub(r"[^0-9]", "", w)
+                out.append("!" + src + ("|width=" + w if w else "") + "!")
         elif t == "br":
             out.append("\n")
         else:
@@ -225,7 +231,7 @@ def html_to_wiki(html: str) -> str:
 
 _WIKI_MONO = re.compile(r"\{\{(.+?)\}\}")
 _WIKI_MENTION = re.compile(r"\[~([^\]]+)\]")
-_WIKI_IMG = re.compile(r"!([^!\n|]+)(?:\|[^!\n]*)?!")
+_WIKI_IMG = re.compile(r"!([^!\n|]+)(?:\|([^!\n]*))?!")
 _WIKI_LINK = re.compile(r"\[(?:([^\]|]+)\|)?([^\]]+)\]")
 
 
@@ -246,7 +252,12 @@ def _wiki_inline_html(text, mr=None):
         lbl = escape(nm, quote=True)
         return f'<span data-type="mention" data-id="{u}" data-label="{lbl}">@{escape(nm, quote=False)}</span>'
     s = _WIKI_MENTION.sub(_men, s)
-    s = _WIKI_IMG.sub(lambda m: f'<img src="{escape(m.group(1).strip(), quote=True)}">', s)
+    def _img(m):
+        src = escape(m.group(1).strip(), quote=True)
+        wm = re.search(r"width\s*=\s*(\d+)", m.group(2) or "")     # !파일|width=300! 크기 유지
+        return f'<img src="{src}"' + (f' width="{wm.group(1)}"' if wm else "") + ">"
+
+    s = _WIKI_IMG.sub(_img, s)
     s = _WIKI_LINK.sub(
         lambda m: f'<a href="{escape(m.group(2).strip(), quote=True)}">'
                   f'{escape(m.group(1), quote=False) if m.group(1) else escape(m.group(2).strip(), quote=False)}</a>', s)
