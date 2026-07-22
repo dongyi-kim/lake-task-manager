@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from pathlib import Path
 
 import uvicorn
 
@@ -44,14 +45,17 @@ def _sso_login(s):
     login(s.jira_base, s.jira_state_path)
 
 
-def _serve_bg(s):
-    """uvicorn 을 백그라운드(데몬) 스레드로 기동. **실제 HTTP 응답까지** 확인 후 반환.
+def _serve_bg(s, wait=True):
+    """uvicorn 을 백그라운드(데몬) 스레드로 기동. wait=True 면 **실제 HTTP 응답까지** 확인 후 반환.
     (server.started 는 소켓 accept 보다 살짝 이를 수 있어, 그대로 창을 열면 --app 초기 로드가
-     connection-refused → 흰 화면 고착. 실 연결 확인으로 이 레이스를 제거한다.)"""
+     connection-refused → 흰 화면 고착. 실 연결 확인으로 이 레이스를 제거한다.)
+    wait=False 면 즉시 반환(창을 먼저 띄우고 창의 goto 재시도가 준비를 커버 — 트레이/윈도 공용)."""
     import urllib.request
     config = uvicorn.Config("app.main:app", host=s.app_host, port=s.app_port, log_level="warning")
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
+    if not wait:
+        return server
     probe = f"http://127.0.0.1:{s.app_port}/api/health"
     for _ in range(300):                              # 최대 ~30s
         if getattr(server, "started", False):
@@ -228,9 +232,13 @@ def _set_window_icon_win(ico_path):
         return False
 
 
-def _run_app_window(s, headless=False):
-    """앱 창(Playwright Chromium, --app 모드=주소창 없는 앱 창)으로 실행. 로그인도 같은 창에서.
-    창 닫으면 서버 종료 후 반환. 프로필은 임시폴더(정리)라 실행 폴더(cwd)에 아무것도 안 남긴다."""
+def _window_session(s, auto_login=False, headless=False):
+    """앱 창(Playwright Chromium, --app 모드) 하나를 열고 **닫힐 때까지** 대기.
+    서버는 이미 떠 있다고 가정(창의 goto 재시도가 준비를 커버) — 여기선 서버를 시작/종료하지 않는다.
+    → 트레이가 이 함수를 스레드로 여러 번 재사용(창을 닫아도 백엔드는 유지). 임시 프로필은 정리.
+
+    auto_login: 최초 오픈에서만 True — prod SSO 3서비스 자동 취득 신호. (재오픈 땐 조용히 연다)
+    """
     import shutil
     import tempfile
     url = f"http://localhost:{s.app_port}/"
@@ -239,7 +247,6 @@ def _run_app_window(s, headless=False):
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
     udd = tempfile.mkdtemp(prefix="ltm-appwin-")       # 앱 창 전용 임시 프로필 (cwd 오염 방지)
-    # 1) 창을 '부팅 로더 data URL' 로 즉시 연다 → 서버 준비 여부와 무관하게 흰 화면/‘localhost/’ 타이틀 없음.
     context = p.chromium.launch_persistent_context(
         user_data_dir=udd,
         headless=headless,
@@ -250,10 +257,7 @@ def _run_app_window(s, headless=False):
     )
     page = context.pages[0] if context.pages else context.wait_for_event("page")
     _wire_external_links(context, page)                # 외부 링크 훅(goto 전 설치 → 실제 페이지에도 적용)
-    # 2) 서버가 실제로 응답할 때까지 대기(그동안 창엔 부팅로더가 계속 돎).
-    server = _serve_bg(s)
-    # 3) 준비된 서버로 실제 앱 이동. 혹시 비면 잠깐 뒤 재시도(부팅로더 유지).
-    for _ in range(50):
+    for _ in range(300):                               # goto 재시도(서버 준비 대기 포함, ~30s). 부팅로더 유지.
         try:
             page.goto(url, wait_until="domcontentloaded")
             if page.evaluate("!!(document.querySelector('.app-boot')||document.querySelector('.wrap'))"):
@@ -265,34 +269,178 @@ def _run_app_window(s, headless=False):
         page.wait_for_timeout(100)
     from app.settings import STATIC_DIR
     ico_path = str(STATIC_DIR / "favicon.ico")
-    print(f"Lake Task Manager - {url}  (env={s.jira_env})  [이 창을 닫으면 종료됩니다]")
-    # [prod] 시작하면 3개 서비스 SSO 를 자동 취득 — 아래 while 루프가 신호를 받아 임시 창에서 구동.
-    # 이미 인증돼 있으면 service_probe 로 스킵돼 창이 안 뜬다(세션 유효 시 무음). 앱 창은 그대로.
-    if s.jira_env == "prod":
+    print(f"Lake Task Manager - {url}  (env={s.jira_env})")
+    # [prod] 최초 오픈에서만 3서비스 SSO 자동 취득 — 아래 while 루프가 신호를 받아 임시 창에서 구동.
+    # 이미 인증돼 있으면 service_probe 로 스킵(무음). (재오픈 땐 auto_login=False 라 신호 안 보냄)
+    if auto_login and s.jira_env == "prod":
         appmain._login_requested.set()
-    # 창이 닫힐 때까지 대기. 로그인 요청(_login_requested)이 오면 같은 창에서 SSO 구동.
-    # 초반 몇 초간 창 아이콘을 우리 .ico 로 재적용(Chromium 이 favicon 으로 덮어쓰는 것 대비).
     try:
         i = 0
         while not page.is_closed():
             if appmain._login_requested.is_set():
                 _do_login_in_window(s, page, context, appmain)
-            if i < 16:                                  # ~8초 동안 재적용
+            if i < 16:                                  # ~8초 동안 창 아이콘 재적용(favicon 덮어쓰기 대비)
                 _set_window_icon_win(ico_path)
             i += 1
             page.wait_for_timeout(500)
     except Exception:
         pass
-    try:
-        context.close()
-    except Exception:
-        pass
-    try:
-        p.stop()
-    except Exception:
-        pass
-    server.should_exit = True
+    for closer in (context.close, p.stop):
+        try:
+            closer()
+        except Exception:
+            pass
     shutil.rmtree(udd, ignore_errors=True)             # 임시 프로필 정리
+
+
+def _run_app_window(s):
+    """[비-트레이 폴백] 서버 + 앱 창 1개. 창 닫으면 서버도 종료(기존 동작)."""
+    server = _serve_bg(s, wait=False)                  # 창 먼저 뜨게 non-blocking
+    _window_session(s, auto_login=True)
+    try:
+        server.should_exit = True
+    except Exception:
+        pass
+
+
+# ── 시작 메뉴 / 자동시작 바로가기 (Windows) ─────────────────────────────────
+# 시작 메뉴 .lnk 를 만들어 두면 '시작'에서 검색해 실행할 수 있다(요구사항). 자동시작은
+# 시작프로그램 폴더의 .lnk 존재로 on/off (트레이 메뉴 토글). .lnk 생성은 PowerShell WScript.Shell.
+_SHORTCUT_NAME = "Lake Task Manager.lnk"
+
+
+def _launcher_bat():
+    """배포 repo 의 run.bat (업데이트+venv+run.py 를 다 하는 런처)."""
+    from app.settings import APP_ROOT
+    return APP_ROOT / "run.bat"
+
+
+def _start_menu_dir():
+    return Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+
+def _startup_dir():
+    return _start_menu_dir() / "Startup"
+
+
+def _make_shortcut(lnk_path, target, icon):
+    """PowerShell 로 .lnk 생성(최소화 실행). best-effort."""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        lnk_path.parent.mkdir(parents=True, exist_ok=True)
+        ps = (
+            "$w=New-Object -ComObject WScript.Shell;"
+            f"$s=$w.CreateShortcut('{lnk_path}');"
+            f"$s.TargetPath='{target}';"
+            f"$s.WorkingDirectory='{target.parent}';"
+            f"$s.WindowStyle=7;"                        # 7 = 최소화(콘솔 안 튀게)
+            + (f"$s.IconLocation='{icon}';" if icon else "")
+            + "$s.Save()"
+        )
+        import subprocess
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                       capture_output=True, timeout=15)
+        return lnk_path.exists()
+    except Exception:
+        return False
+
+
+def _icon_path():
+    from app.settings import STATIC_DIR
+    ico = STATIC_DIR / "favicon.ico"
+    return str(ico) if ico.exists() else ""
+
+
+def _ensure_start_menu_shortcut():
+    """시작 메뉴에 바로가기가 없으면 만든다(검색 가능하게). 이미 있으면 no-op."""
+    try:
+        lnk = _start_menu_dir() / _SHORTCUT_NAME
+        if not lnk.exists() and _launcher_bat().exists():
+            _make_shortcut(lnk, _launcher_bat(), _icon_path())
+    except Exception:
+        pass
+
+
+def _autostart_enabled():
+    try:
+        return (_startup_dir() / _SHORTCUT_NAME).exists()
+    except Exception:
+        return False
+
+
+def _set_autostart(enable):
+    """자동시작(부팅 시 실행) on/off — 시작프로그램 폴더의 .lnk 생성/삭제."""
+    try:
+        lnk = _startup_dir() / _SHORTCUT_NAME
+        if enable:
+            _make_shortcut(lnk, _launcher_bat(), _icon_path())
+        elif lnk.exists():
+            lnk.unlink()
+    except Exception:
+        pass
+
+
+def _run_tray(s):
+    """[트레이 상주] 백엔드는 상시 유지, 앱 창은 트레이 메뉴로 열고/닫는다.
+    창을 닫아도 서버·트레이는 살아있고 [앱 열기]로 재오픈. 종료는 트레이 [종료]로만."""
+    import pystray
+    from PIL import Image
+    from app.settings import STATIC_DIR
+
+    server = _serve_bg(s, wait=False)                  # 백엔드 상시(창과 독립)
+    _ensure_start_menu_shortcut()                      # '시작'에서 검색 가능하게
+
+    _win = {"open": False}
+    _lock = threading.Lock()
+
+    def open_window(initial=False):
+        with _lock:
+            if _win["open"]:
+                return                                 # 한 번에 창 하나만
+            _win["open"] = True
+
+        def run():
+            try:
+                _window_session(s, auto_login=initial)
+            finally:
+                _win["open"] = False
+        threading.Thread(target=run, name="app-window", daemon=True).start()
+
+    # 트레이 아이콘 이미지 (png 우선)
+    img = None
+    for cand in ("icon.png", "favicon.ico"):
+        try:
+            img = Image.open(str(STATIC_DIR / cand))
+            break
+        except Exception:
+            continue
+
+    def on_open(icon, item):
+        open_window()
+
+    def on_autostart(icon, item):
+        _set_autostart(not _autostart_enabled())
+        icon.update_menu()
+
+    def on_quit(icon, item):
+        try:
+            server.should_exit = True
+        except Exception:
+            pass
+        icon.stop()
+
+    menu = pystray.Menu(
+        pystray.MenuItem("앱 열기", on_open, default=True),
+        pystray.MenuItem("컴퓨터 시작 시 자동 실행", on_autostart,
+                         checked=lambda item: _autostart_enabled()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("종료", on_quit),
+    )
+    icon = pystray.Icon("lake-task-manager", img, "Lake Task Manager", menu)
+    print(f"Lake Task Manager - 트레이 상주 (env={s.jira_env}). 창을 닫아도 백엔드는 유지됩니다.")
+    open_window(initial=True)                          # 시작 시 창 1개 오픈
+    icon.run()                                         # 메인 스레드 블로킹(트레이 루프)
 
 
 def _run_plain(s):
@@ -324,18 +472,31 @@ def main():
         if not state.exists():
             print(f"[prod] SSO 세션이 없습니다({state}). 앱 화면의 'SSO 로그인' 버튼을 누르세요.")
 
-    # 앱 창 모드 (playwright 있고, 끄지 않았으면). 창 닫히면 전체 종료.
+    # 앱 창 모드 (playwright 있고, 끄지 않았으면).
     use_window = os.getenv("LAKE_NO_WINDOW") not in ("1", "true", "True")
     if use_window:
         try:
             import playwright.sync_api  # noqa: F401
         except Exception:
             use_window = False
-    if use_window:
-        _run_app_window(s)
-        os._exit(0)          # 남은 스레드까지 확실히 정리하고 즉시 종료(=run.bat 도 함께 끝)
-    else:
+    if not use_window:
         _run_plain(s)
+        return
+
+    # 트레이 상주 모드 (pystray 있고, Windows 이고, 끄지 않았으면) — 창 닫아도 백엔드 유지.
+    use_tray = os.getenv("LAKE_NO_TRAY") not in ("1", "true", "True") and sys.platform.startswith("win")
+    if use_tray:
+        try:
+            import pystray  # noqa: F401
+            from PIL import Image  # noqa: F401
+        except Exception:
+            use_tray = False
+    if use_tray:
+        _run_tray(s)         # icon.run() 이 블로킹; [종료] 시 반환
+        os._exit(0)
+    else:
+        _run_app_window(s)   # 폴백: 창 닫으면 전체 종료(기존 동작)
+        os._exit(0)          # 남은 스레드까지 확실히 정리하고 즉시 종료(=run.bat 도 함께 끝)
 
 
 if __name__ == "__main__":
