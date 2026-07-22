@@ -669,6 +669,20 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* 멘션 칩 */
 .cmt-ed-host .ProseMirror .mention { color: var(--accent); font-weight: 700; background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-radius: 4px; padding: 0 3px; }
+/* 링크 뱃지 편집 패널 (뱃지 더블클릭 / 툴바 🔗) — 제목·URL 을 한 화면에서 */
+.badge-edit { position: fixed; z-index: 100001; width: 320px; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 10px 32px rgba(0,0,0,.25); font-size: 12px; }
+.badge-edit label { display: block; color: var(--muted-2); font-size: 11px; font-weight: 700;
+  margin: 4px 0 3px; }
+.badge-edit input { width: 100%; box-sizing: border-box; padding: 5px 8px; font-size: 12.5px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); color: var(--text); }
+.badge-edit input:focus { outline: none; border-color: var(--accent); }
+.badge-edit .be-row { display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px; }
+.badge-edit button { font-size: 12px; padding: 5px 14px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+.badge-edit .be-ok { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
 /* @멘션 자동완성 팝업 (body 에 append) */
 .mention-popup { position: fixed; z-index: 100000; min-width: 200px; max-width: 320px; max-height: 240px;
   overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;

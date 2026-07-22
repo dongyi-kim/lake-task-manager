@@ -167,6 +167,8 @@ function linkBadgeExt(T) {
         }),
       }];
     },
+    // atom 이라 기본적으로 getText() 에 안 잡힌다 → 뱃지만 있는 댓글이 '내용 없음'으로 오판되던 문제.
+    renderText({ node }) { return node.attrs.title || node.attrs.href || ""; },
     renderHTML({ node }) {
       const href = node.attrs.href || "";
       const attrs = { href, class: "web-badge", rel: "noopener" };
@@ -193,16 +195,13 @@ function linkBadgeExt(T) {
         a.addEventListener("click", (e) => e.preventDefault());     // 편집 중 이동 방지
         a.addEventListener("dblclick", (e) => {
           e.preventDefault(); e.stopPropagation();
-          const t = window.prompt("표시할 제목", cur.attrs.title || "");
-          if (t === null) return;
-          const h = window.prompt("링크 URL", cur.attrs.href || "");
-          if (h === null) return;
-          const href = (h || "").trim();
-          if (!href || typeof getPos !== "function") return;
-          editor.chain().focus().command(({ tr }) => {
-            tr.setNodeMarkup(getPos(), undefined, { href, title: (t || "").trim() || href });
-            return true;
-          }).run();
+          openBadgeEditor(a, cur.attrs, (title, href) => {
+            if (typeof getPos !== "function") return;
+            editor.chain().focus().command(({ tr }) => {
+              tr.setNodeMarkup(getPos(), undefined, { href, title });   // href 바뀌면 favicon 도 갱신
+              return true;
+            }).run();
+          });
         });
         return {
           dom: a,
@@ -212,6 +211,46 @@ function linkBadgeExt(T) {
       };
     },
   });
+}
+
+// 뱃지 편집 패널 — 제목과 URL 을 **한 화면에서** 고친다.
+// (prompt 를 두 번 연달아 띄우면 브라우저가 '추가 대화상자 차단'으로 두 번째를 막아버린다.)
+function openBadgeEditor(anchor, attrs, onSave) {
+  document.querySelectorAll(".badge-edit").forEach((e) => e.remove());
+  const box = document.createElement("div");
+  box.className = "badge-edit";
+  box.innerHTML =
+    '<label>표시할 제목</label><input class="be-t" type="text">' +
+    '<label>링크 URL</label><input class="be-h" type="text">' +
+    '<div class="be-row"><button type="button" class="be-cancel">취소</button>' +
+    '<button type="button" class="be-ok">저장</button></div>';
+  document.body.appendChild(box);
+  const t = box.querySelector(".be-t"), h = box.querySelector(".be-h");
+  t.value = attrs.title || "";
+  h.value = attrs.href || "";
+  // 화면 안에 들어오게 — 아래로 넘치면 앵커 위로 뒤집는다(에디터가 화면 하단에 있을 때가 많다).
+  const r = anchor.getBoundingClientRect();
+  const bh = box.offsetHeight || 180;
+  let top = r.bottom + 6;
+  if (top + bh > window.innerHeight - 8) top = Math.max(8, r.top - bh - 6);
+  box.style.left = Math.round(Math.max(8, Math.min(r.left, window.innerWidth - 340))) + "px";
+  box.style.top = Math.round(top) + "px";
+  const close = () => { box.remove(); document.removeEventListener("mousedown", onDoc, true); };
+  const onDoc = (ev) => { if (!box.contains(ev.target)) close(); };
+  setTimeout(() => document.addEventListener("mousedown", onDoc, true), 0);
+  const save = () => {
+    const href = (h.value || "").trim();
+    if (!href) { h.focus(); return; }
+    onSave((t.value || "").trim() || href, href);
+    close();
+  };
+  box.querySelector(".be-cancel").addEventListener("click", close);
+  box.querySelector(".be-ok").addEventListener("click", save);
+  box.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); save(); }
+    else if (ev.key === "Escape") { ev.preventDefault(); close(); }
+  });
+  t.focus(); t.select();
 }
 
 // 뱃지 제목 교체 — href 가 같고 제목이 아직 expect(기본=href) 인 뱃지만 바꾼다(사용자가 고친 건 유지).
@@ -479,28 +518,24 @@ export default {
       const ed = this._ed;
       if (!ed) return;
       const sel = ed.state.selection;
-      if (ed.isActive("linkBadge")) {                       // 이미 뱃지 선택 → 수정
+      const host = this.$refs.ed;
+      if (ed.isActive("linkBadge")) {                       // 이미 뱃지 선택 → 제목·URL 수정
         const at = sel.from;
         const node = ed.state.doc.nodeAt(at);
-        const t = window.prompt("표시할 제목", (node && node.attrs.title) || "");
-        if (t === null) return;
-        const h = window.prompt("링크 URL", (node && node.attrs.href) || "");
-        if (h === null) return;
-        const href = (h || "").trim();
-        if (!href) return;
-        ed.chain().focus().command(({ tr }) => {
-          tr.setNodeMarkup(at, undefined, { href, title: (t || "").trim() || href });
-          return true;
-        }).run();
+        const dom = (host && host.querySelector("a.web-badge.ProseMirror-selectednode")) || host;
+        openBadgeEditor(dom, (node && node.attrs) || {}, (title, href) => {
+          ed.chain().focus().command(({ tr }) => {
+            tr.setNodeMarkup(at, undefined, { href, title });
+            return true;
+          }).run();
+        });
         return;
       }
       const selText = ed.state.doc.textBetween(sel.from, sel.to, " ").trim();
-      const h = window.prompt("링크 URL", "");
-      if (h === null) return;
-      const href = (h || "").trim();
-      if (!href) return;
-      ed.chain().focus().insertContentAt({ from: sel.from, to: sel.to },
-        { type: "linkBadge", attrs: { href, title: selText || href } }).run();
+      openBadgeEditor(host, { title: selText, href: "" }, (title, href) => {
+        ed.chain().focus().insertContentAt({ from: sel.from, to: sel.to },
+          { type: "linkBadge", attrs: { href, title: title || href } }).run();
+      });
     },
     tbImage() { this.$refs.file && this.$refs.file.click(); },
     inCallout(t) { this.tick; return !!(this._ed && this._ed.isActive("callout", { type: t })); },
@@ -614,8 +649,9 @@ export default {
       if (this.busy || !this._ed) return;
       let html = this._ed.getHTML();
       const text = (this._ed.getText() || "").trim();
-      const hasImg = /<img\b/i.test(html);
-      if (!text && !hasImg) { this.err = "내용을 입력하세요."; return; }
+      // 이미지/링크 뱃지만 있는 댓글도 유효한 내용이다(텍스트가 비어도 통과).
+      const hasNode = /<img\b/i.test(html) || /<a\b/i.test(html);
+      if (!text && !hasNode) { this.err = "내용을 입력하세요."; return; }
       this.busy = true; this.err = "";
       const uploaded = [];
       try {
