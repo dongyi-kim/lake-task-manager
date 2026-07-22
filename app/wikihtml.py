@@ -124,7 +124,18 @@ def _blocks(node, lines, depth=0):
                 lines.append("")
             continue
         t = c.tag
-        if t == "p" or t == "div":
+        cls = c.attrs.get("class") or ""
+        if t == "div" and "callout" in cls:
+            # Jira 콜아웃 매크로 — <div class="callout callout-info"> <-> {info}…{info}
+            m = re.search(r"callout-(\w+)", cls)
+            kind = m.group(1) if m else "info"
+            inner = []
+            _blocks(c, inner)
+            lines.append("{" + kind + "}")
+            lines.extend([x for x in inner if x.strip()])
+            lines.append("{" + kind + "}")
+            lines.append("")
+        elif t == "p" or t == "div":
             inner = _inline(c).strip()
             if inner:
                 lines.append(inner)
@@ -229,6 +240,10 @@ def html_to_wiki(html: str) -> str:
 # TipTap 이 파싱 가능한 표준 HTML 로. 사람 멘션 [~id] → <span data-type=mention>.
 # 이름 해석기(mr)를 주면 라벨을 본명으로.
 
+# Jira 콜아웃 매크로 종류. 표준 4종(info/note/warning/tip) + mock/사내가 쓰는 2종.
+_CALLOUT_KINDS = ("note", "info", "warning", "tip", "success", "error")
+_CALLOUT_OPEN_RE = re.compile(r"^\{(" + "|".join(_CALLOUT_KINDS) + r")(?::[^}]*)?\}\s*$")
+
 _WIKI_MONO = re.compile(r"\{\{(.+?)\}\}")
 _WIKI_MENTION = re.compile(r"\[~([^\]]+)\]")
 _WIKI_IMG = re.compile(r"!([^!\n|]+)(?:\|([^!\n]*))?!")
@@ -295,6 +310,18 @@ def wiki_to_html(wiki: str, mr=None) -> str:
             html.append(f'<pre class="jecodeblock"><code{cls}>'
                         + escape("\n".join(body)) + "</code></pre>")
             continue
+        # 콜아웃 매크로 {info}/{note}/{warning}/{tip}/… — 안 잡으면 리터럴 텍스트로 남아 깨진다.
+        m = re.match(r"^\{(" + "|".join(_CALLOUT_KINDS) + r")(?::[^}]*)?\}\s*$", st)
+        if m:
+            kind = m.group(1)
+            body, i = [], i + 1
+            while i < n and not re.match(r"^\{" + kind + r"(?::[^}]*)?\}\s*$", lines[i].strip()):
+                body.append(lines[i])
+                i += 1
+            i += 1
+            html.append(f'<div class="callout callout-{kind}">'
+                        + wiki_to_html("\n".join(body), mr) + "</div>")
+            continue
         if st == "{quote}":
             body, i = [], i + 1
             while i < n and lines[i].strip() != "{quote}":
@@ -341,7 +368,7 @@ def wiki_to_html(wiki: str, mr=None) -> str:
             s2 = lines[i].strip()
             if (s2 == "" or s2.startswith(("|", "{code", "{noformat", "{quote", "bq. "))
                     or re.match(r"^h[1-6]\.\s", s2) or re.match(r"^[*#]+\s", s2)
-                    or re.match(r"^-{4,}$", s2)):
+                    or re.match(r"^-{4,}$", s2) or _CALLOUT_OPEN_RE.match(s2)):
                 break
             para.append(s2)
             i += 1

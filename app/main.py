@@ -234,9 +234,9 @@ def api_issue(key: str):
 
 
 @app.get("/api/issue/{key}/comments")
-def api_issue_comments(key: str):
-    """범용 단일 티켓 코멘트 리소스."""
-    return JSONResponse(_client.issue_comments(key))
+def api_issue_comments(key: str, limit: int = 100):
+    """범용 단일 티켓 코멘트 리소스. 프론트가 최신순/오래된순으로 정렬하므로 넉넉히 준다."""
+    return JSONResponse(_client.issue_comments(key, limit))
 
 
 @app.get("/api/search")

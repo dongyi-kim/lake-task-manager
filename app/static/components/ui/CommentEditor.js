@@ -270,6 +270,9 @@ export default {
       content: this.initial || "",
       autofocus: true,
       editorProps: {
+        // 본문에 tkt-desc 를 부여 → 렌더된 댓글과 **같은 CSS**를 그대로 사용(인용·콜아웃 등 일치).
+        // 에디터 전용 규칙(.cmt-ed-host .ProseMirror …)이 더 구체적이라 필요한 곳만 덮어쓴다.
+        attributes: { class: "tkt-desc" },
         handlePaste: (view, event) => {
           const cd = event.clipboardData;
           const files = cd && cd.files;

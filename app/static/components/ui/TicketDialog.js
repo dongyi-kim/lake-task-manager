@@ -44,6 +44,7 @@ export default {
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [], sibOpen: true,
                     pdesc: null, pdescOpen: false, pdescErr: "",
                     me: null, composing: false, editingId: null, editInitial: "", editErr: "",
+                    cmtSort: "new",              // new=최신순(기본) | old=오래된순. 초 단위까지 비교.
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
@@ -62,6 +63,13 @@ export default {
   computed: {
     today() { return ymd(new Date().toISOString()); },   // 기한 초과 판정용
     tk() { return (this.v && this.v.key) || this.keyId; },   // 쓰기 대상 티켓 키
+    // 코멘트 정렬 — created 를 ms 로 파싱해 **초 단위까지** 비교(같은 분에 여러 개 달려도 안정).
+    sortedComments() {
+      const list = (this.comments || []).slice();
+      const t = (c) => { const n = Date.parse(c && c.date); return isNaN(n) ? 0 : n; };
+      list.sort((a, b) => (this.cmtSort === "old" ? t(a) - t(b) : t(b) - t(a)));
+      return list;
+    },
     // 스파인 계보 = [조상…, 현재]. 조상만 도착해도 그릴 수 있어야 하므로 **v 를 기다리지 않는다**
     // (현재 노드는 keyId 로 먼저 그리고, v 가 오면 제목·타입이 채워진다).
     spine() {
@@ -153,6 +161,14 @@ export default {
       return (n / 1024 / 1024).toFixed(1) + " MB";
     },
     // ── 코멘트 작성/수정/삭제 (첫 쓰기 기능) ──
+    // 작성자 시그니처 컬러 — 사번 해시 → 고정 색. 같은 사람은 늘 같은 색(좌측 선으로 구분).
+    sigColor(id) {
+      const s = String(id || "");
+      if (!s) return "var(--border)";
+      let h = 0;
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+      return "hsl(" + (h % 360) + " 62% 52%)";
+    },
     canEdit(c) { return !!(this.me && this.me.id && c && c.authorId === this.me.id); },
     reloadComments() {
       const key = this.keyId;
@@ -286,6 +302,16 @@ export default {
           a.querySelector(".jb-meta").textContent = meta;
           a.title = key + " " + (b.summary || "") + (meta ? " (" + meta + ")" : "");
         }).catch(() => { /* 조회 실패 시 키만 표시 */ });
+      });
+      // 3) 일반 웹 링크 → favicon 뱃지(에디터와 동일한 모양). Confluence/Jira 뱃지는 위에서 처리됨.
+      root.querySelectorAll(".tkt-desc a[href]").forEach((a) => {
+        if (a.dataset.web || a.dataset.jira) return;
+        if (a.classList.contains("conf-link") || a.classList.contains("jira-badge")) return;
+        const href = a.getAttribute("href") || "";
+        if (!/^https?:\/\//i.test(href)) return;
+        a.dataset.web = "1";
+        a.classList.add("web-badge");
+        a.style.setProperty("--fav", "url('/api/favicon?u=" + encodeURIComponent(href) + "')");
       });
     },
     // v-html 로 렌더된 이미지/표에 '확대' 버튼을 얹는다(우측 상단). 중복 주입 방지 마커 사용.
@@ -538,12 +564,20 @@ export default {
 
           <!-- 코멘트 — 본문(v)과 무관하게 자기 상태로 렌더 -->
           <template v-if="!err">
-            <div class="tkt-sec-t">코멘트<span v-if="comments"> ({{ comments.length }})</span></div>
+            <div class="tkt-sec-t">코멘트<span v-if="comments"> ({{ comments.length }})</span>
+              <span v-if="comments && comments.length > 1" class="cmt-sort">
+                <button type="button" class="cmt-sort-b" :class="{ on: cmtSort === 'new' }"
+                        @click="cmtSort = 'new'" title="최신 댓글이 위로">최신순</button>
+                <button type="button" class="cmt-sort-b" :class="{ on: cmtSort === 'old' }"
+                        @click="cmtSort = 'old'" title="오래된 댓글이 위로">오래된순</button>
+              </span>
+            </div>
             <div v-if="!comments" class="loading">코멘트 불러오는 중…</div>
             <template v-else>
               <div v-if="!comments.length" class="muted">코멘트가 없습니다.</div>
               <div v-else class="tkt-comments">
-                <div v-for="(c, i) in comments" :key="c.id || i" class="tkt-cmt">
+                <div v-for="(c, i) in sortedComments" :key="c.id || i" class="tkt-cmt"
+                     :style="{ '--sig': sigColor(c.authorId) }">
                   <div class="tkt-cmt-h">
                     <Avatar :user="c.authorId" :name="c.author" :size="20" /><b>{{ c.author }}</b>
                     <span class="muted">{{ fdt(c.date) }}</span>

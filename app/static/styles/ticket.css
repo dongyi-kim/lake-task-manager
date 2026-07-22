@@ -392,7 +392,9 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 
 /* ── 코멘트 ── */
 .tkt-comments { display: flex; flex-direction: column; gap: 8px; }
-.tkt-cmt { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel); }
+/* 좌측 선 = 작성자 시그니처 컬러(--sig, 사번 해시로 고정) → 누가 쓴 댓글인지 한눈에 구분 */
+.tkt-cmt { border: 1px solid var(--border); border-left: 3px solid var(--sig, var(--border));
+  border-radius: 8px; padding: 8px 12px; background: var(--panel); }
 .tkt-cmt-h { display: flex; gap: 7px; align-items: center; font-size: 12.5px; margin-bottom: 3px; }
 .tkt-cmt-h .muted { font-size: 11.5px; }
 /* 코멘트는 이제 HTML(<p>/<br>) 렌더 → white-space:normal. (pre-wrap 이면 태그 사이 개행이
@@ -583,7 +585,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-ed-host .ProseMirror li { margin: 2px 0; }
 .cmt-ed-host .ProseMirror li > p { margin: 0; }
 .cmt-ed-host .ProseMirror a { color: var(--accent); text-decoration: none; }
-.cmt-ed-host .ProseMirror blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--border); color: var(--muted); }
+/* 인용은 에디터 전용 규칙을 두지 않는다 — .tkt-desc blockquote(따옴표 글리프 포함)를 그대로 써
+   에디터 미리보기와 실제 렌더가 일치하게 한다. (콜아웃도 동일 원리로 .tkt-desc .callout 사용) */
 .cmt-ed-host .ProseMirror code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12.5px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
 .cmt-ed-host .ProseMirror pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
@@ -617,6 +620,14 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-ed-host .ProseMirror .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: 0;
   width: 4px; background: var(--accent); pointer-events: none; z-index: 3; }
 .cmt-ed-host .ProseMirror.resize-cursor { cursor: col-resize; }
+/* 코멘트 정렬 버튼 (최신순/오래된순) */
+.cmt-sort { margin-left: 10px; display: inline-flex; gap: 2px; vertical-align: middle; }
+.cmt-sort-b { font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent; background: none; color: var(--muted-2); font-weight: 500; }
+.cmt-sort-b:hover { color: var(--text); border-color: var(--border); }
+.cmt-sort-b.on { color: var(--accent); border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel)); font-weight: 700; }
+
 /* 웹 링크 뱃지 — favicon(= --fav, /api/favicon) + 칩. favicon 없으면 빈 사각형으로 폴백. */
 .cmt-ed-host .ProseMirror a.web-badge, .tkt-desc a.web-badge {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;

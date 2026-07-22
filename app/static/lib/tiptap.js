@@ -28,6 +28,7 @@ export function loadTiptap() {
     return {
       Editor: m[0].Editor,
       Extension: m[0].Extension,
+      Node: m[0].Node,
       StarterKit: m[1].default,
       Mention: m[2].default,
       Table: m[3].default,
