@@ -552,8 +552,8 @@ export default {
                   <div v-else class="tkt-cmt-b tkt-desc" @click="onContentClick" v-html="c.html"></div>
                 </div>
               </div>
-              <!-- 작성 -->
-              <div class="tkt-cmt-compose" v-if="me && me.id">
+              <!-- 작성 — 항상 노출(me 조회 실패에도 사라지지 않게). 미인증이면 제출 때 로그인 오버레이 -->
+              <div class="tkt-cmt-compose">
                 <button v-if="!composing" class="tkt-cmt-addbtn" @click="startCompose">＋ 댓글 달기</button>
                 <CommentEditor v-else :ticket-key="tk" submit-label="등록" :submit-fn="submitNew"
                   @submitted="onComposed" @cancel="cancelCompose" />
