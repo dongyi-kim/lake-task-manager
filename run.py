@@ -64,59 +64,61 @@ def _serve_bg(s):
     return server
 
 
-def _warm_confluence(page, context, conf_base, timeout=40):
-    """Confluence 를 한 번 열어 SSO 쿠키를 같은 컨텍스트에 받아둔다.
+def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
+    """서비스 하나를 앱 창에서 열어 SSO 로그인시키고 인증될 때까지 기다린다 — (ok, 이유).
 
-    같은 IdP 면 사용자 입력 없이 리다이렉트만으로 끝난다. 별도 로그인이 필요한 경우엔
-    그 화면이 떠 있는 동안 사용자가 마치면 감지된다(timeout 안에서 대기).
-    실패해도 Jira 세션 저장은 그대로 진행한다 — Confluence 는 부가 기능이다.
+    같은 IdP 면 리다이렉트만으로 즉시 인증되고, 아니면 로그인 화면이 떠서 사용자가
+    직접 로그인한다. per_timeout 안에 안 되면 실패로 본다.
     """
-    from app.auth.sso_session import conf_authed
-    if not conf_base:
-        print("[login] Confluence base 미설정 — 건너뜀")
-        return False
-    try:
-        page.goto(conf_base, wait_until="domcontentloaded")
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and not page.is_closed():
-            if conf_authed(context, conf_base):
-                print("[login] Confluence 세션 확보")
-                return True
-            page.wait_for_timeout(1500)
-        print("[login] Confluence 인증 미확인 — 검색에서 Confluence 만 제외될 수 있음")
-    except Exception as e:
-        print(f"[login] Confluence 훑기 실패({e}) — Jira 세션은 정상 저장")
-    return False
-
-
-def _do_login_in_window(s, page, context, appmain, timeout=300):
-    """[prod] 같은 앱 창에서 사내 SSO 로그인 구동: Jira 로 이동 → 인증 감지 → 세션 저장 → 앱 복귀."""
-    from app.auth.sso_session import _authed, conf_authed
-    appmain._login_requested.clear()
-    base = s.jira_base.rstrip("/")
-    conf = (getattr(s, "confluence_base", "") or "").rstrip("/")
-    home = f"http://localhost:{s.app_port}/"
+    from app.auth.sso_session import service_probe
     try:
         page.goto(base, wait_until="domcontentloaded")
-        deadline = time.monotonic() + timeout
-        ok = False
-        while time.monotonic() < deadline and not page.is_closed():
-            if _authed(context, base):
-                # SSO 쿠키는 도메인별 — Jira 로그인만으로는 Confluence 가 401 이다.
-                # 같은 IdP 면 한 번 열어주는 것만으로 리다이렉트가 돌며 쿠키가 붙는다.
-                _warm_confluence(page, context, conf)
-                context.storage_state(path=appmain._client._state_path())   # 세션 저장
-                appmain._client.reset_provider()                            # 백엔드가 새 세션 사용
-                ok = True
-                break
-            page.wait_for_timeout(1500)
-        print("[login] " + ("완료 — 세션 저장" if ok else "미완료(시간초과/취소)"))
-    except Exception:
-        pass
+    except Exception as e:
+        return False, f"페이지 열기 실패({e})"
+    deadline = time.monotonic() + per_timeout
+    last = "대기 시간 초과"
+    while time.monotonic() < deadline and not page.is_closed():
+        ok, why = service_probe(context, base, paths)
+        if ok:
+            return True, why
+        last = why
+        page.wait_for_timeout(1500)
+    return False, last
+
+
+def _do_login_in_window(s, page, context, appmain, per_timeout=300):
+    """[prod] 앱 창에서 Jira → Confluence → Bitbucket(설정된 것만) 을 **하나씩** 열어 SSO 로그인.
+
+    각 서비스는 도메인이 달라 SSO 쿠키가 따로 필요하다(하나만 로그인하면 나머지는 401).
+    셋 중 하나라도 인증이 안 되면 세션은 저장하되 로그인 미완료로 남긴다
+    (앱은 '로그인 필요' 를 다시 띄운다 — 부분 인증이라도 되는 기능은 동작).
+    """
+    from app.auth.sso_session import service_probe
+    appmain._login_requested.clear()
+    home = f"http://localhost:{s.app_port}/"
+    targets = getattr(s, "auth_targets", None) or [("Jira", s.jira_base.rstrip("/"), ["/rest/api/2/myself"])]
+    results = []
+    try:
+        for name, base, paths in targets:
+            # 이미 세션이 살아 있으면(직전 로그인·리다이렉트) 페이지를 새로 열지 않고 통과
+            ok, why = service_probe(context, base, paths)
+            if not ok:
+                ok, why = _login_one_service(page, context, name, base, paths, per_timeout, appmain)
+            results.append((name, ok))
+            print(f"[login] {name}: {'OK' if ok else '실패'} — {why}")
+        # 하나라도 됐으면 세션 저장(부분 인증이라도 그 기능은 쓰게), provider 갱신
+        if any(ok for _, ok in results):
+            context.storage_state(path=appmain._client._state_path())
+            appmain._client.reset_provider()
+        all_ok = all(ok for _, ok in results)
+        print("[login] " + ("전체 완료 — " if all_ok else "일부 미완료 — ")
+              + ", ".join(f"{n}={'O' if ok else 'X'}" for n, ok in results))
+    except Exception as e:
+        print(f"[login] 오류: {e}")
     finally:
         try:
             if not page.is_closed():
-                page.goto(home, wait_until="domcontentloaded")             # 앱으로 복귀
+                page.goto(home, wait_until="domcontentloaded")            # 앱으로 복귀
         except Exception:
             pass
 

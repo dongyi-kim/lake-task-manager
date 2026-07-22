@@ -106,6 +106,20 @@ class Settings:
         self.sp_field_id = str(pick("SP_FIELD_ID", f.get("story_point"), "customfield_10004"))
         self.epic_link_field_id = str(pick("EPIC_LINK_FIELD_ID", f.get("epic_link"), "customfield_10008"))
         self.confluence_base = str(pick("CONFLUENCE_BASE", conf.get("base"), "")).rstrip("/")
+        # Bitbucket 은 아직 mock — base 가 설정되면 SSO 로그인 순회 대상에 포함된다.
+        _bb = cfg.get("bitbucket") or {}
+        self.bitbucket_base = str(pick("BITBUCKET_BASE", _bb.get("base"), "")).rstrip("/")
+        # SSO 로그인 순회 대상 — base 가 있는 서비스만. run.py 가 앱 창에서 하나씩 연다.
+        #   (이름, base URL, 인증 판정용 REST 경로 후보들)
+        self.auth_targets = [("Jira", self.jira_base, ["/rest/api/2/myself"])]
+        if self.confluence_base:
+            self.auth_targets.append(
+                ("Confluence", self.confluence_base,
+                 ["/rest/api/user/current", "/rest/api/user/current.json"]))
+        if self.bitbucket_base:
+            self.auth_targets.append(
+                ("Bitbucket", self.bitbucket_base,
+                 ["/rest/api/1.0/users?limit=1", "/plugins/servlet/applinks/whoami"]))
         self.cache_db_path = str(pick("CACHE_DB_PATH", cache.get("db_path"), str(BASE_DIR / "cache.sqlite3")))
         self.cache_ttl_seconds = int(pick("CACHE_TTL_SECONDS", cache.get("ttl_seconds"), 900))
         self.app_host = str(pick("APP_HOST", server.get("host"), "0.0.0.0"))

@@ -149,24 +149,59 @@ class SsoSessionProvider(AuthProvider):
             pass
 
 
-def conf_authed(context, base):
-    """Confluence 쪽 세션이 살아 있는지 — 익명이 아닌 current user 를 돌려주면 True.
+def service_probe(context, base, paths):
+    """서비스(Jira/Confluence/Bitbucket) 인증 상태를 진단 — (ok, 이유문자열).
 
-    SSO 쿠키는 **도메인별**이라 Jira 로그인만으로는 Confluence 가 401 이 난다.
-    같은 IdP 면 Confluence 를 한 번 열어주는 것만으로 리다이렉트가 돌며 쿠키가 붙는다.
+    SSO 쿠키는 **도메인별**이라 서비스마다 따로 로그인해야 한다.
+    실패 원인을 구분해 로그로 남긴다(미인증 401 · SSO 리다이렉트 미완료 · 경로 문제).
     """
     b = (base or "").rstrip("/")
     if not b:
-        return False
-    try:
-        resp = context.request.get(b + "/rest/api/user/current")
-        if resp.status == 200:
-            body = resp.json()
-            name = body.get("username") or body.get("userKey") or body.get("accountId")
-            return bool(name)
-    except Exception:
-        pass
-    return False
+        return False, "base 미설정"
+    last = "응답 없음"
+    for path in paths:
+        try:
+            resp = context.request.get(b + path)
+        except Exception as e:
+            last = f"{path}: 요청 실패({e})"
+            continue
+        st = resp.status
+        if st == 200:
+            try:
+                body = resp.json()
+            except Exception:
+                last = f"{path}: 200(로그인 페이지 HTML=미인증)"
+                continue
+            # 응답 형태가 서비스마다 다르다 — 사용자 식별자가 잡히면 인증으로 본다
+            name = _extract_user(body)
+            if name:
+                return True, f"인증됨({name})"
+            last = f"{path}: 200 이나 사용자 없음"
+        elif st in (401, 403):
+            last = f"{path}: {st}(인증 필요)"
+        elif st in (301, 302, 303, 307, 308):
+            last = f"{path}: {st}(SSO 리다이렉트 미완료)"
+        else:
+            last = f"{path}: HTTP {st}"
+    return False, last
+
+
+def _extract_user(body):
+    """다양한 응답에서 사용자 식별자를 뽑는다(Jira myself · Confluence current · Bitbucket users)."""
+    if isinstance(body, dict):
+        for k in ("name", "username", "userKey", "accountId", "key", "slug"):
+            v = body.get(k)
+            if v and v != "anonymous":
+                return v
+        vals = body.get("values")               # Bitbucket users?limit=1 → {values:[{...}]}
+        if isinstance(vals, list) and vals:
+            return _extract_user(vals[0])
+    return None
+
+
+def conf_authed(context, base):
+    return service_probe(context, base,
+                         ["/rest/api/user/current", "/rest/api/user/current.json"])[0]
 
 
 def _authed(context, base):

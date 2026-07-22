@@ -170,3 +170,26 @@ def test_excerpt_highlight_is_safe_html():
     assert "@@@" not in _clean_excerpt("잘린 @@@hl@@@쿼리")
     # 마커 없는 평문도 escape
     assert _clean_excerpt("<b>x</b>") == "&lt;b&gt;x&lt;/b&gt;"
+
+
+def test_service_user_extraction():
+    """SSO 순회 로그인의 인증 판정 — 서비스별 응답에서 사용자 식별자를 뽑는다."""
+    from app.auth.sso_session import _extract_user
+    assert _extract_user({"name": "hong", "displayName": "홍길동"}) == "hong"   # Jira myself
+    assert _extract_user({"username": "hong"}) == "hong"                        # Confluence current
+    assert _extract_user({"values": [{"name": "hong", "slug": "hong"}]}) == "hong"  # Bitbucket users
+    assert _extract_user({"name": "anonymous"}) is None                         # 익명은 미인증
+    assert _extract_user({}) is None
+
+
+def test_auth_targets_include_configured_services():
+    """base 가 설정된 서비스만 SSO 로그인 순회 대상 — Jira 는 항상, 나머지는 base 있을 때."""
+    from app.settings import get_settings
+    s = get_settings()
+    names = [t[0] for t in s.auth_targets]
+    assert "Jira" in names
+    # confluence_base 가 있으면 Confluence 포함(dev 는 jira820 이 같은 호스트로 서빙)
+    if s.confluence_base:
+        assert "Confluence" in names
+    if not s.bitbucket_base:
+        assert "Bitbucket" not in names       # base 없으면 제외(현재 mock)
