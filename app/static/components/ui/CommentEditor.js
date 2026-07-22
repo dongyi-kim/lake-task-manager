@@ -11,6 +11,17 @@ import { api } from "../../lib/api.js";
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
+// 멘션 팝업 아바타 — 네트워크 요청(=404 스팸) 없이 이니셜 원. id 로 색 결정.
+const _MN_COLORS = ["#6d4fc0", "#2d8a5f", "#c07a2d", "#b34a6b", "#3a6ea5", "#8a5a2d"];
+function mnAvatar(name, id) {
+  let h = 0; const s = id || name || "";
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  const bg = _MN_COLORS[h % _MN_COLORS.length];
+  const ch = ((name || id || "?").trim()[0] || "?").toUpperCase();
+  return `<span class="mn-av" style="background:${bg}">${esc(ch)}</span>`;
+}
+const _URL_RE = /^https?:\/\/\S+$/i;
+
 // @사람 멘션 자동완성 팝업 (tippy 없이 순수 DOM) — TipTap suggestion.render 핸들러.
 function mentionSuggestion() {
   return {
@@ -23,7 +34,7 @@ function mentionSuggestion() {
         if (!items.length) { el.innerHTML = '<div class="mn-empty">사용자 없음</div>'; return; }
         el.innerHTML = items.map((u, i) =>
           `<div class="mn-item${i === sel ? " sel" : ""}" data-i="${i}">`
-          + `<img class="mn-av" src="${esc(u.avatar)}" onerror="this.style.visibility='hidden'">`
+          + mnAvatar(u.name, u.id)
           + `<span class="mn-nm">${esc(u.name)}</span><span class="mn-id">${esc(u.id)}</span></div>`).join("");
         el.querySelectorAll(".mn-item").forEach((row) => {
           row.addEventListener("mousedown", (e) => { e.preventDefault(); pick(+row.dataset.i); });
@@ -101,8 +112,18 @@ export default {
       autofocus: true,
       editorProps: {
         handlePaste: (view, event) => {
-          const files = event.clipboardData && event.clipboardData.files;
+          const cd = event.clipboardData;
+          const files = cd && cd.files;
           if (files && files.length && handleFiles(files, view)) { event.preventDefault(); return true; }
+          // 순수 URL 붙여넣기 → 자동 링크(문서/웹). 읽기 렌더에서 앱이 Jira/Confluence 뱃지화.
+          const txt = cd && cd.getData && cd.getData("text/plain");
+          if (txt && _URL_RE.test(txt.trim()) && self._ed.state.selection.empty) {
+            const url = txt.trim();
+            self._ed.chain().focus().insertContent(
+              [{ type: "text", marks: [{ type: "link", attrs: { href: url } }], text: url },
+               { type: "text", text: " " }]).run();
+            event.preventDefault(); return true;
+          }
           return false;
         },
         handleDrop: (view, event) => {
@@ -143,6 +164,15 @@ export default {
       this.cmd((c) => c.extendMarkRange("link").setLink({ href: url }).run());
     },
     tbImage() { this.$refs.file && this.$refs.file.click(); },
+    inTable() { this.tick; return !!(this._ed && this._ed.isActive("table")); },
+    tColBefore() { this.cmd((c) => c.addColumnBefore().run()); },
+    tColAfter() { this.cmd((c) => c.addColumnAfter().run()); },
+    tColDel() { this.cmd((c) => c.deleteColumn().run()); },
+    tRowBefore() { this.cmd((c) => c.addRowBefore().run()); },
+    tRowAfter() { this.cmd((c) => c.addRowAfter().run()); },
+    tRowDel() { this.cmd((c) => c.deleteRow().run()); },
+    tHeaderRow() { this.cmd((c) => c.toggleHeaderRow().run()); },
+    tTableDel() { this.cmd((c) => c.deleteTable().run()); },
     onFile(e) {
       const files = e.target.files;
       if (files && files.length && this._ed) {
@@ -208,6 +238,19 @@ export default {
         <button type="button" class="tb-b" @click="tbTable" title="표 삽입">▦</button>
         <button type="button" class="tb-b" @click="tbImage" title="이미지">🖼</button>
         <input ref="file" type="file" accept="image/*" multiple style="display:none" @change="onFile">
+      </div>
+      <div class="cmt-tb cmt-tb-tbl" v-show="ready && inTable()">
+        <span class="tb-lbl">표</span>
+        <button type="button" class="tb-b" @click="tColBefore" title="왼쪽 열 추가">＋열←</button>
+        <button type="button" class="tb-b" @click="tColAfter" title="오른쪽 열 추가">＋열→</button>
+        <button type="button" class="tb-b" @click="tColDel" title="열 삭제">－열</button>
+        <span class="tb-sep"></span>
+        <button type="button" class="tb-b" @click="tRowBefore" title="위 행 추가">＋행↑</button>
+        <button type="button" class="tb-b" @click="tRowAfter" title="아래 행 추가">＋행↓</button>
+        <button type="button" class="tb-b" @click="tRowDel" title="행 삭제">－행</button>
+        <span class="tb-sep"></span>
+        <button type="button" class="tb-b" @click="tHeaderRow" title="헤더행 토글">헤더</button>
+        <button type="button" class="tb-b" @click="tTableDel" title="표 삭제">🗑표</button>
       </div>
       <div ref="ed" class="cmt-ed-host"></div>
       <div class="cmt-ed-bar">
