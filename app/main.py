@@ -1,3 +1,4 @@
+
 """
 Lake Task Manager — FastAPI 진입점.
 - /api/wbs            : 기능1 WBS Dashboard (wbs_config.yaml + Jira Epic 진척률, 캐시)
@@ -45,6 +46,23 @@ def _on_session_expired(request: Request, exc: SessionExpired):
         content={"needLogin": True, "env": _settings.jira_env, "detail": str(exc)})
 
 
+def _build_rev():
+    """실행 중인 코드의 git 커밋 — 앱이 최신 배포본인지 눈으로 확인하기 위함.
+    (배포 pull·재시작을 깜빡해 옛 코드가 도는 경우가 잦다.)"""
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, timeout=3).decode().strip()
+    except Exception:
+        return "(unknown)"
+
+
+_BUILD_REV = _build_rev()
+
+
 # ── 개발자용 진단(dev tools) — 지금은 전부 열림. 노출 제어는 나중에 역할 훅(devtools.enabled)으로 ──
 from app import devtools as _devtools   # noqa: E402
 
@@ -55,7 +73,7 @@ def _probe_result(label, fn, kind=None, full=False):
     try:
         raw = fn()
     except Exception as e:
-        err = {"label": label, "error": str(e)}
+        err = {"label": label, "rev": _BUILD_REV, "error": str(e)}
         st = getattr(e, "status", None)
         if st is not None:
             err["status"] = st
@@ -64,7 +82,7 @@ def _probe_result(label, fn, kind=None, full=False):
                 err["hint"] = ("403 — XSRF 또는 권한. 헤더는 붙였으니, 앱을 최신으로 재시작했는지 확인. "
                                "그래도 403 이면 이 경로에 code search 권한이 없거나 엔드포인트가 다를 수 있음.")
         return err
-    out = {"label": label}
+    out = {"label": label, "rev": _BUILD_REV}
     if kind:
         out["digest"] = _devtools.bitbucket_digest(raw, kind)
     if full or not kind:
@@ -84,6 +102,14 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
             lambda: _client.provider.get_json(base + "/rest/api/1.0/repos",
                                               params={"name": name, "limit": limit}),
             kind="repo", full=full)
+
+    @app.get("/api/dev/bitbucket/diag")
+    def _dev_bb_diag():
+        """XSRF 진단 — Bitbucket 도메인 쿠키 이름·전송 헤더. code search 403 원인 파악용."""
+        prov = _client.provider
+        if not hasattr(prov, "_diag_write"):
+            return {"note": "이 provider(로컬 basic/mock)는 쿠키 진단 미지원 — prod SSO 에서만."}
+        return {"rev": _BUILD_REV, "diag": prov._diag_write(_BB + "/rest/search/latest/search")}
 
     @app.get("/api/dev/bitbucket/code")
     def _dev_bb_code(q: str = "test", limit: int = 3, full: bool = False):
@@ -127,23 +153,6 @@ if _devtools.enabled(_settings, "sso_status"):
 
 
 @app.get("/api/health")
-def _build_rev():
-    """실행 중인 코드의 git 커밋 — 앱이 최신 배포본인지 눈으로 확인하기 위함.
-    (배포 pull·재시작을 깜빡해 옛 코드가 도는 경우가 잦다.)"""
-    import subprocess
-    from pathlib import Path
-    root = Path(__file__).resolve().parent.parent
-    try:
-        return subprocess.check_output(
-            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL, timeout=3).decode().strip()
-    except Exception:
-        return "(unknown)"
-
-
-_BUILD_REV = _build_rev()
-
-
 def health():
     return {"status": "ok", "env": _settings.jira_env, "projectKey": _settings.project_key,
             "needLogin": _client.needs_login(), "rev": _BUILD_REV,

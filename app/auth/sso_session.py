@@ -193,6 +193,28 @@ class SsoSessionProvider(AuthProvider):
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
         return resp.body(), resp.headers.get("content-type")
 
+    def _diag_write(self, url):
+        """[dev 진단] 이 URL 에 대해 실제로 보낼 XSRF 헤더 + 그 도메인 쿠키 이름들.
+        값은 마스킹. atl.xsrf.token 이 있는지, 어떤 X-Atlassian-Token 을 보내는지 확인용."""
+        def do():
+            names, xsrf_cookie = [], None
+            try:
+                for c in self._context.cookies(url):
+                    nm = c.get("name", "")
+                    names.append(nm)
+                    if nm in ("atl.xsrf.token", "atlassian.xsrf.token"):
+                        xsrf_cookie = nm
+            except Exception as e:
+                return {"error": f"cookies() 실패: {e}"}
+            h = self._xsrf_headers(url)
+            token = h.get("X-Atlassian-Token", "")
+            return {"url": url, "cookie_names": names,
+                    "xsrf_cookie_found": xsrf_cookie or "(없음)",
+                    "X-Atlassian-Token 전송값": ("no-check" if token == "no-check"
+                                                else f"토큰({len(token)}자)" if token else "(없음)"),
+                    "X-Requested-With": h.get("X-Requested-With", "(없음)")}
+        return self._submit(do)
+
     def get_bytes(self, path, params=None):
         return self._submit(lambda: self._fetch_bytes(path, params))
 
