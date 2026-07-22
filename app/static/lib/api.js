@@ -44,7 +44,9 @@ export const api = {
   workloadBucket: (u, b) => get("/api/workload/" + encodeURIComponent(u) + "/" + b),
   workloadDetail: (user) => get("/api/workload/" + encodeURIComponent(user)),
   activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
-  search: (q, scope) => req("/api/search?q=" + encodeURIComponent(q) + "&scope=" + encodeURIComponent(scope || "scoped")),
+  search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
+    + "&scope=" + encodeURIComponent(scope || "scoped")
+    + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence
   ticket: (key) => get("/api/ticket/" + encodeURIComponent(key)),
   ticketBadge: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/badge"),
   ticketAncestors: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/ancestors"),
@@ -55,6 +57,19 @@ export const api = {
   ticketAttachments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/attachments"),
   ticketDocuments: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/documents"),
   ticketComments: (key) => get("/api/issue/" + encodeURIComponent(key) + "/comments"),
+
+  // ── 링크 걸기(관련 티켓 / 관련문서) ──
+  linkTypes: () => get("/api/linktypes"),                              // 관계 선택지(캐시됨)
+  linkAdd: (key, body) =>                                              // 관련 티켓
+    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/link", "POST", body)
+      .then((r) => { evict(encodeURIComponent(key)); evict(encodeURIComponent(body.key)); return r; }),
+  linkDelete: (key, linkId, other) =>
+    req("/api/ticket/" + encodeURIComponent(key) + "/link/" + encodeURIComponent(linkId)
+        + (other ? "?other=" + encodeURIComponent(other) : ""), { method: "DELETE" })
+      .then((r) => { evict(encodeURIComponent(key)); if (other) evict(encodeURIComponent(other)); return r; }),
+  documentAdd: (key, body) =>                                          // 관련문서(remote link)
+    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/document", "POST", body)
+      .then((r) => { evict(encodeURIComponent(key)); return r; }),
 
   // ── 최근 열어본 항목(서버 저장 — 브라우저가 달라도 같은 목록) ──
   recent: (limit) => req("/api/recent" + (limit ? "?limit=" + limit : "")),   // memo 제외(자주 바뀜)

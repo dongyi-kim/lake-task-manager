@@ -32,6 +32,19 @@ class _CommentBody(BaseModel):
     html: str = ""
 
 
+class _LinkBody(BaseModel):
+    """관련 티켓 링크 — key=상대 티켓, type=링크 타입명(Blocks 등), direction=이 티켓의 방향."""
+    key: str
+    type: str = "Relates"
+    direction: str = "outward"        # outward | inward
+
+
+class _DocBody(BaseModel):
+    """관련문서 — Confluence 문서/웹 링크(remote link)."""
+    url: str
+    title: str = ""
+
+
 class _RecentBody(BaseModel):
     """최근 열어본 항목 기록 — 검색창을 빈 상태로 열었을 때 보여줄 목록."""
     url: str
@@ -271,9 +284,11 @@ def api_recent_clear(url: str = ""):
 
 
 @app.get("/api/search")
-def api_search(q: str = "", scope: str = "scoped", limit: int = 8):
-    """통합 검색 — Jira(JQL text~) + Confluence(CQL) + Bitbucket(mock) 병렬. scope=scoped|all."""
-    return JSONResponse(search.search_all(_client, _settings, q, scope, limit))
+def api_search(q: str = "", scope: str = "scoped", limit: int = 8, only: str = ""):
+    """통합 검색 — Jira(JQL text~) + Confluence(CQL) + Bitbucket(mock) 병렬. scope=scoped|all.
+    only=jira 또는 only=confluence 로 소스를 좁힐 수 있다(링크 추가 팝업이 쓴다)."""
+    picks = [x for x in (only or "").split(",") if x.strip()] or None
+    return JSONResponse(search.search_all(_client, _settings, q, scope, limit, picks))
 
 
 @app.get("/api/linktitle")
@@ -416,6 +431,36 @@ def api_comment_source(key: str, cid: str):
     if src is None:
         return JSONResponse({"error": "코멘트 없음", "key": key, "cid": cid}, status_code=404)
     return JSONResponse(src)
+
+
+@app.get("/api/linktypes")
+def api_link_types():
+    """이슈 링크 관계 선택지 — [{name, inward, outward}]. 인스턴스 설정이라 조회해서 쓴다."""
+    return JSONResponse(_client.link_types())
+
+
+@app.post("/api/ticket/{key}/link")
+def api_link_add(key: str, body: _LinkBody):
+    """관련 티켓 추가 — 이슈 링크 생성. direction=outward 면 이 티켓이 outward 쪽(예: blocks)."""
+    try:
+        return JSONResponse(_client.add_issue_link(key, body.key, body.type, body.direction))
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.delete("/api/ticket/{key}/link/{link_id}")
+def api_link_delete(key: str, link_id: str, other: str = ""):
+    return JSONResponse(_client.delete_issue_link(link_id, key, other or None))
+
+
+@app.post("/api/ticket/{key}/document")
+def api_document_add(key: str, body: _DocBody):
+    """관련문서 추가 — Confluence 문서/웹 링크를 remote link 로 건다."""
+    try:
+        _client.add_remote_link(key, body.url, body.title)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/ticket/{key}/attachment")

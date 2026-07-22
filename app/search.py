@@ -84,7 +84,9 @@ def _jira_item(it, base):
     }
 
 
-def search_all(client, settings, q, scope="scoped", limit=8):
+def search_all(client, settings, q, scope="scoped", limit=8, only=None):
+    """only=['jira'] 처럼 소스를 좁힐 수 있다. 링크 추가 팝업처럼 한 소스만 필요할 때 쓴다
+    (prod SSO 는 직렬이라 안 쓰는 소스를 부르면 그만큼 느려진다)."""
     q = (q or "").strip()
     base = {"query": q, "scope": scope,
             "jira": {"items": []}, "confluence": {"items": []}, "bitbucket": {"items": []}}
@@ -95,7 +97,11 @@ def search_all(client, settings, q, scope="scoped", limit=8):
         "confluence": lambda: _search_confluence(client, settings, q, scope, limit),
         "bitbucket": lambda: _search_bitbucket(settings, q, limit),
     }
+    if only:
+        funcs = {k: f for k, f in funcs.items() if k in set(only)}
     out = dict(base)
+    if not funcs:
+        return out
     with ThreadPoolExecutor(max_workers=3) as ex:
         futs = {k: ex.submit(f) for k, f in funcs.items()}
         for k, fut in futs.items():

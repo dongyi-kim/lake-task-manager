@@ -8,6 +8,7 @@ import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
 import SettingsMenu from "./SettingsMenu.js";
+import LinkPicker from "./LinkPicker.js";
 import { recordOpen } from "../../lib/recent.js";
 import { highlightIn as hljsHighlight, ensureHljsTheme } from "../../lib/hljs.js";
 import { loadTiptap } from "../../lib/tiptap.js";
@@ -37,7 +38,7 @@ function descEmpty(html) {
 
 export default {
   name: "TicketDialog",
-  components: { TypeBadge, Avatar, CommentEditor, SettingsMenu },
+  components: { TypeBadge, Avatar, CommentEditor, SettingsMenu, LinkPicker },
   // mode: dialog(모달, 기본) | page(새 창 전용 단독 페이지 — 오버레이·닫기 없음)
   props: { keyId: { type: String, required: true },
            mode: { type: String, default: "dialog" },
@@ -47,6 +48,10 @@ export default {
                     pdesc: null, pdescOpen: false, pdescErr: "",
                     me: null, composing: false, editingId: null, editInitial: "", editErr: "",
                     cmtSort: "new",              // new=최신순(기본) | old=오래된순. 초 단위까지 비교.
+                    // 링크 추가(관련 티켓/관련문서) · 파일 첨부(＋ 버튼 · 드래그앤드롭)
+                    relPick: false, linkBusy: false, linkErr: "",
+                    docPick: false, docBusy: false, docErr: "",
+                    uploading: false, upErr: "", dragOver: false,
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
@@ -170,6 +175,80 @@ export default {
     },
     // ── 코멘트 작성/수정/삭제 (첫 쓰기 기능) ──
     // 작성자 시그니처 컬러 — 사번 해시 → 고정 색. 같은 사람은 늘 같은 색(좌측 선으로 구분).
+    // ── 파일 첨부: ＋ 버튼 · 드래그앤드롭 ──
+    // 드래그는 '파일'일 때만 반응한다(에디터 안 텍스트/이미지 드래그까지 받으면 오작동).
+    hasFiles(e) {
+      const t = e.dataTransfer && e.dataTransfer.types;
+      return !!t && Array.prototype.indexOf.call(t, "Files") >= 0;
+    },
+    onDragEnter(e) { if (this.hasFiles(e)) { this._dragDepth = (this._dragDepth || 0) + 1; this.dragOver = true; } },
+    onDragOver(e) { if (this.hasFiles(e)) e.dataTransfer.dropEffect = "copy"; },
+    // dragleave 는 자식으로 넘어갈 때도 뜬다 → 깊이를 세서 진짜 벗어날 때만 끈다
+    onDragLeave() { this._dragDepth = Math.max(0, (this._dragDepth || 0) - 1); if (!this._dragDepth) this.dragOver = false; },
+    onDrop(e) {
+      this._dragDepth = 0; this.dragOver = false;
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (files.length) this.uploadFiles(files);
+    },
+    onFilePick(e) {
+      const files = Array.from(e.target.files || []);
+      e.target.value = "";                        // 같은 파일을 연속으로 고를 수 있게 초기화
+      if (files.length) this.uploadFiles(files);
+    },
+    async uploadFiles(files) {
+      if (this.uploading || !this.tk) return;
+      this.uploading = true; this.upErr = "";
+      const failed = [];
+      for (const f of files) {
+        try { await api.attachmentUpload(this.tk, f); }
+        catch (e) { failed.push(f.name + " (" + ((e && e.message) || e) + ")"); }
+      }
+      this.uploading = false;
+      this.upErr = failed.length ? "첨부 실패: " + failed.join(", ") : "";
+      await this.reloadAttachments();
+    },
+    reloadAttachments() {
+      const key = this.keyId;
+      return api.ticketAttachments(key)
+        .then((a) => { if (this.keyId === key) this.atts = a || []; }).catch(() => {});
+    },
+
+    // ── 관련 티켓 / 관련문서 링크 걸기 ──
+    async addLink(sel) {
+      if (this.linkBusy) return;
+      this.linkBusy = true; this.linkErr = "";
+      try {
+        await api.linkAdd(this.tk, sel);
+        this.relPick = false;
+        await this.reloadRelated();
+      } catch (e) { this.linkErr = "링크 실패: " + ((e && e.message) || e); }
+      finally { this.linkBusy = false; }
+    },
+    reloadRelated() {
+      const key = this.keyId;
+      return api.ticketRelated(key)
+        .then((r) => { if (this.keyId === key) this.related = r || []; }).catch(() => {});
+    },
+    async addDoc(sel) {
+      if (this.docBusy) return;
+      this.docBusy = true; this.docErr = "";
+      try {
+        let title = sel.title || "";
+        if (!title) {                             // URL 만 붙여넣은 경우 — 문서 제목을 가져온다
+          try { title = (await api.linkTitle(sel.url)).title || ""; } catch (e) { /* 없으면 URL 로 */ }
+        }
+        await api.documentAdd(this.tk, { url: sel.url, title });
+        this.docPick = false;
+        await this.reloadDocs();
+      } catch (e) { this.docErr = "첨부 실패: " + ((e && e.message) || e); }
+      finally { this.docBusy = false; }
+    },
+    reloadDocs() {
+      const key = this.keyId;
+      return api.ticketDocuments(key)
+        .then((d) => { if (this.keyId === key) this.docs = d || []; }).catch(() => {});
+    },
+
     // 글쓴이 시그니처 컬러 — 기본 아바타(프사 없는 사람)와 같은 색이어야 하므로 colors.js 단일 소스.
     sigColor,
     canEdit(c) { return !!(this.me && this.me.id && c && c.authorId === this.me.id); },
@@ -354,7 +433,10 @@ export default {
     },
   },
   template: `
-    <div :class="[isPage ? 'tkt-page' : 'tkt-ov', { expanded }]" @click.self="!isPage && $emit('close')">
+    <div :class="[isPage ? 'tkt-page' : 'tkt-ov', { expanded, 'drag-over': dragOver }]"
+         @click.self="!isPage && $emit('close')"
+         @dragenter.prevent="onDragEnter" @dragover.prevent="onDragOver"
+         @dragleave="onDragLeave" @drop.prevent="onDrop">
       <div class="tkt-dlg" :class="{ expanded, page: isPage }"
            :role="isPage ? null : 'dialog'" :aria-modal="isPage ? null : 'true'">
         <!-- 최상단 타이틀바 — 배경은 티켓 타입 색을 따른다.
@@ -440,14 +522,22 @@ export default {
             </div>
 
             <div class="grp grp-rel">
-            <div v-if="related.length" class="sec sec-related spn-sib">
-              <div class="tkt-mlabel">관련 Task {{ related.length }}</div>
+            <div class="sec sec-related spn-sib">
+              <div class="tkt-mlabel has-add">
+                <span>관련 Task {{ related.length }}</span>
+                <button class="add-b" title="관련 티켓 추가 (Jira 이슈 링크)"
+                        @click.stop="relPick = !relPick">＋</button>
+              </div>
+              <LinkPicker v-if="relPick" mode="jira" :exclude-keys="related.map(r => r.key).concat([tk])"
+                          :busy="linkBusy" :err="linkErr"
+                          @close="relPick = false" @pick="addLink" />
               <div v-for="r in related" :key="'rel-' + r.key" class="spn-sibrow tkt"
                    :data-key="r.key" :title="r.rel + ' · ' + r.key + ' · ' + r.summary">
                 <span class="spn-sdot" :class="'st-' + (r.statusCategory || 'todo')"></span>
                 <span class="spn-stitle">{{ r.summary }}</span>
                 <span class="spn-rel" :class="r.via">{{ r.via === 'link' ? r.rel : '언급' }}</span>
               </div>
+              <div v-if="!related.length" class="muted mini">관련 티켓 없음</div>
             </div>
             <div v-if="siblings.length" class="sec sec-sib spn-sib">
               <div class="tkt-mlabel spn-sib-h" @click="sibOpen = !sibOpen">
@@ -553,8 +643,13 @@ export default {
           <!-- 설명 아래 2분할: 첨부파일 | 관련문서(언급된 Confluence 문서) -->
           <div class="tkt-two">
             <div class="tkt-two-col">
-              <div class="tkt-sec-t">첨부파일<span v-if="atts.length"> ({{ atts.length }})</span></div>
-              <div v-if="!atts.length" class="muted mini">첨부파일 없음</div>
+              <div class="tkt-sec-t has-add">첨부파일<span v-if="atts.length"> ({{ atts.length }})</span>
+                <button class="add-b" title="파일 첨부" @click="$refs.file.click()">＋</button>
+                <input ref="file" type="file" multiple hidden @change="onFilePick">
+              </div>
+              <div v-if="upErr" class="tkt-cmt-err">{{ upErr }}</div>
+              <div v-if="uploading" class="muted mini">첨부 올리는 중…</div>
+              <div v-if="!atts.length" class="muted mini">첨부파일 없음 — 파일을 이 창에 끌어다 놓아도 됩니다</div>
               <div v-else class="chipwrap">
                 <a v-for="a in atts" :key="a.id" class="fchip" :href="a.url" target="_blank" rel="noopener"
                    :title="a.filename + ' · ' + fsize(a.size) + (a.author ? ' · ' + a.author : '')">
@@ -565,7 +660,12 @@ export default {
               </div>
             </div>
             <div class="tkt-two-col">
-              <div class="tkt-sec-t">관련문서<span v-if="docs.length"> ({{ docs.length }})</span></div>
+              <div class="tkt-sec-t has-add">관련문서<span v-if="docs.length"> ({{ docs.length }})</span>
+                <button class="add-b" title="관련문서 추가 (Confluence 문서·웹 링크)"
+                        @click.stop="docPick = !docPick">＋</button>
+              </div>
+              <LinkPicker v-if="docPick" mode="confluence" :busy="docBusy" :err="docErr"
+                          @close="docPick = false" @pick="addDoc" />
               <div v-if="!docs.length" class="muted mini">언급된 문서 없음</div>
               <div v-else class="chipwrap">
                 <a v-for="(d, i) in docs" :key="i" class="fchip doc" :href="d.url" target="_blank"

@@ -685,12 +685,19 @@ class JiraClient:
     # ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 첨부 업로드 ────────────────────
     # 앱 최초의 쓰기 경로. body 는 **Jira wiki markup**(라우트에서 markdown→wiki 변환 후 전달).
     # 성공 시 해당 티켓 캐시를 비워 다음 조회가 최신을 읽게 한다. XSRF 는 provider 가 처리.
-    def _invalidate_ticket(self, key, *, comments=False, attachments=False):
+    def _invalidate_ticket(self, key, *, comments=False, attachments=False,
+                           links=False, documents=False):
         if comments:
             self.cache.invalidate(f"comments:{self.env}:{key}")
         if attachments:
             self.cache.invalidate(f"issue:{self.env}:{key}")        # attachment 필드가 여기 캐시됨
             self.cache.invalidate(f"attachments:{self.env}:{key}")
+        if links:
+            self.cache.invalidate(f"issue:{self.env}:{key}")        # issuelinks 필드가 여기 캐시됨
+            self.cache.invalidate(f"related:{self.env}:{key}")
+        if documents:
+            self.cache.invalidate(f"remotelinks:{self.env}:{key}")
+            self.cache.invalidate(f"documents:{self.env}:{key}")
 
     def add_comment(self, key, body):
         """코멘트 작성 (body = Jira wiki markup). 반환: 생성된 코멘트 객체."""
@@ -724,6 +731,70 @@ class JiraClient:
         self.provider.delete(f"/rest/api/2/attachment/{attachment_id}")
         if key:
             self._invalidate_ticket(key, attachments=True)
+        return {"ok": True}
+
+    LINK_TYPES_TTL = 24 * 3600            # 링크 타입은 인스턴스 설정 — 거의 안 바뀐다
+
+    def link_types(self):
+        """이슈 링크 타입 — [{name, inward, outward}]. 링크 걸 때 관계 선택지로 쓴다.
+        하드코딩 금지(인스턴스마다 다르다). 조회 실패 시 Jira 기본 4종으로 폴백."""
+        def do():
+            data = self.provider.get_json("/rest/api/2/issueLinkType")
+            out = []
+            for t in ((data or {}).get("issueLinkTypes") or []):
+                if t.get("name"):
+                    out.append({"name": t["name"], "inward": t.get("inward") or t["name"],
+                                "outward": t.get("outward") or t["name"]})
+            return out
+        try:
+            got = self.cache.get_or_set(f"linktypes:{self.env}", self.LINK_TYPES_TTL, do)[0]
+        except Exception:
+            got = []
+        return got or [
+            {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+            {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+            {"name": "Duplicate", "inward": "is duplicated by", "outward": "duplicates"},
+            {"name": "Cloners", "inward": "is cloned by", "outward": "clones"},
+        ]
+
+    def add_issue_link(self, key, other_key, type_name, direction="outward"):
+        """이슈 링크 생성. direction=outward 면 `key --(type.outward)--> other_key`.
+        (예: Blocks/outward = 이 티켓이 상대를 막는다. inward 면 반대.)"""
+        if not other_key or other_key.upper() == (key or "").upper():
+            raise ValueError("자기 자신에는 링크할 수 없습니다.")
+        inward, outward = (key, other_key) if direction == "outward" else (other_key, key)
+        self.provider.post_json("/rest/api/2/issueLink", {
+            "type": {"name": type_name or "Relates"},
+            "inwardIssue": {"key": inward}, "outwardIssue": {"key": outward}})
+        # 양쪽 다 무효화 — 상대 티켓에서도 곧바로 보여야 한다
+        self._invalidate_ticket(key, links=True)
+        self._invalidate_ticket(other_key, links=True)
+        return {"ok": True}
+
+    def delete_issue_link(self, link_id, key=None, other_key=None):
+        self.provider.delete(f"/rest/api/2/issueLink/{link_id}")
+        for k in (key, other_key):
+            if k:
+                self._invalidate_ticket(k, links=True)
+        return {"ok": True}
+
+    def add_remote_link(self, key, url, title="", relationship=""):
+        """원격 링크(Confluence 문서·웹 링크) 추가 — '관련문서'에 붙는다.
+        globalId 를 URL 로 두면 같은 문서를 다시 걸어도 한 줄로 갱신된다(실 Jira 동작)."""
+        url = (url or "").strip()
+        if not url:
+            raise ValueError("URL 이 필요합니다.")
+        body = {"globalId": url,
+                "object": {"url": url, "title": (title or "").strip() or url}}
+        if relationship:
+            body["relationship"] = relationship
+        res = self.provider.post_json(f"/rest/api/2/issue/{key}/remotelink", body)
+        self._invalidate_ticket(key, documents=True)
+        return res or {"ok": True}
+
+    def delete_remote_link(self, key, link_id):
+        self.provider.delete(f"/rest/api/2/issue/{key}/remotelink/{link_id}")
+        self._invalidate_ticket(key, documents=True)
         return {"ok": True}
 
     def comment_source(self, key, comment_id):
