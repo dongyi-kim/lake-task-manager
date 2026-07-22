@@ -182,6 +182,8 @@ if _devtools.enabled(_settings, "sso_status"):
 def health():
     return {"status": "ok", "env": _settings.jira_env, "projectKey": _settings.project_key,
             "needLogin": _client.needs_login(), "rev": _BUILD_REV,
+            # 앱 URL(localhost/browse/KEY)을 붙여넣었을 때 실 Jira 주소로 바꾸기 위해 프론트에 노출
+            "jiraBase": (_settings.jira_base or "").rstrip("/"),
             "devTools": sorted(_settings.dev_tools)}
 
 

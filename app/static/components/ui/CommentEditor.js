@@ -214,16 +214,34 @@ function linkBadgeExt(T) {
   });
 }
 
-// 붙여넣기로 만든 뱃지의 제목(아직 URL 그대로)을 페이지 제목으로 교체.
-function updateBadgeTitle(editor, url, title) {
+// 뱃지 제목 교체 — href 가 같고 제목이 아직 expect(기본=href) 인 뱃지만 바꾼다(사용자가 고친 건 유지).
+function updateBadgeTitle(editor, href, title, expect) {
   if (!editor || editor.isDestroyed) return;
+  const want = expect === undefined ? href : expect;
   let at = null;
   editor.state.doc.descendants((node, pos) => {
     if (at !== null) return false;
-    if (node.type.name === "linkBadge" && node.attrs.href === url && node.attrs.title === url) at = pos;
+    if (node.type.name === "linkBadge" && node.attrs.href === href && node.attrs.title === want) at = pos;
   });
   if (at === null) return;
-  editor.view.dispatch(editor.state.tr.setNodeMarkup(at, undefined, { href: url, title }));
+  editor.view.dispatch(editor.state.tr.setNodeMarkup(at, undefined, { href, title }));
+}
+
+// 우리 앱 URL 을 붙여넣은 경우의 정규화. 외부 URL 이면 null.
+//  · {앱}/browse/KEY  → **실 Jira 티켓 주소**(그게 정본) + 제목은 티켓 키
+//  · 그 외 앱 URL     → 'Lake Task Manager' 뱃지 (localhost 링크로 보이지 않게)
+function normalizeAppUrl(url, jiraBase) {
+  try {
+    const u = new URL(url, location.href);
+    if (u.origin !== location.origin) return null;
+    const m = /^\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/.exec(u.pathname);
+    if (m) {
+      const key = m[1].toUpperCase();
+      const base = (jiraBase || "").replace(/\/+$/, "");
+      return { href: (base || location.origin) + "/browse/" + key, title: key, key };
+    }
+    return { href: url, title: "Lake Task Manager" };
+  } catch (e) { return null; }
 }
 
 // 표/코드블럭이 문서 첫 블록이면 그 '위'로 커서를 보낼 수 없다(문단이 없어서).
@@ -342,6 +360,8 @@ export default {
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
+    this._jiraBase = "";              // 앱 URL(/browse/KEY) 붙여넣기를 실 Jira 주소로 바꾸는 데 사용
+    api.health().then((h) => { this._jiraBase = (h && h.jiraBase) || ""; }).catch(() => { /* noop */ });
     let T;
     try { T = await loadTiptap(); }
     catch (e) { this.loadErr = "에디터를 불러오지 못했습니다(네트워크/CDN 차단). 잠시 후 다시 시도."; return; }
@@ -393,14 +413,24 @@ export default {
           const txt = cd && cd.getData && cd.getData("text/plain");
           if (txt && _URL_RE.test(txt.trim()) && self._ed.state.selection.empty) {
             const url = txt.trim();
+            const norm = normalizeAppUrl(url, self._jiraBase);     // 우리 앱 URL 이면 정규화
+            const href = norm ? norm.href : url;
+            const title0 = norm ? norm.title : url;
             self._ed.chain().focus().insertContent([
-              { type: "linkBadge", attrs: { href: url, title: url } },
+              { type: "linkBadge", attrs: { href, title: title0 } },
               { type: "text", text: " " },
             ]).run();
-            // 라벨을 페이지 제목(og:title → <title>)으로 교체. 실패하면 URL 그대로 둔다.
-            api.linkTitle(url).then((r) => {
-              if (r && r.title) updateBadgeTitle(self._ed, url, r.title);
-            }).catch(() => { /* noop */ });
+            if (norm && norm.key) {
+              // Jira 티켓 — 키에 요약을 붙여 읽기 쉽게(렌더에서는 앱이 리치 티켓 뱃지로 바꾼다)
+              api.ticketBadge(norm.key).then((bd) => {
+                if (bd && bd.summary) updateBadgeTitle(self._ed, href, norm.key + " " + bd.summary, norm.key);
+              }).catch(() => { /* noop */ });
+            } else if (!norm) {
+              // 외부 URL — 라벨을 페이지 제목(og:title → <title>)으로. 실패하면 URL 그대로.
+              api.linkTitle(url).then((r) => {
+                if (r && r.title) updateBadgeTitle(self._ed, url, r.title);
+              }).catch(() => { /* noop */ });
+            }
             event.preventDefault(); return true;
           }
           return false;
