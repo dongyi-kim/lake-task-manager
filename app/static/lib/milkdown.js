@@ -8,15 +8,15 @@
 //   환경이면 reject → 호출측이 '에디터 로드 실패'만 표시하고 나머지 앱은 정상.
 const VER = "7.21.2";
 const ESM = "https://esm.sh/@milkdown/crepe@" + VER + "?bundle";
-const CSS = "https://cdn.jsdelivr.net/npm/@milkdown/crepe@" + VER + "/lib/theme";
-const COMMON = CSS + "/common/style.css";                 // 기능 CSS(하위 파일을 @import)
-const THEME = { light: CSS + "/frame/style.css", dark: CSS + "/frame-dark/style.css" };
+// CSS 는 **로컬 벤더**(자체완결). Crepe 배포 CSS 는 @import '@milkdown/kit/...' 등 node_modules
+// 경로를 담아 raw <link> 로 못 쓴다(ORB 차단 → 렌더 깨짐). tools/build_crepe_css.py 로 @import 를
+// 전부 해소해 인라인한 파일을 쓴다. 테마별 완결 파일(common+frame 포함).
+const CSS = { light: "vendor/crepe-light.css", dark: "vendor/crepe-dark.css" };
 
 let _mod = null;
 
 export async function loadCrepe(dark) {
-  _ensureLink("crepe-common-css", COMMON);
-  _ensureLink("crepe-theme-css", dark ? THEME.dark : THEME.light);   // 테마 전환 시 href 교체
+  _ensureLink("crepe-css", dark ? CSS.dark : CSS.light);   // 테마 전환 시 href 교체
   if (!_mod) _mod = import(/* @vite-ignore */ ESM);
   return await _mod;                                       // { Crepe, CrepeFeature, ... }
 }
