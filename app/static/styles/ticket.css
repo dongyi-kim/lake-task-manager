@@ -541,6 +541,16 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* CommentEditor (TipTap) */
 .cmt-editor { margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
   background: var(--panel); }
+/* 최대화 모드 — 화면 대부분을 쓰는 오버레이. 본문이 남는 높이를 차지한다. */
+.cmt-editor.maximized { position: fixed; inset: 3vh 4vw; z-index: 9000; margin: 0;
+  display: flex; flex-direction: column; box-shadow: 0 24px 70px rgba(0,0,0,.38); }
+.cmt-editor.maximized .cmt-ed-host { flex: 1 1 auto; max-height: none; }
+/* 콜아웃 툴바 버튼 — 종류별 색 힌트 */
+.cmt-tb .co-i.on { color: var(--st-prog); border-color: var(--st-prog); }
+.cmt-tb .co-n.on { color: var(--muted-2); border-color: var(--muted-2); }
+.cmt-tb .co-t.on { color: var(--done, var(--st-done)); border-color: var(--done, var(--st-done)); }
+.cmt-tb .co-w.on { color: var(--warn); border-color: var(--warn); }
+
 /* 툴바 */
 .cmt-tb { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 8px;
   border-bottom: 1px solid var(--border); background: var(--panel-2); }

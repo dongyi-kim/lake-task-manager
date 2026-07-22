@@ -43,6 +43,44 @@ function replaceLinkText(editor, url, title) {
     .run();
 }
 
+// Jira 콜아웃 매크로 블록 — <div class="callout callout-info"> <-> {info}…{info}.
+// 표준 4종(info/note/tip/warning)을 툴바로 넣는다. 렌더 CSS(.tkt-desc .callout*)를 그대로 쓴다.
+function calloutExt(T) {
+  return T.Node.create({
+    name: "callout",
+    group: "block",
+    content: "block+",
+    defining: true,
+    addAttributes() {
+      return {
+        type: {
+          default: "info",
+          parseHTML: (el) => {
+            const m = /callout-(\w+)/.exec(el.className || "");
+            return m ? m[1] : "info";
+          },
+          renderHTML: () => ({}),        // 종류는 아래 class 로만 표현
+        },
+      };
+    },
+    parseHTML() { return [{ tag: "div.callout" }]; },
+    renderHTML({ node, HTMLAttributes }) {
+      return ["div", Object.assign({}, HTMLAttributes,
+        { class: "callout callout-" + (node.attrs.type || "info") }), 0];
+    },
+    addCommands() {
+      const name = this.name;
+      return {
+        toggleCallout: (type) => ({ editor, commands }) => {
+          if (editor.isActive(name, { type })) return commands.lift(name);      // 같은 종류 → 해제
+          if (editor.isActive(name)) return commands.updateAttributes(name, { type });  // 종류 변경
+          return commands.wrapIn(name, { type });
+        },
+      };
+    },
+  });
+}
+
 // 이미지 삽입 시 세로가 너무 길지 않도록 기본 높이 상한(px). 원본이 이보다 작으면 원본 유지.
 const IMG_MAX_H = 320;
 
@@ -248,7 +286,7 @@ export default {
     submitFn: { type: Function, required: true },       // async (html) => any (실패 시 throw)
   },
   emits: ["submitted", "cancel"],
-  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [] }; },
+  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [], maximized: false }; },
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
@@ -280,6 +318,7 @@ export default {
         T.StarterKit.configure({ codeBlock: false }),   // 아래 CodeBlockLowlight 로 교체(구문강조)
         // 코드블럭 — 원래 Jira 와 같은 태그(<pre class="jecodeblock"><code class="language-X">) + lowlight 강조
         T.CodeBlockLowlight.configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
+        calloutExt(T),
         singleLineHeadingExt(T),
         firstBlockEscapeExt(T),
         T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
@@ -350,6 +389,9 @@ export default {
       this.cmd((c) => c.extendMarkRange("link").setLink({ href: url }).run());
     },
     tbImage() { this.$refs.file && this.$refs.file.click(); },
+    inCallout(t) { this.tick; return !!(this._ed && this._ed.isActive("callout", { type: t })); },
+    tbCallout(t) { this.cmd((c) => c.toggleCallout(t).run()); },
+    toggleMax() { this.maximized = !this.maximized; },
     inCodeBlock() { this.tick; return !!(this._ed && this._ed.isActive("codeBlock")); },
     codeLang() { this.tick; return (this._ed && this._ed.getAttributes("codeBlock").language) || ""; },
     setCodeLang(e) {
@@ -435,7 +477,7 @@ export default {
     },
   },
   template: `
-  <div class="cmt-editor">
+  <div class="cmt-editor" :class="{ maximized }">
     <div v-if="loadErr" class="cmt-ed-err">{{ loadErr }}
       <button class="cmt-ed-btn" @click="$emit('cancel')">닫기</button>
     </div>
@@ -455,9 +497,16 @@ export default {
         <button type="button" class="tb-b" :class="{on:active('blockquote')}" @click="tbQuote" title="인용">❝</button>
         <button type="button" class="tb-b" :class="{on:active('codeBlock')}" @click="tbCodeBlock" title="코드블록">{ }</button>
         <span class="tb-sep"></span>
+        <button type="button" class="tb-b co-i" :class="{on:inCallout('info')}" @click="tbCallout('info')" title="정보 콜아웃 {info}">ℹ</button>
+        <button type="button" class="tb-b co-n" :class="{on:inCallout('note')}" @click="tbCallout('note')" title="노트 콜아웃 {note}">📌</button>
+        <button type="button" class="tb-b co-t" :class="{on:inCallout('tip')}" @click="tbCallout('tip')" title="팁 콜아웃 {tip}">💡</button>
+        <button type="button" class="tb-b co-w" :class="{on:inCallout('warning')}" @click="tbCallout('warning')" title="경고 콜아웃 {warning}">⚠</button>
+        <span class="tb-sep"></span>
         <button type="button" class="tb-b" :class="{on:active('link')}" @click="tbLink" title="링크">🔗</button>
         <button type="button" class="tb-b" @click="tbTable" title="표 삽입">▦</button>
         <button type="button" class="tb-b" @click="tbImage" title="이미지">🖼</button>
+        <button type="button" class="tb-b" style="margin-left:auto" @click="toggleMax"
+                :title="maximized ? '최대화 해제' : '에디터 최대화'">{{ maximized ? '🗗' : '🗖' }}</button>
         <input ref="file" type="file" accept="image/*" multiple style="display:none" @change="onFile">
       </div>
       <div class="cmt-tb cmt-tb-tbl" v-show="ready && inCodeBlock()">
