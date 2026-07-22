@@ -7,7 +7,8 @@ import { TYPE_BG, typeLabel } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
-import { highlightIn as hljsHighlight } from "../../lib/hljs.js";
+import { highlightIn as hljsHighlight, ensureHljsTheme } from "../../lib/hljs.js";
+import { loadTiptap } from "../../lib/tiptap.js";
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
 function confTitleFromUrl(u) {
@@ -52,6 +53,10 @@ export default {
     };
     window.addEventListener("keydown", this._onKey);
     this.load();
+    // 에디터·구문강조 CDN 프리로드 — 티켓 다이얼로그/풀뷰가 열리는 시점에 미리 받아둔다.
+    // (버전 고정 URL 이라 브라우저가 장기 캐시 → 이후엔 네트워크 없이 즉시.) '댓글 달기' 지연 제거.
+    ensureHljsTheme(document.documentElement.getAttribute("data-theme") === "dark");
+    loadTiptap().catch(() => { /* CDN 차단 등 — 실제 사용 시 에러 표시 */ });
   },
   unmounted() { window.removeEventListener("keydown", this._onKey); },
   computed: {

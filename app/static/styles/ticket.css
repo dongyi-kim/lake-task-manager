@@ -314,11 +314,17 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* 태스크리스트 체크박스(읽기전용) */
 .tkt-desc input[type="checkbox"], .tkt-desc input[type="radio"] { margin: 0 6px 0 0; vertical-align: middle; }
 /* 코드블록 — class 에 의존하지 않고 모든 <pre> 를 코드박스로(실 Jira 는 pre.jecodeblock,
-   mock 은 pre.code, 렌더러/버전에 따라 무-class pre 도 있어 통째로 커버). */
+   mock 은 pre.code, 렌더러/버전에 따라 무-class pre 도 있어 통째로 커버). 패딩은 컴팩트하게. */
 .tkt-desc pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
-  padding: 12px 14px; overflow-x: auto; margin: 0 0 12px; }
+  padding: 6px 10px; overflow-x: auto; margin: 0 0 10px; }
 .tkt-desc pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5;
   white-space: pre; display: block; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+/* 줄번호 거터 — <pre> 를 [번호열 | 코드] 2열로. 폰트·line-height 를 code 와 맞춰 정렬. */
+.tkt-desc pre.has-ln { display: flex; gap: 10px; }
+.tkt-desc pre .ln-gutter { flex: none; text-align: right; color: var(--muted-2); user-select: none;
+  white-space: pre; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12.5px; line-height: 1.5; border-right: 1px solid var(--border); padding-right: 8px; }
+.tkt-desc pre.has-ln > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; }
 /* 인용 — 큰 따옴표 글리프로 '인용'임을 형태로 알린다(색만으로 구분하지 않음) */
 .tkt-desc blockquote { position: relative; margin: 0 0 12px; padding: 8px 14px 8px 40px;
   color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
@@ -571,7 +577,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-ed-host .ProseMirror code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12.5px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
 .cmt-ed-host .ProseMirror pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
-  padding: 10px 12px; margin: 0 0 10px; overflow: auto; }
+  padding: 6px 10px; margin: 0 0 10px; overflow: auto; }
 .cmt-ed-host .ProseMirror pre code { background: none; border: 0; padding: 0; font-size: 12.5px; }
 .cmt-ed-host .ProseMirror img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; }
 .cmt-ed-host .ProseMirror hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }

@@ -23,6 +23,36 @@ function mnAvatar(name, id) {
 }
 const _URL_RE = /^https?:\/\/\S+$/i;
 
+// 표/코드블럭이 문서 첫 블록이면 그 '위'로 커서를 보낼 수 없다(문단이 없어서).
+// → 첫 블록 시작에서 ArrowUp, 또는 어디서든 Mod+Shift+Enter 로 현재 최상위 블록 **위에 문단**을 만든다.
+function firstBlockEscapeExt(T) {
+  const insertAbove = (editor) => {
+    const $from = editor.state.selection.$from;
+    if ($from.depth < 1) return false;
+    const top = $from.before(1);                 // 현재 최상위 블록의 시작 위치
+    return editor.chain().insertContentAt(top, { type: "paragraph" })
+      .setTextSelection(top + 1).focus().run();
+  };
+  return T.Extension.create({
+    name: "firstBlockEscape",
+    addKeyboardShortcuts() {
+      return {
+        "Mod-Shift-Enter": () => insertAbove(this.editor),
+        ArrowUp: () => {
+          const sel = this.editor.state.selection;
+          if (!sel.empty) return false;
+          const $from = sel.$from;
+          if ($from.depth < 1 || $from.before(1) !== 0) return false;   // 첫 최상위 블록 안이 아님
+          if ($from.parentOffset !== 0) return false;                    // 그 줄의 맨 앞이 아님
+          const first = this.editor.state.doc.firstChild;
+          if (!first || first.type.name === "paragraph") return false;   // 이미 문단이면 기본 동작
+          return insertAbove(this.editor);
+        },
+      };
+    },
+  });
+}
+
 // 헤딩은 무조건 한 줄 — 헤딩 블록 안에 줄바꿈(hardBreak)이 생기면 그 자리에서 줄별 헤딩으로 분리.
 // 입력/토글/붙여넣기 등 경로와 무관하게 불변식을 보장(다른 블록의 소프트브레이크는 건드리지 않음).
 function singleLineHeadingExt(T) {
@@ -136,6 +166,7 @@ export default {
         // 코드블럭 — 원래 Jira 와 같은 태그(<pre class="jecodeblock"><code class="language-X">) + lowlight 강조
         T.CodeBlockLowlight.configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
         singleLineHeadingExt(T),
+        firstBlockEscapeExt(T),
         T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
         T.Image, T.Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
