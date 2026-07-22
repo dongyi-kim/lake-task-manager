@@ -131,18 +131,28 @@ class SsoSessionProvider(AuthProvider):
     def _xsrf_headers(self, url):
         """이 URL(도메인)에 맞는 XSRF 쓰기 헤더.
 
-        Atlassian XSRF 는 두 가지 우회를 받는다:
-          (1) X-Atlassian-Token: no-check           — 표준. Jira/Confluence 는 이걸로 충분.
-          (2) atl.xsrf.token 쿠키값을 헤더로 echo    — double-submit. **Bitbucket 검색은 (1)이
-              안 통해** 이게 필요하다(실측: no-check 만으론 'XSRF check failed').
-        쿠키가 있으면 실제 토큰을 보내고, 없으면 no-check 로 폴백. XHR 표식도 함께 붙인다.
+        Bitbucket DC 의 XSRF 는 **Origin/Referer 로 same-origin 을 검증**한다. 그리고
+        no-check 헤더는 '비브라우저 클라이언트' 에만 적용되고, **세션 쿠키를 든 브라우저 요청은
+        무시**한다(실측: BITBUCKETSESSIONID 보유 + no-check 만으론 'XSRF check failed').
+        우리 요청은 SSO 세션 쿠키를 들고 나가므로 브라우저 요청으로 분류된다 →
+        **Origin/Referer 를 서비스 base 로 붙여 same-origin 으로 통과**시킨다.
+
+        · Origin/Referer = 대상 URL 의 origin(scheme://host[:port])  ← Bitbucket 검색의 핵심
+        · X-Atlassian-Token: no-check + (있으면) atl.xsrf.token echo  ← Jira/Confluence·비브라우저용
+        · X-Requested-With: XMLHttpRequest
         """
+        from urllib.parse import urlsplit
+        u = urlsplit(url)
+        origin = f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else None
         headers = dict(WRITE_HEADERS)
-        headers["X-Requested-With"] = "XMLHttpRequest"    # 일부 필터가 same-origin AJAX 로 인정
+        headers["X-Requested-With"] = "XMLHttpRequest"
+        if origin:
+            headers["Origin"] = origin
+            headers["Referer"] = origin + "/"     # same-origin 판정용(경로는 무관)
         try:
             for c in self._context.cookies(url):
                 if c.get("name") in ("atl.xsrf.token", "atlassian.xsrf.token") and c.get("value"):
-                    headers["X-Atlassian-Token"] = c["value"]   # no-check → 실제 토큰(double-submit)
+                    headers["X-Atlassian-Token"] = c["value"]   # 쿠키가 있으면 double-submit 도
                     break
         except Exception:
             pass
@@ -212,7 +222,9 @@ class SsoSessionProvider(AuthProvider):
                     "xsrf_cookie_found": xsrf_cookie or "(없음)",
                     "X-Atlassian-Token 전송값": ("no-check" if token == "no-check"
                                                 else f"토큰({len(token)}자)" if token else "(없음)"),
-                    "X-Requested-With": h.get("X-Requested-With", "(없음)")}
+                    "X-Requested-With": h.get("X-Requested-With", "(없음)"),
+                    "Origin": h.get("Origin", "(없음)"),
+                    "Referer": h.get("Referer", "(없음)")}
         return self._submit(do)
 
     def get_bytes(self, path, params=None):
