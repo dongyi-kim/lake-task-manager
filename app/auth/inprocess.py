@@ -29,6 +29,13 @@ class InProcessProvider(AuthProvider):
     def get_json(self, path, params=None, priority=0):   # priority 무시(큐 없음)
         return self._get(path, params).json()
 
+    def post_json(self, path, json_body=None, params=None):
+        with self._lock:
+            r = self._client.post(path, json=json_body or {}, params=params or {})
+        if r.status_code in (401, 403) or r.status_code >= 500:
+            raise SessionExpired(f"HTTP {r.status_code} on {path}")
+        return r.json()
+
     def get_text(self, path, params=None):
         return self._get(path, params).text
 

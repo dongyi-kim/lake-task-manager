@@ -45,6 +45,48 @@ def _on_session_expired(request: Request, exc: SessionExpired):
         content={"needLogin": True, "env": _settings.jira_env, "detail": str(exc)})
 
 
+# ── 개발자용 진단(dev tools) — 기본 꺼짐. settings.dev_tools 로 켠 것만 라우트가 붙는다 ──
+from app import devtools as _devtools   # noqa: E402
+
+
+def _probe_result(label, fn):
+    """fn() 상류 호출 결과의 **필드 구조만**(값 마스킹) 돌려준다 — 화면에 찍어 확인용."""
+    try:
+        raw = fn()
+    except Exception as e:
+        return {"label": label, "error": str(e)}
+    return {"label": label,
+            "keys": _devtools.key_tree(_devtools.schema_of(raw)),
+            "schema": _devtools.schema_of(raw)}
+
+
+if _devtools.enabled(_settings, "bitbucket_probe"):
+    # 사내 Bitbucket 실제 응답 형태를 확인(값 마스킹). code/repo 검색 mock 을 실물에 맞추기 위한 일회성.
+    _BB = (_settings.bitbucket_base or "").rstrip("/")
+
+    @app.get("/api/dev/bitbucket/repos")
+    def _dev_bb_repos(name: str = "", limit: int = 3):
+        base = _BB
+        return _probe_result(
+            "GET /rest/api/1.0/repos",
+            lambda: _client.provider.get_json(base + "/rest/api/1.0/repos",
+                                              params={"name": name, "limit": limit}))
+
+    @app.get("/api/dev/bitbucket/code")
+    def _dev_bb_code(q: str = "test", limit: int = 3):
+        base = _BB
+        body = {"query": q, "entities": {"code": {"start": 0, "limit": limit}}}
+        return _probe_result(
+            "POST /rest/search/latest/search",
+            lambda: _client.provider.post_json(base + "/rest/search/latest/search", body))
+
+    @app.get("/api/dev/tools")
+    def _dev_tools_list():
+        return {"enabled": sorted(_settings.dev_tools),
+                "available": _devtools.DEV_TOOLS,
+                "bitbucket_base": _BB or "(미설정)"}
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "env": _settings.jira_env, "projectKey": _settings.project_key,

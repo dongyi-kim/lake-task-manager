@@ -4,9 +4,11 @@
 현업이 쓰는 **Jira DC 8.20.8**(구버전, SSO 잠금 사내 인스턴스)을 SP/티켓의 source of truth로 두고,
 그 위에 **Module → WBS Task → Epic 진척률 롤업**을 얇게 얹어 PMO가 프로젝트 전체를 조망한다.
 
-> **타깃 사내 인스턴스 버전(고정):** Jira DC **8.20.8** + Confluence DC **9.2.4**.
+> **타깃 사내 인스턴스 버전(고정):** Jira DC **8.20.8** + Confluence DC **9.2.4** + Bitbucket DC **7.17.2**.
 > 통합 검색(우상단)이 Confluence CQL 을 이 버전 스펙(9.x URL `/spaces/{space}/pages/{id}/{title}` 등)에
-> 맞춰 파싱한다. dev mock(jira820)도 같은 버전을 구성한다(`app/fakebridge.py` 의 `confluence_version="9.2.4"`).
+> 맞춰 파싱한다. dev mock(jira820)도 같은 버전을 구성한다(`app/fakebridge.py` 의 `confluence_version`/`bitbucket_version`).
+> **Bitbucket 은 code/repo 검색만 타겟**(POST `/rest/search/latest/search` · GET `/rest/api/1.0/repos`).
+> 실제 응답 필드 형태는 사내 인스턴스에서 dev-tools 프로브로 확인해 mock 을 맞춘다(아래 §12).
 
 이 문서는 프로젝트의 배경·목표·설계 원칙·구현 접근법을 담는다.
 Claude Code가 작업 시 이 맥락을 항상 우선한다.
@@ -400,3 +402,26 @@ lake-task-manager/               # repo 루트
 관리자에게 **PAT 또는 자동화용 서비스 계정**을 정식 요청한다.
 정식 인증이 열리면 `AuthProvider`에 `PatAuthProvider`(운영용) 하나만 추가하면
 나머지 코드는 그대로 무인 자동화로 승격된다.
+
+---
+
+## 12. 개발자용 진단 기능 (dev-tools) — 관리 방식
+
+사내 API의 **실제 응답 형태**를 개발 중 확인해야 할 때가 있다(사내 데이터는 외부 반출 불가).
+그래서 앱 안에 **기본 꺼진** 진단 기능을 두고, 설정으로 켠 뒤 **필드 구조만**(값 마스킹) 화면에서 확인한다.
+
+**레지스트리**: `app/devtools.py` 의 `DEV_TOOLS` 에 등록. 새 dev 기능은 반드시 여기 등록하고 라우트를
+`_devtools.enabled(settings, name)` 로 게이팅한다(`app/main.py`). 안 켜면 라우트 자체가 안 붙는다.
+
+**켜고 끄기**: `config/jira.yml` 의 `dev_tools: [이름, …]` 또는 env `LAKE_DEV_TOOLS=이름,…`.
+**운영 배포 시엔 반드시 비운다**(`dev_tools: []`) → 라우트가 전부 사라진다.
+
+**스키마 덤프**: `devtools.schema_of(값)` 은 스칼라를 타입/길이로 마스킹하고(긴 문자열은 앞 24자 힌트만),
+리스트는 개수+병합 구조만 남긴다. `key_tree()` 는 `a.b.c : 타입` 평면 목록으로 — 화면 보고 구술하기 쉽다.
+
+**현재 등록된 것**:
+- `bitbucket_probe` — 사내 Bitbucket 7.17.2 응답 확인용(일회성). base 는 `config/jira.yml` 의 `bitbucket.base`.
+  - `GET /api/dev/tools` — 켜진 기능·bitbucket base 확인
+  - `GET /api/dev/bitbucket/repos?name=&limit=3` — 저장소 목록 응답 구조
+  - `GET /api/dev/bitbucket/code?q=검색어&limit=3` — code search(POST /rest/search/latest/search) 응답 구조
+  - 목적: mock(jira820)의 code/repo 검색 응답을 실물에 맞추기. **확인 끝나면 `dev_tools: []` 로 끌 것.**

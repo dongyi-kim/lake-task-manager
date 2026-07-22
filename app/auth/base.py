@@ -27,6 +27,11 @@ class AuthProvider:
     # 여러 스레드에서 동시 GET 가능한가 (basic/PAT=True, SSO=Playwright 단일 context=False)
     supports_parallel = False
 
+    def post_json(self, path, json_body=None, params=None):
+        """POST + JSON 응답. dev 프로브(Bitbucket code search 등)용.
+        기본 미지원 — 필요한 provider 만 구현한다."""
+        raise NotImplementedError("이 provider 는 POST 를 지원하지 않습니다")
+
     def get_json(self, path, params=None):
         raise NotImplementedError
 
