@@ -423,6 +423,24 @@ def _run_tray(s):
         _set_autostart(not _autostart_enabled())
         icon.update_menu()
 
+    def on_restart(icon, item):
+        # 업데이트 후 재기동 — run.bat 을 새 콘솔로 (2초 뒤 시작해 현재 인스턴스가 포트를 놓게 함).
+        # run.bat 이 git pull(자동) + venv/deps + 앱 재기동을 한다. 그 뒤 현재 인스턴스는 종료.
+        try:
+            bat = _launcher_bat()
+            if bat.exists() and sys.platform.startswith("win"):
+                import subprocess
+                cmd = 'timeout /t 2 /nobreak >nul & "' + str(bat) + '"'
+                subprocess.Popen(["cmd", "/c", cmd], cwd=str(bat.parent),
+                                 creationflags=0x00000010)   # CREATE_NEW_CONSOLE (독립 실행)
+        except Exception:
+            pass
+        try:
+            server.should_exit = True
+        except Exception:
+            pass
+        icon.stop()
+
     def on_quit(icon, item):
         try:
             server.should_exit = True
@@ -432,6 +450,8 @@ def _run_tray(s):
 
     menu = pystray.Menu(
         pystray.MenuItem("앱 열기", on_open, default=True),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("업데이트 후 재시작", on_restart),
         pystray.MenuItem("컴퓨터 시작 시 자동 실행", on_autostart,
                          checked=lambda item: _autostart_enabled()),
         pystray.Menu.SEPARATOR,
