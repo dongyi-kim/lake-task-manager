@@ -7,6 +7,7 @@
 // 부모는 submitFn(finalHTML) 만 넘긴다(작성/수정은 부모가 선택). 출력은 HTML(서버가 wiki 로 변환).
 import { loadTiptap } from "../../lib/tiptap.js";
 import { ensureHljsTheme } from "../../lib/hljs.js";
+import { saveDraft, loadDraft, clearDraft } from "../../lib/draft.js";
 import { api } from "../../lib/api.js";
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
@@ -23,25 +24,6 @@ function mnAvatar(name, id) {
 }
 const _URL_RE = /^https?:\/\/\S+$/i;
 
-// 붙여넣기로 만든 링크의 라벨(아직 URL 그대로인 것)을 페이지 제목으로 교체.
-// 텍스트를 선택해 링크를 건 경우엔 그 텍스트가 라벨이므로 대상이 아니다(URL==라벨일 때만 바꾼다).
-function replaceLinkText(editor, url, title) {
-  if (!editor || editor.isDestroyed) return;
-  let range = null;
-  editor.state.doc.descendants((node, pos) => {
-    if (range || !node.isText) return;
-    const linked = (node.marks || []).some((m) => m.type.name === "link" && m.attrs.href === url);
-    if (linked && node.text === url) range = { from: pos, to: pos + node.nodeSize };
-  });
-  if (!range) return;
-  const selFrom = editor.state.selection.from;
-  const delta = title.length - (range.to - range.from);
-  const keep = selFrom > range.to ? selFrom + delta : selFrom;
-  editor.chain()
-    .insertContentAt(range, { type: "text", marks: [{ type: "link", attrs: { href: url } }], text: title })
-    .setTextSelection(Math.max(1, keep))
-    .run();
-}
 
 // Jira 콜아웃 매크로 블록 — <div class="callout callout-info"> <-> {info}…{info}.
 // 표준 4종(info/note/tip/warning)을 툴바로 넣는다. 렌더 CSS(.tkt-desc .callout*)를 그대로 쓴다.
@@ -159,20 +141,89 @@ function imageResizeExt(T) {
   });
 }
 
-// 하이퍼링크를 favicon 칩(뱃지)으로 렌더 — href 로 /api/favicon URL 을 만들어 CSS 변수(--fav)로 전달.
-// 저장은 그대로 [텍스트|url] (class/style 은 html_to_wiki 가 무시). favicon 이 없으면 기본 사각형.
+// 웹 링크 뱃지 — **원자적 inline 노드**(atom). 글자 단위로 커서가 들어가지 않고 한 덩어리로 다뤄진다.
+// 더블클릭하면 제목/URL 을 고칠 수 있고, URL 이 바뀌면 favicon(--fav)도 즉시 갱신된다.
+// 저장은 <a href>제목</a> → wiki [제목|url] (html_to_wiki 가 그대로 처리).
+function favCss(href) {
+  return /^https?:/i.test(href) ? "url('/api/favicon?u=" + encodeURIComponent(href) + "')" : "";
+}
+
 function linkBadgeExt(T) {
-  return T.Link.extend({
-    renderHTML({ HTMLAttributes }) {
-      const href = String(HTMLAttributes.href || "");
-      const attrs = Object.assign({}, HTMLAttributes);
-      if (/^https?:/i.test(href)) {
-        attrs.class = (attrs.class ? attrs.class + " " : "") + "web-badge";
-        attrs.style = "--fav:url('/api/favicon?u=" + encodeURIComponent(href) + "')";
-      }
-      return ["a", attrs, 0];
+  return T.Node.create({
+    name: "linkBadge",
+    group: "inline",
+    inline: true,
+    atom: true,                     // 한 덩어리 — 내부로 커서가 들어가지 않는다
+    selectable: true,
+    addAttributes() {
+      return { href: { default: "" }, title: { default: "" } };
     },
-  }).configure({ openOnClick: false, autolink: true, linkOnPaste: true });
+    parseHTML() {
+      return [{
+        tag: "a[href]",
+        getAttrs: (el) => ({
+          href: el.getAttribute("href") || "",
+          title: (el.textContent || "").trim(),
+        }),
+      }];
+    },
+    renderHTML({ node }) {
+      const href = node.attrs.href || "";
+      const attrs = { href, class: "web-badge", rel: "noopener" };
+      const fav = favCss(href);
+      if (fav) attrs.style = "--fav:" + fav;
+      return ["a", attrs, node.attrs.title || href];
+    },
+    addNodeView() {
+      return ({ node, editor, getPos }) => {
+        let cur = node;
+        const a = document.createElement("a");
+        const paint = (n) => {
+          const href = n.attrs.href || "";
+          a.className = "web-badge";
+          a.setAttribute("href", href);
+          a.setAttribute("rel", "noopener");
+          a.textContent = n.attrs.title || href;
+          const fav = favCss(href);
+          if (fav) a.style.setProperty("--fav", fav);
+          else a.style.removeProperty("--fav");
+          a.title = href + "  (더블클릭: 제목·링크 수정)";
+        };
+        paint(cur);
+        a.addEventListener("click", (e) => e.preventDefault());     // 편집 중 이동 방지
+        a.addEventListener("dblclick", (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const t = window.prompt("표시할 제목", cur.attrs.title || "");
+          if (t === null) return;
+          const h = window.prompt("링크 URL", cur.attrs.href || "");
+          if (h === null) return;
+          const href = (h || "").trim();
+          if (!href || typeof getPos !== "function") return;
+          editor.chain().focus().command(({ tr }) => {
+            tr.setNodeMarkup(getPos(), undefined, { href, title: (t || "").trim() || href });
+            return true;
+          }).run();
+        });
+        return {
+          dom: a,
+          update: (n) => { if (n.type !== cur.type) return false; cur = n; paint(n); return true; },
+          ignoreMutation: () => true,
+        };
+      };
+    },
+  });
+}
+
+// 붙여넣기로 만든 뱃지의 제목(아직 URL 그대로)을 페이지 제목으로 교체.
+function updateBadgeTitle(editor, url, title) {
+  if (!editor || editor.isDestroyed) return;
+  let at = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (at !== null) return false;
+    if (node.type.name === "linkBadge" && node.attrs.href === url && node.attrs.title === url) at = pos;
+  });
+  if (at === null) return;
+  editor.view.dispatch(editor.state.tr.setNodeMarkup(at, undefined, { href: url, title }));
 }
 
 // 표/코드블럭이 문서 첫 블록이면 그 '위'로 커서를 보낼 수 없다(문단이 없어서).
@@ -286,7 +337,8 @@ export default {
     submitFn: { type: Function, required: true },       // async (html) => any (실패 시 throw)
   },
   emits: ["submitted", "cancel"],
-  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [], maximized: false }; },
+  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
+                    maximized: false, restored: false }; },
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
@@ -340,12 +392,13 @@ export default {
           const txt = cd && cd.getData && cd.getData("text/plain");
           if (txt && _URL_RE.test(txt.trim()) && self._ed.state.selection.empty) {
             const url = txt.trim();
-            self._ed.chain().focus().insertContent(
-              [{ type: "text", marks: [{ type: "link", attrs: { href: url } }], text: url },
-               { type: "text", text: " " }]).run();
+            self._ed.chain().focus().insertContent([
+              { type: "linkBadge", attrs: { href: url, title: url } },
+              { type: "text", text: " " },
+            ]).run();
             // 라벨을 페이지 제목(og:title → <title>)으로 교체. 실패하면 URL 그대로 둔다.
             api.linkTitle(url).then((r) => {
-              if (r && r.title) replaceLinkText(self._ed, url, r.title);
+              if (r && r.title) updateBadgeTitle(self._ed, url, r.title);
             }).catch(() => { /* noop */ });
             event.preventDefault(); return true;
           }
@@ -359,8 +412,10 @@ export default {
       },
       onSelectionUpdate: () => { self.tick++; },
       onTransaction: () => { self.tick++; },
+      onUpdate: () => { self.tick++; self.saveDraftSoon(); },   // 작성 중 임시저장(디바운스)
     });
     if (this._dead) { try { this._ed.destroy(); } catch (e) { /* noop */ } return; }
+    await this.restoreDraft();                                   // 이전에 쓰다 만 내용 복원
     this.ready = true;
   },
   beforeUnmount() {
@@ -381,12 +436,33 @@ export default {
     tbQuote() { this.cmd((c) => c.toggleBlockquote().run()); },
     tbCodeBlock() { this.cmd((c) => c.toggleCodeBlock().run()); },
     tbTable() { this.cmd((c) => c.insertTable({ rows: 2, cols: 2, withHeaderRow: true }).run()); },
+    // 링크 = 원자적 뱃지 노드. 선택 텍스트가 있으면 그 텍스트가 제목이 된다.
     tbLink() {
-      const prev = this._ed.getAttributes("link").href || "";
-      const url = window.prompt("링크 URL", prev);
-      if (url === null) return;
-      if (url === "") { this.cmd((c) => c.unsetLink().run()); return; }
-      this.cmd((c) => c.extendMarkRange("link").setLink({ href: url }).run());
+      const ed = this._ed;
+      if (!ed) return;
+      const sel = ed.state.selection;
+      if (ed.isActive("linkBadge")) {                       // 이미 뱃지 선택 → 수정
+        const at = sel.from;
+        const node = ed.state.doc.nodeAt(at);
+        const t = window.prompt("표시할 제목", (node && node.attrs.title) || "");
+        if (t === null) return;
+        const h = window.prompt("링크 URL", (node && node.attrs.href) || "");
+        if (h === null) return;
+        const href = (h || "").trim();
+        if (!href) return;
+        ed.chain().focus().command(({ tr }) => {
+          tr.setNodeMarkup(at, undefined, { href, title: (t || "").trim() || href });
+          return true;
+        }).run();
+        return;
+      }
+      const selText = ed.state.doc.textBetween(sel.from, sel.to, " ").trim();
+      const h = window.prompt("링크 URL", "");
+      if (h === null) return;
+      const href = (h || "").trim();
+      if (!href) return;
+      ed.chain().focus().insertContentAt({ from: sel.from, to: sel.to },
+        { type: "linkBadge", attrs: { href, title: selText || href } }).run();
     },
     tbImage() { this.$refs.file && this.$refs.file.click(); },
     inCallout(t) { this.tick; return !!(this._ed && this._ed.isActive("callout", { type: t })); },
@@ -450,6 +526,52 @@ export default {
       }
       this._ed.chain().focus().updateAttributes("image", { width: w }).run();
     },
+    // ── 작성 중 임시저장(IndexedDB, TTL 7일) — 취소/이동해도 내용·이미지가 남는다 ──
+    // 수정 모드는 원본이 있으므로 저장하지 않는다(새 댓글 작성만).
+    draftKey() { return this.initial ? null : "new:" + this.ticketKey; },
+    saveDraftSoon() {
+      const k = this.draftKey();
+      if (!k || !this._ed) return;
+      clearTimeout(this._dt);
+      this._dt = setTimeout(() => {
+        if (!this._ed || this._dead) return;
+        let html = this._ed.getHTML();
+        const text = (this._ed.getText() || "").trim();
+        const imgs = [];
+        for (const [url, info] of this._pending) {
+          if (!html.includes(url)) continue;
+          const token = "draft:" + info.name;          // objectURL 은 새로고침 후 무효 → 토큰으로
+          html = html.split(url).join(token);
+          imgs.push({ token, name: info.name, blob: info.blob });
+        }
+        if (!text && !imgs.length) { clearDraft(k); return; }   // 빈 초안은 남기지 않는다
+        saveDraft(k, { html, images: imgs });
+      }, 700);
+    },
+    async restoreDraft() {
+      const k = this.draftKey();
+      if (!k) return;
+      const rec = await loadDraft(k);
+      if (!rec || !rec.html || this._dead || !this._ed) return;
+      let html = rec.html;
+      for (const im of (rec.images || [])) {
+        try {
+          const url = URL.createObjectURL(im.blob);     // 저장된 blob → 새 objectURL
+          this._pending.set(url, { blob: im.blob, name: im.name });
+          html = html.split(im.token).join(url);
+        } catch (e) { /* noop */ }
+      }
+      this._ed.commands.setContent(html, false);
+      this.restored = true;
+    },
+    discardDraft() {
+      const k = this.draftKey();
+      if (k) clearDraft(k);
+      try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
+      this._pending.clear();
+      if (this._ed) this._ed.commands.clearContent(true);
+      this.restored = false;
+    },
     async submit() {
       if (this.busy || !this._ed) return;
       let html = this._ed.getHTML();
@@ -467,6 +589,8 @@ export default {
           html = html.split(url).join(res.filename);    // objectURL → 실제 파일명
         }
         await this.submitFn(html);
+        const dk = this.draftKey();
+        if (dk) clearDraft(dk);                      // 제출 성공 → 임시저장 삭제
         for (const u of this._pending.keys()) URL.revokeObjectURL(u);
         this._pending.clear();
         this.$emit("submitted");
@@ -502,7 +626,8 @@ export default {
         <button type="button" class="tb-b co-t" :class="{on:inCallout('tip')}" @click="tbCallout('tip')" title="팁 콜아웃 {tip}">💡</button>
         <button type="button" class="tb-b co-w" :class="{on:inCallout('warning')}" @click="tbCallout('warning')" title="경고 콜아웃 {warning}">⚠</button>
         <span class="tb-sep"></span>
-        <button type="button" class="tb-b" :class="{on:active('link')}" @click="tbLink" title="링크">🔗</button>
+        <button type="button" class="tb-b" :class="{on:active('linkBadge')}" @click="tbLink"
+                title="링크 뱃지 (선택 텍스트가 제목이 됨 · 뱃지 더블클릭으로 수정)">🔗</button>
         <button type="button" class="tb-b" @click="tbTable" title="표 삽입">▦</button>
         <button type="button" class="tb-b" @click="tbImage" title="이미지">🖼</button>
         <button type="button" class="tb-b" style="margin-left:auto" @click="toggleMax"
@@ -546,6 +671,10 @@ export default {
           <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/><path d="M2.5 6.5h11"/><rect class="fillbar" x="2.5" y="2.5" width="11" height="4"/></svg></button>
         <button type="button" class="tb-b tb-ic tb-del" @click="tTableDel" title="표 삭제">
           <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/><path d="M2.5 6.5h11M6.5 2.5v11"/><path d="M10 10l3.5 3.5M13.5 10L10 13.5"/></svg></button>
+      </div>
+      <div v-if="restored" class="cmt-restored">
+        <span>작성 중이던 내용을 복원했습니다.</span>
+        <button type="button" class="cmt-ed-btn ghost" @click="discardDraft">새로 쓰기</button>
       </div>
       <div ref="ed" class="cmt-ed-host"></div>
       <div class="cmt-ed-bar">
