@@ -21,7 +21,7 @@ import queue
 import sys
 import threading
 
-from .base import AuthProvider, LoginRequired, SessionExpired, upstream_priority
+from .base import AuthProvider, LoginRequired, SessionExpired, UpstreamError, upstream_priority
 
 
 def _launch(p, headless):
@@ -128,17 +128,23 @@ class SsoSessionProvider(AuthProvider):
         return self._submit(lambda: self._fetch(path, params, False), priority)
 
     def _post(self, path, json_body, params):
+        import json as _json
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        # Atlassian(Jira/Confluence/Bitbucket)은 POST 에 XSRF 토큰이 없으면 403 이다.
-        # GET 은 면제라 세션은 멀쩡한데 POST 만 막힌다 → no-check 헤더로 우회(공식 방식).
+        # Atlassian(Jira/Confluence/Bitbucket)은 POST 에 XSRF 토큰이 없으면 403 이다(GET 은 면제).
+        # body 는 **명시적으로 JSON 문자열**로 보낸다 — data=dict 로 넘기면 인코딩이
+        # 어긋날 수 있어 Content-Type: application/json 과 함께 직렬화해 준다.
         resp = self._context.request.post(
-            url, data=json_body or {}, params=params or {},
-            headers={"X-Atlassian-Token": "no-check", "Content-Type": "application/json"})
+            url, data=_json.dumps(json_body or {}), params=params or {},
+            headers={"X-Atlassian-Token": "no-check", "Content-Type": "application/json",
+                     "Accept": "application/json"})
         if resp.status == 401:
             raise SessionExpired(f"HTTP 401 on {path} — 세션 만료. login 재실행.")
         if resp.status >= 400:
-            # 403 은 XSRF·권한, 그 외는 서버 문제 — 세션 만료로 단정하지 않는다
-            raise SessionExpired(f"HTTP {resp.status} on {path}")
+            try:
+                body = resp.text()
+            except Exception:
+                body = ""
+            raise UpstreamError(resp.status, path, body)   # status·본문을 진단에 담는다
         return resp.json()
 
     def post_json(self, path, json_body=None, params=None):

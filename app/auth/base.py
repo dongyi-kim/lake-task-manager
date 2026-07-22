@@ -54,3 +54,13 @@ class SessionExpired(RuntimeError):
 
 class LoginRequired(SessionExpired):
     """세션 파일이 아직 없음 — 최초 SSO 로그인이 필요. (SessionExpired 로 함께 처리됨)"""
+
+
+class UpstreamError(SessionExpired):
+    """상류 4xx/5xx — 진단용으로 status·응답 본문 미리보기를 담는다.
+    401 이면 정말 세션 만료지만, 403 은 XSRF·권한, 그 외는 서버 문제일 수 있다."""
+
+    def __init__(self, status, path, body=""):
+        self.status = status
+        self.body = (body or "")[:400]
+        super().__init__(f"HTTP {status} on {path}" + (f" — {self.body}" if self.body else ""))

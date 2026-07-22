@@ -102,9 +102,27 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
 
 
 @app.get("/api/health")
+def _build_rev():
+    """실행 중인 코드의 git 커밋 — 앱이 최신 배포본인지 눈으로 확인하기 위함.
+    (배포 pull·재시작을 깜빡해 옛 코드가 도는 경우가 잦다.)"""
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, timeout=3).decode().strip()
+    except Exception:
+        return "(unknown)"
+
+
+_BUILD_REV = _build_rev()
+
+
 def health():
     return {"status": "ok", "env": _settings.jira_env, "projectKey": _settings.project_key,
-            "needLogin": _client.needs_login()}
+            "needLogin": _client.needs_login(), "rev": _BUILD_REV,
+            "devTools": sorted(_settings.dev_tools)}
 
 
 @app.post("/api/login")
