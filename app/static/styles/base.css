@@ -93,9 +93,13 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
 .sm-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px; font-size: 13px; }
 .sm-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .sm-dot.ok { background: var(--st-done); } .sm-dot.no { background: var(--danger); }
+.sm-dot.loading { background: var(--muted-2); animation: sm-pulse 1s ease-in-out infinite; }
+.sm-dot.err { background: var(--warn, #c07a2d); }
+@keyframes sm-pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
 .sm-svc { flex: 1 1 auto; color: var(--text); }
 .sm-state { font-size: 11px; font-weight: 700; }
 .sm-state.ok { color: var(--st-done); } .sm-state.no { color: var(--danger); }
+.sm-state.loading { color: var(--muted-2); font-weight: 500; } .sm-state.err { color: var(--warn, #c07a2d); }
 .sm-btn { display: block; width: 100%; margin-top: 8px; padding: 7px 10px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
   font-size: 12.5px; font-weight: 600; font-family: inherit; cursor: pointer; text-align: center; }

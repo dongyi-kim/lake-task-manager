@@ -129,15 +129,24 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300):
         if any(ok for _, ok in results):
             context.storage_state(path=appmain._client._state_path())
             appmain._client.reset_provider()
+            # 앱 페이지를 새로고침해 인증 상태를 즉시 반영(설정창 dot·로그인 오버레이 갱신).
+            try:
+                if not page.is_closed():
+                    page.reload(wait_until="domcontentloaded")
+            except Exception:
+                pass
         all_ok = all(ok for _, ok in results)
         print("[login] " + ("전체 완료 — " if all_ok else "일부 미완료 — ")
               + ", ".join(f"{n}={'O' if ok else 'X'}" for n, ok in results))
     except Exception as e:
         print(f"[login] 오류: {e}")
     finally:
+        # 임시 로그인 창 + SSO 과정에서 뜬 팝업까지 전부 닫는다(앱 창 page 만 남긴다).
+        # (IdP 가 새 창을 띄우면 login_page.close() 만으론 안 닫혀 'Jira 창이 계속 떠 있음' 이 된다.)
         try:
-            if login_page is not None and not login_page.is_closed():
-                login_page.close()                        # 임시 로그인 창만 닫기 (앱 창은 그대로)
+            for pg in list(context.pages):
+                if pg is not page and not pg.is_closed():
+                    pg.close()
         except Exception:
             pass
 

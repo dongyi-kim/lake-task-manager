@@ -143,35 +143,39 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
                 "bitbucket_base": _BB or "(미설정)"}
 
 
+def _probe_service(svc):
+    """서비스 하나의 인증 상태 — provider 세션으로 실제 호출. {service, base, authenticated, configured, detail}."""
+    from app.auth.sso_session import _extract_user
+    name, base, paths = svc["name"], svc["base"], svc["paths"]
+    if not svc.get("configured"):
+        return {"service": name, "base": "", "authenticated": False,
+                "configured": False, "detail": "미설정 (config 의 base 필요)"}
+    ok, detail = False, ""
+    for path in paths:
+        try:
+            body = _client.provider.get_json(base.rstrip("/") + path)
+            who = _extract_user(body)             # 인증 필요 엔드포인트가 200 이면 인증됨
+            ok, detail = True, (f"{path} → {who}" if who else f"{path} → 200(인증됨)")
+            break
+        except Exception as e:
+            detail = f"{path}: {getattr(e, 'status', '')} {str(e)[:80]}".strip()
+    return {"service": name, "base": base, "authenticated": ok, "configured": True, "detail": detail}
+
+
 if _devtools.enabled(_settings, "sso_status"):
     @app.get("/api/dev/sso")
     def _dev_sso_status():
-        """각 서비스 인증 상태 — 지금 provider 세션으로 실제 호출해 확인.
-        로그인 순회 후 Confluence 만 X 로 뜨면 그 도메인 SSO 가 안 붙은 것."""
-        rows = []
-        from app.auth.sso_session import _extract_user
-        # 설정 여부와 무관하게 **세 서비스 모두** 표시(미설정이면 그 사실을 알린다).
+        """각 서비스 인증 상태(전체). 개별 실시간 표시는 /api/dev/sso/{service} 를 병렬 호출."""
+        return {"targets": [_probe_service(svc) for svc in getattr(_settings, "services", [])],
+                "note": "authenticated=false 인 서비스는 그 도메인 SSO 로그인이 안 된 것."}
+
+    @app.get("/api/dev/sso/{service}")
+    def _dev_sso_one(service: str):
+        """서비스 하나만 인증 확인 — 설정창이 서비스별로 병렬 호출해 각각 실시간 렌더한다."""
         for svc in getattr(_settings, "services", []):
-            name, base, paths = svc["name"], svc["base"], svc["paths"]
-            if not svc.get("configured"):
-                rows.append({"service": name, "base": "", "authenticated": False,
-                             "configured": False, "detail": "미설정 (config 의 base 필요)"})
-                continue
-            ok, detail = False, ""
-            for path in paths:
-                try:
-                    body = _client.provider.get_json(base.rstrip("/") + path)
-                    who = _extract_user(body)     # 인증 필요 엔드포인트가 200 이면 인증됨
-                    ok = True
-                    detail = f"{path} → {who}" if who else f"{path} → 200(인증됨)"
-                    break
-                except Exception as e:
-                    detail = f"{path}: {getattr(e, 'status', '')} {str(e)[:80]}".strip()
-            rows.append({"service": name, "base": base, "authenticated": ok,
-                         "configured": True, "detail": detail})
-        return {"targets": rows,
-                "note": "authenticated=false 인 서비스는 그 도메인 SSO 로그인이 안 된 것. "
-                        "상단 [SSO 로그인] 재실행 시 그 창에서 해당 서비스에 직접 로그인."}
+            if svc["name"].lower() == service.lower():
+                return _probe_service(svc)
+        return JSONResponse({"error": "unknown service", "service": service}, status_code=404)
 
 
 @app.get("/api/health")
