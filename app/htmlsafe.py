@@ -58,6 +58,7 @@ _CONF_RE = re.compile(r"(?:confluence|/wiki/|/display/|/spaces/|/pages/)", re.I)
 #   user-hover = 실 Jira DC 의 사용자 맨션 앵커 class(볼드+컬러 스타일 대상). conf-link = 아래에서 부여.
 _ALLOWED_CLASSES = {
     "panel", "panel-title", "panel-body", "callout", "code", "jecodeblock", "user-hover", "conf-link",
+    "image-wrap",                      # 실 Jira DC 가 본문 이미지를 감싸는 래퍼
     "callout-note", "callout-info", "callout-warning", "callout-tip",
     "callout-success", "callout-error",
 }
@@ -202,6 +203,21 @@ class _Sanitizer(HTMLParser):
         return (" " + " ".join(parts)) if parts else ""
 
 
+# 맨션 앵커 — 실 Jira 는 텍스트를 displayName('{본명} {회사}')으로 렌더한다.
+_MENTION_A_RE = re.compile(r'(<a\b[^>]*\bclass="[^"]*user-hover[^"]*"[^>]*>)([^<]+)(</a>)', re.I)
+
+
+def shorten_mention_names(html):
+    """맨션 앵커 텍스트를 **본명만**으로 줄인다.
+    본문에 박히는 이름은 짧아야 하고(에디터도 본명으로 넣는다), 회사까지 붙으면 문장이 길어진다.
+    동명이인 구분이 필요한 곳은 @멘션 팝업이지 본문이 아니다."""
+    if not html:
+        return html
+    from .names import real_name
+    return _MENTION_A_RE.sub(
+        lambda m: m.group(1) + (real_name(unescape(m.group(2))) or m.group(2)) + m.group(3), html)
+
+
 def sanitize_html(html):
     """신뢰 불가 HTML → allowlist 로 정화한 안전 HTML 문자열. 파싱 실패 시 전부 escape."""
     if not html:
@@ -246,6 +262,22 @@ def tidy_html(html):
 
 
 _IMG_SRC_RE = re.compile(r'(<img\b[^>]*?\bsrc=")([^"]*)("[^>]*>)', re.I)
+
+
+def proxy_attachment_images(html):
+    """dev(mock/local) 용 — **Jira 첨부 경로(/secure/…) 이미지만** same-origin 프록시로 재작성.
+    첨부는 jira820(in-process 또는 :8080)에 있어 앱 오리진으로는 못 받는다. 반대로 앱이 직접
+    서빙하는 static 이미지(/ticket-sample.svg 등)는 그대로 둬야 하므로 접두사로 가른다."""
+    if not html:
+        return html
+
+    def _one(src):
+        s = (src or "").strip()
+        if not s.startswith("/secure/"):
+            return src
+        return "/api/img?u=" + urllib.parse.quote(s, safe="")
+
+    return _IMG_SRC_RE.sub(lambda m: m.group(1) + _one(m.group(2)) + m.group(3), html)
 
 
 def proxy_images(html, jira_base, allow_host):

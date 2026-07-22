@@ -15,7 +15,8 @@ from urllib.parse import quote, unquote, urlparse
 
 from . import progress
 from .auth.base import SessionExpired, background_upstream
-from .htmlsafe import _CONF_RE, proxy_images, sanitize_html, text_to_html, tidy_html
+from .htmlsafe import (_CONF_RE, proxy_attachment_images, proxy_images, sanitize_html,
+                       shorten_mention_names, text_to_html, tidy_html)
 from .names import real_name
 from .sections import split_sections
 
@@ -253,12 +254,12 @@ def _build_ticket_view(raw, sp_field, jira_base=""):
     rendered = raw.get("renderedFields") or {}
     rhtml = rendered.get("description")
     if rhtml and str(rhtml).strip():
-        desc, fmt = tidy_html(sanitize_html(rhtml)), "html"
+        desc, fmt = shorten_mention_names(tidy_html(sanitize_html(rhtml))), "html"
     elif _looks_like_html(f.get("description")):
         # 사내 인스턴스는 WYSIWYG 에디터(Jira Editor 계열 — 'jePanel_*' class)를 써서
         # fields.description **원문 자체가 HTML** 이다. 이때 평문 취급하면 태그가
         # 글자로 보인다(<p>안녕하세요</p>). renderedFields 가 빌 때의 방어.
-        desc, fmt = tidy_html(sanitize_html(f["description"])), "html"
+        desc, fmt = shorten_mention_names(tidy_html(sanitize_html(f["description"]))), "html"
     else:
         desc, fmt = tidy_html(text_to_html(f.get("description") or "")), "text"
     st = f.get("status") or {}
@@ -657,6 +658,7 @@ class JiraClient:
                 rb = c.get("renderedBody")
                 html = sanitize_html(rb) if rb and str(rb).strip() else text_to_html(c.get("body") or "")
                 html = tidy_html(html)              # 빈 문단·앞뒤 공백 정리(과도 여백 제거)
+                html = shorten_mention_names(html)  # 맨션은 본명만(에디터 표기와 일치)
                 html = self._proxy_media(html)      # prod: 코멘트 내 이미지도 프록시
                 out.append({
                     "id": str(c.get("id") or ""),       # 수정/삭제용
@@ -737,18 +739,23 @@ class JiraClient:
                         "html": wiki_to_html(c.get("body") or "", self._mention_name)}
         return None
 
-    def _mention_name(self, uid):
-        """멘션 라벨 — 사번 uid → 본명(best-effort, 캐시). 실패 시 uid 그대로."""
+    def _display_name(self, uid):
+        """사용자 표시이름 — 사번 uid → displayName('{본명} {회사}', best-effort, 캐시). 실패 시 uid.
+        동명이인 구분이 필요한 곳(@멘션 팝업)은 회사까지 붙은 이 값을 쓴다."""
         def do():
             try:
                 u = self.provider.get_json("/rest/api/2/user", params={"username": uid})
-                return real_name(u.get("displayName") or uid) or uid
+                return u.get("displayName") or uid
             except Exception:
                 return uid
         try:
-            return self.cache.get_or_set(f"uname:{self.env}:{uid}", self.s.cache_ttl_seconds, do)[0]
+            return self.cache.get_or_set(f"udisp:{self.env}:{uid}", self.s.cache_ttl_seconds, do)[0]
         except Exception:
             return uid
+
+    def _mention_name(self, uid):
+        """멘션 라벨 — 본명만(본문에 박히는 이름이라 짧아야 한다)."""
+        return real_name(self._display_name(uid)) or uid
 
     def current_user(self):
         """세션 사용자 — 본인 댓글(수정/삭제 노출) 판정용. {id, name}. 캐시."""
@@ -1359,9 +1366,16 @@ class JiraClient:
         return "/api/img?u=" + quote(absolute, safe="")
 
     def _proxy_media(self, html):
-        """prod 에서만 <img src> 를 /api/img 프록시로 재작성 (mock/local 은 same-origin static)."""
-        if self.env != "prod" or not html:
+        """<img src> 를 /api/img 프록시로 재작성 — **세 환경 공통**.
+        첨부 이미지는 Jira 상대경로(/secure/attachment/…)라 그대로 두면 앱 오리진에서 404 다
+        (mock 은 jira820 이 in-process, local 은 :8080 — 어느 쪽도 앱이 그 경로를 서빙하지 않는다).
+        프록시는 provider 로 받아 same-origin 으로 돌려주므로 mock/local/prod 가 같은 경로를 탄다.
+        prod 만 절대 URL 로 바꿔 호스트 검증(SSRF 방지)을 태우고, dev 는 상대경로 그대로
+        넘겨 provider 가 base 를 붙이게 한다."""
+        if not html:
             return html
+        if self.env != "prod":
+            return proxy_attachment_images(html)
         return proxy_images(html, self.s.jira_base, self._media_allowed_host)
 
     def fetch_media(self, u):

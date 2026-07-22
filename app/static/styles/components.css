@@ -16,11 +16,15 @@
 .tbadge.v-solid { color: var(--tc); background: color-mix(in srgb, var(--tc) 14%, transparent);
                   border: 1px solid color-mix(in srgb, var(--tc) 34%, transparent); }
 
-/* Avatar — 프로필 이미지. 없으면 .avt-df(기본 사람 아이콘)로 폴백 */
+/* Avatar — 프로필 이미지. 없으면 .avt-ini(시그니처 컬러 + 이름 첫 글자)로 폴백.
+   이름조차 없을 때만 .avt-df(기본 사람 아이콘). */
 .avt { flex: none; border-radius: 50%; object-fit: cover; vertical-align: middle;
        background: var(--panel-2); border: 1px solid var(--border); }
 .avt-df { display: inline-flex; align-items: center; justify-content: center; }
 .avt-df::before { content: "\1F464"; opacity: .55; line-height: 1; }
+.avt-ini { display: inline-flex; align-items: center; justify-content: center;
+           border-color: transparent; color: #fff; font-weight: 700; line-height: 1;
+           user-select: none; text-shadow: 0 1px 1px rgba(0, 0, 0, .25); }
 
 /* ProgressBar */
 .pbar-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }

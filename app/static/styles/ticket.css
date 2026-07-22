@@ -611,6 +611,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-ed-host .ProseMirror li { margin: 2px 0; }
 .cmt-ed-host .ProseMirror li > p { margin: 0; }
 .cmt-ed-host .ProseMirror a { color: var(--accent); text-decoration: none; }
+/* 뱃지는 일반 링크 색(accent)을 상속하면 안 된다 — 렌더와 같은 글자색으로.
+   (색 없는 .jb-name 이 <a> 의 파란색을 물려받아 에디터에서만 시퍼렇게 보이던 문제) */
+.cmt-ed-host .ProseMirror a.jira-badge,
+.cmt-ed-host .ProseMirror a.web-badge { color: var(--text); }
 /* 인용은 에디터 전용 규칙을 두지 않는다 — .tkt-desc blockquote(따옴표 글리프 포함)를 그대로 써
    에디터 미리보기와 실제 렌더가 일치하게 한다. (콜아웃도 동일 원리로 .tkt-desc .callout 사용) */
 .cmt-ed-host .ProseMirror code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;

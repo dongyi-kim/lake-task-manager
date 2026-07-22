@@ -66,6 +66,12 @@ def _is_mention(n):
     return n.tag == "span" and (n.attrs.get("data-type") == "mention" or "data-mention" in n.attrs)
 
 
+def _cell_safe(s):
+    """코드 텍스트를 wiki 인라인에 안전하게 — '|' 는 표 셀 구분자라 그대로 두면 셀이 쪼개진다.
+    Jira wiki 의 이스케이프('\\|')로 바꾼다. '}}' 는 monospace 를 조기 종료시키므로 떼어 놓는다."""
+    return (s or "").replace("|", "\\|").replace("}}", "} }")
+
+
 def _inline(node):
     """인라인 노드/자식들을 wiki 문자열로."""
     out = []
@@ -86,11 +92,14 @@ def _inline(node):
         elif t == "pre":
             # 인라인 문맥(주로 표 셀)의 코드블럭. Jira wiki 표는 **행이 한 줄**이라 여러 줄 {code}
             # 를 셀에 담을 수 없다 — 원시 줄바꿈을 그대로 두면 행이 끊겨 표 전체가 깨진다.
-            # → 줄바꿈을 wiki 강제개행(\\)으로 바꿔 한 줄로 만든다(표 유지, 코드 스타일은 손실).
+            # → 줄마다 {{monospace}} 로 감싸고 wiki 강제개행(\\)으로 잇는다.
+            #   표도 안 깨지고 코드도 코드로 보인다(구문강조·언어 표기만 손실 — wiki 표의 한계).
+            #   되읽으면 <code> 줄들로 돌아와 다시 저장해도 같은 형태다(왕복 안정).
             txt = _txt(c).strip("\n")
-            out.append("\\\\".join(ln for ln in txt.split("\n")))
+            out.append("\\\\".join(("{{" + _cell_safe(ln) + "}}") if ln.strip() else ""
+                                   for ln in txt.split("\n")))
         elif t == "code":
-            out.append("{{" + _txt(c) + "}}")
+            out.append("{{" + _cell_safe(_txt(c)) + "}}")
         elif t == "a":
             href = (c.attrs.get("href") or "").strip()
             label = _inline(c).strip()
@@ -229,12 +238,17 @@ def _table(node, lines):
             elif ch.tag in ("thead", "tbody", "tfoot"):
                 collect(ch)
     collect(node)
+    # 셀 안의 줄바꿈(<br>)은 wiki 강제개행(\\)이어야 한다 — 진짜 개행을 넣으면 행이 끊겨 표가 깨진다.
+    def cell(c):
+        return _inline(c).strip().replace("\n", "\\\\")
+
     for tr in rows:
         cells = _cells(tr)
         if cells and all(c.tag == "th" for c in cells):
-            lines.append("||" + "||".join(_inline(c).strip() for c in cells) + "||")
+            # 빈 헤더 셀도 공백 한 칸으로 — ''로 두면 '||||' 가 돼 되읽을 때 셀이 사라진다.
+            lines.append("||" + "||".join(cell(c) or " " for c in cells) + "||")
         else:
-            lines.append("|" + "|".join(_inline(c).strip() or " " for c in cells) + "|")
+            lines.append("|" + "|".join(cell(c) or " " for c in cells) + "|")
 
 
 def html_to_wiki(html: str) -> str:
@@ -269,7 +283,8 @@ def _wiki_inline_html(text, mr=None):
     spans = []
 
     def stash(m):
-        spans.append(escape(m.group(1), quote=False))
+        # 셀 안의 리터럴 파이프는 '\\|' 로 저장돼 있다 — 표시할 땐 되돌린다.
+        spans.append(escape(m.group(1).replace("\\|", "|"), quote=False))
         return "\x00%d\x00" % (len(spans) - 1)
 
     s = _WIKI_MONO.sub(stash, s)                                     # {{code}} 보호
@@ -294,6 +309,7 @@ def _wiki_inline_html(text, mr=None):
     s = re.sub(r"(?<![\w_])_(\S(?:.*?\S)?)_(?![\w_])", r"<em>\1</em>", s)
     s = re.sub(r"(?<![\w-])-(\S(?:.*?\S)?)-(?![\w-])", r"<s>\1</s>", s)
     s = s.replace("\\\\", "<br>")            # wiki 강제개행 → <br> (표 셀 여러 줄 등)
+    s = s.replace("\\|", "|")               # 이스케이프된 셀 구분자 복원
 
     def pop(m):
         return "<code>" + spans[int(m.group(1))] + "</code>"
@@ -418,16 +434,20 @@ def _wiki_list_html(items, mr=None):
     return "".join(frags)
 
 
+# 셀 구분자 '|' — 앞에 백슬래시가 붙은 '\\|' 는 리터럴 파이프라 나누지 않는다(코드 안의 파이프).
+_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
+
+
 def _wiki_table_html(rows, mr=None):
     out = ["<table><tbody>"]
     for r in rows:
         r = r.strip()
         if r.startswith("||"):
-            cells = [c for c in r.split("||") if c != ""]
+            cells = [c for c in re.split(r"(?<!\\)\|\|", r) if c != ""]
             tag = "th"
         else:
             inner = r[1:-1] if r.endswith("|") else r[1:]
-            cells = inner.split("|")
+            cells = _CELL_SPLIT_RE.split(inner)
             tag = "td"
         out.append("<tr>" + "".join(f"<{tag}>" + _wiki_inline_html(c.strip(), mr) + f"</{tag}>"
                                     for c in cells) + "</tr>")

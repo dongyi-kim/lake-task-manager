@@ -3,7 +3,7 @@
 // 코멘트 텍스트는 Vue 기본 이스케이프({{ }})로 안전 표시. Esc/백드롭/X 로 닫기.
 import { api } from "../../lib/api.js";
 import { ymd, ymdhm, ts, esc } from "../../lib/fmt.js";
-import { TYPE_BG, typeLabel } from "../../lib/colors.js";
+import { TYPE_BG, typeLabel, sigColor } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
@@ -162,13 +162,8 @@ export default {
     },
     // ── 코멘트 작성/수정/삭제 (첫 쓰기 기능) ──
     // 작성자 시그니처 컬러 — 사번 해시 → 고정 색. 같은 사람은 늘 같은 색(좌측 선으로 구분).
-    sigColor(id) {
-      const s = String(id || "");
-      if (!s) return "var(--border)";
-      let h = 0;
-      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-      return "hsl(" + (h % 360) + " 62% 52%)";
-    },
+    // 글쓴이 시그니처 컬러 — 기본 아바타(프사 없는 사람)와 같은 색이어야 하므로 colors.js 단일 소스.
+    sigColor,
     canEdit(c) { return !!(this.me && this.me.id && c && c.authorId === this.me.id); },
     reloadComments() {
       const key = this.keyId;

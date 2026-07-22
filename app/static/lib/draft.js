@@ -49,3 +49,21 @@ export function loadDraft(key) {
 export function clearDraft(key) {
   return op("readwrite", (s) => s.delete(key)).catch(() => null);
 }
+
+// TTL 은 '그 키를 읽을 때'만 걸린다 → 다시 안 여는 티켓의 초안은 blob 째 영원히 남는다.
+// 세션당 1회 전체를 훑어 만료분을 지운다(용량 누수 방지).
+let _swept = false;
+export function purgeExpired() {
+  if (_swept) return Promise.resolve();
+  _swept = true;
+  return idb().then((db) => new Promise((res) => {
+    const req = db.transaction(STORE, "readwrite").objectStore(STORE).openCursor();
+    req.onsuccess = () => {
+      const c = req.result;
+      if (!c) { res(); return; }
+      if (Date.now() - ((c.value || {}).savedAt || 0) > TTL_MS) c.delete();
+      c.continue();
+    };
+    req.onerror = () => res();
+  })).catch(() => null);
+}

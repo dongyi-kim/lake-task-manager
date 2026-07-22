@@ -128,11 +128,20 @@ def test_media_host_allow_and_ssrf_block():
     assert c.fetch_media("ftp://x/y") == (None, None)
 
 
-def test_mock_does_not_proxy_images():
-    # mock/local 은 same-origin static → 프록시 재작성 안 함(_proxy_media no-op)
+def test_mock_does_not_proxy_app_static_images():
+    # 앱이 직접 서빙하는 static 이미지는 dev 에서 프록시로 바꾸지 않는다(그대로 로드된다)
     v = _client().ticket_view(_key_of_type("Bug"))
     assert "/api/img?u=" not in v["descriptionHtml"]
     assert '<img src="/ticket-sample.svg"' in v["descriptionHtml"]
+
+
+def test_mock_proxies_jira_attachment_images():
+    # 첨부(/secure/…)는 jira820 에 있어 앱 오리진으로는 못 받는다 → dev 도 프록시를 태워야 한다
+    out = _client()._proxy_media(
+        '<p><img src="/secure/attachment/30001/shot.png" alt="" />'
+        '<img src="/ticket-sample.svg" alt="" /></p>')
+    assert '/api/img?u=%2Fsecure%2Fattachment%2F30001%2Fshot.png' in out
+    assert '<img src="/ticket-sample.svg"' in out
 
 
 def test_prod_proxy_media_rewrites_images():

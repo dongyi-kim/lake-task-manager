@@ -54,6 +54,29 @@ def test_table():
     assert html_to_wiki(h) == "||A||B||\n|1|2|"
 
 
+def test_table_cell_code_block_survives_as_monospace_lines():
+    """표 셀 안 코드블럭 — wiki 표는 행이 한 줄이라 {code} 를 넣으면 표가 깨진다.
+    줄마다 {{monospace}} + 강제개행(\\\\)으로 저장해 **표도 코드도** 살린다."""
+    h = ('<table><tbody><tr><td><pre><code class="language-python">'
+         'a = 1\nb = a | 2</code></pre></td><td>설명</td></tr></tbody></table>')
+    w = html_to_wiki(h)
+    assert w == "|{{a = 1}}\\\\{{b = a \\| 2}}|설명|"      # 셀 구분자와 안 헷갈리게 '|' 는 이스케이프
+    assert w.count("\n") == 0                              # 한 줄 = 표가 안 깨진다
+    # 되읽으면 코드(모노스페이스) 줄로 돌아오고, 파이프도 원문 그대로다
+    back = wiki_to_html(w)
+    assert "<code>a = 1</code>" in back and "<code>b = a | 2</code>" in back
+    assert back.count("<td>") == 2                         # 파이프 때문에 셀이 늘지 않는다
+    assert html_to_wiki(back) == w                         # 다시 저장해도 같은 형태(왕복 안정)
+
+
+def test_empty_header_cell_is_not_dropped():
+    """빈 헤더 셀을 ''로 쓰면 '||||' 가 돼 되읽을 때 셀이 통째로 사라진다(표 열이 줄어듦)."""
+    h = "<table><tbody><tr><th>A</th><th></th></tr><tr><td>1</td><td>2</td></tr></tbody></table>"
+    w = html_to_wiki(h)
+    assert w == "||A|| ||\n|1|2|"
+    assert wiki_to_html(w).count("<th>") == 2
+
+
 def test_blockquote():
     assert html_to_wiki("<blockquote><p>인용</p></blockquote>") == "bq. 인용"
 

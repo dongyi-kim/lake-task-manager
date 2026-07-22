@@ -7,20 +7,17 @@
 // 부모는 submitFn(finalHTML) 만 넘긴다(작성/수정은 부모가 선택). 출력은 HTML(서버가 wiki 로 변환).
 import { loadTiptap } from "../../lib/tiptap.js";
 import { ensureHljsTheme } from "../../lib/hljs.js";
-import { saveDraft, loadDraft, clearDraft } from "../../lib/draft.js";
+import { saveDraft, loadDraft, clearDraft, purgeExpired } from "../../lib/draft.js";
 import { api } from "../../lib/api.js";
+import { sigColor, initialOf } from "../../lib/colors.js";
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
-// 멘션 팝업 아바타 — 네트워크 요청(=404 스팸) 없이 이니셜 원. id 로 색 결정.
-const _MN_COLORS = ["#6d4fc0", "#2d8a5f", "#c07a2d", "#b34a6b", "#3a6ea5", "#8a5a2d"];
+// 멘션 팝업 아바타 — 네트워크 요청(=404 스팸) 없이 이니셜 원.
+// 색은 기본 아바타·댓글 구분 바와 같은 시그니처 컬러(colors.js) 를 쓴다.
 function mnAvatar(name, id) {
-  let h = 0; const s = id || name || "";
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  const bg = _MN_COLORS[h % _MN_COLORS.length];
-  const ch = ((name || id || "?").trim()[0] || "?").toUpperCase();
-  return `<span class="mn-av" style="background:${bg}">${esc(ch)}</span>`;
+  return `<span class="mn-av" style="background:${sigColor(id || name)}">${esc(initialOf(name, id))}</span>`;
 }
 const _URL_RE = /^https?:\/\/\S+$/i;
 
@@ -305,6 +302,28 @@ const _APP_PAGES = {
   wbs: "WBS Dashboard", vit: "현안 (PMO_VIT)", workload: "인력 워크로드", devtools: "Dev Tools",
 };
 
+// 실 Jira 주소 — 모듈 단위로 **한 번만** 조회해 캐시한다. 에디터 인스턴스마다 받으면
+// 붙여넣기가 응답보다 빨랐을 때 앱 주소(localhost)가 그대로 저장된다(다른 사람에겐 못 여는 링크).
+let _jiraBase = "";
+let _jiraBaseReq = null;
+function jiraBase() {
+  if (!_jiraBaseReq) {
+    _jiraBaseReq = api.health()
+      .then((h) => { _jiraBase = (h && h.jiraBase) || ""; return _jiraBase; })
+      .catch(() => "");
+  }
+  return _jiraBaseReq;
+}
+
+// 이 URL 이 '우리 앱' 주소인가. 로컬 1인 앱이라 같은 앱을 localhost/127.0.0.1 어느 쪽으로도 연다
+// → origin 문자열만 비교하면 별칭으로 연 주소를 남의 사이트로 오해한다(포트가 같으면 우리 앱).
+const _LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+function isAppOrigin(u) {
+  if (u.origin === location.origin) return true;
+  return _LOOPBACK.has(u.hostname) && _LOOPBACK.has(location.hostname)
+    && (u.port || "") === (location.port || "");
+}
+
 // 우리 앱 URL 을 붙여넣은 경우의 정규화. 외부 URL 이면 null.
 //  · {앱}/browse/KEY  → **실 Jira 티켓 주소**(그게 정본) + 제목은 티켓 키
 //  · 그 외 앱 URL     → 'Lake Task Manager - {화면 이름}' 뱃지 (localhost 링크로 보이지 않게)
@@ -316,11 +335,10 @@ function normalizeAppUrl(url, jiraBase) {
     if (m) {
       const key = m[1].toUpperCase();
       // 우리 앱 주소면 실 Jira 로 바꾼다(그게 정본). 이미 Jira 주소면 그대로 둔다.
-      const base = (u.origin === location.origin && jiraBase)
-        ? jiraBase.replace(/\/+$/, "") : u.origin;
+      const base = (isAppOrigin(u) && jiraBase) ? jiraBase.replace(/\/+$/, "") : u.origin;
       return { href: base + "/browse/" + key, title: key, key };
     }
-    if (u.origin !== location.origin) return null;      // 외부 일반 URL → og:title 조회
+    if (!isAppOrigin(u)) return null;                   // 외부 일반 URL → og:title 조회
     const route = (u.hash || "").replace(/^#\/?/, "").split(/[?/]/)[0] || "wbs";
     const page = _APP_PAGES[route] || route || "";
     return { href: url, title: "Lake Task Manager" + (page ? " - " + page : "") };
@@ -408,7 +426,8 @@ function mentionSuggestion(ticketKey) {
         el.innerHTML = items.map((u, i) =>
           `<div class="mn-item${i === sel ? " sel" : ""}" data-i="${i}">`
           + mnAvatar(u.name, u.id)
-          + `<span class="mn-nm">${esc(u.name)}</span><span class="mn-id">${esc(u.id)}</span></div>`).join("");
+          // 팝업엔 회사까지 붙은 전체 표시명(동명이인 구분). 삽입되는 멘션은 본명만(pick).
+          + `<span class="mn-nm">${esc(u.display || u.name)}</span><span class="mn-id">${esc(u.id)}</span></div>`).join("");
         el.querySelectorAll(".mn-item").forEach((row) => {
           row.addEventListener("mousedown", (e) => { e.preventDefault(); pick(+row.dataset.i); });
         });
@@ -454,8 +473,7 @@ export default {
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
-    this._jiraBase = "";              // 앱 URL(/browse/KEY) 붙여넣기를 실 Jira 주소로 바꾸는 데 사용
-    api.health().then((h) => { this._jiraBase = (h && h.jiraBase) || ""; }).catch(() => { /* noop */ });
+    jiraBase();                       // 앱 URL(/browse/KEY)→실 Jira 주소 변환용. 미리 받아 둔다.
     let T;
     try { T = await loadTiptap(); }
     catch (e) { this.loadErr = "에디터를 불러오지 못했습니다(네트워크/CDN 차단). 잠시 후 다시 시도."; return; }
@@ -507,7 +525,7 @@ export default {
           const txt = cd && cd.getData && cd.getData("text/plain");
           if (txt && _URL_RE.test(txt.trim()) && self._ed.state.selection.empty) {
             const url = txt.trim();
-            const norm = normalizeAppUrl(url, self._jiraBase);     // 우리 앱 URL 이면 정규화
+            const norm = normalizeAppUrl(url, _jiraBase);          // 우리 앱 URL 이면 정규화
             const href = norm ? norm.href : url;
             const title0 = norm ? norm.title : url;
             self._ed.chain().focus().insertContent([
@@ -672,6 +690,7 @@ export default {
     async restoreDraft() {
       const k = this.draftKey();
       if (!k) return;
+      purgeExpired();                       // 다른 티켓의 만료 초안도 이참에 정리(세션 1회)
       const rec = await loadDraft(k);
       if (!rec || !rec.html || this._dead || !this._ed) return;
       let html = rec.html;
@@ -696,6 +715,14 @@ export default {
     async submit() {
       if (this.busy || !this._ed) return;
       let html = this._ed.getHTML();
+      // 안전망 — 앱 주소로 남은 티켓 링크(붙여넣기가 health 응답보다 빨랐던 경우)는 실 Jira 주소로.
+      // 저장된 댓글은 다른 사람도 읽는다: localhost 링크로 남기면 안 된다.
+      if (_jiraBase) {
+        const port = location.port ? ":" + location.port : "";
+        const re = new RegExp("https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])" + port
+                              + "(/browse/[A-Za-z][A-Za-z0-9]*-\\d+)", "g");
+        html = html.replace(re, _jiraBase.replace(/\/+$/, "") + "$1");
+      }
       const text = (this._ed.getText() || "").trim();
       // 이미지/링크 뱃지만 있는 댓글도 유효한 내용이다(텍스트가 비어도 통과).
       const hasNode = /<img\b/i.test(html) || /<a\b/i.test(html);

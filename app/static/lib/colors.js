@@ -21,3 +21,18 @@ export const TYPE_BG = {
   "Sub-Task": "var(--ty-sub)", Improvement: "var(--ty-feat)", "New Feature": "var(--ty-feat)",
 };
 export function typeLabel(t) { return TYPE_LABEL[t] || t; }
+
+// 사용자 시그니처 컬러 — id 해시 → 고정 hue. 같은 사람은 어디서나 같은 색.
+// 쓰는 곳: 댓글 좌측 구분 바(글쓴이 식별) · 프로필 사진 없는 사람의 기본 아바타 배경 · 멘션 팝업.
+export function sigColor(id) {
+  const s = String(id || "");
+  if (!s) return "var(--border)";
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return "hsl(" + (h % 360) + " 62% 52%)";
+}
+// 기본 아바타에 넣을 이니셜 — 본명 우선(한글은 그대로, 영문은 대문자).
+export function initialOf(name, id) {
+  const s = String(name || id || "").trim();
+  return (s[0] || "?").toUpperCase();
+}

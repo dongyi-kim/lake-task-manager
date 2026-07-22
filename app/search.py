@@ -185,8 +185,9 @@ _BB_KINDS = [("code", "코드"), ("pullrequest", "PR"), ("repository", "저장�
 
 
 def search_users(client, s, q, limit=8):
-    """@사람 멘션 자동완성 — Jira 유저 검색. [{id, name, avatar}].
+    """@사람 멘션 자동완성 — Jira 유저 검색. [{id, name, display, avatar}].
     id 는 사번(username) → 본문에 [~id] 로 직렬화(실 Jira 가 사용자 링크로 렌더).
+    name=본명(멘션에 박히는 짧은 이름) / display='{본명} {회사}'(팝업 표시 — 동명이인 구분).
     (문서/웹 링크는 멘션이 아니라 '붙여넣기 시 뱃지'로 처리 — 프론트가 담당.)"""
     q = (q or "").strip()
     try:
@@ -199,8 +200,8 @@ def search_users(client, s, q, limit=8):
         uid = u.get("name") or u.get("key") or ""
         if not uid:
             continue
-        out.append({"id": uid,
-                    "name": real_name(u.get("displayName") or uid),
+        disp = u.get("displayName") or uid
+        out.append({"id": uid, "name": real_name(disp) or uid, "display": disp,
                     "avatar": "/api/avatar/" + uid})
     return out
 
@@ -254,19 +255,19 @@ def mention_suggestions(client, s, q, key, limit=8):
         return search_users(client, s, q, limit)
     if not key:
         return []                                              # 컨텍스트 없으면 검색 안 함
-    acc, order = {}, []                                        # uid -> name(or None), 순서 보존
+    acc, order = {}, []                     # uid -> displayName('{본명} {회사}', or None), 순서 보존
 
-    def add(uid, name=None):
+    def add(uid, display=None):
         if uid and uid not in acc:
-            acc[uid] = name
+            acc[uid] = display
             order.append(uid)
 
     try:
         f = (client.get_issue(key) or {}).get("fields") or {}
         rep = f.get("reporter") or {}
         asg = f.get("assignee") or {}
-        add(rep.get("name"), real_name(rep.get("displayName") or rep.get("name")))   # 만든사람
-        add(asg.get("name"), real_name(asg.get("displayName") or asg.get("name")))   # 담당자
+        add(rep.get("name"), rep.get("displayName") or rep.get("name"))              # 만든사람
+        add(asg.get("name"), asg.get("displayName") or asg.get("name"))              # 담당자
         for uid in _MENTION_RE.findall(f.get("description") or ""):                   # 본문 멘션
             add(uid)
     except Exception:
@@ -276,7 +277,7 @@ def mention_suggestions(client, s, q, key, limit=8):
             f"/rest/api/2/issue/{key}/comment", params={"maxResults": 50, "orderBy": "-created"})
         for c in data.get("comments", []):
             a = c.get("author") or {}
-            add(a.get("name"), real_name(a.get("displayName") or a.get("name")))      # 댓글 작성자
+            add(a.get("name"), a.get("displayName") or a.get("name"))                 # 댓글 작성자
             for uid in _MENTION_RE.findall(c.get("body") or ""):                      # 댓글 멘션
                 add(uid)
     except Exception:
@@ -288,7 +289,8 @@ def mention_suggestions(client, s, q, key, limit=8):
         pass
     out = []
     for uid in order[:limit]:
-        out.append({"id": uid, "name": acc[uid] or client._mention_name(uid),
+        disp = acc[uid] or client._display_name(uid)
+        out.append({"id": uid, "name": real_name(disp) or uid, "display": disp,
                     "avatar": "/api/avatar/" + uid})
     return out
 
