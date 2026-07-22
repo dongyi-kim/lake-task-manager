@@ -1259,6 +1259,49 @@ class JiraClient:
         parent = ".".join(jh.split(".")[-2:]) if jh.count(".") >= 1 else jh
         return host == parent or host.endswith("." + parent)
 
+    LINK_TITLE_TTL = 7 * 24 * 3600         # 페이지 제목도 자주 안 바뀐다
+
+    def link_title(self, u):
+        """웹 URL 의 표시 제목 — og:title 우선, 없으면 <title>. 실패 시 None. 캐시.
+        붙여넣기로 만든 링크 뱃지의 라벨(URL 대신 사람이 읽는 제목)로 쓴다."""
+        from html import unescape
+        from urllib.parse import urlsplit
+        try:
+            p = urlsplit(u or "")
+        except Exception:
+            return None
+        if p.scheme not in ("http", "https") or not p.netloc:
+            return None
+        bases = [b for b in (self.s.jira_base, self.s.confluence_base,
+                             getattr(self.s, "bitbucket_base", "")) if b]
+        origin = f"{p.scheme}://{p.netloc}"
+        internal = any(origin.rstrip("/") == b.rstrip("/") for b in bases)
+
+        def do():
+            html = ""
+            try:
+                if internal:                       # 사내 서비스는 인증 세션으로
+                    data, _ct = self.provider.get_bytes(u)
+                    html = (data or b"")[:200000].decode("utf-8", "replace")
+                else:
+                    import requests
+                    r = requests.get(u, timeout=6, headers={"User-Agent": "LakeTaskManager"})
+                    if r.status_code != 200:
+                        return {}
+                    html = r.text[:200000]
+            except Exception:
+                return {}
+            m = (re.search(r'<meta[^>]+property=["\']og:title["\'][^>]*content=["\']([^"\']+)', html, re.I)
+                 or re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*property=["\']og:title["\']', html, re.I)
+                 or re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S))
+            if not m:
+                return {}
+            t = re.sub(r"\s+", " ", unescape(m.group(1))).strip()[:120]
+            return {"t": t} if t else {}
+
+        got = self.cache.get_or_set(f"linktitle:{u}", self.LINK_TITLE_TTL, do)[0] or {}
+        return got.get("t") or None
+
     FAVICON_TTL = 7 * 24 * 3600            # favicon 은 거의 안 바뀐다 — 길게 캐시
 
     def favicon(self, u):

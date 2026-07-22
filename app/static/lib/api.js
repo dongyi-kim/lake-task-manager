@@ -60,6 +60,7 @@ export const api = {
   me: () => get("/api/me"),                                             // 본인 댓글 판정
   mentionUsers: (q, key) => req("/api/mention/users?q=" + encodeURIComponent(q || "")   // @사람 자동완성
     + (key ? "&key=" + encodeURIComponent(key) : "")),                                  // 빈 쿼리 시 티켓 관련 우선
+  linkTitle: (u) => req("/api/linktitle?u=" + encodeURIComponent(u || "")),             // 링크 뱃지 제목(og:title)
   commentCreate: (key, html) =>
     jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST", { html })
       .then((r) => { evict(encodeURIComponent(key)); return r; }),

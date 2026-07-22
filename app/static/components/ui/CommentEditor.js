@@ -23,6 +23,26 @@ function mnAvatar(name, id) {
 }
 const _URL_RE = /^https?:\/\/\S+$/i;
 
+// 붙여넣기로 만든 링크의 라벨(아직 URL 그대로인 것)을 페이지 제목으로 교체.
+// 텍스트를 선택해 링크를 건 경우엔 그 텍스트가 라벨이므로 대상이 아니다(URL==라벨일 때만 바꾼다).
+function replaceLinkText(editor, url, title) {
+  if (!editor || editor.isDestroyed) return;
+  let range = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (range || !node.isText) return;
+    const linked = (node.marks || []).some((m) => m.type.name === "link" && m.attrs.href === url);
+    if (linked && node.text === url) range = { from: pos, to: pos + node.nodeSize };
+  });
+  if (!range) return;
+  const selFrom = editor.state.selection.from;
+  const delta = title.length - (range.to - range.from);
+  const keep = selFrom > range.to ? selFrom + delta : selFrom;
+  editor.chain()
+    .insertContentAt(range, { type: "text", marks: [{ type: "link", attrs: { href: url } }], text: title })
+    .setTextSelection(Math.max(1, keep))
+    .run();
+}
+
 // 이미지 삽입 시 세로가 너무 길지 않도록 기본 높이 상한(px). 원본이 이보다 작으면 원본 유지.
 const IMG_MAX_H = 320;
 
@@ -284,6 +304,10 @@ export default {
             self._ed.chain().focus().insertContent(
               [{ type: "text", marks: [{ type: "link", attrs: { href: url } }], text: url },
                { type: "text", text: " " }]).run();
+            // 라벨을 페이지 제목(og:title → <title>)으로 교체. 실패하면 URL 그대로 둔다.
+            api.linkTitle(url).then((r) => {
+              if (r && r.title) replaceLinkText(self._ed, url, r.title);
+            }).catch(() => { /* noop */ });
             event.preventDefault(); return true;
           }
           return false;

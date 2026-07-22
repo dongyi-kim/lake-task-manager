@@ -245,6 +245,12 @@ def api_search(q: str = "", scope: str = "scoped", limit: int = 8):
     return JSONResponse(search.search_all(_client, _settings, q, scope, limit))
 
 
+@app.get("/api/linktitle")
+def api_link_title(u: str):
+    """링크 뱃지 라벨용 페이지 제목 — og:title 우선, 없으면 <title>. 못 얻으면 빈 문자열."""
+    return JSONResponse({"url": u, "title": _client.link_title(u) or ""})
+
+
 @app.get("/api/favicon")
 def api_favicon(u: str):
     """웹 링크 뱃지용 favicon — origin 의 favicon 을 same-origin 으로 반환. 없으면 404(기본 아이콘)."""
