@@ -553,8 +553,11 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-tb .tb-lbl { font-size: 11px; font-weight: 700; color: var(--muted-2); padding: 0 6px 0 2px; }
 .cmt-langsel { font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border);
   background: var(--panel); color: var(--text); max-width: 160px; }
-/* hljs 테마의 .hljs 배경이 우리 코드박스(panel-2) 배경을 덮지 않게 — 토큰 색만 사용 */
-.tkt-desc pre code.hljs, .cmt-ed-host .ProseMirror pre code.hljs,
+/* hljs 테마는 .hljs 에 background + padding:1em 을 준다. 배경은 우리 코드박스(panel-2)를 덮고,
+   padding 은 코드 텍스트만 아래로 밀어 **줄번호 거터와 y축이 어긋난다**. 둘 다 무력화하고
+   패딩은 <pre> 가 담당한다(토큰 색만 테마에서 가져옴). */
+.tkt-desc pre code.hljs, .cmt-ed-host .ProseMirror pre code.hljs {
+  background: transparent !important; padding: 0 !important; }
 .tkt-desc pre code[class*="language-"], .cmt-ed-host .ProseMirror pre code { background: transparent; }
 .cmt-ed-host { max-height: 440px; overflow: auto; }
 
