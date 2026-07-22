@@ -40,6 +40,7 @@ export default {
       view: "time",                       // time | cluster | hier
       sort: "due",
       // 보기 방식 — 기본값은 "내 것만, 완료는 접고, 동료는 집계만"
+      scope: "assignee",                  // assignee | reporter | both — 무엇을 '내 일'로 볼지
       showDone: false,
       showOthers: false,                  // 동료 하위를 처음부터 펼칠지
       showNoDue: true,
@@ -154,7 +155,7 @@ export default {
   methods: {
     async load() {
       this.loading = true; this.err = "";
-      try { this.model = await api.myTasks(this.showDone); }
+      try { this.model = await api.myTasks(this.showDone, this.scope); }
       catch (e) { this.err = (e && e.message) || "불러오기 실패"; }
       finally { this.loading = false; }
     },
@@ -162,6 +163,7 @@ export default {
       this.showDone = !this.showDone;
       this.load();                  // 완료 포함 여부는 서버 질의 조건이라 다시 받는다
     },
+    setScope(v) { if (this.scope !== v) { this.scope = v; this.load(); } },   // JQL 조건 → 재조회
     keep(a) {
       if (!this.showDone && a.statusCategory === "done") return false;
       if (!this.showNoDue && (a.dueDays === null || a.dueDays === undefined)) return false;
@@ -226,6 +228,12 @@ export default {
       <div class="mt-seg sm">
         <button v-for="s in sorts" :key="s.k" :class="{ on: sort === s.k }" @click="sort = s.k" :title="s.hint">{{ s.label }}</button>
       </div>
+      <!-- '내 일'의 정의 — 담당만 볼지, 내가 등록한 것까지 볼지. JQL 조건이라 바꾸면 다시 받는다 -->
+      <div class="mt-seg sm">
+        <button :class="{ on: scope === 'assignee' }" @click="setScope('assignee')" title="담당자가 나인 티켓">담당</button>
+        <button :class="{ on: scope === 'reporter' }" @click="setScope('reporter')" title="내가 등록(보고)한 티켓 — 남에게 넘긴 뒤 결과를 봐야 할 때">내가 등록</button>
+        <button :class="{ on: scope === 'both' }" @click="setScope('both')" title="담당 + 내가 등록한 것 모두">둘 다</button>
+      </div>
       <div class="mt-toggles">
         <label class="mt-tg" title="완료된 내 일감까지 함께 본다(서버에서 다시 받아옵니다)">
           <input type="checkbox" :checked="showDone" @change="toggleDone"> 완료 포함
@@ -256,6 +264,9 @@ export default {
           <span class="mt-dot" :class="'st-' + a.statusCategory"></span>
           <span class="mt-key">{{ a.key }}</span>
           <span class="mt-title">{{ a.title }}</span>
+          <span v-if="scope !== 'assignee' && a.role" class="mt-role" :class="a.role"
+                :title="a.role === 'both' ? '담당이자 내가 등록' : (a.role === 'reporter' ? '내가 등록(담당 아님)' : '담당')">
+            {{ a.role === 'reporter' ? '등록' : (a.role === 'both' ? '담당·등록' : '담당') }}</span>
           <span class="mt-ctx">
             <span v-if="a.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(a.epicKey)">◆ {{ epicTitle(a.epicKey) }}</span>
             <span v-else class="mt-epic none">Epic 없음</span>

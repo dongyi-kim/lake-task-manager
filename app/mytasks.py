@@ -59,6 +59,7 @@ def _node(raw, today, epic_field):
     """이슈 원본 → 화면이 쓰는 얇은 노드."""
     f = raw.get("fields") or {}
     a = f.get("assignee") or {}
+    rp = f.get("reporter") or {}
     pri_name, pri_rank = _pri(f)
     dd = _days_until(f.get("duedate"), today)
     itype = (f.get("issuetype") or {}).get("name") or ""
@@ -71,6 +72,8 @@ def _node(raw, today, epic_field):
         "statusCategory": _cat(f),
         "assignee": real_name(a.get("displayName") or a.get("name")) or None,
         "assigneeId": a.get("name"),
+        "reporter": real_name(rp.get("displayName") or rp.get("name")) or None,
+        "reporterId": rp.get("name"),
         "pri": pri_name, "priRank": pri_rank, "priBand": _PRI_BAND.get(pri_rank, "mid"),
         "due": f.get("duedate") or None,
         "dueDays": dd,
@@ -99,8 +102,11 @@ def _rollup(nodes):
     return int(round(got / tot * 100))
 
 
-def build_my_tasks(client, user=None, include_done=False, limit=200):
+def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assignee"):
     """세션 사용자(또는 user 지정)의 '내 Task' 모델.
+
+    scope: assignee(담당) | reporter(내가 등록) | both. '내 일'의 정의는 사람마다 다르다 —
+    남에게 넘긴 뒤 결과를 봐야 하는 사람에게는 reporter 도 자기 일이다. JQL 조건이라 서버 몫.
 
     담당 이슈를 한 번에 긁고(=JQL 1회), 부모/형제는 **필요한 것만** 배치로 채운다.
     prod SSO 는 직렬이라 왕복 횟수가 곧 체감 속도다.
@@ -113,7 +119,12 @@ def build_my_tasks(client, user=None, include_done=False, limit=200):
     ef = {"sp": client.s.sp_field_id, "epic": client.s.epic_link_field_id}
 
     # 1) 내가 담당한 이슈 — 기본은 미완료만(완료까지 넣으면 화면이 과거로 가득 찬다)
-    jql = 'assignee = "%s"' % me
+    if scope == "reporter":
+        jql = 'reporter = "%s"' % me
+    elif scope == "both":
+        jql = '(assignee = "%s" OR reporter = "%s")' % (me, me)
+    else:
+        jql = 'assignee = "%s"' % me
     if not include_done:
         jql += " AND statusCategory != Done"
     jql += " ORDER BY duedate ASC"
@@ -121,7 +132,22 @@ def build_my_tasks(client, user=None, include_done=False, limit=200):
                 if ((r.get("fields") or {}).get("issuetype") or {}).get("name") != "Epic"]
     # Epic 은 담당자가 있어도 '실행 단위'가 아니라 묶음이다 — 목록에 섞으면 노이즈가 된다
     # (Epic 자체는 아래에서 그룹의 소속 표시로만 쓴다).
+    def role_of(n):
+        """이 일감에서 내 역할 — 화면이 '담당/등록'을 구분해 보여줄 수 있게."""
+        a, r = n["assigneeId"] == me, n["reporterId"] == me
+        return "both" if (a and r) else ("assignee" if a else ("reporter" if r else None))
+
+    def is_mine(n):
+        """이 스코프에서 '내 일'인가 — 하위 중 무엇을 내 원자로 뽑을지의 기준이다."""
+        if scope == "reporter":
+            return n["reporterId"] == me
+        if scope == "both":
+            return n["assigneeId"] == me or n["reporterId"] == me
+        return n["assigneeId"] == me
+
     mine = [_node(r, today, ef) for r in mine_raw]
+    for n in mine:
+        n["role"] = role_of(n)
     if not mine:
         return {"user": {"id": me}, "groups": [], "epics": [], "counts": _counts([])}
 
@@ -145,6 +171,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200):
     if kid_keys:
         for r in client.issues_by_keys(sorted(set(kid_keys))):
             c = _node(r, today, ef)
+            c["role"] = role_of(c)
             if c["parentKey"]:
                 kid_of.setdefault(c["parentKey"], []).append(c)
 
@@ -156,9 +183,10 @@ def build_my_tasks(client, user=None, include_done=False, limit=200):
         if not g:
             g = groups[node["key"]] = {
                 "key": node["key"], "title": node["title"], "type": node["type"],
-                "mine": node["assigneeId"] == me,
+                "mine": is_mine(node), "role": node.get("role"),
                 "assignee": node["assignee"], "assigneeId": node["assigneeId"],
                 "status": node["status"], "statusCategory": node["statusCategory"],
+                "reporter": node.get("reporter"), "reporterId": node.get("reporterId"),
                 "epic": node["epic"], "pri": node["pri"], "priRank": node["priRank"],
                 "priBand": node["priBand"], "due": node["due"], "dueDays": node["dueDays"],
                 "atoms": [], "others": [], "hasSubs": has_kids,
@@ -183,7 +211,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200):
         else:
             kids = kid_of.get(n["key"]) or []
             g = group_of(n, bool(kids))
-            my_kids = [c for c in kids if c["assigneeId"] == me]
+            my_kids = [c for c in kids if is_mine(c)]
             if my_kids:
                 for c in my_kids:
                     add_atom(g, c)      # 하위가 있으면 하위가 실행 단위 — Task 자체는 원자가 아니다
@@ -219,6 +247,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200):
 
     atoms = [a for g in out for a in g["atoms"]]
     return {"user": {"id": me, "name": (client.current_user() or {}).get("name") or me},
+            "scope": scope,
             "today": today.isoformat(), "groups": out, "epics": epics,
             "counts": _counts(atoms)}
 

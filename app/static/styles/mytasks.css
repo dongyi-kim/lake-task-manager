@@ -167,3 +167,11 @@
 .mt-row.solo .mt-epic, .mt-row.solo .mt-st, .mt-row.solo .mt-due { margin-left: 0; }
 .mt-row.solo .mt-title { flex: 1 1 auto; }
 .mt-row.solo .mt-epic { margin-left: auto; }
+
+/* 역할 배지 — '담당/등록' 스코프를 섞어 볼 때만 뜬다(담당만 볼 땐 전부 같아서 노이즈다) */
+.mt-role { flex: none; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px;
+  white-space: nowrap; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); }
+.mt-role.reporter { color: var(--ty-story); border-color: color-mix(in srgb, var(--ty-story) 35%, transparent);
+  background: color-mix(in srgb, var(--ty-story) 12%, transparent); }
+.mt-role.both { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent); }

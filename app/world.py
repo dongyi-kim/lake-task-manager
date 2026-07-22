@@ -726,7 +726,11 @@ class World:
         self._fx("DL-9030", "Task", "[내Task] 마감 없는 내 Task",
                  assignee=self.ME, priority="Medium", due=None, epicKey=self.MY_EPIC,
                  statusCategory="todo", statusName="Open")
-        # 6) 완료된 내 Task — 기본 목록에서 빠져야 한다
+        # 6) 내가 등록(reporter)했지만 담당은 동료 — '내가 등록' 스코프에서만 보여야 한다
+        self._fx("DL-9032", "Task", "[내Task] 내가 등록·담당은 동료 — reporter 스코프 검증",
+                 assignee=self.MATE, reporter=self.ME, epicKey=self.MY_EPIC,
+                 priority="High", due=due(5), statusCategory="todo", statusName="Open")
+        # 7) 완료된 내 Task — 기본 목록에서 빠져야 한다
         self._fx("DL-9031", "Task", "[내Task] 완료된 내 Task — 기본 목록에서 제외",
                  assignee=self.ME, priority="Medium", due=due(-3), epicKey=self.MY_EPIC,
                  statusCategory="done", statusName="Resolved",
