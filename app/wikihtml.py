@@ -274,7 +274,8 @@ def wiki_to_html(wiki: str, mr=None) -> str:
                 i += 1
             i += 1
             cls = f' class="language-{escape(lang, quote=True)}"' if lang else ""
-            html.append(f"<pre><code{cls}>" + escape("\n".join(body)) + "</code></pre>")
+            html.append(f'<pre class="jecodeblock"><code{cls}>'
+                        + escape("\n".join(body)) + "</code></pre>")
             continue
         if st == "{quote}":
             body, i = [], i + 1

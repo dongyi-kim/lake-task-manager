@@ -6,6 +6,7 @@
 // · 이미지 붙여넣기/드롭 = 제출 시 업로드: 로컬 objectURL 미리보기 → 제출 때 첨부 업로드·롤백
 // 부모는 submitFn(finalHTML) 만 넘긴다(작성/수정은 부모가 선택). 출력은 HTML(서버가 wiki 로 변환).
 import { loadTiptap } from "../../lib/tiptap.js";
+import { ensureHljsTheme } from "../../lib/hljs.js";
 import { api } from "../../lib/api.js";
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
@@ -103,7 +104,7 @@ export default {
     submitFn: { type: Function, required: true },       // async (html) => any (실패 시 throw)
   },
   emits: ["submitted", "cancel"],
-  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0 }; },
+  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [] }; },
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
@@ -111,6 +112,8 @@ export default {
     try { T = await loadTiptap(); }
     catch (e) { this.loadErr = "에디터를 불러오지 못했습니다(네트워크/CDN 차단). 잠시 후 다시 시도."; return; }
     if (this._dead) return;
+    ensureHljsTheme(document.documentElement.getAttribute("data-theme") === "dark");   // 구문강조 색 CSS
+    this.languages = T.languages || [];
     const self = this;
     // 붙여넣기/드롭 이미지 → objectURL 삽입 + 추적(제출 시 업로드)
     const handleFiles = (files, view) => {
@@ -129,7 +132,9 @@ export default {
     this._ed = new T.Editor({
       element: this.$refs.ed,
       extensions: [
-        T.StarterKit,
+        T.StarterKit.configure({ codeBlock: false }),   // 아래 CodeBlockLowlight 로 교체(구문강조)
+        // 코드블럭 — 원래 Jira 와 같은 태그(<pre class="jecodeblock"><code class="language-X">) + lowlight 강조
+        T.CodeBlockLowlight.configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
         singleLineHeadingExt(T),
         T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
@@ -192,6 +197,12 @@ export default {
       this.cmd((c) => c.extendMarkRange("link").setLink({ href: url }).run());
     },
     tbImage() { this.$refs.file && this.$refs.file.click(); },
+    inCodeBlock() { this.tick; return !!(this._ed && this._ed.isActive("codeBlock")); },
+    codeLang() { this.tick; return (this._ed && this._ed.getAttributes("codeBlock").language) || ""; },
+    setCodeLang(e) {
+      const lang = e.target.value;
+      if (this._ed) this._ed.chain().focus().updateAttributes("codeBlock", { language: lang || null }).run();
+    },
     inTable() { this.tick; return !!(this._ed && this._ed.isActive("table")); },
     tColBefore() { this.cmd((c) => c.addColumnBefore().run()); },
     tColAfter() { this.cmd((c) => c.addColumnAfter().run()); },
@@ -266,6 +277,13 @@ export default {
         <button type="button" class="tb-b" @click="tbTable" title="표 삽입">▦</button>
         <button type="button" class="tb-b" @click="tbImage" title="이미지">🖼</button>
         <input ref="file" type="file" accept="image/*" multiple style="display:none" @change="onFile">
+      </div>
+      <div class="cmt-tb cmt-tb-tbl" v-show="ready && inCodeBlock()">
+        <span class="tb-lbl">코드 언어</span>
+        <select class="cmt-langsel" :value="codeLang()" @change="setCodeLang">
+          <option value="">(자동 감지)</option>
+          <option v-for="l in languages" :key="l" :value="l">{{ l }}</option>
+        </select>
       </div>
       <div class="cmt-tb cmt-tb-tbl" v-show="ready && inTable()">
         <span class="tb-lbl">표</span>

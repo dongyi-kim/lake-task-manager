@@ -41,7 +41,7 @@ def test_code_block():
     h = '<pre><code class="language-python">print(1)</code></pre>'
     assert html_to_wiki(h) == "{code:python}\nprint(1)\n{code}"
     assert wiki_to_html("{code:python}\nprint(1)\n{code}") == \
-        '<pre><code class="language-python">print(1)</code></pre>'
+        '<pre class="jecodeblock"><code class="language-python">print(1)</code></pre>'
 
 
 def test_lists_nested():

@@ -70,7 +70,7 @@ def test_mock_bug_description_has_rich_elements():
     html = v["descriptionHtml"]
     assert v["descriptionFormat"] == "html"
     assert "<table>" in html and "<th>" in html           # 표
-    assert '<pre class="code">' in html and "<code" in html  # 코드블록
+    assert '<pre class="jecodeblock">' in html and "<code" in html  # 코드블록
     assert "callout callout-warning" in html              # 콜아웃
     assert '<img src="/ticket-sample.svg"' in html        # 이미지(오프라인)
     assert "<ol>" in html                                  # 번호 목록(재현 절차)
@@ -83,7 +83,7 @@ def test_mock_story_description_has_quote_and_code():
     v = _client().ticket_view(_key_of_type("Story"))
     html = v["descriptionHtml"]
     assert "<blockquote>" in html                          # 인용
-    assert '<pre class="code">' in html                    # 코드
+    assert '<pre class="jecodeblock">' in html               # 코드
     assert '<img src="/ticket-sample.svg"' in html
     assert "<script" not in html.lower()
 

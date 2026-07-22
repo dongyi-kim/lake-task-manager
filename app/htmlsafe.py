@@ -57,7 +57,7 @@ _CONF_RE = re.compile(r"(?:confluence|/wiki/|/display/|/spaces/|/pages/)", re.I)
 # class 는 모든 허용 태그에서 받되, 값은 아래 토큰(또는 lang-*)만 남긴다 — 임의 클래스 주입 차단.
 #   user-hover = 실 Jira DC 의 사용자 맨션 앵커 class(볼드+컬러 스타일 대상). conf-link = 아래에서 부여.
 _ALLOWED_CLASSES = {
-    "panel", "panel-title", "panel-body", "callout", "code", "user-hover", "conf-link",
+    "panel", "panel-title", "panel-body", "callout", "code", "jecodeblock", "user-hover", "conf-link",
     "callout-note", "callout-info", "callout-warning", "callout-tip",
     "callout-success", "callout-error",
 }
@@ -74,19 +74,14 @@ _VENDOR_CALLOUT_RE = re.compile(r"^jePanel[_-](\w+)$", re.I)
 def _expand_class(tok):
     """class 토큰 하나 → 표준 토큰 목록(정규화 대상이 아니면 자기 자신).
 
-    코드블록 통일: 실 Jira DC 는 `<pre class="jecodeblock"><code class="language-md">` 로,
-    dev mock(jira820)은 `<pre class="code"><code class="lang-md">` 로 렌더한다. 정규화 없이는
-    prod 코드블록이 class 를 잃어 스타일이 0 이 된다(.tkt-desc pre.code 미매치). 여기서
-    jecodeblock→code, language-*→lang-* 로 통일해 CSS·프론트는 code/lang-* 하나만 알면 된다."""
+    코드블록: **원래 Jira 와 동일한 태그** 를 유지한다 — `<pre class="jecodeblock"><code class="language-X">`.
+    (에디터·mock·prod 전부 이 형태로 통일. jecodeblock class 와 language-* class 를 살린다.
+     highlight.js 가 language-* 를 읽어 렌더 강조.)"""
     m = _VENDOR_CALLOUT_RE.match(tok)
     if m:
         t = m.group(1).lower()
         # 모르는 타입도 콜아웃 형태는 유지한다(무스타일 div 로 떨어지는 것보다 낫다)
         return ["callout", "callout-" + (t if t in _CALLOUT_TYPES else "note")]
-    if tok == "jecodeblock":
-        return ["code"]
-    if tok.startswith("language-"):
-        return ["lang-" + tok[len("language-"):]]
     return [tok]
 
 
@@ -184,9 +179,10 @@ class _Sanitizer(HTMLParser):
             k = (k or "").lower()
             if k.startswith("on") or k in ("style", "srcset", "formaction", "xlink:href"):
                 continue                 # 이벤트 핸들러·스타일·기타 위험 속성 제거
-            if k == "class":             # 허용 클래스 토큰(또는 lang-*)만 유지
+            if k == "class":             # 허용 클래스 토큰(또는 코드 언어 language-*/lang-*)만 유지
                 toks = [n for t in (v or "").split() for n in _expand_class(t)]
-                classes += [t for t in toks if t in _ALLOWED_CLASSES or t.startswith("lang-")]
+                classes += [t for t in toks
+                            if t in _ALLOWED_CLASSES or t.startswith(("lang-", "language-"))]
                 continue
             if k not in allowed:
                 continue

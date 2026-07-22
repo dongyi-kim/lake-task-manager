@@ -7,6 +7,7 @@ import { TYPE_BG, typeLabel } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
+import { highlightIn as hljsHighlight } from "../../lib/hljs.js";
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
 function confTitleFromUrl(u) {
@@ -246,7 +247,8 @@ export default {
         this.zoom = { type: "table", html: table.outerHTML };
       }
     },
-    augment() { this.augmentZoomables(); this.augmentLinks(); },
+    augment() { this.augmentZoomables(); this.augmentLinks(); this.highlightCode(); },
+    highlightCode() { try { hljsHighlight(this.$el); } catch (e) { /* noop */ } },
     // 설명/코멘트 내 링크를 뱃지로: Confluence(문서 제목=URL 슬러그), Jira 티켓(이름/상태/담당자).
     augmentLinks() {
       const root = this.$el;

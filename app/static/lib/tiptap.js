@@ -21,20 +21,28 @@ export function loadTiptap() {
     import(/* @vite-ignore */ E("extension-link")),
     import(/* @vite-ignore */ E("extension-placeholder")),
     import(/* @vite-ignore */ "https://esm.sh/@tiptap/pm@" + V + "/state"),
-  ]).then((m) => ({
-    Editor: m[0].Editor,
-    Extension: m[0].Extension,
-    StarterKit: m[1].default,
-    Mention: m[2].default,
-    Table: m[3].default,
-    TableRow: m[4].default,
-    TableCell: m[5].default,
-    TableHeader: m[6].default,
-    Image: m[7].default,
-    Link: m[8].default,
-    Placeholder: m[9].default,
-    Plugin: m[10].Plugin,
-    PluginKey: m[10].PluginKey,
-  })).catch((e) => { _p = null; throw e; });
+    import(/* @vite-ignore */ E("extension-code-block-lowlight")),
+    import(/* @vite-ignore */ "https://esm.sh/lowlight@3"),
+  ]).then((m) => {
+    const lowlight = m[12].createLowlight(m[12].common);   // 공통 언어(약 37종) 등록
+    return {
+      Editor: m[0].Editor,
+      Extension: m[0].Extension,
+      StarterKit: m[1].default,
+      Mention: m[2].default,
+      Table: m[3].default,
+      TableRow: m[4].default,
+      TableCell: m[5].default,
+      TableHeader: m[6].default,
+      Image: m[7].default,
+      Link: m[8].default,
+      Placeholder: m[9].default,
+      Plugin: m[10].Plugin,
+      PluginKey: m[10].PluginKey,
+      CodeBlockLowlight: m[11].default,
+      lowlight,
+      languages: lowlight.listLanguages(),
+    };
+  }).catch((e) => { _p = null; throw e; });
   return _p;
 }
