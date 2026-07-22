@@ -5,9 +5,9 @@
 사내 데이터는 외부로 반출할 수 없다. 그래서 앱 안에 **기본 꺼진** 진단 기능을 두고,
 설정으로 켠 뒤 **필드 구조만**(값은 마스킹) 화면에 찍어 확인한다.
 
-**관리 방식** — 모든 dev 기능은 여기 DEV_TOOLS 에 등록하고, config 의 `dev_tools`
-(또는 env `LAKE_DEV_TOOLS`, 콤마구분)로 켠다. 안 켜면 라우트 자체가 안 붙는다.
-운영 배포 시엔 목록을 비우면 전부 사라진다.
+**관리 방식** — 모든 dev 기능은 여기 DEV_TOOLS 에 등록한다. **지금은 전부 열려 있다**
+(config 스위치 없음). 노출 제어는 나중에 유저 역할 구분이 생기면 `enabled()` 한 곳에서
+role 로 가른다 — 라우트 등록·게이팅이 전부 그 함수를 거치므로 여기만 바꾸면 된다.
 """
 
 # name -> 한 줄 설명. 새 dev 기능은 여기 등록한다.
@@ -19,12 +19,16 @@ DEV_TOOLS = {
 }
 
 
-def enabled(settings, name):
-    return name in (getattr(settings, "dev_tools", None) or set())
+# 지금은 **전부 열어둔다**(config 무관). 노출 제어는 '나중에' 유저 역할 구분이 생기면
+# 여기 한 곳에서 role 을 보고 가른다. 그때까지는 모든 dev 기능이 항상 켜져 있다.
+# (라우트 등록·엔드포인트 게이팅이 전부 이 함수 하나를 거치므로, 역할 훅은 여기만 바꾸면 된다.)
+def enabled(settings, name, role=None):
+    # TODO(역할): 유저 역할이 도입되면 role 로 가른다. 예) return role in _VISIBLE_TO.get(name, {"dev"})
+    return name in DEV_TOOLS
 
 
 def any_enabled(settings):
-    return bool(getattr(settings, "dev_tools", None))
+    return True
 
 
 # ── 안전한 스키마 스켈레톤 ──────────────────────────────────────────

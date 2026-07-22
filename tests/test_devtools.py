@@ -30,42 +30,21 @@ def test_list_shows_count_and_merged_keys():
     assert "a" in flat and "b" in flat          # 항목마다 다른 키도 병합돼 보임
 
 
-def test_enabled_flag():
-    class S:
-        dev_tools = {"bitbucket_probe"}
-    assert dt.enabled(S, "bitbucket_probe")
-    assert not dt.enabled(S, "other")
-    class S2:
-        dev_tools = set()
-    assert not dt.any_enabled(S2)
+def test_enabled_open_for_registered():
+    """지금은 config 무관 — 등록된(DEV_TOOLS) 기능은 항상 열려 있고, 미등록은 닫힘.
+    노출 제어는 나중에 역할 훅(enabled 의 role 인자)으로 붙인다."""
+    assert dt.enabled(None, "bitbucket_probe")     # 등록됨 → 열림
+    assert dt.enabled(None, "sso_status")
+    assert not dt.enabled(None, "존재하지않는기능")  # 미등록 → 닫힘
+    assert dt.any_enabled(None)
 
 
-def test_dev_routes_gated_by_flag(monkeypatch):
-    """dev_tools 가 비면 /api/dev/* 라우트 자체가 없고, 켜면 붙는다.
-
-    config 값에 의존하지 않게 env(LAKE_DEV_TOOLS)로 강제한다.
-    """
-    import importlib
+def test_dev_routes_open_now():
+    """지금은 dev 라우트가 항상 열려 있다(config 무관).
+    역할 구분이 생기면 devtools.enabled() 한 곳에서 가리면 된다."""
     from fastapi.testclient import TestClient
-
-    # 꺼짐 — env 로 빈 목록 강제
-    monkeypatch.setenv("LAKE_DEV_TOOLS", "__none__")
-    import app.settings
-    importlib.reload(app.settings)
     import app.main
-    importlib.reload(app.main)
     c = TestClient(app.main.app)
-    assert c.get("/api/dev/tools").status_code == 404
+    assert c.get("/api/dev/tools").status_code == 200
+    assert c.get("/api/dev/sso").status_code == 200
     assert c.get("/api/health").status_code == 200
-
-    # 켜짐 — env 로 활성화하면 라우트가 생긴다
-    monkeypatch.setenv("LAKE_DEV_TOOLS", "bitbucket_probe")
-    importlib.reload(app.settings)
-    importlib.reload(app.main)
-    c2 = TestClient(app.main.app)
-    assert c2.get("/api/dev/tools").status_code == 200
-
-    # 원상복구 — 다른 테스트에 영향 없게 기본으로 리로드
-    monkeypatch.delenv("LAKE_DEV_TOOLS", raising=False)
-    importlib.reload(app.settings)
-    importlib.reload(app.main)

@@ -45,7 +45,7 @@ def _on_session_expired(request: Request, exc: SessionExpired):
         content={"needLogin": True, "env": _settings.jira_env, "detail": str(exc)})
 
 
-# ── 개발자용 진단(dev tools) — 기본 꺼짐. settings.dev_tools 로 켠 것만 라우트가 붙는다 ──
+# ── 개발자용 진단(dev tools) — 지금은 전부 열림. 노출 제어는 나중에 역할 훅(devtools.enabled)으로 ──
 from app import devtools as _devtools   # noqa: E402
 
 

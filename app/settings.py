@@ -109,12 +109,10 @@ class Settings:
         # Bitbucket 은 아직 mock — base 가 설정되면 SSO 로그인 순회 대상에 포함된다.
         _bb = cfg.get("bitbucket") or {}
         self.bitbucket_base = str(pick("BITBUCKET_BASE", _bb.get("base"), "")).rstrip("/")
-        # 개발자용 진단 기능 스위치 — 기본 꺼짐. config 의 dev_tools 리스트 또는
-        # env LAKE_DEV_TOOLS(콤마구분)로 켠다. 운영 배포 시엔 비워서 전부 끈다.
-        _dt_env = os.getenv("LAKE_DEV_TOOLS", "")
-        _dt = ([x.strip() for x in _dt_env.split(",")] if _dt_env
-               else (cfg.get("dev_tools") or []))
-        self.dev_tools = {str(x).strip() for x in _dt if str(x).strip()}
+        # 개발자용 진단 기능 — 지금은 **전부 열림**(config 무관). devtools.DEV_TOOLS 가 곧 목록.
+        # 노출 제어는 나중에 유저 역할이 생기면 devtools.enabled() 에서 가른다.
+        from app import devtools as _devtools
+        self.dev_tools = set(_devtools.DEV_TOOLS)
         # SSO 로그인 순회 대상 — base 가 있는 서비스만. run.py 가 앱 창에서 하나씩 연다.
         #   (이름, base URL, 인증 판정용 REST 경로 후보들)
         self.auth_targets = [("Jira", self.jira_base, ["/rest/api/2/myself"])]

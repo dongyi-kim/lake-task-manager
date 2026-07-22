@@ -128,13 +128,33 @@ class SsoSessionProvider(AuthProvider):
             priority = upstream_priority()      # 백그라운드 갱신은 사용자 요청 뒤로
         return self._submit(lambda: self._fetch(path, params, False), priority)
 
+    def _xsrf_headers(self, url):
+        """이 URL(도메인)에 맞는 XSRF 쓰기 헤더.
+
+        Atlassian XSRF 는 두 가지 우회를 받는다:
+          (1) X-Atlassian-Token: no-check           — 표준. Jira/Confluence 는 이걸로 충분.
+          (2) atl.xsrf.token 쿠키값을 헤더로 echo    — double-submit. **Bitbucket 검색은 (1)이
+              안 통해** 이게 필요하다(실측: no-check 만으론 'XSRF check failed').
+        쿠키가 있으면 실제 토큰을 보내고, 없으면 no-check 로 폴백. XHR 표식도 함께 붙인다.
+        """
+        headers = dict(WRITE_HEADERS)
+        headers["X-Requested-With"] = "XMLHttpRequest"    # 일부 필터가 same-origin AJAX 로 인정
+        try:
+            for c in self._context.cookies(url):
+                if c.get("name") in ("atl.xsrf.token", "atlassian.xsrf.token") and c.get("value"):
+                    headers["X-Atlassian-Token"] = c["value"]   # no-check → 실제 토큰(double-submit)
+                    break
+        except Exception:
+            pass
+        return headers
+
     def _write(self, method, path, json_body, params, want_json=True):
-        """쓰기(POST/PUT/DELETE) 공통 — XSRF 헤더(WRITE_HEADERS) + JSON 명시 직렬화 + 진단 예외.
+        """쓰기(POST/PUT/DELETE) 공통 — XSRF 헤더 + JSON 명시 직렬화 + 진단 예외.
         편집 기능이 전부 이 경로를 탄다. 제품(Jira/Confluence/Bitbucket) 구분 없이 동일."""
         import json as _json
         url = path if path.startswith(("http://", "https://")) else self.base + path
         fn = getattr(self._context.request, method)     # post/put/delete
-        kw = {"params": params or {}, "headers": WRITE_HEADERS}
+        kw = {"params": params or {}, "headers": self._xsrf_headers(url)}
         if json_body is not None:
             kw["data"] = _json.dumps(json_body)          # data=dict 인코딩 어긋남 방지 → 명시 직렬화
         resp = fn(url, **kw)
