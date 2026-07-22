@@ -44,6 +44,7 @@ export const api = {
   workloadBucket: (u, b) => get("/api/workload/" + encodeURIComponent(u) + "/" + b),
   workloadDetail: (user) => get("/api/workload/" + encodeURIComponent(user)),
   activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
+  myTasks: (done) => req("/api/mytasks" + (done ? "?done=1" : "")),   // 내 Task(세 뷰 공용 모델)
   search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
     + "&scope=" + encodeURIComponent(scope || "scoped")
     + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence

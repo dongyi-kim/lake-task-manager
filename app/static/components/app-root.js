@@ -1,5 +1,6 @@
 // app-root.js — SPA 루트: 해시 라우팅(#/wbs #/vit #/workload) + nav + 산식 callout + 로그인 오버레이.
 // <keep-alive> 로 뷰 상태(데이터·detail/activity 캐시·펼침) 보존 → 탭 전환 재fetch 없음. updated: 2026-07-09
+import MyTasksView from "./views/MyTasksView.js";
 import WorkloadView from "./views/WorkloadView.js";
 import VitView from "./views/VitView.js";
 import WbsView from "./views/WbsView.js";
@@ -11,7 +12,8 @@ import SearchOverlay from "./ui/SearchOverlay.js";
 import SettingsMenu from "./ui/SettingsMenu.js";
 import { api } from "../lib/api.js";
 
-const ROUTES = { wbs: WbsView, vit: VitView, workload: WorkloadView, devtools: DevToolsView };
+const ROUTES = { wbs: WbsView, vit: VitView, workload: WorkloadView,
+                 mytasks: MyTasksView, devtools: DevToolsView };
 function currentRoute() { return location.hash.replace("#/", "") || "wbs"; }
 // /browse/DL-1234 — 그 티켓만의 단독 페이지("새 창에서 열기" 대상).
 // Jira 와 같은 URL 형태라 주소만 보고도 어느 티켓인지 안다.
@@ -75,6 +77,7 @@ export default {
           <a :class="{ on: route === 'wbs' }" href="#/wbs">WBS Dashboard</a>
           <a :class="{ on: route === 'vit' }" href="#/vit">현안 (PMO_VIT)</a>
           <a :class="{ on: route === 'workload' }" href="#/workload">인력 워크로드</a>
+          <a :class="{ on: route === 'mytasks' }" href="#/mytasks">내 Task</a>
         </nav>
         <div class="top-actions">
           <button class="search-trig" @click="searchOpen = true" title="통합 검색 ( / )">

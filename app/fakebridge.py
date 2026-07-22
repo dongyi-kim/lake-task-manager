@@ -16,7 +16,9 @@ from jira820.config import Config
 from jira820.store import Store
 
 from .settings import get_settings
-from .world import get_world
+from .world import World as _World, get_world
+
+W_ME = _World.ME          # dev 세션 사용자(= world 픽스처의 "나")
 
 # 사내 워크플로 상태/타입 스킴 — app/world.py 직렬화기와 동일해야 statusCategory·subtask 판정이 일치
 _STATUSES = [["Open", "todo", "1"], ["In Progress", "inprogress", "3"],
@@ -38,6 +40,9 @@ def build_store():
         statuses=_STATUSES, issue_types=_ISSUE_TYPES,
         modules=list(w.modules), components_extra=["사용자 VoC"],
         latency_ms=int(os.getenv("FAKE_LATENCY_MS", "0")),
+        # 세션 사용자(/myself) — dev 에서 '내 Task' 가 빈 화면이 되지 않게 world 사람으로.
+        # (실 Jira 에선 SSO 로그인 사용자다.)
+        current_user=W_ME,
     )
     store = Store(cfg, seed=True)       # jira820 자체 샘플(JIRA820 프로젝트 + confluence) 시드
     # 이 프로젝트 world(DL) 를 additive 주입 (키/사용자 disjoint → 교체 아님, 공존).

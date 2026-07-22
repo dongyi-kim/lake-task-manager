@@ -374,6 +374,8 @@ class JiraClient:
     def _issue_fields(self):
         return ("summary,description,issuetype,status,assignee,reporter,components,created,duedate,"
                 "resolutiondate,updated,labels,parent,subtasks,timespent,issuelinks,attachment,"
+                "priority,"                     # '내 Task' 정렬 축(우선순위)
+
                 + self.s.sp_field_id + "," + self.s.epic_link_field_id)
 
     def get_issue(self, key):
@@ -424,6 +426,40 @@ class JiraClient:
             self._bg_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="swr")
             self._bg_lock = threading.Lock()
             self._bg_inflight = set()
+
+    # ── '내 Task' 용 얇은 조회 헬퍼 (app/mytasks.py 가 쓴다) ──
+    def search_issues(self, jql, max_results=200):
+        """JQL → 원본 이슈 리스트(캐시 write-through). 목록 자체는 캐시하지 않는다 —
+        담당/마감이 자주 바뀌는 화면이라 낡은 목록이 더 해롭다."""
+        return self._search(jql, max_results=max_results)
+
+    def issues_by_keys(self, keys):
+        """키 목록 → 원본 이슈들. 캐시에 있으면 그대로 쓰고 없는 것만 한 번에 받는다."""
+        keys = [k for k in dict.fromkeys(keys) if k]
+        if not keys:
+            return []
+        self.prefetch_issues(keys)
+        out = []
+        for k in keys:
+            try:
+                raw = self.get_issue(k)
+            except Exception:
+                raw = None
+            if isinstance(raw, dict) and raw.get("key"):
+                out.append(raw)
+        return out
+
+    def s_today(self):
+        """오늘 — mock/local 은 world 기준일이 '오늘'이라 실제 날짜와 다르다.
+        마감 D-day 계산이 어긋나지 않게 서버가 기준일을 정해 준다."""
+        from datetime import date
+        if self.env == "prod":
+            return date.today()
+        try:
+            from .world import get_world
+            return get_world().today
+        except Exception:
+            return date.today()
 
     def prefetch_issues(self, keys):
         """여러 티켓 원본을 **검색 한 번**으로 받아 티켓 단위 캐시에 채운다.

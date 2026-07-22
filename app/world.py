@@ -104,6 +104,8 @@ class World:
         self._build_attachments()     # 첨부파일 — '첨부파일' 패널 용
         # ★ 픽스처는 맨 마지막 — 위 자동 생성기들이 픽스처 내용을 덮어쓰지 않게
         self._build_ui_fixtures()     # UI 회귀 검증용 Epic + 하위 티켓
+        self._build_mytask_fixtures() # '내 Task' 화면 픽스처(담당 조합·Epic 없음·마감 초과)
+        self._priorities()            # 우선순위 — 픽스처가 지정한 것은 그대로 두고 나머지만 채운다
         self._index()
         self._build_activity()
         self._build_confluence()
@@ -663,6 +665,82 @@ class World:
                      resolved=(self.today - timedelta(days=2)) if cat == "done" else None,
                      tresolved="15:00" if cat == "done" else None)
             parent["subtasks"].append(k)
+
+    # ── '내 Task' 화면 픽스처 (DL-9020~) ────────────────────────────────────
+    # 이 화면은 "내가 담당한 것"이 Task 일 수도 Sub-Task 일 수도 있고, 하위에 남의 것이 섞이고,
+    # Epic 이 없을 수도 있고, 마감이 지났을 수도 있다 — 그 조합이 전부 있어야 검증이 된다.
+    # 세션 사용자(myself)는 FIX_USERS[0] 로 맞춰 둔다(fakebridge 의 current_user).
+    ME = FIX_USERS[0]
+    MATE = FIX_USERS[1]
+
+    MY_EPIC = "DL-9019"
+
+    def _build_mytask_fixtures(self):
+        d = self.today
+        # 전용 Epic — UI 회귀 Epic(DL-9000)에 섞으면 그쪽 검증이 흐려진다.
+        self._fx(self.MY_EPIC, "Epic", "[내Task] 내 Task 화면 픽스처", epicKey=None)
+
+        def due(days):
+            return d + timedelta(days=days)
+
+        # 1) 내 Task + 하위에 내 것과 남의 것이 섞임 (동료 서브 집계 칩 검증)
+        p1 = self._fx("DL-9020", "Task", "[내Task] 내 Task — 하위에 동료 Sub 섞임",
+                      assignee=self.ME, priority="High", due=due(3), epicKey=self.MY_EPIC,
+                      description="담당=나. 하위 4개 중 2개가 동료 것.")
+        for k, t, who, cat, st, pri, dd in [
+            ("DL-9021", "[내Task] 내 Sub — 완료", self.ME, "done", "Resolved", "Medium", -2),
+            ("DL-9022", "[내Task] 내 Sub — 진행중·임박", self.ME, "inprogress", "In Progress", "High", 2),
+            ("DL-9023", "[내Task] 동료 Sub — 진행중", self.MATE, "inprogress", "In Progress", "Medium", 4),
+            ("DL-9024", "[내Task] 동료 Sub — 미착수", self.MATE, "todo", "Open", "Low", 8),
+        ]:
+            self._fx(k, SUBTASK_TYPE, t, parentKey="DL-9020", epicKey=None, assignee=who,
+                     statusCategory=cat, statusName=st, priority=pri, due=due(dd),
+                     resolved=(d - timedelta(days=2)) if cat == "done" else None,
+                     tresolved="15:00" if cat == "done" else None)
+            p1["subtasks"].append(k)
+
+        # 2) 남의 Task 인데 내가 Sub 담당 — 상위 진척 시각화 검증
+        p2 = self._fx("DL-9025", "Task", "[내Task] 남의 Task — 내가 Sub 만 담당",
+                      assignee=self.MATE, priority="Medium", due=due(10), epicKey=self.MY_EPIC,
+                      description="담당=동료. 이 안에서 내 몫만 뽑혀 보여야 한다.")
+        for k, t, who, cat, st, pri, dd in [
+            ("DL-9026", "[내Task] 내 Sub — 리뷰 대기·내일 마감", self.ME, "inprogress", "In Progress", "Medium", 1),
+            ("DL-9027", "[내Task] 동료 Sub — 완료", self.MATE, "done", "Resolved", "Medium", -5),
+        ]:
+            self._fx(k, SUBTASK_TYPE, t, parentKey="DL-9025", epicKey=None, assignee=who,
+                     statusCategory=cat, statusName=st, priority=pri, due=due(dd),
+                     resolved=(d - timedelta(days=5)) if cat == "done" else None,
+                     tresolved="15:00" if cat == "done" else None)
+            p2["subtasks"].append(k)
+
+        # 3) Epic 없는 내 Task ('Epic 없음'을 일급 상태로 다루는지) + 마감 초과
+        self._fx("DL-9028", "Task", "[내Task] Epic 없는 내 Task — 마감 초과",
+                 assignee=self.ME, epicKey=None, priority="High", due=due(-1),
+                 statusCategory="inprogress", statusName="In Progress",
+                 description="Epic 미지정 + D+1. 목록 최상단에 와야 한다.")
+        # 4) Epic 없는 내 Task — 오늘 마감, 하위 없음
+        self._fx("DL-9029", "Task", "[내Task] Epic 없는 내 Task — 오늘 마감",
+                 assignee=self.ME, epicKey=None, priority="Low", due=due(0),
+                 statusCategory="todo", statusName="Open")
+        # 5) 마감이 아예 없는 내 Task (정렬에서 맨 뒤로 밀리는지)
+        self._fx("DL-9030", "Task", "[내Task] 마감 없는 내 Task",
+                 assignee=self.ME, priority="Medium", due=None, epicKey=self.MY_EPIC,
+                 statusCategory="todo", statusName="Open")
+        # 6) 완료된 내 Task — 기본 목록에서 빠져야 한다
+        self._fx("DL-9031", "Task", "[내Task] 완료된 내 Task — 기본 목록에서 제외",
+                 assignee=self.ME, priority="Medium", due=due(-3), epicKey=self.MY_EPIC,
+                 statusCategory="done", statusName="Resolved",
+                 resolved=d - timedelta(days=1), tresolved="15:00")
+
+    # 우선순위 — 실 Jira 는 모든 이슈가 priority 를 갖는다. 없으면 '내 Task' 정렬의 한 축이
+    # 통째로 죽어 화면 검증이 안 된다. ★ rng 미사용(키 해시에서 결정적으로) → world 시퀀스 불변.
+    _PRIORITIES = ["Highest", "High", "Medium", "Medium", "Low", "Lowest"]
+
+    def _priorities(self):
+        for k, it in self.issues.items():
+            if it.get("priority"):
+                continue                      # 픽스처가 지정한 값은 건드리지 않는다
+            it["priority"] = self._PRIORITIES[sum(map(ord, k)) % len(self._PRIORITIES)]
 
     def _build_links(self):
         """이슈 링크(relates to / blocks / duplicates) — 같은 모듈 안에서 몇 쌍 연결.
