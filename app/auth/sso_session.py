@@ -129,9 +129,16 @@ class SsoSessionProvider(AuthProvider):
 
     def _post(self, path, json_body, params):
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        resp = self._context.request.post(url, data=json_body or {}, params=params or {})
-        if resp.status in (401, 403) or resp.status >= 500:
-            raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
+        # Atlassian(Jira/Confluence/Bitbucket)은 POST 에 XSRF 토큰이 없으면 403 이다.
+        # GET 은 면제라 세션은 멀쩡한데 POST 만 막힌다 → no-check 헤더로 우회(공식 방식).
+        resp = self._context.request.post(
+            url, data=json_body or {}, params=params or {},
+            headers={"X-Atlassian-Token": "no-check", "Content-Type": "application/json"})
+        if resp.status == 401:
+            raise SessionExpired(f"HTTP 401 on {path} — 세션 만료. login 재실행.")
+        if resp.status >= 400:
+            # 403 은 XSRF·권한, 그 외는 서버 문제 — 세션 만료로 단정하지 않는다
+            raise SessionExpired(f"HTTP {resp.status} on {path}")
         return resp.json()
 
     def post_json(self, path, json_body=None, params=None):

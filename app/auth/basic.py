@@ -29,7 +29,8 @@ class BasicAuthProvider(AuthProvider):
 
     def post_json(self, path, json_body=None, params=None):
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        r = self.session.post(url, json=json_body or {}, params=params, timeout=30)
+        r = self.session.post(url, json=json_body or {}, params=params, timeout=30,
+                              headers={"X-Atlassian-Token": "no-check"})
         if r.status_code in (401, 403) or r.status_code >= 500:
             raise SessionExpired(f"HTTP {r.status_code} on {path}")
         r.raise_for_status()
