@@ -72,13 +72,22 @@ _VENDOR_CALLOUT_RE = re.compile(r"^jePanel[_-](\w+)$", re.I)
 
 
 def _expand_class(tok):
-    """class 토큰 하나 → 표준 토큰 목록(정규화 대상이 아니면 자기 자신)."""
+    """class 토큰 하나 → 표준 토큰 목록(정규화 대상이 아니면 자기 자신).
+
+    코드블록 통일: 실 Jira DC 는 `<pre class="jecodeblock"><code class="language-md">` 로,
+    dev mock(jira820)은 `<pre class="code"><code class="lang-md">` 로 렌더한다. 정규화 없이는
+    prod 코드블록이 class 를 잃어 스타일이 0 이 된다(.tkt-desc pre.code 미매치). 여기서
+    jecodeblock→code, language-*→lang-* 로 통일해 CSS·프론트는 code/lang-* 하나만 알면 된다."""
     m = _VENDOR_CALLOUT_RE.match(tok)
-    if not m:
-        return [tok]
-    t = m.group(1).lower()
-    # 모르는 타입도 콜아웃 형태는 유지한다(무스타일 div 로 떨어지는 것보다 낫다)
-    return ["callout", "callout-" + (t if t in _CALLOUT_TYPES else "note")]
+    if m:
+        t = m.group(1).lower()
+        # 모르는 타입도 콜아웃 형태는 유지한다(무스타일 div 로 떨어지는 것보다 낫다)
+        return ["callout", "callout-" + (t if t in _CALLOUT_TYPES else "note")]
+    if tok == "jecodeblock":
+        return ["code"]
+    if tok.startswith("language-"):
+        return ["lang-" + tok[len("language-"):]]
+    return [tok]
 
 
 def _safe_url(value, allow_data_image=False):
