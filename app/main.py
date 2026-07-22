@@ -55,7 +55,15 @@ def _probe_result(label, fn, kind=None, full=False):
     try:
         raw = fn()
     except Exception as e:
-        return {"label": label, "error": str(e)}
+        err = {"label": label, "error": str(e)}
+        st = getattr(e, "status", None)
+        if st is not None:
+            err["status"] = st
+            err["body_preview"] = getattr(e, "body", "")
+            if st == 403:
+                err["hint"] = ("403 — XSRF 또는 권한. 헤더는 붙였으니, 앱을 최신으로 재시작했는지 확인. "
+                               "그래도 403 이면 이 경로에 code search 권한이 없거나 엔드포인트가 다를 수 있음.")
+        return err
     out = {"label": label}
     if kind:
         out["digest"] = _devtools.bitbucket_digest(raw, kind)

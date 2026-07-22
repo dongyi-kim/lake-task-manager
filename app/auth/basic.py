@@ -30,10 +30,12 @@ class BasicAuthProvider(AuthProvider):
     def post_json(self, path, json_body=None, params=None):
         url = path if path.startswith(("http://", "https://")) else self.base + path
         r = self.session.post(url, json=json_body or {}, params=params, timeout=30,
-                              headers={"X-Atlassian-Token": "no-check"})
-        if r.status_code in (401, 403) or r.status_code >= 500:
-            raise SessionExpired(f"HTTP {r.status_code} on {path}")
-        r.raise_for_status()
+                              headers={"X-Atlassian-Token": "no-check", "Accept": "application/json"})
+        if r.status_code == 401:
+            raise SessionExpired(f"HTTP 401 on {path}")
+        if r.status_code >= 400:
+            from .base import UpstreamError
+            raise UpstreamError(r.status_code, path, r.text)
         return r.json()
 
     def get_text(self, path, params=None):
