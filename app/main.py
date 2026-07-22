@@ -120,10 +120,20 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
             lambda: _client.provider.post_json(base + "/rest/search/latest/search", body),
             kind="code", full=full)
 
+    # 설정 메뉴가 노출할 dev API 목록(경로 + 설명). 실제 라우트와 손으로 맞춘다.
+    _DEV_ENDPOINTS = [
+        {"path": "/api/dev/sso", "label": "SSO 인증 상태", "method": "GET"},
+        {"path": "/api/dev/bitbucket/diag", "label": "Bitbucket XSRF 쿠키 진단", "method": "GET"},
+        {"path": "/api/dev/bitbucket/repos?limit=3", "label": "Bitbucket 저장소 검색(구조)", "method": "GET"},
+        {"path": "/api/dev/bitbucket/code?q=test", "label": "Bitbucket 코드 검색(구조)", "method": "GET"},
+        {"path": "/api/dev/tools", "label": "dev tools 목록", "method": "GET"},
+    ]
+
     @app.get("/api/dev/tools")
     def _dev_tools_list():
         return {"enabled": sorted(_settings.dev_tools),
                 "available": _devtools.DEV_TOOLS,
+                "endpoints": _DEV_ENDPOINTS,
                 "bitbucket_base": _BB or "(미설정)"}
 
 
@@ -139,13 +149,13 @@ if _devtools.enabled(_settings, "sso_status"):
             for path in paths:
                 try:
                     body = _client.provider.get_json(base.rstrip("/") + path)
+                    # 인증 필요 엔드포인트가 200 이면 인증된 것 — 사용자 이름은 있으면 detail 로.
                     who = _extract_user(body)
-                    if who:
-                        ok, detail = True, f"{path} → {who}"
-                        break
-                    detail = f"{path}: 200 이나 사용자 없음"
+                    ok = True
+                    detail = f"{path} → {who}" if who else f"{path} → 200(인증됨)"
+                    break
                 except Exception as e:
-                    detail = f"{path}: {getattr(e, 'status', '')} {str(e)[:80]}"
+                    detail = f"{path}: {getattr(e, 'status', '')} {str(e)[:80]}".strip()
             rows.append({"service": name, "base": base, "authenticated": ok, "detail": detail})
         return {"targets": rows,
                 "note": "authenticated=false 인 서비스는 그 도메인 SSO 로그인이 안 된 것. "

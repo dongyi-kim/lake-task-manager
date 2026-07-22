@@ -7,6 +7,7 @@ import FormulaCallout from "./ui/FormulaCallout.js";
 import LoginOverlay from "./ui/LoginOverlay.js";
 import TicketDialog from "./ui/TicketDialog.js";
 import SearchOverlay from "./ui/SearchOverlay.js";
+import SettingsMenu from "./ui/SettingsMenu.js";
 import { api } from "../lib/api.js";
 
 const ROUTES = { wbs: WbsView, vit: VitView, workload: WorkloadView };
@@ -20,7 +21,7 @@ function ticketOf() {
 
 export default {
   name: "AppRoot",
-  components: { FormulaCallout, LoginOverlay, TicketDialog, SearchOverlay },
+  components: { FormulaCallout, LoginOverlay, TicketDialog, SearchOverlay, SettingsMenu },
   // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
@@ -79,9 +80,7 @@ export default {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
             <span>검색</span><kbd>/</kbd>
           </button>
-          <button class="theme-btn" @click="toggleTheme" :title="theme === 'dark' ? '라이트 모드로' : '다크 모드로'">
-            <span v-if="theme === 'dark'">☀ Light</span><span v-else>🌙 Dark</span>
-          </button>
+          <SettingsMenu :theme="theme" @toggle-theme="toggleTheme" />
         </div>
       </header>
       <div v-if="!ready" class="loading page">불러오는 중…</div>

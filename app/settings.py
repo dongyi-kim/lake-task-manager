@@ -121,9 +121,11 @@ class Settings:
                 ("Confluence", self.confluence_base,
                  ["/rest/api/user/current", "/rest/api/user/current.json"]))
         if self.bitbucket_base:
+            # inbox count 는 인증 필요 + JSON({count}) — 익명은 401. repos 처럼 관리자 권한 불필요.
+            # (users?limit=1 은 관리자 전용이라 일반 계정이 401, whoami 는 plain text 라 오판)
             self.auth_targets.append(
                 ("Bitbucket", self.bitbucket_base,
-                 ["/rest/api/1.0/users?limit=1", "/plugins/servlet/applinks/whoami"]))
+                 ["/rest/api/1.0/inbox/pull-requests/count", "/rest/api/1.0/repos?limit=1"]))
         self.cache_db_path = str(pick("CACHE_DB_PATH", cache.get("db_path"), str(BASE_DIR / "cache.sqlite3")))
         self.cache_ttl_seconds = int(pick("CACHE_TTL_SECONDS", cache.get("ttl_seconds"), 900))
         self.app_host = str(pick("APP_HOST", server.get("host"), "0.0.0.0"))
