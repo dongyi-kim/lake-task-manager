@@ -722,9 +722,11 @@ class World:
             for uid in ids:
                 rng = _rng("conf", uid)
                 pages = []
-                for _ in range(rng.randint(0, 4)):
+                for _ in range(rng.randint(1, 6)):        # 문서 수 확충(검색 결과가 풍부하도록)
                     _t = wc.conf_title(rng)
-                    pages.append({"title": _t, "space": wc.conf_space(rng),
+                    _sp = wc.conf_space(rng)
+                    pages.append({"title": _t, "space": _sp,
+                                  "ancestors": wc.conf_ancestors(rng, _sp),   # 상위 폴더 경로
                                   "action": wc.conf_action(rng), "body": wc.conf_body(rng, _t),
                                   "date": self.today - timedelta(days=rng.randint(0, 13)),
                                   "time": "%02d:%02d" % (rng.randint(8, 19), rng.choice([0, 15, 30, 45]))})

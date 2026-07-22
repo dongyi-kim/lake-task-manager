@@ -67,6 +67,14 @@ export default {
       document.body.appendChild(a); a.click(); a.remove();   // run.py 훅이 시스템 브라우저로
     },
     stCls(cat) { return "st-" + (cat || "todo"); },
+    // 문서 경로를 breadcrumb 로. 데이터는 [스페이스 … 직계부모] 순 → **역순**으로 뒤집어
+    // '직계부모 ‹ … ‹ 스페이스' 표기. 4단 초과면 양끝만 남기고 가운데를 '…' 로 접는다
+    // (양 끝 = 가장 가까운 폴더와 스페이스, 둘 다 맥락상 제일 중요).
+    confPath(path) {
+      const rev = (path || []).slice().reverse();
+      if (rev.length <= 4) return rev;
+      return [rev[0], rev[1], "…", rev[rev.length - 1]];
+    },
     fdt(s) { return ymdhm(s); },
     cnt(src) { return this.res && this.res[src] && this.res[src].items ? this.res[src].items.length : 0; },
   },
@@ -112,12 +120,20 @@ export default {
           <!-- Confluence -->
           <div class="sr-sec">
             <div class="sr-sec-h"><span class="sr-src conf">Confluence</span> <b>{{ cnt('confluence') }}</b><span v-if="res.confluence.error" class="sr-serr">· {{ res.confluence.error }}</span></div>
-            <div v-for="(it, i) in res.confluence.items" :key="'c'+i" class="sr-item" :class="{ active: flat[active] && flat[active].it === it }"
+            <div v-for="(it, i) in res.confluence.items" :key="'c'+i" class="sr-item sr-item2 conf" :class="{ active: flat[active] && flat[active].it === it }"
                  @click="pick({ src: 'confluence', it })" @mousemove="active = idx('confluence', i)">
-              <span class="sr-pageic"></span>
-              <span class="sr-title">{{ it.title }}</span>
-              <span class="sr-excerpt">{{ it.excerpt }}</span>
-              <span class="sr-meta">{{ it.space }}</span>
+              <div class="sr-body">
+                <div class="sr-r1">
+                  <span class="sr-pageic"></span>
+                  <span class="sr-title">{{ it.title }}</span>
+                  <span class="sr-path" :title="(it.path || []).slice().reverse().join(' ‹ ')">
+                    <template v-for="(seg, j) in confPath(it.path)" :key="j"
+                      ><span v-if="j" class="sr-sep">‹</span><span class="sr-seg" :class="{ ell: seg === '…' }">{{ seg }}</span
+                    ></template>
+                  </span>
+                </div>
+                <div v-if="it.excerpt" class="sr-r2">{{ it.excerpt }}</div>
+              </div>
             </div>
             <div v-if="!cnt('confluence') && !res.confluence.error" class="sr-none">결과 없음</div>
           </div>

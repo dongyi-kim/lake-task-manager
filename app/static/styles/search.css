@@ -71,3 +71,24 @@
   -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }
 .sr-pageic { -webkit-mask: var(--conf-ic) center/contain no-repeat; mask: var(--conf-ic) center/contain no-repeat; }
 .sr-repoic { border-radius: 3px; background: var(--muted); -webkit-mask: none; mask: none; opacity: .5; }
+
+/* Confluence 결과 — 2줄.
+   1행: [아이콘 제목] ────────── [경로(우측정렬)]
+   2행: 미리보기(눌린 색·작은 크기로 제목과 구분) */
+.sr-item2 { align-items: stretch; }
+.sr-item2 > .sr-body { flex: 1 1 auto; min-width: 0; }
+.sr-r1 { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.sr-r1 .sr-pageic { flex: none; align-self: center; }
+.sr-r1 .sr-title { flex: 0 1 auto; font-weight: 600; font-size: 13.5px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 경로 — 우측 정렬(margin-left auto), 제목과 시각 구분(옅은 색·작게·아이콘) */
+.sr-path { flex: 0 1 auto; min-width: 0; margin-left: auto; padding-left: 12px;
+  display: flex; align-items: baseline; gap: 4px; justify-content: flex-end;
+  overflow: hidden; white-space: nowrap; color: var(--muted-2); font-size: 10.5px; }
+.sr-path .sr-seg { overflow: hidden; text-overflow: ellipsis; }
+.sr-path .sr-seg:last-child { flex: none; font-weight: 600; }   /* 스페이스(루트)는 강조 */
+.sr-path .sr-seg.ell { flex: none; }
+.sr-path .sr-sep { flex: none; opacity: .55; margin: 0 3px; }
+/* 미리보기 — 제목과 확실히 구분: 한 단계 들여쓰고 눌린 색 */
+.sr-r2 { margin-top: 3px; padding-left: 20px; color: var(--muted); font-size: 12px; line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

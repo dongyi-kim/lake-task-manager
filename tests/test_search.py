@@ -135,3 +135,25 @@ def test_confluence_401_gives_actionable_message():
     out = _search_confluence(_C(), s, "테스트", "scoped", 5)
     assert out["items"] == [] and out.get("needLogin") is True
     assert "로그인 필요" in out["error"] and "세션 만료" not in out["error"]
+
+
+def test_confluence_result_has_path():
+    """Confluence 검색 결과에 문서 경로(스페이스 + 상위폴더)가 담긴다.
+
+    UI 가 breadcrumb(직계부모 ‹ … ‹ 스페이스)로 그린다. 경로는 [스페이스 … 직계부모] 순.
+    """
+    from app.search import _search_confluence
+    from app.settings import get_settings
+    from app.jira_client import JiraClient
+    from app.cache import Cache
+
+    s = get_settings()
+    c = JiraClient(s, Cache(":memory:"))
+    out = _search_confluence(c, s, "가이드", "all", 20)
+    items = out["items"]
+    assert items, "Confluence 결과가 없음"
+    assert all("path" in it for it in items)
+    # 경로 첫 요소는 스페이스 이름(루트), 폴더가 있으면 뒤에 이어진다
+    deep = [it for it in items if len(it["path"]) >= 2]
+    assert deep, "폴더 계층이 있는 문서가 없음"
+    assert all(len(it["path"]) >= 1 for it in items)

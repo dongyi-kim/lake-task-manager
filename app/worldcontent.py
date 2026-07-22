@@ -181,8 +181,22 @@ ACTIVITY_KINDS = ["created", "commented", "transitioned", "assigned", "logged wo
 _CONF_TITLES = [
     "아키텍처 결정 기록(ADR)", "스프린트 회고", "운영 런북", "설계 리뷰 노트",
     "온보딩 가이드", "장애 포스트모템", "API 명세 초안", "데이터 계약(Contract)",
+    "배포 파이프라인 가이드", "데이터 카탈로그 표준", "SLA/SLO 정의서", "보안 점검 체크리스트",
+    "쿼리 성능 튜닝 노트", "스키마 마이그레이션 계획", "권한 관리 정책", "모니터링 대시보드 설명",
+    "인시던트 대응 플레이북", "용량 산정 워크시트", "릴리스 노트 템플릿", "회의록 - 주간 싱크",
 ]
+# 스페이스 키 → 표시 이름(경로 맨 끝, 루트)
 _CONF_SPACES = ["DL", "PMO", "ARCH", "OPS"]
+_CONF_SPACE_NAMES = {"DL": "데이터플랫폼", "PMO": "PMO", "ARCH": "아키텍처", "OPS": "운영"}
+# 스페이스별 폴더 경로 후보 — [최상위 … 직계부모] 순(실 Confluence ancestors 순서).
+# 일부러 깊이를 다양하게(0~3단) 둬서 '중간 생략(…)' UI 를 검증할 수 있게 한다.
+_CONF_FOLDERS = {
+    "DL":   [[], ["엔지니어링"], ["엔지니어링", "파이프라인"],
+             ["엔지니어링", "파이프라인", "실시간 처리"], ["표준·정책"], ["표준·정책", "데이터 거버넌스"]],
+    "PMO":  [[], ["프로젝트 관리"], ["프로젝트 관리", "주간 보고"], ["산출물"]],
+    "ARCH": [[], ["설계"], ["설계", "결정 기록"], ["설계", "리뷰"]],
+    "OPS":  [[], ["운영 절차"], ["운영 절차", "장애 대응"], ["운영 절차", "장애 대응", "포스트모템"], ["모니터링"]],
+}
 _CONF_ACTS = ["created", "edited", "commented"]
 
 
@@ -192,6 +206,15 @@ def conf_title(rng):
 
 def conf_space(rng):
     return rng.choice(_CONF_SPACES)
+
+
+def conf_space_name(space):
+    return _CONF_SPACE_NAMES.get(space, space)
+
+
+def conf_ancestors(rng, space):
+    """문서의 상위 폴더 경로 — [최상위 … 직계부모] 순(스페이스 루트는 제외, 경로 조립 시 붙인다)."""
+    return list(rng.choice(_CONF_FOLDERS.get(space, [[]])))
 
 
 def conf_action(rng):

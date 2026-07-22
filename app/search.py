@@ -142,11 +142,17 @@ def _search_confluence(client, s, q, scope, limit):
     for r in data.get("results", []):
         c = r.get("content") or {}
         webui = r.get("url") or ((c.get("_links") or {}).get("webui") or "")
+        sp = c.get("space") or {}
+        # 문서 경로: [스페이스, 최상위폴더 … 직계부모] (표시는 프론트가 역순 breadcrumb 로).
+        # ancestors 는 Confluence 순서([최상위 … 직계부모])라 그대로 이어 붙인다.
+        path = [sp.get("name") or sp.get("key") or ""]
+        path += [a.get("title", "") for a in (c.get("ancestors") or []) if a.get("title")]
         items.append({
             "type": "confluence",
             "title": r.get("title") or c.get("title", ""),
             "excerpt": _clean_excerpt(r.get("excerpt", "")),
-            "space": (c.get("space") or {}).get("key", ""),
+            "space": sp.get("key", ""),
+            "path": [p for p in path if p],     # 예: ["데이터플랫폼","엔지니어링","파이프라인"]
             "id": c.get("id", ""),
             "url": (base + webui) if base and webui.startswith("/") else webui,
         })
