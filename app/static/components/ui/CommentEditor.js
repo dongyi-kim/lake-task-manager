@@ -23,6 +23,22 @@ function mnAvatar(name, id) {
 }
 const _URL_RE = /^https?:\/\/\S+$/i;
 
+// 하이퍼링크를 favicon 칩(뱃지)으로 렌더 — href 로 /api/favicon URL 을 만들어 CSS 변수(--fav)로 전달.
+// 저장은 그대로 [텍스트|url] (class/style 은 html_to_wiki 가 무시). favicon 이 없으면 기본 사각형.
+function linkBadgeExt(T) {
+  return T.Link.extend({
+    renderHTML({ HTMLAttributes }) {
+      const href = String(HTMLAttributes.href || "");
+      const attrs = Object.assign({}, HTMLAttributes);
+      if (/^https?:/i.test(href)) {
+        attrs.class = (attrs.class ? attrs.class + " " : "") + "web-badge";
+        attrs.style = "--fav:url('/api/favicon?u=" + encodeURIComponent(href) + "')";
+      }
+      return ["a", attrs, 0];
+    },
+  }).configure({ openOnClick: false, autolink: true, linkOnPaste: true });
+}
+
 // 표/코드블럭이 문서 첫 블록이면 그 '위'로 커서를 보낼 수 없다(문단이 없어서).
 // → 첫 블록 시작에서 ArrowUp, 또는 어디서든 Mod+Shift+Enter 로 현재 최상위 블록 **위에 문단**을 만든다.
 function firstBlockEscapeExt(T) {
@@ -169,7 +185,7 @@ export default {
         firstBlockEscapeExt(T),
         T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
-        T.Image, T.Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
+        T.Image, linkBadgeExt(T),
         T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 없이 바로 마크다운(#, -, ``` )·@멘션 사용" }),
       ],
       content: this.initial || "",

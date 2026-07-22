@@ -593,15 +593,33 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-ed-host .ProseMirror hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
 .cmt-ed-host .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder);
   color: var(--muted-2); float: left; height: 0; pointer-events: none; }
-/* 표 */
-.cmt-ed-host .ProseMirror table { border-collapse: collapse; margin: 0 0 10px; width: auto; }
+/* 표 — prosemirror-tables 필수 스타일. td/th 의 position:relative 가 없으면 셀 선택 오버레이
+   (.selectedCell:after)가 셀에 안 붙어 드래그가 셀 선택이 아니라 문서 전체 선택처럼 보인다.
+   table-layout:fixed 는 열 리사이즈가 제대로 동작하는 데 필요. */
+.cmt-ed-host .tableWrapper { overflow-x: auto; }
+.cmt-ed-host .ProseMirror table { border-collapse: collapse; table-layout: fixed; width: 100%;
+  margin: 0 0 10px; overflow: hidden; }
 .cmt-ed-host .ProseMirror th, .cmt-ed-host .ProseMirror td { border: 1px solid var(--border);
-  padding: 5px 9px; min-width: 40px; vertical-align: top; }
+  padding: 5px 9px; min-width: 40px; vertical-align: top;
+  position: relative; box-sizing: border-box; }
 .cmt-ed-host .ProseMirror th { background: var(--panel-2); font-weight: 700; }
-.cmt-ed-host .ProseMirror .selectedCell:after { background: color-mix(in srgb, var(--accent) 18%, transparent);
-  content: ""; position: absolute; inset: 0; pointer-events: none; }
+.cmt-ed-host .ProseMirror .selectedCell:after { background: color-mix(in srgb, var(--accent) 22%, transparent);
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 2; }
 .cmt-ed-host .ProseMirror .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: 0;
-  width: 3px; background: var(--accent); pointer-events: none; }
+  width: 4px; background: var(--accent); pointer-events: none; z-index: 3; }
+.cmt-ed-host .ProseMirror.resize-cursor { cursor: col-resize; }
+/* 웹 링크 뱃지 — favicon(= --fav, /api/favicon) + 칩. favicon 없으면 빈 사각형으로 폴백. */
+.cmt-ed-host .ProseMirror a.web-badge, .tkt-desc a.web-badge {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  padding: 1px 8px 1px 6px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--panel-2); color: var(--text); text-decoration: none;
+  font-size: 12px; line-height: 1.6; vertical-align: baseline; }
+.cmt-ed-host .ProseMirror a.web-badge::before, .tkt-desc a.web-badge::before {
+  content: ""; width: 13px; height: 13px; flex: none; border-radius: 3px;
+  background-image: var(--fav); background-size: contain; background-repeat: no-repeat;
+  background-position: center; background-color: var(--border); }
+.cmt-ed-host .ProseMirror a.web-badge:hover, .tkt-desc a.web-badge:hover { border-color: var(--accent); }
+
 /* 멘션 칩 */
 .cmt-ed-host .ProseMirror .mention { color: var(--accent); font-weight: 700; background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-radius: 4px; padding: 0 3px; }

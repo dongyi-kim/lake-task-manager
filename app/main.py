@@ -245,6 +245,16 @@ def api_search(q: str = "", scope: str = "scoped", limit: int = 8):
     return JSONResponse(search.search_all(_client, _settings, q, scope, limit))
 
 
+@app.get("/api/favicon")
+def api_favicon(u: str):
+    """웹 링크 뱃지용 favicon — origin 의 favicon 을 same-origin 으로 반환. 없으면 404(기본 아이콘)."""
+    data, ctype = _client.favicon(u)
+    if data is None:
+        return JSONResponse({"error": "no favicon", "u": u}, status_code=404)
+    return Response(content=data, media_type=(ctype or "image/x-icon"),
+                    headers={"Cache-Control": "private, max-age=604800"})   # 7일
+
+
 @app.get("/api/mention/users")
 def api_mention_users(q: str = "", key: str = "", limit: int = 8):
     """@사람 멘션 자동완성 — [{id, name, avatar}].

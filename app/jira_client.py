@@ -1259,6 +1259,52 @@ class JiraClient:
         parent = ".".join(jh.split(".")[-2:]) if jh.count(".") >= 1 else jh
         return host == parent or host.endswith("." + parent)
 
+    FAVICON_TTL = 7 * 24 * 3600            # favicon 은 거의 안 바뀐다 — 길게 캐시
+
+    def favicon(self, u):
+        """웹 URL origin 의 favicon — (bytes, content_type). 못 가져오면 (None, None).
+        사내 서비스(jira/confluence/bitbucket)는 인증 provider 로, 그 외 공개 사이트는 직접 GET.
+        링크 뱃지 아이콘용. 결과(base64)를 캐시해 매번 외부 요청하지 않는다."""
+        import base64
+        from urllib.parse import urlsplit
+        try:
+            p = urlsplit(u or "")
+        except Exception:
+            return (None, None)
+        if p.scheme not in ("http", "https") or not p.netloc:
+            return (None, None)
+        origin = f"{p.scheme}://{p.netloc}"
+        bases = [b for b in (self.s.jira_base, self.s.confluence_base,
+                             getattr(self.s, "bitbucket_base", "")) if b]
+        internal = any(origin.rstrip("/") == b.rstrip("/") for b in bases)
+
+        def do():
+            for path in ("/favicon.ico", "/favicon.png"):
+                try:
+                    if internal:
+                        data, ct = self.provider.get_bytes(origin + path)
+                    else:
+                        import requests
+                        r = requests.get(origin + path, timeout=5,
+                                         headers={"User-Agent": "LakeTaskManager"})
+                        if r.status_code != 200:
+                            continue
+                        data, ct = r.content, r.headers.get("Content-Type")
+                    if data:
+                        return {"d": base64.b64encode(data).decode(),
+                                "ct": (ct or "image/x-icon").split(";")[0].strip()}
+                except Exception:
+                    continue
+            return {}
+
+        got = self.cache.get_or_set(f"favicon:{origin}", self.FAVICON_TTL, do)[0] or {}
+        if not got.get("d"):
+            return (None, None)
+        try:
+            return (base64.b64decode(got["d"]), got.get("ct") or "image/x-icon")
+        except Exception:
+            return (None, None)
+
     def _media_url(self, u):
         """첨부 URL — prod 는 /api/img 프록시(인증·크로스오리진 회피), mock/local 은 same-origin 그대로."""
         if not u:
