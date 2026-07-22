@@ -242,9 +242,10 @@ def api_search(q: str = "", scope: str = "scoped", limit: int = 8):
 
 
 @app.get("/api/mention/users")
-def api_mention_users(q: str = "", limit: int = 8):
-    """@사람 멘션 자동완성 — [{id, name, avatar}]. 에디터가 @ 입력 시 호출."""
-    return JSONResponse(search.search_users(_client, _settings, q, limit))
+def api_mention_users(q: str = "", key: str = "", limit: int = 8):
+    """@사람 멘션 자동완성 — [{id, name, avatar}].
+    q 가 있으면 유저 검색. 비어 있으면(팝업 첫 오픈) key 티켓 관련 사람 우선(불필요한 검색 안 함)."""
+    return JSONResponse(search.mention_suggestions(_client, _settings, q, key, limit))
 
 
 @app.get("/api/img")

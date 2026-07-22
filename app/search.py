@@ -205,6 +205,94 @@ def search_users(client, s, q, limit=8):
     return out
 
 
+_MENTION_RE = re.compile(r"\[~([^\]]+)\]")
+
+
+def _module_people(client, s, key):
+    """티켓 소속 모듈의 사람들(config 추론). 못 찾으면 [] (요구: 모듈 정보 없으면 무시).
+    모듈 신호: (a) Jira 컴포넌트=모듈(아무 티켓이나) (b) WBS config epic→module 역인덱스."""
+    from .settings import load_people, load_plan
+    try:
+        f = (client.get_issue(key) or {}).get("fields") or {}
+    except Exception:
+        return []
+    modules = []
+    comps = f.get("components") or []
+    if comps and (comps[0] or {}).get("name"):
+        modules.append(comps[0]["name"])
+    epic = f.get(s.epic_link_field_id)
+    if not epic and (f.get("parent") or {}).get("key"):        # Sub-Task → 부모의 Epic
+        try:
+            pf = (client.get_issue(f["parent"]["key"]) or {}).get("fields") or {}
+            epic = pf.get(s.epic_link_field_id) or f["parent"]["key"]
+        except Exception:
+            epic = None
+    if epic:
+        try:
+            for w in (load_plan().get("wbs") or []):
+                if any((e or {}).get("key") == epic for e in (w.get("epics") or [])):
+                    if w.get("module") and w["module"] not in modules:
+                        modules.append(w["module"])
+        except Exception:
+            pass
+    if not modules:
+        return []
+    people = load_people() or {}
+    ids = []
+    for m in modules:
+        for uid in (people.get(m) or []):
+            if uid and uid not in ids:
+                ids.append(uid)
+    return ids
+
+
+def mention_suggestions(client, s, q, key, limit=8):
+    """@사람 멘션 피드. q 있으면 유저 검색. 비어 있으면(팝업 첫 오픈) **불필요한 검색 없이**
+    티켓 관련 사람 1순위(리포터/담당/댓글작성/멘션) + 모듈 사람 2순위(중복 제거)."""
+    q = (q or "").strip()
+    if q:
+        return search_users(client, s, q, limit)
+    if not key:
+        return []                                              # 컨텍스트 없으면 검색 안 함
+    acc, order = {}, []                                        # uid -> name(or None), 순서 보존
+
+    def add(uid, name=None):
+        if uid and uid not in acc:
+            acc[uid] = name
+            order.append(uid)
+
+    try:
+        f = (client.get_issue(key) or {}).get("fields") or {}
+        rep = f.get("reporter") or {}
+        asg = f.get("assignee") or {}
+        add(rep.get("name"), real_name(rep.get("displayName") or rep.get("name")))   # 만든사람
+        add(asg.get("name"), real_name(asg.get("displayName") or asg.get("name")))   # 담당자
+        for uid in _MENTION_RE.findall(f.get("description") or ""):                   # 본문 멘션
+            add(uid)
+    except Exception:
+        pass
+    try:
+        data = client.provider.get_json(
+            f"/rest/api/2/issue/{key}/comment", params={"maxResults": 50, "orderBy": "-created"})
+        for c in data.get("comments", []):
+            a = c.get("author") or {}
+            add(a.get("name"), real_name(a.get("displayName") or a.get("name")))      # 댓글 작성자
+            for uid in _MENTION_RE.findall(c.get("body") or ""):                      # 댓글 멘션
+                add(uid)
+    except Exception:
+        pass
+    try:
+        for uid in _module_people(client, s, key):                                   # 모듈 사람(2순위)
+            add(uid)
+    except Exception:
+        pass
+    out = []
+    for uid in order[:limit]:
+        out.append({"id": uid, "name": acc[uid] or client._mention_name(uid),
+                    "avatar": "/api/avatar/" + uid})
+    return out
+
+
 def _search_bitbucket(s, q, limit):
     """mock — 사내 Bitbucket 버전/연동 확인 전까지 결정적 가짜 결과. 여러 project 지원."""
     projs = s.search_bitbucket_projects or ["DATA"]

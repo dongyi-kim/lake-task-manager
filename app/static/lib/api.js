@@ -58,7 +58,8 @@ export const api = {
 
   // ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 이미지 첨부. 성공 후 그 티켓 memo 무효화 ──
   me: () => get("/api/me"),                                             // 본인 댓글 판정
-  mentionUsers: (q) => req("/api/mention/users?q=" + encodeURIComponent(q || "")),   // @사람 자동완성
+  mentionUsers: (q, key) => req("/api/mention/users?q=" + encodeURIComponent(q || "")   // @사람 자동완성
+    + (key ? "&key=" + encodeURIComponent(key) : "")),                                  // 빈 쿼리 시 티켓 관련 우선
   commentCreate: (key, html) =>
     jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST", { html })
       .then((r) => { evict(encodeURIComponent(key)); return r; }),

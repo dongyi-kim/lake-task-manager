@@ -23,10 +23,11 @@ function mnAvatar(name, id) {
 const _URL_RE = /^https?:\/\/\S+$/i;
 
 // @사람 멘션 자동완성 팝업 (tippy 없이 순수 DOM) — TipTap suggestion.render 핸들러.
-function mentionSuggestion() {
+// ticketKey: 빈 쿼리 시 이 티켓 관련 사람(리포터/담당/댓글작성/멘션)·모듈 사람을 우선 표시.
+function mentionSuggestion(ticketKey) {
   return {
     char: "@",
-    items: ({ query }) => api.mentionUsers(query).then((r) => r || []).catch(() => []),
+    items: ({ query }) => api.mentionUsers(query, ticketKey).then((r) => r || []).catch(() => []),
     render: () => {
       let el = null, items = [], sel = 0, command = null;
       const paint = () => {
@@ -103,7 +104,7 @@ export default {
       element: this.$refs.ed,
       extensions: [
         T.StarterKit,
-        T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion() }),
+        T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
         T.Image, T.Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
         T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 없이 바로 마크다운(#, -, ``` )·@멘션 사용" }),
