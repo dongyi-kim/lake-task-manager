@@ -59,6 +59,9 @@ class _Tree(HTMLParser):
         self.stack[-1].children.append(_Node(text=data))
 
 
+_BROWSE_URL_RE = re.compile(r"/browse/[A-Za-z][A-Za-z0-9]*-\d+")
+
+
 def _is_mention(n):
     return n.tag == "span" and (n.attrs.get("data-type") == "mention" or "data-mention" in n.attrs)
 
@@ -91,8 +94,19 @@ def _inline(node):
         elif t == "a":
             href = (c.attrs.get("href") or "").strip()
             label = _inline(c).strip()
-            out.append(("[" + label + "|" + href + "]") if href and label and label != href
-                       else ("[" + href + "]" if href else label))
+            if href and _BROWSE_URL_RE.search(href):
+                # Jira 티켓 링크 — **라벨 없이 URL만** 저장한다. 읽기 렌더가 키/제목/상태를 조회해
+                # 리치 뱃지로 바꾸므로 라벨이 불필요하고, 티켓 제목에 흔한 '[' ']' 가 wiki 링크
+                # 문법([label|url])을 깨뜨리는 문제도 원천 차단된다.
+                out.append("[" + href + "]")
+            elif href and label and label != href:
+                # 라벨의 wiki 구분자는 링크를 깨뜨린다 → 안전한 문자로 치환.
+                safe = label.replace("|", "/").replace("[", "(").replace("]", ")")
+                out.append("[" + safe + "|" + href + "]")
+            elif href:
+                out.append("[" + href + "]")
+            else:
+                out.append(label)
         elif t == "img":
             src = (c.attrs.get("src") or "").strip()
             if src:

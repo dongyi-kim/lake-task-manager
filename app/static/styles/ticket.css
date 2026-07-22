@@ -309,7 +309,14 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .jira-badge .jb-dot.st-done { background: var(--st-done); }
 .jira-badge .jb-key { flex: none; color: var(--accent); font-weight: 700; }
 .jira-badge .jb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.jira-badge .jb-meta { flex: none; color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+/* 상태 — 제목과 구분선(|)으로 나누고 상태 카테고리 색을 준다(담당자는 표시하지 않는다) */
+.jira-badge .jb-meta { flex: none; font-size: 10.5px; white-space: nowrap; font-weight: 700;
+  color: var(--muted); }
+.jira-badge .jb-meta:not(:empty)::before { content: "|"; color: var(--border-hi);
+  font-weight: 400; margin-right: 5px; }
+.jira-badge .jb-meta.st-todo { color: var(--st-todo); }
+.jira-badge .jb-meta.st-inprogress { color: var(--st-prog); }
+.jira-badge .jb-meta.st-done { color: var(--st-done); }
 :root { --conf-ic: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z'/><path d='M9 13h6M9 17h4'/></svg>"); }
 .tkt-desc code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12.5px;
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }

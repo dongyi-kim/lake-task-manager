@@ -298,9 +298,11 @@ export default {
           if (!b) return;
           a.querySelector(".jb-dot").className = "jb-dot st-" + (b.statusCategory || "todo");
           a.querySelector(".jb-name").textContent = b.summary || "";
-          const meta = [b.status, b.assignee].filter(Boolean).join(" · ");
-          a.querySelector(".jb-meta").textContent = meta;
-          a.title = key + " " + (b.summary || "") + (meta ? " (" + meta + ")" : "");
+          // 상태만(담당자 제외) — 구분선 '|' 는 CSS, 색은 상태 카테고리로.
+          const meta = a.querySelector(".jb-meta");
+          meta.textContent = b.status || "";
+          meta.className = "jb-meta st-" + (b.statusCategory || "todo");
+          a.title = key + " " + (b.summary || "") + (b.status ? " (" + b.status + ")" : "");
         }).catch(() => { /* 조회 실패 시 키만 표시 */ });
       });
       // 3) 일반 웹 링크 → favicon 뱃지(에디터와 동일한 모양). Confluence/Jira 뱃지는 위에서 처리됨.

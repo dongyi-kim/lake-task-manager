@@ -148,6 +148,19 @@ function favCss(href) {
   return /^https?:/i.test(href) ? "url('/api/favicon?u=" + encodeURIComponent(href) + "')" : "";
 }
 
+// Jira 티켓 링크 판별 + 티켓 요약 조회(세션 캐시) — 에디터 뱃지를 읽기 렌더와 같게 그리기 위해.
+function jiraKeyOf(href) {
+  const m = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/.exec(href || "");
+  return m ? m[1].toUpperCase() : null;
+}
+const _tkCache = new Map();
+function ticketData(key) {
+  if (_tkCache.has(key)) return Promise.resolve(_tkCache.get(key));
+  return api.ticketBadge(key)
+    .then((b) => { _tkCache.set(key, b); return b; })
+    .catch(() => null);
+}
+
 function linkBadgeExt(T) {
   return T.Node.create({
     name: "linkBadge",
@@ -182,14 +195,35 @@ function linkBadgeExt(T) {
         const a = document.createElement("a");
         const paint = (n) => {
           const href = n.attrs.href || "";
-          a.className = "web-badge";
           a.setAttribute("href", href);
           a.setAttribute("rel", "noopener");
+          a.title = href + "  (더블클릭: 제목·링크 수정)";
+          const key = jiraKeyOf(href);
+          if (key) {
+            // Jira 티켓 — 읽기 렌더(augmentLinks)와 **같은 구조·클래스**로 그려 모양을 일치시킨다.
+            a.className = "jira-badge tkt";
+            a.style.removeProperty("--fav");
+            a.innerHTML = '<span class="jb-dot"></span><b class="jb-key"></b>'
+              + '<span class="jb-name"></span><span class="jb-meta"></span>';
+            a.querySelector(".jb-key").textContent = key;
+            ticketData(key).then((bd) => {
+              if (!bd || !a.isConnected) return;
+              const dot = a.querySelector(".jb-dot"), nm = a.querySelector(".jb-name"),
+                    mt = a.querySelector(".jb-meta");
+              if (!dot || !nm || !mt) return;
+              const cat = bd.statusCategory || "todo";
+              dot.className = "jb-dot st-" + cat;
+              nm.textContent = bd.summary || "";
+              mt.textContent = bd.status || "";            // 담당자는 표시하지 않는다
+              mt.className = "jb-meta st-" + cat;
+            });
+            return;
+          }
+          a.className = "web-badge";
           a.textContent = n.attrs.title || href;
           const fav = favCss(href);
           if (fav) a.style.setProperty("--fav", fav);
           else a.style.removeProperty("--fav");
-          a.title = href + "  (더블클릭: 제목·링크 수정)";
         };
         paint(cur);
         a.addEventListener("click", (e) => e.preventDefault());     // 편집 중 이동 방지
@@ -277,17 +311,31 @@ const _APP_PAGES = {
 function normalizeAppUrl(url, jiraBase) {
   try {
     const u = new URL(url, location.href);
-    if (u.origin !== location.origin) return null;
+    // /browse/KEY 는 우리 앱 주소든 실 Jira 주소든 **티켓**으로 취급한다.
     const m = /^\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/.exec(u.pathname);
     if (m) {
       const key = m[1].toUpperCase();
-      const base = (jiraBase || "").replace(/\/+$/, "");
-      return { href: (base || location.origin) + "/browse/" + key, title: key, key };
+      // 우리 앱 주소면 실 Jira 로 바꾼다(그게 정본). 이미 Jira 주소면 그대로 둔다.
+      const base = (u.origin === location.origin && jiraBase)
+        ? jiraBase.replace(/\/+$/, "") : u.origin;
+      return { href: base + "/browse/" + key, title: key, key };
     }
+    if (u.origin !== location.origin) return null;      // 외부 일반 URL → og:title 조회
     const route = (u.hash || "").replace(/^#\/?/, "").split(/[?/]/)[0] || "wbs";
     const page = _APP_PAGES[route] || route || "";
     return { href: url, title: "Lake Task Manager" + (page ? " - " + page : "") };
   } catch (e) { return null; }
+}
+
+// 티켓 뱃지 라벨 — [타입] [번호] [제목] - [상태]
+function ticketLabel(key, bd) {
+  const parts = [];
+  if (bd && bd.type) parts.push(bd.type);
+  parts.push(key);
+  if (bd && bd.summary) parts.push(bd.summary);
+  let s = parts.join(" ");
+  if (bd && bd.status) s += " - " + bd.status;
+  return s;
 }
 
 // 표/코드블럭이 문서 첫 블록이면 그 '위'로 커서를 보낼 수 없다(문단이 없어서).
@@ -469,7 +517,7 @@ export default {
             if (norm && norm.key) {
               // Jira 티켓 — 키에 요약을 붙여 읽기 쉽게(렌더에서는 앱이 리치 티켓 뱃지로 바꾼다)
               api.ticketBadge(norm.key).then((bd) => {
-                if (bd && bd.summary) updateBadgeTitle(self._ed, href, norm.key + " " + bd.summary, norm.key);
+                if (bd) updateBadgeTitle(self._ed, href, ticketLabel(norm.key, bd), norm.key);
               }).catch(() => { /* noop */ });
             } else if (!norm) {
               // 외부 URL — 라벨을 페이지 제목(og:title → <title>)으로. 실패하면 URL 그대로.
