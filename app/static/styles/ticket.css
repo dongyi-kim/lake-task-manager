@@ -550,6 +550,13 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-tb .tb-sep { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
 .cmt-tb-tbl { background: color-mix(in srgb, var(--accent) 8%, var(--panel-2)); }
 .cmt-tb-tbl .tb-b { font-size: 11.5px; }
+/* 표 편집 아이콘 버튼 — 표 윤곽 + 추가(+)/삭제(×) 표시로 동작을 형태로 구분 */
+.cmt-tb .tb-ic { min-width: 30px; }
+.cmt-tb .tb-ic svg { width: 16px; height: 16px; fill: none; stroke: currentColor;
+  stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.cmt-tb .tb-ic svg .fillbar { fill: currentColor; stroke: none; opacity: .4; }
+.cmt-tb .tb-del:hover { color: var(--danger); border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--panel)); }
 .cmt-tb .tb-lbl { font-size: 11px; font-weight: 700; color: var(--muted-2); padding: 0 6px 0 2px; }
 .cmt-langsel { font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border);
   background: var(--panel); color: var(--text); max-width: 160px; }

@@ -318,16 +318,24 @@ export default {
       </div>
       <div class="cmt-tb cmt-tb-tbl" v-show="ready && inTable()">
         <span class="tb-lbl">표</span>
-        <button type="button" class="tb-b" @click="tColBefore" title="왼쪽 열 추가">＋열←</button>
-        <button type="button" class="tb-b" @click="tColAfter" title="오른쪽 열 추가">＋열→</button>
-        <button type="button" class="tb-b" @click="tColDel" title="열 삭제">－열</button>
+        <button type="button" class="tb-b tb-ic" @click="tColBefore" title="왼쪽에 열 추가">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="7.5" y="2.5" width="6" height="11" rx="1"/><path d="M10.5 2.5v11"/><path d="M3.2 6.2v3.6M1.4 8h3.6"/></svg></button>
+        <button type="button" class="tb-b tb-ic" @click="tColAfter" title="오른쪽에 열 추가">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="6" height="11" rx="1"/><path d="M5.5 2.5v11"/><path d="M12.8 6.2v3.6M11 8h3.6"/></svg></button>
+        <button type="button" class="tb-b tb-ic tb-del" @click="tColDel" title="열 삭제">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/><path d="M8 2.5v11"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8"/></svg></button>
         <span class="tb-sep"></span>
-        <button type="button" class="tb-b" @click="tRowBefore" title="위 행 추가">＋행↑</button>
-        <button type="button" class="tb-b" @click="tRowAfter" title="아래 행 추가">＋행↓</button>
-        <button type="button" class="tb-b" @click="tRowDel" title="행 삭제">－행</button>
+        <button type="button" class="tb-b tb-ic" @click="tRowBefore" title="위에 행 추가">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="7.5" width="11" height="6" rx="1"/><path d="M2.5 10.5h11"/><path d="M6.2 3.2h3.6M8 1.4v3.6"/></svg></button>
+        <button type="button" class="tb-b tb-ic" @click="tRowAfter" title="아래에 행 추가">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="6" rx="1"/><path d="M2.5 5.5h11"/><path d="M6.2 12.8h3.6M8 11v3.6"/></svg></button>
+        <button type="button" class="tb-b tb-ic tb-del" @click="tRowDel" title="행 삭제">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/><path d="M2.5 8h11"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8"/></svg></button>
         <span class="tb-sep"></span>
-        <button type="button" class="tb-b" @click="tHeaderRow" title="헤더행 토글">헤더</button>
-        <button type="button" class="tb-b" @click="tTableDel" title="표 삭제">🗑표</button>
+        <button type="button" class="tb-b tb-ic" @click="tHeaderRow" title="헤더 행 토글">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/><path d="M2.5 6.5h11"/><rect class="fillbar" x="2.5" y="2.5" width="11" height="4"/></svg></button>
+        <button type="button" class="tb-b tb-ic tb-del" @click="tTableDel" title="표 삭제">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/><path d="M2.5 6.5h11M6.5 2.5v11"/><path d="M10 10l3.5 3.5M13.5 10L10 13.5"/></svg></button>
       </div>
       <div ref="ed" class="cmt-ed-host"></div>
       <div class="cmt-ed-bar">

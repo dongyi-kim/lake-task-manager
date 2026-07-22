@@ -80,6 +80,12 @@ def _inline(node):
             out.append("_" + _inline(c) + "_")
         elif t in ("s", "del", "strike"):
             out.append("-" + _inline(c) + "-")
+        elif t == "pre":
+            # 인라인 문맥(주로 표 셀)의 코드블럭. Jira wiki 표는 **행이 한 줄**이라 여러 줄 {code}
+            # 를 셀에 담을 수 없다 — 원시 줄바꿈을 그대로 두면 행이 끊겨 표 전체가 깨진다.
+            # → 줄바꿈을 wiki 강제개행(\\)으로 바꿔 한 줄로 만든다(표 유지, 코드 스타일은 손실).
+            txt = _txt(c).strip("\n")
+            out.append("\\\\".join(ln for ln in txt.split("\n")))
         elif t == "code":
             out.append("{{" + _txt(c) + "}}")
         elif t == "a":
@@ -247,6 +253,7 @@ def _wiki_inline_html(text, mr=None):
     s = re.sub(r"(?<![\w*])\*(\S(?:.*?\S)?)\*(?![\w*])", r"<strong>\1</strong>", s)
     s = re.sub(r"(?<![\w_])_(\S(?:.*?\S)?)_(?![\w_])", r"<em>\1</em>", s)
     s = re.sub(r"(?<![\w-])-(\S(?:.*?\S)?)-(?![\w-])", r"<s>\1</s>", s)
+    s = s.replace("\\\\", "<br>")            # wiki 강제개행 → <br> (표 셀 여러 줄 등)
 
     def pop(m):
         return "<code>" + spans[int(m.group(1))] + "</code>"
