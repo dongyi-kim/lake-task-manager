@@ -20,8 +20,10 @@ export function loadTiptap() {
     import(/* @vite-ignore */ E("extension-image")),
     import(/* @vite-ignore */ E("extension-link")),
     import(/* @vite-ignore */ E("extension-placeholder")),
+    import(/* @vite-ignore */ "https://esm.sh/@tiptap/pm@" + V + "/state"),
   ]).then((m) => ({
     Editor: m[0].Editor,
+    Extension: m[0].Extension,
     StarterKit: m[1].default,
     Mention: m[2].default,
     Table: m[3].default,
@@ -31,6 +33,8 @@ export function loadTiptap() {
     Image: m[7].default,
     Link: m[8].default,
     Placeholder: m[9].default,
+    Plugin: m[10].Plugin,
+    PluginKey: m[10].PluginKey,
   })).catch((e) => { _p = null; throw e; });
   return _p;
 }

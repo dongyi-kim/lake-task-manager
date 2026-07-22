@@ -22,6 +22,32 @@ function mnAvatar(name, id) {
 }
 const _URL_RE = /^https?:\/\/\S+$/i;
 
+// 헤딩은 무조건 한 줄 — 헤딩 블록 안에 줄바꿈(hardBreak)이 생기면 그 자리에서 줄별 헤딩으로 분리.
+// 입력/토글/붙여넣기 등 경로와 무관하게 불변식을 보장(다른 블록의 소프트브레이크는 건드리지 않음).
+function singleLineHeadingExt(T) {
+  return T.Extension.create({
+    name: "singleLineHeading",
+    addProseMirrorPlugins() {
+      return [new T.Plugin({
+        appendTransaction: (trs, oldState, newState) => {
+          if (!trs.some((t) => t.docChanged)) return null;
+          const hb = newState.schema.nodes.hardBreak;
+          if (!hb) return null;
+          const breaks = [];
+          newState.doc.descendants((node, pos) => {
+            if (node.type.name !== "heading") return;
+            node.forEach((child, offset) => { if (child.type === hb) breaks.push(pos + 1 + offset); });
+          });
+          if (!breaks.length) return null;
+          const tr = newState.tr;
+          breaks.sort((a, b) => b - a).forEach((p) => { tr.delete(p, p + 1); tr.split(p); });
+          return tr.steps.length ? tr : null;
+        },
+      })];
+    },
+  });
+}
+
 // @사람 멘션 자동완성 팝업 (tippy 없이 순수 DOM) — TipTap suggestion.render 핸들러.
 // ticketKey: 빈 쿼리 시 이 티켓 관련 사람(리포터/담당/댓글작성/멘션)·모듈 사람을 우선 표시.
 function mentionSuggestion(ticketKey) {
@@ -104,6 +130,7 @@ export default {
       element: this.$refs.ed,
       extensions: [
         T.StarterKit,
+        singleLineHeadingExt(T),
         T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
         T.Image, T.Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
