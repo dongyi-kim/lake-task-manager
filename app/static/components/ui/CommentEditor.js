@@ -9,6 +9,7 @@ import { loadTiptap } from "../../lib/tiptap.js";
 import { ensureHljsTheme } from "../../lib/hljs.js";
 import { saveDraft, loadDraft, clearDraft, purgeExpired } from "../../lib/draft.js";
 import { api } from "../../lib/api.js";
+import { extOf } from "../../lib/filetype.js";
 import { sigColor, initialOf, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { debouncedItems } from "../../lib/typeahead.js";
 
@@ -184,7 +185,8 @@ function fileBadgeExt(T) {
     renderHTML({ node }) {
       return ["a", { href: node.attrs.href || node.attrs.name || "",
                      class: "file-badge", "data-file": node.attrs.name || "",
-                     rel: "noopener" }, node.attrs.name || ""];
+                     "data-ext": extOf(node.attrs.name), rel: "noopener" },
+              node.attrs.name || ""];
     },
     addNodeView() {
       return ({ node }) => {
@@ -194,9 +196,10 @@ function fileBadgeExt(T) {
         a.setAttribute("href", node.attrs.href || "");
         a.setAttribute("rel", "noopener");
         a.title = node.attrs.name + (node.attrs.size ? "  (" + fmtSize(node.attrs.size) + ")" : "");
-        const ext = (node.attrs.name || "").split(".").pop().slice(0, 4).toUpperCase();
+        // 아이콘·색은 filebadge.css 한 곳이 data-ext 로 정한다 — 서버가 렌더한 코멘트와 같은
+        // 규칙이라야 작성 중 화면과 등록 뒤 화면이 같아 보인다.
+        a.setAttribute("data-ext", extOf(node.attrs.name));
         a.innerHTML = '<i class="fb-ext"></i><span class="fb-n"></span>';
-        a.querySelector(".fb-ext").textContent = ext || "FILE";
         a.querySelector(".fb-n").textContent = node.attrs.name || "";
         // 편집 중에는 링크를 따라가지 않는다 — 아직 올라가지도 않은 파일이다.
         a.addEventListener("click", (e) => e.preventDefault());

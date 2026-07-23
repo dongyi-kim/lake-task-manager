@@ -765,6 +765,50 @@ class World:
         self._fx("DL-9035", "Task", "[내Task] Epic 없는 사용자 VoC — 전용 Epic 취급",
                  assignee=self.ME, epicKey=None, component="사용자 VoC",
                  priority="Medium", due=due(4), statusCategory="todo", statusName="Open")
+        # 10) 첨부 파일 종류 — 뱃지 라벨·색(언어 포함)을 눈으로 확인하는 자리.
+        #     확장자별 색을 고치면 여기부터 열어라. 코드·문서·표·압축·미디어를 한 티켓에 모아 둔다.
+        #     ★ 본문/코멘트에도 [^파일명] 으로 넣는다 — 첨부 목록의 칩과 **본문 안의 칩**은 렌더
+        #       경로가 달라(목록=프론트, 본문=서버 HTML) 한쪽만 맞고 다른 쪽이 틀린 적이 있다.
+        self._fx("DL-9036", "Task", "[UI] 첨부 파일 종류 — 확장자 뱃지·언어 색 확인",
+                 assignee=self.ME, priority="Medium", due=due(6),
+                 statusCategory="inprogress", statusName="In Progress",
+                 description=("h3. 산출물\n"
+                              "설계서 [^아키텍처설계.pdf] · 일정 [^배포일정.xlsx] · 보고 [^주간보고.docx]\n"
+                              "코드 [^ingest.py] · [^rollup.ts] · [^Schema.java] · [^migrate.sql]\n"
+                              "설정 [^values.yaml] · [^pipeline.json] · 로그 [^error.log]\n"
+                              "묶음 [^snapshot.zip] · 화면 [^flow.png]"))
+        for fn, mime in [
+            ("아키텍처설계.pdf", "application/pdf"),
+            ("배포일정.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ("주간보고.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            ("발표자료.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+            ("요건정의.hwp", "application/x-hwp"),
+            ("ingest.py", "text/x-python"),
+            ("rollup.ts", "text/typescript"),
+            ("chart.js", "text/javascript"),
+            ("Schema.java", "text/x-java"),
+            ("worker.go", "text/x-go"),
+            ("migrate.sql", "application/sql"),
+            ("run.sh", "application/x-sh"),
+            ("values.yaml", "text/yaml"),
+            ("pipeline.json", "application/json"),
+            ("index.html", "text/html"),
+            ("theme.css", "text/css"),
+            ("error.log", "text/plain"),
+            ("측정치.csv", "text/csv"),
+            ("snapshot.zip", "application/zip"),
+            ("flow.png", "image/png"),
+            ("demo.mp4", "video/mp4"),
+        ]:
+            self._fx_attach("DL-9036", fn, mime, b"x", size=1024 * (7 + len(fn)))
+        self.issues["DL-9036"]["comments"] = [{
+            "author": self.ME,
+            "body": ("리뷰 부탁드립니다. 코드는 [^ingest.py] 와 [^rollup.ts] 이고, "
+                     "설계는 [^아키텍처설계.pdf] 입니다.\n"
+                     "결과 데이터는 [^측정치.csv] · 묶음은 [^snapshot.zip] 에 있습니다."),
+            "created": d - timedelta(days=1), "time": "10:20",
+        }]
+
         # 9) 완료된 내 Task — 기본 목록에서 빠져야 한다
         self._fx("DL-9031", "Task", "[내Task] 완료된 내 Task — 기본 목록에서 제외",
                  assignee=self.ME, priority="Medium", due=due(-3), epicKey=self.MY_EPIC,

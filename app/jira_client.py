@@ -16,7 +16,8 @@ from urllib.parse import quote, unquote, urlparse
 
 from . import progress
 from .auth.base import SessionExpired, background_upstream, write_upstream
-from .htmlsafe import (_CONF_RE, proxy_attachment_images, proxy_images, sanitize_html,
+from .htmlsafe import (_CONF_RE, proxy_attachment_images, proxy_attachment_links,
+                       proxy_images, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html)
 from .names import real_name
 from .sections import split_sections
@@ -1711,8 +1712,12 @@ class JiraClient:
         if not html:
             return html
         if self.env != "prod":
-            return proxy_attachment_images(html)
-        return proxy_images(html, self.s.jira_base, self._media_allowed_host)
+            out = proxy_attachment_images(html)
+        else:
+            out = proxy_images(html, self.s.jira_base, self._media_allowed_host)
+        # 첨부 **링크**도 같은 이유로 재작성한다 — 이미지만 프록시하고 링크를 빼 두면
+        # 본문의 파일을 눌렀을 때 앱 오리진에서 404 가 난다.
+        return proxy_attachment_links(out, self.s.jira_base)
 
     def fetch_media(self, u):
         """이미지 URL(u) 을 인증 provider 로 받아 (bytes, content_type) 반환. 허용 안 되면 (None, None)."""

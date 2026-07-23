@@ -2,6 +2,7 @@
 // description 은 백엔드에서 **정화된 HTML**(app/htmlsafe.py) 이라 v-html 로 그대로 렌더(table/code/quote/panel/callout/img).
 // 코멘트 텍스트는 Vue 기본 이스케이프({{ }})로 안전 표시. Esc/백드롭/X 로 닫기.
 import { api } from "../../lib/api.js";
+import { extOf } from "../../lib/filetype.js";
 import { ymd, ymdhm, ts, esc } from "../../lib/fmt.js";
 import { TYPE_BG, typeLabel, sigColor } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
@@ -124,6 +125,7 @@ export default {
     parentOf(p) { if (p && this.ownDescEmpty && !this.pdescOpen) this.toggleParentDesc(); },
   },
   methods: {
+    extOf,
     // 본문(Description)·코멘트·계보(조상/형제)·타임라인을 **동시에 출발**시키고 각자 도착하는 대로
     // 개별 렌더한다(서로 막지 않음). 느린 타임라인이 본문을 기다리지 않게 하는 게 핵심.
     // 다이얼로그는 계보/형제/타임라인 클릭으로 티켓을 갈아타므로, 늦게 온 이전 티켓 응답이
@@ -693,9 +695,12 @@ export default {
               <div v-if="uploading" class="muted mini">첨부 올리는 중…</div>
               <div v-if="!atts.length" class="muted mini">첨부파일 없음 — 파일을 이 창에 끌어다 놓아도 됩니다</div>
               <div v-else class="chipwrap">
-                <a v-for="a in atts" :key="a.id" class="fchip" :href="a.url" target="_blank" rel="noopener"
+                <!-- 첨부 목록 칩과 본문 속 파일 뱃지는 **같은 것**이다 — 모양이 갈라지면
+                     "이건 첨부고 저건 뭐지" 가 된다. data-ext 로 아이콘·색 규칙을 공유한다. -->
+                <a v-for="a in atts" :key="a.id" class="fchip" :class="{ img: a.isImage }"
+                   :data-ext="extOf(a.filename)" :href="a.url" target="_blank" rel="noopener"
                    :title="a.filename + ' · ' + fsize(a.size) + (a.author ? ' · ' + a.author : '')">
-                  <span class="fchip-ic" :class="{ img: a.isImage }"></span>
+                  <span class="fchip-ic"></span>
                   <span class="fchip-n">{{ a.filename }}</span>
                   <span class="fchip-m">{{ fdt(a.created) }} · {{ fsize(a.size) }}</span>
                 </a>

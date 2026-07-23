@@ -40,7 +40,7 @@ _VOID_ALL = {"area", "base", "br", "col", "embed", "hr", "img", "input",
              "link", "meta", "param", "source", "track", "wbr", "frame"}
 # 태그별 허용 속성 (그 외 전부 제거; on* 은 어디서도 불허)
 _ALLOWED_ATTRS = {
-    "a": {"href", "title"},
+    "a": {"href", "title", "data-ext"},
     "img": {"src", "alt", "title", "width", "height"},
     "td": {"colspan", "rowspan"},
     "th": {"colspan", "rowspan", "scope"},
@@ -59,6 +59,7 @@ _CONF_RE = re.compile(r"(?:confluence|/wiki/|/display/|/spaces/|/pages/)", re.I)
 _ALLOWED_CLASSES = {
     "panel", "panel-title", "panel-body", "callout", "code", "jecodeblock", "user-hover", "conf-link",
     "image-wrap",                      # 실 Jira DC 가 본문 이미지를 감싸는 래퍼
+    "attachment", "file-badge",        # 첨부 파일 링크([^name]) — 칩으로 그린다
     "callout-note", "callout-info", "callout-warning", "callout-tip",
     "callout-success", "callout-error",
 }
@@ -278,6 +279,61 @@ def proxy_attachment_images(html):
         return "/api/img?u=" + urllib.parse.quote(s, safe="")
 
     return _IMG_SRC_RE.sub(lambda m: m.group(1) + _one(m.group(2)) + m.group(3), html)
+
+
+# 앵커 **여는 태그 전체**를 잡는다. href 까지만 잡으면 뒤쪽에 있는 class 를 못 봐서
+# class 가 두 번 들어간 태그가 만들어진다(브라우저는 앞의 것만 쓴다 — 실제로 그랬다).
+_A_OPEN_RE = re.compile(r"<a\b[^>]*>", re.I)
+_HREF_IN_TAG = re.compile(r'\bhref="([^"]*)"', re.I)
+_CLASS_IN_TAG = re.compile(r'\bclass="([^"]*)"', re.I)
+
+
+def proxy_attachment_links(html, jira_base=""):
+    """첨부 **링크**(<a href="/secure/attachment/…">)를 same-origin 프록시로 재작성한다.
+
+    이미지와 같은 문제다: 첨부는 Jira 에 있는데 링크는 앱 오리진으로 해석돼 404 가 난다
+    (이미지는 이미 프록시하고 있었는데 링크만 빠져 있었다 — 눌러 보면 Not Found).
+    함께 file-badge 클래스와 data-ext 를 붙인다 — 첨부는 문장 속 링크가 아니라 '붙어 있는
+    물건' 이라 칩으로 읽히는 편이 맞고, 렌더된 코멘트는 JS 를 안 거치므로 종류별 색을 주려면
+    CSS 가 볼 수 있는 표식이 필요하다.
+    """
+    if not html:
+        return html
+    base = (jira_base or "").rstrip("/")
+
+    def _one(m):
+        tag = m.group(0)
+        hm = _HREF_IN_TAG.search(tag)
+        if not hm:
+            return tag
+        href = unescape(hm.group(1) or "").strip()
+        # ★ '/secure/' 로 시작한다고 다 첨부가 아니다 — 멘션 프로필도 /secure/ViewProfile.jspa 다.
+        #   넓게 잡았더니 맨션 앵커가 첨부 링크로 바뀌어 user-hover 클래스와 프로필 링크가 통째로
+        #   사라졌다. 첨부 경로만 정확히 집는다.
+        if href.startswith("/secure/attachment/"):
+            target = href                       # dev — provider 가 base 를 붙인다
+        elif base and href.startswith(base + "/secure/attachment/"):
+            target = href                       # prod — 절대 URL(호스트 검증은 프록시가 한다)
+        else:
+            return tag
+
+        new_href = "/api/file?u=" + urllib.parse.quote(target, safe="")
+        tag = tag[:hm.start(1)] + escape(new_href, quote=True) + tag[hm.end(1):]
+
+        name = urllib.parse.unquote(target.rstrip("/").split("/")[-1])
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext and len(ext) <= 8 and ext.isalnum() and "data-ext=" not in tag:
+            tag = tag.replace("<a", '<a data-ext="' + escape(ext, quote=True) + '"', 1)
+
+        cm = _CLASS_IN_TAG.search(tag)
+        if cm:
+            if "file-badge" not in cm.group(1).split():
+                tag = tag[:cm.start(1)] + (cm.group(1) + " file-badge").strip() + tag[cm.end(1):]
+        else:
+            tag = tag.replace("<a", '<a class="file-badge"', 1)
+        return tag
+
+    return _A_OPEN_RE.sub(_one, html)
 
 
 def proxy_images(html, jira_base, allow_host):

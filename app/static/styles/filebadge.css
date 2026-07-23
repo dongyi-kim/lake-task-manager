@@ -1,0 +1,153 @@
+/* filebadge.css — 첨부 파일 뱃지(칩) 한 벌.
+ *
+ * ★ 선택자는 :is(.file-badge, .fchip) 로 **한 번만** 쓴다. 처음엔 .file-badge 에만 규칙을 걸었다가
+ *   첨부 목록 칩만 색·아이콘이 빠졌다 — 같은 것을 두 이름으로 두면 반드시 한쪽이 빠진다.
+ *
+ * 쓰이는 곳이 셋인데 모양이 갈라지면 안 된다:
+ *   ① 댓글 에디터 안(작성 중, JS 노드뷰)  ② 렌더된 본문·코멘트(서버 HTML)  ③ 첨부 목록(프론트)
+ * ②는 JS 를 거치지 않으므로 **CSS 만으로** 아이콘·색이 나와야 한다 → 서버가 실어 준
+ * data-ext 를 CSS 가 읽고, 아이콘은 mask 로 그린다.
+ *
+ * 아이콘을 외부에서 받지 않는 이유: 이 앱은 오프라인에서도 돌아야 하고(캐시로 버티는 화면이
+ * 있다), 아이콘 하나 때문에 CDN 의존을 늘릴 이유가 없다. 인라인 SVG 를 mask 로 쓰면 색은
+ * currentColor 대신 --fb 로 갈아 끼울 수 있어 종류별 색과 아이콘을 한 벌로 관리한다.
+ *
+ * 파일명은 **코딩 폰트**로 쓴다 — 확장자·버전·언더스코어가 섞인 이름은 비례폭에서 붙어 보이고,
+ * 사람이 이름을 대조할 때(같은 파일인가?) 글자 폭이 일정해야 눈으로 훑을 수 있다.
+ */
+
+.file-badge, .fchip {
+  display: inline-flex; align-items: center; gap: 6px; vertical-align: baseline;
+  max-width: 320px; padding: 2px 9px 2px 6px; border-radius: 7px;
+  text-decoration: none; color: var(--text);
+  background: var(--panel); border: 1px solid var(--border);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace;
+  font-size: 11.5px; line-height: 17px;
+}
+.file-badge:hover, .fchip:hover {
+  border-color: color-mix(in srgb, var(--fb, var(--accent)) 45%, var(--border));
+  background: color-mix(in srgb, var(--fb, var(--accent)) 7%, var(--panel));
+  text-decoration: none;
+}
+.file-badge > .fb-n, .fchip > .fchip-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 시각·용량 같은 곁다리는 이름보다 물러나야 한다 */
+.fchip > .fchip-m { flex: none; font-size: 10px; color: var(--muted-2); }
+
+/* ── 아이콘 ────────────────────────────────────────────────────────────────
+   ①③ 은 JS 가 <i class="fb-ext"> 를 만들고, ② 는 ::before 가 대신한다 — 같은 크기·같은 마스크.
+   글자(확장자 이름)가 아니라 **모양**으로 종류를 말한다. */
+.file-badge > .fb-ext, .fchip > .fchip-ic, .file-badge::before {
+  content: ""; flex: none; width: 15px; height: 15px; display: block; font-size: 0;
+  background-color: var(--fb, var(--muted-2));
+  -webkit-mask: var(--fb-ic) center / 15px 15px no-repeat;
+          mask: var(--fb-ic) center / 15px 15px no-repeat;
+}
+/* JS 가 아이콘 요소를 직접 넣는 경우엔 ::before 를 켜지 않는다(두 개가 된다) */
+.file-badge:has(.fb-ext)::before, .fchip::before { content: none; }
+
+/* ── 종류별 아이콘(mask) + 색 ───────────────────────────────────────────────
+   기본은 '문서' 모양. 아래에서 확장자별로 갈아 끼운다. */
+.file-badge, .fchip {
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/><path d="M14 2v6h6" fill="none" stroke="white" stroke-width="1.6"/></svg>');
+}
+/* 코드 — </> */
+:is(.file-badge, .fchip)[data-ext="js"], :is(.file-badge, .fchip)[data-ext="mjs"], :is(.file-badge, .fchip)[data-ext="cjs"],
+:is(.file-badge, .fchip)[data-ext="ts"], :is(.file-badge, .fchip)[data-ext="tsx"], :is(.file-badge, .fchip)[data-ext="jsx"],
+:is(.file-badge, .fchip)[data-ext="py"], :is(.file-badge, .fchip)[data-ext="java"], :is(.file-badge, .fchip)[data-ext="kt"],
+:is(.file-badge, .fchip)[data-ext="go"], :is(.file-badge, .fchip)[data-ext="rs"], :is(.file-badge, .fchip)[data-ext="rb"],
+:is(.file-badge, .fchip)[data-ext="php"], :is(.file-badge, .fchip)[data-ext="c"], :is(.file-badge, .fchip)[data-ext="h"],
+:is(.file-badge, .fchip)[data-ext="cpp"], :is(.file-badge, .fchip)[data-ext="cc"], :is(.file-badge, .fchip)[data-ext="hpp"],
+:is(.file-badge, .fchip)[data-ext="cs"], :is(.file-badge, .fchip)[data-ext="swift"], :is(.file-badge, .fchip)[data-ext="scala"],
+:is(.file-badge, .fchip)[data-ext="sh"], :is(.file-badge, .fchip)[data-ext="bat"], :is(.file-badge, .fchip)[data-ext="ps1"],
+:is(.file-badge, .fchip)[data-ext="r"], :is(.file-badge, .fchip)[data-ext="lua"], :is(.file-badge, .fchip)[data-ext="dart"],
+:is(.file-badge, .fchip)[data-ext="vue"], :is(.file-badge, .fchip)[data-ext="svelte"]
+{
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6L3 12l6 6M15 6l6 6-6 6"/></svg>');
+}
+/* 데이터베이스 — 원통 */
+:is(.file-badge, .fchip)[data-ext="sql"] {
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>');
+}
+/* 표 — 격자 */
+:is(.file-badge, .fchip)[data-ext="xls"], :is(.file-badge, .fchip)[data-ext="xlsx"], :is(.file-badge, .fchip)[data-ext="xlsm"],
+:is(.file-badge, .fchip)[data-ext="csv"], :is(.file-badge, .fchip)[data-ext="tsv"], :is(.file-badge, .fchip)[data-ext="ods"]
+{
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16M15 4v16"/></svg>');
+}
+/* 발표 — 화면 */
+:is(.file-badge, .fchip)[data-ext="ppt"], :is(.file-badge, .fchip)[data-ext="pptx"], :is(.file-badge, .fchip)[data-ext="key"],
+:is(.file-badge, .fchip)[data-ext="odp"] {
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 16v4M8 20h8"/></svg>');
+}
+/* 그림 */
+:is(.file-badge, .fchip)[data-ext="png"], :is(.file-badge, .fchip)[data-ext="jpg"], :is(.file-badge, .fchip)[data-ext="jpeg"],
+:is(.file-badge, .fchip)[data-ext="gif"], :is(.file-badge, .fchip)[data-ext="webp"], :is(.file-badge, .fchip)[data-ext="svg"],
+:is(.file-badge, .fchip)[data-ext="bmp"], :is(.file-badge, .fchip)[data-ext="heic"], .fchip.img {
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.8" fill="black" stroke="none"/><path d="M21 16l-5-5-6 6-3-3-4 4"/></svg>');
+}
+/* 압축 — 상자 */
+:is(.file-badge, .fchip)[data-ext="zip"], :is(.file-badge, .fchip)[data-ext="7z"], :is(.file-badge, .fchip)[data-ext="rar"],
+:is(.file-badge, .fchip)[data-ext="tar"], :is(.file-badge, .fchip)[data-ext="gz"], :is(.file-badge, .fchip)[data-ext="tgz"],
+:is(.file-badge, .fchip)[data-ext="jar"] {
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linejoin="round"><path d="M21 8l-9-5-9 5v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>');
+}
+/* 영상·소리 — 재생 */
+:is(.file-badge, .fchip)[data-ext="mp4"], :is(.file-badge, .fchip)[data-ext="mov"], :is(.file-badge, .fchip)[data-ext="avi"],
+:is(.file-badge, .fchip)[data-ext="mkv"], :is(.file-badge, .fchip)[data-ext="webm"], :is(.file-badge, .fchip)[data-ext="mp3"],
+:is(.file-badge, .fchip)[data-ext="wav"], :is(.file-badge, .fchip)[data-ext="m4a"], :is(.file-badge, .fchip)[data-ext="flac"] {
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>');
+}
+/* 설정·마크업 — 태그 */
+:is(.file-badge, .fchip)[data-ext="json"], :is(.file-badge, .fchip)[data-ext="yaml"], :is(.file-badge, .fchip)[data-ext="yml"],
+:is(.file-badge, .fchip)[data-ext="xml"], :is(.file-badge, .fchip)[data-ext="toml"], :is(.file-badge, .fchip)[data-ext="ini"],
+:is(.file-badge, .fchip)[data-ext="html"], :is(.file-badge, .fchip)[data-ext="htm"], :is(.file-badge, .fchip)[data-ext="css"],
+:is(.file-badge, .fchip)[data-ext="scss"] {
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><path d="M8 4c-2 0-3 1-3 3v2c0 1.5-1 2-2 3 1 1 2 1.5 2 3v2c0 2 1 3 3 3M16 4c2 0 3 1 3 3v2c0 1.5 1 2 2 3-1 1-2 1.5-2 3v2c0 2-1 3-3 3"/></svg>');
+}
+/* 로그·텍스트 — 줄 */
+:is(.file-badge, .fchip)[data-ext="log"], :is(.file-badge, .fchip)[data-ext="txt"], :is(.file-badge, .fchip)[data-ext="md"]
+{
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 11h16M4 16h10"/></svg>');
+}
+
+/* ── 색 — 사람들이 이미 아는 색과 언어 색 ─────────────────────────────────── */
+:is(.file-badge, .fchip)[data-ext="pdf"] { --fb: #d93025; }
+:is(.file-badge, .fchip)[data-ext="doc"], :is(.file-badge, .fchip)[data-ext="docx"], :is(.file-badge, .fchip)[data-ext="hwp"],
+:is(.file-badge, .fchip)[data-ext="hwpx"], :is(.file-badge, .fchip)[data-ext="rtf"] { --fb: #2b579a; }
+:is(.file-badge, .fchip)[data-ext="xls"], :is(.file-badge, .fchip)[data-ext="xlsx"], :is(.file-badge, .fchip)[data-ext="xlsm"],
+:is(.file-badge, .fchip)[data-ext="csv"], :is(.file-badge, .fchip)[data-ext="tsv"] { --fb: #217346; }
+:is(.file-badge, .fchip)[data-ext="ppt"], :is(.file-badge, .fchip)[data-ext="pptx"], :is(.file-badge, .fchip)[data-ext="key"] { --fb: #d24726; }
+:is(.file-badge, .fchip)[data-ext="txt"], :is(.file-badge, .fchip)[data-ext="log"], :is(.file-badge, .fchip)[data-ext="md"] { --fb: #6b7280; }
+:is(.file-badge, .fchip)[data-ext="js"], :is(.file-badge, .fchip)[data-ext="mjs"], :is(.file-badge, .fchip)[data-ext="cjs"] { --fb: #b8a600; }
+:is(.file-badge, .fchip)[data-ext="ts"], :is(.file-badge, .fchip)[data-ext="tsx"] { --fb: #3178c6; }
+:is(.file-badge, .fchip)[data-ext="jsx"] { --fb: #4fb3d9; }
+:is(.file-badge, .fchip)[data-ext="py"] { --fb: #3776ab; }
+:is(.file-badge, .fchip)[data-ext="java"] { --fb: #ea2d2e; }
+:is(.file-badge, .fchip)[data-ext="kt"] { --fb: #7f52ff; }
+:is(.file-badge, .fchip)[data-ext="go"] { --fb: #00add8; }
+:is(.file-badge, .fchip)[data-ext="rs"] { --fb: #b7410e; }
+:is(.file-badge, .fchip)[data-ext="rb"] { --fb: #cc342d; }
+:is(.file-badge, .fchip)[data-ext="php"] { --fb: #777bb4; }
+:is(.file-badge, .fchip)[data-ext="cs"] { --fb: #68217a; }
+:is(.file-badge, .fchip)[data-ext="c"], :is(.file-badge, .fchip)[data-ext="h"] { --fb: #5a7fa5; }
+:is(.file-badge, .fchip)[data-ext="cpp"], :is(.file-badge, .fchip)[data-ext="cc"], :is(.file-badge, .fchip)[data-ext="hpp"] { --fb: #00599c; }
+:is(.file-badge, .fchip)[data-ext="swift"] { --fb: #f05138; }
+:is(.file-badge, .fchip)[data-ext="sh"], :is(.file-badge, .fchip)[data-ext="bat"] { --fb: #4eaa25; }
+:is(.file-badge, .fchip)[data-ext="ps1"] { --fb: #2f6fbd; }
+:is(.file-badge, .fchip)[data-ext="sql"] { --fb: #dd7a00; }
+:is(.file-badge, .fchip)[data-ext="r"] { --fb: #276dc3; }
+:is(.file-badge, .fchip)[data-ext="vue"] { --fb: #41b883; }
+:is(.file-badge, .fchip)[data-ext="dart"] { --fb: #0175c2; }
+:is(.file-badge, .fchip)[data-ext="html"], :is(.file-badge, .fchip)[data-ext="htm"] { --fb: #e34c26; }
+:is(.file-badge, .fchip)[data-ext="css"], :is(.file-badge, .fchip)[data-ext="scss"] { --fb: #563d7c; }
+:is(.file-badge, .fchip)[data-ext="json"] { --fb: #8a6d3b; }
+:is(.file-badge, .fchip)[data-ext="xml"] { --fb: #f26b3a; }
+:is(.file-badge, .fchip)[data-ext="yaml"], :is(.file-badge, .fchip)[data-ext="yml"], :is(.file-badge, .fchip)[data-ext="toml"] { --fb: #7a5c3e; }
+:is(.file-badge, .fchip)[data-ext="png"], :is(.file-badge, .fchip)[data-ext="jpg"], :is(.file-badge, .fchip)[data-ext="jpeg"],
+:is(.file-badge, .fchip)[data-ext="gif"], :is(.file-badge, .fchip)[data-ext="webp"], :is(.file-badge, .fchip)[data-ext="svg"]
+{ --fb: #7c3aed; }
+:is(.file-badge, .fchip)[data-ext="zip"], :is(.file-badge, .fchip)[data-ext="7z"], :is(.file-badge, .fchip)[data-ext="rar"],
+:is(.file-badge, .fchip)[data-ext="tar"], :is(.file-badge, .fchip)[data-ext="gz"], :is(.file-badge, .fchip)[data-ext="jar"] { --fb: #ea580c; }
+:is(.file-badge, .fchip)[data-ext="mp4"], :is(.file-badge, .fchip)[data-ext="mov"], :is(.file-badge, .fchip)[data-ext="mkv"],
+:is(.file-badge, .fchip)[data-ext="webm"] { --fb: #0f766e; }
+:is(.file-badge, .fchip)[data-ext="mp3"], :is(.file-badge, .fchip)[data-ext="wav"], :is(.file-badge, .fchip)[data-ext="flac"] { --fb: #9333ea; }

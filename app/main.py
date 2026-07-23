@@ -14,6 +14,7 @@ JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 """
 
 import threading
+import urllib.parse
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -432,6 +433,27 @@ def api_img(u: str):
     # 첨부는 id 기준 불변 → 길게 캐시(확대 시 재요청 없이 브라우저 캐시 히트).
     return Response(content=data, media_type=media,
                     headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/api/file")
+def api_file(u: str):
+    """첨부 파일 프록시 — 인증 세션으로 받아 same-origin 으로 돌려준다(/api/img 의 파일판).
+
+    이미지는 화면에 그리면 끝이지만 파일은 **저장**되므로 원래 이름으로 내려가야 한다.
+    Content-Disposition 없이 주면 브라우저가 'file' 같은 이름으로 저장하거나 그냥 화면에 편다.
+    """
+    data, ctype = _client.fetch_media(u)
+    if data is None:
+        return JSONResponse({"error": "첨부 없음 또는 허용되지 않은 호스트", "u": u}, status_code=404)
+    name = urllib.parse.unquote((u or "").rstrip("/").split("/")[-1]) or "download"
+    # RFC 5987 — 한글 파일명이 헤더에서 깨지지 않게 UTF-8 로 별도 표기(ASCII 폴백 병기).
+    ascii_name = name.encode("ascii", "ignore").decode() or "download"
+    disp = ("inline; filename=\"%s\"; filename*=UTF-8''%s"
+            % (ascii_name.replace('"', ""), urllib.parse.quote(name)))
+    media = (ctype or "application/octet-stream").split(";")[0].strip()
+    return Response(content=data, media_type=media,
+                    headers={"Content-Disposition": disp,
+                             "Cache-Control": "private, max-age=86400"})
 
 
 @app.get("/api/ticket/{key}")

@@ -446,11 +446,6 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   padding: 0 8px; text-decoration: none; }   /* 세로 패딩 0 — 설명 안 conf-link 배지와 동일 높이(18px) */
 .fchip:hover { border-color: var(--accent); text-decoration: none; }
 .fchip.doc { color: var(--st-prog); }
-.fchip-ic { width: 11px; height: 11px; flex: none; display: block; background: var(--muted);
-  -webkit-mask: var(--file-ic) center/contain no-repeat; mask: var(--file-ic) center/contain no-repeat; }
-.fchip-ic.img { -webkit-mask: var(--img-ic) center/contain no-repeat; mask: var(--img-ic) center/contain no-repeat; }
-.fchip-ic.conf { background: currentColor;
-  -webkit-mask: var(--conf-ic) center/contain no-repeat; mask: var(--conf-ic) center/contain no-repeat; }
 .fchip-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .fchip-m { flex: none; font-weight: 500; font-size: 10.5px; color: var(--muted-2);
   font-variant-numeric: tabular-nums; }
