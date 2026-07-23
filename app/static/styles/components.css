@@ -77,3 +77,6 @@
 .sm-who b { font-family: ui-monospace, Consolas, monospace; color: var(--text); }
 .sm-who em { font-style: normal; font-size: 10px; font-weight: 700; padding: 1px 6px;
   border-radius: 4px; background: var(--panel-2); border: 1px solid var(--border); }
+
+.sm-who em.mgr { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.sm-who-h { flex-basis: 100%; font-size: 10px; color: var(--muted-2); }

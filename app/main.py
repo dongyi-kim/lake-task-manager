@@ -209,17 +209,28 @@ if _devtools.enabled(_settings, "sso_status"):
         return JSONResponse({"error": "unknown service", "service": service}, status_code=404)
 
 
+def _session_user():
+    """세션 사용자. 못 읽으면 {} — current_user() 는 예외를 삼키고 {} 를 준다."""
+    try:
+        return _client.current_user() or {}
+    except Exception:
+        return {}
+
+
 def _is_manager(me=None):
-    """세션 사용자가 매니저인가. 매니저 전용 화면(WBS·워크로드)의 단일 판정 지점."""
+    """세션 사용자가 매니저인가. 매니저 전용 화면(WBS·워크로드)의 단일 판정 지점.
+
+    ★ '세션을 아직 못 읽음' 과 '매니저가 아님' 은 **다른 상태**다. 둘을 같이 취급하면
+      prod 첫 실행처럼 세션이 아직 없는 동안 403 이 나고, 사용자는 로그인도 못 한 채
+      "매니저 전용 화면입니다" 만 본다 — 권한 문제가 아니라 인증 문제인데.
+      current_user() 는 실패를 예외가 아니라 **빈 dict** 로 알려주므로 그것으로 판단한다.
+      모르면 막지 않는다: 정말 권한이 없으면 뒤의 데이터 호출이 401/403 을 내 로그인으로 이어진다.
+    """
     from app.settings import is_manager as _im
     if me is None:
-        try:
-            me = _client.current_user()
-        except Exception:
-            # 세션을 못 읽음 = 권한 문제가 아니라 **인증 문제**. 여기서 403 을 내면 로그인도
-            # 못 한 채 막다른 오류가 된다. 통과시키면 뒤의 데이터 호출이 401 을 내
-            # 정상적인 로그인 안내로 이어진다.
-            return True
+        me = _session_user()
+    if not (me or {}).get("id") and not (me or {}).get("name"):
+        return True          # 세션 미확인 — 판정 불가이므로 막지 않는다
     return _im(_settings, me)
 
 
@@ -232,8 +243,15 @@ def _require_manager():
 
 @app.get("/api/health")
 def health():
+    # 세션 **파일이 있는지**만 보면 부족하다. 파일은 남아 있는데 쿠키가 만료된 경우가 흔한데,
+    # 그때 앱이 그냥 켜지면 화면은 떴는데 모든 조회가 실패하는 상태가 된다(사용자에겐 '인증 오류').
+    # → prod 는 저장된 세션으로 /myself 를 **한 번 실제로 찔러 본다**. 이건 headless 재사용이라
+    #   로그인 창을 띄우지 않는다(수동 로그인은 사용자가 [SSO 로그인] 을 눌러야 시작된다).
+    need = _client.needs_login()
+    if not need and _settings.jira_env == "prod":
+        need = not bool(_session_user().get("id"))
     return {"status": "ok", "env": _settings.jira_env, "projectKey": _settings.project_key,
-            "needLogin": _client.needs_login(), "rev": _BUILD_REV,
+            "needLogin": need, "rev": _BUILD_REV,
             # 앱 URL(localhost/browse/KEY)을 붙여넣었을 때 실 Jira 주소로 바꾸기 위해 프론트에 노출
             "jiraBase": (_settings.jira_base or "").rstrip("/"),
             "devTools": sorted(_settings.dev_tools)}
@@ -530,7 +548,8 @@ def api_attachment_delete(key: str, aid: str):
 @app.get("/api/me")
 def api_me():
     """세션 사용자 — 본인 댓글(수정/삭제) 판정 + 매니저 여부(화면 노출 판정)."""
-    me = dict(_client.current_user() or {})
+    me = dict(_session_user())
+    me["known"] = bool(me.get("id") or me.get("name"))   # 세션을 읽었는가
     me["manager"] = _is_manager(me)
     return JSONResponse(me)
 

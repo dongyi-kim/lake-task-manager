@@ -89,9 +89,15 @@ export default {
              — 이게 안 보이면 "나는 매니저인데 왜 안 되지" 를 추측으로 풀어야 한다. -->
         <div v-if="me" class="sm-who">
           <template v-if="me.error">세션 확인 실패 — {{ me.error }}</template>
+          <!-- '세션 미확인' 과 '워커' 를 구분해 보인다. 둘을 같은 말로 쓰면
+               로그인이 안 된 건지 권한이 없는 건지 알 수 없다. -->
+          <template v-else-if="!me.known">
+            <b>세션 미확인</b><span>아래 [인증하기] 로 SSO 로그인하세요</span>
+          </template>
           <template v-else>
-            <b>{{ me.id || '?' }}</b><span v-if="me.name"> · {{ me.name }}</span>
-            <em>{{ manager ? '매니저' : '일반' }}</em>
+            <b>{{ me.id }}</b><span v-if="me.name"> · {{ me.name }}</span>
+            <em :class="{ mgr: manager }">{{ manager ? '매니저' : '일반' }}</em>
+            <span v-if="!manager" class="sm-who-h">config 의 manager 목록에 위 id 를 넣으면 매니저</span>
           </template>
         </div>
         <div v-for="s in services" :key="s.name" class="sm-row" :title="s.detail">

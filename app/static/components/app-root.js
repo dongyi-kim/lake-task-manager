@@ -123,7 +123,7 @@ export default {
           <SettingsMenu :theme="theme" @toggle-theme="toggleTheme" />
         </div>
       </header>
-      <div v-if="!ready" class="loading page">불러오는 중…</div>
+      <div v-if="!ready" class="loading page">인증 확인 중…</div>
       <!-- 티켓 단독 페이지: 대시보드 뷰 대신 티켓 내용만 -->
       <TicketDialog v-else-if="!needLogin && pageTicket" :key="pageTicket"
                     :key-id="pageTicket" mode="page" :theme="theme"

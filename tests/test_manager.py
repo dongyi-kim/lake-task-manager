@@ -72,3 +72,23 @@ def test_current_user_does_not_cache_failure():
     assert c.current_user() == {}             # 실패 — 캐시되면 안 된다
     assert c.current_user()["id"] == "pm.kim"  # 로그인 후 즉시 반영
     assert len(calls) == 2
+
+
+def test_unknown_session_is_not_treated_as_worker():
+    """'세션을 아직 못 읽음' 과 '매니저가 아님' 은 다른 상태다. 같이 취급하면 prod 첫 실행에서
+    로그인도 못 한 채 '매니저 전용 화면입니다' 만 보게 된다(권한이 아니라 인증 문제인데).
+    current_user() 는 실패를 예외가 아니라 **빈 dict** 로 알린다 — 그 경로가 핵심."""
+    import app.main as m
+
+    orig = m._client.current_user
+    try:
+        m._client.current_user = lambda: {}          # 세션 미확인
+        m._settings.managers = ["pm.kim"]
+        assert m._is_manager() is True               # 막지 않는다
+        m._client.current_user = lambda: {"id": "worker.park", "name": "박워커"}
+        assert m._is_manager() is False              # 읽혔고 목록에 없으면 워커
+        m._client.current_user = lambda: {"id": "pm.kim", "name": "김PM"}
+        assert m._is_manager() is True
+    finally:
+        m._client.current_user = orig
+        m._settings.managers = []

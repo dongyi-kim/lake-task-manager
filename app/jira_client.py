@@ -311,6 +311,12 @@ class JiraClient:
         # provider 는 lazy 생성 — 임포트/기동 시 Chrome 을 띄우거나 세션 없음으로 크래시하지 않는다.
         self._provider = None
         self._provider_built = False
+        # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
+        # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
+        try:
+            self.cache.invalidate(f"myself:{self.env}")
+        except Exception:
+            pass
 
     @property
     def provider(self):
@@ -365,6 +371,12 @@ class JiraClient:
                 pass
         self._provider = None
         self._provider_built = False
+        # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
+        # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
+        try:
+            self.cache.invalidate(f"myself:{self.env}")
+        except Exception:
+            pass
 
     def login(self, timeout=300):
         """[prod] 설치된 Chrome 을 띄워 SSO 로그인(폴링 감지) 후 세션 저장. 성공 시 provider 재설정."""
