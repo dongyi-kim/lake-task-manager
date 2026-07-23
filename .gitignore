@@ -1,7 +1,11 @@
 # SSO 세션 — 실 크리덴셜, 절대 커밋 금지
 jira_state.json
-.appwin-profile/          # 앱 창 Chromium 프로필(쿠키·세션) — 절대 커밋 금지
-sso/                      # 서비스별 SSO 세션(쿠키) — 절대 커밋 금지
+# 앱 창 Chromium 프로필(쿠키·세션) — 절대 커밋 금지
+# ★ .gitignore 는 **인라인 주석을 지원하지 않는다** — 패턴 뒤에 주석을 붙이면
+#   그 전체가 하나의 패턴이 돼 아무것도 무시하지 못한다(실제로 그렇게 새어나갈 뻔했다).
+.appwin-profile/
+# 서비스별 SSO 세션(쿠키) — 절대 커밋 금지
+sso/
 
 # Python
 __pycache__/

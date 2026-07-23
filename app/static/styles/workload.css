@@ -78,3 +78,35 @@
 .dchip.danger { color: var(--danger); background: var(--danger-bg); }
 .dbadge .ic { width: 12px; height: 12px; flex: none; }
 .dchip .ic { width: 10px; height: 10px; flex: none; }
+
+/* ── 상세: Epic 분포 막대 + 3컬럼(할당됨 / 진행 중 / 최근 완료) ────────────── */
+/* 분포를 목록보다 위에 둔다 — "이 사람이 지금 어느 Epic 에 매여 있나"가 먼저 읽혀야 한다. */
+.wepic { margin: 2px 0 14px; padding: 10px 12px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 9px; }
+.wepic-h { display: flex; align-items: baseline; gap: 7px; font-size: 11px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .3px; margin-bottom: 7px; }
+.wepic-h > b { color: var(--text); font-size: 12.5px; }
+.wepic-h .mini { text-transform: none; letter-spacing: 0; font-size: 10.5px; }
+.wepic-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
+.wepic-i { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted);
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wepic-i > i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.wepic-i > b { color: var(--text); font-variant-numeric: tabular-nums; }
+.wepic-i.none > i { background: none !important; border: 1px dashed var(--border-hi); }
+
+/* 3컬럼 — 상태 흐름 순서. 좁아지면 2 → 1 열로 접힌다 */
+.tcols3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+@media (max-width: 1100px) { .tcols3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .tcols3 { grid-template-columns: 1fr; } }
+.tcol { min-width: 0; }
+.sec-t.open { color: var(--muted); }
+.sec-t.inProgress { color: var(--st-prog); }
+.sec-t.done7d { color: var(--st-done); }
+
+/* 행에 붙는 Epic 뱃지 — 분포 막대와 같은 색이라 눈으로 이어진다 */
+.ebadge { flex: none; font-size: 9.5px; padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+  max-width: 150px; overflow: hidden; text-overflow: ellipsis;
+  color: var(--ec, var(--muted)); border: 1px solid var(--ec, var(--border));
+  background: color-mix(in srgb, var(--ec, var(--border)) 12%, transparent); }
+.ebadge.voc { --ec: var(--ty-story); }
+.ebadge.none { color: var(--muted-2); background: none; border-style: dashed; border-color: var(--border-hi); }

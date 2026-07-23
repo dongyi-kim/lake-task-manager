@@ -103,6 +103,11 @@ class Settings:
         self.search_jira_projects = _slist(_sj, "projects", "project", default=[self.project_key])
         self.search_confluence_spaces = _slist(_sc, "spaces", "space")
         self.search_bitbucket_projects = _slist(_sb, "projects", "project")
+        # 사용자 VoC — 컴포넌트 이름으로 식별한다. 인스턴스마다 다를 수 있어 config 로 받는다.
+        # 워크로드 Epic 분포에서 **전용 Epic 처럼** 따로 세는 기준이기도 하다.
+        from .progress import VOC_COMPONENT as _VOC_DEFAULT   # 기본값 단일 소스
+        self.voc_component = str(pick("VOC_COMPONENT", (cfg.get("jira") or {}).get("voc_component"),
+                                      _VOC_DEFAULT))
         self.sp_field_id = str(pick("SP_FIELD_ID", f.get("story_point"), "customfield_10004"))
         self.epic_link_field_id = str(pick("EPIC_LINK_FIELD_ID", f.get("epic_link"), "customfield_10008"))
         self.confluence_base = str(pick("CONFLUENCE_BASE", conf.get("base"), "")).rstrip("/")

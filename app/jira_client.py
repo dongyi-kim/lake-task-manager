@@ -113,12 +113,12 @@ def _conf_title(url, text=None):
 _CAT_MAP = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
 
 
-VOC_COMPONENT = "사용자 VoC"          # 컴포넌트명 = VoC 판정 기준(워크로드·계보 공용)
+from .progress import VOC_COMPONENT   # 컴포넌트명 = VoC 판정 기준(워크로드·계보 공용, 단일 소스)
 
 
 def _wl_category(component, itype, is_subtask=None):
     """워크로드 카테고리 — VoC성 / Sub-Task / Task. is_subtask=issuetype.subtask(로케일 무관)."""
-    if component == "사용자 VoC":
+    if component == VOC_COMPONENT:
         return "voc"
     if is_subtask if is_subtask is not None else (itype == "Sub-Task"):
         return "subtask"
@@ -145,7 +145,7 @@ def _started_from(created, updated, cat):
 def _comp_of(f):
     """대표 Component 이름. VoC 성 판정을 위해 '사용자 VoC' 가 있으면 그걸, 없으면 첫 컴포넌트."""
     comps = [c.get("name") for c in (f.get("components") or [])]
-    return "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else None)
+    return VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else None)
 
 
 def _normalize_issue(raw, sp_field):
@@ -1569,7 +1569,7 @@ class JiraClient:
             for it in self._search(jql, max_results=300):   # write-through: 각 티켓 캐시
                 f = it.get("fields", {}) or {}
                 comps = [c.get("name") for c in (f.get("components") or [])]
-                comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
+                comp = VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else "")
                 itt = f.get("issuetype") or {}
                 c = _wl_category(comp, itt.get("name", ""), itt.get("subtask"))
                 if not c:
@@ -1616,6 +1616,7 @@ class JiraClient:
         itt = f.get("issuetype") or {}
         # sub-task 는 로케일별 이름이 달라도 뱃지/색이 맞게 "Sub-Task" 로 정규화(issuetype.subtask 기준).
         tname = "Sub-Task" if itt.get("subtask") else itt.get("name", "")
+        comps = [c.get("name") for c in (f.get("components") or []) if c.get("name")]
         return {
             "key": it.get("key", ""),
             "summary": f.get("summary", ""),
@@ -1624,6 +1625,11 @@ class JiraClient:
             "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
             "due": f.get("duedate") or None,
             "resolved": f.get("resolutiondate") or None,
+            # Epic 분포용. epic 이 있으면 그 Epic 소속이고(= VoC 라도 Epic 이 있으면 그쪽으로 센다),
+            # 없고 VoC 컴포넌트면 '사용자 VoC' 를 전용 Epic 처럼 따로 센다.
+            "epic": f.get(self.s.epic_link_field_id) or None,
+            "voc": self.s.voc_component in comps,
+            "components": comps,
         }
 
     # 버킷별 JQL — 세 리스트를 각각 따로 부를 수 있게 분리(프론트에서 병렬 로딩·개별 렌더).
@@ -1640,15 +1646,38 @@ class JiraClient:
             return None
         def do():
             raws = self._search(jql.format(u=user), max_results=200)
-            return [self._wl_ticket(it) for it in raws if self._wl_keep(it)]
+            out = [self._wl_ticket(it) for it in raws if self._wl_keep(it)]
+            self._attach_epic_names(out)
+            return out
         return self.cache.get_or_set(f"workload_bucket:{self.env}:{user}:{bucket}",
                                      self.s.cache_ttl_seconds, do)[0]
+
+    def _attach_epic_names(self, tickets):
+        """Epic 키 → 제목. 분포 막대의 범례에 키가 아니라 이름이 떠야 읽힌다.
+        키를 한 번에 모아 배치 조회하므로 왕복은 1회다(prod SSO 는 직렬이라 중요)."""
+        keys = sorted({t["epic"] for t in tickets if t.get("epic")})
+        if not keys:
+            return
+        try:
+            self.prefetch_issues(keys)
+        except Exception:
+            pass
+        names = {}
+        for k in keys:
+            try:
+                b = self.ticket_badge(k)
+            except Exception:
+                b = None
+            names[k] = (b or {}).get("summary") or k
+        for t in tickets:
+            if t.get("epic"):
+                t["epicName"] = names.get(t["epic"], t["epic"])
 
     def _wl_keep(self, it):
         """카운트와 동일 필터: Task성/VoC성만 (Epic·Story·Bug 제외)."""
         f = it.get("fields", {}) or {}
         comps = [c.get("name") for c in (f.get("components") or [])]
-        comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
+        comp = VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else "")
         itt = f.get("issuetype") or {}
         return _wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
 
@@ -1664,7 +1693,7 @@ class JiraClient:
         def keep(it):   # 카운트와 동일 필터: Task성/VoC성만 (Epic·Story·Bug 제외)
             f = it.get("fields", {}) or {}
             comps = [c.get("name") for c in (f.get("components") or [])]
-            comp = "사용자 VoC" if "사용자 VoC" in comps else (comps[0] if comps else "")
+            comp = VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else "")
             itt = f.get("issuetype") or {}
             return _wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
         op = self._search(f'assignee = "{user}" AND statusCategory = "To Do" AND updated >= -14d', max_results=200)

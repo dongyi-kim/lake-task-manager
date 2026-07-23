@@ -370,12 +370,27 @@ class World:
 
     # ── VoC 티켓 (Component=VoC, 고객의 소리성 업무) ──
     def _build_voc(self):
+        made = []
         for module in self.gen_modules:
             for pid in self._pool(module):
                 rng = _rng("voc", pid)
                 for _ in range(rng.randint(0, 5)):
-                    self._make_issue(rng, rng.choice(["Task", "Bug", "Story"]), module,
-                                     component="사용자 VoC", assignee=pid)
+                    k = self._make_issue(rng, rng.choice(["Task", "Bug", "Story"]), module,
+                                         component="사용자 VoC", assignee=pid)
+                    if k:
+                        made.append(k)          # _make_issue 는 **키**를 돌려준다
+        # VoC 는 보통 Epic 이 없지만 **가끔 Epic 이 배정된다**. 그때는 그 Epic 소속으로 세야 하므로
+        # (워크로드 Epic 분포) 그 경우를 데이터에 심어 둔다.
+        # ★ rng 미사용 — 키 해시로 결정적으로 고른다(world 시퀀스 불변).
+        epics_of = {}
+        for k, x in sorted(self.issues.items()):
+            if x["type"] == "Epic" and x.get("module"):
+                epics_of.setdefault(x["module"], []).append(k)
+        for k in made:
+            it = self.issues[k]
+            cands = epics_of.get(it["module"]) or []
+            if cands and sum(map(ord, k)) % 3 == 0:              # 대략 1/3
+                it["epicKey"] = cands[sum(map(ord, k)) % len(cands)]
 
     # 첨부 샘플 — 실제 바이트까지 넣어 다운로드/썸네일 경로도 dev 에서 동작하게 한다(아주 작게).
     _ATT_SPECS = [("설계_검토.png", "image/png"), ("배포_체크리스트.md", "text/markdown"),

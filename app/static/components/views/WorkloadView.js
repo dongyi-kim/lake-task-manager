@@ -9,6 +9,18 @@ import ProgressBar from "../ui/ProgressBar.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
 
+// 상세 3컬럼 — 상태 흐름 순서(할당 → 진행 → 완료). 세 버킷 모두 같은 행 컴포넌트를 쓴다.
+const WL_COLS = [
+  { k: "open", label: "할당됨", cls: "todo" },
+  { k: "inProgress", label: "진행 중", cls: "" },
+  { k: "done7d", label: "최근 7일 완료", cls: "done" },
+];
+// Epic 분포 색 — 건수 많은 순으로 팔레트를 배정(같은 화면 안에서만 일관되면 된다).
+const EPIC_COLORS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)",
+                     "var(--c5)", "var(--c6)", "var(--c7)"];
+const VOC_COLOR = "var(--ty-story)";      // 사용자 VoC — 전용 Epic 취급이라 고정색
+const NONE_COLOR = "var(--border-hi)";    // Epic 없음
+
 export default {
   name: "WorkloadView",
   components: { ProgressBar, TypeBadge, Avatar },
@@ -32,6 +44,7 @@ export default {
   unmounted() { if (this._onResize) window.removeEventListener("resize", this._onResize); },
   activated() { this.scheduleMeasure(); },   // keep-alive 재활성 시 평균선 재측정
   computed: {
+    WL_COLS() { return WL_COLS; },
     // 지금까지 도착한 모듈만 (스케일·평균·합계는 이걸 기준으로 계산)
     loaded() { return (this.d ? this.d.modules : []).map((m) => this.mods[m.module]).filter(Boolean); },
     totals() {
@@ -62,6 +75,38 @@ export default {
     },
   },
   methods: {
+    /** 세 버킷 티켓의 소속 Epic 분포.
+     *  규칙: Epic 이 있으면 그 Epic. 없고 VoC 컴포넌트면 **'사용자 VoC' 를 전용 Epic 처럼** 따로 센다
+     *  (Epic 없음에 섞으면 VoC 물량이 안 보인다). VoC 라도 Epic 이 배정돼 있으면 그 Epic 쪽으로 센다. */
+    epicDist(pid) {
+      const d = this.tkd[pid] || {};
+      const all = [].concat(d.open || [], d.inProgress || [], d.done7d || []);
+      const by = new Map();
+      for (const t of all) {
+        const key = t.epic ? t.epic : (t.voc ? "__voc__" : "__none__");
+        const name = t.epic ? (t.epicName || t.epic) : (t.voc ? "사용자 VoC" : "Epic 없음");
+        const kind = t.epic ? "epic" : (t.voc ? "voc" : "none");
+        const g = by.get(key) || { key, name, kind, value: 0 };
+        g.value++;
+        by.set(key, g);
+      }
+      // 실제 Epic 을 건수 순으로 먼저, VoC·Epic 없음은 성격이 달라 항상 끝에 고정한다.
+      const epics = [...by.values()].filter((g) => g.kind === "epic").sort((a, b) => b.value - a.value);
+      epics.forEach((g, i) => { g.color = EPIC_COLORS[i % EPIC_COLORS.length]; });
+      const voc = by.get("__voc__"); if (voc) voc.color = VOC_COLOR;
+      const none = by.get("__none__"); if (none) none.color = NONE_COLOR;
+      const groups = epics.concat(voc ? [voc] : [], none ? [none] : []);
+      return {
+        groups, total: all.length,
+        segments: groups.map((g) => ({ value: g.value, color: g.color,
+                                       title: g.name + " · " + g.value + "건" })),
+      };
+    },
+    /** 행의 Epic 뱃지 색 — 위 분포 막대와 같은 색이어야 눈으로 이어진다. */
+    epicColorOf(pid, t) {
+      const g = this.epicDist(pid).groups.find((x) => x.key === (t.epic || "__none__"));
+      return (g && g.color) || NONE_COLOR;
+    },
     mcolor(i) { return moduleColor(i); },
     openCount(p) { return p.open ? this.barVal(p.open, "count") : 0; },   // 미착수(To Do) 건수
     assignedCount(p) { return this.barVal(p.inProgress, "count") + this.openCount(p); },  // 미완료 할당
@@ -224,54 +269,55 @@ export default {
               <div v-if="actOpen[p.id]" class="act">
                 <div v-if="!tkd[p.id]" class="loading">불러오는 중…</div>
                 <div v-else-if="tkd[p.id].error" class="muted">불러오지 못했습니다: {{ tkd[p.id].error }}</div>
-                <div v-else class="tcols">
-                  <div>
-                    <div class="sec-t">진행 중 · 할당됨 <b>{{ (tkd[p.id].inProgress || []).length + (tkd[p.id].open || []).length }}</b></div>
-                    <div v-if="tkd[p.id].inProgress === null" class="loading">진행 중 불러오는 중…</div>
-                    <template v-else-if="tkd[p.id].inProgress.length">
-                      <div class="sub-lbl">진행 중 <b>{{ tkd[p.id].inProgress.length }}</b></div>
-                      <div v-for="t in tkd[p.id].inProgress" :key="'ip-' + t.key" class="wtk tkt"
-                           :data-key="t.key" role="button" tabindex="0" :title="t.key + ' · ' + t.summary">
-                        <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
-                        <span class="sm">{{ t.summary }}</span>
-                        <span class="sched">
-                          <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
-                          <span v-else class="dbadge nodue">마감 설정되지 않음</span>
-                          <span v-if="t.due" class="dchip" :class="ddCls(t.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(t.due) }}</span>
-                        </span>
-                      </div>
-                    </template>
-                    <div v-if="tkd[p.id].open === null" class="loading">할당됨 불러오는 중…</div>
-                    <template v-else-if="tkd[p.id].open.length">
-                      <div class="sub-lbl todo">할당됨 (미착수) <b>{{ (tkd[p.id].open || []).length }}</b></div>
-                      <div v-for="t in (tkd[p.id].open || [])" :key="'op-' + t.key" class="wtk todo tkt"
-                           :data-key="t.key" role="button" tabindex="0" :title="t.key + ' · ' + t.summary">
-                        <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
-                        <span class="sm">{{ t.summary }}</span>
-                        <span class="sched">
-                          <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
-                          <span v-else class="dbadge nodue">마감 설정되지 않음</span>
-                          <span v-if="t.due" class="dchip" :class="ddCls(t.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(t.due) }}</span>
-                        </span>
-                      </div>
-                    </template>
-                    <div v-if="tkd[p.id].inProgress && tkd[p.id].open && !tkd[p.id].inProgress.length && !tkd[p.id].open.length" class="muted">진행 중·할당됨 티켓 없음</div>
-                  </div>
-                  <div>
-                    <div class="sec-t">최근 7일 완료 <b>{{ (tkd[p.id].done7d || []).length }}</b></div>
-                    <div v-if="tkd[p.id].done7d === null" class="loading">불러오는 중…</div>
-                    <div v-for="t in (tkd[p.id].done7d || [])" :key="t.key" class="wtk done tkt"
-                         :data-key="t.key" role="button" tabindex="0" :title="t.key + ' · ' + t.summary">
-                      <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
-                      <span class="sm">{{ t.summary }}</span>
-                      <span class="sched">
-                        <span v-if="t.due" class="dbadge"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5" width="17" height="16" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>Due {{ fy(t.due) }}</span>
-                        <span class="dbadge fin"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5 11-11"/></svg>Finished {{ fdt(t.resolved) }}</span>
-                      </span>
+                <template v-else>
+                  <!-- 세 버킷에서 찾은 티켓의 **소속 Epic 분포**. 이 사람이 지금 어느 Epic 에
+                       매여 있는지가 목록보다 먼저 읽혀야 한다. -->
+                  <div class="wepic">
+                    <div class="wepic-h">Epic 분포
+                      <b>{{ epicDist(p.id).total }}</b>
+                      <span class="muted mini">할당됨·진행중·최근완료 합산</span>
                     </div>
-                    <div v-if="tkd[p.id].done7d && !tkd[p.id].done7d.length" class="muted">최근 7일 완료 티켓 없음</div>
+                    <ProgressBar :segments="epicDist(p.id).segments" :height="18" show-total />
+                    <div class="wepic-lg">
+                      <span v-for="g in epicDist(p.id).groups" :key="g.key" class="wepic-i"
+                            :class="{ voc: g.kind === 'voc', none: g.kind === 'none' }"
+                            :title="g.name + ' · ' + g.value + '건'">
+                        <i :style="{ background: g.color }"></i>{{ g.name }} <b>{{ g.value }}</b>
+                      </span>
+                      <span v-if="!epicDist(p.id).groups.length" class="muted mini">티켓 없음</span>
+                    </div>
                   </div>
-                </div>
+
+                  <!-- 할당됨 / 진행중 / 최근완료 — 상태 흐름 순서대로 3컬럼 -->
+                  <div class="tcols3">
+                    <div v-for="c in WL_COLS" :key="c.k" class="tcol">
+                      <div class="sec-t" :class="c.k">{{ c.label }}
+                        <b>{{ (tkd[p.id][c.k] || []).length }}</b>
+                      </div>
+                      <div v-if="tkd[p.id][c.k] === null" class="loading">불러오는 중…</div>
+                      <template v-else>
+                        <div v-for="t in tkd[p.id][c.k]" :key="c.k + '-' + t.key" class="wtk tkt"
+                             :class="c.cls" :data-key="t.key" role="button" tabindex="0"
+                             :title="t.key + ' · ' + t.summary">
+                          <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
+                          <span class="sm">{{ t.summary }}</span>
+                          <span class="sched">
+                            <span v-if="t.epic" class="ebadge" :style="{ '--ec': epicColorOf(p.id, t) }"
+                                  :title="'Epic: ' + (t.epicName || t.epic)">◆ {{ t.epicName || t.epic }}</span>
+                            <span v-else-if="t.voc" class="ebadge voc">◆ 사용자 VoC</span>
+                            <span v-else class="ebadge none">Epic 없음</span>
+                            <span v-if="c.k === 'done7d'" class="dbadge fin"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5 11-11"/></svg>{{ fdt(t.resolved) }}</span>
+                            <template v-else>
+                              <span v-if="t.due" class="dchip" :class="ddCls(t.due)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/></svg>{{ dd(t.due) }}</span>
+                              <span v-else class="dbadge nodue">마감 없음</span>
+                            </template>
+                          </span>
+                        </div>
+                        <div v-if="!(tkd[p.id][c.k] || []).length" class="muted mini">없음</div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
               </div>
             </template>
           </template>
