@@ -51,7 +51,7 @@ export default {
                     // 링크 추가(관련 티켓/관련문서) · 파일 첨부(＋ 버튼 · 드래그앤드롭)
                     relPick: false, linkBusy: false, linkErr: "",
                     docPick: false, docBusy: false, docErr: "",
-                    uploading: false, upErr: "", dragOver: false,
+                    uploading: false, upErr: "", dragOver: false, dragInEditor: false,
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
@@ -181,12 +181,35 @@ export default {
       const t = e.dataTransfer && e.dataTransfer.types;
       return !!t && Array.prototype.indexOf.call(t, "Files") >= 0;
     },
-    onDragEnter(e) { if (this.hasFiles(e)) { this._dragDepth = (this._dragDepth || 0) + 1; this.dragOver = true; } },
-    onDragOver(e) { if (this.hasFiles(e)) e.dataTransfer.dropEffect = "copy"; },
+    /** 지금 포인터가 **에디터 위**인가. 같은 파일을 놓아도 결과가 다르다:
+     *  에디터 위 → 댓글 본문에 들어가고 등록할 때 첨부된다.
+     *  그 밖 → 티켓 첨부로 **즉시** 올라간다(댓글과 무관).
+     *  구분을 안 하면 댓글을 쓰다 파일을 떨어뜨렸는데 본문엔 안 들어가고 첨부만 늘어난다. */
+    inEditor(e) { return !!(e.target && e.target.closest && e.target.closest(".cmt-editor")); },
+    onDragEnter(e) {
+      if (!this.hasFiles(e)) return;
+      this._dragDepth = (this._dragDepth || 0) + 1;
+      this.dragOver = true;
+      this.dragInEditor = this.inEditor(e);
+    },
+    onDragOver(e) {
+      if (!this.hasFiles(e)) return;
+      e.dataTransfer.dropEffect = "copy";
+      // dragenter 만으로는 에디터 안팎을 오갈 때 늦게 바뀐다 — 움직일 때마다 다시 본다.
+      this.dragInEditor = this.inEditor(e);
+    },
     // dragleave 는 자식으로 넘어갈 때도 뜬다 → 깊이를 세서 진짜 벗어날 때만 끈다
-    onDragLeave() { this._dragDepth = Math.max(0, (this._dragDepth || 0) - 1); if (!this._dragDepth) this.dragOver = false; },
+    onDragLeave() {
+      this._dragDepth = Math.max(0, (this._dragDepth || 0) - 1);
+      if (!this._dragDepth) { this.dragOver = false; this.dragInEditor = false; }
+    },
     onDrop(e) {
       this._dragDepth = 0; this.dragOver = false;
+      const wasEditor = this.dragInEditor;
+      this.dragInEditor = false;
+      // ★ 에디터 위에 놓았으면 여기서 아무것도 하지 않는다 — 에디터가 이미 받았다.
+      //   둘 다 처리하면 파일이 본문에도 들어가고 첨부로도 올라가 **두 번** 붙는다.
+      if (wasEditor || this.inEditor(e)) return;
       const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
       if (files.length) this.uploadFiles(files);
     },
@@ -441,6 +464,17 @@ export default {
          @click.self="!isPage && $emit('close')"
          @dragenter.prevent="onDragEnter" @dragover.prevent="onDragOver"
          @dragleave="onDragLeave" @drop.prevent="onDrop">
+    <!-- 드래그 중 안내 — 같은 파일이라도 **어디에 놓느냐로 결과가 달라지므로** 그 차이를
+         놓기 전에 말해 준다. 놓고 나서 "왜 본문에 안 들어갔지" 를 겪게 하면 안 된다. -->
+    <div v-if="dragOver" class="tkt-dz" :class="{ ed: dragInEditor }">
+      <div class="tkt-dz-c">
+        <div class="tkt-dz-ic">{{ dragInEditor ? '✍' : '📎' }}</div>
+        <b>{{ dragInEditor ? '댓글 본문에 넣기' : '티켓에 첨부' }}</b>
+        <span>{{ dragInEditor
+          ? '이미지는 본문에 보이고, 그 밖의 파일은 칩으로 들어갑니다 · 등록할 때 첨부됩니다'
+          : '놓는 즉시 첨부됩니다 · 댓글 본문에 넣으려면 작성 중인 에디터 위에 놓으세요' }}</span>
+      </div>
+    </div>
       <div class="tkt-dlg" :class="{ expanded, page: isPage }"
            :role="isPage ? null : 'dialog'" :aria-modal="isPage ? null : 'true'">
         <!-- 최상단 타이틀바 — 배경은 티켓 타입 색을 따른다.

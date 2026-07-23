@@ -554,7 +554,9 @@ export default {
                     maximized: false, restored: false,
                     // 인라인 모드에서 사용자가 끌어 정한 본문 높이(px). null = 기본값.
                     // 최대화 모드에는 안 쓴다 — 거기선 창이 높이를 정한다.
-                    hostH: loadEditorHeight(), resizing: false }; },
+                    hostH: loadEditorHeight(), resizing: false,
+                    // 파일을 이 에디터 위로 끌고 왔는가 — 테두리로 "여기에 놓으면 본문" 을 말한다
+                    dragOver: false, dragDepth: 0 }; },
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
@@ -680,6 +682,21 @@ export default {
     inCallout(t) { this.tick; return !!(this._ed && this._ed.isActive("callout", { type: t })); },
     tbCallout(t) { this.cmd((c) => c.toggleCallout(t).run()); },
     toggleMax() { this.maximized = !this.maximized; },
+
+    // 드래그 안내 — 실제 삽입은 ProseMirror 의 handleDrop 이 한다. 여기서는 **보이는 것만**
+    // 맡는다(테두리). 두 곳에서 삽입하면 파일이 두 번 들어간다.
+    hasFiles(e) {
+      const t = e.dataTransfer && e.dataTransfer.types;
+      return !!t && Array.prototype.indexOf.call(t, "Files") >= 0;
+    },
+    onDragEnter(e) { if (this.hasFiles(e)) { this.dragDepth++; this.dragOver = true; } },
+    onDragOver(e) {
+      if (!this.hasFiles(e)) return;
+      e.dataTransfer.dropEffect = "copy";
+      this.dragOver = true;    // dragenter 를 놓치는 경로(자식 위로 바로 진입)가 있어 여기서도 켠다
+    },
+    onDragLeave() { this.dragDepth = Math.max(0, this.dragDepth - 1); if (!this.dragDepth) this.dragOver = false; },
+    onDropFiles() { this.dragDepth = 0; this.dragOver = false; },
 
     /** 아래 손잡이를 끌어 본문 높이를 바꾼다(인라인 모드 전용).
      *  pointer 이벤트 + setPointerCapture 를 쓰는 이유: 마우스가 에디터 밖으로 나가도 끌림이
@@ -878,7 +895,8 @@ export default {
     },
   },
   template: `
-  <div class="cmt-editor" :class="{ maximized }">
+  <div class="cmt-editor" :class="{ maximized, 'drag-over': dragOver }"
+       @dragenter="onDragEnter" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDropFiles">
     <div v-if="loadErr" class="cmt-ed-err">{{ loadErr }}
       <button class="cmt-ed-btn" @click="$emit('cancel')">닫기</button>
     </div>
