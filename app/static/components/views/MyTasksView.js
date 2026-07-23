@@ -48,10 +48,34 @@ function epicSig(card) {
   return null;
 }
 
-const SORTS = [
-  { k: "due", label: "마감", hint: "마감 → 우선순위" },
-  { k: "pri", label: "우선순위", hint: "우선순위 → 마감" },
+// 옵션 정의 — 라벨/설명이 한곳에 있어야 콤보박스와 저장 키가 어긋나지 않는다.
+// reload: true 면 서버 질의 조건이라 값이 바뀌면 다시 받아야 한다(클라이언트에서 거를 수 없다).
+const OPTIONS = [
+  { key: "axis", label: "상태 축", opts: [
+    { k: "h", label: "가로축", hint: "할당됨/진행중/최근완료를 세로로 긴 칼럼으로 — 티켓은 리스트" },
+    { k: "v", label: "세로축", hint: "상태를 가로로 꽉 찬 패널로 쌓기 — 티켓은 그리드" }] },
+  { key: "groupBy", label: "그룹화", opts: [
+    { k: "none", label: "없음", hint: "모든 티켓을 개별 카드로" },
+    { k: "sub", label: "Sub Task", hint: "부모 Task 로 묶고 그 안에 Sub-Task — 하위가 없는 Task 는 그냥 카드" }] },
+  { key: "subView", label: "Sub Task", opts: [
+    { k: "collapsed", label: "모두 접기", hint: "하위를 모두 접는다 — 부모 Task 만 본다" },
+    { k: "mine", label: "내 티켓만", hint: "하위 중 내가 담당인 것만 펼친다" },
+    { k: "all", label: "모든 티켓", hint: "동료가 담당인 하위(유관)까지 모두 펼친다" }] },
+  { key: "scope", label: "범위", reload: true, opts: [
+    { k: "assignee", label: "담당", hint: "담당자가 나" },
+    { k: "reporter", label: "등록", hint: "내가 등록" },
+    { k: "both", label: "둘 다", hint: "담당 + 등록" }] },
+  { key: "sort", label: "정렬", opts: [
+    { k: "due", label: "마감", hint: "1차 마감 → 2차 우선순위" },
+    { k: "pri", label: "우선순위", hint: "1차 우선순위 → 2차 마감" }] },
+  { key: "openFilter", label: "할당됨", cls: "todo", reload: true, opts: [
+    { k: "all", label: "모두", hint: "담당된 모든 미착수 티켓" },
+    { k: "2w", label: "2주 내 갱신", hint: "최근 2주 안에 갱신된 것만 — 오래 방치된 건 감춘다" }] },
+  { key: "doneFilter", label: "완료", cls: "done", reload: true, opts: [
+    { k: "1w", label: "1주", hint: "최근 1주 안에 완료" },
+    { k: "1m", label: "1달", hint: "최근 1달 안에 완료" }] },
 ];
+const PREF_KEY = "mytasks.opts";
 
 export default {
   name: "MyTasksView",
@@ -61,10 +85,11 @@ export default {
       model: null, loading: true, err: "",
       axis: "h",            // h = 상태를 가로축(칸반) | v = 상태를 세로축(가로 패널)
       groupBy: "sub",       // none | sub (부모 Task 로 묶기)
-      // 하위(Sub-Task) 보기 3단: collapsed(모두 접기) | mine(내 것만) | all(전체).
-      // showRelated 는 그 **기본값**을 정하고, 그룹별 버튼이 개별로 덮어쓴다.
-      showRelated: false,
-      groupModes: {},       // { 그룹키: 'collapsed' | 'mine' | 'all' }
+      // 하위(Sub-Task) 보기 — **화면 전체에 하나**. collapsed | mine | all.
+      // 전에는 그룹마다 버튼을 달아 개별로 바꿨는데, 그룹이 열 개면 열 번 눌러야 원하는 상태가 되고
+      // 지금 무엇이 펼쳐져 있는지도 카드마다 달라 한눈에 안 잡혔다. 보기 방식은 화면의 성격이지
+      // 그룹 하나하나의 속성이 아니다.
+      subView: "mine",
       bandClosed: {},       // 세로축 모드에서 접어 둔 상태 밴드 { todo|inprogress|done: true }
       scope: "assignee",    // assignee | reporter | both
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
@@ -72,7 +97,7 @@ export default {
       sort: "due",
     };
   },
-  mounted() { this.load(); },
+  mounted() { this.loadPrefs(); this.load(); },
   computed: {
     groups() { return (this.model && this.model.groups) || []; },
     epicMap() {
@@ -81,8 +106,7 @@ export default {
       return m;
     },
     states() { return STATES; },
-    defaultMode() { return this.showRelated ? "all" : "mine"; },
-    sorts() { return SORTS; },
+    options() { return OPTIONS; },
     doneDays() { return (this.model && this.model.doneWindowDays) || 7; },
 
     /** 모든 카드(내 것 + 유관) — 배치 이전의 평면 목록. 각 카드는 소속(부모/Epic)을 안다. */
@@ -126,10 +150,32 @@ export default {
       catch (e) { this.err = (e && e.message) || "불러오기 실패"; }
       finally { this.loading = false; }
     },
-    setScope(v) { if (this.scope !== v) { this.scope = v; this.load(); } },
-    // 축 필터는 JQL 조건이라 바꾸면 다시 받는다(클라이언트에서 걸러낼 수 있는 게 아니다)
-    setOpenFilter(v) { if (this.openFilter !== v) { this.openFilter = v; this.load(); } },
-    setDoneFilter(v) { if (this.doneFilter !== v) { this.doneFilter = v; this.load(); } },
+    /** 옵션 하나 바꾸기. reload 옵션은 JQL 조건이라 바꾸면 다시 받는다
+     *  (서버 질의 자체가 달라지므로 클라이언트에서 걸러낼 수 있는 게 아니다). */
+    setOpt(o, v) {
+      if (this[o.key] === v) return;
+      this[o.key] = v;
+      this.savePrefs();
+      if (o.reload) this.load();
+    },
+    hintOf(o) { const cur = o.opts.find((x) => x.k === this[o.key]); return cur ? cur.hint : o.label; },
+
+    /** 옵션은 브라우저에 남긴다 — 매번 같은 배치로 맞추는 건 화면이 할 일이지 사람이 할 일이 아니다.
+     *  값 검증까지 하는 이유: 옵션 목록이 바뀌면 저장된 옛 값이 어디에도 없는 상태가 되고,
+     *  그러면 select 가 빈 채로 뜨고 필터는 이상하게 걸린다. */
+    loadPrefs() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(PREF_KEY) || "null"); } catch (e) { saved = null; }
+      if (!saved) return;
+      for (const o of OPTIONS) {
+        if (o.opts.some((x) => x.k === saved[o.key])) this[o.key] = saved[o.key];
+      }
+    },
+    savePrefs() {
+      const out = {};
+      for (const o of OPTIONS) out[o.key] = this[o.key];
+      try { localStorage.setItem(PREF_KEY, JSON.stringify(out)); } catch (e) { /* 사파리 프라이빗 등 */ }
+    },
 
     /** 원자/동료 티켓 → 카드. mine 이면 강조 대상이다. */
     card(t, g, mine) {
@@ -150,9 +196,9 @@ export default {
       });
     },
     /** 그룹이 아닌(=하위 없는) 카드 묶음용 — 기본은 내 담당만, '유관 기본 펼침' 이면 전부.
-        하위가 있는 Task 는 그룹별 3단 모드(modeOf)를 쓰므로 이 함수를 타지 않는다. */
+        '모두 접기' 는 하위에만 걸리는 말이라 여기선 '내 것만' 과 같게 둔다 — 접을 하위가 없다. */
     visible(cards) {
-      return this.sorted(this.showRelated ? cards : cards.filter((c) => c.mine));
+      return this.sorted(this.subView === "all" ? cards : cards.filter((c) => c.mine));
     },
     dueOf(c) { return (c.dueDays === null || c.dueDays === undefined) ? NO_DUE : c.dueDays; },
     sorted(cards) {
@@ -175,7 +221,7 @@ export default {
     taskPanel(g) {
       const mineCards = g.atoms.map((a) => this.card(a, g, true));
       const all = mineCards.concat(g.others.map((ot) => this.card(ot, g, false)));
-      const mode = this.modeOf(g.key);
+      const mode = this.subView;
       const shown = mode === "collapsed" ? [] : (mode === "all" ? all : mineCards);
       return {
         key: g.key, kind: "task", group: g,
@@ -206,25 +252,10 @@ export default {
     bandOpen(k) { return !this.bandClosed[k]; },
     toggleBand(k) { this.bandClosed = Object.assign({}, this.bandClosed, { [k]: !this.bandClosed[k] }); },
     bandCount(k) {
-      return this.allCards.filter((c) => c.statusCategory === k && (this.showRelated || c.mine)).length;
+      return this.allCards.filter((c) => c.statusCategory === k && (this.subView === "all" || c.mine)).length;
     },
     /** 하위 보기 모드 — 그룹별 설정이 있으면 그것, 없으면 상단 옵션이 정한 기본값. */
-    modeOf(k) { return this.groupModes[k] || this.defaultMode; },
     /** 펼치기 버튼 — 접기 → 내 것만 → 전체 → 접기 로 순환한다. */
-    cycleMode(k) {
-      const next = { collapsed: "mine", mine: "all", all: "collapsed" };
-      this.groupModes = Object.assign({}, this.groupModes, { [k]: next[this.modeOf(k)] });
-    },
-    modeLabel(m, mineN, allN) {
-      if (m === "collapsed") return "▸ 하위 " + allN;
-      if (m === "mine") return "▾ 내 하위 " + mineN + (allN > mineN ? " / " + allN : "");
-      return "▾ 전체 " + allN;
-    },
-    modeHint(m) {
-      if (m === "collapsed") return "모두 접힘 — 누르면 내가 할당된 하위만 펼칩니다";
-      if (m === "mine") return "내가 할당된 하위만 — 누르면 모든 하위를 펼칩니다";
-      return "모든 하위 — 누르면 접습니다";
-    },
     epicTitle(k) { return k ? ((this.epicMap[k] || {}).title || k) : null; },
     /** 카드 좌측 띠 색 — 소속 Epic 의 시그니처 컬러. 없으면 null(중립). */
     sigOf(c) { return epicSig(c); },
@@ -241,74 +272,6 @@ export default {
   },
   template: `
   <div class="mytasks" :class="'ax-' + axis">
-    <div class="mt-head">
-      <div>
-        <h2 class="mt-h">내 Task<span v-if="model && model.user" class="mt-who">{{ model.user.name || model.user.id }}</span></h2>
-        <div class="mt-sub">상태 축·그룹화·유관 보기를 바꾸면 같은 데이터를 다르게 배치합니다.</div>
-      </div>
-      <div v-if="model" class="mt-counts">
-        <span class="mt-c todo">할당됨 <b>{{ counts.todo }}</b></span>
-        <span class="mt-c prog">진행 중 <b>{{ counts.inprogress }}</b></span>
-        <span class="mt-c done">최근 {{ doneDays }}일 완료 <b>{{ counts.done }}</b></span>
-        <span class="mt-c" :class="{ zero: !counts.related }">유관 <b>{{ counts.related }}</b></span>
-      </div>
-    </div>
-
-    <!-- 옵션 패널 — 세 축을 여기서 정한다 -->
-    <div class="mt-bar">
-      <div class="mt-opt">
-        <span class="mt-opt-l">상태 축</span>
-        <div class="mt-seg">
-          <button :class="{ on: axis === 'h' }" @click="axis = 'h'"
-                  title="할당됨/진행중/최근완료를 세로로 긴 칼럼으로 — 티켓은 리스트">가로축</button>
-          <button :class="{ on: axis === 'v' }" @click="axis = 'v'"
-                  title="상태를 가로로 꽉 찬 패널로 쌓기 — 티켓은 그리드">세로축</button>
-        </div>
-      </div>
-      <div class="mt-opt">
-        <span class="mt-opt-l">그룹화</span>
-        <div class="mt-seg">
-          <button :class="{ on: groupBy === 'none' }" @click="groupBy = 'none'" title="모든 티켓을 개별 카드로">없음</button>
-          <button :class="{ on: groupBy === 'sub' }" @click="groupBy = 'sub'"
-                  title="부모 Task 로 묶고 그 안에 Sub-Task — 하위가 없는 Task 는 그냥 카드">Sub Task</button>
-        </div>
-      </div>
-      <div class="mt-opt">
-        <span class="mt-opt-l">범위</span>
-        <div class="mt-seg">
-          <button :class="{ on: scope === 'assignee' }" @click="setScope('assignee')" title="담당자가 나">담당</button>
-          <button :class="{ on: scope === 'reporter' }" @click="setScope('reporter')" title="내가 등록">등록</button>
-          <button :class="{ on: scope === 'both' }" @click="setScope('both')" title="담당 + 등록">둘 다</button>
-        </div>
-      </div>
-      <div class="mt-opt">
-        <span class="mt-opt-l">정렬</span>
-        <div class="mt-seg">
-          <button v-for="s in sorts" :key="s.k" :class="{ on: sort === s.k }" @click="sort = s.k" :title="s.hint">{{ s.label }}</button>
-        </div>
-      </div>
-      <!-- 상태 축별 범위 — 컬럼 헤더에 메뉴를 달면 헤더가 시끄러워지고 세로축 모드에선 둘 곳이 없다.
-           컨트롤은 이 패널 한 곳에 모아 둔다. -->
-      <div class="mt-opt">
-        <span class="mt-opt-l st todo">할당됨</span>
-        <div class="mt-seg">
-          <button :class="{ on: openFilter === 'all' }" @click="setOpenFilter('all')" title="담당된 모든 미착수 티켓">모두</button>
-          <button :class="{ on: openFilter === '2w' }" @click="setOpenFilter('2w')" title="최근 2주 안에 갱신된 것만 — 오래 방치된 건 감춘다">2주 내 갱신</button>
-        </div>
-      </div>
-      <div class="mt-opt">
-        <span class="mt-opt-l st done">완료</span>
-        <div class="mt-seg">
-          <button :class="{ on: doneFilter === '1w' }" @click="setDoneFilter('1w')" title="최근 1주 안에 완료">1주</button>
-          <button :class="{ on: doneFilter === '1m' }" @click="setDoneFilter('1m')" title="최근 1달 안에 완료">1달</button>
-        </div>
-      </div>
-      <label class="mt-tg" title="하위(Sub-Task) 펼침 기본값 — 각 그룹의 펼치기 버튼으로 개별 변경할 수 있습니다">
-        <input type="checkbox" v-model="showRelated"> 유관 Task 기본 펼침
-      </label>
-      <button class="mt-refresh" @click="load" title="다시 불러오기">↻</button>
-    </div>
-
     <div v-if="loading" class="loading">불러오는 중…</div>
     <div v-else-if="err" class="mt-err">{{ err }}</div>
     <div v-else-if="!panels.length" class="mt-empty">표시할 일감이 없습니다.</div>
@@ -320,7 +283,7 @@ export default {
       <div class="mt-headrow">
         <div v-for="st in states" :key="'h-' + st.k" class="mt-colh" :class="'c-' + st.k">
           {{ st.label }}
-          <b>{{ allCards.filter(c => c.statusCategory === st.k && (showRelated || c.mine)).length }}</b>
+          <b>{{ allCards.filter(c => c.statusCategory === st.k && (subView === 'all' || c.mine)).length }}</b>
         </div>
       </div>
 
@@ -358,8 +321,6 @@ export default {
               <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
 
             </div>
-            <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
-                    :title="modeHint(p.mode)">{{ modeLabel(p.mode, p.mineCount, p.allCount) }}</button>
           </div>
           <div v-if="p.mode !== 'collapsed'" class="mt-gbody">
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
@@ -371,7 +332,7 @@ export default {
                   <PriIcon :rank="c.priRank" :name="c.pri" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
-                  <span v-if="!c.mine || p.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                  <span v-if="!c.mine || subView === 'all'" class="mt-owner" :class="{ me: c.mine }"
                         :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
@@ -428,8 +389,6 @@ export default {
               <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
 
             </div>
-                <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
-                        :title="modeHint(p.mode)">{{ modeLabel(p.mode, p.mineCount, p.allCount) }}</button>
               </div>
               <div class="mt-gbody one">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
@@ -439,7 +398,7 @@ export default {
                   <PriIcon :rank="c.priRank" :name="c.pri" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
-                  <span v-if="!c.mine || p.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                  <span v-if="!c.mine || subView === 'all'" class="mt-owner" :class="{ me: c.mine }"
                         :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
@@ -451,5 +410,19 @@ export default {
         </template>
       </div>
     </template>
+    <!-- 옵션 패널 — 세 축을 여기서 정한다. **화면 하단에 띄운다**:
+         이 화면의 본론은 목록이고 옵션은 가끔 건드리는 것이라, 위에 두면 스크롤 한 판을
+         옵션이 먼저 먹는다. 마크업도 목록 뒤에 둬 탭 이동이 목록을 먼저 지나가게 한다
+         (보이는 순서와 읽는 순서를 맞춘다). -->
+    <div class="mt-bar float">
+      <label v-for="o in options" :key="o.key" class="mt-opt">
+        <span class="mt-opt-l" :class="o.cls">{{ o.label }}</span>
+        <select class="mt-sel" :value="$data[o.key]" @change="setOpt(o, $event.target.value)"
+                :title="hintOf(o)">
+          <option v-for="v in o.opts" :key="v.k" :value="v.k" :title="v.hint">{{ v.label }}</option>
+        </select>
+      </label>
+      <button class="mt-refresh" @click="load" title="다시 불러오기">↻</button>
+    </div>
   </div>`,
 };

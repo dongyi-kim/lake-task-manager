@@ -426,3 +426,38 @@
    (그룹 전체를 붉히면 하위까지 다 급해 보인다. 급한 건 부모 자신이다) */
 .mt-card.parent.urgent:not(:hover) {
   background: color-mix(in srgb, var(--today) 6%, transparent); }
+
+/* ── 하단 플로팅 옵션 바 ─────────────────────────────────────────────────────
+   이 화면의 본론은 목록이다. 옵션을 위에 두면 스크롤 한 판을 옵션이 먼저 먹고, 정작
+   보러 온 티켓은 접힌 화면 아래에서 시작한다. 아래에 띄우면 화면 위쪽을 통째로 목록에 준다.
+   가운데 정렬 + 화면 폭에 맞춰 줄바꿈. 목록 끝이 바 뒤에 가리지 않게 아래 여백을 준다. */
+.mytasks { padding-bottom: 96px; }
+.mt-bar.float { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+  z-index: 40; margin: 0; justify-content: center;
+  /* fixed + shrink-to-fit 은 폭을 내용보다 좁게 잡아 멀쩡한데도 줄바꿈된다 → max-content.
+     화면이 좁으면 max-width 가 걸리고 그때는 정상적으로 줄바꿈된다. */
+  width: max-content; max-width: calc(100vw - 32px);
+  border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.16), 0 1px 3px rgba(0,0,0,.10);
+  /* 반투명 + 블러 — 뒤 카드가 비쳐 '떠 있는 판' 으로 읽히고, 무엇을 가리고 있는지도 보인다 */
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+:root[data-theme="dark"] .mt-bar.float {
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+  box-shadow: 0 6px 24px rgba(0,0,0,.5), 0 1px 3px rgba(0,0,0,.4); }
+/* 새로고침 버튼은 오른쪽 끝으로 밀 이유가 없다(바가 화면 폭이 아니라 내용 폭이다) */
+.mt-bar.float .mt-refresh { margin-left: 4px; }
+@media (max-width: 900px) { .mt-bar.float { gap: 8px; padding: 7px 9px; }
+  .mytasks { padding-bottom: 128px; } }
+
+/* ── 콤보박스 옵션 ──────────────────────────────────────────────────────────
+   토글 세그먼트는 선택지를 다 펼쳐 보여 주는 대신 **자리를 선택지 수만큼** 먹는다.
+   옵션이 일곱 개면 바가 화면 폭을 다 쓰고 줄바꿈까지 생긴다. 콤보박스는 고른 값 하나만
+   보이므로 바가 한 줄에 들어가고, 무엇을 고를 수 있는지는 열었을 때 보면 된다. */
+.mt-bar .mt-opt { gap: 5px; cursor: pointer; }
+.mt-sel { font: inherit; font-size: 11.5px; font-weight: 600; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px;
+  padding: 4px 6px; cursor: pointer; max-width: 120px; }
+.mt-sel:hover { border-color: var(--border-hi); }
+.mt-sel:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.mt-opt-l.todo { color: var(--st-todo); }
+.mt-opt-l.done { color: var(--st-done); }
