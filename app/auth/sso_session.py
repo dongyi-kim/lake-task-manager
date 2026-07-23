@@ -87,6 +87,10 @@ class SsoSessionProvider(AuthProvider):
                 break
             fn, done, box = job
             try:
+                # PC 절전/크래시로 브라우저가 죽어 있을 수 있다(밤새 켜 둔 뒤 흔하다).
+                # 그때는 **저장된 쿠키 파일로 브라우저만 다시 띄운다** — 재로그인 불필요.
+                if not self._browser.is_connected():
+                    self._relaunch()
                 box[0] = fn()
             except BaseException as e:   # noqa: BLE001 - 호출자 스레드로 재전달
                 box[1] = e
@@ -96,6 +100,25 @@ class SsoSessionProvider(AuthProvider):
             self._p.stop()
         except Exception:
             pass
+
+    def _relaunch(self):
+        """브라우저/컨텍스트만 다시 만든다. storage_state(SSO 쿠키)는 파일에서 그대로 재사용하므로
+        세션이 아직 유효하면 사용자는 아무것도 안 해도 된다. 만료됐다면 다음 호출이 401 →
+        SessionExpired 로 정상 안내된다."""
+        for obj in (getattr(self, "_context", None), getattr(self, "_browser", None)):
+            try:
+                obj.close()
+            except Exception:
+                pass
+        self._browser = _launch(self._p, headless=True)
+        ctx_kw = {"storage_state": self._state_path}
+        if self._ua:
+            ctx_kw["user_agent"] = self._ua
+        self._context = self._browser.new_context(**ctx_kw)
+
+    # 한 요청이 이보다 오래 걸리면 스레드가 먹통이라고 본다. 넉넉히 두되 **무한 대기는 안 된다** —
+    # 예전엔 timeout 이 없어, 죽은 브라우저에서 호출이 멎으면 앱 전체가 응답을 잃었다.
+    JOB_TIMEOUT = 180
 
     def _submit(self, fn, priority=0):
         """fn 을 Playwright 전용 스레드에서 실행하고 결과/예외를 호출자 스레드로 반환.
@@ -109,7 +132,10 @@ class SsoSessionProvider(AuthProvider):
         done = threading.Event()
         box = [None, None]   # [result, error]
         self._jobs.put((priority, next(self._seq), (fn, done, box)))
-        done.wait()
+        if not done.wait(self.JOB_TIMEOUT):
+            raise SessionExpired(
+                "Jira 응답이 없습니다(%ds 초과). 절전 후 세션이 끊겼을 수 있습니다 — "
+                "[SSO 로그인] 을 다시 실행하세요." % self.JOB_TIMEOUT)
         if box[1] is not None:
             raise box[1]
         return box[0]

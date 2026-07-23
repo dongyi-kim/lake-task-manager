@@ -232,6 +232,24 @@ def _set_window_icon_win(ico_path):
         return False
 
 
+def _appwin_profile():
+    """앱 창 Chromium 프로필 경로 — SSO 세션 파일 옆에 둔다(같이 백업/삭제되게).
+    고정 경로라 쿠키·로그인 상태가 창을 닫았다 열어도 남는다."""
+    from pathlib import Path
+
+    from app.settings import get_settings
+    try:
+        base = Path(get_settings().jira_state_path).resolve().parent
+    except Exception:
+        base = Path.cwd()
+    d = base / ".appwin-profile"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
 def _window_session(s, auto_login=False, headless=False):
     """앱 창(Playwright Chromium, --app 모드) 하나를 열고 **닫힐 때까지** 대기.
     서버는 이미 떠 있다고 가정(창의 goto 재시도가 준비를 커버) — 여기선 서버를 시작/종료하지 않는다.
@@ -241,20 +259,31 @@ def _window_session(s, auto_login=False, headless=False):
     """
     import shutil
     import tempfile
-    url = f"http://localhost:{s.app_port}/"
+    url = f"http://127.0.0.1:{s.app_port}/"            # localhost 는 Windows 에서 ::1 폴백 지연
     import app.main as appmain
     appmain._window_login = True                       # /api/login 이 이 창에서 로그인하도록
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
-    udd = tempfile.mkdtemp(prefix="ltm-appwin-")       # 앱 창 전용 임시 프로필 (cwd 오염 방지)
-    context = p.chromium.launch_persistent_context(
-        user_data_dir=udd,
-        headless=headless,
-        no_viewport=True,                              # 뷰포트를 실제 창 크기에 추종(리사이즈 시 흰 여백 방지)
-        ignore_default_args=["--enable-automation"],   # '자동화 제어 중' 안내바 제거
-        args=["--no-first-run", "--no-default-browser-check",
-              "--window-size=1400,900", f"--app={_BOOT_DATA_URL}"],  # 앱 모드 + 즉시 부팅로더
-    )
+
+    def _launch(udd):
+        return p.chromium.launch_persistent_context(
+            user_data_dir=udd,
+            headless=headless,
+            no_viewport=True,                          # 뷰포트를 실제 창 크기에 추종(리사이즈 시 흰 여백 방지)
+            ignore_default_args=["--enable-automation"],   # '자동화 제어 중' 안내바 제거
+            args=["--no-first-run", "--no-default-browser-check",
+                  "--window-size=1400,900", f"--app={_BOOT_DATA_URL}"],  # 앱 모드 + 즉시 부팅로더
+        )
+
+    # 앱 창 프로필은 **고정 경로**를 쓴다 — 매번 임시 디렉터리를 새로 만들면 쿠키가 늘 초기화된다.
+    # 창을 여러 개 열면 같은 프로필을 동시에 못 쓰므로(Chromium 이 잠근다) 그때만 임시로 떨어진다.
+    shared = _appwin_profile()
+    udd, tmp = str(shared), False
+    try:
+        context = _launch(udd)
+    except Exception:
+        udd, tmp = tempfile.mkdtemp(prefix="ltm-appwin-"), True
+        context = _launch(udd)
     page = context.pages[0] if context.pages else context.wait_for_event("page")
     _wire_external_links(context, page)                # 외부 링크 훅(goto 전 설치 → 실제 페이지에도 적용)
     for _ in range(300):                               # goto 재시도(서버 준비 대기 포함, ~30s). 부팅로더 유지.
@@ -282,15 +311,23 @@ def _window_session(s, auto_login=False, headless=False):
             if i < 16:                                  # ~8초 동안 창 아이콘 재적용(favicon 덮어쓰기 대비)
                 _set_window_icon_win(ico_path)
             i += 1
-            page.wait_for_timeout(500)
+            # ★ page.wait_for_timeout 이 아니라 로컬 sleep. 전자는 브라우저와 프로토콜 왕복을 하는데,
+            #   절전 등으로 파이프가 먹통이면 **영원히 멈춘다**(트레이가 창을 죽은 걸로 못 알아챘다).
+            #   is_closed() 는 로컬 상태라 왕복이 없다.
+            time.sleep(0.5)
     except Exception:
         pass
-    for closer in (context.close, p.stop):
-        try:
-            closer()
-        except Exception:
-            pass
-    shutil.rmtree(udd, ignore_errors=True)             # 임시 프로필 정리
+    # 정리는 별도 스레드에 맡기고 기다리지 않는다 — 죽은 드라이버에서 close()/stop() 이 멎을 수 있고,
+    # 여기서 막히면 호출한 쪽(트레이)이 창이 닫힌 걸 영영 모른다.
+    def _cleanup():
+        for closer in (context.close, p.stop):
+            try:
+                closer()
+            except Exception:
+                pass
+        if tmp:
+            shutil.rmtree(udd, ignore_errors=True)     # 임시 프로필만 정리(고정 프로필은 보존)
+    threading.Thread(target=_cleanup, name="appwin-cleanup", daemon=True).start()
 
 
 def _run_app_window(s):
@@ -391,20 +428,18 @@ def _run_tray(s):
     server = _serve_bg(s, wait=False)                  # 백엔드 상시(창과 독립)
     _ensure_start_menu_shortcut()                      # '시작'에서 검색 가능하게
 
-    _win = {"open": False}
-    _lock = threading.Lock()
-
     def open_window(initial=False):
-        with _lock:
-            if _win["open"]:
-                return                                 # 한 번에 창 하나만
-            _win["open"] = True
+        """[앱 열기] — 잠그지 않고 **누를 때마다 새 창**을 연다.
 
+        예전엔 'open' 플래그로 한 번에 하나만 열었는데, 절전 등으로 창 스레드가 멎으면
+        플래그가 True 로 굳어 이후 [앱 열기]가 **아무 반응 없이** 무시됐다(밤새 켜 둔 뒤 겪는 증상).
+        창은 그냥 브라우저 하나라 여러 개 열려도 문제가 없으니, 상태를 안 들고 있는 쪽이 안전하다.
+        """
         def run():
             try:
                 _window_session(s, auto_login=initial)
-            finally:
-                _win["open"] = False
+            except Exception as e:                     # 조용히 죽지 않게 로그는 남긴다
+                print("app window error:", e)
         threading.Thread(target=run, name="app-window", daemon=True).start()
 
     # 트레이 아이콘 이미지 (png 우선)

@@ -1,5 +1,6 @@
 # SSO 세션 — 실 크리덴셜, 절대 커밋 금지
 jira_state.json
+.appwin-profile/          # 앱 창 Chromium 프로필(쿠키·세션) — 절대 커밋 금지
 
 # Python
 __pycache__/
