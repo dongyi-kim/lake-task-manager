@@ -56,7 +56,7 @@ class _RecentBody(BaseModel):
 app = FastAPI(title="Lake Task Manager")
 
 _settings = get_settings()
-_cache = Cache(_settings.cache_db_path)
+_cache = Cache(_settings.cache_db_path, dead_ttl=_settings.cache_dead_ttl_seconds)
 _client = JiraClient(_settings, _cache)
 
 # 앱 창 모드(run.py)에서 SSO 로그인을 '같은 창'으로 처리하기 위한 in-process 신호.
@@ -68,7 +68,11 @@ _window_login = False
 @app.exception_handler(SessionExpired)
 def _on_session_expired(request: Request, exc: SessionExpired):
     """세션 없음(LoginRequired)·만료(SessionExpired) → 500 대신 401 + needLogin 플래그.
-    프론트가 로그인 오버레이를 띄운다."""
+
+    여기까지 왔다는 건 **캐시로도 못 막았다**는 뜻이다(캐시가 있으면 낡은 값으로 답했다).
+    그러니 이 지점에서 상류를 '죽음' 으로 표시해 둔다 — 다음 호출들은 죽은 세션에 붙어
+    수십 초를 버리는 대신 곧바로 캐시로 답한다."""
+    _client.mark_upstream_down(str(exc)[:120])
     return JSONResponse(
         status_code=401,
         content={"needLogin": True, "env": _settings.jira_env, "detail": str(exc)})
@@ -250,11 +254,63 @@ def health():
     need = _client.needs_login()
     if not need and _settings.jira_env == "prod":
         need = not bool(_session_user().get("id"))
+    st = _client.upstream_state()
+    if not need:
+        _client.mark_upstream_ok()          # 세션이 읽혔다 = 상류 정상
     return {"status": "ok", "env": _settings.jira_env, "projectKey": _settings.project_key,
             "needLogin": need, "rev": _BUILD_REV,
             # 앱 URL(localhost/browse/KEY)을 붙여넣었을 때 실 Jira 주소로 바꾸기 위해 프론트에 노출
             "jiraBase": (_settings.jira_base or "").rstrip("/"),
+            # 인증이 안 돼도 캐시가 있으면 화면은 띄운다 — 프론트가 이걸 보고 판단한다.
+            "hasCache": st["hasCache"], "lastSyncAt": st["lastSyncAt"],
             "devTools": sorted(_settings.dev_tools)}
+
+
+_ONLINE_CACHE = {"at": 0.0, "ok": False}
+
+
+def _probe_online(timeout=1.2):
+    """Jira 호스트에 **TCP 로 닿기만** 하는지. 인증을 타지 않으므로 싸고 빠르다.
+
+    '오프라인' 과 '온라인인데 미인증' 은 사용자가 할 일이 다르다 — 전자는 기다리는 것 말곤
+    없고, 후자는 로그인을 끝내면 된다. 화면이 둘을 같은 말로 뭉뚱그리면 안 된다.
+    결과는 몇 초 캐시한다(상단 알림이 주기적으로 물어보므로).
+    """
+    import socket
+    import time as _t
+    from urllib.parse import urlparse
+    if _t.time() - _ONLINE_CACHE["at"] < 5:
+        return _ONLINE_CACHE["ok"]
+    u = urlparse(_settings.jira_base or "")
+    host, port = u.hostname, (u.port or (443 if u.scheme == "https" else 80))
+    ok = False
+    if host:
+        try:
+            with socket.create_connection((host, port), timeout):
+                ok = True
+        except Exception:
+            ok = False
+    _ONLINE_CACHE.update(at=_t.time(), ok=ok)
+    return ok
+
+
+@app.get("/api/status")
+def api_status():
+    """화면 상단 알림용 경량 상태 — **Jira 를 타지 않는다**(그래야 자주 물어도 된다).
+    오프라인/인증 중인지, 지금 보고 있는 데이터가 언제 기준인지."""
+    st = _client.upstream_state()
+    st["env"] = _settings.jira_env
+    unauth = _client.needs_login() or st["down"]
+    # mode — 화면 상단 알림이 이 하나로 갈린다.
+    #   ok             정상
+    #   offline        망이 안 닿는다 → 기다리는 수밖에 없다
+    #   authenticating 망은 닿는데 세션이 없다 → 로그인이 진행 중이다
+    if not unauth:
+        st["mode"] = "ok"
+    else:
+        st["mode"] = "authenticating" if _probe_online() else "offline"
+    st["needLogin"] = unauth
+    return JSONResponse(st)
 
 
 @app.post("/api/login")

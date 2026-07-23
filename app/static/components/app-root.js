@@ -7,6 +7,7 @@ import WbsView from "./views/WbsView.js";
 import DevToolsView from "./views/DevToolsView.js";
 import FormulaCallout from "./ui/FormulaCallout.js";
 import LoginOverlay from "./ui/LoginOverlay.js";
+import StatusBanner from "./ui/StatusBanner.js";
 import TicketDialog from "./ui/TicketDialog.js";
 import SearchOverlay from "./ui/SearchOverlay.js";
 import SettingsMenu from "./ui/SettingsMenu.js";
@@ -34,7 +35,7 @@ function ticketOf() {
 
 export default {
   name: "AppRoot",
-  components: { FormulaCallout, LoginOverlay, TicketDialog, SearchOverlay, SettingsMenu },
+  components: { FormulaCallout, LoginOverlay, StatusBanner, TicketDialog, SearchOverlay, SettingsMenu },
   // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
@@ -44,6 +45,8 @@ export default {
                     //   매니저의 탭이 사라지거나 첫 화면에서 튕기는 쪽이, 워커에게 잠깐 보였다가
                     //   사라지는 쪽보다 훨씬 나쁘다. 데이터는 어차피 서버가 403 으로 막는다.
                     manager: null,
+                    // 캐시로 버틸 수 있는가. 미인증이어도 캐시가 살아 있으면 화면은 띄운다.
+                    hasCache: false,
                     ticketKeyFromPath: ticketOf() }; },
   computed: {
     tabs() { return TABS.filter((t) => !t.manager || this.manager !== false); },
@@ -91,8 +94,10 @@ export default {
     // ★ 부팅은 health 하나만 기다린다. /api/me 는 prod 에서 Jira(/myself)를 타고, 그건
     //   Playwright 전용 스레드 한 줄로 직렬화돼 있어 세션이 굳으면 최대 JOB_TIMEOUT(180s)까지
     //   멎는다. 여기에 부팅을 묶으면 창이 '불러오는 중…' 에서 몇 분씩 갇힌다(실제로 겪었다).
-    api.health().then((h) => { this.needLogin = !!(h && h.needLogin); })
-      .catch(() => {}).finally(() => { this.ready = true; });
+    api.health().then((h) => {
+      this.needLogin = !!(h && h.needLogin);
+      this.hasCache = !!(h && h.hasCache);
+    }).catch(() => {}).finally(() => { this.ready = true; });
     // 매니저 판정은 **부팅과 무관하게** 따로 흐른다. 결과가 오면 watch 가 정리한다.
     api.me().then((me) => { this.manager = !!(me && me.manager); })
       .catch(() => { this.manager = null; });   // 모르면 막지 않는다(아래 주석 참고)
@@ -128,7 +133,11 @@ export default {
       <TicketDialog v-else-if="!needLogin && pageTicket" :key="pageTicket"
                     :key-id="pageTicket" mode="page" :theme="theme"
                     @search="searchOpen = true" @toggle-theme="toggleTheme" />
-      <template v-else-if="!needLogin">
+      <!-- 인증이 안 됐어도 **캐시가 살아 있으면** 화면을 준다. 오프라인에서 아무것도 못 보는
+           것보다, 낡았다는 사실을 알리면서 어제 것이라도 보여 주는 편이 쓸모 있다.
+           캐시가 죽었으면(dead_ttl 초과) 보여 줄 게 없으므로 인증 전에는 못 들어간다. -->
+      <template v-else-if="!needLogin || hasCache">
+        <StatusBanner />
         <FormulaCallout :route="route" />
         <keep-alive><component :is="view"></component></keep-alive>
       </template>

@@ -4,7 +4,7 @@
 import { api } from "../../lib/api.js";
 export default {
   name: "LoginOverlay",
-  data() { return { show: false, busy: false, msg: "", tried: false }; },
+  data() { return { show: false, busy: false, msg: "", tried: false, hasCache: false }; },
   watch: {
     // 미인증이 확인되면 **곧바로** 로그인을 시작한다. 버튼을 기다릴 이유가 없다 —
     // 이 상태에서 사용자가 할 수 있는 일이 그것 하나뿐이고, 세션이 없으면 화면의 모든 조회가
@@ -14,10 +14,24 @@ export default {
     show(v) { if (v && !this.tried) { this.tried = true; this.doLogin(); } },
   },
   mounted() {
-    window.addEventListener("need-login", () => { this.show = true; });
-    api.health().then((h) => { if (h && h.needLogin) this.show = true; }).catch(() => {});
+    // 도중에 세션이 끊긴 경우: 캐시로 버틸 수 있으면 막지 않고 인증만 다시 건다.
+    window.addEventListener("need-login", () => {
+      if (!this.hasCache) this.show = true;
+      this.kick();
+    });
+    // ★ 캐시가 살아 있으면 화면을 막지 않는다 — 오프라인에서도 최소한의 이용성을 준다.
+    //   그때도 로그인 시도는 백그라운드로 계속되고(아래 kick), 상태는 상단 알림이 말한다.
+    api.health().then((h) => {
+      if (!h) return;
+      this.hasCache = !!h.hasCache;
+      if (!h.needLogin) return;
+      if (this.hasCache) { this.kick(); return; }   // 막지 않고 조용히 인증만 시도
+      this.show = true;                          // 보여 줄 캐시조차 없다 → 인증 전엔 진입 불가
+    }).catch(() => {});
   },
   methods: {
+    /** 화면을 막지 않고 로그인만 시작한다(페이지당 한 번). */
+    kick() { if (!this.tried) { this.tried = true; this.doLogin(); } },
     async doLogin() {
       this.busy = true;
       this.msg = "인증이 필요해 자동으로 SSO 로그인을 시작합니다. 잠시 후 이 창이 사내 로그인 페이지로 이동하며, 로그인을 끝까지 완료하면 자동으로 앱으로 돌아옵니다…";

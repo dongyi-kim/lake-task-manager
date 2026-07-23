@@ -92,3 +92,64 @@ def test_unknown_session_is_not_treated_as_worker():
     finally:
         m._client.current_user = orig
         m._settings.managers = []
+
+
+# ── 2중 TTL 캐시 — 오프라인/미인증에서 화면을 지키는 지점 ──────────────────
+def test_cache_serves_stale_when_upstream_fails():
+    """outdated 를 넘겨도 dead 안이면 낡은 값으로 버틴다. 예전엔 producer 예외가 그대로
+    올라가 화면이 통째로 비었는데, 정작 같은 데이터가 캐시에 있었다."""
+    import time as _t
+
+    from app.cache import Cache
+    c = Cache(":memory:", dead_ttl=3600)
+    c.set("k", {"v": 1}, ttl=0)                      # 즉시 outdated
+    _t.sleep(0.01)
+
+    def boom():
+        raise RuntimeError("offline")
+
+    val, hit = c.get_or_set("k", 0, boom)
+    assert val == {"v": 1} and hit is True
+    assert c.served_stale_at > 0
+
+
+def test_cache_raises_when_value_is_dead():
+    """dead 를 넘긴 값은 없는 것과 같다 — 숨기지 말고 그대로 알린다(그래야 로그인을 막는다)."""
+    import time as _t
+
+    from app.cache import Cache
+    c = Cache(":memory:", dead_ttl=0)
+    c.set("k", {"v": 1}, ttl=0)
+    _t.sleep(0.01)
+    try:
+        c.get_or_set("k", 0, lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+        raise AssertionError("dead 값이면 예외가 올라와야 한다")
+    except RuntimeError:
+        pass
+
+
+def test_cache_skips_producer_when_upstream_known_down():
+    """상류가 죽은 걸 아는 동안엔 붙어 보지 않는다 — prod 는 실패 판정에만 최대 180초를 쓴다."""
+    import time as _t
+
+    from app.cache import Cache
+    c = Cache(":memory:", dead_ttl=3600)
+    c.set("k", {"v": 1}, ttl=0)
+    _t.sleep(0.01)
+    calls = []
+    c.skip_producer = lambda: True
+    val, hit = c.get_or_set("k", 0, lambda: calls.append(1) or {"v": 2})
+    assert val == {"v": 1} and hit is True and calls == []
+
+
+def test_has_any_ignores_dead_rows():
+    """'캐시로 버틸 수 있는가' 는 dead 를 넘긴 값을 세면 안 된다 — 세면 빈 화면으로 진입한다."""
+    import time as _t
+
+    from app.cache import Cache
+    c = Cache(":memory:", dead_ttl=0)
+    c.set("k", {"v": 1}, ttl=999)
+    _t.sleep(0.01)
+    assert c.has_any() is False
+    c.dead_ttl = 3600
+    assert c.has_any() is True

@@ -8,6 +8,7 @@ Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 P
 import re
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from html import unescape
@@ -886,6 +887,33 @@ class JiraClient:
     def _mention_name(self, uid):
         """멘션 라벨 — 본명만(본문에 박히는 이름이라 짧아야 한다)."""
         return real_name(self._display_name(uid)) or uid
+
+    # ── 상류(Jira) 상태 ─────────────────────────────────────────────────
+    # 세션이 죽었는데도 호출마다 붙어 보면, prod 는 실패 판정에만 최대 JOB_TIMEOUT(180초)를
+    # 쓴다. 화면이 그만큼 멎는다. 한 번 실패하면 잠깐 '상류 죽음' 으로 표시해 두고 그동안은
+    # 캐시로 답한다(회로차단기). 성공하면 즉시 해제한다.
+    UPSTREAM_DOWN_FOR = 20        # 초 — 이 동안은 상류에 붙지 않는다
+
+    def upstream_down(self):
+        return time.time() < getattr(self, "_upstream_down_until", 0)
+
+    def mark_upstream_down(self, reason=""):
+        self._upstream_down_until = time.time() + self.UPSTREAM_DOWN_FOR
+        self._upstream_reason = reason or "상류 응답 없음"
+
+    def mark_upstream_ok(self):
+        self._upstream_down_until = 0
+        self._upstream_reason = ""
+
+    def upstream_state(self):
+        """화면 상단 알림이 쓸 상태. authed 는 세션 사용자를 읽을 수 있는지로 본다."""
+        return {
+            "down": self.upstream_down(),
+            "reason": getattr(self, "_upstream_reason", ""),
+            "lastSyncAt": self.cache.last_upstream_ok or None,
+            "servedStaleAt": self.cache.served_stale_at or None,
+            "hasCache": self.cache.has_any(),
+        }
 
     def current_user(self):
         """세션 사용자 — 본인 댓글(수정/삭제 노출)·매니저 판정용. {id, name}. **성공만** 캐시.

@@ -46,6 +46,9 @@ manager: [test.ui01]
 cache:
   db_path: cache-dev.sqlite3
   ttl_seconds: 900
+  # dead_ttl — 이 시각이 지나야 '없는 값'. 그 전까지는 **오프라인·SSO 만료 상태에서도**
+  # 낡은 값을 그대로 화면에 준다(상단 알림이 낡았음을 알린다). ttl_seconds 는 '낡음' 기준일 뿐이다.
+  dead_ttl_seconds: 86400                  # 24시간
 
 server:
   host: 127.0.0.1

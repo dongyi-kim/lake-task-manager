@@ -80,3 +80,33 @@
 
 .sm-who em.mgr { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .sm-who-h { flex-basis: 100%; font-size: 10px; color: var(--muted-2); }
+
+/* ── 상단 상태 알림 ─────────────────────────────────────────────────────────
+   화면을 막지 않고 알린다: 막으면 아무것도 못 하고, 조용하면 낡은 값을 최신으로 믿는다.
+   그래서 본문 위에 떠 있되 폭을 다 먹지 않고, 닫을 수 있다. */
+.stbanner { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 8000;
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  /* 내용 폭만 쓰되 화면을 넘지 않게. 알림이 화면 폭을 다 먹으면 경고가 아니라 방해가 된다. */
+  width: max-content; max-width: min(620px, calc(100vw - 24px));
+  padding: 8px 30px 8px 13px; border-radius: 10px; font-size: 12px; position: fixed;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid color-mix(in srgb, var(--st-prog) 40%, var(--border));
+  box-shadow: 0 6px 24px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.10); }
+.stbanner.offline { border-color: color-mix(in srgb, var(--today) 42%, var(--border)); }
+.stb-dot { width: 8px; height: 8px; border-radius: 999px; flex: none; background: var(--st-prog);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--st-prog) 22%, transparent); }
+.stbanner.offline .stb-dot { background: var(--today);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--today) 22%, transparent); }
+/* 인증 중은 '진행 중' 이므로 맥박을 준다. 오프라인은 멈춘 상태라 가만히 둔다 — 움직임의
+   유무가 곧 "기다리면 되는가 / 내가 할 게 없는가" 를 말한다. */
+.stbanner.authenticating .stb-dot { animation: stb-pulse 1.4s ease-in-out infinite; }
+@keyframes stb-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.stbanner b { flex: none; }
+.stb-stale { color: var(--text); font-weight: 600; }
+.stb-hint { color: var(--muted); font-size: 11px; flex-basis: 100%; }
+/* 닫기는 첫 줄 오른쪽 끝에 고정 — 흐름에 두면 설명이 길 때 혼자 아래로 밀린다 */
+.stb-x { position: absolute; top: 5px; right: 7px; border: 0; background: none;
+  color: var(--muted-2); font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.stb-x:hover { color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .stbanner .stb-dot { animation: none; } }

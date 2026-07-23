@@ -2,7 +2,12 @@
 SQLite 캐시 (검토 #7) — 느린 Jira API 를 가려주는 TTL 캐시 + 진척 스냅샷.
 stdlib sqlite3 만 사용(무의존).
 
-- cache    : 요청 시그니처 -> Jira 응답 JSON (TTL 만료 시 재호출)
+- cache    : 요청 시그니처 -> Jira 응답 JSON. **TTL 이 두 단계**다:
+             · outdated(ttl)      — 이 시각이 지나면 '낡음'. 온라인이면 다시 받아 온다.
+             · dead(dead_ttl)     — 이 시각이 지나야 '없는 것'. 그 전까지는 오프라인·미인증
+                                    상태에서도 낡은 값을 **그대로 준다**.
+             한 단계뿐이면 만료 == 소멸이라, 망이 끊기거나 SSO 가 만료된 순간 화면이 통째로
+             빈다. 사무실 밖·VPN 밖에서도 최소한 어제 본 것은 보여야 한다.
 - snapshot : (entity, ref) 시계열 metric — 기능2 '최근 진척 히스토리', 기능3 '최근7일' 뒷받침
 """
 
@@ -38,12 +43,24 @@ CREATE INDEX IF NOT EXISTS ix_recent_at ON recent(opened_at DESC);
 """
 
 
+DEAD_TTL_DEFAULT = 24 * 3600      # 이만큼 지나면 진짜 없는 값으로 본다
+
+
 class Cache:
-    def __init__(self, db_path):
+    def __init__(self, db_path, dead_ttl=DEAD_TTL_DEFAULT):
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._migrate()
         self._lock = threading.Lock()
+        self.dead_ttl = int(dead_ttl)
+        # 상류(Jira)가 지금 못 쓰는 상태면 True 를 주는 콜러블. 있으면 producer 를 **아예 호출하지
+        # 않고** 낡은 값으로 답한다 — 죽은 세션에 매번 붙어 보느라 화면이 멎는 걸 막는다
+        # (prod 의 Playwright 호출은 실패 판정까지 최대 180초가 걸린다).
+        self.skip_producer = None
+        # 마지막으로 상류에서 실제로 받아 온 시각 / 낡은 값을 내준 적이 있는지 —
+        # 화면 상단 알림이 "언제 기준 데이터인지" 를 말하려면 이 두 개가 필요하다.
+        self.last_upstream_ok = 0.0
+        self.served_stale_at = 0.0
 
     def _migrate(self):
         """CREATE TABLE IF NOT EXISTS 는 **기존 DB에 새 컬럼을 더해 주지 않는다** —
@@ -78,25 +95,67 @@ class Cache:
             self._conn.commit()
 
     def get_or_set(self, key, ttl, producer):
-        """캐시 히트면 반환, 아니면 producer() 실행 후 저장."""
+        """신선하면 그대로, 아니면 producer() 로 갱신. **갱신에 실패하면 낡은 값으로 버틴다.**
+
+        오프라인·SSO 만료에서 화면을 지키는 지점이 여기다. 예전엔 producer 가 실패하면 그대로
+        예외가 올라가 화면이 통째로 비었는데, 정작 어제 받아 둔 같은 데이터가 캐시에 있었다.
+        dead_ttl 안이면 그걸 준다 — 낡았다는 사실은 화면 상단 알림이 따로 말한다.
+
+        반환: (값, hit) — hit=True 는 상류를 안 탔다는 뜻(신선하든 낡았든).
+        """
         hit = self.get(key)
         if hit is not None:
             return hit, True
-        value = producer()
+        # 상류가 죽은 걸 이미 아는 상태면 붙어 보지 않는다(실패 판정에만 수십 초가 걸린다).
+        if self.skip_producer and self.skip_producer():
+            alive = self.get_alive(key)
+            if alive is not None:
+                self.served_stale_at = time.time()
+                return alive[0], True
+        try:
+            value = producer()
+        except Exception:
+            alive = self.get_alive(key)
+            if alive is None:
+                raise                       # 낡은 값조차 없으면 숨길 게 없다 — 그대로 알린다
+            self.served_stale_at = time.time()
+            return alive[0], True
         self.set(key, value, ttl)
+        self.last_upstream_ok = time.time()
         return value, False
 
     def get_stale(self, key):
         """TTL 이 지났어도 남아 있으면 값을 준다(SWR 용). 없으면 None."""
+        got = self.get_stale_at(key)
+        return got[0] if got else None
+
+    def get_stale_at(self, key):
+        """(값, 받아온 시각) — 낡았는지·얼마나 낡았는지 판단해야 하는 쪽을 위해."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT payload FROM cache WHERE key = ?", (key,)).fetchone()
+                "SELECT payload, fetched_at FROM cache WHERE key = ?", (key,)).fetchone()
         if not row:
             return None
         try:
-            return json.loads(row[0])
+            return json.loads(row[0]), float(row[1])
         except Exception:
             return None
+
+    def get_alive(self, key, dead_ttl=None):
+        """죽지 않은(dead_ttl 이내) 값. 낡았어도 준다. (값, 받아온 시각) 또는 None."""
+        got = self.get_stale_at(key)
+        if not got:
+            return None
+        dead = self.dead_ttl if dead_ttl is None else int(dead_ttl)
+        return got if (time.time() - got[1]) <= dead else None
+
+    def has_any(self):
+        """캐시에 쓸 만한 게 하나라도 있는가 — 오프라인으로 띄울지, 로그인부터 시킬지 가른다."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM cache WHERE fetched_at > ? LIMIT 1",
+                (time.time() - self.dead_ttl,)).fetchone()
+        return bool(row)
 
     def get_or_set_swr(self, key, ttl, producer, background):
         """stale-while-revalidate.

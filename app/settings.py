@@ -141,7 +141,12 @@ class Settings:
         # SSO 로그인 순회·판정에는 **설정된 것만** (base 없는 서비스는 창을 못 연다).
         self.auth_targets = [(s["name"], s["base"], s["paths"]) for s in self.services if s["configured"]]
         self.cache_db_path = str(pick("CACHE_DB_PATH", cache.get("db_path"), str(BASE_DIR / "cache.sqlite3")))
+        # outdated — 이 시각이 지나면 '낡음'(온라인이면 다시 받는다)
         self.cache_ttl_seconds = int(pick("CACHE_TTL_SECONDS", cache.get("ttl_seconds"), 900))
+        # dead — 이 시각이 지나야 '없는 값'. 그 전까지는 오프라인·미인증에서도 낡은 값을 준다.
+        # 기본 24시간: 하루 안에 본 것은 망이 끊겨도 다시 볼 수 있어야 한다는 기준.
+        self.cache_dead_ttl_seconds = int(pick("CACHE_DEAD_TTL_SECONDS",
+                                               cache.get("dead_ttl_seconds"), 24 * 3600))
         self.app_host = str(pick("APP_HOST", server.get("host"), "0.0.0.0"))
         self.app_port = int(pick("APP_PORT", server.get("port"), 8000))
 
