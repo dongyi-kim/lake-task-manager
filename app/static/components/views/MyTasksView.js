@@ -100,12 +100,18 @@ export default {
     this.loadPrefs();
     this.load();
     // 창 크기가 바뀌면 축도 따라간다(리사이즈·모니터 전환·창 분할).
+    // 상태 전이 등으로 티켓이 바뀌면 **이 뷰만** 조용히 다시 받는다. 카드가 새 상태의 열로
+    // 알아서 옮겨 간다(상태·담당·해결이 한꺼번에 바뀌므로 카드 하나만 손대는 것보다 안전하고,
+    // 화면을 다시 그리는 것보다 가볍다 — 스크롤·펼침·옵션이 그대로 남는다).
+    this._onChanged = () => this.load({ quiet: true });
+    window.addEventListener("ticket-changed", this._onChanged);
     this._mq = window.matchMedia(NARROW);
     this._onMq = (e) => { this.axis = e.matches ? "v" : "h"; };
     this._mq.addEventListener ? this._mq.addEventListener("change", this._onMq)
                               : this._mq.addListener(this._onMq);
   },
   unmounted() {
+    window.removeEventListener("ticket-changed", this._onChanged);
     if (!this._mq) return;
     this._mq.removeEventListener ? this._mq.removeEventListener("change", this._onMq)
                                  : this._mq.removeListener(this._onMq);
@@ -163,8 +169,12 @@ export default {
     },
   },
   methods: {
-    async load() {
-      this.loading = true; this.err = "";
+    /** quiet=true 면 스피너를 띄우지 않는다 — 전이 후처럼 **이미 보고 있는 화면**을 갱신할 때
+     *  로딩 화면을 한 번 끼워 넣으면 목록이 통째로 사라졌다 나타나 '전체 새로고침' 으로 보인다.
+     *  바뀐 건 티켓 하나인데 화면 전체가 깜빡일 이유가 없다. */
+    async load(opts) {
+      if (!(opts && opts.quiet)) this.loading = true;
+      this.err = "";
       try {
         this.model = await api.myTasks({ scope: this.scope, openFilter: this.openFilter,
                                          doneFilter: this.doneFilter });

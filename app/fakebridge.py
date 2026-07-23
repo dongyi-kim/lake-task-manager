@@ -23,6 +23,16 @@ W_ME = _World.ME          # dev 세션 사용자(= world 픽스처의 "나")
 # 사내 워크플로 상태/타입 스킴 — app/world.py 직렬화기와 동일해야 statusCategory·subtask 판정이 일치
 _STATUSES = [["Open", "todo", "1"], ["In Progress", "inprogress", "3"],
              ["Reopened", "todo", "4"], ["Resolved", "done", "5"], ["Closed", "done", "6"]]
+# 전이 규칙. jira820 기본값은 '아무 상태 → 아무 상태' 라 편하지만, 그러면 우클릭 메뉴에
+# 도달 불가능한 상태까지 뜬다 — 앱이 "갈 수 있다" 고 해 놓고 Jira 가 거절하는 상황을 로컬에서
+# 재현하지 못한다. 사내 워크플로와 같은 모양으로 좁혀 둔다.
+_TRANSITIONS = {
+    "Open":        ["In Progress", "Resolved"],
+    "In Progress": ["Resolved", "Open"],
+    "Resolved":    ["Closed", "Reopened"],
+    "Closed":      ["Reopened"],
+    "Reopened":    ["In Progress", "Resolved"],
+}
 _ISSUE_TYPES = [["Bug", "1"], ["Epic", "2"], ["Improvement", "3"], ["New Feature", "4"],
                 ["Story", "5"], ["Task", "6"], ["Sub-Task", "7"]]
 
@@ -37,7 +47,7 @@ def build_store():
         base_date=w.today, server_version="8.20.8", confluence_version="9.2.4",
         sp_field=s.sp_field_id, epic_link_field=s.epic_link_field_id,
         subtask_type="Sub-Task",
-        statuses=_STATUSES, issue_types=_ISSUE_TYPES,
+        statuses=_STATUSES, transition_scheme=_TRANSITIONS, issue_types=_ISSUE_TYPES,
         modules=list(w.modules), components_extra=["사용자 VoC"],
         latency_ms=int(os.getenv("FAKE_LATENCY_MS", "0")),
         # 세션 사용자(/myself) — dev 에서 '내 Task' 가 빈 화면이 되지 않게 world 사람으로.

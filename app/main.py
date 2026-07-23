@@ -556,6 +556,49 @@ def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
         done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w")))
 
 
+class _TransitionBody(BaseModel):
+    id: str = ""
+    hours: int = 0
+    minutes: int = 0
+    assignee: str = ""
+    resolution: str = ""
+    commentHtml: str = ""
+
+
+@app.get("/api/ticket/{key}/transitions")
+def api_transitions(key: str):
+    """이 티켓에서 지금 가능한 상태 전이 + 전이 화면 필드."""
+    return JSONResponse(_client.transitions(key))
+
+
+@app.post("/api/ticket/{key}/transition")
+def api_do_transition(key: str, body: _TransitionBody):
+    """상태 전이 실행.
+
+    ★ 소요시간은 사람이 "1d 5h" 같은 문자열을 직접 치게 두지 않는다 — 실제로 오타가 잦다.
+      시/분을 숫자로 받아 **여기서** Jira 포맷으로 조립한다. 일(d) 단위는 쓰지 않는다
+      (하루 8시간이냐 24시간이냐가 인스턴스 설정에 달려 있어, 같은 '1d' 가 다른 값이 된다)."""
+    parts = []
+    if body.hours:
+        parts.append(f"{int(body.hours)}h")
+    if body.minutes:
+        parts.append(f"{int(body.minutes)}m")
+    time_spent = " ".join(parts)
+    comment = html_to_wiki(body.commentHtml) if body.commentHtml else ""
+    try:
+        _client.do_transition(key, body.id, time_spent=time_spent or None,
+                              assignee=body.assignee or None,
+                              resolution=body.resolution or None,
+                              comment=comment or None)
+    except SessionExpired:
+        raise
+    except Exception as e:
+        # Jira 가 거절한 이유(필수 필드 누락·권한 등)를 그대로 보여 준다 — 삼키면 사용자는
+        # 무엇을 고쳐야 할지 알 수 없고, 결국 Jira 를 따로 열어 확인해야 한다.
+        return JSONResponse({"ok": False, "error": str(e)[:400]}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
 @app.get("/api/linktypes")
 def api_link_types():
     """이슈 링크 관계 선택지 — [{name, inward, outward}]. 인스턴스 설정이라 조회해서 쓴다."""

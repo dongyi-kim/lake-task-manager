@@ -8,6 +8,7 @@ import DevToolsView from "./views/DevToolsView.js";
 import FormulaCallout from "./ui/FormulaCallout.js";
 import LoginOverlay from "./ui/LoginOverlay.js";
 import StatusBanner from "./ui/StatusBanner.js";
+import TicketMenu from "./ui/TicketMenu.js";
 import TicketDialog from "./ui/TicketDialog.js";
 import SearchOverlay from "./ui/SearchOverlay.js";
 import SettingsMenu from "./ui/SettingsMenu.js";
@@ -35,7 +36,7 @@ function ticketOf() {
 
 export default {
   name: "AppRoot",
-  components: { FormulaCallout, LoginOverlay, StatusBanner, TicketDialog, SearchOverlay, SettingsMenu },
+  components: { FormulaCallout, LoginOverlay, StatusBanner, TicketMenu, TicketDialog, SearchOverlay, SettingsMenu },
   // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
@@ -141,6 +142,7 @@ export default {
         <FormulaCallout :route="route" />
         <keep-alive><component :is="view"></component></keep-alive>
       </template>
+      <TicketMenu />
       <LoginOverlay />
       <TicketDialog v-if="ticketKey" :key-id="ticketKey" @close="ticketKey = null" />
       <!-- keep-alive: 같은 창에서 다시 열면 마지막 검색어·결과가 그대로 남는다 -->

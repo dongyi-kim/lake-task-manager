@@ -84,7 +84,11 @@ export const api = {
                             { method: "DELETE" }),
 
   // ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 이미지 첨부. 성공 후 그 티켓 memo 무효화 ──
-  me: () => get("/api/me"),                                             // 본인 댓글 판정
+  me: () => get("/api/me"),
+  // 전이 목록은 **캐시하지 않는다** — 현재 상태에 따라 매번 달라지고, 낡은 목록은 곧 400 이다.
+  transitions: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/transitions"),
+  doTransition: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/transition",
+                                       "POST", body).then((r) => { evict(key); return r; }),                                             // 본인 댓글 판정
   mentionUsers: (q, key) => req("/api/mention/users?q=" + encodeURIComponent(q || "")   // @사람 자동완성
     + (key ? "&key=" + encodeURIComponent(key) : "")),                                  // 빈 쿼리 시 티켓 관련 우선
   linkTitle: (u) => req("/api/linktitle?u=" + encodeURIComponent(u || "")),             // 링크 뱃지 제목(og:title)

@@ -110,3 +110,73 @@
   color: var(--muted-2); font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .stb-x:hover { color: var(--text); }
 @media (prefers-reduced-motion: reduce) { .stbanner .stb-dot { animation: none; } }
+
+/* ── 티켓 우클릭 메뉴 ───────────────────────────────────────────────────────
+   드래그 대신 메뉴를 쓰는 이유는 TicketMenu.js 주석 참고 — 요약하면 "놓을 수 있는 칸" 이
+   티켓마다 다르므로, 가능한 것만 보여 주는 편이 정직하다. */
+.tkmenu { position: fixed; z-index: 9500; min-width: 200px; padding: 5px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.20), 0 1px 3px rgba(0,0,0,.10); }
+.tkm-h { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; font-weight: 700;
+  color: var(--accent); padding: 4px 8px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.tkm-loading, .tkm-err { font-size: 11.5px; color: var(--muted); padding: 6px 8px; }
+.tkm-i { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--text);
+  padding: 6px 8px; border-radius: 7px; cursor: pointer; }
+.tkm-i:hover { background: var(--panel-2); }
+.tkm-i em { margin-left: auto; font-style: normal; color: var(--muted-2); }
+/* 목적지 상태의 색 — 어디로 가는지가 글자보다 먼저 잡힌다 */
+.tkm-dot { width: 8px; height: 8px; border-radius: 999px; flex: none; background: var(--muted-2); }
+.tkm-i.to-todo .tkm-dot { background: var(--st-todo); }
+.tkm-i.to-inprogress .tkm-dot { background: var(--st-prog); }
+.tkm-i.to-done .tkm-dot { background: var(--st-done); }
+
+/* ── 전이 화면 ─────────────────────────────────────────────────────────── */
+.trx-ov { position: fixed; inset: 0; z-index: 9600; display: flex; align-items: center;
+  justify-content: center; background: rgba(15,18,22,.42); backdrop-filter: blur(2px); }
+.trx { width: min(460px, calc(100vw - 32px)); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+  box-shadow: 0 18px 50px rgba(0,0,0,.30); }
+.trx-h { display: flex; align-items: center; gap: 8px; padding: 12px 14px;
+  border-bottom: 1px solid var(--border); font-size: 13.5px; }
+.trx-key { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--accent); }
+.trx-x { margin-left: auto; border: 0; background: none; font-size: 19px; line-height: 1;
+  color: var(--muted-2); cursor: pointer; }
+.trx-b { padding: 12px 14px; display: flex; flex-direction: column; gap: 13px; }
+.trx-f { display: flex; flex-direction: column; gap: 5px; }
+.trx-l { font-size: 11px; font-weight: 700; color: var(--muted); }
+.trx-l i { font-style: normal; color: var(--today); font-size: 10px; margin-left: 3px; }
+.trx-hint { font-size: 10.5px; color: var(--muted-2); }
+.trx input[type="number"], .trx select, .trx textarea, .trx-who input {
+  font: inherit; font-size: 12.5px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+.trx textarea { resize: vertical; }
+/* 시/분 두 칸 — 문자열을 직접 치게 하지 않는 것이 이 화면의 요점이다 */
+.trx-time { display: flex; align-items: center; gap: 6px; }
+.trx-time input { width: 68px; text-align: right; }
+.trx-time em { font-style: normal; font-size: 11.5px; color: var(--muted); }
+.trx-prev { margin-left: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: 6px; padding: 2px 8px; }
+.trx-who { position: relative; display: flex; flex-direction: column; }
+.trx-who input { width: 100%; }
+.trx-drop { position: absolute; top: 100%; left: 0; right: 0; z-index: 2; margin-top: 4px;
+  max-height: 220px; overflow: auto; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.16); padding: 4px; }
+.trx-drop button { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
+  border: 0; background: none; font: inherit; font-size: 12px; padding: 5px 6px;
+  border-radius: 6px; cursor: pointer; color: var(--text); }
+.trx-drop button:hover { background: var(--panel-2); }
+.trx-drop em { margin-left: auto; font-style: normal; font-size: 10px; color: var(--muted-2); }
+.trx-block { margin: 12px 14px; padding: 10px 12px; font-size: 12px; color: var(--text);
+  background: color-mix(in srgb, var(--today) 8%, transparent); border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--today) 30%, var(--border)); }
+.trx-f2 { display: flex; align-items: center; gap: 8px; padding: 11px 14px;
+  border-top: 1px solid var(--border); background: var(--panel-2); }
+.trx-err { font-size: 11.5px; color: var(--today); flex: 1 1 auto; }
+.trx-need { font-size: 11.5px; color: var(--muted-2); flex: 1 1 auto; }
+.trx-cancel, .trx-ok { border-radius: 8px; font: inherit; font-size: 12.5px; font-weight: 600;
+  padding: 6px 12px; cursor: pointer; margin-left: auto; }
+.trx-cancel { margin-left: auto; border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
+.trx-ok { margin-left: 0; border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+.trx-ok:disabled { opacity: .5; cursor: not-allowed; }

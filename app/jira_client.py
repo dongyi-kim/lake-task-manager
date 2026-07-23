@@ -800,6 +800,92 @@ class JiraClient:
         self.cache.invalidate(f"issueview:{self.env}:{key}")
         self._reprime(key, comments=comments)
 
+    # ── 상태 전이 ──────────────────────────────────────────────────────
+    # Jira 는 "상태를 지정" 하는 게 아니라 **워크플로가 허용한 전이 id** 를 실행한다. 그래서
+    # 가능한 목록은 티켓의 현재 상태에 따라 매번 달라진다 → 캐시하지 않는다(낡은 목록은
+    # 곧 400 이다). ?expand=transitions.fields 로 **전이 화면에 무엇을 물어야 하는지**까지
+    # 받아 온다 — 이게 없으면 클라이언트는 필수 입력을 알 수 없다.
+    DONE_PREFERRED = "resolved"        # 완료로 보낼 때 기본 목적지(§ 아래 주석)
+
+    def transitions(self, key):
+        """이 티켓에서 지금 가능한 전이 목록(+화면 필드). 실패하면 빈 목록."""
+        try:
+            data = self.provider.get_json(f"/rest/api/2/issue/{key}/transitions",
+                                          params={"expand": "transitions.fields"})
+        except SessionExpired:
+            raise
+        except Exception:
+            return []
+        out = []
+        for t in (data or {}).get("transitions") or []:
+            to = t.get("to") or {}
+            cat = ((to.get("statusCategory") or {}).get("key") or "").lower()
+            cat = {"new": "todo", "indeterminate": "inprogress", "done": "done"}.get(cat, cat)
+            out.append({
+                "id": str(t.get("id")), "name": t.get("name") or "",
+                "to": to.get("name") or "", "toCategory": cat,
+                "hasScreen": bool(t.get("hasScreen")),
+                "fields": self._screen_fields(t.get("fields") or {}),
+            })
+        # 완료로 가는 길이 여럿이면(Resolved/Closed) **Resolved 를 먼저** 놓는다.
+        # 우리 앱에서 '완료' 는 "작업자가 끝냈다" 이지 "검증까지 끝나 닫혔다" 가 아니다 —
+        # Closed 는 확인 절차를 거친 쪽이므로 앱이 임의로 보낼 자리가 아니다.
+        out.sort(key=lambda t: (t["toCategory"] != "done",
+                                (t["to"] or "").lower() != self.DONE_PREFERRED))
+        return out
+
+    # 우리가 폼으로 그릴 수 있는 필드 타입만 통과시킨다. 모르는 필수 필드가 하나라도 있으면
+    # 그 전이는 앱에서 처리하지 않고 Jira 로 넘긴다 — 사용자가 폼을 다 채운 뒤 400 을 맞는
+    # 것보다, 처음부터 안 열어 주고 이유를 말하는 편이 낫다.
+    RENDERABLE = {"worklog", "user", "resolution", "comment", "string", "number", "date",
+                  "datetime", "option", "priority"}
+
+    def _screen_fields(self, raw):
+        out, unsupported = [], []
+        for fid, f in (raw or {}).items():
+            sch = f.get("schema") or {}
+            # ★ 타입은 schema.type 으로 읽는다. system 을 먼저 보면 'assignee' 같은 **필드 이름**이
+            #   타입 자리에 와서 렌더 가능한데도 미지원으로 떨어진다(실제로 그랬다).
+            #   system 은 "이 필드가 무엇인가"(assignee/resolution/…)이고 type 은 "어떻게 입력하나"다.
+            typ = (sch.get("type") or "").lower()
+            if typ == "array":
+                typ = (sch.get("items") or "").lower()
+            system = (sch.get("system") or "").lower()
+            item = {"id": fid, "name": f.get("name") or fid, "type": typ, "system": system,
+                    "required": bool(f.get("required")),
+                    "allowedValues": [{"id": str(v.get("id")), "name": v.get("name") or v.get("value") or ""}
+                                      for v in (f.get("allowedValues") or [])]}
+            if typ in self.RENDERABLE:
+                out.append(item)
+            elif item["required"]:
+                unsupported.append(item["name"])
+        if unsupported:
+            return {"fields": out, "unsupported": unsupported}
+        return {"fields": out, "unsupported": []}
+
+    def do_transition(self, key, transition_id, *, time_spent=None, assignee=None,
+                      resolution=None, comment=None):
+        """전이 실행. 화면 필드는 Jira 규약대로 fields/update 에 나눠 싣는다
+        (worklog·comment 는 '추가' 라 update, resolution·assignee 는 '설정' 이라 fields)."""
+        body = {"transition": {"id": str(transition_id)}}
+        fields, update = {}, {}
+        if resolution:
+            fields["resolution"] = {"name": resolution}
+        if assignee:
+            fields["assignee"] = {"name": assignee}
+        if time_spent:
+            update["worklog"] = [{"add": {"timeSpent": time_spent}}]
+        if comment:
+            update["comment"] = [{"add": {"body": comment}}]
+        if fields:
+            body["fields"] = fields
+        if update:
+            body["update"] = update
+        res = self.provider.post_json(f"/rest/api/2/issue/{key}/transitions", body)
+        # 상태·담당·해결이 한꺼번에 바뀐다 → 본문/댓글을 즉시 다시 채운다(쓰기 우선순위).
+        self._invalidate_ticket(key, comments=bool(comment))
+        return res
+
     def add_comment(self, key, body):
         """코멘트 작성 (body = Jira wiki markup). 반환: 생성된 코멘트 객체."""
         res = self.provider.post_json(f"/rest/api/2/issue/{key}/comment", {"body": body})
