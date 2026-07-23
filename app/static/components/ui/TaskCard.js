@@ -26,7 +26,8 @@ const URGENCY = [
 ];
 const CALM = { key: "calm", label: "여유 있음(7일 초과)" };
 const UNKNOWN = { key: "unknown", label: "마감이 정해져 있지 않습니다" };
-const HOT_DAYS = 7;   // 이 안으로 들어오면 카드에 🔥
+const HOT_DAYS = 7;    // 이 안으로 들어오면 카드에 🔥
+const RED_DAYS = 3;    // 이 안으로 들어오면 카드 자체가 붉은 기를 띈다
 
 export function urgencyOf(dueDays) {
   if (dueDays === null || dueDays === undefined) return UNKNOWN;
@@ -35,6 +36,13 @@ export function urgencyOf(dueDays) {
 }
 export function isHot(dueDays) {
   return dueDays !== null && dueDays !== undefined && dueDays <= HOT_DAYS;
+}
+// '지금 손대야 하는 것' — **최우선(Blocker/Highest)** 이거나 **마감 3일 이내**.
+// 둘 중 하나만으로는 부족하다: 마감이 멀어도 Blocker 는 지금 봐야 하고, 우선순위가 보통이어도
+// 내일이 마감이면 지금 봐야 한다. 카드 전체에 옅은 붉은 기를 줘 목록에서 먼저 잡히게 한다.
+export function isUrgent(card) {
+  const d = card.dueDays;
+  return card.priRank === 0 || (d !== null && d !== undefined && d <= RED_DAYS);
 }
 
 export default {
@@ -51,6 +59,7 @@ export default {
     urg() { return urgencyOf(this.card.dueDays); },
     // 완료된 일은 아무리 마감이 지났어도 급하지 않다 — 이미 끝났다.
     hot() { return !this.done && isHot(this.card.dueDays); },
+    urgent() { return !this.done && isUrgent(this.card); },
     // 고정폭으로 세로로 나열되므로 길이가 들쭉날쭉하면 안 된다 — 가장 긴 게 'D-DAY'(5자).
     dday() {
       const d = this.card.dueDays;
@@ -66,7 +75,7 @@ export default {
   },
   template: `
   <div class="mt-card two tkt" :data-key="card.key"
-       :class="{ mine: card.mine, rel: !card.mine, done: done, hot: hot }">
+       :class="{ mine: card.mine, rel: !card.mine, done: done, hot: hot, urgent: urgent }">
     <span v-if="hot" class="tc-hot" :title="urg.label">🔥</span>
     <div class="tc-l1">
       <TypeBadge :type="card.type" />

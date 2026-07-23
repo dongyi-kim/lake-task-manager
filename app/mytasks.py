@@ -22,7 +22,14 @@ from .names import real_name
 
 # 우선순위 정규화 — 인스턴스마다 이름이 다를 수 있어 이름을 소문자로 맞춰 본다.
 # 못 알아보면 중간(2)으로 둔다: 모르는 값이 맨 위나 맨 아래로 튀는 게 제일 나쁘다.
-_PRI_RANK = {"highest": 0, "high": 1, "medium": 2, "normal": 2, "low": 3, "lowest": 4}
+# 우선순위 이름 → 등급(0=가장 급함). Jira 는 인스턴스마다 우선순위 **이름 체계가 다르다** —
+# 기본 스킴(Highest/High/…)과 Blocker/Critical/Major/Minor/Trivial 스킴이 둘 다 흔하다.
+# 모르는 이름은 2(보통)로 떨어지므로, 안 적어 두면 Blocker 가 '보통' 으로 표시된다(실제로 그랬다).
+_PRI_RANK = {
+    "highest": 0, "high": 1, "medium": 2, "normal": 2, "low": 3, "lowest": 4,
+    "blocker": 0, "critical": 1, "major": 2, "minor": 3, "trivial": 4,
+    "urgent": 0, "p1": 0, "p2": 1, "p3": 2, "p4": 3, "p5": 4,
+}
 _PRI_BAND = {0: "high", 1: "high", 2: "mid", 3: "low", 4: "low"}
 
 # 상태 부분점수 — 완료만 100% 로 치면 진행 중인 일이 통째로 0 이라 롤업이 실제보다 어둡다.

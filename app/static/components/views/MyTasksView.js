@@ -18,7 +18,7 @@ import { api } from "../../lib/api.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
 import PriIcon from "../ui/PriIcon.js";
-import TaskCard from "../ui/TaskCard.js";
+import TaskCard, { isHot, isUrgent } from "../ui/TaskCard.js";
 import { categoryColor } from "../../lib/colors.js";
 
 const NO_DUE = 1e6;
@@ -113,7 +113,7 @@ export default {
       const out = this.groups.filter((g) => g.hasSubs).map((g) => this.taskPanel(g));
       const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs));
       if (solo) out.push(solo);
-      return out.sort((a, b) => a.rank - b.rank);
+      return out.sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
     },
   },
   methods: {
@@ -161,14 +161,16 @@ export default {
         ? (a.priRank - b.priRank || this.dueOf(a) - this.dueOf(b))
         : (this.dueOf(a) - this.dueOf(b) || a.priRank - b.priRank)) || (a.key < b.key ? -1 : 1));
     },
-    /** 패널 정렬 키 — 그 안에서 가장 급한 내 카드가 순서를 정한다(급한 게 위/앞으로). */
+    /** 패널 정렬 키 — 그 안에서 가장 급한 내 카드가 순서를 정한다(급한 게 위/앞으로).
+     *  ★ 카드와 **같은 1·2차 규칙**을 쓴다. 1차만 보면 마감이 같은 그룹들의 순서가 우선순위와
+     *    무관하게 흔들려, 그룹 안 카드는 제대로 정렬됐는데 그룹끼리는 아닌 상태가 된다. */
     rankOf(cards) {
       const mine = cards.filter((c) => c.mine);
       const pool = mine.length ? mine : cards;
-      if (!pool.length) return NO_DUE;
-      return this.sort === "pri"
-        ? Math.min(...pool.map((c) => c.priRank))
-        : Math.min(...pool.map((c) => this.dueOf(c)));
+      if (!pool.length) return [NO_DUE, 9];
+      const due = Math.min(...pool.map((c) => this.dueOf(c)));
+      const pri = Math.min(...pool.map((c) => c.priRank));
+      return this.sort === "pri" ? [pri, due] : [due, pri];
     },
     taskPanel(g) {
       const mineCards = g.atoms.map((a) => this.card(a, g, true));
@@ -231,6 +233,10 @@ export default {
       const v = epicSig({ epicKey: c.epicKey || c.epic, voc: c.voc });
       return v ? { "--sig": v } : {};
     },
+    // 급함 판정은 2줄 카드와 **같은 함수**를 쓴다. 그룹·Sub-Task 카드가 다른 기준으로 붉어지면
+    // 같은 화면에서 '급함' 의 뜻이 두 개가 된다.
+    isHotC(c) { return c.statusCategory !== "done" && isHot(c.dueDays); },
+    isUrgentC(c) { return c.statusCategory !== "done" && isUrgent(c); },
     dueLabel, dueBand,
   },
   template: `
@@ -332,7 +338,9 @@ export default {
         <div v-else-if="p.kind === 'task'" class="mt-gcard2 k-task" :style="sigStyle(p.group)">
           <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
-                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done' }">
+                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
+                        urgent: isUrgentC(p.group) }">
+              <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
               <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
@@ -348,6 +356,7 @@ export default {
                     :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
                 <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
               <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
+
             </div>
             <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
                     :title="modeHint(p.mode)">{{ modeLabel(p.mode, p.mineCount, p.allCount) }}</button>
@@ -356,7 +365,9 @@ export default {
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length }]">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
-                     :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
+                     :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
+                             urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
+                  <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
                   <PriIcon :rank="c.priRank" :name="c.pri" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
@@ -399,7 +410,9 @@ export default {
                  :style="sigStyle(p.group)">
               <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
-                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done' }">
+                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
+                        urgent: isUrgentC(p.group) }">
+              <span v-if="isHotC(p.group)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
               <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
@@ -413,13 +426,16 @@ export default {
                     :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
                 <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
               <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
+
             </div>
                 <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
                         :title="modeHint(p.mode)">{{ modeLabel(p.mode, p.mineCount, p.allCount) }}</button>
               </div>
               <div class="mt-gbody one">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
-                     :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
+                     :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
+                             urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
+                  <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
                   <PriIcon :rank="c.priRank" :name="c.pri" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
