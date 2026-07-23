@@ -435,14 +435,19 @@ def api_comment_source(key: str, cid: str):
 
 
 @app.get("/api/mytasks")
-def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee"):
+def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
+                openFilter: str = "all", doneFilter: str = "1w"):
     """'내 Task' — 세션 사용자가 담당한 일감 + 그 부모/형제/Epic 맥락을 **한 모델**로.
     세 가지 뷰(시간 우선·부모 클러스터·계층 우선)는 전부 이 하나에서 프론트가 파생시킨다.
     user 를 주면 그 사람 기준(대리 확인용), done=true 면 완료까지 포함.
-    scope=assignee|reporter|both — '내 일'을 담당 기준으로 볼지 등록(보고) 기준까지 볼지."""
+    scope=assignee|reporter|both — '내 일'을 담당 기준으로 볼지 등록(보고) 기준까지 볼지.
+    openFilter=all|2w — '할당됨' 축 범위 · doneFilter=1w|1m — '최근 완료' 축 기간."""
     if scope not in ("assignee", "reporter", "both"):
         scope = "assignee"
-    return JSONResponse(mytasks.build_my_tasks(_client, user or None, include_done=done, scope=scope))
+    return JSONResponse(mytasks.build_my_tasks(
+        _client, user or None, include_done=done, scope=scope,
+        open_filter=(openFilter if openFilter in ("all", "2w") else "all"),
+        done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w")))
 
 
 @app.get("/api/linktypes")

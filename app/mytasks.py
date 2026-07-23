@@ -31,6 +31,8 @@ _PRI_BAND = {0: "high", 1: "high", 2: "mid", 3: "low", 4: "low"}
 _PARTIAL = {"done": 1.0, "inprogress": 0.4, "todo": 0.0}
 
 _NO_DUE = 10 ** 6           # 마감 없음 = 맨 뒤. None 정렬 분기를 안 만들려고 큰 수를 쓴다
+# '최근 완료' 로 볼 기간 선택지. 1주는 워크로드의 done7d 와 같은 창이다.
+DONE_WINDOWS = {"1w": 7, "1m": 30}
 
 
 def _days_until(due, today):
@@ -102,11 +104,14 @@ def _rollup(nodes):
     return int(round(got / tot * 100))
 
 
-def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assignee"):
+def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assignee",
+                   open_filter="all", done_filter="1w"):
     """세션 사용자(또는 user 지정)의 '내 Task' 모델.
 
     scope: assignee(담당) | reporter(내가 등록) | both. '내 일'의 정의는 사람마다 다르다 —
     남에게 넘긴 뒤 결과를 봐야 하는 사람에게는 reporter 도 자기 일이다. JQL 조건이라 서버 몫.
+    open_filter: all | 2w      — '할당됨' 축에 무엇을 담을지
+    done_filter: 1w | 1m       — '최근 완료' 축의 기간
 
     담당 이슈를 한 번에 긁고(=JQL 1회), 부모/형제는 **필요한 것만** 배치로 채운다.
     prod SSO 는 직렬이라 왕복 횟수가 곧 체감 속도다.
@@ -118,15 +123,28 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     today = client.s_today() if hasattr(client, "s_today") else date.today()
     ef = {"sp": client.s.sp_field_id, "epic": client.s.epic_link_field_id}
 
-    # 1) 내가 담당한 이슈 — 기본은 미완료만(완료까지 넣으면 화면이 과거로 가득 찬다)
+    # 1) 내가 담당(또는 등록)한 이슈.
+    #    화면이 '할당됨 / 진행 중 / 최근 완료' 3상태를 축으로 쓰므로 상태별 조건을 **한 질의**에 담는다
+    #    (버킷마다 따로 부르면 prod SSO 는 직렬이라 왕복이 그대로 지연이 된다).
+    #      · 할당됨: 오래 방치된 것까지 다 볼지(all), 최근 2주 안에 손댄 것만 볼지(2w)
+    #      · 진행 중: 항상 전부 — 지금 하는 일을 숨기면 안 된다
+    #      · 완료   : 최근 N일 안에 끝낸 것만(완료 전체를 넣으면 화면이 과거로 가득 찬다)
     if scope == "reporter":
-        jql = 'reporter = "%s"' % me
+        who = 'reporter = "%s"' % me
     elif scope == "both":
-        jql = '(assignee = "%s" OR reporter = "%s")' % (me, me)
+        who = '(assignee = "%s" OR reporter = "%s")' % (me, me)
     else:
-        jql = 'assignee = "%s"' % me
-    if not include_done:
-        jql += " AND statusCategory != Done"
+        who = 'assignee = "%s"' % me
+
+    open_cond = 'statusCategory = "To Do"'
+    if open_filter == "2w":
+        open_cond += " AND updated >= -14d"
+    done_days = DONE_WINDOWS.get(done_filter, DONE_WINDOWS["1w"])
+    parts = ['statusCategory = "In Progress"', "(%s)" % open_cond,
+             "(statusCategory = Done AND resolved >= -%dd)" % done_days]
+    jql = "%s AND (%s)" % (who, " OR ".join(parts))
+    if include_done:
+        jql = who                                      # 완료 전체까지(과거 조회용)
     jql += " ORDER BY duedate ASC"
     mine_raw = [r for r in client.search_issues(jql, max_results=limit)
                 if ((r.get("fields") or {}).get("issuetype") or {}).get("name") != "Epic"]
@@ -247,7 +265,8 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
 
     atoms = [a for g in out for a in g["atoms"]]
     return {"user": {"id": me, "name": (client.current_user() or {}).get("name") or me},
-            "scope": scope,
+            "scope": scope, "openFilter": open_filter, "doneFilter": done_filter,
+            "doneWindowDays": DONE_WINDOWS.get(done_filter, 7),
             "today": today.isoformat(), "groups": out, "epics": epics,
             "counts": _counts(atoms)}
 

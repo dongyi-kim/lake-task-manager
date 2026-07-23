@@ -91,6 +91,7 @@ class World:
         self._comp_ids = {m: str(100 + i) for i, m in enumerate(self.modules + ["사용자 VoC"])}
         self.users = self._make_users()
         self.issues = {}                 # key -> canonical issue
+        self.sprints = {}                # id -> 스프린트(jira820 store.sprints 형태)
         self.attachments = {}            # id -> 첨부(jira820 store.attachments 형태)
         self._counter = 5000             # 생성 키 DL-5001+ (config epic id DL-1xx 와 충돌 회피)
 
@@ -106,6 +107,7 @@ class World:
         self._build_ui_fixtures()     # UI 회귀 검증용 Epic + 하위 티켓
         self._build_mytask_fixtures() # '내 Task' 화면 픽스처(담당 조합·Epic 없음·마감 초과)
         self._priorities()            # 우선순위 — 픽스처가 지정한 것은 그대로 두고 나머지만 채운다
+        self._sprints()               # 스프린트 — '스프린트 내 티켓만' 필터 검증용
         self._index()
         self._build_activity()
         self._build_confluence()
@@ -745,7 +747,17 @@ class World:
         self._fx("DL-9032", "Task", "[내Task] 내가 등록·담당은 동료 — reporter 스코프 검증",
                  assignee=self.MATE, reporter=self.ME, epicKey=self.MY_EPIC,
                  priority="High", due=due(5), statusCategory="todo", statusName="Open")
-        # 7) 완료된 내 Task — 기본 목록에서 빠져야 한다
+        # 7) 축 필터 검증 — 이 두 건이 없으면 '2주 내 갱신'·'1달' 필터가 늘 같은 결과라 확인이 안 된다.
+        self._fx("DL-9033", "Task", "[내Task] 오래 방치된 할당 — '2주 내 갱신' 에서 빠져야",
+                 assignee=self.ME, epicKey=self.MY_EPIC, priority="Low", due=due(20),
+                 statusCategory="todo", statusName="Open",
+                 created=d - timedelta(days=120), updated=d - timedelta(days=60))
+        self._fx("DL-9034", "Task", "[내Task] 20일 전 완료 — '1주' 엔 없고 '1달' 엔 있어야",
+                 assignee=self.ME, epicKey=self.MY_EPIC, priority="Medium", due=due(-20),
+                 statusCategory="done", statusName="Resolved",
+                 created=d - timedelta(days=60), updated=d - timedelta(days=20),
+                 resolved=d - timedelta(days=20), tresolved="15:00")
+        # 8) 완료된 내 Task — 기본 목록에서 빠져야 한다
         self._fx("DL-9031", "Task", "[내Task] 완료된 내 Task — 기본 목록에서 제외",
                  assignee=self.ME, priority="Medium", due=due(-3), epicKey=self.MY_EPIC,
                  statusCategory="done", statusName="Resolved",
@@ -760,6 +772,30 @@ class World:
             if it.get("priority"):
                 continue                      # 픽스처가 지정한 값은 건드리지 않는다
             it["priority"] = self._PRIORITIES[sum(map(ord, k)) % len(self._PRIORITIES)]
+
+    # 스프린트 — 실 Jira 는 대부분 보드/스프린트를 쓴다. dev 에 하나도 없으면
+    # '스프린트에 속한 티켓만' 필터를 눈으로 검증할 수 없다(늘 0건).
+    # ★ rng 미사용 — 키 해시로 결정적 배정(world 시퀀스 불변). 일부러 **일부만** 넣는다
+    #   (스프린트 밖 티켓이 있어야 필터가 의미를 갖는다).
+    def _sprints(self):
+        d = self.today
+        self.sprints = {
+            1: {"id": 1, "name": "Sprint 24", "state": "closed", "boardId": 1,
+                "startDate": d - timedelta(days=28), "endDate": d - timedelta(days=14)},
+            2: {"id": 2, "name": "Sprint 25", "state": "active", "boardId": 1,
+                "startDate": d - timedelta(days=13), "endDate": d + timedelta(days=1)},
+            3: {"id": 3, "name": "Sprint 26", "state": "future", "boardId": 1,
+                "startDate": d + timedelta(days=2), "endDate": d + timedelta(days=16)},
+        }
+        for k, it in sorted(self.issues.items()):
+            if it["type"] == "Epic":
+                continue                       # Epic 은 스프린트에 넣지 않는다(실무 관례)
+            h = sum(map(ord, k))
+            if h % 10 < 3:
+                continue                       # 약 30% 는 스프린트 밖
+            # 완료된 것은 지난 스프린트, 나머지는 활성/차기로 — 상태와 어긋나지 않게
+            sid = 1 if it["statusCategory"] == "done" and h % 2 == 0 else (2 if h % 5 else 3)
+            it["sprints"] = [sid]
 
     def _build_links(self):
         """이슈 링크(relates to / blocks / duplicates) — 같은 모듈 안에서 몇 쌍 연결.

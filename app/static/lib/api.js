@@ -44,8 +44,12 @@ export const api = {
   workloadBucket: (u, b) => get("/api/workload/" + encodeURIComponent(u) + "/" + b),
   workloadDetail: (user) => get("/api/workload/" + encodeURIComponent(user)),
   activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
-  myTasks: (done, scope) => req("/api/mytasks?scope=" + encodeURIComponent(scope || "assignee")
-    + (done ? "&done=1" : "")),                                       // 내 Task(세 뷰 공용 모델)
+  myTasks: (opts) => {                                                // 내 Task(옵션은 서버 질의 조건)
+    const o = opts || {};
+    return req("/api/mytasks?scope=" + encodeURIComponent(o.scope || "assignee")
+      + "&openFilter=" + encodeURIComponent(o.openFilter || "all")
+      + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w"));
+  },
   search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
     + "&scope=" + encodeURIComponent(scope || "scoped")
     + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence
