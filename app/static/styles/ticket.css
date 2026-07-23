@@ -9,20 +9,22 @@
   background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 40px 16px; overflow: hidden; }
 .tkt-dlg { position: relative; background: var(--panel); color: var(--text); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, .38); width: min(1240px, 100%);
-  /* 상단 패딩은 0 — 타이틀바가 모서리까지 꽉 채운다 */
-  padding: 0 24px 20px;
-  /* 좌/우 패널은 음수 마진으로 다이얼로그 가장자리까지 채우는 '직각' 배경이라
-     라운드 모서리 밖으로 삐져나온다 → overflow-x 로 잘라낸다.
-     세로는 auto — **다이얼로그가 스크롤 주체**여야 타이틀바 sticky 가 여기에 붙는다.
-     (오버레이가 스크롤 주체면 바가 화면 최상단까지 올라가 다이얼로그와 따로 논다) */
-  max-height: calc(100vh - 80px); overflow: hidden auto; }
+  /* 패딩은 본문이 가진다 — 타이틀바는 모서리까지 꽉 채운다 */
+  padding: 0;
+  /* 스크롤 주체는 **본문(.tkt-body)** — 다이얼로그가 스크롤하면 바가 타이틀바 옆까지 올라와
+     모서리 밖으로 삐져나온 것처럼 보인다. 타이틀바는 흐르지 않는 첫 행으로 고정한다. */
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - 80px); overflow: hidden; }
+/* 좌/우 패널은 음수 마진으로 가장자리까지 채우는 '직각' 배경이라 라운드 모서리 밖으로
+   삐져나온다 → overflow-x 로 잘라낸다. 가로 패딩도 여기(본문)가 가진다. */
+.tkt-body { flex: 1 1 auto; min-height: 0; overflow: hidden auto; padding: 0 24px 20px; }
 .tkt-dlg > :last-child { margin-bottom: 0; }
 /* ── 최상단 타이틀바 ──
    배경은 티켓 타입 색(--tc)의 옅은 틴트. 타입을 색으로 먼저 알리고, 텍스트로 다시 확인시킨다.
    다이얼로그 좌우 패딩(24px)을 음수 마진으로 상쇄해 모서리까지 꽉 채운다. */
-.tkt-bar { position: sticky; top: 0; z-index: 5;
+.tkt-bar { flex: none; z-index: 5;
   display: flex; align-items: center; gap: 12px; min-width: 0;
-  margin: 0 -24px; padding: 9px 12px 9px 18px;
+  margin: 0; padding: 9px 12px 9px 18px;
   background: color-mix(in srgb, var(--tc, var(--ty-task)) 15%, var(--panel));
   border-bottom: 2px solid color-mix(in srgb, var(--tc, var(--ty-task)) 55%, transparent);
   border-radius: 12px 12px 0 0; }
@@ -307,6 +309,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .jira-badge .jb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-todo); }
 .jira-badge .jb-dot.st-inprogress { background: var(--st-prog); }
 .jira-badge .jb-dot.st-done { background: var(--st-done); }
+/* 맨 앞은 **타입 뱃지**. 예전의 상태색 점은 오른쪽 상태 글자와 중복인 데다 뜻이 안 읽혔다. */
+.jira-badge .jb-type { flex: none; font-size: 9px; padding: 0 4px; line-height: 15px; }
 .jira-badge .jb-key { flex: none; color: var(--accent); font-weight: 700; }
 .jira-badge .jb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 /* 상태 — 제목과 구분선(|)으로 나누고 상태 카테고리 색을 준다(담당자는 표시하지 않는다) */
@@ -528,8 +532,11 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   display: flex; flex-direction: column;
   max-height: none; overflow: visible;         /* 페이지 자체가 스크롤 주체 */
   box-shadow: none; border: 0; border-radius: 0; }
+.tkt-dlg.page .tkt-body { overflow: visible; flex: 1; display: flex; flex-direction: column; }
 .tkt-dlg.page .tkt-cols { flex: 1; }           /* 남는 높이를 컬럼이 가져가 배경이 바닥까지 */
-.tkt-dlg.page .tkt-bar { border-radius: 0; }
+/* 페이지 모드는 **페이지가** 스크롤 주체다 → 타이틀바를 sticky 로 붙여 둔다.
+   (다이얼로그 모드는 본문만 스크롤하고 타이틀바는 흐르지 않는 첫 행이라 sticky 가 필요 없다.) */
+.tkt-dlg.page .tkt-bar { position: sticky; top: 0; border-radius: 0; }
 /* 확장 버튼이 없는 페이지에서는 .expanded 폭 제한도 무의미 */
 .tkt-dlg.page.expanded { max-width: none; }
 
@@ -731,8 +738,18 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .add-b:hover { color: var(--accent); border-color: var(--accent); }
 
 /* 검색 팝오버 — 섹션 바로 아래에 붙는다(모달이 아니라 인라인이라 맥락이 안 끊긴다) */
-.lp { position: relative; margin: 6px 0 10px; border: 1px solid var(--border-hi); border-radius: 10px;
-  background: var(--panel); box-shadow: 0 10px 28px rgba(0, 0, 0, .18); padding: 8px; z-index: 5; }
+/* 오버레이 모달 — 인라인이면 폭이 좁고 아래 내용을 밀어낸다. 검색 오버레이와 같은 결. */
+/* z-index: 티켓 다이얼로그(.tkt-ov=9000) **위**여야 한다 — 이 팝업은 그 안에서 열린다.
+   이미지 확대(9500)보다는 아래(둘이 동시에 뜨지 않지만 순서를 정해 둔다). */
+.lp-ov { position: fixed; inset: 0; z-index: 9400; display: flex; align-items: flex-start;
+  justify-content: center; padding: 10vh 16px 16px; background: rgba(12, 16, 24, .42);
+  backdrop-filter: blur(2px); }
+.lp { width: min(720px, 100%); max-height: 76vh; display: flex; flex-direction: column;
+  border: 1px solid var(--border-hi); border-radius: 12px; background: var(--panel);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .35); padding: 10px 12px 12px; }
+.lp-h { display: flex; align-items: baseline; gap: 8px; font-size: 13px; font-weight: 700;
+  margin-bottom: 8px; }
+.lp-h-s { font-size: 11px; font-weight: 400; color: var(--muted); }
 .lp-top { display: flex; align-items: center; gap: 6px; }
 .lp-input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--border); border-radius: 7px;
   background: var(--panel-2); color: var(--text); padding: 6px 8px; font-size: 12.5px; }
@@ -749,7 +766,12 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .lp-add:disabled { opacity: .55; cursor: default; }
 .lp-err { margin-top: 7px; font-size: 11.5px; color: var(--today); }
 .lp-hint { color: var(--muted); font-size: 12px; padding: 9px 6px; }
-.lp-list { margin-top: 7px; max-height: 260px; overflow-y: auto; }
+.lp-list { margin-top: 7px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* 상태 — '제목 - 상태' 형태로 뒤에 붙는다(색은 상태 카테고리) */
+.lp-st { flex: none; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.lp-st.st-todo { color: var(--st-todo); }
+.lp-st.st-inprogress { color: var(--st-prog); }
+.lp-st.st-done { color: var(--st-done); }
 .lp-item { display: flex; align-items: center; gap: 7px; padding: 6px 7px; border-radius: 7px;
   cursor: pointer; min-width: 0; font-size: 12.5px; }
 .lp-item.active { background: var(--panel-2); }

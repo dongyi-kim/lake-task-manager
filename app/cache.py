@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS recent (
     kind      TEXT NOT NULL,         -- jira | confluence | web
     title     TEXT NOT NULL,
     meta      TEXT NOT NULL DEFAULT '',
+    type      TEXT NOT NULL DEFAULT '',   -- 이슈타입(Task/Bug/…) — 목록을 검색 결과와 같은 모양으로
     opened_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_recent_at ON recent(opened_at DESC);
@@ -41,7 +42,19 @@ class Cache:
     def __init__(self, db_path):
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._lock = threading.Lock()
+
+    def _migrate(self):
+        """CREATE TABLE IF NOT EXISTS 는 **기존 DB에 새 컬럼을 더해 주지 않는다** —
+        이미 쓰던 사람의 캐시에도 컬럼을 채워 넣는다(없으면 조회가 통째로 깨진다)."""
+        try:
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(recent)")}
+            if cols and "type" not in cols:
+                self._conn.execute("ALTER TABLE recent ADD COLUMN type TEXT NOT NULL DEFAULT ''")
+                self._conn.commit()
+        except Exception:
+            pass
 
     # ── TTL 캐시 ──
     def get(self, key):
@@ -138,15 +151,15 @@ class Cache:
     # 웹페이지가 읽을 수 없으므로, 우리가 연 것을 우리가 기록하는 수밖에 없다.)
     RECENT_KEEP = 200                       # 이 개수만 남기고 오래된 것부터 버린다
 
-    def touch_recent(self, url, kind, title, meta=""):
+    def touch_recent(self, url, kind, title, meta="", type_=""):
         if not url:
             return
         with self._lock:
             self._conn.execute(
-                "INSERT INTO recent(url, kind, title, meta, opened_at) VALUES (?,?,?,?,?) "
+                "INSERT INTO recent(url, kind, title, meta, type, opened_at) VALUES (?,?,?,?,?,?) "
                 "ON CONFLICT(url) DO UPDATE SET opened_at=excluded.opened_at, "
-                "title=excluded.title, meta=excluded.meta, kind=excluded.kind",
-                (url, kind or "web", title or url, meta or "", time.time()),
+                "title=excluded.title, meta=excluded.meta, kind=excluded.kind, type=excluded.type",
+                (url, kind or "web", title or url, meta or "", type_ or "", time.time()),
             )
             self._conn.execute(
                 "DELETE FROM recent WHERE url NOT IN "
@@ -154,7 +167,7 @@ class Cache:
             self._conn.commit()
 
     def recent_items(self, limit=20, kind=None):
-        sql = "SELECT url, kind, title, meta, opened_at FROM recent"
+        sql = "SELECT url, kind, title, meta, type, opened_at FROM recent"
         args = []
         if kind:
             sql += " WHERE kind=?"
@@ -163,8 +176,8 @@ class Cache:
         args.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
-        return [{"url": u, "kind": k, "title": t, "meta": m, "openedAt": at}
-                for u, k, t, m, at in rows]
+        return [{"url": u, "kind": k, "title": t, "meta": m, "type": ty, "openedAt": at}
+                for u, k, t, m, ty, at in rows]
 
     def forget_recent(self, url=None):
         with self._lock:

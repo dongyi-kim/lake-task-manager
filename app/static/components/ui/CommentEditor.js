@@ -9,7 +9,7 @@ import { loadTiptap } from "../../lib/tiptap.js";
 import { ensureHljsTheme } from "../../lib/hljs.js";
 import { saveDraft, loadDraft, clearDraft, purgeExpired } from "../../lib/draft.js";
 import { api } from "../../lib/api.js";
-import { sigColor, initialOf } from "../../lib/colors.js";
+import { sigColor, initialOf, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { debouncedItems } from "../../lib/typeahead.js";
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
@@ -201,16 +201,17 @@ function linkBadgeExt(T) {
             // Jira 티켓 — 읽기 렌더(augmentLinks)와 **같은 구조·클래스**로 그려 모양을 일치시킨다.
             a.className = "jira-badge tkt";
             a.style.removeProperty("--fav");
-            a.innerHTML = '<span class="jb-dot"></span><b class="jb-key"></b>'
+            a.innerHTML = '<span class="tbadge v-solid jb-type"></span><b class="jb-key"></b>'
               + '<span class="jb-name"></span><span class="jb-meta"></span>';
             a.querySelector(".jb-key").textContent = key;
             ticketData(key).then((bd) => {
               if (!bd || !a.isConnected) return;
-              const dot = a.querySelector(".jb-dot"), nm = a.querySelector(".jb-name"),
+              const tb = a.querySelector(".jb-type"), nm = a.querySelector(".jb-name"),
                     mt = a.querySelector(".jb-meta");
-              if (!dot || !nm || !mt) return;
+              if (!tb || !nm || !mt) return;
               const cat = bd.statusCategory || "todo";
-              dot.className = "jb-dot st-" + cat;
+              tb.textContent = typeLabel(bd.type || "");
+              tb.style.setProperty("--tc", TYPE_BG[bd.type] || "var(--ty-task)");
               nm.textContent = bd.summary || "";
               mt.textContent = bd.status || "";            // 담당자는 표시하지 않는다
               mt.className = "jb-meta st-" + cat;

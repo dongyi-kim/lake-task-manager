@@ -29,6 +29,7 @@ export function recordOpen(item) {
     kind: item.kind || "web",
     title: (item.title || item.url).slice(0, 300),
     meta: (item.meta || "").slice(0, 300),
+    type: (item.type || "").slice(0, 40),
   }).catch(() => { /* 기록 실패는 사용자 흐름을 막지 않는다 */ });
 }
 

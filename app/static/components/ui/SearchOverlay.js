@@ -96,8 +96,8 @@ export default {
       if (f.src === "recent") { this.openRecent(f.it); return; }
       if (f.src === "jira") {
         recordOpen({ url: f.it.url || ("/browse/" + f.it.key), kind: "jira",
-                     title: f.it.key + " " + (f.it.title || ""),
-                     meta: [f.it.project, f.it.status].filter(Boolean).join(" · ") });
+                     title: f.it.key + " " + (f.it.title || ""), type: f.it.issuetype || "",
+                     meta: f.it.status || "" });
         this.$emit("open-ticket", f.it.key); this.$emit("close"); return;
       }
       if (f.src === "confluence" && f.it.url) {

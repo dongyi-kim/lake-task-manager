@@ -155,8 +155,8 @@ export default {
         // 검색창을 빈 상태로 열었을 때 보여줄 '최근 열어본 항목'에 남긴다.
         if (fresh() && v) {
           recordOpen({ url: v.url || ("/browse/" + key), kind: "jira",
-                       title: key + " " + (v.summary || ""),
-                       meta: [v.type, v.status].filter(Boolean).join(" · ") });
+                       title: key + " " + (v.summary || ""), type: v.type || "",
+                       meta: v.status || "" });
         }
       } catch (e) {
         if (fresh()) {
@@ -387,11 +387,15 @@ export default {
         a.classList.add("jira-badge", "tkt");
         a.setAttribute("data-key", key);
         a.removeAttribute("href");
-        a.innerHTML = '<span class="jb-dot"></span><b class="jb-key">' + esc(key) + "</b>"
+        // [타입][번호][제목] - [상태]. 예전엔 맨 앞이 상태색 점이었는데, 상태는 오른쪽에 글자로도
+        // 나오므로 중복인 데다 무슨 뜻인지 읽히지 않았다 → 그 자리를 **타입 뱃지**로 바꾼다.
+        a.innerHTML = '<span class="tbadge v-solid jb-type"></span><b class="jb-key">' + esc(key) + "</b>"
           + '<span class="jb-name"></span><span class="jb-meta"></span>';
         api.ticketBadge(key).then((b) => {
           if (!b) return;
-          a.querySelector(".jb-dot").className = "jb-dot st-" + (b.statusCategory || "todo");
+          const tb = a.querySelector(".jb-type");
+          tb.textContent = typeLabel(b.type || "");
+          tb.style.setProperty("--tc", TYPE_BG[b.type] || "var(--ty-task)");
           a.querySelector(".jb-name").textContent = b.summary || "";
           // 상태만(담당자 제외) — 구분선 '|' 는 CSS, 색은 상태 카테고리로.
           const meta = a.querySelector(".jb-meta");
@@ -480,6 +484,10 @@ export default {
             <button v-if="!isPage" class="tb-btn ico close" @click="$emit('close')" aria-label="닫기" title="닫기">✕</button>
           </span>
         </div>
+
+        <!-- 스크롤 주체는 **본문**이다. 다이얼로그 전체를 스크롤시키면 바가 타이틀바
+             옆까지 올라와 모서리 밖으로 삐져나온 것처럼 보인다. -->
+        <div class="tkt-body">
 
         <!-- 섹션별 독립 렌더: 스파인(계보/형제/타임라인)은 본문(v) 응답을 기다리지 않는다.
              본문·코멘트도 각자 자기 상태가 채워지는 대로 그려진다. -->
@@ -761,6 +769,7 @@ export default {
             </div>
           </aside>
         </div><!-- /.tkt-cols -->
+        </div><!-- /.tkt-body -->
       </div>
 
       <div v-if="zoom" class="tkt-zoom" @click="zoom = null">

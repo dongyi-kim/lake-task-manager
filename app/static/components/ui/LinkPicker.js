@@ -7,11 +7,13 @@
 // api.linkAdd / api.documentAdd 로 처리한다 — 이 컴포넌트는 '무엇을 붙일지' 고르는 역할만 한다.
 import { api } from "../../lib/api.js";
 import { createTypeahead } from "../../lib/typeahead.js";
+import TypeBadge from "./TypeBadge.js";
 
 const _URL_RE = /^https?:\/\/\S+$/i;
 
 export default {
   name: "LinkPicker",
+  components: { TypeBadge },
   props: {
     mode: { type: String, default: "jira" },        // jira | confluence
     excludeKeys: { type: Array, default: () => [] },  // 이미 걸린 티켓(중복 방지)
@@ -41,7 +43,8 @@ export default {
           seen.add(key);
           // 저장된 제목은 "KEY 요약" 형태 — 앞의 키를 떼어 목록의 다른 행과 모양을 맞춘다
           const title = String(r.title || "").replace(new RegExp("^" + key + "\s*"), "");
-          out.push({ key, title: title || r.title || key, status: r.meta || "", _recent: true });
+          out.push({ key, title: title || r.title || key, status: r.meta || "",
+                     issuetype: r.type || "", _recent: true });
         } else {
           if (!r.url || r.kind === "jira") continue;      // 문서/웹 링크만
           const u = r.url.replace(/\/+$/, "").toLowerCase();
@@ -78,9 +81,6 @@ export default {
   },
   mounted() {
     this.$nextTick(() => { const el = this.$refs.input; if (el) el.focus(); });
-    this._onDoc = (e) => { if (this.$el && !this.$el.contains(e.target)) this.$emit("close"); };
-    // capture 로 달면 내부 클릭도 먼저 잡혀 닫힌다 → bubble 단계에서 문서 클릭만 본다
-    setTimeout(() => document.addEventListener("click", this._onDoc), 0);
     document.addEventListener("keydown", this._onEsc = (e) => {
       if (e.key === "Escape") { e.stopPropagation(); this.$emit("close"); }
     }, true);
@@ -97,7 +97,6 @@ export default {
     }
   },
   unmounted() {
-    document.removeEventListener("click", this._onDoc);
     document.removeEventListener("keydown", this._onEsc, true);
     this._ta.cancel();
   },
@@ -151,7 +150,14 @@ export default {
     plain(s) { const d = document.createElement("div"); d.innerHTML = s || ""; return (d.textContent || "").trim(); },
   },
   template: `
+  <!-- 오버레이 모달 — 인라인으로 열면 폭이 좁고 아래 내용을 밀어낸다.
+       body 로 teleport: 티켓 다이얼로그 안에 두면 그 스택/스크롤에 갇힌다. -->
+  <Teleport to="body">
+  <div class="lp-ov" @click.self="$emit('close')">
   <div class="lp" @click.stop>
+    <div class="lp-h">{{ isJira ? '관련 티켓 추가' : '관련문서 추가' }}
+      <span class="lp-h-s">{{ isJira ? 'Jira 이슈 링크' : 'Confluence 문서 · 웹 링크' }}</span>
+    </div>
     <div class="lp-top">
       <input ref="input" v-model="q" class="lp-input" @keydown="onKey" autocomplete="off"
              :placeholder="isJira ? '티켓 번호(DL-1234) 또는 제목으로 검색…' : '문서 제목으로 검색하거나 URL 붙여넣기…'" />
@@ -187,12 +193,13 @@ export default {
       <div v-else-if="!shown.length && !loading" class="lp-hint">결과 없음</div>
       <div v-for="(it, i) in shown" :key="isJira ? it.key : ('c'+i)" class="lp-item"
            :class="{ active: active === i }" @mousemove="active = i" @click="choose(it)">
+        <!-- [타입] [번호] [제목] - [상태] — 타입은 뱃지로 -->
         <template v-if="isJira">
-          <!-- 최근 목록엔 상태가 없다 — 있지도 않은 상태색을 칠하지 않고 중립 표시를 쓴다 -->
-          <span class="sr-dot" :class="it._recent ? 'rc' : 'st-' + (it.statusCategory || 'todo')"></span>
+          <TypeBadge v-if="it.issuetype" :type="it.issuetype" />
+          <span v-else class="sr-dot" :class="it._recent ? 'rc' : 'st-' + (it.statusCategory || 'todo')"></span>
           <b class="sr-key">{{ it.key }}</b>
           <span class="sr-title">{{ it.title }}</span>
-          <span class="sr-meta">{{ it.status }}</span>
+          <span v-if="it.status" class="lp-st" :class="'st-' + (it.statusCategory || '')">- {{ it.status }}</span>
         </template>
         <template v-else>
           <span class="sr-pageic"></span>
@@ -201,5 +208,7 @@ export default {
         </template>
       </div>
     </div>
-  </div>`,
+  </div>
+  </div>
+  </Teleport>`,
 };
