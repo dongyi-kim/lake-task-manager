@@ -63,6 +63,7 @@ export default {
       // showRelated 는 그 **기본값**을 정하고, 그룹별 버튼이 개별로 덮어쓴다.
       showRelated: false,
       groupModes: {},       // { 그룹키: 'collapsed' | 'mine' | 'all' }
+      bandClosed: {},       // 세로축 모드에서 접어 둔 상태 밴드 { todo|inprogress|done: true }
       scope: "assignee",    // assignee | reporter | both
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
@@ -188,6 +189,12 @@ export default {
       const m = { todo: [], inprogress: [], done: [] };
       for (const c of cards) (m[c.statusCategory] || m.todo).push(c);
       return m;
+    },
+    /** 세로축 모드의 상태 밴드 접기 — 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게. */
+    bandOpen(k) { return !this.bandClosed[k]; },
+    toggleBand(k) { this.bandClosed = Object.assign({}, this.bandClosed, { [k]: !this.bandClosed[k] }); },
+    bandCount(k) {
+      return this.allCards.filter((c) => c.statusCategory === k && (this.showRelated || c.mine)).length;
     },
     /** 하위 보기 모드 — 그룹별 설정이 있으면 그것, 없으면 상단 옵션이 정한 기본값. */
     modeOf(k) { return this.groupModes[k] || this.defaultMode; },
@@ -368,10 +375,13 @@ export default {
 
     <!-- ══ 상태 = 세로축 : 상태 패널이 가로로 꽉 차서 쌓이고, 그 안에서 그룹이 좌우로 ══ -->
     <template v-else>
-      <div v-for="st in states" :key="st.k" class="mt-band" :class="'c-' + st.k">
-        <div class="mt-bandh">{{ st.label }}
-          <b>{{ allCards.filter(c => c.statusCategory === st.k && (showRelated || c.mine)).length }}</b>
-        </div>
+      <div v-for="st in states" :key="st.k" class="mt-band" :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
+        <button class="mt-bandh" @click="toggleBand(st.k)"
+                :title="bandOpen(st.k) ? '접기' : '펼치기'">
+          <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>{{ st.label }}
+          <b>{{ bandCount(st.k) }}</b>
+        </button>
+        <template v-if="bandOpen(st.k)">
         <!-- 그룹화 없음 → 카드 그리드 하나 -->
         <div v-if="groupBy === 'none'" class="mt-grid2">
           <div v-for="c in byState(panels[0].cards)[st.k]" :key="c.key" class="mt-card tkt"
@@ -444,6 +454,7 @@ export default {
             </div>
           </template>
         </div>
+        </template>
       </div>
     </template>
   </div>`,

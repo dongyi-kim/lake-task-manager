@@ -193,18 +193,26 @@
   --tc: var(--st-todo); background: color-mix(in srgb, var(--tc) 4%, var(--panel)); }
 .mt-band.c-inprogress { --tc: var(--st-prog); }
 .mt-band.c-done { --tc: var(--st-done); }
-.mt-bandh { display: flex; align-items: center; gap: 7px; padding: 6px 11px; font-size: 11px;
-  font-weight: 700; color: var(--tc); letter-spacing: .3px;
-  border-bottom: 1px solid var(--border); border-left: 3px solid var(--tc);
-  background: color-mix(in srgb, var(--tc) 13%, var(--panel)); }
+/* 밴드 헤더 = 접기 버튼. 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게 한다. */
+.mt-bandh { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
+  padding: 6px 11px; font-size: 11px; font-weight: 700; color: var(--tc); letter-spacing: .3px;
+  border: 0; border-bottom: 1px solid var(--border); border-left: 3px solid var(--tc);
+  background: color-mix(in srgb, var(--tc) 13%, var(--panel)); cursor: pointer; font-family: inherit; }
+.mt-bandh:hover { background: color-mix(in srgb, var(--tc) 20%, var(--panel)); }
+.mt-bandh .chev { transition: transform .12s; display: inline-block; color: var(--tc); }
+.mt-bandh .chev.open { transform: rotate(90deg); }
+.mt-band.closed .mt-bandh { border-bottom: 0; }
 .mt-bandh b { color: var(--text); font-variant-numeric: tabular-nums; }
 /* 그리드 — 가로가 남으면 열이 늘어난다. 순서는 좌→우, 위→아래(행 우선)로 읽힌다. */
 .mt-grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 4px 10px; padding: 6px 8px; }
-/* 그룹이 좌우로 늘어서는 줄 — 그룹 카드가 자기 폭을 갖고 그 안이 다시 그리드 */
-.mt-grouprow { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-  gap: 8px; padding: 7px 8px; align-items: start; }
-.mt-gcard { border: 1px solid var(--border); border-left: 3px solid var(--sig, var(--accent));
+/* 그룹이 좌우로 늘어서는 줄 — **컬럼마다 독립적인 세로 공간**을 갖는다.
+   grid 로 두면 행이 정렬돼, 한 컬럼의 큰 카드가 다른 컬럼의 카드까지 아래로 밀어낸다.
+   CSS 다단(columns)은 컬럼별로 따로 흐르므로 그 밀림이 없다(카드는 쪼개지지 않게 break-inside). */
+.mt-grouprow { columns: 380px; column-gap: 10px; padding: 7px 8px; }
+.mt-gcard { break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid;
+  display: inline-block; width: 100%; margin: 0 0 8px;
+  border: 1px solid var(--border); border-left: 3px solid var(--sig, var(--accent));
   border-radius: 8px; background: var(--panel); min-width: 0; }
 .mt-gch { display: flex; align-items: center; gap: 6px; padding: 5px 8px; min-width: 0;
   border-bottom: 1px solid var(--border); background: var(--panel-2); }
