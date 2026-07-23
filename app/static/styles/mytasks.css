@@ -356,3 +356,23 @@
 :root[data-theme="dark"] .pri-i.highest { color: #f87171; }
 :root[data-theme="dark"] .pri-i.high    { color: #fb923c; }
 :root[data-theme="dark"] .pri-i.low     { color: #60a5fa; }
+
+/* ── 2행: 우선순위 | 마감 | 담당자 ─────────────────────────────────────────
+   세 칸을 세로선으로 끊는다. 붙여 두면 '▲ D-3 홍길동' 이 한 덩어리로 읽혀 어디까지가
+   우선순위이고 어디부터가 마감인지 매번 다시 봐야 한다. */
+.tc-l2 .pri-i { padding-right: 9px; border-right: 1px solid var(--border); }
+
+/* 완료일도 뱃지가 아니라 **텍스트**. 마감 자리에 그대로 들어가므로 형태가 같아야
+   '이 자리는 시점을 말하는 칸' 으로 읽힌다(뱃지면 혼자 튀어 다른 종류의 정보로 보인다). */
+.tc-when.fin b { color: var(--st-done); }
+.tc-l2 .tc-fin { border: 0; background: none; padding: 0; }   /* 남은 뱃지 스타일 무력화 */
+
+/* ── 급함 표식 — 카드 우측 상단에 띄운다 ────────────────────────────────────
+   2행 안에 두면 다른 정보와 같은 무게로 줄에 섞여 훑을 때 안 걸린다. 카드 밖으로 반쯤
+   나온 표식은 스크롤 중에도 눈에 먼저 들어온다 — 그게 이 표시의 목적이다.
+   제목이 긴 카드와 겹치지 않도록 1행 오른쪽에 자리를 비워 둔다. */
+.mt-card.two { position: relative; }
+.mt-card.two.hot > .tc-l1 { padding-right: 14px; }
+.tc-hot { position: absolute; top: -7px; right: -5px; z-index: 2;
+  font-size: 11px; line-height: 1; padding: 2px; border-radius: 999px;
+  background: var(--panel); box-shadow: 0 1px 4px rgba(0,0,0,.22); cursor: default; }

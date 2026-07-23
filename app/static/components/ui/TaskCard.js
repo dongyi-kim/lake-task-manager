@@ -1,12 +1,16 @@
 // TaskCard.js — '내 Task' 의 **2줄 카드**. 하위(Sub-Task)가 없어 부모 카드에 담기지 않는 티켓용.
 //
 //   1행  [타입] [번호] [제목]
-//   2행  [우선순위] [긴급도] [D-day] | [담당자] [소속 Epic]
+//   2행  [우선순위] | [D-day] | [담당자] [소속 Epic]   + 급하면 우측 상단에 🔥
 //
 // 왜 2줄인가: 한 줄에 다 넣으면 제목이 먼저 잘려 정작 무슨 일인지가 안 보인다. 제목에 한 줄을
 // 통째로 주고, 판단 재료(급한가·언제까지·누가·어디 소속)는 아랫줄에 모은다.
 //
-// 완료된 티켓은 **긴급도·D-day 대신 완료일**을 보인다 — 끝난 일에 '며칠 남음' 은 의미가 없다.
+// 완료된 티켓은 **D-day 대신 완료일**을 보인다 — 끝난 일에 '며칠 남음' 은 의미가 없다.
+//
+// 급한 티켓(7일 이내)은 카드 **우측 상단에 🔥 를 띄운다**. 2행 안에 두면 다른 정보와 같은
+// 무게로 줄에 섞여 훑을 때 안 걸린다. 카드 밖으로 반쯤 나온 표식은 목록을 스크롤하는 중에도
+// 눈에 먼저 들어온다 — 그게 이 표시의 목적이다.
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import PriIcon from "./PriIcon.js";
@@ -14,20 +18,23 @@ import { ymd } from "../../lib/fmt.js";
 
 // 긴급도 — 남은 일수 하나로 정한다. 숫자(D-3)는 정확하지만 훑을 땐 안 읽히고,
 // 표정은 정확하지 않지만 **한눈에** 읽힌다. 둘을 같이 둬서 서로를 보완한다.
+// 급함의 단계 — 표식은 🔥 하나지만 말풍선은 왜 급한지까지 알려 준다.
 const URGENCY = [
-  { max: 0, icon: "😡", key: "over", label: "마감일이거나 지났습니다" },
-  { max: 3, icon: "😰", key: "soon", label: "3일 이내" },
-  { max: 7, icon: "😮", key: "week", label: "일주일 이내" },
+  { max: 0, key: "over", label: "마감일이거나 지났습니다" },
+  { max: 3, key: "soon", label: "마감까지 3일 이내" },
+  { max: 7, key: "week", label: "마감까지 일주일 이내" },
 ];
-const CALM = { icon: "😴", key: "calm", label: "여유 있음(7일 초과)" };
-// 마감이 없으면 '여유' 가 아니라 **모른다** — 급한지 아닌지를 판단할 근거 자체가 없다.
-// 잠자는 얼굴로 두면 "안 급함" 이라고 단정해 버리므로 물음표로 구분한다.
-const UNKNOWN = { icon: "❓", key: "unknown", label: "마감이 정해져 있지 않습니다" };
+const CALM = { key: "calm", label: "여유 있음(7일 초과)" };
+const UNKNOWN = { key: "unknown", label: "마감이 정해져 있지 않습니다" };
+const HOT_DAYS = 7;   // 이 안으로 들어오면 카드에 🔥
 
 export function urgencyOf(dueDays) {
   if (dueDays === null || dueDays === undefined) return UNKNOWN;
   for (const u of URGENCY) if (dueDays <= u.max) return u;
   return CALM;
+}
+export function isHot(dueDays) {
+  return dueDays !== null && dueDays !== undefined && dueDays <= HOT_DAYS;
 }
 
 export default {
@@ -42,6 +49,8 @@ export default {
   computed: {
     done() { return this.card.statusCategory === "done"; },
     urg() { return urgencyOf(this.card.dueDays); },
+    // 완료된 일은 아무리 마감이 지났어도 급하지 않다 — 이미 끝났다.
+    hot() { return !this.done && isHot(this.card.dueDays); },
     // 고정폭으로 세로로 나열되므로 길이가 들쭉날쭉하면 안 된다 — 가장 긴 게 'D-DAY'(5자).
     dday() {
       const d = this.card.dueDays;
@@ -57,7 +66,8 @@ export default {
   },
   template: `
   <div class="mt-card two tkt" :data-key="card.key"
-       :class="{ mine: card.mine, rel: !card.mine, done: done }">
+       :class="{ mine: card.mine, rel: !card.mine, done: done, hot: hot }">
+    <span v-if="hot" class="tc-hot" :title="urg.label">🔥</span>
     <div class="tc-l1">
       <TypeBadge :type="card.type" />
       <span class="mt-key">{{ card.key }}</span>
@@ -66,16 +76,13 @@ export default {
     <div class="tc-l2">
       <PriIcon :rank="card.priRank" :name="card.pri" />
       <!-- 완료면 '언제 끝냈나' 만 남긴다. 끝난 일에 긴급도·남은 일수는 의미가 없다. -->
-      <template v-if="done">
-        <span class="tc-fin" :title="'완료 ' + doneAt">✓ {{ doneAt || '완료' }}</span>
-      </template>
-      <template v-else>
-        <span class="tc-when" :class="[dueCls, { inh: card.dueInherited }]"
-              :title="card.dueInherited ? '상위 Task 의 마감(' + (card.due || '') + ')' : (card.due || '마감 없음')">
-          <span class="tc-urg" :class="urg.key" :title="urg.label">{{ urg.icon }}</span>
-          <b><i v-if="card.dueInherited" class="inh-m">↑</i>{{ dday }}</b>
-        </span>
-      </template>
+      <span class="tc-when" :class="[done ? 'fin' : dueCls, { inh: !done && card.dueInherited }]"
+            :title="done ? '완료 ' + doneAt
+                         : (card.dueInherited ? '상위 Task 의 마감(' + (card.due || '') + ')'
+                                              : (card.due || '마감 없음'))">
+        <b v-if="done">✓ {{ doneAt || '완료' }}</b>
+        <b v-else><i v-if="card.dueInherited" class="inh-m">↑</i>{{ dday }}</b>
+      </span>
       <span v-if="showOwner" class="mt-owner" :class="{ me: card.mine }"
             :title="(card.assignee || '미할당') + ' 담당' + (card.mine ? ' (나)' : '')">
         <Avatar :user="card.assigneeId" :name="card.assignee" :size="15" />{{ card.assignee || '미할당' }}
