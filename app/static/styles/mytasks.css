@@ -113,32 +113,56 @@
 .mt-colh.c-inprogress, .mt-cell.c-inprogress { --tc: var(--st-prog); }
 .mt-colh.c-done, .mt-cell.c-done { --tc: var(--st-done); }
 
-/* 그룹 = 카드 하나. 좌측 굵은 레일 + 헤더 띠 + 옅은 면이 한 덩어리로 읽히게 한다. */
+/* 그룹 = **Task 카드 하나**. 카드가 곧 컨테이너이고, 하위는 그 카드 '안'에 들어간다.
+   전에는 그룹을 색 있는 패널(콜아웃처럼)로 감쌌는데, 카드 위에 또 패널이 얹혀 시끄러웠다.
+   지금은 패널을 없애고 카드 하나만 남긴다 — 상위 행이 카드의 머리, 하위가 카드의 본문. */
 .mt-gcard2 { --gc: var(--accent); margin: 0 0 10px; border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--gc) 26%, var(--border));
-  border-left: 4px solid var(--gc);
-  background: color-mix(in srgb, var(--gc) 5%, var(--panel));
-  overflow: hidden; }
-.mt-gcard2.k-epic { --gc: var(--ty-epic); }
-.mt-gcard2.k-epic.none { --gc: var(--muted-2); }
-.mt-gh { display: flex; align-items: center; gap: 8px; min-width: 0;
-  padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--gc) 22%, var(--border));
-  background: color-mix(in srgb, var(--gc) 12%, var(--panel)); }
-.mt-gcard2.k-epic > .mt-gh .mt-pt { font-size: 13.5px; }
-.mt-gcard2.none .mt-pt { color: var(--muted-2); }
-/* Epic 카드 안의 Task 카드 — 한 단계 안으로 들여 '안에 담긴' 관계를 보인다 */
-.mt-gcard2.inner { margin: 8px 8px 8px 10px; background: var(--panel); }
-.mt-gh.sub { padding: 5px 9px; }
-.mt-gbody { padding-top: 6px; padding-bottom: 6px; }
-.mt-gbody.plain { padding: 0 8px; }
-/* 상태 셀 — 카드 안에서 칼럼을 나누는 옅은 칸 */
-.mt-cell { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 4px;
-  min-height: 26px; border-radius: 7px; border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--tc) 5%, var(--panel)); }
-.mt-gbody.plain .mt-cell { margin-bottom: 8px; }
-/* 빈 칸은 자리만 지킨다 — 대부분의 그룹은 한 상태에만 카드가 있어서, 빈 칸까지 상자로 그리면
-   화면이 빈 상자로 뒤덮인다. 정렬은 유지하되 존재감만 지운다. */
-.mt-cell.empty { border-color: transparent; background: none; min-height: 18px; }
+  background: var(--panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--gc); overflow: hidden; }
+
+/* 상위 행 = 카드의 머리. 카드 안이라 자기 테두리는 갖지 않는다. */
+.mt-gh { display: flex; align-items: center; gap: 8px; padding: 0; }
+.mt-card.parent { flex: 1 1 auto; padding: 8px 10px; background: none;
+  border: 0; border-radius: 0; box-shadow: none; }
+.mt-card.parent:hover { background: color-mix(in srgb, var(--gc) 5%, transparent); }
+.mt-card.parent .mt-title { font-weight: 700; font-size: 13px; }
+.mt-card.parent .mt-key { font-size: 11px; }
+.mt-gh .mt-more { margin-right: 10px; }
+
+/* 하위 = 카드의 본문. 머리와 가는 선으로만 나누고, 왼쪽 안내선으로 '안에 들어있음' 을 보인다. */
+.mt-gbody { padding: 6px 10px 8px 22px; position: relative;
+  border-top: 1px solid var(--grid, var(--border)); }
+.mt-gbody::before { content: ""; position: absolute; left: 11px; top: 8px; bottom: 10px;
+  width: 2px; border-radius: 2px; background: color-mix(in srgb, var(--gc) 30%, transparent); }
+.mt-gbody.plain { padding: 0 8px; border-top: 0; }
+.mt-gbody.plain::before { display: none; }
+@media (max-width: 900px) { .mt-gbody { padding-left: 16px; } .mt-gbody::before { left: 7px; } }
+
+/* Epic 은 카드가 아니라 **구획**이다 — 제목 줄 + 가는 선. 카드를 또 씌우면 카드 안에 카드가 된다. */
+.mt-gcard2.k-epic { background: none; border: 0; border-radius: 0; margin-bottom: 18px; }
+.mt-gcard2.k-epic > .mt-gh { padding: 4px 2px 6px; gap: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ty-epic) 30%, var(--border)); }
+.mt-gcard2.k-epic > .mt-gh .mt-pt { font-size: 13.5px; font-weight: 700; }
+.mt-gcard2.k-epic > .mt-gh .mt-pdia { color: var(--ty-epic); }
+.mt-gcard2.k-epic.none > .mt-gh { border-bottom-color: var(--border); }
+.mt-gcard2.k-epic.none .mt-pt { color: var(--muted-2); }
+.mt-gcard2.inner { margin: 8px 0 8px 12px; }
+
+/* 상태 셀 — 칼럼을 나누는 자리일 뿐, 상자가 아니다.
+   (테두리·배경을 주면 카드마다 상자가 겹쳐 화면이 상자로 뒤덮인다. 상태색은 맨 위 헤더가 이미 진다.) */
+.mt-cell { min-width: 0; display: flex; flex-direction: column; gap: 3px;
+  background: none; border: 0; padding: 0; }
+.mt-gbody.plain .mt-cell { padding-bottom: 8px; }
+.mt-cell.empty { min-height: 0; }
+
+/* 하위 진척 — 부모 카드에만. ★ .mt-bar 는 상단 옵션 패널이 쓰는 이름이라 겹치면
+   패널이 4px 막대로 찌그러진다(실제로 겪었다). 반드시 .mt-pbar 를 쓸 것. */
+.mt-roll { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px;
+  color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
+.mt-roll em { font-style: normal; }
+.mt-pbar { display: inline-block; width: 42px; height: 4px; border-radius: 99px;
+  background: var(--track, var(--border)); overflow: hidden; }
+.mt-pbar i { display: block; height: 100%; background: var(--gc, var(--accent)); }
 
 /* ── ax-v : 상태 밴드(가로로 꽉 참) + 그룹이 좌우 ── */
 .mt-band { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
@@ -168,27 +192,3 @@
 .mt-more.m-all { border-style: solid; border-color: var(--accent); color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
-/* ── 상위 카드 ─────────────────────────────────────────────────────────
-   그룹 헤더가 그냥 '띠' 면 별개 패널로 읽힌다. 부모 Task 도 **카드**로 그려
-   (우선순위 바·타입 뱃지·마감 칩까지 하위와 같은 언어) 그 안에 하위 카드가 담긴 모양이 되게 한다.
-   구분은 크기·굵기·진척 바로 — 색을 더 쓰면 하위 카드의 상태색을 이긴다. */
-.mt-gh { display: flex; align-items: center; gap: 8px; padding: 6px 8px; }
-.mt-card.parent { flex: 1 1 auto; padding: 7px 10px; background: var(--panel);
-  border: 1px solid color-mix(in srgb, var(--gc) 30%, var(--border));
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .06); }
-.mt-card.parent .mt-title { font-weight: 700; font-size: 13px; }
-.mt-card.parent .mt-key { font-size: 11px; }
-.mt-card.parent.mine { border-left: 3px solid var(--gc); }
-/* 하위 진척 — 부모 카드에만 붙는다(하위는 자기 상태가 곧 진척이다) */
-.mt-roll { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px;
-  color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
-.mt-roll em { font-style: normal; }
-/* ★ 클래스 이름 주의 — .mt-bar 는 상단 **옵션 패널**이 이미 쓴다. 겹치면 패널이 4px 막대로
-   찌그러진다(실제로 그렇게 옵션이 통째로 사라졌다). 진척 바는 .mt-pbar 로 분리. */
-.mt-pbar { display: inline-block; width: 42px; height: 4px; border-radius: 99px;
-  background: var(--track, var(--border)); overflow: hidden; }
-.mt-pbar i { display: block; height: 100%; background: var(--gc, var(--accent)); }
-/* 하위 카드는 한 단계 안으로 — '담겨 있다' 가 보이게 */
-.mt-gbody { padding-left: 18px; }
-.mt-gbody.plain { padding-left: 8px; }
-@media (max-width: 900px) { .mt-gbody { padding-left: 10px; } }
