@@ -74,7 +74,17 @@ export default {
     scrollActive() { this.$nextTick(() => { const el = this.$el.querySelector(".sr-item.active"); if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" }); }); },
     idx(src, i) { return this.flat.findIndex((f) => f.src === src && f.it === (this.res[src].items[i])); },
     async loadRecent() {
-      try { this.recent = (await api.recent(20)) || []; } catch (e) { this.recent = []; }
+      let r = [];
+      try { r = (await api.recent(30)) || []; } catch (e) { r = []; }
+      // 예전에 다른 URL 형태(호스트 다름)로 저장된 같은 티켓/문서를 한 줄로 합친다
+      const seen = new Set();
+      this.recent = r.filter((x) => {
+        const m = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/.exec(x.url || "");
+        const k = m ? m[1].toUpperCase() : String(x.url || "").replace(/\/+$/, "").toLowerCase();
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      }).slice(0, 20);
       if (this.showRecent) this.active = this.recent.length ? 0 : -1;
     },
     // 최근 목록에서 지우기(잘못 열었던 항목 등). 서버 목록이라 다른 브라우저에서도 사라진다.

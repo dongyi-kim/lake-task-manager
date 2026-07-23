@@ -9,13 +9,23 @@ import { api } from "./api.js";
 const _last = new Map();            // url -> ts. 같은 항목이 연속으로 여러 번 기록되는 것 방지
 const DEDUP_MS = 3000;
 
+const _BROWSE = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/;
+
+/** 저장 키 정규화 — **티켓의 정체는 키**다. URL(호스트 포함)을 정체로 삼으면 같은 티켓이
+ *  base 표기마다(localhost / 127.0.0.1 / 사내주소, 혹은 주소 변경 후) 다른 항목으로 쌓인다. */
+function canonicalUrl(url) {
+  const m = _BROWSE.exec(url || "");
+  return m ? "/browse/" + m[1].toUpperCase() : (url || "");
+}
+
 export function recordOpen(item) {
   if (!item || !item.url) return;
+  const url = canonicalUrl(item.url);
   const now = Date.now();
-  if (now - (_last.get(item.url) || 0) < DEDUP_MS) return;
-  _last.set(item.url, now);
+  if (now - (_last.get(url) || 0) < DEDUP_MS) return;
+  _last.set(url, now);
   api.recentAdd({
-    url: item.url,
+    url,
     kind: item.kind || "web",
     title: (item.title || item.url).slice(0, 300),
     meta: (item.meta || "").slice(0, 300),

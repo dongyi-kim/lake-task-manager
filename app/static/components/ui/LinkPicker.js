@@ -21,10 +21,40 @@ export default {
   emits: ["close", "pick"],
   data() {
     return { q: "", items: [], loading: false, serr: "", active: -1,
+             recent: [],                      // 검색어 없을 때의 후보(최근 조회)
              types: [], type: "Relates", direction: "outward", title: "" };
   },
   computed: {
     isJira() { return this.mode === "jira"; },
+    // 검색어가 없을 때 보여줄 후보 = 최근 조회한 티켓/문서.
+    // 검색 결과와 **같은 모양**으로 맞춰 둔다 — 그래야 ↑↓/Enter·선택 코드를 그대로 쓴다.
+    recentItems() {
+      const skip = new Set((this.excludeKeys || []).map((k) => String(k).toUpperCase()));
+      const seen = new Set();          // 예전에 다른 URL 형태로 저장된 같은 항목 방어
+      const out = [];
+      for (const r of this.recent) {
+        if (this.isJira) {
+          const m = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/.exec(r.url || "");
+          if (!m) continue;
+          const key = m[1].toUpperCase();
+          if (skip.has(key) || seen.has(key)) continue;
+          seen.add(key);
+          // 저장된 제목은 "KEY 요약" 형태 — 앞의 키를 떼어 목록의 다른 행과 모양을 맞춘다
+          const title = String(r.title || "").replace(new RegExp("^" + key + "\s*"), "");
+          out.push({ key, title: title || r.title || key, status: r.meta || "", _recent: true });
+        } else {
+          if (!r.url || r.kind === "jira") continue;      // 문서/웹 링크만
+          const u = r.url.replace(/\/+$/, "").toLowerCase();
+          if (seen.has(u)) continue;
+          seen.add(u);
+          out.push({ url: r.url, title: r.title || r.url, path: [], _recent: true });
+        }
+      }
+      return out.slice(0, 12);
+    },
+    // 지금 목록에 그릴 것 — 검색어가 있으면 검색 결과, 없으면 최근 조회
+    shown() { return this.q.trim() ? this.items : this.recentItems; },
+    showingRecent() { return !this.q.trim() && !this.rawUrl && this.recentItems.length > 0; },
     // 붙여넣은 URL 은 검색 없이 그대로 첨부할 수 있다(문서 제목은 서버가 og:title 로 채운다)
     rawUrl() { return !this.isJira && _URL_RE.test(this.q.trim()) ? this.q.trim() : ""; },
     typeOpts() {
@@ -54,6 +84,11 @@ export default {
     document.addEventListener("keydown", this._onEsc = (e) => {
       if (e.key === "Escape") { e.stopPropagation(); this.$emit("close"); }
     }, true);
+    // 최근 조회 목록(서버 저장 — 브라우저가 달라도 같다). 검색어가 없을 때의 후보로 쓴다.
+    api.recent(20).then((r) => {
+      this.recent = r || [];
+      if (!this.q.trim() && this.recentItems.length) this.active = 0;
+    }).catch(() => { /* 없으면 그냥 안내문만 */ });
     if (this.isJira) {
       api.linkTypes().then((t) => {
         this.types = t || [];
@@ -76,7 +111,11 @@ export default {
     },
     run() {
       const q = this.q.trim();
-      if (!q || this.rawUrl) { this._ta.cancel(); this.items = []; this.loading = false; this.active = -1; return; }
+      if (!q || this.rawUrl) {
+        this._ta.cancel(); this.items = []; this.loading = false;
+        this.active = this.recentItems.length ? 0 : -1;   // 최근 목록으로 돌아가면 첫 항목 선택
+        return;
+      }
       this.loading = true; this.serr = "";
       this._ta.run(q).then((r) => {
         if (r === null) return;                 // 낡은 응답 — 버린다
@@ -95,11 +134,11 @@ export default {
       else if (e.key === "Enter") {
         e.preventDefault();
         if (this.rawUrl) { this.pickUrl(); return; }
-        const it = this.items[this.active];
+        const it = this.shown[this.active];
         if (it) this.choose(it);
       }
     },
-    move(d) { const n = this.items.length; if (n) this.active = (this.active + d + n) % n; },
+    move(d) { const n = this.shown.length; if (n) this.active = (this.active + d + n) % n; },
     choose(it) {
       if (this.isJira) {
         this.$emit("pick", { key: it.key, type: this.type, direction: this.direction });
@@ -141,14 +180,16 @@ export default {
     <div v-else-if="serr" class="lp-err">{{ serr }}</div>
 
     <div v-if="!rawUrl" class="lp-list">
-      <div v-if="!q.trim()" class="lp-hint">
+      <div v-if="showingRecent" class="lp-sec">최근 조회한 {{ isJira ? '티켓' : '문서' }}</div>
+      <div v-else-if="!q.trim()" class="lp-hint">
         {{ isJira ? '번호나 제목 일부를 입력하세요.' : '제목 일부를 입력하거나 문서 URL 을 붙여넣으세요.' }}
       </div>
-      <div v-else-if="!items.length && !loading" class="lp-hint">결과 없음</div>
-      <div v-for="(it, i) in items" :key="isJira ? it.key : ('c'+i)" class="lp-item"
+      <div v-else-if="!shown.length && !loading" class="lp-hint">결과 없음</div>
+      <div v-for="(it, i) in shown" :key="isJira ? it.key : ('c'+i)" class="lp-item"
            :class="{ active: active === i }" @mousemove="active = i" @click="choose(it)">
         <template v-if="isJira">
-          <span class="sr-dot" :class="'st-' + (it.statusCategory || 'todo')"></span>
+          <!-- 최근 목록엔 상태가 없다 — 있지도 않은 상태색을 칠하지 않고 중립 표시를 쓴다 -->
+          <span class="sr-dot" :class="it._recent ? 'rc' : 'st-' + (it.statusCategory || 'todo')"></span>
           <b class="sr-key">{{ it.key }}</b>
           <span class="sr-title">{{ it.title }}</span>
           <span class="sr-meta">{{ it.status }}</span>
