@@ -198,30 +198,43 @@ def _downloads_dir():
 
 
 def _wire_downloads(context):
-    """앱 창의 파일 다운로드를 **실제로 저장**하고 화면에 알린다.
+    """앱 창의 다운로드를 받아 둘 큐를 만든다(저장은 _drain_downloads 가 메인 루프에서).
 
-    앱 모드 Chromium 에는 다운로드 표시줄이 없다. 게다가 자동화로 띄운 창은 받은 파일을 임시
-    폴더에 두었다가 창이 닫힐 때 지운다 — 사용자 눈에는 **눌러도 아무 일도 안 일어난 것**으로
-    보인다(실제로 그렇게 보고됐다). 그래서 받은 파일을 '다운로드' 폴더로 옮기고, 저장됐다는
-    사실과 경로를 페이지에 이벤트로 알려 준다.
+    **왜 앱 창에서만 파일이 이상하게 저장됐나** — 앱 창은 Playwright 가 띄운 Chromium 이고,
+    Playwright 는 다운로드를 가로채 자기 임시 폴더에 **GUID 이름(확장자 없음)** 으로 떨궈 둔다.
+    원래 이름(suggested_filename)은 이벤트에만 들어 있어서, 우리가 save_as 로 옮겨 줘야
+    사용자 폴더에 제 이름으로 남는다. 안 옮기면 창을 닫을 때 그 임시 파일도 지워진다.
+    (일반 Chrome 에는 이 가로채기가 없으니 그냥 잘 받아진다 — 그래서 증상이 앱 창에서만 났다.)
 
-    같은 이름이 있으면 '(2)' 를 붙인다 — 조용히 덮어쓰면 아까 받은 파일이 사라진다.
+    ★ 저장(save_as)을 **이벤트 핸들러 안에서 하면 안 된다.** sync API 에서 핸들러는 드라이버
+      스레드에서 불리는데, 거기서 다시 Playwright 호출을 하면 완료되지 않는다(실제로 이벤트는
+      왔는데 파일이 안 옮겨졌다). 핸들러는 객체만 담고, 실제 저장은 메인 루프가 한다.
     """
-    def on_download(dl):
+    import queue
+    q = queue.Queue()
+    context.on("download", lambda dl: q.put(dl))
+    return q
+
+
+def _drain_downloads(context, q):
+    """받아 둔 다운로드를 '다운로드' 폴더로 옮기고 결과를 화면에 알린다. 메인 루프에서 호출."""
+    while True:
+        try:
+            dl = q.get_nowait()
+        except Exception:
+            return
         try:
             name = dl.suggested_filename or "download"
             dest = _downloads_dir() / name
             stem, dot, ext = name.rpartition(".")
             i = 2
-            while dest.exists():
-                dest = dest.with_name((f"{stem} ({i}).{ext}" if dot else f"{name} ({i})"))
+            while dest.exists():                       # 조용히 덮어쓰면 아까 받은 파일이 사라진다
+                dest = dest.with_name(f"{stem} ({i}).{ext}" if dot else f"{name} ({i})")
                 i += 1
             dl.save_as(str(dest))
             _notify_page(context, {"ok": True, "name": dest.name, "path": str(dest)})
-        except Exception as e:                       # 실패도 알린다 — 조용한 실패가 제일 나쁘다
+        except Exception as e:                         # 실패도 알린다 — 조용한 실패가 제일 나쁘다
             _notify_page(context, {"ok": False, "error": str(e)[:200]})
-
-    context.on("download", on_download)
 
 
 def _notify_page(context, detail):
@@ -313,6 +326,7 @@ def _window_session(s, auto_login=False, headless=False):
     url = f"http://127.0.0.1:{s.app_port}/"            # localhost 는 Windows 에서 ::1 폴백 지연
     import app.main as appmain
     appmain._window_login = True                       # /api/login 이 이 창에서 로그인하도록
+    from playwright.sync_api import TimeoutError as PWTimeoutError
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
 
@@ -338,7 +352,7 @@ def _window_session(s, auto_login=False, headless=False):
         context = _launch(udd)
     page = context.pages[0] if context.pages else context.wait_for_event("page")
     _wire_external_links(context, page)                # 외부 링크 훅(goto 전 설치 → 실제 페이지에도 적용)
-    _wire_downloads(context)                           # 첨부 다운로드를 '다운로드' 폴더에 저장 + 알림
+    dlq = _wire_downloads(context)                     # 첨부 다운로드 큐(저장은 아래 루프에서)
     for _ in range(300):                               # goto 재시도(서버 준비 대기 포함, ~30s). 부팅로더 유지.
         try:
             page.goto(url, wait_until="domcontentloaded")
@@ -358,15 +372,32 @@ def _window_session(s, auto_login=False, headless=False):
         appmain._login_requested.set()
     try:
         i = 0
+        pump = True          # Playwright 이벤트를 넘겨받을 수 있는 상태인가
         while not page.is_closed():
             if appmain._login_requested.is_set():
                 _do_login_in_window(s, page, context, appmain)
+            _drain_downloads(context, dlq)              # 받아 둔 다운로드를 여기서(메인 스레드) 저장
             if i < 16:                                  # ~8초 동안 창 아이콘 재적용(favicon 덮어쓰기 대비)
                 _set_window_icon_win(ico_path)
             i += 1
-            # ★ page.wait_for_timeout 이 아니라 로컬 sleep. 전자는 브라우저와 프로토콜 왕복을 하는데,
-            #   절전 등으로 파이프가 먹통이면 **영원히 멈춘다**(트레이가 창을 죽은 걸로 못 알아챘다).
-            #   is_closed() 는 로컬 상태라 왕복이 없다.
+            # ★★ 여기서 그냥 time.sleep 만 돌면 **다운로드 저장도, _openExternal 바인딩도 영영
+            #     실행되지 않는다.** Playwright 동기 API 는 우리가 Playwright 호출 안에 있는
+            #     동안에만 이벤트(download, expose_function 호출)를 넘겨주기 때문이다.
+            #     실제로 그 탓에 앱 창에서 첨부가 임시 폴더에 해시 이름으로 남고(저장 훅 미실행),
+            #     '새 창에서 열기' 도 아무 반응이 없었다(바인딩 미실행).
+            #
+            #     그렇다고 page.wait_for_timeout 을 쓰면 절전 등으로 파이프가 먹통일 때 영원히
+            #     멈춘다(트레이가 창을 죽은 걸로 못 알아챘던 문제). 그래서 **타임아웃이 있는**
+            #     대기로 이벤트를 펌프하고, 드라이버가 죽으면 로컬 sleep 으로 내려앉는다.
+            #     is_closed() 는 로컬 상태라 왕복이 없어 그 뒤에도 종료 감지는 계속된다.
+            if pump:
+                try:
+                    context.wait_for_event("close", timeout=400)
+                    break                               # 컨텍스트가 실제로 닫혔다
+                except PWTimeoutError:
+                    continue                            # 정상 — 400ms 동안 이벤트만 넘기고 돌아온다
+                except Exception:
+                    pump = False                        # 드라이버가 죽었다 → 아래 sleep 으로
             time.sleep(0.5)
     except Exception:
         pass
