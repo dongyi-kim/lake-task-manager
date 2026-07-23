@@ -497,3 +497,54 @@
   /* 세로축으로 전환되는 폭 — 3칼럼 변수는 무시하고 한 줄로 */
   .mt-headrow, .mt-gbody { grid-template-columns: 1fr; }
 }
+
+/* ── 가로축: 하나의 그리드에 모든 것을 세운다 ────────────────────────────────
+   단독 카드와 그룹 카드 **안의** 하위 카드가 서로 다른 x 에 서 있었다. 그룹 카드가 안쪽
+   패딩을 따로 갖고 있어 트랙 폭이 달라진 탓이다 — 같은 '할당됨' 열인데 오른쪽 끝이 어긋나면
+   열이 두 개로 보인다. 안쪽 패딩을 없애 **바깥 그리드와 같은 트랙**을 쓰게 한다.
+   대신 카드가 열을 꽉 채우므로(단독 카드도 마찬가지) 좌우 여백은 그리드가 책임진다. */
+.ax-h .mt-gbody.plain .mt-cell { padding-left: 0; padding-right: 0; }
+.ax-h .mt-gcard2 { margin-left: 8px; margin-right: 8px; }
+.ax-h .mt-gcard2.k-task > .mt-gbody { padding-left: 0; padding-right: 0; }
+/* 좌측 시그니처 레일을 테두리가 아니라 **덧그림**으로 — border 는 폭을 먹어 안쪽 그리드를
+   3px 밀어낸다. 그 3px 때문에 하위 카드가 바깥 열과 안 맞았다. */
+.ax-h .mt-gcard2 { border-left-width: 0; position: relative; }
+.ax-h .mt-gcard2::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  border-radius: 10px 0 0 10px; background: var(--sig, var(--gc)); z-index: 1; }
+/* 하위 영역의 세로 안내선은 뺀다 — 카드 자체의 레일이 이미 같은 말을 하고, 첫 열을 침범한다 */
+.ax-h .mt-gcard2.k-task > .mt-gbody::before { display: none; }
+.ax-h .mt-gcard2.k-task > .mt-gbody { padding-top: 8px; padding-bottom: 10px; }
+
+/* ── 칼럼 배경 층 ───────────────────────────────────────────────────────────
+   카드 뒤에 한 겹으로 깔아 **그룹 카드가 있는 구간에서도 띠가 이어진다**.
+   색은 이전보다 진하게(4% → 9%) — 4% 는 모니터·조명에 따라 아예 안 보였다.
+   경계는 색만으로 두지 않고 세로선을 함께 그어, 색을 못 보는 경우에도 열이 읽히게 한다. */
+.mt-hwrap { position: relative; }
+.mt-colbg { position: absolute; inset: 0; z-index: 0; display: grid; gap: 0 8px; padding: 0 8px;
+  grid-template-columns: var(--mt-cols, repeat(3, minmax(0, 1fr))); pointer-events: none; }
+.mt-colbg > div { border-radius: 8px; }
+.mt-colbg > .c-todo { background: color-mix(in srgb, var(--st-todo) 9%, transparent); }
+.mt-colbg > .c-inprogress { background: color-mix(in srgb, var(--st-prog) 9%, transparent); }
+.mt-colbg > .c-done { background: color-mix(in srgb, var(--st-done) 9%, transparent); }
+.mt-hwrap > .mt-gbody, .mt-hwrap > .mt-gcard2 { position: relative; z-index: 1; }
+/* 셀에 칠하던 색은 걷는다 — 두 겹이 되면 그룹 구간만 옅어 보인다 */
+.ax-h .mt-gbody.plain .mt-cell { background: none; }
+@media (max-width: 900px) { .mt-colbg { display: none; } }
+
+/* 그룹 카드의 하위 영역은 **반투명**으로 — 불투명하면 그 구간만 칼럼 색이 끊긴다.
+   회색으로 눌러 '카드 안쪽' 임을 보이는 역할은 그대로 두되, 밑에 깔린 칼럼 색이 배어 나오게
+   한다. 두 정보(어느 열인가 / 누구의 하위인가)가 서로를 지우지 않는 유일한 방법이다. */
+.ax-h .mt-gcard2.k-task > .mt-gbody { background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
+/* 상위 행(카드의 머리)은 불투명하게 둔다 — 제목을 읽는 줄이라 배경이 비치면 산만하다 */
+.ax-h .mt-gcard2 > .mt-gh { background: var(--panel); }
+
+/* ★ 카드 **자체**가 불투명 흰색이면 본문을 반투명으로 만들어도 소용없다 — 비치는 게 그 흰색이다.
+   가로축에서는 카드 배경을 비우고, 글을 읽는 머리 줄(.mt-gh)만 불투명하게 남긴다.
+   그러면 하위 영역에서 밑에 깔린 칼럼 색이 그대로 배어 나온다. */
+.ax-h .mt-gcard2 { background: transparent; }
+.ax-h .mt-gcard2 > .mt-gh { border-radius: 10px 10px 0 0; }
+
+/* 첫 카드가 칼럼 헤더에 딱 붙어 있었다 — 배경 띠가 보일 틈이 없고, 카드 위로 반쯤 나온 🔥 가
+   sticky 헤더에 잘렸다. 표식이 카드 밖으로 나오는 구조라면 그만큼의 자리는 확보돼야 한다. */
+.mt-hwrap { padding-top: 12px; }
+.mt-headrow { padding-bottom: 4px; }

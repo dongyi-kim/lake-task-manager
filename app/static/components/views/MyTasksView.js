@@ -320,6 +320,13 @@ export default {
         </button>
       </div>
 
+      <!-- 칼럼 배경 — 카드 뒤에 **한 겹으로** 깐다. 셀마다 칠하면 그룹 카드가 놓인 구간에서
+           띠가 끊겨 '영역' 이 아니라 '카드 뒤 색칠' 로 보인다(실제로 그랬다). -->
+      <div class="mt-hwrap">
+        <div class="mt-colbg" aria-hidden="true">
+          <div v-for="st in states" :key="'bg-' + st.k" :class="'c-' + st.k"></div>
+        </div>
+
       <template v-for="p in panels" :key="p.key">
         <!-- 그룹화 없음 / 하위 없는 Task 묶음 — 묶을 게 없으니 카드 테두리도 없다 -->
         <div v-if="p.kind === 'none' || p.kind === 'solo'" class="mt-gbody plain">
@@ -377,6 +384,7 @@ export default {
         </div>
 
       </template>
+      </div>
     </template>
 
     <!-- ══ 상태 = 세로축 : 상태 패널이 가로로 꽉 차서 쌓이고, 그 안에서 그룹이 좌우로 ══ -->
