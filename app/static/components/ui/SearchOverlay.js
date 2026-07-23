@@ -4,10 +4,12 @@
 import { api } from "../../lib/api.js";
 import { ymdhm } from "../../lib/fmt.js";
 import { recordOpen, stripTags } from "../../lib/recent.js";
+import Avatar from "./Avatar.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 
 export default {
   name: "SearchOverlay",
+  components: { Avatar },
   emits: ["close", "open-ticket"],
   data() {
     return { q: "", scope: "scoped", res: null, loading: false, err: "",
@@ -182,7 +184,9 @@ export default {
               <span class="sr-dot" :class="stCls(it.statusCategory)"></span>
               <b class="sr-key">{{ it.key }}</b>
               <span class="sr-title">{{ it.title }}</span>
-              <span class="sr-meta">{{ it.project }} · {{ it.status }}<template v-if="it.assignee"> · {{ it.assignee }}</template></span>
+              <span class="sr-meta">{{ it.project }} · {{ it.status }}<template v-if="it.assignee">
+                <span class="sr-who"><Avatar :user="it.assigneeId" :name="it.assignee" :size="14" />{{ it.assignee }}</span>
+              </template></span>
             </div>
             <div v-if="!cnt('jira') && !res.jira.error" class="sr-none">결과 없음</div>
           </div>

@@ -107,3 +107,7 @@
 
 /* 검색어 강조 — 스니펫에서 매칭 부분(배경 없이 색+볼드로, 뱃지 느낌 안 나게) */
 .sr-r2 mark { background: none; color: var(--accent); font-weight: 700; }
+
+/* 검색 결과의 담당자 — 이름 앞에 프로필 사진 */
+.sr-who { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; }
+.sr-who .avt { width: 14px; height: 14px; }

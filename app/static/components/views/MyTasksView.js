@@ -16,6 +16,7 @@
 // 카드 모양은 배치와 무관하게 하나다(.mt-card) — 리스트든 그리드든 같은 것을 읽는다.
 import { api } from "../../lib/api.js";
 import TypeBadge from "../ui/TypeBadge.js";
+import Avatar from "../ui/Avatar.js";
 import { categoryColor } from "../../lib/colors.js";
 
 const NO_DUE = 1e6;
@@ -52,7 +53,7 @@ const SORTS = [
 
 export default {
   name: "MyTasksView",
-  components: { TypeBadge },
+  components: { TypeBadge, Avatar },
   data() {
     return {
       model: null, loading: true, err: "",
@@ -349,7 +350,9 @@ export default {
               <span class="mt-title">{{ c.title }}</span>
               <span v-if="c.epicKey" class="mt-epic sm">◆ {{ epicTitle(c.epicKey) }}</span>
               <span v-else-if="c.voc" class="mt-epic sm">◆ 사용자 VoC</span>
-              <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+              <span v-if="!c.mine || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                    :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
               <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
             </div>
           </div>
@@ -371,7 +374,9 @@ export default {
               <span v-if="p.epicKey" class="mt-epic">◆ {{ epicTitle(p.epicKey) }}</span>
               <span v-else-if="p.group.voc" class="mt-epic">◆ 사용자 VoC</span>
               <span v-else class="mt-epic none">Epic 없음</span>
-              <span v-if="!p.group.mine" class="mt-owner">{{ p.group.assignee || '미할당' }} 담당</span>
+              <span class="mt-owner" :class="{ me: p.group.mine }"
+                    :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
+                <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
               <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
             </div>
             <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
@@ -386,7 +391,9 @@ export default {
                   <TypeBadge :type="c.type" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
-                  <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                  <span v-if="!c.mine || p.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
                 </div>
             </div>
@@ -410,7 +417,9 @@ export default {
                 <TypeBadge :type="c.type" />
                 <span class="mt-key">{{ c.key }}</span>
                 <span class="mt-title">{{ c.title }}</span>
-                <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                <span v-if="!c.mine || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                      :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                 <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
               </div>
             </div>
@@ -429,7 +438,9 @@ export default {
                 <em>{{ sp.group.pct }}%</em>
               </span>
               
-              <span v-if="!sp.group.mine" class="mt-owner">{{ sp.group.assignee || '미할당' }} 담당</span>
+              <span class="mt-owner" :class="{ me: sp.group.mine }"
+                    :title="(sp.group.assignee || '미할당') + ' 담당' + (sp.group.mine ? ' (나)' : '')">
+                <Avatar :user="sp.group.assigneeId" :name="sp.group.assignee" :size="16" />{{ sp.group.assignee || '미할당' }}</span>
               <span class="mt-due" :class="dueBand(sp.group.dueDays)">{{ dueLabel(sp.group.dueDays) || '—' }}</span>
             </div>
               <button class="mt-more" :class="'m-' + sp.mode" @click="cycleMode(sp.key)"
@@ -444,7 +455,9 @@ export default {
                   <TypeBadge :type="c.type" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
-                  <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                  <span v-if="!c.mine || sp.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
                 </div>
               </div>
@@ -470,7 +483,8 @@ export default {
             <span class="mt-title">{{ c.title }}</span>
             <span v-if="c.epicKey" class="mt-epic sm">◆ {{ epicTitle(c.epicKey) }}</span>
               <span v-else-if="c.voc" class="mt-epic sm">◆ 사용자 VoC</span>
-            <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+            <span v-if="!c.mine" class="mt-owner" :title="(c.assignee || '미할당') + ' 담당'">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
             <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
           </div>
           <div v-if="!byState(panels[0].cards)[st.k].length" class="mt-none">해당 상태의 티켓 없음</div>
@@ -487,7 +501,9 @@ export default {
                 <span class="mt-key">{{ c.key }}</span>
                 <span class="mt-title">{{ c.title }}</span>
                 <span class="mt-epic sm" :style="{ '--sig': sigOf({ epicKey: p.voc ? null : p.key, voc: p.voc }) }">◆ {{ p.title }}</span>
-                <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                <span v-if="!c.mine || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                      :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                 <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
               </div>
               <div v-for="sp in p.subPanels" :key="sp.key" v-show="byState(sp.cards)[st.k].length"
@@ -504,7 +520,9 @@ export default {
                     <TypeBadge :type="c.type" />
                     <span class="mt-key">{{ c.key }}</span>
                     <span class="mt-title">{{ c.title }}</span>
-                    <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                    <span v-if="!c.mine || sp.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                     <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
                   </div>
                 </div>
@@ -520,7 +538,9 @@ export default {
                 <span class="mt-title">{{ c.title }}</span>
                 <span v-if="c.epicKey" class="mt-epic sm">◆ {{ epicTitle(c.epicKey) }}</span>
               <span v-else-if="c.voc" class="mt-epic sm">◆ 사용자 VoC</span>
-                <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                <span v-if="!c.mine || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                      :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                 <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
               </div>
             </template>
@@ -537,7 +557,9 @@ export default {
                 <em>{{ p.group.pct }}%</em>
               </span>
               
-              <span v-if="!p.group.mine" class="mt-owner">{{ p.group.assignee || '미할당' }} 담당</span>
+              <span class="mt-owner" :class="{ me: p.group.mine }"
+                    :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
+                <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
               <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
             </div>
                 <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
@@ -550,7 +572,9 @@ export default {
                   <TypeBadge :type="c.type" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
-                  <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                  <span v-if="!c.mine || p.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
+                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
                 </div>
               </div>

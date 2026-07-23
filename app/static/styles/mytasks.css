@@ -70,7 +70,13 @@
   color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
 .mt-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-size: 12.5px; }
-.mt-owner { flex: none; font-size: 10px; color: var(--muted-2); white-space: nowrap; }
+/* 담당자 — 이름 앞에 프로필 사진(없으면 시그니처 컬러 + 이니셜). 누가 맡았는지는
+   이름보다 얼굴/색으로 먼저 잡힌다. 그룹(부모) 카드는 내 것이어도 **항상** 보인다 —
+   그 묶음의 주인이 누구인지가 맥락이기 때문. */
+.mt-owner { flex: none; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; color: var(--muted-2); white-space: nowrap; }
+.mt-owner .avt { width: 15px; height: 15px; }
+.mt-owner.me { color: var(--muted); font-weight: 600; }
 .mt-due { flex: none; font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; font-weight: 700;
   padding: 1px 6px; border-radius: 4px; white-space: nowrap; color: var(--muted-2);
   background: var(--panel-2); border: 1px solid var(--border); }

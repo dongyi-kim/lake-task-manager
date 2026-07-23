@@ -77,6 +77,7 @@ def _jira_item(it, base):
         "title": f.get("summary", ""),
         "status": st.get("name", ""), "statusCategory": _cat(st),
         "assignee": real_name(a.get("displayName") or a.get("name")) or None,
+        "assigneeId": a.get("name"),          # 프로필 사진 조회용(없으면 이니셜로 폴백)
         "issuetype": (f.get("issuetype") or {}).get("name", ""),
         "project": (f.get("project") or {}).get("key", ""),
         "updated": f.get("updated"),
