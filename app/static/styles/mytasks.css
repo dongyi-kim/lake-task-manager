@@ -505,7 +505,10 @@
    대신 카드가 열을 꽉 채우므로(단독 카드도 마찬가지) 좌우 여백은 그리드가 책임진다. */
 .ax-h .mt-gbody.plain .mt-cell { padding-left: 0; padding-right: 0; }
 .ax-h .mt-gcard2 { margin-left: 8px; margin-right: 8px; }
-.ax-h .mt-gcard2.k-task > .mt-gbody { padding-left: 0; padding-right: 0; }
+/* 하위는 부모보다 **좁게** — 양 끝 x 가 부모와 같으면 '담긴 것' 이 아니라 '나란히 놓인 것' 이
+   된다. 들여쓰기가 곧 소속 표시다. 다만 크게 들이면 바깥 칼럼과 어긋나 열이 두 개로 보이므로
+   (그게 원래 문제였다) 14px 만 — 소속은 보이되 열은 유지되는 최소치. */
+.ax-h .mt-gcard2.k-task > .mt-gbody { padding-left: 14px; padding-right: 14px; }
 /* 좌측 시그니처 레일을 테두리가 아니라 **덧그림**으로 — border 는 폭을 먹어 안쪽 그리드를
    3px 밀어낸다. 그 3px 때문에 하위 카드가 바깥 열과 안 맞았다. */
 .ax-h .mt-gcard2 { border-left-width: 0; position: relative; }
@@ -534,14 +537,23 @@
 /* 그룹 카드의 하위 영역은 **반투명**으로 — 불투명하면 그 구간만 칼럼 색이 끊긴다.
    회색으로 눌러 '카드 안쪽' 임을 보이는 역할은 그대로 두되, 밑에 깔린 칼럼 색이 배어 나오게
    한다. 두 정보(어느 열인가 / 누구의 하위인가)가 서로를 지우지 않는 유일한 방법이다. */
-.ax-h .mt-gcard2.k-task > .mt-gbody { background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
+.ax-h .mt-gcard2.k-task > .mt-gbody { background: var(--panel-2); }
+/* 카드 안에서도 어느 열인지 보이게 — 바깥 칼럼과 같은 색을 회색 바닥 위에 얹는다.
+   카드가 불투명해도 열은 계속 읽힌다. */
+.ax-h .mt-gcard2 .mt-cell.c-todo { background: color-mix(in srgb, var(--st-todo) 8%, transparent); }
+.ax-h .mt-gcard2 .mt-cell.c-inprogress { background: color-mix(in srgb, var(--st-prog) 8%, transparent); }
+.ax-h .mt-gcard2 .mt-cell.c-done { background: color-mix(in srgb, var(--st-done) 8%, transparent); }
+.ax-h .mt-gcard2 .mt-cell { border-radius: 7px; }
 /* 상위 행(카드의 머리)은 불투명하게 둔다 — 제목을 읽는 줄이라 배경이 비치면 산만하다 */
 .ax-h .mt-gcard2 > .mt-gh { background: var(--panel); }
 
 /* ★ 카드 **자체**가 불투명 흰색이면 본문을 반투명으로 만들어도 소용없다 — 비치는 게 그 흰색이다.
    가로축에서는 카드 배경을 비우고, 글을 읽는 머리 줄(.mt-gh)만 불투명하게 남긴다.
    그러면 하위 영역에서 밑에 깔린 칼럼 색이 그대로 배어 나온다. */
-.ax-h .mt-gcard2 { background: transparent; }
+/* ★ 되돌림 — 카드를 투명하게 만들었더니 칼럼 색은 비쳤지만 **한 티켓이라는 덩어리감**이
+   사라졌다. 묶음을 보이려고 만든 카드인데 그 역할을 잃으면 본말이 뒤집힌다.
+   칼럼 색은 카드를 뚫는 대신 **카드 안쪽 셀에 직접** 넣는다(아래) — 둘 다 산다. */
+.ax-h .mt-gcard2 { background: var(--panel); }
 .ax-h .mt-gcard2 > .mt-gh { border-radius: 10px 10px 0 0; }
 
 /* 첫 카드가 칼럼 헤더에 딱 붙어 있었다 — 배경 띠가 보일 틈이 없고, 카드 위로 반쯤 나온 🔥 가
