@@ -129,14 +129,22 @@
 .mt-card.parent .mt-key { font-size: 11px; }
 .mt-gh .mt-more { margin-right: 10px; }
 
-/* 하위 = 카드의 본문. 머리와 가는 선으로만 나누고, 왼쪽 안내선으로 '안에 들어있음' 을 보인다. */
-.mt-gbody { padding: 6px 10px 8px 22px; position: relative;
-  border-top: 1px solid var(--grid, var(--border)); }
-.mt-gbody::before { content: ""; position: absolute; left: 11px; top: 8px; bottom: 10px;
-  width: 2px; border-radius: 2px; background: color-mix(in srgb, var(--gc) 30%, transparent); }
-.mt-gbody.plain { padding: 0 8px; border-top: 0; }
-.mt-gbody.plain::before { display: none; }
-@media (max-width: 900px) { .mt-gbody { padding-left: 16px; } .mt-gbody::before { left: 7px; } }
+/* 하위 = 카드 아래로 **뻗어나온 회색 면**. 상위 카드는 흰색으로 두고 하위 바닥만 눌러
+   (같은 흰색이면 상위·하위가 구분되지 않는다) 그 위에 하위 카드를 흰색으로 띄운다.
+   → 무엇이 부모이고 무엇이 그 안의 것인지 색의 층으로 읽힌다. */
+.mt-gcard2.k-task > .mt-gbody { background: var(--panel-2);
+  border-top: 1px solid var(--border); padding: 8px 10px 10px 20px; position: relative; }
+.mt-gcard2.k-task > .mt-gbody::before { content: ""; position: absolute; left: 10px; top: 10px;
+  bottom: 12px; width: 2px; border-radius: 2px;
+  background: color-mix(in srgb, var(--gc) 28%, transparent); }
+/* 회색 바닥 위의 하위 카드는 흰색이라야 뜬다(투명이면 바닥에 묻힌다) */
+.mt-gcard2.k-task > .mt-gbody .mt-card { background: var(--panel); border-color: var(--border); }
+.mt-gcard2.k-task > .mt-gbody .mt-card.rel { background: color-mix(in srgb, var(--panel) 55%, transparent); }
+/* Epic 직속 카드 영역과 '그룹화 없음' 은 카드 본문이 아니라 그냥 목록이라 바닥을 깔지 않는다 */
+.mt-gbody { padding: 6px 10px 8px 10px; }
+.mt-gbody.plain { padding: 0 8px; }
+@media (max-width: 900px) { .mt-gcard2.k-task > .mt-gbody { padding-left: 16px; }
+  .mt-gcard2.k-task > .mt-gbody::before { left: 7px; } }
 
 /* Epic 은 카드가 아니라 **구획**이다 — 제목 줄 + 가는 선. 카드를 또 씌우면 카드 안에 카드가 된다. */
 .mt-gcard2.k-epic { background: none; border: 0; border-radius: 0; margin-bottom: 18px; }
