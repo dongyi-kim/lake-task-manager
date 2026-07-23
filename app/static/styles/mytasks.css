@@ -298,7 +298,7 @@
 .tc-l2 .tc-when { flex: none; display: inline-flex; align-items: center; gap: 5px;
   padding-right: 9px; border-right: 1px solid var(--border); }
 .tc-when b { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; font-weight: 700;
-  font-variant-numeric: tabular-nums; min-width: 5ch; color: var(--muted-2); }
+  font-variant-numeric: tabular-nums; min-width: 5ch; text-align: center; color: var(--muted-2); }
 .tc-when.over b { color: var(--today); }
 .tc-when.today b, .tc-when.soon b { color: var(--st-prog); }
 .tc-when.none b { color: var(--muted-2); opacity: .7; }
@@ -348,7 +348,9 @@
    글자 크기를 작게 잡고 자간을 좁혀 '▲▲' 가 두 글자가 아니라 **하나의 표식**으로 보이게 한다.
    폭을 고정해야 그 뒤의 긴급도·마감이 카드마다 같은 자리에서 시작한다. */
 .pri-i { flex: none; display: inline-flex; align-items: center; justify-content: center;
-  min-width: 15px; font-size: 7.5px; letter-spacing: -1.5px; line-height: 1;
+  /* ★ min-width 가 아니라 **고정폭**. min-width 로 두면 '▲▲'(두 글자) 카드만 넓어져
+     뒤따르는 구분선·마감·담당자가 그 카드에서만 밀린다 — 세로로 훑을 수 없게 된다. */
+  width: 17px; min-width: 17px; font-size: 7.5px; letter-spacing: -1.5px; line-height: 1;
   cursor: default; user-select: none; }
 .pri-i.highest { color: #dc2626; }
 .pri-i.high    { color: #ea580c; }
