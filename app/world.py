@@ -667,7 +667,10 @@ class World:
                  ]))
 
         # 11) Sub-Task 세트 — 설명 없음(상위 설명 자동 펼침) + 형제 목록
-        parent = self._fx("DL-9012", "Task", "[UI] Sub-Task 부모 — 형제 목록/하위 Task 확인",
+        # 부모에만 마감이 있다(하위 4개는 전부 마감 없음) — 하위가 부모 마감을 물려받아
+        # 표시하는지(↑ 표식) 확인하는 조합. 실무에서 마감은 대개 부모에만 걸린다.
+        parent = self._fx("DL-9012", "Task", "[UI] Sub-Task 부모 — 형제 목록/하위 마감 상속",
+                          due=self.today + timedelta(days=5),
                           description=("h3. 부모 설명\n이 설명이 하위 Sub-Task 의 '상위 티켓 설명' 에 나와야 한다.\n"
                                        "{info}\n상위 설명 자동 펼침은 DL-9013 에서 확인.\n{info}"))
         subs = [

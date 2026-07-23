@@ -79,6 +79,7 @@ def _node(raw, today, epic_field):
         "pri": pri_name, "priRank": pri_rank, "priBand": _PRI_BAND.get(pri_rank, "mid"),
         "due": f.get("duedate") or None,
         "dueDays": dd,
+        "resolved": f.get("resolutiondate") or None,   # 완료 카드는 마감 대신 완료일을 보인다
         "sp": f.get(epic_field["sp"]),
         "epic": f.get(epic_field["epic"]) or None,
         # 사용자 VoC 는 Epic 이 없어도 **전용 Epic 처럼** 취급한다(색·묶음 모두).

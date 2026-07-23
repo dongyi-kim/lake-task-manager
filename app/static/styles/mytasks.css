@@ -210,13 +210,6 @@
    grid 로 두면 행이 정렬돼, 한 컬럼의 큰 카드가 다른 컬럼의 카드까지 아래로 밀어낸다.
    CSS 다단(columns)은 컬럼별로 따로 흐르므로 그 밀림이 없다(카드는 쪼개지지 않게 break-inside). */
 .mt-grouprow { columns: 380px; column-gap: 10px; padding: 7px 8px; }
-.mt-gcard { break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid;
-  display: inline-block; width: 100%; margin: 0 0 8px;
-  border: 1px solid var(--border); border-left: 3px solid var(--sig, var(--accent));
-  border-radius: 8px; background: var(--panel); min-width: 0; }
-.mt-gch { display: flex; align-items: center; gap: 6px; padding: 5px 8px; min-width: 0;
-  border-bottom: 1px solid var(--border); background: var(--panel-2); }
-.mt-gcard .mt-grid2 { grid-template-columns: 1fr; padding: 4px; gap: 3px; }
 
 /* 하위 보기 3단 버튼 — 현재 상태를 글자로 보여주고 누르면 다음 단계로 순환한다
    (접기 → 내 것만 → 전체). 상태별로 테두리 성격을 달리해 지금 어디인지 눈으로도 잡히게. */
@@ -225,3 +218,74 @@
 .mt-more.m-all { border-style: solid; border-color: var(--accent); color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
+
+/* ── 2줄 카드 — 하위가 없어 부모 카드에 담기지 않는 티켓 ─────────────────────
+   한 줄에 다 넣으면 제목이 먼저 잘려 정작 무슨 일인지가 안 보인다.
+   1행은 제목에 통째로 주고, 판단 재료(급한가·언제까지·누가·어디 소속)를 2행에 모은다. */
+.mt-card.two { display: flex; flex-direction: column; align-items: stretch; gap: 3px;
+  padding: 7px 10px; }
+.tc-l1 { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.tc-l2 { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 1px; }
+.mt-card.two .mt-title { flex: 1 1 auto; font-size: 12.5px; }
+/* 2행은 보조 정보 — 1행보다 한 단계 물러나 보이게 */
+.tc-l2 .mt-owner, .tc-l2 .mt-epic { flex: none; }
+.tc-l2 .mt-epic { margin-left: auto; }
+
+/* 긴급도 — 남은 일수를 표정 하나로. 숫자(D-3)는 정확하지만 훑을 땐 안 읽히고,
+   표정은 정확하진 않지만 한눈에 읽힌다. 둘을 같이 둬 서로를 보완한다. */
+.tc-urg { flex: none; font-size: 13px; line-height: 1; cursor: default;
+  filter: saturate(1.05); }
+.tc-urg.calm { opacity: .45; }          /* 여유 있는 건 존재감을 낮춘다 */
+/* 완료 — 긴급도·D-day 자리에 완료일 */
+.tc-fin { flex: none; display: inline-flex; align-items: center; gap: 4px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; font-weight: 700;
+  color: var(--st-done); background: color-mix(in srgb, var(--st-done) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--st-done) 32%, transparent);
+  padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+
+/* ── 세로축 모드 여백 ─────────────────────────────────────────────────────
+   카드가 붙어 있으면 '목록의 줄' 로 보이고 카드로 안 읽힌다. 카드 사이·밴드 안쪽에 숨 쉴 틈을 준다. */
+.mt-gbody.one { grid-template-columns: 1fr; row-gap: 4px; padding: 8px 10px 10px 20px; }
+.mt-band .mt-grid2 { gap: 6px 10px; padding: 8px 10px 10px; }
+.mt-grouprow { padding: 9px 10px 11px; }
+.mt-band .mt-card { padding: 7px 10px; }
+.mt-band .mt-card.two { padding: 8px 10px; }
+/* 세로축 그룹 카드 — 가로축과 같은 카드 모양(흰 카드 + 회색 하위 바닥)을 쓰되 폭만 컬럼에 맞춘다 */
+.mt-grouprow .mt-gcard2 { margin: 0 0 10px; }
+
+/* ── 세로축 다단 배치 — 컬럼을 넘나들지 않게 ──────────────────────────────────
+   .mt-grouprow 는 CSS 다단(columns)이다. 다단은 **자식을 컬럼 경계에서 쪼개는 게 기본**이라
+   카드에 break-inside: avoid 를 주지 않으면 한 카드가 두 컬럼에 걸쳐 잘리고 겹쳐 보인다.
+   컨테이너 기준으로 걸어 둔다 — 안에 그룹 카드(.mt-gcard2)와 단독 카드(.mt-card)가 섞여 있고,
+   어느 쪽이든 쪼개지면 안 되기 때문. */
+.mt-grouprow > .mt-gcard2,
+.mt-grouprow > .mt-card {
+  break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid;
+  display: inline-block; width: 100%; vertical-align: top; margin: 0 0 10px; }
+.mt-grouprow > .mt-card.two { display: inline-flex; flex-direction: column; }
+
+/* 밴드 안쪽 여백 — 카드가 밴드 테두리·헤더에 닿으면 '패널에 얹힌 목록' 으로 보인다 */
+.mt-band { margin-bottom: 12px; }
+.mt-band .mt-grouprow { padding: 10px 12px 2px; }
+.mt-band .mt-grid2 { gap: 8px 12px; padding: 10px 12px 12px; }
+
+/* 상속받은 마감은 제 것이 아님을 드러낸다 — 안 그러면 하위에 마감이 실제로 잡힌 줄로 읽힌다 */
+.mt-due.inh { border-style: dashed; }
+.mt-due .inh-m { font-style: normal; opacity: .7; margin-right: 1px; }
+
+/* ── 2줄 카드 2행: 마감은 뱃지가 아니라 **고정폭 텍스트** ─────────────────────
+   카드가 세로로 길게 늘어서는 화면이라, 마감 칸의 폭이 카드마다 다르면 담당자 이름의
+   시작 위치가 계속 흔들려 눈이 세로로 훑질 못한다. 마감 칸을 고정폭으로 못 박고
+   그 뒤에 세로 구분선을 둬서 '언제까지 | 누가' 두 칸으로 읽히게 한다.
+   가장 긴 값이 'D-DAY'(5자)이므로 그 폭에 맞춘다. */
+.tc-l2 .tc-when { flex: none; display: inline-flex; align-items: center; gap: 5px;
+  padding-right: 9px; border-right: 1px solid var(--border); }
+.tc-when b { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; font-weight: 700;
+  font-variant-numeric: tabular-nums; min-width: 5ch; color: var(--muted-2); }
+.tc-when.over b { color: var(--today); }
+.tc-when.today b, .tc-when.soon b { color: var(--st-prog); }
+.tc-when.none b { color: var(--muted-2); opacity: .7; }
+.tc-when.inh b { font-style: italic; }      /* 제 마감이 아니라 상위에서 물려받은 값 */
+.tc-when .inh-m { font-style: normal; opacity: .65; margin-right: 1px; }
+.tc-l2 .tc-fin { border-right: 1px solid var(--border); border-radius: 4px 0 0 4px;
+  margin-right: 0; padding-right: 9px; }

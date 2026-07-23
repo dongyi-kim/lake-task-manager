@@ -17,6 +17,7 @@
 import { api } from "../../lib/api.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
+import TaskCard from "../ui/TaskCard.js";
 import { categoryColor } from "../../lib/colors.js";
 
 const NO_DUE = 1e6;
@@ -53,7 +54,7 @@ const SORTS = [
 
 export default {
   name: "MyTasksView",
-  components: { TypeBadge, Avatar },
+  components: { TypeBadge, Avatar, TaskCard },
   data() {
     return {
       model: null, loading: true, err: "",
@@ -131,10 +132,18 @@ export default {
 
     /** 원자/동료 티켓 → 카드. mine 이면 강조 대상이다. */
     card(t, g, mine) {
+      // Sub-Task 에 마감이 없으면 **부모 Task 의 마감**을 쓴다. 실무에서 마감은 보통 부모에만
+      // 걸리고 하위는 비워 두는데, 그걸 '마감 없음' 으로 두면 실제로는 부모와 같은 날 끝나야 할
+      // 일이 안 급한 것처럼 보인다. 다만 빌려 온 값이므로 dueInherited 로 표시해 구분한다.
+      const own = t.dueDays !== null && t.dueDays !== undefined;
+      const inherit = !own && t.key !== g.key && g.dueDays !== null && g.dueDays !== undefined;
       return Object.assign({}, t, {
         mine,
         parent: g,
         epicKey: t.epic || g.epic || null,
+        due: inherit ? g.due : t.due,
+        dueDays: inherit ? g.dueDays : t.dueDays,
+        dueInherited: inherit,
         // 그룹 자체가 카드인 경우(하위 없는 단독 Task)와 하위 카드 구분
         isGroupSelf: t.key === g.key,
       });
@@ -311,20 +320,10 @@ export default {
       <template v-for="p in panels" :key="p.key">
         <!-- 그룹화 없음 / 하위 없는 Task 묶음 — 묶을 게 없으니 카드 테두리도 없다 -->
         <div v-if="p.kind === 'none' || p.kind === 'solo'" class="mt-gbody plain">
-          <div v-for="st in states" :key="'n-' + st.k" class="mt-cell" :class="'c-' + st.k">
-            <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
-                 :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
-              <span class="mt-pri" :class="c.priBand" :title="'우선순위: ' + c.pri"></span>
-              <TypeBadge :type="c.type" />
-              <span class="mt-key">{{ c.key }}</span>
-              <span class="mt-title">{{ c.title }}</span>
-              <span v-if="c.epicKey" class="mt-epic sm">◆ {{ epicTitle(c.epicKey) }}</span>
-              <span v-else-if="c.voc" class="mt-epic sm">◆ 사용자 VoC</span>
-              <span v-if="!c.mine || showRelated" class="mt-owner" :class="{ me: c.mine }"
-                    :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
-              <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
-            </div>
+          <div v-for="st in states" :key="'n-' + st.k" class="mt-cell"
+               :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length }]">
+            <TaskCard v-for="c in byState(p.cards)[st.k]" :key="c.key" :card="c"
+                   :epic-title="epicTitle(c.epicKey)" />
           </div>
         </div>
 
@@ -384,18 +383,8 @@ export default {
         <template v-if="bandOpen(st.k)">
         <!-- 그룹화 없음 → 카드 그리드 하나 -->
         <div v-if="groupBy === 'none'" class="mt-grid2">
-          <div v-for="c in byState(panels[0].cards)[st.k]" :key="c.key" class="mt-card tkt"
-               :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
-            <span class="mt-pri" :class="c.priBand"></span>
-            <TypeBadge :type="c.type" />
-            <span class="mt-key">{{ c.key }}</span>
-            <span class="mt-title">{{ c.title }}</span>
-            <span v-if="c.epicKey" class="mt-epic sm">◆ {{ epicTitle(c.epicKey) }}</span>
-              <span v-else-if="c.voc" class="mt-epic sm">◆ 사용자 VoC</span>
-            <span v-if="!c.mine" class="mt-owner" :title="(c.assignee || '미할당') + ' 담당'">
-                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
-            <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
-          </div>
+          <TaskCard v-for="c in byState(panels[0].cards)[st.k]" :key="c.key" :card="c"
+                   :epic-title="epicTitle(c.epicKey)" />
           <div v-if="!byState(panels[0].cards)[st.k].length" class="mt-none">해당 상태의 티켓 없음</div>
         </div>
         <!-- 그룹화 있음 → 그룹이 좌우로 늘어서고 각 그룹 안이 그리드 -->
@@ -403,22 +392,12 @@ export default {
           <template v-for="p in panels" :key="p.key">
             <!-- 하위 없는 Task 묶음 — 카드로만 -->
             <template v-if="p.kind === 'solo'">
-              <div v-for="c in byState(p.cards)[st.k]" :key="'so-' + c.key" class="mt-card tkt"
-                   :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
-                <span class="mt-pri" :class="c.priBand"></span>
-                <TypeBadge :type="c.type" />
-                <span class="mt-key">{{ c.key }}</span>
-                <span class="mt-title">{{ c.title }}</span>
-                <span v-if="c.epicKey" class="mt-epic sm">◆ {{ epicTitle(c.epicKey) }}</span>
-              <span v-else-if="c.voc" class="mt-epic sm">◆ 사용자 VoC</span>
-                <span v-if="!c.mine || showRelated" class="mt-owner" :class="{ me: c.mine }"
-                      :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
-                <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
-              </div>
+              <TaskCard v-for="c in byState(p.cards)[st.k]" :key="'so-' + c.key" :card="c"
+                   :epic-title="epicTitle(c.epicKey)" />
             </template>
-            <div v-else v-show="byState(p.cards)[st.k].length" class="mt-gcard" :style="sigStyle(p.group)">
-              <div class="mt-gch">
+            <div v-else v-show="byState(p.cards)[st.k].length" class="mt-gcard2 k-task"
+                 :style="sigStyle(p.group)">
+              <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done' }">
               <span class="mt-pri" :class="p.group.priBand" :title="'우선순위: ' + p.group.pri"></span>
@@ -438,7 +417,7 @@ export default {
                 <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
                         :title="modeHint(p.mode)">{{ modeLabel(p.mode, p.mineCount, p.allCount) }}</button>
               </div>
-              <div class="mt-grid2">
+              <div class="mt-gbody one">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
                   <span class="mt-pri" :class="c.priBand"></span>
