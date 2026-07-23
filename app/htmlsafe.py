@@ -40,7 +40,7 @@ _VOID_ALL = {"area", "base", "br", "col", "embed", "hr", "img", "input",
              "link", "meta", "param", "source", "track", "wbr", "frame"}
 # 태그별 허용 속성 (그 외 전부 제거; on* 은 어디서도 불허)
 _ALLOWED_ATTRS = {
-    "a": {"href", "title", "data-ext"},
+    "a": {"href", "title", "data-ext", "download"},
     "img": {"src", "alt", "title", "width", "height"},
     "td": {"colspan", "rowspan"},
     "th": {"colspan", "rowspan", "scope"},
@@ -197,6 +197,8 @@ class _Sanitizer(HTMLParser):
             # Confluence/문서 링크는 URL 로 판별해 뱃지 표식(실 Jira·mock 공통 — prod 에도 적용)
             if href_val and _CONF_RE.search(unescape(href_val)) and "conf-link" not in classes:
                 classes.append("conf-link")
+            # ※ 첨부의 내려받기 처리는 proxy_attachment_links 가 맡는다 — 이 시점엔 아직
+            #   file-badge 가 붙기 전이라 여기서는 첨부인지 알 수 없다.
             parts.append('target="_blank"')
             parts.append('rel="noopener noreferrer nofollow"')
         if classes:
@@ -324,6 +326,12 @@ def proxy_attachment_links(html, jira_base=""):
         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
         if ext and len(ext) <= 8 and ext.isalnum() and "data-ext=" not in tag:
             tag = tag.replace("<a", '<a data-ext="' + escape(ext, quote=True) + '"', 1)
+
+        # 새 탭이 아니라 **내려받기**로. target=_blank 로 열면 앱 창(Chromium 앱 모드)에서 팝업이
+        # 뜨고 그게 곧바로 다운로드로 바뀌며 임시 이름(해시·확장자 없음)으로 저장된다.
+        tag = re.sub(r'\s*target="[^"]*"', "", tag)
+        if " download" not in tag:
+            tag = tag.replace("<a", '<a download="' + escape(name, quote=True) + '"', 1)
 
         cm = _CLASS_IN_TAG.search(tag)
         if cm:

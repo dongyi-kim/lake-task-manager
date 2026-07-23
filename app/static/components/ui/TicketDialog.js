@@ -506,10 +506,10 @@ export default {
             <!-- 티켓 단독 페이지도 Home 과 같은 우상단 구성 — 테마 토글은 설정 메뉴 안에 있다
                  (SSO 상태·Dev Tools·rev 도 여기서 함께 본다). -->
             <SettingsMenu v-if="isPage" :theme="theme" @toggle-theme="$emit('toggle-theme')" />
-            <!-- data-ext: 같은 호스트지만 앱 창(Chromium)이 아니라 시스템 기본 브라우저로.
+            <!-- data-external: 같은 호스트지만 앱 창(Chromium)이 아니라 시스템 기본 브라우저로.
                  run.py 의 외부링크 훅이 이 속성을 보고 넘긴다. -->
             <a v-if="!isPage" class="tb-btn ico" :href="pageHref" target="_blank" rel="noopener"
-               data-ext aria-label="새 창에서 열기" title="새 창에서 열기">
+               data-external aria-label="새 창에서 열기" title="새 창에서 열기">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
             </a>
             <button v-if="!isPage" class="tb-btn ico" @click="expanded = !expanded"
@@ -698,7 +698,7 @@ export default {
                 <!-- 첨부 목록 칩과 본문 속 파일 뱃지는 **같은 것**이다 — 모양이 갈라지면
                      "이건 첨부고 저건 뭐지" 가 된다. data-ext 로 아이콘·색 규칙을 공유한다. -->
                 <a v-for="a in atts" :key="a.id" class="fchip" :class="{ img: a.isImage }"
-                   :data-ext="extOf(a.filename)" :href="a.url" target="_blank" rel="noopener"
+                   :data-ext="extOf(a.filename)" :href="a.url" :download="a.filename" rel="noopener"
                    :title="a.filename + ' · ' + fsize(a.size) + (a.author ? ' · ' + a.author : '')">
                   <span class="fchip-ic"></span>
                   <span class="fchip-n">{{ a.filename }}</span>

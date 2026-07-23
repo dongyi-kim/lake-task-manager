@@ -168,9 +168,14 @@ document.addEventListener('click', function(e){
     if (!a) return;
     var href = a.href || '';
     if (!/^https?:/i.test(href)) return;
-    // data-ext = 같은 호스트라도 시스템 브라우저로 (예: 티켓 '새 창에서 열기' → /browse/KEY).
+    // data-external = 같은 호스트라도 시스템 브라우저로 (예: 티켓 '새 창에서 열기' → /browse/KEY).
     // 이게 없으면 내부 링크라 앱 창(Chromium)에 새 창으로 떠 버린다.
-    if (a.host === location.host && !a.hasAttribute('data-ext')) return;
+    // ★ 이름을 풀어 쓴다 — 예전엔 data-ext 였는데, 파일 확장자(extension)를 같은 이름으로
+    //   붙이는 순간 **첨부 링크가 전부 외부 열기로 가로채졌다**. 짧은 이름은 뜻이 둘로 읽힌다.
+    if (a.host === location.host && !a.hasAttribute('data-external')) return;
+    // 내려받기 링크는 가로채지 않는다 — 브라우저가 저장하게 두고, 저장 결과는 아래
+    // _wire_downloads 가 '다운로드' 폴더로 옮겨 알린다.
+    if (a.hasAttribute('download')) return;
     if (window._openExternal) { e.preventDefault(); window._openExternal(href); }
   } catch (_) {}
 }, true);

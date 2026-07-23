@@ -436,7 +436,7 @@ def api_img(u: str):
 
 
 @app.get("/api/file")
-def api_file(u: str):
+def api_file(u: str, inline: int = 0):
     """첨부 파일 프록시 — 인증 세션으로 받아 same-origin 으로 돌려준다(/api/img 의 파일판).
 
     이미지는 화면에 그리면 끝이지만 파일은 **저장**되므로 원래 이름으로 내려가야 한다.
@@ -447,9 +447,17 @@ def api_file(u: str):
         return JSONResponse({"error": "첨부 없음 또는 허용되지 않은 호스트", "u": u}, status_code=404)
     name = urllib.parse.unquote((u or "").rstrip("/").split("/")[-1]) or "download"
     # RFC 5987 — 한글 파일명이 헤더에서 깨지지 않게 UTF-8 로 별도 표기(ASCII 폴백 병기).
-    ascii_name = name.encode("ascii", "ignore").decode() or "download"
-    disp = ("inline; filename=\"%s\"; filename*=UTF-8''%s"
-            % (ascii_name.replace('"', ""), urllib.parse.quote(name)))
+    # ASCII 폴백 — 한글이 빠지면 '.pdf' 같은 껍데기만 남는다. 그럴 땐 download 를 앞에 붙인다
+    # (RFC 5987 을 못 읽는 클라이언트가 그 이름으로 저장한다).
+    ascii_name = name.encode("ascii", "ignore").decode().strip() or ""
+    if not ascii_name or ascii_name.startswith("."):
+        ascii_name = "download" + ascii_name
+    # ★ 기본은 attachment(내려받기). inline 으로 주면 브라우저가 '표시' 를 시도하고, 표시할 수
+    #   없는 형식이면 URL 에서 이름을 지어내 **확장자 없는 해시 같은 파일**로 저장된다.
+    #   미리보기가 필요한 자리(이미지 확대 등)만 ?inline=1 로 명시한다.
+    kind = "inline" if inline else "attachment"
+    disp = ("%s; filename=\"%s\"; filename*=UTF-8''%s"
+            % (kind, ascii_name.replace('"', ""), urllib.parse.quote(name)))
     media = (ctype or "application/octet-stream").split(";")[0].strip()
     return Response(content=data, media_type=media,
                     headers={"Content-Disposition": disp,
