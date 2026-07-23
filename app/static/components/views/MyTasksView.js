@@ -335,10 +335,21 @@ export default {
         <!-- Task 그룹 = 카드 하나 -->
         <div v-else-if="p.kind === 'task'" class="mt-gcard2 k-task">
           <div class="mt-gh">
-            <span class="mt-pkey tkt" :data-key="p.key">{{ p.key }}</span>
-            <span class="mt-pt">{{ p.title }}</span>
-            <span v-if="p.epicKey" class="mt-epic">◆ {{ epicTitle(p.epicKey) }}</span>
-            <span v-else class="mt-epic none">Epic 없음</span>
+            <div class="mt-card parent tkt" :data-key="p.key"
+                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done' }">
+              <span class="mt-pri" :class="p.group.priBand" :title="'우선순위: ' + p.group.pri"></span>
+              <TypeBadge :type="p.group.type" />
+              <span class="mt-key">{{ p.key }}</span>
+              <span class="mt-title">{{ p.title }}</span>
+              <span v-if="p.group.pct !== null" class="mt-roll" :title="'하위 진척 ' + p.group.pct + '%'">
+                <span class="mt-pbar"><i :style="{ width: p.group.pct + '%' }"></i></span>
+                <em>{{ p.group.pct }}%</em>
+              </span>
+              <span v-if="p.epicKey" class="mt-epic">◆ {{ epicTitle(p.epicKey) }}</span>
+              <span v-else class="mt-epic none">Epic 없음</span>
+              <span v-if="!p.group.mine" class="mt-owner">{{ p.group.assignee || '미할당' }} 담당</span>
+              <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
+            </div>
             <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
                     :title="modeHint(p.mode)">{{ modeLabel(p.mode, p.mineCount, p.allCount) }}</button>
           </div>
@@ -382,8 +393,20 @@ export default {
           </div>
           <div class="mt-gcard2 k-task inner" v-for="sp in p.subPanels" :key="sp.key">
             <div class="mt-gh sub">
-              <span class="mt-pkey tkt" :data-key="sp.key">{{ sp.key }}</span>
-              <span class="mt-pt">{{ sp.title }}</span>
+            <div class="mt-card parent tkt" :data-key="sp.key"
+                 :class="{ mine: sp.group.mine, rel: !sp.group.mine, done: sp.group.statusCategory === 'done' }">
+              <span class="mt-pri" :class="sp.group.priBand" :title="'우선순위: ' + sp.group.pri"></span>
+              <TypeBadge :type="sp.group.type" />
+              <span class="mt-key">{{ sp.key }}</span>
+              <span class="mt-title">{{ sp.title }}</span>
+              <span v-if="sp.group.pct !== null" class="mt-roll" :title="'하위 진척 ' + sp.group.pct + '%'">
+                <span class="mt-pbar"><i :style="{ width: sp.group.pct + '%' }"></i></span>
+                <em>{{ sp.group.pct }}%</em>
+              </span>
+              
+              <span v-if="!sp.group.mine" class="mt-owner">{{ sp.group.assignee || '미할당' }} 담당</span>
+              <span class="mt-due" :class="dueBand(sp.group.dueDays)">{{ dueLabel(sp.group.dueDays) || '—' }}</span>
+            </div>
               <button class="mt-more" :class="'m-' + sp.mode" @click="cycleMode(sp.key)"
                       :title="modeHint(sp.mode)">{{ modeLabel(sp.mode, sp.mineCount, sp.allCount) }}</button>
             </div>
@@ -476,8 +499,20 @@ export default {
             </template>
             <div v-else v-show="byState(p.cards)[st.k].length" class="mt-gcard">
               <div class="mt-gch">
-                <span class="mt-pkey tkt" :data-key="p.key">{{ p.key }}</span>
-                <span class="mt-pt">{{ p.title }}</span>
+            <div class="mt-card parent tkt" :data-key="p.key"
+                 :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done' }">
+              <span class="mt-pri" :class="p.group.priBand" :title="'우선순위: ' + p.group.pri"></span>
+              <TypeBadge :type="p.group.type" />
+              <span class="mt-key">{{ p.key }}</span>
+              <span class="mt-title">{{ p.title }}</span>
+              <span v-if="p.group.pct !== null" class="mt-roll" :title="'하위 진척 ' + p.group.pct + '%'">
+                <span class="mt-pbar"><i :style="{ width: p.group.pct + '%' }"></i></span>
+                <em>{{ p.group.pct }}%</em>
+              </span>
+              
+              <span v-if="!p.group.mine" class="mt-owner">{{ p.group.assignee || '미할당' }} 담당</span>
+              <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
+            </div>
                 <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
                         :title="modeHint(p.mode)">{{ modeLabel(p.mode, p.mineCount, p.allCount) }}</button>
               </div>
