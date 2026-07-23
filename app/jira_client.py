@@ -413,20 +413,18 @@ class JiraClient:
 
     ISSUE_BATCH = 50                  # JQL "key in (...)" 한 번에 담을 최대 개수
 
-    # 편집에 예민해 **매번 재검증**하는 캐시 키 접두사 = 티켓 다이얼로그가 그리는 것 전부.
-    # 사람이 방금 고쳤을 수 있는 화면이라, TTL 이 15분이면 내가 쓴 댓글이 15분 동안 안 보인다
-    # — 그건 캐시가 아니라 버그로 보인다. 캐시로 즉시 그리되 매번 뒤에서 다시 받는다.
+    # 매번 재검증하는 캐시 키 = **사람이 방금 바꿨을 수 있고, 틀리면 바로 곤란한 것**뿐이다.
+    #   issue/issueview  티켓 본문 + 상태·담당·마감(같은 응답에 들어 있다)
+    #   comments         댓글
+    # 여기까지가 "지금 이 티켓이 어떤 상태이고 무슨 얘기가 오갔나" 다. TTL 이 15분이면 내가
+    # 방금 쓴 댓글이 15분 동안 안 보이는데, 그건 캐시가 아니라 버그로 보인다.
     #
-    # ★ 한 화면을 이루는 조각이 키를 여러 개 쓴다. 일부만 넣으면 "본문은 최신인데 첨부만
-    #   옛것" 같은 어긋난 화면이 된다 — 다이얼로그가 부르는 것은 다 넣는다.
-    #     issue/issueview  본문 · comments  댓글 · attachments 첨부 · documents/remotelinks 관련문서
-    #     timeline/changelog 이력 · children/related/siblings/ancestors 계보·관련 티켓
-    # 목록·롤업(wbs/vit/workload/epic_tree)은 넣지 않는다: 무겁고, 몇 분 낡아도 판단이 바뀌지
-    # 않으며, 매번 갱신하면 단일 상류 큐가 그걸로 가득 차 정작 다이얼로그가 밀린다.
-    REVALIDATE_PREFIXES = (
-        "issue:", "issueview:", "comments:", "attachments:", "documents:", "remotelinks:",
-        "timeline:", "changelog:", "children:", "related:", "siblings:", "ancestors:",
-    )
+    # ★ 나머지는 일부러 뺐다. 첨부·링크·이력(changelog/timeline)·계보(ancestors/siblings/
+    #   children/related)는 자주 바뀌지 않고, 조금 낡아도 판단이 틀어지지 않는다. 반면 갱신
+    #   비용은 크다 — 계보 하나가 상류를 여러 번 타고(실측 3건), prod 는 상류가 단일 큐라
+    #   그게 쌓이면 정작 본문·댓글이 밀린다. 강제 갱신은 값싼 것에만 건다.
+    #   (내가 첨부·링크를 직접 바꾼 경우는 쓰기 직후 해당 키를 invalidate 하므로 이미 최신이다.)
+    REVALIDATE_PREFIXES = ("issue:", "issueview:", "comments:")
 
     def _wire_cache(self):
         """캐시에 '항상 재검증' 규칙과 스케줄러를 물린다. 호출부를 안 건드리려고 여기 한 곳에서."""
