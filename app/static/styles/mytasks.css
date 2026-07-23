@@ -470,3 +470,13 @@
    그 뒤에 오기 때문). */
 .mt-card:not(.two) > .tc-when { flex: none; margin-left: 4px; padding-left: 9px;
   border-left: 1px solid var(--border); border-right: 0; padding-right: 0; }
+
+/* 가로축 — 그룹 카드의 좌우를 **단독 카드와 같은 선**에 맞춘다.
+   그룹 카드는 상태 3칼럼을 가로질러야 해서(하위를 자기 상태 칸에 놓는다) 폭이 넓은 건 맞는데,
+   여태 칼럼 영역보다 더 바깥에서 시작·끝나 혼자 화면을 가로지르는 슬래브처럼 보였다
+   (실측 단독 44~532 / 그룹 28~1572). 바깥 여백만 맞춰도 '같은 판 위의 큰 카드' 로 읽힌다.
+   16px = 그리드 좌우 패딩(8) + 셀 패딩(8). */
+.ax-h .mt-gcard2 { margin-left: 16px; margin-right: 16px; }
+/* 안쪽 하위 영역도 그만큼 덜 파고들게 — 카드가 좁아진 만큼 여백이 두 배로 보이면 답답하다 */
+.ax-h .mt-gcard2.k-task > .mt-gbody { padding-left: 16px; }
+.ax-h .mt-gcard2.k-task > .mt-gbody::before { left: 7px; }
