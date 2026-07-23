@@ -327,10 +327,21 @@ class JiraClient:
         if self.env == "prod":
             # 세션 없으면 SsoSessionProvider 가 LoginRequired 를 던짐 → 라우트가 needLogin 처리.
             from .auth.sso_session import SsoSessionProvider
-            return SsoSessionProvider(self.s.jira_base, self._state_path())
+            return SsoSessionProvider(self.s.jira_base, self.sso_store())
         # mock: jira820 을 in-process(ASGI)로 — 이 프로젝트 world 주입. HTTP 소켓/run_fake 불필요.
         from .auth.inprocess import InProcessProvider
         return InProcessProvider()
+
+    def sso_store(self):
+        """SSO 세션 저장소 — 서비스별 파일. 한 서비스를 갱신해도 나머지가 안 날아간다."""
+        from .auth.sso_store import SsoStore
+        if getattr(self, "_sso_store", None) is None:
+            self._sso_store = SsoStore(self._state_path(), {
+                "jira": self.s.jira_base,
+                "confluence": self.s.confluence_base,
+                "bitbucket": self.s.bitbucket_base,
+            })
+        return self._sso_store
 
     def _state_path(self):
         """세션 파일 절대 경로 (상대면 APP_ROOT 기준 — run.py 의 존재검사와 일치)."""
@@ -340,11 +351,10 @@ class JiraClient:
         return str(p if p.is_absolute() else APP_ROOT / p)
 
     def needs_login(self):
-        """prod 이고 세션 파일이 없으면 True (mock/local 은 항상 False)."""
+        """prod 이고 저장된 세션이 하나도 없으면 True (mock/local 은 항상 False)."""
         if self.env != "prod":
             return False
-        from pathlib import Path
-        return not Path(self._state_path()).exists()
+        return not self.sso_store().any_exists()
 
     def reset_provider(self):
         """세션 갱신 후 다음 호출 때 새 세션으로 provider 를 재생성하도록 초기화."""
@@ -361,7 +371,8 @@ class JiraClient:
         if self.env != "prod":
             return True
         from .auth.sso_session import login_wait
-        ok = login_wait(self.s.jira_base, self._state_path(), timeout=timeout)
+        # Jira 만 다시 로그인 — 저장은 jira 파일에만 되므로 Confluence/Bitbucket 세션은 그대로 산다.
+        ok = login_wait(self.s.jira_base, self.sso_store(), service="jira", timeout=timeout)
         if ok:
             self.reset_provider()
         return ok

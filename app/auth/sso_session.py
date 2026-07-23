@@ -47,12 +47,15 @@ class SsoSessionProvider(AuthProvider):
 
     supports_parallel = False
 
-    def __init__(self, base, state_path, user_agent=None):
+    def __init__(self, base, store, user_agent=None):
         self.base = base.rstrip("/")
         # 세션 파일이 없으면 브라우저를 띄우기 전에 명확히 실패 → 라우트가 needLogin 으로 안내.
-        if not state_path or not os.path.exists(state_path):
-            raise LoginRequired(f"SSO 세션 파일이 없습니다({state_path}). 최초 로그인이 필요합니다.")
-        self._state_path = state_path
+        if store is None or not store.any_exists():
+            raise LoginRequired("저장된 SSO 세션이 없습니다. 최초 로그인이 필요합니다.")
+        self._store = store
+        self._state = store.merged()
+        if not self._state:
+            raise LoginRequired("저장된 SSO 세션이 비어 있습니다. 로그인이 필요합니다.")
         self._ua = user_agent
         # PriorityQueue — 사용자 요청(0)이 백그라운드 갱신(1)을 앞지른다.
         # 단일 큐라 백그라운드 작업이 앞에 쌓이면 사용자의 다음 조회가 그만큼 늦어진다.
@@ -72,7 +75,7 @@ class SsoSessionProvider(AuthProvider):
             from playwright.sync_api import sync_playwright   # 지연 import
             self._p = sync_playwright().start()
             self._browser = _launch(self._p, headless=True)
-            ctx_kw = {"storage_state": self._state_path}
+            ctx_kw = {"storage_state": self._state}
             if self._ua:
                 ctx_kw["user_agent"] = self._ua
             self._context = self._browser.new_context(**ctx_kw)
@@ -111,7 +114,8 @@ class SsoSessionProvider(AuthProvider):
             except Exception:
                 pass
         self._browser = _launch(self._p, headless=True)
-        ctx_kw = {"storage_state": self._state_path}
+        # 디스크에서 다시 읽는다 — 그동안 다른 서비스가 갱신됐을 수 있다.
+        ctx_kw = {"storage_state": self._store.merged() or self._state}
         if self._ua:
             ctx_kw["user_agent"] = self._ua
         self._context = self._browser.new_context(**ctx_kw)
@@ -362,7 +366,7 @@ def _authed(context, base):
     return False
 
 
-def login(base, state_path):
+def login(base, store, service="jira"):
     """[CLI] headed Chromium 으로 수동 SSO 로그인 후 세션 저장 (터미널 Enter 대기)."""
     from playwright.sync_api import sync_playwright
     base = base.rstrip("/")
@@ -372,12 +376,12 @@ def login(base, state_path):
         page = context.new_page()
         page.goto(base, wait_until="domcontentloaded")
         input(">>> 사내 SSO/인증서 로그인을 끝까지 완료한 뒤, 이 창에서 Enter: ")
-        context.storage_state(path=state_path)
+        store.save(service, context.storage_state())
         browser.close()
-        print(f"세션 저장 완료: {state_path}")
+        print(f"세션 저장 완료: {store.path(service)}")
 
 
-def login_wait(base, state_path, timeout=300, poll=2.0):
+def login_wait(base, store, service="jira", timeout=300, poll=2.0):
     """[웹/자동] headed Chromium 을 띄우고, 로그인 완료를 폴링으로 감지해 세션 저장.
 
     터미널 Enter 없이 동작 → 웹 버튼(/api/login)에서 호출 가능.
@@ -400,7 +404,9 @@ def login_wait(base, state_path, timeout=300, poll=2.0):
                 break
             time.sleep(poll)
         if ok:
-            context.storage_state(path=state_path)
+            # ★ 이 서비스 것만 저장한다. 예전엔 파일을 통째로 덮어써서, 한 서비스를 다시
+            #   로그인하면 나머지 서비스 쿠키가 같이 날아갔다.
+            store.save(service, context.storage_state())
         browser.close()
         return ok
 
@@ -409,6 +415,8 @@ if __name__ == "__main__":
     from ..settings import get_settings
     s = get_settings()
     if len(sys.argv) > 1 and sys.argv[1] == "login":
-        login(s.jira_base, s.jira_state_path)
+        from .sso_store import SsoStore
+        login(s.jira_base, SsoStore(s.jira_state_path, {
+            "jira": s.jira_base, "confluence": s.confluence_base, "bitbucket": s.bitbucket_base}))
     else:
         print("사용: python -m app.auth.sso_session login")

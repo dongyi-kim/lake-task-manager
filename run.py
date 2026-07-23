@@ -131,7 +131,9 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300):
             print(f"[login] {name}: {'OK' if ok else '실패'} — {why}")
         # 하나라도 됐으면 세션 저장(부분 인증이라도 그 기능은 쓰게), provider 갱신
         if any(ok for _, ok in results):
-            context.storage_state(path=appmain._client._state_path())
+            # 이 창은 세 서비스를 모두 돌았으므로 도메인별로 갈라 각각 저장한다
+            # (한 파일에 통째로 넣으면 다음에 한 서비스만 갱신할 때 나머지가 날아간다).
+            appmain._client.sso_store().save_all_from(context.storage_state())
             appmain._client.reset_provider()
             # 앱 페이지를 새로고침해 인증 상태를 즉시 반영(설정창 dot·로그인 오버레이 갱신).
             try:
@@ -442,6 +444,84 @@ def _run_tray(s):
                 print("app window error:", e)
         threading.Thread(target=run, name="app-window", daemon=True).start()
 
+    # ── 서비스별 SSO 인증 상태 ────────────────────────────────────────────
+    # 인증 여부의 **단일 원천은 백엔드**다(같은 프로세스의 provider 로 실제 호출해 본다).
+    # 트레이는 그 결과를 비추기만 한다 — 메뉴가 열릴 때 조회하면 그동안 트레이가 멎으므로
+    # 백그라운드에서 주기적으로 채워 두고, 메뉴는 캐시된 값을 즉시 그린다.
+    _sso = {}            # {서비스명: True(인증) | False(로그인 필요) | None(미설정)}
+    _busy = set()        # 로그인 진행 중인 서비스
+
+    def probe_sso():
+        if s.jira_env != "prod":
+            return
+        try:
+            from app.main import _probe_service
+        except Exception:
+            return
+        for svc in getattr(s, "services", []):
+            if not svc.get("configured"):
+                _sso[svc["name"]] = None
+                continue
+            try:
+                _sso[svc["name"]] = bool(_probe_service(svc).get("authenticated"))
+            except Exception:
+                _sso[svc["name"]] = False
+
+    def sso_poller(icon):
+        while True:
+            probe_sso()
+            try:
+                icon.update_menu()
+            except Exception:
+                pass
+            time.sleep(60)
+
+    def login_service(name, base):
+        """그 서비스만 로그인 — 저장도 그 서비스 파일에만 되므로 나머지 세션은 그대로 산다."""
+        if name in _busy:
+            return
+        _busy.add(name)
+        try:
+            from app.auth.sso_session import login_wait
+            import app.main as appmain
+            ok = login_wait(base, appmain._client.sso_store(), service=name.lower(), timeout=300)
+            if ok:
+                appmain._client.reset_provider()
+            print(f"[tray] {name} 로그인 {'성공' if ok else '실패/취소'}")
+        except Exception as e:
+            print(f"[tray] {name} 로그인 오류: {e}")
+        finally:
+            _busy.discard(name)
+            probe_sso()
+
+    def sso_items():
+        """서비스별 메뉴 항목 — 상태 표시 + 클릭하면 그 서비스만 로그인."""
+        if s.jira_env != "prod":
+            return [pystray.MenuItem(f"SSO 없음 (env={s.jira_env})", None, enabled=False)]
+        # ★ pystray 는 콜백의 인자 개수를 검사한다(기본값 인자도 센다) → 기본인자 트릭 대신
+        #   클로저 팩토리로 서비스명을 가둔다.
+        def item_for(name, base):
+            def label(item):
+                st = _sso.get(name)
+                if name in _busy:
+                    return f"  … {name} 로그인 중"
+                if st is None:
+                    return f"  – {name} (미설정)"
+                return f"  ● {name} 인증됨" if st else f"  ○ {name} — 클릭해 로그인"
+
+            def on_click(icon, item):
+                if _sso.get(name) is None:
+                    return                       # 미설정 서비스는 열 창이 없다
+                threading.Thread(target=login_service, args=(name, base),
+                                 name="sso-login-" + name, daemon=True).start()
+
+            def enabled(item):
+                return _sso.get(name) is not None
+
+            return pystray.MenuItem(label, on_click, enabled=enabled)
+
+        return [item_for(svc["name"], svc["base"]) for svc in getattr(s, "services", [])]
+
     # 트레이 아이콘 이미지 (png 우선)
     img = None
     for cand in ("icon.png", "favicon.ico"):
@@ -486,6 +566,9 @@ def _run_tray(s):
     menu = pystray.Menu(
         pystray.MenuItem("앱 열기", on_open, default=True),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("SSO 인증", pystray.Menu(lambda: sso_items())),
+        pystray.MenuItem("SSO 상태 새로고침", lambda icon, item: (probe_sso(), icon.update_menu())),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem("업데이트 후 재시작", on_restart),
         pystray.MenuItem("컴퓨터 시작 시 자동 실행", on_autostart,
                          checked=lambda item: _autostart_enabled()),
@@ -493,6 +576,7 @@ def _run_tray(s):
         pystray.MenuItem("종료", on_quit),
     )
     icon = pystray.Icon("lake-task-manager", img, "Lake Task Manager", menu)
+    threading.Thread(target=sso_poller, args=(icon,), name="sso-poller", daemon=True).start()
     print(f"Lake Task Manager - 트레이 상주 (env={s.jira_env}). 창을 닫아도 백엔드는 유지됩니다.")
     open_window(initial=True)                          # 시작 시 창 1개 오픈
     icon.run()                                         # 메인 스레드 블로킹(트레이 루프)
