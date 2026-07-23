@@ -85,17 +85,21 @@ export default {
       return c;
     },
 
-    /** 화면에 그릴 그룹 목록. 그룹화 방식에 따라 1단(Task) / 2단(Epic) / 없음. */
+    /** 화면에 그릴 목록.
+     *  ★ 그룹은 **하위가 실제로 있을 때만** 만든다. Sub-Task 가 없는 Task 는 묶을 게 없으므로
+     *    자기 자신만 담은 그룹 패널이 아니라 **그냥 티켓 카드**다(그게 사실에 맞는 표현이다). */
     panels() {
       if (this.groupBy === "none") {
         return [{ key: "__all__", kind: "none", cards: this.visible(this.allCards) }];
       }
       if (this.groupBy === "task") {
-        return this.groups.map((g) => this.taskPanel(g))
-          .filter((p) => p.cards.length || p.hiddenCount)
-          .sort((a, b) => a.rank - b.rank);
+        const out = this.groups.filter((g) => g.hasSubs).map((g) => this.taskPanel(g))
+          .filter((p) => p.cards.length || p.hiddenCount);
+        const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs));
+        if (solo) out.push(solo);
+        return out.sort((a, b) => a.rank - b.rank);
       }
-      // Epic — 그룹 패널 안에서 Task 가 다시 Sub-Task 들의 그룹 카드가 된다.
+      // Epic — 그 안에서 하위를 가진 Task 만 다시 그룹이 되고, 나머지는 Epic 직속 카드다.
       const by = new Map();
       for (const g of this.groups) {
         const k = g.epic || "__none__";
@@ -106,7 +110,7 @@ export default {
       const out = keys.map((k) => this.epicPanel(k, by.get(k)));
       out.sort((a, b) => a.rank - b.rank);
       if (by.has("__none__")) out.push(this.epicPanel("__none__", by.get("__none__")));
-      return out.filter((p) => p.subPanels.some((s) => s.cards.length || s.hiddenCount));
+      return out.filter((p) => p.soloCards.length || p.subPanels.length);
     },
   },
   methods: {
@@ -170,14 +174,36 @@ export default {
         rank: this.rankOf(cards),
       };
     },
+    /** 하위 없는 Task 들을 묶음 없이 카드로만 모은 덩어리(그룹 패널이 아니다). */
+    soloPanel(gs) {
+      const cards = [];
+      for (const g of gs) {
+        for (const a of g.atoms) cards.push(this.card(a, g, true));
+        for (const ot of g.others) cards.push(this.card(ot, g, false));
+      }
+      const vis = this.visible(cards);
+      if (!vis.length) return null;
+      return { key: "__solo__", kind: "solo", cards: vis, hiddenCount: this.hidden(cards),
+               rank: this.rankOf(cards) };
+    },
     epicPanel(ek, gs) {
-      const subPanels = gs.map((g) => this.taskPanel(g)).sort((a, b) => a.rank - b.rank);
+      // 하위가 있는 Task 만 Epic 안에서 다시 그룹이 된다. 나머지는 Epic 직속 카드.
+      const subPanels = gs.filter((g) => g.hasSubs).map((g) => this.taskPanel(g))
+        .filter((sp) => sp.cards.length || sp.hiddenCount)
+        .sort((a, b) => a.rank - b.rank);
+      const solo = this.soloPanel(gs.filter((g) => !g.hasSubs));
       const all = [].concat(...gs.map((g) => [].concat(
         g.atoms.map((a) => this.card(a, g, true)), g.others.map((o) => this.card(o, g, false)))));
       return {
         key: ek, kind: "epic",
         title: ek === "__none__" ? "Epic 없음" : ((this.epicMap[ek] || {}).title || ek),
         none: ek === "__none__",
+        soloCards: solo ? solo.cards : [],
+        // 헤더 개수는 **보이는 티켓 수** — 그룹이 된 Task 수를 세면 직속 카드만 있는 Epic 이 '0' 이 된다
+        count: (solo ? solo.cards.length : 0)
+               + gs.filter((g) => g.hasSubs).reduce((n, g) => n + this.visible(
+                   [].concat(g.atoms.map((a) => this.card(a, g, true)),
+                             g.others.map((o) => this.card(o, g, false))), g.key).length, 0),
         subPanels, rank: this.rankOf(all),
       };
     },
@@ -278,8 +304,8 @@ export default {
       </div>
 
       <template v-for="p in panels" :key="p.key">
-        <!-- 그룹화 없음 — 묶음이 없으니 카드 테두리도 없다 -->
-        <div v-if="p.kind === 'none'" class="mt-gbody plain">
+        <!-- 그룹화 없음 / 하위 없는 Task 묶음 — 묶을 게 없으니 카드 테두리도 없다 -->
+        <div v-if="p.kind === 'none' || p.kind === 'solo'" class="mt-gbody plain">
           <div v-for="st in states" :key="'n-' + st.k" class="mt-cell" :class="'c-' + st.k">
             <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
                  :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :data-key="c.key">
@@ -325,7 +351,22 @@ export default {
           <div class="mt-gh">
             <span v-if="!p.none" class="mt-pdia">◆</span>
             <span class="mt-pt">{{ p.title }}</span>
-            <span class="mt-pn">Task {{ p.subPanels.length }}</span>
+            <span class="mt-pn">티켓 {{ p.count }}</span>
+          </div>
+          <!-- Epic 직속 카드(하위 없는 Task) — 그룹이 아니므로 카드로만 -->
+          <div v-if="p.soloCards.length" class="mt-gbody">
+            <div v-for="st in states" :key="'ep-' + p.key + st.k" class="mt-cell"
+                 :class="['c-' + st.k, { empty: !byState(p.soloCards)[st.k].length }]">
+              <div v-for="c in byState(p.soloCards)[st.k]" :key="c.key" class="mt-card tkt"
+                   :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :data-key="c.key">
+                <span class="mt-pri" :class="c.priBand" :title="'우선순위: ' + c.pri"></span>
+                <TypeBadge :type="c.type" />
+                <span class="mt-key">{{ c.key }}</span>
+                <span class="mt-title">{{ c.title }}</span>
+                <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
+              </div>
+            </div>
           </div>
           <div class="mt-gcard2 k-task inner" v-for="sp in p.subPanels" :key="sp.key">
             <div class="mt-gh sub">
@@ -377,6 +418,17 @@ export default {
         <div v-else class="mt-grouprow">
           <template v-for="p in panels" :key="p.key">
             <template v-if="p.kind === 'epic'">
+              <!-- Epic 직속 카드(하위 없는 Task) — 그룹 카드로 감싸지 않는다 -->
+              <div v-for="c in byState(p.soloCards)[st.k]" :key="'es-' + c.key" class="mt-card tkt"
+                   :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :data-key="c.key">
+                <span class="mt-pri" :class="c.priBand"></span>
+                <TypeBadge :type="c.type" />
+                <span class="mt-key">{{ c.key }}</span>
+                <span class="mt-title">{{ c.title }}</span>
+                <span class="mt-epic sm">◆ {{ p.title }}</span>
+                <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
+              </div>
               <div v-for="sp in p.subPanels" :key="sp.key" v-show="byState(sp.cards)[st.k].length"
                    class="mt-gcard">
                 <div class="mt-gch">
@@ -395,6 +447,19 @@ export default {
                     <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
                   </div>
                 </div>
+              </div>
+            </template>
+            <!-- 하위 없는 Task 묶음 — 카드로만 -->
+            <template v-else-if="p.kind === 'solo'">
+              <div v-for="c in byState(p.cards)[st.k]" :key="'so-' + c.key" class="mt-card tkt"
+                   :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :data-key="c.key">
+                <span class="mt-pri" :class="c.priBand"></span>
+                <TypeBadge :type="c.type" />
+                <span class="mt-key">{{ c.key }}</span>
+                <span class="mt-title">{{ c.title }}</span>
+                <span v-if="c.epicKey" class="mt-epic sm">◆ {{ epicTitle(c.epicKey) }}</span>
+                <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
+                <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
               </div>
             </template>
             <div v-else v-show="byState(p.cards)[st.k].length" class="mt-gcard">
