@@ -807,6 +807,23 @@ class JiraClient:
     # 받아 온다 — 이게 없으면 클라이언트는 필수 입력을 알 수 없다.
     DONE_PREFERRED = "resolved"        # 완료로 보낼 때 기본 목적지(§ 아래 주석)
 
+    TIMECFG_TTL = 6 * 3600     # 인스턴스 설정이라 자주 안 바뀐다
+
+    def timetracking(self):
+        """이 인스턴스에서 **하루가 몇 시간인가**. '1d' 는 여기서 8h 가 될 수도 24h 가 될 수도
+        있다(Jira 관리자 설정). 추측하면 사용자가 적은 '1d' 와 Jira 가 기록한 값이 달라진다 —
+        읽어 와서 화면에 그대로 알린다. 못 읽으면 Jira DC 기본값(8h/일, 5일/주)."""
+        def do():
+            cfg = self.provider.get_json("/rest/api/2/configuration") or {}
+            tt = cfg.get("timeTrackingConfiguration") or {}
+            return {"hoursPerDay": float(tt.get("workingHoursPerDay") or 8),
+                    "daysPerWeek": float(tt.get("workingDaysPerWeek") or 5),
+                    "enabled": bool(cfg.get("timeTrackingEnabled", True))}
+        try:
+            return self.cache.get_or_set(f"timecfg:{self.env}", self.TIMECFG_TTL, do)[0]
+        except Exception:
+            return {"hoursPerDay": 8.0, "daysPerWeek": 5.0, "enabled": True}
+
     def transitions(self, key):
         """이 티켓에서 지금 가능한 전이 목록(+화면 필드). 실패하면 빈 목록."""
         try:

@@ -556,8 +556,15 @@ def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
         done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w")))
 
 
+@app.get("/api/timetracking")
+def api_timetracking():
+    """시간 추적 설정 — '1d' 가 몇 시간인지. 화면이 이 값을 사용자에게 그대로 보여 준다."""
+    return JSONResponse(_client.timetracking())
+
+
 class _TransitionBody(BaseModel):
     id: str = ""
+    days: int = 0
     hours: int = 0
     minutes: int = 0
     assignee: str = ""
@@ -579,6 +586,8 @@ def api_do_transition(key: str, body: _TransitionBody):
       시/분을 숫자로 받아 **여기서** Jira 포맷으로 조립한다. 일(d) 단위는 쓰지 않는다
       (하루 8시간이냐 24시간이냐가 인스턴스 설정에 달려 있어, 같은 '1d' 가 다른 값이 된다)."""
     parts = []
+    if body.days:
+        parts.append(f"{int(body.days)}d")
     if body.hours:
         parts.append(f"{int(body.hours)}h")
     if body.minutes:

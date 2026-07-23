@@ -4,10 +4,11 @@
 // 정한다(?expand=transitions.fields) — 워크플로마다 다르므로 화면에 박아 두면 안 된다.
 //
 // 두 가지를 일부러 Jira 와 다르게 한다:
-//  1) **소요시간을 시/분 숫자로 받는다.** Jira 는 "1d 5h" 같은 문자열을 직접 치게 하는데
-//     오타가 잦다(5h 를 5 로만 쓰거나, 공백을 빠뜨리거나). 숫자 두 칸으로 받아 서버에서
-//     조립한다. 일(d) 단위는 안 쓴다 — 하루가 8시간인지 24시간인지가 인스턴스 설정에 달려
-//     있어 같은 '1d' 가 다른 값이 된다.
+//  1) **소요시간을 일/시/분 숫자로 받는다.** Jira 는 "1d 5h" 같은 문자열을 직접 치게 하는데
+//     오타가 잦다(5h 를 5 로만 쓰거나, 공백을 빠뜨리거나). 숫자 칸으로 받아 서버에서 조립한다.
+//     ★ '1d' 가 몇 시간인지는 **우리가 정하지 않는다** — Jira 인스턴스 설정
+//       (workingHoursPerDay, DC 기본 8시간)이 정한다. 그 값을 읽어와 화면에 그대로 알린다.
+//       안 알리면 사용자는 하루를 24시간으로 여기고 적는데 Jira 는 8시간으로 기록한다.
 //  2) **코멘트를 필수로 받는다.** Jira 에선 선택이지만, 무엇을 했는지 한 줄도 없이 닫힌
 //     티켓은 나중에 아무도 해석하지 못한다. 이 앱을 통해 닫는 것에는 기록을 남긴다.
 import { api } from "../../lib/api.js";
@@ -21,8 +22,12 @@ export default {
   emits: ["close", "done"],
   data() {
     return {
-      hours: 0, minutes: 0, assignee: "", assigneeName: "", resolution: "",
-      comment: "", who: [], whoOpen: false, busy: false, err: "",
+      days: 0, hours: 0, minutes: 0, resolution: "", comment: "",
+      tt: null,   // 시간 추적 설정(하루 = 몇 시간)
+      // 담당자는 **선택된 사람 자체**를 들고 있는다(문자열이 아니라 노드). 문자열이면 화면에
+      // 남은 글자와 실제 값이 어긋날 수 있다 — 다 치고 못 고른 채 제출하는 사고가 난다.
+      user: null, q: "", who: [], whoOpen: false, hi: 0,
+      busy: false, err: "",
     };
   },
   computed: {
@@ -32,14 +37,17 @@ export default {
     resolutions() { return (this.has.resolution && this.has.resolution.allowedValues) || []; },
     timeText() {
       const p = [];
+      if (this.days) p.push(this.days + "d");
       if (this.hours) p.push(this.hours + "h");
       if (this.minutes) p.push(this.minutes + "m");
       return p.join(" ") || "—";
     },
+    hoursPerDay() { return (this.tt && this.tt.hoursPerDay) || 8; },
+    dayNote() { return "이 Jira 에서 1일 = " + this.hoursPerDay + "시간"; },
     problems() {
       const out = [];
-      if (this.has.worklog && !(this.hours || this.minutes)) out.push("소요시간");
-      if (this.has.assignee && !this.assignee) out.push("담당자");
+      if (this.has.worklog && !(this.days || this.hours || this.minutes)) out.push("소요시간");
+      if (this.has.assignee && !this.user) out.push("담당자");
       if (this.has.resolution && !this.resolution) out.push("처리 방법");
       // 코멘트는 Jira 기준 선택이지만 우리는 필수로 둔다(위 주석 참고).
       if (this.has.comment && !this.comment.trim()) out.push("코멘트");
@@ -48,27 +56,41 @@ export default {
   },
   mounted() {
     if (this.resolutions.length) this.resolution = this.resolutions[0].name;
+    api.timetracking().then((t) => { this.tt = t; }).catch(() => {});
     this._ta = createTypeahead((q) => api.mentionUsers(q, this.ticket), { minLen: 0 });
     this.searchWho("");
     api.me().then((m) => {                       // 대개 자기 자신이다 — 기본값으로 채운다
-      if (m && m.id && !this.assignee) { this.assignee = m.id; this.assigneeName = m.name || m.id; }
+      if (m && m.id && !this.user) {
+        this.user = { id: m.id, name: m.name || m.id, display: m.name || m.id,
+                      avatar: "/api/avatar/" + encodeURIComponent(m.id) };
+      }
     }).catch(() => {});
   },
   methods: {
     searchWho(q) {
+      this.hi = 0;
       this._ta.run(q).then((r) => { if (r) this.who = r.slice(0, 8); }).catch(() => {});
     },
-    pickWho(u) {
-      this.assignee = u.id || u.name; this.assigneeName = u.display || u.name || u.id;
-      this.whoOpen = false;
+    pickWho(u) { this.user = u; this.whoOpen = false; this.q = ""; this.who = []; },
+    clearWho() {
+      this.user = null; this.q = ""; this.whoOpen = true; this.searchWho("");
+      this.$nextTick(() => { const el = this.$refs.who; if (el) el.focus(); });
+    },
+    onWhoKey(e) {
+      if (!this.whoOpen || !this.who.length) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); this.hi = (this.hi + 1) % this.who.length; }
+      else if (e.key === "ArrowUp") { e.preventDefault(); this.hi = (this.hi + this.who.length - 1) % this.who.length; }
+      else if (e.key === "Enter") { e.preventDefault(); this.pickWho(this.who[this.hi]); }
     },
     async submit() {
       if (this.problems.length || this.busy) return;
       this.busy = true; this.err = "";
       try {
         const r = await api.doTransition(this.ticket, {
-          id: this.transition.id, hours: Number(this.hours) || 0,
-          minutes: Number(this.minutes) || 0, assignee: this.assignee,
+          id: this.transition.id, days: Number(this.days) || 0,
+          hours: Number(this.hours) || 0,
+          minutes: Number(this.minutes) || 0,
+          assignee: (this.user && this.user.id) || "",
           resolution: this.resolution,
           commentHtml: this.comment ? "<p>" + this.comment.replace(/[<&]/g, (c) =>
             (c === "<" ? "&lt;" : "&amp;")).replace(/\n/g, "<br>") + "</p>" : "",
@@ -100,27 +122,38 @@ export default {
         <label v-if="has.worklog" class="trx-f">
           <span class="trx-l">소요시간 <i>필수</i></span>
           <span class="trx-time">
+            <input type="number" min="0" max="99" v-model.number="days"><em :title="dayNote">일</em>
             <input type="number" min="0" max="999" v-model.number="hours"><em>시간</em>
             <input type="number" min="0" max="59" step="5" v-model.number="minutes"><em>분</em>
             <b class="trx-prev">{{ timeText }}</b>
           </span>
-          <span class="trx-hint">Jira 에는 {{ timeText }} 형식으로 기록됩니다.</span>
+          <span class="trx-hint">실제 이 업무만을 위해 소요한 시간 기준으로 입력<i v-if="days"> · {{ dayNote }}</i></span>
         </label>
 
-        <label v-if="has.assignee" class="trx-f">
+        <div v-if="has.assignee" class="trx-f">
           <span class="trx-l">담당자 <i>필수</i></span>
-          <span class="trx-who">
-            <input :value="assigneeName" @focus="whoOpen = true"
-                   @input="assigneeName = $event.target.value; assignee = ''; whoOpen = true; searchWho($event.target.value)"
-                   placeholder="이름 또는 사번">
+          <!-- 고른 사람은 **노드(칩)** 로 남는다 — 입력창에 글자로 남겨 두면 화면의 글자와
+               실제 값이 어긋날 수 있고, 다 치고 못 고른 채 제출하는 사고가 난다. -->
+          <span v-if="user" class="trx-chip">
+            <Avatar :user="user.id" :name="user.display || user.name" :size="22" />
+            <b>{{ user.name || user.display }}</b>
+            <em>{{ user.id }}</em>
+            <button class="trx-chip-x" @click="clearWho" title="다른 사람 고르기">×</button>
+          </span>
+          <span v-else class="trx-who">
+            <input ref="who" :value="q" @focus="whoOpen = true; searchWho(q)"
+                   @input="q = $event.target.value; whoOpen = true; searchWho($event.target.value)"
+                   @keydown="onWhoKey" placeholder="이름 또는 사번으로 검색">
             <div v-if="whoOpen && who.length" class="trx-drop">
-              <button v-for="u in who" :key="u.id || u.name" @click.prevent="pickWho(u)">
-                <Avatar :user="u.id || u.name" :name="u.display || u.name" :size="18" />
-                <span>{{ u.display || u.name }}</span><em>{{ u.id || u.name }}</em>
+              <button v-for="(u, i) in who" :key="u.id" :class="{ hi: i === hi }"
+                      @click.prevent="pickWho(u)" @mouseenter="hi = i">
+                <Avatar :user="u.id" :name="u.display || u.name" :size="22" />
+                <span>{{ u.name || u.display }}</span><em>{{ u.id }}</em>
               </button>
             </div>
+            <span v-else-if="whoOpen" class="trx-hint">검색 결과가 없습니다.</span>
           </span>
-        </label>
+        </div>
 
         <label v-if="has.resolution" class="trx-f">
           <span class="trx-l">처리 방법 <i>필수</i></span>

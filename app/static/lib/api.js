@@ -86,6 +86,7 @@ export const api = {
   // ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 이미지 첨부. 성공 후 그 티켓 memo 무효화 ──
   me: () => get("/api/me"),
   // 전이 목록은 **캐시하지 않는다** — 현재 상태에 따라 매번 달라지고, 낡은 목록은 곧 400 이다.
+  timetracking: () => get("/api/timetracking"),
   transitions: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/transitions"),
   doTransition: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/transition",
                                        "POST", body).then((r) => { evict(key); return r; }),                                             // 본인 댓글 판정
