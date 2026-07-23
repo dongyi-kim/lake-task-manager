@@ -19,6 +19,24 @@ const LEVELS = [
   { icon: "▼▼", key: "lowest", label: "Lowest — 최하" },
 ];
 
+// 이름 → 등급. 서버(mytasks._PRI_RANK)와 **같은 표**다 — 선택지 목록처럼 서버 등급이 딸려
+// 오지 않는 자리에서 쓴다. 둘이 어긋나면 고르기 전과 후의 아이콘이 달라진다.
+const RANK_OF = {
+  highest: 0, high: 1, medium: 2, normal: 2, low: 3, lowest: 4,
+  blocker: 0, critical: 1, major: 2, minor: 3, trivial: 4,
+  urgent: 0, p1: 0, p2: 1, p3: 2, p4: 3, p5: 4,
+};
+// ★ 사내 체계는 'P0-Blocker … P4-Trivial' 이라 **접두사 숫자가 곧 등급**이다. 이름 표를 먼저
+//   보면 사내 이름이 바뀌는 순간 전부 '보통' 으로 떨어진다 — 숫자를 먼저 읽는다.
+const P_PREFIX = /^\s*P\s*(\d+)/i;
+export function priRankOf(name) {
+  const n = (name || "").trim();
+  const m = P_PREFIX.exec(n);
+  if (m) return Math.min(parseInt(m[1], 10), 4);
+  const k = n.toLowerCase();
+  return k in RANK_OF ? RANK_OF[k] : 2;
+}
+
 export function priLevel(rank) {
   return LEVELS[rank === null || rank === undefined ? 2 : Math.max(0, Math.min(4, rank))];
 }

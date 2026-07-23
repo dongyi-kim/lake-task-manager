@@ -833,3 +833,65 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 /* 에디터가 직접 받을 때 — 테두리로 "여기에 놓으면 본문" 을 말한다 */
 .cmt-editor.drag-over { outline: 2px dashed var(--accent); outline-offset: 2px;
   background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+/* ── 필드 인라인 편집 ───────────────────────────────────────────────────────
+   편집 가능한 값은 **눌리는 것처럼** 보이고, 아닌 값은 그냥 글자다. 연필 아이콘을 줄줄이
+   붙이지 않는 이유: 아이콘이 늘면 화면이 도구 모음처럼 보여 정작 '지금 무엇이 담겨 있나' 가
+   안 읽힌다. 대신 올렸을 때 배경이 들어와 누를 수 있음을 알린다. */
+.fe { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+.fe-v { border: 0; background: none; font: inherit; color: inherit; cursor: pointer;
+  padding: 1px 5px; margin: -1px -5px; border-radius: 6px; display: inline-flex;
+  align-items: center; gap: 6px; min-width: 0; text-align: left; }
+/* 평소에는 **아무 표시도 없다** — 보기 화면은 값을 읽는 자리지 편집 도구가 아니다.
+   테두리를 늘 그려 두면 티켓 정보가 입력 폼처럼 보이고, 정작 '무엇이 담겨 있나' 가 뒤로 밀린다.
+   올렸을 때만 옅은 회색 면이 들어와 "여기 누를 수 있다" 를 알린다(색은 안 쓴다 — 파란 테두리는
+   '지금 뭔가 활성' 이라는 다른 뜻으로 읽힌다). 실제로 열렸을 때만 강조색을 쓴다. */
+.fe-v:hover { background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border-hi); }
+.fe-v.on { background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, var(--border-hi)); }
+.fe-ro { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+
+.fe-back { position: fixed; inset: 0; z-index: 9400; }
+.fe-pop { position: absolute; top: calc(100% + 5px); left: -6px; z-index: 9450;
+  min-width: 230px; max-width: 320px; padding: 6px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgba(0,0,0,.20); display: flex; flex-direction: column; gap: 5px; }
+.fe-pop input { font: inherit; font-size: 12.5px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; }
+.fe-list { max-height: 220px; overflow: auto; display: flex; flex-direction: column; gap: 1px; }
+.fe-i { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 0;
+  background: none; font: inherit; font-size: 12.5px; color: var(--text); padding: 5px 7px;
+  border-radius: 6px; cursor: pointer; }
+.fe-i:hover { background: var(--panel-2); }
+.fe-i.cur { color: var(--accent); font-weight: 600; }
+.fe-i em { margin-left: auto; font-style: normal; font-size: 10px; color: var(--muted-2); }
+.fe-none { font-size: 11.5px; color: var(--muted-2); padding: 5px 7px; }
+.fe-clear { border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+  font: inherit; font-size: 11.5px; border-radius: 7px; padding: 5px; cursor: pointer; }
+.fe-clear:hover { border-color: var(--today); color: var(--today); }
+.fe-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.fe-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border);
+  background: var(--panel-2); color: var(--text); font: inherit; font-size: 11px;
+  border-radius: 999px; padding: 1px 7px; cursor: pointer; }
+.fe-chip i { font-style: normal; color: var(--muted-2); }
+.fe-chip:hover { border-color: var(--today); }
+.fe-chip:hover i { color: var(--today); }
+.fe-foot { display: flex; align-items: center; gap: 6px; }
+.fe-err { flex: 1 1 auto; font-size: 11px; color: var(--today); }
+.fe-cancel, .fe-ok { border-radius: 7px; font: inherit; font-size: 12px; font-weight: 600;
+  padding: 5px 10px; cursor: pointer; }
+.fe-cancel { margin-left: auto; border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
+.fe-ok { border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+.fe-ok:disabled { opacity: .5; cursor: not-allowed; }
+/* 컴포넌트 칩은 라벨과 **같은 중립색**을 쓴다. 색을 넣었더니 파란 테두리가 '지금 활성/편집 중'
+   으로 읽혀 보기 화면이 폼처럼 보였다. 컴포넌트와 라벨은 각자 이름표가 붙은 줄에 있으므로
+   색으로 더 가를 이유가 없다. */
+.tkt-label.comp { }
+
+/* 우선순위 — '내 Task' 와 같은 아이콘 + 이름. 전용 알약(.prio-b)을 걷어낸 이유: 같은 값이
+   화면마다 다른 모양이면 같은 티켓인지 매번 다시 읽어야 한다. */
+.prio-n { font-size: 12.5px; }
+.fe-i .pri-i { flex: none; }
+/* 편집 불가 항목 — 시각적으로는 그냥 값이다(잠금 아이콘 같은 걸 붙이면 '고장' 으로 보인다).
+   왜 못 고치는지는 말풍선이 말한다. */
+.fe-ro { cursor: default; }

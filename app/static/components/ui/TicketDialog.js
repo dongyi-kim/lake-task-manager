@@ -3,6 +3,8 @@
 // 코멘트 텍스트는 Vue 기본 이스케이프({{ }})로 안전 표시. Esc/백드롭/X 로 닫기.
 import { api } from "../../lib/api.js";
 import { extOf } from "../../lib/filetype.js";
+import FieldEdit from "./FieldEdit.js";
+import PriIcon from "./PriIcon.js";
 import { ymd, ymdhm, ts, esc } from "../../lib/fmt.js";
 import { TYPE_BG, typeLabel, sigColor } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
@@ -39,7 +41,7 @@ function descEmpty(html) {
 
 export default {
   name: "TicketDialog",
-  components: { TypeBadge, Avatar, CommentEditor, SettingsMenu, LinkPicker },
+  components: { TypeBadge, Avatar, CommentEditor, SettingsMenu, LinkPicker, FieldEdit, PriIcon },
   // mode: dialog(모달, 기본) | page(새 창 전용 단독 페이지 — 오버레이·닫기 없음)
   props: { keyId: { type: String, required: true },
            mode: { type: String, default: "dialog" },
@@ -53,6 +55,8 @@ export default {
                     relPick: false, linkBusy: false, linkErr: "",
                     docPick: false, docBusy: false, docErr: "",
                     uploading: false, upErr: "", dragOver: false, dragInEditor: false,
+                    // 편집 가능 필드 — Jira 가 답한 것만 편집 UI 를 연다(추측 금지).
+                    emeta: null, descEdit: false,
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
     // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
@@ -149,6 +153,10 @@ export default {
       api.ticketChildren(key).then((c) => { if (fresh()) this.children = c || []; }).catch(() => {});
       api.ticketRelated(key).then((r) => { if (fresh()) this.related = r || []; }).catch(() => {});
       api.ticketAttachments(key).then((a) => { if (fresh()) this.atts = a || []; }).catch(() => {});
+      // 편집 가능 필드도 함께 — 티켓마다·상태마다 다르므로 열 때마다 받는다.
+      this.emeta = null;
+      api.editmeta(key).then((m) => { if (fresh()) this.emeta = m || {}; })
+        .catch(() => { if (fresh()) this.emeta = {}; });
       api.ticketDocuments(key).then((d) => { if (fresh()) this.docs = d || []; }).catch(() => {});
 
       try {
@@ -231,6 +239,20 @@ export default {
       this.uploading = false;
       this.upErr = failed.length ? "첨부 실패: " + failed.join(", ") : "";
       await this.reloadAttachments();
+    },
+    /** 편집 가능 필드를 받아 둔다. 실패하면 아무것도 안 열린다 — 조용히 열어 주는 것보다
+     *  조용히 닫는 편이 안전하다(열어 두면 다 입력한 뒤 거절당한다). */
+    loadEditmeta() {
+      const key = this.keyId;
+      return api.editmeta(key)
+        .then((m) => { if (this.keyId === key) this.emeta = m || {}; })
+        .catch(() => { if (this.keyId === key) this.emeta = {}; });
+    },
+    fmeta(id) { return (this.emeta && this.emeta[id]) || null; },
+    /** 필드가 바뀌면 티켓을 다시 받는다 — 한 필드만 손대도 상태·이력이 같이 움직인다. */
+    onFieldSaved() {
+      this.load();          // 한 필드만 손대도 상태·이력·계보가 같이 움직인다 → 통째로 다시 받는다
+      window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: this.keyId } }));
     },
     reloadAttachments() {
       const key = this.keyId;
@@ -615,19 +637,38 @@ export default {
           <div class="tkt-meta">
             <div><span class="k">상태</span><span class="val"
               ><span class="val-st" :class="statusClass(v.statusCategory)">{{ v.status || '—' }}</span></span></div>
-            <div><span class="k">우선순위</span><span class="val"
-              ><span class="prio-b" :class="prioCls(v.priority)">{{ v.priority || '미지정' }}</span></span></div>
-            <div><span class="k">담당자</span><span class="val val-user"><Avatar v-if="v.assigneeId"
-              :user="v.assigneeId" :name="v.assignee" :size="18" />{{ v.assignee || '—' }}</span></div>
-            <div><span class="k">보고자</span><span class="val val-user"><Avatar v-if="v.reporterId"
-              :user="v.reporterId" :name="v.reporter" :size="18" />{{ v.reporter || '—' }}</span></div>
-            <div><span class="k">컴포넌트</span><span class="val">{{ (v.components && v.components.length) ? v.components.join(', ') : '—' }}</span></div>
+            <div><span class="k">우선순위</span><span class="val">
+              <FieldEdit :ticket="tk" field="priority" :meta="fmeta('priority')"
+                         :value="v.priority" @saved="onFieldSaved">
+                <PriIcon :rank="v.priRank" :name="v.priority" /><span class="prio-n">{{ v.priority || '미지정' }}</span>
+              </FieldEdit></span></div>
+            <div><span class="k">담당자</span><span class="val val-user">
+              <FieldEdit :ticket="tk" field="assignee" :meta="fmeta('assignee')"
+                         :value="v.assigneeId" :user-id="v.assigneeId" @saved="onFieldSaved">
+                <Avatar v-if="v.assigneeId" :user="v.assigneeId" :name="v.assignee" :size="18" />{{ v.assignee || '—' }}
+              </FieldEdit></span></div>
+            <div><span class="k">보고자</span><span class="val val-user">
+              <FieldEdit :ticket="tk" field="reporter" :meta="fmeta('reporter')"
+                         :value="v.reporterId" :user-id="v.reporterId" @saved="onFieldSaved">
+                <Avatar v-if="v.reporterId" :user="v.reporterId" :name="v.reporter" :size="18" />{{ v.reporter || '—' }}
+              </FieldEdit></span></div>
+            <div><span class="k">작업 기한</span><span class="val">
+              <FieldEdit :ticket="tk" field="duedate" :meta="fmeta('duedate')"
+                         :value="v.due" @saved="onFieldSaved">{{ v.due || '—' }}</FieldEdit></span></div>
+            <div><span class="k">컴포넌트</span><span class="val">
+              <FieldEdit :ticket="tk" field="components" :meta="fmeta('components')"
+                         :value="v.components || []" @saved="onFieldSaved">
+                <span v-if="v.components && v.components.length" class="tkt-labels">
+                  <span v-for="c in v.components" :key="c" class="tkt-label comp">{{ c }}</span>
+                </span><span v-else>—</span>
+              </FieldEdit></span></div>
             <div class="wide"><span class="k">라벨</span><span class="val">
-              <span v-if="v.labels && v.labels.length" class="tkt-labels">
-                <span v-for="l in v.labels" :key="l" class="tkt-label">{{ l }}</span>
-              </span>
-              <span v-else>—</span>
-            </span></div>
+              <FieldEdit :ticket="tk" field="labels" :meta="fmeta('labels')"
+                         :value="v.labels || []" @saved="onFieldSaved">
+                <span v-if="v.labels && v.labels.length" class="tkt-labels">
+                  <span v-for="l in v.labels" :key="l" class="tkt-label">{{ l }}</span>
+                </span><span v-else>—</span>
+              </FieldEdit></span></div>
           </div>
 
           <!-- Sub-Task 는 설명을 대충 쓰는 경우가 많아 상위(부모) 설명을 여기서 바로 볼 수 있게.

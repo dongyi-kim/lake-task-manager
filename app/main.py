@@ -670,6 +670,79 @@ class _TransitionBody(BaseModel):
     commentHtml: str = ""
 
 
+class _FieldsBody(BaseModel):
+    # 화면이 다루는 값 그대로 받는다(Jira 형식 변환은 아래에서) — 프론트가 Jira 규약을 알 필요 없다.
+    priority: str | None = None
+    assignee: str | None = None
+    reporter: str | None = None
+    duedate: str | None = None            # "" = 지움
+    labels: list[str] | None = None
+    components: list[str] | None = None
+    summary: str | None = None
+    descriptionHtml: str | None = None
+
+
+@app.get("/api/ticket/{key}/editmeta")
+def api_editmeta(key: str):
+    """지금 이 사용자가 **이 이슈에서 고칠 수 있는 필드**. 화면은 이 목록에 있는 것만 연다."""
+    return JSONResponse(_client.editmeta(key))
+
+
+@app.get("/api/options/{kind}")
+def api_options(kind: str, q: str = ""):
+    """편집용 선택지 — priorities | components | labels."""
+    if kind == "priorities":
+        return JSONResponse(_client.priorities())
+    if kind == "components":
+        return JSONResponse(_client.components())
+    if kind == "labels":
+        return JSONResponse(_client.label_suggestions(q))
+    return JSONResponse({"error": "unknown kind"}, status_code=404)
+
+
+@app.put("/api/ticket/{key}/fields")
+def api_update_fields(key: str, body: _FieldsBody):
+    """필드 수정. **editmeta 에 없는 필드는 거부한다** — 화면이 실수로 보내도 여기서 막힌다
+    (권한 판단을 화면에만 맡기면, 화면 버그가 곧 권한 구멍이 된다)."""
+    meta = _client.editmeta(key)
+    fields, denied = {}, []
+
+    def put(fid, value):
+        if fid not in meta:
+            denied.append(fid)
+            return
+        fields[fid] = value
+
+    if body.priority is not None:
+        put("priority", {"name": body.priority})
+    if body.assignee is not None:
+        put("assignee", {"name": body.assignee} if body.assignee else None)
+    if body.reporter is not None:
+        put("reporter", {"name": body.reporter} if body.reporter else None)
+    if body.duedate is not None:
+        put("duedate", body.duedate or None)
+    if body.labels is not None:
+        put("labels", list(body.labels))
+    if body.components is not None:
+        put("components", [{"name": c} for c in body.components])
+    if body.summary is not None:
+        put("summary", body.summary)
+    if body.descriptionHtml is not None:
+        put("description", html_to_wiki(body.descriptionHtml))
+
+    if denied:
+        return JSONResponse({"ok": False, "error": "편집 권한이 없는 항목입니다: " + ", ".join(denied)},
+                            status_code=403)
+    if not fields:
+        return JSONResponse({"ok": True, "note": "변경 없음"})
+    try:
+        return JSONResponse(_client.update_fields(key, fields))
+    except SessionExpired:
+        raise
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=400)
+
+
 @app.get("/api/ticket/{key}/menu")
 def api_ticket_menu(key: str):
     """카드 우클릭 메뉴에 필요한 것 한 번에 — 티켓 요약 + 내가 바꿀 수 있는지 + 가능한 전이.

@@ -16,6 +16,7 @@
 - group.pct(= SP 가중 롤업, 부분점수 포함)
 """
 
+import re
 from datetime import date, datetime
 
 from .names import real_name
@@ -31,6 +32,8 @@ _PRI_RANK = {
     "urgent": 0, "p1": 0, "p2": 1, "p3": 2, "p4": 3, "p5": 4,
 }
 _PRI_BAND = {0: "high", 1: "high", 2: "mid", 3: "low", 4: "low"}
+# 'P0-Blocker' 처럼 **접두사 숫자로 등급을 말하는** 체계(사내 표준). 이름보다 이게 우선한다.
+_P_PREFIX = re.compile(r"^\s*P\s*(\d+)", re.I)
 
 # 상태 부분점수 — 완료만 100% 로 치면 진행 중인 일이 통째로 0 이라 롤업이 실제보다 어둡다.
 # (WBS/Epic 진척률은 '완료/전체' 이진이 원칙이지만, 이 화면은 개인 트래킹용 체감 지표라 다르다.
@@ -52,10 +55,24 @@ def _days_until(due, today):
     return (d - today).days
 
 
+def pri_rank(name):
+    """우선순위 이름 → 등급(0=가장 급함). **이 프로젝트의 유일한 판정처**다.
+
+    ★ 사내 체계는 'P0-Blocker … P4-Trivial' 이라 **접두사 숫자가 곧 등급**이다. 이름을 통째로
+      표에서 찾는 방식은 사내 이름이 바뀌는 순간(P1-Critical → P1-치명) 전부 '보통' 으로
+      떨어진다. 그래서 숫자를 먼저 읽고, 그게 없을 때만 이름 표로 간다
+      (Highest/High/… · Blocker/Critical/… 같은 표준 스킴).
+    """
+    n = (name or "").strip()
+    m = _P_PREFIX.match(n)
+    if m:
+        return min(int(m.group(1)), 4)
+    return _PRI_RANK.get(n.lower(), 2)
+
+
 def _pri(f):
     name = ((f.get("priority") or {}).get("name") or "").strip()
-    rank = _PRI_RANK.get(name.lower(), 2)
-    return name, rank
+    return name, pri_rank(name)
 
 
 def _cat(f):

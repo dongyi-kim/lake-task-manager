@@ -248,6 +248,11 @@ def _log_sections(key, view):
     print("[sections] %s: %s" % (key, " | ".join(parts)), file=sys.stderr)
 
 
+def _pri_rank(name):
+    from .mytasks import pri_rank           # 등급 판정은 mytasks 가 단일 소스(P{n} 접두사 우선)
+    return pri_rank(name)
+
+
 def _build_ticket_view(raw, sp_field, jira_base=""):
     """티켓 상세 다이얼로그용 리치 뷰(순수 함수 — 테스트 용이).
     description: prod 의 renderedFields.description(HTML)이 있으면 **sanitize**, 없으면 평문→escape+nl2br.
@@ -280,6 +285,9 @@ def _build_ticket_view(raw, sp_field, jira_base=""):
         "status": st.get("name", ""),
         "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
         "priority": _prio((f.get("priority") or {}).get("name")),
+        # 등급(0=가장 급함)은 '내 Task' 와 **같은 표**를 쓴다. 화면마다 따로 매기면 같은 티켓이
+        # 화면에 따라 다른 아이콘으로 보인다(Blocker 가 여기선 보통, 저기선 최우선).
+        "priRank": _pri_rank((f.get("priority") or {}).get("name")),
         "assignee": _rn(f.get("assignee")),
         "reporter": _rn(f.get("reporter")),
         # 프로필 이미지 조회용 사용자 id (displayName 이 아니라 Jira username)
@@ -800,6 +808,77 @@ class JiraClient:
         # 본문/상태/댓글은 화면이 곧바로 다시 그린다 → 미리 채워 둔다(위 주석 참고).
         self.cache.invalidate(f"issueview:{self.env}:{key}")
         self._reprime(key, comments=comments)
+
+    # ── 편집 ──────────────────────────────────────────────────────────
+    # **무엇을 고칠 수 있는지는 Jira 가 정한다.** 우리가 추측하면(예: 담당자면 다 된다) 화면은
+    # 열어 놓고 저장에서 거절당한다. editmeta 는 "지금 이 사용자가 이 이슈에서 편집 가능한
+    # 필드" 만 돌려주므로, 그 목록에 없는 필드는 아예 편집 UI 를 열지 않는다.
+    # 캐시하지 않는다 — 상태가 바뀌면(워크플로 속성) 편집 가능 필드도 바뀐다.
+    EDITABLE = {"summary", "description", "priority", "assignee", "reporter", "duedate",
+                "labels", "components", "issuetype", "epic"}
+
+    def editmeta(self, key):
+        """편집 가능한 필드 → {필드id: {name, type, required, operations, allowedValues}}.
+        실패하면 빈 dict(=아무것도 못 고침). 조용히 열어 주는 것보다 조용히 닫는 게 안전하다."""
+        try:
+            data = self.provider.get_json(f"/rest/api/2/issue/{key}/editmeta") or {}
+        except SessionExpired:
+            raise
+        except Exception:
+            return {}
+        out = {}
+        for fid, f in (data.get("fields") or {}).items():
+            sch = f.get("schema") or {}
+            typ = (sch.get("type") or "").lower()
+            if typ == "array":
+                typ = (sch.get("items") or "").lower() + "[]"
+            out[fid] = {
+                "id": fid, "name": f.get("name") or fid, "type": typ,
+                "required": bool(f.get("required")),
+                "operations": f.get("operations") or [],
+                "allowedValues": [{"id": str(v.get("id") or ""),
+                                   "name": v.get("name") or v.get("value") or ""}
+                                  for v in (f.get("allowedValues") or [])],
+            }
+        return out
+
+    def update_fields(self, key, fields):
+        """필드 수정(PUT /issue). fields 는 Jira 형식 그대로 — 변환은 라우트가 한다."""
+        self.provider.put_json(f"/rest/api/2/issue/{key}", {"fields": fields})
+        self._invalidate_ticket(key)
+        return {"ok": True}
+
+    OPTIONS_TTL = 1800          # 우선순위·컴포넌트는 거의 안 바뀐다
+
+    def priorities(self):
+        def do():
+            return [{"id": str(x.get("id")), "name": x.get("name") or ""}
+                    for x in (self.provider.get_json("/rest/api/2/priority") or [])]
+        try:
+            return self.cache.get_or_set(f"priorities:{self.env}", self.OPTIONS_TTL, do)[0]
+        except Exception:
+            return []
+
+    def components(self):
+        def do():
+            path = f"/rest/api/2/project/{self.s.project_key}/components"
+            return [{"id": str(x.get("id")), "name": x.get("name") or ""}
+                    for x in (self.provider.get_json(path) or [])]
+        try:
+            return self.cache.get_or_set(f"components:{self.env}", self.OPTIONS_TTL, do)[0]
+        except Exception:
+            return []
+
+    def label_suggestions(self, q=""):
+        """라벨 자동완성. Jira DC 는 JQL 자동완성 엔드포인트로 준다.
+        없으면(구버전·권한) 빈 목록 — 그때는 사용자가 새로 적어 넣으면 된다."""
+        try:
+            data = self.provider.get_json(
+                "/rest/api/2/jql/autocompletedata/suggestions",
+                params={"fieldName": "labels", "fieldValue": q or ""}) or {}
+            return [x.get("value") or "" for x in (data.get("results") or []) if x.get("value")]
+        except Exception:
+            return []
 
     # ── 상태 전이 ──────────────────────────────────────────────────────
     # Jira 는 "상태를 지정" 하는 게 아니라 **워크플로가 허용한 전이 id** 를 실행한다. 그래서
