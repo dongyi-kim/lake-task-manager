@@ -1483,7 +1483,8 @@ class JiraClient:
                     "created": a.get("created"),
                     "author": real_name((a.get("author") or {}).get("displayName")
                                         or (a.get("author") or {}).get("name")),
-                    "url": self._media_url(a.get("content") or ""),
+                    # 목록의 링크는 **내려받기**다(썸네일만 이미지 프록시).
+                    "url": self._media_url(a.get("content") or "", download=True),
                     "thumb": self._media_url(a.get("thumbnail") or "") if is_img else None,
                     "isImage": is_img,
                 })
@@ -1692,15 +1693,20 @@ class JiraClient:
         except Exception:
             return (None, None)
 
-    def _media_url(self, u):
-        """첨부 URL — prod 는 /api/img 프록시(인증·크로스오리진 회피), mock/local 은 same-origin 그대로."""
+    def _media_url(self, u, download=False):
+        """첨부 URL — **항상 프록시**를 거친다.
+
+        전엔 dev 에서 Jira 주소를 그대로 줬는데, 그러면 앱 창(SSO 세션을 가진 Chromium)에서만
+        열리고 사용자가 평소 쓰는 브라우저에서는 인증이 없어 실패한다. 세 환경이 같은 경로를
+        타야 "여기선 되는데 저기선 안 된다" 가 없다.
+
+        download=True 는 파일용(/api/file) — 원래 이름으로 저장되도록 헤더가 다르다.
+        """
         if not u:
             return None
-        if self.env != "prod":
-            return u
         base = (self.s.jira_base or "").rstrip("/")
-        absolute = (base + u) if u.startswith("/") else u
-        return "/api/img?u=" + quote(absolute, safe="")
+        target = u if not u.startswith("/") else (base + u if self.env == "prod" else u)
+        return ("/api/file?u=" if download else "/api/img?u=") + quote(target, safe="")
 
     def _proxy_media(self, html):
         """<img src> 를 /api/img 프록시로 재작성 — **세 환경 공통**.

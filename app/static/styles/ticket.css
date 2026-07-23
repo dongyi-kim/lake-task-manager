@@ -73,6 +73,8 @@
    패널과 본문이 같은 색이면 경계가 1px 보더뿐이라 구분이 안 된다.
    ※ 패널 '안'에서 --panel-2 를 쓰던 요소(형제 hover·tl-src·mention 배지)는
      배경과 같아져 사라지므로 --panel 로 옮겼다. */
+/* 이 다이얼로그가 하위 레이아웃의 기준자(container). inline-size 만 재면 되므로 세로는 건드리지 않는다. */
+.tkt-dlg { container-type: inline-size; container-name: tkt; }
 .tkt-cols { display: flex; align-items: flex-start; gap: 0; min-width: 0; }
 /* 가운데 본문 = 내용 카드를 담는 well(--bg). 좌/우 패널(--panel-2)과는 한 단계 다르다.
    컬럼 간 18px 간격은 spine/tl 의 margin 이 아니라 main 의 padding 으로 준다.
@@ -171,7 +173,11 @@
    ★ 묶음을 쓰는 이유 — 섹션을 개별 grid item 으로 두면 같은 '행' 의 두 열이 높이를
      공유해서, 한쪽이 길면 반대쪽에 빈 공간이 생긴다(담당 아래가 뜨던 문제).
      열 묶음 하나가 grid item 이면 각 열이 자기 높이로 독립해 흐른다. */
-@media (max-width: 1150px) {
+/* ★ 기준은 뷰포트가 아니라 **다이얼로그 자신의 폭**이다(container query).
+   뷰포트로 재면 실제로 쓸 수 있는 폭과 어긋난다 — 다이얼로그는 좌우 여백이 있고 페이지 모드는
+   폭이 또 다르다. 그래서 3단이 충분히 들어가는 창에서도 1단으로 접히는 일이 있었다.
+   임계값도 실제 필요 폭에 맞춰 낮춘다: 계보 240 + 본문 500 + 히스토리 240 ≈ 1000. */
+@container tkt (max-width: 1000px) {
   /* 본문 영역 전체가 well(--bg) — 넓은 화면의 색 구조를 그대로 유지한다.
      (이걸 안 주면 다이얼로그 흰색이 드러나 화면 폭에 따라 색감이 달라진다) */
   .tkt-cols {
@@ -205,8 +211,8 @@
   .sec-dates .sf-gap, .sec-history .sf-gap { margin-top: 0; }
 }
 
-/* 아주 좁은 화면(모바일·분할 화면) — 2단도 무리라 한 줄씩 */
-@media (max-width: 720px) {
+/* 아주 좁을 때(분할 화면 등) — 2단도 무리라 한 줄씩. 이 역시 다이얼로그 폭 기준이다. */
+@container tkt (max-width: 620px) {
   .tkt-cols {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas: "lineage" "who" "main" "rel" "history";
@@ -436,10 +442,16 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 
 /* 설명 아래 2분할 — 첨부파일 | 관련문서 */
 .tkt-two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
-@media (max-width: 760px) { .tkt-two { grid-template-columns: 1fr; } }
+@container tkt (max-width: 560px) { .tkt-two { grid-template-columns: 1fr; } }
 .tkt-two .mini { font-size: 11.5px; }
 /* 칩 — 설명/코멘트의 conf-link 배지와 같은 문법(얇게). 세로로 쌓이되 폭은 내용만큼 */
-.chipwrap { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+/* 첨부 **목록**의 칩은 폭을 맞춘다. 내용만큼만 늘어나면 오른쪽 끝이 들쭉날쭉해 세로로 훑을 때
+   눈이 계속 좌우로 흔들린다. 날짜·용량은 오른쪽 끝에 붙여 같은 자리에서 읽히게 한다.
+   (본문 속 뱃지는 문장 안에 들어가므로 그대로 내용 폭을 쓴다 — 여기만 규칙이 다르다) */
+.chipwrap { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.chipwrap > .fchip { width: 100%; max-width: none; }
+.chipwrap > .fchip > .fchip-n { flex: 1 1 auto; }
+.chipwrap > .fchip > .fchip-m { margin-left: auto; padding-left: 10px; }
 .fchip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0;
   font-size: 11.5px; font-weight: 600; line-height: 1.4; color: var(--text);
   border: 1px solid var(--border); background: var(--panel); border-radius: 6px;

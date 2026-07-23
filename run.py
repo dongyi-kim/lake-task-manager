@@ -185,6 +185,50 @@ def _sys_open(url):
         pass
 
 
+def _downloads_dir():
+    """OS 의 '다운로드' 폴더. 없으면 홈. (레지스트리까지 뒤지지 않는다 — 기본 위치면 충분하다)"""
+    import pathlib
+    d = pathlib.Path.home() / "Downloads"
+    return d if d.is_dir() else pathlib.Path.home()
+
+
+def _wire_downloads(context):
+    """앱 창의 파일 다운로드를 **실제로 저장**하고 화면에 알린다.
+
+    앱 모드 Chromium 에는 다운로드 표시줄이 없다. 게다가 자동화로 띄운 창은 받은 파일을 임시
+    폴더에 두었다가 창이 닫힐 때 지운다 — 사용자 눈에는 **눌러도 아무 일도 안 일어난 것**으로
+    보인다(실제로 그렇게 보고됐다). 그래서 받은 파일을 '다운로드' 폴더로 옮기고, 저장됐다는
+    사실과 경로를 페이지에 이벤트로 알려 준다.
+
+    같은 이름이 있으면 '(2)' 를 붙인다 — 조용히 덮어쓰면 아까 받은 파일이 사라진다.
+    """
+    def on_download(dl):
+        try:
+            name = dl.suggested_filename or "download"
+            dest = _downloads_dir() / name
+            stem, dot, ext = name.rpartition(".")
+            i = 2
+            while dest.exists():
+                dest = dest.with_name((f"{stem} ({i}).{ext}" if dot else f"{name} ({i})"))
+                i += 1
+            dl.save_as(str(dest))
+            _notify_page(context, {"ok": True, "name": dest.name, "path": str(dest)})
+        except Exception as e:                       # 실패도 알린다 — 조용한 실패가 제일 나쁘다
+            _notify_page(context, {"ok": False, "error": str(e)[:200]})
+
+    context.on("download", on_download)
+
+
+def _notify_page(context, detail):
+    import json
+    for pg in list(context.pages):
+        try:
+            pg.evaluate("(d) => window.dispatchEvent(new CustomEvent('lake-download', {detail: d}))",
+                        detail)
+        except Exception:
+            pass
+
+
 def _wire_external_links(context, page):
     """외부 링크를 새 Chromium 창 대신 시스템 기본 브라우저로 열도록 바인딩+init 스크립트 설치."""
     try:
@@ -271,6 +315,7 @@ def _window_session(s, auto_login=False, headless=False):
         return p.chromium.launch_persistent_context(
             user_data_dir=udd,
             headless=headless,
+            accept_downloads=True,                     # ★ 아래 _wire_downloads 참고
             no_viewport=True,                          # 뷰포트를 실제 창 크기에 추종(리사이즈 시 흰 여백 방지)
             ignore_default_args=["--enable-automation"],   # '자동화 제어 중' 안내바 제거
             args=["--no-first-run", "--no-default-browser-check",
@@ -288,6 +333,7 @@ def _window_session(s, auto_login=False, headless=False):
         context = _launch(udd)
     page = context.pages[0] if context.pages else context.wait_for_event("page")
     _wire_external_links(context, page)                # 외부 링크 훅(goto 전 설치 → 실제 페이지에도 적용)
+    _wire_downloads(context)                           # 첨부 다운로드를 '다운로드' 폴더에 저장 + 알림
     for _ in range(300):                               # goto 재시도(서버 준비 대기 포함, ~30s). 부팅로더 유지.
         try:
             page.goto(url, wait_until="domcontentloaded")

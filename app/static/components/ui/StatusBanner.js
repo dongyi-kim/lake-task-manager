@@ -13,7 +13,9 @@ const POLL_MS = 8000;
 
 export default {
   name: "StatusBanner",
-  data() { return { mode: "ok", lastSyncAt: null, hidden: false }; },
+  data() { return { mode: "ok", lastSyncAt: null, hidden: false,
+                    // 앱 창은 다운로드 표시줄이 없다 — 저장됐다는 사실을 우리가 알려야 한다.
+                    dl: null }; },
   computed: {
     show() { return !this.hidden && (this.mode === "offline" || this.mode === "authenticating"); },
     label() { return this.mode === "offline" ? "오프라인" : "인증 중"; },
@@ -32,8 +34,17 @@ export default {
       return (sameDay ? "오늘 " + t : (d.getMonth() + 1) + "/" + d.getDate() + " " + t) + " 기준";
     },
   },
-  mounted() { this.tick(); this._t = setInterval(this.tick, POLL_MS); },
-  unmounted() { clearInterval(this._t); },
+  mounted() {
+    this.tick();
+    this._t = setInterval(this.tick, POLL_MS);
+    window.addEventListener("lake-download", this._onDl = (e) => {
+      this.dl = (e && e.detail) || null;
+      clearTimeout(this._dlT);
+      this._dlT = setTimeout(() => { this.dl = null; }, 6000);
+    });
+  },
+  unmounted() { clearInterval(this._t); clearTimeout(this._dlT);
+                window.removeEventListener("lake-download", this._onDl); },
   methods: {
     tick() {
       api.raw("/api/status").then((s) => {
@@ -46,11 +57,21 @@ export default {
     },
   },
   template: `
+  <div>
+  <!-- 다운로드 알림 — 앱 창(Chromium 앱 모드)에는 다운로드 표시줄이 없어서, 저장이 됐는지
+       안 됐는지 알 길이 없다. 파일명과 저장 위치를 잠깐 띄운다. -->
+  <div v-if="dl" class="dltoast" :class="{ bad: !dl.ok }">
+    <span class="dl-ic">{{ dl.ok ? '⬇' : '⚠' }}</span>
+    <template v-if="dl.ok"><b>{{ dl.name }}</b><span class="dl-p">{{ dl.path }}</span></template>
+    <template v-else><b>다운로드 실패</b><span class="dl-p">{{ dl.error }}</span></template>
+    <button class="dl-x" @click="dl = null" title="닫기">×</button>
+  </div>
   <div v-if="show" class="stbanner" :class="mode" role="status">
     <span class="stb-dot"></span>
     <b>{{ label }}</b>
     <span class="stb-stale">지금 보는 데이터는 최신이 아닙니다 · {{ since }}</span>
     <span class="stb-hint">{{ detail }}</span>
     <button class="stb-x" @click="hidden = true" title="이 알림 닫기">×</button>
+  </div>
   </div>`,
 };

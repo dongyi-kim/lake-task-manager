@@ -238,3 +238,19 @@
 .up-i i { font-style: normal; font-size: 9.5px; font-weight: 700; color: #fff;
   background: var(--accent); border-radius: 3px; padding: 0 5px; line-height: 15px; }
 
+
+/* 다운로드 알림 — 앱 창에는 다운로드 표시줄이 없다. 저장됐다는 사실과 **어디에** 저장됐는지를
+   잠깐 띄운다(경로를 안 보여 주면 파일을 찾으러 탐색기를 뒤져야 한다). */
+.dltoast { position: fixed; right: 14px; bottom: 14px; z-index: 9700;
+  display: flex; align-items: center; gap: 9px; max-width: min(520px, calc(100vw - 28px));
+  padding: 9px 34px 9px 12px; border-radius: 10px; font-size: 12px;
+  background: var(--panel); border: 1px solid color-mix(in srgb, var(--st-done) 40%, var(--border));
+  box-shadow: 0 8px 26px rgba(0,0,0,.18); }
+.dltoast.bad { border-color: color-mix(in srgb, var(--today) 45%, var(--border)); }
+.dl-ic { flex: none; font-size: 14px; color: var(--st-done); }
+.dltoast.bad .dl-ic { color: var(--today); }
+.dltoast b { flex: none; font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+.dl-p { color: var(--muted-2); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.dl-x { position: absolute; top: 5px; right: 7px; border: 0; background: none;
+  color: var(--muted-2); font-size: 15px; line-height: 1; cursor: pointer; }
