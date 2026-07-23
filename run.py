@@ -338,6 +338,10 @@ def _window_session(s, auto_login=False, headless=False):
             no_viewport=True,                          # 뷰포트를 실제 창 크기에 추종(리사이즈 시 흰 여백 방지)
             ignore_default_args=["--enable-automation"],   # '자동화 제어 중' 안내바 제거
             args=["--no-first-run", "--no-default-browser-check",
+                  # Chromium 자체 다운로드 말풍선(좌상단)을 끈다 — 저장은 우리가 하고 알림도
+                  # 우리가 띄우는데, 브라우저 것까지 뜨면 같은 일을 두 번 말하는 데다 그 안내가
+                  # 가리키는 임시 경로는 사용자에게 아무 의미가 없다(Playwright 임시 파일).
+                  "--disable-features=DownloadBubble,DownloadBubbleV2",
                   "--window-size=1400,900", f"--app={_BOOT_DATA_URL}"],  # 앱 모드 + 즉시 부팅로더
         )
 
