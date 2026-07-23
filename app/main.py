@@ -184,22 +184,25 @@ def _probe_service(svc):
             ok, detail = True, (f"{path} → {who}" if who else f"{path} → 200(인증됨)")
             break
         except Exception as e:
-            detail = f"{path}: {getattr(e, 'status', '')} {str(e)[:80]}".strip()
+            detail = f"{path}: {getattr(e, 'status', '')} {type(e).__name__} {str(e)[:80]}".strip()
     return {"service": name, "base": base, "authenticated": ok, "configured": True, "detail": detail}
 
 
 if _devtools.enabled(_settings, "sso_status"):
     @app.get("/api/dev/sso")
     def _dev_sso_status():
-        """각 서비스 인증 상태(전체). 개별 실시간 표시는 /api/dev/sso/{service} 를 병렬 호출."""
-        _require_manager()
+        """각 서비스 인증 상태(전체). 개별 실시간 표시는 /api/dev/sso/{service} 를 병렬 호출.
+
+        ★ 매니저 게이트를 걸지 말 것 — 인증 상태·로그인은 역할과 무관하다(누구나 로그인해야
+          한다). 걸면 첫 실행에서 고리가 닫힌다: 세션 없음 → 매니저 판정 불가 → 403 →
+          설정창엔 '오류' 만 뜨고 무엇을 해야 하는지 알 수 없다."""
         return {"targets": [_probe_service(svc) for svc in getattr(_settings, "services", [])],
                 "note": "authenticated=false 인 서비스는 그 도메인 SSO 로그인이 안 된 것."}
 
     @app.get("/api/dev/sso/{service}")
     def _dev_sso_one(service: str):
-        """서비스 하나만 인증 확인 — 설정창이 서비스별로 병렬 호출해 각각 실시간 렌더한다."""
-        _require_manager()
+        """서비스 하나만 인증 확인 — 설정창이 서비스별로 병렬 호출해 각각 실시간 렌더한다.
+        (위와 같은 이유로 매니저 게이트 없음.)"""
         for svc in getattr(_settings, "services", []):
             if svc["name"].lower() == service.lower():
                 return _probe_service(svc)
@@ -213,7 +216,10 @@ def _is_manager(me=None):
         try:
             me = _client.current_user()
         except Exception:
-            return not _settings.managers      # 세션을 못 읽으면 미설정 여부로만 판단
+            # 세션을 못 읽음 = 권한 문제가 아니라 **인증 문제**. 여기서 403 을 내면 로그인도
+            # 못 한 채 막다른 오류가 된다. 통과시키면 뒤의 데이터 호출이 401 을 내
+            # 정상적인 로그인 안내로 이어진다.
+            return True
     return _im(_settings, me)
 
 

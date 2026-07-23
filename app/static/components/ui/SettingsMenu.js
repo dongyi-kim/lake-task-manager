@@ -12,7 +12,8 @@ export default {
   props: { theme: { type: String, default: "light" } },
   emits: ["toggle-theme"],
   data() {
-    return { manager: false,   // 매니저 아니면 Dev Tools 섹션을 감춘다(판정 전에도 감춤)
+    return { me: null,   // 세션 사용자 — config 의 manager 목록에 무엇을 적어야 하는지 보이려고
+      manager: false,   // 매니저 아니면 Dev Tools 섹션을 감춘다(판정 전에도 감춤)
      
       open: false, rev: "", tools: null, loggingIn: false,
       // 서비스별 독립 상태 — loading|ok|no|off|err. 각자 도착하는 대로 렌더된다.
@@ -25,7 +26,8 @@ export default {
     needsAuth() { return this.services.some((s) => s.status === "no" || s.status === "err"); },
   },
   mounted() {
-    api.me().then((me) => { this.manager = !!(me && me.manager); }).catch(() => {});
+    api.me().then((me) => { this.me = me || null; this.manager = !!(me && me.manager); })
+      .catch((e) => { this.me = { error: (e && e.message) || "확인 실패" }; });
     this._onDoc = (e) => { if (this.open && this.$el && !this.$el.contains(e.target)) this.close(); };
     document.addEventListener("click", this._onDoc, true);
     document.addEventListener("keydown", this._onEsc = (e) => { if (e.key === "Escape" && this.open) this.close(); });
@@ -55,7 +57,8 @@ export default {
             svc.detail = r.detail || "";
             svc.status = r.configured === false ? "off" : (r.authenticated ? "ok" : "no");
           })
-          .catch(() => { svc.status = "err"; svc.detail = "확인 실패"; });
+          // 사유를 그대로 남긴다 — '오류' 만 뜨면 다음에 또 무엇이 문제인지 못 짚는다.
+          .catch((e) => { svc.status = "err"; svc.detail = "확인 실패: " + ((e && e.message) || e); });
       }
     },
     _startPoll() { this._stopPoll(); this._poll = setInterval(() => { if (this.open) this.probeAll(); }, 4000); },
@@ -82,6 +85,15 @@ export default {
       <!-- SSO 상태 (서비스별 개별·실시간) -->
       <div class="sm-sec">
         <div class="sm-h">SSO 인증</div>
+        <!-- 지금 앱이 나를 누구로 보고 있는지. config 의 manager 목록에 적을 값이 곧 이 id 다
+             — 이게 안 보이면 "나는 매니저인데 왜 안 되지" 를 추측으로 풀어야 한다. -->
+        <div v-if="me" class="sm-who">
+          <template v-if="me.error">세션 확인 실패 — {{ me.error }}</template>
+          <template v-else>
+            <b>{{ me.id || '?' }}</b><span v-if="me.name"> · {{ me.name }}</span>
+            <em>{{ manager ? '매니저' : '일반' }}</em>
+          </template>
+        </div>
         <div v-for="s in services" :key="s.name" class="sm-row" :title="s.detail">
           <span class="sm-dot" :class="s.status"></span>
           <span class="sm-svc">{{ s.name }}</span>

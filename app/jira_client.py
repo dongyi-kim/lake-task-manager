@@ -876,15 +876,23 @@ class JiraClient:
         return real_name(self._display_name(uid)) or uid
 
     def current_user(self):
-        """세션 사용자 — 본인 댓글(수정/삭제 노출) 판정용. {id, name}. 캐시."""
+        """세션 사용자 — 본인 댓글(수정/삭제 노출)·매니저 판정용. {id, name}. **성공만** 캐시.
+
+        ★ 실패를 캐시하지 마라. 예전엔 예외를 삼켜 빈 dict 를 돌려줬고, 그 빈 값이 TTL(기본
+          15분) 동안 캐시에 눌러앉았다. 그래서 prod 첫 실행에서 세션이 아직 없을 때 한 번
+          실패하면, 그 뒤 SSO 로그인에 성공해 로그에 '인증됨' 이 찍혀도 앱은 15분 내내
+          "세션 사용자 없음" 으로 봤다 — 매니저 판정이 계속 False 라 매니저 전용 화면이
+          403 이었고, 새로고침해도 풀리지 않는 '인증 오류' 의 정체가 이것이었다.
+          producer 가 예외를 내면 get_or_set 은 저장하지 않으므로, 밖에서 삼킨다.
+        """
         def do():
-            try:
-                u = self.provider.get_json("/rest/api/2/myself")
-            except Exception:
-                return {}
+            u = self.provider.get_json("/rest/api/2/myself")
             return {"id": u.get("name") or u.get("key") or "",
                     "name": real_name(u.get("displayName") or u.get("name")) or ""}
-        return self.cache.get_or_set(f"myself:{self.env}", self.s.cache_ttl_seconds, do)[0]
+        try:
+            return self.cache.get_or_set(f"myself:{self.env}", self.s.cache_ttl_seconds, do)[0]
+        except Exception:
+            return {}
 
     def ticket_badge(self, key):
         """티켓 인라인 뱃지용 경량 요약(요약/타입/상태/담당자). 없으면 None. (renderedFields 미포함=가벼움)"""

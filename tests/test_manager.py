@@ -26,12 +26,15 @@ def test_case_insensitive_and_trimmed():
     assert is_manager(st, "  PM.Kim  ") is True
 
 
-def test_dict_uses_id_not_display_name():
-    """current_user() 는 {id: 사번, name: 표시이름} 이다. name 을 먼저 보면 표시이름과
-    사번을 비교하게 된다(실제로 겪은 버그)."""
-    st = _s(["test.ui01"])
-    assert is_manager(st, {"id": "test.ui01", "name": "UI픽스처01"}) is True
-    assert is_manager(st, {"id": "other", "name": "test.ui01"}) is False
+def test_dict_matches_any_representation():
+    """사용자 표현이 여러 가지다 — 우리 내부 {id: 사번, name: **표시이름**},
+    Jira 원본 {name: 사번, key, displayName}. 설정에 적은 값이 어느 필드에 있든 통해야 한다.
+    하나만 골라 비교하면 본인은 매니저인데 조용히 거부된다(실제로 겪은 버그)."""
+    assert is_manager(_s(["test.ui01"]), {"id": "test.ui01", "name": "UI픽스처01"}) is True
+    assert is_manager(_s(["ui픽스처01"]), {"id": "test.ui01", "name": "UI픽스처01"}) is True
+    assert is_manager(_s(["skcc.11890"]), {"id": "x", "key": "skcc.11890"}) is True
+    assert is_manager(_s(["a@b.com"]), {"id": "x", "emailAddress": "a@b.com"}) is True
+    assert is_manager(_s(["test.ui01"]), {"id": "other", "name": "다른사람"}) is False
 
 
 def test_raw_jira_myself_falls_back_to_name():
@@ -42,3 +45,30 @@ def test_raw_jira_myself_falls_back_to_name():
 def test_missing_user_is_not_manager():
     assert is_manager(_s(["pm.kim"]), None) is False
     assert is_manager(_s(["pm.kim"]), "") is False
+
+
+def test_current_user_does_not_cache_failure():
+    """실패한 /myself 를 캐시하면, 로그인에 성공해도 TTL 동안 '세션 없음' 이 남아
+    매니저 판정이 계속 False 가 된다(prod 에서 겪은 '새로고침해도 안 풀리는 인증 오류')."""
+    from app.cache import Cache
+    from app.jira_client import JiraClient
+
+    calls = []
+
+    class _P:
+        def get_json(self, path, **kw):
+            calls.append(path)
+            if len(calls) == 1:               # 첫 호출: 아직 세션 없음
+                raise RuntimeError("HTTP 401 — 세션 만료 가능")
+            return {"name": "pm.kim", "displayName": "김PM SKCC"}
+
+    c = JiraClient.__new__(JiraClient)        # 네트워크/설정 없이 이 메서드만 본다
+    c.cache = Cache(":memory:")
+    c.env = "prod"
+    c.s = SimpleNamespace(cache_ttl_seconds=900)
+    c._provider = _P()
+    c._provider_built = True   # provider 프로퍼티가 _provider 를 그대로 준다
+
+    assert c.current_user() == {}             # 실패 — 캐시되면 안 된다
+    assert c.current_user()["id"] == "pm.kim"  # 로그인 후 즉시 반영
+    assert len(calls) == 2

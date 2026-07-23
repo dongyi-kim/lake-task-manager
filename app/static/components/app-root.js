@@ -39,14 +39,16 @@ export default {
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
                     ready: false, needLogin: false, ticketKey: null, searchOpen: false,
-                    // null = 아직 모름. 판정 전에는 매니저 전용 탭을 감춰 둔다 —
-                    // 보였다가 사라지면 눌러 놓고 튕기는 꼴이 된다.
+                    // null = 아직 모름 · true = 매니저 · false = 아님.
+                    // ★ 모를 때는 **막지 않는다**(false 일 때만 제한). 판정이 늦거나 실패했다고
+                    //   매니저의 탭이 사라지거나 첫 화면에서 튕기는 쪽이, 워커에게 잠깐 보였다가
+                    //   사라지는 쪽보다 훨씬 나쁘다. 데이터는 어차피 서버가 403 으로 막는다.
                     manager: null,
                     ticketKeyFromPath: ticketOf() }; },
   computed: {
-    tabs() { return TABS.filter((t) => !t.manager || this.manager); },
+    tabs() { return TABS.filter((t) => !t.manager || this.manager !== false); },
     /** 이 사용자가 볼 수 있는 화면인가. 매니저 전용인데 아니면 접근 자체를 막는다. */
-    allowed() { return !MANAGER_ONLY.has(this.route) || this.manager === true; },
+    allowed() { return !MANAGER_ONLY.has(this.route) || this.manager !== false; },
     view() {
       if (!this.allowed) return ROUTES.mytasks;   // 권한 없는 주소는 '내 Task' 로
       return ROUTES[this.route] || ROUTES.wbs;
@@ -56,7 +58,10 @@ export default {
   watch: {
     // 볼 수 없는 주소면 주소 자체를 바로잡는다. 화면만 바꿔치면 해시가 #/wbs 로 남아
     // 탭 강조가 아무 데도 안 걸리고, 새로고침할 때마다 같은 상황이 되풀이된다.
-    route() { if (this.ready && !this.allowed) location.hash = "#/mytasks"; },
+    route() { this.guard(); },
+    // 판정이 늦게 도착해 '매니저 아님' 으로 밝혀지면 그때 자리를 옮긴다.
+    // (기본 진입 #없음 = wbs 도 여기서 걸린다 — 워커의 기본 화면은 내 Task 다.)
+    manager() { this.guard(); },
   },
   mounted() {
     window.addEventListener("hashchange", () => { this.route = currentRoute(); });
@@ -83,22 +88,19 @@ export default {
         e.preventDefault(); this.searchOpen = true;
       }
     });
-    api.health().then((h) => {
-      this.needLogin = !!(h && h.needLogin);
-      if (this.needLogin) return null;
-      // 매니저 판정은 세션 사용자로 하므로 로그인 뒤에야 알 수 있다.
-      return api.me().then((me) => { this.manager = !!(me && me.manager); }).catch(() => {
-        // 판정을 못 하면 **막지 않는다**. 서버가 어차피 403 으로 막으므로 여기서 감추면
-        // 매니저인데도 화면이 사라지는 쪽이 더 큰 사고다.
-        this.manager = true;
-      });
-    }).catch(() => {}).finally(() => {
-      this.ready = true;
-      // 기본 진입(#없음)은 wbs 인데, 매니저가 아니면 볼 수 없다 → 내 Task 로 보낸다.
-      if (!this.allowed) location.hash = "#/mytasks";
-    });
+    // ★ 부팅은 health 하나만 기다린다. /api/me 는 prod 에서 Jira(/myself)를 타고, 그건
+    //   Playwright 전용 스레드 한 줄로 직렬화돼 있어 세션이 굳으면 최대 JOB_TIMEOUT(180s)까지
+    //   멎는다. 여기에 부팅을 묶으면 창이 '불러오는 중…' 에서 몇 분씩 갇힌다(실제로 겪었다).
+    api.health().then((h) => { this.needLogin = !!(h && h.needLogin); })
+      .catch(() => {}).finally(() => { this.ready = true; });
+    // 매니저 판정은 **부팅과 무관하게** 따로 흐른다. 결과가 오면 watch 가 정리한다.
+    api.me().then((me) => { this.manager = !!(me && me.manager); })
+      .catch(() => { this.manager = null; });   // 모르면 막지 않는다(아래 주석 참고)
   },
   methods: {
+    /** 볼 수 없는 주소면 워커 기본 화면(내 Task)으로. 화면만 바꿔치지 않고 **주소까지** 고친다
+     *  — 안 그러면 탭 강조가 아무 데도 안 걸리고 새로고침마다 같은 상황이 되풀이된다. */
+    guard() { if (!this.allowed) location.hash = "#/mytasks"; },
     toggleTheme() {
       this.theme = this.theme === "dark" ? "light" : "dark";
       document.documentElement.setAttribute("data-theme", this.theme);
