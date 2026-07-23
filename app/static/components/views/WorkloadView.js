@@ -290,10 +290,11 @@ export default {
 
                   <!-- 할당됨 / 진행중 / 최근완료 — 상태 흐름 순서대로 3컬럼 -->
                   <div class="tcols3">
-                    <div v-for="c in WL_COLS" :key="c.k" class="tcol">
-                      <div class="sec-t" :class="c.k">{{ c.label }}
+                    <div v-for="c in WL_COLS" :key="c.k" class="tcol" :class="'c-' + c.k">
+                      <div class="sec-t">{{ c.label }}
                         <b>{{ (tkd[p.id][c.k] || []).length }}</b>
                       </div>
+                      <div class="tcol-body">
                       <div v-if="tkd[p.id][c.k] === null" class="loading">불러오는 중…</div>
                       <template v-else>
                         <div v-for="t in tkd[p.id][c.k]" :key="c.k + '-' + t.key" class="wtk tkt"
@@ -315,6 +316,7 @@ export default {
                         </div>
                         <div v-if="!(tkd[p.id][c.k] || []).length" class="muted mini">없음</div>
                       </template>
+                      </div>
                     </div>
                   </div>
                 </template>

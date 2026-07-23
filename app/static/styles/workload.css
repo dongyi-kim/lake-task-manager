@@ -94,14 +94,31 @@
 .wepic-i > b { color: var(--text); font-variant-numeric: tabular-nums; }
 .wepic-i.none > i { background: none !important; border: 1px dashed var(--border-hi); }
 
-/* 3컬럼 — 상태 흐름 순서. 좁아지면 2 → 1 열로 접힌다 */
-.tcols3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+/* 3컬럼 — 상태 흐름 순서. 좁아지면 2 → 1 열로 접힌다.
+   ★ 각 컬럼은 **자기 영역(패널)**을 가진다. 라벨만으로 나누면 컬럼 높이가 제각각일 때
+   (완료 3건 vs 진행중 15건) 경계가 사라져 어느 열의 행인지 눈으로 안 잡힌다.
+   상태색은 헤더에 진하게, 본문에는 아주 옅게만 — 행 안의 색(타입 뱃지·마감 칩)을 이기면 안 된다. */
+.tcols3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
 @media (max-width: 1100px) { .tcols3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .tcols3 { grid-template-columns: 1fr; } }
-.tcol { min-width: 0; }
-.sec-t.open { color: var(--muted); }
-.sec-t.inProgress { color: var(--st-prog); }
-.sec-t.done7d { color: var(--st-done); }
+
+.tcol { min-width: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: var(--panel); --tc: var(--muted-2); }
+.tcol.c-open { --tc: var(--st-todo); }
+.tcol.c-inProgress { --tc: var(--st-prog); }
+.tcol.c-done7d { --tc: var(--st-done); }
+/* 본문 옅은 틴트 — 열끼리 구분은 되되 글자 대비는 유지되는 정도 */
+.tcol { background: color-mix(in srgb, var(--tc) 4%, var(--panel)); }
+/* 헤더 — 상태색 띠 + 좌측 굵은 마커. 컬럼이 비어도 영역이 남는다 */
+.tcol > .sec-t { margin: 0; padding: 7px 10px 7px 9px; font-size: 11px; font-weight: 700;
+  color: var(--tc); letter-spacing: .3px; border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--tc);
+  background: color-mix(in srgb, var(--tc) 13%, var(--panel)); }
+.tcol > .sec-t > b { color: var(--text); margin-left: 4px; font-variant-numeric: tabular-nums; }
+.tcol-body { padding: 2px 10px 8px; min-height: 46px; }
+.tcol .wtk { padding: 6px 2px; }
+.tcol .wtk:first-child { border-top: none; }
+.tcol .muted.mini { padding: 8px 2px; display: block; }
 
 /* 행에 붙는 Epic 뱃지 — 분포 막대와 같은 색이라 눈으로 이어진다 */
 .ebadge { flex: none; font-size: 9.5px; padding: 1px 6px; border-radius: 4px; white-space: nowrap;
