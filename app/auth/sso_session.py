@@ -22,7 +22,7 @@ import sys
 import threading
 
 from .base import (AuthProvider, LoginRequired, SessionExpired, UpstreamError,
-                   WRITE_HEADERS, upstream_priority)
+                   WRITE_HEADERS, PRIO_WRITE, upstream_priority)
 
 
 def _launch(p, headless):
@@ -127,9 +127,9 @@ class SsoSessionProvider(AuthProvider):
     def _submit(self, fn, priority=0):
         """fn 을 Playwright 전용 스레드에서 실행하고 결과/예외를 호출자 스레드로 반환.
 
-        priority: 0=사용자 요청(기본) · 1=백그라운드 갱신.
+        priority: -1=쓰기 · 0=사용자 요청(기본) · 1=백그라운드 갱신. 작은 값이 먼저다.
         단일 큐라 백그라운드 작업이 앞에 쌓이면 사용자의 다음 조회가 그만큼 늦어진다
-        → 낮은 우선순위로 넣어 사용자 요청이 항상 앞지르게 한다.
+        → 낮은 우선순위로 넣어 사용자 요청이 항상 앞지르게 한다. 쓰기는 그보다도 앞이다.
         """
         if not self._thread.is_alive():
             raise SessionExpired("SSO provider 스레드가 종료됨 — login 재실행 필요.")
@@ -215,14 +215,17 @@ class SsoSessionProvider(AuthProvider):
         except Exception:
             return {}                                    # 204 No Content 등
 
+    # 쓰기는 **무조건 큐 맨 앞**이다. 읽기가 앞에 쌓여 있으면 그만큼 늦어지고, 늦어지다
+    # 타임아웃에 걸리면 사용자가 쓴 글이 그대로 사라진다(스레드 로컬 우선순위와 무관하게 고정).
     def post_json(self, path, json_body=None, params=None):
-        return self._submit(lambda: self._write("post", path, json_body, params))
+        return self._submit(lambda: self._write("post", path, json_body, params), PRIO_WRITE)
 
     def put_json(self, path, json_body=None, params=None):
-        return self._submit(lambda: self._write("put", path, json_body, params))
+        return self._submit(lambda: self._write("put", path, json_body, params), PRIO_WRITE)
 
     def delete(self, path, params=None):
-        return self._submit(lambda: self._write("delete", path, None, params, want_json=False))
+        return self._submit(lambda: self._write("delete", path, None, params, want_json=False),
+                            PRIO_WRITE)
 
     def _write_multipart(self, path, field, filename, data, content_type):
         """멀티파트 단일 파일 업로드 — Playwright context.request.post(multipart=...).
@@ -250,7 +253,8 @@ class SsoSessionProvider(AuthProvider):
 
     def post_multipart(self, path, filename, data, content_type=None, field="file", params=None):
         # params 는 첨부 업로드에선 쓰지 않으나 인터페이스 통일용으로 받는다.
-        return self._submit(lambda: self._write_multipart(path, field, filename, data, content_type))
+        return self._submit(lambda: self._write_multipart(path, field, filename, data, content_type),
+                            PRIO_WRITE)
 
     def get_text(self, path, params=None):
         return self._submit(lambda: self._fetch(path, params, True))

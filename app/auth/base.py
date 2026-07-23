@@ -1,23 +1,54 @@
 import threading
 
-# 이 스레드에서 나가는 상류 호출의 우선순위(0=사용자, 1=백그라운드 갱신).
+# 상류 호출 우선순위 — **작은 값이 먼저**(provider 의 우선순위 큐가 최소값부터 꺼낸다).
+#   -1 쓰기      코멘트/본문/업로드. 사용자가 만든 것이라 늦어지면 유실처럼 보이고,
+#                실제로 타임아웃까지 밀리면 진짜 실패한다. 무조건 맨 앞.
+#    0 사용자 조회 화면이 기다리고 있는 읽기.
+#    1 백그라운드 갱신(SWR). 아무도 안 기다리므로 항상 뒤.
+# prod 는 상류가 **단일 큐**(Playwright 전용 스레드 하나)라 이 순서가 곧 체감 성능이고,
+# 쓰기에서는 곧 성패다 — 읽기 몇 개가 앞에 있으면 그만큼 쓰기가 늦어진다.
+PRIO_WRITE = -1
+PRIO_USER = 0
+PRIO_BACKGROUND = 1
+
 # 호출 지점마다 인자를 넘기지 않으려고 스레드 로컬에 둔다 — provider 가 읽는다.
 _PRIO = threading.local()
 
 
 def upstream_priority():
-    return getattr(_PRIO, "value", 0)
+    return getattr(_PRIO, "value", PRIO_USER)
 
 
-class background_upstream:
-    """with 블록 안의 상류 호출을 백그라운드 우선순위로."""
+class _prio_scope:
+    def __init__(self, value):
+        self._value = value
 
     def __enter__(self):
-        _PRIO.value = 1
+        self._prev = getattr(_PRIO, "value", PRIO_USER)
+        _PRIO.value = self._value
 
     def __exit__(self, *exc):
-        _PRIO.value = 0
+        # 이전 값으로 되돌린다(0 으로 고정하면 중첩됐을 때 바깥 문맥이 사라진다 —
+        # 쓰기 문맥 안에서 백그라운드 블록을 잠깐 쓰면 쓰기 우선순위를 잃는다).
+        _PRIO.value = self._prev
         return False
+
+
+class background_upstream(_prio_scope):
+    """with 블록 안의 상류 호출을 백그라운드 우선순위로."""
+
+    def __init__(self):
+        super().__init__(PRIO_BACKGROUND)
+
+
+class write_upstream(_prio_scope):
+    """with 블록 안의 상류 호출을 **쓰기 우선순위**로.
+
+    쓰기 자체뿐 아니라 '그 쓰기를 화면에 반영하기 위한 재조회' 도 여기에 넣는다 —
+    글은 올라갔는데 화면이 안 바뀌면 사용자에겐 실패한 것과 같다."""
+
+    def __init__(self):
+        super().__init__(PRIO_WRITE)
 
 
 """AuthProvider 인터페이스 — JiraClient 는 어떤 인증인지 몰라야 한다."""

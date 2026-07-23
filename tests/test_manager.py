@@ -186,3 +186,36 @@ def test_no_revalidate_while_upstream_down():
     c.set("issue:x:DL-1", {"k": 1}, ttl=999)
     c.get_or_set("issue:x:DL-1", 999, lambda: {})
     assert sched == []
+
+
+# ── 쓰기 우선순위 — 단일 상류 큐에서 쓰기가 밀리지 않아야 한다 ─────────────
+def test_write_jobs_jump_the_queue():
+    """prod 는 상류가 단일 큐(Playwright 스레드 1개)라 순서가 곧 성패다. 읽기가 앞에 쌓여
+    있으면 쓰기가 그만큼 늦어지고, 타임아웃까지 밀리면 사용자가 쓴 글이 그대로 사라진다."""
+    import queue as _q
+    from itertools import count
+
+    from app.auth.base import PRIO_BACKGROUND, PRIO_USER, PRIO_WRITE
+
+    assert PRIO_WRITE < PRIO_USER < PRIO_BACKGROUND      # 작은 값이 먼저
+
+    jobs, seq = _q.PriorityQueue(), count()
+    for prio, name in [(PRIO_BACKGROUND, "swr"), (PRIO_USER, "read1"),
+                       (PRIO_USER, "read2"), (PRIO_WRITE, "comment")]:
+        jobs.put((prio, next(seq), name))
+    assert jobs.get()[2] == "comment"                    # 나중에 넣어도 맨 앞
+    assert [jobs.get()[2] for _ in range(3)] == ["read1", "read2", "swr"]
+
+
+def test_prio_scope_restores_outer_context():
+    """중첩됐을 때 0 으로 되돌리면 바깥 문맥이 사라진다 — 쓰기 문맥 안에서 백그라운드 블록을
+    잠깐 쓰면 나머지 쓰기 호출이 우선순위를 잃는다."""
+    from app.auth.base import (PRIO_BACKGROUND, PRIO_USER, PRIO_WRITE,
+                               background_upstream, upstream_priority, write_upstream)
+    assert upstream_priority() == PRIO_USER
+    with write_upstream():
+        assert upstream_priority() == PRIO_WRITE
+        with background_upstream():
+            assert upstream_priority() == PRIO_BACKGROUND
+        assert upstream_priority() == PRIO_WRITE          # 되돌아와야 한다
+    assert upstream_priority() == PRIO_USER

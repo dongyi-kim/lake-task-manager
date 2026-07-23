@@ -15,7 +15,7 @@ from html import unescape
 from urllib.parse import quote, unquote, urlparse
 
 from . import progress
-from .auth.base import SessionExpired, background_upstream
+from .auth.base import SessionExpired, background_upstream, write_upstream
 from .htmlsafe import (_CONF_RE, proxy_attachment_images, proxy_images, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html)
 from .names import real_name
@@ -764,6 +764,25 @@ class JiraClient:
     # ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 첨부 업로드 ────────────────────
     # 앱 최초의 쓰기 경로. body 는 **Jira wiki markup**(라우트에서 markdown→wiki 변환 후 전달).
     # 성공 시 해당 티켓 캐시를 비워 다음 조회가 최신을 읽게 한다. XSRF 는 provider 가 처리.
+    def _reprime(self, key, *, comments=False):
+        """비운 캐시를 **쓰기 우선순위로 즉시 다시 채운다**.
+
+        비우기만 하면 다음 조회가 일반 우선순위로 줄을 서고, 앞에 읽기가 밀려 있으면 글은
+        올라갔는데 화면이 한참 그대로다 — 사용자에겐 실패한 것과 같다. 쓰기와 그 반영은
+        한 묶음으로 다뤄야 한다. 실패해도 조용히 넘어간다(다음 조회가 어차피 받아 온다).
+        """
+        def job():
+            try:
+                with write_upstream():
+                    self.get_issue(key)
+                    self._get_issue_view(key)
+                    if comments:
+                        self._issue_comments(key)
+            except Exception:
+                pass
+        self._ensure_bg()
+        self._bg_pool.submit(job)
+
     def _invalidate_ticket(self, key, *, comments=False, attachments=False,
                            links=False, documents=False):
         if comments:
@@ -777,6 +796,9 @@ class JiraClient:
         if documents:
             self.cache.invalidate(f"remotelinks:{self.env}:{key}")
             self.cache.invalidate(f"documents:{self.env}:{key}")
+        # 본문/상태/댓글은 화면이 곧바로 다시 그린다 → 미리 채워 둔다(위 주석 참고).
+        self.cache.invalidate(f"issueview:{self.env}:{key}")
+        self._reprime(key, comments=comments)
 
     def add_comment(self, key, body):
         """코멘트 작성 (body = Jira wiki markup). 반환: 생성된 코멘트 객체."""
