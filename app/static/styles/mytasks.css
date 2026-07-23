@@ -87,12 +87,15 @@
   border-color: color-mix(in srgb, var(--st-prog) 32%, transparent); }
 /* Epic 뱃지도 **좌측 띠와 같은 시그니처 컬러**를 쓴다(--sig 는 카드에 물려 있다).
    둘이 다른 색이면 "이 색이 무슨 뜻인가" 가 두 갈래로 갈려 색이 정보가 되지 못한다. */
-.mt-epic { flex: none; font-size: 9.5px; color: var(--sig, var(--ty-epic)); white-space: nowrap;
+.mt-epic { flex: 0 1 auto; min-width: 0; font-size: 9.5px; color: var(--sig, var(--ty-epic)); white-space: nowrap;
   max-width: 200px; overflow: hidden; text-overflow: ellipsis;
   background: color-mix(in srgb, var(--sig, var(--ty-epic)) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--sig, var(--ty-epic)) 32%, transparent);
   padding: 1px 6px; border-radius: 4px; }
+/* 고정 max-width 는 카드가 좁아져도 그대로여서 넘쳐 나간다. 남는 폭만큼만 쓰고
+   모자라면 줄어들며 …로 잘리게 한다(줄어들 수 있어야 ellipsis 가 걸린다). */
 .mt-epic.sm { max-width: 130px; }
+.tc-l2 .mt-epic { flex: 0 1 auto; min-width: 24px; margin-left: auto; }
 .mt-epic.none { color: var(--muted-2); background: none; border-style: dashed; border-color: var(--border-hi); }
 .mt-none { color: var(--muted-2); font-size: 11px; padding: 6px 8px; }
 
@@ -245,8 +248,7 @@
 .tc-l2 { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 1px; }
 .mt-card.two .mt-title { flex: 1 1 auto; font-size: 12.5px; }
 /* 2행은 보조 정보 — 1행보다 한 단계 물러나 보이게 */
-.tc-l2 .mt-owner, .tc-l2 .mt-epic { flex: none; }
-.tc-l2 .mt-epic { margin-left: auto; }
+.tc-l2 .mt-owner { flex: none; }
 
 /* 긴급도 — 남은 일수를 표정 하나로. 숫자(D-3)는 정확하지만 훑을 땐 안 읽히고,
    표정은 정확하진 않지만 한눈에 읽힌다. 둘을 같이 둬 서로를 보완한다. */

@@ -304,8 +304,8 @@ export default {
                 <span class="mt-pbar"><i :style="{ width: p.group.pct + '%' }"></i></span>
                 <em>{{ p.group.pct }}%</em>
               </span>
-              <span v-if="p.epicKey" class="mt-epic">◆ {{ epicTitle(p.epicKey) }}</span>
-              <span v-else-if="p.group.voc" class="mt-epic">◆ 사용자 VoC</span>
+              <span v-if="p.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(p.epicKey)">{{ epicTitle(p.epicKey) }}</span>
+              <span v-else-if="p.group.voc" class="mt-epic">사용자 VoC</span>
               <span v-else class="mt-epic none">Epic 없음</span>
               <span class="mt-owner" :class="{ me: p.group.mine }"
                     :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">

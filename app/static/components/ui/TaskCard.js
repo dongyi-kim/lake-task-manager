@@ -80,8 +80,8 @@ export default {
             :title="(card.assignee || '미할당') + ' 담당' + (card.mine ? ' (나)' : '')">
         <Avatar :user="card.assigneeId" :name="card.assignee" :size="15" />{{ card.assignee || '미할당' }}
       </span>
-      <span v-if="showEpic && card.epicKey" class="mt-epic sm" :title="'Epic: ' + epicTitle">◆ {{ epicTitle }}</span>
-      <span v-else-if="showEpic && card.voc" class="mt-epic sm">◆ 사용자 VoC</span>
+      <span v-if="showEpic && card.epicKey" class="mt-epic sm" :title="'Epic: ' + epicTitle">{{ epicTitle }}</span>
+      <span v-else-if="showEpic && card.voc" class="mt-epic sm">사용자 VoC</span>
       <span v-else-if="showEpic" class="mt-epic sm none">Epic 없음</span>
     </div>
   </div>`,
