@@ -171,15 +171,6 @@
 @media (max-width: 900px) { .mt-gcard2.k-task > .mt-gbody { padding-left: 16px; }
   .mt-gcard2.k-task > .mt-gbody::before { left: 7px; } }
 
-/* Epic 은 카드가 아니라 **구획**이다 — 제목 줄 + 가는 선. 카드를 또 씌우면 카드 안에 카드가 된다. */
-.mt-gcard2.k-epic { background: none; border: 0; border-radius: 0; margin-bottom: 18px; }
-.mt-gcard2.k-epic > .mt-gh { padding: 4px 2px 6px; gap: 8px;
-  border-bottom: 2px solid color-mix(in srgb, var(--sig, var(--ty-epic)) 55%, transparent); }
-.mt-gcard2.k-epic > .mt-gh .mt-pt { font-size: 13.5px; font-weight: 700; }
-.mt-gcard2.k-epic > .mt-gh .mt-pdia { color: var(--sig, var(--ty-epic)); }
-.mt-gcard2.k-epic.none > .mt-gh { border-bottom-color: var(--border); }
-.mt-gcard2.k-epic.none .mt-pt { color: var(--muted-2); }
-.mt-gcard2.inner { margin: 8px 0 8px 12px; }
 
 /* 상태 셀 — 칼럼을 나누는 자리일 뿐, 상자가 아니다.
    (테두리·배경을 주면 카드마다 상자가 겹쳐 화면이 상자로 뒤덮인다. 상태색은 맨 위 헤더가 이미 진다.) */

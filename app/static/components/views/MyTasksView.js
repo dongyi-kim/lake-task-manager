@@ -7,9 +7,9 @@
 //               세로 = 상태가 **가로로 꽉 찬 패널**로 쌓임. 티켓은 그리드.
 //               ★ 그룹은 늘 상태의 **반대 축**에 놓인다 — 가로 모드면 그룹이 위아래로 쌓이고,
 //                 세로 모드면 상태 패널 안에서 그룹이 좌우로 늘어선다.
-//  2) 그룹화    없음 = 모든 Task/Sub-Task가 개별 카드
-//               Task = 같은 Task가 그룹 패널, 그 안에 Sub-Task
-//               Epic = 같은 Epic이 그룹 패널, 그 안에서 Task가 다시 Sub-Task들의 그룹 카드
+//  2) 그룹화    없음     = 모든 Task/Sub-Task가 개별 카드
+//               Sub Task = 같은 부모 Task로 묶고 그 안에 Sub-Task. 하위가 없는 Task는
+//                          묶을 게 없으므로 그룹이 아니라 그냥 카드다.
 //  3) 유관 보기 그룹 안에서 담당이 '나'인 티켓을 강조해 먼저 보여주고,
 //               확장 버튼을 누르면 내가 담당이 아닌 티켓(동료 몫)도 함께 보여준다.
 //
@@ -58,7 +58,7 @@ export default {
     return {
       model: null, loading: true, err: "",
       axis: "h",            // h = 상태를 가로축(칸반) | v = 상태를 세로축(가로 패널)
-      groupBy: "task",      // none | task | epic
+      groupBy: "sub",       // none | sub (부모 Task 로 묶기)
       // 하위(Sub-Task) 보기 3단: collapsed(모두 접기) | mine(내 것만) | all(전체).
       // showRelated 는 그 **기본값**을 정하고, 그룹별 버튼이 개별로 덮어쓴다.
       showRelated: false,
@@ -107,25 +107,10 @@ export default {
       if (this.groupBy === "none") {
         return [{ key: "__all__", kind: "none", cards: this.visible(this.allCards) }];
       }
-      if (this.groupBy === "task") {
-        const out = this.groups.filter((g) => g.hasSubs).map((g) => this.taskPanel(g));
-        const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs));
-        if (solo) out.push(solo);
-        return out.sort((a, b) => a.rank - b.rank);
-      }
-      // Epic — 그 안에서 하위를 가진 Task 만 다시 그룹이 되고, 나머지는 Epic 직속 카드다.
-      const by = new Map();
-      for (const g of this.groups) {
-        // 사용자 VoC 는 Epic 이 없어도 **전용 Epic** 으로 묶는다(Epic 이 있으면 그쪽이 우선).
-        const k = g.epic || (g.voc ? "__voc__" : "__none__");
-        if (!by.has(k)) by.set(k, []);
-        by.get(k).push(g);
-      }
-      const keys = [...by.keys()].filter((k) => k !== "__none__");
-      const out = keys.map((k) => this.epicPanel(k, by.get(k)));
-      out.sort((a, b) => a.rank - b.rank);
-      if (by.has("__none__")) out.push(this.epicPanel("__none__", by.get("__none__")));
-      return out.filter((p) => p.soloCards.length || p.subPanels.length);
+      const out = this.groups.filter((g) => g.hasSubs).map((g) => this.taskPanel(g));
+      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs));
+      if (solo) out.push(solo);
+      return out.sort((a, b) => a.rank - b.rank);
     },
   },
   methods: {
@@ -198,28 +183,6 @@ export default {
       if (!vis.length) return null;
       return { key: "__solo__", kind: "solo", cards: vis, rank: this.rankOf(cards) };
     },
-    epicPanel(ek, gs) {
-      // 하위가 있는 Task 만 Epic 안에서 다시 그룹이 된다. 나머지는 Epic 직속 카드.
-      const subPanels = gs.filter((g) => g.hasSubs).map((g) => this.taskPanel(g))
-        .sort((a, b) => a.rank - b.rank);
-      const solo = this.soloPanel(gs.filter((g) => !g.hasSubs));
-      const all = [].concat(...gs.map((g) => [].concat(
-        g.atoms.map((a) => this.card(a, g, true)), g.others.map((o) => this.card(o, g, false)))));
-      return {
-        key: ek, kind: "epic",
-        title: ek === "__none__" ? "Epic 없음"
-             : ek === "__voc__" ? "사용자 VoC"
-             : ((this.epicMap[ek] || {}).title || ek),
-        none: ek === "__none__",
-        voc: ek === "__voc__",
-        soloCards: solo ? solo.cards : [],
-        // 헤더 개수는 **보이는 티켓 수** — 그룹이 된 Task 수를 세면 직속 카드만 있는 Epic 이 '0' 이 된다
-        count: (solo ? solo.cards.length : 0)
-               + gs.filter((g) => g.hasSubs).reduce(
-                   (n, g) => n + this.taskPanel(g).cards.length, 0),
-        subPanels, rank: this.rankOf(all),
-      };
-    },
     /** 패널의 카드를 상태별로 나눈다 — 상태 축이 가로든 세로든 이 함수를 쓴다. */
     byState(cards) {
       const m = { todo: [], inprogress: [], done: [] };
@@ -283,8 +246,8 @@ export default {
         <span class="mt-opt-l">그룹화</span>
         <div class="mt-seg">
           <button :class="{ on: groupBy === 'none' }" @click="groupBy = 'none'" title="모든 티켓을 개별 카드로">없음</button>
-          <button :class="{ on: groupBy === 'task' }" @click="groupBy = 'task'" title="같은 Task 로 묶고 그 안에 Sub-Task">Task</button>
-          <button :class="{ on: groupBy === 'epic' }" @click="groupBy = 'epic'" title="같은 Epic 으로 묶고, 그 안에서 Task 가 Sub-Task 를 묶는다">Epic</button>
+          <button :class="{ on: groupBy === 'sub' }" @click="groupBy = 'sub'"
+                  title="부모 Task 로 묶고 그 안에 Sub-Task — 하위가 없는 Task 는 그냥 카드">Sub Task</button>
         </div>
       </div>
       <div class="mt-opt">
@@ -400,70 +363,6 @@ export default {
           </div>
         </div>
 
-        <!-- Epic 그룹 = 카드 하나, 그 안에서 Task 가 다시 작은 카드 -->
-        <div v-else class="mt-gcard2 k-epic" :class="{ none: p.none }">
-          <div class="mt-gh" :style="p.none ? {} : { '--sig': sigOf({ epicKey: p.voc ? null : p.key, voc: p.voc }) }">
-            <span v-if="!p.none" class="mt-pdia">◆</span>
-            <span class="mt-pt">{{ p.title }}</span>
-            <span class="mt-pn">티켓 {{ p.count }}</span>
-          </div>
-          <!-- Epic 직속 카드(하위 없는 Task) — 그룹이 아니므로 카드로만 -->
-          <div v-if="p.soloCards.length" class="mt-gbody">
-            <div v-for="st in states" :key="'ep-' + p.key + st.k" class="mt-cell"
-                 :class="['c-' + st.k, { empty: !byState(p.soloCards)[st.k].length }]">
-              <div v-for="c in byState(p.soloCards)[st.k]" :key="c.key" class="mt-card tkt"
-                   :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
-                <span class="mt-pri" :class="c.priBand" :title="'우선순위: ' + c.pri"></span>
-                <TypeBadge :type="c.type" />
-                <span class="mt-key">{{ c.key }}</span>
-                <span class="mt-title">{{ c.title }}</span>
-                <span v-if="!c.mine || showRelated" class="mt-owner" :class="{ me: c.mine }"
-                      :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
-                <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
-              </div>
-            </div>
-          </div>
-          <div class="mt-gcard2 k-task inner" v-for="sp in p.subPanels" :key="sp.key"
-               :style="sigStyle(sp.group)">
-            <div class="mt-gh sub">
-            <div class="mt-card parent tkt" :data-key="sp.key" :style="sigStyle(sp.group)"
-                 :class="{ mine: sp.group.mine, rel: !sp.group.mine, done: sp.group.statusCategory === 'done' }">
-              <span class="mt-pri" :class="sp.group.priBand" :title="'우선순위: ' + sp.group.pri"></span>
-              <TypeBadge :type="sp.group.type" />
-              <span class="mt-key">{{ sp.key }}</span>
-              <span class="mt-title">{{ sp.title }}</span>
-              <span v-if="sp.group.pct !== null" class="mt-roll" :title="'하위 진척 ' + sp.group.pct + '%'">
-                <span class="mt-pbar"><i :style="{ width: sp.group.pct + '%' }"></i></span>
-                <em>{{ sp.group.pct }}%</em>
-              </span>
-              
-              <span class="mt-owner" :class="{ me: sp.group.mine }"
-                    :title="(sp.group.assignee || '미할당') + ' 담당' + (sp.group.mine ? ' (나)' : '')">
-                <Avatar :user="sp.group.assigneeId" :name="sp.group.assignee" :size="16" />{{ sp.group.assignee || '미할당' }}</span>
-              <span class="mt-due" :class="dueBand(sp.group.dueDays)">{{ dueLabel(sp.group.dueDays) || '—' }}</span>
-            </div>
-              <button class="mt-more" :class="'m-' + sp.mode" @click="cycleMode(sp.key)"
-                      :title="modeHint(sp.mode)">{{ modeLabel(sp.mode, sp.mineCount, sp.allCount) }}</button>
-            </div>
-            <div v-if="sp.mode !== 'collapsed'" class="mt-gbody">
-              <div v-for="st in states" :key="sp.key + st.k" class="mt-cell"
-                   :class="['c-' + st.k, { empty: !byState(sp.cards)[st.k].length }]">
-                <div v-for="c in byState(sp.cards)[st.k]" :key="c.key" class="mt-card tkt"
-                     :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
-                  <span class="mt-pri" :class="c.priBand" :title="'우선순위: ' + c.pri"></span>
-                  <TypeBadge :type="c.type" />
-                  <span class="mt-key">{{ c.key }}</span>
-                  <span class="mt-title">{{ c.title }}</span>
-                  <span v-if="!c.mine || sp.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
-                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
-                  <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </template>
     </template>
 
@@ -492,44 +391,8 @@ export default {
         <!-- 그룹화 있음 → 그룹이 좌우로 늘어서고 각 그룹 안이 그리드 -->
         <div v-else class="mt-grouprow">
           <template v-for="p in panels" :key="p.key">
-            <template v-if="p.kind === 'epic'">
-              <!-- Epic 직속 카드(하위 없는 Task) — 그룹 카드로 감싸지 않는다 -->
-              <div v-for="c in byState(p.soloCards)[st.k]" :key="'es-' + c.key" class="mt-card tkt"
-                   :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
-                <span class="mt-pri" :class="c.priBand"></span>
-                <TypeBadge :type="c.type" />
-                <span class="mt-key">{{ c.key }}</span>
-                <span class="mt-title">{{ c.title }}</span>
-                <span class="mt-epic sm" :style="{ '--sig': sigOf({ epicKey: p.voc ? null : p.key, voc: p.voc }) }">◆ {{ p.title }}</span>
-                <span v-if="!c.mine || showRelated" class="mt-owner" :class="{ me: c.mine }"
-                      :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
-                <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
-              </div>
-              <div v-for="sp in p.subPanels" :key="sp.key" v-show="byState(sp.cards)[st.k].length"
-                   class="mt-gcard" :style="sigStyle(sp.group)">
-                <div class="mt-gch">
-                  <span class="mt-epic" :style="{ '--sig': sigOf({ epicKey: p.voc ? null : p.key, voc: p.voc }) }">◆ {{ p.title }}</span>
-                  <span class="mt-pkey tkt" :data-key="sp.key">{{ sp.key }}</span>
-                  <span class="mt-pt">{{ sp.title }}</span>
-                </div>
-                <div class="mt-grid2">
-                  <div v-for="c in byState(sp.cards)[st.k]" :key="c.key" class="mt-card tkt"
-                       :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
-                    <span class="mt-pri" :class="c.priBand"></span>
-                    <TypeBadge :type="c.type" />
-                    <span class="mt-key">{{ c.key }}</span>
-                    <span class="mt-title">{{ c.title }}</span>
-                    <span v-if="!c.mine || sp.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
-                        :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
-                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
-                    <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
-                  </div>
-                </div>
-              </div>
-            </template>
             <!-- 하위 없는 Task 묶음 — 카드로만 -->
-            <template v-else-if="p.kind === 'solo'">
+            <template v-if="p.kind === 'solo'">
               <div v-for="c in byState(p.cards)[st.k]" :key="'so-' + c.key" class="mt-card tkt"
                    :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
                 <span class="mt-pri" :class="c.priBand"></span>
