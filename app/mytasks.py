@@ -209,6 +209,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
                 "assignee": node["assignee"], "assigneeId": node["assigneeId"],
                 "status": node["status"], "statusCategory": node["statusCategory"],
                 "reporter": node.get("reporter"), "reporterId": node.get("reporterId"),
+                "voc": node.get("voc"),          # Epic 이 없어도 VoC 는 전용 Epic 처럼 묶고 색을 준다
                 "epic": node["epic"], "pri": node["pri"], "priRank": node["priRank"],
                 "priBand": node["priBand"], "due": node["due"], "dueDays": node["dueDays"],
                 "atoms": [], "others": [], "hasSubs": has_kids,

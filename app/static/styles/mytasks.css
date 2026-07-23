@@ -43,7 +43,15 @@
 /* ── 카드 — 어느 배치에서도 같은 모양 ── */
 .mt-card { display: flex; align-items: center; gap: 7px; min-width: 0; cursor: pointer;
   padding: 6px 8px; border-radius: 7px; border: 1px solid transparent; background: var(--panel); }
-.mt-card:hover { border-color: var(--border-hi); }
+/* 호버 — 밑줄(전역 .tkt:hover 가 긋는다)은 카드에서 지운다. 카드는 링크가 아니라 면이므로
+   밑줄이 어색하고, 제목만 강조돼 어느 카드인지도 덜 명확하다.
+   대신 **면 전체**를 들어올린다: 소속 Epic 색의 옅은 배경 + 그 색 테두리 + 살짝 뜬 그림자. */
+.mt-card { transition: background-color .12s ease, border-color .12s ease, box-shadow .12s ease; }
+.mt-card:hover, .mt-card:hover .mt-title { text-decoration: none; }
+.mt-card:hover { background: color-mix(in srgb, var(--sig, var(--accent)) 9%, var(--panel));
+  border-color: color-mix(in srgb, var(--sig, var(--accent)) 45%, var(--border));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .10); }
+.mt-card:focus-visible { outline: 2px solid var(--sig, var(--accent)); outline-offset: -2px; }
 /* 좌측 띠 = **소속 Epic 의 시그니처 컬러**(--sig). 같은 Epic 은 어느 카드에서도 같은 색이라
    목록을 훑을 때 '같은 묶음' 이 색으로 먼저 잡힌다. Epic 도 VoC 도 없으면 색을 주지 않는다.
    내 담당 / 유관 구분은 **띠의 진하기 + 카드 투명도**로 — 색은 이미 Epic 이 쓰고 있다. */
@@ -125,7 +133,8 @@
    지금은 패널을 없애고 카드 하나만 남긴다 — 상위 행이 카드의 머리, 하위가 카드의 본문. */
 .mt-gcard2 { --gc: var(--accent); margin: 0 0 10px; border-radius: 10px;
   background: var(--panel); border: 1px solid var(--border);
-  border-left: 3px solid var(--gc); overflow: hidden; }
+  /* 좌측 레일도 **소속 Epic 색** — 카드 안의 티켓 띠와 같은 색이라 한 묶음으로 읽힌다 */
+  border-left: 3px solid var(--sig, var(--gc)); overflow: hidden; }
 
 /* 상위 행 = 카드의 머리. 카드 안이라 자기 테두리는 갖지 않는다. */
 .mt-gh { display: flex; align-items: center; gap: 8px; padding: 0; }
@@ -146,6 +155,9 @@
   background: color-mix(in srgb, var(--gc) 28%, transparent); }
 /* 회색 바닥 위의 하위 카드는 흰색이라야 뜬다(투명이면 바닥에 묻힌다) */
 .mt-gcard2.k-task > .mt-gbody .mt-card { background: var(--panel); border-color: var(--border); }
+.mt-gcard2.k-task > .mt-gbody .mt-card:hover {
+  background: color-mix(in srgb, var(--sig, var(--accent)) 9%, var(--panel));
+  border-color: color-mix(in srgb, var(--sig, var(--accent)) 45%, var(--border)); }
 .mt-gcard2.k-task > .mt-gbody .mt-card.rel { background: color-mix(in srgb, var(--panel) 55%, transparent); }
 /* Epic 직속 카드 영역과 '그룹화 없음' 은 카드 본문이 아니라 그냥 목록이라 바닥을 깔지 않는다 */
 .mt-gbody { padding: 6px 10px 8px 10px; }
@@ -195,7 +207,8 @@
 /* 그룹이 좌우로 늘어서는 줄 — 그룹 카드가 자기 폭을 갖고 그 안이 다시 그리드 */
 .mt-grouprow { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
   gap: 8px; padding: 7px 8px; align-items: start; }
-.mt-gcard { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); min-width: 0; }
+.mt-gcard { border: 1px solid var(--border); border-left: 3px solid var(--sig, var(--accent));
+  border-radius: 8px; background: var(--panel); min-width: 0; }
 .mt-gch { display: flex; align-items: center; gap: 6px; padding: 5px 8px; min-width: 0;
   border-bottom: 1px solid var(--border); background: var(--panel-2); }
 .mt-gcard .mt-grid2 { grid-template-columns: 1fr; padding: 4px; gap: 3px; }

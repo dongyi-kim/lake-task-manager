@@ -757,7 +757,12 @@ class World:
                  statusCategory="done", statusName="Resolved",
                  created=d - timedelta(days=60), updated=d - timedelta(days=20),
                  resolved=d - timedelta(days=20), tresolved="15:00")
-        # 8) 완료된 내 Task — 기본 목록에서 빠져야 한다
+        # 8) Epic 없는 사용자 VoC — 'Epic 없음' 이 아니라 **전용 Epic('사용자 VoC')** 으로 묶이고
+        #    자기 시그니처 색·뱃지를 가져야 한다. 이게 없으면 그 규칙을 화면에서 확인할 수 없다.
+        self._fx("DL-9035", "Task", "[내Task] Epic 없는 사용자 VoC — 전용 Epic 취급",
+                 assignee=self.ME, epicKey=None, component="사용자 VoC",
+                 priority="Medium", due=due(4), statusCategory="todo", statusName="Open")
+        # 9) 완료된 내 Task — 기본 목록에서 빠져야 한다
         self._fx("DL-9031", "Task", "[내Task] 완료된 내 Task — 기본 목록에서 제외",
                  assignee=self.ME, priority="Medium", due=due(-3), epicKey=self.MY_EPIC,
                  statusCategory="done", statusName="Resolved",

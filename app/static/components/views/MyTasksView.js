@@ -16,7 +16,7 @@
 // 카드 모양은 배치와 무관하게 하나다(.mt-card) — 리스트든 그리드든 같은 것을 읽는다.
 import { api } from "../../lib/api.js";
 import TypeBadge from "../ui/TypeBadge.js";
-import { sigColor } from "../../lib/colors.js";
+import { categoryColor } from "../../lib/colors.js";
 
 const NO_DUE = 1e6;
 
@@ -40,7 +40,7 @@ const STATES = [
 // Epic 도 VoC 도 아니면 색을 주지 않는다 — 없는 소속을 색으로 지어내지 않는다.
 const VOC_SIG = "var(--ty-story)";
 function epicSig(card) {
-  if (card.epicKey) return sigColor(card.epicKey);
+  if (card.epicKey) return categoryColor(card.epicKey);
   if (card.voc) return VOC_SIG;
   return null;
 }
@@ -115,7 +115,8 @@ export default {
       // Epic — 그 안에서 하위를 가진 Task 만 다시 그룹이 되고, 나머지는 Epic 직속 카드다.
       const by = new Map();
       for (const g of this.groups) {
-        const k = g.epic || "__none__";
+        // 사용자 VoC 는 Epic 이 없어도 **전용 Epic** 으로 묶는다(Epic 이 있으면 그쪽이 우선).
+        const k = g.epic || (g.voc ? "__voc__" : "__none__");
         if (!by.has(k)) by.set(k, []);
         by.get(k).push(g);
       }
@@ -205,8 +206,11 @@ export default {
         g.atoms.map((a) => this.card(a, g, true)), g.others.map((o) => this.card(o, g, false)))));
       return {
         key: ek, kind: "epic",
-        title: ek === "__none__" ? "Epic 없음" : ((this.epicMap[ek] || {}).title || ek),
+        title: ek === "__none__" ? "Epic 없음"
+             : ek === "__voc__" ? "사용자 VoC"
+             : ((this.epicMap[ek] || {}).title || ek),
         none: ek === "__none__",
+        voc: ek === "__voc__",
         soloCards: solo ? solo.cards : [],
         // 헤더 개수는 **보이는 티켓 수** — 그룹이 된 Task 수를 세면 직속 카드만 있는 Epic 이 '0' 이 된다
         count: (solo ? solo.cards.length : 0)
@@ -352,7 +356,7 @@ export default {
         </div>
 
         <!-- Task 그룹 = 카드 하나 -->
-        <div v-else-if="p.kind === 'task'" class="mt-gcard2 k-task">
+        <div v-else-if="p.kind === 'task'" class="mt-gcard2 k-task" :style="sigStyle(p.group)">
           <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done' }">
@@ -391,7 +395,7 @@ export default {
 
         <!-- Epic 그룹 = 카드 하나, 그 안에서 Task 가 다시 작은 카드 -->
         <div v-else class="mt-gcard2 k-epic" :class="{ none: p.none }">
-          <div class="mt-gh" :style="p.none ? {} : { '--sig': sigOf({ epicKey: p.key }) }">
+          <div class="mt-gh" :style="p.none ? {} : { '--sig': sigOf({ epicKey: p.voc ? null : p.key, voc: p.voc }) }">
             <span v-if="!p.none" class="mt-pdia">◆</span>
             <span class="mt-pt">{{ p.title }}</span>
             <span class="mt-pn">티켓 {{ p.count }}</span>
@@ -411,7 +415,8 @@ export default {
               </div>
             </div>
           </div>
-          <div class="mt-gcard2 k-task inner" v-for="sp in p.subPanels" :key="sp.key">
+          <div class="mt-gcard2 k-task inner" v-for="sp in p.subPanels" :key="sp.key"
+               :style="sigStyle(sp.group)">
             <div class="mt-gh sub">
             <div class="mt-card parent tkt" :data-key="sp.key" :style="sigStyle(sp.group)"
                  :class="{ mine: sp.group.mine, rel: !sp.group.mine, done: sp.group.statusCategory === 'done' }">
@@ -481,14 +486,14 @@ export default {
                 <TypeBadge :type="c.type" />
                 <span class="mt-key">{{ c.key }}</span>
                 <span class="mt-title">{{ c.title }}</span>
-                <span class="mt-epic sm">◆ {{ p.title }}</span>
+                <span class="mt-epic sm" :style="{ '--sig': sigOf({ epicKey: p.voc ? null : p.key, voc: p.voc }) }">◆ {{ p.title }}</span>
                 <span v-if="!c.mine" class="mt-owner">{{ c.assignee || '미할당' }}</span>
                 <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
               </div>
               <div v-for="sp in p.subPanels" :key="sp.key" v-show="byState(sp.cards)[st.k].length"
-                   class="mt-gcard">
+                   class="mt-gcard" :style="sigStyle(sp.group)">
                 <div class="mt-gch">
-                  <span class="mt-epic">◆ {{ p.title }}</span>
+                  <span class="mt-epic" :style="{ '--sig': sigOf({ epicKey: p.voc ? null : p.key, voc: p.voc }) }">◆ {{ p.title }}</span>
                   <span class="mt-pkey tkt" :data-key="sp.key">{{ sp.key }}</span>
                   <span class="mt-pt">{{ sp.title }}</span>
                 </div>
@@ -519,7 +524,7 @@ export default {
                 <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
               </div>
             </template>
-            <div v-else v-show="byState(p.cards)[st.k].length" class="mt-gcard">
+            <div v-else v-show="byState(p.cards)[st.k].length" class="mt-gcard" :style="sigStyle(p.group)">
               <div class="mt-gch">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done' }">

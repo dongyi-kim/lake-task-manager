@@ -2,6 +2,18 @@
 // updated: 2026-07-08
 export function moduleColor(i) { return "var(--c" + ((i % 7) + 1) + ")"; }
 
+// ── 범주형 팔레트 — Epic·모듈처럼 **'서로 다름' 만 뜻하는 값**에 쓴다(순서·크기 의미 없음).
+// 해시로 hue 를 만드는 방식(hsl(h 62% 52%))은 인접 해시가 비슷한 색이 돼 구분이 안 된다.
+// hue 를 충분히 벌린 고정 12색을 두고 키로 그중 하나를 고른다. 실제 색값은 tokens.css(라이트/다크).
+const CATEGORY_N = 12;
+export function categoryColor(key) {
+  const s = String(key == null ? "" : key);
+  if (!s) return null;
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 131 + s.charCodeAt(i)) >>> 0;
+  return "var(--cat" + ((h % CATEGORY_N) + 1) + ")";
+}
+
 // statusCategory(todo|inprogress|done) → CSS 변수 / 라벨
 export const STATUS_VAR = { todo: "var(--st-todo)", inprogress: "var(--st-prog)", done: "var(--st-done)" };
 export const STATUS_LABEL = { todo: "To Do", inprogress: "In Progress", done: "Done" };
