@@ -1099,7 +1099,30 @@ class JiraClient:
             "status": st.get("name", ""),
             "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
             "assignee": real_name(a.get("displayName") or a.get("name")) or None,
+            # 아래 둘은 **권한 판정 재료**다(내 티켓인가?). 표시용 이름과 달리 id 여야 한다 —
+            # 표시이름은 동명이인이 있어 사람을 특정하지 못한다.
+            "assigneeId": a.get("name") or a.get("key") or None,
+            "reporterId": ((f.get("reporter") or {}).get("name")
+                           or (f.get("reporter") or {}).get("key") or None),
         }
+
+    # ── 담당자 ────────────────────────────────────────────────────────
+    def set_assignee(self, key, user_id):
+        """담당자 지정/해제. user_id 가 비면 해제(Jira 는 name=null 로 받는다)."""
+        self.provider.put_json(f"/rest/api/2/issue/{key}/assignee",
+                               {"name": user_id or None})
+        self._invalidate_ticket(key)
+        return {"ok": True}
+
+    def delete_issue(self, key):
+        """티켓 삭제. 되돌릴 수 없다 — 호출부(라우트/화면)가 확인을 받는다."""
+        self.provider.delete(f"/rest/api/2/issue/{key}")
+        # 이 티켓의 캐시를 전부 버린다. 살아 있으면 지워진 티켓이 목록에 계속 남는다.
+        for pre in ("issue", "issueview", "comments", "attachments", "documents",
+                    "remotelinks", "timeline", "changelog", "children", "related",
+                    "siblings", "ancestors"):
+            self.cache.invalidate(f"{pre}:{self.env}:{key}")
+        return {"ok": True}
 
     def ticket_view(self, key):
         """티켓 상세 다이얼로그용 리치 뷰 — 없으면 None. description 은 항상 정화된 안전 HTML."""

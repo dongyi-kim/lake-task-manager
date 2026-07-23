@@ -556,6 +556,74 @@ def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
         done_filter=(doneFilter if doneFilter in ("1w", "1m") else "1w")))
 
 
+class _AssigneeBody(BaseModel):
+    assignee: str = ""          # 빈 문자열 = 담당자 해제
+
+
+def _may_edit(key: str) -> bool:
+    """이 티켓을 바꿀 수 있는가 — **내 티켓(담당/보고)이거나 매니저**.
+    남의 티켓 상태를 아무나 바꾸면 그건 협업이 아니라 사고다. 매니저는 조율 책임이 있어 연다."""
+    if _is_manager():
+        return True
+    me = (_session_user().get("id") or "").lower()
+    if not me:
+        return False                      # 세션을 모르면 남의 티켓일 수 있다 → 열지 않는다
+    b = _client.ticket_badge(key) or {}
+    return me in {(b.get("assigneeId") or "").lower(), (b.get("reporterId") or "").lower()}
+
+
+def _require_edit(key: str):
+    if not _may_edit(key):
+        raise HTTPException(status_code=403,
+                            detail="담당자·보고자 또는 매니저만 바꿀 수 있습니다.")
+
+
+@app.put("/api/ticket/{key}/assignee")
+def api_set_assignee(key: str, body: _AssigneeBody):
+    """담당자 지정/해제. 빈 값이면 해제."""
+    _require_edit(key)
+    return JSONResponse(_client.set_assignee(key, body.assignee.strip()))
+
+
+@app.delete("/api/ticket/{key}")
+def api_delete_ticket(key: str):
+    """티켓 삭제 — 되돌릴 수 없다. 화면이 한 번 더 확인을 받는다."""
+    _require_edit(key)
+    try:
+        return JSONResponse(_client.delete_issue(key))
+    except SessionExpired:
+        raise
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=400)
+
+
+class _OpenBody(BaseModel):
+    url: str = ""
+
+
+@app.post("/api/open")
+def api_open(body: _OpenBody):
+    """URL 을 **기본 브라우저**로 연다.
+
+    앱 창은 Playwright 가 띄운 Chromium 이라 window.open 으로 열면 그 자동화 창 안에 또 하나가
+    뜬다 — 탭·즐겨찾기·확장이 없는 창이라 '새 창에서 열기' 의 목적(평소 쓰는 브라우저에서 보기)에
+    맞지 않는다. 서버가 로컬에서 도니 OS 기본 브라우저를 직접 띄우는 게 맞다.
+
+    ★ 아무 URL 이나 열지 않는다 — 앱 자신과 설정된 Jira/Confluence 만. 로컬 서버가 임의 URL 을
+      여는 통로가 되면, 화면에 뜬 남의 링크 하나로 무엇이든 실행시킬 수 있게 된다.
+    """
+    url = (body.url or "").strip()
+    allowed = [f"http://127.0.0.1:{_settings.app_port}", f"http://localhost:{_settings.app_port}"]
+    for base in (_settings.jira_base, _settings.confluence_base):
+        if base:
+            allowed.append(base.rstrip("/"))
+    if not any(url.startswith(a) for a in allowed):
+        return JSONResponse({"ok": False, "error": "허용되지 않은 주소입니다."}, status_code=400)
+    import webbrowser
+    ok = webbrowser.open(url)
+    return JSONResponse({"ok": bool(ok)})
+
+
 @app.get("/api/timetracking")
 def api_timetracking():
     """시간 추적 설정 — '1d' 가 몇 시간인지. 화면이 이 값을 사용자에게 그대로 보여 준다."""
@@ -570,6 +638,25 @@ class _TransitionBody(BaseModel):
     assignee: str = ""
     resolution: str = ""
     commentHtml: str = ""
+
+
+@app.get("/api/ticket/{key}/menu")
+def api_ticket_menu(key: str):
+    """카드 우클릭 메뉴에 필요한 것 한 번에 — 티켓 요약 + 내가 바꿀 수 있는지 + 가능한 전이.
+    메뉴 하나 여는 데 왕복을 세 번 하면 prod 의 단일 상류 큐에서 그만큼 늦다."""
+    b = _client.ticket_badge(key) or {}
+    me = _session_user()
+    may = _may_edit(key)
+    return JSONResponse({
+        "key": key, "summary": b.get("summary") or "",
+        "assignee": b.get("assignee"), "assigneeId": b.get("assigneeId"),
+        "status": b.get("status") or "", "statusCategory": b.get("statusCategory") or "",
+        "me": {"id": me.get("id") or "", "name": me.get("name") or ""},
+        "mayEdit": may,
+        "jiraBase": (_settings.jira_base or "").rstrip("/"),
+        # 바꿀 수 없으면 전이 목록을 부를 이유가 없다(상류 호출만 낭비된다)
+        "transitions": _client.transitions(key) if may else [],
+    })
 
 
 @app.get("/api/ticket/{key}/transitions")

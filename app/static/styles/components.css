@@ -200,3 +200,37 @@
 .trx .cmt-ed-host { max-height: 190px; overflow: auto; }
 .trx-b { max-height: min(62vh, 560px); overflow: auto; }
 .cmt-ed-msg.solo { padding: 6px 8px; font-size: 11.5px; color: var(--today); }
+
+/* ── 우클릭 메뉴: 그룹 구조 ─────────────────────────────────────────────────
+   순서는 '자주 쓰는 것' 이 아니라 **되돌리기 쉬운 것** 부터다 —
+   담당자(쉬움) → 상태·삭제(무겁거나 못 되돌림) → 편의(아무것도 안 바꿈).
+   파괴적인 항목이 손가락 먼저 가는 자리에 있으면 안 된다. */
+.tkmenu { max-height: min(80vh, 560px); overflow: auto; }
+.tkm-h { display: flex; align-items: center; gap: 7px; }
+.tkm-st { margin-left: auto; font-size: 10px; font-weight: 600; color: var(--muted-2);
+  font-family: inherit; }
+.tkm-g { font-size: 9.5px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--muted-2); padding: 8px 8px 3px; }
+.tkm-g:first-of-type { padding-top: 2px; }
+.tkm-note { font-size: 11px; color: var(--muted-2); padding: 3px 8px 5px; line-height: 1.45; }
+.tkm-ic { width: 15px; text-align: center; font-size: 12px; flex: none; }
+.tkm-i:disabled { opacity: .42; cursor: not-allowed; }
+.tkm-i:disabled:hover { background: none; }
+/* 삭제는 눌러야 붉어진다 — 늘 붉으면 메뉴가 경고판이 되고, 정작 위험할 때 눈에 안 띈다 */
+.tkm-i.danger:hover { background: color-mix(in srgb, var(--today) 12%, transparent); color: var(--today); }
+.tkm-i em { font-size: 10px; }
+
+/* 담당자 고르기 */
+.trx.up { width: min(420px, calc(100vw - 32px)); }
+.up-b { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 9px; }
+.up-b > input { font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.up-list { max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.up-i { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--text);
+  padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.up-i.hi { background: var(--panel-2); }
+.up-i em { margin-left: auto; font-style: normal; font-family: ui-monospace, Consolas, monospace;
+  font-size: 10.5px; color: var(--muted-2); }
+.up-i i { font-style: normal; font-size: 9.5px; font-weight: 700; color: #fff;
+  background: var(--accent); border-radius: 3px; padding: 0 5px; line-height: 15px; }

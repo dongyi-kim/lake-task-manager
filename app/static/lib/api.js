@@ -87,6 +87,12 @@ export const api = {
   me: () => get("/api/me"),
   // 전이 목록은 **캐시하지 않는다** — 현재 상태에 따라 매번 달라지고, 낡은 목록은 곧 400 이다.
   timetracking: () => get("/api/timetracking"),
+  openExternal: (url) => jsonReq("/api/open", "POST", { url }),
+  ticketMenu: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/menu"),
+  setAssignee: (key, assignee) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/assignee",
+                                          "PUT", { assignee }).then((r) => { evict(key); return r; }),
+  deleteTicket: (key) => req("/api/ticket/" + encodeURIComponent(key), { method: "DELETE" })
+                           .then((r) => { evict(key); return r; }),
   transitions: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/transitions"),
   doTransition: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/transition",
                                        "POST", body).then((r) => { evict(key); return r; }),                                             // 본인 댓글 판정
