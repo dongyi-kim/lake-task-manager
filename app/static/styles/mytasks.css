@@ -289,3 +289,24 @@
 .tc-when .inh-m { font-style: normal; opacity: .65; margin-right: 1px; }
 .tc-l2 .tc-fin { border-right: 1px solid var(--border); border-radius: 4px 0 0 4px;
   margin-right: 0; padding-right: 9px; }
+
+/* ── 입체감 ─────────────────────────────────────────────────────────────────
+   카드가 배경과 같은 평면에 있으면 '목록의 한 줄' 로 읽힌다. 옅은 그림자로 한 겹 띄워
+   각 티켓이 **집어 들 수 있는 하나의 물건**처럼 보이게 한다.
+   그림자는 두 겹이다 — 아래로 번지는 흐린 그림자(떠 있는 느낌) + 1px 밀착 그림자(윤곽).
+   호버는 이미 더 강한 그림자를 쓰므로 기본값은 그보다 확실히 약해야 단계가 읽힌다. */
+.mt-card, .mt-gcard2 { box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 1px 1px rgba(0,0,0,.04); }
+.mt-gcard2 { box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 1px rgba(0,0,0,.05); }
+/* 회색 바닥에 놓인 하위 카드는 한 겹 더 안쪽이므로 그림자도 한 단계 옅게 */
+.mt-gcard2.k-task > .mt-gbody .mt-card { box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+/* 유관(내 담당 아님) 카드는 이미 흐리게 처리된다 — 그림자까지 살리면 흐림이 안 읽힌다 */
+.mt-card.rel { box-shadow: none; }
+.mt-card:hover { box-shadow: 0 3px 10px rgba(0,0,0,.13), 0 1px 2px rgba(0,0,0,.06); }
+
+/* 어두운 테마는 검은 그림자가 배경에 묻힌다 — 대신 위쪽 밝은 테두리로 입체를 만든다 */
+:root[data-theme="dark"] .mt-card,
+:root[data-theme="dark"] .mt-gcard2 {
+  box-shadow: 0 1px 2px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.04); }
+:root[data-theme="dark"] .mt-card.rel { box-shadow: none; }
+:root[data-theme="dark"] .mt-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06); }
