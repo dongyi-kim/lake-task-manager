@@ -143,7 +143,9 @@
 .mt-gcard2 { --gc: var(--accent); margin: 0 0 10px; border-radius: 10px;
   background: var(--panel); border: 1px solid var(--border);
   /* 좌측 레일도 **소속 Epic 색** — 카드 안의 티켓 띠와 같은 색이라 한 묶음으로 읽힌다 */
-  border-left: 3px solid var(--sig, var(--gc)); overflow: hidden; }
+  /* overflow:hidden 을 쓰지 않는다 — 부모 카드 위로 걸친 🔥 가 잘린다.
+     둥근 하위 바닥은 바닥 자체에 radius 를 줘서 얻는다. */
+  border-left: 3px solid var(--sig, var(--gc)); }
 
 /* 상위 행 = 카드의 머리. 카드 안이라 자기 테두리는 갖지 않는다. */
 .mt-gh { display: flex; align-items: center; gap: 8px; padding: 0; }
@@ -157,7 +159,7 @@
 /* 하위 = 카드 아래로 **뻗어나온 회색 면**. 상위 카드는 흰색으로 두고 하위 바닥만 눌러
    (같은 흰색이면 상위·하위가 구분되지 않는다) 그 위에 하위 카드를 흰색으로 띄운다.
    → 무엇이 부모이고 무엇이 그 안의 것인지 색의 층으로 읽힌다. */
-.mt-gcard2.k-task > .mt-gbody { background: var(--panel-2);
+.mt-gcard2.k-task > .mt-gbody { background: var(--panel-2); border-radius: 0 0 9px 9px;
   border-top: 1px solid var(--border); padding: 8px 10px 10px 20px; position: relative; }
 .mt-gcard2.k-task > .mt-gbody::before { content: ""; position: absolute; left: 10px; top: 10px;
   bottom: 12px; width: 2px; border-radius: 2px;
@@ -373,9 +375,12 @@
    제목이 긴 카드와 겹치지 않도록 1행 오른쪽에 자리를 비워 둔다. */
 .mt-card.two { position: relative; }
 /* 좌측 상단 — 카드를 왼쪽부터 읽으므로 급함이 **제목보다 먼저** 눈에 든다.
-   우측에 두면 제목을 다 읽고 나서야 급한 줄 알게 된다. 1행 왼쪽에 자리를 비워 겹침을 막는다. */
-.mt-card.two.hot > .tc-l1 { padding-left: 24px; }
-.tc-hot { position: absolute; top: -3px; left: 4px; z-index: 2;
+   (우측이면 제목을 다 읽고 나서야 급한 줄 안다.)
+   ★ 자리를 비우지 않는다. 표식은 **순수 오버레이**여야 한다 — padding 으로 밀면 급한 카드만
+     제목 시작 위치가 달라져 목록을 세로로 훑을 수 없다. 그래서 x 를 카드 왼쪽 끝에 맞추고
+     세로로 카드 위쪽에 걸쳐 띄운다(내용이 있는 자리를 피한다). */
+.mt-card { position: relative; }
+.tc-hot { position: absolute; top: -9px; left: 0; z-index: 3; pointer-events: none;
   font-size: 14px; line-height: 1; padding: 2px; border-radius: 999px;
   background: color-mix(in srgb, var(--today) 16%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--today) 30%, transparent);
@@ -406,8 +411,9 @@
    따로 띄울 자리가 없다. 마감 표시 뒤에 붙이면 같은 위치를 뜻하면서 줄 높이도 안 건드린다.
    2줄 카드처럼 카드 밖으로 내밀 수 없는 이유: 그룹 카드는 overflow:hidden(둥근 하위 바닥) 이라
    잘려 나가고, Sub-Task 는 한 줄이라 내밀면 위 카드와 겹친다. */
-.tc-hot.inline { position: static; font-size: 13px; padding: 0; background: none;
-  box-shadow: none; flex: none; }
+/* 한 줄 카드(그룹 부모·Sub-Task)도 같은 자리·같은 모양. 인라인으로 두면 우선순위 아이콘부터
+   줄 전체가 오른쪽으로 밀려, 급한 카드만 열이 어긋난다. */
+.tc-hot.inline { top: -11px; }
 /* 하위 카드는 회색 바닥 위에서 흰색으로 지정돼 있다 — 급하면 그 지정을 이겨야 붉은 기가 산다 */
 .mt-gcard2.k-task > .mt-gbody .mt-card.urgent:not(:hover) {
   background: color-mix(in srgb, var(--today) 7%, var(--panel));
