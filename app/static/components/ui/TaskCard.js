@@ -1,7 +1,7 @@
 // TaskCard.js — '내 Task' 의 **2줄 카드**. 하위(Sub-Task)가 없어 부모 카드에 담기지 않는 티켓용.
 //
 //   1행  [타입] [번호] [제목]
-//   2행  [긴급도] [D-day] [담당자] [소속 Epic]
+//   2행  [우선순위] [긴급도] [D-day] | [담당자] [소속 Epic]
 //
 // 왜 2줄인가: 한 줄에 다 넣으면 제목이 먼저 잘려 정작 무슨 일인지가 안 보인다. 제목에 한 줄을
 // 통째로 주고, 판단 재료(급한가·언제까지·누가·어디 소속)는 아랫줄에 모은다.
@@ -9,6 +9,7 @@
 // 완료된 티켓은 **긴급도·D-day 대신 완료일**을 보인다 — 끝난 일에 '며칠 남음' 은 의미가 없다.
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
+import PriIcon from "./PriIcon.js";
 import { ymd } from "../../lib/fmt.js";
 
 // 긴급도 — 남은 일수 하나로 정한다. 숫자(D-3)는 정확하지만 훑을 땐 안 읽히고,
@@ -31,7 +32,7 @@ export function urgencyOf(dueDays) {
 
 export default {
   name: "TaskCard",
-  components: { TypeBadge, Avatar },
+  components: { TypeBadge, Avatar, PriIcon },
   props: {
     card: { type: Object, required: true },
     showOwner: { type: Boolean, default: true },
@@ -63,6 +64,7 @@ export default {
       <span class="mt-title">{{ card.title }}</span>
     </div>
     <div class="tc-l2">
+      <PriIcon :rank="card.priRank" :name="card.pri" />
       <!-- 완료면 '언제 끝냈나' 만 남긴다. 끝난 일에 긴급도·남은 일수는 의미가 없다. -->
       <template v-if="done">
         <span class="tc-fin" :title="'완료 ' + doneAt">✓ {{ doneAt || '완료' }}</span>

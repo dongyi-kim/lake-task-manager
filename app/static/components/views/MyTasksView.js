@@ -17,6 +17,7 @@
 import { api } from "../../lib/api.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
+import PriIcon from "../ui/PriIcon.js";
 import TaskCard from "../ui/TaskCard.js";
 import { categoryColor } from "../../lib/colors.js";
 
@@ -54,7 +55,7 @@ const SORTS = [
 
 export default {
   name: "MyTasksView",
-  components: { TypeBadge, Avatar, TaskCard },
+  components: { TypeBadge, Avatar, TaskCard, PriIcon },
   data() {
     return {
       model: null, loading: true, err: "",
@@ -323,7 +324,7 @@ export default {
           <div v-for="st in states" :key="'n-' + st.k" class="mt-cell"
                :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length }]">
             <TaskCard v-for="c in byState(p.cards)[st.k]" :key="c.key" :card="c"
-                   :epic-title="epicTitle(c.epicKey)" />
+                   :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
           </div>
         </div>
 
@@ -332,7 +333,7 @@ export default {
           <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done' }">
-              <span class="mt-pri" :class="p.group.priBand" :title="'우선순위: ' + p.group.pri"></span>
+              <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.title }}</span>
@@ -356,8 +357,7 @@ export default {
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length }]">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
-                  <span class="mt-pri" :class="c.priBand" :title="'우선순위: ' + c.pri"></span>
-                  <TypeBadge :type="c.type" />
+                  <PriIcon :rank="c.priRank" :name="c.pri" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
                   <span v-if="!c.mine || p.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
@@ -384,7 +384,7 @@ export default {
         <!-- 그룹화 없음 → 카드 그리드 하나 -->
         <div v-if="groupBy === 'none'" class="mt-grid2">
           <TaskCard v-for="c in byState(panels[0].cards)[st.k]" :key="c.key" :card="c"
-                   :epic-title="epicTitle(c.epicKey)" />
+                   :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
           <div v-if="!byState(panels[0].cards)[st.k].length" class="mt-none">해당 상태의 티켓 없음</div>
         </div>
         <!-- 그룹화 있음 → 그룹이 좌우로 늘어서고 각 그룹 안이 그리드 -->
@@ -393,14 +393,14 @@ export default {
             <!-- 하위 없는 Task 묶음 — 카드로만 -->
             <template v-if="p.kind === 'solo'">
               <TaskCard v-for="c in byState(p.cards)[st.k]" :key="'so-' + c.key" :card="c"
-                   :epic-title="epicTitle(c.epicKey)" />
+                   :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
             </template>
             <div v-else v-show="byState(p.cards)[st.k].length" class="mt-gcard2 k-task"
                  :style="sigStyle(p.group)">
               <div class="mt-gh">
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done' }">
-              <span class="mt-pri" :class="p.group.priBand" :title="'우선순위: ' + p.group.pri"></span>
+              <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.title }}</span>
@@ -420,8 +420,7 @@ export default {
               <div class="mt-gbody one">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done' }" :style="sigStyle(c)" :data-key="c.key">
-                  <span class="mt-pri" :class="c.priBand"></span>
-                  <TypeBadge :type="c.type" />
+                  <PriIcon :rank="c.priRank" :name="c.pri" />
                   <span class="mt-key">{{ c.key }}</span>
                   <span class="mt-title">{{ c.title }}</span>
                   <span v-if="!c.mine || p.mode === 'all' || showRelated" class="mt-owner" :class="{ me: c.mine }"
