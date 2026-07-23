@@ -44,9 +44,14 @@
 .mt-card { display: flex; align-items: center; gap: 7px; min-width: 0; cursor: pointer;
   padding: 6px 8px; border-radius: 7px; border: 1px solid transparent; background: var(--panel); }
 .mt-card:hover { border-color: var(--border-hi); }
-/* 내 담당은 좌측 강조선 — 유관 티켓과 한눈에 갈린다 */
-.mt-card.mine { border-left: 3px solid var(--accent); }
-.mt-card.rel { opacity: .62; background: none; border-left: 3px solid transparent; }
+/* 좌측 띠 = **소속 Epic 의 시그니처 컬러**(--sig). 같은 Epic 은 어느 카드에서도 같은 색이라
+   목록을 훑을 때 '같은 묶음' 이 색으로 먼저 잡힌다. Epic 도 VoC 도 없으면 색을 주지 않는다.
+   내 담당 / 유관 구분은 **띠의 진하기 + 카드 투명도**로 — 색은 이미 Epic 이 쓰고 있다. */
+.mt-card { border-left: 3px solid transparent; }
+/* Epic 도 VoC 도 없으면 **중립색** — 없는 소속을 파란색으로 지어내지 않는다 */
+.mt-card.mine { border-left-color: var(--sig, var(--muted-2)); }
+.mt-card.rel { opacity: .62; background: none;
+  border-left-color: color-mix(in srgb, var(--sig, var(--border-hi)) 40%, transparent); }
 .mt-card.done .mt-title { text-decoration: line-through; opacity: .6; }
 .mt-pri { flex: none; width: 3px; height: 13px; border-radius: 2px; background: var(--muted-2); }
 .mt-pri.high { background: var(--today); }
@@ -66,10 +71,12 @@
 .mt-due.today, .mt-due.soon { color: var(--st-prog);
   background: color-mix(in srgb, var(--st-prog) 12%, transparent);
   border-color: color-mix(in srgb, var(--st-prog) 32%, transparent); }
-.mt-epic { flex: none; font-size: 9.5px; color: var(--ty-epic); white-space: nowrap;
+/* Epic 뱃지도 **좌측 띠와 같은 시그니처 컬러**를 쓴다(--sig 는 카드에 물려 있다).
+   둘이 다른 색이면 "이 색이 무슨 뜻인가" 가 두 갈래로 갈려 색이 정보가 되지 못한다. */
+.mt-epic { flex: none; font-size: 9.5px; color: var(--sig, var(--ty-epic)); white-space: nowrap;
   max-width: 200px; overflow: hidden; text-overflow: ellipsis;
-  background: color-mix(in srgb, var(--ty-epic) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ty-epic) 30%, transparent);
+  background: color-mix(in srgb, var(--sig, var(--ty-epic)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sig, var(--ty-epic)) 32%, transparent);
   padding: 1px 6px; border-radius: 4px; }
 .mt-epic.sm { max-width: 130px; }
 .mt-epic.none { color: var(--muted-2); background: none; border-style: dashed; border-color: var(--border-hi); }
@@ -149,9 +156,9 @@
 /* Epic 은 카드가 아니라 **구획**이다 — 제목 줄 + 가는 선. 카드를 또 씌우면 카드 안에 카드가 된다. */
 .mt-gcard2.k-epic { background: none; border: 0; border-radius: 0; margin-bottom: 18px; }
 .mt-gcard2.k-epic > .mt-gh { padding: 4px 2px 6px; gap: 8px;
-  border-bottom: 1px solid color-mix(in srgb, var(--ty-epic) 30%, var(--border)); }
+  border-bottom: 2px solid color-mix(in srgb, var(--sig, var(--ty-epic)) 55%, transparent); }
 .mt-gcard2.k-epic > .mt-gh .mt-pt { font-size: 13.5px; font-weight: 700; }
-.mt-gcard2.k-epic > .mt-gh .mt-pdia { color: var(--ty-epic); }
+.mt-gcard2.k-epic > .mt-gh .mt-pdia { color: var(--sig, var(--ty-epic)); }
 .mt-gcard2.k-epic.none > .mt-gh { border-bottom-color: var(--border); }
 .mt-gcard2.k-epic.none .mt-pt { color: var(--muted-2); }
 .mt-gcard2.inner { margin: 8px 0 8px 12px; }

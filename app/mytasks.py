@@ -81,6 +81,9 @@ def _node(raw, today, epic_field):
         "dueDays": dd,
         "sp": f.get(epic_field["sp"]),
         "epic": f.get(epic_field["epic"]) or None,
+        # 사용자 VoC 는 Epic 이 없어도 **전용 Epic 처럼** 취급한다(색·묶음 모두).
+        # 단 Epic 이 배정돼 있으면 그 Epic 이 우선이다 — 워크로드 Epic 분포와 같은 규칙.
+        "voc": epic_field["voc"] in [c.get("name") for c in (f.get("components") or [])],
         "parentKey": ((f.get("parent") or {}).get("key")) or None,
     }
 
@@ -121,7 +124,8 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
         return {"user": None, "groups": [], "epics": [], "error": "세션 사용자를 확인할 수 없습니다."}
 
     today = client.s_today() if hasattr(client, "s_today") else date.today()
-    ef = {"sp": client.s.sp_field_id, "epic": client.s.epic_link_field_id}
+    ef = {"sp": client.s.sp_field_id, "epic": client.s.epic_link_field_id,
+          "voc": client.s.voc_component}
 
     # 1) 내가 담당(또는 등록)한 이슈.
     #    화면이 '할당됨 / 진행 중 / 최근 완료' 3상태를 축으로 쓰므로 상태별 조건을 **한 질의**에 담는다
