@@ -36,6 +36,13 @@ search:
   confluence: { spaces: [DL, PMO] }
   bitbucket:  { projects: [DATA] }         # mock (사내 Bitbucket 버전 확인 전까지 가짜 결과)
 
+# 매니저(PM/PL) Jira 사용자 ID 목록 — **화이트리스트**.
+#   여기 있는 사람에게만  WBS Dashboard · 인력 워크로드  가 보인다.
+#   현안(PMO_VIT)·내 Task·티켓 뷰/다이얼로그는 누구나 쓴다(역할 무관).
+#   ※ 비워 두면 제한 없음(모두 매니저) — 빈 목록은 '아무도 없음' 이 아니라 '미설정' 이다.
+#   dev 는 mock 세션 사용자(test.ui01)를 매니저로 둬 전 화면을 그대로 검증한다.
+manager: [test.ui01]
+
 cache:
   db_path: cache-dev.sqlite3
   ttl_seconds: 900

@@ -127,10 +127,15 @@ export default {
       if (this.groupBy === "none") {
         return [{ key: "__all__", kind: "none", cards: this.visible(this.allCards) }];
       }
-      const out = this.groups.filter((g) => g.hasSubs).map((g) => this.taskPanel(g));
+      // 하위가 있는 Task 를 **위로**, 하위 없는 단독 Task 묶음을 아래로.
+      // 단독 묶음은 서로 아무 관계 없는 티켓을 담는 자루라 그 '순위'(가장 급한 카드)는 사실상
+      // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
+      // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
+      const out = this.groups.filter((g) => g.hasSubs).map((g) => this.taskPanel(g))
+        .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
       const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs));
       if (solo) out.push(solo);
-      return out.sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
+      return out;
     },
   },
   methods: {

@@ -14,6 +14,16 @@ import { api } from "../lib/api.js";
 
 const ROUTES = { wbs: WbsView, vit: VitView, workload: WorkloadView,
                  mytasks: MyTasksView, devtools: DevToolsView };
+// 탭 정의 한곳 — 라벨과 접근 권한이 갈라지지 않게. manager: true 면 매니저에게만 보인다.
+// (티켓 뷰/다이얼로그·검색은 역할과 무관하다 — 여기 없는 건 다 누구나 쓴다.)
+const TABS = [
+  { k: "wbs", label: "WBS Dashboard", manager: true },
+  { k: "vit", label: "현안 (PMO_VIT)" },
+  { k: "workload", label: "인력 워크로드", manager: true },
+  { k: "mytasks", label: "내 Task" },
+];
+// 탭에 없지만 주소로는 갈 수 있는 매니저 전용 화면(설정 메뉴에서 진입).
+const MANAGER_ONLY = new Set(TABS.filter((t) => t.manager).map((t) => t.k).concat(["devtools"]));
 function currentRoute() { return location.hash.replace("#/", "") || "wbs"; }
 // /browse/DL-1234 — 그 티켓만의 단독 페이지("새 창에서 열기" 대상).
 // Jira 와 같은 URL 형태라 주소만 보고도 어느 티켓인지 안다.
@@ -29,10 +39,24 @@ export default {
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
                     ready: false, needLogin: false, ticketKey: null, searchOpen: false,
+                    // null = 아직 모름. 판정 전에는 매니저 전용 탭을 감춰 둔다 —
+                    // 보였다가 사라지면 눌러 놓고 튕기는 꼴이 된다.
+                    manager: null,
                     ticketKeyFromPath: ticketOf() }; },
   computed: {
-    view() { return ROUTES[this.route] || ROUTES.wbs; },
+    tabs() { return TABS.filter((t) => !t.manager || this.manager); },
+    /** 이 사용자가 볼 수 있는 화면인가. 매니저 전용인데 아니면 접근 자체를 막는다. */
+    allowed() { return !MANAGER_ONLY.has(this.route) || this.manager === true; },
+    view() {
+      if (!this.allowed) return ROUTES.mytasks;   // 권한 없는 주소는 '내 Task' 로
+      return ROUTES[this.route] || ROUTES.wbs;
+    },
     pageTicket() { return this.ticketKeyFromPath; },
+  },
+  watch: {
+    // 볼 수 없는 주소면 주소 자체를 바로잡는다. 화면만 바꿔치면 해시가 #/wbs 로 남아
+    // 탭 강조가 아무 데도 안 걸리고, 새로고침할 때마다 같은 상황이 되풀이된다.
+    route() { if (this.ready && !this.allowed) location.hash = "#/mytasks"; },
   },
   mounted() {
     window.addEventListener("hashchange", () => { this.route = currentRoute(); });
@@ -59,8 +83,20 @@ export default {
         e.preventDefault(); this.searchOpen = true;
       }
     });
-    api.health().then((h) => { this.needLogin = !!(h && h.needLogin); })
-      .catch(() => {}).finally(() => { this.ready = true; });
+    api.health().then((h) => {
+      this.needLogin = !!(h && h.needLogin);
+      if (this.needLogin) return null;
+      // 매니저 판정은 세션 사용자로 하므로 로그인 뒤에야 알 수 있다.
+      return api.me().then((me) => { this.manager = !!(me && me.manager); }).catch(() => {
+        // 판정을 못 하면 **막지 않는다**. 서버가 어차피 403 으로 막으므로 여기서 감추면
+        // 매니저인데도 화면이 사라지는 쪽이 더 큰 사고다.
+        this.manager = true;
+      });
+    }).catch(() => {}).finally(() => {
+      this.ready = true;
+      // 기본 진입(#없음)은 wbs 인데, 매니저가 아니면 볼 수 없다 → 내 Task 로 보낸다.
+      if (!this.allowed) location.hash = "#/mytasks";
+    });
   },
   methods: {
     toggleTheme() {
@@ -74,10 +110,8 @@ export default {
       <header v-if="!pageTicket" class="top">
         <img class="nav-logo" src="icon.png" alt="Lake Task Manager" title="Lake Task Manager" />
         <nav class="tabs">
-          <a :class="{ on: route === 'wbs' }" href="#/wbs">WBS Dashboard</a>
-          <a :class="{ on: route === 'vit' }" href="#/vit">현안 (PMO_VIT)</a>
-          <a :class="{ on: route === 'workload' }" href="#/workload">인력 워크로드</a>
-          <a :class="{ on: route === 'mytasks' }" href="#/mytasks">내 Task</a>
+          <a v-for="t in tabs" :key="t.k" :class="{ on: route === t.k }"
+             :href="'#/' + t.k">{{ t.label }}</a>
         </nav>
         <div class="top-actions">
           <button class="search-trig" @click="searchOpen = true" title="통합 검색 ( / )">

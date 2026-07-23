@@ -124,6 +124,7 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
 
     @app.get("/api/dev/bitbucket/repos")
     def _dev_bb_repos(name: str = "", limit: int = 3, full: bool = False):
+        _require_manager()
         base = _BB
         return _probe_result(
             "GET /rest/api/1.0/repos",
@@ -134,6 +135,7 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
     @app.get("/api/dev/bitbucket/diag")
     def _dev_bb_diag():
         """XSRF 진단 — Bitbucket 도메인 쿠키 이름·전송 헤더. code search 403 원인 파악용."""
+        _require_manager()
         prov = _client.provider
         if not hasattr(prov, "_diag_write"):
             return {"note": "이 provider(로컬 basic/mock)는 쿠키 진단 미지원 — prod SSO 에서만."}
@@ -141,6 +143,7 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
 
     @app.get("/api/dev/bitbucket/code")
     def _dev_bb_code(q: str = "test", limit: int = 3, full: bool = False):
+        _require_manager()
         base = _BB
         body = {"query": q, "entities": {"code": {"start": 0, "limit": limit}}}
         return _probe_result(
@@ -159,6 +162,7 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
 
     @app.get("/api/dev/tools")
     def _dev_tools_list():
+        _require_manager()
         return {"enabled": sorted(_settings.dev_tools),
                 "available": _devtools.DEV_TOOLS,
                 "endpoints": _DEV_ENDPOINTS,
@@ -188,16 +192,36 @@ if _devtools.enabled(_settings, "sso_status"):
     @app.get("/api/dev/sso")
     def _dev_sso_status():
         """각 서비스 인증 상태(전체). 개별 실시간 표시는 /api/dev/sso/{service} 를 병렬 호출."""
+        _require_manager()
         return {"targets": [_probe_service(svc) for svc in getattr(_settings, "services", [])],
                 "note": "authenticated=false 인 서비스는 그 도메인 SSO 로그인이 안 된 것."}
 
     @app.get("/api/dev/sso/{service}")
     def _dev_sso_one(service: str):
         """서비스 하나만 인증 확인 — 설정창이 서비스별로 병렬 호출해 각각 실시간 렌더한다."""
+        _require_manager()
         for svc in getattr(_settings, "services", []):
             if svc["name"].lower() == service.lower():
                 return _probe_service(svc)
         return JSONResponse({"error": "unknown service", "service": service}, status_code=404)
+
+
+def _is_manager(me=None):
+    """세션 사용자가 매니저인가. 매니저 전용 화면(WBS·워크로드)의 단일 판정 지점."""
+    from app.settings import is_manager as _im
+    if me is None:
+        try:
+            me = _client.current_user()
+        except Exception:
+            return not _settings.managers      # 세션을 못 읽으면 미설정 여부로만 판단
+    return _im(_settings, me)
+
+
+def _require_manager():
+    """매니저 전용 API 게이트. 프론트에서 탭을 숨기지만 주소를 직접 치면 그만이라,
+    데이터를 주는 쪽에서도 막는다(숨김은 접근 제어가 아니다)."""
+    if not _is_manager():
+        raise HTTPException(status_code=403, detail="매니저 전용 화면입니다.")
 
 
 @app.get("/api/health")
@@ -226,6 +250,7 @@ def api_login():
 
 @app.get("/api/wbs")
 def api_wbs():
+    _require_manager()
     plan = load_plan()
     epic_prog = _client.epic_progress_map(plan)
     data = rollup.build(plan, epic_prog)
@@ -498,8 +523,10 @@ def api_attachment_delete(key: str, aid: str):
 
 @app.get("/api/me")
 def api_me():
-    """세션 사용자 — 본인 댓글(수정/삭제) 판정용."""
-    return JSONResponse(_client.current_user())
+    """세션 사용자 — 본인 댓글(수정/삭제) 판정 + 매니저 여부(화면 노출 판정)."""
+    me = dict(_client.current_user() or {})
+    me["manager"] = _is_manager(me)
+    return JSONResponse(me)
 
 
 @app.get("/api/vit/shell")
@@ -531,6 +558,7 @@ def api_vit():
 
 @app.get("/api/workload")
 def api_workload():
+    _require_manager()
     plan = load_plan()
     return JSONResponse(workload.build_workload(_client, plan, load_people(), jira_base=_settings.jira_base))
 
@@ -538,6 +566,7 @@ def api_workload():
 @app.get("/api/workload/shell")
 def api_workload_shell():
     """워크로드 골격 — 모듈·인원 수만(Jira 조회 없음)."""
+    _require_manager()
     plan = load_plan()
     return JSONResponse(workload.build_workload_shell(_client, plan, load_people(),
                                                       jira_base=_settings.jira_base))
@@ -546,6 +575,7 @@ def api_workload_shell():
 @app.get("/api/workload/module/{module}")
 def api_workload_module(module: str):
     """워크로드 — 모듈 하나만(모듈별 병렬 호출용)."""
+    _require_manager()
     plan = load_plan()
     return JSONResponse(workload.build_workload_module(_client, plan, load_people(), module))
 
@@ -553,6 +583,7 @@ def api_workload_module(module: str):
 @app.get("/api/workload/{user}/{bucket}")
 def api_workload_bucket(user: str, bucket: str):
     """인력 상세의 한 버킷(open|inProgress|done7d) — 세 리스트를 각각 병렬 로딩."""
+    _require_manager()
     rows = _client.workload_bucket(user, bucket)
     if rows is None:
         return JSONResponse({"error": "unknown bucket", "bucket": bucket}, status_code=404)
@@ -562,11 +593,13 @@ def api_workload_bucket(user: str, bucket: str):
 @app.get("/api/workload/{user}")
 def api_workload_tickets(user: str):
     """인력 상세 — 진행중 / 최근7일 완료 티켓 리스트 (프론트 [+] 확장)."""
+    _require_manager()
     return JSONResponse(_client.workload_tickets(user))
 
 
 @app.get("/api/activity/{user}")
 def api_activity(user: str):
+    _require_manager()
     return JSONResponse(_client.activity(user))
 
 

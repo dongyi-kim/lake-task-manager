@@ -12,7 +12,8 @@ export default {
   props: { theme: { type: String, default: "light" } },
   emits: ["toggle-theme"],
   data() {
-    return {
+    return { manager: false,   // 매니저 아니면 Dev Tools 섹션을 감춘다(판정 전에도 감춤)
+     
       open: false, rev: "", tools: null, loggingIn: false,
       // 서비스별 독립 상태 — loading|ok|no|off|err. 각자 도착하는 대로 렌더된다.
       services: SERVICES.map((name) => ({ name, status: "loading", detail: "", configured: null })),
@@ -24,6 +25,7 @@ export default {
     needsAuth() { return this.services.some((s) => s.status === "no" || s.status === "err"); },
   },
   mounted() {
+    api.me().then((me) => { this.manager = !!(me && me.manager); }).catch(() => {});
     this._onDoc = (e) => { if (this.open && this.$el && !this.$el.contains(e.target)) this.close(); };
     document.addEventListener("click", this._onDoc, true);
     document.addEventListener("keydown", this._onEsc = (e) => { if (e.key === "Escape" && this.open) this.close(); });
@@ -111,8 +113,8 @@ export default {
         </div>
       </div>
 
-      <!-- Dev Tools -->
-      <div class="sm-sec">
+      <!-- Dev Tools — 매니저 전용 -->
+      <div v-if="manager" class="sm-sec">
         <div class="sm-h">Dev Tools</div>
         <a class="sm-btn sm-devgo" href="#/devtools" @click="close()">개발용 API 열기 →</a>
       </div>

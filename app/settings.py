@@ -103,6 +103,13 @@ class Settings:
         self.search_jira_projects = _slist(_sj, "projects", "project", default=[self.project_key])
         self.search_confluence_spaces = _slist(_sc, "spaces", "space")
         self.search_bitbucket_projects = _slist(_sb, "projects", "project")
+        # 매니저(PM/PL) Jira 사용자 ID 화이트리스트. WBS Dashboard·인력 워크로드는 여기 있는
+        # 사람에게만 보인다(그 외 기능은 누구나). 화이트리스트만 두는 이유: 역할이 늘 때마다
+        # 사람 목록을 두 벌 관리하게 되면 반드시 어긋난다 — 매니저만 적고 나머지는 '그 외' 다.
+        # ★ 비어 있으면 **제한 없음**(모두 매니저). 안 그러면 config 를 안 채운 dev·초기 설치에서
+        #   아무에게도 아무것도 안 보이는 상태가 된다 — 빈 목록은 '아무도 없음' 이 아니라 '미설정'.
+        self.managers = [x.lower() for x in
+                         _slist(cfg, "manager", "managers", default=[]) or []]
         # 사용자 VoC — 컴포넌트 이름으로 식별한다. 인스턴스마다 다를 수 있어 config 로 받는다.
         # 워크로드 Epic 분포에서 **전용 Epic 처럼** 따로 세는 기준이기도 하다.
         from .progress import VOC_COMPONENT as _VOC_DEFAULT   # 기본값 단일 소스
@@ -167,6 +174,19 @@ def _normalize_wbs(raw):
                 "epics": [{"key": e["ticket"], "weight": e["weight"]} for e in t.get("epics", []) or []],
             })
     return plan
+
+
+def is_manager(settings, user):
+    """이 사용자가 매니저인가. user 는 id 문자열 또는 /myself 응답 dict.
+    화이트리스트가 비어 있으면(미설정) 전원 매니저로 본다."""
+    if not settings.managers:
+        return True
+    if isinstance(user, dict):
+        # ★ id 를 먼저 본다. 우리 내부 표현은 {id: 사번, name: **표시이름**} 이라 name 부터
+        #   보면 "홍길동 SKCC" 같은 표시이름과 사번을 비교하게 된다(실제로 그랬다).
+        #   Jira 원본 /myself 는 id 가 없고 name 이 곧 사번이라 폴백으로 함께 받는다.
+        user = user.get("id") or user.get("name") or user.get("key") or ""
+    return str(user or "").strip().lower() in settings.managers
 
 
 def load_wbs_config(path=None):
