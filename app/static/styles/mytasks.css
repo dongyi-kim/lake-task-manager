@@ -480,3 +480,20 @@
 /* 안쪽 하위 영역도 그만큼 덜 파고들게 — 카드가 좁아진 만큼 여백이 두 배로 보이면 답답하다 */
 .ax-h .mt-gcard2.k-task > .mt-gbody { padding-left: 16px; }
 .ax-h .mt-gcard2.k-task > .mt-gbody::before { left: 7px; }
+
+/* ── 가로축: 상태 열 접기 ───────────────────────────────────────────────────
+   지금 안 보는 상태를 치우고 남은 열에 폭을 몰아준다. 접힌 열은 **사라지지 않고** 좁은
+   레일로 남는다 — 없어지면 다시 펼 자리가 없다(세로축 밴드와 같은 원칙).
+   폭은 CSS 변수 하나로 정해 헤더 줄과 모든 그룹 본문이 통째로 함께 움직인다. */
+.mt-headrow, .mt-gbody { grid-template-columns: var(--mt-cols, repeat(3, minmax(0, 1fr))); }
+.mt-colh { cursor: pointer; font-family: inherit; text-align: left; }
+.mt-colh .chev { transition: transform .12s; display: inline-block; color: inherit; flex: none; }
+.mt-colh .chev.open { transform: rotate(90deg); }
+.mt-colh.closed { justify-content: center; padding: 3px 0 5px; gap: 3px; }
+.mt-colh.closed b { margin-left: 0; }
+/* 접힌 열의 카드는 감춘다(트랙은 남으므로 레이아웃은 그대로) */
+.mt-cell.closed > * { display: none; }
+@media (max-width: 900px) {
+  /* 세로축으로 전환되는 폭 — 3칼럼 변수는 무시하고 한 줄로 */
+  .mt-headrow, .mt-gbody { grid-template-columns: 1fr; }
+}

@@ -3,10 +3,13 @@
 // 백엔드는 **사실 하나**(내 실행 원자 + 부모/동료/Epic 맥락)만 주고, 배치는 전부 여기서 한다.
 // 상단 옵션 패널이 세 축을 정한다:
 //
-//  1) 상태 축   가로 = 할당됨/진행중/최근완료가 **세로로 긴 칼럼**(칸반). 티켓은 1차원 리스트.
-//               세로 = 상태가 **가로로 꽉 찬 패널**로 쌓임. 티켓은 그리드.
+//  1) 상태 축   **폭이 정한다(옵션 아님)**. 3칼럼이 들어가면 가로축, 안 들어가면 세로축.
+//               가로 = 할당됨/진행중/최근완료가 세로로 긴 칼럼(칸반). 티켓은 1차원 리스트.
+//               세로 = 상태가 가로로 꽉 찬 패널로 쌓임. 티켓은 그리드.
 //               ★ 그룹은 늘 상태의 **반대 축**에 놓인다 — 가로 모드면 그룹이 위아래로 쌓이고,
 //                 세로 모드면 상태 패널 안에서 그룹이 좌우로 늘어선다.
+//               ★ 두 모드 모두 상태를 **접을 수 있고**, 접힘 상태(bandClosed)를 공유한다 —
+//                 창을 줄였다고 접어 둔 게 펴지면 그건 같은 화면이 아니다.
 //  2) 그룹화    없음     = 모든 Task/Sub-Task가 개별 카드
 //               Sub Task = 같은 부모 Task로 묶고 그 안에 Sub-Task. 하위가 없는 Task는
 //                          묶을 게 없으므로 그룹이 아니라 그냥 카드다.
@@ -43,10 +46,12 @@ function epicSig(card) {
 
 // 옵션 정의 — 라벨/설명이 한곳에 있어야 콤보박스와 저장 키가 어긋나지 않는다.
 // reload: true 면 서버 질의 조건이라 값이 바뀌면 다시 받아야 한다(클라이언트에서 거를 수 없다).
+// 상태 축은 **옵션이 아니다**. 3칼럼이 들어가면 가로축, 안 들어가면 세로축 — 화면 폭이
+// 답을 정해 놓았는데 사람에게 고르라고 하면, 좁은 화면에서 가로축을 골라 글자가 두 자씩
+// 끊기는 칼럼을 보게 된다. 고를 수 있다고 더 나은 게 아니다.
+const NARROW = "(max-width: 900px)";      // 이 아래로는 3칼럼이 성립하지 않는다(CSS 도 같은 값)
+
 const OPTIONS = [
-  { key: "axis", label: "상태 축", opts: [
-    { k: "h", label: "가로축", hint: "할당됨/진행중/최근완료를 세로로 긴 칼럼으로 — 티켓은 리스트" },
-    { k: "v", label: "세로축", hint: "상태를 가로로 꽉 찬 패널로 쌓기 — 티켓은 그리드" }] },
   { key: "groupBy", label: "그룹화", opts: [
     { k: "none", label: "없음", hint: "모든 티켓을 개별 카드로" },
     { k: "sub", label: "Sub Task", hint: "부모 Task 로 묶고 그 안에 Sub-Task — 하위가 없는 Task 는 그냥 카드" }] },
@@ -76,7 +81,8 @@ export default {
   data() {
     return {
       model: null, loading: true, err: "",
-      axis: "h",            // h = 상태를 가로축(칸반) | v = 상태를 세로축(가로 패널)
+      // 폭이 정한다(사용자 선택 아님). 좁으면 v(세로) — 화면이 답을 알고 있다.
+      axis: window.matchMedia(NARROW).matches ? "v" : "h",
       groupBy: "sub",       // none | sub (부모 Task 로 묶기)
       // 하위(Sub-Task) 보기 — **화면 전체에 하나**. collapsed | mine | all.
       // 전에는 그룹마다 버튼을 달아 개별로 바꿨는데, 그룹이 열 개면 열 번 눌러야 원하는 상태가 되고
@@ -90,7 +96,20 @@ export default {
       sort: "due",
     };
   },
-  mounted() { this.loadPrefs(); this.load(); },
+  mounted() {
+    this.loadPrefs();
+    this.load();
+    // 창 크기가 바뀌면 축도 따라간다(리사이즈·모니터 전환·창 분할).
+    this._mq = window.matchMedia(NARROW);
+    this._onMq = (e) => { this.axis = e.matches ? "v" : "h"; };
+    this._mq.addEventListener ? this._mq.addEventListener("change", this._onMq)
+                              : this._mq.addListener(this._onMq);
+  },
+  unmounted() {
+    if (!this._mq) return;
+    this._mq.removeEventListener ? this._mq.removeEventListener("change", this._onMq)
+                                 : this._mq.removeListener(this._onMq);
+  },
   computed: {
     groups() { return (this.model && this.model.groups) || []; },
     epicMap() {
@@ -100,6 +119,11 @@ export default {
     },
     states() { return STATES; },
     options() { return OPTIONS; },
+    /** 상태 열 폭 — 접힌 열은 좁은 레일만 남긴다(사라지면 되펼 자리가 없다).
+     *  헤더 줄과 모든 그룹 본문이 같은 변수를 쓰므로 칼럼이 통째로 함께 움직인다. */
+    gridCols() {
+      return this.states.map((st) => (this.bandOpen(st.k) ? "minmax(0, 1fr)" : "34px")).join(" ");
+    },
     doneDays() { return (this.model && this.model.doneWindowDays) || 7; },
 
     /** 모든 카드(내 것 + 유관) — 배치 이전의 평면 목록. 각 카드는 소속(부모/Epic)을 안다. */
@@ -168,9 +192,14 @@ export default {
       for (const o of OPTIONS) {
         if (o.opts.some((x) => x.k === saved[o.key])) this[o.key] = saved[o.key];
       }
+      // 상태 열 접힘은 옵션 목록에 없지만(콤보가 아니라 헤더 클릭) 같이 기억한다 —
+      // 매번 다시 접게 하면 접기의 의미가 없다.
+      if (saved.bandClosed && typeof saved.bandClosed === "object") {
+        this.bandClosed = Object.assign({}, saved.bandClosed);
+      }
     },
     savePrefs() {
-      const out = {};
+      const out = { bandClosed: this.bandClosed };
       for (const o of OPTIONS) out[o.key] = this[o.key];
       try { localStorage.setItem(PREF_KEY, JSON.stringify(out)); } catch (e) { /* 사파리 프라이빗 등 */ }
     },
@@ -248,7 +277,10 @@ export default {
     },
     /** 세로축 모드의 상태 밴드 접기 — 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게. */
     bandOpen(k) { return !this.bandClosed[k]; },
-    toggleBand(k) { this.bandClosed = Object.assign({}, this.bandClosed, { [k]: !this.bandClosed[k] }); },
+    toggleBand(k) {
+      this.bandClosed = Object.assign({}, this.bandClosed, { [k]: !this.bandClosed[k] });
+      this.savePrefs();
+    },
     bandCount(k) {
       return this.allCards.filter((c) => c.statusCategory === k && (this.subView === "all" || c.mine)).length;
     },
@@ -268,7 +300,7 @@ export default {
     isUrgentC(c) { return c.statusCategory !== "done" && isUrgent(c); },
   },
   template: `
-  <div class="mytasks" :class="'ax-' + axis">
+  <div class="mytasks" :class="'ax-' + axis" :style="{ '--mt-cols': gridCols }">
     <div v-if="loading" class="loading">불러오는 중…</div>
     <div v-else-if="err" class="mt-err">{{ err }}</div>
     <div v-else-if="!panels.length" class="mt-empty">표시할 일감이 없습니다.</div>
@@ -278,17 +310,22 @@ export default {
           안 씌우면 어디부터 어디까지가 한 그룹인지 안 읽힌다 — 둘 다 피한 구조다.) -->
     <template v-else-if="axis === 'h'">
       <div class="mt-headrow">
-        <div v-for="st in states" :key="'h-' + st.k" class="mt-colh" :class="'c-' + st.k">
-          {{ st.label }}
+        <button v-for="st in states" :key="'h-' + st.k" class="mt-colh"
+                :class="['c-' + st.k, { closed: !bandOpen(st.k) }]"
+                @click="toggleBand(st.k)"
+                :title="(bandOpen(st.k) ? '접기' : '펼치기') + ' — ' + st.label">
+          <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>
+          <template v-if="bandOpen(st.k)">{{ st.label }}</template>
           <b>{{ allCards.filter(c => c.statusCategory === st.k && (subView === 'all' || c.mine)).length }}</b>
-        </div>
+        </button>
       </div>
 
       <template v-for="p in panels" :key="p.key">
         <!-- 그룹화 없음 / 하위 없는 Task 묶음 — 묶을 게 없으니 카드 테두리도 없다 -->
         <div v-if="p.kind === 'none' || p.kind === 'solo'" class="mt-gbody plain">
           <div v-for="st in states" :key="'n-' + st.k" class="mt-cell"
-               :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length }]">
+               :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
+                                                closed: !bandOpen(st.k) }]">
             <TaskCard v-for="c in byState(p.cards)[st.k]" :key="c.key" :card="c"
                    :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
           </div>
@@ -321,7 +358,8 @@ export default {
           </div>
           <div v-if="p.mode !== 'collapsed'" class="mt-gbody">
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
-                 :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length }]">
+                 :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
+                                                closed: !bandOpen(st.k) }]">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
                              urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
