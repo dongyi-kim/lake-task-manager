@@ -124,11 +124,14 @@
   gap: 0 8px; padding: 0 8px; align-items: start; }
 @media (max-width: 900px) { .mt-headrow, .mt-gbody { grid-template-columns: 1fr; } }
 .mt-headrow { position: sticky; top: 0; z-index: 3; padding-bottom: 6px; background: var(--bg); }
-.mt-colh { display: flex; align-items: center; gap: 6px; padding: 5px 9px; font-size: 10.5px;
-  font-weight: 700; color: var(--tc, var(--muted)); letter-spacing: .3px; border-radius: 7px;
-  border: 1px solid color-mix(in srgb, var(--tc, var(--border)) 26%, var(--border));
-  border-left: 3px solid var(--tc, var(--border));
-  background: color-mix(in srgb, var(--tc, var(--border)) 13%, var(--panel)); }
+/* 상태 제목 — **상자가 아니라 제목**이다. 색 상자로 감싸면 그 안의 카드까지 한 덩어리로
+   묶여 '콜아웃에 담긴 목록' 으로 읽힌다. 여기서 상태는 담는 그릇이 아니라 영역의 이름이므로,
+   글자 + 그 아래 색 밑줄로만 표시하고 영역 구분은 세로선과 배경 음영이 맡는다. */
+.mt-colh { display: flex; align-items: center; gap: 6px; padding: 3px 2px 5px; font-size: 10.5px;
+  font-weight: 700; color: var(--tc, var(--muted)); letter-spacing: .3px;
+  border: 0; border-bottom: 2px solid var(--tc, var(--border)); background: none; }
+.mt-colh::before { content: ""; width: 6px; height: 6px; border-radius: 2px;
+  background: var(--tc, var(--border)); flex: none; }
 .mt-colh b { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; }
 .mt-colh.c-todo, .mt-cell.c-todo { --tc: var(--st-todo); }
 .mt-colh.c-inprogress, .mt-cell.c-inprogress { --tc: var(--st-prog); }
@@ -172,11 +175,19 @@
   .mt-gcard2.k-task > .mt-gbody::before { left: 7px; } }
 
 
-/* 상태 셀 — 칼럼을 나누는 자리일 뿐, 상자가 아니다.
-   (테두리·배경을 주면 카드마다 상자가 겹쳐 화면이 상자로 뒤덮인다. 상태색은 맨 위 헤더가 이미 진다.) */
+/* 상태 셀 — 상자가 아니라 **영역**이다. 테두리로 감싸는 대신 세로 구분선과 옅은 배경
+   음영으로 "여기부터 저기까지가 이 상태" 를 만든다. 감싸는 테두리가 없으니 카드마다
+   상자가 겹쳐 보이지 않으면서도 칼럼 경계는 분명하다. */
 .mt-cell { min-width: 0; display: flex; flex-direction: column; gap: 3px;
   background: none; border: 0; padding: 0; }
-.mt-gbody.plain .mt-cell { padding-bottom: 8px; }
+.mt-gbody.plain .mt-cell { padding: 8px 8px 10px;
+  background: color-mix(in srgb, var(--tc, var(--border)) 4%, transparent); }
+/* 세로 구분선 — 칼럼 사이에만(첫 칼럼 왼쪽엔 그을 자리가 없다) */
+.mt-gbody.plain .mt-cell + .mt-cell,
+.mt-headrow .mt-colh + .mt-colh { border-left: 1px solid var(--border); padding-left: 12px; }
+@media (max-width: 900px) {
+  .mt-gbody.plain .mt-cell + .mt-cell, .mt-headrow .mt-colh + .mt-colh {
+    border-left: 0; padding-left: 2px; } }
 .mt-cell.empty { min-height: 0; }
 
 /* 하위 진척 — 부모 카드에만. ★ .mt-bar 는 상단 옵션 패널이 쓰는 이름이라 겹치면
@@ -189,19 +200,23 @@
 .mt-pbar i { display: block; height: 100%; background: var(--gc, var(--accent)); }
 
 /* ── ax-v : 상태 밴드(가로로 꽉 참) + 그룹이 좌우 ── */
-.mt-band { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
-  --tc: var(--st-todo); background: color-mix(in srgb, var(--tc) 4%, var(--panel)); }
+/* 상태 영역 — 테두리로 감싼 상자(콜아웃)가 아니라, **가로선으로 나뉜 개별 공간**이다.
+   위쪽 색 선이 영역의 시작을 긋고, 옅은 배경 음영이 그 영역의 범위를 보인다.
+   상자로 감싸면 안의 카드까지 한 덩어리로 묶여 카드 하나하나가 안 읽힌다. */
+.mt-band { margin-bottom: 20px; border: 0; border-radius: 0;
+  --tc: var(--st-todo); background: color-mix(in srgb, var(--tc) 4%, transparent);
+  border-top: 2px solid color-mix(in srgb, var(--tc) 55%, transparent); }
 .mt-band.c-inprogress { --tc: var(--st-prog); }
 .mt-band.c-done { --tc: var(--st-done); }
 /* 밴드 헤더 = 접기 버튼. 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게 한다. */
+/* 영역 제목 — 색 상자가 아니라 제목 줄. 누르면 접힌다. */
 .mt-bandh { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
-  padding: 6px 11px; font-size: 11px; font-weight: 700; color: var(--tc); letter-spacing: .3px;
-  border: 0; border-bottom: 1px solid var(--border); border-left: 3px solid var(--tc);
-  background: color-mix(in srgb, var(--tc) 13%, var(--panel)); cursor: pointer; font-family: inherit; }
-.mt-bandh:hover { background: color-mix(in srgb, var(--tc) 20%, var(--panel)); }
+  padding: 7px 10px 6px; font-size: 11px; font-weight: 700; color: var(--tc); letter-spacing: .3px;
+  border: 0; background: none; cursor: pointer; font-family: inherit; }
+.mt-bandh:hover { color: var(--tc); background: color-mix(in srgb, var(--tc) 7%, transparent); }
 .mt-bandh .chev { transition: transform .12s; display: inline-block; color: var(--tc); }
 .mt-bandh .chev.open { transform: rotate(90deg); }
-.mt-band.closed .mt-bandh { border-bottom: 0; }
+.mt-band.closed { background: none; }   /* 접히면 음영도 없앤다 — 빈 색면만 남으면 무엇의 영역인지 모른다 */
 .mt-bandh b { color: var(--text); font-variant-numeric: tabular-nums; }
 /* 그리드 — 가로가 남으면 열이 늘어난다. 순서는 좌→우, 위→아래(행 우선)로 읽힌다. */
 .mt-grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -310,3 +325,11 @@
 :root[data-theme="dark"] .mt-card.rel { box-shadow: none; }
 :root[data-theme="dark"] .mt-card:hover {
   box-shadow: 0 4px 12px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06); }
+
+/* 카드가 영역 배경 위에 놓이므로 흰 카드가 뜨도록 — 영역 음영은 어디까지나 바닥이다 */
+.mt-cell .mt-card, .mt-band .mt-card { background: var(--panel); }
+.mt-cell .mt-card.rel, .mt-band .mt-card.rel { background: color-mix(in srgb, var(--panel) 60%, transparent); }
+
+/* 칼럼 높이를 맞춘다 — 음영과 세로 구분선이 카드 수만큼만 내려오면 영역 경계가 중간에서
+   끊겨 '영역' 이 아니라 '카드 뒤 색칠' 로 보인다. 세 칼럼이 같은 바닥까지 내려와야 한 판이 된다. */
+.mt-gbody.plain { align-items: stretch; }
