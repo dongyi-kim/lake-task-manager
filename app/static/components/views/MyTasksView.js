@@ -47,8 +47,10 @@ export default {
       model: null, loading: true, err: "",
       axis: "h",            // h = 상태를 가로축(칸반) | v = 상태를 세로축(가로 패널)
       groupBy: "task",      // none | task | epic
-      showRelated: false,   // 유관 Task(내 담당이 아닌 티켓)도 함께
-      openGroups: {},       // 그룹별 개별 확장(유관 보기)
+      // 하위(Sub-Task) 보기 3단: collapsed(모두 접기) | mine(내 것만) | all(전체).
+      // showRelated 는 그 **기본값**을 정하고, 그룹별 버튼이 개별로 덮어쓴다.
+      showRelated: false,
+      groupModes: {},       // { 그룹키: 'collapsed' | 'mine' | 'all' }
       scope: "assignee",    // assignee | reporter | both
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
@@ -64,6 +66,7 @@ export default {
       return m;
     },
     states() { return STATES; },
+    defaultMode() { return this.showRelated ? "all" : "mine"; },
     sorts() { return SORTS; },
     doneDays() { return (this.model && this.model.doneWindowDays) || 7; },
 
@@ -93,8 +96,7 @@ export default {
         return [{ key: "__all__", kind: "none", cards: this.visible(this.allCards) }];
       }
       if (this.groupBy === "task") {
-        const out = this.groups.filter((g) => g.hasSubs).map((g) => this.taskPanel(g))
-          .filter((p) => p.cards.length || p.hiddenCount);
+        const out = this.groups.filter((g) => g.hasSubs).map((g) => this.taskPanel(g));
         const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs));
         if (solo) out.push(solo);
         return out.sort((a, b) => a.rank - b.rank);
@@ -138,14 +140,10 @@ export default {
         isGroupSelf: t.key === g.key,
       });
     },
-    // 유관 보기가 꺼져 있으면 내 담당만. 그룹 단위 확장은 openGroups 로 개별 허용.
-    visible(cards, gkey) {
-      if (this.showRelated || (gkey && this.openGroups[gkey])) return this.sorted(cards);
-      return this.sorted(cards.filter((c) => c.mine));
-    },
-    hidden(cards, gkey) {
-      if (this.showRelated || (gkey && this.openGroups[gkey])) return 0;
-      return cards.filter((c) => !c.mine).length;
+    /** 그룹이 아닌(=하위 없는) 카드 묶음용 — 기본은 내 담당만, '유관 기본 펼침' 이면 전부.
+        하위가 있는 Task 는 그룹별 3단 모드(modeOf)를 쓰므로 이 함수를 타지 않는다. */
+    visible(cards) {
+      return this.sorted(this.showRelated ? cards : cards.filter((c) => c.mine));
     },
     dueOf(c) { return (c.dueDays === null || c.dueDays === undefined) ? NO_DUE : c.dueDays; },
     sorted(cards) {
@@ -164,14 +162,16 @@ export default {
         : Math.min(...pool.map((c) => this.dueOf(c)));
     },
     taskPanel(g) {
-      const cards = [].concat(g.atoms.map((a) => this.card(a, g, true)),
-                              g.others.map((o) => this.card(o, g, false)));
+      const mineCards = g.atoms.map((a) => this.card(a, g, true));
+      const all = mineCards.concat(g.others.map((ot) => this.card(ot, g, false)));
+      const mode = this.modeOf(g.key);
+      const shown = mode === "collapsed" ? [] : (mode === "all" ? all : mineCards);
       return {
         key: g.key, kind: "task", group: g,
         title: g.title, epicKey: g.epic,
-        cards: this.visible(cards, g.key),
-        hiddenCount: this.hidden(cards, g.key),
-        rank: this.rankOf(cards),
+        mode, mineCount: mineCards.length, allCount: all.length,
+        cards: this.sorted(shown),
+        rank: this.rankOf(all),
       };
     },
     /** 하위 없는 Task 들을 묶음 없이 카드로만 모은 덩어리(그룹 패널이 아니다). */
@@ -183,13 +183,11 @@ export default {
       }
       const vis = this.visible(cards);
       if (!vis.length) return null;
-      return { key: "__solo__", kind: "solo", cards: vis, hiddenCount: this.hidden(cards),
-               rank: this.rankOf(cards) };
+      return { key: "__solo__", kind: "solo", cards: vis, rank: this.rankOf(cards) };
     },
     epicPanel(ek, gs) {
       // 하위가 있는 Task 만 Epic 안에서 다시 그룹이 된다. 나머지는 Epic 직속 카드.
       const subPanels = gs.filter((g) => g.hasSubs).map((g) => this.taskPanel(g))
-        .filter((sp) => sp.cards.length || sp.hiddenCount)
         .sort((a, b) => a.rank - b.rank);
       const solo = this.soloPanel(gs.filter((g) => !g.hasSubs));
       const all = [].concat(...gs.map((g) => [].concat(
@@ -201,9 +199,8 @@ export default {
         soloCards: solo ? solo.cards : [],
         // 헤더 개수는 **보이는 티켓 수** — 그룹이 된 Task 수를 세면 직속 카드만 있는 Epic 이 '0' 이 된다
         count: (solo ? solo.cards.length : 0)
-               + gs.filter((g) => g.hasSubs).reduce((n, g) => n + this.visible(
-                   [].concat(g.atoms.map((a) => this.card(a, g, true)),
-                             g.others.map((o) => this.card(o, g, false))), g.key).length, 0),
+               + gs.filter((g) => g.hasSubs).reduce(
+                   (n, g) => n + this.taskPanel(g).cards.length, 0),
         subPanels, rank: this.rankOf(all),
       };
     },
@@ -213,8 +210,23 @@ export default {
       for (const c of cards) (m[c.statusCategory] || m.todo).push(c);
       return m;
     },
-    toggleGroup(k) { this.openGroups = Object.assign({}, this.openGroups, { [k]: !this.openGroups[k] }); },
-    isOpen(k) { return this.showRelated || !!this.openGroups[k]; },
+    /** 하위 보기 모드 — 그룹별 설정이 있으면 그것, 없으면 상단 옵션이 정한 기본값. */
+    modeOf(k) { return this.groupModes[k] || this.defaultMode; },
+    /** 펼치기 버튼 — 접기 → 내 것만 → 전체 → 접기 로 순환한다. */
+    cycleMode(k) {
+      const next = { collapsed: "mine", mine: "all", all: "collapsed" };
+      this.groupModes = Object.assign({}, this.groupModes, { [k]: next[this.modeOf(k)] });
+    },
+    modeLabel(m, mineN, allN) {
+      if (m === "collapsed") return "▸ 하위 " + allN;
+      if (m === "mine") return "▾ 내 하위 " + mineN + (allN > mineN ? " / " + allN : "");
+      return "▾ 전체 " + allN;
+    },
+    modeHint(m) {
+      if (m === "collapsed") return "모두 접힘 — 누르면 내가 할당된 하위만 펼칩니다";
+      if (m === "mine") return "내가 할당된 하위만 — 누르면 모든 하위를 펼칩니다";
+      return "모든 하위 — 누르면 접습니다";
+    },
     epicTitle(k) { return k ? ((this.epicMap[k] || {}).title || k) : null; },
     dueLabel, dueBand,
   },
@@ -282,8 +294,8 @@ export default {
           <button :class="{ on: doneFilter === '1m' }" @click="setDoneFilter('1m')" title="최근 1달 안에 완료">1달</button>
         </div>
       </div>
-      <label class="mt-tg" title="그룹 안에서 내 담당이 아닌 티켓(동료 몫)도 함께 본다">
-        <input type="checkbox" v-model="showRelated"> 유관 Task 보기
+      <label class="mt-tg" title="하위(Sub-Task) 펼침 기본값 — 각 그룹의 펼치기 버튼으로 개별 변경할 수 있습니다">
+        <input type="checkbox" v-model="showRelated"> 유관 Task 기본 펼침
       </label>
       <button class="mt-refresh" @click="load" title="다시 불러오기">↻</button>
     </div>
@@ -327,10 +339,10 @@ export default {
             <span class="mt-pt">{{ p.title }}</span>
             <span v-if="p.epicKey" class="mt-epic">◆ {{ epicTitle(p.epicKey) }}</span>
             <span v-else class="mt-epic none">Epic 없음</span>
-            <button v-if="p.hiddenCount" class="mt-more" @click="toggleGroup(p.key)">유관 {{ p.hiddenCount }} 보기</button>
-            <button v-else-if="!showRelated && openGroups[p.key]" class="mt-more on" @click="toggleGroup(p.key)">유관 숨기기</button>
+            <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
+                    :title="modeHint(p.mode)">{{ modeLabel(p.mode, p.mineCount, p.allCount) }}</button>
           </div>
-          <div class="mt-gbody">
+          <div v-if="p.mode !== 'collapsed'" class="mt-gbody">
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length }]">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
@@ -372,10 +384,10 @@ export default {
             <div class="mt-gh sub">
               <span class="mt-pkey tkt" :data-key="sp.key">{{ sp.key }}</span>
               <span class="mt-pt">{{ sp.title }}</span>
-              <button v-if="sp.hiddenCount" class="mt-more" @click="toggleGroup(sp.key)">유관 {{ sp.hiddenCount }} 보기</button>
-              <button v-else-if="!showRelated && openGroups[sp.key]" class="mt-more on" @click="toggleGroup(sp.key)">유관 숨기기</button>
+              <button class="mt-more" :class="'m-' + sp.mode" @click="cycleMode(sp.key)"
+                      :title="modeHint(sp.mode)">{{ modeLabel(sp.mode, sp.mineCount, sp.allCount) }}</button>
             </div>
-            <div class="mt-gbody">
+            <div v-if="sp.mode !== 'collapsed'" class="mt-gbody">
               <div v-for="st in states" :key="sp.key + st.k" class="mt-cell"
                    :class="['c-' + st.k, { empty: !byState(sp.cards)[st.k].length }]">
                 <div v-for="c in byState(sp.cards)[st.k]" :key="c.key" class="mt-card tkt"
@@ -466,7 +478,8 @@ export default {
               <div class="mt-gch">
                 <span class="mt-pkey tkt" :data-key="p.key">{{ p.key }}</span>
                 <span class="mt-pt">{{ p.title }}</span>
-                <button v-if="p.hiddenCount" class="mt-more" @click="toggleGroup(p.key)">유관 {{ p.hiddenCount }}</button>
+                <button class="mt-more" :class="'m-' + p.mode" @click="cycleMode(p.key)"
+                        :title="modeHint(p.mode)">{{ modeLabel(p.mode, p.mineCount, p.allCount) }}</button>
               </div>
               <div class="mt-grid2">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"

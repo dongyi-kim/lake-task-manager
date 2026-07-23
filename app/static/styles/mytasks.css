@@ -160,3 +160,10 @@
 .mt-gch { display: flex; align-items: center; gap: 6px; padding: 5px 8px; min-width: 0;
   border-bottom: 1px solid var(--border); background: var(--panel-2); }
 .mt-gcard .mt-grid2 { grid-template-columns: 1fr; padding: 4px; gap: 3px; }
+
+/* 하위 보기 3단 버튼 — 현재 상태를 글자로 보여주고 누르면 다음 단계로 순환한다
+   (접기 → 내 것만 → 전체). 상태별로 테두리 성격을 달리해 지금 어디인지 눈으로도 잡히게. */
+.mt-more.m-collapsed { border-style: dashed; color: var(--muted-2); }
+.mt-more.m-mine { border-style: solid; border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
+.mt-more.m-all { border-style: solid; border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent); }
