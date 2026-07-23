@@ -57,6 +57,15 @@ class Cache:
         # 않고** 낡은 값으로 답한다 — 죽은 세션에 매번 붙어 보느라 화면이 멎는 걸 막는다
         # (prod 의 Playwright 호출은 실패 판정까지 최대 180초가 걸린다).
         self.skip_producer = None
+        # ── 편집에 예민한 데이터 — **캐시가 신선해도 매번 다시 받는다** ──────────────
+        # 티켓 본문·코멘트·첨부·링크는 사람이 방금 고쳤을 수 있는 것들이다. TTL 이 15분이면
+        # 내가 쓴 댓글이 15분 동안 안 보일 수 있는데, 그건 캐시가 아니라 버그로 보인다.
+        # 그렇다고 캐시를 끄면 열 때마다 빈 화면을 보고 기다려야 한다 →
+        # **캐시로 즉시 그리고, 매번 뒤에서 갱신한다**(다음 조회부터 최신).
+        # 접두사로 두는 이유: 키를 만드는 곳이 열 군데 넘는데 각자 판단하게 하면 반드시 갈린다.
+        self.always_revalidate = ()
+        # 재검증을 실제로 돌릴 스케줄러(key, ttl, producer). 없으면 그냥 캐시만 준다.
+        self.revalidator = None
         # 마지막으로 상류에서 실제로 받아 온 시각 / 낡은 값을 내준 적이 있는지 —
         # 화면 상단 알림이 "언제 기준 데이터인지" 를 말하려면 이 두 개가 필요하다.
         self.last_upstream_ok = 0.0
@@ -105,6 +114,9 @@ class Cache:
         """
         hit = self.get(key)
         if hit is not None:
+            # 편집에 예민한 키는 신선해도 뒤에서 다시 받는다(화면은 즉시 뜨고 값은 곧 최신이 된다).
+            if self._needs_revalidate(key):
+                self.revalidator(key, ttl, producer)
             return hit, True
         # 상류가 죽은 걸 이미 아는 상태면 붙어 보지 않는다(실패 판정에만 수십 초가 걸린다).
         if self.skip_producer and self.skip_producer():
@@ -123,6 +135,13 @@ class Cache:
         self.set(key, value, ttl)
         self.last_upstream_ok = time.time()
         return value, False
+
+    def _needs_revalidate(self, key):
+        if not self.revalidator or not self.always_revalidate:
+            return False
+        if self.skip_producer and self.skip_producer():
+            return False          # 상류가 죽었는데 갱신을 걸면 큐만 쌓인다
+        return key.startswith(self.always_revalidate)
 
     def get_stale(self, key):
         """TTL 이 지났어도 남아 있으면 값을 준다(SWR 용). 없으면 None."""
@@ -169,6 +188,8 @@ class Cache:
         """
         hit = self.get(key)
         if hit is not None:
+            if self._needs_revalidate(key):
+                background(key, ttl, producer)   # 신선해도 다시 받는다(편집에 예민한 키)
             return hit, "fresh"
         stale = self.get_stale(key)
         if stale is not None:

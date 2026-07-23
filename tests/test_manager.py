@@ -153,3 +153,36 @@ def test_has_any_ignores_dead_rows():
     assert c.has_any() is False
     c.dead_ttl = 3600
     assert c.has_any() is True
+
+
+# ── 편집에 예민한 데이터는 매번 재검증 ────────────────────────────────────
+def test_edit_sensitive_keys_revalidate_even_when_fresh():
+    """티켓 본문·코멘트는 사람이 방금 고쳤을 수 있다. TTL 이 15분이면 내가 쓴 댓글이 15분 동안
+    안 보이는데, 그건 캐시가 아니라 버그로 보인다 → 캐시로 즉시 그리되 매번 뒤에서 갱신한다."""
+    from app.cache import Cache
+    c = Cache(":memory:", dead_ttl=3600)
+    sched = []
+    c.always_revalidate = ("comments:",)
+    c.revalidator = lambda k, ttl, prod: sched.append(k)
+
+    c.set("comments:x:DL-1", [{"id": 1}], ttl=999)          # 아주 신선한 값
+    val, hit = c.get_or_set("comments:x:DL-1", 999, lambda: [])
+    assert val == [{"id": 1}] and hit is True               # 화면은 즉시 캐시로
+    assert sched == ["comments:x:DL-1"]                     # 그래도 갱신은 걸린다
+
+    c.set("wbs:x", {"a": 1}, ttl=999)                       # 목록·롤업은 대상 아님
+    c.get_or_set("wbs:x", 999, lambda: {})
+    assert sched == ["comments:x:DL-1"]
+
+
+def test_no_revalidate_while_upstream_down():
+    """상류가 죽은 걸 아는 동안 갱신을 걸면 큐만 쌓이고 아무것도 최신이 되지 않는다."""
+    from app.cache import Cache
+    c = Cache(":memory:", dead_ttl=3600)
+    sched = []
+    c.always_revalidate = ("issue:",)
+    c.revalidator = lambda k, ttl, prod: sched.append(k)
+    c.skip_producer = lambda: True
+    c.set("issue:x:DL-1", {"k": 1}, ttl=999)
+    c.get_or_set("issue:x:DL-1", 999, lambda: {})
+    assert sched == []

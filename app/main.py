@@ -58,6 +58,7 @@ app = FastAPI(title="Lake Task Manager")
 _settings = get_settings()
 _cache = Cache(_settings.cache_db_path, dead_ttl=_settings.cache_dead_ttl_seconds)
 _client = JiraClient(_settings, _cache)
+_client._wire_cache()      # 캐시에 재검증 규칙·회로차단기 연결(호출부는 그대로)
 
 # 앱 창 모드(run.py)에서 SSO 로그인을 '같은 창'으로 처리하기 위한 in-process 신호.
 #   run.py 가 _window_login=True 로 설정하고 _login_requested 를 폴링해 앱 창에서 로그인 구동.
