@@ -87,16 +87,26 @@
   border-color: color-mix(in srgb, var(--st-prog) 32%, transparent); }
 /* Epic 뱃지도 **좌측 띠와 같은 시그니처 컬러**를 쓴다(--sig 는 카드에 물려 있다).
    둘이 다른 색이면 "이 색이 무슨 뜻인가" 가 두 갈래로 갈려 색이 정보가 되지 못한다. */
-.mt-epic { flex: 0 1 auto; min-width: 0; font-size: 9.5px; color: var(--sig, var(--ty-epic)); white-space: nowrap;
-  max-width: 200px; overflow: hidden; text-overflow: ellipsis;
-  background: color-mix(in srgb, var(--sig, var(--ty-epic)) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--sig, var(--ty-epic)) 32%, transparent);
-  padding: 1px 6px; border-radius: 4px; }
+/* Epic 뱃지 — Jira 의 로젠지(lozenge)를 따른다: **채운 배경 + 굵은 흰 글자**.
+   전에는 옅은 배경에 얇은 글자여서, 정작 색으로 구분하라고 만든 뱃지가 배경에 묻혔다.
+   면을 채우면 같은 색이라도 훨씬 멀리서 잡히고, 굵은 글자가 작은 크기를 버텨 준다. */
+/* ★ 고정 max-width 를 두지 않는다. 줄에 229px 가 남았는데도 130px 캡 때문에 132px 짜리
+   이름이 잘리고 있었다 — 자리가 있는데 자르면 그건 그냥 정보를 버리는 것이다.
+   flex: 0 1 auto + min-width: 0 이면 **모자랄 때만** 줄며 …로 잘린다(자리가 있으면 다 보인다). */
+.mt-epic { flex: 0 1 auto; min-width: 0; white-space: nowrap;
+  max-width: none; overflow: hidden; text-overflow: ellipsis;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .1px; line-height: 15px;
+  color: #fff; background: var(--sig, var(--ty-epic)); border: 0;
+  padding: 0 7px; border-radius: 3px; }
+/* 어두운 테마의 팔레트는 밝은 색이라 흰 글자가 안 읽힌다 — 글자를 어둡게 뒤집는다 */
+:root[data-theme="dark"] .mt-epic { color: #0b1015; }
 /* 고정 max-width 는 카드가 좁아져도 그대로여서 넘쳐 나간다. 남는 폭만큼만 쓰고
    모자라면 줄어들며 …로 잘리게 한다(줄어들 수 있어야 ellipsis 가 걸린다). */
-.mt-epic.sm { max-width: 130px; }
+.mt-epic.sm { max-width: none; }
 .tc-l2 .mt-epic { flex: 0 1 auto; min-width: 24px; margin-left: auto; }
-.mt-epic.none { color: var(--muted-2); background: none; border-style: dashed; border-color: var(--border-hi); }
+/* 'Epic 없음' 은 뱃지가 아니라 **없음의 표시**다 — 채우면 있는 것처럼 보인다 */
+.mt-epic.none { color: var(--muted-2); background: none; font-weight: 600;
+  border: 1px dashed var(--border-hi); padding: 0 6px; line-height: 13px; }
 .mt-none { color: var(--muted-2); font-size: 11px; padding: 6px 8px; }
 
 /* 그룹 안에서 내 담당이 아닌 티켓을 펼치는 버튼 */
@@ -405,7 +415,7 @@
   border-bottom-color: color-mix(in srgb, var(--today) 30%, var(--border)); }
 /* Epic 뱃지는 반투명 배경이라 붉은 카드 위에서 제 색이 붉게 물든다 — 바탕을 불투명으로 깔아
    어느 카드에 놓이든 Epic 색이 그대로 나오게 한다. */
-.mt-card.urgent .mt-epic { background: color-mix(in srgb, var(--sig, var(--ty-epic)) 12%, var(--panel)); }
+/* 채운 뱃지는 붉은 카드 위에서도 제 색을 그대로 지킨다 — 별도 보정이 필요 없다 */
 .mt-card.urgent .tc-hot { background: color-mix(in srgb, var(--today) 22%, var(--panel)); }
 /* 영역 음영 위(칼럼·밴드 안)에서도 붉은 기가 살아야 한다 — 그쪽 규칙이 배경을 흰색으로 덮는다 */
 .mt-cell .mt-card.two.urgent:not(:hover), .mt-band .mt-card.urgent:not(:hover) {

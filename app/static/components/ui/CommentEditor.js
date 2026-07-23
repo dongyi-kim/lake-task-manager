@@ -473,6 +473,11 @@ export default {
     initial: { type: String, default: "" },            // 수정 시 기존 HTML
     submitLabel: { type: String, default: "등록" },
     submitFn: { type: Function, required: true },       // async (html) => any (실패 시 throw)
+    // 이 에디터가 더 큰 화면의 **한 필드**로 들어갈 때(예: 상태 전이 화면)는 자기 버튼 줄을
+    // 감춘다. 화면에 제출 버튼이 두 개면 무엇이 무엇을 하는지 알 수 없다.
+    // 바깥에서 ref 로 submit() 을 부르면 이미지 업로드·초안 정리까지 그대로 탄다 —
+    // 그 로직을 밖에서 다시 짜면 반드시 어긋난다.
+    hideFooter: { type: Boolean, default: false },
   },
   emits: ["submitted", "cancel"],
   data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
@@ -833,7 +838,8 @@ export default {
         <button type="button" class="cmt-ed-btn ghost" @click="discardDraft">새로 쓰기</button>
       </div>
       <div ref="ed" class="cmt-ed-host"></div>
-      <div class="cmt-ed-bar">
+      <div v-if="hideFooter && err" class="cmt-ed-msg solo">{{ err }}</div>
+      <div v-if="!hideFooter" class="cmt-ed-bar">
         <span v-if="err" class="cmt-ed-msg">{{ err }}</span>
         <button class="cmt-ed-btn ghost" :disabled="busy" @click="$emit('cancel')">취소</button>
         <button class="cmt-ed-btn primary" :disabled="busy || !ready" @click="submit">

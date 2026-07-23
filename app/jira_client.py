@@ -1072,7 +1072,10 @@ class JiraClient:
         def do():
             u = self.provider.get_json("/rest/api/2/myself")
             return {"id": u.get("name") or u.get("key") or "",
-                    "name": real_name(u.get("displayName") or u.get("name")) or ""}
+                    "name": real_name(u.get("displayName") or u.get("name")) or "",
+                    # display = '{본명} {회사}' 원본 — 동명이인 구분이 필요한 화면(담당자 선택 등)용.
+                    # name 은 짧은 본명이라 소속을 알 수 없다.
+                    "display": u.get("displayName") or u.get("name") or ""}
         try:
             return self.cache.get_or_set(f"myself:{self.env}", self.s.cache_ttl_seconds, do)[0]
         except Exception:

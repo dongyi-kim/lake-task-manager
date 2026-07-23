@@ -11,18 +11,23 @@
 //       안 알리면 사용자는 하루를 24시간으로 여기고 적는데 Jira 는 8시간으로 기록한다.
 //  2) **코멘트를 필수로 받는다.** Jira 에선 선택이지만, 무엇을 했는지 한 줄도 없이 닫힌
 //     티켓은 나중에 아무도 해석하지 못한다. 이 앱을 통해 닫는 것에는 기록을 남긴다.
+//     입력은 **댓글과 같은 에디터**를 쓴다 — 표·코드·이미지 붙여넣기·멘션이 그대로 되고,
+//     여기만 맨 textarea 면 "왜 여기선 안 되지" 가 된다. 제출은 이 화면이 소유하고
+//     (버튼이 둘이면 안 된다) 에디터의 submit() 을 ref 로 부른다 — 이미지 업로드·초안 정리가
+//     그 안에 들어 있어, 밖에서 다시 짜면 반드시 어긋난다.
 import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
+import CommentEditor from "./CommentEditor.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 
 export default {
   name: "TransitionDialog",
-  components: { Avatar },
+  components: { Avatar, CommentEditor },
   props: { ticket: { type: String, required: true }, transition: { type: Object, required: true } },
   emits: ["close", "done"],
   data() {
     return {
-      days: 0, hours: 0, minutes: 0, resolution: "", comment: "",
+      days: 0, hours: 0, minutes: 0, resolution: "",
       tt: null,   // 시간 추적 설정(하루 = 몇 시간)
       // 담당자는 **선택된 사람 자체**를 들고 있는다(문자열이 아니라 노드). 문자열이면 화면에
       // 남은 글자와 실제 값이 어긋날 수 있다 — 다 치고 못 고른 채 제출하는 사고가 난다.
@@ -49,19 +54,23 @@ export default {
       if (this.has.worklog && !(this.days || this.hours || this.minutes)) out.push("소요시간");
       if (this.has.assignee && !this.user) out.push("담당자");
       if (this.has.resolution && !this.resolution) out.push("처리 방법");
-      // 코멘트는 Jira 기준 선택이지만 우리는 필수로 둔다(위 주석 참고).
-      if (this.has.comment && !this.comment.trim()) out.push("코멘트");
+      // 코멘트 내용 유무는 에디터가 판정한다(빈 본문이면 제출 시 스스로 막는다) —
+      // 여기서 HTML 을 들여다보며 다시 판정하면 두 규칙이 갈린다.
       return out;
     },
   },
   mounted() {
     if (this.resolutions.length) this.resolution = this.resolutions[0].name;
     api.timetracking().then((t) => { this.tt = t; }).catch(() => {});
-    this._ta = createTypeahead((q) => api.mentionUsers(q, this.ticket), { minLen: 0 });
+    // ★ allowEmpty 가 없으면 **빈 검색어에서 무조건 빈 배열**이라 칸을 눌러도 아무것도 안 뜬다
+    //   — 사용자에겐 "검색이 동작 안 한다" 로 보인다. 빈 검색어는 이 티켓 관련자를 먼저 주므로
+    //   (서버가 key 로 판단) 오히려 가장 쓸모 있는 첫 화면이다.
+    this._ta = createTypeahead((q) => api.mentionUsers(q, this.ticket),
+                               { minLen: 1, allowEmpty: true });
     this.searchWho("");
     api.me().then((m) => {                       // 대개 자기 자신이다 — 기본값으로 채운다
       if (m && m.id && !this.user) {
-        this.user = { id: m.id, name: m.name || m.id, display: m.name || m.id,
+        this.user = { id: m.id, name: m.name || m.id, display: m.display || m.name || m.id,
                       avatar: "/api/avatar/" + encodeURIComponent(m.id) };
       }
     }).catch(() => {});
@@ -82,9 +91,19 @@ export default {
       else if (e.key === "ArrowUp") { e.preventDefault(); this.hi = (this.hi + this.who.length - 1) % this.who.length; }
       else if (e.key === "Enter") { e.preventDefault(); this.pickWho(this.who[this.hi]); }
     },
+    /** 제출 버튼 → 에디터에게 넘긴다. 에디터가 이미지 업로드·본문 검사를 마친 뒤
+     *  sendTransition(html) 을 호출한다. 코멘트 필드가 없는 전이면 바로 보낸다. */
     async submit() {
       if (this.problems.length || this.busy) return;
-      this.busy = true; this.err = "";
+      this.err = "";
+      if (this.has.comment && this.$refs.ed) { this.$refs.ed.submit(); return; }
+      this.busy = true;
+      await this.sendTransition("");
+    },
+    /** 실제 전송. 에디터가 부르는 경로라 실패는 **던져야** 한다 — 에디터가 그걸 받아
+     *  올린 이미지를 되돌리고 사용자에게 알린다(조용히 삼키면 첨부만 남는다). */
+    async sendTransition(html) {
+      this.busy = true;
       try {
         const r = await api.doTransition(this.ticket, {
           id: this.transition.id, days: Number(this.days) || 0,
@@ -92,16 +111,16 @@ export default {
           minutes: Number(this.minutes) || 0,
           assignee: (this.user && this.user.id) || "",
           resolution: this.resolution,
-          commentHtml: this.comment ? "<p>" + this.comment.replace(/[<&]/g, (c) =>
-            (c === "<" ? "&lt;" : "&amp;")).replace(/\n/g, "<br>") + "</p>" : "",
+          commentHtml: html || "",
         });
-        if (r && r.ok === false) { this.err = r.error || "전이에 실패했습니다."; this.busy = false; return; }
-        this.$emit("done");
+        if (r && r.ok === false) throw new Error(r.error || "전이에 실패했습니다.");
       } catch (e) {
+        this.busy = false;
         // Jira 가 거절한 이유를 그대로 보인다 — 삼키면 무엇을 고쳐야 할지 알 수 없다.
         this.err = (e && e.message) || "전이에 실패했습니다.";
-        this.busy = false;
+        throw e;
       }
+      this.$emit("done");
     },
   },
   template: `
@@ -136,7 +155,8 @@ export default {
                실제 값이 어긋날 수 있고, 다 치고 못 고른 채 제출하는 사고가 난다. -->
           <span v-if="user" class="trx-chip">
             <Avatar :user="user.id" :name="user.display || user.name" :size="22" />
-            <b>{{ user.name || user.display }}</b>
+            <!-- 소속까지 보이는 전체 표시이름 — 동명이인이 있으면 본명만으론 누구인지 못 고른다 -->
+            <b>{{ user.display || user.name }}</b>
             <em>{{ user.id }}</em>
             <button class="trx-chip-x" @click="clearWho" title="다른 사람 고르기">×</button>
           </span>
@@ -148,7 +168,7 @@ export default {
               <button v-for="(u, i) in who" :key="u.id" :class="{ hi: i === hi }"
                       @click.prevent="pickWho(u)" @mouseenter="hi = i">
                 <Avatar :user="u.id" :name="u.display || u.name" :size="22" />
-                <span>{{ u.name || u.display }}</span><em>{{ u.id }}</em>
+                <span>{{ u.display || u.name }}</span><em>{{ u.id }}</em>
               </button>
             </div>
             <span v-else-if="whoOpen" class="trx-hint">검색 결과가 없습니다.</span>
@@ -162,11 +182,14 @@ export default {
           </select>
         </label>
 
-        <label v-if="has.comment" class="trx-f">
+        <div v-if="has.comment" class="trx-f">
           <span class="trx-l">코멘트 <i>필수</i></span>
-          <textarea v-model="comment" rows="3" placeholder="무엇을 했는지 한 줄이라도 남겨 주세요"></textarea>
+          <!-- 댓글과 **같은 에디터** — 표·코드·이미지 붙여넣기·멘션이 그대로 된다.
+               버튼 줄은 감추고(제출은 아래 한 곳) ref 로 submit() 을 부른다. -->
+          <CommentEditor ref="ed" :ticket-key="ticket" hide-footer
+                         :submit-fn="sendTransition" @cancel="$emit('close')" />
           <span class="trx-hint">Jira 에선 선택이지만, 기록 없이 닫힌 티켓은 나중에 해석할 수 없어 이 앱에서는 받습니다.</span>
-        </label>
+        </div>
       </div>
 
       <div class="trx-f2">

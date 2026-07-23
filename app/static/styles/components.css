@@ -195,3 +195,8 @@
 .trx-drop .avt { flex: none; }
 .trx-time input { width: 58px; }
 .trx-hint i { font-style: normal; color: var(--accent); }
+/* 전이 화면 안의 댓글 에디터 — 다이얼로그 폭에 맞추고, 본문이 길어지면 화면을 넘지 않게 */
+.trx .cmt-editor { border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); }
+.trx .cmt-ed-host { max-height: 190px; overflow: auto; }
+.trx-b { max-height: min(62vh, 560px); overflow: auto; }
+.cmt-ed-msg.solo { padding: 6px 8px; font-size: 11.5px; color: var(--today); }
