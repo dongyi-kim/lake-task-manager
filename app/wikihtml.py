@@ -103,7 +103,13 @@ def _inline(node):
         elif t == "a":
             href = (c.attrs.get("href") or "").strip()
             label = _inline(c).strip()
-            if href and _BROWSE_URL_RE.search(href):
+            if "file-badge" in (c.attrs.get("class") or ""):
+                # 첨부 파일 뱃지 — Jira 의 **첨부 링크 문법**으로 저장한다. 일반 링크([label|url])
+                # 로 쓰면 그 티켓에 붙은 파일이 아니라 특정 URL 을 가리키게 되고, 파일이 다른
+                # 곳으로 옮겨지거나 첨부가 지워졌을 때 본문만 남아 깨진 링크가 된다.
+                fname = (c.attrs.get("data-file") or label or href).strip()
+                out.append("[^" + fname.replace("]", ")") + "]")
+            elif href and _BROWSE_URL_RE.search(href):
                 # Jira 티켓 링크 — **라벨 없이 URL만** 저장한다. 읽기 렌더가 키/제목/상태를 조회해
                 # 리치 뱃지로 바꾸므로 라벨이 불필요하고, 티켓 제목에 흔한 '[' ']' 가 wiki 링크
                 # 문법([label|url])을 깨뜨리는 문제도 원천 차단된다.

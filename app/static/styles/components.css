@@ -134,9 +134,13 @@
 /* ── 전이 화면 ─────────────────────────────────────────────────────────── */
 .trx-ov { position: fixed; inset: 0; z-index: 9600; display: flex; align-items: center;
   justify-content: center; background: rgba(15,18,22,.42); backdrop-filter: blur(2px); }
+/* 본문이 커지면(에디터 높이 조절) **다이얼로그도 같이 커진다**. 안쪽만 늘어나고 창은 그대로면
+   늘린 만큼 스크롤이 생겨 늘린 보람이 없다. 화면 높이에 닿으면 그때부터 본문이 스크롤한다. */
 .trx { width: min(460px, calc(100vw - 32px)); background: var(--panel);
   border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+  display: flex; flex-direction: column; max-height: 92vh;
   box-shadow: 0 18px 50px rgba(0,0,0,.30); }
+.trx-h, .trx-f2 { flex: none; }
 .trx-h { display: flex; align-items: center; gap: 8px; padding: 12px 14px;
   border-bottom: 1px solid var(--border); font-size: 13.5px; }
 .trx-key { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--accent); }
@@ -197,8 +201,18 @@
 .trx-hint i { font-style: normal; color: var(--accent); }
 /* 전이 화면 안의 댓글 에디터 — 다이얼로그 폭에 맞추고, 본문이 길어지면 화면을 넘지 않게 */
 .trx .cmt-editor { border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); }
+/* 기본 높이만 정한다 — 사용자가 끌어서 정한 높이(인라인 style)가 이걸 이긴다 */
 .trx .cmt-ed-host { max-height: 190px; overflow: auto; }
-.trx-b { max-height: min(62vh, 560px); overflow: auto; }
+/* 첨부 파일 뱃지 — 이미지가 아닌 파일은 "무엇이 붙어 있다" 는 사실이 내용이라 칩으로 보인다 */
+.file-badge { display: inline-flex; align-items: center; gap: 5px; vertical-align: baseline;
+  max-width: 260px; padding: 1px 8px 1px 4px; border-radius: 999px; text-decoration: none;
+  font-size: 11.5px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); cursor: default; }
+.file-badge .fb-ext { font-style: normal; font-size: 8.5px; font-weight: 800; letter-spacing: .2px;
+  color: #fff; background: var(--muted-2); border-radius: 999px; padding: 0 5px; line-height: 14px; }
+.file-badge .fb-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-badge:hover { border-color: var(--border-hi); }
+.trx-b { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .cmt-ed-msg.solo { padding: 6px 8px; font-size: 11.5px; color: var(--today); }
 
 /* ── 우클릭 메뉴: 그룹 구조 ─────────────────────────────────────────────────

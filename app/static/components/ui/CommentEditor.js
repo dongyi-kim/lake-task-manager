@@ -159,6 +159,60 @@ function ticketData(key) {
     .catch(() => null);
 }
 
+// 첨부 파일 뱃지 — 이미지가 아닌 파일을 본문에 **한 덩어리**로 박는다.
+// 이미지는 그림 자체가 내용이라 <img> 로 넣지만, 파일은 "무엇이 붙어 있다" 는 사실이 내용이다.
+// 그래서 미리보기 대신 이름과 확장자를 보이는 칩으로 그린다. 제출 시 실제 티켓 첨부가 되고
+// 본문에는 Jira 첨부 링크([^이름])로 저장된다.
+function fileBadgeExt(T) {
+  return T.Node.create({
+    name: "fileBadge",
+    group: "inline",
+    inline: true,
+    atom: true,                     // 한 덩어리 — 내부로 커서가 들어가지 않는다
+    selectable: true,
+    addAttributes() {
+      return { href: { default: "" }, name: { default: "" }, size: { default: 0 } };
+    },
+    parseHTML() {
+      return [{ tag: "a.file-badge", getAttrs: (el) => ({
+        href: el.getAttribute("href") || "",
+        name: el.getAttribute("data-file") || (el.textContent || "").trim(),
+      }) }];
+    },
+    // atom 은 기본적으로 getText() 에 안 잡힌다 → 파일만 넣은 댓글이 '내용 없음' 으로 오판된다.
+    renderText({ node }) { return node.attrs.name || ""; },
+    renderHTML({ node }) {
+      return ["a", { href: node.attrs.href || node.attrs.name || "",
+                     class: "file-badge", "data-file": node.attrs.name || "",
+                     rel: "noopener" }, node.attrs.name || ""];
+    },
+    addNodeView() {
+      return ({ node }) => {
+        const a = document.createElement("a");
+        a.className = "file-badge";
+        a.setAttribute("data-file", node.attrs.name || "");
+        a.setAttribute("href", node.attrs.href || "");
+        a.setAttribute("rel", "noopener");
+        a.title = node.attrs.name + (node.attrs.size ? "  (" + fmtSize(node.attrs.size) + ")" : "");
+        const ext = (node.attrs.name || "").split(".").pop().slice(0, 4).toUpperCase();
+        a.innerHTML = '<i class="fb-ext"></i><span class="fb-n"></span>';
+        a.querySelector(".fb-ext").textContent = ext || "FILE";
+        a.querySelector(".fb-n").textContent = node.attrs.name || "";
+        // 편집 중에는 링크를 따라가지 않는다 — 아직 올라가지도 않은 파일이다.
+        a.addEventListener("click", (e) => e.preventDefault());
+        return { dom: a };
+      };
+    },
+  });
+}
+
+function fmtSize(n) {
+  if (!n) return "";
+  if (n < 1024) return n + "B";
+  if (n < 1024 * 1024) return Math.round(n / 1024) + "KB";
+  return (n / 1024 / 1024).toFixed(1) + "MB";
+}
+
 function linkBadgeExt(T) {
   return T.Node.create({
     name: "linkBadge",
@@ -466,6 +520,22 @@ function mentionSuggestion(ticketKey) {
   };
 }
 
+// 끌어서 정한 높이는 **기억한다**. 매번 다시 늘리게 하면 늘리는 의미가 없다 —
+// 긴 글을 쓰는 사람은 늘 길게 쓴다. 화면(px)이라 localStorage 로 충분하다.
+const H_KEY = "cmtEditorH";
+const H_MIN = 120;
+const H_MAX = 720;
+
+function loadEditorHeight() {
+  try {
+    const v = parseInt(localStorage.getItem(H_KEY) || "", 10);
+    return v >= H_MIN && v <= H_MAX ? v : null;
+  } catch (e) { return null; }
+}
+function saveEditorHeight(v) {
+  try { localStorage.setItem(H_KEY, String(v)); } catch (e) { /* 사파리 프라이빗 등 */ }
+}
+
 export default {
   name: "CommentEditor",
   props: {
@@ -481,7 +551,10 @@ export default {
   },
   emits: ["submitted", "cancel"],
   data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
-                    maximized: false, restored: false }; },
+                    maximized: false, restored: false,
+                    // 인라인 모드에서 사용자가 끌어 정한 본문 높이(px). null = 기본값.
+                    // 최대화 모드에는 안 쓴다 — 거기선 창이 높이를 정한다.
+                    hostH: loadEditorHeight(), resizing: false }; },
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
@@ -494,20 +567,7 @@ export default {
     this.languages = T.languages || [];
     const self = this;
     // 붙여넣기/드롭 이미지 → objectURL 삽입 + 추적(제출 시 업로드)
-    const handleFiles = (files, view) => {
-      let any = false;
-      for (const f of files) {
-        if (!f.type || !f.type.startsWith("image/")) continue;
-        any = true;
-        const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
-        const name = "paste-" + Date.now() + "-" + (++self._seq) + "." + ext;
-        const url = URL.createObjectURL(f);
-        self._pending.set(url, { blob: f, name });
-        self._ed.chain().focus().setImage({ src: url, alt: name }).run();
-        self.applyFitWidth(url);                 // 세로가 너무 길면 기본 상한으로 축소
-      }
-      return any;
-    };
+    const handleFiles = (files) => self.insertFiles(files);
     this._ed = new T.Editor({
       element: this.$refs.ed,
       extensions: [
@@ -515,6 +575,7 @@ export default {
         // 코드블럭 — 원래 Jira 와 같은 태그(<pre class="jecodeblock"><code class="language-X">) + lowlight 강조
         T.CodeBlockLowlight.configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
         calloutExt(T),
+        fileBadgeExt(T),
         singleLineHeadingExt(T),
         firstBlockEscapeExt(T),
         T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
@@ -619,6 +680,41 @@ export default {
     inCallout(t) { this.tick; return !!(this._ed && this._ed.isActive("callout", { type: t })); },
     tbCallout(t) { this.cmd((c) => c.toggleCallout(t).run()); },
     toggleMax() { this.maximized = !this.maximized; },
+
+    /** 아래 손잡이를 끌어 본문 높이를 바꾼다(인라인 모드 전용).
+     *  pointer 이벤트 + setPointerCapture 를 쓰는 이유: 마우스가 에디터 밖으로 나가도 끌림이
+     *  유지된다. mousemove 를 document 에 걸면 iframe·다른 요소 위에서 놓칠 수 있다. */
+    startResize(e) {
+      if (this.maximized) return;
+      const host = this.$refs.ed;
+      if (!host) return;
+      e.preventDefault();
+      this.resizing = true;
+      const startY = e.clientY;
+      const startH = host.getBoundingClientRect().height;
+      const move = (ev) => {
+        const h = Math.max(H_MIN, Math.min(H_MAX, Math.round(startH + (ev.clientY - startY))));
+        this.hostH = h;
+      };
+      const up = () => {
+        this.resizing = false;
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        if (this.hostH) saveEditorHeight(this.hostH);
+        // ★ 드래그가 끝나면 브라우저가 click 을 한 번 더 쏜다. 그 click 이 바깥으로 올라가면
+        //   오버레이의 '바깥 클릭 = 닫기' 에 걸려 **다이얼로그가 그냥 꺼진다**(실제로 겪었다).
+        //   딱 한 번만 삼킨다 — 계속 막으면 다음 클릭까지 먹는다.
+        window.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); },
+                                { capture: true, once: true });
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    },
+    /** 손잡이를 더블클릭하면 기본 높이로 되돌린다 — 잘못 늘렸을 때 되돌릴 길이 있어야 한다. */
+    resetHeight() {
+      this.hostH = null;
+      try { localStorage.removeItem(H_KEY); } catch (e) { /* noop */ }
+    },
     inCodeBlock() { this.tick; return !!(this._ed && this._ed.isActive("codeBlock")); },
     codeLang() { this.tick; return (this._ed && this._ed.getAttributes("codeBlock").language) || ""; },
     setCodeLang(e) {
@@ -635,19 +731,38 @@ export default {
     tHeaderRow() { this.cmd((c) => c.toggleHeaderRow().run()); },
     tTableDel() { this.cmd((c) => c.deleteTable().run()); },
     onFile(e) {
-      const files = e.target.files;
-      if (files && files.length && this._ed) {
-        for (const f of files) {
-          if (!f.type || !f.type.startsWith("image/")) continue;
+      this.insertFiles(e.target.files);
+      e.target.value = "";
+    },
+
+    /** 붙여넣기·드롭·파일 선택이 **모두 여기로** 온다 — 경로마다 따로 짜면 갈린다
+     *  (실제로 선택 경로만 .txt 를 이미지로 넣고 있었다).
+     *  제출 전까지는 아무것도 올리지 않는다: objectURL 로 본문에 자리만 잡아 두고, 제출할 때
+     *  본문에 남아 있는 것만 업로드한다 — 넣었다 지운 파일이 첨부에 남지 않는다. */
+    insertFiles(files) {
+      if (!files || !files.length || !this._ed) return false;
+      for (const f of files) {
+        const url = URL.createObjectURL(f);
+        if (f.type && f.type.startsWith("image/")) {
+          // 이미지 — 그림 자체가 내용이라 본문에 그대로 그린다
           const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
           const name = "paste-" + Date.now() + "-" + (++this._seq) + "." + ext;
-          const url = URL.createObjectURL(f);
           this._pending.set(url, { blob: f, name });
           this._ed.chain().focus().setImage({ src: url, alt: name }).run();
-          this.applyFitWidth(url);
+          this.applyFitWidth(url);              // 세로가 너무 길면 기본 상한으로 축소
+        } else {
+          // 그 외 파일 — "무엇이 붙어 있다" 는 사실이 내용이므로 칩으로 박는다.
+          // ★ 원래 파일명을 그대로 쓴다. 이미지처럼 이름을 지어내면 '설계초안.txt' 가
+          //   'paste-1784….plain' 이 돼 아무도 못 알아본다(실제로 그랬다).
+          const name = f.name || ("file-" + Date.now() + "-" + (++this._seq));
+          this._pending.set(url, { blob: f, name });
+          this._ed.chain().focus()
+            .insertContent({ type: "fileBadge", attrs: { href: url, name, size: f.size || 0 } })
+            .insertContent(" ")
+            .run();
         }
       }
-      e.target.value = "";
+      return true;
     },
     // 삽입된 이미지의 자연 크기를 재서 세로 상한을 넘으면 비율 유지로 width 지정.
     applyFitWidth(url) {
@@ -744,7 +859,8 @@ export default {
       try {
         for (const [url, info] of this._pending) {
           if (!html.includes(url)) continue;            // 지운 이미지는 업로드 안 함
-          const file = new File([info.blob], info.name, { type: info.blob.type || "image/png" });
+          const file = new File([info.blob], info.name,
+                                { type: (info.blob && info.blob.type) || "application/octet-stream" });
           const res = await api.attachmentUpload(this.ticketKey, file);
           uploaded.push(res.id);
           html = html.split(url).join(res.filename);    // objectURL → 실제 파일명
@@ -793,7 +909,7 @@ export default {
         <button type="button" class="tb-b" @click="tbImage" title="이미지">🖼</button>
         <button type="button" class="tb-b" style="margin-left:auto" @click="toggleMax"
                 :title="maximized ? '최대화 해제' : '에디터 최대화'">{{ maximized ? '🗗' : '🗖' }}</button>
-        <input ref="file" type="file" accept="image/*" multiple style="display:none" @change="onFile">
+        <input ref="file" type="file" multiple style="display:none" @change="onFile">
       </div>
       <div class="cmt-tb cmt-tb-tbl" v-show="ready && inCodeBlock()">
         <span class="tb-lbl">코드 언어</span>
@@ -837,7 +953,13 @@ export default {
         <span>작성 중이던 내용을 복원했습니다.</span>
         <button type="button" class="cmt-ed-btn ghost" @click="discardDraft">새로 쓰기</button>
       </div>
-      <div ref="ed" class="cmt-ed-host"></div>
+      <div ref="ed" class="cmt-ed-host"
+           :style="!maximized && hostH ? { height: hostH + 'px', maxHeight: 'none' } : null"></div>
+      <!-- 세로 크기 조절 손잡이 — 최대화 모드에는 없다(거기선 창이 높이를 정한다).
+           얇은 선이 아니라 잡을 수 있는 띠로 둔다: 1~2px 짜리는 조준하다 지친다. -->
+      <div v-if="!maximized" class="cmt-ed-grip" :class="{ on: resizing }"
+           @pointerdown="startResize" @dblclick="resetHeight"
+           title="끌어서 높이 조절 · 더블클릭하면 기본 높이"><i></i></div>
       <div v-if="hideFooter && err" class="cmt-ed-msg solo">{{ err }}</div>
       <div v-if="!hideFooter" class="cmt-ed-bar">
         <span v-if="err" class="cmt-ed-msg">{{ err }}</span>

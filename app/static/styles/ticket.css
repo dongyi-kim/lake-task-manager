@@ -790,3 +790,14 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   padding: 4px 7px 5px; text-transform: uppercase; }
 /* 최근 항목엔 상태 정보가 없다 → 상태색 점 대신 중립 표시(있지도 않은 상태를 칠하지 않는다) */
 .lp-item .sr-dot.rc { background: none; border: 1px solid var(--border-hi); }
+
+/* ── 에디터 세로 크기 조절 손잡이 ───────────────────────────────────────────
+   1~2px 선으로 두면 조준하다 지친다 — 잡을 수 있는 **띠**(8px)로 두고, 그 안에 얇은 표시선을
+   그린다. 커서가 올라오면 표시선이 진해져 "여기가 잡는 곳" 이 드러난다. */
+.cmt-ed-grip { height: 8px; cursor: ns-resize; display: flex; align-items: center;
+  justify-content: center; touch-action: none; user-select: none; }
+.cmt-ed-grip i { display: block; width: 42px; height: 2px; border-radius: 2px;
+  background: var(--border-hi); transition: background-color .12s, width .12s; }
+.cmt-ed-grip:hover i, .cmt-ed-grip.on i { background: var(--accent); width: 62px; }
+/* 끄는 동안 본문에 커서가 들어가거나 글자가 잡히면 조작이 튄다 */
+.cmt-ed-grip.on ~ *, .cmt-editor:has(.cmt-ed-grip.on) .cmt-ed-host { user-select: none; }
