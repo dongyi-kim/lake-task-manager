@@ -19,18 +19,11 @@ import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
 import PriIcon from "../ui/PriIcon.js";
 import TaskCard, { isHot, isUrgent } from "../ui/TaskCard.js";
+import DueText from "../ui/DueText.js";
 import { categoryColor } from "../../lib/colors.js";
 
 const NO_DUE = 1e6;
 
-function dueLabel(d) {
-  if (d === null || d === undefined) return "";
-  return d < 0 ? "D+" + -d : d === 0 ? "오늘" : "D-" + d;
-}
-function dueBand(d) {
-  if (d === null || d === undefined) return "none";
-  return d < 0 ? "over" : d === 0 ? "today" : d <= 7 ? "soon" : "later";
-}
 
 // 상태 축 — 순서가 곧 작업 흐름이다.
 const STATES = [
@@ -79,7 +72,7 @@ const PREF_KEY = "mytasks.opts";
 
 export default {
   name: "MyTasksView",
-  components: { TypeBadge, Avatar, TaskCard, PriIcon },
+  components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText },
   data() {
     return {
       model: null, loading: true, err: "",
@@ -268,7 +261,6 @@ export default {
     // 같은 화면에서 '급함' 의 뜻이 두 개가 된다.
     isHotC(c) { return c.statusCategory !== "done" && isHot(c.dueDays); },
     isUrgentC(c) { return c.statusCategory !== "done" && isUrgent(c); },
-    dueLabel, dueBand,
   },
   template: `
   <div class="mytasks" :class="'ax-' + axis">
@@ -318,7 +310,7 @@ export default {
               <span class="mt-owner" :class="{ me: p.group.mine }"
                     :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
                 <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
-              <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
+              <DueText :card="p.group" />
 
             </div>
           </div>
@@ -335,7 +327,7 @@ export default {
                   <span v-if="!c.mine || subView === 'all'" class="mt-owner" :class="{ me: c.mine }"
                         :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
-                  <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
+                  <DueText :card="c" />
                 </div>
             </div>
           </div>
@@ -386,7 +378,7 @@ export default {
               <span class="mt-owner" :class="{ me: p.group.mine }"
                     :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
                 <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
-              <span class="mt-due" :class="dueBand(p.group.dueDays)">{{ dueLabel(p.group.dueDays) || '—' }}</span>
+              <DueText :card="p.group" />
 
             </div>
               </div>
@@ -401,7 +393,7 @@ export default {
                   <span v-if="!c.mine || subView === 'all'" class="mt-owner" :class="{ me: c.mine }"
                         :title="(c.assignee || '미할당') + ' 담당' + (c.mine ? ' (나)' : '')">
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
-                  <span class="mt-due" :class="dueBand(c.dueDays)">{{ dueLabel(c.dueDays) || '—' }}</span>
+                  <DueText :card="c" />
                 </div>
               </div>
             </div>

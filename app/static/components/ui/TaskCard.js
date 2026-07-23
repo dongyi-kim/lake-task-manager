@@ -14,7 +14,7 @@
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import PriIcon from "./PriIcon.js";
-import { ymd } from "../../lib/fmt.js";
+import DueText from "./DueText.js";
 
 // 긴급도 — 남은 일수 하나로 정한다. 숫자(D-3)는 정확하지만 훑을 땐 안 읽히고,
 // 표정은 정확하지 않지만 **한눈에** 읽힌다. 둘을 같이 둬서 서로를 보완한다.
@@ -47,7 +47,7 @@ export function isUrgent(card) {
 
 export default {
   name: "TaskCard",
-  components: { TypeBadge, Avatar, PriIcon },
+  components: { TypeBadge, Avatar, PriIcon, DueText },
   props: {
     card: { type: Object, required: true },
     showOwner: { type: Boolean, default: true },
@@ -61,16 +61,6 @@ export default {
     hot() { return !this.done && isHot(this.card.dueDays); },
     urgent() { return !this.done && isUrgent(this.card); },
     // 고정폭으로 세로로 나열되므로 길이가 들쭉날쭉하면 안 된다 — 가장 긴 게 'D-DAY'(5자).
-    dday() {
-      const d = this.card.dueDays;
-      if (d === null || d === undefined) return "미정";
-      return d < 0 ? "D+" + -d : d === 0 ? "D-DAY" : "D-" + d;
-    },
-    dueCls() {
-      const d = this.card.dueDays;
-      if (d === null || d === undefined) return "none";
-      return d < 0 ? "over" : d === 0 ? "today" : d <= 7 ? "soon" : "later";
-    },
     doneAt() { return this.card.resolved ? ymd(this.card.resolved) : ""; },
   },
   template: `
@@ -85,13 +75,7 @@ export default {
     <div class="tc-l2">
       <PriIcon :rank="card.priRank" :name="card.pri" />
       <!-- 완료면 '언제 끝냈나' 만 남긴다. 끝난 일에 긴급도·남은 일수는 의미가 없다. -->
-      <span class="tc-when" :class="[done ? 'fin' : dueCls, { inh: !done && card.dueInherited }]"
-            :title="done ? '완료 ' + doneAt
-                         : (card.dueInherited ? '상위 Task 의 마감(' + (card.due || '') + ')'
-                                              : (card.due || '마감 없음'))">
-        <b v-if="done">✓ {{ doneAt || '완료' }}</b>
-        <b v-else><i v-if="card.dueInherited" class="inh-m">↑</i>{{ dday }}</b>
-      </span>
+      <DueText :card="card" />
       <span v-if="showOwner" class="mt-owner" :class="{ me: card.mine }"
             :title="(card.assignee || '미할당') + ' 담당' + (card.mine ? ' (나)' : '')">
         <Avatar :user="card.assigneeId" :name="card.assignee" :size="15" />{{ card.assignee || '미할당' }}

@@ -295,8 +295,8 @@
    시작 위치가 계속 흔들려 눈이 세로로 훑질 못한다. 마감 칸을 고정폭으로 못 박고
    그 뒤에 세로 구분선을 둬서 '언제까지 | 누가' 두 칸으로 읽히게 한다.
    가장 긴 값이 'D-DAY'(5자)이므로 그 폭에 맞춘다. */
-.tc-l2 .tc-when { flex: none; display: inline-flex; align-items: center; gap: 5px;
-  padding-right: 9px; border-right: 1px solid var(--border); }
+.tc-when { display: inline-flex; align-items: center; gap: 5px; }
+.tc-l2 .tc-when { flex: none; padding-right: 9px; border-right: 1px solid var(--border); }
 .tc-when b { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; font-weight: 700;
   font-variant-numeric: tabular-nums; min-width: 5ch; text-align: center; color: var(--muted-2); }
 .tc-when.over b { color: var(--today); }
@@ -461,3 +461,10 @@
 .mt-sel:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 .mt-opt-l.todo { color: var(--st-todo); }
 .mt-opt-l.done { color: var(--st-done); }
+
+/* 한 줄 카드(그룹 부모·Sub-Task)의 마감 칸 — 2줄 카드와 **같은 텍스트 형식**을 쓴다.
+   한쪽만 뱃지면 같은 정보가 두 모양이 돼 카드 종류가 바뀔 때마다 눈이 다시 찾아야 한다.
+   여기선 칸 앞에 세로 구분선을 둬 담당자/진척과 갈라 놓는다(2줄 카드는 뒤에 둔다 — 담당자가
+   그 뒤에 오기 때문). */
+.mt-card:not(.two) > .tc-when { flex: none; margin-left: 4px; padding-left: 9px;
+  border-left: 1px solid var(--border); border-right: 0; padding-right: 0; }
