@@ -699,13 +699,14 @@ export default {
         const editable = comment ? this.canEdit(comment) : (this.mayEdit() || !this.emeta);
         if (!editable || cb.dataset.cbBusy) return;         // 권한 없으면 읽기전용, 진행 중이면 무시
         const index = parseInt(cb.getAttribute("data-cb-index"), 10);
-        if (!(index >= 0)) return;
+        const id = cb.getAttribute("data-cb-id") || null;    // id 우선(서버가 index 폴백)
+        if (!(index >= 0) && !id) return;
         const want = !cb.defaultChecked;
         cb.dataset.cbBusy = "1";
-        cb.checked = want;                                   // 낙관적 표시
+        cb.checked = want;                                   // 낙관적 표시(즉시 반영)
         const body = comment
-          ? { target: "comment", commentId: String(comment.id), index, checked: want }
-          : { target: "description", index, checked: want };
+          ? { target: "comment", commentId: String(comment.id), id, index, checked: want }
+          : { target: "description", id, index, checked: want };
         api.toggleCheckbox(this.tk, body).then((r) => {
           if (r && r.ok) { cb.defaultChecked = want; if (want) cb.setAttribute("checked", ""); else cb.removeAttribute("checked"); }
           else { cb.checked = cb.defaultChecked; this.editErr = (r && r.error) || "체크박스 저장 실패"; }

@@ -608,10 +608,11 @@ def api_comment_delete(key: str, cid: str):
 
 
 class _CheckboxBody(BaseModel):
-    """본문/코멘트 안의 index 번째 체크박스를 checked 로 토글."""
+    """본문/코멘트 안의 대상 체크박스를 checked 로 토글 — id 우선, index 폴백."""
     target: str = "description"          # "description" | "comment"
     commentId: str | None = None
-    index: int
+    id: str | None = None                # 체크박스 id(우선). 없거나 못 찾으면 index.
+    index: int | None = None
     checked: bool
 
 
@@ -623,9 +624,10 @@ def api_ticket_checkbox(key: str, body: _CheckboxBody):
         if body.target == "comment":
             if not body.commentId:
                 return JSONResponse({"ok": False, "error": "commentId 가 필요합니다."}, status_code=400)
-            r = _client.toggle_comment_checkbox(key, body.commentId, body.index, bool(body.checked))
+            r = _client.toggle_comment_checkbox(key, body.commentId, body.index,
+                                                bool(body.checked), cbid=body.id)
         else:
-            r = _client.toggle_description_checkbox(key, body.index, bool(body.checked))
+            r = _client.toggle_description_checkbox(key, body.index, bool(body.checked), cbid=body.id)
         return JSONResponse(r)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)

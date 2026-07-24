@@ -282,23 +282,44 @@ def _pri_rank(name):
 _CB_INPUT_RE = re.compile(r"<input\b[^>]*>", re.I)
 _CB_TYPE_RE = re.compile(r"""type\s*=\s*['"]?\s*checkbox""", re.I)
 _CB_CHECKED_RE = re.compile(r"""\s+checked(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s/>]+))?""", re.I)
+_CB_ID_RE = re.compile(r"""\bid\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s/>]+))""", re.I)
 
 
-def _set_checkbox(html, index, checked):
-    """HTML 원문에서 index 번째 `<input type=checkbox>` 의 checked 를 설정/해제해 돌려준다.
+def _apply_checked(tag, checked):
+    """`<input …>` 태그 문자열의 checked 만 설정/해제(나머지 속성 보존)."""
+    tag = _CB_CHECKED_RE.sub("", tag)                 # 기존 checked 제거(중복 방지)
+    if not checked:
+        return tag
+    if tag.endswith("/>"):
+        return tag[:-2].rstrip() + ' checked="checked" />'
+    return tag[:-1].rstrip() + ' checked="checked">'
 
-    나머지 속성(id·dir 등)과 문서의 다른 부분은 **그대로 둔다** — 체크 상태 하나만 바꾼다.
-    대상 체크박스를 못 찾으면 None(호출부가 오류 처리). index 는 문서 내 체크박스 순번(0-based)."""
+
+def _tag_id(tag):
+    m = _CB_ID_RE.search(tag)
+    return (m.group(1) or m.group(2) or m.group(3)) if m else None
+
+
+def _set_checkbox(html, index, checked, cbid=None):
+    """HTML 원문에서 대상 `<input type=checkbox>` 의 checked 만 뒤집어 돌려준다.
+
+    **id 우선, index 폴백**: cbid 가 주어지고 그 id 를 가진 체크박스가 있으면 그걸 짚는다
+    (체크박스가 추가/삭제·순서변경돼도 정확). 없으면 index 번째(0-based)로 짚는다
+    (prod 가 상태변경마다 id 를 재발급해 id 가 안 맞을 때의 폴백). 못 찾으면 None.
+    나머지 속성(id·dir 등)과 문서의 다른 부분은 그대로 둔다 — 체크 상태 하나만 바꾼다."""
     boxes = [m for m in _CB_INPUT_RE.finditer(html) if _CB_TYPE_RE.search(m.group(0))]
-    if index < 0 or index >= len(boxes):
-        return None
-    m = boxes[index]
-    tag = _CB_CHECKED_RE.sub("", m.group(0))          # 기존 checked 제거(중복 방지)
-    if checked:
-        if tag.endswith("/>"):
-            tag = tag[:-2].rstrip() + ' checked="checked" />'
-        else:
-            tag = tag[:-1].rstrip() + ' checked="checked">'
+    m = None
+    if cbid:
+        cbid = str(cbid)
+        for b in boxes:
+            if _tag_id(b.group(0)) == cbid:
+                m = b
+                break
+    if m is None:                                     # id 없거나 못 찾음 → index 폴백
+        if index is None or index < 0 or index >= len(boxes):
+            return None
+        m = boxes[index]
+    tag = _apply_checked(m.group(0), checked)
     return html[:m.start()] + tag + html[m.end():]
 
 
@@ -1061,32 +1082,39 @@ class JiraClient:
         self._invalidate_ticket(key)
         return {"ok": True}
 
-    def toggle_description_checkbox(self, key, index, checked):
-        """본문(description)의 index 번째 체크박스를 checked 상태로 토글하고 저장한다.
+    def toggle_description_checkbox(self, key, index, checked, cbid=None):
+        """본문(description)의 대상 체크박스를 checked 상태로 토글하고 저장한다.
 
         사내 Jira(JEDITOR)는 체크박스를 원문에 `<input … type="checkbox">` HTML 로 저장한다.
         그래서 wiki 변환을 거치지 않고 **원문을 그대로 받아 그 체크박스 하나만 뒤집어** PUT 한다
-        (나머지 서식은 손대지 않는다 — 최소 변경). 화면 순서 = 원문 순서라 index 로 짚는다."""
-        raw = self.get_issue(key) or {}
+        (나머지 서식은 손대지 않는다 — 최소 변경). id 우선 + index 폴백으로 대상을 짚는다.
+        ★ 캐시 아닌 **최신 원문**을 provider 로 직접 읽는다(description 만) — 그 사이 다른 변경을 덮어쓰지 않게."""
+        raw = self.provider.get_json(f"/rest/api/2/issue/{key}", params={"fields": "description"}) or {}
         body = (raw.get("fields") or {}).get("description") or ""
-        new_body = _set_checkbox(body, index, checked)
+        new_body = _set_checkbox(body, index, checked, cbid=cbid)
         if new_body is None:
-            raise ValueError(f"본문에서 {index}번째 체크박스를 찾지 못했습니다.")
+            raise ValueError("본문에서 해당 체크박스를 찾지 못했습니다.")
         self.provider.put_json(f"/rest/api/2/issue/{key}",
                                {"fields": {"description": new_body}})
         self._invalidate_ticket(key)
         return {"ok": True}
 
-    def toggle_comment_checkbox(self, key, comment_id, index, checked):
-        """코멘트의 index 번째 체크박스를 토글하고 저장한다(본문과 같은 원리)."""
-        c = self.provider.get_json(f"/rest/api/2/issue/{key}/comment/{comment_id}") or {}
-        body = c.get("body") or ""
-        new_body = _set_checkbox(body, index, checked)
+    def toggle_comment_checkbox(self, key, comment_id, index, checked, cbid=None):
+        """코멘트의 대상 체크박스를 토글하고 저장한다(본문과 같은 원리 — id 우선 + index 폴백).
+        ★ 단일 코멘트 GET 은 일부 서버(fake 포함)에서 405 → **리스트에서 id 로** 최신 원문을 찾는다."""
+        data = self.provider.get_json(f"/rest/api/2/issue/{key}/comment",
+                                      params={"maxResults": 1000, "orderBy": "-created"}) or {}
+        body = ""
+        for c in data.get("comments", []):
+            if str(c.get("id")) == str(comment_id):
+                body = c.get("body") or ""
+                break
+        new_body = _set_checkbox(body, index, checked, cbid=cbid)
         if new_body is None:
-            raise ValueError(f"코멘트에서 {index}번째 체크박스를 찾지 못했습니다.")
+            raise ValueError("코멘트에서 해당 체크박스를 찾지 못했습니다.")
         self.provider.put_json(f"/rest/api/2/issue/{key}/comment/{comment_id}",
                                {"body": new_body})
-        self._invalidate_ticket(key)
+        self._invalidate_ticket(key, comments=True)   # 코멘트 캐시까지 비워야 다시 읽을 때 반영
         return {"ok": True}
 
     OPTIONS_TTL = 1800          # 우선순위·컴포넌트는 거의 안 바뀐다

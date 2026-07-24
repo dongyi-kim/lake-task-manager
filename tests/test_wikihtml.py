@@ -107,7 +107,7 @@ def test_tasklist_to_native_checkbox_html():
 
 def test_set_checkbox_toggle_by_index():
     """렌더 화면에서 index 번째 체크박스를 토글 → 원본의 그 체크박스만 checked 를 뒤집는다
-    (id·나머지 서식은 보존; prod 가 상태변경마다 id 를 재발급해도 index 로 안전하게 짚는다)."""
+    (id·나머지 서식은 보존)."""
     from app.jira_client import _set_checkbox
     raw = ('<p dir="auto"><input id="111" type="checkbox" />A</p>'
            '<p dir="auto"><input id="222" type="checkbox" checked="checked" />B</p>')
@@ -116,3 +116,18 @@ def test_set_checkbox_toggle_by_index():
     off = _set_checkbox(raw, 1, False)
     assert 'id="222" type="checkbox" />' in off
     assert _set_checkbox(raw, 9, True) is None    # 없는 index → None
+
+
+def test_set_checkbox_by_id_with_index_fallback():
+    """id 우선(순서 무관), 못 찾으면 index 폴백 — prod 의 id 재발급에도 견고."""
+    from app.jira_client import _set_checkbox
+    raw = ('<p dir="auto"><input id="AAA" type="checkbox" />A</p>'
+           '<p dir="auto"><input id="BBB" type="checkbox" />B</p>')
+    # id 로 두 번째(BBB)를 짚는다 — index 를 안 줘도(=None) 정확
+    r = _set_checkbox(raw, None, True, cbid="BBB")
+    assert 'id="AAA" type="checkbox" />' in r and 'id="BBB" type="checkbox" checked' in r
+    # id 를 못 찾으면 index 폴백
+    r = _set_checkbox(raw, 0, True, cbid="ZZZ")
+    assert 'id="AAA" type="checkbox" checked' in r
+    # id 도 없고 index 도 없으면 None
+    assert _set_checkbox(raw, None, True, cbid="ZZZ") is None

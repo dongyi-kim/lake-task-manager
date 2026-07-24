@@ -121,12 +121,15 @@ class _Sanitizer(HTMLParser):
         if t == "radio":
             self.out.append('<input type="radio"%s disabled />' % chk)
             return
-        # 체크박스: data-cb-index 로 짚는다. 프론트가 수정권한이 있을 때만 클릭을 받아
-        # **원본 필드의 이 index 번째 체크박스**를 뒤집어 저장한다(순서가 원본과 같아 index 로 매칭).
+        # 체크박스: **id 우선, index 폴백**으로 짚는다. 프론트가 수정권한이 있을 때 클릭을 받아
+        # 원본 필드에서 이 id(또는 없으면 index 번째) 체크박스를 뒤집어 저장한다.
+        # id 는 원본에 있으면 그대로 싣는다(원본 순서 = 화면 순서라 index 도 함께 유효).
         idx = self._cb_index
         self._cb_index += 1
-        self.out.append('<input type="checkbox"%s class="tkt-cb" data-cb-index="%d" />'
-                        % (chk, idx))
+        cid = (d.get("id") or "").strip()
+        idattr = (' data-cb-id="%s"' % escape(cid, quote=True)) if cid else ""
+        self.out.append('<input type="checkbox"%s class="tkt-cb" data-cb-index="%d"%s />'
+                        % (chk, idx, idattr))
 
     # 위험 서브트리(script 등) 내부는 태그·텍스트 모두 버림
     def handle_starttag(self, tag, attrs):
