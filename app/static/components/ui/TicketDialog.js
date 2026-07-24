@@ -59,6 +59,16 @@ function confTitleFromUrl(u) {
   } catch (e) { /* noop */ }
   return null;
 }
+const SPINE_W_KEY = "tkt.spineW";
+const SPINE_HIDE_KEY = "tkt.spineHidden";
+function loadSpineW() {
+  try { const v = parseInt(localStorage.getItem(SPINE_W_KEY), 10); if (v >= 180 && v <= 460) return v; } catch (e) { /* noop */ }
+  return 264;
+}
+function loadSpineHidden() {
+  try { return localStorage.getItem(SPINE_HIDE_KEY) === "1"; } catch (e) { return false; }
+}
+
 const _BROWSE_RE = /\/browse\/([A-Z][A-Z0-9]+-\d+)/;
 
 // 설명이 "실제로" 비었는지 — HTML 문자열이 아니라 **렌더 텍스트**를 trim 해서 본다.
@@ -97,6 +107,8 @@ export default {
                     // 상태 전이 팝업
                     stOpen: false, stInfo: null, stErr: "", stPick: null,
                     err: "", expanded: false, zoom: null, zoomLoading: false,
+                    // 좌측 부가정보 패널 — 폭 조절·접기(저장). 넓은 화면(사이드바 모드)에서만 의미.
+                    spineW: loadSpineW(), spineHidden: loadSpineHidden(),
                     // 목록이 길면 기본으로 접는다(FOLD_AT 초과). 몇 개인지는 제목 옆 숫자로 안다.
                     attOpen: true, docOpen: true,
                     kidSort: loadKidSort(),
@@ -199,6 +211,8 @@ export default {
       list.sort((a, b) => (this.cmtSort === "old" ? t(a) - t(b) : t(b) - t(a)));
       return list;
     },
+    /** 좌측 부가정보 패널을 그릴 거리가 있는가(계보/형제/타임라인 중 하나라도). */
+    hasSpine() { return this.spine.length > 1 || this.siblings.length > 0 || this.timeline.length > 0; },
     // 스파인 계보 = [조상…, 현재]. 조상만 도착해도 그릴 수 있어야 하므로 **v 를 기다리지 않는다**
     // (현재 노드는 keyId 로 먼저 그리고, v 가 오면 제목·타입이 채워진다).
     spine() {
@@ -246,6 +260,27 @@ export default {
     parentOf(p) { if (p && this.ownDescEmpty && !this.pdescOpen) this.toggleParentDesc(); },
   },
   methods: {
+    setSpineHidden(v) {
+      this.spineHidden = v;
+      try { localStorage.setItem(SPINE_HIDE_KEY, v ? "1" : "0"); } catch (e) { /* noop */ }
+    },
+    startSpineDrag(e) {
+      const x0 = e.clientX, w0 = this.spineW;
+      const onMove = (ev) => {
+        // 왼쪽 패널이라 오른쪽으로 끌면 넓어진다. 너무 좁으면 목록이 잘리고, 너무 넓으면
+        // 본문이 좁아진다 — 180~460 으로 묶는다.
+        this.spineW = Math.max(180, Math.min(460, w0 + (ev.clientX - x0)));
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.userSelect = "";
+        try { localStorage.setItem(SPINE_W_KEY, String(this.spineW)); } catch (e) { /* noop */ }
+      };
+      document.body.style.userSelect = "none";   // 드래그 중 글자 선택 방지
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
     // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
     fromBackdrop,
     extOf,
@@ -801,9 +836,16 @@ export default {
 
         <!-- 섹션별 독립 렌더: 스파인(계보/형제/타임라인)은 본문(v) 응답을 기다리지 않는다.
              본문·코멘트도 각자 자기 상태가 채워지는 대로 그려진다. -->
-        <div class="tkt-cols">
+        <div class="tkt-cols" :class="{ 'spine-hidden': spineHidden }"
+             :style="{ '--spine-w': spineW + 'px' }">
+          <!-- 접힌 상태에서 다시 펴는 손잡이(얇은 레일) -->
+          <button v-if="spineHidden && hasSpine" class="spine-show" title="부가정보 패널 펼치기"
+                  @click="setSpineHidden(false)">›</button>
           <!-- 좌측 세로 스파인 — 계보(조상→현재, 레일+진척) + 형제 목록. 클릭 시 해당 티켓으로 이동 -->
-          <aside v-if="spine.length > 1 || siblings.length || timeline.length" class="tkt-spine">
+          <aside v-if="hasSpine && !spineHidden" class="tkt-spine">
+            <button class="spine-hide" title="부가정보 패널 접기" @click="setSpineHidden(true)">‹</button>
+            <!-- 오른쪽 가장자리를 끌어 폭 조절. 넓은 화면에서만 보인다(좁으면 grid 라 무의미). -->
+            <div class="spine-grip" title="너비 조절 — 드래그" @mousedown.prevent="startSpineDrag"></div>
             <!-- 조상이 없으면(Epic 등) 자기 자신만 남으므로 계보 블록 자체를 생략 -->
             <!-- 좁은 화면에서 '열 묶음' 단위로 배치된다(.grp). 넓은 화면에선 display:contents 라
                  구조상 없는 것과 같고, 순서는 CSS order 로 기존과 동일하게 유지한다. -->

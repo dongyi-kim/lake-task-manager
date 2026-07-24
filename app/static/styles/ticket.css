@@ -83,9 +83,35 @@
    (margin 으로 두면 그 틈만 다이얼로그 배경으로 드러나 세로 띠가 생긴다) */
 .tkt-main { flex: 1; min-width: 0; align-self: stretch;
   margin: 0 0 -20px; padding: 16px 18px; background: var(--bg); }
-.tkt-spine { flex: 0 0 264px; width: 264px; align-self: stretch; min-width: 0;
+.tkt-spine { position: relative; flex: 0 0 var(--spine-w, 264px); width: var(--spine-w, 264px);
+  align-self: stretch; min-width: 0;
   margin: 0 0 -20px -24px; padding: 16px 14px 16px 24px;
   border-right: 1px solid var(--border); background: var(--panel-2); }
+/* 폭 조절 손잡이 — 오른쪽 가장자리. 평소엔 은근하고 올리면 또렷해진다. */
+.spine-grip { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; z-index: 6;
+  cursor: col-resize; }
+.spine-grip::after { content: ""; position: absolute; top: 0; right: 3px; width: 2px; height: 100%;
+  background: transparent; transition: background .12s; }
+.spine-grip:hover::after { background: var(--accent); }
+/* 접기 버튼 — 패널 우상단 */
+.spine-hide, .spine-show { position: absolute; z-index: 7; display: flex; align-items: center;
+  justify-content: center; width: 18px; height: 22px; padding: 0; cursor: pointer;
+  font-size: 13px; line-height: 1; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 5px; background: var(--panel); }
+.spine-hide { top: 8px; right: 6px; }
+.spine-hide:hover, .spine-show:hover { color: var(--accent); border-color: var(--accent); }
+/* 접힌 상태 — 얇은 레일 하나만 남기고 펴는 버튼을 띄운다 */
+.spine-show { top: 12px; left: 0; width: 16px; height: 34px; border-radius: 0 6px 6px 0; }
+.tkt-cols.spine-hidden { position: relative; }
+/* 접혔을 때는 grid/flex 모두에서 좌측 컬럼이 없다 — 본문이 그 폭을 가져간다 */
+@container tkt (min-width: 1000.1px) {
+  .tkt-cols.spine-hidden { padding-left: 8px; }
+}
+/* 좁은 화면(grid 모드)에선 폭 조절·접기가 무의미 — 손잡이/버튼을 숨긴다 */
+@container tkt (max-width: 1000px) {
+  .spine-grip, .spine-hide, .spine-show { display: none; }
+  .tkt-cols.spine-hidden .tkt-spine { display: contents; }   /* 접힘 무시하고 평소처럼 흐른다 */
+}
 /* 마이크로 라벨 — 9.5px 대문자 트래킹(목업 문법) */
 .tkt-mlabel { font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
   color: var(--muted-2); margin-bottom: 11px; }
