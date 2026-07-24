@@ -151,3 +151,13 @@
 :is(.file-badge, .fchip)[data-ext="mp4"], :is(.file-badge, .fchip)[data-ext="mov"], :is(.file-badge, .fchip)[data-ext="mkv"],
 :is(.file-badge, .fchip)[data-ext="webm"] { --fb: #0f766e; }
 :is(.file-badge, .fchip)[data-ext="mp3"], :is(.file-badge, .fchip)[data-ext="wav"], :is(.file-badge, .fchip)[data-ext="flac"] { --fb: #9333ea; }
+
+/* 칩 + 지우기 — ✕ 는 칩 **밖**에 둔다. 안에 넣으면 파일 이름이 그만큼 짧아지고,
+   내려받기 링크 안의 버튼이라 눌렀을 때 무엇이 실행되는지도 헷갈린다. */
+.fchip-w { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; }
+.chip-x { flex: none; font: inherit; font-size: 11px; line-height: 1; color: var(--muted-2);
+  background: none; border: 0; padding: 2px 4px; border-radius: 5px; cursor: pointer;
+  opacity: 0; transition: opacity .12s; }
+/* 평소엔 숨어 있다 — 목록을 훑을 때 ✕ 가 줄마다 늘어서면 그게 먼저 읽힌다 */
+.fchip-w:hover .chip-x, .chip-x:focus-visible { opacity: 1; }
+.chip-x:hover { color: #fff; background: var(--danger); }

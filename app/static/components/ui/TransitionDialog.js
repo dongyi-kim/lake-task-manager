@@ -19,6 +19,7 @@ import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
 import { createTypeahead } from "../../lib/typeahead.js";
+import { fromBackdrop } from "../../lib/backdrop.js";
 
 export default {
   name: "TransitionDialog",
@@ -78,6 +79,8 @@ export default {
     }).catch(() => {});
   },
   methods: {
+    // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
+    fromBackdrop,
     searchWho(q) {
       this.hi = 0;
       this._ta.run(q).then((r) => { if (r) this.who = r.slice(0, 8); }).catch(() => {});
@@ -126,7 +129,7 @@ export default {
     },
   },
   template: `
-  <div class="trx-ov" @click.self="$emit('close')">
+  <div class="trx-ov" @click.self="fromBackdrop($event) && $emit('close')">
     <div class="trx">
       <div class="trx-h">
         <b>{{ transition.name || ('→ ' + transition.to) }}</b>

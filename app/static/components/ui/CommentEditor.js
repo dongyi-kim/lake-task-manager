@@ -734,6 +734,8 @@ export default {
                     // 인라인 모드에서 사용자가 끌어 정한 본문 높이(px). null = 기본값.
                     // 최대화 모드에는 안 쓴다 — 거기선 창이 높이를 정한다.
                     hostH: loadEditorHeight(), resizing: false,
+                    // 업로드 진행 — 몇 개 중 몇 번째, 지금 무엇을 올리는 중인가
+                    upTotal: 0, upDone: 0, upName: "",
                     // 파일을 이 에디터 위로 끌고 왔는가 — 테두리로 "여기에 놓으면 본문" 을 말한다
                     dragOver: false, dragDepth: 0,
                     // '' | 'jira' | 'confluence' — '/' 로 연 검색창
@@ -823,6 +825,15 @@ export default {
     this._dead = true;
     try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
     try { if (this._ed) this._ed.destroy(); } catch (e) { /* noop */ }
+  },
+  computed: {
+    /** 올리는 동안 **무엇을 기다리는지** 말한다. prod 는 첨부 하나에 몇 초씩 걸려서,
+     *  '저장 중…' 만 떠 있으면 멈춘 것처럼 느껴진다 — 몇 개 중 몇 번째인지가 그 차이를 만든다. */
+    busyLabel() {
+      if (!this.upTotal) return "저장 중…";
+      const n = Math.min(this.upDone + 1, this.upTotal);
+      return "첨부 " + n + "/" + this.upTotal + (this.upName ? " · " + this.upName : "");
+    },
   },
   methods: {
     active(name, attrs) { this.tick; return this._ed && this._ed.isActive(name, attrs); },
@@ -1081,15 +1092,23 @@ export default {
       if (!text && !hasNode) { this.err = "내용을 입력하세요."; return; }
       this.busy = true; this.err = "";
       const uploaded = [];
+      // 올릴 것부터 센다 — prod 는 첨부 하나에 몇 초씩 걸린다. 몇 개 중 몇 번째인지 모르면
+      // 그 몇 초가 '멈춘 것' 으로 느껴진다.
+      const queue = [];
+      for (const [url, info] of this._pending) if (html.includes(url)) queue.push([url, info]);
+      this.upTotal = queue.length;
+      this.upDone = 0;
       try {
-        for (const [url, info] of this._pending) {
-          if (!html.includes(url)) continue;            // 지운 이미지는 업로드 안 함
+        for (const [url, info] of queue) {
+          this.upName = info.name;
           const file = new File([info.blob], info.name,
                                 { type: (info.blob && info.blob.type) || "application/octet-stream" });
           const res = await api.attachmentUpload(this.ticketKey, file);
           uploaded.push(res.id);
           html = html.split(url).join(res.filename);    // objectURL → 실제 파일명
+          this.upDone += 1;
         }
+        this.upName = "";                                // 이제 본문/댓글 자체를 올린다
         await this.submitFn(html);
         const dk = this.draftKey();
         if (dk) clearDraft(dk);                      // 제출 성공 → 임시저장 삭제
@@ -1192,7 +1211,7 @@ export default {
         <span v-if="err" class="cmt-ed-msg">{{ err }}</span>
         <button class="cmt-ed-btn ghost" :disabled="busy" @click="$emit('cancel')">취소</button>
         <button class="cmt-ed-btn primary" :disabled="busy || !ready" @click="submit">
-          {{ busy ? '저장 중…' : submitLabel }}</button>
+          {{ busy ? busyLabel : submitLabel }}</button>
       </div>
     </template>
   </div>`,

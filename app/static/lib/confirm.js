@@ -6,6 +6,8 @@
 // 자동 수락으로 바꾸는 방법도 있지만, 그러면 우리가 모르는 대화상자까지 전부 수락하게 된다.
 //
 // 반환은 Promise<boolean> — 쓰는 쪽 코드 모양은 window.confirm 과 거의 같다.
+import { fromBackdrop } from "./backdrop.js";
+
 export function confirmBox(message, opts) {
   const o = opts || {};
   return new Promise((resolve) => {
@@ -38,7 +40,9 @@ export function confirmBox(message, opts) {
     };
     ok.addEventListener("click", () => done(true));
     cancel.addEventListener("click", () => done(false));
-    ov.addEventListener("click", (e) => { if (e.target === ov) done(false); });
+    // 배경 클릭으로 닫되, **누른 곳과 뗀 곳이 모두 배경일 때만** — 창 안에서 글자를 끌다가
+    // 손이 밖에서 떨어졌을 뿐인데 닫히면 그건 취소가 아니라 사고다.
+    ov.addEventListener("click", (e) => { if (fromBackdrop(e)) done(false); });
     window.addEventListener("keydown", onKey, true);
     document.body.appendChild(ov);
     // 되돌릴 수 없는 일이면 **취소에** 손이 먼저 가야 한다 — 기본 포커스를 취소에 둔다.

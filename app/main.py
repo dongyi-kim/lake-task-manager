@@ -916,8 +916,17 @@ async def api_attachment_upload(key: str, file: UploadFile = File(...)):
 
 @app.delete("/api/ticket/{key}/attachment/{aid}")
 def api_attachment_delete(key: str, aid: str):
-    """첨부 삭제 — 제출 취소·부분실패 롤백용."""
+    """첨부 삭제 — 제출 취소·부분실패 롤백 + 화면의 ✕.
+    되돌릴 수 없으므로 **바꿀 수 있는 사람만**(담당/보고/매니저). 숨김은 접근 제어가 아니다."""
+    _require_edit(key)
     return JSONResponse(_client.delete_attachment(aid, key=key))
+
+
+@app.delete("/api/ticket/{key}/document/{lid}")
+def api_document_delete(key: str, lid: str):
+    """관련문서(remote link) 떼기. 본문에 **언급**된 문서는 링크가 아니라 글이라 여기서 못 지운다."""
+    _require_edit(key)
+    return JSONResponse(_client.delete_remote_link(key, lid))
 
 
 @app.get("/api/me")

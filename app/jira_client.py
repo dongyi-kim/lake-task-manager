@@ -1739,7 +1739,9 @@ class JiraClient:
                 obj = r.get("object") or {}
                 url = (obj.get("url") or "").strip()
                 if url:
-                    out.append({"title": (obj.get("title") or "").strip(), "url": url})
+                    # id 를 함께 싣는다 — 이게 있어야 화면에서 링크를 뗄 수 있다(문서 ✕).
+                    out.append({"id": str(r.get("id") or ""),
+                                "title": (obj.get("title") or "").strip(), "url": url})
             return out
         return self.cache.get_or_set(f"remotelinks:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
 
@@ -1765,14 +1767,16 @@ class JiraClient:
                 pass
             out, seen = [], set()
 
-            def add(u, title, is_conf):
+            def add(u, title, is_conf, link_id=None):
                 u = _abs_url(u, self.s.confluence_base)     # 상대경로면 절대화(안 그러면 404)
                 # Confluence 는 문서 정규화 키로, Web link 는 URL 로 중복 판정
                 ck = _conf_key(u) if is_conf else ("web:" + u.rstrip("/").lower())
                 if ck in seen:
                     return
                 seen.add(ck)
-                out.append({"title": title, "url": u})
+                # linkId 가 있는 것만 지울 수 있다 — 본문에 **언급**된 문서는 링크가 아니라 글이라,
+                # 지우려면 본문을 고쳐야 한다(화면도 그때만 ✕ 를 보인다).
+                out.append({"title": title, "url": u, "linkId": link_id})
 
             # (1) 본문 언급 Confluence 문서
             for h in htmls:
@@ -1785,7 +1789,7 @@ class JiraClient:
                 u = r["url"]
                 is_conf = bool(_CONF_RE.search(u))
                 title = r["title"] or (_conf_title(u) if is_conf else u)
-                add(u, title, is_conf)
+                add(u, title, is_conf, r.get("id"))
             return out[:limit]
         return self._swr(f"documents:{self.env}:{key}", build)
 

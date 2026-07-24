@@ -8,6 +8,7 @@
 import { api } from "../../lib/api.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 import TypeBadge from "./TypeBadge.js";
+import { fromBackdrop } from "../../lib/backdrop.js";
 
 const _URL_RE = /^https?:\/\/\S+$/i;
 
@@ -107,6 +108,8 @@ export default {
     q() { this.run(); },
   },
   methods: {
+    // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
+    fromBackdrop,
     setRel(e) {
       const o = this.typeOpts[+e.target.value];
       if (o) { this.type = o.name; this.direction = o.direction; }
@@ -159,7 +162,7 @@ export default {
   <!-- 오버레이 모달 — 인라인으로 열면 폭이 좁고 아래 내용을 밀어낸다.
        body 로 teleport: 티켓 다이얼로그 안에 두면 그 스택/스크롤에 갇힌다. -->
   <Teleport to="body">
-  <div class="lp-ov" @click.self="$emit('close')">
+  <div class="lp-ov" @click.self="fromBackdrop($event) && $emit('close')">
   <div class="lp" @click.stop>
     <div class="lp-h">{{ insert ? (isJira ? '티켓 넣기' : '문서 넣기')
                                 : (isJira ? '관련 티켓 추가' : '관련문서 추가') }}

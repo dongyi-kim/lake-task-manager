@@ -15,6 +15,7 @@ import Avatar from "./Avatar.js";
 import TypeBadge from "./TypeBadge.js";
 import FieldEdit from "./FieldEdit.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
+import { fromBackdrop } from "../../lib/backdrop.js";
 
 export default {
   name: "NewChildDialog",
@@ -62,6 +63,8 @@ export default {
   },
   unmounted() { document.removeEventListener("keydown", this._onEsc, true); },
   methods: {
+    // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
+    fromBackdrop,
     rankOf: priRankOf,
     setWho(id, u) {
       this.nc.assigneeId = id || "";
@@ -86,7 +89,7 @@ export default {
   },
   template: `
   <Teleport to="body">
-  <div class="nk-ov" @click.self="$emit('close')">
+  <div class="nk-ov" @click.self="fromBackdrop($event) && $emit('close')">
   <div class="nk" @click.stop>
     <div class="nk-h">{{ title }}
       <span class="nk-h-s">{{ parent }} 아래에 만듭니다</span>

@@ -15,6 +15,7 @@ import LinkPicker from "./LinkPicker.js";
 import TransitionDialog from "./TransitionDialog.js";
 import DueText from "./DueText.js";
 import NewChildDialog from "./NewChildDialog.js";
+import { fromBackdrop } from "../../lib/backdrop.js";
 
 // 목록이 이보다 길면 기본으로 접는다. 첨부가 스무 개인 티켓에서 본문·코멘트가 화면 밖으로
 // 밀려나는 걸 막는다 — 몇 개인지는 제목 옆 숫자로 이미 알 수 있다.
@@ -174,6 +175,9 @@ export default {
     /** 전이 목록·권한 — 우클릭 메뉴와 같은 응답에서 꺼낸다(판정이 갈리면 안 된다). */
     stList() { return (this.stInfo && this.stInfo.transitions) || []; },
     stMayEdit() { return !!(this.stInfo && this.stInfo.mayEdit); },
+    /** 이 티켓을 손댈 수 있는가 — editmeta 에 고칠 수 있는 필드가 하나라도 있으면 그렇다.
+     *  (서버가 판정한 결과라 우리가 추측하지 않는다. 삭제는 서버가 한 번 더 막는다.) */
+    mayEdit() { return !!(this.emeta && Object.keys(this.emeta).length); },
     /** Epic Link 필드 id — 인스턴스마다 다른 커스텀필드라 이름으로 찾는다(하드코딩 금지). */
     epicFieldId() {
       const m = this.emeta || {};
@@ -238,6 +242,8 @@ export default {
     parentOf(p) { if (p && this.ownDescEmpty && !this.pdescOpen) this.toggleParentDesc(); },
   },
   methods: {
+    // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
+    fromBackdrop,
     extOf,
     // 본문(Description)·코멘트·계보(조상/형제)·타임라인을 **동시에 출발**시키고 각자 도착하는 대로
     // 개별 렌더한다(서로 막지 않음). 느린 타임라인이 본문을 기다리지 않게 하는 게 핵심.
@@ -447,6 +453,24 @@ export default {
       this.load();          // 한 필드만 손대도 상태·이력·계보가 같이 움직인다 → 통째로 다시 받는다
       window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: this.keyId } }));
     },
+    /** 첨부·문서를 함께 다시 받는다 — 댓글/본문을 고치면 그 안의 첨부·문서도 같이 달라진다.
+     *  예전엔 코멘트 목록만 다시 받아, 파일을 붙였는데 첨부 목록은 그대로였다. */
+    reloadSide() { this.reloadAttachments(); this.reloadDocs(); },
+    async delAttachment(a) {
+      if (!await confirmBox(a.filename + " 을(를) 삭제할까요?", { okLabel: "삭제", danger: true })) return;
+      this.upErr = "";
+      try { await api.attachmentDelete(this.tk, a.id); }
+      catch (e) { this.upErr = "삭제 실패: " + ((e && e.message) || e); }
+      this.reloadSide();
+    },
+    async delDoc(d) {
+      if (!await confirmBox((d.title || d.url) + " 을(를) 이 티켓에서 뗄까요?",
+                            { okLabel: "떼기", danger: true })) return;
+      this.docErr = "";
+      try { await api.documentDelete(this.tk, d.linkId); }
+      catch (e) { this.docErr = "떼지 못했습니다: " + ((e && e.message) || e); }
+      this.reloadDocs();
+    },
     reloadAttachments() {
       const key = this.keyId;
       return api.ticketAttachments(key)
@@ -511,7 +535,7 @@ export default {
     startCompose() { this.editingId = null; this.editErr = ""; this.composing = true; },
     cancelCompose() { this.composing = false; },
     submitNew(md) { return api.commentCreate(this.tk, md); },     // CommentEditor 가 await
-    onComposed() { this.composing = false; this.reloadComments(); },
+    onComposed() { this.composing = false; this.reloadComments(); this.reloadSide(); },
     async startEdit(c) {
       // 원본(markdown)을 먼저 받아온 뒤 editingId 를 켠다 — 에디터는 마운트 시 initialValue 만 읽으므로.
       this.composing = false; this.editErr = "";
@@ -523,7 +547,7 @@ export default {
     },
     cancelEdit() { this.editingId = null; this.editInitial = ""; },
     submitEdit(c, md) { return api.commentUpdate(this.tk, c.id, md); },
-    onEdited() { this.editingId = null; this.editInitial = ""; this.reloadComments(); },
+    onEdited() { this.editingId = null; this.editInitial = ""; this.reloadComments(); this.reloadSide(); },
     async delComment(c) {
       // window.confirm 을 쓰면 **앱 창에서는 아무 일도 일어나지 않는다**(Playwright 가 대화상자를
       // 자동 거절한다). 크롬에서만 되던 이유가 이것이었다.
@@ -693,7 +717,7 @@ export default {
   },
   template: `
     <div :class="[isPage ? 'tkt-page' : 'tkt-ov', { expanded, 'drag-over': dragOver }]"
-         @click.self="!isPage && $emit('close')"
+         @click.self="!isPage && fromBackdrop($event) && $emit('close')"
          @dragenter.prevent="onDragEnter" @dragover.prevent="onDragOver"
          @dragleave="onDragLeave" @drop.prevent="onDrop">
     <!-- 드래그 중 안내 — 같은 파일이라도 **어디에 놓느냐로 결과가 달라지므로** 그 차이를
@@ -1071,13 +1095,18 @@ export default {
               <div class="chipwrap" :class="{ 'fold-peek': !attOpen }">
                 <!-- 첨부 목록 칩과 본문 속 파일 뱃지는 **같은 것**이다 — 모양이 갈라지면
                      "이건 첨부고 저건 뭐지" 가 된다. data-ext 로 아이콘·색 규칙을 공유한다. -->
-                <a v-for="a in atts" :key="a.id" class="fchip" :class="{ img: a.isImage }"
-                   :data-ext="extOf(a.filename)" :href="a.url" :download="a.filename" rel="noopener"
-                   :title="a.filename + ' · ' + fsize(a.size) + (a.author ? ' · ' + a.author : '')">
-                  <span class="fchip-ic"></span>
-                  <span class="fchip-n">{{ a.filename }}</span>
-                  <span class="fchip-m">{{ fdt(a.created) }} · {{ fsize(a.size) }}</span>
-                </a>
+                <span v-for="a in atts" :key="a.id" class="fchip-w">
+                  <a class="fchip" :class="{ img: a.isImage }"
+                     :data-ext="extOf(a.filename)" :href="a.url" :download="a.filename" rel="noopener"
+                     :title="a.filename + ' · ' + fsize(a.size) + (a.author ? ' · ' + a.author : '')">
+                    <span class="fchip-ic"></span>
+                    <span class="fchip-n">{{ a.filename }}</span>
+                    <span class="fchip-m">{{ fdt(a.created) }} · {{ fsize(a.size) }}</span>
+                  </a>
+                  <!-- ✕ 는 **바꿀 수 있는 사람에게만**. 없는데 보이면 눌러 보고서야 안 되는 걸 안다. -->
+                  <button v-if="mayEdit" class="chip-x" title="첨부 삭제"
+                          @click.stop.prevent="delAttachment(a)">✕</button>
+                </span>
               </div>
               <button v-if="atts.length > FOLD_AT" class="fold-b" @click="attOpen = !attOpen">
                 {{ attOpen ? '접기' : '+' + (atts.length - FOLD_AT) + '개 더' }}</button>
@@ -1093,11 +1122,15 @@ export default {
               <div v-if="!docs.length" class="muted mini">언급된 문서 없음</div>
               <div v-else class="foldwrap" :class="{ folded: !docOpen }">
               <div class="chipwrap" :class="{ 'fold-peek': !docOpen }">
-                <a v-for="(d, i) in docs" :key="i" class="fchip doc" :href="d.url" target="_blank"
-                   rel="noopener" :title="d.url">
-                  <span class="fchip-ic conf"></span>
-                  <span class="fchip-n">{{ d.title }}</span>
-                </a>
+                <span v-for="(d, i) in docs" :key="i" class="fchip-w">
+                  <a class="fchip doc" :href="d.url" target="_blank" rel="noopener" :title="d.url">
+                    <span class="fchip-ic conf"></span>
+                    <span class="fchip-n">{{ d.title }}</span>
+                  </a>
+                  <!-- 본문에 **언급**된 문서는 링크가 아니라 글이라 뗄 수 없다(linkId 가 없다) -->
+                  <button v-if="mayEdit && d.linkId" class="chip-x" title="관련문서 떼기"
+                          @click.stop.prevent="delDoc(d)">✕</button>
+                </span>
               </div>
               <button v-if="docs.length > FOLD_AT" class="fold-b" @click="docOpen = !docOpen">
                 {{ docOpen ? '접기' : '+' + (docs.length - FOLD_AT) + '개 더' }}</button>

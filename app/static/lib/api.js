@@ -138,6 +138,10 @@ export const api = {
     return req("/api/ticket/" + encodeURIComponent(key) + "/attachment", { method: "POST", body: fd })
       .then((r) => { evict(encodeURIComponent(key)); return r; });
   },
+  documentDelete: (key, lid) =>
+    req("/api/ticket/" + encodeURIComponent(key) + "/document/" + encodeURIComponent(lid),
+        { method: "DELETE" })
+      .then((r) => { evict(encodeURIComponent(key)); return r; }),
   attachmentDelete: (key, aid) =>                                      // 롤백
     req("/api/ticket/" + encodeURIComponent(key) + "/attachment/" + encodeURIComponent(aid), { method: "DELETE" })
       .then((r) => { evict(encodeURIComponent(key)); return r; }),

@@ -6,6 +6,7 @@ import { ymdhm } from "../../lib/fmt.js";
 import { recordOpen, stripTags } from "../../lib/recent.js";
 import Avatar from "./Avatar.js";
 import { createTypeahead } from "../../lib/typeahead.js";
+import { fromBackdrop } from "../../lib/backdrop.js";
 
 export default {
   name: "SearchOverlay",
@@ -58,6 +59,8 @@ export default {
     scopeLabel() { return this.scope === "scoped" ? "소속 프로젝트/스페이스" : "전체"; },
   },
   methods: {
+    // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
+    fromBackdrop,
     // 디바운스·응답 역전 방어·같은 질의 캐시는 typeahead 가 맡는다(대기 시간은 설정값).
     schedule() {
       const q = this.q.trim();
@@ -136,7 +139,7 @@ export default {
     cnt(src) { return this.res && this.res[src] && this.res[src].items ? this.res[src].items.length : 0; },
   },
   template: `
-  <div class="sr-ov" @click.self="$emit('close')">
+  <div class="sr-ov" @click.self="fromBackdrop($event) && $emit('close')">
     <div class="sr-box" role="dialog" aria-modal="true">
       <div class="sr-top">
         <svg class="sr-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>

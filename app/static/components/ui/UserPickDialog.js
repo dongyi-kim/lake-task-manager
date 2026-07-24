@@ -6,6 +6,7 @@
 import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
 import { createTypeahead } from "../../lib/typeahead.js";
+import { fromBackdrop } from "../../lib/backdrop.js";
 
 export default {
   name: "UserPickDialog",
@@ -21,6 +22,8 @@ export default {
     this.$nextTick(() => { const el = this.$refs.q; if (el) el.focus(); });
   },
   methods: {
+    // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
+    fromBackdrop,
     search(q) {
       this.loading = true; this.hi = 0;
       this._ta.run(q).then((r) => {
@@ -34,7 +37,7 @@ export default {
     },
   },
   template: `
-  <div class="trx-ov" @click.self="$emit('close')">
+  <div class="trx-ov" @click.self="fromBackdrop($event) && $emit('close')">
     <div class="trx up">
       <div class="trx-h"><b>담당자 변경</b><span class="trx-key">{{ ticket }}</span>
         <button class="trx-x" @click="$emit('close')" title="닫기">×</button></div>
