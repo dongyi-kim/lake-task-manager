@@ -465,11 +465,18 @@ def api_file(u: str, inline: int = 0):
 
 
 @app.get("/api/ticket/{key}")
-def api_ticket(key: str):
-    """티켓 상세 다이얼로그 — 요약·상태·담당/보고·일정·라벨·컴포넌트 + 정화된 description(HTML)."""
-    view = _client.ticket_view(key)
+def api_ticket(key: str, fresh: int = 0):
+    """티켓 상세 다이얼로그 — 요약·상태·담당/보고·일정·라벨·컴포넌트 + 정화된 description(HTML).
+
+    fresh=1 은 캐시를 건너뛴다 — 본문을 고치기 시작하는 순간처럼 낡은 값이면 안 되는 자리용.
+    """
+    view = _client.ticket_view(key, fresh=bool(fresh))
     if view is None:
         return JSONResponse({"error": "Issue Does Not Exist", "key": key}, status_code=404)
+    if fresh:
+        # 서버만 캐시를 건너뛰어 봐야 소용없다 — **브라우저가 같은 URL 응답을 다시 쓴다.**
+        # (실제로 감시가 매번 같은 옛 본문을 받아 충돌을 못 봤다.)
+        return JSONResponse(view, headers={"Cache-Control": "no-store"})
     return JSONResponse(view)
 
 
@@ -680,6 +687,7 @@ class _FieldsBody(BaseModel):
     components: list[str] | None = None
     summary: str | None = None
     descriptionHtml: str | None = None
+    epic: str | None = None               # Epic 키 ("" = 소속 해제)
 
 
 @app.get("/api/ticket/{key}/editmeta")
@@ -697,6 +705,8 @@ def api_options(kind: str, q: str = ""):
         return JSONResponse(_client.components())
     if kind == "labels":
         return JSONResponse(_client.label_suggestions(q))
+    if kind == "epics":
+        return JSONResponse(_client.epic_options(q))
     return JSONResponse({"error": "unknown kind"}, status_code=404)
 
 
@@ -729,6 +739,9 @@ def api_update_fields(key: str, body: _FieldsBody):
         put("summary", body.summary)
     if body.descriptionHtml is not None:
         put("description", html_to_wiki(body.descriptionHtml))
+    if body.epic is not None:
+        # Epic Link 는 커스텀 필드라 id 가 인스턴스마다 다르다 — config 에서 받는다(하드코딩 금지).
+        put(_settings.epic_link_field_id, body.epic or None)
 
     if denied:
         return JSONResponse({"ok": False, "error": "편집 권한이 없는 항목입니다: " + ", ".join(denied)},

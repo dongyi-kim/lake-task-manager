@@ -570,3 +570,7 @@
    sticky 헤더에 잘렸다. 표식이 카드 밖으로 나오는 구조라면 그만큼의 자리는 확보돼야 한다. */
 .mt-hwrap { padding-top: 12px; }
 .mt-headrow { padding-bottom: 4px; }
+
+/* 미분류(Unclassified) — 방향도 무게도 없다. 점 하나로 '아직 등급이 없다' 만 말한다.
+   Medium 의 가로막대(▬)와 헷갈리면 안 된다: 하나는 판단이 끝난 것, 하나는 아직 안 된 것이다. */
+.pri-i.unset { color: var(--muted-2); opacity: .75; font-size: 14px; letter-spacing: 0; }

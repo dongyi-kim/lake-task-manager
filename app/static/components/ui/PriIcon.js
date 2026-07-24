@@ -11,6 +11,12 @@
 // 여기 쓴 ▲▼▬ 는 기본 도형이라 어느 폰트에서도 그대로 나온다.
 //
 // Jira DC 의 우선순위 아이콘과 같은 은유(위/아래 화살표 + 적/청)라 따로 배울 게 없다.
+// 사내 체계에는 **Unclassified(미분류)** 가 실제 값으로 쓰인다. 이걸 Medium 으로 떨어뜨리면
+// "아직 분류 안 된 것" 과 "보통이라고 판단한 것" 이 화면에서 같아 보인다 — 둘은 전혀 다른 상태다
+// (전자는 누군가 등급을 매겨야 하고, 후자는 이미 매겨졌다). 그래서 자기 표식을 준다.
+const UNSET_NAMES = new Set(["unclassified", "none", "not set", "undefined", "-", ""]);
+const UNSET = { icon: "·", key: "unset", label: "Unclassified — 미분류(등급 미지정)" };
+
 const LEVELS = [
   { icon: "▲▲", key: "highest", label: "Highest — 최우선" },
   { icon: "▲", key: "high", label: "High — 높음" },
@@ -44,7 +50,14 @@ export function priLevel(rank) {
 export default {
   name: "PriIcon",
   props: { rank: { type: Number, default: 2 }, name: { type: String, default: "" } },
-  computed: { lv() { return priLevel(this.rank); } },
+  computed: {
+    // 이름이 미분류면 등급(숫자)보다 **이름이 우선**이다. 미분류는 등급이 없는 상태이지
+    // '2등급' 이 아니다 — 정렬용 숫자를 그림에 그대로 옮기면 거짓말이 된다.
+    lv() {
+      const n = (this.name || "").trim().toLowerCase();
+      return UNSET_NAMES.has(n) ? UNSET : priLevel(this.rank);
+    },
+  },
   template: `<span class="pri-i" :class="lv.key"
                    :title="'우선순위: ' + (name || lv.label)">{{ lv.icon }}</span>`,
 };

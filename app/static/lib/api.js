@@ -53,7 +53,13 @@ export const api = {
   search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
     + "&scope=" + encodeURIComponent(scope || "scoped")
     + (only ? "&only=" + encodeURIComponent(only) : "")),               // only=jira|confluence
-  ticket: (key) => get("/api/ticket/" + encodeURIComponent(key)),
+  // fresh: 캐시를 건너뛴다(본문 편집 시작·편집 중 충돌 감시). 평소엔 쓰지 마라 — 상류 왕복이다.
+  // ★ 이때는 memo(get)를 타면 안 된다 — 프로미스 캐시가 URL 이 같다는 이유로 **늘 첫 응답**을
+  //   돌려준다. 서버가 캐시를 건너뛰고 no-store 를 붙여도 여기서 막히면 아무 소용이 없다.
+  ticket: (key, fresh) => {
+    const u = "/api/ticket/" + encodeURIComponent(key);
+    return fresh ? req(u + "?fresh=1") : get(u);
+  },
   ticketBadge: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/badge"),
   ticketAncestors: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/ancestors"),
   ticketSiblings: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/siblings"),

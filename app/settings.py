@@ -117,6 +117,8 @@ class Settings:
                                       _VOC_DEFAULT))
         self.sp_field_id = str(pick("SP_FIELD_ID", f.get("story_point"), "customfield_10004"))
         self.epic_link_field_id = str(pick("EPIC_LINK_FIELD_ID", f.get("epic_link"), "customfield_10008"))
+        # Epic Name — Epic 의 **단축어**(보드 칸에 뜨는 이름). 요약과 별개 필드다.
+        self.epic_name_field_id = str(pick("EPIC_NAME_FIELD_ID", f.get("epic_name"), "customfield_10011"))
         self.confluence_base = str(pick("CONFLUENCE_BASE", conf.get("base"), "")).rstrip("/")
         # Bitbucket 은 아직 mock — base 가 설정되면 SSO 로그인 순회 대상에 포함된다.
         _bb = cfg.get("bitbucket") or {}

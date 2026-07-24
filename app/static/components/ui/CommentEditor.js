@@ -9,6 +9,7 @@ import { loadTiptap } from "../../lib/tiptap.js";
 import { ensureHljsTheme } from "../../lib/hljs.js";
 import { saveDraft, loadDraft, clearDraft, purgeExpired } from "../../lib/draft.js";
 import { api } from "../../lib/api.js";
+import LinkPicker from "./LinkPicker.js";
 import { extOf } from "../../lib/filetype.js";
 import { sigColor, initialOf, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { debouncedItems } from "../../lib/typeahead.js";
@@ -164,6 +165,46 @@ function ticketData(key) {
 // 이미지는 그림 자체가 내용이라 <img> 로 넣지만, 파일은 "무엇이 붙어 있다" 는 사실이 내용이다.
 // 그래서 미리보기 대신 이름과 확장자를 보이는 칩으로 그린다. 제출 시 실제 티켓 첨부가 되고
 // 본문에는 Jira 첨부 링크([^이름])로 저장된다.
+// 영역 구분선 — 본문을 '=== 제목 ===' 으로 나누는 사내 관습. 티켓 뷰는 이미 이 표시를 읽어
+// 영역별 카드로 그리는데(sections.py), **에디터에서는 그냥 글자**라 쓰는 사람이 결과를 못 봤다.
+//
+// 저장 형태는 바꾸지 않는다 — 노드는 '=== 제목 ===' 한 줄짜리 문단으로 직렬화된다. 새 문법을
+// 만들면 Jira 웹에서 연 사람이 못 알아보고, 기존 티켓과도 어긋난다. 화면에서만 선처럼 보인다.
+// 이미 저장된 본문을 편집기로 열 때: '=== 제목 ===' 한 줄짜리 문단을 구분선 노드로 바꾼다.
+// 안 바꾸면 편집기에선 그냥 글자로 보이고, 사용자가 손대면 형식이 깨진다.
+const SEC_LINE = /<p>\s*={3,}\s*([^<]+?)\s*={3,}\s*<\/p>/gi;
+function liftSections(html) {
+  return (html || "").replace(SEC_LINE, (m, t) => '<div class="sec-title-node">' + t + "</div>");
+}
+
+function sectionExt(T) {
+  return T.Node.create({
+    name: "sectionTitle",
+    group: "block",
+    content: "inline*",                 // 제목은 그대로 편집되는 글자다(별도 입력창을 두지 않는다)
+    defining: true,
+    parseHTML() { return [{ tag: "div.sec-title-node" }]; },
+    renderHTML() { return ["div", { class: "sec-title-node" }, 0]; },
+    addInputRules() {
+      const type = this.type;
+      return [
+        // '=== 제목 ===' 을 다 치면 그 자리에서 선으로 바뀐다(= 3개 이상 양쪽).
+        // ★ textblockTypeInputRule 만 쓰면 **일치한 글자를 통째로 지운다** — 제목까지 사라진다.
+        //   직접 넣어 줘야 한다(실제로 빈 구분선이 만들어졌다).
+        new T.InputRule({
+          find: /^={3,}\s*(.+?)\s*={3,}$/,
+          handler: ({ state, range, match, chain }) => {
+            chain().deleteRange(range).insertContent({
+              type: type.name,
+              content: match[1] ? [{ type: "text", text: match[1] }] : [],
+            }).run();
+          },
+        }),
+      ];
+    },
+  });
+}
+
 function fileBadgeExt(T) {
   return T.Node.create({
     name: "fileBadge",
@@ -473,6 +514,132 @@ function singleLineHeadingExt(T) {
 
 // @사람 멘션 자동완성 팝업 (tippy 없이 순수 DOM) — TipTap suggestion.render 핸들러.
 // ticketKey: 빈 쿼리 시 이 티켓 관련 사람(리포터/담당/댓글작성/멘션)·모듈 사람을 우선 표시.
+// ── '/' 명령 ────────────────────────────────────────────────────────────────
+// 툴바에 안 담기는 것들(표·콜아웃·티켓/문서 넣기)까지 **손을 키보드에 둔 채** 쓰게 한다.
+// 툴바를 늘리지 않는 이유: 버튼이 스무 개가 되면 자주 쓰는 굵게/목록이 안 보인다.
+//
+// 이름은 화면에 보이는 우리말이 먼저고, '/'로 치는 영어 낱말은 별칭으로 붙인다 —
+// 한글로 치는 사람이 '표'로 찾고, 손에 익은 사람은 '/table' 로 친다.
+const SLASH = [
+  { g: "삽입", id: "code", ic: "{ }", t: "코드 블록", h: "언어 강조", k: "code 코드 codeblock",
+    run: (e, r) => e.chain().focus().deleteRange(r).setCodeBlock().run() },
+  { g: "삽입", id: "table", ic: "▦", t: "표", h: "3×3 · 머리행", k: "table 표 테이블",
+    run: (e, r) => e.chain().focus().deleteRange(r)
+                    .insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
+  { g: "삽입", id: "quote", ic: "❝", t: "인용", h: "", k: "quote 인용",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleBlockquote().run() },
+  { g: "삽입", id: "bullet", ic: "•", t: "글머리 목록", h: "", k: "list bullet 목록 불릿",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleBulletList().run() },
+  { g: "삽입", id: "ordered", ic: "1.", t: "번호 목록", h: "", k: "numlist ordered 번호 목록",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleOrderedList().run() },
+  // 구분선은 **본문에서만** 뜬다(sections). 댓글은 티켓 뷰가 영역으로 쪼개 주지 않아,
+  // 넣어 봐야 등록 뒤엔 '=== 제목 ===' 글자로 남는다.
+  { g: "삽입", id: "divider", ic: "⌗", t: "영역 구분선", h: "=== 제목 ===", k: "divider 구분선 영역 섹션",
+    only: "sections",
+    run: (e, r) => e.chain().focus().deleteRange(r).insertContent({ type: "sectionTitle" }).run() },
+
+  { g: "알림", id: "info", ic: "ℹ", t: "정보", h: "{info}", k: "info 정보",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleCallout("info").run() },
+  { g: "알림", id: "note", ic: "📌", t: "노트", h: "{note}", k: "note 노트",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleCallout("note").run() },
+  { g: "알림", id: "tip", ic: "💡", t: "팁", h: "{tip}", k: "tip 팁",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleCallout("tip").run() },
+  { g: "알림", id: "success", ic: "✔", t: "성공", h: "{success}", k: "success 성공 완료",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleCallout("success").run() },
+  { g: "알림", id: "warning", ic: "⚠", t: "주의", h: "{warning}", k: "warning 주의 경고",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleCallout("warning").run() },
+  { g: "알림", id: "error", ic: "✖", t: "오류", h: "{error}", k: "error 오류 에러 실패",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleCallout("error").run() },
+
+  { g: "붙이기", id: "jira", ic: "🎫", t: "Jira 티켓", h: "검색해서 링크", k: "jira 티켓 이슈",
+    run: (e, r, host) => { e.chain().focus().deleteRange(r).run(); host.openPick("jira"); } },
+  { g: "붙이기", id: "confluence", ic: "📄", t: "Confluence 문서", h: "검색해서 링크",
+    k: "confluence 문서 위키 컨플루언스",
+    run: (e, r, host) => { e.chain().focus().deleteRange(r).run(); host.openPick("confluence"); } },
+  { g: "붙이기", id: "file", ic: "📎", t: "파일 · 이미지", h: "등록할 때 함께 올라갑니다",
+    k: "file image 파일 이미지 첨부 업로드",
+    run: (e, r, host) => { e.chain().focus().deleteRange(r).run(); host.tbImage(); } },
+];
+
+function slashSuggestion(host) {
+  return {
+    char: "/",
+    // 낱말 중간의 '/'(경로·URL)에는 뜨지 않게 — 앞이 줄머리이거나 공백일 때만.
+    allowSpaces: false,
+    startOfLine: false,
+    command: ({ editor, range, props }) => props.run(editor, range, host),
+    items: ({ query }) => {
+      const q = (query || "").trim().toLowerCase();
+      return SLASH.filter((it) => {
+        if (it.only === "sections" && !host.sections) return false;
+        if (!q) return true;
+        return it.id.startsWith(q) || it.t.toLowerCase().includes(q) || it.k.includes(q);
+      });
+    },
+    render: () => {
+      let el = null, items = [], sel = 0, command = null;
+      const paint = () => {
+        if (!el) return;
+        if (!items.length) { el.innerHTML = '<div class="mn-empty">해당하는 명령이 없습니다</div>'; return; }
+        let html = "", g = "";
+        items.forEach((it, i) => {
+          if (it.g !== g) { g = it.g; html += `<div class="sl-g">${esc(g)}</div>`; }
+          html += `<div class="sl-item${i === sel ? " sel" : ""}" data-i="${i}">`
+                + `<span class="sl-ic">${esc(it.ic)}</span>`
+                + `<span class="sl-t">${esc(it.t)}</span>`
+                + (it.h ? `<span class="sl-h">${esc(it.h)}</span>` : "")
+                + `<span class="sl-k">/${esc(it.id)}</span></div>`;
+        });
+        el.innerHTML = html;
+        el.querySelectorAll(".sl-item").forEach((row) => {
+          row.addEventListener("mousedown", (e) => { e.preventDefault(); pick(+row.dataset.i); });
+        });
+        const cur = el.querySelector(".sl-item.sel");
+        if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
+      };
+      const pick = (i) => { const it = items[i]; if (it && command) command(it); };
+      const place = (rectFn) => {
+        if (!el || !rectFn) return; const r = rectFn(); if (!r) return;
+        // 아래가 모자라면 위로 — 화면 끝에서 목록이 잘리면 고를 수가 없다.
+        const h = el.offsetHeight || 260;
+        const below = window.innerHeight - r.bottom;
+        el.style.left = Math.round(Math.min(r.left, window.innerWidth - 300)) + "px";
+        el.style.top = Math.round(below < h + 12 ? Math.max(8, r.top - h - 4) : r.bottom + 4) + "px";
+      };
+      return {
+        onStart: (p) => {
+          items = p.items || []; sel = 0; command = p.command;
+          el = document.createElement("div"); el.className = "mention-popup slash-popup";
+          document.body.appendChild(el); paint(); place(p.clientRect);
+        },
+        onUpdate: (p) => {
+          items = p.items || []; command = p.command;
+          if (sel >= items.length) sel = 0;
+          paint(); place(p.clientRect);
+        },
+        onKeyDown: (p) => {
+          const k = p.event.key, n = items.length;
+          if (k === "ArrowDown") { sel = n ? (sel + 1) % n : 0; paint(); return true; }
+          if (k === "ArrowUp") { sel = n ? (sel - 1 + n) % n : 0; paint(); return true; }
+          if (k === "Enter" || k === "Tab") { if (n) { pick(sel); return true; } }
+          if (k === "Escape") { return true; }
+          return false;
+        },
+        onExit: () => { if (el) el.remove(); el = null; },
+      };
+    },
+  };
+}
+
+function slashExt(T, host) {
+  return T.Extension.create({
+    name: "slashCmd",
+    addProseMirrorPlugins() {
+      return [T.Suggestion(Object.assign({ editor: this.editor }, slashSuggestion(host)))];
+    },
+  });
+}
+
 function mentionSuggestion(ticketKey) {
   // 디바운스 없이 두면 **한 글자마다** 요청이 나간다(한글은 자모 단위라 더 심하다).
   // 대기 중이던 호출은 최신 결과로 함께 해소한다 — 취소해 버리면 팝업이 멎는다.
@@ -541,6 +708,7 @@ function saveEditorHeight(v) {
 
 export default {
   name: "CommentEditor",
+  components: { LinkPicker },
   props: {
     ticketKey: { type: String, required: true },
     initial: { type: String, default: "" },            // 수정 시 기존 HTML
@@ -551,6 +719,14 @@ export default {
     // 바깥에서 ref 로 submit() 을 부르면 이미지 업로드·초안 정리까지 그대로 탄다 —
     // 그 로직을 밖에서 다시 짜면 반드시 어긋난다.
     hideFooter: { type: Boolean, default: false },
+    // 영역 구분선(=== 제목 ===)을 쓸 수 있는가. **본문에서만 켠다.**
+    // 티켓 뷰가 영역으로 쪼개 보여 주는 건 설명뿐이라, 댓글에서 구분선을 허용하면 편집기에선
+    // 선으로 보이다가 등록하면 그냥 '=== 제목 ===' 글자로 남는다 — 없는 구조를 약속하는 셈이다.
+    sections: { type: Boolean, default: false },
+    // 이 에디터가 무엇을 쓰는 중인가 — **초안 저장소를 가르는 열쇠**다.
+    // 예전엔 "내용이 비었으면 새 댓글" 로 봤는데, 설명이 빈 티켓의 본문 편집기가 같은 조건에
+    // 걸려 **새 댓글 초안을 본문에 불러왔다**. 목적이 다르면 칸도 달라야 한다.
+    kind: { type: String, default: "comment" },   // comment | description | transition
   },
   emits: ["submitted", "cancel"],
   data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [],
@@ -559,7 +735,9 @@ export default {
                     // 최대화 모드에는 안 쓴다 — 거기선 창이 높이를 정한다.
                     hostH: loadEditorHeight(), resizing: false,
                     // 파일을 이 에디터 위로 끌고 왔는가 — 테두리로 "여기에 놓으면 본문" 을 말한다
-                    dragOver: false, dragDepth: 0 }; },
+                    dragOver: false, dragDepth: 0,
+                    // '' | 'jira' | 'confluence' — '/' 로 연 검색창
+                    pick: "" }; },
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
@@ -580,6 +758,8 @@ export default {
         // 코드블럭 — 원래 Jira 와 같은 태그(<pre class="jecodeblock"><code class="language-X">) + lowlight 강조
         T.CodeBlockLowlight.configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
         calloutExt(T),
+        ...(this.sections ? [sectionExt(T)] : []),
+        slashExt(T, this),
         fileBadgeExt(T),
         singleLineHeadingExt(T),
         firstBlockEscapeExt(T),
@@ -587,9 +767,9 @@ export default {
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
         // inline:true — 이미지가 같은 줄에 글자와 나란히 놓이게(TipTap 기본은 블록이라 줄이 갈린다)
         imageResizeExt(T).configure({ inline: true }), linkBadgeExt(T),
-        T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 없이 바로 마크다운(#, -, ``` )·@멘션 사용" }),
+        T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 로 표·코드·티켓 넣기, @ 로 멘션, 마크다운(#, -, ``` )" }),
       ],
-      content: this.initial || "",
+      content: (this.sections ? liftSections(this.initial) : this.initial) || "",
       autofocus: true,
       editorProps: {
         // 본문에 tkt-desc 를 부여 → 렌더된 댓글과 **같은 CSS**를 그대로 사용(인용·콜아웃 등 일치).
@@ -682,6 +862,19 @@ export default {
       });
     },
     tbImage() { this.$refs.file && this.$refs.file.click(); },
+    /** '/jira' · '/confluence' — 검색창을 띄운다. 넣는 것은 아래 onPick 이 한다. */
+    openPick(kind) { this.pick = kind; },
+    /** 고른 티켓/문서를 **링크 뱃지**로 넣는다 — 붙여넣은 URL 과 같은 모양이어야
+     *  읽는 쪽에서 무엇이 뭔지 갈리지 않는다(저장도 같은 [제목|주소]). */
+    onPick(it) {
+      this.pick = "";
+      const href = it.url || "";
+      if (!href) return;
+      const title = it.key ? (it.key + " " + (it.title || "")).trim() : (it.title || href);
+      this._ed.chain().focus()
+        .insertContent([{ type: "linkBadge", attrs: { href, title } }, { type: "text", text: " " }])
+        .run();
+    },
     inCallout(t) { this.tick; return !!(this._ed && this._ed.isActive("callout", { type: t })); },
     tbCallout(t) { this.cmd((c) => c.toggleCallout(t).run()); },
     toggleMax() { this.maximized = !this.maximized; },
@@ -814,7 +1007,19 @@ export default {
     },
     // ── 작성 중 임시저장(IndexedDB, TTL 7일) — 취소/이동해도 내용·이미지가 남는다 ──
     // 수정 모드는 원본이 있으므로 저장하지 않는다(새 댓글 작성만).
-    draftKey() { return this.initial ? null : "new:" + this.ticketKey; },
+    //
+    // **본문 편집은 초안을 쓰지 않는다.** 본문은 서버에 이미 있는 글이고, 다른 사람이 고쳤을 수도
+    // 있다 — 열 때마다 최신 본문을 그대로 보여 줘야 한다. 지난 초안을 덮어 놓으면 사용자는
+    // 자기가 안 쓴 글을 자기 글로 알고 저장한다. 상태 전이 코멘트도 그 창에서 끝나는 한 줄이다.
+    draftKey() {
+      // **본문 편집은 초안을 남기지 않는다.** 기준이 되는 글이 서버에 있고 남이 고칠 수도 있어,
+      // '수정' 을 누를 때마다 최신 본문을 받아 거기서 시작한다. 그 옆에 지난 초안까지 두면
+      // 어느 것이 진짜인지가 매번 문제가 된다 — 하나만 둔다.
+      // (칸을 나누기 전엔 "내용이 비었으면 새 댓글" 로 갈라서, 설명이 빈 티켓의 본문
+      //  편집기가 **새 댓글 초안을 불러왔다.**)
+      if (this.kind !== "comment" || this.initial) return null;
+      return "new:" + this.ticketKey;
+    },
     saveDraftSoon() {
       const k = this.draftKey();
       if (!k || !this._ed) return;
@@ -931,6 +1136,7 @@ export default {
         <button type="button" class="tb-b" style="margin-left:auto" @click="toggleMax"
                 :title="maximized ? '최대화 해제' : '에디터 최대화'">{{ maximized ? '🗗' : '🗖' }}</button>
         <input ref="file" type="file" multiple style="display:none" @change="onFile">
+        <LinkPicker v-if="pick" :mode="pick" insert @close="pick = ''" @pick="onPick" />
       </div>
       <div class="cmt-tb cmt-tb-tbl" v-show="ready && inCodeBlock()">
         <span class="tb-lbl">코드 언어</span>

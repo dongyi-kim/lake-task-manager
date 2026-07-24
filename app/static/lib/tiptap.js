@@ -23,12 +23,18 @@ export function loadTiptap() {
     import(/* @vite-ignore */ "https://esm.sh/@tiptap/pm@" + V + "/state"),
     import(/* @vite-ignore */ E("extension-code-block-lowlight")),
     import(/* @vite-ignore */ "https://esm.sh/lowlight@3"),
+    // @멘션이 이미 쓰는 것과 **같은** 플러그인 — '/' 메뉴를 직접 짜면
+    // 캐럿 위치·조합중 한글·키 처리가 멘션과 어긋난다.
+    import(/* @vite-ignore */ "https://esm.sh/@tiptap/suggestion@" + V),
   ]).then((m) => {
     const lowlight = m[12].createLowlight(m[12].common);   // 공통 언어(약 37종) 등록
     return {
       Editor: m[0].Editor,
       Extension: m[0].Extension,
       Node: m[0].Node,
+      // 입력 규칙 — '=== 제목 ===' 같은 표기를 치는 즉시 노드로 바꾼다
+      textblockTypeInputRule: m[0].textblockTypeInputRule,
+      InputRule: m[0].InputRule,
       StarterKit: m[1].default,
       Mention: m[2].default,
       Table: m[3].default,
@@ -41,6 +47,7 @@ export function loadTiptap() {
       Plugin: m[10].Plugin,
       PluginKey: m[10].PluginKey,
       CodeBlockLowlight: m[11].default,
+      Suggestion: m[13].default,
       lowlight,
       languages: lowlight.listLanguages(),
     };

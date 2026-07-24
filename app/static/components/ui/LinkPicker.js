@@ -18,6 +18,9 @@ export default {
     mode: { type: String, default: "jira" },        // jira | confluence
     excludeKeys: { type: Array, default: () => [] },  // 이미 걸린 티켓(중복 방지)
     busy: Boolean,
+    // 글 안에 **넣기만** 할 때(에디터 '/jira' '/confluence'). 링크 '관계'를 묻지 않는다 —
+    // 관계는 티켓끼리의 issue link 개념이라 문장 속 참조에는 의미가 없다.
+    insert: Boolean,
     err: { type: String, default: "" },
   },
   emits: ["close", "pick"],
@@ -139,7 +142,10 @@ export default {
     },
     move(d) { const n = this.shown.length; if (n) this.active = (this.active + d + n) % n; },
     choose(it) {
-      if (this.isJira) {
+      if (this.insert) {
+        // 넣는 쪽은 무엇을 넣을지만 알면 된다 — 키·제목·주소.
+        this.$emit("pick", { key: it.key || "", url: it.url || "", title: this.plain(it.title) });
+      } else if (this.isJira) {
         this.$emit("pick", { key: it.key, type: this.type, direction: this.direction });
       } else {
         this.$emit("pick", { url: it.url, title: this.plain(it.title) });
@@ -155,8 +161,10 @@ export default {
   <Teleport to="body">
   <div class="lp-ov" @click.self="$emit('close')">
   <div class="lp" @click.stop>
-    <div class="lp-h">{{ isJira ? '관련 티켓 추가' : '관련문서 추가' }}
-      <span class="lp-h-s">{{ isJira ? 'Jira 이슈 링크' : 'Confluence 문서 · 웹 링크' }}</span>
+    <div class="lp-h">{{ insert ? (isJira ? '티켓 넣기' : '문서 넣기')
+                                : (isJira ? '관련 티켓 추가' : '관련문서 추가') }}
+      <span class="lp-h-s">{{ insert ? '고른 것이 글 안에 링크로 들어갑니다'
+                                     : (isJira ? 'Jira 이슈 링크' : 'Confluence 문서 · 웹 링크') }}</span>
     </div>
     <div class="lp-top">
       <input ref="input" v-model="q" class="lp-input" @keydown="onKey" autocomplete="off"
@@ -166,7 +174,7 @@ export default {
     </div>
 
     <!-- 관련 티켓: 관계(링크 타입 + 방향)를 먼저 정한다 -->
-    <div v-if="isJira" class="lp-rel">
+    <div v-if="isJira && !insert" class="lp-rel">
       <span class="lp-rel-l">이 티켓이</span>
       <select class="lp-sel" @change="setRel">
         <option v-for="(o, i) in typeOpts" :key="i" :value="i"

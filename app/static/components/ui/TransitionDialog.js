@@ -186,7 +186,7 @@ export default {
           <span class="trx-l">코멘트 <i>필수</i></span>
           <!-- 댓글과 **같은 에디터** — 표·코드·이미지 붙여넣기·멘션이 그대로 된다.
                버튼 줄은 감추고(제출은 아래 한 곳) ref 로 submit() 을 부른다. -->
-          <CommentEditor ref="ed" :ticket-key="ticket" hide-footer
+          <CommentEditor ref="ed" :ticket-key="ticket" hide-footer kind="transition"
                          :submit-fn="sendTransition" @cancel="$emit('close')" />
           <span class="trx-hint">Jira 에선 선택이지만, 기록 없이 닫힌 티켓은 나중에 해석할 수 없어 이 앱에서는 받습니다.</span>
         </div>

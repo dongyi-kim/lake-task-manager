@@ -14,7 +14,7 @@ import { createTypeahead } from "../../lib/typeahead.js";
 
 const KO = {
   priority: "우선순위", assignee: "담당자", reporter: "보고자",
-  duedate: "작업 기한", labels: "라벨", components: "컴포넌트",
+  duedate: "작업 기한", labels: "라벨", components: "컴포넌트", epic: "소속 Epic",
 };
 
 export default {
@@ -53,6 +53,7 @@ export default {
     isUser() { return this.field === "assignee" || this.field === "reporter"; },
     isMulti() { return this.field === "labels" || this.field === "components"; },
     isDate() { return this.field === "duedate"; },
+    isEpic() { return this.field === "epic"; },
     // 라벨만 **새 값 생성**을 허용한다. 컴포넌트는 프로젝트 설정에 있는 것만 유효해
     // 아무거나 만들면 저장에서 거절된다(Jira 가 모르는 컴포넌트다).
     canCreate() { return this.field === "labels"; },
@@ -77,6 +78,8 @@ export default {
         if (!this.opts.length) api.options("components").then((r) => { this.opts = (r || []).map((x) => x.name); });
       } else if (this.field === "labels") {
         this.suggest("");
+      } else if (this.isEpic) {
+        this.searchEpics("");
       } else if (this.isUser) {
         this._ta = this._ta || createTypeahead((q) => api.mentionUsers(q, this.ticket),
                                                { minLen: 1, allowEmpty: true });
@@ -87,6 +90,9 @@ export default {
     close() { this.open = false; this.q = ""; this.err = ""; },
     suggest(q) {
       api.options("labels", q).then((r) => { this.opts = r || []; }).catch(() => { this.opts = []; });
+    },
+    searchEpics(q) {
+      api.options("epics", q).then((r) => { this.opts = r || []; }).catch(() => { this.opts = []; });
     },
     searchWho(q) {
       this._ta.run(q).then((r) => { if (r) this.who = r.slice(0, 8); }).catch(() => {});
@@ -123,7 +129,7 @@ export default {
             :title="label + ' 수정'"><slot>{{ display || value || '—' }}</slot></button>
     <span v-else class="fe-ro" :title="roHint"><slot>{{ display || value || '—' }}</slot></span>
 
-    <span v-if="open" class="fe-pop" @click.stop>
+    <span v-if="open" class="fe-pop" :class="{ wide: isEpic }" @click.stop>
       <!-- 우선순위 / 컴포넌트: 정해진 값 중에서만 -->
       <template v-if="field === 'priority'">
         <!-- '내 Task' 와 같은 아이콘·같은 등급 표 — 화면마다 다른 그림이면 같은 티켓이 달라 보인다 -->
@@ -144,6 +150,24 @@ export default {
           <div v-if="!who.length" class="fe-none">결과가 없습니다.</div>
         </div>
         <button v-if="field === 'assignee' && userId" class="fe-clear" @click="clearUser">담당자 해제</button>
+      </template>
+
+      <!-- 소속 Epic -->
+      <template v-else-if="isEpic">
+        <input ref="inp" :value="q" @input="q = $event.target.value; searchEpics($event.target.value)"
+               placeholder="Epic 이름·제목 또는 키">
+        <div class="fe-list">
+          <!-- Epic 은 이름이 둘이다: **단축어(Epic Name)** 와 요약. 사람들은 단축어로 부르지만
+               비슷한 단축어끼리는 요약을 봐야 구별된다 — 그래서 둘 다 보인다. -->
+          <button v-for="e in opts" :key="e.key" class="fe-i epic" :class="{ cur: e.key === value }"
+                  @click="save(e.key)">
+            <b class="fe-epic-n">{{ e.name }}</b>
+            <span v-if="e.summary && e.summary !== e.name" class="fe-epic-s">{{ e.summary }}</span>
+            <em>{{ e.key }}</em>
+          </button>
+          <div v-if="!opts.length" class="fe-none">Epic 이 없습니다.</div>
+        </div>
+        <button v-if="value" class="fe-clear" @click="save('')">Epic 소속 해제</button>
       </template>
 
       <!-- 작업 기한 -->

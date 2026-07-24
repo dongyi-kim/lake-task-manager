@@ -10,6 +10,7 @@ fake 서버(HTTP)와 mock 모드(in-process)가 이 world 를 공유한다.
 
 import hashlib
 import random
+import re
 from datetime import date, timedelta
 from functools import lru_cache
 
@@ -72,6 +73,17 @@ def _shash(s):
 def _iid(key):
     """이슈 키 → 결정적 숫자 id(실 Jira issue.id 형태). fake server 의 _iid 와 동일 규칙."""
     return str(int(hashlib.md5(key.encode()).hexdigest()[:8], 16))
+
+
+def _epic_short(summary):
+    """요약에서 Epic 단축어를 만든다 — 앞 두 낱말 정도.
+
+    실 Jira 의 Epic Name 은 사람이 직접 적는 값이라 규칙이 없다. dev 에서는 '요약과는 다른
+    짧은 이름' 이라는 성질만 지키면 화면 검증에 충분하다(둘을 같이 보여 주는 게 이 값의 용도다).
+    """
+    s = re.sub(r"^\[[^\]]*\]\s*", "", summary or "").strip()
+    w = s.split()
+    return " ".join(w[:2]) if w else (s[:12] or "Epic")
 
 
 class World:
@@ -236,15 +248,19 @@ class World:
             _cl(updated, [{"field": "description", "fieldtype": "jira",
                            "from": None, "fromString": "(이전 설명)", "to": None, "toString": "(수정된 설명)"}])
 
+        summary_txt = summary or self._summary(rng, itype, module)
         self.issues[key] = {
             "key": key, "project": self.project, "type": itype,
-            "summary": summary or self._summary(rng, itype, module),
+            "summary": summary_txt,
             "description": wc.description(rng, itype, reporter),
             "module": module, "component": component or module,
             "assignee": assignee, "reporter": reporter,
             "statusCategory": cat, "statusName": status_name,
             "labels": labels, "sp": sp,
             "epicKey": epic_key if itype != "Epic" else None,
+            # Epic Name = 보드 칸에 들어가는 **단축어**. 요약(summary)은 문장이라 칸에 안 들어간다.
+            # 실 Jira 에서도 둘은 별개 필드이고, 사람들은 보통 이 단축어로 Epic 을 부른다.
+            "epicName": _epic_short(summary_txt) if itype == "Epic" else None,
             "parentKey": parent_key,
             "created": created, "updated": updated, "resolved": resolved, "due": due,
             "tcreated": _tm(), "tresolved": _tm(), "tupdated": _tm(),
@@ -443,6 +459,9 @@ class World:
             "statusCategory": "inprogress", "statusName": "In Progress",
             "labels": ["ui-fixture"], "sp": None,
             "epicKey": None if itype == "Epic" else self.UI_EPIC, "parentKey": None,
+            # Epic Name(단축어) — 안 채우면 목록에서 요약이 그대로 이름 자리에 앉아, 단축어와
+            # 요약을 나란히 보여 주는 화면이 같은 글자를 두 번 그린다(구별에 아무 도움이 안 된다).
+            "epicName": _epic_short(summary) if itype == "Epic" else None,
             "created": d0, "updated": self.today, "resolved": None, "due": None,
             "tcreated": "09:00", "tupdated": "18:00", "tresolved": None,
             "comments": [], "worklog": [], "subtasks": [], "changelog": [],
@@ -465,6 +484,7 @@ class World:
     def _build_ui_fixtures(self):
         conf = "https://confluence.corp.example"
         self._fx(self.UI_EPIC, "Epic", "[UI] UI 회귀 검증 픽스처",
+                 epicName="UI 회귀",
                  labels=["ui-fixture", "PMO_VIT"],
                  description=("UI 를 수정할 때 **검증 포인트별로** 열어볼 티켓 모음이다.\n"
                               "하위 티켓 제목이 곧 검증 항목이므로, 화면을 고친 뒤 해당 티켓만 열어 확인하면 된다.\n\n"
@@ -698,20 +718,21 @@ class World:
     def _build_mytask_fixtures(self):
         d = self.today
         # 전용 Epic — UI 회귀 Epic(DL-9000)에 섞으면 그쪽 검증이 흐려진다.
-        self._fx(self.MY_EPIC, "Epic", "[내Task] 내 Task 화면 픽스처", epicKey=None)
+        self._fx(self.MY_EPIC, "Epic", "[내Task] 내 Task 화면 픽스처",
+                 epicName="내 Task 화면", epicKey=None)
 
         def due(days):
             return d + timedelta(days=days)
 
         # 1) 내 Task + 하위에 내 것과 남의 것이 섞임 (동료 서브 집계 칩 검증)
         p1 = self._fx("DL-9020", "Task", "[내Task] 내 Task — 하위에 동료 Sub 섞임",
-                      assignee=self.ME, priority="High", due=due(3), epicKey=self.MY_EPIC,
+                      assignee=self.ME, priority="P1-Critical", due=due(3), epicKey=self.MY_EPIC,
                       description="담당=나. 하위 4개 중 2개가 동료 것.")
         for k, t, who, cat, st, pri, dd in [
-            ("DL-9021", "[내Task] 내 Sub — 완료", self.ME, "done", "Resolved", "Medium", -2),
-            ("DL-9022", "[내Task] 내 Sub — 진행중·임박", self.ME, "inprogress", "In Progress", "High", 2),
-            ("DL-9023", "[내Task] 동료 Sub — 진행중", self.MATE, "inprogress", "In Progress", "Medium", 4),
-            ("DL-9024", "[내Task] 동료 Sub — 미착수", self.MATE, "todo", "Open", "Low", 8),
+            ("DL-9021", "[내Task] 내 Sub — 완료", self.ME, "done", "Resolved", "P2-Major", -2),
+            ("DL-9022", "[내Task] 내 Sub — 진행중·임박", self.ME, "inprogress", "In Progress", "P1-Critical", 2),
+            ("DL-9023", "[내Task] 동료 Sub — 진행중", self.MATE, "inprogress", "In Progress", "P2-Major", 4),
+            ("DL-9024", "[내Task] 동료 Sub — 미착수", self.MATE, "todo", "Open", "P3-Minor", 8),
         ]:
             self._fx(k, SUBTASK_TYPE, t, parentKey="DL-9020", epicKey=None, assignee=who,
                      statusCategory=cat, statusName=st, priority=pri, due=due(dd),
@@ -721,11 +742,11 @@ class World:
 
         # 2) 남의 Task 인데 내가 Sub 담당 — 상위 진척 시각화 검증
         p2 = self._fx("DL-9025", "Task", "[내Task] 남의 Task — 내가 Sub 만 담당",
-                      assignee=self.MATE, priority="Medium", due=due(10), epicKey=self.MY_EPIC,
+                      assignee=self.MATE, priority="P2-Major", due=due(10), epicKey=self.MY_EPIC,
                       description="담당=동료. 이 안에서 내 몫만 뽑혀 보여야 한다.")
         for k, t, who, cat, st, pri, dd in [
-            ("DL-9026", "[내Task] 내 Sub — 리뷰 대기·내일 마감", self.ME, "inprogress", "In Progress", "Medium", 1),
-            ("DL-9027", "[내Task] 동료 Sub — 완료", self.MATE, "done", "Resolved", "Medium", -5),
+            ("DL-9026", "[내Task] 내 Sub — 리뷰 대기·내일 마감", self.ME, "inprogress", "In Progress", "P2-Major", 1),
+            ("DL-9027", "[내Task] 동료 Sub — 완료", self.MATE, "done", "Resolved", "P2-Major", -5),
         ]:
             self._fx(k, SUBTASK_TYPE, t, parentKey="DL-9025", epicKey=None, assignee=who,
                      statusCategory=cat, statusName=st, priority=pri, due=due(dd),
@@ -735,28 +756,29 @@ class World:
 
         # 3) Epic 없는 내 Task ('Epic 없음'을 일급 상태로 다루는지) + 마감 초과
         self._fx("DL-9028", "Task", "[내Task] Epic 없는 내 Task — 마감 초과",
-                 assignee=self.ME, epicKey=None, priority="High", due=due(-1),
+                 assignee=self.ME, epicKey=None, priority="P1-Critical", due=due(-1),
                  statusCategory="inprogress", statusName="In Progress",
                  description="Epic 미지정 + D+1. 목록 최상단에 와야 한다.")
         # 4) Epic 없는 내 Task — 오늘 마감, 하위 없음
         self._fx("DL-9029", "Task", "[내Task] Epic 없는 내 Task — 오늘 마감",
-                 assignee=self.ME, epicKey=None, priority="Low", due=due(0),
+                 assignee=self.ME, epicKey=None, priority="P3-Minor", due=due(0),
                  statusCategory="todo", statusName="Open")
         # 5) 마감이 아예 없는 내 Task (정렬에서 맨 뒤로 밀리는지)
         self._fx("DL-9030", "Task", "[내Task] 마감 없는 내 Task",
-                 assignee=self.ME, priority="Medium", due=None, epicKey=self.MY_EPIC,
+                 # 마감도 우선순위도 없는 티켓 — 'Unclassified' 표시와 맨 뒤 정렬을 함께 검증
+                 assignee=self.ME, priority="Unclassified", due=None, epicKey=self.MY_EPIC,
                  statusCategory="todo", statusName="Open")
         # 6) 내가 등록(reporter)했지만 담당은 동료 — '내가 등록' 스코프에서만 보여야 한다
         self._fx("DL-9032", "Task", "[내Task] 내가 등록·담당은 동료 — reporter 스코프 검증",
                  assignee=self.MATE, reporter=self.ME, epicKey=self.MY_EPIC,
-                 priority="High", due=due(5), statusCategory="todo", statusName="Open")
+                 priority="P1-Critical", due=due(5), statusCategory="todo", statusName="Open")
         # 7) 축 필터 검증 — 이 두 건이 없으면 '2주 내 갱신'·'1달' 필터가 늘 같은 결과라 확인이 안 된다.
         self._fx("DL-9033", "Task", "[내Task] 오래 방치된 할당 — '2주 내 갱신' 에서 빠져야",
-                 assignee=self.ME, epicKey=self.MY_EPIC, priority="Low", due=due(20),
+                 assignee=self.ME, epicKey=self.MY_EPIC, priority="P3-Minor", due=due(20),
                  statusCategory="todo", statusName="Open",
                  created=d - timedelta(days=120), updated=d - timedelta(days=60))
         self._fx("DL-9034", "Task", "[내Task] 20일 전 완료 — '1주' 엔 없고 '1달' 엔 있어야",
-                 assignee=self.ME, epicKey=self.MY_EPIC, priority="Medium", due=due(-20),
+                 assignee=self.ME, epicKey=self.MY_EPIC, priority="P2-Major", due=due(-20),
                  statusCategory="done", statusName="Resolved",
                  created=d - timedelta(days=60), updated=d - timedelta(days=20),
                  resolved=d - timedelta(days=20), tresolved="15:00")
@@ -764,13 +786,13 @@ class World:
         #    자기 시그니처 색·뱃지를 가져야 한다. 이게 없으면 그 규칙을 화면에서 확인할 수 없다.
         self._fx("DL-9035", "Task", "[내Task] Epic 없는 사용자 VoC — 전용 Epic 취급",
                  assignee=self.ME, epicKey=None, component="사용자 VoC",
-                 priority="Medium", due=due(4), statusCategory="todo", statusName="Open")
+                 priority="P2-Major", due=due(4), statusCategory="todo", statusName="Open")
         # 10) 첨부 파일 종류 — 뱃지 라벨·색(언어 포함)을 눈으로 확인하는 자리.
         #     확장자별 색을 고치면 여기부터 열어라. 코드·문서·표·압축·미디어를 한 티켓에 모아 둔다.
         #     ★ 본문/코멘트에도 [^파일명] 으로 넣는다 — 첨부 목록의 칩과 **본문 안의 칩**은 렌더
         #       경로가 달라(목록=프론트, 본문=서버 HTML) 한쪽만 맞고 다른 쪽이 틀린 적이 있다.
         self._fx("DL-9036", "Task", "[UI] 첨부 파일 종류 — 확장자 뱃지·언어 색 확인",
-                 assignee=self.ME, priority="Medium", due=due(6),
+                 assignee=self.ME, priority="P2-Major", due=due(6),
                  statusCategory="inprogress", statusName="In Progress",
                  description=("h3. 산출물\n"
                               "설계서 [^아키텍처설계.pdf] · 일정 [^배포일정.xlsx] · 보고 [^주간보고.docx]\n"
@@ -811,13 +833,16 @@ class World:
 
         # 9) 완료된 내 Task — 기본 목록에서 빠져야 한다
         self._fx("DL-9031", "Task", "[내Task] 완료된 내 Task — 기본 목록에서 제외",
-                 assignee=self.ME, priority="Medium", due=due(-3), epicKey=self.MY_EPIC,
+                 assignee=self.ME, priority="P2-Major", due=due(-3), epicKey=self.MY_EPIC,
                  statusCategory="done", statusName="Resolved",
                  resolved=d - timedelta(days=1), tresolved="15:00")
 
     # 우선순위 — 실 Jira 는 모든 이슈가 priority 를 갖는다. 없으면 '내 Task' 정렬의 한 축이
     # 통째로 죽어 화면 검증이 안 된다. ★ rng 미사용(키 해시에서 결정적으로) → world 시퀀스 불변.
-    _PRIORITIES = ["Highest", "High", "Medium", "Medium", "Low", "Lowest"]
+    # 사내 체계 그대로 — 'P{n}-이름' + 미분류. dev 를 표준 스킴(Highest/High/…)으로 두면
+    # P 접두사 파싱도, 미분류 표식도 화면에서 한 번도 검증되지 않는다.
+    _PRIORITIES = ["P0-Blocker", "P1-Critical", "P2-Major", "P2-Major",
+                   "P3-Minor", "P4-Trivial", "Unclassified"]
 
     def _priorities(self):
         for k, it in self.issues.items():

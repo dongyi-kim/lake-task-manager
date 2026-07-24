@@ -6,12 +6,13 @@ import { extOf } from "../../lib/filetype.js";
 import FieldEdit from "./FieldEdit.js";
 import PriIcon from "./PriIcon.js";
 import { ymd, ymdhm, ts, esc } from "../../lib/fmt.js";
-import { TYPE_BG, typeLabel, sigColor } from "../../lib/colors.js";
+import { TYPE_BG, typeLabel, sigColor, categoryColor } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
 import SettingsMenu from "./SettingsMenu.js";
 import LinkPicker from "./LinkPicker.js";
+import TransitionDialog from "./TransitionDialog.js";
 import { recordOpen } from "../../lib/recent.js";
 import { highlightIn as hljsHighlight, ensureHljsTheme } from "../../lib/hljs.js";
 import { loadTiptap } from "../../lib/tiptap.js";
@@ -41,7 +42,8 @@ function descEmpty(html) {
 
 export default {
   name: "TicketDialog",
-  components: { TypeBadge, Avatar, CommentEditor, SettingsMenu, LinkPicker, FieldEdit, PriIcon },
+  components: { TypeBadge, Avatar, CommentEditor, SettingsMenu, LinkPicker, FieldEdit, PriIcon,
+                TransitionDialog },
   // mode: dialog(모달, 기본) | page(새 창 전용 단독 페이지 — 오버레이·닫기 없음)
   props: { keyId: { type: String, required: true },
            mode: { type: String, default: "dialog" },
@@ -56,13 +58,21 @@ export default {
                     docPick: false, docBusy: false, docErr: "",
                     uploading: false, upErr: "", dragOver: false, dragInEditor: false,
                     // 편집 가능 필드 — Jira 가 답한 것만 편집 UI 를 연다(추측 금지).
-                    emeta: null, descEdit: false,
+                    emeta: null, descEdit: false, descBusy: false, descErr: "",
+                    // 본문 편집을 시작한 시점의 본문 + 그 뒤 남이 고쳤는가
+                    descBase: "", descConflict: false,
+                    // 상태 전이 팝업
+                    stOpen: false, stInfo: null, stErr: "", stPick: null,
                     err: "", expanded: false, zoom: null, zoomLoading: false }; },
   mounted() {
-    // Esc: 확대(zoom)가 열려 있으면 그것부터 닫고, 아니면 다이얼로그 닫기
+    // Esc: 위에 뜬 것부터 하나씩 닫는다(확대 → 상태 팝업 → 다이얼로그).
+    // 안쪽 것을 두고 다이얼로그가 먼저 닫히면, 열려 있던 팝업의 투명 배경(fe-back)이 남아
+    // 화면 전체가 안 눌리는 상태가 된다 — 실제로 그렇게 막혔다.
     this._onKey = (e) => {
       if (e.key !== "Escape") return;
-      if (this.zoom) { this.zoom = null; } else { this.$emit("close"); }
+      if (this.zoom) { this.zoom = null; }
+      else if (this.stOpen) { this.stOpen = false; }
+      else { this.$emit("close"); }
     };
     window.addEventListener("keydown", this._onKey);
     this.load();
@@ -73,6 +83,25 @@ export default {
   },
   unmounted() { window.removeEventListener("keydown", this._onKey); },
   computed: {
+    /** 소속 Epic 의 제목 — 계보 패널이 이미 받아 둔 것을 쓴다(따로 조회하지 않는다).
+     *  아직 안 왔거나 없으면 키를 그대로 — 빈 뱃지를 보이느니 번호라도 보이는 게 낫다. */
+    epicTitle() {
+      const k = this.v && this.v.epicKey;
+      if (!k) return "";
+      const a = (this.ancestors || []).find((x) => x.key === k);
+      return (a && a.summary) || k;
+    },
+    /** 전이 목록·권한 — 우클릭 메뉴와 같은 응답에서 꺼낸다(판정이 갈리면 안 된다). */
+    stList() { return (this.stInfo && this.stInfo.transitions) || []; },
+    stMayEdit() { return !!(this.stInfo && this.stInfo.mayEdit); },
+    /** Epic Link 필드 id — 인스턴스마다 다른 커스텀필드라 이름으로 찾는다(하드코딩 금지). */
+    epicFieldId() {
+      const m = this.emeta || {};
+      for (const k of Object.keys(m)) {
+        if (/epic\s*link/i.test(m[k].name || "")) return k;
+      }
+      return "__no_epic__";
+    },
     today() { return ymd(new Date().toISOString()); },   // 기한 초과 판정용
     tk() { return (this.v && this.v.key) || this.keyId; },   // 쓰기 대상 티켓 키
     // 코멘트 정렬 — created 를 ms 로 파싱해 **초 단위까지** 비교(같은 분에 여러 개 달려도 안정).
@@ -134,6 +163,50 @@ export default {
     // 개별 렌더한다(서로 막지 않음). 느린 타임라인이 본문을 기다리지 않게 하는 게 핵심.
     // 다이얼로그는 계보/형제/타임라인 클릭으로 티켓을 갈아타므로, 늦게 온 이전 티켓 응답이
     // 새 티켓 화면을 덮지 않도록 요청 토큰(_req)으로 가드한다.
+    /** 본문 편집 열기 — **열기 직전에 본문을 다시 받는다.**
+     *  화면에 떠 있던 본문은 이 창을 연 시점의 것이라, 그 사이 남이 고쳤으면 낡은 글 위에
+     *  저장하게 되고 남의 수정이 조용히 사라진다. 못 받으면 지금 화면의 본문으로 연다
+     *  (편집 자체를 막을 이유는 없다 — 저장할 때 다시 실패하면 그때 알린다). */
+    async startDescEdit() {
+      this.descErr = ""; this.descConflict = false;
+      try {
+        const v = await api.ticket(this.keyId, true);      // 캐시 건너뛰기 — 기준이 낡으면 안 된다
+        if (v && this.v && v.descriptionHtml !== undefined) {
+          this.v.descriptionHtml = v.descriptionHtml;
+          this.v.descriptionSections = v.descriptionSections;
+        }
+      } catch (e) { /* 지금 화면의 본문으로 연다 */ }
+      // 이 순간의 본문이 **내가 고치기 시작한 기준**이다. 뒤에 이게 달라지면 남이 손댄 것.
+      this.descBase = (this.v && this.v.descriptionHtml) || "";
+      this.descEdit = true;
+      this.watchDesc();
+    },
+    /** 편집 중 본문이 남에 의해 바뀌었는지 지켜본다. 서버가 알려 줄 방법이 없어 주기적으로 묻되,
+     *  간격을 넓게 둔다 — prod 는 상류가 한 줄(SSO 세션)이라 잦은 조회가 다른 요청을 밀어낸다.
+     *  한 번 알리면 멈춘다(같은 말을 반복할 이유가 없다). */
+    watchDesc() {
+      this.stopWatchDesc();
+      this._descT = setInterval(async () => {
+        if (!this.descEdit) { this.stopWatchDesc(); return; }
+        try {
+          const v = await api.ticket(this.keyId, true);
+          if (!v || v.descriptionHtml === undefined) return;
+          if ((v.descriptionHtml || "") !== this.descBase) {
+            this.descConflict = true;
+            this.stopWatchDesc();
+          }
+        } catch (e) { /* 못 물어봤을 뿐 — 조용히 다음 차례에 다시 */ }
+      }, 30000);
+    },
+    stopWatchDesc() { if (this._descT) { clearInterval(this._descT); this._descT = null; } },
+    /** 상태 전이 목록 — 카드 우클릭 메뉴와 **같은 응답**을 쓴다(권한 판정도 같아야 한다). */
+    openStatus() {
+      if (this.stOpen) { this.stOpen = false; return; }
+      this.stOpen = true; this.stErr = ""; this.stInfo = null;
+      api.ticketMenu(this.keyId)
+        .then((r) => { this.stInfo = r || {}; })
+        .catch((e) => { this.stErr = (e && e.message) || "불러오지 못했습니다."; this.stInfo = {}; });
+    },
     async load() {
       const key = this.keyId;
       const my = this._req = (this._req || 0) + 1;
@@ -249,6 +322,21 @@ export default {
         .catch(() => { if (this.keyId === key) this.emeta = {}; });
     },
     fmeta(id) { return (this.emeta && this.emeta[id]) || null; },
+    /** 본문 저장 — 에디터가 이미지 업로드까지 끝낸 HTML 을 준다. 실패는 **던져야** 에디터가
+     *  올린 이미지를 되돌린다(조용히 삼키면 첨부만 남는다). */
+    async saveDesc(html) {
+      this.descBusy = true; this.descErr = "";
+      try {
+        const r = await api.updateFields(this.tk, { descriptionHtml: html });
+        if (r && r.ok === false) throw new Error(r.error || "저장 실패");
+      } catch (e) {
+        this.descBusy = false;
+        this.descErr = (e && e.message) || "저장 실패";
+        throw e;
+      }
+      this.descBusy = false; this.descEdit = false; this.stopWatchDesc();
+      this.onFieldSaved();
+    },
     /** 필드가 바뀌면 티켓을 다시 받는다 — 한 필드만 손대도 상태·이력이 같이 움직인다. */
     onFieldSaved() {
       this.load();          // 한 필드만 손대도 상태·이력·계보가 같이 움직인다 → 통째로 다시 받는다
@@ -298,6 +386,7 @@ export default {
 
     // 글쓴이 시그니처 컬러 — 기본 아바타(프사 없는 사람)와 같은 색이어야 하므로 colors.js 단일 소스.
     sigColor,
+    categoryColor,
     canEdit(c) { return !!(this.me && this.me.id && c && c.authorId === this.me.id); },
     reloadComments() {
       const key = this.keyId;
@@ -635,8 +724,28 @@ export default {
           <div class="tkt-sec-t first">티켓 정보</div>
 
           <div class="tkt-meta">
-            <div><span class="k">상태</span><span class="val"
-              ><span class="val-st" :class="statusClass(v.statusCategory)">{{ v.status || '—' }}</span></span></div>
+            <!-- 상태는 '고쳐 넣는 값'이 아니라 워크플로가 허용한 **전이를 실행**하는 것이라
+                 editmeta 에 안 온다. 그래서 다른 필드처럼 FieldEdit 을 쓰지 못하지만, 쓰는 사람
+                 입장에선 똑같이 '눌러서 바꾸는 것' 이어야 한다 — 카드 우클릭 메뉴와 같은 목록을 연다. -->
+            <div><span class="k">상태</span><span class="val fe">
+              <button class="fe-v" :class="{ on: stOpen }" @click.stop="openStatus" title="상태 변경"
+                ><span class="val-st" :class="statusClass(v.statusCategory)">{{ v.status || '—' }}</span></button>
+              <span v-if="stOpen" class="fe-pop" @click.stop>
+                <div v-if="!stInfo" class="fe-none">불러오는 중…</div>
+                <template v-else>
+                  <div v-if="!stMayEdit" class="fe-none">담당자·보고자 또는 매니저만 바꿀 수 있습니다.</div>
+                  <template v-else>
+                    <button v-for="t in stList" :key="t.id" class="fe-i" @click="stPick = t; stOpen = false">
+                      <span class="sr-dot" :class="'st-' + (t.toCategory || 'todo')"></span>{{ t.to }}
+                      <em v-if="t.hasScreen" title="추가 입력이 필요합니다">…</em>
+                    </button>
+                    <div v-if="!stList.length" class="fe-none">가능한 전이가 없습니다.</div>
+                  </template>
+                </template>
+                <div v-if="stErr" class="fe-err">{{ stErr }}</div>
+              </span>
+              <span v-if="stOpen" class="fe-back" @click.stop="stOpen = false"></span>
+            </span></div>
             <div><span class="k">우선순위</span><span class="val">
               <FieldEdit :ticket="tk" field="priority" :meta="fmeta('priority')"
                          :value="v.priority" @saved="onFieldSaved">
@@ -660,6 +769,18 @@ export default {
                          :value="v.components || []" @saved="onFieldSaved">
                 <span v-if="v.components && v.components.length" class="tkt-labels">
                   <span v-for="c in v.components" :key="c" class="tkt-label comp">{{ c }}</span>
+                </span><span v-else>—</span>
+              </FieldEdit></span></div>
+            <div><span class="k">소속 Epic</span><span class="val">
+              <FieldEdit :ticket="tk" field="epic" :meta="fmeta(epicFieldId)"
+                         :value="v.epicKey" @saved="onFieldSaved">
+                <!-- '내 Task' 카드와 **같은 뱃지·같은 시그니처 컬러**. 같은 Epic 이 화면마다
+                     다른 모습이면 색으로 소속을 알아보는 것 자체가 안 된다.
+                     번호는 뱃지 밖에 따로 적지 않는다 — 계보 패널에 이미 있고, 여기서 알고 싶은
+                     것은 '어느 Epic 소속인가' 다(번호가 필요하면 툴팁에 있다). -->
+                <span v-if="v.epicKey" class="tkt-epic">
+                  <span class="mt-epic" :style="{ '--sig': categoryColor(v.epicKey) }"
+                        :title="v.epicKey + ' · ' + epicTitle">{{ epicTitle }}</span>
                 </span><span v-else>—</span>
               </FieldEdit></span></div>
             <div class="wide"><span class="k">라벨</span><span class="val">
@@ -691,13 +812,43 @@ export default {
             </div>
           </div>
 
-          <div v-if="ownDescEmpty">
-            <div class="tkt-sec-t">설명</div>
+          <!-- 본문 편집 — 설명이 비었든 영역이 여럿이든 **한 자리**에서 연다.
+               분기마다 버튼을 달면 어떤 티켓에선 보이고 어떤 티켓에선 안 보인다(실제로 그랬다). -->
+          <div v-if="descEdit" class="tkt-desc-edit">
+            <div class="tkt-sec-t">설명 편집</div>
+            <!-- 편집을 시작한 뒤 **남이 본문을 바꿨다.** 자동으로 합치지 않는다 — 두 글을 기계가
+                 섞으면 어느 쪽도 아닌 글이 남는다. 사실만 알리고 판단은 사람이 한다.
+                 한 번만 뜬다(고칠 때마다 뜨면 경고가 아니라 소음이다). -->
+            <div v-if="descConflict" class="tkt-desc-conflict">
+              ⚠ 누군가 이 본문을 수정했습니다. 작성 중이던 내용을 백업한 뒤 새로고침을 권장합니다.
+            </div>
+            <!-- 댓글과 **같은 에디터** — 여기만 다른 편집기를 쓰면 표·코드·이미지 붙여넣기가
+                 되는 곳과 안 되는 곳이 생긴다. 저장은 이 화면이 소유한다(버튼이 둘이면 안 된다). -->
+            <CommentEditor ref="ded" :ticket-key="tk" :initial="v.descriptionHtml" hide-footer
+                           sections kind="description"
+                           :submit-fn="saveDesc" @cancel="descEdit = false" />
+            <div class="tkt-desc-edit-f">
+              <span v-if="descErr" class="tkt-cmt-err">{{ descErr }}</span>
+              <button class="cmt-ed-btn ghost" @click="descEdit = false; stopWatchDesc()">취소</button>
+              <button class="cmt-ed-btn primary" :disabled="descBusy"
+                      @click="$refs.ded && $refs.ded.submit()">{{ descBusy ? '저장 중…' : '저장' }}</button>
+            </div>
+          </div>
+
+          <div v-else-if="ownDescEmpty">
+            <div class="tkt-sec-t">설명
+              <button v-if="fmeta('description')" class="sec-edit" @click="startDescEdit">수정</button>
+            </div>
             <div class="tkt-desc tkt-desc-box"><p class="muted">설명이 없습니다.</p></div>
           </div>
           <!-- 구분선(=== 제목 ===)으로 나뉜 영역을 각각 제목 달린 카드로. 구분선이 없으면 1개뿐 -->
           <template v-else v-for="(sec, i) in descSections" :key="i">
-            <div class="tkt-sec-t">{{ sec.title || '설명' }}</div>
+            <div class="tkt-sec-t">{{ sec.title || '설명' }}
+              <!-- 첫 영역에만 — 영역마다 버튼이 있으면 '이 영역만 고치는 건가' 로 읽힌다.
+                   실제로는 본문 전체를 한 번에 편집한다(구분선도 본문의 일부다). -->
+              <button v-if="i === 0 && fmeta('description')" class="sec-edit"
+                      @click="startDescEdit">수정</button>
+            </div>
             <!-- {N} 시스템정보 + {N} 테이블정보 는 항상 짝 → 한 행에 2단으로 -->
             <div v-if="sec.columns" class="tkt-two secpair">
               <div v-for="(c, j) in sec.columns" :key="j" class="tkt-two-col">
@@ -862,5 +1013,10 @@ export default {
         <div v-else class="tkt-zoom-table" @click.stop v-html="zoom.html"></div>
         <button class="tkt-zoom-x" @click.stop="zoom = null" aria-label="닫기">✕</button>
       </div>
+
+      <!-- 상태 전이 — 카드 우클릭과 **같은 창**. 코멘트·담당자·해결책 같은 전이 화면 입력을
+           여기서만 다르게 받으면 같은 일을 두 벌로 관리하게 된다. -->
+      <TransitionDialog v-if="stPick" :ticket="tk" :transition="stPick"
+                        @close="stPick = null" @done="stPick = null; load()" />
     </div>`,
 };

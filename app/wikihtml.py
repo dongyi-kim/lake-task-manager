@@ -100,6 +100,10 @@ def _inline(node):
                                    for ln in txt.split("\n")))
         elif t == "code":
             out.append("{{" + _cell_safe(_txt(c)) + "}}")
+        elif t == "div" and "sec-title-node" in (c.attrs.get("class") or ""):
+            # 영역 구분선 — 저장 형태는 사내 관습 그대로 '=== 제목 ==='. 새 문법을 만들면
+            # Jira 웹에서 연 사람이 못 알아보고 기존 티켓과도 어긋난다.
+            out.append("\n=== " + _inline(c).strip() + " ===\n")
         elif t == "a":
             href = (c.attrs.get("href") or "").strip()
             label = _inline(c).strip()
@@ -154,6 +158,14 @@ def _blocks(node, lines, depth=0):
             continue
         t = c.tag
         cls = c.attrs.get("class") or ""
+        if t == "div" and "sec-title-node" in cls:
+            # 영역 구분선 — 저장 형태는 사내 관습 그대로 '=== 제목 ==='. 새 문법을 만들면
+            # Jira 웹에서 연 사람이 못 알아보고 기존 티켓과도 어긋난다. 앞뒤 빈 줄은 sections.py 가
+            # 줄 단위로 자르기 때문에 필요하다(다른 블록에 붙어 있으면 못 자른다).
+            lines.append("")
+            lines.append("=== " + _inline(c).strip() + " ===")
+            lines.append("")
+            continue
         if t == "div" and "callout" in cls:
             # Jira 콜아웃 매크로 — <div class="callout callout-info"> <-> {info}…{info}
             m = re.search(r"callout-(\w+)", cls)

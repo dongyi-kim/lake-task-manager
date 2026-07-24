@@ -33,6 +33,9 @@ _TRANSITIONS = {
     "Closed":      ["Reopened"],
     "Reopened":    ["In Progress", "Resolved"],
 }
+# 사내 우선순위 — 'P{n}-이름' 체계 + 미분류(Unclassified). 등급은 접두사 숫자로 읽는다.
+_PRIORITIES = [["P0-Blocker", "1"], ["P1-Critical", "2"], ["P2-Major", "3"],
+               ["P3-Minor", "4"], ["P4-Trivial", "5"], ["Unclassified", "6"]]
 _ISSUE_TYPES = [["Bug", "1"], ["Epic", "2"], ["Improvement", "3"], ["New Feature", "4"],
                 ["Story", "5"], ["Task", "6"], ["Sub-Task", "7"]]
 
@@ -46,8 +49,13 @@ def build_store():
         project_key="JIRA820", project_name="JIRA820 Sample Project",
         base_date=w.today, server_version="8.20.8", confluence_version="9.2.4",
         sp_field=s.sp_field_id, epic_link_field=s.epic_link_field_id,
+        epic_name_field=s.epic_name_field_id,
         subtask_type="Sub-Task",
         statuses=_STATUSES, transition_scheme=_TRANSITIONS, issue_types=_ISSUE_TYPES,
+        priorities=_PRIORITIES,
+        # 새로 만든 티켓은 **미분류**로 시작한다 — 아무 등급이나 자동으로 붙이면
+        # 'P2 인데 아무도 P2 라고 판단한 적 없는' 티켓이 쌓인다.
+        default_priority="Unclassified",
         modules=list(w.modules), components_extra=["사용자 VoC"],
         latency_ms=int(os.getenv("FAKE_LATENCY_MS", "0")),
         # 세션 사용자(/myself) — dev 에서 '내 Task' 가 빈 화면이 되지 않게 world 사람으로.

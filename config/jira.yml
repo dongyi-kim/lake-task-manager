@@ -23,6 +23,7 @@ jira:
   fields:
     story_point: customfield_10004
     epic_link:   customfield_10008
+    epic_name:   customfield_10011   # Epic 단축어(보드 칸 이름) — 요약과 별개 필드
 
 confluence:
   base: http://127.0.0.1:8080              # fake 가 Confluence CQL 도 같은 호스트로 서빙(위와 같은 이유로 127.0.0.1)

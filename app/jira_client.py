@@ -253,7 +253,7 @@ def _pri_rank(name):
     return pri_rank(name)
 
 
-def _build_ticket_view(raw, sp_field, jira_base=""):
+def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
     """티켓 상세 다이얼로그용 리치 뷰(순수 함수 — 테스트 용이).
     description: prod 의 renderedFields.description(HTML)이 있으면 **sanitize**, 없으면 평문→escape+nl2br.
     """
@@ -304,6 +304,9 @@ def _build_ticket_view(raw, sp_field, jira_base=""):
         "labels": f.get("labels") or [],
         "components": [c.get("name") for c in (f.get("components") or []) if c.get("name")],
         "sp": f.get(sp_field),
+        # 소속 Epic — 편집(Epic Link)과 표시에 함께 쓴다. 계보 패널은 별도 조회지만,
+        # 이 값이 있어야 "지금 무엇에 속해 있나" 를 한 번의 응답으로 알 수 있다.
+        "epicKey": (f.get(epic_field) if epic_field else None) or None,
         "descriptionHtml": desc,           # 항상 안전(정화됨). 프론트는 그대로 v-html.
         "descriptionFormat": fmt,          # 'html'(정화됨) | 'text'(평문→nl2br)
         # '=== 제목 ===' 구분선으로 나눈 영역. 구분선이 없으면 1개(title=None)라
@@ -409,7 +412,9 @@ class JiraClient:
                 "resolutiondate,updated,labels,parent,subtasks,timespent,issuelinks,attachment,"
                 "priority,"                     # '내 Task' 정렬 축(우선순위)
 
-                + self.s.sp_field_id + "," + self.s.epic_link_field_id)
+                # Epic Name — Epic 을 부르는 단축어. 검색 목록과 뱃지가 같은 이름을 써야 한다.
+                + self.s.sp_field_id + "," + self.s.epic_link_field_id
+                + "," + self.s.epic_name_field_id)
 
     def get_issue(self, key):
         """단일 티켓 원본(fields 포함) — `issue:{env}:{key}` 로 티켓 단위 캐시."""
@@ -869,6 +874,38 @@ class JiraClient:
         except Exception:
             return []
 
+    def epic_options(self, q=""):
+        """Epic 후보 — 제목/키로 검색. 편집 드롭다운용이라 소수만.
+        Epic 은 수십 개 수준이라 전체를 받아 걸러도 되지만, JQL 로 좁히면 prod 왕복이 준다."""
+        q = (q or "").strip()
+        jql = f'project = {self.s.project_key} AND issuetype = Epic'
+        if q:
+            safe = q.replace('"', " ")
+            # 단축어(Epic Name)로도 찾게 한다 — 사람들은 Epic 을 요약 문장이 아니라 그 이름으로 부른다.
+            jql += (f' AND (summary ~ "{safe}" OR "Epic Name" ~ "{safe}" OR key = "{safe}")')
+        try:
+            raws = self._search(jql + " ORDER BY key", cache_key=None) or []
+        except Exception:
+            # 구버전·필드 미설정이면 "Epic Name" 절이 JQL 에러가 된다 — 요약만으로 한 번 더.
+            if not q:
+                return []
+            try:
+                jql = (f'project = {self.s.project_key} AND issuetype = Epic'
+                       f' AND (summary ~ "{q}" OR key = "{q}")')
+                raws = self._search(jql + " ORDER BY key", cache_key=None) or []
+            except Exception:
+                return []
+        out = []
+        nf = self.s.epic_name_field_id
+        for r in raws[:20]:
+            f = r.get("fields") or {}
+            # name = 단축어(Epic Name), summary = 요약. **둘 다 준다** — 목록에서 단축어만 보이면
+            # 비슷한 이름끼리 구별이 안 되고, 요약만 보이면 평소 부르는 이름이 안 보인다.
+            out.append({"key": r.get("key"),
+                        "name": (f.get(nf) if nf else None) or f.get("summary") or r.get("key"),
+                        "summary": f.get("summary") or ""})
+        return out
+
     def label_suggestions(self, q=""):
         """라벨 자동완성. Jira DC 는 JQL 자동완성 엔드포인트로 준다.
         없으면(구버전·권한) 빈 목록 — 그때는 사용자가 새로 적어 넣으면 된다."""
@@ -1204,12 +1241,16 @@ class JiraClient:
             self.cache.invalidate(f"{pre}:{self.env}:{key}")
         return {"ok": True}
 
-    def ticket_view(self, key):
-        """티켓 상세 다이얼로그용 리치 뷰 — 없으면 None. description 은 항상 정화된 안전 HTML."""
-        raw = self._get_issue_view(key)
+    def ticket_view(self, key, fresh=False):
+        """티켓 상세 다이얼로그용 리치 뷰 — 없으면 None. description 은 항상 정화된 안전 HTML.
+
+        fresh=True 면 캐시를 건너뛰고 상류를 직접 본다(본문 편집 시작·충돌 감시).
+        """
+        raw = self._get_issue_view(key, fresh=fresh)
         if not raw:
             return None
-        view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base)
+        view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base,
+                                  self.s.epic_link_field_id)
         view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
         # 섹션은 프록시 이전 HTML 에서 잘렸다 — 이미지가 든 섹션도 프록시를 타야 한다
         for sec in view.get("descriptionSections") or []:
@@ -1821,10 +1862,27 @@ class JiraClient:
         except Exception:
             return None, None
 
-    def _get_issue_view(self, key):
+    def _get_issue_view(self, key, fresh=False):
         """상세 뷰용 단일 티켓 원본 — renderedFields(HTML) 포함 요청. `issueview:{env}:{key}` 캐시.
         prod 은 renderedFields.description(HTML) 반환, mock/local(jira820)도 렌더된 HTML 제공."""
         ck = f"issueview:{self.env}:{key}"
+        fetch = lambda: self.provider.get_json(                      # noqa: E731
+            f"/rest/api/2/issue/{key}",
+            params={"fields": self._issue_fields(), "expand": "renderedFields"})
+        if fresh:
+            # **낡은 값을 받으면 안 되는 자리**(본문 편집 시작·편집 중 충돌 감시)에서만 쓴다.
+            # 평소 경로는 캐시를 먼저 주고 뒤에서 갱신한다 — 화면은 빨리 뜨지만 첫 응답이
+            # 한 박자 늦다. 그 한 박자가 본문 편집에서는 '남의 수정을 덮어쓰기' 가 된다.
+            try:
+                data = fetch()
+            except SessionExpired:
+                raise
+            except Exception:
+                got = self.cache.get_alive(ck)                # 못 받으면 있던 값으로 — 편집 자체를 막진 않는다
+                data = got[0] if got else None
+            else:
+                self.cache.set(ck, data, self.s.cache_ttl_seconds)
+            return data if isinstance(data, dict) and "fields" in data else None
         # SessionExpired(401/403/5xx) 는 전파돼 라우트가 needLogin(401) 처리. 404 는 에러 바디(dict) → None.
         data, _ = self.cache.get_or_set(
             ck, self.s.cache_ttl_seconds,
