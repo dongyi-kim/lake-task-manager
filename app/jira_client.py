@@ -271,7 +271,7 @@ def _log_sections(key, view):
         else:
             why = s.get("kvSkip") or "-"
             parts.append("'%s' 본문(%s)" % (name, why))
-    print("[sections] %s: %s" % (key, " | ".join(parts)), file=sys.stderr)
+    # (dev 진단용 — prod 로그를 채워 제거. 필요하면 LAKE_DEBUG 로 되살릴 것.)
 
 
 def _pri_rank(name):
@@ -433,22 +433,93 @@ class JiraClient:
         return epic_key
 
     # ── 티켓 단위 캐시 레이어 (모든 이슈/하위이슈를 key 단위로 캐싱) ──
-    def _issue_fields(self):
-        return ("summary,description,issuetype,status,assignee,reporter,components,created,duedate,"
-                "resolutiondate,updated,labels,parent,subtasks,timespent,issuelinks,attachment,"
-                "priority,"                     # '내 Task' 정렬 축(우선순위)
+    #: prod 에 **없는 커스텀 필드**. 인스턴스마다 필드 id 가 달라, config 에 잘못 적힌 값을
+    #: fields= 로 요청하면 Jira 가 "field 'customfield_X' does not exist" 로 **400** 을 내고
+    #: 그 이슈/검색 조회가 통째로 실패한다(로그 폭주·화면 빈 채로). 한 번 걸리면 그 필드를
+    #: 여기 담아 두고 다음부터 요청에서 뺀다 — 나머지 필드는 정상적으로 온다.
+    _bad_fields = None
 
-                # Epic Name — Epic 을 부르는 단축어. 검색 목록과 뱃지가 같은 이름을 써야 한다.
-                + self.s.sp_field_id + "," + self.s.epic_link_field_id
-                + "," + self.s.epic_name_field_id)
+    def _issue_fields(self):
+        base = ["summary", "description", "issuetype", "status", "assignee", "reporter",
+                "components", "created", "duedate", "resolutiondate", "updated", "labels",
+                "parent", "subtasks", "timespent", "issuelinks", "attachment",
+                "priority",                     # '내 Task' 정렬 축
+                self.s.sp_field_id, self.s.epic_link_field_id, self.s.epic_name_field_id]
+        bad = self._bad_fields or set()
+        return ",".join(f for f in base if f and f not in bad)
+
+    _FIELD_ERR = re.compile(r"field '([^']+)' does not exist|'([^']+)'.*cannot be set", re.I)
+
+    @staticmethod
+    def _looks_anonymous(data):
+        """응답이 **익명(비인증) 상태**를 가리키는가. Jira DC 는 세션이 없으면 401 대신
+        200 + "... cannot be viewed by anonymous user" 로 답할 때가 있다 — 그걸 '없는 필드'
+        로 오해하면 멀쩡한 필드를 빼 버리고, 진짜 원인(세션 끊김)을 놓친다."""
+        if not isinstance(data, dict):
+            return False
+        blob = " ".join(data.get("errorMessages") or [])
+        for v in (data.get("errors") or {}).values():
+            blob += " " + str(v)
+        return "anonymous" in blob.lower()
+
+    def _note_bad_field(self, data):
+        """검색/이슈 응답이 '없는 필드' 에러면 그 필드를 기억한다 → 다음 요청에서 뺀다.
+        새로 알게 됐으면 True(호출부가 재시도)."""
+        if not isinstance(data, dict):
+            return False
+        # 익명(세션 끊김)으로 필드가 안 보이는 것을 '없는 필드' 로 착각하면 안 된다 — 그건
+        # 필드 문제가 아니라 인증 문제다(아래 조회 경로가 SessionExpired 로 올려 재인증한다).
+        if self._looks_anonymous(data):
+            return False
+        msgs = " ".join(data.get("errorMessages") or [])
+        for k, v in (data.get("errors") or {}).items():
+            msgs += " " + str(v)
+        found = set()
+        for m in self._FIELD_ERR.finditer(msgs):
+            f = m.group(1) or m.group(2)
+            if f and f.startswith("customfield_"):
+                found.add(f)
+        if not found:
+            return False
+        if self._bad_fields is None:
+            self._bad_fields = set()
+        new = found - self._bad_fields
+        if new:
+            self._bad_fields |= new
+            self._log_once("badfield", f"[fields] 없는 커스텀 필드 제외: {sorted(new)}")
+            return True
+        return False
+
+    #: 같은 로그를 초당 몇 번씩 찍지 않게 — prod 는 상류가 단일 큐라 같은 실패가 연달아 온다.
+    _log_seen = None
+
+    def _log_once(self, key, msg, every=30.0):
+        import time as _t
+        if self._log_seen is None:
+            self._log_seen = {}
+        now = _t.monotonic()
+        last = self._log_seen.get(key, 0)
+        if now - last < every:
+            return
+        self._log_seen[key] = now
+        print(msg, file=sys.stderr, flush=True)
 
     def get_issue(self, key):
         """단일 티켓 원본(fields 포함) — `issue:{env}:{key}` 로 티켓 단위 캐시."""
         ck = f"issue:{self.env}:{key}"
-        data, _ = self.cache.get_or_set(
-            ck, self.s.cache_ttl_seconds,
-            lambda: self.provider.get_json(f"/rest/api/2/issue/{key}",
-                                           params={"fields": self._issue_fields()}))
+
+        def fetch():
+            d = self.provider.get_json(f"/rest/api/2/issue/{key}",
+                                       params={"fields": self._issue_fields()})
+            if self._looks_anonymous(d):
+                # 세션이 익명이 됐다 — 필드가 아니라 인증 문제다. 재인증이 돌게 올린다.
+                raise SessionExpired("익명 응답 — 세션 끊김(재인증 필요).")
+            if self._note_bad_field(d):
+                d = self.provider.get_json(f"/rest/api/2/issue/{key}",
+                                           params={"fields": self._issue_fields()})
+            return d
+
+        data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
         return data
 
     ISSUE_BATCH = 50                  # JQL "key in (...)" 한 번에 담을 최대 개수
@@ -610,14 +681,24 @@ class JiraClient:
                 #   그 페이지만 버리고 지금까지 모은 것을 돌려준다. 세션이 진짜 죽었으면
                 #   provider 가 401 에서 이미 SessionExpired 를 던졌을 것이다.
                 if not isinstance(data, dict) or "issues" not in data:
-                    # Jira DC 는 **자식 없는 Epic** 의 `"Epic Link" = X` 를 200-결과가 아니라
-                    # 400 에러 바디로 답한다("No issues have a parent epic ..."). 이건 정상적인
-                    # '0건' 이지 오류가 아니다 — 조용히 빈 목록으로 넘긴다(폴백/상위가 처리).
+                    if self._looks_anonymous(data):
+                        raise SessionExpired("익명 응답(검색) — 세션 끊김(재인증 필요).")
+                    # 없는 커스텀 필드 때문이면 그 필드 빼고 이 페이지만 다시(로그는 _note 가 1회).
+                    if self._note_bad_field(data):
+                        data = self.provider.get_json("/rest/api/2/search", params={
+                            "jql": jql, "fields": self._issue_fields(),
+                            "startAt": start, "maxResults": 100})
+                        if isinstance(data, dict) and "issues" in data:
+                            batch = data.get("issues", [])
+                            issues.extend(batch); start += 100
+                            if start >= data.get("total", 0) or not batch or start >= max_results:
+                                break
+                            continue
+                    # 자식 없는 Epic 은 Jira DC 가 400 에러로 답한다 — 정상적인 '0건' 이라 조용히.
                     msgs = " ".join((data or {}).get("errorMessages") or []) if isinstance(data, dict) else ""
                     if "parent epic" not in msgs.lower():
-                        snippet = (str(data)[:120] if data is not None else "None")
-                        print(f"[search] 검색 응답 아님(무시): jql={jql[:80]!r} :: {snippet}",
-                              file=sys.stderr, flush=True)
+                        self._log_once("search-odd",
+                                       f"[search] 검색 응답 아님(무시): {str(data)[:120]}")
                     break
                 batch = data.get("issues", [])
                 issues.extend(batch)
@@ -1374,7 +1455,14 @@ class JiraClient:
         """
         try:
             u = self.provider.get_json("/rest/api/2/myself")
-            return bool(u and (u.get("name") or u.get("key")))
+            if not isinstance(u, dict):
+                return False
+            # 익명 응답이거나 이름이 없으면 세션이 아니다. (Jira 는 미인증에 200+익명 객체를
+            # 주기도 한다 — status 코드만 보면 살아 있는 것처럼 보인다.)
+            name = u.get("name") or u.get("key") or ""
+            if not name or "anonymous" in str(name).lower():
+                return False
+            return True
         except Exception:
             return False
 
@@ -2146,9 +2234,9 @@ class JiraClient:
         try:
             u = self.provider.get_json("/rest/api/2/user", params={"username": pid})
             dn = u.get("displayName")
-        except Exception as e:
-            import sys
-            print(f"[workload] displayName lookup failed pid={pid}: {e}", file=sys.stderr)
+        except Exception:
+            # 이름 조회 실패는 흔하고(권한·비활성 사용자) 화면엔 id 로 폴백된다 — 로그로 안 남긴다.
+            pass
         if dn:
             self.cache.set(ck, dn, self.s.cache_ttl_seconds)
             return dn

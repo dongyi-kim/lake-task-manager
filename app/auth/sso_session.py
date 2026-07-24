@@ -19,6 +19,18 @@ import os
 import itertools
 import queue
 import sys
+import time as _time
+
+# 같은 [auth] 메시지를 초당 여러 번 찍지 않게 — prod 는 상류가 단일 큐라 같은 401 이 연달아 온다.
+_auth_seen = {}
+
+
+def _auth_log(msg):
+    now = _time.monotonic()
+    if now - _auth_seen.get(msg, 0) < 20.0:
+        return
+    _auth_seen[msg] = now
+    print(msg, file=sys.stderr, flush=True)
 import threading
 
 from .base import (AuthProvider, LoginRequired, SessionExpired, UpstreamError,
@@ -157,8 +169,7 @@ class SsoSessionProvider(AuthProvider):
                 reason = resp.headers.get("x-authentication-denied-reason") or ""
             except Exception:
                 pass
-            print(f"[auth] GET {resp.status} {path}"
-                  + (f" [{reason}]" if reason else ""), file=sys.stderr, flush=True)
+            _auth_log(f"[auth] GET {resp.status} {path}" + (f" [{reason}]" if reason else ""))
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
         return resp.text() if as_text else resp.json()
 
@@ -322,7 +333,7 @@ class SsoSessionProvider(AuthProvider):
         url = path if path.startswith(("http://", "https://")) else self.base + path
         resp = self._context.request.get(url, params=params or {})
         if resp.status in (401, 403) or resp.status >= 500:
-            print(f"[auth] GET(bytes) {resp.status} {path}", file=sys.stderr, flush=True)
+            _auth_log(f"[auth] GET(bytes) {resp.status} {path}")
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
         return resp.body(), resp.headers.get("content-type")
 
