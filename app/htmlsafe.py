@@ -109,15 +109,24 @@ class _Sanitizer(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.out = []
         self._drop_depth = 0     # _DROP_SUBTREE 내부면 >0
+        self._cb_index = 0       # 이 필드에서 몇 번째 체크박스인가 — 원본 순서 = 화면 순서
 
-    # 태스크리스트 체크박스만 읽기전용으로 렌더(그 외 input 은 제거)
+    # 체크박스는 **토글 가능**하게, 라디오는 읽기전용으로 렌더(그 외 input 은 제거)
     def _emit_input(self, attrs):
         d = {(k or "").lower(): v for k, v in attrs}
         t = (d.get("type") or "").strip().lower()
         if t not in ("checkbox", "radio"):
             return
         chk = " checked" if "checked" in d else ""
-        self.out.append('<input type="%s"%s disabled />' % (t, chk))
+        if t == "radio":
+            self.out.append('<input type="radio"%s disabled />' % chk)
+            return
+        # 체크박스: data-cb-index 로 짚는다. 프론트가 수정권한이 있을 때만 클릭을 받아
+        # **원본 필드의 이 index 번째 체크박스**를 뒤집어 저장한다(순서가 원본과 같아 index 로 매칭).
+        idx = self._cb_index
+        self._cb_index += 1
+        self.out.append('<input type="checkbox"%s class="tkt-cb" data-cb-index="%d" />'
+                        % (chk, idx))
 
     # 위험 서브트리(script 등) 내부는 태그·텍스트 모두 버림
     def handle_starttag(self, tag, attrs):

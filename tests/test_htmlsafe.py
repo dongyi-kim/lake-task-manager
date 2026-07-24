@@ -132,7 +132,9 @@ def test_input_checkbox_does_not_truncate_following_content():
     assert "앞 문단" in out and "완료 항목" in out and "미완료 항목" in out
     assert "뒤 문단" in out                       # ← 이게 잘리면 안 됨
     assert out.count("<input") == 2               # 체크박스 렌더
-    assert "disabled" in out                      # 읽기전용
+    # 토글 가능하게 렌더 — 순서(index)로 원본 체크박스를 짚는다(수정권한 있으면 프론트가 클릭 처리).
+    assert 'data-cb-index="0"' in out and 'data-cb-index="1"' in out
+    assert "tkt-cb" in out
     assert "checked" in out                        # 완료 항목 체크 유지
 
 

@@ -654,7 +654,29 @@ export default {
     fmin(s) { return ((ymdhm(s) || "").split(" ")[1] || "").split(":")[1] || ""; },
     statusClass(cat) { return "st-" + (cat || "todo"); },
     // 확대 버튼(.zoom-btn)만 반응 — 표는 드래그 복사가 가능해야 하므로 내용 클릭으로는 확대 안 함.
-    onContentClick(e) {
+    onContentClick(e, comment) {
+      // ── 체크박스 토글 ── 본문/코멘트의 렌더된 체크박스를 누르면 원본의 그 체크박스를 뒤집어 저장.
+      const cb = e.target.closest && e.target.closest("input.tkt-cb");
+      if (cb) {
+        // 네이티브 토글은 막고 우리가 확정 상태를 제어한다(실패 시 원복). defaultChecked = 저장된 값.
+        e.preventDefault();
+        const editable = comment ? this.canEdit(comment) : !!this.fmeta("description");
+        if (!editable || cb.dataset.cbBusy) return;         // 권한 없으면 읽기전용, 진행 중이면 무시
+        const index = parseInt(cb.getAttribute("data-cb-index"), 10);
+        if (!(index >= 0)) return;
+        const want = !cb.defaultChecked;
+        cb.dataset.cbBusy = "1";
+        cb.checked = want;                                   // 낙관적 표시
+        const body = comment
+          ? { target: "comment", commentId: String(comment.id), index, checked: want }
+          : { target: "description", index, checked: want };
+        api.toggleCheckbox(this.tk, body).then((r) => {
+          if (r && r.ok) { cb.defaultChecked = want; if (want) cb.setAttribute("checked", ""); else cb.removeAttribute("checked"); }
+          else { cb.checked = cb.defaultChecked; this.editErr = (r && r.error) || "체크박스 저장 실패"; }
+        }).catch((err) => { cb.checked = cb.defaultChecked; this.editErr = "체크박스 저장 실패: " + ((err && err.message) || err); })
+          .finally(() => { delete cb.dataset.cbBusy; });
+        return;
+      }
       // 본문의 문서/웹 링크를 열면 '최근 열어본 항목'에 남긴다(Jira 뱃지는 다이얼로그가 기록).
       const a = e.target.closest && e.target.closest("a[href]");
       if (a) {
@@ -1246,7 +1268,7 @@ export default {
                   <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :initial="editInitial"
                     submit-label="저장" :submit-fn="(md) => submitEdit(c, md)"
                     @submitted="onEdited" @cancel="cancelEdit" />
-                  <div v-else class="tkt-cmt-b tkt-desc" @click="onContentClick" v-html="c.html"></div>
+                  <div v-else class="tkt-cmt-b tkt-desc" @click="(e) => onContentClick(e, c)" v-html="c.html"></div>
                 </div>
               </div>
               <!-- 작성 — 항상 노출(me 조회 실패에도 사라지지 않게). 미인증이면 제출 때 로그인 오버레이 -->

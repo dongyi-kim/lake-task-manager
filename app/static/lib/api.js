@@ -134,6 +134,10 @@ export const api = {
       .then((r) => { evict(encodeURIComponent(key)); return r; }),
   commentSource: (key, cid) =>                                         // 수정 로드(markdown), memo 제외
     req("/api/ticket/" + encodeURIComponent(key) + "/comment/" + encodeURIComponent(cid) + "/source"),
+  // 본문/코멘트 안 index 번째 체크박스 토글 → 서버가 원본 필드의 그 체크박스만 뒤집어 저장.
+  toggleCheckbox: (key, body) =>
+    jsonReq("/api/ticket/" + encodeURIComponent(key) + "/checkbox", "POST", body)
+      .then((r) => { evict(encodeURIComponent(key)); return r; }),
   attachmentUpload: (key, file) => {                                   // multipart — Content-Type 자동
     const fd = new FormData();
     fd.append("file", file, file.name || "paste.png");

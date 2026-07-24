@@ -87,3 +87,32 @@ def test_roundtrip_wiki_stable():
             "* 하나\n* 둘\n\n{code:js}\nlet a = 1;\n{code}\n\n"
             "bq. 인용\n\n||A||B||\n|1|2|\n\n[링크|https://x.com]")
     assert html_to_wiki(wiki_to_html(wiki)) == wiki
+
+
+def test_tasklist_to_native_checkbox_html():
+    """체크박스는 사내 Jira(JEDITOR) 네이티브 형식 `<p><input type=checkbox>` 로 저장하고,
+    각 체크박스에 고유 id 를 붙인다(문서 내 유일 + 내용 안 바꾸면 재저장에도 동일)."""
+    h = ('<ul data-type="taskList">'
+         '<li data-type="taskItem" data-checked="true"><label><input type="checkbox" checked></label><div>완료</div></li>'
+         '<li data-type="taskItem" data-checked="false"><label><input type="checkbox"></label><div>할 일</div></li>'
+         '</ul>')
+    from app.wikihtml import html_to_wiki
+    a = html_to_wiki(h)
+    assert a.count('type="checkbox"') == 2
+    assert 'checked="checked"' in a          # 완료 항목만 체크
+    assert '완료' in a and '할 일' in a
+    assert a.count('<input id="') == 2        # 각 체크박스에 id
+    assert html_to_wiki(h) == a               # 내용 동일 → id 도 동일(재저장 churn 없음)
+
+
+def test_set_checkbox_toggle_by_index():
+    """렌더 화면에서 index 번째 체크박스를 토글 → 원본의 그 체크박스만 checked 를 뒤집는다
+    (id·나머지 서식은 보존; prod 가 상태변경마다 id 를 재발급해도 index 로 안전하게 짚는다)."""
+    from app.jira_client import _set_checkbox
+    raw = ('<p dir="auto"><input id="111" type="checkbox" />A</p>'
+           '<p dir="auto"><input id="222" type="checkbox" checked="checked" />B</p>')
+    on = _set_checkbox(raw, 0, True)
+    assert 'id="111" type="checkbox" checked="checked"' in on and 'id="222"' in on
+    off = _set_checkbox(raw, 1, False)
+    assert 'id="222" type="checkbox" />' in off
+    assert _set_checkbox(raw, 9, True) is None    # 없는 index → None

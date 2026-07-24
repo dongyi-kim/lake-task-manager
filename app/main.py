@@ -607,6 +607,30 @@ def api_comment_delete(key: str, cid: str):
     return JSONResponse(_client.delete_comment(key, cid))
 
 
+class _CheckboxBody(BaseModel):
+    """본문/코멘트 안의 index 번째 체크박스를 checked 로 토글."""
+    target: str = "description"          # "description" | "comment"
+    commentId: str | None = None
+    index: int
+    checked: bool
+
+
+@app.post("/api/ticket/{key}/checkbox")
+def api_ticket_checkbox(key: str, body: _CheckboxBody):
+    """렌더된 체크박스를 화면에서 눌러 토글 → 원본 필드의 해당 체크박스만 뒤집어 저장.
+    (본문/코멘트가 HTML input 체크박스를 쓰는 사내 Jira 용. mock/local 도 같은 경로.)"""
+    try:
+        if body.target == "comment":
+            if not body.commentId:
+                return JSONResponse({"ok": False, "error": "commentId 가 필요합니다."}, status_code=400)
+            r = _client.toggle_comment_checkbox(key, body.commentId, body.index, bool(body.checked))
+        else:
+            r = _client.toggle_description_checkbox(key, body.index, bool(body.checked))
+        return JSONResponse(r)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
 @app.get("/api/ticket/{key}/comment/{cid}/source")
 def api_comment_source(key: str, cid: str):
     """수정 로드용 — 코멘트 원본(wiki)을 markdown 으로 변환해 반환. 없으면 404."""

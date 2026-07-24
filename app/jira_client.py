@@ -279,6 +279,29 @@ def _pri_rank(name):
     return pri_rank(name)
 
 
+_CB_INPUT_RE = re.compile(r"<input\b[^>]*>", re.I)
+_CB_TYPE_RE = re.compile(r"""type\s*=\s*['"]?\s*checkbox""", re.I)
+_CB_CHECKED_RE = re.compile(r"""\s+checked(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s/>]+))?""", re.I)
+
+
+def _set_checkbox(html, index, checked):
+    """HTML 원문에서 index 번째 `<input type=checkbox>` 의 checked 를 설정/해제해 돌려준다.
+
+    나머지 속성(id·dir 등)과 문서의 다른 부분은 **그대로 둔다** — 체크 상태 하나만 바꾼다.
+    대상 체크박스를 못 찾으면 None(호출부가 오류 처리). index 는 문서 내 체크박스 순번(0-based)."""
+    boxes = [m for m in _CB_INPUT_RE.finditer(html) if _CB_TYPE_RE.search(m.group(0))]
+    if index < 0 or index >= len(boxes):
+        return None
+    m = boxes[index]
+    tag = _CB_CHECKED_RE.sub("", m.group(0))          # 기존 checked 제거(중복 방지)
+    if checked:
+        if tag.endswith("/>"):
+            tag = tag[:-2].rstrip() + ' checked="checked" />'
+        else:
+            tag = tag[:-1].rstrip() + ' checked="checked">'
+    return html[:m.start()] + tag + html[m.end():]
+
+
 def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
     """티켓 상세 다이얼로그용 리치 뷰(순수 함수 — 테스트 용이).
     description: prod 의 renderedFields.description(HTML)이 있으면 **sanitize**, 없으면 평문→escape+nl2br.
@@ -1014,6 +1037,34 @@ class JiraClient:
     def update_fields(self, key, fields):
         """필드 수정(PUT /issue). fields 는 Jira 형식 그대로 — 변환은 라우트가 한다."""
         self.provider.put_json(f"/rest/api/2/issue/{key}", {"fields": fields})
+        self._invalidate_ticket(key)
+        return {"ok": True}
+
+    def toggle_description_checkbox(self, key, index, checked):
+        """본문(description)의 index 번째 체크박스를 checked 상태로 토글하고 저장한다.
+
+        사내 Jira(JEDITOR)는 체크박스를 원문에 `<input … type="checkbox">` HTML 로 저장한다.
+        그래서 wiki 변환을 거치지 않고 **원문을 그대로 받아 그 체크박스 하나만 뒤집어** PUT 한다
+        (나머지 서식은 손대지 않는다 — 최소 변경). 화면 순서 = 원문 순서라 index 로 짚는다."""
+        raw = self.get_issue(key) or {}
+        body = (raw.get("fields") or {}).get("description") or ""
+        new_body = _set_checkbox(body, index, checked)
+        if new_body is None:
+            raise ValueError(f"본문에서 {index}번째 체크박스를 찾지 못했습니다.")
+        self.provider.put_json(f"/rest/api/2/issue/{key}",
+                               {"fields": {"description": new_body}})
+        self._invalidate_ticket(key)
+        return {"ok": True}
+
+    def toggle_comment_checkbox(self, key, comment_id, index, checked):
+        """코멘트의 index 번째 체크박스를 토글하고 저장한다(본문과 같은 원리)."""
+        c = self.provider.get_json(f"/rest/api/2/issue/{key}/comment/{comment_id}") or {}
+        body = c.get("body") or ""
+        new_body = _set_checkbox(body, index, checked)
+        if new_body is None:
+            raise ValueError(f"코멘트에서 {index}번째 체크박스를 찾지 못했습니다.")
+        self.provider.put_json(f"/rest/api/2/issue/{key}/comment/{comment_id}",
+                               {"body": new_body})
         self._invalidate_ticket(key)
         return {"ok": True}
 
