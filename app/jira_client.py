@@ -1855,7 +1855,8 @@ class JiraClient:
     TIMELINE_FIELDS = {"status", "assignee", "resolution", "priority",
                        "duedate", "epic link", "parent", "sprint"}
 
-    CHILD_SCAN_LIMIT = 20        # 자손 상태변경 스캔 상한(자식 1명당 REST 1회 — cold 비용 방어)
+    CHILD_SCAN_LIMIT = 20        # 자손 상태변경 **스캔** 상한(타임라인 — 자식 1명당 changelog 1회, cold 비용 방어)
+    CHILD_DISPLAY_LIMIT = 300    # 하위 목록 **표시** 상한. 검색이 경량(1회)+뱃지 배치라 넉넉히 보여도 싸다.
 
     def prefetch_changelogs(self, keys):
         """여러 티켓의 이력을 **검색 한 번**으로 받아 changelog 캐시에 채운다.
@@ -2014,7 +2015,8 @@ class JiraClient:
         """직계 하위 티켓(Epic→Epic Link 자식 / 그 외→Sub-Task) — ticket_badge 형태.
         _child_keys·ticket_badge 가 모두 캐시라 재방문은 무료."""
         def build():
-            kids = self._child_keys(key)
+            # 표시용은 넉넉한 상한(CHILD_DISPLAY_LIMIT) — 스캔용 20 을 쓰면 하위가 많은 Epic 이 20 개로 잘렸다.
+            kids = self._child_keys(key, limit=self.CHILD_DISPLAY_LIMIT)
             self.prefetch_issues(kids, light=True)   # 뱃지만 필요 → 경량 배치(이후 badge 는 캐시 히트)
             return [b for b in (self.ticket_badge(k) for k in kids) if b]
         return self._swr(f"children:{self.env}:{key}", build)
