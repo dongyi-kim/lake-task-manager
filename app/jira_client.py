@@ -1140,6 +1140,19 @@ class JiraClient:
         self._ensure_bg()
         self._bg_pool.submit(job)
 
+    def invalidate_ticket_all(self, key):
+        """이 티켓과 관련된 **모든 파생 캐시**를 비운다 — 좌하단 강제 새로고침용.
+        (출력 형태가 바뀌는 배포 뒤엔 SWR 이 옛 결과를 계속 내주므로, 사용자가 이걸로 한 번에
+        털 수 있어야 한다. 예: 하위 표시 상한 20→300 배포 후에도 옛 20 개 캐시가 남아 보이던 문제.)
+        prefix 삭제라 epic_children:{key} 는 :light 변형까지 함께 지워진다."""
+        env = self.env
+        for pfx in ("issue", "issueL", "issueview", "comments", "children", "siblings",
+                    "ancestors", "related", "timeline", "attachments", "documents",
+                    "remotelinks", "epic_children", "changelog", "editmeta"):
+            self.cache.invalidate(f"{pfx}:{env}:{key}")
+        self._reprime(key, comments=True)
+        return {"ok": True}
+
     def _invalidate_ticket(self, key, *, comments=False, attachments=False,
                            links=False, documents=False):
         if comments:

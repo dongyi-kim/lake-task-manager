@@ -616,6 +616,16 @@ class _CheckboxBody(BaseModel):
     checked: bool
 
 
+@app.post("/api/ticket/{key}/refresh")
+def api_ticket_refresh(key: str):
+    """이 티켓의 서버측 파생 캐시를 모두 비운다 — 좌하단 강제 새로고침이 먼저 호출.
+    (SWR 이 옛 결과를 내주는 걸 확실히 털어, 배포 직후에도 최신이 보이게.)"""
+    try:
+        return JSONResponse(_client.invalidate_ticket_all(key))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
 @app.post("/api/ticket/{key}/checkbox")
 def api_ticket_checkbox(key: str, body: _CheckboxBody):
     """렌더된 체크박스를 화면에서 눌러 토글 → 원본 필드의 해당 체크박스만 뒤집어 저장.

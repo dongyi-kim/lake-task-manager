@@ -378,13 +378,15 @@ export default {
         .catch((e) => { this.stErr = (e && e.message) || "불러오지 못했습니다."; this.stInfo = {}; });
     },
     hardRefresh() {
-      // 좌하단 강제 새로고침 — 이 티켓 관련 memo 를 비우고 서버-fresh 로 다시 받는다.
+      // 좌하단 강제 새로고침 — 서버측 파생 캐시(children/siblings/… SWR 옛 결과)까지 비운 **뒤**
+      // 다시 받는다. 순서가 중요: 먼저 서버 캐시를 털고 나서 load 해야 최신이 잡힌다.
       if (this.refreshing) return;
       this.refreshing = true;
-      api.evict(this.keyId);
-      Promise.resolve(this.load(true)).finally(() => {
-        setTimeout(() => { this.refreshing = false; }, 500);   // 아이콘이 잠깐 도는 느낌
-      });
+      const key = this.keyId;
+      api.evict(key);
+      Promise.resolve(api.ticketRefresh(key))
+        .then(() => this.load(true))
+        .finally(() => { setTimeout(() => { this.refreshing = false; }, 500); });
     },
     async load(force) {
       const key = this.keyId;
