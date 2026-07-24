@@ -30,14 +30,16 @@
   border-radius: 12px 12px 0 0; }
 .tb-name { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 7px;
   white-space: nowrap; overflow: hidden; }
-.tb-type { flex: none; font-size: 10px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase;
+/* 타입·번호·제목·상태 **모두 같은 크기**(14px). 크기가 제각각이면 한 줄이 들쭉날쭉해
+   읽기 어렵다 — 위계는 굵기·색·글꼴로만 준다(타입=색 강조, 번호=모노, 제목=본문색). */
+.tb-type { flex: none; font-size: 14px; font-weight: 800; letter-spacing: .3px; text-transform: uppercase;
   color: color-mix(in srgb, var(--tc, var(--ty-task)) 75%, var(--text)); }
 .tb-key { flex: none; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 13px; font-weight: 700; color: var(--text); }
+  font-size: 14px; font-weight: 700; color: var(--text); }
 /* 제목만 줄어든다 — 타입·번호·상태는 항상 읽혀야 한다 */
-.tb-sum { flex: 0 1 auto; min-width: 0; font-size: 15px; font-weight: 600; color: var(--text);
+.tb-sum { flex: 0 1 auto; min-width: 0; font-size: 14px; font-weight: 600; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; }
-.tb-st { flex: none; font-size: 11.5px; font-weight: 700; }
+.tb-st { flex: none; font-size: 14px; font-weight: 700; }
 .tb-st.st-todo { color: var(--st-todo); }
 .tb-st.st-inprogress { color: var(--st-prog); }
 .tb-st.st-done { color: var(--st-done); }
@@ -228,7 +230,7 @@
 /* ── 메타 그리드 ── */
 .tkt-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 18px;
   padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
-.tkt-meta > div { display: flex; gap: 8px; font-size: 12.5px; align-items: baseline; }
+.tkt-meta > div { display: flex; gap: 8px; font-size: 12px; align-items: baseline; }
 .tkt-meta .k { color: var(--muted-2); flex: 0 0 58px; font-size: 11px; letter-spacing: .3px; }
 /* 상태 값 — 타이틀바(.tb-st)와 같은 색 규칙 */
 .val-st { font-weight: 700; }
@@ -249,7 +251,7 @@
   margin: 18px 0 8px; font-weight: 700; }
 
 /* ── description 렌더 ── */
-.tkt-desc { font-size: 13.5px; line-height: 1.65; word-break: break-word; }
+.tkt-desc { font-size: 12.5px; line-height: 1.6; word-break: break-word; }
 /* 설명 영역을 카드(흰 배경)로 분리해 다른 UI와 구분 */
 /* 다이얼로그 중앙(--panel)과 같은 색이면 영역 구분이 안 된다 → 한 단계 눌러서(inset surface) */
 /* 내용 카드는 흰색(--panel) — 눌린 본문 배경(--bg) 위로 떠 보이게 */
@@ -420,7 +422,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-cmt-h .muted { font-size: 11.5px; }
 /* 코멘트는 이제 HTML(<p>/<br>) 렌더 → white-space:normal. (pre-wrap 이면 태그 사이 개행이
    실제 줄바꿈으로 렌더돼 문단마다 빈 줄이 겹치는 문제. 코드블록은 pre.code 가 자체 pre 유지) */
-.tkt-cmt-b { font-size: 13px; white-space: normal; word-break: break-word; }
+.tkt-cmt-b { font-size: 12.5px; white-space: normal; word-break: break-word; }
 
 /* 상위 티켓 설명 (Sub-Task) — '설명'과 같은 섹션 헤더 + 짧은 토글. 설명 섹션 바로 위에 온다 */
 .pdesc .tkt-sec-t { margin-top: 18px; }
@@ -1135,3 +1137,16 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .sec-mention .mn-doc { display: flex; align-items: center; gap: 6px; text-decoration: none;
   color: var(--text); }
 .sec-mention .mn-doc:hover { text-decoration: none; background: var(--panel-2); }
+
+/* ── 좁은 다이얼로그에서 타이틀 제목이 다 안 보일 때 ──────────────────────────
+   ① 먼저 진행 상태를 숨긴다(상태는 아래 티켓 정보에도 있다).
+   ② 그래도 모자라면 제목을 **줄바꿈**해서라도 통째로 보인다 — 번호로만 부르기 어려운
+      티켓이라 제목이 잘리면 무엇인지 알 수 없다. 타이틀바 높이는 그만큼 늘어난다. */
+@container tkt (max-width: 680px) {
+  .tkt-bar .tb-st { display: none; }
+}
+@container tkt (max-width: 560px) {
+  .tkt-bar { align-items: flex-start; }
+  .tb-name { white-space: normal; flex-wrap: wrap; }
+  .tb-sum { white-space: normal; overflow: visible; text-overflow: clip; flex: 1 1 100%; }
+}
