@@ -102,7 +102,7 @@ def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
     return False, last
 
 
-def _do_login_in_window(s, page, context, appmain, per_timeout=300):
+def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary=False):
     """[prod] **별도 임시 창**을 열어 Jira → Confluence → Bitbucket(설정된 것만) SSO 로그인.
 
     앱 창(page)은 건드리지 않는다 — 로그인 전용 페이지(창)를 새로 열어 거기서 IdP 로그인하고,
@@ -117,6 +117,12 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300):
     from app.auth.sso_session import service_probe
     appmain._login_requested.clear()
     targets = getattr(s, "auth_targets", None) or [("Jira", s.jira_base.rstrip("/"), ["/rest/api/2/myself"])]
+    if only_primary:
+        # ★ **앱을 켤 때는 Jira 만 인증한다.** 예전엔 Jira·Confluence·Bitbucket 을 차례로 돌았는데,
+        #   서비스마다 창을 띄우고 최대 5분씩 기다리는 동안 로그인 창이 화면에 남고, 세션 저장은
+        #   전부 끝난 뒤라 그 사이 앱의 인증 표시가 됐다 안 됐다 했다. 앱이 뜨자마자 필요한 것은
+        #   Jira 하나뿐이다 — 나머지는 트레이의 [SSO 인증] 에서 필요할 때 한다.
+        targets = targets[:1]
     login_page = None
     results = []
     try:
@@ -129,12 +135,23 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300):
                 ok, why = _login_one_service(login_page, context, name, base, paths, per_timeout, appmain)
             results.append((name, ok))
             print(f"[login] {name}: {'OK' if ok else '실패'} — {why}")
-        # 하나라도 됐으면 세션 저장(부분 인증이라도 그 기능은 쓰게), provider 갱신
+            # 되는 대로 **바로** 저장·반영한다. 전부 끝난 뒤에 저장하면 그 사이 앱은 여전히
+            # 미인증으로 보이고, 사용자는 '됐다는데 안 됐다' 를 겪는다.
+            if ok:
+                try:
+                    appmain._client.sso_store().save_all_from(context.storage_state())
+                    appmain._client.reset_provider()
+                except Exception as e:
+                    print(f"[login]   세션 저장 실패: {e}")
+                # 이 서비스 로그인 창은 여기서 닫는다 — 다음 서비스를 기다리는 동안 떠 있을 이유가 없다.
+                try:
+                    if login_page is not None and not login_page.is_closed():
+                        login_page.close()
+                        login_page = None
+                except Exception:
+                    pass
+        # 저장·반영은 위에서 서비스마다 이미 했다. 여기서는 화면만 최신 상태로 돌린다.
         if any(ok for _, ok in results):
-            # 이 창은 세 서비스를 모두 돌았으므로 도메인별로 갈라 각각 저장한다
-            # (한 파일에 통째로 넣으면 다음에 한 서비스만 갱신할 때 나머지가 날아간다).
-            appmain._client.sso_store().save_all_from(context.storage_state())
-            appmain._client.reset_provider()
             # 앱 페이지를 새로고침해 인증 상태를 즉시 반영(설정창 dot·로그인 오버레이 갱신).
             try:
                 if not page.is_closed():
@@ -397,7 +414,9 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
         pump = True          # Playwright 이벤트를 넘겨받을 수 있는 상태인가
         while not page.is_closed():
             if appmain._login_requested.is_set():
-                _do_login_in_window(s, page, context, appmain)
+                # 시작 직후의 자동 취득은 **Jira 만**(only_primary). 트레이에서 고른 서비스 로그인은
+                # 그쪽 경로(_run_tray)가 따로 돈다.
+                _do_login_in_window(s, page, context, appmain, only_primary=True)
             _drain_downloads(context, dlq)              # 받아 둔 다운로드를 여기서(메인 스레드) 저장
             if i < 16:                                  # ~8초 동안 창 아이콘 재적용(favicon 덮어쓰기 대비)
                 _set_window_icon_win(ico_path)

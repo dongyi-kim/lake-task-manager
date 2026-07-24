@@ -576,6 +576,13 @@ class JiraClient:
                 data = self.provider.get_json("/rest/api/2/search", params={
                     "jql": jql, "fields": self._issue_fields(),
                     "startAt": start, "maxResults": 100})
+                # ★ **검색 응답이 아닌 것을 '결과 0건' 으로 읽지 않는다.**
+                #   인증이 끊긴 Jira 는 로그인 페이지로 302→200(HTML) 을 주는데, 그걸 dict 로
+                #   받아 issues 를 꺼내면 빈 목록이 된다. 그 빈 목록이 캐시에 박히면 인증이
+                #   끝난 뒤에도 화면은 계속 '결과 없음' 이다(실제로 PMO_VIT 가 그렇게 비었다).
+                if not isinstance(data, dict) or "issues" not in data:
+                    raise SessionExpired(
+                        "검색 응답이 아닙니다 — 인증이 끊겼을 수 있습니다(로그인 페이지 응답).")
                 batch = data.get("issues", [])
                 issues.extend(batch)
                 start += 100
