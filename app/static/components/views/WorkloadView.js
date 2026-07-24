@@ -3,7 +3,7 @@
 //   (Due·D-day, 완료일시; 진행중=임박순·완료=최근순 정렬).
 // 인력 = 본명(displayName 첫 어절) + 개발/운영 뱃지(id 사번 x+숫자/i+숫자). updated: 2026-07-09
 import { api } from "../../lib/api.js";
-import { moduleColor } from "../../lib/colors.js";
+import { moduleColor, categoryColor } from "../../lib/colors.js";
 import { ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";
 import ProgressBar from "../ui/ProgressBar.js";
 import TypeBadge from "../ui/TypeBadge.js";
@@ -15,9 +15,8 @@ const WL_COLS = [
   { k: "inProgress", label: "진행 중", cls: "" },
   { k: "done7d", label: "최근 7일 완료", cls: "done" },
 ];
-// Epic 분포 색 — 건수 많은 순으로 팔레트를 배정(같은 화면 안에서만 일관되면 된다).
-const EPIC_COLORS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)",
-                     "var(--c5)", "var(--c6)", "var(--c7)"];
+// Epic 분포 색 — **시그니처 컬러(categoryColor(epicKey))**. 같은 Epic 은 어느 화면·어느 사람에서도
+// 같은 색이다(내 Task·WBS 와 정책 통일). 예전엔 화면 안 건수 순 팔레트라 사람마다 색이 달랐다.
 const VOC_COLOR = "var(--ty-story)";      // 사용자 VoC — 전용 Epic 취급이라 고정색
 const NONE_COLOR = "var(--border-hi)";    // Epic 없음
 
@@ -119,7 +118,7 @@ export default {
       }
       // 실제 Epic 을 건수 순으로 먼저, VoC·Epic 없음은 성격이 달라 항상 끝에 고정한다.
       const epics = [...by.values()].filter((g) => g.kind === "epic").sort((a, b) => b.value - a.value);
-      epics.forEach((g, i) => { g.color = EPIC_COLORS[i % EPIC_COLORS.length]; });
+      epics.forEach((g) => { g.color = categoryColor(g.key); });   // 시그니처 컬러(키 기반, 전 화면 공통)
       const voc = by.get("__voc__"); if (voc) voc.color = VOC_COLOR;
       const none = by.get("__none__"); if (none) none.color = NONE_COLOR;
       const groups = epics.concat(voc ? [voc] : [], none ? [none] : []);
@@ -330,9 +329,9 @@ export default {
                           <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
                           <span class="sm">{{ t.summary }}</span>
                           <span class="sched">
-                            <span v-if="t.epic" class="ebadge" :style="{ '--ec': epicColorOf(p.id, t) }"
-                                  :title="'Epic: ' + (t.epicName || t.epic)">◆ {{ t.epicName || t.epic }}</span>
-                            <span v-else-if="t.voc" class="ebadge voc">◆ 사용자 VoC</span>
+                            <span v-if="t.epic" class="ebadge" :style="{ '--sig': epicColorOf(p.id, t) }"
+                                  :title="'Epic: ' + (t.epicName || t.epic)">{{ t.epicName || t.epic }}</span>
+                            <span v-else-if="t.voc" class="ebadge voc">사용자 VoC</span>
                             <span v-else class="ebadge none">Epic 없음</span>
                             <span v-if="c.k === 'done7d'" class="dbadge fin"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5 11-11"/></svg>{{ fdt(t.resolved) }}</span>
                             <template v-else>

@@ -2,7 +2,7 @@
 // 간트 본문(라벨트리·타임라인 바·트리커넥터)은 검증된 명령형 renderGantt()를 refs 로 구동.
 // 4계층 lazy(Epic→Task→Sub-Task), 파일탐색기식 가이드선/[+], 상태색 바. updated: 2026-07-08
 import { api } from "../../lib/api.js";
-import { moduleColor } from "../../lib/colors.js";
+import { moduleColor, categoryColor } from "../../lib/colors.js";
 
 export default {
   name: "WbsView",
@@ -283,7 +283,10 @@ export default {
               pct: pct(ep.progressPct), dates: { s: p.start, e: p.end },
               onToggle: () => { expanded[epath] = !expanded[epath]; if (expanded[epath]) self.loadEpicTree(p.epicKey); self.renderGantt(); },
             }, {
-              name: ep.name, start: p.start, end: p.end, progressPct: ep.progressPct, color: cvar,
+              // Epic 막대 색 = **시그니처 컬러**(categoryColor(epicKey)) — 내 Task·워크로드와 정책 통일.
+              // (모듈/WBS 막대는 모듈색 cvar 그대로 — 계층이 색으로 구분된다.)
+              name: ep.name, start: p.start, end: p.end, progressPct: ep.progressPct,
+              color: categoryColor(p.epicKey) || cvar,
               title: ep.name + "  " + ep.doneSp + "/" + ep.totalSp + " SP (" + pct(ep.progressPct) + ")" + (ep.mockSp > 0 ? ", mock " + ep.mockSp : ""),
               conn: { parentX: wbsX, ancX: [], isLast: lastE, childX: epicX },
             });
