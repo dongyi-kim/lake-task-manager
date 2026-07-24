@@ -164,6 +164,10 @@ export default {
     canCreate() {
       return !!(this.nc.type && this.nc.priority && (this.nc.summary || "").trim());
     },
+    /** 관련문서 = **사람이 붙인** 문서만. 멘션 링크는 아래 mentionDocs 로 간다. */
+    refDocs() { return (this.docs || []).filter((d) => !d.mention); },
+    /** 이 티켓을 언급해서 자동으로 생긴 링크 — 좌측 패널에 따로 모은다. */
+    mentionDocs() { return (this.docs || []).filter((d) => d.mention); },
     /** 소속 Epic 의 제목 — 계보 패널이 이미 받아 둔 것을 쓴다(따로 조회하지 않는다).
      *  아직 안 왔거나 없으면 키를 그대로 — 빈 뱃지를 보이느니 번호라도 보이는 게 낫다. */
     epicTitle() {
@@ -609,6 +613,10 @@ export default {
     fy(s) { return ymd(s); },
     fts(s) { return ts(s); },   // 일정 공통 포맷 yyyy.mm.dd HH:mm
     fdt(s) { return ymdhm(s); },
+    /** 첨부 칩의 시각 — 날짜·시각·분을 따로 준다. 좁아질 때 **뒤에서부터** 버리기 위해서다. */
+    fdate(s) { return (ymdhm(s) || "").split(" ")[0] || ""; },
+    fhour(s) { return ((ymdhm(s) || "").split(" ")[1] || "").split(":")[0] || ""; },
+    fmin(s) { return ((ymdhm(s) || "").split(" ")[1] || "").split(":")[1] || ""; },
     statusClass(cat) { return "st-" + (cat || "todo"); },
     // 확대 버튼(.zoom-btn)만 반응 — 표는 드래그 복사가 가능해야 하므로 내용 클릭으로는 확대 안 함.
     onContentClick(e) {
@@ -834,6 +842,18 @@ export default {
               </div>
               <div v-if="!related.length" class="muted mini">관련 티켓 없음</div>
             </div>
+            <!-- 이 티켓을 **저쪽에서 언급해** 자동으로 생긴 링크(Confluence 의 Jira 이슈 매크로 등).
+                 참고하라고 사람이 붙인 관련문서와 성질이 달라 자리를 나눈다 — 관련문서에 섞으면
+                 '내가 붙인 것' 과 '남이 나를 부른 것' 이 한 줄로 보인다. -->
+            <div v-if="mentionDocs.length" class="sec sec-mention spn-sib">
+              <div class="tkt-mlabel">이 Ticket을 멘션함 <span class="spn-pos">{{ mentionDocs.length }}</span></div>
+              <a v-for="(d, i) in mentionDocs" :key="'mn-' + i" class="spn-sibrow mn-doc"
+                 :href="d.url" target="_blank" rel="noopener" :title="d.url">
+                <span class="sr-pageic"></span>
+                <span class="spn-stitle">{{ d.title }}</span>
+              </a>
+            </div>
+
             <div v-if="siblings.length" class="sec sec-sib spn-sib">
               <!-- 숫자는 **한 번만**. 예전엔 '형제 15' 옆에 '12/15' 가 또 붙어, 전체 개수가 두 번
                    나오고 15 와 12 가 나란히 서서 무엇이 무엇인지 읽히지 않았다.
@@ -1101,7 +1121,11 @@ export default {
                      :title="a.filename + ' · ' + fsize(a.size) + (a.author ? ' · ' + a.author : '')">
                     <span class="fchip-ic"></span>
                     <span class="fchip-n">{{ a.filename }}</span>
-                    <span class="fchip-m">{{ fdt(a.created) }} · {{ fsize(a.size) }}</span>
+                    <!-- 메타는 **조각으로** 둔다: 폭이 모자라면 분 → 시각 → 용량 순으로 사라진다.
+                         한 덩어리 문자열이면 '…' 로 잘려 아무 뜻도 안 남는다. -->
+                    <span class="fchip-m">
+                      <i class="m-d">{{ fdate(a.created) }}</i><i class="m-t">{{ fhour(a.created) }}<b class="m-min">:{{ fmin(a.created) }}</b></i><i class="m-s">{{ fsize(a.size) }}</i>
+                    </span>
                   </a>
                   <!-- ✕ 는 **바꿀 수 있는 사람에게만**. 없는데 보이면 눌러 보고서야 안 되는 걸 안다. -->
                   <button v-if="mayEdit" class="chip-x" title="첨부 삭제"
@@ -1113,16 +1137,16 @@ export default {
               </div>
             </div>
             <div class="tkt-two-col">
-              <div class="tkt-sec-t has-add">관련문서<span v-if="docs.length"> ({{ docs.length }})</span>
+              <div class="tkt-sec-t has-add">관련문서<span v-if="refDocs.length"> ({{ refDocs.length }})</span>
                 <button class="add-b" title="관련문서 추가 (Confluence 문서·웹 링크)"
                         @click.stop="docPick = !docPick">＋</button>
               </div>
               <LinkPicker v-if="docPick" mode="confluence" :busy="docBusy" :err="docErr"
                           @close="docPick = false" @pick="addDoc" />
-              <div v-if="!docs.length" class="muted mini">언급된 문서 없음</div>
+              <div v-if="!refDocs.length" class="muted mini">관련문서 없음</div>
               <div v-else class="foldwrap" :class="{ folded: !docOpen }">
               <div class="chipwrap" :class="{ 'fold-peek': !docOpen }">
-                <span v-for="(d, i) in docs" :key="i" class="fchip-w">
+                <span v-for="(d, i) in refDocs" :key="i" class="fchip-w">
                   <a class="fchip doc" :href="d.url" target="_blank" rel="noopener" :title="d.url">
                     <span class="fchip-ic conf"></span>
                     <span class="fchip-n">{{ d.title }}</span>

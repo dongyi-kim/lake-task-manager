@@ -164,7 +164,7 @@
 /* 계보 → 관련 Task → 형제. 계보는 '내가 어디에 있나'라 늘 먼저고, 관련 Task 는 이 티켓을
    보다가 곧장 따라가는 곳이라 형제보다 앞이다. 형제는 참고에 가깝다.
    (하위 Task 는 이제 본문 칸이 맡는다 — 좌측엔 없다.) */
-.sec-lineage { order: 1; } .sec-related { order: 2; } .sec-sib { order: 3; }
+.sec-lineage { order: 1; } .sec-related { order: 2; } .sec-mention { order: 3; } .sec-sib { order: 4; }
 
 /* 좁은 화면 — 가로 3단 해제.
    패널을 통째로 쌓으면 '계보 형제 하위 관련' 이 한 줄로 길게 늘어져 읽기 어렵다.
@@ -1130,3 +1130,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-desc a.user-hover::before { content: "@"; opacity: .65; margin-right: 1px; }
 .tkt-desc a.user-hover:hover { text-decoration: none;
   background: color-mix(in srgb, var(--accent) 20%, transparent); }
+
+/* 이 티켓을 멘션한 문서 — 좌측 패널. 문서로 바로 나가는 링크라 티켓 행(.tkt)과 달리 밑줄 없이. */
+.sec-mention .mn-doc { display: flex; align-items: center; gap: 6px; text-decoration: none;
+  color: var(--text); }
+.sec-mention .mn-doc:hover { text-decoration: none; background: var(--panel-2); }

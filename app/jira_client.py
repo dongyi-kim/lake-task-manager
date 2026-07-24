@@ -30,6 +30,8 @@ _BROWSE_KEY_RE = re.compile(r"/browse/([A-Z][A-Z0-9]+-\d+)")
 _ANCHOR_RE = re.compile(r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 # Confluence URL 에서 문서 제목 — /pages/{id}/{slug} 또는 /display/{space}/{slug}
 _CONF_TITLE_RE = re.compile(r"/pages/\d+/([^/?#]+)|/display/[^/]+/([^/?#]+)")
+#: Confluence 페이지 id — 옛 링크(`/pages/viewpage.action?pageId=…`)엔 제목이 없고 이것만 있다.
+_CONF_PAGEID_RE = re.compile(r"[?&]pageId=(\d+)|/pages/(\d+)(?:[/?#]|$)")
 
 
 # 이슈 링크 관계 문구 — 사내 Jira 는 inward/outward 에 서술형 장문을 넣기도 한다
@@ -96,6 +98,30 @@ def _abs_url(url, base):
     if not u.startswith("/"):
         return u                                   # 앵커(#…) 등은 손대지 않는다
     return (base or "").rstrip("/") + u if base else u
+
+
+#: 제목이라 부르기 어려운 값들 — 이게 나오면 URL 슬러그도 링크 텍스트도 쓸모가 없었다는 뜻이다.
+#: (Confluence 의 옛 링크 `/pages/viewpage.action?pageId=…` 에는 제목이 아예 없다.)
+_WEAK_TITLES = {"", "page", "pages", "viewpage.action", "confluence 문서", "문서"}
+
+
+def _weak_title(t, url=""):
+    tt = (t or "").strip().lower()
+    if tt in _WEAK_TITLES:
+        return True
+    # URL 을 그대로 제목처럼 쓰고 있으면 그것도 제목이 아니다
+    return bool(url) and tt == (url or "").strip().lower()
+
+
+#: Confluence 의 'Jira 이슈' 매크로가 자동으로 다는 링크 관계. 사람이 붙인 참고 문서가 아니다.
+_MENTION_RELS = ("mentioned in", "mentioned on", "is mentioned in", "wiki page")
+
+
+def _is_mention_link(r):
+    rel = (r.get("rel") or "").strip().lower()
+    if rel:
+        return any(k in rel for k in _MENTION_RELS)
+    return False
 
 
 def _conf_title(url, text=None):
@@ -1740,8 +1766,13 @@ class JiraClient:
                 url = (obj.get("url") or "").strip()
                 if url:
                     # id 를 함께 싣는다 — 이게 있어야 화면에서 링크를 뗄 수 있다(문서 ✕).
+                    # relationship/application 은 **Confluence 가 이 티켓을 언급했을 때** 자동으로
+                    # 붙는 값이다("mentioned in" 등). 사람이 붙인 참고 문서와 성격이 달라 구분한다.
+                    app = (r.get("application") or {})
                     out.append({"id": str(r.get("id") or ""),
-                                "title": (obj.get("title") or "").strip(), "url": url})
+                                "title": (obj.get("title") or "").strip(), "url": url,
+                                "rel": (r.get("relationship") or "").strip(),
+                                "app": (app.get("name") or app.get("type") or "").strip()})
             return out
         return self.cache.get_or_set(f"remotelinks:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
 
@@ -1767,7 +1798,7 @@ class JiraClient:
                 pass
             out, seen = [], set()
 
-            def add(u, title, is_conf, link_id=None):
+            def add(u, title, is_conf, link_id=None, mention=False, rel=""):
                 u = _abs_url(u, self.s.confluence_base)     # 상대경로면 절대화(안 그러면 404)
                 # Confluence 는 문서 정규화 키로, Web link 는 URL 로 중복 판정
                 ck = _conf_key(u) if is_conf else ("web:" + u.rstrip("/").lower())
@@ -1776,7 +1807,10 @@ class JiraClient:
                 seen.add(ck)
                 # linkId 가 있는 것만 지울 수 있다 — 본문에 **언급**된 문서는 링크가 아니라 글이라,
                 # 지우려면 본문을 고쳐야 한다(화면도 그때만 ✕ 를 보인다).
-                out.append({"title": title, "url": u, "linkId": link_id})
+                # mention=True 는 **저쪽에서 이 티켓을 언급해** 자동으로 생긴 링크다.
+                # 참고하라고 사람이 붙인 문서와 성격이 다르므로 화면에서 자리를 나눈다.
+                out.append({"title": title, "url": u, "linkId": link_id,
+                            "mention": bool(mention), "rel": rel})
 
             # (1) 본문 언급 Confluence 문서
             for h in htmls:
@@ -1789,7 +1823,20 @@ class JiraClient:
                 u = r["url"]
                 is_conf = bool(_CONF_RE.search(u))
                 title = r["title"] or (_conf_title(u) if is_conf else u)
-                add(u, title, is_conf, r.get("id"))
+                # ★ 제목이 'page' 처럼 쓸모없으면 **문서에서 진짜 제목을 받아 온다**.
+                #   옛 Confluence 링크(/pages/viewpage.action?pageId=…)에는 제목이 URL 어디에도
+                #   없어서, 슬러그만 보면 영영 'page' 로 남는다. 조회는 캐시된다.
+                if is_conf and _weak_title(title, u):
+                    got = self.conf_title_by_id(u)          # ① 페이지 id 로 정확히
+                    if not got:
+                        try:
+                            got = self.link_title(u)        # ② 그것도 안 되면 og:title
+                        except Exception:
+                            got = None
+                    if got:
+                        title = got
+                add(u, title, is_conf, r.get("id"),
+                    mention=_is_mention_link(r), rel=r.get("rel") or "")
             return out[:limit]
         return self._swr(f"documents:{self.env}:{key}", build)
 
@@ -1842,6 +1889,33 @@ class JiraClient:
         return host == parent or host.endswith("." + parent)
 
     LINK_TITLE_TTL = 7 * 24 * 3600         # 페이지 제목도 자주 안 바뀐다
+
+    CONF_TITLE_TTL = 24 * 3600        # 문서 제목은 거의 안 바뀐다
+
+    def conf_title_by_id(self, url):
+        """Confluence 페이지 **id 로 진짜 제목**을 받아 온다(없으면 None).
+
+        옛 링크(`/pages/viewpage.action?pageId=123`)에는 제목이 URL 어디에도 없어서, 슬러그만
+        보면 영영 'page' 로 남는다. 페이지를 통째로 받아 og:title 을 훑는 것보다 이 조회가
+        싸고 정확하다 — 실패하면 호출부가 og:title 로 물러선다.
+        """
+        base = (self.s.confluence_base or "").rstrip("/")
+        if not base:
+            return None
+        m = _CONF_PAGEID_RE.search(url or "")
+        pid = (m.group(1) or m.group(2)) if m else None
+        if not pid:
+            return None
+
+        def do():
+            d = self.provider.get_json(f"{base}/rest/api/content/{pid}")
+            return ((d or {}).get("title") or "").strip()
+
+        try:
+            return self.cache.get_or_set(f"conftitle:{self.env}:{pid}",
+                                         self.CONF_TITLE_TTL, do)[0] or None
+        except Exception:
+            return None
 
     def link_title(self, u):
         """웹 URL 의 표시 제목 — og:title 우선, 없으면 <title>. 실패 시 None. 캐시.
