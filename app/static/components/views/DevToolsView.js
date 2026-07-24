@@ -4,7 +4,7 @@ import { api } from "../../lib/api.js";
 
 export default {
   name: "DevToolsView",
-  data() { return { rev: "", tools: null, results: {}, running: {} }; },
+  data() { return { rev: "", tools: null, results: {}, running: {}, params: {} }; },
   async mounted() {
     const [h, t] = await Promise.all([
       api.health().catch(() => null),
@@ -14,10 +14,23 @@ export default {
     this.tools = t;
   },
   methods: {
+    // 실제 호출 경로 — param 이 있으면 입력값을 {param} 자리에 넣는다(없으면 원본).
+    pathOf(ep) {
+      if (!ep.param) return ep.path;
+      const v = (this.params[ep.path] || "").trim();
+      return v ? ep.path.replace("{" + ep.param + "}", encodeURIComponent(v)) : ep.path;
+    },
     async run(ep) {
+      if (ep.param && !(this.params[ep.path] || "").trim()) {
+        this.results[ep.path] = { error: ep.param + " 를 입력하세요" };
+        return;
+      }
       this.running[ep.path] = true;
       try {
-        this.results[ep.path] = await api.raw(ep.path);
+        const path = this.pathOf(ep);
+        this.results[ep.path] = ep.method === "POST"
+          ? await api.raw(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+          : await api.raw(path);
       } catch (e) {
         this.results[ep.path] = { error: String(e) };
       } finally {
@@ -37,16 +50,21 @@ export default {
 
     <div v-if="!tools || !tools.endpoints" class="dt-empty">개발용 API 목록을 불러오지 못했습니다.</div>
 
-    <div v-for="ep in (tools && tools.endpoints) || []" :key="ep.path" class="dt-card">
+    <div v-for="ep in (tools && tools.endpoints) || []" :key="ep.path" class="dt-card"
+         :class="{ danger: ep.danger }">
       <div class="dt-card-h">
         <div class="dt-card-t">
           <span class="dt-label">{{ ep.label }}</span>
           <span class="dt-path"><span class="dt-method">{{ ep.method }}</span> {{ ep.path }}</span>
         </div>
         <div class="dt-actions">
+          <!-- param 이 필요한 엔드포인트(예: 티켓 키)는 입력칸을 먼저 -->
+          <input v-if="ep.param" class="dt-param" :placeholder="ep.placeholder || ep.param"
+                 v-model="params[ep.path]" @keyup.enter="run(ep)" spellcheck="false">
           <button class="dt-run" :disabled="running[ep.path]" @click="run(ep)">
             {{ running[ep.path] ? '실행 중…' : '실행' }}</button>
-          <a class="dt-open" :href="ep.path" target="_blank" rel="noopener">새 탭 ↗</a>
+          <!-- GET 만 새 탭으로 열 수 있다(POST 는 실행 버튼으로) -->
+          <a v-if="ep.method === 'GET'" class="dt-open" :href="ep.path" target="_blank" rel="noopener">새 탭 ↗</a>
         </div>
       </div>
       <pre v-if="results[ep.path]" class="dt-result">{{ pretty(results[ep.path]) }}</pre>

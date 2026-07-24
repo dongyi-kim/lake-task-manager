@@ -168,13 +168,27 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
             kind="code", full=full)
 
     # 설정 메뉴가 노출할 dev API 목록(경로 + 설명). 실제 라우트와 손으로 맞춘다.
+    # param 이 있으면 프론트가 입력칸을 띄우고 {param} 자리에 넣어 호출한다.
     _DEV_ENDPOINTS = [
         {"path": "/api/dev/sso", "label": "SSO 인증 상태", "method": "GET"},
+        {"path": "/api/ticket/{key}/refresh", "label": "티켓 캐시 새로고침 (children/siblings/…)",
+         "method": "POST", "param": "key", "placeholder": "예: DL-1234"},
+        {"path": "/api/dev/cache/clear", "label": "전체 캐시 비우기 (배포 뒤 SWR 옛 결과 강제 제거)",
+         "method": "POST", "danger": True},
         {"path": "/api/dev/bitbucket/diag", "label": "Bitbucket XSRF 쿠키 진단", "method": "GET"},
         {"path": "/api/dev/bitbucket/repos?limit=3", "label": "Bitbucket 저장소 검색(구조)", "method": "GET"},
         {"path": "/api/dev/bitbucket/code?q=test", "label": "Bitbucket 코드 검색(구조)", "method": "GET"},
         {"path": "/api/dev/tools", "label": "dev tools 목록", "method": "GET"},
     ]
+
+    if _devtools.enabled(_settings, "cache_admin"):
+        @app.post("/api/dev/cache/clear")
+        def _dev_cache_clear():
+            """전체 캐시를 비운다 — 배포 뒤 출력 형태가 바뀌었는데 SWR 이 옛 결과를 계속 낼 때.
+            (개별 티켓만 털려면 /api/ticket/{key}/refresh.)"""
+            _require_manager()
+            _cache.invalidate()          # prefix 없이 = 전부
+            return {"ok": True, "cleared": "all"}
 
     @app.get("/api/dev/tools")
     def _dev_tools_list():

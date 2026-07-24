@@ -171,10 +171,15 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
 .dt-path { display: block; font-size: 11.5px; color: var(--muted-2); margin-top: 2px;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; word-break: break-all; }
 .dt-method { color: var(--accent); font-weight: 700; }
-.dt-actions { display: flex; gap: 8px; flex: none; }
+.dt-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.dt-param { font-size: 12px; padding: 5px 9px; border-radius: 7px; width: 140px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+.dt-param:focus { outline: none; border-color: var(--accent); }
 .dt-run, .dt-open { font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 7px;
   border: 1px solid var(--border); cursor: pointer; text-decoration: none; white-space: nowrap; }
 .dt-run { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* 위험(전체 캐시 비우기) 카드는 실행 버튼을 붉게 — 되돌릴 수 없는 전역 동작임을 표시 */
+.dt-card.danger .dt-run { background: var(--today); border-color: var(--today); }
 .dt-run:disabled { opacity: .6; cursor: default; }
 .dt-open { background: var(--panel); color: var(--muted); }
 .dt-open:hover { color: var(--text); border-color: var(--accent); }
