@@ -35,6 +35,7 @@ function jsonReq(path, method, body) {
 export const api = {
   health: () => req("/api/health"),                                    // 로그인 상태 — memo 제외
   raw: (path, opts) => req(path, opts),                                // memo 없이 매번 조회(설정 메뉴 등)
+  evict: (key) => evict(encodeURIComponent(key)),                      // 이 티켓 관련 memo 비우기(강제 새로고침)
   login: () => req("/api/login", { method: "POST" }),
   prefs: () => req("/api/prefs"),
   setPrefs: (body) => jsonReq("/api/prefs", "PUT", body),

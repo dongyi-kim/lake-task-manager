@@ -117,6 +117,7 @@ export default {
                     // 상태 전이 팝업
                     stOpen: false, stInfo: null, stErr: "", stPick: null,
                     err: "", expanded: false, zoom: null, zoomLoading: false,
+                    refreshing: false,               // 좌하단 강제 새로고침 진행 표시
                     // 좌/우 부가정보 패널 — 폭 조절·접기(저장). 넓은 화면(사이드바 모드)에서만 의미.
                     spineW: loadSpineW(), spineHidden: loadSpineHidden(),
                     tlW: loadTlW(), tlHidden: loadTlHidden(),
@@ -376,7 +377,16 @@ export default {
         .then((r) => { this.stInfo = r || {}; })
         .catch((e) => { this.stErr = (e && e.message) || "불러오지 못했습니다."; this.stInfo = {}; });
     },
-    async load() {
+    hardRefresh() {
+      // 좌하단 강제 새로고침 — 이 티켓 관련 memo 를 비우고 서버-fresh 로 다시 받는다.
+      if (this.refreshing) return;
+      this.refreshing = true;
+      api.evict(this.keyId);
+      Promise.resolve(this.load(true)).finally(() => {
+        setTimeout(() => { this.refreshing = false; }, 500);   // 아이콘이 잠깐 도는 느낌
+      });
+    },
+    async load(force) {
       const key = this.keyId;
       const my = this._req = (this._req || 0) + 1;
       const fresh = () => my === this._req && this.keyId === key;
@@ -416,7 +426,7 @@ export default {
       }).catch(() => {});
 
       try {
-        const v = await api.ticket(key);
+        const v = await api.ticket(key, force);          // force=강제 새로고침이면 서버 캐시도 건너뜀
         if (fresh()) this.v = v;
         // 검색창을 빈 상태로 열었을 때 보여줄 '최근 열어본 항목'에 남긴다.
         if (fresh() && v) {
@@ -1366,6 +1376,16 @@ export default {
           </aside>
         </div><!-- /.tkt-cols -->
         </div><!-- /.tkt-body -->
+
+        <!-- 좌하단 강제 새로고침 — 이 티켓을 캐시 비우고 서버에서 다시 받는다(체크박스 등 최신 반영) -->
+        <button class="tkt-refresh" :class="{ busy: refreshing }" @click="hardRefresh"
+                :title="refreshing ? '새로 받는 중…' : '강제 새로고침 (캐시 비우고 다시 받기)'"
+                aria-label="강제 새로고침">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v5h-5"/>
+          </svg>
+        </button>
       </div>
 
       <div v-if="zoom" class="tkt-zoom" @click="zoom = null">

@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
-from html import unescape
+from html import escape, unescape
 from urllib.parse import quote, unquote, urlparse
 
 from . import progress
@@ -347,6 +347,45 @@ def _revive_checkboxes(html):
     return _ESC_CB_PARA.sub(one, html)
 
 
+def _checkbox_states(raw_field):
+    """raw 필드(원문 HTML/wiki)에서 체크박스의 (checked, id) 를 **문서 순서대로** 뽑는다.
+
+    저장은 우리가 raw 에 하므로(우리 _set_checkbox 가 checked 를 정확히 남긴다) raw 가 상태의
+    진실이다. prod 의 renderedFields(JEDITOR 서버 렌더)는 checked 를 input 에 안 싣고 je_rdata
+    JSON 에 두기도 해, 렌더만 보면 늘 해제로 보인다 → raw 에서 상태를 읽어 렌더에 덧씌운다."""
+    out = []
+    for m in _CB_INPUT_RE.finditer(raw_field or ""):
+        tag = m.group(0)
+        if _CB_TYPE_RE.search(tag):
+            out.append((bool(_CB_CHECKED_RE.search(tag)), _tag_id(tag)))
+    return out
+
+
+_SANITIZED_CB_RE = re.compile(r'<input\b[^>]*\btkt-cb\b[^>]*>', re.I)
+
+
+def _sync_checkboxes(rendered_html, raw_field):
+    """정화된 렌더 HTML 의 체크박스들에 raw 의 상태(checked)·id 를 **순서대로 덧씌운다**.
+    렌더 순서 = 원문 순서라 index 로 매칭. raw 에 체크박스가 없으면 그대로 둔다(무영향)."""
+    states = _checkbox_states(raw_field)
+    if not states or "tkt-cb" not in (rendered_html or ""):
+        return rendered_html
+    i = [0]
+
+    def repl(m):
+        n = i[0]
+        i[0] += 1
+        if n >= len(states):
+            return m.group(0)
+        checked, cid = states[n]
+        tag = re.sub(r'\s+checked(="[^"]*")?', "", m.group(0), flags=re.I)
+        tag = re.sub(r'\s+data-cb-id="[^"]*"', "", tag, flags=re.I)
+        ins = (" checked" if checked else "") + (' data-cb-id="%s"' % escape(cid, quote=True) if cid else "")
+        return (tag[:-2].rstrip() + ins + " />") if tag.endswith("/>") else (tag[:-1].rstrip() + ins + ">")
+
+    return _SANITIZED_CB_RE.sub(repl, rendered_html)
+
+
 def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
     """티켓 상세 다이얼로그용 리치 뷰(순수 함수 — 테스트 용이).
     description: prod 의 renderedFields.description(HTML)이 있으면 **sanitize**, 없으면 평문→escape+nl2br.
@@ -354,15 +393,19 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
     f = raw.get("fields", {}) or {}
     rendered = raw.get("renderedFields") or {}
     rhtml = rendered.get("description")
+    raw_desc = f.get("description")
     if rhtml and str(rhtml).strip():
-        desc, fmt = shorten_mention_names(tidy_html(sanitize_html(_revive_checkboxes(rhtml)))), "html"
-    elif _looks_like_html(f.get("description")):
+        # 렌더 HTML 로 리치 내용을 그리되, 체크박스의 상태·id 는 **raw 원문**에서 덧씌운다
+        # (prod renderedFields 는 checked 를 input 에 안 실어 늘 해제로 보이던 문제).
+        desc = _sync_checkboxes(tidy_html(sanitize_html(_revive_checkboxes(rhtml))), raw_desc)
+        desc, fmt = shorten_mention_names(desc), "html"
+    elif _looks_like_html(raw_desc):
         # 사내 인스턴스는 WYSIWYG 에디터(Jira Editor 계열 — 'jePanel_*' class)를 써서
         # fields.description **원문 자체가 HTML** 이다. 이때 평문 취급하면 태그가
-        # 글자로 보인다(<p>안녕하세요</p>). renderedFields 가 빌 때의 방어.
-        desc, fmt = shorten_mention_names(tidy_html(sanitize_html(f["description"]))), "html"
+        # 글자로 보인다(<p>안녕하세요</p>). renderedFields 가 빌 때의 방어. (raw 라 상태 이미 정확)
+        desc, fmt = shorten_mention_names(tidy_html(sanitize_html(raw_desc))), "html"
     else:
-        desc, fmt = tidy_html(text_to_html(f.get("description") or "")), "text"
+        desc, fmt = tidy_html(text_to_html(raw_desc or "")), "text"
     st = f.get("status") or {}
     itype = f.get("issuetype") or {}
 
@@ -983,6 +1026,7 @@ class JiraClient:
                 rb = c.get("renderedBody")
                 html = sanitize_html(_revive_checkboxes(rb)) if rb and str(rb).strip() else text_to_html(c.get("body") or "")
                 html = tidy_html(html)              # 빈 문단·앞뒤 공백 정리(과도 여백 제거)
+                html = _sync_checkboxes(html, c.get("body"))   # 체크박스 상태·id 는 raw 원문 기준
                 html = shorten_mention_names(html)  # 맨션은 본명만(에디터 표기와 일치)
                 html = self._proxy_media(html)      # prod: 코멘트 내 이미지도 프록시
                 out.append({
