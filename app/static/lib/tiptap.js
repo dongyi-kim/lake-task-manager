@@ -26,6 +26,16 @@ export function loadTiptap() {
     // @멘션이 이미 쓰는 것과 **같은** 플러그인 — '/' 메뉴를 직접 짜면
     // 캐럿 위치·조합중 한글·키 처리가 멘션과 어긋난다.
     import(/* @vite-ignore */ "https://esm.sh/@tiptap/suggestion@" + V),
+    // 정렬(좌·중·우) — 문단·제목·표 셀에 건다. 표 셀 정렬이 여기 없으면 마크다운 표 정렬이 안 붙는다.
+    import(/* @vite-ignore */ E("extension-text-align")),
+    // 글꼴 — FontFamily 는 TextStyle(인라인 style 마크) 위에서 동작한다(둘 다 필요).
+    import(/* @vite-ignore */ E("extension-text-style")),
+    import(/* @vite-ignore */ E("extension-font-family")),
+    // 리스트 들여쓰기 — 형제가 없어도 한 단계 더 넣으려면 findWrapping 이 필요하다.
+    import(/* @vite-ignore */ "https://esm.sh/@tiptap/pm@" + V + "/transform"),
+    // 체크박스(태스크 리스트) — 본문·댓글에 할 일 목록.
+    import(/* @vite-ignore */ E("extension-task-list")),
+    import(/* @vite-ignore */ E("extension-task-item")),
   ]).then((m) => {
     const lowlight = m[12].createLowlight(m[12].common);   // 공통 언어(약 37종) 등록
     return {
@@ -48,6 +58,12 @@ export function loadTiptap() {
       PluginKey: m[10].PluginKey,
       CodeBlockLowlight: m[11].default,
       Suggestion: m[13].default,
+      TextAlign: m[14].default,
+      TextStyle: m[15].default,
+      FontFamily: m[16].default,
+      findWrapping: m[17].findWrapping,
+      TaskList: m[18].default,
+      TaskItem: m[19].default,
       lowlight,
       languages: lowlight.listLanguages(),
     };

@@ -179,8 +179,15 @@ class _Sanitizer(HTMLParser):
         parts, classes, href_val = [], [], None
         for k, v in attrs:
             k = (k or "").lower()
-            if k.startswith("on") or k in ("style", "srcset", "formaction", "xlink:href"):
-                continue                 # 이벤트 핸들러·스타일·기타 위험 속성 제거
+            if k == "style":
+                # style 은 통째로 위험(behaviour·url·expression)하지만, **정렬·글꼴만** 골라
+                # 통과시킨다 — 에디터의 text-align/font-family 가 렌더·재편집에서 살아남게.
+                safe = _safe_style(v)
+                if safe:
+                    parts.append('style="' + escape(safe, quote=True) + '"')
+                continue
+            if k.startswith("on") or k in ("srcset", "formaction", "xlink:href"):
+                continue                 # 이벤트 핸들러·기타 위험 속성 제거
             if k == "class":             # 허용 클래스 토큰(또는 코드 언어 language-*/lang-*)만 유지
                 toks = [n for t in (v or "").split() for n in _expand_class(t)]
                 classes += [t for t in toks
@@ -219,6 +226,29 @@ def shorten_mention_names(html):
     from .names import real_name
     return _MENTION_A_RE.sub(
         lambda m: m.group(1) + (real_name(unescape(m.group(2))) or m.group(2)) + m.group(3), html)
+
+
+# style 에서 **정렬·글꼴만** 남긴다. url()·expression 등은 값 자체를 통과시키지 않는다
+# (값에 괄호/콜론이 있으면 버린다 → text-align:center, font-family:"..." 처럼 단순한 것만).
+_ALIGN_OK = {"left", "right", "center", "justify"}
+_FONT_RE = re.compile(r"^[\w \-,'\"]+$")
+
+
+def _safe_style(v):
+    out = []
+    for decl in (v or "").split(";"):
+        if ":" not in decl:
+            continue
+        prop, val = decl.split(":", 1)
+        prop = prop.strip().lower()
+        val = val.strip()
+        if "url(" in val.lower() or "expression" in val.lower() or "(" in val and prop != "font-family":
+            continue
+        if prop == "text-align" and val.lower() in _ALIGN_OK:
+            out.append("text-align:" + val.lower())
+        elif prop == "font-family" and _FONT_RE.match(val):
+            out.append("font-family:" + val)
+    return ";".join(out)
 
 
 def sanitize_html(html):

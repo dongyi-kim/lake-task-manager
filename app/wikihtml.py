@@ -110,6 +110,10 @@ def _inline(node):
                                    for ln in txt.split("\n")))
         elif t == "code":
             out.append("{{" + _cell_safe(_txt(c)) + "}}")
+        elif t == "span" and "monospace" in (c.attrs.get("style") or "").lower():
+            # 에디터의 '코딩 글꼴' 은 곧 Jira wiki 의 monospace({{...}}) 다 — 그래야 저장·재편집에
+            # 살아남는다(정렬 등 다른 인라인 스타일은 wiki 에 대응이 없어 글자만 남는다).
+            out.append("{{" + _cell_safe(_inline(c)) + "}}")
         elif t == "div" and "sec-title-node" in (c.attrs.get("class") or ""):
             # 영역 구분선 — 저장 형태는 사내 관습 그대로 '=== 제목 ==='. 새 문법을 만들면
             # Jira 웹에서 연 사람이 못 알아보고 기존 티켓과도 어긋난다.
@@ -194,6 +198,9 @@ def _blocks(node, lines, depth=0):
         elif t in ("h1", "h2", "h3", "h4", "h5", "h6"):
             lines.append("h" + t[1] + ". " + _inline(c).strip())
             lines.append("")
+        elif t == "ul" and "tasklist" in (c.attrs.get("data-type") or "").lower():
+            _tasklist(c, lines, "*")
+            lines.append("")
         elif t in ("ul", "ol"):
             _list(c, lines, "#" if t == "ol" else "*")
             lines.append("")
@@ -250,6 +257,31 @@ def _list(node, lines, marker):
             lines.append(marker + " " + text)
         for nl in nested:
             _list(nl, lines, (marker + ("#" if nl.tag == "ol" else "*")))
+
+
+def _tasklist(node, lines, marker):
+    """태스크 리스트 → '* [x] 텍스트' / '* [ ] 텍스트'. Jira wiki 에 태스크 표준 표기가 없어
+    GitHub 관습(체크 마커)으로 저장한다 — 사람이 읽어도 명확하고, 렌더에서 체크박스로 되살린다.
+    중첩(할 일 안의 할 일)도 marker 를 늘려 그대로 표현한다."""
+    for li in node.children:
+        if li.tag != "li":
+            continue
+        checked = (li.attrs.get("data-checked") or "").lower() == "true"
+        box = "[x] " if checked else "[ ] "
+        inline_parts, nested = [], []
+        for ch in li.children:
+            if ch.tag in ("ul", "ol"):
+                nested.append(ch)
+            elif ch.tag == "label":
+                continue                    # 체크박스 UI(라벨/인풋)는 마커로 대신한다
+            else:
+                tmp = _Node("span"); tmp.children = [ch]
+                inline_parts.append(_inline(tmp))
+        text = "".join(inline_parts).strip()
+        lines.append(marker + " " + box + text)
+        for nl in nested:
+            fn = _tasklist if "tasklist" in (nl.attrs.get("data-type") or "").lower() else _list
+            fn(nl, lines, marker + "*")
 
 
 def _cells(tr):

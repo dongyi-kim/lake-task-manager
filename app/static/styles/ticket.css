@@ -1229,3 +1229,15 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tb-style-i.h2 .tb-style-t { font-size: 14.5px; font-weight: 700; }
 .tb-style-i.h3 .tb-style-t { font-size: 13.5px; font-weight: 700; }
 .tb-style-i.code .tb-style-t { font-family: ui-monospace, Consolas, monospace; }
+
+/* ── 표 크기 선택 격자 ─────────────────────────────────────────────────────
+   손을 올린 만큼(행×열)이 파랗게 차고, 누르면 그 크기로 삽입된다. */
+.tp-wrap { position: relative; display: inline-flex; }
+.tp-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 9500; padding: 8px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+.tp-grid { display: grid; grid-template-columns: repeat(8, 16px); grid-auto-rows: 16px; gap: 3px; }
+.tp-cell { width: 16px; height: 16px; border: 1px solid var(--border); border-radius: 2px;
+  background: var(--panel-2); cursor: pointer; }
+.tp-cell.on { background: color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
+.tp-label { display: block; margin-top: 7px; text-align: center; font-size: 11px; color: var(--muted); }

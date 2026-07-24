@@ -477,8 +477,10 @@ function firstBlockEscapeExt(T) {
         Tab: () => {
           const e = ed();
           if (e.isActive("table")) return false;
+          // 리스트면 한 단계 들여쓰기(가능할 때 — 앞 형제 밑으로). 그 외/불가면 소비만 해서
+          // Tab 으로 에디터 밖으로 포커스가 나가지 않게 한다.
           if (e.isActive("listItem")) return e.chain().focus().sinkListItem("listItem").run() || true;
-          return true;                       // 소비만 — Tab 으로 에디터 밖으로 나가지 않게
+          return true;
         },
         "Shift-Tab": () => {
           const e = ed();
@@ -544,23 +546,29 @@ const STYLES = [
   { k: "h3", level: 3, label: "제목 3", hint: "", short: "H3" },
   { k: "quote", label: "인용", hint: "❝", short: "인용" },
   { k: "code", label: "코드 블록", hint: "언어 강조", short: "{ }" },
+  { k: "clear", label: "모든 스타일 제거", hint: "본문으로", short: "본문" },
+];
+
+// 글꼴 — 기본(본문)과 코딩(고정폭). 코딩 폰트는 파일명·명령·값을 붙여 쓸 때 글자폭이 일정해야
+// 눈으로 대조된다. css 는 실제 지정할 font-family(sanitizer 가 정렬·글꼴만 통과시킨다).
+const FONTS = [
+  { k: "default", label: "기본 글꼴", short: "가", css: "" },
+  { k: "mono", label: "코딩 글꼴(고정폭)", short: "{ }",
+    css: 'ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace' },
 ];
 
 const SLASH = [
   { g: "삽입", id: "code", ic: "{ }", t: "코드 블록", h: "언어 강조", k: "code 코드 codeblock",
     run: (e, r) => e.chain().focus().deleteRange(r).setCodeBlock().run() },
-  { g: "삽입", id: "table", ic: "▦", t: "표", h: "3×3 · 머리행", k: "table 표 테이블",
-    run: (e, r) => e.chain().focus().deleteRange(r)
-                    .insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
+  { g: "삽입", id: "table", ic: "▦", t: "표", h: "행·열 골라 삽입", k: "table 표 테이블",
+    run: (e, r, host) => { e.chain().focus().deleteRange(r).run(); host.openTablePicker(); } },
   { g: "삽입", id: "markdown_table", ic: "⊞", t: "마크다운 표", h: "붙여넣어 변환",
     k: "markdown_table md 마크다운 표 붙여넣기 paste",
     run: (e, r, host) => { e.chain().focus().deleteRange(r).run(); host.mdTable = true; } },
+  { g: "삽입", id: "checkbox", ic: "☑", t: "체크박스", h: "할 일 목록", k: "checkbox 체크박스 할일 task todo",
+    run: (e, r) => e.chain().focus().deleteRange(r).toggleTaskList().run() },
   { g: "삽입", id: "quote", ic: "❝", t: "인용", h: "", k: "quote 인용",
     run: (e, r) => e.chain().focus().deleteRange(r).toggleBlockquote().run() },
-  { g: "삽입", id: "bullet", ic: "•", t: "글머리 목록", h: "", k: "list bullet 목록 불릿",
-    run: (e, r) => e.chain().focus().deleteRange(r).toggleBulletList().run() },
-  { g: "삽입", id: "ordered", ic: "1.", t: "번호 목록", h: "", k: "numlist ordered 번호 목록",
-    run: (e, r) => e.chain().focus().deleteRange(r).toggleOrderedList().run() },
   // 구분선은 **본문에서만** 뜬다(sections). 댓글은 티켓 뷰가 영역으로 쪼개 주지 않아,
   // 넣어 봐야 등록 뒤엔 '=== 제목 ===' 글자로 남는다.
   { g: "삽입", id: "divider", ic: "⌗", t: "영역 구분선", h: "=== 제목 ===", k: "divider 구분선 영역 섹션",
@@ -769,13 +777,15 @@ export default {
                     dragOver: false, dragDepth: 0,
                     // '' | 'jira' | 'confluence' — '/' 로 연 검색창
                     pick: "",
-                    mdTable: false, styleOpen: false }; },
+                    mdTable: false, styleOpen: false, fontOpen: false,
+                    // 표 크기 선택 격자 — { r, c } 는 지금 손이 올라간 칸(미리보기)
+                    tablePick: false, tpR: 0, tpC: 0 }; },
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
     jiraBase();                       // 앱 URL(/browse/KEY)→실 Jira 주소 변환용. 미리 받아 둔다.
     let T;
-    try { T = await loadTiptap(); }
+    try { T = await loadTiptap(); this._T = T; }
     catch (e) { this.loadErr = "에디터를 불러오지 못했습니다(네트워크/CDN 차단). 잠시 후 다시 시도."; return; }
     if (this._dead) return;
     ensureHljsTheme(document.documentElement.getAttribute("data-theme") === "dark");   // 구문강조 색 CSS
@@ -797,6 +807,12 @@ export default {
         firstBlockEscapeExt(T),
         T.Mention.configure({ HTMLAttributes: { class: "mention" }, suggestion: mentionSuggestion(this.ticketKey) }),
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
+        // 정렬 — 문단·제목·표 셀에. 표 셀을 포함해야 마크다운 표의 :-: / --: 정렬이 붙는다.
+        T.TextAlign.configure({ types: ["heading", "paragraph", "tableCell", "tableHeader"] }),
+        // 글꼴 — TextStyle(인라인 style) 위에서 FontFamily 가 동작한다.
+        T.TextStyle, T.FontFamily,
+        // 체크박스(태스크 리스트) — nested 허용(할 일 안의 할 일)
+        T.TaskList, T.TaskItem.configure({ nested: true }),
         // inline:true — 이미지가 같은 줄에 글자와 나란히 놓이게(TipTap 기본은 블록이라 줄이 갈린다)
         imageResizeExt(T).configure({ inline: true }), linkBadgeExt(T),
         T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 로 표·코드·티켓 넣기, @ 로 멘션, 마크다운(#, -, ``` )" }),
@@ -858,6 +874,13 @@ export default {
   },
   computed: {
     STYLES: () => STYLES,
+    FONTS: () => FONTS,
+    curFont() {
+      this.tick;
+      const e = this._ed;
+      if (e && e.isActive("textStyle", { fontFamily: FONTS[1].css })) return FONTS[1];
+      return FONTS[0];
+    },
     curStyle() {
       this.tick;                                   // 커서 이동/편집마다 다시 계산
       const e = this._ed;
@@ -890,6 +913,12 @@ export default {
     setStyle(o) {
       this.styleOpen = false;
       this.cmd((c) => {
+        if (o.k === "clear") {
+          // 선택 범위(없으면 그 블록)의 **모든** 서식을 벗긴다: 인라인 마크(굵게·기울임·코드·
+          // 글꼴·정렬 등) 제거 + 블록을 기본 문단으로. 붙여넣은 리치 텍스트를 본문으로 되돌릴 때.
+          return c.unsetAllMarks().clearNodes().setParagraph()
+                  .unsetFontFamily().setTextAlign("left").run();
+        }
         if (o.k === "p") return c.setParagraph().run();
         if (o.k === "code") return c.toggleCodeBlock().run();
         if (o.k === "quote") return c.toggleBlockquote().run();
@@ -897,10 +926,28 @@ export default {
       });
     },
     tbBullet() { this.cmd((c) => c.toggleBulletList().run()); },
+    tbTask() { this.cmd((c) => c.toggleTaskList().run()); },
     tbOrdered() { this.cmd((c) => c.toggleOrderedList().run()); },
     tbQuote() { this.cmd((c) => c.toggleBlockquote().run()); },
     tbCodeBlock() { this.cmd((c) => c.toggleCodeBlock().run()); },
-    tbTable() { this.cmd((c) => c.insertTable({ rows: 2, cols: 2, withHeaderRow: true }).run()); },
+    // 표 크기 선택 격자 — 8×8 칸. i(1~64)를 행/열로 환산.
+    openTablePicker() { this.tablePick = true; this.tpR = 0; this.tpC = 0; },
+    tpRowOf(i) { return Math.floor((i - 1) / 8) + 1; },
+    tpColOf(i) { return ((i - 1) % 8) + 1; },
+    insertTableSize(r, c) {
+      this.tablePick = false;
+      this.cmd((cmd) => cmd.insertTable({ rows: r, cols: c, withHeaderRow: true }).run());
+    },
+    isAlign(a) { this.tick; return !!(this._ed && this._ed.isActive({ textAlign: a })); },
+    tbAlign(a) {
+      // 이미 그 정렬이면 해제(기본=왼쪽)로 되돌린다 — 토글이 자연스럽다.
+      const cur = this._ed && this._ed.isActive({ textAlign: a });
+      this.cmd((c) => c.setTextAlign(cur ? "left" : a).run());
+    },
+    setFont(f) {
+      this.fontOpen = false;
+      this.cmd((c) => (f.css ? c.setFontFamily(f.css).run() : c.unsetFontFamily().run()));
+    },
     /** 파싱된 마크다운 표({header, rows, align})를 **진짜 표 노드**로 넣는다.
      *  빈 표를 만든 뒤 셀을 채우는 것보다, HTML 로 한 번에 파싱해 넣는 게 정렬·헤더까지 정확하다. */
     insertMdTable(t) {
@@ -1218,6 +1265,7 @@ export default {
         <span class="tb-sep"></span>
         <button type="button" class="tb-b" :class="{on:active('bulletList')}" @click="tbBullet" title="불릿">•</button>
         <button type="button" class="tb-b" :class="{on:active('orderedList')}" @click="tbOrdered" title="번호">1.</button>
+        <button type="button" class="tb-b" :class="{on:active('taskList')}" @click="tbTask" title="체크박스(할 일)">☑</button>
         <button type="button" class="tb-b" :class="{on:active('blockquote')}" @click="tbQuote" title="인용">❝</button>
         <button type="button" class="tb-b" :class="{on:active('codeBlock')}" @click="tbCodeBlock" title="코드블록">{ }</button>
         <span class="tb-sep"></span>
@@ -1226,9 +1274,38 @@ export default {
         <button type="button" class="tb-b co-t" :class="{on:inCallout('tip')}" @click="tbCallout('tip')" title="팁 콜아웃 {tip}">💡</button>
         <button type="button" class="tb-b co-w" :class="{on:inCallout('warning')}" @click="tbCallout('warning')" title="경고 콜아웃 {warning}">⚠</button>
         <span class="tb-sep"></span>
+        <!-- 정렬 — 문단·제목·표 셀에 적용. 표 셀에서도 쓰인다. -->
+        <button type="button" class="tb-b" :class="{on:isAlign('left')}" @click="tbAlign('left')" title="왼쪽 정렬">⬅</button>
+        <button type="button" class="tb-b" :class="{on:isAlign('center')}" @click="tbAlign('center')" title="가운데 정렬">⬌</button>
+        <button type="button" class="tb-b" :class="{on:isAlign('right')}" @click="tbAlign('right')" title="오른쪽 정렬">➡</button>
+        <!-- 글꼴 — 기본 vs 코딩(고정폭). 선택 글자에 적용된다. -->
+        <span class="tb-style">
+          <button type="button" class="tb-b tb-style-b" :class="{on:fontOpen}" @click.stop="fontOpen = !fontOpen"
+                  title="글꼴">{{ curFont.short }}<i class="tb-caret">▾</i></button>
+          <span v-if="fontOpen" class="tb-style-pop" @click.stop>
+            <button v-for="f in FONTS" :key="f.k" type="button" class="tb-style-i"
+                    :class="{ on: curFont.k === f.k }" @click="setFont(f)">
+              <span class="tb-style-t" :style="{ fontFamily: f.css || 'inherit' }">{{ f.label }}</span>
+            </button>
+          </span>
+          <span v-if="fontOpen" class="tb-style-back" @click.stop="fontOpen = false"></span>
+        </span>
+        <span class="tb-sep"></span>
         <button type="button" class="tb-b" :class="{on:active('linkBadge')}" @click="tbLink"
                 title="링크 뱃지 (선택 텍스트가 제목이 됨 · 뱃지 더블클릭으로 수정)">🔗</button>
-        <button type="button" class="tb-b" @click="tbTable" title="표 삽입">▦</button>
+        <span class="tb-style tp-wrap">
+          <button type="button" class="tb-b" :class="{on:tablePick}" @click.stop="openTablePicker" title="표 삽입 — 행·열 선택">▦</button>
+          <span v-if="tablePick" class="tp-pop" @click.stop @mouseleave="tpR = 0; tpC = 0">
+            <span class="tp-grid">
+              <span v-for="i in 64" :key="i" class="tp-cell"
+                    :class="{ on: tpRowOf(i) <= tpR && tpColOf(i) <= tpC }"
+                    @mouseenter="tpR = tpRowOf(i); tpC = tpColOf(i)"
+                    @click="insertTableSize(tpRowOf(i), tpColOf(i))"></span>
+            </span>
+            <span class="tp-label">{{ tpR && tpC ? (tpR + ' × ' + tpC) : '행 × 열 선택' }}</span>
+          </span>
+          <span v-if="tablePick" class="tb-style-back" @click.stop="tablePick = false"></span>
+        </span>
         <button type="button" class="tb-b" @click="mdTable = true" title="마크다운 표 붙여넣기 → 변환">⊞</button>
         <button type="button" class="tb-b" @click="tbImage" title="이미지">🖼</button>
         <button type="button" class="tb-b" style="margin-left:auto" @click="toggleMax"
