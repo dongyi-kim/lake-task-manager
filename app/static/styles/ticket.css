@@ -1176,3 +1176,56 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   .tb-name { white-space: normal; flex-wrap: wrap; }
   .tb-sum { white-space: normal; overflow: visible; text-overflow: clip; flex: 1 1 100%; }
 }
+
+/* ── 마크다운 표 삽입 창 ───────────────────────────────────────────────────
+   왼쪽에 원본(코딩 폰트), 오른쪽에 실시간 미리보기 — 붙여넣은 즉시 표로 보여 준다. */
+.mdt-ov { position: fixed; inset: 0; z-index: 9700; display: flex; align-items: center;
+  justify-content: center; background: rgba(0,0,0,.42); }
+.mdt { width: min(820px, 94vw); max-height: 88vh; display: flex; flex-direction: column;
+  padding: 14px 16px 12px; border-radius: 12px; background: var(--panel);
+  border: 1px solid var(--border); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+.mdt-h { display: flex; align-items: baseline; gap: 8px; font-size: 14px; font-weight: 800; margin-bottom: 10px; }
+.mdt-h-s { font-size: 11px; font-weight: 600; color: var(--muted-2); }
+.mdt-h .lp-x { margin-left: auto; }
+.mdt-body { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-height: 0; flex: 1 1 auto; }
+.mdt-src { width: 100%; min-height: 240px; resize: vertical; font-size: 12.5px; line-height: 1.5;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace;
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; }
+.mdt-src:focus { outline: none; border-color: var(--accent); }
+.mdt-prev { display: flex; flex-direction: column; min-width: 0; }
+.mdt-prev-h { font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  color: var(--muted-2); margin-bottom: 6px; }
+.mdt-prev-box { flex: 1 1 auto; overflow: auto; border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px; background: var(--bg); }
+.mdt-table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+.mdt-table th, .mdt-table td { border: 1px solid var(--border); padding: 4px 8px; }
+.mdt-table th { background: var(--panel-2); font-weight: 700; }
+.mdt-prev-none { flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+  text-align: center; font-size: 12px; color: var(--muted-2);
+  border: 1px dashed var(--border-hi); border-radius: 8px; padding: 16px; }
+.mdt-f { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.mdt-hint { flex: 1 1 auto; font-size: 10.5px; color: var(--muted-2); }
+.mdt-hint code, .mdt-prev-none code { font-family: ui-monospace, Consolas, monospace;
+  background: var(--panel-2); padding: 0 3px; border-radius: 3px; }
+@media (max-width: 620px) { .mdt-body { grid-template-columns: 1fr; } }
+
+/* ── 툴바 스타일 콤보 ──────────────────────────────────────────────────────
+   헤딩 버튼 셋을 하나로 접었다. 지금 스타일이 버튼에 보이고, 누르면 목록이 뜬다. */
+.tb-style { position: relative; display: inline-flex; }
+.tb-style-b { display: inline-flex; align-items: center; gap: 3px; min-width: 44px; padding: 0 6px; }
+.tb-caret { font-style: normal; font-size: 8px; opacity: .6; }
+.tb-style-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 9500; min-width: 160px;
+  padding: 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.2); display: flex; flex-direction: column; gap: 1px; }
+.tb-style-back { position: fixed; inset: 0; z-index: 9490; }
+.tb-style-i { display: flex; align-items: baseline; gap: 8px; padding: 5px 8px; border: 0;
+  border-radius: 6px; background: none; cursor: pointer; color: var(--text); text-align: left; font: inherit; }
+.tb-style-i:hover { background: var(--panel-2); }
+.tb-style-i.on { color: var(--accent); }
+.tb-style-i em { margin-left: auto; font-style: normal; font-size: 10.5px; color: var(--muted-2); }
+.tb-style-i .tb-style-t { font-size: 13px; }
+.tb-style-i.h1 .tb-style-t { font-size: 16px; font-weight: 800; }
+.tb-style-i.h2 .tb-style-t { font-size: 14.5px; font-weight: 700; }
+.tb-style-i.h3 .tb-style-t { font-size: 13.5px; font-weight: 700; }
+.tb-style-i.code .tb-style-t { font-family: ui-monospace, Consolas, monospace; }

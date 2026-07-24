@@ -10,6 +10,7 @@ import { ensureHljsTheme } from "../../lib/hljs.js";
 import { saveDraft, loadDraft, clearDraft, purgeExpired } from "../../lib/draft.js";
 import { api } from "../../lib/api.js";
 import LinkPicker from "./LinkPicker.js";
+import MarkdownTableDialog from "./MarkdownTableDialog.js";
 import { extOf } from "../../lib/filetype.js";
 import { sigColor, initialOf, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { debouncedItems } from "../../lib/typeahead.js";
@@ -535,12 +536,25 @@ function singleLineHeadingExt(T) {
 //
 // 이름은 화면에 보이는 우리말이 먼저고, '/'로 치는 영어 낱말은 별칭으로 붙인다 —
 // 한글로 치는 사람이 '표'로 찾고, 손에 익은 사람은 '/table' 로 친다.
+// 글 스타일(툴바 콤보) — 문단·제목1~3·인용·코드블록. 짧은 표기는 버튼에, 이름은 목록에.
+const STYLES = [
+  { k: "p", label: "본문", hint: "기본 문단", short: "본문" },
+  { k: "h1", level: 1, label: "제목 1", hint: "가장 큰 제목", short: "H1" },
+  { k: "h2", level: 2, label: "제목 2", hint: "", short: "H2" },
+  { k: "h3", level: 3, label: "제목 3", hint: "", short: "H3" },
+  { k: "quote", label: "인용", hint: "❝", short: "인용" },
+  { k: "code", label: "코드 블록", hint: "언어 강조", short: "{ }" },
+];
+
 const SLASH = [
   { g: "삽입", id: "code", ic: "{ }", t: "코드 블록", h: "언어 강조", k: "code 코드 codeblock",
     run: (e, r) => e.chain().focus().deleteRange(r).setCodeBlock().run() },
   { g: "삽입", id: "table", ic: "▦", t: "표", h: "3×3 · 머리행", k: "table 표 테이블",
     run: (e, r) => e.chain().focus().deleteRange(r)
                     .insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
+  { g: "삽입", id: "markdown_table", ic: "⊞", t: "마크다운 표", h: "붙여넣어 변환",
+    k: "markdown_table md 마크다운 표 붙여넣기 paste",
+    run: (e, r, host) => { e.chain().focus().deleteRange(r).run(); host.mdTable = true; } },
   { g: "삽입", id: "quote", ic: "❝", t: "인용", h: "", k: "quote 인용",
     run: (e, r) => e.chain().focus().deleteRange(r).toggleBlockquote().run() },
   { g: "삽입", id: "bullet", ic: "•", t: "글머리 목록", h: "", k: "list bullet 목록 불릿",
@@ -723,7 +737,7 @@ function saveEditorHeight(v) {
 
 export default {
   name: "CommentEditor",
-  components: { LinkPicker },
+  components: { LinkPicker, MarkdownTableDialog },
   props: {
     ticketKey: { type: String, required: true },
     initial: { type: String, default: "" },            // 수정 시 기존 HTML
@@ -754,7 +768,8 @@ export default {
                     // 파일을 이 에디터 위로 끌고 왔는가 — 테두리로 "여기에 놓으면 본문" 을 말한다
                     dragOver: false, dragDepth: 0,
                     // '' | 'jira' | 'confluence' — '/' 로 연 검색창
-                    pick: "" }; },
+                    pick: "",
+                    mdTable: false, styleOpen: false }; },
   async mounted() {
     this._pending = new Map();        // objectURL -> { blob, name }
     this._seq = 0;
@@ -842,6 +857,19 @@ export default {
     try { if (this._ed) this._ed.destroy(); } catch (e) { /* noop */ }
   },
   computed: {
+    STYLES: () => STYLES,
+    curStyle() {
+      this.tick;                                   // 커서 이동/편집마다 다시 계산
+      const e = this._ed;
+      if (!e) return STYLES[0];
+      for (const o of STYLES) {
+        if (o.k === "p") continue;
+        if (o.k === "code" && e.isActive("codeBlock")) return o;
+        if (o.k === "quote" && e.isActive("blockquote")) return o;
+        if (o.level && e.isActive("heading", { level: o.level })) return o;
+      }
+      return STYLES[0];
+    },
     /** 올리는 동안 **무엇을 기다리는지** 말한다. prod 는 첨부 하나에 몇 초씩 걸려서,
      *  '저장 중…' 만 떠 있으면 멈춘 것처럼 느껴진다 — 몇 개 중 몇 번째인지가 그 차이를 만든다. */
     busyLabel() {
@@ -858,11 +886,37 @@ export default {
     tbStrike() { this.cmd((c) => c.toggleStrike().run()); },
     tbCode() { this.cmd((c) => c.toggleCode().run()); },
     tbH(l) { this.cmd((c) => c.toggleHeading({ level: l }).run()); },
+    /** 지금 커서가 놓인 블록 스타일(콤보 표시용). */
+    setStyle(o) {
+      this.styleOpen = false;
+      this.cmd((c) => {
+        if (o.k === "p") return c.setParagraph().run();
+        if (o.k === "code") return c.toggleCodeBlock().run();
+        if (o.k === "quote") return c.toggleBlockquote().run();
+        return c.toggleHeading({ level: o.level }).run();
+      });
+    },
     tbBullet() { this.cmd((c) => c.toggleBulletList().run()); },
     tbOrdered() { this.cmd((c) => c.toggleOrderedList().run()); },
     tbQuote() { this.cmd((c) => c.toggleBlockquote().run()); },
     tbCodeBlock() { this.cmd((c) => c.toggleCodeBlock().run()); },
     tbTable() { this.cmd((c) => c.insertTable({ rows: 2, cols: 2, withHeaderRow: true }).run()); },
+    /** 파싱된 마크다운 표({header, rows, align})를 **진짜 표 노드**로 넣는다.
+     *  빈 표를 만든 뒤 셀을 채우는 것보다, HTML 로 한 번에 파싱해 넣는 게 정렬·헤더까지 정확하다. */
+    insertMdTable(t) {
+      this.mdTable = false;
+      if (!t || !t.header || !this._ed) return;
+      const esc = (x) => String(x == null ? "" : x)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const th = t.header.map((h, i) =>
+        '<th' + (t.align[i] ? ' style="text-align:' + t.align[i] + '"' : "") + ">" + esc(h) + "</th>").join("");
+      const body = t.rows.map((row) =>
+        "<tr>" + t.header.map((_, i) =>
+          '<td' + (t.align[i] ? ' style="text-align:' + t.align[i] + '"' : "") + ">"
+          + esc(row[i] || "") + "</td>").join("") + "</tr>").join("");
+      const html = "<table><thead><tr>" + th + "</tr></thead><tbody>" + body + "</tbody></table><p></p>";
+      this._ed.chain().focus().insertContent(html).run();
+    },
     // 링크 = 원자적 뱃지 노드. 선택 텍스트가 있으면 그 텍스트가 제목이 된다.
     tbLink() {
       const ed = this._ed;
@@ -1149,9 +1203,18 @@ export default {
         <button type="button" class="tb-b" :class="{on:active('strike')}" @click="tbStrike" title="취소선"><s>S</s></button>
         <button type="button" class="tb-b" :class="{on:active('code')}" @click="tbCode" title="인라인 코드">&lt;/&gt;</button>
         <span class="tb-sep"></span>
-        <button type="button" class="tb-b" :class="{on:active('heading',{level:1})}" @click="tbH(1)" title="제목1">H1</button>
-        <button type="button" class="tb-b" :class="{on:active('heading',{level:2})}" @click="tbH(2)" title="제목2">H2</button>
-        <button type="button" class="tb-b" :class="{on:active('heading',{level:3})}" @click="tbH(3)" title="제목3">H3</button>
+        <!-- 스타일 콤보 — 문단/제목/코드블록. 헤딩 버튼 셋을 여기로 합쳤다(툴바가 짧아진다). -->
+        <span class="tb-style" @keydown.esc="styleOpen = false">
+          <button type="button" class="tb-b tb-style-b" :class="{on:styleOpen}" @click.stop="styleOpen = !styleOpen"
+                  :title="'글 스타일 — ' + curStyle.label">{{ curStyle.short }}<i class="tb-caret">▾</i></button>
+          <span v-if="styleOpen" class="tb-style-pop" @click.stop>
+            <button v-for="o in STYLES" :key="o.k" type="button" class="tb-style-i"
+                    :class="[o.k, { on: curStyle.k === o.k }]" @click="setStyle(o)">
+              <span class="tb-style-t">{{ o.label }}</span><em>{{ o.hint }}</em>
+            </button>
+          </span>
+          <span v-if="styleOpen" class="tb-style-back" @click.stop="styleOpen = false"></span>
+        </span>
         <span class="tb-sep"></span>
         <button type="button" class="tb-b" :class="{on:active('bulletList')}" @click="tbBullet" title="불릿">•</button>
         <button type="button" class="tb-b" :class="{on:active('orderedList')}" @click="tbOrdered" title="번호">1.</button>
@@ -1166,11 +1229,13 @@ export default {
         <button type="button" class="tb-b" :class="{on:active('linkBadge')}" @click="tbLink"
                 title="링크 뱃지 (선택 텍스트가 제목이 됨 · 뱃지 더블클릭으로 수정)">🔗</button>
         <button type="button" class="tb-b" @click="tbTable" title="표 삽입">▦</button>
+        <button type="button" class="tb-b" @click="mdTable = true" title="마크다운 표 붙여넣기 → 변환">⊞</button>
         <button type="button" class="tb-b" @click="tbImage" title="이미지">🖼</button>
         <button type="button" class="tb-b" style="margin-left:auto" @click="toggleMax"
                 :title="maximized ? '최대화 해제' : '에디터 최대화'">{{ maximized ? '🗗' : '🗖' }}</button>
         <input ref="file" type="file" multiple style="display:none" @change="onFile">
         <LinkPicker v-if="pick" :mode="pick" insert @close="pick = ''" @pick="onPick" />
+        <MarkdownTableDialog v-if="mdTable" @close="mdTable = false" @insert="insertMdTable" />
       </div>
       <div class="cmt-tb cmt-tb-tbl" v-show="ready && inCodeBlock()">
         <span class="tb-lbl">코드 언어</span>
