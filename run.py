@@ -748,15 +748,26 @@ def _run_tray(s):
     def on_restart(icon, item):
         # 업데이트 후 재기동 — run.bat 을 새 콘솔로 (2초 뒤 시작해 현재 인스턴스가 포트를 놓게 함).
         # run.bat 이 git pull(자동) + venv/deps + 앱 재기동을 한다. 그 뒤 현재 인스턴스는 종료.
+        launched = False
         try:
             bat = _launcher_bat()
             if bat.exists() and sys.platform.startswith("win"):
                 import subprocess
-                cmd = 'timeout /t 2 /nobreak >nul & "' + str(bat) + '"'
-                subprocess.Popen(["cmd", "/c", cmd], cwd=str(bat.parent),
+                # ★ 명령을 **문자열 한 줄**로 넘긴다. 리스트로 주면 subprocess 가 run.bat 경로를
+                #   \"…\" 로 이스케이프하는데, cmd.exe 는 그 백슬래시-따옴표를 못 읽어 경로가 깨져
+                #   run.bat 이 **실행되지 않았다**(=앱은 꺼지는데 재시작이 안 됨). 문자열로 주면
+                #   cmd 가 `timeout … & "경로"` 를 그대로 파싱한다(경로 공백도 따옴표로 안전).
+                cmd = 'cmd /c timeout /t 2 /nobreak >nul & "%s"' % str(bat)
+                subprocess.Popen(cmd, cwd=str(bat.parent),
                                  creationflags=0x00000010)   # CREATE_NEW_CONSOLE (독립 실행)
-        except Exception:
-            pass
+                launched = True
+        except Exception as e:
+            print(f"[tray] 재시작 런처 실행 실패: {e}", file=sys.stderr, flush=True)
+        if not launched:
+            # 런처를 못 띄웠으면 **끄지 않는다** — 끄기만 하면 사용자는 '업데이트 후 재시작' 을
+            # 눌렀는데 앱이 그냥 사라진 것으로 겪는다. 계속 켜 둔 채 원인(런처 경로)을 남긴다.
+            print("[tray] run.bat 을 찾지 못해 재시작을 건너뜁니다(앱은 유지).", file=sys.stderr, flush=True)
+            return
         try:
             server.should_exit = True
         except Exception:
