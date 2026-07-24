@@ -339,7 +339,10 @@ def _revive_checkboxes(html):
         attrs, text = m.group(1), m.group(2)
         if "checkbox" not in attrs.lower():
             return m.group(0)          # 체크박스가 아닌 이스케이프는 건드리지 않는다
-        return '<p dir="auto"><input' + attrs + '>' + text + '</p>'
+        # ★ `<p>` 로 다시 감싸지 않는다 — 이 조각은 이미 jira820 이 만든 바깥 `<p>` 안이라,
+        #    `<p>` 를 넣으면 p 안의 p 가 돼(브라우저가 빈 p 로 쪼갬) 줄간격이 크게 벌어졌다.
+        #    체크박스를 **인라인**으로 두면 바깥 p 안에서 줄바꿈(<br>)만으로 깔끔히 나열된다.
+        return '<input' + attrs + '>' + text
 
     return _ESC_CB_PARA.sub(one, html)
 

@@ -691,26 +691,26 @@ export default {
       // ── 체크박스 토글 ── 본문/코멘트의 렌더된 체크박스를 누르면 원본의 그 체크박스를 뒤집어 저장.
       const cb = e.target.closest && e.target.closest("input.tkt-cb");
       if (cb) {
-        // 네이티브 토글은 막고 우리가 확정 상태를 제어한다(실패 시 원복). defaultChecked = 저장된 값.
-        e.preventDefault();
-        // 본인 코멘트이거나 이 이슈를 **뭐라도 고칠 수 있으면**(editmeta 에 편집 필드 존재) 시도한다.
-        // 최종 판정은 서버 — 권한 없으면 저장이 실패해 원복된다(낙관적 표시 후 롤백).
-        // (emeta 로딩 전이면 허용. 코멘트 author 가 세션 사용자와 달라도 이슈 편집권이 있으면 토글.)
-        const editable = (comment && this.canEdit(comment)) || this.mayEdit || !this.emeta;   // mayEdit=computed(값)
-        if (!editable || cb.dataset.cbBusy) return;         // 권한 없으면 읽기전용, 진행 중이면 무시
+        // 본인 코멘트이거나 이 이슈를 **뭐라도 고칠 수 있으면**(editmeta 에 편집 필드 존재) 토글 시도.
+        // 최종 판정은 서버 — 권한 없으면 저장이 실패해 원복된다. (mayEdit 은 computed=값)
+        const editable = (comment && this.canEdit(comment)) || this.mayEdit || !this.emeta;
+        if (!editable || cb.dataset.cbBusy) { e.preventDefault(); return; }   // 못 고치면 상태 고정
+        // ★ preventDefault 를 걸지 않는다 — 체크박스는 클릭의 '활성화' 로 checked 가 바뀌는데,
+        //   preventDefault 를 걸면 브라우저가 그 활성화를 **취소해 우리 코드 뒤에 다시 되돌린다**
+        //   (그래서 아무리 눌러도 체크가 안 됐다). 네이티브 토글을 그대로 살려 즉시 반영하고,
+        //   그 값을 저장한다. 실패하면 원복.
+        const want = cb.checked;                             // 활성화가 이미 뒤집은 값 = 원하는 상태
         const index = parseInt(cb.getAttribute("data-cb-index"), 10);
         const id = cb.getAttribute("data-cb-id") || null;    // id 우선(서버가 index 폴백)
-        if (!(index >= 0) && !id) return;
-        const want = !cb.defaultChecked;
+        if (!(index >= 0) && !id) { cb.checked = !want; return; }
         cb.dataset.cbBusy = "1";
-        cb.checked = want;                                   // 낙관적 표시(즉시 반영)
         const body = comment
           ? { target: "comment", commentId: String(comment.id), id, index, checked: want }
           : { target: "description", id, index, checked: want };
         api.toggleCheckbox(this.tk, body).then((r) => {
           if (r && r.ok) { cb.defaultChecked = want; if (want) cb.setAttribute("checked", ""); else cb.removeAttribute("checked"); }
-          else { cb.checked = cb.defaultChecked; this.editErr = (r && r.error) || "체크박스 저장 실패"; }
-        }).catch((err) => { cb.checked = cb.defaultChecked; this.editErr = "체크박스 저장 실패: " + ((err && err.message) || err); })
+          else { cb.checked = !want; this.editErr = (r && r.error) || "체크박스 저장 실패"; }
+        }).catch((err) => { cb.checked = !want; this.editErr = "체크박스 저장 실패: " + ((err && err.message) || err); })
           .finally(() => { delete cb.dataset.cbBusy; });
         return;
       }
