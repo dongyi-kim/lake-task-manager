@@ -469,7 +469,22 @@ function firstBlockEscapeExt(T) {
   return T.Extension.create({
     name: "firstBlockEscape",
     addKeyboardShortcuts() {
+      const ed = () => this.editor;
       return {
+        // ★ Tab 이 **에디터를 벗어나던** 버그. 리스트면 한 단계 들여쓰기(bullet level ↑),
+        //   표면 셀 이동(Table 확장이 처리 — false 로 넘긴다), 그 외엔 그냥 소비해 포커스를 지킨다.
+        Tab: () => {
+          const e = ed();
+          if (e.isActive("table")) return false;
+          if (e.isActive("listItem")) return e.chain().focus().sinkListItem("listItem").run() || true;
+          return true;                       // 소비만 — Tab 으로 에디터 밖으로 나가지 않게
+        },
+        "Shift-Tab": () => {
+          const e = ed();
+          if (e.isActive("table")) return false;
+          if (e.isActive("listItem")) return e.chain().focus().liftListItem("listItem").run() || true;
+          return true;
+        },
         "Mod-Shift-Enter": () => insertAbove(this.editor),
         ArrowUp: () => {
           const sel = this.editor.state.selection;

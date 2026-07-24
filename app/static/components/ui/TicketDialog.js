@@ -739,10 +739,10 @@ export default {
       root.querySelectorAll(".tkt-desc a[href]").forEach((a) => {
         if (a.dataset.web || a.dataset.jira) return;
         if (a.classList.contains("conf-link") || a.classList.contains("jira-badge")) return;
+        const href = a.getAttribute("href") || "";
         // 맨션은 **사람**이지 웹 링크가 아니다. prod 는 프로필 주소를 절대 URL 로 주는데,
         // 그것까지 favicon 뱃지로 바꾸면 사람 이름이 남의 사이트 링크처럼 보인다.
         if (a.classList.contains("user-hover") || /\/secure\/ViewProfile\.jspa/i.test(href)) return;
-        const href = a.getAttribute("href") || "";
         if (!/^https?:\/\//i.test(href)) return;
         a.dataset.web = "1";
         a.classList.add("web-badge");
