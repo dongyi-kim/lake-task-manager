@@ -207,12 +207,18 @@
 
 /* 하위 진척 — 부모 카드에만. ★ .mt-bar 는 상단 옵션 패널이 쓰는 이름이라 겹치면
    패널이 4px 막대로 찌그러진다(실제로 겪었다). 반드시 .mt-pbar 를 쓸 것. */
-.mt-roll { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px;
+.mt-roll { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 10px;
   color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
-.mt-roll em { font-style: normal; }
-.mt-pbar { display: inline-block; width: 42px; height: 4px; border-radius: 99px;
+.mt-roll em { font-style: normal; font-weight: 700; }
+/* 막대는 눈으로 비율을 읽는 것이라 너무 짧으면 '거의 다 됐나' 를 못 읽는다 — 넉넉히 준다 */
+.mt-pbar { display: inline-block; width: 84px; height: 6px; border-radius: 99px;
   background: var(--track, var(--border)); overflow: hidden; }
 .mt-pbar i { display: block; height: 100%; background: var(--gc, var(--accent)); }
+/* 묶음 사이 세로선 — 소속(Epic)과 현황(진척·담당자·마감)을 끊는다 */
+.mt-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 1px; background: var(--border); }
+/* 좁아지면 **막대부터** 버린다 — 숫자(3/7)는 남아도 뜻이 그대로지만, 막대만 남으면
+   몇 개인지 알 수 없다. */
+@media (max-width: 1100px) { .mt-card.parent .mt-pbar { display: none; } }
 
 /* ── ax-v : 상태 밴드(가로로 꽉 참) + 그룹이 좌우 ── */
 /* 상태 영역 — 테두리로 감싼 상자(콜아웃)가 아니라, **가로선으로 나뉜 개별 공간**이다.
@@ -574,3 +580,23 @@
 /* 미분류(Unclassified) — 방향도 무게도 없다. 점 하나로 '아직 등급이 없다' 만 말한다.
    Medium 의 가로막대(▬)와 헷갈리면 안 된다: 하나는 판단이 끝난 것, 하나는 아직 안 된 것이다. */
 .pri-i.unset { color: var(--muted-2); opacity: .75; font-size: 14px; letter-spacing: 0; }
+
+/* ── 상위 Task 뱃지(Sub-Task 카드) ────────────────────────────────────────
+   Epic 뱃지는 **면을 채운** 로젠지, 이건 **테두리만** — 같은 줄 같은 자리에 서므로 모양이
+   갈려야 한다(색만 다르면 '어느 Epic 이지?' 하고 읽는다).
+   ↑ 표시로 '위쪽 것' 임을 한 글자로 말한다. */
+.mt-card { container-type: inline-size; container-name: mtc; }
+.mt-parent { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px;
+  overflow: hidden; white-space: nowrap;
+  font-size: 9.5px; font-weight: 700; line-height: 14px; padding: 0 6px;
+  color: var(--sig, var(--ty-task)); background: none;
+  border: 1px solid color-mix(in srgb, var(--sig, var(--ty-task)) 45%, var(--border));
+  border-radius: 3px; }
+.mt-parent::before { content: "↑"; flex: none; opacity: .75; font-weight: 800; }
+.mt-parent .mp-k { flex: none; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  opacity: .8; }
+/* 제목만 줄어들며 뒤부터 잘린다 */
+.mt-parent .mp-t { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tc-l2 .mt-parent { margin-left: auto; }
+/* 좁으면 **번호부터** 버린다 — 제목이 어느 Task 인지 더 잘 말한다 */
+@container mtc (max-width: 340px) { .mt-parent .mp-k { display: none; } }

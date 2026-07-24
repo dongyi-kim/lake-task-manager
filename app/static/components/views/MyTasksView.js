@@ -359,13 +359,20 @@ export default {
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.title }}</span>
-              <span v-if="p.group.pct !== null" class="mt-roll" :title="'하위 진척 ' + p.group.pct + '%'">
-                <span class="mt-pbar"><i :style="{ width: p.group.pct + '%' }"></i></span>
-                <em>{{ p.group.pct }}%</em>
-              </span>
+              <!-- Epic 이 먼저다 — '무엇에 속한 일인가' 는 소속이라 제목 옆에 붙어야 읽히고,
+                   진척은 '얼마나 됐나' 라 담당자·마감과 같은 현황 묶음이다. 사이를 세로선으로
+                   끊어 두 묶음이 눈에 갈리게 한다. -->
               <span v-if="p.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(p.epicKey)">{{ epicTitle(p.epicKey) }}</span>
               <span v-else-if="p.group.voc" class="mt-epic">사용자 VoC</span>
               <span v-else class="mt-epic none">Epic 없음</span>
+              <span class="mt-sep" aria-hidden="true"></span>
+              <!-- 진척은 **몇 개 중 몇 개**로 적는다. 퍼센트는 SP 가중이 섞여 손으로 세어
+                   확인할 수가 없다 — 3/7 은 목록을 세어 보면 맞는지 바로 안다. -->
+              <span v-if="p.group.pct !== null" class="mt-roll"
+                    :title="'하위 ' + p.group.kidsDone + '/' + p.group.kidsTotal + ' 완료 (진척 ' + p.group.pct + '%)'">
+                <span class="mt-pbar"><i :style="{ width: p.group.pct + '%' }"></i></span>
+                <em>{{ p.group.kidsDone }}/{{ p.group.kidsTotal }}</em>
+              </span>
               <span class="mt-owner" :class="{ me: p.group.mine }"
                     :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
                 <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
@@ -431,9 +438,11 @@ export default {
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.title }}</span>
-              <span v-if="p.group.pct !== null" class="mt-roll" :title="'하위 진척 ' + p.group.pct + '%'">
+              <span class="mt-sep" aria-hidden="true"></span>
+              <span v-if="p.group.pct !== null" class="mt-roll"
+                    :title="'하위 ' + p.group.kidsDone + '/' + p.group.kidsTotal + ' 완료 (진척 ' + p.group.pct + '%)'">
                 <span class="mt-pbar"><i :style="{ width: p.group.pct + '%' }"></i></span>
-                <em>{{ p.group.pct }}%</em>
+                <em>{{ p.group.kidsDone }}/{{ p.group.kidsTotal }}</em>
               </span>
               
               <span class="mt-owner" :class="{ me: p.group.mine }"

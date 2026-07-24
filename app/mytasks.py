@@ -275,6 +275,10 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
         # 롤업은 하위 전체 기준(동료 몫 포함) — 부모의 실제 진척이다.
         # 하위가 없으면 그 Task 하나의 상태가 곧 진척이라 별도 바를 그리지 않는다(pct=None).
         g["pct"] = _rollup(kids) if kids else None
+        # 화면에는 퍼센트 대신 **몇 개 중 몇 개**를 적는다. 퍼센트는 SP 가중이 섞인 값이라
+        # "3/7" 처럼 손으로 세어 확인할 수가 없다 — 눈으로 대조되는 숫자가 신뢰를 만든다.
+        g["kidsDone"] = sum(1 for c in kids if c["statusCategory"] == "done")
+        g["kidsTotal"] = len(kids)
         g["othersDone"] = sum(1 for c in g["others"] if c["statusCategory"] == "done")
         g["atoms"].sort(key=lambda a: (a["dueDays"] if a["dueDays"] is not None else _NO_DUE,
                                        a["priRank"], a["key"]))

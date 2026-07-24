@@ -10,16 +10,18 @@
 import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
+import TypeBadge from "./TypeBadge.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 
 const KO = {
   priority: "우선순위", assignee: "담당자", reporter: "보고자",
   duedate: "작업 기한", labels: "라벨", components: "컴포넌트", epic: "소속 Epic",
+  issuetype: "티켓 타입",
 };
 
 export default {
   name: "FieldEdit",
-  components: { Avatar, PriIcon },
+  components: { Avatar, PriIcon, TypeBadge },
   props: {
     ticket: { type: String, required: true },
     field: { type: String, required: true },      // priority | assignee | reporter | duedate | labels | components
@@ -27,8 +29,14 @@ export default {
     value: { default: null },                     // 현재 값(문자열 또는 배열)
     display: { type: String, default: "" },       // 화면 표기(값과 다를 때: 담당자 본명 등)
     userId: { type: String, default: "" },        // 담당자/보고자 아바타용
+    // **아직 서버에 없는 티켓**(새로 만드는 줄)도 같은 팝업으로 고르게 한다. 저장은 하지 않고
+    // 고른 값을 부모에게 넘긴다 — 새 티켓만 다른 입력기를 쓰면, 만들 때와 고칠 때 조작이 달라진다.
+    local: { type: Boolean, default: false },
+    // local 일 때의 선택지(우선순위·타입). 이름을 opts 로 두면 **data 의 opts 와 충돌**해
+    // 목록이 늘 빈 채로 뜬다(실제로 그랬다) — 프롭과 상태는 이름을 겹치면 안 된다.
+    choices: { type: Array, default: null },
   },
-  emits: ["saved"],
+  emits: ["saved", "pick"],
   data() {
     return { open: false, busy: false, err: "", q: "", opts: [], hi: 0,
              draft: null, who: [] };
@@ -49,11 +57,12 @@ export default {
     window.removeEventListener("keydown", this._onEsc);
   },
   computed: {
-    editable() { return !!this.meta; },
+    editable() { return this.local || !!this.meta; },
     isUser() { return this.field === "assignee" || this.field === "reporter"; },
     isMulti() { return this.field === "labels" || this.field === "components"; },
     isDate() { return this.field === "duedate"; },
     isEpic() { return this.field === "epic"; },
+    isType() { return this.field === "issuetype"; },
     // 라벨만 **새 값 생성**을 허용한다. 컴포넌트는 프로젝트 설정에 있는 것만 유효해
     // 아무거나 만들면 저장에서 거절된다(Jira 가 모르는 컴포넌트다).
     canCreate() { return this.field === "labels"; },
@@ -71,6 +80,10 @@ export default {
       window.dispatchEvent(new CustomEvent("fe-open", { detail: this._id() }));
       this.open = true; this.err = ""; this.q = ""; this.hi = 0;
       this.draft = this.isMulti ? (this.value || []).slice() : this.value;
+      if (this.local) {
+        // 선택지는 부모가 준다(아직 티켓이 없어 editmeta 가 없다). 사용자 검색만 평소와 같다.
+        if (!this.isUser && !this.isDate) return this._focus();
+      }
       if (this.field === "priority") {
         this.opts = (this.meta.allowedValues || []).map((v) => v.name);
       } else if (this.field === "components") {
@@ -85,6 +98,9 @@ export default {
                                                { minLen: 1, allowEmpty: true });
         this.searchWho("");
       }
+      this._focus();
+    },
+    _focus() {
       this.$nextTick(() => { const el = this.$refs.inp; if (el) el.focus(); });
     },
     close() { this.open = false; this.q = ""; this.err = ""; },
@@ -106,7 +122,13 @@ export default {
       if (!v || this.draft.indexOf(v) >= 0) return;
       this.draft.push(v); this.q = ""; this.suggest("");
     },
-    async save(v) {
+    async save(v, extra) {
+      if (this.local) {
+        // 아직 티켓이 없다 — 서버에 보낼 것이 없으므로 고른 값만 넘긴다.
+        this.$emit("pick", v, extra || null);
+        this.close();
+        return;
+      }
       this.busy = true; this.err = "";
       const body = {};
       body[this.field === "duedate" ? "duedate" : this.field] = v;
@@ -133,8 +155,15 @@ export default {
       <!-- 우선순위 / 컴포넌트: 정해진 값 중에서만 -->
       <template v-if="field === 'priority'">
         <!-- '내 Task' 와 같은 아이콘·같은 등급 표 — 화면마다 다른 그림이면 같은 티켓이 달라 보인다 -->
-        <button v-for="o in opts" :key="o" class="fe-i" :class="{ cur: o === value }"
+        <button v-for="o in (local ? (choices || []) : opts)" :key="o" class="fe-i"
+                :class="{ cur: o === value }"
                 @click="save(o)"><PriIcon :rank="rankOf(o)" :name="o" />{{ o }}</button>
+      </template>
+
+      <!-- 티켓 타입 — 새로 만드는 줄에서만 쓴다(기존 티켓의 타입 변경은 워크플로가 걸린다) -->
+      <template v-else-if="isType">
+        <button v-for="o in (choices || [])" :key="o" class="fe-i" :class="{ cur: o === value }"
+                @click="save(o)"><TypeBadge :type="o" />{{ o }}</button>
       </template>
 
       <!-- 담당자 / 보고자 -->
@@ -143,7 +172,7 @@ export default {
                placeholder="이름 또는 사번">
         <div class="fe-list">
           <button v-for="u in who" :key="u.id" class="fe-i" :class="{ cur: u.id === userId }"
-                  @click="save(u.id)">
+                  @click="save(u.id, u)">
             <Avatar :user="u.id" :name="u.display || u.name" :size="20" />
             <span>{{ u.display || u.name }}</span><em>{{ u.id }}</em>
           </button>

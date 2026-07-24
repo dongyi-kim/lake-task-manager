@@ -10,7 +10,12 @@ import { ymd } from "../../lib/fmt.js";
 
 export default {
   name: "DueText",
-  props: { card: { type: Object, required: true } },
+  props: {
+    card: { type: Object, required: true },
+    // 완료일을 날짜까지 적을 자리가 없을 때(하위 Task 한 줄). 날짜를 넣으면 이 칸만 넓어져
+    // 뒤 칸들의 시작 위치가 줄마다 흔들린다 — 끝났다는 사실만 ✓ 로 말한다.
+    noDate: { type: Boolean, default: false },
+  },
   computed: {
     done() { return this.card.statusCategory === "done"; },
     d() { const v = this.card.dueDays; return v === null || v === undefined ? null : v; },
@@ -32,7 +37,7 @@ export default {
   },
   template: `
   <span class="tc-when" :class="[cls, { inh: !done && card.dueInherited }]" :title="tip">
-    <b v-if="done">✓ {{ doneAt || '완료' }}</b>
+    <b v-if="done">{{ noDate ? '✓' : ('✓ ' + (doneAt || '완료')) }}</b>
     <b v-else><i v-if="card.dueInherited" class="inh-m">↑</i>{{ label }}</b>
   </span>`,
 };

@@ -4,7 +4,7 @@
 import { api } from "../../lib/api.js";
 import { extOf } from "../../lib/filetype.js";
 import FieldEdit from "./FieldEdit.js";
-import PriIcon from "./PriIcon.js";
+import PriIcon, { priRankOf } from "./PriIcon.js";
 import { ymd, ymdhm, ts, esc } from "../../lib/fmt.js";
 import { TYPE_BG, typeLabel, sigColor, categoryColor } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
@@ -13,9 +13,40 @@ import CommentEditor from "./CommentEditor.js";
 import SettingsMenu from "./SettingsMenu.js";
 import LinkPicker from "./LinkPicker.js";
 import TransitionDialog from "./TransitionDialog.js";
+import DueText from "./DueText.js";
+import NewChildDialog from "./NewChildDialog.js";
+
+// 목록이 이보다 길면 기본으로 접는다. 첨부가 스무 개인 티켓에서 본문·코멘트가 화면 밖으로
+// 밀려나는 걸 막는다 — 몇 개인지는 제목 옆 숫자로 이미 알 수 있다.
+const FOLD_AT = 5;
+
+// 하위 Task 정렬 기준 — '내 Task' 와 같은 축(마감·우선순위) + 사람별 보기.
+const KID_SORTS = [
+  { k: "due", label: "마감", hint: "마감일 → 우선순위" },
+  { k: "pri", label: "우선순위", hint: "우선순위 → 마감일" },
+  { k: "who", label: "담당자", hint: "담당자 이름 → 마감일" },
+];
+const KID_SORT_KEY = "tkt.kidSort";
+
+function loadKidSort() {
+  try {
+    const v = localStorage.getItem(KID_SORT_KEY);
+    return KID_SORTS.some((o) => o.k === v) ? v : "due";
+  } catch (e) { return "due"; }
+}
+
+/** 오늘부터 마감까지 남은 날. 없으면 null(= '미정'). */
+function daysTo(iso) {
+  if (!iso) return null;
+  const due = new Date(String(iso).substring(0, 10) + "T00:00:00");
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d = Math.round((due - today) / 86400000);
+  return isNaN(d) ? null : d;
+}
 import { recordOpen } from "../../lib/recent.js";
 import { highlightIn as hljsHighlight, ensureHljsTheme } from "../../lib/hljs.js";
 import { loadTiptap } from "../../lib/tiptap.js";
+
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
 function confTitleFromUrl(u) {
@@ -43,13 +74,13 @@ function descEmpty(html) {
 export default {
   name: "TicketDialog",
   components: { TypeBadge, Avatar, CommentEditor, SettingsMenu, LinkPicker, FieldEdit, PriIcon,
-                TransitionDialog },
+                TransitionDialog, DueText, NewChildDialog },
   // mode: dialog(모달, 기본) | page(새 창 전용 단독 페이지 — 오버레이·닫기 없음)
   props: { keyId: { type: String, required: true },
            mode: { type: String, default: "dialog" },
            theme: { type: String, default: "light" } },   // 페이지 모드 테마 버튼 표시용
   emits: ["close", "search", "toggle-theme"],
-  data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [], sibOpen: true,
+  data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [],
                     pdesc: null, pdescOpen: false, pdescErr: "",
                     me: null, composing: false, editingId: null, editInitial: "", editErr: "",
                     cmtSort: "new",              // new=최신순(기본) | old=오래된순. 초 단위까지 비교.
@@ -63,7 +94,12 @@ export default {
                     descBase: "", descConflict: false,
                     // 상태 전이 팝업
                     stOpen: false, stInfo: null, stErr: "", stPick: null,
-                    err: "", expanded: false, zoom: null, zoomLoading: false }; },
+                    err: "", expanded: false, zoom: null, zoomLoading: false,
+                    // 목록이 길면 기본으로 접는다(FOLD_AT 초과). 몇 개인지는 제목 옆 숫자로 안다.
+                    attOpen: true, docOpen: true,
+                    kidSort: loadKidSort(),
+                    // 하위 티켓 만들기 — 만들 수 있는 타입은 부모가 정한다(서버가 다시 검사한다)
+                    kidTypes: [], adding: false }; },
   mounted() {
     // Esc: 위에 뜬 것부터 하나씩 닫는다(확대 → 상태 팝업 → 다이얼로그).
     // 안쪽 것을 두고 다이얼로그가 먼저 닫히면, 열려 있던 팝업의 투명 배경(fe-back)이 남아
@@ -83,6 +119,49 @@ export default {
   },
   unmounted() { window.removeEventListener("keydown", this._onKey); },
   computed: {
+    FOLD_AT: () => FOLD_AT,
+    /** 하위가 무엇인지는 **내 타입**이 정한다 — Epic 밑은 Task, Task 밑은 Sub-Task.
+     *  Sub-Task 밑은 없다(Jira 가 3단까지만 둔다) → 그때만 칸을 안 그린다.
+     *  판정은 issuetype.subtask 로 한다 — 타입 **이름**은 인스턴스·로케일마다 다르다. */
+    isEpic() { return !!this.v && this.v.type === "Epic"; },
+    canHaveKids() { return !!this.v && !this.v.subtask; },
+    kidsLabel() { return this.isEpic ? "소속 Task" : "하위 Sub-Task"; },
+    KID_SORTS: () => KID_SORTS,
+    /** 정렬된 하위 목록. 기준은 '내 Task' 와 같다:
+     *    마감 → (마감일, 우선순위) / 우선순위 → (우선순위, 마감일)
+     *  담당자 기준은 이름으로 먼저 모으고 **그 안에서 마감 순**이다 — 사람별로 보는 이유가
+     *  '이 사람이 다음에 뭘 해야 하나' 라서, 이름만 맞추고 안이 뒤죽박죽이면 쓸모가 없다.
+     *  완료된 하위는 어느 기준에서도 맨 뒤로 간다(담당자 기준에서는 사람별로).
+     *  마감 없음도 맨 뒤다(언제까지인지 모르는 일이 급한 일보다 앞에 설 이유가 없다). */
+    kidsSorted() {
+      const NO_DUE = 99999;
+      const dd = (c) => {
+        const v = this.kidCard(c).dueDays;
+        return v === null || v === undefined ? NO_DUE : v;
+      };
+      const pr = (c) => (c.priRank === null || c.priRank === undefined ? 2 : c.priRank);
+      // 미할당은 이름이 없다 — 사람 뒤에 모은다(빈 문자열이 앞에 서면 목록이 '아무도' 로 시작한다)
+      const who = (c) => (c.assignee || "\uffff");
+      // ★ **완료는 늘 맨 뒤.** 끝난 일은 마감이 아무리 지났어도 지금 할 일이 아니다 — 위에 두면
+      //   목록의 첫 줄들이 이미 끝난 일로 채워져 '다음에 뭘 하지' 를 못 읽는다.
+      //   담당자 기준에서는 **사람별로** 뒤로 보낸다(사람 묶음을 깨면 사람별로 보는 뜻이 없다).
+      const fin = (c) => (c.statusCategory === "done" ? 1 : 0);
+      const rest = (a, b) => dd(a) - dd(b) || pr(a) - pr(b) || a.key.localeCompare(b.key);
+      const byDue = (a, b) => fin(a) - fin(b) || rest(a, b);
+      const byPri = (a, b) => fin(a) - fin(b) || pr(a) - pr(b) || dd(a) - dd(b)
+                              || a.key.localeCompare(b.key);
+      const cmp = this.kidSort === "pri" ? byPri
+                : this.kidSort === "who"
+                  ? ((a, b) => who(a).localeCompare(who(b), "ko") || fin(a) - fin(b) || rest(a, b))
+                  : byDue;
+      return (this.children || []).slice().sort(cmp);
+    },
+    /** 만들 수 있는 타입이 있고 이 티켓을 손댈 수 있을 때만 추가 UI 를 연다.
+     *  못 만드는데 버튼만 있으면 다 적은 뒤 거절당한다 — 그건 기능이 아니라 함정이다. */
+    kidCreate() { return this.kidTypes.length > 0; },
+    canCreate() {
+      return !!(this.nc.type && this.nc.priority && (this.nc.summary || "").trim());
+    },
     /** 소속 Epic 의 제목 — 계보 패널이 이미 받아 둔 것을 쓴다(따로 조회하지 않는다).
      *  아직 안 왔거나 없으면 키를 그대로 — 빈 뱃지를 보이느니 번호라도 보이는 게 낫다. */
     epicTitle() {
@@ -163,6 +242,17 @@ export default {
     // 개별 렌더한다(서로 막지 않음). 느린 타임라인이 본문을 기다리지 않게 하는 게 핵심.
     // 다이얼로그는 계보/형제/타임라인 클릭으로 티켓을 갈아타므로, 늦게 온 이전 티켓 응답이
     // 새 티켓 화면을 덮지 않도록 요청 토큰(_req)으로 가드한다.
+    setKidSort(k) {
+      this.kidSort = k;
+      // 고른 기준은 기억한다 — 매번 고르게 하면 그건 기능이 아니라 숙제다.
+      try { localStorage.setItem(KID_SORT_KEY, k); } catch (e) { /* 사파리 프라이빗 등 */ }
+    },
+    /** 만들어졌으면 목록을 다시 받는다 — 만든 것이 바로 보여야 만들어졌다는 걸 안다. */
+    async onKidCreated() {
+      this.adding = false;
+      const c = await api.ticketChildren(this.keyId).catch(() => null);
+      if (c) this.children = c;
+    },
     /** 본문 편집 열기 — **열기 직전에 본문을 다시 받는다.**
      *  화면에 떠 있던 본문은 이 창을 연 시점의 것이라, 그 사이 남이 고쳤으면 낡은 글 위에
      *  저장하게 되고 남의 수정이 조용히 사라진다. 못 받으면 지금 화면의 본문으로 연다
@@ -223,14 +313,28 @@ export default {
       api.ticketAncestors(key).then((a) => { if (fresh()) this.ancestors = a || []; }).catch(() => {});
       api.ticketSiblings(key).then((s) => { if (fresh()) this.siblings = s || []; }).catch(() => {});
       api.ticketTimeline(key).then((t) => { if (fresh()) this.timeline = t || []; }).catch(() => {});
-      api.ticketChildren(key).then((c) => { if (fresh()) this.children = c || []; }).catch(() => {});
+      // 이 티켓 밑에 무엇을 만들 수 있는지 — 없으면(Sub-Task) 추가 UI 자체를 안 그린다.
+      this.kidTypes = []; this.adding = false; this.ncErr = "";
+      api.childTypes(key).then((t) => { if (fresh()) this.kidTypes = t || []; }).catch(() => {});
+      api.ticketChildren(key).then((c) => {
+        if (!fresh()) return;
+        this.children = c || [];
+      }).catch(() => {});
       api.ticketRelated(key).then((r) => { if (fresh()) this.related = r || []; }).catch(() => {});
-      api.ticketAttachments(key).then((a) => { if (fresh()) this.atts = a || []; }).catch(() => {});
+      api.ticketAttachments(key).then((a) => {
+        if (!fresh()) return;
+        this.atts = a || [];
+        this.attOpen = this.atts.length <= FOLD_AT;
+      }).catch(() => {});
       // 편집 가능 필드도 함께 — 티켓마다·상태마다 다르므로 열 때마다 받는다.
       this.emeta = null;
       api.editmeta(key).then((m) => { if (fresh()) this.emeta = m || {}; })
         .catch(() => { if (fresh()) this.emeta = {}; });
-      api.ticketDocuments(key).then((d) => { if (fresh()) this.docs = d || []; }).catch(() => {});
+      api.ticketDocuments(key).then((d) => {
+        if (!fresh()) return;
+        this.docs = d || [];
+        this.docOpen = this.docs.length <= FOLD_AT;
+      }).catch(() => {});
 
       try {
         const v = await api.ticket(key);
@@ -387,6 +491,15 @@ export default {
     // 글쓴이 시그니처 컬러 — 기본 아바타(프사 없는 사람)와 같은 색이어야 하므로 colors.js 단일 소스.
     sigColor,
     categoryColor,
+    /** DueText 가 먹는 모양으로 — 마감이 비면 **상위(이 티켓)의 마감을 물려받는다.**
+     *  Sub-Task 에 마감을 따로 안 적는 게 흔한데, 그때 '미정' 이라고 하면 실제로는 부모
+     *  마감에 묶여 있는 일이 자유로워 보인다. */
+    kidCard(c) {
+      const inh = !c.due && this.v && this.v.due ? this.v.due : null;
+      const due = c.due || inh;
+      return { statusCategory: c.statusCategory, resolved: c.resolved, due,
+               dueInherited: !!inh, dueDays: daysTo(due) };
+    },
     canEdit(c) { return !!(this.me && this.me.id && c && c.authorId === this.me.id); },
     reloadComments() {
       const key = this.keyId;
@@ -666,14 +779,9 @@ export default {
               </div>
             </div>
             </div>
-            <div v-if="children.length" class="sec sec-children spn-sib">
-              <div class="tkt-mlabel">하위 Task {{ children.length }}</div>
-              <div v-for="c in children" :key="'ch-' + c.key" class="spn-sibrow tkt"
-                   :data-key="c.key" :title="c.type + ' ' + c.key + ' · ' + c.summary">
-                <span class="spn-sdot" :class="'st-' + (c.statusCategory || 'todo')"></span>
-                <span class="spn-stitle">{{ c.summary }}</span>
-              </div>
-            </div>
+            <!-- 하위 Task 는 **본문 칸**이 맡는다(상태·담당자·마감까지 보이는 쪽). 같은 목록을
+                 여기에도 두면 어느 쪽이 진짜인지 매번 눈이 헷갈리고, 좁은 화면에선 계보 열이
+                 그만큼 길어져 정작 계보가 안 보인다. -->
             </div>
 
             <div class="grp grp-rel">
@@ -686,6 +794,8 @@ export default {
               <LinkPicker v-if="relPick" mode="jira" :exclude-keys="related.map(r => r.key).concat([tk])"
                           :busy="linkBusy" :err="linkErr"
                           @close="relPick = false" @pick="addLink" />
+              <!-- 좌측 패널은 접지 않는다 — 여기는 '지금 어디에 있고 무엇과 엮여 있나'를 한눈에
+                   보는 자리라, 몇 개를 감추면 그 한눈이 성립하지 않는다(길면 패널이 스크롤된다). -->
               <div v-for="r in related" :key="'rel-' + r.key" class="spn-sibrow tkt"
                    :data-key="r.key" :title="r.rel + ' · ' + r.key + ' · ' + r.summary">
                 <span class="spn-sdot" :class="'st-' + (r.statusCategory || 'todo')"></span>
@@ -695,21 +805,21 @@ export default {
               <div v-if="!related.length" class="muted mini">관련 티켓 없음</div>
             </div>
             <div v-if="siblings.length" class="sec sec-sib spn-sib">
-              <div class="tkt-mlabel spn-sib-h" @click="sibOpen = !sibOpen">
-                <span class="chev" :class="{ open: sibOpen }">▸</span>
-                <span>형제 {{ siblings.length }}</span>
-                <span v-if="sibPos" class="spn-pos">{{ sibPos }}/{{ siblings.length }}</span>
+              <!-- 숫자는 **한 번만**. 예전엔 '형제 15' 옆에 '12/15' 가 또 붙어, 전체 개수가 두 번
+                   나오고 15 와 12 가 나란히 서서 무엇이 무엇인지 읽히지 않았다.
+                   위치를 알 수 있으면 '몇 번째/전체', 아니면 전체만. -->
+              <div class="tkt-mlabel">
+                <span>형제</span>
+                <span class="spn-pos">{{ sibPos ? sibPos + '/' + siblings.length : siblings.length }}</span>
               </div>
-              <template v-if="sibOpen">
-                <div v-for="s in siblings" :key="s.key" class="spn-sibrow"
-                     :class="{ cur: s.current, other: isOther(s), tkt: !s.current }"
-                     :data-key="s.current ? null : s.key"
-                     :title="s.key + ' · ' + s.summary + (s.component ? ' (' + s.component + ')' : '')">
-                  <span class="spn-sdot" :class="'st-' + (s.statusCategory || 'todo')"></span>
-                  <span class="spn-stitle">{{ s.summary }}</span>
-                  <span v-if="isOther(s)" class="spn-scomp">{{ s.component }}</span>
-                </div>
-              </template>
+              <div v-for="s in siblings" :key="s.key" class="spn-sibrow"
+                   :class="{ cur: s.current, other: isOther(s), tkt: !s.current }"
+                   :data-key="s.current ? null : s.key"
+                   :title="s.key + ' · ' + s.summary + (s.component ? ' (' + s.component + ')' : '')">
+                <span class="spn-sdot" :class="'st-' + (s.statusCategory || 'todo')"></span>
+                <span class="spn-stitle">{{ s.summary }}</span>
+                <span v-if="isOther(s)" class="spn-scomp">{{ s.component }}</span>
+              </div>
             </div>
             </div>
 
@@ -876,6 +986,68 @@ export default {
             <div v-else class="tkt-desc tkt-desc-box" @click="onContentClick" v-html="sec.html"></div>
           </template>
 
+          <!-- 하위 Task — Epic 이면 소속 Task, Task 면 Sub-Task. Sub-Task 는 아래가 없어
+               칸 자체가 안 뜬다(빈 칸을 남기면 '있는데 못 불러온 것' 처럼 읽힌다).
+               좌측 계보 패널에도 같은 목록이 있지만 그건 **이동용**이고, 여기는 상태·담당자·
+               마감까지 한눈에 보는 **현황**이다. -->
+          <div v-if="canHaveKids" class="tkt-kids">
+            <div class="tkt-sec-t">{{ kidsLabel }}<span v-if="children.length"> ({{ children.length }})</span>
+              <!-- 정렬 기준 — '내 Task' 와 **같은 규칙**을 쓴다(마감↔우선순위가 서로의 2차 기준).
+                   화면마다 순서가 다르면 같은 목록을 두 번 익혀야 한다. -->
+              <span v-if="children.length > 1" class="kid-sortwrap">
+                <span class="kid-sortl">정렬기준</span>
+                <span class="cmt-sort">
+                  <button v-for="o in KID_SORTS" :key="o.k" type="button" class="cmt-sort-b"
+                          :class="{ on: kidSort === o.k }" @click="setKidSort(o.k)"
+                          :title="o.hint">{{ o.label }}</button>
+                </span>
+              </span>
+            </div>
+            <!-- 접어도 **아무것도 안 보이게 하지 않는다.** 접힌 목록이 통째로 사라지면 '없는 것'
+                 처럼 읽힌다. 앞 5개는 그대로 두고 6번째부터 흐려지며 잘려, 뒤에 더 있다는 것이
+                 목록 자체로 보이게 한다(개수는 버튼에 적는다). -->
+            <!-- 비어 있어도 칸은 남는다 — 목록이 통째로 없으면 이 티켓에 하위를 둘 수 있다는
+                 것 자체를 모른다. 다만 '없음' 을 글로 적지는 않는다: 바로 아래 추가 카드가
+                 무엇을 할 수 있는지 이미 말하고 있어, 안내문은 자리만 먹는다. -->
+            <!-- 하위는 접지 않는다 — 이 칸은 '이 티켓이 무엇으로 이뤄져 있나' 자체라,
+                 몇 개를 감추면 그 답이 반쪽이 된다. 길면 스크롤하면 된다. -->
+            <div v-if="children.length" class="kidlist">
+              <!-- 한 줄의 뼈대는 '내 Task' 카드와 같다: [타입][번호][제목] | 상태 | 담당자 | 마감.
+                   같은 정보가 화면마다 다른 순서로 놓이면 눈이 매번 다시 찾아야 한다. -->
+              <div v-for="c in kidsSorted" :key="'k-' + c.key" class="kidrow tkt" :data-key="c.key"
+                   :title="c.key + ' ' + c.summary + (c.priority ? ' · ' + c.priority : '')">
+                <PriIcon :rank="c.priRank" :name="c.priority" />
+                <!-- 타입 뱃지는 **갈릴 때만** 쓴다. Sub-Task 목록은 전부 Sub-Task 라 같은 그림을
+                     줄마다 반복하며 자리만 먹는다. Epic 밑은 Task·Story·Bug 가 섞여 구별이 필요하다. -->
+                <!-- 칸 자체는 비어도 남긴다 — 줄마다 칸 수가 다르면 칼럼을 맞출 수 없다. -->
+                <span class="kid-ty"><TypeBadge v-if="isEpic" :type="c.type" /></span>
+                <b class="kid-k">{{ c.key }}</b>
+                <span class="kid-s">{{ c.summary }}</span>
+                <DueText :card="kidCard(c)" no-date />
+                <span class="kid-st" :class="statusClass(c.statusCategory)">{{ c.status }}</span>
+                <!-- 담당자 칸 폭은 **내용이 정한다**(subgrid — 아래 CSS). 고정 폭이면 이름이
+                     짧은 목록엔 줄마다 빈 띠가 남는다. 미할당도 같은 자리·같은 크기를 지킨다 —
+                     아바타가 빠지면 그 줄만 글자가 왼쪽으로 밀려 세로로 훑을 수가 없다. -->
+                <span class="kid-a">
+                  <Avatar v-if="c.assigneeId" :user="c.assigneeId" :name="c.assignee" :size="18" />
+                  <span v-else class="kid-noav" aria-hidden="true"></span>
+                  <span class="kid-an" :class="{ none: !c.assigneeId }">{{ c.assignee || '미할당' }}</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- 추가 카드 — 목록의 마지막 줄과 **같은 크기**로 앉아, 새 줄이 여기에 생긴다는 것을
+                 자리로 말한다. 다이얼로그를 새로 띄우지 않는 이유: 지금 보고 있는 맥락(부모가
+                 무엇이고 형제가 어떤지)이 화면에서 사라지면, 그걸 보려고 연 창에서 그걸 잃는다. -->
+            <button v-if="kidCreate" class="kidadd" @click="adding = true">
+              ＋ {{ isEpic ? '하위 Task 추가' : 'Sub Task 추가' }}
+            </button>
+
+            <NewChildDialog v-if="adding" :parent="tk" :is-epic="isEpic" :types="kidTypes"
+                            :parent-due="(v && v.due) || ''"
+                            @close="adding = false" @created="onKidCreated" />
+          </div>
+
           <!-- 설명 아래 2분할: 첨부파일 | 관련문서(언급된 Confluence 문서) -->
           <div class="tkt-two">
             <div class="tkt-two-col">
@@ -886,7 +1058,10 @@ export default {
               <div v-if="upErr" class="tkt-cmt-err">{{ upErr }}</div>
               <div v-if="uploading" class="muted mini">첨부 올리는 중…</div>
               <div v-if="!atts.length" class="muted mini">첨부파일 없음 — 파일을 이 창에 끌어다 놓아도 됩니다</div>
-              <div v-else class="chipwrap">
+              <!-- 목록이 길면 기본으로 접는다 — 첨부가 스무 개인 티켓에서 본문·코멘트가 화면
+                   밖으로 밀려난다. 앞 5개는 남기고 6번째가 흐려지며, 그 위에 펼침 버튼이 앉는다. -->
+              <div v-else class="foldwrap" :class="{ folded: !attOpen }">
+              <div class="chipwrap" :class="{ 'fold-peek': !attOpen }">
                 <!-- 첨부 목록 칩과 본문 속 파일 뱃지는 **같은 것**이다 — 모양이 갈라지면
                      "이건 첨부고 저건 뭐지" 가 된다. data-ext 로 아이콘·색 규칙을 공유한다. -->
                 <a v-for="a in atts" :key="a.id" class="fchip" :class="{ img: a.isImage }"
@@ -897,6 +1072,9 @@ export default {
                   <span class="fchip-m">{{ fdt(a.created) }} · {{ fsize(a.size) }}</span>
                 </a>
               </div>
+              <button v-if="atts.length > FOLD_AT" class="fold-b" @click="attOpen = !attOpen">
+                {{ attOpen ? '접기' : '+' + (atts.length - FOLD_AT) + '개 더' }}</button>
+              </div>
             </div>
             <div class="tkt-two-col">
               <div class="tkt-sec-t has-add">관련문서<span v-if="docs.length"> ({{ docs.length }})</span>
@@ -906,12 +1084,16 @@ export default {
               <LinkPicker v-if="docPick" mode="confluence" :busy="docBusy" :err="docErr"
                           @close="docPick = false" @pick="addDoc" />
               <div v-if="!docs.length" class="muted mini">언급된 문서 없음</div>
-              <div v-else class="chipwrap">
+              <div v-else class="foldwrap" :class="{ folded: !docOpen }">
+              <div class="chipwrap" :class="{ 'fold-peek': !docOpen }">
                 <a v-for="(d, i) in docs" :key="i" class="fchip doc" :href="d.url" target="_blank"
                    rel="noopener" :title="d.url">
                   <span class="fchip-ic conf"></span>
                   <span class="fchip-n">{{ d.title }}</span>
                 </a>
+              </div>
+              <button v-if="docs.length > FOLD_AT" class="fold-b" @click="docOpen = !docOpen">
+                {{ docOpen ? '접기' : '+' + (docs.length - FOLD_AT) + '개 더' }}</button>
               </div>
             </div>
           </div>

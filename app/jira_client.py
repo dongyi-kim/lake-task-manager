@@ -864,6 +864,72 @@ class JiraClient:
         except Exception:
             return []
 
+    def issue_types(self):
+        """이 인스턴스의 이슈 타입 — [{name, subtask}]. 이름은 인스턴스마다 다르므로
+        **subtask 플래그**로 갈라야 한다(우리 world 는 'Sub-Task', 다른 곳은 '하위 작업')."""
+        def do():
+            return [{"name": x.get("name") or "", "subtask": bool(x.get("subtask"))}
+                    for x in (self.provider.get_json("/rest/api/2/issuetype") or [])]
+        try:
+            return self.cache.get_or_set(f"issuetypes:{self.env}", self.OPTIONS_TTL, do)[0]
+        except Exception:
+            return []
+
+    def child_types(self, parent_key):
+        """이 티켓 **밑에** 만들 수 있는 타입.
+
+        Jira 의 계층은 Epic → 일반 이슈 → Sub-Task 셋뿐이다. 그래서 부모가 무엇인지가 곧
+        답이다: Epic 밑은 일반 이슈(Sub-Task·Epic 제외), 일반 이슈 밑은 Sub-Task,
+        Sub-Task 밑은 없다. 이름으로 판정하지 않는다 — 로케일·인스턴스마다 다르다.
+        """
+        b = self.ticket_badge(parent_key) or {}
+        types = self.issue_types()
+        if not types:
+            return []
+        raw = self.get_issue(parent_key) or {}
+        it = ((raw.get("fields") or {}).get("issuetype") or {})
+        if it.get("subtask"):
+            return []                                   # Sub-Task 밑은 없다
+        if (b.get("type") or "") == "Epic":
+            return [t["name"] for t in types if not t["subtask"] and t["name"] != "Epic"]
+        return [t["name"] for t in types if t["subtask"]]
+
+    def create_child(self, parent_key, itype, summary, priority=None,
+                     duedate=None, assignee=None):
+        """하위 티켓 생성. 부모가 Epic 이면 Epic Link 로, 아니면 parent(Sub-Task)로 잇는다.
+
+        생성 결과 키를 돌려준다. 실패는 그대로 올린다 — 조용히 삼키면 사용자는 만들어진 줄 안다.
+        """
+        b = self.ticket_badge(parent_key) or {}
+        fields = {
+            "project": {"key": self.s.project_key},
+            "issuetype": {"name": itype},
+            "summary": summary,
+        }
+        if priority:
+            fields["priority"] = {"name": priority}
+        if duedate:
+            fields["duedate"] = duedate
+        if assignee:
+            fields["assignee"] = {"name": assignee}
+        if (b.get("type") or "") == "Epic":
+            fields[self.s.epic_link_field_id] = parent_key
+        else:
+            fields["parent"] = {"key": parent_key}
+        # 쓰기는 큐 맨 앞으로 — 뒤에 밀리면 사용자는 '만들어졌나?' 하고 또 누른다.
+        with write_upstream():
+            res = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
+        key = (res or {}).get("key")
+        # 부모의 자식 목록이 낡았다 — 새로 만든 게 바로 안 보이면 만들어졌는지 알 수 없다.
+        # ★ children 만 지워선 안 된다. 하위 목록의 출처는 부모 원본의 subtasks 필드(Epic 이면
+        #   Epic Link 검색)라, issue: 캐시가 남아 있으면 새 자식이 **영영 안 보인다**.
+        self.cache.invalidate(f"issue:{self.env}:{parent_key}")
+        self.cache.invalidate(f"children:{self.env}:{parent_key}")
+        # Epic 은 자식을 JQL 로 찾는다 — 그 결과도 캐시라 함께 버려야 새 Task 가 보인다.
+        self.cache.invalidate(f"epic_children:{self.env}:{parent_key}")
+        self._invalidate_ticket(parent_key)
+        return {"key": key}
+
     def components(self):
         def do():
             path = f"/rest/api/2/project/{self.s.project_key}/components"
@@ -1216,6 +1282,13 @@ class JiraClient:
             "status": st.get("name", ""),
             "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
             "assignee": real_name(a.get("displayName") or a.get("name")) or None,
+            # 마감·완료일 — 하위 Task 목록이 '언제까지'를 같이 보여 준다. 이미 받아 온 필드라
+            # 왕복이 늘지 않는다(뱃지 하나 때문에 다시 묻지 않는다).
+            "due": f.get("duedate") or None,
+            "resolved": f.get("resolutiondate") or None,
+            # 우선순위 — 하위 목록의 첫 칸. 이름과 등급을 함께 준다(그림은 등급, 툴팁은 이름).
+            "priority": (f.get("priority") or {}).get("name") or None,
+            "priRank": _pri_rank((f.get("priority") or {}).get("name")),
             # 아래 둘은 **권한 판정 재료**다(내 티켓인가?). 표시용 이름과 달리 id 여야 한다 —
             # 표시이름은 동명이인이 있어 사람을 특정하지 못한다.
             "assigneeId": a.get("name") or a.get("key") or None,
@@ -1991,6 +2064,9 @@ class JiraClient:
             "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
             "due": f.get("duedate") or None,
             "resolved": f.get("resolutiondate") or None,
+            # 우선순위 — 하위 목록의 첫 칸. 이름과 등급을 함께 준다(그림은 등급, 툴팁은 이름).
+            "priority": (f.get("priority") or {}).get("name") or None,
+            "priRank": _pri_rank((f.get("priority") or {}).get("name")),
             # Epic 분포용. epic 이 있으면 그 Epic 소속이고(= VoC 라도 Epic 이 있으면 그쪽으로 센다),
             # 없고 VoC 컴포넌트면 '사용자 VoC' 를 전용 Epic 처럼 따로 센다.
             "epic": f.get(self.s.epic_link_field_id) or None,

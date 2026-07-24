@@ -51,9 +51,11 @@ export default {
     dayNote() { return "이 Jira 에서 1일 = " + this.hoursPerDay + "시간"; },
     problems() {
       const out = [];
-      if (this.has.worklog && !(this.days || this.hours || this.minutes)) out.push("소요시간");
-      if (this.has.assignee && !this.user) out.push("담당자");
-      if (this.has.resolution && !this.resolution) out.push("처리 방법");
+      // 무엇이 필수인지는 **서버가 준 화면 정의**가 정한다(전이마다 다르다).
+      const need = (id) => this.has[id] && this.has[id].required;
+      if (need("worklog") && !(this.days || this.hours || this.minutes)) out.push("소요시간");
+      if (need("assignee") && !this.user) out.push("담당자");
+      if (need("resolution") && !this.resolution) out.push("처리 방법");
       // 코멘트 내용 유무는 에디터가 판정한다(빈 본문이면 제출 시 스스로 막는다) —
       // 여기서 HTML 을 들여다보며 다시 판정하면 두 규칙이 갈린다.
       return out;
@@ -139,7 +141,7 @@ export default {
 
       <div v-else class="trx-b">
         <label v-if="has.worklog" class="trx-f">
-          <span class="trx-l">소요시간 <i>필수</i></span>
+          <span class="trx-l">소요시간 <i v-if="has.worklog.required">필수</i></span>
           <span class="trx-time">
             <input type="number" min="0" max="99" v-model.number="days"><em :title="dayNote">일</em>
             <input type="number" min="0" max="999" v-model.number="hours"><em>시간</em>
@@ -150,7 +152,7 @@ export default {
         </label>
 
         <div v-if="has.assignee" class="trx-f">
-          <span class="trx-l">담당자 <i>필수</i></span>
+          <span class="trx-l">담당자 <i v-if="has.assignee.required">필수</i></span>
           <!-- 고른 사람은 **노드(칩)** 로 남는다 — 입력창에 글자로 남겨 두면 화면의 글자와
                실제 값이 어긋날 수 있고, 다 치고 못 고른 채 제출하는 사고가 난다. -->
           <span v-if="user" class="trx-chip">
@@ -176,19 +178,18 @@ export default {
         </div>
 
         <label v-if="has.resolution" class="trx-f">
-          <span class="trx-l">처리 방법 <i>필수</i></span>
+          <span class="trx-l">처리 방법 <i v-if="has.resolution.required">필수</i></span>
           <select v-model="resolution">
             <option v-for="r in resolutions" :key="r.id" :value="r.name">{{ r.name }}</option>
           </select>
         </label>
 
         <div v-if="has.comment" class="trx-f">
-          <span class="trx-l">코멘트 <i>필수</i></span>
+          <span class="trx-l">코멘트 <i v-if="has.comment.required">필수</i></span>
           <!-- 댓글과 **같은 에디터** — 표·코드·이미지 붙여넣기·멘션이 그대로 된다.
                버튼 줄은 감추고(제출은 아래 한 곳) ref 로 submit() 을 부른다. -->
           <CommentEditor ref="ed" :ticket-key="ticket" hide-footer kind="transition"
                          :submit-fn="sendTransition" @cancel="$emit('close')" />
-          <span class="trx-hint">Jira 에선 선택이지만, 기록 없이 닫힌 티켓은 나중에 해석할 수 없어 이 앱에서는 받습니다.</span>
         </div>
       </div>
 

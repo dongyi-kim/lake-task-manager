@@ -33,6 +33,12 @@ _TRANSITIONS = {
     "Closed":      ["Reopened"],
     "Reopened":    ["In Progress", "Resolved"],
 }
+# 전이 화면 — 사내 워크플로는 **되돌리는 전이에도** 입력을 요구한다.
+# Reopen 은 "누가 다시 볼 것인가(담당자)" 와 "왜 되돌리는가(코멘트)" 가 없으면 나중에 아무도
+# 이유를 모른다 → 둘 다 강제. (Resolved/Closed 로 갈 때는 기본 화면 = 작업시간·담당자·해결책)
+_TRANSITION_SCREENS = {
+    "Reopened": ["assignee", "comment"],
+}
 # 사내 우선순위 — 'P{n}-이름' 체계 + 미분류(Unclassified). 등급은 접두사 숫자로 읽는다.
 _PRIORITIES = [["P0-Blocker", "1"], ["P1-Critical", "2"], ["P2-Major", "3"],
                ["P3-Minor", "4"], ["P4-Trivial", "5"], ["Unclassified", "6"]]
@@ -52,6 +58,7 @@ def build_store():
         epic_name_field=s.epic_name_field_id,
         subtask_type="Sub-Task",
         statuses=_STATUSES, transition_scheme=_TRANSITIONS, issue_types=_ISSUE_TYPES,
+        transition_screens=_TRANSITION_SCREENS,
         priorities=_PRIORITIES,
         # 새로 만든 티켓은 **미분류**로 시작한다 — 아무 등급이나 자동으로 붙이면
         # 'P2 인데 아무도 P2 라고 판단한 적 없는' 티켓이 쌓인다.

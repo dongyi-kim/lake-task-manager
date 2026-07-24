@@ -62,6 +62,12 @@ export default {
     urgent() { return !this.done && isUrgent(this.card); },
     // 고정폭으로 세로로 나열되므로 길이가 들쭉날쭉하면 안 된다 — 가장 긴 게 'D-DAY'(5자).
     doneAt() { return this.card.resolved ? ymd(this.card.resolved) : ""; },
+    /** Sub-Task 는 **부모 Task** 를 단다. Epic 은 부모를 통해 이미 정해져 있어, 하위마다 Epic 을
+     *  또 붙이면 같은 이름이 카드마다 반복되면서 정작 '어느 Task 밑이냐' 는 안 보인다.
+     *  (그룹화 모드에서는 부모가 곧 그룹 머리라 이 뱃지가 필요 없다 — showEpic 이 꺼져 있다.) */
+    isSub() { return !!this.card.isSub && !this.card.isGroupSelf; },
+    parentKey() { return (this.card.parent && this.card.parent.key) || this.card.parentKey || ""; },
+    parentTitle() { return (this.card.parent && this.card.parent.title) || ""; },
   },
   template: `
   <div class="mt-card two tkt" :data-key="card.key"
@@ -80,7 +86,13 @@ export default {
             :title="(card.assignee || '미할당') + ' 담당' + (card.mine ? ' (나)' : '')">
         <Avatar :user="card.assigneeId" :name="card.assignee" :size="15" />{{ card.assignee || '미할당' }}
       </span>
-      <span v-if="showEpic && card.epicKey" class="mt-epic sm" :title="'Epic: ' + epicTitle">{{ epicTitle }}</span>
+      <!-- 상위 Task — Epic 뱃지와 **다른 모양**이다(채운 면 vs 테두리). 같은 자리에 같은 모양이면
+           어느 것이 Epic 이고 어느 것이 상위 Task 인지 색만으로는 갈리지 않는다. -->
+      <span v-if="showEpic && isSub && parentKey" class="mt-parent sm"
+            :title="'상위: ' + parentKey + ' ' + parentTitle">
+        <b class="mp-k">{{ parentKey }}</b><span class="mp-t">{{ parentTitle }}</span>
+      </span>
+      <span v-else-if="showEpic && card.epicKey" class="mt-epic sm" :title="'Epic: ' + epicTitle">{{ epicTitle }}</span>
       <span v-else-if="showEpic && card.voc" class="mt-epic sm">사용자 VoC</span>
       <span v-else-if="showEpic" class="mt-epic sm none">Epic 없음</span>
     </div>

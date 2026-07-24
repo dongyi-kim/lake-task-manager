@@ -99,6 +99,12 @@ export const api = {
   options: (kind, q) => req("/api/options/" + kind + (q ? "?q=" + encodeURIComponent(q) : "")),
   updateFields: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/fields",
                                        "PUT", body).then((r) => { evict(key); return r; }),
+  childTypes: (key) => req("/api/options/childtypes?q=" + encodeURIComponent(key)),
+  createChild: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/child",
+                                      "POST", body)
+    // 만든 직후 부모의 하위 목록을 다시 받아야 한다 — memo 를 안 비우면 **늘 만들기 전 목록**이
+    // 돌아온다(프로미스 캐시라 서버가 최신을 줘도 소용없다).
+    .then((r) => { evict(encodeURIComponent(key)); return r; }),
   ticketMenu: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/menu"),
   setAssignee: (key, assignee) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/assignee",
                                           "PUT", { assignee }).then((r) => { evict(key); return r; }),

@@ -707,7 +707,44 @@ def api_options(kind: str, q: str = ""):
         return JSONResponse(_client.label_suggestions(q))
     if kind == "epics":
         return JSONResponse(_client.epic_options(q))
+    if kind == "childtypes":
+        # q = 부모 티켓 키. 부모가 무엇이냐로 만들 수 있는 타입이 정해진다.
+        return JSONResponse(_client.child_types(q))
     return JSONResponse({"error": "unknown kind"}, status_code=404)
+
+
+class _ChildBody(BaseModel):
+    type: str
+    summary: str
+    priority: str | None = None
+    duedate: str | None = None
+    assignee: str | None = None
+
+
+@app.post("/api/ticket/{key}/child")
+def api_create_child(key: str, body: _ChildBody):
+    """이 티켓 밑에 하위 티켓을 만든다(Epic→일반 이슈 / 일반 이슈→Sub-Task).
+
+    타입은 **서버가 다시 확인한다** — 화면이 보낸 것을 그대로 믿으면 Sub-Task 밑에 Sub-Task 를
+    만들거나 Epic 을 Epic 밑에 넣는 요청이 그대로 통과한다(Jira 가 거절하겠지만, 왜 거절됐는지
+    사용자에게 남는 건 알 수 없는 오류뿐이다).
+    """
+    _require_edit(key)
+    itype = (body.type or "").strip()
+    summary = (body.summary or "").strip()
+    if not summary:
+        return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
+    allowed = _client.child_types(key)
+    if itype not in allowed:
+        return JSONResponse({"ok": False,
+                             "error": f"이 티켓 밑에는 {itype} 을(를) 만들 수 없습니다."},
+                            status_code=400)
+    try:
+        r = _client.create_child(key, itype, summary, priority=body.priority or None,
+                                 duedate=body.duedate or None, assignee=body.assignee or None)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    return JSONResponse({"ok": True, "key": (r or {}).get("key")})
 
 
 @app.put("/api/ticket/{key}/fields")

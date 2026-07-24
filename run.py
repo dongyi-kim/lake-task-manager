@@ -176,7 +176,19 @@ document.addEventListener('click', function(e){
     // 내려받기 링크는 가로채지 않는다 — 브라우저가 저장하게 두고, 저장 결과는 아래
     // _wire_downloads 가 '다운로드' 폴더로 옮겨 알린다.
     if (a.hasAttribute('download')) return;
-    if (window._openExternal) { e.preventDefault(); window._openExternal(href); }
+    // 일반 브라우저(크롬 등)에서는 손대지 않는다 — 새 탭은 브라우저가 더 잘 연다.
+    // _openExternal 바인딩이 있다는 건 곧 '여기는 앱 창' 이라는 뜻이다.
+    if (!window._openExternal) return;
+    e.preventDefault();
+    // ★ 서버(/api/open)를 **먼저** 쓴다. expose_function 바인딩은 Playwright 가 이벤트를
+    //   넘겨줄 때만 실행돼, 메인 루프가 펌프를 못 도는 순간(로그인 창 대기·다운로드 저장 중 등)
+    //   클릭이 그대로 삼켜진다 — '눌러도 아무 반응 없음' 이 그것이다. 서버 경로는 평범한 HTTP 라
+    //   그런 타이밍을 타지 않는다. 허용 목록 밖 주소(임의 웹 문서)는 400 이 오므로 바인딩으로 뒤로 뺀다.
+    fetch('/api/open', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                         body: JSON.stringify({ url: href }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (!j || !j.ok) throw new Error('not opened'); })
+      .catch(function () { try { window._openExternal(href); } catch (_) {} });
   } catch (_) {}
 }, true);
 """
@@ -314,12 +326,13 @@ def _appwin_profile():
     return d
 
 
-def _window_session(s, auto_login=False, headless=False):
+def _window_session(s, auto_login=False, headless=False, on_ready=None):
     """앱 창(Playwright Chromium, --app 모드) 하나를 열고 **닫힐 때까지** 대기.
     서버는 이미 떠 있다고 가정(창의 goto 재시도가 준비를 커버) — 여기선 서버를 시작/종료하지 않는다.
     → 트레이가 이 함수를 스레드로 여러 번 재사용(창을 닫아도 백엔드는 유지). 임시 프로필은 정리.
 
     auto_login: 최초 오픈에서만 True — prod SSO 3서비스 자동 취득 신호. (재오픈 땐 조용히 연다)
+    on_ready:   창이 실제로 화면에 뜬 시점에 한 번 호출(트레이의 중복 클릭 가드 해제용).
     """
     import shutil
     import tempfile
@@ -370,6 +383,11 @@ def _window_session(s, auto_login=False, headless=False):
     from app.settings import STATIC_DIR
     ico_path = str(STATIC_DIR / "favicon.ico")
     print(f"Lake Task Manager - {url}  (env={s.jira_env})")
+    if on_ready:
+        try:
+            on_ready()                                 # 창이 떴다 — 트레이가 다시 눌림을 받아도 된다
+        except Exception:
+            pass
     # [prod] 최초 오픈에서만 3서비스 SSO 자동 취득 — 아래 while 루프가 신호를 받아 임시 창에서 구동.
     # 이미 인증돼 있으면 service_probe 로 스킵(무음). (재오픈 땐 auto_login=False 라 신호 안 보냄)
     if auto_login and s.jira_env == "prod":
@@ -516,18 +534,37 @@ def _run_tray(s):
     server = _serve_bg(s, wait=False)                  # 백엔드 상시(창과 독립)
     _ensure_start_menu_shortcut()                      # '시작'에서 검색 가능하게
 
-    def open_window(initial=False):
-        """[앱 열기] — 잠그지 않고 **누를 때마다 새 창**을 연다.
+    # [앱 열기] 중복 클릭 가드 — **시각으로만** 판단한다.
+    # 예전엔 'open' 불리언으로 한 번에 하나만 열었는데, 절전 등으로 창 스레드가 멎으면 그 값이
+    # True 로 굳어 이후 [앱 열기]가 아무 반응 없이 무시됐다(밤새 켜 둔 뒤 겪던 증상).
+    # 시각 기반은 무슨 일이 있어도 스스로 풀린다 — 최악이라도 몇 초 뒤엔 다시 열 수 있다.
+    _open = {"t": 0.0, "ready": True}
+    _OPEN_WAIT = 15.0      # 창이 뜨기 전: Chromium 기동에 몇 초 걸린다. 그 사이 클릭은 다 같은 뜻이다.
+    _OPEN_MIN = 1.5        # 창이 뜬 뒤: 트레이 더블클릭 한 번이 두 개로 세어지는 것만 막는다.
 
-        예전엔 'open' 플래그로 한 번에 하나만 열었는데, 절전 등으로 창 스레드가 멎으면
-        플래그가 True 로 굳어 이후 [앱 열기]가 **아무 반응 없이** 무시됐다(밤새 켜 둔 뒤 겪는 증상).
-        창은 그냥 브라우저 하나라 여러 개 열려도 문제가 없으니, 상태를 안 들고 있는 쪽이 안전하다.
+    def open_window(initial=False):
+        """[앱 열기] — 창을 하나 연다. 연달아 누른 것은 한 번으로 친다.
+
+        트레이 아이콘은 한 번 눌러도 이벤트가 여러 번 오고(기본 항목 + 더블클릭), 창이 뜨기까지
+        몇 초 걸려 사용자는 '안 눌렸나' 하고 또 누른다. 그대로 두면 창이 서너 개 뜬다.
         """
+        now = time.monotonic()
+        gap = now - _open["t"]
+        if gap < (_OPEN_MIN if _open["ready"] else _OPEN_WAIT):
+            print("[tray] 앱 창을 이미 여는 중입니다 — 중복 클릭 무시")
+            return
+        _open["t"], _open["ready"] = now, False
+
+        def ready():
+            _open["ready"] = True
+
         def run():
             try:
-                _window_session(s, auto_login=initial)
+                _window_session(s, auto_login=initial, on_ready=ready)
             except Exception as e:                     # 조용히 죽지 않게 로그는 남긴다
                 print("app window error:", e)
+            finally:
+                _open["ready"] = True                  # 실패해도 다음 클릭은 받아야 한다
         threading.Thread(target=run, name="app-window", daemon=True).start()
 
     # ── 서비스별 SSO 인증 상태 ────────────────────────────────────────────
