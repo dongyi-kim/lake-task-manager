@@ -719,6 +719,7 @@ class _ChildBody(BaseModel):
     priority: str | None = None
     duedate: str | None = None
     assignee: str | None = None
+    components: list[str] | None = None
 
 
 @app.post("/api/ticket/{key}/child")
@@ -741,7 +742,8 @@ def api_create_child(key: str, body: _ChildBody):
                             status_code=400)
     try:
         r = _client.create_child(key, itype, summary, priority=body.priority or None,
-                                 duedate=body.duedate or None, assignee=body.assignee or None)
+                                 duedate=body.duedate or None, assignee=body.assignee or None,
+                                 components=body.components or None)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     return JSONResponse({"ok": True, "key": (r or {}).get("key")})

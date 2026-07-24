@@ -1045,6 +1045,7 @@ export default {
 
             <NewChildDialog v-if="adding" :parent="tk" :is-epic="isEpic" :types="kidTypes"
                             :parent-due="(v && v.due) || ''"
+                            :parent-components="(v && v.components) || []"
                             @close="adding = false" @created="onKidCreated" />
           </div>
 

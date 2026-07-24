@@ -24,13 +24,14 @@ export default {
     isEpic: { type: Boolean, default: false },     // Epic 밑이면 타입을 고른다(아니면 Sub-Task 하나뿐)
     types: { type: Array, default: () => [] },     // 만들 수 있는 타입(서버가 부모를 보고 정한 목록)
     parentDue: { type: String, default: "" },      // 상위(Task/Epic)의 작업 기한 — 기본값으로 물려준다
+    parentComponents: { type: Array, default: () => [] },   // 상위의 컴포넌트 — 기본값으로 물려받는다
   },
   emits: ["close", "created"],
   data() {
     // 우선순위는 **비워 둔 채** 시작한다. 기본값을 넣어 두면 아무도 판단하지 않은 등급이
     // 그대로 굳는다 — 등급은 만드는 사람이 정해야 하는 값이라 비워 두고 물어본다.
-    return { busy: false, err: "", priOpts: [],
-             nc: { type: "", summary: "", priority: "",
+    return { busy: false, err: "", priOpts: [], compOpts: [],
+             nc: { type: "", summary: "", priority: "", components: [],
                    duedate: "", assigneeId: "", assigneeName: "" } };
   },
   computed: {
@@ -45,6 +46,11 @@ export default {
     this.nc.type = this.pickType ? "" : (this.types[0] || "");
     // 기한은 상위의 것을 물려준다 — 하위는 대개 상위와 같은 날까지다. 다르면 고치면 된다.
     this.nc.duedate = this.parentDue || "";
+    // 컴포넌트도 상위 것을 물려받는다. 컴포넌트는 곧 **모듈**(롤업 축)이라, 비워 두면 새 티켓이
+    // 어느 모듈에도 안 잡혀 WBS·워크로드에서 사라진다.
+    this.nc.components = (this.parentComponents || []).slice();
+    api.options("components").then((r) => { this.compOpts = (r || []).map((x) => x.name); })
+      .catch(() => { this.compOpts = []; });
     api.options("priorities").then((r) => { this.priOpts = (r || []).map((x) => x.name); })
       .catch(() => { this.priOpts = []; });
     this.$nextTick(() => { const el = this.$refs.sum; if (el) el.focus(); });
@@ -68,6 +74,7 @@ export default {
         const r = await api.createChild(this.parent, {
           type: this.nc.type, summary: this.nc.summary.trim(), priority: this.nc.priority,
           duedate: this.nc.duedate || null, assignee: this.nc.assigneeId || null,
+          components: this.nc.components.slice(),
         });
         if (!r || r.ok === false) { this.err = (r && r.error) || "만들지 못했습니다."; return; }
         this.$emit("created", r.key);
@@ -115,6 +122,15 @@ export default {
         <FieldEdit :ticket="parent" field="duedate" local :value="nc.duedate"
                    @pick="(v) => nc.duedate = v">
           <span :class="{ muted: !nc.duedate }">{{ nc.duedate || '미지정' }}</span>
+        </FieldEdit></span></div>
+
+      <div><span class="k">컴포넌트</span><span class="val">
+        <FieldEdit :ticket="parent" field="components" local :choices="compOpts"
+                   :value="nc.components" @pick="(v) => nc.components = v">
+          <span v-if="nc.components.length" class="tkt-labels">
+            <span v-for="c in nc.components" :key="c" class="tkt-label comp">{{ c }}</span>
+          </span>
+          <span v-else class="muted">미지정</span>
         </FieldEdit></span></div>
 
       <div><span class="k">담당자</span><span class="val val-user">

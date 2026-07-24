@@ -82,6 +82,8 @@ export default {
       this.draft = this.isMulti ? (this.value || []).slice() : this.value;
       if (this.local) {
         // 선택지는 부모가 준다(아직 티켓이 없어 editmeta 가 없다). 사용자 검색만 평소와 같다.
+        // 목록형(컴포넌트)은 화면이 opts 를 그리므로 거기에도 넣어 준다.
+        this.opts = (this.choices || []).slice();
         if (!this.isUser && !this.isDate) return this._focus();
       }
       if (this.field === "priority") {

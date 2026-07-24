@@ -895,7 +895,7 @@ class JiraClient:
         return [t["name"] for t in types if t["subtask"]]
 
     def create_child(self, parent_key, itype, summary, priority=None,
-                     duedate=None, assignee=None):
+                     duedate=None, assignee=None, components=None):
         """하위 티켓 생성. 부모가 Epic 이면 Epic Link 로, 아니면 parent(Sub-Task)로 잇는다.
 
         생성 결과 키를 돌려준다. 실패는 그대로 올린다 — 조용히 삼키면 사용자는 만들어진 줄 안다.
@@ -912,6 +912,10 @@ class JiraClient:
             fields["duedate"] = duedate
         if assignee:
             fields["assignee"] = {"name": assignee}
+        if components:
+            # 컴포넌트는 곧 **모듈**이다(이 프로젝트의 롤업 축). 비워 두면 새 티켓이 어느 모듈에도
+            # 안 잡혀 WBS·워크로드에서 사라진다 — 화면이 부모 것을 기본값으로 채워 보낸다.
+            fields["components"] = [{"name": c} for c in components if c]
         if (b.get("type") or "") == "Epic":
             fields[self.s.epic_link_field_id] = parent_key
         else:
@@ -1073,6 +1077,10 @@ class JiraClient:
             fields["resolution"] = {"name": resolution}
         if assignee:
             fields["assignee"] = {"name": assignee}
+        if components:
+            # 컴포넌트는 곧 **모듈**이다(이 프로젝트의 롤업 축). 비워 두면 새 티켓이 어느 모듈에도
+            # 안 잡혀 WBS·워크로드에서 사라진다 — 화면이 부모 것을 기본값으로 채워 보낸다.
+            fields["components"] = [{"name": c} for c in components if c]
         if time_spent:
             update["worklog"] = [{"add": {"timeSpent": time_spent}}]
         if comment:
