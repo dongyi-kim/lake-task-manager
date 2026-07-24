@@ -88,7 +88,14 @@ export default {
     window.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
     window.addEventListener("drop", (e) => { if (hasFiles(e)) e.preventDefault(); });
     window.addEventListener("hashchange", () => { this.route = currentRoute(); });
-    window.addEventListener("need-login", () => { this.needLogin = true; this.ready = true; });
+    window.addEventListener("need-login", () => {
+      // ★ **이미 화면이 떠 있으면 갈아엎지 않는다.** prod 는 세션이 잠깐씩 끊겼다 붙는데,
+      //   그때마다 화면을 로그인 오버레이로 바꾸면 보던 티켓 창과 쓰던 글이 사라진다.
+      //   인증이 필요하다는 사실은 상단 알림이 말하고, 재인증은 뒤에서 조용히 돈다.
+      //   처음 뜰 때(아직 아무것도 못 그린 상태)만 오버레이로 막는다.
+      if (this.ready) return;
+      this.needLogin = true; this.ready = true;
+    });
     // 티켓 링크(.tkt[data-key]) 위임 처리 — 어느 화면/코멘트에서 눌러도 인앱 다이얼로그로 연다.
     document.addEventListener("click", (e) => {
       const a = e.target.closest && e.target.closest(".tkt[data-key]");

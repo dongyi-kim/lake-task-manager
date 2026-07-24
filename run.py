@@ -172,14 +172,11 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
                         login_page = None
                 except Exception:
                     pass
-        # 저장·반영은 위에서 서비스마다 이미 했다. 여기서는 화면만 최신 상태로 돌린다.
-        if any(ok for _, ok in results):
-            # 앱 페이지를 새로고침해 인증 상태를 즉시 반영(설정창 dot·로그인 오버레이 갱신).
-            try:
-                if not page.is_closed():
-                    page.reload(wait_until="domcontentloaded")
-            except Exception:
-                pass
+        # 저장·반영은 위에서 서비스마다 이미 했다.
+        # ★ **앱 페이지를 새로고침하지 않는다.** 인증이 잠깐 끊겼다 붙을 때마다 새로고침하면
+        #   보던 티켓 창·쓰던 글·스크롤이 전부 날아간다(사용자가 겪은 '홈으로 돌아가고 새로 뜨는'
+        #   그것이다). 세션은 이미 provider 에 반영됐고, 화면의 인증 표시는 상단 알림이
+        #   주기적으로 확인해 스스로 바뀐다.
         all_ok = all(ok for _, ok in results)
         print("[login] " + ("전체 완료 — " if all_ok else "일부 미완료 — ")
               + ", ".join(f"{n}={'O' if ok else 'X'}" for n, ok in results))

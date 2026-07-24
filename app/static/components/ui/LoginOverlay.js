@@ -16,6 +16,7 @@ export default {
   mounted() {
     // 도중에 세션이 끊긴 경우: 캐시로 버틸 수 있으면 막지 않고 인증만 다시 건다.
     window.addEventListener("need-login", () => {
+      // 화면을 막는 건 **보여 줄 캐시조차 없을 때** 뿐이다. 그 외에는 뒤에서 인증만 다시 건다.
       if (!this.hasCache) this.show = true;
       this.kick();
     });
@@ -30,8 +31,15 @@ export default {
     }).catch(() => {});
   },
   methods: {
-    /** 화면을 막지 않고 로그인만 시작한다(페이지당 한 번). */
-    kick() { if (!this.tried) { this.tried = true; this.doLogin(); } },
+    /** 화면을 막지 않고 로그인만 시작한다.
+     *  ★ **자주 부르지 않는다.** prod 는 401 이 주기적으로 스쳐 지나가는데, 그때마다 로그인을
+     *    걸면 인증 흐름이 끊임없이 돌며 화면이 요동친다. 한 번 시도했으면 한동안 쉰다. */
+    kick() {
+      const now = Date.now();
+      if (this.tried && now - (this._lastTry || 0) < 120000) return;   // 2분 쿨다운
+      this.tried = true; this._lastTry = now;
+      this.doLogin();
+    },
     async doLogin() {
       // 앱 창 모드의 로그인은 **이 창을 Jira 로 보냈다가** 앱으로 되돌린다. 그때 주소가 초기값이라
       // 보던 화면(내 Task·티켓)이 홈으로 리셋됐다 — 어디였는지 적어 두고 돌아와서 되돌린다.
@@ -41,7 +49,14 @@ export default {
       try {
         const r = await api.login();
         if (r && r.pending) return;                    // 앱 창 모드: 이 창이 Jira 로 이동됨(대기)
-        if (r && r.ok) { location.reload(); return; }  // 폴백(별도 창): 성공 시 새로고침
+        if (r && r.ok) {
+          // ★ **새로고침하지 않는다.** 보던 티켓 창·쓰던 글·스크롤이 전부 날아간다. 인증은
+          //   서버 쪽에서 이미 끝났으므로, 오버레이만 걷고 하던 일을 계속하게 둔다
+          //   (다음 조회부터 정상 응답이 오고, 상단 알림도 스스로 사라진다).
+          this.show = false; this.msg = "";
+          window.dispatchEvent(new CustomEvent("auth-ok"));
+          return;
+        }
         this.msg = "로그인이 완료되지 않았습니다(시간 초과/취소). 다시 시도하세요.";
       } catch (e) { this.msg = "로그인 실패: " + e.message; }
       this.busy = false;
