@@ -643,14 +643,21 @@ class JiraClient:
     def get_issue_light(self, key):
         """단일 티켓 — **경량 필드만**(무거운 description·issuelinks·attachment 제외).
 
-        뱃지·형제·자식키처럼 가벼운 정보만 필요할 때 쓴다. **포함관계 재사용**: 이미 전체
-        issue:{key} 캐시가 있으면(상위집합) 그걸 그대로 쓴다 — 경량 요청 때문에 다시 받지 않는다.
-        없으면 issueL:{key}(경량) 캐시, 그것도 없으면 경량으로 받아 issueL 에 담는다.
-        (경량 캐시는 전체 캐시와 분리 — 관련/첨부가 이걸 읽고 빈 값으로 깨지지 않게.)"""
-        full = self.cache.get(f"issue:{self.env}:{key}")
-        if full is not None:
-            return full
-        ck = f"issueL:{self.env}:{key}"
+        뱃지·형제·자식키처럼 가벼운 정보만 필요할 때 쓴다. **포함관계 + 최신성**으로 캐시를 고른다:
+        전체(issue:)는 경량의 상위집합이라 내용은 늘 충분하므로, 전체·경량 중 **TTL 이내이면서 더
+        최근에 받아온 쪽**을 쓴다(전체가 더 최신이면 전체, 경량이 더 최신이면 경량). 둘 다 만료/없으면
+        경량으로 받아 issueL 에 담는다(전체 캐시와 분리 — 관련/첨부가 이걸 읽고 깨지지 않게)."""
+        ttl = self.s.cache_ttl_seconds
+        now = time.time()
+        fk, ck = f"issue:{self.env}:{key}", f"issueL:{self.env}:{key}"
+        full = self.cache.get_stale_at(fk)        # (값, 받아온 시각) | None
+        light = self.cache.get_stale_at(ck)
+        full_ok = full is not None and (now - full[1]) <= ttl
+        light_ok = light is not None and (now - light[1]) <= ttl
+        # 전체가 살아 있고(TTL내) 경량보다 더(또는 같이) 최신이면 전체를 쓴다 — 굳이 다시 안 받는다.
+        if full_ok and (not light_ok or full[1] >= light[1]):
+            return full[0]
+        # 그 외(경량이 더 최신이거나 전체가 만료) → issueL 경유(SWR). 만료면 여기서 경량 조회.
 
         def fetch():
             d = self.provider.get_json(f"/rest/api/2/issue/{key}",

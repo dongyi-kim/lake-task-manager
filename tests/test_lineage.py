@@ -304,3 +304,22 @@ def test_documents_merge_remote_links_and_dedupe():
     assert len(urls) == len(set(urls))
     # Web link(비 Confluence)도 포함된다
     assert any("wiki.corp.example" in u for u in urls)
+
+
+def test_get_issue_light_prefers_fresher_of_full_and_light():
+    """get_issue_light 는 전체(issue:)·경량(issueL:) 중 **TTL 이내이면서 더 최근에 받아온** 쪽을 쓴다.
+    전체는 경량의 상위집합이라 내용은 늘 충분 — 관건은 최신성이다."""
+    import time
+    c = _client()
+    env, key, ttl = c.env, "DL-9001", c.s.cache_ttl_seconds
+    fk, lk = f"issue:{env}:{key}", f"issueL:{env}:{key}"
+    # 전체를 먼저(오래), 경량을 나중(최신) → 경량이 선택돼야
+    c.cache.set(fk, {"key": key, "fields": {"summary": "OLD-FULL"}}, ttl)
+    time.sleep(0.02)
+    c.cache.set(lk, {"key": key, "fields": {"summary": "NEW-LIGHT"}}, ttl)
+    assert c.get_issue_light(key)["fields"]["summary"] == "NEW-LIGHT"
+    # 반대로 전체가 더 최신이면 전체
+    c.cache.set(lk, {"key": key, "fields": {"summary": "OLD-LIGHT"}}, ttl)
+    time.sleep(0.02)
+    c.cache.set(fk, {"key": key, "fields": {"summary": "NEW-FULL"}}, ttl)
+    assert c.get_issue_light(key)["fields"]["summary"] == "NEW-FULL"
