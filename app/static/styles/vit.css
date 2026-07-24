@@ -103,3 +103,7 @@
 
 /* 행 전체가 클릭 대상인 블록들 — 전역 .tkt:hover 밑줄이 행 전체에 걸리지 않게 */
 .c-children .ctr:hover, .c-info .l2:hover, .tnode.tkt:hover { text-decoration: none; }
+
+/* 탭마다 두는 강제 새로고침 줄 — 오른쪽 끝에. 자주 쓰는 것이 아니라 '막혔을 때' 쓰는 것이라
+   눈에 먼저 들어올 필요는 없지만, 찾을 때 늘 같은 자리에 있어야 한다. */
+.vtools { display: flex; justify-content: flex-end; margin: 6px 0 2px; }

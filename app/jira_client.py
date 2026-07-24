@@ -615,7 +615,20 @@ class JiraClient:
                 if start >= data.get("total", 0) or not batch or start >= max_results:
                     break
             return issues
-        issues = self.cache.get_or_set(cache_key, self.s.cache_ttl_seconds, do)[0] if cache_key else do()
+        if cache_key:
+            # ★ **빈 목록은 캐시하지 않는다.** 인증이 끊긴 순간에 한 번 0건이 잡히면 그 0건이
+            #   TTL 동안(그리고 SWR 로 그 뒤로도) 사실처럼 서빙된다 — PMO_VIT 가 계속 '현안 없음'
+            #   이었던 이유다. 목록 조회는 다시 받으면 그만이라 빈 값을 굳힐 이유가 없다.
+            #   (진짜로 0건인 프로젝트에서는 매번 한 번 더 묻는 것뿐이다.)
+            hit = self.cache.get(cache_key)
+            if hit is not None:
+                issues = hit
+            else:
+                issues = do()
+                if issues:
+                    self.cache.set(cache_key, issues, self.s.cache_ttl_seconds)
+        else:
+            issues = do()
         for it in issues:                       # write-through: 각 티켓 개별 캐시
             if it.get("key"):
                 self.cache.set(f"issue:{self.env}:{it['key']}", it, self.s.cache_ttl_seconds)
@@ -713,9 +726,11 @@ class JiraClient:
         def do():
             roots = self._search(
                 f'project={self.s.project_key} AND labels="PMO_VIT" ORDER BY updated DESC',
-                cache_key=f"vit_list:{self.env}")
+                cache_key=f"vit_list:v2:{self.env}")
             return [self._vit_base(it) for it in roots]
-        return self._swr(f"vit_bases:{self.env}", do)
+        # 키에 v2 를 붙여 **예전에 박힌 빈 목록을 통째로 버린다**. 규칙을 고쳐도 이미 캐시에
+        # 들어간 0건은 그대로 남아, 고친 코드가 도는데도 화면은 계속 비어 있었다.
+        return self._swr(f"vit_bases:v2:{self.env}", do)
 
     def vit_tree_of(self, key, itype):
         """루트 하나의 자손 트리 — 루트 단위 캐시(모듈별 조회끼리 공유·재사용)."""
@@ -1135,10 +1150,6 @@ class JiraClient:
             fields["resolution"] = {"name": resolution}
         if assignee:
             fields["assignee"] = {"name": assignee}
-        if components:
-            # 컴포넌트는 곧 **모듈**이다(이 프로젝트의 롤업 축). 비워 두면 새 티켓이 어느 모듈에도
-            # 안 잡혀 WBS·워크로드에서 사라진다 — 화면이 부모 것을 기본값으로 채워 보낸다.
-            fields["components"] = [{"name": c} for c in components if c]
         if time_spent:
             update["worklog"] = [{"add": {"timeSpent": time_spent}}]
         if comment:

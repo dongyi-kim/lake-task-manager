@@ -24,7 +24,8 @@ const NONE_COLOR = "var(--border-hi)";    // Epic 없음
 export default {
   name: "WorkloadView",
   components: { ProgressBar, TypeBadge, Avatar },
-  data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {}, metric: "count", mods: {}, modErr: {} }; },
+  data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {}, metric: "count",
+                    mods: {}, modErr: {}, busy: false }; },
   created() { this.bodyRefs = {}; },   // 비반응 DOM 참조(모듈 body)
   async mounted() {
     // 모듈별 병렬 로딩: 골격 먼저 → 각 모듈 동시 요청 → 도착하는 대로 채움(느린 모듈이 안 막음).
@@ -75,6 +76,18 @@ export default {
     },
   },
   methods: {
+    /** 캐시를 비우고 전부 다시 받는다 — 낡은 값으로 화면을 지키는 구조라 사람이 끊을 수단이 필요하다. */
+    async hardRefresh() {
+      if (this.busy) return;
+      this.busy = true;
+      try {
+        await api.refresh();
+        this.d = null; this.mods = {}; this.modErr = {}; this.tkd = {}; this.actOpen = {};
+        await this.load();
+      } catch (e) {
+        this.err = (e && e.message) || "다시 받지 못했습니다.";
+      } finally { this.busy = false; }
+    },
     /** 세 버킷 티켓의 소속 Epic 분포.
      *  규칙: Epic 이 있으면 그 Epic. 없고 VoC 컴포넌트면 **'사용자 VoC' 를 전용 Epic 처럼** 따로 센다
      *  (Epic 없음에 섞으면 VoC 물량이 안 보인다). VoC 라도 Epic 이 배정돼 있으면 그 Epic 쪽으로 센다. */
@@ -220,6 +233,10 @@ export default {
         <div class="chip">진행 중 <b>{{ totals.ip }}</b>건</div>
         <div class="chip">할당됨 <b>{{ totals.op }}</b>건</div>
         <div class="chip">최근 7일 완료 <b>{{ totals.dn }}</b>건</div>
+      </div>
+      <div class="vtools">
+        <button class="btn" :disabled="busy" @click="hardRefresh">
+          {{ busy ? '다시 받는 중…' : '↻ 강제 새로고침' }}</button>
       </div>
       <div class="legend wl-legend">
         <span><i class="sw task"></i> Task</span>

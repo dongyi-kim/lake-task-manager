@@ -14,7 +14,7 @@ export default {
   name: "VitView",
   components: { TypeBadge, StatusPill },
   data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false,
-                    mods: {}, modErr: {}, modPartial: {} }; },
+                    mods: {}, modErr: {}, modPartial: {}, busy: false }; },
   // 모듈별 병렬 로딩: 골격(shell)을 먼저 그리고 각 모듈을 동시에 요청해 **도착하는 대로** 채운다.
   // (전부 모일 때까지 기다리지 않음 — 느린 모듈이 나머지를 막지 않는다)
   async mounted() {
@@ -33,6 +33,20 @@ export default {
     } catch (e) { this.err = e.message; }
   },
   methods: {
+    /** 캐시를 비우고 전부 다시 받는다. 화면도 '모른다' 상태로 되돌린 뒤 새로 채운다 —
+     *  옛 값을 남겨 두면 무엇이 새로 온 값인지 알 수 없다. */
+    async hardRefresh() {
+      if (this.busy) return;
+      this.busy = true;
+      try {
+        await api.refresh();
+        this.d = null; this.mods = {}; this.modErr = {}; this.modPartial = {};
+        this.detail = {}; this.detailOpen = {};
+        await this.load();
+      } catch (e) {
+        this.err = (e && e.message) || "다시 받지 못했습니다.";
+      } finally { this.busy = false; }
+    },
     kids(it) {   // 직계 하위 티켓 — '완료 작업 안 보기' 시 done 제외 + 상태 정렬(Open→진행중→해결)
       const ch = it.children || [];
       const arr = this.hideDone ? ch.filter((c) => c.statusCategory !== "done") : ch.slice();
@@ -125,10 +139,17 @@ export default {
       </div>
       <div class="note" v-if="d.summary.skippedDup">상위가 이미 PMO_VIT 인 자손 현안 {{ d.summary.skippedDup }}건은 중복으로 숨김</div>
 
+      <div class="vtools">
+        <!-- 캐시를 비우고 처음부터 다시 받는다. 낡은 값으로 화면을 지키는 구조라(오프라인 대비)
+             '뭔가 이상하다' 싶을 때 사람이 직접 끊어 줄 수단이 필요하다. -->
+        <button class="btn" :disabled="busy" @click="hardRefresh">
+          {{ busy ? '다시 받는 중…' : '↻ 강제 새로고침' }}</button>
+      </div>
+
       <div v-for="(m, i) in d.modules" :key="m.module" class="vgroup">
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.count }} 현안</span></div>
         <div v-if="modErr[m.module]" class="err">· 불러오지 못했습니다: {{ modErr[m.module] }}</div>
-        <div v-else-if="!mods[m.module]" class="loading">· 불러오는 중…</div>
+        <div v-else-if="!mods[m.module]" class="loading">· 현안과 하위 티켓을 불러오는 중…</div>
         <div v-else-if="!mods[m.module].length" class="empty">· 현안 없음</div>
         <!-- 일부만 왔다 — 목록은 보여 주되 '이게 전부' 라고 말하지 않는다 -->
         <div v-else-if="modPartial[m.module]" class="err">

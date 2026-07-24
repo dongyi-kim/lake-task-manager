@@ -68,6 +68,23 @@ def _serve_bg(s, wait=True):
     return server
 
 
+def _silent_sso(context, base, paths):
+    """**창 없이** 인증을 시도한다 — 리다이렉트만으로 끝나는 경우를 위해서다.
+
+    같은 IdP 로 이미 로그인돼 있으면 서비스 첫 페이지를 한 번 받는 것만으로 세션이 선다
+    (앱→IdP→앱 리다이렉트 체인이 자동으로 끝난다). 그때까지 창을 띄우면, 사람이 할 일이
+    하나도 없는데 브라우저가 떴다 사라지는 것을 보게 된다.
+    사람이 직접 입력해야 하는 경우에만 창을 연다(아래 _login_one_service).
+    """
+    from app.auth.sso_session import service_probe
+    try:
+        # request 는 창이 아니라 컨텍스트의 네트워크 스택을 쓴다 — 쿠키는 공유되고 화면엔 안 뜬다.
+        context.request.get(base, timeout=20000)
+    except Exception:
+        return False, "조용한 시도 실패"
+    return service_probe(context, base, paths)
+
+
 def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
     """서비스 하나를 앱 창에서 열어 SSO 로그인시키고 인증될 때까지 기다린다 — (ok, 이유).
 
@@ -129,6 +146,11 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
         for name, base, paths in targets:
             # 이미 세션이 살아 있으면(직전 로그인·리다이렉트) 창을 열지 않고 통과
             ok, why = service_probe(context, base, paths)
+            if not ok:
+                # ① 먼저 **창 없이** — 리다이렉트만으로 끝나면 사용자는 아무것도 안 본다.
+                ok, why = _silent_sso(context, base, paths)
+                if ok:
+                    print(f"[login]   {name} 창 없이 인증됨")
             if not ok:
                 if login_page is None or login_page.is_closed():
                     login_page = context.new_page()      # 로그인 전용 임시 창 (앱 창과 별개)

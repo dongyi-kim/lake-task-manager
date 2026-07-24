@@ -100,6 +100,7 @@ export default {
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
       sort: "due",
+      busy: false,
     };
   },
   mounted() {
@@ -187,6 +188,13 @@ export default {
       }
       catch (e) { this.err = (e && e.message) || "불러오기 실패"; }
       finally { this.loading = false; }
+    },
+    async hardRefresh() {
+      if (this.busy) return;
+      this.busy = true;
+      try { await api.refresh(); this.model = null; await this.load(); }
+      catch (e) { this.err = (e && e.message) || "다시 받지 못했습니다."; }
+      finally { this.busy = false; }
     },
     /** 옵션 하나 바꾸기. reload 옵션은 JQL 조건이라 바꾸면 다시 받는다
      *  (서버 질의 자체가 달라지므로 클라이언트에서 걸러낼 수 있는 게 아니다). */
@@ -526,7 +534,11 @@ export default {
           <option v-for="v in o.opts" :key="v.k" :value="v.k" :title="v.hint">{{ v.label }}</option>
         </select>
       </label>
+      <!-- 그냥 다시 받는 것과 **캐시까지 비우는 것**은 다르다. 낡은 값으로 화면을 지키는
+           구조라(오프라인 대비) '뭔가 이상하다' 싶을 때 끊을 수단이 있어야 한다. -->
       <button class="mt-refresh" @click="load" title="다시 불러오기">↻</button>
+      <button class="mt-refresh" :disabled="busy" @click="hardRefresh"
+              title="캐시를 비우고 처음부터 다시 받기">⟲</button>
     </div>
   </div>`,
 };
