@@ -693,10 +693,10 @@ export default {
       if (cb) {
         // 네이티브 토글은 막고 우리가 확정 상태를 제어한다(실패 시 원복). defaultChecked = 저장된 값.
         e.preventDefault();
-        // 코멘트는 본인 글일 때, 본문은 **뭐라도 고칠 수 있으면**(editmeta 에 편집 필드 존재) 시도한다.
-        // editmeta 에 description 키가 없어도 권한이 있으면 서버가 받아 준다 — 최종 판정은 서버.
-        // (emeta 로딩 전이면 낙관적으로 허용; 권한 없으면 서버 저장이 실패해 원복된다.)
-        const editable = comment ? this.canEdit(comment) : (this.mayEdit() || !this.emeta);
+        // 본인 코멘트이거나 이 이슈를 **뭐라도 고칠 수 있으면**(editmeta 에 편집 필드 존재) 시도한다.
+        // 최종 판정은 서버 — 권한 없으면 저장이 실패해 원복된다(낙관적 표시 후 롤백).
+        // (emeta 로딩 전이면 허용. 코멘트 author 가 세션 사용자와 달라도 이슈 편집권이 있으면 토글.)
+        const editable = (comment && this.canEdit(comment)) || this.mayEdit || !this.emeta;   // mayEdit=computed(값)
         if (!editable || cb.dataset.cbBusy) return;         // 권한 없으면 읽기전용, 진행 중이면 무시
         const index = parseInt(cb.getAttribute("data-cb-index"), 10);
         const id = cb.getAttribute("data-cb-id") || null;    // id 우선(서버가 index 폴백)
