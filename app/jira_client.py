@@ -550,14 +550,21 @@ class JiraClient:
     #: 여기 담아 두고 다음부터 요청에서 뺀다 — 나머지 필드는 정상적으로 온다.
     _bad_fields = None
 
-    def _issue_fields(self):
+    #: 목록/롤업/워크로드/VIT 어디에서도 안 읽는 **무거운 필드**. 이것만 빼면 페이로드가 확 준다
+    #: (description 이 압도적으로 크다). 이 셋은 티켓 **다이얼로그**에서만 쓰는데, 다이얼로그는
+    #: 별도 경로로 각각 받는다: 본문=issueview(renderedFields), 관련=issuelinks, 첨부=attachment
+    #: (모두 get_issue/전용 조회). 그래서 목록 검색에선 안전하게 뺀다.
+    _HEAVY_FIELDS = frozenset({"description", "issuelinks", "attachment"})
+
+    def _issue_fields(self, light=False):
         base = ["summary", "description", "issuetype", "status", "assignee", "reporter",
                 "components", "created", "duedate", "resolutiondate", "updated", "labels",
                 "parent", "subtasks", "timespent", "issuelinks", "attachment",
                 "priority",                     # '내 Task' 정렬 축
                 self.s.sp_field_id, self.s.epic_link_field_id, self.s.epic_name_field_id]
         bad = self._bad_fields or set()
-        return ",".join(f for f in base if f and f not in bad)
+        drop = (bad | self._HEAVY_FIELDS) if light else bad
+        return ",".join(f for f in base if f and f not in drop)
 
     _FIELD_ERR = re.compile(r"field '([^']+)' does not exist|'([^']+)'.*cannot be set", re.I)
 
@@ -633,6 +640,31 @@ class JiraClient:
         data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
         return data
 
+    def get_issue_light(self, key):
+        """단일 티켓 — **경량 필드만**(무거운 description·issuelinks·attachment 제외).
+
+        뱃지·형제·자식키처럼 가벼운 정보만 필요할 때 쓴다. **포함관계 재사용**: 이미 전체
+        issue:{key} 캐시가 있으면(상위집합) 그걸 그대로 쓴다 — 경량 요청 때문에 다시 받지 않는다.
+        없으면 issueL:{key}(경량) 캐시, 그것도 없으면 경량으로 받아 issueL 에 담는다.
+        (경량 캐시는 전체 캐시와 분리 — 관련/첨부가 이걸 읽고 빈 값으로 깨지지 않게.)"""
+        full = self.cache.get(f"issue:{self.env}:{key}")
+        if full is not None:
+            return full
+        ck = f"issueL:{self.env}:{key}"
+
+        def fetch():
+            d = self.provider.get_json(f"/rest/api/2/issue/{key}",
+                                       params={"fields": self._issue_fields(light=True)})
+            if self._looks_anonymous(d):
+                raise SessionExpired("익명 응답 — 세션 끊김(재인증 필요).")
+            if self._note_bad_field(d):
+                d = self.provider.get_json(f"/rest/api/2/issue/{key}",
+                                           params={"fields": self._issue_fields(light=True)})
+            return d
+
+        data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
+        return data
+
     ISSUE_BATCH = 50                  # JQL "key in (...)" 한 번에 담을 최대 개수
 
     # 매번 재검증하는 캐시 키 = **사람이 방금 바꿨을 수 있고, 틀리면 바로 곤란한 것**뿐이다.
@@ -646,7 +678,7 @@ class JiraClient:
     #   비용은 크다 — 계보 하나가 상류를 여러 번 타고(실측 3건), prod 는 상류가 단일 큐라
     #   그게 쌓이면 정작 본문·댓글이 밀린다. 강제 갱신은 값싼 것에만 건다.
     #   (내가 첨부·링크를 직접 바꾼 경우는 쓰기 직후 해당 키를 invalidate 하므로 이미 최신이다.)
-    REVALIDATE_PREFIXES = ("issue:", "issueview:", "comments:")
+    REVALIDATE_PREFIXES = ("issue:", "issueL:", "issueview:", "comments:")
 
     #: 요청 한 건이 도는 동안의 '못 가져온 개수'(스레드별)
     _miss = threading.local()
@@ -775,14 +807,24 @@ class JiraClient:
                 if k:
                     self.cache.set(f"issue:{env}:{k}", it, self.s.cache_ttl_seconds)
 
-    def _search(self, jql, cache_key=None, max_results=200):
+    def _search(self, jql, cache_key=None, max_results=200, light=True):
         """JQL 검색 → 원본 이슈 리스트. 결과를 티켓 단위 캐시에 write-through.
-        (검색 자체도 cache_key 주면 캐시 — 같은 목록 재조회 절약)."""
+        (검색 자체도 cache_key 주면 캐시 — 같은 목록 재조회 절약).
+
+        **기본이 light** 다 — 목록/롤업/워크로드/VIT 어디도 무거운 필드를 안 읽으므로 항상 경량으로
+        받는다(가장 큰 절감은 description). full 이 정말 필요한 자리는 없다(있으면 명시적으로 끈다).
+        light=True 면 **무거운 필드(description·issuelinks·attachment)를 빼고** 받는다. 캐시는 **포함관계**로 재사용한다:
+          · light 요청은 full 캐시(상위집합)가 있으면 그걸 쓴다(cache_key). 없으면 light 캐시.
+          · full 요청은 full 캐시만 쓴다(light 는 필드가 모자라 full 을 만족 못 시킴).
+        write-through 도 분리한다: full 은 issue:{key}(전체), light 는 issueL:{key}(경량) 로 —
+        경량 이슈가 전체 이슈 캐시를 오염시켜 관련/첨부(issuelinks·attachment 사용)를 깨지 않게."""
+        fields = self._issue_fields(light=light)
+
         def do():
             issues, start = [], 0
             while True:
                 data = self.provider.get_json("/rest/api/2/search", params={
-                    "jql": jql, "fields": self._issue_fields(),
+                    "jql": jql, "fields": fields,
                     "startAt": start, "maxResults": 100})
                 # 검색 응답이 아니면(예: 인증 끊긴 Jira 의 로그인 HTML) 그 자리에서 멈춘다.
                 # ★ 예전엔 여기서 곧장 SessionExpired 를 올렸는데, 검색은 VIT·WBS·워크로드·
@@ -797,7 +839,7 @@ class JiraClient:
                     # 없는 커스텀 필드 때문이면 그 필드 빼고 이 페이지만 다시(로그는 _note 가 1회).
                     if self._note_bad_field(data):
                         data = self.provider.get_json("/rest/api/2/search", params={
-                            "jql": jql, "fields": self._issue_fields(),
+                            "jql": jql, "fields": self._issue_fields(light=light),
                             "startAt": start, "maxResults": 100})
                         if isinstance(data, dict) and "issues" in data:
                             batch = data.get("issues", [])
@@ -822,18 +864,25 @@ class JiraClient:
             #   TTL 동안(그리고 SWR 로 그 뒤로도) 사실처럼 서빙된다 — PMO_VIT 가 계속 '현안 없음'
             #   이었던 이유다. 목록 조회는 다시 받으면 그만이라 빈 값을 굳힐 이유가 없다.
             #   (진짜로 0건인 프로젝트에서는 매번 한 번 더 묻는 것뿐이다.)
+            # 포함관계 재사용: light 요청도 full 캐시(cache_key)가 있으면 그걸 쓴다(상위집합).
             hit = self.cache.get(cache_key)
+            if hit is None and light:
+                hit = self.cache.get(cache_key + ":light")
             if hit is not None:
                 issues = hit
             else:
                 issues = do()
                 if issues:
-                    self.cache.set(cache_key, issues, self.s.cache_ttl_seconds)
+                    self.cache.set(cache_key + (":light" if light else ""),
+                                   issues, self.s.cache_ttl_seconds)
         else:
             issues = do()
+        # write-through: full 은 issue:{key}(전체), light 는 issueL:{key}(경량) 로 분리한다.
+        # 경량 이슈로 전체 이슈 캐시를 덮으면 관련(issuelinks)·첨부(attachment)가 빈 채로 보인다.
+        pfx = "issueL" if light else "issue"
         for it in issues:                       # write-through: 각 티켓 개별 캐시
             if it.get("key"):
-                self.cache.set(f"issue:{self.env}:{it['key']}", it, self.s.cache_ttl_seconds)
+                self.cache.set(f"{pfx}:{self.env}:{it['key']}", it, self.s.cache_ttl_seconds)
         return issues
 
     # ── Epic 자식 조회 ──
@@ -1088,6 +1137,7 @@ class JiraClient:
             self.cache.invalidate(f"documents:{self.env}:{key}")
         # 본문/상태/댓글은 화면이 곧바로 다시 그린다 → 미리 채워 둔다(위 주석 참고).
         self.cache.invalidate(f"issueview:{self.env}:{key}")
+        self.cache.invalidate(f"issueL:{self.env}:{key}")           # 경량 이슈 캐시도 함께(뱃지·형제·자식)
         self._reprime(key, comments=comments)
 
     # ── 편집 ──────────────────────────────────────────────────────────
@@ -1239,8 +1289,10 @@ class JiraClient:
         # ★ children 만 지워선 안 된다. 하위 목록의 출처는 부모 원본의 subtasks 필드(Epic 이면
         #   Epic Link 검색)라, issue: 캐시가 남아 있으면 새 자식이 **영영 안 보인다**.
         self.cache.invalidate(f"issue:{self.env}:{parent_key}")
+        self.cache.invalidate(f"issueL:{self.env}:{parent_key}")     # 경량 캐시(형제·자식키 출처)도 함께
         self.cache.invalidate(f"children:{self.env}:{parent_key}")
         # Epic 은 자식을 JQL 로 찾는다 — 그 결과도 캐시라 함께 버려야 새 Task 가 보인다.
+        # (prefix 삭제라 epic_children:{parent} 와 :light 변형까지 같이 지워진다.)
         self.cache.invalidate(f"epic_children:{self.env}:{parent_key}")
         self._invalidate_ticket(parent_key)
         return {"key": key}
@@ -1616,7 +1668,7 @@ class JiraClient:
     def ticket_badge(self, key):
         """티켓 인라인 뱃지용 경량 요약(요약/타입/상태/담당자). 없으면 None. (renderedFields 미포함=가벼움)"""
         try:
-            raw = self.get_issue(key)
+            raw = self.get_issue_light(key)      # 뱃지는 경량 필드만 → 전체 캐시 있으면 재사용, 없으면 경량
         except Exception:
             return None
         if not isinstance(raw, dict) or "fields" not in raw:
@@ -1747,12 +1799,12 @@ class JiraClient:
         현재 티켓도 포함하고 current=True 로 표시(‘5개 중 2번째’ 위치 파악용). Epic 은 []."""
         def build():
             try:
-                f = self.get_issue(key).get("fields") or {}
+                f = self.get_issue_light(key).get("fields") or {}     # parent·epic_link 만 보면 됨(경량)
             except Exception:
                 return []
             parent_key = (f.get("parent") or {}).get("key")
             if parent_key:                      # Sub-Task → 부모의 subtasks (부모 1회 조회로 끝)
-                subs = (self.get_issue(parent_key).get("fields") or {}).get("subtasks") or []
+                subs = (self.get_issue_light(parent_key).get("fields") or {}).get("subtasks") or []
                 rows = [{"key": s.get("key"),
                          "summary": (s.get("fields") or {}).get("summary") or s.get("key"),
                          "type": (((s.get("fields") or {}).get("issuetype")) or {}).get("name", "Sub-Task"),
@@ -1851,7 +1903,7 @@ class JiraClient:
         """직계 자식 키 — Epic 은 Epic Link 자식, 그 외는 subtasks. (둘 다 기존 캐시 재사용)"""
         limit = self.CHILD_SCAN_LIMIT if limit is None else limit
         try:
-            f = self.get_issue(key).get("fields") or {}
+            f = self.get_issue_light(key).get("fields") or {}   # issuetype·subtasks 만 보면 됨(경량)
         except Exception:
             return []
         if (f.get("issuetype") or {}).get("name") == "Epic":
@@ -2340,9 +2392,17 @@ class JiraClient:
         """상세 뷰용 단일 티켓 원본 — renderedFields(HTML) 포함 요청. `issueview:{env}:{key}` 캐시.
         prod 은 renderedFields.description(HTML) 반환, mock/local(jira820)도 렌더된 HTML 제공."""
         ck = f"issueview:{self.env}:{key}"
-        fetch = lambda: self.provider.get_json(                      # noqa: E731
-            f"/rest/api/2/issue/{key}",
-            params={"fields": self._issue_fields(), "expand": "renderedFields"})
+
+        def fetch():
+            d = self.provider.get_json(
+                f"/rest/api/2/issue/{key}",
+                params={"fields": self._issue_fields(), "expand": "renderedFields"})
+            # 이 응답은 **전체 필드**(issuelinks·attachment 포함)라, 같은 티켓의 전체 이슈 캐시도
+            # 함께 데운다 → 다이얼로그의 관련(issuelinks)·첨부(attachment)·자식 조회가 재요청 없이
+            # 이걸 재사용한다(경량 검색으로 issue:{key} 가 안 데워지는 걸 상쇄 + 기존 중복 제거).
+            if isinstance(d, dict) and "fields" in d:
+                self.cache.set(f"issue:{self.env}:{key}", d, self.s.cache_ttl_seconds)
+            return d
         if fresh:
             # **낡은 값을 받으면 안 되는 자리**(본문 편집 시작·편집 중 충돌 감시)에서만 쓴다.
             # 평소 경로는 캐시를 먼저 주고 뒤에서 갱신한다 — 화면은 빨리 뜨지만 첫 응답이
@@ -2358,11 +2418,7 @@ class JiraClient:
                 self.cache.set(ck, data, self.s.cache_ttl_seconds)
             return data if isinstance(data, dict) and "fields" in data else None
         # SessionExpired(401/403/5xx) 는 전파돼 라우트가 needLogin(401) 처리. 404 는 에러 바디(dict) → None.
-        data, _ = self.cache.get_or_set(
-            ck, self.s.cache_ttl_seconds,
-            lambda: self.provider.get_json(
-                f"/rest/api/2/issue/{key}",
-                params={"fields": self._issue_fields(), "expand": "renderedFields"}))
+        data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
         if not isinstance(data, dict) or "fields" not in data:
             return None       # 존재하지 않는 티켓(404 에러 바디)
         return data
