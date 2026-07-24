@@ -17,22 +17,25 @@ export default {
                     mods: {}, modErr: {}, modPartial: {}, busy: false }; },
   // 모듈별 병렬 로딩: 골격(shell)을 먼저 그리고 각 모듈을 동시에 요청해 **도착하는 대로** 채운다.
   // (전부 모일 때까지 기다리지 않음 — 느린 모듈이 나머지를 막지 않는다)
-  async mounted() {
-    try {
-      this.d = await api.vitShell();
-      this.d.modules.forEach((m) => {
-        api.vitModule(m.module)
-          .then((r) => {
-            this.mods[m.module] = r.issues || [];
-            // 조립 도중 못 받은 티켓이 있었으면 그 수를 남긴다 — 목록은 보여 주되
-            // '이게 전부' 라고 말하지 않기 위해서다.
-            if (r && r.partial) this.modPartial[m.module] = r.missing || 1;
-          })
-          .catch((e) => { this.modErr[m.module] = e.message; this.mods[m.module] = []; });
-      });
-    } catch (e) { this.err = e.message; }
-  },
+  async mounted() { await this.load(); },
   methods: {
+    /** 골격(모듈 목록)을 먼저 받고, 모듈별 본문을 병렬로 채운다.
+     *  ★ 이 로직이 예전엔 mounted() 안에 인라인이라, hardRefresh 가 this.load() 를 부르면
+     *    'this.load is not a function' 이었다(새로고침 버튼이 그래서 죽었다). 메서드로 뺀다. */
+    async load() {
+      this.err = "";
+      try {
+        this.d = await api.vitShell();
+        this.d.modules.forEach((m) => {
+          api.vitModule(m.module)
+            .then((r) => {
+              this.mods[m.module] = r.issues || [];
+              if (r && r.partial) this.modPartial[m.module] = r.missing || 1;
+            })
+            .catch((e) => { this.modErr[m.module] = e.message; this.mods[m.module] = []; });
+        });
+      } catch (e) { this.err = e.message; }
+    },
     /** 캐시를 비우고 전부 다시 받는다. 화면도 '모른다' 상태로 되돌린 뒤 새로 채운다 —
      *  옛 값을 남겨 두면 무엇이 새로 온 값인지 알 수 없다. */
     async hardRefresh() {

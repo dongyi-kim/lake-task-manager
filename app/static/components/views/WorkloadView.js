@@ -28,17 +28,7 @@ export default {
                     mods: {}, modErr: {}, busy: false }; },
   created() { this.bodyRefs = {}; },   // 비반응 DOM 참조(모듈 body)
   async mounted() {
-    // 모듈별 병렬 로딩: 골격 먼저 → 각 모듈 동시 요청 → 도착하는 대로 채움(느린 모듈이 안 막음).
-    // 막대 스케일/모듈평균은 도착한 모듈까지로 계산되고, 남은 모듈이 오면 자연스럽게 갱신된다.
-    try {
-      this.d = await api.workloadShell();
-      this.d.modules.forEach((m) => { this.open[m.module] = true; });
-      this.d.modules.forEach((m) => {
-        api.workloadModule(m.module)
-          .then((r) => { this.mods[m.module] = r; this.scheduleMeasure(); })
-          .catch((e) => { this.modErr[m.module] = e.message; });
-      });
-    } catch (e) { this.err = e.message; }
+    await this.load();
     this._onResize = () => this.scheduleMeasure();
     window.addEventListener("resize", this._onResize);
   },
@@ -76,6 +66,20 @@ export default {
     },
   },
   methods: {
+    /** 모듈별 병렬 로딩: 골격 먼저 → 각 모듈 동시 요청 → 도착하는 대로 채움(느린 모듈이 안 막음).
+     *  ★ 메서드로 둔다 — hardRefresh 가 this.load() 를 부른다(예전엔 mounted 인라인이라 죽었다). */
+    async load() {
+      this.err = "";
+      try {
+        this.d = await api.workloadShell();
+        this.d.modules.forEach((m) => { this.open[m.module] = true; });
+        this.d.modules.forEach((m) => {
+          api.workloadModule(m.module)
+            .then((r) => { this.mods[m.module] = r; this.scheduleMeasure(); })
+            .catch((e) => { this.modErr[m.module] = e.message; });
+        });
+      } catch (e) { this.err = e.message; }
+    },
     /** 캐시를 비우고 전부 다시 받는다 — 낡은 값으로 화면을 지키는 구조라 사람이 끊을 수단이 필요하다. */
     async hardRefresh() {
       if (this.busy) return;
