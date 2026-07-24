@@ -240,7 +240,9 @@ def text_to_html(text):
 
 
 # 빈 블록(공백/nbsp/br 만 든 <p>·<div>) — 실 Jira 렌더 HTML 이 만드는 과도한 여백 원인
-_BLANK = r"(?:\s|&nbsp;| |<br\s*/?>)"
+# ★ 제로폭 문자(zwnj)를 빠뜨리면 Jira/에디터가 &zwnj; 로 채운 빈 문단이 빈 줄로 남는다.
+_ZW = r"(?:&zwnj;|&zwj;|&#x?200[bcd];|&#8203;|&#8204;|&#8205;|&#65279;|​|‌|‍|﻿| )"
+_BLANK = r"(?:\s|&nbsp;| |<br\s*/?>|" + _ZW + r")"
 _EMPTY_BLOCK = r"<(?:p|div)(?:\s[^>]*)?>" + _BLANK + r"*</(?:p|div)>"
 _BLANK_MARK = '<p class="blank"></p>'
 _EMPTY_RUN_RE = re.compile(r"(?:" + _EMPTY_BLOCK + r"\s*)+", re.I)     # 연속 빈 블록(1개+) → 표식 1개
