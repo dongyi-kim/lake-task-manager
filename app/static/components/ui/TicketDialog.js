@@ -657,9 +657,21 @@ export default {
       root.querySelectorAll(".tkt-desc a.conf-link").forEach((a) => {
         if (a.dataset.conftitled) return;
         a.dataset.conftitled = "1";
-        const label = confTitleFromUrl(a.getAttribute("href") || "") || (a.textContent || "").trim() || "Confluence 문서";
-        a.innerHTML = '<span class="conf-title">' + esc(label) + "</span>";
-        a.title = label;
+        const href = a.getAttribute("href") || "";
+        // ① URL 슬러그에 제목이 있으면 그걸로(요청 없음). 옛 링크(viewpage.action?pageId=)엔 없다.
+        const fromUrl = confTitleFromUrl(href);
+        const setLabel = (t) => {
+          const label = t || "Confluence 문서";
+          a.innerHTML = '<span class="conf-title">' + esc(label) + "</span>";
+          a.title = label;
+        };
+        if (fromUrl) { setLabel(fromUrl); return; }
+        // ② 슬러그가 없으면 **서버에서 문서 제목을 받아 온다**(Confluence 링크는 무조건 제목으로).
+        //    받아오는 동안은 링크 텍스트로 임시 표시(빈 뱃지보단 낫다).
+        setLabel((a.textContent || "").trim() || "Confluence 문서");
+        api.linkTitle(href).then((r) => {
+          if (r && r.title && a.isConnected) setLabel(r.title);
+        }).catch(() => { /* 못 받으면 임시 라벨 유지 */ });
       });
       // 2) Jira 티켓 링크(/browse/KEY) → 뱃지. href 제거하고 인앱 다이얼로그로 열기.
       root.querySelectorAll(".tkt-desc a[href]").forEach((a) => {

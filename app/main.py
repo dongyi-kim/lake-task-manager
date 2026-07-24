@@ -419,8 +419,10 @@ def api_search(q: str = "", scope: str = "scoped", limit: int = 8, only: str = "
 
 @app.get("/api/linktitle")
 def api_link_title(u: str):
-    """링크 뱃지 라벨용 페이지 제목 — og:title 우선, 없으면 <title>. 못 얻으면 빈 문자열."""
-    return JSONResponse({"url": u, "title": _client.link_title(u) or ""})
+    """링크 뱃지 라벨용 페이지 제목. Confluence 면 **페이지 id 로 정확히** 받고(옛 링크는
+    URL 에 제목이 없다), 안 되면 og:title/<title> 로. 못 얻으면 빈 문자열."""
+    title = _client.conf_title_by_id(u) or _client.link_title(u) or ""
+    return JSONResponse({"url": u, "title": title})
 
 
 @app.get("/api/favicon")

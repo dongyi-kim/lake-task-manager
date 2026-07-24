@@ -13,19 +13,21 @@ export default {
   components: { Avatar },
   emits: ["close", "open-ticket"],
   data() {
+    // 소스별로 **따로** 채운다 — 셋을 다 기다리지 않고 오는 대로 보인다.
+    // res 는 늘 세 칸을 갖고, loadingSrc 가 각 칸이 아직 오는 중인지 말한다.
     return { q: "", scope: "scoped", res: null, loading: false, err: "",
+             loadingSrc: { jira: false, confluence: false, bitbucket: false },
              active: -1, optsOpen: false, recent: [] };
   },
   created() {
-    this._ta = createTypeahead(
-      (q) => api.search(q, this.scope).catch((e) => ({ error: e.message || "검색 실패" })),
-      { minLen: 2, cacheMs: 12000, emptyValue: null,
-        // 에러거나 **아무 소스도 결과가 없을 때**는 캐시하지 않는다(순간 실패가 굳지 않게).
-        shouldCache: (r) => {
-          if (!r || r.error) return false;
-          const n = (x) => ((x && x.items) || []).length;
-          return n(r.jira) + n(r.confluence) + n(r.bitbucket) > 0;
-        } });
+    // 소스마다 러너를 따로 둔다 — Jira 가 빨리 와도 Confluence 를 안 기다리고 먼저 그린다.
+    // 빈/에러 결과는 캐시하지 않는다(순간 실패가 같은 검색어에 굳지 않게).
+    const mk = (only) => createTypeahead(
+      (q) => api.search(q, this.scope, only).then((r) => (r && r[only]) || { items: [] })
+                .catch((e) => ({ error: e.message || "검색 실패" })),
+      { minLen: 2, cacheMs: 12000, emptyValue: { items: [] },
+        shouldCache: (r) => !!(r && !r.error && ((r.items || []).length > 0)) });
+    this._src = { jira: mk("jira"), confluence: mk("confluence"), bitbucket: mk("bitbucket") };
   },
   mounted() {
     this._onKey = (e) => {
@@ -52,8 +54,8 @@ export default {
     // 이전 검색어를 선택 상태로 둔다 — 바로 새로 타이핑하면 덮어써지고, 그대로 두면 결과 유지
     this.$nextTick(() => { const el = this.$refs.input; if (el) { el.focus(); el.select(); } });
   },
-  deactivated() { window.removeEventListener("keydown", this._onKey); this._ta.cancel(); },
-  unmounted() { window.removeEventListener("keydown", this._onKey); this._ta.cancel(); },
+  deactivated() { window.removeEventListener("keydown", this._onKey); Object.values(this._src).forEach((t) => t.cancel()); },
+  unmounted() { window.removeEventListener("keydown", this._onKey); Object.values(this._src).forEach((t) => t.cancel()); },
   watch: {
     q() { this.schedule(); },
     scope() { if (this.q.trim()) this.run(); },
@@ -77,17 +79,26 @@ export default {
     // 디바운스·응답 역전 방어·같은 질의 캐시는 typeahead 가 맡는다(대기 시간은 설정값).
     schedule() {
       const q = this.q.trim();
-      if (!q) { this._ta.cancel(); this.res = null; this.err = ""; this.loading = false; this.active = -1; return; }
+      if (!q) {
+        Object.values(this._src).forEach((t) => t.cancel());
+        this.res = null; this.err = ""; this.loading = false; this.active = -1;
+        this.loadingSrc = { jira: false, confluence: false, bitbucket: false };
+        return;
+      }
+      this.err = "";
+      // 세 칸을 미리 만들어 두고(빈 목록), 오는 대로 갈아 끼운다 — 셋을 다 기다리지 않는다.
+      if (!this.res) this.res = { jira: { items: [] }, confluence: { items: [] }, bitbucket: { items: [] } };
+      this.active = -1;                          // 새 검색 — 자동 선택 없음(무심코 Enter 방지)
       this.loading = true;
-      this._ta.run(q).then((r) => {
-        if (r === null) return;                 // 낡은 응답 — 버린다(목록이 튀는 원인)
-        this.loading = false;
-        if (r && r.error) { this.err = r.error; this.res = null; return; }
-        this.err = ""; this.res = r;
-        // ★ **자동으로 아무것도 고르지 않는다.** 예전엔 결과가 오면 0번을 선택해서, 검색 도중
-        //   무심코 Enter 를 누르면 엉뚱한 티켓으로 넘어갔다. 사용자가 ↑↓/마우스로 직접 옮기기
-        //   전까지 선택은 없다(active = -1). Enter 는 아래 onKey 에서 별도로 다룬다.
-        this.active = -1;
+      ["jira", "confluence", "bitbucket"].forEach((src) => {
+        this.loadingSrc[src] = true;
+        this._src[src].run(q).then((r) => {
+          if (r === null) return;                // 낡은 응답 — 버린다
+          this.loadingSrc[src] = false;
+          this.loading = Object.values(this.loadingSrc).some(Boolean);
+          // 한 소스가 실패해도 그 칸만 에러로 두고 나머지는 그대로 보인다.
+          this.res[src] = r && r.error ? { items: [], error: r.error } : (r || { items: [] });
+        });
       });
     },
     run() { this.schedule(); },                 // scope 변경 등 즉시 재조회도 같은 경로로
@@ -212,7 +223,8 @@ export default {
                 <span class="sr-who"><Avatar :user="it.assigneeId" :name="it.assignee" :size="14" />{{ it.assignee }}</span>
               </template></span>
             </div>
-            <div v-if="!cnt('jira') && !res.jira.error" class="sr-none">결과 없음</div>
+            <div v-if="loadingSrc.jira" class="sr-none"><span class="spinner"></span> 불러오는 중…</div>
+            <div v-else-if="!cnt('jira') && !res.jira.error" class="sr-none">결과 없음</div>
           </div>
           <!-- Confluence -->
           <div class="sr-sec">
@@ -232,7 +244,8 @@ export default {
                 <div v-if="it.excerpt" class="sr-r2" v-html="it.excerpt"></div>
               </div>
             </div>
-            <div v-if="!cnt('confluence') && !res.confluence.error" class="sr-none">결과 없음</div>
+            <div v-if="loadingSrc.confluence" class="sr-none"><span class="spinner"></span> 불러오는 중…</div>
+            <div v-else-if="!cnt('confluence') && !res.confluence.error" class="sr-none">결과 없음</div>
           </div>
           <!-- Bitbucket (mock) -->
           <div class="sr-sec">
