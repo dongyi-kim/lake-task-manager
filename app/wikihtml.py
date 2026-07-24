@@ -13,6 +13,7 @@ TipTap 은 HTML 을 다루고 Jira DC 8.20 댓글은 wiki markup 으로 저장·
 
 from __future__ import annotations
 
+import hashlib
 import re
 from html import escape, unescape
 from html.parser import HTMLParser
@@ -282,7 +283,11 @@ def _tasklist(node, lines, marker):
                 tmp = _Node("span"); tmp.children = [ch]
                 inline_parts.append(_inline(tmp))
         text = "".join(inline_parts).strip()
-        lines.append('<p dir="auto"><input type="checkbox"%s />%s</p>' % (chk, text))
+        # JEDITOR 는 체크박스마다 **고유 id** 를 붙여 각 체크 상태를 따로 추적한다(원본에서 확인).
+        # id 가 없으면 prod 가 개별 토글/저장을 못 걸 수 있어 우리도 붙인다. len(lines) 는 이 문서에서
+        # 지금까지 나온 줄 수라 체크박스마다 유일하고, 내용을 안 바꾸면 같은 id 라 재저장에도 안 흔들린다.
+        cid = int(hashlib.md5(("%d:%s" % (len(lines), text)).encode("utf-8")).hexdigest()[:11], 16)
+        lines.append('<p dir="auto"><input id="%d" type="checkbox"%s />%s</p>' % (cid, chk, text))
         for nl in nested:
             # 중첩 태스크는 다시 체크박스로(평면), 그 외 목록은 기존 wiki 목록으로.
             if "tasklist" in (nl.attrs.get("data-type") or "").lower():
