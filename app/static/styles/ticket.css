@@ -303,6 +303,9 @@
 .tkt-refresh svg { width: 18px; height: 18px; }
 .tkt-refresh.busy { color: var(--accent); cursor: default; }
 .tkt-refresh.busy svg { animation: ltm-spin .8s linear infinite; }
+/* 전체 화면(페이지) 모드에서는 뷰포트 좌하단에 **고정** — 페이지가 길어도 스크롤과 무관하게 늘 보인다 */
+.tkt-page .tkt-refresh { position: fixed; left: 18px; bottom: 18px; z-index: 8000; width: 42px; height: 42px; }
+.tkt-page .tkt-refresh svg { width: 20px; height: 20px; }
 
 .tkt-desc { font-size: 12.5px; line-height: 1.6; word-break: break-word; }
 /* 체크박스 — 수정권한 있으면 클릭해 토글(서버 저장). 권한 없으면 읽기전용 느낌. */

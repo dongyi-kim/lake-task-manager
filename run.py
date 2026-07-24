@@ -106,6 +106,42 @@ def _silent_renew_via_provider(appmain, base, paths):
         return False
 
 
+def _headless_cert_login(p, appmain, name, base, paths, timeout=35):
+    """**창 없이**(headless) cert 자동 인증을 시도한다 — 첫 로그인 포함(provider 없어도 됨).
+
+    사내 SSO 가 로컬 클라이언트 인증서로 자동 처리되면, id/pw 창을 띄울 이유가 없다. 별도
+    headless 브라우저를 앱 창과 같은 Playwright(p)로 띄워 서비스로 이동하고, 인증이 서면
+    (service_probe 200) storage_state 를 저장한다. 시간 안에 안 되면(사람 입력 필요) False →
+    호출부가 그제서야 보이는 창을 연다. 기존 세션이 있으면 쿠키를 실어 리다이렉트만으로도 끝난다."""
+    from app.auth.sso_session import service_probe
+    browser = None
+    try:
+        browser = p.chromium.launch(headless=True)
+        store = appmain._client.sso_store()
+        state = store.merged() if store.any_exists() else None
+        ctx = browser.new_context(storage_state=state) if state else browser.new_context()
+        pg = ctx.new_page()
+        pg.goto(base, wait_until="domcontentloaded")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if service_probe(ctx, base, paths)[0]:
+                store.save_all_from(ctx.storage_state())
+                appmain._client.reset_provider()
+                print(f"[login]   {name} 창 없이 인증됨(cert 자동)")
+                return True
+            pg.wait_for_timeout(1000)
+        return False
+    except Exception as e:
+        print(f"[login]   {name} headless 로그인 시도 실패(창으로 폴백): {e}")
+        return False
+    finally:
+        try:
+            if browser is not None:
+                browser.close()
+        except Exception:
+            pass
+
+
 def _poke_auth_changed(page):
     """앱 페이지에 '인증 상태가 바뀌었다' 를 즉시 알린다 — 설정창·상단 알림이 다음 폴링(4초)을
     기다리지 않고 **바로** 다시 확인하게. (앱 창 모드에서만 page 가 우리 앱이라 의미가 있다.)"""
@@ -149,7 +185,7 @@ def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
     return False, last
 
 
-def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary=False):
+def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary=False, p=None):
     """[prod] **별도 임시 창**을 열어 Jira → Confluence → Bitbucket(설정된 것만) SSO 로그인.
 
     앱 창(page)은 건드리지 않는다 — 로그인 전용 페이지(창)를 새로 열어 거기서 IdP 로그인하고,
@@ -184,7 +220,14 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
                     ok = True
                     silent_ok = True                      # provider 가 이미 저장·보유 → 아래서 또 저장 안 함
                     print(f"[login]   {name} 창 없이 인증됨(리다이렉트)")
+            if not ok and p is not None:
+                # ② 그래도 안 되면(첫 로그인 등) **창 없이 cert 자동 인증**을 시도한다.
+                #    사내 인증이 로컬 인증서로 자동 처리되면 여기서 끝 — id/pw 창이 안 뜬다.
+                if _headless_cert_login(p, appmain, name, base, paths):
+                    ok = True
+                    silent_ok = True
             if not ok:
+                # ③ 사람이 직접 입력해야 하는 경우에만 보이는 창을 연다.
                 if login_page is None or login_page.is_closed():
                     login_page = context.new_page()      # 로그인 전용 임시 창 (앱 창과 별개)
                 ok, why = _login_one_service(login_page, context, name, base, paths, per_timeout, appmain)
@@ -473,7 +516,7 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
             if appmain._login_requested.is_set():
                 # 시작 직후의 자동 취득은 **Jira 만**(only_primary). 트레이에서 고른 서비스 로그인은
                 # 그쪽 경로(_run_tray)가 따로 돈다.
-                _do_login_in_window(s, page, context, appmain, only_primary=True)
+                _do_login_in_window(s, page, context, appmain, only_primary=True, p=p)
             _drain_downloads(context, dlq)              # 받아 둔 다운로드를 여기서(메인 스레드) 저장
             if i < 16:                                  # ~8초 동안 창 아이콘 재적용(favicon 덮어쓰기 대비)
                 _set_window_icon_win(ico_path)

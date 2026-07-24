@@ -507,34 +507,52 @@ def login(base, store, service="jira"):
         print(f"세션 저장 완료: {store.path(service)}")
 
 
-def login_wait(base, store, service="jira", timeout=300, poll=2.0):
-    """[웹/자동] headed Chromium 을 띄우고, 로그인 완료를 폴링으로 감지해 세션 저장.
-
-    터미널 Enter 없이 동작 → 웹 버튼(/api/login)에서 호출 가능.
-    사용자가 브라우저에서 SSO 를 끝내면 /myself 200 을 감지하고 storage_state 저장 후 닫는다.
-    반환: 성공 True / 타임아웃 False.
-    """
+def _login_attempt(p, base, store, service, headless, timeout, poll):
+    """브라우저 하나 띄워 로그인 완료(폴링)를 기다린다 → 성공하면 세션 저장하고 True.
+    headless=True 면 **창이 안 뜬다** — 사내 인증이 클라이언트 인증서로 자동 처리되는 환경에선
+    이걸로 충분해 사용자는 창을 아예 못 본다."""
     import time
-    from playwright.sync_api import sync_playwright
-    base = base.rstrip("/")
-    with sync_playwright() as p:
-        browser = _launch(p, headless=False)
+    browser = _launch(p, headless=headless)
+    try:
         context = browser.new_context()
         page = context.new_page()
         page.goto(base, wait_until="domcontentloaded")
         deadline = time.monotonic() + timeout
-        ok = False
         while time.monotonic() < deadline:
             if _authed(context, base):
-                ok = True
-                break
+                store.save(service, context.storage_state())
+                return True
             time.sleep(poll)
-        if ok:
-            # ★ 이 서비스 것만 저장한다. 예전엔 파일을 통째로 덮어써서, 한 서비스를 다시
-            #   로그인하면 나머지 서비스 쿠키가 같이 날아갔다.
-            store.save(service, context.storage_state())
-        browser.close()
-        return ok
+        return False
+    finally:
+        try:
+            browser.close()
+        except Exception:
+            pass
+
+
+#: 창 없이(headless) cert 자동 인증을 기다리는 시간. 인증서 자동 선택이면 리다이렉트 몇 초면 끝난다.
+#: 이 안에 안 되면 '사람 입력이 필요한 로그인' 으로 보고 보이는 창으로 넘어간다.
+HEADLESS_LOGIN_SECS = 35
+
+
+def login_wait(base, store, service="jira", timeout=300, poll=2.0):
+    """[웹/자동] SSO 로그인 완료를 폴링으로 감지해 세션 저장.
+
+    ★ **먼저 창 없이(headless)** 시도한다 — 사내 SSO 가 로컬 인증서로 자동 인증되면 창이
+    아예 안 뜬다. 그 안에 안 끝나면(=사람이 직접 입력해야 하면) 그제서야 보이는 창을 연다.
+    반환: 성공 True / 타임아웃 False.
+    """
+    from playwright.sync_api import sync_playwright
+    base = base.rstrip("/")
+    with sync_playwright() as p:
+        # ① 창 없이 — 인증서 자동이면 여기서 끝(사용자는 아무 창도 못 본다).
+        if _login_attempt(p, base, store, service, headless=True,
+                          timeout=min(HEADLESS_LOGIN_SECS, timeout), poll=poll):
+            return True
+        # ② 자동으로 안 됐다 → 사람 입력이 필요하니 보이는 창을 연다.
+        # 세션 저장은 _login_attempt 안에서 그 서비스 것만 한다(파일 통째 덮어쓰기 방지).
+        return _login_attempt(p, base, store, service, headless=False, timeout=timeout, poll=poll)
 
 
 if __name__ == "__main__":
