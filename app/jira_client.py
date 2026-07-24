@@ -302,6 +302,27 @@ def _set_checkbox(html, index, checked):
     return html[:m.start()] + tag + html[m.end():]
 
 
+#: 우리가 저장한 체크박스 HTML(`<p dir="auto"><input … type="checkbox">…</p>`)이 **이스케이프된 채**
+#: 렌더돼 온 것을 되살린다. 사내 prod(JEDITOR)는 이 HTML 을 네이티브 체크박스로 렌더하지만,
+#: 로컬 mock(jira820)의 표준 wiki 렌더러는 raw HTML 을 글자로 이스케이프한다(`&lt;input …&gt;`가
+#: 화면에 그대로 보임). 그 이스케이프된 체크박스 문단만 실제 HTML 로 되돌려 로컬도 prod 처럼 렌더.
+_ESC_CB_PARA = re.compile(
+    r'&lt;p dir="auto"&gt;\s*&lt;input\b([^&]*?)/?\s*&gt;(.*?)&lt;/p&gt;', re.I | re.S)
+
+
+def _revive_checkboxes(html):
+    if not html or "&lt;input" not in html:
+        return html
+
+    def one(m):
+        attrs, text = m.group(1), m.group(2)
+        if "checkbox" not in attrs.lower():
+            return m.group(0)          # 체크박스가 아닌 이스케이프는 건드리지 않는다
+        return '<p dir="auto"><input' + attrs + '>' + text + '</p>'
+
+    return _ESC_CB_PARA.sub(one, html)
+
+
 def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
     """티켓 상세 다이얼로그용 리치 뷰(순수 함수 — 테스트 용이).
     description: prod 의 renderedFields.description(HTML)이 있으면 **sanitize**, 없으면 평문→escape+nl2br.
@@ -310,7 +331,7 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
     rendered = raw.get("renderedFields") or {}
     rhtml = rendered.get("description")
     if rhtml and str(rhtml).strip():
-        desc, fmt = shorten_mention_names(tidy_html(sanitize_html(rhtml))), "html"
+        desc, fmt = shorten_mention_names(tidy_html(sanitize_html(_revive_checkboxes(rhtml)))), "html"
     elif _looks_like_html(f.get("description")):
         # 사내 인스턴스는 WYSIWYG 에디터(Jira Editor 계열 — 'jePanel_*' class)를 써서
         # fields.description **원문 자체가 HTML** 이다. 이때 평문 취급하면 태그가
@@ -936,7 +957,7 @@ class JiraClient:
             out = []
             for c in data.get("comments", [])[:limit]:
                 rb = c.get("renderedBody")
-                html = sanitize_html(rb) if rb and str(rb).strip() else text_to_html(c.get("body") or "")
+                html = sanitize_html(_revive_checkboxes(rb)) if rb and str(rb).strip() else text_to_html(c.get("body") or "")
                 html = tidy_html(html)              # 빈 문단·앞뒤 공백 정리(과도 여백 제거)
                 html = shorten_mention_names(html)  # 맨션은 본명만(에디터 표기와 일치)
                 html = self._proxy_media(html)      # prod: 코멘트 내 이미지도 프록시

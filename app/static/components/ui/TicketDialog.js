@@ -68,6 +68,16 @@ function loadSpineW() {
 function loadSpineHidden() {
   try { return localStorage.getItem(SPINE_HIDE_KEY) === "1"; } catch (e) { return false; }
 }
+// 우측 타임라인 패널도 좌측 스파인과 같은 규칙으로 폭 조절·접기(각자 저장).
+const TL_W_KEY = "tkt.tlW";
+const TL_HIDE_KEY = "tkt.tlHidden";
+function loadTlW() {
+  try { const v = parseInt(localStorage.getItem(TL_W_KEY), 10); if (v >= 170 && v <= 440) return v; } catch (e) { /* noop */ }
+  return 220;
+}
+function loadTlHidden() {
+  try { return localStorage.getItem(TL_HIDE_KEY) === "1"; } catch (e) { return false; }
+}
 
 const _BROWSE_RE = /\/browse\/([A-Z][A-Z0-9]+-\d+)/;
 
@@ -107,8 +117,9 @@ export default {
                     // 상태 전이 팝업
                     stOpen: false, stInfo: null, stErr: "", stPick: null,
                     err: "", expanded: false, zoom: null, zoomLoading: false,
-                    // 좌측 부가정보 패널 — 폭 조절·접기(저장). 넓은 화면(사이드바 모드)에서만 의미.
+                    // 좌/우 부가정보 패널 — 폭 조절·접기(저장). 넓은 화면(사이드바 모드)에서만 의미.
                     spineW: loadSpineW(), spineHidden: loadSpineHidden(),
+                    tlW: loadTlW(), tlHidden: loadTlHidden(),
                     // 목록이 길면 기본으로 접는다(FOLD_AT 초과). 몇 개인지는 제목 옆 숫자로 안다.
                     attOpen: true, docOpen: true,
                     kidSort: loadKidSort(),
@@ -213,6 +224,8 @@ export default {
     },
     /** 좌측 부가정보 패널을 그릴 거리가 있는가(계보/형제/타임라인 중 하나라도). */
     hasSpine() { return this.spine.length > 1 || this.siblings.length > 0 || this.timeline.length > 0; },
+    /** 우측 타임라인 패널을 그릴 거리가 있는가(일정 또는 이력). */
+    hasTl() { return !!(this.v || this.timeline.length); },
     // 스파인 계보 = [조상…, 현재]. 조상만 도착해도 그릴 수 있어야 하므로 **v 를 기다리지 않는다**
     // (현재 노드는 keyId 로 먼저 그리고, v 가 오면 제목·타입이 채워진다).
     spine() {
@@ -278,6 +291,26 @@ export default {
         try { localStorage.setItem(SPINE_W_KEY, String(this.spineW)); } catch (e) { /* noop */ }
       };
       document.body.style.userSelect = "none";   // 드래그 중 글자 선택 방지
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    setTlHidden(v) {
+      this.tlHidden = v;
+      try { localStorage.setItem(TL_HIDE_KEY, v ? "1" : "0"); } catch (e) { /* noop */ }
+    },
+    startTlDrag(e) {
+      const x0 = e.clientX, w0 = this.tlW;
+      const onMove = (ev) => {
+        // 오른쪽 패널이라 **왼쪽으로** 끌면 넓어진다(델타 부호가 스파인과 반대).
+        this.tlW = Math.max(170, Math.min(440, w0 - (ev.clientX - x0)));
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.userSelect = "";
+        try { localStorage.setItem(TL_W_KEY, String(this.tlW)); } catch (e) { /* noop */ }
+      };
+      document.body.style.userSelect = "none";
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     },
@@ -861,8 +894,8 @@ export default {
 
         <!-- 섹션별 독립 렌더: 스파인(계보/형제/타임라인)은 본문(v) 응답을 기다리지 않는다.
              본문·코멘트도 각자 자기 상태가 채워지는 대로 그려진다. -->
-        <div class="tkt-cols" :class="{ 'spine-hidden': spineHidden }"
-             :style="{ '--spine-w': spineW + 'px' }">
+        <div class="tkt-cols" :class="{ 'spine-hidden': spineHidden, 'tl-hidden': tlHidden }"
+             :style="{ '--spine-w': spineW + 'px', '--tl-w': tlW + 'px' }">
           <!-- 접힌 상태에서 다시 펴는 손잡이(얇은 레일) -->
           <button v-if="spineHidden && hasSpine" class="spine-show" title="부가정보 패널 펼치기"
                   @click="setSpineHidden(false)">›</button>
@@ -1285,8 +1318,14 @@ export default {
           </template>
           </div><!-- /.tkt-main -->
 
-          <!-- 우측: 타임라인 -->
-          <aside v-if="v || timeline.length" class="tkt-tl">
+          <!-- 접힌 상태에서 다시 펴는 손잡이(우측 가장자리) -->
+          <button v-if="tlHidden && hasTl" class="tl-show" title="일정·타임라인 패널 펼치기"
+                  @click="setTlHidden(false)">‹</button>
+          <!-- 우측: 일정 + 타임라인 (폭 조절·접기 — 좌측 스파인과 대칭) -->
+          <aside v-if="hasTl && !tlHidden" class="tkt-tl">
+            <button class="tl-hide" title="일정·타임라인 패널 접기" @click="setTlHidden(true)">›</button>
+            <!-- 왼쪽 가장자리를 끌어 폭 조절 -->
+            <div class="tl-grip" title="너비 조절 — 드래그" @mousedown.prevent="startTlDrag"></div>
             <template v-if="v">
               <div class="grp grp-who">
               <div class="sec sec-dates">

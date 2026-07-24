@@ -93,24 +93,33 @@
 .spine-grip::after { content: ""; position: absolute; top: 0; right: 3px; width: 2px; height: 100%;
   background: transparent; transition: background .12s; }
 .spine-grip:hover::after { background: var(--accent); }
-/* 접기 버튼 — 패널 우상단 */
-.spine-hide, .spine-show { position: absolute; z-index: 7; display: flex; align-items: center;
-  justify-content: center; width: 18px; height: 22px; padding: 0; cursor: pointer;
-  font-size: 13px; line-height: 1; color: var(--muted); border: 1px solid var(--border);
-  border-radius: 5px; background: var(--panel); }
-.spine-hide { top: 8px; right: 6px; }
-.spine-hide:hover, .spine-show:hover { color: var(--accent); border-color: var(--accent); }
-/* 접힌 상태 — 얇은 레일 하나만 남기고 펴는 버튼을 띄운다 */
-.spine-show { top: 12px; left: 0; width: 16px; height: 34px; border-radius: 0 6px 6px 0; }
-.tkt-cols.spine-hidden { position: relative; }
-/* 접혔을 때는 grid/flex 모두에서 좌측 컬럼이 없다 — 본문이 그 폭을 가져간다 */
+/* 접기/펴기 버튼 — **분할선 위, 세로 가운데**의 원형. 좌(spine)·우(tl) 대칭.
+   원의 중심이 패널 경계선(분할선) 위에 오도록 -13px 로 반쯤 걸친다. */
+.spine-hide, .spine-show, .tl-hide, .tl-show {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 8;
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; cursor: pointer;
+  font-size: 15px; line-height: 1; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 50%; background: var(--panel);
+  box-shadow: 0 1px 4px rgba(0,0,0,.16); transition: color .12s, border-color .12s, background .12s; }
+.spine-hide:hover, .spine-show:hover, .tl-hide:hover, .tl-show:hover {
+  color: var(--accent); border-color: var(--accent); background: var(--panel-2); }
+.spine-hide { right: -13px; }        /* 스파인 오른쪽 경계(분할선) 위 */
+.tl-hide { left: -13px; }            /* 타임라인 왼쪽 경계(분할선) 위 */
+/* 접힌 상태 — 패널이 사라진 자리(다이얼로그 가장자리)에서 펴는 버튼만 띄운다 */
+.spine-show { left: -4px; }
+.tl-show { right: -4px; }
+.tkt-cols.spine-hidden, .tkt-cols.tl-hidden { position: relative; }
+/* 접혔을 때는 그 컬럼이 없다 — 본문이 그 폭을 가져간다 */
 @container tkt (min-width: 1000.1px) {
   .tkt-cols.spine-hidden { padding-left: 8px; }
+  .tkt-cols.tl-hidden { padding-right: 8px; }
 }
 /* 좁은 화면(grid 모드)에선 폭 조절·접기가 무의미 — 손잡이/버튼을 숨긴다 */
 @container tkt (max-width: 1000px) {
-  .spine-grip, .spine-hide, .spine-show { display: none; }
-  .tkt-cols.spine-hidden .tkt-spine { display: contents; }   /* 접힘 무시하고 평소처럼 흐른다 */
+  .spine-grip, .spine-hide, .spine-show, .tl-grip, .tl-hide, .tl-show { display: none; }
+  .tkt-cols.spine-hidden .tkt-spine,
+  .tkt-cols.tl-hidden .tkt-tl { display: contents; }   /* 접힘 무시하고 평소처럼 흐른다 */
 }
 /* 마이크로 라벨 — 9.5px 대문자 트래킹(목업 문법) */
 .tkt-mlabel { font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
@@ -182,9 +191,16 @@
   background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
   padding: 0 4px; margin-right: 4px; white-space: nowrap; }
 /* 우측 패널 — 타임라인 */
-.tkt-tl { flex: 0 0 220px; width: 220px; align-self: stretch; min-width: 0;
+.tkt-tl { position: relative; flex: 0 0 var(--tl-w, 220px); width: var(--tl-w, 220px);
+  align-self: stretch; min-width: 0;
   margin: 0 -24px -20px 0; padding: 16px 24px 16px 14px;
   border-left: 1px solid var(--border); background: var(--panel-2); }
+/* 폭 조절 손잡이 — 왼쪽 가장자리(스파인의 오른쪽 손잡이와 대칭) */
+.tl-grip { position: absolute; top: 0; left: -3px; width: 7px; height: 100%; z-index: 6;
+  cursor: col-resize; }
+.tl-grip::after { content: ""; position: absolute; top: 0; left: 3px; width: 2px; height: 100%;
+  background: transparent; transition: background .12s; }
+.tl-grip:hover::after { background: var(--accent); }
 /* 넓은 화면에서 .grp 는 없는 것과 같다(구조만 제공).
    순서는 order 로 기존과 동일하게: 계보 → 형제 → 하위 → 관련. */
 .tkt-spine { display: flex; flex-direction: column; }
@@ -912,7 +928,15 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   border-radius: 6px; cursor: pointer; }
 .fe-i:hover { background: var(--panel-2); }
 .fe-i.cur { color: var(--accent); font-weight: 600; }
-.fe-i em { margin-left: auto; font-style: normal; font-size: 10px; color: var(--muted-2); }
+.fe-i em { margin-left: auto; font-style: normal; font-size: 10px; color: var(--muted-2);
+  flex: none; padding-left: 8px; }
+/* 담당자/보고자 검색 — 소속명이 긴 사람이 있어 팝업을 넓히고, 그래도 넘치면 이름은 말줄임.
+   (사번 em 은 오른쪽에 고정 폭으로 남겨 누구인지 항상 보이게) */
+.fe-pop.users { min-width: 330px; max-width: min(460px, 82vw); }
+/* 이름 span 만 늘린다 — Avatar 도 <span class="avt"> 라 :not(.avt) 로 제외(안 하면 사진이 늘어남) */
+.fe-pop.users .fe-i > span:not(.avt) { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.fe-i .avt { flex: none; }
 .fe-none { font-size: 11.5px; color: var(--muted-2); padding: 5px 7px; }
 .fe-clear { border: 1px solid var(--border); background: var(--panel); color: var(--muted);
   font: inherit; font-size: 11.5px; border-radius: 7px; padding: 5px; cursor: pointer; }

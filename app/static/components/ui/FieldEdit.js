@@ -153,7 +153,7 @@ export default {
             :title="label + ' 수정'"><slot>{{ display || value || '—' }}</slot></button>
     <span v-else class="fe-ro" :title="roHint"><slot>{{ display || value || '—' }}</slot></span>
 
-    <span v-if="open" class="fe-pop" :class="{ wide: isEpic }" @click.stop>
+    <span v-if="open" class="fe-pop" :class="{ wide: isEpic, users: isUser }" @click.stop>
       <!-- 우선순위 / 컴포넌트: 정해진 값 중에서만 -->
       <template v-if="field === 'priority'">
         <!-- '내 Task' 와 같은 아이콘·같은 등급 표 — 화면마다 다른 그림이면 같은 티켓이 달라 보인다 -->

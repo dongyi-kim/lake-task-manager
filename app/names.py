@@ -24,10 +24,15 @@ def real_name(display):
     본명은 공백 없는 단일 토큰(한글 성명)이라 **첫 어절**이 본명이다.
     회사명이 여러 어절이어도('SK주식회사 C&C') 안전. 회사 접미사가 없는
     시스템 계정('PMO Office')은 첫 토큰을 그대로 돌려준다. None/빈값은 "".
+
+    일부 계정은 '{본명}({영어이름}) {소속}'(예: '김도윤(David) SKCC') 형태다 —
+    이때도 **본명만** 남긴다(첫 어절에서 여는 괄호 앞까지). 괄호가 없으면 첫 어절 그대로.
     """
     if not display:
         return ""
-    return display.split()[0]
+    first = display.split()[0]
+    name = first.split("(", 1)[0]           # '김도윤(David)' → '김도윤'
+    return name or first                     # 괄호로 시작하는 이상 케이스는 원본 유지
 
 
 def staff_kind(jira_id):

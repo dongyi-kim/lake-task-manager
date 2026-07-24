@@ -223,8 +223,12 @@
 .tkm-i.danger:hover { background: color-mix(in srgb, var(--today) 12%, transparent); color: var(--today); }
 .tkm-i em { font-size: 10px; }
 
-/* 담당자 고르기 */
-.trx.up { width: min(420px, calc(100vw - 32px)); }
+/* 담당자 고르기 — 소속명이 긴 사람이 있어 폭을 넉넉히. 그래도 넘치면 이름은 말줄임(사번은 고정) */
+.trx.up { width: min(500px, calc(100vw - 32px)); }
+/* 이름 span 만 늘린다 — Avatar 도 <span class="avt"> 라 :not(.avt) 로 제외(안 하면 사진이 늘어남) */
+.up-i > span:not(.avt) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up-i .avt { flex: none; }
+.up-i em { flex: none; }
 .up-b { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 9px; }
 .up-b > input { font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2);
   border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }

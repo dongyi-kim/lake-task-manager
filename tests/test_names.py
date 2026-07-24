@@ -21,6 +21,13 @@ def test_real_name_system_account_and_empty():
     assert real_name("") == ""
 
 
+def test_real_name_with_english_name_in_parens():
+    # 일부 계정은 '{본명}({영어이름}) {소속}' — 이 경우도 본명만.
+    assert real_name("김도윤(David) SKCC") == "김도윤"
+    assert real_name("김도윤(David)") == "김도윤"
+    assert real_name("김도윤 (David) SKCC") == "김도윤"   # 이름과 괄호 사이 공백도 안전
+
+
 def test_staff_kind_dev_ops():
     assert staff_kind("skcc.x1042") == "dev"
     assert staff_kind("skcc.i2011") == "ops"
