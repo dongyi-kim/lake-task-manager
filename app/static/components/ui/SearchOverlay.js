@@ -32,7 +32,14 @@ export default {
       if (e.key === "Escape") { this.$emit("close"); return; }
       if (e.key === "ArrowDown") { e.preventDefault(); this.move(1); }
       else if (e.key === "ArrowUp") { e.preventDefault(); this.move(-1); }
-      else if (e.key === "Enter") { const f = this.flat[this.active]; if (f) this.pick(f); }
+      else if (e.key === "Enter") {
+        // 직접 고른 항목이 있으면 그걸 연다.
+        if (this.active >= 0) { const f = this.flat[this.active]; if (f) this.pick(f); return; }
+        // 고른 게 없으면 **검색어가 티켓 번호와 정확히 같을 때만** 바로 넘어간다
+        // (DL-1234 처럼). 그 외에는 아무 일도 안 한다 — 무심코 누른 Enter 로 넘어가지 않게.
+        const m = /^\s*([A-Za-z][A-Za-z0-9]*-\d+)\s*$/.exec(this.q || "");
+        if (m) { e.preventDefault(); this.$emit("open-ticket", m[1].toUpperCase()); this.$emit("close"); }
+      }
     };
   },
   // keep-alive 로 감싸 마지막 검색어·결과를 유지한다(창을 닫았다 열어도 그대로).
@@ -77,11 +84,19 @@ export default {
         this.loading = false;
         if (r && r.error) { this.err = r.error; this.res = null; return; }
         this.err = ""; this.res = r;
-        this.active = this.flat.length ? 0 : -1;
+        // ★ **자동으로 아무것도 고르지 않는다.** 예전엔 결과가 오면 0번을 선택해서, 검색 도중
+        //   무심코 Enter 를 누르면 엉뚱한 티켓으로 넘어갔다. 사용자가 ↑↓/마우스로 직접 옮기기
+        //   전까지 선택은 없다(active = -1). Enter 는 아래 onKey 에서 별도로 다룬다.
+        this.active = -1;
       });
     },
     run() { this.schedule(); },                 // scope 변경 등 즉시 재조회도 같은 경로로
-    move(d) { const n = this.flat.length; if (!n) return; this.active = (this.active + d + n) % n; this.scrollActive(); },
+    move(d) {
+      const n = this.flat.length; if (!n) return;
+      // 아직 아무것도 안 골랐으면 첫 ↓ 는 맨 위, 첫 ↑ 는 맨 아래로.
+      this.active = this.active < 0 ? (d > 0 ? 0 : n - 1) : (this.active + d + n) % n;
+      this.scrollActive();
+    },
     scrollActive() { this.$nextTick(() => { const el = this.$el.querySelector(".sr-item.active"); if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" }); }); },
     idx(src, i) { return this.flat.findIndex((f) => f.src === src && f.it === (this.res[src].items[i])); },
     async loadRecent() {
@@ -96,7 +111,7 @@ export default {
         seen.add(k);
         return true;
       }).slice(0, 20);
-      if (this.showRecent) this.active = this.recent.length ? 0 : -1;
+      if (this.showRecent) this.active = -1;
     },
     // 최근 목록에서 지우기(잘못 열었던 항목 등). 서버 목록이라 다른 브라우저에서도 사라진다.
     async forget(it) {
