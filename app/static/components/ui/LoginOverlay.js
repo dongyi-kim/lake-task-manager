@@ -33,6 +33,9 @@ export default {
     /** 화면을 막지 않고 로그인만 시작한다(페이지당 한 번). */
     kick() { if (!this.tried) { this.tried = true; this.doLogin(); } },
     async doLogin() {
+      // 앱 창 모드의 로그인은 **이 창을 Jira 로 보냈다가** 앱으로 되돌린다. 그때 주소가 초기값이라
+      // 보던 화면(내 Task·티켓)이 홈으로 리셋됐다 — 어디였는지 적어 두고 돌아와서 되돌린다.
+      try { sessionStorage.setItem("lake.route", location.hash || ""); } catch (e) { /* noop */ }
       this.busy = true;
       this.msg = "인증이 필요해 자동으로 SSO 로그인을 시작합니다. 잠시 후 이 창이 사내 로그인 페이지로 이동하며, 로그인을 끝까지 완료하면 자동으로 앱으로 돌아옵니다…";
       try {

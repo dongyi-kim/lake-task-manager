@@ -14,6 +14,7 @@ import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
 import TransitionDialog from "./TransitionDialog.js";
 import UserPickDialog from "./UserPickDialog.js";
+import { confirmBox } from "../../lib/confirm.js";
 
 export default {
   name: "TicketMenu",
@@ -85,7 +86,9 @@ export default {
     async del() {
       // 되돌릴 수 없다 — 티켓 번호와 제목을 보여 주고 확인을 받는다.
       const t = this.info && this.info.summary ? "\n\n" + this.info.summary : "";
-      if (!window.confirm(this.key + " 을(를) 삭제합니다. 되돌릴 수 없습니다." + t)) return;
+      // 앱 창에서 window.confirm 은 사람에게 뜨지도 않고 false 로 돌아온다(자동 거절).
+      if (!await confirmBox(this.key + " 을(를) 삭제합니다. 되돌릴 수 없습니다." + t,
+                            { okLabel: "삭제", danger: true })) return;
       return this.run("del", () => api.deleteTicket(this.key));
     },
     /** 기본 브라우저로 연다 — 앱 창은 Playwright Chromium 이라 window.open 이면 탭·즐겨찾기도

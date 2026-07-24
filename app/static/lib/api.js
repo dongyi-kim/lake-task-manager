@@ -8,7 +8,12 @@ async function req(path, opts) {
     if (b && b.needLogin) window.dispatchEvent(new CustomEvent("need-login"));
     throw new Error("HTTP 401");
   }
-  if (!r.ok) throw new Error("HTTP " + r.status);
+  if (!r.ok) {
+    // 서버가 남긴 이유를 그대로 올린다 — 'HTTP 502' 만 보여 주면 사용자도 우리도 알 수 없다.
+    let msg = "";
+    try { const b = await r.clone().json(); msg = (b && (b.error || b.detail)) || ""; } catch (e) { /* 본문이 JSON 이 아님 */ }
+    throw new Error(msg || "HTTP " + r.status);
+  }
   return r.json();
 }
 

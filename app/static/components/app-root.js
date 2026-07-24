@@ -68,6 +68,15 @@ export default {
     manager() { this.guard(); },
   },
   mounted() {
+    // 로그인 왕복(앱 창이 Jira 로 갔다 돌아옴) 뒤 **보던 자리로** 되돌린다.
+    // 없으면 늘 홈에서 다시 시작하게 되는데, 그건 로그인이 아니라 사고처럼 느껴진다.
+    try {
+      const back = sessionStorage.getItem("lake.route");
+      if (back) {
+        sessionStorage.removeItem("lake.route");
+        if (back !== (location.hash || "")) { location.hash = back; this.route = currentRoute(); }
+      }
+    } catch (e) { /* noop */ }
     window.addEventListener("hashchange", () => { this.route = currentRoute(); });
     window.addEventListener("need-login", () => { this.needLogin = true; this.ready = true; });
     // 티켓 링크(.tkt[data-key]) 위임 처리 — 어느 화면/코멘트에서 눌러도 인앱 다이얼로그로 연다.

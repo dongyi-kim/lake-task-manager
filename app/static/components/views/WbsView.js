@@ -6,7 +6,9 @@ import { moduleColor } from "../../lib/colors.js";
 
 export default {
   name: "WbsView",
-  data() { return { D: null, err: "", unit: "month", expanded: {}, epicTree: {}, hideBugVoc: true, _rt: null, _onResize: null }; },
+  data() { return { D: null, err: "", unit: "month", expanded: {}, epicTree: {},
+                    // Epic 별로 '못 가져온 하위 수'(-1 = 통째로 실패). 없는 것과 못 받은 것은 다르다.
+                    partial: {}, hideBugVoc: true, _rt: null, _onResize: null }; },
   async mounted() {
     try { this.D = await api.wbs(); this.$nextTick(() => this.renderGantt()); }
     catch (e) { this.err = e.message; }
@@ -45,14 +47,22 @@ export default {
     expandAll() { this.D.wbs.forEach((w) => { this.expanded[w.id] = true; }); this.renderGantt(); },
     collapseAll() { this.expanded = {}; this.renderGantt(); },
     async refresh() {
-      try { await api.refresh(); this.epicTree = {}; this.expanded = {}; this.D = await api.wbs(); this.$nextTick(() => this.renderGantt()); }
+      try { await api.refresh(); this.epicTree = {}; this.expanded = {}; this.partial = {}; this.D = await api.wbs(); this.$nextTick(() => this.renderGantt()); }
       catch (e) { this.err = e.message; }
     },
     loadEpicTree(key) {
       if (this.epicTree[key] !== undefined) return;
       this.epicTree[key] = "loading";
-      api.epicTree(key).then((t) => { this.epicTree[key] = t || []; this.scheduleRender(); })
-        .catch(() => { this.epicTree[key] = []; this.scheduleRender(); });
+      api.epicTree(key)
+        .then((t) => {
+          // 응답이 배열이던 시절과 객체({tree, partial})인 지금을 **둘 다** 받는다.
+          const arr = Array.isArray(t) ? t : ((t && t.tree) || []);
+          if (t && !Array.isArray(t) && t.partial) this.partial[key] = t.missing || 1;
+          this.epicTree[key] = arr;
+          this.scheduleRender();
+        })
+        // 실패는 빈 트리로 두되 **못 받았다는 사실**을 남긴다 — 안 그러면 '하위 없음' 이 된다.
+        .catch(() => { this.epicTree[key] = []; this.partial[key] = -1; this.scheduleRender(); });
     },
     scheduleRender() {   // 여러 epic-tree 도착을 1프레임 1회 렌더로 coalesce
       if (this._raf) return;
@@ -273,7 +283,14 @@ export default {
             const tree = epicTree[p.epicKey];
             if (tree === undefined) { self.loadEpicTree(p.epicKey); msgRow("task", "· 불러오는 중…", { anc: [!lastE], conn: eConn }); return; }
             if (tree === "loading") { msgRow("task", "· 불러오는 중…", { anc: [!lastE], conn: eConn }); return; }
-            if (!tree.length) { msgRow("task", "· 하위 티켓 없음", { anc: [!lastE], conn: eConn }); return; }
+            if (!tree.length) {
+              // 못 받은 것과 원래 없는 것을 **다르게 적는다**. 상류가 느렸을 뿐인데 '없음' 이라고
+              // 쓰면 보는 사람은 그걸 사실로 읽는다(실제로 그렇게 읽혔다).
+              const miss = this.partial[e.ticket];
+              msgRow("task", miss ? "· 하위 티켓을 불러오지 못했습니다 — 새로고침하세요"
+                                  : "· 하위 티켓 없음", { anc: [!lastE], conn: eConn });
+              return;
+            }
             const vtree = tree.filter(keep);
             if (!vtree.length) { msgRow("task", "· 표시할 하위 티켓 없음 (Bug/VoC 숨김)", { anc: [!lastE], conn: eConn }); return; }
 

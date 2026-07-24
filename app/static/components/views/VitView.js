@@ -13,7 +13,8 @@ const KLAB = { created: "생성됨", done: "완료됨", resolved: "해결됨" };
 export default {
   name: "VitView",
   components: { TypeBadge, StatusPill },
-  data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false, mods: {}, modErr: {} }; },
+  data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false,
+                    mods: {}, modErr: {}, modPartial: {} }; },
   // 모듈별 병렬 로딩: 골격(shell)을 먼저 그리고 각 모듈을 동시에 요청해 **도착하는 대로** 채운다.
   // (전부 모일 때까지 기다리지 않음 — 느린 모듈이 나머지를 막지 않는다)
   async mounted() {
@@ -21,7 +22,12 @@ export default {
       this.d = await api.vitShell();
       this.d.modules.forEach((m) => {
         api.vitModule(m.module)
-          .then((r) => { this.mods[m.module] = r.issues || []; })
+          .then((r) => {
+            this.mods[m.module] = r.issues || [];
+            // 조립 도중 못 받은 티켓이 있었으면 그 수를 남긴다 — 목록은 보여 주되
+            // '이게 전부' 라고 말하지 않기 위해서다.
+            if (r && r.partial) this.modPartial[m.module] = r.missing || 1;
+          })
           .catch((e) => { this.modErr[m.module] = e.message; this.mods[m.module] = []; });
       });
     } catch (e) { this.err = e.message; }
@@ -124,6 +130,10 @@ export default {
         <div v-if="modErr[m.module]" class="err">· 불러오지 못했습니다: {{ modErr[m.module] }}</div>
         <div v-else-if="!mods[m.module]" class="loading">· 불러오는 중…</div>
         <div v-else-if="!mods[m.module].length" class="empty">· 현안 없음</div>
+        <!-- 일부만 왔다 — 목록은 보여 주되 '이게 전부' 라고 말하지 않는다 -->
+        <div v-else-if="modPartial[m.module]" class="err">
+          · 일부를 불러오지 못했습니다({{ modPartial[m.module] }}건) — 새로고침하세요
+        </div>
         <div v-else class="tbl">
           <div class="vhead"><div>티켓</div><div class="ch-head"><span>Sub Task</span><span>상태</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
           <template v-for="it in mods[m.module]" :key="it.key">

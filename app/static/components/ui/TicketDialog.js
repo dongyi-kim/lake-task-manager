@@ -46,6 +46,7 @@ function daysTo(iso) {
 import { recordOpen } from "../../lib/recent.js";
 import { highlightIn as hljsHighlight, ensureHljsTheme } from "../../lib/hljs.js";
 import { loadTiptap } from "../../lib/tiptap.js";
+import { confirmBox } from "../../lib/confirm.js";
 
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
@@ -524,7 +525,9 @@ export default {
     submitEdit(c, md) { return api.commentUpdate(this.tk, c.id, md); },
     onEdited() { this.editingId = null; this.editInitial = ""; this.reloadComments(); },
     async delComment(c) {
-      if (!window.confirm("이 댓글을 삭제할까요?")) return;
+      // window.confirm 을 쓰면 **앱 창에서는 아무 일도 일어나지 않는다**(Playwright 가 대화상자를
+      // 자동 거절한다). 크롬에서만 되던 이유가 이것이었다.
+      if (!await confirmBox("이 댓글을 삭제할까요?", { okLabel: "삭제", danger: true })) return;
       try { await api.commentDelete(this.tk, c.id); await this.reloadComments(); }
       catch (e) { window.alert("삭제 실패: " + ((e && e.message) || e)); }
     },
@@ -657,6 +660,9 @@ export default {
       root.querySelectorAll(".tkt-desc a[href]").forEach((a) => {
         if (a.dataset.web || a.dataset.jira) return;
         if (a.classList.contains("conf-link") || a.classList.contains("jira-badge")) return;
+        // 맨션은 **사람**이지 웹 링크가 아니다. prod 는 프로필 주소를 절대 URL 로 주는데,
+        // 그것까지 favicon 뱃지로 바꾸면 사람 이름이 남의 사이트 링크처럼 보인다.
+        if (a.classList.contains("user-hover") || /\/secure\/ViewProfile\.jspa/i.test(href)) return;
         const href = a.getAttribute("href") || "";
         if (!/^https?:\/\//i.test(href)) return;
         a.dataset.web = "1";

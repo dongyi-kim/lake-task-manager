@@ -334,10 +334,15 @@ def api_login():
 def api_wbs():
     _require_manager()
     plan = load_plan()
-    epic_prog = _client.epic_progress_map(plan)
-    data = rollup.build(plan, epic_prog)
-    # 주의: Epic→Task→Sub-Task 트리는 여기서 미리 안 긁는다(lazy).
-    #       프론트가 Epic 을 펼칠 때만 GET /api/epic/{key}/tree 로 가져간다.
+
+    def build():
+        epic_prog = _client.epic_progress_map(plan)
+        # 주의: Epic→Task→Sub-Task 트리는 여기서 미리 안 긁는다(lazy).
+        #       프론트가 Epic 을 펼칠 때만 GET /api/epic/{key}/tree 로 가져간다.
+        return rollup.build(plan, epic_prog)
+
+    # ★ 세는 구간 **안에서** 조립해야 한다 — 다 만든 뒤에 세면 카운터는 늘 0 이다.
+    data = _with_partial(build)
     # 진척 스냅샷 기록 (기능2/3 시계열 뒷받침)
     _cache.add_snapshot("pmo", plan.get("project_key", "LAKE"), data["rollup"]["pmo"])
     return JSONResponse(data)
@@ -346,7 +351,10 @@ def api_wbs():
 @app.get("/api/epic/{epic_key}/tree")
 def api_epic_tree(epic_key: str):
     """WBS Gantt 지연 로딩 — Epic 을 펼칠 때 그 Epic 의 자식(Task/Story/Bug) + Sub-Task 트리만 반환."""
-    return JSONResponse(_client.epic_tree(epic_key))
+    tree = _with_partial(lambda: {"tree": _client.epic_tree(epic_key)})
+    # 원래 배열을 그대로 주던 자리다 — 배열엔 '못 받았다' 를 실을 데가 없어 객체로 감쌌다.
+    # 프론트는 둘 다 받아 준다(옛 응답도 그대로 읽힌다).
+    return JSONResponse(tree)
 
 
 @app.get("/api/epic/{epic_key}/progress")
@@ -884,7 +892,23 @@ def api_document_add(key: str, body: _DocBody):
 async def api_attachment_upload(key: str, file: UploadFile = File(...)):
     """이미지/파일 첨부(제출 시). 확정 {id, filename} 반환 → 프론트가 !파일명! 로 참조·롤백."""
     data = await file.read()
-    res = _client.upload_attachment(key, file.filename or "paste.png", data, file.content_type)
+    try:
+        res = _client.upload_attachment(key, file.filename or "paste.png", data, file.content_type)
+    except SessionExpired as e:
+        # ★ 업로드 401 을 **세션 만료로 단정하지 않는다.** 첨부 엔드포인트의 401 은 XSRF 거절일
+        #   때가 있는데(방금 전 코멘트 POST 는 멀쩡히 됐다), 그걸 만료로 올리면 전역 401 핸들러가
+        #   needLogin 을 켜고 앱이 통째로 SSO 로그인 흐름으로 끌려간다 — 보던 화면과 쓰던 글이
+        #   날아가고 홈으로 돌아온다. 사용자가 본 '새로고침되고 홈으로' 가 이것이다.
+        #   세션이 진짜 죽었는지는 **가벼운 조회로 확인**하고, 살아 있으면 이 요청만 실패시킨다.
+        alive = False
+        try:
+            alive = bool(_client.current_user())
+        except Exception:
+            alive = False
+        if not alive:
+            raise
+        return JSONResponse({"ok": False, "error": "첨부 업로드가 거절되었습니다 — " + str(e)[:200]},
+                            status_code=502)
     att = res[0] if isinstance(res, list) and res else (res or {})
     return JSONResponse({"id": str(att.get("id") or ""),
                          "filename": att.get("filename") or (file.filename or "")})
@@ -905,6 +929,21 @@ def api_me():
     return JSONResponse(me)
 
 
+def _with_partial(build):
+    """조립 도중 **못 가져온 게 있었는지**를 응답에 함께 싣는다.
+
+    없는 것과 못 받은 것은 다르다. 구분해서 주지 않으면 화면은 둘을 같은 '없음' 으로 그리고,
+    보는 사람은 상류가 느렸을 뿐인 목록을 사실로 읽는다.
+    """
+    _client.miss_begin()
+    data = build()
+    n = _client.miss_count()
+    if isinstance(data, dict) and n:
+        data["partial"] = True
+        data["missing"] = n
+    return data
+
+
 @app.get("/api/vit/shell")
 def api_vit_shell():
     """현안 골격 — 모듈 목록·모듈별 건수(트리 조립 없음). 프론트가 뼈대를 먼저 그린다."""
@@ -916,20 +955,23 @@ def api_vit_shell():
 def api_vit_module(module: str):
     """현안 — 모듈 하나만. 프론트가 모듈별로 병렬 호출해 도착하는 대로 렌더한다."""
     plan = load_plan()
-    return JSONResponse(vit.build_vit_module(_client, plan, load_people(), module))
+    return JSONResponse(_with_partial(
+        lambda: vit.build_vit_module(_client, plan, load_people(), module)))
 
 
 @app.get("/api/vit/{key}")
 def api_vit_detail(key: str):
     """단일 현안 상세 — 자손 트리 + 코멘트 (프론트 [자세히] 지연 로딩)."""
     plan = load_plan()
-    return JSONResponse(vit.vit_detail(_client, plan, load_people(), key))
+    return JSONResponse(_with_partial(
+        lambda: vit.vit_detail(_client, plan, load_people(), key)))
 
 
 @app.get("/api/vit")
 def api_vit():
     plan = load_plan()
-    return JSONResponse(vit.build_vit(_client, plan, load_people(), jira_base=_settings.jira_base))
+    return JSONResponse(_with_partial(
+        lambda: vit.build_vit(_client, plan, load_people(), jira_base=_settings.jira_base)))
 
 
 @app.get("/api/workload")

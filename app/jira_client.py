@@ -440,11 +440,29 @@ class JiraClient:
     #   (내가 첨부·링크를 직접 바꾼 경우는 쓰기 직후 해당 키를 invalidate 하므로 이미 최신이다.)
     REVALIDATE_PREFIXES = ("issue:", "issueview:", "comments:")
 
+    #: 요청 한 건이 도는 동안의 '못 가져온 개수'(스레드별)
+    _miss = threading.local()
+
     def _wire_cache(self):
         """캐시에 '항상 재검증' 규칙과 스케줄러를 물린다. 호출부를 안 건드리려고 여기 한 곳에서."""
         self.cache.always_revalidate = self.REVALIDATE_PREFIXES
         self.cache.revalidator = self._refresh_bg
         self.cache.skip_producer = self.upstream_down
+
+    # ── 못 가져온 것 세기 ──────────────────────────────────────────────
+    # 트리·목록 조립은 티켓을 하나씩 받아 붙이는데, 그중 몇 개가 실패해도 조립은 계속된다
+    # (하나 못 받았다고 화면 전체를 죽일 이유는 없다). 문제는 **그 사실이 사라진다**는 것이다 —
+    # 화면에는 '하위 티켓 없음' 으로 뜨고, 보는 사람은 진짜 없는 줄 안다.
+    # 그래서 요청 하나가 도는 동안 실패 건수를 세어 두고, 라우트가 응답에 실어 보낸다.
+    # 스레드별로 센다 — FastAPI 동기 라우트는 스레드풀에서 돌아 요청끼리 섞이면 안 된다.
+    def miss_begin(self):
+        self._miss.n = 0
+
+    def miss_add(self, n=1):
+        self._miss.n = getattr(self._miss, "n", 0) + n
+
+    def miss_count(self):
+        return getattr(self._miss, "n", 0)
 
     def _swr(self, key, producer):
         """stale-while-revalidate — 만료돼도 남은 값이 있으면 **즉시** 주고 뒤에서 갱신.
@@ -504,6 +522,10 @@ class JiraClient:
                 raw = None
             if isinstance(raw, dict) and raw.get("key"):
                 out.append(raw)
+            else:
+                # 못 받은 티켓은 목록에서 그냥 빠진다 — 그 사실을 세어 두지 않으면
+                # 화면은 '원래 그만큼뿐' 이라고 말하게 된다(WBS 트리가 그렇게 비었다).
+                self.miss_add()
         return out
 
     def s_today(self):
@@ -723,7 +745,8 @@ class JiraClient:
             try:
                 node["children"].append(self._node_from_issue(self.get_issue(skey)))
             except Exception:
-                pass
+                # 삼키되 **세어 둔다** — 안 그러면 못 받은 하위가 '없는 하위' 가 된다.
+                self.miss_add()
         return node
 
     def _vit_tree(self, key, itype):
@@ -738,6 +761,8 @@ class JiraClient:
             self.prefetch_issues([s.get("key") for s in subs])       # 자식 원본을 한 번에
             return [self._node_from_issue(self.get_issue(s["key"])) for s in subs if s.get("key")]
         except Exception:
+            # 트리를 통째로 못 만들었다 — 빈 트리로 내려가되 '못 만들었다' 는 남긴다.
+            self.miss_add()
             return []
 
     def _issue_comments(self, key, limit=5):

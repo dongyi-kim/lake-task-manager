@@ -200,13 +200,27 @@ class SsoSessionProvider(AuthProvider):
         if json_body is not None:
             kw["data"] = _json.dumps(json_body)          # data=dict 인코딩 어긋남 방지 → 명시 직렬화
         resp = fn(url, **kw)
-        if resp.status == 401:
-            raise SessionExpired(f"HTTP 401 on {path} — 세션 만료. login 재실행.")
         if resp.status >= 400:
+            # ★ 401 도 **본문을 읽고 나서** 판단한다. 예전엔 본문 없이 '세션 만료' 로 단정했는데,
+            #   첨부 업로드의 401 은 XSRF 거절일 때도 있어(Jira 는 이유를 본문에 적는다)
+            #   화면에는 '401 저장 실패' 만 뜨고 진짜 이유는 아무 데도 안 남았다.
             try:
                 body = resp.text()
             except Exception:
                 body = ""
+            hdrs = ""
+            try:
+                # Jira 는 XSRF 거절을 이 헤더로도 알린다(본문이 HTML 이라 안 읽힐 때가 있다).
+                xa = resp.headers.get("x-authentication-denied-reason") or ""
+                if xa:
+                    hdrs = f" [{xa}]"
+            except Exception:
+                pass
+            print(f"[upload] HTTP {resp.status} {path}{hdrs} :: {(body or '')[:300]}",
+                  file=sys.stderr, flush=True)
+            if resp.status == 401:
+                raise SessionExpired(
+                    f"HTTP 401 on {path}{hdrs} — {(body or '세션 만료 가능. login 재실행.')[:200]}")
             raise UpstreamError(resp.status, path, body)
         if not want_json:
             return resp.status
@@ -231,20 +245,42 @@ class SsoSessionProvider(AuthProvider):
         """멀티파트 단일 파일 업로드 — Playwright context.request.post(multipart=...).
         multipart 는 필드명→{name,mimeType,buffer} dict. XSRF 는 Content-Type 없는 헤더로."""
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        resp = self._context.request.post(
-            url,
-            multipart={field: {"name": filename,
-                               "mimeType": content_type or "application/octet-stream",
-                               "buffer": data}},
-            headers=self._xsrf_headers(url, multipart=True),
-        )
-        if resp.status == 401:
-            raise SessionExpired(f"HTTP 401 on {path} — 세션 만료. login 재실행.")
+        body = {field: {"name": filename,
+                        "mimeType": content_type or "application/octet-stream",
+                        "buffer": data}}
+        resp = self._context.request.post(url, multipart=body,
+                                          headers=self._xsrf_headers(url, multipart=True))
+        if resp.status in (401, 403):
+            # 한 번은 **순수 no-check 로만** 다시 던져 본다.
+            # 우리 기본 헤더는 브라우저처럼 보이게 꾸민다(Origin/Referer/XHR + 쿠키의 xsrf 토큰 echo).
+            # Bitbucket 검색이 그래야 통과해서 그렇게 맞춰 뒀는데, Jira 의 첨부 업로드는 반대로
+            # **비브라우저 클라이언트**로 보일 때(no-check 만 있을 때) 통과하는 구성이 있다.
+            # 둘 중 무엇이 맞는지는 인스턴스 설정이 정하므로, 실패했을 때만 다른 쪽으로 한 번 더 본다.
+            from .base import MULTIPART_HEADERS
+            print(f"[upload] {resp.status} — no-check 단독 헤더로 1회 재시도: {path}",
+                  file=sys.stderr, flush=True)
+            resp = self._context.request.post(url, multipart=body, headers=dict(MULTIPART_HEADERS))
         if resp.status >= 400:
+            # ★ 401 도 **본문을 읽고 나서** 판단한다. 예전엔 본문 없이 '세션 만료' 로 단정했는데,
+            #   첨부 업로드의 401 은 XSRF 거절일 때도 있어(Jira 는 이유를 본문에 적는다)
+            #   화면에는 '401 저장 실패' 만 뜨고 진짜 이유는 아무 데도 안 남았다.
             try:
                 body = resp.text()
             except Exception:
                 body = ""
+            hdrs = ""
+            try:
+                # Jira 는 XSRF 거절을 이 헤더로도 알린다(본문이 HTML 이라 안 읽힐 때가 있다).
+                xa = resp.headers.get("x-authentication-denied-reason") or ""
+                if xa:
+                    hdrs = f" [{xa}]"
+            except Exception:
+                pass
+            print(f"[upload] HTTP {resp.status} {path}{hdrs} :: {(body or '')[:300]}",
+                  file=sys.stderr, flush=True)
+            if resp.status == 401:
+                raise SessionExpired(
+                    f"HTTP 401 on {path}{hdrs} — {(body or '세션 만료 가능. login 재실행.')[:200]}")
             raise UpstreamError(resp.status, path, body)
         try:
             return resp.json()
