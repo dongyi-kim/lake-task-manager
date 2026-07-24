@@ -367,6 +367,55 @@ class SsoSessionProvider(AuthProvider):
     def get_bytes(self, path, params=None):
         return self._submit(lambda: self._fetch_bytes(path, params))
 
+    def renew_silent(self, targets, save_cb=None):
+        """**창을 띄우지 않고** 세션을 되살린다 — 리다이렉트만으로 끝나는 흔한 경우를 위해서다.
+
+        provider 컨텍스트는 **headless** 라, 여기서 실제 페이지를 열어 서비스로 이동하면
+        앱→IdP→앱 리다이렉트 체인(JS·meta-refresh 포함)이 화면에 아무것도 안 뜨고 끝난다.
+        `context.request.get`(다른 곳의 '조용한 시도')은 **HTTP 30x 만** 따라가 SSO 의
+        JS/meta 리다이렉트를 놓치고 자주 실패한다 → 그때마다 사용자에게 창이 떴다.
+        이 메서드는 진짜 페이지 네비게이션이라 그 체인을 완주한다. IdP 세션이 아직 살아 있으면
+        사람은 아무것도 안 보고 인증이 갱신된다. 로그인 폼이 떠야 하는(사람 입력이 필요한)
+        경우에는 갱신이 안 되고 False → 호출부가 그제서야 보이는 창을 연다.
+
+        targets: [(base, [probe_path…]), …]. 하나라도 새로 인증되면 갱신된 storage_state 를
+        save_cb(state) 로 넘긴다(디스크 저장은 호출부 몫). 반환: 새로 인증된 게 있으면 True.
+        """
+        def do():
+            page = self._context.new_page()          # headless → 화면에 안 뜬다
+            renewed = False
+            try:
+                for base, paths in (targets or []):
+                    b = (base or "").rstrip("/")
+                    if not b:
+                        continue
+                    if service_probe(self._context, b, paths)[0]:
+                        continue                     # 이미 살아 있으면 건드리지 않는다
+                    try:
+                        page.goto(b, wait_until="domcontentloaded")
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=12000)
+                        except Exception:
+                            pass                     # 아이들 안 돼도 아래 프로브로 판정
+                    except Exception:
+                        continue
+                    if service_probe(self._context, b, paths)[0]:
+                        renewed = True
+            finally:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+            if renewed and save_cb:
+                try:
+                    save_cb(self._context.storage_state())
+                except Exception:
+                    pass
+            return renewed
+
+        # 사용자 대기를 막지 않게 쓰기(-1) 우선순위로 — 이건 사람이 기다리는 로그인 경로다.
+        return self._submit(do, PRIO_WRITE)
+
     def close(self):
         try:
             self._jobs.put((99, next(self._seq), None))

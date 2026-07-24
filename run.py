@@ -85,6 +85,36 @@ def _silent_sso(context, base, paths):
     return service_probe(context, base, paths)
 
 
+def _silent_renew_via_provider(appmain, base, paths):
+    """headless provider 로 **창 없이** 세션 갱신을 시도한다 — 리다이렉트만으로 끝나면 창이 안 뜬다.
+
+    _silent_sso 는 `context.request.get`(HTTP 30x 만) 이라 SSO 의 JS/meta 리다이렉트를 못 따라가
+    자주 헛돈다. provider 는 headless 컨텍스트라 거기서 진짜 페이지를 열면 리다이렉트 체인을
+    끝까지 태우면서도 화면엔 아무것도 안 뜬다. 성공하면 provider 가 갱신된 세션을 저장·보유하므로
+    이후 REST 는 바로 정상 응답이 온다. 사람이 입력해야 하는 경우엔 False → 호출부가 창을 연다."""
+    try:
+        prov = appmain._client.provider          # 살아 있는 headless provider (없으면 LoginRequired)
+    except Exception:
+        return False
+    fn = getattr(prov, "renew_silent", None)
+    if not fn:
+        return False
+    try:
+        store = appmain._client.sso_store()
+        return bool(fn([(base, paths)], save_cb=store.save_all_from))
+    except Exception:
+        return False
+
+
+def _poke_auth_changed(page):
+    """앱 페이지에 '인증 상태가 바뀌었다' 를 즉시 알린다 — 설정창·상단 알림이 다음 폴링(4초)을
+    기다리지 않고 **바로** 다시 확인하게. (앱 창 모드에서만 page 가 우리 앱이라 의미가 있다.)"""
+    try:
+        page.evaluate("() => window.dispatchEvent(new CustomEvent('auth-ok'))")
+    except Exception:
+        pass
+
+
 def _login_one_service(page, context, name, base, paths, per_timeout, appmain):
     """서비스 하나를 앱 창에서 열어 SSO 로그인시키고 인증될 때까지 기다린다 — (ok, 이유).
 
@@ -146,11 +176,14 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
         for name, base, paths in targets:
             # 이미 세션이 살아 있으면(직전 로그인·리다이렉트) 창을 열지 않고 통과
             ok, why = service_probe(context, base, paths)
+            silent_ok = False
             if not ok:
-                # ① 먼저 **창 없이** — 리다이렉트만으로 끝나면 사용자는 아무것도 안 본다.
-                ok, why = _silent_sso(context, base, paths)
-                if ok:
-                    print(f"[login]   {name} 창 없이 인증됨")
+                # ① 먼저 **창 없이** — headless provider 로 리다이렉트 체인을 완주시킨다.
+                #    IdP 세션이 살아 있으면 사용자는 창을 아예 못 본다(대부분의 '계속 뜨는' 창이 이 경우).
+                if _silent_renew_via_provider(appmain, base, paths):
+                    ok = True
+                    silent_ok = True                      # provider 가 이미 저장·보유 → 아래서 또 저장 안 함
+                    print(f"[login]   {name} 창 없이 인증됨(리다이렉트)")
             if not ok:
                 if login_page is None or login_page.is_closed():
                     login_page = context.new_page()      # 로그인 전용 임시 창 (앱 창과 별개)
@@ -160,11 +193,16 @@ def _do_login_in_window(s, page, context, appmain, per_timeout=300, only_primary
             # 되는 대로 **바로** 저장·반영한다. 전부 끝난 뒤에 저장하면 그 사이 앱은 여전히
             # 미인증으로 보이고, 사용자는 '됐다는데 안 됐다' 를 겪는다.
             if ok:
-                try:
-                    appmain._client.sso_store().save_all_from(context.storage_state())
-                    appmain._client.reset_provider()
-                except Exception as e:
-                    print(f"[login]   세션 저장 실패: {e}")
+                if not silent_ok:
+                    # 창 로그인으로 붙은 경우만 앱 창(headed) 세션을 저장·반영한다.
+                    # (창 없이 갱신됐으면 provider 가 이미 자기 세션을 저장·보유하고 있다.)
+                    try:
+                        appmain._client.sso_store().save_all_from(context.storage_state())
+                        appmain._client.reset_provider()
+                    except Exception as e:
+                        print(f"[login]   세션 저장 실패: {e}")
+                # 인증이 방금 섰다 → 설정창·상단 알림이 **바로** 다시 확인하게 앱 페이지를 깨운다.
+                _poke_auth_changed(page)
                 # 이 서비스 로그인 창은 여기서 닫는다 — 다음 서비스를 기다리는 동안 떠 있을 이유가 없다.
                 try:
                     if login_page is not None and not login_page.is_closed():

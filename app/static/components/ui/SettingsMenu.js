@@ -34,10 +34,13 @@ export default {
     this._onDoc = (e) => { if (this.open && this.$el && !this.$el.contains(e.target)) this.close(); };
     document.addEventListener("click", this._onDoc, true);
     document.addEventListener("keydown", this._onEsc = (e) => { if (e.key === "Escape" && this.open) this.close(); });
+    // 로그인이 방금 성공하면(서버가 auth-ok 를 쏜다) 4초 폴링을 기다리지 말고 **즉시** 다시 확인한다.
+    window.addEventListener("auth-ok", this._onAuthOk = () => { if (this.open) this.probeAll(); });
   },
   unmounted() {
     document.removeEventListener("click", this._onDoc, true);
     document.removeEventListener("keydown", this._onEsc);
+    window.removeEventListener("auth-ok", this._onAuthOk);
     this._stopPoll();
   },
   methods: {

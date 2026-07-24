@@ -20,6 +20,11 @@ export default {
       if (!this.hasCache) this.show = true;
       this.kick();
     });
+    // 서버가 로그인 성공을 알리면(창 없이 갱신 포함) 오버레이를 바로 걷고 다음 시도를 풀어 준다.
+    window.addEventListener("auth-ok", () => {
+      this.show = false; this.msg = ""; this.busy = false;
+      this.tried = false; this._lastTry = 0;         // 쿨다운 리셋 — 다음에 정말 필요하면 즉시 재시도
+    });
     // ★ 캐시가 살아 있으면 화면을 막지 않는다 — 오프라인에서도 최소한의 이용성을 준다.
     //   그때도 로그인 시도는 백그라운드로 계속되고(아래 kick), 상태는 상단 알림이 말한다.
     api.health().then((h) => {
