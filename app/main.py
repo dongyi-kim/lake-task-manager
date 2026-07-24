@@ -72,8 +72,18 @@ def _on_session_expired(request: Request, exc: SessionExpired):
     """세션 없음(LoginRequired)·만료(SessionExpired) → 500 대신 401 + needLogin 플래그.
 
     여기까지 왔다는 건 **캐시로도 못 막았다**는 뜻이다(캐시가 있으면 낡은 값으로 답했다).
-    그러니 이 지점에서 상류를 '죽음' 으로 표시해 둔다 — 다음 호출들은 죽은 세션에 붙어
-    수십 초를 버리는 대신 곧바로 캐시로 답한다."""
+
+    ★ 하지만 **개별 요청의 401 을 세션 만료로 단정하지 않는다.** XSRF 거절·특정 엔드포인트
+      권한·상류 순간 오류도 401 로 온다. 그걸 만료로 처리하면 프론트가 로그인을 걸고
+      인증 창이 뜬다(사용자가 겪은 '자꾸 크로미움 창 뜨는' 그것이다).
+      /myself 로 한 번 확인해서 **세션이 정말 죽었을 때만** needLogin 을 켠다.
+      살아 있으면 이 요청만 실패시킨다 — 화면은 그대로다.
+    """
+    if _settings.jira_env == "prod" and _client.session_alive():
+        return JSONResponse(
+            status_code=502,
+            content={"error": "요청이 거절되었습니다(세션은 정상) — " + str(exc)[:160]})
+    # 세션이 정말 죽었다 — 다음 호출들이 죽은 세션에 붙어 수십 초를 버리지 않게 표시.
     _client.mark_upstream_down(str(exc)[:120])
     return JSONResponse(
         status_code=401,

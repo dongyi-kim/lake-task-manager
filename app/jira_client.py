@@ -602,13 +602,18 @@ class JiraClient:
                 data = self.provider.get_json("/rest/api/2/search", params={
                     "jql": jql, "fields": self._issue_fields(),
                     "startAt": start, "maxResults": 100})
-                # ★ **검색 응답이 아닌 것을 '결과 0건' 으로 읽지 않는다.**
-                #   인증이 끊긴 Jira 는 로그인 페이지로 302→200(HTML) 을 주는데, 그걸 dict 로
-                #   받아 issues 를 꺼내면 빈 목록이 된다. 그 빈 목록이 캐시에 박히면 인증이
-                #   끝난 뒤에도 화면은 계속 '결과 없음' 이다(실제로 PMO_VIT 가 그렇게 비었다).
+                # 검색 응답이 아니면(예: 인증 끊긴 Jira 의 로그인 HTML) 그 자리에서 멈춘다.
+                # ★ 예전엔 여기서 곧장 SessionExpired 를 올렸는데, 검색은 VIT·WBS·워크로드·
+                #   내 Task 에서 쉴 새 없이 돈다 — 응답이 조금만 예상과 달라도 그때마다 세션을
+                #   '죽음' 으로 표시하고 로그인 창이 떴다(어제부터 '인증 계속 풀림' 의 정체).
+                #   대신 **빈 목록은 캐시하지 않는** 것으로 0건 오염을 막고(아래), 여기서는
+                #   그 페이지만 버리고 지금까지 모은 것을 돌려준다. 세션이 진짜 죽었으면
+                #   provider 가 401 에서 이미 SessionExpired 를 던졌을 것이다.
                 if not isinstance(data, dict) or "issues" not in data:
-                    raise SessionExpired(
-                        "검색 응답이 아닙니다 — 인증이 끊겼을 수 있습니다(로그인 페이지 응답).")
+                    snippet = (str(data)[:120] if data is not None else "None")
+                    print(f"[search] 검색 응답 아님(무시): jql={jql[:80]!r} :: {snippet}",
+                          file=sys.stderr, flush=True)
+                    break
                 batch = data.get("issues", [])
                 issues.extend(batch)
                 start += 100
@@ -1143,16 +1148,30 @@ class JiraClient:
     def do_transition(self, key, transition_id, *, time_spent=None, assignee=None,
                       resolution=None, comment=None):
         """전이 실행. 화면 필드는 Jira 규약대로 fields/update 에 나눠 싣는다
-        (worklog·comment 는 '추가' 라 update, resolution·assignee 는 '설정' 이라 fields)."""
-        body = {"transition": {"id": str(transition_id)}}
+        (worklog·comment 는 '추가' 라 update, resolution·assignee 는 '설정' 이라 fields).
+
+        ★ **그 전이의 화면에 있는 필드만 보낸다.** Jira 는 화면에 없는 필드를 넣으면 400 을
+          낸다("Field 'resolution' cannot be set, it is not on the appropriate screen").
+          Open→In Progress 처럼 화면이 없는 전이에는 아무것도 안 보내야 한다. 무엇이 화면에
+          있는지는 transitions() 응답이 이미 알고 있으니 그걸로 거른다.
+        """
+        tid = str(transition_id)
+        allowed = set()
+        for t in (self.transitions(key) or []):
+            if str(t.get("id")) == tid:
+                allowed = {f.get("id") for f in (t.get("fields") or {}).get("fields", [])}
+                break
+        body = {"transition": {"id": tid}}
         fields, update = {}, {}
-        if resolution:
+        if resolution and "resolution" in allowed:
             fields["resolution"] = {"name": resolution}
-        if assignee:
+        if assignee and "assignee" in allowed:
             fields["assignee"] = {"name": assignee}
-        if time_spent:
+        if time_spent and "worklog" in allowed:
             update["worklog"] = [{"add": {"timeSpent": time_spent}}]
-        if comment:
+        # 코멘트는 화면에 없어도 대개 받아 준다(transition comment 는 특별 취급) — 다만 화면이
+        # comment 를 선언했거나, 아무 제약 정보가 없을 때만 넣어 불필요한 400 을 피한다.
+        if comment and ("comment" in allowed or not allowed):
             update["comment"] = [{"add": {"body": comment}}]
         if fields:
             body["fields"] = fields
@@ -1340,6 +1359,19 @@ class JiraClient:
             return self.cache.get_or_set(f"myself:{self.env}", self.s.cache_ttl_seconds, do)[0]
         except Exception:
             return {}
+
+    def session_alive(self):
+        """세션이 **정말** 살아 있는가 — /myself 를 캐시 없이 직접 물어본다.
+
+        개별 요청의 401 은 세션이 죽어서가 아닐 때가 많다(XSRF 거절, 특정 엔드포인트 권한,
+        상류의 순간 오류). 그걸 세션 만료로 단정하면 로그인 흐름이 돌고 인증 창이 뜬다.
+        여기서 한 번 확인해, /myself 가 되면 세션은 산 것으로 본다.
+        """
+        try:
+            u = self.provider.get_json("/rest/api/2/myself")
+            return bool(u and (u.get("name") or u.get("key")))
+        except Exception:
+            return False
 
     def ticket_badge(self, key):
         """티켓 인라인 뱃지용 경량 요약(요약/타입/상태/담당자). 없으면 None. (renderedFields 미포함=가벼움)"""

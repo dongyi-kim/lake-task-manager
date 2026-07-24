@@ -150,6 +150,15 @@ class SsoSessionProvider(AuthProvider):
         url = path if path.startswith(("http://", "https://")) else self.base + path
         resp = self._context.request.get(url, params=params or {})
         if resp.status in (401, 403) or resp.status >= 500:
+            # ★ **무엇이** 401 인지 찍는다. '인증 계속 풀림' 이 어느 요청에서 시작되는지
+            #   여기 없이는 알 수 없다(401 은 세션 만료·XSRF·권한이 다 같은 코드로 온다).
+            reason = ""
+            try:
+                reason = resp.headers.get("x-authentication-denied-reason") or ""
+            except Exception:
+                pass
+            print(f"[auth] GET {resp.status} {path}"
+                  + (f" [{reason}]" if reason else ""), file=sys.stderr, flush=True)
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
         return resp.text() if as_text else resp.json()
 
@@ -313,6 +322,7 @@ class SsoSessionProvider(AuthProvider):
         url = path if path.startswith(("http://", "https://")) else self.base + path
         resp = self._context.request.get(url, params=params or {})
         if resp.status in (401, 403) or resp.status >= 500:
+            print(f"[auth] GET(bytes) {resp.status} {path}", file=sys.stderr, flush=True)
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
         return resp.body(), resp.headers.get("content-type")
 
