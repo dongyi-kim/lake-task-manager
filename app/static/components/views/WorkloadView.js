@@ -26,13 +26,23 @@ export default {
   components: { ProgressBar, TypeBadge, Avatar },
   data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {}, metric: "count",
                     mods: {}, modErr: {}, busy: false }; },
-  created() { this.bodyRefs = {}; },   // 비반응 DOM 참조(모듈 body)
+  created() {
+    this.bodyRefs = {};                // 비반응 DOM 참조(모듈 body)
+    // 좌하단 플로팅 새로고침 — 뷰마다 캐시 비우고 다시 받는 함수 이름이 달라 여기서 잇는다.
+    window.addEventListener("force-refresh", this._fr = async () => {
+      try { await this.hardRefresh(); }
+      finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
+    });
+  },
   async mounted() {
     await this.load();
     this._onResize = () => this.scheduleMeasure();
     window.addEventListener("resize", this._onResize);
   },
-  unmounted() { if (this._onResize) window.removeEventListener("resize", this._onResize); },
+  unmounted() {
+    if (this._onResize) window.removeEventListener("resize", this._onResize);
+    window.removeEventListener("force-refresh", this._fr);
+  },
   activated() { this.scheduleMeasure(); },   // keep-alive 재활성 시 평균선 재측정
   computed: {
     WL_COLS() { return WL_COLS; },
@@ -237,10 +247,6 @@ export default {
         <div class="chip">진행 중 <b>{{ totals.ip }}</b>건</div>
         <div class="chip">할당됨 <b>{{ totals.op }}</b>건</div>
         <div class="chip">최근 7일 완료 <b>{{ totals.dn }}</b>건</div>
-      </div>
-      <div class="vtools">
-        <button class="btn" :disabled="busy" @click="hardRefresh">
-          {{ busy ? '다시 받는 중…' : '↻ 강제 새로고침' }}</button>
       </div>
       <div class="legend wl-legend">
         <span><i class="sw task"></i> Task</span>

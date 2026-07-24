@@ -5,6 +5,7 @@ import WorkloadView from "./views/WorkloadView.js";
 import VitView from "./views/VitView.js";
 import WbsView from "./views/WbsView.js";
 import DevToolsView from "./views/DevToolsView.js";
+import FloatingRefresh from "./ui/FloatingRefresh.js";
 import FormulaCallout from "./ui/FormulaCallout.js";
 import LoginOverlay from "./ui/LoginOverlay.js";
 import StatusBanner from "./ui/StatusBanner.js";
@@ -36,7 +37,7 @@ function ticketOf() {
 
 export default {
   name: "AppRoot",
-  components: { FormulaCallout, LoginOverlay, StatusBanner, TicketMenu, TicketDialog, SearchOverlay, SettingsMenu },
+  components: { FormulaCallout, LoginOverlay, StatusBanner, TicketMenu, TicketDialog, SearchOverlay, SettingsMenu, FloatingRefresh },
   // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
@@ -167,6 +168,8 @@ export default {
         <StatusBanner />
         <FormulaCallout :route="route" />
         <keep-alive><component :is="view"></component></keep-alive>
+        <!-- 좌하단 플로팅 강제 새로고침 — 데이터 화면에서만(개발 도구·티켓 단독 페이지 제외) -->
+        <FloatingRefresh v-if="route !== 'devtools'" />
       </template>
       <TicketMenu />
       <LoginOverlay />

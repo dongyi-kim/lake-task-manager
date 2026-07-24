@@ -184,3 +184,15 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
 .dt-note { margin-top: 16px; font-size: 12px; color: var(--muted); }
 .dt-note code { font-family: ui-monospace, Consolas, monospace; }
+
+/* 좌하단 플로팅 강제 새로고침 — 탭마다 제각각이던 새로고침을 하나로. 늘 같은 자리·같은 아이콘.
+   자주 쓰는 게 아니라 '막혔을 때' 쓰는 것이라 눈에 먼저 들 필요는 없되, 찾을 땐 늘 여기 있다. */
+.fab-refresh { position: fixed; left: 18px; bottom: 18px; z-index: 8000;
+  width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; cursor: pointer; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgba(0,0,0,.16); transition: color .12s, border-color .12s, transform .12s; }
+.fab-refresh:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
+.fab-refresh svg { width: 20px; height: 20px; }
+.fab-refresh.busy { color: var(--accent); cursor: default; }
+.fab-refresh.busy svg { animation: ltm-spin .8s linear infinite; }

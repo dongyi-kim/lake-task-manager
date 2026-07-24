@@ -112,6 +112,11 @@ export default {
     // 화면을 다시 그리는 것보다 가볍다 — 스크롤·펼침·옵션이 그대로 남는다).
     this._onChanged = () => this.load({ quiet: true });
     window.addEventListener("ticket-changed", this._onChanged);
+    // 좌하단 플로팅 새로고침
+    window.addEventListener("force-refresh", this._fr = async () => {
+      try { await this.hardRefresh(); }
+      finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
+    });
     this._mq = window.matchMedia(NARROW);
     this._onMq = (e) => { this.axis = e.matches ? "v" : "h"; };
     this._mq.addEventListener ? this._mq.addEventListener("change", this._onMq)
@@ -119,6 +124,7 @@ export default {
   },
   unmounted() {
     window.removeEventListener("ticket-changed", this._onChanged);
+    window.removeEventListener("force-refresh", this._fr);
     if (!this._mq) return;
     this._mq.removeEventListener ? this._mq.removeEventListener("change", this._onMq)
                                  : this._mq.removeListener(this._onMq);
@@ -534,11 +540,6 @@ export default {
           <option v-for="v in o.opts" :key="v.k" :value="v.k" :title="v.hint">{{ v.label }}</option>
         </select>
       </label>
-      <!-- 그냥 다시 받는 것과 **캐시까지 비우는 것**은 다르다. 낡은 값으로 화면을 지키는
-           구조라(오프라인 대비) '뭔가 이상하다' 싶을 때 끊을 수단이 있어야 한다. -->
-      <button class="mt-refresh" @click="load" title="다시 불러오기">↻</button>
-      <button class="mt-refresh" :disabled="busy" @click="hardRefresh"
-              title="캐시를 비우고 처음부터 다시 받기">⟲</button>
     </div>
   </div>`,
 };

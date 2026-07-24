@@ -9,13 +9,23 @@ export default {
   data() { return { D: null, err: "", unit: "month", expanded: {}, epicTree: {},
                     // Epic 별로 '못 가져온 하위 수'(-1 = 통째로 실패). 없는 것과 못 받은 것은 다르다.
                     partial: {}, hideBugVoc: true, _rt: null, _onResize: null }; },
+  created() {
+    window.addEventListener("force-refresh", this._fr = async () => {
+      try { await this.refresh(); }
+      finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
+    });
+  },
   async mounted() {
     try { this.D = await api.wbs(); this.$nextTick(() => this.renderGantt()); }
     catch (e) { this.err = e.message; }
     this._onResize = () => { clearTimeout(this._rt); this._rt = setTimeout(() => this.renderGantt(), 150); };
     window.addEventListener("resize", this._onResize);
   },
-  unmounted() { if (this._onResize) window.removeEventListener("resize", this._onResize); if (this._raf) cancelAnimationFrame(this._raf); },
+  unmounted() {
+    if (this._onResize) window.removeEventListener("resize", this._onResize);
+    if (this._raf) cancelAnimationFrame(this._raf);
+    window.removeEventListener("force-refresh", this._fr);
+  },
   activated() { this.$nextTick(() => this.renderGantt()); },   // keep-alive 재활성 시 재렌더
   computed: {
     pmo() { return this.D ? this.D.rollup.pmo : null; },
@@ -358,7 +368,6 @@ export default {
           <div class="seg"><button v-for="u in ['day','week','month']" :key="u" :class="{ on: unit === u }" @click="setUnit(u)">{{ unitLabel(u) }}</button></div>
           <button class="btn" @click="expandAll">전체 Epic 펼치기</button>
           <button class="btn" @click="collapseAll">전체 접기</button>
-          <button class="btn" @click="refresh">↻ 새로고침</button>
         </div>
       </div>
 

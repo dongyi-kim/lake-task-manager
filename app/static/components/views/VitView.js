@@ -18,6 +18,16 @@ export default {
   // 모듈별 병렬 로딩: 골격(shell)을 먼저 그리고 각 모듈을 동시에 요청해 **도착하는 대로** 채운다.
   // (전부 모일 때까지 기다리지 않음 — 느린 모듈이 나머지를 막지 않는다)
   async mounted() { await this.load(); },
+  created() {
+    // 좌하단 플로팅 새로고침이 부른다 — 뷰마다 캐시를 비우고 다시 받는 함수가 이름이 달라
+    // (hardRefresh/refresh) 여기서 한 번에 잇는다. 끝나면 버튼에 '됐다' 고 알린다.
+    window.addEventListener("force-refresh", this._fr = async () => {
+      try { await this.hardRefresh(); } finally {
+        window.dispatchEvent(new CustomEvent("force-refresh-done"));
+      }
+    });
+  },
+  unmounted() { window.removeEventListener("force-refresh", this._fr); },
   methods: {
     /** 골격(모듈 목록)을 먼저 받고, 모듈별 본문을 병렬로 채운다.
      *  ★ 이 로직이 예전엔 mounted() 안에 인라인이라, hardRefresh 가 this.load() 를 부르면
@@ -141,13 +151,6 @@ export default {
         </div>
       </div>
       <div class="note" v-if="d.summary.skippedDup">상위가 이미 PMO_VIT 인 자손 현안 {{ d.summary.skippedDup }}건은 중복으로 숨김</div>
-
-      <div class="vtools">
-        <!-- 캐시를 비우고 처음부터 다시 받는다. 낡은 값으로 화면을 지키는 구조라(오프라인 대비)
-             '뭔가 이상하다' 싶을 때 사람이 직접 끊어 줄 수단이 필요하다. -->
-        <button class="btn" :disabled="busy" @click="hardRefresh">
-          {{ busy ? '다시 받는 중…' : '↻ 강제 새로고침' }}</button>
-      </div>
 
       <div v-for="(m, i) in d.modules" :key="m.module" class="vgroup">
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.count }} 현안</span></div>

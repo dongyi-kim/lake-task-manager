@@ -17,6 +17,16 @@ import re
 from html import escape, unescape
 from html.parser import HTMLParser
 
+# 제로폭 문자 — 눈에 안 보이지만 str.strip() 은 공백으로 안 본다(zwnj ‌ 등).
+# TipTap 이 빈 문단을 <p>&nbsp;&zwnj;</p> 로 내보내는데, 이걸 안 지우면 댓글 끝에 빈 줄이
+# 하나씩 쌓인다(사용자가 겪은 그것). strip() 앞에 이 문자들을 함께 벗긴다.
+_ZERO_WIDTH = "​‌‍﻿"
+_BLANK_CHARS = _ZERO_WIDTH + chr(0x20) + chr(0x09) + chr(0x0d) + chr(0x0a) + chr(0xa0)
+
+
+def _blank(t):
+    """공백·제로폭만 남은 문자열인가 → 빈 것으로 친다."""
+    return not (t or "").strip(_BLANK_CHARS)
 # ────────────────────────── HTML → Jira wiki ──────────────────────────
 
 _VOID = {"br", "img", "hr"}
@@ -152,7 +162,7 @@ def _txt(node):
 def _blocks(node, lines, depth=0):
     for c in node.children:
         if c.text is not None:
-            if c.text.strip():                       # 벌거벗은 텍스트 → 문단
+            if not _blank(c.text):                    # 벌거벗은 텍스트 → 문단
                 lines.append(_inline_wrap(c.text))
                 lines.append("")
             continue
@@ -173,12 +183,12 @@ def _blocks(node, lines, depth=0):
             inner = []
             _blocks(c, inner)
             lines.append("{" + kind + "}")
-            lines.extend([x for x in inner if x.strip()])
+            lines.extend([x for x in inner if not _blank(x)])
             lines.append("{" + kind + "}")
             lines.append("")
         elif t == "p" or t == "div":
             inner = _inline(c).strip()
-            if inner:
+            if not _blank(inner):
                 lines.append(inner)
                 lines.append("")
         elif t in ("h1", "h2", "h3", "h4", "h5", "h6"):
@@ -190,7 +200,7 @@ def _blocks(node, lines, depth=0):
         elif t == "blockquote":
             inner = []
             _blocks(c, inner)
-            body = [x for x in inner if x.strip()]
+            body = [x for x in inner if not _blank(x)]
             if len(body) <= 1:
                 lines.append("bq. " + (body[0] if body else ""))
             else:
