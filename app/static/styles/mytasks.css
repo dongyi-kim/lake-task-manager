@@ -626,3 +626,36 @@
 :root[data-theme="dark"] .mt-colf-b.on { color: #0b1015; }
 /* 세로축 밴드에서는 제목 줄 오른쪽 끝에 붙인다 */
 .mt-bandh-w .mt-colf { margin-right: 10px; }
+
+/* ── 다크 모드에서 면이 안 갈리던 문제 ─────────────────────────────────────
+   밝은 테마는 흰 카드 / 회색 배경이라 면이 저절로 갈리는데, 어두운 테마는 카드(#16181f)와
+   배경(#0e0f13)의 차이가 4단계뿐이라 **카드도 배경도 그냥 검게** 보였다. 테두리도 배경과
+   비슷해 경계가 없었다. 어두운 화면에서는 '밝기 차'가 밝은 화면에서만큼 눈에 안 들어온다.
+
+   그림자로 띄우지 않는 이유: 검은 바탕에 검은 그림자는 아무것도 하지 않는다.
+   대신 **카드를 한 단계 더 밝게 + 테두리를 또렷하게** — 어두운 화면에서 면을 가르는 건
+   결국 이 둘이다. 색(Epic 시그니처)은 이미 다른 일을 하고 있어 여기에 끌어다 쓰지 않는다. */
+:root[data-theme="dark"] .mt-card { background: var(--panel-2); border-color: var(--border); }
+:root[data-theme="dark"] .mt-card:hover {
+  background: color-mix(in srgb, var(--sig, var(--accent)) 14%, var(--panel-3));
+  border-color: color-mix(in srgb, var(--sig, var(--accent)) 60%, var(--border-hi)); }
+/* 유관(내 것 아님) 카드는 **투명도 대신 어두운 면**으로 물러난다 — 투명하게만 만들면
+   배경과 같아져 카드였다는 사실 자체가 사라진다. */
+:root[data-theme="dark"] .mt-card.rel { opacity: .78; background: var(--panel);
+  border-color: var(--border); }
+/* 그룹(부모 Task) 카드는 하위를 담는 그릇이라 한 단계 더 또렷하게 */
+:root[data-theme="dark"] .mt-gcard2 { background: var(--panel); border-color: var(--border-hi); }
+/* 상태 칼럼 띠 — 어두운 배경에선 9% 로는 색이 안 보인다 */
+:root[data-theme="dark"] .mt-colbg > .c-todo { background: color-mix(in srgb, var(--st-todo) 16%, transparent); }
+:root[data-theme="dark"] .mt-colbg > .c-inprogress { background: color-mix(in srgb, var(--st-prog) 13%, transparent); }
+:root[data-theme="dark"] .mt-colbg > .c-done { background: color-mix(in srgb, var(--st-done) 12%, transparent); }
+:root[data-theme="dark"] .mt-gbody.plain .mt-cell {
+  background: color-mix(in srgb, var(--tc, var(--border)) 10%, transparent); }
+/* 세로축 밴드도 같은 이유로 진하게 */
+:root[data-theme="dark"] .mt-band { background: color-mix(in srgb, var(--tc, var(--border)) 10%, transparent); }
+/* 급한 카드도 다크에서는 **panel-2 위에** 붉은 기를 얹는다 — 밝은 테마용 --panel 위에 얹으면
+   다시 배경과 같은 어둠으로 내려앉아, 급한 티켓만 면이 사라졌다. */
+:root[data-theme="dark"] .mt-card.urgent:not(:hover),
+:root[data-theme="dark"] .mt-cell .mt-card.two.urgent:not(:hover),
+:root[data-theme="dark"] .mt-band .mt-card.urgent:not(:hover) {
+  background: color-mix(in srgb, var(--today) 12%, var(--panel-2)); }
