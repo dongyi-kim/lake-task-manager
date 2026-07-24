@@ -664,10 +664,14 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
    놓고 바로 타이핑할 수 있다(안 주면 폭이 0 이라 커서가 안 들어간다 — prod Jira 와 동일 동작). */
 .cmt-ed-host .ProseMirror ul[data-type="taskList"] { list-style: none; padding-left: 2px; margin: 0 0 10px; }
 .cmt-ed-host .ProseMirror ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 7px; margin: 3px 0; }
-.cmt-ed-host .ProseMirror ul[data-type="taskList"] li > label { flex: 0 0 auto; margin-top: 3px; user-select: none; }
+/* 체크박스와 글의 세로 정렬 — label 높이를 글 한 줄(line-height)과 같게 두고 그 안에서 체크박스를
+   가운데 정렬하면, 체크박스가 **첫 줄 글자와 같은 높이**에 온다(여러 줄이어도 첫 줄 기준). */
+.cmt-ed-host .ProseMirror ul[data-type="taskList"] li > label { flex: 0 0 auto; margin: 0;
+  display: inline-flex; align-items: center; height: 1.65em; user-select: none; }
 .cmt-ed-host .ProseMirror ul[data-type="taskList"] li > div { flex: 1 1 auto; min-width: 0; }
-.cmt-ed-host .ProseMirror ul[data-type="taskList"] li > div > p { margin: 0; }
-.cmt-ed-host .ProseMirror ul[data-type="taskList"] input[type="checkbox"] { cursor: pointer; width: 14px; height: 14px; }
+.cmt-ed-host .ProseMirror ul[data-type="taskList"] li > div > p { margin: 0; line-height: 1.65; }
+.cmt-ed-host .ProseMirror ul[data-type="taskList"] input[type="checkbox"] { cursor: pointer;
+  width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
 .cmt-ed-host .ProseMirror a { color: var(--accent); text-decoration: none; }
 /* 뱃지는 일반 링크 색(accent)을 상속하면 안 된다 — 렌더와 같은 글자색으로.
    (색 없는 .jb-name 이 <a> 의 파란색을 물려받아 에디터에서만 시퍼렇게 보이던 문제) */

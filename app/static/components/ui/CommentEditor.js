@@ -1203,8 +1203,9 @@ export default {
         html = html.replace(re, _jiraBase.replace(/\/+$/, "") + "$1");
       }
       const text = (this._ed.getText() || "").trim();
-      // 이미지/링크 뱃지만 있는 댓글도 유효한 내용이다(텍스트가 비어도 통과).
-      const hasNode = /<img\b/i.test(html) || /<a\b/i.test(html);
+      // 이미지/링크 뱃지·체크박스만 있는 댓글도 유효한 내용이다(텍스트가 비어도 통과).
+      // (체크박스는 getText 에 안 잡혀 '내용 없음' 으로 오판되던 문제 — <input> 존재로 판정.)
+      const hasNode = /<img\b/i.test(html) || /<a\b/i.test(html) || /<input\b/i.test(html);
       if (!text && !hasNode) { this.err = "내용을 입력하세요."; return; }
       this.busy = true; this.err = "";
       const uploaded = [];
