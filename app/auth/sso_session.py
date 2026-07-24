@@ -156,7 +156,7 @@ class SsoSessionProvider(AuthProvider):
             raise box[1]
         return box[0]
 
-    def _fetch(self, path, params, as_text):
+    def _fetch(self, path, params, as_text, quiet=False):
         # Playwright 스레드에서 실행 — body 추출(json()/text())도 반드시 이 스레드에서.
         # path 가 절대 URL(http…)이면 그대로(Confluence 등 별도 호스트), 아니면 jira base + path.
         url = path if path.startswith(("http://", "https://")) else self.base + path
@@ -169,14 +169,17 @@ class SsoSessionProvider(AuthProvider):
                 reason = resp.headers.get("x-authentication-denied-reason") or ""
             except Exception:
                 pass
-            _auth_log(f"[auth] GET {resp.status} {path}" + (f" [{reason}]" if reason else ""))
+            # quiet=상태 확인(트레이·설정창 주기 프로브). 401 은 오류가 아니라 '아직 미인증'
+            # 이라는 **정상 응답**이라, 매분 로그를 남기면 진짜 문제의 로그가 파묻힌다.
+            if not quiet:
+                _auth_log(f"[auth] GET {resp.status} {path}" + (f" [{reason}]" if reason else ""))
             raise SessionExpired(f"HTTP {resp.status} on {path} — 세션 만료 가능. login 재실행.")
         return resp.text() if as_text else resp.json()
 
-    def get_json(self, path, params=None, priority=None):
+    def get_json(self, path, params=None, priority=None, quiet=False):
         if priority is None:
             priority = upstream_priority()      # 백그라운드 갱신은 사용자 요청 뒤로
-        return self._submit(lambda: self._fetch(path, params, False), priority)
+        return self._submit(lambda: self._fetch(path, params, False, quiet=quiet), priority)
 
     def _xsrf_cookie(self, url):
         """이 도메인의 XSRF 토큰 쿠키 값(없으면 None). 멀티파트는 이 값을 쿼리로도 보내야 한다."""

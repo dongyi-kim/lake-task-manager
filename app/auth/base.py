@@ -89,7 +89,7 @@ class AuthProvider:
         return: 파싱된 JSON 응답(첨부 객체 리스트 등)."""
         raise NotImplementedError("이 provider 는 멀티파트 업로드를 지원하지 않습니다")
 
-    def get_json(self, path, params=None):
+    def get_json(self, path, params=None, quiet=False):
         raise NotImplementedError
 
     def get_text(self, path, params=None):

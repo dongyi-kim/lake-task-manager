@@ -96,8 +96,11 @@ def search_all(client, settings, q, scope="scoped", limit=8, only=None):
     funcs = {
         "jira": lambda: _search_jira(client, settings, q, scope, limit),
         "confluence": lambda: _search_confluence(client, settings, q, scope, limit),
-        "bitbucket": lambda: _search_bitbucket(settings, q, limit),
     }
+    # Bitbucket 은 **켰을 때만** 검색한다. 안 켰으면 아예 호출하지 않는다 — 안 쓰는 서비스에
+    # 검색을 보내면 prod 에선 인증 오류의 소음이 되고, 직렬 큐라 그만큼 느려진다.
+    if getattr(settings, "bitbucket_enabled", False):
+        funcs["bitbucket"] = lambda: _search_bitbucket(settings, q, limit)
     if only:
         funcs = {k: f for k, f in funcs.items() if k in set(only)}
     out = dict(base)

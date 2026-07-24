@@ -195,7 +195,7 @@ def _probe_service(svc):
     ok, detail = False, ""
     for path in paths:
         try:
-            body = _client.provider.get_json(base.rstrip("/") + path)
+            body = _client.provider.get_json(base.rstrip("/") + path, quiet=True)
             who = _extract_user(body)             # 인증 필요 엔드포인트가 200 이면 인증됨
             ok, detail = True, (f"{path} → {who}" if who else f"{path} → 200(인증됨)")
             break
@@ -323,6 +323,25 @@ def api_status():
         st["mode"] = "authenticating" if _probe_online() else "offline"
     st["needLogin"] = unauth
     return JSONResponse(st)
+
+
+class _PrefsBody(BaseModel):
+    bitbucketEnabled: bool | None = None
+
+
+@app.get("/api/prefs")
+def api_prefs_get():
+    """사람이 화면에서 켜고 끄는 설정. 지금은 Bitbucket 연동 여부."""
+    return JSONResponse({"bitbucketEnabled": bool(_settings.bitbucket_enabled),
+                         "bitbucketConfigured": bool(_settings.bitbucket_base)})
+
+
+@app.put("/api/prefs")
+def api_prefs_put(body: _PrefsBody):
+    if body.bitbucketEnabled is not None:
+        _settings.set_bitbucket_enabled(body.bitbucketEnabled)
+    return JSONResponse({"bitbucketEnabled": bool(_settings.bitbucket_enabled),
+                         "bitbucketConfigured": bool(_settings.bitbucket_base)})
 
 
 @app.post("/api/login")

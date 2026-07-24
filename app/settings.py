@@ -120,9 +120,13 @@ class Settings:
         # Epic Name — Epic 의 **단축어**(보드 칸에 뜨는 이름). 요약과 별개 필드다.
         self.epic_name_field_id = str(pick("EPIC_NAME_FIELD_ID", f.get("epic_name"), "customfield_10011"))
         self.confluence_base = str(pick("CONFLUENCE_BASE", conf.get("base"), "")).rstrip("/")
-        # Bitbucket 은 아직 mock — base 가 설정되면 SSO 로그인 순회 대상에 포함된다.
         _bb = cfg.get("bitbucket") or {}
         self.bitbucket_base = str(pick("BITBUCKET_BASE", _bb.get("base"), "")).rstrip("/")
+        # Bitbucket 연동은 **사람이 화면에서 켜야** 쓴다(기본 꺼짐). base 가 config 에 있어도 이게
+        # False 면 인증 순회·검색에 안 낀다 — 아직 mock 이고, 안 켠 서비스에 SSO 창을 띄우거나
+        # 검색을 보내면 그게 인증 오류 소음이 된다.
+        from app import prefs as _prefs
+        self.bitbucket_enabled = bool(_prefs.load().get("bitbucketEnabled"))
         # 개발자용 진단 기능 — 지금은 **전부 열림**(config 무관). devtools.DEV_TOOLS 가 곧 목록.
         # 노출 제어는 나중에 유저 역할이 생기면 devtools.enabled() 에서 가른다.
         from app import devtools as _devtools
@@ -137,7 +141,8 @@ class Settings:
              "paths": ["/rest/api/2/myself"]},
             {"name": "Confluence", "base": self.confluence_base, "configured": bool(self.confluence_base),
              "paths": ["/rest/api/user/current", "/rest/api/user/current.json"]},
-            {"name": "Bitbucket", "base": self.bitbucket_base, "configured": bool(self.bitbucket_base),
+            {"name": "Bitbucket", "base": self.bitbucket_base,
+             "configured": bool(self.bitbucket_base) and self.bitbucket_enabled,
              "paths": ["/rest/api/1.0/inbox/pull-requests/count", "/rest/api/1.0/repos?limit=1"]},
         ]
         # SSO 로그인 순회·판정에는 **설정된 것만** (base 없는 서비스는 창을 못 연다).
@@ -151,6 +156,22 @@ class Settings:
                                                cache.get("dead_ttl_seconds"), 24 * 3600))
         self.app_host = str(pick("APP_HOST", server.get("host"), "0.0.0.0"))
         self.app_port = int(pick("APP_PORT", server.get("port"), 8000))
+
+    def _recompute_targets(self):
+        """Bitbucket 토글이 바뀌면 인증 순회 대상을 다시 계산한다(재시작 불필요)."""
+        for svc in self.services:
+            if svc["name"] == "Bitbucket":
+                svc["configured"] = bool(self.bitbucket_base) and self.bitbucket_enabled
+        self.auth_targets = [(x["name"], x["base"], x["paths"])
+                             for x in self.services if x["configured"]]
+
+    def set_bitbucket_enabled(self, on):
+        """Bitbucket 연동 on/off — 저장 + 인증 순회 대상 즉시 반영."""
+        from app import prefs as _prefs
+        self.bitbucket_enabled = bool(on)
+        _prefs.save({"bitbucketEnabled": self.bitbucket_enabled})
+        self._recompute_targets()
+        return self.bitbucket_enabled
 
 
 @lru_cache

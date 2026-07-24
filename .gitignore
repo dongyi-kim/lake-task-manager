@@ -27,3 +27,6 @@ venv/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# 런타임 사용자 설정(Bitbucket 연동 등) — 사용자별 상태, 커밋 금지
+app_prefs.json

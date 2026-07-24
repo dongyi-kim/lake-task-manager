@@ -38,11 +38,25 @@ def test_confluence_search_returns_pages():
         assert it["url"].startswith("/spaces/") or "/spaces/" in it["url"]
 
 
-def test_bitbucket_is_mock():
-    r = search.search_all(_client(), get_settings(), "ETL", scope="scoped", limit=5)
-    bb = r["bitbucket"]
-    assert bb.get("mock") is True
-    assert bb["items"] and all(i.get("mock") and i["repo"] for i in bb["items"])
+def test_bitbucket_off_by_default():
+    """Bitbucket 연동은 기본 꺼짐 — 켜지 않으면 검색에 아예 안 낀다(빈 칸)."""
+    s = get_settings()
+    assert s.bitbucket_enabled is False
+    r = search.search_all(_client(), s, "ETL", scope="scoped", limit=5)
+    assert r["bitbucket"]["items"] == []
+
+
+def test_bitbucket_when_enabled_is_mock():
+    """켜면 mock 결과가 나온다(연동 예정)."""
+    s = get_settings()
+    s.set_bitbucket_enabled(True)
+    try:
+        r = search.search_all(_client(), s, "ETL", scope="scoped", limit=5)
+        bb = r["bitbucket"]
+        assert bb.get("mock") is True
+        assert bb["items"] and all(i.get("mock") and i["repo"] for i in bb["items"])
+    finally:
+        s.set_bitbucket_enabled(False)
 
 
 def test_empty_query_returns_empty():

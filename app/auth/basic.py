@@ -25,7 +25,7 @@ class BasicAuthProvider(AuthProvider):
         r.raise_for_status()
         return r
 
-    def get_json(self, path, params=None, priority=0):   # priority 무시(큐 없음)
+    def get_json(self, path, params=None, priority=0, quiet=False):   # priority·quiet 무시(큐 없음)
         return self._get(path, params).json()
 
     def _write(self, method, path, json_body, params, want_json=True):

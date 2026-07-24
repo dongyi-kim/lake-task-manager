@@ -19,6 +19,7 @@ export default {
       // 서비스별 독립 상태 — loading|ok|no|off|err. 각자 도착하는 대로 렌더된다.
       services: SERVICES.map((name) => ({ name, status: "loading", detail: "", configured: null })),
       taMs: typeaheadDelay(),          // 자동완성 대기(ms) — 검색·문서/티켓 링크·@멘션 공통
+      bbEnabled: false, bbConfigured: false, bbBusy: false,   // Bitbucket 연동(저장됨, 기본 꺼짐)
     };
   },
   computed: {
@@ -28,6 +29,8 @@ export default {
   mounted() {
     api.me().then((me) => { this.me = me || null; this.manager = !!(me && me.manager); })
       .catch((e) => { this.me = { error: (e && e.message) || "확인 실패" }; });
+    api.prefs().then((p) => { this.bbEnabled = !!p.bitbucketEnabled; this.bbConfigured = !!p.bitbucketConfigured; })
+      .catch(() => {});
     this._onDoc = (e) => { if (this.open && this.$el && !this.$el.contains(e.target)) this.close(); };
     document.addEventListener("click", this._onDoc, true);
     document.addEventListener("keydown", this._onEsc = (e) => { if (e.key === "Escape" && this.open) this.close(); });
@@ -39,6 +42,13 @@ export default {
   },
   methods: {
     toggle() { this.open ? this.close() : this.openMenu(); },
+    async setBitbucket(on) {
+      if (this.bbBusy) return;
+      this.bbBusy = true;
+      try { const p = await api.setPrefs({ bitbucketEnabled: on }); this.bbEnabled = !!p.bitbucketEnabled; }
+      catch (e) { /* 실패하면 원래 값 유지 */ }
+      finally { this.bbBusy = false; this.probeAll(); }
+    },
     setTa(ms) { this.taMs = ms; setTypeaheadDelay(ms); },
     openMenu() {
       this.open = true;
@@ -108,6 +118,16 @@ export default {
         <button v-if="needsAuth" class="sm-btn primary" :disabled="loggingIn" @click="authenticate">
           {{ loggingIn ? '인증 창 진행 중…' : '인증하기 (SSO 로그인)' }}
         </button>
+        <!-- Bitbucket 연동 — 켰을 때만 인증 순회·검색에 낀다(기본 꺼짐, 저장됨) -->
+        <div class="sm-toggle-row bb-row">
+          <span class="sm-tg-label">Bitbucket 연동
+            <em v-if="!bbConfigured" class="sm-who-h">config 에 bitbucket.base 필요</em>
+            <em v-else class="sm-who-h">켜면 인증·검색에 포함됩니다</em>
+          </span>
+          <button class="sm-switch" :class="{ on: bbEnabled }" role="switch" :aria-checked="bbEnabled"
+                  :disabled="bbBusy || !bbConfigured" @click="setBitbucket(!bbEnabled)"
+                  title="Bitbucket 연동 사용 여부"><span class="sm-knob"></span></button>
+        </div>
       </div>
 
       <!-- 테마 (토글 스위치) -->
