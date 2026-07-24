@@ -1045,30 +1045,31 @@ class JiraClient:
             "resolved": f.get("resolutiondate") or None,
             "children": [],
         }
-        # 하위(Sub-task)도 개별 티켓으로 조회 → 티켓 단위 캐시
+        # 하위(Sub-task)도 개별 티켓으로 조회 → 티켓 단위 캐시. 노드는 경량 필드만 쓰므로 경량 조회.
+        # (개별 실패는 여기서 miss 로 세므로 경량 조회여도 부분실패 집계는 그대로 동작한다.)
         for s in (f.get("subtasks") or []):
             skey = s.get("key")
             if not skey:
                 continue
             try:
-                node["children"].append(self._node_from_issue(self.get_issue(skey)))
+                node["children"].append(self._node_from_issue(self.get_issue_light(skey)))
             except Exception:
                 # 삼키되 **세어 둔다** — 안 그러면 못 받은 하위가 '없는 하위' 가 된다.
                 self.miss_add()
         return node
 
     def _vit_tree(self, key, itype):
-        """Root 자손 트리 — 모든 노드를 get_issue/_search(티켓 단위 캐시)로 조회.
-        (Epic 자식은 경량 검색으로 크게 절감. 서브태스크 개별 조회는 부분실패 집계를 위해 full 유지.)"""
+        """Root 자손 트리 — 모든 노드를 get_issue_light/_search(티켓 단위 캐시)로 조회.
+        노드는 경량 필드(_node_from_issue)만 쓰므로 전 구간 경량으로 받는다(Epic 자식 검색·서브태스크 모두)."""
         try:
             if itype == "Epic":
                 children = self._search(f'"Epic Link" = {key}',
                                         cache_key=f"epic_children:{self.env}:{key}")
                 return [self._node_from_issue(c) for c in children]
-            root = self.get_issue(key)
+            root = self.get_issue_light(key)
             subs = ((root.get("fields") or {}).get("subtasks")) or []
-            self.prefetch_issues([s.get("key") for s in subs])       # 자식 원본을 한 번에
-            return [self._node_from_issue(self.get_issue(s["key"])) for s in subs if s.get("key")]
+            self.prefetch_issues([s.get("key") for s in subs], light=True)   # 자식 원본을 한 번에(경량)
+            return [self._node_from_issue(self.get_issue_light(s["key"])) for s in subs if s.get("key")]
         except Exception:
             # 트리를 통째로 못 만들었다 — 빈 트리로 내려가되 '못 만들었다' 는 남긴다.
             self.miss_add()

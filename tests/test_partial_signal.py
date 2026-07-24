@@ -23,14 +23,15 @@ def test_miss_counter_starts_clean(client):
 def test_failed_child_is_counted_not_swallowed(client, monkeypatch):
     """자식 하나가 실패하면 그 수가 남는다 — 조립 결과만 보면 '원래 없었다' 와 구분되지 않는다."""
     client.miss_begin()
-    real = client.get_issue
+    # VIT 트리는 경량 조회(get_issue_light)로 자손을 받는다 → 그걸 실패시킨다.
+    real = client.get_issue_light
 
     def flaky(key):
         if key.endswith("13"):          # 특정 하위만 실패
             raise RuntimeError("upstream down")
         return real(key)
 
-    monkeypatch.setattr(client, "get_issue", flaky)
+    monkeypatch.setattr(client, "get_issue_light", flaky)
     tree = client._vit_tree("DL-9012", "Task")
     assert client.miss_count() >= 1, "실패한 하위가 세어지지 않았다"
     # 나머지는 그대로 온다 — 하나 실패했다고 전부 버리지 않는다
