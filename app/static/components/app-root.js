@@ -77,6 +77,16 @@ export default {
         if (back !== (location.hash || "")) { location.hash = back; this.route = currentRoute(); }
       }
     } catch (e) { /* noop */ }
+    // ★ 파일을 **빗맞게 떨어뜨리면 브라우저가 그 파일로 이동한다** — 앱 창이 파일을 열고,
+    //   돌아오면 앱이 처음부터 다시 뜬 것처럼 보인다('홈으로 돌아가고 새로 뜨는' 증상이 이것이다).
+    //   드롭 영역들은 각자 preventDefault 를 하지만, 그 **바깥**(여백·헤더·다이얼로그 틈)은
+    //   아무도 안 막는다. 여기서 한 겹 더 막는다 — 파일 드래그일 때만.
+    const hasFiles = (e) => {
+      const t = e.dataTransfer && e.dataTransfer.types;
+      return !!t && Array.prototype.indexOf.call(t, "Files") >= 0;
+    };
+    window.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+    window.addEventListener("drop", (e) => { if (hasFiles(e)) e.preventDefault(); });
     window.addEventListener("hashchange", () => { this.route = currentRoute(); });
     window.addEventListener("need-login", () => { this.needLogin = true; this.ready = true; });
     // 티켓 링크(.tkt[data-key]) 위임 처리 — 어느 화면/코멘트에서 눌러도 인앱 다이얼로그로 연다.

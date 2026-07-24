@@ -158,6 +158,16 @@ class SsoSessionProvider(AuthProvider):
             priority = upstream_priority()      # 백그라운드 갱신은 사용자 요청 뒤로
         return self._submit(lambda: self._fetch(path, params, False), priority)
 
+    def _xsrf_cookie(self, url):
+        """이 도메인의 XSRF 토큰 쿠키 값(없으면 None). 멀티파트는 이 값을 쿼리로도 보내야 한다."""
+        try:
+            for c in self._context.cookies(url):
+                if c.get("name") in ("atl.xsrf.token", "atlassian.xsrf.token") and c.get("value"):
+                    return c["value"]
+        except Exception:
+            pass
+        return None
+
     def _xsrf_headers(self, url, multipart=False):
         """이 URL(도메인)에 맞는 XSRF 쓰기 헤더. multipart=True 면 Content-Type 을 뺀다
         (멀티파트 인코더가 boundary 와 함께 직접 지정 — 여기서 넣으면 boundary 누락).
@@ -181,13 +191,9 @@ class SsoSessionProvider(AuthProvider):
         if origin:
             headers["Origin"] = origin
             headers["Referer"] = origin + "/"     # same-origin 판정용(경로는 무관)
-        try:
-            for c in self._context.cookies(url):
-                if c.get("name") in ("atl.xsrf.token", "atlassian.xsrf.token") and c.get("value"):
-                    headers["X-Atlassian-Token"] = c["value"]   # 쿠키가 있으면 double-submit 도
-                    break
-        except Exception:
-            pass
+        tok = self._xsrf_cookie(url)
+        if tok:
+            headers["X-Atlassian-Token"] = tok        # 쿠키가 있으면 double-submit 도
         return headers
 
     def _write(self, method, path, json_body, params, want_json=True):
@@ -248,9 +254,15 @@ class SsoSessionProvider(AuthProvider):
         body = {field: {"name": filename,
                         "mimeType": content_type or "application/octet-stream",
                         "buffer": data}}
-        resp = self._context.request.post(url, multipart=body,
+        # ★ Jira 의 **멀티파트** XSRF 는 헤더가 아니라 **쿼리 파라미터 atl_token** 을 본다.
+        #   업로드는 파일 본문을 다 읽기 전에 통과 여부를 정해야 해서, 폼 필드가 아닌 URL 에서
+        #   토큰을 찾는다. 그래서 JSON 쓰기(코멘트 등)는 멀쩡한데 첨부만 'XSRF check failed' 였다.
+        #   토큰 쿠키가 없으면(비브라우저 세션) 파라미터 없이 no-check 만으로 간다.
+        tok = self._xsrf_cookie(url)
+        params = {"atl_token": tok} if tok else {}
+        resp = self._context.request.post(url, multipart=body, params=params,
                                           headers=self._xsrf_headers(url, multipart=True))
-        if resp.status in (401, 403):
+        if resp.status in (401, 403, 404):
             # 한 번은 **순수 no-check 로만** 다시 던져 본다.
             # 우리 기본 헤더는 브라우저처럼 보이게 꾸민다(Origin/Referer/XHR + 쿠키의 xsrf 토큰 echo).
             # Bitbucket 검색이 그래야 통과해서 그렇게 맞춰 뒀는데, Jira 의 첨부 업로드는 반대로
@@ -259,7 +271,8 @@ class SsoSessionProvider(AuthProvider):
             from .base import MULTIPART_HEADERS
             print(f"[upload] {resp.status} — no-check 단독 헤더로 1회 재시도: {path}",
                   file=sys.stderr, flush=True)
-            resp = self._context.request.post(url, multipart=body, headers=dict(MULTIPART_HEADERS))
+            resp = self._context.request.post(url, multipart=body,
+                                              headers=dict(MULTIPART_HEADERS))
         if resp.status >= 400:
             # ★ 401 도 **본문을 읽고 나서** 판단한다. 예전엔 본문 없이 '세션 만료' 로 단정했는데,
             #   첨부 업로드의 401 은 XSRF 거절일 때도 있어(Jira 는 이유를 본문에 적는다)
