@@ -55,24 +55,30 @@ const OPTIONS = [
   { key: "groupBy", label: "그룹화", opts: [
     { k: "none", label: "없음", hint: "모든 티켓을 개별 카드로" },
     { k: "sub", label: "Sub Task", hint: "부모 Task 로 묶고 그 안에 Sub-Task — 하위가 없는 Task 는 그냥 카드" }] },
-  { key: "subView", label: "Sub Task", opts: [
+  { key: "subView", label: "Sub Task 보기", opts: [
     { k: "collapsed", label: "모두 접기", hint: "하위를 모두 접는다 — 부모 Task 만 본다" },
     { k: "mine", label: "내 티켓만", hint: "하위 중 내가 담당인 것만 펼친다" },
     { k: "all", label: "모든 티켓", hint: "동료가 담당인 하위(유관)까지 모두 펼친다" }] },
-  { key: "scope", label: "범위", reload: true, opts: [
-    { k: "assignee", label: "담당", hint: "담당자가 나" },
-    { k: "reporter", label: "등록", hint: "내가 등록" },
-    { k: "both", label: "둘 다", hint: "담당 + 등록" }] },
+  { key: "scope", label: "연관성", reload: true, opts: [
+    { k: "assignee", label: "내가 담당자", hint: "담당자가 나" },
+    { k: "reporter", label: "내가 보고자", hint: "내가 보고(등록)한 것" },
+    { k: "both", label: "모두", hint: "담당 + 보고" }] },
   { key: "sort", label: "정렬", opts: [
     { k: "due", label: "마감", hint: "1차 마감 → 2차 우선순위" },
-    { k: "pri", label: "우선순위", hint: "1차 우선순위 → 2차 마감" }] },
-  { key: "openFilter", label: "할당됨", cls: "todo", reload: true, opts: [
+    { k: "pri", label: "우선순위", hint: "1차 우선순위 → 2차 마감" },
+    { k: "epic", label: "소속 Epic", hint: "Epic 으로 모으고 그 안에서 우선순위 → 마감" }] },
+];
+
+// 컬럼(상태) 제목에 붙는 **표시 범위** — 그 칸에만 걸리는 조건이라 그 칸의 제목에 둔다.
+// 아래 플로팅 바에 두면 '지금 무엇이 걸러진 목록인가' 를 화면 반대편에서 읽어야 했다.
+const BAND_FILTERS = {
+  todo: { key: "openFilter", opts: [
     { k: "all", label: "모두", hint: "담당된 모든 미착수 티켓" },
     { k: "2w", label: "2주 내 갱신", hint: "최근 2주 안에 갱신된 것만 — 오래 방치된 건 감춘다" }] },
-  { key: "doneFilter", label: "완료", cls: "done", reload: true, opts: [
+  done: { key: "doneFilter", opts: [
     { k: "1w", label: "1주", hint: "최근 1주 안에 완료" },
     { k: "1m", label: "1달", hint: "최근 1달 안에 완료" }] },
-];
+};
 const PREF_KEY = "mytasks.opts";
 
 export default {
@@ -202,6 +208,10 @@ export default {
       for (const o of OPTIONS) {
         if (o.opts.some((x) => x.k === saved[o.key])) this[o.key] = saved[o.key];
       }
+      // 상태 칸 제목으로 옮긴 표시 범위도 같이 기억한다(플로팅 바에서 빠졌을 뿐 값은 그대로다)
+      for (const f of Object.values(BAND_FILTERS)) {
+        if (f.opts.some((x) => x.k === saved[f.key])) this[f.key] = saved[f.key];
+      }
       // 상태 열 접힘은 옵션 목록에 없지만(콤보가 아니라 헤더 클릭) 같이 기억한다 —
       // 매번 다시 접게 하면 접기의 의미가 없다.
       if (saved.bandClosed && typeof saved.bandClosed === "object") {
@@ -211,6 +221,7 @@ export default {
     savePrefs() {
       const out = { bandClosed: this.bandClosed };
       for (const o of OPTIONS) out[o.key] = this[o.key];
+      for (const f of Object.values(BAND_FILTERS)) out[f.key] = this[f.key];
       try { localStorage.setItem(PREF_KEY, JSON.stringify(out)); } catch (e) { /* 사파리 프라이빗 등 */ }
     },
 
@@ -237,12 +248,29 @@ export default {
     visible(cards) {
       return this.sorted(this.subView === "all" ? cards : cards.filter((c) => c.mine));
     },
+    /** 이 상태 칸에 붙는 표시 범위 정의(없으면 null). 진행 중은 기간 개념이 없다 — 지금 하는 일이다. */
+    bandFilter(k) { return BAND_FILTERS[k] || null; },
+    /** 그 칸의 현재 값 */
+    opt(k) { const f = BAND_FILTERS[k]; return f ? this[f.key] : null; },
+    setBandFilter(k, v) {
+      const f = BAND_FILTERS[k];
+      if (!f || this[f.key] === v) return;
+      this[f.key] = v;
+      this.savePrefs();
+      this.load({ quiet: true });          // 서버 질의 조건이라 다시 받아야 한다
+    },
     dueOf(c) { return (c.dueDays === null || c.dueDays === undefined) ? NO_DUE : c.dueDays; },
     sorted(cards) {
       const by = this.sort;
-      return cards.slice().sort((a, b) => (by === "pri"
-        ? (a.priRank - b.priRank || this.dueOf(a) - this.dueOf(b))
-        : (this.dueOf(a) - this.dueOf(b) || a.priRank - b.priRank)) || (a.key < b.key ? -1 : 1));
+      // Epic 기준은 **Epic 으로 모으고 그 안에서 우선순위 → 마감**이다. Epic 으로 묶어 보는
+      // 이유가 '이 Epic 에서 뭐부터 하지' 라서, 묶기만 하고 안이 뒤죽박죽이면 볼 이유가 없다.
+      // Epic 없음은 맨 뒤로 — 소속이 없는 건 소속들 사이에 끼워 넣을 자리가 없다.
+      const ep = (c) => (c.epicKey ? (this.epicTitle(c.epicKey) || c.epicKey) : "￿");
+      const byPri = (a, b) => a.priRank - b.priRank || this.dueOf(a) - this.dueOf(b);
+      const byDue = (a, b) => this.dueOf(a) - this.dueOf(b) || a.priRank - b.priRank;
+      const cmp = by === "epic" ? ((a, b) => ep(a).localeCompare(ep(b), "ko") || byPri(a, b))
+                : by === "pri" ? byPri : byDue;
+      return cards.slice().sort((a, b) => cmp(a, b) || (a.key < b.key ? -1 : 1));
     },
     /** 패널 정렬 키 — 그 안에서 가장 급한 내 카드가 순서를 정한다(급한 게 위/앞으로).
      *  ★ 카드와 **같은 1·2차 규칙**을 쓴다. 1차만 보면 마감이 같은 그룹들의 순서가 우선순위와
@@ -320,14 +348,21 @@ export default {
           안 씌우면 어디부터 어디까지가 한 그룹인지 안 읽힌다 — 둘 다 피한 구조다.) -->
     <template v-else-if="axis === 'h'">
       <div class="mt-headrow">
-        <button v-for="st in states" :key="'h-' + st.k" class="mt-colh"
-                :class="['c-' + st.k, { closed: !bandOpen(st.k) }]"
-                @click="toggleBand(st.k)"
-                :title="(bandOpen(st.k) ? '접기' : '펼치기') + ' — ' + st.label">
-          <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>
-          <template v-if="bandOpen(st.k)">{{ st.label }}</template>
-          <b>{{ allCards.filter(c => c.statusCategory === st.k && (subView === 'all' || c.mine)).length }}</b>
-        </button>
+        <div v-for="st in states" :key="'h-' + st.k" class="mt-colh"
+             :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
+          <button class="mt-colh-b" @click="toggleBand(st.k)"
+                  :title="(bandOpen(st.k) ? '접기' : '펼치기') + ' — ' + st.label">
+            <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>
+            <template v-if="bandOpen(st.k)">{{ st.label }}</template>
+            <b>{{ allCards.filter(c => c.statusCategory === st.k && (subView === 'all' || c.mine)).length }}</b>
+          </button>
+          <!-- 표시 범위는 **그 칸에만** 걸리는 조건이라 그 칸의 제목에 둔다 -->
+          <span v-if="bandOpen(st.k) && bandFilter(st.k)" class="mt-colf">
+            <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
+                    class="mt-colf-b" :class="{ on: opt(st.k) === o.k }"
+                    :title="o.hint" @click.stop="setBandFilter(st.k, o.k)">{{ o.label }}</button>
+          </span>
+        </div>
       </div>
 
       <!-- 칼럼 배경 — 카드 뒤에 **한 겹으로** 깐다. 셀마다 칠하면 그룹 카드가 놓인 구간에서
@@ -407,11 +442,18 @@ export default {
     <!-- ══ 상태 = 세로축 : 상태 패널이 가로로 꽉 차서 쌓이고, 그 안에서 그룹이 좌우로 ══ -->
     <template v-else>
       <div v-for="st in states" :key="st.k" class="mt-band" :class="['c-' + st.k, { closed: !bandOpen(st.k) }]">
-        <button class="mt-bandh" @click="toggleBand(st.k)"
-                :title="bandOpen(st.k) ? '접기' : '펼치기'">
-          <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>{{ st.label }}
-          <b>{{ bandCount(st.k) }}</b>
-        </button>
+        <div class="mt-bandh-w">
+          <button class="mt-bandh" @click="toggleBand(st.k)"
+                  :title="bandOpen(st.k) ? '접기' : '펼치기'">
+            <span class="chev" :class="{ open: bandOpen(st.k) }">▸</span>{{ st.label }}
+            <b>{{ bandCount(st.k) }}</b>
+          </button>
+          <span v-if="bandFilter(st.k)" class="mt-colf">
+            <button v-for="o in bandFilter(st.k).opts" :key="o.k" type="button"
+                    class="mt-colf-b" :class="{ on: opt(st.k) === o.k }"
+                    :title="o.hint" @click.stop="setBandFilter(st.k, o.k)">{{ o.label }}</button>
+          </span>
+        </div>
         <template v-if="bandOpen(st.k)">
         <!-- 그룹화 없음 → 카드 그리드 하나 -->
         <div v-if="groupBy === 'none'" class="mt-grid2">

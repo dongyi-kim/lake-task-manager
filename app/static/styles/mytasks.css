@@ -193,7 +193,7 @@
 /* 상태 셀 — 상자가 아니라 **영역**이다. 테두리로 감싸는 대신 세로 구분선과 옅은 배경
    음영으로 "여기부터 저기까지가 이 상태" 를 만든다. 감싸는 테두리가 없으니 카드마다
    상자가 겹쳐 보이지 않으면서도 칼럼 경계는 분명하다. */
-.mt-cell { min-width: 0; display: flex; flex-direction: column; gap: 3px;
+.mt-cell { min-width: 0; display: flex; flex-direction: column; gap: 5px;
   background: none; border: 0; padding: 0; }
 .mt-gbody.plain .mt-cell { padding: 8px 8px 10px;
   background: color-mix(in srgb, var(--tc, var(--border)) 4%, transparent); }
@@ -241,7 +241,7 @@
 .mt-bandh b { color: var(--text); font-variant-numeric: tabular-nums; }
 /* 그리드 — 가로가 남으면 열이 늘어난다. 순서는 좌→우, 위→아래(행 우선)로 읽힌다. */
 .mt-grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 4px 10px; padding: 6px 8px; }
+  gap: 6px 10px; padding: 6px 8px; }
 /* 그룹이 좌우로 늘어서는 줄 — **컬럼마다 독립적인 세로 공간**을 갖는다.
    grid 로 두면 행이 정렬돼, 한 컬럼의 큰 카드가 다른 컬럼의 카드까지 아래로 밀어낸다.
    CSS 다단(columns)은 컬럼별로 따로 흐르므로 그 밀림이 없다(카드는 쪼개지지 않게 break-inside). */
@@ -281,7 +281,7 @@
 /* ── 세로축 모드 여백 ─────────────────────────────────────────────────────
    카드가 붙어 있으면 '목록의 줄' 로 보이고 카드로 안 읽힌다. 카드 사이·밴드 안쪽에 숨 쉴 틈을 준다. */
 .mt-gbody.one { grid-template-columns: 1fr; row-gap: 4px; padding: 8px 10px 10px 20px; }
-.mt-band .mt-grid2 { gap: 6px 10px; padding: 8px 10px 10px; }
+.mt-band .mt-grid2 { gap: 8px 10px; padding: 8px 10px 10px; }
 .mt-grouprow { padding: 9px 10px 11px; }
 .mt-band .mt-card { padding: 7px 10px; }
 .mt-band .mt-card.two { padding: 8px 10px; }
@@ -302,7 +302,7 @@
 /* 밴드 안쪽 여백 — 카드가 밴드 테두리·헤더에 닿으면 '패널에 얹힌 목록' 으로 보인다 */
 .mt-band { margin-bottom: 12px; }
 .mt-band .mt-grouprow { padding: 10px 12px 2px; }
-.mt-band .mt-grid2 { gap: 8px 12px; padding: 10px 12px 12px; }
+.mt-band .mt-grid2 { gap: 10px 12px; padding: 10px 12px 12px; }
 
 /* 상속받은 마감은 제 것이 아님을 드러낸다 — 안 그러면 하위에 마감이 실제로 잡힌 줄로 읽힌다 */
 .mt-due.inh { border-style: dashed; }
@@ -600,3 +600,29 @@
 .tc-l2 .mt-parent { margin-left: auto; }
 /* 좁으면 **번호부터** 버린다 — 제목이 어느 Task 인지 더 잘 말한다 */
 @container mtc (max-width: 340px) { .mt-parent .mp-k { display: none; } }
+
+/* ── 상태 칸 제목의 표시 범위 ─────────────────────────────────────────────
+   '최근 1주만' 같은 조건은 **그 칸에만** 걸린다. 아래 플로팅 바에 두면 '지금 무엇이 걸러진
+   목록인가' 를 화면 반대편에서 읽어야 했다. 조건은 그것이 적용되는 곳 옆에 있어야 한다.
+
+   ★ 제목 줄 자체(.mt-colh / .mt-band .mt-bandh)는 **원래 모양 그대로** 둔다. 여기에 새 규칙을
+     덧씌웠더니 점·밑줄·개수 위치가 한꺼번에 어긋났다(접는 버튼이 알약처럼 떠 버렸다).
+     바뀐 것은 '그 줄 안에 버튼이 하나 더 생겼다' 뿐이므로, 새 규칙은 **새 요소에만** 건다. */
+.mt-colh-b { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto;
+  font: inherit; color: inherit; letter-spacing: inherit; text-align: left;
+  background: none; border: 0; padding: 0; cursor: pointer; }
+/* 개수는 제목 바로 옆에 — 오른쪽 끝은 표시 범위가 쓴다(원래 규칙의 margin-left:auto 를 끈다) */
+.mt-colh .mt-colh-b b { margin-left: 4px; }
+.mt-bandh-w { display: flex; align-items: center; }
+.mt-bandh-w > .mt-bandh { width: auto; flex: 0 1 auto; }
+.mt-colf { flex: none; display: inline-flex; margin-left: auto; border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden; background: var(--panel); }
+.mt-colf-b { font: inherit; font-size: 9.5px; font-weight: 700; letter-spacing: 0;
+  text-transform: none; color: var(--muted-2); background: none; border: 0;
+  padding: 1px 7px; cursor: pointer; }
+.mt-colf-b + .mt-colf-b { border-left: 1px solid var(--border); }
+.mt-colf-b:hover { color: var(--text); }
+.mt-colf-b.on { color: #fff; background: var(--accent); }
+:root[data-theme="dark"] .mt-colf-b.on { color: #0b1015; }
+/* 세로축 밴드에서는 제목 줄 오른쪽 끝에 붙인다 */
+.mt-bandh-w .mt-colf { margin-right: 10px; }
