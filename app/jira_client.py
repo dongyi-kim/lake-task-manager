@@ -780,7 +780,7 @@ class JiraClient:
         except Exception:
             return date.today()
 
-    def prefetch_issues(self, keys):
+    def prefetch_issues(self, keys, light=False):
         """여러 티켓 원본을 **검색 한 번**으로 받아 티켓 단위 캐시에 채운다.
 
         prod(SSO)는 모든 호출이 단일 큐로 직렬화되므로 낱개 GET N 번 = N × 왕복이다.
@@ -788,16 +788,25 @@ class JiraClient:
         실패해도 조용히 넘어간다 — 뒤따르는 get_issue 가 개별 조회로 정상 동작한다.
         """
         env = self.env
-        miss = [k for k in dict.fromkeys(keys)
-                if k and self.cache.get(f"issue:{env}:{k}") is None]
+        # light=True 면 경량 필드로 받아 issueL 에 채운다(뱃지·경량 노드용). 이미 전체(issue:)나
+        # 경량(issueL:) 캐시가 있으면 그 티켓은 커버된 것 — 다시 안 받는다(포함관계).
+        if light:
+            miss = [k for k in dict.fromkeys(keys)
+                    if k and self.cache.get(f"issue:{env}:{k}") is None
+                    and self.cache.get(f"issueL:{env}:{k}") is None]
+        else:
+            miss = [k for k in dict.fromkeys(keys)
+                    if k and self.cache.get(f"issue:{env}:{k}") is None]
         if len(miss) < 2:                 # 1건이면 배치 이득 없음(그냥 개별 조회에 맡긴다)
             return
+        fields = self._issue_fields(light=light)
+        pfx = "issueL" if light else "issue"
         for i in range(0, len(miss), self.ISSUE_BATCH):
             chunk = miss[i:i + self.ISSUE_BATCH]
             try:
                 data = self.provider.get_json("/rest/api/2/search", params={
                     "jql": "key in (%s)" % ",".join(chunk),
-                    "fields": self._issue_fields(), "maxResults": len(chunk)})
+                    "fields": fields, "maxResults": len(chunk)})
             except SessionExpired:
                 raise
             except Exception:
@@ -805,7 +814,7 @@ class JiraClient:
             for it in (data.get("issues") or []):
                 k = it.get("key")
                 if k:
-                    self.cache.set(f"issue:{env}:{k}", it, self.s.cache_ttl_seconds)
+                    self.cache.set(f"{pfx}:{env}:{k}", it, self.s.cache_ttl_seconds)
 
     def _search(self, jql, cache_key=None, max_results=200, light=True):
         """JQL 검색 → 원본 이슈 리스트. 결과를 티켓 단위 캐시에 write-through.
@@ -937,7 +946,7 @@ class JiraClient:
     def epic_name(self, epic_key):
         """Epic 이름(summary) — Jira 에서. (config 엔 이름 없음)"""
         try:
-            it = self.get_issue(self._resolve(epic_key))
+            it = self.get_issue_light(self._resolve(epic_key))   # summary 만 → 경량
             return (it.get("fields") or {}).get("summary") or epic_key
         except Exception:
             return epic_key
@@ -1049,7 +1058,8 @@ class JiraClient:
         return node
 
     def _vit_tree(self, key, itype):
-        """Root 자손 트리 — 모든 노드를 get_issue/_search(티켓 단위 캐시)로 조회."""
+        """Root 자손 트리 — 모든 노드를 get_issue/_search(티켓 단위 캐시)로 조회.
+        (Epic 자식은 경량 검색으로 크게 절감. 서브태스크 개별 조회는 부분실패 집계를 위해 full 유지.)"""
         try:
             if itype == "Epic":
                 children = self._search(f'"Epic Link" = {key}',
@@ -1997,7 +2007,7 @@ class JiraClient:
         _child_keys·ticket_badge 가 모두 캐시라 재방문은 무료."""
         def build():
             kids = self._child_keys(key)
-            self.prefetch_issues(kids)          # 자식 원본을 한 번에 → 이후 badge 는 캐시 히트
+            self.prefetch_issues(kids, light=True)   # 뱃지만 필요 → 경량 배치(이후 badge 는 캐시 히트)
             return [b for b in (self.ticket_badge(k) for k in kids) if b]
         return self._swr(f"children:{self.env}:{key}", build)
 
@@ -2558,7 +2568,7 @@ class JiraClient:
         if not keys:
             return
         try:
-            self.prefetch_issues(keys)
+            self.prefetch_issues(keys, light=True)     # Epic 제목(뱃지)만 필요 → 경량
         except Exception:
             pass
         names = {}

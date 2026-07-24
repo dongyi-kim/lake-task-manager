@@ -81,14 +81,20 @@ def test_siblings_of_epic_empty():
 
 # ── 캐시 ──
 def test_lineage_reuses_per_ticket_cache():
-    """조상 각각이 issue:{env}:{key} 로 개별 캐시되고, 조립 결과도 캐시된다."""
+    """조상 각각이 티켓단위 캐시(전체 issue: 또는 경량 issueL:)로 개별 캐시되고, 조립 결과도 캐시된다.
+    (뱃지는 경량 조회라 issueL: 에 담긴다 — 어느 쪽이든 '개별 캐시됨' 이면 된다.)"""
     sub, parent, epic = _subtask_chain()
     c = _client()
     env = c.env
-    assert c.cache.get(f"issue:{env}:{epic}") is None
+
+    def cached(key):
+        return (c.cache.get(f"issue:{env}:{key}") is not None
+                or c.cache.get(f"issueL:{env}:{key}") is not None)
+
+    assert not cached(epic)
     c.ticket_ancestors(sub)
-    assert c.cache.get(f"issue:{env}:{epic}") is not None      # 조상 개별 캐시
-    assert c.cache.get(f"issue:{env}:{parent}") is not None
+    assert cached(epic)                                       # 조상 개별 캐시(전체 또는 경량)
+    assert cached(parent)
     assert c.cache.get(f"ancestors:{env}:{sub}") is not None   # 조립 결과 캐시
     c.ticket_siblings(sub)
     assert c.cache.get(f"siblings:{env}:{sub}") is not None
