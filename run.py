@@ -628,44 +628,17 @@ def _run_tray(s):
             except Exception:
                 _sso[svc["name"]] = False
 
-    def _keep_warm():
-        """죽은 서비스 세션을 **창 없이** 되살려 본다(리다이렉트만으로 끝나는 경우).
-        되면 저장·반영. 안 되면(사람 입력 필요) 그냥 둔다 — 창을 함부로 띄우지 않는다."""
-        if s.jira_env != "prod":
-            return
-        import app.main as appmain
-        ctx = getattr(getattr(appmain._client, "provider", None), "_context", None)
-        if ctx is None:
-            return
-        healed = False
-        for name, base, paths in getattr(s, "auth_targets", []):
-            if _sso.get(name):                       # 이미 살아 있으면 건드리지 않는다
-                continue
-            try:
-                ok, _why = _silent_sso(ctx, base, paths)
-            except Exception:
-                ok = False
-            if ok:
-                healed = True
-                print(f"[keep-warm] {name} 세션 창 없이 복구")
-        if healed:
-            try:
-                appmain._client.sso_store().save_all_from(ctx.storage_state())
-                appmain._client.reset_provider()
-            except Exception:
-                pass
-            probe_sso()
-
     def sso_poller(icon):
         # 매분 인증 상태를 확인한다 — 이게 곧 **keep-warm** 이다. 살아 있는 세션에 주기적으로
         # 인증 요청을 보내 유휴 만료를 늦춘다. 죽었으면(리다이렉트만으로 살릴 수 있는 경우)
         # 조용히 다시 세운다 — 사용자가 아무것도 안 눌러도 세션이 스스로 복구된다.
+        # ★ probe_sso 는 provider 큐(Playwright 전용 스레드)로 도는 인증 GET 이라 **그 자체가
+        #   keep-warm** 이다 — 매분 살아 있는 세션에 요청을 보내 유휴 만료를 늦춘다.
+        #   여기서 컨텍스트를 직접 만지면 안 된다: Playwright 동기 API 는 자기를 만든 스레드에서만
+        #   써야 해서, 다른 스레드에서 ctx.request/storage_state 를 부르면
+        #   "cannot switch to a different thread" 로 터진다(앱 시작 때 그 에러가 났다).
         while True:
             probe_sso()
-            try:
-                _keep_warm()
-            except Exception:
-                pass
             try:
                 icon.update_menu()
             except Exception:
