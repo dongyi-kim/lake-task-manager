@@ -4,6 +4,7 @@ import MyTasksView from "./views/MyTasksView.js";
 import WorkloadView from "./views/WorkloadView.js";
 import VitView from "./views/VitView.js";
 import WbsView from "./views/WbsView.js";
+import HomeView from "./views/HomeView.js";
 import DevToolsView from "./views/DevToolsView.js";
 import FloatingRefresh from "./ui/FloatingRefresh.js";
 import FormulaCallout from "./ui/FormulaCallout.js";
@@ -15,7 +16,7 @@ import SearchOverlay from "./ui/SearchOverlay.js";
 import SettingsMenu from "./ui/SettingsMenu.js";
 import { api } from "../lib/api.js";
 
-const ROUTES = { wbs: WbsView, vit: VitView, workload: WorkloadView,
+const ROUTES = { home: HomeView, wbs: WbsView, vit: VitView, workload: WorkloadView,
                  mytasks: MyTasksView, devtools: DevToolsView };
 // 탭 정의 한곳 — 라벨과 접근 권한이 갈라지지 않게. manager: true 면 매니저에게만 보인다.
 // (티켓 뷰/다이얼로그·검색은 역할과 무관하다 — 여기 없는 건 다 누구나 쓴다.)
@@ -27,7 +28,7 @@ const TABS = [
 ];
 // 탭에 없지만 주소로는 갈 수 있는 매니저 전용 화면(설정 메뉴에서 진입).
 const MANAGER_ONLY = new Set(TABS.filter((t) => t.manager).map((t) => t.k).concat(["devtools"]));
-function currentRoute() { return location.hash.replace("#/", "") || "wbs"; }
+function currentRoute() { return location.hash.replace("#/", "") || "home"; }
 // /browse/DL-1234 — 그 티켓만의 단독 페이지("새 창에서 열기" 대상).
 // Jira 와 같은 URL 형태라 주소만 보고도 어느 티켓인지 안다.
 function ticketOf() {
@@ -51,12 +52,16 @@ export default {
                     hasCache: false,
                     ticketKeyFromPath: ticketOf() }; },
   computed: {
-    tabs() { return TABS.filter((t) => !t.manager || this.manager !== false); },
-    /** 이 사용자가 볼 수 있는 화면인가. 매니저 전용인데 아니면 접근 자체를 막는다. */
+    // ★ 매니저 전용 탭은 **매니저로 확정된 뒤에만** 보인다(manager===true). 예전엔 '아직 모름
+    //   (null)' 일 때도 보여 줘서, 워커에게 잠깐 떴다가 사라졌다 — 순서를 뒤집어 '판정 후 표시'.
+    //   (판정이 끝내 실패하면 그 탭은 안 뜨지만, 주소로는 갈 수 있고 데이터는 서버가 막는다.)
+    tabs() { return TABS.filter((t) => !t.manager || this.manager === true); },
+    /** 이 사용자가 볼 수 있는 화면인가. 매니저 전용인데 '아님(false)' 이면 접근을 막는다.
+     *  (아직 모름(null)일 땐 막지 않는다 — 판정 지연으로 매니저가 튕기는 게 더 나쁘다.) */
     allowed() { return !MANAGER_ONLY.has(this.route) || this.manager !== false; },
     view() {
       if (!this.allowed) return ROUTES.mytasks;   // 권한 없는 주소는 '내 Task' 로
-      return ROUTES[this.route] || ROUTES.wbs;
+      return ROUTES[this.route] || ROUTES.home;
     },
     pageTicket() { return this.ticketKeyFromPath; },
   },
@@ -143,7 +148,9 @@ export default {
   template: `
     <div class="wrap" :class="{ 'wrap-bare': pageTicket }">
       <header v-if="!pageTicket" class="top">
-        <img class="nav-logo" src="icon.png" alt="Lake Task Manager" title="Lake Task Manager" />
+        <a href="#/home" class="nav-home" title="홈으로">
+          <img class="nav-logo" src="icon.png" alt="Lake Task Manager" />
+        </a>
         <nav class="tabs">
           <a v-for="t in tabs" :key="t.k" :class="{ on: route === t.k }"
              :href="'#/' + t.k">{{ t.label }}</a>
