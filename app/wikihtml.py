@@ -260,28 +260,35 @@ def _list(node, lines, marker):
 
 
 def _tasklist(node, lines, marker):
-    """태스크 리스트 → '* [x] 텍스트' / '* [ ] 텍스트'. Jira wiki 에 태스크 표준 표기가 없어
-    GitHub 관습(체크 마커)으로 저장한다 — 사람이 읽어도 명확하고, 렌더에서 체크박스로 되살린다.
-    중첩(할 일 안의 할 일)도 marker 를 늘려 그대로 표현한다."""
+    """태스크 리스트 → 사내 Jira(JEDITOR 플러그인)의 **네이티브 체크박스 HTML** 로 저장한다.
+
+    사내 prod 에디터에서 체크박스를 넣고 'HTML 코드 보기' 를 하면 그 원본이
+    `<p dir="auto"><input id="…" type="checkbox"></p>` 다(체크되면 `checked`). 즉 이 필드는
+    체크박스를 **HTML input 그대로** 저장한다. 예전엔 wiki 관습으로 `* [ ]` 를 썼는데,
+    그 표기를 JEDITOR 가 몰라 화면에 `[ ]` 글자로 그대로 나왔다 → prod 형식에 맞춘다.
+    (중첩은 JEDITOR 체크박스가 평면이라 각 항목을 개별 `<p>` 로 편다.)"""
     for li in node.children:
         if li.tag != "li":
             continue
         checked = (li.attrs.get("data-checked") or "").lower() == "true"
-        box = "[x] " if checked else "[ ] "
+        chk = ' checked="checked"' if checked else ""
         inline_parts, nested = [], []
         for ch in li.children:
             if ch.tag in ("ul", "ol"):
                 nested.append(ch)
             elif ch.tag == "label":
-                continue                    # 체크박스 UI(라벨/인풋)는 마커로 대신한다
+                continue                    # 체크박스 UI(라벨/인풋)는 아래 input 으로 대신한다
             else:
                 tmp = _Node("span"); tmp.children = [ch]
                 inline_parts.append(_inline(tmp))
         text = "".join(inline_parts).strip()
-        lines.append(marker + " " + box + text)
+        lines.append('<p dir="auto"><input type="checkbox"%s />%s</p>' % (chk, text))
         for nl in nested:
-            fn = _tasklist if "tasklist" in (nl.attrs.get("data-type") or "").lower() else _list
-            fn(nl, lines, marker + "*")
+            # 중첩 태스크는 다시 체크박스로(평면), 그 외 목록은 기존 wiki 목록으로.
+            if "tasklist" in (nl.attrs.get("data-type") or "").lower():
+                _tasklist(nl, lines, marker)
+            else:
+                _list(nl, lines, marker + "*")
 
 
 def _cells(tr):
