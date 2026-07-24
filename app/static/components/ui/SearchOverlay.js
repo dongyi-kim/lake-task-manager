@@ -19,7 +19,13 @@ export default {
   created() {
     this._ta = createTypeahead(
       (q) => api.search(q, this.scope).catch((e) => ({ error: e.message || "검색 실패" })),
-      { minLen: 2, cacheMs: 12000, emptyValue: null });
+      { minLen: 2, cacheMs: 12000, emptyValue: null,
+        // 에러거나 **아무 소스도 결과가 없을 때**는 캐시하지 않는다(순간 실패가 굳지 않게).
+        shouldCache: (r) => {
+          if (!r || r.error) return false;
+          const n = (x) => ((x && x.items) || []).length;
+          return n(r.jira) + n(r.confluence) + n(r.bitbucket) > 0;
+        } });
   },
   mounted() {
     this._onKey = (e) => {

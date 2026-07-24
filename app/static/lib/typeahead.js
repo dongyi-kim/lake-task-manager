@@ -54,6 +54,9 @@ function makeCache(ttl) {
  *   opts.minLen  최소 글자수(그보다 짧으면 부르지 않고 onEmpty). 빈 문자열은 별도 취급(allowEmpty).
  *   opts.allowEmpty  빈 질의도 의미가 있는 경우(멘션 팝업: 티켓 관련 사람 우선 표시)
  *   opts.cacheMs 같은 질의 캐시 TTL(0이면 캐시 없음)
+ *   opts.shouldCache(r)  이 결과를 캐시해도 되는가(기본: 전부). 빈/에러 결과를 캐시하면
+ *                        순간적으로 0건이 온 질의가 그 TTL 동안 계속 0건으로 뜬다
+ *                        (같은 검색어인데 어떨 땐 뜨고 어떨 땐 안 뜨는 그것).
  * 반환: run(query) -> Promise<결과|null>. null 은 '이 호출은 낡았으니 무시하라'는 뜻.
  */
 export function createTypeahead(fetcher, opts) {
@@ -77,7 +80,9 @@ export function createTypeahead(fetcher, opts) {
       timer = setTimeout(() => {
         Promise.resolve(fetcher(q)).then(
           (r) => {
-            if (cache) cache.set(q, r);
+            // 빈/에러 결과는 캐시하지 않는다 — 순간 실패로 0건이 온 질의가 TTL 동안 굳으면
+            // 같은 검색어로 돌아와도 계속 0건이다(사용자가 겪은 깜빡임).
+            if (cache && r != null && (!o.shouldCache || o.shouldCache(r))) cache.set(q, r);
             resolve(my === seq ? r : null);                  // 낡은 응답은 null → 호출부가 버린다
           },
           () => resolve(my === seq ? o.errorValue : null),

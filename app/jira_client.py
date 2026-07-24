@@ -610,9 +610,14 @@ class JiraClient:
                 #   그 페이지만 버리고 지금까지 모은 것을 돌려준다. 세션이 진짜 죽었으면
                 #   provider 가 401 에서 이미 SessionExpired 를 던졌을 것이다.
                 if not isinstance(data, dict) or "issues" not in data:
-                    snippet = (str(data)[:120] if data is not None else "None")
-                    print(f"[search] 검색 응답 아님(무시): jql={jql[:80]!r} :: {snippet}",
-                          file=sys.stderr, flush=True)
+                    # Jira DC 는 **자식 없는 Epic** 의 `"Epic Link" = X` 를 200-결과가 아니라
+                    # 400 에러 바디로 답한다("No issues have a parent epic ..."). 이건 정상적인
+                    # '0건' 이지 오류가 아니다 — 조용히 빈 목록으로 넘긴다(폴백/상위가 처리).
+                    msgs = " ".join((data or {}).get("errorMessages") or []) if isinstance(data, dict) else ""
+                    if "parent epic" not in msgs.lower():
+                        snippet = (str(data)[:120] if data is not None else "None")
+                        print(f"[search] 검색 응답 아님(무시): jql={jql[:80]!r} :: {snippet}",
+                              file=sys.stderr, flush=True)
                     break
                 batch = data.get("issues", [])
                 issues.extend(batch)

@@ -155,6 +155,9 @@ def _search_confluence(client, s, q, scope, limit):
     if scope == "scoped" and s.search_confluence_spaces:
         joined = ", ".join('"%s"' % x for x in s.search_confluence_spaces)
         cql = "space in (%s) AND %s" % (joined, cql)
+    # 최근 고친 문서가 위로 — Jira 검색(ORDER BY updated DESC)과 같은 기준이라 두 목록이
+    # 같은 감각으로 읽힌다. CQL 은 lastModified(=최종 수정) 로 정렬한다.
+    cql += " ORDER BY lastModified DESC"
     # prod: 별도 호스트 절대 URL / mock·local: jira820 이 같은 호스트로 서빙 → 상대 경로
     url = (base + "/rest/api/search") if (s.jira_env == "prod" and base) else "/rest/api/search"
     try:

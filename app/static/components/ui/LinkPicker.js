@@ -81,7 +81,12 @@ export default {
     this._ta = createTypeahead(
       (q) => api.search(q, "all", this.isJira ? "jira" : "confluence")
                .catch((e) => ({ error: e.message || "검색 실패" })),
-      { minLen: 2, cacheMs: 12000, emptyValue: { jira: { items: [] }, confluence: { items: [] } } });
+      { minLen: 2, cacheMs: 12000, emptyValue: { jira: { items: [] }, confluence: { items: [] } },
+        shouldCache: (r) => {
+          if (!r || r.error) return false;
+          const n = (x) => ((x && x.items) || []).length;
+          return n(r.jira) + n(r.confluence) > 0;
+        } });
   },
   mounted() {
     this.$nextTick(() => { const el = this.$refs.input; if (el) el.focus(); });
