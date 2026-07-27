@@ -10,6 +10,7 @@ import FloatingRefresh from "./ui/FloatingRefresh.js";
 import FormulaCallout from "./ui/FormulaCallout.js";
 import LoginOverlay from "./ui/LoginOverlay.js";
 import StatusBanner from "./ui/StatusBanner.js";
+import ToastStack from "./ui/ToastStack.js";
 import TicketMenu from "./ui/TicketMenu.js";
 import TicketDialog from "./ui/TicketDialog.js";
 import SearchOverlay from "./ui/SearchOverlay.js";
@@ -38,7 +39,7 @@ function ticketOf() {
 
 export default {
   name: "AppRoot",
-  components: { FormulaCallout, LoginOverlay, StatusBanner, TicketMenu, TicketDialog, SearchOverlay, SettingsMenu, FloatingRefresh },
+  components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, TicketMenu, TicketDialog, SearchOverlay, SettingsMenu, FloatingRefresh },
   // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
@@ -180,6 +181,8 @@ export default {
       </template>
       <TicketMenu />
       <LoginOverlay />
+      <!-- 우하단 알림 스택 — 인증·다운로드 등 주요 알림이 쌓였다 사라진다(항상 존재) -->
+      <ToastStack />
       <TicketDialog v-if="ticketKey" :key-id="ticketKey" @close="ticketKey = null" />
       <!-- keep-alive: 같은 창에서 다시 열면 마지막 검색어·결과가 그대로 남는다 -->
       <keep-alive>

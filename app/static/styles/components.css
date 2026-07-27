@@ -245,6 +245,31 @@
 
 /* 다운로드 알림 — 앱 창에는 다운로드 표시줄이 없다. 저장됐다는 사실과 **어디에** 저장됐는지를
    잠깐 띄운다(경로를 안 보여 주면 파일을 찾으러 탐색기를 뒤져야 한다). */
+/* ── 우하단 알림 스택(ToastStack) — mac 알림처럼 쌓였다 사라진다 ── */
+.toaststack { position: fixed; right: 16px; bottom: 16px; z-index: 9750;
+  display: flex; flex-direction: column-reverse; gap: 10px;
+  width: min(380px, calc(100vw - 32px)); pointer-events: none; }
+.toast { pointer-events: auto; position: relative; display: flex; align-items: flex-start; gap: 10px;
+  padding: 11px 32px 11px 13px; border-radius: 12px; background: var(--panel);
+  border: 1px solid var(--border); box-shadow: 0 10px 30px rgba(0,0,0,.20); }
+.toast-ic { flex: none; font-size: 17px; line-height: 1.25; }
+.toast-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.toast-t { font-weight: 700; font-size: 13px; color: var(--text); word-break: break-word; }
+.toast-m { font-size: 11.5px; color: var(--muted); line-height: 1.4; word-break: break-all;
+  font-family: ui-monospace, Consolas, monospace; }
+.toast-x { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: var(--muted-2);
+  font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.toast-x:hover { color: var(--text); }
+.toast.k-success { border-color: color-mix(in srgb, var(--st-done) 45%, var(--border)); }
+.toast.k-error { border-color: color-mix(in srgb, var(--today) 50%, var(--border)); }
+.toast.k-success .toast-ic { color: var(--st-done); }
+.toast.k-error .toast-ic { color: var(--today); }
+/* 등장/퇴장 — 오른쪽에서 슬라이드 + 페이드. 남은 항목은 부드럽게 자리 이동. */
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(42px); }
+.toast-enter-active, .toast-leave-active { transition: opacity .26s ease, transform .26s ease; }
+.toast-leave-active { position: absolute; right: 0; width: 100%; }
+.toast-move { transition: transform .26s ease; }
+
 /* 우상단 고정. 파일명은 아이콘 옆(윗줄), **저장 경로는 아랫줄에 전체**(말줄임 없이 줄바꿈). */
 .dltoast { position: fixed; right: 14px; top: 14px; z-index: 9700;
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px;
