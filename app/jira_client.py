@@ -16,7 +16,7 @@ from urllib.parse import quote, unquote, urlparse
 
 from . import progress
 from .auth.base import SessionExpired, background_upstream, write_upstream
-from .htmlsafe import (_CONF_RE, proxy_attachment_images, proxy_attachment_links,
+from .htmlsafe import (_CONF_RE, flatten_task_lists, proxy_attachment_images, proxy_attachment_links,
                        proxy_images, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html)
 from .names import real_name
@@ -327,8 +327,9 @@ def _set_checkbox(html, index, checked, cbid=None):
 #: 렌더돼 온 것을 되살린다. 사내 prod(JEDITOR)는 이 HTML 을 네이티브 체크박스로 렌더하지만,
 #: 로컬 mock(jira820)의 표준 wiki 렌더러는 raw HTML 을 글자로 이스케이프한다(`&lt;input …&gt;`가
 #: 화면에 그대로 보임). 그 이스케이프된 체크박스 문단만 실제 HTML 로 되돌려 로컬도 prod 처럼 렌더.
+#: `<p dir="auto">` 뿐 아니라 dir 이 없는 `<p>`(정화가 dir 을 떼면 이 형태)도 되살린다.
 _ESC_CB_PARA = re.compile(
-    r'&lt;p dir="auto"&gt;\s*&lt;input\b([^&]*?)/?\s*&gt;(.*?)&lt;/p&gt;', re.I | re.S)
+    r'&lt;p(?:\s[^&]*?)?&gt;\s*&lt;input\b([^&]*?)/?\s*&gt;(.*?)&lt;/p&gt;', re.I | re.S)
 
 
 def _revive_checkboxes(html):
@@ -1331,7 +1332,9 @@ class JiraClient:
         fmt = (getattr(self.s, "description_format", "") or "").lower()
         if fmt not in ("html", "wiki"):
             fmt = "html" if self.env == "prod" else "wiki"
-        return sanitize_html(html) if fmt == "html" else html_to_wiki(html)
+        # HTML 모드: 태스크리스트를 먼저 **체크박스 문단**으로 편다(안 그러면 <ul><li> 불릿·빈 span 이
+        # 남아 화면에서 체크박스가 어긋난다). wiki 모드는 html_to_wiki 가 이미 같은 형태로 바꾼다.
+        return sanitize_html(flatten_task_lists(html)) if fmt == "html" else html_to_wiki(html)
 
     def create_child(self, parent_key, itype, summary, priority=None,
                      duedate=None, assignee=None, components=None, description=None):

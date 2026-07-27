@@ -16,6 +16,97 @@ import urllib.parse
 from html import escape, unescape
 from html.parser import HTMLParser
 
+
+class _TaskFlatten(HTMLParser):
+    """TipTap TaskList 를 사내 JEDITOR **네이티브 체크박스 문단**으로 편다.
+
+    에디터 출력: <ul data-type="taskList"><li data-checked><label><input><span></label><div>text</div></li>…</ul>
+    변환 결과 : <p dir="auto"><input type="checkbox" [checked="checked"]/>text</p> …
+
+    안 펴면 HTML 저장(prod) 시 <ul><li> 불릿·빈 span 이 남아 화면에서 '불릿만 남고 체크박스가
+    어긋나' 보인다(리포트된 증상). 이 문단형은 prod JEDITOR 가 네이티브로 렌더하고, 로컬(jira820)에서도
+    _revive_checkboxes 가 <p dir="auto"><input…> 패턴을 되살린다. 태스크리스트 밖은 원본 그대로 통과.
+    """
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out = []
+        self._task = 0        # taskList <ul> 깊이
+        self._li = 0          # li 깊이(중첩 대비)
+        self._chk = False
+        self._buf = []        # li 안 인라인 텍스트/서식
+        self._label = 0       # label 서브트리 깊이(체크박스 UI 는 버린다)
+
+    @staticmethod
+    def _is_task(attrs):
+        return (dict(attrs).get("data-type") or "").lower() == "tasklist"
+
+    def handle_starttag(self, tag, attrs):
+        raw = self.get_starttag_text() or ("<%s>" % tag)
+        if tag == "ul" and self._is_task(attrs):
+            self._task += 1
+            return
+        if not self._task:
+            self.out.append(raw); return
+        if tag == "li":
+            if self._li == 0:
+                self._chk = (dict(attrs).get("data-checked") or "").lower() == "true"
+                self._buf = []
+            self._li += 1
+            return
+        if tag == "label":
+            self._label += 1; return
+        if self._label:
+            return
+        if tag in ("div", "p", "span"):
+            return                                  # 래퍼는 unwrap(인라인 텍스트만 남긴다)
+        self._buf.append(raw)                       # 인라인 서식(b/i/code/a…) 유지
+
+    def handle_startendtag(self, tag, attrs):
+        if not self._task:
+            self.out.append(self.get_starttag_text() or ("<%s/>" % tag)); return
+        if self._label and tag == "input":
+            return                                  # 체크박스 UI input 은 아래서 재생성 → 버린다
+        if self._li and not self._label and tag == "br":
+            self._buf.append("<br>")
+
+    def handle_endtag(self, tag):
+        if tag == "ul" and self._task:
+            self._task -= 1; return
+        if not self._task:
+            self.out.append("</%s>" % tag); return
+        if tag == "label" and self._label:
+            self._label -= 1; return
+        if self._label:
+            return
+        if tag == "li" and self._li:
+            self._li -= 1
+            if self._li == 0:
+                chk = ' checked="checked"' if self._chk else ""
+                self.out.append('<p dir="auto"><input type="checkbox"%s />%s</p>'
+                                % (chk, "".join(self._buf).strip()))
+            return
+        if tag in ("div", "p", "span"):
+            return
+        self._buf.append("</%s>" % tag)
+
+    def handle_data(self, data):
+        if self._task and self._li and not self._label:
+            self._buf.append(escape(data, quote=False))
+        elif not self._task:
+            self.out.append(escape(data, quote=False))
+
+
+def flatten_task_lists(html):
+    """TipTap TaskList → JEDITOR 체크박스 문단. 태스크리스트가 없으면 그대로 반환."""
+    if not html or "tasklist" not in html.lower():
+        return html
+    p = _TaskFlatten()
+    try:
+        p.feed(html); p.close()
+    except Exception:
+        return html
+    return "".join(p.out)
+
 # 표시에 필요한 서식 태그만 허용 (구조/텍스트/표/코드/링크/이미지).
 _ALLOWED_TAGS = {
     "p", "br", "hr", "b", "strong", "i", "em", "u", "s", "strike", "del", "ins",
