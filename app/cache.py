@@ -47,12 +47,19 @@ DEAD_TTL_DEFAULT = 24 * 3600      # 이만큼 지나면 진짜 없는 값으로 
 
 
 class Cache:
+    # 정리(purge) 정책 — 디스크 무한증가 방지. 캐시 행은 dead_ttl 을 넘으면 오프라인 폴백에도
+    # 못 쓰므로(get_alive 가 dead_ttl 로 거른다) 지워도 안전하다. 스냅샷(시계열)은 최근 흐름만 쓰니
+    # 이 기간만 남긴다. set() 이 일정 횟수마다 한 번씩 자동 정리하고, 시작 시에도 한 번 돈다.
+    SNAPSHOT_KEEP_DAYS = 120
+    PURGE_EVERY = 400            # set() 이 이만큼 쌓일 때마다 한 번 정리(비용 amortize)
+
     def __init__(self, db_path, dead_ttl=DEAD_TTL_DEFAULT):
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._migrate()
         self._lock = threading.Lock()
         self.dead_ttl = int(dead_ttl)
+        self._set_count = 0
         # 상류(Jira)가 지금 못 쓰는 상태면 True 를 주는 콜러블. 있으면 producer 를 **아예 호출하지
         # 않고** 낡은 값으로 답한다 — 죽은 세션에 매번 붙어 보느라 화면이 멎는 걸 막는다
         # (prod 의 Playwright 호출은 실패 판정까지 최대 180초가 걸린다).
@@ -101,6 +108,28 @@ class Cache:
                 "INSERT OR REPLACE INTO cache(key, payload, fetched_at, ttl) VALUES (?,?,?,?)",
                 (key, json.dumps(value, ensure_ascii=False), time.time(), int(ttl)),
             )
+            # 주기적 자동 정리 — 오래 켜 두는 세션에서도 디스크가 계속 늘지 않게(비용은 amortize).
+            self._set_count += 1
+            if self._set_count >= self.PURGE_EVERY:
+                self._set_count = 0
+                self._purge_within_lock()
+            self._conn.commit()
+
+    def _purge_within_lock(self):
+        """죽은 캐시 행(dead_ttl 초과) + 오래된 스냅샷 삭제. **이미 _lock 을 쥔 채** 호출한다.
+        (SQLite 는 DELETE 로 파일이 줄진 않지만 빈 페이지를 재사용하므로 크기가 안정된다.)"""
+        now = time.time()
+        try:
+            self._conn.execute("DELETE FROM cache WHERE ? - fetched_at > ?", (now, self.dead_ttl))
+            self._conn.execute("DELETE FROM snapshot WHERE taken_at < ?",
+                               (now - self.SNAPSHOT_KEEP_DAYS * 86400,))
+        except Exception:
+            pass
+
+    def purge(self):
+        """죽은 캐시·오래된 스냅샷 정리 — 시작 시 1회 등 밖에서 호출용."""
+        with self._lock:
+            self._purge_within_lock()
             self._conn.commit()
 
     def get_or_set(self, key, ttl, producer):

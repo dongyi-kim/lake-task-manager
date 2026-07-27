@@ -58,6 +58,7 @@ app = FastAPI(title="Lake Task Manager")
 
 _settings = get_settings()
 _cache = Cache(_settings.cache_db_path, dead_ttl=_settings.cache_dead_ttl_seconds)
+_cache.purge()      # 시작 시 1회 — 지난 실행에서 쌓인 죽은 캐시 행·오래된 스냅샷 정리(디스크 안정화)
 _client = JiraClient(_settings, _cache)
 _client._wire_cache()      # 캐시에 재검증 규칙·회로차단기 연결(호출부는 그대로)
 
