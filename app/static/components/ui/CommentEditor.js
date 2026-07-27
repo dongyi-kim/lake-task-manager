@@ -14,6 +14,22 @@ import MarkdownTableDialog from "./MarkdownTableDialog.js";
 import { extOf } from "../../lib/filetype.js";
 import { sigColor, initialOf, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { debouncedItems } from "../../lib/typeahead.js";
+import { pushToast } from "../../lib/toast.js";
+
+// 첨부 업로드 재시도 — prod 는 SSO 세션/사내망 탓에 첨부가 간헐적으로 삐끗한다. 한 번 실패했다고
+// 파일을 버리지 않고 최대 이만큼 **다시** 올려 본다(총 시도 횟수).
+const UPLOAD_TRIES = 3;
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// 끝내 못 올린 파일의 본문 참조(blob objectURL)를 통째로 걷어낸다 — 안 지우면 저장된 본문에
+// 죽은 blob: 링크나 깨진 이미지가 남는다. 이미지 <img>·파일 뱃지 <a> 를 태그째 제거한다.
+function stripPendingRef(html, url) {
+  const u = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return (html || "")
+    .replace(new RegExp('<img\\b[^>]*\\bsrc="' + u + '"[^>]*>', "gi"), "")
+    .replace(new RegExp('<a\\b[^>]*\\bhref="' + u + '"[^>]*>.*?<\\/a>', "gi"), "")
+    .split(url).join("");                 // 혹시 남은 raw 참조까지
+}
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
@@ -1215,6 +1231,7 @@ export default {
       if (!text && !hasNode) { this.err = "내용을 입력하세요."; return; }
       this.busy = true; this.err = "";
       const uploaded = [];
+      const failed = [];                               // UPLOAD_TRIES 회 재시도 후에도 못 올린 파일 이름
       // 올릴 것부터 센다 — prod 는 첨부 하나에 몇 초씩 걸린다. 몇 개 중 몇 번째인지 모르면
       // 그 몇 초가 '멈춘 것' 으로 느껴진다.
       const queue = [];
@@ -1226,17 +1243,49 @@ export default {
           this.upName = info.name;
           const file = new File([info.blob], info.name,
                                 { type: (info.blob && info.blob.type) || "application/octet-stream" });
-          const res = await api.attachmentUpload(this.ticketKey, file);
-          uploaded.push(res.id);
-          html = html.split(url).join(res.filename);    // objectURL → 실제 파일명
+          // 최대 UPLOAD_TRIES 회까지 다시 올려 본다 — 간헐 실패(네트워크/세션)로 파일을 버리지 않게.
+          let res = null;
+          for (let attempt = 1; attempt <= UPLOAD_TRIES; attempt++) {
+            try { res = await api.attachmentUpload(this.ticketKey, file); break; }
+            catch (e) {
+              if (attempt < UPLOAD_TRIES) {                        // 아직 기회가 남았으면 잠깐 뒤 재시도
+                this.upName = info.name + " (재시도 " + attempt + "/" + (UPLOAD_TRIES - 1) + ")";
+                await sleep(400 * attempt);                        // 점점 더 기다렸다 다시(백오프)
+              }
+            }
+          }
+          if (res) {
+            uploaded.push(res.id);
+            html = html.split(url).join(res.filename);            // objectURL → 실제 파일명
+          } else {
+            failed.push(info.name);                               // 끝내 실패 — 본문에서 참조를 걷어낸다
+            html = stripPendingRef(html, url);
+          }
           this.upDone += 1;
         }
         this.upName = "";                                // 이제 본문/댓글 자체를 올린다
+        // 올릴 게 파일뿐이었는데 전부 실패 — 저장할 본문이 없다. 알리고 끝낸다(_pending 은 남겨
+        // 사용자가 다시 [등록]으로 재시도할 수 있게). text 는 사용자가 친 글자(파일 참조 제거와 무관).
+        if (!text && uploaded.length === 0 && failed.length) {
+          pushToast({ kind: "error", icon: "⚠", title: "파일 업로드 실패",
+                      message: failed.join(", ") + " — 모두 실패해 저장하지 않았습니다. 다시 시도해 주세요.",
+                      timeout: 9000 });
+          this.err = "파일 업로드에 모두 실패했습니다: " + failed.join(", ");
+          return;                                                 // finally 가 busy=false
+        }
         await this.submitFn(html);
         const dk = this.draftKey();
         if (dk) clearDraft(dk);                      // 제출 성공 → 임시저장 삭제
         for (const u of this._pending.keys()) URL.revokeObjectURL(u);
         this._pending.clear();
+        // 본문 저장까지 성공한 뒤에야 '일부 파일 실패'를 알린다 — 본문은 확실히 저장됐고, 어떤
+        // 파일이 빠졌는지 우하단 알림으로 분명히 남긴다(다이얼로그가 닫혀도 보이도록 토스트로).
+        if (failed.length) {
+          pushToast({ kind: "error", icon: "⚠", title: "파일 업로드 실패",
+                      message: failed.join(", ") + " — 본문은 저장했습니다. 파일은 다시 첨부해 주세요.",
+                      timeout: 9000 });
+          this.err = "파일 업로드 실패: " + failed.join(", ") + " (본문은 저장됨)";
+        }
         this.$emit("submitted");
       } catch (e) {
         for (const id of uploaded) { try { await api.attachmentDelete(this.ticketKey, id); } catch (_) { /* noop */ } }
