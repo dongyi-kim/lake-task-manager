@@ -852,6 +852,9 @@ export default {
       if (!root || !root.querySelectorAll) return;
       root.querySelectorAll(".tkt-desc img, .tkt-desc table:not(.kv-table)").forEach((el) => {
         if (el.dataset.zoomified) return;
+        // 첨부 **파일 뱃지(칩)** 안의 아이콘/썸네일 이미지는 확대 대상이 아니다 — 콘텐츠 이미지가
+        // 아니라 링크 칩이라, 여기에 '확대' 를 얹으면 칩 위에 엉뚱한 버튼이 뜬다(prod 에서 발생).
+        if (el.tagName === "IMG" && el.closest(".file-badge, .fchip, .attachment")) return;
         el.dataset.zoomified = "1";
         const wrap = document.createElement(el.tagName === "IMG" ? "span" : "div");
         wrap.className = "zoomable";
