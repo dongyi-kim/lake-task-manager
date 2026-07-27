@@ -258,22 +258,34 @@ def _ticket_people(client, key):
         return do()
 
 
-def _priority_uids(client, s, key):
-    """사람 검색 결과에서 **위로 올릴** 사람들(소문자 uid 집합):
-    매니저(settings.managers) ∪ 등록 인력(people.yaml 전체) ∪ 이 티켓 등장인물."""
+def _manager_people_uids(s):
+    """매니저(settings.managers) ∪ 등록 인력(people.yaml 전체) — 소문자 uid 집합."""
     from .settings import load_people
-    pri = set(s.managers or [])                                    # settings.managers 는 이미 소문자
+    ids = set(s.managers or [])                                    # settings.managers 는 이미 소문자
     try:
         for lst in (load_people() or {}).values():
             for uid in (lst or []):
                 if uid:
-                    pri.add(str(uid).strip().lower())
+                    ids.add(str(uid).strip().lower())
     except Exception:
         pass
-    for uid in _ticket_people(client, key):
-        if uid:
-            pri.add(str(uid).strip().lower())
-    return pri
+    return ids
+
+
+def _mention_rank(client, s, key):
+    """사람 검색 결과 정렬 가중치 함수 → uid 를 받아 0·1·2 를 돌려준다(작을수록 위).
+      0) 이 티켓에 등장한 사람   1) 매니저 또는 등록 인력   2) 그 외.
+    같은 등급 안에서는 호출부가 stable sort 라 기존 Jira 검색 순서가 유지된다."""
+    tset = {str(u).strip().lower() for u in _ticket_people(client, key) if u}
+    mpset = _manager_people_uids(s)
+    def rank(uid):
+        u = (uid or "").strip().lower()
+        if u in tset:
+            return 0
+        if u in mpset:
+            return 1
+        return 2
+    return rank
 
 
 def _module_people(client, s, key):
@@ -319,13 +331,12 @@ def mention_suggestions(client, s, q, key, limit=8):
     티켓 관련 사람 1순위(리포터/담당/댓글작성/멘션) + 모듈 사람 2순위(중복 제거)."""
     q = (q or "").strip()
     if q:
-        # 넉넉히 받아 우선순위(매니저 · 등록 인력 · 이 티켓 등장인물)를 위로 올린 뒤 limit 만큼 자른다.
+        # 넉넉히 받아 3등급(티켓 등장인물 > 매니저·등록인력 > 그 외)으로 올린 뒤 limit 만큼 자른다.
         # (Jira 검색 순위로만 자르면 우선순위 사람이 하필 9번째라 잘려 안 보인다.)
         results = search_users(client, s, q, min(max(limit * 4, limit), 40))
-        pri = _priority_uids(client, s, key)
-        if pri:
-            # 0=우선(pri), 1=그 외. stable sort 라 각 그룹 안에선 Jira 순위가 유지된다.
-            results.sort(key=lambda u: 0 if (u.get("id") or "").strip().lower() in pri else 1)
+        rank = _mention_rank(client, s, key)
+        # stable sort 라 같은 등급 안에선 기존 Jira 검색 순서가 유지된다.
+        results.sort(key=lambda u: rank(u.get("id")))
         return results[:limit]
     if not key:
         return []                                              # 컨텍스트 없으면 검색 안 함
