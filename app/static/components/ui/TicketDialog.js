@@ -118,6 +118,7 @@ export default {
                     stOpen: false, stInfo: null, stErr: "", stPick: null,
                     err: "", expanded: false, zoom: null, zoomLoading: false,
                     refreshing: false,               // 좌하단 강제 새로고침 진행 표시
+                    sumEdit: false, sumDraft: "", sumBusy: false, sumErr: "",   // 제목(summary) 인라인 수정
                     // 좌/우 부가정보 패널 — 폭 조절·접기(저장). 넓은 화면(사이드바 모드)에서만 의미.
                     spineW: loadSpineW(), spineHidden: loadSpineHidden(),
                     tlW: loadTlW(), tlHidden: loadTlHidden(),
@@ -517,6 +518,29 @@ export default {
         .catch(() => { if (this.keyId === key) this.emeta = {}; });
     },
     fmeta(id) { return (this.emeta && this.emeta[id]) || null; },
+    /** 제목(summary) 인라인 수정 — editmeta 에 summary 가 있을 때만(권한). Enter 저장 / Esc 취소. */
+    startSumEdit() {
+      if (!this.v || !this.fmeta("summary") || this.sumBusy) return;
+      this.sumDraft = this.v.summary || "";
+      this.sumErr = ""; this.sumEdit = true;
+      this.$nextTick(() => { const el = this.$refs.sumInput; if (el) { el.focus(); el.select(); } });
+    },
+    cancelSumEdit() { this.sumEdit = false; this.sumErr = ""; },
+    async saveSum() {
+      const s = (this.sumDraft || "").trim();
+      if (!s) { this.sumErr = "제목을 입력하세요."; return; }
+      if (this.v && s === this.v.summary) { this.sumEdit = false; return; }   // 변경 없음
+      this.sumBusy = true; this.sumErr = "";
+      try {
+        const r = await api.updateFields(this.tk, { summary: s });
+        if (r && r.ok === false) throw new Error(r.error || "저장 실패");
+        if (this.v) this.v.summary = s;         // 낙관적 즉시 반영(그 뒤 onFieldSaved 가 재조회)
+        this.sumEdit = false;
+        this.onFieldSaved();
+      } catch (e) {
+        this.sumErr = (e && e.message) || "저장 실패";
+      } finally { this.sumBusy = false; }
+    },
     /** 본문 저장 — 에디터가 이미지 업로드까지 끝낸 HTML 을 준다. 실패는 **던져야** 에디터가
      *  올린 이미지를 되돌린다(조용히 삼키면 첨부만 남는다). */
     async saveDesc(html) {
@@ -865,8 +889,21 @@ export default {
           <span class="tb-name" :title="barTitle">
             <span class="tb-type">{{ v ? v.type : '' }}</span>
             <span class="tb-key">{{ (v && v.key) || keyId }}</span>
-            <span class="tb-sum">{{ v ? v.summary : '불러오는 중…' }}</span>
-            <span v-if="v && v.status" class="tb-st" :class="statusClass(v.statusCategory)">- {{ v.status }}</span>
+            <!-- 제목 — 수정권한(editmeta.summary) 있으면 연필로 인라인 편집 -->
+            <template v-if="!sumEdit">
+              <span class="tb-sum" :class="{ editable: v && fmeta('summary') }"
+                    @click="v && fmeta('summary') && startSumEdit()"
+                    :title="v && fmeta('summary') ? '클릭해 제목 수정' : ''">{{ v ? v.summary : '불러오는 중…' }}</span>
+              <button v-if="v && fmeta('summary')" class="tb-sumedit" @click.stop="startSumEdit" title="제목 수정" aria-label="제목 수정">✎</button>
+              <span v-if="v && v.status" class="tb-st" :class="statusClass(v.statusCategory)">- {{ v.status }}</span>
+            </template>
+            <template v-else>
+              <input ref="sumInput" class="tb-sum-input" v-model="sumDraft" :disabled="sumBusy" maxlength="255"
+                     @keydown.enter.prevent="saveSum" @keydown.esc.prevent="cancelSumEdit" @click.stop />
+              <button class="tb-sumedit ok" @click.stop="saveSum" :disabled="sumBusy" :title="sumBusy ? '저장 중' : '저장 (Enter)'">{{ sumBusy ? '…' : '✓' }}</button>
+              <button class="tb-sumedit" @click.stop="cancelSumEdit" :disabled="sumBusy" title="취소 (Esc)">✕</button>
+              <span v-if="sumErr" class="tb-sum-err">{{ sumErr }}</span>
+            </template>
           </span>
           <span class="tb-actions">
             <!-- 단독 페이지는 nav 가 없다 → Home·검색·테마를 타이틀바에서 제공.

@@ -39,6 +39,20 @@
 /* 제목만 줄어든다 — 타입·번호·상태는 항상 읽혀야 한다 */
 .tb-sum { flex: 0 1 auto; min-width: 0; font-size: 14px; font-weight: 600; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; }
+.tb-sum.editable { cursor: text; border-radius: 4px; }
+.tb-sum.editable:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+/* 제목 수정 — 연필/확인/취소 버튼 + 인라인 입력 */
+.tb-sumedit { flex: none; border: 0; background: none; cursor: pointer; padding: 2px 4px;
+  font-size: 12.5px; line-height: 1; color: var(--muted-2); border-radius: 4px; opacity: .7; }
+.tb-name:hover .tb-sumedit { opacity: 1; }
+.tb-sumedit:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tb-sumedit.ok { color: var(--good); }
+.tb-sumedit:disabled { opacity: .4; cursor: default; }
+.tb-sum-input { flex: 1 1 auto; min-width: 120px; font: inherit; font-size: 14px; font-weight: 600;
+  color: var(--text); background: var(--panel); border: 1px solid var(--accent); border-radius: 6px;
+  padding: 3px 8px; }
+.tb-sum-input:focus { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+.tb-sum-err { flex: none; font-size: 11.5px; color: var(--today); }
 .tb-st { flex: none; font-size: 14px; font-weight: 700; }
 .tb-st.st-todo { color: var(--st-todo); }
 .tb-st.st-inprogress { color: var(--st-prog); }
