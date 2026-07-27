@@ -15,11 +15,12 @@ import Avatar from "./Avatar.js";
 import TypeBadge from "./TypeBadge.js";
 import FieldEdit from "./FieldEdit.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
+import CommentEditor from "./CommentEditor.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 
 export default {
   name: "NewChildDialog",
-  components: { Avatar, TypeBadge, FieldEdit, PriIcon },
+  components: { Avatar, TypeBadge, FieldEdit, PriIcon, CommentEditor },
   props: {
     parent: { type: String, required: true },      // 부모 티켓 키
     isEpic: { type: Boolean, default: false },     // Epic 밑이면 타입을 고른다(아니면 Sub-Task 하나뿐)
@@ -32,6 +33,7 @@ export default {
     // 우선순위는 **비워 둔 채** 시작한다. 기본값을 넣어 두면 아무도 판단하지 않은 등급이
     // 그대로 굳는다 — 등급은 만드는 사람이 정해야 하는 값이라 비워 두고 물어본다.
     return { busy: false, err: "", priOpts: [], compOpts: [],
+             descOpen: false, createdKey: "",   // 설명(폴딩) · 생성 후 첨부용 키
              nc: { type: "", summary: "", priority: "", components: [],
                    duedate: "", assigneeId: "", assigneeName: "" } };
   },
@@ -70,17 +72,31 @@ export default {
       this.nc.assigneeId = id || "";
       this.nc.assigneeName = u ? (u.display || u.name || "") : "";
     },
+    // 설명 저장 — 에디터가 이미지 업로드까지 끝낸 HTML 을 준다(생성된 티켓 키로).
+    async saveDesc(html) {
+      const r = await api.updateFields(this.createdKey, { descriptionHtml: html });
+      if (r && r.ok === false) throw new Error(r.error || "설명 저장 실패");
+    },
     async submit() {
       if (!this.canCreate || this.busy) return;
       this.busy = true; this.err = "";
       try {
+        // 설명을 쓸지 — 이미지가 blob 이라 **티켓을 먼저 만들고** 그 키로 붙인다(생성 후 자동 첨부).
+        const wantDesc = this.descOpen && this.$refs.ded && !this.$refs.ded.isBlank();
         const r = await api.createChild(this.parent, {
           type: this.nc.type, summary: this.nc.summary.trim(), priority: this.nc.priority,
           duedate: this.nc.duedate || null, assignee: this.nc.assigneeId || null,
           components: this.nc.components.slice(),
         });
         if (!r || r.ok === false) { this.err = (r && r.error) || "만들지 못했습니다."; return; }
-        this.$emit("created", r.key);
+        const key = r.key;
+        if (wantDesc && key) {
+          this.createdKey = key;                 // 에디터의 업로드/저장 대상이 새 티켓이 되게
+          await this.$nextTick();
+          // 실패해도 티켓은 이미 만들어졌다 — 설명만 못 붙는다(사용자는 열어서 다시 쓸 수 있다).
+          try { await this.$refs.ded.submit(); } catch (e) { /* noop */ }
+        }
+        this.$emit("created", key);
       } catch (e) {
         // 거절 사유를 그대로 보인다 — 삼키면 무엇이 문제인지 알 수 없다.
         this.err = (e && e.message) || "만들지 못했습니다.";
@@ -145,6 +161,17 @@ export default {
           <span v-else class="nk-noav" aria-hidden="true"></span>
           <span :class="{ muted: !nc.assigneeId }">{{ nc.assigneeName || '미지정' }}</span>
         </FieldEdit></span></div>
+    </div>
+
+    <!-- 설명(기본 접힘) — 펼치면 에디터. 이미지/파일은 붙여넣기·드롭으로, 생성 후 자동 첨부된다. -->
+    <div class="nk-desc">
+      <button type="button" class="nk-desc-t" @click="descOpen = !descOpen">
+        <span class="nk-desc-cav">{{ descOpen ? '▾' : '▸' }}</span>설명 {{ descOpen ? '접기' : '추가 (선택)' }}
+      </button>
+      <div v-show="descOpen" class="nk-desc-body">
+        <CommentEditor ref="ded" :ticket-key="createdKey || parent" :submit-fn="saveDesc" hide-footer />
+        <div class="nk-desc-hint">이미지·파일은 여기에 붙여넣거나 끌어다 놓으면 티켓 생성 후 함께 첨부됩니다.</div>
+      </div>
     </div>
 
     <div v-if="err" class="tkt-cmt-err">{{ err }}</div>

@@ -1191,6 +1191,12 @@ export default {
       if (this._ed) this._ed.commands.clearContent(true);
       this.restored = false;
     },
+    // 바깥(생성 다이얼로그 등)에서 '설명을 쓸지' 판단용 — 글자·이미지·링크·체크박스 하나라도 있으면 false.
+    isBlank() {
+      if (!this._ed) return true;
+      const text = (this._ed.getText() || "").trim();
+      return !text && !/<img\b|<a\b|<input\b/i.test(this._ed.getHTML());
+    },
     async submit() {
       if (this.busy || !this._ed) return;
       let html = this._ed.getHTML();

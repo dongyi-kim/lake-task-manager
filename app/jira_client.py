@@ -1287,10 +1287,11 @@ class JiraClient:
         return [t["name"] for t in types if t["subtask"]]
 
     def create_child(self, parent_key, itype, summary, priority=None,
-                     duedate=None, assignee=None, components=None):
+                     duedate=None, assignee=None, components=None, description=None):
         """하위 티켓 생성. 부모가 Epic 이면 Epic Link 로, 아니면 parent(Sub-Task)로 잇는다.
 
         생성 결과 키를 돌려준다. 실패는 그대로 올린다 — 조용히 삼키면 사용자는 만들어진 줄 안다.
+        description 은 wiki 문자열(라우트가 html_to_wiki 로 변환해 넘긴다).
         """
         b = self.ticket_badge(parent_key) or {}
         fields = {
@@ -1298,6 +1299,8 @@ class JiraClient:
             "issuetype": {"name": itype},
             "summary": summary,
         }
+        if description:
+            fields["description"] = description
         if priority:
             fields["priority"] = {"name": priority}
         if duedate:
@@ -1327,6 +1330,88 @@ class JiraClient:
         self.cache.invalidate(f"epic_children:{self.env}:{parent_key}")
         self._invalidate_ticket(parent_key)
         return {"key": key}
+
+    def create_epic(self, summary, priority=None, duedate=None, assignee=None,
+                    components=None, description=None, epic_name=None):
+        """최상위 Epic 생성(부모 없음). Epic Name(단축어) 커스텀 필드가 있으면 채운다.
+        생성 후 목록/검색 캐시가 낡으므로 관련 캐시를 넓게 버린다."""
+        etype = next((t["name"] for t in self.issue_types()
+                      if (t.get("name") or "").lower() == "epic"), "Epic")
+        fields = {
+            "project": {"key": self.s.project_key},
+            "issuetype": {"name": etype},
+            "summary": summary,
+        }
+        if description:
+            fields["description"] = description
+        if priority:
+            fields["priority"] = {"name": priority}
+        if duedate:
+            fields["duedate"] = duedate
+        if assignee:
+            fields["assignee"] = {"name": assignee}
+        if components:
+            fields["components"] = [{"name": c} for c in components if c]
+        # Epic Name(단축어) — 검색·뱃지가 요약이 아니라 이 이름을 쓴다. 없으면 요약으로.
+        enf = getattr(self.s, "epic_name_field_id", None)
+        if enf:
+            fields[enf] = epic_name or summary
+        with write_upstream():
+            res = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
+        key = (res or {}).get("key")
+        # WBS/현안/에픽 목록이 이 Epic 을 담으려면 관련 목록 캐시를 비운다(넓게).
+        for pfx in ("wbs_build", "vit_bases", "vit_list", "epic_options"):
+            self.cache.invalidate(f"{pfx}:")
+        return {"key": key}
+
+    def set_epic_link(self, epic_key, task_keys):
+        """기존 Task 들을 Epic 에 넣는다(Epic Link 설정). 각자 PUT — 하나 실패해도 나머지는 진행.
+        반환: {ok, linked:[…], failed:[{key,error}]}."""
+        enf = self.s.epic_link_field_id
+        linked, failed = [], []
+        for k in task_keys or []:
+            k = (k or "").strip()
+            if not k:
+                continue
+            try:
+                self.provider.put_json(f"/rest/api/2/issue/{k}", {"fields": {enf: epic_key}})
+                self._invalidate_ticket(k)
+                self.cache.invalidate(f"issue:{self.env}:{k}")
+                self.cache.invalidate(f"issueL:{self.env}:{k}")
+                linked.append(k)
+            except Exception as e:
+                failed.append({"key": k, "error": str(e)[:200]})
+        # 이 Epic 의 자식 목록 캐시 무효화(새로 든 Task 가 보이게)
+        self.cache.invalidate(f"epic_children:{self.env}:{epic_key}")
+        self.cache.invalidate(f"children:{self.env}:{epic_key}")
+        return {"ok": not failed, "linked": linked, "failed": failed}
+
+    def epic_candidates(self, q="", limit=20):
+        """Epic 에 넣을 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외). q 로 키/제목 필터.
+        JQL 을 단순하게(project + 최신순) 두고 타입/검색은 파이썬에서 거른다 — mock/prod 공통 안전."""
+        pk = self.s.project_key
+        raws = self._search(f"project = {pk} ORDER BY updated DESC", max_results=200) or []
+        enf = self.s.epic_link_field_id
+        ql = (q or "").strip().lower()
+        out = []
+        for it in raws:
+            f = it.get("fields") or {}
+            itype = f.get("issuetype") or {}
+            tname = itype.get("name") or ""
+            if tname == "Epic" or itype.get("subtask"):
+                continue
+            key = it.get("key") or ""
+            summ = f.get("summary") or key
+            if ql and ql not in key.lower() and ql not in summ.lower():
+                continue
+            out.append({
+                "key": key, "summary": summ, "type": tname,
+                "statusCategory": _norm_cat(((f.get("status") or {}).get("statusCategory") or {}).get("key")),
+                "epicKey": f.get(enf) or None,
+            })
+            if len(out) >= max(1, min(limit, 100)):
+                break
+        return {"items": out}
 
     def components(self):
         def do():

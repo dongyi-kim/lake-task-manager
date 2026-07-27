@@ -809,6 +809,7 @@ class _ChildBody(BaseModel):
     duedate: str | None = None
     assignee: str | None = None
     components: list[str] | None = None
+    descriptionHtml: str | None = None       # 폴딩 에디터 본문(HTML → wiki)
 
 
 @app.post("/api/ticket/{key}/child")
@@ -829,13 +830,69 @@ def api_create_child(key: str, body: _ChildBody):
         return JSONResponse({"ok": False,
                              "error": f"이 티켓 밑에는 {itype} 을(를) 만들 수 없습니다."},
                             status_code=400)
+    desc = html_to_wiki(body.descriptionHtml) if body.descriptionHtml else None
     try:
         r = _client.create_child(key, itype, summary, priority=body.priority or None,
                                  duedate=body.duedate or None, assignee=body.assignee or None,
-                                 components=body.components or None)
+                                 components=body.components or None, description=desc or None)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     return JSONResponse({"ok": True, "key": (r or {}).get("key")})
+
+
+class _EpicBody(BaseModel):
+    summary: str
+    epicName: str | None = None
+    priority: str | None = None
+    duedate: str | None = None
+    assignee: str | None = None
+    components: list[str] | None = None
+    descriptionHtml: str | None = None
+    taskKeys: list[str] | None = None        # 이 Epic 에 함께 넣을 기존 Task 키
+
+
+@app.post("/api/epic")
+def api_create_epic(body: _EpicBody):
+    """최상위 Epic 생성 + (선택) 기존 Task 들을 이 Epic 에 넣는다."""
+    summary = (body.summary or "").strip()
+    if not summary:
+        return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
+    desc = html_to_wiki(body.descriptionHtml) if body.descriptionHtml else None
+    try:
+        r = _client.create_epic(summary, priority=body.priority or None,
+                                duedate=body.duedate or None, assignee=body.assignee or None,
+                                components=body.components or None, description=desc or None,
+                                epic_name=(body.epicName or "").strip() or None)
+        key = (r or {}).get("key")
+        link = None
+        if key and body.taskKeys:
+            link = _client.set_epic_link(key, body.taskKeys)
+        return JSONResponse({"ok": True, "key": key, "link": link})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=400)
+
+
+class _EpicLinkBody(BaseModel):
+    taskKeys: list[str]
+
+
+@app.post("/api/epic/{key}/link")
+def api_epic_link(key: str, body: _EpicLinkBody):
+    """기존 Task 들을 이 Epic 에 넣는다(Epic Link 설정)."""
+    try:
+        return JSONResponse(_client.set_epic_link(key, body.taskKeys))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=400)
+
+
+@app.get("/api/epic-candidates")
+def api_epic_candidates(q: str = "", limit: int = 20):
+    """Epic 에 넣을 만한 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외), Epic 미소속 우선.
+    q 로 제목/키 검색. (Epic 생성 화면의 '기존 Task 선택'용)"""
+    try:
+        return JSONResponse(_client.epic_candidates(q, limit))
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200], "items": []}, status_code=200)
 
 
 @app.put("/api/ticket/{key}/fields")

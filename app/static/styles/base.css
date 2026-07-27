@@ -230,6 +230,25 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
 
 /* 좌하단 플로팅 강제 새로고침 — 탭마다 제각각이던 새로고침을 하나로. 늘 같은 자리·같은 아이콘.
    자주 쓰는 게 아니라 '막혔을 때' 쓰는 것이라 눈에 먼저 들 필요는 없되, 찾을 땐 늘 여기 있다. */
+/* 좌하단 '+' 티켓 추가 — 새로고침 버튼 바로 위 */
+.addfab { position: fixed; left: 18px; bottom: 68px; z-index: 8000;
+  width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: #fff; background: var(--accent); border: 1px solid var(--accent);
+  box-shadow: 0 4px 14px rgba(0,0,0,.22); transition: transform .14s, filter .12s; }
+.addfab:hover { filter: brightness(1.06); transform: translateY(-1px); }
+.addfab.on { transform: rotate(45deg); }
+.addfab svg { width: 20px; height: 20px; }
+.addfab-back { position: fixed; inset: 0; z-index: 8001; }
+.addfab-menu { position: fixed; left: 18px; bottom: 118px; z-index: 8002; min-width: 210px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 6px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.22); display: flex; flex-direction: column; gap: 2px; }
+.addfab-i { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0;
+  background: none; font: inherit; font-size: 13px; font-weight: 600; color: var(--text);
+  padding: 9px 11px; border-radius: 8px; cursor: pointer; }
+.addfab-i:hover { background: var(--panel-2); }
+.addfab-i .afi-ic { font-size: 16px; flex: none; }
+.addfab-i em { margin-left: auto; font-style: normal; font-size: 10.5px; color: var(--muted-2); }
+
 .fab-refresh { position: fixed; left: 18px; bottom: 18px; z-index: 8000;
   width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center;
   justify-content: center; cursor: pointer; color: var(--muted);

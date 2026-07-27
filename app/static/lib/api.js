@@ -112,6 +112,8 @@ export const api = {
   updateFields: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/fields",
                                        "PUT", body).then((r) => { evict(key); return r; }),
   childTypes: (key) => req("/api/options/childtypes?q=" + encodeURIComponent(key)),
+  createEpic: (body) => jsonReq("/api/epic", "POST", body).then((r) => { _memo.clear(); return r; }),
+  epicCandidates: (q) => req("/api/epic-candidates?limit=25&q=" + encodeURIComponent(q || "")),
   createChild: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/child",
                                       "POST", body)
     // 만든 직후 부모의 하위 목록을 다시 받아야 한다 — memo 를 안 비우면 **늘 만들기 전 목록**이
