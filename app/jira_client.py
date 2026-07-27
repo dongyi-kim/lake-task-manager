@@ -1479,9 +1479,10 @@ class JiraClient:
         except Exception:
             return {"me": me, "modules": [], "taskKeys": [], "epicKeys": []}
 
-    def epic_candidates(self, q="", limit=20):
+    def epic_candidates(self, q="", limit=20, exclude_linked=False):
         """Epic 에 넣을 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외). q 로 키/제목 필터.
-        JQL 을 단순하게(project + 최신순) 두고 타입/검색은 파이썬에서 거른다 — mock/prod 공통 안전."""
+        exclude_linked=True 면 **이미 다른 Epic 에 속한 Task 를 뺀다**(자르기 전에 걸러야 소속 없는
+        후보가 limit 안에 남는다). JQL 은 단순히(project + 최신순), 나머지는 파이썬에서 — mock/prod 공통."""
         pk = self.s.project_key
         raws = self._search(f"project = {pk} ORDER BY updated DESC", max_results=200) or []
         enf = self.s.epic_link_field_id
@@ -1492,6 +1493,8 @@ class JiraClient:
             itype = f.get("issuetype") or {}
             tname = itype.get("name") or ""
             if tname == "Epic" or itype.get("subtask"):
+                continue
+            if exclude_linked and f.get(enf):        # 이미 Epic 에 속함 → 제외(자르기 전에)
                 continue
             key = it.get("key") or ""
             summ = f.get("summary") or key

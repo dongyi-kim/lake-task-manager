@@ -158,8 +158,8 @@ export default {
       }
       return out;
     },
-    /** Epic 필터를 적용한 카드 — 배치·집계는 모두 이걸 쓴다(가린 Epic 은 개수에서도 빠진다). */
-    allCards() { return this.rawCards.filter((c) => this.epicPass(c.epicKey)); },
+    /** Epic 필터를 적용한 카드 — 배치·집계는 모두 이걸 쓴다(가린 버킷은 개수에서도 빠진다). */
+    allCards() { return this.rawCards.filter((c) => this.epicPass(c)); },
     /** 하단 Epic 콤보의 개별 항목 — 내 Task 에 실제로 있는 Epic 들(시그니처 컬러 포함). */
     epicOptions() {
       const seen = new Set(), out = [];
@@ -172,10 +172,14 @@ export default {
       }
       return out.sort((a, b) => a.title.localeCompare(b.title, "ko"));
     },
-    hasNoneBucket() { return this.rawCards.some((c) => !c.epicKey); },
-    /** 필터 대상 전체 버킷(Epic 키들 + 소속없음). '모든 Epic' 체크 상태 계산용. */
+    // 사용자 VoC(=Epic 은 아니지만 논리적으로 Epic 처럼 쓰는) 버킷 — **Epic 에 안 속한 VoC** 만.
+    // (Epic 이 배정된 VoC 는 그 Epic 버킷에 들어간다.)
+    hasVocBucket() { return this.rawCards.some((c) => !c.epicKey && c.voc); },
+    hasNoneBucket() { return this.rawCards.some((c) => !c.epicKey && !c.voc); },
+    /** 필터 대상 전체 버킷(Epic 키들 + 사용자 VoC + 소속없음). '모든 Epic' 체크 상태 계산용. */
     allBuckets() {
       const ks = this.epicOptions.map((e) => e.key);
+      if (this.hasVocBucket) ks.push("__voc__");
       if (this.hasNoneBucket) ks.push("__none__");
       return ks;
     },
@@ -206,10 +210,10 @@ export default {
       // 단독 묶음은 서로 아무 관계 없는 티켓을 담는 자루라 그 '순위'(가장 급한 카드)는 사실상
       // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
       // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
-      // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 Epic 버킷으로 통째로 거른다.
-      const out = this.groups.filter((g) => g.hasSubs && this.epicPass(g.epic)).map((g) => this.taskPanel(g))
+      // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 버킷으로 통째로 거른다.
+      const out = this.groups.filter((g) => g.hasSubs && this.epicPass(g)).map((g) => this.taskPanel(g))
         .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
-      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs && this.epicPass(g.epic)));
+      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs && this.epicPass(g)));
       if (solo) out.push(solo);
       return out;
     },
@@ -245,8 +249,14 @@ export default {
     },
     hintOf(o) { const cur = o.opts.find((x) => x.k === this[o.key]); return cur ? cur.hint : o.label; },
 
-    /** Epic 필터 — 이 카드의 Epic 버킷이 가려지지 않았는가(소속 없음/VoC = "__none__"). */
-    epicPass(epicKey) { return !this.epicHidden[epicKey || "__none__"]; },
+    /** 이 카드/그룹의 필터 버킷 — Epic 키, 없으면 사용자 VoC("__voc__"), 그것도 아니면 "__none__". */
+    bucketOf(x) {
+      const ek = (x && (x.epicKey || x.epic)) || null;
+      if (ek) return ek;
+      return x && x.voc ? "__voc__" : "__none__";
+    },
+    /** Epic 필터 — 이 카드/그룹의 버킷이 가려지지 않았는가. */
+    epicPass(x) { return !this.epicHidden[this.bucketOf(x)]; },
     toggleEpic(k) {
       const h = Object.assign({}, this.epicHidden);
       if (h[k]) delete h[k]; else h[k] = true;
@@ -592,8 +602,8 @@ export default {
         </select>
       </label>
 
-      <!-- Epic 필터 — 체크박스 다중선택 콤보. 내 Task 유관 Epic + 소속 없음을 개별로 켜고 끈다. -->
-      <div v-if="epicOptions.length || hasNoneBucket" class="mt-opt mt-epicf">
+      <!-- Epic 필터 — 체크박스 다중선택 콤보. 내 Task 유관 Epic + 사용자 VoC + 소속 없음을 개별로. -->
+      <div v-if="epicOptions.length || hasVocBucket || hasNoneBucket" class="mt-opt mt-epicf">
         <span class="mt-opt-l">Epic</span>
         <div class="mt-ef">
           <button class="mt-ef-btn" :class="{ on: !allEpicsShown }" @click.stop="epicOpen = !epicOpen"
@@ -607,14 +617,19 @@ export default {
               모든 Epic</button>
             <div class="mt-ef-sep"></div>
             <div class="mt-ef-list">
-              <button v-if="hasNoneBucket" type="button" class="mt-ef-i" @click="toggleEpic('__none__')">
-                <span class="mt-ef-ck" :class="{ on: !epicHidden['__none__'] }"></span>
-                <span class="mt-ef-dot none"></span><span class="mt-ef-t">Epic 없음</span></button>
               <button v-for="e in epicOptions" :key="e.key" type="button" class="mt-ef-i" @click="toggleEpic(e.key)"
                       :title="e.title">
                 <span class="mt-ef-ck" :class="{ on: !epicHidden[e.key] }"></span>
                 <span class="mt-ef-dot" :style="{ background: e.color }"></span>
                 <span class="mt-ef-t">{{ e.title }}</span></button>
+              <!-- 사용자 VoC — Epic 은 아니지만 논리적으로 Epic 처럼. 끄면 Epic 에 안 속한 VoC 가 숨는다. -->
+              <button v-if="hasVocBucket" type="button" class="mt-ef-i" @click="toggleEpic('__voc__')">
+                <span class="mt-ef-ck" :class="{ on: !epicHidden['__voc__'] }"></span>
+                <span class="mt-ef-dot" style="background: var(--ty-story)"></span>
+                <span class="mt-ef-t">사용자 VoC</span></button>
+              <button v-if="hasNoneBucket" type="button" class="mt-ef-i" @click="toggleEpic('__none__')">
+                <span class="mt-ef-ck" :class="{ on: !epicHidden['__none__'] }"></span>
+                <span class="mt-ef-dot none"></span><span class="mt-ef-t">Epic 없음</span></button>
             </div>
           </div>
         </div>

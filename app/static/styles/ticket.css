@@ -1199,6 +1199,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .nk-sel-x { border: 0; background: none; color: var(--muted-2); cursor: pointer; font-size: 12px; padding: 0 2px; }
 .nk-sel-x:hover { color: var(--today); }
 .nk-tsearch { margin-bottom: 7px; }
+/* 기존 Task 검색줄 — 검색 입력 + '이미 Epic 속한 것 제외' 토글을 한 줄에 */
+.nk-tsrow { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+.nk-tsrow .nk-tsearch { flex: 1 1 auto; margin-bottom: 0; }
+.nk-exep { flex: none; white-space: nowrap; }
 .nk-cands { max-height: 220px; overflow: auto; display: flex; flex-direction: column; gap: 2px;
   border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
 .nk-cands-tall { max-height: 320px; }

@@ -924,11 +924,11 @@ def api_epic_link(key: str, body: _EpicLinkBody):
 
 
 @app.get("/api/epic-candidates")
-def api_epic_candidates(q: str = "", limit: int = 20):
-    """Epic 에 넣을 만한 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외), Epic 미소속 우선.
-    q 로 제목/키 검색. (Epic 생성 화면의 '기존 Task 선택'용)"""
+def api_epic_candidates(q: str = "", limit: int = 20, excludeLinked: int = 0):
+    """Epic 에 넣을 만한 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외). q 로 제목/키 검색.
+    excludeLinked=1 이면 이미 다른 Epic 에 속한 Task 를 뺀다. (Epic 생성 '기존 Task 선택'용)"""
     try:
-        return JSONResponse(_client.epic_candidates(q, limit))
+        return JSONResponse(_client.epic_candidates(q, limit, exclude_linked=bool(excludeLinked)))
     except Exception as e:
         return JSONResponse({"error": str(e)[:200], "items": []}, status_code=200)
 

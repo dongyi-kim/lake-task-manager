@@ -24,6 +24,9 @@ export default {
       // 기존 Task 선택
       pickOpen: false, candQ: "", cands: [], candBusy: false,
       selected: [],           // [{key, summary, type}]
+      // 이미 다른 Epic 에 속한 Task 는 기본으로 감춘다 — 새 Epic 에 담을 후보를 고르는 자리라
+      // 대개 '소속 없는 것' 을 찾는다(이미 배정된 걸 빼앗아 오는 건 예외적 작업).
+      excludeEpicLinked: true,
     };
   },
   computed: {
@@ -52,11 +55,16 @@ export default {
       clearTimeout(this._t);
       this._t = setTimeout(() => {
         this.candBusy = true;
-        api.raw("/api/epic-candidates?limit=25&q=" + encodeURIComponent(q || ""))
+        const ex = this.excludeEpicLinked ? 1 : 0;      // 서버가 이미-Epic-속한 것을 걸러(자르기 전에)
+        api.raw("/api/epic-candidates?limit=25&excludeLinked=" + ex + "&q=" + encodeURIComponent(q || ""))
           .then((r) => { this.cands = (r && r.items) || []; })
           .catch(() => { this.cands = []; })
           .finally(() => { this.candBusy = false; });
       }, 250);
+    },
+    toggleExcludeLinked() {
+      this.excludeEpicLinked = !this.excludeEpicLinked;
+      this.searchCands(this.candQ);                     // 조건이 바뀌었으니 다시 받는다
     },
     isSel(k) { return this.selectedKeys.includes(k); },
     toggleTask(c) {
@@ -149,18 +157,28 @@ export default {
             <button class="nk-sel-x" @click="removeSel(t.key)" aria-label="빼기">✕</button>
           </span>
         </div>
-        <input class="nk-mini nk-tsearch" :value="candQ" @input="searchCands($event.target.value)"
-               placeholder="Task 검색 (키 또는 제목)">
+        <div class="nk-tsrow">
+          <input class="nk-mini nk-tsearch" :value="candQ" @input="searchCands($event.target.value)"
+                 placeholder="Task 검색 (키 또는 제목)">
+          <button type="button" class="nk-voc nk-exep" :class="{ on: excludeEpicLinked }" role="switch"
+                  :aria-checked="excludeEpicLinked" @click="toggleExcludeLinked"
+                  title="이미 다른 Epic 에 속한 Task 를 목록에서 숨깁니다">
+            <span class="nk-voc-k"></span><span class="nk-voc-t">이미 Epic 속한 것 제외</span>
+          </button>
+        </div>
         <div class="nk-cands">
           <div v-if="candBusy" class="muted nk-cand-empty">찾는 중…</div>
-          <button v-for="c in cands" :key="c.key" type="button" class="nk-cand" :class="{ on: isSel(c.key) }"
-                  @click="toggleTask(c)">
+          <button v-for="c in cands" :key="c.key" type="button" class="nk-cand nk-cand-task"
+                  :class="{ on: isSel(c.key) }" @click="toggleTask(c)">
             <span class="nk-cand-ck">{{ isSel(c.key) ? '☑' : '☐' }}</span>
             <TypeBadge :type="c.type" /><b>{{ c.key }}</b>
             <span class="nk-cand-s">{{ c.summary }}</span>
-            <span v-if="c.epicKey" class="nk-cand-ep" :title="'현재 Epic: ' + c.epicKey">↳ {{ c.epicKey }}</span>
+            <span v-if="c.epicKey" class="nk-cand-ep" :title="'현재 Epic: ' + (c.epicName || c.epicKey)">↳ {{ c.epicName || c.epicKey }}</span>
+            <span v-if="c.assignee" class="nk-cand-asg" :title="c.assignee + ' 담당'">
+              <Avatar :user="c.assigneeId" :name="c.assignee" :size="16" />{{ c.assignee }}</span>
           </button>
-          <div v-if="!candBusy && !cands.length" class="muted nk-cand-empty">결과가 없습니다.</div>
+          <div v-if="!candBusy && !cands.length" class="muted nk-cand-empty">
+            {{ excludeEpicLinked ? '소속 없는 Task 가 없습니다 (제외 토글을 꺼 보세요).' : '결과가 없습니다.' }}</div>
         </div>
       </div>
     </div>
