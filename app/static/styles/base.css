@@ -246,7 +246,13 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
   background: none; font: inherit; font-size: 13px; font-weight: 600; color: var(--text);
   padding: 9px 11px; border-radius: 8px; cursor: pointer; }
 .addfab-i:hover { background: var(--panel-2); }
-.addfab-i .afi-ic { font-size: 16px; flex: none; }
+/* Jira 스타일 타입 아이콘 — 타입색 둥근 사각형 + 흰 글리프(Epic 번개·Task 체크·Sub 체크+가지) */
+.addfab-i .afi-ic { flex: none; width: 20px; height: 20px; border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center; }
+.addfab-i .afi-ic svg { width: 14px; height: 14px; display: block; }
+.afi-ic.ty-epic { background: var(--ty-epic); }
+.afi-ic.ty-task { background: var(--ty-task); }
+.afi-ic.ty-sub { background: var(--ty-sub); }
 .addfab-i em { margin-left: auto; font-style: normal; font-size: 10.5px; color: var(--muted-2); }
 
 .fab-refresh { position: fixed; left: 18px; bottom: 18px; z-index: 8000;

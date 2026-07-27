@@ -633,7 +633,14 @@ export default {
       return { statusCategory: c.statusCategory, resolved: c.resolved, due,
                dueInherited: !!inh, dueDays: daysTo(due) };
     },
-    canEdit(c) { return !!(this.me && this.me.id && c && c.authorId === this.me.id); },
+    // 본인 댓글 판정은 **서버가 매긴 c.mine 을 우선**한다(세션 사용자로 서버가 대조 — id 형식/
+    // 로딩 타이밍에 안 흔들린다). 옛 캐시로 mine 이 없을 때만 클라이언트 비교로 폴백.
+    canEdit(c) {
+      if (!c) return false;
+      if (c.mine === true) return true;
+      if (c.mine === false) return false;
+      return !!(this.me && this.me.id && c.authorId === this.me.id);
+    },
     reloadComments() {
       const key = this.keyId;
       return api.ticketComments(key)

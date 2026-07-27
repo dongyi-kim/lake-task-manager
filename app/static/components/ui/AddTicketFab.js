@@ -117,9 +117,19 @@ export default {
     <!-- 분류 메뉴 -->
     <div v-if="menuOpen" class="addfab-back" @click="menuOpen = false"></div>
     <div v-if="menuOpen" class="addfab-menu">
-      <button class="addfab-i" @click="startEpic"><span class="afi-ic">📐</span>Epic 추가하기</button>
-      <button class="addfab-i" @click="startTask"><span class="afi-ic">🗂</span>Task 추가하기<em>Epic 밑에</em></button>
-      <button class="addfab-i" @click="startSub"><span class="afi-ic">✅</span>Sub Task 추가하기<em>Task 밑에</em></button>
+      <button class="addfab-i" @click="startEpic">
+        <span class="afi-ic ty-epic" aria-hidden="true"><svg viewBox="0 0 16 16">
+          <path fill="#fff" d="M9.2 1.5 4 8.9h2.7l-1 5.6 5.1-7.4H9.9l1.1-5.6z"/></svg></span>Epic 추가하기</button>
+      <button class="addfab-i" @click="startTask">
+        <span class="afi-ic ty-task" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"
+          stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 8.3l2.6 2.6L12 4.8"/></svg></span>Task 추가하기<em>Epic 밑에</em></button>
+      <button class="addfab-i" @click="startSub">
+        <span class="afi-ic ty-sub" aria-hidden="true"><svg viewBox="0 0 16 16">
+          <path fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+                d="M6.2 7.6l2 2 3.6-3.9"/>
+          <path fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+                d="M3.6 3.2v3.1h3"/></svg></span>Sub Task 추가하기<em>Task 밑에</em></button>
     </div>
 
     <!-- 상위 검색 오버레이(Task/Sub) -->

@@ -1115,8 +1115,12 @@ class JiraClient:
         return _display_node(raw, self.s.sp_field_id, with_subs=True) if raw else None
 
     def issue_comments(self, key, limit=5):
-        """단일 티켓 코멘트 — mock/local/prod 동일 형태."""
-        return self._issue_comments(key, limit)
+        """단일 티켓 코멘트 — mock/local/prod 동일 형태.
+        본인 댓글 판정(mine)은 **캐시 밖**에서 매번 세션 사용자로 매긴다 — 캐시에 구우면 세션이
+        아직 없던 순간의 값이 굳는다. 프론트는 이 서버 판정(mine)을 그대로 믿는다(수정/삭제 노출)."""
+        rows = self._issue_comments(key, limit)
+        me = ((self.current_user() or {}).get("id") or "").strip().lower()
+        return [dict(c, mine=bool(me) and (c.get("authorId") or "").strip().lower() == me) for c in rows]
 
     # ── 쓰기(편집) — 코멘트 작성/수정/삭제 + 첨부 업로드 ────────────────────
     # 앱 최초의 쓰기 경로. body 는 **Jira wiki markup**(라우트에서 markdown→wiki 변환 후 전달).
