@@ -22,6 +22,12 @@
 .wbars.wl-fail { align-items: center; }
 .wl-fail-t { flex: 1; font-size: 11.5px; font-weight: 600; color: var(--today);
   background: var(--panel-2); border: 1px dashed var(--today); border-radius: 8px; padding: 4px 10px; }
+/* 통계 도착 전 — 사람 by 사람 로딩 중이라는 자리표시(막대 영역에 옅게) */
+.wbars.wl-pending { align-items: center; }
+.wl-pending-t { flex: 1; font-size: 11.5px; color: var(--muted-2);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px;
+  animation: wl-pulse 1.3s ease-in-out infinite; }
+@keyframes wl-pulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
 /* 범례 스와치 — 단색=진행 중, 사선=할당됨(미착수). 색(hue)은 타입이므로 여기선 중립 회색으로 형태만 안내 */
 .wl-legend .sw.solid-sw { background: var(--muted); }
 .wl-legend .sw.hatch { border: 1px solid var(--border);

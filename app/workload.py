@@ -48,13 +48,27 @@ def build_workload(client, plan, people, jira_base="", generated_at=None):
     }
 
 def build_workload_shell(client, plan, people, jira_base="", generated_at=None):
-    """골격 — 모듈 목록·인원 수만(Jira 조회 없음, config 기반). 프론트가 뼈대를 먼저 그린다."""
+    """골격 — 모듈 목록 + **인력 로스터(명단)**. 통계는 안 붙는다(사람 by 사람으로 뒤에 개별 로딩).
+    이름은 **캐시된 displayName** 만 쓴다(상류에 안 붙어 빠르다) — 없으면 id, 개별 로딩이 채워 준다."""
+    def roster(m):
+        rows = []
+        for pid in people.get(m, []):
+            dn = client.display_name_cached(pid)     # 캐시 전용(상류 조회 없음)
+            rows.append({"id": pid, "name": real_name(dn) if dn else pid, "kind": staff_kind(pid)})
+        return rows
     return {
         "generatedAt": generated_at or datetime.now().strftime("%Y-%m-%d %H:%M"),
         "projectKey": plan.get("project_key", "DL"),
         "jiraBase": jira_base,
-        "modules": [{"module": m, "peopleCount": len(people.get(m, []))} for m in plan["modules"]],
+        "modules": [{"module": m, "peopleCount": len(people.get(m, [])), "people": roster(m)}
+                    for m in plan["modules"]],
     }
+
+
+def build_workload_person(client, pid):
+    """인력 **한 명**의 통계 행 — 로스터 행에 채워 넣을 값(이름·개발/운영·집계)."""
+    b = client.workload_person(pid)
+    return dict(b, name=real_name(b.get("displayName") or pid), kind=staff_kind(pid))
 
 
 def build_workload_module(client, plan, people, module):

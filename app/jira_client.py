@@ -2488,53 +2488,59 @@ class JiraClient:
     def workload(self, plan, people):
         return self._fetch_workload(plan, people)
 
+    @staticmethod
+    def _wl_zero():
+        return {"count": {"task": 0, "subtask": 0, "voc": 0}, "hr": {"task": 0, "subtask": 0, "voc": 0}}
+
+    def _wl_counts(self, jql):
+        # count(티켓수) · hr(소요시간, 표준 timespent 초→시). 카테고리 3분할: task/subtask/voc.
+        # 주의: 여기서 예외를 삼키면 '조회 실패'가 0 으로 둔갑하고 그게 캐시된다(막대만 0, 상세는 정상).
+        #       → 실패는 그대로 올려보내고 workload_person 이 캐시 없이 error 로 처리한다.
+        by = {"count": {"task": 0, "subtask": 0, "voc": 0}, "hr": {"task": 0, "subtask": 0, "voc": 0}}
+        for it in self._search(jql, max_results=300):   # write-through: 각 티켓 캐시
+            f = it.get("fields", {}) or {}
+            comps = [c.get("name") for c in (f.get("components") or [])]
+            comp = VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else "")
+            itt = f.get("issuetype") or {}
+            c = _wl_category(comp, itt.get("name", ""), itt.get("subtask"))
+            if not c:
+                continue
+            by["count"][c] += 1
+            by["hr"][c] += round((f.get("timespent") or 0) / 3600.0, 1)
+        return by
+
+    def workload_person(self, pid):
+        """**인력 1명**의 워크로드 번들 — `workload:{env}:{pid}` 캐시. (사람 by 사람 비동기 로딩용.)
+        displayName 은 카운트 번들과 분리해 매번 재해석(카운트가 캐시돼도 username 이 안 굳게)."""
+        key = f'workload:{self.env}:{pid}'
+        bundle = self.cache.get(key)
+        if bundle is None:
+            try:
+                bundle = {
+                    "id": pid,
+                    # 미완료 할당 = 미착수(To Do) + 진행 중(In Progress). 완료는 최근 7일만.
+                    # 미착수는 최근 14일내 update 된 것만(할당 후 잊혀진 오래된 티켓=데이터오염 제외).
+                    "open": self._wl_counts(f'assignee = "{pid}" AND statusCategory = "To Do" AND updated >= -14d'),
+                    "inProgress": self._wl_counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
+                    "done7d": self._wl_counts(f'assignee = "{pid}" AND statusCategory = Done AND resolved >= -7d'),
+                }
+                self.cache.set(key, bundle, self.s.cache_ttl_seconds)   # 성공한 결과만 캐시
+            except SessionExpired:
+                raise            # 세션 만료/로그인 필요 → 라우트가 401 needLogin 으로 (0 으로 위장 금지)
+            except Exception:
+                # 조회 실패 — 0 을 캐시하지 않는다(다음 로드에서 재시도). UI 는 '조회 실패'로 표시.
+                bundle = {"id": pid, "error": True,
+                          "open": self._wl_zero(), "inProgress": self._wl_zero(), "done7d": self._wl_zero()}
+        return dict(bundle, displayName=self._display_name(pid))
+
+    def display_name_cached(self, uid):
+        """캐시에 있으면 displayName, 없으면 None — **상류에 안 붙는다**(shell 로스터를 빠르게 그리려고)."""
+        return self.cache.get(f"udisp:{self.env}:{uid}")
+
     def _fetch_workload(self, plan, people):
-        """인력별 Task성/VoC성 × 진행중/최근7일완료 티켓 수."""
-        def counts(jql):
-            # count(티켓수) · hr(소요시간, 표준 timespent 초→시). 카테고리 3분할: task/subtask/voc.
-            # 주의: 여기서 예외를 삼키면 '조회 실패'가 0 으로 둔갑하고 그게 캐시된다(막대만 0, 상세는 정상).
-            #       → 실패는 그대로 올려보내고 person() 이 캐시 없이 error 로 처리한다.
-            by = {"count": {"task": 0, "subtask": 0, "voc": 0}, "hr": {"task": 0, "subtask": 0, "voc": 0}}
-            for it in self._search(jql, max_results=300):   # write-through: 각 티켓 캐시
-                f = it.get("fields", {}) or {}
-                comps = [c.get("name") for c in (f.get("components") or [])]
-                comp = VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else "")
-                itt = f.get("issuetype") or {}
-                c = _wl_category(comp, itt.get("name", ""), itt.get("subtask"))
-                if not c:
-                    continue
-                by["count"][c] += 1
-                by["hr"][c] += round((f.get("timespent") or 0) / 3600.0, 1)
-            return by
-
-        def zero():
-            return {"count": {"task": 0, "subtask": 0, "voc": 0}, "hr": {"task": 0, "subtask": 0, "voc": 0}}
-
-        def person(pid):
-            key = f'workload:{self.env}:{pid}'
-            bundle = self.cache.get(key)
-            if bundle is None:
-                try:
-                    bundle = {
-                        "id": pid,
-                        # 미완료 할당 = 미착수(To Do) + 진행 중(In Progress). 완료는 최근 7일만.
-                        # 미착수는 최근 14일내 update 된 것만(할당 후 잊혀진 오래된 티켓=데이터오염 제외).
-                        "open": counts(f'assignee = "{pid}" AND statusCategory = "To Do" AND updated >= -14d'),
-                        "inProgress": counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
-                        "done7d": counts(f'assignee = "{pid}" AND statusCategory = Done AND resolved >= -7d'),
-                    }
-                    self.cache.set(key, bundle, self.s.cache_ttl_seconds)   # 성공한 결과만 캐시
-                except SessionExpired:
-                    raise            # 세션 만료/로그인 필요 → 라우트가 401 needLogin 으로 (0 으로 위장 금지)
-                except Exception:
-                    # 조회 실패 — 0 을 캐시하지 않는다(다음 로드에서 재시도). UI 는 '조회 실패'로 표시.
-                    bundle = {"id": pid, "error": True,
-                              "open": zero(), "inProgress": zero(), "done7d": zero()}
-            # displayName 은 카운트 번들과 분리해 별도 해석(자체 캐시·실패 자가치유)
-            # → 카운트가 캐시돼 있어도 이름은 매번 재해석되어 username 이 굳지 않는다.
-            return dict(bundle, displayName=self._display_name(pid))
+        """인력별 Task성/VoC성 × 진행중/최근7일완료 티켓 수. (전체 한 방 — /api/workload 용)"""
         pids = [pid for module in plan["modules"] for pid in people.get(module, [])]
-        by_pid = {b["id"]: b for b in self._pmap(pids, person)}   # 인력 단위 병렬
+        by_pid = {b["id"]: b for b in self._pmap(pids, self.workload_person)}   # 인력 단위 병렬
         return {module: [by_pid[pid] for pid in people.get(module, []) if pid in by_pid]
                 for module in plan["modules"]}
 

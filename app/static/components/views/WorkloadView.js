@@ -24,7 +24,7 @@ export default {
   name: "WorkloadView",
   components: { ProgressBar, TypeBadge, Avatar },
   data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {}, metric: "count",
-                    mods: {}, modErr: {}, busy: false }; },
+                    pstat: {}, busy: false }; },   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
   created() {
     this.bodyRefs = {};                // 비반응 DOM 참조(모듈 body)
     // 좌하단 플로팅 새로고침 — 뷰마다 캐시 비우고 다시 받는 함수 이름이 달라 여기서 잇는다.
@@ -45,31 +45,38 @@ export default {
   activated() { this.scheduleMeasure(); },   // keep-alive 재활성 시 평균선 재측정
   computed: {
     WL_COLS() { return WL_COLS; },
-    // 지금까지 도착한 모듈만 (스케일·평균·합계는 이걸 기준으로 계산)
-    loaded() { return (this.d ? this.d.modules : []).map((m) => this.mods[m.module]).filter(Boolean); },
+    // 지금까지 도착한 인력 통계(성공한 것만) — 스케일·합계 기준
+    loadedStats() { return Object.values(this.pstat).filter((s) => s && !s.error); },
     totals() {
       const t = { p: 0, op: 0, ip: 0, dn: 0 };
-      this.loaded.forEach((m) => { t.p += m.peopleCount; t.op += (m.openTotal || 0); t.ip += m.inProgressTotal; t.dn += m.done7dTotal; });
+      (this.d ? this.d.modules : []).forEach((m) => { t.p += m.peopleCount; });
+      this.loadedStats.forEach((s) => {
+        t.op += this.barVal(s.open, "count");
+        t.ip += this.barVal(s.inProgress, "count");
+        t.dn += this.barVal(s.done7d, "count");
+      });
       return t;
     },
     // 완료 실적 계산식은 '완료' 막대에만 적용(진행중은 timespent 가 없어 항상 티켓 수).
     doneUnit() { return this.metric === "hr" ? "h" : "건"; },
-    // 막대 스케일 = 전체 인력 최대값. 진행중은 count 고정, 완료는 선택 메트릭.
+    // 막대 스케일 = 지금까지 도착한 인력 최대값. 사람이 더 로딩되면 커질 수 있다(막대가 자리 잡아간다).
     scale() {
       let ip = 1, dn = 1;
-      this.loaded.forEach((m) => m.people.forEach((p) => {
-        ip = Math.max(ip, this.assignedCount(p));   // 진행중 + 미착수
-        dn = Math.max(dn, this.barVal(p.done7d, this.metric));
-      }));
+      this.loadedStats.forEach((s) => {
+        ip = Math.max(ip, this.assignedCount(s));   // 진행중 + 미착수
+        dn = Math.max(dn, this.barVal(s.done7d, this.metric));
+      });
       return { ip, dn };
     },
-    // 모듈 평균(세로선/수치) — 진행중 count, 완료 선택 메트릭
+    // 모듈 평균(세로선/수치) — **모듈 전원이 로딩됐을 때만** 낸다(프로그래스바=평균선은 그때 갱신).
     avgByMod() {
       const out = {};
       const avg = (xs) => xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length * 10) / 10 : 0;
-      this.loaded.forEach((m) => {
-        out[m.module] = { ip: avg(m.people.map((p) => this.assignedCount(p))),
-                          dn: avg(m.people.map((p) => this.barVal(p.done7d, this.metric))) };
+      (this.d ? this.d.modules : []).forEach((m) => {
+        if (!this.moduleComplete(m)) return;
+        const ss = (m.people || []).map((p) => this.pstat[p.id]).filter((s) => s && !s.error);
+        out[m.module] = { ip: avg(ss.map((s) => this.assignedCount(s))),
+                          dn: avg(ss.map((s) => this.barVal(s.done7d, this.metric))) };
       });
       return out;
     },
@@ -80,14 +87,31 @@ export default {
     async load() {
       this.err = "";
       try {
-        this.d = await api.workloadShell();
+        this.d = await api.workloadShell();          // 골격 + 로스터(명단) 먼저 — 즉시 그려진다
         this.d.modules.forEach((m) => { this.open[m.module] = true; });
-        this.d.modules.forEach((m) => {
-          api.workloadModule(m.module)
-            .then((r) => { this.mods[m.module] = r; this.scheduleMeasure(); })
-            .catch((e) => { this.modErr[m.module] = e.message; });
-        });
+        // 명단이 그려진 뒤, **사람 by 사람** 통계를 개별 비동기로 받는다(각자 도착하는 대로 채움).
+        const seen = new Set(), pids = [];
+        this.d.modules.forEach((m) => (m.people || []).forEach((p) => {
+          if (!seen.has(p.id)) { seen.add(p.id); pids.push(p.id); }
+        }));
+        this._loadPeople(pids);
       } catch (e) { this.err = e.message; }
+    },
+    /** 사람 by 사람 통계 로딩 — **동시 요청 상한(CONC)**을 둔다. 한꺼번에 다 쏘면 서버(로컬 fake·
+     *  prod 단일 SSO 큐)를 덮쳐 조회가 통째로 실패한다(각자 3개 검색이라 18명이면 54개 동시).
+     *  하나 끝날 때마다 다음을 채워, 화면은 사람 순으로 채워지되 서버는 안 붐빈다. */
+    _loadPeople(pids) {
+      const CONC = 3;
+      let i = 0;
+      const next = () => {
+        if (i >= pids.length) return;
+        const pid = pids[i++];
+        api.workloadPerson(pid)
+          .then((r) => { this.pstat[pid] = r; })
+          .catch((e) => { this.pstat[pid] = { id: pid, error: true, message: (e && e.message) || String(e) }; })
+          .finally(() => { this.scheduleMeasure(); next(); });
+      };
+      for (let k = 0; k < Math.min(CONC, pids.length); k++) next();
     },
     /** 캐시를 비우고 전부 다시 받는다 — 낡은 값으로 화면을 지키는 구조라 사람이 끊을 수단이 필요하다. */
     async hardRefresh() {
@@ -95,11 +119,30 @@ export default {
       this.busy = true;
       try {
         await api.refresh();
-        this.d = null; this.mods = {}; this.modErr = {}; this.tkd = {}; this.actOpen = {};
+        this.d = null; this.pstat = {}; this.tkd = {}; this.actOpen = {}; this.linePos = {};
         await this.load();
       } catch (e) {
         this.err = (e && e.message) || "다시 받지 못했습니다.";
       } finally { this.busy = false; }
+    },
+    /** 이 모듈 인력이 **전원** 로딩됐는가(성공/실패 불문 — 도착했으면 됨). 평균선/헤더 합계 게이트. */
+    moduleComplete(m) {
+      const ppl = m.people || [];
+      return ppl.length > 0 && ppl.every((p) => this.pstat[p.id]);
+    },
+    /** 모듈 헤더 합계 — 로딩된 인력까지 누적(부분 진행도 보여준다). loaded/total 로 진행 표시. */
+    moduleAgg(m) {
+      const t = { ip: 0, op: 0, dn: 0, loaded: 0 };
+      (m.people || []).forEach((p) => {
+        const s = this.pstat[p.id];
+        if (!s) return;
+        t.loaded++;
+        if (s.error) return;
+        t.ip += this.barVal(s.inProgress, "count");
+        t.op += this.barVal(s.open, "count");
+        t.dn += this.barVal(s.done7d, "count");
+      });
+      return t;
     },
     /** 세 버킷 티켓의 소속 Epic 분포.
      *  규칙: Epic 이 있으면 그 Epic. 없고 VoC 컴포넌트면 **'사용자 VoC' 를 전용 Epic 처럼** 따로 센다
@@ -176,6 +219,7 @@ export default {
       for (const mod in this.bodyRefs) {
         const body = this.bodyRefs[mod];
         if (!body || !body.getBoundingClientRect || !this.open[mod]) continue;
+        if (!this.avgByMod[mod]) continue;      // 모듈 전원 로딩 전엔 평균선 안 그린다
         const prow = body.querySelector(".prow");
         const whead = body.querySelector(".whead");
         if (!prow || !whead) continue;
@@ -260,14 +304,12 @@ export default {
         <div class="mod-head" :class="{ open: open[m.module] }" @click="toggleMod(m.module)">
           <span class="chev">▸</span><span class="dot" :style="{ background: mcolor(i) }"></span>
           <b>{{ m.module }}</b><span class="pc">인력 {{ m.peopleCount }}</span>
-          <span v-if="mods[m.module]" class="agg">진행중 <b>{{ mods[m.module].inProgressTotal }}</b> · 할당됨 <b>{{ mods[m.module].openTotal || 0 }}</b> · 최근7일 완료 <b>{{ mods[m.module].done7dTotal }}</b></span>
-          <span v-else-if="modErr[m.module]" class="agg">— 불러오기 실패</span>
-          <span v-else class="agg muted">불러오는 중…</span>
+          <!-- 헤더 합계·평균은 **모듈 전원 로딩됐을 때** 확정. 그 전엔 진행률(loaded/total)만. -->
+          <span v-if="moduleComplete(m)" class="agg">진행중 <b>{{ moduleAgg(m).ip }}</b> · 할당됨 <b>{{ moduleAgg(m).op }}</b> · 최근7일 완료 <b>{{ moduleAgg(m).dn }}</b></span>
+          <span v-else class="agg muted">불러오는 중… ({{ moduleAgg(m).loaded }}/{{ m.peopleCount }})</span>
         </div>
         <div v-if="open[m.module]" class="mod-body" :ref="(el) => setBody(m.module, el)">
-          <div v-if="modErr[m.module]" class="err">모듈을 불러오지 못했습니다: {{ modErr[m.module] }}</div>
-          <div v-else-if="!mods[m.module]" class="loading">불러오는 중…</div>
-          <div v-else-if="!mods[m.module].people.length" class="empty">등록된 인력이 없습니다 (config/people.yaml)</div>
+          <div v-if="!m.people || !m.people.length" class="empty">등록된 인력이 없습니다 (config/people.yaml)</div>
           <template v-else>
             <div class="whead">
               <div class="hl">인력</div>
@@ -280,15 +322,17 @@ export default {
               <div class="mavg-num" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ avgByMod[m.module].ip }}건</div>
               <div class="mavg-num" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ avgByMod[m.module].dn }}{{ doneUnit }}</div>
             </template>
-            <template v-for="p in mods[m.module].people" :key="p.id">
+            <template v-for="p in m.people" :key="p.id">
               <div class="prow">
-                <span class="pname" :title="p.id"><Avatar :user="p.id" :name="p.name" :size="20" /><b>{{ p.name }}</b><span v-if="p.kind" class="kbadge" :class="p.kind">{{ p.kind === 'dev' ? '개발' : '운영' }}</span></span>
-                <div v-if="p.error" class="wbars wl-fail" title="이 인력의 집계 조회에 실패했습니다(0 이 아님). 새로고침으로 재시도하세요.">
+                <span class="pname" :title="p.id"><Avatar :user="p.id" :name="(pstat[p.id] && pstat[p.id].name) || p.name" :size="20" /><b>{{ (pstat[p.id] && pstat[p.id].name) || p.name }}</b><span v-if="(pstat[p.id] && pstat[p.id].kind) || p.kind" class="kbadge" :class="(pstat[p.id] && pstat[p.id].kind) || p.kind">{{ ((pstat[p.id] && pstat[p.id].kind) || p.kind) === 'dev' ? '개발' : '운영' }}</span></span>
+                <!-- 통계는 사람 by 사람으로 도착 — 아직이면 로딩, 실패면 재시도 안내, 오면 막대 -->
+                <div v-if="!pstat[p.id]" class="wbars wl-pending"><span class="wl-pending-t">불러오는 중…</span></div>
+                <div v-else-if="pstat[p.id].error" class="wbars wl-fail" title="이 인력의 집계 조회에 실패했습니다(0 이 아님). 새로고침으로 재시도하세요.">
                   <span class="wl-fail-t">집계 조회 실패 — 새로고침으로 재시도</span>
                 </div>
                 <div v-else class="wbars">
-                  <ProgressBar class="wside" :segments="segAssigned(p)" :scale="scale.ip" show-total dark-text />
-                  <ProgressBar class="wside" :segments="seg(p.done7d, metric)" :scale="scale.dn" show-total dark-text />
+                  <ProgressBar class="wside" :segments="segAssigned(pstat[p.id])" :scale="scale.ip" show-total dark-text />
+                  <ProgressBar class="wside" :segments="seg(pstat[p.id].done7d, metric)" :scale="scale.dn" show-total dark-text />
                 </div>
                 <button class="plus" @click="toggleAct(p.id)">{{ actOpen[p.id] ? "−" : "+" }}</button>
               </div>

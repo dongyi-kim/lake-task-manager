@@ -1088,6 +1088,14 @@ def api_workload_module(module: str):
     return JSONResponse(workload.build_workload_module(_client, plan, load_people(), module))
 
 
+@app.get("/api/workload/person/{user}")
+def api_workload_person(user: str):
+    """워크로드 — **인력 한 명**의 통계 행(사람 by 사람 비동기 로딩용). 통계는 assignee 기준이라
+    모듈과 무관 → user 만 받는다. workload:{env}:{user} 캐시라 재방문·모듈 중복은 공짜."""
+    _require_manager()
+    return JSONResponse(workload.build_workload_person(_client, user))
+
+
 @app.get("/api/workload/{user}/{bucket}")
 def api_workload_bucket(user: str, bucket: str):
     """인력 상세의 한 버킷(open|inProgress|done7d) — 세 리스트를 각각 병렬 로딩."""

@@ -52,6 +52,7 @@ export const api = {
   workload: () => get("/api/workload"),
   workloadShell: () => get("/api/workload/shell"),
   workloadModule: (m) => get("/api/workload/module/" + encodeURIComponent(m)),
+  workloadPerson: (u) => get("/api/workload/person/" + encodeURIComponent(u)),   // 사람 by 사람 로딩
   workloadBucket: (u, b) => get("/api/workload/" + encodeURIComponent(u) + "/" + b),
   workloadDetail: (user) => get("/api/workload/" + encodeURIComponent(user)),
   activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
