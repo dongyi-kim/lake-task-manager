@@ -561,6 +561,10 @@
 .ax-h .mt-gbody.plain .mt-cell,
 .ax-h .mt-gcard2.k-task > .mt-gbody .mt-cell { padding-left: 11px; padding-right: 11px; }
 .ax-h .mt-gcard2 { margin-left: 0; margin-right: 0; }
+/* 그룹(Task with Sub) 안의 상태 영역(셀)을 **모두 같은 높이(가장 큰 칼럼) 로 통일**하고,
+   카드 위아래로 배경이 조금 비치게 세로 여백을 준다 — 카드가 그 상태 칸에 '담겨 있다' 가 읽힌다. */
+.ax-h .mt-gcard2.k-task > .mt-gbody { align-items: stretch; }
+.ax-h .mt-gcard2.k-task > .mt-gbody .mt-cell { padding-top: 7px; padding-bottom: 7px; }
 /* 그룹 하위 영역 그리드 패딩은 기본(8px) 그대로 둔다 — 단독 그리드와 같아야 열이 맞는다.
    (그룹 헤더=부모 Task 는 폭 넓은 머리줄, 좌측 시그니처 레일이 소속을 말한다.) */
 /* 좌측 시그니처 레일을 테두리가 아니라 **덧그림**으로 — border 는 폭을 먹어 안쪽 그리드를
