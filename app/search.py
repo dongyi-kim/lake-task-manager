@@ -222,6 +222,60 @@ def search_users(client, s, q, limit=8):
 _MENTION_RE = re.compile(r"\[~([^\]]+)\]")
 
 
+def _ticket_people(client, key):
+    """이 티켓에 등장한 사람 uid 목록(리포터·담당·댓글작성·본문/댓글 멘션). 순서 보존, 짧게 캐시.
+    (검색 결과 정렬 가중치용 — 매 타건마다 댓글을 다시 긁지 않게 티켓 단위로 캐시한다.)"""
+    if not key:
+        return []
+
+    def do():
+        ids, seen = [], set()
+
+        def add(uid):
+            if uid and uid not in seen:
+                seen.add(uid); ids.append(uid)
+        try:
+            f = (client.get_issue(key) or {}).get("fields") or {}
+            add((f.get("reporter") or {}).get("name"))
+            add((f.get("assignee") or {}).get("name"))
+            for uid in _MENTION_RE.findall(f.get("description") or ""):
+                add(uid)
+        except Exception:
+            pass
+        try:
+            data = client.provider.get_json(
+                f"/rest/api/2/issue/{key}/comment", params={"maxResults": 50, "orderBy": "-created"})
+            for c in data.get("comments", []):
+                add((c.get("author") or {}).get("name"))
+                for uid in _MENTION_RE.findall(c.get("body") or ""):
+                    add(uid)
+        except Exception:
+            pass
+        return ids
+    try:
+        return client.cache.get_or_set(f"tpeople:{client.env}:{key}", client.OPTIONS_TTL, do)[0]
+    except Exception:
+        return do()
+
+
+def _priority_uids(client, s, key):
+    """사람 검색 결과에서 **위로 올릴** 사람들(소문자 uid 집합):
+    매니저(settings.managers) ∪ 등록 인력(people.yaml 전체) ∪ 이 티켓 등장인물."""
+    from .settings import load_people
+    pri = set(s.managers or [])                                    # settings.managers 는 이미 소문자
+    try:
+        for lst in (load_people() or {}).values():
+            for uid in (lst or []):
+                if uid:
+                    pri.add(str(uid).strip().lower())
+    except Exception:
+        pass
+    for uid in _ticket_people(client, key):
+        if uid:
+            pri.add(str(uid).strip().lower())
+    return pri
+
+
 def _module_people(client, s, key):
     """티켓 소속 모듈의 사람들(config 추론). 못 찾으면 [] (요구: 모듈 정보 없으면 무시).
     모듈 신호: (a) Jira 컴포넌트=모듈(아무 티켓이나) (b) WBS config epic→module 역인덱스."""
@@ -265,7 +319,14 @@ def mention_suggestions(client, s, q, key, limit=8):
     티켓 관련 사람 1순위(리포터/담당/댓글작성/멘션) + 모듈 사람 2순위(중복 제거)."""
     q = (q or "").strip()
     if q:
-        return search_users(client, s, q, limit)
+        # 넉넉히 받아 우선순위(매니저 · 등록 인력 · 이 티켓 등장인물)를 위로 올린 뒤 limit 만큼 자른다.
+        # (Jira 검색 순위로만 자르면 우선순위 사람이 하필 9번째라 잘려 안 보인다.)
+        results = search_users(client, s, q, min(max(limit * 4, limit), 40))
+        pri = _priority_uids(client, s, key)
+        if pri:
+            # 0=우선(pri), 1=그 외. stable sort 라 각 그룹 안에선 Jira 순위가 유지된다.
+            results.sort(key=lambda u: 0 if (u.get("id") or "").strip().lower() in pri else 1)
+        return results[:limit]
     if not key:
         return []                                              # 컨텍스트 없으면 검색 안 함
     acc, order = {}, []                     # uid -> displayName('{본명} {회사}', or None), 순서 보존

@@ -22,8 +22,10 @@ export default {
   name: "NewChildDialog",
   components: { Avatar, TypeBadge, FieldEdit, PriIcon, CommentEditor },
   props: {
-    parent: { type: String, required: true },      // 부모 티켓 키
+    parent: { type: String, default: "" },         // 부모 티켓 키 (standalone 이면 없음)
     isEpic: { type: Boolean, default: false },     // Epic 밑이면 타입을 고른다(아니면 Sub-Task 하나뿐)
+    // Epic 없이 최상위 Task 를 만드는 모드('Epic 없음'/'사용자 VoC'). 부모가 없어 /api/task 로 만든다.
+    standalone: { type: Boolean, default: false },
     types: { type: Array, default: () => [] },     // 만들 수 있는 타입(서버가 부모를 보고 정한 목록)
     parentDue: { type: String, default: "" },      // 상위(Task/Epic)의 작업 기한 — 기본값으로 물려준다
     parentComponents: { type: Array, default: () => [] },   // 상위의 컴포넌트 — 기본값으로 물려받는다
@@ -34,14 +36,19 @@ export default {
     // 그대로 굳는다 — 등급은 만드는 사람이 정해야 하는 값이라 비워 두고 물어본다.
     return { busy: false, err: "", priOpts: [], compOpts: [],
              descOpen: false, createdKey: "",   // 설명(폴딩) · 생성 후 첨부용 키
+             voc: false,                         // '사용자 VoC' 토글 — 켜면 그 컴포넌트를 붙여 만든다
              nc: { type: "", summary: "", priority: "", components: [],
                    duedate: "", assigneeId: "", assigneeName: "" } };
   },
   computed: {
-    title() { return this.isEpic ? "하위 Task 만들기" : "Sub Task 만들기"; },
+    title() { return this.standalone ? "Task 만들기" : (this.isEpic ? "하위 Task 만들기" : "Sub Task 만들기"); },
+    // 헤더 부제 — 무엇 밑에(또는 무엇으로) 만드는지. standalone 은 Epic 이 없다.
+    subLabel() { return this.standalone ? "Epic 없이 만듭니다" : (this.parent + " 아래에 만듭니다"); },
     canCreate() { return !!(this.nc.type && this.nc.priority && this.nc.summary.trim()); },
     // 고를 것이 하나뿐인 선택은 소음이다 — Sub-Task 는 타입 줄 자체를 안 그린다.
-    pickType() { return this.isEpic && this.types.length > 1; },
+    pickType() { return (this.isEpic || this.standalone) && this.types.length > 1; },
+    // Task 를 만드는 창인가(Epic 밑 Task / 독립 Task) — Sub-Task 창엔 VoC 토글을 안 둔다.
+    isTask() { return this.isEpic || this.standalone; },
   },
   mounted() {
     // 타입: Sub-Task 는 고를 것이 없으니 그대로 박고, Epic 밑은 **비워 두고 고르게** 한다
@@ -51,7 +58,10 @@ export default {
     this.nc.duedate = this.parentDue || "";
     // 컴포넌트도 상위 것을 물려받는다. 컴포넌트는 곧 **모듈**(롤업 축)이라, 비워 두면 새 티켓이
     // 어느 모듈에도 안 잡혀 WBS·워크로드에서 사라진다.
-    this.nc.components = (this.parentComponents || []).slice();
+    // '사용자 VoC' 는 모듈이 아니라 별도 토글로 다룬다 — 물려받은 값에 있으면 토글을 켜고 목록에선 뺀다.
+    const pc = (this.parentComponents || []).slice();
+    this.voc = pc.includes("사용자 VoC");
+    this.nc.components = pc.filter((c) => c !== "사용자 VoC");
     api.options("components").then((r) => { this.compOpts = (r || []).map((x) => x.name); })
       .catch(() => { this.compOpts = []; });
     api.options("priorities").then((r) => { this.priOpts = (r || []).map((x) => x.name); })
@@ -83,11 +93,17 @@ export default {
       try {
         // 설명을 쓸지 — 이미지가 blob 이라 **티켓을 먼저 만들고** 그 키로 붙인다(생성 후 자동 첨부).
         const wantDesc = this.descOpen && this.$refs.ded && !this.$refs.ded.isBlank();
-        const r = await api.createChild(this.parent, {
+        // 컴포넌트 = 사용자가 고른 모듈 + (VoC 토글이 켜졌으면) '사용자 VoC'. 중복은 넣지 않는다.
+        const comps = this.nc.components.filter((c) => c !== "사용자 VoC");
+        if (this.voc && this.isTask) comps.push("사용자 VoC");
+        const payload = {
           type: this.nc.type, summary: this.nc.summary.trim(), priority: this.nc.priority,
           duedate: this.nc.duedate || null, assignee: this.nc.assigneeId || null,
-          components: this.nc.components.slice(),
-        });
+          components: comps,
+        };
+        // standalone 은 부모가 없어 /api/task 로, 그 외엔 부모 밑으로(/api/ticket/{parent}/child).
+        const r = this.standalone ? await api.createTask(payload)
+                                  : await api.createChild(this.parent, payload);
         if (!r || r.ok === false) { this.err = (r && r.error) || "만들지 못했습니다."; return; }
         const key = r.key;
         if (wantDesc && key) {
@@ -108,7 +124,7 @@ export default {
   <div class="nk-ov" @click.self="fromBackdrop($event) && $emit('close')">
   <div class="nk" @click.stop>
     <div class="nk-h">{{ title }}
-      <span class="nk-h-s">{{ parent }} 아래에 만듭니다</span>
+      <span class="nk-h-s">{{ subLabel }}</span>
       <button class="lp-x" @click="$emit('close')" aria-label="닫기">✕</button>
     </div>
 
@@ -151,6 +167,13 @@ export default {
           </span>
           <span v-else class="muted">미지정</span>
         </FieldEdit></span></div>
+
+      <div v-if="isTask"><span class="k">사용자 VoC</span><span class="val">
+        <button type="button" class="nk-voc" :class="{ on: voc }" role="switch" :aria-checked="voc"
+                @click="voc = !voc" :title="voc ? '사용자 VoC 컴포넌트를 붙여 만듭니다' : '켜면 사용자 VoC 로 분류'">
+          <span class="nk-voc-k"></span>
+          <span class="nk-voc-t">{{ voc ? '사용자 VoC 로 분류' : '일반 (VoC 아님)' }}</span>
+        </button></span></div>
 
       <div><span class="k">담당자</span><span class="val val-user">
         <FieldEdit :ticket="parent" field="assignee" local :value="nc.assigneeId"

@@ -799,6 +799,9 @@ def api_options(kind: str, q: str = ""):
     if kind == "childtypes":
         # q = 부모 티켓 키. 부모가 무엇이냐로 만들 수 있는 타입이 정해진다.
         return JSONResponse(_client.child_types(q))
+    if kind == "tasktypes":
+        # 부모 없이 만드는 최상위 Task 타입(Epic·Sub-Task 제외) — 'Epic 없음'/'사용자 VoC' 용.
+        return JSONResponse(_client.task_types())
     return JSONResponse({"error": "unknown kind"}, status_code=404)
 
 
@@ -830,9 +833,44 @@ def api_create_child(key: str, body: _ChildBody):
         return JSONResponse({"ok": False,
                              "error": f"이 티켓 밑에는 {itype} 을(를) 만들 수 없습니다."},
                             status_code=400)
-    desc = html_to_wiki(body.descriptionHtml) if body.descriptionHtml else None
+    desc = _client.desc_field_value(body.descriptionHtml)
     try:
         r = _client.create_child(key, itype, summary, priority=body.priority or None,
+                                 duedate=body.duedate or None, assignee=body.assignee or None,
+                                 components=body.components or None, description=desc or None)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    return JSONResponse({"ok": True, "key": (r or {}).get("key")})
+
+
+class _TaskBody(BaseModel):
+    type: str
+    summary: str
+    priority: str | None = None
+    duedate: str | None = None
+    assignee: str | None = None
+    components: list[str] | None = None
+    descriptionHtml: str | None = None
+
+
+@app.post("/api/task")
+def api_create_task(body: _TaskBody):
+    """Epic 없이 **최상위 Task** 를 만든다('Epic 없음' / '사용자 VoC').
+
+    '사용자 VoC' 는 Epic 이 아니라 components 에 '사용자 VoC' 를 넣어 구분한다 — 화면이 그 컴포넌트를
+    기본값으로 채워 보낸다(백엔드는 특별취급 없이 일반 컴포넌트로 저장). 타입은 서버가 다시 확인한다.
+    """
+    itype = (body.type or "").strip()
+    summary = (body.summary or "").strip()
+    if not summary:
+        return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
+    allowed = _client.task_types()
+    if itype not in allowed:
+        return JSONResponse({"ok": False, "error": f"{itype} 타입은 만들 수 없습니다."},
+                            status_code=400)
+    desc = _client.desc_field_value(body.descriptionHtml)
+    try:
+        r = _client.create_child(None, itype, summary, priority=body.priority or None,
                                  duedate=body.duedate or None, assignee=body.assignee or None,
                                  components=body.components or None, description=desc or None)
     except Exception as e:
@@ -857,7 +895,7 @@ def api_create_epic(body: _EpicBody):
     summary = (body.summary or "").strip()
     if not summary:
         return JSONResponse({"ok": False, "error": "제목을 입력하세요."}, status_code=400)
-    desc = html_to_wiki(body.descriptionHtml) if body.descriptionHtml else None
+    desc = _client.desc_field_value(body.descriptionHtml)
     try:
         r = _client.create_epic(summary, priority=body.priority or None,
                                 duedate=body.duedate or None, assignee=body.assignee or None,
@@ -923,7 +961,7 @@ def api_update_fields(key: str, body: _FieldsBody):
     if body.summary is not None:
         put("summary", body.summary)
     if body.descriptionHtml is not None:
-        put("description", html_to_wiki(body.descriptionHtml))
+        put("description", _client.desc_field_value(body.descriptionHtml))
     if body.epic is not None:
         # Epic Link 는 커스텀 필드라 id 가 인스턴스마다 다르다 — config 에서 받는다(하드코딩 금지).
         put(_settings.epic_link_field_id, body.epic or None)

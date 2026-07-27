@@ -79,6 +79,11 @@ class Settings:
             return v
 
         self.jira_env = str(pick("JIRA_ENV", cfg.get("env"), "mock")).strip()
+        # description 필드 저장 형식. 사내 prod 은 description 이 **JEditor(HTML) 필드**라 HTML 을
+        # 그대로 넣어야 한다(wiki 로 넣으면 'h3.' 이 글자로 남고 줄바꿈이 뭉치며 '<' 뒤가 태그로 먹힌다).
+        # mock/local(jira820)은 wiki 필드다. 미지정이면 env 로 정한다(prod=html, 그 외=wiki).
+        self.description_format = str(pick("DESCRIPTION_FORMAT", cfg.get("description_format"),
+                                           "html" if self.jira_env == "prod" else "wiki")).strip().lower()
         self.jira_base = str(pick("JIRA_BASE", j.get("base"), "http://localhost:8080")).rstrip("/")
         self.project_key = str(pick("PROJECT_KEY", j.get("project_key"), "DL"))
         self.jira_user = str(pick("JIRA_USER", j.get("user"), "admin"))

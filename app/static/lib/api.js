@@ -112,6 +112,8 @@ export const api = {
   updateFields: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/fields",
                                        "PUT", body).then((r) => { evict(key); return r; }),
   childTypes: (key) => req("/api/options/childtypes?q=" + encodeURIComponent(key)),
+  taskTypes: () => req("/api/options/tasktypes"),                       // Epic 없이 만들 최상위 타입
+  createTask: (body) => jsonReq("/api/task", "POST", body).then((r) => { _memo.clear(); return r; }),
   createEpic: (body) => jsonReq("/api/epic", "POST", body).then((r) => { _memo.clear(); return r; }),
   epicCandidates: (q) => req("/api/epic-candidates?limit=25&q=" + encodeURIComponent(q || "")),
   createChild: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/child",

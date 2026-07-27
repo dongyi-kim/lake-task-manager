@@ -1257,8 +1257,9 @@ class JiraClient:
             return []
 
     def issue_types(self):
-        """이 인스턴스의 이슈 타입 — [{name, subtask}]. 이름은 인스턴스마다 다르므로
-        **subtask 플래그**로 갈라야 한다(우리 world 는 'Sub-Task', 다른 곳은 '하위 작업')."""
+        """이 인스턴스의 **전역** 이슈 타입 — [{name, subtask}]. 이름은 인스턴스마다 다르므로
+        **subtask 플래그**로 갈라야 한다(우리 world 는 'Sub-Task', 다른 곳은 '하위 작업').
+        ※ 전역 목록이라 prod 에선 전사 타입이 다 섞인다 — 생성 UI 는 project_issue_types 를 써라."""
         def do():
             return [{"name": x.get("name") or "", "subtask": bool(x.get("subtask"))}
                     for x in (self.provider.get_json("/rest/api/2/issuetype") or [])]
@@ -1266,6 +1267,32 @@ class JiraClient:
             return self.cache.get_or_set(f"issuetypes:{self.env}", self.OPTIONS_TTL, do)[0]
         except Exception:
             return []
+
+    def project_issue_types(self):
+        """이 **프로젝트에서 실제로 만들 수 있는** 이슈 타입 — createmeta 기반.
+        전역 /issuetype 은 전사 타입까지 섞여 나와(prod), DL 에 없는 낯선 타입이 생성창에 뜬다.
+        createmeta 가 비었거나 막히면(구버전·권한·mock) 전역 목록으로 폴백한다."""
+        def do():
+            pk = self.s.project_key
+            try:
+                data = self.provider.get_json(
+                    "/rest/api/2/issue/createmeta",
+                    params={"projectKeys": pk, "expand": "projects.issuetypes"}) or {}
+                projs = data.get("projects") or []
+                for pr in projs:
+                    if (pr.get("key") or "") == pk or len(projs) == 1:
+                        its = pr.get("issuetypes") or []
+                        if its:
+                            return [{"name": x.get("name") or "", "subtask": bool(x.get("subtask"))}
+                                    for x in its]
+            except Exception:
+                pass
+            return [{"name": x.get("name") or "", "subtask": bool(x.get("subtask"))}
+                    for x in (self.provider.get_json("/rest/api/2/issuetype") or [])]
+        try:
+            return self.cache.get_or_set(f"projtypes:{self.env}", self.OPTIONS_TTL, do)[0]
+        except Exception:
+            return self.issue_types()
 
     def child_types(self, parent_key):
         """이 티켓 **밑에** 만들 수 있는 타입.
@@ -1275,7 +1302,7 @@ class JiraClient:
         Sub-Task 밑은 없다. 이름으로 판정하지 않는다 — 로케일·인스턴스마다 다르다.
         """
         b = self.ticket_badge(parent_key) or {}
-        types = self.issue_types()
+        types = self.project_issue_types()          # 전사 타입이 아니라 **이 프로젝트** 것만
         if not types:
             return []
         raw = self.get_issue(parent_key) or {}
@@ -1286,14 +1313,30 @@ class JiraClient:
             return [t["name"] for t in types if not t["subtask"] and t["name"] != "Epic"]
         return [t["name"] for t in types if t["subtask"]]
 
+    def desc_field_value(self, html):
+        """에디터 HTML → description 필드에 저장할 값(형식이 환경마다 다르다).
+
+        사내 **prod** 은 description 이 JEditor(HTML) 필드라 HTML 을 그대로(정화해) 넣어야 한다 —
+        wiki 로 넣으면 화면에서 'h3.' 이 글자로 남고, 줄바꿈이 뭉치고, '<' 뒤가 태그로 먹혀 유실된다
+        (실제 리포트된 버그). **mock/local(jira820)** 은 wiki 필드라 html_to_wiki 로 변환한다.
+        settings.description_format('html'|'wiki')로 강제 지정 가능. 빈 입력은 None(설명 지움).
+        """
+        if not html:
+            return None
+        from .wikihtml import html_to_wiki
+        fmt = (getattr(self.s, "description_format", "") or "").lower()
+        if fmt not in ("html", "wiki"):
+            fmt = "html" if self.env == "prod" else "wiki"
+        return sanitize_html(html) if fmt == "html" else html_to_wiki(html)
+
     def create_child(self, parent_key, itype, summary, priority=None,
                      duedate=None, assignee=None, components=None, description=None):
-        """하위 티켓 생성. 부모가 Epic 이면 Epic Link 로, 아니면 parent(Sub-Task)로 잇는다.
+        """하위/독립 티켓 생성. 부모가 Epic 이면 Epic Link 로, 일반 이슈면 parent(Sub-Task)로 잇는다.
+        **parent_key 가 없으면(=None) Epic 없이 최상위 Task** 로 만든다('Epic 없음'/'사용자 VoC').
 
         생성 결과 키를 돌려준다. 실패는 그대로 올린다 — 조용히 삼키면 사용자는 만들어진 줄 안다.
         description 은 wiki 문자열(라우트가 html_to_wiki 로 변환해 넘긴다).
         """
-        b = self.ticket_badge(parent_key) or {}
         fields = {
             "project": {"key": self.s.project_key},
             "issuetype": {"name": itype},
@@ -1310,26 +1353,41 @@ class JiraClient:
         if components:
             # 컴포넌트는 곧 **모듈**이다(이 프로젝트의 롤업 축). 비워 두면 새 티켓이 어느 모듈에도
             # 안 잡혀 WBS·워크로드에서 사라진다 — 화면이 부모 것을 기본값으로 채워 보낸다.
+            # ('사용자 VoC' 는 모듈이 아닌 컴포넌트로, Epic 없이 이 값만 넣어 구분한다.)
             fields["components"] = [{"name": c} for c in components if c]
-        if (b.get("type") or "") == "Epic":
-            fields[self.s.epic_link_field_id] = parent_key
-        else:
-            fields["parent"] = {"key": parent_key}
+        if parent_key:
+            b = self.ticket_badge(parent_key) or {}
+            if (b.get("type") or "") == "Epic":
+                fields[self.s.epic_link_field_id] = parent_key
+            else:
+                fields["parent"] = {"key": parent_key}
         # 쓰기는 큐 맨 앞으로 — 뒤에 밀리면 사용자는 '만들어졌나?' 하고 또 누른다.
         with write_upstream():
             res = self.provider.post_json("/rest/api/2/issue", {"fields": fields})
         key = (res or {}).get("key")
-        # 부모의 자식 목록이 낡았다 — 새로 만든 게 바로 안 보이면 만들어졌는지 알 수 없다.
-        # ★ children 만 지워선 안 된다. 하위 목록의 출처는 부모 원본의 subtasks 필드(Epic 이면
-        #   Epic Link 검색)라, issue: 캐시가 남아 있으면 새 자식이 **영영 안 보인다**.
-        self.cache.invalidate(f"issue:{self.env}:{parent_key}")
-        self.cache.invalidate(f"issueL:{self.env}:{parent_key}")     # 경량 캐시(형제·자식키 출처)도 함께
-        self.cache.invalidate(f"children:{self.env}:{parent_key}")
-        # Epic 은 자식을 JQL 로 찾는다 — 그 결과도 캐시라 함께 버려야 새 Task 가 보인다.
-        # (prefix 삭제라 epic_children:{parent} 와 :light 변형까지 같이 지워진다.)
-        self.cache.invalidate(f"epic_children:{self.env}:{parent_key}")
-        self._invalidate_ticket(parent_key)
+        if parent_key:
+            # 부모의 자식 목록이 낡았다 — 새로 만든 게 바로 안 보이면 만들어졌는지 알 수 없다.
+            # ★ children 만 지워선 안 된다. 하위 목록의 출처는 부모 원본의 subtasks 필드(Epic 이면
+            #   Epic Link 검색)라, issue: 캐시가 남아 있으면 새 자식이 **영영 안 보인다**.
+            self.cache.invalidate(f"issue:{self.env}:{parent_key}")
+            self.cache.invalidate(f"issueL:{self.env}:{parent_key}")     # 경량 캐시(형제·자식키 출처)도 함께
+            self.cache.invalidate(f"children:{self.env}:{parent_key}")
+            # Epic 은 자식을 JQL 로 찾는다 — 그 결과도 캐시라 함께 버려야 새 Task 가 보인다.
+            # (prefix 삭제라 epic_children:{parent} 와 :light 변형까지 같이 지워진다.)
+            self.cache.invalidate(f"epic_children:{self.env}:{parent_key}")
+            self._invalidate_ticket(parent_key)
+        else:
+            # 독립 Task — 부모가 없다. 대신 이 Task 를 담을 목록/검색 캐시를 넓게 버린다
+            # (워크로드·내Task·현안·검색이 낡은 채로 새 Task 를 안 보여 주지 않게).
+            for pfx in ("wbs_build", "vit_bases", "vit_list", "workload", "mytasks", "search"):
+                self.cache.invalidate(f"{pfx}:")
         return {"key": key}
+
+    def task_types(self):
+        """Epic 없이 만들 수 있는 **최상위 티켓 타입** — Sub-Task·Epic 을 뺀 일반 이슈들.
+        ('Epic 없음' Task 생성용. 프로젝트 createmeta 기반이라 전사 타입이 새지 않는다.)"""
+        return [t["name"] for t in self.project_issue_types()
+                if not t.get("subtask") and (t.get("name") or "") != "Epic"]
 
     def create_epic(self, summary, priority=None, duedate=None, assignee=None,
                     components=None, description=None, epic_name=None):
@@ -1424,35 +1482,33 @@ class JiraClient:
             return []
 
     def epic_options(self, q=""):
-        """Epic 후보 — 제목/키로 검색. 편집 드롭다운용이라 소수만.
-        Epic 은 수십 개 수준이라 전체를 받아 걸러도 되지만, JQL 로 좁히면 prod 왕복이 준다."""
-        q = (q or "").strip()
-        jql = f'project = {self.s.project_key} AND issuetype = Epic'
-        if q:
-            safe = q.replace('"', " ")
-            # 단축어(Epic Name)로도 찾게 한다 — 사람들은 Epic 을 요약 문장이 아니라 그 이름으로 부른다.
-            jql += (f' AND (summary ~ "{safe}" OR "Epic Name" ~ "{safe}" OR key = "{safe}")')
+        """Epic 후보 — **요약·Epic Name·키** 무엇으로 쳐도 찾는다(대소문자 무시). 편집 드롭다운용.
+
+        Epic 목록 전체(수십 개)를 한 번 받아 **파이썬에서** 거른다. JQL 의 `"Epic Name" ~` 절은
+        구버전/mock 에서 파싱이 안 될 수 있어, 매칭을 서버에 맡기면 Epic Name 으로만 맞는 항목이
+        통째로 빠진다(요약만 검색됨). 목록은 캐시하므로 매 타건마다 prod 를 왕복하지 않는다.
+        """
+        q = (q or "").strip().lower()
+        jql = f'project = {self.s.project_key} AND issuetype = Epic ORDER BY key'
         try:
-            raws = self._search(jql + " ORDER BY key", cache_key=None) or []
+            # q 와 무관한 고정 JQL → 한 번 받아 캐시(create_epic 이 'epic_options:' 프리픽스로 무효화).
+            raws = self._search(jql, cache_key=f"epic_options:all:{self.env}", max_results=200) or []
         except Exception:
-            # 구버전·필드 미설정이면 "Epic Name" 절이 JQL 에러가 된다 — 요약만으로 한 번 더.
-            if not q:
-                return []
-            try:
-                jql = (f'project = {self.s.project_key} AND issuetype = Epic'
-                       f' AND (summary ~ "{q}" OR key = "{q}")')
-                raws = self._search(jql + " ORDER BY key", cache_key=None) or []
-            except Exception:
-                return []
-        out = []
+            return []
         nf = self.s.epic_name_field_id
-        for r in raws[:20]:
+        out = []
+        for r in raws:
             f = r.get("fields") or {}
+            key = r.get("key") or ""
+            summ = f.get("summary") or ""
             # name = 단축어(Epic Name), summary = 요약. **둘 다 준다** — 목록에서 단축어만 보이면
             # 비슷한 이름끼리 구별이 안 되고, 요약만 보이면 평소 부르는 이름이 안 보인다.
-            out.append({"key": r.get("key"),
-                        "name": (f.get(nf) if nf else None) or f.get("summary") or r.get("key"),
-                        "summary": f.get("summary") or ""})
+            name = (f.get(nf) if nf else None) or summ or key
+            if q and q not in key.lower() and q not in summ.lower() and q not in (name or "").lower():
+                continue
+            out.append({"key": key, "name": name, "summary": summ})
+            if len(out) >= 20:
+                break
         return out
 
     def label_suggestions(self, q=""):

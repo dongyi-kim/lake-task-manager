@@ -39,7 +39,10 @@ export default {
   emits: ["saved", "pick"],
   data() {
     return { open: false, busy: false, err: "", q: "", opts: [], hi: 0,
-             draft: null, who: [] };
+             draft: null, who: [],
+             // 팝업을 body 로 teleport 해 fixed 로 띄운다 — 안 그러면 스크롤되는 다이얼로그
+             // (overflow:auto) 안에 갇혀 긴 목록이 잘린다. popStyle 은 트리거 기준 위치.
+             popStyle: {} };
   },
   mounted() {
     // 다른 필드를 열면 이건 닫는다 — 여러 개가 동시에 떠 있으면 어느 것을 고치는 중인지
@@ -55,6 +58,8 @@ export default {
   unmounted() {
     window.removeEventListener("fe-open", this._onOther);
     window.removeEventListener("keydown", this._onEsc);
+    window.removeEventListener("scroll", this._place, true);      // 열린 채 언마운트돼도 새지 않게
+    window.removeEventListener("resize", this._place);
   },
   computed: {
     editable() { return this.local || !!this.meta; },
@@ -79,6 +84,10 @@ export default {
       if (!this.editable || this.busy) return;
       window.dispatchEvent(new CustomEvent("fe-open", { detail: this._id() }));
       this.open = true; this.err = ""; this.q = ""; this.hi = 0;
+      // 트리거 기준으로 팝업을 놓고, 스크롤/리사이즈 때 따라오게 한다(닫히면 뗀다).
+      this.$nextTick(() => this._place());
+      window.addEventListener("scroll", this._place, true);
+      window.addEventListener("resize", this._place);
       this.draft = this.isMulti ? (this.value || []).slice() : this.value;
       if (this.local) {
         // 선택지는 부모가 준다(아직 티켓이 없어 editmeta 가 없다). 사용자 검색만 평소와 같다.
@@ -105,7 +114,27 @@ export default {
     _focus() {
       this.$nextTick(() => { const el = this.$refs.inp; if (el) el.focus(); });
     },
-    close() { this.open = false; this.q = ""; this.err = ""; },
+    // 팝업(teleport)을 트리거 버튼 기준으로 fixed 배치 — 아래가 좁으면 위로 뒤집는다.
+    _place() {
+      const t = this.$refs.fev;
+      if (!t) return;
+      const r = t.getBoundingClientRect();
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const pop = this.$refs.pop;
+      const ph = (pop && pop.offsetHeight) || 240;                 // 렌더 전 근사치
+      const style = { position: "fixed", left: Math.max(8, Math.min(r.left, vw - 360)) + "px", zIndex: 9700 };
+      if (r.bottom + 6 + ph > vh - 8 && r.top - 6 > vh - r.bottom) {   // 아래가 모자라고 위가 더 넓으면 위로
+        style.bottom = (vh - r.top + 6) + "px"; style.top = "auto";
+      } else {
+        style.top = (r.bottom + 6) + "px"; style.bottom = "auto";
+      }
+      this.popStyle = style;
+    },
+    close() {
+      this.open = false; this.q = ""; this.err = "";
+      window.removeEventListener("scroll", this._place, true);
+      window.removeEventListener("resize", this._place);
+    },
     suggest(q) {
       api.options("labels", q).then((r) => { this.opts = r || []; }).catch(() => { this.opts = []; });
     },
@@ -149,11 +178,13 @@ export default {
   },
   template: `
   <span class="fe" :class="{ ro: !editable }">
-    <button v-if="editable" class="fe-v" :class="{ on: open }" @click.stop="start"
+    <button v-if="editable" ref="fev" class="fe-v" :class="{ on: open }" @click.stop="start"
             :title="label + ' 수정'"><slot>{{ display || value || '—' }}</slot></button>
     <span v-else class="fe-ro" :title="roHint"><slot>{{ display || value || '—' }}</slot></span>
 
-    <span v-if="open" class="fe-pop" :class="{ wide: isEpic, users: isUser }" @click.stop>
+    <Teleport to="body">
+    <span v-if="open" ref="pop" class="fe-pop fe-pop-fixed" :class="{ wide: isEpic, users: isUser }"
+          :style="popStyle" @click.stop>
       <!-- 우선순위 / 컴포넌트: 정해진 값 중에서만 -->
       <template v-if="field === 'priority'">
         <!-- '내 Task' 와 같은 아이콘·같은 등급 표 — 화면마다 다른 그림이면 같은 티켓이 달라 보인다 -->
@@ -235,6 +266,7 @@ export default {
 
       <div v-if="err && !isMulti" class="fe-err">{{ err }}</div>
     </span>
-    <span v-if="open" class="fe-back" @click.stop="close"></span>
+    <span v-if="open" class="fe-back fe-back-fixed" @click.stop="close"></span>
+    </Teleport>
   </span>`,
 };
