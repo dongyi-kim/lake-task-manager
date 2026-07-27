@@ -1,0 +1,3 @@
+/* esm.sh - highlight.js@11.11.1/lib/languages/nestedtext */
+function c(t){let s={match:[/^\s*(?=\S)/,/[^:]+/,/:\s*/,/$/],className:{2:"attribute",3:"punctuation"}},a={match:[/^\s*(?=\S)/,/[^:]*[^: ]/,/[ ]*:/,/[ ]/,/.*$/],className:{2:"attribute",3:"punctuation",5:"string"}},n={match:[/^\s*/,/>/,/[ ]/,/.*$/],className:{2:"punctuation",4:"string"}},e={variants:[{match:[/^\s*/,/-/,/[ ]/,/.*$/]},{match:[/^\s*/,/-$/]}],className:{2:"bullet",4:"string"}};return{name:"Nested Text",aliases:["nt"],contains:[t.inherit(t.HASH_COMMENT_MODE,{begin:/^\s*(?=#)/,excludeBegin:!0}),e,n,s,a]}}export{c as default};
+//# sourceMappingURL=nestedtext.mjs.map

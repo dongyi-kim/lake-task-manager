@@ -1,0 +1,3 @@
+/* esm.sh - @tiptap/extension-font-family@2.11.7 */
+import"/vendor/esm/d246d2989a8855c1.mjs";import{Extension as n}from"/vendor/esm/e761d34120b1a287.mjs";var a=n.create({name:"fontFamily",addOptions(){return{types:["textStyle"]}},addGlobalAttributes(){return[{types:this.options.types,attributes:{fontFamily:{default:null,parseHTML:t=>t.style.fontFamily,renderHTML:t=>t.fontFamily?{style:`font-family: ${t.fontFamily}`}:{}}}}]},addCommands(){return{setFontFamily:t=>({chain:e})=>e().setMark("textStyle",{fontFamily:t}).run(),unsetFontFamily:()=>({chain:t})=>t().setMark("textStyle",{fontFamily:null}).removeEmptyTextStyle().run()}}});export{a as FontFamily,a as default};
+//# sourceMappingURL=extension-font-family.mjs.map

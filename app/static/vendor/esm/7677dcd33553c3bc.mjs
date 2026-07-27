@@ -1,0 +1,3 @@
+/* esm.sh - highlight.js@11.11.1/lib/languages/tap */
+function n(e){return{name:"Test Anything Protocol",case_insensitive:!0,contains:[e.HASH_COMMENT_MODE,{className:"meta",variants:[{begin:"^TAP version (\\d+)$"},{begin:"^1\\.\\.(\\d+)$"}]},{begin:/---$/,end:"\\.\\.\\.$",subLanguage:"yaml",relevance:0},{className:"number",begin:" (\\d+) "},{className:"symbol",variants:[{begin:"^ok"},{begin:"^not ok"}]}]}}export{n as default};
+//# sourceMappingURL=tap.mjs.map

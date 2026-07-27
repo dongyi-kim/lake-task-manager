@@ -1,0 +1,3 @@
+/* esm.sh - highlight.js@11.11.1/lib/languages/leaf */
+function o(e){let n=/([A-Za-z_][A-Za-z_0-9]*)?/,t={scope:"params",begin:/\(/,end:/\)(?=\:?)/,endsParent:!0,relevance:7,contains:[{scope:"string",begin:'"',end:'"'},{scope:"keyword",match:["true","false","in"].join("|")},{scope:"variable",match:/[A-Za-z_][A-Za-z_0-9]*/},{scope:"operator",match:/\+|\-|\*|\/|\%|\=\=|\=|\!|\>|\<|\&\&|\|\|/}]},a={match:[n,/(?=\()/],scope:{1:"keyword"},contains:[t]};return t.contains.unshift(a),{name:"Leaf",contains:[{match:[/#+/,n,/(?=\()/],scope:{1:"punctuation",2:"keyword"},starts:{contains:[{match:/\:/,scope:"punctuation"}]},contains:[t]},{match:[/#+/,n,/:?/],scope:{1:"punctuation",2:"keyword",3:"punctuation"}}]}}export{o as default};
+//# sourceMappingURL=leaf.mjs.map

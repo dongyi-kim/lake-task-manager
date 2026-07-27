@@ -1,0 +1,3 @@
+/* esm.sh - highlight.js@11.11.1/lib/languages/taggerscript */
+function t(n){return{name:"Tagger Script",contains:[{className:"comment",begin:/\$noop\(/,end:/\)/,contains:[{begin:/\\[()]/},{begin:/\(/,end:/\)/,contains:[{begin:/\\[()]/},"self"]}],relevance:10},{className:"keyword",begin:/\$[_a-zA-Z0-9]+(?=\()/},{className:"variable",begin:/%[_a-zA-Z0-9:]+%/},{className:"symbol",begin:/\\[\\nt$%,()]/},{className:"symbol",begin:/\\u[a-fA-F0-9]{4}/}]}}export{t as default};
+//# sourceMappingURL=taggerscript.mjs.map

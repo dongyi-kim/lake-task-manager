@@ -1,0 +1,3 @@
+/* esm.sh - @tiptap/extension-table-cell@2.11.7 */
+import{Node as r,mergeAttributes as a}from"/vendor/esm/e761d34120b1a287.mjs";var u=r.create({name:"tableCell",addOptions(){return{HTMLAttributes:{}}},content:"block+",addAttributes(){return{colspan:{default:1},rowspan:{default:1},colwidth:{default:null,parseHTML:t=>{let e=t.getAttribute("colwidth");return e?e.split(",").map(l=>parseInt(l,10)):null}}}},tableRole:"cell",isolating:!0,parseHTML(){return[{tag:"td"}]},renderHTML({HTMLAttributes:t}){return["td",a(this.options.HTMLAttributes,t),0]}});export{u as TableCell,u as default};
+//# sourceMappingURL=extension-table-cell.mjs.map
