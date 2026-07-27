@@ -23,13 +23,13 @@ const PAGES = {
     ],
   },
   workload: {
-    core: "진행 중 = 티켓 수(건) · 완료 실적 = Task 수 또는 소요시간(Time Tracking) 선택",
+    core: "진행 중 = 티켓 수(건) · 완료 성과 = Task 수 또는 소요시간(Time Tracking) 선택",
     pre: "진행 중   = 담당 & 진행중 티켓 수 (Task / Sub-Task / VoC)\n"
        + "완료(7일) = 담당 & 최근 7일 내 완료(Done)\n"
        + "  · Task 수  = 완료 티켓 개수\n"
        + "  · 소요시간 = 완료 티켓의 Time Tracking(timespent) 합",
     notes: [
-      "<b>완료 실적 계산식</b>(우측하단 플로팅) — Task 수 / 소요시간 전환. <b>진행 중은 항상 티켓 수</b>(timespent 없음).",
+      "<b>완료 성과</b>(하단 중앙 플로팅) — Task 수 / 소요시간 전환. <b>진행 중은 항상 티켓 수</b>(timespent 없음).",
       "<b>소요시간</b> = 표준 Time Tracking 필드(<code>timespent</code>, 예 2d 3h → 시간 환산). 커스텀필드 아님.",
       "막대 색 구분 — <b>Task</b> / <b>Sub-Task</b> / <b>VoC</b>(Component 사용자 VoC). 담당(Assignee) 기준. Sub-Task 도 조회·표시.",
       "막대 최대값 = 전체 인력 최대(진행중·완료 각각). <b>세로선 = 해당 모듈 평균</b>. 0은 생략.",

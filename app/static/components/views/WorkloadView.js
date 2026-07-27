@@ -23,8 +23,15 @@ const NONE_COLOR = "var(--border-hi)";    // Epic 없음
 export default {
   name: "WorkloadView",
   components: { ProgressBar, TypeBadge, Avatar },
-  data() { return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {}, metric: "count",
-                    pstat: {}, busy: false }; },   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
+  data() {
+    // 옵션(완료 성과 계산식·정렬)은 브라우저에 남긴다 — 매번 다시 고르는 건 화면이 할 일이다.
+    let pref = {};
+    try { pref = JSON.parse(localStorage.getItem("workload.opts") || "{}") || {}; } catch (e) { pref = {}; }
+    return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {},
+             metric: ["count", "hr"].includes(pref.metric) ? pref.metric : "count",
+             sortBy: ["name", "assigned", "done"].includes(pref.sortBy) ? pref.sortBy : "name",
+             pstat: {}, busy: false };   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
+  },
   created() {
     this.bodyRefs = {};                // 비반응 DOM 참조(모듈 body)
     // 좌하단 플로팅 새로고침 — 뷰마다 캐시 비우고 다시 받는 함수 이름이 달라 여기서 잇는다.
@@ -200,7 +207,25 @@ export default {
       });
       return segs;
     },
-    setMetric(mk) { this.metric = mk; this.scheduleMeasure(); },
+    setMetric(mk) { this.metric = mk; this._savePrefs(); this.scheduleMeasure(); },
+    setSort(k) { this.sortBy = k; this._savePrefs(); },
+    _savePrefs() {
+      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy })); }
+      catch (e) { /* 사파리 프라이빗 등 */ }
+    },
+    /** 모듈 안에서 인력 정렬 — 이름 / 할당된 Ticket수 / 완료(완료 성과, 계산식에 따라 값이 달라짐).
+     *  값 기준(할당·완료)은 **많은 순**. 아직 통계가 안 온 사람은 -1 로 맨 뒤(도착하면 제자리로). */
+    sortedPeople(m) {
+      const ppl = (m.people || []).slice();
+      const nm = (p) => (this.pstat[p.id] && this.pstat[p.id].name) || p.name || p.id;
+      if (this.sortBy === "name") return ppl.sort((a, b) => nm(a).localeCompare(nm(b), "ko"));
+      const val = (p) => {
+        const s = this.pstat[p.id];
+        if (!s || s.error) return -1;
+        return this.sortBy === "assigned" ? this.assignedCount(s) : this.barVal(s.done7d, this.metric);
+      };
+      return ppl.sort((a, b) => val(b) - val(a));
+    },
     seg(bar, metric) {
       const u = metric === "hr" ? "h" : "건";
       const t = this.mv(bar, "task", metric), s = this.mv(bar, "subtask", metric), v = this.mv(bar, "voc", metric);
@@ -282,7 +307,7 @@ export default {
     },
   },
   template: `
-  <div>
+  <div class="wl-view">
     <div v-if="err" class="err">워크로드 데이터를 불러오지 못했습니다: {{ err }}</div>
     <template v-else-if="d">
       <div class="chips">
@@ -322,7 +347,7 @@ export default {
               <div class="mavg-num" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ avgByMod[m.module].ip }}건</div>
               <div class="mavg-num" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ avgByMod[m.module].dn }}{{ doneUnit }}</div>
             </template>
-            <template v-for="p in m.people" :key="p.id">
+            <template v-for="p in sortedPeople(m)" :key="p.id">
               <div class="prow">
                 <span class="pname" :title="p.id"><Avatar :user="p.id" :name="(pstat[p.id] && pstat[p.id].name) || p.name" :size="20" /><b>{{ (pstat[p.id] && pstat[p.id].name) || p.name }}</b><span v-if="(pstat[p.id] && pstat[p.id].kind) || p.kind" class="kbadge" :class="(pstat[p.id] && pstat[p.id].kind) || p.kind">{{ ((pstat[p.id] && pstat[p.id].kind) || p.kind) === 'dev' ? '개발' : '운영' }}</span></span>
                 <!-- 통계는 사람 by 사람으로 도착 — 아직이면 로딩, 실패면 재시도 안내, 오면 막대 -->
@@ -395,12 +420,21 @@ export default {
           </template>
         </div>
       </div>
-      <div class="fab">
-        <div class="fab-panel">
-          <div class="t">완료 실적 계산식</div>
+      <!-- 하단 중앙 플로팅 옵션 바 ('내 Task' 와 같은 자리·모양) -->
+      <div class="wl-bar float">
+        <div class="wl-opt">
+          <span class="wl-opt-l">완료 성과</span>
           <div class="fab-seg">
             <button :class="{ on: metric === 'count' }" @click="setMetric('count')">Task 수</button>
             <button :class="{ on: metric === 'hr' }" @click="setMetric('hr')">소요시간</button>
+          </div>
+        </div>
+        <div class="wl-opt">
+          <span class="wl-opt-l">정렬</span>
+          <div class="fab-seg">
+            <button :class="{ on: sortBy === 'name' }" @click="setSort('name')">이름</button>
+            <button :class="{ on: sortBy === 'assigned' }" @click="setSort('assigned')">할당 Ticket수</button>
+            <button :class="{ on: sortBy === 'done' }" @click="setSort('done')">완료</button>
           </div>
         </div>
       </div>

@@ -137,3 +137,17 @@
 /* 'Epic 없음' 은 뱃지가 아니라 없음의 표시 — 채우지 않고 점선(내 Task .mt-epic.none 과 동일) */
 .ebadge.none { color: var(--muted-2); background: none; font-weight: 600;
   border: 1px dashed var(--border-hi); padding: 0 6px; line-height: 13px; }
+
+/* 하단 중앙 플로팅 옵션 바 — '내 Task'(.mt-bar.float)와 같은 자리·모양.
+   완료 성과 계산식 + 모듈 내 인력 정렬 기준을 여기서 고른다. */
+.wl-bar.float { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 50;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap; max-width: calc(100vw - 32px);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 8px 14px; box-shadow: var(--shadow); }
+:root[data-theme="dark"] .wl-bar.float { background: color-mix(in srgb, var(--panel) 92%, #000); }
+.wl-opt { display: inline-flex; align-items: center; gap: 8px; }
+.wl-opt-l { font-size: 10px; font-weight: 700; letter-spacing: .4px; color: var(--muted-2);
+  text-transform: none; white-space: nowrap; }
+@media (max-width: 640px) { .wl-bar.float { gap: 8px 12px; padding: 7px 10px; } }
+/* 하단 플로팅 바가 마지막 모듈 행을 가리지 않게 여백 확보 */
+.wl-view { padding-bottom: 76px; }
