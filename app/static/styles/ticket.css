@@ -1217,6 +1217,11 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   white-space: nowrap; font-size: 10.5px; font-weight: 700; line-height: 1; padding: 3px 8px;
   border-radius: 999px; color: #fff; background: var(--ec, var(--accent));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent); }
+/* Sub 상위 Task 행의 소속 Epic — 담당자와 나란히 우측에 붙는 작은 배지(자동 좌여백 없음) */
+.nk-cand-task .nk-epic-badge.sm { margin-left: auto; max-width: 30%; font-size: 9.5px; padding: 2px 7px; }
+.nk-cand-asg { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 26%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--muted); }
+.nk-cand-asg + .nk-epic-badge.sm, .nk-cand-task .nk-epic-badge.sm + .nk-cand-asg { margin-left: 6px; }
 /* 특수 옵션(Epic 없음 / 사용자 VoC) — 목록 맨 위, 옅은 강조 배경 */
 .nk-cand-sp { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .nk-cand-sp:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
@@ -1251,8 +1256,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .nk-voc.on { color: var(--text); }
 .nk-voc.on .nk-voc-k { background: var(--accent); }
 .nk-voc.on .nk-voc-k::after { left: 15px; }
-/* 아직 안 고른 필수 값 — 비어 보이면 '안 써도 되는 칸' 으로 읽힌다 */
-.nk-need { font-size: 11px; font-weight: 700; color: var(--warn); }
+/* 아직 안 채운 필수 값 — 붉은 글씨로 '반드시 입력' 을 알린다(비면 안 써도 되는 칸으로 읽힌다) */
+.nk-need { font-size: 11px; font-weight: 700; color: var(--danger); }
 /* 담당자 미지정 자리 — 아바타 크기의 빈 원. 없으면 이 줄만 다른 줄과 어긋난다 */
 .nk-noav { flex: none; width: 20px; height: 20px; border-radius: 50%;
   border: 1px dashed var(--border-hi); }

@@ -326,9 +326,29 @@ def _module_people(client, s, key):
     return ids
 
 
+def _my_module_people(client, s):
+    """현재 사용자와 **같은 모듈** 사람들(people.yaml). 내가 people 에 없으면 [] (요구: 제외)."""
+    from .settings import load_people
+    me = ((client.current_user() or {}).get("id") or "").strip().lower()
+    if not me:
+        return []
+    people = load_people() or {}
+    my_mods = [m for m, ids in people.items()
+               if any(str(u).strip().lower() == me for u in (ids or []))]
+    if not my_mods:
+        return []                                   # 내가 어느 모듈에도 없다 → 이 그룹은 통째로 생략
+    out = []
+    for m in my_mods:
+        for uid in (people.get(m) or []):
+            if uid and uid not in out:
+                out.append(uid)
+    return out
+
+
 def mention_suggestions(client, s, q, key, limit=8):
-    """@사람 멘션 피드. q 있으면 유저 검색. 비어 있으면(팝업 첫 오픈) **불필요한 검색 없이**
-    티켓 관련 사람 1순위(리포터/담당/댓글작성/멘션) + 모듈 사람 2순위(중복 제거)."""
+    """@사람 멘션 피드. q 있으면 유저 검색(3등급 정렬). 비어 있으면(팝업 첫 오픈) 기본 노출:
+       1) 이 티켓 유관자(**티켓 뷰에서 열었을 때만**) 2) 내 모듈 사람(내가 people 에 없으면 생략)
+       3) 매니저 — 순서대로 채워 중복 제거."""
     q = (q or "").strip()
     if q:
         # 넉넉히 받아 3등급(티켓 등장인물 > 매니저·등록인력 > 그 외)으로 올린 뒤 limit 만큼 자른다.
@@ -338,8 +358,6 @@ def mention_suggestions(client, s, q, key, limit=8):
         # stable sort 라 같은 등급 안에선 기존 Jira 검색 순서가 유지된다.
         results.sort(key=lambda u: rank(u.get("id")))
         return results[:limit]
-    if not key:
-        return []                                              # 컨텍스트 없으면 검색 안 함
     acc, order = {}, []                     # uid -> displayName('{본명} {회사}', or None), 순서 보존
 
     def add(uid, display=None):
@@ -347,31 +365,38 @@ def mention_suggestions(client, s, q, key, limit=8):
             acc[uid] = display
             order.append(uid)
 
-    try:
-        f = (client.get_issue(key) or {}).get("fields") or {}
-        rep = f.get("reporter") or {}
-        asg = f.get("assignee") or {}
-        add(rep.get("name"), rep.get("displayName") or rep.get("name"))              # 만든사람
-        add(asg.get("name"), asg.get("displayName") or asg.get("name"))              # 담당자
-        for uid in _MENTION_RE.findall(f.get("description") or ""):                   # 본문 멘션
-            add(uid)
-    except Exception:
-        pass
-    try:
-        data = client.provider.get_json(
-            f"/rest/api/2/issue/{key}/comment", params={"maxResults": 50, "orderBy": "-created"})
-        for c in data.get("comments", []):
-            a = c.get("author") or {}
-            add(a.get("name"), a.get("displayName") or a.get("name"))                 # 댓글 작성자
-            for uid in _MENTION_RE.findall(c.get("body") or ""):                      # 댓글 멘션
+    # 1) 이 티켓 유관자 — key 가 있을 때만(= 티켓 뷰에서 연 경우). 일반 사람검색엔 티켓 맥락이 없다.
+    if key:
+        try:
+            f = (client.get_issue(key) or {}).get("fields") or {}
+            rep = f.get("reporter") or {}
+            asg = f.get("assignee") or {}
+            add(rep.get("name"), rep.get("displayName") or rep.get("name"))          # 만든사람
+            add(asg.get("name"), asg.get("displayName") or asg.get("name"))          # 담당자
+            for uid in _MENTION_RE.findall(f.get("description") or ""):               # 본문 멘션
                 add(uid)
-    except Exception:
-        pass
+        except Exception:
+            pass
+        try:
+            data = client.provider.get_json(
+                f"/rest/api/2/issue/{key}/comment", params={"maxResults": 50, "orderBy": "-created"})
+            for c in data.get("comments", []):
+                a = c.get("author") or {}
+                add(a.get("name"), a.get("displayName") or a.get("name"))             # 댓글 작성자
+                for uid in _MENTION_RE.findall(c.get("body") or ""):                  # 댓글 멘션
+                    add(uid)
+        except Exception:
+            pass
+    # 2) 내 모듈 사람(내가 people 에 있을 때만)  3) 매니저
     try:
-        for uid in _module_people(client, s, key):                                   # 모듈 사람(2순위)
+        for uid in _my_module_people(client, s):
             add(uid)
     except Exception:
         pass
+    for uid in (s.managers or []):
+        add(uid)
+    if not order:
+        return []
     out = []
     for uid in order[:limit]:
         disp = acc[uid] or client._display_name(uid)

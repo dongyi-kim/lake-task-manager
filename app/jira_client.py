@@ -1444,6 +1444,41 @@ class JiraClient:
         self.cache.invalidate(f"children:{self.env}:{epic_key}")
         return {"ok": not failed, "linked": linked, "failed": failed}
 
+    def my_task_context(self):
+        """현재 사용자의 Task 맥락 — 검색어가 **없을 때** '내 것' 을 위로 올리기 위한 집합.
+        반환 {me, modules[], taskKeys[], epicKeys[]} (JSON 캐시라 list). 짧게 캐시한다.
+          · modules  = people.yaml 에서 내가 속한 모듈(내가 없으면 빈 목록)
+          · taskKeys = 내가 담당/보고한 티켓 키   · epicKeys = 그 티켓들의 소속 Epic 키
+        """
+        me = ((self.current_user() or {}).get("id") or "").strip()
+        ck = f"myctx:{self.env}:{me or '-'}"
+
+        def do():
+            from .settings import load_people
+            mods = [m for m, ids in (load_people() or {}).items()
+                    if me and me in (ids or [])]
+            tks, eks = [], []
+            if me:
+                pk = self.s.project_key
+                enf = self.s.epic_link_field_id
+                safe = me.replace('"', " ")
+                jql = f'project = {pk} AND (assignee = "{safe}" OR reporter = "{safe}")'
+                try:
+                    for it in (self._search(jql, cache_key=ck + ":s", max_results=200) or []):
+                        k = it.get("key")
+                        if k:
+                            tks.append(k)
+                        ek = (it.get("fields") or {}).get(enf)
+                        if ek and ek not in eks:
+                            eks.append(ek)
+                except Exception:
+                    pass
+            return {"me": me, "modules": mods, "taskKeys": tks, "epicKeys": eks}
+        try:
+            return self.cache.get_or_set(ck, self.OPTIONS_TTL, do)[0]
+        except Exception:
+            return {"me": me, "modules": [], "taskKeys": [], "epicKeys": []}
+
     def epic_candidates(self, q="", limit=20):
         """Epic 에 넣을 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외). q 로 키/제목 필터.
         JQL 을 단순하게(project + 최신순) 두고 타입/검색은 파이썬에서 거른다 — mock/prod 공통 안전."""
@@ -1462,13 +1497,48 @@ class JiraClient:
             summ = f.get("summary") or key
             if ql and ql not in key.lower() and ql not in summ.lower():
                 continue
+            # 담당자 — 검색 필드에 이미 있어 **추가 부하 없이** 그대로 싣는다(상위 Task 고를 때 참고).
+            asg = f.get("assignee") or {}
+            comp = ((f.get("components") or [{}])[0] or {}).get("name")     # 모듈 판정(첫 컴포넌트)
             out.append({
                 "key": key, "summary": summ, "type": tname,
                 "statusCategory": _norm_cat(((f.get("status") or {}).get("statusCategory") or {}).get("key")),
                 "epicKey": f.get(enf) or None,
+                "assignee": real_name(asg.get("displayName") or asg.get("name")) or None,
+                "assigneeId": asg.get("name") or None,
+                "_comp": comp, "_asgId": asg.get("name") or "",
             })
-            if len(out) >= max(1, min(limit, 100)):
+            # 검색 중이면 관련도(updated) 순서대로 limit 에서 끊는다 — 이름으로 좁혔는데 내 것이
+            # 앞으로 튀면 오히려 헷갈린다. 검색어가 없을 땐 **끊지 않고 다 모아** 아래서 정렬한다
+            # (limit 에서 미리 끊으면 뒤쪽의 내 Task 가 정렬 대상에 들지도 못한다).
+            if ql and len(out) >= max(1, min(limit, 100)):
                 break
+        cap = max(1, min(limit, 100))
+        # 검색어가 없으면 '내 것' 을 위로: 0) 내가 담당/보고한 Task  1) 내 모듈 Task  2) 그 외.
+        if not ql:
+            ctx = self.my_task_context()
+            mine = set(ctx.get("taskKeys") or []); me = ctx.get("me") or ""
+            mods = set(ctx.get("modules") or [])
+            def rank(i):
+                if i["key"] in mine or (me and i["_asgId"] == me):
+                    return 0
+                if i["_comp"] and i["_comp"] in mods:
+                    return 1
+                return 2
+            out.sort(key=rank)                                    # stable — 같은 등급은 updated 순 유지
+        out = out[:cap]                                           # 정렬 뒤 잘라 내 Task 가 살아남게
+        for i in out:
+            i.pop("_comp", None); i.pop("_asgId", None)
+        # 소속 Epic 이름 — 검색 결과엔 Epic 키만 있다. **구별되는 Epic 만** ticket_badge(캐시·경량)로
+        # 이름을 채운다(내 Task 화면이 쓰는 것과 같은 방식). 후보들이 Epic 을 공유해 조회 수는 적다.
+        names = {}
+        for ek in {i["epicKey"] for i in out if i["epicKey"]}:
+            try:
+                names[ek] = (self.ticket_badge(ek) or {}).get("summary") or ek
+            except Exception:
+                names[ek] = ek
+        for i in out:
+            i["epicName"] = names.get(i["epicKey"]) if i["epicKey"] else None
         return {"items": out}
 
     def components(self):
@@ -1507,9 +1577,11 @@ class JiraClient:
             if q and q not in key.lower() and q not in summ.lower() and q not in (name or "").lower():
                 continue
             out.append({"key": key, "name": name, "summary": summ})
-            if len(out) >= 20:
-                break
-        return out
+        # 검색어가 없으면 **내 Task 에 유관한 Epic** 을 위로 올린다(그 다음 기존 key 순).
+        if not q:
+            eks = set(self.my_task_context().get("epicKeys") or [])
+            out.sort(key=lambda e: 0 if e["key"] in eks else 1)   # stable — 나머지는 key 순 유지
+        return out[:20]
 
     def label_suggestions(self, q=""):
         """라벨 자동완성. Jira DC 는 JQL 자동완성 엔드포인트로 준다.

@@ -7,6 +7,7 @@
 // (티켓 다이얼로그 안의 '추가' 는 상위가 이미 정해져 있어 이 fab 을 안 탄다 — 그쪽은 상위 고정.)
 import { api } from "../../lib/api.js";
 import TypeBadge from "./TypeBadge.js";
+import Avatar from "./Avatar.js";
 import NewChildDialog from "./NewChildDialog.js";
 import EpicCreateDialog from "./EpicCreateDialog.js";
 import { pushToast } from "../../lib/toast.js";
@@ -21,7 +22,7 @@ const SPECIALS = [
 
 export default {
   name: "AddTicketFab",
-  components: { TypeBadge, NewChildDialog, EpicCreateDialog },
+  components: { TypeBadge, Avatar, NewChildDialog, EpicCreateDialog },
   data() {
     return {
       menuOpen: false,
@@ -144,9 +145,13 @@ export default {
             <b>{{ c.key }}</b><span class="nk-cand-s">{{ c.summary || c.name }}</span>
             <span class="nk-epic-badge" :style="{ '--ec': epicColor(c.key) }">{{ c.name }}</span>
           </button>
-          <!-- Sub 상위(Task) 후보: 기존처럼 타입 뱃지 -->
-          <button v-else type="button" class="nk-cand" @click="choseParent(c)">
+          <!-- Sub 상위(Task) 후보: 타입뱃지 + 키 + 제목, 우측에 소속 Epic·담당자(추가 부하 없음) -->
+          <button v-else type="button" class="nk-cand nk-cand-task" @click="choseParent(c)">
             <TypeBadge :type="c.type" /><b>{{ c.key }}</b><span class="nk-cand-s">{{ c.summary }}</span>
+            <span v-if="c.epicKey" class="nk-epic-badge sm" :style="{ '--ec': epicColor(c.epicKey) }"
+                  :title="'소속 Epic: ' + (c.epicName || c.epicKey)">{{ c.epicName || c.epicKey }}</span>
+            <span v-if="c.assignee" class="nk-cand-asg" :title="c.assignee + ' 담당'">
+              <Avatar :user="c.assigneeId" :name="c.assignee" :size="16" />{{ c.assignee }}</span>
           </button>
         </template>
         <div v-if="!pickBusy && !pickList.length" class="muted nk-cand-empty">결과가 없습니다.</div>

@@ -141,14 +141,14 @@ export default {
           <template v-if="nc.priority">
             <PriIcon :rank="rankOf(nc.priority)" :name="nc.priority" /><span class="prio-n">{{ nc.priority }}</span>
           </template>
-          <span v-else class="nk-need">고르세요</span>
+          <span v-else class="nk-need">필수입력</span>
         </FieldEdit></span></div>
 
       <div v-if="pickType"><span class="k">티켓 타입</span><span class="val">
         <FieldEdit :ticket="parent" field="issuetype" local :choices="types"
                    :value="nc.type" @pick="(v) => nc.type = v">
           <TypeBadge v-if="nc.type" :type="nc.type" />
-          <span v-else class="nk-need">고르세요</span>
+          <span v-else class="nk-need">필수입력</span>
         </FieldEdit></span></div>
       <div v-else><span class="k">티켓 타입</span><span class="val">
         <TypeBadge :type="nc.type" /></span></div>
