@@ -1126,15 +1126,16 @@ export default {
 
           <!-- Sub-Task 는 설명을 대충 쓰는 경우가 많아 상위(부모) 설명을 여기서 바로 볼 수 있게.
                자기 설명이 비어 있으면 자동으로 펼친다. -->
+          <!-- 제목·폴딩버튼·영역을 **하나의 접이식 헤더 + 영역**으로 통합(중복 라벨 제거).
+               헤더 자체가 토글이라 누르면 바로 아래 상위 설명이 펼쳐진다. -->
           <div v-if="parentOf" class="pdesc">
-            <div class="tkt-sec-t">상위 티켓 설명</div>
             <button class="pdesc-t" :class="{ open: pdescOpen }" @click="toggleParentDesc"
                     :title="parentOf.key + ' · ' + parentOf.summary">
               <span class="chev">&#9656;</span>
-              <span>{{ pdescOpen ? '접기' : '상위 티켓 설명 펼쳐 보기' }}</span>
+              <span class="pdesc-lbl">상위 티켓 설명</span>
               <span class="pdesc-k">{{ parentOf.key }}</span>
             </button>
-            <div v-if="pdescOpen">
+            <div v-if="pdescOpen" class="pdesc-body">
               <div v-if="pdescErr" class="muted">상위 설명을 불러오지 못했습니다: {{ pdescErr }}</div>
               <div v-else-if="!pdesc" class="loading">불러오는 중…</div>
               <div v-else-if="descEmpty(pdesc.descriptionHtml)" class="tkt-desc tkt-desc-box pdesc-box">
