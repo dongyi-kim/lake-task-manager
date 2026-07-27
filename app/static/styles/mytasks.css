@@ -480,6 +480,38 @@
 .mt-opt-l.todo { color: var(--st-todo); }
 .mt-opt-l.done { color: var(--st-done); }
 
+/* Epic 필터 — 체크박스 다중선택 콤보. 하단 바에 있으니 목록은 **위로** 펼친다. */
+.mt-ef { position: relative; display: inline-flex; }
+.mt-ef-btn { font: inherit; font-size: 11.5px; font-weight: 600; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px;
+  padding: 4px 7px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.mt-ef-btn:hover { border-color: var(--border-hi); }
+.mt-ef-btn.on { border-color: var(--accent); color: var(--accent); }
+.mt-ef-cav { font-size: 8px; opacity: .7; }
+.mt-ef-back { position: fixed; inset: 0; z-index: 60; }
+.mt-ef-pop { position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 61; min-width: 190px;
+  max-width: 300px; padding: 5px; border-radius: 10px; background: var(--panel);
+  border: 1px solid var(--border); box-shadow: 0 12px 34px rgba(0,0,0,.28);
+  display: flex; flex-direction: column; gap: 2px; }
+.mt-ef-list { max-height: 46vh; overflow: auto; display: flex; flex-direction: column; gap: 1px; }
+.mt-ef-sep { height: 1px; background: var(--border); margin: 3px 2px; }
+.mt-ef-i { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 0;
+  background: none; font: inherit; font-size: 12px; color: var(--text); padding: 5px 7px;
+  border-radius: 6px; cursor: pointer; }
+.mt-ef-i:hover { background: var(--panel-2); }
+.mt-ef-i.master { font-weight: 700; }
+.mt-ef-ck { flex: none; width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid var(--border-hi);
+  position: relative; background: var(--panel-2); }
+.mt-ef-ck.on { background: var(--accent); border-color: var(--accent); }
+.mt-ef-ck.on::after { content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.mt-ef-ck.ind { background: var(--accent); border-color: var(--accent); }
+.mt-ef-ck.ind::after { content: ""; position: absolute; left: 2px; top: 5.5px; width: 9px; height: 2px;
+  background: #fff; border-radius: 1px; }
+.mt-ef-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+.mt-ef-dot.none { background: transparent; border: 1.5px dashed var(--muted-2); }
+.mt-ef-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 한 줄 카드(그룹 부모·Sub-Task)의 마감 칸 — 2줄 카드와 **같은 텍스트 형식**을 쓴다.
    한쪽만 뱃지면 같은 정보가 두 모양이 돼 카드 종류가 바뀔 때마다 눈이 다시 찾아야 한다.
    여기선 칸 앞에 세로 구분선을 둬 담당자/진척과 갈라 놓는다(2줄 카드는 뒤에 둔다 — 담당자가

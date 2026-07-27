@@ -101,6 +101,10 @@ export default {
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
       sort: "due",
       busy: false,
+      // Epic 필터(하단 콤보) — **가릴 버킷**만 담는다(비어 있으면 전부 표시). 새로 나타난 Epic 은
+      // 여기 없으니 기본 표시된다. 버킷 키 = Epic 키, 소속 없음은 "__none__".
+      epicHidden: {},
+      epicOpen: false,
     };
   },
   mounted() {
@@ -145,14 +149,42 @@ export default {
     },
     doneDays() { return (this.model && this.model.doneWindowDays) || 7; },
 
-    /** 모든 카드(내 것 + 유관) — 배치 이전의 평면 목록. 각 카드는 소속(부모/Epic)을 안다. */
-    allCards() {
+    /** 모든 카드(내 것 + 유관) — Epic 필터 **적용 전** 평면 목록. 필터 옵션 목록은 이걸 본다. */
+    rawCards() {
       const out = [];
       for (const g of this.groups) {
         for (const a of g.atoms) out.push(this.card(a, g, true));
         for (const o of g.others) out.push(this.card(o, g, false));
       }
       return out;
+    },
+    /** Epic 필터를 적용한 카드 — 배치·집계는 모두 이걸 쓴다(가린 Epic 은 개수에서도 빠진다). */
+    allCards() { return this.rawCards.filter((c) => this.epicPass(c.epicKey)); },
+    /** 하단 Epic 콤보의 개별 항목 — 내 Task 에 실제로 있는 Epic 들(시그니처 컬러 포함). */
+    epicOptions() {
+      const seen = new Set(), out = [];
+      for (const c of this.rawCards) {
+        if (c.epicKey && !seen.has(c.epicKey)) {
+          seen.add(c.epicKey);
+          out.push({ key: c.epicKey, title: this.epicTitle(c.epicKey) || c.epicKey,
+                     color: categoryColor(c.epicKey) });
+        }
+      }
+      return out.sort((a, b) => a.title.localeCompare(b.title, "ko"));
+    },
+    hasNoneBucket() { return this.rawCards.some((c) => !c.epicKey); },
+    /** 필터 대상 전체 버킷(Epic 키들 + 소속없음). '모든 Epic' 체크 상태 계산용. */
+    allBuckets() {
+      const ks = this.epicOptions.map((e) => e.key);
+      if (this.hasNoneBucket) ks.push("__none__");
+      return ks;
+    },
+    allEpicsShown() { return this.allBuckets.every((k) => !this.epicHidden[k]); },
+    anyEpicHidden() { return this.allBuckets.some((k) => this.epicHidden[k]); },
+    epicFilterLabel() {
+      if (this.allEpicsShown) return "전체";
+      const shown = this.allBuckets.filter((k) => !this.epicHidden[k]).length;
+      return shown + "/" + this.allBuckets.length;
     },
     counts() {
       const c = { todo: 0, inprogress: 0, done: 0, related: 0 };
@@ -174,9 +206,10 @@ export default {
       // 단독 묶음은 서로 아무 관계 없는 티켓을 담는 자루라 그 '순위'(가장 급한 카드)는 사실상
       // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
       // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
-      const out = this.groups.filter((g) => g.hasSubs).map((g) => this.taskPanel(g))
+      // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 Epic 버킷으로 통째로 거른다.
+      const out = this.groups.filter((g) => g.hasSubs && this.epicPass(g.epic)).map((g) => this.taskPanel(g))
         .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
-      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs));
+      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs && this.epicPass(g.epic)));
       if (solo) out.push(solo);
       return out;
     },
@@ -212,6 +245,21 @@ export default {
     },
     hintOf(o) { const cur = o.opts.find((x) => x.k === this[o.key]); return cur ? cur.hint : o.label; },
 
+    /** Epic 필터 — 이 카드의 Epic 버킷이 가려지지 않았는가(소속 없음/VoC = "__none__"). */
+    epicPass(epicKey) { return !this.epicHidden[epicKey || "__none__"]; },
+    toggleEpic(k) {
+      const h = Object.assign({}, this.epicHidden);
+      if (h[k]) delete h[k]; else h[k] = true;
+      this.epicHidden = h; this.savePrefs();
+    },
+    /** '모든 Epic' — 다 보이면 전부 가리고, 아니면 전부 보인다(가림 초기화). */
+    toggleAllEpics() {
+      if (this.allEpicsShown) {
+        const h = {}; for (const k of this.allBuckets) h[k] = true; this.epicHidden = h;
+      } else { this.epicHidden = {}; }
+      this.savePrefs();
+    },
+
     /** 옵션은 브라우저에 남긴다 — 매번 같은 배치로 맞추는 건 화면이 할 일이지 사람이 할 일이 아니다.
      *  값 검증까지 하는 이유: 옵션 목록이 바뀌면 저장된 옛 값이 어디에도 없는 상태가 되고,
      *  그러면 select 가 빈 채로 뜨고 필터는 이상하게 걸린다. */
@@ -231,9 +279,12 @@ export default {
       if (saved.bandClosed && typeof saved.bandClosed === "object") {
         this.bandClosed = Object.assign({}, saved.bandClosed);
       }
+      if (saved.epicHidden && typeof saved.epicHidden === "object") {
+        this.epicHidden = Object.assign({}, saved.epicHidden);
+      }
     },
     savePrefs() {
-      const out = { bandClosed: this.bandClosed };
+      const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden };
       for (const o of OPTIONS) out[o.key] = this[o.key];
       for (const f of Object.values(BAND_FILTERS)) out[f.key] = this[f.key];
       try { localStorage.setItem(PREF_KEY, JSON.stringify(out)); } catch (e) { /* 사파리 프라이빗 등 */ }
@@ -540,6 +591,34 @@ export default {
           <option v-for="v in o.opts" :key="v.k" :value="v.k" :title="v.hint">{{ v.label }}</option>
         </select>
       </label>
+
+      <!-- Epic 필터 — 체크박스 다중선택 콤보. 내 Task 유관 Epic + 소속 없음을 개별로 켜고 끈다. -->
+      <div v-if="epicOptions.length || hasNoneBucket" class="mt-opt mt-epicf">
+        <span class="mt-opt-l">Epic</span>
+        <div class="mt-ef">
+          <button class="mt-ef-btn" :class="{ on: !allEpicsShown }" @click.stop="epicOpen = !epicOpen"
+                  :title="'Epic 필터 — ' + epicFilterLabel">
+            {{ epicFilterLabel }}<i class="mt-ef-cav">▾</i>
+          </button>
+          <div v-if="epicOpen" class="mt-ef-back" @click="epicOpen = false"></div>
+          <div v-if="epicOpen" class="mt-ef-pop" @click.stop>
+            <button type="button" class="mt-ef-i master" @click="toggleAllEpics">
+              <span class="mt-ef-ck" :class="{ on: allEpicsShown, ind: anyEpicHidden && !allEpicsShown }"></span>
+              모든 Epic</button>
+            <div class="mt-ef-sep"></div>
+            <div class="mt-ef-list">
+              <button v-if="hasNoneBucket" type="button" class="mt-ef-i" @click="toggleEpic('__none__')">
+                <span class="mt-ef-ck" :class="{ on: !epicHidden['__none__'] }"></span>
+                <span class="mt-ef-dot none"></span><span class="mt-ef-t">Epic 없음</span></button>
+              <button v-for="e in epicOptions" :key="e.key" type="button" class="mt-ef-i" @click="toggleEpic(e.key)"
+                      :title="e.title">
+                <span class="mt-ef-ck" :class="{ on: !epicHidden[e.key] }"></span>
+                <span class="mt-ef-dot" :style="{ background: e.color }"></span>
+                <span class="mt-ef-t">{{ e.title }}</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>`,
 };
