@@ -1346,6 +1346,19 @@ class JiraClient:
         # 남아 화면에서 체크박스가 어긋난다). wiki 모드는 html_to_wiki 가 이미 같은 형태로 바꾼다.
         return sanitize_html(flatten_task_lists(html)) if fmt == "html" else html_to_wiki(html)
 
+    def _comment_fmt(self):
+        fmt = (getattr(self.s, "comment_format", "") or "").lower()
+        return fmt if fmt in ("html", "wiki") else ("html" if self.env == "prod" else "wiki")
+
+    def comment_field_value(self, html):
+        """에디터 HTML → 코멘트 본문에 저장할 값. description 과 **같은 규칙**(comment_format).
+        prod=HTML(정화) — 위키로 넣으면 인라인코드의 '(*)' 가 별 이모티콘으로 변환되고 '{{}}' 가
+        글자로 샌다(리포트된 버그). mock/local(jira820)=wiki 라 html_to_wiki 로 변환한다."""
+        if not html:
+            return ""
+        from .wikihtml import html_to_wiki
+        return sanitize_html(flatten_task_lists(html)) if self._comment_fmt() == "html" else html_to_wiki(html)
+
     def create_child(self, parent_key, itype, summary, priority=None,
                      duedate=None, assignee=None, components=None, description=None):
         """하위/독립 티켓 생성. 부모가 Epic 이면 Epic Link 로, 일반 이슈면 parent(Sub-Task)로 잇는다.
@@ -1855,16 +1868,22 @@ class JiraClient:
         return {"ok": True}
 
     def comment_source(self, key, comment_id):
-        """코멘트 원본(wiki) → 에디터용 HTML. 수정 로드 시 사용. 없으면 None.
-        (단일 코멘트 GET 은 일부 서버에서 미지원 → 리스트에서 id 로 찾아 견고하게.)"""
+        """코멘트 원본 → 에디터용 HTML. 수정 로드 시 사용. 없으면 None.
+        (단일 코멘트 GET 은 일부 서버에서 미지원 → 리스트에서 id 로 찾아 견고하게.)
+        comment_format=html(prod) 이면 원본이 이미 HTML 이라 정화만, wiki 면 wiki_to_html."""
         from .wikihtml import wiki_to_html
         data = self.provider.get_json(
             f"/rest/api/2/issue/{key}/comment",
             params={"maxResults": 1000, "orderBy": "-created"})
         for c in data.get("comments", []):
             if str(c.get("id")) == str(comment_id):
-                return {"id": str(comment_id),
-                        "html": wiki_to_html(c.get("body") or "", self._mention_name)}
+                body = c.get("body") or ""
+                if self._comment_fmt() == "html":
+                    # description 수정로드와 같은 형태 — 체크박스를 다시 살려 에디터가 태스크리스트로 든다.
+                    html = sanitize_html(_revive_checkboxes(body)) if body.strip() else ""
+                else:
+                    html = wiki_to_html(body, self._mention_name)
+                return {"id": str(comment_id), "html": html}
         return None
 
     def _display_name(self, uid):

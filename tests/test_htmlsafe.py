@@ -317,3 +317,13 @@ def test_vendor_callout_class_normalized():
 
     # 정규화가 임의 class 주입 구멍이 되면 안 된다
     assert "evil" not in sanitize_html('<div class="evil jePanel_info"><p>x</p></div>')
+
+
+def test_emoticon_img_marked_but_content_image_not():
+    """Jira 이모티콘/이모지 이미지엔 .emoticon 표식(확대 제외용), 본문 이미지엔 없어야 한다."""
+    emo = sanitize_html('<p><img src="https://j/images/icons/emoticons/star_yellow.gif" width="16"></p>')
+    assert 'class="emoticon"' in emo
+    emoji = sanitize_html('<p><img src="https://j/images/icons/emoji/1f600.png"></p>')
+    assert 'class="emoticon"' in emoji
+    pic = sanitize_html('<p><img src="https://j/secure/attachment/1/pic.png" width="800"></p>')
+    assert "emoticon" not in pic

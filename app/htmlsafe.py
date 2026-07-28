@@ -145,10 +145,15 @@ _SAFE_SCHEMES = ("http://", "https://", "mailto:", "tel:")
 #   신형: {base}/spaces/{space}/pages/{id}/{title}?{qs}  (space 는 jira 와 다를 수·여러 곳일 수 있음)
 #   구형(DC): /display/{SPACE}/... · /pages/viewpage.action · Cloud: /wiki/...
 _CONF_RE = re.compile(r"(?:confluence|/wiki/|/display/|/spaces/|/pages/)", re.I)
+# Jira 이모티콘/이모지 이미지 URL — 인라인 아이콘이라 '확대' 대상이 아니다(본문 이미지와 구분).
+#   클래식: {base}/images/icons/emoticons/star_yellow.gif · 이모지: /images/icons/emoji/...
+#   플러그인/wiki: /s/.../emoticons/... 도 함께 잡는다.
+_EMOTICON_RE = re.compile(r"/images/icons/emoticons/|/images/icons/emoji|/emoticons/", re.I)
 # class 는 모든 허용 태그에서 받되, 값은 아래 토큰(또는 lang-*)만 남긴다 — 임의 클래스 주입 차단.
 #   user-hover = 실 Jira DC 의 사용자 맨션 앵커 class(볼드+컬러 스타일 대상). conf-link = 아래에서 부여.
 _ALLOWED_CLASSES = {
     "panel", "panel-title", "panel-body", "callout", "code", "jecodeblock", "user-hover", "conf-link",
+    "emoticon",                        # Jira 이모티콘 이미지 — 확대(줌) 대상에서 제외하려고 표식
     "image-wrap",                      # 실 Jira DC 가 본문 이미지를 감싸는 래퍼
     "attachment", "file-badge",        # 첨부 파일 링크([^name]) — 칩으로 그린다
     "callout-note", "callout-info", "callout-warning", "callout-tip",
@@ -279,7 +284,7 @@ class _Sanitizer(HTMLParser):
 
     def _attrs(self, tag, attrs):
         allowed = _ALLOWED_ATTRS.get(tag, set())
-        parts, classes, href_val = [], [], None
+        parts, classes, href_val, src_val = [], [], None, None
         for k, v in attrs:
             k = (k or "").lower()
             if k == "style":
@@ -302,7 +307,12 @@ class _Sanitizer(HTMLParser):
                 continue
             if k == "href":
                 href_val = v or ""
+            if k == "src":
+                src_val = v or ""
             parts.append(k + '="' + escape(v or "", quote=True) + '"')
+        if tag == "img" and src_val and _EMOTICON_RE.search(unescape(src_val)) and "emoticon" not in classes:
+            # Jira 이모티콘/이모지 이미지 — 확대(줌) 버튼이 붙지 않도록 표식.
+            classes.append("emoticon")
         if tag == "a":
             # Confluence/문서 링크는 URL 로 판별해 뱃지 표식(실 Jira·mock 공통 — prod 에도 적용)
             if href_val and _CONF_RE.search(unescape(href_val)) and "conf-link" not in classes:

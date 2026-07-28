@@ -26,7 +26,6 @@ from .auth.base import SessionExpired
 from .cache import Cache
 from .jira_client import JiraClient
 from .settings import STATIC_DIR, get_settings, load_plan, load_people
-from .wikihtml import html_to_wiki
 
 
 class _CommentBody(BaseModel):
@@ -604,18 +603,18 @@ def api_ticket_siblings(key: str):
 # mock/local/prod 동일 경로(jira820 이 쓰기 지원 → 로컬 검증 가능). XSRF 는 provider 가 처리.
 @app.post("/api/ticket/{key}/comment")
 def api_comment_create(key: str, body: _CommentBody):
-    wiki = html_to_wiki(body.html or "")
-    if not wiki.strip():
+    val = _client.comment_field_value(body.html or "")
+    if not (val or "").strip():
         return JSONResponse({"error": "빈 코멘트"}, status_code=400)
-    return JSONResponse(_client.add_comment(key, wiki), status_code=201)
+    return JSONResponse(_client.add_comment(key, val), status_code=201)
 
 
 @app.put("/api/ticket/{key}/comment/{cid}")
 def api_comment_update(key: str, cid: str, body: _CommentBody):
-    wiki = html_to_wiki(body.html or "")
-    if not wiki.strip():
+    val = _client.comment_field_value(body.html or "")
+    if not (val or "").strip():
         return JSONResponse({"error": "빈 코멘트"}, status_code=400)
-    return JSONResponse(_client.update_comment(key, cid, wiki))
+    return JSONResponse(_client.update_comment(key, cid, val))
 
 
 @app.delete("/api/ticket/{key}/comment/{cid}")
@@ -1021,7 +1020,7 @@ def api_do_transition(key: str, body: _TransitionBody):
     if body.minutes:
         parts.append(f"{int(body.minutes)}m")
     time_spent = " ".join(parts)
-    comment = html_to_wiki(body.commentHtml) if body.commentHtml else ""
+    comment = _client.comment_field_value(body.commentHtml) if body.commentHtml else ""
     try:
         _client.do_transition(key, body.id, time_spent=time_spent or None,
                               assignee=body.assignee or None,

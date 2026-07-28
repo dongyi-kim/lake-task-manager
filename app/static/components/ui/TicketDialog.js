@@ -892,6 +892,16 @@ export default {
         // 첨부 **파일 뱃지(칩)** 안의 아이콘/썸네일 이미지는 확대 대상이 아니다 — 콘텐츠 이미지가
         // 아니라 링크 칩이라, 여기에 '확대' 를 얹으면 칩 위에 엉뚱한 버튼이 뜬다(prod 에서 발생).
         if (el.tagName === "IMG" && el.closest(".file-badge, .fchip, .attachment")) return;
+        // Jira 이모티콘/이모지(예: (*)→별)는 인라인 아이콘이라 확대 대상이 아니다.
+        //  1) 서버가 붙인 .emoticon 표식,  2) 폴백으로 아주 작은 이미지(≤32px)도 제외.
+        if (el.tagName === "IMG") {
+          if (el.classList.contains("emoticon")) return;
+          const w = parseInt(el.getAttribute("width") || "0", 10);
+          const h = parseInt(el.getAttribute("height") || "0", 10);
+          if ((w && w <= 32) || (h && h <= 32)) return;
+          const rw = el.naturalWidth || el.width || 0, rh = el.naturalHeight || el.height || 0;
+          if (rw && rh && Math.max(rw, rh) <= 32) return;
+        }
         el.dataset.zoomified = "1";
         const wrap = document.createElement(el.tagName === "IMG" ? "span" : "div");
         wrap.className = "zoomable";

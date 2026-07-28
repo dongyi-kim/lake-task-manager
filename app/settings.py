@@ -84,6 +84,11 @@ class Settings:
         # mock/local(jira820)은 wiki 필드다. 미지정이면 env 로 정한다(prod=html, 그 외=wiki).
         self.description_format = str(pick("DESCRIPTION_FORMAT", cfg.get("description_format"),
                                            "html" if self.jira_env == "prod" else "wiki")).strip().lower()
+        # 코멘트 저장 형식 — 사내 prod 은 코멘트도 **HTML(JEditor)** 로 렌더된다(위키가 아니다):
+        # 인라인코드 SQL 의 '(*)' 가 별 이모티콘으로 자동변환되고 '{{}}' 가 글자로 새는 버그가 그 증거다.
+        # 미지정이면 description_format 을 따른다(prod=html, 그 외 jira820=wiki). 위키로 되돌리려면 'wiki'.
+        self.comment_format = str(pick("COMMENT_FORMAT", cfg.get("comment_format"),
+                                       self.description_format)).strip().lower()
         self.jira_base = str(pick("JIRA_BASE", j.get("base"), "http://localhost:8080")).rstrip("/")
         self.project_key = str(pick("PROJECT_KEY", j.get("project_key"), "DL"))
         self.jira_user = str(pick("JIRA_USER", j.get("user"), "admin"))

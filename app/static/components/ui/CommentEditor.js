@@ -489,6 +489,18 @@ function normalizeAppUrl(url, jiraBase) {
   } catch (e) { return null; }
 }
 
+// Confluence 문서 URL 의 **슬러그**에서 제목을 뽑는다 — 백엔드(og:title/문서조회) 응답 전에
+// 즉시 라벨로 쓰려는 것. 신형 /pages/{id}/{slug}, 구형 /display/{space}/{slug}.
+// pathname 만 보므로 #heading 앵커·?쿼리는 자동으로 빠진다(그게 raw url 로 새던 버그의 방지책).
+function confTitleFromUrl(u) {
+  try {
+    const path = new URL(u, location.href).pathname;
+    const m = path.match(/\/pages\/\d+\/([^/]+)\/?$/) || path.match(/\/display\/[^/]+\/([^/]+)\/?$/);
+    if (m && m[1]) return decodeURIComponent(m[1].replace(/\+/g, " ")).trim();
+  } catch (e) { /* noop */ }
+  return null;
+}
+
 // 티켓 뱃지 라벨 — [타입] [번호] [제목] - [상태]
 function ticketLabel(key, bd) {
   const parts = [];
@@ -876,7 +888,10 @@ export default {
             const url = txt.trim();
             const norm = normalizeAppUrl(url, _jiraBase);          // 우리 앱 URL 이면 정규화
             const href = norm ? norm.href : url;
-            const title0 = norm ? norm.title : url;
+            // 외부 URL 이면 Confluence 슬러그 제목을 **즉시** 라벨로(백엔드 지연/실패·앵커와 무관하게
+            // raw url 이 박히지 않게). 백엔드 조회가 성공하면 더 정확한 제목으로 덮어쓴다.
+            const slug = norm ? null : confTitleFromUrl(url);
+            const title0 = norm ? norm.title : (slug || url);
             self._ed.chain().focus().insertContent([
               { type: "linkBadge", attrs: { href, title: title0 } },
               { type: "text", text: " " },
@@ -887,9 +902,9 @@ export default {
                 if (bd) updateBadgeTitle(self._ed, href, ticketLabel(norm.key, bd), norm.key);
               }).catch(() => { /* noop */ });
             } else if (!norm) {
-              // 외부 URL — 라벨을 페이지 제목(og:title → <title>)으로. 실패하면 URL 그대로.
+              // 외부 URL — 라벨을 페이지 제목(문서 실제 title/og:title)으로. 실패하면 슬러그(또는 URL) 유지.
               api.linkTitle(url).then((r) => {
-                if (r && r.title) updateBadgeTitle(self._ed, url, r.title);
+                if (r && r.title) updateBadgeTitle(self._ed, url, r.title, title0);
               }).catch(() => { /* noop */ });
             }
             event.preventDefault(); return true;

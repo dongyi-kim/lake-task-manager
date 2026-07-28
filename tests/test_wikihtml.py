@@ -131,3 +131,19 @@ def test_set_checkbox_by_id_with_index_fallback():
     assert 'id="AAA" type="checkbox" checked' in r
     # id 도 없고 index 도 없으면 None
     assert _set_checkbox(raw, None, True, cbid="ZZZ") is None
+
+
+def test_inline_code_with_star_roundtrips_clean():
+    """인라인코드 SQL 왕복 — '(*)' 가 별 이모티콘으로 변하거나 {{}} 가 글자로 새면 안 된다
+    (prod 댓글에서 리포트된 버그. 우리 변환기는 깨끗해야 하고, prod 는 html 모드로 회피한다)."""
+    html = '<p><code>select count(*) from blarbkar</code></p>'
+    w = html_to_wiki(html)
+    assert w == "{{select count(*) from blarbkar}}"
+    out = wiki_to_html(w)
+    assert out == '<p><code>select count(*) from blarbkar</code></p>'
+    assert "{{" not in out and "}}" not in out
+
+
+def test_codeblock_preserves_star_literal():
+    html = '<pre class="jecodeblock"><code class="language-sql">where a=(*)</code></pre>'
+    assert "where a=(*)" in wiki_to_html(html_to_wiki(html))
