@@ -301,6 +301,12 @@ export default {
       const g = this.epicDist(pid).groups.find((x) => x.key === (t.epic || "__none__"));
       return (g && g.color) || NONE_COLOR;
     },
+    /** 마감 리스크 행의 소속 Epic 뱃지 — {라벨, 색}. Epic→시그니처색, VoC/Epic없음은 고정색. */
+    riskEpic(t) {
+      if (t.epic) return { label: t.epicName || t.epic, color: categoryColor(t.epic) };
+      if (t.voc) return { label: "사용자 VoC", color: VOC_COLOR };
+      return { label: "Epic 없음", color: NONE_COLOR };
+    },
     mcolor(i) { return moduleColor(i); },
     openCount(p) { return p.open ? this.barVal(p.open, "count") : 0; },   // 미착수(To Do) 건수
     assignedCount(p) { return this.barVal(p.inProgress, "count") + this.openCount(p); },  // 미완료 할당
@@ -713,9 +719,21 @@ export default {
               <div v-if="dueRiskBusy && !dueRisk" class="muted mini"><span class="spinner"></span> 불러오는 중…</div>
               <template v-else-if="dueRisk">
                 <div class="wl-mon-big" :class="{ warn: dueRisk.over.length }">초과 <b>{{ dueRisk.over.length }}</b> · 임박 <b>{{ dueRisk.soon.length }}</b></div>
-                <div class="wl-mon-list">
-                  <span v-for="(x, i) in dueRisk.over.slice(0, 5)" :key="'o' + i" class="wl-mon-row warn tkt" :data-key="x.t.key" role="button">{{ x.t.key }} · {{ x.who }} <b>{{ dd(x.t.due) }}</b></span>
-                  <span v-for="(x, i) in dueRisk.soon.slice(0, 3)" :key="'s' + i" class="wl-mon-row tkt" :data-key="x.t.key" role="button">{{ x.t.key }} · {{ x.who }} <b>{{ dd(x.t.due) }}</b></span>
+                <div class="wl-risk-list">
+                  <span v-for="(x, i) in dueRisk.over.slice(0, 6)" :key="'o' + i" class="wl-risk-row tkt" :data-key="x.t.key" role="button"
+                        :title="x.t.key + ' · ' + x.who + ' · ' + x.t.summary">
+                    <b class="wl-risk-key">{{ x.t.key }}</b>
+                    <span class="wl-risk-title">{{ x.t.summary }}</span>
+                    <span class="wl-risk-epic" :style="{ '--ec': riskEpic(x.t).color }">{{ riskEpic(x.t).label }}</span>
+                    <b class="wl-risk-dd" :class="ddCls(x.t.due)">{{ dd(x.t.due) }}</b>
+                  </span>
+                  <span v-for="(x, i) in dueRisk.soon.slice(0, 4)" :key="'s' + i" class="wl-risk-row tkt" :data-key="x.t.key" role="button"
+                        :title="x.t.key + ' · ' + x.who + ' · ' + x.t.summary">
+                    <b class="wl-risk-key">{{ x.t.key }}</b>
+                    <span class="wl-risk-title">{{ x.t.summary }}</span>
+                    <span class="wl-risk-epic" :style="{ '--ec': riskEpic(x.t).color }">{{ riskEpic(x.t).label }}</span>
+                    <b class="wl-risk-dd" :class="ddCls(x.t.due)">{{ dd(x.t.due) }}</b>
+                  </span>
                   <span v-if="!dueRisk.over.length && !dueRisk.soon.length" class="mini ok">마감 위험 없음 ✓</span>
                 </div>
               </template>
