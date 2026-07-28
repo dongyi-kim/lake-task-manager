@@ -824,7 +824,7 @@ class JiraClient:
                 if k:
                     self.cache.set(f"{pfx}:{env}:{k}", it, self.s.cache_ttl_seconds)
 
-    def _search(self, jql, cache_key=None, max_results=200, light=True):
+    def _search(self, jql, cache_key=None, max_results=200, light=True, ttl=None):
         """JQL 검색 → 원본 이슈 리스트. 결과를 티켓 단위 캐시에 write-through.
         (검색 자체도 cache_key 주면 캐시 — 같은 목록 재조회 절약).
 
@@ -891,7 +891,7 @@ class JiraClient:
                 issues = do()
                 if issues:
                     self.cache.set(cache_key + (":light" if light else ""),
-                                   issues, self.s.cache_ttl_seconds)
+                                   issues, ttl or self.s.cache_ttl_seconds)
         else:
             issues = do()
         # write-through: full 은 issue:{key}(전체), light 는 issueL:{key}(경량) 로 분리한다.
@@ -1174,6 +1174,16 @@ class JiraClient:
         # 본문/상태/댓글은 화면이 곧바로 다시 그린다 → 미리 채워 둔다(위 주석 참고).
         self.cache.invalidate(f"issueview:{self.env}:{key}")
         self.cache.invalidate(f"issueL:{self.env}:{key}")           # 경량 이슈 캐시도 함께(뱃지·형제·자식)
+        # 전체 이슈 원본도 비운다 — **계보(ancestors)** 는 get_issue(=issue: 캐시)의 fields 로
+        # 조상(Epic Link/parent)을 읽는다. 이걸 안 비우면 소속 Epic 을 바꿔도 옛 원본을 읽어
+        # 계보가 안 바뀌고, 새 Epic 요약을 못 찾아 뱃지가 키로 뜬다(방금 그 버그).
+        self.cache.invalidate(f"issue:{self.env}:{key}")
+        # 계보(조상/형제) 조립결과도 비운다 — _swr 로 따로 캐시되기 때문.
+        self.cache.invalidate(f"ancestors:{self.env}:{key}")
+        self.cache.invalidate(f"siblings:{self.env}:{key}")
+        # 상위 피커 후보 풀 — 이 티켓의 소속 Epic/요약이 바뀌면 후보 목록도 낡는다(길게 캐시하므로 명시 무효화).
+        self.cache.invalidate("epic_cand:")
+        self.cache.invalidate("epic_options:")
         self._reprime(key, comments=comments)
 
     # ── 편집 ──────────────────────────────────────────────────────────
@@ -1388,6 +1398,8 @@ class JiraClient:
             # (워크로드·내Task·현안·검색이 낡은 채로 새 Task 를 안 보여 주지 않게).
             for pfx in ("wbs_build", "vit_bases", "vit_list", "workload", "mytasks", "search"):
                 self.cache.invalidate(f"{pfx}:")
+        # 새 Task 는 상위 피커의 후보가 될 수 있다 → 후보 풀 무효화(길게 캐시하므로).
+        self.cache.invalidate("epic_cand:")
         return {"key": key}
 
     def task_types(self):
@@ -1487,11 +1499,25 @@ class JiraClient:
             return {"me": me, "modules": [], "taskKeys": [], "epicKeys": []}
 
     def epic_candidates(self, q="", limit=20, exclude_linked=False):
+        """상위 Task 피커 후보 — **조립 결과를 통째로 캐시**(긴 TTL). 첫 로딩이 느렸던 이유는
+        200건 검색·200건 write-through·소속 Epic 이름 해석·정렬을 매 호출마다 다시 했기 때문.
+        q 별로 결과를 캐시하면 재조회는 cache.get 한 번이다(새 Task/Epic Link 변경 시 'epic_cand:' 무효화)."""
+        ql = (q or "").strip().lower()
+        ck = f"epic_cand:res:{self.env}:{ql}:{int(limit)}:{int(bool(exclude_linked))}"
+        return self.cache.get_or_set(
+            ck, self.OPTIONS_TTL,
+            lambda: self._epic_candidates_build(q, limit, exclude_linked))[0]
+
+    def _epic_candidates_build(self, q="", limit=20, exclude_linked=False):
         """Epic 에 넣을 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외). q 로 키/제목 필터.
         exclude_linked=True 면 **이미 다른 Epic 에 속한 Task 를 뺀다**(자르기 전에 걸러야 소속 없는
         후보가 limit 안에 남는다). JQL 은 단순히(project + 최신순), 나머지는 파이썬에서 — mock/prod 공통."""
         pk = self.s.project_key
-        raws = self._search(f"project = {pk} ORDER BY updated DESC", max_results=200) or []
+        # 상위 Task 피커의 **첫 로딩이 느린** 주범 — q 와 무관한 이 200건 검색을 매번 새로 돌렸다.
+        # q 필터·정렬은 파이썬에서 하므로 목록 자체는 재사용 가능. cache_key + 긴 TTL(OPTIONS_TTL)로
+        # 캐시 효용을 높인다(새 Task 생성·Epic Link 변경 시 'epic_cand:' 프리픽스로 무효화).
+        raws = self._search(f"project = {pk} ORDER BY updated DESC", max_results=200,
+                            cache_key=f"epic_cand:all:{self.env}", ttl=self.OPTIONS_TTL) or []
         enf = self.s.epic_link_field_id
         ql = (q or "").strip().lower()
         out = []
@@ -1562,6 +1588,13 @@ class JiraClient:
             return []
 
     def epic_options(self, q=""):
+        """소속 Epic 편집 드롭다운 후보 — **조립 결과를 q 별로 캐시**(긴 TTL). 재조회 즉시.
+        (create_epic·Epic 편집이 'epic_options:' 프리픽스로 무효화.)"""
+        ql = (q or "").strip().lower()
+        ck = f"epic_options:res:{self.env}:{ql}"
+        return self.cache.get_or_set(ck, self.OPTIONS_TTL, lambda: self._epic_options_build(q))[0]
+
+    def _epic_options_build(self, q=""):
         """Epic 후보 — **요약·Epic Name·키** 무엇으로 쳐도 찾는다(대소문자 무시). 편집 드롭다운용.
 
         Epic 목록 전체(수십 개)를 한 번 받아 **파이썬에서** 거른다. JQL 의 `"Epic Name" ~` 절은
@@ -1571,8 +1604,10 @@ class JiraClient:
         q = (q or "").strip().lower()
         jql = f'project = {self.s.project_key} AND issuetype = Epic ORDER BY key'
         try:
-            # q 와 무관한 고정 JQL → 한 번 받아 캐시(create_epic 이 'epic_options:' 프리픽스로 무효화).
-            raws = self._search(jql, cache_key=f"epic_options:all:{self.env}", max_results=200) or []
+            # q 와 무관한 고정 JQL → 한 번 받아 **긴 TTL**로 캐시(create_epic·Epic 편집이
+            # 'epic_options:' 프리픽스로 무효화). 첫 로딩 체감을 줄이려 OPTIONS_TTL(30분)로.
+            raws = self._search(jql, cache_key=f"epic_options:all:{self.env}",
+                                max_results=200, ttl=self.OPTIONS_TTL) or []
         except Exception:
             return []
         nf = self.s.epic_name_field_id

@@ -12,6 +12,7 @@ import Avatar from "./Avatar.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
 import TypeBadge from "./TypeBadge.js";
 import { createTypeahead } from "../../lib/typeahead.js";
+import { categoryColor } from "../../lib/colors.js";
 
 const KO = {
   priority: "우선순위", assignee: "담당자", reporter: "보고자",
@@ -80,6 +81,7 @@ export default {
   methods: {
     _id() { return this.ticket + ":" + this.field; },
     rankOf: priRankOf,
+    epicColor(key) { return categoryColor(key); },   // Epic 시그니처 컬러(전 화면 공통)
     start() {
       if (!this.editable || this.busy) return;
       window.dispatchEvent(new CustomEvent("fe-open", { detail: this._id() }));
@@ -261,11 +263,13 @@ export default {
         <div class="fe-list">
           <!-- Epic 은 이름이 둘이다: **단축어(Epic Name)** 와 요약. 사람들은 단축어로 부르지만
                비슷한 단축어끼리는 요약을 봐야 구별된다 — 그래서 둘 다 보인다. -->
+          <!-- Task 생성 시 상위 Epic 피커(NewChildDialog .nk-cand-epic)와 **같은 포맷**:
+               [키] [Epic Summary] [시그니처색 뱃지=Epic Name(우측)] -->
           <button v-for="e in opts" :key="e.key" class="fe-i epic" :class="{ cur: e.key === value }"
                   @click="save(e.key)">
-            <b class="fe-epic-n">{{ e.name }}</b>
-            <span v-if="e.summary && e.summary !== e.name" class="fe-epic-s">{{ e.summary }}</span>
-            <em>{{ e.key }}</em>
+            <b class="fe-epic-k">{{ e.key }}</b>
+            <span class="fe-epic-s">{{ e.summary || e.name }}</span>
+            <span class="fe-epic-badge" :style="{ '--ec': epicColor(e.key) }">{{ e.name }}</span>
           </button>
           <div v-if="!opts.length" class="fe-none">Epic 이 없습니다.</div>
         </div>
