@@ -11,9 +11,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.auth.base import SessionExpired      # noqa: E402
-from app.cache import Cache                   # noqa: E402
-from app.jira_client import JiraClient        # noqa: E402
-from app.settings import get_settings         # noqa: E402
+from app.infra.cache import Cache                   # noqa: E402
+from app.jira.jira_client import JiraClient        # noqa: E402
+from app.infra.settings import get_settings         # noqa: E402
 
 PLAN = {"modules": ["ETL"], "project_key": "DL"}
 PEOPLE = {"ETL": ["skcc.x1042"]}
@@ -74,7 +74,7 @@ def test_session_expired_propagates_not_zero():
 # ── 모듈/버킷 분할 (병렬 로딩용) ──
 def test_workload_module_matches_full_build():
     """모듈별 조립 결과가 전체 조립의 해당 모듈과 같아야 한다(분할해도 값이 안 변함)."""
-    from app import workload as wl
+    from app.domain import workload as wl
     c = _client()
     full = wl.build_workload(c, PLAN, PEOPLE)["modules"][0]
     part = wl.build_workload_module(c, PLAN, PEOPLE, "ETL")

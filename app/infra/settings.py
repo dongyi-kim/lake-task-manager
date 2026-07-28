@@ -17,7 +17,7 @@ import yaml
 #     └── app/…             ← 코드/리소스(static 번들)
 #
 # frozen(.exe): 외부 파일(config, cache)은 exe 옆, 번들 리소스(static)는 내부(_MEIPASS).
-SRC_DIR = Path(__file__).resolve().parent.parent          # repo 루트(=app 의 부모)
+SRC_DIR = Path(__file__).resolve().parent.parent.parent   # repo 루트(=app 의 부모). settings.py 는 app/infra/ 에 있어 3단계 위.
 
 
 def _find_app_root(candidates):
@@ -122,7 +122,7 @@ class Settings:
                          _slist(cfg, "manager", "managers", default=[]) or []]
         # 사용자 VoC — 컴포넌트 이름으로 식별한다. 인스턴스마다 다를 수 있어 config 로 받는다.
         # 워크로드 Epic 분포에서 **전용 Epic 처럼** 따로 세는 기준이기도 하다.
-        from .progress import VOC_COMPONENT as _VOC_DEFAULT   # 기본값 단일 소스
+        from app.domain.progress import VOC_COMPONENT as _VOC_DEFAULT   # 기본값 단일 소스
         self.voc_component = str(pick("VOC_COMPONENT", (cfg.get("jira") or {}).get("voc_component"),
                                       _VOC_DEFAULT))
         self.sp_field_id = str(pick("SP_FIELD_ID", f.get("story_point"), "customfield_10004"))
@@ -135,11 +135,11 @@ class Settings:
         # Bitbucket 연동은 **사람이 화면에서 켜야** 쓴다(기본 꺼짐). base 가 config 에 있어도 이게
         # False 면 인증 순회·검색에 안 낀다 — 아직 mock 이고, 안 켠 서비스에 SSO 창을 띄우거나
         # 검색을 보내면 그게 인증 오류 소음이 된다.
-        from app import prefs as _prefs
+        from app.infra import prefs as _prefs
         self.bitbucket_enabled = bool(_prefs.load().get("bitbucketEnabled"))
         # 개발자용 진단 기능 — 지금은 **전부 열림**(config 무관). devtools.DEV_TOOLS 가 곧 목록.
         # 노출 제어는 나중에 유저 역할이 생기면 devtools.enabled() 에서 가른다.
-        from app import devtools as _devtools
+        from app.infra import devtools as _devtools
         self.dev_tools = set(_devtools.DEV_TOOLS)
         # SSO 로그인 순회 대상 — base 가 있는 서비스만. run.py 가 앱 창에서 하나씩 연다.
         #   (이름, base URL, 인증 판정용 REST 경로 후보들)
@@ -177,7 +177,7 @@ class Settings:
 
     def set_bitbucket_enabled(self, on):
         """Bitbucket 연동 on/off — 저장 + 인증 순회 대상 즉시 반영."""
-        from app import prefs as _prefs
+        from app.infra import prefs as _prefs
         self.bitbucket_enabled = bool(on)
         _prefs.save({"bitbucketEnabled": self.bitbucket_enabled})
         self._recompute_targets()

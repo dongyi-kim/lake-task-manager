@@ -5,7 +5,7 @@
 1) 검증 포인트별 티켓이 고정 키로 존재하고, 각자 노리는 데이터를 실제로 갖고 있을 것.
 2) WBS·현안·워크로드 **집계에 섞이지 않을 것**(섞이면 대시보드 숫자가 오염된다).
 """
-from app.world import get_world
+from app.mock.world import get_world
 
 
 def _w():
@@ -40,8 +40,8 @@ def test_fixture_data_actually_present():
 
 def test_fixtures_reachable_from_all_three_dashboards():
     """찾기 쉬워야 한다 — WBS(TEST 모듈)·현안(PMO_VIT)·워크로드(TEST 인력) 세 경로 모두에서 도달 가능."""
-    from app.settings import load_people, load_wbs_config
-    from app.world import FIX_MODULE, FIX_USERS
+    from app.infra.settings import load_people, load_wbs_config
+    from app.mock.world import FIX_MODULE, FIX_USERS
 
     plan = load_wbs_config()
     assert FIX_MODULE in plan["modules"], "WBS 에 TEST 모듈이 없음"
@@ -57,7 +57,7 @@ def test_fixtures_reachable_from_all_three_dashboards():
 def test_test_module_contains_only_fixtures():
     """TEST 모듈에 랜덤 데이터가 섞이면 픽스처를 찾는 의미가 없다 — 생성기가 이 모듈을 건너뛰어야 한다."""
     w = _w()
-    from app.world import FIX_MODULE
+    from app.mock.world import FIX_MODULE
 
     in_test = [i for i in w.issues.values() if i["module"] == FIX_MODULE]
     assert in_test, "TEST 모듈이 비어 있음"

@@ -6,7 +6,7 @@
 """
 import pytest
 
-from app.jira_client import JiraClient
+from app.jira.jira_client import JiraClient
 
 
 @pytest.fixture()

@@ -7,10 +7,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.cache import Cache            # noqa: E402
-from app.jira_client import JiraClient  # noqa: E402
-from app.settings import get_settings   # noqa: E402
-from app.world import get_world         # noqa: E402
+from app.infra.cache import Cache            # noqa: E402
+from app.jira.jira_client import JiraClient  # noqa: E402
+from app.infra.settings import get_settings   # noqa: E402
+from app.mock.world import get_world         # noqa: E402
 
 
 def _client():
@@ -168,8 +168,8 @@ def test_timeline_child_changelog_is_cached_per_ticket():
 # ── VIT 모듈 분할 (병렬 로딩용) ──
 def test_vit_module_matches_full_build():
     """모듈별 조립이 전체 조립의 해당 모듈과 동일해야 한다."""
-    from app import vit
-    from app.settings import load_people, load_plan
+    from app.domain import vit
+    from app.infra.settings import load_people, load_plan
     c = _client()
     plan, people = load_plan(), load_people()
     full = vit.build_vit(c, plan, people)
@@ -184,7 +184,7 @@ def test_vit_module_matches_full_build():
 # ── 관련문서 중복 제거 ──
 def test_conf_key_dedups_same_document():
     """같은 Confluence 페이지를 가리키는 서로 다른 URL 형태가 한 키로 묶여야 한다."""
-    from app.jira_client import _conf_key
+    from app.jira.jira_client import _conf_key
     same = [
         "https://conf/spaces/DL/pages/12345/설계-노트",
         "https://conf/spaces/DL/pages/12345/설계-노트/",           # 끝 슬래시
@@ -205,7 +205,7 @@ def test_documents_are_deduped():
         docs = c.ticket_documents(k)
         if len(docs) < 2:
             continue
-        from app.jira_client import _conf_key
+        from app.jira.jira_client import _conf_key
         keys = [_conf_key(d["url"]) for d in docs]
         assert len(keys) == len(set(keys)), f"{k}: 중복 문서 {keys}"
         assert all(d["title"] and d["url"] for d in docs)
@@ -215,7 +215,7 @@ def test_documents_are_deduped():
 # ── 링크 관계 라벨 / Confluence 편집(초안) URL ──
 def test_rel_label_shortens_verbose_jira_text():
     """사내 Jira 의 서술형 문구를 짧은 표준어로 — prod 피드백."""
-    from app.jira_client import _rel_label
+    from app.jira.jira_client import _rel_label
     verbose = {"name": "Blocks",
                "outward": "Linked issue cannot finish until this issue finishes",
                "inward": "This issue cannot finish until linked issue finishes"}
@@ -231,7 +231,7 @@ def test_rel_label_shortens_verbose_jira_text():
 
 def test_conf_draft_url_title_and_key():
     """편집(초안) 모드 URL 은 제목이 없어 링크 텍스트로 폴백하고, draftId 로 중복 판정."""
-    from app.jira_client import _conf_key, _conf_title
+    from app.jira.jira_client import _conf_key, _conf_title
     u = "https://conf/pages/resumedraft.action?draftId=98765&draftShareId=abc-def"
     assert _conf_title(u, "<b>배포 계획서</b>") == "배포 계획서"
     assert _conf_title(u, None) == "Confluence 문서"          # 텍스트도 없으면 기본값
@@ -247,7 +247,7 @@ def test_voc_ticket_gets_virtual_lineage_node():
     실 티켓은 아니지만 '어디 소속인지' 는 보여주는 게 낫다 → 가상 상위 노드.
     virtual=True + key=None 이라 프론트가 클릭 대상에서 뺀다.
     """
-    from app.world import get_world
+    from app.mock.world import get_world
     w = get_world()
     key = next(k for k, i in w.issues.items()
                if i.get("component") == "사용자 VoC"
@@ -261,7 +261,7 @@ def test_voc_ticket_gets_virtual_lineage_node():
 
 def test_epic_lineage_unaffected_by_voc_rule():
     """Epic 에 속한 티켓은 기존 계보 그대로(가상 노드가 끼면 안 된다)."""
-    from app.world import get_world
+    from app.mock.world import get_world
     w = get_world()
     key = next(k for k, i in w.issues.items()
                if i.get("epicKey") and i.get("component") != "사용자 VoC")
@@ -275,7 +275,7 @@ def test_relative_confluence_url_is_absolutized():
     그대로 두면 브라우저가 우리 앱(localhost) 기준으로 해석해 404 로 가고,
     같은 호스트로 보이니 run.py 외부링크 훅도 안 타서 시스템 브라우저가 아예 안 뜬다.
     """
-    from app.jira_client import _abs_url
+    from app.jira.jira_client import _abs_url
 
     B = "https://confluence.corp.example"
     assert _abs_url("/display/DL/문서", B) == B + "/display/DL/문서"
@@ -295,7 +295,7 @@ def test_documents_merge_remote_links_and_dedupe():
     본문에 이미 언급된 Confluence 문서가 remote link 로도 걸려 있으면 한 번만 나와야 하고,
     remote link 로만 있는 Web link 는 새로 추가돼야 한다.
     """
-    from app.world import get_world
+    from app.mock.world import get_world
     w = get_world()
     key = next(k for k, i in w.issues.items() if i.get("remotelinks"))
     docs = _client().ticket_documents(key)

@@ -3,7 +3,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app import progress   # noqa: E402
+from app.domain import progress   # noqa: E402
 
 
 def test_done_total_and_mock():

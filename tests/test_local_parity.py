@@ -16,10 +16,10 @@ pytest.importorskip("jira820")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.cache import Cache  # noqa: E402
-from app.settings import get_settings, load_people, load_plan  # noqa: E402
-from app import rollup, vit, workload  # noqa: E402
-from app.jira_client import JiraClient  # noqa: E402
+from app.infra.cache import Cache  # noqa: E402
+from app.infra.settings import get_settings, load_people, load_plan  # noqa: E402
+from app.domain import rollup, vit, workload   # noqa: E402
+from app.jira.jira_client import JiraClient  # noqa: E402
 
 
 class _Shim:
@@ -44,7 +44,7 @@ class _Shim:
 
 
 def _local_client(tmp_path):
-    from app.fakebridge import build_injected_app
+    from app.mock.fakebridge import build_injected_app
     tc = TestClient(build_injected_app())
     c = JiraClient(get_settings(), Cache(str(tmp_path / "local.sqlite3")))
     c.env = "local"

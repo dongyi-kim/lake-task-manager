@@ -1,7 +1,7 @@
 """매니저 화이트리스트 — 권한 규칙이라 회귀하면 조용히 화면이 사라지거나 열린다."""
 from types import SimpleNamespace
 
-from app.settings import is_manager
+from app.infra.settings import is_manager
 
 
 def _s(managers):
@@ -50,8 +50,8 @@ def test_missing_user_is_not_manager():
 def test_current_user_does_not_cache_failure():
     """실패한 /myself 를 캐시하면, 로그인에 성공해도 TTL 동안 '세션 없음' 이 남아
     매니저 판정이 계속 False 가 된다(prod 에서 겪은 '새로고침해도 안 풀리는 인증 오류')."""
-    from app.cache import Cache
-    from app.jira_client import JiraClient
+    from app.infra.cache import Cache
+    from app.jira.jira_client import JiraClient
 
     calls = []
 
@@ -100,7 +100,7 @@ def test_cache_serves_stale_when_upstream_fails():
     올라가 화면이 통째로 비었는데, 정작 같은 데이터가 캐시에 있었다."""
     import time as _t
 
-    from app.cache import Cache
+    from app.infra.cache import Cache
     c = Cache(":memory:", dead_ttl=3600)
     c.set("k", {"v": 1}, ttl=0)                      # 즉시 outdated
     _t.sleep(0.01)
@@ -117,7 +117,7 @@ def test_cache_raises_when_value_is_dead():
     """dead 를 넘긴 값은 없는 것과 같다 — 숨기지 말고 그대로 알린다(그래야 로그인을 막는다)."""
     import time as _t
 
-    from app.cache import Cache
+    from app.infra.cache import Cache
     c = Cache(":memory:", dead_ttl=0)
     c.set("k", {"v": 1}, ttl=0)
     _t.sleep(0.01)
@@ -132,7 +132,7 @@ def test_cache_skips_producer_when_upstream_known_down():
     """상류가 죽은 걸 아는 동안엔 붙어 보지 않는다 — prod 는 실패 판정에만 최대 180초를 쓴다."""
     import time as _t
 
-    from app.cache import Cache
+    from app.infra.cache import Cache
     c = Cache(":memory:", dead_ttl=3600)
     c.set("k", {"v": 1}, ttl=0)
     _t.sleep(0.01)
@@ -146,7 +146,7 @@ def test_has_any_ignores_dead_rows():
     """'캐시로 버틸 수 있는가' 는 dead 를 넘긴 값을 세면 안 된다 — 세면 빈 화면으로 진입한다."""
     import time as _t
 
-    from app.cache import Cache
+    from app.infra.cache import Cache
     c = Cache(":memory:", dead_ttl=0)
     c.set("k", {"v": 1}, ttl=999)
     _t.sleep(0.01)
@@ -159,7 +159,7 @@ def test_has_any_ignores_dead_rows():
 def test_edit_sensitive_keys_revalidate_even_when_fresh():
     """티켓 본문·코멘트는 사람이 방금 고쳤을 수 있다. TTL 이 15분이면 내가 쓴 댓글이 15분 동안
     안 보이는데, 그건 캐시가 아니라 버그로 보인다 → 캐시로 즉시 그리되 매번 뒤에서 갱신한다."""
-    from app.cache import Cache
+    from app.infra.cache import Cache
     c = Cache(":memory:", dead_ttl=3600)
     sched = []
     c.always_revalidate = ("comments:",)
@@ -177,7 +177,7 @@ def test_edit_sensitive_keys_revalidate_even_when_fresh():
 
 def test_no_revalidate_while_upstream_down():
     """상류가 죽은 걸 아는 동안 갱신을 걸면 큐만 쌓이고 아무것도 최신이 되지 않는다."""
-    from app.cache import Cache
+    from app.infra.cache import Cache
     c = Cache(":memory:", dead_ttl=3600)
     sched = []
     c.always_revalidate = ("issue:",)

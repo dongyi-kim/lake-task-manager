@@ -4,8 +4,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
-from app.settings import load_plan     # noqa: E402
-from app.world import SUBTASK_TYPE, get_world   # noqa: E402
+from app.infra.settings import load_plan     # noqa: E402
+from app.mock.world import SUBTASK_TYPE, get_world   # noqa: E402
 
 
 def test_world_deterministic_and_indexed():

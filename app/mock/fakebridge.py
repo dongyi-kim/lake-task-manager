@@ -15,8 +15,8 @@ from jira820 import make_app
 from jira820.config import Config
 from jira820.store import Store
 
-from .settings import get_settings
-from .world import World as _World, get_world
+from app.infra.settings import get_settings
+from app.mock.world import World as _World, get_world
 
 W_ME = _World.ME          # dev 세션 사용자(= world 픽스처의 "나")
 

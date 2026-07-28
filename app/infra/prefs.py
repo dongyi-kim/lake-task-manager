@@ -20,7 +20,7 @@ _DEFAULTS = {"bitbucketEnabled": False}
 
 
 def _path():
-    from app.settings import BASE_DIR
+    from app.infra.settings import BASE_DIR
     return Path(BASE_DIR) / "app_prefs.json"
 
 

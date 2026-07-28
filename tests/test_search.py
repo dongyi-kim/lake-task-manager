@@ -3,10 +3,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app import search                       # noqa: E402
-from app.cache import Cache                  # noqa: E402
-from app.jira_client import JiraClient       # noqa: E402
-from app.settings import get_settings        # noqa: E402
+from app.domain import search   # noqa: E402
+from app.infra.cache import Cache                  # noqa: E402
+from app.jira.jira_client import JiraClient       # noqa: E402
+from app.infra.settings import get_settings        # noqa: E402
 
 
 def _client():
@@ -135,8 +135,8 @@ def test_confluence_401_gives_actionable_message():
     Confluence 전용 안내로 바꾸고 needLogin 플래그를 준다.
     """
     from app.auth.base import SessionExpired
-    from app.search import _search_confluence
-    from app.settings import get_settings
+    from app.domain.search import _search_confluence
+    from app.infra.settings import get_settings
 
     class _P:
         def get_json(self, *a, **k):
@@ -160,10 +160,10 @@ def test_confluence_result_has_path():
 
     UI 가 breadcrumb(직계부모 ‹ … ‹ 스페이스)로 그린다. 경로는 [스페이스 … 직계부모] 순.
     """
-    from app.search import _search_confluence
-    from app.settings import get_settings
-    from app.jira_client import JiraClient
-    from app.cache import Cache
+    from app.domain.search import _search_confluence
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+    from app.infra.cache import Cache
 
     s = get_settings()
     c = JiraClient(s, Cache(":memory:"))
@@ -179,7 +179,7 @@ def test_confluence_result_has_path():
 
 def test_excerpt_highlight_is_safe_html():
     """검색 스니펫의 하이라이트를 <mark> 로 살리되 XSS 안전(평문 escape 후 마커만 태그화)."""
-    from app.search import _clean_excerpt
+    from app.domain.search import _clean_excerpt
     assert _clean_excerpt("앞 @@@hl@@@쿼리@@@endhl@@@ 뒤") == "앞 <mark>쿼리</mark> 뒤"
     # 스크립트 주입은 escape
     out = _clean_excerpt("@@@hl@@@<script>x</script>@@@endhl@@@")
@@ -202,7 +202,7 @@ def test_service_user_extraction():
 
 def test_auth_targets_include_configured_services():
     """base 가 설정된 서비스만 SSO 로그인 순회 대상 — Jira 는 항상, 나머지는 base 있을 때."""
-    from app.settings import get_settings
+    from app.infra.settings import get_settings
     s = get_settings()
     names = [t[0] for t in s.auth_targets]
     assert "Jira" in names
@@ -216,7 +216,7 @@ def test_auth_targets_include_configured_services():
 def test_default_avatar_url_detection():
     """Jira 기본(프로필 없음) 아바타 URL 은 None 처리돼 프론트가 시그니처로 폴백해야 한다.
     커스텀 아바타는 ownerId 를 담으므로 유지한다."""
-    from app.jira_client import _is_default_avatar_url
+    from app.jira.jira_client import _is_default_avatar_url
     assert _is_default_avatar_url("") is True
     assert _is_default_avatar_url("https://j/secure/useravatar?avatarId=10122") is True
     assert _is_default_avatar_url("https://j/secure/useravatar?ownerId=jdoe&avatarId=99") is False

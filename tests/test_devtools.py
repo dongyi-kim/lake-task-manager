@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """개발자용 진단 기능(dev tools) — 게이팅 + 안전한 스키마 덤프."""
-from app import devtools as dt
+from app.infra import devtools as dt
 
 
 def test_schema_masks_values_keeps_structure():

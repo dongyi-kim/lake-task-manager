@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """'=== 제목 ===' 구분선 기반 description 영역 분할."""
-from app.sections import split_sections as S
+from app.content.sections import split_sections as S
 
 
 def _one(html):
@@ -220,7 +220,7 @@ def test_class_bearing_container_still_rejected():
 
 def test_real_prod_shape():
     """제보된 실제 prod HTML 구조 — 한 문단에 구분선 2개, 내용은 다음 문단."""
-    from app.htmlsafe import sanitize_html, tidy_html
+    from app.content.htmlsafe import sanitize_html, tidy_html
     raw = ('<p dir="auto">==================== 신청정보 ====================<br />\n'
            '신청자 : 홍길동<br />\n부서 : 데이터<br />\n'
            '==================== 요청내용 ====================</p>\n\n'

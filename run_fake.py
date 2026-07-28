@@ -11,7 +11,7 @@ import os
 
 import uvicorn
 
-from app.fakebridge import build_injected_app
+from app.mock.fakebridge import build_injected_app
 
 if __name__ == "__main__":
     port = int(os.getenv("FAKE_PORT", "8080"))

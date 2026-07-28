@@ -15,13 +15,13 @@ from datetime import date, timedelta
 from html import escape, unescape
 from urllib.parse import quote, unquote, urlparse
 
-from . import progress
-from .auth.base import SessionExpired, background_upstream, write_upstream
-from .htmlsafe import (_CONF_RE, flatten_task_lists, proxy_attachment_images, proxy_attachment_links,
+from app.domain import progress
+from app.auth.base import SessionExpired, background_upstream, write_upstream
+from app.content.htmlsafe import (_CONF_RE, flatten_task_lists, proxy_attachment_images, proxy_attachment_links,
                        proxy_images, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html)
-from .names import real_name
-from .sections import split_sections
+from app.domain.names import real_name
+from app.content.sections import split_sections
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -139,7 +139,7 @@ def _conf_title(url, text=None):
     t = unescape(t)
     return t or "Confluence 문서"
 
-from .progress import VOC_COMPONENT, norm_cat   # VoC 판정 기준 + status→분류 단일 소스
+from app.domain.progress import VOC_COMPONENT, norm_cat   # VoC 판정 기준 + status→분류 단일 소스
 _norm_cat = norm_cat                             # 하위 호출부 호환용 별칭
 
 
@@ -270,7 +270,7 @@ def _log_sections(key, view):
 
 
 def _pri_rank(name):
-    from .mytasks import pri_rank           # 등급 판정은 mytasks 가 단일 소스(P{n} 접두사 우선)
+    from app.domain.mytasks import pri_rank           # 등급 판정은 mytasks 가 단일 소스(P{n} 접두사 우선)
     return pri_rank(name)
 
 
@@ -538,20 +538,20 @@ class JiraClient:
 
     def _make_provider(self):
         if self.env == "local":
-            from .auth.basic import BasicAuthProvider
+            from app.auth.basic import BasicAuthProvider
             return BasicAuthProvider(self.s.jira_base, self.s.jira_user,
                                      self.s.jira_token, self.s.jira_auth)
         if self.env == "prod":
             # 세션 없으면 SsoSessionProvider 가 LoginRequired 를 던짐 → 라우트가 needLogin 처리.
-            from .auth.sso_session import SsoSessionProvider
+            from app.auth.sso_session import SsoSessionProvider
             return SsoSessionProvider(self.s.jira_base, self.sso_store())
         # mock: jira820 을 in-process(ASGI)로 — 이 프로젝트 world 주입. HTTP 소켓/run_fake 불필요.
-        from .auth.inprocess import InProcessProvider
+        from app.auth.inprocess import InProcessProvider
         return InProcessProvider()
 
     def sso_store(self):
         """SSO 세션 저장소 — 서비스별 파일. 한 서비스를 갱신해도 나머지가 안 날아간다."""
-        from .auth.sso_store import SsoStore
+        from app.auth.sso_store import SsoStore
         if getattr(self, "_sso_store", None) is None:
             self._sso_store = SsoStore(self._state_path(), {
                 "jira": self.s.jira_base,
@@ -563,7 +563,7 @@ class JiraClient:
     def _state_path(self):
         """세션 파일 절대 경로 (상대면 APP_ROOT 기준 — run.py 의 존재검사와 일치)."""
         from pathlib import Path
-        from .settings import APP_ROOT
+        from app.infra.settings import APP_ROOT
         p = Path(self.s.jira_state_path)
         return str(p if p.is_absolute() else APP_ROOT / p)
 
@@ -593,7 +593,7 @@ class JiraClient:
         """[prod] 설치된 Chrome 을 띄워 SSO 로그인(폴링 감지) 후 세션 저장. 성공 시 provider 재설정."""
         if self.env != "prod":
             return True
-        from .auth.sso_session import login_wait
+        from app.auth.sso_session import login_wait
         # Jira 만 다시 로그인 — 저장은 jira 파일에만 되므로 Confluence/Bitbucket 세션은 그대로 산다.
         ok = login_wait(self.s.jira_base, self.sso_store(), service="jira", timeout=timeout)
         if ok:
@@ -843,7 +843,7 @@ class JiraClient:
         if self.env == "prod":
             return date.today()
         try:
-            from .world import get_world
+            from app.mock.world import get_world
             return get_world().today
         except Exception:
             return date.today()
@@ -1429,7 +1429,7 @@ class JiraClient:
         """
         if not html:
             return None
-        from .wikihtml import html_to_wiki
+        from app.content.wikihtml import html_to_wiki
         fmt = (getattr(self.s, "description_format", "") or "").lower()
         if fmt not in ("html", "wiki"):
             fmt = "html" if self.env == "prod" else "wiki"
@@ -1447,7 +1447,7 @@ class JiraClient:
         글자로 샌다(리포트된 버그). mock/local(jira820)=wiki 라 html_to_wiki 로 변환한다."""
         if not html:
             return ""
-        from .wikihtml import html_to_wiki
+        from app.content.wikihtml import html_to_wiki
         return sanitize_html(flatten_task_lists(html)) if self._comment_fmt() == "html" else html_to_wiki(html)
 
     def create_child(self, parent_key, itype, summary, priority=None,
@@ -1579,7 +1579,7 @@ class JiraClient:
         ck = f"myctx:{self.env}:{me or '-'}"
 
         def do():
-            from .settings import load_people
+            from app.infra.settings import load_people
             mods = [m for m, ids in (load_people() or {}).items()
                     if me and me in (ids or [])]
             tks, eks = [], []
@@ -1964,7 +1964,7 @@ class JiraClient:
         """코멘트 원본 → 에디터용 HTML. 수정 로드 시 사용. 없으면 None.
         (단일 코멘트 GET 은 일부 서버에서 미지원 → 리스트에서 id 로 찾아 견고하게.)
         comment_format=html(prod) 이면 원본이 이미 HTML 이라 정화만, wiki 면 wiki_to_html."""
-        from .wikihtml import wiki_to_html
+        from app.content.wikihtml import wiki_to_html
         data = self.provider.get_json(
             f"/rest/api/2/issue/{key}/comment",
             params={"maxResults": 1000, "orderBy": "-created"})

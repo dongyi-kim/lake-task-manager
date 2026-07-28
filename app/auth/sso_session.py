@@ -556,7 +556,7 @@ def login_wait(base, store, service="jira", timeout=300, poll=2.0):
 
 
 if __name__ == "__main__":
-    from ..settings import get_settings
+    from app.infra.settings import get_settings
     s = get_settings()
     if len(sys.argv) > 1 and sys.argv[1] == "login":
         from .sso_store import SsoStore

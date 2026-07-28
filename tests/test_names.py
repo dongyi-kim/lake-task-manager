@@ -3,7 +3,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.names import real_name, staff_kind   # noqa: E402
+from app.domain.names import real_name, staff_kind   # noqa: E402
 
 
 def test_real_name_single_token_company():

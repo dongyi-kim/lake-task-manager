@@ -22,7 +22,7 @@ from pathlib import Path
 
 import uvicorn
 
-from app.settings import APP_ROOT, get_settings
+from app.infra.settings import APP_ROOT, get_settings
 
 
 # 창을 열자마자(서버 준비 전에도) 즉시 보여줄 부팅 로더 — 외부 자원 없는 self-contained data URL.
@@ -491,7 +491,7 @@ def _appwin_profile():
     고정 경로라 쿠키·로그인 상태가 창을 닫았다 열어도 남는다."""
     from pathlib import Path
 
-    from app.settings import get_settings
+    from app.infra.settings import get_settings
     try:
         base = Path(get_settings().jira_state_path).resolve().parent
     except Exception:
@@ -558,7 +558,7 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
         if page.is_closed():
             break
         page.wait_for_timeout(100)
-    from app.settings import STATIC_DIR
+    from app.infra.settings import STATIC_DIR
     ico_path = str(STATIC_DIR / "favicon.ico")
     print(f"Lake Task Manager - {url}  (env={s.jira_env})")
     if on_ready:
@@ -642,7 +642,7 @@ _SHORTCUT_NAME = "Lake Task Manager.lnk"
 
 def _launcher_bat():
     """배포 repo 의 run.bat (업데이트+venv+run.py 를 다 하는 런처)."""
-    from app.settings import APP_ROOT
+    from app.infra.settings import APP_ROOT
     return APP_ROOT / "run.bat"
 
 
@@ -678,7 +678,7 @@ def _make_shortcut(lnk_path, target, icon):
 
 
 def _icon_path():
-    from app.settings import STATIC_DIR
+    from app.infra.settings import STATIC_DIR
     ico = STATIC_DIR / "favicon.ico"
     return str(ico) if ico.exists() else ""
 
@@ -717,7 +717,7 @@ def _run_tray(s):
     창을 닫아도 서버·트레이는 살아있고 [앱 열기]로 재오픈. 종료는 트레이 [종료]로만."""
     import pystray
     from PIL import Image
-    from app.settings import STATIC_DIR
+    from app.infra.settings import STATIC_DIR
 
     server = _serve_bg(s, wait=False)                  # 백엔드 상시(창과 독립)
     _warm_session_bg(s)                                # SSO 세션 미리 데우기(창 기동과 병렬)

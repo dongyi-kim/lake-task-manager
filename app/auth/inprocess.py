@@ -15,7 +15,7 @@ class InProcessProvider(AuthProvider):
     def __init__(self):
         from fastapi.testclient import TestClient
 
-        from app.fakebridge import build_injected_app
+        from app.mock.fakebridge import build_injected_app
         self._client = TestClient(build_injected_app())
         self._lock = threading.Lock()
 

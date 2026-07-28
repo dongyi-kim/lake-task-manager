@@ -336,7 +336,7 @@ def shorten_mention_names(html):
     동명이인 구분이 필요한 곳은 @멘션 팝업이지 본문이 아니다."""
     if not html:
         return html
-    from .names import real_name
+    from app.domain.names import real_name
     return _MENTION_A_RE.sub(
         lambda m: m.group(1) + (real_name(unescape(m.group(2))) or m.group(2)) + m.group(3), html)
 

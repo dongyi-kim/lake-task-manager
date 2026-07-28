@@ -27,7 +27,7 @@ def _start_fake(port):
     실제 HTTP 응답(4xx 포함=살아있음)까지 확인 후 반환 → 앱이 붙을 때 레이스 없음."""
     import uvicorn
 
-    from app.fakebridge import build_injected_app
+    from app.mock.fakebridge import build_injected_app
 
     config = uvicorn.Config(build_injected_app(), host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)

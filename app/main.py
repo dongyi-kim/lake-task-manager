@@ -21,11 +21,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import mytasks, rollup, search, vit, workload
-from .auth.base import SessionExpired
-from .cache import Cache
-from .jira_client import JiraClient
-from .settings import STATIC_DIR, get_settings, load_plan, load_people
+from app.domain import mytasks, rollup, search, vit, workload
+from app.auth.base import SessionExpired
+from app.infra.cache import Cache
+from app.jira.jira_client import JiraClient
+from app.infra.settings import STATIC_DIR, get_settings, load_plan, load_people
 
 
 class _CommentBody(BaseModel):
@@ -166,7 +166,7 @@ _BUILD_REV = _build_rev()
 
 
 # ── 개발자용 진단(dev tools) — 지금은 전부 열림. 노출 제어는 나중에 역할 훅(devtools.enabled)으로 ──
-from app import devtools as _devtools   # noqa: E402
+from app.infra import devtools as _devtools   # noqa: E402
 
 
 def _probe_result(label, fn, kind=None, full=False):
@@ -314,7 +314,7 @@ def _is_manager(me=None):
       current_user() 는 실패를 예외가 아니라 **빈 dict** 로 알려주므로 그것으로 판단한다.
       모르면 막지 않는다: 정말 권한이 없으면 뒤의 데이터 호출이 401/403 을 내 로그인으로 이어진다.
     """
-    from app.settings import is_manager as _im
+    from app.infra.settings import is_manager as _im
     if me is None:
         me = _session_user()
     if not (me or {}).get("id") and not (me or {}).get("name"):

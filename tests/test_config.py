@@ -5,7 +5,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app import settings   # noqa: E402
+from app.infra import settings   # noqa: E402
 
 
 def test_real_plan_loads_and_validates():

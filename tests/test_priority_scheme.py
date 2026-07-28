@@ -3,8 +3,8 @@
 Jira 기본 스킴(Highest/High/Medium/…)이 섞이면 '내 Task' 정렬 축이 두 체계로 갈리고,
 화면에 뜨는 아이콘도 등급마다 달라진다. dev 데이터가 먼저 지켜야 실 데이터에서 눈에 띈다.
 """
-from app.fakebridge import _PRIORITIES
-from app.world import get_world
+from app.mock.fakebridge import _PRIORITIES
+from app.mock.world import get_world
 
 SCHEME = {"P0-Blocker", "P1-Critical", "P2-Major", "P3-Minor", "P4-Trivial", "Unclassified"}
 
@@ -22,7 +22,7 @@ def test_world_uses_only_scheme_priorities():
 def test_new_issue_defaults_to_unclassified():
     """등급을 안 주고 만든 티켓은 '미분류'다 — 아무 등급이나 자동으로 붙이면
     아무도 판단한 적 없는 P2 가 쌓인다."""
-    from app.fakebridge import build_store
+    from app.mock.fakebridge import build_store
     st = build_store()
     assert st.config.default_priority == "Unclassified"
     assert st.serializer.priority_obj(None)["name"] == "Unclassified"

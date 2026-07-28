@@ -9,7 +9,7 @@
 
 from datetime import date, datetime, timedelta
 
-from .names import real_name
+from app.domain.names import real_name
 
 
 def _flatten(nodes):

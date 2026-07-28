@@ -10,7 +10,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.htmlsafe import proxy_images, sanitize_html, text_to_html, tidy_html   # noqa: E402
+from app.content.htmlsafe import proxy_images, sanitize_html, text_to_html, tidy_html   # noqa: E402
 
 
 # ── 1. 위험 요소 제거 ───────────────────────────────────────────────

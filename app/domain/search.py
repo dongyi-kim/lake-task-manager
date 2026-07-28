@@ -12,9 +12,9 @@ import hashlib
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-from .auth.base import SessionExpired
-from .names import real_name
-from .progress import norm_cat
+from app.auth.base import SessionExpired
+from app.domain.names import real_name
+from app.domain.progress import norm_cat
 
 
 def _cat(status):
@@ -270,7 +270,7 @@ def _ticket_people(client, key):
 
 def _manager_people_uids(s):
     """매니저(settings.managers) ∪ 등록 인력(people.yaml 전체) — 소문자 uid 집합."""
-    from .settings import load_people
+    from app.infra.settings import load_people
     ids = set(s.managers or [])                                    # settings.managers 는 이미 소문자
     try:
         for lst in (load_people() or {}).values():
@@ -301,7 +301,7 @@ def _mention_rank(client, s, key):
 def _module_people(client, s, key):
     """티켓 소속 모듈의 사람들(config 추론). 못 찾으면 [] (요구: 모듈 정보 없으면 무시).
     모듈 신호: (a) Jira 컴포넌트=모듈(아무 티켓이나) (b) WBS config epic→module 역인덱스."""
-    from .settings import load_people, load_plan
+    from app.infra.settings import load_people, load_plan
     try:
         f = (client.get_issue(key) or {}).get("fields") or {}
     except Exception:
@@ -338,7 +338,7 @@ def _module_people(client, s, key):
 
 def _my_module_people(client, s):
     """현재 사용자와 **같은 모듈** 사람들(people.yaml). 내가 people 에 없으면 [] (요구: 제외)."""
-    from .settings import load_people
+    from app.infra.settings import load_people
     me = ((client.current_user() or {}).get("id") or "").strip().lower()
     if not me:
         return []

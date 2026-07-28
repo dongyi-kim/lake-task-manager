@@ -4,7 +4,7 @@
 사람 멘션 [~id] <-> <span data-type=mention> 왕복을 특히 가드한다.
 """
 
-from app.wikihtml import html_to_wiki, wiki_to_html
+from app.content.wikihtml import html_to_wiki, wiki_to_html
 
 
 def test_headings_and_inline():
@@ -96,7 +96,7 @@ def test_tasklist_to_native_checkbox_html():
          '<li data-type="taskItem" data-checked="true"><label><input type="checkbox" checked></label><div>완료</div></li>'
          '<li data-type="taskItem" data-checked="false"><label><input type="checkbox"></label><div>할 일</div></li>'
          '</ul>')
-    from app.wikihtml import html_to_wiki
+    from app.content.wikihtml import html_to_wiki
     a = html_to_wiki(h)
     assert a.count('type="checkbox"') == 2
     assert 'checked="checked"' in a          # 완료 항목만 체크
@@ -108,7 +108,7 @@ def test_tasklist_to_native_checkbox_html():
 def test_set_checkbox_toggle_by_index():
     """렌더 화면에서 index 번째 체크박스를 토글 → 원본의 그 체크박스만 checked 를 뒤집는다
     (id·나머지 서식은 보존)."""
-    from app.jira_client import _set_checkbox
+    from app.jira.jira_client import _set_checkbox
     raw = ('<p dir="auto"><input id="111" type="checkbox" />A</p>'
            '<p dir="auto"><input id="222" type="checkbox" checked="checked" />B</p>')
     on = _set_checkbox(raw, 0, True)
@@ -120,7 +120,7 @@ def test_set_checkbox_toggle_by_index():
 
 def test_set_checkbox_by_id_with_index_fallback():
     """id 우선(순서 무관), 못 찾으면 index 폴백 — prod 의 id 재발급에도 견고."""
-    from app.jira_client import _set_checkbox
+    from app.jira.jira_client import _set_checkbox
     raw = ('<p dir="auto"><input id="AAA" type="checkbox" />A</p>'
            '<p dir="auto"><input id="BBB" type="checkbox" />B</p>')
     # id 로 두 번째(BBB)를 짚는다 — index 를 안 줘도(=None) 정확

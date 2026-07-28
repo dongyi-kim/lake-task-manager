@@ -5,7 +5,7 @@
 
 from datetime import datetime
 
-from .names import real_name, staff_kind
+from app.domain.names import real_name, staff_kind
 
 
 def _avg(xs):

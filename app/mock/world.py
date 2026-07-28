@@ -14,8 +14,8 @@ import re
 from datetime import date, timedelta
 from functools import lru_cache
 
-from . import worldcontent as wc
-from .settings import get_settings, load_people, load_plan
+from app.mock import worldcontent as wc
+from app.infra.settings import get_settings, load_people, load_plan
 
 # 사내 워크플로 상태 (Open/In Progress/Resolved/Closed/Reopened) → 내부 cat
 _STATUS_NAMES = {"todo": ["Open", "Open", "Reopened"],

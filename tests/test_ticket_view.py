@@ -7,10 +7,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.cache import Cache            # noqa: E402
-from app.jira_client import JiraClient, _build_ticket_view   # noqa: E402
-from app.settings import get_settings   # noqa: E402
-from app.world import get_world         # noqa: E402
+from app.infra.cache import Cache            # noqa: E402
+from app.jira.jira_client import JiraClient, _build_ticket_view   # noqa: E402
+from app.infra.settings import get_settings   # noqa: E402
+from app.mock.world import get_world         # noqa: E402
 
 
 # ── 순수 빌더: renderedFields(HTML) 우선 + 정화 ──
