@@ -19,7 +19,7 @@ export default {
       <div class="pbar" :class="{ darktext: darkText }" :style="{ height: height + 'px' }">
         <template v-if="total > 0">
           <div v-for="(s, i) in segments" v-show="s.value > 0" :key="i" class="pbar-seg"
-               :style="{ width: (s.value / denom * 100) + '%', background: s.color, color: darkText ? '#14243a' : '#fff' }"
+               :style="{ width: (s.value / denom * 100) + '%', background: s.color }"
                :title="s.title">
             <span v-if="s.hatchFrac" class="pbar-hatch" :style="{ width: (s.hatchFrac * 100) + '%' }"></span>
             <span class="pbar-lbl"><span v-if="s.name" class="pbar-name" :class="{ atomic: s.nameAtomic }">{{ s.name }} </span>{{ s.label != null ? s.label : s.value }}</span>

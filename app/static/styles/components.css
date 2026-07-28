@@ -50,15 +50,18 @@
 /* 세그먼트 오른쪽 일부만 사선(할당됨) 오버레이 — 숫자(.pbar-lbl)는 합 세그먼트 중앙에 유지 */
 .pbar-hatch { position: absolute; right: 0; top: 0; bottom: 0; z-index: 0; pointer-events: none;
               background: repeating-linear-gradient(135deg, rgba(255,255,255,.6) 0 2px, rgba(255,255,255,0) 2px 6px); }
-/* 가시성 — 뱃지/후광 없이 채움 위에 진한 글자만. (흰 뱃지는 행마다 반복돼 시선을 뺏었다)
-   채움색을 선명하게 잡아둔 덕에 진한 잉크(darkText, #14243a)로 4.3~7.3:1 이 나온다.
-   흰 그림자 한 겹만 얹어 사선(할당됨) 구간에서도 글자가 뜨게 한다. */
-/* 흰 글자(기본) — 진한 색 위라 **어두운 그림자**로 또렷하게(예: Epic별 인력 지분 이름). */
+/* 가시성 — 막대 색은 그대로 두고 **흰 글자 + 어두운 외곽선**(자막 방식)으로 통일한다.
+   밝은 색 위에서도(흰 글자가 묻힐 곳) 외곽선이 글자를 잡아주고, 어두운 색 위에서도(진한 글자가
+   묻히던 곳) 흰 글자가 뜬다 → 개인별(진한 막대)·Epic지분(밝은 막대) 양쪽 모두 읽힌다.
+   외곽선은 4방향 1px 오프셋 + 소프트 한 겹. text-stroke 대신 shadow 라 글자 두께는 안 변한다. */
 .pbar-lbl { position: relative; z-index: 1; font-weight: 700; display: inline-flex; align-items: baseline;
-            gap: 3px; max-width: 100%; padding: 0 4px;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, .55), 0 0 1px rgba(0, 0, 0, .4); }
-/* 어두운 글자(darkText: 워크로드 막대) — 흰 halo 로 사선 위에서도 뜬다. */
-.pbar.darktext .pbar-lbl { text-shadow: 0 1px 0 rgba(255, 255, 255, .3); }
+            gap: 3px; max-width: 100%; padding: 0 4px; color: #fff;
+            text-shadow:
+              1px 0 0 rgba(0,0,0,.62), -1px 0 0 rgba(0,0,0,.62),
+              0 1px 0 rgba(0,0,0,.62), 0 -1px 0 rgba(0,0,0,.62),
+              1px 1px 0 rgba(0,0,0,.5), -1px -1px 0 rgba(0,0,0,.5),
+              1px -1px 0 rgba(0,0,0,.5), -1px 1px 0 rgba(0,0,0,.5),
+              0 0 3px rgba(0,0,0,.55); }
 .pbar-zero { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 10px; }
 
 /* LoginOverlay */
