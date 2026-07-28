@@ -231,16 +231,21 @@
 .wl-mon-big { font-size: 13px; color: var(--text); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .wl-mon-big b { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .wl-mon-big.warn b { color: var(--danger); }
-.wl-mon-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
-.wl-mon-row { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text); }
+/* 목록(버스팩터·Epic분산 등) — 항목 사이 연한 수평 구분선(간격은 최소) */
+.wl-mon-list { display: flex; flex-direction: column; margin-top: 6px; }
+.wl-mon-row { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text);
+  padding: 5px 0; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.wl-mon-row:first-child { border-top: 0; padding-top: 1px; }
 .wl-mon-row i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
 .wl-mon-row b { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 .wl-mon-row.warn b { color: var(--danger); }
 .wl-mon-row b.voc { color: var(--wl-voc); }   /* 'VoC + N Epic' — VoC 색으로 강조 */
 
 /* 마감 리스크 행 — 티켓번호 | 제목 | Epic뱃지 | D-day. 좁으면 Epic뱃지 → 제목 순으로 생략(컨테이너 쿼리). */
-.wl-risk-list { container-type: inline-size; display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
-.wl-risk-row { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11.5px; cursor: pointer; }
+.wl-risk-list { container-type: inline-size; display: flex; flex-direction: column; margin-top: 6px; }
+.wl-risk-row { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11.5px; cursor: pointer;
+  padding: 5px 0; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.wl-risk-row:first-child { border-top: 0; padding-top: 1px; }
 .wl-risk-row:hover .wl-risk-title { color: var(--accent); }
 .wl-risk-key { flex: none; color: var(--accent); font-weight: 700; font-size: 11px;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; letter-spacing: .2px; font-variant-numeric: tabular-nums; }
