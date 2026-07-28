@@ -40,7 +40,10 @@ export function sigColor(id) {
   const s = String(id || "");
   if (!s) return "var(--border)";
   let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) >>> 0;
+  // ★ 끝자리만 다른 id(예: test.ui01 vs test.ui02)는 해시가 1 차이라 hue 도 1° 차이 → 같은 색으로 보였다.
+  //   avalanche 믹싱으로 작은 입력차가 hue 전체에 퍼지게 한다(인접 id 가 확실히 다른 색).
+  h ^= h >>> 16; h = Math.imul(h, 0x7feb352d) >>> 0; h ^= h >>> 15; h = Math.imul(h, 0x846ca68b) >>> 0; h ^= h >>> 16;
   return "hsl(" + (h % 360) + " 62% 52%)";
 }
 // 기본 아바타에 넣을 이니셜 — 본명 우선(한글은 그대로, 영문은 대문자).
