@@ -333,7 +333,7 @@ export default {
         segs.push({
           value: c, color: "var(--wl-" + k + ")",
           hatchFrac: c > 0 ? no / c : 0,      // 오른쪽 이 비율만 사선(할당됨)
-          label: String(c),
+          label: String(c), name: lb,         // 공간 넉넉하면 분류(Task/Sub-Task/VoC) 표시
           title: lb + " 진행 중 " + ni + " · 할당됨 " + no + " (합 " + c + ")",
         });
       });
@@ -424,7 +424,7 @@ export default {
       groups = this.orderGroups(groups);
       return groups.map((g) => ({
         value: g.value, color: g.color, hatchFrac: g.value > 0 ? g.no / g.value : 0,
-        label: String(g.value),
+        label: String(g.value), name: g.name,   // 공간 넉넉하면 Epic 이름 표시
         title: g.name + " 진행 중 " + g.ni + " · 할당됨 " + g.no + " (합 " + g.value + ")",
       }));
     },
@@ -438,7 +438,7 @@ export default {
         return Object.assign({ key: k, value: v }, this.groupMeta(k, names));
       }).filter((g) => g.value > 0);
       groups = this.orderGroups(groups);
-      return groups.map((g) => ({ value: g.value, color: g.color, title: g.name + " " + g.value + u }));
+      return groups.map((g) => ({ value: g.value, color: g.color, name: g.name, title: g.name + " " + g.value + u }));
     },
     /** 모듈 안에서 인력 정렬 — 이름 / 할당된 Ticket수 / 완료(완료 성과, 계산식에 따라 값이 달라짐).
      *  값 기준(할당·완료)은 **많은 순**. 아직 통계가 안 온 사람은 -1 로 맨 뒤(도착하면 제자리로). */
@@ -457,9 +457,9 @@ export default {
       const u = metric === "hr" ? "h" : "건";
       const t = this.mv(bar, "task", metric), s = this.mv(bar, "subtask", metric), v = this.vocVal(bar, metric);
       return [
-        { value: t, color: "var(--wl-task)", title: "Task " + t + u },
-        { value: s, color: "var(--wl-subtask)", title: "Sub-Task " + s + u },
-        { value: v, color: "var(--wl-voc)", title: "VoC " + v + u },
+        { value: t, color: "var(--wl-task)", name: "Task", title: "Task " + t + u },
+        { value: s, color: "var(--wl-subtask)", name: "Sub-Task", title: "Sub-Task " + s + u },
+        { value: v, color: "var(--wl-voc)", name: "VoC", title: "VoC " + v + u },
       ];
     },
     setBody(mod, el) { if (el) this.bodyRefs[mod] = el; },
@@ -558,8 +558,8 @@ export default {
 
       <!-- ══ 패널 그리드 (그라파나풍) ══ -->
       <div class="wl-grid">
-        <!-- 개인별 워크로드 (넓게) — 이 패널 전용 옵션 툴바 내장 -->
-        <div class="wl-panel span8">
+        <!-- 개인별 워크로드 (전체폭) — 이 패널 전용 옵션 툴바 내장 -->
+        <div class="wl-panel span12">
           <div class="wl-panel-h"><b>개인별 워크로드</b>
             <span v-if="grouping === 'epic'" class="wl-hlg">
               <span v-for="g in moduleEpicGroups.groups" :key="g.key" class="wl-hlg-i" :title="g.name + ' · ' + g.pct + '%'">
@@ -680,23 +680,6 @@ export default {
         </div>
         </div><!-- /wl-panel 개인별 워크로드 -->
 
-        <!-- ① 모듈이 기여하는 Epic (개인별 워크로드 오른쪽) -->
-        <div class="wl-panel span4">
-          <div class="wl-panel-h"><b>모듈이 기여하는 Epic</b> <span class="mini muted">할당+진행+완료 · {{ doneUnit }}</span></div>
-          <div class="wl-panel-b">
-            <div v-if="!statsReady" class="muted mini">집계 중… ({{ moduleAgg(curMod).loaded }}/{{ curMod.peopleCount }})</div>
-            <template v-else>
-              <ProgressBar :segments="moduleEpicSegs()" :height="18" show-total />
-              <div class="wl-epic-lg">
-                <span v-for="g in moduleEpicGroups.groups" :key="g.key" class="wl-epic-i"
-                      :class="{ voc: g.kind === 'voc', none: g.kind === 'none' }" :title="g.name + ' · ' + g.value + doneUnit">
-                  <i :style="{ background: g.color }"></i>{{ g.name }} <b>{{ g.pct }}%</b></span>
-                <span v-if="!moduleEpicGroups.groups.length" class="muted mini">집계할 작업이 없습니다.</span>
-              </div>
-            </template>
-          </div>
-        </div>
-
         <!-- 좌측 세로 스택: 버스팩터 · 인력별 Epic 분산 · 마감 리스크 -->
         <div class="wl-col span4">
           <!-- 버스팩터 -->
@@ -741,25 +724,44 @@ export default {
           </div>
         </div>
 
-        <!-- ② Epic별 인력 지분 (넓게, 오른쪽) -->
-        <div class="wl-panel span8">
-          <div class="wl-panel-h"><b>Epic별 인력 지분</b> <span class="mini muted">누가 얼마나 (상위 8)</span></div>
-          <div class="wl-panel-b">
-            <div v-if="!statsReady" class="muted mini">집계 중…</div>
-            <template v-else>
-              <div v-for="r in epicPeopleRows" :key="r.epic.key" class="wl-epr">
-                <div class="wl-epr-h">
-                  <span class="wl-epr-badge" :style="{ '--ec': r.epic.color }">{{ r.epic.name }}</span>
-                  <span v-if="r.single" class="wl-warn-chip" title="참여 인력 1명 — 지식 집중(버스팩터) 리스크">⚠ 단독</span>
+        <!-- 우측 세로 스택: ① 모듈이 기여하는 Epic (위) → ② Epic별 인력 지분 (아래) -->
+        <div class="wl-col span8">
+          <!-- ① 모듈이 기여하는 Epic -->
+          <div class="wl-panel">
+            <div class="wl-panel-h"><b>모듈이 기여하는 Epic</b> <span class="mini muted">할당+진행+완료 · {{ doneUnit }}</span></div>
+            <div class="wl-panel-b">
+              <div v-if="!statsReady" class="muted mini">집계 중… ({{ moduleAgg(curMod).loaded }}/{{ curMod.peopleCount }})</div>
+              <template v-else>
+                <ProgressBar :segments="moduleEpicSegs()" :height="18" show-total />
+                <div class="wl-epic-lg">
+                  <span v-for="g in moduleEpicGroups.groups" :key="g.key" class="wl-epic-i"
+                        :class="{ voc: g.kind === 'voc', none: g.kind === 'none' }" :title="g.name + ' · ' + g.value + doneUnit">
+                    <i :style="{ background: g.color }"></i>{{ g.name }} <b>{{ g.pct }}%</b></span>
+                  <span v-if="!moduleEpicGroups.groups.length" class="muted mini">집계할 작업이 없습니다.</span>
                 </div>
-                <ProgressBar :segments="r.segs" :height="16" />
-                <div class="wl-epr-lg">
-                  <span v-for="s in r.segs" :key="s.pid" class="wl-epr-p" :title="s.title">
-                    <Avatar :user="s.pid" :name="s.name" :size="14" />{{ s.name }} <b>{{ s.pct }}%</b></span>
+              </template>
+            </div>
+          </div>
+          <!-- ② Epic별 인력 지분 -->
+          <div class="wl-panel">
+            <div class="wl-panel-h"><b>Epic별 인력 지분</b> <span class="mini muted">누가 얼마나 (상위 8)</span></div>
+            <div class="wl-panel-b">
+              <div v-if="!statsReady" class="muted mini">집계 중…</div>
+              <template v-else>
+                <div v-for="r in epicPeopleRows" :key="r.epic.key" class="wl-epr">
+                  <div class="wl-epr-h">
+                    <span class="wl-epr-badge" :style="{ '--ec': r.epic.color }">{{ r.epic.name }}</span>
+                    <span v-if="r.single" class="wl-warn-chip" title="참여 인력 1명 — 지식 집중(버스팩터) 리스크">⚠ 단독</span>
+                  </div>
+                  <ProgressBar :segments="r.segs" :height="16" />
+                  <div class="wl-epr-lg">
+                    <span v-for="s in r.segs" :key="s.pid" class="wl-epr-p" :title="s.title">
+                      <Avatar :user="s.pid" :name="s.name" :size="14" />{{ s.name }} <b>{{ s.pct }}%</b></span>
+                  </div>
                 </div>
-              </div>
-              <div v-if="!epicPeopleRows.length" class="muted mini">집계할 Epic 이 없습니다.</div>
-            </template>
+                <div v-if="!epicPeopleRows.length" class="muted mini">집계할 Epic 이 없습니다.</div>
+              </template>
+            </div>
           </div>
         </div>
       </div><!-- /wl-grid -->
