@@ -30,6 +30,8 @@ export function recordOpen(item) {
     title: (item.title || item.url).slice(0, 300),
     meta: (item.meta || "").slice(0, 300),
     type: (item.type || "").slice(0, 40),
+    // 검색 결과와 동일 포맷으로 다시 그리기 위한 부가필드(key·epicKey/Name·assignee·status·…)
+    data: item.data || {},
   }).catch(() => { /* 기록 실패는 사용자 흐름을 막지 않는다 */ });
 }
 

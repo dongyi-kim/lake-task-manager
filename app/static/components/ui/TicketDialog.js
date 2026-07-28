@@ -48,6 +48,8 @@ import { recordOpen } from "../../lib/recent.js";
 import { highlightIn as hljsHighlight, ensureHljsTheme } from "../../lib/hljs.js";
 import { loadTiptap } from "../../lib/tiptap.js";
 import { confirmBox } from "../../lib/confirm.js";
+import { pushToast } from "../../lib/toast.js";
+import { copyTicketLink } from "../../lib/ticketlink.js";
 
 
 // Confluence URL 에서 문서 제목 추출(내부 <a> 텍스트 무시) — /pages/{id}/{slug} 또는 /display/{space}/{slug}.
@@ -281,6 +283,13 @@ export default {
     parentOf(p) { if (p && this.ownDescEmpty && !this.pdescOpen) this.toggleParentDesc(); },
   },
   methods: {
+    /** 이 티켓의 Jira 링크를 클립보드로 복사. */
+    async copyLink() {
+      const { ok, url } = await copyTicketLink(this.keyId);
+      pushToast(ok
+        ? { kind: "success", icon: "📋", title: "링크 복사됨", message: url, timeout: 4000 }
+        : { kind: "error", icon: "⚠", title: "복사 실패", message: url, timeout: 6000 });
+    },
     /** 좌우 패널 접기/펴기 버튼을 **지금 보이는 스크롤 영역의 세로 중앙**에 둔다.
      *  본문(.tkt-body)이 스크롤 주체라 그 scrollTop+높이의 절반이 곧 화면 중앙(콘텐츠 좌표계). */
     posCollapse() {
@@ -448,7 +457,15 @@ export default {
         if (fresh() && v) {
           recordOpen({ url: v.url || ("/browse/" + key), kind: "jira",
                        title: key + " " + (v.summary || ""), type: v.type || "",
-                       meta: v.status || "" });
+                       meta: v.status || "",
+                       // 검색결과와 동일 포맷으로 최근목록을 그리기 위한 표시필드
+                       data: {
+                         key, summary: v.summary || "",
+                         epicKey: v.epicKey || null, epicName: v.epicName || null,
+                         assignee: v.assignee || null, assigneeId: v.assigneeId || null,
+                         status: v.status || null, statusCategory: v.statusCategory || null,
+                         project: (String(key).split("-")[0] || null), issuetype: v.type || null,
+                       } });
         }
       } catch (e) {
         if (fresh()) {
@@ -940,6 +957,10 @@ export default {
             <button v-if="isPage" class="search-trig" @click="$emit('search')" title="통합 검색 ( / )">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
               <span>검색</span><kbd>/</kbd>
+            </button>
+            <!-- 링크 복사 — 이 티켓의 Jira URL 을 클립보드로 -->
+            <button v-if="v" class="tb-btn ico" @click="copyLink" aria-label="Jira 링크 복사" title="Jira 링크 복사">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
             </button>
             <a v-if="v && v.url" class="tb-btn" :href="v.url" target="_blank" rel="noopener"
                title="Jira에서 열기">Jira에서 열기 ↗</a>

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS recent (
     title     TEXT NOT NULL,
     meta      TEXT NOT NULL DEFAULT '',
     type      TEXT NOT NULL DEFAULT '',   -- 이슈타입(Task/Bug/…) — 목록을 검색 결과와 같은 모양으로
+    data      TEXT NOT NULL DEFAULT '',   -- 표시용 JSON(key·summary·epicKey/Name·assignee·status·…) — 검색결과와 동일 포맷
     opened_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_recent_at ON recent(opened_at DESC);
@@ -85,7 +86,9 @@ class Cache:
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(recent)")}
             if cols and "type" not in cols:
                 self._conn.execute("ALTER TABLE recent ADD COLUMN type TEXT NOT NULL DEFAULT ''")
-                self._conn.commit()
+            if cols and "data" not in cols:
+                self._conn.execute("ALTER TABLE recent ADD COLUMN data TEXT NOT NULL DEFAULT ''")
+            self._conn.commit()
         except Exception:
             pass
 
@@ -260,15 +263,21 @@ class Cache:
     # 웹페이지가 읽을 수 없으므로, 우리가 연 것을 우리가 기록하는 수밖에 없다.)
     RECENT_KEEP = 200                       # 이 개수만 남기고 오래된 것부터 버린다
 
-    def touch_recent(self, url, kind, title, meta="", type_=""):
+    def touch_recent(self, url, kind, title, meta="", type_="", data=""):
         if not url:
             return
+        # data 는 표시용 부가필드(JSON 문자열). dict 로 들어오면 직렬화.
+        if isinstance(data, (dict, list)):
+            try:
+                data = json.dumps(data, ensure_ascii=False)
+            except Exception:
+                data = ""
         with self._lock:
             self._conn.execute(
-                "INSERT INTO recent(url, kind, title, meta, type, opened_at) VALUES (?,?,?,?,?,?) "
+                "INSERT INTO recent(url, kind, title, meta, type, data, opened_at) VALUES (?,?,?,?,?,?,?) "
                 "ON CONFLICT(url) DO UPDATE SET opened_at=excluded.opened_at, "
-                "title=excluded.title, meta=excluded.meta, kind=excluded.kind, type=excluded.type",
-                (url, kind or "web", title or url, meta or "", type_ or "", time.time()),
+                "title=excluded.title, meta=excluded.meta, kind=excluded.kind, type=excluded.type, data=excluded.data",
+                (url, kind or "web", title or url, meta or "", type_ or "", data or "", time.time()),
             )
             self._conn.execute(
                 "DELETE FROM recent WHERE url NOT IN "
@@ -276,7 +285,7 @@ class Cache:
             self._conn.commit()
 
     def recent_items(self, limit=20, kind=None):
-        sql = "SELECT url, kind, title, meta, type, opened_at FROM recent"
+        sql = "SELECT url, kind, title, meta, type, data, opened_at FROM recent"
         args = []
         if kind:
             sql += " WHERE kind=?"
@@ -285,8 +294,22 @@ class Cache:
         args.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
-        return [{"url": u, "kind": k, "title": t, "meta": m, "type": ty, "openedAt": at}
-                for u, k, t, m, ty, at in rows]
+        out = []
+        for u, k, t, m, ty, data, at in rows:
+            item = {"url": u, "kind": k, "title": t, "meta": m, "type": ty, "openedAt": at}
+            if data:
+                try:
+                    d = json.loads(data)
+                    if isinstance(d, dict):
+                        # 표시용 부가필드(key·epicKey/Name·assignee·status·…)를 그대로 올린다.
+                        # 코어 필드는 덮어쓰지 않는다.
+                        for kk, vv in d.items():
+                            if kk not in item:
+                                item[kk] = vv
+                except Exception:
+                    pass
+            out.append(item)
+        return out
 
     def forget_recent(self, url=None):
         with self._lock:

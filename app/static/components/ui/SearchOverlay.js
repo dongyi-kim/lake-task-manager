@@ -135,7 +135,7 @@ export default {
       if (f.src === "jira") {
         recordOpen({ url: f.it.url || ("/browse/" + f.it.key), kind: "jira",
                      title: f.it.key + " " + (f.it.title || ""), type: f.it.issuetype || "",
-                     meta: f.it.status || "" });
+                     meta: f.it.status || "", data: this.jiraData(f.it) });
         this.$emit("open-ticket", f.it.key); this.$emit("close"); return;
       }
       if (f.src === "confluence" && f.it.url) {
@@ -148,9 +148,21 @@ export default {
     // 최근 항목 열기 — Jira 티켓이면 인앱 다이얼로그, 그 외는 시스템 브라우저.
     openRecent(it) {
       const m = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/.exec(it.url || "");
-      recordOpen(it);                                   // 다시 열었으니 맨 위로
+      // 다시 열었으니 맨 위로 — 저장돼 있던 표시필드(key·epicKey/Name·assignee·…)도 함께 재기록.
+      recordOpen({ url: it.url, kind: it.kind, title: it.title, meta: it.meta, type: it.type,
+                   data: it.kind === "jira" ? this.jiraData(it) : (it.data || {}) });
       if (m) { this.$emit("open-ticket", m[1].toUpperCase()); this.$emit("close"); return; }
       this.openExternal(it.url);
+    },
+    // 검색결과/최근항목 공통 — Jira 티켓의 표시용 부가필드만 추린다.
+    jiraData(it) {
+      return {
+        key: it.key || null, summary: it.summary || it.title || "",
+        epicKey: it.epicKey || null, epicName: it.epicName || null,
+        assignee: it.assignee || null, assigneeId: it.assigneeId || null,
+        status: it.status || null, statusCategory: it.statusCategory || null,
+        project: it.project || null, issuetype: it.issuetype || it.type || null,
+      };
     },
     epicColor(key) { return categoryColor(key); },
     recentIc(kind) { return kind === "jira" ? "sr-dot st-inprogress"
@@ -204,9 +216,23 @@ export default {
             <div class="sr-sec-h"><span class="sr-src recent">최근 열어본 항목</span> <b>{{ recent.length }}</b></div>
             <div v-for="(it, i) in recent" :key="it.url" class="sr-item sr-recent"
                  :class="{ active: active === i }" @click="openRecent(it)" @mousemove="active = i">
-              <span :class="recentIc(it.kind)"></span>
-              <span class="sr-title">{{ it.title }}</span>
-              <span class="sr-meta">{{ it.meta }}</span>
+              <!-- Jira 티켓 — 검색 결과와 동일 포맷(상태점·키·제목·Epic뱃지·프로젝트·상태·담당자) -->
+              <template v-if="it.key">
+                <span class="sr-dot" :class="stCls(it.statusCategory)"></span>
+                <b class="sr-key">{{ it.key }}</b>
+                <span class="sr-title">{{ it.summary || it.title }}</span>
+                <span v-if="it.epicKey" class="sr-epic" :style="{ '--ec': epicColor(it.epicKey) }"
+                      :title="'소속 Epic: ' + (it.epicName || it.epicKey)">{{ it.epicName || it.epicKey }}</span>
+                <span class="sr-meta"><template v-if="it.project || it.status">{{ it.project }}<template v-if="it.project && it.status"> · </template>{{ it.status }}</template><template v-if="it.assignee">
+                  <span class="sr-who"><Avatar :user="it.assigneeId" :name="it.assignee" :size="14" />{{ it.assignee }}</span>
+                </template></span>
+              </template>
+              <!-- Confluence · 웹 등 그 외 — 기존 단순 표기(아이콘·제목·부제) -->
+              <template v-else>
+                <span :class="recentIc(it.kind)"></span>
+                <span class="sr-title">{{ it.title }}</span>
+                <span class="sr-meta">{{ it.meta }}</span>
+              </template>
               <button class="sr-forget" title="목록에서 지우기"
                       @click.stop="forget(it)" aria-label="목록에서 지우기">✕</button>
             </div>

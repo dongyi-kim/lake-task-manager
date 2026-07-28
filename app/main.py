@@ -53,6 +53,7 @@ class _RecentBody(BaseModel):
     title: str = ""
     meta: str = ""                    # 부제(티켓 상태·스페이스명·도메인 등)
     type: str = ""                    # 이슈타입(Task/Bug/…) — 목록 모양을 검색 결과와 맞추려고
+    data: dict = {}                   # 표시용 부가필드(key·epicKey/Name·assignee·status·…) — 검색결과와 동일 포맷
 
 app = FastAPI(title="Lake Task Manager")
 
@@ -433,7 +434,7 @@ def api_recent(limit: int = 20, kind: str = ""):
 
 @app.post("/api/recent")
 def api_recent_add(body: _RecentBody):
-    _cache.touch_recent(body.url, body.kind, body.title, body.meta, body.type)
+    _cache.touch_recent(body.url, body.kind, body.title, body.meta, body.type, body.data or {})
     return JSONResponse({"ok": True})
 
 

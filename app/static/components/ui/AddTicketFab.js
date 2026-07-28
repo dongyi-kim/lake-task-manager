@@ -10,6 +10,8 @@ import { api } from "../../lib/api.js";
 import NewChildDialog from "./NewChildDialog.js";
 import EpicCreateDialog from "./EpicCreateDialog.js";
 import { pushToast } from "../../lib/toast.js";
+import { confirmBox } from "../../lib/confirm.js";
+import { copyTicketLink } from "../../lib/ticketlink.js";
 
 export default {
   name: "AddTicketFab",
@@ -25,13 +27,20 @@ export default {
     startEpic() { this.menuOpen = false; this.showEpic = true; },
     startTask() { this.menuOpen = false; this.child = { pickKind: "epic" }; },   // 상위=Epic (창 안에서 고름)
     startSub() { this.menuOpen = false; this.child = { pickKind: "task" }; },    // 상위=Task (창 안에서 고름)
-    onCreated(key) {
+    async onCreated(key) {
       this.showEpic = false; this.child = null;
-      if (key) {
-        pushToast({ kind: "success", icon: "✓", title: "티켓 생성됨", message: key + " — 눌러서 열기", timeout: 6000 });
-        window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key } }));
-        window.dispatchEvent(new CustomEvent("lake-open-ticket", { detail: { key } }));
+      if (!key) return;
+      window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key } }));
+      // 편의: 방금 만든 티켓의 Jira 링크를 클립보드로 복사할지 묻는다.
+      const yes = await confirmBox(key + " 를 만들었습니다. Jira 링크를 클립보드에 복사할까요?",
+                                   { okLabel: "복사", cancelLabel: "안 함" });
+      if (yes) {
+        const { ok, url } = await copyTicketLink(key);
+        pushToast(ok
+          ? { kind: "success", icon: "📋", title: "링크 복사됨", message: url, timeout: 5000 }
+          : { kind: "error", icon: "⚠", title: "복사 실패", message: url, timeout: 7000 });
       }
+      window.dispatchEvent(new CustomEvent("lake-open-ticket", { detail: { key } }));
     },
   },
   template: `
