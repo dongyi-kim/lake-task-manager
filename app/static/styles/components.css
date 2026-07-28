@@ -36,8 +36,13 @@
             font-weight: 700; overflow: hidden; min-width: 0; container-type: inline-size; }
 /* 세그먼트 안 이름(예: Epic별 인력 지분) — 공간이 충분(≥60px)할 때만 '{이름} {지분}%',
    좁으면 이름을 숨겨 '{지분}%' 만 남긴다(컨테이너 쿼리). */
-.pbar-name { display: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 72%; }
-@container (min-width: 60px) { .pbar-name { display: inline; } }
+/* 세그먼트 안 이름 — 공간이 있으면 **최대한** 보이고 넘칠 때만 '…'(부분 생략).
+   flex 로 남는 공간을 다 쓰되 숫자(라벨)는 항상 남긴다. */
+.pbar-name { display: none; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@container (min-width: 52px) { .pbar-name { display: inline-block; } }
+/* 원자적 라벨(예: 'Epic 없음') — 전부 보이거나 아예 숨김(부분 생략 금지 → 숫자만). */
+.pbar-name.atomic { text-overflow: clip; }
+@container (max-width: 82px) { .pbar-name.atomic { display: none; } }
 /* 항목(Task/Sub-Task/VoC) 경계 — 표면색 1px 구분선. 인접 색이 비슷해도 확실히 끊긴다.
    (현안 세로 진척 바와 동일 문법. 가로 막대라 왼쪽 모서리에 건다)
    box-shadow 라 폭에 영향 없음. 첫 '보이는' 세그먼트의 선은 .pbar 의 overflow:hidden 이 잘라낸다. */

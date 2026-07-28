@@ -430,7 +430,7 @@ export default {
       groups = this.orderGroups(groups);
       return groups.map((g) => ({
         value: g.value, color: g.color, hatchFrac: g.value > 0 ? g.no / g.value : 0,
-        label: String(g.value), name: g.name,   // 공간 넉넉하면 Epic 이름 표시
+        label: String(g.value), name: g.name, nameAtomic: g.kind === "none",   // 'Epic 없음' 은 전부/생략
         title: g.name + " 진행 중 " + g.ni + " · 할당됨 " + g.no + " (합 " + g.value + ")",
       }));
     },
@@ -444,7 +444,7 @@ export default {
         return Object.assign({ key: k, value: v }, this.groupMeta(k, names));
       }).filter((g) => g.value > 0);
       groups = this.orderGroups(groups);
-      return groups.map((g) => ({ value: g.value, color: g.color, name: g.name, title: g.name + " " + g.value + u }));
+      return groups.map((g) => ({ value: g.value, color: g.color, name: g.name, nameAtomic: g.kind === "none", title: g.name + " " + g.value + u }));
     },
     /** 모듈 안에서 인력 정렬 — 이름 / 할당된 Ticket수 / 완료(완료 성과, 계산식에 따라 값이 달라짐).
      *  값 기준(할당·완료)은 **많은 순**. 아직 통계가 안 온 사람은 -1 로 맨 뒤(도착하면 제자리로). */

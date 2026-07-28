@@ -209,8 +209,9 @@
 .wl-epic-i b { color: var(--muted); font-variant-numeric: tabular-nums; }
 .wl-epic-i.voc b, .wl-epic-i.none b { color: var(--muted-2); }
 /* ② Epic→인력 지분 */
-.wl-epr { margin-top: 11px; }
-.wl-epr:first-of-type { margin-top: 4px; }
+/* Epic별 인력 지분 — 각 Epic 항목 사이 여백 + 연한 수평 구분선 */
+.wl-epr { margin-top: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.wl-epr:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
 .wl-epr-h { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
 /* [색상박스] 에픽 이름 — 박스는 그 Epic 시그니처색 네모, 이름은 평문 */
 .wl-epr-sw { width: 12px; height: 12px; border-radius: 3px; flex: none;

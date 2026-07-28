@@ -22,7 +22,7 @@ export default {
                :style="{ width: (s.value / denom * 100) + '%', background: s.color, color: darkText ? '#14243a' : '#fff' }"
                :title="s.title">
             <span v-if="s.hatchFrac" class="pbar-hatch" :style="{ width: (s.hatchFrac * 100) + '%' }"></span>
-            <span class="pbar-lbl"><span v-if="s.name" class="pbar-name">{{ s.name }} </span>{{ s.label != null ? s.label : s.value }}</span>
+            <span class="pbar-lbl"><span v-if="s.name" class="pbar-name" :class="{ atomic: s.nameAtomic }">{{ s.name }} </span>{{ s.label != null ? s.label : s.value }}</span>
           </div>
         </template>
         <div v-else class="pbar-zero">0</div>
