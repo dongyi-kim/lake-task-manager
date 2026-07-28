@@ -34,6 +34,9 @@ export default {
              mod: typeof pref.mod === "string" ? pref.mod : "",
              // 막대 색 구분: 'type'(티켓유형=기존) | 'epic'(소속 Epic)
              grouping: ["type", "epic"].includes(pref.grouping) ? pref.grouping : "type",
+             // 하단 '모듈 통계' 섹션 — 접이식. 마감 리스크는 열 때 지연 로딩.
+             statsOpen: pref.statsOpen === true,
+             dueRisk: null, dueRiskBusy: false, dueRiskFor: "",
              pstat: {}, busy: false };   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
   },
   created() {
@@ -106,6 +109,72 @@ export default {
       }
       return out;
     },
+    // ── 모듈 통계(하단 섹션) — 이미 로딩된 인력 번들을 프론트에서 집계한다(추가 조회 없음). ──
+    statsReady() { return !!(this.curMod && this.moduleComplete(this.curMod)); },
+    /** 현재 모듈의 Epic 집계: 진행중+최근완료를 Epic별로(metric 반영) + Epic별 인력 분해. */
+    moduleEpicAgg() {
+      const people = this.curStats, metric = this.metric;
+      const names = {}, agg = {}, byPerson = {};
+      people.forEach((s) => Object.assign(names, s.epicNames || {}));
+      const val = (e) => (metric === "hr" ? (e.hr || 0) : (e.count || 0));
+      people.forEach((s) => {
+        ["inProgress", "done7d"].forEach((bk) => {         // '기여' = 진행중 + 최근7일완료
+          const eps = (s[bk] && s[bk].epics) || {};
+          for (const k in eps) {
+            const v = val(eps[k]);
+            if (!v) continue;
+            agg[k] = (agg[k] || 0) + v;
+            (byPerson[k] || (byPerson[k] = {}));
+            byPerson[k][s.id] = (byPerson[k][s.id] || 0) + v;
+          }
+        });
+      });
+      return { agg, byPerson, names };
+    },
+    /** ① 모듈 → Epic 기여도: 정렬된 그룹(비중%) — 가로 스택 막대 + 범례. */
+    moduleEpicGroups() {
+      const { agg, names } = this.moduleEpicAgg;
+      let groups = Object.keys(agg).map((k) =>
+        Object.assign({ key: k, value: agg[k] }, this.groupMeta(k, names)));
+      groups = this.orderGroups(groups);
+      const total = groups.reduce((a, g) => a + g.value, 0) || 1;
+      groups.forEach((g) => { g.pct = Math.round((g.value * 100) / total); });
+      return { groups, total };
+    },
+    /** ② Epic → 인력 지분: 상위 Epic 마다 인력 세그먼트(지분%). 참여 1명이면 single 표식(버스팩터). */
+    epicPeopleRows() {
+      const { byPerson } = this.moduleEpicAgg;
+      const nameOf = (pid) => (this.pstat[pid] && this.pstat[pid].name) || pid;
+      const epics = this.moduleEpicGroups.groups.filter((g) => g.kind === "epic").slice(0, 8);
+      return epics.map((g) => {
+        const pp = byPerson[g.key] || {};
+        const segs = Object.keys(pp).map((pid) => ({
+          pid, name: nameOf(pid), value: pp[pid], color: categoryColor(pid),
+        })).sort((a, b) => b.value - a.value);
+        const total = segs.reduce((a, s) => a + s.value, 0) || 1;
+        segs.forEach((s) => { s.pct = Math.round((s.value * 100) / total); s.title = s.name + " " + s.value + " (" + s.pct + "%)"; });
+        return { epic: g, total, segs, single: segs.length === 1 };
+      });
+    },
+    /** 모니터링 — 버스팩터: 참여 인력이 1명뿐인 Epic(지식 집중 리스크). */
+    busFactor() { return this.epicPeopleRows.filter((r) => r.single).map((r) => ({ epic: r.epic, person: r.segs[0] })); },
+    /** 모니터링 — 부하 편중도: 미완료 할당(진행중+할당) 인력별, 상위 1명 비중. */
+    loadSkew() {
+      const load = this.curStats.map((s) => ({ id: s.id, name: s.name, v: this.assignedCount(s) }))
+        .filter((x) => x.v > 0).sort((a, b) => b.v - a.v);
+      const total = load.reduce((a, x) => a + x.v, 0);
+      if (!total || !load.length) return null;
+      return { top: load[0], pct: Math.round((load[0].v * 100) / total), total, n: load.length };
+    },
+    /** 모니터링 — 인력별 Epic 분산: 한 사람이 걸친 Epic 수(많은 순). ≥4 면 과다. */
+    epicSpread() {
+      return this.curStats.map((s) => {
+        const keys = new Set();
+        ["open", "inProgress", "done7d"].forEach((bk) =>
+          Object.keys((s[bk] && s[bk].epics) || {}).forEach((k) => { if (!k.startsWith("__")) keys.add(k); }));
+        return { id: s.id, name: s.name, count: keys.size };
+      }).filter((x) => x.count > 0).sort((a, b) => b.count - a.count);
+    },
   },
   methods: {
     /** 모듈별 병렬 로딩: 골격 먼저 → 각 모듈 동시 요청 → 도착하는 대로 채움(느린 모듈이 안 막음).
@@ -137,9 +206,11 @@ export default {
       this.mod = mod;
       this.bodyRefs = {};            // 이전 모듈 body 참조 폐기(측정 대상은 현재 모듈뿐)
       this.linePos = {};
+      this.dueRisk = null; this.dueRiskFor = "";    // 마감 리스크는 모듈별 — 초기화
       this._savePrefs();
       this.loadModulePeople(mod);
       this.scheduleMeasure();
+      if (this.statsOpen) this.$nextTick(() => this.loadDueRisk());
     },
     /** 사람 by 사람 통계 로딩 — **동시 요청 상한(CONC)**을 둔다. 한꺼번에 다 쏘면 서버(로컬 fake·
      *  prod 단일 SSO 큐)를 덮쳐 조회가 통째로 실패한다(각자 3개 검색이라 18명이면 54개 동시).
@@ -153,7 +224,7 @@ export default {
         api.workloadPerson(pid)
           .then((r) => { this.pstat[pid] = r; })
           .catch((e) => { this.pstat[pid] = { id: pid, error: true, message: (e && e.message) || String(e) }; })
-          .finally(() => { this.scheduleMeasure(); next(); });
+          .finally(() => { this.scheduleMeasure(); if (this.statsOpen) this.loadDueRisk(); next(); });
       };
       for (let k = 0; k < Math.min(CONC, pids.length); k++) next();
     },
@@ -247,8 +318,51 @@ export default {
     setMetric(mk) { this.metric = mk; this._savePrefs(); this.scheduleMeasure(); },
     setSort(k) { this.sortBy = k; this._savePrefs(); },
     setGrouping(g) { this.grouping = g; this._savePrefs(); this.scheduleMeasure(); },
+    // ── 모듈 통계 ──
+    toggleStats() {
+      this.statsOpen = !this.statsOpen;
+      this._savePrefs();
+      if (this.statsOpen) this.loadDueRisk();     // 열 때 마감 리스크 지연 로딩
+    },
+    /** ① 모듈→Epic 스택 막대 세그먼트. */
+    moduleEpicSegs() {
+      const u = this.metric === "hr" ? "h" : "건";
+      return this.moduleEpicGroups.groups.map((g) => ({
+        value: g.value, color: g.color, title: g.name + " " + g.value + u + " (" + g.pct + "%)",
+      }));
+    },
+    /** 마감 리스크 — 현재 모듈 인력의 할당/진행중 티켓에서 초과(D+)·임박(D-3) 집계(지연 로딩). */
+    async loadDueRisk() {
+      const mod = this.curMod ? this.curMod.module : "";
+      if (this.dueRiskBusy || (this.dueRisk && this.dueRiskFor === mod)) return;
+      if (!this.statsReady) return;                // 전원 로딩된 뒤에만
+      this.dueRiskBusy = true; this.dueRiskFor = mod;
+      const people = (this.curMod && this.curMod.people) || [];
+      const over = [], soon = [];
+      const nameOf = (pid) => (this.pstat[pid] && this.pstat[pid].name) || pid;
+      try {
+        await Promise.all(people.map(async (p) => {
+          for (const bk of ["open", "inProgress"]) {
+            let rows = [];
+            try { rows = (await api.workloadBucket(p.id, bk)) || []; } catch (e) { rows = []; }
+            rows.forEach((t) => {
+              if (!t.due) return;
+              const d = this.dueRank(t);
+              if (d < 0) over.push({ t, who: nameOf(p.id) });
+              else if (d <= 3) soon.push({ t, who: nameOf(p.id) });
+            });
+          }
+        }));
+      } finally {
+        // 임박순 정렬
+        over.sort((a, b) => this.dueRank(a.t) - this.dueRank(b.t));
+        soon.sort((a, b) => this.dueRank(a.t) - this.dueRank(b.t));
+        if (this.dueRiskFor === mod) this.dueRisk = { over, soon };
+        this.dueRiskBusy = false;
+      }
+    },
     _savePrefs() {
-      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping })); }
+      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, statsOpen: this.statsOpen })); }
       catch (e) { /* 사파리 프라이빗 등 */ }
     },
     // ── 막대 세그먼트: 'type'(티켓유형) / 'epic'(소속 Epic) 두 모드 ──
@@ -510,6 +624,103 @@ export default {
           </template>
         </div>
       </div>
+      <!-- ── 모듈 통계(매니저용 조망) — 접이식. 이미 로딩된 인력 번들을 프론트 집계 ── -->
+      <div v-if="curMod" class="wl-stats" :class="{ open: statsOpen }">
+        <button class="wl-stats-h" @click="toggleStats">
+          <span class="chev">▸</span> 모듈 통계 <em>· {{ curMod.module }}</em>
+          <span class="muted mini">Epic 기여도 · 인력 지분 · 매니저 모니터링</span>
+        </button>
+        <div v-if="statsOpen" class="wl-stats-body">
+          <div v-if="!statsReady" class="muted wl-stats-wait">인력 통계를 모두 받은 뒤 집계합니다… ({{ moduleAgg(curMod).loaded }}/{{ curMod.peopleCount }})</div>
+          <template v-else>
+            <!-- ① 모듈 → Epic 기여도 -->
+            <div class="wl-stat-card">
+              <div class="wl-stat-t">이 모듈이 기여하는 Epic <span class="muted mini">진행중 + 최근{{ doneDays }}일완료 · {{ doneUnit }}</span></div>
+              <ProgressBar :segments="moduleEpicSegs()" :height="20" show-total />
+              <div class="wl-epic-lg">
+                <span v-for="g in moduleEpicGroups.groups" :key="g.key" class="wl-epic-i"
+                      :class="{ voc: g.kind === 'voc', none: g.kind === 'none' }" :title="g.name + ' · ' + g.value + doneUnit">
+                  <i :style="{ background: g.color }"></i>{{ g.name }} <b>{{ g.pct }}%</b>
+                </span>
+                <span v-if="!moduleEpicGroups.groups.length" class="muted mini">집계할 작업이 없습니다.</span>
+              </div>
+            </div>
+            <!-- ② Epic → 인력 지분 -->
+            <div class="wl-stat-card">
+              <div class="wl-stat-t">Epic별 인력 지분 <span class="muted mini">누가 얼마나 (상위 8개 Epic)</span></div>
+              <div v-for="r in epicPeopleRows" :key="r.epic.key" class="wl-epr">
+                <div class="wl-epr-h">
+                  <span class="wl-epr-badge" :style="{ '--ec': r.epic.color }">{{ r.epic.name }}</span>
+                  <span v-if="r.single" class="wl-warn-chip" title="참여 인력 1명 — 지식 집중(버스팩터) 리스크">⚠ 단독</span>
+                </div>
+                <ProgressBar :segments="r.segs" :height="16" />
+                <div class="wl-epr-lg">
+                  <span v-for="s in r.segs" :key="s.pid" class="wl-epr-p" :title="s.title">
+                    <Avatar :user="s.pid" :name="s.name" :size="14" />{{ s.name }} <b>{{ s.pct }}%</b>
+                  </span>
+                </div>
+              </div>
+              <div v-if="!epicPeopleRows.length" class="muted mini">집계할 Epic 이 없습니다.</div>
+            </div>
+            <!-- ③ 매니저 모니터링 -->
+            <div class="wl-stat-card">
+              <div class="wl-stat-t">매니저 모니터링</div>
+              <div class="wl-mon-grid">
+                <!-- 버스팩터 -->
+                <div class="wl-mon">
+                  <div class="wl-mon-t">버스팩터 <span class="muted mini">참여 1명 Epic</span></div>
+                  <div v-if="busFactor.length" class="wl-mon-list">
+                    <span v-for="b in busFactor" :key="b.epic.key" class="wl-mon-row warn">
+                      <i :style="{ background: b.epic.color }"></i>{{ b.epic.name }} — {{ b.person.name }}
+                    </span>
+                  </div>
+                  <div v-else class="mini ok">단독 참여 Epic 없음 ✓</div>
+                </div>
+                <!-- 부하 편중도 -->
+                <div class="wl-mon">
+                  <div class="wl-mon-t">부하 편중도 <span class="muted mini">상위 1명 비중</span></div>
+                  <div v-if="loadSkew" class="wl-mon-big" :class="{ warn: loadSkew.pct >= 40 }">
+                    <b>{{ loadSkew.pct }}%</b>
+                    <span class="muted mini">{{ loadSkew.top.name }} · 미완료 {{ loadSkew.top.v }}건</span>
+                  </div>
+                  <div v-else class="muted mini">할당된 작업 없음</div>
+                </div>
+                <!-- 인력별 Epic 분산 -->
+                <div class="wl-mon">
+                  <div class="wl-mon-t">인력별 Epic 분산 <span class="muted mini">≥4 과다</span></div>
+                  <div class="wl-mon-list">
+                    <span v-for="e in epicSpread" :key="e.id" class="wl-mon-row" :class="{ warn: e.count >= 4 }">
+                      <Avatar :user="e.id" :name="e.name" :size="14" />{{ e.name }} <b>{{ e.count }} Epic</b>
+                    </span>
+                    <span v-if="!epicSpread.length" class="muted mini">데이터 없음</span>
+                  </div>
+                </div>
+                <!-- 마감 리스크(지연 로딩) -->
+                <div class="wl-mon">
+                  <div class="wl-mon-t">마감 리스크 <span class="muted mini">초과 · 임박(D-3)</span></div>
+                  <div v-if="dueRiskBusy && !dueRisk" class="muted mini"><span class="spinner"></span> 불러오는 중…</div>
+                  <template v-else-if="dueRisk">
+                    <div class="wl-mon-big" :class="{ warn: dueRisk.over.length }">
+                      초과 <b>{{ dueRisk.over.length }}</b> · 임박 <b>{{ dueRisk.soon.length }}</b>
+                    </div>
+                    <div class="wl-mon-list">
+                      <span v-for="(x, i) in dueRisk.over.slice(0, 5)" :key="'o' + i" class="wl-mon-row warn tkt" :data-key="x.t.key" role="button">
+                        {{ x.t.key }} · {{ x.who }} <b>{{ dd(x.t.due) }}</b>
+                      </span>
+                      <span v-for="(x, i) in dueRisk.soon.slice(0, 3)" :key="'s' + i" class="wl-mon-row tkt" :data-key="x.t.key" role="button">
+                        {{ x.t.key }} · {{ x.who }} <b>{{ dd(x.t.due) }}</b>
+                      </span>
+                      <span v-if="!dueRisk.over.length && !dueRisk.soon.length" class="mini ok">마감 위험 없음 ✓</span>
+                    </div>
+                  </template>
+                  <div v-else class="muted mini">—</div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
       <!-- 하단 중앙 플로팅 옵션 바 ('내 Task' 와 같은 자리·모양) -->
       <div class="wl-bar float">
         <div class="wl-opt">

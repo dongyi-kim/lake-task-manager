@@ -23,7 +23,8 @@
 .avt-df { display: inline-flex; align-items: center; justify-content: center; }
 .avt-df::before { content: "\1F464"; opacity: .55; line-height: 1; }
 .avt-ini { display: inline-flex; align-items: center; justify-content: center;
-           border-color: transparent; color: #fff; font-weight: 700; line-height: 1;
+           border-color: transparent; color: #fff; font-weight: 800; line-height: 1;
+           letter-spacing: -0.04em; overflow: hidden; white-space: nowrap;
            user-select: none; text-shadow: 0 1px 1px rgba(0, 0, 0, .25); }
 
 /* ProgressBar */

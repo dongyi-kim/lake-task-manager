@@ -211,3 +211,13 @@ def test_auth_targets_include_configured_services():
         assert "Confluence" in names
     if not s.bitbucket_base:
         assert "Bitbucket" not in names       # base 없으면 제외(현재 mock)
+
+
+def test_default_avatar_url_detection():
+    """Jira 기본(프로필 없음) 아바타 URL 은 None 처리돼 프론트가 시그니처로 폴백해야 한다.
+    커스텀 아바타는 ownerId 를 담으므로 유지한다."""
+    from app.jira_client import _is_default_avatar_url
+    assert _is_default_avatar_url("") is True
+    assert _is_default_avatar_url("https://j/secure/useravatar?avatarId=10122") is True
+    assert _is_default_avatar_url("https://j/secure/useravatar?ownerId=jdoe&avatarId=99") is False
+    assert _is_default_avatar_url("https://gravatar.com/avatar/abc") is False

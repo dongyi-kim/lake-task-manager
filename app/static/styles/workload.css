@@ -159,3 +159,52 @@
 @media (max-width: 640px) { .wl-bar.float { gap: 8px 12px; padding: 7px 10px; } }
 /* 하단 플로팅 바가 마지막 모듈 행을 가리지 않게 여백 확보 */
 .wl-view { padding-bottom: 76px; }
+
+/* ── 모듈 통계(매니저용 조망) ── */
+.wl-stats { margin-top: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.wl-stats-h { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; cursor: pointer;
+  background: var(--panel-2); border: 0; padding: 11px 14px; font-size: 13.5px; font-weight: 700; color: var(--text); }
+.wl-stats-h .chev { transition: transform .15s; font-size: 11px; color: var(--muted); }
+.wl-stats.open .wl-stats-h .chev { transform: rotate(90deg); }
+.wl-stats-h em { font-style: normal; color: var(--accent); font-weight: 700; }
+.wl-stats-h .mini { margin-left: auto; font-weight: 400; }
+.mini { font-size: 11px; }
+.wl-stats-body { padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.wl-stats-wait { padding: 18px; text-align: center; font-size: 13px; }
+.wl-stat-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel-2); }
+.wl-stat-t { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 9px; display: flex; align-items: baseline; gap: 8px; }
+.wl-stat-t .mini { font-weight: 400; }
+/* ① 모듈→Epic 범례 */
+.wl-epic-lg { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 9px; }
+.wl-epic-i { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text); max-width: 100%; }
+.wl-epic-i i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.wl-epic-i b { color: var(--muted); font-variant-numeric: tabular-nums; }
+.wl-epic-i.voc b, .wl-epic-i.none b { color: var(--muted-2); }
+/* ② Epic→인력 지분 */
+.wl-epr { margin-top: 11px; }
+.wl-epr:first-of-type { margin-top: 4px; }
+.wl-epr-h { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.wl-epr-badge { max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 10.5px; font-weight: 700; line-height: 1; padding: 3px 8px; border-radius: 999px;
+  color: #fff; background: var(--ec, var(--accent)); box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent); }
+.wl-warn-chip { font-size: 10px; font-weight: 700; color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-radius: 999px; padding: 2px 7px; white-space: nowrap; }
+.wl-epr-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 5px; }
+.wl-epr-p { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+.wl-epr-p b { color: var(--text); font-variant-numeric: tabular-nums; }
+/* ③ 매니저 모니터링 그리드 */
+.wl-mon-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.wl-mon { border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; background: var(--panel); }
+.wl-mon-t { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 7px; display: flex; align-items: baseline; gap: 6px; }
+.wl-mon-t .mini { font-weight: 400; }
+.wl-mon-big { font-size: 13px; color: var(--text); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.wl-mon-big b { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.wl-mon-big.warn b { color: var(--danger); }
+.wl-mon-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.wl-mon-row { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text); }
+.wl-mon-row i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.wl-mon-row b { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.wl-mon-row.warn b { color: var(--danger); }
+.wl-mon-row.tkt { cursor: pointer; }
+.wl-mon-row.tkt:hover { color: var(--accent); }
+.ok { color: var(--good); font-weight: 600; }

@@ -454,6 +454,19 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None):
     }
 
 
+def _is_default_avatar_url(url):
+    """Jira 시스템 **기본 아바타**(프로필 사진 없음) URL 인가.
+    Jira DC 는 커스텀 아바타 URL 에만 `ownerId` 를 담는다 — 없으면 기본 실루엣으로 보고
+    None 처리해 프론트가 시그니처(이름 이니셜)로 폴백하게 한다. (useravatar 형태에만 적용 —
+    외부/그라바타 등 다른 URL 은 건드리지 않는다.)"""
+    low = (url or "").lower()
+    if not low:
+        return True
+    if "useravatar" in low and "ownerid=" not in low:
+        return True
+    return False
+
+
 class JiraClient:
     def __init__(self, settings, cache):
         self.s = settings
@@ -2546,6 +2559,11 @@ class JiraClient:
             return None                                   # 실패는 캐시 안 함 → 다음에 재시도
         urls = ((u or {}).get("avatarUrls") or {})
         url = next((urls[s] for s in ("48x48", "32x32", "24x24", "16x16") if urls.get(s)), None)
+        # Jira 는 **프로필 사진이 없어도** avatarUrls 를 준다(시스템 기본 실루엣). 그걸 그대로 200 으로
+        # 돌려주면 프론트의 시그니처(이름 이니셜) 폴백이 영영 안 뜬다 → prod 에서 실제로 그랬다.
+        # 커스텀 아바타 URL 은 useravatar 에 **ownerId** 를 담는다. 없으면 시스템 기본으로 보고 None.
+        if _is_default_avatar_url(url):
+            url = None
         self.cache.set(ck, url or "", self.AVATAR_TTL)    # 없음("")도 캐시 — 매번 재조회 방지
         return url
 

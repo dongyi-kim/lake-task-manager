@@ -46,5 +46,10 @@ export function sigColor(id) {
 // 기본 아바타에 넣을 이니셜 — 본명 우선(한글은 그대로, 영문은 대문자).
 export function initialOf(name, id) {
   const s = String(name || id || "").trim();
-  return (s[0] || "?").toUpperCase();
+  if (!s) return "?";
+  // 본명(첫 어절)의 **마지막 두 글자** — 예: "손다슬 (주)대원씨엔씨" → "다슬".
+  // 한 글자면 그 글자, 영문 id 폴백은 앞 두 글자를 대문자로.
+  const first = s.split(/\s+/)[0] || s;
+  if (/[가-힣]/.test(first)) return first.length >= 2 ? first.slice(-2) : first;
+  return first.slice(0, 2).toUpperCase();
 }

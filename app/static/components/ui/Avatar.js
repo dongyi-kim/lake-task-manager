@@ -23,10 +23,11 @@ export default {
       return { width: this.size + "px", height: this.size + "px",
                fontSize: Math.round(this.size * 0.62) + "px" };
     },
-    // 기본 아바타 — 글자는 원보다 작아야 답답하지 않다(0.5배).
+    // 기본 아바타 — 시그니처 배경 + 이니셜. 두 글자면 원 안에 들어오게 폰트를 줄인다(크고 볼드하되 넘치지 않게).
     inibox() {
+      const two = (this.initial || "").length >= 2;
       return { width: this.size + "px", height: this.size + "px",
-               fontSize: Math.round(this.size * 0.5) + "px",
+               fontSize: Math.round(this.size * (two ? 0.42 : 0.54)) + "px",
                background: sigColor(this.user || this.name) };
     },
     initial() { return initialOf(this.name, this.user); },
