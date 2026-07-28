@@ -6,7 +6,7 @@
 
 > **타깃 사내 인스턴스 버전(고정):** Jira DC **8.20.8** + Confluence DC **9.2.4** + Bitbucket DC **7.17.2**.
 > 통합 검색(우상단)이 Confluence CQL 을 이 버전 스펙(9.x URL `/spaces/{space}/pages/{id}/{title}` 등)에
-> 맞춰 파싱한다. dev mock(jira820)도 같은 버전을 구성한다(`app/fakebridge.py` 의 `confluence_version`/`bitbucket_version`).
+> 맞춰 파싱한다. dev mock(jira820)도 같은 버전을 구성한다(`app/mock/fakebridge.py` 의 `confluence_version`/`bitbucket_version`).
 > **Bitbucket 은 code/repo 검색만 타겟**(POST `/rest/search/latest/search` · GET `/rest/api/1.0/repos`).
 > 실제 응답 필드 형태는 사내 인스턴스에서 dev-tools 프로브로 확인해 mock 을 맞춘다(아래 §12).
 
@@ -253,7 +253,7 @@ progress = Σ(SP where statusCategory.key == "done") / Σ(SP 전체)
 
 이 PC는 사내 VDI/VBS로 **Docker·WSL2 불가**, Jira DC **deprecation으로 신규 평가 라이선스 발급도 중단**.
 → 실 Jira 없이 **외부 오픈소스 패키지 [`jira820`](https://pypi.org/project/jira820)**(범용 Jira DC 8.20.8 mock)
-에 **이 프로젝트 world 를 주입**(`app/fakebridge.py`)해 개발·테스트한다. 무설치·무라이선스·무가상화.
+에 **이 프로젝트 world 를 주입**(`app/mock/fakebridge.py`)해 개발·테스트한다. 무설치·무라이선스·무가상화.
 
 **dev 데이터 경로가 jira820 하나로 일원화됨** (기존 `tools/fake_jira`·`app/mockdata.py` 제거):
 - **mock**: jira820 을 **in-process(ASGI)** 로 호출(`app/auth/inprocess.py`). 소켓/`run_fake` 불필요. dev 기본값.
@@ -265,7 +265,7 @@ python run_fake.py                               # :8080 (FAKE_LATENCY_MS 로 �
 JIRA_ENV=local python run.py                     # 앱(local) → :8080 jira820
 ```
 
-- 테스트 데이터 = 결정적 `app/world.py` (jira820 에 주입). Jira·DB·seed 불필요.
+- 테스트 데이터 = 결정적 `app/mock/world.py` (jira820 에 주입). Jira·DB·seed 불필요.
 - jira820 은 실 Jira DC 8.20.8 형태 — statusCategory `new/indeterminate/done`, 사내 status(Open/In Progress/Resolved/Closed/Reopened)·type(Bug/Epic/…/Sub-Task), 티켓 키 `DL-xxxx`.
 - **mock·local 모두 같은 jira820(같은 world·직렬화기)** → 출력 100% 일치(전송만 다름, 회귀 기준). `tests/test_local_parity.py` 가 자동 가드.
 - 한계: 실 Jira 고유 quirk 는 못 잡음 → 사내 **prod(SSO)**에서 소수 대조.
@@ -329,35 +329,31 @@ world 는 랜덤 생성이라 "설명 없는 Sub-Task", "링크 있는 티켓" �
 설정·매핑은 **`config/`**(jira.yml·wbs_config.yaml·people.yaml), 나머지는 코드/도구.
 진행 상황·TODO·History 는 **`PROGRESS.md`** 로 관리한다.
 
-> ⚠️ 아래 트리는 과거 `src/` 레이아웃 기준으로 **일부 낡음** — 현재 코드는 **repo 루트**에 있다(`src/` 없음). 구조 전면 갱신은 별도 예정.
+> 코드는 **repo 루트**에 있다(`src/` 없음). `app/` 은 **역할별 서브패키지**로 정리돼 있고, 각 폴더에 `README.md` 가 있다.
 
 ```
 lake-task-manager/               # repo 루트
 ├── CLAUDE.md                    # 프로젝트 지침 (루트 관례 유지)
+├── PROGRESS.md                  # TODO / 진행 History
+├── run.py / run_fake.py         # 앱 런처(앱 창·단일 인스턴스) / Fake Jira 서버 런처
+├── requirements.txt / requirements-sso.txt   # 앱 deps / +playwright(prod SSO)
 ├── config/                      # 환경설정 + 매핑. 사용자 편집 · git 커밋
 │   ├── jira.yml                 # 환경설정(env·jira·confluence·cache·server). 중첩 YAML
 │   ├── wbs_config.yaml          # 기능1: module → WBS task → epic(ticket=DL-xxxx, weight 정수)
 │   └── people.yaml              # 기능3: module → [jira user id]
-│                                # (exe 빌드 없음 — 배포는 배포 repo 의 run.bat 소스실행)
-└── src/                         # (과거 레이아웃 — 실제론 아래가 전부 repo 루트에 있음)
-    ├── PROGRESS.md              # TODO / 진행 History
-    ├── run.py / run_fake.py     # 앱 런처(앱 창) / Fake Jira 서버 런처
-    ├── requirements.txt / requirements-sso.txt   # 앱 deps / +playwright(prod SSO)
-    ├── app/                     # FastAPI 백엔드 + 정적 프론트
-    │   ├── main.py              # 라우트(/api/wbs·vit·workload[/{user}]·login·health·refresh) + static
-    │   ├── settings.py          # config/jira.yml + wbs_config 로더/검증, frozen(exe)·컨테이너 경로 인식
-    │   ├── world.py             # ★ 단일 결정적 데이터 세계 (이슈·설명·코멘트·활동·confluence)
-    │   ├── worldcontent.py      # description/comment/activity 다양성 풀
-    │   ├── fakebridge.py        # world 를 외부 jira820 서버에 주입(mock/local 공용 dev 백엔드)
-    │   ├── progress.py          # 순수 SP 롤업 (Epic 단위)
-    │   ├── rollup.py            # WBS/Module/PMO 가중 조합 (상대 가중치 자동 정규화) — 순수
-    │   ├── vit.py / workload.py # 기능2 현안 / 기능3 워크로드 조합
-    │   ├── cache.py             # SQLite TTL 캐시(티켓 단위) + snapshot
-    │   ├── jira_client.py       # REST 호출 (AuthProvider 주입, 캐시 경유) — env 무관 단일 경로
-    │   ├── auth/{base,basic,sso_session,inprocess}.py   # inprocess=mock용 jira820 in-process provider
-    │   └── static/             # Vue 3 무빌드 SPA: index.html(셸)+app.js+components/(app-root·ui·views)+lib/(api·fmt·colors)+styles/(tokens·base·components·뷰별)+vendor/(vue.esm)
-    └── tests/                   # world/progress/rollup/config/names/local_parity 유닛테스트
+├── app/                         # FastAPI 백엔드 + 정적 프론트 (역할별 서브패키지)
+│   ├── main.py                  # ★ ASGI 진입점(uvicorn "app.main:app"). 라우트 ~90개 + static 마운트 + 창제어 브리지
+│   ├── content/                 # HTML/wiki 정화·변환·섹션 (htmlsafe·wikihtml·sections) — 순수 표시계층
+│   ├── domain/                  # 도메인 로직 (progress·rollup·workload·vit·mytasks·search·names) — progress/rollup 순수
+│   ├── mock/                    # 결정적 데이터 세계 (world·worldcontent·fakebridge) — dev mock/local
+│   ├── infra/                   # 교차 관심사 (cache·settings·prefs·devtools)
+│   ├── jira/                    # REST 클라이언트 (jira_client) — AuthProvider 주입, 캐시 경유, env 무관 단일 경로
+│   ├── auth/                    # 인증 추상화 (base·basic·inprocess·sso_session·sso_store) — provider 교체로 환경 전환
+│   └── static/                  # Vue 3 무빌드 SPA: index.html+app.js+components/(app-root·ui·views)+lib/+styles/+vendor/(vue.esm)
+└── tests/                       # world/progress/rollup/config/names/local_parity/app_control 등 유닛테스트
 ```
+> 각 패키지 폴더의 `README.md` 에 파일별 1줄 설명·규칙이 있다(폴더 진입 시 먼저 읽어라).
+> import 는 **절대경로**(`from app.<pkg>.<mod> import …`). `main.py`(ASGI 진입점)·`auth/` 는 루트/기존 위치 유지.
 > dev fake 서버는 **외부 오픈소스 [`jira820`](https://pypi.org/project/jira820)** 패키지(requirements). 이전
 > `tools/fake_jira`·`app/mockdata.py` 는 이 패키지로 대체·제거됨.
 
@@ -382,7 +378,7 @@ lake-task-manager/               # repo 루트
 4. `JiraClient`는 `AuthProvider`를 주입받아 REST 호출. **어떤 인증인지 몰라야 한다.** 모든 호출은 `cache` 경유.
 5. 환경 선택은 `config/jira.yml`(`env`, 환경변수 `JIRA_ENV` 로 override)로만. 커스텀 필드 ID·매핑 하드코딩 금지.
 6. **세 환경(mock/local/prod) 모두 동일한 REST 파서 경로**(`jira_client`). env 분기 없음 — provider 만 다름.
-7. **테스트 데이터는 `app/world.py` 단일 소스** → `app/fakebridge.py` 로 jira820 에 주입. mock(in-process)·local(HTTP)이
+7. **테스트 데이터는 `app/mock/world.py` 단일 소스** → `app/mock/fakebridge.py` 로 jira820 에 주입. mock(in-process)·local(HTTP)이
    같은 jira820 을 소비하므로 출력 일치(회귀 기준, `tests/test_local_parity.py`).
 
 ---
