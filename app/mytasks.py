@@ -20,6 +20,7 @@ import re
 from datetime import date, datetime
 
 from .names import real_name
+from .progress import norm_cat
 
 # 우선순위 정규화 — 인스턴스마다 이름이 다를 수 있어 이름을 소문자로 맞춰 본다.
 # 못 알아보면 중간(2)으로 둔다: 모르는 값이 맨 위나 맨 아래로 튀는 게 제일 나쁘다.
@@ -77,8 +78,7 @@ def _pri(f):
 
 def _cat(f):
     st = f.get("status") or {}
-    key = ((st.get("statusCategory") or {}).get("key") or "").lower()
-    return {"new": "todo", "indeterminate": "inprogress", "done": "done"}.get(key, "todo")
+    return norm_cat((st.get("statusCategory") or {}).get("key"))
 
 
 def _node(raw, today, epic_field):

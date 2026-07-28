@@ -138,10 +138,8 @@ def _conf_title(url, text=None):
     t = unescape(t)
     return t or "Confluence 문서"
 
-_CAT_MAP = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
-
-
-from .progress import VOC_COMPONENT   # 컴포넌트명 = VoC 판정 기준(워크로드·계보 공용, 단일 소스)
+from .progress import VOC_COMPONENT, norm_cat   # VoC 판정 기준 + status→분류 단일 소스
+_norm_cat = norm_cat                             # 하위 호출부 호환용 별칭
 
 
 def _wl_category(component, itype, is_subtask=None):
@@ -153,10 +151,6 @@ def _wl_category(component, itype, is_subtask=None):
     if itype == "Task":
         return "task"
     return None
-
-
-def _norm_cat(key):
-    return _CAT_MAP.get((key or "").lower(), "todo")
 
 
 def _started_from(created, updated, cat):
@@ -1247,10 +1241,21 @@ class JiraClient:
         # 계보(조상/형제) 조립결과도 비운다 — _swr 로 따로 캐시되기 때문.
         self.cache.invalidate(f"ancestors:{self.env}:{key}")
         self.cache.invalidate(f"siblings:{self.env}:{key}")
+        # 상태·담당·해결 이력 파생 뷰 — 전이/담당변경이 이력을 바꾸면 타임라인이 낡는다(저렴하게 재조립).
+        self.cache.invalidate(f"changelog:{self.env}:{key}")
+        self.cache.invalidate(f"timeline:{self.env}:{key}")
         # 상위 피커 후보 풀 — 이 티켓의 소속 Epic/요약이 바뀌면 후보 목록도 낡는다(길게 캐시하므로 명시 무효화).
         self.cache.invalidate("epic_cand:")
         self.cache.invalidate("epic_options:")
         self._reprime(key, comments=comments)
+
+    def _invalidate_people_views(self):
+        """담당자 변경·상태 전이는 **인력별 집계**(워크로드·활동)를 바꾼다. 이 뷰들은 사람(사번)으로
+        캐시되고 한 번의 담당변경이 두 사람(전/후 담당)에 걸쳐 영향을 주므로, 프리픽스째 비운다
+        (heavy 재조립이지만 1인 로컬 앱에선 전이 빈도가 낮고 다음 폴링에서 SWR 로 채워진다)."""
+        self.cache.invalidate("workload:")
+        self.cache.invalidate("workload_bucket:")
+        self.cache.invalidate("activity:")
 
     # ── 편집 ──────────────────────────────────────────────────────────
     # **무엇을 고칠 수 있는지는 Jira 가 정한다.** 우리가 추측하면(예: 담당자면 다 된다) 화면은
@@ -1754,8 +1759,7 @@ class JiraClient:
         out = []
         for t in (data or {}).get("transitions") or []:
             to = t.get("to") or {}
-            cat = ((to.get("statusCategory") or {}).get("key") or "").lower()
-            cat = {"new": "todo", "indeterminate": "inprogress", "done": "done"}.get(cat, cat)
+            cat = norm_cat((to.get("statusCategory") or {}).get("key"))
             out.append({
                 "id": str(t.get("id")), "name": t.get("name") or "",
                 "to": to.get("name") or "", "toCategory": cat,
@@ -1833,6 +1837,7 @@ class JiraClient:
         res = self.provider.post_json(f"/rest/api/2/issue/{key}/transitions", body)
         # 상태·담당·해결이 한꺼번에 바뀐다 → 본문/댓글을 즉시 다시 채운다(쓰기 우선순위).
         self._invalidate_ticket(key, comments=bool(comment))
+        self._invalidate_people_views()   # 상태·담당 변경 → 워크로드/활동 집계도 낡는다
         return res
 
     def add_comment(self, key, body):
@@ -1952,20 +1957,6 @@ class JiraClient:
                 return {"id": str(comment_id), "html": html}
         return None
 
-    def _display_name(self, uid):
-        """사용자 표시이름 — 사번 uid → displayName('{본명} {회사}', best-effort, 캐시). 실패 시 uid.
-        동명이인 구분이 필요한 곳(@멘션 팝업)은 회사까지 붙은 이 값을 쓴다."""
-        def do():
-            try:
-                u = self.provider.get_json("/rest/api/2/user", params={"username": uid})
-                return u.get("displayName") or uid
-            except Exception:
-                return uid
-        try:
-            return self.cache.get_or_set(f"udisp:{self.env}:{uid}", self.s.cache_ttl_seconds, do)[0]
-        except Exception:
-            return uid
-
     def _mention_name(self, uid):
         """멘션 라벨 — 본명만(본문에 박히는 이름이라 짧아야 한다)."""
         return real_name(self._display_name(uid)) or uid
@@ -2080,6 +2071,7 @@ class JiraClient:
         self.provider.put_json(f"/rest/api/2/issue/{key}/assignee",
                                {"name": user_id or None})
         self._invalidate_ticket(key)
+        self._invalidate_people_views()   # 담당 변경 → 전/후 담당자의 워크로드/활동 집계가 낡는다
         return {"ok": True}
 
     def delete_issue(self, key):
@@ -2090,6 +2082,7 @@ class JiraClient:
                     "remotelinks", "timeline", "changelog", "children", "related",
                     "siblings", "ancestors"):
             self.cache.invalidate(f"{pre}:{self.env}:{key}")
+        self._invalidate_people_views()   # 삭제된 티켓이 담당자 워크로드/활동에 계속 잡히지 않게
         return {"ok": True}
 
     def ticket_view(self, key, fresh=False):
@@ -2903,8 +2896,9 @@ class JiraClient:
         return dict(bundle, displayName=self._display_name(pid))
 
     def display_name_cached(self, uid):
-        """캐시에 있으면 displayName, 없으면 None — **상류에 안 붙는다**(shell 로스터를 빠르게 그리려고)."""
-        return self.cache.get(f"udisp:{self.env}:{uid}")
+        """캐시에 있으면 displayName, 없으면 None — **상류에 안 붙는다**(shell 로스터를 빠르게 그리려고).
+        _display_name(성공 시 user:{env}:{pid} 에 캐시)이 채운 값을 읽는다 — 같은 키를 봐야 히트한다."""
+        return self.cache.get(f"user:{self.env}:{uid}")
 
     def _fetch_workload(self, plan, people):
         """인력별 Task성/VoC성 × 진행중/최근7일완료 티켓 수. (전체 한 방 — /api/workload 용)

@@ -14,12 +14,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .auth.base import SessionExpired
 from .names import real_name
-
-_CAT = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
+from .progress import norm_cat
 
 
 def _cat(status):
-    return _CAT.get(((status.get("statusCategory") or {}).get("key") or "").lower(), "todo")
+    return norm_cat((status.get("statusCategory") or {}).get("key"))
 
 
 def _q_escape(q):

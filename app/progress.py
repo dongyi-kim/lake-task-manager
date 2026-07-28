@@ -17,6 +17,15 @@ EXCLUDE_ISSUETYPES = {"Bug", "Ops", "운영"}
 VOC_COMPONENT = "사용자 VoC"     # VoC 성 티켓 — 진척률 계산에서 항상 제외
 MOCK_LABEL = "mock"
 
+# Jira statusCategory.key → 앱 내부 3분류. 상태명(status name) 하드코딩 금지 규칙의 단일 소스.
+# (world.py/fakebridge 의 mock 상태 스킴은 데이터 생성용 별개 테이블이라 여기서 관리하지 않는다.)
+CAT_MAP = {"new": "todo", "indeterminate": "inprogress", "done": "done", "undefined": "todo"}
+
+
+def norm_cat(key):
+    """statusCategory.key(문자열) → 'todo'|'inprogress'|'done'. 미지/누락은 'todo'."""
+    return CAT_MAP.get((key or "").lower(), "todo")
+
 
 def sp_of(issue):
     """SP 값. 누락(None)이면 기본값 적용: Bug -> 0, 나머지 -> 1."""
