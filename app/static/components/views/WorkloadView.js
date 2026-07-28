@@ -750,7 +750,7 @@ export default {
               <template v-else>
                 <div v-for="r in epicPeopleRows" :key="r.epic.key" class="wl-epr">
                   <div class="wl-epr-h">
-                    <span class="wl-epr-badge" :style="{ '--ec': r.epic.color }">{{ r.epic.name }}</span>
+                    <span class="wl-epr-sw" :style="{ background: r.epic.color }"></span><b class="wl-epr-name">{{ r.epic.name }}</b>
                     <span v-if="r.single" class="wl-warn-chip" title="참여 인력 1명 — 지식 집중(버스팩터) 리스크">⚠ 단독</span>
                   </div>
                   <ProgressBar :segments="r.segs" :height="16" />
