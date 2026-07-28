@@ -113,10 +113,12 @@ export default {
     statsReady() { return !!(this.curMod && this.moduleComplete(this.curMod)); },
     /** 현재 모듈의 Epic 집계: 진행중+최근완료를 Epic별로(metric 반영) + Epic별 인력 분해. */
     moduleEpicAgg() {
-      const people = this.curStats, metric = this.metric;
+      const people = this.curStats;
       const names = {}, agg = {}, byPerson = {};
       people.forEach((s) => Object.assign(names, s.epicNames || {}));
-      const val = (e) => (metric === "hr" ? (e.hr || 0) : (e.count || 0));
+      // 기여도·지분은 **항상 티켓 수**. (할당+진행+완료 기준이라 소요시간은 무의미 — '완료 성과'
+      //  토글은 개인별 워크로드 막대에만 영향, 이 통계엔 영향 없음.)
+      const val = (e) => (e.count || 0);
       people.forEach((s) => {
         ["open", "inProgress", "done7d"].forEach((bk) => {  // 할당+진행중+최근완료 (어느 상태든 소속 표시)
           const eps = (s[bk] && s[bk].epics) || {};
@@ -350,9 +352,8 @@ export default {
     setGrouping(g) { this.grouping = g; this._savePrefs(); this.scheduleMeasure(); },
     /** ① 모듈→Epic 스택 막대 세그먼트. */
     moduleEpicSegs() {
-      const u = this.metric === "hr" ? "h" : "건";
       return this.moduleEpicGroups.groups.map((g) => ({
-        value: g.value, color: g.color, title: g.name + " " + g.value + u + " (" + g.pct + "%)",
+        value: g.value, color: g.color, title: g.name + " " + g.value + "건 (" + g.pct + "%)",   // 항상 티켓 수
       }));
     },
     /** 마감 리스크 — 현재 모듈 인력의 할당/진행중 티켓에서 초과(D+)·임박(D-3) 집계(지연 로딩). */
@@ -746,14 +747,14 @@ export default {
         <div class="wl-col span8">
           <!-- ① 모듈이 기여하는 Epic -->
           <div class="wl-panel">
-            <div class="wl-panel-h"><b>모듈이 기여하는 Epic</b> <span class="mini muted">할당+진행+완료 · {{ doneUnit }}</span></div>
+            <div class="wl-panel-h"><b>모듈이 기여하는 Epic</b> <span class="mini muted">할당+진행+완료 · 건</span></div>
             <div class="wl-panel-b">
               <div v-if="!statsReady" class="muted mini">집계 중… ({{ moduleAgg(curMod).loaded }}/{{ curMod.peopleCount }})</div>
               <template v-else>
                 <ProgressBar :segments="moduleEpicSegs()" :height="18" show-total />
                 <div class="wl-epic-lg">
                   <span v-for="g in moduleEpicGroups.groups" :key="g.key" class="wl-epic-i"
-                        :class="{ voc: g.kind === 'voc', none: g.kind === 'none' }" :title="g.name + ' · ' + g.value + doneUnit">
+                        :class="{ voc: g.kind === 'voc', none: g.kind === 'none' }" :title="g.name + ' · ' + g.value + '건'">
                     <i :style="{ background: g.color }"></i>{{ g.name }} <b>{{ g.pct }}%</b></span>
                   <span v-if="!moduleEpicGroups.groups.length" class="muted mini">집계할 작업이 없습니다.</span>
                 </div>
