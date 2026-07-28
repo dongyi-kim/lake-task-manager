@@ -138,13 +138,19 @@ export default {
       else { this.$emit("close"); }
     };
     window.addEventListener("keydown", this._onKey);
+    // 창 크기가 바뀌면 보이는 중앙도 바뀐다 → 접기버튼 재배치.
+    window.addEventListener("resize", this._onResize = () => this.posCollapse());
+    this.$nextTick(() => this.posCollapse());
     this.load();
     // 에디터·구문강조 CDN 프리로드 — 티켓 다이얼로그/풀뷰가 열리는 시점에 미리 받아둔다.
     // (버전 고정 URL 이라 브라우저가 장기 캐시 → 이후엔 네트워크 없이 즉시.) '댓글 달기' 지연 제거.
     ensureHljsTheme(document.documentElement.getAttribute("data-theme") === "dark");
     loadTiptap().catch(() => { /* CDN 차단 등 — 실제 사용 시 에러 표시 */ });
   },
-  unmounted() { window.removeEventListener("keydown", this._onKey); },
+  unmounted() {
+    window.removeEventListener("keydown", this._onKey);
+    window.removeEventListener("resize", this._onResize);
+  },
   computed: {
     FOLD_AT: () => FOLD_AT,
     /** 하위가 무엇인지는 **내 타입**이 정한다 — Epic 밑은 Task, Task 밑은 Sub-Task.
@@ -268,13 +274,20 @@ export default {
   },
   watch: {
     keyId() { this.load(); },
-    v() { this.$nextTick(this.augment); },            // 설명 렌더 후 확대버튼·뱃지 주입
-    comments() { this.$nextTick(this.augment); },     // 코멘트 렌더 후
+    v() { this.$nextTick(() => { this.augment(); this.posCollapse(); }); },   // 설명 렌더 후 확대버튼·뱃지 + 접기버튼 위치
+    comments() { this.$nextTick(() => { this.augment(); this.posCollapse(); }); },  // 코멘트 렌더 후
     pdesc() { this.$nextTick(this.augment); },        // 상위 설명 렌더 후(확대버튼·뱃지 주입)
     // 이 Sub-Task 에 설명이 없으면 상위 설명을 자동으로 펼친다(가장 흔한 케이스)
     parentOf(p) { if (p && this.ownDescEmpty && !this.pdescOpen) this.toggleParentDesc(); },
   },
   methods: {
+    /** 좌우 패널 접기/펴기 버튼을 **지금 보이는 스크롤 영역의 세로 중앙**에 둔다.
+     *  본문(.tkt-body)이 스크롤 주체라 그 scrollTop+높이의 절반이 곧 화면 중앙(콘텐츠 좌표계). */
+    posCollapse() {
+      const b = this.$refs.body;
+      if (!b) return;
+      b.style.setProperty("--cb-top", Math.round(b.scrollTop + b.clientHeight / 2) + "px");
+    },
     setSpineHidden(v) {
       this.spineHidden = v;
       try { localStorage.setItem(SPINE_HIDE_KEY, v ? "1" : "0"); } catch (e) { /* noop */ }
@@ -950,7 +963,7 @@ export default {
 
         <!-- 스크롤 주체는 **본문**이다. 다이얼로그 전체를 스크롤시키면 바가 타이틀바
              옆까지 올라와 모서리 밖으로 삐져나온 것처럼 보인다. -->
-        <div class="tkt-body">
+        <div class="tkt-body" ref="body" @scroll="posCollapse">
 
         <!-- 섹션별 독립 렌더: 스파인(계보/형제/타임라인)은 본문(v) 응답을 기다리지 않는다.
              본문·코멘트도 각자 자기 상태가 채워지는 대로 그려진다. -->

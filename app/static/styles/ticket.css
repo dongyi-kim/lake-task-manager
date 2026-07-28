@@ -110,7 +110,10 @@
 /* 접기/펴기 버튼 — **분할선 위, 세로 가운데**의 원형. 좌(spine)·우(tl) 대칭.
    원의 중심이 패널 경계선(분할선) 위에 오도록 -13px 로 반쯤 걸친다. */
 .spine-hide, .spine-show, .tl-hide, .tl-show {
-  position: absolute; top: 50%; transform: translateY(-50%); z-index: 8;
+  /* 세로 위치는 **지금 보이는 스크롤 영역의 중앙**을 따라간다(--cb-top 을 본문 스크롤이 갱신).
+     var 가 아직 없으면(초기) 50% 로. 안 그러면 긴 다이얼로그에서 버튼이 전체 높이의 중간(대개
+     화면 밖)에 박혀 스크롤하면 사라진다. */
+  position: absolute; top: var(--cb-top, 50%); transform: translateY(-50%); z-index: 8;
   display: flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; padding: 0; cursor: pointer;
   font-size: 15px; line-height: 1; color: var(--muted);

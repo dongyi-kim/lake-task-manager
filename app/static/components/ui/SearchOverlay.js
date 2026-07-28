@@ -7,6 +7,7 @@ import { recordOpen, stripTags } from "../../lib/recent.js";
 import Avatar from "./Avatar.js";
 import { createTypeahead } from "../../lib/typeahead.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
+import { categoryColor } from "../../lib/colors.js";
 
 export default {
   name: "SearchOverlay",
@@ -151,6 +152,7 @@ export default {
       if (m) { this.$emit("open-ticket", m[1].toUpperCase()); this.$emit("close"); return; }
       this.openExternal(it.url);
     },
+    epicColor(key) { return categoryColor(key); },
     recentIc(kind) { return kind === "jira" ? "sr-dot st-inprogress"
       : kind === "confluence" ? "sr-pageic" : "sr-webic"; },
     openExternal(url) {
@@ -219,6 +221,8 @@ export default {
               <span class="sr-dot" :class="stCls(it.statusCategory)"></span>
               <b class="sr-key">{{ it.key }}</b>
               <span class="sr-title">{{ it.title }}</span>
+              <span v-if="it.epicKey" class="sr-epic" :style="{ '--ec': epicColor(it.epicKey) }"
+                    :title="'소속 Epic: ' + (it.epicName || it.epicKey)">{{ it.epicName || it.epicKey }}</span>
               <span class="sr-meta">{{ it.project }} · {{ it.status }}<template v-if="it.assignee">
                 <span class="sr-who"><Avatar :user="it.assigneeId" :name="it.assignee" :size="14" />{{ it.assignee }}</span>
               </template></span>

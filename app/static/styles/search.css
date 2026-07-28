@@ -11,7 +11,7 @@
 /* ── 오버레이 ── */
 .sr-ov { position: fixed; inset: 0; z-index: 9200; display: flex; align-items: flex-start; justify-content: center;
   background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 68px 16px 24px; }
-.sr-box { width: min(760px, 100%); max-height: calc(100vh - 100px); display: flex; flex-direction: column;
+.sr-box { width: min(820px, 100%); max-height: calc(100vh - 100px); display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--border-hi); border-radius: 12px; overflow: hidden;
   box-shadow: 0 24px 70px rgba(0, 0, 0, .4); }
 
@@ -67,6 +67,12 @@
 .sr-excerpt { flex: 1 1 6em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--muted); font-size: 12px; }
 .sr-meta { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+/* 검색 결과 티켓의 소속 Epic — 상위 Task 피커와 같은 시그니처색 뱃지(우측, 담당자 앞) */
+.sr-epic { flex: none; margin-left: auto; max-width: 30%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 10px; font-weight: 700; line-height: 1; padding: 2px 8px;
+  border-radius: 999px; color: #fff; background: var(--ec, var(--accent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent); }
+.sr-epic + .sr-meta { margin-left: 8px; }        /* Epic 뒤 meta 는 붙여서(둘 다 우측 묶음) */
 .sr-pageic, .sr-repoic { width: 13px; height: 13px; flex: none; background: currentColor; color: var(--muted);
   -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }
 .sr-pageic { -webkit-mask: var(--conf-ic) center/contain no-repeat; mask: var(--conf-ic) center/contain no-repeat; }

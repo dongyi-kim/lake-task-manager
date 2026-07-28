@@ -68,7 +68,7 @@ def _exact_keys(s, q):
     return []
 
 
-def _jira_item(it, base):
+def _jira_item(it, base, epic_field=None):
     f = it.get("fields", {}) or {}
     st = f.get("status") or {}
     a = f.get("assignee") or {}
@@ -80,6 +80,7 @@ def _jira_item(it, base):
         "assigneeId": a.get("name"),          # 프로필 사진 조회용(없으면 이니셜로 폴백)
         "issuetype": (f.get("issuetype") or {}).get("name", ""),
         "project": (f.get("project") or {}).get("key", ""),
+        "epicKey": (f.get(epic_field) if epic_field else None) or None,   # 소속 Epic(시그니처색 뱃지용)
         "updated": f.get("updated"),
         "url": (base + "/browse/" + it.get("key", "")) if base else "",
     }
@@ -120,12 +121,12 @@ def _search_jira(client, s, q, scope, limit):
     # 티켓 키/번호를 그대로 친 경우 그 티켓을 먼저 조회해 맨 앞에 둔다.
     # text~ 검색만으로는 본문에 그 키가 언급된 다른 티켓이 위에 올 수 있다
     # (예: "DL-9001" 이 코멘트에 적힌 DL-9007). 정확히 그 티켓을 찾는 게 의도다.
+    enf = s.epic_link_field_id
+    fields = "summary,status,issuetype,assignee,updated,project," + enf   # 소속 Epic 뱃지용
     exact = []
     for key in _exact_keys(s, q):
         try:
-            raw = client.provider.get_json(
-                "/rest/api/2/issue/" + key,
-                params={"fields": "summary,status,issuetype,assignee,updated,project"})
+            raw = client.provider.get_json("/rest/api/2/issue/" + key, params={"fields": fields})
         except Exception:
             continue                                  # 없는 키 — 조용히 건너뛴다
         if raw and raw.get("key"):
@@ -136,18 +137,27 @@ def _search_jira(client, s, q, scope, limit):
         jql = "project in (%s) AND %s" % (", ".join(s.search_jira_projects), jql)
     jql += " ORDER BY updated DESC"
     data = client.provider.get_json("/rest/api/2/search", params={
-        "jql": jql, "fields": "summary,status,issuetype,assignee,updated,project",
-        "maxResults": limit})
+        "jql": jql, "fields": fields, "maxResults": limit})
     base = (s.jira_base or "").rstrip("/")
-    items = [dict(_jira_item(it, base), exact=True) for it in exact]
+    items = [dict(_jira_item(it, base, enf), exact=True) for it in exact]
     seen = {x["key"] for x in items}
     for it in data.get("issues", []):
-        row = _jira_item(it, base)
+        row = _jira_item(it, base, enf)
         if row["key"] in seen:                        # 정확 일치와 중복 제거
             continue
         seen.add(row["key"])
         items.append(row)
-    return {"items": items[:max(limit, len(exact))]}
+    items = items[:max(limit, len(exact))]
+    # 소속 Epic 이름 — 결과에 Epic 키만 있다. 구별되는 Epic 만 ticket_badge(캐시)로 이름을 채운다.
+    names = {}
+    for ek in {i.get("epicKey") for i in items if i.get("epicKey")}:
+        try:
+            names[ek] = (client.ticket_badge(ek) or {}).get("summary") or ek
+        except Exception:
+            names[ek] = ek
+    for i in items:
+        i["epicName"] = names.get(i.get("epicKey")) if i.get("epicKey") else None
+    return {"items": items}
 
 
 def _search_confluence(client, s, q, scope, limit):
