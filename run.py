@@ -69,6 +69,39 @@ def _serve_bg(s, wait=True):
     return server
 
 
+def _signal_existing_instance(s):
+    """**단일 인스턴스** — 이미 떠 있는 인스턴스가 있으면 그쪽에 '창 포커스/열기' 를 시키고 True.
+    아무도 없으면(연결 실패) False → 이 프로세스가 정상 기동한다.
+
+    3분기(요구사항):
+      · 백엔드 꺼짐        → False (여기서 새로 기동)
+      · 백엔드+창 살아있음 → 기존 창을 앞으로(action=focus)
+      · 백엔드만 살아있음  → 그 인스턴스가 새 창을 연다(action=open)
+    """
+    import json
+    import urllib.request
+    base = f"http://127.0.0.1:{s.app_port}"
+    try:
+        urllib.request.urlopen(base + "/api/health", timeout=1.5).read()
+    except Exception:
+        return False                                  # 아무도 없다 → 내가 뜬다
+    action = None
+    try:
+        req = urllib.request.Request(base + "/api/app/open", data=b"", method="POST")
+        body = urllib.request.urlopen(req, timeout=8).read()
+        if body:
+            action = (json.loads(body) or {}).get("action")
+    except Exception:
+        pass
+    if action == "focus":
+        print("Lake Task Manager 가 이미 실행 중입니다 — 기존 창을 앞으로 가져왔습니다.")
+    elif action == "open":
+        print("Lake Task Manager 백엔드가 실행 중입니다 — 새 앱 창을 엽니다.")
+    else:
+        print(f"Lake Task Manager 가 이미 실행 중입니다: {base}")
+    return True
+
+
 def _warm_session_bg(s):
     """[prod] 서버가 준비되면 **백그라운드로** SSO 세션을 미리 데운다 — 앱 창(Chromium) 기동과 **병렬**.
 
@@ -537,6 +570,7 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
     # 이미 인증돼 있으면 service_probe 로 스킵(무음). (재오픈 땐 auto_login=False 라 신호 안 보냄)
     if auto_login and s.jira_env == "prod":
         appmain._login_requested.set()
+    appmain.note_window_opened()               # 단일 인스턴스: '살아있는 창 있음' 으로 집계
     try:
         i = 0
         pump = True          # Playwright 이벤트를 넘겨받을 수 있는 상태인가
@@ -545,6 +579,11 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
                 # 시작 직후의 자동 취득은 **Jira 만**(only_primary). 트레이에서 고른 서비스 로그인은
                 # 그쪽 경로(_run_tray)가 따로 돈다.
                 _do_login_in_window(s, page, context, appmain, only_primary=True, p=p)
+            if appmain.consume_focus_request():         # 재실행/트레이 '앱 열기' 가 이 창을 앞으로
+                try:
+                    page.bring_to_front()               # ★ 반드시 이 창의 스레드에서(Playwright 스레드 고정)
+                except Exception:
+                    pass
             _drain_downloads(context, dlq)              # 받아 둔 다운로드를 여기서(메인 스레드) 저장
             if i < 16:                                  # ~8초 동안 창 아이콘 재적용(favicon 덮어쓰기 대비)
                 _set_window_icon_win(ico_path)
@@ -570,6 +609,7 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
             time.sleep(0.5)
     except Exception:
         pass
+    appmain.note_window_closed()               # 창이 닫혔다 — '살아있는 창' 집계에서 뺀다
     # 정리는 별도 스레드에 맡기고 기다리지 않는다 — 죽은 드라이버에서 close()/stop() 이 멎을 수 있고,
     # 여기서 막히면 호출한 쪽(트레이)이 창이 닫힌 걸 영영 모른다.
     def _cleanup():
@@ -716,6 +756,11 @@ def _run_tray(s):
                 _open["ready"] = True                  # 실패해도 다음 클릭은 받아야 한다
         threading.Thread(target=run, name="app-window", daemon=True).start()
 
+    # 단일 인스턴스: 재실행(런처 재기동)이 백엔드에 '창 열기/포커스' 를 요청하면 이 hook 으로 연다.
+    # (살아있는 창이 있으면 백엔드가 대신 focus 이벤트를 세워, 창 루프가 bring_to_front 한다.)
+    import app.main as _appmain
+    _appmain.set_open_window_hook(open_window)
+
     # ── 서비스별 SSO 인증 상태 ────────────────────────────────────────────
     # 인증 여부의 **단일 원천은 백엔드**다(같은 프로세스의 provider 로 실제 호출해 본다).
     # 트레이는 그 결과를 비추기만 한다 — 메뉴가 열릴 때 조회하면 그동안 트레이가 멎으므로
@@ -812,7 +857,9 @@ def _run_tray(s):
             continue
 
     def on_open(icon, item):
-        open_window()
+        # 트레이 [앱 열기]도 '이미 떠 있으면 포커스, 없으면 새 창' 으로 통일한다.
+        import app.main as appmain
+        appmain.request_focus_or_open()
 
     def on_autostart(icon, item):
         _set_autostart(not _autostart_enabled())
@@ -895,6 +942,11 @@ def main():
     # prod SSO 1회 로그인:  python run.py login
     if len(sys.argv) > 1 and sys.argv[1] == "login":
         _sso_login(s)
+        return
+
+    # 단일 인스턴스: 이미 떠 있으면 그 인스턴스에 창을 띄우/포커스 시키고 끝낸다(새 백엔드 안 띄움).
+    # (시작프로그램/바로가기 재실행 시 백엔드가 두 개 뜨거나 창이 여러 개 나는 것을 막는다.)
+    if _signal_existing_instance(s):
         return
 
     if s.jira_env == "prod":

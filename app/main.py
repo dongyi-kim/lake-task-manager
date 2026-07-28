@@ -67,6 +67,63 @@ _client._wire_cache()      # 캐시에 재검증 규칙·회로차단기 연결(
 _login_requested = threading.Event()
 _window_login = False
 
+# ── 앱 창 제어 브리지 (단일 인스턴스 실행) ──────────────────────────────────
+# 창은 run.py 가 소유(Playwright)하지만, "이미 떠 있으면 포커스 / 없으면 새 창" 판정과
+# 재실행 신호의 **단일 원천은 백엔드**다. run.py 가 open hook 을 등록하고 창 수를 보고하며,
+# 창 스레드는 focus 요청을 자기 스레드에서 폴링해 bring_to_front 한다(Playwright 는 스레드 고정이라
+# 다른 스레드에서 창을 못 만진다 — 그래서 이벤트만 넘기고 실제 조작은 창 루프가 한다).
+_app_ctrl = {"open_hook": None, "live": 0, "focus": threading.Event(), "lock": threading.Lock()}
+
+
+def set_open_window_hook(fn):
+    """run.py(_run_tray)가 '새 앱 창 열기' 동작을 등록."""
+    _app_ctrl["open_hook"] = fn
+
+
+def note_window_opened():
+    with _app_ctrl["lock"]:
+        _app_ctrl["live"] += 1
+
+
+def note_window_closed():
+    with _app_ctrl["lock"]:
+        _app_ctrl["live"] = max(0, _app_ctrl["live"] - 1)
+
+
+def live_window_count():
+    with _app_ctrl["lock"]:
+        return _app_ctrl["live"]
+
+
+def request_focus_or_open():
+    """이미 열린 창이 있으면 포커스 요청, 없으면 새 창 hook 실행 — 재실행/트레이/엔드포인트 공용.
+    반환 action: focus(기존 창 앞으로) | open(새 창) | none(창 미관리 모드) | error."""
+    if live_window_count() > 0:
+        _app_ctrl["focus"].set()               # 창 루프가 폴링해 앞으로 가져온다
+        return {"action": "focus"}
+    hook = _app_ctrl["open_hook"]
+    if not hook:
+        return {"action": "none"}               # plain 모드 등 — 창을 관리하지 않는다
+    try:
+        hook()
+        return {"action": "open"}
+    except Exception:
+        return {"action": "error"}
+
+
+def consume_focus_request():
+    """창 루프가 **자기 스레드에서** 호출 — 포커스 요청이 있었으면 True(그리고 소비)."""
+    if _app_ctrl["focus"].is_set():
+        _app_ctrl["focus"].clear()
+        return True
+    return False
+
+
+@app.post("/api/app/open")
+def api_app_open():
+    """다른 실행 인스턴스(런처)가 '창을 띄우거나 포커스' 요청 — 단일 인스턴스 동작의 진입점."""
+    return request_focus_or_open()
+
 
 @app.exception_handler(SessionExpired)
 def _on_session_expired(request: Request, exc: SessionExpired):
