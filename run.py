@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import uvicorn
@@ -66,6 +67,33 @@ def _serve_bg(s, wait=True):
                 pass
         time.sleep(0.1)
     return server
+
+
+def _warm_session_bg(s):
+    """[prod] 서버가 준비되면 **백그라운드로** SSO 세션을 미리 데운다 — 앱 창(Chromium) 기동과 **병렬**.
+
+    인증 provider 는 첫 인증 요청 때 헤드리스 Chromium 을 띄우는데, 지금은 그게 SPA 의 첫 데이터
+    조회 시점(창이 뜬 뒤)에야 시작돼 첫 화면이 그만큼 늦다. 부팅 직후 여기서 미리 띄워 두면
+    창이 뜨자마자 데이터가 즉답한다(세션이 살아 있는 재시작에서 특히 효과). 실패는 무해 —
+    세션이 없거나 죽었으면 기존 창 SSO 흐름이 그대로 처리한다."""
+    if s.jira_env != "prod":
+        return
+
+    def run():
+        probe = f"http://127.0.0.1:{s.app_port}/api/health"
+        for _ in range(80):                     # 서버 준비 대기(~20s)
+            try:
+                if urllib.request.urlopen(probe, timeout=2).status == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.25)
+        try:
+            import app.main as appmain
+            appmain._client.warm_session()      # provider(헤드리스 Chromium)+세션 미리 로드/검증
+        except Exception:
+            pass
+    threading.Thread(target=run, name="sso-warm", daemon=True).start()
 
 
 def _silent_sso(context, base, paths):
@@ -558,6 +586,7 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
 def _run_app_window(s):
     """[비-트레이 폴백] 서버 + 앱 창 1개. 창 닫으면 서버도 종료(기존 동작)."""
     server = _serve_bg(s, wait=False)                  # 창 먼저 뜨게 non-blocking
+    _warm_session_bg(s)                                # SSO 세션 미리 데우기(창 기동과 병렬)
     _window_session(s, auto_login=True)
     try:
         server.should_exit = True
@@ -651,6 +680,7 @@ def _run_tray(s):
     from app.settings import STATIC_DIR
 
     server = _serve_bg(s, wait=False)                  # 백엔드 상시(창과 독립)
+    _warm_session_bg(s)                                # SSO 세션 미리 데우기(창 기동과 병렬)
     _ensure_start_menu_shortcut()                      # '시작'에서 검색 가능하게
 
     # [앱 열기] 중복 클릭 가드 — **시각으로만** 판단한다.

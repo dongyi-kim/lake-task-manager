@@ -475,6 +475,7 @@ class JiraClient:
         # provider 는 lazy 생성 — 임포트/기동 시 Chrome 을 띄우거나 세션 없음으로 크래시하지 않는다.
         self._provider = None
         self._provider_built = False
+        self._provider_lock = threading.Lock()   # provider lazy 생성 경쟁 방지(부팅 warm + 첫 요청 동시 접근)
         self._renew_at = {}          # 서비스별 마지막 무음갱신 시도 시각(스로틀)
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
         # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
@@ -486,9 +487,23 @@ class JiraClient:
     @property
     def provider(self):
         if not self._provider_built:
-            self._provider = self._make_provider()
-            self._provider_built = True
+            with self._provider_lock:
+                if not self._provider_built:          # 락 안에서 재확인(더블체크)
+                    self._provider = self._make_provider()
+                    self._provider_built = True
         return self._provider
+
+    def warm_session(self):
+        """부팅 시 **백그라운드로** 인증 세션을 미리 데운다(prod 전용).
+        provider(헤드리스 Chromium)+세션 로드+/myself 확인을 앱 창 기동과 **병렬**로 끝내
+        SPA 의 첫 데이터 요청이 Chromium 기동을 기다리지 않게 한다. 실패는 무해(창 SSO 가 처리).
+        세션 파일이 없으면(첫 로그인) 조용히 건너뛴다."""
+        if self.env != "prod":
+            return
+        try:
+            self.current_user()          # provider 생성(Chromium) + 세션 로드 + /myself 검증
+        except Exception:
+            pass
 
     RENEW_THROTTLE_SEC = 60          # 같은 서비스를 이 간격 안엔 다시 무음갱신하지 않는다
 
