@@ -30,6 +30,10 @@ export default {
     return { d: null, err: "", open: {}, tkd: {}, actOpen: {}, linePos: {},
              metric: ["count", "hr"].includes(pref.metric) ? pref.metric : "count",
              sortBy: ["name", "assigned", "done"].includes(pref.sortBy) ? pref.sortBy : "name",
+             // 한 번에 한 모듈만 본다(부하↓). 선택 모듈은 브라우저에 남긴다.
+             mod: typeof pref.mod === "string" ? pref.mod : "",
+             // 막대 색 구분: 'type'(티켓유형=기존) | 'epic'(소속 Epic)
+             grouping: ["type", "epic"].includes(pref.grouping) ? pref.grouping : "type",
              pstat: {}, busy: false };   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
   },
   created() {
@@ -52,12 +56,27 @@ export default {
   activated() { this.scheduleMeasure(); },   // keep-alive 재활성 시 평균선 재측정
   computed: {
     WL_COLS() { return WL_COLS; },
-    // 지금까지 도착한 인력 통계(성공한 것만) — 스케일·합계 기준
-    loadedStats() { return Object.values(this.pstat).filter((s) => s && !s.error); },
+    // 지금 보고 있는 모듈(하단 메뉴에서 고른 것). 없으면 첫 모듈.
+    curMod() {
+      const ms = (this.d && this.d.modules) || [];
+      return ms.find((m) => m.module === this.mod) || ms[0] || null;
+    },
+    curIdx() {
+      const ms = (this.d && this.d.modules) || [];
+      const i = ms.findIndex((m) => m.module === (this.curMod && this.curMod.module));
+      return i < 0 ? 0 : i;
+    },
+    // 현재 모듈 인력 중 도착·성공한 통계만 (스케일·합계·평균 기준 — 다른 모듈 사람은 섞지 않는다)
+    curStats() {
+      const m = this.curMod;
+      if (!m) return [];
+      return (m.people || []).map((p) => this.pstat[p.id]).filter((s) => s && !s.error);
+    },
+    // 화면엔 선택한 모듈 하나만 (부하↓). 기존 모듈 마크업을 그대로 재사용하려고 배열로 감싼다.
+    shownModules() { return this.curMod ? [this.curMod] : []; },
     totals() {
-      const t = { p: 0, op: 0, ip: 0, dn: 0 };
-      (this.d ? this.d.modules : []).forEach((m) => { t.p += m.peopleCount; });
-      this.loadedStats.forEach((s) => {
+      const t = { p: this.curMod ? this.curMod.peopleCount : 0, op: 0, ip: 0, dn: 0 };
+      this.curStats.forEach((s) => {
         t.op += this.barVal(s.open, "count");
         t.ip += this.barVal(s.inProgress, "count");
         t.dn += this.barVal(s.done7d, "count");
@@ -66,25 +85,25 @@ export default {
     },
     // 완료 실적 계산식은 '완료' 막대에만 적용(진행중은 timespent 가 없어 항상 티켓 수).
     doneUnit() { return this.metric === "hr" ? "h" : "건"; },
-    // 막대 스케일 = 지금까지 도착한 인력 최대값. 사람이 더 로딩되면 커질 수 있다(막대가 자리 잡아간다).
+    // 막대 스케일 = 현재 모듈 인력 최대값. 사람이 더 로딩되면 커질 수 있다(막대가 자리 잡아간다).
     scale() {
       let ip = 1, dn = 1;
-      this.loadedStats.forEach((s) => {
+      this.curStats.forEach((s) => {
         ip = Math.max(ip, this.assignedCount(s));   // 진행중 + 미착수
         dn = Math.max(dn, this.barVal(s.done7d, this.metric));
       });
       return { ip, dn };
     },
-    // 모듈 평균(세로선/수치) — **모듈 전원이 로딩됐을 때만** 낸다(프로그래스바=평균선은 그때 갱신).
+    // 모듈 평균(세로선/수치) — **현재 모듈 전원이 로딩됐을 때만** 낸다.
     avgByMod() {
       const out = {};
       const avg = (xs) => xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length * 10) / 10 : 0;
-      (this.d ? this.d.modules : []).forEach((m) => {
-        if (!this.moduleComplete(m)) return;
+      const m = this.curMod;
+      if (m && this.moduleComplete(m)) {
         const ss = (m.people || []).map((p) => this.pstat[p.id]).filter((s) => s && !s.error);
         out[m.module] = { ip: avg(ss.map((s) => this.assignedCount(s))),
                           dn: avg(ss.map((s) => this.barVal(s.done7d, this.metric))) };
-      });
+      }
       return out;
     },
   },
@@ -96,13 +115,31 @@ export default {
       try {
         this.d = await api.workloadShell();          // 골격 + 로스터(명단) 먼저 — 즉시 그려진다
         this.d.modules.forEach((m) => { this.open[m.module] = true; });
-        // 명단이 그려진 뒤, **사람 by 사람** 통계를 개별 비동기로 받는다(각자 도착하는 대로 채움).
-        const seen = new Set(), pids = [];
-        this.d.modules.forEach((m) => (m.people || []).forEach((p) => {
-          if (!seen.has(p.id)) { seen.add(p.id); pids.push(p.id); }
-        }));
-        this._loadPeople(pids);
+        // 선택 모듈: 저장된 값 우선 → 없으면 **세션 사용자 소속 모듈**(myModule) → 그것도 없으면 첫 모듈.
+        const names = this.d.modules.map((m) => m.module);
+        if (!names.includes(this.mod)) {
+          this.mod = (this.d.myModule && names.includes(this.d.myModule)) ? this.d.myModule : (names[0] || "");
+        }
+        // **선택한 모듈의 인력만** 통계를 받는다(한 화면 = 한 모듈, 부하↓).
+        this.loadModulePeople(this.mod);
       } catch (e) { this.err = e.message; }
+    },
+    /** 선택 모듈의 인력 통계를 사람 by 사람으로 로딩(이미 받은 사람은 건너뜀). */
+    loadModulePeople(mod) {
+      const m = (this.d && this.d.modules || []).find((x) => x.module === mod);
+      if (!m) return;
+      const pids = (m.people || []).map((p) => p.id).filter((id) => !this.pstat[id]);
+      if (pids.length) this._loadPeople(pids);
+    },
+    /** 하단 메뉴에서 모듈 전환 — 그 모듈 인력만 로딩하고, 평균선 참조를 초기화한다. */
+    selectModule(mod) {
+      if (mod === this.mod) return;
+      this.mod = mod;
+      this.bodyRefs = {};            // 이전 모듈 body 참조 폐기(측정 대상은 현재 모듈뿐)
+      this.linePos = {};
+      this._savePrefs();
+      this.loadModulePeople(mod);
+      this.scheduleMeasure();
     },
     /** 사람 by 사람 통계 로딩 — **동시 요청 상한(CONC)**을 둔다. 한꺼번에 다 쏘면 서버(로컬 fake·
      *  prod 단일 SSO 큐)를 덮쳐 조회가 통째로 실패한다(각자 3개 검색이라 18명이면 54개 동시).
@@ -209,9 +246,57 @@ export default {
     },
     setMetric(mk) { this.metric = mk; this._savePrefs(); this.scheduleMeasure(); },
     setSort(k) { this.sortBy = k; this._savePrefs(); },
+    setGrouping(g) { this.grouping = g; this._savePrefs(); this.scheduleMeasure(); },
     _savePrefs() {
-      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy })); }
+      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping })); }
       catch (e) { /* 사파리 프라이빗 등 */ }
+    },
+    // ── 막대 세그먼트: 'type'(티켓유형) / 'epic'(소속 Epic) 두 모드 ──
+    // 왼쪽 '할당된 Ticket' 막대. type=Task/Sub-Task/VoC, epic=소속 Epic 별.
+    assignedSegs(p) { return this.grouping === "epic" ? this.segAssignedEpic(p) : this.segAssigned(p); },
+    // 오른쪽 '최근 7일 완료' 막대(metric 반영).
+    doneSegs(p) { return this.grouping === "epic" ? this.segDoneEpic(p, this.metric) : this.seg(p.done7d, this.metric); },
+    /** 그룹 키 → 표시 메타(이름·성격·색). Epic 은 시그니처 컬러(전 화면 공통). */
+    groupMeta(key, names) {
+      if (key === "__voc__") return { name: "사용자 VoC", kind: "voc", color: VOC_COLOR };
+      if (key === "__none__") return { name: "Epic 없음", kind: "none", color: NONE_COLOR };
+      return { name: (names && names[key]) || key, kind: "epic", color: categoryColor(key) };
+    },
+    /** 실제 Epic(건수 많은 순) 먼저, VoC·Epic 없음은 성격이 달라 항상 끝. (상세 epicDist 와 동일 규칙) */
+    orderGroups(list) {
+      const epics = list.filter((g) => g.kind === "epic").sort((a, b) => b.value - a.value);
+      const voc = list.find((g) => g.kind === "voc");
+      const none = list.find((g) => g.kind === "none");
+      return epics.concat(voc ? [voc] : [], none ? [none] : []);
+    },
+    /** 왼쪽 막대(할당됨) — Epic 별. 세그 폭=진행중+할당됨 합, 오른쪽 '할당됨' 비율만 사선. */
+    segAssignedEpic(p) {
+      const ipE = (p.inProgress && p.inProgress.epics) || {};
+      const opE = (p.open && p.open.epics) || {};
+      const names = p.epicNames || {};
+      const keys = new Set([...Object.keys(ipE), ...Object.keys(opE)]);
+      let groups = [...keys].map((k) => {
+        const ni = (ipE[k] && ipE[k].count) || 0, no = (opE[k] && opE[k].count) || 0;
+        return Object.assign({ key: k, ni, no, value: ni + no }, this.groupMeta(k, names));
+      }).filter((g) => g.value > 0);
+      groups = this.orderGroups(groups);
+      return groups.map((g) => ({
+        value: g.value, color: g.color, hatchFrac: g.value > 0 ? g.no / g.value : 0,
+        label: String(g.value),
+        title: g.name + " 진행 중 " + g.ni + " · 할당됨 " + g.no + " (합 " + g.value + ")",
+      }));
+    },
+    /** 오른쪽 막대(최근 7일 완료) — Epic 별. metric=count|hr. */
+    segDoneEpic(p, metric) {
+      const dE = (p.done7d && p.done7d.epics) || {};
+      const names = p.epicNames || {};
+      const u = metric === "hr" ? "h" : "건";
+      let groups = Object.keys(dE).map((k) => {
+        const v = metric === "hr" ? (dE[k].hr || 0) : (dE[k].count || 0);
+        return Object.assign({ key: k, value: v }, this.groupMeta(k, names));
+      }).filter((g) => g.value > 0);
+      groups = this.orderGroups(groups);
+      return groups.map((g) => ({ value: g.value, color: g.color, title: g.name + " " + g.value + u }));
     },
     /** 모듈 안에서 인력 정렬 — 이름 / 할당된 Ticket수 / 완료(완료 성과, 계산식에 따라 값이 달라짐).
      *  값 기준(할당·완료)은 **많은 순**. 아직 통계가 안 온 사람은 -1 로 맨 뒤(도착하면 제자리로). */
@@ -317,17 +402,22 @@ export default {
         <div class="chip">최근 7일 완료 <b>{{ totals.dn }}</b>건</div>
       </div>
       <div class="legend wl-legend">
-        <span><i class="sw task"></i> Task</span>
-        <span><i class="sw subtask"></i> Sub-Task</span>
-        <span><i class="sw voc"></i> VoC (Component 사용자 VoC)</span>
+        <template v-if="grouping === 'type'">
+          <span><i class="sw task"></i> Task</span>
+          <span><i class="sw subtask"></i> Sub-Task</span>
+          <span><i class="sw voc"></i> VoC (Component 사용자 VoC)</span>
+        </template>
+        <template v-else>
+          <span class="muted">색 = 소속 Epic(시그니처 컬러) · VoC·Epic 없음은 끝에</span>
+        </template>
         <span><i class="sw solid-sw"></i> 단색 = 진행 중</span>
         <span><i class="sw hatch"></i> 사선 = 할당됨(미착수)</span>
-        <span class="muted">· 왼쪽=미완료 할당(타입별 진행 중 + 할당됨), 오른쪽=최근 7일 완료 · 세로선 = 모듈 평균</span>
+        <span class="muted">· 왼쪽=미완료 할당(진행 중 + 할당됨), 오른쪽=최근 7일 완료 · 세로선 = 모듈 평균</span>
       </div>
 
-      <div v-for="(m, i) in d.modules" :key="m.module" class="mod">
+      <div v-for="m in shownModules" :key="m.module" class="mod">
         <div class="mod-head" :class="{ open: open[m.module] }" @click="toggleMod(m.module)">
-          <span class="chev">▸</span><span class="dot" :style="{ background: mcolor(i) }"></span>
+          <span class="chev">▸</span><span class="dot" :style="{ background: mcolor(curIdx) }"></span>
           <b>{{ m.module }}</b><span class="pc">인력 {{ m.peopleCount }}</span>
           <!-- 헤더 합계·평균은 **모듈 전원 로딩됐을 때** 확정. 그 전엔 진행률(loaded/total)만. -->
           <span v-if="moduleComplete(m)" class="agg">진행중 <b>{{ moduleAgg(m).ip }}</b> · 할당됨 <b>{{ moduleAgg(m).op }}</b> · 최근7일 완료 <b>{{ moduleAgg(m).dn }}</b></span>
@@ -356,8 +446,8 @@ export default {
                   <span class="wl-fail-t">집계 조회 실패 — 새로고침으로 재시도</span>
                 </div>
                 <div v-else class="wbars">
-                  <ProgressBar class="wside" :segments="segAssigned(pstat[p.id])" :scale="scale.ip" show-total dark-text />
-                  <ProgressBar class="wside" :segments="seg(pstat[p.id].done7d, metric)" :scale="scale.dn" show-total dark-text />
+                  <ProgressBar class="wside" :segments="assignedSegs(pstat[p.id])" :scale="scale.ip" show-total dark-text />
+                  <ProgressBar class="wside" :segments="doneSegs(pstat[p.id])" :scale="scale.dn" show-total dark-text />
                 </div>
                 <button class="plus" @click="toggleAct(p.id)">{{ actOpen[p.id] ? "−" : "+" }}</button>
               </div>
@@ -422,6 +512,19 @@ export default {
       </div>
       <!-- 하단 중앙 플로팅 옵션 바 ('내 Task' 와 같은 자리·모양) -->
       <div class="wl-bar float">
+        <div class="wl-opt">
+          <span class="wl-opt-l">모듈</span>
+          <select class="wl-modsel" :value="mod" @change="selectModule($event.target.value)">
+            <option v-for="m in d.modules" :key="m.module" :value="m.module">{{ m.module }} ({{ m.peopleCount }})</option>
+          </select>
+        </div>
+        <div class="wl-opt">
+          <span class="wl-opt-l">Task 구분</span>
+          <div class="fab-seg">
+            <button :class="{ on: grouping === 'type' }" @click="setGrouping('type')">티켓유형</button>
+            <button :class="{ on: grouping === 'epic' }" @click="setGrouping('epic')">소속 Epic</button>
+          </div>
+        </div>
         <div class="wl-opt">
           <span class="wl-opt-l">완료 성과</span>
           <div class="fab-seg">

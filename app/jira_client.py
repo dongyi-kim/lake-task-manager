@@ -2713,13 +2713,18 @@ class JiraClient:
 
     @staticmethod
     def _wl_zero():
-        return {"count": {"task": 0, "subtask": 0, "voc": 0}, "hr": {"task": 0, "subtask": 0, "voc": 0}}
+        return {"count": {"task": 0, "subtask": 0, "voc": 0},
+                "hr": {"task": 0, "subtask": 0, "voc": 0}, "epics": {}}
 
     def _wl_counts(self, jql):
         # count(티켓수) · hr(소요시간, 표준 timespent 초→시). 카테고리 3분할: task/subtask/voc.
+        # epics: **소속 Epic 별** 분포(막대 색구분 '소속 Epic' 모드용). 키=Epic키 / '__voc__' / '__none__'.
+        #   규칙은 상세 화면(epicDist)과 동일: Epic 이 있으면 그 Epic, 없고 VoC 면 전용버킷, 그 외 Epic 없음.
         # 주의: 여기서 예외를 삼키면 '조회 실패'가 0 으로 둔갑하고 그게 캐시된다(막대만 0, 상세는 정상).
         #       → 실패는 그대로 올려보내고 workload_person 이 캐시 없이 error 로 처리한다.
-        by = {"count": {"task": 0, "subtask": 0, "voc": 0}, "hr": {"task": 0, "subtask": 0, "voc": 0}}
+        by = {"count": {"task": 0, "subtask": 0, "voc": 0},
+              "hr": {"task": 0, "subtask": 0, "voc": 0}, "epics": {}}
+        enf = self.s.epic_link_field_id
         for it in self._search(jql, max_results=300):   # write-through: 각 티켓 캐시
             f = it.get("fields", {}) or {}
             comps = [c.get("name") for c in (f.get("components") or [])]
@@ -2728,8 +2733,15 @@ class JiraClient:
             c = _wl_category(comp, itt.get("name", ""), itt.get("subtask"))
             if not c:
                 continue
+            hr = round((f.get("timespent") or 0) / 3600.0, 1)
             by["count"][c] += 1
-            by["hr"][c] += round((f.get("timespent") or 0) / 3600.0, 1)
+            by["hr"][c] += hr
+            # Epic 분포 — 상세(epicDist)와 같은 그룹 규칙
+            ek = (f.get(enf) if enf else None) or None
+            gk = ek if ek else ("__voc__" if VOC_COMPONENT in comps else "__none__")
+            g = by["epics"].setdefault(gk, {"count": 0, "hr": 0})
+            g["count"] += 1
+            g["hr"] += hr
         return by
 
     def workload_person(self, pid):
@@ -2747,6 +2759,10 @@ class JiraClient:
                     "inProgress": self._wl_counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
                     "done7d": self._wl_counts(f'assignee = "{pid}" AND statusCategory = Done AND resolved >= -7d'),
                 }
+                # '소속 Epic' 색구분 범례용 — 막대에 나온 Epic 키를 이름으로(배치 1회).
+                ekeys = sorted({k for b in ("open", "inProgress", "done7d")
+                                for k in bundle[b]["epics"].keys() if not k.startswith("__")})
+                bundle["epicNames"] = self._epic_name_map(ekeys)
                 self.cache.set(key, bundle, self.s.cache_ttl_seconds)   # 성공한 결과만 캐시
             except SessionExpired:
                 raise            # 세션 만료/로그인 필요 → 라우트가 401 needLogin 으로 (0 으로 위장 금지)
@@ -2761,11 +2777,13 @@ class JiraClient:
         return self.cache.get(f"udisp:{self.env}:{uid}")
 
     def _fetch_workload(self, plan, people):
-        """인력별 Task성/VoC성 × 진행중/최근7일완료 티켓 수. (전체 한 방 — /api/workload 용)"""
-        pids = [pid for module in plan["modules"] for pid in people.get(module, [])]
+        """인력별 Task성/VoC성 × 진행중/최근7일완료 티켓 수. (전체 한 방 — /api/workload 용)
+        모듈 목록은 people.yaml(모듈→인력) 이 소스 — plan(wbs) 이 아니다."""
+        modules = list(people.keys())
+        pids = [pid for module in modules for pid in people.get(module, [])]
         by_pid = {b["id"]: b for b in self._pmap(pids, self.workload_person)}   # 인력 단위 병렬
         return {module: [by_pid[pid] for pid in people.get(module, []) if pid in by_pid]
-                for module in plan["modules"]}
+                for module in modules}
 
     def _wl_ticket(self, it):
         """워크로드 상세용 티켓 투영: 번호·제목·타입·상태·마감·완료일시."""
@@ -2813,12 +2831,11 @@ class JiraClient:
         return self.cache.get_or_set(f"workload_bucket:{self.env}:{user}:{bucket}",
                                      self.s.cache_ttl_seconds, do)[0]
 
-    def _attach_epic_names(self, tickets):
-        """Epic 키 → 제목. 분포 막대의 범례에 키가 아니라 이름이 떠야 읽힌다.
-        키를 한 번에 모아 배치 조회하므로 왕복은 1회다(prod SSO 는 직렬이라 중요)."""
-        keys = sorted({t["epic"] for t in tickets if t.get("epic")})
+    def _epic_name_map(self, keys):
+        """Epic 키들 → {키: 제목}. 배치 조회로 왕복 1회(prod SSO 직렬이라 중요)."""
+        keys = sorted({k for k in (keys or []) if k})
         if not keys:
-            return
+            return {}
         try:
             self.prefetch_issues(keys, light=True)     # Epic 제목(뱃지)만 필요 → 경량
         except Exception:
@@ -2830,6 +2847,11 @@ class JiraClient:
             except Exception:
                 b = None
             names[k] = (b or {}).get("summary") or k
+        return names
+
+    def _attach_epic_names(self, tickets):
+        """Epic 키 → 제목. 분포 막대의 범례에 키가 아니라 이름이 떠야 읽힌다."""
+        names = self._epic_name_map([t.get("epic") for t in tickets if t.get("epic")])
         for t in tickets:
             if t.get("epic"):
                 t["epicName"] = names.get(t["epic"], t["epic"])

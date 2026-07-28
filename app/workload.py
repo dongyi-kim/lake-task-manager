@@ -12,11 +12,18 @@ def _avg(xs):
     return round(sum(xs) / len(xs), 2) if xs else 0.0
 
 
+def workload_modules(people):
+    """워크로드의 모듈 목록은 **people.yaml(모듈→인력)** 이 소스다(파일 순서 유지).
+    wbs_config(plan) 의 모듈은 WBS 롤업 전용 — 인력이 없는 모듈도 워크로드엔 떠야 하고,
+    반대로 WBS 는 없지만 인력만 있는 모듈도 있을 수 있어 두 목록을 섞지 않는다."""
+    return list(people.keys())
+
+
 def build_workload(client, plan, people, jira_base="", generated_at=None):
     data = client.workload(plan, people)     # module -> [person dict]
     modules = []
     all_ip, all_done = [], []
-    for m in plan["modules"]:
+    for m in workload_modules(people):
         # 본명(displayName 첫 어절) + 개발/운영(id 사번 접두) 파생 — 원본 비변형(캐시 공유 안전)
         rows = [dict(p, name=real_name(p.get("displayName") or p["id"]), kind=staff_kind(p["id"]))
                 for p in data.get(m, [])]
@@ -56,12 +63,26 @@ def build_workload_shell(client, plan, people, jira_base="", generated_at=None):
             dn = client.display_name_cached(pid)     # 캐시 전용(상류 조회 없음)
             rows.append({"id": pid, "name": real_name(dn) if dn else pid, "kind": staff_kind(pid)})
         return rows
+    mods = workload_modules(people)
+    # 기본 표시 모듈 = **세션 사용자가 속한 모듈**(1인 로컬 앱이라 '켠 사람'이 곧 대상).
+    # 사번(id) 대소문자 무시로 매칭. 못 찾으면 None → 프론트가 첫 모듈로 폴백.
+    my_module = None
+    try:
+        me = ((client.current_user() or {}).get("id") or "").strip().lower()
+        if me:
+            for m in mods:
+                if any((pid or "").strip().lower() == me for pid in people.get(m, [])):
+                    my_module = m
+                    break
+    except Exception:
+        my_module = None
     return {
         "generatedAt": generated_at or datetime.now().strftime("%Y-%m-%d %H:%M"),
         "projectKey": plan.get("project_key", "DL"),
         "jiraBase": jira_base,
+        "myModule": my_module,
         "modules": [{"module": m, "peopleCount": len(people.get(m, [])), "people": roster(m)}
-                    for m in plan["modules"]],
+                    for m in mods],
     }
 
 

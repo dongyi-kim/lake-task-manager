@@ -148,6 +148,14 @@
 .wl-opt { display: inline-flex; align-items: center; gap: 8px; }
 .wl-opt-l { font-size: 10px; font-weight: 700; letter-spacing: .4px; color: var(--muted-2);
   text-transform: none; white-space: nowrap; }
+/* 모듈 선택 드롭다운 — 세그먼트 버튼과 톤을 맞춘다 */
+.wl-modsel { font: inherit; font-size: 12px; font-weight: 600; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 26px 5px 10px; cursor: pointer; max-width: 200px;
+  appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center; }
+.wl-modsel:hover { border-color: var(--accent); }
 @media (max-width: 640px) { .wl-bar.float { gap: 8px 12px; padding: 7px 10px; } }
 /* 하단 플로팅 바가 마지막 모듈 행을 가리지 않게 여백 확보 */
 .wl-view { padding-bottom: 76px; }
