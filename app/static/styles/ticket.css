@@ -1216,6 +1216,21 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .nk-sel-x { border: 0; background: none; color: var(--muted-2); cursor: pointer; font-size: 12px; padding: 0 2px; }
 .nk-sel-x:hover { color: var(--today); }
 .nk-tsearch { margin-bottom: 7px; }
+/* 상위(부모) 줄 — 상수 고정 / 고른 결과(칩+변경) / 고르는 중(검색)을 한 자리에서 */
+.nk-parent { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; min-height: 30px; }
+.nk-parent > .k { flex: none; width: 40px; font-size: 11px; color: var(--muted-2); }
+.nk-parent .nk-tsearch { flex: 1 1 auto; margin-bottom: 0; }
+.nk-parent-chip { flex: 1 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 10px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border);
+  font-size: 12px; overflow: hidden; }
+.nk-parent-chip.fixed { background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+.nk-parent-chip b { flex: none; color: var(--accent); font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+.nk-parent-chip .nk-sp-ic { flex: none; }
+.nk-parent-s { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.nk-parent-chg { flex: none; border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+  font: inherit; font-size: 11px; padding: 4px 9px; border-radius: 7px; cursor: pointer; }
+.nk-parent-chg:hover { border-color: var(--accent); color: var(--accent); }
 /* 기존 Task 검색줄 — 검색 입력 + '이미 Epic 속한 것 제외' 토글을 한 줄에 */
 .nk-tsrow { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
 .nk-tsrow .nk-tsearch { flex: 1 1 auto; margin-bottom: 0; }
