@@ -1258,6 +1258,16 @@ class JiraClient:
         self.cache.invalidate("workload_bucket:")
         self.cache.invalidate("activity:")
 
+    def _invalidate_ticket_content(self, key, *, comments=False):
+        """**본문/코멘트 내용만** 바뀌는 편집(뷰 모드 체크박스 토글 등)용 경량 무효화.
+        계보·형제·이력·상위피커 후보풀은 안 건드리고 재조회(reprime)도 하지 않는다 —
+        프론트가 이미 낙관적으로 반영했고, 다음 조회 때 캐시가 최신을 lazy 로 받으면 충분하다.
+        (체크박스 하나 뒤집는데 epic_cand:/ancestors/timeline 까지 통째로 비우는 건 과하다.)"""
+        self.cache.invalidate(f"issue:{self.env}:{key}")       # description 원본 필드
+        self.cache.invalidate(f"issueview:{self.env}:{key}")   # 렌더된 본문 뷰
+        if comments:
+            self.cache.invalidate(f"comments:{self.env}:{key}")
+
     # ── 편집 ──────────────────────────────────────────────────────────
     # **무엇을 고칠 수 있는지는 Jira 가 정한다.** 우리가 추측하면(예: 담당자면 다 된다) 화면은
     # 열어 놓고 저장에서 거절당한다. editmeta 는 "지금 이 사용자가 이 이슈에서 편집 가능한
@@ -1295,6 +1305,9 @@ class JiraClient:
         """필드 수정(PUT /issue). fields 는 Jira 형식 그대로 — 변환은 라우트가 한다."""
         self.provider.put_json(f"/rest/api/2/issue/{key}", {"fields": fields})
         self._invalidate_ticket(key)
+        # 담당자를 이 경로로 바꾸기도 한다(필드 편집기) → 워크로드/활동 집계도 갱신.
+        if isinstance(fields, dict) and "assignee" in fields:
+            self._invalidate_people_views()
         return {"ok": True}
 
     def toggle_description_checkbox(self, key, index, checked, cbid=None):
@@ -1311,7 +1324,8 @@ class JiraClient:
             raise ValueError("본문에서 해당 체크박스를 찾지 못했습니다.")
         self.provider.put_json(f"/rest/api/2/issue/{key}",
                                {"fields": {"description": new_body}})
-        self._invalidate_ticket(key)
+        # 체크박스 하나만 바뀌었다 — 본문 캐시만 비운다(계보·후보풀·이력·재조회는 불필요).
+        self._invalidate_ticket_content(key)
         return {"ok": True}
 
     def toggle_comment_checkbox(self, key, comment_id, index, checked, cbid=None):
@@ -1329,7 +1343,8 @@ class JiraClient:
             raise ValueError("코멘트에서 해당 체크박스를 찾지 못했습니다.")
         self.provider.put_json(f"/rest/api/2/issue/{key}/comment/{comment_id}",
                                {"body": new_body})
-        self._invalidate_ticket(key, comments=True)   # 코멘트 캐시까지 비워야 다시 읽을 때 반영
+        # 코멘트 체크박스 하나만 바뀌었다 — 코멘트 캐시만 비운다(경량, 재조회 없음).
+        self._invalidate_ticket_content(key, comments=True)
         return {"ok": True}
 
     OPTIONS_TTL = 1800          # 우선순위·컴포넌트는 거의 안 바뀐다
@@ -1489,6 +1504,8 @@ class JiraClient:
                 self.cache.invalidate(f"{pfx}:")
         # 새 Task 는 상위 피커의 후보가 될 수 있다 → 후보 풀 무효화(길게 캐시하므로).
         self.cache.invalidate("epic_cand:")
+        # 새 티켓이 담당자에게 배정됐으면 그 사람 워크로드/활동도 낡는다(하위 Task 생성 포함).
+        self._invalidate_people_views()
         return {"key": key}
 
     def task_types(self):
