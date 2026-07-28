@@ -36,8 +36,6 @@ export default {
              grouping: ["type", "epic"].includes(pref.grouping) ? pref.grouping : "type",
              // 'VoC 제외' — 소속 Epic 없는 사용자 VoC(__voc__) 를 막대·통계에서 뺀다.
              excludeVoc: pref.excludeVoc === true,
-             // 워크로드 뷰 탭: 'people'(개인별 워크로드) | 'stats'(모듈 통계).
-             tab: ["people", "stats"].includes(pref.tab) ? pref.tab : "people",
              dueRisk: null, dueRiskBusy: false, dueRiskFor: "",
              pstat: {}, busy: false };   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
   },
@@ -222,7 +220,7 @@ export default {
       this._savePrefs();
       this.loadModulePeople(mod);
       this.scheduleMeasure();
-      if (this.tab === "stats") this.$nextTick(() => this.loadDueRisk());
+      this.$nextTick(() => this.loadDueRisk());
     },
     /** 사람 by 사람 통계 로딩 — **동시 요청 상한(CONC)**을 둔다. 한꺼번에 다 쏘면 서버(로컬 fake·
      *  prod 단일 SSO 큐)를 덮쳐 조회가 통째로 실패한다(각자 3개 검색이라 18명이면 54개 동시).
@@ -236,7 +234,7 @@ export default {
         api.workloadPerson(pid)
           .then((r) => { this.pstat[pid] = r; })
           .catch((e) => { this.pstat[pid] = { id: pid, error: true, message: (e && e.message) || String(e) }; })
-          .finally(() => { this.scheduleMeasure(); if (this.tab === "stats") this.loadDueRisk(); next(); });
+          .finally(() => { this.scheduleMeasure(); this.loadDueRisk(); next(); });
       };
       for (let k = 0; k < Math.min(CONC, pids.length); k++) next();
     },
@@ -344,13 +342,6 @@ export default {
     setMetric(mk) { this.metric = mk; this._savePrefs(); this.scheduleMeasure(); },
     setSort(k) { this.sortBy = k; this._savePrefs(); },
     setGrouping(g) { this.grouping = g; this._savePrefs(); this.scheduleMeasure(); },
-    // ── 탭 ──
-    setTab(t) {
-      this.tab = t;
-      this._savePrefs();
-      if (t === "stats") this.$nextTick(() => this.loadDueRisk());   // 통계 탭 진입 시 마감 리스크 로딩
-      else this.scheduleMeasure();                                    // 개인별 탭 복귀 시 평균선 재측정
-    },
     /** ① 모듈→Epic 스택 막대 세그먼트. */
     moduleEpicSegs() {
       const u = this.metric === "hr" ? "h" : "건";
@@ -390,7 +381,7 @@ export default {
       }
     },
     _savePrefs() {
-      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, tab: this.tab, excludeVoc: this.excludeVoc })); }
+      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, excludeVoc: this.excludeVoc })); }
       catch (e) { /* 사파리 프라이빗 등 */ }
     },
     /** 'VoC 제외' 토글 — 막대·통계·마감리스크 모두 재산출(마감리스크는 필터가 바뀌므로 재로딩). */
@@ -398,7 +389,7 @@ export default {
       this.excludeVoc = on;
       this._savePrefs();
       this.dueRisk = null; this.dueRiskFor = "";
-      if (this.tab === "stats") this.$nextTick(() => this.loadDueRisk());
+      this.$nextTick(() => this.loadDueRisk());
       this.scheduleMeasure();
     },
     // ── 막대 세그먼트: 'type'(티켓유형) / 'epic'(소속 Epic) 두 모드 ──
@@ -474,7 +465,7 @@ export default {
     setBody(mod, el) { if (el) this.bodyRefs[mod] = el; },
     scheduleMeasure() { this.$nextTick(() => this.measureLines()); },
     measureLines() {
-      if (!this.d || this.tab !== "people") { this.linePos = {}; return; }   // 평균선은 개인별 탭에서만
+      if (!this.d) { this.linePos = {}; return; }
       const pos = {};
       for (const mod in this.bodyRefs) {
         const body = this.bodyRefs[mod];
@@ -545,26 +536,12 @@ export default {
   <div class="wl-view">
     <div v-if="err" class="err">워크로드 데이터를 불러오지 못했습니다: {{ err }}</div>
     <template v-else-if="d">
-      <!-- 상단: 모듈 선택 + 탭 (대시보드형 헤더) -->
-      <div class="wl-head">
+      <!-- ══ 컨트롤 바: 모듈 + 옵션 + VoC ══ -->
+      <div class="wl-ctl">
         <select class="wl-modsel" :value="mod" @change="selectModule($event.target.value)" aria-label="모듈 선택">
           <option v-for="m in d.modules" :key="m.module" :value="m.module">{{ m.module }} · 인력 {{ m.peopleCount }}</option>
         </select>
-        <div class="wl-tabs">
-          <button :class="{ on: tab === 'people' }" @click="setTab('people')">개인별 워크로드</button>
-          <button :class="{ on: tab === 'stats' }" @click="setTab('stats')">모듈 통계</button>
-        </div>
-      </div>
-      <div class="chips">
-        <div class="chip">인력 <b>{{ totals.p }}</b>명</div>
-        <div class="chip">진행 중 <b>{{ totals.ip }}</b>건</div>
-        <div class="chip">할당됨 <b>{{ totals.op }}</b>건</div>
-        <div class="chip">최근 7일 완료 <b>{{ totals.dn }}</b>건</div>
-      </div>
-
-      <!-- ══ 개인별 워크로드 탭 ══ -->
-      <template v-if="tab === 'people'">
-        <div class="wl-opts">
+        <div class="wl-ctl-opts">
           <div class="wl-opt"><span class="wl-opt-l">Task 구분</span><div class="fab-seg">
             <button :class="{ on: grouping === 'type' }" @click="setGrouping('type')">티켓유형</button>
             <button :class="{ on: grouping === 'epic' }" @click="setGrouping('epic')">소속 Epic</button></div></div>
@@ -575,25 +552,44 @@ export default {
             <button :class="{ on: sortBy === 'name' }" @click="setSort('name')">이름</button>
             <button :class="{ on: sortBy === 'assigned' }" @click="setSort('assigned')">할당</button>
             <button :class="{ on: sortBy === 'done' }" @click="setSort('done')">완료</button></div></div>
-          <label class="wl-toggle" :class="{ on: !excludeVoc }" title="소속 Epic 없는 사용자 VoC 를 Epic 처럼 포함(끄면 제외)">
-            <input type="checkbox" :checked="!excludeVoc" @change="setExcludeVoc(!$event.target.checked)"><span class="wl-toggle-sw"></span>VoC 포함
-          </label>
+          <button class="wl-vocbtn" :class="{ on: !excludeVoc }" @click="setExcludeVoc(!excludeVoc)"
+                  :title="excludeVoc ? '소속 Epic 없는 사용자 VoC 제외됨 — 눌러 포함' : '소속 Epic 없는 사용자 VoC 포함됨 — 눌러 제외'">
+            <span class="wl-vocdot"></span>VoC {{ excludeVoc ? '제외' : '포함' }}
+          </button>
         </div>
-        <div class="legend wl-legend">
-          <template v-if="grouping === 'type'">
-            <span><i class="sw task"></i> Task</span>
-            <span><i class="sw subtask"></i> Sub-Task</span>
-            <span><i class="sw voc"></i> VoC (Component 사용자 VoC)</span>
-          </template>
-          <template v-else>
-            <span class="muted">색 = 소속 Epic(시그니처 컬러) · VoC·Epic 없음은 끝에</span>
-          </template>
-          <span><i class="sw solid-sw"></i> 단색 = 진행 중</span>
-          <span><i class="sw hatch"></i> 사선 = 할당됨(미착수)</span>
-          <span class="muted">· 왼쪽=미완료 할당(진행 중 + 할당됨), 오른쪽=최근 7일 완료 · 세로선 = 모듈 평균</span>
-        </div>
+      </div>
 
-        <div v-for="m in shownModules" :key="m.module" class="wl-people" :ref="(el) => setBody(m.module, el)">
+      <!-- ══ Stat 타일 ══ -->
+      <div class="wl-tiles">
+        <div class="wl-tile"><div class="wl-tile-v">{{ totals.p }}</div><div class="wl-tile-l">인력</div></div>
+        <div class="wl-tile"><div class="wl-tile-v">{{ totals.ip }}</div><div class="wl-tile-l">진행 중</div></div>
+        <div class="wl-tile"><div class="wl-tile-v">{{ totals.op }}</div><div class="wl-tile-l">할당됨</div></div>
+        <div class="wl-tile"><div class="wl-tile-v">{{ totals.dn }}</div><div class="wl-tile-l">최근 7일 완료</div></div>
+        <div class="wl-tile" :class="{ warn: loadSkew && loadSkew.pct >= 40 }">
+          <div class="wl-tile-v">{{ loadSkew ? loadSkew.pct + '%' : '—' }}</div><div class="wl-tile-l">부하 편중 · 상위1명</div></div>
+        <div class="wl-tile" :class="{ warn: dueRisk && dueRisk.over.length }">
+          <div class="wl-tile-v">{{ dueRisk ? dueRisk.over.length : '…' }}</div><div class="wl-tile-l">마감 초과</div></div>
+      </div>
+
+      <!-- ══ 패널 그리드 (그라파나풍) ══ -->
+      <div class="wl-grid">
+        <!-- 개인별 워크로드 (풀폭) -->
+        <div class="wl-panel span12">
+          <div class="wl-panel-h"><b>개인별 워크로드</b>
+            <span v-if="grouping === 'epic'" class="wl-hlg">
+              <span v-for="g in moduleEpicGroups.groups" :key="g.key" class="wl-hlg-i" :title="g.name + ' · ' + g.pct + '%'">
+                <i :style="{ background: g.color }"></i>{{ g.name }}</span>
+              <span v-if="!moduleEpicGroups.groups.length" class="mini muted">색 = 소속 Epic(시그니처)</span>
+              <span class="mini muted">· 단색=진행중 사선=할당</span>
+            </span>
+            <span v-else class="wl-hlg">
+              <span class="wl-hlg-i"><i class="sw task"></i>Task</span>
+              <span class="wl-hlg-i"><i class="sw subtask"></i>Sub-Task</span>
+              <span class="wl-hlg-i"><i class="sw voc"></i>VoC</span>
+              <span class="mini muted">· 단색=진행중 사선=할당 세로선=평균</span>
+            </span>
+          </div>
+          <div v-for="m in shownModules" :key="m.module" class="wl-panel-b wl-people" :ref="(el) => setBody(m.module, el)">
           <div v-if="!m.people || !m.people.length" class="empty">등록된 인력이 없습니다 (config/people.yaml)</div>
           <template v-else>
             <div class="whead">
@@ -679,27 +675,31 @@ export default {
             </template>
           </template>
         </div>
-      </template>
+        </div><!-- /wl-panel 개인별 워크로드 -->
 
-      <!-- ══ 모듈 통계 탭 (대시보드) ══ -->
-      <template v-else>
-        <div v-if="!statsReady" class="muted wl-stats-wait">인력 통계를 모두 받은 뒤 집계합니다… ({{ moduleAgg(curMod).loaded }}/{{ curMod.peopleCount }})</div>
-        <div v-else class="wl-stats-body">
-            <!-- ① 모듈 → Epic 기여도 -->
-            <div class="wl-stat-card">
-              <div class="wl-stat-t">이 모듈이 기여하는 Epic <span class="muted mini">진행중 + 최근{{ doneDays }}일완료 · {{ doneUnit }}</span></div>
-              <ProgressBar :segments="moduleEpicSegs()" :height="20" show-total />
+        <!-- ① 모듈이 기여하는 Epic -->
+        <div class="wl-panel span6">
+          <div class="wl-panel-h"><b>모듈이 기여하는 Epic</b> <span class="mini muted">할당+진행+완료 · {{ doneUnit }}</span></div>
+          <div class="wl-panel-b">
+            <div v-if="!statsReady" class="muted mini">집계 중… ({{ moduleAgg(curMod).loaded }}/{{ curMod.peopleCount }})</div>
+            <template v-else>
+              <ProgressBar :segments="moduleEpicSegs()" :height="18" show-total />
               <div class="wl-epic-lg">
                 <span v-for="g in moduleEpicGroups.groups" :key="g.key" class="wl-epic-i"
                       :class="{ voc: g.kind === 'voc', none: g.kind === 'none' }" :title="g.name + ' · ' + g.value + doneUnit">
-                  <i :style="{ background: g.color }"></i>{{ g.name }} <b>{{ g.pct }}%</b>
-                </span>
+                  <i :style="{ background: g.color }"></i>{{ g.name }} <b>{{ g.pct }}%</b></span>
                 <span v-if="!moduleEpicGroups.groups.length" class="muted mini">집계할 작업이 없습니다.</span>
               </div>
-            </div>
-            <!-- ② Epic → 인력 지분 -->
-            <div class="wl-stat-card">
-              <div class="wl-stat-t">Epic별 인력 지분 <span class="muted mini">누가 얼마나 (상위 8개 Epic)</span></div>
+            </template>
+          </div>
+        </div>
+
+        <!-- ② Epic별 인력 지분 -->
+        <div class="wl-panel span6">
+          <div class="wl-panel-h"><b>Epic별 인력 지분</b> <span class="mini muted">누가 얼마나 (상위 8)</span></div>
+          <div class="wl-panel-b">
+            <div v-if="!statsReady" class="muted mini">집계 중…</div>
+            <template v-else>
               <div v-for="r in epicPeopleRows" :key="r.epic.key" class="wl-epr">
                 <div class="wl-epr-h">
                   <span class="wl-epr-badge" :style="{ '--ec': r.epic.color }">{{ r.epic.name }}</span>
@@ -708,69 +708,57 @@ export default {
                 <ProgressBar :segments="r.segs" :height="16" />
                 <div class="wl-epr-lg">
                   <span v-for="s in r.segs" :key="s.pid" class="wl-epr-p" :title="s.title">
-                    <Avatar :user="s.pid" :name="s.name" :size="14" />{{ s.name }} <b>{{ s.pct }}%</b>
-                  </span>
+                    <Avatar :user="s.pid" :name="s.name" :size="14" />{{ s.name }} <b>{{ s.pct }}%</b></span>
                 </div>
               </div>
               <div v-if="!epicPeopleRows.length" class="muted mini">집계할 Epic 이 없습니다.</div>
-            </div>
-            <!-- ③ 매니저 모니터링 -->
-            <div class="wl-stat-card">
-              <div class="wl-stat-t">매니저 모니터링</div>
-              <div class="wl-mon-grid">
-                <!-- 버스팩터 -->
-                <div class="wl-mon">
-                  <div class="wl-mon-t">버스팩터 <span class="muted mini">참여 1명 Epic</span></div>
-                  <div v-if="busFactor.length" class="wl-mon-list">
-                    <span v-for="b in busFactor" :key="b.epic.key" class="wl-mon-row warn">
-                      <i :style="{ background: b.epic.color }"></i>{{ b.epic.name }} — {{ b.person.name }}
-                    </span>
-                  </div>
-                  <div v-else class="mini ok">단독 참여 Epic 없음 ✓</div>
-                </div>
-                <!-- 부하 편중도 -->
-                <div class="wl-mon">
-                  <div class="wl-mon-t">부하 편중도 <span class="muted mini">상위 1명 비중</span></div>
-                  <div v-if="loadSkew" class="wl-mon-big" :class="{ warn: loadSkew.pct >= 40 }">
-                    <b>{{ loadSkew.pct }}%</b>
-                    <span class="muted mini">{{ loadSkew.top.name }} · 미완료 {{ loadSkew.top.v }}건</span>
-                  </div>
-                  <div v-else class="muted mini">할당된 작업 없음</div>
-                </div>
-                <!-- 인력별 Epic 분산 -->
-                <div class="wl-mon">
-                  <div class="wl-mon-t">인력별 Epic 분산 <span class="muted mini">≥4 과다</span></div>
-                  <div class="wl-mon-list">
-                    <span v-for="e in epicSpread" :key="e.id" class="wl-mon-row" :class="{ warn: e.count >= 4 }">
-                      <Avatar :user="e.id" :name="e.name" :size="14" />{{ e.name }} <b :class="{ voc: e.voc }">{{ e.label }}</b>
-                    </span>
-                    <span v-if="!epicSpread.length" class="muted mini">데이터 없음</span>
-                  </div>
-                </div>
-                <!-- 마감 리스크(지연 로딩) -->
-                <div class="wl-mon">
-                  <div class="wl-mon-t">마감 리스크 <span class="muted mini">초과 · 임박(D-3)</span></div>
-                  <div v-if="dueRiskBusy && !dueRisk" class="muted mini"><span class="spinner"></span> 불러오는 중…</div>
-                  <template v-else-if="dueRisk">
-                    <div class="wl-mon-big" :class="{ warn: dueRisk.over.length }">
-                      초과 <b>{{ dueRisk.over.length }}</b> · 임박 <b>{{ dueRisk.soon.length }}</b>
-                    </div>
-                    <div class="wl-mon-list">
-                      <span v-for="(x, i) in dueRisk.over.slice(0, 5)" :key="'o' + i" class="wl-mon-row warn tkt" :data-key="x.t.key" role="button">
-                        {{ x.t.key }} · {{ x.who }} <b>{{ dd(x.t.due) }}</b>
-                      </span>
-                      <span v-for="(x, i) in dueRisk.soon.slice(0, 3)" :key="'s' + i" class="wl-mon-row tkt" :data-key="x.t.key" role="button">
-                        {{ x.t.key }} · {{ x.who }} <b>{{ dd(x.t.due) }}</b>
-                      </span>
-                      <span v-if="!dueRisk.over.length && !dueRisk.soon.length" class="mini ok">마감 위험 없음 ✓</span>
-                    </div>
-                  </template>
-                  <div v-else class="muted mini">—</div>
-                </div>
-              </div>
-            </div>
+            </template>
+          </div>
         </div>
-      </template>
+
+        <!-- 버스팩터 -->
+        <div class="wl-panel span4">
+          <div class="wl-panel-h"><b>버스팩터</b> <span class="mini muted">참여 1명 Epic</span></div>
+          <div class="wl-panel-b">
+            <div v-if="!statsReady" class="muted mini">집계 중…</div>
+            <template v-else>
+              <div v-if="busFactor.length" class="wl-mon-list">
+                <span v-for="b in busFactor" :key="b.epic.key" class="wl-mon-row warn"><i :style="{ background: b.epic.color }"></i>{{ b.epic.name }} — {{ b.person.name }}</span>
+              </div>
+              <div v-else class="mini ok">단독 참여 Epic 없음 ✓</div>
+            </template>
+          </div>
+        </div>
+
+        <!-- 인력별 Epic 분산 -->
+        <div class="wl-panel span4">
+          <div class="wl-panel-h"><b>인력별 Epic 분산</b> <span class="mini muted">≥4 과다</span></div>
+          <div class="wl-panel-b">
+            <div v-if="!statsReady" class="muted mini">집계 중…</div>
+            <div v-else class="wl-mon-list">
+              <span v-for="e in epicSpread" :key="e.id" class="wl-mon-row" :class="{ warn: e.count >= 4 }"><Avatar :user="e.id" :name="e.name" :size="14" />{{ e.name }} <b :class="{ voc: e.voc }">{{ e.label }}</b></span>
+              <span v-if="!epicSpread.length" class="muted mini">데이터 없음</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 마감 리스크 -->
+        <div class="wl-panel span4">
+          <div class="wl-panel-h"><b>마감 리스크</b> <span class="mini muted">초과 · 임박(D-3)</span></div>
+          <div class="wl-panel-b">
+            <div v-if="dueRiskBusy && !dueRisk" class="muted mini"><span class="spinner"></span> 불러오는 중…</div>
+            <template v-else-if="dueRisk">
+              <div class="wl-mon-big" :class="{ warn: dueRisk.over.length }">초과 <b>{{ dueRisk.over.length }}</b> · 임박 <b>{{ dueRisk.soon.length }}</b></div>
+              <div class="wl-mon-list">
+                <span v-for="(x, i) in dueRisk.over.slice(0, 5)" :key="'o' + i" class="wl-mon-row warn tkt" :data-key="x.t.key" role="button">{{ x.t.key }} · {{ x.who }} <b>{{ dd(x.t.due) }}</b></span>
+                <span v-for="(x, i) in dueRisk.soon.slice(0, 3)" :key="'s' + i" class="wl-mon-row tkt" :data-key="x.t.key" role="button">{{ x.t.key }} · {{ x.who }} <b>{{ dd(x.t.due) }}</b></span>
+                <span v-if="!dueRisk.over.length && !dueRisk.soon.length" class="mini ok">마감 위험 없음 ✓</span>
+              </div>
+            </template>
+            <div v-else class="muted mini">—</div>
+          </div>
+        </div>
+      </div><!-- /wl-grid -->
     </template>
     <div v-else class="loading page">불러오는 중…</div>
   </div>`,
