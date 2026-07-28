@@ -294,7 +294,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     epics = []
     for ek in sorted({g["epic"] for g in out if g["epic"]}):
         b = client.ticket_badge(ek)
-        epics.append({"key": ek, "title": (b or {}).get("summary") or ek,
+        epics.append({"key": ek, "title": client.epic_label(b, ek),   # Epic Name→Summary→키
                       "statusCategory": (b or {}).get("statusCategory") or "todo"})
 
     atoms = [a for g in out for a in g["atoms"]]

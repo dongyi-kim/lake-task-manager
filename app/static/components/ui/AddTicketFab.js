@@ -13,9 +13,25 @@ import { pushToast } from "../../lib/toast.js";
 import { confirmBox } from "../../lib/confirm.js";
 import { copyTicketLink } from "../../lib/ticketlink.js";
 
+// 상위 피커(Task/Sub 만들기)의 첫 로딩이 느린 이유: 검색어 없이 열면 200건 조회+정렬+Epic 이름
+// 해석을 처음 한 번 돈다(~수 초). 그 조립결과는 서버가 30분 캐시하므로, **화면 진입 시 미리 한 번**
+// 백그라운드로 돌려 캐시를 데워 두면 실제로 열 때 즉시 뜬다. 세션당 한 번만(모듈 플래그).
+let _prewarmed = false;
+function _prewarmPickers() {
+  if (_prewarmed) return;
+  _prewarmed = true;
+  // 초기 페이지 로딩과 경쟁하지 않게 잠깐 뒤, 결과는 버린다(캐시만 데운다).
+  setTimeout(() => {
+    api.epicCandidates("").catch(() => {});     // Sub-Task 상위(Task) 후보
+    api.options("epics").catch(() => {});        // Task 상위(Epic) 후보
+    api.taskTypes().catch(() => {});             // 'Epic 없음' 생성용 타입
+  }, 1200);
+}
+
 export default {
   name: "AddTicketFab",
   components: { NewChildDialog, EpicCreateDialog },
+  mounted() { _prewarmPickers(); },   // 화면 진입 시 상위 피커 캐시 미리 데우기
   data() {
     return {
       menuOpen: false,

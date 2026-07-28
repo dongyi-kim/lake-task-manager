@@ -207,7 +207,8 @@ export default {
       const k = this.v && this.v.epicKey;
       if (!k) return "";
       const a = (this.ancestors || []).find((x) => x.key === k);
-      return (a && a.summary) || k;
+      // 에픽 뱃지 라벨 규칙(전 화면 공통): Epic Name(단축어) → Summary → 티켓 키.
+      return (a && (a.epicName || a.summary)) || k;
     },
     /** 전이 목록·권한 — 우클릭 메뉴와 같은 응답에서 꺼낸다(판정이 갈리면 안 된다). */
     stList() { return (this.stInfo && this.stInfo.transitions) || []; },

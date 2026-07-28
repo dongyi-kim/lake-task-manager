@@ -462,6 +462,7 @@ class JiraClient:
         # provider 는 lazy 생성 — 임포트/기동 시 Chrome 을 띄우거나 세션 없음으로 크래시하지 않는다.
         self._provider = None
         self._provider_built = False
+        self._renew_at = {}          # 서비스별 마지막 무음갱신 시도 시각(스로틀)
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
         # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
         try:
@@ -475,6 +476,42 @@ class JiraClient:
             self._provider = self._make_provider()
             self._provider_built = True
         return self._provider
+
+    RENEW_THROTTLE_SEC = 60          # 같은 서비스를 이 간격 안엔 다시 무음갱신하지 않는다
+
+    def _renew_service(self, name):
+        """세션이 죽은 서비스(예: Confluence)를 **창 없이** 다시 인증 시도(prod SSO 전용). 성공 시 True.
+
+        Jira 와 Confluence 는 도메인이 달라 SSO 쿠키·세션이 **따로** 만료된다 — Jira 는 살아 있어도
+        Confluence 만 죽는 일이 흔하다(그때 문서제목 조회·검색이 계속 401). renew_silent 는 headless
+        컨텍스트에서 서비스로 이동해 IdP 리다이렉트만으로 세션을 되살린다(사람 입력 불필요할 때).
+        renew_silent 없는 provider(basic/inprocess=dev)면 no-op. 실패 반복으로 매 요청이 12초씩
+        낭비되지 않게 서비스별로 스로틀한다."""
+        fn = getattr(self.provider, "renew_silent", None)
+        if not fn:
+            return False
+        tgt = next(((b, paths) for nm, b, paths in getattr(self.s, "auth_targets", [])
+                    if (nm or "").lower() == name.lower()), None)
+        if not tgt:
+            return False
+        now = time.time()
+        if now - self._renew_at.get(name, 0) < self.RENEW_THROTTLE_SEC:
+            return False
+        self._renew_at[name] = now
+        try:
+            return bool(fn([tgt], save_cb=self.sso_store().save_all_from))
+        except Exception:
+            return False
+
+    def _conf_get_json(self, url, params=None):
+        """Confluence REST 조회 — 401(SessionExpired)이면 **Confluence 세션만** 무음 갱신 후 한 번
+        재시도(자가치유). 갱신도 실패하면 원래 예외를 그대로 올린다(라우트가 needLogin 처리)."""
+        try:
+            return self.provider.get_json(url, params=params)
+        except SessionExpired:
+            if self._renew_service("Confluence"):
+                return self.provider.get_json(url, params=params)
+            raise
 
     def _make_provider(self):
         if self.env == "local":
@@ -952,10 +989,11 @@ class JiraClient:
         return [_display_node(it, sp, with_subs=True) for it in raws]
 
     def epic_name(self, epic_key):
-        """Epic 이름(summary) — Jira 에서. (config 엔 이름 없음)"""
+        """Epic 라벨 — Epic Name(단축어) → Summary → 키 순(전 화면 공통). (config 엔 이름 없음)"""
         try:
-            it = self.get_issue_light(self._resolve(epic_key))   # summary 만 → 경량
-            return (it.get("fields") or {}).get("summary") or epic_key
+            f = (self.get_issue_light(self._resolve(epic_key)).get("fields") or {})
+            nf = self.s.epic_name_field_id
+            return (f.get(nf) if nf else None) or f.get("summary") or epic_key
         except Exception:
             return epic_key
 
@@ -1583,7 +1621,7 @@ class JiraClient:
         names = {}
         for ek in {i["epicKey"] for i in out if i["epicKey"]}:
             try:
-                names[ek] = (self.ticket_badge(ek) or {}).get("summary") or ek
+                names[ek] = self.epic_label(self.ticket_badge(ek), ek)   # Epic Name→Summary→키
             except Exception:
                 names[ek] = ek
         for i in out:
@@ -1984,9 +2022,12 @@ class JiraClient:
         f = raw.get("fields") or {}
         st = f.get("status") or {}
         a = f.get("assignee") or {}
+        nf = self.s.epic_name_field_id
         return {
             "key": raw.get("key", key),
             "summary": f.get("summary", ""),
+            # Epic Name(단축어) 커스텀필드 — 뱃지 라벨은 **Epic Name → Summary → 키** 순으로 쓴다.
+            "epicName": (f.get(nf) if nf else None) or None,
             "type": (f.get("issuetype") or {}).get("name", ""),
             "status": st.get("name", ""),
             "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
@@ -2049,7 +2090,9 @@ class JiraClient:
             return None
         return {"key": b["key"], "summary": b["summary"], "type": b["type"],
                 "status": b["status"], "statusCategory": b["statusCategory"],
-                "assignee": b["assignee"], "pct": pct}
+                "assignee": b["assignee"], "pct": pct,
+                # Epic 노드는 뱃지/칩이 Epic Name(단축어)→Summary→키 순으로 라벨하도록 함께 싣는다.
+                "epicName": b.get("epicName")}
 
     def _parent_pct(self, key):
         """부모(Task/Story)의 진척 — 자식 Sub-Task 완료 개수 비율(%). 자식 없으면 None."""
@@ -2553,7 +2596,7 @@ class JiraClient:
             return None
 
         def do():
-            d = self.provider.get_json(f"{base}/rest/api/content/{pid}")
+            d = self._conf_get_json(f"{base}/rest/api/content/{pid}")   # 401 이면 Confluence 세션 자가갱신
             return ((d or {}).get("title") or "").strip()
 
         try:
@@ -2885,8 +2928,15 @@ class JiraClient:
         return self.cache.get_or_set(f"workload_bucket:{self.env}:{user}:{bucket}",
                                      self.s.cache_ttl_seconds, do)[0]
 
+    @staticmethod
+    def epic_label(badge, key):
+        """에픽 뱃지 라벨 — **Epic Name(단축어) → Summary → 티켓 키** 순. (전 화면 공통 규칙)
+        badge 는 ticket_badge() 결과(dict|None). 셋 다 없으면 키를 마지막 폴백으로 준다."""
+        b = badge or {}
+        return b.get("epicName") or b.get("summary") or key
+
     def _epic_name_map(self, keys):
-        """Epic 키들 → {키: 제목}. 배치 조회로 왕복 1회(prod SSO 직렬이라 중요)."""
+        """Epic 키들 → {키: 라벨(Epic Name→Summary→키)}. 배치 조회로 왕복 1회(prod SSO 직렬이라 중요)."""
         keys = sorted({k for k in (keys or []) if k})
         if not keys:
             return {}
@@ -2900,7 +2950,7 @@ class JiraClient:
                 b = self.ticket_badge(k)
             except Exception:
                 b = None
-            names[k] = (b or {}).get("summary") or k
+            names[k] = self.epic_label(b, k)
         return names
 
     def _attach_epic_names(self, tickets):

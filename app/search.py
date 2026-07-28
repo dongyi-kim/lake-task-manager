@@ -148,11 +148,11 @@ def _search_jira(client, s, q, scope, limit):
         seen.add(row["key"])
         items.append(row)
     items = items[:max(limit, len(exact))]
-    # 소속 Epic 이름 — 결과에 Epic 키만 있다. 구별되는 Epic 만 ticket_badge(캐시)로 이름을 채운다.
+    # 소속 Epic 라벨 — Epic Name(단축어) → Summary → 키 순(전 화면 공통). 구별되는 Epic 만 캐시 조회.
     names = {}
     for ek in {i.get("epicKey") for i in items if i.get("epicKey")}:
         try:
-            names[ek] = (client.ticket_badge(ek) or {}).get("summary") or ek
+            names[ek] = client.epic_label(client.ticket_badge(ek), ek)
         except Exception:
             names[ek] = ek
     for i in items:
@@ -174,7 +174,8 @@ def _search_confluence(client, s, q, scope, limit):
     # prod: 별도 호스트 절대 URL / mock·local: jira820 이 같은 호스트로 서빙 → 상대 경로
     url = (base + "/rest/api/search") if (s.jira_env == "prod" and base) else "/rest/api/search"
     try:
-        data = client.provider.get_json(url, params={"cql": cql, "limit": limit})
+        # 401 이면 Confluence 세션만 무음 갱신 후 한 번 재시도(자가치유). 그래도 안 되면 needLogin.
+        data = client._conf_get_json(url, params={"cql": cql, "limit": limit})
     except SessionExpired:
         # SSO 쿠키는 **도메인별** — Jira 세션이 살아 있어도 Confluence 는 따로 인증이 필요하다.
         # 원문 메시지("세션 만료")는 Jira 가 끊긴 것처럼 읽혀 오해를 부르므로 바꿔 준다.
