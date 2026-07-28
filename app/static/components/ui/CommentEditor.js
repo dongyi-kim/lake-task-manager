@@ -194,6 +194,33 @@ function liftSections(html) {
   return (html || "").replace(SEC_LINE, (m, t) => '<div class="sec-title-node">' + t + "</div>");
 }
 
+// 저장/표시된 체크박스(<p><input type=checkbox …>글<br><input …>글</p>)를 편집기로 열 때
+// **TipTap TaskList** 로 되살린다. 안 하면 TipTap 이 <input> 노드를 몰라 통째로 버려 — 수정에
+// 들어가면 체크박스가 사라진다(실제 리포트된 버그). 저장 때는 다시 <p><input> 로 평탄화된다.
+const _CB_IN_P = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
+const _CB_SPLIT = /<input\b([^>]*)>\s*([\s\S]*?)(?=<input\b|$)/gi;
+function liftCheckboxes(html) {
+  if (!html || !/<input[^>]*type=["']?\s*checkbox/i.test(html)) return html;
+  return html.replace(_CB_IN_P, (m, inner) => {
+    if (!/<input[^>]*type=["']?\s*checkbox/i.test(inner)) return m;   // 체크박스 없는 문단은 그대로
+    const items = [];
+    let mm;
+    _CB_SPLIT.lastIndex = 0;
+    while ((mm = _CB_SPLIT.exec(inner)) !== null) {
+      const attrs = mm[1] || "";
+      if (!/type=["']?\s*checkbox/i.test(attrs)) continue;
+      const checked = /\bchecked\b/i.test(attrs);
+      const text = (mm[2] || "").replace(/(?:<br\s*\/?>|\s)+$/i, "");  // 항목 사이 <br>·공백 제거
+      // TipTap TaskItem 은 li[data-type=taskItem] + 본문이 <p> 로 감싸져야 파싱한다(안 그러면 항목이
+      // 합쳐지거나 버려진다). data-type·<p> 래퍼를 정확히 맞춘다.
+      items.push('<li data-checked="' + (checked ? "true" : "false") + '" data-type="taskItem">'
+        + '<label><input type="checkbox"' + (checked ? ' checked="checked"' : "") + '><span></span></label>'
+        + "<div><p>" + (text || "") + "</p></div></li>");
+    }
+    return items.length ? '<ul data-type="taskList">' + items.join("") + "</ul>" : m;
+  });
+}
+
 function sectionExt(T) {
   return T.Node.create({
     name: "sectionTitle",
@@ -833,7 +860,7 @@ export default {
         imageResizeExt(T).configure({ inline: true }), linkBadgeExt(T),
         T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 로 표·코드·티켓 넣기, @ 로 멘션, 마크다운(#, -, ``` )" }),
       ],
-      content: (this.sections ? liftSections(this.initial) : this.initial) || "",
+      content: liftCheckboxes(this.sections ? liftSections(this.initial) : this.initial) || "",
       autofocus: true,
       editorProps: {
         // 본문에 tkt-desc 를 부여 → 렌더된 댓글과 **같은 CSS**를 그대로 사용(인용·콜아웃 등 일치).
