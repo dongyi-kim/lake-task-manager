@@ -39,7 +39,7 @@ export default {
   emits: ["saved", "pick"],
   data() {
     return { open: false, busy: false, err: "", q: "", opts: [], hi: 0,
-             draft: null, who: [],
+             draft: null, who: [], dateDraft: "",   // 날짜 텍스트 입력(자동 YYYY-MM-DD 포맷)
              // 팝업을 body 로 teleport 해 fixed 로 띄운다 — 안 그러면 스크롤되는 다이얼로그
              // (overflow:auto) 안에 갇혀 긴 목록이 잘린다. popStyle 은 트리거 기준 위치.
              popStyle: {} };
@@ -89,6 +89,7 @@ export default {
       window.addEventListener("scroll", this._place, true);
       window.addEventListener("resize", this._place);
       this.draft = this.isMulti ? (this.value || []).slice() : this.value;
+      if (this.isDate) this.dateDraft = this.value || "";
       if (this.local) {
         // 선택지는 부모가 준다(아직 티켓이 없어 editmeta 가 없다). 사용자 검색만 평소와 같다.
         // 목록형(컴포넌트)은 화면이 opts 를 그리므로 거기에도 넣어 준다.
@@ -175,6 +176,45 @@ export default {
     },
     saveMulti() { this.save(this.draft.slice()); },
     clearUser() { this.save(""); },
+    // ── 날짜 입력(자유 타이핑) ──
+    // 네이티브 <input type=date> 는 세그먼트 편집이라 '20260417' 을 심리스하게 못 치고, 중간
+    // 백스페이스에서 무너진다. **텍스트 입력**으로 받아 숫자만 뽑아 YYYY-MM-DD 로 자동 포맷한다.
+    _fmtDate(s) {
+      const d = String(s || "").replace(/\D/g, "").slice(0, 8);   // YYYYMMDD
+      if (d.length <= 4) return d;
+      if (d.length <= 6) return d.slice(0, 4) + "-" + d.slice(4);
+      return d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6);
+    },
+    _validDate(s) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+      if (!m) return false;
+      const y = +m[1], mo = +m[2], da = +m[3];
+      if (mo < 1 || mo > 12 || da < 1 || da > 31) return false;
+      const dt = new Date(y, mo - 1, da);           // 존재하는 날짜인지(2월 30일 등 거름)
+      return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === da;
+    },
+    onDateInput(e) {
+      this.err = "";
+      const f = this._fmtDate(e.target.value);
+      this.dateDraft = f;
+      e.target.value = f;                            // 대시 자동삽입을 즉시 화면에 반영
+    },
+    commitDate() {
+      const s = (this.dateDraft || "").trim();
+      if (!s) { this.save(""); return; }             // 비우면 기한 해제
+      if (this._validDate(s)) this.save(s);
+      else this.err = "날짜는 YYYY-MM-DD (예: 2026-04-17) 형식이어야 합니다.";
+    },
+    openNative() {
+      const el = this.$refs.nat;
+      if (!el) return;
+      try { el.showPicker ? el.showPicker() : el.click(); } catch (e) { el.click(); }
+    },
+    onNative(e) {
+      const v = e.target.value || "";
+      this.dateDraft = v;
+      if (v) this.save(v); else this.save("");
+    },
   },
   template: `
   <span class="fe" :class="{ ro: !editable }">
@@ -232,9 +272,20 @@ export default {
         <button v-if="value" class="fe-clear" @click="save('')">Epic 소속 해제</button>
       </template>
 
-      <!-- 작업 기한 -->
+      <!-- 작업 기한 — 자유 타이핑(YYYYMMDD 자동 포맷) + 달력 버튼 -->
       <template v-else-if="isDate">
-        <input ref="inp" type="date" :value="value || ''" @change="save($event.target.value)">
+        <div class="fe-date">
+          <input ref="inp" class="fe-date-t" :value="dateDraft" @input="onDateInput"
+                 @keydown.enter.prevent="commitDate" @blur="commitDate"
+                 placeholder="YYYY-MM-DD" inputmode="numeric" maxlength="10" autocomplete="off">
+          <button type="button" class="fe-date-cal" @mousedown.prevent="openNative" title="달력에서 고르기"
+                  aria-label="달력">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <rect x="3" y="4.5" width="18" height="17" rx="2"/><path d="M3 9h18M8 2.5v4M16 2.5v4"/></svg>
+          </button>
+          <input ref="nat" type="date" class="fe-date-native" :value="value || ''" @change="onNative" tabindex="-1">
+        </div>
+        <div v-if="err" class="fe-err">{{ err }}</div>
         <button v-if="value" class="fe-clear" @click="save('')">기한 지우기</button>
       </template>
 
