@@ -5,6 +5,7 @@ JiraClient — AuthProvider 를 주입받아 REST 호출 (어떤 인증인지 �
 Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 Phase 에서 확장)
 """
 
+import base64
 import re
 import sys
 import threading
@@ -1044,9 +1045,9 @@ class JiraClient:
     # 진척 = Root 현안의 자손 티켓 "개수 기반"(done/total). 시작·마감·소식·코멘트 포함.
     # (local/prod 경로는 라이브 Jira 대상 Phase B 에서 검증/심화 — 자손 깊이 등)
     def vit_issues(self, plan, people, epic_prog=None):
-        # 조립 결과를 캐시 → /api/vit·/api/vit/{key} 가 매번 forest 를 재조립하지 않음
-        data, _ = self.cache.get_or_set(f"vit_build:{self.env}", self.s.cache_ttl_seconds, self._fetch_vit)
-        return data
+        # 조립 결과를 **SWR** 캐시 → 만료돼도 옛 forest 를 즉시 주고 재조립은 백그라운드로
+        # (부품 vit_bases/vit_tree 는 이미 SWR — 이제 조립 결과도 동기 재빌드 대기가 없다).
+        return self._swr(f"vit_build:{self.env}", self._fetch_vit)
 
     def vit_bases(self):
         """PMO_VIT 루트의 **경량 base 목록**(트리 없음) — 모듈 분류·중복제거용.
@@ -1332,6 +1333,10 @@ class JiraClient:
         return {"ok": True}
 
     OPTIONS_TTL = 1800          # 우선순위·컴포넌트는 거의 안 바뀐다
+    # Epic/Task 후보 **기반 목록**(200건 검색) — q 필터는 파이썬에서 하므로 목록 자체는 재사용.
+    # 새 Task 생성·Epic Link/Epic 편집이 'epic_cand:'/'epic_options:' 프리픽스로 명시 무효화하므로
+    # TTL 만료에 기대지 않는다 → 길게(6h) 잡아 반복 상류 검색을 없앤다.
+    EPIC_LIST_TTL = 6 * 3600
 
     def priorities(self):
         def do():
@@ -1601,7 +1606,7 @@ class JiraClient:
         # q 필터·정렬은 파이썬에서 하므로 목록 자체는 재사용 가능. cache_key + 긴 TTL(OPTIONS_TTL)로
         # 캐시 효용을 높인다(새 Task 생성·Epic Link 변경 시 'epic_cand:' 프리픽스로 무효화).
         raws = self._search(f"project = {pk} ORDER BY updated DESC", max_results=200,
-                            cache_key=f"epic_cand:all:{self.env}", ttl=self.OPTIONS_TTL) or []
+                            cache_key=f"epic_cand:all:{self.env}", ttl=self.EPIC_LIST_TTL) or []
         enf = self.s.epic_link_field_id
         ql = (q or "").strip().lower()
         out = []
@@ -1691,7 +1696,7 @@ class JiraClient:
             # q 와 무관한 고정 JQL → 한 번 받아 **긴 TTL**로 캐시(create_epic·Epic 편집이
             # 'epic_options:' 프리픽스로 무효화). 첫 로딩 체감을 줄이려 OPTIONS_TTL(30분)로.
             raws = self._search(jql, cache_key=f"epic_options:all:{self.env}",
-                                max_results=200, ttl=self.OPTIONS_TTL) or []
+                                max_results=200, ttl=self.EPIC_LIST_TTL) or []
         except Exception:
             return []
         nf = self.s.epic_name_field_id
@@ -2006,7 +2011,7 @@ class JiraClient:
                     # name 은 짧은 본명이라 소속을 알 수 없다.
                     "display": u.get("displayName") or u.get("name") or ""}
         try:
-            return self.cache.get_or_set(f"myself:{self.env}", self.s.cache_ttl_seconds, do)[0]
+            return self.cache.get_or_set(f"myself:{self.env}", self.USER_TTL, do)[0]
         except Exception:
             return {}
 
@@ -2550,9 +2555,12 @@ class JiraClient:
         return self._swr(f"documents:{self.env}:{key}", build)
 
     # ── 사용자 프로필 이미지 ──
-    # 아바타는 사실상 불변이라 URL 해석을 아주 길게 캐시(AVATAR_TTL). 바이트는 캐시에 넣지 않고
-    # (SQLite 블롭 비대) HTTP Cache-Control(장기·immutable)로 브라우저가 들고 있게 한다.
+    # 아바타는 사실상 불변이라 URL 해석을 아주 길게 캐시(AVATAR_TTL). 바이트도 캐시한다 —
+    # 브라우저 HTTP Cache-Control 이 콜드일 때(새 브라우저 창 = 문서화된 멀티브라우저 시나리오)
+    # 로스터가 매번 아바타를 상류에서 다시 끌었다(prod SSO 는 직렬화된 왕복). 작은 이미지만
+    # 담고(<=128KB) purge 가 죽은 것을 지워 SQLite 크기는 안정적이다.
     AVATAR_TTL = 30 * 24 * 3600      # 30일
+    AVATAR_BYTES_MAX = 128 * 1024    # 이보다 크면 캐시 안 함(아바타는 보통 수 KB)
 
     def _avatar_url(self, user):
         """사용자 아바타 URL(큰 것 우선). 없거나 조회 실패면 None. 성공/실패 모두 길게 캐시하지 않도록
@@ -2580,13 +2588,24 @@ class JiraClient:
         url = self._avatar_url(user)
         if not url:
             return (None, None)
+        bk = f"avatar_bytes:{self.env}:{user}"
+        cached = self.cache.get(bk)
+        if isinstance(cached, dict) and cached.get("b64"):
+            try:
+                return (base64.b64decode(cached["b64"]), cached.get("ct") or None)
+            except Exception:
+                pass                                       # 손상된 항목은 무시하고 다시 받는다
         try:
             if url.startswith("http://") or url.startswith("https://"):
-                return self.fetch_media(url)              # 절대 URL 은 허용 호스트만
-            data, ctype = self.provider.get_bytes(url)    # 상대 경로 = Jira 자기 호스트
-            return (data, ctype)
+                data, ctype = self.fetch_media(url)        # 절대 URL 은 허용 호스트만
+            else:
+                data, ctype = self.provider.get_bytes(url) # 상대 경로 = Jira 자기 호스트
         except Exception:
             return (None, None)
+        if data and len(data) <= self.AVATAR_BYTES_MAX:
+            self.cache.set(bk, {"b64": base64.b64encode(data).decode("ascii"),
+                                "ct": ctype or ""}, self.AVATAR_TTL)
+        return (data, ctype)
 
     # ── 이미지/첨부 프록시 (prod: 인증 세션으로 받아 same-origin 반환) ──
     def _media_allowed_host(self, host):
@@ -2802,11 +2821,16 @@ class JiraClient:
             return None       # 존재하지 않는 티켓(404 에러 바디)
         return data
 
+    # 사용자 디렉토리(사번→displayName)·세션 정체는 세션 중 사실상 안 바뀐다. 15분은 짧다 —
+    # prod SSO 에선 재조회가 직렬화된 상류 왕복이라 6h 로 늘린다(로그인은 myself: 를 명시 무효화,
+    # dead-TTL 폴백이 오프라인도 커버).
+    USER_TTL = 6 * 3600
+
     def _display_name(self, pid):
         """Jira 사용자 displayName('{본명} {회사}').
 
         **성공만 캐시**(user:{env}:{pid}). 실패하면 로그 남기고 id 폴백하되 **캐시하지 않는다**
-        → 일시적 실패(예: 세션 만료)로 username 이 15분간 굳는 문제 방지(다음 호출에 재시도).
+        → 일시적 실패(예: 세션 만료)로 username 이 굳는 문제 방지(다음 호출에 재시도).
         """
         ck = f"user:{self.env}:{pid}"
         hit = self.cache.get(ck)
@@ -2820,7 +2844,7 @@ class JiraClient:
             # 이름 조회 실패는 흔하고(권한·비활성 사용자) 화면엔 id 로 폴백된다 — 로그로 안 남긴다.
             pass
         if dn:
-            self.cache.set(ck, dn, self.s.cache_ttl_seconds)
+            self.cache.set(ck, dn, self.USER_TTL)
             return dn
         return pid
 
