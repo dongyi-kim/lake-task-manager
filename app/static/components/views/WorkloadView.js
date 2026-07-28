@@ -36,8 +36,8 @@ export default {
              grouping: ["type", "epic"].includes(pref.grouping) ? pref.grouping : "type",
              // 'VoC 제외' — 소속 Epic 없는 사용자 VoC(__voc__) 를 막대·통계에서 뺀다.
              excludeVoc: pref.excludeVoc === true,
-             // 하단 '모듈 통계' 섹션 — 접이식. 마감 리스크는 열 때 지연 로딩.
-             statsOpen: pref.statsOpen === true,
+             // 워크로드 뷰 탭: 'people'(개인별 워크로드) | 'stats'(모듈 통계).
+             tab: ["people", "stats"].includes(pref.tab) ? pref.tab : "people",
              dueRisk: null, dueRiskBusy: false, dueRiskFor: "",
              pstat: {}, busy: false };   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
   },
@@ -120,7 +120,7 @@ export default {
       people.forEach((s) => Object.assign(names, s.epicNames || {}));
       const val = (e) => (metric === "hr" ? (e.hr || 0) : (e.count || 0));
       people.forEach((s) => {
-        ["inProgress", "done7d"].forEach((bk) => {         // '기여' = 진행중 + 최근7일완료
+        ["open", "inProgress", "done7d"].forEach((bk) => {  // 할당+진행중+최근완료 (어느 상태든 소속 표시)
           const eps = (s[bk] && s[bk].epics) || {};
           for (const k in eps) {
             const v = val(eps[k]);
@@ -157,7 +157,7 @@ export default {
         const total = segs.reduce((a, s) => a + s.value, 0) || 1;
         segs.forEach((s) => {
           s.pct = Math.round((s.value * 100) / total);
-          s.label = s.pct + "%";                          // 좁으면 이건 남고 이름만 숨는다(컨테이너 쿼리)
+          s.label = "(" + s.pct + "%)";                   // 좁으면 이 괄호%만 남고 이름은 숨는다(컨테이너 쿼리)
           s.title = s.name + " " + s.value + " (" + s.pct + "%)";
         });
         return { epic: g, total, segs, single: segs.length === 1 };
@@ -173,14 +173,19 @@ export default {
       if (!total || !load.length) return null;
       return { top: load[0], pct: Math.round((load[0].v * 100) / total), total, n: load.length };
     },
-    /** 모니터링 — 인력별 Epic 분산: 한 사람이 걸친 Epic 수(많은 순). ≥4 면 과다. */
+    /** 모니터링 — 인력별 Epic 분산: 한 사람이 걸친 Epic 수(많은 순). ≥4 면 과다.
+     *  소속 Epic 없는 사용자 VoC 도 처리 중이면 함께 표시("VoC + N Epic"). 'VoC 제외' 면 VoC 는 뺀다. */
     epicSpread() {
       return this.curStats.map((s) => {
-        const keys = new Set();
+        const keys = new Set(); let voc = false;
         ["open", "inProgress", "done7d"].forEach((bk) =>
-          Object.keys((s[bk] && s[bk].epics) || {}).forEach((k) => { if (!k.startsWith("__")) keys.add(k); }));
-        return { id: s.id, name: s.name, count: keys.size };
-      }).filter((x) => x.count > 0).sort((a, b) => b.count - a.count);
+          Object.keys((s[bk] && s[bk].epics) || {}).forEach((k) => {
+            if (k === "__voc__") { if (!this.excludeVoc) voc = true; }
+            else if (!k.startsWith("__")) keys.add(k);
+          }));
+        const label = voc ? ("VoC" + (keys.size ? " + " + keys.size + " Epic" : "")) : (keys.size + " Epic");
+        return { id: s.id, name: s.name, count: keys.size, voc, label };
+      }).filter((x) => x.count > 0 || x.voc).sort((a, b) => b.count - a.count);
     },
   },
   methods: {
@@ -217,7 +222,7 @@ export default {
       this._savePrefs();
       this.loadModulePeople(mod);
       this.scheduleMeasure();
-      if (this.statsOpen) this.$nextTick(() => this.loadDueRisk());
+      if (this.tab === "stats") this.$nextTick(() => this.loadDueRisk());
     },
     /** 사람 by 사람 통계 로딩 — **동시 요청 상한(CONC)**을 둔다. 한꺼번에 다 쏘면 서버(로컬 fake·
      *  prod 단일 SSO 큐)를 덮쳐 조회가 통째로 실패한다(각자 3개 검색이라 18명이면 54개 동시).
@@ -231,7 +236,7 @@ export default {
         api.workloadPerson(pid)
           .then((r) => { this.pstat[pid] = r; })
           .catch((e) => { this.pstat[pid] = { id: pid, error: true, message: (e && e.message) || String(e) }; })
-          .finally(() => { this.scheduleMeasure(); if (this.statsOpen) this.loadDueRisk(); next(); });
+          .finally(() => { this.scheduleMeasure(); if (this.tab === "stats") this.loadDueRisk(); next(); });
       };
       for (let k = 0; k < Math.min(CONC, pids.length); k++) next();
     },
@@ -339,11 +344,12 @@ export default {
     setMetric(mk) { this.metric = mk; this._savePrefs(); this.scheduleMeasure(); },
     setSort(k) { this.sortBy = k; this._savePrefs(); },
     setGrouping(g) { this.grouping = g; this._savePrefs(); this.scheduleMeasure(); },
-    // ── 모듈 통계 ──
-    toggleStats() {
-      this.statsOpen = !this.statsOpen;
+    // ── 탭 ──
+    setTab(t) {
+      this.tab = t;
       this._savePrefs();
-      if (this.statsOpen) this.loadDueRisk();     // 열 때 마감 리스크 지연 로딩
+      if (t === "stats") this.$nextTick(() => this.loadDueRisk());   // 통계 탭 진입 시 마감 리스크 로딩
+      else this.scheduleMeasure();                                    // 개인별 탭 복귀 시 평균선 재측정
     },
     /** ① 모듈→Epic 스택 막대 세그먼트. */
     moduleEpicSegs() {
@@ -384,7 +390,7 @@ export default {
       }
     },
     _savePrefs() {
-      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, statsOpen: this.statsOpen, excludeVoc: this.excludeVoc })); }
+      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, tab: this.tab, excludeVoc: this.excludeVoc })); }
       catch (e) { /* 사파리 프라이빗 등 */ }
     },
     /** 'VoC 제외' 토글 — 막대·통계·마감리스크 모두 재산출(마감리스크는 필터가 바뀌므로 재로딩). */
@@ -392,7 +398,7 @@ export default {
       this.excludeVoc = on;
       this._savePrefs();
       this.dueRisk = null; this.dueRiskFor = "";
-      if (this.statsOpen) this.$nextTick(() => this.loadDueRisk());
+      if (this.tab === "stats") this.$nextTick(() => this.loadDueRisk());
       this.scheduleMeasure();
     },
     // ── 막대 세그먼트: 'type'(티켓유형) / 'epic'(소속 Epic) 두 모드 ──
@@ -465,15 +471,14 @@ export default {
         { value: v, color: "var(--wl-voc)", title: "VoC " + v + u },
       ];
     },
-    toggleMod(m) { this.open[m] = !this.open[m]; this.scheduleMeasure(); },
     setBody(mod, el) { if (el) this.bodyRefs[mod] = el; },
     scheduleMeasure() { this.$nextTick(() => this.measureLines()); },
     measureLines() {
-      if (!this.d) return;
+      if (!this.d || this.tab !== "people") { this.linePos = {}; return; }   // 평균선은 개인별 탭에서만
       const pos = {};
       for (const mod in this.bodyRefs) {
         const body = this.bodyRefs[mod];
-        if (!body || !body.getBoundingClientRect || !this.open[mod]) continue;
+        if (!body || !body.getBoundingClientRect || !body.isConnected) continue;
         if (!this.avgByMod[mod]) continue;      // 모듈 전원 로딩 전엔 평균선 안 그린다
         const prow = body.querySelector(".prow");
         const whead = body.querySelector(".whead");
@@ -540,35 +545,55 @@ export default {
   <div class="wl-view">
     <div v-if="err" class="err">워크로드 데이터를 불러오지 못했습니다: {{ err }}</div>
     <template v-else-if="d">
+      <!-- 상단: 모듈 선택 + 탭 (대시보드형 헤더) -->
+      <div class="wl-head">
+        <select class="wl-modsel" :value="mod" @change="selectModule($event.target.value)" aria-label="모듈 선택">
+          <option v-for="m in d.modules" :key="m.module" :value="m.module">{{ m.module }} · 인력 {{ m.peopleCount }}</option>
+        </select>
+        <div class="wl-tabs">
+          <button :class="{ on: tab === 'people' }" @click="setTab('people')">개인별 워크로드</button>
+          <button :class="{ on: tab === 'stats' }" @click="setTab('stats')">모듈 통계</button>
+        </div>
+      </div>
       <div class="chips">
         <div class="chip">인력 <b>{{ totals.p }}</b>명</div>
         <div class="chip">진행 중 <b>{{ totals.ip }}</b>건</div>
         <div class="chip">할당됨 <b>{{ totals.op }}</b>건</div>
         <div class="chip">최근 7일 완료 <b>{{ totals.dn }}</b>건</div>
       </div>
-      <div class="legend wl-legend">
-        <template v-if="grouping === 'type'">
-          <span><i class="sw task"></i> Task</span>
-          <span><i class="sw subtask"></i> Sub-Task</span>
-          <span><i class="sw voc"></i> VoC (Component 사용자 VoC)</span>
-        </template>
-        <template v-else>
-          <span class="muted">색 = 소속 Epic(시그니처 컬러) · VoC·Epic 없음은 끝에</span>
-        </template>
-        <span><i class="sw solid-sw"></i> 단색 = 진행 중</span>
-        <span><i class="sw hatch"></i> 사선 = 할당됨(미착수)</span>
-        <span class="muted">· 왼쪽=미완료 할당(진행 중 + 할당됨), 오른쪽=최근 7일 완료 · 세로선 = 모듈 평균</span>
-      </div>
 
-      <div v-for="m in shownModules" :key="m.module" class="mod">
-        <div class="mod-head" :class="{ open: open[m.module] }" @click="toggleMod(m.module)">
-          <span class="chev">▸</span><span class="dot" :style="{ background: mcolor(curIdx) }"></span>
-          <b>{{ m.module }}</b><span class="pc">인력 {{ m.peopleCount }}</span>
-          <!-- 헤더 합계·평균은 **모듈 전원 로딩됐을 때** 확정. 그 전엔 진행률(loaded/total)만. -->
-          <span v-if="moduleComplete(m)" class="agg">진행중 <b>{{ moduleAgg(m).ip }}</b> · 할당됨 <b>{{ moduleAgg(m).op }}</b> · 최근7일 완료 <b>{{ moduleAgg(m).dn }}</b></span>
-          <span v-else class="agg muted">불러오는 중… ({{ moduleAgg(m).loaded }}/{{ m.peopleCount }})</span>
+      <!-- ══ 개인별 워크로드 탭 ══ -->
+      <template v-if="tab === 'people'">
+        <div class="wl-opts">
+          <div class="wl-opt"><span class="wl-opt-l">Task 구분</span><div class="fab-seg">
+            <button :class="{ on: grouping === 'type' }" @click="setGrouping('type')">티켓유형</button>
+            <button :class="{ on: grouping === 'epic' }" @click="setGrouping('epic')">소속 Epic</button></div></div>
+          <div class="wl-opt"><span class="wl-opt-l">완료 성과</span><div class="fab-seg">
+            <button :class="{ on: metric === 'count' }" @click="setMetric('count')">Task 수</button>
+            <button :class="{ on: metric === 'hr' }" @click="setMetric('hr')">소요시간</button></div></div>
+          <div class="wl-opt"><span class="wl-opt-l">정렬</span><div class="fab-seg">
+            <button :class="{ on: sortBy === 'name' }" @click="setSort('name')">이름</button>
+            <button :class="{ on: sortBy === 'assigned' }" @click="setSort('assigned')">할당</button>
+            <button :class="{ on: sortBy === 'done' }" @click="setSort('done')">완료</button></div></div>
+          <label class="wl-toggle" :class="{ on: !excludeVoc }" title="소속 Epic 없는 사용자 VoC 를 Epic 처럼 포함(끄면 제외)">
+            <input type="checkbox" :checked="!excludeVoc" @change="setExcludeVoc(!$event.target.checked)"><span class="wl-toggle-sw"></span>VoC 포함
+          </label>
         </div>
-        <div v-if="open[m.module]" class="mod-body" :ref="(el) => setBody(m.module, el)">
+        <div class="legend wl-legend">
+          <template v-if="grouping === 'type'">
+            <span><i class="sw task"></i> Task</span>
+            <span><i class="sw subtask"></i> Sub-Task</span>
+            <span><i class="sw voc"></i> VoC (Component 사용자 VoC)</span>
+          </template>
+          <template v-else>
+            <span class="muted">색 = 소속 Epic(시그니처 컬러) · VoC·Epic 없음은 끝에</span>
+          </template>
+          <span><i class="sw solid-sw"></i> 단색 = 진행 중</span>
+          <span><i class="sw hatch"></i> 사선 = 할당됨(미착수)</span>
+          <span class="muted">· 왼쪽=미완료 할당(진행 중 + 할당됨), 오른쪽=최근 7일 완료 · 세로선 = 모듈 평균</span>
+        </div>
+
+        <div v-for="m in shownModules" :key="m.module" class="wl-people" :ref="(el) => setBody(m.module, el)">
           <div v-if="!m.people || !m.people.length" class="empty">등록된 인력이 없습니다 (config/people.yaml)</div>
           <template v-else>
             <div class="whead">
@@ -654,16 +679,12 @@ export default {
             </template>
           </template>
         </div>
-      </div>
-      <!-- ── 모듈 통계(매니저용 조망) — 접이식. 이미 로딩된 인력 번들을 프론트 집계 ── -->
-      <div v-if="curMod" class="wl-stats" :class="{ open: statsOpen }">
-        <button class="wl-stats-h" @click="toggleStats">
-          <span class="chev">▸</span> 모듈 통계 <em>· {{ curMod.module }}</em>
-          <span class="muted mini">Epic 기여도 · 인력 지분 · 매니저 모니터링</span>
-        </button>
-        <div v-if="statsOpen" class="wl-stats-body">
-          <div v-if="!statsReady" class="muted wl-stats-wait">인력 통계를 모두 받은 뒤 집계합니다… ({{ moduleAgg(curMod).loaded }}/{{ curMod.peopleCount }})</div>
-          <template v-else>
+      </template>
+
+      <!-- ══ 모듈 통계 탭 (대시보드) ══ -->
+      <template v-else>
+        <div v-if="!statsReady" class="muted wl-stats-wait">인력 통계를 모두 받은 뒤 집계합니다… ({{ moduleAgg(curMod).loaded }}/{{ curMod.peopleCount }})</div>
+        <div v-else class="wl-stats-body">
             <!-- ① 모듈 → Epic 기여도 -->
             <div class="wl-stat-card">
               <div class="wl-stat-t">이 모듈이 기여하는 Epic <span class="muted mini">진행중 + 최근{{ doneDays }}일완료 · {{ doneUnit }}</span></div>
@@ -721,7 +742,7 @@ export default {
                   <div class="wl-mon-t">인력별 Epic 분산 <span class="muted mini">≥4 과다</span></div>
                   <div class="wl-mon-list">
                     <span v-for="e in epicSpread" :key="e.id" class="wl-mon-row" :class="{ warn: e.count >= 4 }">
-                      <Avatar :user="e.id" :name="e.name" :size="14" />{{ e.name }} <b>{{ e.count }} Epic</b>
+                      <Avatar :user="e.id" :name="e.name" :size="14" />{{ e.name }} <b :class="{ voc: e.voc }">{{ e.label }}</b>
                     </span>
                     <span v-if="!epicSpread.length" class="muted mini">데이터 없음</span>
                   </div>
@@ -748,48 +769,8 @@ export default {
                 </div>
               </div>
             </div>
-          </template>
         </div>
-      </div>
-
-      <!-- 하단 중앙 플로팅 옵션 바 ('내 Task' 와 같은 자리·모양) -->
-      <div class="wl-bar float">
-        <div class="wl-opt">
-          <span class="wl-opt-l">모듈</span>
-          <select class="wl-modsel" :value="mod" @change="selectModule($event.target.value)">
-            <option v-for="m in d.modules" :key="m.module" :value="m.module">{{ m.module }} ({{ m.peopleCount }})</option>
-          </select>
-        </div>
-        <div class="wl-opt">
-          <span class="wl-opt-l">Task 구분</span>
-          <div class="fab-seg">
-            <button :class="{ on: grouping === 'type' }" @click="setGrouping('type')">티켓유형</button>
-            <button :class="{ on: grouping === 'epic' }" @click="setGrouping('epic')">소속 Epic</button>
-          </div>
-        </div>
-        <div class="wl-opt">
-          <span class="wl-opt-l">완료 성과</span>
-          <div class="fab-seg">
-            <button :class="{ on: metric === 'count' }" @click="setMetric('count')">Task 수</button>
-            <button :class="{ on: metric === 'hr' }" @click="setMetric('hr')">소요시간</button>
-          </div>
-        </div>
-        <div class="wl-opt">
-          <span class="wl-opt-l">VoC</span>
-          <div class="fab-seg">
-            <button :class="{ on: !excludeVoc }" @click="setExcludeVoc(false)" title="소속 Epic 없는 사용자 VoC 를 Epic 처럼 포함">포함</button>
-            <button :class="{ on: excludeVoc }" @click="setExcludeVoc(true)" title="소속 Epic 없는 사용자 VoC 를 막대·통계에서 제외">제외</button>
-          </div>
-        </div>
-        <div class="wl-opt">
-          <span class="wl-opt-l">정렬</span>
-          <div class="fab-seg">
-            <button :class="{ on: sortBy === 'name' }" @click="setSort('name')">이름</button>
-            <button :class="{ on: sortBy === 'assigned' }" @click="setSort('assigned')">할당 Ticket수</button>
-            <button :class="{ on: sortBy === 'done' }" @click="setSort('done')">완료</button>
-          </div>
-        </div>
-      </div>
+      </template>
     </template>
     <div v-else class="loading page">불러오는 중…</div>
   </div>`,

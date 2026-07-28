@@ -35,7 +35,7 @@
 
 /* 모듈 평균 — 헤더행 평균 수치 + 세로 가이드선. 선은 progress bar 채움(.pbar-seg) 뒤에 둔다
  * (빈 트랙 위에는 보이고, 색 채움은 선을 덮음 → 막대를 가로지르지 않게). 라벨(.mavg-num)은 맨 위. */
-.mod-body { position: relative; }
+.wl-people { position: relative; }
 .mavg-line { position: absolute; bottom: 0; width: 2px; z-index: 1; background: var(--muted); opacity: .55; pointer-events: none; }
 .mavg-line::after { content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: var(--muted); }
 .prow .pbar-seg { position: relative; z-index: 2; }   /* 채움이 가이드선을 덮음 */
@@ -157,8 +157,32 @@
   background-repeat: no-repeat; background-position: right 9px center; }
 .wl-modsel:hover { border-color: var(--accent); }
 @media (max-width: 640px) { .wl-bar.float { gap: 8px 12px; padding: 7px 10px; } }
-/* 하단 플로팅 바가 마지막 모듈 행을 가리지 않게 여백 확보 */
-.wl-view { padding-bottom: 76px; }
+.wl-view { padding-bottom: 20px; }
+
+/* ── 대시보드형 헤더: 모듈 선택 + 탭 ── */
+.wl-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+.wl-head .wl-modsel { max-width: 260px; font-size: 13px; padding: 7px 30px 7px 12px; }
+.wl-tabs { display: inline-flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
+.wl-tabs button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; font-weight: 700;
+  padding: 6px 15px; border-radius: 7px; cursor: pointer; }
+.wl-tabs button:hover { color: var(--text); }
+.wl-tabs button.on { background: var(--accent); color: #fff; }
+
+/* 개인별 탭 옵션 줄 (기존 하단바에서 올라옴) */
+.wl-opts { display: flex; align-items: center; gap: 14px 20px; flex-wrap: wrap; margin-bottom: 10px;
+  padding: 9px 13px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; }
+/* VoC 포함 토글 스위치 */
+.wl-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--muted); cursor: pointer; user-select: none; }
+.wl-toggle.on { color: var(--text); }
+.wl-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.wl-toggle-sw { position: relative; width: 34px; height: 18px; border-radius: 999px; background: var(--border-hi); transition: background .15s; flex: none; }
+.wl-toggle-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.wl-toggle.on .wl-toggle-sw { background: var(--accent); }
+.wl-toggle.on .wl-toggle-sw::after { transform: translateX(16px); }
+
+/* 인력 목록 — 카드/폴딩 없이 심플한 정보 패널(대시보드형) */
+.wl-people { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 
 /* ── 모듈 통계(매니저용 조망) ── */
 .wl-stats { margin-top: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
@@ -169,7 +193,7 @@
 .wl-stats-h em { font-style: normal; color: var(--accent); font-weight: 700; }
 .wl-stats-h .mini { margin-left: auto; font-weight: 400; }
 .mini { font-size: 11px; }
-.wl-stats-body { padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.wl-stats-body { display: flex; flex-direction: column; gap: 14px; }
 .wl-stats-wait { padding: 18px; text-align: center; font-size: 13px; }
 .wl-stat-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel-2); }
 .wl-stat-t { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 9px; display: flex; align-items: baseline; gap: 8px; }
@@ -205,6 +229,7 @@
 .wl-mon-row i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
 .wl-mon-row b { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 .wl-mon-row.warn b { color: var(--danger); }
+.wl-mon-row b.voc { color: var(--wl-voc); }   /* 'VoC + N Epic' — VoC 색으로 강조 */
 .wl-mon-row.tkt { cursor: pointer; }
 .wl-mon-row.tkt:hover { color: var(--accent); }
 .ok { color: var(--good); font-weight: 600; }

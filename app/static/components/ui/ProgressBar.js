@@ -16,7 +16,7 @@ export default {
   template: `
     <div class="pbar-wrap">
       <div v-if="showTotal" class="pbar-total">{{ total }}</div>
-      <div class="pbar" :style="{ height: height + 'px' }">
+      <div class="pbar" :class="{ darktext: darkText }" :style="{ height: height + 'px' }">
         <template v-if="total > 0">
           <div v-for="(s, i) in segments" v-show="s.value > 0" :key="i" class="pbar-seg"
                :style="{ width: (s.value / denom * 100) + '%', background: s.color, color: darkText ? '#14243a' : '#fff' }"
