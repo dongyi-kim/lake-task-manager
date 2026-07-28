@@ -34,6 +34,8 @@ export default {
              mod: typeof pref.mod === "string" ? pref.mod : "",
              // 막대 색 구분: 'type'(티켓유형=기존) | 'epic'(소속 Epic)
              grouping: ["type", "epic"].includes(pref.grouping) ? pref.grouping : "type",
+             // 'VoC 제외' — 소속 Epic 없는 사용자 VoC(__voc__) 를 막대·통계에서 뺀다.
+             excludeVoc: pref.excludeVoc === true,
              // 하단 '모듈 통계' 섹션 — 접이식. 마감 리스크는 열 때 지연 로딩.
              statsOpen: pref.statsOpen === true,
              dueRisk: null, dueRiskBusy: false, dueRiskFor: "",
@@ -145,14 +147,19 @@ export default {
     epicPeopleRows() {
       const { byPerson } = this.moduleEpicAgg;
       const nameOf = (pid) => (this.pstat[pid] && this.pstat[pid].name) || pid;
-      const epics = this.moduleEpicGroups.groups.filter((g) => g.kind === "epic").slice(0, 8);
+      // Epic + **사용자 VoC(Epic처럼 취급)**. 'VoC 제외' 면 orderGroups 가 이미 voc 를 뺐다.
+      const epics = this.moduleEpicGroups.groups.filter((g) => g.kind === "epic" || g.kind === "voc").slice(0, 8);
       return epics.map((g) => {
         const pp = byPerson[g.key] || {};
         const segs = Object.keys(pp).map((pid) => ({
           pid, name: nameOf(pid), value: pp[pid], color: categoryColor(pid),
         })).sort((a, b) => b.value - a.value);
         const total = segs.reduce((a, s) => a + s.value, 0) || 1;
-        segs.forEach((s) => { s.pct = Math.round((s.value * 100) / total); s.title = s.name + " " + s.value + " (" + s.pct + "%)"; });
+        segs.forEach((s) => {
+          s.pct = Math.round((s.value * 100) / total);
+          s.label = s.pct + "%";                          // 좁으면 이건 남고 이름만 숨는다(컨테이너 쿼리)
+          s.title = s.name + " " + s.value + " (" + s.pct + "%)";
+        });
         return { epic: g, total, segs, single: segs.length === 1 };
       });
     },
@@ -295,8 +302,18 @@ export default {
     openCount(p) { return p.open ? this.barVal(p.open, "count") : 0; },   // 미착수(To Do) 건수
     assignedCount(p) { return this.barVal(p.inProgress, "count") + this.openCount(p); },  // 미완료 할당
     mv(bar, kind, metric) { return (bar[metric] || {})[kind] || 0; },   // kind: 'task'|'subtask'|'voc'
-    barVal(bar, metric) {   // 세 카테고리 합 (스케일·모듈평균·막대 총합 일치)
-      return this.mv(bar, "task", metric) + this.mv(bar, "subtask", metric) + this.mv(bar, "voc", metric);
+    /** 소속 Epic 없는 사용자 VoC(__voc__) 양 — 'VoC 제외' 시 막대·통계·합계에서 뺀다. */
+    noVocOf(bar, metric) {
+      const g = bar && bar.epics && bar.epics.__voc__;
+      if (!g) return 0;
+      return metric === "hr" ? (g.hr || 0) : (g.count || 0);
+    },
+    /** VoC 제외 반영한 카테고리 voc 값(=voc 전체 − Epic없는 VoC). */
+    vocVal(bar, metric) {
+      return this.mv(bar, "voc", metric) - (this.excludeVoc ? this.noVocOf(bar, metric) : 0);
+    },
+    barVal(bar, metric) {   // 세 카테고리 합 (스케일·모듈평균·막대 총합 일치). VoC 제외 반영.
+      return this.mv(bar, "task", metric) + this.mv(bar, "subtask", metric) + this.vocVal(bar, metric);
     },
     // 왼쪽 막대 = 미완료 할당. 정렬: Task→Sub-Task→VoC. 타입당 세그먼트 1개(폭=진행중+할당됨 합),
     // 오른쪽 '할당됨' 비율만 사선 오버레이(hatchFrac) → 숫자(합)는 세그먼트 중앙에 위치.
@@ -305,7 +322,11 @@ export default {
       const kinds = [["task", "Task"], ["subtask", "Sub-Task"], ["voc", "VoC"]];
       const segs = [];
       kinds.forEach(([k, lb]) => {
-        const ni = this.mv(ip, k, "count"), no = this.mv(op, k, "count"), c = ni + no;
+        let ni = this.mv(ip, k, "count"), no = this.mv(op, k, "count");
+        if (k === "voc" && this.excludeVoc) {           // Epic 없는 VoC 만큼 뺀다
+          ni -= this.noVocOf(ip, "count"); no -= this.noVocOf(op, "count");
+        }
+        const c = ni + no;
         segs.push({
           value: c, color: "var(--wl-" + k + ")",
           hatchFrac: c > 0 ? no / c : 0,      // 오른쪽 이 비율만 사선(할당됨)
@@ -347,6 +368,7 @@ export default {
             try { rows = (await api.workloadBucket(p.id, bk)) || []; } catch (e) { rows = []; }
             rows.forEach((t) => {
               if (!t.due) return;
+              if (this.excludeVoc && t.voc && !t.epic) return;   // 소속 Epic 없는 VoC 제외
               const d = this.dueRank(t);
               if (d < 0) over.push({ t, who: nameOf(p.id) });
               else if (d <= 3) soon.push({ t, who: nameOf(p.id) });
@@ -362,8 +384,16 @@ export default {
       }
     },
     _savePrefs() {
-      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, statsOpen: this.statsOpen })); }
+      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, statsOpen: this.statsOpen, excludeVoc: this.excludeVoc })); }
       catch (e) { /* 사파리 프라이빗 등 */ }
+    },
+    /** 'VoC 제외' 토글 — 막대·통계·마감리스크 모두 재산출(마감리스크는 필터가 바뀌므로 재로딩). */
+    setExcludeVoc(on) {
+      this.excludeVoc = on;
+      this._savePrefs();
+      this.dueRisk = null; this.dueRiskFor = "";
+      if (this.statsOpen) this.$nextTick(() => this.loadDueRisk());
+      this.scheduleMeasure();
     },
     // ── 막대 세그먼트: 'type'(티켓유형) / 'epic'(소속 Epic) 두 모드 ──
     // 왼쪽 '할당된 Ticket' 막대. type=Task/Sub-Task/VoC, epic=소속 Epic 별.
@@ -376,10 +406,11 @@ export default {
       if (key === "__none__") return { name: "Epic 없음", kind: "none", color: NONE_COLOR };
       return { name: (names && names[key]) || key, kind: "epic", color: categoryColor(key) };
     },
-    /** 실제 Epic(건수 많은 순) 먼저, VoC·Epic 없음은 성격이 달라 항상 끝. (상세 epicDist 와 동일 규칙) */
+    /** 실제 Epic(건수 많은 순) 먼저, VoC·Epic 없음은 성격이 달라 항상 끝. (상세 epicDist 와 동일 규칙)
+     *  'VoC 제외' 면 소속 Epic 없는 VoC 그룹을 통째로 뺀다(막대·통계 공통). */
     orderGroups(list) {
       const epics = list.filter((g) => g.kind === "epic").sort((a, b) => b.value - a.value);
-      const voc = list.find((g) => g.kind === "voc");
+      const voc = this.excludeVoc ? null : list.find((g) => g.kind === "voc");
       const none = list.find((g) => g.kind === "none");
       return epics.concat(voc ? [voc] : [], none ? [none] : []);
     },
@@ -427,7 +458,7 @@ export default {
     },
     seg(bar, metric) {
       const u = metric === "hr" ? "h" : "건";
-      const t = this.mv(bar, "task", metric), s = this.mv(bar, "subtask", metric), v = this.mv(bar, "voc", metric);
+      const t = this.mv(bar, "task", metric), s = this.mv(bar, "subtask", metric), v = this.vocVal(bar, metric);
       return [
         { value: t, color: "var(--wl-task)", title: "Task " + t + u },
         { value: s, color: "var(--wl-subtask)", title: "Sub-Task " + s + u },
@@ -741,6 +772,13 @@ export default {
           <div class="fab-seg">
             <button :class="{ on: metric === 'count' }" @click="setMetric('count')">Task 수</button>
             <button :class="{ on: metric === 'hr' }" @click="setMetric('hr')">소요시간</button>
+          </div>
+        </div>
+        <div class="wl-opt">
+          <span class="wl-opt-l">VoC</span>
+          <div class="fab-seg">
+            <button :class="{ on: !excludeVoc }" @click="setExcludeVoc(false)" title="소속 Epic 없는 사용자 VoC 를 Epic 처럼 포함">포함</button>
+            <button :class="{ on: excludeVoc }" @click="setExcludeVoc(true)" title="소속 Epic 없는 사용자 VoC 를 막대·통계에서 제외">제외</button>
           </div>
         </div>
         <div class="wl-opt">
