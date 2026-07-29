@@ -847,9 +847,11 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 
 /* 검색 팝오버 — 섹션 바로 아래에 붙는다(모달이 아니라 인라인이라 맥락이 안 끊긴다) */
 /* 오버레이 모달 — 인라인이면 폭이 좁고 아래 내용을 밀어낸다. 검색 오버레이와 같은 결. */
-/* z-index: 티켓 다이얼로그(.tkt-ov=9000) **위**여야 한다 — 이 팝업은 그 안에서 열린다.
-   이미지 확대(9500)보다는 아래(둘이 동시에 뜨지 않지만 순서를 정해 둔다). */
-.lp-ov { position: fixed; inset: 0; z-index: 9400; display: flex; align-items: flex-start;
+/* z-index: 에디터가 뜨는 **어떤 다이얼로그보다도 위**여야 입력이 된다 — CommentEditor 는
+   티켓 다이얼로그(9000)뿐 아니라 하위생성(nk-ov=9600)·Epic 생성 안에서도 열리고, 토스트(9700~9750)
+   까지 있다. 이 팝업이 그 아래면 뒤에 깔려 클릭·입력이 안 된다(리포트된 버그). 그래서 **9800**
+   (멘션/뱃지 편집 100000 아래, 나머지 오버레이 위). */
+.lp-ov { position: fixed; inset: 0; z-index: 9800; display: flex; align-items: flex-start;
   justify-content: center; padding: 10vh 16px 16px; background: rgba(12, 16, 24, .42);
   backdrop-filter: blur(2px); }
 .lp { width: min(720px, 100%); max-height: 76vh; display: flex; flex-direction: column;

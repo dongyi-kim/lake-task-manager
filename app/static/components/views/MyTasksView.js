@@ -127,7 +127,7 @@ export default {
     // 상태 전이 등으로 티켓이 바뀌면 **이 뷰만** 조용히 다시 받는다. 카드가 새 상태의 열로
     // 알아서 옮겨 간다(상태·담당·해결이 한꺼번에 바뀌므로 카드 하나만 손대는 것보다 안전하고,
     // 화면을 다시 그리는 것보다 가볍다 — 스크롤·펼침·옵션이 그대로 남는다).
-    this._onChanged = () => this.load({ quiet: true });
+    this._onChanged = () => { this._dropModelCache(); this.load({ quiet: true }); };
     window.addEventListener("ticket-changed", this._onChanged);
     // 좌하단 플로팅 새로고침
     window.addEventListener("force-refresh", this._fr = async () => {
@@ -269,16 +269,27 @@ export default {
      *  로딩 화면을 한 번 끼워 넣으면 목록이 통째로 사라졌다 나타나 '전체 새로고침' 으로 보인다.
      *  바뀐 건 티켓 하나인데 화면 전체가 깜빡일 이유가 없다. */
     async load(opts) {
-      if (!(opts && opts.quiet)) this.loading = true;
+      // 이 요청이 무엇을 받는지의 서명(스코프+상태필터). 캐시 키 겸 SWR 판정에 쓴다.
+      const key = this.apiScope + "|" + this.openFilter + "|" + this.doneFilter;
+      const cache = this._mcache || (this._mcache = {});
+      // 예전에 받아 둔 같은 필터의 응답이 있으면 **즉시** 보여 준다(SWR) — 스피너 없이 바로 뜨고,
+      // 아래에서 최신으로 조용히 갱신한다. 퀵필터를 오갈 때 체감이 즉각적이 된다.
+      if (!(opts && opts.quiet) && cache[key]) { this.model = cache[key]; this.loading = false; }
+      else if (!(opts && opts.quiet)) this.loading = true;
       this.err = "";
       // ★ 요청 순번 가드 — 퀵필터를 빠르게 바꾸면 요청이 여러 개 날아가는데, prod 지연 때문에
       //   먼저 보낸(지나간) 요청이 **나중에** 도착해 최신 화면을 옛 결과로 덮어쓴다(리포트된 버그:
-      //   이미 다른 필터를 골랐는데 지나간 필터 내용이 렌더링됨). 순번이 어긋난 응답은 통째로 버린다.
+      //   이미 다른 필터를 골랐는데 지나간 필터 내용이 렌더링됨). 순번이 어긋난 응답은 UI 에선 버린다.
       const seq = this._loadSeq = (this._loadSeq || 0) + 1;
       try {
         const model = await api.myTasks({ scope: this.apiScope, openFilter: this.openFilter,
                                           doneFilter: this.doneFilter });
-        if (seq !== this._loadSeq) return;     // 더 최신 요청이 이미 떴다 — 이 결과는 낡았다
+        // ★ 성공 응답은 **순번과 무관하게** 캐시에 보관한다 — UI 가 버릴 응답이라도 성공했으면
+        //   그 필터로 다시 왔을 때 즉시 쓸 수 있게 재활용한다(요청 헛수고 방지). 캐시는 12개로 제한.
+        cache[key] = model;
+        const ks = Object.keys(cache);
+        if (ks.length > 12) delete cache[ks[0]];
+        if (seq !== this._loadSeq) return;     // 더 최신 요청이 이미 떴다 — 화면엔 안 쓴다
         this.model = model;
       }
       catch (e) {
@@ -287,9 +298,12 @@ export default {
       }
       finally { if (seq === this._loadSeq) this.loading = false; }
     },
+    /** 티켓이 바뀌면 클라이언트 모델 캐시는 낡는다 — 통째로 비운다(서버 mt: 캐시도 같은 이유로 무효화). */
+    _dropModelCache() { this._mcache = {}; },
     async hardRefresh() {
       if (this.busy) return;
       this.busy = true;
+      this._dropModelCache();
       try { await api.refresh(); this.model = null; await this.load(); }
       catch (e) { this.err = (e && e.message) || "다시 받지 못했습니다."; }
       finally { this.busy = false; }
@@ -661,20 +675,17 @@ export default {
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.title }}</span>
-              <!-- Epic 이 먼저다 — '무엇에 속한 일인가' 는 소속이라 제목 옆에 붙어야 읽히고,
-                   진척은 '얼마나 됐나' 라 담당자·마감과 같은 현황 묶음이다. 사이를 세로선으로
-                   끊어 두 묶음이 눈에 갈리게 한다. -->
-              <span v-if="p.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(p.epicKey)">{{ epicTitle(p.epicKey) }}</span>
-              <span v-else-if="p.group.voc" class="mt-epic">사용자 VoC</span>
-              <span v-else class="mt-epic none">Epic 없음</span>
-              <span class="mt-sep" aria-hidden="true"></span>
-              <!-- 진척은 **몇 개 중 몇 개**로 적는다. 퍼센트는 SP 가중이 섞여 손으로 세어
-                   확인할 수가 없다 — 3/7 은 목록을 세어 보면 맞는지 바로 안다. -->
+              <!-- 진척은 **제목 바로 뒤**에 둔다(사용자 요청) — 이 묶음이 얼마나 됐나를 제목 옆에서
+                   바로 읽는다. **몇 개 중 몇 개**로 적는다(퍼센트는 SP 가중이라 손으로 못 센다). -->
               <span v-if="p.group.pct !== null" class="mt-roll"
                     :title="'하위 ' + p.group.kidsDone + '/' + p.group.kidsTotal + ' 완료 (진척 ' + p.group.pct + '%)'">
                 <span class="mt-pbar"><i :style="{ width: p.group.pct + '%' }"></i></span>
                 <em>{{ p.group.kidsDone }}/{{ p.group.kidsTotal }}</em>
               </span>
+              <span v-if="p.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(p.epicKey)">{{ epicTitle(p.epicKey) }}</span>
+              <span v-else-if="p.group.voc" class="mt-epic">사용자 VoC</span>
+              <span v-else class="mt-epic none">Epic 없음</span>
+              <span class="mt-sep" aria-hidden="true"></span>
               <span class="mt-owner" :class="{ me: p.group.mine }"
                     :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
                 <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>
@@ -750,13 +761,13 @@ export default {
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
               <span class="mt-title">{{ p.title }}</span>
-              <span class="mt-sep" aria-hidden="true"></span>
+              <!-- 진척을 제목 바로 뒤로(사용자 요청) -->
               <span v-if="p.group.pct !== null" class="mt-roll"
                     :title="'하위 ' + p.group.kidsDone + '/' + p.group.kidsTotal + ' 완료 (진척 ' + p.group.pct + '%)'">
                 <span class="mt-pbar"><i :style="{ width: p.group.pct + '%' }"></i></span>
                 <em>{{ p.group.kidsDone }}/{{ p.group.kidsTotal }}</em>
               </span>
-              
+              <span class="mt-sep" aria-hidden="true"></span>
               <span class="mt-owner" :class="{ me: p.group.mine }"
                     :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
                 <Avatar :user="p.group.assigneeId" :name="p.group.assignee" :size="16" />{{ p.group.assignee || '미할당' }}</span>

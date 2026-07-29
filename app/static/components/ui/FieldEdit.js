@@ -117,7 +117,9 @@ export default {
       this._focus();
     },
     _focus() {
-      this.$nextTick(() => { const el = this.$refs.inp; if (el) el.focus(); });
+      // preventScroll — 팝업 입력에 포커스를 줄 때 브라우저가 그 자리로 **페이지를 스크롤**하는 걸
+      // 막는다(퀵필터 picker 를 누르면 화면이 아래로 튀던 버그).
+      this.$nextTick(() => { const el = this.$refs.inp; if (el) el.focus({ preventScroll: true }); });
     },
     // 팝업(teleport)을 트리거 버튼 기준으로 fixed 배치 — 아래가 좁으면 위로 뒤집는다.
     _place() {
