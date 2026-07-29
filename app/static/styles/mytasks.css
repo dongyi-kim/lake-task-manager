@@ -27,8 +27,11 @@
 .mt-qf-seg .mt-qf-fe { display: inline-flex; align-items: stretch; }
 .mt-qf-seg .mt-qf-fe .fe-v { height: 32px; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px;
   font: 600 12.5px/1 inherit; font-family: inherit; border: 1px solid var(--border); border-radius: 0 7px 7px 0;
-  background: var(--panel); color: var(--muted); cursor: pointer; padding: 0 12px; }
-.mt-qf-seg .mt-qf-fe .fe-v:hover { color: var(--text); }
+  background: var(--panel); color: var(--muted); cursor: pointer;
+  /* 기본 .fe-v 의 음수 마진(margin:-1px -5px)이 세그먼트에서 버튼과 1px 어긋나게 했다 → 0 으로 리셋. */
+  padding: 0 12px; margin: 0; }
+.mt-qf-seg .mt-qf-fe .fe-v:hover { color: var(--text); box-shadow: none; }
+.mt-qf-seg .mt-qf-fe .fe-v.on { box-shadow: none; }
 .mt-qf-seg .mt-qf-fe.qf-on .fe-v { color: #fff; background: var(--accent); border-color: var(--accent); }
 .mt-qf .qf-fe-v { font-weight: 700; }
 .mt-qf .qf-fe-cav { font-size: 8px; opacity: .6; }
