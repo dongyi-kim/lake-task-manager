@@ -69,6 +69,25 @@ def _serve_bg(s, wait=True):
     return server
 
 
+def _wait_port_free(port, timeout=12):
+    """포트가 빌 때까지(=직전 인스턴스가 완전히 종료) 잠깐 기다린다. 업데이트 후 재기동 전용."""
+    import socket
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        sk = socket.socket()
+        sk.settimeout(0.4)
+        try:
+            rc = sk.connect_ex(("127.0.0.1", int(port)))
+        except Exception:
+            rc = 1
+        finally:
+            sk.close()
+        if rc != 0:
+            return True          # 연결 실패 = 리스너 없음 = 포트 비었음
+        time.sleep(0.3)
+    return False
+
+
 def _signal_existing_instance(s):
     """**단일 인스턴스** — 이미 떠 있는 인스턴스가 있으면 그쪽에 '창 포커스/열기' 를 시키고 True.
     아무도 없으면(연결 실패) False → 이 프로세스가 정상 기동한다.
@@ -878,7 +897,12 @@ def _run_tray(s):
                 #   run.bat 이 **실행되지 않았다**(=앱은 꺼지는데 재시작이 안 됨). 문자열로 주면
                 #   cmd 가 `timeout … & "경로"` 를 그대로 파싱한다(경로 공백도 따옴표로 안전).
                 cmd = 'cmd /c timeout /t 2 /nobreak >nul & "%s"' % str(bat)
-                subprocess.Popen(cmd, cwd=str(bat.parent),
+                # LAKE_RESTART=1 로 재기동을 표시한다 → 새 인스턴스는 단일 인스턴스 억제를
+                # 건너뛰고(내가 새 인스턴스가 돼야 함), 종료 중인 이 인스턴스의 포트가 풀릴 때까지
+                # 잠깐 기다린다. 안 그러면 새 인스턴스가 "이미 떠 있음"으로 오판해 창만 열고 종료해,
+                # 결국 둘 다 사라진다(=업데이트 후 아무것도 안 뜸).
+                env = dict(os.environ, LAKE_RESTART="1")
+                subprocess.Popen(cmd, cwd=str(bat.parent), env=env,
                                  creationflags=0x00000010)   # CREATE_NEW_CONSOLE (독립 실행)
                 launched = True
         except Exception as e:
@@ -914,6 +938,7 @@ def _run_tray(s):
         pystray.MenuItem("종료", on_quit),
     )
     icon = pystray.Icon("lake-task-manager", img, "Lake Task Manager", menu)
+    _appmain.set_restart_hook(lambda: on_restart(icon, None))   # UI '업데이트' 버튼 → 트레이 재시작과 동일 경로
     threading.Thread(target=sso_poller, args=(icon,), name="sso-poller", daemon=True).start()
     print(f"Lake Task Manager - 트레이 상주 (env={s.jira_env}). 창을 닫아도 백엔드는 유지됩니다.")
     open_window(initial=True)                          # 시작 시 창 1개 오픈
@@ -944,9 +969,13 @@ def main():
         _sso_login(s)
         return
 
-    # 단일 인스턴스: 이미 떠 있으면 그 인스턴스에 창을 띄우/포커스 시키고 끝낸다(새 백엔드 안 띄움).
-    # (시작프로그램/바로가기 재실행 시 백엔드가 두 개 뜨거나 창이 여러 개 나는 것을 막는다.)
-    if _signal_existing_instance(s):
+    if os.getenv("LAKE_RESTART"):
+        # 업데이트 후 재기동: 직전 인스턴스가 방금 종료 중이다. 단일 인스턴스 억제를 건너뛰고
+        # (내가 새 인스턴스가 돼야 함) 포트가 풀릴 때까지 기다린 뒤 정상 기동한다.
+        _wait_port_free(s.app_port)
+    elif _signal_existing_instance(s):
+        # 단일 인스턴스: 이미 떠 있으면 그 인스턴스에 창을 띄우/포커스 시키고 끝낸다(새 백엔드 안 띄움).
+        # (시작프로그램/바로가기 재실행 시 백엔드가 두 개 뜨거나 창이 여러 개 나는 것을 막는다.)
         return
 
     if s.jira_env == "prod":

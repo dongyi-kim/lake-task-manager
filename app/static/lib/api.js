@@ -40,6 +40,8 @@ export const api = {
     jsonReq("/api/ticket/" + encodeURIComponent(key) + "/refresh", "POST", {})
       .then((r) => { evict(encodeURIComponent(key)); return r; }).catch(() => {}),
   login: () => req("/api/login", { method: "POST" }),
+  updateInfo: () => req("/api/update"),                                // 업데이트 가능 여부(배포 repo) — memo 제외
+  updateRestart: () => req("/api/app/update-restart", { method: "POST" }),   // git pull + 재시작(트레이 경로)
   prefs: () => req("/api/prefs"),
   setPrefs: (body) => jsonReq("/api/prefs", "PUT", body),
   refresh: () => req("/api/refresh", { method: "POST" }).then((r) => { _memo.clear(); return r; }),

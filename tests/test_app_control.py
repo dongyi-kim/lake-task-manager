@@ -8,6 +8,7 @@ import app.main as m
 
 def _reset():
     m._app_ctrl["open_hook"] = None
+    m._app_ctrl["restart_hook"] = None
     m._app_ctrl["live"] = 0
     m._app_ctrl["focus"].clear()
 
@@ -53,3 +54,22 @@ def test_open_endpoint(client=None):
     c = TestClient(m.app)
     assert c.post("/api/app/open").json() == {"action": "none"}
     _reset()
+
+
+def test_restart_hook():
+    _reset()
+    assert m.request_restart() == {"action": "none"}     # 훅 없으면 스스로 재시작 못 함
+    calls = []
+    m.set_restart_hook(lambda: calls.append(1))
+    assert m.request_restart() == {"action": "restart"}
+    assert calls == [1]
+    _reset()
+
+
+def test_update_endpoint_shape():
+    from fastapi.testclient import TestClient
+    c = TestClient(m.app)
+    body = c.get("/api/update").json()
+    for k in ("available", "behind", "current", "ok", "checkedAt"):
+        assert k in body
+    assert isinstance(body["available"], bool)

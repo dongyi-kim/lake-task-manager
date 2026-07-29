@@ -72,12 +72,30 @@ _window_login = False
 # 재실행 신호의 **단일 원천은 백엔드**다. run.py 가 open hook 을 등록하고 창 수를 보고하며,
 # 창 스레드는 focus 요청을 자기 스레드에서 폴링해 bring_to_front 한다(Playwright 는 스레드 고정이라
 # 다른 스레드에서 창을 못 만진다 — 그래서 이벤트만 넘기고 실제 조작은 창 루프가 한다).
-_app_ctrl = {"open_hook": None, "live": 0, "focus": threading.Event(), "lock": threading.Lock()}
+_app_ctrl = {"open_hook": None, "restart_hook": None, "live": 0,
+             "focus": threading.Event(), "lock": threading.Lock()}
 
 
 def set_open_window_hook(fn):
     """run.py(_run_tray)가 '새 앱 창 열기' 동작을 등록."""
     _app_ctrl["open_hook"] = fn
+
+
+def set_restart_hook(fn):
+    """run.py(_run_tray)가 '업데이트 후 재시작' 동작을 등록(트레이 메뉴와 동일 경로)."""
+    _app_ctrl["restart_hook"] = fn
+
+
+def request_restart():
+    """UI '업데이트' 버튼 → 트레이의 업데이트+재시작을 트리거. 반환 action: restart | none."""
+    hook = _app_ctrl["restart_hook"]
+    if not hook:
+        return {"action": "none"}         # 트레이 모드가 아니면 스스로 재시작할 수 없다
+    try:
+        hook()
+        return {"action": "restart"}
+    except Exception:
+        return {"action": "error"}
 
 
 def note_window_opened():
@@ -123,6 +141,26 @@ def consume_focus_request():
 def api_app_open():
     """다른 실행 인스턴스(런처)가 '창을 띄우거나 포커스' 요청 — 단일 인스턴스 동작의 진입점."""
     return request_focus_or_open()
+
+
+# ── 업데이트 확인 (배포 repo 가 원격보다 뒤처졌나) ─────────────────────────
+from app.infra.settings import APP_ROOT as _APP_ROOT        # noqa: E402
+from app.infra.update_check import UpdateChecker            # noqa: E402
+
+_updater = UpdateChecker(_APP_ROOT)
+_updater.start()
+
+
+@app.get("/api/update")
+def api_update():
+    """배포 repo 의 업데이트 가능 여부. {available, behind, current, ok, checkedAt}. 즉답(캐시)."""
+    return _updater.get()
+
+
+@app.post("/api/app/update-restart")
+def api_app_update_restart():
+    """UI '업데이트' → 트레이의 '업데이트 후 재시작'을 실행(git pull + 재기동). 트레이 모드에서만."""
+    return request_restart()
 
 
 @app.exception_handler(SessionExpired)

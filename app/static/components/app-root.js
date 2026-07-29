@@ -17,6 +17,8 @@ import TicketDialog from "./ui/TicketDialog.js";
 import SearchOverlay from "./ui/SearchOverlay.js";
 import SettingsMenu from "./ui/SettingsMenu.js";
 import { api } from "../lib/api.js";
+import { confirmBox } from "../lib/confirm.js";
+import { pushToast } from "../lib/toast.js";
 
 const ROUTES = { home: HomeView, wbs: WbsView, vit: VitView, workload: WorkloadView,
                  mytasks: MyTasksView, devtools: DevToolsView };
@@ -52,6 +54,8 @@ export default {
                     manager: null,
                     // 캐시로 버틸 수 있는가. 미인증이어도 캐시가 살아 있으면 화면은 띄운다.
                     hasCache: false,
+                    // 배포 repo 업데이트 가능 여부(null=아직 모름). updating=재시작 트리거 후.
+                    update: null, updating: false,
                     ticketKeyFromPath: ticketOf() }; },
   computed: {
     // ★ 매니저 전용 탭은 **매니저로 확정된 뒤에만** 보인다(manager===true). 예전엔 '아직 모름
@@ -140,11 +144,43 @@ export default {
     // 매니저 판정은 **부팅과 무관하게** 따로 흐른다. 결과가 오면 watch 가 정리한다.
     api.me().then((me) => { this.manager = !!(me && me.manager); })
       .catch(() => { this.manager = null; });   // 모르면 막지 않는다(아래 주석 참고)
+    // 업데이트(배포 repo 최신 여부) — 시작 시 + 주기적으로 확인. 실패는 조용히(표시만 하는 기능).
+    this.checkUpdate();
+    setInterval(() => this.checkUpdate(), 30 * 60 * 1000);
   },
   methods: {
     /** 볼 수 없는 주소면 워커 기본 화면(내 Task)으로. 화면만 바꿔치지 않고 **주소까지** 고친다
      *  — 안 그러면 탭 강조가 아무 데도 안 걸리고 새로고침마다 같은 상황이 되풀이된다. */
     guard() { if (!this.allowed) location.hash = "#/mytasks"; },
+    checkUpdate() {
+      api.updateInfo().then((u) => { this.update = u || null; }).catch(() => {});
+    },
+    async doUpdate() {
+      if (this.updating || !(this.update && this.update.available)) return;
+      const n = this.update.behind || 0;
+      const ok = await confirmBox(
+        "새 버전이 있습니다" + (n ? " (" + n + "개 업데이트)" : "") + ".\n"
+        + "지금 받아서 앱을 재시작할까요? 잠시 창이 닫혔다가 다시 열립니다.",
+        { okLabel: "업데이트 후 재시작", cancelLabel: "나중에" });
+      if (!ok) return;
+      this.updating = true;
+      try {
+        const r = await api.updateRestart();
+        if (r && r.action === "restart") {
+          pushToast({ kind: "info", icon: "⬆", title: "업데이트를 받아 재시작합니다",
+                      message: "잠시 후 앱이 다시 열립니다.", timeout: 0, key: "update" });
+        } else {
+          // 트레이 모드가 아니면 스스로 재시작 못 함 — 수동 안내.
+          this.updating = false;
+          pushToast({ kind: "info", title: "수동 업데이트가 필요합니다",
+                      message: "앱을 닫고 run.bat 을 다시 실행하세요.", timeout: 8000, key: "update" });
+        }
+      } catch (e) {
+        this.updating = false;
+        pushToast({ kind: "error", title: "업데이트 시작 실패",
+                    message: (e && e.message) || "", timeout: 6000, key: "update" });
+      }
+    },
     toggleTheme() {
       this.theme = this.theme === "dark" ? "light" : "dark";
       document.documentElement.setAttribute("data-theme", this.theme);
@@ -162,6 +198,12 @@ export default {
              :href="'#/' + t.k">{{ t.label }}</a>
         </nav>
         <div class="top-actions">
+          <button v-if="update && update.available" class="update-trig" :class="{ busy: updating }"
+                  @click="doUpdate" :disabled="updating"
+                  :title="'새 버전 ' + (update.behind || '') + '개 — 클릭해 업데이트 후 재시작'">
+            <span class="update-dot"></span>
+            <span>{{ updating ? '업데이트 중…' : '업데이트' }}</span>
+          </button>
           <button class="search-trig" @click="searchOpen = true" title="통합 검색 ( / )">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
             <span>검색</span><kbd>/</kbd>
