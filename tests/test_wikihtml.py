@@ -185,3 +185,23 @@ def test_section_divider_html_mode_strips_inline_marks():
 def test_flatten_section_titles_noop_without_marker():
     from app.content.htmlsafe import flatten_section_titles
     assert flatten_section_titles("<p>그냥 본문</p>") == "<p>그냥 본문</p>"
+
+
+def test_mention_html_mode_becomes_jira_anchor():
+    """prod(html 모드): 멘션 span 이 정화에서 통째로 죽지 않고 Jira user-hover 앵커로 보존된다.
+    (기존엔 span 의 data-* 가 정화에서 떨어져 그냥 '@이름' 글자가 돼 멘션이 안 걸렸다 — 리포트된 버그.)"""
+    from app.content.htmlsafe import flatten_mentions_html, sanitize_html
+    editor = '<p><span class="mention" data-type="mention" data-id="skcc.x1103" data-label="이준서">@이준서</span> 님</p>'
+    stored = sanitize_html(flatten_mentions_html(editor))
+    assert 'class="user-hover"' in stored          # Jira 가 쓰는 멘션 앵커 class
+    assert "name=skcc.x1103" in stored             # 프로필 링크에 사번
+    assert "@이준서" in stored
+    assert 'data-type="mention"' not in stored     # 우리 span 형태는 앵커로 바뀜
+    # 정화 재적용에도 안정(멱등)
+    assert sanitize_html(stored) == stored
+
+
+def test_mention_wiki_mode_stays_id():
+    """wiki 모드(mock/local): 멘션 → [~사번] (기존 동작 유지, 회귀 가드)."""
+    h = '<p><span data-type="mention" data-id="skcc.x1103">@이준서</span> 님</p>'
+    assert html_to_wiki(h) == "[~skcc.x1103] 님"

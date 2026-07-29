@@ -890,9 +890,11 @@ export default {
       if (!root || !root.querySelectorAll) return;
       root.querySelectorAll(".tkt-desc img, .tkt-desc table:not(.kv-table)").forEach((el) => {
         if (el.dataset.zoomified) return;
-        // 첨부 **파일 뱃지(칩)** 안의 아이콘/썸네일 이미지는 확대 대상이 아니다 — 콘텐츠 이미지가
-        // 아니라 링크 칩이라, 여기에 '확대' 를 얹으면 칩 위에 엉뚱한 버튼이 뜬다(prod 에서 발생).
-        if (el.tagName === "IMG" && el.closest(".file-badge, .fchip, .attachment")) return;
+        // 첨부 **파일 뱃지(칩)/링크** 안의 아이콘·썸네일 이미지는 확대 대상이 아니다 — 콘텐츠 이미지가
+        // 아니라 링크 칩이다. 여기에 '확대' 를 얹으면 칩 뒤에 엉뚱한 '확대' 버튼이 붙는다(prod 리포트).
+        // ★ prod 는 뱃지 class 가 우리(.file-badge)와 달라(Jira 자체 렌더) 못 걸릴 수 있어, **앵커(a)
+        //   안**과 **data-ext 를 가진 요소 안**도 함께 제외한다(첨부 이미지는 늘 링크/뱃지 안이다).
+        if (el.tagName === "IMG" && el.closest("a, .file-badge, .fchip, .attachment, [data-ext]")) return;
         // Jira 이모티콘/이모지(예: (*)→별)는 인라인 아이콘이라 확대 대상이 아니다.
         //  1) 서버가 붙인 .emoticon 표식,  2) 폴백으로 아주 작은 이미지(≤32px)도 제외.
         if (el.tagName === "IMG") {

@@ -17,8 +17,8 @@ from urllib.parse import quote, unquote, urlparse
 
 from app.domain import progress
 from app.auth.base import SessionExpired, background_upstream, write_upstream
-from app.content.htmlsafe import (_CONF_RE, flatten_section_titles, flatten_task_lists,
-                       proxy_attachment_images, proxy_attachment_links,
+from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
+                       flatten_task_lists, proxy_attachment_images, proxy_attachment_links,
                        proxy_images, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html)
 from app.domain.names import real_name
@@ -1448,7 +1448,7 @@ class JiraClient:
         # sec-title-node class 가 떨어져 그냥 <div> 로 남아 '=== ===' 표식이 사라진다).
         # wiki 모드는 html_to_wiki 가 이미 둘 다 같은 형태로 바꾼다.
         if fmt == "html":
-            return sanitize_html(flatten_section_titles(flatten_task_lists(html)))
+            return sanitize_html(flatten_mentions_html(flatten_section_titles(flatten_task_lists(html))))
         return html_to_wiki(html)
 
     def _comment_fmt(self):
@@ -1462,7 +1462,9 @@ class JiraClient:
         if not html:
             return ""
         from app.content.wikihtml import html_to_wiki
-        return sanitize_html(flatten_task_lists(html)) if self._comment_fmt() == "html" else html_to_wiki(html)
+        if self._comment_fmt() == "html":
+            return sanitize_html(flatten_mentions_html(flatten_task_lists(html)))
+        return html_to_wiki(html)
 
     def create_child(self, parent_key, itype, summary, priority=None,
                      duedate=None, assignee=None, components=None, description=None):

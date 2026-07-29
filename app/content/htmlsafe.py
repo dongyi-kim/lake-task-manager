@@ -131,6 +131,38 @@ def flatten_section_titles(html):
 
     return _SEC_TITLE_DIV_RE.sub(_repl, html)
 
+
+# 사람 멘션 — 에디터는 <span data-type="mention" data-id="사번">@이름</span> 로 직렬화한다.
+# wiki 모드는 html_to_wiki 가 [~사번] 으로 바꿔 Jira 가 실제 멘션(알림·프로필 링크)으로 처리한다.
+# 하지만 **prod(html 모드)** 는 정화만 해 저장하는데, 정화기 _ALLOWED_ATTRS 에 span 항목이 없어
+# data-type/data-id 가 통째로 떨어져 나가 그냥 '@이름' 글자가 된다 → **멘션이 안 걸린다**(Jira 에
+# 남는 값이 평문, 알림·링크 없음. 재편집하면 글자로 굳음 — 리포트된 버그).
+# → 정화 **전에** 멘션 span 을 Jira 가 쓰는 사용자 멘션 앵커(class="user-hover" + 프로필 링크)로
+#   바꾼다. 이게 Jira 가 렌더하는 멘션 형태와 같아 표시가 일치하고, user-hover class 는 allowlist 에
+#   있어 정화를 통과한다.
+_MENTION_SPAN_RE = re.compile(r'<span\b[^>]*\bdata-type="mention"[^>]*>(.*?)</span>', re.I | re.S)
+
+
+def flatten_mentions_html(html):
+    """<span data-type="mention" data-id="사번">@이름</span> → <a class="user-hover"
+    href="/secure/ViewProfile.jspa?name=사번">@이름</a>. 멘션이 없으면 그대로 반환."""
+    if not html or 'data-type="mention"' not in html:
+        return html
+
+    def _repl(m):
+        tag = m.group(0)
+        idm = re.search(r'\bdata-id="([^"]*)"', tag)
+        uid = (idm.group(1) if idm else "").strip()
+        name = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        if not name.startswith("@"):
+            name = "@" + name
+        if not uid:
+            return escape(name)                 # 사번을 모르면 안전하게 글자만
+        return ('<a class="user-hover" href="/secure/ViewProfile.jspa?name='
+                + escape(uid, quote=True) + '">' + escape(name) + "</a>")
+
+    return _MENTION_SPAN_RE.sub(_repl, html)
+
 # 표시에 필요한 서식 태그만 허용 (구조/텍스트/표/코드/링크/이미지).
 _ALLOWED_TAGS = {
     "p", "br", "hr", "b", "strong", "i", "em", "u", "s", "strike", "del", "ins",
