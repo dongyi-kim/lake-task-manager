@@ -109,6 +109,7 @@ def _node(raw, today, epic_field):
         # 사용자 VoC 는 Epic 이 없어도 **전용 Epic 처럼** 취급한다(색·묶음 모두).
         # 단 Epic 이 배정돼 있으면 그 Epic 이 우선이다 — 워크로드 Epic 분포와 같은 규칙.
         "voc": epic_field["voc"] in [c.get("name") for c in (f.get("components") or [])],
+        "components": [c.get("name") for c in (f.get("components") or []) if c.get("name")],
         "parentKey": ((f.get("parent") or {}).get("key")) or None,
     }
 
@@ -158,10 +159,40 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     #      · 할당됨: 오래 방치된 것까지 다 볼지(all), 최근 2주 안에 손댄 것만 볼지(2w)
     #      · 진행 중: 항상 전부 — 지금 하는 일을 숨기면 안 된다
     #      · 완료   : 최근 N일 안에 끝낸 것만(완료 전체를 넣으면 화면이 과거로 가득 찬다)
-    if scope == "reporter":
+    # 스코프 해석 — assignee(기본) | reporter | both | module:<모듈명>.
+    #   module 스코프: 그 모듈의 일감 = 모듈 인력(people.yaml) 중 하나가 담당/보고 **또는**
+    #   티켓 component 가 그 모듈. (매니저 구분 없이 누구나 다른 모듈도 볼 수 있다.)
+    mod_ids, mod_comps = set(), set()
+    if scope.startswith("module:"):
+        module = scope.split(":", 1)[1].strip()
+        from app.infra.settings import load_people
+        people = load_people() or {}
+        if module in people:
+            for pid in (people.get(module) or []):
+                if pid:
+                    mod_ids.add(pid)
+            mod_comps.add(module)
+            scope_kind = "module"
+        else:
+            scope_kind = "assignee"     # 알 수 없는 모듈 → 안전 폴백
+    else:
+        scope_kind = scope if scope in ("reporter", "both") else "assignee"
+
+    def _in(field, ids):
+        return "%s in (%s)" % (field, ", ".join('"%s"' % i for i in sorted(ids)))
+
+    if scope_kind == "reporter":
         who = 'reporter = "%s"' % me
-    elif scope == "both":
+    elif scope_kind == "both":
         who = '(assignee = "%s" OR reporter = "%s")' % (me, me)
+    elif scope_kind == "module":
+        cl = []
+        if mod_ids:
+            cl.append(_in("assignee", mod_ids))
+            cl.append(_in("reporter", mod_ids))
+        if mod_comps:
+            cl.append(_in("component", mod_comps))
+        who = "(%s)" % " OR ".join(cl) if cl else 'assignee = "%s"' % me
     else:
         who = 'assignee = "%s"' % me
 
@@ -185,10 +216,15 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
         return "both" if (a and r) else ("assignee" if a else ("reporter" if r else None))
 
     def is_mine(n):
-        """이 스코프에서 '내 일'인가 — 하위 중 무엇을 내 원자로 뽑을지의 기준이다."""
-        if scope == "reporter":
+        """이 스코프의 '대상 일'인가 — 하위 중 무엇을 원자로 뽑을지의 기준이다.
+        module 스코프에선 '그 모듈 소속'(인력 담당/보고 or 모듈 component)을 대상으로 본다."""
+        if scope_kind == "module":
+            if n["assigneeId"] in mod_ids or n["reporterId"] in mod_ids:
+                return True
+            return any(c in mod_comps for c in (n.get("components") or []))
+        if scope_kind == "reporter":
             return n["reporterId"] == me
-        if scope == "both":
+        if scope_kind == "both":
             return n["assigneeId"] == me or n["reporterId"] == me
         return n["assigneeId"] == me
 

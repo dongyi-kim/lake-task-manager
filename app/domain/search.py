@@ -368,6 +368,29 @@ def mention_suggestions(client, s, q, key, limit=8):
         # stable sort 라 같은 등급 안에선 기존 Jira 검색 순서가 유지된다.
         results.sort(key=lambda u: rank(u.get("id")))
         return results[:limit]
+    # 기본 노출인데 **티켓 맥락이 없으면**(일반 사람검색) 모듈 사람 + 매니저뿐 — config 유래라
+    # 거의 안 바뀐다. 검색 다이얼로그의 기본값으로 매번 이름을 해석하지 않게 **길게 캐시**한다
+    # (people.yaml 편집은 /api/refresh 가 전체 캐시를 비워 반영). 넉넉히 만들어 두고 잘라 쓴다.
+    if not key:
+        def build_default():
+            seen, out = set(), []
+            uids = list(_my_module_people(client, s)) + list(s.managers or [])
+            for uid in uids:
+                if not uid or uid in seen:
+                    continue
+                seen.add(uid)
+                disp = client._display_name(uid)
+                out.append({"id": uid, "name": real_name(disp) or uid, "display": disp,
+                            "avatar": "/api/avatar/" + uid})
+                if len(out) >= 40:
+                    break
+            return out
+        try:
+            cached = client.cache.get_or_set(
+                f"mentiondef:{client.env}", client.EPIC_LIST_TTL, build_default)[0]
+        except Exception:
+            cached = build_default()
+        return cached[:limit]
     acc, order = {}, []                     # uid -> displayName('{본명} {회사}', or None), 순서 보존
 
     def add(uid, display=None):

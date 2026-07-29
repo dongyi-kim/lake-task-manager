@@ -768,9 +768,9 @@ def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
     """'내 Task' — 세션 사용자가 담당한 일감 + 그 부모/형제/Epic 맥락을 **한 모델**로.
     세 가지 뷰(시간 우선·부모 클러스터·계층 우선)는 전부 이 하나에서 프론트가 파생시킨다.
     user 를 주면 그 사람 기준(대리 확인용), done=true 면 완료까지 포함.
-    scope=assignee|reporter|both — '내 일'을 담당 기준으로 볼지 등록(보고) 기준까지 볼지.
+    scope=assignee|reporter|both|module:<모듈명> — 담당/보고/모듈 단위. 모듈은 매니저 구분 없이 선택 가능.
     openFilter=all|2w — '할당됨' 축 범위 · doneFilter=1w|1m — '최근 완료' 축 기간."""
-    if scope not in ("assignee", "reporter", "both"):
+    if not (scope in ("assignee", "reporter", "both") or scope.startswith("module:")):
         scope = "assignee"
     return JSONResponse(mytasks.build_my_tasks(
         _client, user or None, include_done=done, scope=scope,
@@ -1203,10 +1203,18 @@ def api_document_delete(key: str, lid: str):
 
 @app.get("/api/me")
 def api_me():
-    """세션 사용자 — 본인 댓글(수정/삭제) 판정 + 매니저 여부(화면 노출 판정)."""
+    """세션 사용자 — 본인 댓글(수정/삭제) 판정 + 매니저 여부 + 모듈(내 Task 필터용)."""
     me = dict(_session_user())
     me["known"] = bool(me.get("id") or me.get("name"))   # 세션을 읽었는가
     me["manager"] = _is_manager(me)
+    # 모듈 목록 — Task 화면의 '모듈' 필터용. 캐시된 디렉토리에서(매 요청 config 안 읽음).
+    try:
+        from app.infra.settings import module_dir, modules_of
+        me["modules"] = modules_of(me.get("id") or me.get("name") or "")
+        me["allModules"] = module_dir()["modules"]
+    except Exception:
+        me["modules"] = []
+        me["allModules"] = []
     return JSONResponse(me)
 
 
@@ -1313,6 +1321,8 @@ def api_activity(user: str):
 @app.post("/api/refresh")
 def api_refresh():
     _cache.invalidate()          # 전체 캐시 무효화 (epic/workload/activity)
+    from app.infra.settings import reload_people
+    reload_people()              # config(people.yaml) 편집분도 다음 조회부터 반영
     return {"status": "refreshed"}
 
 

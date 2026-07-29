@@ -239,8 +239,44 @@ def load_wbs_config(path=None):
 load_plan = load_wbs_config          # 하위호환 별칭 (내부 코드는 load_plan 사용)
 
 
+# people.yaml 은 **디스크 읽기**라 매 요청마다 다시 읽으면 낭비다(모듈 필터가 자주 부른다).
+# 앱 시작 후 1회 읽어 캐시하고, 파생 디렉토리(id→모듈)도 함께 만들어 둔다.
+# config 를 고쳤으면 /api/refresh 가 reload_people() 로 캐시를 비운다(그다음 조회부터 반영).
+_PEOPLE_CACHE = {"data": None, "dir": None}
+
+
 def load_people(path=None):
-    return _read_yaml(path or (CONFIG_DIR / "people.yaml")) or {}
+    if path is not None:                       # 명시 경로(테스트 등)는 캐시 우회
+        return _read_yaml(path) or {}
+    if _PEOPLE_CACHE["data"] is None:
+        _PEOPLE_CACHE["data"] = _read_yaml(CONFIG_DIR / "people.yaml") or {}
+    return _PEOPLE_CACHE["data"]
+
+
+def module_dir():
+    """모듈 디렉토리(캐시) — {people, byUser(id소문자→[모듈]), modules}. 시작 후 1회 구성.
+    '내가 속한 모듈'·'모듈 인력' 조회의 단일 소스 — 매번 config 를 훑지 않는다."""
+    d = _PEOPLE_CACHE["dir"]
+    if d is None:
+        people = load_people()
+        by = {}
+        for mod, ids in people.items():
+            for pid in (ids or []):
+                by.setdefault(str(pid or "").strip().lower(), []).append(mod)
+        d = _PEOPLE_CACHE["dir"] = {"people": people, "byUser": by,
+                                    "modules": list(people.keys())}
+    return d
+
+
+def modules_of(user_id):
+    """그 사용자가 속한 모듈 목록(캐시된 디렉토리에서)."""
+    return list(module_dir()["byUser"].get(str(user_id or "").strip().lower(), []))
+
+
+def reload_people():
+    """people.yaml 캐시 무효화 — config 를 고쳤을 때(/api/refresh) 다음 조회부터 반영."""
+    _PEOPLE_CACHE["data"] = None
+    _PEOPLE_CACHE["dir"] = None
 
 
 def validate_plan(plan):
