@@ -111,10 +111,18 @@ def _inline(node):
                                    for ln in txt.split("\n")))
         elif t == "code":
             out.append("{{" + _cell_safe(_txt(c)) + "}}")
-        elif t == "span" and "monospace" in (c.attrs.get("style") or "").lower():
-            # 에디터의 '코딩 글꼴' 은 곧 Jira wiki 의 monospace({{...}}) 다 — 그래야 저장·재편집에
-            # 살아남는다(정렬 등 다른 인라인 스타일은 wiki 에 대응이 없어 글자만 남는다).
-            out.append("{{" + _cell_safe(_inline(c)) + "}}")
+        elif t == "span":
+            # 에디터의 인라인 스타일 span — Jira wiki 로 살릴 수 있는 것만 감싼다:
+            #   코딩 글꼴 → {{monospace}},  글자색 → {color:#..}…{color}.
+            #   배경색(background-color)은 Jira wiki 매크로가 없어 글자만 남는다(underline 과 같은 한계).
+            sty = (c.attrs.get("style") or "").lower()
+            inner = _inline(c)
+            if "monospace" in sty:
+                inner = "{{" + _cell_safe(inner) + "}}"
+            m = re.search(r"(?:^|;)\s*color\s*:\s*([^;]+)", sty)
+            if m:
+                inner = "{color:" + m.group(1).strip() + "}" + inner + "{color}"
+            out.append(inner)
         elif t == "div" and "sec-title-node" in (c.attrs.get("class") or ""):
             # 영역 구분선 — 저장 형태는 사내 관습 그대로 '=== 제목 ==='. 새 문법을 만들면
             # Jira 웹에서 연 사람이 못 알아보고 기존 티켓과도 어긋난다.
@@ -348,6 +356,7 @@ _WIKI_MONO = re.compile(r"\{\{(.+?)\}\}")
 _WIKI_MENTION = re.compile(r"\[~([^\]]+)\]")
 _WIKI_IMG = re.compile(r"!([^!\n|]+)(?:\|([^!\n]*))?!")
 _WIKI_LINK = re.compile(r"\[(?:([^\]|]+)\|)?([^\]]+)\]")
+_WIKI_COLOR = re.compile(r"\{color:([^}]+)\}(.*?)\{color\}", re.S)   # 글자색 {color:#..}…{color}
 
 
 def _wiki_inline_html(text, mr=None):
@@ -368,6 +377,9 @@ def _wiki_inline_html(text, mr=None):
         lbl = escape(nm, quote=True)
         return f'<span data-type="mention" data-id="{u}" data-label="{lbl}">@{escape(nm, quote=False)}</span>'
     s = _WIKI_MENTION.sub(_men, s)
+    # 글자색 {color:#..}…{color} → <span style="color:..">…</span>. 안쪽 텍스트는 뒤 규칙이 계속 처리.
+    s = _WIKI_COLOR.sub(lambda m: '<span style="color:' + escape(m.group(1).strip(), quote=True)
+                        + '">' + m.group(2) + "</span>", s)
     def _img(m):
         src = escape(m.group(1).strip(), quote=True)
         wm = re.search(r"width\s*=\s*(\d+)", m.group(2) or "")     # !파일|width=300! 크기 유지

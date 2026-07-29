@@ -1415,6 +1415,16 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tb-style-i.h2 .tb-style-t { font-size: 14.5px; font-weight: 700; }
 .tb-style-i.h3 .tb-style-t { font-size: 13.5px; font-weight: 700; }
 .tb-style-i.code .tb-style-t { font-family: ui-monospace, Consolas, monospace; }
+/* 글자색 버튼 — 'A' 밑에 색 표식이 아니라 그냥 A 로 두되 팔레트로 고른다 */
+.tb-color-b .tb-ca { font-weight: 800; }
+/* 색 팔레트 팝업 — 스와치 그리드 */
+.tb-sw-pop { flex-direction: row; flex-wrap: wrap; min-width: 0; width: 132px; gap: 4px; padding: 6px; }
+.tb-sw { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--border); cursor: pointer;
+  padding: 0; flex: none; }
+.tb-sw:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* '기본/없음' 스와치 — 대각선 빗금으로 '색 없음' 을 나타낸다 */
+.tb-sw.none { background:
+  linear-gradient(135deg, var(--panel) 44%, var(--danger) 45%, var(--danger) 55%, var(--panel) 56%); }
 
 /* ── 표 크기 선택 격자 ─────────────────────────────────────────────────────
    손을 올린 만큼(행×열)이 파랗게 차고, 누르면 그 크기로 삽입된다. */

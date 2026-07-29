@@ -612,6 +612,51 @@ const FONTS = [
     css: 'ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace' },
 ];
 
+// 글자색·배경색 팔레트 — 너무 많으면 고르기 어렵다. 기본(없음) + 강조 몇 개. 값은 Jira wiki
+// {color:#..} 로도, html <span style> 로도 나가므로 hex 로 둔다.
+const COLORS = [
+  { k: "", label: "기본색" },
+  { k: "#dc2626", label: "빨강" }, { k: "#ea580c", label: "주황" }, { k: "#ca8a04", label: "노랑" },
+  { k: "#16a34a", label: "초록" }, { k: "#2563eb", label: "파랑" }, { k: "#7c3aed", label: "보라" },
+  { k: "#6b7280", label: "회색" },
+];
+const BGCOLORS = [
+  { k: "", label: "없음" },
+  { k: "#fef08a", label: "노랑" }, { k: "#bbf7d0", label: "초록" }, { k: "#bfdbfe", label: "파랑" },
+  { k: "#fecaca", label: "빨강" }, { k: "#e9d5ff", label: "보라" }, { k: "#e5e7eb", label: "회색" },
+];
+
+// 글자색·배경색 — TextStyle(<span style>) 위에 color/background-color 속성을 얹는다.
+// 공식 Color/Highlight 확장이 번들에 없어 직접 만든다(콜아웃·구분선과 같은 인라인 확장 방식).
+function fontColorExt(T) {
+  return T.Extension.create({
+    name: "fontColorBg",
+    addGlobalAttributes() {
+      return [{
+        types: ["textStyle"],
+        attributes: {
+          color: {
+            default: null,
+            parseHTML: (el) => el.style.color || null,
+            renderHTML: (a) => (a.color ? { style: "color: " + a.color } : {}),
+          },
+          backgroundColor: {
+            default: null,
+            parseHTML: (el) => el.style.backgroundColor || null,
+            renderHTML: (a) => (a.backgroundColor ? { style: "background-color: " + a.backgroundColor } : {}),
+          },
+        },
+      }];
+    },
+    addCommands() {
+      return {
+        setFontColor: (color) => ({ chain }) => chain().setMark("textStyle", { color }).run(),
+        setFontBg: (backgroundColor) => ({ chain }) => chain().setMark("textStyle", { backgroundColor }).run(),
+      };
+    },
+  });
+}
+
 const SLASH = [
   { g: "삽입", id: "code", ic: "{ }", t: "코드 블록", h: "언어 강조", k: "code 코드 codeblock",
     run: (e, r) => e.chain().focus().deleteRange(r).setCodeBlock().run() },
@@ -833,6 +878,7 @@ export default {
                     // '' | 'jira' | 'confluence' — '/' 로 연 검색창
                     pick: "",
                     mdTable: false, styleOpen: false, fontOpen: false,
+                    colorOpen: false, bgOpen: false,   // 글자색·배경색 팔레트 열림
                     // 표 크기 선택 격자 — { r, c } 는 지금 손이 올라간 칸(미리보기)
                     tablePick: false, tpR: 0, tpC: 0 }; },
   async mounted() {
@@ -864,8 +910,8 @@ export default {
         T.Table.configure({ resizable: true }), T.TableRow, T.TableHeader, T.TableCell,
         // 정렬 — 문단·제목·표 셀에. 표 셀을 포함해야 마크다운 표의 :-: / --: 정렬이 붙는다.
         T.TextAlign.configure({ types: ["heading", "paragraph", "tableCell", "tableHeader"] }),
-        // 글꼴 — TextStyle(인라인 style) 위에서 FontFamily 가 동작한다.
-        T.TextStyle, T.FontFamily,
+        // 글꼴 — TextStyle(인라인 style) 위에서 FontFamily·글자색/배경색이 동작한다.
+        T.TextStyle, T.FontFamily, fontColorExt(T),
         // 체크박스(태스크 리스트) — nested 허용(할 일 안의 할 일)
         T.TaskList, T.TaskItem.configure({ nested: true }),
         // inline:true — 이미지가 같은 줄에 글자와 나란히 놓이게(TipTap 기본은 블록이라 줄이 갈린다)
@@ -933,6 +979,8 @@ export default {
   computed: {
     STYLES: () => STYLES,
     FONTS: () => FONTS,
+    COLORS: () => COLORS,
+    BGCOLORS: () => BGCOLORS,
     curFont() {
       this.tick;
       const e = this._ed;
@@ -962,6 +1010,16 @@ export default {
   methods: {
     active(name, attrs) { this.tick; return this._ed && this._ed.isActive(name, attrs); },
     cmd(fn) { if (this._ed) { fn(this._ed.chain().focus()); this._ed.commands.focus(); } },
+    /** 글자색 — 빈 값이면 해제(color 속성 제거). */
+    setFontColor(c) {
+      this.colorOpen = false;
+      this.cmd((ch) => ch.setMark("textStyle", { color: c || null }).run());
+    },
+    /** 배경색(형광펜) — 빈 값이면 해제. */
+    setFontBg(c) {
+      this.bgOpen = false;
+      this.cmd((ch) => ch.setMark("textStyle", { backgroundColor: c || null }).run());
+    },
     tbBold() { this.cmd((c) => c.toggleBold().run()); },
     tbItalic() { this.cmd((c) => c.toggleItalic().run()); },
     tbStrike() { this.cmd((c) => c.toggleStrike().run()); },
@@ -1376,6 +1434,28 @@ export default {
         <button type="button" class="tb-b" :class="{on:isAlign('left')}" @click="tbAlign('left')" title="왼쪽 정렬">⬅</button>
         <button type="button" class="tb-b" :class="{on:isAlign('center')}" @click="tbAlign('center')" title="가운데 정렬">⬌</button>
         <button type="button" class="tb-b" :class="{on:isAlign('right')}" @click="tbAlign('right')" title="오른쪽 정렬">➡</button>
+        <span class="tb-sep"></span>
+        <!-- 글자색 -->
+        <span class="tb-style">
+          <button type="button" class="tb-b tb-color-b" :class="{on:colorOpen}"
+                  @click.stop="colorOpen=!colorOpen; bgOpen=false" title="글자색"><b class="tb-ca">A</b><i class="tb-caret">▾</i></button>
+          <span v-if="colorOpen" class="tb-style-pop tb-sw-pop" @click.stop>
+            <button v-for="c in COLORS" :key="'fc'+c.k" type="button" class="tb-sw" :class="{none:!c.k}"
+                    :style="c.k ? {background:c.k} : {}" :title="c.label" @click="setFontColor(c.k)"></button>
+          </span>
+          <span v-if="colorOpen" class="tb-style-back" @click.stop="colorOpen=false"></span>
+        </span>
+        <!-- 배경색(형광펜) -->
+        <span class="tb-style">
+          <button type="button" class="tb-b" :class="{on:bgOpen}"
+                  @click.stop="bgOpen=!bgOpen; colorOpen=false" title="배경색(형광펜)">🖍<i class="tb-caret">▾</i></button>
+          <span v-if="bgOpen" class="tb-style-pop tb-sw-pop" @click.stop>
+            <button v-for="c in BGCOLORS" :key="'bg'+c.k" type="button" class="tb-sw" :class="{none:!c.k}"
+                    :style="c.k ? {background:c.k} : {}" :title="c.label" @click="setFontBg(c.k)"></button>
+          </span>
+          <span v-if="bgOpen" class="tb-style-back" @click.stop="bgOpen=false"></span>
+        </span>
+        <span class="tb-sep"></span>
         <!-- 글꼴 — 기본 vs 코딩(고정폭). 선택 글자에 적용된다. -->
         <span class="tb-style">
           <button type="button" class="tb-b tb-style-b" :class="{on:fontOpen}" @click.stop="fontOpen = !fontOpen"

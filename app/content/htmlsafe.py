@@ -397,10 +397,14 @@ def shorten_mention_names(html):
         lambda m: m.group(1) + (real_name(unescape(m.group(2))) or m.group(2)) + m.group(3), html)
 
 
-# style 에서 **정렬·글꼴만** 남긴다. url()·expression 등은 값 자체를 통과시키지 않는다
-# (값에 괄호/콜론이 있으면 버린다 → text-align:center, font-family:"..." 처럼 단순한 것만).
+# style 에서 **정렬·글꼴·글자색·배경색만** 남긴다. url()·expression 등 위험값은 통과시키지 않는다.
 _ALIGN_OK = {"left", "right", "center", "justify"}
 _FONT_RE = re.compile(r"^[\w \-,'\"]+$")
+# 색 — hex(#rgb/#rrggbb 등) · rgb()/rgba() · 이름(red 등)만. url()/expression 은 아래에서 이미 거른다.
+_COLOR_RE = re.compile(
+    r"^#[0-9a-fA-F]{3,8}$"
+    r"|^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*[01]?(?:\.\d+)?\s*)?\)$"
+    r"|^[a-zA-Z]+$")
 
 
 def _safe_style(v):
@@ -411,12 +415,15 @@ def _safe_style(v):
         prop, val = decl.split(":", 1)
         prop = prop.strip().lower()
         val = val.strip()
-        if "url(" in val.lower() or "expression" in val.lower() or "(" in val and prop != "font-family":
+        low = val.lower()
+        if "url(" in low or "expression" in low or "javascript" in low:
             continue
-        if prop == "text-align" and val.lower() in _ALIGN_OK:
-            out.append("text-align:" + val.lower())
-        elif prop == "font-family" and _FONT_RE.match(val):
+        if prop == "text-align" and low in _ALIGN_OK:
+            out.append("text-align:" + low)
+        elif prop == "font-family" and "(" not in val and _FONT_RE.match(val):
             out.append("font-family:" + val)
+        elif prop in ("color", "background-color") and _COLOR_RE.match(val):
+            out.append(prop + ":" + val)
     return ";".join(out)
 
 

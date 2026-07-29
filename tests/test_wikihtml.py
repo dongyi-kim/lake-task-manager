@@ -205,3 +205,21 @@ def test_mention_wiki_mode_stays_id():
     """wiki 모드(mock/local): 멘션 → [~사번] (기존 동작 유지, 회귀 가드)."""
     h = '<p><span data-type="mention" data-id="skcc.x1103">@이준서</span> 님</p>'
     assert html_to_wiki(h) == "[~skcc.x1103] 님"
+
+
+def test_font_color_html_mode_survives_sanitize():
+    """글자색·배경색 — html(prod) 모드: 정화가 color/background-color 를 살린다(위험값은 버린다)."""
+    from app.content.htmlsafe import sanitize_html
+    h = ('<p><span style="color: #dc2626">빨강</span>'
+         '<span style="background-color: rgb(254,240,138)">형광</span></p>')
+    out = sanitize_html(h)
+    assert "color:#dc2626" in out
+    assert "background-color:rgb(254,240,138)" in out
+    assert sanitize_html('<span style="color: url(javascript:x)">x</span>') == "<span>x</span>"
+
+
+def test_font_color_wiki_roundtrip():
+    """글자색 — wiki 모드: {color:#..}…{color} 로 저장되고 되읽힌다. 배경색은 wiki 대응이 없어 글자만."""
+    w = html_to_wiki('<p><span style="color:#dc2626">빨강</span> <span style="background-color:#fef08a">형광</span></p>')
+    assert w == "{color:#dc2626}빨강{color} 형광"
+    assert '<span style="color:#dc2626">빨강</span>' in wiki_to_html(w)
