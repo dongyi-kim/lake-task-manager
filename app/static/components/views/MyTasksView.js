@@ -262,12 +262,21 @@ export default {
     async load(opts) {
       if (!(opts && opts.quiet)) this.loading = true;
       this.err = "";
+      // ★ 요청 순번 가드 — 퀵필터를 빠르게 바꾸면 요청이 여러 개 날아가는데, prod 지연 때문에
+      //   먼저 보낸(지나간) 요청이 **나중에** 도착해 최신 화면을 옛 결과로 덮어쓴다(리포트된 버그:
+      //   이미 다른 필터를 골랐는데 지나간 필터 내용이 렌더링됨). 순번이 어긋난 응답은 통째로 버린다.
+      const seq = this._loadSeq = (this._loadSeq || 0) + 1;
       try {
-        this.model = await api.myTasks({ scope: this.apiScope, openFilter: this.openFilter,
-                                         doneFilter: this.doneFilter });
+        const model = await api.myTasks({ scope: this.apiScope, openFilter: this.openFilter,
+                                          doneFilter: this.doneFilter });
+        if (seq !== this._loadSeq) return;     // 더 최신 요청이 이미 떴다 — 이 결과는 낡았다
+        this.model = model;
       }
-      catch (e) { this.err = (e && e.message) || "불러오기 실패"; }
-      finally { this.loading = false; }
+      catch (e) {
+        if (seq !== this._loadSeq) return;     // 낡은 요청의 에러도 최신 화면에 씌우지 않는다
+        this.err = (e && e.message) || "불러오기 실패";
+      }
+      finally { if (seq === this._loadSeq) this.loading = false; }
     },
     async hardRefresh() {
       if (this.busy) return;
