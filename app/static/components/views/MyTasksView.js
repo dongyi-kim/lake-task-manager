@@ -460,11 +460,12 @@ export default {
                 @click="setScope('assignee')">내가 담당자</button>
         <button type="button" class="mt-qf-b" :class="{ on: scope === 'reporter' }"
                 @click="setScope('reporter')">내가 보고자</button>
-        <button type="button" class="mt-qf-b" :class="{ on: scope === 'mymodules' }"
-                @click="setScope('mymodules')" title="내가 속한 모듈 전체">모듈 전체</button>
-        <select class="mt-qf-sel" :class="{ on: scope === 'module' }"
-                :value="scope === 'mymodules' ? '__all__' : (moduleSel || '__all__')"
-                @change="onModulePick($event.target.value)" title="특정 모듈로 좁히기">
+        <span class="mt-qf-modgrp">
+          <button type="button" class="mt-qf-b seg-l" :class="{ on: scope === 'mymodules' }"
+                  @click="setScope('mymodules')" title="내가 속한 모듈 전체">모듈 전체</button>
+          <select class="mt-qf-sel seg-r" :class="{ on: scope === 'module' }"
+                  :value="scope === 'mymodules' ? '__all__' : (moduleSel || '__all__')"
+                  @change="onModulePick($event.target.value)" title="특정 모듈로 좁히기">
           <option value="__all__">{{ myModules.length ? '내 모듈 전체' : '모듈 전체' }}</option>
           <optgroup v-if="myModules.length" label="내 모듈">
             <option v-for="m in myModules" :key="'my-' + m" :value="m">{{ m }}</option>
@@ -473,6 +474,7 @@ export default {
             <option v-for="m in otherModules" :key="'ot-' + m" :value="m">{{ m }}</option>
           </optgroup>
         </select>
+        </span>
       </div>
       <div v-if="model && model.counts" class="mt-tiles">
         <div class="mt-tile over" :class="{ zero: !model.counts.overdue }">

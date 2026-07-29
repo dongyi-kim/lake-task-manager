@@ -18,6 +18,12 @@
 .mt-qf-sel { padding: 0 8px; color: var(--text); max-width: 200px; outline: none; }
 .mt-qf-sel:disabled { opacity: .5; cursor: default; background: var(--panel-2); color: var(--muted); }
 .mt-qf-sel.on { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+/* '모듈 전체' 버튼 + 모듈 콤보 = **하나의 세그먼트**(이어붙임, 경계 공유). */
+.mt-qf-modgrp { display: inline-flex; align-items: stretch; }
+.mt-qf-modgrp .seg-l { border-radius: 7px 0 0 7px; border-right-width: 0; }
+.mt-qf-modgrp .seg-r { border-radius: 0 7px 7px 0; margin-left: 0; }
+/* 왼쪽 버튼이 활성(파랑)일 때 이음선은 콤보의 좌측 경계가 진다(파랑 옆 회색선). */
+.mt-qf-modgrp .seg-l.on + .seg-r { border-left-color: var(--border); }
 /* Task+SubTask 그룹 개별 접기 버튼 */
 .mt-fold { flex: none; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; background: none; color: var(--muted); cursor: pointer; border-radius: 4px; padding: 0; }
