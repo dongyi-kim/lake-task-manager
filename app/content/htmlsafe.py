@@ -107,6 +107,30 @@ def flatten_task_lists(html):
         return html
     return "".join(p.out)
 
+
+# 영역 구분선(sectionTitle 노드) — 에디터는 <div class="sec-title-node">제목</div> 로 직렬화하지만
+# **저장 형태는 사내 관습 그대로 '=== 제목 ==='**(한 줄짜리 문단)여야 한다. wiki 모드는 html_to_wiki
+# 가 이 변환을 하지만, **prod(html 모드)** 는 에디터 HTML 을 그대로 정화만 해 저장한다 —
+# 그러면 정화 과정에서 allowlist 에 없는 `sec-title-node` class 가 떨어져 나가 그냥 <div>제목</div> 가
+# 되고, '=== ===' 표식이 사라진다(영역으로 안 갈리고, 수정하려 열면 통째로 없어진다 — 리포트된 버그).
+# → 정화 **전에** 구분선 div 를 '<p>=== 제목 ===</p>' 로 평탄화해 저장 형태를 wiki 모드와 일치시킨다.
+_SEC_TITLE_DIV_RE = re.compile(r'<div\b[^>]*\bclass="[^"]*\bsec-title-node\b[^"]*"[^>]*>(.*?)</div>',
+                               re.I | re.S)
+
+
+def flatten_section_titles(html):
+    """<div class="sec-title-node">제목</div> → <p>=== 제목 ===</p>. 구분선이 없으면 그대로 반환.
+    제목 안의 인라인 태그는 벗겨 **평문**으로 둔다('=== 제목 ===' 는 평문 표식이라 그래야
+    표시(split_sections)·재편집(liftSections) 이 다시 이 줄을 구분선으로 알아본다)."""
+    if not html or "sec-title-node" not in html:
+        return html
+
+    def _repl(m):
+        title = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        return "<p>=== " + title + " ===</p>"
+
+    return _SEC_TITLE_DIV_RE.sub(_repl, html)
+
 # 표시에 필요한 서식 태그만 허용 (구조/텍스트/표/코드/링크/이미지).
 _ALLOWED_TAGS = {
     "p", "br", "hr", "b", "strong", "i", "em", "u", "s", "strike", "del", "ins",

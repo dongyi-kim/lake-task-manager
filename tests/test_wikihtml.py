@@ -147,3 +147,41 @@ def test_inline_code_with_star_roundtrips_clean():
 def test_codeblock_preserves_star_literal():
     html = '<pre class="jecodeblock"><code class="language-sql">where a=(*)</code></pre>'
     assert "where a=(*)" in wiki_to_html(html_to_wiki(html))
+
+
+def test_section_divider_wiki_mode():
+    """영역 구분선(sectionTitle) — wiki 모드(mock/local): 에디터의 <div class=sec-title-node>
+    가 사내 관습 '=== 제목 ===' 한 줄 문단으로 저장된다."""
+    h = '<p>안녕</p><div class="sec-title-node">신청정보</div><p>본문</p>'
+    assert html_to_wiki(h) == "안녕\n\n=== 신청정보 ===\n\n본문"
+
+
+def test_section_divider_html_mode_roundtrips():
+    """영역 구분선 — html 모드(prod): 정화 때 allowlist 에 없는 sec-title-node class 가 떨어져
+    그냥 <div> 로 남아 '=== ===' 표식이 사라지던 버그(영역으로 안 갈리고, 수정 열면 사라짐).
+    flatten_section_titles 가 **정화 전에** '<p>=== 제목 ===</p>' 로 평탄화해 wiki 모드와 저장
+    형태를 맞추고, 표시(split_sections)·재편집(liftSections)이 다시 구분선으로 인식하게 한다."""
+    import re
+    from app.content.htmlsafe import flatten_section_titles, sanitize_html
+    from app.content.sections import split_sections
+    editor = '<p>안녕</p><div class="sec-title-node">신청정보</div><p>본문</p>'
+    stored = sanitize_html(flatten_section_titles(editor))
+    assert stored == "<p>안녕</p><p>=== 신청정보 ===</p><p>본문</p>"
+    # 표시 — 영역으로 갈린다(머리말 + '신청정보' 영역)
+    assert [s.get("title") for s in split_sections(stored)] == [None, "신청정보"]
+    # 재편집 — 프론트 liftSections 와 동일한 정규식이 구분선 노드로 되살린다
+    lifted = re.sub(r'<p>\s*={3,}\s*([^<]+?)\s*={3,}\s*</p>',
+                    r'<div class="sec-title-node">\1</div>', stored)
+    assert '<div class="sec-title-node">신청정보</div>' in lifted
+
+
+def test_section_divider_html_mode_strips_inline_marks():
+    """제목에 인라인 서식이 섞여도 저장은 **평문 '=== 제목 ==='** 이라야 표시·재편집이 인식한다."""
+    from app.content.htmlsafe import flatten_section_titles, sanitize_html
+    editor = '<div class="sec-title-node">신청 <strong>정보</strong></div>'
+    assert sanitize_html(flatten_section_titles(editor)) == "<p>=== 신청 정보 ===</p>"
+
+
+def test_flatten_section_titles_noop_without_marker():
+    from app.content.htmlsafe import flatten_section_titles
+    assert flatten_section_titles("<p>그냥 본문</p>") == "<p>그냥 본문</p>"

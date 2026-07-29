@@ -17,7 +17,8 @@ from urllib.parse import quote, unquote, urlparse
 
 from app.domain import progress
 from app.auth.base import SessionExpired, background_upstream, write_upstream
-from app.content.htmlsafe import (_CONF_RE, flatten_task_lists, proxy_attachment_images, proxy_attachment_links,
+from app.content.htmlsafe import (_CONF_RE, flatten_section_titles, flatten_task_lists,
+                       proxy_attachment_images, proxy_attachment_links,
                        proxy_images, sanitize_html,
                        shorten_mention_names, text_to_html, tidy_html)
 from app.domain.names import real_name
@@ -1433,9 +1434,13 @@ class JiraClient:
         fmt = (getattr(self.s, "description_format", "") or "").lower()
         if fmt not in ("html", "wiki"):
             fmt = "html" if self.env == "prod" else "wiki"
-        # HTML 모드: 태스크리스트를 먼저 **체크박스 문단**으로 편다(안 그러면 <ul><li> 불릿·빈 span 이
-        # 남아 화면에서 체크박스가 어긋난다). wiki 모드는 html_to_wiki 가 이미 같은 형태로 바꾼다.
-        return sanitize_html(flatten_task_lists(html)) if fmt == "html" else html_to_wiki(html)
+        # HTML 모드: 태스크리스트를 먼저 **체크박스 문단**으로, 영역 구분선을 **'=== 제목 ==='
+        # 문단**으로 편다(안 그러면 태스크리스트는 불릿·빈 span 으로 어긋나고, 구분선은 정화 때
+        # sec-title-node class 가 떨어져 그냥 <div> 로 남아 '=== ===' 표식이 사라진다).
+        # wiki 모드는 html_to_wiki 가 이미 둘 다 같은 형태로 바꾼다.
+        if fmt == "html":
+            return sanitize_html(flatten_section_titles(flatten_task_lists(html)))
+        return html_to_wiki(html)
 
     def _comment_fmt(self):
         fmt = (getattr(self.s, "comment_format", "") or "").lower()
