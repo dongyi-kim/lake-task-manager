@@ -812,10 +812,13 @@ class JiraClient:
             self._bg_inflight = set()
 
     # ── '내 Task' 용 얇은 조회 헬퍼 (app/mytasks.py 가 쓴다) ──
-    def search_issues(self, jql, max_results=200):
-        """JQL → 원본 이슈 리스트(캐시 write-through). 목록 자체는 캐시하지 않는다 —
-        담당/마감이 자주 바뀌는 화면이라 낡은 목록이 더 해롭다."""
-        return self._search(jql, max_results=max_results)
+    def search_issues(self, jql, max_results=200, cache_key=None):
+        """JQL → 원본 이슈 리스트(캐시 write-through). 기본은 목록을 캐시하지 않는다 —
+        담당/마감이 자주 바뀌는 화면이라 낡은 목록이 더 해롭다.
+        단 **cache_key 를 주면 목록도 캐시**한다: 내 Task 의 사람별 분할 질의처럼
+        `assignee in (…) OR reporter in (…)` 를 **사람 하나치**로 쪼갠 것은 모듈이 겹치면
+        그대로 재사용되므로 캐시 가치가 크다(담당/상태 변경 시 'mt:' 프리픽스째 무효화한다)."""
+        return self._search(jql, cache_key=cache_key, max_results=max_results)
 
     def issues_by_keys(self, keys):
         """키 목록 → 원본 이슈들. 캐시에 있으면 그대로 쓰고 없는 것만 한 번에 받는다."""
@@ -1249,6 +1252,9 @@ class JiraClient:
         # 상위 피커 후보 풀 — 이 티켓의 소속 Epic/요약이 바뀌면 후보 목록도 낡는다(길게 캐시하므로 명시 무효화).
         self.cache.invalidate("epic_cand:")
         self.cache.invalidate("epic_options:")
+        # 내 Task 사람별/Epic별 분할 목록(mt:) — 마감·소속 Epic·상태 등이 바뀌면 어느 버킷/Epic에
+        # 드는지가 달라지므로 함께 비운다(뷰모드 체크박스 경량 무효화 경로는 이 메서드를 안 탄다).
+        self.cache.invalidate("mt:")
         self._reprime(key, comments=comments)
 
     def _invalidate_people_views(self):
@@ -1258,6 +1264,9 @@ class JiraClient:
         self.cache.invalidate("workload:")
         self.cache.invalidate("workload_bucket:")
         self.cache.invalidate("activity:")
+        # 내 Task 의 사람별 분할 목록(mt:)도 담당/상태 변경에 낡는다 — 프리픽스째 비운다
+        # (다음 조회에서 사람별로 다시 받아 캐시된다).
+        self.cache.invalidate("mt:")
 
     def _invalidate_ticket_content(self, key, *, comments=False):
         """**본문/코멘트 내용만** 바뀌는 편집(뷰 모드 체크박스 토글 등)용 경량 무효화.

@@ -162,7 +162,15 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     # 스코프 해석 — assignee(기본) | reporter | both | module:<모듈명>.
     #   module 스코프: 그 모듈의 일감 = 모듈 인력(people.yaml) 중 하나가 담당/보고 **또는**
     #   티켓 component 가 그 모듈. (매니저 구분 없이 누구나 다른 모듈도 볼 수 있다.)
+    #   assignee(기본) | reporter | both | mymodules | module:<모듈> |
+    #   assignee:<사번> | reporter:<사번> | epic:<키>  — 뒤 셋은 '특정 사람/Epic' 필터(퀵필터 picker).
     mod_ids, mod_comps = set(), set()
+    spec_user, epic_scope = None, None
+
+    def _lit(s):
+        """따옴표로 감싸는 JQL 리터럴 안전화 — 따옴표·역슬래시 제거(스코프 문자열은 사용자 입력)."""
+        return "".join(c for c in (s or "") if c not in '"\\').strip()
+
     if scope == "mymodules" or scope.startswith("module:"):
         from app.infra.settings import load_people, modules_of
         people = load_people() or {}
@@ -177,39 +185,79 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
                     mod_ids.add(pid)
             mod_comps.add(mod)
         scope_kind = "module" if targets else "assignee"  # 대상 없으면 안전 폴백
+    elif scope.startswith("assignee:"):
+        spec_user = _lit(scope.split(":", 1)[1])
+        scope_kind = "uassignee" if spec_user else "assignee"
+    elif scope.startswith("reporter:"):
+        spec_user = _lit(scope.split(":", 1)[1])
+        scope_kind = "ureporter" if spec_user else "assignee"
+    elif scope.startswith("epic:"):
+        epic_scope = "".join(c for c in scope.split(":", 1)[1] if c.isalnum() or c == "-")
+        scope_kind = "epic" if epic_scope else "assignee"
     else:
         scope_kind = scope if scope in ("reporter", "both") else "assignee"
 
     def _in(field, ids):
         return "%s in (%s)" % (field, ", ".join('"%s"' % i for i in sorted(ids)))
 
-    if scope_kind == "reporter":
-        who = 'reporter = "%s"' % me
-    elif scope_kind == "both":
-        who = '(assignee = "%s" OR reporter = "%s")' % (me, me)
-    elif scope_kind == "module":
-        cl = []
-        if mod_ids:
-            cl.append(_in("assignee", mod_ids))
-            cl.append(_in("reporter", mod_ids))
-        if mod_comps:
-            cl.append(_in("component", mod_comps))
-        who = "(%s)" % " OR ".join(cl) if cl else 'assignee = "%s"' % me
-    else:
-        who = 'assignee = "%s"' % me
-
+    # 상태 축 조건(할당됨/진행중/최근완료 세 버킷을 한 질의에). 캐시 키에도 반영해 필터가 다르면
+    # 다른 캐시가 되게 한다(2w/1w 결과가 섞이지 않게).
     open_cond = 'statusCategory = "To Do"'
     if open_filter == "2w":
         open_cond += " AND updated >= -14d"
     done_days = DONE_WINDOWS.get(done_filter, DONE_WINDOWS["1w"])
     parts = ['statusCategory = "In Progress"', "(%s)" % open_cond,
              "(statusCategory = Done AND resolved >= -%dd)" % done_days]
-    jql = "%s AND (%s)" % (who, " OR ".join(parts))
-    if include_done:
-        jql = who                                      # 완료 전체까지(과거 조회용)
-    jql += " ORDER BY duedate ASC"
-    mine_raw = [r for r in client.search_issues(jql, max_results=limit)
-                if ((r.get("fields") or {}).get("issuetype") or {}).get("name") != "Epic"]
+    cond = "(%s)" % " OR ".join(parts)
+    filt = "all" if include_done else ("%s.%s" % (open_filter, done_filter))
+    env = getattr(client, "env", "?")
+
+    def _where(base):
+        j = base if include_done else "%s AND %s" % (base, cond)   # include_done 이면 상태 무관 전체
+        return j + " ORDER BY duedate ASC"
+
+    # (cache_key, jql) 서브쿼리 — `IN`/`OR` 을 **사람 하나치**로 쪼갠다. 사람별 목록은 모듈이
+    # 겹치면 그대로 재사용되므로 각자 캐시 대상이다. 'me' 도 사람이라 같은 규칙을 쓴다:
+    # currentUser 로 온 사번이든 picker(사번)든 **같은 사번 → 같은 `asg:{id}`/`rep:{id}` 키**로
+    # 모여 currentUser()/username 이 따로 캐시되거나 중복 조회되지 않는다.
+    subqs = []
+
+    def _add(kkey, base):
+        subqs.append(("mt:%s:%s:%s" % (env, kkey, filt), _where(base)))
+
+    if scope_kind == "module":
+        for p in sorted(mod_ids):
+            _add("asgrep:%s" % p, '(assignee = "%s" OR reporter = "%s")' % (p, p))
+        if mod_comps:
+            _add("cmp:%s" % ",".join(sorted(mod_comps)), _in("component", mod_comps))
+        if not subqs:
+            _add("asg:%s" % me, 'assignee = "%s"' % me)
+    elif scope_kind == "uassignee":
+        _add("asg:%s" % spec_user, 'assignee = "%s"' % spec_user)
+    elif scope_kind == "ureporter":
+        _add("rep:%s" % spec_user, 'reporter = "%s"' % spec_user)
+    elif scope_kind == "epic":
+        _add("epic:%s" % epic_scope, '"Epic Link" = %s' % epic_scope)
+    elif scope_kind == "reporter":
+        _add("rep:%s" % me, 'reporter = "%s"' % me)
+    elif scope_kind == "both":                            # 담당·보고를 따로 쪼개 각자 캐시(합집합은 병합)
+        _add("asg:%s" % me, 'assignee = "%s"' % me)
+        _add("rep:%s" % me, 'reporter = "%s"' % me)
+    else:
+        _add("asg:%s" % me, 'assignee = "%s"' % me)
+
+    # 실행 + **취합/중복제거** — 한 티켓이 여러 사람 질의에 걸릴 수 있으니(예: A가 담당, B가 보고)
+    # 이슈 키로 dedup 한다. Epic 은 실행 단위가 아니라 묶음이라 목록에서 뺀다.
+    seen, mine_raw = set(), []
+    for ck, jq in subqs:
+        for r in client.search_issues(jq, max_results=limit, cache_key=ck):
+            k = r.get("key")
+            if not k or k in seen:
+                continue
+            if (((r.get("fields") or {}).get("issuetype") or {}).get("name")) == "Epic":
+                continue
+            seen.add(k)
+            mine_raw.append(r)
     # Epic 은 담당자가 있어도 '실행 단위'가 아니라 묶음이다 — 목록에 섞으면 노이즈가 된다
     # (Epic 자체는 아래에서 그룹의 소속 표시로만 쓴다).
     def role_of(n):
@@ -224,6 +272,12 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
             if n["assigneeId"] in mod_ids or n["reporterId"] in mod_ids:
                 return True
             return any(c in mod_comps for c in (n.get("components") or []))
+        if scope_kind == "uassignee":
+            return n["assigneeId"] == spec_user
+        if scope_kind == "ureporter":
+            return n["reporterId"] == spec_user
+        if scope_kind == "epic":
+            return n.get("epic") == epic_scope          # 그 Epic 직속(Sub-Task 는 맥락으로만)
         if scope_kind == "reporter":
             return n["reporterId"] == me
         if scope_kind == "both":
