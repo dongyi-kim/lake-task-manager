@@ -96,7 +96,9 @@ export default {
         // 선택지는 부모가 준다(아직 티켓이 없어 editmeta 가 없다). 사용자 검색만 평소와 같다.
         // 목록형(컴포넌트)은 화면이 opts 를 그리므로 거기에도 넣어 준다.
         this.opts = (this.choices || []).slice();
-        if (!this.isUser && !this.isDate) return this._focus();
+        // 사용자·날짜·Epic 은 아래에서 검색기를 붙인다(local 이어도 타이핑 검색이 필요하다) —
+        // 그 외(우선순위·타입·컴포넌트)만 choices 로 끝내고 바로 포커스한다.
+        if (!this.isUser && !this.isDate && !this.isEpic) return this._focus();
       }
       if (this.field === "priority") {
         this.opts = (this.meta.allowedValues || []).map((v) => v.name);
@@ -266,7 +268,7 @@ export default {
           <!-- Task 생성 시 상위 Epic 피커(NewChildDialog .nk-cand-epic)와 **같은 포맷**:
                [키] [Epic Summary] [시그니처색 뱃지=Epic Name(우측)] -->
           <button v-for="e in opts" :key="e.key" class="fe-i epic" :class="{ cur: e.key === value }"
-                  @click="save(e.key)">
+                  @click="save(e.key, e)">
             <b class="fe-epic-k">{{ e.key }}</b>
             <span class="fe-epic-s">{{ e.summary || e.name }}</span>
             <span class="fe-epic-badge" :style="{ '--ec': epicColor(e.key) }">{{ e.name }}</span>

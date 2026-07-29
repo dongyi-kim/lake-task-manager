@@ -24,6 +24,16 @@
 .mt-qf-modgrp .seg-r { border-radius: 0 7px 7px 0; margin-left: 0; }
 /* 왼쪽 버튼이 활성(파랑)일 때 이음선은 콤보의 좌측 경계가 진다(파랑 옆 회색선). */
 .mt-qf-modgrp .seg-l.on + .seg-r { border-left-color: var(--border); }
+/* 특정 사람/Epic picker 칩 — FieldEdit(local)의 트리거를 다른 퀵필터 칩과 같은 모양으로. */
+.mt-qf .mt-qf-fe { display: inline-flex; }
+.mt-qf .mt-qf-fe .fe-v { height: 32px; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px;
+  font: 600 12.5px/1 inherit; font-family: inherit; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--panel); color: var(--muted); cursor: pointer; padding: 0 12px; }
+.mt-qf .mt-qf-fe .fe-v:hover { color: var(--text); border-color: var(--accent); }
+.mt-qf .mt-qf-fe.qf-on .fe-v { color: #fff; background: var(--accent); border-color: var(--accent); }
+.mt-qf .qf-fe-v { font-weight: 700; }
+.mt-qf .qf-fe-cav { font-size: 8px; opacity: .6; }
+.mt-qf .mt-qf-fe.qf-on .qf-fe-cav { opacity: .85; }
 /* Task+SubTask 그룹 개별 접기 버튼 — 제목 줄에 인라인으로 끼우지 않고 **카드 상단 좌측에
    플로팅**(오버레이)한다. 인라인이면 우선순위 아이콘부터 줄 전체가 오른쪽으로 밀려 카드마다
    제목 시작 위치가 흔들렸다. 절대배치로 띄우고, 부모 카드는 그만큼 좌측을 비워 준다. */

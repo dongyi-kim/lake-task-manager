@@ -23,6 +23,7 @@ import Avatar from "../ui/Avatar.js";
 import PriIcon from "../ui/PriIcon.js";
 import TaskCard, { isHot, isUrgent } from "../ui/TaskCard.js";
 import DueText from "../ui/DueText.js";
+import FieldEdit from "../ui/FieldEdit.js";
 import { categoryColor } from "../../lib/colors.js";
 
 const NO_DUE = 1e6;
@@ -79,7 +80,7 @@ const PREF_KEY = "mytasks.opts";
 
 export default {
   name: "MyTasksView",
-  components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText },
+  components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit },
   data() {
     return {
       model: null, loading: true, err: "",
@@ -95,6 +96,10 @@ export default {
       // 상단 퀵필터 — assignee(기본) | reporter | mymodules(내 모듈 전체) | module(특정 모듈).
       scope: "assignee",
       moduleSel: "",        // 선택한 모듈명(scope==='module' 일 때)
+      // 특정 사람/Epic 필터(picker 로 고른 대상) — 각 칩이 자기 선택을 기억한다.
+      assigneeSel: null,    // {id, name}  scope==='uassignee'
+      reporterSel: null,    // {id, name}  scope==='ureporter'
+      epicSel: null,        // {key, name} scope==='uepic'
       me: null,             // /api/me — modules(내 모듈)·allModules·manager
       gClosed: {},          // Task+SubTask 그룹 개별 접힘 { groupKey: true }
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
@@ -160,6 +165,9 @@ export default {
     apiScope() {
       if (this.scope === "mymodules") return "mymodules";
       if (this.scope === "module") return this.moduleSel ? "module:" + this.moduleSel : "mymodules";
+      if (this.scope === "uassignee") return this.assigneeSel ? "assignee:" + this.assigneeSel.id : "assignee";
+      if (this.scope === "ureporter") return this.reporterSel ? "reporter:" + this.reporterSel.id : "reporter";
+      if (this.scope === "uepic") return this.epicSel ? "epic:" + this.epicSel.key : "assignee";
       return this.scope;
     },
     /** 상태 열 폭 — 접힌 열은 좁은 레일만 남긴다(사라지면 되펼 자리가 없다).
@@ -300,6 +308,23 @@ export default {
       this.scope = s;
       this.savePrefs(); this.load();
     },
+    /** 특정 사람/Epic picker(FieldEdit local)에서 고름 → 그 스코프로 전환·서버 재조회.
+     *  빈 값(해제)이면 '내가 담당자' 기본으로 되돌린다. */
+    pickAssignee(id, u) {
+      if (!id) { this.assigneeSel = null; if (this.scope === "uassignee") this.setScope("assignee"); return; }
+      this.assigneeSel = { id, name: (u && (u.display || u.name)) || id };
+      this.scope = "uassignee"; this.savePrefs(); this.load();
+    },
+    pickReporter(id, u) {
+      if (!id) { this.reporterSel = null; if (this.scope === "ureporter") this.setScope("reporter"); return; }
+      this.reporterSel = { id, name: (u && (u.display || u.name)) || id };
+      this.scope = "ureporter"; this.savePrefs(); this.load();
+    },
+    pickEpic(key, e) {
+      if (!key) { this.epicSel = null; if (this.scope === "uepic") this.setScope("assignee"); return; }
+      this.epicSel = { key, name: (e && (e.name || e.summary)) || key };
+      this.scope = "uepic"; this.savePrefs(); this.load();
+    },
     /** 콤보박스에서 모듈 선택 — '내 모듈 전체'(__all__) 또는 특정 모듈. */
     onModulePick(v) {
       if (!v || v === "__all__") { this.setScope("mymodules"); return; }
@@ -378,14 +403,19 @@ export default {
         this.epicHidden = Object.assign({}, saved.epicHidden);
       }
       // 상단 퀵필터(연관성/모듈)는 OPTIONS 밖이라 따로 복원한다.
-      if (["assignee", "reporter", "mymodules", "module"].includes(saved.scope)) this.scope = saved.scope;
+      if (["assignee", "reporter", "mymodules", "module", "uassignee", "ureporter", "uepic"].includes(saved.scope))
+        this.scope = saved.scope;
       if (typeof saved.moduleSel === "string") this.moduleSel = saved.moduleSel;
+      if (saved.assigneeSel && saved.assigneeSel.id) this.assigneeSel = saved.assigneeSel;
+      if (saved.reporterSel && saved.reporterSel.id) this.reporterSel = saved.reporterSel;
+      if (saved.epicSel && saved.epicSel.key) this.epicSel = saved.epicSel;
       if (saved.gClosed && typeof saved.gClosed === "object") this.gClosed = Object.assign({}, saved.gClosed);
       if (saved.projPref && typeof saved.projPref === "object") this.projPref = Object.assign({}, saved.projPref);
     },
     savePrefs() {
       const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden, gClosed: this.gClosed,
-                    scope: this.scope, moduleSel: this.moduleSel, projPref: this.projPref };
+                    scope: this.scope, moduleSel: this.moduleSel, projPref: this.projPref,
+                    assigneeSel: this.assigneeSel, reporterSel: this.reporterSel, epicSel: this.epicSel };
       for (const o of OPTIONS) out[o.key] = this[o.key];
       for (const f of Object.values(BAND_FILTERS)) out[f.key] = this[f.key];
       try { localStorage.setItem(PREF_KEY, JSON.stringify(out)); } catch (e) { /* 사파리 프라이빗 등 */ }
@@ -527,6 +557,23 @@ export default {
           </optgroup>
         </select>
         </span>
+
+        <!-- 특정 사람/Epic 필터 — 티켓 속성 편집과 **같은 picker**(FieldEdit local)를 눌러 고른다.
+             고르면 그 대상 스코프로 서버 재조회(assignee:<사번> / reporter:<사번> / epic:<키>). -->
+        <FieldEdit class="mt-qf-fe" :class="{ 'qf-on': scope === 'uassignee' }" ticket="__filter__"
+                   field="assignee" local :value="assigneeSel ? assigneeSel.id : ''"
+                   :user-id="assigneeSel ? assigneeSel.id : ''" @pick="pickAssignee">
+          <span class="qf-fe-l">담당자</span><b v-if="assigneeSel" class="qf-fe-v">{{ assigneeSel.name }}</b><span class="qf-fe-cav">▾</span>
+        </FieldEdit>
+        <FieldEdit class="mt-qf-fe" :class="{ 'qf-on': scope === 'ureporter' }" ticket="__filter__"
+                   field="reporter" local :value="reporterSel ? reporterSel.id : ''"
+                   :user-id="reporterSel ? reporterSel.id : ''" @pick="pickReporter">
+          <span class="qf-fe-l">보고자</span><b v-if="reporterSel" class="qf-fe-v">{{ reporterSel.name }}</b><span class="qf-fe-cav">▾</span>
+        </FieldEdit>
+        <FieldEdit class="mt-qf-fe" :class="{ 'qf-on': scope === 'uepic' }" ticket="__filter__"
+                   field="epic" local :value="epicSel ? epicSel.key : ''" @pick="pickEpic">
+          <span class="qf-fe-l">Epic</span><b v-if="epicSel" class="qf-fe-v">{{ epicSel.name }}</b><span class="qf-fe-cav">▾</span>
+        </FieldEdit>
       </div>
       <div v-if="model && model.counts" class="mt-tiles">
         <div class="mt-tile over" :class="{ zero: !model.counts.overdue }">
