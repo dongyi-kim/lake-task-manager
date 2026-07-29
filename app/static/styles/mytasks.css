@@ -6,6 +6,43 @@
 
 .mytasks { padding: 2px 0 40px; }
 
+/* ══ 상단: 퀵필터(담당/보고/모듈) + 요약 타일 — 워크로드식 정형(딱딱) ══ */
+.mt-top { display: flex; flex-direction: column; gap: 10px; margin: 0 0 14px; }
+.mt-qf { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mt-qf-b { font: 600 12.5px/1 inherit; font-family: inherit; color: var(--muted); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 7px; padding: 7px 13px; cursor: pointer; }
+.mt-qf-b:hover { color: var(--text); border-color: var(--accent); }
+.mt-qf-b.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+.mt-qf-mod { display: inline-flex; align-items: center; gap: 6px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px 3px 12px; }
+.mt-qf-mod.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.mt-qf-modl { font: 600 12.5px/1 inherit; color: var(--muted); }
+.mt-qf-mod.on .mt-qf-modl { color: var(--accent); }
+.mt-qf-sel { border: 0; background: transparent; color: var(--text); font: 600 12.5px/1 inherit;
+  font-family: inherit; cursor: pointer; padding: 5px 2px; outline: none; max-width: 180px; }
+
+.mt-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 720px) { .mt-tiles { grid-template-columns: repeat(3, 1fr); } }
+.mt-tile { display: flex; flex-direction: column; gap: 3px; padding: 9px 12px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 3px; }
+.mt-tile b { font: 800 22px/1 inherit; color: var(--text); font-variant-numeric: tabular-nums; }
+.mt-tile span { font-size: 11px; color: var(--muted); }
+.mt-tile.over b { color: var(--danger); }
+.mt-tile.today b { color: var(--warn); }
+.mt-tile.done b { color: var(--good); }
+.mt-tile.zero b { color: var(--muted); }
+
+/* 딱딱한 플랫 패널 — 상태 밴드/열을 워크로드 패널처럼 경계로 감싼다(사용자 요청). */
+.mt-band { border: 1px solid var(--border); border-radius: 3px; border-top: 2px solid var(--tc);
+  background: var(--panel); overflow: hidden; }
+.mt-band.closed { border-top-color: var(--tc); }
+.mt-bandh { border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--tc) 7%, var(--panel)); }
+.mt-band.closed .mt-bandh { border-bottom: 0; }
+/* 가로(칸반) 모드 — 컬럼 배경도 옅은 패널면으로 정형화 */
+.mt-colbg > div { border: 1px solid var(--border); border-radius: 3px;
+  background: color-mix(in srgb, var(--tc, var(--border)) 3%, var(--panel)); }
+
 /* ── 헤더 + 요약 ── */
 .mt-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .mt-h { font-size: 17px; font-weight: 700; margin: 0; letter-spacing: -.2px; }

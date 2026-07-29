@@ -59,10 +59,6 @@ const OPTIONS = [
     { k: "collapsed", label: "모두 접기", hint: "하위를 모두 접는다 — 부모 Task 만 본다" },
     { k: "mine", label: "내 티켓만", hint: "하위 중 내가 담당인 것만 펼친다" },
     { k: "all", label: "모든 티켓", hint: "동료가 담당인 하위(유관)까지 모두 펼친다" }] },
-  { key: "scope", label: "연관성", reload: true, opts: [
-    { k: "assignee", label: "내가 담당자", hint: "담당자가 나" },
-    { k: "reporter", label: "내가 보고자", hint: "내가 보고(등록)한 것" },
-    { k: "both", label: "모두", hint: "담당 + 보고" }] },
   { key: "sort", label: "정렬", opts: [
     { k: "due", label: "마감", hint: "1차 마감 → 2차 우선순위" },
     { k: "pri", label: "우선순위", hint: "1차 우선순위 → 2차 마감" },
@@ -96,7 +92,10 @@ export default {
       // 그룹 하나하나의 속성이 아니다.
       subView: "mine",
       bandClosed: {},       // 세로축 모드에서 접어 둔 상태 밴드 { todo|inprogress|done: true }
-      scope: "assignee",    // assignee | reporter | both
+      // 상단 퀵필터 — assignee(기본) | reporter | module. module 이면 moduleSel 이 대상 모듈.
+      scope: "assignee",
+      moduleSel: "",        // 선택한 모듈명(scope==='module' 일 때)
+      me: null,             // /api/me — modules(내 모듈)·allModules·manager
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
       sort: "due",
@@ -109,6 +108,8 @@ export default {
   },
   mounted() {
     this.loadPrefs();
+    // 모듈 필터 셀렉터용 — 내 모듈/전체 모듈. 태스크 로딩과 병렬(부팅 안 막음).
+    api.me().then((me) => { this.me = me || null; }).catch(() => {});
     this.load();
     // 창 크기가 바뀌면 축도 따라간다(리사이즈·모니터 전환·창 분할).
     // 상태 전이 등으로 티켓이 바뀌면 **이 뷰만** 조용히 다시 받는다. 카드가 새 상태의 열로
@@ -142,6 +143,17 @@ export default {
     },
     states() { return STATES; },
     options() { return OPTIONS; },
+    // ── 상단 퀵필터 ──
+    myModules() { return (this.me && this.me.modules) || []; },
+    otherModules() {
+      const mine = new Set(this.myModules);
+      return ((this.me && this.me.allModules) || []).filter((m) => !mine.has(m));
+    },
+    /** 서버로 보낼 scope 문자열 — module 이면 module:<명>, 모듈 미선택이면 담당자로 폴백. */
+    apiScope() {
+      if (this.scope === "module") return this.moduleSel ? "module:" + this.moduleSel : "assignee";
+      return this.scope;
+    },
     /** 상태 열 폭 — 접힌 열은 좁은 레일만 남긴다(사라지면 되펼 자리가 없다).
      *  헤더 줄과 모든 그룹 본문이 같은 변수를 쓰므로 칼럼이 통째로 함께 움직인다. */
     gridCols() {
@@ -226,7 +238,7 @@ export default {
       if (!(opts && opts.quiet)) this.loading = true;
       this.err = "";
       try {
-        this.model = await api.myTasks({ scope: this.scope, openFilter: this.openFilter,
+        this.model = await api.myTasks({ scope: this.apiScope, openFilter: this.openFilter,
                                          doneFilter: this.doneFilter });
       }
       catch (e) { this.err = (e && e.message) || "불러오기 실패"; }
@@ -248,6 +260,18 @@ export default {
       if (o.reload) this.load();
     },
     hintOf(o) { const cur = o.opts.find((x) => x.k === this[o.key]); return cur ? cur.hint : o.label; },
+    /** 상단 퀵필터 — 담당자/보고자 전환(모듈 선택은 해제). */
+    setScope(s) {
+      if (this.scope === s) return;
+      this.scope = s; this.moduleSel = "";
+      this.savePrefs(); this.load();
+    },
+    /** 모듈 선택 — scope 를 module 로 두고 그 모듈로 조회(매니저 구분 없이 누구나). */
+    setModule(name) {
+      if (!name) { return; }
+      this.scope = "module"; this.moduleSel = name;
+      this.savePrefs(); this.load();
+    },
 
     /** 이 카드/그룹의 필터 버킷 — Epic 키, 없으면 사용자 VoC("__voc__"), 그것도 아니면 "__none__". */
     bucketOf(x) {
@@ -292,9 +316,13 @@ export default {
       if (saved.epicHidden && typeof saved.epicHidden === "object") {
         this.epicHidden = Object.assign({}, saved.epicHidden);
       }
+      // 상단 퀵필터(연관성/모듈)는 OPTIONS 밖이라 따로 복원한다.
+      if (["assignee", "reporter", "module"].includes(saved.scope)) this.scope = saved.scope;
+      if (typeof saved.moduleSel === "string") this.moduleSel = saved.moduleSel;
     },
     savePrefs() {
-      const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden };
+      const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden,
+                    scope: this.scope, moduleSel: this.moduleSel };
       for (const o of OPTIONS) out[o.key] = this[o.key];
       for (const f of Object.values(BAND_FILTERS)) out[f.key] = this[f.key];
       try { localStorage.setItem(PREF_KEY, JSON.stringify(out)); } catch (e) { /* 사파리 프라이빗 등 */ }
@@ -414,6 +442,39 @@ export default {
   },
   template: `
   <div class="mytasks" :class="'ax-' + axis" :style="{ '--mt-cols': gridCols }">
+    <!-- ══ 상단: 퀵필터(담당/보고/모듈) + 요약 타일 — 딱딱한 워크로드식 정형 ══ -->
+    <div class="mt-top">
+      <div class="mt-qf">
+        <button type="button" class="mt-qf-b" :class="{ on: scope === 'assignee' }"
+                @click="setScope('assignee')">내가 담당자</button>
+        <button type="button" class="mt-qf-b" :class="{ on: scope === 'reporter' }"
+                @click="setScope('reporter')">내가 보고자</button>
+        <label class="mt-qf-mod" :class="{ on: scope === 'module' }" title="모듈 단위로 보기 (내 모듈 먼저)">
+          <span class="mt-qf-modl">모듈</span>
+          <select class="mt-qf-sel" :value="scope === 'module' ? moduleSel : ''"
+                  @change="setModule($event.target.value)">
+            <option value="" disabled>선택…</option>
+            <optgroup v-if="myModules.length" label="내 모듈">
+              <option v-for="m in myModules" :key="'my-' + m" :value="m">{{ m }}</option>
+            </optgroup>
+            <optgroup v-if="otherModules.length" label="다른 모듈">
+              <option v-for="m in otherModules" :key="'ot-' + m" :value="m">{{ m }}</option>
+            </optgroup>
+          </select>
+        </label>
+      </div>
+      <div v-if="model && model.counts" class="mt-tiles">
+        <div class="mt-tile over" :class="{ zero: !model.counts.overdue }">
+          <b>{{ model.counts.overdue }}</b><span>지남</span></div>
+        <div class="mt-tile today" :class="{ zero: !model.counts.today }">
+          <b>{{ model.counts.today }}</b><span>오늘</span></div>
+        <div class="mt-tile week" :class="{ zero: !model.counts.week }">
+          <b>{{ model.counts.week }}</b><span>이번 주</span></div>
+        <div class="mt-tile"><b>{{ model.counts.total }}</b><span>전체</span></div>
+        <div class="mt-tile done"><b>{{ model.counts.done }}</b><span>최근 완료</span></div>
+      </div>
+    </div>
+
     <div v-if="loading" class="loading">불러오는 중…</div>
     <div v-else-if="err" class="mt-err">{{ err }}</div>
     <div v-else-if="!panels.length" class="mt-empty">표시할 일감이 없습니다.</div>

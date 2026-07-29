@@ -14,8 +14,8 @@ const PAGES = [
     desc: "PMO_VIT 루트 현안의 자손(Epic·Task·Sub-Task) 진행 상황을 데일리로 트래킹합니다." },
   { k: "workload", label: "인력 워크로드", icon: "👥", manager: true,
     desc: "인력별 작업량(진행 중 · 최근 7일 완료)과 활동을 모듈 단위로 봅니다." },
-  { k: "mytasks", label: "내 Task", icon: "✅", manager: false,
-    desc: "내가 담당한 일감을 마감 · 우선순위로 정렬해 한눈에 봅니다." },
+  { k: "mytasks", label: "Task", icon: "✅", manager: false,
+    desc: "담당·보고·모듈 단위로 일감을 마감 · 우선순위로 정렬해 한눈에 봅니다." },
 ];
 
 export default {

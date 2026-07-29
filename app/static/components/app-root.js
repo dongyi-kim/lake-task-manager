@@ -28,7 +28,7 @@ const TABS = [
   { k: "wbs", label: "WBS Dashboard", manager: true },
   { k: "vit", label: "현안 (PMO_VIT)" },
   { k: "workload", label: "인력 워크로드", manager: true },
-  { k: "mytasks", label: "내 Task" },
+  { k: "mytasks", label: "Task" },
 ];
 // 탭에 없지만 주소로는 갈 수 있는 매니저 전용 화면(설정 메뉴에서 진입).
 const MANAGER_ONLY = new Set(TABS.filter((t) => t.manager).map((t) => t.k).concat(["devtools"]));
