@@ -42,8 +42,8 @@ export default {
         text: "",
         status: {},                                  // { "To Do": true, … }
         epic: null,                                  // {key, name}
-        labels: "",
-        component: "",
+        labels: [],                                  // 다중 선택(FieldEdit)
+        component: [],
         created: { mode: "", from: "", to: "", days: "7" },   // mode: '' | recent | range
         updated: { mode: "", from: "", to: "", days: "7" },
         resolved: { mode: "", from: "", to: "", days: "7" },
@@ -70,8 +70,8 @@ export default {
       const st = STATUS_CATS.filter((s) => f.status[s.k]).map((s) => s.k);
       if (st.length) p.push(inList("statusCategory", st));
       if (f.epic) p.push('"Epic Link" = ' + f.epic.key);
-      if (csv(f.labels).length) p.push(inList("labels", csv(f.labels)));
-      if (csv(f.component).length) p.push(inList("component", csv(f.component)));
+      if (f.labels.length) p.push(inList("labels", f.labels));
+      if (f.component.length) p.push(inList("component", f.component));
       for (const d of DATE_FIELDS) {
         const v = f[d.k];
         if (v.mode === "recent" && String(v.days).trim()) {
@@ -108,7 +108,7 @@ export default {
       this.f.assignee = "any"; this.f.assigneeSel = null;
       this.f.reporter = "any"; this.f.reporterSel = null;
       this.f.text = ""; this.f.status = {}; this.f.epic = null;
-      this.f.labels = ""; this.f.component = "";
+      this.f.labels = []; this.f.component = [];
       for (const d of DATE_FIELDS) this.f[d.k] = { mode: "", from: "", to: "", days: "7" };
     },
     apply() { this.$emit("apply", this.jql); },
@@ -180,15 +180,21 @@ export default {
             <button v-if="f.epic" type="button" class="adv-clear" @click="f.epic=null">해제</button>
           </div>
         </div>
-        <!-- Labels -->
+        <!-- Labels — 다중 선택(FieldEdit) -->
         <div class="adv-row">
           <span class="adv-l">Labels</span>
-          <div class="adv-v"><input class="adv-in" v-model="f.labels" placeholder="쉼표로 구분 (labels in …)" spellcheck="false" /></div>
+          <div class="adv-v adv-seg3">
+            <FieldEdit class="adv-fe" :class="{ on: f.labels.length }" ticket="__adv__" field="labels" local
+                       :value="f.labels" @pick="(v) => f.labels = v || []">{{ f.labels.length ? f.labels.join(', ') : '라벨 지정…' }}</FieldEdit>
+          </div>
         </div>
-        <!-- Component -->
+        <!-- Component — 다중 선택(FieldEdit) -->
         <div class="adv-row">
           <span class="adv-l">Component</span>
-          <div class="adv-v"><input class="adv-in" v-model="f.component" placeholder="쉼표로 구분 (component in …)" spellcheck="false" /></div>
+          <div class="adv-v adv-seg3">
+            <FieldEdit class="adv-fe" :class="{ on: f.component.length }" ticket="__adv__" field="components" local
+                       :value="f.component" @pick="(v) => f.component = v || []">{{ f.component.length ? f.component.join(', ') : '컴포넌트 지정…' }}</FieldEdit>
+          </div>
         </div>
         <!-- Created / Updated / Resolved -->
         <div v-for="d in dateFields" :key="d.k" class="adv-row">

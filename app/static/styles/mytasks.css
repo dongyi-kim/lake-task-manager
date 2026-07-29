@@ -49,8 +49,19 @@
   color: var(--muted); cursor: pointer; padding: 0; }
 .mt-qf-jgo svg { width: 15px; height: 15px; }
 .mt-qf-jgo:hover { color: var(--text); border-color: var(--accent); }
+/* 고급 검색 활성(scope=jql) — 버튼·입력·돋보기 **함께** 강조(다른 세그먼트 on 과 통일). */
+.mt-qf-adv.qf-on .mt-qf-b { color: #fff; background: var(--accent); border-color: var(--accent); }
 .mt-qf-adv.qf-on .mt-qf-jgo { color: #fff; background: var(--accent); border-color: var(--accent); }
 .mt-qf-adv.qf-on .mt-qf-jql { border-top-color: var(--accent); border-bottom-color: var(--accent); }
+
+/* 세그먼트 hover — [버튼|피커]의 테두리를 **함께** 강조한다(한쪽만 켜지면 하나로 안 보인다). */
+.mt-qf-seg:hover .mt-qf-b,
+.mt-qf-seg:hover .mt-qf-sel,
+.mt-qf-seg:hover .mt-qf-fe .fe-v,
+.mt-qf-seg:hover .mt-qf-jql,
+.mt-qf-seg:hover .mt-qf-jgo { border-color: var(--accent); }
+.mt-qf-seg:hover .mt-qf-b:not(.on) { color: var(--text); }
+.mt-qf-seg:hover .mt-qf-fe .fe-v { color: var(--text); }
 /* Task+SubTask 그룹 개별 접기 버튼 — 제목 줄에 인라인으로 끼우지 않고 **카드 상단 좌측에
    플로팅**(오버레이)한다. 인라인이면 우선순위 아이콘부터 줄 전체가 오른쪽으로 밀려 카드마다
    제목 시작 위치가 흔들렸다. 절대배치로 띄우고, 부모 카드는 그만큼 좌측을 비워 준다. */
@@ -860,9 +871,11 @@
 .adv-seg3 > button { height: 28px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2);
   color: var(--muted); font: 600 11.5px/1 inherit; padding: 0 11px; cursor: pointer; }
 .adv-seg3 > button.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+.adv-fe { display: inline-flex; align-items: center; }
 .adv-fe .fe-v { height: 28px; box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px;
   border: 1px dashed var(--border-hi); border-radius: 7px; background: var(--panel-2); color: var(--muted);
-  font: 600 11.5px/1 inherit; padding: 0 12px; cursor: pointer; }
+  font: 600 11.5px/1 inherit; padding: 0 12px; cursor: pointer; margin: 0; }  /* 기본 .fe-v 음수마진 리셋(간격 균일) */
+.adv-fe .fe-v:hover { box-shadow: none; }
 .adv-fe.on .fe-v { color: #fff; background: var(--accent); border-color: var(--accent); border-style: solid; }
 .adv-clear { height: 28px; border: 0; background: none; color: var(--muted); text-decoration: underline;
   cursor: pointer; font-size: 11px; }

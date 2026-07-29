@@ -96,14 +96,14 @@ export default {
         // 선택지는 부모가 준다(아직 티켓이 없어 editmeta 가 없다). 사용자 검색만 평소와 같다.
         // 목록형(컴포넌트)은 화면이 opts 를 그리므로 거기에도 넣어 준다.
         this.opts = (this.choices || []).slice();
-        // 사용자·날짜·Epic 은 아래에서 검색기를 붙인다(local 이어도 타이핑 검색이 필요하다) —
-        // 그 외(우선순위·타입·컴포넌트)만 choices 로 끝내고 바로 포커스한다.
-        if (!this.isUser && !this.isDate && !this.isEpic) return this._focus();
+        // 사용자·날짜·Epic·다중(라벨/컴포넌트)은 아래에서 검색기/목록을 붙인다(local 이어도 필요) —
+        // 그 외(우선순위·타입)만 choices 로 끝내고 바로 포커스한다.
+        if (!this.isUser && !this.isDate && !this.isEpic && !this.isMulti) return this._focus();
       }
       if (this.field === "priority") {
         this.opts = (this.meta.allowedValues || []).map((v) => v.name);
       } else if (this.field === "components") {
-        this.opts = (this.meta.allowedValues || []).map((v) => v.name);
+        this.opts = ((this.meta && this.meta.allowedValues) || []).map((v) => v.name);   // local 은 meta 없음
         if (!this.opts.length) api.options("components").then((r) => { this.opts = (r || []).map((x) => x.name); });
       } else if (this.field === "labels") {
         this.suggest("");
