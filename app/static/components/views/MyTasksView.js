@@ -499,7 +499,10 @@ export default {
       const mineCards = g.atoms.map((a) => this.card(a, g, true));
       const all = mineCards.concat(g.others.map((ot) => this.card(ot, g, false)));
       const mode = this.subView;
-      const shown = mode === "collapsed" ? [] : (mode === "all" ? all : mineCards);
+      // '내 티켓만' 이라도 **내 하위가 하나도 없으면** 그 그룹의 실제 하위(others)를 대신 보여 준다.
+      // (내가 부모만 담당하고 하위는 전부 남의 것이거나, epic 스코프처럼 하위가 스코프에 안 잡힐 때 —
+      //  안 그러면 그룹 본문이 비어 '하위가 없는 것처럼' 보인다.)
+      const shown = mode === "collapsed" ? [] : (mode === "all" || !mineCards.length ? all : mineCards);
       return {
         key: g.key, kind: "task", group: g,
         title: g.title, epicKey: g.epic,

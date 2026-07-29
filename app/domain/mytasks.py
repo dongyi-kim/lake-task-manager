@@ -366,8 +366,12 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
             if my_kids:
                 for c in my_kids:
                     add_atom(g, c)      # 하위가 있으면 하위가 실행 단위 — Task 자체는 원자가 아니다
-            else:
-                add_atom(g, n)          # 하위가 없거나 전부 남의 것 → Task 자체가 원자
+            elif not kids:
+                add_atom(g, n)          # 하위가 아예 없는 단독 Task → Task 자체가 원자(soloPanel 로 감)
+            # else: 하위는 있으나 전부 남의 것/스코프 밖(예: epic 스코프의 Sub-Task 는 Epic Link 가 없어
+            #   is_mine 이 안 잡힌다). 이때 **Task 자신을 하위 원자로 넣지 않는다** — 넣으면 부모 헤더와
+            #   같은 티켓이 자기 그룹 본문에 하위처럼 다시 뜬다('자기 자신이 SubTask 로 보이던' 버그).
+            #   실제 하위는 아래 4)에서 others 로 붙고, 프론트가 '내 하위가 없으면 others 를 대신 보여' 준다.
 
     # 4) 동료 하위 + 롤업 + 정렬 키
     for g in groups.values():
