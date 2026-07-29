@@ -31,10 +31,16 @@
 .mt-fold { position: absolute; top: 7px; left: 4px; z-index: 4;
   width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; background: none; color: var(--muted); cursor: pointer; border-radius: 4px; padding: 0; }
-.mt-gh > .mt-card.parent { margin-left: 26px; }   /* 플로팅 버튼 자리 확보 */
+.mt-gh > .mt-card.parent { margin-left: 26px; }   /* 세로축: 플로팅 버튼 자리 확보 */
 .mt-fold:hover { background: var(--panel-2); color: var(--text); }
 .mt-fold .chev { display: inline-block; transition: transform .12s; font-size: 10px; }
 .mt-fold .chev.open { transform: rotate(90deg); }
+/* 가로축: 폴딩 버튼을 카드(티켓) **왼쪽 바깥 여백**으로 빼서 플로팅 핸들처럼 띄운다.
+   카드 안이 아니라 왼쪽 거터에 떠 있어 어느 그룹을 접는지가 카드와 분리돼 읽힌다. */
+.ax-h .mt-fold { left: -26px; top: 9px; width: 22px; height: 22px; border: 1px solid var(--border);
+  background: var(--panel); border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.ax-h .mt-fold:hover { background: var(--panel-2); color: var(--text); border-color: var(--border-hi); }
+.ax-h .mt-gh > .mt-card.parent { margin-left: 0; }   /* 버튼이 바깥으로 나가므로 안쪽 자리 불필요 */
 
 .mt-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 @media (max-width: 720px) { .mt-tiles { grid-template-columns: repeat(3, 1fr); } }
@@ -711,7 +717,7 @@
 /* Task+SubTask 카드는 덩치가 커서 상태색 칼럼 배경 위에 놓이면 경계가 흐려진다 —
    **또렷한 외곽선**(border-hi)과 살짝 강한 그림자로 한 덩어리임을 분명히 한다. */
 .ax-h .mt-gcard2.k-task { border-color: var(--border-hi);
-  box-shadow: 0 2px 7px rgba(0,0,0,.12); }
+  box-shadow: 0 4px 12px rgba(0,0,0,.15), 0 1px 3px rgba(0,0,0,.10); }
 /* 바깥 여백은 한 번만(콜럼 안쪽 inset), 좌우 대칭. */
 .ax-h .mt-hwrap { padding: 9px 8px 2px; }
 
