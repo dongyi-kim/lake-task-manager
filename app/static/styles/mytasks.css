@@ -24,9 +24,14 @@
 .mt-qf-modgrp .seg-r { border-radius: 0 7px 7px 0; margin-left: 0; }
 /* 왼쪽 버튼이 활성(파랑)일 때 이음선은 콤보의 좌측 경계가 진다(파랑 옆 회색선). */
 .mt-qf-modgrp .seg-l.on + .seg-r { border-left-color: var(--border); }
-/* Task+SubTask 그룹 개별 접기 버튼 */
-.mt-fold { flex: none; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
+/* Task+SubTask 그룹 개별 접기 버튼 — 제목 줄에 인라인으로 끼우지 않고 **카드 상단 좌측에
+   플로팅**(오버레이)한다. 인라인이면 우선순위 아이콘부터 줄 전체가 오른쪽으로 밀려 카드마다
+   제목 시작 위치가 흔들렸다. 절대배치로 띄우고, 부모 카드는 그만큼 좌측을 비워 준다. */
+.mt-gh { position: relative; }
+.mt-fold { position: absolute; top: 7px; left: 4px; z-index: 4;
+  width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; background: none; color: var(--muted); cursor: pointer; border-radius: 4px; padding: 0; }
+.mt-gh > .mt-card.parent { margin-left: 26px; }   /* 플로팅 버튼 자리 확보 */
 .mt-fold:hover { background: var(--panel-2); color: var(--text); }
 .mt-fold .chev { display: inline-block; transition: transform .12s; font-size: 10px; }
 .mt-fold .chev.open { transform: rotate(90deg); }
@@ -674,23 +679,39 @@
 .mt-colh.c-todo, .mt-cell.c-todo, .mt-colbg > .c-todo { --tc: var(--st-todo); }
 .mt-colh.c-inprogress, .mt-cell.c-inprogress, .mt-colbg > .c-inprogress { --tc: var(--st-prog); }
 .mt-colh.c-done, .mt-cell.c-done, .mt-colbg > .c-done { --tc: var(--st-done); }
-/* 헤더·본문·카드셀을 같은 트랙으로(박스와 카드 열이 정렬). 바깥 여백은 mt-hwrap 이 한 번만. */
+/* 헤더·본문·카드셀을 같은 트랙으로(박스와 카드 열이 정렬). 바깥 여백은 mt-hwrap 이 한 번만.
+   ★ 칼럼 사이 gap 을 없앤다 — 3칼럼이 **하나의 박스**로 이어지고, 내부 경계는 단선(divider)로만
+     갈린다(카드끼리는 셀 좌우 패딩 11px 이 간격을 준다). */
 .ax-h .mt-headrow, .ax-h .mt-colbg, .ax-h .mt-gbody {
-  grid-template-columns: var(--mt-cols, repeat(3, minmax(0, 1fr))); gap: 0 8px; padding: 0; }
+  grid-template-columns: var(--mt-cols, repeat(3, minmax(0, 1fr))); gap: 0; padding: 0; }
 .ax-h .mt-headrow { padding-bottom: 0; margin-bottom: 0; }
-/* 헤더 = 박스 상단(얇은 바) — 좌측 색선 없이 옅은 상태색. */
+/* 헤더 = 박스 상단(얇은 바). 3칼럼이 하나로 이어지게 내부 세로경계는 단선, 바깥 끝만 라운드.
+   좌측 색선 없이 상태색(조금 더 진하게). */
 .ax-h .mt-colh { padding: 6px 11px; font-size: 11.5px; font-weight: 700; letter-spacing: .2px;
-  color: var(--tc, var(--muted)); background: color-mix(in srgb, var(--tc) 14%, var(--panel));
-  border: 1px solid var(--border); border-bottom: 1px solid var(--border); border-radius: 3px 3px 0 0; }
+  color: var(--tc, var(--muted)); background: color-mix(in srgb, var(--tc) 20%, var(--panel));
+  border: 1px solid var(--border); border-right: 0; border-radius: 0; }
+.ax-h .mt-headrow > .mt-colh:first-child { border-radius: 3px 0 0 0; }
+.ax-h .mt-headrow > .mt-colh:last-child { border-right: 1px solid var(--border); border-radius: 0 3px 0 0; }
 .ax-h .mt-colh b { margin-left: auto; color: var(--text); background: var(--panel);
   border: 1px solid var(--border); border-radius: 2px; padding: 0 6px; font-variant-numeric: tabular-nums; }
-/* 본문 = 박스 아래로 이어짐 + 옅은 상태색 배경(구분). 좌측 색선 없음. */
-.ax-h .mt-colbg > div { background: color-mix(in srgb, var(--tc) 6%, var(--panel));
-  border: 1px solid var(--border); border-top: 0; border-radius: 0 0 3px 3px; }
-/* 셀은 박스 배경 위라 색 이중칠 안 함. 단 그룹의 SubTask 영역 회색면은 유지(부모 카드 구분). */
-.ax-h .mt-gcard2 .mt-cell.c-todo, .ax-h .mt-gcard2 .mt-cell.c-inprogress,
-.ax-h .mt-gcard2 .mt-cell.c-done, .ax-h .mt-gbody.plain .mt-cell { background: none; }
+/* 본문 = 박스 아래로 이어짐 + 상태색 배경(구분, 조금 더 진하게). 내부 세로경계 단선, 바깥만 라운드. */
+.ax-h .mt-colbg > div { background: color-mix(in srgb, var(--tc) 11%, var(--panel));
+  border: 1px solid var(--border); border-top: 0; border-right: 0; border-radius: 0; }
+.ax-h .mt-colbg > div:first-child { border-radius: 0 0 0 3px; }
+.ax-h .mt-colbg > div:last-child { border-right: 1px solid var(--border); border-radius: 0 0 3px 0; }
+/* 단독(plain) 셀은 colbg 박스 위라 색 이중칠 안 함. */
+.ax-h .mt-gbody.plain .mt-cell { background: none; }
+/* 그룹(Task+SubTask) 회색면(panel-2)이 밑의 colbg 색을 덮으므로, 상태색을 **셀에 직접 복구**한다
+   — 그래야 카드 안에서도 어느 상태 칸인지 읽힌다(부모 카드 구분용 회색면은 그대로). */
 .ax-h .mt-gcard2.k-task > .mt-gbody { background: var(--panel-2); }
+.ax-h .mt-gcard2 .mt-cell.c-todo { background: color-mix(in srgb, var(--st-todo) 13%, transparent); }
+.ax-h .mt-gcard2 .mt-cell.c-inprogress { background: color-mix(in srgb, var(--st-prog) 13%, transparent); }
+.ax-h .mt-gcard2 .mt-cell.c-done { background: color-mix(in srgb, var(--st-done) 13%, transparent); }
+.ax-h .mt-gcard2 .mt-cell { border-radius: 2px; }
+/* Task+SubTask 카드는 덩치가 커서 상태색 칼럼 배경 위에 놓이면 경계가 흐려진다 —
+   **또렷한 외곽선**(border-hi)과 살짝 강한 그림자로 한 덩어리임을 분명히 한다. */
+.ax-h .mt-gcard2.k-task { border-color: var(--border-hi);
+  box-shadow: 0 2px 7px rgba(0,0,0,.12); }
 /* 바깥 여백은 한 번만(콜럼 안쪽 inset), 좌우 대칭. */
 .ax-h .mt-hwrap { padding: 9px 8px 2px; }
 
