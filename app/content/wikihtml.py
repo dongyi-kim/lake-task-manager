@@ -152,13 +152,18 @@ def _inline(node):
         elif t == "img":
             src = (c.attrs.get("src") or "").strip()
             if src:
+                # 첨부 이미지(/secure/attachment/{id}/{name}) → Jira wiki 첨부 문법 **!name!**.
+                # 경로째 !…! 로 쓰면 이미지 매크로가 안 먹는다(첨부명만이 유효). 그 외(외부 URL 등)는
+                # src 그대로 둔다.
+                am = re.search(r"/secure/attachment/[^/]+/(.+)$", src)
+                ref = am.group(1) if am else src
                 # 크기 유지 — Jira wiki 이미지 파라미터 !파일|width=300!
                 w = (c.attrs.get("width") or "").strip()
                 if not w:
                     m = re.search(r"width\s*:\s*(\d+)", c.attrs.get("style") or "")
                     w = m.group(1) if m else ""
                 w = re.sub(r"[^0-9]", "", w)
-                out.append("!" + src + ("|width=" + w if w else "") + "!")
+                out.append("!" + ref + ("|width=" + w if w else "") + "!")
         elif t == "br":
             out.append("\n")
         else:

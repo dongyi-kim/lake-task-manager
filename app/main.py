@@ -1183,8 +1183,12 @@ async def api_attachment_upload(key: str, file: UploadFile = File(...)):
         return JSONResponse({"ok": False, "error": "첨부 업로드가 거절되었습니다 — " + str(e)[:200]},
                             status_code=502)
     att = res[0] if isinstance(res, list) and res else (res or {})
-    return JSONResponse({"id": str(att.get("id") or ""),
-                         "filename": att.get("filename") or (file.filename or "")})
+    fid = str(att.get("id") or "")
+    fname = att.get("filename") or (file.filename or "")
+    # 첨부 콘텐츠 경로 — 본문에 이미지/링크를 **이 경로**로 박아야 렌더에서 실제 첨부로 풀린다.
+    # (파일명만 박으면 html 모드(prod)에서 상대경로가 앱 오리진을 가리켜 이미지가 엑박이 된다.)
+    path = ("/secure/attachment/%s/%s" % (fid, fname)) if fid else fname
+    return JSONResponse({"id": fid, "filename": fname, "path": path})
 
 
 @app.delete("/api/ticket/{key}/attachment/{aid}")

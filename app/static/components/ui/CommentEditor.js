@@ -1356,7 +1356,10 @@ export default {
           }
           if (res) {
             uploaded.push(res.id);
-            html = html.split(url).join(res.filename);            // objectURL → 실제 파일명
+            // objectURL → **첨부 콘텐츠 경로**(/secure/attachment/{id}/{name}). 파일명만 박으면
+            // html 모드(prod)에서 <img src="name"> 가 앱 오리진 상대경로가 돼 이미지가 엑박이 된다.
+            // 경로로 두면 렌더가 실제 첨부로 풀고(프록시 재작성), wiki 모드는 저장 시 !name! 로 축약한다.
+            html = html.split(url).join(res.path || res.filename);
           } else {
             failed.push(info.name);                               // 끝내 실패 — 본문에서 참조를 걷어낸다
             html = stripPendingRef(html, url);

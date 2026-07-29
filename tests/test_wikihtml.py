@@ -219,6 +219,19 @@ def test_font_color_html_mode_survives_sanitize():
     assert sanitize_html('<span style="color: url(javascript:x)">x</span>') == "<span>x</span>"
 
 
+def test_uploaded_image_attachment_path_both_modes():
+    """붙여넣기/업로드 이미지는 첨부 경로(/secure/attachment/{id}/{name})로 본문에 박힌다.
+    wiki 모드는 저장 시 !name! 로 축약, html 모드는 경로를 유지해 렌더에서 실제 첨부로 풀린다
+    (파일명만 박으면 html 모드에서 앱 오리진 상대경로가 돼 엑박 — 리포트된 버그)."""
+    from app.content.htmlsafe import sanitize_html, proxy_attachment_images
+    h = '<p><img src="/secure/attachment/9/paste-1.png" alt="paste-1.png"></p>'
+    assert html_to_wiki(h) == "!paste-1.png!"                       # wiki: 첨부명만
+    assert 'src="/secure/attachment/9/paste-1.png"' in sanitize_html(h)   # html: 경로 유지
+    assert "/api/img?u=" in proxy_attachment_images(sanitize_html(h))     # 렌더에서 프록시로 풀림
+    # 외부 이미지는 건드리지 않는다
+    assert html_to_wiki('<p><img src="https://x.com/a.png"></p>') == "!https://x.com/a.png!"
+
+
 def test_font_color_wiki_roundtrip():
     """글자색 — wiki 모드: {color:#..}…{color} 로 저장되고 되읽힌다. 배경색은 wiki 대응이 없어 글자만."""
     w = html_to_wiki('<p><span style="color:#dc2626">빨강</span> <span style="background-color:#fef08a">형광</span></p>')
