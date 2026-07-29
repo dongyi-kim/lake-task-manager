@@ -153,11 +153,12 @@ def flatten_mentions_html(html):
         tag = m.group(0)
         idm = re.search(r'\bdata-id="([^"]*)"', tag)
         uid = (idm.group(1) if idm else "").strip()
-        name = re.sub(r"<[^>]+>", "", m.group(1)).strip()
-        if not name.startswith("@"):
-            name = "@" + name
+        # 앵커 **본문에는 @ 를 넣지 않는다** — Jira 는 user-hover 멘션을 렌더할 때 @ 를 스스로 붙인다.
+        # 우리 에디터 span 본문은 '@이름' 이라 그대로 두면 Jira 가 @ 를 한 번 더 붙여 '@@이름' 이 된다
+        # (리포트된 버그). 앞의 @ 를 떼고 이름만 남긴다.
+        name = re.sub(r"<[^>]+>", "", m.group(1)).strip().lstrip("@").strip()
         if not uid:
-            return escape(name)                 # 사번을 모르면 안전하게 글자만
+            return escape("@" + name) if name else ""   # 사번을 모르면 글자만(@ 표시로 사람임을)
         return ('<a class="user-hover" href="/secure/ViewProfile.jspa?name='
                 + escape(uid, quote=True) + '">' + escape(name) + "</a>")
 

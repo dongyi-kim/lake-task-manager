@@ -195,7 +195,8 @@ def test_mention_html_mode_becomes_jira_anchor():
     stored = sanitize_html(flatten_mentions_html(editor))
     assert 'class="user-hover"' in stored          # Jira 가 쓰는 멘션 앵커 class
     assert "name=skcc.x1103" in stored             # 프로필 링크에 사번
-    assert "@이준서" in stored
+    assert ">이준서</a>" in stored                 # 앵커 본문 = 이름만(@ 없음 — Jira 가 렌더 시 @ 붙임)
+    assert "@이준서" not in stored                 # @@이준서 방지(Jira 의 @ 와 중복 금지)
     assert 'data-type="mention"' not in stored     # 우리 span 형태는 앵커로 바뀜
     # 정화 재적용에도 안정(멱등)
     assert sanitize_html(stored) == stored
