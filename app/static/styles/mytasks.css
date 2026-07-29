@@ -174,15 +174,15 @@
   gap: 0 8px; padding: 0 8px; align-items: start; }
 @media (max-width: 900px) { .mt-headrow, .mt-gbody { grid-template-columns: 1fr; } }
 .mt-headrow { position: sticky; top: 0; z-index: 3; padding-bottom: 6px; background: var(--bg); }
-/* 상태 제목 — **상자가 아니라 제목**이다. 색 상자로 감싸면 그 안의 카드까지 한 덩어리로
-   묶여 '콜아웃에 담긴 목록' 으로 읽힌다. 여기서 상태는 담는 그릇이 아니라 영역의 이름이므로,
-   글자 + 그 아래 색 밑줄로만 표시하고 영역 구분은 세로선과 배경 음영이 맡는다. */
-.mt-colh { display: flex; align-items: center; gap: 6px; padding: 3px 2px 5px; font-size: 10.5px;
-  font-weight: 700; color: var(--tc, var(--muted)); letter-spacing: .3px;
-  border: 0; border-bottom: 2px solid var(--tc, var(--border)); background: none; }
-.mt-colh::before { content: ""; width: 6px; height: 6px; border-radius: 2px;
-  background: var(--tc, var(--border)); flex: none; }
-.mt-colh b { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; }
+/* 상태 헤더 = **채운 헤더 바**(워크로드 패널처럼). 각지게(2px) + 상태색 좌측 굵은 띠 + 하단 경계.
+   글자만 떠 있는 '제목' 이 아니라 영역을 여는 헤더 줄로 읽히게 한다. */
+.mt-colh { display: flex; align-items: center; gap: 7px; padding: 6px 10px; font-size: 11px;
+  font-weight: 700; color: var(--tc, var(--muted)); letter-spacing: .2px;
+  background: color-mix(in srgb, var(--tc, var(--border)) 12%, var(--panel));
+  border: 1px solid var(--border); border-left: 3px solid var(--tc, var(--border));
+  border-radius: 2px; }
+.mt-colh b { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 2px; padding: 0 6px; }
 .mt-colh.c-todo, .mt-cell.c-todo { --tc: var(--st-todo); }
 .mt-colh.c-inprogress, .mt-cell.c-inprogress { --tc: var(--st-prog); }
 .mt-colh.c-done, .mt-cell.c-done { --tc: var(--st-done); }
@@ -190,7 +190,7 @@
 /* 그룹 = **Task 카드 하나**. 카드가 곧 컨테이너이고, 하위는 그 카드 '안'에 들어간다.
    전에는 그룹을 색 있는 패널(콜아웃처럼)로 감쌌는데, 카드 위에 또 패널이 얹혀 시끄러웠다.
    지금은 패널을 없애고 카드 하나만 남긴다 — 상위 행이 카드의 머리, 하위가 카드의 본문. */
-.mt-gcard2 { --gc: var(--accent); margin: 0 0 10px; border-radius: 10px;
+.mt-gcard2 { --gc: var(--accent); margin: 0 0 10px; border-radius: 3px;
   background: var(--panel); border: 1px solid var(--border);
   /* 좌측 레일도 **소속 Epic 색** — 카드 안의 티켓 띠와 같은 색이라 한 묶음으로 읽힌다 */
   /* overflow:hidden 을 쓰지 않는다 — 부모 카드 위로 걸친 🔥 가 잘린다.
@@ -209,7 +209,7 @@
 /* 하위 = 카드 아래로 **뻗어나온 회색 면**. 상위 카드는 흰색으로 두고 하위 바닥만 눌러
    (같은 흰색이면 상위·하위가 구분되지 않는다) 그 위에 하위 카드를 흰색으로 띄운다.
    → 무엇이 부모이고 무엇이 그 안의 것인지 색의 층으로 읽힌다. */
-.mt-gcard2.k-task > .mt-gbody { background: var(--panel-2); border-radius: 0 0 9px 9px;
+.mt-gcard2.k-task > .mt-gbody { background: var(--panel-2); border-radius: 0 0 3px 3px;
   border-top: 1px solid var(--border); padding: 8px 10px 10px 20px; position: relative; }
 .mt-gcard2.k-task > .mt-gbody::before { content: ""; position: absolute; left: 10px; top: 10px;
   bottom: 12px; width: 2px; border-radius: 2px;
@@ -608,7 +608,7 @@
    3px 밀어낸다. 그 3px 때문에 하위 카드가 바깥 열과 안 맞았다. */
 .ax-h .mt-gcard2 { border-left-width: 0; position: relative; }
 .ax-h .mt-gcard2::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
-  border-radius: 10px 0 0 10px; background: var(--sig, var(--gc)); z-index: 1; }
+  border-radius: 2px 0 0 2px; background: var(--sig, var(--gc)); z-index: 1; }
 /* 하위 영역의 세로 안내선은 뺀다 — 카드 자체의 레일이 이미 같은 말을 하고, 첫 열을 침범한다 */
 .ax-h .mt-gcard2.k-task > .mt-gbody::before { display: none; }
 /* 가로축에선 안내선이 없으니 회색 면의 비대칭 좌패딩(기본 20px)을 **단독 그리드와 같은 8px** 로.
@@ -622,7 +622,7 @@
 .mt-hwrap { position: relative; }
 .mt-colbg { position: absolute; inset: 0; z-index: 0; display: grid; gap: 0 8px; padding: 0 3px;
   grid-template-columns: var(--mt-cols, repeat(3, minmax(0, 1fr))); pointer-events: none; }
-.mt-colbg > div { border-radius: 8px; }
+.mt-colbg > div { border-radius: 2px; }
 .mt-colbg > .c-todo { background: color-mix(in srgb, var(--st-todo) 11%, transparent); }
 .mt-colbg > .c-inprogress { background: color-mix(in srgb, var(--st-prog) 11%, transparent); }
 .mt-colbg > .c-done { background: color-mix(in srgb, var(--st-done) 11%, transparent); }
@@ -640,7 +640,7 @@
 .ax-h .mt-gcard2 .mt-cell.c-todo { background: color-mix(in srgb, var(--st-todo) 8%, transparent); }
 .ax-h .mt-gcard2 .mt-cell.c-inprogress { background: color-mix(in srgb, var(--st-prog) 8%, transparent); }
 .ax-h .mt-gcard2 .mt-cell.c-done { background: color-mix(in srgb, var(--st-done) 8%, transparent); }
-.ax-h .mt-gcard2 .mt-cell { border-radius: 7px; }
+.ax-h .mt-gcard2 .mt-cell { border-radius: 2px; }
 /* 상위 행(카드의 머리)은 불투명하게 둔다 — 제목을 읽는 줄이라 배경이 비치면 산만하다 */
 .ax-h .mt-gcard2 > .mt-gh { background: var(--panel); }
 
@@ -651,7 +651,7 @@
    사라졌다. 묶음을 보이려고 만든 카드인데 그 역할을 잃으면 본말이 뒤집힌다.
    칼럼 색은 카드를 뚫는 대신 **카드 안쪽 셀에 직접** 넣는다(아래) — 둘 다 산다. */
 .ax-h .mt-gcard2 { background: var(--panel); }
-.ax-h .mt-gcard2 > .mt-gh { border-radius: 10px 10px 0 0; }
+.ax-h .mt-gcard2 > .mt-gh { border-radius: 2px 2px 0 0; }
 
 /* 첫 카드가 칼럼 헤더에 딱 붙어 있었다 — 배경 띠가 보일 틈이 없고, 카드 위로 반쯤 나온 🔥 가
    sticky 헤더에 잘렸다. 표식이 카드 밖으로 나오는 구조라면 그만큼의 자리는 확보돼야 한다. */
