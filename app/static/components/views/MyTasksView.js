@@ -24,6 +24,7 @@ import PriIcon from "../ui/PriIcon.js";
 import TaskCard, { isHot, isUrgent } from "../ui/TaskCard.js";
 import DueText from "../ui/DueText.js";
 import FieldEdit from "../ui/FieldEdit.js";
+import AdvancedSearchDialog from "../ui/AdvancedSearchDialog.js";
 import { categoryColor } from "../../lib/colors.js";
 
 const NO_DUE = 1e6;
@@ -80,7 +81,7 @@ const PREF_KEY = "mytasks.opts";
 
 export default {
   name: "MyTasksView",
-  components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit },
+  components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit, AdvancedSearchDialog },
   data() {
     return {
       model: null, loading: true, err: "",
@@ -93,13 +94,14 @@ export default {
       // 그룹 하나하나의 속성이 아니다.
       subView: "mine",
       bandClosed: {},       // 세로축 모드에서 접어 둔 상태 밴드 { todo|inprogress|done: true }
-      // 상단 퀵필터 — assignee(기본) | reporter | mymodules(내 모듈 전체) | module(특정 모듈).
-      scope: "assignee",
-      moduleSel: "",        // 선택한 모듈명(scope==='module' 일 때)
-      // 특정 사람/Epic 필터(picker 로 고른 대상) — 각 칩이 자기 선택을 기억한다.
-      assigneeSel: null,    // {id, name}  scope==='uassignee'
-      reporterSel: null,    // {id, name}  scope==='ureporter'
-      epicSel: null,        // {key, name} scope==='uepic'
+      // 상단 퀵필터 — 세 세그먼트(담당자/보고자/모듈) + 고급 검색. 각 세그먼트는 [버튼][우측 선택]
+      // 으로, 버튼이 그 스코프를 켜고 우측 선택(사람 picker / 모듈 콤보)이 대상을 정한다. Default = '나'.
+      scope: "assignee",    // assignee | reporter | module | jql
+      moduleSel: "",        // 선택한 모듈명("" = 내 모듈 전체) — 포커스 떠나도 유지
+      assigneeSel: null,    // {id, name}  null = 나
+      reporterSel: null,    // {id, name}  null = 나
+      jqlText: "",          // 고급 검색 JQL(직접 입력 또는 빌더가 채움)
+      advOpen: false,       // 고급 검색 다이얼로그 열림
       me: null,             // /api/me — modules(내 모듈)·allModules·manager
       gClosed: {},          // Task+SubTask 그룹 개별 접힘 { groupKey: true }
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
@@ -159,16 +161,15 @@ export default {
       const mine = new Set(this.myModules);
       return ((this.me && this.me.allModules) || []).filter((m) => !mine.has(m));
     },
-    /** 모듈 모드(내 모듈 전체 또는 특정 모듈) — 콤보박스 활성화 판정. */
-    inModule() { return this.scope === "mymodules" || this.scope === "module"; },
-    /** 서버로 보낼 scope 문자열. */
+    /** 세션 사용자 사번 — 담당자/보고자 picker 에서 '나' 판정용. */
+    myId() { return (this.me && (this.me.id || this.me.name)) || ""; },
+    /** 서버로 보낼 scope 문자열. 담당자/보고자는 대상이 '나'면 축약 스코프(assignee/reporter)로
+     *  보내 currentUser 와 **같은 캐시 키**에 모이게 한다(특정 사람이면 assignee:<사번>). */
     apiScope() {
-      if (this.scope === "mymodules") return "mymodules";
       if (this.scope === "module") return this.moduleSel ? "module:" + this.moduleSel : "mymodules";
-      if (this.scope === "uassignee") return this.assigneeSel ? "assignee:" + this.assigneeSel.id : "assignee";
-      if (this.scope === "ureporter") return this.reporterSel ? "reporter:" + this.reporterSel.id : "reporter";
-      if (this.scope === "uepic") return this.epicSel ? "epic:" + this.epicSel.key : "assignee";
-      return this.scope;
+      if (this.scope === "reporter") return this.reporterSel ? "reporter:" + this.reporterSel.id : "reporter";
+      if (this.scope === "jql") return this.jqlText.trim() ? "jql:" + this.jqlText.trim() : "assignee";
+      return this.assigneeSel ? "assignee:" + this.assigneeSel.id : "assignee";
     },
     /** 상태 열 폭 — 접힌 열은 좁은 레일만 남긴다(사라지면 되펼 자리가 없다).
      *  헤더 줄과 모든 그룹 본문이 같은 변수를 쓰므로 칼럼이 통째로 함께 움직인다. */
@@ -302,35 +303,37 @@ export default {
       if (o.reload) this.load();
     },
     hintOf(o) { const cur = o.opts.find((x) => x.k === this[o.key]); return cur ? cur.hint : o.label; },
-    /** 상단 퀵필터 전환 — assignee/reporter/mymodules. **moduleSel 은 유지**(콤보 선택 기억). */
+    /** 세그먼트 버튼 — 그 스코프를 켠다. 우측 선택(사람/모듈)은 **유지**(포커스 떠나도 안 바뀜). */
     setScope(s) {
       if (this.scope === s) return;
       this.scope = s;
       this.savePrefs(); this.load();
     },
-    /** 특정 사람/Epic picker(FieldEdit local)에서 고름 → 그 스코프로 전환·서버 재조회.
-     *  빈 값(해제)이면 '내가 담당자' 기본으로 되돌린다. */
+    /** 담당자 picker(FieldEdit local)에서 고름 → 담당자 스코프. 빈 값 또는 **나**를 고르면
+     *  '나'(null)로 둬 currentUser 와 같은 캐시 키로 모이게 한다. */
     pickAssignee(id, u) {
-      if (!id) { this.assigneeSel = null; if (this.scope === "uassignee") this.setScope("assignee"); return; }
-      this.assigneeSel = { id, name: (u && (u.display || u.name)) || id };
-      this.scope = "uassignee"; this.savePrefs(); this.load();
+      this.assigneeSel = (!id || id === this.myId) ? null : { id, name: (u && (u.display || u.name)) || id };
+      this.scope = "assignee"; this.savePrefs(); this.load();
     },
     pickReporter(id, u) {
-      if (!id) { this.reporterSel = null; if (this.scope === "ureporter") this.setScope("reporter"); return; }
-      this.reporterSel = { id, name: (u && (u.display || u.name)) || id };
-      this.scope = "ureporter"; this.savePrefs(); this.load();
+      this.reporterSel = (!id || id === this.myId) ? null : { id, name: (u && (u.display || u.name)) || id };
+      this.scope = "reporter"; this.savePrefs(); this.load();
     },
-    pickEpic(key, e) {
-      if (!key) { this.epicSel = null; if (this.scope === "uepic") this.setScope("assignee"); return; }
-      this.epicSel = { key, name: (e && (e.name || e.summary)) || key };
-      this.scope = "uepic"; this.savePrefs(); this.load();
-    },
-    /** 콤보박스에서 모듈 선택 — '내 모듈 전체'(__all__) 또는 특정 모듈. */
+    /** 모듈 콤보 — '내 모듈 전체'(__all__)면 moduleSel 비움, 아니면 특정 모듈. **모듈 스코프로 전환**.
+     *  선택은 moduleSel 에 남아 포커스가 떠나도 유지된다. */
     onModulePick(v) {
-      if (!v || v === "__all__") { this.setScope("mymodules"); return; }
-      if (this.scope === "module" && this.moduleSel === v) return;
-      this.scope = "module"; this.moduleSel = v;
+      this.moduleSel = (!v || v === "__all__") ? "" : v;
+      this.scope = "module"; this.savePrefs(); this.load();
+    },
+    /** 고급 검색 — JQL 입력/빌더 결과로 검색 실행. 비어 있으면 '나(담당)'로 폴백. */
+    runJql() {
+      this.scope = this.jqlText.trim() ? "jql" : "assignee";
       this.savePrefs(); this.load();
+    },
+    onAdvApply(jql) {           // 빌더 다이얼로그가 만든 JQL 을 입력창에 채우고 바로 검색
+      this.jqlText = jql || "";
+      this.advOpen = false;
+      this.runJql();
     },
     /** Task+SubTask 그룹 개별 접기/펴기. */
     toggleGroup(key) {
@@ -403,19 +406,18 @@ export default {
         this.epicHidden = Object.assign({}, saved.epicHidden);
       }
       // 상단 퀵필터(연관성/모듈)는 OPTIONS 밖이라 따로 복원한다.
-      if (["assignee", "reporter", "mymodules", "module", "uassignee", "ureporter", "uepic"].includes(saved.scope))
-        this.scope = saved.scope;
+      if (["assignee", "reporter", "module", "jql"].includes(saved.scope)) this.scope = saved.scope;
       if (typeof saved.moduleSel === "string") this.moduleSel = saved.moduleSel;
       if (saved.assigneeSel && saved.assigneeSel.id) this.assigneeSel = saved.assigneeSel;
       if (saved.reporterSel && saved.reporterSel.id) this.reporterSel = saved.reporterSel;
-      if (saved.epicSel && saved.epicSel.key) this.epicSel = saved.epicSel;
+      if (typeof saved.jqlText === "string") this.jqlText = saved.jqlText;
       if (saved.gClosed && typeof saved.gClosed === "object") this.gClosed = Object.assign({}, saved.gClosed);
       if (saved.projPref && typeof saved.projPref === "object") this.projPref = Object.assign({}, saved.projPref);
     },
     savePrefs() {
       const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden, gClosed: this.gClosed,
                     scope: this.scope, moduleSel: this.moduleSel, projPref: this.projPref,
-                    assigneeSel: this.assigneeSel, reporterSel: this.reporterSel, epicSel: this.epicSel };
+                    assigneeSel: this.assigneeSel, reporterSel: this.reporterSel, jqlText: this.jqlText };
       for (const o of OPTIONS) out[o.key] = this[o.key];
       for (const f of Object.values(BAND_FILTERS)) out[f.key] = this[f.key];
       try { localStorage.setItem(PREF_KEY, JSON.stringify(out)); } catch (e) { /* 사파리 프라이빗 등 */ }
@@ -538,43 +540,57 @@ export default {
     <!-- ══ 상단: 퀵필터(담당/보고/모듈) + 요약 타일 — 딱딱한 워크로드식 정형 ══ -->
     <div class="mt-top">
       <div class="mt-qf">
-        <button type="button" class="mt-qf-b" :class="{ on: scope === 'assignee' }"
-                @click="setScope('assignee')">내가 담당자</button>
-        <button type="button" class="mt-qf-b" :class="{ on: scope === 'reporter' }"
-                @click="setScope('reporter')">내가 보고자</button>
-        <span class="mt-qf-modgrp">
-          <button type="button" class="mt-qf-b seg-l" :class="{ on: scope === 'mymodules' }"
-                  @click="setScope('mymodules')" title="내가 속한 모듈 전체">모듈 전체</button>
+        <!-- 담당자 세그먼트: [담당자][picker: 나/이름] — 버튼이 스코프를 켜고 picker 가 대상을 정한다. -->
+        <span class="mt-qf-seg">
+          <button type="button" class="mt-qf-b seg-l" :class="{ on: scope === 'assignee' }"
+                  @click="setScope('assignee')" title="담당자 기준으로 보기">담당자</button>
+          <FieldEdit class="mt-qf-fe seg-r" :class="{ 'qf-on': scope === 'assignee' }" ticket="__filter__"
+                     field="assignee" local :value="assigneeSel ? assigneeSel.id : ''"
+                     :user-id="assigneeSel ? assigneeSel.id : ''" @pick="pickAssignee">
+            <span class="qf-fe-v">{{ assigneeSel ? assigneeSel.name : '나' }}</span><span class="qf-fe-cav">▾</span>
+          </FieldEdit>
+        </span>
+        <!-- 보고자 세그먼트 -->
+        <span class="mt-qf-seg">
+          <button type="button" class="mt-qf-b seg-l" :class="{ on: scope === 'reporter' }"
+                  @click="setScope('reporter')" title="보고자 기준으로 보기">보고자</button>
+          <FieldEdit class="mt-qf-fe seg-r" :class="{ 'qf-on': scope === 'reporter' }" ticket="__filter__"
+                     field="reporter" local :value="reporterSel ? reporterSel.id : ''"
+                     :user-id="reporterSel ? reporterSel.id : ''" @pick="pickReporter">
+            <span class="qf-fe-v">{{ reporterSel ? reporterSel.name : '나' }}</span><span class="qf-fe-cav">▾</span>
+          </FieldEdit>
+        </span>
+        <!-- 모듈 세그먼트: [모듈][콤보] — 콤보 선택은 포커스 떠나도 유지, 버튼이 모듈 스코프를 켠다. -->
+        <span class="mt-qf-seg">
+          <button type="button" class="mt-qf-b seg-l" :class="{ on: scope === 'module' }"
+                  @click="setScope('module')" title="모듈 단위로 보기">모듈</button>
           <select class="mt-qf-sel seg-r" :class="{ on: scope === 'module' }"
-                  :value="scope === 'mymodules' ? '__all__' : (moduleSel || '__all__')"
-                  @change="onModulePick($event.target.value)" title="특정 모듈로 좁히기">
-          <option value="__all__">{{ myModules.length ? '내 모듈 전체' : '모듈 전체' }}</option>
-          <optgroup v-if="myModules.length" label="내 모듈">
-            <option v-for="m in myModules" :key="'my-' + m" :value="m">{{ m }}</option>
-          </optgroup>
-          <optgroup v-if="otherModules.length" label="다른 모듈">
-            <option v-for="m in otherModules" :key="'ot-' + m" :value="m">{{ m }}</option>
-          </optgroup>
-        </select>
+                  :value="moduleSel || '__all__'"
+                  @change="onModulePick($event.target.value)" title="모듈 선택(포커스 떠나도 유지)">
+            <option value="__all__">{{ myModules.length ? '내 모듈 전체' : '모듈 전체' }}</option>
+            <optgroup v-if="myModules.length" label="내 모듈">
+              <option v-for="m in myModules" :key="'my-' + m" :value="m">{{ m }}</option>
+            </optgroup>
+            <optgroup v-if="otherModules.length" label="다른 모듈">
+              <option v-for="m in otherModules" :key="'ot-' + m" :value="m">{{ m }}</option>
+            </optgroup>
+          </select>
         </span>
 
-        <!-- 특정 사람/Epic 필터 — 티켓 속성 편집과 **같은 picker**(FieldEdit local)를 눌러 고른다.
-             고르면 그 대상 스코프로 서버 재조회(assignee:<사번> / reporter:<사번> / epic:<키>). -->
-        <FieldEdit class="mt-qf-fe" :class="{ 'qf-on': scope === 'uassignee' }" ticket="__filter__"
-                   field="assignee" local :value="assigneeSel ? assigneeSel.id : ''"
-                   :user-id="assigneeSel ? assigneeSel.id : ''" @pick="pickAssignee">
-          <span class="qf-fe-l">담당자</span><b v-if="assigneeSel" class="qf-fe-v">{{ assigneeSel.name }}</b><span class="qf-fe-cav">▾</span>
-        </FieldEdit>
-        <FieldEdit class="mt-qf-fe" :class="{ 'qf-on': scope === 'ureporter' }" ticket="__filter__"
-                   field="reporter" local :value="reporterSel ? reporterSel.id : ''"
-                   :user-id="reporterSel ? reporterSel.id : ''" @pick="pickReporter">
-          <span class="qf-fe-l">보고자</span><b v-if="reporterSel" class="qf-fe-v">{{ reporterSel.name }}</b><span class="qf-fe-cav">▾</span>
-        </FieldEdit>
-        <FieldEdit class="mt-qf-fe" :class="{ 'qf-on': scope === 'uepic' }" ticket="__filter__"
-                   field="epic" local :value="epicSel ? epicSel.key : ''" @pick="pickEpic">
-          <span class="qf-fe-l">Epic</span><b v-if="epicSel" class="qf-fe-v">{{ epicSel.name }}</b><span class="qf-fe-cav">▾</span>
-        </FieldEdit>
+        <!-- 고급 검색: [고급 검색][JQL 입력][🔍] — 버튼은 빌더 다이얼로그, 우측 입력창은 JQL 직접 입력,
+             돋보기(또는 Enter)로 그 JQL 을 Task 에 검색해 띄운다. -->
+        <span class="mt-qf-seg mt-qf-adv" :class="{ 'qf-on': scope === 'jql' }">
+          <button type="button" class="mt-qf-b seg-l" @click="advOpen = true"
+                  title="조건을 조합해 JQL 만들기">고급 검색</button>
+          <input class="mt-qf-jql" v-model="jqlText" @keydown.enter="runJql"
+                 placeholder="JQL 직접 입력 또는 [고급 검색]" spellcheck="false" autocomplete="off" />
+          <button type="button" class="mt-qf-jgo seg-r" @click="runJql" title="이 JQL 로 검색" aria-label="검색">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          </button>
+        </span>
       </div>
+      <AdvancedSearchDialog v-if="advOpen" :projects="(me && me.searchProjects) || []" :my-id="myId"
+                            :initial="jqlText" @apply="onAdvApply" @close="advOpen = false" />
       <div v-if="model && model.counts" class="mt-tiles">
         <div class="mt-tile over" :class="{ zero: !model.counts.overdue }">
           <b>{{ model.counts.overdue }}</b><span>지남</span></div>

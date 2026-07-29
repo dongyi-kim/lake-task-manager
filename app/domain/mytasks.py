@@ -165,7 +165,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     #   assignee(기본) | reporter | both | mymodules | module:<모듈> |
     #   assignee:<사번> | reporter:<사번> | epic:<키>  — 뒤 셋은 '특정 사람/Epic' 필터(퀵필터 picker).
     mod_ids, mod_comps = set(), set()
-    spec_user, epic_scope = None, None
+    spec_user, epic_scope, raw_jql = None, None, None
 
     def _lit(s):
         """따옴표로 감싸는 JQL 리터럴 안전화 — 따옴표·역슬래시 제거(스코프 문자열은 사용자 입력)."""
@@ -194,6 +194,11 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     elif scope.startswith("epic:"):
         epic_scope = "".join(c for c in scope.split(":", 1)[1] if c.isalnum() or c == "-")
         scope_kind = "epic" if epic_scope else "assignee"
+    elif scope.startswith("jql:"):
+        # 고급 검색 — 사용자가 UI 빌더/직접 입력으로 만든 **완전한 JQL**. 이건 의도된 자유 질의라
+        # 리터럴 안전화를 하지 않는다(그 자체가 질의문이다). 로컬 1인 앱이라 자기 Jira 를 자기가 조회.
+        raw_jql = scope.split(":", 1)[1].strip()
+        scope_kind = "jql" if raw_jql else "assignee"
     else:
         scope_kind = scope if scope in ("reporter", "both") else "assignee"
 
@@ -238,6 +243,10 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
         _add("rep:%s" % spec_user, 'reporter = "%s"' % spec_user)
     elif scope_kind == "epic":
         _add("epic:%s" % epic_scope, '"Epic Link" = %s' % epic_scope)
+    elif scope_kind == "jql":
+        # 완전한 자유 질의 — 상태 조건으로 감싸지 않고(그 자체가 전체 질의), 캐시도 안 한다(ad-hoc).
+        jq = raw_jql if ("order by" in raw_jql.lower()) else (raw_jql + " ORDER BY duedate ASC")
+        subqs.append((None, jq))
     elif scope_kind == "reporter":
         _add("rep:%s" % me, 'reporter = "%s"' % me)
     elif scope_kind == "both":                            # 담당·보고를 따로 쪼개 각자 캐시(합집합은 병합)
@@ -278,6 +287,8 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
             return n["reporterId"] == spec_user
         if scope_kind == "epic":
             return n.get("epic") == epic_scope          # 그 Epic 직속(Sub-Task 는 맥락으로만)
+        if scope_kind == "jql":
+            return n["key"] in seen                      # JQL 에 실제로 매치된 것만 원자(맥락 제외)
         if scope_kind == "reporter":
             return n["reporterId"] == me
         if scope_kind == "both":
