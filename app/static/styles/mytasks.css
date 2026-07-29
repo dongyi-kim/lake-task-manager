@@ -9,17 +9,21 @@
 /* ══ 상단: 퀵필터(담당/보고/모듈) + 요약 타일 — 워크로드식 정형(딱딱) ══ */
 .mt-top { display: flex; flex-direction: column; gap: 10px; margin: 0 0 14px; }
 .mt-qf { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.mt-qf-b { font: 600 12.5px/1 inherit; font-family: inherit; color: var(--muted); background: var(--panel);
-  border: 1px solid var(--border); border-radius: 7px; padding: 7px 13px; cursor: pointer; }
+/* 칩·콤보 **같은 높이**로 통일(보기 좋게). */
+.mt-qf-b, .mt-qf-sel { height: 32px; box-sizing: border-box; font: 600 12.5px/1 inherit; font-family: inherit;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--muted); cursor: pointer; }
+.mt-qf-b { padding: 0 14px; }
 .mt-qf-b:hover { color: var(--text); border-color: var(--accent); }
 .mt-qf-b.on { color: #fff; background: var(--accent); border-color: var(--accent); }
-.mt-qf-mod { display: inline-flex; align-items: center; gap: 6px; background: var(--panel);
-  border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px 3px 12px; }
-.mt-qf-mod.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-.mt-qf-modl { font: 600 12.5px/1 inherit; color: var(--muted); }
-.mt-qf-mod.on .mt-qf-modl { color: var(--accent); }
-.mt-qf-sel { border: 0; background: transparent; color: var(--text); font: 600 12.5px/1 inherit;
-  font-family: inherit; cursor: pointer; padding: 5px 2px; outline: none; max-width: 180px; }
+.mt-qf-sel { padding: 0 8px; color: var(--text); max-width: 200px; outline: none; }
+.mt-qf-sel:disabled { opacity: .5; cursor: default; background: var(--panel-2); color: var(--muted); }
+.mt-qf-sel.on { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+/* Task+SubTask 그룹 개별 접기 버튼 */
+.mt-fold { flex: none; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: none; color: var(--muted); cursor: pointer; border-radius: 4px; padding: 0; }
+.mt-fold:hover { background: var(--panel-2); color: var(--text); }
+.mt-fold .chev { display: inline-block; transition: transform .12s; font-size: 10px; }
+.mt-fold .chev.open { transform: rotate(90deg); }
 
 .mt-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 @media (max-width: 720px) { .mt-tiles { grid-template-columns: repeat(3, 1fr); } }
@@ -657,6 +661,32 @@
    sticky 헤더에 잘렸다. 표식이 카드 밖으로 나오는 구조라면 그만큼의 자리는 확보돼야 한다. */
 .mt-hwrap { padding-top: 12px; }
 .mt-headrow { padding-bottom: 4px; }
+
+/* ══ 상태영역 = 하나의 박스(헤더+본문 이어짐) + 옅은 상태색 배경(구분용) ══
+   헤더(박스 상단)와 본문(박스 아래)이 하나의 박스로 이어진다. 좌측 색선 없음.
+   그룹카드(Task+SubTask)는 이 박스 안쪽으로 들어오고 SubTask 영역은 회색면을 유지한다. */
+.mt-colh.c-todo, .mt-cell.c-todo, .mt-colbg > .c-todo { --tc: var(--st-todo); }
+.mt-colh.c-inprogress, .mt-cell.c-inprogress, .mt-colbg > .c-inprogress { --tc: var(--st-prog); }
+.mt-colh.c-done, .mt-cell.c-done, .mt-colbg > .c-done { --tc: var(--st-done); }
+/* 헤더·본문·카드셀을 같은 트랙으로(박스와 카드 열이 정렬). 바깥 여백은 mt-hwrap 이 한 번만. */
+.ax-h .mt-headrow, .ax-h .mt-colbg, .ax-h .mt-gbody {
+  grid-template-columns: var(--mt-cols, repeat(3, minmax(0, 1fr))); gap: 0 8px; padding: 0; }
+.ax-h .mt-headrow { padding-bottom: 0; margin-bottom: 0; }
+/* 헤더 = 박스 상단(얇은 바) — 좌측 색선 없이 옅은 상태색. */
+.ax-h .mt-colh { padding: 6px 11px; font-size: 11.5px; font-weight: 700; letter-spacing: .2px;
+  color: var(--tc, var(--muted)); background: color-mix(in srgb, var(--tc) 14%, var(--panel));
+  border: 1px solid var(--border); border-bottom: 1px solid var(--border); border-radius: 3px 3px 0 0; }
+.ax-h .mt-colh b { margin-left: auto; color: var(--text); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 2px; padding: 0 6px; font-variant-numeric: tabular-nums; }
+/* 본문 = 박스 아래로 이어짐 + 옅은 상태색 배경(구분). 좌측 색선 없음. */
+.ax-h .mt-colbg > div { background: color-mix(in srgb, var(--tc) 6%, var(--panel));
+  border: 1px solid var(--border); border-top: 0; border-radius: 0 0 3px 3px; }
+/* 셀은 박스 배경 위라 색 이중칠 안 함. 단 그룹의 SubTask 영역 회색면은 유지(부모 카드 구분). */
+.ax-h .mt-gcard2 .mt-cell.c-todo, .ax-h .mt-gcard2 .mt-cell.c-inprogress,
+.ax-h .mt-gcard2 .mt-cell.c-done, .ax-h .mt-gbody.plain .mt-cell { background: none; }
+.ax-h .mt-gcard2.k-task > .mt-gbody { background: var(--panel-2); }
+/* 바깥 여백은 한 번만(콜럼 안쪽 inset), 좌우 대칭. */
+.ax-h .mt-hwrap { padding: 9px 8px 2px; }
 
 /* 미분류(Unclassified) — 방향도 무게도 없다. 점 하나로 '아직 등급이 없다' 만 말한다.
    Medium 의 가로막대(▬)와 헷갈리면 안 된다: 하나는 판단이 끝난 것, 하나는 아직 안 된 것이다. */

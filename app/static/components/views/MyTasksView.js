@@ -92,10 +92,11 @@ export default {
       // 그룹 하나하나의 속성이 아니다.
       subView: "mine",
       bandClosed: {},       // 세로축 모드에서 접어 둔 상태 밴드 { todo|inprogress|done: true }
-      // 상단 퀵필터 — assignee(기본) | reporter | module. module 이면 moduleSel 이 대상 모듈.
+      // 상단 퀵필터 — assignee(기본) | reporter | mymodules(내 모듈 전체) | module(특정 모듈).
       scope: "assignee",
       moduleSel: "",        // 선택한 모듈명(scope==='module' 일 때)
       me: null,             // /api/me — modules(내 모듈)·allModules·manager
+      gClosed: {},          // Task+SubTask 그룹 개별 접힘 { groupKey: true }
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
       sort: "due",
@@ -149,9 +150,12 @@ export default {
       const mine = new Set(this.myModules);
       return ((this.me && this.me.allModules) || []).filter((m) => !mine.has(m));
     },
-    /** 서버로 보낼 scope 문자열 — module 이면 module:<명>, 모듈 미선택이면 담당자로 폴백. */
+    /** 모듈 모드(내 모듈 전체 또는 특정 모듈) — 콤보박스 활성화 판정. */
+    inModule() { return this.scope === "mymodules" || this.scope === "module"; },
+    /** 서버로 보낼 scope 문자열. */
     apiScope() {
-      if (this.scope === "module") return this.moduleSel ? "module:" + this.moduleSel : "assignee";
+      if (this.scope === "mymodules") return "mymodules";
+      if (this.scope === "module") return this.moduleSel ? "module:" + this.moduleSel : "mymodules";
       return this.scope;
     },
     /** 상태 열 폭 — 접힌 열은 좁은 레일만 남긴다(사라지면 되펼 자리가 없다).
@@ -260,17 +264,23 @@ export default {
       if (o.reload) this.load();
     },
     hintOf(o) { const cur = o.opts.find((x) => x.k === this[o.key]); return cur ? cur.hint : o.label; },
-    /** 상단 퀵필터 — 담당자/보고자 전환(모듈 선택은 해제). */
+    /** 상단 퀵필터 전환 — assignee/reporter/mymodules. **moduleSel 은 유지**(콤보 선택 기억). */
     setScope(s) {
       if (this.scope === s) return;
-      this.scope = s; this.moduleSel = "";
+      this.scope = s;
       this.savePrefs(); this.load();
     },
-    /** 모듈 선택 — scope 를 module 로 두고 그 모듈로 조회(매니저 구분 없이 누구나). */
-    setModule(name) {
-      if (!name) { return; }
-      this.scope = "module"; this.moduleSel = name;
+    /** 콤보박스에서 모듈 선택 — '내 모듈 전체'(__all__) 또는 특정 모듈. */
+    onModulePick(v) {
+      if (!v || v === "__all__") { this.setScope("mymodules"); return; }
+      if (this.scope === "module" && this.moduleSel === v) return;
+      this.scope = "module"; this.moduleSel = v;
       this.savePrefs(); this.load();
+    },
+    /** Task+SubTask 그룹 개별 접기/펴기. */
+    toggleGroup(key) {
+      this.gClosed = Object.assign({}, this.gClosed, { [key]: !this.gClosed[key] });
+      this.savePrefs();
     },
 
     /** 이 카드/그룹의 필터 버킷 — Epic 키, 없으면 사용자 VoC("__voc__"), 그것도 아니면 "__none__". */
@@ -317,11 +327,12 @@ export default {
         this.epicHidden = Object.assign({}, saved.epicHidden);
       }
       // 상단 퀵필터(연관성/모듈)는 OPTIONS 밖이라 따로 복원한다.
-      if (["assignee", "reporter", "module"].includes(saved.scope)) this.scope = saved.scope;
+      if (["assignee", "reporter", "mymodules", "module"].includes(saved.scope)) this.scope = saved.scope;
       if (typeof saved.moduleSel === "string") this.moduleSel = saved.moduleSel;
+      if (saved.gClosed && typeof saved.gClosed === "object") this.gClosed = Object.assign({}, saved.gClosed);
     },
     savePrefs() {
-      const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden,
+      const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden, gClosed: this.gClosed,
                     scope: this.scope, moduleSel: this.moduleSel };
       for (const o of OPTIONS) out[o.key] = this[o.key];
       for (const f of Object.values(BAND_FILTERS)) out[f.key] = this[f.key];
@@ -449,19 +460,19 @@ export default {
                 @click="setScope('assignee')">내가 담당자</button>
         <button type="button" class="mt-qf-b" :class="{ on: scope === 'reporter' }"
                 @click="setScope('reporter')">내가 보고자</button>
-        <label class="mt-qf-mod" :class="{ on: scope === 'module' }" title="모듈 단위로 보기 (내 모듈 먼저)">
-          <span class="mt-qf-modl">모듈</span>
-          <select class="mt-qf-sel" :value="scope === 'module' ? moduleSel : ''"
-                  @change="setModule($event.target.value)">
-            <option value="" disabled>선택…</option>
-            <optgroup v-if="myModules.length" label="내 모듈">
-              <option v-for="m in myModules" :key="'my-' + m" :value="m">{{ m }}</option>
-            </optgroup>
-            <optgroup v-if="otherModules.length" label="다른 모듈">
-              <option v-for="m in otherModules" :key="'ot-' + m" :value="m">{{ m }}</option>
-            </optgroup>
-          </select>
-        </label>
+        <button type="button" class="mt-qf-b" :class="{ on: scope === 'mymodules' }"
+                @click="setScope('mymodules')" title="내가 속한 모듈 전체">모듈 전체</button>
+        <select class="mt-qf-sel" :class="{ on: scope === 'module' }"
+                :value="scope === 'mymodules' ? '__all__' : (moduleSel || '__all__')"
+                @change="onModulePick($event.target.value)" title="특정 모듈로 좁히기">
+          <option value="__all__">{{ myModules.length ? '내 모듈 전체' : '모듈 전체' }}</option>
+          <optgroup v-if="myModules.length" label="내 모듈">
+            <option v-for="m in myModules" :key="'my-' + m" :value="m">{{ m }}</option>
+          </optgroup>
+          <optgroup v-if="otherModules.length" label="다른 모듈">
+            <option v-for="m in otherModules" :key="'ot-' + m" :value="m">{{ m }}</option>
+          </optgroup>
+        </select>
       </div>
       <div v-if="model && model.counts" class="mt-tiles">
         <div class="mt-tile over" :class="{ zero: !model.counts.overdue }">
@@ -520,8 +531,11 @@ export default {
         </div>
 
         <!-- Task 그룹 = 카드 하나 -->
-        <div v-else-if="p.kind === 'task'" class="mt-gcard2 k-task" :style="sigStyle(p.group)">
+        <div v-else-if="p.kind === 'task'" class="mt-gcard2 k-task" :class="{ folded: gClosed[p.key] }" :style="sigStyle(p.group)">
           <div class="mt-gh">
+            <button type="button" class="mt-fold" @click.stop="toggleGroup(p.key)"
+                    :title="gClosed[p.key] ? '하위 펼치기' : '하위 접기'">
+              <span class="chev" :class="{ open: !gClosed[p.key] }">▸</span></button>
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
                         urgent: isUrgentC(p.group) }">
@@ -551,7 +565,7 @@ export default {
 
             </div>
           </div>
-          <div v-if="p.mode !== 'collapsed'" class="mt-gbody">
+          <div v-if="p.mode !== 'collapsed' && !gClosed[p.key]" class="mt-gbody">
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
                                                 closed: !bandOpen(st.k) }]">
@@ -606,8 +620,11 @@ export default {
                    :style="sigStyle(c)" :epic-title="epicTitle(c.epicKey)" />
             </template>
             <div v-else v-show="byState(p.cards)[st.k].length" class="mt-gcard2 k-task"
-                 :style="sigStyle(p.group)">
+                 :class="{ folded: gClosed[p.key] }" :style="sigStyle(p.group)">
               <div class="mt-gh">
+            <button type="button" class="mt-fold" @click.stop="toggleGroup(p.key)"
+                    :title="gClosed[p.key] ? '하위 펼치기' : '하위 접기'">
+              <span class="chev" :class="{ open: !gClosed[p.key] }">▸</span></button>
             <div class="mt-card parent tkt" :data-key="p.key" :style="sigStyle(p.group)"
                  :class="{ mine: p.group.mine, rel: !p.group.mine, done: p.group.statusCategory === 'done',
                         urgent: isUrgentC(p.group) }">
@@ -630,7 +647,7 @@ export default {
 
             </div>
               </div>
-              <div class="mt-gbody one">
+              <div v-if="!gClosed[p.key]" class="mt-gbody one">
                 <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
                              urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">

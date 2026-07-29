@@ -770,7 +770,7 @@ def api_mytasks(user: str = "", done: bool = False, scope: str = "assignee",
     user 를 주면 그 사람 기준(대리 확인용), done=true 면 완료까지 포함.
     scope=assignee|reporter|both|module:<모듈명> — 담당/보고/모듈 단위. 모듈은 매니저 구분 없이 선택 가능.
     openFilter=all|2w — '할당됨' 축 범위 · doneFilter=1w|1m — '최근 완료' 축 기간."""
-    if not (scope in ("assignee", "reporter", "both") or scope.startswith("module:")):
+    if not (scope in ("assignee", "reporter", "both", "mymodules") or scope.startswith("module:")):
         scope = "assignee"
     return JSONResponse(mytasks.build_my_tasks(
         _client, user or None, include_done=done, scope=scope,

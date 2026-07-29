@@ -163,18 +163,20 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     #   module 스코프: 그 모듈의 일감 = 모듈 인력(people.yaml) 중 하나가 담당/보고 **또는**
     #   티켓 component 가 그 모듈. (매니저 구분 없이 누구나 다른 모듈도 볼 수 있다.)
     mod_ids, mod_comps = set(), set()
-    if scope.startswith("module:"):
-        module = scope.split(":", 1)[1].strip()
-        from app.infra.settings import load_people
+    if scope == "mymodules" or scope.startswith("module:"):
+        from app.infra.settings import load_people, modules_of
         people = load_people() or {}
-        if module in people:
-            for pid in (people.get(module) or []):
+        if scope == "mymodules":
+            targets = modules_of(me)                      # 내가 속한 모듈 전체(union)
+        else:
+            m = scope.split(":", 1)[1].strip()
+            targets = [m] if m in people else []
+        for mod in targets:
+            for pid in (people.get(mod) or []):
                 if pid:
                     mod_ids.add(pid)
-            mod_comps.add(module)
-            scope_kind = "module"
-        else:
-            scope_kind = "assignee"     # 알 수 없는 모듈 → 안전 폴백
+            mod_comps.add(mod)
+        scope_kind = "module" if targets else "assignee"  # 대상 없으면 안전 폴백
     else:
         scope_kind = scope if scope in ("reporter", "both") else "assignee"
 
