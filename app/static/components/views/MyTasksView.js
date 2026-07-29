@@ -105,6 +105,10 @@ export default {
       // 여기 없으니 기본 표시된다. 버킷 키 = Epic 키, 소속 없음은 "__none__".
       epicHidden: {},
       epicOpen: false,
+      // Project 필터 — jira.yml search 에 등록된 프로젝트는 **기본 체크**, 그 외는 **기본 언체크**.
+      // projPref[proj] = true(보임)|false(숨김) 은 사용자가 명시적으로 토글한 것만 담는다(없으면 기본 규칙).
+      projPref: {},
+      projOpen: false,
     };
   },
   mounted() {
@@ -174,8 +178,25 @@ export default {
       }
       return out;
     },
-    /** Epic 필터를 적용한 카드 — 배치·집계는 모두 이걸 쓴다(가린 버킷은 개수에서도 빠진다). */
-    allCards() { return this.rawCards.filter((c) => this.epicPass(c)); },
+    /** Epic·Project 필터를 적용한 카드 — 배치·집계는 모두 이걸 쓴다(가린 것은 개수에서도 빠진다). */
+    allCards() { return this.rawCards.filter((c) => this.epicPass(c) && this.projPass(c)); },
+    // ── Project 필터 ── (jira.yml search 등록=기본 보임 / 미등록=기본 숨김, 사용자 토글 가능)
+    searchProjects() { return (this.me && this.me.searchProjects) || []; },
+    /** 내 Task 에 실제로 있는 프로젝트(이슈키 접두사)들 — 등록 여부와 함께. */
+    projectOptions() {
+      const seen = new Set(), out = [], reg = new Set(this.searchProjects);
+      for (const c of this.rawCards) {
+        const p = this.projectOf(c);
+        if (p && !seen.has(p)) { seen.add(p); out.push({ key: p, registered: reg.has(p) }); }
+      }
+      return out.sort((a, b) => a.key.localeCompare(b.key));
+    },
+    allProjectsShown() { return this.projectOptions.every((p) => this.projShown(p.key)); },
+    anyProjectHidden() { return this.projectOptions.some((p) => !this.projShown(p.key)); },
+    projFilterLabel() {
+      if (this.allProjectsShown) return "전체";
+      return this.projectOptions.filter((p) => this.projShown(p.key)).length + "/" + this.projectOptions.length;
+    },
     /** 하단 Epic 콤보의 개별 항목 — 내 Task 에 실제로 있는 Epic 들(시그니처 컬러 포함). */
     epicOptions() {
       const seen = new Set(), out = [];
@@ -227,9 +248,9 @@ export default {
       // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
       // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
       // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 버킷으로 통째로 거른다.
-      const out = this.groups.filter((g) => g.hasSubs && this.epicPass(g)).map((g) => this.taskPanel(g))
+      const out = this.groups.filter((g) => g.hasSubs && this.epicPass(g) && this.projPass(g)).map((g) => this.taskPanel(g))
         .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
-      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs && this.epicPass(g)));
+      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs && this.epicPass(g) && this.projPass(g)));
       if (solo) out.push(solo);
       return out;
     },
@@ -304,6 +325,27 @@ export default {
       this.savePrefs();
     },
 
+    /** 이슈키 접두사 = 프로젝트 키(DL-1234 → DL). */
+    projectOf(x) { const k = (x && x.key) || ""; const i = k.indexOf("-"); return i > 0 ? k.slice(0, i) : k; },
+    /** 이 프로젝트가 보이는가 — 사용자 토글이 있으면 그것, 없으면 기본(등록=보임/미등록=숨김). */
+    projShown(p) {
+      if (Object.prototype.hasOwnProperty.call(this.projPref, p)) return !!this.projPref[p];
+      return this.searchProjects.includes(p);
+    },
+    /** Project 필터 — 이 카드/그룹의 프로젝트가 보이는가. */
+    projPass(x) { return this.projShown(this.projectOf(x)); },
+    toggleProj(p) {
+      this.projPref = Object.assign({}, this.projPref, { [p]: !this.projShown(p) });
+      this.savePrefs();
+    },
+    /** '모든 Project' — 다 보이면 전부 숨기고, 아니면 전부 보인다. */
+    toggleAllProjects() {
+      const want = !this.allProjectsShown;
+      const pref = Object.assign({}, this.projPref);
+      for (const p of this.projectOptions) pref[p.key] = want;
+      this.projPref = pref; this.savePrefs();
+    },
+
     /** 옵션은 브라우저에 남긴다 — 매번 같은 배치로 맞추는 건 화면이 할 일이지 사람이 할 일이 아니다.
      *  값 검증까지 하는 이유: 옵션 목록이 바뀌면 저장된 옛 값이 어디에도 없는 상태가 되고,
      *  그러면 select 가 빈 채로 뜨고 필터는 이상하게 걸린다. */
@@ -330,10 +372,11 @@ export default {
       if (["assignee", "reporter", "mymodules", "module"].includes(saved.scope)) this.scope = saved.scope;
       if (typeof saved.moduleSel === "string") this.moduleSel = saved.moduleSel;
       if (saved.gClosed && typeof saved.gClosed === "object") this.gClosed = Object.assign({}, saved.gClosed);
+      if (saved.projPref && typeof saved.projPref === "object") this.projPref = Object.assign({}, saved.projPref);
     },
     savePrefs() {
       const out = { bandClosed: this.bandClosed, epicHidden: this.epicHidden, gClosed: this.gClosed,
-                    scope: this.scope, moduleSel: this.moduleSel };
+                    scope: this.scope, moduleSel: this.moduleSel, projPref: this.projPref };
       for (const o of OPTIONS) out[o.key] = this[o.key];
       for (const f of Object.values(BAND_FILTERS)) out[f.key] = this[f.key];
       try { localStorage.setItem(PREF_KEY, JSON.stringify(out)); } catch (e) { /* 사파리 프라이빗 등 */ }
@@ -710,6 +753,33 @@ export default {
               <button v-if="hasNoneBucket" type="button" class="mt-ef-i" @click="toggleEpic('__none__')">
                 <span class="mt-ef-ck" :class="{ on: !epicHidden['__none__'] }"></span>
                 <span class="mt-ef-dot none"></span><span class="mt-ef-t">Epic 없음</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Project 필터 — Epic 필터와 같은 다중선택 콤보. jira.yml search 등록 프로젝트는 기본 체크,
+           그 외(다른 프로젝트에 걸린 내 티켓 등)는 기본 언체크로 감춘다(콤보에서 켤 수 있다). -->
+      <div v-if="projectOptions.length > 1 || anyProjectHidden" class="mt-opt mt-epicf">
+        <span class="mt-opt-l">Project</span>
+        <div class="mt-ef">
+          <button class="mt-ef-btn" :class="{ on: !allProjectsShown }" @click.stop="projOpen = !projOpen"
+                  :title="'Project 필터 — ' + projFilterLabel">
+            {{ projFilterLabel }}<i class="mt-ef-cav">▾</i>
+          </button>
+          <div v-if="projOpen" class="mt-ef-back" @click="projOpen = false"></div>
+          <div v-if="projOpen" class="mt-ef-pop" @click.stop>
+            <button type="button" class="mt-ef-i master" @click="toggleAllProjects">
+              <span class="mt-ef-ck" :class="{ on: allProjectsShown, ind: anyProjectHidden && !allProjectsShown }"></span>
+              모든 Project</button>
+            <div class="mt-ef-sep"></div>
+            <div class="mt-ef-list">
+              <button v-for="p in projectOptions" :key="p.key" type="button" class="mt-ef-i"
+                      @click="toggleProj(p.key)" :title="p.registered ? p.key : p.key + ' — 검색 미등록'">
+                <span class="mt-ef-ck" :class="{ on: projShown(p.key) }"></span>
+                <span class="mt-ef-t">{{ p.key }}</span>
+                <span v-if="!p.registered" class="mt-projf-x" title="jira.yml search 에 미등록">미등록</span>
+              </button>
             </div>
           </div>
         </div>

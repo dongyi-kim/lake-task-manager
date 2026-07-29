@@ -568,6 +568,9 @@
   background: #fff; border-radius: 1px; }
 .mt-ef-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
 .mt-ef-dot.none { background: transparent; border: 1.5px dashed var(--muted-2); }
+/* Project 필터 — 검색 미등록 프로젝트 표식(기본 언체크인 이유를 알려 준다) */
+.mt-projf-x { flex: none; margin-left: auto; font-size: 9px; font-weight: 700; letter-spacing: .2px;
+  color: var(--muted-2); border: 1px dashed var(--border-hi); border-radius: 4px; padding: 0 4px; }
 .mt-ef-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 한 줄 카드(그룹 부모·Sub-Task)의 마감 칸 — 2줄 카드와 **같은 텍스트 형식**을 쓴다.

@@ -1215,6 +1215,9 @@ def api_me():
     except Exception:
         me["modules"] = []
         me["allModules"] = []
+    # jira.yml search 에 등록된 Jira 프로젝트 — Task 화면 Project 필터의 **기본 체크 대상**.
+    # 여기 없는 프로젝트의 티켓은 기본 언체크(노이즈 감춤). 사용자가 콤보에서 켤 수 있다.
+    me["searchProjects"] = list(getattr(_client.s, "search_jira_projects", []) or [])
     return JSONResponse(me)
 
 
