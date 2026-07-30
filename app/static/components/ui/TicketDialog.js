@@ -1145,7 +1145,26 @@ export default {
 
           <div class="tkt-main">
           <div v-if="err" class="tkt-err">{{ err }}</div>
-          <div v-else-if="!v" class="tkt-load"><span class="spinner"></span> 불러오는 중…</div>
+          <!-- ★ 응답 전에도 **레이아웃(구조)을 먼저** 그린다 — 값 자리만 스켈레톤(깜빡이는 회색 줄).
+               본문(v) 이 오면 아래 실제 내용으로 교체된다. 전엔 스피너 하나가 전체를 대신해 화면이
+               '텅 빈 채 기다렸다 통째로 뜨는' 느낌이었다. -->
+          <template v-else-if="!v">
+            <div class="tkt-sec-t first">티켓 정보</div>
+            <div class="tkt-meta">
+              <div v-for="(kk, n) in ['상태','우선순위','담당자','보고자','작업 기한','컴포넌트','소속 Epic','라벨']"
+                   :key="'skm'+n" :class="{ wide: n === 7 }">
+                <span class="k">{{ kk }}</span><span class="val"><span class="sk-ln"></span></span>
+              </div>
+            </div>
+            <div class="tkt-sec-t">설명</div>
+            <div class="tkt-desc tkt-desc-box sk-box">
+              <span class="sk-ln" v-for="w in [96,90,93,72,45]" :key="'skd'+w" :style="{ width: w + '%' }"></span>
+            </div>
+            <div class="tkt-sec-t">코멘트</div>
+            <div class="sk-box">
+              <span class="sk-ln" v-for="w in [82,64,90]" :key="'skc'+w" :style="{ width: w + '%' }"></span>
+            </div>
+          </template>
 
           <template v-else>
           <!-- 티켓 제목은 타이틀바가 담당한다. 이 자리는 아래 메타 영역의 헤딩 -->

@@ -82,6 +82,13 @@
 .tkt-ov.expanded .tkt-dlg { max-height: calc(100vh - 40px); }
 .tkt-dlg.expanded { width: 100%; max-width: 1500px; margin: 0 auto; }
 .tkt-load, .tkt-err { padding: 28px 6px; display: flex; align-items: center; gap: 10px; color: var(--muted); }
+/* 스켈레톤 — 본문(v) 오기 전에 레이아웃을 먼저 그리는 자리표시(깜빡이는 회색 줄) */
+.sk-ln { display: inline-block; height: 12px; width: 62%; border-radius: 4px; vertical-align: middle;
+  background: linear-gradient(90deg, var(--panel-2) 25%, var(--border) 42%, var(--panel-2) 60%);
+  background-size: 300% 100%; animation: sk-pulse 1.25s ease-in-out infinite; }
+.sk-box { padding: 2px 0 6px; }
+.sk-box .sk-ln { display: block; height: 12px; margin: 9px 2px; }
+@keyframes sk-pulse { 0%, 100% { background-position: 100% 0; } 50% { background-position: 0 0; } }
 .tkt-err { color: var(--today); }
 
 /* ── 좌측 세로 스파인(계보 + 형제) ── */
