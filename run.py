@@ -760,8 +760,33 @@ def _summon_to_current(open_hook):
     _open_on_current(open_hook, fg, work, mon)       # 창이 아예 없을 때만 새로 연다
 
 
+def _parse_hotkey(spec):
+    """'ctrl+alt+space' / 'ctrl+shift+j' / 'alt+f2' 같은 조합 문자열 → (modifiers, vk, label). 실패 시 None.
+    수식키 ctrl/alt/shift/win 중 하나 이상 + 키(a~z, 0~9, space, F1~F24) 하나."""
+    if not spec:
+        return None
+    MODS = {"ctrl": 0x2, "control": 0x2, "alt": 0x1, "shift": 0x4, "win": 0x8, "super": 0x8, "cmd": 0x8}
+    mods, vk, labels = 0, None, []
+    for pt in [x for x in spec.strip().lower().replace(" ", "").split("+") if x]:
+        if pt in MODS:
+            mods |= MODS[pt]
+            labels.append({"control": "Ctrl", "ctrl": "Ctrl", "alt": "Alt", "shift": "Shift",
+                           "win": "Win", "super": "Win", "cmd": "Win"}[pt])
+        elif pt == "space":
+            vk, _ = 0x20, labels.append("Space")
+        elif len(pt) == 1 and ("a" <= pt <= "z" or "0" <= pt <= "9"):
+            vk, _ = ord(pt.upper()), labels.append(pt.upper())
+        elif pt.startswith("f") and pt[1:].isdigit() and 1 <= int(pt[1:]) <= 24:
+            vk, _ = 0x70 + int(pt[1:]) - 1, labels.append("F" + pt[1:])
+        else:
+            return None
+    if vk is None or mods == 0:
+        return None
+    return mods, vk, "+".join(labels)
+
+
 def _register_global_hotkey(on_fire):
-    """[Windows] Ctrl+Alt+Space 전역 단축키 — 누르면 on_fire(). 전용 스레드에서 등록+메시지 루프."""
+    """[Windows] 전역 단축키(기본 Ctrl+Alt+Space, LAKE_HOTKEY 로 변경) — 누르면 on_fire(). 전용 스레드 루프."""
     if not sys.platform.startswith("win"):
         return
     if os.getenv("LAKE_NO_HOTKEY") in ("1", "true", "True"):
@@ -772,12 +797,18 @@ def _register_global_hotkey(on_fire):
         from ctypes import wintypes
         u = ctypes.windll.user32
         _cfg_win(u, ctypes, wintypes)
-        MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
-        VK_SPACE, WM_HOTKEY, HID = 0x20, 0x0312, 1
-        if not u.RegisterHotKey(None, HID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SPACE):
-            print("[hotkey] Ctrl+Alt+Space 등록 실패(다른 앱이 선점했을 수 있음)", file=sys.stderr)
+        MOD_NOREPEAT, WM_HOTKEY, HID = 0x4000, 0x0312, 1
+        # 조합은 LAKE_HOTKEY 로 바꿀 수 있다(예: ctrl+alt+j) — 다른 앱/IDE 와 겹칠 때. 기본 Ctrl+Alt+Space.
+        spec = os.getenv("LAKE_HOTKEY") or "ctrl+alt+space"
+        parsed = _parse_hotkey(spec)
+        if not parsed:
+            print(f"[hotkey] 잘못된 LAKE_HOTKEY={spec!r} — 기본 Ctrl+Alt+Space 사용", file=sys.stderr)
+            parsed = _parse_hotkey("ctrl+alt+space")
+        mods, vk, label = parsed
+        if not u.RegisterHotKey(None, HID, mods | MOD_NOREPEAT, vk):
+            print(f"[hotkey] {label} 등록 실패(다른 앱이 선점했을 수 있음 — LAKE_HOTKEY 로 조합 변경 가능)", file=sys.stderr)
             return
-        print("[hotkey] Ctrl+Alt+Space — 앱 창을 현재 모니터로 호출")
+        print(f"[hotkey] {label} — 앱 창을 현재 모니터로 호출")
         msg = wintypes.MSG()
         try:
             while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
