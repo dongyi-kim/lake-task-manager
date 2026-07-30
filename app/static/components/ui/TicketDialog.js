@@ -458,17 +458,21 @@ export default {
         .then(() => this.load(true))
         .finally(() => { setTimeout(() => { this.refreshing = false; }, 500); });
     },
-    async load(force) {
+    async load(force, quiet) {
+      // quiet=true (필드 저장 후 재조회 등): v·패널을 **비우지 않는다** → 스켈레톤으로 돌아가 레이아웃이
+      // 깨졌다 복구되는 대신, 응답이 오는 대로 **제자리에서** 값만 갱신된다(편집 시 깨짐 방지).
       const key = this.keyId;
       const my = this._req = (this._req || 0) + 1;
       const fresh = () => my === this._req && this.keyId === key;
-      this.err = ""; this.v = null; this.comments = null;
-      this.ancestors = []; this.siblings = []; this.timeline = [];
-      this.children = []; this.related = []; this.atts = []; this.docs = [];
-      this.pdesc = null; this.pdescOpen = false; this.pdescErr = "";
-      this.composing = false; this.editingId = null; this.editInitial = ""; this.editErr = "";
-
-      this.kidTypes = []; this.adding = false; this.ncErr = ""; this.emeta = null;
+      this.err = "";
+      if (!quiet) {
+        this.v = null; this.comments = null;
+        this.ancestors = []; this.siblings = []; this.timeline = [];
+        this.children = []; this.related = []; this.atts = []; this.docs = [];
+        this.pdesc = null; this.pdescOpen = false; this.pdescErr = "";
+        this.composing = false; this.editingId = null; this.editInitial = ""; this.editErr = "";
+        this.kidTypes = []; this.adding = false; this.ncErr = ""; this.emeta = null;
+      }
       if (!this.me) api.me().then((m) => { this.me = m || {}; }).catch(() => { this.me = {}; });
 
       // ★ 본문(description)을 **가장 먼저** 큐에 넣는다 — 상류가 직렬(prod SSO)일 땐 먼저 보낸 게 먼저
@@ -642,7 +646,7 @@ export default {
      *  ★ 재조회가 끝난 뒤(this.v 최신) **바뀐 값까지 실어** 알린다 — Task 화면이 네트워크 없이
      *  이 티켓이 현재 퀵필터에서 빠지는지 판정해 즉시 반영할 수 있게. */
     async onFieldSaved() {
-      await this.load();     // 끝나면 this.v 가 최신(담당/상태/컴포넌트)
+      await this.load(true, true);   // force+quiet: 레이아웃 유지한 채 값만 제자리 갱신(스켈레톤 복귀 없음)
       this._fireChanged();
     },
     _fireChanged() {
