@@ -146,7 +146,7 @@ export default {
     },
   },
   template: `
-  <div>
+  <div class="vit-view">
     <div v-if="err" class="err">현안 데이터를 불러오지 못했습니다: {{ err }}</div>
     <template v-else-if="d">
       <div class="chips">

@@ -6,9 +6,11 @@
 .vg-head .dot { width: 12px; height: 12px; border-radius: 2px; }
 .vg-head b { font-size: 15px; } .vg-head .c { color: var(--muted); font-size: 12px; }
 
-/* 각진(워크로드식) 테마 — 상단 모듈 칩도 둥근 알약이 아니라 반듯한 사각 칩으로. */
-.chips .chip { border-radius: 3px; }
-.chips .chip .sw { border-radius: 2px; }
+/* 각진(워크로드식) 테마 — 이 화면 안의 뱃지·칩·pill·버튼을 **전부 반듯한 사각(2px)** 으로.
+   .pill/.tbadge 등은 공통 컴포넌트라 .vit-view 로 스코프해 다른 화면(Task·WBS·다이얼로그)엔 영향 없음. */
+.vit-view .pill, .vit-view .tbadge, .vit-view .chip, .vit-view .xbtn,
+.vit-view .mini .act, .vit-view .tcard { border-radius: 2px; }
+.vit-view .chip .sw { border-radius: 2px; }
 
 .tbl { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .vhead, .vrow { display: grid;
