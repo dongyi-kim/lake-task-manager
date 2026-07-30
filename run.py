@@ -677,6 +677,94 @@ def _desktop_diag(hwnd, ref_hwnd):
         return None
 
 
+def _move_window_to_current_desktop(hwnd):
+    """[Windows] 앱 창(hwnd)을 **지금 보고 있는 가상 데스크톱**으로 옮긴다.
+    내부 IVirtualDesktopManagerInternal::MoveViewToDesktop 을 쓴다 — 공용 MoveWindowToDesktop 은
+    교차프로세스(Chromium 창)에 E_ACCESSDENIED 지만 이건 **동작한다**(라이브 검증: Win11 24H2/26100).
+    이미 현재 데스크톱이면 no-op. 되면 True. 빌드별 IID·vtable 차이는 **다중 IID 후보 + GetCount 검증
+    + 예외처리**로 방어 — 안 되면 False 를 돌려 호출부가 그냥 포커스(기존 동작)로 폴백한다.
+    IUnknown/서비스 체인: ImmersiveShell(로컬서버) → IApplicationViewCollection.GetViewForHwnd →
+    IVirtualDesktopManagerInternal.{GetCurrentDesktop, MoveViewToDesktop}."""
+    if not hwnd or not sys.platform.startswith("win"):
+        return False
+    import ctypes
+    from ctypes import POINTER, byref, wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("d1", ctypes.c_uint32), ("d2", ctypes.c_uint16),
+                    ("d3", ctypes.c_uint16), ("d4", ctypes.c_ubyte * 8)]
+
+    def _g(s):
+        a, b, c, d, e = s.split("-")
+        g = GUID(); g.d1, g.d2, g.d3 = int(a, 16), int(b, 16), int(c, 16)
+        for i, x in enumerate(bytes.fromhex(d + e)):
+            g.d4[i] = x
+        return g
+
+    def _vc(ptr, idx, argtypes, *args):
+        slot = ctypes.cast(ctypes.cast(ptr, POINTER(ctypes.c_void_p))[0], POINTER(ctypes.c_void_p))
+        return ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)(slot[idx])(ptr, *args)
+
+    def _rel(ptr):
+        try:
+            _vc(ptr, 2, [])                          # IUnknown::Release
+        except Exception:
+            pass
+    ole = ctypes.windll.ole32
+    try:
+        ole.CoInitialize(None)
+    except Exception:
+        pass
+    view = ctypes.c_void_p()
+    vdmi = ctypes.c_void_p()
+    sp = ctypes.c_void_p()
+    try:
+        # ImmersiveShell — 로컬 서버(CLSCTX_LOCAL_SERVER=4). IServiceProvider 로 하위 서비스를 얻는다.
+        if ole.CoCreateInstance(byref(_g("C2F03A33-21F5-47FA-B4BB-156362A2F239")), None, 4,
+                                byref(_g("6D5140C1-7436-11CE-8034-00AA006009FA")), byref(sp)) != 0 or not sp.value:
+            return False
+        # IApplicationViewCollection → GetViewForHwnd(idx6) → 이 창의 IApplicationView
+        for avc in ("1841C6D7-4F9D-42C0-AF41-8747538F10E5",):
+            vcp = ctypes.c_void_p()
+            if _vc(sp, 3, [POINTER(GUID), POINTER(GUID), POINTER(ctypes.c_void_p)],
+                   byref(_g(avc)), byref(_g(avc)), byref(vcp)) == 0 and vcp.value:
+                got = _vc(vcp, 6, [wintypes.HWND, POINTER(ctypes.c_void_p)], hwnd, byref(view)) == 0
+                _rel(vcp)
+                if got and view.value:
+                    break
+        if not view.value:
+            return False
+        # IVirtualDesktopManagerInternal — 후보 IID 중 GetCount(idx3)가 1~64 로 정상인 것을 채택(vtable 검증).
+        for vd in ("4970BA3D-FD4E-4647-BEA3-D89076EF4B9C",       # Win11 24H2
+                   "53F5CA0B-158F-4124-900C-057158060B27",
+                   "A3175F2D-239C-4BD2-8AA0-EEBA8B0B138E",
+                   "B2F925B9-5A0F-4D2E-9F4D-2B1507593C10",
+                   "094AFE11-44F2-4BA0-976F-29A97E263EE0"):
+            v = ctypes.c_void_p()
+            if _vc(sp, 3, [POINTER(GUID), POINTER(GUID), POINTER(ctypes.c_void_p)],
+                   byref(_g("C5E0CDCA-7B6E-41B2-9FC4-D93975CC467B")), byref(_g(vd)), byref(v)) != 0 or not v.value:
+                continue
+            cnt = ctypes.c_uint(0)
+            if _vc(v, 3, [POINTER(ctypes.c_uint)], byref(cnt)) == 0 and 1 <= cnt.value <= 64:
+                vdmi = v
+                break
+            _rel(v)
+        if not vdmi.value:
+            return False
+        cur = ctypes.c_void_p()
+        if _vc(vdmi, 6, [POINTER(ctypes.c_void_p)], byref(cur)) != 0 or not cur.value:   # GetCurrentDesktop
+            return False
+        hr = _vc(vdmi, 4, [ctypes.c_void_p, ctypes.c_void_p], view, cur)                 # MoveViewToDesktop
+        _rel(cur)
+        return hr == 0
+    except Exception:
+        return False
+    finally:
+        for ptr in (view, vdmi, sp):
+            if ptr.value:
+                _rel(ptr)
+
+
 def _place_window_on(hwnd, ref_fg, work, target_mon):
     """앱 창을 지금 보는 **데스크톱/모니터**로 데려와 전면화·포커스.
       1) 가상 데스크톱: 다른 데스크톱이면 **현재 데스크톱으로 옮긴다**(데스크톱을 바꾸지 않는다).
@@ -739,11 +827,10 @@ def _open_on_current(open_hook, fg, work, mon):
 
 
 def _summon_to_current(open_hook):
-    """단축키 동작 — 앱 창을 전면화·포커스하고, **다른 모니터에 있으면** 현재 모니터로 가져온다.
-    가상 데스크톱 이동은 하지 않는다: Chromium 창은 우리 프로세스 소유가 아니라 교차프로세스
-    이동(MoveWindowToDesktop·hide/show)이 신뢰되지 않는다. 그래서 다른 데스크톱의 창을 포커스하면
-    Windows 가 그 데스크톱으로 전환한다(현재 한계). 같은 데스크톱이면 그냥 포커스만 — 깜빡임 없음.
-    LAKE_HOTKEY_DEBUG=1 이면 멀티데스크톱 판정을 stderr 로 남긴다(정확한 수정을 위한 진단)."""
+    """단축키 동작 — 앱 창을 **지금 보고 있는 가상 데스크톱/모니터**로 데려와 포커스한다.
+    다른 데스크톱에 있으면 내부 API(MoveViewToDesktop)로 **창을 현재 데스크톱으로 옮긴다** — 사용자를
+    다른 데스크톱으로 보내지 않는다(재오픈·깜빡임 없음). 그 API 가 안 되는 빌드면 폴백으로 그냥 포커스
+    (그땐 Windows 가 전환). 그다음 다른 모니터면 현재 모니터로 옮기고 전면화. LAKE_HOTKEY_DEBUG=1 로그."""
     import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
@@ -752,8 +839,9 @@ def _summon_to_current(open_hook):
     work, mon = _monitor_of(fg)
     hwnd = _find_app_hwnd()
     if hwnd:
+        moved = _move_window_to_current_desktop(hwnd)   # 다른 데스크톱이면 현재로 옮긴다(교차프로세스 OK)
         if os.getenv("LAKE_HOTKEY_DEBUG") in ("1", "true", "True"):
-            print("[hotkey] hwnd=%s fg=%s diag=%s" % (hwnd, fg, _desktop_diag(hwnd, fg)),
+            print("[hotkey] hwnd=%s fg=%s moved=%s diag=%s" % (hwnd, fg, moved, _desktop_diag(hwnd, fg)),
                   file=sys.stderr, flush=True)
         _place_window_on(hwnd, fg, work, mon)        # 다른 모니터면 현재 모니터로 + 전면화 + 포커스
         return
