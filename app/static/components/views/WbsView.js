@@ -39,7 +39,7 @@ export default {
       const p = this.pmo;
       return [
         { v: p.rawTotalSp, k: "총 Story Point" }, { v: p.rawDoneSp, k: "완료 SP" },
-        { v: this.pctStr(p.progressPct), k: "진척률" }, { v: p.rawMockSp, k: "mock SP (추정)", mock: true },
+        { v: p.rawMockSp, k: "mock SP (추정)", mock: true },
       ];
     },
     gaugeArc() {
@@ -108,7 +108,7 @@ export default {
       const wbsById = {}; D.wbs.forEach((w) => { wbsById[w.id] = w; });
       const moduleRollup = {}; D.rollup.modules.forEach((m) => { moduleRollup[m.id] = m; });
 
-      const H = { mod: 40, wbs: 44, epic: 32, task: 28, sub: 26 };
+      const H = { mod: 34, wbs: 36, epic: 28, task: 24, sub: 22 };
       const TBADGE = { Epic: "Epic", Story: "Story", Task: "Task", Bug: "Bug", "Sub-Task": "Sub", Improvement: "Impr", "New Feature": "Feat" };
       const TCLASS = { Epic: "bEpic", Story: "bStory", Task: "bTask", Bug: "bBug", "Sub-Task": "bSub", Improvement: "bImp", "New Feature": "bImp" };
       const badge = (t) => "<span class='tb " + (TCLASS[t] || "bTask") + "'>" + (TBADGE[t] || t) + "</span>";
@@ -351,19 +351,21 @@ export default {
     },
   },
   template: `
-  <div>
+  <div class="wbs-view">
     <div v-if="err" class="err">데이터를 불러오지 못했습니다: {{ err }}</div>
     <template v-else-if="D">
       <p class="note">{{ scopeText }}</p>
       <div class="pmo">
         <div class="gauge">
-          <svg viewBox="0 0 120 120" aria-hidden="true">
-            <circle cx="60" cy="60" r="52" fill="none" stroke="var(--track)" stroke-width="14"/>
-            <circle cx="60" cy="60" r="52" fill="none" stroke="var(--done)" stroke-width="14" stroke-linecap="round"
-                    transform="rotate(-90 60 60)" :stroke-dasharray="gaugeArc.arr" :stroke-dashoffset="gaugeArc.off"/>
-          </svg>
-          <div class="pct">{{ pctStr(pmo.progressPct) }}</div>
-          <div class="cap">전체 PMO 진척률<br>(가중 롤업)</div>
+          <div class="ring">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <circle cx="60" cy="60" r="52" fill="none" stroke="var(--track)" stroke-width="14"/>
+              <circle cx="60" cy="60" r="52" fill="none" stroke="var(--done)" stroke-width="14"
+                      transform="rotate(-90 60 60)" :stroke-dasharray="gaugeArc.arr" :stroke-dashoffset="gaugeArc.off"/>
+            </svg>
+            <div class="pct">{{ pctStr(pmo.progressPct) }}</div>
+          </div>
+          <div class="cap">전체 PMO<br>진척률<span class="sub">가중 롤업</span></div>
         </div>
         <div class="kpis">
           <div v-for="(x, i) in kpis" :key="i" class="kpi"><div class="v" :class="{ mock: x.mock }">{{ x.v }}</div><div class="k">{{ x.k }}</div></div>
