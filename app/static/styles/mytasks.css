@@ -352,10 +352,12 @@
 /* 완료 하위 '더 보기' — done 칸이 유독 길 때만 나온다. 카드 목록 아래에 왼쪽으로 붙는 작은 칩
    (첨부목록 '+N개 더'와 같은 성격). flex 셀(가로축)·단일열 그리드(세로축) 양쪽에서 좌측 정렬. */
 .mt-more.m-done { align-self: flex-start; justify-self: start; margin-top: 3px;
-  font-size: 10px; padding: 1px 8px; color: var(--st-done);
-  border-color: color-mix(in srgb, var(--st-done) 45%, var(--border)); }
-.mt-more.m-done:hover { border-color: var(--st-done); border-style: solid;
-  background: color-mix(in srgb, var(--st-done) 10%, transparent); }
+  font-size: 10px; font-weight: 700; padding: 2px 9px; color: var(--st-done);
+  border-style: solid; border-color: color-mix(in srgb, var(--st-done) 50%, var(--border));
+  background: color-mix(in srgb, var(--st-done) 14%, transparent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .1); }
+.mt-more.m-done:hover { border-color: var(--st-done);
+  background: color-mix(in srgb, var(--st-done) 24%, transparent); }
 
 
 /* ── 2줄 카드 — 하위가 없어 부모 카드에 담기지 않는 티켓 ─────────────────────
