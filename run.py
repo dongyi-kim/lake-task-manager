@@ -673,18 +673,6 @@ def _ensure_on_current_desktop(hwnd, ref_hwnd):
         return None
 
 
-def _close_window(hwnd):
-    """[Windows] 창에 WM_CLOSE — 트레이 모드에선 백엔드는 살고 창만 닫힌다(그 뒤 현재 데스크톱에 새로 연다)."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-        u = ctypes.windll.user32
-        u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-        u.PostMessageW(hwnd, 0x0010, 0, 0)           # WM_CLOSE
-    except Exception:
-        pass
-
-
 def _place_window_on(hwnd, ref_fg, work, target_mon):
     """앱 창을 지금 보는 **데스크톱/모니터**로 데려와 전면화·포커스.
       1) 가상 데스크톱: 다른 데스크톱이면 **현재 데스크톱으로 옮긴다**(데스크톱을 바꾸지 않는다).
@@ -746,10 +734,25 @@ def _open_on_current(open_hook, fg, work, mon):
     threading.Thread(target=go, name="hotkey-open", daemon=True).start()
 
 
+def _reshow_on_current(hwnd):
+    """숨겼다 다시 보여 창을 **현재 가상 데스크톱**으로 가져온다 — 재오픈·로딩 없음.
+    Flow Launcher·PowerToys Run 등이 쓰는 방식: 숨긴 창을 다시 보이면 Windows 가 그 창을
+    지금 활성화된 데스크톱에 올린다(가상데스크톱 매니저는 '보이는' 창만 데스크톱에 매단다).
+    교차프로세스 MoveWindowToDesktop 이 막힌 빌드에서도 동작하고 내부 API 도 안 쓴다."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        was_min = bool(u.IsIconic(hwnd))
+        u.ShowWindow(hwnd, 0)                        # SW_HIDE
+        u.ShowWindow(hwnd, 9 if was_min else 5)      # 최소화였으면 SW_RESTORE, 아니면 SW_SHOW(상태 유지)
+    except Exception:
+        pass
+
+
 def _summon_to_current(open_hook):
-    """단축키 동작 — 앱 창을 지금 보고 있는 **데스크톱/모니터**로 데려온다.
-    다른 가상 데스크톱에 있으면: 이동을 시도하되(성공하면 상태 보존), 교차프로세스라 못 옮기면
-    그 창을 **닫고 현재 데스크톱에 새로 연다** — 어느 경우든 사용자를 다른 데스크톱으로 안 보낸다."""
+    """단축키 동작 — 앱 창을 지금 보고 있는 **데스크톱/모니터**로 데려온다(재오픈 없이).
+    다른 가상 데스크톱에 있으면: 공용 이동을 먼저 시도하고(되는 빌드면 그대로), 안 되면 **숨겼다
+    다시 보여** 현재 데스크톱으로 가져온다(_reshow_on_current). 어느 쪽도 데스크톱을 바꾸지 않는다."""
     import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
@@ -759,13 +762,10 @@ def _summon_to_current(open_hook):
     hwnd = _find_app_hwnd()
     if hwnd:
         if _ensure_on_current_desktop(hwnd, fg) is False:
-            # 다른 데스크톱 + 이동 실패 → 그 창 닫고 현재 데스크톱에 새로 (데스크톱 스위치 방지)
-            _close_window(hwnd)
-            _open_on_current(open_hook, fg, work, mon)
-            return
-        _place_window_on(hwnd, fg, work, mon)        # 현재 데스크톱(또는 이동됨/판정불가) → 모니터+포커스
+            _reshow_on_current(hwnd)                 # 이동이 막힌 빌드 → 숨겼다 보이기(현재 데스크톱, 로딩 없음)
+        _place_window_on(hwnd, fg, work, mon)        # 모니터 이동(다른 화면일 때만)+전면화+포커스
         return
-    _open_on_current(open_hook, fg, work, mon)       # 창 없음 → 새로 연다
+    _open_on_current(open_hook, fg, work, mon)       # 창이 아예 없을 때만 새로 연다
 
 
 def _register_global_hotkey(on_fire):
