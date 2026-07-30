@@ -8,7 +8,7 @@
 /* 모듈별 현안 상태 집계 — 전체/진행중/완료 */
 .vg-head .mcounts { color: var(--muted); font-size: 11.5px; font-weight: 400; margin-left: 2px; }
 .vg-head .mcounts b { font-size: 12px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
-.vg-head .mcounts b.p { color: var(--st-prog); } .vg-head .mcounts b.d { color: var(--st-done); }
+.vg-head .mcounts b.t { color: var(--st-todo); } .vg-head .mcounts b.p { color: var(--st-prog); } .vg-head .mcounts b.d { color: var(--st-done); }
 
 /* 각진(워크로드식) 테마 — 이 화면 안의 뱃지·칩·pill·버튼을 **전부 반듯한 사각(2px)** 으로.
    .pill/.tbadge 등은 공통 컴포넌트라 .vit-view 로 스코프해 다른 화면(Task·WBS·다이얼로그)엔 영향 없음. */

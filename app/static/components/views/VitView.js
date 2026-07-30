@@ -156,11 +156,15 @@ export default {
       (this.mods[module] || []).forEach((it) => { if (this.isLate(it)) late++; else if (this.isStale(it)) stale++; });
       return { late, stale };
     },
-    modCounts(module) {   // 모듈별 현안 상태 집계 — 전체/진행중/완료
+    modCounts(module) {   // 모듈별 현안 상태 집계 — 전체/할일/진행중/완료
       const arr = this.mods[module] || [];
-      let inprogress = 0, done = 0;
-      arr.forEach((it) => { if (it.statusCategory === "done") done++; else if (it.statusCategory === "inprogress") inprogress++; });
-      return { total: arr.length, inprogress, done };
+      let todo = 0, inprogress = 0, done = 0;
+      arr.forEach((it) => {
+        if (it.statusCategory === "done") done++;
+        else if (it.statusCategory === "inprogress") inprogress++;
+        else todo++;
+      });
+      return { total: arr.length, todo, inprogress, done };
     },
     newsHtml(ev) {
       return `<span class='d'>${ymdhm(ev.date)}</span><span class='act ${ev.kind}'>${KLAB[ev.kind] || ev.kind}</span>`
@@ -235,7 +239,7 @@ export default {
 
       <div v-for="(m, i) in d.modules" :key="m.module" class="vgroup">
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.count }} 현안</span>
-          <span v-if="mods[m.module]" class="mcounts">전체 <b>{{ modCounts(m.module).total }}</b> · 진행중 <b class="p">{{ modCounts(m.module).inprogress }}</b> · 완료 <b class="d">{{ modCounts(m.module).done }}</b></span>
+          <span v-if="mods[m.module]" class="mcounts">전체 <b>{{ modCounts(m.module).total }}</b> · 할일 <b class="t">{{ modCounts(m.module).todo }}</b> · 진행중 <b class="p">{{ modCounts(m.module).inprogress }}</b> · 완료 <b class="d">{{ modCounts(m.module).done }}</b></span>
           <span v-if="mods[m.module] && modRisk(m.module).late" class="rk late sm">지연 {{ modRisk(m.module).late }}</span>
           <span v-if="mods[m.module] && modRisk(m.module).stale" class="rk stale sm">정체 {{ modRisk(m.module).stale }}</span>
         </div>
