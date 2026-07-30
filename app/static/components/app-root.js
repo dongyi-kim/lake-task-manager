@@ -27,7 +27,9 @@ const ROUTES = { home: HomeView, wbs: WbsView, vit: VitView, workload: WorkloadV
 const TABS = [
   { k: "wbs", label: "WBS Dashboard", manager: true },
   { k: "vit", label: "현안 (PMO_VIT)" },
-  { k: "workload", label: "인력 워크로드", manager: true },
+  // 인력 워크로드 — 매니저는 전체 모듈, 비매니저도 **자기 모듈**은 볼 수 있다(백엔드가 사번→모듈로
+  // 스코프한다). 그래서 manager 게이트를 두지 않는다(탭 노출·라우팅 모두 개방).
+  { k: "workload", label: "인력 워크로드" },
   { k: "mytasks", label: "Task" },
 ];
 // 탭에 없지만 주소로는 갈 수 있는 매니저 전용 화면(설정 메뉴에서 진입).

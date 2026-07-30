@@ -407,6 +407,52 @@ def _require_manager():
         raise HTTPException(status_code=403, detail="매니저 전용 화면입니다.")
 
 
+# ── 워크로드 스코프 ──────────────────────────────────────────────────────────
+# 인력 워크로드는 매니저 전용이었지만, **비매니저도 '자기 모듈'은 볼 수 있게** 연다.
+# 매니저 = 전체 모듈. 비매니저 = 자기가 속한 모듈만(사번→모듈 매핑). 게이트는 데이터 쪽에서 건다
+# (프론트 숨김은 접근 제어가 아니다).
+def _my_modules_or_all():
+    """(restricted, module_set). 매니저면 (False, None)=제한 없음. 비매니저면 (True, {내 모듈…})."""
+    me = _session_user()
+    if _is_manager(me):
+        return False, None
+    try:
+        from app.infra.settings import modules_of
+        return True, set(modules_of(me.get("id") or me.get("name") or ""))
+    except Exception:
+        return True, set()
+
+
+def _scoped_people():
+    """워크로드용 people(모듈→인력) — 비매니저는 자기 모듈만, 매니저는 전체.
+    빌더가 모듈 목록을 people 에서 뽑으므로(workload_modules) 여기서 거르면 출력이 그대로 좁아진다."""
+    people = load_people()
+    restricted, mods = _my_modules_or_all()
+    if not restricted:
+        return people
+    return {m: v for m, v in people.items() if m in mods}
+
+
+def _require_module_access(module):
+    """비매니저가 자기 모듈이 아닌 모듈을 직접 조회하는 것을 막는다."""
+    restricted, mods = _my_modules_or_all()
+    if restricted and module not in mods:
+        raise HTTPException(status_code=403, detail="이 모듈은 조회 권한이 없습니다.")
+
+
+def _require_person_access(user):
+    """비매니저가 자기 모듈 밖 인력의 상세를 직접 조회하는 것을 막는다(모듈 인력에 한함)."""
+    restricted, mods = _my_modules_or_all()
+    if not restricted:
+        return
+    u = (user or "").strip().lower()
+    people = load_people()
+    for m in mods:
+        if any((pid or "").strip().lower() == u for pid in people.get(m, [])):
+            return
+    raise HTTPException(status_code=403, detail="이 인력은 조회 권한이 없습니다.")
+
+
 @app.get("/api/health")
 def health():
     # 세션 **파일이 있는지**만 보면 부족하다. 파일은 남아 있는데 쿠키가 만료된 경우가 흔한데,
@@ -1321,24 +1367,23 @@ def api_vit():
 
 @app.get("/api/workload")
 def api_workload():
-    _require_manager()
+    # 비매니저는 자기 모듈만(people 을 스코프해 넘긴다). 매니저는 전체.
     plan = load_plan()
-    return JSONResponse(workload.build_workload(_client, plan, load_people(), jira_base=_settings.jira_base))
+    return JSONResponse(workload.build_workload(_client, plan, _scoped_people(), jira_base=_settings.jira_base))
 
 
 @app.get("/api/workload/shell")
 def api_workload_shell():
-    """워크로드 골격 — 모듈·인원 수만(Jira 조회 없음)."""
-    _require_manager()
+    """워크로드 골격 — 모듈·인원 수만(Jira 조회 없음). 비매니저는 자기 모듈만."""
     plan = load_plan()
-    return JSONResponse(workload.build_workload_shell(_client, plan, load_people(),
+    return JSONResponse(workload.build_workload_shell(_client, plan, _scoped_people(),
                                                       jira_base=_settings.jira_base))
 
 
 @app.get("/api/workload/module/{module}")
 def api_workload_module(module: str):
-    """워크로드 — 모듈 하나만(모듈별 병렬 호출용)."""
-    _require_manager()
+    """워크로드 — 모듈 하나만(모듈별 병렬 호출용). 비매니저는 자기 모듈만 조회 가능."""
+    _require_module_access(module)
     plan = load_plan()
     return JSONResponse(workload.build_workload_module(_client, plan, load_people(), module))
 
@@ -1347,14 +1392,14 @@ def api_workload_module(module: str):
 def api_workload_person(user: str):
     """워크로드 — **인력 한 명**의 통계 행(사람 by 사람 비동기 로딩용). 통계는 assignee 기준이라
     모듈과 무관 → user 만 받는다. workload:{env}:{user} 캐시라 재방문·모듈 중복은 공짜."""
-    _require_manager()
+    _require_person_access(user)
     return JSONResponse(workload.build_workload_person(_client, user))
 
 
 @app.get("/api/workload/{user}/{bucket}")
 def api_workload_bucket(user: str, bucket: str):
     """인력 상세의 한 버킷(open|inProgress|done7d) — 세 리스트를 각각 병렬 로딩."""
-    _require_manager()
+    _require_person_access(user)
     rows = _client.workload_bucket(user, bucket)
     if rows is None:
         return JSONResponse({"error": "unknown bucket", "bucket": bucket}, status_code=404)
@@ -1364,7 +1409,7 @@ def api_workload_bucket(user: str, bucket: str):
 @app.get("/api/workload/{user}")
 def api_workload_tickets(user: str):
     """인력 상세 — 진행중 / 최근7일 완료 티켓 리스트 (프론트 [+] 확장)."""
-    _require_manager()
+    _require_person_access(user)
     return JSONResponse(_client.workload_tickets(user))
 
 
