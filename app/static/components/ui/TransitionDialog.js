@@ -109,8 +109,9 @@ export default {
      *  올린 이미지를 되돌리고 사용자에게 알린다(조용히 삼키면 첨부만 남는다). */
     async sendTransition(html) {
       this.busy = true;
+      let r;
       try {
-        const r = await api.doTransition(this.ticket, {
+        r = await api.doTransition(this.ticket, {
           id: this.transition.id, days: Number(this.days) || 0,
           hours: Number(this.hours) || 0,
           minutes: Number(this.minutes) || 0,
@@ -126,6 +127,8 @@ export default {
         throw e;
       }
       this.$emit("done");
+      // 후처리: 이 전이가 부모 상태 규칙을 촉발하면(하위 완료/진행중/재열림) 상위도 바꿀지 물어본다.
+      if (r && r.cascade) window.dispatchEvent(new CustomEvent("cascade-prompt", { detail: r.cascade }));
     },
   },
   template: `

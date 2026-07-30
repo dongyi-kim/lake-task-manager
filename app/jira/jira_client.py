@@ -1918,6 +1918,76 @@ class JiraClient:
         self._invalidate_people_views()   # 상태·담당 변경 → 워크로드/활동 집계도 낡는다
         return res
 
+    def cascade_suggestion(self, child_key, *, created=False):
+        """전이/생성 **후처리** — 하위 티켓 변화가 부모 상태 규칙을 촉발하면 '부모도 바꿀까?' 제안을 만든다.
+        **Jira 를 자동으로 바꾸지 않는다** — 프론트가 이 제안으로 확인 팝업을 띄우고, 사용자가 [예] 하면
+        기존 전이 경로(TransitionDialog/do_transition)로 부모를 전이한다. 제안 없으면 None.
+
+        부모 = 하위의 직접 parent(Sub-Task→상위 Task). 규칙(변화 후 **현재 상태** 기준):
+          R1 완료   : 하위가 done & 부모 not done & **모든 하위가 done** → 부모를 완료(Resolved 우선)로?
+          R2 진행중 : 하위가 inprogress & 부모가 todo(Open)             → 부모를 진행중으로?
+          R3 재열림 : (하위가 not done | 새 하위 생성) & 부모가 done     → 부모를 Reopened 로?
+        갈 수 있는 전이가 부모에 없으면(워크플로 제약) 제안하지 않는다(할 수 있는 게 없으니).
+        캐시 지연을 피하려 부모/하위 상태는 Jira 에서 **직접(fresh)** 읽는다 — 후처리 1회라 비용 무시 가능."""
+        prov = self.provider
+        try:
+            cf = (prov.get_json(f"/rest/api/2/issue/{child_key}",
+                                params={"fields": "status,parent"}).get("fields") or {})
+            parent_key = (cf.get("parent") or {}).get("key")
+            if not parent_key:
+                return None
+            ccat = norm_cat((((cf.get("status") or {}).get("statusCategory")) or {}).get("key"))
+            pf = (prov.get_json(f"/rest/api/2/issue/{parent_key}",
+                                params={"fields": "summary,status,subtasks"}).get("fields") or {})
+        except SessionExpired:
+            raise
+        except Exception:
+            return None
+        pcat = norm_cat((((pf.get("status") or {}).get("statusCategory")) or {}).get("key"))
+
+        def _scat(s):
+            return norm_cat(((((s.get("fields") or {}).get("status")) or {}).get("statusCategory") or {}).get("key"))
+
+        rule, target_cat, want_reopen = None, None, False
+        if created:
+            if pcat == "done":
+                rule, want_reopen = "reopen", True
+        elif ccat == "done" and pcat != "done":
+            cats = [_scat(s) for s in (pf.get("subtasks") or [])]
+            if cats and all(c == "done" for c in cats):
+                rule, target_cat = "done", "done"
+        elif ccat == "inprogress" and pcat == "todo":
+            rule, target_cat = "inprogress", "inprogress"
+        elif ccat != "done" and pcat == "done":
+            rule, want_reopen = "reopen", True
+        if not rule:
+            return None
+
+        try:
+            trs = self.transitions(parent_key) or []
+        except Exception:
+            return None
+        if want_reopen:
+            pick = (next((t for t in trs if (t.get("to") or "").lower() == "reopened"), None)
+                    or next((t for t in trs if t.get("toCategory") == "todo"), None))
+        else:
+            pick = next((t for t in trs if t.get("toCategory") == target_cat), None)
+        if not pick:
+            return None
+        fld = pick.get("fields") or {}
+        return {
+            "rule": rule,
+            "parentKey": parent_key,
+            "parentSummary": pf.get("summary") or "",
+            "parentStatus": ((pf.get("status") or {}).get("name")) or "",
+            "transition": {
+                "id": pick["id"], "name": pick.get("name") or "",
+                "to": pick.get("to") or "", "toCategory": pick.get("toCategory") or "",
+                "needsScreen": bool(fld.get("fields")) or bool(fld.get("unsupported")),
+                "fields": pick.get("fields"),
+            },
+        }
+
     def add_comment(self, key, body):
         """코멘트 작성 (body = Jira wiki markup). 반환: 생성된 코멘트 객체."""
         res = self.provider.post_json(f"/rest/api/2/issue/{key}/comment", {"body": body})

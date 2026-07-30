@@ -14,6 +14,7 @@ import StatusBanner from "./ui/StatusBanner.js";
 import ToastStack from "./ui/ToastStack.js";
 import TicketMenu from "./ui/TicketMenu.js";
 import TicketDialog from "./ui/TicketDialog.js";
+import TransitionDialog from "./ui/TransitionDialog.js";
 import SearchOverlay from "./ui/SearchOverlay.js";
 import SettingsMenu from "./ui/SettingsMenu.js";
 import { api } from "../lib/api.js";
@@ -44,7 +45,7 @@ function ticketOf() {
 
 export default {
   name: "AppRoot",
-  components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, TicketMenu, TicketDialog, SearchOverlay, SettingsMenu, FloatingRefresh, AddTicketFab },
+  components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, TicketMenu, TicketDialog, TransitionDialog, SearchOverlay, SettingsMenu, FloatingRefresh, AddTicketFab },
   // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
@@ -58,6 +59,8 @@ export default {
                     hasCache: false,
                     // 배포 repo 업데이트 가능 여부(null=아직 모름). updating=재시작 트리거 후.
                     update: null, updating: false,
+                    // 하위 상태변경 후처리: 부모 전이에 필수 입력이 있으면 이 다이얼로그로 채운다.
+                    cascadeTrx: null,
                     ticketKeyFromPath: ticketOf() }; },
   computed: {
     // ★ 매니저 전용 탭은 **매니저로 확정된 뒤에만** 보인다(manager===true). 예전엔 '아직 모름
@@ -106,6 +109,8 @@ export default {
     window.addEventListener("lake-open-ticket", (e) => {
       const k = e && e.detail && e.detail.key; if (k) this.ticketKey = k;
     });
+    // 하위 티켓 상태변경/생성의 **후처리** — 부모 상태 규칙을 촉발하면 '상위도 바꿀까?' 물어본다.
+    window.addEventListener("cascade-prompt", (e) => { if (e && e.detail) this.onCascade(e.detail); });
     window.addEventListener("need-login", () => {
       // ★ **이미 화면이 떠 있으면 갈아엎지 않는다.** prod 는 세션이 잠깐씩 끊겼다 붙는데,
       //   그때마다 화면을 로그인 오버레이로 바꾸면 보던 티켓 창과 쓰던 글이 사라진다.
@@ -154,6 +159,38 @@ export default {
     /** 볼 수 없는 주소면 워커 기본 화면(내 Task)으로. 화면만 바꿔치지 않고 **주소까지** 고친다
      *  — 안 그러면 탭 강조가 아무 데도 안 걸리고 새로고침마다 같은 상황이 되풀이된다. */
     guard() { if (!this.allowed) location.hash = "#/mytasks"; },
+    /** 하위 상태변경 후처리 — 부모도 바꿀지 확인하고, [예]면 기존 전이 경로로 상위를 전이한다.
+     *  필수 입력이 있는 전이면(needsScreen) 부모 전이 다이얼로그를 열어 사용자가 채우게 한다.
+     *  상위 전이가 또 조상 규칙을 촉발하면 응답의 cascade 로 **연쇄**된다. */
+    async onCascade(c) {
+      if (!c || !c.parentKey || !c.transition) return;
+      const t = c.transition;
+      const ok = await confirmBox(this.cascadeMsg(c),
+        { okLabel: (t.to || "변경") + " 로 변경", cancelLabel: "아니오" });
+      if (!ok) return;
+      if (t.needsScreen) { this.cascadeTrx = { ticket: c.parentKey, transition: t }; return; }
+      try {
+        const r = await api.doTransition(c.parentKey, { id: t.id });
+        if (r && r.ok === false) throw new Error(r.error || "전이에 실패했습니다.");
+        pushToast({ kind: "success", title: c.parentKey + " → " + (t.to || "전이"), timeout: 4000 });
+        window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: c.parentKey } }));
+        if (r && r.cascade) this.onCascade(r.cascade);   // 조부모까지 연쇄
+      } catch (e) {
+        pushToast({ kind: "error", title: "상위 전이 실패", message: (e && e.message) || "", timeout: 6000 });
+      }
+    },
+    cascadeMsg(c) {
+      const p = (c.parentSummary ? "'" + c.parentSummary + "' " : "") + "(" + c.parentKey + ")";
+      const to = c.transition.to || "";
+      if (c.rule === "done") return "모든 하위 작업이 완료됐습니다. 상위 " + p + " 도 " + to + " (으)로 완료 처리할까요?";
+      if (c.rule === "inprogress") return "하위 작업이 진행 중으로 바뀌었습니다. 상위 " + p + " 도 진행중(" + to + ")으로 바꿀까요?";
+      return "완료된 상위 " + p + " 에 미완료/새 하위가 생겼습니다. 상위를 " + to + " (으)로 되돌릴까요?";
+    },
+    onCascadeDone() {
+      const k = this.cascadeTrx && this.cascadeTrx.ticket;
+      this.cascadeTrx = null;
+      if (k) window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: k } }));
+    },
     checkUpdate() {
       api.updateInfo().then((u) => { this.update = u || null; }).catch(() => {});
     },
@@ -235,6 +272,9 @@ export default {
       <!-- 좌하단 '+' 티켓 추가(공통) — 로그인·devtools 제외하고 어디서든 -->
       <AddTicketFab v-if="ready && (!needLogin || hasCache) && route !== 'devtools'" />
       <TicketDialog v-if="ticketKey" :key-id="ticketKey" @close="ticketKey = null" />
+      <!-- 하위 상태변경 후처리: 상위 전이에 필수 입력이 있을 때만 뜨는 부모 전이 다이얼로그 -->
+      <TransitionDialog v-if="cascadeTrx" :ticket="cascadeTrx.ticket" :transition="cascadeTrx.transition"
+                        @close="cascadeTrx = null" @done="onCascadeDone()" />
       <!-- keep-alive: 같은 창에서 다시 열면 마지막 검색어·결과가 그대로 남는다 -->
       <keep-alive>
         <SearchOverlay v-if="searchOpen" @close="searchOpen = false"

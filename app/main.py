@@ -1044,7 +1044,17 @@ def api_create_child(key: str, body: _ChildBody):
                                  components=body.components or None, description=desc or None)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-    return JSONResponse({"ok": True, "key": (r or {}).get("key")})
+    # 후처리: 완료된 상위에 새 하위가 생겼다면 상위를 Reopened 로 되돌릴지 제안(자동변경 X).
+    newkey = (r or {}).get("key")
+    cascade = None
+    try:
+        if newkey:
+            cascade = _client.cascade_suggestion(newkey, created=True)
+    except SessionExpired:
+        raise
+    except Exception:
+        cascade = None
+    return JSONResponse({"ok": True, "key": newkey, "cascade": cascade})
 
 
 class _TaskBody(BaseModel):
@@ -1235,7 +1245,15 @@ def api_do_transition(key: str, body: _TransitionBody):
         # Jira 가 거절한 이유(필수 필드 누락·권한 등)를 그대로 보여 준다 — 삼키면 사용자는
         # 무엇을 고쳐야 할지 알 수 없고, 결국 Jira 를 따로 열어 확인해야 한다.
         return JSONResponse({"ok": False, "error": str(e)[:400]}, status_code=400)
-    return JSONResponse({"ok": True})
+    # 후처리: 이 티켓이 하위라면 부모 상태 규칙(완료/진행중/재열림)을 촉발하는지 제안한다(자동변경 X).
+    cascade = None
+    try:
+        cascade = _client.cascade_suggestion(key)
+    except SessionExpired:
+        raise
+    except Exception:
+        cascade = None
+    return JSONResponse({"ok": True, "cascade": cascade})
 
 
 @app.get("/api/linktypes")
