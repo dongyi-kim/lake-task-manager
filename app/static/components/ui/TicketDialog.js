@@ -119,6 +119,9 @@ export default {
                     // 상태 전이 팝업
                     stOpen: false, stInfo: null, stErr: "", stPick: null,
                     err: "", expanded: false, zoom: null, zoomLoading: false,
+                    // 첫 로딩 동안 참 — 좌/우 부가정보 패널을 (데이터 오기 전에도) 스켈레톤으로 띄워
+                    // 레이아웃을 통째로 먼저 그리기 위한 플래그. 형제·타임라인까지 오면 꺼진다.
+                    loading: true,
                     refreshing: false,               // 좌하단 강제 새로고침 진행 표시
                     sumEdit: false, sumDraft: "", sumBusy: false, sumErr: "",   // 제목(summary) 인라인 수정
                     // 좌/우 부가정보 패널 — 폭 조절·접기(저장). 넓은 화면(사이드바 모드)에서만 의미.
@@ -466,6 +469,7 @@ export default {
       const fresh = () => my === this._req && this.keyId === key;
       this.err = "";
       if (!quiet) {
+        this.loading = true;      // 좌/우 패널을 스켈레톤으로 먼저 띄운다(형제·타임라인 오면 끔)
         this.v = null; this.comments = null;
         this.ancestors = []; this.siblings = []; this.timeline = [];
         this.children = []; this.related = []; this.atts = []; this.docs = [];
@@ -511,8 +515,10 @@ export default {
       ]);
       if (!fresh()) return;
       // 3순위: 형제·타임라인·첨부·관련문서·하위·관련티켓·지원(편집메타·하위타입) — 서로 동급이라 함께.
-      api.ticketSiblings(key).then((s) => { if (fresh()) this.siblings = s || []; }).catch(() => {});
-      api.ticketTimeline(key).then((t) => { if (fresh()) this.timeline = t || []; }).catch(() => {});
+      // 형제·타임라인은 좌/우 패널 스켈레톤을 걷는 기준이라 둘이 끝나면 loading 을 끈다.
+      const _sib = api.ticketSiblings(key).then((s) => { if (fresh()) this.siblings = s || []; }).catch(() => {});
+      const _tl = api.ticketTimeline(key).then((t) => { if (fresh()) this.timeline = t || []; }).catch(() => {});
+      Promise.allSettled([_sib, _tl]).then(() => { if (fresh()) this.loading = false; });
       api.ticketAttachments(key).then((a) => {
         if (!fresh()) return;
         this.atts = a || []; this.attOpen = this.atts.length <= FOLD_AT;
@@ -1069,13 +1075,17 @@ export default {
         <div class="tkt-cols" :class="{ 'spine-hidden': spineHidden, 'tl-hidden': tlHidden }"
              :style="{ '--spine-w': spineW + 'px', '--tl-w': tlW + 'px' }">
           <!-- 접힌 상태에서 다시 펴는 손잡이(얇은 레일) -->
-          <button v-if="spineHidden && hasSpine" class="spine-show" title="부가정보 패널 펼치기"
+          <button v-if="spineHidden && (loading || hasSpine)" class="spine-show" title="부가정보 패널 펼치기"
                   @click="setSpineHidden(false)">›</button>
           <!-- 좌측 세로 스파인 — 계보(조상→현재, 레일+진척) + 형제 목록. 클릭 시 해당 티켓으로 이동 -->
-          <aside v-if="hasSpine && !spineHidden" class="tkt-spine">
+          <!-- loading 동안엔(데이터 전) 스켈레톤으로 미리 그려 레이아웃을 통째로 띄운다. -->
+          <aside v-if="(loading || hasSpine) && !spineHidden" class="tkt-spine">
             <button class="spine-hide" title="부가정보 패널 접기" @click="setSpineHidden(true)">‹</button>
             <!-- 오른쪽 가장자리를 끌어 폭 조절. 넓은 화면에서만 보인다(좁으면 grid 라 무의미). -->
             <div class="spine-grip" title="너비 조절 — 드래그" @mousedown.prevent="startSpineDrag"></div>
+            <div v-if="loading && !hasSpine" class="sk-box spn-sk">
+              <span class="sk-ln" v-for="w in [72,88,58,80,64]" :key="'sksp'+w" :style="{ width: w + '%' }"></span>
+            </div>
             <!-- 조상이 없으면(Epic 등) 자기 자신만 남으므로 계보 블록 자체를 생략 -->
             <!-- 좁은 화면에서 '열 묶음' 단위로 배치된다(.grp). 넓은 화면에선 display:contents 라
                  구조상 없는 것과 같고, 순서는 CSS order 로 기존과 동일하게 유지한다. -->
@@ -1511,10 +1521,10 @@ export default {
           </div><!-- /.tkt-main -->
 
           <!-- 접힌 상태에서 다시 펴는 손잡이(우측 가장자리) -->
-          <button v-if="tlHidden && hasTl" class="tl-show" title="일정·타임라인 패널 펼치기"
+          <button v-if="tlHidden && (loading || hasTl)" class="tl-show" title="일정·타임라인 패널 펼치기"
                   @click="setTlHidden(false)">‹</button>
-          <!-- 우측: 일정 + 타임라인 (폭 조절·접기 — 좌측 스파인과 대칭) -->
-          <aside v-if="hasTl && !tlHidden" class="tkt-tl">
+          <!-- 우측: 일정 + 타임라인 (폭 조절·접기 — 좌측 스파인과 대칭). loading 동안 스켈레톤으로 먼저. -->
+          <aside v-if="(loading || hasTl) && !tlHidden" class="tkt-tl">
             <button class="tl-hide" title="일정·타임라인 패널 접기" @click="setTlHidden(true)">›</button>
             <!-- 왼쪽 가장자리를 끌어 폭 조절 -->
             <div class="tl-grip" title="너비 조절 — 드래그" @mousedown.prevent="startTlDrag"></div>
@@ -1531,6 +1541,10 @@ export default {
               </div>
               </div>
             </template>
+            <div v-else-if="loading" class="grp grp-who"><div class="sec sec-dates">
+              <div class="tkt-mlabel sf-gap">일정</div>
+              <div class="sk-box"><span class="sk-ln" v-for="w in [60,55,66,50,58]" :key="'skdt'+w" :style="{ width: w + '%' }"></span></div>
+            </div></div>
 
             <div v-if="timeline.length" class="sec sec-history">
             <div class="tkt-mlabel sf-gap">타임라인</div>
@@ -1553,6 +1567,10 @@ export default {
                   <span class="tl-m">{{ e.author || '—' }} · {{ fdt(e.date) }}</span>
                 </span>
               </div>
+            </div>
+            <div v-else-if="loading" class="sec sec-history">
+              <div class="tkt-mlabel sf-gap">타임라인</div>
+              <div class="sk-box"><span class="sk-ln" v-for="w in [85,70,92,64]" :key="'sktl'+w" :style="{ width: w + '%' }"></span></div>
             </div>
           </aside>
         </div><!-- /.tkt-cols -->

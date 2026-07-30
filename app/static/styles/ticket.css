@@ -89,6 +89,8 @@
 .sk-box { padding: 2px 0 6px; }
 .sk-box .sk-ln { display: block; height: 12px; margin: 9px 2px; }
 @keyframes sk-pulse { 0%, 100% { background-position: 100% 0; } 50% { background-position: 0 0; } }
+/* 좌/우 부가정보 패널 로딩 스켈레톤 — 데이터 오기 전에도 레이아웃(3열)을 통째로 그린다 */
+.tkt-spine .sk-box, .tkt-tl .sk-box { padding: 6px 8px 10px; }
 .tkt-err { color: var(--today); }
 
 /* ── 좌측 세로 스파인(계보 + 형제) ── */
