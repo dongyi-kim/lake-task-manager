@@ -74,6 +74,9 @@ const BAND_FILTERS = {
   todo: { key: "openFilter", opts: [
     { k: "all", label: "모두", hint: "담당된 모든 미착수 티켓" },
     { k: "2w", label: "2주 내 갱신", hint: "최근 2주 안에 갱신된 것만 — 오래 방치된 건 감춘다" }] },
+  inprogress: { key: "progFilter", opts: [
+    { k: "1m", label: "1달 내 갱신", hint: "최근 1달 안에 손댄 것만 — 오래 멈춘 진행 중은 감춘다" },
+    { k: "all", label: "모두", hint: "진행 중인 모든 티켓" }] },
   done: { key: "doneFilter", opts: [
     { k: "1w", label: "1주", hint: "최근 1주 안에 완료" },
     { k: "1m", label: "1달", hint: "최근 1달 안에 완료" }] },
@@ -106,6 +109,7 @@ export default {
       me: null,             // /api/me — modules(내 모듈)·allModules·manager
       gClosed: {},          // Task+SubTask 그룹 개별 접힘 { groupKey: true }
       openFilter: "all",    // 할당됨 축: all | 2w   (서버 질의 조건)
+      progFilter: "all",    // 진행 중 축: all | 1m  (기본 모두 — 지금 하는 일을 숨기지 않는다)
       doneFilter: "1w",     // 완료 축 기간: 1w | 1m (서버 질의 조건)
       sort: "due",
       busy: false,
@@ -287,7 +291,7 @@ export default {
      *  바뀐 건 티켓 하나인데 화면 전체가 깜빡일 이유가 없다. */
     async load(opts) {
       // 이 요청이 무엇을 받는지의 서명(스코프+상태필터). 캐시 키 겸 SWR 판정에 쓴다.
-      const key = this.apiScope + "|" + this.openFilter + "|" + this.doneFilter;
+      const key = this.apiScope + "|" + this.openFilter + "|" + this.progFilter + "|" + this.doneFilter;
       const cache = this._mcache || (this._mcache = {});
       // 예전에 받아 둔 같은 필터의 응답이 있으면 **즉시** 보여 준다(SWR) — 스피너 없이 바로 뜨고,
       // 아래에서 최신으로 조용히 갱신한다. 퀵필터를 오갈 때 체감이 즉각적이 된다.
@@ -301,7 +305,7 @@ export default {
       const seq = this._loadSeq = (this._loadSeq || 0) + 1;
       try {
         const model = await api.myTasks({ scope: this.apiScope, openFilter: this.openFilter,
-                                          doneFilter: this.doneFilter });
+                                          progFilter: this.progFilter, doneFilter: this.doneFilter });
         // ★ 성공 응답은 **순번과 무관하게** 캐시에 보관한다 — UI 가 버릴 응답이라도 성공했으면
         //   그 필터로 다시 왔을 때 즉시 쓸 수 있게 재활용한다(요청 헛수고 방지). 캐시는 12개로 제한.
         cache[key] = model;

@@ -134,7 +134,7 @@ def _rollup(nodes):
 
 
 def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assignee",
-                   open_filter="all", done_filter="1w"):
+                   open_filter="all", prog_filter="all", done_filter="1w"):
     """세션 사용자(또는 user 지정)의 '내 Task' 모델.
 
     scope: assignee(담당) | reporter(내가 등록) | both. '내 일'의 정의는 사람마다 다르다 —
@@ -210,11 +210,16 @@ def build_my_tasks(client, user=None, include_done=False, limit=200, scope="assi
     open_cond = 'statusCategory = "To Do"'
     if open_filter == "2w":
         open_cond += " AND updated >= -14d"
+    # 진행 중: 기본은 전부(지금 하는 일을 숨기지 않는다). 1m 이면 최근 1달 안에 손댄 것만
+    # (오래 멈춰 사실상 방치된 '진행 중' 을 감춘다 — 할당됨의 2w 와 같은 취지).
+    prog_cond = 'statusCategory = "In Progress"'
+    if prog_filter == "1m":
+        prog_cond += " AND updated >= -30d"
     done_days = DONE_WINDOWS.get(done_filter, DONE_WINDOWS["1w"])
-    parts = ['statusCategory = "In Progress"', "(%s)" % open_cond,
+    parts = ["(%s)" % prog_cond, "(%s)" % open_cond,
              "(statusCategory = Done AND resolved >= -%dd)" % done_days]
     cond = "(%s)" % " OR ".join(parts)
-    filt = "all" if include_done else ("%s.%s" % (open_filter, done_filter))
+    filt = "all" if include_done else ("%s.%s.%s" % (open_filter, prog_filter, done_filter))
     env = getattr(client, "env", "?")
 
     def _where(base):

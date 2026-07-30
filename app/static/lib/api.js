@@ -66,6 +66,7 @@ export const api = {
     const o = opts || {};
     return req("/api/mytasks?scope=" + encodeURIComponent(o.scope || "assignee")
       + "&openFilter=" + encodeURIComponent(o.openFilter || "all")
+      + "&progFilter=" + encodeURIComponent(o.progFilter || "all")
       + "&doneFilter=" + encodeURIComponent(o.doneFilter || "1w"));
   },
   search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
