@@ -26,8 +26,13 @@ export default {
         window.dispatchEvent(new CustomEvent("force-refresh-done"));
       }
     });
+    // 재인증(auth-ok) 후 — 세션 끊긴 채 실패했던 조회를 가볍게 다시 받는다(서버 캐시는 안 비움).
+    window.addEventListener("auth-ok", this._authok = () => { this.load(); });
   },
-  unmounted() { window.removeEventListener("force-refresh", this._fr); },
+  unmounted() {
+    window.removeEventListener("force-refresh", this._fr);
+    window.removeEventListener("auth-ok", this._authok);
+  },
   methods: {
     /** 골격(모듈 목록)을 먼저 받고, 모듈별 본문을 병렬로 채운다.
      *  ★ 이 로직이 예전엔 mounted() 안에 인라인이라, hardRefresh 가 this.load() 를 부르면

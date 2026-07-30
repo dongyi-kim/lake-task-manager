@@ -155,6 +155,9 @@ export default {
       try { await this.hardRefresh(); }
       finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
     });
+    // 재인증(auth-ok) 후 — 세션이 끊긴 채 실패했던 조회를 다시 받는다(그대로 두면 '목록 없음'
+    // 으로 굳어 새로고침해야만 떴다). 서버 캐시는 안 비운다(가벼운 재조회).
+    window.addEventListener("auth-ok", this._authok = () => { this.load(); });
     this._mq = window.matchMedia(NARROW);
     this._onMq = (e) => { this.axis = e.matches ? "v" : "h"; };
     this._mq.addEventListener ? this._mq.addEventListener("change", this._onMq)
@@ -163,6 +166,7 @@ export default {
   unmounted() {
     window.removeEventListener("ticket-changed", this._onChanged);
     window.removeEventListener("force-refresh", this._fr);
+    window.removeEventListener("auth-ok", this._authok);
     if (!this._mq) return;
     this._mq.removeEventListener ? this._mq.removeEventListener("change", this._onMq)
                                  : this._mq.removeListener(this._onMq);

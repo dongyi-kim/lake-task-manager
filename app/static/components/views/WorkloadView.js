@@ -46,6 +46,8 @@ export default {
       try { await this.hardRefresh(); }
       finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
     });
+    // 재인증(auth-ok) 후 — 세션 끊긴 채 실패했던 조회를 가볍게 다시 받는다(서버 캐시는 안 비움).
+    window.addEventListener("auth-ok", this._authok = () => { this.load(); });
   },
   async mounted() {
     await this.load();
@@ -55,6 +57,7 @@ export default {
   unmounted() {
     if (this._onResize) window.removeEventListener("resize", this._onResize);
     window.removeEventListener("force-refresh", this._fr);
+    window.removeEventListener("auth-ok", this._authok);
   },
   activated() { this.scheduleMeasure(); },   // keep-alive 재활성 시 평균선 재측정
   computed: {

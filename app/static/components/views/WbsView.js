@@ -14,6 +14,10 @@ export default {
       try { await this.refresh(); }
       finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
     });
+    // 재인증(auth-ok) 후 — 세션 끊긴 채 실패했던 조회를 가볍게 다시 받는다(서버 캐시는 안 비움).
+    window.addEventListener("auth-ok", this._authok = () => {
+      api.wbs().then((d) => { this.D = d; this.err = ""; this.$nextTick(() => this.renderGantt()); }).catch(() => {});
+    });
   },
   async mounted() {
     try { this.D = await api.wbs(); this.$nextTick(() => this.renderGantt()); }
@@ -25,6 +29,7 @@ export default {
     if (this._onResize) window.removeEventListener("resize", this._onResize);
     if (this._raf) cancelAnimationFrame(this._raf);
     window.removeEventListener("force-refresh", this._fr);
+    window.removeEventListener("auth-ok", this._authok);
   },
   activated() { this.$nextTick(() => this.renderGantt()); },   // keep-alive 재활성 시 재렌더
   computed: {

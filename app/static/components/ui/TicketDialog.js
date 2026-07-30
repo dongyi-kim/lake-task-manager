@@ -155,6 +155,9 @@ export default {
       else this.reloadLineage();    // 형제 하나가 바뀜 → 형제 목록만
     });
     this.$nextTick(() => this.posCollapse());
+    // 재인증(auth-ok) 후 — 티켓 로딩 중 세션이 끊겨 본문이 안 뜬 채 굳은 경우 다시 받는다.
+    // (정상 로드된 창은 건드리지 않는다 — 쓰던 글·스크롤 보존.)
+    window.addEventListener("auth-ok", this._authok = () => { if (this.err || !this.v) this.load(); });
     this.load();
     // 에디터·구문강조 CDN 프리로드 — 티켓 다이얼로그/풀뷰가 열리는 시점에 미리 받아둔다.
     // (버전 고정 URL 이라 브라우저가 장기 캐시 → 이후엔 네트워크 없이 즉시.) '댓글 달기' 지연 제거.
@@ -165,6 +168,7 @@ export default {
     window.removeEventListener("keydown", this._onKey);
     window.removeEventListener("resize", this._onResize);
     window.removeEventListener("ticket-changed", this._onExtChanged);
+    window.removeEventListener("auth-ok", this._authok);
   },
   computed: {
     FOLD_AT: () => FOLD_AT,
