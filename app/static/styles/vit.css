@@ -43,7 +43,15 @@
 .vrow { padding: 11px 16px; border-top: 1px solid var(--border); align-items: start; }
 .vrow:first-child { border-top: none; } .vrow:hover { background: rgba(127,127,127,.035); }
 
-/* 티켓 컬럼 3줄: (상태·번호·담당자) / (타입·이름) / (Started·Updated·Due) */
+/* 티켓 컬럼 = [상태(왼쪽 고정폭·색 꽉찬 셀)] + [본문(이름·타입텍스트/담당·신호/일자)]. */
+.c-info { display: grid; grid-template-columns: 92px 1fr; align-items: stretch; }
+.c-info .cstat { display: flex; align-items: flex-start; padding: 2px 9px; font-size: 11px; }
+.c-info .cbody { min-width: 0; padding-left: 10px; }
+.vhead .th-info { display: grid; grid-template-columns: 92px 1fr; align-items: center; }
+.vhead .th-info span:nth-child(1) { padding-left: 9px; }
+.vhead .th-info span:nth-child(2) { padding-left: 10px; }
+.c-info .l2 .summ { min-width: 0; }
+.c-info .l2 .ty { flex: 0 0 auto; color: var(--muted); font-weight: 400; font-size: 11px; }
 .c-info .l1 { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 4px; }
 .c-info .l1 .who { color: var(--muted); font-size: 11.5px; } .c-info .l1 .who::before { content: "\1F464"; opacity: .55; margin-right: 3px; font-size: 10px; }
 .c-info .l2 { display: flex; align-items: baseline; gap: 7px; margin-bottom: 5px; min-width: 0; cursor: pointer; }
@@ -59,7 +67,7 @@
 /* 직계 하위 티켓 — 컬럼명은 상위 헤더(.ch-head)에, 각 티켓은 구분선으로만 나열(박스·내부헤더 없음).
  * .ch-head 와 .ctr 은 동일 서브그리드라 같은 위치에 정렬됨. 행 클릭 시 Jira 이동, 많으면 스크롤 */
 .vhead .ch-head, .c-children .ctr {
-  display: grid; grid-template-columns: minmax(110px,2.4fr) minmax(80px,1fr) 58px 58px minmax(58px,1fr); gap: 0; align-items: stretch; }
+  display: grid; grid-template-columns: 84px minmax(110px,2.4fr) 58px 58px minmax(58px,1fr); gap: 0; align-items: stretch; }
 .vhead .ch-head > span { padding: 0 8px; }
 /* 하위 티켓 = [세로 진척 바][목록]. 목록이 Open→진행중→해결 순이라 바 구간과 행 묶음이 일치.
    단 바는 '완료 작업 안 보기'와 무관하게 항상 전체 기준(진척도는 표시 옵션에 안 흔들려야 함) */
@@ -88,11 +96,11 @@
 .c-children .ct-tkt .ty { flex: 0 0 auto; color: var(--muted); font-size: 10px; }   /* 타입 = 제목 뒤 텍스트 */
 .c-children .dt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .c-children .asg { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 상태 = 뱃지 아님, 칸을 상태색으로 꽉 채운 셀(연한 채움 + 상태색 글자). */
-.c-children .scell { font-weight: 700; font-size: 10.5px; white-space: nowrap; letter-spacing: .2px; }
-.c-children .scell.s-todo { background: color-mix(in srgb, var(--st-todo) 15%, var(--panel)); color: var(--st-todo); }
-.c-children .scell.s-prog { background: color-mix(in srgb, var(--st-prog) 15%, var(--panel)); color: var(--st-prog); }
-.c-children .scell.s-done { background: color-mix(in srgb, var(--st-done) 16%, var(--panel)); color: var(--st-done); }
+/* 상태 = 뱃지 아님, 칸을 상태색으로 꽉 채운 셀(연한 채움 + 상태색 글자). 현안·하위 티켓 공통. */
+.vit-view .scell { font-weight: 700; font-size: 10.5px; white-space: nowrap; letter-spacing: .2px; }
+.vit-view .scell.s-todo { background: color-mix(in srgb, var(--st-todo) 15%, var(--panel)); color: var(--st-todo); }
+.vit-view .scell.s-prog { background: color-mix(in srgb, var(--st-prog) 15%, var(--panel)); color: var(--st-prog); }
+.vit-view .scell.s-done { background: color-mix(in srgb, var(--st-done) 16%, var(--panel)); color: var(--st-done); }
 
 
 .mini { font-size: 11.5px; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

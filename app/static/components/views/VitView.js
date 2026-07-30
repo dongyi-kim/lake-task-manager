@@ -240,27 +240,28 @@ export default {
           · 일부를 불러오지 못했습니다({{ modPartial[m.module] }}건) — 새로고침하세요
         </div>
         <div v-else class="tbl">
-          <div class="vhead"><div>티켓</div><div class="ch-head"><span>Sub Task</span><span>상태</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
+          <div class="vhead"><div class="th-info"><span>상태</span><span>티켓</span></div><div class="ch-head"><span>상태</span><span>Sub Task</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
           <template v-for="it in sortedIssues(m.module)" :key="it.key">
             <div class="vrow">
               <div class="c-info">
-                <div class="l1">
-                  <StatusPill :cat="it.statusCategory" :label="it.status" />
-                  <TypeBadge :type="it.type" />
-                  <span class="who">{{ it.assignee || "미지정" }}</span>
-                  <span v-if="isLate(it)" class="rk late">지연 {{ dd(it.due) }}</span>
-                  <span v-else-if="isStale(it)" class="rk stale">정체 {{ stallDays(it) }}일</span>
-                  <span v-if="recentCount(it,'done')" class="rk move">↑완료 {{ recentCount(it,'done') }}</span>
-                  <span v-if="recentCount(it,'created')" class="rk new">+신규 {{ recentCount(it,'created') }}</span>
-                </div>
-                <div class="l2 tkt" :data-key="it.key" role="button" tabindex="0"
-                     :title="it.key + ' · ' + it.summary">
-                  <span class="key">{{ it.key }}</span><span class="summ">{{ it.summary }}</span>
-                </div>
-                <div class="l3">
-                  <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
-                  <span class="dt"><span class="dl">Due</span><span v-if="it.due" :class="{ overdue: dueOverdue(it.due) }">{{ fy(it.due) }} ({{ dd(it.due) }})</span><span v-else>—</span></span>
-                  <span class="dt"><span class="dl">활동</span><span :class="{ overdue: isStale(it) }">{{ stallDays(it) != null ? stallDays(it) + '일 전' : '—' }}</span></span>
+                <div class="cstat scell" :class="scls(it.statusCategory)">{{ it.status || it.statusCategory }}</div>
+                <div class="cbody">
+                  <div class="l2 tkt" :data-key="it.key" role="button" tabindex="0"
+                       :title="it.key + ' · ' + it.summary">
+                    <span class="key">{{ it.key }}</span><span class="summ">{{ it.summary }}</span><span class="ty">{{ tyLabel(it.type) }}</span>
+                  </div>
+                  <div class="l1">
+                    <span class="who">{{ it.assignee || "미지정" }}</span>
+                    <span v-if="isLate(it)" class="rk late">지연 {{ dd(it.due) }}</span>
+                    <span v-else-if="isStale(it)" class="rk stale">정체 {{ stallDays(it) }}일</span>
+                    <span v-if="recentCount(it,'done')" class="rk move">↑완료 {{ recentCount(it,'done') }}</span>
+                    <span v-if="recentCount(it,'created')" class="rk new">+신규 {{ recentCount(it,'created') }}</span>
+                  </div>
+                  <div class="l3">
+                    <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
+                    <span class="dt"><span class="dl">Due</span><span v-if="it.due" :class="{ overdue: dueOverdue(it.due) }">{{ fy(it.due) }} ({{ dd(it.due) }})</span><span v-else>—</span></span>
+                    <span class="dt"><span class="dl">활동</span><span :class="{ overdue: isStale(it) }">{{ stallDays(it) != null ? stallDays(it) + '일 전' : '—' }}</span></span>
+                  </div>
                 </div>
               </div>
               <!-- 세로 진척 바(티켓 수 기준) + 하위 티켓 목록. 목록이 Open→진행중→해결 순이라
@@ -275,8 +276,8 @@ export default {
                 <div class="c-children">
                   <div v-for="c in kids(it)" :key="c.key" class="ctr tkt" :data-key="c.key"
                        role="button" tabindex="0" :title="c.key + ' · ' + c.summary">
-                    <div class="ct-tkt"><span class="sm">{{ c.summary }}</span><span class="ty">{{ tyLabel(c.type) }}</span></div>
                     <div class="scell" :class="scls(c.statusCategory)">{{ c.status || c.statusCategory }}</div>
+                    <div class="ct-tkt"><span class="sm">{{ c.summary }}</span><span class="ty">{{ tyLabel(c.type) }}</span></div>
                     <div class="dt">{{ fy(c.created) || "—" }}</div>
                     <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
                     <div class="asg">{{ c.assignee || "—" }}</div>
