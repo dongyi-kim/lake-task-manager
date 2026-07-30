@@ -27,6 +27,7 @@ import FieldEdit from "../ui/FieldEdit.js";
 import AdvancedSearchDialog from "../ui/AdvancedSearchDialog.js";
 import { categoryColor } from "../../lib/colors.js";
 import { pushToast } from "../../lib/toast.js";
+import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
 
 const NO_DUE = 1e6;
 
@@ -627,6 +628,9 @@ export default {
     /** 하위 보기 모드 — 그룹별 설정이 있으면 그것, 없으면 상단 옵션이 정한 기본값. */
     /** 펼치기 버튼 — 접기 → 내 것만 → 전체 → 접기 로 순환한다. */
     epicTitle(k) { return k ? ((this.epicMap[k] || {}).title || k) : null; },
+    // VoC 티켓 제목 접두 [대분류 - 소분류] → 뱃지 세그먼트 / 제목에서 접두 제거(voc.js).
+    vocSegs(title) { return vocBadgeSegs(title); },
+    vocStrip(title) { return vocStripTitle(title); },
     /** 카드 좌측 띠 색 — 소속 Epic 의 시그니처 컬러. 없으면 null(중립). */
     sigOf(c) { return epicSig(c); },
     sigStyle(c) {
@@ -764,7 +768,7 @@ export default {
               <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
-              <span class="mt-title">{{ p.title }}</span>
+              <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
               <!-- 진척은 **제목 바로 뒤**에 둔다(사용자 요청) — 이 묶음이 얼마나 됐나를 제목 옆에서
                    바로 읽는다. **몇 개 중 몇 개**로 적는다(퍼센트는 SP 가중이라 손으로 못 센다). -->
               <span v-if="p.group.pct !== null" class="mt-roll"
@@ -773,7 +777,9 @@ export default {
                 <em>{{ p.group.kidsDone }}/{{ p.group.kidsTotal }}</em>
               </span>
               <span v-if="p.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(p.epicKey)">{{ epicTitle(p.epicKey) }}</span>
-              <span v-else-if="p.group.voc" class="mt-epic">사용자 VoC</span>
+              <span v-else-if="p.group.voc" class="mt-voc" :title="'사용자 VoC' + (vocSegs(p.title).length > 1 ? ' — ' + vocSegs(p.title).slice(1).join(' · ') : '')">
+                <span v-for="(s, i) in vocSegs(p.title)" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
+              </span>
               <span v-else class="mt-epic none">Epic 없음</span>
               <span class="mt-sep" aria-hidden="true"></span>
               <span class="mt-owner" :class="{ me: p.group.mine }"
@@ -852,7 +858,7 @@ export default {
               <PriIcon :rank="p.group.priRank" :name="p.group.pri" />
               <TypeBadge :type="p.group.type" />
               <span class="mt-key">{{ p.key }}</span>
-              <span class="mt-title">{{ p.title }}</span>
+              <span class="mt-title">{{ p.group.voc ? vocStrip(p.title) : p.title }}</span>
               <!-- 진척을 제목 바로 뒤로(사용자 요청) -->
               <span v-if="p.group.pct !== null" class="mt-roll"
                     :title="'하위 ' + p.group.kidsDone + '/' + p.group.kidsTotal + ' 완료 (진척 ' + p.group.pct + '%)'">
@@ -860,7 +866,9 @@ export default {
                 <em>{{ p.group.kidsDone }}/{{ p.group.kidsTotal }}</em>
               </span>
               <span v-if="p.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(p.epicKey)">{{ epicTitle(p.epicKey) }}</span>
-              <span v-else-if="p.group.voc" class="mt-epic">사용자 VoC</span>
+              <span v-else-if="p.group.voc" class="mt-voc" :title="'사용자 VoC' + (vocSegs(p.title).length > 1 ? ' — ' + vocSegs(p.title).slice(1).join(' · ') : '')">
+                <span v-for="(s, i) in vocSegs(p.title)" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
+              </span>
               <span v-else class="mt-epic none">Epic 없음</span>
               <span class="mt-sep" aria-hidden="true"></span>
               <span class="mt-owner" :class="{ me: p.group.mine }"

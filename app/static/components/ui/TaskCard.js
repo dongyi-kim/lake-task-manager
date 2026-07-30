@@ -15,6 +15,7 @@ import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import PriIcon from "./PriIcon.js";
 import DueText from "./DueText.js";
+import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
 
 // 긴급도 — 남은 일수 하나로 정한다. 숫자(D-3)는 정확하지만 훑을 땐 안 읽히고,
 // 표정은 정확하지 않지만 **한눈에** 읽힌다. 둘을 같이 둬서 서로를 보완한다.
@@ -68,6 +69,9 @@ export default {
     isSub() { return !!this.card.isSub && !this.card.isGroupSelf; },
     parentKey() { return (this.card.parent && this.card.parent.key) || this.card.parentKey || ""; },
     parentTitle() { return (this.card.parent && this.card.parent.title) || ""; },
+    // VoC 티켓은 제목 접두 [대분류 - 소분류] 를 떼고, 그 값을 뱃지로 쪼개 보인다(voc.js).
+    dispTitle() { return this.card.voc ? vocStripTitle(this.card.title) : (this.card.title || ""); },
+    vocSegs() { return vocBadgeSegs(this.card.title); },
   },
   template: `
   <div class="mt-card two tkt" :data-key="card.key"
@@ -76,7 +80,7 @@ export default {
     <div class="tc-l1">
       <TypeBadge :type="card.type" />
       <span class="mt-key">{{ card.key }}</span>
-      <span class="mt-title">{{ card.title }}</span>
+      <span class="mt-title">{{ dispTitle }}</span>
     </div>
     <div class="tc-l2">
       <PriIcon :rank="card.priRank" :name="card.pri" />
@@ -93,7 +97,9 @@ export default {
         <b class="mp-k">{{ parentKey }}</b><span class="mp-t">{{ parentTitle }}</span>
       </span>
       <span v-else-if="showEpic && card.epicKey" class="mt-epic sm" :title="'Epic: ' + epicTitle">{{ epicTitle }}</span>
-      <span v-else-if="showEpic && card.voc" class="mt-epic sm">사용자 VoC</span>
+      <span v-else-if="showEpic && card.voc" class="mt-voc sm" :title="'사용자 VoC' + (vocSegs.length > 1 ? ' — ' + vocSegs.slice(1).join(' · ') : '')">
+        <span v-for="(s, i) in vocSegs" :key="i" class="mt-voc-seg" :class="{ head: i === 0 }">{{ s }}</span>
+      </span>
       <span v-else-if="showEpic" class="mt-epic sm none">Epic 없음</span>
     </div>
   </div>`,

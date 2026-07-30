@@ -203,6 +203,16 @@
 /* 'Epic 없음' 은 뱃지가 아니라 **없음의 표시**다 — 채우면 있는 것처럼 보인다 */
 .mt-epic.none { color: var(--muted-2); background: none; font-weight: 600;
   border: 1px dashed var(--border-hi); padding: 0 6px; line-height: 13px; }
+/* 사용자 VoC 뱃지 — [ VoC | 대분류 | 소분류 ] 세그먼트(제목 접두를 voc.js 가 파싱).
+   head(VoC)는 VoC 시그니처색으로 채우고, 대/소분류는 옅은 칸으로 이어 붙인다. */
+.mt-voc { display: inline-flex; align-items: stretch; flex: 0 1 auto; min-width: 0;
+  border-radius: 3px; overflow: hidden; font-size: 9.5px; font-weight: 700; line-height: 15px;
+  border: 1px solid color-mix(in srgb, var(--ty-story) 55%, var(--border)); }
+.mt-voc-seg { padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.mt-voc-seg.head { background: var(--ty-story); color: #fff; flex: none; }
+.mt-voc-seg:not(.head) { background: color-mix(in srgb, var(--ty-story) 13%, transparent);
+  color: var(--text); border-left: 1px solid color-mix(in srgb, var(--ty-story) 40%, var(--border)); }
+.tc-l2 .mt-voc { margin-left: auto; }
 .mt-none { color: var(--muted-2); font-size: 11px; padding: 6px 8px; }
 
 /* 그룹 안에서 내 담당이 아닌 티켓을 펼치는 버튼 */
