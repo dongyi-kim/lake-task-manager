@@ -1026,10 +1026,13 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
             no_viewport=True,                          # 뷰포트를 실제 창 크기에 추종(리사이즈 시 흰 여백 방지)
             ignore_default_args=["--enable-automation"],   # '자동화 제어 중' 안내바 제거
             args=["--no-first-run", "--no-default-browser-check",
-                  # Chromium 자체 다운로드 말풍선(좌상단)을 끈다 — 저장은 우리가 하고 알림도
-                  # 우리가 띄우는데, 브라우저 것까지 뜨면 같은 일을 두 번 말하는 데다 그 안내가
-                  # 가리키는 임시 경로는 사용자에게 아무 의미가 없다(Playwright 임시 파일).
-                  "--disable-features=DownloadBubble,DownloadBubbleV2",
+                  # --disable-features 는 하나만 유효(뒤 값이 앞을 덮음)라 아래 항목을 콤마로 **한 플래그에 병합**한다.
+                  #  - DownloadBubble* : Chromium 자체 다운로드 말풍선(좌상단)을 끈다 — 저장·알림은 우리가 하고,
+                  #    그 안내가 가리키는 임시 경로는 사용자에게 무의미(Playwright 임시 파일)라 두 번 말하게 된다.
+                  #  - CalculateNativeWinOcclusion : 창을 최소화하면 Chromium 이 '가려짐'으로 보고 렌더 표면을
+                  #    버려서, 단축키로 복구해도 리페인트 전까지 **흰 화면**만 뜬다(minimize→restore 버그). 끈다.
+                  "--disable-features=DownloadBubble,DownloadBubbleV2,CalculateNativeWinOcclusion",
+                  "--disable-backgrounding-occluded-windows",   # 최소화 중 렌더러 백그라운드화로 인한 미갱신 방지
                   "--window-size=1400,900", f"--app={_BOOT_DATA_URL}"],  # 앱 모드 + 즉시 부팅로더
         )
 
