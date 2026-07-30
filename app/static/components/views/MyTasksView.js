@@ -26,6 +26,7 @@ import DueText from "../ui/DueText.js";
 import FieldEdit from "../ui/FieldEdit.js";
 import AdvancedSearchDialog from "../ui/AdvancedSearchDialog.js";
 import { categoryColor } from "../../lib/colors.js";
+import { pushToast } from "../../lib/toast.js";
 
 const NO_DUE = 1e6;
 
@@ -116,6 +117,8 @@ export default {
       // projPref[proj] = true(보임)|false(숨김) 은 사용자가 명시적으로 토글한 것만 담는다(없으면 기본 규칙).
       projPref: {},
       projOpen: false,
+      // 수정으로 **현재 퀵필터에서 이탈**한 티켓 키 — 네트워크 재조회 없이 즉시 숨긴다(다음 실 로딩에 초기화).
+      excluded: {},
     };
   },
   mounted() {
@@ -127,7 +130,21 @@ export default {
     // 상태 전이 등으로 티켓이 바뀌면 **이 뷰만** 조용히 다시 받는다. 카드가 새 상태의 열로
     // 알아서 옮겨 간다(상태·담당·해결이 한꺼번에 바뀌므로 카드 하나만 손대는 것보다 안전하고,
     // 화면을 다시 그리는 것보다 가볍다 — 스크롤·펼침·옵션이 그대로 남는다).
-    this._onChanged = () => { this._dropModelCache(); this.load({ quiet: true }); };
+    // 티켓 수정 알림. 담당/보고/모듈 퀵필터는 **네트워크 없이** 이 티켓이 필터에서 빠지는지
+    // 판정해 즉시 숨기고(+우하단 토스트) 로컬 카드도 갱신한다. 고급검색(jql)만 서버 재조회로
+    // 사라진 것을 찾아 토스트한다(그쪽은 클라가 조건을 알 수 없다).
+    this._onChanged = (e) => {
+      const view = (e && e.detail && e.detail.view) || null;
+      const clientEval = ["assignee", "reporter", "mymodules", "module"].includes(this.scope);
+      if (view && clientEval) { this._applyEditLocally(view); return; }   // 네트워크 없음
+      const before = new Set(this.rawCards.map((c) => c.key));
+      this._dropModelCache();
+      this.load({ quiet: true }).then(() => {
+        const after = new Set(this.rawCards.map((c) => c.key));
+        const gone = [...before].filter((k) => !after.has(k));
+        if (gone.length) this._toastExcluded(gone);
+      });
+    };
     window.addEventListener("ticket-changed", this._onChanged);
     // 좌하단 플로팅 새로고침
     window.addEventListener("force-refresh", this._fr = async () => {
@@ -188,7 +205,7 @@ export default {
       return out;
     },
     /** Epic·Project 필터를 적용한 카드 — 배치·집계는 모두 이걸 쓴다(가린 것은 개수에서도 빠진다). */
-    allCards() { return this.rawCards.filter((c) => this.epicPass(c) && this.projPass(c)); },
+    allCards() { return this.rawCards.filter((c) => this.epicPass(c) && this.projPass(c) && !this.excluded[c.key]); },
     // ── Project 필터 ── (jira.yml search 등록=기본 보임 / 미등록=기본 숨김, 사용자 토글 가능)
     searchProjects() { return (this.me && this.me.searchProjects) || []; },
     /** 내 Task 에 실제로 있는 프로젝트(이슈키 접두사)들 — 등록 여부와 함께. */
@@ -257,9 +274,9 @@ export default {
       // 전체 최솟값이 된다 → 다른 그룹과 같이 정렬하면 언제나 맨 위를 차지한다. 순위 경쟁은
       // 실제 묶음(그룹)끼리만 시키고, 자루는 자리를 고정한다.
       // Epic 필터: 그룹은 부모·자식이 같은 Epic 을 공유하므로 그룹의 버킷으로 통째로 거른다.
-      const out = this.groups.filter((g) => g.hasSubs && this.epicPass(g) && this.projPass(g)).map((g) => this.taskPanel(g))
+      const out = this.groups.filter((g) => g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]).map((g) => this.taskPanel(g))
         .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
-      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs && this.epicPass(g) && this.projPass(g)));
+      const solo = this.soloPanel(this.groups.filter((g) => !g.hasSubs && this.epicPass(g) && this.projPass(g) && !this.excluded[g.key]));
       if (solo) out.push(solo);
       return out;
     },
@@ -277,6 +294,7 @@ export default {
       if (!(opts && opts.quiet) && cache[key]) { this.model = cache[key]; this.loading = false; }
       else if (!(opts && opts.quiet)) this.loading = true;
       this.err = "";
+      if (Object.keys(this.excluded).length) this.excluded = {};   // 실 로딩이면 클라 이탈표시 초기화(목록이 새로 정확)
       // ★ 요청 순번 가드 — 퀵필터를 빠르게 바꾸면 요청이 여러 개 날아가는데, prod 지연 때문에
       //   먼저 보낸(지나간) 요청이 **나중에** 도착해 최신 화면을 옛 결과로 덮어쓴다(리포트된 버그:
       //   이미 다른 필터를 골랐는데 지나간 필터 내용이 렌더링됨). 순번이 어긋난 응답은 UI 에선 버린다.
@@ -300,6 +318,45 @@ export default {
     },
     /** 티켓이 바뀌면 클라이언트 모델 캐시는 낡는다 — 통째로 비운다(서버 mt: 캐시도 같은 이유로 무효화). */
     _dropModelCache() { this._mcache = {}; },
+    /** 이 티켓(수정 후 필드)이 **현재 퀵필터 스코프**에 여전히 맞는가 — 네트워크 없이 판정.
+     *  담당/보고는 사번 일치, 모듈은 (모듈 인력 담당/보고) 또는 (모듈 컴포넌트). */
+    _matchesScope(f) {
+      const me = ((this.me && this.me.id) || (this.me && this.me.name) || "").toLowerCase();
+      const a = (f.assigneeId || "").toLowerCase(), r = (f.reporterId || "").toLowerCase();
+      if (this.scope === "assignee") return a === me;
+      if (this.scope === "reporter") return r === me;
+      const mods = this.scope === "mymodules" ? this.myModules : (this.moduleSel ? [this.moduleSel] : this.myModules);
+      const mu = (this.me && this.me.moduleUsers) || {};
+      const people = new Set();
+      for (const m of mods) for (const u of (mu[m] || [])) people.add(String(u).toLowerCase());
+      if (people.has(a) || people.has(r)) return true;
+      const comps = new Set(mods);
+      return (f.components || []).some((c) => comps.has(c));
+    },
+    /** 티켓 수정 알림을 **네트워크 없이** 반영 — 로컬 카드 필드 갱신(상태/담당/컴포넌트) 후
+     *  현재 필터에서 이탈했으면 숨기고 우하단 토스트. */
+    _applyEditLocally(f) {
+      const key = f.key;
+      const upd = (n) => {
+        if (!n || n.key !== key) return;
+        if (f.statusCategory) n.statusCategory = f.statusCategory;
+        if ("assigneeId" in f) n.assigneeId = f.assigneeId;
+        if ("reporterId" in f) n.reporterId = f.reporterId;
+        if (f.components) n.components = f.components;
+      };
+      for (const g of (this.model && this.model.groups) || []) {
+        (g.atoms || []).forEach(upd); (g.others || []).forEach(upd); upd(g);
+      }
+      if (!this._matchesScope(f)) {
+        this.excluded = Object.assign({}, this.excluded, { [key]: true });
+        this._toastExcluded([key]);
+      }
+    },
+    _toastExcluded(keys) {
+      const label = keys.length === 1 ? keys[0] : keys.length + "개 티켓";
+      pushToast({ kind: "info", icon: "↪", title: "현재 필터에서 제외",
+                  message: label + " — 수정으로 이 목록 조건에 더는 맞지 않아 숨겼습니다.", timeout: 5000 });
+    },
     async hardRefresh() {
       if (this.busy) return;
       this.busy = true;
@@ -496,8 +553,9 @@ export default {
       return this.sort === "pri" ? [pri, due] : [due, pri];
     },
     taskPanel(g) {
-      const mineCards = g.atoms.map((a) => this.card(a, g, true));
-      const all = mineCards.concat(g.others.map((ot) => this.card(ot, g, false)));
+      const ex = (a) => !this.excluded[a.key];      // 수정으로 필터 이탈한 하위는 뺀다
+      const mineCards = g.atoms.filter(ex).map((a) => this.card(a, g, true));
+      const all = mineCards.concat(g.others.filter(ex).map((ot) => this.card(ot, g, false)));
       const mode = this.subView;
       // '내 티켓만' 이라도 **내 하위가 하나도 없으면** 그 그룹의 실제 하위(others)를 대신 보여 준다.
       // (내가 부모만 담당하고 하위는 전부 남의 것이거나, epic 스코프처럼 하위가 스코프에 안 잡힐 때 —
@@ -515,8 +573,8 @@ export default {
     soloPanel(gs) {
       const cards = [];
       for (const g of gs) {
-        for (const a of g.atoms) cards.push(this.card(a, g, true));
-        for (const ot of g.others) cards.push(this.card(ot, g, false));
+        for (const a of g.atoms) if (!this.excluded[a.key]) cards.push(this.card(a, g, true));
+        for (const ot of g.others) if (!this.excluded[ot.key]) cards.push(this.card(ot, g, false));
       }
       const vis = this.visible(cards);
       if (!vis.length) return null;

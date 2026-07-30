@@ -1257,11 +1257,16 @@ def api_me():
     # 모듈 목록 — Task 화면의 '모듈' 필터용. 캐시된 디렉토리에서(매 요청 config 안 읽음).
     try:
         from app.infra.settings import module_dir, modules_of
+        _dir = module_dir()
         me["modules"] = modules_of(me.get("id") or me.get("name") or "")
-        me["allModules"] = module_dir()["modules"]
+        me["allModules"] = _dir["modules"]
+        # 모듈 → 인력(사번) 매핑 — Task 화면이 **네트워크 없이** '이 티켓이 이 모듈 소속인가' 를
+        # 판정(수정 후 퀵필터 이탈 즉시 반영)하는 데 쓴다. 팀 규모라 작다(디렉토리 캐시에서).
+        me["moduleUsers"] = _dir.get("people") or {}
     except Exception:
         me["modules"] = []
         me["allModules"] = []
+        me["moduleUsers"] = {}
     # jira.yml search 에 등록된 Jira 프로젝트 — Task 화면 Project 필터의 **기본 체크 대상**.
     # 여기 없는 프로젝트의 티켓은 기본 언체크(노이즈 감춤). 사용자가 콤보에서 켤 수 있다.
     me["searchProjects"] = list(getattr(_client.s, "search_jira_projects", []) or [])

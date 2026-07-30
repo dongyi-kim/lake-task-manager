@@ -621,10 +621,20 @@ export default {
       this.descBusy = false; this.descEdit = false; this.stopWatchDesc();
       this.onFieldSaved();
     },
-    /** 필드가 바뀌면 티켓을 다시 받는다 — 한 필드만 손대도 상태·이력이 같이 움직인다. */
-    onFieldSaved() {
-      this.load();          // 한 필드만 손대도 상태·이력·계보가 같이 움직인다 → 통째로 다시 받는다
-      window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: this.keyId } }));
+    /** 필드가 바뀌면 티켓을 다시 받는다 — 한 필드만 손대도 상태·이력이 같이 움직인다.
+     *  ★ 재조회가 끝난 뒤(this.v 최신) **바뀐 값까지 실어** 알린다 — Task 화면이 네트워크 없이
+     *  이 티켓이 현재 퀵필터에서 빠지는지 판정해 즉시 반영할 수 있게. */
+    async onFieldSaved() {
+      await this.load();     // 끝나면 this.v 가 최신(담당/상태/컴포넌트)
+      this._fireChanged();
+    },
+    _fireChanged() {
+      const v = this.v || {};
+      window.dispatchEvent(new CustomEvent("ticket-changed", { detail: {
+        key: this.keyId,
+        view: { key: this.keyId, assigneeId: v.assigneeId || null, reporterId: v.reporterId || null,
+                statusCategory: v.statusCategory || null, components: v.components || [],
+                resolved: v.resolved || null } } }));
     },
     /** 첨부·문서를 함께 다시 받는다 — 댓글/본문을 고치면 그 안의 첨부·문서도 같이 달라진다.
      *  예전엔 코멘트 목록만 다시 받아, 파일을 붙였는데 첨부 목록은 그대로였다. */
