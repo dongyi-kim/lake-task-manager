@@ -615,11 +615,11 @@ def _find_app_hwnd():
     return found[0] if found else None
 
 
-def _ensure_on_current_desktop(hwnd, ref_hwnd):
-    """[Windows] 앱 창(hwnd)이 **지금 보고 있는 가상 데스크톱**(ref_hwnd 데스크톱)에 오게 한다.
-    이미 그 데스크톱이면 그대로 True. 아니면 옮겨 보고(공용 IVirtualDesktopManager) **다시 확인**한다.
-    반환: True(현재 데스크톱에 있음/옮김) / False(다른 데스크톱 — 옮기기 실패, 교차프로세스 미지원 빌드) /
-    None(COM 미지원·판정 불가). False 면 호출부가 '닫고 현재 데스크톱에 새로 열기'로 폴백한다."""
+def _desktop_diag(hwnd, ref_hwnd):
+    """[Windows·읽기전용 진단] 앱 창과 현재(내가 보는 창) 데스크톱을 두 방법으로 비교한다.
+    반환 dict {on: IsWindowOnCurrentVirtualDesktop, win: 앱창 데스크톱GUID, cur: 현재 데스크톱GUID,
+    same: win==cur}. 멀티데스크톱에서 어떤 판정이 맞는지 로그로 보고 정확히 고치기 위한 것. 이동은 안 한다.
+    COM 미지원이면 None."""
     if not (hwnd and ref_hwnd):
         return None
     import ctypes
@@ -653,11 +653,21 @@ def _ensure_on_current_desktop(hwnd, ref_hwnd):
         MoveTo = WF(ctypes.c_long, ctypes.c_void_p, wintypes.HWND, POINTER(GUID))(slot[5])
         Release = WF(ctypes.c_ulong, ctypes.c_void_p)(slot[2])
 
-        def _on_current():
-            b = wintypes.BOOL()
-            return bool(b.value) if IsOnCur(p, hwnd, byref(b)) == 0 else None
+        def _gs(g):
+            return "%08X-%04X-%04X-%s" % (g.d1, g.d2, g.d3, bytes(g.d4).hex().upper())
         try:
-            return _on_current()                     # ★ 읽기전용 — 교차프로세스 이동은 신뢰 불가라 안 함(진단만)
+            info = {"on": None, "win": "", "cur": "", "same": None}
+            b = wintypes.BOOL()
+            if IsOnCur(p, hwnd, byref(b)) == 0:
+                info["on"] = bool(b.value)
+            gw, gc = GUID(), GUID()
+            if GetId(p, hwnd, byref(gw)) == 0:
+                info["win"] = _gs(gw)
+            if GetId(p, ref_hwnd, byref(gc)) == 0:
+                info["cur"] = _gs(gc)
+            if info["win"] and info["cur"]:
+                info["same"] = info["win"] == info["cur"]
+            return info                              # ★ 읽기전용(이동 안 함) — 두 판정법을 함께 본다
         finally:
             try:
                 Release(p)
@@ -743,8 +753,7 @@ def _summon_to_current(open_hook):
     hwnd = _find_app_hwnd()
     if hwnd:
         if os.getenv("LAKE_HOTKEY_DEBUG") in ("1", "true", "True"):
-            r = _ensure_on_current_desktop(hwnd, fg)   # 읽기전용 판정(True/False/None)
-            print("[hotkey] hwnd=%s fg=%s onCurrentDesktop=%s" % (hwnd, fg, r),
+            print("[hotkey] hwnd=%s fg=%s diag=%s" % (hwnd, fg, _desktop_diag(hwnd, fg)),
                   file=sys.stderr, flush=True)
         _place_window_on(hwnd, fg, work, mon)        # 다른 모니터면 현재 모니터로 + 전면화 + 포커스
         return
