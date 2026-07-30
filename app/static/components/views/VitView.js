@@ -109,6 +109,8 @@ export default {
     fy(s) { return ymd(s); },
     fdt(s) { return ymdhm(s); },
     dd(s) { return dday(s); },
+    tyLabel(t) { return typeLabel(t); },   // 이슈타입 → 짧은 라벨(제목 뒤 텍스트로 붙임)
+    scls(cat) { return "s-" + ({ inprogress: "prog", done: "done" }[cat] || "todo"); },   // 상태 → 채운 셀 클래스
     dueOverdue(iso) {   // D-Day 당일 또는 그 이후(초과) → 붉게
       const due = new Date(iso.substring(0, 10) + "T00:00:00");
       const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -273,8 +275,8 @@ export default {
                 <div class="c-children">
                   <div v-for="c in kids(it)" :key="c.key" class="ctr tkt" :data-key="c.key"
                        role="button" tabindex="0" :title="c.key + ' · ' + c.summary">
-                    <div class="ct-tkt"><TypeBadge :type="c.type" /><span class="sm">{{ c.summary }}</span></div>
-                    <div><StatusPill :cat="c.statusCategory" :label="c.status" /></div>
+                    <div class="ct-tkt"><span class="sm">{{ c.summary }}</span><span class="ty">{{ tyLabel(c.type) }}</span></div>
+                    <div class="scell" :class="scls(c.statusCategory)">{{ c.status || c.statusCategory }}</div>
                     <div class="dt">{{ fy(c.created) || "—" }}</div>
                     <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>
                     <div class="asg">{{ c.assignee || "—" }}</div>
