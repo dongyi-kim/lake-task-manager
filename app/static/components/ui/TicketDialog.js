@@ -482,28 +482,34 @@ export default {
         if (fresh()) this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + key : (e.message || "불러오기 실패");
       });
 
-      // 나머지 패널 — 본문 뒤로 큐잉(직렬이면 본문 다음에 온다). 각자 도착하는 대로 렌더.
-      api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; })
-        .catch(() => { if (fresh()) this.comments = []; });
-      api.ticketAncestors(key).then((a) => { if (fresh()) this.ancestors = a || []; }).catch(() => {});
+      // ★ 우선순위를 **틈(await)으로 강제**한다. 브라우저 병렬 + 상류 직렬(prod SSO) 이면 그냥 다
+      //   쏴 두면 도착 순서가 뒤섞인다(계보가 첨부보다 늦게 오는 걸 지연 테스트로 확인). 상류가
+      //   직렬이라 tier 사이 await 는 **추가 지연이 없다**(어차피 한 줄로 처리된다). 로컬(basic,
+      //   parallel)만 미세 손해지만 dev·localhost 라 무시 가능.
+      await vp;                                          // 1순위: 티켓정보·설명·일정
+      if (!fresh()) return;
+      // 2순위: 계보(조상) · 댓글(설명 바로 아래, 먼저 읽는다)
+      await Promise.all([
+        api.ticketAncestors(key).then((a) => { if (fresh()) this.ancestors = a || []; }).catch(() => {}),
+        api.ticketComments(key).then((c) => { if (fresh()) this.comments = c; }).catch(() => { if (fresh()) this.comments = []; }),
+      ]);
+      if (!fresh()) return;
+      // 3순위: 형제·타임라인·첨부·관련문서·하위·관련티켓·지원(편집메타·하위타입) — 서로 동급이라 함께.
       api.ticketSiblings(key).then((s) => { if (fresh()) this.siblings = s || []; }).catch(() => {});
       api.ticketTimeline(key).then((t) => { if (fresh()) this.timeline = t || []; }).catch(() => {});
-      api.childTypes(key).then((t) => { if (fresh()) this.kidTypes = t || []; }).catch(() => {});
-      api.ticketChildren(key).then((c) => { if (fresh()) this.children = c || []; }).catch(() => {});
-      api.ticketRelated(key).then((r) => { if (fresh()) this.related = r || []; }).catch(() => {});
       api.ticketAttachments(key).then((a) => {
         if (!fresh()) return;
         this.atts = a || []; this.attOpen = this.atts.length <= FOLD_AT;
       }).catch(() => {});
-      // 편집 가능 필드 — 티켓·상태마다 다르므로 열 때마다 받는다(본문 뒤라 픽커 여는 시점엔 대개 와 있다).
-      api.editmeta(key).then((m) => { if (fresh()) this.emeta = m || {}; })
-        .catch(() => { if (fresh()) this.emeta = {}; });
       api.ticketDocuments(key).then((d) => {
         if (!fresh()) return;
         this.docs = d || []; this.docOpen = this.docs.length <= FOLD_AT;
       }).catch(() => {});
+      api.ticketChildren(key).then((c) => { if (fresh()) this.children = c || []; }).catch(() => {});
+      api.ticketRelated(key).then((r) => { if (fresh()) this.related = r || []; }).catch(() => {});
+      api.editmeta(key).then((m) => { if (fresh()) this.emeta = m || {}; }).catch(() => { if (fresh()) this.emeta = {}; });
+      api.childTypes(key).then((t) => { if (fresh()) this.kidTypes = t || []; }).catch(() => {});
 
-      await vp;
       // 유휴 시 이 티켓의 편집 팝업(담당/보고 기본·상태 전이)·전역 기본목록을 미리 데운다(로그인 상태).
       if (fresh()) { api.warmTicket(key); api.warmGlobals(); }
     },
