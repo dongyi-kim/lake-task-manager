@@ -123,6 +123,8 @@ export default {
       projOpen: false,
       // 수정으로 **현재 퀵필터에서 이탈**한 티켓 키 — 네트워크 재조회 없이 즉시 숨긴다(다음 실 로딩에 초기화).
       excluded: {},
+      // Task+SubTask 그룹별 '완료 하위 더 보기' 펼침 { groupKey: true } — 일시 상태(저장 안 함).
+      doneOpen: {},
     };
   },
   mounted() {
@@ -596,6 +598,23 @@ export default {
       for (const c of cards) (m[c.statusCategory] || m.todo).push(c);
       return m;
     },
+    /** done 하위가 유독 많아 카드가 세로로 길어지는 걸 막는다. todo/진행중 중 큰 쪽보다 done 이
+     *  많으면, done 은 **max(큰 쪽, min(done,4))** 개까지만 우선 보이고 나머지는 '+N개 더'(첨부
+     *  목록과 동일한 언폴딩)로 접는다. 큰 쪽만큼은 늘 보여 다른 칸보다 짧아 보이지 않게, 그러면서
+     *  최소 4개(done 이 4 미만이면 전부)는 보장한다. 접힘은 그룹키별 doneOpen 에(일시 상태). */
+    _doneLimit(p) {
+      const bs = this.byState(p.cards);
+      return Math.max(Math.max(bs.todo.length, bs.inprogress.length), Math.min(bs.done.length, 4));
+    },
+    doneShown(p) {
+      const done = this.byState(p.cards).done;
+      return this.doneOpen[p.key] ? done : done.slice(0, this._doneLimit(p));
+    },
+    doneHidden(p) { return Math.max(0, this.byState(p.cards).done.length - this._doneLimit(p)); },
+    doneTruncatable(p) { return this.doneHidden(p) > 0; },
+    toggleDone(key) { this.doneOpen = Object.assign({}, this.doneOpen, { [key]: !this.doneOpen[key] }); },
+    /** 상태 칸에 실제로 그릴 카드 — done 은 위 규칙으로 잘라서 보여 준다(todo/진행중은 그대로). */
+    cellCards(p, k) { return k === "done" ? this.doneShown(p) : this.byState(p.cards)[k]; },
     /** 세로축 모드의 상태 밴드 접기 — 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게. */
     bandOpen(k) { return !this.bandClosed[k]; },
     toggleBand(k) {
@@ -768,7 +787,7 @@ export default {
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
                                                 closed: !bandOpen(st.k) }]">
-                <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
+                <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
                              urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
                   <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
@@ -780,6 +799,8 @@ export default {
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <DueText :card="c" />
                 </div>
+                <button v-if="st.k === 'done' && doneTruncatable(p)" class="mt-more m-done"
+                        @click.stop="toggleDone(p.key)">{{ doneOpen[p.key] ? '접기' : '+' + doneHidden(p) + '개 더' }}</button>
             </div>
           </div>
         </div>
@@ -838,6 +859,9 @@ export default {
                 <span class="mt-pbar"><i :style="{ width: p.group.pct + '%' }"></i></span>
                 <em>{{ p.group.kidsDone }}/{{ p.group.kidsTotal }}</em>
               </span>
+              <span v-if="p.epicKey" class="mt-epic" :title="'Epic: ' + epicTitle(p.epicKey)">{{ epicTitle(p.epicKey) }}</span>
+              <span v-else-if="p.group.voc" class="mt-epic">사용자 VoC</span>
+              <span v-else class="mt-epic none">Epic 없음</span>
               <span class="mt-sep" aria-hidden="true"></span>
               <span class="mt-owner" :class="{ me: p.group.mine }"
                     :title="(p.group.assignee || '미할당') + ' 담당' + (p.group.mine ? ' (나)' : '')">
@@ -847,7 +871,7 @@ export default {
             </div>
               </div>
               <div v-if="!gClosed[p.key]" class="mt-gbody one">
-                <div v-for="c in byState(p.cards)[st.k]" :key="c.key" class="mt-card tkt"
+                <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
                              urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
                   <span v-if="isHotC(c)" class="tc-hot inline" title="마감이 일주일 이내입니다">🔥</span>
@@ -859,6 +883,8 @@ export default {
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <DueText :card="c" />
                 </div>
+                <button v-if="st.k === 'done' && doneTruncatable(p)" class="mt-more m-done"
+                        @click.stop="toggleDone(p.key)">{{ doneOpen[p.key] ? '접기' : '+' + doneHidden(p) + '개 더' }}</button>
               </div>
             </div>
           </template>
