@@ -562,8 +562,8 @@ def _cfg_win(u, ctypes, wintypes):
         fn.argtypes = args
 
 
-def _current_monitor_work():
-    """지금 포그라운드 창(없으면 커서)이 있는 모니터의 작업영역 (left,top,right,bottom). 실패 시 None."""
+def _monitor_of(hwnd):
+    """hwnd(없으면 커서)가 있는 모니터의 (작업영역 (l,t,r,b), HMONITOR). 실패 시 (None, None)."""
     import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
@@ -577,9 +577,8 @@ def _current_monitor_work():
         _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
                     ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
     MDN = 2                                          # MONITOR_DEFAULTTONEAREST
-    fg = u.GetForegroundWindow()
-    if fg:
-        mon = u.MonitorFromWindow(fg, MDN)
+    if hwnd:
+        mon = u.MonitorFromWindow(hwnd, MDN)
     else:
         pt = wintypes.POINT()
         u.GetCursorPos(ctypes.byref(pt))
@@ -587,9 +586,9 @@ def _current_monitor_work():
     mi = MONITORINFO()
     mi.cbSize = ctypes.sizeof(MONITORINFO)
     if not u.GetMonitorInfoW(mon, ctypes.byref(mi)):
-        return None
+        return None, None
     w = mi.rcWork
-    return (w.left, w.top, w.right, w.bottom)
+    return (w.left, w.top, w.right, w.bottom), mon
 
 
 def _find_app_hwnd():
@@ -616,8 +615,66 @@ def _find_app_hwnd():
     return found[0] if found else None
 
 
-def _place_window_on(hwnd, work):
-    """hwnd 를 work(작업영역) 중앙에 놓고 복구·전면화·포커스. work=None 이면 위치는 두고 전면화만."""
+def _bring_to_current_desktop(hwnd, ref_hwnd):
+    """[Windows] 앱 창(hwnd)을 **지금 보고 있는 가상 데스크톱**(ref_hwnd 가 있는 데스크톱)으로 옮긴다.
+    이미 그 데스크톱이면 아무것도 안 한다. ★ 이게 핵심이다 — 안 하면 아래 SetForegroundWindow 가
+    사용자를 앱 창이 있던 **다른 데스크톱으로 끌고 가버린다**(사용자가 싫다고 한 그 동작). 대신 창을
+    나에게로 데려온다. 공용 IVirtualDesktopManager COM. 반환 True(현재 데스크톱)/False(옮기기 실패)/
+    None(COM 미지원). (교차 프로세스 MoveWindowToDesktop 은 일부 Windows 빌드에서 막힐 수 있다.)"""
+    if not (hwnd and ref_hwnd):
+        return None
+    import ctypes
+    from ctypes import POINTER, byref, wintypes
+    try:
+        ole = ctypes.windll.ole32
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("d1", ctypes.c_uint32), ("d2", ctypes.c_uint16),
+                        ("d3", ctypes.c_uint16), ("d4", ctypes.c_ubyte * 8)]
+
+        def mk(d1, d2, d3, tail):
+            g = GUID()
+            g.d1, g.d2, g.d3 = d1, d2, d3
+            for i, b in enumerate(tail):
+                g.d4[i] = b
+            return g
+        CLSID = mk(0xAA509086, 0x5CA9, 0x4C25, (0x8F, 0x95, 0x58, 0x9D, 0x3C, 0x07, 0xB4, 0x8A))
+        IID = mk(0xA5CD92FF, 0x29BE, 0x454C, (0x8D, 0x04, 0xD8, 0x28, 0x79, 0xFB, 0x3F, 0x1B))
+        try:
+            ole.CoInitialize(None)
+        except Exception:
+            pass
+        p = ctypes.c_void_p()
+        if ole.CoCreateInstance(byref(CLSID), None, 1, byref(IID), byref(p)) != 0 or not p.value:
+            return None
+        slot = ctypes.cast(ctypes.cast(p, POINTER(ctypes.c_void_p))[0], POINTER(ctypes.c_void_p))
+        WF = ctypes.WINFUNCTYPE
+        IsOnCur = WF(ctypes.c_long, ctypes.c_void_p, wintypes.HWND, POINTER(wintypes.BOOL))(slot[3])
+        GetId = WF(ctypes.c_long, ctypes.c_void_p, wintypes.HWND, POINTER(GUID))(slot[4])
+        MoveTo = WF(ctypes.c_long, ctypes.c_void_p, wintypes.HWND, POINTER(GUID))(slot[5])
+        Release = WF(ctypes.c_ulong, ctypes.c_void_p)(slot[2])
+        try:
+            on = wintypes.BOOL()
+            if IsOnCur(p, hwnd, byref(on)) == 0 and on.value:
+                return True                          # 이미 현재 데스크톱 — 옮길 필요 없음
+            did = GUID()
+            if GetId(p, ref_hwnd, byref(did)) != 0:  # 현재 데스크톱 = 내가 보는 창의 데스크톱
+                return None
+            return MoveTo(p, hwnd, byref(did)) == 0
+        finally:
+            try:
+                Release(p)
+            except Exception:
+                pass
+    except Exception:
+        return None
+
+
+def _place_window_on(hwnd, ref_fg, work, target_mon):
+    """앱 창을 지금 보는 **데스크톱/모니터**로 데려와 전면화·포커스.
+      1) 가상 데스크톱: 다른 데스크톱이면 **현재 데스크톱으로 옮긴다**(데스크톱을 바꾸지 않는다).
+      2) 모니터: **다른 모니터에 있을 때만** 현재 모니터로 옮긴다(같은 화면이면 안 건드림 = 불필요한 이동 방지).
+      3) 복구 + 전면화 + 포커스."""
     import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
@@ -627,20 +684,21 @@ def _place_window_on(hwnd, work):
     class RECT(ctypes.Structure):
         _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
                     ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+    _bring_to_current_desktop(hwnd, ref_fg)          # ★ 데스크톱 스위칭 방지
     if u.IsIconic(hwnd):
         u.ShowWindow(hwnd, 9)                        # SW_RESTORE
-    if work:
+    cur_mon = u.MonitorFromWindow(hwnd, 2)           # MONITOR_DEFAULTTONEAREST
+    if work and target_mon and cur_mon != target_mon:
+        # 다른 모니터에 있을 때만 옮긴다 — 크기는 유지(SWP_NOSIZE)하고 위치만 현재 모니터 중앙으로.
         r = RECT()
         u.GetWindowRect(hwnd, ctypes.byref(r))
         w, h = r.right - r.left, r.bottom - r.top
         ww, wh = work[2] - work[0], work[3] - work[1]
-        w, h = min(w, ww), min(h, wh)
-        x = work[0] + (ww - w) // 2
-        y = work[1] + (wh - h) // 2
-        u.SetWindowPos(hwnd, 0, x, y, w, h, 0x0040)  # HWND_TOP, SWP_SHOWWINDOW
+        x = work[0] + max(0, (ww - w) // 2)
+        y = work[1] + max(0, (wh - h) // 2)
+        u.SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0040)   # SWP_NOSIZE | SWP_SHOWWINDOW
     # SetForegroundWindow 는 우리가 포그라운드 스레드가 아니면 무시된다 → 입력 스레드를 잠깐 붙인다.
-    fg = u.GetForegroundWindow()
-    fg_tid = u.GetWindowThreadProcessId(fg, None) if fg else 0
+    fg_tid = u.GetWindowThreadProcessId(ref_fg, None) if ref_fg else 0
     cur_tid = k.GetCurrentThreadId()
     attached = bool(fg_tid and fg_tid != cur_tid and u.AttachThreadInput(fg_tid, cur_tid, True))
     try:
@@ -652,11 +710,16 @@ def _place_window_on(hwnd, work):
 
 
 def _summon_to_current(open_hook):
-    """단축키 동작 — 앱 창을 지금 보고 있는 모니터로 불러온다(없으면 열고, 뜨면 옮긴다)."""
-    work = _current_monitor_work()                  # 포커스 뺏기 전에 현재 모니터부터 잡는다
+    """단축키 동작 — 앱 창을 지금 보고 있는 데스크톱/모니터로 데려온다(없으면 열고, 뜨면 데려온다)."""
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    _cfg_win(u, ctypes, wintypes)                    # ★ restype 지정 뒤에 handle 을 읽어야 잘림이 없다
+    fg = u.GetForegroundWindow()                     # 포커스 뺏기 전 '내가 보는 창'
+    work, mon = _monitor_of(fg)
     hwnd = _find_app_hwnd()
     if hwnd:
-        _place_window_on(hwnd, work)
+        _place_window_on(hwnd, fg, work, mon)
         return
     try:
         if open_hook:
@@ -665,11 +728,11 @@ def _summon_to_current(open_hook):
         pass
 
     def _later():
-        for _ in range(60):                         # ~6s — 창이 뜨면 현재 모니터로
+        for _ in range(60):                         # ~6s — 창이 뜨면 현재 데스크톱/모니터로
             time.sleep(0.1)
             h = _find_app_hwnd()
             if h:
-                _place_window_on(h, work)
+                _place_window_on(h, fg, work, mon)  # 새 창은 이미 현재 데스크톱 → 데스크톱 이동 no-op
                 return
     threading.Thread(target=_later, name="hotkey-open", daemon=True).start()
 

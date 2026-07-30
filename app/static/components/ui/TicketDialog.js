@@ -135,9 +135,17 @@ export default {
     // 화면 전체가 안 눌리는 상태가 된다 — 실제로 그렇게 막혔다.
     this._onKey = (e) => {
       if (e.key !== "Escape") return;
-      if (this.zoom) { this.zoom = null; }
-      else if (this.stOpen) { this.stOpen = false; }
-      else { this.$emit("close"); }
+      if (this.zoom) { this.zoom = null; return; }
+      if (this.stOpen) { this.stOpen = false; return; }
+      // 본문/댓글 **리치 에디터에 포커스가 있으면** ESC 는 다이얼로그를 닫지 말고 **에디터에서
+      // 빠져나가기만** 한다(사용자 요청). 포커스가 빠진 뒤 한 번 더 누르면 다이얼로그가 닫힌다.
+      const ae = document.activeElement;
+      if (ae && ae.closest && ae.closest('.ProseMirror, .tiptap, [contenteditable="true"]')) {
+        e.preventDefault();
+        try { ae.blur(); } catch (_) { /* noop */ }
+        return;
+      }
+      this.$emit("close");
     };
     window.addEventListener("keydown", this._onKey);
     // 창 크기가 바뀌면 보이는 중앙도 바뀐다 → 접기버튼 재배치.
