@@ -1216,15 +1216,19 @@ class JiraClient:
         털 수 있어야 한다. 예: 하위 표시 상한 20→300 배포 후에도 옛 20 개 캐시가 남아 보이던 문제.)
         prefix 삭제라 epic_children:{key} 는 :light 변형까지 함께 지워진다."""
         env = self.env
+        parent_key, epic_key = self._lineage_of(key)      # 그룹 형제 캐시(부모/Epic)까지 함께 털기 위해
         for pfx in ("issue", "issueL", "issueview", "comments", "children", "siblings",
                     "ancestors", "related", "timeline", "attachments", "documents",
                     "remotelinks", "epic_children", "changelog", "editmeta"):
             self.cache.invalidate(f"{pfx}:{env}:{key}")
+        self._invalidate_lineage(parent_key, epic_key)    # 형제 목록은 그룹(부모/Epic)별 공유 캐시
         self._reprime(key, comments=True)
         return {"ok": True}
 
     def _invalidate_ticket(self, key, *, comments=False, attachments=False,
                            links=False, documents=False):
+        # 부모/Epic 은 **비우기 전에** 읽어 둔다 — 아래에서 issueL:/issue: 를 비우면 못 읽는다.
+        parent_key, epic_key = self._lineage_of(key)
         if comments:
             self.cache.invalidate(f"comments:{self.env}:{key}")
         if attachments:
@@ -1245,7 +1249,9 @@ class JiraClient:
         self.cache.invalidate(f"issue:{self.env}:{key}")
         # 계보(조상/형제) 조립결과도 비운다 — _swr 로 따로 캐시되기 때문.
         self.cache.invalidate(f"ancestors:{self.env}:{key}")
-        self.cache.invalidate(f"siblings:{self.env}:{key}")
+        # 형제/부모 파생 — 형제 목록은 **그룹(부모/Epic)별 공유 캐시**(각 티켓별 아님)라 그룹 키
+        # 하나만 비우면 형제 전원의 뷰가 갱신된다. 하위(subtask)가 바뀌면 부모의 진척·하위목록도 함께.
+        self._invalidate_lineage(parent_key, epic_key)
         # 상태·담당·해결 이력 파생 뷰 — 전이/담당변경이 이력을 바꾸면 타임라인이 낡는다(저렴하게 재조립).
         self.cache.invalidate(f"changelog:{self.env}:{key}")
         self.cache.invalidate(f"timeline:{self.env}:{key}")
@@ -1277,6 +1283,32 @@ class JiraClient:
         self.cache.invalidate(f"issueview:{self.env}:{key}")   # 렌더된 본문 뷰
         if comments:
             self.cache.invalidate(f"comments:{self.env}:{key}")
+
+    def _lineage_of(self, key):
+        """이 티켓의 (부모키, Epic키). subtask 는 parent, Story/Task 는 Epic Link 를 가진다.
+        보통 방금 본 티켓이라 캐시 히트(경량) — 미스면 light 1회 조회로 확실히 부모를 찾는다
+        (부모/Epic 은 상태변경으로 안 바뀌므로 결과가 안전하다). **무효화 전에** 불러야 한다."""
+        try:
+            f = self.get_issue_light(key).get("fields") or {}
+        except Exception:
+            return None, None
+        return (f.get("parent") or {}).get("key"), f.get(self.s.epic_link_field_id)
+
+    def _invalidate_lineage(self, parent_key, epic_key):
+        """하위/구성원 하나가 바뀌면 **부모/Epic 파생 캐시**도 낡는다 — 함께 비운다.
+        형제 목록은 부모(subtask)·Epic(Story/Task)별로 **공유 캐시**되므로(각 티켓별이 아니라)
+        그룹 키 하나만 비우면 형제 전원의 뷰가 갱신된다."""
+        env = self.env
+        if parent_key:
+            # 부모의 진척·하위목록·원본(subtasks 필드)·형제 그룹 — 하위 상태변경/추가가 다 여기 반영된다.
+            for pfx in ("issue", "issueL", "issueview", "children"):
+                self.cache.invalidate(f"{pfx}:{env}:{parent_key}")
+            self.cache.invalidate(f"siblings:{env}:sub:{parent_key}")
+            self._reprime(parent_key)               # 부모 진척/뷰를 백그라운드로 즉시 재조회
+        if epic_key:
+            # Epic 자식 목록(형제·롤업 진척이 공유) — 구성원 상태/소속이 바뀌면 Epic 진척·형제뷰가 낡는다.
+            self.cache.invalidate(f"epic_children:{env}:{epic_key}")
+            self.cache.invalidate(f"siblings:{env}:epic:{epic_key}")
 
     # ── 편집 ──────────────────────────────────────────────────────────
     # **무엇을 고칠 수 있는지는 Jira 가 정한다.** 우리가 추측하면(예: 담당자면 다 된다) 화면은
@@ -2208,40 +2240,48 @@ class JiraClient:
 
     def ticket_siblings(self, key):
         """형제 = 같은 부모(Sub-Task) 또는 같은 Epic(Story/Task/Bug)을 공유하는 티켓들.
-        현재 티켓도 포함하고 current=True 로 표시(‘5개 중 2번째’ 위치 파악용). Epic 은 []."""
-        def build():
-            try:
-                f = self.get_issue_light(key).get("fields") or {}     # parent·epic_link 만 보면 됨(경량)
-            except Exception:
-                return []
-            parent_key = (f.get("parent") or {}).get("key")
-            if parent_key:                      # Sub-Task → 부모의 subtasks (부모 1회 조회로 끝)
+        현재 티켓도 포함하고 current=True 로 표시(‘5개 중 2번째’ 위치 파악용). Epic 은 [].
+
+        ★ 형제 목록은 **그룹(부모/Epic)별로 공유 캐시**한다 — 각 티켓이 제 형제 목록을 따로 들면
+        한 형제가 바뀔 때 나머지 형제 캐시가 전부 낡아, 부모 하나만 무효화해선 안 갱신된다.
+        그룹(siblings:{env}:sub:{부모} 또는 :epic:{에픽}) 하나만 캐시하고, '현재' 표시는 **읽을 때**
+        단다(그래야 _invalidate_lineage 가 그룹 키 하나만 비우면 형제 전원의 뷰가 갱신된다)."""
+        try:
+            f = self.get_issue_light(key).get("fields") or {}         # parent·epic_link 만 보면 됨(경량)
+        except Exception:
+            return []
+        parent_key = (f.get("parent") or {}).get("key")
+        if parent_key:                          # Sub-Task → 부모의 subtasks (그룹=부모)
+            def build():
                 subs = (self.get_issue_light(parent_key).get("fields") or {}).get("subtasks") or []
-                rows = [{"key": s.get("key"),
+                return [{"key": s.get("key"),
                          "summary": (s.get("fields") or {}).get("summary") or s.get("key"),
                          "type": (((s.get("fields") or {}).get("issuetype")) or {}).get("name", "Sub-Task"),
                          "statusCategory": _norm_cat(((((s.get("fields") or {}).get("status") or {})
                                                        .get("statusCategory")) or {}).get("key")),
                          "component": None} for s in subs if s.get("key")]
-            else:
-                epic_key = f.get(self.s.epic_link_field_id)
-                if not epic_key:
-                    return []
+            rows = self._swr(f"siblings:{self.env}:sub:{parent_key}", build)
+        else:                                   # Story/Task/Bug → 같은 Epic 자식 (그룹=Epic)
+            epic_key = f.get(self.s.epic_link_field_id)
+            if not epic_key:
+                return []
+
+            def build():
                 raws = self._search(f'"Epic Link" = {epic_key}',
                                     cache_key=f"epic_children:{self.env}:{epic_key}")
-                rows = []
+                out = []
                 for it in raws:
                     ff = it.get("fields") or {}
-                    rows.append({"key": it.get("key"),
-                                 "summary": ff.get("summary") or it.get("key"),
-                                 "type": (ff.get("issuetype") or {}).get("name", ""),
-                                 "statusCategory": _norm_cat(((ff.get("status") or {})
-                                                              .get("statusCategory") or {}).get("key")),
-                                 "component": _comp_of(ff)})
-            for r in rows:
-                r["current"] = (r["key"] == key)
-            return rows
-        return self._swr(f"siblings:{self.env}:{key}", build)
+                    out.append({"key": it.get("key"),
+                                "summary": ff.get("summary") or it.get("key"),
+                                "type": (ff.get("issuetype") or {}).get("name", ""),
+                                "statusCategory": _norm_cat(((ff.get("status") or {})
+                                                             .get("statusCategory") or {}).get("key")),
+                                "component": _comp_of(ff)})
+                return out
+            rows = self._swr(f"siblings:{self.env}:epic:{epic_key}", build)
+        # '현재' 표시는 **읽을 때** 단다(그룹 캐시는 공유, current 만 티켓별로 다르다).
+        return [dict(r, current=(r.get("key") == key)) for r in rows]
 
     # ── 티켓 타임라인(변경 이력 + 코멘트) ──
     # '중요 알림'만 남긴다: 생성 / 상태 / 담당자 / 해결 / 우선순위 / 마감 / 소속 / 스프린트 + 댓글.

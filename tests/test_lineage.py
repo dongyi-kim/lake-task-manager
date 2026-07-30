@@ -97,7 +97,28 @@ def test_lineage_reuses_per_ticket_cache():
     assert cached(parent)
     assert c.cache.get(f"ancestors:{env}:{sub}") is not None   # 조립 결과 캐시
     c.ticket_siblings(sub)
-    assert c.cache.get(f"siblings:{env}:{sub}") is not None
+    # 형제 목록은 **그룹(부모)별 공유 캐시** — 각 티켓별이 아니라 부모 키로 캐시된다(형제 전원 공유).
+    assert c.cache.get(f"siblings:{env}:sub:{parent}") is not None
+
+
+def test_sibling_cache_is_shared_by_parent_and_invalidated_together():
+    """형제 목록은 부모별 **공유 캐시**(각 티켓이 제 형제목록을 따로 들지 않는다). 그래서 형제 하나가
+    바뀌면 부모 그룹 캐시 하나만 비워도 **형제 전원의 뷰가 갱신**된다(LCA 부모의 child 정보로 공유)."""
+    sub, parent, _epic = _subtask_chain()
+    c = _client()
+    env = c.env
+    c.ticket_siblings(sub)
+    gkey = f"siblings:{env}:sub:{parent}"
+    assert c.cache.get(gkey) is not None
+    # '현재' 표시만 티켓별로 다르고, 다른 형제를 조회해도 **같은 그룹 캐시**를 재사용한다
+    other = next(k for k in get_world().issues[parent]["subtasks"] if k != sub)
+    sibs_other = c.ticket_siblings(other)
+    assert sum(1 for s in sibs_other if s["current"]) == 1 and next(s for s in sibs_other if s["current"])["key"] == other
+    # 형제 하나(other)를 무효화하면 부모 그룹 캐시가 비워진다 → 형제 전원 갱신
+    c._invalidate_ticket(other)
+    assert c.cache.get(gkey) is None
+    # 부모의 진척·하위목록 캐시도 함께 비워진다(하위 상태변경이 부모 진척을 바꾸므로)
+    assert c.cache.get(f"issueview:{env}:{parent}") is None
 
 
 # ── 타임라인 ──

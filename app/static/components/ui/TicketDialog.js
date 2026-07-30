@@ -142,6 +142,18 @@ export default {
     window.addEventListener("keydown", this._onKey);
     // 창 크기가 바뀌면 보이는 중앙도 바뀐다 → 접기버튼 재배치.
     window.addEventListener("resize", this._onResize = () => this.posCollapse());
+    // 관련 티켓(내 하위/형제)이 **다른 곳에서** 바뀌면 그 패널만 조용히 다시 받는다(UI 안 멈춤).
+    // 내 변경(전이·필드·하위생성)은 각 핸들러가 이미 처리하므로 changed===내키 는 건너뛴다.
+    window.addEventListener("ticket-changed", this._onExtChanged = (e) => {
+      const changed = e && e.detail && e.detail.key;
+      if (!changed || changed === this.keyId) return;
+      const inChildren = (this.children || []).some((c) => c.key === changed);
+      const inSiblings = (this.siblings || []).some((s) => s.key === changed);
+      if (!inChildren && !inSiblings) return;
+      api.evict(this.keyId);        // 내 관련 GET memo 를 비워 아래 재조회가 최신을 읽게(memo 는 키별)
+      if (inChildren) { this.reloadChildren(); this.reloadLineage(); this.softReloadView(); }
+      else this.reloadLineage();    // 형제 하나가 바뀜 → 형제 목록만
+    });
     this.$nextTick(() => this.posCollapse());
     this.load();
     // 에디터·구문강조 CDN 프리로드 — 티켓 다이얼로그/풀뷰가 열리는 시점에 미리 받아둔다.
@@ -152,6 +164,7 @@ export default {
   unmounted() {
     window.removeEventListener("keydown", this._onKey);
     window.removeEventListener("resize", this._onResize);
+    window.removeEventListener("ticket-changed", this._onExtChanged);
   },
   computed: {
     FOLD_AT: () => FOLD_AT,
@@ -351,11 +364,32 @@ export default {
       // 고른 기준은 기억한다 — 매번 고르게 하면 그건 기능이 아니라 숙제다.
       try { localStorage.setItem(KID_SORT_KEY, k); } catch (e) { /* 사파리 프라이빗 등 */ }
     },
-    /** 만들어졌으면 목록을 다시 받는다 — 만든 것이 바로 보여야 만들어졌다는 걸 안다. */
+    /** 하위가 생기면 하위목록뿐 아니라 **내 진척(계보 캡슐)·형제**(내가 subtask면)도 바뀐다 —
+     *  관련 패널을 백그라운드로 함께 갱신하고, 다른 화면(내 Task 등)·부모에도 알린다. */
     async onKidCreated() {
       this.adding = false;
-      const c = await api.ticketChildren(this.keyId).catch(() => null);
-      if (c) this.children = c;
+      await this.reloadChildren();
+      this.reloadLineage();
+      window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: this.keyId } }));
+    },
+    reloadChildren() {
+      const key = this.keyId;
+      return api.ticketChildren(key)
+        .then((c) => { if (this.keyId === key) this.children = c || []; }).catch(() => {});
+    },
+    /** 형제·조상(진척 캡슐) 재조회 — 하위/형제 변화가 이 둘에 반영된다. 형제 목록은 서버에서
+     *  부모별 공유 캐시라, 형제 하나가 바뀌면 부모 그룹 무효화로 여기서 최신을 받는다. */
+    reloadLineage() {
+      const key = this.keyId;
+      api.ticketSiblings(key).then((s) => { if (this.keyId === key) this.siblings = s || []; }).catch(() => {});
+      api.ticketAncestors(key).then((a) => { if (this.keyId === key) this.ancestors = a || []; }).catch(() => {});
+    },
+    /** 상태 전이 완료 — 내 뷰를 다시 받고(load), 다른 화면·부모에도 알린다(형제·부모 진척 갱신). */
+    onTransitioned() { this.stPick = null; this.onFieldSaved(); },
+    /** 본문 깜빡임 없이 요약 뷰(상태·진척 등)만 갱신 — 하위 상태변경이 내 진척 %를 바꿀 때. */
+    softReloadView() {
+      const key = this.keyId;
+      api.ticket(key, true).then((v) => { if (this.keyId === key && v) this.v = v; }).catch(() => {});
     },
     /** 본문 편집 열기 — **열기 직전에 본문을 다시 받는다.**
      *  화면에 떠 있던 본문은 이 창을 연 시점의 것이라, 그 사이 남이 고쳤으면 낡은 글 위에
@@ -1499,6 +1533,6 @@ export default {
       <!-- 상태 전이 — 카드 우클릭과 **같은 창**. 코멘트·담당자·해결책 같은 전이 화면 입력을
            여기서만 다르게 받으면 같은 일을 두 벌로 관리하게 된다. -->
       <TransitionDialog v-if="stPick" :ticket="tk" :transition="stPick"
-                        @close="stPick = null" @done="stPick = null; load()" />
+                        @close="stPick = null" @done="onTransitioned()" />
     </div>`,
 };
