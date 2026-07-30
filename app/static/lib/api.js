@@ -36,6 +36,11 @@ function jsonReq(path, method, body) {
                      body: JSON.stringify(body || {}) });
 }
 
+// 유휴 시간에 **미리 데워 둔다** — get() 은 memo 라, 이때 받아 두면 나중에 팝업/다이얼로그가
+// 열릴 때 네트워크 없이 즉시 뜬다(실패는 조용히 무시 — 어차피 필요할 때 다시 받는다).
+function idle(fn) { (window.requestIdleCallback || ((f) => setTimeout(f, 250)))(fn); }
+function warmGet(u) { try { get(u).catch(() => {}); } catch (e) { /* noop */ } }
+
 export const api = {
   health: () => req("/api/health"),                                    // 로그인 상태 — memo 제외
   raw: (path, opts) => req(path, opts),                                // memo 없이 매번 조회(설정 메뉴 등)
@@ -43,6 +48,15 @@ export const api = {
   ticketRefresh: (key) =>                                              // 서버측 파생 캐시까지 비우기
     jsonReq("/api/ticket/" + encodeURIComponent(key) + "/refresh", "POST", {})
       .then((r) => { evict(encodeURIComponent(key)); return r; }).catch(() => {}),
+  // ── 유휴 시 미리 데우기(핫캐시) — 로그인 후에만 호출한다(prod 는 세션 준비 전 조회 시 로그인 유발) ──
+  warmGlobals: () => idle(() => {                                       // 전역 FieldEdit 기본목록
+    warmGet("/api/options/labels"); warmGet("/api/options/components"); warmGet("/api/mention/users?q=");
+  }),
+  warmTicket: (key) => idle(() => {                                     // 이 티켓의 담당/보고 기본 + 상태 전이 메뉴
+    const k = encodeURIComponent(key);
+    warmGet("/api/mention/users?q=&key=" + k);
+    warmGet("/api/ticket/" + k + "/menu");
+  }),
   login: () => req("/api/login", { method: "POST" }),
   updateInfo: () => req("/api/update"),                                // 업데이트 가능 여부(배포 repo) — memo 제외
   updateRestart: () => req("/api/app/update-restart", { method: "POST" }),   // git pull + 재시작(트레이 경로)
@@ -130,7 +144,9 @@ export const api = {
     // 만든 직후 부모의 하위 목록을 다시 받아야 한다 — memo 를 안 비우면 **늘 만들기 전 목록**이
     // 돌아온다(프로미스 캐시라 서버가 최신을 줘도 소용없다).
     .then((r) => { evict(encodeURIComponent(key)); evictLists(); return r; }),
-  ticketMenu: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/menu"),
+  // 상태 전이 메뉴 — **memo**(같은 상태에선 안정적, 유휴 워밍이 재사용). 전이하면 evict(key) 로 비워진다
+  // (doTransition·ticket-changed 가 key memo 를 털어 낡은 전이목록으로 400 나는 걸 막는다).
+  ticketMenu: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/menu"),
   setAssignee: (key, assignee) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/assignee",
                                           "PUT", { assignee }).then((r) => { evict(key); evictLists(); return r; }),
   deleteTicket: (key) => req("/api/ticket/" + encodeURIComponent(key), { method: "DELETE" })

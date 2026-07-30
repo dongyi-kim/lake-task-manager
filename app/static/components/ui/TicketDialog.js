@@ -507,6 +507,9 @@ export default {
           this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + key : (e.message || "불러오기 실패");
         }
       }
+      // 유휴 시 이 티켓의 편집 팝업(담당/보고 기본·상태 전이)과 전역 기본목록(라벨·컴포넌트)을
+      // 미리 데운다 — 사용자가 필드/상태를 누르기 전에 캐시가 차 즉시 뜬다. (이미 로그인 상태.)
+      if (fresh()) { api.warmTicket(key); api.warmGlobals(); }
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
     typeLabel(t) { return typeLabel(t); },

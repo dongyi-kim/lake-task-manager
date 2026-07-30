@@ -313,6 +313,8 @@ export default {
         if (ks.length > 12) delete cache[ks[0]];
         if (seq !== this._loadSeq) return;     // 더 최신 요청이 이미 떴다 — 화면엔 안 쓴다
         this.model = model;
+        // 로그인 확인됨(데이터 왔다) → 유휴 시 FieldEdit 전역 기본목록을 미리 데운다(1회).
+        if (!this._warmed) { this._warmed = true; api.warmGlobals(); }
       }
       catch (e) {
         if (seq !== this._loadSeq) return;     // 낡은 요청의 에러도 최신 화면에 씌우지 않는다
