@@ -64,12 +64,25 @@ export default {
   computed: {
     // 검색어가 없을 땐 '최근 열어본 항목'이 목록이다(키보드 이동도 여기에 걸린다).
     showRecent() { return !this.q.trim() && !this.res; },
-    // 키보드 네비게이션용 평면 리스트 (jira → confluence; bitbucket 은 mock 이라 선택 제외)
+    // 소스별 **표시용 뷰** — 결과에 새겨진 q 가 지금 입력한 검색어와 다르면 stale.
+    // stale 이면 화면엔 흐리게(이전 결과) + 스피너로 두고, 키보드 선택 대상에선 뺀다
+    // (오래된 결과를 새 검색어 결과인 양 고르거나 열지 않게). 새 결과가 오면 stale 이 풀린다.
+    view() {
+      const q = this.q.trim();
+      const pick = (src) => {
+        const r = this.res && this.res[src];
+        if (!r) return { items: [], error: null, stale: false };
+        return { items: r.items || [], error: r.error || null, stale: r.q !== q };
+      };
+      return { jira: pick("jira"), confluence: pick("confluence"), bitbucket: pick("bitbucket") };
+    },
+    // 키보드 네비게이션용 평면 리스트 (jira → confluence; bitbucket 은 mock 이라 선택 제외).
+    // stale 소스는 제외 — 흐려진 이전 결과를 Enter 로 열어 버리지 않게.
     flat() {
       if (this.showRecent) return this.recent.map((x) => ({ src: "recent", it: x }));
       if (!this.res) return [];
-      const j = (this.res.jira.items || []).map((x) => ({ src: "jira", it: x }));
-      const c = (this.res.confluence.items || []).map((x) => ({ src: "confluence", it: x }));
+      const j = this.view.jira.stale ? [] : (this.view.jira.items || []).map((x) => ({ src: "jira", it: x }));
+      const c = this.view.confluence.stale ? [] : (this.view.confluence.items || []).map((x) => ({ src: "confluence", it: x }));
       return j.concat(c);
     },
     scopeLabel() { return this.scope === "scoped" ? "소속 프로젝트/스페이스" : "전체"; },
@@ -98,7 +111,10 @@ export default {
           this.loadingSrc[src] = false;
           this.loading = Object.values(this.loadingSrc).some(Boolean);
           // 한 소스가 실패해도 그 칸만 에러로 두고 나머지는 그대로 보인다.
-          this.res[src] = r && r.error ? { items: [], error: r.error } : (r || { items: [] });
+          // ★ 결과에 **그 결과가 어느 검색어의 것인지**(q)를 새긴다 — 검색어가 이미 바뀌었으면
+          //   view 가 이걸 stale 로 판정해 새 검색어 결과인 양 보여 주지 않는다(오래된 결과 방지).
+          this.res[src] = r && r.error ? { items: [], error: r.error, q }
+                                       : { items: (r && r.items) || [], error: null, q };
         });
       });
     },
@@ -110,7 +126,7 @@ export default {
       this.scrollActive();
     },
     scrollActive() { this.$nextTick(() => { const el = this.$el.querySelector(".sr-item.active"); if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" }); }); },
-    idx(src, i) { return this.flat.findIndex((f) => f.src === src && f.it === (this.res[src].items[i])); },
+    idx(src, i) { return this.flat.findIndex((f) => f.src === src && f.it === (this.view[src].items[i])); },
     async loadRecent() {
       let r = [];
       try { r = (await api.recent(30)) || []; } catch (e) { r = []; }
@@ -182,7 +198,7 @@ export default {
       return [rev[0], rev[1], "…", rev[rev.length - 1]];
     },
     fdt(s) { return ymdhm(s); },
-    cnt(src) { return this.res && this.res[src] && this.res[src].items ? this.res[src].items.length : 0; },
+    cnt(src) { return this.view && this.view[src] ? this.view[src].items.length : 0; },
   },
   template: `
   <div class="sr-ov" @click.self="fromBackdrop($event) && $emit('close')">
@@ -240,10 +256,10 @@ export default {
         </template>
         <template v-else-if="res">
           <!-- Jira -->
-          <div class="sr-sec">
-            <div class="sr-sec-h"><span class="sr-src jira">Jira</span> <b>{{ cnt('jira') }}</b><span v-if="res.jira.error" class="sr-serr">· {{ res.jira.error }}</span></div>
-            <div v-for="(it, i) in res.jira.items" :key="it.key" class="sr-item" :class="{ active: flat[active] && flat[active].it === it }"
-                 @click="pick({ src: 'jira', it })" @mousemove="active = idx('jira', i)">
+          <div class="sr-sec" :class="{ stale: view.jira.stale }">
+            <div class="sr-sec-h"><span class="sr-src jira">Jira</span> <b>{{ cnt('jira') }}</b><span v-if="view.jira.error" class="sr-serr">· {{ view.jira.error }}</span></div>
+            <div v-for="(it, i) in view.jira.items" :key="it.key" class="sr-item" :class="{ active: flat[active] && flat[active].it === it }"
+                 @click="!view.jira.stale && pick({ src: 'jira', it })" @mousemove="active = idx('jira', i)">
               <span class="sr-dot" :class="stCls(it.statusCategory)"></span>
               <b class="sr-key">{{ it.key }}</b>
               <span class="sr-title">{{ it.title }}</span>
@@ -253,14 +269,14 @@ export default {
                 <span class="sr-who"><Avatar :user="it.assigneeId" :name="it.assignee" :size="14" />{{ it.assignee }}</span>
               </template></span>
             </div>
-            <div v-if="loadingSrc.jira" class="sr-none"><span class="spinner"></span> 불러오는 중…</div>
-            <div v-else-if="!cnt('jira') && !res.jira.error" class="sr-none">결과 없음</div>
+            <div v-if="loadingSrc.jira || view.jira.stale" class="sr-none"><span class="spinner"></span> 불러오는 중…</div>
+            <div v-else-if="!cnt('jira') && !view.jira.error" class="sr-none">결과 없음</div>
           </div>
           <!-- Confluence -->
-          <div class="sr-sec">
-            <div class="sr-sec-h"><span class="sr-src conf">Confluence</span> <b>{{ cnt('confluence') }}</b><span v-if="res.confluence.error" class="sr-serr">· {{ res.confluence.error }}</span></div>
-            <div v-for="(it, i) in res.confluence.items" :key="'c'+i" class="sr-item sr-item2 conf" :class="{ active: flat[active] && flat[active].it === it }"
-                 @click="pick({ src: 'confluence', it })" @mousemove="active = idx('confluence', i)">
+          <div class="sr-sec" :class="{ stale: view.confluence.stale }">
+            <div class="sr-sec-h"><span class="sr-src conf">Confluence</span> <b>{{ cnt('confluence') }}</b><span v-if="view.confluence.error" class="sr-serr">· {{ view.confluence.error }}</span></div>
+            <div v-for="(it, i) in view.confluence.items" :key="'c'+i" class="sr-item sr-item2 conf" :class="{ active: flat[active] && flat[active].it === it }"
+                 @click="!view.confluence.stale && pick({ src: 'confluence', it })" @mousemove="active = idx('confluence', i)">
               <div class="sr-body">
                 <div class="sr-r1">
                   <span class="sr-pageic"></span>
@@ -274,13 +290,13 @@ export default {
                 <div v-if="it.excerpt" class="sr-r2" v-html="it.excerpt"></div>
               </div>
             </div>
-            <div v-if="loadingSrc.confluence" class="sr-none"><span class="spinner"></span> 불러오는 중…</div>
-            <div v-else-if="!cnt('confluence') && !res.confluence.error" class="sr-none">결과 없음</div>
+            <div v-if="loadingSrc.confluence || view.confluence.stale" class="sr-none"><span class="spinner"></span> 불러오는 중…</div>
+            <div v-else-if="!cnt('confluence') && !view.confluence.error" class="sr-none">결과 없음</div>
           </div>
           <!-- Bitbucket (mock) -->
-          <div class="sr-sec">
+          <div class="sr-sec" :class="{ stale: view.bitbucket.stale }">
             <div class="sr-sec-h"><span class="sr-src bb">Bitbucket</span> <b>{{ cnt('bitbucket') }}</b> <span class="sr-mock">연동 예정(mock)</span></div>
-            <div v-for="(it, i) in res.bitbucket.items" :key="'b'+i" class="sr-item mock">
+            <div v-for="(it, i) in view.bitbucket.items" :key="'b'+i" class="sr-item mock">
               <span class="sr-repoic"></span>
               <span class="sr-title">{{ it.title }}</span>
               <span class="sr-excerpt">{{ it.repo }}<template v-if="it.path"> · {{ it.path }}</template></span>

@@ -532,6 +532,179 @@ def _hide_console_win():
         pass
 
 
+# ── 전역 단축키(Windows): Ctrl+Alt+Space → 앱 창을 **지금 보고 있는 모니터**로 불러온다 ──────────
+#   '내가 창으로 가는' 게 아니라 '창이 나에게 오는' 동작이다. 포그라운드 창이 있는 모니터의 작업영역
+#   중앙으로 앱 창을 옮겨 전면화·포커스한다(다른 모니터·최소화·닫힘 모두 커버). 핸들은 64비트라
+#   ctypes restype/argtypes 를 지정해 잘림(truncation)을 막는다. LAKE_NO_HOTKEY=1 로 끌 수 있다.
+#   (가상 데스크톱 간 이동은 범위 밖 — 모니터 기준. 대부분의 '다른 화면 보는 중'은 이걸로 해결된다.)
+def _cfg_win(u, ctypes, wintypes):
+    H, V, D = wintypes.HWND, ctypes.c_void_p, wintypes.DWORD
+    for fn, res, args in [
+        (u.GetForegroundWindow, H, []),
+        (u.MonitorFromWindow, V, [H, D]),
+        (u.MonitorFromPoint, V, [wintypes.POINT, D]),
+        (u.GetMonitorInfoW, wintypes.BOOL, [V, V]),
+        (u.GetWindowTextLengthW, ctypes.c_int, [H]),
+        (u.GetWindowTextW, ctypes.c_int, [H, wintypes.LPWSTR, ctypes.c_int]),
+        (u.GetClassNameW, ctypes.c_int, [H, wintypes.LPWSTR, ctypes.c_int]),
+        (u.IsIconic, wintypes.BOOL, [H]),
+        (u.ShowWindow, wintypes.BOOL, [H, ctypes.c_int]),
+        (u.GetWindowRect, wintypes.BOOL, [H, V]),
+        (u.SetWindowPos, wintypes.BOOL, [H, H, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]),
+        (u.SetForegroundWindow, wintypes.BOOL, [H]),
+        (u.BringWindowToTop, wintypes.BOOL, [H]),
+        (u.GetWindowThreadProcessId, D, [H, V]),
+        (u.AttachThreadInput, wintypes.BOOL, [D, D, wintypes.BOOL]),
+        (u.RegisterHotKey, wintypes.BOOL, [H, ctypes.c_int, wintypes.UINT, wintypes.UINT]),
+        (u.UnregisterHotKey, wintypes.BOOL, [H, ctypes.c_int]),
+    ]:
+        fn.restype = res
+        fn.argtypes = args
+
+
+def _current_monitor_work():
+    """지금 포그라운드 창(없으면 커서)이 있는 모니터의 작업영역 (left,top,right,bottom). 실패 시 None."""
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    _cfg_win(u, ctypes, wintypes)
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                    ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
+                    ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
+    MDN = 2                                          # MONITOR_DEFAULTTONEAREST
+    fg = u.GetForegroundWindow()
+    if fg:
+        mon = u.MonitorFromWindow(fg, MDN)
+    else:
+        pt = wintypes.POINT()
+        u.GetCursorPos(ctypes.byref(pt))
+        mon = u.MonitorFromPoint(pt, MDN)
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if not u.GetMonitorInfoW(mon, ctypes.byref(mi)):
+        return None
+    w = mi.rcWork
+    return (w.left, w.top, w.right, w.bottom)
+
+
+def _find_app_hwnd():
+    """Chromium 앱 창(제목에 'Lake Task Manager', 클래스 Chrome_WidgetWin_*) HWND. 없으면 None."""
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    _cfg_win(u, ctypes, wintypes)
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _enum(hwnd, _lp):
+        n = u.GetWindowTextLengthW(hwnd)
+        if n:
+            buf = ctypes.create_unicode_buffer(n + 1)
+            u.GetWindowTextW(hwnd, buf, n + 1)
+            if "Lake Task Manager" in buf.value:
+                cls = ctypes.create_unicode_buffer(64)
+                u.GetClassNameW(hwnd, cls, 64)
+                if cls.value.startswith("Chrome_WidgetWin"):
+                    found.append(hwnd)
+        return True
+    u.EnumWindows(_enum, 0)
+    return found[0] if found else None
+
+
+def _place_window_on(hwnd, work):
+    """hwnd 를 work(작업영역) 중앙에 놓고 복구·전면화·포커스. work=None 이면 위치는 두고 전면화만."""
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    k = ctypes.windll.kernel32
+    _cfg_win(u, ctypes, wintypes)
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                    ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+    if u.IsIconic(hwnd):
+        u.ShowWindow(hwnd, 9)                        # SW_RESTORE
+    if work:
+        r = RECT()
+        u.GetWindowRect(hwnd, ctypes.byref(r))
+        w, h = r.right - r.left, r.bottom - r.top
+        ww, wh = work[2] - work[0], work[3] - work[1]
+        w, h = min(w, ww), min(h, wh)
+        x = work[0] + (ww - w) // 2
+        y = work[1] + (wh - h) // 2
+        u.SetWindowPos(hwnd, 0, x, y, w, h, 0x0040)  # HWND_TOP, SWP_SHOWWINDOW
+    # SetForegroundWindow 는 우리가 포그라운드 스레드가 아니면 무시된다 → 입력 스레드를 잠깐 붙인다.
+    fg = u.GetForegroundWindow()
+    fg_tid = u.GetWindowThreadProcessId(fg, None) if fg else 0
+    cur_tid = k.GetCurrentThreadId()
+    attached = bool(fg_tid and fg_tid != cur_tid and u.AttachThreadInput(fg_tid, cur_tid, True))
+    try:
+        u.BringWindowToTop(hwnd)
+        u.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            u.AttachThreadInput(fg_tid, cur_tid, False)
+
+
+def _summon_to_current(open_hook):
+    """단축키 동작 — 앱 창을 지금 보고 있는 모니터로 불러온다(없으면 열고, 뜨면 옮긴다)."""
+    work = _current_monitor_work()                  # 포커스 뺏기 전에 현재 모니터부터 잡는다
+    hwnd = _find_app_hwnd()
+    if hwnd:
+        _place_window_on(hwnd, work)
+        return
+    try:
+        if open_hook:
+            open_hook()                             # 트레이 모드에서 창이 닫혀 있으면 새로 연다
+    except Exception:
+        pass
+
+    def _later():
+        for _ in range(60):                         # ~6s — 창이 뜨면 현재 모니터로
+            time.sleep(0.1)
+            h = _find_app_hwnd()
+            if h:
+                _place_window_on(h, work)
+                return
+    threading.Thread(target=_later, name="hotkey-open", daemon=True).start()
+
+
+def _register_global_hotkey(on_fire):
+    """[Windows] Ctrl+Alt+Space 전역 단축키 — 누르면 on_fire(). 전용 스레드에서 등록+메시지 루프."""
+    if not sys.platform.startswith("win"):
+        return
+    if os.getenv("LAKE_NO_HOTKEY") in ("1", "true", "True"):
+        return
+
+    def run():
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        _cfg_win(u, ctypes, wintypes)
+        MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
+        VK_SPACE, WM_HOTKEY, HID = 0x20, 0x0312, 1
+        if not u.RegisterHotKey(None, HID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SPACE):
+            print("[hotkey] Ctrl+Alt+Space 등록 실패(다른 앱이 선점했을 수 있음)", file=sys.stderr)
+            return
+        print("[hotkey] Ctrl+Alt+Space — 앱 창을 현재 모니터로 호출")
+        msg = wintypes.MSG()
+        try:
+            while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == WM_HOTKEY:
+                    try:
+                        on_fire()
+                    except Exception as e:
+                        print(f"[hotkey] 처리 오류: {e}", file=sys.stderr)
+        finally:
+            u.UnregisterHotKey(None, HID)
+    threading.Thread(target=run, name="global-hotkey", daemon=True).start()
+
+
 def _set_window_icon_win(ico_path):
     """[Windows] 앱 창(제목에 'Lake Task Manager' 포함)의 아이콘을 우리 .ico 로 직접 지정.
     Chromium --app 의 favicon 래스터화(작업표시줄 저화질)보다 확실. best-effort."""
@@ -849,6 +1022,9 @@ def _run_tray(s):
     # (살아있는 창이 있으면 백엔드가 대신 focus 이벤트를 세워, 창 루프가 bring_to_front 한다.)
     import app.main as _appmain
     _appmain.set_open_window_hook(open_window)
+
+    # 전역 단축키 Ctrl+Alt+Space — 앱 창을 '지금 보고 있는 모니터'로 불러온다(없으면 연다).
+    _register_global_hotkey(lambda: _summon_to_current(_appmain.request_focus_or_open))
 
     # ── 서비스별 SSO 인증 상태 ────────────────────────────────────────────
     # 인증 여부의 **단일 원천은 백엔드**다(같은 프로세스의 provider 로 실제 호출해 본다).

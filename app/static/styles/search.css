@@ -60,6 +60,9 @@
 .sr-err { color: var(--today); padding: 20px; }
 .sr-empty { color: var(--muted); padding: 26px 14px; text-align: center; font-size: 13px; }
 .sr-sec { margin-top: 6px; }
+/* 검색어가 바뀌어 이 소스 결과가 낡았을 때 — 이전 결과를 흐리게 두고(오래된 걸 새 결과인 양
+   보여 주지 않음) 위의 '불러오는 중' 스피너가 갱신을 알린다. 클릭/키보드 선택도 막힌다. */
+.sr-sec.stale .sr-item { opacity: .4; pointer-events: none; filter: grayscale(.3); }
 .sr-sec-h { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted);
   text-transform: uppercase; letter-spacing: .3px; padding: 8px 10px 4px; }
 .sr-sec-h b { color: var(--text); font-variant-numeric: tabular-nums; }
