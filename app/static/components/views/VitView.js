@@ -10,11 +10,35 @@ import StatusPill from "../ui/StatusPill.js";
 
 const KLAB = { created: "생성됨", done: "완료됨", resolved: "해결됨" };
 
+// 데일리미팅 강화 임계 — '지난 N일' 변동 브리핑 창, '무변동 N일 이상'이면 정체로 본다.
+const BRIEF_DAYS = 3;
+const STALE_DAYS = 5;
+
 export default {
   name: "VitView",
   components: { TypeBadge, StatusPill },
   data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false,
-                    mods: {}, modErr: {}, modPartial: {}, busy: false }; },
+                    mods: {}, modErr: {}, modPartial: {}, busy: false,
+                    briefDays: BRIEF_DAYS }; },
+  computed: {
+    allIssues() {
+      if (!this.d) return [];
+      return this.d.modules.flatMap((m) => this.mods[m.module] || []);
+    },
+    // 상단 '오늘의 브리핑' — 지난 BRIEF_DAYS 일 완료·신규(자손 소식) + 지금 지연·정체인 현안 수.
+    brief() {
+      let done = 0, created = 0, late = 0, stale = 0;
+      this.allIssues.forEach((it) => {
+        (it.news || []).forEach((e) => {
+          const ds = this.daysSince(e.date);
+          if (ds != null && ds <= BRIEF_DAYS) { if (e.kind === "created") created++; else done++; }
+        });
+        if (this.isLate(it)) late++;
+        else if (this.isStale(it)) stale++;
+      });
+      return { done, created, late, stale };
+    },
+  },
   // 모듈별 병렬 로딩: 골격(shell)을 먼저 그리고 각 모듈을 동시에 요청해 **도착하는 대로** 채운다.
   // (전부 모일 때까지 기다리지 않음 — 느린 모듈이 나머지를 막지 않는다)
   async mounted() { await this.load(); },
@@ -98,6 +122,38 @@ export default {
     tk(key) { return tkt(key, this.d && this.d.jiraBase); },
     jiraUrl(key) { return (this.d && this.d.jiraBase) ? this.d.jiraBase + "/browse/" + key : "#"; },
     prog(it) { return it.progress || { done: 0, total: 0, pct: 0 }; },
+    // ── 데일리 강화: '움직임'·위험 신호 ─────────────────────────────
+    daysSince(iso) {   // 오늘 기준 경과 일수(달력일). 값 없으면 null.
+      if (!iso) return null;
+      const d = new Date(iso.substring(0, 10) + "T00:00:00");
+      if (isNaN(d)) return null;
+      const t = new Date(); t.setHours(0, 0, 0, 0);
+      return Math.round((t - d) / 86400000);
+    },
+    isDone(it) { return it.statusCategory === "done"; },
+    lastActivity(it) {   // 루트 updated 와 최근 소식(news) 중 가장 최근 = '마지막 움직임'
+      let best = it.updated || it.started || it.created || "";
+      (it.news || []).forEach((e) => { if (e.date && e.date > best) best = e.date; });
+      return best;
+    },
+    stallDays(it) { return this.daysSince(this.lastActivity(it)); },
+    isLate(it) { return !!it.due && !this.isDone(it) && this.dueOverdue(it.due); },
+    isStale(it) { const n = this.stallDays(it); return !this.isDone(it) && n != null && n >= STALE_DAYS; },
+    recentCount(it, kind) {   // 지난 BRIEF_DAYS 일 소식 수. kind: 'created' | 'done'(=완료/해결)
+      return (it.news || []).filter((e) => {
+        const ds = this.daysSince(e.date);
+        if (ds == null || ds > BRIEF_DAYS) return false;
+        return kind === "created" ? e.kind === "created" : e.kind !== "created";
+      }).length;
+    },
+    // 데일리 정렬 — 지연 → 정체 → 진행 → 완료. 동순위는 서버 정렬(updated 내림차순) 유지(안정정렬).
+    rank(it) { if (this.isLate(it)) return 0; if (this.isStale(it)) return 1; return this.isDone(it) ? 3 : 2; },
+    sortedIssues(module) { return (this.mods[module] || []).slice().sort((a, b) => this.rank(a) - this.rank(b)); },
+    modRisk(module) {
+      let late = 0, stale = 0;
+      (this.mods[module] || []).forEach((it) => { if (this.isLate(it)) late++; else if (this.isStale(it)) stale++; });
+      return { late, stale };
+    },
     newsHtml(ev) {
       return `<span class='d'>${ymdhm(ev.date)}</span><span class='act ${ev.kind}'>${KLAB[ev.kind] || ev.kind}</span>`
         + `${tkt(ev.key, this.d.jiraBase)} <span class='sm'>${esc(ev.title || "")}</span>`;
@@ -157,8 +213,23 @@ export default {
       </div>
       <div class="note" v-if="d.summary.skippedDup">상위가 이미 PMO_VIT 인 자손 현안 {{ d.summary.skippedDup }}건은 중복으로 숨김</div>
 
+      <!-- 오늘의 브리핑 — 데일리미팅 한 줄 요약. 지난 N일 움직임(완료·신규) + 지금 위험(지연·정체). -->
+      <div class="brief">
+        <span class="bt">📋 오늘의 브리핑</span>
+        <span class="bwin">지난 {{ briefDays }}일</span>
+        <span class="bi done"><b>{{ brief.done }}</b> 완료</span>
+        <span class="bi new"><b>{{ brief.created }}</b> 신규</span>
+        <span class="bsep"></span>
+        <span class="bwin">현재</span>
+        <span class="bi late"><b>{{ brief.late }}</b> 지연</span>
+        <span class="bi stale"><b>{{ brief.stale }}</b> 정체</span>
+      </div>
+
       <div v-for="(m, i) in d.modules" :key="m.module" class="vgroup">
-        <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.count }} 현안</span></div>
+        <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.count }} 현안</span>
+          <span v-if="mods[m.module] && modRisk(m.module).late" class="rk late sm">지연 {{ modRisk(m.module).late }}</span>
+          <span v-if="mods[m.module] && modRisk(m.module).stale" class="rk stale sm">정체 {{ modRisk(m.module).stale }}</span>
+        </div>
         <div v-if="modErr[m.module]" class="err">· 불러오지 못했습니다: {{ modErr[m.module] }}</div>
         <div v-else-if="!mods[m.module]" class="loading">· 현안과 하위 티켓을 불러오는 중…</div>
         <div v-else-if="!mods[m.module].length" class="empty">· 현안 없음</div>
@@ -168,13 +239,17 @@ export default {
         </div>
         <div v-else class="tbl">
           <div class="vhead"><div>티켓</div><div class="ch-head"><span>Sub Task</span><span>상태</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
-          <template v-for="it in mods[m.module]" :key="it.key">
+          <template v-for="it in sortedIssues(m.module)" :key="it.key">
             <div class="vrow">
               <div class="c-info">
                 <div class="l1">
                   <StatusPill :cat="it.statusCategory" :label="it.status" />
                   <TypeBadge :type="it.type" />
                   <span class="who">{{ it.assignee || "미지정" }}</span>
+                  <span v-if="isLate(it)" class="rk late">지연 {{ dd(it.due) }}</span>
+                  <span v-else-if="isStale(it)" class="rk stale">정체 {{ stallDays(it) }}일</span>
+                  <span v-if="recentCount(it,'done')" class="rk move">↑완료 {{ recentCount(it,'done') }}</span>
+                  <span v-if="recentCount(it,'created')" class="rk new">+신규 {{ recentCount(it,'created') }}</span>
                 </div>
                 <div class="l2 tkt" :data-key="it.key" role="button" tabindex="0"
                      :title="it.key + ' · ' + it.summary">
@@ -183,6 +258,7 @@ export default {
                 <div class="l3">
                   <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
                   <span class="dt"><span class="dl">Due</span><span v-if="it.due" :class="{ overdue: dueOverdue(it.due) }">{{ fy(it.due) }} ({{ dd(it.due) }})</span><span v-else>—</span></span>
+                  <span class="dt"><span class="dl">활동</span><span :class="{ overdue: isStale(it) }">{{ stallDays(it) != null ? stallDays(it) + '일 전' : '—' }}</span></span>
                 </div>
               </div>
               <!-- 세로 진척 바(티켓 수 기준) + 하위 티켓 목록. 목록이 Open→진행중→해결 순이라

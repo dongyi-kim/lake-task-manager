@@ -12,6 +12,30 @@
 .vit-view .mini .act, .vit-view .tcard { border-radius: 2px; }
 .vit-view .chip .sw { border-radius: 2px; }
 
+/* ── 데일리미팅 강화 ─────────────────────────────────────────────
+   '오늘의 브리핑' 한 줄 요약 바 + 현안 행의 위험/움직임 신호 뱃지. 각진 테마(2px) 유지. */
+.vit-view .brief { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 13px; margin: 10px 0 6px;
+  padding: 8px 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; }
+.vit-view .brief .bt { font-weight: 700; font-size: 13px; }
+.vit-view .brief .bwin { color: var(--muted); font-size: 11px; }
+.vit-view .brief .bsep { width: 1px; height: 15px; background: var(--border); margin: 0 2px; }
+.vit-view .brief .bi { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: baseline; gap: 4px; }
+.vit-view .brief .bi b { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text); }
+.vit-view .brief .bi.done b { color: var(--done); }
+.vit-view .brief .bi.new b { color: var(--accent); }
+.vit-view .brief .bi.late b { color: var(--danger); }
+.vit-view .brief .bi.stale b { color: var(--mock); }
+
+/* 위험/움직임 뱃지 — 지연(빨강)·정체(주황)·완료(초록)·신규(파랑). l1 담당자 옆·모듈 헤더에 붙는다. */
+.vit-view .rk { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 2px; flex: 0 0 auto;
+  letter-spacing: .2px; white-space: nowrap; border: 1px solid; }
+.vit-view .rk.late  { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.vit-view .rk.stale { color: var(--mock);   border-color: color-mix(in srgb, var(--mock) 48%, transparent);   background: color-mix(in srgb, var(--mock) 13%, transparent); }
+.vit-view .rk.move  { color: var(--done);   border-color: color-mix(in srgb, var(--done) 45%, transparent);   background: color-mix(in srgb, var(--done) 12%, transparent); }
+.vit-view .rk.new   { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.vit-view .rk.sm { font-size: 9px; padding: 0 5px; font-weight: 600; }
+.vg-head .rk { align-self: center; }
+
 .tbl { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .vhead, .vrow { display: grid;
   grid-template-columns: minmax(240px,1.8fr) minmax(430px,4fr) 64px; gap: 14px; }
