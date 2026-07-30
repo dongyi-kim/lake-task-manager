@@ -492,6 +492,20 @@ def proxy_attachment_images(html):
     return _IMG_SRC_RE.sub(lambda m: m.group(1) + _one(m.group(2)) + m.group(3), html)
 
 
+# 읽기 렌더가 첨부를 same-origin 인증 프록시로 재작성한 URL(/api/img?u=.. · /api/file?u=..)을
+# **원래 대상으로 되돌린다**. 티켓을 재편집할 때 에디터의 초기 내용은 이 프록시된 읽기 HTML 이라,
+# 그대로 저장하면 프록시 URL(/api/img?u=..)이 Jira 에 박힌다 → 다음 렌더에서 Jira 가 그 URL 을
+# 첨부로 못 풀어 이미지가 엑박이 되고 다운로드가 깨진다. **저장 전에** 원래 첨부 URL 로 복원한다.
+_PROXY_MEDIA_RE = re.compile(r'/api/(?:img|file)\?u=([^"\'\s&>]+)')
+
+
+def unproxy_media(html):
+    """/api/img?u=<enc> · /api/file?u=<enc> → 디코드한 원래 첨부 URL(/secure/… 또는 절대 URL)."""
+    if not html or ("/api/img?u=" not in html and "/api/file?u=" not in html):
+        return html
+    return _PROXY_MEDIA_RE.sub(lambda m: urllib.parse.unquote(m.group(1)), html)
+
+
 # 앵커 **여는 태그 전체**를 잡는다. href 까지만 잡으면 뒤쪽에 있는 class 를 못 봐서
 # class 가 두 번 들어간 태그가 만들어진다(브라우저는 앞의 것만 쓴다 — 실제로 그랬다).
 _A_OPEN_RE = re.compile(r"<a\b[^>]*>", re.I)

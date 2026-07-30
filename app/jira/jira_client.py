@@ -19,7 +19,7 @@ from app.domain import progress
 from app.auth.base import SessionExpired, background_upstream, write_upstream
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, proxy_attachment_images, proxy_attachment_links,
-                       proxy_images, sanitize_html,
+                       proxy_images, sanitize_html, unproxy_media,
                        shorten_mention_names, text_to_html, tidy_html)
 from app.domain.names import real_name
 from app.content.sections import split_sections
@@ -1439,6 +1439,7 @@ class JiraClient:
         """
         if not html:
             return None
+        html = unproxy_media(html)          # 재편집 시 박힌 프록시 URL(/api/img?u=..)을 원래 첨부로 복원
         from app.content.wikihtml import html_to_wiki
         fmt = (getattr(self.s, "description_format", "") or "").lower()
         if fmt not in ("html", "wiki"):
@@ -1461,6 +1462,7 @@ class JiraClient:
         글자로 샌다(리포트된 버그). mock/local(jira820)=wiki 라 html_to_wiki 로 변환한다."""
         if not html:
             return ""
+        html = unproxy_media(html)          # 재편집 시 박힌 프록시 URL(/api/img?u=..)을 원래 첨부로 복원
         from app.content.wikihtml import html_to_wiki
         if self._comment_fmt() == "html":
             return sanitize_html(flatten_mentions_html(flatten_task_lists(html)))

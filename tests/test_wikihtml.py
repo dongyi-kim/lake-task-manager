@@ -232,6 +232,27 @@ def test_uploaded_image_attachment_path_both_modes():
     assert html_to_wiki('<p><img src="https://x.com/a.png"></p>') == "!https://x.com/a.png!"
 
 
+def test_edit_reproxied_media_unproxies_to_attachment():
+    """재편집 버그: 편집기 초기 내용은 프록시된 읽기폼(/api/img?u=.. · /api/file?u=..)이라, 저장 전에
+    원래 첨부 URL 로 복원하지 않으면 프록시 URL 이 Jira 에 박혀 다음 렌더에서 이미지가 엑박이 된다.
+    ★ 재편집 저장값 == 최초 업로드 저장값 이어야 한다(멱등)."""
+    import urllib.parse
+    from app.content.htmlsafe import unproxy_media, sanitize_html
+    enc = urllib.parse.quote("/secure/attachment/9/paste.png", safe="")
+    edited = '<p><img src="/api/img?u=%s"></p>' % enc
+    fresh = '<p><img src="/secure/attachment/9/paste.png"></p>'
+    assert html_to_wiki(unproxy_media(edited)) == html_to_wiki(fresh) == "!paste.png!"     # wiki 멱등
+    assert 'src="/secure/attachment/9/paste.png"' in sanitize_html(unproxy_media(edited))  # html 복원
+    # prod 절대 URL 프록시도 복원
+    ab = urllib.parse.quote("https://jira.corp/secure/attachment/9/paste.png", safe="")
+    assert "https://jira.corp/secure/attachment/9/paste.png" in sanitize_html(unproxy_media('<img src="/api/img?u=%s">' % ab))
+    # 파일 링크 프록시(/api/file)도 복원
+    fenc = urllib.parse.quote("/secure/attachment/9/report.pdf", safe="")
+    fh = '<p><a class="file-badge" href="/api/file?u=%s" data-file="report.pdf">report.pdf</a></p>' % fenc
+    assert html_to_wiki(unproxy_media(fh)) == "[^report.pdf]"
+    assert unproxy_media("<p>x</p>") == "<p>x</p>"      # 프록시 없으면 무변화
+
+
 def test_font_color_wiki_roundtrip():
     """글자색 — wiki 모드: {color:#..}…{color} 로 저장되고 되읽힌다. 배경색은 wiki 대응이 없어 글자만."""
     w = html_to_wiki('<p><span style="color:#dc2626">빨강</span> <span style="background-color:#fef08a">형광</span></p>')
