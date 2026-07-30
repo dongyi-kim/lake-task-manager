@@ -873,38 +873,72 @@ def _parse_hotkey(spec):
     return mods, vk, "+".join(labels)
 
 
+# 핫키 스레드 상태 — set_hotkey_live 가 여기에 새 조합을 넣고 스레드를 깨워 재등록시킨다.
+_HK = {"tid": 0, "want": None}
+_HK_WM_APP = 0x8000     # 스레드에 '재등록' 을 알리는 사용자 메시지
+
+
+def _hotkey_spec():
+    """등록할 조합 — LAKE_HOTKEY(테스트용 override) > 저장된 설정 > 기본값."""
+    spec = os.getenv("LAKE_HOTKEY")
+    if spec:
+        return spec
+    try:
+        return get_settings().quick_open_hotkey or "ctrl+alt+space"
+    except Exception:
+        return "ctrl+alt+space"
+
+
+def set_hotkey_live(spec):
+    """[설정/트레이] 단축키가 바뀌면 — 핫키 스레드에 재등록을 요청한다(즉시 반영, 재시작 불필요)."""
+    if not sys.platform.startswith("win"):
+        return
+    _HK["want"] = spec
+    tid = _HK["tid"]
+    if tid:
+        try:
+            ctypes.windll.user32.PostThreadMessageW(tid, _HK_WM_APP, 0, 0)
+        except Exception:
+            pass
+
+
 def _register_global_hotkey(on_fire):
-    """[Windows] 전역 단축키(기본 Ctrl+Alt+Space, LAKE_HOTKEY 로 변경) — 누르면 on_fire(). 전용 스레드 루프."""
+    """[Windows] 전역 단축키(설정값, 기본 Ctrl+Alt+Space) — 누르면 on_fire(). 전용 스레드 루프.
+    설정에서 조합을 바꾸면 set_hotkey_live 가 이 스레드를 깨워 **재등록**한다(재시작 불필요)."""
     if not sys.platform.startswith("win"):
         return
     if os.getenv("LAKE_NO_HOTKEY") in ("1", "true", "True"):
         return
 
     def run():
-        import ctypes
+        import ctypes as _c
         from ctypes import wintypes
-        u = ctypes.windll.user32
-        _cfg_win(u, ctypes, wintypes)
+        u = _c.windll.user32
+        _cfg_win(u, _c, wintypes)
         MOD_NOREPEAT, WM_HOTKEY, HID = 0x4000, 0x0312, 1
-        # 조합은 LAKE_HOTKEY 로 바꿀 수 있다(예: ctrl+alt+j) — 다른 앱/IDE 와 겹칠 때. 기본 Ctrl+Alt+Space.
-        spec = os.getenv("LAKE_HOTKEY") or "ctrl+alt+space"
-        parsed = _parse_hotkey(spec)
-        if not parsed:
-            print(f"[hotkey] 잘못된 LAKE_HOTKEY={spec!r} — 기본 Ctrl+Alt+Space 사용", file=sys.stderr)
-            parsed = _parse_hotkey("ctrl+alt+space")
-        mods, vk, label = parsed
-        if not u.RegisterHotKey(None, HID, mods | MOD_NOREPEAT, vk):
-            print(f"[hotkey] {label} 등록 실패(다른 앱이 선점했을 수 있음 — LAKE_HOTKEY 로 조합 변경 가능)", file=sys.stderr)
-            return
-        print(f"[hotkey] {label} — 앱 창을 현재 모니터로 호출")
+        _HK["tid"] = _c.windll.kernel32.GetCurrentThreadId()
+
+        def _reg(spec):
+            parsed = _parse_hotkey(spec) or _parse_hotkey("ctrl+alt+space")
+            mods, vk, label = parsed
+            u.UnregisterHotKey(None, HID)                # 이전 것 해제(첫 등록 땐 no-op)
+            if u.RegisterHotKey(None, HID, mods | MOD_NOREPEAT, vk):
+                print(f"[hotkey] {label} — 앱 창을 현재 데스크톱으로 호출")
+                return True
+            print(f"[hotkey] {label} 등록 실패(다른 앱이 선점했을 수 있음 — 설정에서 조합 변경 가능)", file=sys.stderr)
+            return False
+        _reg(_hotkey_spec())
         msg = wintypes.MSG()
         try:
-            while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            while u.GetMessageW(_c.byref(msg), None, 0, 0) > 0:
                 if msg.message == WM_HOTKEY:
                     try:
                         on_fire()
                     except Exception as e:
                         print(f"[hotkey] 처리 오류: {e}", file=sys.stderr)
+                elif msg.message == _HK_WM_APP and _HK["want"]:
+                    _reg(_HK["want"])                    # 설정에서 바뀐 조합으로 재등록
+                    _HK["want"] = None
         finally:
             u.UnregisterHotKey(None, HID)
     threading.Thread(target=run, name="global-hotkey", daemon=True).start()
@@ -1376,12 +1410,38 @@ def _run_tray(s):
             pass
         icon.stop()
 
+    # 빠른 열기 단축키 — 설정 페이지와 같은 pref. 고르면 저장 + 즉시 재등록(재시작 불필요).
+    HK_OPTS = [("Alt + Space", "alt+space"), ("Ctrl + Alt + Space", "ctrl+alt+space"), ("Ctrl + Alt + J", "ctrl+alt+j")]
+
+    def _cur_hotkey():
+        try:
+            return get_settings().quick_open_hotkey
+        except Exception:
+            return "ctrl+alt+space"
+
+    def hotkey_items():
+        # pystray 는 콜백 인자 개수를 검사 → 기본인자 트릭 대신 클로저 팩토리로 조합을 가둔다.
+        def item_for(label, spec):
+            def on_click(icon, item):
+                try:
+                    get_settings().set_quick_open_hotkey(spec)
+                except Exception:
+                    pass
+                set_hotkey_live(spec)
+                icon.update_menu()
+
+            def checked(item):
+                return _cur_hotkey() == spec
+            return pystray.MenuItem(label, on_click, checked=checked, radio=True)
+        return [item_for(l, sp) for l, sp in HK_OPTS]
+
     menu = pystray.Menu(
         pystray.MenuItem("앱 열기", on_open, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("SSO 인증", pystray.Menu(lambda: sso_items())),
         pystray.MenuItem("SSO 상태 새로고침", lambda icon, item: (probe_sso(), icon.update_menu())),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("빠른 열기 단축키", pystray.Menu(lambda: hotkey_items())),
         pystray.MenuItem("업데이트 후 재시작", on_restart),
         pystray.MenuItem("컴퓨터 시작 시 자동 실행", on_autostart,
                          checked=lambda item: _autostart_enabled()),
@@ -1391,6 +1451,7 @@ def _run_tray(s):
     icon = pystray.Icon("lake-task-manager", img, "Lake Task Manager", menu)
     _appmain.set_restart_hook(lambda: on_restart(icon, None))   # UI '업데이트' 버튼 → 트레이 재시작과 동일 경로
     _appmain.set_quit_hook(lambda: on_quit(icon, None))         # 새 run.bat 이 '옛 버전이니 빠져라' 로 호출 → 조용히 종료
+    _appmain.set_hotkey_hook(set_hotkey_live)                   # 설정 페이지에서 단축키 바꾸면 즉시 재등록
     threading.Thread(target=sso_poller, args=(icon,), name="sso-poller", daemon=True).start()
     print(f"Lake Task Manager - 트레이 상주 (env={s.jira_env}). 창을 닫아도 백엔드는 유지됩니다.")
     open_window(initial=True)                          # 시작 시 창 1개 오픈

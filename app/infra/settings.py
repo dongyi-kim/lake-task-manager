@@ -137,6 +137,8 @@ class Settings:
         # 검색을 보내면 그게 인증 오류 소음이 된다.
         from app.infra import prefs as _prefs
         self.bitbucket_enabled = bool(_prefs.load().get("bitbucketEnabled"))
+        # 빠른 열기 전역 단축키(데스크톱 앱, 저장됨). run.py 가 이 값으로 등록·재등록.
+        self.quick_open_hotkey = str(_prefs.load().get("quickOpenHotkey") or "ctrl+alt+space")
         # 개발자용 진단 기능 — 지금은 **전부 열림**(config 무관). devtools.DEV_TOOLS 가 곧 목록.
         # 노출 제어는 나중에 유저 역할이 생기면 devtools.enabled() 에서 가른다.
         from app.infra import devtools as _devtools
@@ -182,6 +184,13 @@ class Settings:
         _prefs.save({"bitbucketEnabled": self.bitbucket_enabled})
         self._recompute_targets()
         return self.bitbucket_enabled
+
+    def set_quick_open_hotkey(self, spec):
+        """빠른 열기 단축키 조합 저장. run.py 는 훅(set_hotkey_hook)으로 즉시 재등록한다."""
+        from app.infra import prefs as _prefs
+        self.quick_open_hotkey = str(spec or "ctrl+alt+space").strip().lower()
+        _prefs.save({"quickOpenHotkey": self.quick_open_hotkey})
+        return self.quick_open_hotkey
 
 
 @lru_cache

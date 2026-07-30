@@ -6,6 +6,12 @@ import { api } from "../../lib/api.js";
 import { TYPEAHEAD_PRESETS, typeaheadDelay, setTypeaheadDelay } from "../../lib/typeahead.js";
 
 const SERVICES = ["Jira", "Confluence", "Bitbucket"];
+// 빠른 열기 전역 단축키 선택지 — run.py 가 이 spec 을 등록한다(데스크톱 앱). 기본 ctrl+alt+space.
+const HOTKEYS = [
+  { spec: "alt+space", label: "Alt + Space" },
+  { spec: "ctrl+alt+space", label: "Ctrl + Alt + Space" },
+  { spec: "ctrl+alt+j", label: "Ctrl + Alt + J" },
+];
 
 export default {
   name: "SettingsMenu",
@@ -20,16 +26,19 @@ export default {
       services: SERVICES.map((name) => ({ name, status: "loading", detail: "", configured: null })),
       taMs: typeaheadDelay(),          // 자동완성 대기(ms) — 검색·문서/티켓 링크·@멘션 공통
       bbEnabled: false, bbConfigured: false, bbBusy: false,   // Bitbucket 연동(저장됨, 기본 꺼짐)
+      hotkey: "ctrl+alt+space", hkBusy: false,   // 빠른 열기 단축키(저장됨)
     };
   },
   computed: {
     taPresets() { return TYPEAHEAD_PRESETS; },
+    hotkeys() { return HOTKEYS; },
     needsAuth() { return this.services.some((s) => s.status === "no" || s.status === "err"); },
   },
   mounted() {
     api.me().then((me) => { this.me = me || null; this.manager = !!(me && me.manager); })
       .catch((e) => { this.me = { error: (e && e.message) || "확인 실패" }; });
-    api.prefs().then((p) => { this.bbEnabled = !!p.bitbucketEnabled; this.bbConfigured = !!p.bitbucketConfigured; })
+    api.prefs().then((p) => { this.bbEnabled = !!p.bitbucketEnabled; this.bbConfigured = !!p.bitbucketConfigured;
+      if (p.quickOpenHotkey) this.hotkey = p.quickOpenHotkey; })
       .catch(() => {});
     this._onDoc = (e) => { if (this.open && this.$el && !this.$el.contains(e.target)) this.close(); };
     document.addEventListener("click", this._onDoc, true);
@@ -53,6 +62,14 @@ export default {
       finally { this.bbBusy = false; this.probeAll(); }
     },
     setTa(ms) { this.taMs = ms; setTypeaheadDelay(ms); },
+    async setHotkey(spec) {
+      if (this.hkBusy || this.hotkey === spec) return;
+      const prev = this.hotkey;
+      this.hkBusy = true; this.hotkey = spec;      // 낙관적 반영
+      try { const p = await api.setPrefs({ quickOpenHotkey: spec }); this.hotkey = p.quickOpenHotkey || spec; }
+      catch (e) { this.hotkey = prev; }            // 실패하면 되돌린다
+      finally { this.hkBusy = false; }
+    },
     openMenu() {
       this.open = true;
       api.health().then((h) => { this.rev = (h && h.rev) || ""; }).catch(() => {});
@@ -151,6 +168,19 @@ export default {
                     @click="setTa(o.ms)" :title="o.hint">{{ o.label }}</button>
           </div>
           <div class="sm-ta-h">타이핑을 이만큼 멈추면 검색어를 갱신합니다. 느린 망에선 길게.</div>
+        </div>
+      </div>
+
+      <!-- 단축키 — 빠른 열기 전역 단축키(데스크톱 앱) -->
+      <div class="sm-sec">
+        <div class="sm-h">단축키</div>
+        <div class="sm-ta">
+          <div class="sm-ta-l">⚡ 빠른 열기</div>
+          <div class="sm-ta-seg">
+            <button v-for="o in hotkeys" :key="o.spec" :class="{ on: hotkey === o.spec }"
+                    :disabled="hkBusy" @click="setHotkey(o.spec)">{{ o.label }}</button>
+          </div>
+          <div class="sm-ta-h">이 조합을 누르면 앱 창이 지금 보고 있는 화면(가상 데스크톱)으로 옵니다. — 데스크톱 앱</div>
         </div>
       </div>
 

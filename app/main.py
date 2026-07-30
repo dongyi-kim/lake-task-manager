@@ -72,7 +72,7 @@ _window_login = False
 # 재실행 신호의 **단일 원천은 백엔드**다. run.py 가 open hook 을 등록하고 창 수를 보고하며,
 # 창 스레드는 focus 요청을 자기 스레드에서 폴링해 bring_to_front 한다(Playwright 는 스레드 고정이라
 # 다른 스레드에서 창을 못 만진다 — 그래서 이벤트만 넘기고 실제 조작은 창 루프가 한다).
-_app_ctrl = {"open_hook": None, "restart_hook": None, "quit_hook": None, "live": 0,
+_app_ctrl = {"open_hook": None, "restart_hook": None, "quit_hook": None, "hotkey_hook": None, "live": 0,
              "focus": threading.Event(), "lock": threading.Lock()}
 
 
@@ -102,6 +102,11 @@ def set_quit_hook(fn):
     """run.py(_run_tray)가 '조용히 종료(재시작 없이)' 동작을 등록 — 트레이 [종료]와 동일 경로.
     새 인스턴스(run.bat)가 '옛 버전이 떠 있으니 너는 빠져라' 로 부를 때 쓴다."""
     _app_ctrl["quit_hook"] = fn
+
+
+def set_hotkey_hook(fn):
+    """run.py(_run_tray)가 '빠른 열기 단축키 재등록' 동작을 등록 — 설정에서 조합을 바꾸면 즉시 반영."""
+    _app_ctrl["hotkey_hook"] = fn
 
 
 def request_quit():
@@ -523,21 +528,34 @@ def api_status():
 
 class _PrefsBody(BaseModel):
     bitbucketEnabled: bool | None = None
+    quickOpenHotkey: str | None = None
+
+
+def _prefs_payload():
+    return {"bitbucketEnabled": bool(_settings.bitbucket_enabled),
+            "bitbucketConfigured": bool(_settings.bitbucket_base),
+            "quickOpenHotkey": _settings.quick_open_hotkey}
 
 
 @app.get("/api/prefs")
 def api_prefs_get():
-    """사람이 화면에서 켜고 끄는 설정. 지금은 Bitbucket 연동 여부."""
-    return JSONResponse({"bitbucketEnabled": bool(_settings.bitbucket_enabled),
-                         "bitbucketConfigured": bool(_settings.bitbucket_base)})
+    """사람이 화면에서 켜고 끄는 설정 — Bitbucket 연동 여부, 빠른 열기 단축키."""
+    return JSONResponse(_prefs_payload())
 
 
 @app.put("/api/prefs")
 def api_prefs_put(body: _PrefsBody):
     if body.bitbucketEnabled is not None:
         _settings.set_bitbucket_enabled(body.bitbucketEnabled)
-    return JSONResponse({"bitbucketEnabled": bool(_settings.bitbucket_enabled),
-                         "bitbucketConfigured": bool(_settings.bitbucket_base)})
+    if body.quickOpenHotkey is not None:
+        _settings.set_quick_open_hotkey(body.quickOpenHotkey)
+        hook = _app_ctrl.get("hotkey_hook")          # run.py 가 있으면 즉시 재등록(데스크톱 앱)
+        if hook:
+            try:
+                hook(_settings.quick_open_hotkey)
+            except Exception:
+                pass
+    return JSONResponse(_prefs_payload())
 
 
 @app.post("/api/login")
