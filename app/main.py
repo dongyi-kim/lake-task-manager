@@ -72,7 +72,7 @@ _window_login = False
 # 재실행 신호의 **단일 원천은 백엔드**다. run.py 가 open hook 을 등록하고 창 수를 보고하며,
 # 창 스레드는 focus 요청을 자기 스레드에서 폴링해 bring_to_front 한다(Playwright 는 스레드 고정이라
 # 다른 스레드에서 창을 못 만진다 — 그래서 이벤트만 넘기고 실제 조작은 창 루프가 한다).
-_app_ctrl = {"open_hook": None, "restart_hook": None, "live": 0,
+_app_ctrl = {"open_hook": None, "restart_hook": None, "quit_hook": None, "live": 0,
              "focus": threading.Event(), "lock": threading.Lock()}
 
 
@@ -94,6 +94,33 @@ def request_restart():
     try:
         hook()
         return {"action": "restart"}
+    except Exception:
+        return {"action": "error"}
+
+
+def set_quit_hook(fn):
+    """run.py(_run_tray)가 '조용히 종료(재시작 없이)' 동작을 등록 — 트레이 [종료]와 동일 경로.
+    새 인스턴스(run.bat)가 '옛 버전이 떠 있으니 너는 빠져라' 로 부를 때 쓴다."""
+    _app_ctrl["quit_hook"] = fn
+
+
+def request_quit():
+    """이 인스턴스를 **깨끗하게 종료**시킨다(재시작 없이). 새 인스턴스가 이어받는다.
+    반환 action: quit | none. 실제 종료는 hook 이 별도 스레드에서 처리(응답을 먼저 보낸 뒤 종료)."""
+    hook = _app_ctrl["quit_hook"]
+    if not hook:
+        return {"action": "none"}         # 트레이 모드가 아니면(창만) 스스로 못 끈다
+    try:
+        # 응답 먼저 돌려주고 잠깐 뒤 종료 — 호출자(새 run.py)가 200 을 받고 포트 해제를 기다린다.
+        def _later():
+            import time as _t
+            _t.sleep(0.4)
+            try:
+                hook()
+            except Exception:
+                pass
+        threading.Thread(target=_later, name="app-quit", daemon=True).start()
+        return {"action": "quit"}
     except Exception:
         return {"action": "error"}
 
@@ -161,6 +188,19 @@ def api_update():
 def api_app_update_restart():
     """UI '업데이트' → 트레이의 '업데이트 후 재시작'을 실행(git pull + 재기동). 트레이 모드에서만."""
     return request_restart()
+
+
+@app.get("/api/app/rev")
+def api_app_rev():
+    """실행 중인 이 인스턴스의 코드 커밋(짧은 해시). 새 run.bat 이 '떠 있는 게 최신인가' 판정에 쓴다."""
+    return {"rev": _BUILD_REV}
+
+
+@app.post("/api/app/quit")
+def api_app_quit():
+    """이 인스턴스를 **재시작 없이** 깨끗하게 종료 — 새 인스턴스(run.bat)가 이어받을 때.
+    응답(200)을 먼저 보내고 잠시 뒤 종료하므로, 호출자는 200 을 받고 포트 해제를 기다리면 된다."""
+    return request_quit()
 
 
 @app.exception_handler(SessionExpired)

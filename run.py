@@ -88,14 +88,54 @@ def _wait_port_free(port, timeout=12):
     return False
 
 
-def _signal_existing_instance(s):
-    """**단일 인스턴스** — 이미 떠 있는 인스턴스가 있으면 그쪽에 '창 포커스/열기' 를 시키고 True.
-    아무도 없으면(연결 실패) False → 이 프로세스가 정상 기동한다.
+def _disk_rev():
+    """디스크의 현재 앱 코드 커밋(짧은 해시) — run.bat 이 방금 최신으로 당겨 둔 값.
+    못 읽으면 "" (그럼 강제 재시작 판정을 안 한다 = 안전측)."""
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parent            # run.py = 앱 코드(submodule) 루트
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, timeout=3).decode().strip()
+    except Exception:
+        return ""
 
-    3분기(요구사항):
-      · 백엔드 꺼짐        → False (여기서 새로 기동)
-      · 백엔드+창 살아있음 → 기존 창을 앞으로(action=focus)
-      · 백엔드만 살아있음  → 그 인스턴스가 새 창을 연다(action=open)
+
+def _running_rev(base):
+    """떠 있는 인스턴스가 **기동 시점에 박아둔** 코드 커밋. 못 읽으면 ""."""
+    import json
+    import urllib.request
+    try:
+        body = urllib.request.urlopen(base + "/api/app/rev", timeout=2).read()
+        return ((json.loads(body) or {}).get("rev") or "").strip()
+    except Exception:
+        return ""
+
+
+def _quit_existing(base, port):
+    """떠 있는 (옛) 인스턴스를 **조용히 종료**시키고 포트가 풀릴 때까지 기다린다.
+    트레이 [종료]와 같은 경로(깨끗한 exit 0)라 그 인스턴스의 run.bat 콘솔도 프롬프트 없이 닫힌다
+    (Ctrl+C 종료가 아니라 정상 종료 → '일괄 작업을 끝내시겠습니까' 안 뜬다).
+    종료가 시작돼 포트가 풀리면 True, 스스로 못 끄면(트레이 모드 아님 등) False."""
+    import json
+    import urllib.request
+    try:
+        req = urllib.request.Request(base + "/api/app/quit", data=b"", method="POST")
+        body = urllib.request.urlopen(req, timeout=8).read()
+        action = (json.loads(body or b"{}") or {}).get("action")
+    except Exception:
+        action = None
+    if action != "quit":
+        return False                       # 옛 인스턴스가 스스로 못 끈다 → 강제하지 않음(폴백)
+    return _wait_port_free(port)            # 포트가 풀리면 True
+
+
+def _signal_existing_instance(s):
+    """**단일 인스턴스** — 이미 떠 있는 인스턴스가 있으면:
+      · 그게 **옛 버전**(디스크 rev ≠ 실행 rev)이면 → 조용히 종료시키고 **False**(내가 최신으로 이어받음)
+      · 최신이면 → 창 포커스/열기 시키고 **True**(내가 안 뜸)
+    아무도 없으면(연결 실패) False → 이 프로세스가 정상 기동한다.
     """
     import json
     import urllib.request
@@ -104,6 +144,14 @@ def _signal_existing_instance(s):
         urllib.request.urlopen(base + "/api/health", timeout=1.5).read()
     except Exception:
         return False                                  # 아무도 없다 → 내가 뜬다
+    # 떠 있는 게 옛 버전이면(run.bat 이 방금 최신으로 당겼는데 실행 중인 건 옛 코드) 자동 재시작.
+    disk, running = _disk_rev(), _running_rev(base)
+    if disk and running and disk != running:
+        print(f"실행 중인 앱이 옛 버전입니다(실행 {running} ≠ 최신 {disk}) — 종료 후 최신으로 다시 시작합니다.")
+        if _quit_existing(base, s.app_port):
+            return False                              # 옛 인스턴스 종료됨 → 내가 최신으로 기동(수동 확인 불필요)
+        print("(옛 인스턴스를 자동 종료할 수 없어 기존 창을 사용합니다.)")   # 폴백
+    # 최신(또는 rev 미확정/폴백) — 기존 동작: 창 포커스/열기
     action = None
     try:
         req = urllib.request.Request(base + "/api/app/open", data=b"", method="POST")
@@ -939,6 +987,7 @@ def _run_tray(s):
     )
     icon = pystray.Icon("lake-task-manager", img, "Lake Task Manager", menu)
     _appmain.set_restart_hook(lambda: on_restart(icon, None))   # UI '업데이트' 버튼 → 트레이 재시작과 동일 경로
+    _appmain.set_quit_hook(lambda: on_quit(icon, None))         # 새 run.bat 이 '옛 버전이니 빠져라' 로 호출 → 조용히 종료
     threading.Thread(target=sso_poller, args=(icon,), name="sso-poller", daemon=True).start()
     print(f"Lake Task Manager - 트레이 상주 (env={s.jira_env}). 창을 닫아도 백엔드는 유지됩니다.")
     open_window(initial=True)                          # 시작 시 창 1개 오픈
