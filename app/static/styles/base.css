@@ -1,6 +1,8 @@
 /* base.css — 공통 레이아웃/크롬 (body·nav·chip·legend·module card). 화면별 고유 스타일은 각 View 에.
  * updated: 2026-07-08 */
 * { box-sizing: border-box; }
+/* 루트도 테마색 — 네비게이션 전환 순간(CSS 로드 전) html 기본 흰색이 스쳐 보이는 것 방지 */
+html { background: var(--bg); }
 body { margin: 0; background: var(--bg); color: var(--text);
   font-family: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; font-size: 14px; line-height: 1.5; }

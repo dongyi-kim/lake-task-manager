@@ -11,11 +11,15 @@
 <link rel="apple-touch-icon" href="icon.png">
 <script>
   // 테마 초기화 (paint 전 실행 → 깜빡임 방지). 저장값 우선, 없으면 시스템값을 '고정'.
+  // ★ **루트(html) 배경도 즉시** 테마색으로 칠한다 — 외부 CSS 가 로드되기 전(네비게이션 전환 순간,
+  //   예: SSO 로 Jira 갔다 앱으로 되돌아오는 사이)엔 body 규칙이 아직 안 붙어 html 기본색(흰색)이
+  //   스쳐 보인다. 그 '애매한 흰 화면'을 없앤다.
   (function () {
     try {
       var t = localStorage.getItem("theme") ||
         (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       document.documentElement.setAttribute("data-theme", t);
+      document.documentElement.style.backgroundColor = (t === "dark" ? "#0e0f13" : "#f2f3f5");
     } catch (e) {}
   })();
 </script>
