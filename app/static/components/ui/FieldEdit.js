@@ -144,12 +144,24 @@ export default {
       window.removeEventListener("resize", this._place);
     },
     suggest(q) {
-      api.options("labels", q).then((r) => { this.opts = q ? (r || []) : this._prepRecentStr(r || []); })
-        .catch(() => { this.opts = []; });
+      if (!q) {                                  // 기본 목록 — 즉시(memo/워밍). 디바운스·순번가드 불필요.
+        if (this._taLbl) this._taLbl.cancel();   // 대기 중이던 타이핑 응답 취소(빈 목록을 덮지 않게)
+        api.options("labels", "").then((r) => { this.opts = this._prepRecentStr(r || []); }).catch(() => { this.opts = []; });
+        return;
+      }
+      // 타이핑 — **디바운스 + 응답 역전 방어**(typeahead). 늦게 온 옛 질의 결과는 버려 **마지막
+      // 글자 결과만** 반영된다(전엔 매 키마다 직접 호출이라 옛 응답이 새 목록을 덮을 수 있었다).
+      this._taLbl = this._taLbl || createTypeahead((x) => api.options("labels", x), { minLen: 1 });
+      this._taLbl.run(q).then((r) => { if (r != null) this.opts = r || []; }).catch(() => {});
     },
     searchEpics(q) {
-      api.options("epics", q).then((r) => { this.opts = q ? (r || []) : this._prepRecent(r || [], (e) => e.key); })
-        .catch(() => { this.opts = []; });
+      if (!q) {
+        if (this._taEp) this._taEp.cancel();
+        api.options("epics", "").then((r) => { this.opts = this._prepRecent(r || [], (e) => e.key); }).catch(() => { this.opts = []; });
+        return;
+      }
+      this._taEp = this._taEp || createTypeahead((x) => api.options("epics", x), { minLen: 1 });
+      this._taEp.run(q).then((r) => { if (r != null) this.opts = r || []; }).catch(() => {});
     },
     searchWho(q) {
       this._ta.run(q).then((r) => {

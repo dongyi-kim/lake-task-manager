@@ -37,7 +37,11 @@ function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
 // 멘션 팝업 아바타 — 네트워크 요청(=404 스팸) 없이 이니셜 원.
 // 색은 기본 아바타·댓글 구분 바와 같은 시그니처 컬러(colors.js) 를 쓴다.
 function mnAvatar(name, id) {
-  return `<span class="mn-av" style="background:${sigColor(id || name)}">${esc(initialOf(name, id))}</span>`;
+  // 이니셜(시그니처색)을 **바탕으로 깔고** 그 위에 프로필 사진을 async 로 얹는다 — 로드되면 사진이
+  // 덮고(부드럽게), 404/실패면 paint 가 img 를 지워 이니셜이 그대로 남는다. 바이트·브라우저 캐시라
+  // 한 번 받은 뒤엔 즉시. (전엔 사진 없이 이니셜만 떠 '사진이 안 뜬다' 였다.)
+  const img = id ? `<img class="mn-av-img" src="/api/avatar/${encodeURIComponent(id)}" alt="" loading="lazy">` : "";
+  return `<span class="mn-av" style="background:${sigColor(id || name)}">${esc(initialOf(name, id))}${img}</span>`;
 }
 const _URL_RE = /^https?:\/\/\S+$/i;
 
@@ -798,6 +802,11 @@ function mentionSuggestion(ticketKey) {
           + `<span class="mn-nm">${esc(u.display || u.name)}</span><span class="mn-id">${esc(u.id)}</span></div>`).join("");
         el.querySelectorAll(".mn-item").forEach((row) => {
           row.addEventListener("mousedown", (e) => { e.preventDefault(); pick(+row.dataset.i); });
+        });
+        // 프로필 사진: 로드되면 부드럽게 드러내고, 실패(404/세션)면 지워 이니셜을 유지(인라인 핸들러 없이 — CSP 안전).
+        el.querySelectorAll(".mn-av-img").forEach((img) => {
+          img.addEventListener("load", () => img.classList.add("on"));
+          img.addEventListener("error", () => img.remove());
         });
       };
       const pick = (i) => { const u = items[i]; if (u && command) command({ id: u.id, label: u.name }); };
