@@ -1415,8 +1415,9 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tb-style-i.h2 .tb-style-t { font-size: 14.5px; font-weight: 700; }
 .tb-style-i.h3 .tb-style-t { font-size: 13.5px; font-weight: 700; }
 .tb-style-i.code .tb-style-t { font-family: ui-monospace, Consolas, monospace; }
-/* 글자색 버튼 — 'A' 밑에 색 표식이 아니라 그냥 A 로 두되 팔레트로 고른다 */
-.tb-color-b .tb-ca { font-weight: 800; }
+/* 글자색 버튼 — 'A' 아래 빨간 밑줄(글자색 관용 표식). 배경색 버튼 — 'A' 에 노란 형광(배경 표식). */
+.tb-color-b .tb-ca { font-weight: 800; border-bottom: 2px solid var(--danger); line-height: 1.15; }
+.tb-bg-b .tb-ba { font-weight: 800; background: #fde047; color: #1f2937; border-radius: 2px; padding: 0 2px; }
 /* 색 팔레트 팝업 — 스와치 그리드 */
 .tb-sw-pop { flex-direction: row; flex-wrap: wrap; min-width: 0; width: 132px; gap: 4px; padding: 6px; }
 .tb-sw { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--border); cursor: pointer;

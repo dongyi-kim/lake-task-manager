@@ -1408,6 +1408,26 @@ export default {
         <button type="button" class="tb-b" :class="{on:active('italic')}" @click="tbItalic" title="기울임"><i>I</i></button>
         <button type="button" class="tb-b" :class="{on:active('strike')}" @click="tbStrike" title="취소선"><s>S</s></button>
         <button type="button" class="tb-b" :class="{on:active('code')}" @click="tbCode" title="인라인 코드">&lt;/&gt;</button>
+        <!-- 글자색 — 문자서식과 같은 묶음에 둔다(첫 줄에 보이게). -->
+        <span class="tb-style">
+          <button type="button" class="tb-b tb-color-b" :class="{on:colorOpen}"
+                  @click.stop="colorOpen=!colorOpen; bgOpen=false" title="글자색"><b class="tb-ca">A</b><i class="tb-caret">▾</i></button>
+          <span v-if="colorOpen" class="tb-style-pop tb-sw-pop" @click.stop>
+            <button v-for="c in COLORS" :key="'fc'+c.k" type="button" class="tb-sw" :class="{none:!c.k}"
+                    :style="c.k ? {background:c.k} : {}" :title="c.label" @click="setFontColor(c.k)"></button>
+          </span>
+          <span v-if="colorOpen" class="tb-style-back" @click.stop="colorOpen=false"></span>
+        </span>
+        <!-- 배경색(형광펜) -->
+        <span class="tb-style">
+          <button type="button" class="tb-b tb-bg-b" :class="{on:bgOpen}"
+                  @click.stop="bgOpen=!bgOpen; colorOpen=false" title="배경색(형광펜)"><b class="tb-ba">A</b><i class="tb-caret">▾</i></button>
+          <span v-if="bgOpen" class="tb-style-pop tb-sw-pop" @click.stop>
+            <button v-for="c in BGCOLORS" :key="'bg'+c.k" type="button" class="tb-sw" :class="{none:!c.k}"
+                    :style="c.k ? {background:c.k} : {}" :title="c.label" @click="setFontBg(c.k)"></button>
+          </span>
+          <span v-if="bgOpen" class="tb-style-back" @click.stop="bgOpen=false"></span>
+        </span>
         <span class="tb-sep"></span>
         <!-- 스타일 콤보 — 문단/제목/코드블록. 헤딩 버튼 셋을 여기로 합쳤다(툴바가 짧아진다). -->
         <span class="tb-style" @keydown.esc="styleOpen = false">
@@ -1437,27 +1457,6 @@ export default {
         <button type="button" class="tb-b" :class="{on:isAlign('left')}" @click="tbAlign('left')" title="왼쪽 정렬">⬅</button>
         <button type="button" class="tb-b" :class="{on:isAlign('center')}" @click="tbAlign('center')" title="가운데 정렬">⬌</button>
         <button type="button" class="tb-b" :class="{on:isAlign('right')}" @click="tbAlign('right')" title="오른쪽 정렬">➡</button>
-        <span class="tb-sep"></span>
-        <!-- 글자색 -->
-        <span class="tb-style">
-          <button type="button" class="tb-b tb-color-b" :class="{on:colorOpen}"
-                  @click.stop="colorOpen=!colorOpen; bgOpen=false" title="글자색"><b class="tb-ca">A</b><i class="tb-caret">▾</i></button>
-          <span v-if="colorOpen" class="tb-style-pop tb-sw-pop" @click.stop>
-            <button v-for="c in COLORS" :key="'fc'+c.k" type="button" class="tb-sw" :class="{none:!c.k}"
-                    :style="c.k ? {background:c.k} : {}" :title="c.label" @click="setFontColor(c.k)"></button>
-          </span>
-          <span v-if="colorOpen" class="tb-style-back" @click.stop="colorOpen=false"></span>
-        </span>
-        <!-- 배경색(형광펜) -->
-        <span class="tb-style">
-          <button type="button" class="tb-b" :class="{on:bgOpen}"
-                  @click.stop="bgOpen=!bgOpen; colorOpen=false" title="배경색(형광펜)">🖍<i class="tb-caret">▾</i></button>
-          <span v-if="bgOpen" class="tb-style-pop tb-sw-pop" @click.stop>
-            <button v-for="c in BGCOLORS" :key="'bg'+c.k" type="button" class="tb-sw" :class="{none:!c.k}"
-                    :style="c.k ? {background:c.k} : {}" :title="c.label" @click="setFontBg(c.k)"></button>
-          </span>
-          <span v-if="bgOpen" class="tb-style-back" @click.stop="bgOpen=false"></span>
-        </span>
         <span class="tb-sep"></span>
         <!-- 글꼴 — 기본 vs 코딩(고정폭). 선택 글자에 적용된다. -->
         <span class="tb-style">

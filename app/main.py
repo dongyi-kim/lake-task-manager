@@ -560,8 +560,9 @@ def api_favicon(u: str):
     data, ctype = _client.favicon(u)
     if data is None:
         return JSONResponse({"error": "no favicon", "u": u}, status_code=404)
+    # 파비콘은 거의 안 바뀐다 → **아주 길게**(1년, immutable). 링크 뱃지 아이콘이라 재요청이 잦다.
     return Response(content=data, media_type=(ctype or "image/x-icon"),
-                    headers={"Cache-Control": "private, max-age=604800"})   # 7일
+                    headers={"Cache-Control": "private, max-age=31536000, immutable"})   # 1년
 
 
 @app.get("/api/mention/users")
@@ -579,9 +580,10 @@ def api_img(u: str):
     if data is None:
         return JSONResponse({"error": "이미지 없음 또는 허용되지 않은 호스트", "u": u}, status_code=404)
     media = (ctype or "application/octet-stream").split(";")[0].strip()
-    # 첨부는 id 기준 불변 → 길게 캐시(확대 시 재요청 없이 브라우저 캐시 히트).
+    # 첨부 이미지는 **id 기준 불변**(내용이 바뀌지 않고, 지워지면 지워질 뿐) → 아주 길게 + immutable
+    # (확대·재열람·목록 썸네일에서 브라우저 캐시 히트, 재요청 없음). 30일.
     return Response(content=data, media_type=media,
-                    headers={"Cache-Control": "private, max-age=86400"})
+                    headers={"Cache-Control": "private, max-age=2592000, immutable"})
 
 
 @app.get("/api/file")
