@@ -115,7 +115,9 @@ export const api = {
   openExternal: (url) => jsonReq("/api/open", "POST", { url }),
   // 편집 가능 필드 — 상태에 따라 바뀌므로 캐시하지 않는다
   editmeta: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/editmeta"),
-  options: (kind, q) => req("/api/options/" + kind + (q ? "?q=" + encodeURIComponent(q) : "")),
+  // 기본 목록(빈 질의)은 **memo** — 같은 팝업을 다시 열 때 네트워크 없이 즉시 뜬다(라벨·컴포넌트
+  // 기본 추천). 질의를 치는 순간부터는 fresh(req). 쓰기(evict)·refresh 로 무효화된다.
+  options: (kind, q) => { const u = "/api/options/" + kind + (q ? "?q=" + encodeURIComponent(q) : ""); return q ? req(u) : get(u); },
   updateFields: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/fields",
                                        "PUT", body).then((r) => { evict(key); evictLists(); return r; }),
   childTypes: (key) => req("/api/options/childtypes?q=" + encodeURIComponent(key)),
@@ -136,8 +138,10 @@ export const api = {
   transitions: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/transitions"),
   doTransition: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/transition",
                                        "POST", body).then((r) => { evict(key); evictLists(); return r; }),                                // 본인 댓글 판정
-  mentionUsers: (q, key) => req("/api/mention/users?q=" + encodeURIComponent(q || "")   // @사람 자동완성
-    + (key ? "&key=" + encodeURIComponent(key) : "")),                                  // 빈 쿼리 시 티켓 관련 우선
+  // 빈 쿼리(팝업 첫 오픈)의 기본 추천 목록은 **memo** — 담당/보고 picker 를 다시 열 때 즉시.
+  // (티켓 유관자 기본 목록은 issue+comment 조회라 prod 에서 특히 느렸다.) 질의 입력 시엔 fresh.
+  mentionUsers: (q, key) => { const u = "/api/mention/users?q=" + encodeURIComponent(q || "")
+    + (key ? "&key=" + encodeURIComponent(key) : ""); return q ? req(u) : get(u); },
   linkTitle: (u) => req("/api/linktitle?u=" + encodeURIComponent(u || "")),             // 링크 뱃지 제목(og:title)
   commentCreate: (key, html) =>
     jsonReq("/api/ticket/" + encodeURIComponent(key) + "/comment", "POST", { html })

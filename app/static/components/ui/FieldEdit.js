@@ -103,8 +103,9 @@ export default {
       if (this.field === "priority") {
         this.opts = (this.meta.allowedValues || []).map((v) => v.name);
       } else if (this.field === "components") {
-        this.opts = ((this.meta && this.meta.allowedValues) || []).map((v) => v.name);   // local 은 meta 없음
-        if (!this.opts.length) api.options("components").then((r) => { this.opts = (r || []).map((x) => x.name); });
+        const base = ((this.meta && this.meta.allowedValues) || []).map((v) => v.name);   // local 은 meta 없음
+        this.opts = this._prepRecentStr(base);
+        if (!base.length) api.options("components").then((r) => { this.opts = this._prepRecentStr((r || []).map((x) => x.name)); });
       } else if (this.field === "labels") {
         this.suggest("");
       } else if (this.isEpic) {
@@ -143,13 +144,49 @@ export default {
       window.removeEventListener("resize", this._place);
     },
     suggest(q) {
-      api.options("labels", q).then((r) => { this.opts = r || []; }).catch(() => { this.opts = []; });
+      api.options("labels", q).then((r) => { this.opts = q ? (r || []) : this._prepRecentStr(r || []); })
+        .catch(() => { this.opts = []; });
     },
     searchEpics(q) {
-      api.options("epics", q).then((r) => { this.opts = r || []; }).catch(() => { this.opts = []; });
+      api.options("epics", q).then((r) => { this.opts = q ? (r || []) : this._prepRecent(r || [], (e) => e.key); })
+        .catch(() => { this.opts = []; });
     },
     searchWho(q) {
-      this._ta.run(q).then((r) => { if (r) this.who = r.slice(0, 8); }).catch(() => {});
+      this._ta.run(q).then((r) => {
+        if (!r) return;
+        // 빈 질의(기본 추천)면 **최근 이 다이얼로그에서 고른 사람**을 맨 위로.
+        this.who = q ? r.slice(0, 8) : this._prepRecent(r.slice(0, 8), (u) => u.id);
+      }).catch(() => {});
+    },
+    // ── 최근 사용값(이 필드에서 내가 고른 값) — 기본 목록 상단에 우선 노출 ──
+    _rkey() { return "fe.recent." + this.field; },
+    _recent() {
+      try { return JSON.parse(localStorage.getItem(this._rkey()) || "[]") || []; } catch (e) { return []; }
+    },
+    _pushRecent(item) {
+      if (!item || !item.id) return;
+      const cur = this._recent().filter((x) => x.id !== item.id);
+      cur.unshift(item);
+      try { localStorage.setItem(this._rkey(), JSON.stringify(cur.slice(0, 6))); } catch (e) { /* 사파리 등 */ }
+    },
+    _recItem(v, extra) {
+      if (this.isUser && extra) return { id: extra.id || v, name: extra.name, display: extra.display };
+      if (this.isEpic && extra) return { id: v, key: v, name: extra.name, summary: extra.summary };
+      return { id: String(v), label: String(v) };
+    },
+    /** 객체 목록 앞에 최근값(같은 shape)을 끼워 넣고 중복 제거. */
+    _prepRecent(list, idOf) {
+      const rec = this._recent();
+      if (!rec.length) return list;
+      const seen = new Set(rec.map((x) => x.id));
+      return rec.concat((list || []).filter((x) => !seen.has(idOf(x))));
+    },
+    /** 문자열 목록(라벨·컴포넌트) 앞에 최근값을 끼워 넣고 중복 제거. */
+    _prepRecentStr(list) {
+      const rec = this._recent().map((x) => x.id).filter(Boolean);
+      if (!rec.length) return list || [];
+      const seen = new Set(rec);
+      return rec.concat((list || []).filter((x) => !seen.has(x)));
     },
     toggle(v) {
       const i = this.draft.indexOf(v);
@@ -161,6 +198,7 @@ export default {
       this.draft.push(v); this.q = ""; this.suggest("");
     },
     async save(v, extra) {
+      if (v && !Array.isArray(v)) this._pushRecent(this._recItem(v, extra));   // 최근값 기록(빈값=해제 제외)
       if (this.local) {
         // 아직 티켓이 없다 — 서버에 보낼 것이 없으므로 고른 값만 넘긴다.
         this.$emit("pick", v, extra || null);
@@ -180,7 +218,10 @@ export default {
         this.err = (e && e.message) || "저장 실패";
       } finally { this.busy = false; }
     },
-    saveMulti() { this.save(this.draft.slice()); },
+    saveMulti() {
+      for (const val of this.draft) this._pushRecent({ id: String(val), label: String(val) });
+      this.save(this.draft.slice());
+    },
     clearUser() { this.save(""); },
     // ── 날짜 입력(자유 타이핑) ──
     // 네이티브 <input type=date> 는 세그먼트 편집이라 '20260417' 을 심리스하게 못 치고, 중간

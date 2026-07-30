@@ -391,22 +391,25 @@ def mention_suggestions(client, s, q, key, limit=8):
         except Exception:
             cached = build_default()
         return cached[:limit]
-    acc, order = {}, []                     # uid -> displayName('{본명} {회사}', or None), 순서 보존
+    # key 있는 기본 목록(담당/보고 picker 첫 오픈) — 티켓 유관자 조회(issue+comments)라 prod 에서
+    # 느리다. **티켓별로 캐시**한다(쓰기 시 _invalidate_ticket 이 mentionctx: 를 비워 담당·댓글 변화 반영).
+    # 넉넉히(40) 만들어 두고 요청 limit 만큼 잘라 쓴다.
+    def build_ctx():
+        acc, order = {}, []                 # uid -> displayName('{본명} {회사}', or None), 순서 보존
 
-    def add(uid, display=None):
-        if uid and uid not in acc:
-            acc[uid] = display
-            order.append(uid)
+        def add(uid, display=None):
+            if uid and uid not in acc:
+                acc[uid] = display
+                order.append(uid)
 
-    # 1) 이 티켓 유관자 — key 가 있을 때만(= 티켓 뷰에서 연 경우). 일반 사람검색엔 티켓 맥락이 없다.
-    if key:
+        # 1) 이 티켓 유관자(만든사람·담당자·본문/댓글 멘션·댓글 작성자)
         try:
             f = (client.get_issue(key) or {}).get("fields") or {}
             rep = f.get("reporter") or {}
             asg = f.get("assignee") or {}
-            add(rep.get("name"), rep.get("displayName") or rep.get("name"))          # 만든사람
-            add(asg.get("name"), asg.get("displayName") or asg.get("name"))          # 담당자
-            for uid in _MENTION_RE.findall(f.get("description") or ""):               # 본문 멘션
+            add(rep.get("name"), rep.get("displayName") or rep.get("name"))
+            add(asg.get("name"), asg.get("displayName") or asg.get("name"))
+            for uid in _MENTION_RE.findall(f.get("description") or ""):
                 add(uid)
         except Exception:
             pass
@@ -415,27 +418,31 @@ def mention_suggestions(client, s, q, key, limit=8):
                 f"/rest/api/2/issue/{key}/comment", params={"maxResults": 50, "orderBy": "-created"})
             for c in data.get("comments", []):
                 a = c.get("author") or {}
-                add(a.get("name"), a.get("displayName") or a.get("name"))             # 댓글 작성자
-                for uid in _MENTION_RE.findall(c.get("body") or ""):                  # 댓글 멘션
+                add(a.get("name"), a.get("displayName") or a.get("name"))
+                for uid in _MENTION_RE.findall(c.get("body") or ""):
                     add(uid)
         except Exception:
             pass
-    # 2) 내 모듈 사람(내가 people 에 있을 때만)  3) 매니저
-    try:
-        for uid in _my_module_people(client, s):
+        # 2) 내 모듈 사람(내가 people 에 있을 때만)  3) 매니저
+        try:
+            for uid in _my_module_people(client, s):
+                add(uid)
+        except Exception:
+            pass
+        for uid in (s.managers or []):
             add(uid)
+        out = []
+        for uid in order[:40]:
+            disp = acc[uid] or client._display_name(uid)
+            out.append({"id": uid, "name": real_name(disp) or uid, "display": disp,
+                        "avatar": "/api/avatar/" + uid})
+        return out
+
+    try:
+        cached = client.cache.get_or_set(f"mentionctx:{client.env}:{key}", client.OPTIONS_TTL, build_ctx)[0]
     except Exception:
-        pass
-    for uid in (s.managers or []):
-        add(uid)
-    if not order:
-        return []
-    out = []
-    for uid in order[:limit]:
-        disp = acc[uid] or client._display_name(uid)
-        out.append({"id": uid, "name": real_name(disp) or uid, "display": disp,
-                    "avatar": "/api/avatar/" + uid})
-    return out
+        cached = build_ctx()
+    return cached[:limit]
 
 
 def _search_bitbucket(s, q, limit):

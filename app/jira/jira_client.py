@@ -1249,6 +1249,7 @@ class JiraClient:
         self.cache.invalidate(f"issue:{self.env}:{key}")
         # 계보(조상/형제) 조립결과도 비운다 — _swr 로 따로 캐시되기 때문.
         self.cache.invalidate(f"ancestors:{self.env}:{key}")
+        self.cache.invalidate(f"mentionctx:{self.env}:{key}")   # 담당/보고/댓글 변화 → @멘션 기본목록도 낡음
         # 형제/부모 파생 — 형제 목록은 **그룹(부모/Epic)별 공유 캐시**(각 티켓별 아님)라 그룹 키
         # 하나만 비우면 형제 전원의 뷰가 갱신된다. 하위(subtask)가 바뀌면 부모의 진척·하위목록도 함께.
         self._invalidate_lineage(parent_key, epic_key)
@@ -1786,14 +1787,19 @@ class JiraClient:
 
     def label_suggestions(self, q=""):
         """라벨 자동완성. Jira DC 는 JQL 자동완성 엔드포인트로 준다.
-        없으면(구버전·권한) 빈 목록 — 그때는 사용자가 새로 적어 넣으면 된다."""
-        try:
-            data = self.provider.get_json(
-                "/rest/api/2/jql/autocompletedata/suggestions",
-                params={"fieldName": "labels", "fieldValue": q or ""}) or {}
-            return [x.get("value") or "" for x in (data.get("results") or []) if x.get("value")]
-        except Exception:
-            return []
+        없으면(구버전·권한) 빈 목록 — 그때는 사용자가 새로 적어 넣으면 된다.
+        라벨은 거의 안 바뀐다 → **질의별로 캐시**(빈 질의 기본목록이 특히 자주·느리다). refresh 로 비워짐."""
+        ql = (q or "").strip()
+
+        def do():
+            try:
+                data = self.provider.get_json(
+                    "/rest/api/2/jql/autocompletedata/suggestions",
+                    params={"fieldName": "labels", "fieldValue": ql}) or {}
+                return [x.get("value") or "" for x in (data.get("results") or []) if x.get("value")]
+            except Exception:
+                return []
+        return self.cache.get_or_set(f"labels:{self.env}:{ql.lower()}", self.OPTIONS_TTL, do)[0]
 
     # ── 상태 전이 ──────────────────────────────────────────────────────
     # Jira 는 "상태를 지정" 하는 게 아니라 **워크플로가 허용한 전이 id** 를 실행한다. 그래서
