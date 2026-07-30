@@ -26,6 +26,10 @@ function get(path) {
 }
 // 쓰기 후 그 티켓 관련 GET memo 를 비워 다음 조회가 최신을 읽게 한다(코멘트·첨부·타임라인 등).
 function evict(sub) { for (const k of Array.from(_memo.keys())) if (k.includes(sub)) _memo.delete(k); }
+// 하위/형제/조상 **목록**은 **다른 티켓의** 것도 이 티켓 변화에 낡는다(부모 키를 프론트가 모름).
+// 상태·담당·제목 변경, 하위 생성/삭제 후엔 이 목록 memo 를 통째로 비워, **부모 다이얼로그의 자식
+// 목록**(리포트된 버그: 하위 상태 바꿨는데 부모의 자식목록엔 반영 안 됨)이 최신을 받게 한다.
+function evictLists() { evict("/children"); evict("/siblings"); evict("/ancestors"); }
 
 function jsonReq(path, method, body) {
   return req(path, { method, headers: { "Content-Type": "application/json" },
@@ -112,7 +116,7 @@ export const api = {
   editmeta: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/editmeta"),
   options: (kind, q) => req("/api/options/" + kind + (q ? "?q=" + encodeURIComponent(q) : "")),
   updateFields: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/fields",
-                                       "PUT", body).then((r) => { evict(key); return r; }),
+                                       "PUT", body).then((r) => { evict(key); evictLists(); return r; }),
   childTypes: (key) => req("/api/options/childtypes?q=" + encodeURIComponent(key)),
   taskTypes: () => req("/api/options/tasktypes"),                       // Epic 없이 만들 최상위 타입
   createTask: (body) => jsonReq("/api/task", "POST", body).then((r) => { _memo.clear(); return r; }),
@@ -122,15 +126,15 @@ export const api = {
                                       "POST", body)
     // 만든 직후 부모의 하위 목록을 다시 받아야 한다 — memo 를 안 비우면 **늘 만들기 전 목록**이
     // 돌아온다(프로미스 캐시라 서버가 최신을 줘도 소용없다).
-    .then((r) => { evict(encodeURIComponent(key)); return r; }),
+    .then((r) => { evict(encodeURIComponent(key)); evictLists(); return r; }),
   ticketMenu: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/menu"),
   setAssignee: (key, assignee) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/assignee",
-                                          "PUT", { assignee }).then((r) => { evict(key); return r; }),
+                                          "PUT", { assignee }).then((r) => { evict(key); evictLists(); return r; }),
   deleteTicket: (key) => req("/api/ticket/" + encodeURIComponent(key), { method: "DELETE" })
-                           .then((r) => { evict(key); return r; }),
+                           .then((r) => { evict(key); evictLists(); return r; }),
   transitions: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/transitions"),
   doTransition: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/transition",
-                                       "POST", body).then((r) => { evict(key); return r; }),                                             // 본인 댓글 판정
+                                       "POST", body).then((r) => { evict(key); evictLists(); return r; }),                                // 본인 댓글 판정
   mentionUsers: (q, key) => req("/api/mention/users?q=" + encodeURIComponent(q || "")   // @사람 자동완성
     + (key ? "&key=" + encodeURIComponent(key) : "")),                                  // 빈 쿼리 시 티켓 관련 우선
   linkTitle: (u) => req("/api/linktitle?u=" + encodeURIComponent(u || "")),             // 링크 뱃지 제목(og:title)
