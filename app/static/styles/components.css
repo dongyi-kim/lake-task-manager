@@ -74,6 +74,11 @@
 .login-msg { font-size: 13.5px; line-height: 1.6; color: var(--muted); margin-bottom: 20px; }
 .login-btn { background: var(--accent); color: #fff; border: 0; border-radius: 9px; padding: 11px 26px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .login-btn:disabled { opacity: .6; cursor: default; }
+/* 자동 로그인 타임아웃 진행바 — 다 차면 manual 색으로 바뀌고 아래 안내가 '수동 로그인'으로 전환된다. */
+.login-prog { height: 6px; border-radius: 6px; background: var(--border); overflow: hidden; margin: -8px 0 10px; }
+.login-prog i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 6px; transition: width .2s linear; }
+.login-prog.manual i { background: #e0922f; }
+.login-sub { font-size: 12px; line-height: 1.55; color: var(--muted); margin: 0 0 18px; }
 
 /* FormulaCallout */
 .fcallout { border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--panel);

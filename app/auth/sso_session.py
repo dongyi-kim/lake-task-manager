@@ -394,7 +394,7 @@ class SsoSessionProvider(AuthProvider):
                     try:
                         page.goto(b, wait_until="domcontentloaded")
                         try:
-                            page.wait_for_load_state("networkidle", timeout=12000)
+                            page.wait_for_load_state("networkidle", timeout=6000)
                         except Exception:
                             pass                     # 아이들 안 돼도 아래 프로브로 판정
                     except Exception:

@@ -4,7 +4,8 @@
 import { api } from "../../lib/api.js";
 export default {
   name: "LoginOverlay",
-  data() { return { show: false, busy: false, msg: "", tried: false, hasCache: false }; },
+  data() { return { show: false, busy: false, msg: "", tried: false, hasCache: false,
+                    prog: 0, phase: "auto" }; },   // prog 0~100(자동로그인 타임아웃 진행바), phase: auto|manual
   watch: {
     // 미인증이 확인되면 **곧바로** 로그인을 시작한다. 버튼을 기다릴 이유가 없다 —
     // 이 상태에서 사용자가 할 수 있는 일이 그것 하나뿐이고, 세션이 없으면 화면의 모든 조회가
@@ -23,6 +24,7 @@ export default {
     // 서버가 로그인 성공을 알리면(창 없이 갱신 포함) 오버레이를 바로 걷고 다음 시도를 풀어 준다.
     window.addEventListener("auth-ok", () => {
       this.show = false; this.msg = ""; this.busy = false;
+      this._stopProg();                              // 진행바 정지·리셋
       this.tried = false; this._lastTry = 0;         // 쿨다운 리셋 — 다음에 정말 필요하면 즉시 재시도
     });
     // ★ 캐시가 살아 있으면 화면을 막지 않는다 — 오프라인에서도 최소한의 이용성을 준다.
@@ -50,7 +52,8 @@ export default {
       // 보던 화면(내 Task·티켓)이 홈으로 리셋됐다 — 어디였는지 적어 두고 돌아와서 되돌린다.
       try { sessionStorage.setItem("lake.route", location.hash || ""); } catch (e) { /* noop */ }
       this.busy = true;
-      this.msg = "인증이 필요해 자동으로 SSO 로그인을 시작합니다. 잠시 후 이 창이 사내 로그인 페이지로 이동하며, 로그인을 끝까지 완료하면 자동으로 앱으로 돌아옵니다…";
+      this._startProg();          // 자동 로그인 타임아웃 진행바 시작(끝나면 '수동 로그인' 안내)
+      this.msg = "SSO 로그인을 진행하고 있습니다.";
       try {
         const r = await api.login();
         if (r && r.pending) return;                    // 앱 창 모드: 이 창이 Jira 로 이동됨(대기)
@@ -65,14 +68,39 @@ export default {
         this.msg = "로그인이 완료되지 않았습니다(시간 초과/취소). 다시 시도하세요.";
       } catch (e) { this.msg = "로그인 실패: " + e.message; }
       this.busy = false;
+      this._stopProg();
+    },
+    /** 자동 로그인 대기시간을 진행바로 보여 준다 — 백엔드가 '창 없이(cert 자동)' 인증을 시도하는
+     *  동안(대략 ~15초)을 채우고, 다 차면 '수동 로그인 창이 뜬다'고 안내한다(phase=manual).
+     *  성공(auth-ok)하면 _stopProg 로 즉시 걷힌다. */
+    _startProg() {
+      this._stopProg();
+      this.phase = "auto"; this.prog = 0;
+      const total = 15000, t0 = Date.now();
+      this._ptimer = setInterval(() => {
+        const el = Date.now() - t0;
+        this.prog = Math.min(100, Math.round((el / total) * 100));
+        if (el >= total && this.phase !== "manual") this.phase = "manual";
+      }, 200);
+    },
+    _stopProg() {
+      if (this._ptimer) { clearInterval(this._ptimer); this._ptimer = null; }
+      this.prog = 0; this.phase = "auto";
     },
   },
+  unmounted() { this._stopProg(); },
   template: `
     <div v-if="show" class="login-ov">
       <div class="login-card">
         <div class="login-ic">🔒</div>
         <div class="login-h">사내 Jira SSO 로그인 필요</div>
         <div class="login-msg">{{ msg || '세션이 없거나 만료되었습니다. 인증을 시작합니다…' }}</div>
+        <template v-if="busy">
+          <div class="login-prog" :class="{ manual: phase === 'manual' }"><i :style="{ width: prog + '%' }"></i></div>
+          <div class="login-sub">{{ phase === 'manual'
+              ? '자동 로그인이 되지 않아 수동 로그인 창을 띄웁니다 — 사내 로그인을 끝까지 완료해 주세요.'
+              : '자동 로그인을 시도하는 중입니다… 실패하면 수동 로그인 창이 뜹니다.' }}</div>
+        </template>
         <button class="login-btn" :disabled="busy" @click="doLogin">{{ busy ? '로그인 진행 중…' : '다시 시도' }}</button>
       </div>
     </div>`,

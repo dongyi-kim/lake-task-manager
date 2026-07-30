@@ -234,7 +234,7 @@ def _silent_renew_via_provider(appmain, base, paths):
         return False
 
 
-def _headless_cert_login(p, appmain, name, base, paths, timeout=35):
+def _headless_cert_login(p, appmain, name, base, paths, timeout=10):
     """**창 없이**(headless) cert 자동 인증을 시도한다 — 첫 로그인 포함(provider 없어도 됨).
 
     사내 SSO 가 로컬 클라이언트 인증서로 자동 처리되면, id/pw 창을 띄울 이유가 없다. 별도
@@ -514,6 +514,24 @@ def _wire_external_links(context, page):
         pass
 
 
+def _hide_console_win():
+    """[Windows] 이 프로세스의 콘솔 창을 숨긴다 — run.bat 더블클릭으로 뜬 콘솔을 앱이 뜬 뒤 치운다.
+    '닫는' 게 아니라 숨기는 것(FreeConsole 아님)이라 로그 출력은 계속 유효하고, 프로세스가 끝나면
+    숨은 콘솔도 함께 사라진다. 셋업/기동 중 에러는 그 전까지 콘솔에 보이고, 창이 실제로 뜬
+    뒤에만 숨긴다(on_ready). best-effort. LAKE_KEEP_CONSOLE=1 이면 안 숨긴다(디버깅용)."""
+    if not sys.platform.startswith("win"):
+        return
+    if os.getenv("LAKE_KEEP_CONSOLE") in ("1", "true", "True"):
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)   # SW_HIDE
+    except Exception:
+        pass
+
+
 def _set_window_icon_win(ico_path):
     """[Windows] 앱 창(제목에 'Lake Task Manager' 포함)의 아이콘을 우리 .ico 로 직접 지정.
     Chromium --app 의 favicon 래스터화(작업표시줄 저화질)보다 확실. best-effort."""
@@ -694,7 +712,7 @@ def _run_app_window(s):
     """[비-트레이 폴백] 서버 + 앱 창 1개. 창 닫으면 서버도 종료(기존 동작)."""
     server = _serve_bg(s, wait=False)                  # 창 먼저 뜨게 non-blocking
     _warm_session_bg(s)                                # SSO 세션 미리 데우기(창 기동과 병렬)
-    _window_session(s, auto_login=True)
+    _window_session(s, auto_login=True, on_ready=_hide_console_win)   # 창 뜨면 run.bat 콘솔 숨김
     try:
         server.should_exit = True
     except Exception:
@@ -813,6 +831,10 @@ def _run_tray(s):
 
         def ready():
             _open["ready"] = True
+            # 앱 창이 실제로 떴다 → run.bat 콘솔을 숨긴다(최초 1회). 그 전(셋업/기동)엔 콘솔이 보인다.
+            if not _open.get("console_hidden"):
+                _open["console_hidden"] = True
+                _hide_console_win()
 
         def run():
             try:
