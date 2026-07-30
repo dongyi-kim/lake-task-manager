@@ -156,6 +156,12 @@ export default {
       (this.mods[module] || []).forEach((it) => { if (this.isLate(it)) late++; else if (this.isStale(it)) stale++; });
       return { late, stale };
     },
+    modCounts(module) {   // 모듈별 현안 상태 집계 — 전체/진행중/완료
+      const arr = this.mods[module] || [];
+      let inprogress = 0, done = 0;
+      arr.forEach((it) => { if (it.statusCategory === "done") done++; else if (it.statusCategory === "inprogress") inprogress++; });
+      return { total: arr.length, inprogress, done };
+    },
     newsHtml(ev) {
       return `<span class='d'>${ymdhm(ev.date)}</span><span class='act ${ev.kind}'>${KLAB[ev.kind] || ev.kind}</span>`
         + `${tkt(ev.key, this.d.jiraBase)} <span class='sm'>${esc(ev.title || "")}</span>`;
@@ -229,6 +235,7 @@ export default {
 
       <div v-for="(m, i) in d.modules" :key="m.module" class="vgroup">
         <div class="vg-head"><span class="dot" :style="{ background: mcolor(i) }"></span><b>{{ m.module }}</b><span class="c">{{ m.count }} 현안</span>
+          <span v-if="mods[m.module]" class="mcounts">전체 <b>{{ modCounts(m.module).total }}</b> · 진행중 <b class="p">{{ modCounts(m.module).inprogress }}</b> · 완료 <b class="d">{{ modCounts(m.module).done }}</b></span>
           <span v-if="mods[m.module] && modRisk(m.module).late" class="rk late sm">지연 {{ modRisk(m.module).late }}</span>
           <span v-if="mods[m.module] && modRisk(m.module).stale" class="rk stale sm">정체 {{ modRisk(m.module).stale }}</span>
         </div>
@@ -240,28 +247,27 @@ export default {
           · 일부를 불러오지 못했습니다({{ modPartial[m.module] }}건) — 새로고침하세요
         </div>
         <div v-else class="tbl">
-          <div class="vhead"><div class="th-info"><span>상태</span><span>티켓</span></div><div class="ch-head"><span>상태</span><span>Sub Task</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
+          <div class="vhead"><div>티켓</div><div class="ch-head"><span></span><span>상태</span><span>Sub Task</span><span>시작일</span><span>종료일</span><span>담당자</span></div><div></div></div>
           <template v-for="it in sortedIssues(m.module)" :key="it.key">
             <div class="vrow">
               <div class="c-info">
-                <div class="cstat scell" :class="scls(it.statusCategory)">{{ it.status || it.statusCategory }}</div>
-                <div class="cbody">
-                  <div class="l2 tkt" :data-key="it.key" role="button" tabindex="0"
-                       :title="it.key + ' · ' + it.summary">
-                    <span class="key">{{ it.key }}</span><span class="summ">{{ it.summary }}</span><span class="ty">{{ tyLabel(it.type) }}</span>
-                  </div>
-                  <div class="l1">
-                    <span class="who">{{ it.assignee || "미지정" }}</span>
-                    <span v-if="isLate(it)" class="rk late">지연 {{ dd(it.due) }}</span>
-                    <span v-else-if="isStale(it)" class="rk stale">정체 {{ stallDays(it) }}일</span>
-                    <span v-if="recentCount(it,'done')" class="rk move">↑완료 {{ recentCount(it,'done') }}</span>
-                    <span v-if="recentCount(it,'created')" class="rk new">+신규 {{ recentCount(it,'created') }}</span>
-                  </div>
-                  <div class="l3">
-                    <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
-                    <span class="dt"><span class="dl">Due</span><span v-if="it.due" :class="{ overdue: dueOverdue(it.due) }">{{ fy(it.due) }} ({{ dd(it.due) }})</span><span v-else>—</span></span>
-                    <span class="dt"><span class="dl">활동</span><span :class="{ overdue: isStale(it) }">{{ stallDays(it) != null ? stallDays(it) + '일 전' : '—' }}</span></span>
-                  </div>
+                <div class="l1">
+                  <StatusPill :cat="it.statusCategory" :label="it.status" />
+                  <TypeBadge :type="it.type" />
+                  <span class="who">{{ it.assignee || "미지정" }}</span>
+                  <span v-if="isLate(it)" class="rk late">지연 {{ dd(it.due) }}</span>
+                  <span v-else-if="isStale(it)" class="rk stale">정체 {{ stallDays(it) }}일</span>
+                  <span v-if="recentCount(it,'done')" class="rk move">↑완료 {{ recentCount(it,'done') }}</span>
+                  <span v-if="recentCount(it,'created')" class="rk new">+신규 {{ recentCount(it,'created') }}</span>
+                </div>
+                <div class="l2 tkt" :data-key="it.key" role="button" tabindex="0"
+                     :title="it.key + ' · ' + it.summary">
+                  <span class="key">{{ it.key }}</span><span class="summ">{{ it.summary }}</span>
+                </div>
+                <div class="l3">
+                  <span class="dt"><span class="dl">Started</span>{{ fy(startedAt(it)) || "—" }}</span>
+                  <span class="dt"><span class="dl">Due</span><span v-if="it.due" :class="{ overdue: dueOverdue(it.due) }">{{ fy(it.due) }} ({{ dd(it.due) }})</span><span v-else>—</span></span>
+                  <span class="dt"><span class="dl">활동</span><span :class="{ overdue: isStale(it) }">{{ stallDays(it) != null ? stallDays(it) + '일 전' : '—' }}</span></span>
                 </div>
               </div>
               <!-- 세로 진척 바(티켓 수 기준) + 하위 티켓 목록. 목록이 Open→진행중→해결 순이라
