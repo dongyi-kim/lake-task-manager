@@ -657,13 +657,7 @@ def _ensure_on_current_desktop(hwnd, ref_hwnd):
             b = wintypes.BOOL()
             return bool(b.value) if IsOnCur(p, hwnd, byref(b)) == 0 else None
         try:
-            if _on_current():
-                return True                          # 이미 현재 데스크톱
-            did = GUID()
-            if GetId(p, ref_hwnd, byref(did)) == 0:  # 현재 데스크톱 = 내가 보는 창의 데스크톱
-                MoveTo(p, hwnd, byref(did))          # 옮기기 시도(교차프로세스는 실패할 수 있음)
-            r = _on_current()                        # 실제로 옮겨졌는지 재확인
-            return r if r is not None else None
+            return _on_current()                     # ★ 읽기전용 — 교차프로세스 이동은 신뢰 불가라 안 함(진단만)
         finally:
             try:
                 Release(p)
@@ -734,25 +728,12 @@ def _open_on_current(open_hook, fg, work, mon):
     threading.Thread(target=go, name="hotkey-open", daemon=True).start()
 
 
-def _reshow_on_current(hwnd):
-    """숨겼다 다시 보여 창을 **현재 가상 데스크톱**으로 가져온다 — 재오픈·로딩 없음.
-    Flow Launcher·PowerToys Run 등이 쓰는 방식: 숨긴 창을 다시 보이면 Windows 가 그 창을
-    지금 활성화된 데스크톱에 올린다(가상데스크톱 매니저는 '보이는' 창만 데스크톱에 매단다).
-    교차프로세스 MoveWindowToDesktop 이 막힌 빌드에서도 동작하고 내부 API 도 안 쓴다."""
-    try:
-        import ctypes
-        u = ctypes.windll.user32
-        was_min = bool(u.IsIconic(hwnd))
-        u.ShowWindow(hwnd, 0)                        # SW_HIDE
-        u.ShowWindow(hwnd, 9 if was_min else 5)      # 최소화였으면 SW_RESTORE, 아니면 SW_SHOW(상태 유지)
-    except Exception:
-        pass
-
-
 def _summon_to_current(open_hook):
-    """단축키 동작 — 앱 창을 지금 보고 있는 **데스크톱/모니터**로 데려온다(재오픈 없이).
-    다른 가상 데스크톱에 있으면: 공용 이동을 먼저 시도하고(되는 빌드면 그대로), 안 되면 **숨겼다
-    다시 보여** 현재 데스크톱으로 가져온다(_reshow_on_current). 어느 쪽도 데스크톱을 바꾸지 않는다."""
+    """단축키 동작 — 앱 창을 전면화·포커스하고, **다른 모니터에 있으면** 현재 모니터로 가져온다.
+    가상 데스크톱 이동은 하지 않는다: Chromium 창은 우리 프로세스 소유가 아니라 교차프로세스
+    이동(MoveWindowToDesktop·hide/show)이 신뢰되지 않는다. 그래서 다른 데스크톱의 창을 포커스하면
+    Windows 가 그 데스크톱으로 전환한다(현재 한계). 같은 데스크톱이면 그냥 포커스만 — 깜빡임 없음.
+    LAKE_HOTKEY_DEBUG=1 이면 멀티데스크톱 판정을 stderr 로 남긴다(정확한 수정을 위한 진단)."""
     import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
@@ -761,9 +742,11 @@ def _summon_to_current(open_hook):
     work, mon = _monitor_of(fg)
     hwnd = _find_app_hwnd()
     if hwnd:
-        if _ensure_on_current_desktop(hwnd, fg) is False:
-            _reshow_on_current(hwnd)                 # 이동이 막힌 빌드 → 숨겼다 보이기(현재 데스크톱, 로딩 없음)
-        _place_window_on(hwnd, fg, work, mon)        # 모니터 이동(다른 화면일 때만)+전면화+포커스
+        if os.getenv("LAKE_HOTKEY_DEBUG") in ("1", "true", "True"):
+            r = _ensure_on_current_desktop(hwnd, fg)   # 읽기전용 판정(True/False/None)
+            print("[hotkey] hwnd=%s fg=%s onCurrentDesktop=%s" % (hwnd, fg, r),
+                  file=sys.stderr, flush=True)
+        _place_window_on(hwnd, fg, work, mon)        # 다른 모니터면 현재 모니터로 + 전면화 + 포커스
         return
     _open_on_current(open_hook, fg, work, mon)       # 창이 아예 없을 때만 새로 연다
 
