@@ -205,7 +205,12 @@ export default {
     <div class="sr-box" role="dialog" aria-modal="true">
       <div class="sr-top">
         <svg class="sr-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <input ref="input" v-model="q" class="sr-input" placeholder="Jira · Confluence · Bitbucket 통합 검색…" autocomplete="off" />
+        <!-- ★ v-model 대신 uncontrolled + @input. v-model 은 한글 IME **조합 중엔 값을 안 올려서**
+             (조합 끝나야 반영) 타이핑을 마쳐도 검색이 안 걸리고 Enter(조합 확정)를 눌러야 했다.
+             @input 은 조합 중에도 매 입력마다 e.target.value(조합 중 글자 포함)를 q 로 올린다.
+             :value 를 안 걸어(uncontrolled) 조합 중 재바인딩이 없어 IME 커서도 안 깨진다. -->
+        <input ref="input" @input="q = $event.target.value" @compositionupdate="q = $event.target.value"
+               class="sr-input" placeholder="Jira · Confluence · Bitbucket 통합 검색…" autocomplete="off" />
         <span v-if="loading" class="spinner"></span>
         <button class="sr-x" @click="$emit('close')" aria-label="닫기">✕</button>
       </div>

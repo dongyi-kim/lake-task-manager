@@ -1451,7 +1451,13 @@ def _run_tray(s):
     icon = pystray.Icon("lake-task-manager", img, "Lake Task Manager", menu)
     _appmain.set_restart_hook(lambda: on_restart(icon, None))   # UI '업데이트' 버튼 → 트레이 재시작과 동일 경로
     _appmain.set_quit_hook(lambda: on_quit(icon, None))         # 새 run.bat 이 '옛 버전이니 빠져라' 로 호출 → 조용히 종료
-    _appmain.set_hotkey_hook(set_hotkey_live)                   # 설정 페이지에서 단축키 바꾸면 즉시 재등록
+    def _on_hotkey_pref(spec):                                  # 설정 페이지에서 단축키 바꾸면:
+        set_hotkey_live(spec)                                  #   ① 전역 단축키 즉시 재등록
+        try:
+            icon.update_menu()                                 #   ② 트레이 서브메뉴 체크 표시도 즉시 갱신
+        except Exception:
+            pass
+    _appmain.set_hotkey_hook(_on_hotkey_pref)
     threading.Thread(target=sso_poller, args=(icon,), name="sso-poller", daemon=True).start()
     print(f"Lake Task Manager - 트레이 상주 (env={s.jira_env}). 창을 닫아도 백엔드는 유지됩니다.")
     open_window(initial=True)                          # 시작 시 창 1개 오픈
