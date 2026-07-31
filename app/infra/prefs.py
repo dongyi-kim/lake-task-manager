@@ -22,8 +22,8 @@ _DEFAULTS = {"bitbucketEnabled": False,
 
 
 def _path():
-    from app.infra.settings import BASE_DIR
-    return Path(BASE_DIR) / "app_prefs.json"
+    from app.infra.settings import CACHE_DIR
+    return Path(CACHE_DIR) / "app_prefs.json"
 
 
 def load() -> dict:

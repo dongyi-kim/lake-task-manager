@@ -39,6 +39,45 @@ else:
 BASE_DIR = APP_ROOT                    # 외부 파일 기준 (config, cache)
 STATIC_DIR = RESOURCE_DIR / "app" / "static"   # 번들 리소스
 
+# ── .cache/ — 임시/비밀 산출물은 전부 이 아래 ─────────────────────────────────────
+# SSO 세션(jira_state.json·sso/)·DB 캐시(*.sqlite3)·앱 창 프로필(.appwin-profile)·
+# 런타임 설정(app_prefs.json)이 루트에 흩어져 gitignore 도 안내도 파일별로 늘어났다.
+# → 전부 `.cache/` 한 폴더로: 지워도 되는 것(캐시)과 비밀(세션)이 한눈에 구분되고,
+#   gitignore 는 `.cache/` 한 줄이면 된다.
+# 규칙: config 의 상대경로(state_path·db_path)는 **CACHE_DIR 기준**으로 해석한다
+#       (절대경로는 그대로 존중 — 다른 위치를 원하는 사람의 선택을 막지 않는다).
+CACHE_DIR = BASE_DIR / ".cache"
+CACHE_DIR.mkdir(exist_ok=True)
+
+
+def _cache_path(p):
+    """상대경로 → CACHE_DIR 기준 절대경로. 절대경로는 그대로."""
+    p = str(p)
+    return p if os.path.isabs(p) else str(CACHE_DIR / p)
+
+
+def _migrate_legacy_cache():
+    """구버전이 BASE_DIR 루트에 만들던 산출물을 .cache/ 로 1회 이동(하위호환).
+    이동 실패(다른 인스턴스가 잡고 있는 등)는 조용히 넘어간다 — 새 위치에 새로 만들어질 뿐,
+    비밀이 새거나 동작이 깨지지는 않는다. 새 위치에 이미 있으면 옛것을 건드리지 않는다."""
+    import shutil
+    names = ["jira_state.json", "sso", ".appwin-profile", "app_prefs.json"]
+    for db in ("cache.sqlite3", "cache-dev.sqlite3", "cache-prod.sqlite3"):
+        names += [db, db + "-journal", db + "-wal", db + "-shm"]
+    # BASE_DIR(=배포 루트) + SRC_DIR(dev 에서 CWD 상대 해석이 남긴 잔재) 둘 다 쓸어 담는다.
+    roots = [BASE_DIR] + ([SRC_DIR] if SRC_DIR != BASE_DIR else [])
+    for root in roots:
+        for name in names:
+            old, new = root / name, CACHE_DIR / name
+            try:
+                if old.exists() and not new.exists():
+                    shutil.move(str(old), str(new))
+            except Exception:
+                pass
+
+
+_migrate_legacy_cache()
+
 # config 는 prod/dev 분리:
 #   - prod(exe·배포) → repo 루트 `config/`  (사용자 노출, 실제 데이터)
 #   - dev(소스 체크아웃) → `src/config/`     (fake/샘플 데이터)
@@ -94,7 +133,7 @@ class Settings:
         self.jira_user = str(pick("JIRA_USER", j.get("user"), "admin"))
         self.jira_token = str(pick("JIRA_TOKEN", j.get("token"), "admin"))
         self.jira_auth = str(pick("JIRA_AUTH", j.get("auth"), "basic")).strip()   # basic | bearer
-        self.jira_state_path = str(pick("JIRA_STATE_PATH", j.get("state_path"), "jira_state.json"))
+        self.jira_state_path = _cache_path(pick("JIRA_STATE_PATH", j.get("state_path"), "jira_state.json"))   # 상대경로 → .cache/
         # 이미지 프록시 허용 호스트(사내 CDN 등). jira base 호스트·동일 상위도메인은 자동 허용.
         self.image_hosts = [str(h).strip() for h in (j.get("image_hosts") or []) if str(h).strip()]
         # 통합 검색 기본 스코프 — 모두 복수(list). jira projects / confluence spaces / bitbucket projects.
@@ -159,7 +198,7 @@ class Settings:
         ]
         # SSO 로그인 순회·판정에는 **설정된 것만** (base 없는 서비스는 창을 못 연다).
         self.auth_targets = [(s["name"], s["base"], s["paths"]) for s in self.services if s["configured"]]
-        self.cache_db_path = str(pick("CACHE_DB_PATH", cache.get("db_path"), str(BASE_DIR / "cache.sqlite3")))
+        self.cache_db_path = _cache_path(pick("CACHE_DB_PATH", cache.get("db_path"), "cache.sqlite3"))   # 상대경로 → .cache/
         # outdated — 이 시각이 지나면 '낡음'(온라인이면 다시 받는다)
         self.cache_ttl_seconds = int(pick("CACHE_TTL_SECONDS", cache.get("ttl_seconds"), 900))
         # dead — 이 시각이 지나야 '없는 값'. 그 전까지는 오프라인·미인증에서도 낡은 값을 준다.
