@@ -13,6 +13,7 @@ Lake Task Manager — FastAPI 진입점.
 JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 """
 
+import sys
 import threading
 import urllib.parse
 
@@ -199,6 +200,42 @@ def api_app_update_restart():
 def api_app_rev():
     """실행 중인 이 인스턴스의 코드 커밋(짧은 해시). 새 run.bat 이 '떠 있는 게 최신인가' 판정에 쓴다."""
     return {"rev": _BUILD_REV}
+
+
+class _RevealBody(BaseModel):
+    path: str
+
+
+@app.post("/api/app/reveal")
+def api_app_reveal(body: _RevealBody):
+    """받은 파일을 **탐색기에서** 보여 준다(그 파일이 선택된 채로 폴더가 열린다).
+
+    앱 창(Chromium)에는 다운로드 표시줄이 없어 저장 뒤 경로만 알림으로 띄웠는데, 경로를 읽고
+    직접 탐색기를 여는 건 결국 사용자 몫이었다. 알림에서 바로 열게 한다.
+
+    **'다운로드' 폴더 안의 파일만 연다.** 임의 경로를 열어 주는 창구가 되면, 로컬에 떠 있는
+    이 서버로 아무 파일이나 지목하는 요청이 들어올 수 있다. 우리가 파일을 떨구는 곳은 거기
+    하나뿐이라 이 제한으로 잃는 기능이 없다."""
+    import subprocess
+    from pathlib import Path
+    try:
+        p = Path(body.path).resolve()
+        root = (Path.home() / "Downloads")
+        root = (root if root.is_dir() else Path.home()).resolve()
+        if not p.is_file() or root not in p.parents:
+            raise HTTPException(status_code=400, detail="다운로드 폴더 안의 파일만 열 수 있습니다.")
+        if sys.platform == "win32":
+            # /select, 뒤에는 공백 없이 경로가 붙어야 한다(explorer 의 오래된 인자 규칙).
+            subprocess.Popen(["explorer", f"/select,{p}"])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p.parent)])
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)[:200])
 
 
 @app.get("/api/app/assets")

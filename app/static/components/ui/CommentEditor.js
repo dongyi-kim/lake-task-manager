@@ -6,7 +6,7 @@
 // · 이미지 붙여넣기/드롭 = 제출 시 업로드: 로컬 objectURL 미리보기 → 제출 때 첨부 업로드·롤백
 // 부모는 submitFn(finalHTML) 만 넘긴다(작성/수정은 부모가 선택). 출력은 HTML(서버가 wiki 로 변환).
 import { loadTiptap } from "../../lib/tiptap.js";
-import { ensureHljsTheme, editorLineNumbers } from "../../lib/hljs.js";
+import { ensureHljsTheme } from "../../lib/hljs.js";
 import { saveDraft, loadDraft, clearDraft, purgeExpired } from "../../lib/draft.js";
 import { api } from "../../lib/api.js";
 import LinkPicker from "./LinkPicker.js";
@@ -48,6 +48,63 @@ const _URL_RE = /^https?:\/\/\S+$/i;
 
 // Jira 콜아웃 매크로 블록 — <div class="callout callout-info"> <-> {info}…{info}.
 // 표준 4종(info/note/tip/warning)을 툴바로 넣는다. 렌더 CSS(.tkt-desc .callout*)를 그대로 쓴다.
+/**
+ * 편집 중인 코드블럭에 **줄번호**를 붙인다 — 코드블럭 노드뷰.
+ *
+ * 왜 노드뷰인가: 처음엔 완성된 <pre> 에 거터 <span> 을 끼우거나(렌더된 본문에서 쓰는 방법)
+ * data 속성을 달아 CSS 로 그리려 했는데, **둘 다 에디터 안에서는 되돌려진다** — ProseMirror 는
+ * 자기 DOM 에 낯선 변화가 보이면 상태로부터 다시 그려 지워 버린다(실제로 setAttribute 가
+ * 곧바로 사라졌다). 노드뷰는 그 DOM 을 **우리가 소유한다고 선언**하는 유일한 방법이다.
+ *
+ * contentDOM(=<code>)만 에디터가 건드리고, 거터는 그 바깥이라 안전하다. 문서 모델에도
+ * 안 들어가므로 저장되는 본문에 번호가 섞이지 않는다.
+ */
+function codeLineNumbers(T) {
+  return T.CodeBlockLowlight.extend({
+    addNodeView() {
+      // configure({ HTMLAttributes }) 로 준 것은 노드뷰 인자에 안 섞여 온다 — 직접 얹는다.
+      // (여기서 빠뜨리면 편집 중에만 class 가 사라져 저장본과 화면이 달라 보인다.)
+      const base = (this.options && this.options.HTMLAttributes) || {};
+      return ({ node, HTMLAttributes }) => {
+        const pre = document.createElement("pre");
+        Object.entries({ ...base, ...(HTMLAttributes || {}) }).forEach(([k, v]) => {
+          if (v != null) pre.setAttribute(k, v);
+        });
+        pre.classList.add("has-ln");
+        const gut = document.createElement("span");
+        gut.className = "ln-gutter";
+        gut.setAttribute("contenteditable", "false");   // 커서가 번호 안으로 들어가지 않게
+        const code = document.createElement("code");
+        if (node.attrs.language) code.className = "language-" + node.attrs.language;
+        pre.append(gut, code);
+
+        const paint = (n) => {
+          const cnt = (n.textContent || "").replace(/\n$/, "").split("\n").length;
+          const want = Array.from({ length: cnt }, (_, i) => i + 1).join("\n");
+          if (gut.textContent !== want) gut.textContent = want;
+        };
+        paint(node);
+
+        return {
+          dom: pre,
+          contentDOM: code,
+          update(updated) {
+            if (updated.type.name !== node.type.name) return false;
+            node = updated;
+            // 언어를 바꾸면 강조 클래스도 바뀐다(lowlight 는 이 class 를 보고 색을 입힌다).
+            const want = node.attrs.language ? "language-" + node.attrs.language : "";
+            if (code.className !== want) code.className = want;
+            paint(node);
+            return true;
+          },
+          // 거터는 우리 것이다 — 여기서 난 변화를 에디터가 문서 변경으로 오해하면 안 된다.
+          ignoreMutation(m) { return m.target === gut || gut.contains(m.target); },
+        };
+      };
+    },
+  });
+}
+
 function calloutExt(T) {
   return T.Node.create({
     name: "callout",
@@ -921,7 +978,7 @@ export default {
       extensions: [
         T.StarterKit.configure({ codeBlock: false }),   // 아래 CodeBlockLowlight 로 교체(구문강조)
         // 코드블럭 — 원래 Jira 와 같은 태그(<pre class="jecodeblock"><code class="language-X">) + lowlight 강조
-        T.CodeBlockLowlight.configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
+        codeLineNumbers(T).configure({ lowlight: T.lowlight, HTMLAttributes: { class: "jecodeblock" } }),
         calloutExt(T),
         ...(this.sections ? [sectionExt(T)] : []),
         slashExt(T, this),
@@ -986,9 +1043,7 @@ export default {
         },
       },
       onSelectionUpdate: () => { self.tick++; },
-      // 코드블럭 줄번호는 **매 변경마다** 다시 센다 — 줄이 늘고 주는 걸 따라가야 하고,
-      // 붙여넣기·되돌리기처럼 onUpdate 만으로는 안 잡히는 경로가 있어 트랜잭션에 건다.
-      onTransaction: () => { self.tick++; self.paintLineNumbers(); },
+      onTransaction: () => { self.tick++; },
       onUpdate: () => { self.tick++; self.saveDraftSoon(); },   // 작성 중 임시저장(디바운스)
     });
     if (this._dead) { try { this._ed.destroy(); } catch (e) { /* noop */ } return; }
@@ -1039,10 +1094,6 @@ export default {
     },
   },
   methods: {
-    /** 편집 중인 코드블럭에 줄번호를 다시 매긴다(의사요소로 그린다 — hljs.js 주석 참고). */
-    paintLineNumbers() {
-      try { editorLineNumbers(this._ed && this._ed.view && this._ed.view.dom); } catch (e) { /* noop */ }
-    },
     active(name, attrs) { this.tick; return this._ed && this._ed.isActive(name, attrs); },
     cmd(fn) { if (this._ed) { fn(this._ed.chain().focus()); this._ed.commands.focus(); } },
     /** 글자색 — 빈 값이면 해제(color 속성 제거). */

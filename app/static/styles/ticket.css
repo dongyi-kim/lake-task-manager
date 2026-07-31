@@ -795,19 +795,15 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-ed-host .ProseMirror pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
   padding: 6px 10px; margin: 0 0 10px; overflow: auto; }
 .cmt-ed-host .ProseMirror pre code { background: none; border: 0; padding: 0; font-size: 12.5px; }
-/* 편집 중 코드블럭 줄번호 — **의사요소**로 그린다. 여기에 진짜 <span> 을 끼우면 에디터가 그걸
-   자기 내용으로 읽어 문서가 깨진다(의사요소는 DOM 이 아니라 에디터가 못 본다).
-   번호 문자열은 JS 가 data-lines 에 넣는다(hljs.js 의 editorLineNumbers). */
-.cmt-ed-host .ProseMirror pre { position: relative; padding-left: 44px; }
-.cmt-ed-host .ProseMirror pre[data-lines]::before {
-  content: attr(data-lines); position: absolute; left: 0; top: 6px; width: 32px;
-  text-align: right; white-space: pre; user-select: none; pointer-events: none;
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 12.5px; line-height: 1.5; color: var(--muted-2);
-  border-right: 1px solid var(--border); padding-right: 7px;
-}
-/* code 의 줄높이를 번호와 **같은 값으로 못 박는다** — 다르면 아래로 갈수록 어긋난다. */
-.cmt-ed-host .ProseMirror pre code { line-height: 1.5; }
+/* 편집 중 코드블럭도 줄번호 — 거터는 **노드뷰가 만든 우리 소유의 <span>** 이다(CommentEditor
+   의 codeLineNumbers 주석 참고). 그래서 렌더된 본문과 같은 .ln-gutter 스타일을 그대로 쓴다.
+   줄높이는 code 와 **같은 값으로 못 박는다** — 다르면 아래로 갈수록 번호가 어긋난다. */
+.cmt-ed-host .ProseMirror pre.has-ln { display: flex; gap: 10px; }
+.cmt-ed-host .ProseMirror pre .ln-gutter { flex: none; text-align: right; color: var(--muted-2);
+  user-select: none; white-space: pre; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12.5px; line-height: 1.5; border-right: 1px solid var(--border); padding-right: 8px; }
+.cmt-ed-host .ProseMirror pre.has-ln > code { flex: 1 1 auto; min-width: 0; overflow-x: auto;
+  line-height: 1.5; }
 .cmt-ed-host .ProseMirror img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; }
 /* 이미지 크기 조절 — 모서리 드래그 핸들(선택/hover 시 노출) */
 /* vertical-align:top — 같은 줄에 글자와 사진이 있으면 baseline 정렬 탓에 글자가 아래로 밀린다.

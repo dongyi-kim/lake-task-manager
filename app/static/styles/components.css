@@ -283,6 +283,12 @@
 .toast-t { font-weight: 700; font-size: 13px; color: var(--text); word-break: break-word; }
 .toast-m { font-size: 11.5px; color: var(--muted); line-height: 1.4; word-break: break-all;
   font-family: ui-monospace, Consolas, monospace; }
+.toast-m.err { color: var(--danger); font-family: inherit; }
+/* 알림 안의 행동 버튼 — 받은 파일의 '폴더 열기' 처럼, 알림을 읽은 **그 자리에서** 할 수 있게. */
+.toast-act { align-self: flex-start; margin-top: 6px; cursor: pointer;
+  font-size: 11.5px; font-weight: 600; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 9px; }
+.toast-act:hover { border-color: var(--accent); color: var(--accent); }
 .toast-x { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: var(--muted-2);
   font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .toast-x:hover { color: var(--text); }

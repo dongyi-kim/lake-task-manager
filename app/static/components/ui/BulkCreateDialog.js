@@ -16,13 +16,24 @@ import { fromBackdrop } from "../../lib/backdrop.js";
 import { validateBulk, exampleJson, fieldDocs, buildLlmPrompt } from "../../lib/bulkSchema.js";
 import { categoryColor } from "../../lib/colors.js";
 import { errorLines } from "../../lib/jsonlines.js";
-import TaskCard from "./TaskCard.js";
 import TypeBadge from "./TypeBadge.js";
 import JsonEditor from "./JsonEditor.js";
+import PriIcon from "./PriIcon.js";
+import Avatar from "./Avatar.js";
+import DueText from "./DueText.js";
+
+/** 오늘부터 며칠 남았나 — Task 화면의 D-day 와 같은 값이어야 한다(카드·머리 공용). */
+function dayDiff(ymd) {
+  if (!ymd) return null;
+  const d = new Date(ymd + "T00:00:00");
+  if (isNaN(d)) return null;
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  return Math.round((d - t) / 86400000);
+}
 
 export default {
   name: "BulkCreateDialog",
-  components: { TaskCard, JsonEditor, TypeBadge },
+  components: { JsonEditor, TypeBadge, PriIcon, Avatar, DueText },
   props: { mode: { type: String, required: true } },     // 'task' | 'subtask'
   emits: ["close", "done"],
   data() {
@@ -38,6 +49,7 @@ export default {
       // 미리보기에서 실제로 불러온 상위 티켓(Epic/부모 Task). key → badge | null(=없는 티켓).
       // 뱃지를 채우려고 받는 김에 **존재 여부 검수**까지 된다.
       refs: {}, refLoading: false,
+      epicNames: {},          // 상위 티켓이 속한 Epic 의 이름(키만으론 뱃지에 적을 수 없다)
     };
   },
   computed: {
@@ -57,22 +69,18 @@ export default {
       return [...s];
     },
     /**
-     * 미리보기 카드 — **Task 화면과 같은 TaskCard 를 같은 모양으로** 쓴다. 미리보기 전용
-     * 마크업을 따로 두면 "만들면 이렇게 보인다" 를 보여 주는 화면이 정작 실제와 달라진다.
-     * 묶기는 previewGroups 가 한다(여기선 카드 하나하나의 모양만 만든다).
+     * 새로 만들 티켓 하나하나의 재료 — Task 화면에서 **부모 밑 하위 카드**가 쓰는 것과 같은
+     * 필드다(우선순위·번호·제목·담당자·기한). 미리보기 전용 필드를 지어내지 않는다:
+     * "만들면 이렇게 보인다" 를 보여 주는 화면이 실제와 달라지면 미리보기가 아니다.
+     * 묶기는 previewGroups 가 한다.
      */
     cards() {
-      const today = new Date(); today.setHours(0, 0, 0, 0);
       return this.items.map((it, i) => {
         const refKey = (this.isSub ? it.parent : it.epic) || null;
         const ref = refKey ? this.refs[refKey] : null;
         const pri = it.priority || "";
         const rank = pri ? this.opts.priorities.indexOf(pri) : -1;
-        let dueDays = null;
-        if (it.duedate) {
-          const d = new Date(it.duedate + "T00:00:00");
-          if (!isNaN(d)) dueDays = Math.round((d - today) / 86400000);
-        }
+        const dueDays = dayDiff(it.duedate);
         const voc = !this.isSub && !it.epic && /^\s*\[/.test(it.summary || "");
         const card = {
           key: "신규",                              // 아직 Jira 에 없다 — 번호 자리에 그렇게 적는다
@@ -108,14 +116,24 @@ export default {
         by.get(c._ref).cards.push(c);
       }
       const out = [...by.values()].map((g) => {
-        const b = this.refs[g.key] || null;
+        const t0 = this.refs[g.key] || null;
+        // 머리는 **실제 티켓**이다 — Task 화면의 부모 카드와 같은 재료를 그대로 넘긴다.
+        const head = t0 && {
+          key: g.key, title: t0.summary || "", type: t0.type,
+          pri: t0.priority || "", priRank: t0.priRank,
+          assignee: t0.assignee || "", assigneeId: t0.assigneeId || "",
+          statusCategory: t0.statusCategory, due: t0.due || null, resolved: t0.resolved || null,
+          dueDays: dayDiff(t0.due), mine: false,
+          epicKey: t0.epicKey || null,
+          epicTitle: t0.epicKey ? (this.epicNames[t0.epicKey] || t0.epicKey) : "",
+        };
         return {
-          key: g.key, cards: g.cards, badge: b,
+          key: g.key, cards: g.cards, head,
           missing: this.refs[g.key] === null,          // 불러왔는데 없더라 — 생성 시 실패한다
           sig: categoryColor(g.key),
         };
       });
-      if (loose.length) out.push({ key: "__none__", cards: loose, badge: null, missing: false, sig: null });
+      if (loose.length) out.push({ key: "__none__", cards: loose, head: null, missing: false, sig: null });
       return out;
     },
   },
@@ -175,15 +193,26 @@ export default {
       } finally { this.checking = false; }
     },
 
-    /** 미리보기가 참조하는 상위 티켓을 실제로 받아 온다.
-     *  못 받은 것은 null 로 남겨 '없는 티켓' 으로 드러낸다 — 만들기 전에 눈으로 걸러낸다. */
+    /**
+     * 미리보기가 참조하는 상위 티켓을 실제로 받아 온다 — **Task 화면과 똑같이 그리려면**
+     * 뱃지(요약)로는 부족하다(담당자·기한·우선순위·소속 Epic 이 다 필요하다). 그래서 티켓
+     * 전체를 받고, 소속 Epic 의 **이름**은 한 번 더 조회한다(Epic 키만으론 못 적는다).
+     * 못 받은 것은 null 로 남겨 '없는 티켓' 으로 드러낸다 — 만들기 전에 눈으로 걸러낸다.
+     */
     async loadRefs() {
       const keys = this.refKeys.filter((k) => !(k in this.refs));
       if (!keys.length) return;
       this.refLoading = true;
       try {
         await Promise.all(keys.map((k) =>
-          api.ticketBadge(k).then((b) => { this.refs = { ...this.refs, [k]: b || null }; })
+          api.ticket(k)
+            .then(async (t) => {
+              if (t && t.epicKey && !(t.epicKey in this.epicNames)) {
+                const b = await api.ticketBadge(t.epicKey).catch(() => null);
+                this.epicNames = { ...this.epicNames, [t.epicKey]: (b && (b.epicName || b.summary)) || t.epicKey };
+              }
+              this.refs = { ...this.refs, [k]: t || null };
+            })
             .catch(() => { this.refs = { ...this.refs, [k]: null }; })));
       } finally { this.refLoading = false; }
     },
@@ -269,21 +298,40 @@ export default {
         <div v-for="g in previewGroups" :key="g.key" class="blk-g"
              :class="{ 'mt-gcard2 k-task': g.key !== '__none__' }"
              :style="g.sig ? { '--sig': g.sig } : {}">
-          <!-- 상위 머리 — 실제 티켓이다. 여기선 아무것도 열지 않으므로 tkt 를 달지 않는다. -->
+          <!-- 상위 머리 — **실제 티켓이므로 Task 화면의 부모 카드를 그대로 그린다**(우선순위·타입·
+               번호·제목·소속 Epic·담당자·기한). 여기서 필드를 줄이면 '만들면 이렇게 보인다' 가
+               거짓이 된다. 다만 눌러 여는 기능은 없다(tkt 를 달지 않는다 — 미리보기 창이다). -->
           <div v-if="g.key !== '__none__'" class="mt-gh">
-            <div class="mt-card parent" :class="{ miss: g.missing }">
-              <TypeBadge v-if="g.badge" :type="g.badge.type" />
-              <span class="mt-key">{{ g.key }}</span>
-              <span class="mt-title">{{ g.badge ? g.badge.summary : (g.missing ? '없는 티켓입니다 — 이 항목들은 실패합니다' : '불러오는 중…') }}</span>
+            <div v-if="g.head" class="mt-card parent">
+              <PriIcon :rank="g.head.priRank" :name="g.head.pri" />
+              <TypeBadge :type="g.head.type" />
+              <span class="mt-key">{{ g.head.key }}</span>
+              <span class="mt-title">{{ g.head.title }}</span>
+              <span v-if="g.head.epicKey" class="mt-epic" :title="'Epic: ' + g.head.epicTitle">{{ g.head.epicTitle }}</span>
+              <span v-else class="mt-epic none">Epic 없음</span>
+              <span class="mt-sep" aria-hidden="true"></span>
+              <span class="mt-owner" :title="(g.head.assignee || '미할당') + ' 담당'">
+                <Avatar :user="g.head.assigneeId" :name="g.head.assignee" :size="16" />{{ g.head.assignee || '미할당' }}</span>
+              <DueText :card="g.head" />
               <span class="blk-gn">+{{ g.cards.length }}건 생성</span>
+            </div>
+            <div v-else class="mt-card parent miss">
+              <span class="mt-key">{{ g.key }}</span>
+              <span class="mt-title">{{ g.missing ? '없는 티켓입니다 — 이 항목들은 실패합니다' : '불러오는 중…' }}</span>
             </div>
           </div>
           <div v-else class="blk-none-h">{{ isSub ? '상위 없음' : 'Epic 없이 만드는 티켓' }} · {{ g.cards.length }}건</div>
-          <!-- dim=false — 아직 만들어지지 않은 티켓이라 '내 담당/남의 것' 이 없다.
-               link=false — 없는 키라 눌러도 열 수 없다(누르면 빈 창이 뜬다). -->
+          <!-- 새로 만들 티켓 — Task 화면에서 **부모 밑의 하위 카드와 같은 한 줄 배치**다
+               (우선순위 · 번호 · 제목 · 담당자 · 기한). 소속은 머리에 이미 적혀 있어 다시 안 단다. -->
           <div class="mt-gbody one">
-            <TaskCard v-for="c in g.cards" :key="c._i" :card="c" :style="c._sig"
-                      :dim="false" :link="false" :show-epic="false" />
+            <div v-for="c in g.cards" :key="c._i" class="mt-card" :style="c._sig">
+              <PriIcon :rank="c.priRank" :name="c.pri" />
+              <span class="mt-key">{{ c.key }}</span>
+              <span class="mt-title">{{ c.title }}</span>
+              <span class="mt-owner" :title="(c.assignee || '미할당') + ' 담당'">
+                <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
+              <DueText :card="c" />
+            </div>
           </div>
         </div>
       </div>
