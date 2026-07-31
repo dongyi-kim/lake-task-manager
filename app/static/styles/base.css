@@ -58,6 +58,10 @@ header.top { display: flex; align-items: stretch; justify-content: flex-start; g
 .home-notes .hn-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 7px; flex-wrap: wrap; }
 .home-notes .hn-date { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
 .home-notes .hn-title { font-size: 13.5px; font-weight: 700; }
+/* 유형별 소제목 — 목록보다 한 단 왼쪽에서 시작해 묶음의 머리임이 들여쓰기로 드러난다. */
+.home-notes .hn-grp + .hn-grp { margin-top: 11px; }
+.home-notes .hn-gh { font-size: 11.5px; font-weight: 700; color: var(--muted);
+  letter-spacing: -.1px; margin-bottom: 3px; }
 .home-notes .hn-items { margin: 0; padding-left: 17px; }
 .home-notes .hn-items li { font-size: 12.5px; color: var(--text); line-height: 1.7; }
 .theme-btn { align-self: center; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 5px 11px; cursor: pointer; white-space: nowrap; }

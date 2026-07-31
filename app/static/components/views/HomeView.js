@@ -82,7 +82,11 @@ export default {
       <h2 class="hn-h">최근 업데이트</h2>
       <div v-for="r in releases" :key="r.date" class="hn-rel">
         <div class="hn-head"><span class="hn-date">{{ r.date }}</span><b class="hn-title">{{ r.title }}</b></div>
-        <ul class="hn-items"><li v-for="(it, i) in r.items" :key="i">{{ it.text || it }}</li></ul>
+        <!-- 유형별 소제목 — 한 배포에 열몇 줄이 평평하게 늘어서면 무엇이 어디 얘기인지 안 읽힌다. -->
+        <div v-for="(g, gi) in r.groups" :key="gi" class="hn-grp">
+          <div class="hn-gh">{{ g.h }}</div>
+          <ul class="hn-items"><li v-for="(it, i) in g.items" :key="i">{{ it.text || it }}</li></ul>
+        </div>
       </div>
     </section>
   </div>`,

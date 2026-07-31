@@ -15,8 +15,9 @@
   50%      { box-shadow: 0 0 0 9px color-mix(in srgb, var(--accent) 8%, transparent); }
 }
 
+/* 폭은 CSS 가 정한다 — JS 는 그려진 크기를 재서 자리만 잡는다(양쪽이 폭을 각자 알면 어긋난다). */
 .guide-bub {
-  position: fixed; pointer-events: auto;
+  position: fixed; pointer-events: auto; width: 300px; max-width: calc(100vw - 24px);
   background: var(--panel); color: var(--fg);
   border: 1px solid var(--border); border-radius: 12px;
   padding: 13px 14px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.20);
@@ -30,13 +31,15 @@
 }
 .guide-x:hover { filter: brightness(1.06); }
 
-/* 꼬리 — 어느 요소를 말하는지 방향으로 못 박는다. */
+/* 꼬리 — 어느 요소를 말하는지 방향으로 못 박는다.
+   말풍선이 화면 안으로 밀려도 꼬리는 **앵커 중심**을 가리켜야 한다 → 위치를 JS 가 --ax/--ay 로 준다
+   (기본 50% 는 아직 자리를 못 잰 한 프레임용). */
 .guide-bub::after {
   content: ""; position: absolute; width: 10px; height: 10px;
   background: var(--panel); border: 1px solid var(--border);
   transform: rotate(45deg);
 }
-.guide-bub.pl-right::after  { left: -6px; top: 50%; margin-top: -5px; border-right: 0; border-top: 0; }
-.guide-bub.pl-left::after   { right: -6px; top: 50%; margin-top: -5px; border-left: 0; border-bottom: 0; }
-.guide-bub.pl-top::after    { left: 50%; bottom: -6px; margin-left: -5px; border-left: 0; border-top: 0; }
-.guide-bub.pl-bottom::after { left: 50%; top: -6px; margin-left: -5px; border-right: 0; border-bottom: 0; }
+.guide-bub.pl-right::after  { left: -6px; top: var(--ay, 50%); margin-top: -5px; border-right: 0; border-top: 0; }
+.guide-bub.pl-left::after   { right: -6px; top: var(--ay, 50%); margin-top: -5px; border-left: 0; border-bottom: 0; }
+.guide-bub.pl-top::after    { left: var(--ax, 50%); bottom: -6px; margin-left: -5px; border-left: 0; border-top: 0; }
+.guide-bub.pl-bottom::after { left: var(--ax, 50%); top: -6px; margin-left: -5px; border-right: 0; border-bottom: 0; }

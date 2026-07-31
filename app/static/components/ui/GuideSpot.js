@@ -15,7 +15,8 @@ const MAX_TRIES = 8;          // 그래도 없으면 이 화면에선 포기(다
 export default {
   name: "GuideSpot",
   props: { route: { type: String, default: "" } },
-  data() { return { g: null, box: null }; },     // g=지금 띄운 안내, box=가리킬 요소의 위치
+  // g=지금 띄운 안내, box=가리킬 요소의 위치, pos=말풍선의 **확정** 위치(실측 후에 정해진다)
+  data() { return { g: null, box: null, pos: null }; },
   mounted() {
     pruneSeen();                                  // 지워진 안내의 기록 청소
     this._reflow = () => this.measure();
@@ -56,29 +57,49 @@ export default {
     measure() {
       if (!this.g) return;
       const el = document.querySelector(this.g.anchor);
-      if (!el) { this.g = null; this.box = null; return; }   // 도중에 사라졌다 — 조용히 접는다
+      if (!el) { this.g = null; this.box = null; this.pos = null; return; }  // 사라졌다 — 조용히 접는다
       const r = el.getBoundingClientRect();
       this.box = { top: r.top, left: r.left, width: r.width, height: r.height };
+      this.$nextTick(() => this.place());
     },
     close() {
       if (this.g) markSeen(this.g.id);
-      this.g = null; this.box = null;
+      this.g = null; this.box = null; this.pos = null;
       this.schedule();                                        // 이 화면에 또 있으면 이어서
     },
-    /** 말풍선 위치 — 가리킬 요소 기준. 화면 밖으로 나가지 않게 가둔다. */
-    bubbleStyle() {
-      const b = this.box; if (!b) return {};
-      const W = 300, gap = 14;
+    /**
+     * 말풍선 자리를 정한다 — **실제로 그려진 크기를 재고 나서.**
+     *
+     * 처음엔 세로 중앙정렬(translateY(-50%))로 대충 놓았는데, 이 안내가 가리키는 새로고침
+     * 버튼은 화면 **좌하단**에 있어 말풍선 절반이 화면 아래로 잘렸다. 높이를 모르는 채로
+     * 가두면 이런 자리에서 반드시 샌다 → 그려진 뒤 rect 를 재서 네 변을 다 가둔다.
+     *
+     * 자리가 밀려도 꼬리는 **여전히 버튼을 가리켜야 한다** — 안내가 무엇을 말하는지는 꼬리가
+     * 정한다. 그래서 꼬리 위치(--ax/--ay)를 앵커 중심에 맞춰 따로 준다.
+     */
+    place() {
+      const b = this.box, el = this.$refs.bub;
+      if (!b || !el) return;
+      const M = 12, GAP = 14;                     // 화면 여백 · 앵커와의 간격
+      const rect = el.getBoundingClientRect();
+      const W = rect.width, H = rect.height;
       const place = (this.g && this.g.place) || "right";
+      const cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+
       let left, top;
-      if (place === "right") { left = b.left + b.width + gap; top = b.top + b.height / 2; }
-      else if (place === "left") { left = b.left - W - gap; top = b.top + b.height / 2; }
-      else if (place === "top") { left = b.left + b.width / 2 - W / 2; top = b.top - gap; }
-      else { left = b.left + b.width / 2 - W / 2; top = b.top + b.height + gap; }
-      left = Math.max(12, Math.min(left, window.innerWidth - W - 12));
-      top = Math.max(12, Math.min(top, window.innerHeight - 40));
-      const ty = (place === "right" || place === "left") ? "-50%" : (place === "top" ? "-100%" : "0");
-      return { left: left + "px", top: top + "px", width: W + "px", transform: "translateY(" + ty + ")" };
+      if (place === "right")      { left = b.left + b.width + GAP; top = cy - H / 2; }
+      else if (place === "left")  { left = b.left - W - GAP;       top = cy - H / 2; }
+      else if (place === "top")   { left = cx - W / 2;             top = b.top - H - GAP; }
+      else                        { left = cx - W / 2;             top = b.top + b.height + GAP; }
+
+      // 네 변 모두 화면 안으로. (여백을 뺀 자리가 음수가 되는 아주 좁은 화면에서도 위/왼쪽이 이긴다.)
+      left = Math.max(M, Math.min(left, Math.max(M, window.innerWidth - W - M)));
+      top = Math.max(M, Math.min(top, Math.max(M, window.innerHeight - H - M)));
+
+      // 꼬리는 앵커 중심을 향하되, 말풍선 모서리에 붙지 않게 안쪽으로 가둔다.
+      const ay = Math.max(14, Math.min(cy - top, H - 14));
+      const ax = Math.max(14, Math.min(cx - left, W - 14));
+      this.pos = { left: left + "px", top: top + "px", "--ay": ay + "px", "--ax": ax + "px" };
     },
     ringStyle() {
       const b = this.box; if (!b) return {};
@@ -90,7 +111,10 @@ export default {
   template: `
   <div v-if="g && box" class="guide-layer">
     <div class="guide-ring" :style="ringStyle()"></div>
-    <div class="guide-bub" :class="'pl-' + (g.place || 'right')" :style="bubbleStyle()" role="dialog">
+    <!-- pos 가 정해지기 전(=크기를 재기 전) 한 프레임은 화면 밖에 둔다 — 잘못된 자리에서
+         제자리로 튀는 것이 보이면 안내가 아니라 잡음이다. -->
+    <div ref="bub" class="guide-bub" :class="'pl-' + (g.place || 'right')"
+         :style="pos || { left: '-9999px', top: '0px' }" role="dialog">
       <div class="guide-t">{{ g.title }}</div>
       <div class="guide-b">{{ g.body }}</div>
       <button class="guide-x" @click="close">알겠습니다</button>

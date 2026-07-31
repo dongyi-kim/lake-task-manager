@@ -230,8 +230,10 @@ export default {
           <b>없는 티켓</b> {{ refMissing.join(', ') }} — 생성 시 이 항목들은 실패합니다.
         </div>
         <div class="mt-gbody plain blk-flat">
+          <!-- dim=false — 아직 만들어지지 않은 티켓이라 '내 담당/남의 것' 이 없다.
+               그걸로 흐리게 하면 미리보기의 절반이 이유 없이 물러나 보인다. -->
           <TaskCard v-for="c in cards" :key="c._i" :card="c" :style="c._sig"
-                    :epic-title="c._epicTitle" />
+                    :epic-title="c._epicTitle" :dim="false" />
         </div>
       </div>
 
