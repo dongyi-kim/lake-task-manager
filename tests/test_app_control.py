@@ -73,3 +73,18 @@ def test_update_endpoint_shape():
     for k in ("available", "behind", "current", "ok", "checkedAt"):
         assert k in body
     assert isinstance(body["available"], bool)
+
+
+def test_assets_endpoint_lists_module_graph():
+    """자가복구 새로고침(index.html 감시자)이 캐시를 갈아끼울 대상 목록.
+
+    **진입점 하나로는 부족하다** — app.js 만 새로 받아도 그게 import 하는 모듈들이 옛 캐시면
+    똑같이 흰 화면이다. 그래서 js/css 를 전부 준다. 여기가 비면 안전장치가 무력해진다."""
+    from fastapi.testclient import TestClient
+    c = TestClient(m.app)
+    assets = c.get("/api/app/assets").json()["assets"]
+    assert "/app.js" in assets
+    assert "/components/app-root.js" in assets
+    assert any(a.startswith("/vendor/") and a.endswith(".js") for a in assets)   # Vue 자체도 대상
+    assert any(a.endswith(".css") for a in assets)
+    assert all(a.startswith("/") and not a.endswith(".html") for a in assets)

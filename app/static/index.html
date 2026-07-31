@@ -59,5 +59,39 @@
   </div>
 </div>
 <script type="module" src="app.js"></script>
+<script>
+/* 자가복구 새로고침 — "앱을 켰는데 아무것도 안 뜨다가 Ctrl+Shift+R 하면 뜬다" 는 제보의 안전장치.
+ *
+ * 원인은 캐시에 박힌 옛/깨진 JS 다. 그런데 Chrome 의 일반 새로고침은 **본문서만 재검증하고
+ * 서브리소스는 캐시 규칙대로** 쓴다(2017 reload 최적화) — 그래서 location.reload() 로는 안 풀리고
+ * 강제 새로고침만 들었다. 여기서는 정적 자원을 fetch(cache:"reload") 로 한 번 훑어 **캐시 항목
+ * 자체를 새것으로 갈아끼운 뒤** 새로고침한다. 그게 Ctrl+Shift+R 과 같은 효과다.
+ *
+ * 이 스크립트는 일부러 **모듈이 아니다**(type=module 아님) — app.js 가 통째로 실패해도 돌아야 한다.
+ * 판정은 app.js 끝의 window.__lakeUp 하나로 한다. Vue 가 마운트만 되면 헤더(탭)라도 그려지므로,
+ * 안 떴다 = 마운트 자체를 못 했다는 뜻이다.
+ * 복구는 **세션당 딱 한 번**(sessionStorage) — 고쳐지지 않는 원인이면 무한 새로고침이 더 나쁘다. */
+(function () {
+  var KEY = "lake.selfheal", WAIT = 8000;
+  if (!window.sessionStorage) return;
+  setTimeout(function () {
+    if (window.__lakeUp) return;                       // 정상 기동
+    if (sessionStorage.getItem(KEY)) {                 // 이미 한 번 시도했다 — 더 돌지 않고 알린다
+      var b = document.querySelector(".app-boot-sub");
+      if (b) b.textContent = "화면을 불러오지 못했습니다 — 앱을 다시 시작해 주세요";
+      return;
+    }
+    sessionStorage.setItem(KEY, "1");
+    var sub = document.querySelector(".app-boot-sub");
+    if (sub) sub.textContent = "화면을 새로 불러오는 중…";
+    fetch("/api/app/assets").then(function (r) { return r.json(); }).then(function (d) {
+      var list = (d && d.assets) || [];
+      return Promise.all(list.map(function (u) {
+        return fetch(u, { cache: "reload" }).catch(function () {});   // 하나쯤 실패해도 계속
+      }));
+    }).catch(function () {}).then(function () { location.reload(); });
+  }, WAIT);
+})();
+</script>
 </body>
 </html>

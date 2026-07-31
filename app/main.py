@@ -201,6 +201,23 @@ def api_app_rev():
     return {"rev": _BUILD_REV}
 
 
+@app.get("/api/app/assets")
+def api_app_assets():
+    """프론트 정적 자원(js/css) 전체 목록 — **자가복구 새로고침**(index.html 의 감시자)이 쓴다.
+
+    Chrome 의 일반 새로고침은 **본문서만 재검증하고 서브리소스는 캐시 규칙대로** 쓴다(2017 reload
+    최적화). 그래서 옛 JS 가 캐시에 박히면 `location.reload()` 로는 안 풀리고 Ctrl+Shift+R 만 들었다.
+    감시자는 이 목록을 `fetch(cache:"reload")` 로 한 번 훑어 **캐시 항목 자체를 새것으로 갈아끼운 뒤**
+    새로고침한다 — 그게 강제 새로고침과 같은 효과다."""
+    if not STATIC_DIR.exists():
+        return {"assets": []}
+    out = []
+    for p in sorted(STATIC_DIR.rglob("*")):
+        if p.is_file() and p.suffix.lower() in (".js", ".css"):
+            out.append("/" + p.relative_to(STATIC_DIR).as_posix())
+    return {"assets": out}
+
+
 @app.post("/api/app/quit")
 def api_app_quit():
     """이 인스턴스를 **재시작 없이** 깨끗하게 종료 — 새 인스턴스(run.bat)가 이어받을 때.
