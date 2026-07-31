@@ -209,9 +209,12 @@ def validate_bulk(mode, items, lookup=None):
                 comp_names = lookup.components()
             if comp_names is not None:
                 for c in comps:
+                    # 컴포넌트는 **막지 않는다** — 목록에 없는 이름을 쓰는 운영이 있다(사용자 확인).
+                    # 그래도 오타는 잡아 줘야 하니 경고로 알리고, 실제 거절은 생성 결과가 말한다.
                     if c.strip() and c.strip() not in comp_names:
-                        errors.append(_err(i, "components",
-                                           f"'{c}' 컴포넌트가 없습니다. 가능: {', '.join(comp_names)}"))
+                        warnings.append(_err(i, "components",
+                                             f"'{c}' 는 등록된 컴포넌트 목록에 없습니다"
+                                             f"(오타가 아니면 그대로 진행). 등록된 값: {', '.join(comp_names)}"))
 
         asg = (it.get("assignee") or "").strip() if isinstance(it.get("assignee"), str) else ""
         if asg and hasattr(lookup, "user_exists") and not lookup.user_exists(asg):

@@ -141,14 +141,24 @@ def test_type_must_be_creatable_under_parent():
     assert (0, "type") in _fields(standalone)                # Epic 없이 Sub-Task 는 못 만든다
 
 
-def test_priority_component_assignee_checked_against_real_values():
+def test_priority_and_assignee_checked_against_real_values():
     lk = FakeLookup()
     r = validate_bulk("task", [{
         "summary": "A", "type": "Task", "epic": None,
-        "priority": "P9-Nope", "components": ["ETL", "없는모듈"], "assignee": "홍길동",
+        "priority": "P9-Nope", "assignee": "홍길동",
     }], lk)
     f = _fields(r)
-    assert (0, "priority") in f and (0, "components") in f and (0, "assignee") in f
+    assert (0, "priority") in f and (0, "assignee") in f
+
+
+def test_unknown_component_warns_but_does_not_block():
+    """컴포넌트는 목록에 없어도 막지 않는다 — 오타만 경고하고 실제 거절은 Jira 가 말한다."""
+    lk = FakeLookup()
+    r = validate_bulk("task", [{
+        "summary": "A", "type": "Task", "epic": None, "components": ["ETL", "없는모듈"],
+    }], lk)
+    assert r["ok"]
+    assert any(w["field"] == "components" for w in r["warnings"])
 
 
 def test_permission_is_checked_on_parent():
