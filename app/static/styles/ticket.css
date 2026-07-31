@@ -185,9 +185,15 @@
 .spn-sibrow.tkt:hover { background: var(--panel); text-decoration: none; }
 .spn-sibrow.cur { background: var(--panel-3); border-left-color: var(--accent); }
 .spn-sibrow.other { opacity: .5; }
-.spn-sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--st-todo); }
-.spn-sdot.st-inprogress { background: var(--st-prog); }
-.spn-sdot.st-done { background: var(--st-done); }
+/* 상태 = 오른쪽 한글 뱃지(대기/진행/완료) — 왼쪽 동그라미는 무슨 뜻인지 안 읽혀 폐기 */
+.spn-sst { flex: none; font-size: 9px; font-weight: 700; padding: 0.5px 5px; border-radius: 2px;
+  border: 1px solid; white-space: nowrap; letter-spacing: .2px;
+  color: var(--st-todo); border-color: color-mix(in srgb, var(--st-todo) 45%, transparent);
+  background: color-mix(in srgb, var(--st-todo) 10%, transparent); }
+.spn-sst.st-inprogress { color: var(--st-prog); border-color: color-mix(in srgb, var(--st-prog) 45%, transparent);
+  background: color-mix(in srgb, var(--st-prog) 10%, transparent); }
+.spn-sst.st-done { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 45%, transparent);
+  background: color-mix(in srgb, var(--st-done) 10%, transparent); }
 .spn-stitle { flex: 1 1 auto; min-width: 5.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 11px; color: var(--muted); }
 .spn-sibrow.cur .spn-stitle { color: var(--text); font-weight: 600; }

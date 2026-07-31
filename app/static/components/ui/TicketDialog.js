@@ -402,6 +402,8 @@ export default {
     },
     /** 상태 전이 완료 — 내 뷰를 다시 받고(load), 다른 화면·부모에도 알린다(형제·부모 진척 갱신). */
     onTransitioned() { this.stPick = null; this.onFieldSaved(); },
+    /** 형제 목록 상태 라벨 — 한글 짧게(대기/진행/완료). */
+    sstLabel(cat) { return { inprogress: "진행", done: "완료" }[cat] || "대기"; },
     /** 상태 전이 선택 — 완료로 보내는데 미완료 하위가 있으면 먼저 확인(도네가드) 후 진행. */
     async pickTransition(t) {
       this.stOpen = false;
@@ -1167,9 +1169,9 @@ export default {
                    :class="{ cur: s.current, other: isOther(s), tkt: !s.current }"
                    :data-key="s.current ? null : s.key"
                    :title="s.key + ' · ' + s.summary + (s.component ? ' (' + s.component + ')' : '')">
-                <span class="spn-sdot" :class="'st-' + (s.statusCategory || 'todo')"></span>
                 <span class="spn-stitle">{{ s.summary }}</span>
                 <span v-if="isOther(s)" class="spn-scomp">{{ s.component }}</span>
+                <span class="spn-sst" :class="'st-' + (s.statusCategory || 'todo')">{{ sstLabel(s.statusCategory) }}</span>
               </div>
             </div>
             </div>
