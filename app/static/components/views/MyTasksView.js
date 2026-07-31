@@ -29,6 +29,7 @@ import TransitionDialog from "../ui/TransitionDialog.js";
 import { categoryColor } from "../../lib/colors.js";
 import { pushToast } from "../../lib/toast.js";
 import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
+import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
 
 const NO_DUE = 1e6;
 
@@ -756,6 +757,8 @@ export default {
     },
     /** 드랍 → 그 상태로 가는 전이를 찾아 실행. 필수 입력이 있으면 전이 다이얼로그로 넘긴다. */
     async _dropTo(key, zone) {
+      // 완료로 보내는데 미완료 하위가 남아 있으면 먼저 확인(도네가드)
+      if (zone === "done" && !(await confirmDoneDespiteOpenSubs(key))) return;
       let trs = [];
       try { trs = await api.transitions(key) || []; } catch (e) { trs = []; }
       const t = trs.find((x) => x.toCategory === zone);   // done 은 Resolved 우선(서버 정렬)

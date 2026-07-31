@@ -13,6 +13,7 @@ import CommentEditor from "./CommentEditor.js";
 import SettingsMenu from "./SettingsMenu.js";
 import LinkPicker from "./LinkPicker.js";
 import TransitionDialog from "./TransitionDialog.js";
+import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
 import DueText from "./DueText.js";
 import NewChildDialog from "./NewChildDialog.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
@@ -401,6 +402,12 @@ export default {
     },
     /** 상태 전이 완료 — 내 뷰를 다시 받고(load), 다른 화면·부모에도 알린다(형제·부모 진척 갱신). */
     onTransitioned() { this.stPick = null; this.onFieldSaved(); },
+    /** 상태 전이 선택 — 완료로 보내는데 미완료 하위가 있으면 먼저 확인(도네가드) 후 진행. */
+    async pickTransition(t) {
+      this.stOpen = false;
+      if (t.toCategory === "done" && !(await confirmDoneDespiteOpenSubs(this.keyId))) return;
+      this.stPick = t;
+    },
     /** 본문 깜빡임 없이 요약 뷰(상태·진척 등)만 갱신 — 하위 상태변경이 내 진척 %를 바꿀 때. */
     softReloadView() {
       const key = this.keyId;
@@ -1208,7 +1215,7 @@ export default {
                 <template v-else>
                   <div v-if="!stMayEdit" class="fe-none">담당자·보고자 또는 매니저만 바꿀 수 있습니다.</div>
                   <template v-else>
-                    <button v-for="t in stList" :key="t.id" class="fe-i" @click="stPick = t; stOpen = false">
+                    <button v-for="t in stList" :key="t.id" class="fe-i" @click="pickTransition(t)">
                       <span class="sr-dot" :class="'st-' + (t.toCategory || 'todo')"></span>{{ t.to }}
                       <em v-if="t.hasScreen" title="추가 입력이 필요합니다">…</em>
                     </button>

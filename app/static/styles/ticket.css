@@ -1341,6 +1341,23 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   box-shadow: 0 24px 60px rgba(0,0,0,.32); }
 .cfm-m { font-size: 13.5px; line-height: 1.6; color: var(--text); white-space: pre-line; }
 .cfm-f { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+/* 확인창의 대상 티켓 행 — [ 번호 | 제목 (타입뱃지) | 담당자 ]. 제목만 늘어나고 말줄임. */
+.cfm:has(.cfm-tkt) { width: min(480px, 92vw); }   /* 티켓 행이 있으면 조금 넓게 — 뱃지·담당자 살 자리 */
+.cfm-tkts { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.cfm-tkts .cfm-tkt { margin-top: 0; }
+.cfm-tkt.folded { display: none; }
+.cfm-more { font: inherit; font-size: 11.5px; font-weight: 600; color: var(--muted); cursor: pointer;
+  background: var(--panel-2); border: 1px dashed var(--border-hi); border-radius: 3px; padding: 5px 10px; }
+.cfm-more:hover { color: var(--text); border-color: var(--accent); }
+.cfm-note { margin-top: 12px; font-size: 11.5px; color: var(--muted); }
+.cfm-tkt { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 11px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 3px; min-width: 0; }
+.cfm-tkt .cfm-tk { flex: none; font-size: 12px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.cfm-tkt .cfm-tt { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; font-weight: 600; }
+.cfm-tkt .tbadge { flex: none; }
+.cfm-tkt .cfm-ta { flex: none; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.cfm-tkt .cfm-ta::before { content: "\1F464"; opacity: .55; margin-right: 3px; font-size: 10px; }
 .cfm-b { font: inherit; font-size: 12.5px; font-weight: 700; padding: 6px 14px;
   border-radius: 7px; cursor: pointer; color: var(--text);
   background: var(--panel-2); border: 1px solid var(--border); }

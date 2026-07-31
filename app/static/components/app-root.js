@@ -166,7 +166,8 @@ export default {
       if (!c || !c.parentKey || !c.transition) return;
       const t = c.transition;
       const ok = await confirmBox(this.cascadeMsg(c),
-        { okLabel: (t.to || "변경") + " 로 변경", cancelLabel: "아니오" });
+        { okLabel: (t.to || "변경") + " 로 변경", cancelLabel: "아니오",
+          ticket: { key: c.parentKey, summary: c.parentSummary, type: c.parentType, assignee: c.parentAssignee } });
       if (!ok) return;
       if (t.needsScreen) { this.cascadeTrx = { ticket: c.parentKey, transition: t }; return; }
       try {
@@ -180,11 +181,11 @@ export default {
       }
     },
     cascadeMsg(c) {
-      const p = (c.parentSummary ? "'" + c.parentSummary + "' " : "") + "(" + c.parentKey + ")";
+      // 대상 티켓은 본문에 텍스트로 언급하지 않는다 — 아래 카드 행(confirmBox opts.ticket)이 보여준다.
       const to = c.transition.to || "";
-      if (c.rule === "done") return "모든 하위 작업이 완료됐습니다. 상위 " + p + " 도 " + to + " (으)로 완료 처리할까요?";
-      if (c.rule === "inprogress") return "하위 작업이 진행 중으로 바뀌었습니다. 상위 " + p + " 도 진행중(" + to + ")으로 바꿀까요?";
-      return "완료된 상위 " + p + " 에 미완료/새 하위가 생겼습니다. 상위를 " + to + " (으)로 되돌릴까요?";
+      if (c.rule === "done") return "모든 하위 작업이 완료됐습니다.\n아래 상위 Task 도 " + to + " (으)로 완료 처리할까요?";
+      if (c.rule === "inprogress") return "하위 작업이 진행 중으로 바뀌었습니다.\n아래 상위 Task 도 진행중(" + to + ")으로 바꿀까요?";
+      return "완료된 상위 Task 에 미완료/새 하위가 생겼습니다.\n아래 상위 Task 를 " + to + " (으)로 되돌릴까요?";
     },
     onCascadeDone() {
       const k = this.cascadeTrx && this.cascadeTrx.ticket;

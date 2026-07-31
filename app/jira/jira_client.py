@@ -1938,7 +1938,7 @@ class JiraClient:
                 return None
             ccat = norm_cat((((cf.get("status") or {}).get("statusCategory")) or {}).get("key"))
             pf = (prov.get_json(f"/rest/api/2/issue/{parent_key}",
-                                params={"fields": "summary,status,subtasks"}).get("fields") or {})
+                                params={"fields": "summary,status,subtasks,issuetype,assignee"}).get("fields") or {})
         except SessionExpired:
             raise
         except Exception:
@@ -1975,11 +1975,14 @@ class JiraClient:
         if not pick:
             return None
         fld = pick.get("fields") or {}
+        pa = pf.get("assignee") or {}
         return {
             "rule": rule,
             "parentKey": parent_key,
             "parentSummary": pf.get("summary") or "",
             "parentStatus": ((pf.get("status") or {}).get("name")) or "",
+            "parentType": ((pf.get("issuetype") or {}).get("name")) or "",
+            "parentAssignee": real_name(pa.get("displayName") or pa.get("name")) if pa else None,
             "transition": {
                 "id": pick["id"], "name": pick.get("name") or "",
                 "to": pick.get("to") or "", "toCategory": pick.get("toCategory") or "",

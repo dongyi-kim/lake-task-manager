@@ -15,6 +15,7 @@ import Avatar from "./Avatar.js";
 import TransitionDialog from "./TransitionDialog.js";
 import UserPickDialog from "./UserPickDialog.js";
 import { confirmBox } from "../../lib/confirm.js";
+import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
 
 export default {
   name: "TicketMenu",
@@ -59,6 +60,12 @@ export default {
     document.removeEventListener("keydown", this._onEsc);
   },
   methods: {
+    /** 상태 전이 선택 — 완료로 보내는데 미완료 하위가 있으면 먼저 확인(도네가드) 후 진행. */
+    async pickTransition(t) {
+      this.open = false;
+      if (t.toCategory === "done" && !(await confirmDoneDespiteOpenSubs(this.key))) return;
+      this.picked = t;
+    },
     openAt(x, y, key) {
       // 화면 밖으로 나가지 않게 — 아래/오른쪽 끝에서 열면 메뉴가 잘린다.
       this.x = Math.min(x, window.innerWidth - 250);
@@ -136,7 +143,7 @@ export default {
         <div v-if="!mayEdit" class="tkm-note">담당자·보고자 또는 매니저만 바꿀 수 있습니다.</div>
         <template v-else>
           <button v-for="t in transitions" :key="t.id" class="tkm-i" :class="'to-' + t.toCategory"
-                  :disabled="!!busy" @click="picked = t; open = false" :title="t.name">
+                  :disabled="!!busy" @click="pickTransition(t)" :title="t.name">
             <span class="tkm-dot"></span>{{ t.to }}
             <em v-if="t.hasScreen" title="추가 입력이 필요합니다">…</em>
           </button>
