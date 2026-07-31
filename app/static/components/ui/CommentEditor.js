@@ -894,7 +894,7 @@ export default {
                     // 최대화 모드에는 안 쓴다 — 거기선 창이 높이를 정한다.
                     hostH: loadEditorHeight(), resizing: false,
                     // 업로드 진행 — 몇 개 중 몇 번째, 지금 무엇을 올리는 중인가
-                    upTotal: 0, upDone: 0, upName: "",
+                    upTotal: 0, upDone: 0, upName: "", upSize: "", upStart: 0, tickNow: 0,
                     // 파일을 이 에디터 위로 끌고 왔는가 — 테두리로 "여기에 놓으면 본문" 을 말한다
                     dragOver: false, dragDepth: 0,
                     // '' | 'jira' | 'confluence' — '/' 로 연 검색창
@@ -995,6 +995,7 @@ export default {
   },
   beforeUnmount() {
     this._dead = true;
+    if (this._upTick) { clearInterval(this._upTick); this._upTick = null; }   // 업로드 경과 타이머
     try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
     try { if (this._ed) this._ed.destroy(); } catch (e) { /* noop */ }
   },
@@ -1026,7 +1027,13 @@ export default {
     busyLabel() {
       if (!this.upTotal) return "저장 중…";
       const n = Math.min(this.upDone + 1, this.upTotal);
-      return "첨부 " + n + "/" + this.upTotal + (this.upName ? " · " + this.upName : "");
+      // 큰 파일은 분 단위로 걸린다 — 크기와 **경과 시간**을 같이 보여 줘야 '멈춘 것' 으로
+      // 오해하고 다시 누르지 않는다(리포트된 문제: 12MB 업로드 중 반복 제출).
+      const el = this.upStart ? Math.round((this.tickNow - this.upStart) / 1000) : 0;
+      return "첨부 " + n + "/" + this.upTotal
+        + (this.upName ? " · " + this.upName : "")
+        + (this.upSize ? " (" + this.upSize + ")" : "")
+        + (el > 3 ? " · " + el + "초" : "");
     },
   },
   methods: {
@@ -1360,9 +1367,13 @@ export default {
       for (const [url, info] of this._pending) if (html.includes(url)) queue.push([url, info]);
       this.upTotal = queue.length;
       this.upDone = 0;
+      this.upStart = Date.now();
+      // 1초마다 경과 시간을 갱신한다(라벨이 살아 있어야 '진행 중'으로 읽힌다).
+      this._upTick = setInterval(() => { this.tickNow = Date.now(); }, 1000);
       try {
         for (const [url, info] of queue) {
           this.upName = info.name;
+          this.upSize = fmtSize((info.blob && info.blob.size) || 0);
           const file = new File([info.blob], info.name,
                                 { type: (info.blob && info.blob.type) || "application/octet-stream" });
           // 최대 UPLOAD_TRIES 회까지 다시 올려 본다 — 간헐 실패(네트워크/세션)로 파일을 버리지 않게.
@@ -1388,7 +1399,8 @@ export default {
           }
           this.upDone += 1;
         }
-        this.upName = "";                                // 이제 본문/댓글 자체를 올린다
+        this.upName = ""; this.upSize = "";              // 이제 본문/댓글 자체를 올린다
+        clearInterval(this._upTick); this._upTick = null;
         // 올릴 게 파일뿐이었는데 전부 실패 — 저장할 본문이 없다. 알리고 끝낸다(_pending 은 남겨
         // 사용자가 다시 [등록]으로 재시도할 수 있게). text 는 사용자가 친 글자(파일 참조 제거와 무관).
         if (!text && uploaded.length === 0 && failed.length) {

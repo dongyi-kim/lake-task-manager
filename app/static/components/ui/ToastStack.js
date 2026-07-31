@@ -38,7 +38,9 @@ export default {
       const item = { id, kind: t.kind || "info", icon: t.icon || "", title: t.title || "",
                      message: t.message || "", key: t.key || null, _t: null };
       this.toasts.push(item);
-      const ms = t.timeout == null ? 6000 : t.timeout;
+      // 기본 표시시간 — 6초는 읽다가 사라진다는 말이 나왔다. 10초로 늘리고, 사라질 때도
+      // 천천히 페이드아웃한다(아래 CSS .toast-leave-active).
+      const ms = t.timeout == null ? 10000 : t.timeout;
       if (ms > 0) item._t = setTimeout(() => this.dismiss(id), ms);
       // 최대 5개만 — 넘치면 가장 오래된 것부터
       while (this.toasts.length > 5) this.dismiss(this.toasts[0].id);
@@ -50,7 +52,7 @@ export default {
       this.toasts.splice(i, 1);
     },
     pause(t) { clearTimeout(t._t); },
-    resume(t) { clearTimeout(t._t); t._t = setTimeout(() => this.dismiss(t.id), 2500); },
+    resume(t) { clearTimeout(t._t); t._t = setTimeout(() => this.dismiss(t.id), 4000); },
   },
   template: `
   <div class="toaststack">

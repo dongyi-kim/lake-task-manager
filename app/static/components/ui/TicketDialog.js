@@ -20,6 +20,14 @@ import { fromBackdrop } from "../../lib/backdrop.js";
 
 // 목록이 이보다 길면 기본으로 접는다. 첨부가 스무 개인 티켓에서 본문·코멘트가 화면 밖으로
 // 밀려나는 걸 막는다 — 몇 개인지는 제목 옆 숫자로 이미 알 수 있다.
+/** 바이트 → 사람이 읽는 크기(업로드 진행 표시용). */
+function fmtBytes(n) {
+  if (!n) return "";
+  if (n < 1024) return n + "B";
+  if (n < 1024 * 1024) return Math.round(n / 1024) + "KB";
+  return (n / (1024 * 1024)).toFixed(1) + "MB";
+}
+
 const FOLD_AT = 5;
 
 // 하위 Task 정렬 기준 — '내 Task' 와 같은 축(마감·우선순위) + 사람별 보기.
@@ -112,7 +120,8 @@ export default {
                     // 링크 추가(관련 티켓/관련문서) · 파일 첨부(＋ 버튼 · 드래그앤드롭)
                     relPick: false, linkBusy: false, linkErr: "",
                     docPick: false, docBusy: false, docErr: "",
-                    uploading: false, upErr: "", dragOver: false, dragInEditor: false,
+                    uploading: false, upErr: "", upNow: null, upElapsed: 0,
+                    dragOver: false, dragInEditor: false,
                     // 편집 가능 필드 — Jira 가 답한 것만 편집 UI 를 연다(추측 금지).
                     emeta: null, descEdit: false, descBusy: false, descErr: "",
                     // 본문 편집을 시작한 시점의 본문 + 그 뒤 남이 고쳤는가
@@ -600,14 +609,24 @@ export default {
       if (files.length) this.uploadFiles(files);
     },
     async uploadFiles(files) {
-      if (this.uploading || !this.tk) return;
+      if (this.uploading || !this.tk) return;      // 중복 제출 방지(버튼·드롭 모두 이 경로)
       this.uploading = true; this.upErr = "";
       const failed = [];
-      for (const f of files) {
-        try { await api.attachmentUpload(this.tk, f); }
-        catch (e) { failed.push(f.name + " (" + ((e && e.message) || e) + ")"); }
+      // 큰 파일은 분 단위로 걸린다 — 무엇을 몇 번째로 올리는지, 크기와 경과 시간을 계속 보여
+      // 준다(피드백이 없어 사용자가 반복 제출한 문제).
+      const started = Date.now();
+      this._upTick = setInterval(() => { this.upElapsed = Math.round((Date.now() - started) / 1000); }, 1000);
+      try {
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          this.upNow = { name: f.name, size: fmtBytes(f.size), i: i + 1, n: files.length };
+          try { await api.attachmentUpload(this.tk, f); }
+          catch (e) { failed.push(f.name + " (" + ((e && e.message) || e) + ")"); }
+        }
+      } finally {
+        clearInterval(this._upTick); this._upTick = null;
+        this.uploading = false; this.upNow = null; this.upElapsed = 0;
       }
-      this.uploading = false;
       this.upErr = failed.length ? "첨부 실패: " + failed.join(", ") : "";
       await this.reloadAttachments();
     },
@@ -1431,11 +1450,18 @@ export default {
           <div class="tkt-two">
             <div class="tkt-two-col">
               <div class="tkt-sec-t has-add">첨부파일<span v-if="atts.length"> ({{ atts.length }})</span>
-                <button class="add-b" title="파일 첨부" @click="$refs.file.click()">＋</button>
+                <button class="add-b" title="파일 첨부" :disabled="uploading" @click="$refs.file.click()">＋</button>
                 <input ref="file" type="file" multiple hidden @change="onFilePick">
               </div>
               <div v-if="upErr" class="tkt-cmt-err">{{ upErr }}</div>
-              <div v-if="uploading" class="muted mini">첨부 올리는 중…</div>
+              <div v-if="uploading" class="tkt-uping">
+                <span class="spinner" aria-hidden="true"></span>
+                <span v-if="upNow">첨부 올리는 중 {{ upNow.i }}/{{ upNow.n }} — {{ upNow.name }}
+                  <em v-if="upNow.size">({{ upNow.size }})</em></span>
+                <span v-else>첨부 올리는 중…</span>
+                <em v-if="upElapsed > 3">· {{ upElapsed }}초</em>
+                <em class="hint">큰 파일은 몇 분 걸릴 수 있습니다 — 그대로 두세요</em>
+              </div>
               <div v-if="!atts.length" class="muted mini">첨부파일 없음 — 파일을 이 창에 끌어다 놓아도 됩니다</div>
               <!-- 목록이 길면 기본으로 접는다 — 첨부가 스무 개인 티켓에서 본문·코멘트가 화면
                    밖으로 밀려난다. 앞 5개는 남기고 6번째가 흐려지며, 그 위에 펼침 버튼이 앉는다. -->

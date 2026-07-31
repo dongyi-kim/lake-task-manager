@@ -1520,3 +1520,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   background: var(--panel-2); cursor: pointer; }
 .tp-cell.on { background: color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
 .tp-label { display: block; margin-top: 7px; text-align: center; font-size: 11px; color: var(--muted); }
+
+/* 첨부 업로드 진행 — 큰 파일은 분 단위라 '멈춘 것' 으로 오해받는다. 스피너+파일명+크기+경과
+   시간을 함께 보여 주고, 그 옆에 기다리라는 안내를 둔다(반복 제출 방지). */
+.tkt-uping { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 11.5px; color: var(--muted); margin: 4px 0 6px; }
+.tkt-uping em { font-style: normal; color: var(--muted-2); }
+.tkt-uping em.hint { flex-basis: 100%; font-size: 11px; }

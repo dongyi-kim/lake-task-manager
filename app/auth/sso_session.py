@@ -136,7 +136,7 @@ class SsoSessionProvider(AuthProvider):
     # 예전엔 timeout 이 없어, 죽은 브라우저에서 호출이 멎으면 앱 전체가 응답을 잃었다.
     JOB_TIMEOUT = 180
 
-    def _submit(self, fn, priority=0):
+    def _submit(self, fn, priority=0, wait=None):
         """fn 을 Playwright 전용 스레드에서 실행하고 결과/예외를 호출자 스레드로 반환.
 
         priority: -1=쓰기 · 0=사용자 요청(기본) · 1=백그라운드 갱신. 작은 값이 먼저다.
@@ -148,10 +148,11 @@ class SsoSessionProvider(AuthProvider):
         done = threading.Event()
         box = [None, None]   # [result, error]
         self._jobs.put((priority, next(self._seq), (fn, done, box)))
-        if not done.wait(self.JOB_TIMEOUT):
+        limit = wait if wait else self.JOB_TIMEOUT      # 업로드는 크기에 맞춘 한도를 받는다
+        if not done.wait(limit):
             raise SessionExpired(
                 "Jira 응답이 없습니다(%ds 초과). 절전 후 세션이 끊겼을 수 있습니다 — "
-                "[SSO 로그인] 을 다시 실행하세요." % self.JOB_TIMEOUT)
+                "[SSO 로그인] 을 다시 실행하세요." % int(limit))
         if box[1] is not None:
             raise box[1]
         return box[0]
@@ -283,7 +284,12 @@ class SsoSessionProvider(AuthProvider):
         #   토큰 쿠키가 없으면(비브라우저 세션) 파라미터 없이 no-check 만으로 간다.
         tok = self._xsrf_cookie(url)
         params = {"atl_token": tok} if tok else {}
-        resp = self._context.request.post(url, multipart=body, params=params,
+        # ★ Playwright 의 request 타임아웃 기본값은 **30초**다. 12MB 짜리 첨부가 사내망에서
+        #   그 안에 안 올라가 'Timeout 30000ms exceeded' 로 죽었다(리포트된 버그).
+        #   업로드 시간은 파일 크기에 비례하므로 크기로 정한다 — 최소 2분, 1MB 당 +20초,
+        #   상한 15분. 큐 대기(JOB_TIMEOUT)와는 다른 층이라 그쪽도 함께 늘려야 의미가 있다.
+        up_timeout = self._upload_timeout_ms(len(data or b""))
+        resp = self._context.request.post(url, multipart=body, params=params, timeout=up_timeout,
                                           headers=self._xsrf_headers(url, multipart=True))
         if resp.status in (401, 403, 404):
             # 한 번은 **순수 no-check 로만** 다시 던져 본다.
@@ -294,7 +300,7 @@ class SsoSessionProvider(AuthProvider):
             from .base import MULTIPART_HEADERS
             print(f"[upload] {resp.status} — no-check 단독 헤더로 1회 재시도: {path}",
                   file=sys.stderr, flush=True)
-            resp = self._context.request.post(url, multipart=body,
+            resp = self._context.request.post(url, multipart=body, timeout=up_timeout,
                                               headers=dict(MULTIPART_HEADERS))
         if resp.status >= 400:
             # ★ 401 도 **본문을 읽고 나서** 판단한다. 예전엔 본문 없이 '세션 만료' 로 단정했는데,
@@ -323,10 +329,20 @@ class SsoSessionProvider(AuthProvider):
         except Exception:
             return {}
 
+    @staticmethod
+    def _upload_timeout_ms(size_bytes):
+        """업로드 타임아웃(ms) — 크기에 비례. 최소 2분, 1MB 당 +20초, 상한 15분.
+        (사내망 업로드는 느리다: 12MB 가 30초를 넘겨 기본값에 걸렸다.)"""
+        mb = max(0, int(size_bytes or 0)) / (1024 * 1024)
+        return int(min(15 * 60_000, 120_000 + mb * 20_000))
+
     def post_multipart(self, path, filename, data, content_type=None, field="file", params=None):
         # params 는 첨부 업로드에선 쓰지 않으나 인터페이스 통일용으로 받는다.
+        # 큐 대기 한도(JOB_TIMEOUT)도 업로드에 맞춰 늘린다 — 요청 자체는 15분까지 기다릴 수
+        # 있는데 큐가 180초에 끊어 버리면 결국 같은 실패가 된다(층이 둘이라 둘 다 맞춰야 한다).
         return self._submit(lambda: self._write_multipart(path, field, filename, data, content_type),
-                            PRIO_WRITE)
+                            PRIO_WRITE,
+                            wait=self._upload_timeout_ms(len(data or b"")) / 1000 + 30)
 
     def get_text(self, path, params=None):
         return self._submit(lambda: self._fetch(path, params, True))

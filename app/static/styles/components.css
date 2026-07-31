@@ -287,9 +287,13 @@
 .toast.k-success .toast-ic { color: var(--st-done); }
 .toast.k-error .toast-ic { color: var(--today); }
 /* 등장/퇴장 — 오른쪽에서 슬라이드 + 페이드. 남은 항목은 부드럽게 자리 이동. */
-.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(42px); }
-.toast-enter-active, .toast-leave-active { transition: opacity .26s ease, transform .26s ease; }
-.toast-leave-active { position: absolute; right: 0; width: 100%; }
+.toast-enter-from { opacity: 0; transform: translateX(42px); }
+.toast-enter-active { transition: opacity .26s ease, transform .26s ease; }
+/* 나갈 때는 **천천히 페이드**한다 — 순식간에 사라지면 읽던 중에 놓친다(리포트됨).
+   옆으로 밀지 않고 제자리에서 흐려지며 살짝 줄어든다: 눈이 따라가지 않아도 된다. */
+.toast-leave-to { opacity: 0; transform: translateX(10px) scale(.98); }
+.toast-leave-active { transition: opacity .9s ease-out, transform .9s ease-out;
+  position: absolute; right: 0; width: 100%; }
 .toast-move { transition: transform .26s ease; }
 
 /* 우상단 고정. 파일명은 아이콘 옆(윗줄), **저장 경로는 아랫줄에 전체**(말줄임 없이 줄바꿈). */
