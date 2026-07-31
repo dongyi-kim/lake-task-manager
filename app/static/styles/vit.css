@@ -47,8 +47,13 @@
 .vrow { padding: 11px 16px; border-top: 1px solid var(--border); align-items: start; }
 .vrow:first-child { border-top: none; } .vrow:hover { background: rgba(127,127,127,.035); }
 
-/* 티켓 컬럼 3줄: (상태·타입·담당자) / (번호·이름) / (Started·Due·활동) — 최상위 현안은 카드형 원복 */
-.c-info .l1 { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 4px; }
+/* 티켓 컬럼 2줄: [제목(강조)+타입] / [상태·D-day·담당자·번호(+신호)] */
+.c-info .l1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.c-info .l1 .dday { font-size: 11.5px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.c-info .l1 .dday.overdue { color: var(--danger); }
+.c-info .l1 .key { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.c-info .l2 .summ { font-size: 14.5px; font-weight: 700; }   /* 제목 강조 — 폰트 조금 업 */
+.c-info .l2 .ty { flex: 0 0 auto; color: var(--muted); font-weight: 400; font-size: 11.5px; }
 .c-info .l1 .who { color: var(--muted); font-size: 11.5px; } .c-info .l1 .who::before { content: "\1F464"; opacity: .55; margin-right: 3px; font-size: 10px; }
 .c-info .l2 { display: flex; align-items: baseline; gap: 7px; margin-bottom: 5px; min-width: 0; cursor: pointer; }
 .c-info .l2 .key { color: var(--accent); }
