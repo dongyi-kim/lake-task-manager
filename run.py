@@ -1097,6 +1097,22 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None):
                     page.bring_to_front()               # ★ 반드시 이 창의 스레드에서(Playwright 스레드 고정)
                 except Exception:
                     pass
+            # URL 디스패처가 넘긴 Jira 티켓 — 창을 현재 데스크톱/모니터로 소환하고 다이얼로그를 연다.
+            tk = None
+            try:
+                tk = appmain.consume_open_ticket()
+            except Exception:
+                tk = None
+            if tk:
+                try:
+                    _summon_to_current(None)            # 창이 이미 있으므로 open_hook 불필요
+                except Exception:
+                    pass
+                try:
+                    page.evaluate(
+                        "k => window.dispatchEvent(new CustomEvent('lake-open-ticket', { detail: { key: k } }))", tk)
+                except Exception:
+                    pass
             _drain_downloads(context, dlq)              # 받아 둔 다운로드를 여기서(메인 스레드) 저장
             if i < 16:                                  # ~8초 동안 창 아이콘 재적용(favicon 덮어쓰기 대비)
                 _set_window_icon_win(ico_path)

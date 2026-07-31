@@ -13,8 +13,10 @@ Lake Task Manager — FastAPI 진입점.
 JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 """
 
+import re
 import threading
 import urllib.parse
+from collections import deque
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -173,6 +175,33 @@ def consume_focus_request():
 def api_app_open():
     """다른 실행 인스턴스(런처)가 '창을 띄우거나 포커스' 요청 — 단일 인스턴스 동작의 진입점."""
     return request_focus_or_open()
+
+
+# URL 디스패처(dispatch_url.py)가 Jira /browse/{key} 링크를 가로채 넘긴다 —
+# 창을 소환(현재 데스크톱)하고 그 티켓 다이얼로그를 연다. 창 루프(run.py)가 폴링해 소비.
+_open_ticket_q: "deque[str]" = deque(maxlen=8)
+
+
+def consume_open_ticket():
+    """창 루프가 자기 스레드에서 호출 — 열 티켓 키가 있으면 꺼내 준다(없으면 None)."""
+    try:
+        return _open_ticket_q.popleft()
+    except IndexError:
+        return None
+
+
+class _OpenTicketBody(BaseModel):
+    key: str
+
+
+@app.post("/api/app/open-ticket")
+def api_app_open_ticket(body: _OpenTicketBody):
+    key = (body.key or "").strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key):
+        return JSONResponse({"ok": False, "error": "잘못된 티켓 키"}, status_code=400)
+    _open_ticket_q.append(key)
+    r = request_focus_or_open()                 # 창이 없으면 새로 연다(뜨면 루프가 큐를 소비)
+    return {"ok": True, "window": r.get("action")}
 
 
 # ── 업데이트 확인 (배포 repo 가 원격보다 뒤처졌나) ─────────────────────────
