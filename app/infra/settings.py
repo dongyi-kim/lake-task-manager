@@ -70,8 +70,15 @@ def _migrate_legacy_cache():
         for name in names:
             old, new = root / name, CACHE_DIR / name
             try:
-                if old.exists() and not new.exists():
+                if not old.exists():
+                    continue
+                if not new.exists():
                     shutil.move(str(old), str(new))
+                else:
+                    # 새 위치에 이미 있으면 옛것은 **죽은 사본**이다(앱은 새 위치만 읽는다).
+                    # 그냥 두면 옛 쿠키·세션이 루트에 영원히 남는다(실제로 13MB 프로필이 남아
+                    # 있었다) — 캐시·세션은 다시 만들어지는 것이므로 지운다.
+                    shutil.rmtree(old) if old.is_dir() else old.unlink()
             except Exception:
                 pass
 
