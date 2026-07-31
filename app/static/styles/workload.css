@@ -250,9 +250,11 @@
 .wl-risk-key { flex: none; color: var(--accent); font-weight: 700; font-size: 11px;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; letter-spacing: .2px; font-variant-numeric: tabular-nums; }
 .wl-risk-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+/* 리스크 소속 뱃지 — 내 Task(.mt-epic)와 동일한 사각(3px) 솔리드로 통일(둥근 알약 폐기) */
 .wl-risk-epic { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 9.5px; font-weight: 700; line-height: 1; padding: 2px 6px; border-radius: 999px;
-  color: #fff; background: var(--ec, var(--accent)); box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent); }
+  font-size: 9.5px; font-weight: 700; letter-spacing: .1px; line-height: 15px; padding: 0 7px;
+  border-radius: 3px; color: #fff; background: var(--ec, var(--accent)); }
+:root[data-theme="dark"] .wl-risk-epic { color: #0b1015; }
 .wl-risk-dd { flex: none; margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--danger); }
 .wl-risk-dd.warn { color: var(--today); }
 .wl-risk-dd.danger { color: var(--danger); }
@@ -263,8 +265,15 @@
 .wl-mon-row.tkt:hover { color: var(--accent); }
 .ok { color: var(--good); font-weight: 600; }
 
-/* 사용자 VoC 뱃지 세그먼트 — [VoC | 대분류 | 소분류] (Task 화면과 동일 규칙, voc.js 파싱) */
-.ebadge.voc .vseg + .vseg, .wl-risk-epic.voc .vseg + .vseg {
-  margin-left: 4px; padding-left: 4px; border-left: 1px solid rgba(0,0,0,.25); }
-.ebadge.voc .vseg.head, .wl-risk-epic.voc .vseg.head { font-weight: 800; }
-.wl-risk-epic.voc .vseg + .vseg { border-left-color: color-mix(in srgb, var(--ec) 55%, transparent); }
+/* 사용자 VoC 뱃지 — **내 Task(.mt-voc)와 동일한 생김새로 통일**: 외곽선 컨테이너 +
+   head(VoC)는 솔리드, 분류 세그는 연한 틴트 + 구분선. 파싱 규칙도 voc.js 공용. */
+.ebadge.voc, .wl-risk-epic.voc { display: inline-flex; align-items: stretch; padding: 0; overflow: hidden;
+  background: none; color: var(--text); font-size: 9.5px; font-weight: 700; line-height: 15px;
+  border: 1px solid color-mix(in srgb, var(--ty-story) 55%, var(--border)); border-radius: 3px; }
+.ebadge.voc .vseg, .wl-risk-epic.voc .vseg { padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ebadge.voc .vseg.head, .wl-risk-epic.voc .vseg.head { background: var(--ty-story); color: #fff; flex: none; }
+:root[data-theme="dark"] .ebadge.voc .vseg.head,
+:root[data-theme="dark"] .wl-risk-epic.voc .vseg.head { color: #0b1015; }
+.ebadge.voc .vseg:not(.head), .wl-risk-epic.voc .vseg:not(.head) {
+  background: color-mix(in srgb, var(--ty-story) 13%, transparent);
+  color: var(--text); border-left: 1px solid color-mix(in srgb, var(--ty-story) 40%, var(--border)); }
