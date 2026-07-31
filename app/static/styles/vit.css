@@ -15,6 +15,7 @@
 .vit-view .pill, .vit-view .tbadge, .vit-view .chip, .vit-view .xbtn,
 .vit-view .mini .act, .vit-view .tcard { border-radius: 2px; }
 .vit-view .chip .sw { border-radius: 2px; }
+.vit-view .chip b em.cd { font-style: normal; color: var(--st-done); }   /* 완료 수는 완료색 */
 
 /* ── 데일리미팅 강화 ─────────────────────────────────────────────
    '오늘의 브리핑' 한 줄 요약 바 + 현안 행의 위험/움직임 신호 뱃지. 각진 테마(2px) 유지. */

@@ -25,6 +25,9 @@ export default {
       if (!this.d) return [];
       return this.d.modules.flatMap((m) => this.mods[m.module] || []);
     },
+    // 상단 칩 지표 — 모듈 본문이 전부 도착하면 전체 (완료/전체) 를 보여줄 수 있다.
+    allLoaded() { return !!this.d && this.d.modules.every((m) => this.mods[m.module]); },
+    allDone() { return this.allIssues.filter((it) => it.statusCategory === "done").length; },
     // 상단 '오늘의 브리핑' — 지난 BRIEF_DAYS 일 완료·신규(자손 소식) + 지금 지연·정체인 현안 수.
     brief() {
       let done = 0, created = 0, late = 0, stale = 0;
@@ -218,10 +221,15 @@ export default {
   <div class="vit-view">
     <div v-if="err" class="err">현안 데이터를 불러오지 못했습니다: {{ err }}</div>
     <template v-else-if="d">
+      <!-- 상단 주요지표 — 전체·모듈별 (완료/전체). 모듈 본문이 도착하는 대로 개수→완료/전체 로 승격 -->
       <div class="chips">
-        <div class="chip" style="background:var(--accent);color:#fff;border-color:transparent"><b>{{ d.summary.total }}</b> 현안 (PMO_VIT)</div>
+        <div class="chip" style="background:var(--accent);color:#fff;border-color:transparent">
+          <b v-if="allLoaded">{{ allDone }}/{{ d.summary.total }}</b><b v-else>{{ d.summary.total }}</b> 현안 (PMO_VIT)
+        </div>
         <div v-for="(m, i) in d.modules" :key="m.module" class="chip">
-          <span class="sw" :style="{ background: mcolor(i) }"></span> {{ m.module }} <b>{{ m.count }}</b>
+          <span class="sw" :style="{ background: mcolor(i) }"></span> {{ m.module }}
+          <b v-if="mods[m.module]"><em class="cd">{{ modCounts(m.module).done }}</em>/{{ m.count }}</b>
+          <b v-else>{{ m.count }}</b>
         </div>
       </div>
       <div class="note" v-if="d.summary.skippedDup">상위가 이미 PMO_VIT 인 자손 현안 {{ d.summary.skippedDup }}건은 중복으로 숨김</div>
