@@ -13,13 +13,12 @@ import { copyText } from "../../lib/ticketlink.js";
 import { pushToast } from "../../lib/toast.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 import { validateBulk, exampleJson, fieldDocs, buildLlmPrompt } from "../../lib/bulkSchema.js";
-import TypeBadge from "./TypeBadge.js";
-
-const FOLD_AT = 10;          // 미리보기에서 이보다 많으면 접는다
+import { categoryColor } from "../../lib/colors.js";
+import TaskCard from "./TaskCard.js";
 
 export default {
   name: "BulkCreateDialog",
-  components: { TypeBadge },
+  components: { TaskCard },
   props: { mode: { type: String, required: true } },     // 'task' | 'subtask'
   emits: ["close", "done"],
   data() {
@@ -32,22 +31,67 @@ export default {
       opts: { types: [], priorities: [], components: [] },   // 프롬프트에 박을 실제 선택지
       result: null,           // { created:[], failed:[] }
       progress: 0,
-      foldOpen: {},           // 미리보기 그룹별 펼침
+      // 미리보기에서 실제로 불러온 상위 티켓(Epic/부모 Task). key → badge | null(=없는 티켓).
+      // 뱃지를 채우려고 받는 김에 **존재 여부 검수**까지 된다.
+      refs: {}, refLoading: false,
     };
   },
   computed: {
     isSub() { return this.mode === "subtask"; },
     title() { return this.isSub ? "Bulk Sub Task 추가하기" : "Bulk Task 추가하기"; },
     docs() { return fieldDocs(this.mode); },
-    /** 미리보기 그룹 — 상위(Epic/Task)별로 묶는다. 상위가 없으면 'Epic 없음'. */
-    groups() {
-      const by = new Map();
-      this.items.forEach((it, i) => {
-        const k = (this.isSub ? it.parent : it.epic) || "__none__";
-        if (!by.has(k)) by.set(k, { key: k, items: [] });
-        by.get(k).items.push({ ...it, _i: i });
+    /** 이 JSON 이 참조하는 상위 티켓 키들(Epic 또는 부모 Task) — 중복 제거. */
+    refKeys() {
+      const s = new Set();
+      for (const it of this.items) {
+        const k = this.isSub ? it.parent : it.epic;
+        if (k) s.add(k);
+      }
+      return [...s];
+    },
+    /** 불러와 봤더니 **없는** 티켓 — 미리보기 단계에서 눈으로 걸러낸다. */
+    refMissing() { return this.refKeys.filter((k) => this.refs[k] === null); },
+    /**
+     * 미리보기 카드 — **Task 화면과 같은 TaskCard 를 같은 모양으로** 쓴다. 미리보기 전용
+     * 마크업을 따로 두면 "만들면 이렇게 보인다" 를 보여 주는 화면이 정작 실제와 달라진다.
+     * 그룹화는 하지 않는다 — 아직 없는 티켓을 상위별로 묶어 봐야 실제 화면과 모양만 달라진다.
+     *
+     * Task 모드는 소속 Epic 뱃지가, Sub-Task 모드는 상위 Task 뱃지가 각각 채워진다.
+     * 그 이름은 **실제로 불러온 상위 티켓**에서 온다 — 뱃지가 비면 그 키가 없다는 뜻이다.
+     */
+    cards() {
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      return this.items.map((it, i) => {
+        const refKey = (this.isSub ? it.parent : it.epic) || null;
+        const ref = refKey ? this.refs[refKey] : null;
+        const pri = it.priority || "";
+        const rank = pri ? this.opts.priorities.indexOf(pri) : -1;
+        let dueDays = null;
+        if (it.duedate) {
+          const d = new Date(it.duedate + "T00:00:00");
+          if (!isNaN(d)) dueDays = Math.round((d - today) / 86400000);
+        }
+        const voc = !this.isSub && !it.epic && /^\s*\[/.test(it.summary || "");
+        const card = {
+          key: "신규",                              // 아직 Jira 에 없다 — 번호 자리에 그렇게 적는다
+          type: it.type,
+          title: it.summary || "",
+          pri, priRank: rank >= 0 ? rank : undefined,
+          assignee: it.assignee || "", assigneeId: it.assignee || "",
+          mine: false, statusCategory: "new",
+          due: it.duedate || null, dueDays, resolved: null,
+          epicKey: this.isSub ? null : (it.epic || null),
+          voc,
+          isSub: this.isSub,
+          parent: this.isSub && refKey ? { key: refKey, title: (ref && ref.summary) || "" } : null,
+          _i: i,
+        };
+        // 색 신호(--sig)는 Task 화면과 같은 규칙 — 소속이 없으면 색을 지어내지 않는다.
+        const sig = card.epicKey ? categoryColor(card.epicKey) : (card.voc ? "var(--ty-story)" : null);
+        card._sig = sig ? { "--sig": sig } : {};
+        card._epicTitle = ref ? (ref.epicName || ref.summary || refKey) : (refKey || "");
+        return card;
       });
-      return [...by.values()];
     },
   },
   mounted() {
@@ -71,12 +115,6 @@ export default {
   },
   unmounted() { document.removeEventListener("keydown", this._onKey, true); },
   methods: {
-    label(it) { return (it.summary || "").trim() || "(제목 없음)"; },
-    groupLabel(g) { return g.key === "__none__" ? "Epic 없음" : g.key; },
-    shown(g) { return this.foldOpen[g.key] ? g.items : g.items.slice(0, FOLD_AT); },
-    hidden(g) { return Math.max(0, g.items.length - FOLD_AT); },
-    toggleFold(k) { this.foldOpen = Object.assign({}, this.foldOpen, { [k]: !this.foldOpen[k] }); },
-
     async copyPrompt() {
       const ok = await copyText(buildLlmPrompt(this.mode, this.opts));
       pushToast(ok
@@ -99,10 +137,24 @@ export default {
         if (!sv.ok) { this.errors = sv.errors || []; this.errOpen = true; return; }
         this.items = r.data.items;
         this.step = "preview";
+        this.loadRefs();                 // 상위 티켓을 실제로 받아 뱃지를 채운다(= 존재 검수)
       } catch (e) {
         this.errors = [{ index: null, field: null, message: (e && e.message) || "검증에 실패했습니다." }];
         this.errOpen = true;
       } finally { this.checking = false; }
+    },
+
+    /** 미리보기가 참조하는 상위 티켓을 실제로 받아 온다.
+     *  못 받은 것은 null 로 남겨 '없는 티켓' 으로 드러낸다 — 만들기 전에 눈으로 걸러낸다. */
+    async loadRefs() {
+      const keys = this.refKeys.filter((k) => !(k in this.refs));
+      if (!keys.length) return;
+      this.refLoading = true;
+      try {
+        await Promise.all(keys.map((k) =>
+          api.ticketBadge(k).then((b) => { this.refs = { ...this.refs, [k]: b || null }; })
+            .catch(() => { this.refs = { ...this.refs, [k]: null }; })));
+      } finally { this.refLoading = false; }
     },
 
     async create() {
@@ -171,26 +223,15 @@ export default {
         </div>
       </div>
 
-      <!-- ── 2) 미리보기 — 내 Task 화면과 같은 그룹 카드 ─────────── -->
+      <!-- ── 2) 미리보기 — Task 화면의 카드 그대로, 그룹화 없이 평평하게 ─────────── -->
       <div v-else-if="step === 'preview'" class="blk-prev">
-        <div v-for="g in groups" :key="g.key" class="mt-gcard2 k-task blk-g">
-          <div class="mt-gh">
-            <div class="mt-card parent">
-              <span class="mt-key">{{ groupLabel(g) }}</span>
-              <span class="mt-title">{{ isSub ? '이 Task 밑에' : '이 Epic 밑에' }} {{ g.items.length }}건</span>
-            </div>
-          </div>
-          <div class="mt-gbody one">
-            <div v-for="it in shown(g)" :key="it._i" class="mt-card">
-              <TypeBadge :type="it.type" />
-              <span class="mt-title">{{ label(it) }}</span>
-              <span v-if="it.assignee" class="mt-owner">{{ it.assignee }}</span>
-              <span v-if="it.duedate" class="blk-due">{{ it.duedate }}</span>
-            </div>
-            <button v-if="hidden(g)" class="mt-more" @click="toggleFold(g.key)">
-              {{ foldOpen[g.key] ? '접기' : '+' + hidden(g) + '개 더' }}
-            </button>
-          </div>
+        <div v-if="refLoading" class="blk-refload">상위 티켓을 확인하는 중…</div>
+        <div v-if="refMissing.length" class="blk-refbad">
+          <b>없는 티켓</b> {{ refMissing.join(', ') }} — 생성 시 이 항목들은 실패합니다.
+        </div>
+        <div class="mt-gbody plain blk-flat">
+          <TaskCard v-for="c in cards" :key="c._i" :card="c" :style="c._sig"
+                    :epic-title="c._epicTitle" />
         </div>
       </div>
 

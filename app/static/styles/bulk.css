@@ -42,10 +42,21 @@
 
 /* ── 미리보기 ─────────────────────────────────────────────────────── */
 .blk-prev, .blk-res { flex: 1 1 auto; overflow: auto; padding: 14px 16px; min-height: 0; }
-.blk-g { --gc: var(--accent); }
-.blk-prev .mt-card.parent { background: var(--panel-2); }
+/* Task 화면의 카드(.mt-card.two)를 그대로 쓰되 **그룹화 없이** 한 줄씩 세운다.
+   아직 만들어지지 않은 티켓이라 열지 못한다 — 손 모양 커서를 주면 눌러 볼 수 있는 줄 안다. */
+.blk-flat { display: flex; flex-direction: column; gap: 7px; }
 .blk-prev .mt-card { cursor: default; }
-.blk-due { flex: none; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 번호 자리에 '신규' 가 들어간다 — 실제 티켓 번호와 헷갈리지 않게 옅게. */
+.blk-prev .mt-key { color: var(--muted-2); font-weight: 600; }
+
+.blk-refload { font-size: 12px; color: var(--muted); margin-bottom: 9px; }
+.blk-refbad {
+  font-size: 12px; line-height: 1.6; margin-bottom: 10px;
+  padding: 8px 11px; border-radius: 8px;
+  color: var(--danger); background: var(--danger-bg);
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
+}
+.blk-refbad b { margin-right: 6px; }
 
 /* ── 결과 ─────────────────────────────────────────────────────────── */
 .blk-sum { display: flex; gap: 16px; align-items: baseline; margin-bottom: 12px; }
