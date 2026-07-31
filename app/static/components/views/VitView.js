@@ -258,7 +258,7 @@ export default {
               <div class="c-info">
                 <div class="l2 tkt" :data-key="it.key" role="button" tabindex="0"
                      :title="it.key + ' · ' + it.summary">
-                  <span class="summ">{{ it.summary }}</span><span class="ty">{{ tyLabel(it.type) }}</span><span class="key">{{ it.key }}</span>
+                  <span class="summ">{{ it.summary }}</span><TypeBadge :type="it.type" /><span class="key">{{ it.key }}</span>
                 </div>
                 <div class="l1">
                   <StatusPill :cat="it.statusCategory" :label="it.status" />
