@@ -3,7 +3,7 @@
 //   현안/하위 티켓은 행 전체가 클릭 대상(.tkt[data-key]) → 인앱 티켓 다이얼로그.
 // '완료 작업 안 보기' 토글로 직계 완료 티켓 숨김. updated: 2026-07-09
 import { api } from "../../lib/api.js";
-import { moduleColor, STATUS_ORDER, STATUS_VAR, typeLabel, TYPE_BG } from "../../lib/colors.js";
+import { moduleColor, STATUS_ORDER, STATUS_VAR, statusLabel, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { esc, mdISO, ymd, ymdhm, mdhm, tkt, dday } from "../../lib/fmt.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import StatusPill from "../ui/StatusPill.js";
@@ -114,6 +114,7 @@ export default {
     dd(s) { return dday(s); },
     tyLabel(t) { return typeLabel(t); },   // 이슈타입 → 짧은 라벨(제목 뒤 텍스트로 붙임)
     tyColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },   // 타입 텍스트 색 = 타입 시그니처 색
+    slb(s, cat) { return statusLabel(s) || ({ todo: "대기", inprogress: "진행 중", done: "완료" }[cat] || cat); },
     scls(cat) { return "s-" + ({ inprogress: "prog", done: "done" }[cat] || "todo"); },   // 상태 → 채운 셀 클래스
     dueOverdue(iso) {   // D-Day 당일 또는 그 이후(초과) → 붉게
       const due = new Date(iso.substring(0, 10) + "T00:00:00");
@@ -206,7 +207,7 @@ export default {
         + `<span class='ky'>${esc(n.key)}</span>`
         + `<span class='sm'>${esc(n.summary || "")}</span>`
         + (n.assignee ? `<span class='asg'>${esc(n.assignee)}</span>` : "")
-        + `<span class='pill' style='color:${col};border-color:${col}'>${esc(n.status || n.statusCategory)}</span>`
+        + `<span class='pill' style='color:${col};border-color:${col}'>${esc(this.slb(n.status, n.statusCategory))}</span>`
         + `</span>`
         + `<span class='pg'>${prog}</span>`;
     },
@@ -295,7 +296,7 @@ export default {
                 <div class="c-children">
                   <div v-for="c in kids(it)" :key="c.key" class="ctr tkt" :data-key="c.key"
                        role="button" tabindex="0" :title="c.key + ' · ' + c.summary">
-                    <div class="scell" :class="scls(c.statusCategory)">{{ c.status || c.statusCategory }}</div>
+                    <div class="scell" :class="scls(c.statusCategory)">{{ slb(c.status, c.statusCategory) }}</div>
                     <div class="ct-tkt"><span class="sm">{{ c.summary }}</span><span class="ty">{{ tyLabel(c.type) }}</span></div>
                     <div class="dt">{{ fy(c.created) || "—" }}</div>
                     <div class="dt">{{ c.resolved ? fy(c.resolved) : "—" }}</div>

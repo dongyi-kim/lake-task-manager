@@ -6,7 +6,7 @@ import { extOf } from "../../lib/filetype.js";
 import FieldEdit from "./FieldEdit.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
 import { ymd, ymdhm, ts, esc } from "../../lib/fmt.js";
-import { TYPE_BG, typeLabel, sigColor, categoryColor } from "../../lib/colors.js";
+import { TYPE_BG, statusLabel, typeLabel, sigColor, categoryColor } from "../../lib/colors.js";
 import TypeBadge from "./TypeBadge.js";
 import Avatar from "./Avatar.js";
 import CommentEditor from "./CommentEditor.js";
@@ -402,6 +402,7 @@ export default {
     },
     /** 상태 전이 완료 — 내 뷰를 다시 받고(load), 다른 화면·부모에도 알린다(형제·부모 진척 갱신). */
     onTransitioned() { this.stPick = null; this.onFieldSaved(); },
+    stLabel(s) { return statusLabel(s); },
     /** 형제 목록 상태 라벨 — 한글 짧게(대기/진행/완료). */
     sstLabel(cat) { return { inprogress: "진행", done: "완료" }[cat] || "대기"; },
     /** 상태 전이 선택 — 완료로 보내는데 미완료 하위가 있으면 먼저 확인(도네가드) 후 진행. */
@@ -1211,7 +1212,7 @@ export default {
                  입장에선 똑같이 '눌러서 바꾸는 것' 이어야 한다 — 카드 우클릭 메뉴와 같은 목록을 연다. -->
             <div><span class="k">상태</span><span class="val fe">
               <button class="fe-v" :class="{ on: stOpen }" @click.stop="openStatus" title="상태 변경"
-                ><span class="val-st" :class="statusClass(v.statusCategory)">{{ v.status || '—' }}</span></button>
+                ><span class="val-st" :class="statusClass(v.statusCategory)">{{ stLabel(v.status) || '—' }}</span></button>
               <span v-if="stOpen" class="fe-pop" @click.stop>
                 <div v-if="!stInfo" class="fe-none">불러오는 중…</div>
                 <template v-else>

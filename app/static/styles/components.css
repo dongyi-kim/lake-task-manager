@@ -2,14 +2,14 @@
  * updated: 2026-07-08 */
 
 /* 상태 pill */
-.pill { font-size: 9.5px; font-weight: 700; border-radius: 5px; padding: 1.5px 6px; border: 1px solid;
+.pill { font-size: 9.5px; font-weight: 700; border-radius: 2px; padding: 1.5px 6px; border: 1px solid;
         white-space: nowrap; flex: 0 0 auto;
         background: color-mix(in srgb, currentColor 12%, transparent);
         border-color: color-mix(in srgb, currentColor 32%, transparent); }
 
 /* 이슈타입 배지 */
 .tbadge { --tc: var(--ty-task);   /* fallback — 인라인 --tc 미지정 시에도 칩이 안 깨지게 */
-          font-size: 10px; font-weight: 700; line-height: 16px; padding: 0 7px; border-radius: 5px;
+          font-size: 10px; font-weight: 700; line-height: 16px; padding: 0 7px; border-radius: 2px;
           letter-spacing: .3px; flex: 0 0 auto; white-space: nowrap; }
 .tbadge.v-plain { color: var(--muted); border: 1px solid var(--border); }
 /* 알파 틴트 칩 — 배경 14% / 보더 34% / 글자 원색. --tc 는 TypeBadge 가 인라인으로 준다 */

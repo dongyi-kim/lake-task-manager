@@ -11,6 +11,7 @@
 // 권한: 상태 변경·삭제는 **내 티켓(담당/보고)이거나 매니저**일 때만 연다. 남의 티켓 상태를
 // 아무나 바꾸면 협업이 아니라 사고다. 서버도 같은 규칙으로 막는다(숨김은 접근 제어가 아니다).
 import { api } from "../../lib/api.js";
+import { statusLabel } from "../../lib/colors.js";
 import Avatar from "./Avatar.js";
 import NewChildDialog from "./NewChildDialog.js";
 import TransitionDialog from "./TransitionDialog.js";
@@ -65,6 +66,7 @@ export default {
     document.removeEventListener("keydown", this._onEsc);
   },
   methods: {
+    stLabel(s) { return statusLabel(s); },
     /** 상태 전이 선택 — 완료로 보내는데 미완료 하위가 있으면 먼저 확인(도네가드) 후 진행. */
     async pickTransition(t) {
       this.open = false;
@@ -127,7 +129,7 @@ export default {
     <div v-if="open" class="tkmenu" :style="{ left: x + 'px', top: y + 'px' }" @click.stop>
       <div class="tkm-h">
         <b>{{ key }}</b>
-        <span v-if="info && info.status" class="tkm-st">{{ info.status }}</span>
+        <span v-if="info && info.status" class="tkm-st">{{ stLabel(info.status) }}</span>
       </div>
       <div v-if="!info" class="tkm-loading">불러오는 중…</div>
       <template v-else>
