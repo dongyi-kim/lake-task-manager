@@ -80,25 +80,17 @@ const REQUIRED = { task: ["epic", "type", "summary"], subtask: ["parent", "type"
  * 한 항목을 그린다.
  *   only  : 이 필드들만(두 번째 항목은 '필수만으로도 된다' 를 보인다)
  *   brief : 줄 위에 붙는 긴 설명은 생략 — 같은 설명을 두 번 읽게 하지 않는다
- *   plain : 이 필드들은 물려받지 않고 예제 값을 쓴다(제목은 항목마다 달라야 '여럿' 이 보인다)
+ *   alt   : 대체 예제값(v2)이 있으면 그걸 쓴다 — 두 항목의 제목이 같으면 '여럿을 만드는 것'
+ *           이라는 게 눈에 안 들어온다
  */
-function renderItem(mode, seed, opts) {
+function renderItem(mode, opts) {
   const o = opts || {};
   const q = (v) => JSON.stringify(v);
   const fields = exampleFields(mode).filter((f) => !o.only || o.only.indexOf(f.k) >= 0);
   const IND = "      ";
 
-  // 값: 물려받은 게 있으면 그것, 없으면 예제 기본값.
-  const valueOf = (f) => {
-    // plain 은 seed 보다 **먼저** 본다 — seed 에 그 필드가 없어도 대체 예제값(v2)을 써야 한다.
-    if (o.plain && o.plain.indexOf(f.k) >= 0) return f.v2 !== undefined ? f.v2 : f.v;
-    if (!seed || !(f.k in seed)) return f.v;
-    const s = seed[f.k];
-    // task 의 epic 은 빈 값이 곧 'Epic 없음' 이다 — 예제 값으로 되돌리면 안 된다.
-    if (f.k === "epic") return s || null;
-    if (Array.isArray(f.v)) return (s && s.length) ? s : f.v;
-    return s || f.v;
-  };
+  const valueOf = (f) =>
+    (o.alt && o.alt.indexOf(f.k) >= 0 && f.v2 !== undefined) ? f.v2 : f.v;
 
   const rows = fields.map((f) => ({ f, text: IND + q(f.k) + ": " + q(valueOf(f)) }));
   // 옆 주석은 열을 맞춘다 — 들쭉날쭉하면 오히려 읽기 나쁘다. 아주 긴 줄(본문)은 기준에서 뺀다.
@@ -117,32 +109,21 @@ function renderItem(mode, seed, opts) {
  * 붙여넣어 바로 쓸 수 있는 예제 — **주석으로 무엇을 적는 자리인지 설명한다.**
  * 표준 JSON 은 주석을 모르지만 이 창은 받아 준다(validateBulk 가 파싱 전에 걷어낸다).
  * 그러니 주석은 지워도 되고 남겨도 된다 — 남겨 두는 편이 다음에 열었을 때 도움이 된다.
- *
- * seed 는 '티켓 만들기' 창에서 이미 고른 값이다. 거기서 상위·담당자·우선순위를 골라 놓고 왔는데
- * 빈 예제를 주면 같은 값을 손으로 다시 적게 된다 — Bulk 를 쓰는 이유와 정반대다.
- * **필드는 그대로 두고 값만** 물려받는다(안내 역할은 유지된다).
  */
-export function exampleJson(mode, seed) {
+export function exampleJson(mode) {
   const sub = mode === "subtask";
   const kind = sub ? "Sub-Task" : "Task";
   const other = sub ? "Task" : "Sub-Task";
-  const seeded = !!(seed && Object.keys(seed).some((k) => {
-    const v = seed[k];
-    return Array.isArray(v) ? v.length : (v !== undefined && v !== "");
-  }));
-  const intro = seeded
-    ? "  // '티켓 만들기' 창에서 정한 값을 그대로 물려받았습니다 — 제목만 바꿔 가며 늘리세요.\n"
-      + "  // 필요 없는 줄은 지워도 됩니다(없으면 Jira 기본값).\n"
-    : `  // 이 창은 ${kind} 전용입니다. ${other} 와 섞어 만들 수 없습니다.\n`;
 
-  return "{\n" + intro
+  return "{\n"
+    + `  // 이 창은 ${kind} 전용입니다. ${other} 와 섞어 만들 수 없습니다.\n`
     + `  "mode": ${JSON.stringify(mode)},\n`
     + '  "items": [\n'
-    + renderItem(mode, seed) + ",\n"
+    + renderItem(mode) + ",\n"
     + "    // 필수는 " + REQUIRED[mode].join(" · ") + " 셋뿐입니다. 나머지는 없으면 Jira 기본값.\n"
-    // 둘째 항목: 긴 설명은 빼고(같은 글을 두 번 읽게 하지 않는다), 제목은 예제 값으로 —
+    // 둘째 항목: 긴 설명은 빼고(같은 글을 두 번 읽게 하지 않는다), 제목도 다르게 —
     // 두 항목의 제목이 같으면 '여러 개를 만드는 것' 이라는 게 눈에 안 들어온다.
-    + renderItem(mode, seed, { only: REQUIRED[mode], brief: true, plain: ["summary"] }) + "\n"
+    + renderItem(mode, { only: REQUIRED[mode], brief: true, alt: ["summary"] }) + "\n"
     + "  ]\n}";
 }
 

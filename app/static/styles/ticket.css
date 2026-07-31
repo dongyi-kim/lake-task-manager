@@ -1364,15 +1364,6 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .nk-meta .k { flex: none; width: 60px; font-size: 11px; color: var(--muted-2); }
 .nk-meta .val { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px; }
 .nk-f { display: flex; align-items: center; gap: 8px; }
-/* [여러 개 만들기] — 주 동작('만들기')이 아니라 **다른 길**이다. 회색 보조 버튼이면 못 보고
-   지나치고, primary 면 주 동작과 경쟁한다 → 테두리만 강조색으로 둔 중간 무게. */
-.nk-bulk { display: inline-flex; align-items: center; gap: 5px;
-  color: var(--epic); background: var(--panel);
-  border: 1px solid color-mix(in srgb, var(--epic) 45%, var(--border)); font-weight: 600; }
-.nk-bulk:hover:not(:disabled) { background: color-mix(in srgb, var(--epic) 10%, var(--panel));
-  border-color: var(--epic); }
-.nk-bulk:disabled { opacity: .45; cursor: default; }
-.nk-bulk .nb-ic { font-size: 11px; line-height: 1; }
 .nk-hint { flex: 1 1 auto; font-size: 10.5px; color: var(--muted-2); }
 @media (max-width: 560px) { .nk-meta { grid-template-columns: 1fr; } }
 
