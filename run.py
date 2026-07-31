@@ -710,6 +710,8 @@ def _move_window_to_current_desktop(hwnd):
             _vc(ptr, 2, [])                          # IUnknown::Release
         except Exception:
             pass
+    dbg = ((lambda *a: print("[hotkey.move]", *a, file=sys.stderr, flush=True))
+           if os.getenv("LAKE_HOTKEY_DEBUG") in ("1", "true", "True") else (lambda *a: None))
     ole = ctypes.windll.ole32
     try:
         ole.CoInitialize(None)
@@ -722,23 +724,30 @@ def _move_window_to_current_desktop(hwnd):
         # ImmersiveShell — 로컬 서버(CLSCTX_LOCAL_SERVER=4). IServiceProvider 로 하위 서비스를 얻는다.
         if ole.CoCreateInstance(byref(_g("C2F03A33-21F5-47FA-B4BB-156362A2F239")), None, 4,
                                 byref(_g("6D5140C1-7436-11CE-8034-00AA006009FA")), byref(sp)) != 0 or not sp.value:
+            dbg("ImmersiveShell(CoCreateInstance) 실패")
             return False
-        # IApplicationViewCollection → GetViewForHwnd(idx6) → 이 창의 IApplicationView
-        for avc in ("1841C6D7-4F9D-42C0-AF41-8747538F10E5",):
+        # IApplicationViewCollection → GetViewForHwnd(idx6) → 이 창의 IApplicationView.
+        # IID 는 빌드마다 다를 수 있어 후보를 순회한다(GetViewForHwnd 성공이 곧 검증).
+        for avc in ("1841C6D7-4F9D-42C0-AF41-8747538F10E5",     # Win10 1809+ / Win11
+                    "2C08ADF0-A386-4B35-9250-0FE183476FCC"):    # 일부 Win10 빌드
             vcp = ctypes.c_void_p()
             if _vc(sp, 3, [POINTER(GUID), POINTER(GUID), POINTER(ctypes.c_void_p)],
                    byref(_g(avc)), byref(_g(avc)), byref(vcp)) == 0 and vcp.value:
                 got = _vc(vcp, 6, [wintypes.HWND, POINTER(ctypes.c_void_p)], hwnd, byref(view)) == 0
                 _rel(vcp)
                 if got and view.value:
+                    dbg("AVC ok (IID " + avc + ")")
                     break
         if not view.value:
+            dbg("AVC/GetViewForHwnd 실패 — 이 빌드의 IApplicationViewCollection IID 불일치 가능")
             return False
         # IVirtualDesktopManagerInternal — 후보 IID 중 GetCount(idx3)가 1~64 로 정상인 것을 채택(vtable 검증).
-        for vd in ("4970BA3D-FD4E-4647-BEA3-D89076EF4B9C",       # Win11 24H2
-                   "53F5CA0B-158F-4124-900C-057158060B27",
-                   "A3175F2D-239C-4BD2-8AA0-EEBA8B0B138E",
+        # idx 3(GetCount)/4(MoveViewToDesktop)/6(GetCurrentDesktop)는 Win10~Win11 24H2 에서 공통.
+        for vd in ("4970BA3D-FD4E-4647-BEA3-D89076EF4B9C",       # Win11 24H2 (26100)
+                   "53F5CA0B-158F-4124-900C-057158060B27",       # Win11 22H2/23H2 (22621/22631)
+                   "A3175F2D-239C-4BD2-8AA0-EEBA8B0B138E",        # Win11 21H2 (22000)
                    "B2F925B9-5A0F-4D2E-9F4D-2B1507593C10",
+                   "F31574D6-B682-4CDC-BD56-1827860ABEC6",        # Win10 1607~21H2
                    "094AFE11-44F2-4BA0-976F-29A97E263EE0"):
             v = ctypes.c_void_p()
             if _vc(sp, 3, [POINTER(GUID), POINTER(GUID), POINTER(ctypes.c_void_p)],
@@ -746,16 +755,20 @@ def _move_window_to_current_desktop(hwnd):
                 continue
             cnt = ctypes.c_uint(0)
             if _vc(v, 3, [POINTER(ctypes.c_uint)], byref(cnt)) == 0 and 1 <= cnt.value <= 64:
+                dbg("VDMI ok (IID " + vd + ", desktops=" + str(cnt.value) + ")")
                 vdmi = v
                 break
             _rel(v)
         if not vdmi.value:
+            dbg("VDMI 후보 모두 실패 — 이 빌드의 IVirtualDesktopManagerInternal IID 불일치")
             return False
         cur = ctypes.c_void_p()
         if _vc(vdmi, 6, [POINTER(ctypes.c_void_p)], byref(cur)) != 0 or not cur.value:   # GetCurrentDesktop
+            dbg("GetCurrentDesktop 실패")
             return False
         hr = _vc(vdmi, 4, [ctypes.c_void_p, ctypes.c_void_p], view, cur)                 # MoveViewToDesktop
         _rel(cur)
+        dbg("MoveViewToDesktop hr=" + hex(hr & 0xffffffff))
         return hr == 0
     except Exception:
         return False
