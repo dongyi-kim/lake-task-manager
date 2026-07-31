@@ -110,6 +110,7 @@ export default {
     fdt(s) { return ymdhm(s); },
     dd(s) { return dday(s); },
     tyLabel(t) { return typeLabel(t); },   // 이슈타입 → 짧은 라벨(제목 뒤 텍스트로 붙임)
+    tyColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },   // 타입 텍스트 색 = 타입 시그니처 색
     scls(cat) { return "s-" + ({ inprogress: "prog", done: "done" }[cat] || "todo"); },   // 상태 → 채운 셀 클래스
     dueOverdue(iso) {   // D-Day 당일 또는 그 이후(초과) → 붉게
       const due = new Date(iso.substring(0, 10) + "T00:00:00");
@@ -258,7 +259,7 @@ export default {
               <div class="c-info">
                 <div class="l2 tkt" :data-key="it.key" role="button" tabindex="0"
                      :title="it.key + ' · ' + it.summary">
-                  <span class="summ">{{ it.summary }}</span><TypeBadge :type="it.type" /><span class="key">{{ it.key }}</span>
+                  <span class="summ">{{ it.summary }}</span><span class="ty" :style="{ color: tyColor(it.type) }">{{ tyLabel(it.type) }}</span><span class="key">{{ it.key }}</span>
                 </div>
                 <div class="l1">
                   <StatusPill :cat="it.statusCategory" :label="it.status" />
