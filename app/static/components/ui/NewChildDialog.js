@@ -14,6 +14,7 @@ import TypeBadge from "./TypeBadge.js";
 import FieldEdit from "./FieldEdit.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
 import CommentEditor from "./CommentEditor.js";
+import BulkCreateDialog from "./BulkCreateDialog.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 import { categoryColor } from "../../lib/colors.js";
 
@@ -23,7 +24,7 @@ const SPECIALS = [{ key: "__none__", special: "none", label: "Epic 없음", desc
 
 export default {
   name: "NewChildDialog",
-  components: { Avatar, TypeBadge, FieldEdit, PriIcon, CommentEditor },
+  components: { Avatar, TypeBadge, FieldEdit, PriIcon, CommentEditor, BulkCreateDialog },
   props: {
     // ── 티켓 내부('＋')에서 열 때: 상위 상수 고정 ──
     parent: { type: String, default: "" },         // 부모 티켓 키(고정)
@@ -48,6 +49,7 @@ export default {
       fixed: false,        // 티켓 내부에서 열려 상위가 상수(변경 불가)
       // 상위 선택(FAB) 상태
       pq: "", plist: [], pbusy: false,
+      bulkOpen: false,     // 여기서 바로 여는 Bulk 창(값을 물려받는다)
     };
   },
   computed: {
@@ -58,6 +60,23 @@ export default {
     pickType() { return (this.d.isEpic || this.d.standalone) && this.d.types.length > 1; },
     isTask() { return this.d.isEpic || this.d.standalone; },
     needPick() { return !!this.pickKind && !this.resolved; },
+    /** Bulk 는 이 창이 만들려는 것과 **같은 종류**로 연다 — 무엇을 만들지 다시 고를 이유가 없다. */
+    bulkMode() { return this.creatingSub ? "subtask" : "task"; },
+    /**
+     * Bulk 창에 물려줄 값 — 여기서 이미 고른 것들.
+     * 이 창에서 상위·담당자·우선순위를 다 골라 놓고 넘어갔는데 빈 예제를 주면 같은 값을 손으로
+     * 다시 적게 된다. 그게 Bulk 를 쓰는 이유와 정반대다.
+     */
+    bulkSeed() {
+      const s = { type: this.nc.type, priority: this.nc.priority,
+                  duedate: this.nc.duedate, assignee: this.nc.assigneeId,
+                  components: (this.nc.components || []).slice(),
+                  summary: (this.nc.summary || "").trim() };
+      // 상위: Sub-Task 면 parent, Task 면 epic. Epic 없이 만드는 중이면 비워 둔다(=null 로 나간다).
+      if (this.creatingSub) s.parent = this.d.parent;
+      else s.epic = this.d.standalone ? "" : this.d.parent;
+      return s;
+    },
   },
   mounted() {
     api.options("components").then((r) => { this.compOpts = (r || []).map((x) => x.name); }).catch(() => {});
@@ -77,6 +96,15 @@ export default {
   },
   unmounted() { document.removeEventListener("keydown", this._onEsc, true); clearTimeout(this._t); },
   methods: {
+    /** Bulk 로 넘어간다 — 여기서 고른 값을 물려준 예제와 함께. 이 창은 뒤에 그대로 남는다
+     *  (Bulk 를 취소하면 쓰던 입력이 살아 있어야 한다). */
+    goBulk() { this.bulkOpen = true; },
+    onBulkDone(r) {
+      const n = ((r && r.created) || []).length;
+      if (n) window.dispatchEvent(new CustomEvent("force-refresh"));   // 목록 화면들 새로 받기
+      this.bulkOpen = false;
+      if (n) this.$emit("close");        // 만들었으면 이 창은 할 일이 끝났다
+    },
     fromBackdrop,
     rankOf: priRankOf,
     epicColor(key) { return categoryColor(key); },
@@ -292,11 +320,20 @@ export default {
       <span class="nk-hint">{{ canCreate ? '상태는 워크플로의 첫 상태로 시작합니다.'
                                           : '제목 · 우선순위 · 타입을 정해야 만들 수 있습니다.' }}</span>
       <button class="cmt-ed-btn ghost" @click="$emit('close')">취소</button>
+      <!-- 같은 조건으로 **여러 개**를 만들 때 — 여기서 고른 상위·담당자·우선순위를 그대로
+           물려받은 JSON 예제로 넘어간다(같은 값을 손으로 다시 적지 않게). -->
+      <button class="cmt-ed-btn nk-bulk" :disabled="!resolved" @click="goBulk"
+              :title="creatingSub ? '같은 상위 밑에 Sub-Task 를 JSON 으로 여러 개 만들기'
+                                  : '같은 조건으로 Task 를 JSON 으로 여러 개 만들기'">
+        <span class="nb-ic">▤</span>여러 개 만들기</button>
       <button class="cmt-ed-btn primary" :disabled="!canCreate || busy" @click="submit">
         {{ busy ? '만드는 중…' : '만들기' }}</button>
     </div>
     </template>
   </div>
   </div>
+  <!-- Bulk — 이 창 위에 겹쳐 연다. 취소하면 여기서 쓰던 입력이 그대로 남아 있어야 한다. -->
+  <BulkCreateDialog v-if="bulkOpen" :mode="bulkMode" :seed="bulkSeed"
+                    @close="bulkOpen = false" @done="onBulkDone" />
   </Teleport>`,
 };

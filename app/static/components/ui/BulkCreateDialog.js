@@ -47,7 +47,11 @@ function dayDiff(ymd) {
 export default {
   name: "BulkCreateDialog",
   components: { JsonEditor, TypeBadge, PriIcon, Avatar, DueText },
-  props: { mode: { type: String, required: true } },     // 'task' | 'subtask'
+  props: {
+    mode: { type: String, required: true },                // 'task' | 'subtask'
+    // '티켓 만들기' 창에서 넘어올 때 그 창이 이미 고른 값 — 예제 JSON 이 이걸 물려받는다.
+    seed: { type: Object, default: null },
+  },
   emits: ["close", "done"],
   data() {
     return {
@@ -164,7 +168,7 @@ export default {
     },
   },
   mounted() {
-    this.src = exampleJson(this.mode);
+    this.src = exampleJson(this.mode, this.seed);
     // 프롬프트에 박을 실제 선택지 — 실패해도 프롬프트는 만들 수 있다(그 자리에 안내가 들어간다).
     const tp = this.isSub ? Promise.resolve(["Sub-Task"]) : api.taskTypes().catch(() => []);
     Promise.all([tp, api.options("priorities").catch(() => []), api.options("components").catch(() => [])])

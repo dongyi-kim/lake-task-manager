@@ -37,63 +37,113 @@ export function fieldDocs(mode) {
   ];
 }
 
-/** 붙여넣어 바로 쓸 수 있는 예제 JSON. */
+/**
+ * 예제 JSON 의 **필드 정의** — 값·주석·순서를 여기 한 곳에 둔다.
+ *
+ * 예제는 두 가지 일을 한다: (1) 붙여넣어 바로 쓸 수 있는 뼈대 (2) **어떤 필드가 있고 무엇을
+ * 적는 자리인지 알려 주는 안내.** 그래서 '티켓 만들기' 창에서 값을 물려받을 때도 **필드를
+ * 지우지 않는다** — 안 고른 필드를 지워 버리면 labels·description 을 어떻게 쓰는지 알 길이
+ * 사라진다. 고른 값이 있으면 그 자리의 **값만** 갈아 끼운다.
+ *
+ *   lead : 그 줄 **위**에 붙는 주석(길어서 옆에 못 붙이는 설명)
+ *   tail : 그 줄 **옆**에 붙는 주석(짧은 형식 안내)
+ */
+function exampleFields(mode) {
+  const sub = mode === "subtask";
+  return [
+    sub
+      ? { k: "parent", v: "DL-9012",
+          lead: "상위 Task 키 — 이미 있는 티켓이어야 합니다(이 JSON 안에서 방금 만든 건 못 씁니다)." }
+      : { k: "epic", v: "DL-5874",
+          lead: "소속 Epic 키. 키 자체는 반드시 있어야 합니다 — 없이 만들 땐 null 을 적습니다\n"
+              + "(빠뜨린 것과 '일부러 없음' 을 구분하지 못하면 미아 티켓이 조용히 쌓입니다)." },
+    { k: "type", v: sub ? "Sub-Task" : "Task", tail: "대소문자는 가리지 않습니다" },
+    { k: "summary", v: sub ? "스키마 설계" : "실시간 수집 파이프라인 설계", tail: "필수. 제목",
+      v2: sub ? "적재 파이프라인 구현" : "Epic 없이 만드는 단독 Task" },
+    { k: "priority", v: "P2-Major", tail: "오른쪽 안내의 목록에서 고르세요" },
+    { k: "duedate", v: "2026-08-20", tail: "YYYY-MM-DD" },
+    { k: "assignee", v: "test.ui01", tail: "회사 이메일의 @ 앞부분. 모르면 이 줄을 지우세요" },
+    { k: "components", v: ["ETL"], tail: "모듈. 목록에 없는 값도 쓸 수 있습니다(경고만)" },
+    { k: "labels", v: ["backend"], tail: "공백은 _ 로 바뀝니다" },
+    { k: "description",
+      v: sub
+        ? "## 범위\n- 테이블 3종\n\n### 체크리스트\n- [ ] 초안\n- [x] 리뷰 요청\n\n| 항목 | 값 |\n|------|-----|\n| 대상 | DW |"
+        : "## 배경\n지연이 커져 재설계가 필요하다.\n\n- [ ] 요건 정리\n- [ ] 설계 리뷰\n\n참고: [설계 문서](https://example.com/doc)",
+      lead: "본문은 Markdown — 체크박스 · 표 · 불릿을 씁니다. 첨부는 만들 수 없고,\n"
+          + "링크는 웹(http/https)만 살아납니다." },
+  ];
+}
+
+const REQUIRED = { task: ["epic", "type", "summary"], subtask: ["parent", "type", "summary"] };
+
+/**
+ * 한 항목을 그린다.
+ *   only  : 이 필드들만(두 번째 항목은 '필수만으로도 된다' 를 보인다)
+ *   brief : 줄 위에 붙는 긴 설명은 생략 — 같은 설명을 두 번 읽게 하지 않는다
+ *   plain : 이 필드들은 물려받지 않고 예제 값을 쓴다(제목은 항목마다 달라야 '여럿' 이 보인다)
+ */
+function renderItem(mode, seed, opts) {
+  const o = opts || {};
+  const q = (v) => JSON.stringify(v);
+  const fields = exampleFields(mode).filter((f) => !o.only || o.only.indexOf(f.k) >= 0);
+  const IND = "      ";
+
+  // 값: 물려받은 게 있으면 그것, 없으면 예제 기본값.
+  const valueOf = (f) => {
+    // plain 은 seed 보다 **먼저** 본다 — seed 에 그 필드가 없어도 대체 예제값(v2)을 써야 한다.
+    if (o.plain && o.plain.indexOf(f.k) >= 0) return f.v2 !== undefined ? f.v2 : f.v;
+    if (!seed || !(f.k in seed)) return f.v;
+    const s = seed[f.k];
+    // task 의 epic 은 빈 값이 곧 'Epic 없음' 이다 — 예제 값으로 되돌리면 안 된다.
+    if (f.k === "epic") return s || null;
+    if (Array.isArray(f.v)) return (s && s.length) ? s : f.v;
+    return s || f.v;
+  };
+
+  const rows = fields.map((f) => ({ f, text: IND + q(f.k) + ": " + q(valueOf(f)) }));
+  // 옆 주석은 열을 맞춘다 — 들쭉날쭉하면 오히려 읽기 나쁘다. 아주 긴 줄(본문)은 기준에서 뺀다.
+  const pad = Math.max(0, ...rows.filter((r) => r.f.tail && r.text.length <= 60).map((r) => r.text.length));
+
+  return "    {\n" + rows.map((r, i) => {
+    const comma = i < rows.length - 1 ? "," : "";
+    const lead = (r.f.lead && !o.brief)
+      ? r.f.lead.split("\n").map((l) => IND + "// " + l).join("\n") + "\n" : "";
+    const tail = r.f.tail ? " ".repeat(Math.max(1, pad - r.text.length + 1)) + "// " + r.f.tail : "";
+    return lead + r.text + comma + tail;
+  }).join("\n") + "\n    }";
+}
+
 /**
  * 붙여넣어 바로 쓸 수 있는 예제 — **주석으로 무엇을 적는 자리인지 설명한다.**
  * 표준 JSON 은 주석을 모르지만 이 창은 받아 준다(validateBulk 가 파싱 전에 걷어낸다).
  * 그러니 주석은 지워도 되고 남겨도 된다 — 남겨 두는 편이 다음에 열었을 때 도움이 된다.
+ *
+ * seed 는 '티켓 만들기' 창에서 이미 고른 값이다. 거기서 상위·담당자·우선순위를 골라 놓고 왔는데
+ * 빈 예제를 주면 같은 값을 손으로 다시 적게 된다 — Bulk 를 쓰는 이유와 정반대다.
+ * **필드는 그대로 두고 값만** 물려받는다(안내 역할은 유지된다).
  */
-export function exampleJson(mode) {
-  if (mode === "subtask") {
-    return `{
-  // 이 창은 Sub-Task 전용입니다. Task 와 섞어 만들 수 없습니다.
-  "mode": "subtask",
-  "items": [
-    {
-      // 상위 Task 키 — **이미 있는 티켓**이어야 합니다(이 JSON 안에서 방금 만든 건 못 씁니다).
-      "parent": "DL-9012",
-      "type": "Sub-Task",              // 대소문자는 가리지 않습니다
-      "summary": "스키마 설계",         // 필수. 제목
-      "assignee": "test.ui01",         // 회사 이메일의 @ 앞부분. 모르면 이 줄을 지우세요
-      "duedate": "2026-08-20",         // YYYY-MM-DD
-      "priority": "P2-Major",          // 오른쪽 안내의 목록에서 고르세요
-      // 본문은 Markdown — 체크박스 · 표 · 불릿을 씁니다. 첨부는 만들 수 없습니다.
-      "description": "## 범위\\n- 테이블 3종\\n\\n### 체크리스트\\n- [ ] 초안\\n- [x] 리뷰 요청\\n\\n| 항목 | 값 |\\n|------|-----|\\n| 대상 | DW |"
-    },
-    {
-      // 필수는 parent · type · summary 셋뿐입니다. 나머지는 없으면 Jira 기본값.
-      "parent": "DL-9012",
-      "type": "Sub-Task",
-      "summary": "적재 파이프라인 구현"
-    }
-  ]
-}`;
-  }
-  return `{
-  // 이 창은 Task 전용입니다. Sub-Task 와 섞어 만들 수 없습니다.
-  "mode": "task",
-  "items": [
-    {
-      // 소속 Epic 키. **키 자체는 반드시 있어야 합니다** — 없이 만들 땐 아래처럼 null 을 적습니다
-      // (빠뜨린 것과 '일부러 없음' 을 구분하지 못하면 미아 티켓이 조용히 쌓입니다).
-      "epic": "DL-5874",
-      "type": "Task",                  // 대소문자는 가리지 않습니다
-      "summary": "실시간 수집 파이프라인 설계",   // 필수. 제목
-      "priority": "P2-Major",          // 오른쪽 안내의 목록에서 고르세요
-      "duedate": "2026-08-20",         // YYYY-MM-DD
-      "assignee": "test.ui01",         // 회사 이메일의 @ 앞부분. 모르면 이 줄을 지우세요
-      "components": ["ETL"],           // 모듈. 목록에 없는 값도 쓸 수 있습니다(경고만)
-      "labels": ["backend"],           // 공백은 _ 로 바뀝니다
-      // 본문은 Markdown — 체크박스 · 표 · 불릿을 씁니다. 링크는 웹(http/https)만 살아납니다.
-      "description": "## 배경\\n지연이 커져 재설계가 필요하다.\\n\\n- [ ] 요건 정리\\n- [ ] 설계 리뷰\\n\\n참고: [설계 문서](https://example.com/doc)"
-    },
-    {
-      "epic": null,                    // Epic 없이 만드는 단독 Task
-      "type": "Task",
-      "summary": "Epic 없이 만드는 단독 Task"
-    }
-  ]
-}`;
+export function exampleJson(mode, seed) {
+  const sub = mode === "subtask";
+  const kind = sub ? "Sub-Task" : "Task";
+  const other = sub ? "Task" : "Sub-Task";
+  const seeded = !!(seed && Object.keys(seed).some((k) => {
+    const v = seed[k];
+    return Array.isArray(v) ? v.length : (v !== undefined && v !== "");
+  }));
+  const intro = seeded
+    ? "  // '티켓 만들기' 창에서 정한 값을 그대로 물려받았습니다 — 제목만 바꿔 가며 늘리세요.\n"
+      + "  // 필요 없는 줄은 지워도 됩니다(없으면 Jira 기본값).\n"
+    : `  // 이 창은 ${kind} 전용입니다. ${other} 와 섞어 만들 수 없습니다.\n`;
+
+  return "{\n" + intro
+    + `  "mode": ${JSON.stringify(mode)},\n`
+    + '  "items": [\n'
+    + renderItem(mode, seed) + ",\n"
+    + "    // 필수는 " + REQUIRED[mode].join(" · ") + " 셋뿐입니다. 나머지는 없으면 Jira 기본값.\n"
+    // 둘째 항목: 긴 설명은 빼고(같은 글을 두 번 읽게 하지 않는다), 제목은 예제 값으로 —
+    // 두 항목의 제목이 같으면 '여러 개를 만드는 것' 이라는 게 눈에 안 들어온다.
+    + renderItem(mode, seed, { only: REQUIRED[mode], brief: true, plain: ["summary"] }) + "\n"
+    + "  ]\n}";
 }
 
 function err(index, field, message) { return { index, field, message }; }
