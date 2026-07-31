@@ -262,3 +262,9 @@
 .wl-mon-row.tkt { cursor: pointer; }
 .wl-mon-row.tkt:hover { color: var(--accent); }
 .ok { color: var(--good); font-weight: 600; }
+
+/* 사용자 VoC 뱃지 세그먼트 — [VoC | 대분류 | 소분류] (Task 화면과 동일 규칙, voc.js 파싱) */
+.ebadge.voc .vseg + .vseg, .wl-risk-epic.voc .vseg + .vseg {
+  margin-left: 4px; padding-left: 4px; border-left: 1px solid rgba(0,0,0,.25); }
+.ebadge.voc .vseg.head, .wl-risk-epic.voc .vseg.head { font-weight: 800; }
+.wl-risk-epic.voc .vseg + .vseg { border-left-color: color-mix(in srgb, var(--ec) 55%, transparent); }

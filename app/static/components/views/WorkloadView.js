@@ -3,6 +3,7 @@
 //   (Due·D-day, 완료일시; 진행중=임박순·완료=최근순 정렬).
 // 인력 = 본명(displayName 첫 어절) + 개발/운영 뱃지(id 사번 x+숫자/i+숫자). updated: 2026-07-09
 import { api } from "../../lib/api.js";
+import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
 import { moduleColor, categoryColor, sigColor } from "../../lib/colors.js";
 import { ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";
 import ProgressBar from "../ui/ProgressBar.js";
@@ -313,6 +314,9 @@ export default {
       return { label: "Epic 없음", color: NONE_COLOR };
     },
     mcolor(i) { return moduleColor(i); },
+    // 사용자 VoC 제목 접두 [대분류 - 소분류] → 뱃지 세그먼트 / 제목에서 접두 제거(voc.js — Task 화면과 동일 규칙)
+    vocSegs(title) { return vocBadgeSegs(title); },
+    vocStrip(t) { return (t.voc && !t.epic) ? vocStripTitle(t.summary) : t.summary; },
     openCount(p) { return p.open ? this.barVal(p.open, "count") : 0; },   // 미착수(To Do) 건수
     assignedCount(p) { return this.barVal(p.inProgress, "count") + this.openCount(p); },  // 미완료 할당
     mv(bar, kind, metric) { return (bar[metric] || {})[kind] || 0; },   // kind: 'task'|'subtask'|'voc'
@@ -665,11 +669,11 @@ export default {
                              :class="c.cls" :data-key="t.key" role="button" tabindex="0"
                              :title="t.key + ' · ' + t.summary">
                           <TypeBadge :type="t.type" /><span class="ky">{{ t.key }}</span>
-                          <span class="sm">{{ t.summary }}</span>
+                          <span class="sm">{{ vocStrip(t) }}</span>
                           <span class="sched">
                             <span v-if="t.epic" class="ebadge" :style="{ '--sig': epicColorOf(p.id, t) }"
                                   :title="'Epic: ' + (t.epicName || t.epic)">{{ t.epicName || t.epic }}</span>
-                            <span v-else-if="t.voc" class="ebadge voc">사용자 VoC</span>
+                            <span v-else-if="t.voc" class="ebadge voc" :title="'사용자 VoC' + (vocSegs(t.summary).length > 1 ? ' — ' + vocSegs(t.summary).slice(1).join(' · ') : '')"><span v-for="(sg, si) in vocSegs(t.summary)" :key="si" class="vseg" :class="{ head: si === 0 }">{{ sg }}</span></span>
                             <span v-else class="ebadge none">Epic 없음</span>
                             <span v-if="c.k === 'done7d'" class="dbadge fin"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5 11-11"/></svg>{{ fdt(t.resolved) }}</span>
                             <template v-else>
@@ -727,15 +731,17 @@ export default {
                   <span v-for="(x, i) in dueRisk.over.slice(0, 6)" :key="'o' + i" class="wl-risk-row tkt" :data-key="x.t.key" role="button"
                         :title="x.t.key + ' · ' + x.who + ' · ' + x.t.summary">
                     <b class="wl-risk-key">{{ x.t.key }}</b>
-                    <span class="wl-risk-title">{{ x.t.summary }}</span>
-                    <span class="wl-risk-epic" :style="{ '--ec': riskEpic(x.t).color }">{{ riskEpic(x.t).label }}</span>
+                    <span class="wl-risk-title">{{ vocStrip(x.t) }}</span>
+                    <span v-if="x.t.voc && !x.t.epic" class="wl-risk-epic voc" :style="{ '--ec': riskEpic(x.t).color }"><span v-for="(sg, si) in vocSegs(x.t.summary)" :key="si" class="vseg" :class="{ head: si === 0 }">{{ sg }}</span></span>
+                    <span v-else class="wl-risk-epic" :style="{ '--ec': riskEpic(x.t).color }">{{ riskEpic(x.t).label }}</span>
                     <b class="wl-risk-dd" :class="ddCls(x.t.due)">{{ dd(x.t.due) }}</b>
                   </span>
                   <span v-for="(x, i) in dueRisk.soon.slice(0, 4)" :key="'s' + i" class="wl-risk-row tkt" :data-key="x.t.key" role="button"
                         :title="x.t.key + ' · ' + x.who + ' · ' + x.t.summary">
                     <b class="wl-risk-key">{{ x.t.key }}</b>
-                    <span class="wl-risk-title">{{ x.t.summary }}</span>
-                    <span class="wl-risk-epic" :style="{ '--ec': riskEpic(x.t).color }">{{ riskEpic(x.t).label }}</span>
+                    <span class="wl-risk-title">{{ vocStrip(x.t) }}</span>
+                    <span v-if="x.t.voc && !x.t.epic" class="wl-risk-epic voc" :style="{ '--ec': riskEpic(x.t).color }"><span v-for="(sg, si) in vocSegs(x.t.summary)" :key="si" class="vseg" :class="{ head: si === 0 }">{{ sg }}</span></span>
+                    <span v-else class="wl-risk-epic" :style="{ '--ec': riskEpic(x.t).color }">{{ riskEpic(x.t).label }}</span>
                     <b class="wl-risk-dd" :class="ddCls(x.t.due)">{{ dd(x.t.due) }}</b>
                   </span>
                   <span v-if="!dueRisk.over.length && !dueRisk.soon.length" class="mini ok">마감 위험 없음 ✓</span>
