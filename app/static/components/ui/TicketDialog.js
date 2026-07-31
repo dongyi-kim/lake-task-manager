@@ -1085,8 +1085,12 @@ export default {
         <div class="tkt-cols" :class="{ 'spine-hidden': spineHidden, 'tl-hidden': tlHidden }"
              :style="{ '--spine-w': spineW + 'px', '--tl-w': tlW + 'px' }">
           <!-- 접힌 상태에서 다시 펴는 손잡이(얇은 레일) -->
-          <button v-if="spineHidden && (loading || hasSpine)" class="spine-show" title="부가정보 패널 펼치기"
-                  @click="setSpineHidden(false)">›</button>
+          <button v-if="spineHidden && (loading || hasSpine)" class="spine-show stub" title="계보·형제 패널 펼치기"
+                  @click="setSpineHidden(false)">
+            <span class="st-ic">›</span>
+            <span class="st-label">계보 · 형제</span>
+            <span class="st-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          </button>
           <!-- 좌측 세로 스파인 — 계보(조상→현재, 레일+진척) + 형제 목록. 클릭 시 해당 티켓으로 이동 -->
           <!-- loading 동안엔(데이터 전) 스켈레톤으로 미리 그려 레이아웃을 통째로 띄운다. -->
           <aside v-if="(loading || hasSpine) && !spineHidden" class="tkt-spine">
@@ -1531,8 +1535,12 @@ export default {
           </div><!-- /.tkt-main -->
 
           <!-- 접힌 상태에서 다시 펴는 손잡이(우측 가장자리) -->
-          <button v-if="tlHidden && (loading || hasTl)" class="tl-show" title="일정·타임라인 패널 펼치기"
-                  @click="setTlHidden(false)">‹</button>
+          <button v-if="tlHidden && (loading || hasTl)" class="tl-show stub" title="일정·타임라인 패널 펼치기"
+                  @click="setTlHidden(false)">
+            <span class="st-ic">‹</span>
+            <span class="st-label">일정 · 타임라인</span>
+            <span class="st-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          </button>
           <!-- 우측: 일정 + 타임라인 (폭 조절·접기 — 좌측 스파인과 대칭). loading 동안 스켈레톤으로 먼저. -->
           <aside v-if="(loading || hasTl) && !tlHidden" class="tkt-tl">
             <button class="tl-hide" title="일정·타임라인 패널 접기" @click="setTlHidden(true)">›</button>

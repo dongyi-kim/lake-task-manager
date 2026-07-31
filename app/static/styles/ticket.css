@@ -132,14 +132,38 @@
   color: var(--accent); border-color: var(--accent); background: var(--panel-2); }
 .spine-hide { right: -13px; }        /* 스파인 오른쪽 경계(분할선) 위 */
 .tl-hide { left: -13px; }            /* 타임라인 왼쪽 경계(분할선) 위 */
-/* 접힌 상태 — 패널이 사라진 자리(다이얼로그 가장자리)에서 펴는 버튼만 띄운다 */
-.spine-show { left: -4px; }
-.tl-show { right: -4px; }
+/* 접힌 상태 — 빈 흰 여백만 남지 않게 **세로 레일 스터브**를 세운다.
+   무엇이 접혔는지(세로 라벨) + 접혀 있다는 표시(점 3개) + 펴는 화살표를 한 덩어리로.
+   .stub 이 붙으면 위의 원형 버튼 스타일을 덮어써 레일 모양이 된다. */
+.spine-show.stub, .tl-show.stub {
+  /* ★ top 은 원형 버튼용 --cb-top(스크롤 중앙)을 **덮어써야** 한다 — 안 그러면 레일이
+     아래로 밀려 위쪽에 흰 여백이 남는다(그걸 없애려고 만든 UI 다). */
+  top: 0; bottom: 0; transform: none; height: auto; width: 26px; border-radius: 4px;
+  flex-direction: column; gap: 10px; padding: 10px 0; box-shadow: none;
+  background: linear-gradient(var(--panel-2), var(--panel));
+  border: 1px solid var(--border); }
+.spine-show.stub { left: 0; }
+.tl-show.stub { right: 0; }
+.spine-show.stub:hover, .tl-show.stub:hover {
+  background: linear-gradient(color-mix(in srgb, var(--accent) 10%, var(--panel-2)), var(--panel)); }
+.spine-show.stub .st-ic, .tl-show.stub .st-ic { flex: none; font-size: 14px; line-height: 1; }
+.spine-show.stub .st-label, .tl-show.stub .st-label { margin: auto 0; }   /* 라벨을 레일 세로 중앙으로 */
+/* 세로쓰기 라벨 — 접힌 폭(26px)에서 읽히는 유일한 방향 */
+.spine-show.stub .st-label, .tl-show.stub .st-label {
+  writing-mode: vertical-rl; text-orientation: mixed; font-size: 11px; font-weight: 600;
+  letter-spacing: .06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 0 1 auto; min-height: 0; }
+/* '내용이 더 있다' 는 표시 — 접힘의 시각 신호 */
+.spine-show.stub .st-dots, .tl-show.stub .st-dots { flex: none; display: flex; flex-direction: column; gap: 3px; }
+.spine-show.stub .st-dots i, .tl-show.stub .st-dots i {
+  width: 3px; height: 3px; border-radius: 50%; background: var(--border-hi); }
+.spine-show.stub:hover .st-dots i, .tl-show.stub:hover .st-dots i { background: var(--accent); }
 .tkt-cols.spine-hidden, .tkt-cols.tl-hidden { position: relative; }
 /* 접혔을 때는 그 컬럼이 없다 — 본문이 그 폭을 가져간다 */
 @container tkt (min-width: 1000.1px) {
-  .tkt-cols.spine-hidden { padding-left: 8px; }
-  .tkt-cols.tl-hidden { padding-right: 8px; }
+  /* 접힌 쪽엔 레일 스터브(26px)가 서므로 그만큼 + 여백을 비운다 */
+  .tkt-cols.spine-hidden { padding-left: 34px; }
+  .tkt-cols.tl-hidden { padding-right: 34px; }
 }
 /* 좁은 화면(grid 모드)에선 폭 조절·접기가 무의미 — 손잡이/버튼을 숨긴다 */
 @container tkt (max-width: 1000px) {
