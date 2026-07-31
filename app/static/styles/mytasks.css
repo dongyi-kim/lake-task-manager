@@ -946,6 +946,8 @@
 .mtdnd-zones { position: absolute; inset: 7% 6%; display: flex; gap: 18px; }
 .mtdnd-ov.ax-h .mtdnd-zones { flex-direction: row; }      /* 가로축(칸반 3열) → 좌/중/우 — 칼럼과 정렬 */
 .mtdnd-ov.ax-v .mtdnd-zones { flex-direction: column; }   /* 세로축(상태 밴드) → 위/중간/아래 — 밴드와 정렬 */
+/* 가로축 + 칼럼 측정 성공 시: 존 left/right 를 실제 상태 칼럼과 px 단위로 일치(존은 인라인 절대배치) */
+.mtdnd-ov .mtdnd-zones.measured { display: block; left: 0; right: 0; }
 .mtdnd-z { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   border: 2px dashed var(--border-hi); border-radius: 3px;
   background: color-mix(in srgb, var(--panel) 72%, transparent); transition: border-color .08s, background .08s; }

@@ -677,7 +677,8 @@ export default {
         if (!cand && !this.drag) return;
         if (!this.drag) {
           if (Math.hypot(e.clientX - cand.x0, e.clientY - cand.y0) < 8) return;   // 아직 클릭 범위
-          this.drag = { ...cand, x: e.clientX, y: e.clientY, zone: null };
+          this.drag = { ...cand, x: e.clientX, y: e.clientY, zone: null,
+                        cols: this.axis === "h" ? this._measureCols() : null };
           document.body.classList.add("mtdnd-lock");
           this._dragEl && this._dragEl.classList.add("mtdnd-src");
         }
@@ -729,6 +730,29 @@ export default {
       document.body.classList.remove("mtdnd-lock");
       this._dragEl && this._dragEl.classList.remove("mtdnd-src");
       this._dragEl = null;
+    },
+    /** 가로축 드랍존의 left/right 를 **실제 상태 칼럼**(.mt-colbg 자식)과 일치시키기 위한 측정.
+     *  접힌 칼럼(34px)이 있으면 '모두 펼친' 기하(균등 3등분 + gap)로 재구성한다 — 접힘과 무관하게
+     *  드랍존은 항상 같은 자리(사용자 요청: 폴딩 안 된 상태의 left/right 기준). 실패 시 null(폴백 flex). */
+    _measureCols() {
+      const bg = this.$el && this.$el.querySelector(".mt-colbg");
+      if (!bg) return null;
+      const kids = Array.from(bg.children);
+      if (kids.length !== this.states.length) return null;
+      const allOpen = this.states.every((st) => this.bandOpen(st.k));
+      if (allOpen) {
+        return kids.map((el) => { const r = el.getBoundingClientRect(); return { left: r.left, width: r.width }; });
+      }
+      const cr = bg.getBoundingClientRect();
+      const cs = getComputedStyle(bg);
+      const gap = parseFloat(cs.columnGap || cs.gap) || 0;
+      const w = (cr.width - gap * (kids.length - 1)) / kids.length;
+      return kids.map((_, i) => ({ left: cr.left + i * (w + gap), width: w }));
+    },
+    zoneStyle(i) {
+      const c = this.drag && this.drag.cols && this.drag.cols[i];
+      if (!c) return {};
+      return { position: "absolute", left: c.left + "px", width: c.width + "px", top: "0", bottom: "0" };
     },
     /** 드랍 → 그 상태로 가는 전이를 찾아 실행. 필수 입력이 있으면 전이 다이얼로그로 넘긴다. */
     async _dropTo(key, zone) {
@@ -1096,8 +1120,8 @@ export default {
          가로축(칸반)이면 세로 3등분(위/중간/아래), 세로축이면 가로 3등분(좌/중/우).
          영역 밖 여백·틈에 놓으면 취소. 현재 상태 영역은 흐리게(놓아도 취소). -->
     <div v-if="drag" class="mtdnd-ov" :class="'ax-' + axis" aria-hidden="true">
-      <div class="mtdnd-zones">
-        <div v-for="st in states" :key="'dz-' + st.k" class="mtdnd-z"
+      <div class="mtdnd-zones" :class="{ measured: !!drag.cols }">
+        <div v-for="(st, i) in states" :key="'dz-' + st.k" class="mtdnd-z" :style="zoneStyle(i)"
              :class="['c-' + st.k, { hot: drag.zone === st.k, cur: drag.cat === st.k }]" :data-zone="st.k">
           <span class="mtdnd-zl"><em>To</em> {{ st.drop }}</span>
           <span v-if="drag.cat === st.k" class="mtdnd-zc">현재 상태</span>
