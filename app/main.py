@@ -1471,9 +1471,21 @@ def browse_ticket(key: str):
     index = STATIC_DIR / "index.html"
     if not index.exists():
         raise HTTPException(status_code=404, detail="frontend not built")
-    return FileResponse(str(index))
+    return FileResponse(str(index), headers={"Cache-Control": "no-cache"})
+
+
+class _RevalidatedStatic(StaticFiles):
+    """정적 파일에 `Cache-Control: no-cache` — 브라우저가 **매번 ETag 로 재검증**(안 바뀌면 304).
+
+    Cache-Control 이 없으면 브라우저는 휴리스틱 캐시(Last-Modified 기반 추정 TTL)로 재검증 없이
+    옛 JS/CSS 를 계속 써서, 배포(핀 이동) 후에도 강제 새로고침(Ctrl+Shift+R) 전까지 옛 UI 가 남았다.
+    로컬 서버라 재검증(304) 비용은 무시 가능 — 업데이트 후 **첫 실행부터** 새 UI 가 뜬다."""
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
 
 # 정적 프론트 (마지막에 마운트 — /api 라우트가 우선)
 if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+    app.mount("/", _RevalidatedStatic(directory=str(STATIC_DIR), html=True), name="static")
