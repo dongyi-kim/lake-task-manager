@@ -3,6 +3,7 @@
 // 소개 카드는 **본인에게 허락된 페이지만** 보여준다(매니저 전용은 manager===true 일 때만).
 // 인증 상황은 서비스별(Jira/Confluence/Bitbucket)로 표시 — SettingsMenu 와 같은 소스.
 import { api } from "../../lib/api.js";
+import { RELEASES } from "../../lib/releaseNotes.js";
 
 const SERVICES = ["Jira", "Confluence", "Bitbucket"];
 
@@ -21,7 +22,7 @@ const PAGES = [
 export default {
   name: "HomeView",
   // manager 는 스스로 확인한다(api.me 는 memo 라 앱루트와 중복 요청이 아니다). null=아직 모름.
-  data() { return { auth: null, env: "", manager: null }; },
+  data() { return { auth: null, env: "", manager: null, releases: RELEASES.slice(0, 4) }; },
   computed: {
     // 허락된 페이지만 — 매니저 전용은 manager 가 확정(true)일 때만 노출(먼저 판정, 그 뒤 표시).
     pages() { return PAGES.filter((p) => !p.manager || this.manager === true); },
@@ -75,5 +76,14 @@ export default {
       </a>
     </div>
     <p v-if="manager === null" class="home-hint">권한 확인 중… 매니저 전용 페이지는 확인 후 표시됩니다.</p>
+
+    <!-- 최근 업데이트(릴리즈 노트) — 유저가 느낄 변화만 짧게. 내용은 lib/releaseNotes.js -->
+    <section v-if="releases.length" class="home-notes">
+      <h2 class="hn-h">최근 업데이트</h2>
+      <div v-for="r in releases" :key="r.date" class="hn-rel">
+        <div class="hn-head"><span class="hn-date">{{ r.date }}</span><b class="hn-title">{{ r.title }}</b></div>
+        <ul class="hn-items"><li v-for="(it, i) in r.items" :key="i">{{ it }}</li></ul>
+      </div>
+    </section>
   </div>`,
 };

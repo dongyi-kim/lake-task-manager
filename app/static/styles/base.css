@@ -50,6 +50,16 @@ header.top { display: flex; align-items: stretch; justify-content: flex-start; g
   transition: color .12s, transform .12s; }
 .home-card:hover .hc-go { color: var(--accent); transform: translateX(3px); }
 .home-hint { margin-top: 16px; font-size: 12px; color: var(--muted-2); }
+
+/* 최근 업데이트(릴리즈 노트) — 유저 관점 요약. 각진 테마(2~3px). */
+.home-notes { margin-top: 34px; border-top: 1px solid var(--border); padding-top: 20px; }
+.home-notes .hn-h { font-size: 14px; font-weight: 700; margin: 0 0 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.home-notes .hn-rel { padding: 12px 15px; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; margin-bottom: 10px; }
+.home-notes .hn-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 7px; flex-wrap: wrap; }
+.home-notes .hn-date { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.home-notes .hn-title { font-size: 13.5px; font-weight: 700; }
+.home-notes .hn-items { margin: 0; padding-left: 17px; }
+.home-notes .hn-items li { font-size: 12.5px; color: var(--text); line-height: 1.7; }
 .theme-btn { align-self: center; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 5px 11px; cursor: pointer; white-space: nowrap; }
 .theme-btn:hover { background: var(--panel-2); }
 .meta { color: var(--muted); font-size: 12px; }
