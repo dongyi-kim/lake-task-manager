@@ -17,7 +17,6 @@ from pathlib import Path
 
 _LOCK = threading.Lock()
 _DEFAULTS = {"bitbucketEnabled": False,
-             "jiraLinkPrompted": False,   # Jira 링크 가로채기 1회 안내(토스트) 노출 여부
              # 빠른 열기 전역 단축키(데스크톱 앱). 설정/트레이에서 바꾼다. run.py 가 이 값으로 등록.
              "quickOpenHotkey": "ctrl+alt+space"}
 
