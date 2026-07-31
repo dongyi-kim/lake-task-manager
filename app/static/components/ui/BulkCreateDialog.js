@@ -411,6 +411,10 @@ export default {
           <div class="mt-gbody one">
             <div v-for="c in g.cards" :key="c._i" class="mt-card" :style="c._sig">
               <PriIcon :rank="c.priRank" :name="c.pri" />
+              <!-- ★ Task 화면의 그룹 안 카드에는 타입 뱃지가 없다(거기선 전부 Sub-Task 라 자명하다).
+                   여기서는 다르다 — **무엇을 만드는지가 이 화면의 요점**이고, task 모드에서는
+                   Task·Bug·Story 가 섞인다. JSON 에 적은 type 이 맞게 읽혔는지 여기서 확인한다. -->
+              <TypeBadge :type="c.type" />
               <span class="mt-key">{{ c.key }}</span>
               <span class="mt-title">{{ c.title }}</span>
               <span class="mt-owner" :title="(c.assignee || '미할당') + ' 담당'">
