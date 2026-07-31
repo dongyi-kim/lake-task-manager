@@ -25,6 +25,7 @@ import TaskCard, { isHot, isUrgent } from "../ui/TaskCard.js";
 import DueText from "../ui/DueText.js";
 import FieldEdit from "../ui/FieldEdit.js";
 import AdvancedSearchDialog from "../ui/AdvancedSearchDialog.js";
+import TransitionDialog from "../ui/TransitionDialog.js";
 import { categoryColor } from "../../lib/colors.js";
 import { pushToast } from "../../lib/toast.js";
 import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
@@ -86,10 +87,13 @@ const PREF_KEY = "mytasks.opts";
 
 export default {
   name: "MyTasksView",
-  components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit, AdvancedSearchDialog },
+  components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit, AdvancedSearchDialog, TransitionDialog },
   data() {
     return {
       model: null, loading: true, err: "",
+      // 카드 드래그 상태변경 — 드래그 중이면 {key,title,cat,x,y,zone}. zone = 커서 아래 드랍영역(상태 k | null).
+      drag: null,
+      dragTrx: null,        // 드랍한 전이에 필수 입력이 있으면 TransitionDialog 로 채운다 {ticket, transition}
       // 폭이 정한다(사용자 선택 아님). 좁으면 v(세로) — 화면이 답을 알고 있다.
       axis: window.matchMedia(NARROW).matches ? "v" : "h",
       groupBy: "sub",       // none | sub (부모 Task 로 묶기)
@@ -165,11 +169,13 @@ export default {
     this._onMq = (e) => { this.axis = e.matches ? "v" : "h"; };
     this._mq.addEventListener ? this._mq.addEventListener("change", this._onMq)
                               : this._mq.addListener(this._onMq);
+    this._bindDrag();
   },
   unmounted() {
     window.removeEventListener("ticket-changed", this._onChanged);
     window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
+    this._unbindDrag && this._unbindDrag();
     if (!this._mq) return;
     this._mq.removeEventListener ? this._mq.removeEventListener("change", this._onMq)
                                  : this._mq.removeListener(this._onMq);
@@ -642,6 +648,98 @@ export default {
     // 같은 화면에서 '급함' 의 뜻이 두 개가 된다.
     isHotC(c) { return c.statusCategory !== "done" && isHot(c.dueDays); },
     isUrgentC(c) { return c.statusCategory !== "done" && isUrgent(c); },
+
+    // ── 카드 드래그로 상태변경 ──────────────────────────────────────
+    // 카드를 잡아 끌면 화면에 **오버레이 드랍가이드**가 뜬다: 가로축(칸반)에선 세로 3등분,
+    // 세로축에선 가로 3등분. 영역 밖(가장자리 여백·영역 사이 틈)에 놓으면 **취소**다.
+    // 클릭(티켓 열기)과의 충돌은 이동 임계값(8px)으로 가른다 — 그 미만이면 클릭으로 흘려보낸다.
+    _bindDrag() {
+      const root = this.$el;
+      if (!root || this._dragBound) return;
+      this._dragBound = true;
+      let cand = null;   // pointerdown 후보 {key,title,cat,x0,y0,el}
+      const findCard = (t) => t.closest && t.closest(".mt-card[data-key]");
+      const onDown = (e) => {
+        if (e.button !== 0 || this.drag) return;
+        if (e.target.closest("button, a, input, select, textarea")) return;
+        const el = findCard(e.target);
+        if (!el) return;
+        const key = el.getAttribute("data-key");
+        // 일반 카드는 allCards, 그룹 부모 카드는 panels[].group 에 산다 — 둘 다 찾아야
+        // '같은 상태에 놓기 = 취소' 판정(cat)이 그룹 카드에서도 동작한다.
+        const c = this.allCards.find((x) => x.key === key)
+          || (this.panels.find((p) => p.key === key) || {}).group;
+        cand = { key, title: (c && (c.title || c.summary)) || key,
+                 cat: (c && c.statusCategory) || null, x0: e.clientX, y0: e.clientY };
+      };
+      const onMove = (e) => {
+        if (!cand && !this.drag) return;
+        if (!this.drag) {
+          if (Math.hypot(e.clientX - cand.x0, e.clientY - cand.y0) < 8) return;   // 아직 클릭 범위
+          this.drag = { ...cand, x: e.clientX, y: e.clientY, zone: null };
+          document.body.classList.add("mtdnd-lock");
+        }
+        this.drag.x = e.clientX; this.drag.y = e.clientY;
+        const z = document.elementFromPoint(e.clientX, e.clientY);
+        const zel = z && z.closest && z.closest(".mtdnd-z");
+        this.drag.zone = (zel && !zel.classList.contains("cur")) ? zel.getAttribute("data-zone") : null;
+      };
+      const onUp = () => {
+        if (this.drag) {
+          const { key, zone, cat } = this.drag;
+          this._endDrag();
+          if (zone && zone !== cat) this._dropTo(key, zone);
+          // 드래그였다면 이어지는 click(티켓 다이얼로그 열기)을 한 번 먹는다.
+          const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+          document.addEventListener("click", eat, { capture: true, once: true });
+          setTimeout(() => document.removeEventListener("click", eat, { capture: true }), 0);
+        }
+        cand = null;
+      };
+      const onKey = (e) => { if (e.key === "Escape" && this.drag) { this._endDrag(); cand = null; } };
+      root.addEventListener("pointerdown", onDown);
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("keydown", onKey);
+      this._unbindDrag = () => {
+        root.removeEventListener("pointerdown", onDown);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("keydown", onKey);
+        this._dragBound = false;
+      };
+    },
+    _endDrag() { this.drag = null; document.body.classList.remove("mtdnd-lock"); },
+    /** 드랍 → 그 상태로 가는 전이를 찾아 실행. 필수 입력이 있으면 전이 다이얼로그로 넘긴다. */
+    async _dropTo(key, zone) {
+      let trs = [];
+      try { trs = await api.transitions(key) || []; } catch (e) { trs = []; }
+      const t = trs.find((x) => x.toCategory === zone);   // done 은 Resolved 우선(서버 정렬)
+      if (!t) {
+        pushToast({ kind: "error", title: key + " — 이동할 수 없습니다",
+                    message: "현재 상태에서 그 상태로 가는 전이가 없습니다.", timeout: 5000 });
+        return;
+      }
+      const fld = t.fields || {};
+      if ((fld.fields || []).length || (fld.unsupported || []).length) {
+        this.dragTrx = { ticket: key, transition: t };   // 필수 입력 → 다이얼로그
+        return;
+      }
+      try {
+        const r = await api.doTransition(key, { id: t.id });
+        if (r && r.ok === false) throw new Error(r.error || "전이에 실패했습니다.");
+        pushToast({ kind: "success", title: key + " → " + (t.to || "전이"), timeout: 3500 });
+        window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key } }));
+        if (r && r.cascade) window.dispatchEvent(new CustomEvent("cascade-prompt", { detail: r.cascade }));
+      } catch (e) {
+        pushToast({ kind: "error", title: key + " 전이 실패", message: (e && e.message) || "", timeout: 6000 });
+      }
+    },
+    onDragTrxDone() {
+      const k = this.dragTrx && this.dragTrx.ticket;
+      this.dragTrx = null;
+      if (k) window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: k } }));
+    },
   },
   template: `
   <div class="mytasks" :class="'ax-' + axis" :style="{ '--mt-cols': gridCols }">
@@ -973,5 +1071,23 @@ export default {
         </div>
       </div>
     </div>
+
+    <!-- ══ 카드 드래그 상태변경 — 오버레이 드랍가이드 ══
+         가로축(칸반)이면 세로 3등분(위/중간/아래), 세로축이면 가로 3등분(좌/중/우).
+         영역 밖 여백·틈에 놓으면 취소. 현재 상태 영역은 흐리게(놓아도 취소). -->
+    <div v-if="drag" class="mtdnd-ov" :class="'ax-' + axis" aria-hidden="true">
+      <div class="mtdnd-zones">
+        <div v-for="st in states" :key="'dz-' + st.k" class="mtdnd-z"
+             :class="['c-' + st.k, { hot: drag.zone === st.k, cur: drag.cat === st.k }]" :data-zone="st.k">
+          <span class="mtdnd-zl">{{ st.label }}</span>
+          <span v-if="drag.cat === st.k" class="mtdnd-zc">현재 상태</span>
+        </div>
+      </div>
+      <div class="mtdnd-hint">영역 밖에 놓으면 취소 · ESC 취소</div>
+      <div class="mtdnd-ghost" :style="{ left: drag.x + 'px', top: drag.y + 'px' }">{{ drag.key }} · {{ drag.title }}</div>
+    </div>
+    <!-- 드랍한 전이에 필수 입력(해결책 등)이 있으면 기존 전이 다이얼로그로 채운다 -->
+    <TransitionDialog v-if="dragTrx" :ticket="dragTrx.ticket" :transition="dragTrx.transition"
+                      @close="dragTrx = null" @done="onDragTrxDone()" />
   </div>`,
 };
