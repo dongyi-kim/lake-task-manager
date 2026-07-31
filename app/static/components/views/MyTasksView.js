@@ -671,6 +671,7 @@ export default {
           || (this.panels.find((p) => p.key === key) || {}).group;
         cand = { key, title: (c && (c.title || c.summary)) || key,
                  cat: (c && c.statusCategory) || null, x0: e.clientX, y0: e.clientY };
+        this._dragEl = el;   // 원본 카드 — 드래그 중 흐리게(무엇이 들려 있는지 즉시 보이게)
       };
       const onMove = (e) => {
         if (!cand && !this.drag) return;
@@ -678,6 +679,7 @@ export default {
           if (Math.hypot(e.clientX - cand.x0, e.clientY - cand.y0) < 8) return;   // 아직 클릭 범위
           this.drag = { ...cand, x: e.clientX, y: e.clientY, zone: null };
           document.body.classList.add("mtdnd-lock");
+          this._dragEl && this._dragEl.classList.add("mtdnd-src");
         }
         this.drag.x = e.clientX; this.drag.y = e.clientY;
         const z = document.elementFromPoint(e.clientX, e.clientY);
@@ -696,7 +698,20 @@ export default {
         }
         cand = null;
       };
-      const onKey = (e) => { if (e.key === "Escape" && this.drag) { this._endDrag(); cand = null; } };
+      const onKey = (e) => {
+        if (e.key !== "Escape") return;
+        if (this.drag) { this._endDrag(); cand = null; return; }
+        // 드랍으로 연 전이 다이얼로그의 ESC — TicketDialog 의 체인과 같은 규칙:
+        // 에디터에 포커스가 있으면 먼저 에디터에서 빠져나가고, 한 번 더 누르면 닫는다.
+        if (!this.dragTrx) return;
+        const ae = document.activeElement;
+        if (ae && ae.closest && ae.closest('.ProseMirror, .tiptap, [contenteditable="true"]')) {
+          e.preventDefault();
+          try { ae.blur(); } catch (_) { /* noop */ }
+          return;
+        }
+        this.dragTrx = null;
+      };
       root.addEventListener("pointerdown", onDown);
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
@@ -709,7 +724,12 @@ export default {
         this._dragBound = false;
       };
     },
-    _endDrag() { this.drag = null; document.body.classList.remove("mtdnd-lock"); },
+    _endDrag() {
+      this.drag = null;
+      document.body.classList.remove("mtdnd-lock");
+      this._dragEl && this._dragEl.classList.remove("mtdnd-src");
+      this._dragEl = null;
+    },
     /** 드랍 → 그 상태로 가는 전이를 찾아 실행. 필수 입력이 있으면 전이 다이얼로그로 넘긴다. */
     async _dropTo(key, zone) {
       let trs = [];

@@ -961,7 +961,10 @@
 .mtdnd-hint { position: absolute; left: 50%; bottom: 2.2%; transform: translateX(-50%);
   font-size: 11.5px; color: var(--muted); background: var(--panel); border: 1px solid var(--border);
   border-radius: 3px; padding: 3px 10px; }
-.mtdnd-ghost { position: fixed; transform: translate(12px, 10px); z-index: 301; pointer-events: none;
-  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 12px; font-weight: 600; color: var(--text); background: var(--panel);
-  border: 1px solid var(--accent); border-radius: 3px; padding: 5px 10px; box-shadow: var(--shadow); }
+/* 들고 있는 티켓 — 커서를 따라다니는 카드형 고스트. 원본 카드는 흐려져 '어디서 들었는지'가 남는다. */
+.mtdnd-ghost { position: fixed; transform: translate(14px, 12px); z-index: 301; pointer-events: none;
+  max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; font-weight: 700; color: var(--text); background: var(--panel);
+  border: 1.5px solid var(--accent); border-left-width: 4px; border-radius: 3px; padding: 8px 13px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.22); }
+.mt-card.mtdnd-src { opacity: .35; outline: 2px dashed var(--accent); outline-offset: -2px; }
