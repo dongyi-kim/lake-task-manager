@@ -14,6 +14,7 @@ JIRA_ENV=mock 이면 Jira 없이 결정적 데이터로 전체가 구동된다.
 """
 
 import re
+import sys
 import threading
 import urllib.parse
 from collections import deque
@@ -202,6 +203,59 @@ def api_app_open_ticket(body: _OpenTicketBody):
     _open_ticket_q.append(key)
     r = request_focus_or_open()                 # 창이 없으면 새로 연다(뜨면 루프가 큐를 소비)
     return {"ok": True, "window": r.get("action")}
+
+
+# ── Jira 링크 디스패처(dispatch_url.py) 관리 — 설정 페이지에서 등록/해제 (Windows 전용) ──
+_DISPATCH_SCRIPT = STATIC_DIR.parent.parent / "dispatch_url.py"
+
+
+@app.get("/api/dispatcher/status")
+def api_dispatcher_status():
+    """디스패처 등록 상태 — registered(브라우저로 등록됨) / default(기본 브라우저로 지정됨)."""
+    if sys.platform != "win32" or not _DISPATCH_SCRIPT.exists():
+        return {"supported": False}
+    import winreg
+    registered = default = False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\RegisteredApplications") as k:
+            winreg.QueryValueEx(k, "LakeTaskManagerLinks")
+        registered = True
+    except OSError:
+        pass
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\Shell\Associations"
+                            r"\UrlAssociations\https\UserChoice") as k:
+            prog, _ = winreg.QueryValueEx(k, "ProgId")
+        default = prog == "LTMLink.URL"
+    except OSError:
+        pass
+    return {"supported": True, "registered": registered, "default": default}
+
+
+@app.post("/api/dispatcher/register")
+def api_dispatcher_register():
+    return _dispatcher_run("--register")
+
+
+@app.post("/api/dispatcher/unregister")
+def api_dispatcher_unregister():
+    return _dispatcher_run("--unregister")
+
+
+def _dispatcher_run(flag):
+    """dispatch_url.py 를 별도 프로세스로 실행(레지스트리 등록/해제 — 서버는 사용자 계정으로 도니 HKCU 일치)."""
+    if sys.platform != "win32" or not _DISPATCH_SCRIPT.exists():
+        return JSONResponse({"ok": False, "error": "Windows 데스크톱에서만 지원됩니다."}, status_code=400)
+    import subprocess
+    try:
+        r = subprocess.run([sys.executable, str(_DISPATCH_SCRIPT), flag],
+                           capture_output=True, text=True, timeout=20)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=500)
+    if r.returncode != 0:
+        return JSONResponse({"ok": False, "error": (r.stderr or r.stdout or "실패")[:300]}, status_code=500)
+    return {"ok": True}
 
 
 # ── 업데이트 확인 (배포 repo 가 원격보다 뒤처졌나) ─────────────────────────

@@ -127,6 +127,8 @@ export const api = {
   // 전이 목록은 **캐시하지 않는다** — 현재 상태에 따라 매번 달라지고, 낡은 목록은 곧 400 이다.
   timetracking: () => get("/api/timetracking"),
   openExternal: (url) => jsonReq("/api/open", "POST", { url }),
+  // Jira 링크 디스패처 등록/해제 (설정 페이지) — a: 'register' | 'unregister'
+  dispatcher: (a) => jsonReq("/api/dispatcher/" + a, "POST", {}),
   // 편집 가능 필드 — 상태에 따라 바뀌므로 캐시하지 않는다
   editmeta: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/editmeta"),
   // 기본 목록(빈 질의)은 **memo** — 같은 팝업을 다시 열 때 네트워크 없이 즉시 뜬다(라벨·컴포넌트
