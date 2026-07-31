@@ -35,9 +35,9 @@ const NO_DUE = 1e6;
 
 // 상태 축 — 순서가 곧 작업 흐름이다.
 const STATES = [
-  { k: "todo", label: "할당됨" },
-  { k: "inprogress", label: "진행 중" },
-  { k: "done", label: "최근 완료" },
+  { k: "todo", label: "할당됨", drop: "작업 대기" },
+  { k: "inprogress", label: "진행 중", drop: "진행 중" },
+  { k: "done", label: "최근 완료", drop: "완료" },
 ];
 // Epic 시그니처 컬러 — 같은 Epic 은 어느 화면·어느 카드에서도 같은 색.
 // 사용자 VoC 는 Epic 이 없어도 **전용 Epic 처럼** 자기 색을 갖는다(Epic 이 배정돼 있으면 그쪽 우선).
@@ -1079,7 +1079,7 @@ export default {
       <div class="mtdnd-zones">
         <div v-for="st in states" :key="'dz-' + st.k" class="mtdnd-z"
              :class="['c-' + st.k, { hot: drag.zone === st.k, cur: drag.cat === st.k }]" :data-zone="st.k">
-          <span class="mtdnd-zl">{{ st.label }}</span>
+          <span class="mtdnd-zl"><em>To</em> {{ st.drop }}</span>
           <span v-if="drag.cat === st.k" class="mtdnd-zc">현재 상태</span>
         </div>
       </div>

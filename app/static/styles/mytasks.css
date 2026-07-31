@@ -953,6 +953,7 @@
 .mtdnd-z.c-inprogress  { --zc: var(--st-prog); }
 .mtdnd-z.c-done        { --zc: var(--st-done); }
 .mtdnd-z .mtdnd-zl { font-size: 17px; font-weight: 800; color: var(--zc); letter-spacing: .3px; }
+.mtdnd-z .mtdnd-zl em { font-style: normal; font-weight: 600; font-size: 13px; opacity: .72; margin-right: 2px; }
 .mtdnd-z.hot { border-color: var(--zc); border-style: solid;
   background: color-mix(in srgb, var(--zc) 13%, var(--panel)); }
 .mtdnd-z.cur { opacity: .38; border-style: dotted; }
