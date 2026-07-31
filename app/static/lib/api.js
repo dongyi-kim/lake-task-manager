@@ -17,11 +17,20 @@ async function req(path, opts) {
   return r.json();
 }
 
+// memo 는 **LRU 상한**을 둔다 — 앱 창은 트레이 상주로 며칠씩 살아 있는데, 무한 memo 면
+// 열람한 모든 티켓의 본문·코멘트·타임라인 JSON 이 힙에 계속 쌓인다(장기 사용 메모리 증가의 주범).
+// 최근 300개면 "다시 열면 즉시" 체감은 유지되면서 힙은 일정 수준에서 멈춘다.
 const _memo = new Map();
+const MEMO_MAX = 300;
 function get(path) {
-  if (_memo.has(path)) return _memo.get(path);
+  if (_memo.has(path)) {
+    const p = _memo.get(path);
+    _memo.delete(path); _memo.set(path, p);   // 재삽입 = 최근 사용 표시(Map 은 삽입순 유지)
+    return p;
+  }
   const p = req(path).catch((e) => { _memo.delete(path); throw e; });  // 실패는 캐시 안 함
   _memo.set(path, p);
+  if (_memo.size > MEMO_MAX) _memo.delete(_memo.keys().next().value);  // 가장 오래된 것부터
   return p;
 }
 // 쓰기 후 그 티켓 관련 GET memo 를 비워 다음 조회가 최신을 읽게 한다(코멘트·첨부·타임라인 등).
