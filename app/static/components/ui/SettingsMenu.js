@@ -4,6 +4,7 @@
 // 백엔드: /api/health · /api/dev/sso/{service}(서비스별) · /api/dev/tools · /api/login
 import { api } from "../../lib/api.js";
 import { TYPEAHEAD_PRESETS, typeaheadDelay, setTypeaheadDelay } from "../../lib/typeahead.js";
+import { resetSeen } from "../../lib/guides.js";
 
 const SERVICES = ["Jira", "Confluence", "Bitbucket"];
 // 빠른 열기 전역 단축키 선택지 — run.py 가 이 spec 을 등록한다(데스크톱 앱). 기본 ctrl+alt+space.
@@ -22,6 +23,7 @@ export default {
       manager: false,   // 매니저 아니면 Dev Tools 섹션을 감춘다(판정 전에도 감춤)
      
       open: false, rev: "", tools: null, loggingIn: false,
+      guideMsg: "",     // '가이드 다시 보기' 를 누른 뒤의 짧은 확인 문구
       // 서비스별 독립 상태 — loading|ok|no|off|err. 각자 도착하는 대로 렌더된다.
       services: SERVICES.map((name) => ({ name, status: "loading", detail: "", configured: null })),
       taMs: typeaheadDelay(),          // 자동완성 대기(ms) — 검색·문서/티켓 링크·@멘션 공통
@@ -53,6 +55,14 @@ export default {
     this._stopPoll();
   },
   methods: {
+    /** 본 기록을 지운다 — 다음에 해당 화면에 가면 안내가 다시 뜬다.
+     *  창을 닫아 버리면 방금 지운 것이 눈에 안 보이므로, 여기서 짧게 확인만 주고 열어 둔다. */
+    replayGuides() {
+      resetSeen();
+      this.guideMsg = "초기화했습니다 — 각 화면에서 다시 안내됩니다";
+      clearTimeout(this._gt);
+      this._gt = setTimeout(() => { this.guideMsg = ""; }, 3000);
+    },
     toggle() { this.open ? this.close() : this.openMenu(); },
     async setBitbucket(on) {
       if (this.bbBusy) return;
@@ -182,6 +192,13 @@ export default {
           </div>
           <div class="sm-ta-h">이 조합을 누르면 앱 창이 지금 보고 있는 화면(가상 데스크톱)으로 옵니다. — 데스크톱 앱</div>
         </div>
+      </div>
+
+      <!-- 기능 안내 — 한 번 보고 닫으면 다시 안 뜨므로, 다시 볼 길을 여기 둔다.
+           (목록 자체는 lib/guides.js 가 갖는다. 지워진 안내는 여기서 되살아나지 않는다.) -->
+      <div class="sm-sec">
+        <div class="sm-h">기능 안내</div>
+        <button class="sm-btn" @click="replayGuides">{{ guideMsg || '처음부터 다시 보기' }}</button>
       </div>
 
       <!-- Dev Tools — 매니저 전용 -->

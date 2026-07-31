@@ -17,7 +17,8 @@ import TicketDialog from "./ui/TicketDialog.js";
 import TransitionDialog from "./ui/TransitionDialog.js";
 import SearchOverlay from "./ui/SearchOverlay.js";
 import SettingsMenu from "./ui/SettingsMenu.js";
-import { api } from "../lib/api.js";
+import GuideSpot from "./ui/GuideSpot.js";
+import { api, watchAuth } from "../lib/api.js";
 import { confirmBox } from "../lib/confirm.js";
 import { pushToast } from "../lib/toast.js";
 
@@ -45,7 +46,7 @@ function ticketOf() {
 
 export default {
   name: "AppRoot",
-  components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, TicketMenu, TicketDialog, TransitionDialog, SearchOverlay, SettingsMenu, FloatingRefresh, AddTicketFab },
+  components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, TicketMenu, TicketDialog, TransitionDialog, SearchOverlay, SettingsMenu, FloatingRefresh, AddTicketFab, GuideSpot },
   // ready=health 판정 전. prod 첫 실행: 부팅로더 → (여기) 로딩 스피너 → 로그인 오버레이/대시보드.
   //   → 흰 화면 없음 + 로그인 필요 시 뷰를 먼저 안 띄워 401 에러 깜빡임 방지.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
@@ -119,6 +120,10 @@ export default {
       if (this.ready) return;
       this.needLogin = true; this.ready = true;
     });
+    // 인증이 서면 화면을 연다. **런처가 서버 자기 창으로 SSO 를 끝내는 경로**(prod 첫 기동)에서는
+    // 프론트가 로그인을 건 적이 없어, 여기서 안 열면 오버레이만 걷히고 아무 화면도 없이 남는다.
+    // (api.js 의 인증 감시자가 그 순간을 잡아 auth-ok 를 쏜다.)
+    window.addEventListener("auth-ok", () => { this.needLogin = false; this.ready = true; });
     // 티켓 링크(.tkt[data-key]) 위임 처리 — 어느 화면/코멘트에서 눌러도 인앱 다이얼로그로 연다.
     document.addEventListener("click", (e) => {
       const a = e.target.closest && e.target.closest(".tkt[data-key]");
@@ -147,6 +152,9 @@ export default {
     api.health().then((h) => {
       this.needLogin = !!(h && h.needLogin);
       this.hasCache = !!(h && h.hasCache);
+      // 미인증인 채로 뜬 첫 화면 — 인증이 서는 순간을 지켜본다. 401 을 한 번도 안 겪는 경로
+      // (캐시가 없어 뷰가 아예 안 뜬 경우)라 여기서 직접 걸어 줘야 한다.
+      if (this.needLogin) watchAuth();
     }).catch(() => {}).finally(() => { this.ready = true; });
     // 매니저 판정은 **부팅과 무관하게** 따로 흐른다. 결과가 오면 watch 가 정리한다.
     api.me().then((me) => { this.manager = !!(me && me.manager); })
@@ -272,6 +280,9 @@ export default {
       <ToastStack />
       <!-- 좌하단 '+' 티켓 추가(공통) — 로그인·devtools 제외하고 어디서든 -->
       <AddTicketFab v-if="ready && (!needLogin || hasCache) && route !== 'devtools'" />
+      <!-- 기능 안내(한 번만) — 목록은 lib/guides.js. 다이얼로그가 떠 있으면 띄우지 않는다:
+           가리킬 버튼이 그 뒤에 가려져 무엇을 말하는지 알 수 없게 된다. -->
+      <GuideSpot v-if="ready && !needLogin && !ticketKey && !pageTicket" :route="route" />
       <TicketDialog v-if="ticketKey" :key-id="ticketKey" @close="ticketKey = null" />
       <!-- 하위 상태변경 후처리: 상위 전이에 필수 입력이 있을 때만 뜨는 부모 전이 다이얼로그 -->
       <TransitionDialog v-if="cascadeTrx" :ticket="cascadeTrx.ticket" :transition="cascadeTrx.transition"

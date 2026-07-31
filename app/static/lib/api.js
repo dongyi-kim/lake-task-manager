@@ -5,7 +5,7 @@ async function req(path, opts) {
   const r = await fetch(path, opts);
   if (r.status === 401) {
     let b = {}; try { b = await r.clone().json(); } catch (e) {}
-    if (b && b.needLogin) window.dispatchEvent(new CustomEvent("need-login"));
+    if (b && b.needLogin) { watchAuth(); window.dispatchEvent(new CustomEvent("need-login")); }
     throw new Error("HTTP 401");
   }
   if (!r.ok) {
@@ -39,6 +39,43 @@ function evict(sub) { for (const k of Array.from(_memo.keys())) if (k.includes(s
 // 상태·담당·제목 변경, 하위 생성/삭제 후엔 이 목록 memo 를 통째로 비워, **부모 다이얼로그의 자식
 // 목록**(리포트된 버그: 하위 상태 바꿨는데 부모의 자식목록엔 반영 안 됨)이 최신을 받게 한다.
 function evictLists() { evict("/children"); evict("/siblings"); evict("/ancestors"); }
+
+// ── 인증 복귀 감시 ────────────────────────────────────────────────────────────
+// **리포트된 버그**: prod 첫 기동에서 각 탭이 '불러오는 중' 에서 안 끝난다. 원인은 두 겹이었다.
+//
+//  1) 런처(run.py)가 최초 1회 SSO 를 **서버 자기 창으로** 돌린다. 그 경로에서는 프론트가
+//     /api/login 을 부른 적이 없어 auth-ok 를 **영영 못 받는다**. 인증이 끝나도 화면은 그걸
+//     모르니 아무도 다시 받지 않는다. (상단 배너만 혼자 'ok' 로 바뀌고 입을 다물었다.)
+//  2) 설령 auth-ok 가 와도 아래 memo 가 **세션 없이 떠난 그 요청의 프로미스를 그대로** 돌려줘,
+//     재시도가 죽은 요청에 다시 매달렸다. Ctrl+Shift+R 만 들었던 이유가 이것이다(새 페이지 =
+//     빈 memo). 그래서 사용자에겐 '강제 새로고침 전엔 안 뜬다' 로 보였다.
+//
+// → 미인증을 알게 되면 /api/status(**Jira 를 타지 않는** 경량 상태)를 지켜보다가, 인증이 서면
+//   memo 를 비우고 auth-ok 를 쏜다. 각 화면은 이미 auth-ok 에서 다시 받도록 돼 있다.
+const AUTH_POLL_MS = 2500, AUTH_WATCH_MAX = 15 * 60 * 1000;
+let _authTimer = null, _authUntil = 0;
+
+function stopAuthWatch() { if (_authTimer) { clearInterval(_authTimer); _authTimer = null; } }
+
+/** 미인증을 알게 됐을 때 부른다. 인증이 서는 순간을 잡아 화면들을 깨운다(중복 호출 안전). */
+export function watchAuth() {
+  _authUntil = Date.now() + AUTH_WATCH_MAX;      // 되살아날 기미가 없으면 영원히 돌지는 않는다
+  if (_authTimer) return;
+  _authTimer = setInterval(() => {
+    if (Date.now() > _authUntil) return stopAuthWatch();
+    req("/api/status").then((s) => {
+      if (!s || s.needLogin) return;
+      _memo.clear();                             // ★ 죽은 요청을 버린다 — 안 비우면 재시도가 거기 매달린다
+      stopAuthWatch();
+      window.dispatchEvent(new CustomEvent("auth-ok"));
+    }).catch(() => { /* 서버가 잠깐 안 닿는 것 — 다음 주기에 다시 본다 */ });
+  }, AUTH_POLL_MS);
+}
+
+// LoginOverlay 가 직접 로그인해 성공한 경로도 같은 청소가 필요하다. 이 리스너는 **모듈 평가
+// 시점**에 걸리므로 어떤 컴포넌트의 auth-ok 처리보다 **먼저** 돈다 — 화면들이 다시 받을 때는
+// memo 가 이미 비어 있어 진짜 새 요청이 나간다(등록 순서가 곧 실행 순서다).
+window.addEventListener("auth-ok", () => { _memo.clear(); stopAuthWatch(); });
 
 function jsonReq(path, method, body) {
   return req(path, { method, headers: { "Content-Type": "application/json" },
