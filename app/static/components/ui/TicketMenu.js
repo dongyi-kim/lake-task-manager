@@ -12,6 +12,7 @@
 // 아무나 바꾸면 협업이 아니라 사고다. 서버도 같은 규칙으로 막는다(숨김은 접근 제어가 아니다).
 import { api } from "../../lib/api.js";
 import Avatar from "./Avatar.js";
+import NewChildDialog from "./NewChildDialog.js";
 import TransitionDialog from "./TransitionDialog.js";
 import UserPickDialog from "./UserPickDialog.js";
 import { confirmBox } from "../../lib/confirm.js";
@@ -19,13 +20,15 @@ import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
 
 export default {
   name: "TicketMenu",
-  components: { Avatar, TransitionDialog, UserPickDialog },
+  components: { Avatar, NewChildDialog, TransitionDialog, UserPickDialog },
   data() {
     return { open: false, x: 0, y: 0, key: "", info: null, err: "",
-             picked: null, pickUser: false, busy: "" };
+             picked: null, pickUser: false, addChild: false, busy: "" };
   },
   computed: {
     mayEdit() { return !!(this.info && this.info.mayEdit); },
+    childTypes() { return (this.info && this.info.childTypes) || []; },
+    isEpic() { return !!this.info && this.info.type === "Epic"; },
     assigneeId() { return (this.info && this.info.assigneeId) || ""; },
     meId() { return (this.info && this.info.me && this.info.me.id) || ""; },
     isMine() { return !!this.assigneeId && this.assigneeId === this.meId; },
@@ -48,10 +51,12 @@ export default {
       this.openAt(e.clientX, e.clientY, a.getAttribute("data-key"));
     });
     document.addEventListener("click", this._onDoc = () => {
-      if (!this.picked && !this.pickUser) this.open = false;
+      if (!this.picked && !this.pickUser && !this.addChild) this.open = false;
     });
     document.addEventListener("keydown", this._onEsc = (e) => {
-      if (e.key === "Escape") { this.open = false; this.picked = null; this.pickUser = false; }
+      if (e.key !== "Escape") return;
+      if (this.addChild) return;   // 하위 만들기 창은 스스로 Esc 를 처리한다(입력 중 내용 보호)
+      this.open = false; this.picked = null; this.pickUser = false;
     });
   },
   unmounted() {
@@ -81,6 +86,8 @@ export default {
       // 바뀐 티켓만 화면에 반영한다(뷰가 스스로 조용히 다시 받는다).
       window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { key: this.key } }));
     },
+    /** 우클릭 → 하위 만들기 완료 — 부모 기준으로 화면 갱신(하위 목록·진척이 부모에 달려 있다). */
+    onChildCreated() { this.addChild = false; this.changed(); },
     async run(what, fn) {
       this.busy = what; this.err = "";
       try { await fn(); this.open = false; this.changed(); }
@@ -138,6 +145,14 @@ export default {
           <em>{{ info.assignee }}</em>
         </button>
 
+        <!-- 1.5 하위 만들기 — 만들 수 있는 타입이 있을 때만(Epic→Task / Task→Sub-Task) -->
+        <template v-if="mayEdit && childTypes.length">
+          <div class="tkm-g">만들기</div>
+          <button class="tkm-i" :disabled="!!busy" @click="addChild = true; open = false">
+            <span class="tkm-ic">＋</span>{{ isEpic ? '하위 Task 만들기…' : 'Sub Task 만들기…' }}
+          </button>
+        </template>
+
         <!-- 2. 상태 변경 — 내 티켓이거나 매니저만 -->
         <div class="tkm-g">상태 변경</div>
         <div v-if="!mayEdit" class="tkm-note">담당자·보고자 또는 매니저만 바꿀 수 있습니다.</div>
@@ -168,5 +183,8 @@ export default {
                     @close="pickUser = false" @pick="onPickUser" />
     <TransitionDialog v-if="picked" :ticket="key" :transition="picked"
                       @close="picked = null" @done="picked = null; changed()" />
+    <NewChildDialog v-if="addChild" :parent="key" :is-epic="isEpic" :types="childTypes"
+                    :parent-due="(info && info.due) || ''"
+                    @close="addChild = false" @created="onChildCreated" />
   </div>`,
 };

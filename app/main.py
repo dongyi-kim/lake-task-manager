@@ -1204,11 +1204,14 @@ def api_ticket_menu(key: str):
         "key": key, "summary": b.get("summary") or "",
         "assignee": b.get("assignee"), "assigneeId": b.get("assigneeId"),
         "status": b.get("status") or "", "statusCategory": b.get("statusCategory") or "",
+        "type": b.get("type") or "", "due": b.get("due") or "",
         "me": {"id": me.get("id") or "", "name": me.get("name") or ""},
         "mayEdit": may,
         "jiraBase": (_settings.jira_base or "").rstrip("/"),
         # 바꿀 수 없으면 전이 목록을 부를 이유가 없다(상류 호출만 낭비된다)
         "transitions": _client.transitions(key) if may else [],
+        # 우클릭 '하위 만들기' — 이 티켓 밑에 만들 수 있는 타입(없으면 버튼 자체가 안 뜬다)
+        "childTypes": (_client.child_types(key) or []) if may else [],
     })
 
 
