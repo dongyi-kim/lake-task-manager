@@ -106,6 +106,9 @@
    티켓, 안은 새로 만들 티켓. 여기선 아무것도 열 수 없으므로 손 모양 커서를 주지 않는다. */
 .blk-prev .mt-card { cursor: default; }
 .blk-g + .blk-g { margin-top: 10px; }
+/* Task 화면의 머리 카드는 왼쪽에 26px 를 비워 둔다 — 거기에 접기 버튼(.mt-fold, absolute)이 얹힌다.
+   미리보기에는 접을 하위가 없어 그 버튼도 없으므로, 자리만 남아 제목 왼쪽이 휑했다. 되돌린다. */
+.blk-prev .mt-gh > .mt-card.parent { margin-left: 0; }
 /* 새로 만들 카드의 번호 자리에는 '신규' 가 들어간다 — 실제 티켓 번호와 헷갈리지 않게 옅게.
    (머리의 상위 티켓 번호는 진짜 키이므로 제 색을 그대로 둔다.) */
 .blk-prev .mt-gbody .mt-key { color: var(--muted-2); font-weight: 600; }
