@@ -8,6 +8,7 @@
 // 티켓 다이얼로그 안의 '＋' 는 상위가 이미 정해져 있어 NewChildDialog 를 상위 고정으로 연다.
 import { api } from "../../lib/api.js";
 import NewChildDialog from "./NewChildDialog.js";
+import BulkCreateDialog from "./BulkCreateDialog.js";
 import EpicCreateDialog from "./EpicCreateDialog.js";
 import { pushToast } from "../../lib/toast.js";
 import { confirmBox } from "../../lib/confirm.js";
@@ -30,19 +31,28 @@ function _prewarmPickers() {
 
 export default {
   name: "AddTicketFab",
-  components: { NewChildDialog, EpicCreateDialog },
+  components: { NewChildDialog, EpicCreateDialog, BulkCreateDialog },
   mounted() { _prewarmPickers(); },   // 화면 진입 시 상위 피커 캐시 미리 데우기
   data() {
     return {
       menuOpen: false,
       showEpic: false,       // EpicCreateDialog
       child: null,           // NewChildDialog: { pickKind: 'epic' | 'task' }
+      bulkPick: false,       // Bulk: 모드(Task/Sub) 고르는 중
+      bulk: null,            // BulkCreateDialog: 'task' | 'subtask'
     };
   },
   methods: {
     startEpic() { this.menuOpen = false; this.showEpic = true; },
     startTask() { this.menuOpen = false; this.child = { pickKind: "epic" }; },   // 상위=Epic (창 안에서 고름)
     startSub() { this.menuOpen = false; this.child = { pickKind: "task" }; },    // 상위=Task (창 안에서 고름)
+    // Bulk — 한 번에 Task 만 / Sub-Task 만 만들 수 있다(섞기 불가). 그래서 먼저 종류를 고른다.
+    startBulk() { this.menuOpen = false; this.bulkPick = true; },
+    pickBulk(mode) { this.bulkPick = false; this.bulk = mode; },
+    onBulkDone(r) {
+      const n = ((r && r.created) || []).length;
+      if (n) window.dispatchEvent(new CustomEvent("force-refresh"));   // 목록 화면들 새로 받기
+    },
     async onCreated(key) {
       this.showEpic = false; this.child = null;
       if (!key) return;
@@ -82,10 +92,32 @@ export default {
                 d="M6.2 7.6l2 2 3.6-3.9"/>
           <path fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
                 d="M3.6 3.2v3.1h3"/></svg></span>Sub Task 추가하기<em>Task 밑에</em></button>
+      <div class="addfab-sep"></div>
+      <button class="addfab-i" @click="startBulk">
+        <span class="afi-ic ty-bulk" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"
+          stroke="#fff" stroke-width="1.6" stroke-linecap="round">
+          <path d="M2.6 4.2h10.8M2.6 8h10.8M2.6 11.8h7"/></svg></span>Bulk Task 추가하기<em>JSON 으로</em></button>
+    </div>
+
+    <!-- Bulk: 무엇을 만들지 먼저 고른다(Task 와 Sub-Task 는 섞을 수 없다) -->
+    <div v-if="bulkPick" class="addfab-back" @click="bulkPick = false"></div>
+    <div v-if="bulkPick" class="addfab-menu">
+      <div class="addfab-g">무엇을 한 번에 만들까요?</div>
+      <button class="addfab-i" @click="pickBulk('task')">
+        <span class="afi-ic ty-task" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"
+          stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 8.3l2.6 2.6L12 4.8"/></svg></span>Task 추가하기<em>Epic 밑에</em></button>
+      <button class="addfab-i" @click="pickBulk('subtask')">
+        <span class="afi-ic ty-sub" aria-hidden="true"><svg viewBox="0 0 16 16">
+          <path fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+                d="M6.2 7.6l2 2 3.6-3.9"/>
+          <path fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+                d="M3.6 3.2v3.1h3"/></svg></span>Sub Task 추가하기<em>Task 밑에</em></button>
     </div>
 
     <!-- 생성 다이얼로그(상위 선택 + 내용 입력을 한 창에서) -->
     <EpicCreateDialog v-if="showEpic" @close="showEpic = false" @created="onCreated" />
     <NewChildDialog v-if="child" :pick-kind="child.pickKind" @close="child = null" @created="onCreated" />
+    <BulkCreateDialog v-if="bulk" :mode="bulk" @close="bulk = null" @done="onBulkDone" />
   </div>`,
 };

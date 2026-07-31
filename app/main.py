@@ -1016,6 +1016,7 @@ class _ChildBody(BaseModel):
     duedate: str | None = None
     assignee: str | None = None
     components: list[str] | None = None
+    labels: list[str] | None = None
     descriptionHtml: str | None = None       # 폴딩 에디터 본문(HTML → wiki)
 
 
@@ -1041,7 +1042,8 @@ def api_create_child(key: str, body: _ChildBody):
     try:
         r = _client.create_child(key, itype, summary, priority=body.priority or None,
                                  duedate=body.duedate or None, assignee=body.assignee or None,
-                                 components=body.components or None, description=desc or None)
+                                 components=body.components or None, description=desc or None,
+                                 labels=body.labels or None)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     # 후처리: 완료된 상위에 새 하위가 생겼다면 상위를 Reopened 로 되돌릴지 제안(자동변경 X).
@@ -1064,6 +1066,7 @@ class _TaskBody(BaseModel):
     duedate: str | None = None
     assignee: str | None = None
     components: list[str] | None = None
+    labels: list[str] | None = None
     descriptionHtml: str | None = None
 
 
@@ -1086,10 +1089,47 @@ def api_create_task(body: _TaskBody):
     try:
         r = _client.create_child(None, itype, summary, priority=body.priority or None,
                                  duedate=body.duedate or None, assignee=body.assignee or None,
-                                 components=body.components or None, description=desc or None)
+                                 components=body.components or None, description=desc or None,
+                                 labels=body.labels or None)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     return JSONResponse({"ok": True, "key": (r or {}).get("key")})
+
+
+# ── Bulk 생성 (JSON 으로 여러 티켓을 한 번에) ──────────────────────────────────
+# 흐름: 화면이 1차(스키마)를 보고 → /api/bulk/validate 가 2차(실값 대조) → /api/bulk/create.
+# create 는 **검증을 다시 수행**한다 — 화면을 믿고 쓰기 API 를 열어 두면 안 된다.
+class _BulkBody(BaseModel):
+    mode: str                     # "task" | "subtask"
+    items: list[dict]
+
+
+def _bulk_check(mode, items):
+    """실값까지 대조한 검증 결과. 권한 판정(_may_edit)은 세션을 아는 여기서 주입한다."""
+    from app.domain import bulk as _bulk
+    lookup = _client.bulk_lookup(may_edit=_may_edit)
+    return _bulk.validate_bulk(mode, items, lookup)
+
+
+@app.post("/api/bulk/validate")
+def api_bulk_validate(body: _BulkBody):
+    """dry-run — 만들지 않고 검증만. {ok, errors[], warnings[]} (항목 인덱스+필드+사유)."""
+    return JSONResponse(_bulk_check(body.mode, body.items))
+
+
+@app.post("/api/bulk/create")
+def api_bulk_create(body: _BulkBody):
+    """검증 후 차례로 생성. 하나 실패해도 계속 진행하고 결과를 요약해 돌려준다."""
+    chk = _bulk_check(body.mode, body.items)
+    if not chk.get("ok"):
+        return JSONResponse({"ok": False, "errors": chk.get("errors", []),
+                             "warnings": chk.get("warnings", [])}, status_code=400)
+    from app.content.mdhtml import markdown_to_html
+    # description 은 Markdown 으로 받는다 → 에디터 형태 HTML → 환경별 저장형식(desc_field_value).
+    r = _client.bulk_create(body.mode, body.items,
+                            desc_to_field=lambda md: _client.desc_field_value(markdown_to_html(md)))
+    r["warnings"] = chk.get("warnings", [])
+    return JSONResponse(r)
 
 
 class _EpicBody(BaseModel):

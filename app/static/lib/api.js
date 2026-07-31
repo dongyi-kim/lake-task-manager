@@ -145,6 +145,10 @@ export const api = {
                                        "PUT", body).then((r) => { evict(key); evictLists(); return r; }),
   childTypes: (key) => req("/api/options/childtypes?q=" + encodeURIComponent(key)),
   taskTypes: () => req("/api/options/tasktypes"),                       // Epic 없이 만들 최상위 타입
+  // Bulk 생성 — validate 는 dry-run(쓰기 없음), create 는 서버가 다시 검증한 뒤 차례로 만든다.
+  // 생성은 여러 티켓을 한꺼번에 바꾸므로 목록 memo 를 통째로 비운다(어디에 떨어질지 모른다).
+  bulkValidate: (body) => jsonReq("/api/bulk/validate", "POST", body),
+  bulkCreate: (body) => jsonReq("/api/bulk/create", "POST", body).then((r) => { _memo.clear(); return r; }),
   createTask: (body) => jsonReq("/api/task", "POST", body).then((r) => { _memo.clear(); return r; }),
   createEpic: (body) => jsonReq("/api/epic", "POST", body).then((r) => { _memo.clear(); return r; }),
   epicCandidates: (q) => req("/api/epic-candidates?limit=25&q=" + encodeURIComponent(q || "")),

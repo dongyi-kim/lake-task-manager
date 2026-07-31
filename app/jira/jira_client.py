@@ -1502,7 +1502,8 @@ class JiraClient:
         return html_to_wiki(html)
 
     def create_child(self, parent_key, itype, summary, priority=None,
-                     duedate=None, assignee=None, components=None, description=None):
+                     duedate=None, assignee=None, components=None, description=None,
+                     labels=None):
         """하위/독립 티켓 생성. 부모가 Epic 이면 Epic Link 로, 일반 이슈면 parent(Sub-Task)로 잇는다.
         **parent_key 가 없으면(=None) Epic 없이 최상위 Task** 로 만든다('Epic 없음'/'사용자 VoC').
 
@@ -1527,6 +1528,10 @@ class JiraClient:
             # 안 잡혀 WBS·워크로드에서 사라진다 — 화면이 부모 것을 기본값으로 채워 보낸다.
             # ('사용자 VoC' 는 모듈이 아닌 컴포넌트로, Epic 없이 이 값만 넣어 구분한다.)
             fields["components"] = [{"name": c} for c in components if c]
+        if labels:
+            # 라벨은 생성 시점에 넣을 수 있다(예전엔 만든 뒤 따로 PUT 해야 했다 — 왕복이 두 번이고
+            # 중간에 실패하면 라벨 없는 티켓이 남았다). Jira 라벨엔 공백이 못 들어가 '_' 로 바꾼다.
+            fields["labels"] = [str(x).strip().replace(" ", "_") for x in labels if str(x).strip()]
         if parent_key:
             b = self.ticket_badge(parent_key) or {}
             if (b.get("type") or "") == "Epic":
@@ -1619,6 +1624,78 @@ class JiraClient:
         self.cache.invalidate(f"epic_children:{self.env}:{epic_key}")
         self.cache.invalidate(f"children:{self.env}:{epic_key}")
         return {"ok": not failed, "linked": linked, "failed": failed}
+
+    def bulk_lookup(self, may_edit=None):
+        """Bulk 검증이 쓸 **실값 조회기**(app.domain.bulk.validate_bulk 의 lookup 인자).
+        조회는 전부 캐시를 타고, validate_bulk 가 부모/종류별로 한 번씩만 부른다."""
+        cli = self
+
+        class _Lookup:
+            def badge(self, key):
+                try:
+                    return cli.ticket_badge(key)
+                except Exception:
+                    return None
+
+            def child_types(self, key):
+                try:
+                    return cli.child_types(key)
+                except Exception:
+                    return None
+
+            def task_types(self):
+                try:
+                    return cli.task_types()
+                except Exception:
+                    return None
+
+            def priorities(self):
+                try:
+                    return [p.get("name") for p in (cli.priorities() or []) if p.get("name")]
+                except Exception:
+                    return None
+
+            def components(self):
+                try:
+                    return [c.get("name") for c in (cli.components() or []) if c.get("name")]
+                except Exception:
+                    return None
+
+            def user_exists(self, uid):
+                # 사용자 조회가 막히거나 실패하면 **막지 않는다** — 검증은 도우미지 관문이 아니다.
+                try:
+                    from app.domain import search as _search
+                    hits = _search.search_users(cli, cli.s, uid) or []
+                except Exception:
+                    return True
+                u = (uid or "").strip().lower()
+                return any((h.get("id") or "").strip().lower() == u for h in hits)
+
+        lk = _Lookup()
+        if may_edit is not None:
+            lk.may_edit = may_edit          # 권한 판정은 라우트(세션)가 안다 — 주입받는다
+        return lk
+
+    def bulk_create(self, mode, items, desc_to_field=None):
+        """검증을 통과한 항목들을 **차례로** 만든다. 하나 실패해도 나머지는 진행(Jira 는 롤백이 없다).
+        반환: {ok, created:[{index,key,summary}], failed:[{index,summary,error}]} — set_epic_link 와 같은 형태.
+
+        성능: 항목마다 도는 cascade_suggestion(부모 상태 연쇄 제안)은 **생략**한다 — Bulk 는 대개
+        새 부모 밑에 새로 만드는 것이고, 건마다 상류를 두 번 더 치면 100건이 200왕복이 된다."""
+        from app.domain.bulk import to_create_kwargs
+        created, failed = [], []
+        for i, it in enumerate(items or []):
+            summary = (it.get("summary") or "").strip()
+            try:
+                kw = to_create_kwargs(mode, it)
+                desc = it.get("description")
+                if desc and desc_to_field:
+                    kw["description"] = desc_to_field(desc)
+                r = self.create_child(**kw)
+                created.append({"index": i, "key": (r or {}).get("key"), "summary": summary})
+            except Exception as e:
+                failed.append({"index": i, "summary": summary, "error": str(e)[:300]})
+        return {"ok": not failed, "created": created, "failed": failed}
 
     def my_task_context(self):
         """현재 사용자의 Task 맥락 — 검색어가 **없을 때** '내 것' 을 위로 올리기 위한 집합.

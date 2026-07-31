@@ -276,3 +276,9 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
 .fab-refresh svg { width: 20px; height: 20px; }
 .fab-refresh.busy { color: var(--accent); cursor: default; }
 .fab-refresh.busy svg { animation: ltm-spin .8s linear infinite; }
+
+/* Bulk 메뉴 항목 — 아이콘 색은 '여러 줄' 이미지에 맞춰 중립(모듈/타입 색과 겹치지 않게) */
+.afi-ic.ty-bulk { background: var(--muted); }
+.addfab-sep { height: 1px; margin: 5px 8px; background: var(--border); }
+.addfab-g { padding: 6px 12px 3px; font-size: 10.5px; font-weight: 700; color: var(--muted-2);
+  text-transform: uppercase; letter-spacing: .4px; }
