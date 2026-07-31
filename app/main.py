@@ -612,12 +612,15 @@ def api_status():
 class _PrefsBody(BaseModel):
     bitbucketEnabled: bool | None = None
     quickOpenHotkey: str | None = None
+    jiraLinkPrompted: bool | None = None
 
 
 def _prefs_payload():
+    from app.infra import prefs as _prefs
     return {"bitbucketEnabled": bool(_settings.bitbucket_enabled),
             "bitbucketConfigured": bool(_settings.bitbucket_base),
-            "quickOpenHotkey": _settings.quick_open_hotkey}
+            "quickOpenHotkey": _settings.quick_open_hotkey,
+            "jiraLinkPrompted": bool(_prefs.load().get("jiraLinkPrompted"))}
 
 
 @app.get("/api/prefs")
@@ -638,6 +641,9 @@ def api_prefs_put(body: _PrefsBody):
                 hook(_settings.quick_open_hotkey)
             except Exception:
                 pass
+    if body.jiraLinkPrompted is not None:
+        from app.infra import prefs as _prefs
+        _prefs.save({"jiraLinkPrompted": bool(body.jiraLinkPrompted)})
     return JSONResponse(_prefs_payload())
 
 

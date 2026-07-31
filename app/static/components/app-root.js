@@ -154,6 +154,17 @@ export default {
     // 업데이트(배포 repo 최신 여부) — 시작 시 + 주기적으로 확인. 실패는 조용히(표시만 하는 기능).
     this.checkUpdate();
     setInterval(() => this.checkUpdate(), 30 * 60 * 1000);
+    // Jira 링크 가로채기 — 아직 등록 전이면 **최초 1회만** 설정 위치를 토스트로 알린다.
+    // (강요하지 않는다 — 켜는 버튼은 설정 > 'Jira 링크 연결' 에 있다. 안내 여부는 prefs 에 저장)
+    setTimeout(() => {
+      if (this.needLogin) return;
+      Promise.all([api.prefs(), api.raw("/api/dispatcher/status")]).then(([p, d]) => {
+        if (!d || !d.supported || d.registered || (p && p.jiraLinkPrompted)) return;
+        pushToast({ kind: "info", icon: "🔗", title: "Jira 링크를 이 앱으로 바로 열 수 있어요",
+                    message: "설정 > 'Jira 링크 연결' 에서 언제든 켤 수 있습니다.", timeout: 10000, key: "jira-link" });
+        api.setPrefs({ jiraLinkPrompted: true }).catch(() => {});
+      }).catch(() => {});
+    }, 3000);
   },
   methods: {
     /** 볼 수 없는 주소면 워커 기본 화면(내 Task)으로. 화면만 바꿔치지 않고 **주소까지** 고친다
