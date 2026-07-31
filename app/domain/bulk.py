@@ -219,7 +219,8 @@ def validate_bulk(mode, items, lookup=None):
         asg = (it.get("assignee") or "").strip() if isinstance(it.get("assignee"), str) else ""
         if asg and hasattr(lookup, "user_exists") and not lookup.user_exists(asg):
             errors.append(_err(i, "assignee",
-                               f"'{asg}' 사용자를 찾을 수 없습니다. 사용자명은 **이메일 @ 앞부분**입니다"
+                               # 화면은 이 문구를 그대로 글자로 그린다 — 마크다운 별표를 넣으면 별표가 보인다.
+                               f"'{asg}' 사용자를 찾을 수 없습니다. 사용자명은 이메일 @ 앞부분입니다"
                                f"(예: hong.gildong@company.com → hong.gildong)."))
 
     return {"ok": not errors, "errors": errors, "warnings": warnings}

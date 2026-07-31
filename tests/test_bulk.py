@@ -175,6 +175,33 @@ def test_lookup_is_memoized_per_parent():
     assert lk.badge_calls.count("DL-200") == 1
 
 
+def test_messages_have_no_markdown_markers():
+    """오류/경고 문구는 화면이 **그대로 글자로** 그린다 — 마크다운을 쓰면 별표가 그대로 보인다.
+
+    실제로 assignee 오류에 `**이메일 @ 앞부분**` 이 남아 화면에 별표가 노출됐다. 문구를 새로
+    쓸 때마다 눈으로 잡지 말고 여기서 잡는다."""
+    lk = FakeLookup()
+    res = [
+        validate_bulk("task", [{}]),                                        # 필수 누락
+        validate_bulk("task", [{"summary": "A", "type": "Epic", "epic": "DL-100",
+                                "duedate": "어제", "priority": 3, "labels": [1],
+                                "components": "ETL", "storyPoints": 3}], lk),
+        validate_bulk("task", [{"summary": "A", "type": "Task", "epic": "DL-999",
+                                "priority": "없음", "assignee": "홍길동",
+                                "components": ["없는모듈"],
+                                "description": "![그림](C:/a.png) [문서](file:///x)"}], lk),
+        validate_bulk("subtask", [{"summary": "A", "type": "Sub-Task", "parent": None}], lk),
+        validate_bulk("subtask", [{"summary": "A", "type": "Sub-Task", "parent": "DL-200"}],
+                      FakeLookup(editable=False)),
+        validate_bulk("bogus", [{}]),
+    ]
+    msgs = [m["message"] for r in res for m in r["errors"] + r["warnings"]]
+    assert len(msgs) > 12                                    # 문구를 실제로 훑었는지 자체 확인
+    for m in msgs:
+        for mark in ("**", "__", "`"):
+            assert mark not in m, f"문구에 마크다운({mark}) 이 남았다: {m!r}"
+
+
 # ── 생성 인자 변환 ───────────────────────────────────────────────────────
 def test_to_create_kwargs_maps_parent_by_mode():
     task = to_create_kwargs("task", {"summary": " A ", "type": "Task", "epic": "DL-100",
