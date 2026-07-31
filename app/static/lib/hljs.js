@@ -48,6 +48,23 @@ function ensureLineNumbers(pre) {
   pre.classList.add("has-ln");
 }
 
+/**
+ * **편집 중인** 코드블럭에 줄번호를 붙인다(에디터 전용).
+ *
+ * 위 ensureLineNumbers 는 <pre> 안에 실제 <span> 을 끼우는데, 그 방법을 편집기(ProseMirror)에
+ * 쓰면 **문서 모델이 깨진다** — 에디터는 자기가 만들지 않은 자식 노드를 자기 내용으로 읽는다.
+ * 그래서 여기서는 의사요소(::before)로 그린다. 의사요소는 DOM 이 아니라 에디터가 아예 못 본다.
+ * 번호 문자열은 data-lines 속성에 넣고 CSS 가 attr() 로 읽는다(개행은 white-space:pre 가 살린다).
+ */
+export function editorLineNumbers(root) {
+  if (!root) return;
+  root.querySelectorAll("pre").forEach((pre) => {
+    const n = (pre.textContent || "").replace(/\n$/, "").split("\n").length;
+    const want = Array.from({ length: n }, (_, i) => i + 1).join("\n");
+    if (pre.getAttribute("data-lines") !== want) pre.setAttribute("data-lines", want);
+  });
+}
+
 // root 안의 코드블럭을 강조 + 줄번호(중복 처리 방지 data-hl). 실패는 조용히 무시.
 export async function highlightIn(root) {
   if (!root) return;

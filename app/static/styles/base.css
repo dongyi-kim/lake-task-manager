@@ -289,3 +289,21 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
 .addfab-sep { height: 1px; margin: 5px 8px; background: var(--border); }
 .addfab-g { padding: 6px 12px 3px; font-size: 10.5px; font-weight: 700; color: var(--muted-2);
   text-transform: uppercase; letter-spacing: .4px; }
+
+/* ── 다이얼로그 위에서의 휠 = 뒷 화면을 밀지 않는다 ───────────────────────────
+   창을 띄워 놓고 그 안에서 스크롤했는데 **뒤의 목록이 밀려 있는** 일이 있었다. 창을 닫으면
+   엉뚱한 데를 보고 있게 되니 방향 감각이 통째로 깨진다.
+
+   원인은 스크롤 연쇄(scroll chaining) — 안쪽 스크롤이 끝에 닿으면 브라우저가 남은 양을
+   조상에게 넘긴다. 창 안의 **안 움직이는 자리**(헤더·여백)에 커서를 두면 아예 처음부터 넘어간다.
+
+   그래서 오버레이 자체를 스크롤 컨테이너(overflow:hidden)로 만들고 거기서 연쇄를 끊는다.
+   오버레이 **밖**은 건드리지 않으므로, 창 바깥에 커서를 두고 굴리는 건 그대로 된다.
+   새 오버레이를 만들면 여기 목록에 추가할 것(클래스 이름 관습: `*-ov`). */
+.blk-ov, .adv-ov, .cfm-ov, .login-ov, .lp-ov, .mdt-ov,
+.nk-ov, .sr-ov, .tkt-ov, .trx-ov, .mtdnd-ov {
+  overflow: hidden; overscroll-behavior: contain;
+}
+/* 창 안의 스크롤 영역도 각자 끊는다 — 끝에 닿았을 때 오버레이를 거쳐 밖으로 새지 않게. */
+.blk-ov *, .adv-ov *, .cfm-ov *, .login-ov *, .lp-ov *, .mdt-ov *,
+.nk-ov *, .sr-ov *, .tkt-ov *, .trx-ov * { overscroll-behavior: contain; }

@@ -6,7 +6,7 @@
 // · 이미지 붙여넣기/드롭 = 제출 시 업로드: 로컬 objectURL 미리보기 → 제출 때 첨부 업로드·롤백
 // 부모는 submitFn(finalHTML) 만 넘긴다(작성/수정은 부모가 선택). 출력은 HTML(서버가 wiki 로 변환).
 import { loadTiptap } from "../../lib/tiptap.js";
-import { ensureHljsTheme } from "../../lib/hljs.js";
+import { ensureHljsTheme, editorLineNumbers } from "../../lib/hljs.js";
 import { saveDraft, loadDraft, clearDraft, purgeExpired } from "../../lib/draft.js";
 import { api } from "../../lib/api.js";
 import LinkPicker from "./LinkPicker.js";
@@ -986,7 +986,9 @@ export default {
         },
       },
       onSelectionUpdate: () => { self.tick++; },
-      onTransaction: () => { self.tick++; },
+      // 코드블럭 줄번호는 **매 변경마다** 다시 센다 — 줄이 늘고 주는 걸 따라가야 하고,
+      // 붙여넣기·되돌리기처럼 onUpdate 만으로는 안 잡히는 경로가 있어 트랜잭션에 건다.
+      onTransaction: () => { self.tick++; self.paintLineNumbers(); },
       onUpdate: () => { self.tick++; self.saveDraftSoon(); },   // 작성 중 임시저장(디바운스)
     });
     if (this._dead) { try { this._ed.destroy(); } catch (e) { /* noop */ } return; }
@@ -1037,6 +1039,10 @@ export default {
     },
   },
   methods: {
+    /** 편집 중인 코드블럭에 줄번호를 다시 매긴다(의사요소로 그린다 — hljs.js 주석 참고). */
+    paintLineNumbers() {
+      try { editorLineNumbers(this._ed && this._ed.view && this._ed.view.dom); } catch (e) { /* noop */ }
+    },
     active(name, attrs) { this.tick; return this._ed && this._ed.isActive(name, attrs); },
     cmd(fn) { if (this._ed) { fn(this._ed.chain().focus()); this._ed.commands.focus(); } },
     /** 글자색 — 빈 값이면 해제(color 속성 제거). */

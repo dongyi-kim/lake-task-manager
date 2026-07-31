@@ -5,7 +5,11 @@
 
 .blk-ov { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center;
   justify-content: center; padding: 24px; background: rgba(0, 0, 0, .38); }
-.blk { width: min(1080px, 96vw); max-height: 90vh; display: flex; flex-direction: column;
+/* 높이는 **창 크기에 비례해 넉넉히** 잡는다 — JSON 은 수십 줄이 예사인데, 내용에 따라
+   창이 자라게 두면 대개 작게 떠서 편집기가 좁아진다(한 화면에 대여섯 줄만 보였다).
+   min() 의 앞 항은 아주 큰 화면에서 창이 과하게 커지지 않게 하는 상한이다. */
+.blk { width: min(1080px, 96vw); height: min(880px, 88vh); max-height: 88vh;
+  display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, .3); }
 
@@ -15,26 +19,34 @@
 .blk-h-s { color: var(--muted); font-size: 11.5px; }
 .blk-h .lp-x { margin-left: auto; }
 
-/* ── 입력: 좌 JSON / 우 안내 ───────────────────────────────────────── */
-.blk-body { display: grid; grid-template-columns: 1fr 300px; gap: 14px; padding: 14px 16px;
+/* ── 입력: 좌 JSON / 우 안내 ─────────────────────────────────────────
+   편집기 쪽은 **여백을 주지 않는다** — JSON 은 줄이 길어 한 글자라도 더 보이는 쪽이 낫다.
+   오른쪽 안내에만 여백을 준다(글이라 붙어 있으면 읽기 나쁘다). */
+.blk-body { display: grid; grid-template-columns: 1fr 320px; gap: 0; padding: 0;
   min-height: 0; flex: 1 1 auto; }
 @media (max-width: 820px) { .blk-body { grid-template-columns: 1fr; } }
-.blk-src { width: 100%; min-height: 340px; resize: vertical; box-sizing: border-box;
-  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.6;
-  padding: 10px 12px; color: var(--text); background: var(--panel-2);
-  border: 1px solid var(--border); border-radius: 3px; }
-.blk-src:focus { outline: none; border-color: var(--accent); }
 
-.blk-side { min-width: 0; overflow: auto; }
+.blk-side { min-width: 0; overflow: auto; padding: 12px 14px;
+  border-left: 1px solid var(--border); background: var(--panel); }
+@media (max-width: 820px) { .blk-side { border-left: 0; border-top: 1px solid var(--border); } }
 .blk-side-h { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase;
   letter-spacing: .4px; margin: 4px 0 6px; }
-.blk-fd { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
-  font-size: 11.5px; line-height: 1.7; color: var(--muted); }
-.blk-fd code { font-size: 11px; color: var(--text); background: var(--panel-2);
-  border: 1px solid var(--border); border-radius: 2px; padding: 0 4px; }
-.blk-fd em { font-style: normal; font-size: 9.5px; font-weight: 700; color: var(--muted-2);
-  border: 1px solid var(--border); border-radius: 2px; padding: 0 4px; }
-.blk-fd em.req { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+
+/* 필드 안내는 **표** — 필드/필수/설명이 세 열로 줄맞춤되면 훑어 읽힌다.
+   (줄글로 흘려 두면 어느 게 필수인지 매번 문장을 읽어야 했다.) */
+.blk-ftab { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+.blk-ftab th { text-align: left; font-size: 9.5px; font-weight: 700; color: var(--muted-2);
+  text-transform: uppercase; letter-spacing: .3px; padding: 0 6px 4px 0;
+  border-bottom: 1px solid var(--border); }
+.blk-ftab td { vertical-align: top; padding: 4px 6px 4px 0; font-size: 11.5px; line-height: 1.55;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.blk-ftab tr:last-child td { border-bottom: 0; }
+.blk-ftab code { font-size: 11px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 2px; padding: 0 4px; white-space: nowrap; }
+.blk-ftab .bf-req { font-size: 9.5px; font-weight: 700; color: var(--muted-2); white-space: nowrap; }
+.blk-ftab tr.req .bf-req { color: var(--danger); }
+.blk-ftab .bf-d { color: var(--muted); }
+
 .blk-rules { margin: 0; padding-left: 16px; }
 .blk-rules li { font-size: 11.5px; line-height: 1.75; color: var(--muted); }
 .blk-rules code { font-size: 10.5px; background: var(--panel-2); border: 1px solid var(--border);
@@ -42,21 +54,23 @@
 
 /* ── 미리보기 ─────────────────────────────────────────────────────── */
 .blk-prev, .blk-res { flex: 1 1 auto; overflow: auto; padding: 14px 16px; min-height: 0; }
-/* Task 화면의 카드(.mt-card.two)를 그대로 쓰되 **그룹화 없이** 한 줄씩 세운다.
-   아직 만들어지지 않은 티켓이라 열지 못한다 — 손 모양 커서를 주면 눌러 볼 수 있는 줄 안다. */
-.blk-flat { display: flex; flex-direction: column; gap: 7px; }
+/* Task 화면의 'Task with SubTask'(.mt-gcard2.k-task) 를 그대로 빌려 쓴다 — 머리는 실제 상위
+   티켓, 안은 새로 만들 티켓. 여기선 아무것도 열 수 없으므로 손 모양 커서를 주지 않는다. */
 .blk-prev .mt-card { cursor: default; }
-/* 번호 자리에 '신규' 가 들어간다 — 실제 티켓 번호와 헷갈리지 않게 옅게. */
-.blk-prev .mt-key { color: var(--muted-2); font-weight: 600; }
-
+.blk-g + .blk-g { margin-top: 10px; }
+/* 새로 만들 카드의 번호 자리에는 '신규' 가 들어간다 — 실제 티켓 번호와 헷갈리지 않게 옅게.
+   (머리의 상위 티켓 번호는 진짜 키이므로 제 색을 그대로 둔다.) */
+.blk-prev .mt-gbody .mt-key { color: var(--muted-2); font-weight: 600; }
+/* 이 묶음에서 몇 건이 생기는지 — 머리 오른쪽 끝에. */
+.blk-gn { margin-left: auto; flex: none; font-size: 10.5px; font-weight: 700; color: var(--accent);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 2px; padding: 0 5px; }
+/* 상위가 없는 묶음(Epic 없이 만드는 티켓)의 머리 — 실제 티켓이 아니므로 카드로 그리지 않는다. */
+.blk-none-h { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .3px; margin: 0 0 6px 2px; }
+/* 불러왔는데 없는 상위 — 만들기 전에 눈에 걸려야 한다. */
+.blk-prev .mt-card.parent.miss { color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); background: var(--danger-bg); }
 .blk-refload { font-size: 12px; color: var(--muted); margin-bottom: 9px; }
-.blk-refbad {
-  font-size: 12px; line-height: 1.6; margin-bottom: 10px;
-  padding: 8px 11px; border-radius: 8px;
-  color: var(--danger); background: var(--danger-bg);
-  border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
-}
-.blk-refbad b { margin-right: 6px; }
 
 /* ── 결과 ─────────────────────────────────────────────────────────── */
 .blk-sum { display: flex; gap: 16px; align-items: baseline; margin-bottom: 12px; }
@@ -94,8 +108,19 @@
   background: var(--panel); border: 1px solid var(--border); border-radius: 2px; padding: 0 4px; }
 .blk-err code { flex: none; font-size: 10.5px; color: var(--text); background: var(--panel);
   border: 1px solid var(--border); border-radius: 2px; padding: 0 4px; }
+/* 누르면 편집기가 그 줄로 간다 — 누를 수 있다는 걸 커서와 hover 로 알린다. */
+.blk-err.jump { cursor: pointer; border-radius: 2px; margin: 0 -5px; padding: 0 5px; }
+.blk-err.jump:hover { background: var(--danger-bg); }
 
 /* ── 푸터 ─────────────────────────────────────────────────────────── */
 .blk-f { display: flex; align-items: center; gap: 8px; padding: 11px 16px; flex: none;
   border-top: 1px solid var(--border); }
 .blk-hint { flex: 1 1 auto; font-size: 11px; color: var(--muted-2); }
+
+/* 'JSON 생성 LLM 프롬프트 복사' — 이 창에서 대개 **가장 먼저** 눌러야 하는 버튼이다.
+   보조 버튼(ghost)과 같은 회색이면 안 보인다. 다음 단계(primary)와는 다른 색이어야
+   '진행' 과 '준비' 가 구분된다 → Epic 보라색 계열. */
+.blk-prompt { display: inline-flex; align-items: center; gap: 6px;
+  color: #fff; background: var(--epic); border: 1px solid var(--epic); font-weight: 600; }
+.blk-prompt:hover { filter: brightness(1.08); }
+.blk-prompt .bp-ic { font-size: 12px; line-height: 1; }

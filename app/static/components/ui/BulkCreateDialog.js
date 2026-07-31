@@ -3,7 +3,8 @@
 // 3단계: [입력] → [미리보기] → [결과]
 //   입력   : JSON 붙여넣기 + 예제/필드설명 + LLM 프롬프트 복사. 1차(스키마)+2차(서버 실값) 검증을
 //            통과해야 다음으로 넘어간다. 오류는 **항목 인덱스·필드·사유**로 접히는 목록.
-//   미리보기: 무엇이 만들어질지 상위별로 묶어 보여 준다(내 Task 화면과 같은 카드 UI).
+//   미리보기: 무엇이 만들어질지 **상위(Epic/부모 Task)별로 묶어** 보여 준다 — Task 화면의
+//            'Task with SubTask' 와 같은 모양(머리=실제 상위 티켓, 안=새로 만들 티켓).
 //   결과   : 성공/실패 요약. 실패는 계속 진행 후 모아 보여 주고 **실패분만 JSON 으로 복사**할 수 있다
 //            (Jira 는 롤백이 없다 — 고쳐서 다시 돌리는 게 유일한 복구다).
 //
@@ -14,11 +15,14 @@ import { pushToast } from "../../lib/toast.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
 import { validateBulk, exampleJson, fieldDocs, buildLlmPrompt } from "../../lib/bulkSchema.js";
 import { categoryColor } from "../../lib/colors.js";
+import { errorLines } from "../../lib/jsonlines.js";
 import TaskCard from "./TaskCard.js";
+import TypeBadge from "./TypeBadge.js";
+import JsonEditor from "./JsonEditor.js";
 
 export default {
   name: "BulkCreateDialog",
-  components: { TaskCard },
+  components: { TaskCard, JsonEditor, TypeBadge },
   props: { mode: { type: String, required: true } },     // 'task' | 'subtask'
   emits: ["close", "done"],
   data() {
@@ -40,6 +44,9 @@ export default {
     isSub() { return this.mode === "subtask"; },
     title() { return this.isSub ? "Bulk Sub Task 추가하기" : "Bulk Task 추가하기"; },
     docs() { return fieldDocs(this.mode); },
+    /** 오류가 가리키는 **원문의 줄** — 편집기가 그 줄을 붉게 칠한다.
+     *  "3번 항목의 duedate" 는 정확하지만 어디를 고칠지는 안 알려 준다. 줄로 바꿔 준다. */
+    badLines() { return errorLines(this.src, this.errors); },
     /** 이 JSON 이 참조하는 상위 티켓 키들(Epic 또는 부모 Task) — 중복 제거. */
     refKeys() {
       const s = new Set();
@@ -49,15 +56,10 @@ export default {
       }
       return [...s];
     },
-    /** 불러와 봤더니 **없는** 티켓 — 미리보기 단계에서 눈으로 걸러낸다. */
-    refMissing() { return this.refKeys.filter((k) => this.refs[k] === null); },
     /**
      * 미리보기 카드 — **Task 화면과 같은 TaskCard 를 같은 모양으로** 쓴다. 미리보기 전용
      * 마크업을 따로 두면 "만들면 이렇게 보인다" 를 보여 주는 화면이 정작 실제와 달라진다.
-     * 그룹화는 하지 않는다 — 아직 없는 티켓을 상위별로 묶어 봐야 실제 화면과 모양만 달라진다.
-     *
-     * Task 모드는 소속 Epic 뱃지가, Sub-Task 모드는 상위 Task 뱃지가 각각 채워진다.
-     * 그 이름은 **실제로 불러온 상위 티켓**에서 온다 — 뱃지가 비면 그 키가 없다는 뜻이다.
+     * 묶기는 previewGroups 가 한다(여기선 카드 하나하나의 모양만 만든다).
      */
     cards() {
       const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -80,18 +82,41 @@ export default {
           assignee: it.assignee || "", assigneeId: it.assignee || "",
           mine: false, statusCategory: "new",
           due: it.duedate || null, dueDays, resolved: null,
-          epicKey: this.isSub ? null : (it.epic || null),
+          // 상위 묶음 안에 들어가는 카드는 소속을 또 달지 않는다 — 머리에 이미 적혀 있다.
+          epicKey: null,
           voc,
-          isSub: this.isSub,
-          parent: this.isSub && refKey ? { key: refKey, title: (ref && ref.summary) || "" } : null,
-          _i: i,
+          isSub: false,
+          parent: null,
+          _i: i, _ref: refKey,
         };
-        // 색 신호(--sig)는 Task 화면과 같은 규칙 — 소속이 없으면 색을 지어내지 않는다.
-        const sig = card.epicKey ? categoryColor(card.epicKey) : (card.voc ? "var(--ty-story)" : null);
+        const sig = refKey ? categoryColor(refKey) : (card.voc ? "var(--ty-story)" : null);
         card._sig = sig ? { "--sig": sig } : {};
-        card._epicTitle = ref ? (ref.epicName || ref.summary || refKey) : (refKey || "");
         return card;
       });
+    },
+    /**
+     * 미리보기 묶음 — 상위(Epic 또는 부모 Task)가 있으면 **Task 화면의 'Task with SubTask'**
+     * 처럼 그 상위를 머리로 세우고 그 안에 새로 만들 티켓을 하위 카드로 넣는다.
+     * 어떤 티켓 밑에 무엇이 생기는지는 위치로 보는 게 가장 빠르다 — 카드마다 소속 뱃지를
+     * 반복해 다는 것보다 낫다. 상위가 없는 것들(Epic 없는 Task)은 머리 없이 한 묶음으로 모은다.
+     */
+    previewGroups() {
+      const by = new Map(), loose = [];
+      for (const c of this.cards) {
+        if (!c._ref) { loose.push(c); continue; }
+        if (!by.has(c._ref)) by.set(c._ref, { key: c._ref, cards: [] });
+        by.get(c._ref).cards.push(c);
+      }
+      const out = [...by.values()].map((g) => {
+        const b = this.refs[g.key] || null;
+        return {
+          key: g.key, cards: g.cards, badge: b,
+          missing: this.refs[g.key] === null,          // 불러왔는데 없더라 — 생성 시 실패한다
+          sig: categoryColor(g.key),
+        };
+      });
+      if (loose.length) out.push({ key: "__none__", cards: loose, badge: null, missing: false, sig: null });
+      return out;
     },
   },
   mounted() {
@@ -115,6 +140,12 @@ export default {
   },
   unmounted() { document.removeEventListener("keydown", this._onKey, true); },
   methods: {
+    /** 오류가 가리키는 줄로 편집기를 스크롤한다(미리보기/결과 단계에선 편집기가 없다). */
+    goToError(e) {
+      const ln = errorLines(this.src, [e])[0];
+      if (ln && this.$refs.ed) this.$refs.ed.revealLine(ln);
+    },
+
     async copyPrompt() {
       const ok = await copyText(buildLlmPrompt(this.mode, this.opts));
       pushToast(ok
@@ -204,14 +235,22 @@ export default {
 
       <!-- ── 1) 입력 ─────────────────────────────────────────────── -->
       <div v-if="step === 'input'" class="blk-body">
-        <textarea class="blk-src" v-model="src" spellcheck="false"
-                  placeholder="여기에 JSON 을 붙여넣으세요"></textarea>
+        <!-- 편집기는 칸을 꽉 채운다(여백 없음) — JSON 은 줄이 길어 한 글자라도 더 보이는 쪽이 낫다.
+             오류가 가리키는 줄은 붉게 표시된다(errorLines 가 항목 번호를 줄번호로 바꾼다). -->
+        <JsonEditor ref="ed" v-model="src" :bad-lines="badLines"
+                    placeholder="여기에 JSON 을 붙여넣으세요" />
         <div class="blk-side">
           <div class="blk-side-h">필드</div>
-          <div v-for="d in docs" :key="d.f" class="blk-fd">
-            <code>{{ d.f }}</code><em :class="{ req: d.req.indexOf('필수') === 0 }">{{ d.req }}</em>
-            <span>{{ d.d }}</span>
-          </div>
+          <table class="blk-ftab">
+            <thead><tr><th>필드</th><th>필수</th><th>설명</th></tr></thead>
+            <tbody>
+              <tr v-for="d in docs" :key="d.f" :class="{ req: d.req.indexOf('필수') === 0 }">
+                <td><code>{{ d.f }}</code></td>
+                <td class="bf-req">{{ d.req }}</td>
+                <td class="bf-d">{{ d.d }}</td>
+              </tr>
+            </tbody>
+          </table>
           <div class="blk-side-h">규칙</div>
           <ul class="blk-rules">
             <li v-if="isSub">상위 Task 는 <b>이미 존재</b>해야 합니다(이 JSON 안의 티켓 불가).</li>
@@ -223,17 +262,29 @@ export default {
         </div>
       </div>
 
-      <!-- ── 2) 미리보기 — Task 화면의 카드 그대로, 그룹화 없이 평평하게 ─────────── -->
+      <!-- ── 2) 미리보기 — Task 화면의 'Task with SubTask' 처럼 상위 밑에 새 티켓을 넣어 보인다.
+           상위(Epic/부모 Task)는 **실제로 불러와** 머리에 세운다(= 존재 검수도 된다). ────── -->
       <div v-else-if="step === 'preview'" class="blk-prev">
         <div v-if="refLoading" class="blk-refload">상위 티켓을 확인하는 중…</div>
-        <div v-if="refMissing.length" class="blk-refbad">
-          <b>없는 티켓</b> {{ refMissing.join(', ') }} — 생성 시 이 항목들은 실패합니다.
-        </div>
-        <div class="mt-gbody plain blk-flat">
+        <div v-for="g in previewGroups" :key="g.key" class="blk-g"
+             :class="{ 'mt-gcard2 k-task': g.key !== '__none__' }"
+             :style="g.sig ? { '--sig': g.sig } : {}">
+          <!-- 상위 머리 — 실제 티켓이다. 여기선 아무것도 열지 않으므로 tkt 를 달지 않는다. -->
+          <div v-if="g.key !== '__none__'" class="mt-gh">
+            <div class="mt-card parent" :class="{ miss: g.missing }">
+              <TypeBadge v-if="g.badge" :type="g.badge.type" />
+              <span class="mt-key">{{ g.key }}</span>
+              <span class="mt-title">{{ g.badge ? g.badge.summary : (g.missing ? '없는 티켓입니다 — 이 항목들은 실패합니다' : '불러오는 중…') }}</span>
+              <span class="blk-gn">+{{ g.cards.length }}건 생성</span>
+            </div>
+          </div>
+          <div v-else class="blk-none-h">{{ isSub ? '상위 없음' : 'Epic 없이 만드는 티켓' }} · {{ g.cards.length }}건</div>
           <!-- dim=false — 아직 만들어지지 않은 티켓이라 '내 담당/남의 것' 이 없다.
-               그걸로 흐리게 하면 미리보기의 절반이 이유 없이 물러나 보인다. -->
-          <TaskCard v-for="c in cards" :key="c._i" :card="c" :style="c._sig"
-                    :epic-title="c._epicTitle" :dim="false" />
+               link=false — 없는 키라 눌러도 열 수 없다(누르면 빈 창이 뜬다). -->
+          <div class="mt-gbody one">
+            <TaskCard v-for="c in g.cards" :key="c._i" :card="c" :style="c._sig"
+                      :dim="false" :link="false" :show-epic="false" />
+          </div>
         </div>
       </div>
 
@@ -268,7 +319,8 @@ export default {
           <b v-if="warnings.length" class="warn">경고 {{ warnings.length }}</b>
         </button>
         <div v-if="errOpen" class="blk-errs-b">
-          <div v-for="(e, i) in errors" :key="'e' + i" class="blk-err">
+          <!-- 오류를 누르면 편집기가 그 줄로 간다 — 표시만 하고 찾아가게 두면 헛수고다. -->
+          <div v-for="(e, i) in errors" :key="'e' + i" class="blk-err jump" @click="goToError(e)">
             <span class="blk-at" v-if="e.index !== null && e.index !== undefined">#{{ e.index + 1 }}</span>
             <code v-if="e.field">{{ e.field }}</code><span>{{ e.message }}</span>
           </div>
@@ -281,7 +333,10 @@ export default {
 
       <div class="blk-f">
         <template v-if="step === 'input'">
-          <button class="cmt-ed-btn ghost" @click="copyPrompt">LLM 프롬프트 복사하기</button>
+          <!-- 이 창에서 **가장 먼저 눌러야 하는** 버튼이다(JSON 을 손으로 쓰는 사람은 드물다).
+               다른 보조 버튼과 같은 회색이면 그게 안 보인다 → 제 색을 준다. -->
+          <button class="cmt-ed-btn blk-prompt" @click="copyPrompt">
+            <span class="bp-ic">📋</span>JSON 생성 LLM 프롬프트 복사</button>
           <span class="blk-hint">JSON 을 만들 때 쓰세요</span>
           <button class="cmt-ed-btn primary" :disabled="checking" @click="check">
             {{ checking ? '확인 중…' : '다음 (미리보기)' }}</button>

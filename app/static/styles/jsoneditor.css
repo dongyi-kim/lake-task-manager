@@ -1,0 +1,72 @@
+/* jsoneditor.css — 줄번호 + 구문강조 JSON 팔레트(components/ui/JsonEditor.js).
+
+   두 가지만 지키면 된다.
+
+   ① **글자 격자가 세 겹에서 완전히 같을 것** — 줄번호 거터 · 강조본 <pre> · 입력받는 <textarea>.
+      글꼴·크기·줄높이·여백 중 하나라도 어긋나면 글자가 겹쳐 보인다 → 아래 변수 한 곳에서만 정한다.
+
+   ② **스크롤 주인은 .jed 하나뿐일 것** — 강조본이 흐름에 놓여 상자 크기를 정하고, textarea 가
+      그 위를 정확히 덮는다. 둘 다 자기 스크롤이 없으므로 같은 좌표계에서 함께 밀린다.
+      (예전엔 textarea 가 스크롤하고 강조본을 JS 로 따라가게 했는데, scroll 이벤트가 그리기
+       **뒤에** 오는 탓에 드래그로 자동 스크롤할 때 글자와 선택 영역이 한 프레임씩 어긋났다.) */
+.jed {
+  --jed-fs: 12px;
+  --jed-lh: 19px;              /* 픽셀로 고정 — 배수로 두면 브라우저 반올림에 세 겹이 어긋난다 */
+  --jed-pad: 8px;
+  --jed-gut-w: 46px;
+  --jed-font: ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+
+  position: relative; overflow: auto; min-height: 0; min-width: 0;
+  background: var(--panel-2);
+  font-family: var(--jed-font); font-size: var(--jed-fs); line-height: var(--jed-lh);
+  /* 끝까지 스크롤한 뒤의 휠이 뒷 화면으로 넘어가지 않게 — 편집 중에 페이지가 밀리면 당황스럽다. */
+  overscroll-behavior: contain;
+}
+
+/* 가로 스크롤을 위해 내용 너비만큼 늘어난다(짧으면 상자를 채운다). */
+.jed-inner { display: flex; align-items: stretch; width: max-content; min-width: 100%; min-height: 100%; }
+
+/* 줄번호 — 가로로 스크롤해도 왼쪽에 붙어 있는다(sticky). 세로로는 내용과 함께 움직인다. */
+.jed-gut {
+  position: sticky; left: 0; z-index: 1; flex: none;
+  width: var(--jed-gut-w); box-sizing: border-box;
+  padding: var(--jed-pad) 7px var(--jed-pad) 9px;
+  text-align: right; user-select: none;
+  color: var(--muted-2); background: var(--panel);
+  border-right: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.jed-gl { height: var(--jed-lh); }
+/* 오류가 있는 줄 — 번호부터 눈에 걸려야 어디를 고칠지 바로 안다. */
+.jed-gl.bad { color: var(--danger); font-weight: 700; }
+
+.jed-code { position: relative; flex: 1 1 auto; min-width: 0; }
+
+/* 강조본은 **흐름에 놓여 상자 크기를 정한다**(보이는 쪽). */
+.jed-hl {
+  margin: 0; padding: var(--jed-pad) 12px;
+  font-family: inherit; font-size: inherit; line-height: inherit;
+  white-space: pre; tab-size: 2;
+  color: var(--text); background: none; pointer-events: none;
+}
+.jed-row { height: var(--jed-lh); }
+/* 오류 줄에 옅은 띠 — 글자를 가리지 않을 만큼만. 가로로 스크롤해도 줄 전체가 칠해지도록 늘린다. */
+.jed-row.bad { background: var(--danger-bg); box-shadow: inset 2px 0 0 var(--danger); }
+
+/* 입력창은 그 위를 **정확히 덮는다**. 자기 스크롤은 없다(크기가 내용과 같아 스크롤할 게 없다). */
+.jed-ta {
+  position: absolute; inset: 0; margin: 0;
+  padding: var(--jed-pad) 12px;
+  font-family: inherit; font-size: inherit; line-height: inherit;
+  white-space: pre; tab-size: 2;
+  border: 0; box-sizing: border-box; resize: none; overflow: hidden;
+  color: transparent; background: transparent; caret-color: var(--text);
+}
+.jed-ta:focus { outline: none; }
+.jed-ta::placeholder { color: var(--muted-2); }
+/* 글자가 투명하므로 선택은 배경으로만 보인다 — 그래서 강조본과 **같은 자리**에 있어야 한다. */
+.jed-ta::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+
+/* 토큰 색은 **앱에 이미 있는 hljs 테마**(vendor/hljs/github*.css)가 준다 — 여기서 색을 다시
+   정하면 같은 앱 안에서 코드 색이 두 벌이 되고, 더 구체적인 선택자가 테마를 이겨 버린다.
+   테마가 아직 안 붙은 한 순간에는 <pre> 의 color 를 물려받아 그냥 검은 글자로 보인다. */

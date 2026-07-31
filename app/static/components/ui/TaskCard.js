@@ -57,6 +57,9 @@ export default {
     // '내 담당' 이 아닌 카드를 흐리게(.rel) 물러나게 할지. '내 Task' 화면에서는 그게 핵심이지만,
     // **아직 만들어지지도 않은 티켓**(Bulk 미리보기)에는 담당 관계가 없어 흐릴 이유가 없다.
     dim: { type: Boolean, default: true },
+    // 눌러서 티켓 창을 열 수 있는 카드인가(.tkt[data-key] 를 전역 위임 처리가 잡는다).
+    // 미리보기 카드는 **아직 Jira 에 없다** — 누르면 없는 키로 창을 열려다 실패한다.
+    link: { type: Boolean, default: true },
   },
   computed: {
     done() { return this.card.statusCategory === "done"; },
@@ -80,8 +83,9 @@ export default {
   <!-- dim=false 면 담당 관계로 흐려지지 않는다 — 띠는 제 색(.mine)을 쓰되, 담당자 칸의 '나'
        강조(.me)는 그대로 card.mine 을 따른다(소속을 흐리지 않는 것과 '내 것' 이라고 말하는
        것은 다른 얘기다). -->
-  <div class="mt-card two tkt" :data-key="card.key"
-       :class="{ mine: card.mine || !dim, rel: dim && !card.mine, done: done, hot: hot, urgent: urgent }">
+  <div class="mt-card two" :class="[{ tkt: link },
+       { mine: card.mine || !dim, rel: dim && !card.mine, done: done, hot: hot, urgent: urgent }]"
+       :data-key="link ? card.key : null">
     <span v-if="hot" class="tc-hot" :title="urg.label">🔥</span>
     <div class="tc-l1">
       <TypeBadge :type="card.type" />
