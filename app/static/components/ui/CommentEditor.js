@@ -380,6 +380,15 @@ function linkBadgeExt(T) {
               tr.setNodeMarkup(getPos(), undefined, { href, title });   // href 바뀌면 favicon 도 갱신
               return true;
             }).run();
+          }, () => {
+            // 언링크 — 뱃지를 지우고 **일반 텍스트**로 바꾼다(제목이 있으면 제목, 없으면 URL).
+            if (typeof getPos !== "function") return;
+            const pos = getPos();
+            const text = cur.attrs.title || cur.attrs.href || "";
+            editor.chain().focus().command(({ tr, state }) => {
+              tr.replaceWith(pos, pos + cur.nodeSize, text ? state.schema.text(text) : []);
+              return true;
+            }).run();
           });
         });
         return {
@@ -394,14 +403,15 @@ function linkBadgeExt(T) {
 
 // 뱃지 편집 패널 — 제목과 URL 을 **한 화면에서** 고친다.
 // (prompt 를 두 번 연달아 띄우면 브라우저가 '추가 대화상자 차단'으로 두 번째를 막아버린다.)
-function openBadgeEditor(anchor, attrs, onSave) {
+function openBadgeEditor(anchor, attrs, onSave, onUnlink) {
   document.querySelectorAll(".badge-edit").forEach((e) => e.remove());
   const box = document.createElement("div");
   box.className = "badge-edit";
   box.innerHTML =
     '<label>표시할 제목</label><input class="be-t" type="text">' +
     '<label>링크 URL</label><input class="be-h" type="text">' +
-    '<div class="be-row"><button type="button" class="be-cancel">취소</button>' +
+    '<div class="be-row"><button type="button" class="be-unlink" title="뱃지를 없애고 일반 텍스트로 바꿉니다">언링크</button>' +
+    '<button type="button" class="be-cancel">취소</button>' +
     '<button type="button" class="be-ok">저장</button></div>';
   document.body.appendChild(box);
   const t = box.querySelector(".be-t"), h = box.querySelector(".be-h");
@@ -425,6 +435,9 @@ function openBadgeEditor(anchor, attrs, onSave) {
   };
   box.querySelector(".be-cancel").addEventListener("click", close);
   box.querySelector(".be-ok").addEventListener("click", save);
+  const ul = box.querySelector(".be-unlink");
+  if (onUnlink) ul.addEventListener("click", () => { onUnlink(); close(); });
+  else ul.style.display = "none";
   box.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") { ev.preventDefault(); save(); }
     else if (ev.key === "Escape") { ev.preventDefault(); close(); }
