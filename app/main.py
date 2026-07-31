@@ -1179,8 +1179,11 @@ def api_bulk_create(body: _BulkBody):
         return JSONResponse({"ok": False, "errors": chk.get("errors", []),
                              "warnings": chk.get("warnings", [])}, status_code=400)
     from app.content.mdhtml import markdown_to_html
+    # ★ 보내는 건 **검증이 정규화한 사본**이다 — type/priority/components 의 대소문자를 등록된
+    #   표기로 맞춰 둔 것. 원본(body.items)을 그대로 보내면 그 교정이 통째로 버려진다.
+    items = chk.get("items") or body.items
     # description 은 Markdown 으로 받는다 → 에디터 형태 HTML → 환경별 저장형식(desc_field_value).
-    r = _client.bulk_create(body.mode, body.items,
+    r = _client.bulk_create(body.mode, items,
                             desc_to_field=lambda md: _client.desc_field_value(markdown_to_html(md)))
     r["warnings"] = chk.get("warnings", [])
     return JSONResponse(r)

@@ -24,6 +24,7 @@
   --text:#16181c; --muted:#42464e; --muted-2:#5f646d;
   --accent:#2b5fce; --good:#0a7a5f; --warn:#9a6116; --epic:#6244c4; --danger:#bf3b38;
   --done:#0a7a5f; --track:#e2e5e9; --today:#c2312e; --grid:#ebedf0; --grid2:#d5d9de; --mock:#9a6116;
+  --code-bg:rgba(129,139,152,.20); --code-fg:var(--text);
   --shadow:0 1px 2px rgba(22,24,28,.07), 0 1px 3px rgba(22,24,28,.06);
 
   /* 모듈 팔레트 — 검정 글씨 가독성 위주(파스텔). 라이트/다크 공통 */
@@ -58,6 +59,7 @@
     --text:#e4e6ec; --muted:#b4b7c2; --muted-2:#8b90a1;
     --accent:#5b8def; --good:#3ecfb0; --warn:#e0a458; --epic:#a78bfa; --danger:#e8706b;
     --done:#3ecfb0; --track:#282c38; --today:#ef6e6e; --grid:#1e212b; --grid2:#2e3342; --mock:#e0a458;
+    --code-bg:rgba(139,148,168,.28); --code-fg:var(--text);
     --shadow:0 1px 3px rgba(0,0,0,.5);
     --st-todo:#6b7183; --st-prog:#5b8def; --st-done:#3ecfb0;
     --fill-todo:#3f4658; --fill-prog:#5b8def; --fill-done:#3ecfb0;
@@ -79,6 +81,7 @@
   --text:#e4e6ec; --muted:#b4b7c2; --muted-2:#8b90a1;
   --accent:#5b8def; --good:#3ecfb0; --warn:#e0a458; --epic:#a78bfa; --danger:#e8706b;
   --done:#3ecfb0; --track:#282c38; --today:#ef6e6e; --grid:#1e212b; --grid2:#2e3342; --mock:#e0a458;
+  --code-bg:rgba(139,148,168,.28); --code-fg:var(--text);
   --shadow:0 1px 3px rgba(0,0,0,.5);
   --st-todo:#6b7183; --st-prog:#5b8def; --st-done:#3ecfb0;
   --fill-todo:#3f4658; --fill-prog:#5b8def; --fill-done:#3ecfb0;
@@ -94,6 +97,7 @@
   --text:#16181c; --muted:#42464e; --muted-2:#5f646d;
   --accent:#2b5fce; --good:#0a7a5f; --warn:#9a6116; --epic:#6244c4; --danger:#bf3b38;
   --done:#0a7a5f; --track:#e2e5e9; --today:#c2312e; --grid:#ebedf0; --grid2:#d5d9de; --mock:#9a6116;
+  --code-bg:rgba(129,139,152,.20); --code-fg:var(--text);
   --shadow:0 1px 2px rgba(22,24,28,.07), 0 1px 3px rgba(22,24,28,.06);
   --st-todo:#6b717b; --st-prog:#2b5fce; --st-done:#0a7a5f;
   --fill-todo:#c9ced5; --fill-prog:#3b82f6; --fill-done:#10b981;

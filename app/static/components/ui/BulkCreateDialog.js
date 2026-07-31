@@ -22,6 +22,19 @@ import PriIcon from "./PriIcon.js";
 import Avatar from "./Avatar.js";
 import DueText from "./DueText.js";
 
+// 우측 안내 패널 — 접힘·폭은 티켓 다이얼로그의 측면 패널과 같은 관습으로 기억한다.
+const GUIDE_HIDE_KEY = "blk.guideHidden";
+const GUIDE_W_KEY = "blk.guideW";
+const GUIDE_W_DEF = 320, GUIDE_W_MIN = 240, GUIDE_W_MAX = 560;
+
+function loadFlag(k) { try { return localStorage.getItem(k) === "1"; } catch (e) { return false; } }
+function loadW(k) {
+  try {
+    const v = parseInt(localStorage.getItem(k), 10);
+    return v >= GUIDE_W_MIN && v <= GUIDE_W_MAX ? v : GUIDE_W_DEF;
+  } catch (e) { return GUIDE_W_DEF; }
+}
+
 /** 오늘부터 며칠 남았나 — Task 화면의 D-day 와 같은 값이어야 한다(카드·머리 공용). */
 function dayDiff(ymd) {
   if (!ymd) return null;
@@ -50,6 +63,8 @@ export default {
       // 뱃지를 채우려고 받는 김에 **존재 여부 검수**까지 된다.
       refs: {}, refLoading: false,
       epicNames: {},          // 상위 티켓이 속한 Epic 의 이름(키만으론 뱃지에 적을 수 없다)
+      // 우측 안내 — 티켓 다이얼로그의 측면 패널과 같은 관습(접기·폭 조절, 다음에도 그대로).
+      guideHidden: loadFlag(GUIDE_HIDE_KEY), guideW: loadW(GUIDE_W_KEY),
     };
   },
   computed: {
@@ -59,6 +74,17 @@ export default {
     /** 오류가 가리키는 **원문의 줄** — 편집기가 그 줄을 붉게 칠한다.
      *  "3번 항목의 duedate" 는 정확하지만 어디를 고칠지는 안 알려 준다. 줄로 바꿔 준다. */
     badLines() { return errorLines(this.src, this.errors); },
+    /** 필드별 **실제 선택지** — 프롬프트에 박는 것과 같은 목록(둘이 갈라지면 안 된다).
+     *  "P2-Major 같은 것" 이라고만 적어 두면 무엇이 되는지 몰라 한 번은 틀린다. */
+    valueMap() {
+      return {
+        // type 에는 따로 덧붙이지 않는다 — 목록이 곧 설명이다. (Epic 밑에 만들 때 그 Epic 이
+        // 다른 타입만 허용하면 서버 검증이 가능한 값을 짚어 준다 — 여기서 미리 겁줄 일이 아니다.)
+        type: { list: this.opts.types, note: "" },
+        priority: { list: this.opts.priorities, note: "" },
+        components: { list: this.opts.components, note: "목록에 없는 값도 쓸 수 있습니다(경고만)" },
+      };
+    },
     /** 이 JSON 이 참조하는 상위 티켓 키들(Epic 또는 부모 Task) — 중복 제거. */
     refKeys() {
       const s = new Set();
@@ -158,10 +184,39 @@ export default {
   },
   unmounted() { document.removeEventListener("keydown", this._onKey, true); },
   methods: {
+    setGuideHidden(v) {
+      this.guideHidden = v;
+      try { localStorage.setItem(GUIDE_HIDE_KEY, v ? "1" : "0"); } catch (e) { /* noop */ }
+    },
+    /** 왼쪽 가장자리를 끌어 폭 조절 — 오른쪽 패널이라 왼쪽으로 끌면 넓어진다. */
+    startGuideDrag(e) {
+      const x0 = e.clientX, w0 = this.guideW;
+      const onMove = (ev) => {
+        this.guideW = Math.max(GUIDE_W_MIN, Math.min(GUIDE_W_MAX, w0 - (ev.clientX - x0)));
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.userSelect = "";
+        try { localStorage.setItem(GUIDE_W_KEY, String(this.guideW)); } catch (e) { /* noop */ }
+      };
+      document.body.style.userSelect = "none";     // 드래그 중 글자 선택 방지
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
     /** 오류가 가리키는 줄로 편집기를 스크롤한다(미리보기/결과 단계에선 편집기가 없다). */
     goToError(e) {
       const ln = errorLines(this.src, [e])[0];
       if (ln && this.$refs.ed) this.$refs.ed.revealLine(ln);
+    },
+
+    /** 이 필드에 고를 수 있는 값이 있나(표의 설명 칸이 그때만 목록을 편다). */
+    valuesFor(f) { return this.valueMap[f] || null; },
+    /** 값을 눌러 복사 — 목록을 보고 손으로 옮겨 적다 오타를 내는 게 흔하다. */
+    async copyVal(v) {
+      const ok = await copyText(v);
+      pushToast(ok ? { kind: "success", title: `'${v}' 복사됨`, timeout: 2500, key: "blk-val" }
+                   : { kind: "error", title: "복사 실패", timeout: 3000, key: "blk-val" });
     },
 
     async copyPrompt() {
@@ -263,32 +318,62 @@ export default {
       </div>
 
       <!-- ── 1) 입력 ─────────────────────────────────────────────── -->
-      <div v-if="step === 'input'" class="blk-body">
+      <div v-if="step === 'input'" class="blk-body" :class="{ 'guide-hidden': guideHidden }"
+           :style="{ '--guide-w': guideW + 'px' }">
         <!-- 편집기는 칸을 꽉 채운다(여백 없음) — JSON 은 줄이 길어 한 글자라도 더 보이는 쪽이 낫다.
              오류가 가리키는 줄은 붉게 표시된다(errorLines 가 항목 번호를 줄번호로 바꾼다). -->
         <JsonEditor ref="ed" v-model="src" :bad-lines="badLines"
                     placeholder="여기에 JSON 을 붙여넣으세요" />
-        <div class="blk-side">
+        <!-- 접기 버튼·폭 손잡이는 **패널 밖(.blk-body 기준)** 에 둔다.
+             패널 안에 두면 그 패널의 overflow:auto 가 경계 밖으로 나온 절반을 **잘라 버려**
+             버튼이 반만 보였다(리포트된 증상). -->
+        <button v-if="!guideHidden" class="blk-guide-hide" title="작성 안내 접기"
+                @click="setGuideHidden(true)">›</button>
+        <div v-if="!guideHidden" class="blk-guide-grip" title="너비 조절 — 드래그"
+             @mousedown.prevent="startGuideDrag"></div>
+        <!-- 접힌 상태의 손잡이 — 티켓 다이얼로그 측면 패널과 같은 관습(가장자리 기둥). -->
+        <button v-if="guideHidden" class="blk-guide-show stub" title="작성 안내 펼치기"
+                @click="setGuideHidden(false)">
+          <span class="st-ic">‹</span>
+          <span class="st-label">작성 안내</span>
+          <span class="st-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        </button>
+        <aside v-if="!guideHidden" class="blk-side">
           <div class="blk-side-h">필드</div>
+          <!-- 고를 수 있는 값은 **그 필드 줄 안에** 넣는다. 표 밑에 따로 두면 무엇이 어느 필드
+               얘기인지 눈으로 다시 이어 붙여야 한다. 값은 눌러서 복사된다. -->
           <table class="blk-ftab">
-            <thead><tr><th>필드</th><th>필수</th><th>설명</th></tr></thead>
+            <thead><tr><th>필드</th><th>필수</th><th>설명 · 고를 수 있는 값</th></tr></thead>
             <tbody>
               <tr v-for="d in docs" :key="d.f" :class="{ req: d.req.indexOf('필수') === 0 }">
                 <td><code>{{ d.f }}</code></td>
                 <td class="bf-req">{{ d.req }}</td>
-                <td class="bf-d">{{ d.d }}</td>
+                <td class="bf-d">
+                  {{ d.d }}
+                  <template v-if="valuesFor(d.f)">
+                    <div v-if="valuesFor(d.f).list.length" class="bv-body">
+                      <button v-for="x in valuesFor(d.f).list" :key="x" class="bv-x"
+                              :title="'클릭하면 복사됩니다 — ' + x" @click="copyVal(x)">{{ x }}</button>
+                    </div>
+                    <div v-else class="bv-none">값 목록을 불러오는 중…</div>
+                    <div v-if="valuesFor(d.f).note" class="bv-note">{{ valuesFor(d.f).note }}</div>
+                  </template>
+                </td>
               </tr>
             </tbody>
           </table>
+
           <div class="blk-side-h">규칙</div>
           <ul class="blk-rules">
             <li v-if="isSub">상위 Task 는 <b>이미 존재</b>해야 합니다(이 JSON 안의 티켓 불가).</li>
             <li v-else>Epic 이 없으면 <code>"epic": null</code> 을 <b>명시</b>합니다.</li>
             <li>Task 와 Sub-Task 를 한 번에 섞을 수 없습니다.</li>
+            <li>JSON 에 <code>//</code> 주석을 써도 됩니다(만들 때 자동으로 걷어냅니다).</li>
+            <li>type · priority · components 는 <b>대소문자를 가리지 않습니다</b>.</li>
             <li>본문은 Markdown — 체크박스 <code>- [ ]</code>·표·불릿 지원.</li>
             <li>이미지·파일 첨부 불가. 링크는 <b>웹(http/https)</b>만.</li>
           </ul>
-        </div>
+        </aside>
       </div>
 
       <!-- ── 2) 미리보기 — Task 화면의 'Task with SubTask' 처럼 상위 밑에 새 티켓을 넣어 보인다.

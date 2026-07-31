@@ -1259,6 +1259,19 @@ export default {
     },
     inCodeBlock() { this.tick; return !!(this._ed && this._ed.isActive("codeBlock")); },
     codeLang() { this.tick; return (this._ed && this._ed.getAttributes("codeBlock").language) || ""; },
+    /**
+     * 선택기에 놓을 언어 목록 — **지금 코드블럭의 언어가 목록에 없으면 그것도 넣는다.**
+     *
+     * 옛 티켓의 코드블럭에는 우리가 등록하지 않은 언어(`text`·`plaintext`·대문자 표기 등)가
+     * 붙어 있을 수 있다. 그때 <select> 의 값과 맞는 <option> 이 하나도 없으면 브라우저는
+     * **빈 칸**을 보여 준다 — '(자동 감지)' 도 아니고 그 언어도 아닌, 아무 말도 안 하는 상태다
+     * (리포트된 증상). 원래 값을 선택지로 넣어 주면 그대로 보이고, 건드리지 않는 한 보존된다.
+     */
+    codeLangs() {
+      const cur = this.codeLang();
+      const ls = this.languages || [];
+      return cur && ls.indexOf(cur) < 0 ? [cur].concat(ls) : ls;
+    },
     setCodeLang(e) {
       const lang = e.target.value;
       if (this._ed) this._ed.chain().focus().updateAttributes("codeBlock", { language: lang || null }).run();
@@ -1589,7 +1602,7 @@ export default {
         <span class="tb-lbl">코드 언어</span>
         <select class="cmt-langsel" :value="codeLang()" @change="setCodeLang">
           <option value="">(자동 감지)</option>
-          <option v-for="l in languages" :key="l" :value="l">{{ l }}</option>
+          <option v-for="l in codeLangs()" :key="l" :value="l">{{ l }}</option>
         </select>
       </div>
       <div class="cmt-tb cmt-tb-tbl" v-show="ready && inImage()">

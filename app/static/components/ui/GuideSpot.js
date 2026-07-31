@@ -22,11 +22,23 @@ export default {
     this._reflow = () => this.measure();
     window.addEventListener("resize", this._reflow);
     window.addEventListener("scroll", this._reflow, true);
+    // ★ **다른 것을 건드리면 즉시 비켜선다.**
+    //   말풍선은 떠 있는 물건이라 옆의 버튼이나 그 버튼이 여는 메뉴를 가리게 된다. 실제로
+    //   이 안내(좌하단 새로고침 버튼)가 바로 위의 '+ 티켓 추가' 메뉴를 덮어 **[Bulk Task
+    //   추가하기] 가 안 눌리는** 일이 있었다(리포트된 증상). 안내가 일을 막으면 안내가 아니다.
+    //   바깥을 누르면 '봤다' 로 치고 접는다 — 그 누름 자체는 원래 대상에게 그대로 간다.
+    document.addEventListener("pointerdown", this._outside = (e) => {
+      if (!this.g) return;
+      const bub = this.$refs.bub;
+      if (bub && (e.target === bub || bub.contains(e.target))) return;   // 말풍선 안은 제 몫
+      this.close();
+    }, true);
     this.schedule();
   },
   unmounted() {
     window.removeEventListener("resize", this._reflow);
     window.removeEventListener("scroll", this._reflow, true);
+    document.removeEventListener("pointerdown", this._outside, true);
     this.stop();
   },
   watch: {

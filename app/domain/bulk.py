@@ -74,6 +74,8 @@ def validate_bulk(mode, items, lookup=None):
     # 실값 조회 캐시 — 같은 부모가 여러 번 나와도 한 번만 묻는다
     memo_badge, memo_types = {}, {}
     prio_names = comp_names = task_types = None
+    # 대소문자만 다른 값을 등록된 표기로 바꿔 담아 둘 사본 — 생성은 이걸 쓴다(원본은 안 건드린다).
+    norm = [dict(it) if isinstance(it, dict) else it for it in items]
 
     def badge(k):
         if k not in memo_badge:
@@ -182,39 +184,59 @@ def validate_bulk(mode, items, lookup=None):
                 else:
                     allowed = kid_types(parent_key)
                     if allowed is not None and itype and itype not in allowed:
-                        errors.append(_err(i, "type",
-                                           f"{parent_key} 밑에는 '{itype}' 을(를) 만들 수 없습니다. "
-                                           f"가능: {', '.join(allowed) or '없음'}"))
+                        c = _canon(itype, allowed)
+                        if c:
+                            norm[i]["type"] = c          # 'sub-task' → 'Sub-Task'
+                        else:
+                            errors.append(_err(i, "type",
+                                               f"{parent_key} 밑에는 '{itype}' 을(를) 만들 수 없습니다. "
+                                               f"가능: {', '.join(allowed) or '없음'}"))
                 if hasattr(lookup, "may_edit") and not lookup.may_edit(parent_key):
                     errors.append(_err(i, fld, f"{parent_key} 에 만들 권한이 없습니다(담당자·보고자 또는 매니저만)."))
         elif not sub and itype:
             if task_types is None and hasattr(lookup, "task_types"):
                 task_types = lookup.task_types()
             if task_types is not None and itype not in task_types:
-                errors.append(_err(i, "type",
-                                   f"Epic 없이 '{itype}' 은(는) 만들 수 없습니다. "
-                                   f"가능: {', '.join(task_types) or '없음'}"))
+                c = _canon(itype, task_types)
+                if c:
+                    norm[i]["type"] = c
+                else:
+                    errors.append(_err(i, "type",
+                                       f"Epic 없이 '{itype}' 은(는) 만들 수 없습니다. "
+                                       f"가능: {', '.join(task_types) or '없음'}"))
 
         pr = (it.get("priority") or "").strip() if isinstance(it.get("priority"), str) else ""
         if pr and hasattr(lookup, "priorities"):
             if prio_names is None:
                 prio_names = lookup.priorities()
             if prio_names is not None and pr not in prio_names:
-                errors.append(_err(i, "priority",
-                                   f"'{pr}' 우선순위가 없습니다. 가능: {', '.join(prio_names)}"))
+                c = _canon(pr, prio_names)
+                if c:
+                    norm[i]["priority"] = c              # 'p2-major' → 'P2-Major'
+                else:
+                    errors.append(_err(i, "priority",
+                                       f"'{pr}' 우선순위가 없습니다. 가능: {', '.join(prio_names)}"))
 
         comps = it.get("components")
         if _is_str_list(comps) and comps and hasattr(lookup, "components"):
             if comp_names is None:
                 comp_names = lookup.components()
             if comp_names is not None:
-                for c in comps:
+                fixed = list(comps)
+                for n, c in enumerate(comps):
+                    cs = c.strip()
+                    if not cs or cs in comp_names:
+                        continue
+                    canon = _canon(cs, comp_names)
+                    if canon:
+                        fixed[n] = canon                 # 'etl' → 'ETL' (조용히 맞춘다)
+                        continue
                     # 컴포넌트는 **막지 않는다** — 목록에 없는 이름을 쓰는 운영이 있다(사용자 확인).
                     # 그래도 오타는 잡아 줘야 하니 경고로 알리고, 실제 거절은 생성 결과가 말한다.
-                    if c.strip() and c.strip() not in comp_names:
-                        warnings.append(_err(i, "components",
-                                             f"'{c}' 는 등록된 컴포넌트 목록에 없습니다"
-                                             f"(오타가 아니면 그대로 진행). 등록된 값: {', '.join(comp_names)}"))
+                    warnings.append(_err(i, "components",
+                                         f"'{c}' 는 등록된 컴포넌트 목록에 없습니다"
+                                         f"(오타가 아니면 그대로 진행). 등록된 값: {', '.join(comp_names)}"))
+                norm[i]["components"] = fixed
 
         asg = (it.get("assignee") or "").strip() if isinstance(it.get("assignee"), str) else ""
         if asg and hasattr(lookup, "user_exists") and not lookup.user_exists(asg):
@@ -223,7 +245,24 @@ def validate_bulk(mode, items, lookup=None):
                                f"'{asg}' 사용자를 찾을 수 없습니다. 사용자명은 이메일 @ 앞부분입니다"
                                f"(예: hong.gildong@company.com → hong.gildong)."))
 
-    return {"ok": not errors, "errors": errors, "warnings": warnings}
+    # items 는 **정규화된 사본** — 생성은 이걸 써야 대소문자가 등록된 표기로 나간다.
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "items": norm}
+
+
+def _canon(value, options):
+    """대소문자만 다른 값을 **실제 등록된 표기**로 바꿔 준다. 못 찾으면 None.
+
+    사람이 손으로 쓰거나 LLM 이 만든 JSON 은 'task' · 'p2-major' · 'etl' 처럼 적히기 쉬운데,
+    그걸 오타로 몰아 막으면 고칠 게 대소문자뿐인 실패가 쌓인다. 여기서 받아 주고, **보낼 때는
+    등록된 표기로 바꿔** 보낸다 — Jira 가 대소문자를 가리든 말든 그쪽에서 문제가 안 생긴다.
+    (casefold 는 대소문자 접기 — 터키어 등까지 고려한 lower 의 상위 호환.)"""
+    if not options:
+        return None
+    v = (value or "").strip().casefold()
+    for o in options:
+        if str(o).strip().casefold() == v:
+            return o
+    return None
 
 
 def to_create_kwargs(mode, item):

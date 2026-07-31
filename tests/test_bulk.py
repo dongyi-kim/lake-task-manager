@@ -202,6 +202,45 @@ def test_messages_have_no_markdown_markers():
             assert mark not in m, f"문구에 마크다운({mark}) 이 남았다: {m!r}"
 
 
+# ── 대소문자 ─────────────────────────────────────────────────────────────
+def test_case_insensitive_values_are_normalized():
+    """'task' · 'p2-major' · 'etl' 을 오타로 몰아 막으면, 고칠 게 대소문자뿐인 실패가 쌓인다.
+    받아 주되 **등록된 표기로 바꿔** 내보낸다 — Jira 가 대소문자를 가리든 말든 안전하다."""
+    lk = FakeLookup()
+    r = validate_bulk("subtask", [{
+        "summary": "A", "type": "sub-task", "parent": "DL-200",
+        "priority": "p2-MAJOR", "components": ["etl", "devops"],
+    }], lk)
+    assert r["ok"], r["errors"]
+    it = r["items"][0]
+    assert it["type"] == "Sub-Task"                  # 'sub-task' → 등록된 표기
+    assert it["priority"] == "P2-Major"
+    assert it["components"] == ["ETL", "DevOps"]
+    assert not r["warnings"]                          # 대소문자만 다른 건 경고할 일이 아니다
+
+
+def test_case_insensitive_does_not_touch_the_input():
+    """정규화는 **사본**에만 한다 — 호출부가 넘긴 dict 를 몰래 바꾸면 추적이 어려워진다."""
+    lk = FakeLookup()
+    src = [{"summary": "A", "type": "sub-task", "parent": "DL-200", "priority": "p2-major"}]
+    validate_bulk("subtask", src, lk)
+    assert src[0]["type"] == "sub-task" and src[0]["priority"] == "p2-major"
+
+
+def test_unknown_value_still_errors():
+    """대소문자를 봐주는 것과 없는 값을 통과시키는 것은 다르다."""
+    lk = FakeLookup()
+    r = validate_bulk("task", [{"summary": "A", "type": "Task", "epic": None,
+                                "priority": "P9-없음"}], lk)
+    assert (0, "priority") in _fields(r)
+
+
+def test_items_are_returned_even_without_lookup():
+    """생성 경로가 항상 result['items'] 를 쓸 수 있어야 한다(lookup 없이 부른 경우 포함)."""
+    r = validate_bulk("task", [{"summary": "A", "type": "Task", "epic": None}])
+    assert r["ok"] and r["items"][0]["summary"] == "A"
+
+
 # ── 생성 인자 변환 ───────────────────────────────────────────────────────
 def test_to_create_kwargs_maps_parent_by_mode():
     task = to_create_kwargs("task", {"summary": " A ", "type": "Task", "epic": "DL-100",

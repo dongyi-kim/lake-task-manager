@@ -8,6 +8,8 @@
 // 서버 검증기는 app/domain/bulk.py. **두 파일의 규칙은 같아야 한다**(여기서 통과하고 서버에서
 // 막히는 건 괜찮지만, 그 반대는 사용자를 속이는 것이다).
 
+import { stripJsonComments } from "./jsonlines.js";
+
 const KEY_RE = /^[A-Z][A-Z0-9]*-\d+$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const MAX_ITEMS = 100;
@@ -21,41 +23,77 @@ export function fieldDocs(mode) {
   const sub = mode === "subtask";
   return [
     { f: "summary", req: "필수", d: "티켓 제목. 빈 문자열 불가" },
-    { f: "type", req: "필수", d: sub ? "보통 \"Sub-Task\"" : "\"Task\" · \"Bug\" · \"Story\" 등" },
+    // 값 예시를 여기 적지 않는다 — 화면은 이 줄 안에 **실제 목록**을 붙이고, 프롬프트도 아래에
+    // 실제 목록을 따로 싣는다. 두 곳에 값이 있으면 하나는 반드시 낡는다.
+    { f: "type", req: "필수", d: "만들 이슈 타입" },
     sub ? { f: "parent", req: "필수", d: "상위 Task 키(예 \"DL-9012\"). 이미 존재하는 티켓만. null 불가" }
         : { f: "epic", req: "필수(키)", d: "소속 Epic 키(예 \"DL-5874\"). Epic 없이 만들면 null 을 명시" },
     { f: "priority", req: "선택", d: "없으면 Jira 기본값" },
     { f: "duedate", req: "선택", d: "\"YYYY-MM-DD\"" },
     { f: "assignee", req: "선택", d: "Jira 사용자명 = 이메일 @ 앞부분(예 hong.gildong). 표시이름 아님" },
-    { f: "components", req: "선택", d: "모듈. 문자열 배열 예 [\"ETL\"]" },
+    { f: "components", req: "선택", d: "모듈 이름의 배열" },
     { f: "labels", req: "선택", d: "문자열 배열. 공백은 _ 로 바뀜" },
     { f: "description", req: "선택", d: "본문. Markdown (체크박스·표·불릿 지원)" },
   ];
 }
 
 /** 붙여넣어 바로 쓸 수 있는 예제 JSON. */
+/**
+ * 붙여넣어 바로 쓸 수 있는 예제 — **주석으로 무엇을 적는 자리인지 설명한다.**
+ * 표준 JSON 은 주석을 모르지만 이 창은 받아 준다(validateBulk 가 파싱 전에 걷어낸다).
+ * 그러니 주석은 지워도 되고 남겨도 된다 — 남겨 두는 편이 다음에 열었을 때 도움이 된다.
+ */
 export function exampleJson(mode) {
   if (mode === "subtask") {
-    return JSON.stringify({
-      mode: "subtask",
-      items: [
-        { parent: "DL-9012", type: "Sub-Task", summary: "스키마 설계",
-          assignee: "test.ui01", duedate: "2026-08-20", priority: "P2-Major",
-          description: "## 범위\n- 테이블 3종\n\n### 체크리스트\n- [ ] 초안\n- [x] 리뷰 요청\n\n| 항목 | 값 |\n|------|-----|\n| 대상 | DW |" },
-        { parent: "DL-9012", type: "Sub-Task", summary: "적재 파이프라인 구현" },
-      ],
-    }, null, 2);
+    return `{
+  // 이 창은 Sub-Task 전용입니다. Task 와 섞어 만들 수 없습니다.
+  "mode": "subtask",
+  "items": [
+    {
+      // 상위 Task 키 — **이미 있는 티켓**이어야 합니다(이 JSON 안에서 방금 만든 건 못 씁니다).
+      "parent": "DL-9012",
+      "type": "Sub-Task",              // 대소문자는 가리지 않습니다
+      "summary": "스키마 설계",         // 필수. 제목
+      "assignee": "test.ui01",         // 회사 이메일의 @ 앞부분. 모르면 이 줄을 지우세요
+      "duedate": "2026-08-20",         // YYYY-MM-DD
+      "priority": "P2-Major",          // 오른쪽 안내의 목록에서 고르세요
+      // 본문은 Markdown — 체크박스 · 표 · 불릿을 씁니다. 첨부는 만들 수 없습니다.
+      "description": "## 범위\\n- 테이블 3종\\n\\n### 체크리스트\\n- [ ] 초안\\n- [x] 리뷰 요청\\n\\n| 항목 | 값 |\\n|------|-----|\\n| 대상 | DW |"
+    },
+    {
+      // 필수는 parent · type · summary 셋뿐입니다. 나머지는 없으면 Jira 기본값.
+      "parent": "DL-9012",
+      "type": "Sub-Task",
+      "summary": "적재 파이프라인 구현"
+    }
+  ]
+}`;
   }
-  return JSON.stringify({
-    mode: "task",
-    items: [
-      { epic: "DL-5874", type: "Task", summary: "실시간 수집 파이프라인 설계",
-        priority: "P2-Major", duedate: "2026-08-20", assignee: "test.ui01",
-        components: ["ETL"], labels: ["backend"],
-        description: "## 배경\n지연이 커져 재설계가 필요하다.\n\n- [ ] 요건 정리\n- [ ] 설계 리뷰\n\n참고: [설계 문서](https://example.com/doc)" },
-      { epic: null, type: "Task", summary: "Epic 없이 만드는 단독 Task" },
-    ],
-  }, null, 2);
+  return `{
+  // 이 창은 Task 전용입니다. Sub-Task 와 섞어 만들 수 없습니다.
+  "mode": "task",
+  "items": [
+    {
+      // 소속 Epic 키. **키 자체는 반드시 있어야 합니다** — 없이 만들 땐 아래처럼 null 을 적습니다
+      // (빠뜨린 것과 '일부러 없음' 을 구분하지 못하면 미아 티켓이 조용히 쌓입니다).
+      "epic": "DL-5874",
+      "type": "Task",                  // 대소문자는 가리지 않습니다
+      "summary": "실시간 수집 파이프라인 설계",   // 필수. 제목
+      "priority": "P2-Major",          // 오른쪽 안내의 목록에서 고르세요
+      "duedate": "2026-08-20",         // YYYY-MM-DD
+      "assignee": "test.ui01",         // 회사 이메일의 @ 앞부분. 모르면 이 줄을 지우세요
+      "components": ["ETL"],           // 모듈. 목록에 없는 값도 쓸 수 있습니다(경고만)
+      "labels": ["backend"],           // 공백은 _ 로 바뀝니다
+      // 본문은 Markdown — 체크박스 · 표 · 불릿을 씁니다. 링크는 웹(http/https)만 살아납니다.
+      "description": "## 배경\\n지연이 커져 재설계가 필요하다.\\n\\n- [ ] 요건 정리\\n- [ ] 설계 리뷰\\n\\n참고: [설계 문서](https://example.com/doc)"
+    },
+    {
+      "epic": null,                    // Epic 없이 만드는 단독 Task
+      "type": "Task",
+      "summary": "Epic 없이 만드는 단독 Task"
+    }
+  ]
+}`;
 }
 
 function err(index, field, message) { return { index, field, message }; }
@@ -71,7 +109,9 @@ export function validateBulk(text, mode) {
 
   let data;
   try {
-    data = JSON.parse(raw);
+    // 주석(//, /* */)을 허용한다 — 예제에 설명을 달아 두는 게 이 창의 가장 큰 도움이다.
+    // 지우는 게 아니라 공백으로 덮으므로 오류가 가리키는 줄번호는 원문과 그대로 맞는다.
+    data = JSON.parse(stripJsonComments(raw));
   } catch (e) {
     // JSON.parse 의 메시지는 위치를 알려 준다 — 그대로 보여 주는 게 가장 도움이 된다.
     return { ok: false, data: null, errors: [err(null, null, "JSON 문법 오류 — " + (e && e.message))], warnings };

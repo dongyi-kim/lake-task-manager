@@ -9,11 +9,47 @@
 // (입력 중인 글에도 표시가 붙어야 쓸모가 있다).
 
 /**
+ * JSON 안의 주석(`//`, `/* *\/`)을 지운다 — JSON.parse 는 주석을 모른다.
+ *
+ * 예제에 설명을 달아 두려면(그게 이 입력창의 가장 큰 도움이다) 주석을 받아 줘야 한다.
+ * ★ **지우지 않고 공백으로 덮는다** — 글자 수와 줄 수가 그대로여야 오류 위치(줄번호)가
+ *   원문과 어긋나지 않는다. 문자열 안의 `//` 는 주석이 아니므로 건드리지 않는다.
+ */
+export function stripJsonComments(text) {
+  const s = String(text == null ? "" : text);
+  let out = "", i = 0, inStr = false, esc = false;
+  while (i < s.length) {
+    const c = s[i];
+    if (inStr) {
+      out += c;
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      i++; continue;
+    }
+    if (c === '"') { inStr = true; out += c; i++; continue; }
+    if (c === "/" && s[i + 1] === "/") {
+      while (i < s.length && s[i] !== "\n") { out += " "; i++; }
+      continue;
+    }
+    if (c === "/" && s[i + 1] === "*") {
+      const end = s.indexOf("*/", i + 2);
+      const stop = end < 0 ? s.length : end + 2;
+      for (; i < stop; i++) out += (s[i] === "\n" ? "\n" : " ");
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
+/**
  * items 배열의 i 번째 항목이 시작하는 줄번호(1-based) 목록.
  * items 를 못 찾으면 빈 배열 — 표시를 안 할 뿐, 검증 자체는 영향받지 않는다.
  */
 export function itemStartLines(text) {
-  const s = String(text == null ? "" : text);
+  // 주석 안의 중괄호가 항목으로 세어지면 안 된다(공백으로 덮으므로 줄 위치는 그대로).
+  const s = stripJsonComments(text);
   const out = [];
   let line = 1, i = 0;
   let inStr = false, esc = false;

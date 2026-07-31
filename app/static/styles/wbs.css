@@ -112,4 +112,4 @@
 
 .tline { width: 2px; height: 13px; background: var(--today); display: inline-block; }
 .footer { margin-top: 20px; color: var(--muted); font-size: 11.5px; line-height: 1.7; }
-.footer code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 2px; padding: 1px 5px; }
+

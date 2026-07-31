@@ -24,8 +24,9 @@ import { ensureHljsTheme } from "../../lib/hljs.js";
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
 const esc = (s) => s.replace(/[&<>]/g, (c) => ESC[c]);
 
-// 문자열(뒤에 ':' 가 오면 키) · 참/거짓/널 · 숫자
-const TOK = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+// 문자열(뒤에 ':' 가 오면 키) · 주석 · 참/거짓/널 · 숫자.
+// **문자열을 먼저** 둔다 — 그래야 문자열 안의 `//` 가 주석으로 잘리지 않는다(순서가 규칙이다).
+const TOK = /("(?:\\.|[^"\\])*")(\s*:)?|(\/\/[^\n]*)|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
 
 function highlightLine(src) {
   let out = "", last = 0, m;
@@ -37,9 +38,11 @@ function highlightLine(src) {
         ? '<span class="hljs-attr">' + esc(m[1]) + "</span>" + esc(m[2])
         : '<span class="hljs-string">' + esc(m[1]) + "</span>";
     } else if (m[3] !== undefined) {
-      out += '<span class="hljs-literal">' + esc(m[3]) + "</span>";
+      out += '<span class="hljs-comment">' + esc(m[3]) + "</span>";
+    } else if (m[4] !== undefined) {
+      out += '<span class="hljs-literal">' + esc(m[4]) + "</span>";
     } else {
-      out += '<span class="hljs-number">' + esc(m[4]) + "</span>";
+      out += '<span class="hljs-number">' + esc(m[5]) + "</span>";
     }
     last = TOK.lastIndex;
   }
