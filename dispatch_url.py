@@ -63,7 +63,9 @@ def _jira_ticket_of(url):
 
 
 def _send_to_app(key):
-    """떠 있는 앱에 티켓 열기를 요청. 성공하면 True."""
+    """떠 있는 앱에 티켓 열기를 요청. **다이얼로그를 실제로 열 수 있을 때만** True.
+    창 없는 모드(LAKE_NO_WINDOW 등)는 서버가 살아 있어도 열 창이 없다(window=none) —
+    그때 True 를 주면 링크가 조용히 삼켜지므로 False 로 돌려 브라우저 폴백을 태운다."""
     import json
     import urllib.request
     port = _app_port()
@@ -72,7 +74,10 @@ def _send_to_app(key):
         data=json.dumps({"key": key}).encode(), headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=1.5) as r:
-            return 200 <= r.status < 300
+            if not (200 <= r.status < 300):
+                return False
+            body = json.loads(r.read().decode("utf-8") or "{}")
+            return bool(body.get("ok")) and body.get("window") in ("focus", "open")
     except Exception:
         return False
 
