@@ -124,19 +124,20 @@
      화면 밖)에 박혀 스크롤하면 사라진다. */
   position: absolute; top: var(--cb-top, 50%); transform: translateY(-50%); z-index: 8;
   display: flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; padding: 0; cursor: pointer;
-  font-size: 15px; line-height: 1; color: var(--muted);
-  border: 1px solid var(--border); border-radius: 50%; background: var(--panel);
+  /* 세로로 긴 라운드 박스(약 1:3) — 원형보다 '가장자리의 손잡이' 로 읽힌다 */
+  width: 18px; height: 54px; padding: 0; cursor: pointer;
+  font-size: 13px; line-height: 1; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
   box-shadow: 0 1px 4px rgba(0,0,0,.16); transition: color .12s, border-color .12s, background .12s; }
 .spine-hide:hover, .spine-show:hover, .tl-hide:hover, .tl-show:hover {
   color: var(--accent); border-color: var(--accent); background: var(--panel-2); }
-.spine-hide { right: -13px; }        /* 스파인 오른쪽 경계(분할선) 위 */
-.tl-hide { left: -13px; }            /* 타임라인 왼쪽 경계(분할선) 위 */
+.spine-hide { right: -9px; }         /* 스파인 오른쪽 경계(분할선) 위 — 폭(18)의 절반 */
+.tl-hide { left: -9px; }             /* 타임라인 왼쪽 경계(분할선) 위 — 폭(18)의 절반 */
 /* 접힌 상태 — 그 자리를 **통째로 채우는 패널**이 곧 버튼이다(떠다니는 개별 버튼 아님).
    위아래 꽉 차게 세우되 폭은 좁게, 펼친 패널과 같은 배경/테두리를 써서 '접힌 패널' 로 읽히게.
    안의 화살표·세로 라벨·점은 그 패널의 내용물일 뿐 별도 버튼이 아니다. */
 .spine-show.stub, .tl-show.stub {
-  top: 0; bottom: 0; height: auto; transform: none;
+  top: 0; bottom: 0; height: auto; transform: none; overflow: visible;
   width: 30px; padding: 12px 0; gap: 10px; flex-direction: column;
   /* 본문과 같은 흰색이면 '접힌 패널' 로 안 읽힌다 — 옅은 톤으로 채우고 안쪽 경계선을 준다. */
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 0;
@@ -146,13 +147,19 @@
 .spine-show.stub:hover, .tl-show.stub:hover {
   background: color-mix(in srgb, var(--accent) 9%, var(--panel-2));
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
-/* 펼치기 표시는 **원형 버튼 모양 그대로** 패널 안에 둔다(예전 버튼을 없애지 않고 품는다) */
+/* 펼치기 원형 버튼 — **접기(−) 버튼과 완전히 같은 자리**: 패널 경계선 위에 반쯤 걸치고
+   세로는 --cb-top(보이는 스크롤 중앙). 접기/펼치기가 같은 좌표라 눈이 따라갈 필요가 없다.
+   (패널 안 flex 흐름에서 빼내 절대배치 — 그래서 라벨·점은 패널 중앙 정렬을 그대로 유지) */
 .spine-show.stub .st-ic, .tl-show.stub .st-ic {
-  flex: none; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  position: absolute; top: var(--cb-top, 50%); transform: translateY(-50%); z-index: 9;
+  width: 18px; height: 54px; display: flex; align-items: center; justify-content: center;
   font-size: 13px; line-height: 1; color: var(--muted);
-  background: var(--panel); border: 1px solid var(--border); border-radius: 50%;
-  box-shadow: 0 1px 3px rgba(0,0,0,.12); }
-.spine-show.stub:hover .st-ic, .tl-show.stub:hover .st-ic { color: var(--accent); border-color: var(--accent); }
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.16); }
+.spine-show.stub .st-ic { right: -9px; }    /* 접힌 패널의 오른쪽 경계 = .spine-hide 와 동일 */
+.tl-show.stub .st-ic { left: -9px; }        /* 접힌 패널의 왼쪽 경계 = .tl-hide 와 동일 */
+.spine-show.stub:hover .st-ic, .tl-show.stub:hover .st-ic {
+  color: var(--accent); border-color: var(--accent); background: var(--panel-2); }
 /* 세로쓰기 라벨 — 좁은 폭에서 읽히는 유일한 방향. 패널 가운데에 놓는다. */
 .spine-show.stub .st-label, .tl-show.stub .st-label {
   writing-mode: vertical-rl; text-orientation: mixed; font-size: 11px; font-weight: 600;
