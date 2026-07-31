@@ -141,8 +141,8 @@
   /* 본문과 같은 흰색이면 '접힌 패널' 로 안 읽힌다 — 옅은 톤으로 채우고 안쪽 경계선을 준다. */
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 0;
   box-shadow: none; color: var(--muted); }
-.spine-show.stub { left: 0; border-left: 0; border-radius: 0 6px 6px 0; }
-.tl-show.stub { right: 0; border-right: 0; border-radius: 6px 0 0 6px; }
+.spine-show.stub { left: 0; border-left: 0; }
+.tl-show.stub { right: 0; border-right: 0; }
 .spine-show.stub:hover, .tl-show.stub:hover {
   background: color-mix(in srgb, var(--accent) 9%, var(--panel-2));
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
@@ -162,9 +162,10 @@
 /* 접혔을 때는 그 컬럼이 없다 — 본문이 그 폭을 가져간다 */
 @container tkt (min-width: 1000.1px) {
   /* 접힌 쪽엔 레일 스터브(26px)가 서므로 그만큼 + 여백을 비운다 */
-  /* 접힌 쪽은 패널(30px)이 자리를 채운다 — 본문은 그만큼만 비운다 */
-  .tkt-cols.spine-hidden { padding-left: 38px; }
-  .tkt-cols.tl-hidden { padding-right: 38px; }
+  /* 접힌 쪽 여백은 **패널 폭과 정확히 같아야** 한다. 더 주면 패널 옆에 흰 띠가 남는다
+     (실제로 38px 로 두어 8px 흰 줄이 보였다). */
+  .tkt-cols.spine-hidden { padding-left: 30px; }
+  .tkt-cols.tl-hidden { padding-right: 30px; }
 }
 /* 좁은 화면(grid 모드)에선 폭 조절·접기가 무의미 — 손잡이/버튼을 숨긴다 */
 @container tkt (max-width: 1000px) {
