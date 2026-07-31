@@ -27,7 +27,6 @@ export default {
       taMs: typeaheadDelay(),          // 자동완성 대기(ms) — 검색·문서/티켓 링크·@멘션 공통
       bbEnabled: false, bbConfigured: false, bbBusy: false,   // Bitbucket 연동(저장됨, 기본 꺼짐)
       hotkey: "ctrl+alt+space", hkBusy: false,   // 빠른 열기 단축키(저장됨)
-      dsp: null, dspBusy: false,   // Jira 링크 디스패처 상태 {supported, registered, default}
     };
   },
   computed: {
@@ -79,19 +78,8 @@ export default {
       this._startPoll();               // 열려 있는 동안 실시간 갱신(로그인 완료 반영)
     },
     close() { this.open = false; this._stopPoll(); },
-    // Jira 링크 디스패처 — 상태 확인/등록/해제. 등록은 Windows 기본 앱 설정 창도 연다.
-    probeDsp() {
-      api.raw("/api/dispatcher/status").then((r) => { this.dsp = r || null; }).catch(() => { this.dsp = null; });
-    },
-    async dspAction(a) {
-      if (this.dspBusy) return;
-      this.dspBusy = true;
-      try { await api.dispatcher(a); } catch (e) { /* 상태 재조회로 결과 확인 */ }
-      finally { this.dspBusy = false; this.probeDsp(); }
-    },
     // 서비스별 **병렬** 프로브 — 각 응답이 오는 대로 그 행만 갱신(하나 느려도 나머지는 즉시).
     probeAll() {
-      this.probeDsp();   // 디스패처 상태도 같이(Windows 설정에서 기본 브라우저를 바꾸면 폴링으로 반영)
       for (const svc of this.services) {
         api.raw("/api/dev/sso/" + encodeURIComponent(svc.name))
           .then((r) => {
@@ -193,26 +181,6 @@ export default {
                     :disabled="hkBusy" @click="setHotkey(o.spec)">{{ o.label }}</button>
           </div>
           <div class="sm-ta-h">이 조합을 누르면 앱 창이 지금 보고 있는 화면(가상 데스크톱)으로 옵니다. — 데스크톱 앱</div>
-        </div>
-      </div>
-
-      <!-- Jira 링크 가로채기 — URL 디스패처 등록/해제 (Windows 데스크톱 전용) -->
-      <div v-if="dsp && dsp.supported" class="sm-sec">
-        <div class="sm-h">Jira 링크 연결</div>
-        <div class="sm-ta">
-          <div class="sm-ta-l">🔗 Jira 링크 가로채기</div>
-          <div class="sm-ta-h">메신저·메일 등 다른 앱에서 Jira 티켓 링크를 열면 브라우저 대신 이 앱으로 띄웁니다.
-            그 외 링크는 원래 쓰던 브라우저로 그대로 전달됩니다.</div>
-          <template v-if="!dsp.registered">
-            <button class="sm-btn primary" :disabled="dspBusy" @click="dspAction('register')">
-              {{ dspBusy ? '처리 중…' : '등록하고 기본 브라우저 설정 열기' }}</button>
-          </template>
-          <template v-else>
-            <div v-if="dsp.default" class="sm-ta-h">✔ 사용 중 — 기본 브라우저가 "Lake Task Manager 링크" 로 지정되어 있습니다.</div>
-            <div v-else class="sm-ta-h">등록됨 — Windows 설정에서 기본 브라우저를 <b>"Lake Task Manager 링크"</b> 로 지정해야 동작합니다.</div>
-            <button v-if="!dsp.default" class="sm-btn" :disabled="dspBusy" @click="dspAction('register')">기본 브라우저 설정 다시 열기</button>
-            <button class="sm-btn" :disabled="dspBusy" @click="dspAction('unregister')">해제</button>
-          </template>
         </div>
       </div>
 
