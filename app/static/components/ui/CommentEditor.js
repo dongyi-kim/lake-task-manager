@@ -248,11 +248,49 @@ function ticketData(key) {
 //
 // 저장 형태는 바꾸지 않는다 — 노드는 '=== 제목 ===' 한 줄짜리 문단으로 직렬화된다. 새 문법을
 // 만들면 Jira 웹에서 연 사람이 못 알아보고, 기존 티켓과도 어긋난다. 화면에서만 선처럼 보인다.
-// 이미 저장된 본문을 편집기로 열 때: '=== 제목 ===' 한 줄짜리 문단을 구분선 노드로 바꾼다.
+// 이미 저장된 본문을 편집기로 열 때: '=== 제목 ===' 줄을 구분선 노드로 바꾼다.
 // 안 바꾸면 편집기에선 그냥 글자로 보이고, 사용자가 손대면 형식이 깨진다.
-const SEC_LINE = /<p>\s*={3,}\s*([^<]+?)\s*={3,}\s*<\/p>/gi;
+//
+// ★ **문단 안에 <br> 로 이어진 경우까지** 처리해야 한다. Jira wiki 는 홑 줄바꿈을 <br> 로 내므로
+//   실제 티켓 본문은 `<p>안녕하세요<br/>==== 신청정보 ====<br/>이렇게 신청함</p>` 처럼 한 문단에
+//   뭉쳐 들어온다. 예전엔 '구분선만 담은 <p>' 만 봤던 탓에, 화면에선 영역이 갈려 보이는 본문이
+//   수정 화면에서는 '==== 제목 ====' 맨 글자로 풀렸다(리포트된 버그).
+//   자르는 규칙은 표시 계층(app/content/sections.py)과 같아야 한다 — 한쪽만 고치면 또 어긋난다.
+const SEC_ONELINE = /^\s*={3,}\s*(.+?)\s*={3,}\s*$/;
+const _P_BLOCK = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
+const _TAGS = /<[^>]*>/g;
+
 function liftSections(html) {
-  return (html || "").replace(SEC_LINE, (m, t) => '<div class="sec-title-node">' + t + "</div>");
+  if (!html || html.indexOf("===") < 0) return html;
+  return html.replace(_P_BLOCK, (whole, inner) => {
+    if (inner.indexOf("===") < 0) return whole;
+    const lines = inner.split(/<br\s*\/?>/i);
+    const isSec = (l) => SEC_ONELINE.test(l.replace(_TAGS, "").trim());
+    if (!lines.some(isSec)) return whole;                 // 구분선 줄이 없으면 손대지 않는다
+
+    // 구분선 줄에서 문단을 끊고, 그 자리에 노드를 넣는다(앞뒤 줄은 다시 <br> 로 이어 붙인다).
+    const out = [];
+    let buf = [];
+    const flush = () => {
+      const body = buf.join("<br>");
+      if (body.replace(_TAGS, "").trim()) out.push("<p>" + body + "</p>");
+      buf = [];
+    };
+    for (const line of lines) {
+      const plain = line.replace(_TAGS, "").trim();
+      const m = SEC_ONELINE.exec(plain);
+      if (m) {
+        flush();
+        // 제목은 **다시 이스케이프하지 않는다** — 여기 들어온 건 이미 정화된 HTML 조각이라
+        // '&lt;' 같은 엔티티가 그대로다. 한 번 더 걸면 'a &amp;lt; b' 로 글자가 새어 나온다.
+        out.push('<div class="sec-title-node">' + m[1] + "</div>");
+      } else {
+        buf.push(line);
+      }
+    }
+    flush();
+    return out.join("");
+  });
 }
 
 // 저장/표시된 체크박스(<p><input type=checkbox …>글<br><input …>글</p>)를 편집기로 열 때
