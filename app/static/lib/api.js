@@ -118,8 +118,10 @@ export const api = {
   workload: () => get("/api/workload"),
   workloadShell: () => get("/api/workload/shell"),
   workloadModule: (m) => get("/api/workload/module/" + encodeURIComponent(m)),
-  workloadPerson: (u) => get("/api/workload/person/" + encodeURIComponent(u)),   // 사람 by 사람 로딩
-  workloadBucket: (u, b) => get("/api/workload/" + encodeURIComponent(u) + "/" + b),
+  // days = '최근 완료' 로 볼 기간(7·14·28). URL 에 넣어야 memo 도 기간별로 갈린다.
+  workloadPerson: (u, days) => get("/api/workload/person/" + encodeURIComponent(u) + "?days=" + (days || 7)),
+  workloadBucket: (u, b, days) => get("/api/workload/" + encodeURIComponent(u) + "/" + b
+                                      + "?days=" + (days || 7)),
   workloadDetail: (user) => get("/api/workload/" + encodeURIComponent(user)),
   activity: (user) => get("/api/activity/" + encodeURIComponent(user)),
   myTasks: (opts) => {                                                // 내 Task(옵션은 서버 질의 조건)

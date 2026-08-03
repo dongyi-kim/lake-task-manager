@@ -3122,10 +3122,12 @@ class JiraClient:
             g["hr"] += hr
         return by
 
-    def workload_person(self, pid):
+    def workload_person(self, pid, done_days=None):
         """**인력 1명**의 워크로드 번들 — `workload:{env}:{pid}` 캐시. (사람 by 사람 비동기 로딩용.)
-        displayName 은 카운트 번들과 분리해 매번 재해석(카운트가 캐시돼도 username 이 안 굳게)."""
-        key = f'workload:{self.env}:{pid}'
+        displayName 은 카운트 번들과 분리해 매번 재해석(카운트가 캐시돼도 username 이 안 굳게).
+        done_days 는 '최근 완료' 기간(7·14·28) — 캐시 키에 넣어야 기간별 결과가 안 섞인다."""
+        done_days = self.wl_done_days(done_days)
+        key = f'workload:{self.env}:{pid}:{done_days}'
         bundle = self.cache.get(key)
         if bundle is None:
             try:
@@ -3135,7 +3137,7 @@ class JiraClient:
                     # 미착수는 최근 14일내 update 된 것만(할당 후 잊혀진 오래된 티켓=데이터오염 제외).
                     "open": self._wl_counts(f'assignee = "{pid}" AND statusCategory = "To Do" AND updated >= -14d'),
                     "inProgress": self._wl_counts(f'assignee = "{pid}" AND statusCategory = "In Progress"'),
-                    "done7d": self._wl_counts(f'assignee = "{pid}" AND statusCategory = Done AND resolved >= -7d'),
+                    "done7d": self._wl_counts(f'assignee = "{pid}" AND ' + self.wl_done_jql(done_days)),
                 }
                 # '소속 Epic' 색구분 범례용 — 막대에 나온 Epic 키를 이름으로(배치 1회).
                 ekeys = sorted({k for b in ("open", "inProgress", "done7d")
@@ -3191,15 +3193,46 @@ class JiraClient:
         }
 
     # 버킷별 JQL — 세 리스트를 각각 따로 부를 수 있게 분리(프론트에서 병렬 로딩·개별 렌더).
+    # 최근 완료로 볼 수 있는 기간(일). 화면에서 고른다 — 주 단위로 일하는 팀이 많아 1·2·4주.
+    WL_DONE_DAYS = (7, 14, 28)
+    WL_DONE_DEFAULT = 7
+
+    @staticmethod
+    def wl_done_days(days):
+        """허용된 값만 — 임의 숫자를 그대로 JQL 에 넣지 않는다."""
+        try:
+            d = int(days)
+        except Exception:
+            return JiraClient.WL_DONE_DEFAULT
+        return d if d in JiraClient.WL_DONE_DAYS else JiraClient.WL_DONE_DEFAULT
+
+    @staticmethod
+    def wl_done_jql(days):
+        """최근 완료 — **resolved 만 보면 안 된다.**
+
+        Resolved 를 거치는 사람의 티켓엔 resolutiondate 가 찍히지만, Closed 로 바로 가거나
+        resolution 없이 완료 상태로 넘어가면 **비어 있다**. 그걸 기준으로만 세면 그런 워크플로를
+        쓰는 사람의 완료가 통째로 빠진다 — '일부 사람만 완료가 누락' 으로 나타났다(리포트된 버그).
+        완료 판정은 statusCategory 로 하고(프로젝트 원칙), 시점은 resolved 가 있으면 그것을,
+        없으면 updated 를 쓴다. 완료 상태인 티켓의 마지막 변경은 대개 그 전이다."""
+        d = JiraClient.wl_done_days(days)
+        return ('statusCategory = Done AND (resolved >= -%dd '
+                'OR (resolved IS EMPTY AND updated >= -%dd))' % (d, d))
+
     WL_BUCKETS = {
         "open":       'assignee = "{u}" AND statusCategory = "To Do" AND updated >= -14d',
         "inProgress": 'assignee = "{u}" AND statusCategory = "In Progress"',
-        "done7d":     'assignee = "{u}" AND statusCategory = Done AND resolved >= -7d',
+        # done7d 는 기간이 화면에서 바뀌므로 여기 고정하지 않는다 — workload_bucket 이 만든다.
     }
 
-    def workload_bucket(self, user, bucket):
-        """인력 상세의 **한 버킷만** (open|inProgress|done7d). 버킷 단위 캐시."""
-        jql = self.WL_BUCKETS.get(bucket)
+    def workload_bucket(self, user, bucket, days=None):
+        """인력 상세의 **한 버킷만** (open|inProgress|done7d). 버킷 단위 캐시.
+        done7d 의 기간은 화면에서 고른다(7·14·28일) — 캐시 키에도 넣어야 섞이지 않는다."""
+        d = self.wl_done_days(days)
+        if bucket == "done7d":
+            jql = 'assignee = "{u}" AND ' + self.wl_done_jql(d)
+        else:
+            jql = self.WL_BUCKETS.get(bucket)
         if not jql:
             return None
         def do():
@@ -3207,7 +3240,8 @@ class JiraClient:
             out = [self._wl_ticket(it) for it in raws if self._wl_keep(it)]
             self._attach_epic_names(out)
             return out
-        return self.cache.get_or_set(f"workload_bucket:{self.env}:{user}:{bucket}",
+        suffix = f":{d}" if bucket == "done7d" else ""
+        return self.cache.get_or_set(f"workload_bucket:{self.env}:{user}:{bucket}{suffix}",
                                      self.s.cache_ttl_seconds, do)[0]
 
     @staticmethod
@@ -3250,28 +3284,13 @@ class JiraClient:
         itt = f.get("issuetype") or {}
         return _wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
 
-    def workload_tickets(self, user):
-        """인력 상세: 진행중 / 최근7일 완료 **티켓 리스트** (카운트 화면의 [+] 확장용).
+    def workload_tickets(self, user, days=None):
+        """인력 상세: 진행중 / 최근 완료 **티켓 리스트** (카운트 화면의 [+] 확장용).
         버킷 캐시를 재사용하므로 개별 호출과 결과가 동일하다."""
         return {"user": user,
                 "open": self.workload_bucket(user, "open"),
                 "inProgress": self.workload_bucket(user, "inProgress"),
-                "done7d": self.workload_bucket(user, "done7d")}
-
-    def _fetch_workload_tickets(self, user):
-        def keep(it):   # 카운트와 동일 필터: Task성/VoC성만 (Epic·Story·Bug 제외)
-            f = it.get("fields", {}) or {}
-            comps = [c.get("name") for c in (f.get("components") or [])]
-            comp = VOC_COMPONENT if VOC_COMPONENT in comps else (comps[0] if comps else "")
-            itt = f.get("issuetype") or {}
-            return _wl_category(comp, itt.get("name", ""), itt.get("subtask")) is not None
-        op = self._search(f'assignee = "{user}" AND statusCategory = "To Do" AND updated >= -14d', max_results=200)
-        ip = self._search(f'assignee = "{user}" AND statusCategory = "In Progress"', max_results=200)
-        dn = self._search(f'assignee = "{user}" AND statusCategory = Done AND resolved >= -7d', max_results=200)
-        return {"user": user,
-                "open": [self._wl_ticket(it) for it in op if keep(it)],
-                "inProgress": [self._wl_ticket(it) for it in ip if keep(it)],
-                "done7d": [self._wl_ticket(it) for it in dn if keep(it)]}
+                "done7d": self.workload_bucket(user, "done7d", days)}
 
     def activity(self, user):
         key = f"activity:{self.env}:{user}"

@@ -99,3 +99,49 @@ def test_workload_bucket_cached_individually():
     c.workload_bucket(user, "inProgress")
     assert c.cache.get(f"workload_bucket:{c.env}:{user}:inProgress") is not None
     assert c.cache.get(f"workload_bucket:{c.env}:{user}:done7d") is None   # 부른 것만 캐시
+
+
+# ── '최근 완료' 기간 필터 (1·2·4주) ──────────────────────────────────────────
+# 리포트된 버그: **일부 사람만** 완료 Task 가 누락됐다. 원인은 옛 질의가 `resolved >= -7d`
+# 하나만 봤다는 것 — Resolved 를 거치지 않고 Closed 로 바로 가거나 resolution 없이 완료로
+# 넘어가면 resolutiondate 가 **비어 있어** 그 사람의 완료가 통째로 빠졌다.
+
+def test_wl_done_days_only_allows_known_values():
+    """임의 숫자를 그대로 JQL 에 넣지 않는다(주입·오타 방어)."""
+    assert JiraClient.wl_done_days(14) == 14
+    assert JiraClient.wl_done_days("28") == 28
+    for bad in (1, 999, -7, None, "abc", "7 OR 1=1"):
+        assert JiraClient.wl_done_days(bad) == JiraClient.WL_DONE_DEFAULT
+
+
+def test_wl_done_jql_covers_empty_resolutiondate():
+    """완료 판정은 statusCategory, 시점은 resolved 없으면 updated 로 폴백해야 한다."""
+    jql = JiraClient.wl_done_jql(14)
+    assert "statusCategory = Done" in jql
+    assert "resolved >= -14d" in jql
+    assert "resolved IS EMPTY AND updated >= -14d" in jql   # ← 누락되던 그 부류
+
+
+def test_workload_bucket_period_widens_result():
+    """기간을 넓히면 완료 목록은 **실제로 늘어난다**(부분집합 + 진짜 증가).
+    빈 목록끼리 비교하면 부분집합은 늘 참이라 아무것도 증명 못 한다 — 완료가 있는 인력으로 본다."""
+    c = _client()
+    user = "skcc.x1103"
+    keys = {d: {t["key"] for t in c.workload_bucket(user, "done7d", d)}
+            for d in JiraClient.WL_DONE_DAYS}
+    assert keys[7] and keys[7] < keys[14] < keys[28]
+    # 버킷 캐시는 기간별로 갈려야 한다 — 안 그러면 1주 결과가 4주 자리에 앉는다
+    for d in JiraClient.WL_DONE_DAYS:
+        assert c.cache.get(f"workload_bucket:{c.env}:{user}:done7d:{d}") is not None
+
+
+def test_workload_person_cache_key_includes_period():
+    c = _client()
+    pid = PEOPLE["ETL"][0]
+    c.workload_person(pid, 7)
+    c.workload_person(pid, 28)
+    assert c.cache.get(f"workload:{c.env}:{pid}:7") is not None
+    assert c.cache.get(f"workload:{c.env}:{pid}:28") is not None
+    # 잘못된 기간은 기본값으로 정규화 — 없는 키를 만들지 않는다
+    c.workload_person(pid, 999)
+    assert c.cache.get(f"workload:{c.env}:{pid}:999") is None

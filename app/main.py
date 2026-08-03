@@ -1606,18 +1606,19 @@ def api_workload_module(module: str):
 
 
 @app.get("/api/workload/person/{user}")
-def api_workload_person(user: str):
+def api_workload_person(user: str, days: int = 7):
     """워크로드 — **인력 한 명**의 통계 행(사람 by 사람 비동기 로딩용). 통계는 assignee 기준이라
-    모듈과 무관 → user 만 받는다. workload:{env}:{user} 캐시라 재방문·모듈 중복은 공짜."""
+    모듈과 무관 → user 만 받는다. days 는 '최근 완료' 기간(7·14·28)."""
     _require_person_access(user)
-    return JSONResponse(workload.build_workload_person(_client, user))
+    return JSONResponse(workload.build_workload_person(_client, user, days))
 
 
 @app.get("/api/workload/{user}/{bucket}")
-def api_workload_bucket(user: str, bucket: str):
-    """인력 상세의 한 버킷(open|inProgress|done7d) — 세 리스트를 각각 병렬 로딩."""
+def api_workload_bucket(user: str, bucket: str, days: int = 7):
+    """인력 상세의 한 버킷(open|inProgress|done7d) — 세 리스트를 각각 병렬 로딩.
+    days 는 done7d 에만 쓰인다('최근 완료' 기간)."""
     _require_person_access(user)
-    rows = _client.workload_bucket(user, bucket)
+    rows = _client.workload_bucket(user, bucket, days)
     if rows is None:
         return JSONResponse({"error": "unknown bucket", "bucket": bucket}, status_code=404)
     return JSONResponse(rows)

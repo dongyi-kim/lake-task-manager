@@ -1,4 +1,4 @@
-// WorkloadView.js — 기능3 인력 워크로드. 두 막대(진행 중 / 최근 7일 완료), Task성·VoC성 색 구분,
+// WorkloadView.js — 기능3 인력 워크로드. 두 막대(진행 중 / 최근 완료 1·2·4주), Task성·VoC성 색 구분,
 // 모듈 평균 = 막대 뒤 세로 가이드선 + 헤더행 평균수치. [+] 확장 = 진행중/완료 티켓 리스트
 //   (Due·D-day, 완료일시; 진행중=임박순·완료=최근순 정렬).
 // 인력 = 본명(displayName 첫 어절) + 개발/운영 뱃지(id 사번 x+숫자/i+숫자). updated: 2026-07-09
@@ -11,10 +11,12 @@ import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
 
 // 상세 3컬럼 — 상태 흐름 순서(할당 → 진행 → 완료). 세 버킷 모두 같은 행 컴포넌트를 쓴다.
+// '최근 완료' 로 볼 기간(일) — 백엔드 JiraClient.WL_DONE_DAYS 와 같아야 한다.
+const DONE_DAYS = [7, 14, 28];
 const WL_COLS = [
   { k: "open", label: "할당됨", cls: "todo" },
   { k: "inProgress", label: "진행 중", cls: "" },
-  { k: "done7d", label: "최근 7일 완료", cls: "done" },
+  { k: "done7d", label: "최근 완료", cls: "done" },   // 실제 라벨은 doneLabel(기간 포함)
 ];
 // Epic 분포 색 — **시그니처 컬러(categoryColor(epicKey))**. 같은 Epic 은 어느 화면·어느 사람에서도
 // 같은 색이다(내 Task·WBS 와 정책 통일). 예전엔 화면 안 건수 순 팔레트라 사람마다 색이 달랐다.
@@ -37,6 +39,8 @@ export default {
              grouping: ["type", "epic"].includes(pref.grouping) ? pref.grouping : "type",
              // 'VoC 제외' — 소속 Epic 없는 사용자 VoC(__voc__) 를 막대·통계에서 뺀다.
              excludeVoc: pref.excludeVoc === true,
+             // '최근 완료' 로 볼 기간(일). 주 단위로 일하는 팀이 많아 1·2·4주로 고른다.
+             doneDays: [7, 14, 28].includes(pref.doneDays) ? pref.doneDays : 7,
              dueRisk: null, dueRiskBusy: false, dueRiskFor: "",
              pstat: {}, busy: false };   // pstat[pid] = 그 인력의 통계 행(사람 by 사람 로딩)
   },
@@ -63,6 +67,7 @@ export default {
   activated() { this.scheduleMeasure(); },   // keep-alive 재활성 시 평균선 재측정
   computed: {
     WL_COLS() { return WL_COLS; },
+    DONE_DAYS() { return DONE_DAYS; },
     // 지금 보고 있는 모듈(하단 메뉴에서 고른 것). 없으면 첫 모듈.
     curMod() {
       const ms = (this.d && this.d.modules) || [];
@@ -92,6 +97,8 @@ export default {
     },
     // 완료 실적 계산식은 '완료' 막대에만 적용(진행중은 timespent 가 없어 항상 티켓 수).
     doneUnit() { return this.metric === "hr" ? "h" : "건"; },
+    /** '최근 N주 완료' — 기간 선택(doneDays)을 라벨에 그대로 반영한다. */
+    doneLabel() { return "최근 " + (this.doneDays / 7) + "주 완료"; },
     // 막대 스케일 = 현재 모듈 인력 최대값. 사람이 더 로딩되면 커질 수 있다(막대가 자리 잡아간다).
     scale() {
       let ip = 1, dn = 1;
@@ -237,7 +244,7 @@ export default {
       const next = () => {
         if (i >= pids.length) return;
         const pid = pids[i++];
-        api.workloadPerson(pid)
+        api.workloadPerson(pid, this.doneDays)
           .then((r) => { this.pstat[pid] = r; })
           .catch((e) => { this.pstat[pid] = { id: pid, error: true, message: (e && e.message) || String(e) }; })
           .finally(() => { this.scheduleMeasure(); this.loadDueRisk(); next(); });
@@ -355,6 +362,25 @@ export default {
       return segs;
     },
     setMetric(mk) { this.metric = mk; this._savePrefs(); this.scheduleMeasure(); },
+    /** '최근 완료' 기간 변경 — 서버 질의 조건이 바뀌므로 통계·완료 목록을 다시 받는다. */
+    setDoneDays(d) {
+      if (this.doneDays === d) return;
+      this.doneDays = d; this._savePrefs();
+      this.pstat = {}; this.linePos = {};           // 받아 둔 카운트·평균선은 다른 질문의 답이다
+      if (this.mod) this.loadModulePeople(this.mod);
+      // 이미 펼쳐 둔 상세는 **완료 칸만** 다시 받는다. tkd 를 통째로 비우면 펼친 채로
+      // '불러오는 중…' 에서 멈춘다(목록은 toggleAct 로만 채워진다).
+      const byResolved = (a, b) => (b.resolved || "").localeCompare(a.resolved || "");
+      Object.keys(this.tkd).forEach((id) => {
+        const box = this.tkd[id];
+        if (!box) return;
+        box.done7d = null;
+        api.workloadBucket(id, "done7d", d)
+          .then((rows) => { box.done7d = (rows || []).slice().sort(byResolved); })
+          .catch((e) => { box.done7d = []; box.err.done7d = e.message; });
+      });
+      this.scheduleMeasure();
+    },
     setSort(k) { this.sortBy = k; this._savePrefs(); },
     setGrouping(g) { this.grouping = g; this._savePrefs(); this.scheduleMeasure(); },
     /** ① 모듈→Epic 스택 막대 세그먼트. */
@@ -376,7 +402,7 @@ export default {
         await Promise.all(people.map(async (p) => {
           for (const bk of ["open", "inProgress"]) {
             let rows = [];
-            try { rows = (await api.workloadBucket(p.id, bk)) || []; } catch (e) { rows = []; }
+            try { rows = (await api.workloadBucket(p.id, bk, this.doneDays)) || []; } catch (e) { rows = []; }
             rows.forEach((t) => {
               if (!t.due) return;
               if (this.excludeVoc && t.voc && !t.epic) return;   // 소속 Epic 없는 VoC 제외
@@ -395,7 +421,7 @@ export default {
       }
     },
     _savePrefs() {
-      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, excludeVoc: this.excludeVoc })); }
+      try { localStorage.setItem("workload.opts", JSON.stringify({ metric: this.metric, sortBy: this.sortBy, mod: this.mod, grouping: this.grouping, excludeVoc: this.excludeVoc, doneDays: this.doneDays })); }
       catch (e) { /* 사파리 프라이빗 등 */ }
     },
     /** 'VoC 제외' 토글 — 막대·통계·마감리스크 모두 재산출(마감리스크는 필터가 바뀌므로 재로딩). */
@@ -519,7 +545,7 @@ export default {
         const box = this.tkd[id];
         const byDue = (a, b) => this.dueRank(a) - this.dueRank(b);
         const byResolved = (a, b) => (b.resolved || "").localeCompare(a.resolved || "");
-        const load = (bucket, sorter) => api.workloadBucket(id, bucket)
+        const load = (bucket, sorter) => api.workloadBucket(id, bucket, this.doneDays)
           .then((rows) => { box[bucket] = (rows || []).slice().sort(sorter); })
           .catch((e) => { box[bucket] = []; box.err[bucket] = e.message; });
         load("inProgress", byDue);
@@ -563,7 +589,7 @@ export default {
         <div class="wl-tile"><div class="wl-tile-v">{{ totals.p }}</div><div class="wl-tile-l">인력</div></div>
         <div class="wl-tile"><div class="wl-tile-v">{{ totals.op }}</div><div class="wl-tile-l">할당됨</div></div>
         <div class="wl-tile"><div class="wl-tile-v">{{ totals.ip }}</div><div class="wl-tile-l">진행 중</div></div>
-        <div class="wl-tile"><div class="wl-tile-v">{{ totals.dn }}</div><div class="wl-tile-l">최근 7일 완료</div></div>
+        <div class="wl-tile"><div class="wl-tile-v">{{ totals.dn }}</div><div class="wl-tile-l">{{ doneLabel }}</div></div>
         <div class="wl-tile" :class="{ warn: loadSkew && loadSkew.pct >= 40 }">
           <div class="wl-tile-v">{{ loadSkew ? loadSkew.pct + '%' : '—' }}</div><div class="wl-tile-l">부하 편중 · 상위1명</div></div>
         <div class="wl-tile" :class="{ warn: dueRisk && dueRisk.over.length }">
@@ -596,6 +622,9 @@ export default {
             <div class="wl-opt"><span class="wl-opt-l">완료 성과</span><div class="fab-seg">
               <button :class="{ on: metric === 'count' }" @click="setMetric('count')">Task 수</button>
               <button :class="{ on: metric === 'hr' }" @click="setMetric('hr')">소요시간</button></div></div>
+            <div class="wl-opt"><span class="wl-opt-l">완료 기간</span><div class="fab-seg">
+              <button v-for="d in DONE_DAYS" :key="d" :class="{ on: doneDays === d }"
+                      @click="setDoneDays(d)" :title="'최근 ' + d + '일 안에 완료된 Task 만 센다'">{{ d / 7 }}주</button></div></div>
             <div class="wl-opt"><span class="wl-opt-l">정렬</span><div class="fab-seg">
               <button :class="{ on: sortBy === 'name' }" @click="setSort('name')">이름</button>
               <button :class="{ on: sortBy === 'assigned' }" @click="setSort('assigned')">할당</button>
@@ -611,10 +640,12 @@ export default {
           <template v-else>
             <div class="whead">
               <div class="hl">인력</div>
-              <div class="wbars"><div class="wside"><div class="hl">할당된 Ticket (Open + In-Progress)</div></div><div class="wside"><div class="hl">최근 7일 완료 ({{ doneUnit }})</div></div></div>
+              <div class="wbars"><div class="wside"><div class="hl">할당된 Ticket (Open + In-Progress)</div></div><div class="wside"><div class="hl">{{ doneLabel }} ({{ doneUnit }})</div></div></div>
               <div></div>
             </div>
-            <template v-if="linePos[m.module]">
+            <!-- 평균선은 좌표(linePos)와 평균값(avgByMod)이 **둘 다** 있을 때만. 하나만 보고 그리면
+                 통계를 다시 받는 동안(avgByMod 가 비고 linePos 는 남은 순간) 렌더가 터진다. -->
+            <template v-if="linePos[m.module] && avgByMod[m.module]">
               <div class="mavg-line" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].top + 'px' }"></div>
               <div class="mavg-line" :style="{ left: linePos[m.module].doneX + 'px', top: linePos[m.module].top + 'px' }"></div>
               <div class="mavg-num" :style="{ left: linePos[m.module].ipX + 'px', top: linePos[m.module].hy + 'px' }">모듈 평균 {{ avgByMod[m.module].ip }}건</div>
@@ -659,7 +690,7 @@ export default {
                   <!-- 할당됨 / 진행중 / 최근완료 — 상태 흐름 순서대로 3컬럼 -->
                   <div class="tcols3">
                     <div v-for="c in WL_COLS" :key="c.k" class="tcol" :class="'c-' + c.k">
-                      <div class="sec-t">{{ c.label }}
+                      <div class="sec-t">{{ c.k === 'done7d' ? doneLabel : c.label }}
                         <b>{{ (tkd[p.id][c.k] || []).length }}</b>
                       </div>
                       <div class="tcol-body">
