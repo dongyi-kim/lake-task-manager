@@ -632,11 +632,15 @@ export default {
       return Math.max(0, this.byState(p.cards)[k].length - SUB_CAP);
     },
     toggleSub(key) { this.subOpen = Object.assign({}, this.subOpen, { [key]: !this.subOpen[key] }); },
-    /** 상태 칸에 실제로 그릴 카드 — 접기 대상이고 닫혀 있으면 SUB_CAP 개까지만. */
-    cellCards(p, k) {
-      const list = this.byState(p.cards)[k];
-      return (this.foldable(p) && !this.subOpen[p.key]) ? list.slice(0, SUB_CAP) : list;
-    },
+    /**
+     * 상태 칸에 그릴 카드 — **자르지 않고 전부 준다.**
+     * 잘라내기는 CSS(.fold-peek)가 한다: 여섯 번째가 흐려지며 잘리고 그 뒤는 사라진다.
+     * "뒤에 더 있다" 를 잘린 카드가 말해 주는데, JS 로 미리 잘라 버리면 보여 줄 카드가 없다
+     * (첨부·관련문서 목록과 같은 방식이다).
+     */
+    cellCards(p, k) { return this.byState(p.cards)[k]; },
+    /** 이 칸을 접어서 보여 줄 것인가 — 접기 대상이고 아직 안 폈을 때. */
+    peeking(p) { return this.foldable(p) && !this.subOpen[p.key]; },
     /** 세로축 모드의 상태 밴드 접기 — 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게. */
     bandOpen(k) { return !this.bandClosed[k]; },
     toggleBand(k) {
@@ -951,7 +955,9 @@ export default {
           <div v-if="p.mode !== 'collapsed' && !gClosed[p.key]" class="mt-gbody">
             <div v-for="st in states" :key="p.key + st.k" class="mt-cell"
                  :class="['c-' + st.k, { empty: !byState(p.cards)[st.k].length,
-                                                closed: !bandOpen(st.k) }]">
+                                                closed: !bandOpen(st.k),
+                                                foldwrap: foldable(p),
+                                                folded: peeking(p), 'fold-peek': peeking(p) }]">
                 <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
                              urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
@@ -964,9 +970,9 @@ export default {
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <DueText :card="c" />
                 </div>
-                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다. -->
-                <button v-if="cellHidden(p, st.k) || (subOpen[p.key] && overflowed(p, st.k))"
-                        class="mt-more m-sub" @click.stop="toggleSub(p.key)">{{
+                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다.
+                     접혀 있을 때는 흐려진 카드 **위에** 앉는다(.foldwrap.folded > .fold-b). -->
+                <button v-if="overflowed(p, st.k)" class="fold-b" @click.stop="toggleSub(p.key)">{{
                         subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
             </div>
           </div>
@@ -1039,7 +1045,8 @@ export default {
 
             </div>
               </div>
-              <div v-if="!gClosed[p.key]" class="mt-gbody one">
+              <div v-if="!gClosed[p.key]" class="mt-gbody one"
+                   :class="{ foldwrap: foldable(p), folded: peeking(p), 'fold-peek': peeking(p) }">
                 <div v-for="c in cellCards(p, st.k)" :key="c.key" class="mt-card tkt"
                      :class="{ mine: c.mine, rel: !c.mine, done: c.statusCategory === 'done',
                              urgent: isUrgentC(c) }" :style="sigStyle(c)" :data-key="c.key">
@@ -1052,9 +1059,9 @@ export default {
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <DueText :card="c" />
                 </div>
-                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다. -->
-                <button v-if="cellHidden(p, st.k) || (subOpen[p.key] && overflowed(p, st.k))"
-                        class="mt-more m-sub" @click.stop="toggleSub(p.key)">{{
+                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다.
+                     접혀 있을 때는 흐려진 카드 **위에** 앉는다(.foldwrap.folded > .fold-b). -->
+                <button v-if="overflowed(p, st.k)" class="fold-b" @click.stop="toggleSub(p.key)">{{
                         subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
               </div>
             </div>

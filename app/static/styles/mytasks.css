@@ -359,17 +359,11 @@
 .mt-more.m-mine { border-style: solid; border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
 .mt-more.m-all { border-style: solid; border-color: var(--accent); color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent); }
-/* 하위 '더 보기' — 어느 한 칸이라도 넘치면 세 칸 모두에 걸린다(넘친 칸에만 버튼이 붙는다).
-   카드 목록 아래에 왼쪽으로 붙는 작은 칩(첨부목록 '+N개 더'와 같은 성격).
-   폭은 카드와 같게(셀/그리드 stretch — align/justify 로 줄이지 않는다).
-   예전엔 완료 칸 전용이라 완료색을 썼는데, 이제 특정 상태를 뜻하지 않으므로 중립색으로 둔다
-   (그 칸이 무슨 상태인지는 셀이 이미 말하고 있다). */
-.mt-more.m-sub { margin-top: 4px; font-size: 10px; font-weight: 700; padding: 3px 8px;
-  color: var(--muted); border-style: solid; border-color: var(--border-hi);
-  background: color-mix(in srgb, var(--muted) 15%, transparent);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
-.mt-more.m-sub:hover { color: var(--accent); border-color: var(--accent);
-  background: color-mix(in srgb, var(--muted) 24%, transparent); }
+/* 하위 목록 접기 — 첨부·관련문서와 **같은 UI**(base.css 의 .foldwrap/.fold-peek/.fold-b):
+   여섯 번째 카드가 흐려지며 잘리고 그 위에 [+N개 더] 알약이 앉는다. 잘린 카드가 "뒤에 더
+   있다" 를 말하고, 몇 개인지는 버튼이 말한다.
+   접힌 칸은 아래쪽에 버튼이 겹치므로 그만큼 자리를 비운다(안 그러면 마지막 카드를 덮는다). */
+.mt-cell.folded, .mt-gbody.one.folded { padding-bottom: 14px; }
 
 
 /* ── 2줄 카드 — 하위가 없어 부모 카드에 담기지 않는 티켓 ─────────────────────

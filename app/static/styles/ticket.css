@@ -1235,28 +1235,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   .kid-st { width: 10px; height: 10px; border-radius: 50%; font-size: 0; line-height: 0; }
 }
 
-/* 섹션 접기 — 버튼은 **흐려진 줄 위에** 앉는다. 제목 옆에 두면 '더 있다'를 말하는 곳(목록 끝)과
-   그걸 여는 곳(제목 옆)이 떨어져 있어, 눈이 본 자리에서 손이 갈 데가 없다. */
-.foldwrap { position: relative; }
-.fold-b { display: block; margin: 6px auto 0; font: inherit; font-size: 10.5px; font-weight: 700;
-  color: var(--muted); background: var(--panel); border: 1px solid var(--border);
-  border-radius: 999px; padding: 2px 12px; cursor: pointer; }
-.fold-b:hover { color: var(--text); border-color: var(--border-hi); background: var(--panel-2); }
-/* 접혀 있을 때만 겹친다 — 펼치면 목록 끝에 자연스럽게 따라붙는다(가릴 것이 없다) */
-.foldwrap.folded > .fold-b { position: absolute; left: 50%; bottom: 0; margin: 0;
-  transform: translateX(-50%); box-shadow: 0 2px 10px rgba(0,0,0,.16); }
-
-/* 접힌 목록 — 앞 5개는 그대로, 6번째는 흐려지며 잘리고, 그 뒤는 없다.
-   전부 감추면 '없는 것'으로 읽히고, 전부 보이면 접은 의미가 없다. 6번째의 잘린 모습이
-   "뒤에 더 있다"를 말한다(몇 개인지는 버튼에 적혀 있다).
-   높이를 px 로 자르지 않는 이유: 줄 높이가 테마·글꼴·줄바꿈에 따라 달라져 어떤 화면에선
-   4개만, 어떤 화면에선 6개가 보인다. **개수로** 자르면 어디서나 같다. */
-.fold-peek > :nth-child(n + 7) { display: none; }
-.fold-peek > :nth-child(6) {
-  opacity: .4; pointer-events: none;
-  -webkit-mask: linear-gradient(to bottom, #000 15%, transparent 92%);
-          mask: linear-gradient(to bottom, #000 15%, transparent 92%);
-}
+/* 접기 UI(.foldwrap/.fold-b/.fold-peek)는 **base.css 공통**으로 옮겼다 —
+   첨부·관련문서만의 것이 아니라 Task 화면의 하위 목록도 같은 UI 를 쓴다. */
 
 /* ── 하위 티켓 추가 ────────────────────────────────────────────────────────
    추가 버튼은 목록의 한 줄과 **같은 크기**다 — 새 줄이 여기 생긴다는 것을 자리로 말한다.
