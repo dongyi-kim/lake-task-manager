@@ -1,4 +1,4 @@
-/* bulk.css — Bulk 티켓 생성 다이얼로그(JSON 입력 → 미리보기 → 결과).
+/* bulk.css — Bulk 티켓 생성 다이얼로그(JSON 입력 → 미리보기 = 결과).
    골격은 다른 다이얼로그(.nk/.mdt)와 같은 관습: 오버레이 + 카드 + 헤더/본문/푸터.
    미리보기는 **내 Task 화면의 그룹 카드**(.mt-gcard2/.mt-card)를 그대로 빌려 쓴다 —
    같은 것을 두 벌로 그리면 반드시 어긋난다. 각진 테마(2~3px) 유지. */
@@ -100,8 +100,9 @@
 .blk-rules li { font-size: 11.5px; line-height: 1.75; color: var(--muted); }
 
 
-/* ── 미리보기 ─────────────────────────────────────────────────────── */
-.blk-prev, .blk-res { flex: 1 1 auto; overflow: auto; padding: 14px 16px; min-height: 0; }
+/* ── 미리보기(= 결과) ───────────────────────────────────────────────
+   position:relative 는 진척 오버레이(.blk-prog)의 기준이다 — 없으면 오버레이가 화면 전체를 덮는다. */
+.blk-prev { position: relative; flex: 1 1 auto; overflow: auto; padding: 14px 16px; min-height: 0; }
 /* Task 화면의 'Task with SubTask'(.mt-gcard2.k-task) 를 그대로 빌려 쓴다 — 머리는 실제 상위
    티켓, 안은 새로 만들 티켓. 여기선 아무것도 열 수 없으므로 손 모양 커서를 주지 않는다. */
 .blk-prev .mt-card { cursor: default; }
@@ -123,22 +124,50 @@
   border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); background: var(--danger-bg); }
 .blk-refload { font-size: 12px; color: var(--muted); margin-bottom: 9px; }
 
-/* ── 결과 ─────────────────────────────────────────────────────────── */
-.blk-sum { display: flex; gap: 16px; align-items: baseline; margin-bottom: 12px; }
-.blk-sum span { font-size: 12.5px; color: var(--muted); }
-.blk-sum b { font-size: 20px; font-weight: 800; margin-right: 4px; font-variant-numeric: tabular-nums; }
-.blk-sum .ok b { color: var(--st-done); }
-.blk-sum .ng b { color: var(--danger); }
-.blk-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
-.blk-row { display: flex; align-items: baseline; gap: 8px; padding: 5px 9px; min-width: 0;
+/* ── 만드는 중 · 결과 ──────────────────────────────────────────────────
+   진척은 **덮되 가리지 않는다** — 아래 카드가 하나씩 초록으로 바뀌는 게 비쳐야, 기다리는 동안
+   무슨 일이 일어나는지 보인다. (불투명하게 덮으면 진척바 숫자만 보고 믿어야 한다.) */
+.blk-prog { position: absolute; inset: 0; z-index: 6; display: flex;
+  align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--panel) 62%, transparent); backdrop-filter: blur(1px); }
+.bp-box { width: min(360px, 80%); padding: 16px 18px; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--border); box-shadow: 0 10px 34px rgba(0,0,0,.22); }
+.bp-t { font-size: 13px; margin-bottom: 9px; }
+.bp-t b { font-variant-numeric: tabular-nums; font-size: 15px; }
+.bp-bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+.bp-bar i { display: block; height: 100%; background: var(--accent); transition: width .25s ease-out; }
+.bp-sub { display: flex; align-items: baseline; gap: 10px; margin-top: 8px; font-size: 11px; }
+.bp-sub .ok { color: var(--st-done); font-weight: 700; }
+.bp-sub .ng { color: var(--danger); font-weight: 700; }
+.bp-note { margin-left: auto; color: var(--muted-2); }
+
+/* 다 만든 뒤 한 줄 요약 — 카드 색이 본론이고 이건 숫자 확인용이다. */
+.blk-done { margin-bottom: 10px; padding: 8px 11px; border-radius: 4px; font-size: 12.5px;
+  color: var(--st-done); background: color-mix(in srgb, var(--st-done) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--st-done) 35%, transparent); }
+.blk-done.ng { color: var(--danger); background: var(--danger-bg);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.blk-done b { font-variant-numeric: tabular-nums; }
+.blk-done .ng { color: var(--danger); }
+.blk-done .bd-hint { margin-left: 8px; font-size: 11.5px; color: var(--muted); }
+
+/* 카드의 성공/실패 — **색만으로 말하지 않는다**(색각 차이). 왼쪽 굵은 띠 + 글자 표식을 같이 준다.
+   ★ 선택자를 길게 쓴 이유: Task 화면의 `.mt-gcard2.k-task > .mt-gbody .mt-card`(클래스 4개)가
+     border-color·background 를 되돌린다. 그보다 구체적이어야 색이 실제로 먹는다
+     (짧게 썼다가 회색 그대로였다 — 눈으로는 '색이 없네' 로만 보여 원인을 찾기 어려웠다). */
+.blk-prev .blk-g .mt-gbody .mt-card.blk-ok {
+  border-left: 3px solid var(--st-done);
+  background: color-mix(in srgb, var(--st-done) 10%, var(--panel)); }
+.blk-prev .blk-g .mt-gbody .mt-card.blk-ng {
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--panel)); }
+.blk-mark { flex: none; margin-left: 4px; font-size: 10px; font-weight: 700;
+  border-radius: 2px; padding: 0 5px; line-height: 16px; }
+.blk-mark.ok { color: #fff; background: var(--st-done); }
+.blk-mark.ng { color: #fff; background: var(--danger); }
+
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 2px;
   border-left-width: 3px; font-size: 12px; }
-.blk-row.ok { border-left-color: var(--st-done); cursor: pointer; }
-.blk-row.ng { border-left-color: var(--danger); }
-.blk-key { flex: none; font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }
-.blk-row.ng .blk-key { color: var(--muted); }
-.blk-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.blk-why { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 11px; color: var(--danger); }
 
 /* ── 오류·경고 (접힘) ─────────────────────────────────────────────── */

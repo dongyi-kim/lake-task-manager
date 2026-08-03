@@ -1,12 +1,17 @@
 // BulkCreateDialog.js — JSON 으로 여러 티켓을 한 번에 만든다.
 //
-// 3단계: [입력] → [미리보기] → [결과]
+// 2단계: [입력] → [미리보기 = 결과]
 //   입력   : JSON 붙여넣기 + 예제/필드설명 + LLM 프롬프트 복사. 1차(스키마)+2차(서버 실값) 검증을
 //            통과해야 다음으로 넘어간다. 오류는 **항목 인덱스·필드·사유**로 접히는 목록.
 //   미리보기: 무엇이 만들어질지 **상위(Epic/부모 Task)별로 묶어** 보여 준다 — Task 화면의
 //            'Task with SubTask' 와 같은 모양(머리=실제 상위 티켓, 안=새로 만들 티켓).
-//   결과   : 성공/실패 요약. 실패는 계속 진행 후 모아 보여 주고 **실패분만 JSON 으로 복사**할 수 있다
-//            (Jira 는 롤백이 없다 — 고쳐서 다시 돌리는 게 유일한 복구다).
+//
+// ★ **결과 화면을 따로 두지 않는다.** 예전엔 만들고 나면 성공/실패 목록이 있는 다른 화면으로
+//   넘어갔는데, 방금 본 카드와 그 목록을 눈으로 다시 짝지어야 했다. 지금은 **그 카드가 그대로
+//   초록/붉게 바뀐다** — 어느 것이 됐고 어느 것이 안 됐는지 자리로 안다.
+//   만드는 동안에는 진척 오버레이가 덮되 아래가 비쳐, 카드가 하나씩 초록이 되는 게 보인다.
+//   실패는 계속 진행하고 **실패분만 JSON 으로 회수**할 수 있다(Jira 는 롤백이 없다 — 고쳐서
+//   다시 돌리는 게 유일한 복구다).
 //
 // 규칙·예제·프롬프트는 lib/bulkSchema.js 단일 소스. 서버 검증기는 app/domain/bulk.py.
 import { api } from "../../lib/api.js";
@@ -51,14 +56,17 @@ export default {
   emits: ["close", "done"],
   data() {
     return {
-      step: "input",          // input | preview | result
+      step: "input",          // input | preview (결과도 preview 에서 보인다)
       src: "",
       errors: [], warnings: [], errOpen: true,
       checking: false, busy: false,
       items: [],              // 검증 통과한 항목
       opts: { types: [], priorities: [], components: [] },   // 프롬프트에 박을 실제 선택지
-      result: null,           // { created:[], failed:[] }
-      progress: 0,
+      result: null,           // { created:[], failed:[] } — 다 돌고 난 요약
+      // 진행 상황 — 카드 색과 진척 오버레이가 이걸 본다.
+      //   status: 항목 index → { ok:true, key } | { ok:false, error }
+      //   done  : 지금까지 처리한 건수(총 items.length 분의)
+      status: {}, done: 0,
       // 미리보기에서 실제로 불러온 상위 티켓(Epic/부모 Task). key → badge | null(=없는 티켓).
       // 뱃지를 채우려고 받는 김에 **존재 여부 검수**까지 된다.
       refs: {}, refLoading: false,
@@ -85,6 +93,13 @@ export default {
         components: { list: this.opts.components, note: "목록에 없는 값도 쓸 수 있습니다(경고만)" },
       };
     },
+    /** 지금까지의 성공/실패 수 — 오버레이와 요약 줄이 같은 값을 쓴다. */
+    tally() {
+      let ok = 0, ng = 0;
+      for (const k in this.status) (this.status[k].ok ? ok++ : ng++);
+      return { ok, ng };
+    },
+    pct() { return this.items.length ? Math.round(this.done / this.items.length * 100) : 0; },
     /** 이 JSON 이 참조하는 상위 티켓 키들(Epic 또는 부모 Task) — 중복 제거. */
     refKeys() {
       const s = new Set();
@@ -122,7 +137,10 @@ export default {
           isSub: false,
           parent: null,
           _i: i, _ref: refKey,
+          // 만든 뒤에는 이 카드가 곧 결과다 — 성공하면 번호 자리에 **진짜 키**가 들어간다.
+          _st: this.status[i] || null,
         };
+        if (card._st && card._st.ok && card._st.key) card.key = card._st.key;
         const sig = refKey ? categoryColor(refKey) : (card.voc ? "var(--ty-story)" : null);
         card._sig = sig ? { "--sig": sig } : {};
         return card;
@@ -272,23 +290,61 @@ export default {
       } finally { this.refLoading = false; }
     },
 
+    /**
+     * 만들기 — **작은 묶음으로 나눠 보낸다.**
+     *
+     * 한 번에 다 보내면 서버가 다 끝낼 때까지 화면은 아무 말도 못 한다. 100건이면 몇 분이고,
+     * 그동안 사용자는 멎은 건지 도는 건지 알 수 없다. 나눠 보내면 **진척이 진짜 값**이 되고,
+     * 끝난 항목의 카드를 바로 초록/붉게 칠할 수 있다.
+     * 1건씩 보내지 않는 이유: 서버의 상위 조회 메모이즈가 요청 단위라, 1건씩이면 같은 부모를
+     * 건마다 다시 묻게 된다. 묶음 안에서는 한 번만 묻는다.
+     */
     async create() {
       if (this.busy) return;
-      this.busy = true; this.progress = 0;
+      this.busy = true;
+      this.status = {}; this.done = 0; this.result = null;
+      const CHUNK = 5;
+      const created = [], failed = [];
+      const mark = (i, st) => { this.status = { ...this.status, [i]: st }; };
       try {
-        const r = await api.bulkCreate({ mode: this.mode, items: this.items });
-        if (r && r.ok === false && r.errors) {          // 서버가 다시 검증해 막은 경우
-          this.errors = r.errors; this.step = "input"; this.errOpen = true; return;
+        for (let at = 0; at < this.items.length; at += CHUNK) {
+          const slice = this.items.slice(at, at + CHUNK);
+          let r = null, boom = "";
+          try {
+            r = await api.bulkCreate({ mode: this.mode, items: slice });
+          } catch (e) { boom = (e && e.message) || "생성 요청이 실패했습니다."; }
+
+          if (r && r.ok === false && r.errors) {
+            // 서버가 다시 검증해 막았다 — 그 사이 상위가 지워졌거나 권한이 바뀐 경우다.
+            boom = (r.errors[0] && r.errors[0].message) || "서버 검증에 막혔습니다.";
+            r = null;
+          }
+          if (!r) {                                   // 이 묶음은 통째로 못 만들었다
+            slice.forEach((it, k) => {
+              const i = at + k, msg = boom;
+              mark(i, { ok: false, error: msg });
+              failed.push({ index: i, summary: (it.summary || "").trim(), error: msg });
+            });
+          } else {
+            // 서버가 주는 index 는 **이 묶음 안**의 번호다 — 전체 번호로 환산한다.
+            (r.created || []).forEach((c) => {
+              const i = at + c.index;
+              mark(i, { ok: true, key: c.key });
+              created.push({ ...c, index: i });
+            });
+            (r.failed || []).forEach((f) => {
+              const i = at + f.index;
+              mark(i, { ok: false, error: f.error });
+              failed.push({ ...f, index: i });
+            });
+          }
+          this.done = Math.min(at + CHUNK, this.items.length);
         }
-        this.result = r;
-        this.step = "result";
+        this.result = { ok: !failed.length, created, failed };
         // ★ 건마다 ticket-changed 를 쏘면 안 된다 — 목록 뷰가 항목마다 '필터에서 제외' 토스트를
         //   띄워 10건이면 토스트가 10개 쌓인다(실제로 3건에 3개가 떴다). 갱신은 부모가 **한 번**
         //   force-refresh 로 한다(onBulkDone).
-        this.$emit("done", r);
-      } catch (e) {
-        this.errors = [{ index: null, field: null, message: (e && e.message) || "생성에 실패했습니다." }];
-        this.step = "input"; this.errOpen = true;
+        this.$emit("done", this.result);
       } finally { this.busy = false; }
     },
 
@@ -305,15 +361,16 @@ export default {
       const idx = new Set((this.result.failed || []).map((f) => f.index));
       this.src = JSON.stringify({ mode: this.mode, items: this.items.filter((_, i) => idx.has(i)) }, null, 2);
       this.result = null; this.items = []; this.errors = []; this.step = "input";
+      this.status = {}; this.done = 0;
     },
   },
   template: `
   <div class="blk-ov" @click.self="fromBackdrop($event) && $emit('close')">
     <div class="blk">
       <div class="blk-h">
-        <b>{{ step === 'preview' ? 'Bulk 생성 미리보기' : (step === 'result' ? 'Bulk 생성 결과' : title) }}</b>
+        <b>{{ step === 'input' ? title : (result ? 'Bulk 생성 결과' : 'Bulk 생성 미리보기') }}</b>
         <span class="blk-h-s" v-if="step === 'input'">JSON 기반</span>
-        <span class="blk-h-s" v-else-if="step === 'preview'">{{ items.length }}건</span>
+        <span class="blk-h-s" v-else>{{ items.length }}건</span>
         <button class="lp-x" @click="$emit('close')" aria-label="닫기">✕</button>
       </div>
 
@@ -378,7 +435,26 @@ export default {
 
       <!-- ── 2) 미리보기 — Task 화면의 'Task with SubTask' 처럼 상위 밑에 새 티켓을 넣어 보인다.
            상위(Epic/부모 Task)는 **실제로 불러와** 머리에 세운다(= 존재 검수도 된다). ────── -->
-      <div v-else-if="step === 'preview'" class="blk-prev">
+      <div v-else class="blk-prev">
+        <!-- 만드는 중 — **진짜 진척**이다(묶음이 끝날 때마다 오른다). 화면을 덮되 아래가 비치게
+             둔다: 어느 카드가 이미 초록으로 바뀌었는지 보이는 편이 기다리기 낫다. -->
+        <div v-if="busy" class="blk-prog">
+          <div class="bp-box">
+            <div class="bp-t">티켓을 만드는 중… <b>{{ done }}</b> / {{ items.length }}</div>
+            <div class="bp-bar"><i :style="{ width: pct + '%' }"></i></div>
+            <div class="bp-sub">
+              <span class="ok">성공 {{ tally.ok }}</span>
+              <span v-if="tally.ng" class="ng">실패 {{ tally.ng }}</span>
+              <span class="bp-note">Jira 는 되돌릴 수 없어 한 건씩 차례로 만듭니다.</span>
+            </div>
+          </div>
+        </div>
+        <!-- 다 만든 뒤 요약 — 별도 화면으로 넘기지 않는다. 방금 본 카드가 그대로 색으로 답한다. -->
+        <div v-if="result" class="blk-done" :class="{ ng: result.failed.length }">
+          <b>{{ result.created.length }}건</b> 만들었습니다<template v-if="result.failed.length">,
+            <b class="ng">{{ result.failed.length }}건</b> 실패</template>.
+          <span v-if="result.failed.length" class="bd-hint">붉은 카드가 실패한 항목입니다.</span>
+        </div>
         <div v-if="refLoading" class="blk-refload">상위 티켓을 확인하는 중…</div>
         <div v-for="g in previewGroups" :key="g.key" class="blk-g"
              :class="{ 'mt-gcard2 k-task': g.key !== '__none__' }"
@@ -409,7 +485,9 @@ export default {
           <!-- 새로 만들 티켓 — Task 화면에서 **부모 밑의 하위 카드와 같은 한 줄 배치**다
                (우선순위 · 번호 · 제목 · 담당자 · 기한). 소속은 머리에 이미 적혀 있어 다시 안 단다. -->
           <div class="mt-gbody one">
-            <div v-for="c in g.cards" :key="c._i" class="mt-card" :style="c._sig">
+            <div v-for="c in g.cards" :key="c._i" class="mt-card"
+                 :class="{ 'blk-ok': c._st && c._st.ok, 'blk-ng': c._st && !c._st.ok }"
+                 :style="c._sig" :title="c._st && !c._st.ok ? c._st.error : ''">
               <PriIcon :rank="c.priRank" :name="c.pri" />
               <!-- ★ Task 화면의 그룹 안 카드에는 타입 뱃지가 없다(거기선 전부 Sub-Task 라 자명하다).
                    여기서는 다르다 — **무엇을 만드는지가 이 화면의 요점**이고, task 모드에서는
@@ -420,32 +498,12 @@ export default {
               <span class="mt-owner" :title="(c.assignee || '미할당') + ' 담당'">
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
               <DueText :card="c" />
+              <!-- 결과 표식 — 색만으로는 색각 차이를 못 넘는다. 글자로도 말한다. -->
+              <span v-if="c._st" class="blk-mark" :class="c._st.ok ? 'ok' : 'ng'">
+                {{ c._st.ok ? '생성됨' : '실패' }}</span>
             </div>
           </div>
         </div>
-      </div>
-
-      <!-- ── 3) 결과 ─────────────────────────────────────────────── -->
-      <div v-else class="blk-res">
-        <div class="blk-sum">
-          <span class="ok"><b>{{ (result.created || []).length }}</b> 생성</span>
-          <span v-if="(result.failed || []).length" class="ng"><b>{{ result.failed.length }}</b> 실패</span>
-        </div>
-        <div v-if="(result.created || []).length" class="blk-list">
-          <div v-for="c in result.created" :key="'c' + c.index" class="blk-row ok tkt" :data-key="c.key">
-            <b class="blk-key">{{ c.key }}</b><span class="blk-t">{{ c.summary }}</span>
-          </div>
-        </div>
-        <template v-if="(result.failed || []).length">
-          <div class="blk-side-h">실패</div>
-          <div class="blk-list">
-            <div v-for="f in result.failed" :key="'f' + f.index" class="blk-row ng">
-              <b class="blk-key">#{{ f.index + 1 }}</b>
-              <span class="blk-t">{{ f.summary }}</span>
-              <span class="blk-why">{{ f.error }}</span>
-            </div>
-          </div>
-        </template>
       </div>
 
       <!-- 오류/경고 — 접히는 목록 -->
@@ -478,16 +536,18 @@ export default {
           <button class="cmt-ed-btn primary" :disabled="checking" @click="check">
             {{ checking ? '확인 중…' : '다음 (미리보기)' }}</button>
         </template>
-        <template v-else-if="step === 'preview'">
-          <button class="cmt-ed-btn ghost" @click="step = 'input'">뒤로가기</button>
-          <span class="blk-hint">{{ items.length }}건을 차례로 만듭니다</span>
+        <template v-else-if="!result">
+          <button class="cmt-ed-btn ghost" :disabled="busy" @click="step = 'input'">뒤로가기</button>
+          <span class="blk-hint">{{ busy ? done + ' / ' + items.length + ' 진행 중…'
+                                         : items.length + '건을 차례로 만듭니다' }}</span>
           <button class="cmt-ed-btn primary" :disabled="busy" @click="create">
             {{ busy ? '만드는 중…' : '생성하기' }}</button>
         </template>
         <template v-else>
-          <button v-if="(result.failed || []).length" class="cmt-ed-btn ghost" @click="copyFailed">실패분 JSON 복사</button>
-          <button v-if="(result.failed || []).length" class="cmt-ed-btn ghost" @click="retryFailed">실패분만 다시</button>
-          <span class="blk-hint"></span>
+          <!-- 실패분 회수 — Jira 는 롤백이 없으니, 고쳐서 다시 돌리는 게 유일한 복구다. -->
+          <button v-if="result.failed.length" class="cmt-ed-btn ghost" @click="copyFailed">실패분 JSON 복사</button>
+          <button v-if="result.failed.length" class="cmt-ed-btn ghost" @click="retryFailed">실패분만 다시</button>
+          <span class="blk-hint">{{ result.failed.length ? '실패한 것만 골라 고칠 수 있습니다' : '' }}</span>
           <button class="cmt-ed-btn primary" @click="$emit('close')">닫기</button>
         </template>
       </div>
