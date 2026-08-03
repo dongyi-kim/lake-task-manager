@@ -1446,9 +1446,12 @@ export default {
                             @close="adding = false" @created="onKidCreated" />
           </div>
 
-          <!-- 설명 아래 2분할: 첨부파일 | 관련문서(언급된 Confluence 문서) -->
-          <div class="tkt-two">
-            <div class="tkt-two-col">
+          <!-- 설명 아래: 첨부파일 · 관련문서를 **각자 한 행씩** 가로로 길게.
+               예전엔 좌우 2분할이었는데, 칩이 창의 절반 폭밖에 못 써서 긴 파일명이 늘 잘리고
+               오른쪽 끝의 날짜·용량이 이름을 밀어냈다. 한 행을 통째로 쓰면 그 압박이 사라진다.
+               (설명 안의 sec.columns 2분할은 별개다 — 거긴 계속 .tkt-two 를 쓴다) -->
+          <div class="tkt-stack">
+            <div class="tkt-row">
               <div class="tkt-sec-t has-add">첨부파일<span v-if="atts.length"> ({{ atts.length }})</span>
                 <button class="add-b" title="파일 첨부" :disabled="uploading" @click="$refs.file.click()">＋</button>
                 <input ref="file" type="file" multiple hidden @change="onFilePick">
@@ -1490,7 +1493,7 @@ export default {
                 {{ attOpen ? '접기' : '+' + (atts.length - FOLD_AT) + '개 더' }}</button>
               </div>
             </div>
-            <div class="tkt-two-col">
+            <div class="tkt-row">
               <div class="tkt-sec-t has-add">관련문서<span v-if="refDocs.length"> ({{ refDocs.length }})</span>
                 <button class="add-b" title="관련문서 추가 (Confluence 문서·웹 링크)"
                         @click.stop="docPick = !docPick">＋</button>

@@ -586,18 +586,30 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .spn-rel.mention { color: var(--muted-2); border-color: var(--border); background: var(--panel); }
 
-/* 설명 아래 2분할 — 첨부파일 | 관련문서 */
+/* 설명 안 2분할(sec.columns) — 본문이 스스로 두 칸을 요청한 경우에만 쓴다 */
 .tkt-two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
 @container tkt (max-width: 560px) { .tkt-two { grid-template-columns: 1fr; } }
 .tkt-two .mini { font-size: 11.5px; }
+
+/* 설명 아래 — 첨부파일 · 관련문서를 **각자 한 행씩** 전폭으로.
+   좌우 2분할이던 것을 세로로 폈다: 칩이 창의 절반만 쓰다 보니 긴 파일명이 늘 잘리고,
+   오른쪽 끝에 붙는 날짜·용량이 이름 자리를 계속 밀어냈다(그 정렬 규칙은 아래 .chipwrap).
+   행 사이는 벌려 둔다 — 붙어 있으면 두 목록이 한 덩어리로 읽힌다. */
+.tkt-stack { display: grid; grid-template-columns: 1fr; gap: 14px 0; }
+.tkt-stack .mini { font-size: 11.5px; }
 /* 칩 — 설명/코멘트의 conf-link 배지와 같은 문법(얇게). 세로로 쌓이되 폭은 내용만큼 */
 /* 첨부 **목록**의 칩은 폭을 맞춘다. 내용만큼만 늘어나면 오른쪽 끝이 들쭉날쭉해 세로로 훑을 때
    눈이 계속 좌우로 흔들린다. 날짜·용량은 오른쪽 끝에 붙여 같은 자리에서 읽히게 한다.
    (본문 속 뱃지는 문장 안에 들어가므로 그대로 내용 폭을 쓴다 — 여기만 규칙이 다르다) */
+/* ★ 선택자가 `.chipwrap > .fchip` 였는데, 칩에 ✕ 를 붙이면서 사이에 .fchip-w 래퍼가 들어와
+   **한 칸 어긋나 죽어 있었다** — 그래서 위 주석대로 폭이 맞은 적이 없고, 칩은 계속 내용 폭
+   (약 320px)에 머물러 긴 파일명이 잘렸다. 래퍼를 거쳐 걸어 준다. */
 .chipwrap { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
-.chipwrap > .fchip { width: 100%; max-width: none; }
-.chipwrap > .fchip > .fchip-n { flex: 1 1 auto; }
-.chipwrap > .fchip > .fchip-m { margin-left: auto; padding-left: 10px; }
+.chipwrap > .fchip-w { width: 100%; }
+/* ✕ 옆의 남은 폭을 전부 먹는다(width:100% 로 주면 ✕ 가 밀려난다) */
+.chipwrap .fchip { flex: 1 1 auto; min-width: 0; max-width: none; }
+.chipwrap .fchip > .fchip-n { flex: 1 1 auto; }
+.chipwrap .fchip > .fchip-m { margin-left: auto; padding-left: 10px; }
 .fchip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0;
   font-size: 11.5px; font-weight: 600; line-height: 1.4; color: var(--text);
   border: 1px solid var(--border); background: var(--panel); border-radius: 6px;
