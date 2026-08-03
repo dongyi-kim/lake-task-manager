@@ -440,11 +440,10 @@ if _devtools.enabled(_settings, "pat_probe"):
     # PAT 가 열려 있으면 `PatAuthProvider` 하나만 더해 무인으로 승격할 수 있는데(CLAUDE.md §11),
     # 사내 인스턴스에서 그 메뉴가 열려 있는지 **확인이 안 된 상태**다. 여기서 직접 찔러 본다.
     #
-    # Jira/Confluence DC 8.14+ 는 같은 경로를 쓴다: /rest/pat/latest/tokens
+    # Jira/Confluence DC 8.14+ 는 같은 경로를 쓴다(경로 후보는 아래 _PAT_PROBES).
     #   GET    → 내 토큰 목록(읽기만 — 부작용 없음)
     #   POST   → 발급  { name, expirationDuration(일) }
     #   DELETE → 회수  /{tokenId}
-    _PAT_PATH = "/rest/pat/latest/tokens"
 
     def _pat_base(service):
         for svc in getattr(_settings, "services", []):
@@ -454,27 +453,80 @@ if _devtools.enabled(_settings, "pat_probe"):
                 return svc["name"], svc["base"].rstrip("/")
         raise HTTPException(status_code=404, detail=f"'{service}' 서비스를 모릅니다.")
 
+    # 확인용 후보 경로 — **한 번에 다 찔러 본다.** 한 경로만 보고 404 를 받으면 "PAT 가 없다" 와
+    # "우리가 엉뚱한 데를 쳤다"(context path·세션 만료·구버전 별칭)를 구분할 수 없다.
+    #   sanity  — 이 base·세션으로 REST 가 되긴 하는지(여기서 실패면 PAT 얘기를 할 단계가 아니다)
+    #   rest    — PAT REST 자원. latest 가 정석이고 1.0 은 옛 별칭
+    #   ui      — 사람이 쓰는 PAT 화면. REST 가 404 인데 이건 200 이면 기능은 있고 REST 만 막힌 것
+    _PAT_PROBES = {
+        "jira": {"sanity": "/rest/api/2/myself",
+                 "rest": ["/rest/pat/latest/tokens", "/rest/pat/1.0/tokens"],
+                 "ui": ["/secure/ViewPersonalAccessTokens.jspa"]},
+        "confluence": {"sanity": "/rest/api/user/current",
+                       "rest": ["/rest/pat/latest/tokens", "/rest/pat/1.0/tokens"],
+                       "ui": ["/plugins/personalaccesstokens/usertokens.action"]},
+    }
+
+    def _pat_try(url):
+        """한 경로의 결과를 **상태코드 + 응답이 무엇이었는지**로 돌려준다.
+        Jira 의 'Oops, You've found a dead link' 는 **HTML 404** 라 자원이 아예 없다는 뜻이고,
+        JSON 404/403 은 자원은 있는데 막혔다는 뜻이다 — 대응이 달라 반드시 갈라야 한다."""
+        try:
+            body = _client.provider.get_json(url, quiet=True)
+        except Exception as e:
+            raw = (getattr(e, "body", "") or "")
+            head = raw.lstrip()[:200]
+            html = head.startswith("<") or "<html" in head.lower()
+            out = {"status": getattr(e, "status", None), "ok": False,
+                   "body": "HTML(오류 페이지)" if html else head[:160]}
+            if html and ("dead link" in raw.lower() or "oops" in raw.lower()):
+                out["meaning"] = "자원 없음 — Jira/Confluence 의 404 안내 페이지가 왔습니다(REST 자원 미등록)."
+            elif out["status"] in (401, 403):
+                out["meaning"] = "인증·권한에서 막힘(세션 또는 관리자 정책)."
+            return out
+        return {"status": 200, "ok": True,
+                "body": type(body).__name__ + (f"[{len(body)}]" if isinstance(body, list) else "")}
+
     @app.get("/api/dev/pat/{service}")
     def _dev_pat_check(service: str):
-        """PAT 를 **쓸 수 있는가**만 본다 — 목록 조회(GET)라 아무것도 만들지 않는다.
+        """PAT 를 **쓸 수 있는가**를 여러 경로로 한 번에 본다 — 전부 GET 이라 아무것도 만들지 않는다.
 
-        200 이면 그 인스턴스에서 PAT 가 열려 있다는 뜻이다. 404 면 기능 자체가 없거나(구버전)
-        관리자가 껐고, 401/403 이면 세션이 없거나 권한이 막힌 것이다 — 셋은 대응이 다르므로
-        상태 코드를 그대로 전한다(뭉뚱그리면 무엇을 해야 할지 알 수 없다)."""
+        하나라도 200 이면 supported. 전부 404 인데 sanity 가 200 이면 세션·주소는 멀쩡하고
+        **그 인스턴스에 PAT 자원이 없는 것**이다(관리자가 껐거나 기능이 안 깔림)."""
         _require_manager()
         name, base = _pat_base(service)
-        try:
-            body = _client.provider.get_json(base + _PAT_PATH, quiet=True)
-        except Exception as e:
-            return {"service": name, "supported": False,
-                    "status": getattr(e, "status", None),
-                    "detail": f"{type(e).__name__} {str(e)[:160]}"}
-        # 토큰 이름·만료만 보인다. 토큰 값은 발급 순간에만 존재하고 목록엔 애초에 안 나온다.
-        items = body if isinstance(body, list) else (body or {}).get("values") or []
-        return {"service": name, "supported": True, "count": len(items),
-                "tokens": [{"id": t.get("id"), "name": t.get("name"),
-                            "expiringAt": t.get("expiringAt"), "lastAccess": t.get("lastAccess")}
-                           for t in items[:20]]}
+        spec = _PAT_PROBES.get(name.lower())
+        if not spec:
+            raise HTTPException(status_code=400, detail=f"{name} 은 PAT 확인 대상이 아닙니다(jira·confluence).")
+
+        sanity = _pat_try(base + spec["sanity"])
+        rest = {p: _pat_try(base + p) for p in spec["rest"]}
+        ui = {p: _pat_try(base + p) for p in spec["ui"]}
+
+        live = next((p for p, r in rest.items() if r["ok"]), None)
+        out = {"service": name, "base": base,
+               "supported": bool(live), "restPath": live,
+               "sanity": sanity, "rest": rest, "ui": ui}
+
+        if live:
+            body = _client.provider.get_json(base + live, quiet=True)
+            items = body if isinstance(body, list) else (body or {}).get("values") or []
+            # 토큰 이름·만료만. 토큰 값은 발급 순간에만 존재하고 목록엔 애초에 안 나온다.
+            out["count"] = len(items)
+            out["tokens"] = [{"id": t.get("id"), "name": t.get("name"),
+                              "expiringAt": t.get("expiringAt"), "lastAccess": t.get("lastAccess")}
+                             for t in items[:20]]
+            out["verdict"] = f"PAT REST 사용 가능 ({live}). 무인 자동화(PatAuthProvider) 로 승격할 수 있습니다."
+        elif not sanity["ok"]:
+            out["verdict"] = ("이 base·세션으로는 REST 자체가 안 됩니다 — PAT 이전에 로그인/주소부터 "
+                              "확인하세요(SSO 인증 상태 카드).")
+        elif any(r["ok"] for r in ui.values()):
+            out["verdict"] = ("PAT **화면은 있는데 REST 는 막혀 있습니다.** 화면에서 손으로 발급받아 쓰는 건 "
+                              "되지만, 앱이 REST 로 발급하지는 못합니다.")
+        else:
+            out["verdict"] = ("이 인스턴스에 PAT 가 열려 있지 않습니다(REST·화면 모두 없음). "
+                              "관리자가 껐거나 기능이 설치돼 있지 않습니다 — 승격하려면 관리자 요청이 필요합니다.")
+        return out
 
     class _PatBody(BaseModel):
         name: str = "lake-task-manager-probe"
@@ -490,12 +542,24 @@ if _devtools.enabled(_settings, "pat_probe"):
           정말 쓰려면 cleanup=false 로 발급한 뒤 Jira 화면에서 직접 받아 쓰는 게 맞다."""
         _require_manager()
         name, base = _pat_base(service)
+        spec = _PAT_PROBES.get(name.lower())
+        if not spec:
+            raise HTTPException(status_code=400, detail=f"{name} 은 PAT 확인 대상이 아닙니다(jira·confluence).")
+
+        # **먼저 어느 경로가 살아 있는지 본다.** 고정 경로로 바로 POST 하면 404 하나만 돌아와
+        # '기능이 없는 것'과 '경로가 다른 것'을 구분할 수 없다(실제로 그렇게 헷갈렸다).
+        path = next((p for p in spec["rest"] if _pat_try(base + p)["ok"]), None)
+        if not path:
+            probe = _dev_pat_check(service)
+            return {"service": name, "issued": False, "status": 404,
+                    "detail": "PAT REST 자원이 없어 발급을 시도하지 않았습니다.",
+                    "verdict": probe.get("verdict"), "probe": probe}
         try:
             r = _client.provider.post_json(
-                base + _PAT_PATH,
+                base + path,
                 {"name": body.name, "expirationDuration": max(1, int(body.days))}) or {}
         except Exception as e:
-            return {"service": name, "issued": False,
+            return {"service": name, "issued": False, "path": path,
                     "status": getattr(e, "status", None),
                     "detail": f"{type(e).__name__} {str(e)[:200]}"}
 
@@ -506,7 +570,7 @@ if _devtools.enabled(_settings, "pat_probe"):
                "note": "토큰 값은 발급 시 한 번만 나옵니다. 여기서는 앞 6자만 보여 주고 저장하지 않습니다."}
         if body.cleanup and tid:
             try:
-                _client.provider.delete(base + _PAT_PATH + "/" + str(tid))
+                _client.provider.delete(base + path + "/" + str(tid))
                 out["cleaned"] = True
             except Exception as e:
                 # 못 지웠으면 **반드시 알린다** — 모르는 채로 살아 있는 토큰이 남는다.
