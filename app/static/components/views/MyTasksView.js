@@ -55,6 +55,9 @@ function epicSig(card) {
 // 상태 축은 **옵션이 아니다**. 3칼럼이 들어가면 가로축, 안 들어가면 세로축 — 화면 폭이
 // 답을 정해 놓았는데 사람에게 고르라고 하면, 좁은 화면에서 가로축을 골라 글자가 두 자씩
 // 끊기는 칼럼을 보게 된다. 고를 수 있다고 더 나은 게 아니다.
+// 한 상태 칸에 우선 보여 줄 하위 개수. **어느 한 칸이라도** 이 수를 넘으면 그 Task 는
+// 접기 대상이 되고, 그때부터 모든 칸이 같은 규칙으로 잘린다.
+const SUB_CAP = 5;
 const NARROW = "(max-width: 900px)";      // 이 아래로는 3칼럼이 성립하지 않는다(CSS 도 같은 값)
 
 const OPTIONS = [
@@ -130,7 +133,7 @@ export default {
       // 수정으로 **현재 퀵필터에서 이탈**한 티켓 키 — 네트워크 재조회 없이 즉시 숨긴다(다음 실 로딩에 초기화).
       excluded: {},
       // Task+SubTask 그룹별 '완료 하위 더 보기' 펼침 { groupKey: true } — 일시 상태(저장 안 함).
-      doneOpen: {},
+      subOpen: {},          // Task 별 하위 펼침(일시 상태 — 화면을 떠나면 접힌다)
     };
   },
   mounted() {
@@ -606,23 +609,34 @@ export default {
       for (const c of cards) (m[c.statusCategory] || m.todo).push(c);
       return m;
     },
-    /** done 하위가 유독 많아 카드가 세로로 길어지는 걸 막는다. todo/진행중 중 큰 쪽보다 done 이
-     *  많으면, done 은 **max(큰 쪽, min(done,4))** 개까지만 우선 보이고 나머지는 '+N개 더'(첨부
-     *  목록과 동일한 언폴딩)로 접는다. 큰 쪽만큼은 늘 보여 다른 칸보다 짧아 보이지 않게, 그러면서
-     *  최소 4개(done 이 4 미만이면 전부)는 보장한다. 접힘은 그룹키별 doneOpen 에(일시 상태). */
-    _doneLimit(p) {
+    /**
+     * 하위가 많은 Task 는 카드가 세로로 길어져 목록을 훑기 어렵다 — 접어 둔다.
+     *
+     * **어느 한 상태라도** SUB_CAP 을 넘으면 그 Task 가 접기 대상이 되고, 그때부터는
+     * **모든 상태에 같은 규칙**이 걸린다(각 칸 SUB_CAP 개까지). 예전엔 완료 칸만, 그것도
+     * '다른 칸 중 큰 쪽' 기준으로 잘랐다 — 진행중이 스무 개인 Task 는 손도 못 댔고, 자르는
+     * 기준이 칸마다 달라 왜 여기만 잘렸는지 설명하기 어려웠다. 하나의 수로 통일한다.
+     *
+     * 펼침은 **Task 단위 하나**다(칸마다 따로 열지 않는다) — 하위를 펼쳐 볼 땐 대개 전부를
+     * 보려는 것이고, 칸별로 열고 닫게 하면 지금 무엇이 접혀 있는지 사람이 추적해야 한다.
+     */
+    foldable(p) {
       const bs = this.byState(p.cards);
-      return Math.max(Math.max(bs.todo.length, bs.inprogress.length), Math.min(bs.done.length, 4));
+      return bs.todo.length > SUB_CAP || bs.inprogress.length > SUB_CAP || bs.done.length > SUB_CAP;
     },
-    doneShown(p) {
-      const done = this.byState(p.cards).done;
-      return this.doneOpen[p.key] ? done : done.slice(0, this._doneLimit(p));
+    /** 접힘과 무관하게 이 칸이 **원래 넘쳤나** — 펼친 뒤 '접기' 를 그 칸에 두려고 쓴다. */
+    overflowed(p, k) { return this.byState(p.cards)[k].length > SUB_CAP; },
+    /** 이 칸에서 접혀 안 보이는 개수(0 이면 이 칸엔 더보기 버튼이 없다). */
+    cellHidden(p, k) {
+      if (!this.foldable(p)) return 0;
+      return Math.max(0, this.byState(p.cards)[k].length - SUB_CAP);
     },
-    doneHidden(p) { return Math.max(0, this.byState(p.cards).done.length - this._doneLimit(p)); },
-    doneTruncatable(p) { return this.doneHidden(p) > 0; },
-    toggleDone(key) { this.doneOpen = Object.assign({}, this.doneOpen, { [key]: !this.doneOpen[key] }); },
-    /** 상태 칸에 실제로 그릴 카드 — done 은 위 규칙으로 잘라서 보여 준다(todo/진행중은 그대로). */
-    cellCards(p, k) { return k === "done" ? this.doneShown(p) : this.byState(p.cards)[k]; },
+    toggleSub(key) { this.subOpen = Object.assign({}, this.subOpen, { [key]: !this.subOpen[key] }); },
+    /** 상태 칸에 실제로 그릴 카드 — 접기 대상이고 닫혀 있으면 SUB_CAP 개까지만. */
+    cellCards(p, k) {
+      const list = this.byState(p.cards)[k];
+      return (this.foldable(p) && !this.subOpen[p.key]) ? list.slice(0, SUB_CAP) : list;
+    },
     /** 세로축 모드의 상태 밴드 접기 — 지금 안 보는 상태를 통째로 치우고 화면을 벌 수 있게. */
     bandOpen(k) { return !this.bandClosed[k]; },
     toggleBand(k) {
@@ -950,8 +964,10 @@ export default {
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <DueText :card="c" />
                 </div>
-                <button v-if="st.k === 'done' && doneTruncatable(p)" class="mt-more m-done"
-                        @click.stop="toggleDone(p.key)">{{ doneOpen[p.key] ? '접기' : '+' + doneHidden(p) + '개 더' }}</button>
+                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다. -->
+                <button v-if="cellHidden(p, st.k) || (subOpen[p.key] && overflowed(p, st.k))"
+                        class="mt-more m-sub" @click.stop="toggleSub(p.key)">{{
+                        subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
             </div>
           </div>
         </div>
@@ -1036,8 +1052,10 @@ export default {
                 <Avatar :user="c.assigneeId" :name="c.assignee" :size="15" />{{ c.assignee || '미할당' }}</span>
                   <DueText :card="c" />
                 </div>
-                <button v-if="st.k === 'done' && doneTruncatable(p)" class="mt-more m-done"
-                        @click.stop="toggleDone(p.key)">{{ doneOpen[p.key] ? '접기' : '+' + doneHidden(p) + '개 더' }}</button>
+                <!-- 넘친 칸에만 더보기가 붙지만, 누르면 **이 Task 의 모든 칸**이 함께 열린다. -->
+                <button v-if="cellHidden(p, st.k) || (subOpen[p.key] && overflowed(p, st.k))"
+                        class="mt-more m-sub" @click.stop="toggleSub(p.key)">{{
+                        subOpen[p.key] ? '접기' : '+' + cellHidden(p, st.k) + '개 더' }}</button>
               </div>
             </div>
           </template>

@@ -359,14 +359,16 @@
 .mt-more.m-mine { border-style: solid; border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
 .mt-more.m-all { border-style: solid; border-color: var(--accent); color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent); }
-/* 완료 하위 '더 보기' — done 칸이 유독 길 때만 나온다. 카드 목록 아래에 왼쪽으로 붙는 작은 칩
-   (첨부목록 '+N개 더'와 같은 성격). flex 셀(가로축)·단일열 그리드(세로축) 양쪽에서 좌측 정렬. */
-/* 폭은 카드와 같게(셀/그리드 stretch — align/justify 로 줄이지 않는다). 배경은 옅은 회색 음영. */
-.mt-more.m-done { margin-top: 4px; font-size: 10px; font-weight: 700; padding: 3px 8px;
-  color: var(--st-done); border-style: solid; border-color: var(--border-hi);
+/* 하위 '더 보기' — 어느 한 칸이라도 넘치면 세 칸 모두에 걸린다(넘친 칸에만 버튼이 붙는다).
+   카드 목록 아래에 왼쪽으로 붙는 작은 칩(첨부목록 '+N개 더'와 같은 성격).
+   폭은 카드와 같게(셀/그리드 stretch — align/justify 로 줄이지 않는다).
+   예전엔 완료 칸 전용이라 완료색을 썼는데, 이제 특정 상태를 뜻하지 않으므로 중립색으로 둔다
+   (그 칸이 무슨 상태인지는 셀이 이미 말하고 있다). */
+.mt-more.m-sub { margin-top: 4px; font-size: 10px; font-weight: 700; padding: 3px 8px;
+  color: var(--muted); border-style: solid; border-color: var(--border-hi);
   background: color-mix(in srgb, var(--muted) 15%, transparent);
   box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
-.mt-more.m-done:hover { border-color: var(--st-done);
+.mt-more.m-sub:hover { color: var(--accent); border-color: var(--accent);
   background: color-mix(in srgb, var(--muted) 24%, transparent); }
 
 
