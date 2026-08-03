@@ -413,6 +413,87 @@ def _probe_service(svc):
     return {"service": name, "base": base, "authenticated": ok, "configured": True, "detail": detail}
 
 
+if _devtools.enabled(_settings, "pat_probe"):
+    # ── 개인 액세스 토큰(PAT) 확인 ────────────────────────────────────────────
+    # 지금 운영 인증은 **SSO 세션 재사용**이라 만료가 짧고(수 시간~하루) 무인 자동화가 안 된다.
+    # PAT 가 열려 있으면 `PatAuthProvider` 하나만 더해 무인으로 승격할 수 있는데(CLAUDE.md §11),
+    # 사내 인스턴스에서 그 메뉴가 열려 있는지 **확인이 안 된 상태**다. 여기서 직접 찔러 본다.
+    #
+    # Jira/Confluence DC 8.14+ 는 같은 경로를 쓴다: /rest/pat/latest/tokens
+    #   GET    → 내 토큰 목록(읽기만 — 부작용 없음)
+    #   POST   → 발급  { name, expirationDuration(일) }
+    #   DELETE → 회수  /{tokenId}
+    _PAT_PATH = "/rest/pat/latest/tokens"
+
+    def _pat_base(service):
+        for svc in getattr(_settings, "services", []):
+            if svc["name"].lower() == (service or "").lower():
+                if not svc.get("configured"):
+                    raise HTTPException(status_code=400, detail=f"{svc['name']} base 가 config 에 없습니다.")
+                return svc["name"], svc["base"].rstrip("/")
+        raise HTTPException(status_code=404, detail=f"'{service}' 서비스를 모릅니다.")
+
+    @app.get("/api/dev/pat/{service}")
+    def _dev_pat_check(service: str):
+        """PAT 를 **쓸 수 있는가**만 본다 — 목록 조회(GET)라 아무것도 만들지 않는다.
+
+        200 이면 그 인스턴스에서 PAT 가 열려 있다는 뜻이다. 404 면 기능 자체가 없거나(구버전)
+        관리자가 껐고, 401/403 이면 세션이 없거나 권한이 막힌 것이다 — 셋은 대응이 다르므로
+        상태 코드를 그대로 전한다(뭉뚱그리면 무엇을 해야 할지 알 수 없다)."""
+        _require_manager()
+        name, base = _pat_base(service)
+        try:
+            body = _client.provider.get_json(base + _PAT_PATH, quiet=True)
+        except Exception as e:
+            return {"service": name, "supported": False,
+                    "status": getattr(e, "status", None),
+                    "detail": f"{type(e).__name__} {str(e)[:160]}"}
+        # 토큰 이름·만료만 보인다. 토큰 값은 발급 순간에만 존재하고 목록엔 애초에 안 나온다.
+        items = body if isinstance(body, list) else (body or {}).get("values") or []
+        return {"service": name, "supported": True, "count": len(items),
+                "tokens": [{"id": t.get("id"), "name": t.get("name"),
+                            "expiringAt": t.get("expiringAt"), "lastAccess": t.get("lastAccess")}
+                           for t in items[:20]]}
+
+    class _PatBody(BaseModel):
+        name: str = "lake-task-manager-probe"
+        days: int = 1                 # 시험 발급은 짧게 — 오래 사는 토큰을 실수로 남기지 않는다
+        cleanup: bool = True          # 발급 직후 회수(기본) — 확인이 목적이지 사용이 아니다
+
+    @app.post("/api/dev/pat/{service}")
+    def _dev_pat_issue(service: str, body: _PatBody):
+        """실제로 **발급해 본다.** 기본은 발급 직후 회수(cleanup) — 확인이 목적이라 흔적을 안 남긴다.
+
+        ★ 토큰 값은 **발급 응답에만 한 번** 나오고 다시는 못 본다. 그래서 저장하지 않고,
+          돌려줄 때도 앞 6자만 보낸다 — 화면·로그·캐시 어디에도 온전한 토큰이 남으면 안 된다.
+          정말 쓰려면 cleanup=false 로 발급한 뒤 Jira 화면에서 직접 받아 쓰는 게 맞다."""
+        _require_manager()
+        name, base = _pat_base(service)
+        try:
+            r = _client.provider.post_json(
+                base + _PAT_PATH,
+                {"name": body.name, "expirationDuration": max(1, int(body.days))}) or {}
+        except Exception as e:
+            return {"service": name, "issued": False,
+                    "status": getattr(e, "status", None),
+                    "detail": f"{type(e).__name__} {str(e)[:200]}"}
+
+        tok, tid = r.get("rawToken") or "", r.get("id")
+        out = {"service": name, "issued": True, "id": tid, "name": r.get("name"),
+               "expiringAt": r.get("expiringAt"),
+               "tokenPrefix": (tok[:6] + "…") if tok else "",
+               "note": "토큰 값은 발급 시 한 번만 나옵니다. 여기서는 앞 6자만 보여 주고 저장하지 않습니다."}
+        if body.cleanup and tid:
+            try:
+                _client.provider.delete(base + _PAT_PATH + "/" + str(tid))
+                out["cleaned"] = True
+            except Exception as e:
+                # 못 지웠으면 **반드시 알린다** — 모르는 채로 살아 있는 토큰이 남는다.
+                out["cleaned"] = False
+                out["cleanupError"] = f"{type(e).__name__} {str(e)[:120]}"
+        return out
+
+
 if _devtools.enabled(_settings, "sso_status"):
     @app.get("/api/dev/sso")
     def _dev_sso_status():

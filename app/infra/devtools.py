@@ -16,6 +16,9 @@ DEV_TOOLS = {
                        "code/repo 검색 mock 을 실물에 맞추기 위한 일회성 진단.",
     "sso_status": "각 서비스(Jira/Confluence/Bitbucket)가 지금 인증됐는지 확인. "
                   "앱 로그인 순회 후 어느 서비스가 통과/실패했는지 화면에서 본다.",
+    "pat_probe": "Jira/Confluence 가 **개인 액세스 토큰(PAT)** 발급을 여는지 확인. "
+                 "지금은 SSO 세션 재사용(만료 짧음·반자동)이 한계라, PAT 가 열려 있으면 "
+                 "무인 자동화로 승격할 수 있다 — 그 가능 여부를 사내에서 직접 확인하는 용도.",
     "cache_admin": "캐시 관리 — 특정 티켓의 파생 캐시(children/siblings/…)만 비우거나, "
                    "전체 캐시를 비운다. 배포 뒤 SWR 이 옛 결과를 계속 내줄 때 강제로 턴다.",
 }
