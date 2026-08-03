@@ -362,36 +362,57 @@ if _devtools.enabled(_settings, "bitbucket_probe"):
             lambda: _client.provider.post_json(base + "/rest/search/latest/search", body),
             kind="code", full=full)
 
-    # 설정 메뉴가 노출할 dev API 목록(경로 + 설명). 실제 라우트와 손으로 맞춘다.
-    # param 이 있으면 프론트가 입력칸을 띄우고 {param} 자리에 넣어 호출한다.
-    _DEV_ENDPOINTS = [
-        {"path": "/api/dev/sso", "label": "SSO 인증 상태", "method": "GET"},
-        {"path": "/api/ticket/{key}/refresh", "label": "티켓 캐시 새로고침 (children/siblings/…)",
-         "method": "POST", "param": "key", "placeholder": "예: DL-1234"},
+
+if _devtools.enabled(_settings, "cache_admin"):
+    @app.post("/api/dev/cache/clear")
+    def _dev_cache_clear():
+        """전체 캐시를 비운다 — 배포 뒤 출력 형태가 바뀌었는데 SWR 이 옛 결과를 계속 낼 때.
+        (개별 티켓만 털려면 /api/ticket/{key}/refresh.)"""
+        _require_manager()
+        _cache.invalidate()          # prefix 없이 = 전부
+        return {"ok": True, "cleared": "all"}
+
+
+# 설정 메뉴(Dev Tools 화면)가 노출할 dev API 목록(경로 + 설명). 실제 라우트와 손으로 맞춘다.
+#   param       — 프론트가 입력칸을 띄우고 {param} 자리에 넣어 호출한다.
+#   body        — POST 로 보낼 기본 JSON(없으면 {}).
+#   note/danger — 화면 경고 문구 / 붉은 카드.
+# ★ 각 항목은 **그 기능을 켠 블록과 같은 게이트** 아래 둔다. 예전엔 이 목록과 /api/dev/tools 가
+#   bitbucket_probe 블록 안에 있어서, 그 하나만 꺼도 Dev Tools 화면이 통째로 죽었다.
+_DEV_ENDPOINTS = [
+    {"path": "/api/dev/sso", "label": "SSO 인증 상태", "method": "GET"},
+    {"path": "/api/ticket/{key}/refresh", "label": "티켓 캐시 새로고침 (children/siblings/…)",
+     "method": "POST", "param": "key", "placeholder": "예: DL-1234"},
+]
+if _devtools.enabled(_settings, "cache_admin"):
+    _DEV_ENDPOINTS.append(
         {"path": "/api/dev/cache/clear", "label": "전체 캐시 비우기 (배포 뒤 SWR 옛 결과 강제 제거)",
-         "method": "POST", "danger": True},
+         "method": "POST", "danger": True})
+if _devtools.enabled(_settings, "bitbucket_probe"):
+    _DEV_ENDPOINTS += [
         {"path": "/api/dev/bitbucket/diag", "label": "Bitbucket XSRF 쿠키 진단", "method": "GET"},
         {"path": "/api/dev/bitbucket/repos?limit=3", "label": "Bitbucket 저장소 검색(구조)", "method": "GET"},
         {"path": "/api/dev/bitbucket/code?q=test", "label": "Bitbucket 코드 검색(구조)", "method": "GET"},
-        {"path": "/api/dev/tools", "label": "dev tools 목록", "method": "GET"},
     ]
+if _devtools.enabled(_settings, "pat_probe"):
+    _DEV_ENDPOINTS += [
+        {"path": "/api/dev/pat/{service}", "label": "PAT 사용 가능 확인 (목록 조회 — 아무것도 만들지 않음)",
+         "method": "GET", "param": "service", "placeholder": "jira 또는 confluence"},
+        {"path": "/api/dev/pat/{service}", "label": "PAT 발급 시도 (1일짜리로 발급 후 즉시 회수)",
+         "method": "POST", "param": "service", "placeholder": "jira 또는 confluence", "danger": True,
+         "note": "토큰 값은 앞 6자만 보여 주고 저장하지 않습니다. 회수 실패 시 응답에 표시됩니다.",
+         "body": {"name": "lake-task-manager-probe", "days": 1, "cleanup": True}},
+    ]
+_DEV_ENDPOINTS.append({"path": "/api/dev/tools", "label": "dev tools 목록", "method": "GET"})
 
-    if _devtools.enabled(_settings, "cache_admin"):
-        @app.post("/api/dev/cache/clear")
-        def _dev_cache_clear():
-            """전체 캐시를 비운다 — 배포 뒤 출력 형태가 바뀌었는데 SWR 이 옛 결과를 계속 낼 때.
-            (개별 티켓만 털려면 /api/ticket/{key}/refresh.)"""
-            _require_manager()
-            _cache.invalidate()          # prefix 없이 = 전부
-            return {"ok": True, "cleared": "all"}
 
-    @app.get("/api/dev/tools")
-    def _dev_tools_list():
-        _require_manager()
-        return {"enabled": sorted(_settings.dev_tools),
-                "available": _devtools.DEV_TOOLS,
-                "endpoints": _DEV_ENDPOINTS,
-                "bitbucket_base": _BB or "(미설정)"}
+@app.get("/api/dev/tools")
+def _dev_tools_list():
+    _require_manager()
+    return {"enabled": sorted(_settings.dev_tools),
+            "available": _devtools.DEV_TOOLS,
+            "endpoints": _DEV_ENDPOINTS,
+            "bitbucket_base": (_settings.bitbucket_base or "").rstrip("/") or "(미설정)"}
 
 
 def _probe_service(svc):

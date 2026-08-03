@@ -225,6 +225,8 @@ nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var
 .dt-path { display: block; font-size: 11.5px; color: var(--muted-2); margin-top: 2px;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; word-break: break-all; }
 .dt-method { color: var(--accent); font-weight: 700; }
+/* 부작용이 있는 엔드포인트의 주의문 — 실행 전에 읽혀야 하므로 경로 아래 붙인다. */
+.dt-note-i { display: block; font-size: 11.5px; color: var(--today); margin-top: 4px; }
 .dt-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .dt-param { font-size: 12px; padding: 5px 9px; border-radius: 7px; width: 140px;
   border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
