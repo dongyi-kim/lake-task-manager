@@ -1235,8 +1235,14 @@ export default {
      *  읽는 쪽에서 무엇이 뭔지 갈리지 않는다(저장도 같은 [제목|주소]). */
     onPick(it) {
       this.pick = "";
-      const href = it.url || "";
-      if (!href) return;
+      const href = (it && it.url) || "";
+      if (!href) {
+        // 예전엔 조용히 return 했다 — 사용자에겐 "골랐는데 아무 일도 안 일어남" 으로만 보이고,
+        // 우리도 무엇이 없었는지 알 수 없었다. 주소가 없으면 그 사실을 말한다.
+        pushToast({ kind: "error", title: "링크를 넣지 못했습니다",
+                    message: "고른 항목에 주소가 없습니다. 다시 검색해 주세요.", timeout: 7000 });
+        return;
+      }
       const title = it.key ? (it.key + " " + (it.title || "")).trim() : (it.title || href);
       this._ed.chain().focus()
         .insertContent([{ type: "linkBadge", attrs: { href, title } }, { type: "text", text: " " }])

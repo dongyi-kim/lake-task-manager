@@ -150,8 +150,13 @@ export default {
     // 사라진 것을 찾아 토스트한다(그쪽은 클라가 조건을 알 수 없다).
     this._onChanged = (e) => {
       const view = (e && e.detail && e.detail.view) || null;
-      const clientEval = ["assignee", "reporter", "mymodules", "module"].includes(this.scope);
-      if (view && clientEval) { this._applyEditLocally(view); return; }   // 네트워크 없음
+      // 바뀐 필드는 **즉시** 화면에 반영한다(상태·담당이 눈앞에서 바뀌게).
+      if (view) this._applyEditLocally(view);
+      // ★ 목록에서 빠질지는 **서버가 판정한다.** 예전엔 클라가 흉내 냈는데, 이 목록에 있던
+      //   이유가 그 티켓의 필드만으로는 알 수 없는 경우가 있다 — 이를테면 부모 Task 는
+      //   '내가 하위를 담당해서' 걸려 있는데, 부모 담당자를 같은 모듈 다른 사람으로 바꾸면
+      //   그 필드만 보고 '이탈' 로 단정해 **부모와 하위가 통째로 사라졌다**(리포트된 버그).
+      //   순서만 바뀌면 될 일에 티켓을 잃는 쪽이 훨씬 나쁘다 — 판정은 목록을 만든 쪽에 맡긴다.
       const before = new Set(this.rawCards.map((c) => c.key));
       this._dropModelCache();
       this.load({ quiet: true }).then(() => {
@@ -341,23 +346,8 @@ export default {
     },
     /** 티켓이 바뀌면 클라이언트 모델 캐시는 낡는다 — 통째로 비운다(서버 mt: 캐시도 같은 이유로 무효화). */
     _dropModelCache() { this._mcache = {}; },
-    /** 이 티켓(수정 후 필드)이 **현재 퀵필터 스코프**에 여전히 맞는가 — 네트워크 없이 판정.
-     *  담당/보고는 사번 일치, 모듈은 (모듈 인력 담당/보고) 또는 (모듈 컴포넌트). */
-    _matchesScope(f) {
-      const me = ((this.me && this.me.id) || (this.me && this.me.name) || "").toLowerCase();
-      const a = (f.assigneeId || "").toLowerCase(), r = (f.reporterId || "").toLowerCase();
-      if (this.scope === "assignee") return a === me;
-      if (this.scope === "reporter") return r === me;
-      const mods = this.scope === "mymodules" ? this.myModules : (this.moduleSel ? [this.moduleSel] : this.myModules);
-      const mu = (this.me && this.me.moduleUsers) || {};
-      const people = new Set();
-      for (const m of mods) for (const u of (mu[m] || [])) people.add(String(u).toLowerCase());
-      if (people.has(a) || people.has(r)) return true;
-      const comps = new Set(mods);
-      return (f.components || []).some((c) => comps.has(c));
-    },
-    /** 티켓 수정 알림을 **네트워크 없이** 반영 — 로컬 카드 필드 갱신(상태/담당/컴포넌트) 후
-     *  현재 필터에서 이탈했으면 숨기고 우하단 토스트. */
+    /** 티켓 수정 알림을 화면에 **즉시** 반영 — 로컬 카드의 필드만 갱신한다.
+     *  목록에서 빼는 판정은 하지 않는다(서버가 한다 — _onChanged 주석 참고). */
     _applyEditLocally(f) {
       const key = f.key;
       const upd = (n) => {
@@ -369,10 +359,6 @@ export default {
       };
       for (const g of (this.model && this.model.groups) || []) {
         (g.atoms || []).forEach(upd); (g.others || []).forEach(upd); upd(g);
-      }
-      if (!this._matchesScope(f)) {
-        this.excluded = Object.assign({}, this.excluded, { [key]: true });
-        this._toastExcluded([key]);
       }
     },
     _toastExcluded(keys) {
