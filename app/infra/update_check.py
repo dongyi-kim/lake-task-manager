@@ -29,9 +29,14 @@ _TAG_RE = re.compile(r"/releases/tag/(.+?)/?$")
 def latest_tag(timeout=12):
     """개발 repo 의 최신 릴리즈 태그. 못 알아내면 None.
     /releases/latest 는 /releases/tag/<태그> 로 302 하고 urllib 이 그걸 따라간다.
-    릴리즈가 하나도 없으면 /releases 로 가므로 매칭에 실패해 None 이 된다(정상)."""
+    릴리즈가 하나도 없으면 /releases 로 가므로 매칭에 실패해 None 이 된다(정상).
+
+    ★ 캐시버스터가 **필요하다**(실측). GitHub 은 이 리다이렉트를 CDN 에 캐시해서, 릴리즈가
+      하나도 없던 시절의 결과를 새 릴리즈를 올린 뒤에도 한참 그대로 준다. 쿼리를 붙이면
+      즉시 올바른 태그가 온다. 5분 단위로 묶어 캐시 이점은 살리되 지연을 5분으로 제한한다."""
     try:
-        req = urllib.request.Request(RELEASES_LATEST, headers={"User-Agent": "lake-task-manager"})
+        url = RELEASES_LATEST + "?_=%d" % (int(time.time()) // 300)
+        req = urllib.request.Request(url, headers={"User-Agent": "lake-task-manager"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             m = _TAG_RE.search(r.geturl() or "")
             return m.group(1) if m else None
