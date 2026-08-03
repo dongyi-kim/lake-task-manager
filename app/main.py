@@ -286,17 +286,11 @@ def _on_session_expired(request: Request, exc: SessionExpired):
 
 
 def _build_rev():
-    """실행 중인 코드의 git 커밋 — 앱이 최신 배포본인지 눈으로 확인하기 위함.
-    (배포 pull·재시작을 깜빡해 옛 코드가 도는 경우가 잦다.)"""
-    import subprocess
-    from pathlib import Path
-    root = Path(__file__).resolve().parent.parent
-    try:
-        return subprocess.check_output(
-            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL, timeout=3).decode().strip()
-    except Exception:
-        return "(unknown)"
+    """실행 중인 코드의 버전(릴리즈 태그 우선) — 최신 배포본인지 눈으로 확인하기 위함.
+    (배포·재시작을 깜빡해 옛 코드가 도는 경우가 잦다.)
+    판정 로직은 run.py 와 **같은 함수**를 써야 한다 — version.code_rev 의 주석 참고."""
+    from app.infra.version import code_rev
+    return code_rev() or "(unknown)"
 
 
 _BUILD_REV = _build_rev()

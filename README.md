@@ -105,15 +105,26 @@ python -m pytest tests/test_rollup.py -q   # 한 파일만
 > 회사 관리형 Chrome 이 SSO 자동화를 막아 exe(playwright channel=chrome) 방식이 깨졌다 →
 > **Playwright 전용 Chromium**(`playwright install chromium`)을 쓰는 소스 실행으로 전환. Chromium 은 프로즌 exe 로 안정적으로 번들하기 어려워 소스 실행이 정석.
 
-## 6. 릴리즈 (배포 repo)
+## 6. 릴리즈 = **태그 달기**
 
-배포 repo 루트에서 submodule 핀만 옮겨 커밋한다(빌드 산출물 없음):
+유저의 `run.bat` 은 이 repo 의 `releases/latest` 를 보고 **그 태그의 소스**를 받아 실행한다.
+그래서 **태그가 안 된 커밋은 유저에게 나가지 않는다** — dev 커밋은 자유롭게 쌓아도 된다.
+(git 이 없는 유저도 태그 아카이브를 직접 받으므로 똑같이 자동 업데이트된다.)
+
+배포 repo 루트에서:
 
 ```bash
-git -C lake-task-manager pull origin main          # 최신 소스로 핀 이동
-git add lake-task-manager
-git commit -m "release: bump source @<sha>" && git push
+powershell -File bin/release.ps1              # 오늘 날짜로 배포 (CalVer: v2026.08.03)
+powershell -File bin/release.ps1 -Pre         # prerelease — 유저에겐 안 나감(사내 검증용)
+powershell -File bin/release.ps1 -DryRun      # 무엇을 할지만 출력
+# 검증 후 승격:
+gh release edit v2026.08.03 --prerelease=false --repo dongyi-kim/lake-task-manager
 ```
+
+- **롤백은 태그 삭제가 아니라 새 태그로.** 이미 받아 간 클라이언트·CDN 캐시 때문에 삭제는 지저분하다.
+- 런처(`bin/`)나 `config/` 구조가 바뀌어 **옛 런처로는 못 도는** 배포라면 `RELEASE.json` 의
+  `minLauncher` 를 올린다 → 옛 런처 유저에게 소스를 적용하지 않고 재설치를 안내한다.
+  자세히: [docs/RELEASE.md](docs/RELEASE.md).
 
 ---
 

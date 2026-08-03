@@ -67,12 +67,49 @@ def test_restart_hook():
 
 
 def test_update_endpoint_shape():
+    """배포는 릴리즈 태그 단위 — '몇 커밋 뒤처짐(behind)' 이 아니라 current/latest 를 준다."""
     from fastapi.testclient import TestClient
     c = TestClient(m.app)
     body = c.get("/api/update").json()
-    for k in ("available", "behind", "current", "ok", "checkedAt"):
+    for k in ("available", "current", "latest", "pinned", "ok", "checkedAt"):
         assert k in body
     assert isinstance(body["available"], bool)
+    assert "behind" not in body        # 옛 화면이 이걸 읽고 '0개 업데이트' 를 띄우지 않게
+
+
+def test_update_check_pinned_never_nags():
+    r"""config\lake-task-manager.rev 로 버전을 고정한 PC 는 알림을 받으면 안 된다.
+    (고정한 사람에게 매번 뜨는 알림은 거짓 알림이고, 끌 방법이 없다.)"""
+    import os
+    import tempfile
+    from app.infra.update_check import UpdateChecker
+
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "config"))
+        with open(os.path.join(d, "config", "lake-task-manager.rev"), "w") as f:
+            f.write("v2026.01.01\n")
+        u = UpdateChecker(d)
+        u._refresh()                      # 네트워크를 타지 않는다(고정이면 바로 결론)
+        st = u.get()
+        assert st["pinned"] == "v2026.01.01"
+        assert st["available"] is False and st["ok"] is True
+
+
+def test_update_check_latest_means_not_pinned():
+    """'latest' 나 빈 값은 고정이 아니다 — 그때만 최신 릴리즈를 확인한다."""
+    import os
+    import tempfile
+    from app.infra.version import pinned_rev
+
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "config"))
+        p = os.path.join(d, "config", "lake-task-manager.rev")
+        for val, want in (("latest", ""), ("LATEST\n", ""), ("", ""),
+                          ("v2026.08.03", "v2026.08.03")):
+            with open(p, "w") as f:
+                f.write(val)
+            assert pinned_rev(d) == want, val
+    assert pinned_rev(os.path.join(d, "없는폴더")) == ""      # 파일 없음 → 고정 아님
 
 
 def test_assets_endpoint_lists_module_graph():

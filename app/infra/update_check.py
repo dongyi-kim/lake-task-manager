@@ -1,42 +1,69 @@
-"""배포 repo(APP_ROOT) 가 원격보다 뒤처졌는지 검사 — UI '업데이트 가능' 표시용.
+"""새 버전이 있는가 — UI '업데이트 가능' 표시용. 판정은 **릴리즈 태그**로 한다.
 
-업데이트 = **배포 repo 의 원격(origin) 최신 여부**다(run.bat 이 부팅 때 하는 것과 같은 판정:
-`git rev-list --count HEAD..@{u}`). git 이 없거나 repo 가 아니거나 네트워크가 막히면 조용히
-'업데이트 없음(ok=False)' 으로 답한다 — 표시만 하는 기능이라 실패가 앱을 방해하면 안 된다.
+배포는 개발 repo 의 릴리즈 태그로 나간다(태그 안 된 커밋은 유저에게 안 간다).
+그래서 판정은 "설치된 태그 != 최신 릴리즈 태그" 하나다.
 
-엔드포인트는 **즉답**해야 하므로 fetch 는 백그라운드로 돌리고 캐시값을 돌려준다.
+예전엔 배포 repo 에 `git fetch` 를 걸고 `HEAD..@{u}` 커밋 수를 셌는데, 그러면
+**git 이 없는 유저는 업데이트가 있는지조차 알 수 없었다** — 정작 수동 업데이트가
+제일 어려운 사람들이 알림을 못 받았다.
+
+★ api.github.com 은 쓰지 않는다. 비인증 GitHub API 는 **IP 당 시간당 60회**라, 사내
+  프록시/NAT 뒤 사용자들이 그 60회를 통째로 나눠 쓴다(아침에 다 같이 켜면 전멸).
+  웹 엔드포인트 /releases/latest 는 302 로 태그를 알려 주고 rate limit 이 없다.
+  덤: latest 는 prerelease·draft 를 건너뛰므로 사내 검증용 태그는 유저에게 안 보인다.
+
+엔드포인트는 **즉답**해야 하므로 조회는 백그라운드로 돌리고 캐시값을 돌려준다.
+실패는 전부 조용하다(ok=False) — 표시만 하는 기능이라 실패가 앱을 방해하면 안 된다.
 """
-import subprocess
+import re
 import threading
 import time
+import urllib.request
+
+from app.infra.version import code_rev, pinned_rev
+
+RELEASES_LATEST = "https://github.com/dongyi-kim/lake-task-manager/releases/latest"
+_TAG_RE = re.compile(r"/releases/tag/(.+?)/?$")
+
+
+def latest_tag(timeout=12):
+    """개발 repo 의 최신 릴리즈 태그. 못 알아내면 None.
+    /releases/latest 는 /releases/tag/<태그> 로 302 하고 urllib 이 그걸 따라간다.
+    릴리즈가 하나도 없으면 /releases 로 가므로 매칭에 실패해 None 이 된다(정상)."""
+    try:
+        req = urllib.request.Request(RELEASES_LATEST, headers={"User-Agent": "lake-task-manager"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            m = _TAG_RE.search(r.geturl() or "")
+            return m.group(1) if m else None
+    except Exception:
+        return None
 
 
 class UpdateChecker:
-    def __init__(self, root, stale_after=600):
-        self.root = str(root)
-        self.stale_after = stale_after          # 이 시간(초) 지나면 백그라운드로 다시 fetch
+    def __init__(self, app_root, stale_after=600):
+        self.app_root = str(app_root)           # 배포 루트(config\ 가 있는 곳) — 고정 여부를 읽는다
+        self.stale_after = stale_after          # 이 시간(초) 지나면 백그라운드로 다시 확인
         self._lock = threading.Lock()
         self._refreshing = False
-        self._state = {"available": False, "behind": 0, "current": "",
-                       "checkedAt": 0.0, "ok": False}
+        self._state = {"available": False, "current": "", "latest": "",
+                       "pinned": "", "checkedAt": 0.0, "ok": False}
 
-    def _git(self, *args, timeout=20):
-        return subprocess.run(["git", "-C", self.root, *args],
-                              capture_output=True, text=True, timeout=timeout)
-
-    def _refresh(self, fetch=True):
+    def _refresh(self):
         try:
-            if fetch:
-                self._git("fetch", "--quiet", timeout=25)
-            cur = self._git("rev-parse", "--short", "HEAD", timeout=10)
-            cnt = self._git("rev-list", "--count", "HEAD..@{u}", timeout=10)
-            behind = int((cnt.stdout or "").strip() or "0")
-            state = {"available": behind > 0, "behind": behind,
-                     "current": (cur.stdout or "").strip(),
-                     "checkedAt": time.time(), "ok": True}
+            cur = code_rev()
+            pin = pinned_rev(self.app_root)
+            if pin:
+                # 일부러 특정 버전에 묶어 둔 PC — 최신이 나와도 알리지 않는다.
+                # (고정한 사람에게 매번 뜨는 알림은 거짓 알림이고, 그걸 끌 방법이 없다.)
+                state = {"available": False, "current": cur, "latest": "", "pinned": pin,
+                         "checkedAt": time.time(), "ok": True}
+            else:
+                new = latest_tag()
+                state = {"available": bool(cur and new and cur != new),
+                         "current": cur, "latest": new or "", "pinned": "",
+                         "checkedAt": time.time(), "ok": bool(new)}
         except Exception:
-            # git 없음 / repo 아님 / upstream 없음 / 네트워크 실패 → 표시 안 함(조용히).
-            state = {"available": False, "behind": 0, "current": "",
+            state = {"available": False, "current": "", "latest": "", "pinned": "",
                      "checkedAt": time.time(), "ok": False}
         with self._lock:
             self._state = state

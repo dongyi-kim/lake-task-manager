@@ -89,17 +89,14 @@ def _wait_port_free(port, timeout=12):
 
 
 def _disk_rev():
-    """디스크의 현재 앱 코드 커밋(짧은 해시) — run.bat 이 방금 최신으로 당겨 둔 값.
-    못 읽으면 "" (그럼 강제 재시작 판정을 안 한다 = 안전측)."""
-    import subprocess
-    from pathlib import Path
-    root = Path(__file__).resolve().parent            # run.py = 앱 코드(submodule) 루트
-    try:
-        return subprocess.check_output(
-            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL, timeout=3).decode().strip()
-    except Exception:
-        return ""
+    """디스크의 현재 앱 코드 버전(릴리즈 태그 우선) — run.bat 이 방금 맞춰 둔 값.
+    못 읽으면 "" (그럼 강제 재시작 판정을 안 한다 = 안전측).
+
+    ★ 아래 _running_rev 와 **문자열로 비교**되므로, 떠 있는 인스턴스(/api/app/rev)와
+      반드시 같은 함수로 구해야 한다. 한쪽만 태그·한쪽만 SHA 면 늘 다르다고 나와
+      무한 재시작이 된다."""
+    from app.infra.version import code_rev
+    return code_rev()
 
 
 def _running_rev(base):

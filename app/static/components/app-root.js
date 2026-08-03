@@ -205,9 +205,10 @@ export default {
     },
     async doUpdate() {
       if (this.updating || !(this.update && this.update.available)) return;
-      const n = this.update.behind || 0;
+      // 배포는 릴리즈 태그 단위 — '몇 커밋 뒤처짐' 이 아니라 **어느 버전으로 가는지**를 보여 준다.
+      const to = this.update.latest || "";
       const ok = await confirmBox(
-        "새 버전이 있습니다" + (n ? " (" + n + "개 업데이트)" : "") + ".\n"
+        "새 버전이 있습니다" + (to ? " (" + to + ")" : "") + ".\n"
         + "지금 받아서 앱을 재시작할까요? 잠시 창이 닫혔다가 다시 열립니다.",
         { okLabel: "업데이트 후 재시작", cancelLabel: "나중에" });
       if (!ok) return;
@@ -248,7 +249,7 @@ export default {
         <div class="top-actions">
           <button v-if="update && update.available" class="update-trig" :class="{ busy: updating }"
                   @click="doUpdate" :disabled="updating"
-                  :title="'새 버전 ' + (update.behind || '') + '개 — 클릭해 업데이트 후 재시작'">
+                  :title="'새 버전 ' + (update.latest || '') + ' — 클릭해 업데이트 후 재시작 (현재 ' + (update.current || '?') + ')'">
             <span class="update-dot"></span>
             <span>{{ updating ? '업데이트 중…' : '업데이트' }}</span>
           </button>
