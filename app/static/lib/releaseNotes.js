@@ -106,7 +106,7 @@ export const TRACE = {
   // ── 2026-08-03 ──
   "워크로드 '최근 완료' 기간 선택(1·2·4주)": ["a70baad"],
   "완료 Task 누락(resolved 만 보던 질의)": ["a70baad"],
-  "(화면 미노출) dev — Jira/Confluence PAT 발급 확인 API": ["b926dca"],
+  "(화면 미노출) dev — Jira/Confluence PAT 발급 확인 API": ["b926dca", "34ede42"],
   // ── 2026-08-01 ──
   "영역 구분선 복원(<br> 로 이어진 문단)": ["b936e26"],
   "담당자 변경 시 카드가 사라지던 것(이탈 판정을 서버에)": ["cf7c026"],
