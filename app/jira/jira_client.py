@@ -569,9 +569,19 @@ class JiraClient:
         return str(p if p.is_absolute() else APP_ROOT / p)
 
     def needs_login(self):
-        """prod 이고 저장된 세션이 하나도 없으면 True (mock/local 은 항상 False)."""
+        """지금 로그인이 필요한가 (mock/local 은 항상 False).
+
+        ★ **파일 존재만 보면 안 된다.** 예전엔 '저장된 세션 파일이 하나라도 있나' 만 봤는데,
+          prod 첫 기동의 대부분은 **파일은 있고 쿠키만 만료된** 상태다. 그때 이 함수가
+          False 를 주면 /api/status 가 '인증됨' 이라고 답하고, 프론트의 인증 감시자가
+          그걸 보고 **거짓 auth-ok** 를 쏜 뒤 감시를 멈춘다 → 진짜 로그인이 끝나도
+          아무도 화면에 알려 주지 않아 사용자가 수동 새로고침을 해야 했다(리포트된 버그).
+          그래서 '호출이 실제로 실패해 죽은 것으로 확인된' 상태를 함께 본다.
+        """
         if self.env != "prod":
             return False
+        if getattr(self, "_session_dead", False):
+            return True
         return not self.sso_store().any_exists()
 
     def reset_provider(self):
@@ -583,6 +593,8 @@ class JiraClient:
                 pass
         self._provider = None
         self._provider_built = False
+        # 새 세션으로 갈아끼우는 참이다 — '죽었다' 표시도 함께 지운다(다시 실패하면 다시 선다).
+        self.mark_upstream_ok()
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
         # TTL 동안 남아 매니저 여부·본인 댓글 판정이 계속 틀린다.
         try:
@@ -757,6 +769,8 @@ class JiraClient:
         self.cache.always_revalidate = self.REVALIDATE_PREFIXES
         self.cache.revalidator = self._refresh_bg
         self.cache.skip_producer = self.upstream_down
+        # 상류에서 실제로 받아 왔다 = 세션이 살아 있다 → 차단기·죽음 표시 해제.
+        self.cache.on_upstream_ok = self.mark_upstream_ok
 
     # ── 못 가져온 것 세기 ──────────────────────────────────────────────
     # 트리·목록 조립은 티켓을 하나씩 받아 붙이는데, 그중 몇 개가 실패해도 조립은 계속된다
@@ -2198,13 +2212,53 @@ class JiraClient:
     def upstream_down(self):
         return time.time() < getattr(self, "_upstream_down_until", 0)
 
+    #: 세션이 죽은 것으로 확인된 뒤, 되살아났는지 다시 볼 간격(초)
+    SESSION_RECHECK_EVERY = 8
+
     def mark_upstream_down(self, reason=""):
         self._upstream_down_until = time.time() + self.UPSTREAM_DOWN_FOR
         self._upstream_reason = reason or "상류 응답 없음"
 
+    def mark_session_dead(self, reason=""):
+        """세션이 **정말** 죽은 것으로 확인됨(/myself 까지 실패). needs_login 이 이걸 본다.
+        회로차단기와 달리 시간이 지나도 저절로 풀리지 않는다 — 성공해야 풀린다."""
+        self._session_dead = True
+        self._session_recheck_at = 0.0
+        self.mark_upstream_down(reason)
+
     def mark_upstream_ok(self):
+        """상류가 실제로 응답했다 = 세션도 살아 있다. 차단기와 죽음 표시를 함께 해제한다.
+
+        ★ 예전엔 이 함수를 **아무도 부르지 않았다**(주석엔 '성공하면 즉시 해제한다' 라고
+          적혀 있었는데 호출부가 없었다). 그래서 차단기는 20초 타임아웃으로만 풀렸다."""
         self._upstream_down_until = 0
         self._upstream_reason = ""
+        self._session_dead = False
+
+    def session_recheck_async(self):
+        """죽은 것으로 표시된 세션이 되살아났는지 **뒤에서** 한 번씩 확인한다.
+
+        누가 어떤 경로로 로그인했든(앱 창·런처가 띄운 창·다른 인스턴스) 화면이 스스로
+        살아나야 한다. /api/status 는 즉답해야 하므로 여기서 기다리지 않고 스레드로 돌린다
+        (prod 의 실패 판정은 최대 수십 초가 걸린다)."""
+        if self.env != "prod" or not getattr(self, "_session_dead", False):
+            return
+        now = time.time()
+        if now < getattr(self, "_session_recheck_at", 0) or getattr(self, "_session_rechecking", False):
+            return
+        self._session_recheck_at = now + self.SESSION_RECHECK_EVERY
+        self._session_rechecking = True
+
+        def run():
+            try:
+                if self.session_alive():
+                    self.mark_upstream_ok()
+            except Exception:
+                pass
+            finally:
+                self._session_rechecking = False
+
+        threading.Thread(target=run, name="session-recheck", daemon=True).start()
 
     def upstream_state(self):
         """화면 상단 알림이 쓸 상태. authed 는 세션 사용자를 읽을 수 있는지로 본다."""

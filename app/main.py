@@ -278,8 +278,10 @@ def _on_session_expired(request: Request, exc: SessionExpired):
         return JSONResponse(
             status_code=502,
             content={"error": "요청이 거절되었습니다(세션은 정상) — " + str(exc)[:160]})
-    # 세션이 정말 죽었다 — 다음 호출들이 죽은 세션에 붙어 수십 초를 버리지 않게 표시.
-    _client.mark_upstream_down(str(exc)[:120])
+    # 세션이 정말 죽었다 — 다음 호출들이 죽은 세션에 붙어 수십 초를 버리지 않게 표시하고,
+    # **/api/status 도 이 사실을 알게 한다**(예전엔 세션 파일만 보고 '인증됨' 이라 답해,
+    # 프론트 감시자가 거짓 auth-ok 를 쏘고 감시를 멈췄다 → 로그인해도 화면이 안 살아났다).
+    _client.mark_session_dead(str(exc)[:120])
     return JSONResponse(
         status_code=401,
         content={"needLogin": True, "env": _settings.jira_env, "detail": str(exc)})
@@ -725,6 +727,10 @@ def _probe_online(timeout=1.2):
 def api_status():
     """화면 상단 알림용 경량 상태 — **Jira 를 타지 않는다**(그래야 자주 물어도 된다).
     오프라인/인증 중인지, 지금 보고 있는 데이터가 언제 기준인지."""
+    # 죽은 것으로 표시된 세션은 여기서 **뒤에서** 한 번씩 되살아났는지 본다. 이 함수는
+    # 기다리지 않는다(스레드로 던진다) — 이 엔드포인트는 즉답이 규칙이다.
+    # 이게 있어야 런처 창·다른 인스턴스로 로그인한 경우에도 화면이 스스로 살아난다.
+    _client.session_recheck_async()
     st = _client.upstream_state()
     st["env"] = _settings.jira_env
     unauth = _client.needs_login() or st["down"]

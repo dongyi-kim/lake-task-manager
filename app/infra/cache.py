@@ -65,6 +65,9 @@ class Cache:
         # 않고** 낡은 값으로 답한다 — 죽은 세션에 매번 붙어 보느라 화면이 멎는 걸 막는다
         # (prod 의 Playwright 호출은 실패 판정까지 최대 180초가 걸린다).
         self.skip_producer = None
+        # 상류에서 **실제로 받아 왔을 때** 부를 콜백(있으면). 클라이언트가 이걸로
+        # 회로차단기와 '세션 죽음' 표시를 푼다 — 성공을 아는 곳이 여기뿐이다.
+        self.on_upstream_ok = None
         # ── 편집에 예민한 데이터 — **캐시가 신선해도 매번 다시 받는다** ──────────────
         # 티켓 본문·코멘트·첨부·링크는 사람이 방금 고쳤을 수 있는 것들이다. TTL 이 15분이면
         # 내가 쓴 댓글이 15분 동안 안 보일 수 있는데, 그건 캐시가 아니라 버그로 보인다.
@@ -166,6 +169,11 @@ class Cache:
             return alive[0], True
         self.set(key, value, ttl)
         self.last_upstream_ok = time.time()
+        if self.on_upstream_ok:
+            try:
+                self.on_upstream_ok()
+            except Exception:
+                pass                    # 알림 실패가 조회를 깨면 안 된다
         return value, False
 
     def _needs_revalidate(self, key):
