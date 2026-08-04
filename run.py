@@ -1384,7 +1384,9 @@ def _run_tray(s):
 
     def on_restart(icon, item):
         # 업데이트 후 재기동 — run.bat 을 새 콘솔로 (2초 뒤 시작해 현재 인스턴스가 포트를 놓게 함).
-        # run.bat 이 git pull(자동) + venv/deps + 앱 재기동을 한다. 그 뒤 현재 인스턴스는 종료.
+        # run.bat 이 **최신 릴리즈 태그 확인 → 소스 교체** + venv/deps + 앱 재기동을 한다.
+        # (예전엔 git pull 이었다. 지금은 git 없는 유저도 같은 경로로 업데이트된다.)
+        # 그 뒤 현재 인스턴스는 종료.
         launched = False
         try:
             bat = _launcher_bat()

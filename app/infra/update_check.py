@@ -15,6 +15,7 @@
 엔드포인트는 **즉답**해야 하므로 조회는 백그라운드로 돌리고 캐시값을 돌려준다.
 실패는 전부 조용하다(ok=False) — 표시만 하는 기능이라 실패가 앱을 방해하면 안 된다.
 """
+import os
 import re
 import threading
 import time
@@ -56,7 +57,11 @@ class UpdateChecker:
     def _refresh(self):
         try:
             cur = code_rev()
-            pin = pinned_rev(self.app_root)
+            # LAKE_REV 로 띄운 세션(bin\test_run.bat)은 **일부러 미릴리즈 코드**를 보고 있다.
+            # 고정(pinned)과 같은 취급 — 안 그러면 current('main'·SHA) != latest(태그) 라
+            # 늘 '업데이트 있음' 이 뜨고, 눌러도 그 세션은 계속 그 ref 라(재시작이 환경변수를
+            # 물려받는다) 배지가 영영 안 사라진다.
+            pin = os.environ.get("LAKE_REV", "").strip() or pinned_rev(self.app_root)
             if pin:
                 # 일부러 특정 버전에 묶어 둔 PC — 최신이 나와도 알리지 않는다.
                 # (고정한 사람에게 매번 뜨는 알림은 거짓 알림이고, 그걸 끌 방법이 없다.)

@@ -125,3 +125,30 @@ def test_assets_endpoint_lists_module_graph():
     assert any(a.startswith("/vendor/") and a.endswith(".js") for a in assets)   # Vue 자체도 대상
     assert any(a.endswith(".css") for a in assets)
     assert all(a.startswith("/") and not a.endswith(".html") for a in assets)
+
+
+def test_update_check_dev_session_never_nags():
+    r"""LAKE_REV 로 띄운 개발 세션(bin\test_run.bat)도 알림을 띄우면 안 된다.
+
+    미릴리즈 ref 는 current('main'·SHA) != latest(태그) 라 늘 '업데이트 있음' 이 되는데,
+    눌러 재시작해도 그 세션은 환경변수를 물려받아 같은 ref 로 다시 뜬다 → 배지가 영영
+    안 사라진다. 고정(pinned)과 같은 취급으로 막는다."""
+    import os
+    import tempfile
+    from app.infra.update_check import UpdateChecker
+
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "config"))          # 고정 파일은 없다(= latest 채널)
+        old = os.environ.get("LAKE_REV")
+        os.environ["LAKE_REV"] = "main"
+        try:
+            u = UpdateChecker(d)
+            u._refresh()                                 # 네트워크를 타지 않는다
+            st = u.get()
+            assert st["pinned"] == "main"
+            assert st["available"] is False and st["ok"] is True
+        finally:
+            if old is None:
+                os.environ.pop("LAKE_REV", None)
+            else:
+                os.environ["LAKE_REV"] = old
