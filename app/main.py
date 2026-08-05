@@ -185,6 +185,35 @@ _updater = UpdateChecker(_APP_ROOT)
 _updater.start()
 
 
+def _start_auth_keepalive():
+    """Confluence·Bitbucket 세션을 **미리** 살려 둔다 (prod 전용, 백그라운드).
+
+    SSO 쿠키는 도메인별로 따로 만료된다 — Jira 는 멀쩡한데 Confluence 만 죽는 일이 흔하다.
+    지금까지는 검색이 401 을 맞고 나서야 갱신을 시도했고, 그 갱신이 실패하면 스로틀 때문에
+    한동안 재시도조차 안 해서 '검색을 켜면 Confluence 결과가 한참 안 나온다' 가 됐다.
+    사람이 쓰기 전에 뒤에서 데워 두면 그 순간 자체가 사라진다.
+
+    첫 확인은 조금 늦춘다 — 기동 직후엔 화면이 쓸 조회가 몰리는데, 거기에 인증 왕복을
+    얹으면 첫 화면이 그만큼 늦어진다."""
+    import threading
+
+    def loop():
+        import time as _t
+        _t.sleep(20)                                   # 기동 직후는 양보
+        while True:
+            try:
+                _client.keepalive_auth()
+            except Exception:
+                pass                                   # 유지 작업이 앱을 방해하면 안 된다
+            _t.sleep(_client.KEEPALIVE_EVERY)
+
+    threading.Thread(target=loop, name="auth-keepalive", daemon=True).start()
+
+
+if _settings.jira_env == "prod":
+    _start_auth_keepalive()
+
+
 @app.get("/api/update")
 def api_update():
     """배포 repo 의 업데이트 가능 여부. {available, behind, current, ok, checkedAt}. 즉답(캐시)."""

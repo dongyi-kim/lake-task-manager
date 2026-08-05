@@ -112,3 +112,40 @@ def test_status_endpoint_tells_the_truth_after_a_failed_call():
         client.env = env
         m._settings.jira_env = old_env
         client.mark_upstream_ok()
+
+
+def test_keepalive_renews_only_dead_non_jira_services():
+    """세션 데우기 — Jira 는 건너뛰고, 죽은 서비스만 무음갱신을 부른다.
+
+    SSO 쿠키는 도메인별로 따로 만료돼 Jira 만 살아 있는 상태가 흔하다. 그때 검색이 401 을
+    맞고 나서야 갱신하면 이미 늦다(그 사이 결과가 비어 보인다) — 미리 데워 둔다."""
+    from app.auth.base import SessionExpired
+
+    c = _prod_client()
+    c.s.auth_targets = [("Jira", "https://j", ["/rest/api/2/myself"]),
+                        ("Confluence", "https://c", ["/rest/api/user/current"])]
+    c.s.bitbucket_enabled = False
+    hit, renewed = [], []
+
+    class _P:
+        def get_json(self, url, params=None, priority=0, quiet=False):
+            hit.append(url)
+            raise SessionExpired("만료")
+
+    c._provider, c._provider_built = _P(), True
+    c._renew_service = lambda name: renewed.append(name) or True
+
+    c.keepalive_auth()
+    assert hit == ["https://c/rest/api/user/current"], hit    # Jira 는 안 건드린다
+    assert renewed == ["Confluence"]
+
+
+def test_keepalive_is_prod_only():
+    """mock/local 에서는 아무것도 하지 않는다 — 데울 SSO 세션이 없다."""
+    c = _prod_client()
+    c.env = "mock"
+    c.s.auth_targets = [("Confluence", "https://c", ["/x"])]
+    called = []
+    c._renew_service = lambda name: called.append(name)
+    c.keepalive_auth()
+    assert called == []

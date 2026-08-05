@@ -501,7 +501,9 @@ class JiraClient:
         except Exception:
             pass
 
-    RENEW_THROTTLE_SEC = 60          # 같은 서비스를 이 간격 안엔 다시 무음갱신하지 않는다
+    RENEW_THROTTLE_SEC = 30          # 같은 서비스를 이 간격 안엔 다시 무음갱신하지 않는다
+    #: 비-Jira 서비스(Confluence·Bitbucket) 세션을 **미리** 살려 두는 주기(초)
+    KEEPALIVE_EVERY = 240
 
     def _renew_service(self, name):
         """세션이 죽은 서비스(예: Confluence)를 **창 없이** 다시 인증 시도(prod SSO 전용). 성공 시 True.
@@ -526,6 +528,35 @@ class JiraClient:
             return bool(fn([tgt], save_cb=self.sso_store().save_all_from))
         except Exception:
             return False
+
+    def keepalive_auth(self):
+        """비-Jira 서비스(Confluence·Bitbucket) 세션을 **미리** 확인·갱신한다. prod 전용.
+
+        SSO 쿠키는 **도메인별로 따로 만료**된다 — Jira 는 멀쩡한데 Confluence 만 죽는 일이 흔하다.
+        지금까지는 그걸 **검색이 401 을 맞고 나서야** 알았다: 그 순간 무음갱신을 돌리는데
+        실패하면 RENEW_THROTTLE_SEC 동안 재시도조차 안 해서, 사용자에겐 '검색을 켜면 한동안
+        Confluence 결과가 안 나온다' 로 보였다(리포트된 그 증상).
+
+        → 사람이 쓰기 전에 뒤에서 미리 살려 둔다. 사용자 요청 뒤로 밀리도록 **백그라운드
+          우선순위**로 넣는다(검색·화면 조회가 이것 때문에 늦어지면 본말전도다)."""
+        if self.env != "prod":
+            return
+        from app.auth.base import PRIO_BACKGROUND, _prio_scope
+        for name, base, paths in getattr(self.s, "auth_targets", []):
+            if (name or "").lower() == "jira":
+                continue                       # Jira 는 본 경로가 늘 쓰므로 따로 안 데운다
+            if (name or "").lower() == "bitbucket" and not getattr(self.s, "bitbucket_enabled", False):
+                continue                       # 안 켠 서비스는 건드리지 않는다(인증 소음)
+            probe = (paths or [None])[0]
+            if not probe:
+                continue
+            try:
+                with _prio_scope(PRIO_BACKGROUND):
+                    self.provider.get_json(base.rstrip("/") + probe, quiet=True)
+            except SessionExpired:
+                self._renew_service(name)      # 스로틀은 그 안에서 건다
+            except Exception:
+                pass                           # 망 문제 등 — 다음 주기에 다시 본다
 
     def _conf_get_json(self, url, params=None):
         """Confluence REST 조회 — 401(SessionExpired)이면 **Confluence 세션만** 무음 갱신 후 한 번
