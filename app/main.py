@@ -424,6 +424,14 @@ if _devtools.enabled(_settings, "pat_probe"):
     _DEV_ENDPOINTS += [
         {"path": "/api/dev/pat/{service}", "label": "PAT 사용 가능 확인 (목록 조회 — 아무것도 만들지 않음)",
          "method": "GET", "param": "service", "placeholder": "jira 또는 confluence"},
+        {"path": "/api/dev/auth/capabilities/{service}",
+         "label": "상류 인증 수단 조사 (PAT / OAuth 1.0a) — 서버앱 전환 갈림길",
+         "method": "GET", "param": "service", "placeholder": "jira 또는 confluence"},
+        {"path": "/api/dev/auth/bearer/{service}",
+         "label": "Keycloak 토큰을 REST 가 받아 주는가 (쿠키 없이 Bearer 만)",
+         "method": "POST", "param": "service", "placeholder": "jira 또는 confluence",
+         "note": "먼저 아래 body 의 token 에 사내 Keycloak 액세스 토큰을 넣어야 합니다. 저장하지 않습니다.",
+         "body": {"token": ""}},
         {"path": "/api/dev/pat/{service}", "label": "PAT 발급 시도 (1일짜리로 발급 후 즉시 회수)",
          "method": "POST", "param": "service", "placeholder": "jira 또는 confluence", "danger": True,
          "note": "토큰 값은 앞 6자만 보여 주고 저장하지 않습니다. 회수 실패 시 응답에 표시됩니다.",
@@ -552,6 +560,86 @@ if _devtools.enabled(_settings, "pat_probe"):
         else:
             out["verdict"] = ("이 인스턴스에 PAT 가 열려 있지 않습니다(REST·화면 모두 없음). "
                               "관리자가 껐거나 기능이 설치돼 있지 않습니다 — 승격하려면 관리자 요청이 필요합니다.")
+        return out
+
+    # ── 상류 인증 수단 조사 (서버앱 전환의 갈림길) ────────────────────────────────────
+    # PAT 가 꺼져 있는 것이 확인된 뒤, 남은 후보는 둘이다.
+    #   ① OAuth 1.0a (Application Link) — **사용자별** 자격. Jira 권한이 그대로 보존된다.
+    #   ② 서비스 계정(basic) — 단순하지만 **모든 사용자가 한 계정 권한**으로 보게 된다.
+    # 그리고 검증해야 할 가설이 하나 더 있다: 사내 Keycloak 토큰을 Jira REST 가 받아 주는가.
+    # 받아 준다면 서버앱 전환이 통째로 쉬워지고, 안 받아 주면 ①/② 로 간다.
+
+    _OAUTH_PATHS = ["/rest/applinks/1.0/manifest",          # applinks 플러그인 생존 확인(비관리자 OK)
+                    "/plugins/servlet/oauth/request-token", # OAuth 1.0a 서블릿 존재
+                    "/plugins/servlet/oauth/authorize"]
+
+    @app.get("/api/dev/auth/capabilities/{service}")
+    def _dev_auth_caps(service: str):
+        """이 인스턴스가 **어떤 상류 인증을 받아 주는가**. 전부 GET — 아무것도 만들지 않는다."""
+        _require_manager()
+        name, base = _pat_base(service)
+        pat = {p: _pat_try(base + p) for p in (_PAT_PROBES.get(name.lower(), {}).get("rest") or [])}
+        oauth = {p: _pat_try(base + p) for p in _OAUTH_PATHS}
+        out = {"service": name, "base": base,
+               "pat": pat, "oauth1a": oauth,
+               "patUsable": any(r["ok"] for r in pat.values()),
+               "oauth1aLikely": any(r["ok"] or r.get("status") in (400, 401, 405)
+                                    for r in oauth.values())}
+        # 405/400/401 도 신호다 — '자원은 있는데 이 방식으로 부르면 안 된다' 는 뜻이라
+        # 서블릿이 살아 있다는 증거다. 404(HTML)만이 '없다' 이다.
+        if out["patUsable"]:
+            out["verdict"] = "PAT 가 열려 있습니다 — PatAuthProvider 로 바로 승격 가능."
+        elif out["oauth1aLikely"]:
+            out["verdict"] = ("OAuth 1.0a 흔적이 있습니다 — 관리자에게 Application Link(incoming) "
+                              "생성을 요청하면 **사용자별 자격**으로 서버앱 전환이 가능합니다.")
+        else:
+            out["verdict"] = ("PAT·OAuth 1.0a 둘 다 안 보입니다 — 서비스 계정(basic) 말고는 길이 없고, "
+                              "그건 Jira 권한이 평평해지므로 보안 승인 사안입니다.")
+        return out
+
+    class _BearerBody(BaseModel):
+        token: str = ""
+
+    @app.post("/api/dev/auth/bearer/{service}")
+    def _dev_auth_bearer(service: str, body: _BearerBody):
+        """**사내 Keycloak 토큰을 Jira/Confluence REST 가 받아 주는가** — 이 하나가 갈림길이다.
+
+        ★ 쿠키 없이 **맨 요청**으로 보낸다. SSO 세션이 실린 provider 로 보내면 성공했을 때
+          그게 토큰 덕인지 쿠키 덕인지 알 수 없어, 실험의 의미가 사라진다.
+        ★ 토큰은 **저장하지도 로그에 남기지도 않는다.** 응답에도 앞 6자만 돌려준다."""
+        _require_manager()
+        name, base = _pat_base(service)
+        tok = (body.token or "").strip()
+        if not tok:
+            raise HTTPException(status_code=400, detail="token 이 비어 있습니다.")
+        probe = (_PAT_PROBES.get(name.lower(), {}).get("sanity")) or "/rest/api/2/myself"
+        import requests
+        out = {"service": name, "path": probe, "tokenPrefix": tok[:6] + "…",
+               "note": "쿠키 없이 Authorization 헤더만으로 보냈습니다. 토큰은 저장하지 않습니다."}
+        try:
+            r = requests.get(base + probe, timeout=20, allow_redirects=False,
+                             headers={"Authorization": "Bearer " + tok,
+                                      "Accept": "application/json"})
+            out["status"] = r.status_code
+            ct = (r.headers.get("content-type") or "")
+            out["contentType"] = ct.split(";")[0]
+            who = ""
+            if "json" in ct:
+                try:
+                    j = r.json()
+                    who = j.get("name") or j.get("key") or j.get("username") or ""
+                except Exception:
+                    who = ""
+            out["user"] = who
+            # 로그인 페이지로 302 하면 '거절' 이다(200 이 아니어도 헷갈리지 않게 밝힌다).
+            out["accepted"] = bool(r.status_code == 200 and who)
+            out["verdict"] = ("받아 줍니다 — 이 토큰으로 사용자별 REST 호출이 됩니다(서버앱 전환의 최단 경로)."
+                              if out["accepted"] else
+                              "거절했습니다 — Jira DC 는 REST 에서 IdP 토큰을 받지 않는 게 보통입니다. "
+                              "OAuth 1.0a 나 서비스 계정으로 가야 합니다.")
+        except Exception as e:
+            out["status"] = None
+            out["verdict"] = "요청 자체가 실패했습니다: %s %s" % (type(e).__name__, str(e)[:160])
         return out
 
     class _PatBody(BaseModel):
