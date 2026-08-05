@@ -88,7 +88,7 @@
 .fcallout .fcore { color: var(--muted); font-family: "Consolas","Menlo",monospace; font-size: 12px; }
 .fcallout .ftog { margin-left: auto; color: var(--accent); font-size: 12px; white-space: nowrap; flex: none; user-select: none; }
 .fcallout .fbody { margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--border); color: var(--muted); line-height: 1.7; }
-.fcallout .fbody pre { margin: 0 0 8px; padding: 9px 11px; background: var(--panel-2); border-radius: 7px; overflow-x: auto;
+.fcallout .fbody pre { margin: 0 0 8px; padding: 9px 11px; background: var(--panel-2); border-radius: 7px; overflow: auto hidden;
                        font-family: "Consolas","Menlo",monospace; font-size: 12px; color: var(--text); white-space: pre; }
 .fcallout .fbody ul { margin: 0; padding-left: 17px; } .fcallout .fbody li { margin: 2px 0; } .fcallout .fbody b { color: var(--text); }
 

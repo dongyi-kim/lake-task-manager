@@ -474,8 +474,14 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-desc input[type="checkbox"], .tkt-desc input[type="radio"] { margin: 0 6px 0 0; vertical-align: middle; }
 /* 코드블록 — class 에 의존하지 않고 모든 <pre> 를 코드박스로(실 Jira 는 pre.jecodeblock,
    mock 은 pre.code, 렌더러/버전에 따라 무-class pre 도 있어 통째로 커버). 패딩은 컴팩트하게. */
+/* ★ 가로 스크롤러는 **세로축을 명시해 끈다**(overflow: auto hidden).
+   CSS 규칙상 한 축이 auto 인데 다른 축이 visible 이면 그 축도 auto 로 승격된다 —
+   즉 overflow-x:auto 만 쓰면 이 요소가 **세로 스크롤 컨테이너도** 된다. 테두리·행간
+   반올림 때문에 세로로 1~2px 씩 넘치는 일이 흔한데, 그러면 마우스가 표/코드 위에 있을 때
+   휠이 그 몇 px 를 먹고 **본문으로 전달되지 않는다**. "스크롤이 잠겼다 됐다" 하는 증상의
+   정체가 이것이다(커서를 옆으로 옮기면 다시 되는 게 단서). */
 .tkt-desc pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
-  padding: 6px 10px; overflow-x: auto; margin: 0 0 10px; }
+  padding: 6px 10px; overflow: auto hidden; margin: 0 0 10px; }
 .tkt-desc pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5;
   white-space: pre; display: block; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
 /* 줄번호 거터 — <pre> 를 [번호열 | 코드] 2열로. 폰트·line-height 를 code 와 맞춰 정렬. */
@@ -483,7 +489,7 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-desc pre .ln-gutter { flex: none; text-align: right; color: var(--muted-2); user-select: none;
   white-space: pre; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12.5px; line-height: 1.5; border-right: 1px solid var(--border); padding-right: 8px; }
-.tkt-desc pre.has-ln > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; }
+.tkt-desc pre.has-ln > code { flex: 1 1 auto; min-width: 0; overflow: auto hidden; }
 /* 인용 — 큰 따옴표 글리프로 '인용'임을 형태로 알린다(색만으로 구분하지 않음) */
 .tkt-desc blockquote { position: relative; margin: 0 0 12px; padding: 8px 14px 8px 40px;
   color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
@@ -493,7 +499,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-desc blockquote > :last-child { margin-bottom: 0; }
 
 /* 표 */
-.tkt-desc table { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 12.5px; display: block; overflow-x: auto; }
+.tkt-desc table { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 12.5px; display: block;
+  overflow: auto hidden; }
 .tkt-desc th, .tkt-desc td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
 .tkt-desc th { background: var(--panel-2); font-weight: 700; }
 

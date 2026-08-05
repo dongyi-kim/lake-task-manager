@@ -190,6 +190,7 @@ export default {
     window.removeEventListener("resize", this._onResize);
     window.removeEventListener("ticket-changed", this._onExtChanged);
     window.removeEventListener("auth-ok", this._authok);
+    if (this._cbRaf) { cancelAnimationFrame(this._cbRaf); this._cbRaf = 0; }
   },
   computed: {
     FOLD_AT: () => FOLD_AT,
@@ -332,9 +333,19 @@ export default {
     /** 좌우 패널 접기/펴기 버튼을 **지금 보이는 스크롤 영역의 세로 중앙**에 둔다.
      *  본문(.tkt-body)이 스크롤 주체라 그 scrollTop+높이의 절반이 곧 화면 중앙(콘텐츠 좌표계). */
     posCollapse() {
-      const b = this.$refs.body;
-      if (!b) return;
-      b.style.setProperty("--cb-top", Math.round(b.scrollTop + b.clientHeight / 2) + "px");
+      // ★ 스크롤 이벤트마다 '읽고(scrollTop) 곧바로 쓰는(스타일)' 짓을 하면 이벤트마다 레이아웃이
+      //   강제된다 — 긴 설명·코멘트가 많은 티켓에서 휠이 뻑뻑해지는 원인. 프레임당 한 번으로
+      //   묶고, 값이 그대로면 아예 쓰지 않는다.
+      if (this._cbRaf) return;
+      this._cbRaf = requestAnimationFrame(() => {
+        this._cbRaf = 0;
+        const b = this.$refs.body;
+        if (!b) return;
+        const v = Math.round(b.scrollTop + b.clientHeight / 2);
+        if (v === this._cbTop) return;
+        this._cbTop = v;
+        b.style.setProperty("--cb-top", v + "px");
+      });
     },
     setSpineHidden(v) {
       this.spineHidden = v;
