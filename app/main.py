@@ -178,6 +178,7 @@ def api_app_open():
 
 # ── 업데이트 확인 (배포 repo 가 원격보다 뒤처졌나) ─────────────────────────
 from app.infra.settings import APP_ROOT as _APP_ROOT        # noqa: E402
+from app.infra.version import pinned_rev                    # noqa: E402
 from app.infra.update_check import UpdateChecker            # noqa: E402
 
 _updater = UpdateChecker(_APP_ROOT)
@@ -688,6 +689,9 @@ def health():
         _client.mark_upstream_ok()          # 세션이 읽혔다 = 상류 정상
     return {"status": "ok", "env": _settings.jira_env, "projectKey": _settings.project_key,
             "needLogin": need, "rev": _BUILD_REV,
+            # 이 사본이 특정 버전에 **묶여 있으면** 화면이 그렇게 말해야 한다. 안 그러면
+            # "왜 업데이트가 안 되냐" 를 아무도 설명할 수 없다(옛 배포가 남긴 SHA 핀이 그랬다).
+            "pinned": pinned_rev(_APP_ROOT),
             # 앱 URL(localhost/browse/KEY)을 붙여넣었을 때 실 Jira 주소로 바꾸기 위해 프론트에 노출
             "jiraBase": (_settings.jira_base or "").rstrip("/"),
             # 인증이 안 돼도 캐시가 있으면 화면은 띄운다 — 프론트가 이걸 보고 판단한다.

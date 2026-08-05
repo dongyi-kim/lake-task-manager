@@ -361,3 +361,10 @@ pre code {
           mask: linear-gradient(to bottom, #000 15%, transparent 92%);
 }
 
+
+/* 설정 메뉴의 rev 옆 '고정됨' — 이 사본이 특정 버전에 묶여 업데이트가 안 되는 상태.
+   조용히 안 움직이는 것보다 한 글자라도 말해 주는 편이 낫다(원인을 못 찾는다). */
+.sm-pin { margin-left: 5px; font-size: 9.5px; font-weight: 800; letter-spacing: .2px;
+  color: var(--today); border: 1px solid color-mix(in srgb, var(--today) 40%, transparent);
+  background: color-mix(in srgb, var(--today) 12%, transparent);
+  border-radius: 4px; padding: 0 4px; vertical-align: 1px; }

@@ -22,7 +22,7 @@ export default {
     return { me: null,   // 세션 사용자 — config 의 manager 목록에 무엇을 적어야 하는지 보이려고
       manager: false,   // 매니저 아니면 Dev Tools 섹션을 감춘다(판정 전에도 감춤)
      
-      open: false, rev: "", tools: null, loggingIn: false,
+      open: false, rev: "", pinned: "", tools: null, loggingIn: false,
       guideMsg: "",     // '가이드 다시 보기' 를 누른 뒤의 짧은 확인 문구
       // 서비스별 독립 상태 — loading|ok|no|off|err. 각자 도착하는 대로 렌더된다.
       services: SERVICES.map((name) => ({ name, status: "loading", detail: "", configured: null })),
@@ -82,7 +82,10 @@ export default {
     },
     openMenu() {
       this.open = true;
-      api.health().then((h) => { this.rev = (h && h.rev) || ""; }).catch(() => {});
+      api.health().then((h) => {
+        this.rev = (h && h.rev) || "";
+        this.pinned = (h && h.pinned) || "";      // 고정돼 있으면 그 사실을 화면에 드러낸다
+      }).catch(() => {});
       if (!this.tools) api.raw("/api/dev/tools").then((t) => { this.tools = t; }).catch(() => {});
       this.probeAll();
       this._startPoll();               // 열려 있는 동안 실시간 갱신(로그인 완료 반영)
@@ -208,7 +211,9 @@ export default {
       </div>
 
       <div class="sm-foot">
-        <span class="sm-rev" title="빌드 커밋">rev {{ rev || '…' }}</span>
+        <span class="sm-rev" :title="pinned ? ('이 사본은 ' + pinned + ' 에 고정돼 있어 업데이트되지 않습니다'
+                                              + ' — config\lake-task-manager.rev 를 latest 로 바꾸세요')
+                                            : '실행 중인 버전'">rev {{ rev || '…' }}<b v-if="pinned" class="sm-pin">고정됨</b></span>
         <button class="sm-refresh" @click="probeAll" title="상태 새로고침">↻</button>
       </div>
     </div>
