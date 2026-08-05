@@ -17,6 +17,7 @@
 """
 import os
 import re
+import ssl
 import threading
 import time
 import urllib.request
@@ -35,10 +36,22 @@ def latest_tag(timeout=12):
     ★ 캐시버스터가 **필요하다**(실측). GitHub 은 이 리다이렉트를 CDN 에 캐시해서, 릴리즈가
       하나도 없던 시절의 결과를 새 릴리즈를 올린 뒤에도 한참 그대로 준다. 쿼리를 붙이면
       즉시 올바른 태그가 온다. 5분 단위로 묶어 캐시 이점은 살리되 지연을 5분으로 제한한다."""
+    url = RELEASES_LATEST + "?_=%d" % (int(time.time()) // 300)
+    req = urllib.request.Request(url, headers={"User-Agent": "lake-task-manager"})
     try:
-        url = RELEASES_LATEST + "?_=%d" % (int(time.time()) // 300)
-        req = urllib.request.Request(url, headers={"User-Agent": "lake-task-manager"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            m = _TAG_RE.search(r.geturl() or "")
+            return m.group(1) if m else None
+    except Exception:
+        pass
+    # 사내 TLS 프록시가 가로채면 위가 인증서 오류로 죽는다 — 그러면 **버전 확인만** 못 하게 되고
+    # 유저는 업데이트가 있는 줄도 모른다(런처는 이미 우회하는데 앱만 못 보는 상태가 된다).
+    # 리다이렉트 주소만 읽는 조회라 검증을 끄고 한 번 더 본다. 받아 오는 건 태그 문자열뿐이다.
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
             m = _TAG_RE.search(r.geturl() or "")
             return m.group(1) if m else None
     except Exception:
