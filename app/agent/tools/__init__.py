@@ -1,0 +1,39 @@
+"""agent/tools — LangChain 도구 레지스트리.
+
+에이전트마다 **주는 도구가 다르다**. 전부 다 주면 두 가지가 망가진다: 도구 설명이 길어져
+컨텍스트를 먹고, 무엇보다 Historian 이 티켓을 만들어 버릴 수 있게 된다. 역할 분리는 프롬프트가
+아니라 **도구 목록**으로 강제하는 게 확실하다.
+
+`langchain_core` 가 있어야 import 된다 — 이 패키지를 부르기 전에 `config.available()` 로 게이팅한다.
+"""
+
+from __future__ import annotations
+
+from app.agent.tools._ctx import bind, client, settings         # noqa: F401
+from app.agent.tools.people_tools import (get_module_people, get_person_profile,
+                                          get_team_workload, get_ticket_participants)
+from app.agent.tools.search_tools import (find_parent_epic, get_epic_tree, get_ticket,
+                                          get_ticket_context, search_work_history)
+from app.agent.tools.write_tools import (add_ticket_comment, create_tickets, list_child_types,
+                                         list_ticket_options, list_transitions, set_thread,
+                                         transition_ticket, update_ticket, validate_ticket_plan)
+
+# 과거를 뒤진다 — 읽기만.
+SEARCH_TOOLS = [search_work_history, get_ticket, get_ticket_context, get_epic_tree, find_parent_epic]
+
+# 담당자 근거를 모은다 — 읽기만.
+PEOPLE_TOOLS = [get_team_workload, get_ticket_participants, get_person_profile, get_module_people]
+
+# 초안을 검사한다 — 부작용 없음. 몇 번이고 불러도 된다.
+REVIEW_TOOLS = [validate_ticket_plan, list_ticket_options, list_child_types, list_transitions]
+
+# 실제로 쓴다 — 전부 approval_token 이 필요하다(agent/approval.py).
+WRITE_TOOLS = [create_tickets, update_ticket, add_ticket_comment, transition_ticket]
+
+READ_TOOLS = SEARCH_TOOLS + PEOPLE_TOOLS + REVIEW_TOOLS
+ALL_TOOLS = READ_TOOLS + WRITE_TOOLS
+
+BY_NAME = {t.name: t for t in ALL_TOOLS}
+
+__all__ = ["SEARCH_TOOLS", "PEOPLE_TOOLS", "REVIEW_TOOLS", "WRITE_TOOLS",
+           "READ_TOOLS", "ALL_TOOLS", "BY_NAME", "bind", "client", "settings", "set_thread"]
