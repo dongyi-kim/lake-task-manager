@@ -63,6 +63,16 @@ class Agent(ABC):
     def llm(self, **kw):
         return _cfg.get_llm(temperature=self.temperature, **kw)
 
+    def structured(self, **kw):
+        """스키마로 받는 모델. **스키마에 이름을 붙여서** 넘긴다.
+
+        OpenAI/AOAI 는 구조화 출력을 함수 호출로 구현하므로 스키마가 함수 이름을 가져야 한다.
+        이름 없는 JSON Schema 를 그대로 주면 `Unsupported function` 으로 죽는다 — 실 키로
+        처음 돌렸을 때 여섯 역할이 전부 여기서 넘어졌다. 역할마다 적어 두면 빠뜨리는 사람이
+        생기므로 여기서 한 번에 붙인다.
+        """
+        return self.llm(**kw).with_structured_output(_named(self.schema(), self.name))
+
     @abstractmethod
     def node(self):
         """바깥 그래프에 붙일 함수. State 의 **갱신분**만 돌려줘야 한다."""
@@ -81,7 +91,7 @@ class StructuredAgent(Agent):
 
     def _run(self, state: AgentState) -> dict:
         try:
-            out = self.llm().with_structured_output(self.schema()).invoke(
+            out = self.structured().invoke(
                 [SystemMessage(content=self.system(state)),
                  HumanMessage(content=self.task(state))])
             return self.apply(state, _as_dict(out))
@@ -174,7 +184,7 @@ class ToolAgent(Agent):
     def _conclude(self, state: AgentState, scratch_messages: list) -> dict:
         """걸은 기록을 놓고 **한 번만** 스키마로 정리시킨다."""
         log = _transcript(scratch_messages)
-        out = self.llm().with_structured_output(self.schema()).invoke([
+        out = self.structured().invoke([
             SystemMessage(content=self.system(state)),
             HumanMessage(content=f"{self.task(state)}\n\n### 조사한 내용\n{log}\n\n"
                                  "위 조사 결과만을 근거로 정리하라. 조사에 없는 것을 지어내지 마라.")])
@@ -199,6 +209,15 @@ def _transcript(messages: list, limit: int = 8000) -> str:
 def _short(v, n: int = 300) -> str:
     s = " ".join(str(v or "").split())
     return s if len(s) <= n else s[:n] + "…"
+
+
+def _named(schema, name: str):
+    """JSON Schema 에 `title` 이 없으면 붙인다. pydantic 모델은 이미 이름이 있으니 그대로."""
+    if not isinstance(schema, dict):
+        return schema
+    if schema.get("title") or schema.get("name"):
+        return schema
+    return dict(schema, title=name)
 
 
 def _as_dict(out) -> dict:

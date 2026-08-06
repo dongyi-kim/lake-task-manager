@@ -98,7 +98,7 @@ def test_fake_chat_scripted_responses(clean_env):
 def test_fake_structured_output_matches_schema(clean_env):
     """Planner 의 의도 분류가 fake 로도 굴러가야 그래프 분기를 테스트할 수 있다."""
     clean_env.setenv("LAKE_AGENT_PROVIDER", "fake")
-    schema = {"type": "object",
+    schema = {"title": "Plan", "type": "object",
               "properties": {"intent": {"type": "string", "enum": ["search", "create", "update"]},
                              "confident": {"type": "boolean"},
                              "n": {"type": "integer"}}}
@@ -106,6 +106,18 @@ def test_fake_structured_output_matches_schema(clean_env):
     assert out["intent"] in ("search", "create", "update")
     assert isinstance(out["confident"], bool)
     assert isinstance(out["n"], int)
+
+
+def test_fake_rejects_a_nameless_schema_like_the_real_thing(clean_env):
+    """★ **가짜가 실물보다 관대하면 안 된다.**
+
+    OpenAI/AOAI 는 구조화 출력을 함수 호출로 구현하므로 스키마에 이름(title/name)이 있어야
+    한다. fake 가 이를 받아 주던 동안 여섯 역할의 스키마가 전부 이름 없이 굴러갔고, 실 키를
+    꽂는 순간 한꺼번에 `Unsupported function` 으로 죽었다. 가짜의 관대함이 곧 늦은 발견이다.
+    """
+    clean_env.setenv("LAKE_AGENT_PROVIDER", "fake")
+    with pytest.raises(ValueError, match="이름"):
+        C.get_llm().with_structured_output({"type": "object", "properties": {}})
 
 
 def test_fake_embeddings_shape_and_determinism(clean_env):

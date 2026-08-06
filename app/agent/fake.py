@@ -89,6 +89,13 @@ class FakeChat(BaseChatModel):
 
     # LangChain 의 구조화 출력 경로. 스키마를 kwargs 로 흘려 _generate 가 JSON 을 내게 한다.
     def with_structured_output(self, schema, **kwargs):
+        # ★ **가짜가 실물보다 관대하면 안 된다.** OpenAI/AOAI 는 구조화 출력을 함수 호출로
+        #   구현하므로 스키마에 이름이 있어야 한다. 여기서 조용히 받아 주면 fake 테스트는
+        #   전부 통과하고 실 키를 꽂는 순간 여섯 역할이 한꺼번에 죽는다 — 실제로 그랬다.
+        if isinstance(schema, dict) and not (schema.get("title") or schema.get("name")):
+            raise ValueError(
+                "구조화 출력 스키마에 이름이 없습니다(title 또는 name). "
+                "실제 OpenAI/AOAI 는 이 스키마를 함수로 만들지 못해 'Unsupported function' 으로 거부합니다.")
         return _FakeStructured(self, schema)
 
 
