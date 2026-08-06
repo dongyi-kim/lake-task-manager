@@ -10,6 +10,7 @@ Jira 를 source of truth 로 두고, 그 위에 **Module → WBS Task → Epic �
 
 > 최종 사용자용 사용 안내는 배포 repo 루트 README(사용자 가이드)에 있다.
 > 설계·도메인 규칙 상세는 [`CLAUDE.md`](CLAUDE.md), 진행/백로그는 [`PROGRESS.md`](PROGRESS.md).
+> **AI 에이전트(업무 착수 어시스턴트)** — 멀티 에이전트 구조·RAG·HITL·MCP 는 [`docs/AGENT.md`](docs/AGENT.md).
 > 명령은 모두 **repo 루트** 기준. Windows 는 **PowerShell**, 그 외는 bash 를 병기한다.
 
 ---
