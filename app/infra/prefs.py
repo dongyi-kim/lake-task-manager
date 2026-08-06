@@ -16,9 +16,20 @@ import threading
 from pathlib import Path
 
 _LOCK = threading.Lock()
+# ★ 이 표에 없는 키는 **저장도 조회도 조용히 버려진다**(load/save 가 _DEFAULTS 로 거른다).
+#   새 설정을 추가할 때 여기 먼저 넣어야 한다 — 안 넣으면 화면은 저장됐다고 하고 값은 사라진다.
 _DEFAULTS = {"bitbucketEnabled": False,
              # 빠른 열기 전역 단축키(데스크톱 앱). 설정/트레이에서 바꾼다. run.py 가 이 값으로 등록.
-             "quickOpenHotkey": "ctrl+alt+space"}
+             "quickOpenHotkey": "ctrl+alt+space",
+
+             # ── AI 에이전트 (app/agent) ──
+             # 비밀이 아닌 것만 여기 둔다. API 키는 agent_secrets.json 이 따로 갖는다.
+             # 빈 문자열 = "정하지 않음" → config 가 환경변수·기본값으로 넘어간다.
+             "agentProvider": "",        # aoai | openai | openai_compat | fake
+             "agentApiVersion": "",      # AOAI 전용
+             "agentAoaiChat": "", "agentAoaiEmbed": "",        # ★ 모델명이 아니라 배포명
+             "agentOpenaiChat": "", "agentOpenaiEmbed": "",
+             "agentCompatChat": "", "agentCompatEmbed": ""}
 
 
 def _path():

@@ -51,15 +51,41 @@ def test_status_never_returns_a_raw_key(client, monkeypatch):
 
 
 def test_settings_put_stores_the_model_in_the_right_slot(client, monkeypatch):
-    saved = {}
+    """★ prefs 를 **스텁하지 않는다.**
+
+    처음엔 `prefs.save` 를 가로채 인자만 확인했는데, 정작 `prefs` 는 `_DEFAULTS` 에 없는 키를
+    조용히 버리고 있었다 — 화면은 저장됐다고 하고 값은 사라지는 상태를 테스트가 통과시켰다.
+    가로챈 것을 검사하면 가로챈 것만 검사하게 된다. 여기서는 **다시 읽어서** 확인한다.
+    """
     from app.infra import prefs
-    monkeypatch.setattr(prefs, "save", lambda patch: saved.update(patch) or saved)
+    monkeypatch.delenv("LAKE_AGENT_PROVIDER", raising=False)
     r = client.put("/api/agent/settings",
                    json={"provider": "openai", "chatModel": "gpt-4o", "embedModel": "text-embedding-3-large"})
     assert r.status_code == 200
+    saved = prefs.load()
     assert saved["agentProvider"] == "openai"
     assert saved["agentOpenaiChat"] == "gpt-4o"          # aoai 자리에 들어가면 안 된다
-    assert "agentAoaiChat" not in saved
+    assert not saved.get("agentAoaiChat")
+    # 저장한 값이 실제로 **해석에 쓰여야** 한다 — 파일에만 남고 안 읽히면 저장한 게 아니다.
+    from app.agent import config
+    assert config.provider() == "openai" and config.chat_model() == "gpt-4o"
+
+
+def test_every_agent_pref_key_survives_a_round_trip(monkeypatch, tmp_path):
+    """prefs 화이트리스트(_DEFAULTS)에 빠진 키는 조용히 사라진다 — 새 설정을 늘릴 때의 함정.
+
+    ★ CACHE_DIR 을 반드시 옮긴다. 처음엔 빠뜨려서 **개발자의 실제 app_prefs.json 에 썼다** —
+      테스트가 사용자 설정을 덮어쓰는 건 실패보다 나쁘다(조용하고, 나중에 발견된다).
+    """
+    import app.infra.settings as S
+    monkeypatch.setattr(S, "CACHE_DIR", tmp_path)
+    from app.infra import prefs
+    keys = ["agentProvider", "agentApiVersion", "agentAoaiChat", "agentAoaiEmbed",
+            "agentOpenaiChat", "agentOpenaiEmbed", "agentCompatChat", "agentCompatEmbed"]
+    prefs.save({k: "v-" + k for k in keys})
+    got = prefs.load()
+    missing = [k for k in keys if got.get(k) != "v-" + k]
+    assert not missing, f"prefs 가 삼킨 키: {missing}"
 
 
 def test_settings_put_does_not_echo_the_secret_back(client, monkeypatch):
