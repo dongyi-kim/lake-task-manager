@@ -21,10 +21,16 @@
 
 | 묶음 | 도구 | 성격 |
 |---|---|---|
-| `SEARCH_TOOLS` | `search_work_history` `get_ticket` `get_ticket_context` `get_epic_tree` `find_parent_epic` | 읽기 |
+| `SEARCH_TOOLS` | `search_work_history` `get_ticket` `get_ticket_context` `get_epic_tree` `find_parent_epic` `deep_search` | 읽기 |
 | `PEOPLE_TOOLS` | `get_team_workload` `get_ticket_participants` `get_person_profile` `get_module_people` | 읽기 |
+| `RULE_TOOLS` | `search_rules` | 정적 RAG |
 | `REVIEW_TOOLS` | `validate_ticket_plan` `list_ticket_options` `list_child_types` `list_transitions` | 부작용 없음 |
 | `WRITE_TOOLS` | `create_tickets` `update_ticket` `add_ticket_comment` `transition_ticket` | **승인 토큰 필수** |
+
+`search_work_history`(키워드)와 `deep_search`(의미)는 **경쟁하지 않는다**. 전자는 그 단어를 쓴
+문서를, 후자는 그 단어를 안 썼지만 같은 이야기를 하는 문서를 찾는다 — "CDC"로 검색하면
+"변경분 실시간 반영"이라 적힌 6개월 전 티켓은 절대 안 나온다. 비용이 다르므로 도구도 나눈다
+(`deep_search` 는 본문을 긁고 임베딩까지 한다 → [`../retrieval/`](../retrieval/)).
 
 탐색을 셋으로 나눈 이유 — 검색으로 실마리(①) → 티켓을 열어 읽고(②) → 링크를 타고 번진다(③).
 어디까지 갈지는 모델이 정한다(ReAct). 한 도구가 다 하면 매번 최대 비용을 치른다.
