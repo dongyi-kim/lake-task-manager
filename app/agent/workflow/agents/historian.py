@@ -61,10 +61,56 @@ class Historian(ToolAgent):
     name = Node.HISTORIAN
     temperature = 0.1
 
+    def node(self):
+        """진척도를 물었으면 조사 뒤 **코드가** get_progress 를 불러 숫자를 붙인다.
+
+        프롬프트(시스템 팁 → 명령서 제약)로 두 번 시도했지만 모델은 search_work_history 의
+        docstring("안 나오면 말을 바꿔 다시")에 끌려 검색만 반복하다 걸음을 소진했다(실측 2회).
+        진척률 조회는 판단이 아니라 **조회**다 — 모델이 부르길 기대하는 대신 코드가 부른다.
+        모델의 몫은 여전히 조사(무엇을 찾고 어디를 열지)다.
+        """
+        react = super().node()
+
+        def run(state):
+            out = react(state)
+            asked = last_user_text(state)
+            if not any(w in asked for w in ("진척", "진행률", "현황", "어디까지")):
+                return out
+            try:
+                from app.agent import tools as T
+                r = T.BY_NAME["get_progress"].invoke({"target": state.get("module") or ""})
+                line = ""
+                if r.get("modules"):
+                    m = r["modules"][0]
+                    tasks = " · ".join(f"'{t.get('task')}' {t.get('donePct')}%"
+                                       for t in (m.get("tasks") or [])[:4] if t.get("donePct") is not None)
+                    line = f"{m.get('module')} 모듈 진척률 {m.get('donePct')}%"
+                    if not state.get("module") and r.get("overallPct") is not None:
+                        line = f"전체 {r.get('overallPct')}% · " + line
+                    if tasks:
+                        line += f" (WBS: {tasks})"
+                elif r.get("donePct") is not None:
+                    line = f"{r.get('epic')} 진척률 {r.get('donePct')}% ({r.get('children')})"
+                elif r.get("overallPct") is not None:
+                    line = f"전체 진척률 {r.get('overallPct')}%"
+                if line:
+                    out["situation"] = ((out.get("situation") or "")
+                                        + "\n\n[진척도] " + line).strip()
+                    out["trace"] = note({"trace": out.get("trace") or state.get("trace") or []},
+                                        self.name, "진척률 수치 보강")
+            except Exception:
+                pass                      # 진척률 보강 실패가 조사 결과를 버리게 하면 안 된다
+            return out
+
+        return run
+
     @property
     def tools(self):
         from app.agent import tools as T
-        return T.SEARCH_TOOLS
+        # get_progress 를 주는 이유 — "X 업무의 히스토리와 진척도"처럼 **복합 질의**가 실사용의
+        # 기본형이다. 진척률 도구가 없으면 "여러 작업이 진행 중"이라는 숫자 없는 서술로 때운다
+        # (실측). 조사와 집계를 한 번의 ReAct 에서 섞을 수 있어야 한다.
+        return T.SEARCH_TOOLS + [T.BY_NAME["get_progress"]]
 
     def system(self, state):
         return persona(state, SYSTEM_HISTORIAN)
