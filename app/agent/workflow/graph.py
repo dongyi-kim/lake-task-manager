@@ -90,12 +90,20 @@ def route_after_refiner(state: AgentState) -> str:
 def route_after_reviewer(state: AgentState) -> str:
     """통과하면 승인 요청으로, 아니면 다시 쓰게 한다 — 단, 왕복 상한까지만.
 
-    상한을 넘기면 **미해결 문제를 안고** 사용자에게 간다. 조용히 통과시키는 것보다
-    "이건 못 고쳤습니다"가 낫다 — 판단은 사람이 한다.
+    상한 소진 뒤의 갈래가 중요하다:
+      · **기계 검증 오류**(없는 부모·틀린 타입)가 남았으면 → respond. 만들어 봤자 Jira 가
+        거부하므로 승인 카드를 줄 이유가 없다.
+      · **LLM 검열 의견만** 남았으면 → propose. 검열 의견은 경고로 카드에 실린다.
+        ★ 검열자가 만족할 때까지 승인 자체를 막으면 **사람이 판단할 기회가 사라진다** —
+        실제로 멀쩡한 근거를 "불충분"이라며 두 번 반려해 사용자가 승인할 길이 없어졌다.
+        최종 판단은 검열자가 아니라 사람이 한다.
     """
-    if (state.get("review") or {}).get("ok"):
+    review = state.get("review") or {}
+    if review.get("ok"):
         return "propose"
-    return "revise" if (state.get("revisions") or 0) < MAX_REVISIONS else "respond"
+    if (state.get("revisions") or 0) < MAX_REVISIONS:
+        return "revise"
+    return "respond" if review.get("errors") else "propose"
 
 
 def route_after_responder(state: AgentState) -> str:

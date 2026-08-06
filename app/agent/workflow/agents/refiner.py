@@ -63,7 +63,9 @@ class Refiner(ToolAgent):
     @property
     def tools(self):
         from app.agent import tools as T
-        return T.RULE_TOOLS + T.REVIEW_TOOLS
+        # find_parent_epic 을 주는 이유 — 없으면 "Epic Link 는 어디에 연결할까요?"를 **사용자에게**
+        # 묻게 된다(실제로 물었다). 상위 후보는 찾아보면 아는 것이다.
+        return T.RULE_TOOLS + T.REVIEW_TOOLS + [T.BY_NAME["find_parent_epic"]]
 
     def system(self, state):
         forced = (state.get("turns") or 0) >= MAX_REFINE_TURNS
@@ -82,6 +84,13 @@ class Refiner(ToolAgent):
   했고, 자료에 그 결과가 있다. 자료에 없으면 없는 것이다.
 - **사용자만 아는 것만 묻는다** — 범위(어디까지가 이번 일인가), 완료 조건, 기한, 의도,
   (버그라면) 재현 경로.
+- 상위 Epic 은 묻기 전에 `find_parent_epic` 으로 **직접 찾는다**. 마땅한 후보가 없으면
+  "epic": "" (최상위)로 두면 된다 — 그건 물을 일이 아니다.
+- 우선순위·라벨처럼 **합리적 기본값이 있는 것은 묻지 않는다**(기본 P3-Minor). 사용자가 원하면
+  나중에 바꾸면 된다.
+- ★ 사용자가 "알아서 해줘 / 기본값으로 / 판단에 맡길게"라고 이미 답했으면 **더 묻지 마라.**
+  남은 빈칸은 기본값으로 채우고 rationale 에 어떤 것을 기본값으로 정했는지 적는다.
+  같은 질문을 두 번 받는 사용자는 세 번째 답을 하지 않는다.
 - 한 번에 최대 3개. 취조가 되면 안 된다.
 
 쪼개는 기준:
@@ -101,7 +110,10 @@ class Refiner(ToolAgent):
 - 이미 같은 증상의 Bug 가 열려 있으면 **새로 만들지 말고** questions 로 사용자 판단을 구하라.
 - 버그는 대개 쪼갤 필요가 없다 — Bug 하나면 된다. Sub-Task 로 나누지 마라."""
         else:
-            goal = "아래 요청을 실행 가능한 티켓 초안으로 만들어라. 정보가 모자라면 **초안 대신 질문**을 내라."
+            goal = """아래 요청을 실행 가능한 티켓 초안으로 만들어라. 정보가 모자라면 **초안 대신 질문**을 내라.
+- ★ 이번 배치에는 **Task/Story/Bug 만** 담는다. Sub-Task 는 부모 티켓이 실재해야 만들 수
+  있으므로 **부모가 만들어진 다음** 별도 승인으로 붙인다 — 지금 같이 내면 전부 반려된다.
+  쪼개고 싶은 실행 단계는 description 의 '후속 Sub-Task 후보' 목록으로 적어 두라."""
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []))
         data = wrap_data(
@@ -132,6 +144,17 @@ class Refiner(ToolAgent):
     def apply(self, state, out):
         qs = [q for q in (out.get("questions") or []) if str(q).strip()][:3]
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        mode = out.get("mode") or "task"
+        # ★ 기계적 가드 — task 배치에 Sub-Task 가 섞이면 그 항목은 뺀다. 프롬프트로 막았는데도
+        #   실 모델이 섞어 낸 적이 있고, 그대로 두면 검증 실패 → 재작성 왕복만 태우다
+        #   한도 소진으로 끝난다. 빼는 것이 반려보다 낫다(부모 생성 후 2차 승인으로 붙일 수 있다).
+        if mode == "task":
+            dropped = [i for i in items if (i.get("type") or "").lower().startswith("sub")]
+            if dropped:
+                items = [i for i in items if i not in dropped]
+                names = ", ".join(d.get("summary", "") for d in dropped)
+                extra_note = f"(Sub-Task {len(dropped)}건은 부모 생성 후 별도 승인으로 붙인다: {names})"
+                out["rationale"] = ((out.get("rationale") or "") + "\n" + extra_note).strip()
         turns = (state.get("turns") or 0) + 1
         # 되묻기 상한을 넘겼는데도 질문만 냈다면 질문을 버린다 — 영원히 안 끝나는 대화를 막는다.
         if qs and turns > MAX_REFINE_TURNS:

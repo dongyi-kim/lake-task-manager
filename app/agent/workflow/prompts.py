@@ -41,8 +41,12 @@ ROLE_HINT = {
 
 
 def persona(state, extra: str = "") -> str:
+    # ★ 오늘 날짜를 반드시 넣는다. 모델은 오늘이 언제인지 모른다 — "다음 달 말까지"를
+    #   학습 시점 언저리의 과거 날짜로 지어내는 사고가 실제로 났다(마감 2023-11-30).
+    from datetime import date
+    today = f"오늘은 {date.today().isoformat()} 이다. 날짜 계산은 전부 이 기준으로 한다."
     hint = ROLE_HINT.get((state or {}).get("user_role") or "", "")
-    return "\n\n".join(x for x in (BASE_PERSONA, hint, extra) if x)
+    return "\n\n".join(x for x in (BASE_PERSONA, today, hint, extra) if x)
 
 
 def data_block(title: str, body: str) -> str:

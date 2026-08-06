@@ -112,12 +112,18 @@ class Assigner(ToolAgent):
         return SCHEMA
 
     def apply(self, state, out):
+        # 초안에 없는 항목 번호는 버린다 — 실 모델이 1건짜리 초안에 [0]~[5]를 낸 적이 있다.
+        # 화면이 그 유령 배정을 그리면 사용자는 "무슨 티켓의 담당자지?"가 된다.
+        n_items = len((state.get("draft") or {}).get("items") or [])
         rows = []
         for a in (out.get("assignments") or []):
             if not isinstance(a, dict):
                 continue
+            idx = int(a.get("index") or 0)
+            if not (0 <= idx < n_items):
+                continue
             reasons = [r for r in (a.get("reasons") or []) if str(r).strip()]
-            rows.append({"index": int(a.get("index") or 0), "user": (a.get("user") or "").strip(),
+            rows.append({"index": idx, "user": (a.get("user") or "").strip(),
                          "reasons": reasons,
                          "alternates": [x for x in (a.get("alternates") or [])
                                         if isinstance(x, dict) and x.get("user")][:2]})

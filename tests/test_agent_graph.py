@@ -64,10 +64,20 @@ def test_review_failure_sends_it_back_to_be_rewritten():
     assert G.route_after_reviewer({"review": {"ok": False}, "revisions": 1}) == "revise"
 
 
-def test_rewrite_loop_is_bounded():
-    """상한이 없으면 두 모델이 서로 만족하지 못해 무한히 돈다."""
-    assert G.route_after_reviewer({"review": {"ok": False},
-                                   "revisions": MAX_REVISIONS}) == "respond"
+def test_rewrite_loop_is_bounded_but_humans_still_get_to_judge():
+    """상한이 없으면 두 모델이 서로 만족하지 못해 무한히 돈다. 소진 뒤의 갈래:
+
+    기계 오류가 남았으면 respond(만들어 봤자 Jira 가 거부한다). **LLM 의견만** 남았으면
+    propose — 검열자가 만족할 때까지 승인을 막으면 사람이 판단할 기회가 사라진다
+    (실제로 멀쩡한 근거를 '불충분'이라 두 번 반려해 승인 카드가 아예 안 떴다).
+    """
+    exhausted = {"revisions": MAX_REVISIONS}
+    assert G.route_after_reviewer({**exhausted,
+                                   "review": {"ok": False,
+                                              "errors": [{"message": "없는 부모"}]}}) == "respond"
+    assert G.route_after_reviewer({**exhausted,
+                                   "review": {"ok": False, "errors": [],
+                                              "problems": [{"message": "의견"}]}}) == "propose"
 
 
 def test_passing_review_goes_to_approval_not_straight_to_execution():
