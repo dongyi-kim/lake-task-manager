@@ -1,0 +1,159 @@
+"""agent/workflow/session.py — 그래프를 굴리는 바깥 API. 라우트는 이것만 부른다.
+
+여기가 하는 일은 셋이다.
+
+  · **대화를 잇는다** — `thread_id` 로 Checkpointer 에 State 를 맡긴다. 되묻기가 가능해지는 이유.
+  · **관측을 붙인다** — Langfuse `CallbackHandler(session_id=thread_id)` 를 모든 실행에 단다.
+    한 대화가 한 세션으로 묶여야 트레이스를 읽을 수 있다.
+  · **승인 대기를 노출한다** — 그래프가 Operator 앞에서 멈췄다는 사실과, 무엇을 승인해야 하는지를
+    화면이 알 수 있는 형태로 돌려준다.
+
+**질의·응답은 파일로도 남긴다.** Langfuse 가 없는 환경(폐쇄망·미설정)에서도 무엇을 물었고 무엇을
+답했는지는 남아야 한다. 관측 도구가 없다고 기록이 없어지면 사고가 났을 때 아무것도 못 본다.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+
+from langchain_core.messages import HumanMessage
+
+from app.agent import approval
+from app.agent import config as _cfg
+from app.agent.workflow.graph import get_graph
+from app.agent.workflow.state import Node, Role, as_dict
+
+log = logging.getLogger("agent.chat")
+
+RECURSION_LIMIT = 40        # 왕복 상한을 코드로 걸어 두었지만, 그래프 차원의 안전망도 둔다
+
+
+def new_thread() -> str:
+    return uuid.uuid4().hex[:16]
+
+
+def _config(thread_id: str) -> dict:
+    return {"configurable": {"thread_id": thread_id},
+            "callbacks": _cfg.callbacks(session_id=thread_id),
+            "recursion_limit": RECURSION_LIMIT}
+
+
+def _initial(thread_id, text, user_role, user_id) -> dict:
+    from app.agent.tools import set_thread
+    set_thread(thread_id)       # 쓰기 도구가 자기 대화를 안다(모델이 남의 thread 를 못 적게)
+    return {"messages": [HumanMessage(content=text)], "thread_id": thread_id,
+            "user_role": user_role or Role.MEMBER, "user_id": user_id or "",
+            # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
+            # responder 가 다시 '승인 대기'로 흘러간다.
+            "approval_token": "", "result": {}, "revisions": 0, "trace": []}
+
+
+def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") -> dict:
+    """한 턴 굴린다. 승인이 필요한 지점에서 멈추면 `pending` 이 채워져 돌아온다."""
+    tid = thread_id or new_thread()
+    log.info("[%s] Q: %s", tid, (text or "")[:500])
+    g = get_graph()
+    state = g.invoke(_initial(tid, text, user_role, user_id), _config(tid))
+    out = _shape(tid, state)
+    log.info("[%s] A: %s", tid, (out.get("reply") or "")[:1000])
+    return out
+
+
+def resume(thread_id: str, token: str) -> dict:
+    """사용자가 승인했다. 멈춰 있던 자리(Operator)에서 다시 굴린다.
+
+    승인 표시는 여기서 한다 — 그래야 토큰이 **이 대화의 것**인지 확인할 수 있다.
+    """
+    if not approval.approve(token, thread_id):
+        return {"thread_id": thread_id, "ok": False,
+                "error": "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다. 다시 요청하세요."}
+    from app.agent.tools import set_thread
+    set_thread(thread_id)
+    log.info("[%s] 승인됨 — 실행 시작", thread_id)
+    state = get_graph().invoke(None, _config(thread_id))     # None = 멈춘 자리에서 이어서
+    out = _shape(thread_id, state)
+    log.info("[%s] 실행 결과: %s", thread_id, out.get("result"))
+    return out
+
+
+def cancel(thread_id: str, token: str) -> dict:
+    """사용자가 거절했다. 토큰을 버린다 — 그래프는 멈춘 채로 두고 다음 발화로 이어 간다."""
+    approval.reject(token)
+    log.info("[%s] 승인 거절", thread_id)
+    return {"thread_id": thread_id, "ok": True, "cancelled": True}
+
+
+def snapshot(thread_id: str) -> dict:
+    """현재 State. 새로고침한 화면이 대화를 복원할 때 쓴다."""
+    try:
+        st = get_graph().get_state(_config(thread_id))
+    except Exception:
+        return {}
+    return _shape(thread_id, dict(st.values or {}), st)
+
+
+def _shape(thread_id: str, state: dict, snap=None) -> dict:
+    """State → 화면이 쓰는 모양. **비밀도 원본 메시지도 싣지 않는다.**"""
+    if snap is None:
+        try:
+            snap = get_graph().get_state(_config(thread_id))
+        except Exception:
+            snap = None
+    waiting = bool(snap and Node.OPERATOR in (getattr(snap, "next", None) or ()))
+
+    data = as_dict(state or {})
+    out = {"thread_id": thread_id, "ok": not data.get("error"),
+           "reply": data.get("reply") or "", "trace": data.get("trace") or [],
+           "intent": data.get("intent") or "", "situation": data.get("situation") or "",
+           "evidence": data.get("evidence") or [], "related_docs": data.get("related_docs") or [],
+           "questions": data.get("questions") or [], "assignments": data.get("assignments") or [],
+           "review": data.get("review") or {}, "result": data.get("result") or {},
+           "error": data.get("error") or ""}
+
+    # 승인 카드 — 무엇을 승인하는지가 화면과 토큰에 **같은 내용**으로 담겨야 한다.
+    if waiting and data.get("approval_token"):
+        from app.agent.workflow.agents.refiner import as_bulk_items
+        draft = data.get("draft") or {}
+        out["pending"] = {"token": data["approval_token"], "action": "create_tickets",
+                          "mode": draft.get("mode") or "task", "items": as_bulk_items(draft),
+                          "rationale": draft.get("rationale") or ""}
+    return out
+
+
+def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = ""):
+    """진행 상황을 흘려보낸다. 조사에 십수 초가 걸리는데 빈 화면을 보여 줄 수는 없다.
+
+    `subgraphs=True` 를 쓰는 이유 — 역할 안에서 도구를 부르는 중이라는 것까지 보여야
+    "멈춘 것"과 "일하는 중"이 구분된다.
+    """
+    tid = thread_id or new_thread()
+    log.info("[%s] Q(stream): %s", tid, (text or "")[:500])
+    yield {"type": "start", "thread_id": tid}
+    try:
+        for chunk in get_graph().stream(_initial(tid, text, user_role, user_id), _config(tid),
+                                        stream_mode="updates", subgraphs=True):
+            for ev in _events(chunk):
+                yield ev
+    except Exception as e:
+        log.exception("[%s] 그래프 실패", tid)
+        yield {"type": "error", "message": str(e)[:300]}
+    final = _shape(tid, dict((get_graph().get_state(_config(tid)).values or {})))
+    log.info("[%s] A(stream): %s", tid, (final.get("reply") or "")[:1000])
+    yield {"type": "final", **final}
+
+
+def _events(chunk):
+    """LangGraph 의 업데이트 청크 → 화면이 읽는 이벤트. 모양이 버전마다 조금씩 다르다."""
+    payload = chunk[1] if isinstance(chunk, tuple) and len(chunk) == 2 else chunk
+    if not isinstance(payload, dict):
+        return
+    from app.agent.workflow.state import Stage
+    for node, patch in payload.items():
+        if node in ("think", "act"):        # 서브그래프 내부 — 도구를 부르는 중이라는 신호만
+            yield {"type": "step", "node": node, "label": "도구 사용 중"}
+            continue
+        ev = {"type": "node", "node": node, "label": Stage.LABELS.get(node, node)}
+        if isinstance(patch, dict) and patch.get("trace"):
+            ev["note"] = (patch["trace"][-1] or {}).get("note", "")
+        yield ev

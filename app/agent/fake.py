@@ -44,19 +44,36 @@ class FakeChat(BaseChatModel):
     다 쓰면 다시 되비추기로 돌아간다 — 목록이 짧다고 테스트가 죽지 않게.
     """
 
-    responses: Optional[List[str]] = None
+    responses: Optional[List[Any]] = None
     _cursor: int = 0
 
     @property
     def _llm_type(self) -> str:
         return "fake-chat"
 
+    def bind_tools(self, tools, **kwargs):
+        """ReAct 루프가 fake 로도 굴러가게 한다. 도구 스키마는 쓰지 않고 이름만 기억한다.
+
+        **자기 자신을 돌려준다** — 복제하면 `responses` 커서가 갈라져 시나리오가 어긋난다.
+        가짜 모델이니 상태를 공유해도 잃을 게 없다.
+        """
+        object.__setattr__(self, "_tool_names", [getattr(t, "name", str(t)) for t in tools])
+        return self
+
     def _generate(self, messages, stop=None, run_manager: CallbackManagerForLLMRun = None,
                   **kwargs) -> ChatResult:
-        text = self._next(messages, kwargs)
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+        item = self._next(messages, kwargs)
+        # 시나리오가 {"tool": ..., "args": {...}} 를 주면 **도구 호출**을 낸다.
+        # 이게 있어야 "모델이 도구를 부르고 → 결과를 받아 다시 생각하는" 경로를 키 없이 시험한다.
+        if isinstance(item, dict) and item.get("tool"):
+            msg = AIMessage(content=item.get("content", ""), tool_calls=[{
+                "name": item["tool"], "args": item.get("args") or {},
+                "id": f"fake_call_{self._cursor}"}])
+        else:
+            msg = AIMessage(content=str(item))
+        return ChatResult(generations=[ChatGeneration(message=msg)])
 
-    def _next(self, messages, kwargs) -> str:
+    def _next(self, messages, kwargs):
         if self.responses:
             i = self._cursor
             object.__setattr__(self, "_cursor", i + 1)

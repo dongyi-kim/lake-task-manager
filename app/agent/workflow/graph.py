@@ -1,0 +1,191 @@
+"""agent/workflow/graph.py — 여섯 역할을 잇는다.
+
+```
+START ─> planner ─┬─ chitchat ─────────────────────────────────────────> responder ─> END
+                  └─> historian ─┬─ ask ────────────────────────────────> responder
+                                 └─> refiner ─┬─ 질문 있음 ──────────────> responder
+                                        ▲     └─> assigner ─> reviewer
+                                        │                        │
+                                        └─ 재작성(≤2회) ──────────┤
+                                                                 └─ 통과/한계 ─> propose
+                                                                                    │
+                                                                                    ▼
+                                                                               responder
+                                                                                    │
+                                              ┌─── 승인 대기 (interrupt_before) ─────┘
+                                              ▼
+                                          operator ─> responder ─> END
+```
+
+## 왜 이 모양인가
+
+**Historian 을 건너뛰지 않는다**(chitchat 빼고). "CDC 도입해야 해"에 바로 티켓을 만들어 주는
+어시스턴트는 중복 티켓 생성기다. 조사가 이 서비스의 값어치다.
+
+**Refiner ↔ Reviewer 왕복에 상한을 둔다**(`MAX_REVISIONS`). 안 걸면 모델이 서로 만족하지 못해
+무한히 돈다. 상한을 넘으면 **미해결 문제를 그대로 안고** 사용자에게 간다 — 조용히 통과시키는
+것보다 "이건 못 고쳤습니다"가 낫다.
+
+**Operator 앞에서 멈춘다**(`interrupt_before`). 이게 HITL 의 흐름 쪽 절반이다. 나머지 절반인
+내용 보증은 승인 토큰이 한다(`agent/approval.py`) — 흐름은 코드 실수로 우회될 수 있지만
+토큰은 내용 해시에 묶여 있어 못 우회한다.
+
+**Checkpointer 를 붙인다**(`thread_id`). 이게 없으면 되묻기가 불가능하다 — 사용자가 "범위는
+수집까지야"라고만 답했을 때 앞의 조사 결과가 남아 있어야 한다. `MemorySaver` 를 쓰는 이유는
+LTM 이 사용자 PC 에서 도는 단일 프로세스 앱이고, 앱을 껐다 켜면 대화가 사라지는 게 맞기
+때문이다(진행 중인 승인이 재시작 뒤에도 살아 있으면 그게 더 위험하다).
+"""
+
+from __future__ import annotations
+
+from langgraph.graph import END, START, StateGraph
+
+from app.agent.workflow.agents.assigner import Assigner, merge_assignments
+from app.agent.workflow.agents.historian import Historian
+from app.agent.workflow.agents.operator import Operator
+from app.agent.workflow.agents.planner import Planner
+from app.agent.workflow.agents.refiner import Refiner
+from app.agent.workflow.agents.responder import Responder
+from app.agent.workflow.agents.reviewer import Reviewer
+from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node)
+
+_compiled = {"graph": None}
+
+
+def _node(agent):
+    """붙는 것은 언제나 **함수**다 — 컴파일된 서브그래프를 그대로 노드로 쓰면 전체 State 가
+    반환값이 되어 부모의 `add_messages` 리듀서에 통째로 다시 먹힌다."""
+    return agent.node()
+
+
+# ── 라우터: State 만 보고 결정한다(부작용 없음) ──────────────────────
+def route_after_planner(state: AgentState) -> str:
+    if (state.get("intent") or "") == Intent.CHITCHAT:
+        return "respond"
+    return "investigate"
+
+
+def route_after_historian(state: AgentState) -> str:
+    """조사만 하면 되는 요청은 여기서 끝낸다 — 티켓 초안까지 갈 이유가 없다."""
+    return "refine" if (state.get("intent") or "") in (Intent.PLAN_WORK, Intent.MODIFY) else "respond"
+
+
+def route_after_refiner(state: AgentState) -> str:
+    """되물을 게 있으면 사용자에게 돌아간다. 초안이 섰으면 담당자를 본다."""
+    if state.get("questions"):
+        return "respond"
+    return "assign" if (state.get("draft") or {}).get("items") else "respond"
+
+
+def route_after_reviewer(state: AgentState) -> str:
+    """통과하면 승인 요청으로, 아니면 다시 쓰게 한다 — 단, 왕복 상한까지만.
+
+    상한을 넘기면 **미해결 문제를 안고** 사용자에게 간다. 조용히 통과시키는 것보다
+    "이건 못 고쳤습니다"가 낫다 — 판단은 사람이 한다.
+    """
+    if (state.get("review") or {}).get("ok"):
+        return "propose"
+    return "revise" if (state.get("revisions") or 0) < MAX_REVISIONS else "respond"
+
+
+def route_after_responder(state: AgentState) -> str:
+    """말을 끝냈다. 승인받을 초안이 있으면 **여기서 멈춘다**(interrupt_before=operator).
+
+    이미 실행한 뒤(result 가 있음)라면 끝이다 — 안 그러면 responder↔operator 를 맴돈다.
+    """
+    if state.get("result"):
+        return "end"
+    return "execute" if state.get("approval_token") else "end"
+
+
+def _merge_assignments(state: AgentState) -> dict:
+    """담당자 제안을 초안에 실제로 꽂는다. 근거 없는 제안은 반영되지 않는다.
+
+    별도 노드로 둔 이유 — Assigner 는 '제안'을 만들고, 초안을 고치는 것은 다른 일이다.
+    한 노드에서 둘 다 하면 "근거 없는 건 반영 안 한다"는 규칙이 프롬프트 안에 묻힌다.
+    """
+    return {"draft": merge_assignments(state.get("draft"), state.get("assignments"))}
+
+
+def _propose(state: AgentState) -> dict:
+    """승인 토큰을 발급한다 — 화면이 보여 줄 초안과 **같은 내용에 묶인** 토큰이다.
+
+    이 노드가 따로 있는 이유: 토큰 발급은 라우터가 할 수 없고(라우터는 부작용이 없어야 한다),
+    Reviewer 가 할 일도 아니다(검열자가 실행 허가를 내주면 검열이 아니다).
+    """
+    from app.agent import approval
+    from app.agent.workflow.agents.refiner import as_bulk_items
+
+    draft = state.get("draft") or {}
+    items = as_bulk_items(draft)
+    if not items:
+        return {}
+    payload = {"mode": draft.get("mode") or "task", "items": items}
+    return {"approval_token": approval.stage(state.get("thread_id") or "", "create_tickets", payload)}
+
+
+def build(checkpointer=None):
+    """그래프를 조립한다. `checkpointer` 를 주면 대화가 턴을 넘어 이어지고 승인 대기가 가능해진다."""
+    g = StateGraph(AgentState)
+
+    g.add_node(Node.PLANNER, _node(Planner()))
+    g.add_node(Node.HISTORIAN, _node(Historian()))
+    g.add_node(Node.REFINER, _node(Refiner()))
+    g.add_node(Node.ASSIGNER, _node(Assigner()))
+    g.add_node("merge_assignments", _merge_assignments)
+    g.add_node(Node.REVIEWER, _node(Reviewer()))
+    g.add_node("propose", _propose)
+    g.add_node(Node.OPERATOR, _node(Operator()))
+    g.add_node(Node.RESPONDER, _node(Responder()))
+
+    g.add_edge(START, Node.PLANNER)
+    g.add_conditional_edges(Node.PLANNER, route_after_planner,
+                            {"investigate": Node.HISTORIAN, "respond": Node.RESPONDER})
+    g.add_conditional_edges(Node.HISTORIAN, route_after_historian,
+                            {"refine": Node.REFINER, "respond": Node.RESPONDER})
+    g.add_conditional_edges(Node.REFINER, route_after_refiner,
+                            {"assign": Node.ASSIGNER, "respond": Node.RESPONDER})
+    g.add_edge(Node.ASSIGNER, "merge_assignments")
+    g.add_edge("merge_assignments", Node.REVIEWER)
+    g.add_conditional_edges(Node.REVIEWER, route_after_reviewer,
+                            {"revise": Node.REFINER, "propose": "propose",
+                             "respond": Node.RESPONDER})
+    g.add_edge("propose", Node.RESPONDER)
+    g.add_conditional_edges(Node.RESPONDER, route_after_responder,
+                            {"execute": Node.OPERATOR, "end": END})
+    g.add_edge(Node.OPERATOR, Node.RESPONDER)
+
+    # ★ 여기서 멈춘다. 사용자가 승인 카드를 누르기 전엔 Operator 에 닿지 않는다.
+    #   checkpointer 가 없으면 멈출 수가 없으므로(재개할 자리가 없다) interrupt 도 걸지 않는다.
+    return g.compile(checkpointer=checkpointer,
+                     interrupt_before=[Node.OPERATOR] if checkpointer else None)
+
+
+def get_graph():
+    """프로세스 하나가 그래프 하나를 쓴다. 대화 구분은 `thread_id` 가 한다."""
+    if _compiled["graph"] is None:
+        from langgraph.checkpoint.memory import MemorySaver
+        _compiled["graph"] = build(checkpointer=MemorySaver())
+    return _compiled["graph"]
+
+
+def reset():
+    """설정(provider·모델)이 바뀌면 그래프를 다시 만든다. 대화 기록도 함께 버려진다."""
+    _compiled["graph"] = None
+
+
+if __name__ == "__main__":      # 다이어그램 산출 — 기획문서에 넣는다
+    import pathlib
+
+    from app.infra.settings import CACHE_DIR
+    out = pathlib.Path(CACHE_DIR) / "agent_graph.png"
+    graph = build().get_graph(xray=1)
+    try:
+        out.write_bytes(graph.draw_mermaid_png())
+        print(f"PNG: {out}")
+    except Exception as e:      # 렌더 서비스가 막힌 망에서도 mermaid 원문은 나와야 한다
+        print(f"(PNG 실패: {str(e)[:120]})")
+    mmd = out.with_suffix(".mmd")
+    mmd.write_text(graph.draw_mermaid(), encoding="utf-8")
+    print(f"mermaid: {mmd}")
+    print(graph.draw_mermaid())
