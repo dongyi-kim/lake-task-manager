@@ -1,0 +1,25 @@
+# Lake PMO Agent — AI 어시스턴트 경로 (선택 설치)
+#
+#   pip install -r requirements.txt -r requirements-agent.txt
+#
+# 기본 앱(requirements.txt)에 넣지 않는 이유: 대시보드만 쓰는 사용자에게 200MB+ 의존을 강요하지
+# 않는다. Agent 라우트/설정 패널은 이 패키지들이 **설치돼 있을 때만** 켜진다(devtools 게이팅과 동일).
+#
+# 버전은 사내 AI Bootcamp 실습에서 검증된 조합을 기준선으로 고정한다.
+# langchain 0.3.x ↔ langgraph 0.3.x ↔ AOAI api-version 은 호환성 문제가 잦아, 원인 불명 에러가
+# 나면 버전부터 확인한다.
+
+langchain==0.3.19
+langchain-openai==0.3.7
+langchain-community==0.3.18
+langgraph==0.3.2
+openai==1.65.2
+
+# RAG — 로컬 임베디드 벡터 스토어(서버 불필요). 인덱스는 파일로 떨어진다.
+faiss-cpu==1.10.0
+
+# 토큰 수 계산(비용 표시 + 과다 입력 차단)
+tiktoken==0.9.0
+
+# LLM 호출 트레이싱. 자체 호스팅/클라우드 모두 가능하며, 없어도 앱은 돈다(설정 안 하면 비활성).
+langfuse==2.59.7
