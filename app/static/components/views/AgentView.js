@@ -232,8 +232,11 @@ export default {
                  숫자를 봐야 "이건 비싼 질문이었다"를 알고 다음에 다르게 묻는다. -->
             <div v-if="t.usage && t.usage.totalTokens" class="agent-usage"
                  :title="t.usage.model + ' · 입력 ' + t.usage.promptTokens + ' / 출력 ' + t.usage.completionTokens">
+              <!-- ★ 이 컴포넌트의 template 은 JS 백틱 문자열이다 — "$" + "{{" 를 붙여 쓰면
+                   \`\${\` 로 읽혀 JS 보간이 시작돼 버린다(실제로 파일 전체가 SyntaxError 로 죽었다).
+                   달러 기호는 머스태시 안에서 문자열로 만든다. -->
               LLM {{ t.usage.calls }}회 · {{ t.usage.totalTokens.toLocaleString() }} 토큰<template
-                v-if="t.usage.costUsd"> · ${{ t.usage.costUsd.toFixed(4) }}</template>
+                v-if="t.usage.costUsd"> · {{ '$' + t.usage.costUsd.toFixed(4) }}</template>
             </div>
 
             <!-- 근거: 눌러서 확인할 수 있어야 믿을 수 있다 -->
