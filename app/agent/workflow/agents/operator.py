@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from app.agent.workflow.agents.base import ToolAgent
 from app.agent.workflow.agents.refiner import draft_json, draft_text
+from app.agent.prompts.roles import SYSTEM_OPERATOR
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import AgentState, Node, note
 
@@ -52,15 +53,7 @@ class Operator(ToolAgent):
         return T.WRITE_TOOLS + T.REVIEW_TOOLS
 
     def system(self, state):
-        return persona(state, """\
-너는 지금 **승인된 것을 실행**한다. 초안을 고치지 마라 — 승인 화면에 보인 것과 한 글자라도
-다르면 도구가 거부한다(내용 해시가 승인 토큰에 묶여 있다).
-
-- `create_tickets` 에 **주어진 approval_token 을 그대로** 넘긴다. 지어내지 마라.
-- 토큰이 거부되면 다시 시도하지 말고 그 사유를 그대로 보고한다. 승인을 다시 받아야 한다.
-- Jira 는 롤백이 없다. 일부가 실패해도 나머지는 만들어져 있으니, **실패한 항목을 빠짐없이**
-  보고한다. 실패를 삼키는 것이 이 노드가 저지를 수 있는 최악의 일이다.
-- 한 번 실행하면 끝이다. 같은 내용을 두 번 만들지 마라(토큰은 1회용이라 두 번째는 어차피 실패한다).""")
+        return persona(state, SYSTEM_OPERATOR)
 
     def task(self, state):
         draft = state.get("draft") or {}

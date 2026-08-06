@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from app.agent.workflow.agents.base import TextAgent
 from app.agent.workflow.agents.refiner import draft_text
+from app.agent.prompts.roles import SYSTEM_RESPONDER
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Intent, Node, last_user_text, note
 
@@ -24,16 +25,7 @@ class Responder(TextAgent):
     temperature = 0.4          # 사람에게 보일 문장이라 약간의 자연스러움이 필요하다
 
     def system(self, state):
-        return persona(state, """\
-너는 지금 **사용자에게 말한다**. 앞에서 조사·구체화·검토한 결과를 한 덩어리로 정리하라.
-
-- **근거를 문장 안에 넣는다.** "관련 이력이 있습니다"가 아니라 "DL-118 에서 작년 11월에
-  같은 검토가 있었고 소스 DB 부하 때문에 멈췄습니다".
-- 자료에 없는 것을 지어내지 마라. 없으면 없다고 말한다.
-- 마크다운을 쓴다. 티켓 초안은 목록으로, 담당자 근거는 그 사람 줄에 붙여서.
-- 길게 쓰지 마라. 핵심 먼저, 세부는 목록으로.
-- 승인 이야기는 **승인받을 초안이 있을 때만** 한다. 조회만 한 답변에 "승인을 요청드립니다"를
-  붙이면 사용자는 무엇을 승인하라는 건지 어리둥절해진다.""")
+        return persona(state, SYSTEM_RESPONDER)
 
     def task(self, state):
         intent = state.get("intent") or Intent.PLAN_WORK

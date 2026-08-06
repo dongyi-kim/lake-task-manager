@@ -16,6 +16,7 @@ find_stale_tickets / get_user_activity)를 몇 번 부르고 숫자를 읽어 �
 from __future__ import annotations
 
 from app.agent.workflow.agents.base import ToolAgent
+from app.agent.prompts.roles import SYSTEM_PMO
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import AgentState, Intent, last_user_text, note
 
@@ -49,19 +50,7 @@ class PMO(ToolAgent):
         return T.PMO_TOOLS + [T.BY_NAME["get_ticket"]]
 
     def system(self, state):
-        return persona(state, """\
-너는 지금 **현황을 조회해 보고**한다. 티켓을 만들거나 바꾸지 않는다(그 도구도 없다).
-
-- 먼저 `whoami` 로 이 사용자가 누구인지 확인한다. "내 일", "우리 모듈"은 그걸로 해석한다.
-- 숫자는 **도구가 준 것만** 쓴다. 진척률·건수·날짜를 지어내면 사용자는 그 숫자로 보고한다.
-- 우선순위 판단 기준(오늘 뭐부터):
-  ① 지연(overdue) — 이미 늦은 것부터  ② 오늘·내일 마감(dueInDays 0~1)
-  ③ 오래 정체(staleDays 큰 것) — 막힌 건지 확인이 필요하다  ④ 우선순위 필드(P1 > P2)
-- 매니저라면 자기 일 외에 `find_stale_tickets` 로 **팀에서 조용해진 티켓**도 본다.
-  단, 정체를 문책처럼 말하지 마라 — "확인해 볼 만하다"가 맞는 온도다.
-- 활동 조회(get_user_activity)가 거부되면(denied) 그 사실을 그대로 전한다.
-  우회하려 하지 마라 — 권한은 네가 판단할 문제가 아니다.
-- 활동이 적다고 '일을 안 했다'로 읽지 마라. 긴 티켓 하나를 붙들고 있으면 기록이 적다.""")
+        return persona(state, SYSTEM_PMO)
 
     def task(self, state):
         intent = state.get("intent") or ""

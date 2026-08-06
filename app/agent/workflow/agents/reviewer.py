@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.agents.refiner import as_bulk_items, draft_text
+from app.agent.prompts.roles import SYSTEM_REVIEWER
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, last_user_text, note
 
@@ -50,20 +51,7 @@ class Reviewer(StructuredAgent):
     temperature = 0.0          # 검열은 흔들리면 안 된다
 
     def system(self, state):
-        return persona(state, """\
-너는 지금 **검열자**다. 초안을 만든 것이 너라고 생각하지 말고, 남이 만든 것을 트집 잡는다는
-자세로 본다. 자기가 쓴 글을 자기가 검토하면 다 괜찮아 보이는 법이다.
-
-세 가지를 **각각 따로** 판단하라. 하나로 뭉뚱그리지 마라.
-  ① 근거 있는가   — 조사 결과에 없는 티켓 키·사람·날짜가 초안에 있으면 false
-  ② 규칙에 맞는가 — 티켓 작성 규칙(아래 자동 검증 결과와 규칙 문서)을 어겼으면 false
-  ③ 요청에 답하나 — 사용자가 부탁한 일이 초안에 안 담겼거나, 부탁하지 않은 것이 끼었으면 false
-
-**없는 문제를 만들어 내지 마라.** 문제가 없으면 problems 는 빈 배열이다. 검열자가 매번
-무언가를 찾아내야 한다고 생각하면 멀쩡한 초안을 망친다.
-담당자 근거에 **티켓 키나 숫자가 하나라도 있으면** "근거 불충분"으로 잡지 마라 — 더 나은
-근거를 바라는 건 개선 희망이지 결함이 아니다. "리더 판단에 맡기라"는 사용자의 지시는
-문제가 아니라 **입력**이다.""")
+        return persona(state, SYSTEM_REVIEWER)
 
     def task(self, state):
         auto = _machine_check(state)

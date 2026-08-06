@@ -15,7 +15,10 @@
 /* ── 화면 뼈대 ─────────────────────────────────────────────────
  * 대화는 **입력창이 항상 아래 고정**이어야 한다. 페이지 전체가 스크롤되면 답이 길어질 때마다
  * 입력창을 찾아 내려가야 한다 — 스크롤은 대화 목록만 진다. */
-.agentview { display:flex; flex-direction:column; height:calc(100vh - 118px); min-height:420px; }
+.agentview { display:flex; flex-direction:column; height:calc(100vh - 118px); min-height:420px;
+  /* 대화는 읽는 폭이 생명이다 — 와이드 모니터에서 한 줄이 화면 끝까지 가면 눈이 길을 잃는다.
+     본문 열을 880px 로 묶고 가운데 둔다(head/입력창까지 같은 폭). */
+  max-width:880px; margin:0 auto; width:100%; }
 
 .agent-head { display:flex; align-items:flex-start; justify-content:space-between;
   gap:16px; padding:4px 2px 12px; border-bottom:1px solid var(--border); flex-wrap:wrap; }
@@ -54,7 +57,8 @@
 .agent-bubble.user { background:var(--accent); color:#fff; padding:10px 15px;
   font-size:13.5px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
 .agent-bubble.agent { background:var(--panel); border:1px solid var(--border);
-  padding:14px 16px; color:var(--text); }
+  border-left:3px solid var(--accent);           /* 에이전트 발화 표식 — 아바타 없이도 구분된다 */
+  padding:14px 16px; color:var(--text); box-shadow:var(--shadow); }
 /* 답변에는 표·긴 URL 이 섞인다. 말풍선이 화면을 밀어내지 않게 안에서 감싼다. */
 .agent-bubble.agent { overflow-wrap:anywhere; }
 
@@ -131,6 +135,37 @@
   background:color-mix(in srgb, var(--warn) 10%, transparent);
   color:var(--warn); font-size:12px; line-height:1.6; }
 .agent-card-act { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border); }
+
+/* ── 되묻기 폼 — 타이핑 대신 버튼·자동완성으로 답한다 ─────────────
+ * 에이전트의 질문(kind/options/field)을 그대로 폼으로 그린다. 제출하면 "질문 → 답" 문장이
+ * 되어 일반 메시지로 나간다 — 백엔드는 폼의 존재를 모른다(자연어 답과 동일). */
+.agent-qform { margin-top:14px; border:1.5px solid var(--accent); border-radius:10px;
+  background:color-mix(in srgb, var(--accent) 4%, var(--panel)); padding:12px 14px; }
+.aq { margin-bottom:12px; }
+.aq:last-of-type { margin-bottom:4px; }
+.aq-q { font-size:13px; font-weight:600; color:var(--text); margin-bottom:7px; }
+.aq-opts { display:flex; flex-wrap:wrap; gap:6px; }
+.aq-opts button { position:relative; padding:6px 12px; font-size:12.5px; color:var(--text);
+  background:var(--panel); border:1px solid var(--border); border-radius:18px; cursor:pointer; }
+.aq-opts button:hover { border-color:var(--accent); }
+.aq-opts button.on { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+/* 추천(첫 보기)은 작게 표기 — 미리 눌러 두지는 않는다(선택은 사용자의 것) */
+.aq-opts button em { font-style:normal; font-size:9.5px; margin-left:5px; padding:1px 5px;
+  border-radius:8px; background:color-mix(in srgb, var(--good) 15%, transparent); color:var(--good); }
+.aq-opts button.on em { background:rgba(255,255,255,.25); color:#fff; }
+.aq-in { width:100%; max-width:420px; padding:7px 11px; font:inherit; font-size:13px;
+  color:var(--text); background:var(--panel); border:1px solid var(--border); border-radius:7px; }
+.aq-in:focus { outline:none; border-color:var(--accent); }
+.aq-date { max-width:180px; }
+.aq-ac { position:relative; max-width:420px; }
+.aq-drop { position:absolute; top:calc(100% + 3px); left:0; right:0; z-index:30;
+  background:var(--panel); border:1px solid var(--border-hi); border-radius:8px;
+  box-shadow:var(--shadow); overflow:hidden; }
+.aq-drop button { display:block; width:100%; text-align:left; padding:7px 11px; font-size:12.5px;
+  color:var(--text); background:none; border:0; cursor:pointer; }
+.aq-drop button:hover { background:var(--panel-2); }
+.aq-act { display:flex; gap:8px; margin-top:10px; padding-top:10px;
+  border-top:1px dashed var(--border); }
 
 /* ── 진행 상황 — "멈춤"과 "일하는 중"을 가른다 ────────────────── */
 .agent-steps { display:flex; flex-direction:column; gap:2px; padding:8px 14px;

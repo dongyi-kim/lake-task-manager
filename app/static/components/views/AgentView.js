@@ -49,6 +49,9 @@ export default {
       steps: [],              // 지금 굴러가는 진행(스트리밍 중에만)
       abort: null,
       approving: false,
+      answers: {},            // 되묻기 폼의 답(qi → 값)
+      acRows: [], acOpen: -1, // 자동완성 결과·열린 질문 index
+      priorities: [],
     };
   },
   computed: {
@@ -63,6 +66,7 @@ export default {
     },
   },
   mounted() {
+    this.loadPriorities().then((p) => { this.priorities = p; });
     api.prefs()
       .then((p) => {
         this.ready = !!p.agentEnabled;
@@ -180,6 +184,68 @@ export default {
       const a = (turn.assignments || []).find((x) => x.index === i);
       return a ? a : null;
     },
+
+    // ── 되묻기 폼 ──────────────────────────────────────────────
+    // 에이전트의 질문(kind/options/field)을 폼으로 그리고, 답을 모아 **한 문장으로** 보낸다.
+    // 백엔드는 자연어 답을 받는 것과 동일 — 폼은 순전히 입력을 쉽게 만드는 층이다.
+    qKey(qi) { return "q" + qi; },
+    setAns(qi, v) { this.answers[this.qKey(qi)] = v; this.acOpen = -1; },
+    pickOpt(qi, opt) {
+      this.answers[this.qKey(qi)] = this.answers[this.qKey(qi)] === opt ? "" : opt;
+    },
+    async acSearch(qi, field, ev) {
+      const q = (ev.target.value || "").trim();
+      this.answers[this.qKey(qi)] = q;
+      if (field === "priority") return;                 // 우선순위는 고정 보기라 검색이 없다
+      clearTimeout(this._acT);
+      this._acT = setTimeout(async () => {
+        try {
+          let rows = [];
+          if (field === "assignee") {
+            const r = await fetch("/api/mention/users?q=" + encodeURIComponent(q)).then((x) => x.json());
+            rows = (r || []).map((u) => ({ v: u.id, label: u.name + " (" + u.id + ")" }));
+          } else if (field === "epic") {
+            const r = await fetch("/api/epic-candidates?q=" + encodeURIComponent(q)).then((x) => x.json());
+            rows = ((r && r.items) || []).map((e) => ({ v: e.key, label: e.key + " " + (e.summary || "") }));
+          }
+          this.acRows = rows.slice(0, 7);
+          this.acOpen = this.acRows.length ? qi : -1;
+        } catch (e) { this.acOpen = -1; }
+      }, 250);
+    },
+    async loadPriorities() {
+      if (this._pri) return this._pri;
+      try {
+        const r = await fetch("/api/options/priorities").then((x) => x.json());
+        this._pri = (r || []).map((x) => x.name);
+      } catch (e) { this._pri = []; }
+      return this._pri;
+    },
+    optionsFor(q) {
+      if (q.options && q.options.length) return q.options;
+      if (q.field === "priority") return this.priorities;
+      return [];
+    },
+    formReady(turn) {
+      // 전부 답할 필요는 없다 — 하나라도 채웠으면 보낼 수 있다("나머지는 알아서" 도 유효한 답).
+      return (turn.questions || []).some((q, qi) => (this.answers[this.qKey(qi)] || "").trim());
+    },
+    submitAnswers(turn) {
+      const lines = [];
+      (turn.questions || []).forEach((q, qi) => {
+        const a = (this.answers[this.qKey(qi)] || "").trim();
+        if (a) lines.push((q.question || q) + " → " + a);
+      });
+      if (!lines.length) return;
+      this.answers = {};
+      this.text = lines.join("\n");
+      this.send();
+    },
+    skipAnswers() {
+      this.answers = {};
+      this.text = "나머지는 합리적 기본값으로 알아서 진행해줘";
+      this.send();
+    },
   },
 
   template: `
@@ -262,6 +328,45 @@ export default {
             <div v-if="t.result && (t.result.failed || []).length" class="agent-failed">
               <div class="agent-ev-h">실패</div>
               <div v-for="(f, i) in t.result.failed" :key="i">{{ f.summary }} — {{ f.error }}</div>
+            </div>
+
+            <!-- 되묻기 폼 — 질문을 타이핑 대신 버튼·자동완성으로 답한다.
+                 마지막 턴에만 활성(지난 질문에 답해 봤자 대화는 이미 지나갔다). -->
+            <div v-if="t.questions && t.questions.length && ti === turns.length - 1 && !busy"
+                 class="agent-qform">
+              <div v-for="(q, qi) in t.questions" :key="qi" class="aq">
+                <div class="aq-q">{{ q.question || q }}</div>
+
+                <!-- 객관식: 보기 버튼 (추천이 맨 앞) -->
+                <div v-if="optionsFor(q).length" class="aq-opts">
+                  <button v-for="(opt, oi) in optionsFor(q)" :key="opt"
+                          :class="{ on: answers[qKey(qi)] === opt, rec: oi === 0 }"
+                          @click="pickOpt(qi, opt)">{{ opt }}<em v-if="oi === 0">추천</em></button>
+                </div>
+
+                <!-- 날짜 -->
+                <input v-else-if="q.kind === 'date'" type="date" class="aq-in aq-date"
+                       :value="answers[qKey(qi)] || ''" @input="setAns(qi, $event.target.value)">
+
+                <!-- 담당자·Epic: 자동완성 -->
+                <div v-else-if="q.field === 'assignee' || q.field === 'epic'" class="aq-ac">
+                  <input class="aq-in" :value="answers[qKey(qi)] || ''"
+                         :placeholder="q.field === 'assignee' ? '이름이나 사번으로 검색' : 'Epic 키나 제목으로 검색'"
+                         @input="acSearch(qi, q.field, $event)" @focus="acSearch(qi, q.field, $event)">
+                  <div v-if="acOpen === qi" class="aq-drop">
+                    <button v-for="r in acRows" :key="r.v" @mousedown.prevent="setAns(qi, r.v)">
+                      {{ r.label }}</button>
+                  </div>
+                </div>
+
+                <!-- 자유 서술 -->
+                <input v-else class="aq-in" :value="answers[qKey(qi)] || ''"
+                       placeholder="답을 입력하세요" @input="setAns(qi, $event.target.value)">
+              </div>
+              <div class="aq-act">
+                <button class="ag-ok" :disabled="!formReady(t)" @click="submitAnswers(t)">답변 보내기</button>
+                <button class="ag-cancel" @click="skipAnswers()">알아서 진행해줘</button>
+              </div>
             </div>
 
             <!-- ★ HITL 승인 카드 — 여기서 [생성]을 눌러야만 쓰기가 시작된다 -->

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from app.agent.workflow.agents.base import StructuredAgent
+from app.agent.prompts.roles import SYSTEM_PLANNER
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import AgentState, Intent, Node, conversation, note
 
@@ -58,9 +59,7 @@ class Planner(StructuredAgent):
     temperature = 0.0          # 분류는 흔들리면 안 된다
 
     def system(self, state):
-        return persona(state, """\
-너는 지금 **분류만** 한다. 답을 만들거나 조사하지 않는다.
-판단이 애매하면 더 넓은 쪽(plan_work)을 고른다 — 조사를 더 하는 손해가 놓치는 손해보다 작다.""")
+        return persona(state, SYSTEM_PLANNER)
 
     def task(self, state):
         # Few-shot — 경계가 애매한 갈래(ask↔progress↔activity, plan_work↔report_bug)를
@@ -82,6 +81,8 @@ class Planner(StructuredAgent):
 - "나 오늘 뭐 해야 하지?" → my_day (자기 할 일)
 - "skcc.x1042 최근 3일간 뭐 했어?" → activity (**사람**의 활동)
 - "CDC 검토가 왜 멈췄었지?" → ask (과거 경위를 묻는다 — 상태 숫자가 아니라 이야기)
+- "지난 분기에 성능 관련해서 어떤 논의가 있었어?" → ask (★ progress 아님 — 진척률 숫자가
+  아니라 **지나간 논의·기록**을 찾는 질문이다. "어디까지 왔어"만 progress 다)
 - "DL-207 담당자를 x1103 으로 바꿔줘" → modify
 
 ## 대화

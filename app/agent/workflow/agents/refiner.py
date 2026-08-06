@@ -38,11 +38,29 @@ ITEM = {
     "required": ["summary", "type"],
 }
 
+# 질문은 문자열이 아니라 **폼으로 그릴 수 있는 구조**로 받는다. "P1/P2/P3 중 뭘로 할까요?"를
+# 문장으로 내면 사용자는 타이핑해야 하지만, choice+options 로 내면 버튼 하나다.
+# field 를 표시하면 화면이 그 속성 전용 자동완성(담당자·Epic·우선순위)을 붙인다.
+QUESTION = {
+    "type": "object",
+    "properties": {
+        "question": {"type": "string", "description": "물어볼 것 한 문장"},
+        "kind": {"type": "string", "enum": ["text", "choice", "date"],
+                 "description": "text=자유 서술 / choice=보기 중 선택 / date=날짜"},
+        "options": {"type": "array", "items": {"type": "string"},
+                    "description": "kind=choice 일 때 보기 2~5개. 네가 추천하는 것을 앞에 둔다"},
+        "field": {"type": "string",
+                  "enum": ["", "assignee", "epic", "priority", "duedate", "component"],
+                  "description": "티켓 속성을 묻는 질문이면 그 필드명 — 화면이 전용 자동완성을 붙인다"},
+    },
+    "required": ["question", "kind"],
+}
+
 SCHEMA = {
     "type": "object",
     "properties": {
         "questions": {
-            "type": "array", "items": {"type": "string"},
+            "type": "array", "items": QUESTION,
             "description": ("사용자에게 되물을 것. **사용자만 아는 것**만(범위·완료조건·기한·의도). "
                             "찾아보면 아는 것은 넣지 마라. 물을 게 없으면 빈 배열. 최대 3개"),
         },
@@ -142,7 +160,16 @@ class Refiner(ToolAgent):
         return SCHEMA
 
     def apply(self, state, out):
-        qs = [q for q in (out.get("questions") or []) if str(q).strip()][:3]
+        # 문자열로 오면(구모델·fake) 구조로 승격한다 — 화면은 dict 만 다루면 된다.
+        qs = []
+        for q in (out.get("questions") or [])[:3]:
+            if isinstance(q, str) and q.strip():
+                qs.append({"question": q.strip(), "kind": "text", "options": [], "field": ""})
+            elif isinstance(q, dict) and str(q.get("question") or "").strip():
+                qs.append({"question": str(q["question"]).strip(),
+                           "kind": q.get("kind") or "text",
+                           "options": [str(o) for o in (q.get("options") or []) if str(o).strip()][:5],
+                           "field": q.get("field") or ""})
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
         mode = out.get("mode") or "task"
         # ★ 기계적 가드 — task 배치에 Sub-Task 가 섞이면 그 항목은 뺀다. 프롬프트로 막았는데도

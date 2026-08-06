@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from app.agent.workflow.agents.base import ToolAgent
 from app.agent.workflow.agents.refiner import draft_text
+from app.agent.prompts.roles import SYSTEM_ASSIGNER
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, note
 
@@ -69,24 +70,7 @@ class Assigner(ToolAgent):
         return T.PEOPLE_TOOLS + T.RULE_TOOLS
 
     def system(self, state):
-        return persona(state, """\
-너는 지금 **담당자를 제안**한다. 확정하지 않는다 — 배정은 리더의 권한이고 너는 근거를 갖춘
-후보를 올릴 뿐이다.
-
-먼저 `search_rules` 로 담당자 추천 정책을 확인하라(사번 규칙과 하지 말아야 할 것들이 있다).
-
-조사 순서:
-1. `get_module_people` 로 후보 풀을 만든다. 모듈을 못 찾으면 `get_team_workload` 로 전원을 본다.
-2. Historian 이 찾은 **유사 티켓마다** `get_ticket_participants` 를 부른다.
-   ★ 담당자 필드엔 없지만 **코멘트로 그 논의를 끌고 간 사람**이 여기서 나온다. 가장 강한 신호다.
-3. 후보를 2~3명으로 좁힌 뒤 `get_person_profile` 로 워크로드와 최근 활동을 본다.
-
-지켜야 할 것:
-- **모든 근거에 숫자나 티켓 키를 넣는다.** 없으면 그건 근거가 아니라 인상이다.
-- 워크로드 건수만 보고 가장 한가한 사람에게 주지 않는다. 건수는 난이도를 모른다.
-- 운영 인력(`i` 로 시작하는 사번)에게 신규 개발 Story 를 기본값으로 주지 않는다.
-- 근거를 못 찾으면 **user 를 빈 문자열로 두고** reasons 에 왜 못 정했는지 적는다.
-  억지 추천보다 "정하지 못했다"가 낫다.""")
+        return persona(state, SYSTEM_ASSIGNER)
 
     def task(self, state):
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"

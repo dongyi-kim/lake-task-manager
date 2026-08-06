@@ -15,6 +15,7 @@ ToolAgent 인 이유 — 몇 번 검색해야 충분한지는 미리 알 수 없
 from __future__ import annotations
 
 from app.agent.workflow.agents.base import ToolAgent
+from app.agent.prompts.roles import SYSTEM_HISTORIAN
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, last_user_text, note
 
@@ -66,19 +67,7 @@ class Historian(ToolAgent):
         return T.SEARCH_TOOLS
 
     def system(self, state):
-        return persona(state, """\
-너는 지금 **조사만** 한다. 티켓을 만들거나 담당자를 정하지 않는다(그 도구도 갖고 있지 않다).
-
-조사 요령:
-1. `search_work_history` 로 시작한다. 결과가 빈약하면 **말을 바꿔 다시** 찾는다
-   (약어↔풀어쓴 말, 상위 개념, 영어↔한국어).
-2. 그럴듯한 티켓이 나오면 `get_ticket` 으로 **열어서 코멘트까지 읽는다.**
-   "그래서 어떻게 하기로 했나"는 요약이 아니라 코멘트에 있다.
-3. 실마리가 잡히면 `get_ticket_context` 로 연관 티켓·관련 문서까지 한 홉 나간다.
-4. 키워드로 안 잡히는데 맥락이 필요하면 `deep_search` 를 **한 번만** 쓴다(비싸다).
-
-멈출 때: 같은 결과가 반복되거나, 관련 없는 것만 나오기 시작하면 그만한다.
-**아무것도 못 찾는 것도 결론이다.** 억지로 관련 있어 보이는 티켓을 끌어오지 마라.""")
+        return persona(state, SYSTEM_HISTORIAN)
 
     def task(self, state):
         kws = ", ".join(state.get("keywords") or []) or last_user_text(state)
