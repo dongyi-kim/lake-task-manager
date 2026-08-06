@@ -192,8 +192,16 @@ def real_draft(monkeypatch):
     승인 토큰 대조 · 실제 티켓 생성.
     """
     from app.agent.workflow.agents.operator import Operator
+    from app.agent.workflow.agents.planner import Planner
     from app.agent.workflow.agents.refiner import Refiner, as_bulk_items
     from app.agent.workflow.agents.reviewer import Reviewer, _machine_check
+    from app.agent.workflow.state import Intent
+
+    # Planner 도 고정한다 — fake 의 enum 선택은 해시라 **의도 갈래가 늘어날 때마다** 어디로
+    # 떨어질지 바뀐다(실제로 pmo 갈래가 생기자 이 시나리오가 그쪽으로 새서 깨졌다).
+    # 이 테스트의 관심사는 분류가 아니라 승인 이음매다.
+    monkeypatch.setattr(Planner, "node", lambda self: (lambda state: {
+        "intent": Intent.PLAN_WORK, "keywords": ["CDC"], "sufficient": True}))
 
     monkeypatch.setattr(Refiner, "node", lambda self: (lambda state: {
         "questions": [], "turns": 1,

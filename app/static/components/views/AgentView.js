@@ -90,7 +90,8 @@ export default {
       this.text = "";
       this.turns.push({ who: "user", text });
       const turn = { who: "agent", text: "", trace: [], evidence: [], docs: [],
-                     questions: [], assignments: [], review: {}, pending: null, result: null };
+                     questions: [], assignments: [], review: {}, pending: null, result: null,
+                     usage: null };
       this.turns.push(turn);
       this.busy = true;
       this.steps = [];
@@ -116,6 +117,7 @@ export default {
               docs: ev.related_docs || [], questions: ev.questions || [],
               assignments: ev.assignments || [], review: ev.review || {},
               pending: ev.pending || null, result: ev.result || null,
+              usage: ev.usage || null,
             });
                 if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
             this.busy = false;
@@ -223,6 +225,14 @@ export default {
             <div v-if="t.text" class="agent-md" v-html="md(t.text)"></div>
             <div v-else-if="busy && ti === turns.length - 1" class="agent-thinking">
               <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            </div>
+
+            <!-- 비용 — 질문 하나로 보이지만 안에서 LLM 을 예닐곱 번 부른다.
+                 숫자를 봐야 "이건 비싼 질문이었다"를 알고 다음에 다르게 묻는다. -->
+            <div v-if="t.usage && t.usage.totalTokens" class="agent-usage"
+                 :title="t.usage.model + ' · 입력 ' + t.usage.promptTokens + ' / 출력 ' + t.usage.completionTokens">
+              LLM {{ t.usage.calls }}회 · {{ t.usage.totalTokens.toLocaleString() }} 토큰<template
+                v-if="t.usage.costUsd"> · ${{ t.usage.costUsd.toFixed(4) }}</template>
             </div>
 
             <!-- 근거: 눌러서 확인할 수 있어야 믿을 수 있다 -->

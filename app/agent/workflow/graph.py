@@ -2,6 +2,7 @@
 
 ```
 START ─> planner ─┬─ chitchat ─────────────────────────────────────────> responder ─> END
+                  ├─ my_day/progress/activity ──> pmo(현황 조회) ────────> responder
                   └─> historian ─┬─ ask ────────────────────────────────> responder
                                  └─> refiner ─┬─ 질문 있음 ──────────────> responder
                                         ▲     └─> assigner ─> reviewer
@@ -44,6 +45,7 @@ from app.agent.workflow.agents.assigner import Assigner, merge_assignments
 from app.agent.workflow.agents.historian import Historian
 from app.agent.workflow.agents.operator import Operator
 from app.agent.workflow.agents.planner import Planner
+from app.agent.workflow.agents.pmo import PMO
 from app.agent.workflow.agents.refiner import Refiner
 from app.agent.workflow.agents.responder import Responder
 from app.agent.workflow.agents.reviewer import Reviewer
@@ -60,14 +62,22 @@ def _node(agent):
 
 # ── 라우터: State 만 보고 결정한다(부작용 없음) ──────────────────────
 def route_after_planner(state: AgentState) -> str:
-    if (state.get("intent") or "") == Intent.CHITCHAT:
+    """세 갈래 — 조사(historian) / 현황 직행(pmo) / 그냥 답(responder).
+
+    my_day·progress·activity 를 Historian 에 태우지 않는 이유: 그 요청들은 과거 발굴이 아니라
+    **지금 상태의 집계**다. 검색-열람-링크추적은 낭비이고, 느린 데다 답도 더 나빠진다.
+    """
+    intent = state.get("intent") or ""
+    if intent == Intent.CHITCHAT:
         return "respond"
+    if intent in Intent.DIRECT_ANSWER:
+        return "pmo"
     return "investigate"
 
 
 def route_after_historian(state: AgentState) -> str:
     """조사만 하면 되는 요청은 여기서 끝낸다 — 티켓 초안까지 갈 이유가 없다."""
-    return "refine" if (state.get("intent") or "") in (Intent.PLAN_WORK, Intent.MODIFY) else "respond"
+    return "refine" if (state.get("intent") or "") in Intent.DRAFTS_TICKETS else "respond"
 
 
 def route_after_refiner(state: AgentState) -> str:
@@ -129,6 +139,7 @@ def build(checkpointer=None):
     g = StateGraph(AgentState)
 
     g.add_node(Node.PLANNER, _node(Planner()))
+    g.add_node("pmo", _node(PMO()))
     g.add_node(Node.HISTORIAN, _node(Historian()))
     g.add_node(Node.REFINER, _node(Refiner()))
     g.add_node(Node.ASSIGNER, _node(Assigner()))
@@ -140,7 +151,9 @@ def build(checkpointer=None):
 
     g.add_edge(START, Node.PLANNER)
     g.add_conditional_edges(Node.PLANNER, route_after_planner,
-                            {"investigate": Node.HISTORIAN, "respond": Node.RESPONDER})
+                            {"investigate": Node.HISTORIAN, "pmo": "pmo",
+                             "respond": Node.RESPONDER})
+    g.add_edge("pmo", Node.RESPONDER)
     g.add_conditional_edges(Node.HISTORIAN, route_after_historian,
                             {"refine": Node.REFINER, "respond": Node.RESPONDER})
     g.add_conditional_edges(Node.REFINER, route_after_refiner,

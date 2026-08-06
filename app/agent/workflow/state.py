@@ -29,11 +29,25 @@ class Node:
 
 
 class Intent:
-    """Planner 가 고르는 갈래. 이 값이 그래프의 첫 분기를 결정한다."""
+    """Planner 가 고르는 갈래. 이 값이 그래프의 첫 분기를 결정한다.
+
+    갈래를 늘릴 때는 **다른 길이 필요할 때만** 늘린다. "무엇을 조회하나"가 다를 뿐 길이
+    같다면(조사→답변) 같은 의도로 묶고 도구 선택은 모델에게 맡긴다 — 여기서 REPORT_BUG 와
+    MY_DAY 등을 나눈 이유는 지나는 노드와 필요한 도구 묶음이 실제로 다르기 때문이다.
+    """
     ASK = "ask"                # 그냥 물어본 것 — 찾아서 답하면 끝
     PLAN_WORK = "plan_work"    # "~~한 업무를 해야 한다" — 티켓 트리까지 간다
+    REPORT_BUG = "report_bug"  # "~~한 버그가 발견됐다" — Bug 티켓 + 담당 추천 + 링크까지
+    MY_DAY = "my_day"          # "나 오늘 뭐 해야 할까" — 내 일감을 보고 우선순위를 제안
+    PROGRESS = "progress"      # "~~ 진척도 확인" — Epic/모듈/WBS 진척률과 그 이유
+    ACTIVITY = "activity"      # "A가 최근 뭐 했어?" — 타인 활동 조회(매니저 게이트는 도구가 건다)
     MODIFY = "modify"          # 기존 티켓의 속성을 바꿔 달라
     CHITCHAT = "chitchat"      # 업무 요청이 아님
+
+    # 조사(historian)가 필요한 갈래 / 티켓 초안까지 가는 갈래 — 라우터가 이 집합만 본다.
+    NEEDS_RESEARCH = (ASK, PLAN_WORK, REPORT_BUG, MODIFY)
+    DRAFTS_TICKETS = (PLAN_WORK, REPORT_BUG, MODIFY)
+    DIRECT_ANSWER = (MY_DAY, PROGRESS, ACTIVITY)   # 검색 대신 PMO 도구로 바로 답한다
 
 
 class Role:
@@ -53,6 +67,7 @@ class Stage:
         Node.REVIEWER: "규칙 검증",
         Node.OPERATOR: "티켓 생성",
         Node.RESPONDER: "답변 정리",
+        "pmo": "현황 조회",
     }
 
 
@@ -82,6 +97,10 @@ class AgentState(TypedDict, total=False):
     related_docs: list              # [{"title","url"}]
     epic_candidate: str             # 붙일 만한 상위 Epic
     already_exists: bool            # 사실상 같은 일을 하는 티켓이 이미 있다 — 새로 만들지 말라는 신호
+
+    # ── PMO (my_day/progress/activity 직행) ──
+    pmo_findings: list              # [{"key","point","action"}] 조회에서 확인한 사실
+    pmo_caution: str                # 읽을 때의 주의(활동 적음 ≠ 태만 등)
 
     # ── Refiner ──
     questions: list                 # 사용자에게 되물을 것(비면 진행)

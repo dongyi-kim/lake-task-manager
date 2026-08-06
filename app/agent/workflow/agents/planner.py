@@ -19,9 +19,16 @@ SCHEMA = {
     "properties": {
         "intent": {
             "type": "string",
-            "enum": [Intent.ASK, Intent.PLAN_WORK, Intent.MODIFY, Intent.CHITCHAT],
-            "description": ("ask=이미 있는 것에 대해 물음 / plan_work=새 업무를 시작하려 함 / "
-                            "modify=기존 티켓의 담당자·마감 등을 바꾸려 함 / chitchat=업무 요청 아님"),
+            "enum": [Intent.ASK, Intent.PLAN_WORK, Intent.REPORT_BUG, Intent.MY_DAY,
+                     Intent.PROGRESS, Intent.ACTIVITY, Intent.MODIFY, Intent.CHITCHAT],
+            "description": (
+                "ask=이미 있는 것에 대해 물음(이력·경위) / "
+                "plan_work=새 업무를 시작하려 함(티켓 트리까지) / "
+                "report_bug=버그·장애를 발견했다고 알림(Bug 티켓 생성까지) / "
+                "my_day=자기가 오늘/이번주 뭘 해야 하는지 물음 / "
+                "progress=Epic·모듈·WBS 의 진척도/현황을 물음 / "
+                "activity=특정 **사람**이 최근 무엇을 했는지 물음 / "
+                "modify=기존 티켓의 담당자·마감 등을 바꾸려 함 / chitchat=업무 요청 아님"),
         },
         "keywords": {
             "type": "array", "items": {"type": "string"},
@@ -56,6 +63,8 @@ class Planner(StructuredAgent):
 판단이 애매하면 더 넓은 쪽(plan_work)을 고른다 — 조사를 더 하는 손해가 놓치는 손해보다 작다.""")
 
     def task(self, state):
+        # Few-shot — 경계가 애매한 갈래(ask↔progress↔activity, plan_work↔report_bug)를
+        # 예시로 가른다. 규칙 문장보다 예시가 분류를 훨씬 안정시킨다(In-Context Learning).
         return f"""\
 # 명령서
 아래 대화에서 사용자가 원하는 것을 분류하고, 검색에 쓸 핵심어를 뽑아라.
@@ -64,6 +73,16 @@ class Planner(StructuredAgent):
 - 핵심어는 **검색용**이다. "해야 한다", "관련해서" 같은 말은 빼고 명사구만 남긴다.
 - 티켓 키는 사용자가 실제로 적은 것만 옮긴다.
 - 모듈은 확신이 있을 때만 고른다.
+
+## 분류 예시
+- "실시간 수집에 CDC를 도입해야 한다" → plan_work (새 일을 벌인다)
+- "적재 배치가 어젯밤부터 계속 실패한다" → report_bug (깨진 것을 알린다)
+- "DL-101 어떻게 진행되고 있어?" → progress (티켓·Epic 의 진척 상태)
+- "ETL 모듈 진척률 알려줘" → progress
+- "나 오늘 뭐 해야 하지?" → my_day (자기 할 일)
+- "skcc.x1042 최근 3일간 뭐 했어?" → activity (**사람**의 활동)
+- "CDC 검토가 왜 멈췄었지?" → ask (과거 경위를 묻는다 — 상태 숫자가 아니라 이야기)
+- "DL-207 담당자를 x1103 으로 바꿔줘" → modify
 
 ## 대화
 {conversation(state)}"""

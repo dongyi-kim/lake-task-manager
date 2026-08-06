@@ -48,6 +48,10 @@ class Responder(TextAgent):
         elif state.get("draft", {}).get("items"):
             goal = ("상황 → 티켓 초안 → 담당자 근거 → 검증 결과 순으로 정리하고, "
                     "**마지막에 승인을 요청**하라. 아직 만들어지지 않았음을 분명히 하라.")
+        elif intent in Intent.DIRECT_ANSWER:
+            goal = ("현황 조회 결과를 보고하라. 숫자와 티켓 키를 그대로 쓰고, "
+                    "권하는 행동(action)이 있으면 항목마다 붙여라. 조회가 거부됐다면(권한) "
+                    "그 사실을 그대로 전하라.")
         elif intent in (Intent.ASK, Intent.CHITCHAT):
             goal = "조사 결과로 질문에 답하라. 못 찾았으면 못 찾았다고 하라."
         else:
@@ -69,8 +73,13 @@ class Responder(TextAgent):
         made = "\n".join(f"- {c.get('key')} {c.get('summary','')}" for c in (result.get("created") or []))
         bad = "\n".join(f"- {f.get('summary','')}: {f.get('error','')}" for f in (result.get("failed") or []))
 
+        pmo = "\n".join(
+            f"- {f.get('key','')} {f.get('point','')}" + (f" → {f['action']}" if f.get("action") else "")
+            for f in (state.get("pmo_findings") or []))
         data = wrap_data(
             data_block("현재 상황(조사 결과)", state.get("situation")),
+            data_block("현황 조회 결과", pmo),
+            data_block("읽을 때 주의", state.get("pmo_caution")),
             data_block("근거 티켓", ev),
             data_block("관련 문서", docs),
             data_block("티켓 초안 (아직 만들어지지 않음)", draft_text(state.get("draft"))),

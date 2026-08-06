@@ -19,8 +19,8 @@ import json
 
 from app.agent.workflow.agents.base import ToolAgent
 from app.agent.workflow.prompts import data_block, persona, wrap_data
-from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Node, conversation,
-                                      last_user_text, note)
+from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
+                                      conversation, last_user_text, note)
 
 ITEM = {
     "type": "object",
@@ -88,6 +88,17 @@ class Refiner(ToolAgent):
 - Story Point 는 넣지 않는다(Story 에만 매길 수 있고, 생성 시점엔 못 넣는다).{extra}""")
 
     def task(self, state):
+        # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
+        if (state.get("intent") or "") == Intent.REPORT_BUG:
+            goal = """버그 신고를 **Bug 티켓 초안**으로 만들어라.
+- type 은 Bug. 제목은 증상을 담는다("[모듈] ~~가 ~~할 때 ~~된다").
+- description 에 **재현 경로 / 기대 동작 / 실제 동작**을 나눠 적는다. 사용자가 안 준 것은
+  빈 칸으로 두고 questions 로 물어라 — 재현 경로 없는 버그 티켓은 아무도 못 잡는다.
+- 원인으로 의심되는 기존 티켓이 조사에서 나왔으면 description 에 키를 적어라.
+- 이미 같은 증상의 Bug 가 열려 있으면 **새로 만들지 말고** questions 로 사용자 판단을 구하라.
+- 버그는 대개 쪼갤 필요가 없다 — Bug 하나면 된다. Sub-Task 로 나누지 마라."""
+        else:
+            goal = "아래 요청을 실행 가능한 티켓 초안으로 만들어라. 정보가 모자라면 **초안 대신 질문**을 내라."
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []))
         data = wrap_data(
@@ -98,7 +109,7 @@ class Refiner(ToolAgent):
                        if state.get("already_exists") else ""))
         return f"""\
 # 명령서
-아래 요청을 실행 가능한 티켓 초안으로 만들어라. 정보가 모자라면 **초안 대신 질문**을 내라.
+{goal}
 
 ## 제약조건
 - 조사 결과에 없는 티켓 키·사람·날짜를 지어내지 않는다.

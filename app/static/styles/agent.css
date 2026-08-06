@@ -79,6 +79,9 @@
 .agent-thinking .dot:nth-child(3) { animation-delay:.3s; }
 @keyframes agdot { 0%,60%,100% { opacity:.25; } 30% { opacity:1; } }
 
+/* 비용 표시 — 눈에 띄되 답변을 가리지 않게 */
+.agent-usage { margin-top:10px; font-size:11px; color:var(--muted-2); }
+
 /* ── 근거 · 문서 · 결과 ───────────────────────────────────────── */
 .agent-ev, .agent-docs, .agent-made, .agent-failed { margin-top:12px; padding-top:10px;
   border-top:1px dashed var(--border); }

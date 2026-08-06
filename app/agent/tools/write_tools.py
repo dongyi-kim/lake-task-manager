@@ -206,6 +206,44 @@ def add_ticket_comment(key: str, body: str, approval_token: str) -> dict:
 
 
 @tool
+def link_tickets(key: str, other_key: str, relation: str, approval_token: str) -> dict:
+    """두 티켓을 **잇는다**(Relates/Blocks/Duplicate/Cloners 등). 승인 토큰 필요.
+
+    버그를 만들면 원인 Task·중복 티켓과 이어 둬야 다음 사람이 맥락을 좇을 수 있다.
+    relation 은 이 Jira 에 실재하는 링크 타입 이름이어야 한다 — 지어내지 말고,
+    Relates 가 아니면 list_ticket_options 대신 서버가 아는 타입(link_types)에 맞춰라.
+    방향은 outward(key → other_key). "DL-1 이 DL-2 를 막는다"면 key=DL-1, relation=Blocks.
+    """
+    ok, why = approval.consume(approval_token, "link_tickets",
+                               {"key": key, "other": other_key, "relation": relation})
+    if not ok:
+        return _denied(why)
+    try:
+        client().add_issue_link(key, other_key, relation or "Relates")
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+    return {"ok": True, "key": key, "other": other_key, "relation": relation or "Relates"}
+
+
+@tool
+def attach_document(key: str, url: str, title: str, approval_token: str) -> dict:
+    """티켓에 **관련 문서 링크**(Confluence·웹)를 단다. 승인 토큰 필요.
+
+    조사에서 찾은 설계 문서·요구사항 문서를 티켓에 걸어 두면, 티켓만 연 사람도 근거를
+    바로 좇을 수 있다. 같은 URL 을 다시 걸면 한 줄로 갱신된다(중복이 쌓이지 않는다).
+    """
+    ok, why = approval.consume(approval_token, "attach_document",
+                               {"key": key, "url": url, "title": title})
+    if not ok:
+        return _denied(why)
+    try:
+        client().add_remote_link(key, url, title=title or "")
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+    return {"ok": True, "key": key, "url": url, "title": trim(title, 80)}
+
+
+@tool
 def list_transitions(key: str) -> list:
     """그 티켓에서 **지금 가능한 상태 전이** 목록. 부작용 없음.
 

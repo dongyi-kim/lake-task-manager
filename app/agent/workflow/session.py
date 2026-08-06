@@ -21,6 +21,7 @@ from langchain_core.messages import HumanMessage
 
 from app.agent import approval
 from app.agent import config as _cfg
+from app.agent import usage as _usage
 from app.agent.workflow.graph import get_graph
 from app.agent.workflow.state import Node, Role, as_dict
 
@@ -33,10 +34,26 @@ def new_thread() -> str:
     return uuid.uuid4().hex[:16]
 
 
-def _config(thread_id: str) -> dict:
+def _config(thread_id: str, meter=None) -> dict:
+    cbs = _cfg.callbacks(session_id=thread_id)
+    h = _usage.callback(meter) if meter is not None else None
+    if h:
+        cbs = cbs + [h]
     return {"configurable": {"thread_id": thread_id},
-            "callbacks": _cfg.callbacks(session_id=thread_id),
+            "callbacks": cbs,
             "recursion_limit": RECURSION_LIMIT}
+
+
+def _guard(text: str):
+    """보내기 **전에** 센다. 응답을 받아야 알 수 있다면 이미 늦다.
+
+    사용자가 로그 10만 줄을 붙여 넣었을 때 할 일은 "비쌌습니다"가 아니라 보내지 않는 것이다.
+    """
+    over, n = _usage.too_long(text or "", _cfg.chat_model() or "gpt-4o-mini")
+    if over:
+        return (f"입력이 너무 깁니다({n:,} 토큰). {_usage.MAX_INPUT_TOKENS:,} 토큰 이하로 줄여 주세요 — "
+                "긴 로그나 문서는 붙여 넣지 말고 티켓 키나 문서 제목으로 알려 주시면 제가 찾아봅니다.")
+    return None
 
 
 def _initial(thread_id, text, user_role, user_id) -> dict:
@@ -52,11 +69,16 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
 def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") -> dict:
     """한 턴 굴린다. 승인이 필요한 지점에서 멈추면 `pending` 이 채워져 돌아온다."""
     tid = thread_id or new_thread()
+    too_long = _guard(text)
+    if too_long:
+        return {"thread_id": tid, "ok": False, "reply": too_long, "error": too_long, "trace": []}
     log.info("[%s] Q: %s", tid, (text or "")[:500])
-    g = get_graph()
-    state = g.invoke(_initial(tid, text, user_role, user_id), _config(tid))
+    meter = _usage.Meter()
+    state = get_graph().invoke(_initial(tid, text, user_role, user_id), _config(tid, meter))
     out = _shape(tid, state)
+    out["usage"] = meter.snapshot()
     log.info("[%s] A: %s", tid, (out.get("reply") or "")[:1000])
+    log.info("[%s] 사용량: %s", tid, out["usage"])
     return out
 
 
@@ -71,8 +93,11 @@ def resume(thread_id: str, token: str) -> dict:
     from app.agent.tools import set_thread
     set_thread(thread_id)
     log.info("[%s] 승인됨 — 실행 시작", thread_id)
-    state = get_graph().invoke(None, _config(thread_id))     # None = 멈춘 자리에서 이어서
+    meter = _usage.Meter()
+    # None = 멈춘 자리(Operator 앞)에서 이어서
+    state = get_graph().invoke(None, _config(thread_id, meter))
     out = _shape(thread_id, state)
+    out["usage"] = meter.snapshot()
     log.info("[%s] 실행 결과: %s", thread_id, out.get("result"))
     return out
 
@@ -128,10 +153,18 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
     "멈춘 것"과 "일하는 중"이 구분된다.
     """
     tid = thread_id or new_thread()
+    too_long = _guard(text)
+    if too_long:
+        yield {"type": "start", "thread_id": tid}
+        yield {"type": "final", "thread_id": tid, "ok": False, "reply": too_long,
+               "error": too_long, "trace": []}
+        return
     log.info("[%s] Q(stream): %s", tid, (text or "")[:500])
+    meter = _usage.Meter()
     yield {"type": "start", "thread_id": tid}
     try:
-        for chunk in get_graph().stream(_initial(tid, text, user_role, user_id), _config(tid),
+        for chunk in get_graph().stream(_initial(tid, text, user_role, user_id),
+                                        _config(tid, meter),
                                         stream_mode="updates", subgraphs=True):
             for ev in _events(chunk):
                 yield ev
@@ -139,7 +172,9 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
         log.exception("[%s] 그래프 실패", tid)
         yield {"type": "error", "message": str(e)[:300]}
     final = _shape(tid, dict((get_graph().get_state(_config(tid)).values or {})))
+    final["usage"] = meter.snapshot()
     log.info("[%s] A(stream): %s", tid, (final.get("reply") or "")[:1000])
+    log.info("[%s] 사용량: %s", tid, final["usage"])
     yield {"type": "final", **final}
 
 
