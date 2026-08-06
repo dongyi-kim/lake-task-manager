@@ -178,6 +178,8 @@ class World:
             if cat == "done":                          # 완료일을 created~today 전체에 분산
                 span = max((self.today - created).days, 1)
                 resolved = created + timedelta(days=rng.randint(1, span))
+                if resolved > self.today:              # created==today 면 span=1 이라 내일이 된다
+                    resolved = self.today
         updated = resolved or (created + timedelta(days=rng.randint(0, max((self.today - created).days, 1))))
         if updated > self.today:
             updated = self.today
@@ -199,22 +201,27 @@ class World:
             labels.append("PMO_VIT")
 
         key = epic_key if itype == "Epic" and epic_key else self._newkey()
+        # 코멘트·워크로그는 **티켓 생애주기(created ~ 종료/오늘)** 안에서 일어난다.
+        # 예전엔 `today - 0~13일` / `0~7일` 고정이라, 반년 전에 만든 티켓에 2주 전 코멘트만
+        # 달리는 시간 역전이 생겼다 — 과거 맥락을 읽는 소비자(요약·추천)가 쓸 수 없는 데이터다.
+        life = max(((resolved or self.today) - created).days, 0)
         ncom = rng.randint(0, 4) if itype != SUBTASK_TYPE else rng.randint(0, 1)
         comments = []
         for (k, t) in wc.comments(rng, pool, ncom):
             # rng 호출 순서(choice→randint)를 원본과 동일하게 유지해 world 결정성 보존.
             author = rng.choice(pool + ["pmo", "lead"])
-            ccreated = self.today - timedelta(days=rng.randint(0, 13))
+            ccreated = created + timedelta(days=rng.randint(0, life))
             # 시각은 rng 를 쓰지 않고 결정적으로 파생(업무시간대) → world 시퀀스 불변.
             hh = 9 + (ccreated.toordinal() + len(comments)) % 9
             mm = ((ccreated.toordinal() * 3 + len(comments) * 7) % 6) * 10
             comments.append({"author": author, "kind": k, "text": t, "body": t,
                              "created": ccreated, "tcreated": "%02d:%02d" % (hh, mm)})
+        comments.sort(key=lambda c: (c["created"], c["tcreated"]))   # 스레드는 시간순으로 읽힌다
         worklog = []
         if cat != "todo":
             for _ in range(rng.randint(0, 3)):
                 worklog.append({"author": assignee,
-                                "date": self.today - timedelta(days=rng.randint(0, 7)),
+                                "date": created + timedelta(days=rng.randint(0, life)),
                                 "seconds": 3600 * rng.randint(1, 6)})
 
         # 변경 이력(changelog) — 티켓 다이얼로그 타임라인용.
@@ -334,14 +341,17 @@ class World:
                 if t in _STORYLIKE and rng.random() < 0.35:
                     self._add_subtasks(rng, k, module, rng.randint(1, 2))
 
-    # ── 1~6월에 생성·종료된 과거 완료 이슈 (대량, Closed/Resolved) ──
+    # ── 지난 12개월에 생성·종료된 과거 완료 이슈 (대량, Closed/Resolved) ──
     def _build_history(self):
-        jan1 = date(2026, 1, 1)
+        # 오늘 기준 12개월 창. 예전엔 date(2026,1,1) 하드코딩이라 (a) 해가 바뀌면 창이 어긋나고
+        # (b) 올해 계획 이전의 이력이 없어 "작년에 비슷한 시도가 있었다" 를 찾을 수 없었다.
+        # 과거 맥락을 뒤지는 소비자에게는 이 구간이 본편이다.
+        start = self.today - timedelta(days=365)
         for module in self.gen_modules:
             pool = self._pool(module)
             rng = _rng("hist", module)
             for i in range(rng.randint(12, 24)):
-                created = jan1 + timedelta(days=rng.randint(0, 120))       # Jan~중순 May
+                created = start + timedelta(days=rng.randint(0, 300))      # 12개월 전 ~ 2개월 전
                 resolved = created + timedelta(days=rng.randint(5, 110))   # 종료
                 if resolved >= self.today:
                     resolved = self.today - timedelta(days=rng.randint(15, 150))
@@ -352,7 +362,11 @@ class World:
                                      created=created, resolved=resolved)
                 if t in _STORYLIKE and rng.random() < 0.45:
                     for _ in range(rng.randint(1, 3)):
-                        scr = created + timedelta(days=rng.randint(0, 15))
+                        # 하위 이슈는 부모 구간(created~resolved) 안에서 시작해야 한다.
+                        # 시작을 +0~15일로 고정하면 부모가 5일 만에 끝난 경우 부모 완료일보다
+                        # 늦게 시작 = 생성 전에 완료된 것으로 잡힌다.
+                        _room = max((resolved - created).days - 1, 0)
+                        scr = created + timedelta(days=min(rng.randint(0, 15), _room))
                         srv = min(scr + timedelta(days=rng.randint(3, 60)), resolved)
                         sk = self._make_issue(rng, SUBTASK_TYPE, module, parent_key=k,
                                               assignee=pool[i % len(pool)], created=scr, resolved=srv)
@@ -938,7 +952,9 @@ class World:
                     pages.append({"title": _t, "space": _sp,
                                   "ancestors": wc.conf_ancestors(rng, _sp),   # 상위 폴더 경로
                                   "action": wc.conf_action(rng), "body": wc.conf_body(rng, _t),
-                                  "date": self.today - timedelta(days=rng.randint(0, 13)),
+                                  # 문서도 지난 12개월에 분산한다. 전부 최근 2주에 몰려 있으면
+                                  # "그때 이런 결정이 있었다" 가 성립하지 않는다.
+                                  "date": self.today - timedelta(days=rng.randint(0, 365)),
                                   "time": "%02d:%02d" % (rng.randint(8, 19), rng.choice([0, 15, 30, 45]))})
                 pages.sort(key=lambda p: p["date"], reverse=True)
                 conf[uid] = pages

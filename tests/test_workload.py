@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.auth.base import SessionExpired      # noqa: E402
 from app.infra.cache import Cache                   # noqa: E402
 from app.jira.jira_client import JiraClient        # noqa: E402
-from app.infra.settings import get_settings         # noqa: E402
+from app.infra.settings import get_settings, load_people   # noqa: E402
 
 PLAN = {"modules": ["ETL"], "project_key": "DL"}
 PEOPLE = {"ETL": ["skcc.x1042"]}
@@ -124,12 +124,22 @@ def test_wl_done_jql_covers_empty_resolutiondate():
 
 def test_workload_bucket_period_widens_result():
     """기간을 넓히면 완료 목록은 **실제로 늘어난다**(부분집합 + 진짜 증가).
-    빈 목록끼리 비교하면 부분집합은 늘 참이라 아무것도 증명 못 한다 — 완료가 있는 인력으로 본다."""
+    빈 목록끼리 비교하면 부분집합은 늘 참이라 아무것도 증명 못 한다 — 완료가 있는 인력으로 본다.
+
+    대상 인력을 **찾아서** 본다. world 는 rng 시퀀스가 조금만 움직여도 누가 최근에 뭘 끝냈는지가
+    통째로 바뀌어서, 특정 id 를 박아두면 데이터와 무관한 이유로 깨진다(실제로 겪음).
+    """
     c = _client()
-    user = "skcc.x1103"
-    keys = {d: {t["key"] for t in c.workload_bucket(user, "done7d", d)}
-            for d in JiraClient.WL_DONE_DAYS}
-    assert keys[7] and keys[7] < keys[14] < keys[28]
+    roster = [u for ids in load_people().values() for u in ids]
+    assert roster, "인력 명단이 비어 있다"
+
+    for user in roster:
+        keys = {d: {t["key"] for t in c.workload_bucket(user, "done7d", d)}
+                for d in JiraClient.WL_DONE_DAYS}
+        if keys[7] and keys[7] < keys[14] < keys[28]:
+            break
+    else:
+        pytest.fail("기간을 넓혔을 때 완료가 실제로 늘어나는 인력이 하나도 없다 — world 가 얕다")
     # 버킷 캐시는 기간별로 갈려야 한다 — 안 그러면 1주 결과가 4주 자리에 앉는다
     for d in JiraClient.WL_DONE_DAYS:
         assert c.cache.get(f"workload_bucket:{c.env}:{user}:done7d:{d}") is not None
