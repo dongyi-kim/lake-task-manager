@@ -5,6 +5,7 @@ import WorkloadView from "./views/WorkloadView.js";
 import VitView from "./views/VitView.js";
 import WbsView from "./views/WbsView.js";
 import HomeView from "./views/HomeView.js";
+import AgentView from "./views/AgentView.js";
 import DevToolsView from "./views/DevToolsView.js";
 import FloatingRefresh from "./ui/FloatingRefresh.js";
 import AddTicketFab from "./ui/AddTicketFab.js";
@@ -22,8 +23,11 @@ import { api, watchAuth } from "../lib/api.js";
 import { confirmBox } from "../lib/confirm.js";
 import { pushToast } from "../lib/toast.js";
 
-const ROUTES = { home: HomeView, wbs: WbsView, vit: VitView, workload: WorkloadView,
-                 mytasks: MyTasksView, devtools: DevToolsView };
+// 메인 페이지는 **에이전트 대화**다. 이 앱에서 하고 싶은 일의 시작점이 "무엇을 해야 한다"는
+// 한 문장이기 때문이다 — 대시보드는 그 결과를 확인하는 곳이지 출발점이 아니다.
+// 기존 랜딩(서비스 안내·릴리스 노트)은 #/guide 로 남긴다.
+const ROUTES = { home: AgentView, guide: HomeView, wbs: WbsView, vit: VitView,
+                 workload: WorkloadView, mytasks: MyTasksView, devtools: DevToolsView };
 // 탭 정의 한곳 — 라벨과 접근 권한이 갈라지지 않게. manager: true 면 매니저에게만 보인다.
 // (티켓 뷰/다이얼로그·검색은 역할과 무관하다 — 여기 없는 건 다 누구나 쓴다.)
 const TABS = [

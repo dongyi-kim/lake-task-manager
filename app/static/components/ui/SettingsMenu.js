@@ -1,10 +1,11 @@
 // SettingsMenu.js — 헤더 우상단 고정 설정 버튼. 클릭 시 드롭다운:
 //   · SSO 상태(Jira/Confluence/Bitbucket) — **서비스별로 개별·실시간** 표시(병렬 프로브 + 폴링)
-//   · 테마(다크/라이트) 토글 · Dev Tools · rev
+//   · **AI 에이전트 설정**(키·모델·연결 테스트) · 테마(다크/라이트) 토글 · Dev Tools · rev
 // 백엔드: /api/health · /api/dev/sso/{service}(서비스별) · /api/dev/tools · /api/login
 import { api } from "../../lib/api.js";
 import { TYPEAHEAD_PRESETS, typeaheadDelay, setTypeaheadDelay } from "../../lib/typeahead.js";
 import { resetSeen } from "../../lib/guides.js";
+import AgentSettingsDialog from "./AgentSettingsDialog.js";
 
 const SERVICES = ["Jira", "Confluence", "Bitbucket"];
 // 빠른 열기 전역 단축키 선택지 — run.py 가 이 spec 을 등록한다(데스크톱 앱). 기본 ctrl+alt+space.
@@ -16,6 +17,7 @@ const HOTKEYS = [
 
 export default {
   name: "SettingsMenu",
+  components: { AgentSettingsDialog },
   props: { theme: { type: String, default: "light" } },
   emits: ["toggle-theme"],
   data() {
@@ -29,6 +31,8 @@ export default {
       taMs: typeaheadDelay(),          // 자동완성 대기(ms) — 검색·문서/티켓 링크·@멘션 공통
       bbEnabled: false, bbConfigured: false, bbBusy: false,   // Bitbucket 연동(저장됨, 기본 꺼짐)
       hotkey: "ctrl+alt+space", hkBusy: false,   // 빠른 열기 단축키(저장됨)
+      // 에이전트는 선택 설치라 아예 없을 수 있다 — 그때는 이유를 보여 준다.
+      agentOn: false, agentWhy: "", agentDlg: false,
     };
   },
   computed: {
@@ -40,7 +44,8 @@ export default {
     api.me().then((me) => { this.me = me || null; this.manager = !!(me && me.manager); })
       .catch((e) => { this.me = { error: (e && e.message) || "확인 실패" }; });
     api.prefs().then((p) => { this.bbEnabled = !!p.bitbucketEnabled; this.bbConfigured = !!p.bitbucketConfigured;
-      if (p.quickOpenHotkey) this.hotkey = p.quickOpenHotkey; })
+      if (p.quickOpenHotkey) this.hotkey = p.quickOpenHotkey;
+      this.agentOn = !!p.agentEnabled; this.agentWhy = p.agentReason || ""; })
       .catch(() => {});
     this._onDoc = (e) => { if (this.open && this.$el && !this.$el.contains(e.target)) this.close(); };
     document.addEventListener("click", this._onDoc, true);
@@ -204,6 +209,14 @@ export default {
         <button class="sm-btn" @click="replayGuides">{{ guideMsg || '처음부터 다시 보기' }}</button>
       </div>
 
+      <!-- AI 에이전트 — 키·모델·연결 테스트. 설치 안 됐으면 이유를 보인다
+           ("버튼이 없다"만으로는 설치가 빠진 건지 고장인지 알 수 없다). -->
+      <div class="sm-sec">
+        <div class="sm-h">AI 에이전트</div>
+        <button v-if="agentOn" class="sm-btn" @click="agentDlg = true; close()">설정 · 연결 테스트 →</button>
+        <div v-else class="sm-hint">{{ agentWhy || '설치되지 않았습니다 (requirements-agent.txt)' }}</div>
+      </div>
+
       <!-- Dev Tools — 매니저 전용 -->
       <div v-if="manager" class="sm-sec">
         <div class="sm-h">Dev Tools</div>
@@ -217,5 +230,7 @@ export default {
         <button class="sm-refresh" @click="probeAll" title="상태 새로고침">↻</button>
       </div>
     </div>
+
+    <AgentSettingsDialog v-if="agentDlg" @close="agentDlg = false" />
   </div>`,
 };

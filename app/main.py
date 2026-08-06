@@ -875,7 +875,11 @@ class _PrefsBody(BaseModel):
 def _prefs_payload():
     return {"bitbucketEnabled": bool(_settings.bitbucket_enabled),
             "bitbucketConfigured": bool(_settings.bitbucket_base),
-            "quickOpenHotkey": _settings.quick_open_hotkey}
+            "quickOpenHotkey": _settings.quick_open_hotkey,
+            # 에이전트가 안 붙었으면 화면이 그 사실과 **이유**를 보여야 한다.
+            # "버튼이 없다"만으로는 사용자가 설치가 빠진 건지 고장인지 알 수 없다.
+            "agentEnabled": bool(globals().get("_AGENT_ON")),
+            "agentReason": globals().get("_AGENT_WHY") or ""}
 
 
 @app.get("/api/prefs")
@@ -1872,6 +1876,17 @@ class _RevalidatedStatic(StaticFiles):
         resp = await super().get_response(path, scope)
         resp.headers["Cache-Control"] = "no-cache"
         return resp
+
+
+# ── AI 에이전트 (선택 설치) ────────────────────────────────────────────────
+# `requirements-agent.txt` 가 설치돼 있을 때만 `/api/agent/*` 가 붙는다. 대시보드만 쓰는
+# 사용자에게 langchain·faiss 200MB+ 를 강요하지 않는다(devtools 게이팅과 같은 방식).
+# ★ 정적 마운트보다 **먼저** — 아래 mount("/") 가 모든 경로를 먹는다.
+try:
+    from app.agent.routes import install as _install_agent
+    _AGENT_ON, _AGENT_WHY = _install_agent(app)
+except Exception as _e:                    # import 자체가 깨져도 대시보드는 떠야 한다
+    _AGENT_ON, _AGENT_WHY = False, f"에이전트를 불러오지 못했습니다: {str(_e)[:200]}"
 
 
 # 정적 프론트 (마지막에 마운트 — /api 라우트가 우선)
