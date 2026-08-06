@@ -172,3 +172,59 @@ def test_planner_schema_covers_all_new_intents():
     enum = SCHEMA["properties"]["intent"]["enum"]
     for i in (Intent.REPORT_BUG, Intent.MY_DAY, Intent.PROGRESS, Intent.ACTIVITY):
         assert i in enum
+
+
+# ── modify 실행 경로 — 변경 계획 → 승인 → update_ticket ────────────
+def test_change_plan_routes_to_approval_not_assignment():
+    """변경 계획은 담당자 추천·생성 검증을 지나지 않는다 — 해당이 없는 단계다."""
+    assert G.route_after_refiner({"questions": [],
+                                  "change_plan": {"key": "DL-1", "changes": {"duedate": "2026-09-01"}},
+                                  "draft": {}}) == "propose"
+
+
+def test_propose_stages_an_update_token_matching_the_tool_payload():
+    """토큰 지문은 update_ticket 도구가 만들 payload 와 **같은 모양**이어야 승인이 통한다."""
+    from app.agent import approval
+    approval.clear()
+    plan = {"key": "DL-1", "changes": {"duedate": "2026-09-01"}}
+    tok = G._propose({"thread_id": "t1", "change_plan": plan})["approval_token"]
+    rec = approval.peek(tok)
+    assert rec["action"] == "update_ticket"
+    assert rec["fp"] == approval.fingerprint({"key": "DL-1", "changes": {"duedate": "2026-09-01"}})
+
+
+def test_modify_end_to_end_updates_the_real_ticket(monkeypatch):
+    """modify 이음매 전체 — Planner/Refiner 만 고정. **Operator 는 실물이다**(변경 실행이
+    결정적이라 LLM 없이 돈다). interrupt·이중 토큰·update·코멘트까지 진짜로 굴린다."""
+    from app.agent.workflow import session
+    from app.agent.workflow.agents.planner import Planner
+    from app.agent.workflow.agents.refiner import Refiner
+    from app.agent.tools import _ctx
+    import app.agent.tools as T
+
+    key = _ctx.client().search_issues("ORDER BY created DESC", max_results=5)[0]["key"]
+    plan = {"key": key, "changes": {"duedate": "2026-11-11"},
+            "comment": "의존 작업 지연으로 일정 조정", "why": "일정 조정"}
+
+    monkeypatch.setattr(Planner, "node", lambda self: (lambda st: {
+        "intent": Intent.MODIFY, "keywords": [key], "mentioned_keys": [key], "sufficient": True}))
+    monkeypatch.setattr(Refiner, "node", lambda self: (lambda st: {
+        "questions": [], "change_plan": dict(plan), "turns": 1, "draft": {}}))
+    G.reset()
+
+    out = session.ask(f"{key} 마감을 11월 11일로 미루고 사유도 코멘트로 남겨줘")
+    assert out.get("pending"), out.get("reply")
+    assert out["pending"]["action"] == "update_ticket"
+    assert out["pending"]["changes"] == {"duedate": "2026-11-11"}
+    assert "의존 작업" in out["pending"]["comment"]
+
+    done = session.resume(out["thread_id"], out["pending"]["token"])
+    r = done.get("result") or {}
+    assert r.get("updated"), done
+    assert not r.get("note"), f"코멘트가 실패했다: {r.get('note')}"
+    got = T.BY_NAME["get_ticket"].invoke({"key": key, "comment_limit": 20})
+    assert got["duedate"] == "2026-11-11", "승인했는데 실물이 안 바뀌었다"
+    # limit 을 넉넉히 준다 — jira820 은 orderBy=-created 를 무시하고 오래된 순으로 주므로
+    # 방금 단 코멘트는 목록의 **끝**에 있다.
+    assert any("의존 작업" in (c.get("body") or "") for c in got.get("comments") or []),         "코멘트가 실물에 안 남았다"
+    G.reset()

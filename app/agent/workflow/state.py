@@ -104,7 +104,8 @@ class AgentState(TypedDict, total=False):
 
     # ── Refiner ──
     questions: list                 # 사용자에게 되물을 것(비면 진행)
-    draft: dict                     # {"mode": "task"|"subtask", "items": [...]}
+    draft: dict                     # {"mode": "task"|"subtask", "items": [...]}  (생성 갈래)
+    change_plan: dict               # {"key","changes":{...},"why"}  (modify 갈래 — 기존 티켓 변경)
     turns: int
 
     # ── Assigner ──
@@ -116,6 +117,7 @@ class AgentState(TypedDict, total=False):
 
     # ── Operator (승인 후) ──
     approval_token: str
+    comment_token: str              # 변경과 함께 남길 코멘트의 승인 토큰(카드에 코멘트가 보였을 때만)
     result: dict                    # {"created":[...], "failed":[...]}
 
     # ── 공통 ──

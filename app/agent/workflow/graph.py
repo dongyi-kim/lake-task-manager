@@ -81,9 +81,15 @@ def route_after_historian(state: AgentState) -> str:
 
 
 def route_after_refiner(state: AgentState) -> str:
-    """되물을 게 있으면 사용자에게 돌아간다. 초안이 섰으면 담당자를 본다."""
+    """되물을 게 있으면 사용자에게 돌아간다. 초안이 섰으면 담당자를 본다.
+
+    **변경 계획(modify)은 승인으로 직행**한다 — 담당자 추천(새 티켓용)도, validate_bulk
+    (생성 검증)도 여기엔 해당이 없다. 안전장치는 승인 카드와 editmeta(편집 불가 필드 거부)다.
+    """
     if state.get("questions"):
         return "respond"
+    if (state.get("change_plan") or {}).get("key"):
+        return "propose"
     return "assign" if (state.get("draft") or {}).get("items") else "respond"
 
 
@@ -134,12 +140,27 @@ def _propose(state: AgentState) -> dict:
     from app.agent import approval
     from app.agent.workflow.agents.refiner import as_bulk_items
 
+    tid = state.get("thread_id") or ""
+
+    # modify 갈래 — 변경 승인. 토큰은 update_ticket 도구가 만들 payload 와 **같은 모양**이어야
+    # 지문이 맞는다(도구는 kwargs 를 compact 해서 {"key","changes"} 로 만든다).
+    plan = state.get("change_plan") or {}
+    if plan.get("key") and plan.get("changes"):
+        payload = {"key": plan["key"], "changes": plan["changes"]}
+        out = {"approval_token": approval.stage(tid, "update_ticket", payload)}
+        cmt = (plan.get("comment") or "").strip()
+        if cmt:
+            # 코멘트도 카드에 보이므로 같은 승인에 묶인다 — 토큰은 내용별로 따로(1회용 지문).
+            out["comment_token"] = approval.stage(tid, "add_ticket_comment",
+                                                  {"key": plan["key"], "body": cmt})
+        return out
+
     draft = state.get("draft") or {}
     items = as_bulk_items(draft)
     if not items:
         return {}
     payload = {"mode": draft.get("mode") or "task", "items": items}
-    return {"approval_token": approval.stage(state.get("thread_id") or "", "create_tickets", payload)}
+    return {"approval_token": approval.stage(tid, "create_tickets", payload)}
 
 
 def build(checkpointer=None):
@@ -165,7 +186,8 @@ def build(checkpointer=None):
     g.add_conditional_edges(Node.HISTORIAN, route_after_historian,
                             {"refine": Node.REFINER, "respond": Node.RESPONDER})
     g.add_conditional_edges(Node.REFINER, route_after_refiner,
-                            {"assign": Node.ASSIGNER, "respond": Node.RESPONDER})
+                            {"assign": Node.ASSIGNER, "respond": Node.RESPONDER,
+                             "propose": "propose"})
     g.add_edge(Node.ASSIGNER, "merge_assignments")
     g.add_edge("merge_assignments", Node.REVIEWER)
     g.add_conditional_edges(Node.REVIEWER, route_after_reviewer,

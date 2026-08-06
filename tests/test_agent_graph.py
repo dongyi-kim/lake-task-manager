@@ -105,10 +105,21 @@ def test_graph_has_all_six_roles():
 
 
 def test_tool_using_roles_really_are_subgraphs():
-    """서브그래프가 아니면 stream(subgraphs=True) 가 '도구 부르는 중'을 못 보여 준다."""
+    """서브그래프가 아니면 stream(subgraphs=True) 가 '도구 부르는 중'을 못 보여 준다.
+
+    Operator 는 여기 없다 — modify 를 결정적으로 실행하려고 node() 를 한 겹 더 감싸면서
+    xray 가 서브그래프를 못 본다. create 갈래의 ReAct 는 별도 테스트가 지킨다.
+    """
     nodes = set(G.build().get_graph(xray=1).nodes)
-    for role in (Node.HISTORIAN, Node.REFINER, Node.ASSIGNER, Node.OPERATOR):
+    for role in (Node.HISTORIAN, Node.REFINER, Node.ASSIGNER):
         assert f"{role}:think" in nodes and f"{role}:act" in nodes
+
+
+def test_operator_keeps_react_for_creation():
+    """Operator 의 create 갈래는 여전히 ReAct 서브그래프를 탄다(부분 실패 판단이 실제로 있다)."""
+    from app.agent.workflow.agents.operator import Operator
+    sub = Operator().build()
+    assert {"think", "act"} <= set(sub.get_graph().nodes)
 
 
 def test_diagram_renders():

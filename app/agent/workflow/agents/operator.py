@@ -37,6 +37,13 @@ SCHEMA = {
             "description": "실패한 항목. **반드시 그대로 옮긴다** — 조용히 넘어가면 "
                            "사용자는 다 만들어진 줄 안다",
         },
+        "updated": {
+            "type": "array",
+            "items": {"type": "object", "properties": {
+                "key": {"type": "string"},
+                "fields": {"type": "array", "items": {"type": "string"}}}},
+            "description": "변경된 티켓(modify 갈래). 도구 결과에 나온 것만",
+        },
         "note": {"type": "string", "description": "사용자에게 알릴 것(후속 조치 등). 없으면 빈 문자열"},
     },
     "required": ["created", "failed"],
@@ -46,6 +53,46 @@ SCHEMA = {
 class Operator(ToolAgent):
     name = Node.OPERATOR
     temperature = 0.0          # 실행은 창의적일 필요가 없다
+
+    def node(self):
+        """modify(변경)는 **LLM 없이 결정적으로** 실행한다.
+
+        변경 실행에 판단이 없다 — key·changes·token 세 값을 도구에 넘기면 끝이다. 그런데
+        실 LLM 이 modify 명령서를 받고도 create_tickets 를 부르는 것을 실측했다(시스템 지시가
+        생성 중심이라). 판단이 없는 일에 모델을 끼우면 실패 모드만 늘어난다.
+        생성(create)은 ReAct 를 유지한다 — 부분 실패·후속 확인 같은 판단이 실제로 있다.
+        """
+        react = super().node()
+
+        def run(state):
+            plan = state.get("change_plan") or {}
+            if not plan.get("key"):
+                return react(state)
+
+            from app.agent import tools as T
+            args = {"key": plan["key"], "approval_token": state.get("approval_token") or ""}
+            args.update(plan.get("changes") or {})
+            r = T.BY_NAME["update_ticket"].invoke(args)
+            if not r.get("ok"):
+                return {"result": {"created": [], "updated": [],
+                                   "failed": [{"summary": plan["key"], "error": r.get("error") or ""}]},
+                        "trace": note(state, self.name, f"변경 실패 — {str(r.get('error'))[:80]}")}
+
+            out = {"created": [], "failed": [],
+                   "updated": [{"key": plan["key"], "fields": r.get("updated") or []}], "note": ""}
+            cmt = (plan.get("comment") or "").strip()
+            if cmt:
+                cr = T.BY_NAME["add_ticket_comment"].invoke(
+                    {"key": plan["key"], "body": cmt,
+                     "approval_token": state.get("comment_token") or ""})
+                if not cr.get("ok"):
+                    out["note"] = f"필드는 바꿨지만 코멘트는 남기지 못했습니다: {cr.get('error') or ''}"
+            return {"result": out,
+                    "trace": note(state, self.name,
+                                  f"변경 1건({', '.join(r.get('updated') or [])})"
+                                  + (" · 코멘트" if cmt and not out["note"] else ""))}
+
+        return run
 
     @property
     def tools(self):
@@ -76,7 +123,10 @@ approval_token: {state.get('approval_token') or '(없음 — 실행하지 마라
 
     def apply(self, state, out):
         created = [c for c in (out.get("created") or []) if isinstance(c, dict) and c.get("key")]
+        updated = [u for u in (out.get("updated") or []) if isinstance(u, dict) and u.get("key")]
         failed = [f for f in (out.get("failed") or []) if isinstance(f, dict)]
-        return {"result": {"created": created, "failed": failed, "note": out.get("note") or ""},
-                "trace": note(state, self.name,
-                              f"생성 {len(created)}건" + (f" · 실패 {len(failed)}건" if failed else ""))}
+        summary = (f"변경 {len(updated)}건" if updated else f"생성 {len(created)}건") + (
+            f" · 실패 {len(failed)}건" if failed else "")
+        return {"result": {"created": created, "updated": updated, "failed": failed,
+                           "note": out.get("note") or ""},
+                "trace": note(state, self.name, summary)}

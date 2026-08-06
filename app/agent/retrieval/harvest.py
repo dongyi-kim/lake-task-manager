@@ -53,9 +53,11 @@ def ticket_doc(client, key: str) -> dict | None:
     if f.get("description"):
         parts.append(_text(f["description"]))
     try:
+        # 코멘트 본문은 `html` 필드다(body 아님) — _text 가 태그를 벗긴다.
         for c in client.issue_comments(key, 20) or []:
             who = c.get("authorId") or c.get("author") or ""
-            parts.append(f"[코멘트 {who} {(c.get('created') or '')[:10]}] {_text(c.get('body'))}")
+            when = (c.get("date") or c.get("created") or "")[:10]
+            parts.append(f"[코멘트 {who} {when}] {_text(c.get('html') or c.get('body'))}")
     except Exception:
         pass
     return {"doc_id": f"jira:{raw['key']}", "kind": "jira", "title": f.get("summary") or raw["key"],

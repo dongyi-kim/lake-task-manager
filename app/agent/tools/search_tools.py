@@ -78,12 +78,17 @@ def get_ticket(key: str, comment_limit: int = 5) -> dict:
     out = _issue_brief(raw, getattr(settings(), "sp_field_id", None))
     out["description"] = trim(((raw.get("fields") or {}).get("description")), 1200)
     # comments 는 **비어 있어도 싣는다** — "코멘트가 없다"와 "안 가져왔다"는 모델에게 다른 정보다.
+    # ★ 코멘트 행의 본문은 `html`, 일시는 `date` 다(body/created 아님). 처음에 body 로 읽는 바람에
+    #   모델이 **빈 코멘트**를 받고 있었다 — "코멘트까지 읽는다"던 Historian 이 작성자·날짜만
+    #   보고 있던 셈이다. 테스트가 머리글만 확인해서 놓쳤다(약한 단언의 값).
+    import re as _re
     try:
+        rows = c.issue_comments(key, max(1, min(int(comment_limit or 5), 20))) or []
         out["comments"] = [
             compact({"author": cm.get("authorId") or cm.get("author"),
-                     "created": (cm.get("created") or "")[:10],
-                     "body": trim(cm.get("body"), 500)})
-            for cm in (c.issue_comments(key, max(1, min(int(comment_limit or 5), 20))) or [])]
+                     "created": (cm.get("date") or cm.get("created") or "")[:10],
+                     "body": trim(_re.sub(r"<[^>]+>", " ", cm.get("html") or cm.get("body") or ""), 500)})
+            for cm in rows]
     except Exception as e:                      # 코멘트가 막혀도 티켓 본문은 쓸모가 있다
         out["comments_error"] = str(e)[:200]
     return out

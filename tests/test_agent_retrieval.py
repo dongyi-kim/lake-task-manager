@@ -195,6 +195,10 @@ def test_ticket_doc_merges_comments_into_one_document():
         if c.issue_comments(key, 5):
             d = ticket_doc(c, key)
             assert d["doc_id"] == f"jira:{key}" and "[코멘트" in d["text"]
+            # 머리글만 있고 본문이 비면 안 된다 — 실제로 html 필드를 body 로 읽어 빈 코멘트를
+            # 색인하던 버그가 이 약한 단언을 통과했었다.
+            head, _, tail = d["text"].partition("[코멘트")
+            assert len(tail.split("]", 1)[1].strip()) > 5, "코멘트 본문이 비어 있다"
             assert d["updated"], "updated 가 없으면 장부 1차 판정이 무력해진다"
             return
     pytest.skip("코멘트가 붙은 티켓을 못 찾음")

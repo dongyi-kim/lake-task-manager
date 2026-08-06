@@ -65,6 +65,10 @@ def test_get_ticket_opens_body_and_comments():
     assert r["key"] == hit[0]["key"]
     assert r.get("summary")
     assert "comments" in r or "comments_error" in r
+    # 코멘트가 있으면 **본문이 실제로 담겨야** 한다(html→텍스트). 빈 본문을 모델에 먹이던
+    # 버그가 "comments 키 존재" 단언만으로 통과했었다.
+    for cm in r.get("comments") or []:
+        assert (cm.get("body") or "").strip(), f"빈 코멘트 본문: {cm}"
 
 
 def test_get_ticket_reports_missing_key_instead_of_raising():

@@ -68,7 +68,23 @@ SCHEMA = {
                  "description": "이번에 만들 것의 종류. Sub-Task 는 부모가 있어야 하므로 대개 먼저 task"},
         "items": {"type": "array", "items": ITEM,
                   "description": "티켓 초안. questions 가 있으면 빈 배열로 두어도 된다"},
-        "rationale": {"type": "string", "description": "왜 이렇게 쪼갰는지 2~3문장. 사용자에게 보인다"},
+        "change": {
+            "type": "object",
+            "description": "**modify 의도일 때만** — 기존 티켓의 변경 계획. 이때 items 는 빈 배열",
+            "properties": {
+                "key": {"type": "string", "description": "바꿀 티켓 키. 조사에서 실재 확인된 것만"},
+                "assignee": {"type": "string", "description": "새 담당자 id. 떼려면 \"\" (빈 문자열), 안 바꾸면 생략"},
+                "duedate": {"type": "string", "description": "새 마감 YYYY-MM-DD. 안 바꾸면 생략"},
+                "priority": {"type": "string", "description": "새 우선순위. 안 바꾸면 생략"},
+                "summary": {"type": "string", "description": "새 제목. 안 바꾸면 생략"},
+                "labels": {"type": "array", "items": {"type": "string"},
+                           "description": "라벨 전체 교체값. 안 바꾸면 생략"},
+                "comment": {"type": "string",
+                            "description": "변경과 함께 남길 코멘트(왜 바꾸는지). 없으면 생략"},
+            },
+            "required": ["key"],
+        },
+        "rationale": {"type": "string", "description": "왜 이렇게 쪼갰는지/바꾸는지 2~3문장. 사용자에게 보인다"},
     },
     "required": ["questions", "mode", "items"],
 }
@@ -127,6 +143,14 @@ class Refiner(ToolAgent):
 - 원인으로 의심되는 기존 티켓이 조사에서 나왔으면 description 에 키를 적어라.
 - 이미 같은 증상의 Bug 가 열려 있으면 **새로 만들지 말고** questions 로 사용자 판단을 구하라.
 - 버그는 대개 쪼갤 필요가 없다 — Bug 하나면 된다. Sub-Task 로 나누지 마라."""
+        elif (state.get("intent") or "") == Intent.MODIFY:
+            goal = """기존 티켓의 **변경 계획**(change)을 만들어라. items 는 빈 배열로 둔다.
+- key 는 조사에서 **실재가 확인된** 티켓만. 사용자가 댄 키가 조사에 없으면 questions 로 확인하라.
+- 사용자가 바꾸라고 한 필드만 change 에 넣는다 — 시키지 않은 필드를 얹지 마라.
+- "다음 주 금요일" 같은 상대 날짜는 오늘 날짜 기준으로 계산해 YYYY-MM-DD 로 적는다.
+- 담당자 변경이면 새 담당자 id(skcc.x1042 형식)를 확인하라 — 이름만 있으면 조사 자료의
+  참여자·로스터에서 id 를 찾고, 못 찾으면 questions 로 묻는다(assignee 필드 자동완성이 붙는다).
+- 사용자가 코멘트도 남기라고 했으면 comment 에 그 내용을 담는다."""
         else:
             goal = """아래 요청을 실행 가능한 티켓 초안으로 만들어라. 정보가 모자라면 **초안 대신 질문**을 내라.
 - ★ 이번 배치에는 **Task/Story/Bug 만** 담는다. Sub-Task 는 부모 티켓이 실재해야 만들 수
@@ -188,9 +212,22 @@ class Refiner(ToolAgent):
             qs = []
         draft = {"mode": out.get("mode") or "task", "items": items,
                  "rationale": out.get("rationale") or ""}
-        return {"questions": qs, "draft": draft, "turns": turns,
+
+        # modify 갈래 — 변경 계획. 바꿀 값이 하나도 없는 change 는 계획이 아니다.
+        change = out.get("change") if isinstance(out.get("change"), dict) else {}
+        plan = {}
+        if change.get("key"):
+            fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary", "labels")
+                      if k in change and change[k] is not None}
+            if fields:
+                plan = {"key": str(change["key"]).strip(), "changes": fields,
+                        "comment": (change.get("comment") or "").strip(),
+                        "why": out.get("rationale") or ""}
+
+        return {"questions": qs, "draft": draft, "change_plan": plan, "turns": turns,
                 "trace": note(state, self.name,
-                              f"질문 {len(qs)}개 · 초안 {len(items)}건" if qs or items else "초안 없음")}
+                              f"변경 계획 {plan.get('key')}" if plan else
+                              (f"질문 {len(qs)}개 · 초안 {len(items)}건" if qs or items else "초안 없음"))}
 
 
 def draft_text(draft: dict) -> str:

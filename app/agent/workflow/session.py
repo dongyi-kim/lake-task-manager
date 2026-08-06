@@ -63,7 +63,8 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             "user_role": user_role or Role.MEMBER, "user_id": user_id or "",
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
             # responder 가 다시 '승인 대기'로 흘러간다.
-            "approval_token": "", "result": {}, "revisions": 0, "trace": []}
+            "approval_token": "", "comment_token": "", "result": {}, "revisions": 0,
+            "trace": [], "change_plan": {}, "questions": []}
 
 
 def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") -> dict:
@@ -90,6 +91,13 @@ def resume(thread_id: str, token: str) -> dict:
     if not approval.approve(token, thread_id):
         return {"thread_id": thread_id, "ok": False,
                 "error": "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다. 다시 요청하세요."}
+    # 변경 카드에 코멘트가 함께 보였다면 그 토큰도 같은 승인에 묶인다(내용은 카드에 있었다).
+    try:
+        vals = get_graph().get_state(_config(thread_id)).values or {}
+        if vals.get("comment_token"):
+            approval.approve(vals["comment_token"], thread_id)
+    except Exception:
+        pass
     from app.agent.tools import set_thread
     set_thread(thread_id)
     log.info("[%s] 승인됨 — 실행 시작", thread_id)
@@ -138,11 +146,18 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
 
     # 승인 카드 — 무엇을 승인하는지가 화면과 토큰에 **같은 내용**으로 담겨야 한다.
     if waiting and data.get("approval_token"):
-        from app.agent.workflow.agents.refiner import as_bulk_items
-        draft = data.get("draft") or {}
-        out["pending"] = {"token": data["approval_token"], "action": "create_tickets",
-                          "mode": draft.get("mode") or "task", "items": as_bulk_items(draft),
-                          "rationale": draft.get("rationale") or ""}
+        plan = data.get("change_plan") or {}
+        if plan.get("key"):
+            out["pending"] = {"token": data["approval_token"], "action": "update_ticket",
+                              "key": plan["key"], "changes": plan.get("changes") or {},
+                              "comment": plan.get("comment") or "",
+                              "rationale": plan.get("why") or ""}
+        else:
+            from app.agent.workflow.agents.refiner import as_bulk_items
+            draft = data.get("draft") or {}
+            out["pending"] = {"token": data["approval_token"], "action": "create_tickets",
+                              "mode": draft.get("mode") or "task", "items": as_bulk_items(draft),
+                              "rationale": draft.get("rationale") or ""}
     return out
 
 

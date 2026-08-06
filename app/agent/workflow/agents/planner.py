@@ -84,6 +84,8 @@ class Planner(StructuredAgent):
 - "지난 분기에 성능 관련해서 어떤 논의가 있었어?" → ask (★ progress 아님 — 진척률 숫자가
   아니라 **지나간 논의·기록**을 찾는 질문이다. "어디까지 왔어"만 progress 다)
 - "DL-207 담당자를 x1103 으로 바꿔줘" → modify
+- "DL-207 마감을 다음 주로 미루고 사유도 코멘트로 남겨줘" → modify (★ 코멘트 요청이 섞여도
+  기존 티켓의 속성을 바꾸는 것이 본론이면 modify — plan_work 가 아니다)
 
 ## 대화
 {conversation(state)}"""

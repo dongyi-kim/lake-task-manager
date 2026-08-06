@@ -143,11 +143,11 @@ export default {
         this.turns.push({ who: "agent", text: r.reply || "", trace: r.trace || [],
                           evidence: [], docs: [], questions: [], assignments: [],
                           review: {}, pending: null, result: r.result || null });
-        const made = ((r.result || {}).created || []).length;
+        const made = ((r.result || {}).created || []).length + ((r.result || {}).updated || []).length;
         const bad = ((r.result || {}).failed || []).length;
         if (made) {
           pushToast({ kind: bad ? "error" : "success", key: "agent-made",
-                      title: `${made}건 생성했습니다` + (bad ? ` · 실패 ${bad}건` : "") });
+                      title: `${made}건 반영했습니다` + (bad ? ` · 실패 ${bad}건` : "") });
         } else {
           pushToast({ kind: "error", key: "agent-made",
                       title: r.error || "만들어진 티켓이 없습니다" });
@@ -369,8 +369,35 @@ export default {
               </div>
             </div>
 
-            <!-- ★ HITL 승인 카드 — 여기서 [생성]을 눌러야만 쓰기가 시작된다 -->
+            <!-- ★ HITL 승인 카드 — 여기서 승인을 눌러야만 쓰기가 시작된다.
+                 create(티켓 생성)와 update(기존 티켓 변경) 두 모양이 있다. -->
             <div v-if="t.pending && ti === turns.length - 1" class="agent-card">
+              <!-- 변경 카드 -->
+              <template v-if="t.pending.action === 'update_ticket'">
+                <div class="agent-card-h">
+                  <b><a href="#" class="tkt" :data-key="t.pending.key">{{ t.pending.key }}</a> 변경</b>
+                  <em>아직 바뀌지 않았습니다 — 확인 후 승인하세요</em>
+                </div>
+                <div v-if="t.pending.rationale" class="agent-card-why">{{ t.pending.rationale }}</div>
+                <div class="agent-chg">
+                  <div v-for="(v, k) in t.pending.changes" :key="k" class="agent-chg-row">
+                    <span class="chg-k">{{ ({assignee:'담당자', duedate:'마감일', priority:'우선순위',
+                                            summary:'제목', labels:'라벨'})[k] || k }}</span>
+                    <span class="chg-v">{{ Array.isArray(v) ? v.join(', ') : (v || '(비움)') }}</span>
+                  </div>
+                  <div v-if="t.pending.comment" class="agent-chg-row">
+                    <span class="chg-k">코멘트</span><span class="chg-v">{{ t.pending.comment }}</span>
+                  </div>
+                </div>
+                <div class="agent-card-act">
+                  <button class="ag-ok" :disabled="approving" @click="approve">
+                    {{ approving ? '변경 중…' : '이대로 변경' }}</button>
+                  <button class="ag-cancel" :disabled="approving" @click="cancelPending">취소</button>
+                </div>
+              </template>
+
+              <!-- 생성 카드 -->
+              <template v-else>
               <div class="agent-card-h">
                 <b>만들 티켓 {{ t.pending.items.length }}건</b>
                 <em>아직 만들어지지 않았습니다 — 확인 후 승인하세요</em>
@@ -416,6 +443,7 @@ export default {
                 </button>
                 <button class="ag-cancel" :disabled="approving" @click="cancelPending">취소하고 수정 요청</button>
               </div>
+              </template>
             </div>
           </div>
         </div>

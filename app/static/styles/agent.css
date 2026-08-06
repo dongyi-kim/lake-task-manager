@@ -167,6 +167,12 @@
 .aq-act { display:flex; gap:8px; margin-top:10px; padding-top:10px;
   border-top:1px dashed var(--border); }
 
+/* 변경 카드 — 무엇이 어떻게 바뀌는지 표로 */
+.agent-chg { padding:10px 14px 4px; }
+.agent-chg-row { display:flex; gap:10px; padding:4px 0; font-size:12.5px; }
+.agent-chg-row .chg-k { flex:none; width:70px; color:var(--muted-2); }
+.agent-chg-row .chg-v { color:var(--text); font-weight:600; overflow-wrap:anywhere; }
+
 /* ── 진행 상황 — "멈춤"과 "일하는 중"을 가른다 ────────────────── */
 .agent-steps { display:flex; flex-direction:column; gap:2px; padding:8px 14px;
   background:var(--panel); border:1px solid var(--border); border-radius:10px;
