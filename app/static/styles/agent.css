@@ -216,7 +216,12 @@
 .ag-x { background:none; border:0; color:var(--muted); font-size:15px; cursor:pointer; padding:4px 6px; }
 .ag-body { flex:1; overflow-y:auto; padding:14px 16px; }
 .ag-sec { margin-bottom:18px; }
-.ag-lab { font-size:11.5px; color:var(--muted-2); margin-bottom:7px; font-weight:600; }
+.ag-lab { font-size:11.5px; color:var(--muted-2); margin-bottom:7px; font-weight:600;
+  display:flex; align-items:center; gap:8px; }
+.ag-mini { padding:2px 8px; font-size:11px; color:var(--muted); background:var(--panel);
+  border:1px solid var(--border); border-radius:5px; cursor:pointer; }
+.ag-mini:hover:not(:disabled) { border-color:var(--accent); color:var(--text); }
+.ag-mini-hint { font-style:normal; font-weight:400; color:var(--good); font-size:11px; }
 .ag-tabs { display:flex; flex-wrap:wrap; gap:6px; }
 .ag-tabs button { padding:6px 12px; font-size:12.5px; color:var(--muted); background:var(--panel);
   border:1px solid var(--border); border-radius:7px; cursor:pointer; }

@@ -108,6 +108,16 @@ def api_probe():
     return JSONResponse(r)
 
 
+@router.get("/models")
+def api_models():
+    """지금 provider 에서 쓸 수 있는 모델/배포 목록 — 설정 콤보박스 재료.
+
+    실패해도 200 이다(빈 목록 + 사유). 목록은 참고이지 제약이 아니라서, 조회가 막힌 환경에서도
+    화면은 자유 입력으로 계속 쓸 수 있어야 한다.
+    """
+    return JSONResponse(_cfg.list_models())
+
+
 @router.get("/index")
 def api_index_stats():
     """RAG 색인 현황. 규칙 문서가 몇 조각인지, 티켓을 몇 건 쌓았는지."""

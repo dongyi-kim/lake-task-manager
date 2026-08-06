@@ -222,6 +222,61 @@ def probe(timeout: float = 30.0) -> dict:
     return out
 
 
+def list_models(timeout: float = 10.0) -> dict:
+    """지금 설정된 provider 에서 **실제로 쓸 수 있는** 모델/배포 목록.
+
+    설정 화면의 콤보박스 재료다. 목록 조회가 막히는 환경이 있으므로(권한 없는 키, 프록시,
+    자체 LLM 의 미구현) 실패해도 빈 목록+사유만 준다 — 화면은 자유 입력으로 폴백한다.
+    ★ 목록은 참고이지 제약이 아니다. 조회가 안 된다고 입력까지 막으면 안 된다.
+
+    반환: {"chat": [...], "embed": [...], "error": ""}
+    """
+    p = provider()
+    if p == "fake":
+        return {"chat": ["fake-chat"], "embed": ["fake-embed"], "error": ""}
+    ok, why = available()
+    if not ok:
+        return {"chat": [], "embed": [], "error": why}
+
+    try:
+        if p == "aoai":
+            # AOAI 는 모델이 아니라 **배포**를 골라야 한다. 데이터플레인 deployments 목록은
+            # api-key 로 열린다(관리플레인 자격 증명 불필요).
+            import httpx
+            base = (_secrets.get("aoaiEndpoint", "AOAI_ENDPOINT") or "").rstrip("/")
+            key = _secrets.get("aoaiApiKey", "AOAI_API_KEY")
+            if not (base and key):
+                return {"chat": [], "embed": [], "error": "엔드포인트/키가 설정되지 않았습니다."}
+            r = httpx.get(f"{base}/openai/deployments",
+                          params={"api-version": "2023-03-15-preview"},
+                          headers={"api-key": key}, timeout=timeout)
+            r.raise_for_status()
+            rows = r.json().get("data") or []
+            pairs = [((d.get("id") or ""), str(d.get("model") or "")) for d in rows]
+            is_embed = lambda n, m: "embed" in n.lower() or "embed" in m.lower()  # noqa: E731
+            return {"chat": sorted(n for n, m in pairs if n and not is_embed(n, m)),
+                    "embed": sorted(n for n, m in pairs if n and is_embed(n, m)), "error": ""}
+
+        from openai import OpenAI
+        if p == "openai":
+            cli = OpenAI(api_key=_secrets.get("openaiApiKey", "OPENAI_API_KEY"), timeout=timeout)
+        else:
+            cli = OpenAI(api_key=_secrets.get("compatApiKey", "LAKE_AGENT_COMPAT_KEY") or "unused",
+                         base_url=_secrets.get("compatBaseUrl", "LAKE_AGENT_COMPAT_BASE"),
+                         default_headers=_compat_headers() or None, timeout=timeout)
+        ids = [m.id for m in cli.models.list()]
+        embed = sorted(i for i in ids if "embed" in i)
+        # 채팅에 못 쓰는 것(음성·이미지·중재 등)을 걸러낸다 — 다 보여 주면 목록이 소음이 된다.
+        noise = ("audio", "tts", "whisper", "image", "dall-e", "realtime",
+                 "transcribe", "moderation", "computer-use", "codex")
+        chat = sorted(i for i in ids
+                      if ("gpt" in i or i.startswith("o")) and "embed" not in i
+                      and not any(x in i for x in noise))
+        return {"chat": chat, "embed": embed, "error": ""}
+    except Exception as e:
+        return {"chat": [], "embed": [], "error": _brief(e)}
+
+
 def _brief(e: Exception) -> str:
     s = str(e).strip().replace("\n", " ")
     return (s[:300] + "…") if len(s) > 300 else s

@@ -45,6 +45,7 @@ export const agentApi = {
   saveSettings: (body) => put("/api/agent/settings", body),
   probe: () => post("/api/agent/probe", {}),
   indexStats: () => getJson("/api/agent/index"),
+  models: () => getJson("/api/agent/models"),
   resetIndex: () => post("/api/agent/index/reset", {}),
 
   ask: (body) => post("/api/agent/chat", body),

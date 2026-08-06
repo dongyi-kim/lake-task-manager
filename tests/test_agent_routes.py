@@ -101,6 +101,22 @@ def test_probe_reports_where_it_broke(client):
     assert r["embeddings"]["dim"] == 256
 
 
+def test_models_endpoint_lists_for_the_active_provider(client):
+    """콤보박스 재료. fake 는 자기 모델을, 실패는 200+사유를 준다(목록은 참고이지 제약이 아니다)."""
+    r = client.get("/api/agent/models").json()
+    assert r["chat"] == ["fake-chat"] and r["embed"] == ["fake-embed"]
+
+
+def test_models_endpoint_fails_soft(client, monkeypatch):
+    """조회가 막혀도 500 이 아니라 빈 목록 + 사유 — 화면은 자유 입력으로 폴백한다."""
+    from app.agent import config as C
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai")     # 키 없음 → 조회 실패가 정상
+    r = client.get("/api/agent/models")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["chat"] == [] and body["error"]
+
+
 def test_index_stats_are_visible(client):
     r = client.get("/api/agent/index").json()
     assert "static" in r and "dynamic" in r

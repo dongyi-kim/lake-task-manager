@@ -37,7 +37,16 @@ export default {
       secrets: {},              // 사용자가 **이번에 새로 친 것만** 담긴다
       probe: null,              // 연결 테스트 결과
       index: null,              // 색인 현황
+      // 모델 콤보박스 재료 — 서버가 실 API 에서 조회한다. 실패하면 자유 입력으로 폴백
+      // (목록은 참고이지 제약이 아니다).
+      models: { chat: [], embed: [], error: "" },
+      modelsBusy: false,
     };
+  },
+  watch: {
+    // provider 를 바꾸면 목록도 그 provider 것으로 — 단, 저장 전이라 서버는 아직 이전
+    // provider 다. 안내만 하고, 목록은 저장 후 자동 갱신된다.
+    provider() { this.models = { chat: [], embed: [], error: "" }; },
   },
   computed: {
     providers() { return PROVIDERS; },
@@ -59,6 +68,15 @@ export default {
         this.apiVersion = this.st.apiVersion || "";
       } catch (e) { this.err = (e && e.message) || "설정을 불러오지 못했습니다"; }
       agentApi.indexStats().then((r) => { this.index = r; }).catch(() => {});
+      this.loadModels();
+    },
+
+    async loadModels() {
+      if (this.modelsBusy) return;
+      this.modelsBusy = true;
+      try { this.models = await agentApi.models(); }
+      catch (e) { this.models = { chat: [], embed: [], error: (e && e.message) || "조회 실패" }; }
+      finally { this.modelsBusy = false; }
     },
 
     /** 이미 저장된 키는 자리표시자로만 보인다 — 다시 칠 필요가 없어야 한다. */
@@ -80,6 +98,7 @@ export default {
         if (Object.keys(s).length) body.secrets = s;
         this.st = await agentApi.saveSettings(body);
         this.secrets = {};
+        this.loadModels();                 // provider·키가 바뀌었으니 목록도 새 것으로
         await this.test();                 // 저장했으면 되는지까지 확인해 주는 게 맞다
       } catch (e) { this.err = (e && e.message) || "저장에 실패했습니다"; }
       finally { this.saving = false; }
@@ -132,13 +151,22 @@ export default {
           </label>
         </div>
 
-        <!-- 모델 -->
+        <!-- 모델 — 콤보박스(datalist): 목록에서 고르거나 직접 친다.
+             목록 조회가 막힌 환경(권한 없는 키·자체 LLM)에서도 입력은 계속 돼야 한다. -->
         <div v-if="cur.models.length" class="ag-sec">
-          <div class="ag-lab">모델</div>
+          <div class="ag-lab">모델
+            <button class="ag-mini" :disabled="modelsBusy" @click="loadModels"
+                    title="현재 저장된 provider 기준으로 사용 가능한 목록을 다시 조회">
+              {{ modelsBusy ? '조회 중…' : '목록 새로고침 ↻' }}</button>
+            <em v-if="models.chat.length" class="ag-mini-hint">{{ models.chat.length + models.embed.length }}개 확인됨</em>
+          </div>
           <label class="ag-f"><span>{{ cur.models[0] }}</span>
-            <input v-model="chatModel" spellcheck="false"></label>
+            <input v-model="chatModel" spellcheck="false" list="ag-ml-chat" autocomplete="off"></label>
+          <datalist id="ag-ml-chat"><option v-for="m in models.chat" :key="m" :value="m"></option></datalist>
           <label class="ag-f"><span>{{ cur.models[1] }}</span>
-            <input v-model="embedModel" spellcheck="false"></label>
+            <input v-model="embedModel" spellcheck="false" list="ag-ml-embed" autocomplete="off"></label>
+          <datalist id="ag-ml-embed"><option v-for="m in models.embed" :key="m" :value="m"></option></datalist>
+          <div v-if="models.error" class="ag-hint">목록 조회 실패 — 직접 입력하세요. ({{ models.error }})</div>
           <label v-if="provider === 'aoai'" class="ag-f"><span>api-version</span>
             <input v-model="apiVersion" placeholder="2024-10-21" spellcheck="false"></label>
           <div v-if="provider === 'aoai'" class="ag-hint">
