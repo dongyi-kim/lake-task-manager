@@ -40,8 +40,9 @@ def search_work_history(query: str, limit: int = 8) -> dict:
     """업무 키워드로 **과거 이력**을 찾는다 — Jira 티켓과 Confluence 문서를 함께 뒤진다.
 
     업무 착수 요청을 받으면 **가장 먼저** 이걸 부른다. "이 일이 처음인가, 이미 하던 일인가"를
-    여기서 가른다. 키워드는 2~5개 단어로 좁혀서 넣는다("CDC 실시간 수집" 처럼). 잘 안 나오면
-    동의어·약어로 바꿔 **다시 부른다**(예: CDC / 변경데이터캡처 / 실시간연동).
+    여기서 가른다. 키워드는 2~5개 단어로 좁혀서 넣는다("CDC 실시간 수집" 처럼).
+    안 나오면 동의어로 바꿔 **한 번만** 다시 불러라 — 두 번 비면 사내에 없는 것이다.
+    그때는 이 도구를 더 부르지 말고 다른 도구(get_ticket·search_web 등)로 넘어가라.
 
     돌려주는 것: {"jira": [{key,title,status,assignee,issuetype,updated}...],
                  "confluence": [{title,url,excerpt}...]}

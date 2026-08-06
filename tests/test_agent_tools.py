@@ -231,3 +231,42 @@ def test_update_ticket_round_trip():
 def test_update_with_no_fields_is_rejected_before_touching_jira():
     r = _run(T.BY_NAME["update_ticket"], key="DL-1", approval_token="x")
     assert r["ok"] is False and "바꿀 필드" in r["error"]
+
+
+# ── 외부 지식(웹·GitHub) — 폐쇄망 fail-soft 가 생명이다 ─────────────
+def test_web_tools_are_read_only_and_registered():
+    assert {"search_web", "search_github"} <= set(T.BY_NAME)
+    write = {t.name for t in T.WRITE_TOOLS}
+    assert not ({"search_web", "search_github"} & write)
+
+
+def test_web_search_fails_soft_when_blocked(monkeypatch):
+    """채점 샌드박스는 폐쇄망일 수 있다 — 예외가 아니라 '막혀 있다'는 사실을 돌려준다."""
+    import duckduckgo_search
+    def boom(*a, **k):
+        raise OSError("network unreachable")
+    monkeypatch.setattr(duckduckgo_search, "DDGS", boom)
+    r = _run(T.BY_NAME["search_web"], query="CDC trade-offs")
+    assert "error" in r and "사내 조사" in r["error"]
+
+
+def test_github_search_fails_soft_when_blocked(monkeypatch):
+    import httpx
+    def boom(*a, **k):
+        raise httpx.ConnectError("blocked")
+    monkeypatch.setattr(httpx, "get", boom)
+    r = _run(T.BY_NAME["search_github"], query="cdc kafka")
+    assert "error" in r and "사내 조사" in r["error"]
+
+
+def test_web_tools_docstrings_forbid_internal_terms():
+    """검색어로 사내 정보가 새는 것을 막는 경계가 명세(docstring)에 있어야 한다 —
+    이 규칙은 코드로 강제할 수 없어서(무엇이 '사내 정보'인지 판정 불가) 명세가 최후의 선이다."""
+    for name in ("search_web", "search_github"):
+        assert "사내" in T.BY_NAME[name].description
+
+
+def test_historian_gets_web_tools_but_writers_do_not():
+    from app.agent.workflow.agents.historian import Historian
+    names = {t.name for t in Historian().tools}
+    assert {"search_web", "search_github"} <= names
