@@ -221,8 +221,10 @@
 /* 직접 입력 탈출구가 붙은 객관식 */
 .aq-opts-wrap { display:flex; flex-direction:column; gap:6px; }
 
-/* 사람 자동완성 행 — 아바타+이름(사번) */
-.aq-drop button { display:flex; align-items:center; gap:7px; }
+/* FieldEdit 트리거(질문 폼·카드 직접입력) — 티켓 화면의 팝업을 그대로 쓴다 */
+.aq-fe { display:inline-block; padding:6px 12px; font-size:12.5px; color:var(--muted);
+  background:var(--panel); border:1px dashed var(--border-hi); border-radius:8px; cursor:pointer; }
+.aq-fe:hover { border-color:var(--accent); color:var(--text); }
 
 /* 우측 채널 — **화면 이분할**(오버레이 아님). 내용은 TicketDialog(mode=page) 재활용.
    flex 형제라 패널이 열리면 대화(agent-main)가 자연히 좁아진다. */
@@ -231,8 +233,15 @@
   border-left:1px solid var(--border-hi); }
 .agent-side-h { display:flex; align-items:center; justify-content:space-between;
   padding:8px 14px; border-bottom:1px solid var(--border); background:var(--panel); }
-.agent-side-body { flex:1; overflow:auto; min-height:0; }
-.agent-side-body .tkd-page { min-height:100%; }
+.agent-side-body { flex:1; overflow:auto; min-height:0; padding:14px 16px; }
+.agent-side-nav { display:inline-flex; gap:3px; }
+.agent-side-nav button { min-width:24px; height:24px; font-size:11px; border:1px solid var(--border);
+  background:var(--panel); color:var(--muted); border-radius:6px; cursor:pointer; }
+.agent-side-nav button.on { border-color:var(--accent); color:var(--accent); font-weight:700; }
+.ai-ticketview.side { border:0; padding:0; background:transparent; }
+.tv-hint { margin-top:14px; padding:8px 10px; font-size:11px; color:var(--muted-2);
+  background:var(--panel-2); border-radius:7px; }
+.ai-pv-btn.on { border-color:var(--accent); color:var(--accent); }
 
 /* 리치 입력 — 클로드식 미니멀 박스. 밑은 코멘트 에디터(멘션·/jira·/confluence 재사용)지만
    툴바·크기조절 등 크롬은 걷어낸다 — 채팅에 서식 메뉴는 과하다(사용자 지적).

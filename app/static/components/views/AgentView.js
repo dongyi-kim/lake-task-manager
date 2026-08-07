@@ -15,7 +15,7 @@
 import AgentSettingsDialog from "../ui/AgentSettingsDialog.js";
 import Avatar from "../ui/Avatar.js";
 import CommentEditor from "../ui/CommentEditor.js";
-import TicketDialog from "../ui/TicketDialog.js";
+import FieldEdit from "../ui/FieldEdit.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { renderMarkdown } from "../../lib/agentMd.js";
 import { api } from "../../lib/api.js";
@@ -35,7 +35,7 @@ const EXAMPLES = [
 
 export default {
   name: "AgentView",
-  components: { AgentSettingsDialog, Avatar, CommentEditor, TicketDialog },
+  components: { AgentSettingsDialog, Avatar, CommentEditor, FieldEdit },
   data() {
     return {
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
@@ -51,17 +51,15 @@ export default {
       approving: false,
       settingsOpen: false,
       answers: {},            // 되묻기 폼의 답(qi → 값)
-      customOn: {},           // 객관식 질문에서 '직접 입력'을 고른 상태(qi → bool)
+      customOn: {},           // 객관식 질문에서 '직접 입력'을 고른 상태(qi → bool). 우선순위엔 없다
       previewOn: {},          // 초안 항목별 티켓 미리보기 토글(i → bool)
       epicTrees: {},          // 생성 카드의 계보 컨텍스트(epicKey → children[])
-      acRows: [], acOpen: -1, // 자동완성 결과·열린 질문 index
       priorities: [],
       evOpen: {},             // 근거 목록 펼침(턴 ti → bool). 기본 접힘 — 검증할 때만 편다
-      sideKey: "",            // 우측 채널에 띄운 티켓 키 — 대화를 가리지 않고 옆에서 본다
+      sideDraft: -1,          // 우측 패널에 미리보는 **초안 항목 번호**(-1=닫힘). 초안 전용
       convos: [],             // 최근 대화(localStorage) — 좌측 사이드바
       pickedAssignee: {},     // 승인 카드에서 고른 담당자(항목 i → uid)
       cardCustom: {},         // 카드에서 '직접 입력'을 고른 상태(i → bool)
-      cardAcRows: [], cardAcOpen: -1,   // 카드 담당자 자동완성
     };
   },
   computed: {
@@ -83,20 +81,11 @@ export default {
         if (this.ready) return agentApi.status().then((s) => { this.status = s; });
       })
       .catch((e) => { this.ready = false; this.reason = (e && e.message) || "확인 실패"; });
-    // 답변 안의 티켓 키(`.tkt[data-key]`)는 이 화면에서는 **우리가** 잡는다 — 전역 처리기는
-    // 모달을 띄우는데, 에이전트 화면에서는 대화 옆 우측 채널로 열어야 한다(사용자 요청).
-    // stopPropagation 으로 전역 위임(문서 레벨)까지 안 올라가게 막는다.
-    this._tktClick = (e) => {
-      const a = e.target.closest && e.target.closest(".tkt[data-key]");
-      if (!a) return;
-      e.preventDefault(); e.stopPropagation();
-      this.openTicket(a.getAttribute("data-key"));
-    };
-    this.$el.addEventListener("click", this._tktClick);
+    // 답변 안의 티켓 키(`.tkt[data-key]`)는 앱 전역 위임 처리기가 잡는다(기존 모달) —
+    // 우측 패널은 **생성 중인 초안**의 미리보기 전용이다(사용자 정정).
   },
   unmounted() {
     if (this.abort) this.abort();      // 화면을 떠났는데 서버가 계속 일할 이유가 없다
-    if (this._tktClick) this.$el.removeEventListener("click", this._tktClick);
   },
   methods: {
     md(t, people) { return renderMarkdown(t, people); },
@@ -195,6 +184,8 @@ export default {
             if (ev.pending && ev.pending.items) this.loadEpicTree(ev.pending);
             this.pickedAssignee = {}; this.cardCustom = {}; this.previewOn = {};
             this.customOn = {};
+            // 초안이 오면 우측 미리보기를 **자동으로** 연다 — 만들 실물을 옆에 두고 승인한다.
+            this.sideDraft = (ev.pending && (ev.pending.items || []).length) ? 0 : -1;
             this.saveConvo();
                 if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
             this.busy = false;
@@ -250,7 +241,12 @@ export default {
     reset() {
       if (this.abort) this.abort();
       this.threadId = ""; this.turns = []; this.steps = []; this.busy = false;
-      this.sideKey = "";
+      this.sideDraft = -1;
+    },
+    /** 우측 패널이 미리보는 초안 턴 — 승인 대기는 마지막 턴에만 유효하다. */
+    draftTurn() {
+      const last = this.turns[this.turns.length - 1];
+      return last && last.pending && (last.pending.items || []).length ? last : null;
     },
 
     // ── 최근 대화(좌측 사이드바) — localStorage 보관. 서버 체크포인터는 재시작하면
@@ -283,10 +279,9 @@ export default {
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
-    /** 티켓은 모달이 아니라 **우측 채널**로 — 대화(생성 컨텍스트)를 가리면 안 된다(사용자
-     *  요청). 패널 내용은 TicketDialog 그대로(mode=page 임베드) — UI 재활용. */
+    /** 실존 티켓은 기존처럼 전역 모달(TicketDialog)로. 우측 패널은 초안 미리보기 전용. */
     openTicket(key) {
-      if (key) this.sideKey = key;
+      if (key) window.dispatchEvent(new CustomEvent("lake-open-ticket", { detail: { key } }));
     },
     scroll() { const el = this.$refs.scroller; if (el) el.scrollTop = el.scrollHeight; },
     itemOf(p, i) { return (p.items || [])[i] || {}; },
@@ -374,22 +369,8 @@ export default {
     setPick(i, uid) {
       this.pickedAssignee[i] = uid;
       this.cardCustom[i] = false;
-      this.cardAcOpen = -1;
     },
     pickCustom(i) { this.cardCustom[i] = true; this.pickedAssignee[i] = ""; },
-    async cardSearch(i, ev) {
-      const q = (ev.target.value || "").trim();
-      this.pickedAssignee[i] = q;
-      clearTimeout(this._cardT);
-      this._cardT = setTimeout(async () => {
-        try {
-          const r = await fetch("/api/mention/users?q=" + encodeURIComponent(q)).then((x) => x.json());
-          this.cardAcRows = (r || []).map((u) => ({ v: u.id, name: u.name,
-                                                    label: u.name + " (" + u.id + ")" })).slice(0, 7);
-          this.cardAcOpen = this.cardAcRows.length ? i : -1;
-        } catch (e) { this.cardAcOpen = -1; }
-      }, 250);
-    },
     /** 승인 시 서버에 넘길 담당자 변경분 — 카드에 보였던 값과 다른 것만. */
     assigneeOverrides(turn) {
       const out = {};
@@ -404,29 +385,23 @@ export default {
     // 에이전트의 질문(kind/options/field)을 폼으로 그리고, 답을 모아 **한 문장으로** 보낸다.
     // 백엔드는 자연어 답을 받는 것과 동일 — 폼은 순전히 입력을 쉽게 만드는 층이다.
     qKey(qi) { return "q" + qi; },
-    setAns(qi, v) { this.answers[this.qKey(qi)] = v; this.acOpen = -1; },
+    setAns(qi, v, extra) {
+      // FieldEdit pick(v, extra) — 사람은 '본명(사번)' 으로 답해 모델도 사람도 읽게 한다.
+      let ans = v == null ? "" : String(v);
+      if (extra && extra.name && ans) ans = `${extra.name}(${ans})`;
+      this.answers[this.qKey(qi)] = ans;
+    },
+    /** 질문 → FieldEdit 가 다루는 필드명. 아니면 빈 문자열(자유 서술). */
+    fieldOf(q) {
+      if (q.field === "assignee" || q.field === "epic") return q.field;
+      if (q.kind === "date" || q.field === "duedate") return "duedate";
+      return "";
+    },
+    feHint(q) {
+      return { assignee: "사람 검색…", epic: "Epic 검색…", duedate: "날짜 선택…" }[this.fieldOf(q)] || "선택…";
+    },
     pickOpt(qi, opt) {
       this.answers[this.qKey(qi)] = this.answers[this.qKey(qi)] === opt ? "" : opt;
-    },
-    async acSearch(qi, field, ev) {
-      const q = (ev.target.value || "").trim();
-      this.answers[this.qKey(qi)] = q;
-      if (field === "priority") return;                 // 우선순위는 고정 보기라 검색이 없다
-      clearTimeout(this._acT);
-      this._acT = setTimeout(async () => {
-        try {
-          let rows = [];
-          if (field === "assignee") {
-            const r = await fetch("/api/mention/users?q=" + encodeURIComponent(q)).then((x) => x.json());
-            rows = (r || []).map((u) => ({ v: u.id, name: u.name, label: u.name + " (" + u.id + ")" }));
-          } else if (field === "epic") {
-            const r = await fetch("/api/epic-candidates?q=" + encodeURIComponent(q)).then((x) => x.json());
-            rows = ((r && r.items) || []).map((e) => ({ v: e.key, label: e.key + " " + (e.summary || "") }));
-          }
-          this.acRows = rows.slice(0, 7);
-          this.acOpen = this.acRows.length ? qi : -1;
-        } catch (e) { this.acOpen = -1; }
-      }, 250);
     },
     async loadPriorities() {
       if (this._pri) return this._pri;
@@ -574,46 +549,32 @@ export default {
                 <div class="aq-q">{{ q.question || q }}</div>
 
                 <!-- 객관식: 보기 버튼 (추천이 맨 앞) + '직접 입력' 탈출구.
-                     보기가 전부일 수 없다 — 추천이 다 틀렸을 때 타이핑으로 돌아갈 길이 필요하다 -->
+                     ★ 우선순위는 탈출구가 없다 — 허용값이 고정된 필드에 자유 입력을 열면
+                     검증에서 튕길 값만 들어온다(사용자 지적: 우선순위는 무조건 객관식).
+                     직접 입력 편집기는 티켓 화면과 같은 FieldEdit 를 재사용한다. -->
                 <div v-if="optionsFor(q).length" class="aq-opts-wrap">
                   <div class="aq-opts">
                     <button v-for="(opt, oi) in optionsFor(q)" :key="opt"
                             :class="{ on: !customOn[qi] && answers[qKey(qi)] === opt, rec: oi === 0 }"
                             @click="customOn[qi] = false; pickOpt(qi, opt)">{{ opt }}<em v-if="oi === 0">추천</em></button>
-                    <button :class="{ on: customOn[qi] }"
+                    <button v-if="q.field !== 'priority'" :class="{ on: customOn[qi] }"
                             @click="customOn[qi] = !customOn[qi]; if (customOn[qi]) answers[qKey(qi)] = ''">직접 입력…</button>
                   </div>
                   <template v-if="customOn[qi]">
-                    <input v-if="q.kind === 'date' || q.field === 'duedate'" type="date" class="aq-in aq-date"
-                           :value="answers[qKey(qi)] || ''" @input="setAns(qi, $event.target.value)">
-                    <div v-else-if="q.field === 'assignee' || q.field === 'epic'" class="aq-ac">
-                      <input class="aq-in" :value="answers[qKey(qi)] || ''"
-                             :placeholder="q.field === 'assignee' ? '이름이나 사번으로 검색' : 'Epic 키나 제목으로 검색'"
-                             @input="acSearch(qi, q.field, $event)" @focus="acSearch(qi, q.field, $event)">
-                      <div v-if="acOpen === qi" class="aq-drop">
-                        <button v-for="r in acRows" :key="r.v" @mousedown.prevent="setAns(qi, r.v)">
-                          <Avatar v-if="r.name" :user="r.v" :name="r.name" :size="16" /> {{ r.label }}</button>
-                      </div>
-                    </div>
+                    <FieldEdit v-if="fieldOf(q)" class="aq-fe" ticket="__agent__" :field="fieldOf(q)"
+                               local :value="answers[qKey(qi)] || ''"
+                               @pick="(v, x) => setAns(qi, v, x)">
+                      {{ answers[qKey(qi)] || feHint(q) }}</FieldEdit>
                     <input v-else class="aq-in" :value="answers[qKey(qi)] || ''"
                            placeholder="답을 입력하세요" @input="setAns(qi, $event.target.value)">
                   </template>
                 </div>
 
-                <!-- 날짜 -->
-                <input v-else-if="q.kind === 'date'" type="date" class="aq-in aq-date"
-                       :value="answers[qKey(qi)] || ''" @input="setAns(qi, $event.target.value)">
-
-                <!-- 담당자·Epic: 자동완성 -->
-                <div v-else-if="q.field === 'assignee' || q.field === 'epic'" class="aq-ac">
-                  <input class="aq-in" :value="answers[qKey(qi)] || ''"
-                         :placeholder="q.field === 'assignee' ? '이름이나 사번으로 검색' : 'Epic 키나 제목으로 검색'"
-                         @input="acSearch(qi, q.field, $event)" @focus="acSearch(qi, q.field, $event)">
-                  <div v-if="acOpen === qi" class="aq-drop">
-                    <button v-for="r in acRows" :key="r.v" @mousedown.prevent="setAns(qi, r.v)">
-                      <Avatar v-if="r.name" :user="r.v" :name="r.name" :size="16" /> {{ r.label }}</button>
-                  </div>
-                </div>
+                <!-- 날짜·담당자·Epic — 티켓 화면과 같은 FieldEdit 팝업(규칙·디자인 재사용) -->
+                <FieldEdit v-else-if="fieldOf(q)" class="aq-fe" ticket="__agent__" :field="fieldOf(q)"
+                           local :value="answers[qKey(qi)] || ''"
+                           @pick="(v, x) => setAns(qi, v, x)">
+                  {{ answers[qKey(qi)] || feHint(q) }}</FieldEdit>
 
                 <!-- 자유 서술 -->
                 <input v-else class="aq-in" :value="answers[qKey(qi)] || ''"
@@ -677,29 +638,12 @@ export default {
                       <Avatar :user="it.assignee" :name="personName(t, it.assignee)" :size="15" />
                       {{ personName(t, it.assignee) || it.assignee }}</span>
                   </div>
-                  <!-- 티켓 미리보기(폴딩) — 접으면 구조 텍스트, 펼치면 실제 티켓 모양
-                       (제목·타입·라벨·메타 + 본문 렌더). 승인 전에 "만들어질 실물"을 본다 -->
+                  <!-- 본문 요약(구조 텍스트) + 우측 패널 미리보기 열기 — 실물 렌더는
+                       우측 채널이 담당한다(사용자 정정: 우측 = 초안 미리보기 공간) -->
                   <div v-if="it.description" class="ai-desc-wrap">
-                    <button class="ai-pv-btn" @click="togglePreview(i)">
-                      {{ previewOn[i] ? '▾ 미리보기 접기' : '▸ 티켓 미리보기' }}</button>
-                    <div v-if="previewOn[i]" class="ai-ticketview">
-                      <div class="tv-head">
-                        <span class="ai-type">{{ it.type }}</span>
-                        <b>{{ it.summary }}</b>
-                      </div>
-                      <div class="tv-meta">
-                        <span v-if="it.epic">상위 {{ it.epic }}</span>
-                        <span v-if="it.components && it.components.length">모듈 {{ it.components.join(', ') }}</span>
-                        <span v-for="lb in (it.labels || [])" :key="lb" class="tv-label">{{ lb }}</span>
-                        <span v-if="it.priority">{{ it.priority }}</span>
-                        <span v-if="it.duedate">마감 {{ it.duedate }}</span>
-                        <span v-if="pickFor(t, i, it)">담당
-                          <Avatar :user="pickFor(t, i, it)" :name="personName(t, pickFor(t, i, it))" :size="14" />
-                          {{ personName(t, pickFor(t, i, it)) || pickFor(t, i, it) }}</span>
-                      </div>
-                      <div class="ai-desc-html" v-html="descPreview(it.description)"></div>
-                    </div>
-                    <div v-else class="ai-desc">{{ descText(it.description) }}</div>
+                    <button class="ai-pv-btn" :class="{ on: sideDraft === i }" @click="sideDraft = i">
+                      ▸ 우측에 미리보기</button>
+                    <div class="ai-desc">{{ descText(it.description) }}</div>
                   </div>
                   <!-- 계보 — 이 초안이 어느 Epic 의 어떤 형제들 옆에 붙는지 -->
                   <div v-if="treeFor(t.pending, it) && treeFor(t.pending, it).length" class="ai-tree">
@@ -740,14 +684,12 @@ export default {
                     </label>
                     <label class="ai-cand" :class="{ on: cardCustom[i] }" @click="pickCustom(i)">
                       <b>직접 입력…</b>
-                      <div v-if="cardCustom[i]" class="aq-ac" @click.stop>
-                        <input class="aq-in" :value="pickedAssignee[i] || ''" placeholder="이름이나 사번으로 검색"
-                               @input="cardSearch(i, $event)" @focus="cardSearch(i, $event)">
-                        <div v-if="cardAcOpen === i" class="aq-drop">
-                          <button v-for="r in cardAcRows" :key="r.v"
-                                  @mousedown.prevent="pickedAssignee[i] = r.v; cardAcOpen = -1">
-                            <Avatar v-if="r.name" :user="r.v" :name="r.name" :size="16" /> {{ r.label }}</button>
-                        </div>
+                      <!-- 사람 검색은 티켓 화면과 같은 FieldEdit 팝업(규칙·디자인 재사용) -->
+                      <div v-if="cardCustom[i]" @click.stop>
+                        <FieldEdit class="aq-fe" ticket="__agent__" field="assignee" local
+                                   :value="pickedAssignee[i] || ''" :user-id="pickedAssignee[i] || ''"
+                                   @pick="(v) => { pickedAssignee[i] = v; }">
+                          {{ pickedAssignee[i] || '사람 검색…' }}</FieldEdit>
                       </div>
                     </label>
                   </div>
@@ -806,15 +748,47 @@ export default {
       <AgentSettingsDialog v-if="settingsOpen"
         @close="settingsOpen = false; agentApi.status().then((s) => { status = s; }).catch(() => {})" />
 
-      <!-- 우측 채널 — 티켓을 대화 옆에서 본다. 내용은 TicketDialog 그대로(mode=page 임베드).
-           모달과 달리 승인 카드·대화 맥락을 가리지 않는다(생성 컨텍스트의 미리보기 요구). -->
-      <div v-if="sideKey" class="agent-side">
+      <!-- 우측 채널 — **생성하려는 초안**의 미리보기 공간(사용자 정정). 만들 실물을 티켓
+           모양으로 옆에 두고 카드에서 담당자를 고르며 승인한다. 실존 티켓 클릭은 기존
+           전역 모달(TicketDialog)이 그대로 뜬다. -->
+      <div v-if="draftTurn() && sideDraft >= 0" class="agent-side">
         <div class="agent-side-h">
-          <b>{{ sideKey }}</b>
-          <button class="agent-reset" @click="sideKey = ''" title="닫기">✕</button>
+          <b>만들 티켓 미리보기</b>
+          <span v-if="(draftTurn().pending.items || []).length > 1" class="agent-side-nav">
+            <button v-for="(x, xi) in draftTurn().pending.items" :key="xi"
+                    :class="{ on: sideDraft === xi }" @click="sideDraft = xi">{{ xi + 1 }}</button>
+          </span>
+          <button class="agent-reset" @click="sideDraft = -1" title="닫기">✕</button>
         </div>
-        <div class="agent-side-body">
-          <TicketDialog :key="sideKey" :keyId="sideKey" mode="page" @close="sideKey = ''" />
+        <div class="agent-side-body" v-if="itemOf(draftTurn().pending, sideDraft).summary">
+          <div class="ai-ticketview side">
+            <div class="tv-head">
+              <span class="ai-type">{{ itemOf(draftTurn().pending, sideDraft).type }}</span>
+              <b>{{ itemOf(draftTurn().pending, sideDraft).summary }}</b>
+            </div>
+            <div class="tv-meta">
+              <span v-if="itemOf(draftTurn().pending, sideDraft).epic">상위
+                <a href="#" class="tkt" :data-key="itemOf(draftTurn().pending, sideDraft).epic">
+                  {{ itemOf(draftTurn().pending, sideDraft).epic }}</a></span>
+              <span v-if="(itemOf(draftTurn().pending, sideDraft).components || []).length">
+                모듈 {{ itemOf(draftTurn().pending, sideDraft).components.join(', ') }}</span>
+              <span v-for="lb in (itemOf(draftTurn().pending, sideDraft).labels || [])" :key="lb"
+                    class="tv-label">{{ lb }}</span>
+              <span v-if="itemOf(draftTurn().pending, sideDraft).priority">
+                {{ itemOf(draftTurn().pending, sideDraft).priority }}</span>
+              <span v-if="itemOf(draftTurn().pending, sideDraft).duedate">
+                마감 {{ itemOf(draftTurn().pending, sideDraft).duedate }}</span>
+              <span v-if="pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft))">담당
+                <Avatar :user="pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft))"
+                        :name="personName(draftTurn(), pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft)))"
+                        :size="14" />
+                {{ personName(draftTurn(), pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft)))
+                   || pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft)) }}</span>
+            </div>
+            <div class="ai-desc-html"
+                 v-html="descPreview(itemOf(draftTurn().pending, sideDraft).description)"></div>
+            <div class="tv-hint">담당자 변경·승인은 왼쪽 카드에서 합니다 — 선택하면 여기 즉시 반영됩니다.</div>
+          </div>
         </div>
       </div>
     </template>

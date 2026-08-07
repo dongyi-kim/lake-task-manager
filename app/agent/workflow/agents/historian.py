@@ -180,7 +180,8 @@ class Historian(ToolAgent):
             # 먼저 돌리고, 지식·근황형이거나 결과가 빈약하면 의미 검색(RAG)까지 돌려 자료로
             # 준다. 모델의 검색 실력에 기대지 않는다 — 실측: 노이즈 단어 하나로 0건을 받고
             # "이력 없음"으로 답했다.
-            elif state.get("keywords"):
+            pre = ""
+            if not keys0 and state.get("keywords"):
                 try:
                     pre = _presurvey(state)
                 except Exception:
@@ -188,11 +189,19 @@ class Historian(ToolAgent):
                 if pre:
                     state = {**state, "pre_survey": pre}
 
-            # ── 사전 조사: 기술 검토 요청이면 웹·GitHub 를 **코드가** 조사해 자료로 준다.
+            # ── 사전 조사: 웹·GitHub 를 **코드가** 조사해 자료로 준다.
             # 의무 순서를 명령서에 박아도 모델은 사내 티켓을 여는 데 걸음을 다 썼다(실측 3회).
             # 검색어 생성은 모델이 잘하는 일이니 그것만 시키고, 실행은 코드가 보장한다.
+            # 트리거 둘: ① 기술 검토형 문구 ② **사내 기록이 빈약한데 기술 용어(영문 토큰)가
+            # 있는 요청** — "starrocks iceberg 통계 job 개발"처럼 사내에 없는 신기술 업무는
+            # 웹이 알아야 작업 내용을 채울 수 있다(실측: 웹을 안 타서 모듈만 되물었다).
+            import re as _re
             asked0 = last_user_text(state)
-            if any(w in asked0 for w in ("기술 검토", "방식", "라이브러리", "오픈소스", "비교", "어떤 기술")):
+            wordy = any(w in asked0 for w in ("기술 검토", "방식", "라이브러리", "오픈소스",
+                                              "비교", "어떤 기술"))
+            thin_internal = "키워드 검색" not in pre        # presurvey 가 사내 티켓을 못 찾았다
+            techy = bool(_re.search(r"[A-Za-z][A-Za-z0-9_.-]{2,}", asked0))
+            if wordy or (thin_internal and techy and not keys0):
                 ctx = _research_outside(self, asked0)
                 if ctx:
                     state = {**state, "web_context": ctx}
