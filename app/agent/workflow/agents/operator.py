@@ -57,19 +57,20 @@ class Operator(ToolAgent):
                                # (modify 는 아예 LLM 없이 돌고, create 도 인자 전달 + 결과 보고뿐)
 
     def node(self):
-        """modify(변경)는 **LLM 없이 결정적으로** 실행한다.
+        """실행은 **LLM 없이 결정적으로** — modify 도, create 도.
 
-        변경 실행에 판단이 없다 — key·changes·token 세 값을 도구에 넘기면 끝이다. 그런데
-        실 LLM 이 modify 명령서를 받고도 create_tickets 를 부르는 것을 실측했다(시스템 지시가
-        생성 중심이라). 판단이 없는 일에 모델을 끼우면 실패 모드만 늘어난다.
-        생성(create)은 ReAct 를 유지한다 — 부분 실패·후속 확인 같은 판단이 실제로 있다.
+        실행에 판단이 없다: 승인된 인자를 도구에 넘기고 결과를 그대로 옮기면 끝이다.
+        모델을 끼웠더니 생긴 실패 모드(전부 실측): modify 인데 create_tickets 를 부름,
+        검증 **경고**(Epic 미연결 안내)를 '실패한 항목·후속 조치'로 각색해 보고 —
+        사용자가 방금 '최상위로 두겠다'고 결정한 것을 다시 경고하는 셈이다.
+        도구 결과만이 사실이다. ReAct 는 계획이 전혀 없는 예외 경로에만 남는다.
         """
         react = super().node()
 
         def run(state):
             plan = state.get("change_plan") or {}
             if not plan.get("key"):
-                return react(state)
+                return self._run_create(state, react)
 
             from app.agent import tools as T
             cmt0 = (plan.get("comment") or "").strip()
@@ -111,6 +112,28 @@ class Operator(ToolAgent):
                                   + (" · 코멘트" if cmt and not out["note"] else ""))}
 
         return run
+
+    def _run_create(self, state, react):
+        """생성 실행 — 승인된 초안을 create_tickets 한 번에 넘긴다. 결과는 도구가 준 그대로."""
+        from app.agent import tools as T
+        from app.agent.workflow.agents.refiner import as_bulk_items
+        draft = state.get("draft") or {}
+        items = as_bulk_items(draft)
+        if not items:
+            return react(state)          # 계획이 없다 — 예외 경로만 모델에게
+        r = T.BY_NAME["create_tickets"].invoke(
+            {"mode": draft.get("mode") or "task", "items": items,
+             "approval_token": state.get("approval_token") or ""})
+        created = [c for c in (r.get("created") or []) if isinstance(c, dict) and c.get("key")]
+        failed = [f for f in (r.get("failed") or []) if isinstance(f, dict)]
+        if not r.get("ok") and not created and not failed:
+            # 검증 거부·토큰 거부 — 항목별 실패가 아니라 배치 전체가 시작을 안 한 것
+            failed = [{"summary": it.get("summary", ""), "error": r.get("error") or ""}
+                      for it in items[:1]]
+        return {"result": {"created": created, "failed": failed, "updated": [],
+                           "note": ""},
+                "trace": note(state, self.name,
+                              f"생성 {len(created)}건" + (f" · 실패 {len(failed)}건" if failed else ""))}
 
     @property
     def tools(self):

@@ -339,3 +339,25 @@ def test_curator_produces_brief_from_materials():
                        "our_context": "사내 이력 없음", "references": [], "gaps": ["도입 여부"]})
     kb = out["knowledge_brief"]
     assert kb["concepts"] and kb["gaps"] == ["도입 여부"]
+
+
+def test_operator_create_is_deterministic_tool_truth():
+    """생성 실행도 LLM 없이 — 도구 결과만이 사실이다.
+
+    실측: ReAct 생성이 검증 **경고**(Epic 미연결 안내)를 '실패한 항목·후속 조치'로
+    각색해 보고했다. 사용자가 방금 '최상위로 두겠다'고 결정했는데 다시 경고한 셈.
+    결정적 실행은 created/failed 를 도구가 준 그대로 옮긴다.
+    """
+    from app.agent.workflow.agents.operator import Operator
+    from app.agent.workflow.agents.refiner import as_bulk_items
+    draft = {"mode": "task", "items": [{"summary": "최상위로 두는 티켓", "type": "Task",
+                                        "epic": ""}]}
+    tok = approval.stage("t-det", "create_tickets",
+                         {"mode": "task", "items": as_bulk_items(draft)})
+    approval.approve(tok, "t-det")
+    out = Operator().node()({"draft": draft, "approval_token": tok,
+                             "change_plan": {}, "trace": []})
+    r = out["result"]
+    assert r["created"] and r["created"][0]["key"], r
+    assert r["failed"] == [], "경고가 실패로 각색되면 안 된다"
+    assert r["note"] == ""

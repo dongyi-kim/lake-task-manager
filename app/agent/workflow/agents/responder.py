@@ -33,8 +33,10 @@ class Responder(TextAgent):
         qs = state.get("questions") or []
 
         if result:
-            goal = ("실행 결과를 보고하라. 실패한 항목이 있으면 **가장 먼저** 알리고 "
-                    "무엇을 해야 하는지 말하라.")
+            goal = ("실행 결과를 **짧게** 보고하라: 만든 것 한 줄씩(키+제목), 실제 실패가 "
+                    "있으면 그것만 사유와 함께. 실패·후속 조치·주의 항목을 **지어내지 마라** — "
+                    "자료의 created/failed 에 없는 말은 전부 날조다. 사용자가 이미 내린 결정"
+                    "(예: Epic 없이 최상위로)을 다시 경고하지 마라. 3~5문장이면 충분하다.")
         elif qs:
             goal = "지금까지 파악한 상황을 짧게 정리하고, 모자란 정보를 물어라."
         elif (state.get("change_plan") or {}).get("key"):
