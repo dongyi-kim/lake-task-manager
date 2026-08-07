@@ -30,6 +30,8 @@ _DEFAULTS = {"bitbucketEnabled": False,
              "agentAoaiChat": "", "agentAoaiEmbed": "",        # ★ 모델명이 아니라 배포명
              "agentOpenaiChat": "", "agentOpenaiEmbed": "",
              "agentCompatChat": "", "agentCompatEmbed": "",
+             # 간단한 역할(의도 분류·결정적 실행) 전용 모델 — 비우면 기본 모델 하나로 돈다.
+             "agentAoaiChatSimple": "", "agentOpenaiChatSimple": "", "agentCompatChatSimple": "",
              # 사용자별 시스템 프롬프트 추가분 — 모든 역할의 페르소나 뒤에 붙는다.
              # 프로젝트 공용 추가분은 여기가 아니라 config/agent-prompt.md (repo 커밋 대상).
              "agentUserPrompt": ""}

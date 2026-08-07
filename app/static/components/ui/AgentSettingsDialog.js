@@ -33,7 +33,7 @@ export default {
   data() {
     return {
       st: null, err: "", busy: false, saving: false,
-      provider: "aoai", chatModel: "", embedModel: "", apiVersion: "",
+      provider: "aoai", chatModel: "", chatModelSimple: "", embedModel: "", apiVersion: "",
       userPrompt: "",           // 사용자별 시스템 프롬프트(로컬 저장, 커밋 안 됨)
       showProjPrompt: false,    // 프로젝트 공용 프롬프트(읽기 전용) 펼침
       secrets: {},              // 사용자가 **이번에 새로 친 것만** 담긴다
@@ -74,6 +74,7 @@ export default {
         this.st = await agentApi.status();
         this.provider = this.st.provider || "aoai";
         this.chatModel = this.st.chatModel || "";
+        this.chatModelSimple = this.st.chatModelSimple || "";
         this.embedModel = this.st.embedModel || "";
         this.apiVersion = this.st.apiVersion || "";
         this.userPrompt = this.st.userPrompt || "";
@@ -88,14 +89,21 @@ export default {
       this.comboOpen = this.comboOpen === kind ? "" : kind;
       if (this.comboOpen && !this.models.chat.length && !this.modelsBusy) this.loadModels();
     },
+    comboVal(kind) {
+      return kind === "chat" ? this.chatModel
+           : kind === "simple" ? this.chatModelSimple : this.embedModel;
+    },
     comboOpts(kind) {
-      const list = kind === "chat" ? this.models.chat : this.models.embed;
-      const cur = (kind === "chat" ? this.chatModel : this.embedModel).trim().toLowerCase();
+      // simple 도 채팅 모델 목록에서 고른다 — 같은 provider 의 같은 종류다.
+      const list = kind === "embed" ? this.models.embed : this.models.chat;
+      const cur = this.comboVal(kind).trim().toLowerCase();
       if (!cur || list.some((m) => m.toLowerCase() === cur)) return list;
       return list.filter((m) => m.toLowerCase().includes(cur));
     },
     pickModel(kind, m) {
-      if (kind === "chat") this.chatModel = m; else this.embedModel = m;
+      if (kind === "chat") this.chatModel = m;
+      else if (kind === "simple") this.chatModelSimple = m;
+      else this.embedModel = m;
       this.comboOpen = "";
     },
 
@@ -118,6 +126,7 @@ export default {
       this.saving = true; this.err = ""; this.probe = null;
       try {
         const body = { provider: this.provider, chatModel: this.chatModel,
+                       chatModelSimple: this.chatModelSimple,
                        embedModel: this.embedModel, userPrompt: this.userPrompt };
         if (this.provider === "aoai") body.apiVersion = this.apiVersion;
         // 빈 칸은 보내지 않는다 — 빈 문자열을 보내면 저장된 키를 지우게 된다.
@@ -216,6 +225,23 @@ export default {
               </div>
             </div>
           </div>
+          <!-- 역할별 모델 분리(선택) — 간단한 역할(의도 분류·티켓 실행)은 저렴한 모델로.
+               비우면 위의 기본 모델 하나로 전부 돈다. -->
+          <div class="ag-f"><span>간단한 역할 모델 (선택)</span>
+            <div class="ag-combo">
+              <input v-model="chatModelSimple" spellcheck="false" autocomplete="off"
+                     placeholder="비우면 기본 모델 사용"
+                     @focus="comboOpen = 'simple'" @input="comboOpen = 'simple'">
+              <button class="ag-combo-btn" @click="toggleCombo('simple')" title="목록 열기">▾</button>
+              <div v-if="comboOpen === 'simple' && comboOpts('simple').length" class="ag-combo-drop">
+                <button v-for="m in comboOpts('simple')" :key="m"
+                        :class="{ on: m === chatModelSimple }"
+                        @mousedown.prevent="pickModel('simple', m)">{{ m }}</button>
+              </div>
+            </div>
+          </div>
+          <div class="ag-hint">간단한 역할 = 의도 분류(Planner)·티켓 실행(Operator).
+            조사·초안·검토·답변은 기본 모델을 씁니다. 예) 기본 gpt-4o + 간단 gpt-4o-mini</div>
           <div v-if="models.error" class="ag-hint">목록 조회 실패 — 직접 입력하세요. ({{ models.error }})</div>
           <label v-if="provider === 'aoai'" class="ag-f"><span>api-version</span>
             <input v-model="apiVersion" placeholder="2024-10-21" spellcheck="false"></label>

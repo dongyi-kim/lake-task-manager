@@ -143,3 +143,33 @@ def test_probe_ok_on_fake(clean_env):
     r = C.probe()
     assert r["ok"] is True
     assert r["embeddings"]["dim"] == 256
+
+
+def test_chat_model_tier_falls_back_to_main_when_simple_unset(clean_env):
+    """simple 모델 미설정이면 기본 모델 하나로 돈다 — 모델 하나 쓰는 사람에게 무변화."""
+    clean_env.setenv("LAKE_AGENT_PROVIDER", "openai")
+    clean_env.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-4o")
+    assert C.chat_model("simple") == C.chat_model() == "gpt-4o"
+
+
+def test_chat_model_tier_splits_when_simple_set(clean_env):
+    """간단한 역할 모델을 지정하면 tier=simple 만 갈라진다(기본 tier 는 그대로)."""
+    clean_env.setenv("LAKE_AGENT_PROVIDER", "openai")
+    clean_env.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-4o")
+    clean_env.setenv("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+    assert C.chat_model() == "gpt-4o"
+    assert C.chat_model("simple") == "gpt-4o-mini"
+
+
+def test_role_tiers_assigned_to_shallow_judgment_roles(clean_env):
+    """의도 분류·결정적 실행만 simple — 조사·초안·검토·작문은 기본 모델을 유지한다."""
+    from app.agent.workflow.agents.assigner import Assigner
+    from app.agent.workflow.agents.historian import Historian
+    from app.agent.workflow.agents.operator import Operator
+    from app.agent.workflow.agents.planner import Planner
+    from app.agent.workflow.agents.refiner import Refiner
+    from app.agent.workflow.agents.responder import Responder
+    from app.agent.workflow.agents.reviewer import Reviewer
+    assert Planner.tier == "simple" and Operator.tier == "simple"
+    for cls in (Historian, Refiner, Assigner, Reviewer, Responder):
+        assert cls.tier == "complex", cls.__name__

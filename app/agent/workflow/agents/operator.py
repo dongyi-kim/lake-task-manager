@@ -53,6 +53,8 @@ SCHEMA = {
 class Operator(ToolAgent):
     name = Node.OPERATOR
     temperature = 0.0          # 실행은 창의적일 필요가 없다
+    tier = "simple"            # 승인된 JSON 을 그대로 넘기는 일이다 — 판단이 얕다
+                               # (modify 는 아예 LLM 없이 돌고, create 도 인자 전달 + 결과 보고뿐)
 
     def node(self):
         """modify(변경)는 **LLM 없이 결정적으로** 실행한다.

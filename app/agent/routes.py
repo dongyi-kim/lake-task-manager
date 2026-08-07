@@ -45,6 +45,7 @@ class _SettingsBody(BaseModel):
     """설정 패널이 보내는 것. **모두 선택** — 준 것만 바꾼다(빈 문자열은 '지우기')."""
     provider: str = None
     chatModel: str = None
+    chatModelSimple: str = None    # 간단한 역할(의도 분류·실행) 전용 모델. 빈 문자열 = 안 나눔
     embedModel: str = None
     apiVersion: str = None
     userPrompt: str = None         # 사용자별 시스템 프롬프트 추가분(로컬 prefs 저장)
@@ -73,14 +74,16 @@ def api_settings(body: _SettingsBody):
             patch[key] = v.strip()
     # 모델 이름은 provider 마다 자리가 다르다 — 지금 provider 의 자리에 넣는다.
     p = (body.provider or _cfg.provider()).strip().lower()
-    slot = {"aoai": ("agentAoaiChat", "agentAoaiEmbed"),
-            "openai": ("agentOpenaiChat", "agentOpenaiEmbed"),
-            "openai_compat": ("agentCompatChat", "agentCompatEmbed")}.get(p)
+    slot = {"aoai": ("agentAoaiChat", "agentAoaiEmbed", "agentAoaiChatSimple"),
+            "openai": ("agentOpenaiChat", "agentOpenaiEmbed", "agentOpenaiChatSimple"),
+            "openai_compat": ("agentCompatChat", "agentCompatEmbed", "agentCompatChatSimple")}.get(p)
     if slot:
         if body.chatModel is not None:
             patch[slot[0]] = body.chatModel.strip()
         if body.embedModel is not None:
             patch[slot[1]] = body.embedModel.strip()
+        if body.chatModelSimple is not None:
+            patch[slot[2]] = body.chatModelSimple.strip()
     if patch:
         try:
             from app.infra import prefs

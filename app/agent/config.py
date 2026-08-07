@@ -61,15 +61,33 @@ def provider() -> str:
     return p if p in PROVIDERS else DEFAULT_PROVIDER
 
 
-def chat_model() -> str:
-    """provider 별 '모델/배포' 이름. AOAI 는 **모델명이 아니라 배포명**이다(흔한 실수)."""
+def chat_model(tier: str = "complex") -> str:
+    """provider 별 '모델/배포' 이름. AOAI 는 **모델명이 아니라 배포명**이다(흔한 실수).
+
+    `tier="simple"` 은 **간단한 역할 전용 모델** — 의도 분류·결정적 실행처럼 판단이 얕은
+    역할이 쓴다(역할→tier 매핑은 각 Agent 클래스의 `tier` 속성). 설정이 비어 있으면
+    기본 모델로 폴백한다 — 모델 하나로 쓰는 사람에게는 아무 변화가 없다.
+    """
     p = provider()
+    simple = tier == "simple"
     if p == "aoai":
+        if simple:
+            m = os.getenv("LAKE_AGENT_AOAI_CHAT_SIMPLE") or _pref("agentAoaiChatSimple")
+            if m:
+                return m
         return (os.getenv("LAKE_AGENT_AOAI_CHAT") or _pref("agentAoaiChat")
                 or os.getenv("AOAI_DEPLOY_GPT4O_MINI") or os.getenv("AOAI_DEPLOY_GPT4O") or "")
     if p == "openai":
+        if simple:
+            m = os.getenv("LAKE_AGENT_OPENAI_CHAT_SIMPLE") or _pref("agentOpenaiChatSimple")
+            if m:
+                return m
         return os.getenv("LAKE_AGENT_OPENAI_CHAT") or _pref("agentOpenaiChat") or DEFAULT_OPENAI_CHAT
     if p == "openai_compat":
+        if simple:
+            m = os.getenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE") or _pref("agentCompatChatSimple")
+            if m:
+                return m
         return os.getenv("LAKE_AGENT_COMPAT_CHAT") or _pref("agentCompatChat") or ""
     return "fake-chat"
 
@@ -103,8 +121,12 @@ def _compat_headers() -> dict:
 
 
 # ── 팩토리 ─────────────────────────────────────────────────────────
-def get_llm(temperature: float = 0.2, **kwargs):
-    """provider 에 맞는 chat 모델. 나머지 코드는 이 함수만 부른다."""
+def get_llm(temperature: float = 0.2, tier: str = "complex", **kwargs):
+    """provider 에 맞는 chat 모델. 나머지 코드는 이 함수만 부른다.
+
+    `tier` 로 역할별 모델을 가른다 — simple(의도 분류·결정적 실행)은 저렴한 모델,
+    complex(조사·초안·검토·작문)는 기본 모델. simple 모델 미설정이면 기본 모델 하나로 돈다.
+    """
     p = provider()
     if p == "fake":
         from app.agent.fake import FakeChat
@@ -119,18 +141,18 @@ def get_llm(temperature: float = 0.2, **kwargs):
         return AzureChatOpenAI(
             azure_endpoint=_secrets.get("aoaiEndpoint", "AOAI_ENDPOINT"),
             api_key=_secrets.get("aoaiApiKey", "AOAI_API_KEY"),
-            azure_deployment=chat_model(),           # ★ 모델명이 아니라 배포명
+            azure_deployment=chat_model(tier),       # ★ 모델명이 아니라 배포명
             api_version=api_version(),
             temperature=temperature, **kwargs)
 
     from langchain_openai import ChatOpenAI
     if p == "openai":
         return ChatOpenAI(api_key=_secrets.get("openaiApiKey", "OPENAI_API_KEY"),
-                          model=chat_model(), temperature=temperature, **kwargs)
+                          model=chat_model(tier), temperature=temperature, **kwargs)
     # openai_compat — base_url + 커스텀 헤더. 인증이 표준과 달라도 여기서 흡수한다.
     return ChatOpenAI(api_key=_secrets.get("compatApiKey", "LAKE_AGENT_COMPAT_KEY") or "unused",
                       base_url=_secrets.get("compatBaseUrl", "LAKE_AGENT_COMPAT_BASE"),
-                      model=chat_model(), temperature=temperature,
+                      model=chat_model(tier), temperature=temperature,
                       default_headers=_compat_headers() or None, **kwargs)
 
 
@@ -188,6 +210,12 @@ def status() -> dict:
     from app.agent.prompts.base import _project_prompt
     return {"available": ok, "reason": why, "provider": provider(),
             "chatModel": chat_model(), "embedModel": embed_model(),
+            # 간단한 역할(의도 분류·결정적 실행) 전용 모델 — **설정된 값만**(폴백 없이) 보여
+            # 준다. 폴백값을 보여 주면 화면에서 "따로 설정돼 있다"로 오해된다.
+            "chatModelSimple": (_pref("agentAoaiChatSimple") if provider() == "aoai"
+                                else _pref("agentOpenaiChatSimple") if provider() == "openai"
+                                else _pref("agentCompatChatSimple") if provider() == "openai_compat"
+                                else ""),
             "apiVersion": api_version() if provider() == "aoai" else None,
             "langfuse": bool(get_langfuse_handler()),
             "secrets": _secrets.masked(),

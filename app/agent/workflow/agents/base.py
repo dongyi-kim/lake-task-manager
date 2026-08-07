@@ -39,6 +39,9 @@ class Agent(ABC):
 
     name: str = "agent"
     temperature: float = 0.2
+    # 모델 티어 — simple(판단이 얕은 역할: 의도 분류·결정적 실행)은 저렴한 모델을 쓴다.
+    # 사용자가 설정창에서 '간단한 역할 모델'을 지정했을 때만 갈라지고, 아니면 하나로 돈다.
+    tier: str = "complex"
 
     @property
     def tools(self) -> list:
@@ -61,7 +64,7 @@ class Agent(ABC):
         """모델 출력 → State 갱신분. 여기서만 State 를 만진다."""
 
     def llm(self, **kw):
-        return _cfg.get_llm(temperature=self.temperature, **kw)
+        return _cfg.get_llm(temperature=self.temperature, tier=self.tier, **kw)
 
     def structured(self, **kw):
         """스키마로 받는 모델. **스키마에 이름을 붙여서** 넘긴다.
