@@ -316,3 +316,20 @@ def test_historian_injects_seed_map_for_mentioned_keys(monkeypatch):
     h.node()({"messages": [HumanMessage(content=f"{key} 관련 정리")],
               "mentioned_keys": [key], "keywords": [key], "trace": []})
     assert "후보:" in captured["seed_map"], "지도가 주입되지 않았다"
+
+
+def test_historian_task_renders_without_error():
+    """task() 는 어떤 State 조합에서도 예외 없이 문자열을 내야 한다.
+
+    회귀: node() 는 web_context 라는 키로 넣는데 task() 가 정의 안 된 이름(web_ctx)을
+    참조해 **매 호출 NameError** → fallback 으로 조용히 삼켜졌다. ReAct 를 통째로 씌운
+    테스트는 fallback 때문에 이걸 못 잡는다 — task() 를 직접 부른다.
+    """
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.historian import Historian
+    h = Historian()
+    base = {"messages": [HumanMessage(content="CDC 방식 기술 검토")], "trace": []}
+    assert "과거 이력" in h.task(base)                       # web_context 없음
+    with_web = {**base, "web_context": "- [웹] CDC 비교 글"}
+    assert "외부 기술 조사" in h.task(with_web)              # 있으면 자료로 실린다
+    assert "CDC 비교 글" in h.task(with_web)

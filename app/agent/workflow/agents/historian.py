@@ -194,6 +194,7 @@ class Historian(ToolAgent):
     def task(self, state):
         kws = ", ".join(state.get("keywords") or []) or last_user_text(state)
         keys = ", ".join(state.get("mentioned_keys") or [])
+        web_ctx = state.get("web_context") or ""      # node() 사전 조사가 넣는다
         return f"""\
 # 명령서
 아래 업무 요청과 관련된 **과거 이력**을 조사해 '현재 상황'을 정리하라.
