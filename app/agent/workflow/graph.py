@@ -88,8 +88,12 @@ def route_after_historian(state: AgentState) -> str:
     if intent == Intent.ASK:
         from app.agent.workflow.state import last_user_text
         asked = last_user_text(state)
-        if any(w in asked for w in ("뭐야", "무엇", "뭔지", "정리", "설명", "알려줘",
-                                    "지식", "개념", "어떻게 쓰")):
+        # 사람 판단·추천이 낀 질문("누가 하면 좋을지", "맡겨도 될까")은 curate 로 보내지
+        # 않는다 — Curator 스키마엔 사람이 없어서 개념 강의로 새 버린다(실측).
+        people_ish = any(w in asked for w in ("누가", "누구에게", "맡", "적절", "추천",
+                                              "관련자", "유관자", "활동"))
+        if not people_ish and any(w in asked for w in ("뭐야", "무엇", "뭔지", "정리", "설명",
+                                                       "알려줘", "지식", "개념", "어떻게 쓰")):
             return "curate"
     return "respond"
 
@@ -174,6 +178,13 @@ def _propose(state: AgentState) -> dict:
                                                  {"key": plan["key"], "body": cmt})}
 
     draft = state.get("draft") or {}
+    # epic 모드 — 지문은 create_epic 도구의 payload 와 같은 모양(epic_payload 가 정의).
+    if (draft.get("mode") or "task") == "epic":
+        from app.agent.workflow.agents.refiner import epic_payload
+        p = epic_payload(draft)
+        if not p.get("summary"):
+            return {}
+        return {"approval_token": approval.stage(tid, "create_epic", p)}
     items = as_bulk_items(draft)
     if not items:
         return {}

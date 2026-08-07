@@ -56,6 +56,34 @@ def _guard(text: str):
     return None
 
 
+def _identity() -> str:
+    """'내가 누구인가' — 현재 사용자 정체 한 줄. 모든 역할의 시스템 프롬프트에 실린다.
+
+    "내 모듈", "나한테 맞는 일" 같은 말은 정체를 알아야 해석된다. 매 역할이 whoami 를
+    부르게 하는 대신 세션 시작에 코드가 한 번 해석해 State 로 준다(사용자 요청).
+    """
+    try:
+        from app.agent.tools._ctx import client, settings
+        from app.domain.search import search_users
+        from app.infra.settings import is_manager, load_people
+        me = (client().current_user() or {})
+        uid = me.get("name") or me.get("key") or ""
+        if not uid:
+            return ""
+        name = ""
+        for u in (search_users(client(), settings(), uid, 5) or []):
+            if str(u.get("id") or "") == uid:
+                name = u.get("name") or ""
+                break
+        mods = [m for m, ids in (load_people() or {}).items() if uid in (ids or [])]
+        mgr = bool(is_manager(settings(), me))
+        return (f"The current user is {name or uid} ({uid})"
+                + (f", member of module(s): {', '.join(mods)}" if mods else "")
+                + (", and IS a manager." if mgr else ", not a manager."))
+    except Exception:
+        return ""
+
+
 def _detect_role() -> str:
     """매니저 여부는 선택이 아니라 사실이다 — 세션 설정과 로그인 사용자로 판별한다.
 
@@ -74,6 +102,7 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
     set_thread(thread_id)       # 쓰기 도구가 자기 대화를 안다(모델이 남의 thread 를 못 적게)
     return {"messages": [HumanMessage(content=text)], "thread_id": thread_id,
             "user_role": user_role or _detect_role(), "user_id": user_id or "",
+            "user_identity": _identity(),
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
             # responder 가 다시 '승인 대기'로 흘러간다.
             "approval_token": "", "comment_token": "", "result": {}, "revisions": 0,

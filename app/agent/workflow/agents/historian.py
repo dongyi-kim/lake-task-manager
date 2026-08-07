@@ -125,6 +125,36 @@ def _presurvey(state) -> str:
             f"- {d.get('title')} ({d.get('url')})" for d in r["confluence"][:4]))
 
     asked = last_user_text(state)
+    # LTM 사용법·사내 규칙 질문 — 정적 지식(search_rules)도 코드가 돌려 넣는다.
+    # md 지시만으로는 모델이 티켓 검색 결과에 끌려 규칙 검색을 건너뛰었다(실측).
+    if ("LTM" in asked.upper()) or any(w in asked for w in ("사용법", "어떻게 해", "어떻게 바꿔",
+                                                            "어디 있", "가이드", "규칙")):
+        try:
+            from app.agent.tools.rag_tools import search_rules
+            hits = search_rules.invoke({"question": asked, "k": 4}) or []
+            rows_g = [f"- ({h.get('출처')}) {str(h.get('rule') or '')[:400]}"
+                      for h in hits if h.get("rule")]
+            if rows_g:
+                parts.append("사내 가이드·규칙 (이 질문의 1차 출처 — 여기 있는 대로 답하라):\n"
+                             + "\n".join(rows_g))
+        except Exception:
+            pass
+    # "누가 하면 좋을지"류 — 후보 재료(모듈 로스터+워크로드)를 코드가 주입한다.
+    # md 규칙만으로는 모델이 '기록 없음'으로 종결했다(실측 2회, gpt-4o 포함).
+    if any(w in asked for w in ("누가", "누구", "맡길", "맡으면", "추천")):
+        module = state.get("module") or ""
+        if module:
+            try:
+                from app.agent.tools.people_tools import get_team_workload
+                tw = get_team_workload.invoke({"module": module}) or {}
+                ppl = (tw.get("people") or [])[:6]
+                if ppl:
+                    parts.append(f"후보 재료 — {module} 로스터·워크로드 (누가 할지는 이걸로 "
+                                 "2~3명 후보+근거를 제시하라. '없음'으로 끝내지 마라):\n" + "\n".join(
+                        f"- {p.get('id')} 진행중 {p.get('inProgress', 0)} · 열림 {p.get('open', 0)}"
+                        f" · 최근 완료 {p.get('done28d', 0)}" for p in ppl))
+            except Exception:
+                pass
     knowledge_ish = any(w in asked for w in (
         "히스토리", "근황", "최근", "현황", "정리", "알려줘", "설명", "무슨", "어떤", "왜", "지식"))
     if knowledge_ish or len(jira) < 2:
@@ -252,7 +282,10 @@ class Historian(ToolAgent):
             ext = mcp_client.tools()
         except Exception:
             ext = []
-        return T.SEARCH_TOOLS + T.WEB_TOOLS + [T.BY_NAME["get_progress"]] + ext
+        # 사람 도구 — 담당 적합성 판단("DL-x를 A에게?")·"누가 하면 좋을지"에 필요(실측:
+        # 없어서 대답이 개념 강의로 샜다). 규칙 도구 — LTM 사용법·규칙 질문의 1차 출처.
+        return (T.SEARCH_TOOLS + T.WEB_TOOLS + T.PEOPLE_TOOLS + T.RULE_TOOLS
+                + [T.BY_NAME["get_progress"]] + ext)
 
     def system(self, state):
         return persona(state, SYSTEM_HISTORIAN)

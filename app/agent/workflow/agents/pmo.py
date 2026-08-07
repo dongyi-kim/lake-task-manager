@@ -59,19 +59,29 @@ def _group_activity(state) -> str:
     if (state.get("intent") or "") != _I.ACTIVITY:
         return ""
     asked = last_user_text(state)
-    if not any(w in asked for w in ("모듈", "인력", "구성원", "팀", "들의", "들이")):
+    if not any(w in asked for w in ("모듈", "인력", "구성원", "팀", "들의", "들이",
+                                    "관련자", "유관자")):
         return ""                       # 특정 개인 질문은 기존 경로
-    module = state.get("module") or next((m for m in _MODULES if m.lower() in asked.lower()), "")
-    if not module:
-        return ""
     m = _re.search(r"(\d+)\s*일", asked)
     days = max(1, min(int(m.group(1)) if m else 7, 90))
 
     from app.agent import tools as T
-    roster = (T.BY_NAME["get_module_people"].invoke({"key_or_component": module}) or {}).get("people") or []
+    # 로스터의 두 출처: ① 모듈 ② **티켓 유관자 서클**("DL-101 관련자들") — 담당·보고·코멘트 참여자.
+    keys = state.get("mentioned_keys") or []
+    if keys and any(w in asked for w in ("관련자", "유관자")):
+        who = "티켓 " + keys[0] + " 유관자"
+        p = T.BY_NAME["get_ticket_participants"].invoke({"key": keys[0]}) or {}
+        roster = [x.get("id") if isinstance(x, dict) else x for x in (p.get("people") or [])]
+        roster = [x for x in roster if x][:8]
+    else:
+        module = state.get("module") or next((mm for mm in _MODULES if mm.lower() in asked.lower()), "")
+        if not module:
+            return ""
+        who = module
+        roster = (T.BY_NAME["get_module_people"].invoke({"key_or_component": module}) or {}).get("people") or []
     if not roster:
         return ""
-    rows = [f"[로스터] {module}: {', '.join(roster)} ({len(roster)}명)", f"[조회 기간] 최근 {days}일"]
+    rows = [f"[로스터] {who}: {', '.join(roster)} ({len(roster)}명)", f"[조회 기간] 최근 {days}일"]
     for uid in roster[:8]:
         a = T.BY_NAME["get_user_activity"].invoke({"user_id": uid, "days": days}) or {}
         if a.get("denied"):
@@ -100,9 +110,17 @@ class PMO(ToolAgent):
                 pre = ""
             if pre:
                 state = {**state, "group_activity": pre}
+            from app.agent.tools.search_tools import take_last_jql
+            take_last_jql()                    # 이전 턴 잔여 비우기
             out = react(state)
             if pre:
                 out["group_activity"] = pre    # Responder 도 이 자료로 3층을 쓴다 — State 에 싣는다
+            q = take_last_jql()
+            if q and "JQL" in last_user_text(state).upper():
+                # 사용자가 JQL 을 원했다 — 어느 조회 도구를 썼든 **실행된 쿼리**를 코드가
+                # 근거 줄로 박는다(조회 도구들이 내부 JQL 을 기록해 둔다).
+                out.setdefault("pmo_findings", []).append(
+                    {"key": "", "point": f"실행한 JQL: `{q}`", "action": ""})
             return out
 
         return run
@@ -112,7 +130,9 @@ class PMO(ToolAgent):
         from app.agent import tools as T
         # 로스터·팀 워크로드 — 그룹 활동 질문("ETL 인력들 요즘 뭐 해")에 필요하다.
         return T.PMO_TOOLS + [T.BY_NAME["get_ticket"], T.BY_NAME["get_module_people"],
-                              T.BY_NAME["get_team_workload"]]
+                              T.BY_NAME["get_team_workload"],
+                              T.BY_NAME["run_jql"],           # 조건 조합 검색("P1 미배정 진행중")
+                              T.BY_NAME["get_ticket_participants"]]  # 특정 티켓 유관자 대상 질의
 
     def system(self, state):
         return persona(state, SYSTEM_PMO)
@@ -138,6 +158,11 @@ class PMO(ToolAgent):
                              "**전원**의 진행중 업무를 모아 사람별 한 줄(이름 — 주로 하는 일)로 정리하라. "
                              "로스터에 없는 사번을 지어내지 마라.",
         }.get(intent, "요청에 맞는 현황을 조회해 정리하라.")
+        # 'JQL' 을 입에 올린 요청은 run_jql 이 **의무**다 — 결과만이 아니라 쿼리 자체를 원한다.
+        if "JQL" in last_user_text(state).upper():
+            goal = ("사용자가 JQL 을 요구했다. **반드시 run_jql 로** 조건을 JQL 로 옮겨 실행하고 "
+                    "결과를 보고하라. 다른 조회 도구로 대신하지 마라. "
+                    "(실행된 JQL 한 줄은 시스템이 근거로 자동 첨부한다.)")
         ga = state.get("group_activity") or ""
         ga_block = ""
         if ga:

@@ -461,3 +461,59 @@ def test_group_activity_preaggregates_whole_roster():
     pre14 = _group_activity({"intent": "activity", "module": "ETL", "messages": [
         HumanMessage(content="지난 14일 동안 우리 모듈 인력들 활동")]})
     assert "최근 14일" in pre14
+
+
+def test_run_jql_forces_project_scope_and_caps():
+    """JQL 은 모델이 쓰되 안전은 코드가 — 프로젝트 한정 강제, 타 프로젝트 거부, 결과 캡."""
+    r = _run(T.BY_NAME["run_jql"], jql="statusCategory = indeterminate ORDER BY updated DESC", limit=5)
+    assert r.get("count") is not None and r["jql"].startswith("project = DL"), r.get("jql")
+    assert len(r["tickets"]) <= 5
+    bad = _run(T.BY_NAME["run_jql"], jql='project = OTHER AND status = Open')
+    assert "밖은 조회할 수 없습니다" in (bad.get("error") or "")
+
+
+def test_create_epic_needs_token_and_matches_fingerprint():
+    """Epic 생성도 HITL — 지문은 epic_payload 와 도구 payload 가 같은 모양이어야 한다."""
+    from app.agent.workflow.agents.refiner import epic_payload
+    draft = {"mode": "epic", "items": [{"summary": "데이터 거버넌스 강화", "type": "Epic",
+                                       "epic_name": "거버넌스", "components": ["Catalog"],
+                                       "description": "<h3>배경</h3><p>x</p>"}]}
+    p = epic_payload(draft)
+    # 토큰 없이는 거부
+    r0 = _run(T.BY_NAME["create_epic"], summary=p["summary"], approval_token="",
+              epic_name=p.get("epic_name", ""), description=p.get("description", ""),
+              components=p.get("components"))
+    assert r0["ok"] is False
+    # 스테이징(같은 지문) → 승인 → 생성
+    tok = approval.stage("t-epic", "create_epic", p)
+    approval.approve(tok, "t-epic")
+    r = _run(T.BY_NAME["create_epic"], summary=p["summary"], approval_token=tok,
+             epic_name=p.get("epic_name", ""), description=p.get("description", ""),
+             components=p.get("components"))
+    assert r.get("ok") and r["created"][0]["key"], r
+    # 실물 확인 — Epic 타입으로 생성됐는가. 프로세스 간 공유 캐시(cache.sqlite3)에 같은
+    # 키의 낡은 행이 남을 수 있어(결정적 world 는 키 시퀀스를 재사용) 캐시를 비우고 읽는다.
+    from app.agent.tools import _ctx
+    c = _ctx.client()
+    c.cache.invalidate("issue:")
+    raw = c.get_issue(r["created"][0]["key"]) or {}
+    assert ((raw.get("fields") or {}).get("issuetype") or {}).get("name", "").lower() == "epic"
+
+
+def test_epic_mode_flows_through_propose_and_operator(monkeypatch):
+    """mode=epic 초안 → _propose 가 create_epic 지문으로 스테이징 → Operator 결정적 실행."""
+    import os
+    os.environ["LAKE_AGENT_PROVIDER"] = "fake"
+    from app.agent.workflow import graph as G
+    from app.agent.workflow.agents.operator import Operator
+    draft = {"mode": "epic", "items": [{"summary": "실시간 품질 관제 체계", "type": "Epic",
+                                       "epic_name": "품질관제"}]}
+    out = G._propose({"thread_id": "t-ep2", "draft": draft})
+    tok = out["approval_token"]
+    assert approval.peek(tok)["action"] == "create_epic"
+    approval.approve(tok, "t-ep2")
+    res = Operator().node()({"draft": draft, "approval_token": tok,
+                             "change_plan": {}, "trace": []})
+    r = res["result"]
+    assert r["created"] and r["failed"] == []
+    assert "Task" in (r["note"] or ""), "승인 후 Task 연쇄 제안이 note 에 있어야 한다"

@@ -89,6 +89,7 @@ class AgentState(TypedDict, total=False):
     thread_id: str
     user_role: str                  # Role.*
     user_id: str
+    user_identity: str              # "이름(사번), 모듈, 매니저 여부" — 세션 시작에 코드가 해석
 
     # ── Planner ──
     intent: str                     # Intent.*

@@ -19,15 +19,16 @@ from app.agent.tools.rag_tools import deep_search, search_rules
 from app.agent.tools.survey_tools import map_ticket_neighborhood
 from app.agent.tools.web_tools import search_github, search_web
 from app.agent.tools.search_tools import (find_parent_epic, get_epic_tree, get_ticket,
-                                          get_ticket_context, search_work_history)
-from app.agent.tools.write_tools import (add_ticket_comment, attach_document, create_tickets,
+                                          get_ticket_context, run_jql, search_work_history)
+from app.agent.tools.write_tools import (add_ticket_comment, attach_document, create_epic,
+                                         create_tickets,
                                          link_tickets, list_child_types, list_ticket_options,
                                          list_transitions, set_thread, transition_ticket,
                                          update_ticket, validate_ticket_plan)
 
 # 과거를 뒤진다 — 읽기만. deep_search 는 의미 검색까지 가는 비싼 쪽이라 따로 알아볼 수 있게 뒀다.
 SEARCH_TOOLS = [search_work_history, map_ticket_neighborhood, get_ticket, get_ticket_context,
-                get_epic_tree, find_parent_epic, deep_search]
+                get_epic_tree, find_parent_epic, deep_search, run_jql]
 
 # 담당자 근거를 모은다 — 읽기만.
 PEOPLE_TOOLS = [get_team_workload, get_ticket_participants, get_person_profile, get_module_people]
@@ -46,8 +47,8 @@ WEB_TOOLS = [search_web, search_github]
 REVIEW_TOOLS = [validate_ticket_plan, list_ticket_options, list_child_types, list_transitions]
 
 # 실제로 쓴다 — 전부 approval_token 이 필요하다(agent/approval.py).
-WRITE_TOOLS = [create_tickets, update_ticket, add_ticket_comment, transition_ticket,
-               link_tickets, attach_document]
+WRITE_TOOLS = [create_tickets, create_epic, update_ticket, add_ticket_comment,
+               transition_ticket, link_tickets, attach_document]
 
 READ_TOOLS = SEARCH_TOOLS + PEOPLE_TOOLS + RULE_TOOLS + PMO_TOOLS + WEB_TOOLS + REVIEW_TOOLS
 ALL_TOOLS = READ_TOOLS + WRITE_TOOLS

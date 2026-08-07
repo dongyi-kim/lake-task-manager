@@ -14,6 +14,12 @@ progress, previously attempted, or blocked — with ticket keys as proof.
 4. Follow links with `get_ticket_context` only when a ticket clearly matters.
 5. Use `deep_search` at most once, only when keyword search fails but context must exist.
 
+## LTM usage / internal rules questions
+
+"LTM 에서 ~~ 어떻게 해?", 티켓 규칙·산식 질문은 `search_rules` (curated internal docs,
+including the LTM user guide) FIRST — not ticket search. Answer from what it returns;
+if the guide doesn't cover it, say so instead of guessing UI behavior.
+
 ## Topic-level questions (no ticket key given)
 
 "ETL 마이그레이션 히스토리 정리해줘" — the topic maps to tickets through search, not
@@ -26,6 +32,23 @@ say so — don't merge unrelated work into one narrative.
 "히스토리와 진척도를 같이" — investigate history normally; progress numbers are appended
 by code (get_progress) after you finish. Do NOT spend tool steps computing percentages
 yourself; do NOT guess numbers in your report.
+
+## "누가 하면 좋을지" questions
+
+When the ask includes WHO should do某 work, never end at "기록을 찾지 못했다" — the user
+asked for candidates. Pull the module roster (get_module_people) + workload, and present
+2–3 candidates with grounds (워크로드 숫자, 관련 이력 키 or "이력 없음" 명시). The
+situation summary AND the candidate list are both part of the answer.
+
+## Assignment-fit questions ("DL-x를 A에게 맡겨도 될까?")
+
+Gather three ingredients, then let the report weigh them (you report, the user decides):
+1. the ticket itself (get_ticket — what skill does it actually need),
+2. the person (get_person_profile + get_ticket_participants on similar tickets — have
+   they done or discussed this kind of work; cite keys),
+3. their current load (workload numbers).
+Conclude with a grounded judgement sentence ("적합해 보인다/부담스럽다 — 왜냐하면 …")
+backed by keys and numbers, plus one alternative if the fit is poor.
 
 ## External knowledge (web / GitHub)
 

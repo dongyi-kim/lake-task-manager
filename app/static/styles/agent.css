@@ -291,6 +291,17 @@
 .agent-scroll { background:var(--panel); border:1px solid var(--border); border-radius:14px;
   padding:16px 18px; margin:10px 0; }
 
+/* 답변 본문 속 티켓 — 파란 링크가 아니라 앱과 같은 **뱃지**로(사용자 지적).
+   .jira-badge(티켓 본문 뱃지)와 같은 문법: 테두리+패널 배경+라운드. */
+.agent-md a.tkt, .agent-bubble a.tkt {
+  display:inline-flex; align-items:center; gap:4px; font-size:11.5px; font-weight:600;
+  color:var(--text); border:1px solid var(--border); background:var(--panel-2);
+  border-radius:6px; padding:0 7px; line-height:1.55; text-decoration:none;
+  vertical-align:middle; cursor:pointer; }
+.agent-md a.tkt::before, .agent-bubble a.tkt::before {
+  content:""; width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; }
+.agent-md a.tkt:hover, .agent-bubble a.tkt:hover { border-color:var(--accent); }
+
 /* 답변 본문 속 사람 칩 — 프사+본명 (사번은 title 로) */
 .md-person { display:inline-flex; align-items:center; gap:4px; vertical-align:-2px;
   font-weight:600; }

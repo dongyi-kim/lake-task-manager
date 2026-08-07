@@ -29,6 +29,9 @@ ITEM = {
         "summary": {"type": "string", "description": "동사로 끝나는 제목. 제목만으로 구분되어야 한다"},
         "type": {"type": "string", "description": "Task/Story/Bug/Improvement/Sub-Task 중 실제 허용된 값"},
         "epic": {"type": "string", "description": "task 모드에서 상위 Epic 키. 최상위로 둘 거면 빈 문자열"},
+        "epic_name": {"type": "string",
+                      "description": "epic 모드 전용 — WBS·뱃지에 보일 짧은 단축어(예: 'CDC도입'). "
+                                     "비우면 summary 를 쓴다"},
         "parent": {"type": "string", "description": "subtask 모드에서 부모 티켓 키"},
         "description": {
             "type": "string",
@@ -87,8 +90,10 @@ SCHEMA = {
             "description": ("사용자에게 되물을 것. **사용자만 아는 것**만(범위·완료조건·기한·의도). "
                             "찾아보면 아는 것은 넣지 마라. 물을 게 없으면 빈 배열. 최대 3개"),
         },
-        "mode": {"type": "string", "enum": ["task", "subtask"],
-                 "description": "이번에 만들 것의 종류. Sub-Task 는 부모가 있어야 하므로 대개 먼저 task"},
+        "mode": {"type": "string", "enum": ["task", "subtask", "epic"],
+                 "description": "이번에 만들 것의 종류. Sub-Task 는 부모가 있어야 하므로 대개 먼저 task. "
+                                "epic = 사용자가 새 Epic(이니셔티브)을 만들자고 할 때 — items 는 "
+                                "Epic 1개(type='Epic', epic_name 에 짧은 단축어)"},
         "items": {"type": "array", "items": ITEM,
                   "description": "티켓 초안. questions 가 있으면 빈 배열로 두어도 된다"},
         "change": {
@@ -324,6 +329,17 @@ def as_bulk_items(draft: dict) -> list:
     빈 문자열은 그 명시로 인정되지 않는다.
     """
     mode = (draft or {}).get("mode") or "task"
+    if mode == "epic":
+        # Epic 은 bulk 생성 대상이 아니다 — 화면·검증 표시용 한 줄만 만든다.
+        # 실행은 Operator 가 create_epic 도구로 한다(승인 지문은 epic_payload 가 정의).
+        out = []
+        for it in (draft or {}).get("items") or []:
+            out.append({"summary": (it.get("summary") or "").strip(), "type": "Epic",
+                        **({"epic_name": it["epic_name"]} if it.get("epic_name") else {}),
+                        **({k: it[k] for k in ("description", "priority", "duedate", "assignee")
+                            if str(it.get(k) or "").strip()}),
+                        **({"components": it["components"]} if it.get("components") else {})})
+        return out
     out = []
     for it in (draft or {}).get("items") or []:
         row = {"summary": (it.get("summary") or "").strip(), "type": (it.get("type") or "").strip()}
@@ -340,6 +356,20 @@ def as_bulk_items(draft: dict) -> list:
                 row[k] = vals
         out.append(row)
     return out
+
+
+def epic_payload(draft: dict) -> dict:
+    """epic 모드의 승인 지문 payload — `create_epic` 도구가 consume 때 만드는 것과
+    **같은 모양**이어야 지문이 맞는다(도구는 compact 로 빈 값을 떨군다)."""
+    from app.agent.tools._ctx import compact
+    it = ((draft or {}).get("items") or [{}])[0]
+    return compact({"summary": (it.get("summary") or "").strip(),
+                    "epic_name": (it.get("epic_name") or "").strip(),
+                    "description": it.get("description") or "",
+                    "components": [x for x in (it.get("components") or []) if x],
+                    "priority": (it.get("priority") or "").strip(),
+                    "duedate": (it.get("duedate") or "").strip(),
+                    "assignee": (it.get("assignee") or "").strip()})
 
 
 def draft_json(draft: dict) -> str:

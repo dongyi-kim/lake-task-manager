@@ -71,6 +71,11 @@ def persona(state, extra: str = "") -> str:
     today = (f"Today is {date.today().isoformat()} ({wd}요일). ALL date math uses this. "
              "Resolve relative dates ('다음 주 금요일') by counting weekdays from today.")
     hint = ROLE_HINT.get((state or {}).get("user_role") or "", "")
+    # '내가 누구인가' — 세션이 해석한 사용자 정체(이름·사번·모듈·매니저 여부).
+    # "내 모듈", "나한테 맞는 일"의 해석 기준이 모든 역할에 동일하게 깔린다(사용자 요청).
+    who = (state or {}).get("user_identity") or ""
+    if who:
+        hint = (who + " " + hint).strip()
     proj = _project_prompt()
     user = _user_prompt()
     # 레이어 순서: 공통 페르소나 → 날짜 → 역할 → 프로젝트 공용 → 사용자별 → 역할 지시.

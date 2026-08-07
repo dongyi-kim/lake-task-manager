@@ -114,10 +114,28 @@ class Operator(ToolAgent):
         return run
 
     def _run_create(self, state, react):
-        """생성 실행 — 승인된 초안을 create_tickets 한 번에 넘긴다. 결과는 도구가 준 그대로."""
+        """생성 실행 — 승인된 초안을 create_tickets/create_epic 한 번에 넘긴다.
+        결과는 도구가 준 그대로."""
         from app.agent import tools as T
-        from app.agent.workflow.agents.refiner import as_bulk_items
+        from app.agent.workflow.agents.refiner import as_bulk_items, epic_payload
         draft = state.get("draft") or {}
+
+        if (draft.get("mode") or "task") == "epic":
+            p = epic_payload(draft)
+            if not p.get("summary"):
+                return react(state)
+            r = T.BY_NAME["create_epic"].invoke(
+                {**p, "approval_token": state.get("approval_token") or ""})
+            created = [c for c in (r.get("created") or []) if isinstance(c, dict) and c.get("key")]
+            failed = [] if created else [{"summary": p.get("summary", ""),
+                                          "error": r.get("error") or ""}]
+            note_txt = ("이 Epic 아래에 Task 를 이어서 만들 수 있습니다 — 원하시면 말씀해 주세요."
+                        if created else "")
+            return {"result": {"created": created, "failed": failed, "updated": [],
+                               "note": note_txt},
+                    "trace": note(state, self.name,
+                                  f"Epic 생성 {len(created)}건" + (" · 실패" if failed else ""))}
+
         items = as_bulk_items(draft)
         if not items:
             return react(state)          # 계획이 없다 — 예외 경로만 모델에게

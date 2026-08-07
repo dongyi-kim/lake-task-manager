@@ -193,6 +193,39 @@ def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: 
 
 
 @tool
+def create_epic(summary: str, approval_token: str, epic_name: str = "",
+                description: str = "", components: list = None, priority: str = "",
+                duedate: str = "", assignee: str = "") -> dict:
+    """**최상위 Epic 을 만든다**. 사용자 승인 토큰이 반드시 필요하다.
+
+    summary 는 Epic 의 요약(제목), epic_name 은 짧은 단축어(WBS·뱃지에 표시 — 비우면
+    summary 로). description 은 HTML(배경/완료 기준/References 구조).
+    Task/Sub-Task 는 이 도구가 아니라 create_tickets 로 — Epic 이 먼저 실재해야
+    그 밑에 달 수 있다(생성 후 두 번째 승인으로 이어진다).
+    """
+    from app.agent import approval
+    payload = compact({"summary": summary, "epic_name": epic_name,
+                       "description": description, "components": components,
+                       "priority": priority, "duedate": duedate, "assignee": assignee})
+    ok, why = approval.consume(approval_token, "create_epic", payload)
+    if not ok:
+        return _denied(why)
+    c = client()
+    try:
+        r = c.create_epic(summary=summary, epic_name=epic_name or None,
+                          description=c.desc_field_value(description) if description else None,
+                          components=[x for x in (components or []) if x] or None,
+                          priority=priority or None, duedate=duedate or None,
+                          assignee=assignee or None)
+        key = (r or {}).get("key")
+        if not key:
+            return {"ok": False, "error": "Epic 생성 응답에 키가 없습니다."}
+        return {"ok": True, "created": [{"key": key, "summary": summary}], "failed": []}
+    except Exception as e:
+        return {"ok": False, "created": [], "failed": [], "error": str(e)[:300]}
+
+
+@tool
 def add_ticket_comment(key: str, body: str, approval_token: str) -> dict:
     """티켓에 **코멘트를 남긴다**. 승인 토큰 필요.
 

@@ -93,6 +93,65 @@ def search_work_history(query: str, limit: int = 8) -> dict:
     }
 
 
+# 마지막으로 실행된 JQL — PMO 가 답변에 `JQL: ...` 한 줄을 **코드로** 붙이기 위한 기록.
+# (모델에게 "표기하라"고 시켰지만 스키마 정리 단계에서 떨어뜨렸다 — 실측.)
+import threading as _th
+_last_jql = _th.local()
+
+
+def take_last_jql() -> str:
+    q = getattr(_last_jql, "q", "")
+    _last_jql.q = ""
+    return q
+
+
+@tool
+def run_jql(jql: str, limit: int = 20) -> dict:
+    """**JQL 을 직접 실행**한다 — 사용자가 조건을 조합해 티켓을 찾고 싶을 때
+    ("우선순위 P1 이면서 담당자가 없는 진행중 티켓", "이번 달 마감인 Catalog 티켓").
+
+    사용자의 자연어 조건을 네가 JQL 로 옮겨 넣어라. 참고:
+      상태군 statusCategory in (new, indeterminate, done) / 담당 assignee = "skcc.x1042"
+      / 미배정 assignee is EMPTY (단, 미배정은 find_unassigned_tickets 가 더 정확하다)
+      / 컴포넌트 component = "ETL" / 기한 duedate <= "2026-08-31" / 라벨 labels = "PMO_VIT"
+      / 갱신 updated >= -7d / 정렬 ORDER BY duedate ASC
+
+    프로젝트는 자동으로 우리 프로젝트로 한정된다(다른 프로젝트 조회 불가).
+    돌려주는 것: {"jql": 실행된 최종 JQL, "count", "tickets": [{key,title,status,assignee,duedate}]}
+    """
+    c, s = client(), settings()
+    q = (jql or "").strip().rstrip(";")
+    if not q:
+        return {"error": "JQL 이 비었습니다."}
+    # 프로젝트 한정은 **코드가** 보장한다 — 모델이 빼먹거나 다른 프로젝트를 적어도 우리
+    # 프로젝트 밖은 조회되지 않는다(JQL 은 조회 전용이라 쓰기 위험은 없다).
+    low = q.lower()
+    if "project" not in low:
+        head, sep, tail = q.partition("ORDER BY") if "ORDER BY" in q else q.partition("order by")
+        cond = head.strip()
+        q = f"project = {s.project_key}" + (f" AND ({cond})" if cond else "") + \
+            ((" " + sep + tail) if sep else "")
+    elif f"project = {s.project_key}".lower() not in low.replace('"', ""):
+        return {"error": f"우리 프로젝트({s.project_key}) 밖은 조회할 수 없습니다."}
+    cap = max(1, min(int(limit or 20), 50))
+    try:
+        raws = c.search_issues(q, max_results=cap)
+    except Exception as e:
+        return {"error": f"JQL 실행 실패: {str(e)[:200]} — 문법을 고쳐 다시 시도하라.", "jql": q}
+    rows = []
+    for it in (raws or [])[:cap]:        # mock 이 max_results 를 무시해도 캡은 지킨다(실측)
+        f = it.get("fields") or {}
+        rows.append(compact({
+            "key": it.get("key"), "title": f.get("summary"),
+            "status": (f.get("status") or {}).get("name"),
+            "assignee": (f.get("assignee") or {}).get("name"),
+            "priority": (f.get("priority") or {}).get("name"),
+            "duedate": f.get("duedate"),
+        }))
+    _last_jql.q = q
+    return {"jql": q, "count": len(rows), "tickets": rows}
+
+
 @tool
 def get_ticket(key: str, comment_limit: int = 5) -> dict:
     """티켓 하나를 **본문·코멘트까지** 연다. search_work_history 로 찾은 키를 넣는다.

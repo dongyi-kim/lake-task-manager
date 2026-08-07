@@ -109,6 +109,13 @@ def _machine_check(state: AgentState) -> dict:
     items = as_bulk_items(draft)
     if not items:
         return {"ok": False, "errors": [], "warnings": [], "text": "초안이 비어 있다."}
+    # Epic 은 Bulk 규칙(validate_bulk)의 대상이 아니다 — 요약만 확인하고 통과.
+    # (Epic Link·타입·SP 규칙은 전부 자식 티켓 이야기다.)
+    if (draft.get("mode") or "task") == "epic":
+        ok = bool((items[0].get("summary") or "").strip())
+        return {"ok": ok, "errors": [] if ok else [{"index": 0, "field": "summary",
+                                                    "message": "Epic 요약이 비었다"}],
+                "warnings": [], "text": "Epic 초안 — 기계 검증 대상 아님(요약 확인만)."}
     try:
         from app.agent.tools._ctx import client
         from app.domain.bulk import validate_bulk
