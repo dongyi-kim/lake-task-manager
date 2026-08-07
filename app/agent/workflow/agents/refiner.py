@@ -29,7 +29,19 @@ ITEM = {
         "type": {"type": "string", "description": "Task/Story/Bug/Improvement/Sub-Task 중 실제 허용된 값"},
         "epic": {"type": "string", "description": "task 모드에서 상위 Epic 키. 최상위로 둘 거면 빈 문자열"},
         "parent": {"type": "string", "description": "subtask 모드에서 부모 티켓 키"},
-        "description": {"type": "string", "description": "왜 하는지(배경) + 완료 조건 + 관련 티켓 키"},
+        "description": {
+            "type": "string",
+            "description": (
+                "티켓 본문 — **HTML 로 작성한다**(에디터가 받는 형식. mock 은 위키로 자동 변환, "
+                "prod 는 그대로 저장된다). 구조:\n"
+                "<h3>배경</h3><p>왜 하는지 — 계기·관련 티켓 키(DL-123 텍스트로, 자동 링크됨)</p>\n"
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                "<li data-checked=\"false\">검증 가능한 조건 1</li>"
+                "<li data-checked=\"false\">조건 2</li></ul>\n"
+                "여러 후보·항목 비교가 필요하면 <table><tr><th>…</th></tr><tr><td>…</td></tr></table>.\n"
+                "관련 문서가 있으면 <a href=\"URL\">제목</a>. "
+                "일이 커서 나중에 쪼갤 거면 <h3>후속 Sub-Task 후보</h3><ul><li>…</li></ul> 를 적는다"),
+        },
         "components": {"type": "array", "items": {"type": "string"}},
         "labels": {"type": "array", "items": {"type": "string"}},
         "priority": {"type": "string"},
@@ -134,6 +146,14 @@ class Refiner(ToolAgent):
 - Story Point 는 넣지 않는다(Story 에만 매길 수 있고, 생성 시점엔 못 넣는다).{extra}""")
 
     def task(self, state):
+        # "알아서/기본값" 은 명령서 수준에서 강제한다 — 되묻기 기준(시스템)만으로는 담당자·기한을
+        # 또 물었다(실측 2회). 명령서의 ★ 지시는 따르는 것을 버그 갈래에서 확인했다.
+        said = conversation(state)
+        defaults = any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠"))
+        force_rule = ("\n- ★ 사용자가 **알아서 진행하라고 했다. questions 는 반드시 빈 배열**로 내고 "
+                      "지금 아는 것 + 기본값으로 items 를 완성하라. 담당자는 비워 둔다(다음 단계가 "
+                      "정한다). 기한은 사용자가 말한 것을 쓰고, 없으면 비워 둔다."
+                      if defaults else "")
         # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
         if (state.get("intent") or "") == Intent.REPORT_BUG:
             goal = """버그 신고를 **Bug 티켓 초안**으로 만들어라.
@@ -170,9 +190,17 @@ class Refiner(ToolAgent):
 
 ## 제약조건
 - 조사 결과에 없는 티켓 키·사람·날짜를 지어내지 않는다.
-- description 에는 **왜 하는지(배경)** 와 **완료 조건**을 반드시 넣는다.
-- 컴포넌트는 하나만. 두 모듈에 걸치면 티켓을 나눈다.
-- 이미 같은 일이 진행 중이면 새로 만들지 말고 questions 로 사용자 판단을 구한다.
+- **제목**: "[모듈] 무엇을 어떻게" 형태, 동사로 끝낸다. 제목만으로 다른 티켓과 구분돼야 한다.
+- **description 은 HTML 구조로**: <h3>배경</h3>(계기 + 관련 티켓 키) →
+  <h3>완료 조건 (DoD)</h3>(taskList 체크박스 — 각 항목이 **검증 가능**해야 한다) →
+  필요 시 비교 표(<table>)·관련 문서 링크(<a>). 통짜 문단 하나로 쓰지 마라.
+- **컴포넌트는 하나만**(list_ticket_options 의 실값). 두 모듈에 걸치면 티켓을 나눈다.
+- **라벨은 기존 것 우선**(list_ticket_options 로 확인) — 같은 뜻의 라벨이 두 벌 생기면
+  어느 쪽으로도 검색이 안 된다.
+- **분업이 필요해 보이는 큰 일**은 한 티켓에 몰지 말고 **역할 단위로 여러 Task/Story 로 나눠라**
+  (티켓 하나 = 담당자 한 명). 각 티켓 안의 실행 단계는 DoD 체크박스로, 더 잘게 쪼갤 후보는
+  '후속 Sub-Task 후보' 절로 적는다(부모 생성 후 2차 승인으로 붙는다).
+- 이미 같은 일이 진행 중이면 새로 만들지 말고 questions 로 사용자 판단을 구한다.{force_rule}
 
 ## 대화
 {conversation(state)}
@@ -212,6 +240,15 @@ class Refiner(ToolAgent):
             qs = []
         draft = {"mode": out.get("mode") or "task", "items": items,
                  "rationale": out.get("rationale") or ""}
+
+        # PMO_VIT 는 경영진 보고 현안 전용이고 트리 최상위 하나에만 붙는다 — 그런데 모델이
+        # 기존 라벨 목록에서 보고는 신규 티켓 셋에 전부 붙였다(실측). 사용자가 입으로 말했을
+        # 때만 남기고, 아니면 기계적으로 뗀다. 규칙 위반 라벨은 검색 노이즈가 된다.
+        asked_all = conversation(state)
+        if "PMO_VIT" not in asked_all and "현안" not in asked_all:
+            for it in items:
+                if it.get("labels"):
+                    it["labels"] = [x for x in it["labels"] if str(x).upper() != "PMO_VIT"]
 
         # modify 갈래 — 변경 계획. 바꿀 값이 하나도 없는 change 는 계획이 아니다.
         change = out.get("change") if isinstance(out.get("change"), dict) else {}

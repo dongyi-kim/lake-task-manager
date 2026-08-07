@@ -180,6 +180,29 @@ export default {
     },
     scroll() { const el = this.$refs.scroller; if (el) el.scrollTop = el.scrollHeight; },
     itemOf(p, i) { return (p.items || [])[i] || {}; },
+    /** 초안 description(HTML) → 카드용 읽기 표시. v-html 로 남의 HTML 을 실행하지 않기 위해
+     *  구조 표식(제목 ■, 체크박스 ☐, 표 |)만 텍스트로 살리고 태그는 벗긴다. */
+    descText(html) {
+      let s = String(html || "");
+      s = s.replace(/<h3[^>]*>(.*?)<\/h3>/gi, "
+■ $1
+")
+           .replace(/<li[^>]*data-checked[^>]*>(.*?)<\/li>/gi, "☐ $1
+")
+           .replace(/<li[^>]*>(.*?)<\/li>/gi, "· $1
+")
+           .replace(/<tr[^>]*>/gi, "
+| ").replace(/<\/t[dh]>/gi, " | ")
+           .replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, "$2 ($1)")
+           .replace(/<\/p>|<br\s*\/?>/gi, "
+")
+           .replace(/<[^>]+>/g, "")
+           .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+      return s.replace(/
+{3,}/g, "
+
+").trim();
+    },
     reasonsFor(turn, i) {
       const a = (turn.assignments || []).find((x) => x.index === i);
       return a ? a : null;
@@ -419,7 +442,7 @@ export default {
                     <span v-if="it.priority">{{ it.priority }}</span>
                     <span v-if="it.assignee" class="ai-who">담당 {{ it.assignee }}</span>
                   </div>
-                  <div v-if="it.description" class="ai-desc">{{ it.description }}</div>
+                  <div v-if="it.description" class="ai-desc">{{ descText(it.description) }}</div>
                   <!-- 담당자는 근거와 함께 보인다. 이름만 있으면 리더가 검증할 수 없다 -->
                   <div v-if="reasonsFor(t, i)" class="ai-reasons">
                     <div v-for="(r, ri) in reasonsFor(t, i).reasons" :key="ri">· {{ r }}</div>

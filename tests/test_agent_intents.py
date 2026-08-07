@@ -228,3 +228,19 @@ def test_modify_end_to_end_updates_the_real_ticket(monkeypatch):
     # 방금 단 코멘트는 목록의 **끝**에 있다.
     assert any("의존 작업" in (c.get("body") or "") for c in got.get("comments") or []),         "코멘트가 실물에 안 남았다"
     G.reset()
+
+
+def test_pmo_vit_label_is_stripped_unless_user_asked(monkeypatch):
+    """PMO_VIT 는 경영진 현안 전용·최상위 하나에만 — 모델이 신규 티켓 셋에 전부 붙였다(실측).
+    사용자가 입에 올리지 않았으면 기계적으로 뗀다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.refiner import Refiner
+    r = Refiner()
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "s", "type": "Task", "labels": ["PMO_VIT", "quality"]}]}
+    st = {"messages": [HumanMessage(content="품질 규칙 기능 만들어줘")], "trace": []}
+    got = r.apply(st, dict(out, items=[dict(out["items"][0])]))
+    assert got["draft"]["items"][0]["labels"] == ["quality"]
+    st2 = {"messages": [HumanMessage(content="이거 PMO_VIT 현안으로 올려줘")], "trace": []}
+    got2 = r.apply(st2, dict(out, items=[dict(out["items"][0], labels=["PMO_VIT"])]))
+    assert "PMO_VIT" in got2["draft"]["items"][0]["labels"]
