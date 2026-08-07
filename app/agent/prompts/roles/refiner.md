@@ -32,9 +32,10 @@ The UI adds a "직접 입력" escape hatch automatically, so options need not be
 Reserve kind=text for genuinely free-form answers (reproduction steps, background).
 
 EPIC placement: if the user named no epic and `find_parent_epic` gives MULTIPLE plausible
-candidates (or none clearly fits), ask ONE choice question with field="epic": candidate
-epics as options (key + name + why, recommendation first) plus the literal option
-"없음(최상위)". Never silently attach to a wrong epic and never leave it to chance —
+candidates (or none clearly fits), ask ONE question that is ALWAYS
+`kind="choice", field="epic"` — never kind=text (measured: a text question forces the
+user to type a key they don't remember). Options = candidate epics
+(key + name + why, recommendation first) plus the literal option "없음(최상위)". Never silently attach to a wrong epic and never leave it to chance —
 a ticket without an epic link is invisible to progress dashboards, so the choice is
 the user's to make.
 

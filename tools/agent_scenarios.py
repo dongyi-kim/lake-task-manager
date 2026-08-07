@@ -74,6 +74,14 @@ CASES = [
     ("CMT12", "댓글 + 멘션·문서 언급", [
         "DL-101에 '리니지 설계는 [~skcc.x1103]님과 논의 완료, 상세는 설계 노트 문서 참고' 라고 댓글 남겨줘"],
      "modify", lambda o, _: "[~skcc.x1103]" in ((o.get("pending") or {}).get("comment") or "")),
+    ("REL14", "연관성 규율 — 신기술 질문에 뜬금 티켓 금지", [
+        "ETL 파이프라인 상에서 적재 할 때 Iceberg Puffin NDV 통계정보를 생성하는 단계를 추가하려고해"],
+     "plan_work", lambda o, _: not any(k in (o.get("reply") or "")
+                                       for k in ("DL-5487", "DL-5876", "DL-5122"))),
+    ("EPICQ15", "Epic 후보 질문은 choice(+없음)", [
+        "카탈로그 품질 룰 자동화 작업을 시작하려고 해"],
+     "plan_work", lambda o, _: (not any(q.get("field") == "epic" and q.get("kind") != "choice"
+                                        for q in (o.get("questions") or [])))),
     ("EDGE13", "변칙 — 모호+오타+복합", [
         "카탈로그쪽 메타 등록 안된 태이블들 정리하는 일 누가 하면 좋을지랑 지금 상황 알려줘"],
      None, lambda o, _: len(o.get("reply") or "") > 100 and "skcc." in (o.get("reply") or "")),

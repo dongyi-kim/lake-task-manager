@@ -193,7 +193,10 @@ class ToolAgent(Agent):
         out = self.structured().invoke([
             SystemMessage(content=self.system(state)),
             HumanMessage(content=f"{self.task(state)}\n\n### 조사한 내용\n{log}\n\n"
-                                 "위 조사 결과만을 근거로 정리하라. 조사에 없는 것을 지어내지 마라.")])
+                                 "위 조사 결과만을 근거로 정리하라. 먼저 결론을 뒷받침할 핵심 사실 "
+                                 "2~3개를 조사 기록에서 **원문 그대로**(제목·키·숫자) 짚은 뒤 정리하라 "
+                                 "— 근거를 먼저 찾게 하면 지어낼 자리가 없어진다. "
+                                 "조사에 없는 것을 지어내지 마라.")])
         return _as_dict(out)
 
 

@@ -249,6 +249,15 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
     # 함께 싣는다(사용자 지적: "jira username만 딸랑 나오네"). 다른 화면들과 같은 포맷.
     out["people"] = _people_names(out)
 
+    # 사용자가 JQL 을 요구했는데 답변에 쿼리가 안 실렸으면 **코드가** 붙인다 — 모델이
+    # 표를 정리하며 쿼리 줄을 떨어뜨리는 일이 반복됐다(실측 3회). 쿼리는 재사용 자산이다.
+    if out["reply"] and "JQL" not in out["reply"].upper():
+        for f in (data.get("pmo_findings") or []):
+            p = str(f.get("point") or "")
+            if p.startswith("실행한 JQL"):
+                out["reply"] += "\n\n" + p
+                break
+
     # 한도·크레딧 오류는 원문(영어 JSON 덤프)이 아니라 **사람 말**로 — 사용자가 할 수 있는
     # 행동(잠시 후 재시도 / 크레딧 충전 / 간단 모델 설정)을 알려 준다(사용자 지적).
     if out["error"]:

@@ -120,6 +120,19 @@ def _compat_headers() -> dict:
         return {}
 
 
+def sampling_unsupported(model: str) -> bool:
+    """이 모델이 temperature 등 샘플링 파라미터를 거부하는가.
+
+    OpenAI reasoning 계열(gpt-5 시리즈, o1/o3/o4 시리즈)은 temperature 를 기본값(1)
+    외에 못 받는다. AOAI 는 배포명이라 모델명을 못 믿지만, 배포명도 대개 모델명을
+    포함하므로(gpt-5-mini 등) 부분 일치로 본다 — 틀려도 방향이 안전하다(temperature
+    를 빼는 쪽은 동작하고, 넣는 쪽은 400 으로 죽는다).
+    """
+    import re as _re
+    m = (model or "").lower()
+    return bool(_re.search(r"(?:^|[/_-])(gpt-5|o[134])(?:$|[.-])", m))
+
+
 # ── 팩토리 ─────────────────────────────────────────────────────────
 def get_llm(temperature: float = 0.2, tier: str = "complex", **kwargs):
     """provider 에 맞는 chat 모델. 나머지 코드는 이 함수만 부른다.
@@ -140,23 +153,32 @@ def get_llm(temperature: float = 0.2, tier: str = "complex", **kwargs):
     # 기본 2회로는 상위 모델(TPM 30k 조직에서 한 턴 ~70k 토큰)에서 실측으로 죽었다.
     kwargs.setdefault("max_retries", 6)
 
+    model = chat_model(tier)
+    # ★ reasoning 계열(gpt-5*, o1/o3/o4*)은 temperature 를 못 받는다 — 실측:
+    #   "'temperature' does not support 0.4 ... Only the default (1)" 400 으로 전 역할 사망.
+    #   역할별 temperature 는 그 계열에선 의미가 없으니 **아예 넘기지 않는다**.
+    if sampling_unsupported(model):
+        temp_kw = {}
+    else:
+        temp_kw = {"temperature": temperature}
+
     if p == "aoai":
         from langchain_openai import AzureChatOpenAI
         return AzureChatOpenAI(
             azure_endpoint=_secrets.get("aoaiEndpoint", "AOAI_ENDPOINT"),
             api_key=_secrets.get("aoaiApiKey", "AOAI_API_KEY"),
-            azure_deployment=chat_model(tier),       # ★ 모델명이 아니라 배포명
+            azure_deployment=model,                  # ★ 모델명이 아니라 배포명
             api_version=api_version(),
-            temperature=temperature, **kwargs)
+            **temp_kw, **kwargs)
 
     from langchain_openai import ChatOpenAI
     if p == "openai":
         return ChatOpenAI(api_key=_secrets.get("openaiApiKey", "OPENAI_API_KEY"),
-                          model=chat_model(tier), temperature=temperature, **kwargs)
+                          model=model, **temp_kw, **kwargs)
     # openai_compat — base_url + 커스텀 헤더. 인증이 표준과 달라도 여기서 흡수한다.
     return ChatOpenAI(api_key=_secrets.get("compatApiKey", "LAKE_AGENT_COMPAT_KEY") or "unused",
                       base_url=_secrets.get("compatBaseUrl", "LAKE_AGENT_COMPAT_BASE"),
-                      model=chat_model(tier), temperature=temperature,
+                      model=model, **temp_kw,
                       default_headers=_compat_headers() or None, **kwargs)
 
 

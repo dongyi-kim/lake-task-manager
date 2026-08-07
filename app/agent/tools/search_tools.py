@@ -69,18 +69,26 @@ def search_work_history(query: str, limit: int = 8) -> dict:
         if toks and " ".join(toks) != query:
             r = _hit(" ".join(toks))
         if not ((r.get("jira") or {}).get("items")) and len(toks) > 1:
-            score, seen = {}, {}
+            import re as _re2
+            score, seen, core_hit = {}, {}, {}
+            # 핵심 토큰 = 영문 기술 용어(Iceberg·Puffin·NDV·CDC…). 이게 질의의 정체성이다.
+            core = [t for t in toks if _re2.fullmatch(r"[A-Za-z][A-Za-z0-9.-]{1,}", t)]
             for t in toks:
                 for it in (_hit(t).get("jira") or {}).get("items") or []:
                     k = it.get("key")
                     if k:
                         score[k] = score.get(k, 0) + 1
                         seen[k] = it
+                        if t in core:
+                            core_hit[k] = True
             best = sorted(score, key=lambda k: -score[k])[:lim]
-            # 절반 이상(올림) 토큰이 맞은 것만 — 3토큰 중 1개짜리 스침("검증"만 겹치는
-            # 무관 티켓)까지 실으면 노이즈가 근황 답변에 섞인다(실측).
+            # 절반 이상(올림) 토큰이 맞아야 하고, 질의에 영문 기술 토큰이 있으면 그중
+            # **최소 1개**는 맞아야 한다 — 'ETL·파이프라인' 같은 일반어만 겹친 티켓을
+            # "관련 이력"으로 내밀던 실측 사고("Iceberg Puffin NDV" 질문에 '경계값 오류
+            # 수정'이 관련이라고 나옴)의 재발 방지.
             need = max(1, (len(toks) + 1) // 2)
-            r = {"jira": {"items": [seen[k] for k in best if score[k] >= need]},
+            r = {"jira": {"items": [seen[k] for k in best
+                                    if score[k] >= need and (not core or core_hit.get(k))]},
                  "confluence": r.get("confluence") or {}}
     return {
         "query": query,
@@ -95,13 +103,15 @@ def search_work_history(query: str, limit: int = 8) -> dict:
 
 # 마지막으로 실행된 JQL — PMO 가 답변에 `JQL: ...` 한 줄을 **코드로** 붙이기 위한 기록.
 # (모델에게 "표기하라"고 시켰지만 스키마 정리 단계에서 떨어뜨렸다 — 실측.)
-import threading as _th
-_last_jql = _th.local()
+# ★ thread-local 이 아니다: LangChain ToolNode 가 도구를 워커 스레드에서 돌려 기록이
+#   유실됐다(실측 — 노드에서 읽으면 항상 빈 값). 단일 프로세스 앱이라 모듈 슬롯로 충분하고,
+#   동시 대화 둘이 겹치면 JQL 한 줄이 섞일 수 있는 것은 수용한다(근거 줄 하나의 문제).
+_last_jql = {"q": ""}
 
 
 def take_last_jql() -> str:
-    q = getattr(_last_jql, "q", "")
-    _last_jql.q = ""
+    q = _last_jql.get("q", "")
+    _last_jql["q"] = ""
     return q
 
 
@@ -148,7 +158,7 @@ def run_jql(jql: str, limit: int = 20) -> dict:
             "priority": (f.get("priority") or {}).get("name"),
             "duedate": f.get("duedate"),
         }))
-    _last_jql.q = q
+    _last_jql["q"] = q
     return {"jql": q, "count": len(rows), "tickets": rows}
 
 

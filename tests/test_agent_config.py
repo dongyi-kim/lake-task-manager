@@ -173,3 +173,19 @@ def test_role_tiers_assigned_to_shallow_judgment_roles(clean_env):
     assert Planner.tier == "simple" and Operator.tier == "simple"
     for cls in (Historian, Refiner, Assigner, Reviewer, Responder):
         assert cls.tier == "complex", cls.__name__
+
+
+def test_reasoning_models_do_not_receive_temperature(clean_env):
+    """gpt-5·o-계열은 temperature 를 거부한다(실측 400) — 아예 넘기지 않아야 한다."""
+    for m in ("gpt-5", "gpt-5-mini", "gpt-5.2", "o1", "o3-mini", "my-gpt-5-deploy"):
+        assert C.sampling_unsupported(m), m
+    for m in ("gpt-4o", "gpt-4o-mini", "gpt-4.1", "o2-weird", "solar-pro"):
+        assert not C.sampling_unsupported(m), m
+    clean_env.setenv("LAKE_AGENT_PROVIDER", "openai")
+    clean_env.setenv("OPENAI_API_KEY", "sk-test")
+    clean_env.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-5-mini")
+    llm = C.get_llm(temperature=0.4)
+    assert getattr(llm, "temperature", None) in (None, 1), "reasoning 모델에 temperature 가 실렸다"
+    clean_env.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-4o-mini")
+    llm2 = C.get_llm(temperature=0.4)
+    assert abs(getattr(llm2, "temperature", 0) - 0.4) < 1e-9

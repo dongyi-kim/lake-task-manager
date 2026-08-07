@@ -50,6 +50,12 @@ SCHEMA = {
             "type": "boolean",
             "description": "되묻지 않고 바로 조사에 들어가도 될 만큼 요청이 구체적인가",
         },
+        "plan": {
+            "type": "string",
+            "description": "이 요청을 처리할 실행 계획 한 줄(2~4단계 화살표). "
+                           "예: '사내 이력 검색 → 웹 기술 조사 → 초안 → 담당 추천'. "
+                           "진행 표시로 사용자에게 보인다",
+        },
     },
     "required": ["intent", "keywords", "sufficient"],
 }
@@ -116,5 +122,8 @@ class Planner(StructuredAgent):
             "module": out.get("module") or "",
             "mentioned_keys": [k for k in (out.get("mentioned_keys") or []) if str(k).strip()],
             "sufficient": bool(out.get("sufficient")),
-            "trace": note(state, self.name, f"의도={intent} 핵심어={', '.join(kws) or '없음'}"),
+            "trace": note(state, self.name,
+                          f"의도={intent}"
+                          + (f" · 계획: {str(out.get('plan'))[:80]}" if out.get("plan") else
+                             f" 핵심어={', '.join(kws) or '없음'}")),
         }

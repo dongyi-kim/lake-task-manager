@@ -517,3 +517,17 @@ def test_epic_mode_flows_through_propose_and_operator(monkeypatch):
     r = res["result"]
     assert r["created"] and r["failed"] == []
     assert "Task" in (r["note"] or ""), "승인 후 Task 연쇄 제안이 note 에 있어야 한다"
+
+
+def test_search_ladder_requires_core_token_match():
+    """영문 기술 토큰(질의의 정체성)이 있으면 그중 1개는 맞아야 사다리를 통과한다.
+
+    실측: 'Iceberg Puffin NDV 통계' 질문에 일반어(ETL 등)만 겹친 '경계값 오류 수정'이
+    관련 이력으로 나갔다. 핵심 토큰 0개 매칭이면 결과 없음이 정답이다.
+    """
+    r = _run(T.BY_NAME["search_work_history"],
+             query="Iceberg Puffin NDV 통계정보 생성 적재", limit=6)
+    for it in r["jira"]:
+        t = (it.get("title") or "")
+        assert any(w.lower() in t.lower() for w in ("Iceberg", "Puffin", "NDV", "통계")), \
+            f"핵심 토큰 없이 통과: {it}"

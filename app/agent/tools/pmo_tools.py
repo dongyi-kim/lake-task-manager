@@ -120,7 +120,7 @@ def find_stale_tickets(module: str = "", days: int = 14, limit: int = 15) -> dic
             jql += f' AND component = "{module.strip()}"'
         jql += f" AND updated <= -{max(1, int(days or 14))}d ORDER BY updated ASC"
         from app.agent.tools.search_tools import _last_jql
-        _last_jql.q = jql               # "JQL로 보여줘" 요청이면 코드가 이 쿼리를 근거로 첨부한다
+        _last_jql["q"] = jql            # "JQL로 보여줘" 요청이면 코드가 이 쿼리를 근거로 첨부한다
         raws = c.search_issues(jql, max_results=100)
     except Exception as e:
         return {"error": str(e)[:250]}
@@ -279,7 +279,7 @@ def find_unassigned_tickets(module: str = "", limit: int = 15) -> dict:
             jql += f' AND component = "{module.strip()}"'
         jql += " ORDER BY updated DESC"
         from app.agent.tools.search_tools import _last_jql
-        _last_jql.q = jql + " AND assignee is EMPTY(코드 판정)"
+        _last_jql["q"] = jql + " AND assignee is EMPTY(코드 판정)"
         raws = c.search_issues(jql, max_results=300)
     except Exception as e:
         return {"error": str(e)[:250]}

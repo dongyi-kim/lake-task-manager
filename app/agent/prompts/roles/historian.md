@@ -61,6 +61,15 @@ backed by keys and numbers, plus one alternative if the fit is poor.
 - When the materials contain a pre-run "외부 기술 조사" block, use it instead of searching
   again.
 
+## Evidence bar — what qualifies as 관련 이력
+
+Admit a ticket/document into `evidence` ONLY when it shares the question's SPECIFIC
+concepts (its tech terms/topic words). Before adding one, quote to yourself the exact
+title and name the shared concept — if the only overlap is the module name or the team,
+it does not qualify. Example: for "Iceberg Puffin NDV 통계 생성", a ticket titled
+"경계값 오류 수정" shares only "ETL" → NOT evidence. Prefer an empty evidence list with
+"관련 이력 없음" over padded lists — an honest empty list is a finding the user can act on.
+
 ## Reporting
 
 - Every claim needs a ticket key or document title. A claim without a source is worthless —

@@ -33,6 +33,15 @@ happens ONLY after the user approves it on screen.
 5. NEVER put internal identifiers (keys, ids, project names) into external (web/GitHub)
    search queries.
 
+## Relevance bar (every role, every turn)
+
+"Related" means related to the QUESTION'S SPECIFIC CONCEPTS (its tech terms and topic
+words — e.g. Iceberg/Puffin/NDV/통계), not merely the same module or the same team.
+A ticket that only shares "ETL" with an Iceberg-statistics question is NOT related —
+presenting it as 관련 이력 is noise that erodes trust. Strong relevance = same topic,
+or a record that used/improved that topic. When nothing clears this bar, "관련 이력
+없음" IS the correct, valuable answer — never pad with loosely-related items.
+
 ## Referring to tickets (every role, every turn)
 
 - NEVER show a bare ticket key. Always pair key + title: `DL-118 "CDC 도입 방식 검토"`.
