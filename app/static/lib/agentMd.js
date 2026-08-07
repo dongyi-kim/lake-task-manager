@@ -6,8 +6,10 @@
 //   (라이브러리를 하나 더 들이는 대신 이 방식을 쓴 이유 — 지원 범위를 우리가 정할 수 있고,
 //    무엇이 HTML 이 되는지가 이 파일 안에서 전부 보인다.)
 //
-// 지원: ## 제목 · **굵게** · `코드` · - 목록 · 1. 목록 · > 인용 · --- · 문단
+// 지원: ## 제목 · **굵게** · `코드` · - 목록 · 1. 목록 · > 인용 · --- · **표(| a | b |)** · 문단
 //       그리고 **티켓 키 자동 링크**(DL-123 → 티켓 열기).
+// 표를 지원하는 이유 — 진척률·건수처럼 나열형 숫자를 불릿으로 길게 쓰면 가시성이 없다
+// (사용자 지적). 모델에게 표로 쓰라고 지시했으니 렌더러가 못 그리면 말짱 꽝이다.
 
 const KEY_RE = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 
@@ -35,8 +37,29 @@ export function renderMarkdown(text) {
 
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
 
+  // 표 상태 — 연속된 | … | 줄을 모아 하나의 <table> 로
+  let tbl = null;           // {header: [...], rows: [[...]]}
+  const isRow = (l) => /^\s*\|.*\|\s*$/.test(l);
+  const isSep = (l) => /^\s*\|[\s:|-]+\|\s*$/.test(l);
+  const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+  const flushTable = () => {
+    if (!tbl) return;
+    const h = tbl.header.map((c) => `<th>${inline(c)}</th>`).join("");
+    const b = tbl.rows.map((r) => "<tr>" + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>").join("");
+    out.push(`<table><thead><tr>${h}</tr></thead><tbody>${b}</tbody></table>`);
+    tbl = null;
+  };
+
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, "");
+    if (isRow(line)) {
+      closeList();
+      if (isSep(line)) continue;                       // |---|---| 구분줄은 버린다
+      if (!tbl) tbl = { header: cells(line), rows: [] };
+      else tbl.rows.push(cells(line));
+      continue;
+    }
+    flushTable();
     if (!line.trim()) { closeList(); continue; }
 
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
@@ -64,5 +87,6 @@ export function renderMarkdown(text) {
     out.push(`<p>${inline(line)}</p>`);
   }
   closeList();
+  flushTable();
   return out.join("");
 }

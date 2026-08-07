@@ -41,6 +41,7 @@ export default {
       // (목록은 참고이지 제약이 아니다).
       models: { chat: [], embed: [], error: "" },
       modelsBusy: false,
+      comboOpen: "",            // "chat" | "embed" | "" — 열려 있는 모델 드롭다운
     };
   },
   watch: {
@@ -55,9 +56,16 @@ export default {
   },
   mounted() {
     this.load();
+    this._closeCombo = (e) => {
+      if (this.comboOpen && !e.target.closest(".ag-combo")) this.comboOpen = "";
+    };
+    document.addEventListener("mousedown", this._closeCombo, true);
     document.addEventListener("keydown", this._esc = (e) => { if (e.key === "Escape") this.$emit("close"); });
   },
-  unmounted() { document.removeEventListener("keydown", this._esc); },
+  unmounted() {
+    document.removeEventListener("keydown", this._esc);
+    document.removeEventListener("mousedown", this._closeCombo, true);
+  },
   methods: {
     async load() {
       try {
@@ -69,6 +77,23 @@ export default {
       } catch (e) { this.err = (e && e.message) || "설정을 불러오지 못했습니다"; }
       agentApi.indexStats().then((r) => { this.index = r; }).catch(() => {});
       this.loadModels();
+    },
+
+    /** 보이는 콤보박스 — datalist 는 화살표가 없어 목록이 있는지조차 안 보인다(사용자 지적).
+     *  ▾ 를 누르면 전체 목록, 타이핑하면 걸러진 목록. 직접 입력도 그대로 유효하다. */
+    toggleCombo(kind) {
+      this.comboOpen = this.comboOpen === kind ? "" : kind;
+      if (this.comboOpen && !this.models.chat.length && !this.modelsBusy) this.loadModels();
+    },
+    comboOpts(kind) {
+      const list = kind === "chat" ? this.models.chat : this.models.embed;
+      const cur = (kind === "chat" ? this.chatModel : this.embedModel).trim().toLowerCase();
+      if (!cur || list.some((m) => m.toLowerCase() === cur)) return list;
+      return list.filter((m) => m.toLowerCase().includes(cur));
+    },
+    pickModel(kind, m) {
+      if (kind === "chat") this.chatModel = m; else this.embedModel = m;
+      this.comboOpen = "";
     },
 
     async loadModels() {
@@ -160,12 +185,30 @@ export default {
               {{ modelsBusy ? '조회 중…' : '목록 새로고침 ↻' }}</button>
             <em v-if="models.chat.length" class="ag-mini-hint">{{ models.chat.length + models.embed.length }}개 확인됨</em>
           </div>
-          <label class="ag-f"><span>{{ cur.models[0] }}</span>
-            <input v-model="chatModel" spellcheck="false" list="ag-ml-chat" autocomplete="off"></label>
-          <datalist id="ag-ml-chat"><option v-for="m in models.chat" :key="m" :value="m"></option></datalist>
-          <label class="ag-f"><span>{{ cur.models[1] }}</span>
-            <input v-model="embedModel" spellcheck="false" list="ag-ml-embed" autocomplete="off"></label>
-          <datalist id="ag-ml-embed"><option v-for="m in models.embed" :key="m" :value="m"></option></datalist>
+          <div class="ag-f"><span>{{ cur.models[0] }}</span>
+            <div class="ag-combo">
+              <input v-model="chatModel" spellcheck="false" autocomplete="off"
+                     @focus="comboOpen = 'chat'" @input="comboOpen = 'chat'">
+              <button class="ag-combo-btn" @click="toggleCombo('chat')" title="목록 열기">▾</button>
+              <div v-if="comboOpen === 'chat' && comboOpts('chat').length" class="ag-combo-drop">
+                <button v-for="m in comboOpts('chat')" :key="m"
+                        :class="{ on: m === chatModel }"
+                        @mousedown.prevent="pickModel('chat', m)">{{ m }}</button>
+              </div>
+            </div>
+          </div>
+          <div class="ag-f"><span>{{ cur.models[1] }}</span>
+            <div class="ag-combo">
+              <input v-model="embedModel" spellcheck="false" autocomplete="off"
+                     @focus="comboOpen = 'embed'" @input="comboOpen = 'embed'">
+              <button class="ag-combo-btn" @click="toggleCombo('embed')" title="목록 열기">▾</button>
+              <div v-if="comboOpen === 'embed' && comboOpts('embed').length" class="ag-combo-drop">
+                <button v-for="m in comboOpts('embed')" :key="m"
+                        :class="{ on: m === embedModel }"
+                        @mousedown.prevent="pickModel('embed', m)">{{ m }}</button>
+              </div>
+            </div>
+          </div>
           <div v-if="models.error" class="ag-hint">목록 조회 실패 — 직접 입력하세요. ({{ models.error }})</div>
           <label v-if="provider === 'aoai'" class="ag-f"><span>api-version</span>
             <input v-model="apiVersion" placeholder="2024-10-21" spellcheck="false"></label>

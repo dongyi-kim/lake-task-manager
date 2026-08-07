@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 
+from app.agent.prompts.roles import SYSTEM_REFINER
 from app.agent.workflow.agents.base import ToolAgent
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
@@ -120,33 +121,8 @@ class Refiner(ToolAgent):
         forced = (state.get("turns") or 0) >= MAX_REFINE_TURNS
         extra = ("\n\n★ 되묻기 횟수를 다 썼다. **더 묻지 말고** 아는 것만으로 초안을 만들어라. "
                  "모르는 필드는 비워 두고 rationale 에 '확인 필요'로 남긴다." if forced else "")
-        return persona(state, f"""\
-너는 지금 업무를 **구체화**한다. 아직 아무것도 만들지 않는다.
-
-먼저 `search_rules` 로 쪼개는 기준과 티켓 작성 규칙을 확인하라. 그다음
-`list_ticket_options` / `list_child_types` 로 **실제로 허용된 값**을 확인하라 —
-컴포넌트·타입·우선순위를 지어내면 검증에서 튕긴다.
-
-되묻기 기준:
-- **찾아보면 아는 것은 묻지 않는다.** 관련 티켓·담당 이력·모듈 인원·가능한 값 목록은 네가 확인한다.
-  "기존 티켓이 있는지 확인해 주실 수 있나요?"는 **금지된 질문**이다 — 그건 Historian 이 이미
-  했고, 자료에 그 결과가 있다. 자료에 없으면 없는 것이다.
-- **사용자만 아는 것만 묻는다** — 범위(어디까지가 이번 일인가), 완료 조건, 기한, 의도,
-  (버그라면) 재현 경로.
-- 상위 Epic 은 묻기 전에 `find_parent_epic` 으로 **직접 찾는다**. 마땅한 후보가 없으면
-  "epic": "" (최상위)로 두면 된다 — 그건 물을 일이 아니다.
-- 우선순위·라벨처럼 **합리적 기본값이 있는 것은 묻지 않는다**(기본 P3-Minor). 사용자가 원하면
-  나중에 바꾸면 된다.
-- ★ 사용자가 "알아서 해줘 / 기본값으로 / 판단에 맡길게"라고 이미 답했으면 **더 묻지 마라.**
-  남은 빈칸은 기본값으로 채우고 rationale 에 어떤 것을 기본값으로 정했는지 적는다.
-  같은 질문을 두 번 받는 사용자는 세 번째 답을 하지 않는다.
-- 한 번에 최대 3개. 취조가 되면 안 된다.
-
-쪼개는 기준:
-- 아직 방식이 안 정해진 일을 실행 단위로 쪼개지 마라. **조사·설계는 Task 하나**로 두고,
-  결과가 나온 뒤 실행을 쪼갠다. 지금 5개로 쪼개면 방식이 정해지는 순간 5개를 다시 만든다.
-- 하나의 티켓은 담당자 한 명이 책임질 수 있어야 한다. 둘이 필요하면 쪼갠다.
-- Story Point 는 넣지 않는다(Story 에만 매길 수 있고, 생성 시점엔 못 넣는다).{extra}""")
+        # 정적 지시는 prompts/roles/refiner.md — 동적 경고(횟수 소진)만 코드가 덧붙인다.
+        return persona(state, SYSTEM_REFINER + extra)
 
     def task(self, state):
         # "알아서/기본값" 은 명령서 수준에서 강제한다 — 되묻기 기준(시스템)만으로는 담당자·기한을

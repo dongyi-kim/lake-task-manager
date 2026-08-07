@@ -74,6 +74,10 @@
 .agent-md blockquote { margin:6px 0; padding:4px 12px; border-left:3px solid var(--border-hi);
   color:var(--muted); }
 .agent-md hr { border:0; border-top:1px solid var(--border); margin:12px 0; }
+.agent-md table { border-collapse:collapse; margin:8px 0 10px; font-size:12.5px; max-width:100%; }
+.agent-md th, .agent-md td { border:1px solid var(--border); padding:5px 11px; text-align:left; }
+.agent-md th { background:var(--panel-2); font-weight:600; color:var(--muted); white-space:nowrap; }
+.agent-md td { color:var(--text); }
 
 /* 답변이 오기 전 — 멈춘 게 아니라는 신호 */
 .agent-thinking { display:flex; gap:5px; padding:4px 0; }
@@ -94,6 +98,9 @@
   padding:5px 8px; background:transparent; border:0; border-radius:6px; cursor:pointer;
   font-size:12.5px; color:var(--text); }
 .agent-ev-row:hover { background:var(--panel-2); }
+.agent-ev-row.plain { cursor:default; }
+.agent-ev-row.plain:hover { background:transparent; }
+.agent-ev-row.plain b { color:var(--muted); }
 .agent-ev-row b { color:var(--accent); font-weight:600; flex:none; }
 .agent-ev-row span { color:var(--text); }
 .agent-ev-row em { color:var(--muted-2); font-style:normal; font-size:11.5px;
@@ -232,6 +239,22 @@
 .ag-f input { flex:1; min-width:0; padding:7px 10px; font:inherit; font-size:12.5px;
   color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; }
 .ag-f input:focus { outline:none; border-color:var(--accent); }
+
+.ag-combo { position:relative; flex:1; min-width:0; display:flex; }
+.ag-combo input { flex:1; min-width:0; padding:7px 30px 7px 10px; font:inherit; font-size:12.5px;
+  color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; }
+.ag-combo input:focus { outline:none; border-color:var(--accent); }
+.ag-combo-btn { position:absolute; right:1px; top:1px; bottom:1px; width:26px;
+  border:0; border-left:1px solid var(--border); border-radius:0 5px 5px 0;
+  background:var(--panel-2); color:var(--muted); cursor:pointer; font-size:11px; }
+.ag-combo-btn:hover { color:var(--text); }
+.ag-combo-drop { position:absolute; top:calc(100% + 3px); left:0; right:0; z-index:40;
+  max-height:240px; overflow-y:auto; background:var(--panel);
+  border:1px solid var(--border-hi); border-radius:8px; box-shadow:var(--shadow); }
+.ag-combo-drop button { display:block; width:100%; text-align:left; padding:7px 11px;
+  font-size:12.5px; color:var(--text); background:none; border:0; cursor:pointer; }
+.ag-combo-drop button:hover { background:var(--panel-2); }
+.ag-combo-drop button.on { color:var(--accent); font-weight:600; }
 
 .ag-probe { margin-top:10px; display:flex; flex-direction:column; gap:5px; }
 .ag-row { display:flex; align-items:baseline; gap:9px; padding:7px 11px; border-radius:7px;

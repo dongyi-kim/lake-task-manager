@@ -12,6 +12,7 @@
 //  3) **승인 전에는 아무것도 안 만들어진다는 것이 화면에서도 분명하다.** 초안 카드는
 //     "아직 만들어지지 않았음"을 제목에 달고, 만들 것을 전부 펼쳐 보인 뒤 [생성]을 받는다.
 //     여기서 [생성]을 눌러야만 서버가 쓰기를 시작한다(토큰은 이 카드의 내용에 묶여 있다).
+import AgentSettingsDialog from "../ui/AgentSettingsDialog.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { renderMarkdown } from "../../lib/agentMd.js";
 import { api } from "../../lib/api.js";
@@ -35,6 +36,7 @@ const ROLES = [
 
 export default {
   name: "AgentView",
+  components: { AgentSettingsDialog },
   data() {
     return {
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
@@ -49,6 +51,7 @@ export default {
       steps: [],              // 지금 굴러가는 진행(스트리밍 중에만)
       abort: null,
       approving: false,
+      settingsOpen: false,
       answers: {},            // 되묻기 폼의 답(qi → 값)
       acRows: [], acOpen: -1, // 자동완성 결과·열린 질문 index
       priorities: [],
@@ -175,6 +178,7 @@ export default {
       this.threadId = ""; this.turns = []; this.steps = []; this.busy = false;
     },
 
+    isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
     openTicket(key) {
       if (key) window.dispatchEvent(new CustomEvent("lake-open-ticket", { detail: { key } }));
     },
@@ -184,24 +188,15 @@ export default {
      *  구조 표식(제목 ■, 체크박스 ☐, 표 |)만 텍스트로 살리고 태그는 벗긴다. */
     descText(html) {
       let s = String(html || "");
-      s = s.replace(/<h3[^>]*>(.*?)<\/h3>/gi, "
-■ $1
-")
-           .replace(/<li[^>]*data-checked[^>]*>(.*?)<\/li>/gi, "☐ $1
-")
-           .replace(/<li[^>]*>(.*?)<\/li>/gi, "· $1
-")
-           .replace(/<tr[^>]*>/gi, "
-| ").replace(/<\/t[dh]>/gi, " | ")
+      s = s.replace(/<h3[^>]*>(.*?)<\/h3>/gi, "\n■ $1\n")
+           .replace(/<li[^>]*data-checked[^>]*>(.*?)<\/li>/gi, "☐ $1\n")
+           .replace(/<li[^>]*>(.*?)<\/li>/gi, "· $1\n")
+           .replace(/<tr[^>]*>/gi, "\n| ").replace(/<\/t[dh]>/gi, " | ")
            .replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, "$2 ($1)")
-           .replace(/<\/p>|<br\s*\/?>/gi, "
-")
+           .replace(/<\/p>|<br\s*\/?>/gi, "\n")
            .replace(/<[^>]+>/g, "")
            .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
-      return s.replace(/
-{3,}/g, "
-
-").trim();
+      return s.replace(/\n{3,}/g, "\n\n").trim();
     },
     reasonsFor(turn, i) {
       const a = (turn.assignments || []).find((x) => x.index === i);
@@ -298,6 +293,9 @@ export default {
             {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
           </span>
           <button v-if="turns.length" class="agent-reset" @click="reset">새 대화</button>
+          <!-- 설정 진입 — 우상단 전역 설정을 거치지 않고 이 화면에서 바로.
+               provider·모델을 바꾸고 돌아오면 상단 칩이 즉시 갱신돼야 한다. -->
+          <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
         </div>
       </div>
 
@@ -329,12 +327,19 @@ export default {
             </div>
 
             <!-- 근거: 눌러서 확인할 수 있어야 믿을 수 있다 -->
+            <!-- 근거 — 티켓 키만 클릭 가능. PMO 조회의 근거에는 모듈명("ETL")처럼 티켓이
+                 아닌 항목이 섞이는데, 그걸 버튼으로 만들면 눌렀을 때 '없는 티켓'이 뜬다(실측). -->
             <div v-if="t.evidence && t.evidence.length" class="agent-ev">
               <div class="agent-ev-h">근거</div>
-              <button v-for="e in t.evidence" :key="e.key" class="agent-ev-row"
-                      @click="openTicket(e.key)" :title="e.why">
-                <b>{{ e.key }}</b><span>{{ e.title }}</span><em>{{ e.why }}</em>
-              </button>
+              <template v-for="e in t.evidence" :key="e.key">
+                <button v-if="isTicketKey(e.key)" class="agent-ev-row"
+                        @click="openTicket(e.key)" :title="e.why">
+                  <b>{{ e.key }}</b><span>{{ e.title }}</span><em>{{ e.why }}</em>
+                </button>
+                <div v-else class="agent-ev-row plain" :title="e.why">
+                  <b>{{ e.key }}</b><span>{{ e.title }}</span><em>{{ e.why }}</em>
+                </div>
+              </template>
             </div>
             <div v-if="t.docs && t.docs.length" class="agent-docs">
               <div class="agent-ev-h">관련 문서</div>
@@ -491,6 +496,8 @@ export default {
         Enter 전송 · Shift+Enter 줄바꿈 — <b>승인하기 전에는 아무것도 만들거나 바꾸지 않습니다.</b>
         <a href="#/guide">서비스 안내</a>
       </div>
+      <AgentSettingsDialog v-if="settingsOpen"
+        @close="settingsOpen = false; agentApi.status().then((s) => { status = s; }).catch(() => {})" />
     </template>
   </div>`,
 };
