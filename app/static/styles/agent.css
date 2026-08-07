@@ -232,6 +232,34 @@
 /* 직접 입력 탈출구가 붙은 객관식 */
 .aq-opts-wrap { display:flex; flex-direction:column; gap:6px; }
 
+/* 클로드식 질문 폼 — 세로 카드형 보기 · 순차 등장 · 답한 질문 폴딩 */
+.aq-opts { flex-direction:column; flex-wrap:nowrap; gap:7px; }
+.aq-card { display:flex; align-items:flex-start; gap:8px; width:100%; text-align:left;
+  padding:10px 14px; font-size:12.5px; line-height:1.55; color:var(--text);
+  background:var(--panel); border:1.5px solid var(--border); border-radius:10px;
+  cursor:pointer; }
+.aq-card:hover { border-color:var(--accent); }
+.aq-card.on { border-color:var(--accent); background:var(--accent-dim, rgba(64,120,255,.08));
+  font-weight:600; color:var(--text); }
+.aq-card em { flex:none; margin-left:auto; font-style:normal; font-size:10px;
+  color:var(--accent); border:1px solid var(--accent); border-radius:8px; padding:1px 7px; }
+.aq-card .aq-chk { flex:none; font-style:normal; font-size:14px; line-height:1.3; }
+.aq-card.aq-custom { color:var(--muted); border-style:dashed; flex-direction:column;
+  align-items:stretch; }
+.aq-card.aq-multi-done { justify-content:center; color:#fff; background:var(--accent);
+  border-color:var(--accent); font-weight:600; }
+.aq-card.aq-multi-done:disabled { opacity:.45; cursor:default; }
+.aq-folded { display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+  padding:7px 12px; font-size:12px; background:var(--panel-2); border:1px solid var(--border);
+  border-radius:9px; cursor:pointer; color:var(--muted); }
+.aq-folded .aq-fq { flex:1; min-width:0; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.aq-folded b { flex:none; max-width:45%; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; color:var(--text); }
+.aq-folded em { flex:none; font-style:normal; font-size:10.5px; color:var(--accent); }
+.aq-folded:hover { border-color:var(--accent); }
+.aq-step { margin-left:8px; font-size:10.5px; font-weight:400; color:var(--muted-2); }
+
 /* FieldEdit 트리거(질문 폼·카드 직접입력) — 티켓 화면의 팝업을 그대로 쓴다 */
 .aq-fe { display:inline-block; padding:6px 12px; font-size:12.5px; color:var(--muted);
   background:var(--panel); border:1px dashed var(--border-hi); border-radius:8px; cursor:pointer; }
@@ -342,15 +370,8 @@
 .aq { margin-bottom:12px; }
 .aq:last-of-type { margin-bottom:4px; }
 .aq-q { font-size:13px; font-weight:600; color:var(--text); margin-bottom:7px; }
-.aq-opts { display:flex; flex-wrap:wrap; gap:6px; }
-.aq-opts button { position:relative; padding:6px 12px; font-size:12.5px; color:var(--text);
-  background:var(--panel); border:1px solid var(--border); border-radius:18px; cursor:pointer; }
-.aq-opts button:hover { border-color:var(--accent); }
-.aq-opts button.on { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
-/* 추천(첫 보기)은 작게 표기 — 미리 눌러 두지는 않는다(선택은 사용자의 것) */
-.aq-opts button em { font-style:normal; font-size:9.5px; margin-left:5px; padding:1px 5px;
-  border-radius:8px; background:color-mix(in srgb, var(--good) 15%, transparent); color:var(--good); }
-.aq-opts button.on em { background:rgba(255,255,255,.25); color:#fff; }
+/* (구형 칩 스타일 제거 — 세로 카드형(.aq-card)이 위 블록에서 정의된다) */
+.aq-opts { display:flex; flex-direction:column; flex-wrap:nowrap; gap:7px; }
 .aq-in { width:100%; max-width:420px; padding:7px 11px; font:inherit; font-size:13px;
   color:var(--text); background:var(--panel); border:1px solid var(--border); border-radius:7px; }
 .aq-in:focus { outline:none; border-color:var(--accent); }

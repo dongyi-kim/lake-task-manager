@@ -64,8 +64,9 @@ QUESTION = {
     "type": "object",
     "properties": {
         "question": {"type": "string", "description": "물어볼 것 한 문장"},
-        "kind": {"type": "string", "enum": ["text", "choice", "date"],
-                 "description": "choice=보기 중 선택 / date=날짜 / text=자유 서술. "
+        "kind": {"type": "string", "enum": ["text", "choice", "multi", "date"],
+                 "description": "choice=하나 선택 / multi=**여러 개** 선택 가능(대상 파이프라인·"
+                                "라벨처럼 복수가 자연스러운 질문) / date=날짜 / text=자유 서술. "
                                 "**choice 를 우선하라** — 네가 답을 추천할 수 있는 질문"
                                 "(우선순위·범위·방식·대상)은 전부 choice 다. text 는 정말 "
                                 "자유 서술만 가능한 것(재현 경로, 배경 설명)에만 쓴다. "
@@ -236,6 +237,12 @@ class Refiner(ToolAgent):
         # 되묻기 상한을 넘겼는데도 질문만 냈다면 질문을 버린다 — 영원히 안 끝나는 대화를 막는다.
         if qs and turns > MAX_REFINE_TURNS:
             qs = []
+        # 초안 관련 인터뷰의 마지막엔 항상 **자유 의견** 질문 하나를 붙인다(사용자 요청) —
+        # 객관식 보기가 못 담는 계획·우려를 받아낼 출구. 코드가 붙이므로 모델이 잊지 못한다.
+        if qs and not any(q.get("kind") == "text" and "자유" in q.get("question", "") for q in qs):
+            qs.append({"question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 "
+                                   "적어 주세요 (없으면 건너뛰어도 됩니다)",
+                       "kind": "text", "options": [], "field": ""})
         draft = {"mode": out.get("mode") or "task", "items": items,
                  "rationale": out.get("rationale") or ""}
 

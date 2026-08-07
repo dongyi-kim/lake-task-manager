@@ -52,6 +52,7 @@ export default {
       settingsOpen: false,
       answers: {},            // 되묻기 폼의 답(qi → 값)
       customOn: {},           // 객관식 질문에서 '직접 입력'을 고른 상태(qi → bool). 우선순위엔 없다
+      qDone: {},              // 답을 확정한 질문(qi → bool) — 접혀서 선택만 보인다
       previewOn: {},          // 초안 항목별 티켓 미리보기 토글(i → bool)
       epicTrees: {},          // 생성 카드의 계보 컨텍스트(epicKey → children[])
       priorities: [],
@@ -184,7 +185,7 @@ export default {
             });
             if (ev.pending && ev.pending.items) this.loadEpicTree(ev.pending);
             this.pickedAssignee = {}; this.cardCustom = {}; this.previewOn = {};
-            this.customOn = {};
+            this.customOn = {}; this.qDone = {};
             // 초안(승인 대기 또는 작성 중)이 오면 우측 미리보기를 **자동으로** 연다 —
             // 생성 컨텍스트 내내 옆에서 자라는 것을 본다.
             const nItems = ((ev.pending && ev.pending.items) || ev.draft_items || []).length;
@@ -440,6 +441,12 @@ export default {
       if (extra && extra.name && ans) ans = `${extra.name}(${ans})`;
       this.answers[this.qKey(qi)] = ans;
     },
+    /** 지금 펼쳐 보일 질문 — 아직 확정 안 된 첫 번째. 순차 등장의 축이다. */
+    qActive(turn) {
+      const qs = turn.questions || [];
+      for (let i = 0; i < qs.length; i++) if (!this.qDone[i]) return i;
+      return -1;
+    },
     /** 질문 → FieldEdit 가 다루는 필드명. 아니면 빈 문자열(자유 서술). */
     fieldOf(q) {
       if (q.field === "assignee" || q.field === "epic") return q.field;
@@ -451,6 +458,19 @@ export default {
     },
     pickOpt(qi, opt) {
       this.answers[this.qKey(qi)] = this.answers[this.qKey(qi)] === opt ? "" : opt;
+    },
+    /** 다중선택 — ' | ' 로 이어 붙인다(백엔드는 자연어 답으로 그대로 읽는다). */
+    toggleMulti(qi, opt) {
+      const k = this.qKey(qi);
+      const cur = (this.answers[k] || "").split(" | ").filter(Boolean);
+      const i = cur.indexOf(opt);
+      if (i >= 0) cur.splice(i, 1); else cur.push(opt);
+      this.answers[k] = cur.join(" | ");
+    },
+    isPicked(qi, q, opt) {
+      const a = this.answers[this.qKey(qi)] || "";
+      if (q.kind === "multi") return a.split(" | ").includes(opt);
+      return !this.customOn[qi] && a === opt;
     },
     async loadPriorities() {
       if (this._pri) return this._pri;
@@ -602,40 +622,64 @@ export default {
                  마지막 턴에만 활성(지난 질문에 답해 봤자 대화는 이미 지나갔다). -->
             <div v-if="t.questions && t.questions.length && ti === turns.length - 1 && !busy"
                  class="agent-qform">
-              <div v-for="(q, qi) in t.questions" :key="qi" class="aq">
-                <div class="aq-q">{{ q.question || q }}</div>
+              <!-- 클로드식 순차 폼: 질문은 한 번에 하나씩, 답한 질문은 접혀 선택만 보인다
+                   (세로 카드형 보기가 스크롤을 먹는 것의 절충 — 사용자 요청). -->
+              <div v-for="(q, qi) in t.questions" :key="qi" class="aq"
+                   v-show="qDone[qi] || qi === qActive(t)">
 
-                <!-- 객관식: 보기 버튼 (추천이 맨 앞) + '직접 입력' 탈출구.
-                     ★ 우선순위는 탈출구가 없다 — 허용값이 고정된 필드에 자유 입력을 열면
-                     검증에서 튕길 값만 들어온다(사용자 지적: 우선순위는 무조건 객관식).
-                     직접 입력 편집기는 티켓 화면과 같은 FieldEdit 를 재사용한다. -->
-                <div v-if="optionsFor(q).length" class="aq-opts-wrap">
-                  <div class="aq-opts">
-                    <button v-for="(opt, oi) in optionsFor(q)" :key="opt"
-                            :class="{ on: !customOn[qi] && answers[qKey(qi)] === opt, rec: oi === 0 }"
-                            @click="customOn[qi] = false; pickOpt(qi, opt)">{{ opt }}<em v-if="oi === 0">추천</em></button>
-                    <button v-if="q.field !== 'priority'" :class="{ on: customOn[qi] }"
-                            @click="customOn[qi] = !customOn[qi]; if (customOn[qi]) answers[qKey(qi)] = ''">직접 입력…</button>
+                <!-- 접힌 질문 — 질문 한 줄 + 선택한 답. 누르면 다시 편다 -->
+                <button v-if="qDone[qi] && qActive(t) !== qi" class="aq-folded"
+                        @click="qDone[qi] = false; answers[qKey(qi)] = answers[qKey(qi)] || ''">
+                  <span class="aq-fq">{{ q.question || q }}</span>
+                  <b>{{ answers[qKey(qi)] }}</b><em>수정</em>
+                </button>
+
+                <template v-else>
+                  <div class="aq-q">{{ q.question || q }}
+                    <span class="aq-step">{{ qi + 1 }}/{{ t.questions.length }}</span></div>
+
+                  <!-- 세로 카드형 보기 (추천 맨 위) + '직접 입력' 카드(인라인 즉시 입력).
+                       kind=multi 는 토글 다중선택 + [선택 완료] -->
+                  <div v-if="optionsFor(q).length" class="aq-opts">
+                    <button v-for="(opt, oi) in optionsFor(q)" :key="opt" class="aq-card"
+                            :class="{ on: isPicked(qi, q, opt), rec: oi === 0, multi: q.kind === 'multi' }"
+                            @click="customOn[qi] = false;
+                                    q.kind === 'multi' ? toggleMulti(qi, opt)
+                                                       : (pickOpt(qi, opt), qDone[qi] = true)">
+                      <i v-if="q.kind === 'multi'" class="aq-chk">{{ isPicked(qi, q, opt) ? '☑' : '☐' }}</i>
+                      <span>{{ opt }}</span><em v-if="oi === 0">추천</em></button>
+                    <button v-if="q.kind === 'multi'" class="aq-card aq-multi-done"
+                            :disabled="!(answers[qKey(qi)] || '').trim()"
+                            @click="qDone[qi] = true">
+                      선택 완료 ({{ (answers[qKey(qi)] || '').split(' | ').filter(Boolean).length }}개)</button>
+                    <div v-if="q.field !== 'priority'" class="aq-card aq-custom"
+                         :class="{ on: customOn[qi] }" @click="customOn[qi] = true">
+                      <span v-if="!customOn[qi]">직접 입력…</span>
+                      <template v-else>
+                        <FieldEdit v-if="fieldOf(q)" class="aq-fe" ticket="__agent__"
+                                   :field="fieldOf(q)" local :value="answers[qKey(qi)] || ''"
+                                   @pick="(v, x) => { setAns(qi, v, x); qDone[qi] = true; }">
+                          {{ answers[qKey(qi)] || feHint(q) }}</FieldEdit>
+                        <input v-else class="aq-in" :value="answers[qKey(qi)] || ''"
+                               placeholder="답을 입력하고 Enter" autofocus
+                               @input="setAns(qi, $event.target.value)"
+                               @keydown.enter.stop.prevent="answers[qKey(qi)] && (qDone[qi] = true)"
+                               @click.stop>
+                      </template>
+                    </div>
                   </div>
-                  <template v-if="customOn[qi]">
-                    <FieldEdit v-if="fieldOf(q)" class="aq-fe" ticket="__agent__" :field="fieldOf(q)"
-                               local :value="answers[qKey(qi)] || ''"
-                               @pick="(v, x) => setAns(qi, v, x)">
+
+                  <!-- 보기 없는 질문: 날짜·담당자·Epic 은 FieldEdit, 그 외 자유 서술 -->
+                  <div v-else-if="fieldOf(q)">
+                    <FieldEdit class="aq-fe" ticket="__agent__" :field="fieldOf(q)" local
+                               :value="answers[qKey(qi)] || ''"
+                               @pick="(v, x) => { setAns(qi, v, x); qDone[qi] = true; }">
                       {{ answers[qKey(qi)] || feHint(q) }}</FieldEdit>
-                    <input v-else class="aq-in" :value="answers[qKey(qi)] || ''"
-                           placeholder="답을 입력하세요" @input="setAns(qi, $event.target.value)">
-                  </template>
-                </div>
-
-                <!-- 날짜·담당자·Epic — 티켓 화면과 같은 FieldEdit 팝업(규칙·디자인 재사용) -->
-                <FieldEdit v-else-if="fieldOf(q)" class="aq-fe" ticket="__agent__" :field="fieldOf(q)"
-                           local :value="answers[qKey(qi)] || ''"
-                           @pick="(v, x) => setAns(qi, v, x)">
-                  {{ answers[qKey(qi)] || feHint(q) }}</FieldEdit>
-
-                <!-- 자유 서술 -->
-                <input v-else class="aq-in" :value="answers[qKey(qi)] || ''"
-                       placeholder="답을 입력하세요" @input="setAns(qi, $event.target.value)">
+                  </div>
+                  <input v-else class="aq-in" :value="answers[qKey(qi)] || ''"
+                         placeholder="답을 입력하고 Enter" @input="setAns(qi, $event.target.value)"
+                         @keydown.enter.stop.prevent="answers[qKey(qi)] && (qDone[qi] = true)">
+                </template>
               </div>
               <div class="aq-act">
                 <button class="ag-ok" :disabled="!formReady(t)" @click="submitAnswers(t)">답변 보내기</button>
