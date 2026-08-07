@@ -71,6 +71,17 @@ def route_after_planner(state: AgentState) -> str:
     intent = state.get("intent") or ""
     if intent == Intent.CHITCHAT:
         return "respond"
+    # ── 빠른 경로 2종 (턴 시간의 최대 낭비 제거) ──────────────────
+    # ① 후속 턴: 같은 대화에서 조사 결과(situation)가 이미 있으면 재조사하지 않는다 —
+    #    인터뷰 답변 턴마다 Historian 이 통째로 다시 돌던 것이 실측 낭비의 최대 항목
+    #    (턴당 LLM 3~5회). 새 정보가 필요하면 Refiner 가 자기 도구로 확인한다.
+    if intent in Intent.DRAFTS_TICKETS and (state.get("situation") or "").strip() \
+            and (state.get("turns") or 0) > 0:
+        return "refine"
+    # ② modify + 티켓 키 명시: 키 실재·현재 값 확인은 Refiner 의 get_ticket 이 한다 —
+    #    변경 요청에 과거 이력 발굴은 대개 불필요하다.
+    if intent == Intent.MODIFY and state.get("mentioned_keys"):
+        return "refine"
     if intent in Intent.DIRECT_ANSWER:
         return "pmo"
     return "investigate"
@@ -213,7 +224,7 @@ def build(checkpointer=None):
     g.add_edge(START, Node.PLANNER)
     g.add_conditional_edges(Node.PLANNER, route_after_planner,
                             {"investigate": Node.HISTORIAN, "pmo": "pmo",
-                             "respond": Node.RESPONDER})
+                             "refine": Node.REFINER, "respond": Node.RESPONDER})
     g.add_edge("pmo", Node.RESPONDER)
     g.add_conditional_edges(Node.HISTORIAN, route_after_historian,
                             {"refine": Node.REFINER, "respond": Node.RESPONDER,

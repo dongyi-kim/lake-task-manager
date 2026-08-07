@@ -367,3 +367,21 @@ def test_operator_create_is_deterministic_tool_truth():
     assert r["created"] and r["created"][0]["key"], r
     assert r["failed"] == [], "경고가 실패로 각색되면 안 된다"
     assert r["note"] == ""
+
+
+def test_fast_paths_skip_historian_when_safe():
+    """빠른 경로 2종 — 후속 턴(조사 결과 보유)과 키 명시 modify 는 재조사 없이 Refiner 직행.
+
+    인터뷰 답변 턴마다 Historian 이 통째로 다시 돌던 것이 턴 시간의 최대 낭비였다
+    (턴당 LLM 3~5회). 첫 턴·새 대화는 여전히 조사부터.
+    """
+    # 첫 턴 — 조사부터
+    assert G.route_after_planner({"intent": Intent.PLAN_WORK, "turns": 0}) == "investigate"
+    # 후속 턴 — situation 보유 시 직행
+    assert G.route_after_planner({"intent": Intent.PLAN_WORK, "turns": 1,
+                                  "situation": "DL-118 에서 검토"}) == "refine"
+    # modify + 키 명시 — 직행 (키 확인은 Refiner 의 get_ticket 몫)
+    assert G.route_after_planner({"intent": Intent.MODIFY,
+                                  "mentioned_keys": ["DL-101"]}) == "refine"
+    # modify 인데 키가 없으면 여전히 조사(어느 티켓인지 찾아야 한다)
+    assert G.route_after_planner({"intent": Intent.MODIFY}) == "investigate"
