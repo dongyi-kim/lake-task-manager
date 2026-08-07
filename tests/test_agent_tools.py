@@ -423,3 +423,17 @@ def test_historian_presurvey_for_topic_questions(monkeypatch):
     txt = h.task({"keywords": ["UI"], "pre_survey": pre,
                   "messages": [HumanMessage(content="근황?")]})
     assert "사전 조사" in txt and "DL-9000" in txt
+
+
+def test_unassigned_tool_does_not_lie_about_assigned_tickets():
+    """mock JQL 이 'assignee is EMPTY' 를 조용히 무시한다 — 판정은 코드가 해야 한다.
+
+    실측: 담당자 있는 티켓 전부가 '미배정'으로 둔갑해, '담당자 없는 업무' 질문에
+    엉뚱한 목록이 답으로 나갔다. 이 도구의 결과에는 담당자 있는 티켓이 0건이어야 한다.
+    """
+    from app.agent.tools._ctx import client
+    r = _run(T.BY_NAME["find_unassigned_tickets"], module="")
+    assert "error" not in r
+    for t in (r.get("tickets") or [])[:10]:
+        raw = client().get_issue(t["key"]) or {}
+        assert not ((raw.get("fields") or {}).get("assignee")), f"{t['key']} 는 담당자가 있다"

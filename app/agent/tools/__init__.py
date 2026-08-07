@@ -12,7 +12,8 @@ from __future__ import annotations
 from app.agent.tools._ctx import bind, client, settings         # noqa: F401
 from app.agent.tools.people_tools import (get_module_people, get_person_profile,
                                           get_team_workload, get_ticket_participants)
-from app.agent.tools.pmo_tools import (find_stale_tickets, get_my_workload, get_progress,
+from app.agent.tools.pmo_tools import (find_stale_tickets, find_unassigned_tickets,
+                                       get_my_workload, get_progress,
                                        get_user_activity, whoami)
 from app.agent.tools.rag_tools import deep_search, search_rules
 from app.agent.tools.survey_tools import map_ticket_neighborhood
@@ -35,7 +36,8 @@ PEOPLE_TOOLS = [get_team_workload, get_ticket_participants, get_person_profile, 
 RULE_TOOLS = [search_rules]
 
 # PMO 조회 — 진척률·내 일·정체 티켓·타인 활동(매니저 게이트는 도구 안에 있다).
-PMO_TOOLS = [whoami, get_my_workload, get_progress, find_stale_tickets, get_user_activity]
+PMO_TOOLS = [whoami, get_my_workload, get_progress, find_stale_tickets,
+             find_unassigned_tickets, get_user_activity]
 
 # 외부 지식(웹·GitHub) — 일반 기술 지식 보강. 폐쇄망이면 "막혀 있다"를 돌려준다(의존 아님).
 WEB_TOOLS = [search_web, search_github]

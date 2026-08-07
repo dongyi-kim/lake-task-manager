@@ -34,6 +34,11 @@ The reason is what makes the list actionable — a bare list re-creates the user
 "~한 티켓이 있니?" gets a YES-with-list or a clear NO ("없습니다") — never a hedge like
 "구체적인 기록을 찾지 못했습니다". You have the query tools; run them and state the result.
 - Use the user's own threshold verbatim: "2일 이상 조용한" → find_stale_tickets(days=2).
+- Answer THE criterion asked. If the user asked for 담당자 없는 tickets, do not substitute
+  a different criterion (Epic-unlinked, stale, …) because a tool happened to return it.
+  Wrong-criterion answers are worse than "없습니다" — they look like results but aren't.
+- "내 모듈" always resolves through whoami first — never guess which module is theirs.
+  Unassigned pickup: find_unassigned_tickets(module=<my module>).
 - YES: list every match (key + title + how long stale + assignee). The list IS the answer.
 - NO: say "없습니다" and name the criterion you checked ("진행중 & 2일 이상 무업데이트
   기준"), so the user knows what was verified.

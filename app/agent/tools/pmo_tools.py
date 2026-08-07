@@ -262,6 +262,41 @@ def get_user_activity(user_id: str, days: int = 3) -> dict:
 
 
 @tool
+def find_unassigned_tickets(module: str = "", limit: int = 15) -> dict:
+    """**담당자가 비어 있는 미완료 티켓** — "담당자 없는 업무 있어?", "하나 집어 갈 일 없나".
+
+    module 을 주면 그 모듈만(예: "ETL"). "내 모듈"이라고 했으면 먼저 whoami 로 모듈을
+    알아낸 뒤 그 이름을 넣어라. 없으면 없다고 단정해서 답하면 된다 — 이 도구가 곧 근거다.
+    """
+    c, s = client(), settings()
+    try:
+        # `assignee is EMPTY` 를 JQL 에 넣지 않는다 — mock 이 이 절을 **조용히 무시**해서
+        # 담당자 있는 티켓 전부가 "미배정"으로 둔갑했다(실측: 오답의 근원). 판정은 코드가 한다.
+        jql = f"project = {s.project_key} AND statusCategory != done"
+        if (module or "").strip():
+            jql += f' AND component = "{module.strip()}"'
+        jql += " ORDER BY updated DESC"
+        raws = c.search_issues(jql, max_results=300)
+    except Exception as e:
+        return {"error": str(e)[:250]}
+    rows = []
+    for it in raws or []:
+        f = it.get("fields") or {}
+        if f.get("assignee"):
+            continue
+        rows.append(compact({
+            "key": it.get("key"), "summary": f.get("summary"),
+            "type": (f.get("issuetype") or {}).get("name"),
+            "status": (f.get("status") or {}).get("name"),
+            "priority": (f.get("priority") or {}).get("name"),
+            "duedate": f.get("duedate"),
+            "component": ", ".join(x.get("name", "") for x in (f.get("components") or [])),
+        }))
+    return {"module": module or "전체", "count": len(rows),
+            "tickets": rows[:max(1, min(int(limit or 15), 40))]}
+
+
+@tool
 def whoami() -> dict:
     """지금 이 대화의 사용자가 **누구이고 매니저인지**. 권한이 걸린 요청 전에 확인한다.
 

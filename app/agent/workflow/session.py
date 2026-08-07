@@ -240,8 +240,13 @@ def _friendly_error(err: str) -> str:
 
 
 def _people_names(out: dict) -> dict:
-    """응답에 등장하는 사번 전부의 본명 지도. 실패는 빈 지도 — 이름은 장식이지 조건이 아니다."""
-    uids = set()
+    """응답에 등장하는 사번 전부의 본명 지도. 실패는 빈 지도 — 이름은 장식이지 조건이 아니다.
+
+    답변 **본문 속** 사번도 긁는다 — 렌더러가 이 지도를 보고 사번을 프사+이름 칩으로
+    바꾼다(사용자 지적: 채팅에 username 만 달랑 나온다). 지도에 없는 사번은 그대로 둔다.
+    """
+    import re as _re
+    uids = set(_re.findall(r"\b(skcc\.[a-z]{1,2}[0-9]{2,6})\b", out.get("reply") or ""))
     for a in out.get("assignments") or []:
         uids.add(a.get("user") or "")
         for alt in a.get("alternates") or []:

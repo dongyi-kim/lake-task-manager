@@ -54,6 +54,7 @@ export default {
       epicTrees: {},          // 생성 카드의 계보 컨텍스트(epicKey → children[])
       acRows: [], acOpen: -1, // 자동완성 결과·열린 질문 index
       priorities: [],
+      evOpen: {},             // 근거 목록 펼침(턴 ti → bool). 기본 접힘 — 검증할 때만 편다
       pickedAssignee: {},     // 승인 카드에서 고른 담당자(항목 i → uid)
       cardCustom: {},         // 카드에서 '직접 입력'을 고른 상태(i → bool)
       cardAcRows: [], cardAcOpen: -1,   // 카드 담당자 자동완성
@@ -83,7 +84,7 @@ export default {
     if (this.abort) this.abort();      // 화면을 떠났는데 서버가 계속 일할 이유가 없다
   },
   methods: {
-    md(t) { return renderMarkdown(t); },
+    md(t, people) { return renderMarkdown(t, people); },
     use(ex) { this.text = ex; this.$refs.input && this.$refs.input.focus(); },
 
     onKey(e) {
@@ -403,7 +404,7 @@ export default {
           <div v-if="t.who === 'user'" class="agent-bubble user">{{ t.text }}</div>
 
           <div v-else class="agent-bubble agent">
-            <div v-if="t.text" class="agent-md" v-html="md(t.text)"></div>
+            <div v-if="t.text" class="agent-md" v-html="md(t.text, t.people)"></div>
             <div v-else-if="busy && ti === turns.length - 1" class="agent-thinking">
               <span class="dot"></span><span class="dot"></span><span class="dot"></span>
             </div>
@@ -419,19 +420,23 @@ export default {
                 v-if="t.usage.costUsd"> · {{ '$' + t.usage.costUsd.toFixed(4) }}</template>
             </div>
 
-            <!-- 근거: 눌러서 확인할 수 있어야 믿을 수 있다 -->
+            <!-- 근거: 눌러서 확인할 수 있어야 믿을 수 있다. **기본은 접힘**(사용자 요청) —
+                 본문이 이미 키+제목을 담고 있어서 근거 목록은 검증하고 싶을 때만 펼친다. -->
             <!-- 근거 — 티켓 키만 클릭 가능. PMO 조회의 근거에는 모듈명("ETL")처럼 티켓이
                  아닌 항목이 섞이는데, 그걸 버튼으로 만들면 눌렀을 때 '없는 티켓'이 뜬다(실측). -->
             <div v-if="t.evidence && t.evidence.length" class="agent-ev">
-              <div class="agent-ev-h">근거</div>
-              <template v-for="e in t.evidence" :key="e.key">
-                <button v-if="isTicketKey(e.key)" class="agent-ev-row"
-                        @click="openTicket(e.key)" :title="e.why">
-                  <b>{{ e.key }}</b><span>{{ e.title }}</span><em>{{ e.why }}</em>
-                </button>
-                <div v-else class="agent-ev-row plain" :title="e.why">
-                  <b>{{ e.key }}</b><span>{{ e.title }}</span><em>{{ e.why }}</em>
-                </div>
+              <button class="agent-ev-h agent-ev-toggle" @click="evOpen[ti] = !evOpen[ti]">
+                {{ evOpen[ti] ? '▾' : '▸' }} 근거 {{ t.evidence.length }}건</button>
+              <template v-if="evOpen[ti]">
+                <template v-for="e in t.evidence" :key="e.key">
+                  <button v-if="isTicketKey(e.key)" class="agent-ev-row"
+                          @click="openTicket(e.key)" :title="e.why">
+                    <b>{{ e.key }}</b><span>{{ e.title }}</span><em>{{ e.why }}</em>
+                  </button>
+                  <div v-else class="agent-ev-row plain" :title="e.why">
+                    <b>{{ e.key }}</b><span>{{ e.title }}</span><em>{{ e.why }}</em>
+                  </div>
+                </template>
               </template>
             </div>
             <div v-if="t.docs && t.docs.length" class="agent-docs">

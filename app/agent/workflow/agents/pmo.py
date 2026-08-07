@@ -60,7 +60,10 @@ class PMO(ToolAgent):
         intent = state.get("intent") or ""
         goal = {
             Intent.MY_DAY: "이 사용자가 **오늘 무엇에 집중해야 하는지** 골라라. "
-                           "지연/마감임박/정체를 근거 숫자와 함께 제시하고, 매니저라면 팀 정체 티켓도 언급하라.",
+                           "지연/마감임박/정체를 근거 숫자와 함께 제시하고, 매니저라면 팀 정체 티켓도 언급하라. "
+                           "'담당자 없는 업무를 집고 싶다'면 whoami 로 **내 모듈**을 알아낸 뒤 "
+                           "find_unassigned_tickets(module=그 모듈) 로 조회하라 — 물은 것과 다른 "
+                           "기준(Epic 미연결 등)으로 바꿔치기해 답하지 마라.",
             Intent.PROGRESS: "요청된 대상의 **진척률과 그 이유**를 설명하라. "
                              "숫자가 이상해 보이면 분모에서 빠진 것(Bug·VoC·Epic Link 없음)을 짚어라. "
                              "정체·조용한 티켓을 물었으면 find_stale_tickets 를 **사용자가 말한 "

@@ -12,12 +12,16 @@
 // (사용자 지적). 모델에게 표로 쓰라고 지시했으니 렌더러가 못 그리면 말짱 꽝이다.
 
 const KEY_RE = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
+const UID_RE = /\b(skcc\.[a-z]{1,2}\d{2,6})\b/g;
 
 function esc(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+// 렌더 한 번 동안의 사번→본명 지도(서버 people). 모듈 전역이지만 렌더는 동기라 안전하다.
+let PEOPLE = {};
 
 /** 인라인 문법. 이미 escape 된 문자열을 받는다. */
 function inline(s) {
@@ -27,10 +31,24 @@ function inline(s) {
     // 티켓 키는 클릭하면 티켓 다이얼로그가 열린다 — 근거를 바로 확인할 수 있어야 믿을 수 있다.
     // `.tkt[data-key]` 는 **앱 전역 위임 처리기**가 잡는 관례다(app-root). 코멘트·검색 결과의
     // 티켓 링크와 똑같이 동작하므로 여기만 특별히 다르게 굴지 않는다.
-    .replace(KEY_RE, '<a href="#" class="tkt" data-key="$1">$1</a>');
+    .replace(KEY_RE, '<a href="#" class="tkt" data-key="$1">$1</a>')
+    // 사번은 프사+본명 칩으로 — "skcc.x1042 만 달랑"은 읽는 사람에게 아무 정보가 없다
+    // (사용자 지적). 본명을 모르는 사번(지도에 없음)은 건드리지 않는다.
+    .replace(UID_RE, (m, uid) => {
+      const name = PEOPLE[uid];
+      if (!name) return m;
+      return `<span class="md-person" title="${uid}">` +
+             `<img class="md-avt" src="/api/avatar/${uid}" alt="" ` +
+             `onerror="this.style.display='none'">${name}</span>`;
+    });
 }
 
-export function renderMarkdown(text) {
+export function renderMarkdown(text, people) {
+  PEOPLE = people || {};
+  return _render(text);
+}
+
+function _render(text) {
   const lines = esc(text || "").split("\n");
   const out = [];
   let list = null;          // "ul" | "ol" | null
