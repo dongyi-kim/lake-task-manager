@@ -15,6 +15,7 @@ from app.agent.tools.people_tools import (get_module_people, get_person_profile,
 from app.agent.tools.pmo_tools import (find_stale_tickets, get_my_workload, get_progress,
                                        get_user_activity, whoami)
 from app.agent.tools.rag_tools import deep_search, search_rules
+from app.agent.tools.survey_tools import map_ticket_neighborhood
 from app.agent.tools.web_tools import search_github, search_web
 from app.agent.tools.search_tools import (find_parent_epic, get_epic_tree, get_ticket,
                                           get_ticket_context, search_work_history)
@@ -24,8 +25,8 @@ from app.agent.tools.write_tools import (add_ticket_comment, attach_document, cr
                                          update_ticket, validate_ticket_plan)
 
 # 과거를 뒤진다 — 읽기만. deep_search 는 의미 검색까지 가는 비싼 쪽이라 따로 알아볼 수 있게 뒀다.
-SEARCH_TOOLS = [search_work_history, get_ticket, get_ticket_context, get_epic_tree,
-                find_parent_epic, deep_search]
+SEARCH_TOOLS = [search_work_history, map_ticket_neighborhood, get_ticket, get_ticket_context,
+                get_epic_tree, find_parent_epic, deep_search]
 
 # 담당자 근거를 모은다 — 읽기만.
 PEOPLE_TOOLS = [get_team_workload, get_ticket_participants, get_person_profile, get_module_people]

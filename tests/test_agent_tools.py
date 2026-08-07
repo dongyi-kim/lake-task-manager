@@ -270,3 +270,49 @@ def test_historian_gets_web_tools_but_writers_do_not():
     from app.agent.workflow.agents.historian import Historian
     names = {t.name for t in Historian().tools}
     assert {"search_web", "search_github"} <= names
+
+
+# ── 후보 지도 — 본문을 읽기 전에 코드가 신호를 취합한다 ──────────────
+def test_neighborhood_aggregates_multiple_signals():
+    """계보·라벨·컴포넌트·링크·참여자를 한 번에 — 모델의 검색 반복을 대체하는 지도다."""
+    from app.agent.tools.survey_tools import neighborhood
+    from app.agent.tools import _ctx
+    key = _ctx.client().search_issues(
+        "statusCategory = indeterminate ORDER BY updated DESC", max_results=3)[0]["key"]
+    r = neighborhood(key)
+    assert r["seed"] == key and r["candidates"], r
+    vias = {v for c in r["candidates"] for v in c["via"]}
+    assert len(vias) >= 2, f"신호가 하나뿐이다: {vias}"
+    assert key not in {c["key"] for c in r["candidates"]}, "씨앗 티켓이 후보에 섞였다"
+    # 겹침(via 수) 내림차순 — 여러 신호에 걸린 후보가 위로
+    ns = [len(c["via"]) for c in r["candidates"]]
+    assert ns == sorted(ns, reverse=True)
+
+
+def test_neighborhood_is_compact_enough_for_context():
+    import json
+    from app.agent.tools.survey_tools import neighborhood
+    from app.agent.tools import _ctx
+    key = _ctx.client().search_issues("ORDER BY updated DESC", max_results=1)[0]["key"]
+    assert len(json.dumps(neighborhood(key), ensure_ascii=False)) < 5000
+
+
+def test_historian_injects_seed_map_for_mentioned_keys(monkeypatch):
+    """사용자가 티켓을 지목하면 ReAct 전에 지도가 자료로 들어간다(fake 로 검증)."""
+    import os
+    os.environ["LAKE_AGENT_PROVIDER"] = "fake"
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.historian import Historian
+    from app.agent.tools import _ctx
+    key = _ctx.client().search_issues(
+        "statusCategory = indeterminate ORDER BY updated DESC", max_results=3)[0]["key"]
+    h = Historian()
+    captured = {}
+    orig_task = h.task
+    def spy_task(state):
+        captured["seed_map"] = state.get("seed_map") or ""
+        return orig_task(state)
+    monkeypatch.setattr(h, "task", spy_task)
+    h.node()({"messages": [HumanMessage(content=f"{key} 관련 정리")],
+              "mentioned_keys": [key], "keywords": [key], "trace": []})
+    assert "후보:" in captured["seed_map"], "지도가 주입되지 않았다"
