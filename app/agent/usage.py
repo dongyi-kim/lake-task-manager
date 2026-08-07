@@ -125,14 +125,22 @@ class Meter:
         self.prompt = 0
         self.completion = 0
         self.model = ""
+        # 역할(그래프 노드)별 집계 — "어디가 느리고 비싼가"의 근거(성능 최적화 기준선).
+        self.by_node: dict = {}
 
-    def add(self, model: str, prompt: int, completion: int):
+    def add(self, model: str, prompt: int, completion: int,
+            node: str = "", seconds: float = 0.0):
         with self._lock:
             self.calls += 1
             self.prompt += int(prompt or 0)
             self.completion += int(completion or 0)
             if model:
                 self.model = model
+            if node:
+                row = self.by_node.setdefault(node, {"calls": 0, "tokens": 0, "seconds": 0.0})
+                row["calls"] += 1
+                row["tokens"] += int(prompt or 0) + int(completion or 0)
+                row["seconds"] = round(row["seconds"] + (seconds or 0.0), 1)
 
     @property
     def total(self) -> int:
@@ -145,6 +153,8 @@ class Meter:
                "model": self.model}
         if c is not None:
             out["costUsd"] = c
+        if self.by_node:
+            out["byNode"] = dict(self.by_node)
         return out
 
 
@@ -160,7 +170,25 @@ def callback(meter: Meter):
         return None
 
     class _Handler(BaseCallbackHandler):
-        def on_llm_end(self, response, **kwargs):
+        def __init__(self):
+            self._t0 = {}
+
+        def _start(self, run_id, kwargs):
+            import time as _t
+            md = kwargs.get("metadata") or {}
+            # 서브그래프 안에서는 노드명이 think/act 다 — 체크포인트 네임스페이스의 부모
+            # (historian:.. → historian)로 바꿔야 역할별 집계가 된다.
+            ns = str(md.get("langgraph_checkpoint_ns") or "")
+            node = ns.split(":", 1)[0] if ns else str(md.get("langgraph_node") or "")
+            self._t0[str(run_id)] = (_t.time(), node)
+
+        def on_llm_start(self, serialized, prompts, *, run_id=None, **kwargs):
+            self._start(run_id, kwargs)
+
+        def on_chat_model_start(self, serialized, messages, *, run_id=None, **kwargs):
+            self._start(run_id, kwargs)
+
+        def on_llm_end(self, response, *, run_id=None, **kwargs):
             try:
                 out = response.llm_output or {}
                 usage = out.get("token_usage") or out.get("usage") or {}
@@ -170,9 +198,13 @@ def callback(meter: Meter):
                     if meta:
                         usage = {"prompt_tokens": meta.get("input_tokens"),
                                  "completion_tokens": meta.get("output_tokens")}
+                import time as _t
+                t0, node = self._t0.pop(str(run_id), (None, ""))
+                secs = (_t.time() - t0) if t0 else 0.0
                 meter.add(out.get("model_name") or "",
                           usage.get("prompt_tokens") or 0,
-                          usage.get("completion_tokens") or 0)
+                          usage.get("completion_tokens") or 0,
+                          node=node, seconds=secs)
             except Exception:
                 pass
 
