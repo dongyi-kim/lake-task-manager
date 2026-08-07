@@ -189,3 +189,20 @@ def test_reasoning_models_do_not_receive_temperature(clean_env):
     clean_env.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-4o-mini")
     llm2 = C.get_llm(temperature=0.4)
     assert abs(getattr(llm2, "temperature", 0) - 0.4) < 1e-9
+
+
+def test_playbooks_load_and_inject(clean_env):
+    """전형적 요청의 사전 정의 플로우 — 파싱과 페르소나 주입을 함께 보증한다."""
+    from app.agent.prompts.roles import PLAYBOOKS
+    from app.agent.workflow.agents.planner import SCHEMA
+    from app.agent.workflow.prompts import persona
+    expect = {"epic_create", "task_create", "bug_report", "subtask_bulk", "find_people",
+              "find_tickets", "knowledge", "history", "workload", "assign_fit"}
+    assert expect <= set(PLAYBOOKS), set(PLAYBOOKS)
+    for k in expect:
+        assert "플로우" in PLAYBOOKS[k] and "주의" in PLAYBOOKS[k], k
+    # Planner enum 과 자산이 어긋나면 조용히 주입이 빠진다 — 함께 묶어 검증
+    assert expect <= set(SCHEMA["properties"]["playbook"]["enum"])
+    p = persona({"playbook": "subtask_bulk"})
+    assert "Standard playbook" in p and "재질문 금지" in p
+    assert "Standard playbook" not in persona({})

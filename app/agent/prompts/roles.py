@@ -46,3 +46,22 @@ SYSTEM_OPERATOR = _load("operator")
 SYSTEM_RESPONDER = _load("responder")
 SYSTEM_PMO = _load("pmo")
 SYSTEM_CURATOR = _load("curator")
+
+
+def _load_playbooks() -> dict:
+    """playbooks.md 의 `## id` 절들 → {id: 본문}. 전형적 요청의 사전 정의 플로우."""
+    text = (_DIR.parent / "playbooks.md").read_text(encoding="utf-8")
+    out, cur, buf = {}, None, []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if cur:
+                out[cur] = "\n".join(buf).strip()
+            cur, buf = line[3:].strip(), []
+        elif cur is not None:
+            buf.append(line)
+    if cur:
+        out[cur] = "\n".join(buf).strip()
+    return out
+
+
+PLAYBOOKS = _load_playbooks()

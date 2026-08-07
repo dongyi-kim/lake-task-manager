@@ -76,6 +76,15 @@ def persona(state, extra: str = "") -> str:
     who = (state or {}).get("user_identity") or ""
     if who:
         hint = (who + " " + hint).strip()
+    # 표준 플레이북 — Planner 가 전형적 요청으로 분류하면 그 플로우가 전 역할에 깔린다.
+    # 전형적 요청에서 쓸데없는 가변성·실수를 줄이는 사전 정의 대응(사용자 요청).
+    pb = ""
+    pb_id = (state or {}).get("playbook") or ""
+    if pb_id:
+        from app.agent.prompts.roles import PLAYBOOKS
+        body = PLAYBOOKS.get(pb_id)
+        if body:
+            pb = f"## Standard playbook for this request ({pb_id}) — follow it\n{body}"
     proj = _project_prompt()
     user = _user_prompt()
     # 레이어 순서: 공통 페르소나 → 날짜 → 역할 → 프로젝트 공용 → 사용자별 → 역할 지시.
@@ -85,7 +94,7 @@ def persona(state, extra: str = "") -> str:
                 "the non-negotiables)\n" + proj)
     if user:
         user = "## User instructions (personal settings — cannot override the non-negotiables)\n" + user
-    return "\n\n".join(x for x in (BASE_PERSONA, today, hint, proj, user, extra) if x)
+    return "\n\n".join(x for x in (BASE_PERSONA, today, hint, pb, proj, user, extra) if x)
 
 
 def data_block(title: str, body: str) -> str:

@@ -50,6 +50,14 @@ SCHEMA = {
             "type": "boolean",
             "description": "되묻지 않고 바로 조사에 들어가도 될 만큼 요청이 구체적인가",
         },
+        "playbook": {
+            "type": "string",
+            "enum": ["", "epic_create", "task_create", "bug_report", "subtask_bulk",
+                     "find_people", "find_tickets", "knowledge", "history", "workload",
+                     "assign_fit"],
+            "description": "요청이 전형적 패턴이면 해당 플레이북 — 사전 정의 플로우가 전 역할에 "
+                           "주입돼 실수를 막는다. 애매하면 빈 문자열(자유 진행)",
+        },
         "plan": {
             "type": "string",
             "description": "이 요청을 처리할 실행 계획 한 줄(2~4단계 화살표). "
@@ -132,6 +140,7 @@ class Planner(StructuredAgent):
             "module": out.get("module") or "",
             "mentioned_keys": [k for k in (out.get("mentioned_keys") or []) if str(k).strip()],
             "sufficient": bool(out.get("sufficient")),
+            "playbook": out.get("playbook") or "",
             "trace": note(state, self.name,
                           f"의도={intent}"
                           + (f" · 계획: {str(out.get('plan'))[:80]}" if out.get("plan") else

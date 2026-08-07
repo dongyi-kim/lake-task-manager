@@ -90,6 +90,7 @@ class AgentState(TypedDict, total=False):
     user_role: str                  # Role.*
     user_id: str
     user_identity: str              # "이름(사번), 모듈, 매니저 여부" — 세션 시작에 코드가 해석
+    playbook: str                   # Planner 가 고른 표준 플레이북 id — 전 역할 프롬프트에 주입
 
     # ── Planner ──
     intent: str                     # Intent.*
