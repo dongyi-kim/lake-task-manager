@@ -15,13 +15,46 @@
 /* ── 화면 뼈대 ─────────────────────────────────────────────────
  * 대화는 **입력창이 항상 아래 고정**이어야 한다. 페이지 전체가 스크롤되면 답이 길어질 때마다
  * 입력창을 찾아 내려가야 한다 — 스크롤은 대화 목록만 진다. */
-/* 이분할 컨테이너 — 우측 채널이 열리면 대화(agent-main)와 티켓 패널이 나란히 선다 */
+/* 정통 에이전트 레이아웃: [사이드바 | 대화 | (티켓 패널)] */
 .agentview { display:flex; flex-direction:row; gap:0; height:calc(100vh - 118px);
   min-height:420px; width:100%; }
-.agent-main { flex:1; min-width:0; display:flex; flex-direction:column;
-  /* 대화는 읽는 폭이 생명이다 — 와이드 모니터에서 한 줄이 화면 끝까지 가면 눈이 길을 잃는다.
-     본문 열을 880px 로 묶고 가운데 둔다(head/입력창까지 같은 폭). */
+.agent-main { flex:1; min-width:0; display:flex; flex-direction:column; padding:0 18px;
+  /* 대화는 읽는 폭이 생명이다 — 본문 열을 880px 로 묶고 가운데 둔다. */
   max-width:880px; margin:0 auto; width:100%; }
+/* 빈 화면 — 히어로+추천 칩+입력창을 세로 중앙에(ChatGPT 첫 화면 꼴) */
+.agent-main.is-empty { justify-content:center; }
+.agent-main.is-empty .agent-scroll { flex:0 0 auto; background:transparent; border:0;
+  overflow:visible; }
+.agent-main.is-empty .agent-foot { visibility:hidden; }
+
+/* 좌측 사이드바 — 새 대화·최근 대화·설정 */
+.agent-nav { flex:0 0 232px; min-width:0; display:flex; flex-direction:column; gap:6px;
+  padding:12px 10px; border-right:1px solid var(--border); background:var(--panel-2); }
+.an-new { padding:9px 12px; font:inherit; font-size:13px; font-weight:600; text-align:left;
+  background:var(--panel); color:var(--text); border:1px solid var(--border-hi);
+  border-radius:9px; cursor:pointer; }
+.an-new:hover { border-color:var(--accent); }
+.an-h { margin:10px 4px 2px; font-size:10.5px; font-weight:700; color:var(--muted-2); }
+.an-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:2px; }
+.an-item { display:flex; align-items:center; border-radius:8px; }
+.an-item:hover, .an-item.on { background:var(--panel); }
+.an-open { flex:1; min-width:0; padding:7px 9px; font:inherit; font-size:12px; text-align:left;
+  color:var(--muted); background:none; border:0; cursor:pointer;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.an-item.on .an-open { color:var(--text); font-weight:600; }
+.an-del { flex:none; width:22px; height:22px; margin-right:4px; font-size:10px;
+  color:var(--muted-2); background:none; border:0; border-radius:5px; cursor:pointer;
+  visibility:hidden; }
+.an-item:hover .an-del { visibility:visible; }
+.an-del:hover { background:var(--panel-2); color:var(--bad, #c33); }
+.an-foot { display:flex; align-items:center; justify-content:space-between; gap:6px;
+  padding-top:8px; border-top:1px solid var(--border); }
+
+/* 히어로 */
+.agent-empty { align-items:center; margin:0; }   /* 구 규칙(flex-start·auto 마진) 무효화 */
+.agent-hero { margin:0 0 4px; font-size:26px; text-align:center; }
+.agent-hero-sub { margin:0 0 18px; font-size:13px; color:var(--muted); text-align:center; }
+.agent-ex-wrap { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; }
 
 .agent-head { display:flex; align-items:flex-start; justify-content:space-between;
   gap:16px; padding:4px 2px 12px; border-bottom:1px solid var(--border); flex-wrap:wrap; }

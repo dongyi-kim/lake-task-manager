@@ -58,6 +58,7 @@ export default {
       priorities: [],
       evOpen: {},             // 근거 목록 펼침(턴 ti → bool). 기본 접힘 — 검증할 때만 편다
       sideKey: "",            // 우측 채널에 띄운 티켓 키 — 대화를 가리지 않고 옆에서 본다
+      convos: [],             // 최근 대화(localStorage) — 좌측 사이드바
       pickedAssignee: {},     // 승인 카드에서 고른 담당자(항목 i → uid)
       cardCustom: {},         // 카드에서 '직접 입력'을 고른 상태(i → bool)
       cardAcRows: [], cardAcOpen: -1,   // 카드 담당자 자동완성
@@ -73,6 +74,7 @@ export default {
     },
   },
   mounted() {
+    this.convos = this.loadConvos();
     this.loadPriorities().then((p) => { this.priorities = p; });
     api.prefs()
       .then((p) => {
@@ -190,6 +192,7 @@ export default {
             if (ev.pending && ev.pending.items) this.loadEpicTree(ev.pending);
             this.pickedAssignee = {}; this.cardCustom = {}; this.previewOn = {};
             this.customOn = {};
+            this.saveConvo();
                 if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
             this.busy = false;
             this.steps = [];
@@ -244,6 +247,36 @@ export default {
     reset() {
       if (this.abort) this.abort();
       this.threadId = ""; this.turns = []; this.steps = []; this.busy = false;
+      this.sideKey = "";
+    },
+
+    // ── 최근 대화(좌측 사이드바) — localStorage 보관. 서버 체크포인터는 재시작하면
+    // 사라지므로 **표시용 기록**은 브라우저가 갖는다(이어서 질문하면 서버 컨텍스트가
+    // 살아 있는 동안은 그대로 이어진다).
+    loadConvos() {
+      try { return JSON.parse(localStorage.getItem("agentConvos") || "[]"); }
+      catch (e) { return []; }
+    },
+    saveConvo() {
+      if (!this.threadId || !this.turns.length) return;
+      const first = this.turns.find((t) => t.who === "user");
+      const title = ((first && first.text) || "새 대화").slice(0, 42);
+      const rest = this.convos.filter((c) => c.id !== this.threadId);
+      // 직렬화 가능한 것만 — 함수·프록시 없음. 30개 초과는 오래된 것부터 버린다.
+      this.convos = [{ id: this.threadId, title, at: Date.now(),
+                       turns: JSON.parse(JSON.stringify(this.turns)) }, ...rest].slice(0, 30);
+      try { localStorage.setItem("agentConvos", JSON.stringify(this.convos)); } catch (e) {}
+    },
+    openConvo(c) {
+      if (this.busy) return;
+      this.threadId = c.id; this.turns = JSON.parse(JSON.stringify(c.turns || []));
+      this.steps = []; this.sideKey = "";
+      this.$nextTick(this.scroll);
+    },
+    removeConvo(c) {
+      this.convos = this.convos.filter((x) => x.id !== c.id);
+      try { localStorage.setItem("agentConvos", JSON.stringify(this.convos)); } catch (e) {}
+      if (this.threadId === c.id) this.reset();
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
@@ -438,28 +471,36 @@ export default {
     </div>
 
     <template v-else>
-      <!-- 이분할: 패널이 열리면 대화가 좁아지며 **나란히** 선다(오버레이 아님 — 사용자 지적) -->
-      <div class="agent-main">
-      <div class="agent-head">
-        <div class="agent-title">
-          <h1>LTM Agent</h1>
+      <!-- 정통 에이전트 레이아웃(사용자 요청): 좌측 사이드바(새 대화·최근 대화·설정) +
+           본문. 빈 화면은 중앙 히어로(제목·추천 칩·입력창)로. -->
+      <aside class="agent-nav">
+        <button class="an-new" @click="reset">＋ 새 대화</button>
+        <div class="an-h" v-if="convos.length">최근 대화</div>
+        <div class="an-list">
+          <div v-for="c in convos" :key="c.id" class="an-item" :class="{ on: c.id === threadId }">
+            <button class="an-open" @click="openConvo(c)" :title="c.title">{{ c.title }}</button>
+            <button class="an-del" @click.stop="removeConvo(c)" title="삭제">✕</button>
+          </div>
         </div>
-        <div class="agent-meta">
+        <div class="an-foot">
           <span v-if="status" class="agent-prov" :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
             {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
           </span>
-          <button v-if="turns.length" class="agent-reset" @click="reset">새 대화</button>
-          <!-- 설정 진입 — 우상단 전역 설정을 거치지 않고 이 화면에서 바로.
-               provider·모델을 바꾸고 돌아오면 상단 칩이 즉시 갱신돼야 한다. -->
           <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
         </div>
-      </div>
+      </aside>
+
+      <!-- 이분할: 티켓 패널이 열리면 대화가 좁아지며 나란히 선다 -->
+      <div class="agent-main" :class="{ 'is-empty': empty && !busy }">
 
       <div class="agent-scroll" ref="scroller">
-        <!-- 빈 화면: 무엇을 할 수 있는지 예시로 보여 준다 -->
+        <!-- 빈 화면: 중앙 히어로 — 제목 + 추천 칩(입력창이 바로 아래 온다) -->
         <div v-if="empty && !busy" class="agent-empty">
-          <div class="agent-ex-h">이렇게 물어보세요</div>
-          <button v-for="ex in examples" :key="ex" class="agent-ex" @click="use(ex)">{{ ex }}</button>
+          <h1 class="agent-hero">LTM Agent</h1>
+          <p class="agent-hero-sub">과거 이력을 찾고, 대화로 구체화해, 승인받아 티켓까지 만듭니다.</p>
+          <div class="agent-ex-wrap">
+            <button v-for="ex in examples" :key="ex" class="agent-ex" @click="use(ex)">{{ ex }}</button>
+          </div>
         </div>
 
         <div v-for="(t, ti) in turns" :key="ti" class="agent-turn" :class="t.who">
