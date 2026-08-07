@@ -15,10 +15,13 @@
 /* ── 화면 뼈대 ─────────────────────────────────────────────────
  * 대화는 **입력창이 항상 아래 고정**이어야 한다. 페이지 전체가 스크롤되면 답이 길어질 때마다
  * 입력창을 찾아 내려가야 한다 — 스크롤은 대화 목록만 진다. */
-/* 정통 에이전트 레이아웃: [사이드바 | 대화 | (티켓 패널)] */
-.agentview { display:flex; flex-direction:row; gap:0; height:calc(100vh - 118px);
-  min-height:420px; width:100%; }
-.agent-main { flex:1; min-width:0; display:flex; flex-direction:column; padding:0 18px;
+/* 정통 에이전트 레이아웃: [사이드바 | 대화 | (티켓 패널)]
+   앱 셸(.wrap)의 여백(22/28/60px)을 음수 마진으로 상쇄한다 — 에이전트는 문서가 아니라
+   **앱 화면**이라 상단 네비(46px) 아래를 꽉 채워야 한다(사용자 지적: 상하좌우 여백). */
+.agentview { display:flex; flex-direction:row; gap:0; margin:-16px -28px -60px;
+  height:calc(100vh - 46px); min-height:420px; width:auto; }
+.agent-main { flex:1; min-width:0; display:flex; flex-direction:column;
+  padding:8px 18px 10px;
   /* 대화는 읽는 폭이 생명이다 — 본문 열을 880px 로 묶고 가운데 둔다. */
   max-width:880px; margin:0 auto; width:100%; }
 /* 빈 화면 — 히어로+추천 칩+입력창을 세로 중앙에(ChatGPT 첫 화면 꼴) */
