@@ -29,7 +29,11 @@ SCHEMA = {
             "type": "array",
             "items": {"type": "object", "properties": {
                 "key": {"type": "string", "description": "관련 티켓 키. 없으면 빈 문자열"},
-                "point": {"type": "string", "description": "발견한 사실 한 문장 — 숫자·날짜를 넣는다"},
+                "point": {"type": "string",
+                          "description": "발견한 사실 한 문장 — **티켓 제목을 도구 결과 표기 그대로** "
+                                         "포함하고 숫자·날짜를 넣는다. 키만 달랑 쓰면 읽는 사람이 "
+                                         "무슨 티켓인지 모른다. 예: '\"[ETL] 적재 재시도\" — 12일째 "
+                                         "업데이트 없음, 마감 7/24'"},
                 "action": {"type": "string", "description": "권하는 행동. 없으면 빈 문자열"}}},
             "description": "조회에서 실제로 확인한 것만. 최대 10건",
         },
@@ -58,7 +62,11 @@ class PMO(ToolAgent):
             Intent.MY_DAY: "이 사용자가 **오늘 무엇에 집중해야 하는지** 골라라. "
                            "지연/마감임박/정체를 근거 숫자와 함께 제시하고, 매니저라면 팀 정체 티켓도 언급하라.",
             Intent.PROGRESS: "요청된 대상의 **진척률과 그 이유**를 설명하라. "
-                             "숫자가 이상해 보이면 분모에서 빠진 것(Bug·VoC·Epic Link 없음)을 짚어라.",
+                             "숫자가 이상해 보이면 분모에서 빠진 것(Bug·VoC·Epic Link 없음)을 짚어라. "
+                             "정체·조용한 티켓을 물었으면 find_stale_tickets 를 **사용자가 말한 "
+                             "기준일수(days)** 로 불러라('2일 이상' → days=2). 존재 질문('~있니')은 "
+                             "**단정적으로** 답한다 — 있으면 전부 findings 에 싣고, 없으면 headline 에 "
+                             "'없습니다'라고 말한다. '기록을 찾지 못했다' 같은 얼버무림 금지.",
             Intent.ACTIVITY: "요청된 사람의 **최근 활동**을 조회해 정리하라. "
                              "무엇을 만졌고 어떤 티켓이 움직였는지를 사실 위주로.",
         }.get(intent, "요청에 맞는 현황을 조회해 정리하라.")
