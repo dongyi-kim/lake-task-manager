@@ -82,8 +82,12 @@ def _group_activity(state) -> str:
     if not roster:
         return ""
     rows = [f"[로스터] {who}: {', '.join(roster)} ({len(roster)}명)", f"[조회 기간] 최근 {days}일"]
-    for uid in roster[:8]:
-        a = T.BY_NAME["get_user_activity"].invoke({"user_id": uid, "days": days}) or {}
+    # 전원 활동 조회를 병렬로 — N명 직렬(사람당 1~2초)이 턴 시간의 큰 몫이었다.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        acts = list(ex.map(lambda u: (u, T.BY_NAME["get_user_activity"].invoke(
+            {"user_id": u, "days": days}) or {}), roster[:8]))
+    for uid, a in acts:
         if a.get("denied"):
             return ""                   # 매니저 아님 — 도구 게이트 존중, 기존 경로가 거부를 전한다
         touched = ", ".join(f"{t.get('key')} \"{t.get('summary','')}\"({t.get('status','')})"

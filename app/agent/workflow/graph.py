@@ -125,7 +125,9 @@ def route_after_reviewer(state: AgentState) -> str:
     review = state.get("review") or {}
     if review.get("ok"):
         return "propose"
-    if (state.get("revisions") or 0) < MAX_REVISIONS:
+    # 재작성은 **기계 오류가 있을 때만** — LLM 의견만으로 왕복하면 한 턴이 200초를 넘겼다
+    # (실측: 반려 1회 = 호출 +4~8회). 의견은 카드에 '검토 의견'으로 실려 사람이 판단한다.
+    if review.get("errors") and (state.get("revisions") or 0) < MAX_REVISIONS:
         return "revise"
     return "respond" if review.get("errors") else "propose"
 

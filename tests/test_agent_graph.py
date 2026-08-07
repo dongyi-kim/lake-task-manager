@@ -61,7 +61,13 @@ def test_an_empty_draft_does_not_pretend_to_have_one():
 
 
 def test_review_failure_sends_it_back_to_be_rewritten():
-    assert G.route_after_reviewer({"review": {"ok": False}, "revisions": 1}) == "revise"
+    """재작성은 기계 오류가 있을 때만 — LLM 의견만으로 왕복하면 턴이 200초를 넘겼다."""
+    assert G.route_after_reviewer({"review": {"ok": False,
+                                              "errors": [{"message": "없는 부모"}]},
+                                   "revisions": 1}) == "revise"
+    assert G.route_after_reviewer({"review": {"ok": False, "errors": [],
+                                              "problems": [{"message": "의견"}]},
+                                   "revisions": 0}) == "propose"
 
 
 def test_rewrite_loop_is_bounded_but_humans_still_get_to_judge():
