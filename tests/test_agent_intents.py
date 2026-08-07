@@ -265,3 +265,48 @@ def test_references_are_stamped_into_every_draft_description():
                        "description": "<h3>References</h3><ul><li>DL-1</li></ul>"}]}
     d2 = Refiner().apply(st, out2)["draft"]["items"][0]["description"]
     assert d2.count("References") == 1
+
+
+def test_comment_only_change_plan_goes_through_approval(monkeypatch):
+    """"이 내용 DL-x 에 댓글로 남겨줘" — 변경 필드 없이 댓글만도 승인→실행이 돼야 한다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow import session
+    from app.agent.workflow.agents.planner import Planner
+    from app.agent.workflow.agents.refiner import Refiner
+    from app.agent.tools import _ctx
+    import app.agent.tools as T
+
+    key = _ctx.client().search_issues(
+        "statusCategory = indeterminate ORDER BY updated DESC", max_results=3)[0]["key"]
+    plan = {"key": key, "changes": {}, "comment": "회의 결정: 다음 릴리스로 미룸", "why": ""}
+    monkeypatch.setattr(Planner, "node", lambda self: (lambda st: {
+        "intent": Intent.MODIFY, "keywords": [key], "mentioned_keys": [key], "sufficient": True}))
+    monkeypatch.setattr(Refiner, "node", lambda self: (lambda st: {
+        "questions": [], "change_plan": dict(plan), "turns": 1, "draft": {}}))
+    G.reset()
+
+    out = session.ask(f"{key} 에 '회의 결정: 다음 릴리스로 미룸' 이라고 댓글 남겨줘")
+    assert out.get("pending"), out.get("reply")
+    assert out["pending"]["comment"] and not out["pending"]["changes"]
+
+    done = session.resume(out["thread_id"], out["pending"]["token"])
+    assert (done.get("result") or {}).get("updated"), done
+    got = T.BY_NAME["get_ticket"].invoke({"key": key, "comment_limit": 20})
+    assert any("다음 릴리스로 미룸" in (c.get("body") or "") for c in got.get("comments") or [])
+    G.reset()
+
+
+def test_description_change_survives_the_token_fingerprint():
+    """본문 수정 — propose 가 만드는 payload 와 도구가 만드는 payload 의 지문이 같아야 한다."""
+    from app.agent import approval
+    import app.agent.tools as T
+    from app.agent.tools import _ctx
+    approval.clear()
+    key = _ctx.client().search_issues("ORDER BY updated DESC", max_results=1)[0]["key"]
+    html = "<h3>배경</h3><p>보강</p><h3>완료 조건 (DoD)</h3><ul><li>검증</li></ul>"
+    plan = {"key": key, "changes": {"description": html}}
+    tok = G._propose({"thread_id": "t1", "change_plan": plan})["approval_token"]
+    approval.approve(tok, "t1")
+    r = T.BY_NAME["update_ticket"].invoke({"key": key, "description": html, "approval_token": tok})
+    assert r.get("ok"), r
+    assert "description" in (r.get("updated") or [])

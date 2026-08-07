@@ -64,7 +64,9 @@ QUESTION = {
         "kind": {"type": "string", "enum": ["text", "choice", "date"],
                  "description": "text=자유 서술 / choice=보기 중 선택 / date=날짜"},
         "options": {"type": "array", "items": {"type": "string"},
-                    "description": "kind=choice 일 때 보기 2~5개. 네가 추천하는 것을 앞에 둔다"},
+                    "description": "kind=choice 일 때 보기 2~5개. **네가 추천하는 것을 맨 앞에** 두고, "
+                                   "보기 뒤에 짧은 사유를 괄호로 붙여도 된다 — 예: "
+                                   "\"P2-Major (운영 영향 있음)\", \"skcc.x1210 (유사 작업 2건)\""},
         "field": {"type": "string",
                   "enum": ["", "assignee", "epic", "priority", "duedate", "component"],
                   "description": "티켓 속성을 묻는 질문이면 그 필드명 — 화면이 전용 자동완성을 붙인다"},
@@ -93,6 +95,9 @@ SCHEMA = {
                 "duedate": {"type": "string", "description": "새 마감 YYYY-MM-DD. 안 바꾸면 생략"},
                 "priority": {"type": "string", "description": "새 우선순위. 안 바꾸면 생략"},
                 "summary": {"type": "string", "description": "새 제목. 안 바꾸면 생략"},
+                "description": {"type": "string",
+                                "description": "새 본문(HTML — 생성 때와 같은 구조). 본문을 "
+                                               "고치라는 요청일 때만. 안 바꾸면 생략"},
                 "labels": {"type": "array", "items": {"type": "string"},
                            "description": "라벨 전체 교체값. 안 바꾸면 생략"},
                 "comment": {"type": "string",
@@ -224,10 +229,12 @@ class Refiner(ToolAgent):
         # 대화가 끝나면 Historian 의 조사는 증발하지만, 티켓 description 에 남기면 동적 RAG 가
         # 다음 조사에서 그걸 다시 수확한다(지식이 복리로 쌓인다). 습관을 프롬프트에 맡기지 않고
         # 코드가 보장한다 — 모델이 적었으면 그대로 두고, 안 적었으면 붙인다.
+        import re as _re
         refs = []
         for e in (state.get("evidence") or [])[:5]:
             k, why = (e.get("key") or "").strip(), (e.get("why") or e.get("title") or "").strip()
-            if k:
+            # 티켓 키 모양만 — PMO 근거에는 "ETL" 같은 모듈명이 섞이는데 그건 References 가 아니다.
+            if k and _re.match(r"^[A-Z][A-Z0-9]*-[0-9]+$", k):
                 refs.append(f"<li>{k} — {why}</li>" if why else f"<li>{k}</li>")
         for d in (state.get("related_docs") or [])[:3]:
             t, u = (d.get("title") or "").strip(), (d.get("url") or "").strip()
@@ -252,12 +259,14 @@ class Refiner(ToolAgent):
         change = out.get("change") if isinstance(out.get("change"), dict) else {}
         plan = {}
         if change.get("key"):
-            fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary", "labels")
+            fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary",
+                                             "labels", "description")
                       if k in change and change[k] is not None}
-            if fields:
+            cmt = (change.get("comment") or "").strip()
+            # 댓글만 남기는 것도 유효한 계획이다 — "이 내용 DL-x 에 댓글로 남겨줘"가 실사용에 있다.
+            if fields or cmt:
                 plan = {"key": str(change["key"]).strip(), "changes": fields,
-                        "comment": (change.get("comment") or "").strip(),
-                        "why": out.get("rationale") or ""}
+                        "comment": cmt, "why": out.get("rationale") or ""}
 
         return {"questions": qs, "draft": draft, "change_plan": plan, "turns": turns,
                 "trace": note(state, self.name,

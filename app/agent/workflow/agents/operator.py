@@ -70,6 +70,22 @@ class Operator(ToolAgent):
                 return react(state)
 
             from app.agent import tools as T
+            cmt0 = (plan.get("comment") or "").strip()
+            if not plan.get("changes") and cmt0:
+                # 댓글만 — 승인 토큰이 곧 add_ticket_comment 토큰이다.
+                cr = T.BY_NAME["add_ticket_comment"].invoke(
+                    {"key": plan["key"], "body": cmt0,
+                     "approval_token": state.get("approval_token") or ""})
+                if not cr.get("ok"):
+                    return {"result": {"created": [], "updated": [],
+                                       "failed": [{"summary": plan["key"],
+                                                   "error": cr.get("error") or ""}]},
+                            "trace": note(state, self.name, "코멘트 실패")}
+                return {"result": {"created": [], "failed": [],
+                                   "updated": [{"key": plan["key"], "fields": ["comment"]}],
+                                   "note": ""},
+                        "trace": note(state, self.name, "코멘트 1건")}
+
             args = {"key": plan["key"], "approval_token": state.get("approval_token") or ""}
             args.update(plan.get("changes") or {})
             r = T.BY_NAME["update_ticket"].invoke(args)

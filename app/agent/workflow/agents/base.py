@@ -221,11 +221,20 @@ def _named(schema, name: str):
 
 
 def _as_dict(out) -> dict:
-    if isinstance(out, dict):
-        return out
     if hasattr(out, "model_dump"):
-        return out.model_dump()
-    return dict(out or {})
+        out = out.model_dump()
+    out = dict(out or {}) if not isinstance(out, dict) else out
+
+    # ★ 스키마 에코 언랩 — 모델이 값 대신 **스키마 래퍼를 흉내** 내서
+    #   {"type":"object","properties":{intent:"plan_work",...}} 로 답하는 경우가 있다
+    #   (실측: 영어 프롬프트 전환 직후 전 역할에서 발생 — intent·questions 가 전부 유실돼
+    #   분류가 죽고 되묻기 폼이 안 떴다). 값은 properties 안에 다 있으므로 벗겨서 쓴다.
+    #   판정: 최상위가 스키마 골격 키들뿐이고 properties 가 dict 일 때만 — 실제 필드에
+    #   "properties" 라는 이름을 쓰는 역할은 없다.
+    if (isinstance(out.get("properties"), dict)
+            and set(out) <= {"type", "properties", "required", "title", "description"}):
+        out = out["properties"]
+    return out
 
 
 __all__ = ["Agent", "StructuredAgent", "TextAgent", "ToolAgent", "AIMessage",

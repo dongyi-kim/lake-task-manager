@@ -145,15 +145,19 @@ def _propose(state: AgentState) -> dict:
     # modify 갈래 — 변경 승인. 토큰은 update_ticket 도구가 만들 payload 와 **같은 모양**이어야
     # 지문이 맞는다(도구는 kwargs 를 compact 해서 {"key","changes"} 로 만든다).
     plan = state.get("change_plan") or {}
-    if plan.get("key") and plan.get("changes"):
-        payload = {"key": plan["key"], "changes": plan["changes"]}
-        out = {"approval_token": approval.stage(tid, "update_ticket", payload)}
+    if plan.get("key") and (plan.get("changes") or (plan.get("comment") or "").strip()):
         cmt = (plan.get("comment") or "").strip()
-        if cmt:
-            # 코멘트도 카드에 보이므로 같은 승인에 묶인다 — 토큰은 내용별로 따로(1회용 지문).
-            out["comment_token"] = approval.stage(tid, "add_ticket_comment",
-                                                  {"key": plan["key"], "body": cmt})
-        return out
+        if plan.get("changes"):
+            payload = {"key": plan["key"], "changes": plan["changes"]}
+            out = {"approval_token": approval.stage(tid, "update_ticket", payload)}
+            if cmt:
+                # 코멘트도 카드에 보이므로 같은 승인에 묶인다 — 토큰은 내용별로 따로(1회용 지문).
+                out["comment_token"] = approval.stage(tid, "add_ticket_comment",
+                                                      {"key": plan["key"], "body": cmt})
+            return out
+        # 댓글만 — 그 토큰이 곧 승인 토큰이다(변경 필드가 없으니 update 토큰은 없다).
+        return {"approval_token": approval.stage(tid, "add_ticket_comment",
+                                                 {"key": plan["key"], "body": cmt})}
 
     draft = state.get("draft") or {}
     items = as_bulk_items(draft)

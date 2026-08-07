@@ -129,7 +129,7 @@ def create_tickets(mode: str, items: list, approval_token: str) -> dict:
 @tool
 def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: str = None,
                   priority: str = None, summary: str = None, labels: list = None,
-                  components: list = None) -> dict:
+                  components: list = None, description: str = None) -> dict:
     """기존 티켓의 **속성을 바꾼다**(담당자·마감일·우선순위·제목·라벨·컴포넌트). 승인 토큰 필요.
 
     준 것만 바뀐다. 비우려면 빈 문자열/빈 배열을 명시적으로 준다.
@@ -138,10 +138,11 @@ def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: 
     그 티켓 화면에서 **편집할 수 없는 필드는 거부**된다(권한·워크플로우). 실패하면 사유가 돌아온다.
     """
     changes = compact({"assignee": assignee, "duedate": duedate, "priority": priority,
-                       "summary": summary, "labels": labels, "components": components})
+                       "summary": summary, "labels": labels, "components": components,
+                       "description": description})
     # None 이 아닌데 빈 값인 것(=지우기)은 compact 가 떨궈 버리므로 되살린다.
     for k, v in (("assignee", assignee), ("duedate", duedate), ("summary", summary),
-                 ("labels", labels), ("components", components)):
+                 ("labels", labels), ("components", components), ("description", description)):
         if v is not None and k not in changes:
             changes[k] = v
     if not changes:
@@ -177,6 +178,9 @@ def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: 
         put("labels", list(labels))
     if components is not None:
         put("components", [{"name": x} for x in components])
+    if description is not None:
+        # description 은 HTML 로 받는다 — 환경별 저장 형식 변환(desc_field_value)은 본체가 한다.
+        put("description", c.desc_field_value(description))
 
     if not fields:
         return {"ok": False, "error": f"이 티켓에서 편집할 수 없는 필드입니다: {', '.join(denied)}"}

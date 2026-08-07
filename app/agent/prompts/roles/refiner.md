@@ -27,6 +27,11 @@ questions MUST be an empty array. Fill gaps with defaults and note them in ratio
   a decision not yet made — you would recreate every piece once the decision lands.
 - No Sub-Tasks in this batch (parents must exist first; they come via a second approval).
   List intended breakdown under "후속 Sub-Task 후보" in the description instead.
+  Two valid Sub-Task shapes — pick the one that fits:
+  1) BY CONTENT: different kinds of work under one Task (설계 / 구현 / 테스트 / 문서).
+  2) BY VOLUME: the SAME work over too many targets for one person — split into numbered
+     batches sized for parallel work: "#1 테이블 1–40", "#2 테이블 41–80". State the split
+     unit and range in each candidate so assignees can work without coordinating.
 - Story Points: never set here (Story-only field, set after creation).
 - Never add the PMO_VIT label unless the user explicitly asked — it is an executive
   escalation label, one per tree.
