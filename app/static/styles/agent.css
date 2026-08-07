@@ -185,6 +185,15 @@
 /* 사람 자동완성 행 — 아바타+이름(사번) */
 .aq-drop button { display:flex; align-items:center; gap:7px; }
 
+/* 우측 채널 — 티켓을 대화 옆에서(모달 아님). 내용은 TicketDialog(mode=page) 재활용 */
+.agent-side { position:fixed; top:0; right:0; bottom:0; width:min(780px, 56vw);
+  display:flex; flex-direction:column; background:var(--bg); border-left:1px solid var(--border-hi);
+  box-shadow:-14px 0 34px rgba(0,0,0,.18); z-index:60; }
+.agent-side-h { display:flex; align-items:center; justify-content:space-between;
+  padding:8px 14px; border-bottom:1px solid var(--border); background:var(--panel); }
+.agent-side-body { flex:1; overflow:auto; min-height:0; }
+.agent-side-body .tkd-page { min-height:100%; }
+
 /* 리치 입력 — 코멘트 에디터 재사용 + 멘션/티켓/문서 버튼 줄 */
 .agent-input-rich { display:flex; flex-direction:column; gap:6px; align-items:stretch; }
 .agent-input-tools { display:flex; align-items:center; gap:6px; }

@@ -15,6 +15,7 @@
 import AgentSettingsDialog from "../ui/AgentSettingsDialog.js";
 import Avatar from "../ui/Avatar.js";
 import CommentEditor from "../ui/CommentEditor.js";
+import TicketDialog from "../ui/TicketDialog.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { renderMarkdown } from "../../lib/agentMd.js";
 import { api } from "../../lib/api.js";
@@ -34,7 +35,7 @@ const EXAMPLES = [
 
 export default {
   name: "AgentView",
-  components: { AgentSettingsDialog, Avatar, CommentEditor },
+  components: { AgentSettingsDialog, Avatar, CommentEditor, TicketDialog },
   data() {
     return {
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
@@ -56,6 +57,7 @@ export default {
       acRows: [], acOpen: -1, // 자동완성 결과·열린 질문 index
       priorities: [],
       evOpen: {},             // 근거 목록 펼침(턴 ti → bool). 기본 접힘 — 검증할 때만 편다
+      sideKey: "",            // 우측 채널에 띄운 티켓 키 — 대화를 가리지 않고 옆에서 본다
       pickedAssignee: {},     // 승인 카드에서 고른 담당자(항목 i → uid)
       cardCustom: {},         // 카드에서 '직접 입력'을 고른 상태(i → bool)
       cardAcRows: [], cardAcOpen: -1,   // 카드 담당자 자동완성
@@ -79,10 +81,20 @@ export default {
         if (this.ready) return agentApi.status().then((s) => { this.status = s; });
       })
       .catch((e) => { this.ready = false; this.reason = (e && e.message) || "확인 실패"; });
-    // 답변 안의 티켓 키(`.tkt[data-key]`)는 앱 전역 위임 처리기가 잡는다 — 여기서 또 걸지 않는다.
+    // 답변 안의 티켓 키(`.tkt[data-key]`)는 이 화면에서는 **우리가** 잡는다 — 전역 처리기는
+    // 모달을 띄우는데, 에이전트 화면에서는 대화 옆 우측 채널로 열어야 한다(사용자 요청).
+    // stopPropagation 으로 전역 위임(문서 레벨)까지 안 올라가게 막는다.
+    this._tktClick = (e) => {
+      const a = e.target.closest && e.target.closest(".tkt[data-key]");
+      if (!a) return;
+      e.preventDefault(); e.stopPropagation();
+      this.openTicket(a.getAttribute("data-key"));
+    };
+    this.$el.addEventListener("click", this._tktClick);
   },
   unmounted() {
     if (this.abort) this.abort();      // 화면을 떠났는데 서버가 계속 일할 이유가 없다
+    if (this._tktClick) this.$el.removeEventListener("click", this._tktClick);
   },
   methods: {
     md(t, people) { return renderMarkdown(t, people); },
@@ -235,8 +247,10 @@ export default {
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
+    /** 티켓은 모달이 아니라 **우측 채널**로 — 대화(생성 컨텍스트)를 가리면 안 된다(사용자
+     *  요청). 패널 내용은 TicketDialog 그대로(mode=page 임베드) — UI 재활용. */
     openTicket(key) {
-      if (key) window.dispatchEvent(new CustomEvent("lake-open-ticket", { detail: { key } }));
+      if (key) this.sideKey = key;
     },
     scroll() { const el = this.$refs.scroller; if (el) el.scrollTop = el.scrollHeight; },
     itemOf(p, i) { return (p.items || [])[i] || {}; },
@@ -742,6 +756,18 @@ export default {
       </div>
       <AgentSettingsDialog v-if="settingsOpen"
         @close="settingsOpen = false; agentApi.status().then((s) => { status = s; }).catch(() => {})" />
+
+      <!-- 우측 채널 — 티켓을 대화 옆에서 본다. 내용은 TicketDialog 그대로(mode=page 임베드).
+           모달과 달리 승인 카드·대화 맥락을 가리지 않는다(생성 컨텍스트의 미리보기 요구). -->
+      <div v-if="sideKey" class="agent-side">
+        <div class="agent-side-h">
+          <b>{{ sideKey }}</b>
+          <button class="agent-reset" @click="sideKey = ''" title="닫기">✕</button>
+        </div>
+        <div class="agent-side-body">
+          <TicketDialog :key="sideKey" :keyId="sideKey" mode="page" @close="sideKey = ''" />
+        </div>
+      </div>
     </template>
   </div>`,
 };
