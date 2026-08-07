@@ -15,7 +15,10 @@
 /* ── 화면 뼈대 ─────────────────────────────────────────────────
  * 대화는 **입력창이 항상 아래 고정**이어야 한다. 페이지 전체가 스크롤되면 답이 길어질 때마다
  * 입력창을 찾아 내려가야 한다 — 스크롤은 대화 목록만 진다. */
-.agentview { display:flex; flex-direction:column; height:calc(100vh - 118px); min-height:420px;
+/* 이분할 컨테이너 — 우측 채널이 열리면 대화(agent-main)와 티켓 패널이 나란히 선다 */
+.agentview { display:flex; flex-direction:row; gap:0; height:calc(100vh - 118px);
+  min-height:420px; width:100%; }
+.agent-main { flex:1; min-width:0; display:flex; flex-direction:column;
   /* 대화는 읽는 폭이 생명이다 — 와이드 모니터에서 한 줄이 화면 끝까지 가면 눈이 길을 잃는다.
      본문 열을 880px 로 묶고 가운데 둔다(head/입력창까지 같은 폭). */
   max-width:880px; margin:0 auto; width:100%; }
@@ -185,10 +188,11 @@
 /* 사람 자동완성 행 — 아바타+이름(사번) */
 .aq-drop button { display:flex; align-items:center; gap:7px; }
 
-/* 우측 채널 — 티켓을 대화 옆에서(모달 아님). 내용은 TicketDialog(mode=page) 재활용 */
-.agent-side { position:fixed; top:0; right:0; bottom:0; width:min(780px, 56vw);
-  display:flex; flex-direction:column; background:var(--bg); border-left:1px solid var(--border-hi);
-  box-shadow:-14px 0 34px rgba(0,0,0,.18); z-index:60; }
+/* 우측 채널 — **화면 이분할**(오버레이 아님). 내용은 TicketDialog(mode=page) 재활용.
+   flex 형제라 패널이 열리면 대화(agent-main)가 자연히 좁아진다. */
+.agent-side { flex:0 0 min(760px, 48vw); min-width:380px; height:100%;
+  display:flex; flex-direction:column; background:var(--bg);
+  border-left:1px solid var(--border-hi); }
 .agent-side-h { display:flex; align-items:center; justify-content:space-between;
   padding:8px 14px; border-bottom:1px solid var(--border); background:var(--panel); }
 .agent-side-body { flex:1; overflow:auto; min-height:0; }

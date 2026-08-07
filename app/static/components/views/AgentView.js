@@ -438,6 +438,8 @@ export default {
     </div>
 
     <template v-else>
+      <!-- 이분할: 패널이 열리면 대화가 좁아지며 **나란히** 선다(오버레이 아님 — 사용자 지적) -->
+      <div class="agent-main">
       <div class="agent-head">
         <div class="agent-title">
           <h1>업무 착수 어시스턴트</h1>
@@ -753,6 +755,7 @@ export default {
       <div class="agent-foot">
         Ctrl+Enter 전송 — <b>승인하기 전에는 아무것도 만들거나 바꾸지 않습니다.</b>
         <a href="#/guide">서비스 안내</a>
+      </div>
       </div>
       <AgentSettingsDialog v-if="settingsOpen"
         @close="settingsOpen = false; agentApi.status().then((s) => { status = s; }).catch(() => {})" />
