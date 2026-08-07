@@ -244,3 +244,24 @@ def test_pmo_vit_label_is_stripped_unless_user_asked(monkeypatch):
     st2 = {"messages": [HumanMessage(content="이거 PMO_VIT 현안으로 올려줘")], "trace": []}
     got2 = r.apply(st2, dict(out, items=[dict(out["items"][0], labels=["PMO_VIT"])]))
     assert "PMO_VIT" in got2["draft"]["items"][0]["labels"]
+
+
+def test_references_are_stamped_into_every_draft_description():
+    """조사 결과(References)를 티켓에 박제한다 — 대화는 증발하지만 티켓은 RAG 가 다시 수확한다.
+    습관을 프롬프트에 맡기지 않고 코드가 보장한다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.refiner import Refiner
+    st = {"messages": [HumanMessage(content="CDC 도입")], "trace": [],
+          "evidence": [{"key": "DL-118", "why": "소스 DB 부하로 중단됐던 선행 검토"}],
+          "related_docs": [{"title": "CDC 설계 문서", "url": "https://conf/x"}]}
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "s", "type": "Task", "description": "<h3>배경</h3><p>x</p>"}]}
+    got = Refiner().apply(st, out)
+    d = got["draft"]["items"][0]["description"]
+    assert "References" in d and "DL-118" in d and "https://conf/x" in d
+    # 이미 References 를 적었으면 중복으로 붙이지 않는다
+    out2 = {"questions": [], "mode": "task", "rationale": "",
+            "items": [{"summary": "s", "type": "Task",
+                       "description": "<h3>References</h3><ul><li>DL-1</li></ul>"}]}
+    d2 = Refiner().apply(st, out2)["draft"]["items"][0]["description"]
+    assert d2.count("References") == 1

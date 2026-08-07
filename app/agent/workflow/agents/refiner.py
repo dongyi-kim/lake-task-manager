@@ -40,7 +40,10 @@ ITEM = {
                 "<li data-checked=\"false\">조건 2</li></ul>\n"
                 "여러 후보·항목 비교가 필요하면 <table><tr><th>…</th></tr><tr><td>…</td></tr></table>.\n"
                 "관련 문서가 있으면 <a href=\"URL\">제목</a>. "
-                "일이 커서 나중에 쪼갤 거면 <h3>후속 Sub-Task 후보</h3><ul><li>…</li></ul> 를 적는다"),
+                "일이 커서 나중에 쪼갤 거면 <h3>후속 Sub-Task 후보</h3><ul><li>…</li></ul> 를 적는다. "
+                "조사에서 **알아낸 사실**(왜 멈췄었는지·이미 결정된 것·기술 비교 결론)이 있으면 "
+                "<h3>Knowledge</h3><ul><li>…</li></ul> 로 남겨라 — 나중에 이 티켓을 여는 사람과 "
+                "검색(RAG)이 그걸 다시 쓴다. References(관련 티켓·문서)는 자동으로 붙는다"),
         },
         "components": {"type": "array", "items": {"type": "string"}},
         "labels": {"type": "array", "items": {"type": "string"}},
@@ -240,6 +243,25 @@ class Refiner(ToolAgent):
             qs = []
         draft = {"mode": out.get("mode") or "task", "items": items,
                  "rationale": out.get("rationale") or ""}
+
+        # ── References 자동 첨부 — 조사 결과를 티켓에 박제한다.
+        # 대화가 끝나면 Historian 의 조사는 증발하지만, 티켓 description 에 남기면 동적 RAG 가
+        # 다음 조사에서 그걸 다시 수확한다(지식이 복리로 쌓인다). 습관을 프롬프트에 맡기지 않고
+        # 코드가 보장한다 — 모델이 적었으면 그대로 두고, 안 적었으면 붙인다.
+        refs = []
+        for e in (state.get("evidence") or [])[:5]:
+            k, why = (e.get("key") or "").strip(), (e.get("why") or e.get("title") or "").strip()
+            if k:
+                refs.append(f"<li>{k} — {why}</li>" if why else f"<li>{k}</li>")
+        for d in (state.get("related_docs") or [])[:3]:
+            t, u = (d.get("title") or "").strip(), (d.get("url") or "").strip()
+            if t and u:
+                refs.append(f'<li><a href="{u}">{t}</a></li>')
+        if refs:
+            block = "<h3>References</h3><ul>" + "".join(refs) + "</ul>"
+            for it in items:
+                if "References" not in (it.get("description") or ""):
+                    it["description"] = ((it.get("description") or "") + block)
 
         # PMO_VIT 는 경영진 보고 현안 전용이고 트리 최상위 하나에만 붙는다 — 그런데 모델이
         # 기존 라벨 목록에서 보고는 신규 티켓 셋에 전부 붙였다(실측). 사용자가 입으로 말했을
