@@ -214,7 +214,8 @@ class Historian(ToolAgent):
                         block += f"\n참여자: {', '.join(m['participants'])}"
                     maps.append(block)
                 if maps:
-                    state = {**state, "seed_map": "\n\n".join(maps)}
+                    # 상한 — 지도가 프롬프트를 잡아먹으면 배보다 배꼽이다(P-1 다이어트).
+                    state = {**state, "seed_map": "\n\n".join(maps)[:2500]}
 
             # ── 사전 조사(주제형): 티켓 키 없이 주제·키워드로 물으면("CDC 근황",
             # "픽스처가 무슨 테스크야", "임베딩 캐시에 대해 아는 것") **코드가** 키워드 검색을
@@ -228,7 +229,7 @@ class Historian(ToolAgent):
                 except Exception:
                     pre = ""
                 if pre:
-                    state = {**state, "pre_survey": pre}
+                    state = {**state, "pre_survey": pre[:2500]}
 
             # ── 사전 조사: 웹·GitHub 를 **코드가** 조사해 자료로 준다.
             # 의무 순서를 명령서에 박아도 모델은 사내 티켓을 여는 데 걸음을 다 썼다(실측 3회).

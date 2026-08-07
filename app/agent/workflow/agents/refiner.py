@@ -324,7 +324,7 @@ def draft_text(draft: dict) -> str:
             if v:
                 bits.append(f"{label}={v if not isinstance(v, list) else ', '.join(map(str, v))}")
         if it.get("description"):
-            bits.append(f"\n    설명: {str(it['description'])[:300]}")
+            bits.append(f"\n    설명: {str(it['description'])[:150]}")
         rows.append("  ".join(bits))
     return f"mode={draft.get('mode')}\n" + "\n".join(rows)
 

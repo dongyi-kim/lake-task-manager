@@ -159,7 +159,7 @@ class Operator(ToolAgent):
         return T.WRITE_TOOLS + T.REVIEW_TOOLS
 
     def system(self, state):
-        return persona(state, SYSTEM_OPERATOR)
+        return persona(state, SYSTEM_OPERATOR, lite=True)  # 결정적 실행 위주 — 축약판이면 충분
 
     def task(self, state):
         draft = state.get("draft") or {}

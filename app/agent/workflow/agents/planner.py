@@ -75,7 +75,7 @@ class Planner(StructuredAgent):
     tier = "simple"            # Few-shot 8예시가 실려서 분류는 저렴한 모델로 충분하다
 
     def system(self, state):
-        return persona(state, SYSTEM_PLANNER)
+        return persona(state, SYSTEM_PLANNER, lite=True)   # 분류엔 축약판 — 호출당 1k+ 토큰 절감
 
     def task(self, state):
         # Few-shot — 경계가 애매한 갈래(ask↔progress↔activity, plan_work↔report_bug)를
