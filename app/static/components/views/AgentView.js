@@ -53,6 +53,8 @@ export default {
       approving: false,
       settingsOpen: false,
       answers: {},            // 되묻기 폼의 답(qi → 값)
+      previewOn: {},          // 초안 항목별 본문 미리보기 토글(i → bool)
+      epicTrees: {},          // 생성 카드의 계보 컨텍스트(epicKey → children[])
       acRows: [], acOpen: -1, // 자동완성 결과·열린 질문 index
       priorities: [],
     };
@@ -127,6 +129,7 @@ export default {
               pending: ev.pending || null, result: ev.result || null,
               usage: ev.usage || null,
             });
+            if (ev.pending && ev.pending.items) this.loadEpicTree(ev.pending);
                 if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
             this.busy = false;
             this.steps = [];
@@ -198,6 +201,59 @@ export default {
            .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
       return s.replace(/\n{3,}/g, "\n\n").trim();
     },
+    /** 본문 HTML 미리보기 — v-html 로 넣기 전에 **화이트리스트로 정화**한다.
+     *  초안 HTML 은 LLM 산출물이라 script/이벤트 핸들러가 섞일 가능성을 0 으로 못 박는다. */
+    descPreview(html) {
+      const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+      const ALLOW = new Set(["H3", "P", "UL", "OL", "LI", "TABLE", "THEAD", "TBODY",
+                             "TR", "TH", "TD", "A", "B", "STRONG", "EM", "CODE", "BR", "INPUT"]);
+      const walk = (node) => {
+        for (const el of [...node.children]) {
+          // 실행류 태그는 **내용째** 버린다 — 언랩하면 코드 텍스트가 본문처럼 남는다.
+          if (["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "FORM"].includes(el.tagName)) {
+            el.remove(); continue;
+          }
+          walk(el);
+          if (!ALLOW.has(el.tagName)) { el.replaceWith(...el.childNodes); continue; }
+          for (const a of [...el.attributes]) {
+            const keep = (el.tagName === "A" && a.name === "href" && /^https?:/.test(a.value))
+              || (el.tagName === "LI" && ["data-type", "data-checked"].includes(a.name))
+              || (el.tagName === "UL" && a.name === "data-type")
+              || (el.tagName === "INPUT" && a.name === "type" && a.value === "checkbox");
+            if (!keep) el.removeAttribute(a.name);
+          }
+          if (el.tagName === "A") { el.setAttribute("target", "_blank"); el.setAttribute("rel", "noopener"); }
+          // taskList 항목은 체크박스로 보이게
+          if (el.tagName === "LI" && el.hasAttribute("data-checked")) {
+            const cb = doc.createElement("input");
+            cb.type = "checkbox"; cb.disabled = true;
+            if (el.getAttribute("data-checked") === "true") cb.checked = true;
+            el.prepend(cb);
+          }
+        }
+      };
+      walk(doc.body);
+      return doc.body.innerHTML;
+    },
+    togglePreview(i) { this.previewOn[i] = !this.previewOn[i]; },
+
+    /** 생성 카드의 계보 컨텍스트 — 초안이 매달릴 Epic 의 기존 자식들을 불러와
+     *  "어디에 어떤 형제들 옆에 붙는지"를 트리로 보여 준다. */
+    async loadEpicTree(p) {
+      const epics = [...new Set((p.items || []).map((it) => it.epic).filter(Boolean))];
+      for (const ek of epics) {
+        if (this.epicTrees[ek]) continue;
+        try {
+          const rows = await fetch("/api/ticket/" + encodeURIComponent(ek) + "/children")
+            .then((r) => r.json());
+          this.epicTrees[ek] = (rows || []).slice(0, 12).map((c) => ({
+            key: c.key, summary: c.summary, done: c.statusCategory === "done",
+            type: c.type }));
+        } catch (e) { this.epicTrees[ek] = []; }
+      }
+    },
+    treeFor(p, it) { return it.epic ? this.epicTrees[it.epic] : null; },
+
     reasonsFor(turn, i) {
       const a = (turn.assignments || []).find((x) => x.index === i);
       return a ? a : null;
@@ -447,7 +503,24 @@ export default {
                     <span v-if="it.priority">{{ it.priority }}</span>
                     <span v-if="it.assignee" class="ai-who">담당 {{ it.assignee }}</span>
                   </div>
-                  <div v-if="it.description" class="ai-desc">{{ descText(it.description) }}</div>
+                  <div v-if="it.description" class="ai-desc-wrap">
+                    <button class="ai-pv-btn" @click="togglePreview(i)">
+                      {{ previewOn[i] ? '텍스트로 보기' : '본문 미리보기' }}</button>
+                    <div v-if="previewOn[i]" class="ai-desc ai-desc-html"
+                         v-html="descPreview(it.description)"></div>
+                    <div v-else class="ai-desc">{{ descText(it.description) }}</div>
+                  </div>
+                  <!-- 계보 — 이 초안이 어느 Epic 의 어떤 형제들 옆에 붙는지 -->
+                  <div v-if="treeFor(t.pending, it) && treeFor(t.pending, it).length" class="ai-tree">
+                    <div class="ai-tree-h">{{ it.epic }} 아래에 붙습니다</div>
+                    <div v-for="c in treeFor(t.pending, it)" :key="c.key" class="ai-tree-row"
+                         :class="{ done: c.done }">
+                      ├ <a href="#" class="tkt" :data-key="c.key">{{ c.key }}</a>
+                      <span>{{ c.summary }}</span><em v-if="c.done">완료</em>
+                    </div>
+                    <div class="ai-tree-row new">└ <b>+ {{ it.summary }}</b> <em>(이번에 생성)</em></div>
+                  </div>
+
                   <!-- 담당자는 근거와 함께 보인다. 이름만 있으면 리더가 검증할 수 없다 -->
                   <div v-if="reasonsFor(t, i)" class="ai-reasons">
                     <div v-for="(r, ri) in reasonsFor(t, i).reasons" :key="ri">· {{ r }}</div>

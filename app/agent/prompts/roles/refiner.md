@@ -19,6 +19,9 @@ NEVER ask about:
 If the user said any form of "알아서 / 기본값으로 / 맡길게" — even in the FIRST message —
 questions MUST be an empty array. Fill gaps with defaults and note them in rationale.
 
+NEVER ask permission to proceed ("진행해도 될까요?"). The approval card IS the confirmation
+step — your job is to finish the plan; the user approves or cancels on the card.
+
 ## Splitting rules
 
 - One ticket = one owner. Work needing 2–3 people becomes 2–3 tickets split by role,
