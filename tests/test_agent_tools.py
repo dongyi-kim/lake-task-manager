@@ -370,3 +370,56 @@ def test_historian_task_renders_without_error():
     with_web = {**base, "web_context": "- [웹] CDC 비교 글"}
     assert "외부 기술 조사" in h.task(with_web)              # 있으면 자료로 실린다
     assert "CDC 비교 글" in h.task(with_web)
+
+
+def test_shape_ships_people_name_map():
+    """사람은 사번만 보내지 않는다 — 화면이 아바타+본명으로 그리도록 id→이름 지도가 실린다."""
+    from app.agent.workflow.session import _people_names
+    out = {"assignments": [{"index": 0, "user": "skcc.x1042",
+                            "alternates": [{"user": "skcc.x1210", "why": "-"}]}],
+           "pending": {"items": [{"assignee": "skcc.x1042"}]}}
+    names = _people_names(out)
+    assert names.get("skcc.x1042"), "추천 담당자의 본명이 없다"
+    assert names.get("skcc.x1210"), "대안 후보의 본명이 없다"
+
+
+def test_friendly_error_translates_provider_failures():
+    """429·크레딧 오류는 영어 JSON 덤프가 아니라 사용자가 행동할 수 있는 한국어 안내로."""
+    from app.agent.workflow.session import _friendly_error
+    assert "분당 토큰" in _friendly_error("[assigner] Error code: 429 - Rate limit reached ... tokens per min")
+    assert "크레딧" in _friendly_error("insufficient_quota: exceeded your current quota")
+    assert "컨텍스트" in _friendly_error("maximum context length 128000 exceeded")
+    assert _friendly_error("KeyError: boom") == ""       # 모르는 오류는 숨기지 않는다
+
+
+def test_search_survives_a_noise_token():
+    """전 토큰 AND 매칭에서 일반어 하나('테스크')가 끼어도 실존 티켓을 찾아야 한다.
+
+    실측: 'UI 회귀 검증 픽스처 테스크' → 0건 → "이력 없음" 오답. 코드가 일반어를 떼고
+    재검색하고, 그래도 비면 토큰별 매칭 수로 랭킹한다.
+    """
+    r = _run(T.BY_NAME["search_work_history"], query="UI 회귀 검증 픽스처 테스크", limit=5)
+    assert any(x["key"] == "DL-9000" for x in r["jira"]), r["jira"]
+    # 사다리를 안 타는 정상 질의는 그대로
+    r2 = _run(T.BY_NAME["search_work_history"], query="UI 회귀 검증 픽스처", limit=5)
+    assert any(x["key"] == "DL-9000" for x in r2["jira"])
+
+
+def test_historian_presurvey_for_topic_questions(monkeypatch):
+    """주제형 질문(키 없음)은 코드가 키워드+의미 검색을 먼저 돌려 자료로 준다.
+
+    모델의 검색 실력에 기대지 않는다 — 근황 질문이면 최근 갱신순 목록이 이미 실려 있어야 한다.
+    """
+    import os
+    os.environ["LAKE_AGENT_PROVIDER"] = "fake"
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.historian import Historian, _presurvey
+    pre = _presurvey({"keywords": ["UI", "회귀", "픽스처"],
+                      "messages": [HumanMessage(content="UI 회귀 픽스처 히스토리 알려줘")]})
+    assert "DL-9000" in pre, "실존 티켓이 사전 조사에 없다"
+    assert "키워드 검색" in pre and "갱신" in pre
+    # task() 에 실리는지 — ReAct 없이 task 직접 확인
+    h = Historian()
+    txt = h.task({"keywords": ["UI"], "pre_survey": pre,
+                  "messages": [HumanMessage(content="근황?")]})
+    assert "사전 조사" in txt and "DL-9000" in txt

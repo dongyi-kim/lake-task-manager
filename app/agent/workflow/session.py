@@ -207,7 +207,65 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
             out["pending"] = {"token": data["approval_token"], "action": "create_tickets",
                               "mode": draft.get("mode") or "task", "items": as_bulk_items(draft),
                               "rationale": draft.get("rationale") or ""}
+
+    # 사람은 사번만 달랑 보내지 않는다 — 화면이 아바타+본명으로 그릴 수 있게 id→이름 지도를
+    # 함께 싣는다(사용자 지적: "jira username만 딸랑 나오네"). 다른 화면들과 같은 포맷.
+    out["people"] = _people_names(out)
+
+    # 한도·크레딧 오류는 원문(영어 JSON 덤프)이 아니라 **사람 말**로 — 사용자가 할 수 있는
+    # 행동(잠시 후 재시도 / 크레딧 충전 / 간단 모델 설정)을 알려 준다(사용자 지적).
+    if out["error"]:
+        friendly = _friendly_error(out["error"])
+        if friendly:
+            out["error"] = friendly
+            if not out["reply"]:
+                out["reply"] = friendly
     return out
+
+
+def _friendly_error(err: str) -> str:
+    """LLM 공급자 오류 → 사용자 안내 문구. 모르는 오류는 그대로(숨기는 게 더 나쁘다)."""
+    e = err or ""
+    if "insufficient_quota" in e or "exceeded your current quota" in e:
+        return ("⚠️ OpenAI 크레딧이 부족합니다. 결제 페이지에서 충전한 뒤 다시 시도해 주세요. "
+                "(설정에서 다른 provider 로 바꿀 수도 있습니다)")
+    if "429" in e or "Rate limit" in e or "rate_limit" in e or "tokens per min" in e:
+        return ("⏳ 모델 사용량 한도(분당 토큰)에 걸렸습니다. 몇 초~1분 뒤 다시 시도해 주세요. "
+                "자주 걸리면 설정에서 '간단한 역할 모델'에 가벼운 모델(gpt-4o-mini 등)을 "
+                "지정하면 한도 여유가 커집니다.")
+    if "context_length" in e or "maximum context length" in e:
+        return ("⚠️ 요청이 모델의 컨텍스트 한도를 넘었습니다. 질문을 나누거나 붙여 넣은 "
+                "자료를 줄여 주세요.")
+    return ""
+
+
+def _people_names(out: dict) -> dict:
+    """응답에 등장하는 사번 전부의 본명 지도. 실패는 빈 지도 — 이름은 장식이지 조건이 아니다."""
+    uids = set()
+    for a in out.get("assignments") or []:
+        uids.add(a.get("user") or "")
+        for alt in a.get("alternates") or []:
+            uids.add((alt or {}).get("user") or "")
+    for it in (out.get("pending") or {}).get("items") or []:
+        uids.add(it.get("assignee") or "")
+    ch = (out.get("pending") or {}).get("changes") or {}
+    uids.add(ch.get("assignee") or "")
+    uids.discard("")
+    if not uids:
+        return {}
+    names = {}
+    try:
+        from app.agent.tools._ctx import client, settings
+        from app.domain.search import search_users
+        c, s = client(), settings()
+        for uid in list(uids)[:12]:
+            for r in search_users(c, s, uid, 3) or []:
+                if str(r.get("id") or "") == uid:
+                    names[uid] = r.get("name") or ""
+                    break
+    except Exception:
+        pass
+    return names
 
 
 def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = ""):

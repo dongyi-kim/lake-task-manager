@@ -136,6 +136,10 @@ def get_llm(temperature: float = 0.2, tier: str = "complex", **kwargs):
     if not ok:
         raise RuntimeError(why)
 
+    # 429(TPM 한도)는 몇 초 뒤 그냥 풀린다 — SDK 가 Retry-After 를 존중하며 재시도한다.
+    # 기본 2회로는 상위 모델(TPM 30k 조직에서 한 턴 ~70k 토큰)에서 실측으로 죽었다.
+    kwargs.setdefault("max_retries", 6)
+
     if p == "aoai":
         from langchain_openai import AzureChatOpenAI
         return AzureChatOpenAI(

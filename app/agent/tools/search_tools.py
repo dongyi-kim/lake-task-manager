@@ -50,7 +50,38 @@ def search_work_history(query: str, limit: int = 8) -> dict:
     """
     from app.domain.search import search_all
     c, s = client(), settings()
-    r = search_all(c, s, query, scope="all", limit=max(1, min(int(limit or 8), 20)))
+    lim = max(1, min(int(limit or 8), 20))
+
+    def _hit(q):
+        return search_all(c, s, q, scope="all", limit=lim)
+
+    r = _hit(query)
+    # ── 완화 사다리: 검색은 전 토큰 AND 매칭이라 노이즈 단어 하나가 결과를 0으로 만든다.
+    # 실측: "UI 회귀 검증 픽스처 테스크" — '테스크'가 제목에 없어서 실존 티켓(DL-9000)을
+    # 못 찾고 "이력 없음"으로 답했다. 모델에게 검색어를 다시 쓰라고 시키는 대신 코드가
+    # ① 일반어(테스크·티켓·업무…)를 떼고 재검색 ② 그래도 비면 토큰별로 찾아 매칭 수로
+    # 랭킹한다. 원 질의가 잡히면 사다리는 안 탄다.
+    _STOP = {"테스크", "태스크", "티켓", "업무", "작업", "관련", "정리", "확인", "현황",
+             "무슨", "무엇", "어떤", "하는", "해줘", "주세요", "요청", "진행"}
+    if not ((r.get("jira") or {}).get("items")):
+        toks = [t.strip("[]()\"'") for t in query.split()]
+        toks = [t for t in toks if len(t) >= 2 and t not in _STOP]
+        if toks and " ".join(toks) != query:
+            r = _hit(" ".join(toks))
+        if not ((r.get("jira") or {}).get("items")) and len(toks) > 1:
+            score, seen = {}, {}
+            for t in toks:
+                for it in (_hit(t).get("jira") or {}).get("items") or []:
+                    k = it.get("key")
+                    if k:
+                        score[k] = score.get(k, 0) + 1
+                        seen[k] = it
+            best = sorted(score, key=lambda k: -score[k])[:lim]
+            # 절반 이상(올림) 토큰이 맞은 것만 — 3토큰 중 1개짜리 스침("검증"만 겹치는
+            # 무관 티켓)까지 실으면 노이즈가 근황 답변에 섞인다(실측).
+            need = max(1, (len(toks) + 1) // 2)
+            r = {"jira": {"items": [seen[k] for k in best if score[k] >= need]},
+                 "confluence": r.get("confluence") or {}}
     return {
         "query": query,
         "jira": [compact({k: it.get(k) for k in

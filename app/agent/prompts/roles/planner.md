@@ -26,6 +26,10 @@ pipeline down the wrong road, so spend your effort here.
 ## Keyword craft (they feed search directly)
 
 - Noun phrases only; drop filler ("해야 한다", "관련해서", "좀").
+- Drop generic work words — 테스크/티켓/업무/작업 appear in every request and poison
+  AND-matching search. "UI 회귀 검증 픽스처 테스크" must yield keywords WITHOUT 테스크.
+- If the user quotes what looks like a ticket TITLE (often "[모듈] …" shaped), keep that
+  phrase intact as one keyword — it is the strongest search signal there is.
 - Include BOTH abbreviation and spelled-out form (CDC / 변경데이터캡처, SSO / 통합인증).
 - Prefer domain terms over generic ones: "적재 배치 실패" beats "문제 해결".
 - 3–6 keywords. One keyword is too narrow to search; ten dilute ranking.

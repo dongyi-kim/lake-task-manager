@@ -171,12 +171,19 @@
 .ai-cand:hover { border-color:var(--border-hi); }
 .ai-cand.on { border-color:var(--accent); background:var(--accent-dim, rgba(64,120,255,.07)); }
 .ai-cand b { font-size:12.5px; }
+.ai-cand-who { display:flex; align-items:center; gap:7px; }
+.ai-cand-who small { color:var(--muted-2); font-size:10.5px; }
+.ai-who { display:inline-flex; align-items:center; gap:5px; }
+.tv-meta > span { display:inline-flex; align-items:center; gap:5px; }
 .ai-cand em.rec { font-style:normal; font-size:10px; color:var(--accent); margin-left:6px;
   border:1px solid var(--accent); border-radius:8px; padding:1px 6px; }
 .ai-cand-why { margin-top:3px; font-size:11.5px; color:var(--muted); line-height:1.55; }
 
 /* 직접 입력 탈출구가 붙은 객관식 */
 .aq-opts-wrap { display:flex; flex-direction:column; gap:6px; }
+
+/* 사람 자동완성 행 — 아바타+이름(사번) */
+.aq-drop button { display:flex; align-items:center; gap:7px; }
 
 /* 계보 트리 — 초안이 붙을 자리의 기존 형제들 */
 .ai-tree { margin-top:7px; padding:8px 11px; background:var(--panel);

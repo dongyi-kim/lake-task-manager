@@ -13,6 +13,7 @@
 //     "아직 만들어지지 않았음"을 제목에 달고, 만들 것을 전부 펼쳐 보인 뒤 [생성]을 받는다.
 //     여기서 [생성]을 눌러야만 서버가 쓰기를 시작한다(토큰은 이 카드의 내용에 묶여 있다).
 import AgentSettingsDialog from "../ui/AgentSettingsDialog.js";
+import Avatar from "../ui/Avatar.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { renderMarkdown } from "../../lib/agentMd.js";
 import { api } from "../../lib/api.js";
@@ -32,7 +33,7 @@ const EXAMPLES = [
 
 export default {
   name: "AgentView",
-  components: { AgentSettingsDialog },
+  components: { AgentSettingsDialog, Avatar },
   data() {
     return {
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
@@ -123,7 +124,7 @@ export default {
               docs: ev.related_docs || [], questions: ev.questions || [],
               assignments: ev.assignments || [], review: ev.review || {},
               pending: ev.pending || null, result: ev.result || null,
-              usage: ev.usage || null,
+              usage: ev.usage || null, people: ev.people || {},
             });
             if (ev.pending && ev.pending.items) this.loadEpicTree(ev.pending);
             this.pickedAssignee = {}; this.cardCustom = {}; this.previewOn = {};
@@ -262,6 +263,9 @@ export default {
       return a ? a : null;
     },
 
+    /** 사번 → 본명. 지도에 없으면 사번 그대로(이름은 장식이지 조건이 아니다). */
+    personName(turn, uid) { return ((turn && turn.people) || {})[uid] || ""; },
+
     // ── 승인 카드의 담당자 선택 — 추천을 그대로 받는 게 아니라 후보 중 고른다 ──
     pickFor(turn, i, it) {
       if (this.pickedAssignee[i] !== undefined) return this.pickedAssignee[i];
@@ -281,7 +285,8 @@ export default {
       this._cardT = setTimeout(async () => {
         try {
           const r = await fetch("/api/mention/users?q=" + encodeURIComponent(q)).then((x) => x.json());
-          this.cardAcRows = (r || []).map((u) => ({ v: u.id, label: u.name + " (" + u.id + ")" })).slice(0, 7);
+          this.cardAcRows = (r || []).map((u) => ({ v: u.id, name: u.name,
+                                                    label: u.name + " (" + u.id + ")" })).slice(0, 7);
           this.cardAcOpen = this.cardAcRows.length ? i : -1;
         } catch (e) { this.cardAcOpen = -1; }
       }, 250);
@@ -314,7 +319,7 @@ export default {
           let rows = [];
           if (field === "assignee") {
             const r = await fetch("/api/mention/users?q=" + encodeURIComponent(q)).then((x) => x.json());
-            rows = (r || []).map((u) => ({ v: u.id, label: u.name + " (" + u.id + ")" }));
+            rows = (r || []).map((u) => ({ v: u.id, name: u.name, label: u.name + " (" + u.id + ")" }));
           } else if (field === "epic") {
             const r = await fetch("/api/epic-candidates?q=" + encodeURIComponent(q)).then((x) => x.json());
             rows = ((r && r.items) || []).map((e) => ({ v: e.key, label: e.key + " " + (e.summary || "") }));
@@ -472,7 +477,7 @@ export default {
                              @input="acSearch(qi, q.field, $event)" @focus="acSearch(qi, q.field, $event)">
                       <div v-if="acOpen === qi" class="aq-drop">
                         <button v-for="r in acRows" :key="r.v" @mousedown.prevent="setAns(qi, r.v)">
-                          {{ r.label }}</button>
+                          <Avatar v-if="r.name" :user="r.v" :name="r.name" :size="16" /> {{ r.label }}</button>
                       </div>
                     </div>
                     <input v-else class="aq-in" :value="answers[qKey(qi)] || ''"
@@ -491,7 +496,7 @@ export default {
                          @input="acSearch(qi, q.field, $event)" @focus="acSearch(qi, q.field, $event)">
                   <div v-if="acOpen === qi" class="aq-drop">
                     <button v-for="r in acRows" :key="r.v" @mousedown.prevent="setAns(qi, r.v)">
-                      {{ r.label }}</button>
+                      <Avatar v-if="r.name" :user="r.v" :name="r.name" :size="16" /> {{ r.label }}</button>
                   </div>
                 </div>
 
@@ -553,7 +558,9 @@ export default {
                     <span v-if="it.labels">라벨 {{ it.labels.join(', ') }}</span>
                     <span v-if="it.duedate">마감 {{ it.duedate }}</span>
                     <span v-if="it.priority">{{ it.priority }}</span>
-                    <span v-if="it.assignee" class="ai-who">담당 {{ it.assignee }}</span>
+                    <span v-if="it.assignee" class="ai-who">담당
+                      <Avatar :user="it.assignee" :name="personName(t, it.assignee)" :size="15" />
+                      {{ personName(t, it.assignee) || it.assignee }}</span>
                   </div>
                   <!-- 티켓 미리보기(폴딩) — 접으면 구조 텍스트, 펼치면 실제 티켓 모양
                        (제목·타입·라벨·메타 + 본문 렌더). 승인 전에 "만들어질 실물"을 본다 -->
@@ -571,7 +578,9 @@ export default {
                         <span v-for="lb in (it.labels || [])" :key="lb" class="tv-label">{{ lb }}</span>
                         <span v-if="it.priority">{{ it.priority }}</span>
                         <span v-if="it.duedate">마감 {{ it.duedate }}</span>
-                        <span v-if="pickFor(t, i, it)">담당 {{ pickFor(t, i, it) }}</span>
+                        <span v-if="pickFor(t, i, it)">담당
+                          <Avatar :user="pickFor(t, i, it)" :name="personName(t, pickFor(t, i, it))" :size="14" />
+                          {{ personName(t, pickFor(t, i, it)) || pickFor(t, i, it) }}</span>
                       </div>
                       <div class="ai-desc-html" v-html="descPreview(it.description)"></div>
                     </div>
@@ -594,7 +603,12 @@ export default {
                     <div class="ai-assign-h">담당자 선택</div>
                     <label class="ai-cand" :class="{ on: !cardCustom[i] && pickFor(t, i, it) === reasonsFor(t, i).user }"
                            @click="setPick(i, reasonsFor(t, i).user)">
-                      <b>{{ reasonsFor(t, i).user }}</b><em class="rec">추천</em>
+                      <span class="ai-cand-who">
+                        <Avatar :user="reasonsFor(t, i).user" :name="personName(t, reasonsFor(t, i).user)" :size="22" />
+                        <b>{{ personName(t, reasonsFor(t, i).user) || reasonsFor(t, i).user }}</b>
+                        <small v-if="personName(t, reasonsFor(t, i).user)">{{ reasonsFor(t, i).user }}</small>
+                        <em class="rec">추천</em>
+                      </span>
                       <div class="ai-cand-why">
                         <div v-for="(r, ri) in reasonsFor(t, i).reasons" :key="ri">· {{ r }}</div>
                       </div>
@@ -602,7 +616,11 @@ export default {
                     <label v-for="(alt, ai) in (reasonsFor(t, i).alternates || [])" :key="'a'+ai"
                            class="ai-cand" :class="{ on: !cardCustom[i] && pickFor(t, i, it) === alt.user }"
                            @click="setPick(i, alt.user)">
-                      <b>{{ alt.user }}</b>
+                      <span class="ai-cand-who">
+                        <Avatar :user="alt.user" :name="personName(t, alt.user)" :size="22" />
+                        <b>{{ personName(t, alt.user) || alt.user }}</b>
+                        <small v-if="personName(t, alt.user)">{{ alt.user }}</small>
+                      </span>
                       <div class="ai-cand-why">{{ alt.why }}</div>
                     </label>
                     <label class="ai-cand" :class="{ on: cardCustom[i] }" @click="pickCustom(i)">
@@ -613,7 +631,7 @@ export default {
                         <div v-if="cardAcOpen === i" class="aq-drop">
                           <button v-for="r in cardAcRows" :key="r.v"
                                   @mousedown.prevent="pickedAssignee[i] = r.v; cardAcOpen = -1">
-                            {{ r.label }}</button>
+                            <Avatar v-if="r.name" :user="r.v" :name="r.name" :size="16" /> {{ r.label }}</button>
                         </div>
                       </div>
                     </label>
