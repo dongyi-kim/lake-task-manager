@@ -98,6 +98,37 @@ class Responder(TextAgent):
 
     def apply(self, state, out):
         text = out.get("text") or ""
+
+        # ── 접지 검사 — 답변의 티켓 키·제목·인명을 실물과 대조한다.
+        # 지도·자료를 정확히 줘도 답변 단계에서 날조가 나왔다(없는 키, 바뀐 제목, "PM: 김철수").
+        # 프롬프트로 세 번 막아 봤지만 재발 — 이 부류는 부탁할 일이 아니라 **검증할 일**이다.
+        # 위반이 나오면 실값을 쥐여 주고 한 번 다시 쓰게 하고, 그래도 남으면 경고를 붙인다.
+        # 조용히 고치지 않는 이유: 무엇이 걸렀는지 보여야 사용자가 시스템을 믿을 수 있다.
+        from app.agent.workflow import grounding
+        try:
+            g = grounding.check(text)
+            if not g["ok"]:
+                fixed = self.llm().invoke([
+                    ("system", self.system(state)),
+                    ("user", f"방금 쓴 답에 사실 오류가 있다. 아래만 고쳐 전체를 다시 써라. "
+                             f"다른 내용은 유지하라.\n{grounding.violation_note(g)}\n\n"
+                             f"### 방금 쓴 답\n{text}")])
+                text2 = str(getattr(fixed, "content", "") or "").strip() or text
+                g2 = grounding.check(text2)
+                if g2["ok"]:
+                    text = text2
+                else:                       # 재작성으로도 못 고침 — 덜 틀린 쪽에 경고를 단다
+                    better = text2 if _violations(g2) <= _violations(g) else text
+                    gb = g2 if better is text2 else g
+                    text = better + grounding.warning_block(gb)
+        except Exception:
+            pass                            # 검증기가 죽어도 답은 나가야 한다
+
         from langchain_core.messages import AIMessage
         return {"reply": text, "messages": [AIMessage(content=text)],
                 "trace": note(state, self.name, f"{len(text)}자")}
+
+
+def _violations(g: dict) -> int:
+    return len(g.get("fake_keys") or []) + len(g.get("wrong_titles") or {}) \
+        + len(g.get("fake_people") or [])
