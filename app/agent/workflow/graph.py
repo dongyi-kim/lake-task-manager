@@ -5,7 +5,8 @@ START ─> planner ─┬─ chitchat ──────────────
                   ├─ my_day/progress/activity ──> pmo(현황 조회) ────────> responder
                   └─> historian ─┬─ ask ────────────────────────────────> responder
                                  └─> refiner ─┬─ 질문 있음 ──────────────> responder
-                                        ▲     └─> assigner ─> reviewer
+                                        ▲     ├─> assigner ─┐ (병렬)
+                                        │     └─> reviewer ─┴> merge(join)
                                         │                        │
                                         └─ 재작성(≤2회) ──────────┤
                                                                  └─ 통과/한계 ─> propose
@@ -109,8 +110,11 @@ def route_after_historian(state: AgentState) -> str:
     return "respond"
 
 
-def route_after_refiner(state: AgentState) -> str:
-    """되물을 게 있으면 사용자에게 돌아간다. 초안이 섰으면 담당자를 본다.
+def route_after_refiner(state: AgentState):
+    """되물을 게 있으면 사용자에게 돌아간다. 초안이 섰으면 담당자 제안과 규칙 검증을
+    **동시에** 돌린다(fan-out) — 둘은 서로의 출력을 읽지 않는다(Assigner 는 초안에 사람을
+    제안하고, Reviewer 는 초안 자체를 검열한다). 직렬이던 것을 병렬로 바꿔 생성 플로우의
+    한 스텝을 통째로 접었다. 배정 사용자 실재 확인은 join(merge_assignments)의 코드가 한다.
 
     **변경 계획(modify)은 승인으로 직행**한다 — 담당자 추천(새 티켓용)도, validate_bulk
     (생성 검증)도 여기엔 해당이 없다. 안전장치는 승인 카드와 editmeta(편집 불가 필드 거부)다.
@@ -119,7 +123,7 @@ def route_after_refiner(state: AgentState) -> str:
         return "respond"
     if (state.get("change_plan") or {}).get("key"):
         return "propose"
-    return "assign" if (state.get("draft") or {}).get("items") else "respond"
+    return ["assign", "review"] if (state.get("draft") or {}).get("items") else "respond"
 
 
 def route_after_reviewer(state: AgentState) -> str:
@@ -154,12 +158,25 @@ def route_after_responder(state: AgentState) -> str:
 
 
 def _merge_assignments(state: AgentState) -> dict:
-    """담당자 제안을 초안에 실제로 꽂는다. 근거 없는 제안은 반영되지 않는다.
+    """담당자 제안을 초안에 실제로 꽂는다(fan-out 의 join). 근거 없는 제안은 반영되지 않는다.
 
     별도 노드로 둔 이유 — Assigner 는 '제안'을 만들고, 초안을 고치는 것은 다른 일이다.
     한 노드에서 둘 다 하면 "근거 없는 건 반영 안 한다"는 규칙이 프롬프트 안에 묻힌다.
+
+    Reviewer 가 배정 **전** 초안을 검증하므로(병렬), 배정된 사용자가 실재하는지는
+    여기 코드가 보장한다 — validate_bulk 와 같은 lookup 을 쓴다.
     """
-    return {"draft": merge_assignments(state.get("draft"), state.get("assignments"))}
+    draft = merge_assignments(state.get("draft"), state.get("assignments"))
+    try:
+        from app.agent.tools._ctx import client
+        exists = client().bulk_lookup().user_exists
+        for it in draft.get("items") or []:
+            u = (it.get("assignee") or "").strip()
+            if u and not exists(u):
+                it["assignee"] = ""       # 유령 사용자 배정은 생성 단계에서 어차피 거부된다
+    except Exception:
+        pass                              # lookup 실패가 초안 자체를 버리게 하면 안 된다
+    return {"draft": draft}
 
 
 def _propose(state: AgentState) -> dict:
@@ -230,12 +247,14 @@ def build(checkpointer=None):
                             {"refine": Node.REFINER, "respond": Node.RESPONDER,
                              "curate": Node.CURATOR})
     g.add_edge(Node.CURATOR, Node.RESPONDER)
+    # ★ fan-out — 초안이 서면 Assigner(담당 제안)와 Reviewer(규칙 검열)가 **동시에** 돈다.
+    #   둘 다 끝나야 merge_assignments(join)가 실행되고, 거기서 통과/재작성을 가른다.
     g.add_conditional_edges(Node.REFINER, route_after_refiner,
-                            {"assign": Node.ASSIGNER, "respond": Node.RESPONDER,
-                             "propose": "propose"})
+                            {"assign": Node.ASSIGNER, "review": Node.REVIEWER,
+                             "respond": Node.RESPONDER, "propose": "propose"})
     g.add_edge(Node.ASSIGNER, "merge_assignments")
-    g.add_edge("merge_assignments", Node.REVIEWER)
-    g.add_conditional_edges(Node.REVIEWER, route_after_reviewer,
+    g.add_edge(Node.REVIEWER, "merge_assignments")
+    g.add_conditional_edges("merge_assignments", route_after_reviewer,
                             {"revise": Node.REFINER, "propose": "propose",
                              "respond": Node.RESPONDER})
     g.add_edge("propose", Node.RESPONDER)

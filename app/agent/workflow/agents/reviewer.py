@@ -58,21 +58,19 @@ class Reviewer(StructuredAgent):
         rules = _rules_for(state)
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')}"
                        for e in (state.get("evidence") or []))
-        asg = "\n".join(f"- [{a.get('index')}] {a.get('user') or '(미정)'}: "
-                        f"{'; '.join(a.get('reasons') or []) or '근거 없음'}"
-                        for a in (state.get("assignments") or []))
+        # 담당자 제안은 여기 없다 — Assigner 와 병렬로 돌기 때문. 근거 없는 배정은
+        # merge_assignments 의 코드 가드가 걸러내므로 검열 대상에서 뺀다.
         data = wrap_data(
             data_block("자동 검증 결과 (기계 판정 — 이건 이미 확정이다)", auto["text"]),
             data_block("적용되는 작성 규칙", rules),
-            data_block("조사에서 실제로 나온 티켓", ev),
-            data_block("담당자 제안과 근거", asg))
+            data_block("조사에서 실제로 나온 티켓", ev))
         return f"""\
 # 명령서
 아래 티켓 초안을 사용자에게 보이기 전에 검열하라.
 
 ## 제약조건
 - 자동 검증이 이미 잡은 것은 다시 적지 마라. 너는 **기계가 못 잡는 것**을 본다.
-- 근거 없이 배정된 담당자가 있으면 문제로 잡는다.
+- 담당자 배정은 별도 절차가 검증한다 — 담당자가 비어 있어도 문제 삼지 마라.
 - 과잉 분해(아직 방식이 안 정해졌는데 실행 단위로 쪼갠 것)도 문제로 잡는다.
 
 ## 사용자의 원래 요청

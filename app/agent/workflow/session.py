@@ -23,7 +23,7 @@ from app.agent import approval
 from app.agent import config as _cfg
 from app.agent import usage as _usage
 from app.agent.workflow.graph import get_graph
-from app.agent.workflow.state import Node, Role, as_dict
+from app.agent.workflow.state import TRACE_RESET, Node, Role, as_dict
 
 log = logging.getLogger("agent.chat")
 
@@ -106,7 +106,8 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
             # responder 가 다시 '승인 대기'로 흘러간다.
             "approval_token": "", "comment_token": "", "result": {}, "revisions": 0,
-            "trace": [], "change_plan": {}, "questions": []}
+            # trace 는 리듀서 필드라 [] 대입으로는 안 비워진다 — 리셋 신호를 앞에 싣는다.
+            "trace": [TRACE_RESET], "change_plan": {}, "questions": []}
 
 
 def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") -> dict:

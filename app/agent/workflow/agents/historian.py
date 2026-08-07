@@ -271,8 +271,8 @@ class Historian(ToolAgent):
                 if line:
                     out["situation"] = ((out.get("situation") or "")
                                         + "\n\n[진척도] " + line).strip()
-                    out["trace"] = note({"trace": out.get("trace") or state.get("trace") or []},
-                                        self.name, "진척률 수치 보강")
+                    out["trace"] = (out.get("trace") or []) \
+                        + note(state, self.name, "진척률 수치 보강")
             except Exception:
                 pass                      # 진척률 보강 실패가 조사 결과를 버리게 하면 안 된다
             return out

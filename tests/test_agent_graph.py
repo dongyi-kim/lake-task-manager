@@ -52,8 +52,10 @@ def test_questions_go_back_to_the_user_instead_of_drafting():
                                   "draft": {"items": [{"summary": "x"}]}}) == "respond"
 
 
-def test_a_draft_moves_on_to_assignment():
-    assert G.route_after_refiner({"questions": [], "draft": {"items": [{"summary": "x"}]}}) == "assign"
+def test_a_draft_fans_out_to_assign_and_review_in_parallel():
+    # 초안이 서면 Assigner 와 Reviewer 가 동시에 돈다 — 직렬이던 스텝을 접은 최적화(P-2).
+    assert G.route_after_refiner({"questions": [], "draft": {"items": [{"summary": "x"}]}}) \
+        == ["assign", "review"]
 
 
 def test_an_empty_draft_does_not_pretend_to_have_one():
@@ -385,3 +387,37 @@ def test_fast_paths_skip_historian_when_safe():
                                   "mentioned_keys": ["DL-101"]}) == "refine"
     # modify 인데 키가 없으면 여전히 조사(어느 티켓인지 찾아야 한다)
     assert G.route_after_planner({"intent": Intent.MODIFY}) == "investigate"
+
+
+def test_trace_reducer_appends_deltas_and_resets_on_sentinel():
+    """병렬 fan-out(Assigner∥Reviewer)에서 두 노드가 같은 스텝에 trace 를 써도
+    리듀서가 이어 붙인다. 턴 시작 리셋은 sentinel 로만 가능하다(리듀서엔 대입이 없다)."""
+    from app.agent.workflow.state import TRACE_RESET, merge_trace, note
+    a = note({}, "assigner", "제안 2건")
+    b = note({}, "reviewer", "통과")
+    merged = merge_trace(merge_trace([{"node": "old"}], a), b)
+    assert [t["node"] for t in merged] == ["old", "assigner", "reviewer"]
+    assert merge_trace(merged, [TRACE_RESET]) == []
+    assert merge_trace(merged, [TRACE_RESET, a[0]]) == a
+
+
+def test_merge_join_drops_ghost_assignees():
+    """Reviewer 가 배정 '전' 초안을 검증하므로(병렬), 배정 사용자 실재는 join 코드가 보장한다."""
+    real = _any_real_user()
+    draft = {"mode": "task", "items": [{"summary": "a"}, {"summary": "b"}]}
+    assignments = [{"index": 0, "user": real, "reasons": ["유사 이력 DL-1"]},
+                   {"index": 1, "user": "ghost.x9999", "reasons": ["임의"]}]
+    out = G._merge_assignments({"draft": draft, "assignments": assignments})
+    items = out["draft"]["items"]
+    assert items[0].get("assignee") == real
+    assert not items[1].get("assignee"), "실재하지 않는 사용자 배정은 join 에서 걸러져야 한다"
+
+
+def _any_real_user():
+    from app.agent.tools._ctx import client
+    lk = client().bulk_lookup()
+    for u in ("skcc.x1042", "skcc.x1001", "etl.x1001"):
+        if lk.user_exists(u):
+            return u
+    import pytest
+    pytest.skip("mock 사용자 확인 불가")

@@ -80,6 +80,20 @@ class Stage:
 MAX_REFINE_TURNS = 4       # 되묻기 상한. 넘으면 아는 것만으로 초안을 만든다
 MAX_REVISIONS = 2          # Reviewer↔Refiner 왕복 상한. 안 걸면 무한 루프가 된다
 
+TRACE_RESET = {"reset": True}    # 턴 시작에 trace 를 비우는 신호 — 리듀서엔 "대입"이 없다
+
+
+def merge_trace(old: list | None, new: list | None) -> list:
+    """trace 리듀서 — 병렬 노드가 같은 스텝에 써도 이어 붙는다. 델타(추가분)만 받는다."""
+    if new and isinstance(new[0], dict) and new[0].get("reset"):
+        return list(new[1:])
+    return (old or []) + (new or [])
+
+
+def last_value(old, new):
+    """마지막 쓰기가 이긴다 — 단일 값 필드를 병렬 스텝에서도 쓸 수 있게 하는 리듀서."""
+    return new
+
 
 class AgentState(TypedDict, total=False):
     """대화 하나의 전부. `total=False` — 노드가 자기 몫만 채운다."""
@@ -132,14 +146,17 @@ class AgentState(TypedDict, total=False):
 
     # ── 공통 ──
     reply: str                      # 사용자에게 보일 최종 문장
-    trace: list                     # [{"node","label","note"}] — 어느 에이전트가 무엇을 했나
-    error: str
+    trace: Annotated[list, merge_trace]   # [{"node","label","note"}] — 누가 무엇을 했나
+    error: Annotated[str, last_value]     # 병렬 노드 둘이 같은 스텝에 실패해도 충돌하지 않게
 
 
 def note(state: AgentState, node: str, text: str) -> list:
-    """trace 한 줄 추가. UI 가 "지금 무엇을 하는 중"을 보여주는 근거이자 디버깅 로그다."""
-    return (state.get("trace") or []) + [
-        {"node": node, "label": Stage.LABELS.get(node, node), "note": text}]
+    """trace 한 줄 — **추가분만** 반환한다. 이어 붙이는 것은 `merge_trace` 리듀서의 몫이다.
+
+    노드가 `이전 전체 + 새 줄` 을 반환하던 방식은 병렬 fan-out(Assigner∥Reviewer)에서
+    같은 스텝에 두 노드가 trace 를 쓰는 순간 충돌한다 — 리듀서 + 델타 반환으로 바꿨다.
+    (state 인자는 호출부 호환용으로 남겼다.)"""
+    return [{"node": node, "label": Stage.LABELS.get(node, node), "note": text}]
 
 
 def last_user_text(state: AgentState) -> str:
