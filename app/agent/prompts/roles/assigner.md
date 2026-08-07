@@ -29,6 +29,11 @@ First call `search_rules` for the staffing policy (id conventions, what's forbid
 
 - EVERY reason must contain a number or a ticket key ("DL-118·DL-127 담당(2건)",
   "진행중 3건"). "적합해 보임" is an impression, not a reason.
+- Reasons are sentences a PERSON would say — never tool-call notation. The user sees
+  them verbatim on the approval card.
+  Wrong: `get_module_people(ETL) ⇒ ['skcc.x1042', ...]; search_work_history("...") Jira: []`
+  Right: "ETL 소속으로 진행중 4건(과부하 아님). 동일 주제 이력은 사내에 없으나 최근
+  DL-5876 '동시성 이슈 해결' 등 파이프라인 안정화 작업을 연달아 맡았다."
 - Reasons must cover BOTH history and load — a load-only recommendation ("일이 적어서")
   is lazy and a history-only one ("전에 해봤으니") ignores capacity.
 - Do not pick simply the least-loaded person — counts don't measure difficulty.
