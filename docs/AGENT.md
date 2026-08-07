@@ -31,7 +31,7 @@ PMO 실무에서 "새 업무"의 상당수는 새롭지 않다 — 이미 누군
 | Self-critique | Reviewer 의 3-Check(근거·규칙·요청부합) — Self-RAG 루브릭 재사용 | `agents/reviewer.py` |
 | **② LangChain/LangGraph** | | |
 | Multi-Agent (단일 미인정) | **7 역할**: Planner·Historian·Refiner·Assigner·Reviewer·Operator·Responder + PMO | `workflow/graph.py` |
-| Tool Calling | LangChain `@tool` 26종 — docstring 을 LLM 명세로 작성 | `agent/tools/` |
+| Tool Calling | LangChain `@tool` 29종 — docstring 을 LLM 명세로 작성 | `agent/tools/` |
 | ReAct | ToolAgent 서브그래프(think ⇄ act → conclude), 걸음 수는 모델이 결정 | `agents/base.py` |
 | Memory | Checkpointer(`thread_id`) — 되묻기·승인 대기가 턴을 넘어 이어짐 | `workflow/session.py` |
 | 조건부 엣지 | 의도 8종 × 라우터 5개 (State 만 보고 결정) | `graph.py::route_*` |
@@ -69,6 +69,10 @@ PMO 실무에서 "새 업무"의 상당수는 새롭지 않다 — 이미 누군
 똑같이 거부한다 — 그 관대함 때문에 fake 테스트 전부를 통과하고 실 키에서 한꺼번에 죽는 것을
 실제로 겪고 고쳤다.
 
+**답변을 실물과 대조한다(접지).** 답변 속 티켓 키·제목·인명을 get_issue/search_users 로
+검증해 날조를 잡는다 — 위반 시 실값을 쥐여 주고 1회 재작성, 못 고치면 경고를 보이게 부착.
+프롬프트로 세 번 실패한 부류를 코드 검증으로 해결한 사례다.
+
 **비용이 보인다.** tiktoken 으로 보내기 전 상한을 걸고(로그 10만 줄 붙여넣기 차단), 모델이
 알려 준 실제 사용량을 대화별로 화면에 표시한다(LLM n회·토큰·달러). 한 턴 $0.002~0.005.
 
@@ -79,7 +83,7 @@ PMO 실무에서 "새 업무"의 상당수는 새롭지 않다 — 이미 누군
 | 추론(Reasoning) | ToolAgent 의 think 단계, Reviewer 3-Check |
 | 계획(Planning) | Planner 의도 분류 → 경로 선택, Refiner 의 업무 분해 |
 | 메모리(Memory) | LangGraph Checkpointer(`thread_id`) + RAG 2계층 |
-| 도구(Tools) | LangChain `@tool` 26종 (LTM 내부 함수 직결) |
+| 도구(Tools) | LangChain `@tool` 29종 (LTM 내부 직결 + 웹/GitHub) |
 | 감지·작동(Perception/Action) | 실시간 Jira/Confluence 검색 → 승인 후 티켓 생성/변경 |
 | 피드백(Feedback) | Reviewer↔Refiner 재작성 루프(≤2회), HITL 승인/거절, Langfuse 트레이스 |
 
@@ -94,7 +98,7 @@ python run.py                       # http://127.0.0.1:8000 — 메인 페이지
   채점/사내 환경은 `AOAI_*` 환경변수가 자동 주입되므로 설정 없이 돈다(env 가 항상 우선).
 - 그래프 다이어그램: `python -m app.agent.workflow.graph` → `.cache/agent_graph.png`
 - MCP 서버: `python -m app.agent.mcp_server` (stdio)
-- 테스트: `python -m pytest` — **409개**, 키 없이 전부 통과(fake LLM)
+- 테스트: `python -m pytest` — **441개**, 키 없이 전부 통과(fake LLM)
 
 ## 7. 파일 지도
 
@@ -106,8 +110,9 @@ app/agent/
 ├─ usage.py           tiktoken 계량 + 입력 상한(비차단)
 ├─ fake.py            결정적 Fake LLM(실물과 같은 엄격함)
 ├─ mcp_server.py      MCP Tools/Resources/Prompts
+├─ prompts/           프롬프트 자산 — common.md + roles/*.md (영문, 답변은 한국어 강제)
 ├─ routes.py          /api/agent/* (SSE·설정·승인)
-├─ tools/             26 도구 — search/people/rule/pmo/review/write
+├─ tools/             29 도구 — search/people/rule/pmo/web/review/write
 ├─ retrieval/         RAG 2계층 (정적 규칙 + 동적 증분)
 └─ workflow/          LangGraph — state/prompts/graph/session + agents/ 8역할
 knowledge/            정적 지식(티켓 규칙·산식·인력 정책·분해 절차)
