@@ -46,6 +46,12 @@ class Responder(TextAgent):
             goal = ("상황 → 티켓 초안 → 담당자 근거 → 검증 결과 순으로 정리하고, "
                     "**마지막에 승인을 요청**하라. 아직 만들어지지 않았음을 분명히 하라 — "
                     "\"만들었습니다\"라고 쓰면 사용자가 오해한다.")
+        elif intent in Intent.DIRECT_ANSWER and state.get("group_activity"):
+            goal = ("그룹 활동 보고 — **3층 구조로, 표 없이 서술**하라(사용자가 명시한 형식): "
+                    "① 로스터: 이 모듈에 누가 있는지 한 문단. "
+                    "② 모듈 전체: 이 기간 팀이 한 기여를 2~3문장으로 묶어 서술. "
+                    "③ 사람별: 각자 소제목(### 이름)으로 주로 한 일을 서술 — 근거 티켓 키+제목, "
+                    "코멘트·문서 활동 포함. '확인해 볼 만하다' 같은 기계적 문구 반복 금지.")
         elif intent in Intent.DIRECT_ANSWER:
             goal = ("현황 조회 결과를 보고하라. 숫자와 티켓 키를 그대로 쓰고, "
                     "권하는 행동(action)이 있으면 항목마다 붙여라. 조회가 거부됐다면(권한) "
@@ -87,6 +93,8 @@ class Responder(TextAgent):
                     "참고할 것 → 아직 모르는 것 순. 브리프에 없는 내용을 보태지 마라.")
         data = wrap_data(
             data_block("지식 브리프(Curator 정리)", brief),
+            data_block("그룹 활동 자료(로스터 전원 — 이것으로 3층을 쓴다)",
+                       state.get("group_activity")),
             data_block("현재 상황(조사 결과)", state.get("situation")),
             data_block("현황 조회 결과", pmo),
             data_block("읽을 때 주의", state.get("pmo_caution")),

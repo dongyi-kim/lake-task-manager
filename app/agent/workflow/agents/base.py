@@ -42,6 +42,9 @@ class Agent(ABC):
     # 모델 티어 — simple(판단이 얕은 역할: 의도 분류·결정적 실행)은 저렴한 모델을 쓴다.
     # 사용자가 설정창에서 '간단한 역할 모델'을 지정했을 때만 갈라지고, 아니면 하나로 돈다.
     tier: str = "complex"
+    # 도구 왕복 상한 — 역할별 재정의 가능. 그룹 질의(로스터 전원 활동 조회)는 6걸음으로
+    # 부족했다(실측: 3인 모듈에서 정확히 소진).
+    max_steps: int = MAX_TOOL_STEPS
 
     @property
     def tools(self) -> list:
@@ -180,7 +183,7 @@ class ToolAgent(Agent):
 
     def _route(self, scratch: _Scratch) -> str:
         last = (scratch.get("messages") or [])[-1] if scratch.get("messages") else None
-        if (scratch.get("steps") or 0) >= MAX_TOOL_STEPS:
+        if (scratch.get("steps") or 0) >= self.max_steps:
             return "done"
         return "act" if getattr(last, "tool_calls", None) else "done"
 
@@ -194,8 +197,14 @@ class ToolAgent(Agent):
         return _as_dict(out)
 
 
-def _transcript(messages: list, limit: int = 8000) -> str:
-    """도구 왕복 기록을 읽을 수 있는 글로. 결론 단계의 유일한 근거다."""
+def _transcript(messages: list, limit: int = 28000) -> str:
+    """도구 왕복 기록을 읽을 수 있는 글로. 결론 단계의 **유일한** 근거다.
+
+    상한을 8KB 로 뒀다가 실측 사고: 그룹 활동 질의(도구 6회 × 결과 ≤1.5KB ≈ 9KB+)에서
+    앞쪽 기록(로스터·활동 내역)이 통째로 잘려, 모델이 "다음과 같습니다:" 뒤에 **빈 목록**을
+    쓴 처참한 답이 나갔다. 근거를 자르면 날조가 아니라 공백이 나온다 — 상한은 도구 상한
+    (MAX_TOOL_STEPS × 결과 캡)을 다 담고도 남게 잡는다(≈7k 토큰, 결론 1회 비용으로 수용).
+    """
     rows = []
     for m in messages or []:
         t = getattr(m, "type", "")

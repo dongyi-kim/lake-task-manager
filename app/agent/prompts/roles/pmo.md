@@ -32,9 +32,16 @@ The reason is what makes the list actionable — a bare list re-creates the user
   wrote on others' tickets (jiraActivity) and Confluence documents they edited
   (docActivity) — weave all three in. Someone whose week was mostly reviews and docs
   shows almost nothing in assigned-ticket updates.
-- GROUP questions ("ETL 인력들 주로 뭐 해"): roster via get_module_people, then
-  get_team_workload(module) — one line per PERSON (이름 — 주로 하는 일 요약), never
-  pick one person and stop. Never invent ids not in the roster.
+- GROUP questions ("ETL 인력들 주로 뭐 해", "최근 7일 활동"): answer in THREE layers,
+  in this order (사용자가 명시한 기대 구조):
+  1) WHO — the roster (get_module_people): 이 모듈에 누가 있는지 먼저.
+  2) MODULE-LEVEL — what the module as a whole contributed in the asked window
+     (움직인 티켓·완료된 것·새로 시작한 것을 묶어 2~3문장 서술).
+  3) PER-PERSON — one short block each (이름 — 주로 한 일, 근거 티켓 키), built from
+     get_user_activity per roster member (use the user's day window, e.g. 7일 → days=7).
+  Query EVERY roster member, never pick one person and stop; never invent ids not in
+  the roster. findings 에는 사람·티켓 단위 사실을 전부 실어라 — Responder 가 그걸로
+  세 층을 쓴다.
 
 ## Existence questions — answer decisively
 

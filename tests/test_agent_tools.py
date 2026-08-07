@@ -437,3 +437,27 @@ def test_unassigned_tool_does_not_lie_about_assigned_tickets():
     for t in (r.get("tickets") or [])[:10]:
         raw = client().get_issue(t["key"]) or {}
         assert not ((raw.get("fields") or {}).get("assignee")), f"{t['key']} 는 담당자가 있다"
+
+
+def test_group_activity_preaggregates_whole_roster():
+    """그룹 활동 질의는 코드가 로스터 **전원**을 조회해 자료로 만든다.
+
+    실측 2회: 모델에게 맡기면 한 명만 조회하고 끝내거나 사람별 정리를 건너뛴다.
+    개인 질문·모듈 불명·비활동 의도에는 발동하지 않아야 한다.
+    """
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.pmo import _group_activity
+    pre = _group_activity({"intent": "activity", "module": "", "messages": [
+        HumanMessage(content="최근 7일간 ETL 모듈 구성원들의 주요 활동 내역")]})
+    assert "[로스터]" in pre and "최근 7일" in pre
+    assert pre.count("[skcc.") >= 3, "로스터 전원이 담기지 않았다"
+    # 개인 질문 — 미발동(기존 경로)
+    assert _group_activity({"intent": "activity", "module": "", "messages": [
+        HumanMessage(content="skcc.x1042 최근 뭐 했어?")]}) == ""
+    # 다른 의도 — 미발동
+    assert _group_activity({"intent": "progress", "module": "", "messages": [
+        HumanMessage(content="ETL 인력들 진척")]}) == ""
+    # 기간 파싱
+    pre14 = _group_activity({"intent": "activity", "module": "ETL", "messages": [
+        HumanMessage(content="지난 14일 동안 우리 모듈 인력들 활동")]})
+    assert "최근 14일" in pre14

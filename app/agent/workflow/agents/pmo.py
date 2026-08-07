@@ -44,9 +44,68 @@ SCHEMA = {
 }
 
 
+_MODULES = ("ETL", "Catalog", "Runtime", "Workbench", "DataOps", "DevOps")
+
+
+def _group_activity(state) -> str:
+    """그룹 활동 질의의 사전 취합 — 로스터 전원의 활동을 **코드가** 조회해 자료로 만든다.
+
+    실측 2회: 모델에게 맡기면 한 명만 조회하고 끝내거나, 티켓 표만 나열하고 사람별
+    정리를 건너뛴다. 전원 조회는 판단이 아니라 반복문이다 — 코드가 돌리고, 모델은
+    3층 구조(로스터→모듈 전체→개인별)로 서술만 한다.
+    """
+    import re as _re
+    from app.agent.workflow.state import Intent as _I
+    if (state.get("intent") or "") != _I.ACTIVITY:
+        return ""
+    asked = last_user_text(state)
+    if not any(w in asked for w in ("모듈", "인력", "구성원", "팀", "들의", "들이")):
+        return ""                       # 특정 개인 질문은 기존 경로
+    module = state.get("module") or next((m for m in _MODULES if m.lower() in asked.lower()), "")
+    if not module:
+        return ""
+    m = _re.search(r"(\d+)\s*일", asked)
+    days = max(1, min(int(m.group(1)) if m else 7, 90))
+
+    from app.agent import tools as T
+    roster = (T.BY_NAME["get_module_people"].invoke({"key_or_component": module}) or {}).get("people") or []
+    if not roster:
+        return ""
+    rows = [f"[로스터] {module}: {', '.join(roster)} ({len(roster)}명)", f"[조회 기간] 최근 {days}일"]
+    for uid in roster[:8]:
+        a = T.BY_NAME["get_user_activity"].invoke({"user_id": uid, "days": days}) or {}
+        if a.get("denied"):
+            return ""                   # 매니저 아님 — 도구 게이트 존중, 기존 경로가 거부를 전한다
+        touched = ", ".join(f"{t.get('key')} \"{t.get('summary','')}\"({t.get('status','')})"
+                            for t in (a.get("touched") or [])[:5]) or "없음"
+        cmts = ", ".join(f"{j.get('key')} {j.get('what','')}"
+                         for j in (a.get("jiraActivity") or [])[:4]) or "없음"
+        docs = ", ".join(d.get("title", "") for d in (a.get("docActivity") or [])[:3]) or "없음"
+        rows.append(f"[{uid}] 담당/변경 티켓: {touched} | 코멘트 등 활동: {cmts} | 문서 활동: {docs}")
+    return "\n".join(rows)
+
+
 class PMO(ToolAgent):
     name = "pmo"
     temperature = 0.1
+    max_steps = 12             # 그룹 질의: whoami+로스터+워크로드+인원별 활동 — 6걸음으론 소진
+
+    def node(self):
+        react = super().node()
+
+        def run(state):
+            try:
+                pre = _group_activity(state)
+            except Exception:
+                pre = ""
+            if pre:
+                state = {**state, "group_activity": pre}
+            out = react(state)
+            if pre:
+                out["group_activity"] = pre    # Responder 도 이 자료로 3층을 쓴다 — State 에 싣는다
+            return out
+
+        return run
 
     @property
     def tools(self):
@@ -79,6 +138,13 @@ class PMO(ToolAgent):
                              "**전원**의 진행중 업무를 모아 사람별 한 줄(이름 — 주로 하는 일)로 정리하라. "
                              "로스터에 없는 사번을 지어내지 마라.",
         }.get(intent, "요청에 맞는 현황을 조회해 정리하라.")
+        ga = state.get("group_activity") or ""
+        ga_block = ""
+        if ga:
+            ga_block = ("\n\n### 그룹 활동 자료 (코드가 로스터 전원을 조회함 — 이것이 사실의 전부)\n"
+                        "★ 추가 조회 없이 이 자료만으로 3층으로 정리하라: ① 누가 있는지(로스터) "
+                        "② 모듈 전체가 이 기간에 한 기여(2~3문장 서술) ③ 사람별 한 블록"
+                        "(주로 한 일 — 근거 티켓 키, 코멘트·문서 활동 포함). 전원을 다뤄라.\n" + ga)
         return f"""\
 # 명령서
 {goal}
@@ -86,7 +152,7 @@ class PMO(ToolAgent):
 ## 입력
 사용자 요청: {last_user_text(state)}
 짐작 모듈: {state.get('module') or '미상'}
-언급된 티켓: {', '.join(state.get('mentioned_keys') or []) or '없음'}"""
+언급된 티켓: {', '.join(state.get('mentioned_keys') or []) or '없음'}{ga_block}"""
 
     def schema(self):
         return SCHEMA
