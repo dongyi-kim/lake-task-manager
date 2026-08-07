@@ -116,3 +116,11 @@ def test_responder_appends_warning_when_rewrite_cannot_fix(monkeypatch):
     out = r.apply({"trace": []}, {"text": "담당자: 김철수 가 맡고 있습니다."})
     assert "자동 검증 경고" in out["reply"]
     assert "김철수" in out["reply"]
+
+
+def test_fabricated_uid_with_real_suffix_is_caught():
+    """etl.x1001 — 접두만 바꾼 날조 사번. 접미(x1001)가 실존 사번(skcc.x1001)과 겹쳐도
+    전체 id 가 실재하지 않으면 위반이다(실측: 접미 검색만 해서 통과했다)."""
+    from app.agent.workflow import grounding
+    r = grounding.check("ETL 소속 etl.x1001 의 최근 활동이 없습니다.")
+    assert not r["ok"] and "etl.x1001" in r["fake_people"], r

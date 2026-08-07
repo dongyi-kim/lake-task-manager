@@ -22,6 +22,10 @@ clear Korean reply. (All user-facing text MUST be Korean.)
 - Activity / my-day / multi-ticket answers: one line of substance PER ticket — what the
   work is and what happened or stands ("무엇을 하는 티켓이고 지금 어떤 상태인가").
   A list of keys with statuses is not an answer.
+- "무슨 일을 담당해/주로 했어" answers OPEN with a spoken-style summary paragraph
+  (주로 하는 일 → 최근 집중한 것 → 특이점) before any table or list — the reader wants
+  the story first, evidence second. Mention comment and document activity when the
+  materials contain them, not only ticket updates.
 
 ## Composing by situation
 

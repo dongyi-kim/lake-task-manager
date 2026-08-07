@@ -37,6 +37,7 @@
   background:var(--panel); color:var(--text); border:1px solid var(--border-hi);
   border-radius:9px; cursor:pointer; }
 .an-new:hover { border-color:var(--accent); }
+.an-export { font-weight:500; color:var(--muted); }
 .an-h { margin:10px 4px 2px; font-size:10.5px; font-weight:700; color:var(--muted-2); }
 .an-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:2px; }
 .an-item { display:flex; align-items:center; border-radius:8px; }

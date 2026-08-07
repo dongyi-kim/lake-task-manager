@@ -294,6 +294,34 @@ export default {
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
+    /** 대화 전체를 마크다운으로 클립보드에 — 피드백 전달용(사용자 요청). */
+    async exportChat() {
+      const L = [];
+      this.turns.forEach((t) => {
+        if (t.who === "user") { L.push(`Q: ${t.text}`); return; }
+        L.push(`A: ${t.text || "(본문 없음)"}`);
+        (t.questions || []).forEach((q) => L.push(`  [질문:${q.kind}${q.field ? "/" + q.field : ""}] ${q.question}`
+          + ((q.options || []).length ? ` — 보기: ${q.options.join(" | ")}` : "")));
+        const items = (t.pending && t.pending.items) || t.draftItems || [];
+        items.forEach((it) => L.push(`  [초안] ${it.type} ${it.summary}`
+          + (it.epic ? ` (상위 ${it.epic})` : "") + (it.assignee ? ` 담당 ${it.assignee}` : "")));
+        (t.assignments || []).forEach((a) => L.push(`  [담당추천] ${a.user} — ${(a.reasons || []).join("; ")}`));
+        if (t.result && (t.result.created || []).length)
+          L.push(`  [생성됨] ` + t.result.created.map((c) => c.key).join(", "));
+        if (t.result && (t.result.failed || []).length)
+          L.push(`  [실패] ` + t.result.failed.map((f) => `${f.summary}: ${f.error}`).join(" / "));
+        if (t.usage) L.push(`  [사용량] ${t.usage.calls || "?"}회 · ${t.usage.totalTokens || 0}tok · $${t.usage.costUsd || 0}`);
+        L.push("");
+      });
+      const text = `# LTM Agent 대화 (${new Date().toLocaleString()})\n\n` + L.join("\n");
+      try {
+        await navigator.clipboard.writeText(text);
+        pushToast({ kind: "success", key: "agent-export", title: "대화를 클립보드에 복사했습니다" });
+      } catch (e) {
+        pushToast({ kind: "error", key: "agent-export", title: "복사 실패 — 브라우저 권한을 확인하세요" });
+      }
+    },
+
     /** 실존 티켓은 기존처럼 전역 모달(TicketDialog)로. 우측 패널은 초안 미리보기 전용. */
     openTicket(key) {
       if (key) window.dispatchEvent(new CustomEvent("lake-open-ticket", { detail: { key } }));
@@ -475,6 +503,8 @@ export default {
           <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
         </div>
         <button class="an-new" @click="reset">＋ 새 대화</button>
+        <button v-if="turns.length" class="an-new an-export" @click="exportChat"
+                title="대화 전체를 마크다운으로 클립보드에 복사">📋 대화 복사</button>
         <div class="an-h" v-if="convos.length">최근 대화</div>
         <div class="an-list">
           <div v-for="c in convos" :key="c.id" class="an-item" :class="{ on: c.id === threadId }">

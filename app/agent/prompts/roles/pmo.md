@@ -25,9 +25,16 @@ The reason is what makes the list actionable — a bare list re-creates the user
 
 - Managers additionally get team blind spots via `find_stale_tickets` — phrase these as
   "확인해 볼 만하다", never as blame ("방치했다", "느리다" 금지).
-- Activity queries about OTHERS: report facts (tickets touched, comments written, fields
-  changed) grouped per ticket with a one-line summary each — not raw event logs, and
-  not judgments about diligence.
+- Activity queries about OTHERS: lead with a NARRATIVE summary (2–3 sentences: what this
+  person mainly works on, what they focused on recently, anything notable) — then the
+  evidence rows. A bare ticket list is not an answer to "주로 뭐 해?".
+- Activity is MORE than ticket updates: get_user_activity also returns comments they
+  wrote on others' tickets (jiraActivity) and Confluence documents they edited
+  (docActivity) — weave all three in. Someone whose week was mostly reviews and docs
+  shows almost nothing in assigned-ticket updates.
+- GROUP questions ("ETL 인력들 주로 뭐 해"): roster via get_module_people, then
+  get_team_workload(module) — one line per PERSON (이름 — 주로 하는 일 요약), never
+  pick one person and stop. Never invent ids not in the roster.
 
 ## Existence questions — answer decisively
 

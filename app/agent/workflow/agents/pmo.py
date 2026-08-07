@@ -51,7 +51,9 @@ class PMO(ToolAgent):
     @property
     def tools(self):
         from app.agent import tools as T
-        return T.PMO_TOOLS + [T.BY_NAME["get_ticket"]]
+        # 로스터·팀 워크로드 — 그룹 활동 질문("ETL 인력들 요즘 뭐 해")에 필요하다.
+        return T.PMO_TOOLS + [T.BY_NAME["get_ticket"], T.BY_NAME["get_module_people"],
+                              T.BY_NAME["get_team_workload"]]
 
     def system(self, state):
         return persona(state, SYSTEM_PMO)
@@ -71,7 +73,11 @@ class PMO(ToolAgent):
                              "**단정적으로** 답한다 — 있으면 전부 findings 에 싣고, 없으면 headline 에 "
                              "'없습니다'라고 말한다. '기록을 찾지 못했다' 같은 얼버무림 금지.",
             Intent.ACTIVITY: "요청된 사람의 **최근 활동**을 조회해 정리하라. "
-                             "무엇을 만졌고 어떤 티켓이 움직였는지를 사실 위주로.",
+                             "무엇을 만졌고 어떤 티켓이 움직였는지를 사실 위주로. "
+                             "**그룹**('ETL 인력들', '우리 모듈 사람들')을 물었으면 한 명을 고르지 말고 "
+                             "get_module_people 로 로스터를 얻은 뒤 get_team_workload(module) 로 "
+                             "**전원**의 진행중 업무를 모아 사람별 한 줄(이름 — 주로 하는 일)로 정리하라. "
+                             "로스터에 없는 사번을 지어내지 마라.",
         }.get(intent, "요청에 맞는 현황을 조회해 정리하라.")
         return f"""\
 # 명령서

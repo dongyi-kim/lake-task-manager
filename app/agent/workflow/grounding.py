@@ -83,7 +83,11 @@ def check(reply: str) -> dict:
                 if "NN" in uid.upper():
                     fake_people.append(uid + " (자리표시자)")
                     continue
-            if not (search_users(c, s, uid.split(".")[-1]) or []):
+            # ★ 전체 id 가 **정확히** 실재해야 한다. 접미(x1001)만 검색하면 다른 실존
+            #   사번(skcc.x1001)의 접미와 겹치는 날조(etl.x1001)가 통과한다(실측).
+            hits = (search_users(c, s, uid, 5) or []) + \
+                   (search_users(c, s, uid.split(".")[-1], 8) or [])
+            if not any(str(u.get("id") or "") == uid for u in hits):
                 fake_people.append(uid)
         # 역할 문맥 + 키→사람 매핑("**DL-123**: 김철수") 두 꼴 모두 본다 —
         # 후자는 역할 낱말이 제목 줄에만 있고 항목 줄엔 없어서 NAME_RE 가 놓쳤다(실측).
