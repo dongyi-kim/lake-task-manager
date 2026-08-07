@@ -50,8 +50,8 @@
   visibility:hidden; }
 .an-item:hover .an-del { visibility:visible; }
 .an-del:hover { background:var(--panel-2); color:var(--bad, #c33); }
-.an-foot { display:flex; align-items:center; justify-content:space-between; gap:6px;
-  padding-top:8px; border-top:1px solid var(--border); }
+.an-top { display:flex; align-items:center; justify-content:space-between; gap:6px;
+  padding-bottom:8px; margin-bottom:2px; border-bottom:1px solid var(--border); }
 
 /* 히어로 */
 .agent-empty { align-items:center; margin:0; }   /* 구 규칙(flex-start·auto 마진) 무효화 */

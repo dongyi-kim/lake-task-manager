@@ -170,7 +170,10 @@ export default {
       this.abort = agentApi.stream(
         { text, threadId: this.threadId },
         (ev) => {
-          if (ev.type === "start") { this.threadId = ev.thread_id || this.threadId; }
+          if (ev.type === "start") {
+            this.threadId = ev.thread_id || this.threadId;
+            this.saveConvo();          // 첫 전송 즉시 사이드바에 뜬다 — 답변까지 기다리지 않는다
+          }
           else if (ev.type === "node" || ev.type === "step") {
             // 같은 라벨이 연달아 오면 한 줄로 묶는다(도구를 여러 번 부르면 step 이 쏟아진다).
             const last = this.steps[this.steps.length - 1];
@@ -474,6 +477,13 @@ export default {
       <!-- 정통 에이전트 레이아웃(사용자 요청): 좌측 사이드바(새 대화·최근 대화·설정) +
            본문. 빈 화면은 중앙 히어로(제목·추천 칩·입력창)로. -->
       <aside class="agent-nav">
+        <!-- 모델·설정은 좌상단 — 지금 무엇으로 도는지가 먼저 보인다(사용자 요청) -->
+        <div class="an-top">
+          <span v-if="status" class="agent-prov" :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
+            {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
+          </span>
+          <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
+        </div>
         <button class="an-new" @click="reset">＋ 새 대화</button>
         <div class="an-h" v-if="convos.length">최근 대화</div>
         <div class="an-list">
@@ -481,12 +491,6 @@ export default {
             <button class="an-open" @click="openConvo(c)" :title="c.title">{{ c.title }}</button>
             <button class="an-del" @click.stop="removeConvo(c)" title="삭제">✕</button>
           </div>
-        </div>
-        <div class="an-foot">
-          <span v-if="status" class="agent-prov" :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
-            {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
-          </span>
-          <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
         </div>
       </aside>
 
