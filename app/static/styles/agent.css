@@ -199,17 +199,20 @@
 .agent-side-body .tkd-page { min-height:100%; }
 
 /* 리치 입력 — 클로드식 미니멀 박스. 밑은 코멘트 에디터(멘션·/jira·/confluence 재사용)지만
-   툴바·크기조절 등 크롬은 걷어낸다 — 채팅에 서식 메뉴는 과하다(사용자 지적). */
-.agent-input-rich { display:block; }
-.agent-chatbox { border:1.5px solid var(--border-hi); border-radius:14px; background:var(--panel);
-  padding:4px 6px 6px; }
+   툴바·크기조절 등 크롬은 걷어낸다 — 채팅에 서식 메뉴는 과하다(사용자 지적).
+   ★ .agent-input 의 flex·border-top 규칙(파일 뒤쪽)이 이기지 않게 두 클래스로 스코프를
+   올린다 — flex 가 이기면 박스가 내용 폭으로 쪼그라들고(실측: "짧아졌어"),
+   border-top 은 화면 한가운데 정체불명 가로선이 된다(실측). */
+.agent-input.agent-input-rich { display:block; border-top:0; padding-top:4px; }
+.agent-chatbox { width:100%; border:1.5px solid var(--border-hi); border-radius:16px;
+  background:var(--panel); padding:6px 8px 8px; box-shadow:0 2px 10px rgba(0,0,0,.05); }
 .agent-chatbox:focus-within { border-color:var(--accent); }
-/* 에디터 크롬 제거 + 본문을 채팅 입력답게 */
+/* 에디터 크롬 제거 + 본문을 채팅 입력답게(기본 두 줄 높이 — 한 줄짜리 틈새로 보이지 않게) */
 .agent-chatbox .cmt-tb, .agent-chatbox .cmt-ed-grip { display:none !important; }
 .agent-chatbox .cmt-editor { border:0; background:transparent; }
-.agent-chatbox .cmt-ed-host { height:auto !important; min-height:40px; max-height:220px;
+.agent-chatbox .cmt-ed-host { height:auto !important; min-height:56px; max-height:240px;
   overflow-y:auto; border:0 !important; background:transparent; }
-.agent-chatbox .cmt-ed-host .ProseMirror { padding:8px 10px; min-height:40px; font-size:13.5px; }
+.agent-chatbox .cmt-ed-host .ProseMirror { padding:10px 12px; min-height:56px; font-size:13.5px; }
 /* 하단 아이콘 줄 — @멘션 · 티켓 · 문서 + 원형 전송 */
 .agent-chatbox-bar { display:flex; align-items:center; gap:4px; padding:0 4px; }
 .agent-chatbox-bar > button { width:30px; height:30px; display:inline-flex; align-items:center;
