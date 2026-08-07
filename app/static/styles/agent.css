@@ -37,7 +37,17 @@
   background:var(--panel); color:var(--text); border:1px solid var(--border-hi);
   border-radius:9px; cursor:pointer; }
 .an-new:hover { border-color:var(--accent); }
-.an-export { font-weight:500; color:var(--muted); }
+
+/* 대화 헤더 — 제목 + 우상단 액션 */
+.agent-chat-h { display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:8px 4px 8px 8px; border-bottom:1px solid var(--border); }
+.agent-chat-title { min-width:0; font-size:13.5px; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.agent-chat-acts { display:flex; gap:6px; flex:none; }
+.agent-chat-acts button { padding:4px 10px; font:inherit; font-size:11.5px;
+  background:var(--panel); color:var(--muted); border:1px solid var(--border);
+  border-radius:7px; cursor:pointer; }
+.agent-chat-acts button:hover { border-color:var(--accent); color:var(--text); }
 .an-h { margin:10px 4px 2px; font-size:10.5px; font-weight:700; color:var(--muted-2); }
 .an-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:2px; }
 .an-item { display:flex; align-items:center; border-radius:8px; }

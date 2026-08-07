@@ -294,6 +294,12 @@ export default {
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
+    /** 대화 제목 — 첫 사용자 발화. 사이드바 목록과 같은 규칙이라 헷갈리지 않는다. */
+    convoTitle() {
+      const first = this.turns.find((t) => t.who === "user");
+      return ((first && first.text) || "새 대화").slice(0, 60);
+    },
+
     /** 대화 전체를 마크다운으로 클립보드에 — 피드백 전달용(사용자 요청). */
     async exportChat() {
       const L = [];
@@ -503,8 +509,6 @@ export default {
           <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
         </div>
         <button class="an-new" @click="reset">＋ 새 대화</button>
-        <button v-if="turns.length" class="an-new an-export" @click="exportChat"
-                title="대화 전체를 마크다운으로 클립보드에 복사">📋 대화 복사</button>
         <div class="an-h" v-if="convos.length">최근 대화</div>
         <div class="an-list">
           <div v-for="c in convos" :key="c.id" class="an-item" :class="{ on: c.id === threadId }">
@@ -516,6 +520,14 @@ export default {
 
       <!-- 이분할: 티켓 패널이 열리면 대화가 좁아지며 나란히 선다 -->
       <div class="agent-main" :class="{ 'is-empty': empty && !busy }">
+
+      <!-- 대화 헤더 — 제목(첫 질문) + 우상단 액션(내보내기). 빈 화면에는 없다 -->
+      <div v-if="turns.length" class="agent-chat-h">
+        <b class="agent-chat-title" :title="convoTitle()">{{ convoTitle() }}</b>
+        <div class="agent-chat-acts">
+          <button @click="exportChat" title="대화 전체를 마크다운으로 클립보드에 복사">📋 대화 복사</button>
+        </div>
+      </div>
 
       <div class="agent-scroll" ref="scroller">
         <!-- 빈 화면: 중앙 히어로 — 제목 + 추천 칩(입력창이 바로 아래 온다) -->
