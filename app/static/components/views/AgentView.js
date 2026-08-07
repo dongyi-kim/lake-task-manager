@@ -14,6 +14,7 @@
 //     여기서 [생성]을 눌러야만 서버가 쓰기를 시작한다(토큰은 이 카드의 내용에 묶여 있다).
 import AgentSettingsDialog from "../ui/AgentSettingsDialog.js";
 import Avatar from "../ui/Avatar.js";
+import CommentEditor from "../ui/CommentEditor.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { renderMarkdown } from "../../lib/agentMd.js";
 import { api } from "../../lib/api.js";
@@ -33,7 +34,7 @@ const EXAMPLES = [
 
 export default {
   name: "AgentView",
-  components: { AgentSettingsDialog, Avatar },
+  components: { AgentSettingsDialog, Avatar, CommentEditor },
   data() {
     return {
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
@@ -85,18 +86,65 @@ export default {
   },
   methods: {
     md(t, people) { return renderMarkdown(t, people); },
-    use(ex) { this.text = ex; this.$refs.input && this.$refs.input.focus(); },
+    use(ex) {
+      // 예시를 에디터에 채워 준다 — 바로 보내지 않고 사용자가 고쳐 쓸 수 있게.
+      const ed = this.$refs.richEd;
+      if (ed && ed._ed) { ed._ed.commands.setContent("<p>" + ex + "</p>"); ed._ed.chain().focus().run(); }
+      else this.text = ex;
+    },
 
     onKey(e) {
       // Enter=보내기 / Shift+Enter=줄바꿈. 업무 설명은 여러 줄이 되기 쉬워 줄바꿈을 남겨 둔다.
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
     },
 
+    // ── 리치 입력(코멘트 에디터 재사용) ────────────────────────────
+    submitRich() {
+      const ed = this.$refs.richEd;
+      if (ed && ed.submit) ed.submit();          // submitFn(=sendRich) 로 최종 HTML 이 온다
+    },
+    async sendRich(html) {
+      const text = this.richToText(html);
+      if (!text.trim() || this.busy) return;
+      const ed = this.$refs.richEd;
+      if (ed && ed._ed) ed._ed.commands.clearContent(true);
+      this.dispatch(text, html);
+    },
+    /** 에디터 HTML → 모델에 보낼 텍스트. 멘션은 이름(사번), 뱃지는 제목 텍스트로 푼다 —
+     *  모델은 HTML 이 아니라 글을 읽는다. 사번이 남아야 activity·담당 지정이 정확하다. */
+    richToText(html) {
+      const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+      doc.querySelectorAll("[data-type='mention'],[data-id]").forEach((el) => {
+        const id = el.getAttribute("data-id");
+        if (id) el.replaceWith((el.textContent || "").replace(/^@?/, "@") + "(" + id + ")");
+      });
+      doc.querySelectorAll("a").forEach((a) => a.replaceWith(a.getAttribute("title") || a.textContent || ""));
+      doc.querySelectorAll("p,li,h1,h2,h3,blockquote").forEach((el) => el.append("\n"));
+      doc.querySelectorAll("br").forEach((el) => el.replaceWith("\n"));
+      return (doc.body.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+    },
+    onRichKey(e) {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); this.submitRich(); }
+    },
+    edMention() {
+      const ed = this.$refs.richEd;
+      if (ed && ed._ed) ed._ed.chain().focus().insertContent("@").run();   // 멘션 팝업 트리거
+    },
+    edPick(kind) {
+      const ed = this.$refs.richEd;
+      if (ed && ed.openPick) ed.openPick(kind);
+    },
+
     send() {
+      // 예시 버튼 등 텍스트 경로. 에디터 입력은 sendRich 가 이 아래 dispatch 로 합류한다.
       const text = (this.text || "").trim();
       if (!text || this.busy) return;
       this.text = "";
-      this.turns.push({ who: "user", text });
+      this.dispatch(text, null);
+    },
+
+    dispatch(text, html) {
+      this.turns.push({ who: "user", text, html: html || "" });
       const turn = { who: "agent", text: "", trace: [], evidence: [], docs: [],
                      questions: [], assignments: [], review: {}, pending: null, result: null,
                      usage: null };
@@ -401,7 +449,10 @@ export default {
         </div>
 
         <div v-for="(t, ti) in turns" :key="ti" class="agent-turn" :class="t.who">
-          <div v-if="t.who === 'user'" class="agent-bubble user">{{ t.text }}</div>
+          <!-- 사용자 말풍선 — 에디터로 쓴 턴은 그 HTML 그대로(멘션·티켓 뱃지가 티켓 화면과
+               같은 모양으로 보인다). 예시 버튼 등 텍스트 턴은 기존대로. -->
+          <div v-if="t.who === 'user' && t.html" class="agent-bubble user rich" v-html="t.html"></div>
+          <div v-else-if="t.who === 'user'" class="agent-bubble user">{{ t.text }}</div>
 
           <div v-else class="agent-bubble agent">
             <div v-if="t.text" class="agent-md" v-html="md(t.text, t.people)"></div>
@@ -670,16 +721,23 @@ export default {
         </div>
       </div>
 
-      <div class="agent-input">
-        <textarea ref="input" v-model="text" rows="2" :disabled="busy || ready === null"
-                  placeholder="하려는 업무를 적어 주세요. 예) 실시간 수집 파이프라인에 CDC 방식을 도입해야 한다"
-                  @keydown="onKey"></textarea>
-        <button class="ag-ok" :disabled="busy || !text.trim()" @click="send">
+      <!-- 입력 — 기존 코멘트 에디터를 그대로 재사용한다(사용자 요청: @멘션·/jira·/confluence
+           와 그 렌더링을 티켓 에디터와 같은 UI 로). 위 버튼 줄이 세 기능의 입구다. -->
+      <div class="agent-input agent-input-rich" @keydown.capture="onRichKey">
+        <div class="agent-input-tools">
+          <button :disabled="busy" @click="edMention" title="사람 멘션 (@)">@ 멘션</button>
+          <button :disabled="busy" @click="edPick('jira')" title="티켓 링크 넣기 (/jira)">🎫 티켓</button>
+          <button :disabled="busy" @click="edPick('confluence')" title="문서 링크 넣기 (/confluence)">📄 문서</button>
+          <span class="agent-input-hint">@ 멘션 · '/' 로 티켓·문서 — Ctrl+Enter 전송</span>
+        </div>
+        <CommentEditor ref="richEd" ticketKey="" kind="agentchat" :hideFooter="true"
+                       :submitFn="sendRich" />
+        <button class="ag-ok agent-send" :disabled="busy || ready === null" @click="submitRich">
           {{ busy ? '…' : '보내기' }}
         </button>
       </div>
       <div class="agent-foot">
-        Enter 전송 · Shift+Enter 줄바꿈 — <b>승인하기 전에는 아무것도 만들거나 바꾸지 않습니다.</b>
+        Ctrl+Enter 전송 — <b>승인하기 전에는 아무것도 만들거나 바꾸지 않습니다.</b>
         <a href="#/guide">서비스 안내</a>
       </div>
       <AgentSettingsDialog v-if="settingsOpen"

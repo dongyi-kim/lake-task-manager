@@ -185,6 +185,17 @@
 /* 사람 자동완성 행 — 아바타+이름(사번) */
 .aq-drop button { display:flex; align-items:center; gap:7px; }
 
+/* 리치 입력 — 코멘트 에디터 재사용 + 멘션/티켓/문서 버튼 줄 */
+.agent-input-rich { display:flex; flex-direction:column; gap:6px; align-items:stretch; }
+.agent-input-tools { display:flex; align-items:center; gap:6px; }
+.agent-input-tools button { padding:3px 10px; font-size:11.5px; background:var(--panel);
+  color:var(--muted); border:1px solid var(--border); border-radius:6px; cursor:pointer; }
+.agent-input-tools button:hover { border-color:var(--accent); color:var(--text); }
+.agent-input-hint { margin-left:auto; font-size:10.5px; color:var(--muted-2); }
+.agent-send { align-self:flex-end; min-width:88px; }
+.agent-bubble.user.rich { white-space:normal; }
+.agent-bubble.user.rich p { margin:2px 0; }
+
 /* 답변 본문 속 사람 칩 — 프사+본명 (사번은 title 로) */
 .md-person { display:inline-flex; align-items:center; gap:4px; vertical-align:-2px;
   font-weight:600; }
