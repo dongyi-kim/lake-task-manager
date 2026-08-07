@@ -413,6 +413,16 @@ def test_merge_join_drops_ghost_assignees():
     assert not items[1].get("assignee"), "실재하지 않는 사용자 배정은 join 에서 걸러져야 한다"
 
 
+def test_merge_join_resolves_suffix_only_ids():
+    """사용자가 "x1103"처럼 접미만 대면 로스터 유일 일치로 풀 아이디로 해소한다 —
+    직렬 시절 Reviewer 재작성 루프가 하던 교정이 병렬화로 사라져 배정이 통째로 빠졌다(실측)."""
+    real = _any_real_user()
+    suffix = real.split(".", 1)[1]
+    draft = {"mode": "task", "items": [{"summary": "a", "assignee": suffix}]}
+    out = G._merge_assignments({"draft": draft, "assignments": []})
+    assert out["draft"]["items"][0].get("assignee") == real
+
+
 def _any_real_user():
     from app.agent.tools._ctx import client
     lk = client().bulk_lookup()

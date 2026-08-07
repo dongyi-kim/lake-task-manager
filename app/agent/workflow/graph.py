@@ -173,10 +173,29 @@ def _merge_assignments(state: AgentState) -> dict:
         for it in draft.get("items") or []:
             u = (it.get("assignee") or "").strip()
             if u and not exists(u):
-                it["assignee"] = ""       # 유령 사용자 배정은 생성 단계에서 어차피 거부된다
+                it["assignee"] = _resolve_user(u, exists)
     except Exception:
         pass                              # lookup 실패가 초안 자체를 버리게 하면 안 된다
     return {"draft": draft}
+
+
+def _resolve_user(u: str, exists) -> str:
+    """접미만 온 아이디("x1103")를 로스터 유일 일치로 풀 아이디(skcc.x1103)로 해소한다.
+
+    사용자는 흔히 접미만 댄다. 직렬 시절엔 Reviewer 의 validate_bulk 가 이를 기계 오류로
+    잡아 재작성 루프에서 교정됐지만, 병렬화로 Reviewer 가 배정 전 초안만 보게 되면서 그
+    경로가 사라졌다(실측: 벌크 배정 3건이 통째로 빠짐). 해소 불가면 빈 값 — 유령 배정은
+    생성 단계에서 어차피 거부되고, 승인 화면에서 사용자가 채울 수 있다.
+    """
+    try:
+        from app.infra.settings import load_people
+        ids = {str(i) for ids in (load_people() or {}).values() for i in ids or []}
+        hits = [i for i in ids if i.endswith("." + u)]
+        if len(hits) == 1 and exists(hits[0]):
+            return hits[0]
+    except Exception:
+        pass
+    return ""
 
 
 def _propose(state: AgentState) -> dict:
