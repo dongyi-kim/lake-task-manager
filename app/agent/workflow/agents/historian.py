@@ -110,9 +110,16 @@ def _presurvey(state) -> str:
     if not kws:
         return ""
     q = " ".join(kws)
+    from concurrent.futures import ThreadPoolExecutor
+
     from app.agent.tools.rag_tools import deep_search
     from app.agent.tools.search_tools import search_work_history
-    r = search_work_history.invoke({"query": q, "limit": 10}) or {}
+    # 키워드 검색과 의미 검색(조건부로 쓰일 수 있음)을 **미리 병렬로** 던진다 — 직렬이면
+    # 사전 조사만 수 초를 먹는다. deep 결과는 필요할 때만 꺼내 쓴다(투기 실행).
+    ex = ThreadPoolExecutor(max_workers=2)
+    fut_kw = ex.submit(lambda: search_work_history.invoke({"query": q, "limit": 10}) or {})
+    fut_deep = ex.submit(lambda: deep_search.invoke({"topic": q, "limit": 8}) or {})
+    r = fut_kw.result()
     jira = sorted(r.get("jira") or [], key=lambda x: str(x.get("updated") or ""), reverse=True)
     parts = []
     if jira:
@@ -158,11 +165,15 @@ def _presurvey(state) -> str:
     knowledge_ish = any(w in asked for w in (
         "히스토리", "근황", "최근", "현황", "정리", "알려줘", "설명", "무슨", "어떤", "왜", "지식"))
     if knowledge_ish or len(jira) < 2:
-        d = deep_search.invoke({"topic": q, "limit": 8}) or {}
+        try:
+            d = fut_deep.result(timeout=30) or {}
+        except Exception:
+            d = {}
         if d.get("similar"):
             parts.append("의미 검색 (키워드가 안 겹쳐도 같은 이야기):\n" + "\n".join(
                 f"- [{s.get('kind')}] {s.get('title')} (갱신 {s.get('updated')}) — {s.get('excerpt')}"
                 for s in d["similar"][:5]))
+    ex.shutdown(wait=False)
     return "\n\n".join(parts)
 
 
