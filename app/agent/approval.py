@@ -55,6 +55,39 @@ def approve(token: str, thread_id: str = None) -> bool:
         return True
 
 
+def amend_assignees(token: str, thread_id: str, assignees: dict) -> tuple[bool, str]:
+    """승인 **직전**, 사용자가 카드에서 담당자를 바꿨다 — 스테이징된 내용을 고치고 지문을
+    다시 묶는다.
+
+    "보여 준 것과 같은 내용만 실행된다"는 보증은 그대로다: 이 변경은 승인 화면의 사용자
+    입력에서만 오고(서버가 실재 검증), 고친 내용이 곧 사용자가 승인하는 내용이 된다.
+    승인 뒤에는 못 고친다 — 그건 다시 '보여 준 것과 다른 실행'이 된다.
+    """
+    with _lock:
+        rec = _pending.get(token or "")
+        if not rec or rec["thread"] != str(thread_id or ""):
+            return False, "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다."
+        if rec["approved"]:
+            return False, "이미 승인된 내용은 고칠 수 없습니다. 취소 후 다시 요청하세요."
+        if rec["action"] != "create_tickets":
+            return False, "담당자 변경은 생성 초안에만 적용할 수 있습니다."
+        items = (rec["payload"] or {}).get("items") or []
+        for i, uid in (assignees or {}).items():
+            try:
+                idx = int(i)
+            except (TypeError, ValueError):
+                return False, f"항목 번호가 잘못되었습니다: {i}"
+            if not (0 <= idx < len(items)):
+                return False, f"초안에 없는 항목 번호입니다: {idx}"
+            uid = str(uid or "").strip()
+            if uid:
+                items[idx]["assignee"] = uid
+            else:
+                items[idx].pop("assignee", None)
+        rec["fp"] = fingerprint(rec["payload"])
+        return True, ""
+
+
 def reject(token: str) -> bool:
     with _lock:
         return _pending.pop(token, None) is not None

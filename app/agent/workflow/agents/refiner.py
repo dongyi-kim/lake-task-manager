@@ -62,7 +62,12 @@ QUESTION = {
     "properties": {
         "question": {"type": "string", "description": "물어볼 것 한 문장"},
         "kind": {"type": "string", "enum": ["text", "choice", "date"],
-                 "description": "text=자유 서술 / choice=보기 중 선택 / date=날짜"},
+                 "description": "choice=보기 중 선택 / date=날짜 / text=자유 서술. "
+                                "**choice 를 우선하라** — 네가 답을 추천할 수 있는 질문"
+                                "(우선순위·범위·방식·대상)은 전부 choice 다. text 는 정말 "
+                                "자유 서술만 가능한 것(재현 경로, 배경 설명)에만 쓴다. "
+                                "화면이 '직접 입력' 선택지를 자동으로 붙이므로 보기가 빠짐없이 "
+                                "완전할 필요는 없다"},
         "options": {"type": "array", "items": {"type": "string"},
                     "description": "kind=choice 일 때 보기 2~5개. **네가 추천하는 것을 맨 앞에** 두고, "
                                    "보기 뒤에 짧은 사유를 괄호로 붙여도 된다 — 예: "
@@ -250,6 +255,19 @@ class Refiner(ToolAgent):
                 if "References" not in (it.get("description") or ""):
                     it["description"] = ((it.get("description") or "") + block)
 
+        # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
+        # Reviewer 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
+        # 사용자에게 떠넘겨진다(실측: "P3는 적절한 우선순위가 아닙니다"가 답변에 노출).
+        # 판단이 아니라 표기 문제다 — 코드가 정규화한다.
+        _PRI = {"P0": "P0-Blocker", "P1": "P1-Critical", "P2": "P2-Major",
+                "P3": "P3-Minor", "P4": "P4-Trivial",
+                "BLOCKER": "P0-Blocker", "CRITICAL": "P1-Critical", "MAJOR": "P2-Major",
+                "MINOR": "P3-Minor", "TRIVIAL": "P4-Trivial"}
+        for it in items:
+            p = str(it.get("priority") or "").strip()
+            if p:
+                it["priority"] = _PRI.get(p.upper(), p)
+
         # PMO_VIT 는 경영진 보고 현안 전용이고 트리 최상위 하나에만 붙는다 — 그런데 모델이
         # 기존 라벨 목록에서 보고는 신규 티켓 셋에 전부 붙였다(실측). 사용자가 입으로 말했을
         # 때만 남기고, 아니면 기계적으로 뗀다. 규칙 위반 라벨은 검색 노이즈가 된다.
@@ -266,6 +284,9 @@ class Refiner(ToolAgent):
             fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary",
                                              "labels", "description")
                       if k in change and change[k] is not None}
+            if str(fields.get("priority") or "").strip():
+                p = str(fields["priority"]).strip()
+                fields["priority"] = _PRI.get(p.upper(), p)
             cmt = (change.get("comment") or "").strip()
             # 댓글만 남기는 것도 유효한 계획이다 — "이 내용 DL-x 에 댓글로 남겨줘"가 실사용에 있다.
             if fields or cmt:

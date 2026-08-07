@@ -29,7 +29,10 @@ _DEFAULTS = {"bitbucketEnabled": False,
              "agentApiVersion": "",      # AOAI 전용
              "agentAoaiChat": "", "agentAoaiEmbed": "",        # ★ 모델명이 아니라 배포명
              "agentOpenaiChat": "", "agentOpenaiEmbed": "",
-             "agentCompatChat": "", "agentCompatEmbed": ""}
+             "agentCompatChat": "", "agentCompatEmbed": "",
+             # 사용자별 시스템 프롬프트 추가분 — 모든 역할의 페르소나 뒤에 붙는다.
+             # 프로젝트 공용 추가분은 여기가 아니라 config/agent-prompt.md (repo 커밋 대상).
+             "agentUserPrompt": ""}
 
 
 def _path():

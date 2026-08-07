@@ -60,6 +60,31 @@ SCHEMA = {
 }
 
 
+def _similar_history(state) -> str:
+    """유사 업무의 **담당 이력 표**를 코드가 만든다.
+
+    실측: 모델에게 맡기면 워크로드·모듈 소속만 확인하고 "유사 업무를 해 봤는가"는
+    건너뛴다(도구 걸음을 워크로드에 다 쓴다). 검색과 집계는 판단이 아니다 — 코드가
+    돌리고, 모델은 그 표를 근거로 판단만 한다.
+    """
+    kws = [str(k) for k in (state.get("keywords") or []) if str(k).strip()][:4]
+    if not kws:
+        return ""
+    from app.agent.tools.search_tools import search_work_history
+    r = search_work_history.invoke({"query": " ".join(kws), "limit": 12})
+    by_user: dict = {}
+    for it in (r or {}).get("jira") or []:
+        u = (it.get("assignee") or "").strip()
+        if u:
+            by_user.setdefault(u, []).append(it)
+    rows = []
+    for u, tickets in sorted(by_user.items(), key=lambda kv: -len(kv[1]))[:6]:
+        refs = " · ".join(f"{t.get('key')} \"{t.get('title','')}\"({t.get('status','')})"
+                          for t in tickets[:3])
+        rows.append(f"- {u} — 유사 {len(tickets)}건: {refs}")
+    return "\n".join(rows)
+
+
 class Assigner(ToolAgent):
     name = Node.ASSIGNER
     temperature = 0.2
@@ -69,6 +94,20 @@ class Assigner(ToolAgent):
         from app.agent import tools as T
         return T.PEOPLE_TOOLS + T.RULE_TOOLS
 
+    def node(self):
+        react = super().node()
+
+        def run(state):
+            try:
+                hist = _similar_history(state)
+            except Exception:
+                hist = ""            # 검색 실패가 배정 자체를 막으면 안 된다
+            if hist:
+                state = {**state, "similar_history": hist}
+            return react(state)
+
+        return run
+
     def system(self, state):
         return persona(state, SYSTEM_ASSIGNER)
 
@@ -77,7 +116,9 @@ class Assigner(ToolAgent):
                        for e in (state.get("evidence") or []))
         data = wrap_data(
             data_block("현재 상황", state.get("situation")),
-            data_block("유사 티켓(여기 등장한 사람들을 확인하라)", ev))
+            data_block("유사 티켓(여기 등장한 사람들을 확인하라)", ev),
+            data_block("유사 업무 담당 이력 (코드가 검색·집계함 — 근거로 활용하라)",
+                       state.get("similar_history")))
         return f"""\
 # 명령서
 아래 티켓 초안의 **각 항목마다** 담당자를 근거와 함께 제안하라.
@@ -86,6 +127,10 @@ class Assigner(ToolAgent):
 - 초안 항목 번호(index)를 그대로 쓴다.
 - 사용자 id 는 `skcc.x1042` 형식이어야 한다. 이름을 적지 마라.
 - 근거는 **네가 도구로 확인한 것만**. 확인 안 한 것을 근거처럼 적지 마라.
+- 근거에는 워크로드 숫자만이 아니라 **유사 업무 이력(티켓 키·건수)** 을 반드시 확인해
+  반영하라 — 위 자료의 담당 이력 표가 출발점이다. 이력이 없으면 없다고 적는다.
+- **후보는 한 명이 아니다** — alternates 에 대안 후보를 1명 이상, 왜 1순위가 아닌지와
+  함께 적는다. 사용자가 화면에서 후보 중 고른다.
 - 같은 사람을 모든 항목에 몰지 마라 — 그건 배분이 아니다.
 
 ## 티켓 초안

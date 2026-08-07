@@ -28,11 +28,7 @@ const EXAMPLES = [
   "skcc.x1042 최근 3일간 어떤 업무들을 했어?",
 ];
 
-const ROLES = [
-  { k: "pm", label: "PM", hint: "전체 진척·리스크·일정을 먼저 봅니다" },
-  { k: "lead", label: "모듈 리더", hint: "담당 배분과 팀 부하를 먼저 봅니다" },
-  { k: "member", label: "실무자", hint: "내 일의 범위와 다음 행동을 먼저 봅니다" },
-];
+// 역할 선택 UI 는 없다 — 매니저 여부는 선택이 아니라 사실이라, 서버가 로그인 사용자로 판별한다.
 
 export default {
   name: "AgentView",
@@ -42,7 +38,6 @@ export default {
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
       reason: "",             // 못 쓰는 이유(설치 누락 등)
       status: null,           // provider·모델 — 지금 무엇으로 도는지 화면에 보인다
-      role: localStorage.getItem("agentRole") || "member",
       text: "",
       threadId: "",
       turns: [],              // [{who:"user"|"agent", text, trace, evidence, docs, questions,
@@ -53,16 +48,18 @@ export default {
       approving: false,
       settingsOpen: false,
       answers: {},            // 되묻기 폼의 답(qi → 값)
-      previewOn: {},          // 초안 항목별 본문 미리보기 토글(i → bool)
+      customOn: {},           // 객관식 질문에서 '직접 입력'을 고른 상태(qi → bool)
+      previewOn: {},          // 초안 항목별 티켓 미리보기 토글(i → bool)
       epicTrees: {},          // 생성 카드의 계보 컨텍스트(epicKey → children[])
       acRows: [], acOpen: -1, // 자동완성 결과·열린 질문 index
       priorities: [],
+      pickedAssignee: {},     // 승인 카드에서 고른 담당자(항목 i → uid)
+      cardCustom: {},         // 카드에서 '직접 입력'을 고른 상태(i → bool)
+      cardAcRows: [], cardAcOpen: -1,   // 카드 담당자 자동완성
     };
   },
   computed: {
     examples() { return EXAMPLES; },
-    roles() { return ROLES; },
-    roleHint() { return (ROLES.find((r) => r.k === this.role) || {}).hint || ""; },
     empty() { return this.turns.length === 0; },
     // 승인 대기는 **마지막 턴에만** 유효하다. 지난 카드가 계속 눌리면 사용자가 옛 초안을 만든다.
     pending() {
@@ -86,7 +83,6 @@ export default {
   },
   methods: {
     md(t) { return renderMarkdown(t); },
-    setRole(k) { this.role = k; localStorage.setItem("agentRole", k); },
     use(ex) { this.text = ex; this.$refs.input && this.$refs.input.focus(); },
 
     onKey(e) {
@@ -108,7 +104,7 @@ export default {
       this.$nextTick(this.scroll);
 
       this.abort = agentApi.stream(
-        { text, threadId: this.threadId, role: this.role },
+        { text, threadId: this.threadId },
         (ev) => {
           if (ev.type === "start") { this.threadId = ev.thread_id || this.threadId; }
           else if (ev.type === "node" || ev.type === "step") {
@@ -130,6 +126,8 @@ export default {
               usage: ev.usage || null,
             });
             if (ev.pending && ev.pending.items) this.loadEpicTree(ev.pending);
+            this.pickedAssignee = {}; this.cardCustom = {}; this.previewOn = {};
+            this.customOn = {};
                 if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
             this.busy = false;
             this.steps = [];
@@ -143,8 +141,13 @@ export default {
       if (!p || this.approving) return;
       this.approving = true;
       try {
-        const r = await agentApi.approve(this.threadId, p.token);
         const last = this.turns[this.turns.length - 1];
+        const r = await agentApi.approve(this.threadId, p.token,
+                                         last ? this.assigneeOverrides(last) : null);
+        if (r && r.ok === false && r.error) {       // 담당자 검증 실패 등 — 카드는 살아 있다
+          pushToast({ kind: "error", key: "agent-made", title: r.error });
+          return;
+        }
         last.pending = null;                        // 카드를 닫는다 — 두 번 눌리면 안 된다
         this.turns.push({ who: "agent", text: r.reply || "", trace: r.trace || [],
                           evidence: [], docs: [], questions: [], assignments: [],
@@ -259,6 +262,40 @@ export default {
       return a ? a : null;
     },
 
+    // ── 승인 카드의 담당자 선택 — 추천을 그대로 받는 게 아니라 후보 중 고른다 ──
+    pickFor(turn, i, it) {
+      if (this.pickedAssignee[i] !== undefined) return this.pickedAssignee[i];
+      const a = this.reasonsFor(turn, i);
+      return (a && a.user) || it.assignee || "";
+    },
+    setPick(i, uid) {
+      this.pickedAssignee[i] = uid;
+      this.cardCustom[i] = false;
+      this.cardAcOpen = -1;
+    },
+    pickCustom(i) { this.cardCustom[i] = true; this.pickedAssignee[i] = ""; },
+    async cardSearch(i, ev) {
+      const q = (ev.target.value || "").trim();
+      this.pickedAssignee[i] = q;
+      clearTimeout(this._cardT);
+      this._cardT = setTimeout(async () => {
+        try {
+          const r = await fetch("/api/mention/users?q=" + encodeURIComponent(q)).then((x) => x.json());
+          this.cardAcRows = (r || []).map((u) => ({ v: u.id, label: u.name + " (" + u.id + ")" })).slice(0, 7);
+          this.cardAcOpen = this.cardAcRows.length ? i : -1;
+        } catch (e) { this.cardAcOpen = -1; }
+      }, 250);
+    },
+    /** 승인 시 서버에 넘길 담당자 변경분 — 카드에 보였던 값과 다른 것만. */
+    assigneeOverrides(turn) {
+      const out = {};
+      (turn.pending && turn.pending.items || []).forEach((it, i) => {
+        const picked = (this.pickFor(turn, i, it) || "").trim();
+        if (picked && picked !== (it.assignee || "")) out[String(i)] = picked;
+      });
+      return Object.keys(out).length ? { assignees: out } : null;
+    },
+
     // ── 되묻기 폼 ──────────────────────────────────────────────
     // 에이전트의 질문(kind/options/field)을 폼으로 그리고, 답을 모아 **한 문장으로** 보낸다.
     // 백엔드는 자연어 답을 받는 것과 동일 — 폼은 순전히 입력을 쉽게 만드는 층이다.
@@ -340,11 +377,6 @@ export default {
              대화로 구체화해 <b>담당자 제안과 함께 티켓 초안</b>까지 만들어 드립니다.</p>
         </div>
         <div class="agent-meta">
-          <div class="agent-roles">
-            <button v-for="r in roles" :key="r.k" :class="{ on: role === r.k }"
-                    @click="setRole(r.k)" :title="r.hint">{{ r.label }}</button>
-          </div>
-          <span class="agent-rolehint">{{ roleHint }}</span>
           <span v-if="status" class="agent-prov" :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
             {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
           </span>
@@ -421,11 +453,31 @@ export default {
               <div v-for="(q, qi) in t.questions" :key="qi" class="aq">
                 <div class="aq-q">{{ q.question || q }}</div>
 
-                <!-- 객관식: 보기 버튼 (추천이 맨 앞) -->
-                <div v-if="optionsFor(q).length" class="aq-opts">
-                  <button v-for="(opt, oi) in optionsFor(q)" :key="opt"
-                          :class="{ on: answers[qKey(qi)] === opt, rec: oi === 0 }"
-                          @click="pickOpt(qi, opt)">{{ opt }}<em v-if="oi === 0">추천</em></button>
+                <!-- 객관식: 보기 버튼 (추천이 맨 앞) + '직접 입력' 탈출구.
+                     보기가 전부일 수 없다 — 추천이 다 틀렸을 때 타이핑으로 돌아갈 길이 필요하다 -->
+                <div v-if="optionsFor(q).length" class="aq-opts-wrap">
+                  <div class="aq-opts">
+                    <button v-for="(opt, oi) in optionsFor(q)" :key="opt"
+                            :class="{ on: !customOn[qi] && answers[qKey(qi)] === opt, rec: oi === 0 }"
+                            @click="customOn[qi] = false; pickOpt(qi, opt)">{{ opt }}<em v-if="oi === 0">추천</em></button>
+                    <button :class="{ on: customOn[qi] }"
+                            @click="customOn[qi] = !customOn[qi]; if (customOn[qi]) answers[qKey(qi)] = ''">직접 입력…</button>
+                  </div>
+                  <template v-if="customOn[qi]">
+                    <input v-if="q.kind === 'date' || q.field === 'duedate'" type="date" class="aq-in aq-date"
+                           :value="answers[qKey(qi)] || ''" @input="setAns(qi, $event.target.value)">
+                    <div v-else-if="q.field === 'assignee' || q.field === 'epic'" class="aq-ac">
+                      <input class="aq-in" :value="answers[qKey(qi)] || ''"
+                             :placeholder="q.field === 'assignee' ? '이름이나 사번으로 검색' : 'Epic 키나 제목으로 검색'"
+                             @input="acSearch(qi, q.field, $event)" @focus="acSearch(qi, q.field, $event)">
+                      <div v-if="acOpen === qi" class="aq-drop">
+                        <button v-for="r in acRows" :key="r.v" @mousedown.prevent="setAns(qi, r.v)">
+                          {{ r.label }}</button>
+                      </div>
+                    </div>
+                    <input v-else class="aq-in" :value="answers[qKey(qi)] || ''"
+                           placeholder="답을 입력하세요" @input="setAns(qi, $event.target.value)">
+                  </template>
                 </div>
 
                 <!-- 날짜 -->
@@ -503,11 +555,26 @@ export default {
                     <span v-if="it.priority">{{ it.priority }}</span>
                     <span v-if="it.assignee" class="ai-who">담당 {{ it.assignee }}</span>
                   </div>
+                  <!-- 티켓 미리보기(폴딩) — 접으면 구조 텍스트, 펼치면 실제 티켓 모양
+                       (제목·타입·라벨·메타 + 본문 렌더). 승인 전에 "만들어질 실물"을 본다 -->
                   <div v-if="it.description" class="ai-desc-wrap">
                     <button class="ai-pv-btn" @click="togglePreview(i)">
-                      {{ previewOn[i] ? '텍스트로 보기' : '본문 미리보기' }}</button>
-                    <div v-if="previewOn[i]" class="ai-desc ai-desc-html"
-                         v-html="descPreview(it.description)"></div>
+                      {{ previewOn[i] ? '▾ 미리보기 접기' : '▸ 티켓 미리보기' }}</button>
+                    <div v-if="previewOn[i]" class="ai-ticketview">
+                      <div class="tv-head">
+                        <span class="ai-type">{{ it.type }}</span>
+                        <b>{{ it.summary }}</b>
+                      </div>
+                      <div class="tv-meta">
+                        <span v-if="it.epic">상위 {{ it.epic }}</span>
+                        <span v-if="it.components && it.components.length">모듈 {{ it.components.join(', ') }}</span>
+                        <span v-for="lb in (it.labels || [])" :key="lb" class="tv-label">{{ lb }}</span>
+                        <span v-if="it.priority">{{ it.priority }}</span>
+                        <span v-if="it.duedate">마감 {{ it.duedate }}</span>
+                        <span v-if="pickFor(t, i, it)">담당 {{ pickFor(t, i, it) }}</span>
+                      </div>
+                      <div class="ai-desc-html" v-html="descPreview(it.description)"></div>
+                    </div>
                     <div v-else class="ai-desc">{{ descText(it.description) }}</div>
                   </div>
                   <!-- 계보 — 이 초안이 어느 Epic 의 어떤 형제들 옆에 붙는지 -->
@@ -521,12 +588,35 @@ export default {
                     <div class="ai-tree-row new">└ <b>+ {{ it.summary }}</b> <em>(이번에 생성)</em></div>
                   </div>
 
-                  <!-- 담당자는 근거와 함께 보인다. 이름만 있으면 리더가 검증할 수 없다 -->
-                  <div v-if="reasonsFor(t, i)" class="ai-reasons">
-                    <div v-for="(r, ri) in reasonsFor(t, i).reasons" :key="ri">· {{ r }}</div>
-                    <div v-for="(alt, ai) in (reasonsFor(t, i).alternates || [])" :key="'a'+ai" class="ai-alt">
-                      대안 {{ alt.user }} — {{ alt.why }}
-                    </div>
+                  <!-- 담당자 — 추천을 그대로 받는 게 아니라 **후보 중 고른다**(근거 병기).
+                       직접 입력을 고르면 사람 검색 자동완성이 붙는다. -->
+                  <div v-if="reasonsFor(t, i)" class="ai-assign">
+                    <div class="ai-assign-h">담당자 선택</div>
+                    <label class="ai-cand" :class="{ on: !cardCustom[i] && pickFor(t, i, it) === reasonsFor(t, i).user }"
+                           @click="setPick(i, reasonsFor(t, i).user)">
+                      <b>{{ reasonsFor(t, i).user }}</b><em class="rec">추천</em>
+                      <div class="ai-cand-why">
+                        <div v-for="(r, ri) in reasonsFor(t, i).reasons" :key="ri">· {{ r }}</div>
+                      </div>
+                    </label>
+                    <label v-for="(alt, ai) in (reasonsFor(t, i).alternates || [])" :key="'a'+ai"
+                           class="ai-cand" :class="{ on: !cardCustom[i] && pickFor(t, i, it) === alt.user }"
+                           @click="setPick(i, alt.user)">
+                      <b>{{ alt.user }}</b>
+                      <div class="ai-cand-why">{{ alt.why }}</div>
+                    </label>
+                    <label class="ai-cand" :class="{ on: cardCustom[i] }" @click="pickCustom(i)">
+                      <b>직접 입력…</b>
+                      <div v-if="cardCustom[i]" class="aq-ac" @click.stop>
+                        <input class="aq-in" :value="pickedAssignee[i] || ''" placeholder="이름이나 사번으로 검색"
+                               @input="cardSearch(i, $event)" @focus="cardSearch(i, $event)">
+                        <div v-if="cardAcOpen === i" class="aq-drop">
+                          <button v-for="r in cardAcRows" :key="r.v"
+                                  @mousedown.prevent="pickedAssignee[i] = r.v; cardAcOpen = -1">
+                            {{ r.label }}</button>
+                        </div>
+                      </div>
+                    </label>
                   </div>
                 </li>
               </ol>

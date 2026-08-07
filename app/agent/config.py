@@ -184,11 +184,16 @@ def callbacks(session_id: str = None) -> list:
 def status() -> dict:
     """화면용 현재 설정 — **비밀값 원문은 절대 싣지 않는다**."""
     ok, why = available()
+    from app.infra import prefs as _prefs
+    from app.agent.prompts.base import _project_prompt
     return {"available": ok, "reason": why, "provider": provider(),
             "chatModel": chat_model(), "embedModel": embed_model(),
             "apiVersion": api_version() if provider() == "aoai" else None,
             "langfuse": bool(get_langfuse_handler()),
-            "secrets": _secrets.masked()}
+            "secrets": _secrets.masked(),
+            # 프롬프트 레이어 — 사용자별은 편집 가능, 프로젝트 공용은 읽기 전용 표시.
+            "userPrompt": str(_prefs.load().get("agentUserPrompt") or ""),
+            "projectPrompt": _project_prompt()}
 
 
 def probe(timeout: float = 30.0) -> dict:

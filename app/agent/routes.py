@@ -31,13 +31,14 @@ router = APIRouter(prefix="/api/agent")
 class _ChatBody(BaseModel):
     text: str
     threadId: str = ""
-    role: str = ""                 # pm | lead | member
+    role: str = ""                 # 비우면 서버가 매니저 여부로 판별(테스트용 override 만 남김)
     userId: str = ""
 
 
 class _ApproveBody(BaseModel):
     threadId: str
     token: str
+    overrides: dict = None         # {"assignees": {"0": "skcc.x1042"}} — 카드에서 고른 담당자
 
 
 class _SettingsBody(BaseModel):
@@ -46,6 +47,7 @@ class _SettingsBody(BaseModel):
     chatModel: str = None
     embedModel: str = None
     apiVersion: str = None
+    userPrompt: str = None         # 사용자별 시스템 프롬프트 추가분(로컬 prefs 저장)
     secrets: dict = None           # {"aoaiApiKey": "...", ...} — 저장만, 조회는 마스킹
 
 
@@ -64,7 +66,8 @@ def api_settings(body: _SettingsBody):
     있으면 설정 화면과 실제 동작이 어긋난다. 대화 기록도 함께 사라지는 것이 맞다.
     """
     patch = {}
-    for field, key in (("provider", "agentProvider"), ("apiVersion", "agentApiVersion")):
+    for field, key in (("provider", "agentProvider"), ("apiVersion", "agentApiVersion"),
+                       ("userPrompt", "agentUserPrompt")):
         v = getattr(body, field)
         if v is not None:
             patch[key] = v.strip()
@@ -180,7 +183,7 @@ def api_snapshot(thread_id: str):
 def api_approve(body: _ApproveBody):
     """사용자가 승인 카드를 눌렀다. 여기서부터 쓰기가 일어난다."""
     from app.agent.workflow import session
-    return JSONResponse(session.resume(body.threadId, body.token))
+    return JSONResponse(session.resume(body.threadId, body.token, body.overrides))
 
 
 @router.post("/cancel")

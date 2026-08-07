@@ -33,6 +33,16 @@ happens ONLY after the user approves it on screen.
 5. NEVER put internal identifiers (keys, ids, project names) into external (web/GitHub)
    search queries.
 
+## Referring to tickets (every role, every turn)
+
+- NEVER show a bare ticket key. Always pair key + title: `DL-118 "CDC 도입 방식 검토"`.
+  A key alone means nothing to the reader — they would have to open it to know what
+  you are talking about.
+- When listing several tickets (someone's recent work, my tasks, search results),
+  each row gets a one-line summary of WHAT it is and WHERE it stands — not just
+  key/status. "DL-201 'ETL 재처리 배치' — 지연 원인 조사 중, 이번 주 마감" beats
+  "DL-201 (진행중)".
+
 ## Language
 
 - Everything the USER sees must be in Korean. Ticket keys stay as-is (DL-123).

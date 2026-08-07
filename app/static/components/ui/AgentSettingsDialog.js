@@ -34,6 +34,8 @@ export default {
     return {
       st: null, err: "", busy: false, saving: false,
       provider: "aoai", chatModel: "", embedModel: "", apiVersion: "",
+      userPrompt: "",           // 사용자별 시스템 프롬프트(로컬 저장, 커밋 안 됨)
+      showProjPrompt: false,    // 프로젝트 공용 프롬프트(읽기 전용) 펼침
       secrets: {},              // 사용자가 **이번에 새로 친 것만** 담긴다
       probe: null,              // 연결 테스트 결과
       index: null,              // 색인 현황
@@ -74,6 +76,7 @@ export default {
         this.chatModel = this.st.chatModel || "";
         this.embedModel = this.st.embedModel || "";
         this.apiVersion = this.st.apiVersion || "";
+        this.userPrompt = this.st.userPrompt || "";
       } catch (e) { this.err = (e && e.message) || "설정을 불러오지 못했습니다"; }
       agentApi.indexStats().then((r) => { this.index = r; }).catch(() => {});
       this.loadModels();
@@ -115,7 +118,7 @@ export default {
       this.saving = true; this.err = ""; this.probe = null;
       try {
         const body = { provider: this.provider, chatModel: this.chatModel,
-                       embedModel: this.embedModel };
+                       embedModel: this.embedModel, userPrompt: this.userPrompt };
         if (this.provider === "aoai") body.apiVersion = this.apiVersion;
         // 빈 칸은 보내지 않는다 — 빈 문자열을 보내면 저장된 키를 지우게 된다.
         const s = {};
@@ -173,6 +176,10 @@ export default {
             <span>{{ f[1] }}</span>
             <input :type="f[3] ? 'password' : 'text'" :placeholder="ph(f[0], f[2])"
                    v-model="secrets[f[0]]" autocomplete="off" spellcheck="false">
+            <!-- 보안상 저장된 키 원문은 안 내려온다 — 빈 입력칸이 "키 없음"으로 오해되지
+                 않게, 저장 여부를 명시적인 줄로 보여 준다(사용자 지적). -->
+            <em v-if="masked[f[0]] && !(secrets[f[0]] || '').trim()" class="ag-keyok">
+              ✓ 저장된 키 사용 중 {{ masked[f[0]].replace('설정됨 ', '') }} — 새로 입력하면 교체됩니다</em>
           </label>
         </div>
 
@@ -214,6 +221,20 @@ export default {
             <input v-model="apiVersion" placeholder="2024-10-21" spellcheck="false"></label>
           <div v-if="provider === 'aoai'" class="ag-hint">
             Azure 는 <b>모델명이 아니라 배포명</b>을 넣습니다. 가장 흔한 실수입니다.
+          </div>
+        </div>
+
+        <!-- 프롬프트 레이어 — 사용자별(여기서 편집) + 프로젝트 공용(config 파일, 읽기 전용) -->
+        <div class="ag-sec">
+          <div class="ag-lab">내 프롬프트 (선택)</div>
+          <textarea v-model="userPrompt" class="ag-ta" rows="4" spellcheck="false"
+                    placeholder="모든 답변에 적용할 나만의 지시. 예) 답변은 두괄식으로. 마감 제안은 항상 금요일을 피해서."></textarea>
+          <div class="ag-hint">이 PC에만 저장됩니다(커밋 안 됨). 날조 금지·승인 없는 쓰기 금지
+            같은 절대 규칙은 이 프롬프트로도 바꿀 수 없습니다.</div>
+          <div v-if="st.projectPrompt" class="ag-hint">
+            <button class="ag-mini" @click="showProjPrompt = !showProjPrompt">
+              {{ showProjPrompt ? '▾' : '▸' }} 프로젝트 공용 프롬프트 (config/agent-prompt.md, 읽기 전용)</button>
+            <pre v-if="showProjPrompt" class="ag-proj-prompt">{{ st.projectPrompt }}</pre>
           </div>
         </div>
 

@@ -56,11 +56,24 @@ def _guard(text: str):
     return None
 
 
+def _detect_role() -> str:
+    """매니저 여부는 선택이 아니라 사실이다 — 세션 설정과 로그인 사용자로 판별한다.
+
+    판별 실패(비로그인·설정 없음)는 MEMBER 로 — 낮은 권한이 안전한 기본값이고,
+    매니저 전용 도구는 어차피 도구 안의 게이트가 한 번 더 막는다.
+    """
+    try:
+        from app.agent.tools.pmo_tools import _is_manager
+        return Role.MANAGER if _is_manager() else Role.MEMBER
+    except Exception:
+        return Role.MEMBER
+
+
 def _initial(thread_id, text, user_role, user_id) -> dict:
     from app.agent.tools import set_thread
     set_thread(thread_id)       # 쓰기 도구가 자기 대화를 안다(모델이 남의 thread 를 못 적게)
     return {"messages": [HumanMessage(content=text)], "thread_id": thread_id,
-            "user_role": user_role or Role.MEMBER, "user_id": user_id or "",
+            "user_role": user_role or _detect_role(), "user_id": user_id or "",
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
             # responder 가 다시 '승인 대기'로 흘러간다.
             "approval_token": "", "comment_token": "", "result": {}, "revisions": 0,
@@ -83,11 +96,47 @@ def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") 
     return out
 
 
-def resume(thread_id: str, token: str) -> dict:
+def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
     """사용자가 승인했다. 멈춰 있던 자리(Operator)에서 다시 굴린다.
 
     승인 표시는 여기서 한다 — 그래야 토큰이 **이 대화의 것**인지 확인할 수 있다.
+    `overrides["assignees"]` 는 사용자가 승인 카드에서 고른 담당자({항목번호: uid}) —
+    추천을 그대로 받는 게 아니라 후보 중 고르거나 직접 지정할 수 있어야 한다(사용자 요청).
+    승인 전에 스테이징 내용과 State 를 **같이** 고쳐 지문을 다시 묶는다.
     """
+    assignees = {str(k): str(v or "").strip()
+                 for k, v in ((overrides or {}).get("assignees") or {}).items()}
+    if assignees:
+        # 실재 검증은 서버가 한다 — 화면 자동완성은 편의일 뿐 보증이 아니다.
+        from app.agent.tools._ctx import client, settings
+        from app.domain.search import search_users
+        for uid in {u for u in assignees.values() if u}:
+            try:
+                found = search_users(client(), settings(), uid, 5) or []
+            except Exception:
+                found = []
+            if not any(str(u.get("id") or "") == uid for u in found):
+                return {"thread_id": thread_id, "ok": False,
+                        "error": f"담당자 '{uid}' 를 찾을 수 없습니다. 사번(skcc.x1042 형식)을 확인하세요."}
+        ok, why = approval.amend_assignees(token, thread_id, assignees)
+        if not ok:
+            return {"thread_id": thread_id, "ok": False, "error": why}
+        # Operator 가 넘길 State 의 draft 에도 같은 값을 — 지문과 실행 인자가 일치해야 한다.
+        try:
+            vals = get_graph().get_state(_config(thread_id)).values or {}
+            draft = dict(vals.get("draft") or {})
+            items = [dict(it) for it in (draft.get("items") or [])]
+            for i, uid in assignees.items():
+                idx = int(i)
+                if 0 <= idx < len(items):
+                    if uid:
+                        items[idx]["assignee"] = uid
+                    else:
+                        items[idx].pop("assignee", None)
+            get_graph().update_state(_config(thread_id), {"draft": dict(draft, items=items)})
+        except Exception as e:
+            return {"thread_id": thread_id, "ok": False,
+                    "error": f"담당자 변경을 반영하지 못했습니다: {str(e)[:120]}"}
     if not approval.approve(token, thread_id):
         return {"thread_id": thread_id, "ok": False,
                 "error": "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다. 다시 요청하세요."}

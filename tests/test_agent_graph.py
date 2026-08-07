@@ -107,14 +107,16 @@ def test_graph_has_all_six_roles():
 def test_tool_using_roles_really_are_subgraphs():
     """서브그래프가 아니면 stream(subgraphs=True) 가 '도구 부르는 중'을 못 보여 준다.
 
-    Operator(결정적 modify)와 Historian(결정적 진척률 보강)은 여기 없다 — node() 를 한 겹 더
-    감싸면서 xray 가 클로저 속 서브그래프를 못 본다. 두 역할의 ReAct 는 build() 로 따로 지킨다.
+    Operator(결정적 modify)·Historian(결정적 진척률 보강)·Assigner(유사 이력 사전 취합)는
+    node() 를 한 겹 더 감싸면서 xray 가 클로저 속 서브그래프를 못 본다 — 세 역할의 ReAct 는
+    build() 로 따로 지킨다.
     """
     nodes = set(G.build().get_graph(xray=1).nodes)
-    for role in (Node.REFINER, Node.ASSIGNER):
-        assert f"{role}:think" in nodes and f"{role}:act" in nodes
+    assert f"{Node.REFINER}:think" in nodes and f"{Node.REFINER}:act" in nodes
+    from app.agent.workflow.agents.assigner import Assigner
     from app.agent.workflow.agents.historian import Historian
-    assert {"think", "act"} <= set(Historian().build().get_graph().nodes)
+    for role in (Historian(), Assigner()):
+        assert {"think", "act"} <= set(role.build().get_graph().nodes)
 
 
 def test_operator_keeps_react_for_creation():

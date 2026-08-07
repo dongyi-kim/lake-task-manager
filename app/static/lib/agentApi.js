@@ -50,7 +50,8 @@ export const agentApi = {
 
   ask: (body) => post("/api/agent/chat", body),
   snapshot: (tid) => getJson("/api/agent/snapshot/" + encodeURIComponent(tid)),
-  approve: (threadId, token) => post("/api/agent/approve", { threadId, token }),
+  approve: (threadId, token, overrides) =>
+    post("/api/agent/approve", overrides ? { threadId, token, overrides } : { threadId, token }),
   cancel: (threadId, token) => post("/api/agent/cancel", { threadId, token }),
 
   /**

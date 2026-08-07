@@ -318,6 +318,43 @@ def test_historian_injects_seed_map_for_mentioned_keys(monkeypatch):
     assert "후보:" in captured["seed_map"], "지도가 주입되지 않았다"
 
 
+def test_refiner_normalizes_priority_shorthand():
+    """P3 → P3-Minor 는 판단이 아니라 표기다 — 코드가 정규화해야 Reviewer 왕복이 안 샌다.
+
+    실측: 모델이 'P3' 로 내면 검증에서 튕기고, 재작성 한도가 소진되면 그 지적이
+    사용자 답변에 그대로 노출됐다("P3는 적절한 우선순위가 아닙니다").
+    """
+    from app.agent.workflow.agents.refiner import Refiner
+    r = Refiner()
+    out = r.apply({"turns": 0, "messages": []},
+                  {"mode": "task", "questions": [],
+                   "items": [{"summary": "[ETL] 정규화 확인", "type": "Task", "priority": "P3"},
+                             {"summary": "[ETL] 온전한 값 유지", "type": "Task",
+                              "priority": "P1-Critical"}]})
+    pris = [i["priority"] for i in out["draft"]["items"]]
+    assert pris == ["P3-Minor", "P1-Critical"]
+
+
+def test_approval_amend_assignees_rebinds_fingerprint():
+    """승인 카드에서 고른 담당자는 스테이징 내용과 지문을 **같이** 바꾼다.
+
+    승인 후엔 못 고친다 — 그건 '보여 준 것과 다른 실행'이다.
+    """
+    from app.agent import approval
+    t = approval.stage("th-x", "create_tickets",
+                       {"mode": "task", "items": [{"summary": "a", "type": "Task"}]})
+    ok, why = approval.amend_assignees(t, "th-x", {"0": "skcc.x1042"})
+    assert ok, why
+    rec = approval.peek(t)
+    assert rec["payload"]["items"][0]["assignee"] == "skcc.x1042"
+    assert rec["fp"] == approval.fingerprint(rec["payload"])
+    assert not approval.amend_assignees(t, "다른대화", {"0": "x"})[0]
+    assert not approval.amend_assignees(t, "th-x", {"9": "x"})[0]
+    approval.approve(t, "th-x")
+    assert not approval.amend_assignees(t, "th-x", {"0": "x"})[0]
+    approval.reject(t)
+
+
 def test_historian_task_renders_without_error():
     """task() 는 어떤 State 조합에서도 예외 없이 문자열을 내야 한다.
 
