@@ -198,16 +198,36 @@
 .agent-side-body { flex:1; overflow:auto; min-height:0; }
 .agent-side-body .tkd-page { min-height:100%; }
 
-/* 리치 입력 — 코멘트 에디터 재사용 + 멘션/티켓/문서 버튼 줄 */
-.agent-input-rich { display:flex; flex-direction:column; gap:6px; align-items:stretch; }
-.agent-input-tools { display:flex; align-items:center; gap:6px; }
-.agent-input-tools button { padding:3px 10px; font-size:11.5px; background:var(--panel);
-  color:var(--muted); border:1px solid var(--border); border-radius:6px; cursor:pointer; }
-.agent-input-tools button:hover { border-color:var(--accent); color:var(--text); }
-.agent-input-hint { margin-left:auto; font-size:10.5px; color:var(--muted-2); }
-.agent-send { align-self:flex-end; min-width:88px; }
+/* 리치 입력 — 클로드식 미니멀 박스. 밑은 코멘트 에디터(멘션·/jira·/confluence 재사용)지만
+   툴바·크기조절 등 크롬은 걷어낸다 — 채팅에 서식 메뉴는 과하다(사용자 지적). */
+.agent-input-rich { display:block; }
+.agent-chatbox { border:1.5px solid var(--border-hi); border-radius:14px; background:var(--panel);
+  padding:4px 6px 6px; }
+.agent-chatbox:focus-within { border-color:var(--accent); }
+/* 에디터 크롬 제거 + 본문을 채팅 입력답게 */
+.agent-chatbox .cmt-tb, .agent-chatbox .cmt-ed-grip { display:none !important; }
+.agent-chatbox .cmt-editor { border:0; background:transparent; }
+.agent-chatbox .cmt-ed-host { height:auto !important; min-height:40px; max-height:220px;
+  overflow-y:auto; border:0 !important; background:transparent; }
+.agent-chatbox .cmt-ed-host .ProseMirror { padding:8px 10px; min-height:40px; font-size:13.5px; }
+/* 하단 아이콘 줄 — @멘션 · 티켓 · 문서 + 원형 전송 */
+.agent-chatbox-bar { display:flex; align-items:center; gap:4px; padding:0 4px; }
+.agent-chatbox-bar > button { width:30px; height:30px; display:inline-flex; align-items:center;
+  justify-content:center; font-size:14px; background:transparent; color:var(--muted);
+  border:0; border-radius:8px; cursor:pointer; }
+.agent-chatbox-bar > button:hover { background:var(--panel-2); color:var(--text); }
+.agent-chatbox-space { flex:1; }
+.agent-send-round { width:32px !important; height:32px !important; border-radius:50% !important;
+  background:var(--accent) !important; color:#fff !important; font-size:16px !important;
+  font-weight:700; }
+.agent-send-round:disabled { opacity:.45; cursor:default; }
+.agent-send-round:hover { filter:brightness(1.08); }
 .agent-bubble.user.rich { white-space:normal; }
 .agent-bubble.user.rich p { margin:2px 0; }
+
+/* 대화 영역 — 배경과 구분되는 판(사용자 지적: 채팅과 배경이 안 갈림) */
+.agent-scroll { background:var(--panel); border:1px solid var(--border); border-radius:14px;
+  padding:16px 18px; margin:10px 0; }
 
 /* 답변 본문 속 사람 칩 — 프사+본명 (사번은 title 로) */
 .md-person { display:inline-flex; align-items:center; gap:4px; vertical-align:-2px;

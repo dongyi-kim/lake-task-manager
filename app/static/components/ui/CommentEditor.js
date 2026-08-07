@@ -977,6 +977,8 @@ export default {
     // 티켓 뷰가 영역으로 쪼개 보여 주는 건 설명뿐이라, 댓글에서 구분선을 허용하면 편집기에선
     // 선으로 보이다가 등록하면 그냥 '=== 제목 ===' 글자로 남는다 — 없는 구조를 약속하는 셈이다.
     sections: { type: Boolean, default: false },
+    // 자리표시자 문구 — 댓글이 아닌 곳(에이전트 채팅)에 임베드될 때 바꾼다. 빈 값 = 기본.
+    placeholder: { type: String, default: "" },
     // 이 에디터가 무엇을 쓰는 중인가 — **초안 저장소를 가르는 열쇠**다.
     // 예전엔 "내용이 비었으면 새 댓글" 로 봤는데, 설명이 빈 티켓의 본문 편집기가 같은 조건에
     // 걸려 **새 댓글 초안을 본문에 불러왔다**. 목적이 다르면 칸도 달라야 한다.
@@ -1033,7 +1035,8 @@ export default {
         T.TaskList, T.TaskItem.configure({ nested: true }),
         // inline:true — 이미지가 같은 줄에 글자와 나란히 놓이게(TipTap 기본은 블록이라 줄이 갈린다)
         imageResizeExt(T).configure({ inline: true }), linkBadgeExt(T),
-        T.Placeholder.configure({ placeholder: "댓글을 입력하세요. '/' 로 표·코드·티켓 넣기, @ 로 멘션, 마크다운(#, -, ``` )" }),
+        T.Placeholder.configure({ placeholder: this.placeholder
+          || "댓글을 입력하세요. '/' 로 표·코드·티켓 넣기, @ 로 멘션, 마크다운(#, -, ``` )" }),
       ],
       content: liftCheckboxes(this.sections ? liftSections(this.initial) : this.initial) || "",
       autofocus: true,

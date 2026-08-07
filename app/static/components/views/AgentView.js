@@ -442,9 +442,7 @@ export default {
       <div class="agent-main">
       <div class="agent-head">
         <div class="agent-title">
-          <h1>업무 착수 어시스턴트</h1>
-          <p>하려는 업무를 말하면 <b>과거 이력을 찾아 현재 상황을 정리</b>하고,
-             대화로 구체화해 <b>담당자 제안과 함께 티켓 초안</b>까지 만들어 드립니다.</p>
+          <h1>LTM Agent</h1>
         </div>
         <div class="agent-meta">
           <span v-if="status" class="agent-prov" :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
@@ -737,20 +735,23 @@ export default {
         </div>
       </div>
 
-      <!-- 입력 — 기존 코멘트 에디터를 그대로 재사용한다(사용자 요청: @멘션·/jira·/confluence
-           와 그 렌더링을 티켓 에디터와 같은 UI 로). 위 버튼 줄이 세 기능의 입구다. -->
+      <!-- 입력 — 클로드식 미니멀 채팅 박스. 밑은 코멘트 에디터지만(멘션·/jira·/confluence
+           팝업과 뱃지 렌더 재사용) 툴바 등 크롬은 CSS 로 걷어냈다 — 채팅에 서식 메뉴는
+           과하다(사용자 지적). 하단 아이콘 줄이 세 기능의 입구다. -->
       <div class="agent-input agent-input-rich" @keydown.capture="onRichKey">
-        <div class="agent-input-tools">
-          <button :disabled="busy" @click="edMention" title="사람 멘션 (@)">@ 멘션</button>
-          <button :disabled="busy" @click="edPick('jira')" title="티켓 링크 넣기 (/jira)">🎫 티켓</button>
-          <button :disabled="busy" @click="edPick('confluence')" title="문서 링크 넣기 (/confluence)">📄 문서</button>
-          <span class="agent-input-hint">@ 멘션 · '/' 로 티켓·문서 — Ctrl+Enter 전송</span>
+        <div class="agent-chatbox">
+          <CommentEditor ref="richEd" ticketKey="" kind="agentchat" :hideFooter="true"
+                         placeholder="하려는 업무를 적어 주세요 — @ 멘션 · '/' 로 티켓·문서"
+                         :submitFn="sendRich" />
+          <div class="agent-chatbox-bar">
+            <button :disabled="busy" @click="edMention" title="사람 멘션 (@)">@</button>
+            <button :disabled="busy" @click="edPick('jira')" title="티켓 링크 (/jira)">🎫</button>
+            <button :disabled="busy" @click="edPick('confluence')" title="문서 링크 (/confluence)">📄</button>
+            <span class="agent-chatbox-space"></span>
+            <button class="agent-send-round" :disabled="busy || ready === null"
+                    @click="submitRich" title="보내기 (Ctrl+Enter)">{{ busy ? '…' : '↑' }}</button>
+          </div>
         </div>
-        <CommentEditor ref="richEd" ticketKey="" kind="agentchat" :hideFooter="true"
-                       :submitFn="sendRich" />
-        <button class="ag-ok agent-send" :disabled="busy || ready === null" @click="submitRich">
-          {{ busy ? '…' : '보내기' }}
-        </button>
       </div>
       <div class="agent-foot">
         Ctrl+Enter 전송 — <b>승인하기 전에는 아무것도 만들거나 바꾸지 않습니다.</b>
