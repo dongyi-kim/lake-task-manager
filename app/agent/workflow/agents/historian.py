@@ -246,7 +246,13 @@ class Historian(ToolAgent):
         # (실측). 조사와 집계를 한 번의 ReAct 에서 섞을 수 있어야 한다.
         # 웹·GitHub 도 조사 범위다 — "CDC 방식 비교" 같은 일반 기술 지식은 사내에 없다.
         # 경계(사내 정보는 검색어에 안 넣는다)는 도구 docstring 과 SYSTEM_HISTORIAN 이 지킨다.
-        return T.SEARCH_TOOLS + T.WEB_TOOLS + [T.BY_NAME["get_progress"]]
+        # 외부 MCP 서버 도구(config/agent-mcp.json)도 조사 도구로 합류한다 — 없으면 빈 목록.
+        try:
+            from app.agent import mcp_client
+            ext = mcp_client.tools()
+        except Exception:
+            ext = []
+        return T.SEARCH_TOOLS + T.WEB_TOOLS + [T.BY_NAME["get_progress"]] + ext
 
     def system(self, state):
         return persona(state, SYSTEM_HISTORIAN)

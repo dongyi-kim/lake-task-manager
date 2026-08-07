@@ -26,6 +26,7 @@ class Node:
     REVIEWER = "reviewer"
     OPERATOR = "operator"
     RESPONDER = "responder"
+    CURATOR = "curator"        # 지식 질문 전담 — 조사 결과를 재사용 가능한 브리프로 정리
 
 
 class Intent:
@@ -71,6 +72,7 @@ class Stage:
         Node.REVIEWER: "규칙 검증",
         Node.OPERATOR: "티켓 생성",
         Node.RESPONDER: "답변 정리",
+        Node.CURATOR: "지식 정리",
         "pmo": "현황 조회",
     }
 
@@ -104,6 +106,7 @@ class AgentState(TypedDict, total=False):
 
     # ── PMO (my_day/progress/activity 직행) ──
     pmo_findings: list              # [{"key","point","action"}] 조회에서 확인한 사실
+    knowledge_brief: dict           # Curator — {concepts, our_context, references, gaps}
     pmo_caution: str                # 읽을 때의 주의(활동 적음 ≠ 태만 등)
 
     # ── Refiner ──

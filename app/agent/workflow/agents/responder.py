@@ -72,7 +72,19 @@ class Responder(TextAgent):
         pmo = "\n".join(
             f"- {f.get('key','')} {f.get('point','')}" + (f" → {f['action']}" if f.get("action") else "")
             for f in (state.get("pmo_findings") or []))
+        # 지식 브리프(Curator) — 있으면 답변의 뼈대다: 개념 → 우리 상황 → 참고 → 공백 순.
+        kb = state.get("knowledge_brief") or {}
+        brief = ""
+        if kb:
+            brief = "\n".join(
+                ["[개념]"] + [f"- {c.get('term')}: {c.get('explanation')}" for c in kb.get("concepts") or []]
+                + ["[우리 상황]", kb.get("our_context") or ""]
+                + ["[참고]"] + [f"- {r.get('ref')} — {r.get('why')}" for r in kb.get("references") or []]
+                + ["[남은 공백]"] + [f"- {g}" for g in kb.get("gaps") or []])
+            goal = ("지식 브리프를 뼈대로 답하라: 개념 설명 → 우리 프로젝트의 상황(근거 병기) → "
+                    "참고할 것 → 아직 모르는 것 순. 브리프에 없는 내용을 보태지 마라.")
         data = wrap_data(
+            data_block("지식 브리프(Curator 정리)", brief),
             data_block("현재 상황(조사 결과)", state.get("situation")),
             data_block("현황 조회 결과", pmo),
             data_block("읽을 때 주의", state.get("pmo_caution")),

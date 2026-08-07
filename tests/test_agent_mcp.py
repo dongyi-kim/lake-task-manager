@@ -88,3 +88,47 @@ def test_scenario_prompts_are_listed_and_render(server):
     names, text = _run(go)
     assert {"plan_work", "report_bug", "my_day", "check_progress"} <= names
     assert "적재 배치 실패" in text and "중복" in text
+
+
+# ── MCP 클라이언트(외부 서버 소비) — 자체 서버를 외부인 척 띄워 실왕복한다 ──────────
+def test_mcp_client_wraps_external_server_tools(monkeypatch, tmp_path):
+    """config 에 적힌 stdio MCP 서버의 도구가 LangChain 도구로 감싸져 실제 호출까지 된다.
+
+    네트워크 없이 검증하기 위해 **우리 MCP 서버**를 외부 서버인 것처럼 설정에 적는다 —
+    프로세스 기동·initialize·list_tools·call_tool 전 구간이 실물로 돈다.
+    """
+    import json as _json
+    import os as _os
+    import sys as _sys
+    from pathlib import Path as _P
+    from app.agent import mcp_client
+    root = str(_P(__file__).resolve().parent.parent)
+    cfg = tmp_path / "agent-mcp.json"
+    cfg.write_text(_json.dumps({"servers": [{
+        "name": "self", "command": _sys.executable,
+        "args": ["-m", "app.agent.mcp_server"],
+        "env": {**_os.environ, "PYTHONPATH": root, "JIRA_ENV": "mock",
+                "LAKE_AGENT_PROVIDER": "fake"},
+        "enabled": True}]}), encoding="utf-8")
+    monkeypatch.setattr(mcp_client, "_config_path", lambda: cfg)
+    tools = mcp_client.tools(refresh=True)
+    assert tools, "외부 서버 도구가 하나도 안 붙었다"
+    names = {t.name for t in tools}
+    assert any(n.startswith("mcp_self_") for n in names), names
+    # 읽기 도구 하나를 실제로 부른다 — 검색은 mock world 를 상대로 실데이터를 돌려준다
+    search = next(t for t in tools if "search" in t.name)
+    out = search.invoke({"query": "데이터"})
+    assert isinstance(out, str) and len(out) > 10 and "실패" not in out[:30], out[:200]
+
+
+def test_mcp_client_is_failsoft_without_config_or_server(monkeypatch, tmp_path):
+    """설정이 없으면 빈 목록, 서버 실행 파일이 없으면 그 서버만 조용히 빠진다."""
+    import json as _json
+    from app.agent import mcp_client
+    monkeypatch.setattr(mcp_client, "_config_path", lambda: None)
+    assert mcp_client.tools(refresh=True) == []
+    bad = tmp_path / "agent-mcp.json"
+    bad.write_text(_json.dumps({"servers": [{"name": "ghost", "command": "no-such-binary-xyz",
+                                             "enabled": True}]}), encoding="utf-8")
+    monkeypatch.setattr(mcp_client, "_config_path", lambda: bad)
+    assert mcp_client.tools(refresh=True) == []      # 예외가 아니라 빈 목록

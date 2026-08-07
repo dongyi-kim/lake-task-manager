@@ -208,6 +208,14 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
                               "mode": draft.get("mode") or "task", "items": as_bulk_items(draft),
                               "rationale": draft.get("rationale") or ""}
 
+    # 생성 컨텍스트에서는 **작성 중인 초안**도 내려보낸다(승인 전 단계 포함) — 우측
+    # 미리보기가 되묻기 라운드마다 갱신되며 자라는 것을 보여 준다(사용자 요청).
+    from app.agent.workflow.state import Intent as _I
+    if (data.get("intent") or "") in _I.DRAFTS_TICKETS and not out.get("pending"):
+        items = (data.get("draft") or {}).get("items") or []
+        if items:
+            out["draft_items"] = items
+
     # 사람은 사번만 달랑 보내지 않는다 — 화면이 아바타+본명으로 그릴 수 있게 id→이름 지도를
     # 함께 싣는다(사용자 지적: "jira username만 딸랑 나오네"). 다른 화면들과 같은 포맷.
     out["people"] = _people_names(out)

@@ -305,3 +305,37 @@ def test_snapshot_restores_a_conversation():
     from app.agent.workflow import session
     tid = session.ask("데이터 카탈로그 관련 이력 알려줘")["thread_id"]
     assert session.snapshot(tid)["thread_id"] == tid
+
+
+def test_knowledge_question_routes_through_curator():
+    """지식형 ask("X가 뭐야/정리해줘")는 Historian → Curator → Responder 로 흐른다.
+
+    Curator 는 신설 역할(사용자 요청) — 조사 결과를 개념/우리 상황/참고/공백 스키마로
+    정리한다. 도구는 없다(새 조사 금지). fake 로 경로와 State 필드만 검증한다.
+    """
+    from app.agent.workflow.graph import route_after_historian
+    from app.agent.workflow.state import Intent
+    from langchain_core.messages import HumanMessage
+    st = {"intent": Intent.ASK, "messages": [HumanMessage(content="CDC가 뭐야? 정리해줘")]}
+    assert route_after_historian(st) == "curate"
+    st2 = {"intent": Intent.ASK, "messages": [HumanMessage(content="DL-101 왜 멈췄었지?")]}
+    assert route_after_historian(st2) == "respond"
+    st3 = {"intent": Intent.PLAN_WORK, "messages": [HumanMessage(content="CDC가 뭐야 정리")]}
+    assert route_after_historian(st3) == "refine"
+    assert "curator" in set(G.build().get_graph().nodes)
+
+
+def test_curator_produces_brief_from_materials():
+    import os
+    os.environ["LAKE_AGENT_PROVIDER"] = "fake"
+    from app.agent.workflow.agents.curator import Curator
+    from langchain_core.messages import HumanMessage
+    c = Curator()
+    txt = c.task({"messages": [HumanMessage(content="CDC가 뭐야?")],
+                  "situation": "DL-118 에서 검토", "evidence": [],
+                  "web_context": "- CDC 는 변경 데이터 캡처"})
+    assert "외부 기술 조사" in txt and "DL-118" in txt
+    out = c.apply({}, {"concepts": [{"term": "CDC", "explanation": "x"}],
+                       "our_context": "사내 이력 없음", "references": [], "gaps": ["도입 여부"]})
+    kb = out["knowledge_brief"]
+    assert kb["concepts"] and kb["gaps"] == ["도입 여부"]

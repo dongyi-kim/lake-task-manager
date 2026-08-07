@@ -42,6 +42,7 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.workflow.agents.assigner import Assigner, merge_assignments
+from app.agent.workflow.agents.curator import Curator
 from app.agent.workflow.agents.historian import Historian
 from app.agent.workflow.agents.operator import Operator
 from app.agent.workflow.agents.planner import Planner
@@ -76,8 +77,21 @@ def route_after_planner(state: AgentState) -> str:
 
 
 def route_after_historian(state: AgentState) -> str:
-    """조사만 하면 되는 요청은 여기서 끝낸다 — 티켓 초안까지 갈 이유가 없다."""
-    return "refine" if (state.get("intent") or "") in Intent.DRAFTS_TICKETS else "respond"
+    """조사만 하면 되는 요청은 여기서 끝낸다 — 티켓 초안까지 갈 이유가 없다.
+
+    지식형 질문("X가 뭐야", "정리해줘")은 Curator 를 거친다 — 조사 결과를 개념/우리 상황/
+    참고/공백 스키마로 정리해야 답이 재사용 가능한 브리프가 된다(사용자 요청으로 신설).
+    """
+    intent = state.get("intent") or ""
+    if intent in Intent.DRAFTS_TICKETS:
+        return "refine"
+    if intent == Intent.ASK:
+        from app.agent.workflow.state import last_user_text
+        asked = last_user_text(state)
+        if any(w in asked for w in ("뭐야", "무엇", "뭔지", "정리", "설명", "알려줘",
+                                    "지식", "개념", "어떻게 쓰")):
+            return "curate"
+    return "respond"
 
 
 def route_after_refiner(state: AgentState) -> str:
@@ -174,6 +188,7 @@ def build(checkpointer=None):
     g.add_node(Node.PLANNER, _node(Planner()))
     g.add_node("pmo", _node(PMO()))
     g.add_node(Node.HISTORIAN, _node(Historian()))
+    g.add_node(Node.CURATOR, _node(Curator()))
     g.add_node(Node.REFINER, _node(Refiner()))
     g.add_node(Node.ASSIGNER, _node(Assigner()))
     g.add_node("merge_assignments", _merge_assignments)
@@ -188,7 +203,9 @@ def build(checkpointer=None):
                              "respond": Node.RESPONDER})
     g.add_edge("pmo", Node.RESPONDER)
     g.add_conditional_edges(Node.HISTORIAN, route_after_historian,
-                            {"refine": Node.REFINER, "respond": Node.RESPONDER})
+                            {"refine": Node.REFINER, "respond": Node.RESPONDER,
+                             "curate": Node.CURATOR})
+    g.add_edge(Node.CURATOR, Node.RESPONDER)
     g.add_conditional_edges(Node.REFINER, route_after_refiner,
                             {"assign": Node.ASSIGNER, "respond": Node.RESPONDER,
                              "propose": "propose"})

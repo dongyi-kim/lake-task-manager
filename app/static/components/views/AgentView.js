@@ -180,12 +180,15 @@ export default {
               assignments: ev.assignments || [], review: ev.review || {},
               pending: ev.pending || null, result: ev.result || null,
               usage: ev.usage || null, people: ev.people || {},
+              draftItems: ev.draft_items || [],
             });
             if (ev.pending && ev.pending.items) this.loadEpicTree(ev.pending);
             this.pickedAssignee = {}; this.cardCustom = {}; this.previewOn = {};
             this.customOn = {};
-            // 초안이 오면 우측 미리보기를 **자동으로** 연다 — 만들 실물을 옆에 두고 승인한다.
-            this.sideDraft = (ev.pending && (ev.pending.items || []).length) ? 0 : -1;
+            // 초안(승인 대기 또는 작성 중)이 오면 우측 미리보기를 **자동으로** 연다 —
+            // 생성 컨텍스트 내내 옆에서 자라는 것을 본다.
+            const nItems = ((ev.pending && ev.pending.items) || ev.draft_items || []).length;
+            this.sideDraft = nItems ? Math.min(this.sideDraft < 0 ? 0 : this.sideDraft, nItems - 1) : -1;
             this.saveConvo();
                 if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
             this.busy = false;
@@ -243,10 +246,22 @@ export default {
       this.threadId = ""; this.turns = []; this.steps = []; this.busy = false;
       this.sideDraft = -1;
     },
-    /** 우측 패널이 미리보는 초안 턴 — 승인 대기는 마지막 턴에만 유효하다. */
+    /** 우측 패널이 미리보는 초안 턴 — 승인 대기(pending) 또는 **작성 중**(draftItems).
+     *  생성 컨텍스트가 시작되면 패널이 뜨고, 되묻기에 답할 때마다 내용이 갱신된다. */
     draftTurn() {
       const last = this.turns[this.turns.length - 1];
-      return last && last.pending && (last.pending.items || []).length ? last : null;
+      if (!last || last.who !== "agent") return null;
+      const items = (last.pending && last.pending.items) || last.draftItems || [];
+      return items.length ? last : null;
+    },
+    sideItems() {
+      const t = this.draftTurn();
+      return t ? ((t.pending && t.pending.items) || t.draftItems || []) : [];
+    },
+    sideItem() { return this.sideItems()[this.sideDraft] || {}; },
+    sidePendingReady() {
+      const t = this.draftTurn();
+      return !!(t && t.pending && (t.pending.items || []).length);
     },
 
     // ── 최근 대화(좌측 사이드바) — localStorage 보관. 서버 체크포인터는 재시작하면
@@ -753,41 +768,38 @@ export default {
            전역 모달(TicketDialog)이 그대로 뜬다. -->
       <div v-if="draftTurn() && sideDraft >= 0" class="agent-side">
         <div class="agent-side-h">
-          <b>만들 티켓 미리보기</b>
-          <span v-if="(draftTurn().pending.items || []).length > 1" class="agent-side-nav">
-            <button v-for="(x, xi) in draftTurn().pending.items" :key="xi"
+          <b>{{ sidePendingReady() ? '만들 티켓 미리보기' : '티켓 초안 (작성 중)' }}</b>
+          <span v-if="sideItems().length > 1" class="agent-side-nav">
+            <button v-for="(x, xi) in sideItems()" :key="xi"
                     :class="{ on: sideDraft === xi }" @click="sideDraft = xi">{{ xi + 1 }}</button>
           </span>
           <button class="agent-reset" @click="sideDraft = -1" title="닫기">✕</button>
         </div>
-        <div class="agent-side-body" v-if="itemOf(draftTurn().pending, sideDraft).summary">
+        <div class="agent-side-body" v-if="sideItem().summary">
           <div class="ai-ticketview side">
             <div class="tv-head">
-              <span class="ai-type">{{ itemOf(draftTurn().pending, sideDraft).type }}</span>
-              <b>{{ itemOf(draftTurn().pending, sideDraft).summary }}</b>
+              <span class="ai-type">{{ sideItem().type }}</span>
+              <b>{{ sideItem().summary }}</b>
             </div>
             <div class="tv-meta">
-              <span v-if="itemOf(draftTurn().pending, sideDraft).epic">상위
-                <a href="#" class="tkt" :data-key="itemOf(draftTurn().pending, sideDraft).epic">
-                  {{ itemOf(draftTurn().pending, sideDraft).epic }}</a></span>
-              <span v-if="(itemOf(draftTurn().pending, sideDraft).components || []).length">
-                모듈 {{ itemOf(draftTurn().pending, sideDraft).components.join(', ') }}</span>
-              <span v-for="lb in (itemOf(draftTurn().pending, sideDraft).labels || [])" :key="lb"
-                    class="tv-label">{{ lb }}</span>
-              <span v-if="itemOf(draftTurn().pending, sideDraft).priority">
-                {{ itemOf(draftTurn().pending, sideDraft).priority }}</span>
-              <span v-if="itemOf(draftTurn().pending, sideDraft).duedate">
-                마감 {{ itemOf(draftTurn().pending, sideDraft).duedate }}</span>
-              <span v-if="pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft))">담당
-                <Avatar :user="pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft))"
-                        :name="personName(draftTurn(), pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft)))"
+              <span v-if="sideItem().epic">상위
+                <a href="#" class="tkt" :data-key="sideItem().epic">{{ sideItem().epic }}</a></span>
+              <span v-if="(sideItem().components || []).length">
+                모듈 {{ sideItem().components.join(', ') }}</span>
+              <span v-for="lb in (sideItem().labels || [])" :key="lb" class="tv-label">{{ lb }}</span>
+              <span v-if="sideItem().priority">{{ sideItem().priority }}</span>
+              <span v-if="sideItem().duedate">마감 {{ sideItem().duedate }}</span>
+              <span v-if="pickFor(draftTurn(), sideDraft, sideItem())">담당
+                <Avatar :user="pickFor(draftTurn(), sideDraft, sideItem())"
+                        :name="personName(draftTurn(), pickFor(draftTurn(), sideDraft, sideItem()))"
                         :size="14" />
-                {{ personName(draftTurn(), pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft)))
-                   || pickFor(draftTurn(), sideDraft, itemOf(draftTurn().pending, sideDraft)) }}</span>
+                {{ personName(draftTurn(), pickFor(draftTurn(), sideDraft, sideItem()))
+                   || pickFor(draftTurn(), sideDraft, sideItem()) }}</span>
             </div>
-            <div class="ai-desc-html"
-                 v-html="descPreview(itemOf(draftTurn().pending, sideDraft).description)"></div>
-            <div class="tv-hint">담당자 변경·승인은 왼쪽 카드에서 합니다 — 선택하면 여기 즉시 반영됩니다.</div>
+            <div class="ai-desc-html" v-html="descPreview(sideItem().description)"></div>
+            <div class="tv-hint">{{ sidePendingReady()
+              ? '담당자 변경·승인은 왼쪽 카드에서 합니다 — 선택하면 여기 즉시 반영됩니다.'
+              : '아직 작성 중인 초안입니다 — 질문에 답하거나 피드백을 주면 이 내용이 바뀝니다.' }}</div>
           </div>
         </div>
       </div>
