@@ -53,6 +53,7 @@ export default {
       answers: {},            // 되묻기 폼의 답(qi → 값)
       customOn: {},           // 객관식 질문에서 '직접 입력'을 고른 상태(qi → bool). 우선순위엔 없다
       qDone: {},              // 답을 확정한 질문(qi → bool) — 접혀서 선택만 보인다
+      stepsOpen: false,       // 진행 표시 펼침 — 기본은 접힘(현재 단계만)
       previewOn: {},          // 초안 항목별 티켓 미리보기 토글(i → bool)
       epicTrees: {},          // 생성 카드의 계보 컨텍스트(epicKey → children[])
       priorities: [],
@@ -165,10 +166,16 @@ export default {
             this.saveConvo();          // 첫 전송 즉시 사이드바에 뜬다 — 답변까지 기다리지 않는다
           }
           else if (ev.type === "node" || ev.type === "step") {
-            // 같은 라벨이 연달아 오면 한 줄로 묶는다(도구를 여러 번 부르면 step 이 쏟아진다).
+            // 같은 라벨이 연달아 오면 한 줄로 묶고, 단계별 **소요시간**을 기록한다 —
+            // 어디서 느린지 보여야 기다림이 납득된다(사용자 지적).
+            const now = Date.now();
             const last = this.steps[this.steps.length - 1];
-            if (last && last.label === ev.label) last.note = ev.note || last.note;
-            else this.steps.push({ label: ev.label, note: ev.note || "" });
+            if (last && !last.dur) last.dur = ((now - last.t) / 1000).toFixed(1);
+            if (last && last.label === ev.label) {
+              last.note = ev.note || last.note; last.dur = null; last.t = now;
+            } else {
+              this.steps.push({ label: ev.label, note: ev.note || "", t: now, dur: null });
+            }
             this.$nextTick(this.scroll);
           } else if (ev.type === "error") {
             turn.text = "문제가 생겼습니다 — " + (ev.message || "알 수 없는 오류");
@@ -815,10 +822,16 @@ export default {
           </div>
         </div>
 
-        <!-- 진행 상황: 멈춘 것과 일하는 중을 구분해 준다 -->
+        <!-- 진행 상황: 접으면 현재 단계만, 펼치면 전체 + 단계별 소요시간 -->
         <div v-if="busy && steps.length" class="agent-steps">
-          <div v-for="(s, i) in steps" :key="i" class="agent-step" :class="{ now: i === steps.length - 1 }">
-            <span class="sdot"></span><b>{{ s.label }}</b><em v-if="s.note">{{ s.note }}</em>
+          <button class="agent-steps-h" @click="stepsOpen = !stepsOpen">
+            {{ stepsOpen ? '▾' : '▸' }} 진행 {{ steps.length }}단계</button>
+          <div v-for="(s, i) in steps" :key="i" class="agent-step"
+               v-show="stepsOpen || i === steps.length - 1"
+               :class="{ now: i === steps.length - 1 }">
+            <span class="sdot"></span><b>{{ s.label }}</b>
+            <em v-if="s.note">{{ s.note }}</em>
+            <span class="sdur">{{ s.dur ? s.dur + 's' : '…' }}</span>
           </div>
         </div>
       </div>

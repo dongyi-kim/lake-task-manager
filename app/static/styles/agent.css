@@ -335,6 +335,13 @@
   font-weight:600; }
 .md-avt { width:15px; height:15px; border-radius:50%; object-fit:cover; }
 
+/* 진행 표시 — 폴딩 토글 + 단계별 소요시간 */
+.agent-steps-h { display:block; background:none; border:0; padding:2px 0 6px; cursor:pointer;
+  font:inherit; font-size:11px; font-weight:700; color:var(--muted-2); }
+.agent-steps-h:hover { color:var(--text); }
+.agent-step .sdur { margin-left:auto; flex:none; font-size:10.5px; color:var(--muted-2);
+  font-variant-numeric:tabular-nums; }
+
 /* 근거 폴딩 토글 — 기본 접힘 */
 .agent-ev-toggle { display:block; background:none; border:0; padding:2px 0; cursor:pointer;
   font:inherit; font-size:11px; font-weight:700; color:var(--muted-2); }

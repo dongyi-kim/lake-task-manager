@@ -357,9 +357,34 @@ def _events(chunk):
     if not isinstance(payload, dict):
         return
     from app.agent.workflow.state import Stage
+    _TOOL_KO = {  # 도구명 → 사람이 읽는 라벨. "도구 사용 중"만으로는 어디서 느린지 모른다(사용자 지적)
+        "search_work_history": "사내 이력 검색", "deep_search": "의미 기반 재검색(RAG)",
+        "get_ticket": "티켓 열람", "get_ticket_context": "연관 링크 추적",
+        "map_ticket_neighborhood": "계보·주변 지도", "get_epic_tree": "Epic 트리 조회",
+        "find_parent_epic": "상위 Epic 탐색", "run_jql": "JQL 실행",
+        "search_rules": "사내 규칙·가이드 검색", "search_web": "웹 검색",
+        "search_github": "GitHub 검색", "get_team_workload": "팀 워크로드 조회",
+        "get_module_people": "모듈 로스터 조회", "get_person_profile": "인물 프로필 조회",
+        "get_ticket_participants": "티켓 유관자 조회", "get_my_workload": "내 일감 조회",
+        "get_progress": "진척률 계산", "find_stale_tickets": "정체 티켓 조회",
+        "find_unassigned_tickets": "미배정 티켓 조회", "get_user_activity": "활동 내역 조회",
+        "whoami": "사용자 확인", "list_ticket_options": "허용값 조회",
+        "list_child_types": "하위 유형 조회", "validate_ticket_plan": "초안 검증",
+        "create_tickets": "티켓 생성", "create_epic": "Epic 생성",
+        "update_ticket": "티켓 변경", "add_ticket_comment": "코멘트 등록",
+    }
     for node, patch in payload.items():
-        if node in ("think", "act"):        # 서브그래프 내부 — 도구를 부르는 중이라는 신호만
-            yield {"type": "step", "node": node, "label": "도구 사용 중"}
+        if node == "think":
+            # think 의 산출(AIMessage)에 다음에 부를 도구가 실려 있다 — 이름을 보여 준다.
+            names = []
+            for m in (patch or {}).get("messages") or []:
+                for tc in (getattr(m, "tool_calls", None) or []):
+                    names.append(_TOOL_KO.get(tc.get("name"), tc.get("name")))
+            yield {"type": "step", "node": node,
+                   "label": (" · ".join(names[:3])) if names else "다음 단계 판단 중"}
+            continue
+        if node == "act":
+            yield {"type": "step", "node": node, "label": "도구 실행 결과 수신"}
             continue
         ev = {"type": "node", "node": node, "label": Stage.LABELS.get(node, node)}
         if isinstance(patch, dict) and patch.get("trace"):
