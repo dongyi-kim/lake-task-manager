@@ -171,3 +171,43 @@ def test_structure_choice_is_recorded_where_a_human_can_review_it():
                  structure_why="토픽 3개는 같은 산출물의 분량 분할")
     assert r["draft"]["structure"] == "task_with_subtasks"
     assert "분량 분할" in r["draft"]["rationale"]
+
+
+# ── 초안이 비지 않게: 코드가 채우는 것들 ────────────────────────────
+def test_component_is_filled_from_the_title_prefix():
+    """제목 규약이 '[모듈] …' 이다 — 필드에 빠뜨리면 워크로드 집계에서 통째로 사라진다."""
+    r = _applied(item={"summary": "[ETL] 적재 재시도 로직 추가", "components": []})
+    assert r["draft"]["items"][0]["components"] == ["ETL"]
+
+
+def test_an_unknown_prefix_is_not_forced_into_a_component():
+    r = _applied(item={"summary": "[긴급] 뭔가 하기", "components": []})
+    assert not r["draft"]["items"][0].get("components")
+
+
+def test_empty_child_owners_get_spread_across_the_module():
+    """'사람 나눠서' 라고 한 일에 담당이 하나도 없으면 나눈 의미가 없다.
+    Assigner 는 상위 items 만 보므로(자식은 그 뒤에 생긴다) 여기서 코드가 채운다."""
+    r = _applied(item={"components": ["ETL"], "children": [
+        {"summary": "1~10번 테이블 등록"}, {"summary": "11~20번 테이블 등록"},
+        {"summary": "21~30번 테이블 등록"}]})
+    owners = [c.get("assignee") for c in r["draft"]["items"][0]["children"]]
+    assert all(owners) and len(set(owners)) >= 2, owners
+    from app.infra.settings import load_people
+    assert set(owners) <= set(load_people()["ETL"])
+
+
+def test_explicit_child_owners_are_left_alone():
+    """사용자가 '성능 측정은 x1402' 라고 지정한 것을 코드가 뒤엎으면 안 된다."""
+    r = _applied(item={"components": ["ETL"], "children": [
+        {"summary": "성능 측정", "assignee": "skcc.x1042"},
+        {"summary": "가이드 작성"}]})
+    kids = r["draft"]["items"][0]["children"]
+    assert kids[0]["assignee"] == "skcc.x1042"
+    assert kids[1]["assignee"] and kids[1]["assignee"] != "skcc.x1042", "빈 것만 채운다"
+
+
+def test_saying_it_will_split_without_children_is_flagged():
+    """'나눠서 진행한다'고 판단해 놓고 children 이 없으면 그건 판단이 아니라 말뿐이다."""
+    r = _applied(structure="task_with_subtasks", structure_why="여러 사람이 나눠서")
+    assert "확인 필요" in r["draft"]["rationale"]

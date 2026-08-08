@@ -16,6 +16,7 @@ Reviewer 에서 튕기고 왕복이 한 번 늘어난다. 만들기 전에 실�
 from __future__ import annotations
 
 import json
+import re as _re
 
 from app.agent.prompts.roles import SYSTEM_REFINER
 from app.agent.workflow.agents.base import ToolAgent
@@ -200,7 +201,11 @@ class Refiner(ToolAgent):
         defaults = any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠"))
         force_rule = ("\n- ★ 사용자가 **알아서 진행하라고 했다. questions 는 반드시 빈 배열**로 내고 "
                       "지금 아는 것 + 기본값으로 items 를 완성하라. 담당자는 비워 둔다(다음 단계가 "
-                      "정한다). 기한은 사용자가 말한 것을 쓰고, 없으면 비워 둔다."
+                      "정한다). 기한은 사용자가 말한 것을 쓰고, 없으면 비워 둔다.\n"
+                      "- ★ **items 가 빈 배열인 채로 끝내지 마라.** 조사에서 비슷한 티켓이 "
+                      "나왔든 정보가 조금 모자라든, 지금 아는 것으로 초안을 만들고 미확정은 "
+                      "rationale 에 적는다. 질문만 내고 초안이 0건이면 사용자는 아무것도 "
+                      "승인할 수 없다 — 위임받고 아무것도 안 한 셈이다."
                       if defaults else "")
         # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
         if (state.get("intent") or "") == Intent.REPORT_BUG:
@@ -261,7 +266,9 @@ class Refiner(ToolAgent):
   승인 카드에 '신규 라벨'로 표시돼 사용자가 판단한다. 오탈자·동의어를 새로 만들지 마라.
 - **분업이 필요한 큰 일**: 산출물이 여럿이면 Task 를 나누고(각각 담당 한 명),
   산출물 하나를 여럿이 나눠 하는 것이면 그 Task 의 **children 에 Sub-Task 로** 적는다.
-- 이미 같은 일이 진행 중이면 새로 만들지 말고 questions 로 사용자 판단을 구한다.{force_rule}
+- 이미 같은 일이 진행 중이면 새로 만들지 말고 questions 로 사용자 판단을 구한다 — 단,
+  **사용자가 '알아서'라고 했다면 묻지 말고 초안을 내고** rationale 에 "기존 DL-x 와 겹칠 수
+  있음"을 적는다(위임했는데 질문으로 되돌리면 아무것도 안 만들어진다).{force_rule}
 
 ## 대화
 {conversation(state)}
@@ -293,6 +300,13 @@ class Refiner(ToolAgent):
             # ★ 전부 Sub-Task 이고 부모가 실재하면 **모드를 승격**한다 — 사용자가 "DL-9090 밑에
             #   서브태스크 3개" 라고 부모를 지목했는데 mode 만 task 로 잘못 낸 경우다. 여기서
             #   버리면 "만들겠습니다" 라고 말해 놓고 초안이 0건이 된다(실측: PAR1).
+            # 모델이 parent 를 비운 채 Sub-Task 만 내는 일이 잦다 — 사용자가 "DL-9090 밑에"
+            # 라고 지목했으면 그 키가 부모다(실재는 조사에서 이미 확인됐다).
+            named = [k for k in (state.get("mentioned_keys") or []) if _ticket_exists(k)]
+            if subs and named:
+                for i in subs:
+                    if not str(i.get("parent") or "").strip():
+                        i["parent"] = named[0]
             if subs and len(subs) == len(items) and all(_ticket_exists(i.get("parent")) for i in subs):
                 mode = "subtask"
                 out["mode"] = "subtask"
@@ -348,7 +362,6 @@ class Refiner(ToolAgent):
         # 대화가 끝나면 Historian 의 조사는 증발하지만, 티켓 description 에 남기면 동적 RAG 가
         # 다음 조사에서 그걸 다시 수확한다(지식이 복리로 쌓인다). 습관을 프롬프트에 맡기지 않고
         # 코드가 보장한다 — 모델이 적었으면 그대로 두고, 안 적었으면 붙인다.
-        import re as _re
         refs = []
         for e in (state.get("evidence") or [])[:5]:
             k, why = (e.get("key") or "").strip(), (e.get("why") or e.get("title") or "").strip()
@@ -412,6 +425,46 @@ class Refiner(ToolAgent):
                         c["assignee"] = pool[i % len(pool)]
                     out["rationale"] = ((out.get("rationale") or "")
                                         + "\n(같은 분량 작업이라 담당을 골고루 나눴다)").strip()
+
+        # ── 컴포넌트가 비면 제목의 [모듈] 접두에서 채운다 ────────────────
+        # 우리 제목 규약이 "[모듈] 무엇을 한다"다. 모델이 제목엔 넣고 필드엔 빠뜨리는 일이
+        # 잦은데, 컴포넌트가 없으면 워크로드 집계에서 통째로 빠지고 담당도 못 고른다.
+        known_comps = _known_components()
+        for it in items:
+            if it.get("components"):
+                continue
+            m = _re.match(r"^\s*\[([^\]]+)\]", str(it.get("summary") or ""))
+            name = (m.group(1).strip() if m else "")
+            if name and name in known_comps:
+                it["components"] = [name]
+
+        # ── 자식 담당을 비워 두지 않는다 ─────────────────────────────────
+        # "사람 나눠서" 라고 한 일에 담당이 하나도 없으면 나눈 의미가 없다. Assigner 는
+        # 상위 items 만 보므로(자식은 그 뒤에 생긴다) 여기서 코드가 채운다 — 사용자가
+        # 지정한 자식 담당은 건드리지 않고, **빈 것만** 모듈 로스터로 돌린다.
+        for it in items:
+            kids = [c for c in (it.get("children") or []) if isinstance(c, dict)]
+            empty = [c for c in kids if not str(c.get("assignee") or "").strip()]
+            if not kids or not empty:
+                continue
+            taken = [str(c.get("assignee")).strip() for c in kids
+                     if str(c.get("assignee") or "").strip()]
+            pool = [u for u in _module_pool(it, taken[0] if taken else "") if u]
+            if not pool:
+                continue
+            order = [u for u in pool if u not in taken] or pool
+            for n, c in enumerate(empty):
+                c["assignee"] = order[n % len(order)]
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(나눠 맡도록 자식 담당을 모듈 인력에 배분했다 — "
+                                  "승인 화면에서 바꿀 수 있다)").strip()
+
+        # ── 구조 판단과 산출이 어긋나면 알린다 ──────────────────────────
+        # "Sub-Task 로 나눈다"고 해 놓고 children 이 없으면 그건 판단이 아니라 말뿐이다.
+        if structure == "task_with_subtasks" and not any(i.get("children") for i in items):
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(확인 필요: 나눠서 진행한다고 판단했는데 Sub-Task 가 "
+                                  "없다 — 한 티켓으로 둘지 쪼갤지 정해야 한다)").strip()
 
         # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
         # Reviewer 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
@@ -663,3 +716,12 @@ def _ticket_exists(key) -> bool:
         return bool((client().get_issue(k) or {}).get("key"))
     except Exception:
         return False
+
+
+def _known_components() -> set:
+    try:
+        from app.agent.tools.write_tools import list_ticket_options
+        return {str(x) for x in ((list_ticket_options.invoke({"kind": "components"}) or {})
+                                 .get("components") or [])}
+    except Exception:
+        return set()
