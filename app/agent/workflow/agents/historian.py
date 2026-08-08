@@ -205,20 +205,14 @@ def _topic_dossier(term: str) -> str:
         return ""
     hits, docs = found.get("hits") or [], found.get("documents") or []
     if not hits and not docs:
-        # ★ 정확 표기 미발견 — 유사 식별자가 있으면 **그걸로 교정 재수행**한다.
-        # 실측: 'fdc_flat_summary_ic'(오탈자)·'fdc trace summary ic'(공백형)를
-        # '기록 없음'으로 답하고, 사용자가 정확 표기를 대야 그제야 찾았다.
+        # ★ 정확 표기 미발견 — 유사 식별자 **후보**만 돌려준다. 추정으로 전체 히스토리를
+        # 답하는 대신 객관식으로 확인받는다(사용자 결정 — 오탈자 추정은 어디까지나 추정이다).
+        # 공백형(밑줄만 뺀 표기)은 variants 가 정확히 찾아 여기 오지 않는다 — 그건 바로 답한다.
         sim = (found.get("similar") or [])
         if sim:
-            best = str(sim[0].get("term") or "")
-            if best and best != term:
-                body = _topic_dossier(best)
-                if body:
-                    return (f"[표기 확인] 사용자가 적은 '{term}' 표기로는 기록이 없고, "
-                            f"유사 식별자 **{best}** ({sim[0].get('matched')}/{sim[0].get('of')} "
-                            "토큰 일치)의 기록을 찾았다. 아래는 그 자료다 — 답변 첫머리에서 "
-                            "표기 차이를 짚고, 사용자가 이것을 물은 것인지 확인 한 줄을 붙여라.\n\n"
-                            + body)
+            lines = "\n".join(f"- {x.get('term')} ({x.get('matched')}/{x.get('of')} 토큰 일치)"
+                              for x in sim if x.get("term"))
+            return f"[표기 후보] '{term}' 표기로는 기록이 없다. 유사 식별자 후보:\n{lines}"
         return f"[{term}] 사내 티켓·문서 어디에서도 이 이름을 찾지 못했다."
 
     keys, titles = [], {}
@@ -367,6 +361,23 @@ class Historian(ToolAgent):
                     dossier = _topic_dossier(subject)
                 except Exception:
                     dossier = ""
+                # ── 표기 후보 — 추정으로 답하지 않고 **객관식으로 확인**받는다(사용자 결정).
+                # 다음 턴에 사용자가 고르면 정확 표기로 정상 조사가 돈다.
+                if dossier.startswith("[표기 후보]"):
+                    import re as _re
+                    cands = _re.findall(r"- (\S+) \(", dossier)[:4]
+                    return {
+                        "situation": (f"'{subject}' 표기로는 사내 기록이 없다. "
+                                      f"유사 식별자 {len(cands)}건을 찾았다 — 사용자 확인 대기."),
+                        "evidence": [],
+                        "questions": [{
+                            "question": f"'{subject}' 표기로는 기록을 찾지 못했습니다. "
+                                        "이 중 어느 것을 말씀하신 건가요?",
+                            "kind": "choice",
+                            "options": cands + ["이 중에 없음 — 정확한 표기를 알려주세요"],
+                            "field": ""}],
+                        "trace": note(state, self.name,
+                                      f"표기 확인 질문 — 후보 {len(cands)}건")}
                 if dossier:
                     state = {**state, "topic_dossier": dossier}
 

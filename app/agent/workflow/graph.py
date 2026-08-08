@@ -112,6 +112,9 @@ def route_after_historian(state: AgentState) -> str:
     참고/공백 스키마로 정리해야 답이 재사용 가능한 브리프가 된다(사용자 요청으로 신설).
     """
     intent = state.get("intent") or ""
+    # 조사 단계가 확인 질문을 냈다(표기 후보 등) — 정리(curate)로 갈 것이 없다. 바로 묻는다.
+    if state.get("questions"):
+        return "respond"
     if intent in Intent.DRAFTS_TICKETS:
         return "refine"
     if intent == Intent.ASK:

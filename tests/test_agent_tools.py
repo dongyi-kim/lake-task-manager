@@ -685,9 +685,10 @@ def test_typo_identifier_gets_similar_suggestions():
     assert sim and sim[0]["term"] == "fdc.fdc_trace_summary_ic" and sim[0]["matched"] >= 3
 
 
-def test_dossier_self_corrects_to_the_similar_identifier():
-    """dossier 는 유사 식별자로 교정 재수행하고 '표기 확인'을 앞세운다 — 사용자가 정확
-    표기를 다시 대야만 찾던 실측 사고의 회귀 방지."""
+def test_dossier_offers_candidates_instead_of_guessing():
+    """오탈자 추정은 추정이다 — 전체 히스토리를 추정으로 답하지 않고 **표기 후보**를
+    돌려준다(다음 계층이 객관식 확인 질문으로 바꾼다. 사용자 결정)."""
     from app.agent.workflow.agents.historian import _topic_dossier
     d = _topic_dossier("fdc_flat_summary_ic")
-    assert "표기 확인" in d and "fdc.fdc_trace_summary_ic" in d and "DL-9044" in d
+    assert d.startswith("[표기 후보]") and "fdc.fdc_trace_summary_ic" in d
+    assert "DL-9044" not in d, "추정 대상의 실데이터를 미리 싣지 않는다"
