@@ -205,6 +205,20 @@ def _topic_dossier(term: str) -> str:
         return ""
     hits, docs = found.get("hits") or [], found.get("documents") or []
     if not hits and not docs:
+        # ★ 정확 표기 미발견 — 유사 식별자가 있으면 **그걸로 교정 재수행**한다.
+        # 실측: 'fdc_flat_summary_ic'(오탈자)·'fdc trace summary ic'(공백형)를
+        # '기록 없음'으로 답하고, 사용자가 정확 표기를 대야 그제야 찾았다.
+        sim = (found.get("similar") or [])
+        if sim:
+            best = str(sim[0].get("term") or "")
+            if best and best != term:
+                body = _topic_dossier(best)
+                if body:
+                    return (f"[표기 확인] 사용자가 적은 '{term}' 표기로는 기록이 없고, "
+                            f"유사 식별자 **{best}** ({sim[0].get('matched')}/{sim[0].get('of')} "
+                            "토큰 일치)의 기록을 찾았다. 아래는 그 자료다 — 답변 첫머리에서 "
+                            "표기 차이를 짚고, 사용자가 이것을 물은 것인지 확인 한 줄을 붙여라.\n\n"
+                            + body)
         return f"[{term}] 사내 티켓·문서 어디에서도 이 이름을 찾지 못했다."
 
     keys, titles = [], {}

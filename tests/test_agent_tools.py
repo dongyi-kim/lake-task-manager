@@ -665,3 +665,29 @@ def test_parquet_says_what_is_missing_instead_of_guessing():
         pass
     r = F._read_parquet("dump.parquet", 100, b"PAR1", "")
     assert "pyarrow" in r["error"] and "사람에게 요청" in r["error"]
+
+
+# ── 퍼지 식별자 — 오탈자·공백형도 실물을 찾는다 (실측: '기록 없음' 오답 2연발) ──
+def test_spaced_identifier_is_recognized():
+    """"fdc trace summary ic는?" — 밑줄 없이 말해도 식별자다(한국어 조사는 경계)."""
+    from app.agent.tools._ident import find_identifiers
+    assert find_identifiers("fdc trace summary ic는?") == ["fdc_trace_summary_ic"]
+    assert find_identifiers("please review the new code") == []      # 영어 일반문 오인 금지
+    assert find_identifiers("ETL 모듈 진척률 어때") == []
+
+
+def test_typo_identifier_gets_similar_suggestions():
+    """'fdc_flat_summary_ic'(flat↔trace 오탈자) → 유사 식별자를 코드가 찾아 준다."""
+    from app.agent.tools import BY_NAME
+    r = BY_NAME["find_mentions"].invoke({"term": "fdc_flat_summary_ic", "limit": 8}) or {}
+    assert not r.get("hits")
+    sim = r.get("similar") or []
+    assert sim and sim[0]["term"] == "fdc.fdc_trace_summary_ic" and sim[0]["matched"] >= 3
+
+
+def test_dossier_self_corrects_to_the_similar_identifier():
+    """dossier 는 유사 식별자로 교정 재수행하고 '표기 확인'을 앞세운다 — 사용자가 정확
+    표기를 다시 대야만 찾던 실측 사고의 회귀 방지."""
+    from app.agent.workflow.agents.historian import _topic_dossier
+    d = _topic_dossier("fdc_flat_summary_ic")
+    assert "표기 확인" in d and "fdc.fdc_trace_summary_ic" in d and "DL-9044" in d

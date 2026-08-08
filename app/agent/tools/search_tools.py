@@ -299,8 +299,52 @@ def find_mentions(term: str, limit: int = 8) -> dict:
         if not any(h["key"] == k for h in hits):
             hits.append({"key": k, "title": (seen[k] or {}).get("title") or k,
                          "where": "summary", "snippet": ""})
-    return {"term": term, "variants": vs, "count": len(hits),
-            "hits": [compact(h) for h in hits[:24]], "documents": docs[:5]}
+    out = {"term": term, "variants": vs, "count": len(hits),
+           "hits": [compact(h) for h in hits[:24]], "documents": docs[:5]}
+    # ★ 정확 표기가 어디에도 없으면 **유사 식별자**를 찾아 준다 — 사용자는 오탈자
+    #   (flat↔trace)나 다른 표기로 묻는다(실측: 있는 데이터를 '기록 없음'으로 답했다).
+    if not hits and not docs:
+        sim = _similar_identifiers(term, c, s)
+        if sim:
+            out["similar"] = sim
+            out["note"] = ("정확한 표기로는 기록이 없다. similar 의 식별자가 사용자가 "
+                           "말한 것일 가능성이 높다 — 그 식별자로 조사하고, 답변에서 "
+                           "표기 차이를 짚어라.")
+    return out
+
+
+def _similar_identifiers(term: str, c, s) -> list:
+    """오탈자·유사 표기 구조 — 토큰 겹침으로 실존 식별자를 추정한다.
+
+    'fdc_flat_summary_ic'(없음) → 토큰 {fdc,flat,summary,ic} 중 특징적인 것으로 검색해
+    제목들에서 식별자를 수확 → 겹침 점수 → 'fdc.fdc_trace_summary_ic'(3/4). 판정은
+    호출자(모델)가 하되, 후보는 코드가 보장한다."""
+    import re as _re2
+
+    from app.agent.tools._ident import find_identifiers
+    from app.domain.search import search_all
+    toks = {t for t in _re2.split(r"[._\s]+", (term or "").lower()) if len(t) >= 2}
+    if len(toks) < 3:
+        return []
+    probes = sorted(toks, key=len, reverse=True)[:2]
+    cand: dict[str, int] = {}
+    for p in probes:
+        try:
+            r = search_all(c, s, p, scope="all", limit=10)
+        except Exception:
+            continue
+        blob = " ".join(str(it.get("title") or "")
+                        for it in ((r.get("jira") or {}).get("items") or []))
+        blob += " " + " ".join(str(d.get("title") or "")
+                               for d in ((r.get("confluence") or {}).get("items") or []))
+        for ident in find_identifiers(blob):
+            cand.setdefault(ident, 0)
+    for ident in list(cand):
+        itoks = {t for t in _re2.split(r"[._]+", ident.lower()) if len(t) >= 2}
+        cand[ident] = len(toks & itoks)
+    need = max(2, len(toks) - 2)
+    best = sorted(((k, v) for k, v in cand.items() if v >= need), key=lambda kv: -kv[1])
+    return [{"term": k, "matched": v, "of": len(toks)} for k, v in best[:3]]
 
 
 @tool

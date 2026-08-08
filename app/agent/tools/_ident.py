@@ -21,6 +21,19 @@ import re
 _QUALIFIED = re.compile(r"(?<![\w.])([a-z][a-z0-9_]{2,})\.([a-z][a-z0-9_]{2,})(?![\w.])")
 # 스키마 없이 밑줄만 있는 이름 — etl_fdc_trace_summary_ic, fdc_trace_summary_ic
 _BARE = re.compile(r"(?<![\w.])([a-z][a-z0-9]*(?:_[a-z0-9]+){2,})(?![\w.])")
+# 공백으로 풀어 쓴 이름 — "fdc trace summary ic는?" 처럼 밑줄을 빼고 말한다(실측:
+# 이 표기를 식별자로 못 봐서 '기록 없음'으로 답했다). 소문자 ASCII 짧은 낱말이
+# **3개 이상 연달아** 나올 때만(2개면 평범한 영어구까지 잡는다) 밑줄로 이어 후보로 삼는다.
+# 경계는 ASCII 만 본다 — 한국어 조사("ic는")는 식별자의 일부가 아니라 경계다.
+_SPACED = re.compile(r"(?<![A-Za-z0-9_.])([a-z][a-z0-9]{1,11}(?:\s+[a-z][a-z0-9]{1,11}){2,})"
+                     r"(?![A-Za-z0-9_.])")
+# 평범한 영어 문장 오인 방지 — 기능어가 하나라도 끼면 식별자가 아니다.
+_EN_STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "is",
+            "are", "was", "be", "this", "that", "it", "as", "at", "by", "from", "we",
+            "you", "my", "our", "your", "please", "review", "check", "make", "fix",
+            "add", "update", "remove", "delete", "create", "build", "test", "run",
+            "use", "do", "not", "no", "yes", "can", "should", "will", "would",
+            "how", "what", "why", "when", "where", "new", "old", "all", "any"}
 
 # 확장자·모듈 경로로 흔한 것 — schema.table 로 오인하면 엉뚱한 조사가 돈다.
 _NOT_TABLE_SUFFIX = {"py", "md", "json", "yaml", "yml", "sql", "csv", "txt", "png", "com",
@@ -45,6 +58,17 @@ def find_identifiers(*texts: str) -> list[str]:
         return out
     for m in _BARE.finditer(blob):
         v = m.group(0)
+        if v not in out:
+            out.append(v)
+    if out:
+        return out
+    # 공백형 폴백 — "fdc trace summary ic" → "fdc_trace_summary_ic". 검색은 variants 가
+    # 밑줄형으로 하므로 실물 표기와 만난다.
+    for m in _SPACED.finditer(blob):
+        words = m.group(1).split()
+        if any(w in _EN_STOP for w in words):
+            continue
+        v = "_".join(words)
         if v not in out:
             out.append(v)
     return out
