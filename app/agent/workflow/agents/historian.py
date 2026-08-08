@@ -264,6 +264,17 @@ def _topic_dossier(term: str) -> str:
     for d, body in doc_rows:
         if body:
             parts.append(f"문서 「{d.get('title')}」 ({d.get('url')}) 발췌:\n{body}")
+
+    # ── 담당은 **코드가 판정한다.** 프롬프트로 "작성자는 담당자가 아니다"라고 두 번 경고해도
+    # 모델은 코멘트 작성자를 담당자로 답했다(실측 2회). 담당이라고 **적힌** 것만 담당이다.
+    import re as _re
+    owners, blob = [], "\n".join(parts)
+    for m in _re.finditer(r"담당[^\n]{0,12}?(skcc\.[a-z]\d{3,5})", blob):
+        if m.group(1) not in owners:
+            owners.append(m.group(1))
+    parts.append("[담당] " + (", ".join(owners) + " (기록에 '담당'으로 적힌 사람)" if owners else
+                              "확인된 기록 없음 — 코멘트 작성자·티켓 담당자를 이 대상의 담당으로 "
+                              "말하지 마라. 모르면 '확인되지 않음'이라고 답한다."))
     return "\n\n".join(parts)[:4000]
 
 

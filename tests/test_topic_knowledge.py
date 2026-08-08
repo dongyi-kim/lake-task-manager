@@ -263,3 +263,11 @@ def test_planner_defaults_to_brief_when_unsure():
     from app.agent.workflow.agents.planner import Planner
     out = Planner().apply({}, {"intent": Intent.ASK, "keywords": ["x"]})
     assert out["answer_depth"] == "brief", "애매하면 짧게 — 더 필요하면 사용자가 다시 묻는다"
+
+
+def test_dossier_decides_ownership_in_code_not_by_guessing():
+    """담당은 기록에 '담당'이라고 적힌 사람뿐 — 코멘트 작성자를 담당으로 답한 실측 오답 2회."""
+    assert "[담당] skcc.x1042" in _topic_dossier(TABLE)
+    d = _topic_dossier(UNKNOWN)
+    assert "[담당] 확인된 기록 없음" in d
+    assert "skcc.x1560" not in d.split("[담당]")[1], "코멘트 작성자가 담당 자리에 오면 안 된다"
