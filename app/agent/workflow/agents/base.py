@@ -179,7 +179,24 @@ class ToolAgent(Agent):
 
     def _act(self, scratch: _Scratch) -> dict:
         from langgraph.prebuilt import ToolNode
-        return ToolNode(self.tools).invoke(scratch)
+        # 모델이 한 턴에 여러 도구를 부르면(독립 조회 묶음) **동시에** 실행한다 —
+        # mock 은 밀리초지만 prod Jira 는 호출당 수백 ms 라 직렬이면 그대로 합산된다.
+        last = (scratch.get("messages") or [])[-1]
+        calls = list(getattr(last, "tool_calls", None) or [])
+        if len(calls) <= 1:
+            return ToolNode(self.tools).invoke(scratch)
+        from concurrent.futures import ThreadPoolExecutor
+        from langchain_core.messages import AIMessage
+        node = ToolNode(self.tools)
+
+        def one(tc):
+            # 호출 하나짜리 가짜 메시지로 ToolNode 를 태운다 — 도구 조회·에러 처리 재사용.
+            fake = AIMessage(content="", tool_calls=[tc])
+            return node.invoke({"messages": [fake]})["messages"]
+
+        with ThreadPoolExecutor(max_workers=min(4, len(calls))) as ex:
+            outs = list(ex.map(one, calls))
+        return {"messages": [m for ms in outs for m in ms]}
 
     def _route(self, scratch: _Scratch) -> str:
         last = (scratch.get("messages") or [])[-1] if scratch.get("messages") else None

@@ -382,6 +382,20 @@ class Historian(ToolAgent):
                 if ctx:
                     state = {**state, "web_context": ctx}
 
+            # ── L3a 직결: 주제 자료(dossier)를 **코드가 이미 다 모았으면** 걷지 않는다.
+            # ReAct 는 "무엇을 열지 모를 때"의 도구다 — 대상 하나의 조각을 코드가 전부
+            # 취합한 자산 질의에서 또 걸으면 같은 것을 도구로 재확인하며 3~4호출을 태운다
+            # (실측: dossier 경로의 think 가 이미 취합된 티켓을 get_ticket 으로 다시 열었다).
+            # conclude 한 번이면 된다 — 재료는 task() 의 자료 블록에 이미 실려 있다.
+            if state.get("topic_dossier") and not state.get("web_context")                     and (state.get("intent") or "") == "ask":
+                try:
+                    out = self.apply(state, self._conclude(state, []))
+                    out["trace"] = (out.get("trace") or [])                         + [{"node": self.name, "label": "과거 이력 조사",
+                            "note": "사전 취합 자료로 바로 정리(조사 생략)"}]
+                    return out
+                except Exception:
+                    pass          # 직결이 죽으면 정상 경로로 — 최적화가 답을 막으면 안 된다
+
             out = react(state)
             asked = last_user_text(state)
             if not any(w in asked for w in ("진척", "진행률", "현황", "어디까지")):

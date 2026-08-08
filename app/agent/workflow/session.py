@@ -56,12 +56,22 @@ def _guard(text: str):
     return None
 
 
+_IDENTITY_CACHE = {"at": 0.0, "val": None}
+_IDENTITY_TTL = 300        # 사용자·모듈 소속은 대화 중에 안 바뀐다 — 5분이면 충분히 신선하다
+
+
 def _identity() -> str:
     """'내가 누구인가' — 현재 사용자 정체 한 줄. 모든 역할의 시스템 프롬프트에 실린다.
 
     "내 모듈", "나한테 맞는 일" 같은 말은 정체를 알아야 해석된다. 매 역할이 whoami 를
     부르게 하는 대신 세션 시작에 코드가 한 번 해석해 State 로 준다(사용자 요청).
+
+    ★ 프로세스 캐시(5분) — 이 해석이 사용자 조회·로스터 스캔을 매 턴 다시 했고, 그게
+    턴 시작 오버헤드의 절반이었다(타임라인 실측: 첫 이벤트까지 ~4.6s 중 2~3s).
     """
+    import time as _t
+    if _IDENTITY_CACHE["val"] is not None and _t.time() - _IDENTITY_CACHE["at"] < _IDENTITY_TTL:
+        return _IDENTITY_CACHE["val"]
     try:
         from app.agent.tools._ctx import client, settings
         from app.domain.search import search_users
@@ -77,9 +87,12 @@ def _identity() -> str:
                 break
         mods = [m for m, ids in (load_people() or {}).items() if uid in (ids or [])]
         mgr = bool(is_manager(settings(), me))
-        return (f"The current user is {name or uid} ({uid})"
-                + (f", member of module(s): {', '.join(mods)}" if mods else "")
-                + (", and IS a manager." if mgr else ", not a manager."))
+        val = (f"The current user is {name or uid} ({uid})"
+               + (f", member of module(s): {', '.join(mods)}" if mods else "")
+               + (", and IS a manager." if mgr else ", not a manager."))
+        import time as _t2
+        _IDENTITY_CACHE.update(at=_t2.time(), val=val)
+        return val
     except Exception:
         return ""
 
@@ -346,10 +359,25 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
     meter = _usage.Meter()
     yield {"type": "start", "thread_id": tid}
     try:
-        for chunk in get_graph().stream(_initial(tid, text, user_role, user_id),
-                                        _config(tid, meter),
-                                        stream_mode="updates", subgraphs=True):
-            for ev in _events(chunk):
+        # updates(진행) + messages(토큰) 를 함께 받는다 — 최종 답이 통째로 도착하기를
+        # 기다리면 Responder 생성 시간(2~7초)이 전부 침묵이 된다. Responder 의 토큰만
+        # 흘리는 이유: 중간 역할(think·conclude)의 글은 사용자용 문장이 아니다.
+        for item in get_graph().stream(_initial(tid, text, user_role, user_id),
+                                       _config(tid, meter),
+                                       stream_mode=["updates", "messages"], subgraphs=True):
+            # subgraphs=True + 리스트 모드 → (ns, mode, payload)
+            ns, mode, payload = (item if len(item) == 3 else ("", item[0], item[1]))
+            if mode == "messages":
+                msg, meta = payload
+                node = str((meta or {}).get("langgraph_node") or "")
+                piece = getattr(msg, "content", "") or ""
+                # ★ Chunk 타입만 — 스트림이 끝나면 **완성 메시지**가 한 번 더 흘러온다
+                #   (실측: 같은 답이 두 번 조립됐다). 조각과 완성본을 둘 다 받으면 두 배가 된다.
+                if (node == Node.RESPONDER and piece
+                        and type(msg).__name__.endswith("Chunk")):
+                    yield {"type": "token", "text": piece}
+                continue
+            for ev in _events((ns, payload) if ns != "" or True else payload):
                 yield ev
     except Exception as e:
         log.exception("[%s] 그래프 실패", tid)

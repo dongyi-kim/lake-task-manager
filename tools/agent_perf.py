@@ -21,11 +21,19 @@ SCENARIOS = [
 
 grand = {"sec": 0.0, "calls": 0, "tok": 0, "cost": 0.0}
 for name, turns in SCENARIOS:
-    t0, tid, u = time.time(), "", {}
+    t0, tid, u, ttfc = time.time(), "", {}, None
     for q in turns:
-        out = session.ask(q, thread_id=tid)
-        tid = out["thread_id"]
-        u = out.get("usage") or {}
+        # 스트리밍으로 돌린다 — 사용자 체감(첫 토큰까지)을 재려면 ask() 로는 안 보인다.
+        out = None
+        for ev in session.stream(q, thread_id=tid):
+            if ev.get("type") == "start":
+                tid = ev.get("thread_id") or tid
+            elif ev.get("type") == "token" and ttfc is None:
+                ttfc = time.time() - t0
+            elif ev.get("type") == "final":
+                out = ev
+        tid = (out or {}).get("thread_id") or tid
+        u = (out or {}).get("usage") or {}
     sec = time.time() - t0
     grand["sec"] += sec
     grand["calls"] += u.get("calls", 0)
@@ -34,6 +42,13 @@ for name, turns in SCENARIOS:
     rows = " · ".join(f"{k} {v['calls']}회/{v['seconds']}s/{v['tokens']//1000}k"
                       for k, v in sorted((u.get("byNode") or {}).items(),
                                          key=lambda kv: -kv[1]["seconds"]))
+    tools_s = round(sum(v["seconds"] for v in (u.get("byTool") or {}).values()), 1)
+    extra = ((f" · 도구 {tools_s}s" if tools_s else "")
+             + (f" · 캐시 {u.get('cachedTokens', 0):,}tok" if u.get("cachedTokens") else "")
+             + (f" · 첫토큰 {ttfc:.1f}s" if ttfc else ""))
     print(f"[{name}] {sec:.0f}s · LLM {u.get('calls')}회 · {u.get('totalTokens', 0):,}tok "
-          f"· ${u.get('costUsd', 0)}\n    역할별: {rows}")
+          f"· ${u.get('costUsd', 0)}{extra}\n    역할별: {rows}")
+    if u.get("byTool"):
+        top = sorted(u["byTool"].items(), key=lambda kv: -kv[1]["seconds"])[:5]
+        print("    도구별: " + " · ".join(f"{k} {v['calls']}회/{v['seconds']}s" for k, v in top))
 print(f"\n합계 {grand['sec']:.0f}s · {grand['calls']}회 · {grand['tok']:,}tok · ${round(grand['cost'], 3)}")

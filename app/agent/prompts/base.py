@@ -101,7 +101,12 @@ def persona(state, extra: str = "", lite: bool = False) -> str:
     base = LITE_PERSONA if lite else BASE_PERSONA
     if lite:
         pb = ""       # 플레이북 플로우는 실행 역할의 것 — 분류·결정적 실행엔 지시 소음이다
-    return "\n\n".join(x for x in (base, today, hint, pb, proj, user, extra) if x)
+    # ★ 정렬이 곧 비용이다 — OpenAI 는 1024+ 토큰의 **공통 앞부분**을 자동 캐시한다.
+    #   날짜·정체·플레이북(동적)이 앞에 있으면 매 호출/매 날짜/매 사용자마다 prefix 가
+    #   달라져 캐시가 깨진다. 정적(공통 페르소나 → 역할 지시 → 프로젝트/사용자 프롬프트)을
+    #   앞에, 동적(날짜 → 정체 → 플레이북)을 뒤에 둔다. 전부 시스템 지시라 의미는 순서와
+    #   무관하다 — 순서에 기대던 유일한 것(비협상 규칙 우선)은 문구로 이미 명시돼 있다.
+    return "\n\n".join(x for x in (base, extra, proj, user, today, hint, pb) if x)
 
 
 def data_block(title: str, body: str) -> str:

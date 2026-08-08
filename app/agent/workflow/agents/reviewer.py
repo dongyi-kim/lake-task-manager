@@ -50,6 +50,30 @@ class Reviewer(StructuredAgent):
     name = Node.REVIEWER
     temperature = 0.0          # 검열은 흔들리면 안 된다
 
+    def node(self):
+        base_run = super().node()
+
+        def run(state):
+            # ── L3b: **작은 초안은 기계 검증만으로 통과**시킨다.
+            # LLM 검열이 잡는 것(근거 없는 서술·과잉 분해·요청 불일치)은 항목이 여럿이거나
+            # 트리가 클 때의 병이다. 단건·자식 없음·기계검증 통과인 초안에서 LLM 검열이
+            # 실제로 잡은 것이 없었고(배터리 실측), 호출 하나가 통째로 낭비였다.
+            draft = state.get("draft") or {}
+            items = draft.get("items") or []
+            small = (len(items) == 1 and not (items[0].get("children"))
+                     and (draft.get("mode") or "task") != "epic")
+            if small:
+                auto = _machine_check(state)
+                if auto["ok"]:
+                    return {"review": {"ok": True, "checks": {}, "problems": [],
+                                       "errors": [], "warnings": auto["warnings"],
+                                       "summary": "단건 초안 — 기계 검증 통과(자동)"},
+                            "revisions": (state.get("revisions") or 0) + 1,
+                            "trace": note(state, self.name, "통과(기계 검증만 — 단건 초안)")}
+            return base_run(state)
+
+        return run
+
     def system(self, state):
         return persona(state, SYSTEM_REVIEWER)
 

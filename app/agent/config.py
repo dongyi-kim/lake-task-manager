@@ -177,6 +177,9 @@ def get_llm(temperature: float = 0.2, tier: str = "complex", **kwargs):
     # 429(TPM 한도)는 몇 초 뒤 그냥 풀린다 — SDK 가 Retry-After 를 존중하며 재시도한다.
     # 기본 2회로는 상위 모델(TPM 30k 조직에서 한 턴 ~70k 토큰)에서 실측으로 죽었다.
     kwargs.setdefault("max_retries", 6)
+    # 스트리밍 응답에도 usage 를 싣게 한다 — 토큰 스트리밍(stream_mode="messages")을 켜자
+    # 계측이 전부 0 이 됐다(실측). 마지막 청크에 usage 가 실려야 Meter 가 잡는다.
+    kwargs.setdefault("stream_usage", True)
 
     model = chat_model(tier)
     # ★ reasoning 계열(gpt-5*, o1/o3/o4*)은 temperature 를 못 받는다 — 실측:

@@ -174,6 +174,20 @@ class PMO(ToolAgent):
                 state = {**state, "ticket_progress": prog}
             from app.agent.tools.search_tools import take_last_jql
             take_last_jql()                    # 이전 턴 잔여 비우기
+            # ── L3a 직결: 진척/그룹활동 재료를 코드가 전부 취합했으면 걷지 않는다.
+            # (JQL 요구는 예외 — run_jql 실행 자체가 요청의 일부다.)
+            if (prog or pre) and "JQL" not in last_user_text(state).upper():
+                try:
+                    out = self.apply(state, self._conclude(state, []))
+                    if pre:
+                        out["group_activity"] = pre
+                    if prog:
+                        out["ticket_progress"] = prog
+                    out["trace"] = (out.get("trace") or [])                         + [{"node": self.name, "label": "현황 조회",
+                            "note": "사전 취합 자료로 바로 정리(조회 생략)"}]
+                    return out
+                except Exception:
+                    pass
             out = react(state)
             if pre:
                 out["group_activity"] = pre

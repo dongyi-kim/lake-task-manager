@@ -186,6 +186,12 @@ export default {
               this.steps.push({ label: ev.label, note: ev.note || "", t: now, dur: null });
             }
             this.$nextTick(this.scroll);
+          } else if (ev.type === "token") {
+            // 최종 답이 만들어지는 **동안** 화면에 자란다 — 통째로 기다리면 Responder 생성
+            // 시간(2~7초)이 전부 침묵이다. final 이 오면 완성본으로 교체된다(조립 결과와
+            // 동일함은 서버 쪽에서 검증했다).
+            turn.text = (turn.text || "") + (ev.text || "");
+            this.$nextTick(this.scroll);
           } else if (ev.type === "error") {
             turn.text = "문제가 생겼습니다 — " + (ev.message || "알 수 없는 오류");
             this.busy = false;
