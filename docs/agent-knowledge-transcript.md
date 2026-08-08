@@ -1,0 +1,116 @@
+# 지식 추론 대화 예시 (gpt-4o-mini · mock world)
+
+## 데이터셋 — 현재 적재주기
+
+**사용자**: fdc.fdc_trace_summary_ic 데이터의 현재 적재주기는?
+
+> 경로: ask — 요청 파악 · 과거 이력 조사 · 지식 정리 · 답변 정리
+
+**에이전트**:
+
+현재 `fdc.fdc_trace_summary_ic` 데이터의 적재주기는 **30분 1회**로 설정되어 있습니다. 이 정보는 DL-9044 '[ETL] fdc.fdc_trace_summary_ic 적재주기 변경 (2시간 → 30분)'에서 2026-05-20에 2시간 1회에서 30분 1회로 단축된 사실과 DL-9062 '[Catalog] yms.yms_lot_yield_daily 와 fdc.fdc_trace_summary_ic 지표 정합성 비교'에서 2026-08-05에 확인된 내용에 기반합니다. 
+
+근거:
+- DL-9044 '[ETL] fdc.fdc_trace_summary_ic 적재주기 변경 (2시간 → 30분)' — 2026-05-20에 적재주기를 2시간 1회에서 30분 1회로 단축.
+- DL-9062 '[Catalog] yms.yms_lot_yield_daily 와 fdc.fdc_trace_summary_ic 지표 정합성 비교' — 2026-08-05에 30분 주기로 확인됨. 
+
+변경 경위나 관련 티켓 내용이 더 궁금하면 말씀 주세요.
+
+_(27초 · LLM 6회 · 40,549tok)_
+
+## 데이터셋 — 스키마 + 변경 히스토리
+
+**사용자**: fdc.fdc_trace_summary_ic 스키마 정보랑 지금까지 변경 히스토리 알려줘
+
+> 경로: ask — 요청 파악 · 과거 이력 조사 · 지식 정리 · 답변 정리
+
+**에이전트**:
+
+현재 **fdc.fdc_trace_summary_ic** 테이블의 적재주기는 30분 1회이며, 스키마는 8개 컬럼으로 구성되어 있습니다. 
+
+컬럼 목록은 다음과 같습니다:
+- Lot_ID
+- EQP_ID
+- RECIPE_ID
+- TRACE_TS
+- VALUE_AVG
+- VALUE_STD
+- PART_DT
+- CHAMBER_ID
+
+변경 이력으로는 2026년 6월 29일에 CHAMBER_ID 컬럼이 추가되었고(DL-9045), 2026년 5월 20일에 적재주기가 2시간에서 30분으로 변경되었습니다(DL-9044).
+
+#### 근거
+- DL-9044 [ETL] fdc.fdc_trace_summary_ic 적재주기 변경 (2시간 → 30분) — 적재주기 2시간 1회에서 30분 1회로 변경 (최민서, 2026-05-20)
+- DL-9045 [ETL] fdc.fdc_trace_summary_ic 스키마 변경 — CHAMBER_ID 컬럼 추가 — 스키마 7개 컬럼에서 8개 컬럼으로 변경 (CHAMBER_ID 추가) (이준서, 2026-06-29)
+- 문서 [데이터카탈로그] fdc_trace_summary_ic 테이블 특성 분석 — 현재 적재주기: 30분 1회, 현재 스키마: 8개 컬럼 (http://127.0.0.1:8080/spaces/DL/pages/3529373758/[데이터카탈로그]+fdc_trace_summary_ic+테이블+특성+분석)
+
+변경 경위나 관련 티켓 내용이 더 궁금하면 말씀 주세요.
+
+_(26초 · LLM 5회 · 32,554tok)_
+
+## 데이터셋 — 미지 테이블(정직한 없음)
+
+**사용자**: mes.mes_wip_move_hist 적재주기랑 담당자 알려줘
+
+> 경로: ask — 요청 파악 · 과거 이력 조사 · 지식 정리 · 답변 정리
+
+**에이전트**:
+
+**mes.mes_wip_move_hist**는 현재 적재 대상이 아니며, 담당자는 확인되지 않았습니다. 이 정보는 DL-9051 "[Observability] eqp.eqp_sensor_raw_1s 컨슈머 랙 증가" 티켓의 코멘트에서 확인되었습니다. 
+
+코멘트 내용:  
+- DL-9051 · skcc.x1560 · 2026-06-01: "참고로 성격이 비슷한 mes.mes_wip_move_hist 도 같이 봐야 할 수 있다는 얘기가 나왔는데, 그쪽은 우리 적재 대상이 아닙니다."
+
+더 알아볼 만한 것이 필요하면 말씀해 주세요.
+
+_(20초 · LLM 7회 · 42,539tok)_
+
+## 기술 주제 — Schema Registry 현재 정책
+
+**사용자**: Schema Registry 우리 어떻게 쓰고 있고 호환성 정책은 지금 뭐야?
+
+> 경로: ask — 요청 파악 · 과거 이력 조사 · 지식 정리 · 답변 정리
+
+**에이전트**:
+
+현재 Schema Registry는 FULL 호환성 정책을 따르고 있으며, 보존기간은 90일로 변경되었습니다. 과거 스키마와의 호환성 문제는 별도로 관리해야 할 사항으로 남아 있습니다.
+
+- **호환성 정책**: FULL (DL-9071, 최도윤, 2026-06-22)
+- **보존기간**: 30일 → 90일 (DL-9052, 오채원, 2026-08-03)
+
+초기 호환성 정책은 BACKWARD로 설정되었으나, 이후 FULL로 강화되었습니다 (DL-9071). 
+
+변경 경위나 관련 티켓 내용이 더 궁금하면 말씀 주세요.
+
+_(23초 · LLM 6회 · 39,203tok)_
+
+## 교차 비교(멀티턴)
+
+**사용자**: yms.yms_lot_yield_daily 랑 fdc.fdc_trace_summary_ic 는 뭐가 달라?
+
+> 경로: ask — 요청 파악 · 과거 이력 조사 · 지식 정리 · 답변 정리
+
+**에이전트**:
+
+현재 **yms.yms_lot_yield_daily**는 4시간 주기로 적재되고 있으며, **fdc.fdc_trace_summary_ic**는 30분 주기로 운영되고 있습니다. 두 테이블의 시간축이 맞지 않아 조인 시 리샘플링이 필요하다는 점이 주요 차이점입니다. 
+
+- **yms.yms_lot_yield_daily**: 적재 주기 4시간 (변경 이력: DL-9061 "[Catalog] yms.yms_lot_yield_daily 적재주기 변경 (일 1회 → 4시간 1회)", 한예준, 2026-06-14)
+- **fdc.fdc_trace_summary_ic**: 적재 주기 30분 (티켓 DL-9062 "[Catalog] yms.yms_lot_yield_daily 와 fdc.fdc_trace_summary_ic 지표 정합성 비교"에서 확인됨)
+
+이와 관련하여 진행 중인 작업이 있으며, 리샘플링 방법에 대한 구체적인 정책은 확인된 기록이 없습니다. 더 알아볼 만한 내용을 원하시면 말씀해 주세요.
+
+**사용자**: 그럼 두 테이블 적재주기를 각각 알려줘
+
+> 경로: ask — 요청 파악 · 과거 이력 조사 · 지식 정리 · 답변 정리
+
+**에이전트**:
+
+현재 **yms.yms_lot_yield_daily**의 적재주기는 **4시간 1회**이며, **fdc.fdc_trace_summary_ic**는 **30분 주기**로 운영되고 있습니다. 
+
+- **yms.yms_lot_yield_daily**: 4시간 1회 (DL-9061 "[Catalog] yms.yms_lot_yield_daily 적재주기 변경 (일 1회 → 4시간 1회)", 한예준, 2026-06-14)
+- **fdc.fdc_trace_summary_ic**: 30분 주기 (Job etl_fdc_trace_summary_ic_30m, 담당 skcc.x1042) (DL-9062 "[Catalog] yms.yms_lot_yield_daily 와 fdc.fdc_trace_summary_ic 지표 정합성 비교", skcc.x1103, 2026-08-05)
+
+더 알아볼 만한 것이 필요하면 말씀해 주세요.
+
+_(52초 · LLM 6회 · 38,855tok)_
