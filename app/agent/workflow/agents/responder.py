@@ -226,6 +226,9 @@ class Responder(TextAgent):
         # 참조 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
         # 코드가 접는다. 규칙("같은 근거 같은 번호")은 프롬프트에 있지만 보장은 여기서.
         text = _dedupe_refs(text)
+        # '확인된 기록 없음'만 채운 표 행·참조 줄은 정보가 아니라 소음이다 — md 로 두 번
+        # 금지했는데 재발(실측 2회). 코드가 걷어낸다.
+        text = _prune_empty_rows(text)
 
         from langchain_core.messages import AIMessage
         return {"reply": text, "messages": [AIMessage(content=text)],
@@ -295,6 +298,26 @@ def _dedupe_refs(text: str) -> str:
     ref_block = "\n".join(lines) + "\n"
     cut = len(head)
     return out_body[:cut] + ref_block + out_body[cut:]
+
+
+def _prune_empty_rows(text: str) -> str:
+    """'확인된 기록 없음'만으로 채워진 표 행·참조 줄·그 결과 빈 표를 걷어낸다."""
+    import re as _re
+    out = []
+    rows_removed = False
+    for ln in (text or "").split("\n"):
+        s = ln.strip()
+        if s.startswith("|") and s.count("확인된 기록 없음") >= 2:
+            rows_removed = True
+            continue
+        if _re.match(r"-?\s*\[\d+\]\s*확인된 기록 없음\s*$", s):
+            continue
+        out.append(ln)
+    text = "\n".join(out)
+    if rows_removed:
+        # 헤더+구분선만 남은 표(내용 행 0)는 표째 제거
+        text = _re.sub(r"(?:^|\n)\|[^\n]*\|\n\|[\s:|-]+\|(?=\n(?!\|)|$)", "", text)
+    return text
 
 
 def _violations(g: dict) -> int:

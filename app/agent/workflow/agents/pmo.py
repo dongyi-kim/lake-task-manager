@@ -233,6 +233,16 @@ class PMO(ToolAgent):
         react = super().node()
 
         def run(state):
+            # "아까 그 티켓 어떻게 됐어?" — **이 대화에 그 티켓이 없다.** 지시어의 대상이
+            # 없으면 워크로드를 덤프하지 말고 되묻는다(실측: 전체 목록으로 답했다).
+            asked0 = last_user_text(state)
+            if (any(w in asked0 for w in ("아까", "그 티켓", "방금", "그거"))
+                    and not (state.get("mentioned_keys") or [])
+                    and len(state.get("messages") or []) <= 1):
+                return {"questions": [{"question": "이 대화에서 이전에 다룬 티켓이 없습니다. "
+                                                   "어느 티켓을 말씀하시는 건가요? (키 또는 제목)",
+                                       "kind": "text", "options": [], "field": ""}],
+                        "trace": note(state, self.name, "지시어 대상 없음 — 확인 질문")}
             try:
                 pre = _group_activity(state)
             except Exception:
