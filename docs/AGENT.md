@@ -107,7 +107,9 @@ python run.py                       # http://127.0.0.1:8000 — 메인 페이지
   채점/사내 환경은 `AOAI_*` 환경변수가 자동 주입되므로 설정 없이 돈다(env 가 항상 우선).
 - 그래프 다이어그램: `python -m app.agent.workflow.graph` → `.cache/agent_graph.png`
 - MCP 서버: `python -m app.agent.mcp_server` (stdio)
-- 테스트: `python -m pytest` — **441개**, 키 없이 전부 통과(fake LLM)
+- 테스트: `python -m pytest` — **589개**, 키 없이 전부 통과(fake LLM)
+- 실 LLM 하네스·개발 루프·최근 히스토리·future work: **[HANDOFF.md](HANDOFF.md)** 참조
+  (다른 세션이 이어서 작업할 때 이 문서부터)
 
 ## 7. 파일 지도
 
@@ -119,10 +121,11 @@ app/agent/
 ├─ usage.py           tiktoken 계량 + 입력 상한(비차단)
 ├─ fake.py            결정적 Fake LLM(실물과 같은 엄격함)
 ├─ mcp_server.py      MCP Tools/Resources/Prompts
+├─ compose.py         에디터 AI(본문·댓글 생성, 단일 호출 + 뱃지 후처리)
 ├─ prompts/           프롬프트 자산 — common.md + roles/*.md (영문, 답변은 한국어 강제)
-├─ routes.py          /api/agent/* (SSE·설정·승인)
-├─ tools/             31 도구 — search/people/rule/pmo/web/review/write
+├─ routes.py          /api/agent/* (SSE·설정·승인·compose)
+├─ tools/             31+ 도구 — search/people/rule/pmo/web/review/write/file
 ├─ retrieval/         RAG 2계층 (정적 규칙 + 동적 증분)
-└─ workflow/          LangGraph — state/prompts/graph/session + agents/ 8역할
-knowledge/            정적 지식(티켓 규칙·산식·인력 정책·분해 절차)
+└─ workflow/          LangGraph — state/prompts/graph/session/grounding + agents/ 8역할
+knowledge/            정적 지식(티켓 규칙·산식·인력 정책·분해 절차·본문 가이드·렌더링)
 ```
