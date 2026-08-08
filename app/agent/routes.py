@@ -175,6 +175,25 @@ def api_chat_stream(body: _ChatBody):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+class _ComposeBody(BaseModel):
+    ticketKey: str = ""
+    kind: str = "comment"            # comment | description | transition
+    prompt: str = ""
+    seedHtml: str = ""               # 사용자가 쓰던 글(시드로 쓸지는 화면이 정한다)
+    userId: str = ""
+
+
+@router.post("/compose")
+def api_compose(body: _ComposeBody):
+    """에디터 자동완성 — 본문/코멘트 초안을 만들어 **에디터에 꽂을 HTML** 로 돌려준다.
+
+    쓰기가 아니다(승인 토큰 없음). 저장은 사용자가 에디터에서 누른다.
+    """
+    from app.agent import compose as _compose
+    r = _compose.compose(body.ticketKey, body.kind, body.prompt, body.seedHtml, body.userId)
+    return JSONResponse(r, status_code=200 if r.get("ok") else 400)
+
+
 @router.get("/snapshot/{thread_id}")
 def api_snapshot(thread_id: str):
     """새로고침한 화면이 대화를 복원한다."""

@@ -15,6 +15,7 @@ import { extOf } from "../../lib/filetype.js";
 import { sigColor, initialOf, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { debouncedItems } from "../../lib/typeahead.js";
 import { pushToast } from "../../lib/toast.js";
+import { agentApi } from "../../lib/agentApi.js";
 
 // 첨부 업로드 재시도 — prod 는 SSO 세션/사내망 탓에 첨부가 간헐적으로 삐끗한다. 한 번 실패했다고
 // 파일을 버리지 않고 최대 이만큼 **다시** 올려 본다(총 시도 횟수).
@@ -996,6 +997,9 @@ export default {
                     dragOver: false, dragDepth: 0,
                     // '' | 'jira' | 'confluence' — '/' 로 연 검색창
                     pick: "",
+                    // AI 자동완성 — 팝업 상태. seed 는 "쓰던 글을 재료로 쓸까"다
+                    aiOpen: false, aiPrompt: "", aiSeed: true, aiReplace: false,
+                    aiBusy: false, aiErr: "", aiNote: "",
                     mdTable: false, styleOpen: false, fontOpen: false,
                     colorOpen: false, bgOpen: false,   // 글자색·배경색 팔레트 열림
                     // 표 크기 선택 격자 — { r, c } 는 지금 손이 올라간 칸(미리보기)
@@ -1253,6 +1257,45 @@ export default {
     },
     inCallout(t) { this.tick; return !!(this._ed && this._ed.isActive("callout", { type: t })); },
     tbCallout(t) { this.cmd((c) => c.toggleCallout(t).run()); },
+
+    // ── AI 자동완성 ──────────────────────────────────────────────
+    // 쓰기가 아니다 — 결과를 에디터에 꽂아 줄 뿐이고 저장은 사용자가 누른다.
+    openAi() {
+      this.aiOpen = true; this.aiErr = ""; this.aiNote = "";
+      this.$nextTick(() => this.$refs.aiInput && this.$refs.aiInput.focus());
+    },
+    async runAi() {
+      const prompt = (this.aiPrompt || "").trim();
+      const seed = this.aiSeed ? this.htmlNow() : "";
+      if (!prompt && !seed) { this.aiErr = "무엇을 써 드릴지 적어 주세요."; return; }
+      this.aiBusy = true; this.aiErr = ""; this.aiNote = "";
+      try {
+        const r = await agentApi.compose({
+          ticketKey: this.ticketKey || "", kind: this.kind || "comment",
+          prompt, seedHtml: seed,
+        });
+        if (!r || !r.ok) { this.aiErr = (r && r.error) || "생성에 실패했습니다."; return; }
+        // 한 트랜잭션으로 넣는다 — Ctrl+Z 한 번에 통째로 되돌아가야 사용자가 부담 없이 쓴다.
+        const ed = this._ed;
+        if (!ed) return;
+        if (this.aiReplace) ed.chain().focus().clearContent().insertContent(r.html).run();
+        else ed.chain().focus().insertContent(r.html).run();
+        this.aiNote = r.note || "";
+        this.aiOpen = false; this.aiPrompt = "";
+        if (r.note) pushToast(r.note, "warn");
+      } catch (e) {
+        this.aiErr = String((e && e.message) || e || "생성에 실패했습니다.");
+      } finally {
+        this.aiBusy = false;
+      }
+    },
+    htmlNow() {
+      try { return this._ed ? this._ed.getHTML() : ""; } catch (e) { return ""; }
+    },
+    hasBody() {
+      const h = this.htmlNow();
+      return !!h && h.replace(/<[^>]*>/g, "").trim().length > 0;
+    },
     toggleMax() { this.maximized = !this.maximized; },
 
     // 드래그 안내 — 실제 삽입은 ProseMirror 의 handleDrop 이 한다. 여기서는 **보이는 것만**
@@ -1639,6 +1682,35 @@ export default {
         </span>
         <button type="button" class="tb-b" @click="mdTable = true" title="마크다운 표 붙여넣기 → 변환">⊞</button>
         <button type="button" class="tb-b" @click="tbImage" title="이미지">🖼</button>
+        <span class="tb-sep"></span>
+        <!-- AI 자동완성 — 이 에디터가 무엇을(본문/코멘트) 어느 티켓에 쓰는 중인지 서버가 알고
+             있으므로, 사용자는 "무엇을 써 달라"만 적으면 된다. 결과는 삽입될 뿐 저장은 사용자가. -->
+        <span class="tb-style ai-wrap">
+          <button type="button" class="tb-b tb-ai" :class="{on:aiOpen}" @click.stop="openAi"
+                  title="AI 자동완성 — 지금 쓰는 글을 이어 쓰거나 새로 초안을 만든다">AI</button>
+          <span v-if="aiOpen" class="ai-pop" @click.stop @keydown.esc="aiOpen=false">
+            <textarea ref="aiInput" class="ai-in" v-model="aiPrompt" rows="3"
+                      :placeholder="kind === 'description'
+                        ? '예) 배경·범위·완료 조건까지 본문 초안 잡아줘'
+                        : '예) 진행 상황 공유 코멘트 써줘'"
+                      @keydown.enter.exact.prevent="runAi"></textarea>
+            <label v-if="hasBody()" class="ai-ck">
+              <input type="checkbox" v-model="aiSeed"> 지금 쓰던 글을 재료로 사용
+            </label>
+            <label class="ai-ck">
+              <input type="checkbox" v-model="aiReplace"> 전체 교체 (끄면 커서 위치에 이어쓰기)
+            </label>
+            <span v-if="aiErr" class="ai-err">{{ aiErr }}</span>
+            <span class="ai-row">
+              <span class="ai-hint">Enter 로 생성 · Ctrl+Z 로 되돌리기</span>
+              <button type="button" class="cmt-ed-btn ghost" @click="aiOpen=false">취소</button>
+              <button type="button" class="cmt-ed-btn primary" :disabled="aiBusy" @click="runAi">
+                {{ aiBusy ? '작성 중…' : '생성' }}
+              </button>
+            </span>
+          </span>
+          <span v-if="aiOpen" class="tb-style-back" @click.stop="aiOpen = false"></span>
+        </span>
         <button type="button" class="tb-b" style="margin-left:auto" @click="toggleMax"
                 :title="maximized ? '최대화 해제' : '에디터 최대화'">{{ maximized ? '🗗' : '🗖' }}</button>
         <input ref="file" type="file" multiple style="display:none" @change="onFile">

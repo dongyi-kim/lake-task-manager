@@ -1534,3 +1534,20 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   font-size: 11.5px; color: var(--muted); margin: 4px 0 6px; }
 .tkt-uping em { font-style: normal; color: var(--muted-2); }
 .tkt-uping em.hint { flex-basis: 100%; font-size: 11px; }
+
+/* ── AI 자동완성 (에디터 툴바) ────────────────────────────────────────────────
+   글자 아이콘 'AI' — 이모지 아이콘 사이에서 눈에 띄되 튀지 않게, 살짝 강조만 준다. */
+.tb-b.tb-ai { font-weight: 800; font-size: 11px; letter-spacing: .02em; color: var(--accent); }
+.tb-b.tb-ai.on, .tb-b.tb-ai:hover { color: #fff; background: var(--accent); }
+.ai-wrap { position: relative; }
+.ai-pop { position: absolute; top: calc(100% + 4px); right: 0; z-index: 9600;
+  width: 320px; padding: 8px; display: flex; flex-direction: column; gap: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+.ai-in { width: 100%; resize: vertical; font: inherit; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); color: var(--text); }
+.ai-ck { display: flex; align-items: center; gap: 6px; font-size: 12px;
+  color: var(--muted); cursor: pointer; }
+.ai-err { font-size: 12px; color: var(--danger, #e05a5a); }
+.ai-row { display: flex; align-items: center; gap: 6px; }
+.ai-hint { flex: 1; font-size: 11px; color: var(--muted); }

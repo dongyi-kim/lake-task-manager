@@ -49,6 +49,9 @@ export const agentApi = {
   resetIndex: () => post("/api/agent/index/reset", {}),
 
   ask: (body) => post("/api/agent/chat", body),
+  // 에디터 자동완성 — 쓰기가 아니다(승인 토큰 없음). 결과는 에디터에 꽂힐 뿐이고
+  // 저장은 사용자가 누른다.
+  compose: (body) => post("/api/agent/compose", body),
   snapshot: (tid) => getJson("/api/agent/snapshot/" + encodeURIComponent(tid)),
   approve: (threadId, token, overrides) =>
     post("/api/agent/approve", overrides ? { threadId, token, overrides } : { threadId, token }),

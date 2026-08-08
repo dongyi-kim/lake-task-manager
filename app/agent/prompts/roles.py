@@ -46,6 +46,7 @@ SYSTEM_OPERATOR = _load("operator")
 SYSTEM_RESPONDER = _load("responder")
 SYSTEM_PMO = _load("pmo")
 SYSTEM_CURATOR = _load("curator")
+SYSTEM_COMPOSER = _load("composer")   # 에디터 안에서 본문·코멘트를 써 주는 역할
 
 
 def _load_playbooks() -> dict:
