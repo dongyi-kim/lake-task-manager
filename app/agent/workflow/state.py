@@ -132,6 +132,7 @@ class AgentState(TypedDict, total=False):
     # ── PMO (my_day/progress/activity 직행) ──
     pmo_findings: list              # [{"key","point","action"}] 조회에서 확인한 사실
     group_activity: str             # PMO — 로스터 전원 활동 사전 취합(그룹 질의의 3층 자료)
+    ticket_progress: str            # PMO — 티켓 한 건의 진척 근거 4갈래 사전 취합
     knowledge_brief: dict           # Curator — {concepts, our_context, references, gaps}
     pmo_caution: str                # 읽을 때의 주의(활동 적음 ≠ 태만 등)
 

@@ -137,3 +137,122 @@ def map_ticket_neighborhood(key: str) -> dict:
     **필요한 것만** 열어 읽는다.
     """
     return neighborhood(key)
+
+
+# ── 진척 조사 ──────────────────────────────────────────────────────
+# "이 티켓 지금 어디까지 됐어?"의 답은 상태 필드에 없다(그건 'In Progress' 한 단어다).
+# 실제 진척은 네 군데에 흩어져 있고, 넷 다 봐야 "무엇이 끝났고 무엇이 막혔는지"가 나온다:
+#   ① 티켓 자체 변동(상태·담당·마감·우선순위)  ② 코멘트의 진행 보고
+#   ③ 결과를 적는 유관 문서의 최근 수정        ④ 하위 Sub-Task 완료 / 막던 티켓의 해소
+# 모델의 도구 순회에 맡기면 한두 갈래만 보고 답한다(실측) — 코드가 전부 모아 준다.
+def progress_report(key: str, comment_limit: int = 10) -> dict:
+    """한 티켓의 진척 재료를 전부 모은다(순수 코드 — LLM 없음)."""
+    c = client()
+    seed = (key or "").strip().upper()
+    raw = c.get_issue(seed) or {}
+    if not raw.get("key"):
+        return {"error": f"{seed} 티켓을 찾을 수 없습니다."}
+    f = raw.get("fields") or {}
+    st = (f.get("status") or {})
+    out = {
+        "key": seed, "title": f.get("summary") or "",
+        "status": st.get("name") or "",
+        "done": ((st.get("statusCategory") or {}).get("key") == "done"),
+        "assignee": ((f.get("assignee") or {}).get("name")
+                     or (f.get("assignee") or {}).get("key") or ""),
+        "due": f.get("duedate") or "", "updated": str(f.get("updated") or "")[:10],
+    }
+
+    # ① 필드 변동 — 상태 전이·마감 연기·우선순위 상향은 그 자체가 진척 사건이다
+    try:
+        out["changes"] = [compact({"date": r.get("date"), "who": r.get("author"),
+                                   "field": r.get("field"),
+                                   "from": r.get("from"), "to": r.get("to")})
+                          for r in (c.ticket_field_history(seed) or [])][-8:]
+    except Exception:
+        out["changes"] = []
+
+    # ② 코멘트 — 진행 보고의 1차 출처. 최근 것이 뒤에 오게 둔다(시간순 서술을 위해)
+    try:
+        from app.agent.tools.search_tools import _strip
+        # 코멘트는 html 로 온다(본문 키가 body 가 아니다 — 실측). 사번을 함께 남긴다:
+        # 이름만 남기면 "누가 무엇을 보고했나"를 답변에서 검증할 수 없다.
+        out["comments"] = [compact({"date": str(m.get("date") or "")[:10],
+                                    "who": m.get("authorId") or m.get("author") or "",
+                                    "text": _strip(m.get("html") or "")[:400]})
+                           for m in (c.issue_comments(seed, comment_limit) or [])]
+        out["comments"].reverse()          # 오래된 것부터 — 진척은 시간순 이야기다
+    except Exception:
+        out["comments"] = []
+
+    # ④ 하위 Sub-Task — 몇 개 중 몇 개가 끝났는지가 진척의 뼈대다
+    kids, kdone = [], 0
+    try:
+        for ch in (c.ticket_children(seed) or []):
+            d = (ch.get("statusCat") or ch.get("statusCategory")) == "done"
+            kdone += 1 if d else 0
+            kids.append(compact({"key": ch.get("key"), "title": ch.get("summary"),
+                                 "status": ch.get("status"), "done": d,
+                                 "assignee": ch.get("assignee"),
+                                 "updated": str(ch.get("updated") or "")[:10]}))
+    except Exception:
+        pass
+    out["children"] = kids
+    out["children_done"] = f"{kdone}/{len(kids)}" if kids else ""
+
+    # ④-b 링크 티켓 — 특히 **막고 있던 것이 풀렸는지**가 진척을 좌우한다
+    links = []
+    try:
+        for r in (c.ticket_related(seed) or [])[:8]:
+            rk = r.get("key")
+            if not rk:
+                continue
+            ri = ((c.get_issue(rk) or {}).get("fields") or {})
+            rst = ri.get("status") or {}
+            links.append(compact({
+                "key": rk, "rel": r.get("rel") or "관련", "title": r.get("summary"),
+                "status": rst.get("name"),
+                "done": ((rst.get("statusCategory") or {}).get("key") == "done"),
+                "updated": str(ri.get("updated") or "")[:10]}))
+    except Exception:
+        pass
+    out["links"] = links
+
+    # ③ 유관 문서 — **결과를 적는 문서의 최근 수정**이 곧 진척 근거다. 본문도 조금 싣는다
+    docs = []
+    try:
+        from app.agent.retrieval.harvest import _conf_id
+        from app.agent.tools._ctx import trim
+        from app.agent.tools.search_tools import _strip
+        for d in (c.ticket_documents(seed) or [])[:3]:
+            row = {"title": d.get("title"), "url": d.get("url")}
+            cid = _conf_id(d.get("url") or "")
+            if cid:
+                page = c.confluence_page(cid) or {}
+                body = ((page.get("body") or {}).get("storage") or {}).get("value") or ""
+                row["updated"] = ((page.get("version") or {}).get("when") or "")[:10]
+                row["excerpt"] = trim(_strip(body), 900)
+            docs.append(compact(row))
+    except Exception:
+        pass
+    out["documents"] = docs
+    out["note"] = ("진척은 상태 한 단어가 아니라 이 네 갈래(필드 변동·코멘트·하위 티켓·"
+                   "유관 문서)를 이어 붙인 이야기다. 문서의 '최종 수정'은 결과 기록 시점이다.")
+    return compact(out)
+
+
+@tool
+def get_ticket_progress(ticket_key: str) -> dict:
+    """티켓 **하나의 진척 상황**을 조사한다 — "DL-123 지금 어디까지 됐어?"에 쓴다.
+
+    상태 필드만 보면 'In Progress' 한 단어뿐이라 답이 안 된다. 이 도구는 진척의 근거
+    네 갈래를 한 번에 모아 준다:
+      · changes  — 상태 전이·마감 연기·우선순위 변경 등 티켓 자체의 변동 이력
+      · comments — 착수·중간 보고·블로커 같은 진행 보고 원문(작성자·날짜 포함)
+      · children — 하위 Sub-Task 목록과 완료 개수(예: "2/3")
+      · links    — 연결된 티켓(특히 이 일을 막던 Bug 가 풀렸는지)
+      · documents— 결과를 기록하는 Confluence 문서의 **최종 수정일과 본문 발췌**
+
+    Epic·모듈 전체의 진척률(%)은 get_progress 를 쓴다. 이 도구는 티켓 한 건 전용이다.
+    """
+    return progress_report(ticket_key)

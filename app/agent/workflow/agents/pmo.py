@@ -99,6 +99,58 @@ def _group_activity(state) -> str:
     return "\n".join(rows)
 
 
+def _ticket_progress(state) -> str:
+    """티켓 한 건의 진척 질의 — 근거 네 갈래를 **코드가** 모아 자료로 준다.
+
+    상태 필드는 'In Progress' 한 단어라 답이 못 된다. 모델의 도구 순회에 맡기면 코멘트만
+    보거나 하위 티켓만 세고 끝낸다 — 결과를 적는 문서의 최근 수정처럼 **찾아가야 보이는**
+    근거가 특히 잘 누락된다. 반복문으로 되는 일은 코드가 한다.
+    """
+    from app.agent.workflow.state import Intent as _I
+    keys = [k for k in (state.get("mentioned_keys") or []) if k][:2]
+    if not keys:
+        return ""
+    asked = last_user_text(state)
+    progressy = any(w in asked for w in ("진척", "진행", "어디까지", "얼마나 됐", "상황",
+                                         "현황", "잘 되고", "근황"))
+    if not (progressy or (state.get("intent") or "") == _I.PROGRESS):
+        return ""
+
+    from app.agent.tools.survey_tools import progress_report
+    blocks = []
+    for k in keys:
+        r = progress_report(k)
+        if r.get("error"):
+            continue
+        rows = [f'[{r["key"]}] "{r.get("title", "")}" — 상태 {r.get("status")}'
+                f' · 담당 {r.get("assignee") or "없음"} · 마감 {r.get("due") or "없음"}'
+                f' · 최근 갱신 {r.get("updated")}']
+        if r.get("children"):
+            rows.append(f'하위 Sub-Task {r.get("children_done")} 완료:')
+            rows += [f'  - {c["key"]} "{c.get("title", "")}" '
+                     f'{"완료" if c.get("done") else "진행중"}'
+                     f' (담당 {c.get("assignee") or "없음"})' for c in r["children"]]
+        if r.get("changes"):
+            rows.append("티켓 변동:")
+            rows += [f'  - {ch["date"]} {ch.get("field")} '
+                     f'{ch.get("from") or "(없음)"} → {ch.get("to") or "(없음)"}'
+                     for ch in r["changes"]]
+        if r.get("comments"):
+            rows.append("진행 보고(코멘트, 오래된 것부터):")
+            rows += [f'  - {m["date"]} {m.get("who")}: {m.get("text", "")}'
+                     for m in r["comments"]]
+        if r.get("links"):
+            rows.append("연결 티켓:")
+            rows += [f'  - {x["key"]} ({x.get("rel")}) "{x.get("title", "")}" '
+                     f'{"해결됨" if x.get("done") else x.get("status") or ""}'
+                     f' (갱신 {x.get("updated")})' for x in r["links"]]
+        for dc in r.get("documents") or []:
+            rows.append(f'결과 기록 문서 「{dc.get("title")}」 (최종 수정 {dc.get("updated")}):')
+            rows.append(f'  {dc.get("excerpt", "")}')
+        blocks.append(chr(10).join(rows))
+    return (chr(10) + chr(10)).join(blocks)[:4000]
+
+
 class PMO(ToolAgent):
     name = "pmo"
     temperature = 0.1
@@ -114,11 +166,19 @@ class PMO(ToolAgent):
                 pre = ""
             if pre:
                 state = {**state, "group_activity": pre}
+            try:
+                prog = _ticket_progress(state)
+            except Exception:
+                prog = ""
+            if prog:
+                state = {**state, "ticket_progress": prog}
             from app.agent.tools.search_tools import take_last_jql
             take_last_jql()                    # 이전 턴 잔여 비우기
             out = react(state)
             if pre:
-                out["group_activity"] = pre    # Responder 도 이 자료로 3층을 쓴다 — State 에 싣는다
+                out["group_activity"] = pre
+            if prog:
+                out["ticket_progress"] = prog    # Responder 도 이 자료로 3층을 쓴다 — State 에 싣는다
             q = take_last_jql()
             if q and "JQL" in last_user_text(state).upper():
                 # 사용자가 JQL 을 원했다 — 어느 조회 도구를 썼든 **실행된 쿼리**를 코드가
@@ -174,6 +234,15 @@ class PMO(ToolAgent):
                         "★ 추가 조회 없이 이 자료만으로 3층으로 정리하라: ① 누가 있는지(로스터) "
                         "② 모듈 전체가 이 기간에 한 기여(2~3문장 서술) ③ 사람별 한 블록"
                         "(주로 한 일 — 근거 티켓 키, 코멘트·문서 활동 포함). 전원을 다뤄라.\n" + ga)
+        tp = state.get("ticket_progress") or ""
+        if tp:
+            ga_block += (
+                "\n\n### 티켓 진척 자료 (코드가 네 갈래를 이미 취합함 — 추가 조회 불필요)\n"
+                "★ 이 자료만으로 답하라. **진척은 상태 한 단어가 아니다** — 순서대로 쓴다: "
+                "① 지금 어디까지 왔나(하위 완료 개수·무엇이 끝났나) ② 그 근거가 된 사건"
+                "(코멘트 보고·티켓 변동·막던 티켓 해소·결과 문서의 최근 수정) ③ 남은 일과 "
+                "리스크(마감 대비). 문서의 '남은 일'은 그대로 옮긴다. 근거마다 티켓 키+제목 "
+                "또는 문서 제목·수정일을 붙여라.\n" + tp)
         return f"""\
 # 명령서
 {goal}

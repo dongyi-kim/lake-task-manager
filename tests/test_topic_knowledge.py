@@ -299,3 +299,59 @@ def test_a_table_with_no_tickets_is_still_answerable_from_documents():
     d = _topic_dossier(DOC_ONLY)
     for must in ("주 1회", "etl_qms_defect_code_mst_w", "DEFECT_CD", "[담당] skcc.i2044"):
         assert must in d, f"{must} 가 문서 취합에서 빠졌다"
+
+
+# ── 티켓 진척 조사 ─────────────────────────────────────────────────
+# "이 티켓 지금 어디까지 됐어?"의 답은 상태 필드에 없다. 근거가 네 군데로 흩어져 있고,
+# 넷 다 모여야 "무엇이 끝났고 무엇이 막혔는지"가 나온다.
+from app.agent.tools.survey_tools import progress_report          # noqa: E402
+from app.agent.workflow.agents.pmo import _ticket_progress        # noqa: E402
+
+PROG = "DL-9090"
+
+
+def test_progress_fixture_spreads_evidence_across_four_places():
+    """픽스처 전제 — 상태 필드만 보면 'In Progress' 한 단어뿐이어야 한다."""
+    w = _w()
+    it = w.issues[PROG]
+    assert it["statusName"] == "In Progress"
+    assert len(it["changelog"]) >= 3 and len(it["comments"]) >= 4
+    assert it["subtasks"] == ["DL-9093", "DL-9094", "DL-9095"]
+    assert any(x["key"] == "DL-9092" for x in it["links"])
+
+
+def test_progress_report_gathers_all_four_kinds_of_evidence():
+    r = progress_report(PROG)
+    assert r["children_done"] == "2/3", r.get("children")
+    assert any(c["field"] == "마감" for c in r["changes"]), "마감 연기는 진척 사건이다"
+    assert any("DL-9092" in (m.get("text") or "") for m in r["comments"])
+    assert any(x["key"] == "DL-9092" and x["done"] for x in r["links"]), "막던 티켓의 해소"
+    doc = (r.get("documents") or [{}])[0]
+    assert doc.get("updated") and "남은 일" in (doc.get("excerpt") or ""), doc
+
+
+def test_comments_keep_author_id_and_time_order():
+    """이름만 남기면 '누가 보고했나'를 검증할 수 없고, 순서가 없으면 이야기가 안 된다."""
+    ms = progress_report(PROG)["comments"]
+    assert all(m["who"].startswith(("skcc.", "lead")) for m in ms), ms
+    assert [m["date"] for m in ms] == sorted(m["date"] for m in ms)
+
+
+def test_progress_preaggregation_only_fires_for_progress_questions():
+    base = {"mentioned_keys": [PROG], "intent": Intent.PROGRESS}
+    assert "하위 Sub-Task 2/3" in _ticket_progress({**_msg("DL-9090 지금 어디까지 됐어?"), **base})
+    # 키를 안 댔으면 대상이 없다 — 비싼 취합을 돌리지 않는다
+    assert _ticket_progress({**_msg("진척 어때?"), "intent": Intent.PROGRESS}) == ""
+    # 진척 질문이 아니면(단순 수정 요청) 돌지 않는다
+    assert _ticket_progress({**_msg("DL-9090 우선순위 바꿔줘"),
+                             "mentioned_keys": [PROG], "intent": Intent.MODIFY}) == ""
+
+
+def test_responder_reports_progress_as_a_story_not_a_status_word():
+    from app.agent.workflow.agents.responder import Responder
+    t = Responder().task({**_msg("DL-9090 진척 어때?"), "intent": Intent.PROGRESS,
+                          "ticket_progress": _ticket_progress(
+                              {**_msg("DL-9090 진척 어때?"), "mentioned_keys": [PROG],
+                               "intent": Intent.PROGRESS})})
+    assert "남은 일과 리스크" in t and "결과 문서" in t
+    assert "하위 Sub-Task 2/3" in t, "취합 자료가 프롬프트에 실려야 한다"

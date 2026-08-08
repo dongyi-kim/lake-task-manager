@@ -1191,6 +1191,75 @@ class World:
                                        "하지 않습니다.", 27, "15:35"),
            ])
 
+        # ── ⑦ DL-9090 — **한 티켓의 진척**을 묻는 질문용(다른 축의 시험) ──
+        # "이 티켓 지금 어디까지 됐어?"의 답은 티켓 필드에 없다. 조각이 네 군데다:
+        #   ① 티켓 자체 변동(상태·담당·마감 연기)  ② 코멘트의 진행 보고
+        #   ③ 결과를 적는 유관 문서의 최근 수정   ④ 하위 Sub-Task 완료·상위/링크 티켓 변화
+        # 필드 상태(In Progress)만 보고 "진행 중입니다"로 끝내면 답이 아니다.
+        t7, doc7 = "lineage_ui", "[설계] 리니지 뷰어 1차"
+        fx("DL-9090", "Task", "[Workbench] 데이터 리니지 뷰어 1차 오픈", t7,
+           module="Workbench", component="Workbench",
+           assignee="skcc.x1402", reporter="lead", priority="P1-Critical",
+           statusCategory="inprogress", statusName="In Progress",
+           created=d - timedelta(days=45), due=d + timedelta(days=7),
+           updated=d - timedelta(days=1),
+           description="\n".join([
+               "테이블 간 리니지를 화면에서 탐색할 수 있게 한다. 1차 범위는 조회 전용이다.",
+               "",
+               "h3. 완료 기준",
+               "* 테이블 상세에서 업스트림/다운스트림 2홉 조회",
+               f"* 결과·이슈는 [{doc7}|{self._conf_url(doc7)}] 문서에 기록한다",
+           ]),
+           links=[{"type": "Blocks", "key": "DL-9092"}],
+           subtasks=["DL-9093", "DL-9094", "DL-9095"],
+           # 본문 언급 + remotelink 를 같은 URL 로 — 결과를 적는 문서가 진척의 근거다
+           remotelinks=[{"url": self._conf_url(doc7), "title": doc7,
+                         "application": {"type": "com.atlassian.confluence",
+                                         "name": "Confluence"}}],
+           changelog=[
+               self._chg("skcc.x1402", 38, "status", "To Do", "In Progress", "09:30"),
+               self._chg("lead", 12, "마감", (d - timedelta(days=7)).isoformat(),
+                         (d + timedelta(days=7)).isoformat(), "17:00"),
+               self._chg("lead", 5, "우선순위", "P2-Major", "P1-Critical", "09:00"),
+           ],
+           comments=[
+               self._cmt("skcc.x1402", "1차 착수했습니다. 그래프 렌더는 기존 WBS 뷰 컴포넌트를 "
+                                       "재사용합니다.", 38, "09:40"),
+               self._cmt("skcc.x1450", "업스트림 2홉까지 조회 붙였습니다. 다운스트림은 API 가 "
+                                       "느려서 DL-9092 결과를 기다리는 중입니다.", 16, "18:20"),
+               self._cmt("lead", "다운스트림 지연 때문에 마감을 한 주 미뤘습니다. 대신 "
+                                 "우선순위를 P1 으로 올립니다.", 12, "17:05"),
+               self._cmt("skcc.x1402", "DL-9092 해결돼서 다운스트림도 붙였습니다. 남은 건 "
+                                       "성능 측정과 문서 정리입니다. 결과는 설계 문서에 "
+                                       "적고 있습니다.", 1, "11:15"),
+           ])
+
+        for i, (sub, who, days_done) in enumerate([
+                ("[Workbench] 리니지 그래프 렌더 컴포넌트", "skcc.x1402", 30),
+                ("[Workbench] 업스트림 2홉 조회 연동", "skcc.x1450", 16),
+                ("[Workbench] 다운스트림 조회 연동", "skcc.x1450", None)]):
+            k = f"DL-909{3 + i}"
+            fx(k, "Sub-Task", sub, t7, module="Workbench", component="Workbench",
+               parentKey="DL-9090", assignee=who, reporter="skcc.x1402",
+               created=d - timedelta(days=40),
+               **({"statusCategory": "done", "statusName": "Closed",
+                   "resolved": d - timedelta(days=days_done), "tresolved": "18:00",
+                   "updated": d - timedelta(days=days_done)} if days_done else
+                  {"statusCategory": "inprogress", "statusName": "In Progress",
+                   "updated": d - timedelta(days=1)}))
+
+        fx("DL-9092", "Bug", "[Runtime] 리니지 다운스트림 조회 API 응답 20초", t7,
+           module="Runtime", component="Runtime", assignee="skcc.x1315",
+           reporter="skcc.x1450", priority="P1-Critical",
+           statusCategory="done", statusName="Closed",
+           created=d - timedelta(days=20), resolved=d - timedelta(days=3),
+           tresolved="16:40", updated=d - timedelta(days=3),
+           description="다운스트림 2홉 조회가 20초 이상 걸려 화면이 멈춘다.",
+           comments=[
+               self._cmt("skcc.x1315", "인덱스를 추가해 1.2초로 줄였습니다. DL-9090 다운스트림 "
+                                       "작업 진행 가능합니다.", 3, "16:45"),
+           ])
+
         # ── ⑥ qms.qms_defect_code_mst — **티켓이 하나도 없는 대상**(문서만) ──
         # 함정: 티켓 검색은 0건이다. 여기서 "기록 없음"으로 끝내면 오답 — 문서에 다 있다.
         #       티켓 0건인 대상도 문서를 읽어 답해야 한다.
@@ -1270,6 +1339,20 @@ class World:
                  "h2. 스키마 (5개 컬럼)",
                  "DEFECT_CD, DEFECT_NM, CATEGORY_CD, USE_YN, UPD_DT",
                  "DEFECT_CD 가 기본키다. USE_YN='N' 은 폐기된 코드로 조회에서 제외한다.",
+             ])),
+            # ★ DL-9090 의 **결과를 적는 문서** — 진척을 물으면 이 문서의 최근 수정도 근거다
+            ("skcc.x1402", "[설계] 리니지 뷰어 1차", "DL",
+             ["엔지니어링"], 2, "\n".join([
+                 "DL-9090 리니지 뷰어 1차 개발의 설계와 진행 결과를 기록한다.",
+                 "",
+                 "h2. 진행 결과 (최종 수정 기준)",
+                 "* 그래프 렌더 컴포넌트: 완료 (WBS 뷰 컴포넌트 재사용)",
+                 "* 업스트림 2홉 조회: 완료",
+                 "* 다운스트림 2홉 조회: 완료 — DL-9092 인덱스 추가로 20초 → 1.2초",
+                 "* 남은 일: 성능 측정(2홉 100 노드 기준), 사용 가이드 작성",
+                 "",
+                 "h2. 미결",
+                 "3홉 이상 확장은 1차 범위 밖이다. 2차에서 다룬다.",
              ])),
             # 폐기 예정 판단의 유일한 출처 — 티켓 코멘트에는 '대체 예정'만 스친다
             ("skcc.i2011", "[데이터카탈로그] wip_lot_track_hist 폐기 계획", "DL",

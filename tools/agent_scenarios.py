@@ -137,6 +137,16 @@ CASES = [
                           # 옛 담당을 '현재'로 말하면 실패. 이력으로 언급하는 것은 허용
                           and not re.search(r"(현재|지금)[^.\n]{0,20}skcc\.x1103",
                                             o.get("reply") or ""))),
+    ("PROG1", "티켓 진척 — 상태 한 단어가 아니라 네 갈래 근거를 이어야 한다", [
+        "DL-9090 지금 어디까지 진행됐어?"],
+     None, lambda o, _: (lambda r: (
+         "2/3" in r or ("DL-9093" in r and "DL-9095" in r))      # 하위 완료 파악
+         and "DL-9092" in r                                       # 막던 티켓 해소
+         and any(w in r for w in ("성능 측정", "가이드"))          # 결과 문서의 '남은 일'
+     )(o.get("reply") or "")),
+    ("PROG2", "진척 후속 — 남은 일·리스크를 마감 대비로(멀티턴)", [
+        "DL-9090 진척 어때?", "마감까지 위험한 건 뭐야?"],
+     None, lambda o, _: (lambda r: "2026-08-15" in r or "마감" in r)(o.get("reply") or "")),
     ("DATA9", "티켓 0건 — 문서에만 사는 대상. '기록 없음'으로 끝내면 실패", [
         "qms.qms_defect_code_mst 적재주기랑 스키마 알려줘"],
      "ask", lambda o, _: ("주 1회" in (o.get("reply") or "")
