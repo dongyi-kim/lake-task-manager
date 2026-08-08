@@ -237,3 +237,29 @@ def test_historian_injects_the_dossier_into_its_own_prompt():
     assert "X-MARK" in __import__(
         "app.agent.workflow.agents.historian", fromlist=["Historian"]
     ).Historian().task({"topic_dossier": "X-MARK", **_msg("q")})
+
+
+# ── 답변 깊이 ──────────────────────────────────────────────────────
+def test_answer_depth_shapes_the_reply_instruction():
+    """값을 물으면 결론형, 경위·개념을 물으면 설명형 — 어느 쪽이든 더 깊은 설명은 다음 턴에."""
+    from app.agent.workflow.agents.responder import Responder
+    r = Responder()
+    brief = r.task({**_msg("적재주기는?"), "intent": Intent.ASK, "answer_depth": "brief"})
+    assert "결론형" in brief and "개념 설명·배경·일반론을 덧붙이지 마라" in brief
+    deep = r.task({**_msg("왜 바뀌었어?"), "intent": Intent.ASK, "answer_depth": "explain"})
+    assert "설명형" in deep
+    assert "말씀 주세요" in brief and "말씀 주세요" in deep, "다음 턴 제안이 양쪽 다 있어야 한다"
+
+
+def test_depth_instruction_is_skipped_while_asking_questions():
+    """되묻는 턴은 질문 폼이 주인공이라 깊이 지시가 끼어들면 안 된다."""
+    from app.agent.workflow.agents.responder import Responder
+    t = Responder().task({**_msg("초안 잡아줘"), "questions": ["범위가 어디까지인가요?"],
+                          "answer_depth": "brief"})
+    assert "답변 깊이" not in t
+
+
+def test_planner_defaults_to_brief_when_unsure():
+    from app.agent.workflow.agents.planner import Planner
+    out = Planner().apply({}, {"intent": Intent.ASK, "keywords": ["x"]})
+    assert out["answer_depth"] == "brief", "애매하면 짧게 — 더 필요하면 사용자가 다시 묻는다"

@@ -112,6 +112,7 @@ class AgentState(TypedDict, total=False):
     module: str                     # 짐작한 모듈. 확신 없으면 빈 문자열
     mentioned_keys: list            # 사용자가 직접 댄 티켓 키
     sufficient: bool                # 되묻지 않고 진행해도 되나
+    answer_depth: str               # "brief"(값·결론만) | "explain"(개념·배경까지)
 
     # ── Historian 사전 취합(코드가 만든 자료) ──
     # 선언이 없으면 LangGraph 가 반환값에서 이 키들을 버린다 — 실제로 그래서 Curator 의

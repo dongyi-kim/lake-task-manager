@@ -242,17 +242,25 @@ def _topic_dossier(term: str) -> str:
               f"\"{h['snippet']}\""
               for h in hits if h.get("where") == "comment" and h.get("snippet")]
     if quotes:
-        parts.append("코멘트 근거 (이 문장이 사실의 출처다):\n" + "\n".join(quotes[:8]))
+        parts.append("코멘트 근거 (이 문장이 사실의 출처다. 인용할 때 **티켓 키·작성자·날짜는 "
+                     "여기 적힌 짝 그대로** 옮겨라 — 다른 행의 작성자를 섞지 마라. ★ 작성자는 "
+                     "그 말을 한 사람일 뿐 **대상의 담당자가 아니다**):\n"
+                     + "\n".join(quotes[:8]))
     desc = [f"- {h['key']}: \"{h['snippet']}\""
             for h in hits if h.get("where") == "description" and h.get("snippet")]
     if desc:
         parts.append("본문 근거:\n" + "\n".join(desc[:5]))
-    chg = [f"- {k} · {r['date']} · {r.get('author') or ''}: {r['field']} "
-           f"{r.get('from') or '(없음)'} → {r.get('to') or '(없음)'}"
+    # 변경 이력에는 **티켓 제목을 반드시 함께** 싣는다 — 키만 있으면 그 변경이 무엇에 대한
+    # 것인지 모델이 알 수 없다. 실측 사고: 주제(Schema Registry)를 코멘트에서 언급했을 뿐인
+    # 다른 티켓의 '보존기간 30→90일'을 주제의 속성인 것처럼 답했다.
+    chg = [f"- {k} \"{titles.get(k, '')}\" · {r['date']} · {r.get('author') or ''}: "
+           f"{r['field']} {r.get('from') or '(없음)'} → {r.get('to') or '(없음)'}"
            for k, rows in hist_rows for r in rows
            if r.get("field") not in ("status", "resolution", "description", "assignee")]
     if chg:
-        parts.append("변경 이력 (현재 값 = 가장 최근 변경):\n" + "\n".join(chg[:10]))
+        parts.append("변경 이력 (현재 값 = 가장 최근 변경. ★ 각 행은 **그 티켓의 대상**에 대한 "
+                     "변경이다 — 제목을 보고 지금 묻는 대상의 속성인지 확인하고, 아니면 인용하지 "
+                     "마라):\n" + "\n".join(chg[:10]))
     for d, body in doc_rows:
         if body:
             parts.append(f"문서 「{d.get('title')}」 ({d.get('url')}) 발췌:\n{body}")

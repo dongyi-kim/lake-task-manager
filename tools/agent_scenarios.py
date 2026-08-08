@@ -115,9 +115,12 @@ CASES = [
     ("DATA5", "미지 대상 — 정직한 '없음' + 다른 테이블 사실 전이 금지(이 유형의 전형적 실패)", [
         "mes.mes_wip_move_hist 적재주기랑 담당자 알려줘"],
      "ask", lambda o, _: (any(w in (o.get("reply") or "")
-                              for w in ("확인된 기록", "기록 없음", "확인되지 않", "찾지 못"))
+                              for w in ("확인된 기록", "기록 없음", "확인되지 않", "찾지 못",
+                                        "확인된 바", "확인할 수 없", "없습니다"))
                           and not any(k in (o.get("reply") or "")
-                                      for k in ("DL-9042", "DL-9044", "30분", "2시간")))),
+                                      for k in ("DL-9042", "DL-9044", "30분", "2시간"))
+                          # 코멘트 작성자를 대상의 담당자로 둔갑시키면 실패 — 실측 오답
+                          and not re.search(r"담당자[^.\n]{0,12}\*{0,2}skcc\.", o.get("reply") or ""))),
 
     ("DATA6", "교차 비교 — 두 테이블의 사실이 서로 다른 티켓 코멘트에 있다(멀티턴)", [
         "yms.yms_lot_yield_daily 랑 fdc.fdc_trace_summary_ic 는 뭐가 달라?",

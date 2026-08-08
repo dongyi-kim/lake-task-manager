@@ -60,6 +60,16 @@ SCHEMA = {
             "description": "요청이 전형적 패턴이면 해당 플레이북 — 사전 정의 플로우가 전 역할에 "
                            "주입돼 실수를 막는다. 애매하면 빈 문자열(자유 진행)",
         },
+        "answer_depth": {
+            "type": "string", "enum": ["brief", "explain"],
+            "description": (
+                "사용자가 원하는 답의 깊이. "
+                "brief=값·결론만 원한다(무엇/언제/누구/얼마/어디 — '적재주기는?', '누가 담당?', "
+                "'몇 건이야?', 목록 요청). "
+                "explain=개념·배경·이유까지 원한다('왜', '어떻게 동작', '설명해줘', '정리해줘', "
+                "'무슨 일이었는지', 처음 듣는 기술·용어를 물을 때). "
+                "애매하면 brief — 사용자는 더 필요하면 다시 묻는다"),
+        },
         "plan": {
             "type": "string",
             "description": "이 요청을 처리할 실행 계획 한 줄(2~4단계 화살표). "
@@ -123,6 +133,14 @@ class Planner(StructuredAgent):
   activity 가 아니다 — 사람의 활동이 아니라 **기록에 적힌 담당**을 찾는다)
 - "Schema Registry 우리 어떻게 쓰고 있고 호환성 정책은 뭐야?" → ask (특정 기술의 사내 현황)
 
+## 답변 깊이(answer_depth) 예시
+- "fdc.fdc_trace_summary_ic 적재주기는?" → brief (값 하나면 끝)
+- "DL-101 담당자 누구야?" → brief
+- "이번 주 마감 지난 티켓 뭐 있어?" → brief (목록이 답이다)
+- "CDC가 뭐고 우리는 어떻게 쓰고 있어?" → explain (개념+맥락을 물었다)
+- "적재 지연이 왜 났고 어떻게 해결했어?" → explain (경위를 물었다)
+- "Schema Registry 우리 어떻게 쓰고 있어?" → explain ('어떻게'는 설명 요구다)
+
 ## 계획(plan) 예시 — 의도별 표준 플랜(상황 맞게 다듬어 써라)
 - plan_work: "사내 이력 검색 → (신기술이면 웹 조사) → 되묻기/초안 → 담당 후보 → 검증 → 승인"
 - report_bug: "같은 증상 Bug 검색 → 재현경로 확인 → Bug 초안 → 담당 후보 → 승인"
@@ -150,6 +168,7 @@ class Planner(StructuredAgent):
             "mentioned_keys": [k for k in (out.get("mentioned_keys") or []) if str(k).strip()],
             "sufficient": bool(out.get("sufficient")),
             "playbook": out.get("playbook") or "",
+            "answer_depth": out.get("answer_depth") or "brief",
             "trace": note(state, self.name,
                           f"의도={intent}"
                           + (f" · 계획: {str(out.get('plan'))[:80]}" if out.get("plan") else
