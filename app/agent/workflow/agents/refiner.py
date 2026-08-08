@@ -143,6 +143,14 @@ SCHEMA = {
                 "보고 단위로 관리하려 한다. 하나라도 불확실하면 격상하지 말고 기존 Epic 아래 "
                 "Task 로 두어라(느낌은 근거가 아니다)"),
         },
+        "structure_source": {
+            "type": "string", "enum": ["user_specified", "inferred"],
+            "description": (
+                "그 구조를 **누가 정했나**. user_specified = 사용자가 형태를 말했다"
+                "('에픽으로 만들자', '서브태스크로 쪼개줘', '테스크 하나만'). "
+                "inferred = 사용자는 할 일만 말했고 형태는 네가 판단했다. "
+                "판단한 것이면 사용자가 다르게 생각할 수 있다 — 갈림이 크면 확인을 받는다"),
+        },
         "structure_why": {
             "type": "string",
             "description": "그 구조를 고른 이유 한 줄 — 판정 신호를 사실로 적는다. 예: "
@@ -244,6 +252,17 @@ class Refiner(ToolAgent):
   (새 Task 를 만들면 사용자가 말한 티켓은 그대로 두고 엉뚱한 껍데기가 하나 더 생긴다).
   여러 티켓에 각각 붙이라고 하면(“DL-9093 이랑 DL-9094 둘 다”) **항목마다 parent 를 달리** 한다.
 - ★ items 에는 Task/Story/Bug 만 담는다(Sub-Task 는 children 자리다)."""
+        # 형태를 사용자가 말했는지 **코드가 판정해** 알려 준다 — 같은 문장을 모델이 매번
+        # 다르게 읽지 않도록. 말했으면 그대로 따르고, 열려 있으면 판단하되 갈림이 크면
+        # 시스템이 확인 질문을 붙인다(모델이 임의로 되묻지 않게).
+        shape, word = shape_hint(state)
+        if shape:
+            goal += (f"\n- ★ 사용자가 만들 **형태를 말했다**('{word}' → {shape}). 그대로 따르고 "
+                     "structure_source 를 \"user_specified\" 로 적어라. 다른 형태를 권하지 마라.")
+        elif not defaults:
+            goal += ("\n- ★ 사용자는 **할 일만 말했고 형태는 열려 있다**. 네가 판단하되 "
+                     "structure_source 를 \"inferred\" 로 적어라 — 확인이 필요하면 시스템이 "
+                     "형태 확인 질문을 자동으로 붙인다(네가 따로 묻지 마라).")
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []))
         data = wrap_data(
@@ -382,9 +401,23 @@ class Refiner(ToolAgent):
         # 코드가 되돌리지는 않되(사용자가 명시적으로 원했을 수 있다) 근거를 남기게 강제한다.
         structure = out.get("structure") or ""
         why = (out.get("structure_why") or "").strip()
+        src = out.get("structure_source") or ""
+        said_shape, _word = shape_hint(state)
+        if said_shape:                      # 사용자가 말한 것은 판단이 아니다 — 코드가 확정한다
+            src = "user_specified"
         draft = {"mode": out.get("mode") or "task", "items": items,
                  "structure": structure, "structure_why": why,
+                 "structure_source": src,
                  "rationale": out.get("rationale") or ""}
+        # ★ 형태가 **우리 판단**이고 기본값(단일 Task)에서 올라간 것이면 한 번 확인한다.
+        #   티켓 하나로 끝날 일을 다섯 개로 쪼개 놓고 승인만 받는 것은 사용자가 원한 게
+        #   아닐 수 있다. 사용자가 '알아서'라고 했으면 묻지 않는다(위임이 이긴다).
+        if (src == "inferred" and structure in ("task_with_subtasks", "multiple_tasks",
+                                                "new_epic")
+                and items and not qs and not _said_defaults(state)):
+            qs = [{"question": _shape_question(structure, items),
+                   "kind": "choice", "field": "",
+                   "options": _shape_options(structure)}]
         if draft_new_labels:
             draft["new_labels"] = draft_new_labels
         if structure and why and why not in (draft["rationale"] or ""):
@@ -826,3 +859,51 @@ def _asks_subtasks(state) -> bool:
     said = last_user_text(state)
     return any(w in said for w in ("서브태스크", "서브 태스크", "subtask", "sub-task",
                                    "하위 작업", "하위작업", "쪼개", "나눠서 붙"))
+
+
+# ── 사용자가 형태를 말했나, 열려 있나 ───────────────────────────────
+# 같은 "만들어줘"라도 둘은 완전히 다른 상황이다. 형태를 말했으면 그대로 따르는 것이 맞고,
+# 열려 있으면 우리가 판단하되 **갈림이 크면 확인을 받는** 것이 맞다. 이 판정을 모델에게
+# 맡기면 흔들리므로(같은 문장에 다른 답), 낱말로 하는 판정은 코드가 한다.
+_SHAPE_WORDS = (
+    ("new_epic", ("에픽으로", "epic 으로", "에픽 만들", "에픽으로 크게", "이니셔티브")),
+    ("subtask", ("서브태스크", "서브 태스크", "sub-task", "subtask", "하위 작업", "하위작업",
+                 "쪼개", "분할")),
+    ("multiple_tasks", ("각각 티켓", "티켓 여러", "테스크 여러", "따로따로", "나눠서 만들")),
+    ("single_task", ("하나만", "한 건만", "티켓 하나", "테스크 하나", "단일")),
+)
+
+
+def shape_hint(state) -> tuple:
+    """(사용자가 말한 형태 | "", 근거 낱말). 말하지 않았으면 열려 있는 것이다."""
+    said = last_user_text(state)
+    for kind, words in _SHAPE_WORDS:
+        for w in words:
+            if w in said:
+                return kind, w
+    return "", ""
+
+
+_SHAPE_LABEL = {"single_task": "티켓 하나로", "task_with_subtasks": "Task 하나 + Sub-Task 로 나눠서",
+                "multiple_tasks": "Task 여러 개로", "new_epic": "새 Epic 으로 크게"}
+
+
+def _shape_question(structure, items) -> str:
+    n = len(items)
+    kids = sum(len(i.get("children") or []) for i in items)
+    made = (f"Task {n}건" + (f" + Sub-Task {kids}건" if kids else "")) if n else "초안"
+    return (f"이렇게 만들면 {made} 입니다({_SHAPE_LABEL.get(structure, structure)}). "
+            "이 형태로 진행할까요?")
+
+
+def _shape_options(structure) -> list:
+    """추천(지금 구조)을 맨 앞에, 나머지 갈래를 뒤에 — 사용자가 한 번에 고를 수 있게."""
+    order = [structure] + [k for k in ("single_task", "task_with_subtasks",
+                                       "multiple_tasks", "new_epic") if k != structure]
+    tail = {"single_task": "티켓 하나로 (쪼개지 않는다)",
+            "task_with_subtasks": "Task 하나 + Sub-Task 로 나눈다",
+            "multiple_tasks": "Task 를 여러 개로 나눈다",
+            "new_epic": "새 Epic 으로 격상한다 (보수적으로 — 2스프린트·여러 모듈일 때만)"}
+    opts = [f"{tail[order[0]]} (추천 — 지금 초안이 이 형태다)"]
+    opts += [tail[k] for k in order[1:3]]
+    return opts

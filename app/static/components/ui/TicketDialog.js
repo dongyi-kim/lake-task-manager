@@ -17,6 +17,7 @@ import { confirmDoneDespiteOpenSubs } from "../../lib/doneGuard.js";
 import DueText from "./DueText.js";
 import NewChildDialog from "./NewChildDialog.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
+import { isBusy, busyLabel } from "../../lib/uibusy.js";
 
 // 목록이 이보다 길면 기본으로 접는다. 첨부가 스무 개인 티켓에서 본문·코멘트가 화면 밖으로
 // 밀려나는 걸 막는다 — 몇 개인지는 제목 옆 숫자로 이미 알 수 있다.
@@ -152,6 +153,10 @@ export default {
       if (this.stOpen) { this.stOpen = false; return; }
       // 본문/댓글 **리치 에디터에 포커스가 있으면** ESC 는 다이얼로그를 닫지 말고 **에디터에서
       // 빠져나가기만** 한다(사용자 요청). 포커스가 빠진 뒤 한 번 더 누르면 다이얼로그가 닫힌다.
+      if (isBusy()) {          // AI 생성 중 — 지금 닫으면 받아 놓은 글이 사라진다
+        pushToast(busyLabel() + " — 끝나면 닫을 수 있습니다.", "warn");
+        return;
+      }
       const ae = document.activeElement;
       if (ae && ae.closest && ae.closest('.ProseMirror, .tiptap, [contenteditable="true"]')) {
         e.preventDefault();
@@ -390,6 +395,11 @@ export default {
     },
     // 드래그가 창 밖에서 끝났을 뿐인데 닫히지 않게 — lib/backdrop.js 참고
     fromBackdrop,
+    // 생성 중에는 닫지 않는다 — 실패하면 잠금이 바로 풀린다(uibusy.js).
+    closeGuarded() {
+      if (isBusy()) { pushToast(busyLabel() + " — 끝나면 닫을 수 있습니다.", "warn"); return; }
+      this.$emit("close");
+    },
     extOf,
     // 본문(Description)·코멘트·계보(조상/형제)·타임라인을 **동시에 출발**시키고 각자 도착하는 대로
     // 개별 렌더한다(서로 막지 않음). 느린 타임라인이 본문을 기다리지 않게 하는 게 핵심.
@@ -1102,7 +1112,7 @@ export default {
               <svg v-if="!expanded" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
               <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3a2 2 0 0 0 2-2V3M20 8h-3a2 2 0 0 1-2-2V3M4 16h3a2 2 0 0 1 2 2v3M20 16h-3a2 2 0 0 0-2 2v3"/></svg>
             </button>
-            <button v-if="!isPage" class="tb-btn ico close" @click="$emit('close')" aria-label="닫기" title="닫기">✕</button>
+            <button v-if="!isPage" class="tb-btn ico close" @click="closeGuarded()" aria-label="닫기" title="닫기">✕</button>
           </span>
         </div>
 

@@ -10,6 +10,8 @@ import FieldEdit from "./FieldEdit.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
 import CommentEditor from "./CommentEditor.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
+import { isBusy, busyLabel } from "../../lib/uibusy.js";
+import { pushToast } from "../../lib/toast.js";
 
 export default {
   name: "EpicCreateDialog",
@@ -38,13 +40,18 @@ export default {
     api.options("priorities").then((r) => { this.priOpts = (r || []).map((x) => x.name); }).catch(() => {});
     this.$nextTick(() => { const el = this.$refs.sum; if (el) el.focus(); });
     document.addEventListener("keydown", this._onEsc = (e) => {
-      if (e.key === "Escape") { e.stopPropagation(); this.$emit("close"); }
+      if (e.key === "Escape") { e.stopPropagation(); this.closeGuarded(); }
     }, true);
     this.searchCands("");
   },
   unmounted() { document.removeEventListener("keydown", this._onEsc, true); clearTimeout(this._t); },
   methods: {
     fromBackdrop,
+    // 생성 중에는 닫지 않는다 — 받아 놓은 글이 사라진다(실패하면 바로 풀린다).
+    closeGuarded() {
+      if (isBusy()) { pushToast(busyLabel() + " — 끝나면 닫을 수 있습니다.", "warn"); return; }
+      this.$emit("close");
+    },
     rankOf: priRankOf,
     setWho(id, u) {
       this.ep.assigneeId = id || "";
@@ -110,7 +117,7 @@ export default {
   <div class="nk nk-epic" @click.stop>
     <div class="nk-h">Epic 만들기
       <span class="nk-h-s">최상위 Epic 을 만들고, 기존 Task 를 담을 수 있습니다</span>
-      <button class="lp-x" @click="$emit('close')" aria-label="닫기">✕</button>
+      <button class="lp-x" @click="closeGuarded()" aria-label="닫기">✕</button>
     </div>
 
     <input ref="sum" v-model="ep.summary" class="nk-sum" maxlength="200"

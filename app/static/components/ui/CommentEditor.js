@@ -16,6 +16,7 @@ import { sigColor, initialOf, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { debouncedItems } from "../../lib/typeahead.js";
 import { pushToast } from "../../lib/toast.js";
 import { agentApi } from "../../lib/agentApi.js";
+import { beginBusy } from "../../lib/uibusy.js";
 
 // 첨부 업로드 재시도 — prod 는 SSO 세션/사내망 탓에 첨부가 간헐적으로 삐끗한다. 한 번 실패했다고
 // 파일을 버리지 않고 최대 이만큼 **다시** 올려 본다(총 시도 횟수).
@@ -1289,6 +1290,11 @@ export default {
       const seed = this.aiSeed ? this.htmlNow() : "";
       if (!prompt && !seed) { this.aiErr = "무엇을 써 드릴지 적어 주세요."; return; }
       this.aiBusy = true; this.aiErr = ""; this.aiNote = "";
+      // 생성이 도는 동안 ① 에디터를 잠가 사용자가 쓴 글과 섞이지 않게 하고
+      // ② 창이 닫혀 결과가 통째로 사라지지 않게 막는다. **푸는 것은 finally 가 맡는다** —
+      // 실패·예외 어느 쪽으로 끝나도 잠긴 채로 남으면 앱을 새로고침해야 한다.
+      const unlock = beginBusy("AI가 작성 중");
+      try { if (this._ed) this._ed.setEditable(false); } catch (_) { /* noop */ }
       try {
         const r = await agentApi.compose({
           ticketKey: this.ticketKey || "", kind: this.kind || "comment",
@@ -1308,6 +1314,9 @@ export default {
         this.aiErr = String((e && e.message) || e || "생성에 실패했습니다.");
       } finally {
         this.aiBusy = false;
+        try { if (this._ed) this._ed.setEditable(true); } catch (_) { /* noop */ }
+        unlock();
+        this.$nextTick(() => { try { this._ed && this._ed.commands.focus(); } catch (_) { /* noop */ } });
       }
     },
     htmlNow() {
@@ -1735,6 +1744,7 @@ export default {
         <button type="button" class="tb-b" style="margin-left:auto" @click="toggleMax"
                 :title="maximized ? '최대화 해제' : '에디터 최대화'">{{ maximized ? '🗗' : '🗖' }}</button>
         <input ref="file" type="file" multiple style="display:none" @change="onFile">
+        <span v-if="aiBusy" class="ai-run" aria-live="polite"><i class="ai-spin"></i>AI가 작성 중… 잠시만요</span>
         <LinkPicker v-if="pick" :mode="pick" insert @close="pick = ''" @pick="onPick" />
         <MarkdownTableDialog v-if="mdTable" @close="mdTable = false" @insert="insertMdTable" />
       </div>

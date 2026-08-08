@@ -15,6 +15,8 @@ import FieldEdit from "./FieldEdit.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
 import CommentEditor from "./CommentEditor.js";
 import { fromBackdrop } from "../../lib/backdrop.js";
+import { isBusy, busyLabel } from "../../lib/uibusy.js";
+import { pushToast } from "../../lib/toast.js";
 import { categoryColor } from "../../lib/colors.js";
 
 // Task 상위 고르기에서 Epic 대신 고를 수 있는 특수 옵션(맨 위 고정). ('사용자 VoC' 는 상위가 아니라
@@ -72,12 +74,17 @@ export default {
                       types: this.types, due: this.parentDue, comps: this.parentComponents, plabel: "" });
     }
     document.addEventListener("keydown", this._onEsc = (e) => {
-      if (e.key === "Escape") { e.stopPropagation(); this.$emit("close"); }
+      if (e.key === "Escape") { e.stopPropagation(); this.closeGuarded(); }
     }, true);
   },
   unmounted() { document.removeEventListener("keydown", this._onEsc, true); clearTimeout(this._t); },
   methods: {
     fromBackdrop,
+    // 생성 중에는 닫지 않는다 — 받아 놓은 글이 사라진다(실패하면 바로 풀린다).
+    closeGuarded() {
+      if (isBusy()) { pushToast(busyLabel() + " — 끝나면 닫을 수 있습니다.", "warn"); return; }
+      this.$emit("close");
+    },
     rankOf: priRankOf,
     epicColor(key) { return categoryColor(key); },
     setWho(id, u) {
@@ -182,7 +189,7 @@ export default {
   <div class="nk-ov" @click.self="fromBackdrop($event) && $emit('close')">
   <div class="nk" @click.stop>
     <div class="nk-h">{{ title }}
-      <button class="lp-x" @click="$emit('close')" aria-label="닫기">✕</button>
+      <button class="lp-x" @click="closeGuarded()" aria-label="닫기">✕</button>
     </div>
 
     <!-- 상위 — 고정(상수) / 고른 결과(칩+변경) / 고르는 중(검색) -->

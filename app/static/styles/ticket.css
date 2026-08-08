@@ -1551,3 +1551,16 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .ai-err { font-size: 12px; color: var(--danger, #e05a5a); }
 .ai-row { display: flex; align-items: center; gap: 6px; }
 .ai-hint { flex: 1; font-size: 11px; color: var(--muted); }
+
+/* AI 생성 중 — 툴바에 상태를 띄우고, 본문은 잠근다(setEditable(false)).
+   잠긴 동안 커서가 안 보여야 "왜 안 써지지?" 가 안 생긴다. */
+.ai-run { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px;
+  padding: 0 8px; height: 22px; border-radius: 11px; font-size: 11px; font-weight: 700;
+  color: #fff; background: var(--accent); }
+.ai-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid rgba(255,255,255,.45);
+  border-top-color: #fff; animation: ai-sp .7s linear infinite; }
+@keyframes ai-sp { to { transform: rotate(360deg); } }
+/* TipTap 이 editable=false 로 바뀌면 contenteditable 이 false 가 된다 — 그 상태를 눈에 보이게 */
+.cmt-wrap .ProseMirror[contenteditable="false"] { opacity: .6; cursor: progress;
+  background: repeating-linear-gradient(135deg, transparent, transparent 10px,
+    rgba(127,127,127,.05) 10px, rgba(127,127,127,.05) 20px); }

@@ -313,3 +313,58 @@ def test_subtasks_can_have_different_parents_in_one_batch():
     assert {i["parent"] for i in r["draft"]["items"]} == {"DL-9093", "DL-9094"}
     rows = as_bulk_items(r["draft"])
     assert all(i.get("parent") for i in rows), rows
+
+
+# ── 형태를 누가 정했나: 말했으면 따르고, 열려 있으면 확인한다 ────────
+def _msg(text, **extra):
+    from langchain_core.messages import HumanMessage
+    return {"messages": [HumanMessage(content=text)], **extra}
+
+
+def test_shape_words_are_detected_by_code_not_guessed():
+    """같은 문장을 모델이 매번 다르게 읽지 않도록, 낱말 판정은 코드가 한다."""
+    from app.agent.workflow.agents.refiner import shape_hint
+    assert shape_hint(_msg("이거 에픽으로 크게 잡아줘"))[0] == "new_epic"
+    assert shape_hint(_msg("DL-9090 서브태스크로 쪼개줘"))[0] == "subtask"
+    assert shape_hint(_msg("테스크 하나만 만들어줘"))[0] == "single_task"
+    assert shape_hint(_msg("메타데이터 등록 작업이 필요해"))[0] == "", "형태를 안 말했으면 열려 있다"
+
+
+def test_an_inferred_split_asks_the_user_to_confirm_the_shape():
+    """티켓 하나로 끝날 일을 다섯 개로 쪼개 놓고 승인만 받는 것은 사용자가 원한 게 아닐 수 있다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "multiple_tasks", "structure_source": "inferred",
+           "items": [dict(_draft()["items"][0]), dict(_draft()["items"][0])]}
+    r = Refiner().apply(_msg("리니지 성능 개선이 필요해"), out)
+    q = r["questions"][0]
+    assert q["kind"] == "choice" and "이 형태로 진행할까요" in q["question"]
+    assert "추천" in q["options"][0] and len(q["options"]) >= 2
+    assert r["draft"]["items"], "확인을 받되 초안은 그대로 보여 준다"
+
+
+def test_a_shape_the_user_named_is_not_questioned():
+    """사용자가 말한 것을 되묻는 것은 취조다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "task_with_subtasks", "structure_source": "inferred",
+           "items": [dict(_draft(item={"children": [{"summary": "a"}]})["items"][0])]}
+    r = Refiner().apply(_msg("DL-9090 서브태스크로 쪼개줘"), out)
+    assert not r["questions"], r["questions"]
+    assert r["draft"]["structure_source"] == "user_specified", "코드가 확정한다"
+
+
+def test_delegation_still_beats_the_shape_question():
+    """'알아서' 라고 했으면 형태도 알아서 — 위임이 이긴다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "multiple_tasks", "structure_source": "inferred",
+           "items": [dict(_draft()["items"][0]), dict(_draft()["items"][0])]}
+    r = Refiner().apply(_msg("리니지 성능 개선 필요해. 알아서 해줘"), out)
+    assert not r["questions"]
+
+
+def test_a_plain_single_task_is_not_questioned():
+    """기본값(티켓 하나)은 갈림이 없다 — 물을 이유가 없다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [dict(_draft()["items"][0])]}
+    r = Refiner().apply(_msg("체크박스 하나 추가해줘"), out)
+    assert not r["questions"]

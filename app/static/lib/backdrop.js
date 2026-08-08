@@ -6,6 +6,8 @@
 //
 // 그래서 mousedown 의 target 을 기억해 두고, click 때 **둘 다 배경일 때만** 닫는다.
 // 각 창이 알아서 처리하게 두면 어떤 창은 고쳐지고 어떤 창은 안 고쳐진다 — 한 곳에 둔다.
+import { isBusy } from "./uibusy.js";
+
 let downTarget = null;
 
 // capture 로 받는다 — 창 안쪽에서 stopPropagation 하는 핸들러가 있어도 기록은 남아야 한다.
@@ -15,5 +17,9 @@ window.addEventListener("dragstart", () => { downTarget = null; }, true);
 
 /** 이 클릭이 **배경을 눌렀다 뗀 것**인가. 오버레이의 @click.self 에서 쓴다. */
 export function fromBackdrop(e) {
+  // 끝내면 안 되는 일(AI 생성 등)이 도는 중에는 배경 클릭으로 닫지 않는다 — 받아 놓은
+  // 글이 통째로 사라진다. 판정을 여기 두는 이유는 위와 같다: 각 창이 알아서 처리하면
+  // 어떤 창은 막히고 어떤 창은 안 막힌다.
+  if (isBusy()) return false;
   return !!e && e.target === e.currentTarget && downTarget === e.currentTarget;
 }
