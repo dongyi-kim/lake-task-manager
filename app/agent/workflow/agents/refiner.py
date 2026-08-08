@@ -37,17 +37,50 @@ ITEM = {
             "type": "string",
             "description": (
                 "티켓 본문 — **HTML 로 작성한다**(에디터가 받는 형식. mock 은 위키로 자동 변환, "
-                "prod 는 그대로 저장된다). 구조:\n"
-                "<h3>배경</h3><p>왜 하는지 — 계기·관련 티켓 키(DL-123 텍스트로, 자동 링크됨)</p>\n"
+                "prod 는 그대로 저장된다). 네 섹션을 이 순서로 반드시 채운다"
+                "(knowledge/07-ticket-body-guide.md):\n"
+                "<h3>배경</h3><p>왜 하는지 2~3문장 — 계기가 된 사건·요청을 티켓 키와 함께. "
+                "감상이 아니라 사실로</p>\n"
+                "<h3>작업 범위</h3><ul><li>이번에 하는 것</li>"
+                "<li>이번에 하지 않는 것</li></ul> ← **제외 항목을 적는 게 절반**이다\n"
                 "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
-                "<li data-checked=\"false\">검증 가능한 조건 1</li>"
-                "<li data-checked=\"false\">조건 2</li></ul>\n"
-                "여러 후보·항목 비교가 필요하면 <table><tr><th>…</th></tr><tr><td>…</td></tr></table>.\n"
-                "관련 문서가 있으면 <a href=\"URL\">제목</a>. "
-                "일이 커서 나중에 쪼갤 거면 <h3>후속 Sub-Task 후보</h3><ul><li>…</li></ul> 를 적는다. "
-                "조사에서 **알아낸 사실**(왜 멈췄었는지·이미 결정된 것·기술 비교 결론)이 있으면 "
-                "<h3>Knowledge</h3><ul><li>…</li></ul> 로 남겨라 — 나중에 이 티켓을 여는 사람과 "
-                "검색(RAG)이 그걸 다시 쓴다. References(관련 티켓·문서)는 자동으로 붙는다"),
+                "<li data-checked=\"false\">검증 가능한 조건</li></ul> (2~4개)\n"
+                "<h3>참고</h3><ul><li>DL-123 \"제목\" — **이 일과 무슨 관계인지 한 마디**</li>"
+                "<li><a href=\"URL\">문서 제목</a> — 무엇을 볼 수 있는지</li></ul>\n"
+                "★ 참고는 **항목마다 다르다** — 같은 목록을 여러 티켓에 복사하지 마라. "
+                "관계를 못 적겠으면 관련이 없는 것이니 빼라. 모듈이 같다는 이유로 붙이지 마라.\n"
+                "★ 쪼갤 일은 본문에 '후속 Sub-Task 후보'라고 **글로만 적지 말고** children 에 "
+                "실제 Sub-Task 로 적어라 — 글은 티켓이 되지 않는다.\n"
+                "조사에서 알아낸 사실(왜 멈췄었는지·이미 결정된 것·기술 비교 결론)이 있으면 "
+                "<h3>Knowledge</h3><ul><li>…</li></ul> 로 남겨라 — 나중에 이 티켓을 여는 "
+                "사람과 검색(RAG)이 그걸 다시 쓴다. 여러 후보 비교는 <table> 로."),
+        },
+        "children": {
+            "type": "array",
+            "description": (
+                "이 티켓 **아래에 함께 만들 Sub-Task**. 일이 커서 여러 사람이 나눠 해야 하면 "
+                "여기 적는다 — 본문에 '후속 Sub-Task 후보'라고 글로만 쓰지 마라(그건 티켓이 "
+                "되지 않는다). 승인 후 부모를 먼저 만들고 그 키로 Sub-Task 를 이어 붙인다.\n"
+                "· 기능이 다른 일(검증 스크립트 / 모니터링 / 전환)은 **각각 다른 Sub-Task**로, "
+                "그 일에 맞는 모듈 사람에게.\n"
+                "· 같은 일을 분량으로 나눈 것(토픽 A/B/C 전환)은 **골고루 다른 사람에게** "
+                "배분한다 — 한 사람에게 몰면 나눈 의미가 없다.\n"
+                "· 과잉 분해 금지: 아직 방식이 안 정해진 일은 쪼개지 않는다."),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "동사로 끝나는 제목. 부모 제목을 "
+                                                                 "그대로 베끼지 마라"},
+                    "description": {"type": "string",
+                                    "description": "본문(HTML). 부모 본문을 복사하지 마라 — 배경은 "
+                                                   "부모에 있다. 이 조각이 **무엇을 어떻게 "
+                                                   "끝내는지**만: <h3>작업 범위</h3> + "
+                                                   "<h3>완료 조건 (DoD)</h3>"},
+                    "assignee": {"type": "string", "description": "담당 사번. 모르면 빈 문자열"},
+                    "duedate": {"type": "string", "description": "YYYY-MM-DD. 모르면 빈 문자열"},
+                },
+                "required": ["summary"],
+            },
         },
         "components": {"type": "array", "items": {"type": "string"}},
         "labels": {"type": "array", "items": {"type": "string"}},
@@ -95,6 +128,26 @@ SCHEMA = {
                  "description": "이번에 만들 것의 종류. Sub-Task 는 부모가 있어야 하므로 대개 먼저 task. "
                                 "epic = 사용자가 새 Epic(이니셔티브)을 만들자고 할 때 — items 는 "
                                 "Epic 1개(type='Epic', epic_name 에 짧은 단축어)"},
+        "structure": {
+            "type": "string",
+            "enum": ["single_task", "task_with_subtasks", "multiple_tasks", "new_epic"],
+            "description": (
+                "이번 초안의 **구조 판단**(knowledge/04 '어떤 구조로 만들 것인가'). "
+                "기본값은 single_task 이고, 올라가려면 근거가 있어야 한다.\n"
+                "· single_task = 산출물 하나, 한 사람이 며칠 안에 끝냄\n"
+                "· task_with_subtasks = 산출물은 하나인데 작업이 여러 사람·여러 대상으로 나뉨\n"
+                "· multiple_tasks = 산출물이 여럿이고 완료 시점·검증 주체가 다름(모듈이 다름)\n"
+                "· new_epic = **네 조건을 전부** 만족할 때만 — ①2 스프린트 이상 ②서로 다른 "
+                "모듈의 Task 3개 이상 ③담을 기존 Epic 을 찾아봤고 없다 ④사용자가 별도 진척 "
+                "보고 단위로 관리하려 한다. 하나라도 불확실하면 격상하지 말고 기존 Epic 아래 "
+                "Task 로 두어라(느낌은 근거가 아니다)"),
+        },
+        "structure_why": {
+            "type": "string",
+            "description": "그 구조를 고른 이유 한 줄 — 판정 신호를 사실로 적는다. 예: "
+                           "'토픽 3개 전환은 같은 산출물의 분량 분할이라 Sub-Task', "
+                           "'2주 규모·단일 모듈이라 Epic 격상 보류, DL-101 아래 Task'",
+        },
         "items": {"type": "array", "items": ITEM,
                   "description": "티켓 초안. questions 가 있으면 빈 배열로 두어도 된다"},
         "change": {
@@ -172,14 +225,20 @@ class Refiner(ToolAgent):
   계획을 완성해서 내면 사용자가 카드에서 승인/취소한다."""
         else:
             goal = """아래 요청을 실행 가능한 티켓 초안으로 만들어라. 정보가 모자라면 **초안 대신 질문**을 내라.
-- ★ 이번 배치에는 **Task/Story/Bug 만** 담는다. Sub-Task 는 부모 티켓이 실재해야 만들 수
-  있으므로 **부모가 만들어진 다음** 별도 승인으로 붙인다 — 지금 같이 내면 전부 반려된다.
-  쪼개고 싶은 실행 단계는 description 의 '후속 Sub-Task 후보' 목록으로 적어 두라."""
+- ★ 먼저 **구조를 정한다**(structure + structure_why): 단일 Task / Task+Sub-Task /
+  여러 Task / 새 Epic. 기본은 단일 Task 이고, 올라가려면 한 줄로 댈 근거가 있어야 한다.
+  Epic 격상은 네 조건(2 스프린트↑·다른 모듈 Task 3개↑·담을 기존 Epic 없음·별도 보고 단위)을
+  **전부** 만족할 때만 — 하나라도 불확실하면 기존 Epic 아래 Task 로 두고 보류 사유를 남긴다.
+- ★ 쪼갤 실행 단위는 각 항목의 **children 에 실제 Sub-Task 로** 적는다(승인 한 번으로 부모
+  생성 후 이어 붙는다). 본문에 '후속 Sub-Task 후보'라고 글로만 적지 마라 — 티켓이 되지 않는다.
+- ★ items 에는 Task/Story/Bug 만 담는다(Sub-Task 는 children 자리다)."""
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []))
         data = wrap_data(
             data_block("Historian 이 정리한 현재 상황", state.get("situation")),
             data_block("근거 티켓", ev),
+            data_block("배치 재료 (코드가 조회함 — Epic·컴포넌트·라벨은 이 안에서 고른다)",
+                       _placement_material(state)),
             data_block("붙일 만한 상위 Epic", state.get("epic_candidate")),
             data_block("이미 같은 일이 있는가", "있음 — 새로 만들기 전에 사용자에게 알릴 것"
                        if state.get("already_exists") else ""))
@@ -193,12 +252,15 @@ class Refiner(ToolAgent):
 - **description 은 HTML 구조로**: <h3>배경</h3>(계기 + 관련 티켓 키) →
   <h3>완료 조건 (DoD)</h3>(taskList 체크박스 — 각 항목이 **검증 가능**해야 한다) →
   필요 시 비교 표(<table>)·관련 문서 링크(<a>). 통짜 문단 하나로 쓰지 마라.
-- **컴포넌트는 하나만**(list_ticket_options 의 실값). 두 모듈에 걸치면 티켓을 나눈다.
-- **라벨은 기존 것 우선**(list_ticket_options 로 확인) — 같은 뜻의 라벨이 두 벌 생기면
-  어느 쪽으로도 검색이 안 된다.
-- **분업이 필요해 보이는 큰 일**은 한 티켓에 몰지 말고 **역할 단위로 여러 Task/Story 로 나눠라**
-  (티켓 하나 = 담당자 한 명). 각 티켓 안의 실행 단계는 DoD 체크박스로, 더 잘게 쪼갤 후보는
-  '후속 Sub-Task 후보' 절로 적는다(부모 생성 후 2차 승인으로 붙는다).
+- **Epic 은 항목마다 고른다** — 그 산출물이 기여하는 이니셔티브로. 모듈이 다르면 Epic 도
+  다른 게 정상이다. 아래 '배치 재료'의 후보 중에서만 고르고, 마땅한 게 없거나 여럿이면
+  questions(kind=choice, field=epic, 보기에 "없음(최상위)" 포함)로 물어라.
+- **컴포넌트는 하나만**(배치 재료의 실값). 두 모듈에 걸치면 티켓을 나눈다 —
+  컴포넌트가 둘이면 워크로드가 이중 계상된다.
+- **라벨은 기존 것 우선**(배치 재료 목록) — 새 라벨을 붙일 수는 있지만 목록에 없으면
+  승인 카드에 '신규 라벨'로 표시돼 사용자가 판단한다. 오탈자·동의어를 새로 만들지 마라.
+- **분업이 필요한 큰 일**: 산출물이 여럿이면 Task 를 나누고(각각 담당 한 명),
+  산출물 하나를 여럿이 나눠 하는 것이면 그 Task 의 **children 에 Sub-Task 로** 적는다.
 - 이미 같은 일이 진행 중이면 새로 만들지 말고 questions 로 사용자 판단을 구한다.{force_rule}
 
 ## 대화
@@ -243,8 +305,30 @@ class Refiner(ToolAgent):
             qs.append({"question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 "
                                    "적어 주세요 (없으면 건너뛰어도 됩니다)",
                        "kind": "text", "options": [], "field": ""})
+        # 신규 라벨은 막지 않되 **표시**한다(사용자 결정) — 오탈자·동의어가 검색을 망가뜨린다.
+        known = _known_labels()
+        if known:
+            new_labels = sorted({str(x) for it in items for x in (it.get("labels") or [])
+                                 if str(x) and str(x) not in known})
+            if new_labels:
+                draft_new_labels = new_labels
+            else:
+                draft_new_labels = []
+        else:
+            draft_new_labels = []
+
+        # 구조 판단은 **드러내 놓고** 싣는다 — 숨은 판단은 매번 달라지고 검증도 못 한다.
+        # Epic 격상은 보수적으로: 새 Epic 을 고르고도 조건을 못 채웠으면(단일 모듈·소규모)
+        # 코드가 되돌리지는 않되(사용자가 명시적으로 원했을 수 있다) 근거를 남기게 강제한다.
+        structure = out.get("structure") or ""
+        why = (out.get("structure_why") or "").strip()
         draft = {"mode": out.get("mode") or "task", "items": items,
+                 "structure": structure, "structure_why": why,
                  "rationale": out.get("rationale") or ""}
+        if draft_new_labels:
+            draft["new_labels"] = draft_new_labels
+        if structure and why and why not in (draft["rationale"] or ""):
+            draft["rationale"] = (draft["rationale"] + f"\n(구조: {structure} — {why})").strip()
 
         # ── References 자동 첨부 — 조사 결과를 티켓에 박제한다.
         # 대화가 끝나면 Historian 의 조사는 증발하지만, 티켓 description 에 남기면 동적 RAG 가
@@ -266,6 +350,54 @@ class Refiner(ToolAgent):
             for it in items:
                 if "References" not in (it.get("description") or ""):
                     it["description"] = ((it.get("description") or "") + block)
+
+        # ── Epic Link 는 **실재하는 Epic** 이어야 한다 ─────────────────────
+        # 실측: 사용자가 "기존 에픽 중 맞는 걸로 붙여줘"라고 했는데 모델이 Task(DL-9072)를
+        # 에픽이라 답하고 초안에는 아예 안 실었다. 타입 확인은 판단이 아니라 조회다.
+        for it in items:
+            ek = str(it.get("epic") or "").strip()
+            if not ek:
+                continue
+            if not _is_epic(ek):
+                it["epic"] = ""
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n({ek} 는 Epic 이 아니라 연결하지 않았다 — "
+                                      "Epic 후보를 다시 확인해야 한다)").strip()
+                continue
+            # Epic 의 모듈과 티켓의 컴포넌트가 다르면 둘 중 하나가 틀린 것이다. 어느 쪽인지는
+            # 사람이 판단할 일이라 고치지 않고 **알린다**(조용히 붙이면 남의 진척률이 오염된다).
+            em = _epic_module(ek)
+            comps = [str(c) for c in (it.get("components") or []) if str(c).strip()]
+            if em and comps and em != comps[0]:
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(확인 필요: {ek} 는 {em} 모듈 Epic 인데 이 티켓은 "
+                                      f"{comps[0]} 컴포넌트다)").strip()
+
+        # 컴포넌트는 하나만 — 둘이면 워크로드가 이중 계상된다(knowledge/03).
+        for it in items:
+            comps = [str(c) for c in (it.get("components") or []) if str(c).strip()]
+            if len(comps) > 1:
+                it["components"] = comps[:1]
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n({comps[0]} 만 남겼다 — 컴포넌트가 둘이면 워크로드가 "
+                                      f"이중 계상된다. {', '.join(comps[1:])} 몫은 별도 티켓으로 "
+                                      "나누는 것이 맞다)").strip()
+
+        # ── 분량 분할 Sub-Task 는 골고루 ───────────────────────────────
+        # "사람 나눠서" 라고 말한 일을 한 사람에게 몰아 주면 쪼갠 의미가 없다. 프롬프트로
+        # 지시하되, 몰아준 경우 코드가 되돌린다(누구에게 줄지는 Assigner 의 근거를 존중해
+        # 이미 배정된 사람들 안에서만 돌린다 — 새 사람을 지어내지 않는다).
+        for it in items:
+            kids = [c for c in (it.get("children") or []) if isinstance(c, dict)]
+            owners = [str(c.get("assignee") or "").strip() for c in kids]
+            named = [o for o in owners if o]
+            if len(kids) >= 3 and len(set(named)) == 1 and len(named) == len(kids):
+                pool = _module_pool(it, named[0])
+                if len(pool) > 1:
+                    for i, c in enumerate(kids):
+                        c["assignee"] = pool[i % len(pool)]
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + "\n(같은 분량 작업이라 담당을 골고루 나눴다)").strip()
 
         # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
         # Reviewer 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
@@ -304,6 +436,12 @@ class Refiner(ToolAgent):
             if fields or cmt:
                 plan = {"key": str(change["key"]).strip(), "changes": fields,
                         "comment": cmt, "why": out.get("rationale") or ""}
+
+        # 가드들이 out["rationale"] 에 덧붙인 경고(Epic 불일치·컴포넌트 정리 등)를 초안에 반영한다
+        # — draft 는 items 를 참조로 공유하지만 rationale 은 문자열이라 여기서 맞춰 줘야 한다.
+        draft["rationale"] = out.get("rationale") or draft.get("rationale") or ""
+        if structure and why and why not in draft["rationale"]:
+            draft["rationale"] = (draft["rationale"] + f"\n(구조: {structure} — {why})").strip()
 
         return {"questions": qs, "draft": draft, "change_plan": plan, "turns": turns,
                 "trace": note(state, self.name,
@@ -365,6 +503,25 @@ def as_bulk_items(draft: dict) -> list:
     return out
 
 
+def child_items(draft: dict) -> list:
+    """초안의 children 을 부모 index 와 함께 평평하게 편다 — 승인 지문·연쇄 생성이 같은 것을 본다.
+
+    Sub-Task 는 부모 키가 있어야 만들 수 있는데(도메인 규칙), 부모는 아직 없다. 그래서
+    **부모 index** 로 묶어 두고 Operator 가 부모 생성 결과 키로 치환한다.
+    """
+    rows = []
+    for i, it in enumerate((draft or {}).get("items") or []):
+        for ch in (it.get("children") or []):
+            if not isinstance(ch, dict) or not str(ch.get("summary") or "").strip():
+                continue
+            row = {"parent_index": i, "summary": str(ch["summary"]).strip(), "type": "Sub-Task"}
+            for k in ("description", "assignee", "duedate"):
+                if str(ch.get(k) or "").strip():
+                    row[k] = str(ch[k]).strip()
+            rows.append(row)
+    return rows
+
+
 def epic_payload(draft: dict) -> dict:
     """epic 모드의 승인 지문 payload — `create_epic` 도구가 consume 때 만드는 것과
     **같은 모양**이어야 지문이 맞는다(도구는 compact 로 빈 값을 떨군다)."""
@@ -381,3 +538,85 @@ def epic_payload(draft: dict) -> dict:
 
 def draft_json(draft: dict) -> str:
     return json.dumps(as_bulk_items(draft), ensure_ascii=False, indent=1)
+
+
+def _is_epic(key: str) -> bool:
+    """그 키가 정말 Epic 인가 — 타입 확인은 판단이 아니라 조회다."""
+    try:
+        from app.agent.tools._ctx import client
+        f = (client().get_issue(key) or {}).get("fields") or {}
+        return str((f.get("issuetype") or {}).get("name") or "") == "Epic"
+    except Exception:
+        return False
+
+
+def _module_pool(item: dict, fallback: str) -> list:
+    """이 티켓 모듈의 실 인력. 분량 분할을 돌릴 때 **지어내지 않기 위해** 로스터를 쓴다."""
+    try:
+        from app.infra.settings import load_people
+        roster = load_people() or {}
+        for comp in (item.get("components") or []):
+            ids = [str(x) for x in (roster.get(str(comp)) or []) if str(x)]
+            if ids:
+                return ids
+        # 컴포넌트를 못 믿겠으면 그 사람이 속한 모듈로
+        for ids in roster.values():
+            if fallback in (ids or []):
+                return [str(x) for x in ids]
+    except Exception:
+        pass
+    return [fallback] if fallback else []
+
+
+def _placement_material(state) -> str:
+    """배치 재료 — Epic 후보·허용 컴포넌트·기존 라벨을 **코드가 미리 조회**해 준다.
+
+    도구로 두면 모델이 부를 때만 보이고, 안 부르면 지어낸다(실측: Task 를 Epic 이라 답하고
+    초안엔 안 실었다). 반복 조회는 판단이 아니므로 코드가 한다.
+    """
+    parts = []
+    try:
+        from app.agent.tools.search_tools import find_parent_epic
+        q = " ".join(str(k) for k in (state.get("keywords") or [])[:3])
+        rows = [r for r in (find_parent_epic.invoke({"query": q, "limit": 8}) or [])
+                if isinstance(r, dict) and r.get("key") and not r.get("error")]
+        if rows:
+            parts.append("Epic 후보 (이 중에서만 고른다. 모듈이 다르면 항목마다 다른 Epic 이 정상):\n"
+                         + "\n".join(f"- {r['key']} \"{r.get('summary', '')}\""
+                                     f"{' · ' + r['status'] if r.get('status') else ''}"
+                                     for r in rows[:8]))
+    except Exception:
+        pass
+    try:
+        from app.agent.tools.write_tools import list_ticket_options
+        opts = list_ticket_options.invoke({"kind": ""}) or {}
+        if opts.get("components"):
+            parts.append("컴포넌트(모듈) 실값 — **하나만** 고른다: "
+                         + ", ".join(str(x) for x in opts["components"][:12]))
+        if opts.get("labels"):
+            parts.append("기존 라벨 (여기 없는 라벨은 '신규'로 표시된다): "
+                         + ", ".join(str(x) for x in opts["labels"][:30]))
+    except Exception:
+        pass
+    return "\n\n".join(parts)
+
+
+def _epic_module(key: str) -> str:
+    """Epic 의 모듈(컴포넌트). 티켓 컴포넌트와 어긋나면 배치가 틀린 신호다."""
+    try:
+        from app.agent.tools._ctx import client
+        f = (client().get_issue(key) or {}).get("fields") or {}
+        comps = [c.get("name") for c in (f.get("components") or []) if c.get("name")]
+        return str(comps[0]) if comps else ""
+    except Exception:
+        return ""
+
+
+def _known_labels() -> set:
+    """기존 라벨 집합 — 여기 없으면 '신규 라벨'로 승인 카드에 표시한다(막지는 않는다)."""
+    try:
+        from app.agent.tools.write_tools import list_ticket_options
+        return {str(x) for x in ((list_ticket_options.invoke({"kind": "labels"}) or {})
+                                 .get("labels") or [])}
+    except Exception:
+        return set()

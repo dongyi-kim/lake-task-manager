@@ -139,8 +139,11 @@ class Operator(ToolAgent):
         items = as_bulk_items(draft)
         if not items:
             return react(state)          # 계획이 없다 — 예외 경로만 모델에게
+        from app.agent.workflow.agents.refiner import child_items
+        kids = child_items(draft)
         r = T.BY_NAME["create_tickets"].invoke(
             {"mode": draft.get("mode") or "task", "items": items,
+             **({"children": kids} if kids else {}),
              "approval_token": state.get("approval_token") or ""})
         created = [c for c in (r.get("created") or []) if isinstance(c, dict) and c.get("key")]
         failed = [f for f in (r.get("failed") or []) if isinstance(f, dict)]

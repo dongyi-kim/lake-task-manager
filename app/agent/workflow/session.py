@@ -232,11 +232,20 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
                               "comment": plan.get("comment") or "",
                               "rationale": plan.get("why") or ""}
         else:
-            from app.agent.workflow.agents.refiner import as_bulk_items
+            from app.agent.workflow.agents.refiner import as_bulk_items, child_items
             draft = data.get("draft") or {}
             out["pending"] = {"token": data["approval_token"], "action": "create_tickets",
                               "mode": draft.get("mode") or "task", "items": as_bulk_items(draft),
                               "rationale": draft.get("rationale") or ""}
+            # 승인 화면은 **실제로 만들어질 것 전부**를 보여야 한다 — 자식 Sub-Task 가 카드에
+            # 안 보이면 사용자는 부모 하나만 승인한 줄 안다(지문에는 이미 포함돼 있다).
+            kids = child_items(draft)
+            if kids:
+                out["pending"]["children"] = kids
+            # 구조 판단과 신규 라벨은 **사람이 검토할 거리**다. 숨기면 판단할 기회가 없다.
+            for k in ("structure", "structure_why", "new_labels"):
+                if draft.get(k):
+                    out["pending"][k] = draft[k]
 
     # 생성 컨텍스트에서는 **작성 중인 초안**도 내려보낸다(승인 전 단계 포함) — 우측
     # 미리보기가 되묻기 라운드마다 갱신되며 자라는 것을 보여 준다(사용자 요청).

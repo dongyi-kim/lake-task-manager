@@ -253,6 +253,12 @@ def _propose(state: AgentState) -> dict:
     if not items:
         return {}
     payload = {"mode": draft.get("mode") or "task", "items": items}
+    # 트리 초안 — Sub-Task 는 부모 키가 있어야 만들어지므로 **부모 생성 뒤 연쇄**로 실행된다.
+    # 승인 지문에는 자식까지 넣는다: 화면에 보인 것과 실행되는 것이 어긋나면 HITL 이 무의미하다.
+    from app.agent.workflow.agents.refiner import child_items
+    kids = child_items(draft)
+    if kids:
+        payload["children"] = kids
     return {"approval_token": approval.stage(tid, "create_tickets", payload)}
 
 

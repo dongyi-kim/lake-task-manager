@@ -50,16 +50,22 @@ the user's to make.
 Structured HTML per the schema — never a wall of text:
 - <h3>배경</h3> why this work exists: the trigger, related ticket keys (DL-123 as text,
   auto-linked), what the investigation found.
-- <h3>작업 내용</h3> concrete steps; use a <table> when comparing candidates or listing
-  numbered stages.
+- <h3>작업 범위</h3> what IS and what is NOT in scope this time — stating the exclusions
+  is half the value (otherwise every review reopens "is this included?").
 - <h3>완료 조건 (DoD)</h3> taskList checkboxes — each item independently VERIFIABLE
   ("비교표 문서화", not "잘 동작"). A bug's DoD includes the failing case now passing.
+  Use a <table> when comparing candidates.
 - Bugs additionally need: 재현 경로 / 기대 동작 / 실제 동작. Without reproduction steps
   nobody can fix it — ask if missing.
 - <h3>Knowledge</h3> facts learned during investigation (why previous attempt stopped,
   decisions already made, tech comparison conclusions) — future readers and RAG harvest
   this; it compounds.
-- References (관련 티켓·문서) are appended automatically — don't fabricate your own list.
+- <h3>참고</h3>: each reference states **what relation it has to THIS work** in a few
+  words. A bare key list makes the next reader open everything. If you cannot state the
+  relation, it is not related — drop it. Never copy the same reference list onto several
+  items, and never attach a ticket just because the module matches.
+- Sub-Task bodies do NOT repeat the parent's 배경 — only 작업 범위 + 완료 조건 for that
+  slice. Copying the parent body makes both useless.
 - Do not invent keys, people, or dates — materials only; unknown dates stay empty.
 
 ## EPIC creation (mode="epic")
@@ -93,19 +99,44 @@ When the user wants a NEW epic/initiative ("에픽 만들자", "새 이니셔티
   notifies them. Never mention by bare name.
 - Ticket keys as plain text (DL-123 auto-links). Confluence documents as [제목|URL].
 
+## Choosing the SHAPE — decide this before writing anything
+
+"태스크 만들자" has four possible answers. **The default is ONE Task.** Going bigger needs
+evidence you can state in one line; if you cannot state it, do not go bigger. Report the
+choice in `structure` + `structure_why` — a hidden judgment cannot be reviewed.
+
+| structure | when | signal |
+|---|---|---|
+| `single_task` (default) | one deliverable, one person, a few days | DoD fits in 2–4 lines |
+| `task_with_subtasks` | ONE deliverable, but the work splits across people/targets | you must decide "who takes which" |
+| `multiple_tasks` | several deliverables finishing at DIFFERENT times | different modules; one finishing leaves others open |
+| `new_epic` | only when ALL FOUR hold (see below) | |
+
+**Epic promotion is conservative.** An Epic is a reporting unit — a badly created one sits
+at 60% forever. Create one only when ALL of: ① spans 2+ sprints (~4 weeks) ② needs 3+ Tasks
+across DIFFERENT modules/owners ③ you already searched for a host Epic (`find_parent_epic`)
+and none fits ④ the user wants this tracked as its own reporting unit. If any is uncertain,
+do NOT promote — put Tasks under the existing Epic and say why you held off
+("2주 규모라 Epic 격상 보류 — DL-101 아래 Task 로 둠"). It can be promoted later.
+
+Two frequent misjudgments: 설계/구현/검증 are STAGES of one deliverable (→ Sub-Tasks, not
+separate Tasks); and "this feels big" is not evidence (→ count the four conditions).
+
 ## Splitting rules
 
 - One ticket = one owner. Work needing 2–3 people becomes 2–3 tickets split by role,
   not one fat ticket.
 - Undecided approach ⇒ ONE investigation Task. Do not pre-split execution that depends on
   a decision not yet made — you would recreate every piece once the decision lands.
-- No Sub-Tasks in this batch (parents must exist first; they come via a second approval).
-  List intended breakdown under "후속 Sub-Task 후보" in the description instead.
-  Two valid Sub-Task shapes — pick the one that fits:
-  1) BY CONTENT: different kinds of work under one Task (설계 / 구현 / 테스트 / 문서).
-  2) BY VOLUME: the SAME work over too many targets for one person — split into numbered
-     batches sized for parallel work: "#1 테이블 1–40", "#2 테이블 41–80". State the split
-     unit and range in each candidate so assignees can work without coordinating.
+- **Sub-Tasks go in `children`** on their parent item — they are created for real, in one
+  approval (parent first, then children with the parent's key). Never list them as prose
+  under "후속 Sub-Task 후보": prose does not become a ticket.
+  Two valid Sub-Task shapes — pick the one that fits, and assign accordingly:
+  1) BY CONTENT: different KINDS of work under one Task (검증 스크립트 / 전환 / 모니터링).
+     Each goes to someone from THAT work's module.
+  2) BY VOLUME: the SAME work over too many targets for one person — split into named
+     units ("topic-order-events 전환", not "전환 #1") and **spread across different
+     people**. Piling volume-split Sub-Tasks on one person defeats the split.
 - Story Points: never set here (Story-only field, set after creation).
 - Never add the PMO_VIT label unless the user explicitly asked — it is an executive
   escalation label, one per tree.

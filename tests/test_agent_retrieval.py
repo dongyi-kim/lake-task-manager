@@ -64,10 +64,24 @@ def test_static_index_builds_from_knowledge_dir():
     assert "01-ticket-rules.md" in st["documents"]
 
 
-def test_static_search_finds_the_sp_rule():
+def test_static_search_returns_usable_chunks():
+    """검색이 **쓸 수 있는 모양의 청크**를 돌려주는가 — 순위가 아니라 배관을 본다.
+
+    fake 임베딩은 의미 없는 벡터라 순위가 무작위다. "SP 규칙이 top-k 에 뜨는가"를 단언하면
+    지식 문서를 하나 추가할 때마다 깨진다(07 가이드 추가로 실제로 깨졌다). 의미 품질은
+    배터리(실 LLM)의 몫이다.
+    """
     hits = static_index.search("Story Point 는 어디에 매길 수 있나", k=4)
-    assert hits
-    assert any("Story" in h["text"] for h in hits)
+    assert hits and len(hits) <= 4
+    assert all(h.get("text") and h.get("source", "").endswith(".md") for h in hits)
+
+
+def test_the_sp_rule_actually_gets_indexed():
+    """규칙 본문이 색인 대상 청크에 실제로 들어가는가 — 검색 순위와 무관하게 보장돼야 한다."""
+    from app.agent.retrieval.chunk import split_text
+    path = static_index.knowledge_dir() / "01-ticket-rules.md"
+    chunks = split_text(path.read_text(encoding="utf-8"), source=path.name)
+    assert any("Story Point" in c["text"] for c in chunks), [c["text"][:40] for c in chunks]
 
 
 def test_signature_changes_when_embedding_model_changes(monkeypatch):

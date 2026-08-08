@@ -96,7 +96,7 @@ def _denied(why: str) -> dict:
 
 
 @tool
-def create_tickets(mode: str, items: list, approval_token: str) -> dict:
+def create_tickets(mode: str, items: list, approval_token: str, children: list = None) -> dict:
     """검증을 통과한 티켓들을 **실제로 만든다**. 사용자 승인 토큰이 반드시 필요하다.
 
     토큰은 승인 카드가 발급한다 — **지어낼 수 없고**, 승인 화면에 보인 items 와 한 글자라도
@@ -104,6 +104,11 @@ def create_tickets(mode: str, items: list, approval_token: str) -> dict:
 
     Jira 에는 롤백이 없다 — 하나가 실패해도 나머지는 계속 만들어진다. 결과의 failed 를
     사용자에게 그대로 알려라(조용히 넘어가면 사용자는 다 만들어진 줄 안다).
+
+    `children` 은 **부모와 함께 만들 Sub-Task** 다(각 항목에 `parent_index` 로 몇 번째 부모의
+    자식인지 적는다). Sub-Task 는 부모 키가 있어야 만들어지므로, 부모를 먼저 만들고 그 키로
+    이어 붙인다 — 승인 토큰 하나가 트리 전체를 보증한다(화면에 보인 것과 만들어지는 것이
+    같아야 HITL 이 의미를 갖는다).
 
     돌려주는 것: {"ok", "created": [{index,key,summary}], "failed": [{index,summary,error}]}
     """
@@ -116,14 +121,51 @@ def create_tickets(mode: str, items: list, approval_token: str) -> dict:
         return {"ok": False, "created": [], "failed": [], "errors": pre.get("errors"),
                 "error": "규칙에 맞지 않아 만들지 않았습니다. 고쳐서 다시 승인을 받으세요."}
 
-    ok, why = approval.consume(approval_token, "create_tickets",
-                               {"mode": mode, "items": items})
+    kids = [k for k in (children or []) if isinstance(k, dict) and k.get("summary")]
+    payload = {"mode": mode, "items": items}
+    if kids:
+        payload["children"] = kids
+    ok, why = approval.consume(approval_token, "create_tickets", payload)
     if not ok:
         return _denied(why)
     try:
-        return c.bulk_create(mode, items, desc_to_field=c.desc_field_value)
+        r = c.bulk_create(mode, items, desc_to_field=c.desc_field_value)
     except Exception as e:
         return {"ok": False, "created": [], "failed": [], "error": str(e)[:300]}
+    if not kids:
+        return r
+
+    # ── 2단계: 만들어진 부모 키로 Sub-Task 를 붙인다 ──────────────────
+    made = [x for x in (r.get("created") or []) if isinstance(x, dict) and x.get("key")]
+    rows = []
+    for ch in kids:
+        i = ch.get("parent_index")
+        if not isinstance(i, int) or not (0 <= i < len(made)):
+            continue                      # 부모가 안 만들어졌으면 자식도 만들지 않는다
+        row = {k: v for k, v in ch.items() if k != "parent_index"}
+        row["type"] = "Sub-Task"
+        row["parent"] = made[i]["key"]
+        rows.append(row)
+    if not rows:
+        return r
+    sub = validate_bulk("subtask", rows, c.bulk_lookup())
+    if not sub.get("ok"):
+        # 부모는 이미 만들어졌다(롤백 없음) — 자식 실패를 **그대로 보고**한다.
+        r.setdefault("failed", []).append(
+            {"summary": f"Sub-Task {len(rows)}건",
+             "error": "규칙 위반으로 만들지 않았습니다: "
+                      + "; ".join(str(e.get("message")) for e in (sub.get("errors") or [])[:3])})
+        return r
+    try:
+        r2 = c.bulk_create("subtask", rows, desc_to_field=c.desc_field_value)
+    except Exception as e:
+        r.setdefault("failed", []).append({"summary": f"Sub-Task {len(rows)}건",
+                                           "error": str(e)[:200]})
+        return r
+    r["created"] = (r.get("created") or []) + (r2.get("created") or [])
+    r["failed"] = (r.get("failed") or []) + (r2.get("failed") or [])
+    r["ok"] = bool(r.get("ok")) and bool(r2.get("ok"))
+    return r
 
 
 @tool
