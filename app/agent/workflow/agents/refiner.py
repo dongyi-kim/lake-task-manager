@@ -238,6 +238,11 @@ class Refiner(ToolAgent):
   **전부** 만족할 때만 — 하나라도 불확실하면 기존 Epic 아래 Task 로 두고 보류 사유를 남긴다.
 - ★ 쪼갤 실행 단위는 각 항목의 **children 에 실제 Sub-Task 로** 적는다(승인 한 번으로 부모
   생성 후 이어 붙는다). 본문에 '후속 Sub-Task 후보'라고 글로만 적지 마라 — 티켓이 되지 않는다.
+- ★ **부모가 이미 있으면 children 이 아니라 mode="subtask" 다.** "DL-9090 에 서브태스크
+  추가해줘", "DL-9095 를 쪼개줘" 처럼 **실재하는 티켓을 지목**했으면 그 티켓이 부모다 —
+  감싸는 새 Task 를 만들지 말고, items 를 Sub-Task 로 내고 각 항목의 parent 에 그 키를 적어라
+  (새 Task 를 만들면 사용자가 말한 티켓은 그대로 두고 엉뚱한 껍데기가 하나 더 생긴다).
+  여러 티켓에 각각 붙이라고 하면(“DL-9093 이랑 DL-9094 둘 다”) **항목마다 parent 를 달리** 한다.
 - ★ items 에는 Task/Story/Bug 만 담는다(Sub-Task 는 children 자리다)."""
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []))
@@ -311,6 +316,24 @@ class Refiner(ToolAgent):
                 if (i.get("type") or "").lower().startswith("sub") or mode == "subtask":
                     if not str(i.get("parent") or "").strip():
                         i["parent"] = named[0]
+
+        # ── 지목한 티켓이 부모다: 껍데기 Task 를 만들지 않는다 ─────────────
+        # "DL-9090 에 서브태스크 추가해줘" 는 그 티켓 **아래**에 붙이라는 뜻인데, 모델이
+        # 감싸는 새 Task 를 만들고 그 밑에 children 을 다는 일이 잦다(실측 SUB1~3) —
+        # 그러면 사용자가 말한 티켓은 그대로 두고 엉뚱한 껍데기가 하나 더 생긴다.
+        if named and mode == "task" and len(items) == 1 and items[0].get("children")                 and _asks_subtasks(state):
+            kids0 = [c for c in items[0].get("children") or [] if isinstance(c, dict)]
+            if kids0:
+                items[:] = [{"summary": c.get("summary") or "", "type": "Sub-Task",
+                             "parent": str(c.get("parent") or named[0]),
+                             **{k: c[k] for k in ("description", "assignee", "duedate")
+                                if str(c.get(k) or "").strip()}}
+                            for c in kids0]
+                mode = "subtask"
+                out["mode"] = "subtask"
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n({named[0]} 아래에 바로 붙였다 — 감싸는 Task 를 "
+                                      "새로 만들지 않았다)").strip()
 
         if mode == "task":
             subs = [i for i in items if (i.get("type") or "").lower().startswith("sub")]
@@ -796,3 +819,10 @@ def _existing_epic_like(summary: str):
     except Exception:
         pass
     return None
+
+
+def _asks_subtasks(state) -> bool:
+    """"서브태스크로 쪼개줘 / 하위 작업 추가해줘" 처럼 **자식을 붙여 달라**는 요청인가."""
+    said = last_user_text(state)
+    return any(w in said for w in ("서브태스크", "서브 태스크", "subtask", "sub-task",
+                                   "하위 작업", "하위작업", "쪼개", "나눠서 붙"))

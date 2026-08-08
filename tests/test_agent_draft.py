@@ -271,3 +271,45 @@ def test_a_split_parent_with_children_is_not_flagged():
     r = _applied(item={"summary": "[ETL] 수집 및 적재 정비",
                        "children": [{"summary": "수집 정비"}, {"summary": "적재 정비"}]})
     assert "두 가지 일이" not in r["draft"]["rationale"]
+
+
+# ── 이미 있는 티켓에 Sub-Task 붙이기 ────────────────────────────────
+def test_named_parent_gets_subtasks_directly_not_a_wrapper_task():
+    """'DL-9090 에 서브태스크 추가해줘' 는 그 티켓 **아래**에 붙이라는 뜻이다.
+    감싸는 새 Task 를 만들면 사용자가 말한 티켓은 그대로 두고 껍데기가 하나 더 생긴다(실측)."""
+    from langchain_core.messages import HumanMessage
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "[Workbench] 성능 측정 및 가이드", "type": "Task",
+                      "children": [{"summary": "성능 측정 수행"},
+                                   {"summary": "사용 가이드 작성"}]}]}
+    st = {"mentioned_keys": ["DL-9090"],
+          "messages": [HumanMessage(content="DL-9090 에 서브태스크 추가해줘. 알아서")]}
+    r = Refiner().apply(st, out)
+    rows = r["draft"]["items"]
+    assert r["draft"]["mode"] == "subtask"
+    assert len(rows) == 2 and all(i["type"] == "Sub-Task" for i in rows)
+    assert all(i["parent"] == "DL-9090" for i in rows)
+    assert "감싸는 Task" in r["draft"]["rationale"]
+
+
+def test_children_stay_children_when_the_parent_does_not_exist_yet():
+    """새 일을 쪼개는 것은 여전히 children 이다 — 위 규칙이 이걸 헤집으면 안 된다."""
+    from langchain_core.messages import HumanMessage
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "[ETL] 테이블 30개 등록", "type": "Task", "components": ["ETL"],
+                      "children": [{"summary": "1~15번"}, {"summary": "16~30번"}]}]}
+    st = {"messages": [HumanMessage(content="테이블 30개 등록. 사람 나눠서 쪼개줘")]}
+    r = Refiner().apply(st, out)
+    assert r["draft"]["mode"] == "task"
+    assert len(r["draft"]["items"]) == 1 and len(r["draft"]["items"][0]["children"]) == 2
+
+
+def test_subtasks_can_have_different_parents_in_one_batch():
+    """'DL-9093 이랑 DL-9094 둘 다' — 항목마다 부모가 다른 것이 정상이다."""
+    out = {"questions": [], "mode": "subtask", "rationale": "",
+           "items": [{"summary": "회귀 테스트", "type": "Sub-Task", "parent": "DL-9093"},
+                     {"summary": "회귀 테스트", "type": "Sub-Task", "parent": "DL-9094"}]}
+    r = Refiner().apply({"mentioned_keys": ["DL-9093", "DL-9094"]}, out)
+    assert {i["parent"] for i in r["draft"]["items"]} == {"DL-9093", "DL-9094"}
+    rows = as_bulk_items(r["draft"])
+    assert all(i.get("parent") for i in rows), rows
