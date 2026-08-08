@@ -417,3 +417,39 @@ def test_understructured_single_task_gets_a_shape_question():
                       "description": body}]}
     r = Refiner().apply(_msg("통계 파이프라인 개발해야 해"), out)
     assert r["questions"] and "Sub-Task" in str(r["questions"][0].get("options"))
+
+
+def test_numbered_volume_split_tasks_are_collapsed_into_children():
+    """번호만 다른 Task N개(분량 분할 오판)는 코드가 1 Task + Sub-Task 로 접는다 —
+    실측 재발: '테이블 1~5' Task 5개. 번호가 제목 중간에 있어도 잡는다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "multiple_tasks", "structure_source": "inferred",
+           "items": [{"summary": f"[Catalog] 메타데이터 미등록 테이블 {i} 등록",
+                      "type": "Task", "assignee": f"skcc.x{i}", "description": ""}
+                     for i in range(1, 6)]}
+    r = Refiner().apply(_msg("테이블 30개 등록, 사람 나눠서. 알아서"), out)
+    d = r["draft"]
+    assert len(d["items"]) == 1 and len(d["items"][0]["children"]) == 5
+    assert d["structure"] == "task_with_subtasks"
+
+
+def test_stage_split_tasks_are_collapsed_too():
+    """단계 낱말만 다른 Task 들(…설계/…구현/…검증)도 같은 산출물 — 접는다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "task_with_subtasks", "structure_source": "inferred",
+           "items": [{"summary": f"[ETL] NDV 통계 파이프라인 {w}", "type": "Task",
+                      "description": ""} for w in ("설계", "구현", "검증")]}
+    r = Refiner().apply(_msg("파이프라인 개발. 알아서"), out)
+    d = r["draft"]
+    assert len(d["items"]) == 1 and len(d["items"][0]["children"]) == 3
+
+
+def test_functionally_different_tasks_are_not_collapsed():
+    """기능 분화(모듈·산출물이 다른 Task)는 접지 않는다 — 접으면 STR2 가 망가진다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "multiple_tasks", "structure_source": "user_specified",
+           "items": [{"summary": "[Workbench] 성능 측정 리포트 작성", "type": "Task", "description": ""},
+                     {"summary": "[Runtime] 쿼리 인덱스 조정", "type": "Task", "description": ""},
+                     {"summary": "[Catalog] 사용 가이드 작성", "type": "Task", "description": ""}]}
+    r = Refiner().apply(_msg("성능 측정하고 인덱스도 손보고 가이드도. 알아서"), out)
+    assert len(r["draft"]["items"]) == 3

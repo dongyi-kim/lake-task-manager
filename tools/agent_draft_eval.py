@@ -122,28 +122,36 @@ def measure(items: list, outs: list) -> dict:
 
 
 RUBRIC = (
-    "너는 Jira 티켓 초안의 심사자다. 아래 초안(JSON)을 사내 규율에 비추어 4축으로 1~5점 채점하라.\n"
+    "너는 Jira 티켓 초안의 심사자다. 아래 초안(JSON)을 사내 규율에 비추어 5축으로 1~5점 채점하라.\n"
     "5=흠잡을 데 없음, 3=쓸 만하나 아쉬움, 1=실패. JSON 만 출력:\n"
-    '{"body":n,"roles":n,"refs":n,"placement":n,'
+    '{"topic":n,"body":n,"roles":n,"refs":n,"placement":n,'
     '"worst":"가장 큰 문제 한 문장","fix":"가장 먼저 고칠 것 한 문장"}\n'
+    "— topic(주제 충실: **제목·본문이 사용자의 '원래 요청'의 주제·고유명사를 유지하는가.** "
+    "원래 요청의 기술명·대상이 제목에서 사라지고 Epic 이나 다른 티켓의 주제로 바뀌었으면 "
+    "1~2점 — 형식이 아무리 좋아도 다른 일을 만든 것이다. 이 축이 낮으면 나머지는 의미 없다)\n"
     "— body(본문 작성 가이드: 첫 문단에 배경·왜, 작업 범위, 완료 조건이 있고, 제목은 무엇을 "
-    "하는지 동사로 끝나며 제목만으로 구분되는가. 빈 본문·한 줄 본문은 1점)\n"
+    "하는지 동사로 끝나며 제목만으로 구분되는가. 빈 본문·한 줄 본문·**중복 섹션(참고가 두 벌, "
+    "영문 섹션명)** 은 감점)\n"
     "— roles(역할분리: 상위 Task 는 '무엇을 왜'를 담고 Sub-Task 는 '한 사람이 며칠 안에 끝낼 "
     "실행 단위'인가. Task 본문을 Sub-Task 가 그대로 베끼거나, Sub-Task 가 다시 쪼개야 할 만큼 "
-    "크거나, 같은 일이 중복되면 감점)\n"
+    "크거나, 같은 일이 중복되면 감점. 다단계 규모를 단일 Task 로 뭉갠 것도 감점)\n"
     "— refs(참조: 본문에 근거가 되는 실제 티켓 키·문서가 붙어 있고 그것이 이 일과 실제로 "
-    "관련 있는가. 근거 없는 서술, 무관한 티켓 나열, 여러 항목에 같은 목록을 복붙하면 감점)\n"
+    "관련 있는가. 근거 없는 서술, **링크 없는 문서 제목 나열**, 무관한 티켓 나열, 여러 항목에 "
+    "같은 목록을 복붙하면 감점)\n"
     "— placement(배치: 각 티켓의 Epic·모듈(컴포넌트)·라벨이 그 일에 맞는가. 모듈이 다른 일을 "
     "한 티켓에 몰았거나, Epic 을 아무 데나 붙였거나, 같은 뜻의 라벨을 새로 만들었으면 감점. "
     "여러 Task 가 서로 다른 Epic 에 붙는 것은 정상이다)")
 
 
-def judge(items, context):
+def judge(items, context, original=""):
+    """original = **첫 턴의 원 요청** — 이게 없으면 judge 는 주제 이탈을 잡을 수 없다
+    (실측: 마지막 턴만 줘서 '증분 적재' 둔갑을 5점으로 채점했다)."""
     from app.agent import config as C
     try:
         out = C.get_llm(temperature=0, tier="simple").invoke([
             ("system", RUBRIC),
-            ("user", f"### 사용자 요청\n{context}\n\n### 초안\n"
+            ("user", f"### 원래 요청 (첫 턴 — topic 축의 기준)\n{original or context}\n\n"
+                     f"### 이후 대화\n{context}\n\n### 초안\n"
                      f"{json.dumps(items, ensure_ascii=False, indent=1)[:6000]}")])
         txt = str(getattr(out, "content", "") or "")
         mm = re.search(r"\{.*\}", txt, re.S)
@@ -162,13 +170,13 @@ if __name__ == "__main__":
               f"질문={len(o.get('questions') or [])} 초안={len(_items(o))}건")
     items = _items(outs[-1]) or next((_items(o) for o in reversed(outs) if _items(o)), [])
     m = measure(items, outs)
-    j = judge(items, TURNS[1])
+    j = judge(items, TURNS[1], original=TURNS[0])
     print("\n── 정량 ──")
     for k, v in m.items():
         print(f"  {k}: {v}")
-    print("\n── 정성(3축) ──")
-    print(f"  본문 {j.get('body')} · 역할분리 {j.get('roles')} · 참조 {j.get('refs')}"
-          f" · 배치 {j.get('placement')}")
+    print("\n── 정성(5축) ──")
+    print(f"  주제 {j.get('topic')} · 본문 {j.get('body')} · 역할분리 {j.get('roles')}"
+          f" · 참조 {j.get('refs')} · 배치 {j.get('placement')}")
     print(f"  worst: {j.get('worst')}")
     print(f"  fix:   {j.get('fix')}")
     usage = outs[-1].get("usage") or {}

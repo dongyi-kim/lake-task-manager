@@ -157,6 +157,24 @@ CASES = [
      lambda o, _: "quality-gate" in json.dumps(items(o), ensure_ascii=False)
      and (not pend(o, "new_labels") or "quality-gate" in pend(o, "new_labels"))),
 
+    # ── 실사용 사고 재현: 주제 유지 + 구조 + 본문 규율 (STARR NDV 건) ──
+    # 실측 실패: 제목이 Epic 본문("증분 적재")을 따라가 원 요청(StarRocks Puffin NDV)이
+    # 사라졌고, 다단계 규모인데 단일 Task 로 뭉갰고, 본문에 참고/References/Knowledge 가
+    # 3벌 중복 + 링크 없는 날조 문서 제목이 나열됐다. 전부 여기서 단언한다.
+    ("STARR1", "주제 유지 — 원 요청 고유어가 제목에 남고, 다단계는 쪼개지고, 본문 규율", [
+        "starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해",
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, 마감은 2026-09-30. 알아서 진행해"],
+     lambda o, _: (lambda its: bool(its)
+                   # ① 주제: 원 요청 고유어 2개 이상이 제목에 남아 있다
+                   and sum(1 for w in ("starrocks", "puffin", "ndv", "통계")
+                           if w in (its[0].get("summary") or "").lower()) >= 2
+                   # ② 구조: 다단계 규모 — Sub-Task 로 나뉘었거나 최소한 구조 확인 질문
+                   and (len(kids(o)) >= 2 or bool(o.get("questions")))
+                   # ③ 본문 규율: 참고 1벌, 영문 중복 섹션 없음
+                   and _body(its[0]).count("<h3>참고</h3>") <= 1
+                   and "References" not in _body(its[0])
+                   and "<h3>Knowledge</h3>" not in _body(its[0]))(items(o))),
+
     # ── 규칙 위반을 요구 ─────────────────────────────────────────────
     ("RULE1", "Sub-Task 를 최상위로 만들어 달라 — 규칙대로 거절하거나 부모를 묻는다", [
         "서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼"],

@@ -209,9 +209,12 @@ class Refiner(ToolAgent):
         said = conversation(state)
         defaults = any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠"))
         force_rule = ("\n- ★ 사용자가 **알아서 진행하라고 했다. questions 는 반드시 빈 배열**로 내고 "
-                      "지금 아는 것 + 기본값으로 items 를 완성하라. 담당자는 비워 둔다(다음 단계가 "
-                      "정한다) — 단 **사용자가 누구에게 맡길지 말했으면 그대로 적는다**"
-                      "('성능 측정은 x1402' 처럼 지정한 것을 비우면 지시를 버리는 셈이다). "
+                      "지금 아는 것 + 기본값으로 items 를 완성하라. **Epic 선택도 묻지 마라** — "
+                      "아래 '배치 재료'의 후보 중 이 일의 주제에 가장 맞는 것을 네가 고르고 "
+                      "rationale 에 한 줄로 이유를 적는다(후보가 여럿이어도 위임받았으면 고르는 "
+                      "것이 네 일이다. 정 마땅치 않으면 비워서 최상위로). 담당자는 비워 둔다"
+                      "(다음 단계가 정한다) — 단 **사용자가 누구에게 맡길지 말했으면 그대로 "
+                      "적는다**('성능 측정은 x1402' 처럼 지정한 것을 비우면 지시를 버리는 셈이다). "
                       "기한은 사용자가 말한 것을 쓰고, 없으면 비워 둔다.\n"
                       "- ★ **items 가 빈 배열인 채로 끝내지 마라.** 조사에서 비슷한 티켓이 "
                       "나왔든 정보가 조금 모자라든, 지금 아는 것으로 초안을 만들고 미확정은 "
@@ -260,6 +263,11 @@ class Refiner(ToolAgent):
         if shape:
             goal += (f"\n- ★ 사용자가 만들 **형태를 말했다**('{word}' → {shape}). 그대로 따르고 "
                      "structure_source 를 \"user_specified\" 로 적어라. 다른 형태를 권하지 마라.")
+        elif any(w in request_text(state) for w in ("파이프라인", "구축", "시스템", "개발해야")):
+            # 신규 구축 규모는 하향(단일 Task 뭉개기)이 실측된 실패 모드다 — 넛지를 준다.
+            goal += ("\n- ★ 신규 구축/파이프라인 개발 규모의 요청이다. 설계·구현·검증·연동처럼 "
+                     "**단계가 사람·기간으로 나뉘면 task_with_subtasks** 로 하고 단계를 children "
+                     "에 실어라 — DoD 불릿에 단계를 나열하는 것은 구조 판단을 회피한 것이다.")
         elif not defaults:
             goal += ("\n- ★ 사용자는 **할 일만 말했고 형태는 열려 있다**. 네가 판단하되 "
                      "structure_source 를 \"inferred\" 로 적어라 — 확인이 필요하면 시스템이 "
@@ -509,6 +517,31 @@ class Refiner(ToolAgent):
                                       f"이중 계상된다. {', '.join(comps[1:])} 몫은 별도 티켓으로 "
                                       "나누는 것이 맞다)").strip()
 
+        # ── 번호·단계만 다른 Task N개는 한 산출물이다 — 하나로 접고 children 으로 ──
+        # refiner.md 오판 #1(단계를 Task 로)·#2("테이블 30개 → 30 Tasks")를 코드가
+        # 보장한다(실측 재발 2종: "테이블 1~5" Task 5개 / "…설계·…구현·…검증" Task 3개).
+        # 제목에서 꼬리 번호·단계 낱말을 떼면 같은 제목 = 같은 산출물.
+        need = 2 if structure == "task_with_subtasks" else 3
+        if mode == "task" and len(items) >= need:
+            base = _base_title(str(items[0].get("summary") or ""))
+            same = [i for i in items
+                    if _base_title(str(i.get("summary") or "")) == base]
+            if base and len(base) >= 8 and len(same) == len(items):
+                head = dict(items[0])
+                head["summary"] = base
+                head["children"] = [{"summary": str(i.get("summary") or ""),
+                                     **({"assignee": i["assignee"]} if i.get("assignee") else {}),
+                                     **({"duedate": i["duedate"]} if i.get("duedate") else {})}
+                                    for i in items]
+                items.clear()
+                items.append(head)
+                structure = "task_with_subtasks"
+                out["structure"] = structure
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(번호만 다른 Task 들은 같은 산출물의 분량 분할이라 "
+                                      "한 Task + Sub-Task 로 접었다)").strip()
+                draft["structure"] = structure
+
         # ── 분량 분할 Sub-Task 는 골고루 ───────────────────────────────
         # "사람 나눠서" 라고 말한 일을 한 사람에게 몰아 주면 쪼갠 의미가 없다. 프롬프트로
         # 지시하되, 몰아준 경우 코드가 되돌린다(누구에게 줄지는 Assigner 의 근거를 존중해
@@ -600,18 +633,31 @@ class Refiner(ToolAgent):
         # ── 하향 편향 보정 — single_task 인데 본문이 다단계·다인 규모면 확인을 받는다.
         # 상향(쪼갬)에는 확인 질문이 붙는데 하향(뭉갬)은 아무도 안 막았다(실측: 파이프라인
         # 신규 구축을 단일 Task 로 뭉갰다). 신호는 본문에서 읽는다 — DoD 불릿 5개↑ 또는
-        # 서로 다른 단계 낱말 3종↑. '알아서' 위임이면 묻지 않고 경고만 남긴다.
-        if structure == "single_task" and src == "inferred" and items and not qs:
+        # 서로 다른 단계 낱말 3종↑. 판정 기준은 **사용자가 형태를 입으로 말했는가**(said_shape)다
+        # — 모델이 적어 낸 structure_source 는 위임("알아서")을 지정으로 오독한다(실측).
+        if structure == "single_task" and not said_shape and items and not qs:
             body = " ".join(str(i.get("description") or "") + " " + str(i.get("summary") or "")
                             for i in items)
             dod = body.count("data-checked")
             stages = sum(1 for w in ("설계", "구현", "검증", "연동", "모니터링", "전환",
                                      "PoC", "테스트", "배포") if w in body)
             if dod >= 5 or stages >= 3:
-                msg = ("확인 필요: 설계·구현·검증처럼 단계가 나뉘는 규모로 보이는데 단일 "
-                       "Task 다 — Sub-Task 분할 검토")
                 if _said_defaults(state):
-                    out["rationale"] = ((out.get("rationale") or "") + f"\n({msg})").strip()
+                    # 위임받았으면 묻지 않고 **나눠서** 낸다 — 보정 호출 1회로 단계를
+                    # children 으로 뽑는다(실측: 위임 케이스에서 단일 Task 뭉개기가 반복).
+                    fix = _split_into_children(state, items[0])
+                    if fix:
+                        items[0]["children"] = fix
+                        structure = "task_with_subtasks"
+                        out["structure"] = structure
+                        draft["structure"] = structure
+                        out["rationale"] = ((out.get("rationale") or "")
+                                            + "\n(다단계 규모라 단계별 Sub-Task 로 나눴다 — "
+                                              "위임에 따라 자동. 승인 화면에서 고칠 수 있다)").strip()
+                    else:
+                        out["rationale"] = ((out.get("rationale") or "")
+                                            + "\n(확인 필요: 설계·구현·검증처럼 단계가 나뉘는 "
+                                              "규모로 보이는데 단일 Task 다 — Sub-Task 분할 검토)").strip()
                 else:
                     qs = [{"question": "작업이 여러 단계(설계·구현·검증 등)로 나뉘는 규모로 "
                                        "보입니다. 어떻게 만들까요?",
@@ -693,6 +739,49 @@ def draft_text(draft: dict) -> str:
             bits.append(f"\n    설명: {str(it['description'])[:150]}")
         rows.append("  ".join(bits))
     return f"mode={draft.get('mode')}\n" + "\n".join(rows)
+
+
+def _split_into_children(state, item: dict) -> list:
+    """단일 Task 로 뭉개진 다단계 초안을 **실행 단위 Sub-Task 로 나누는 보정 호출 1회**.
+
+    위임("알아서") 케이스 전용 — 물을 수 없으니 나눠서 내고, 승인 카드에서 사람이 고친다.
+    실패하면 빈 리스트(경고 경로로 폴백) — 보정이 본 흐름을 죽이면 안 된다."""
+    try:
+        from app.agent import config as C
+        schema = {"title": "split_children", "type": "object", "properties": {
+            "children": {"type": "array", "items": {
+                "type": "object", "properties": {
+                    "summary": {"type": "string",
+                                "description": "실행 단위 제목 — 부모 제목을 베끼지 말고 "
+                                               "이 조각이 무엇을 어떻게 끝내는지"}},
+                "required": ["summary"]}}},
+            "required": ["children"]}
+        llm = C.get_llm(temperature=0.1, tier="simple").with_structured_output(schema)
+        r = llm.invoke([
+            ("system", "너는 PMO 티켓 설계자다. 다단계 작업을 한 사람이 며칠 안에 끝낼 "
+                       "실행 단위 Sub-Task 로 나눈다. JSON 만 출력한다."),
+            ("user", f"원 요청: {request_text(state)}\n\n"
+                     f"Task 제목: {item.get('summary')}\n"
+                     f"본문: {str(item.get('description') or '')[:1200]}\n\n"
+                     "이 Task 를 Sub-Task 2~5개로 나눠라. 각 제목은 단계·대상을 담아 서로 "
+                     "구분돼야 한다(예: '통계 생성 job 구현', 'StarRocks 연동 검증').")])
+        kids = [{"summary": str(c.get("summary") or "").strip()}
+                for c in (r or {}).get("children") or []
+                if str(c.get("summary") or "").strip()]
+        return kids[:5] if len(kids) >= 2 else []
+    except Exception:
+        return []
+
+
+def _base_title(s: str) -> str:
+    """제목에서 분할 표식(번호·단계 낱말)을 뗀 몸통 — 같으면 같은 산출물이다.
+
+    번호는 꼬리("… - 테이블 3")만이 아니라 중간("테이블 3 등록")에도 온다(실측) —
+    숫자를 전부 지우고 공백을 접어 비교한다. 단계 낱말은 꼬리에서만 뗀다."""
+    s = _re.sub(r"\d+", "", s or "")
+    s = _re.sub(r"\s*[-–—:]?\s*(?:설계|구현|검증|테스트|연동|모니터링|문서화|배포|개발)"
+                r"(?:\s*단계)?\s*$", "", s.strip()).strip()
+    return _re.sub(r"\s{2,}", " ", s).strip(" -–—:#")
 
 
 def draft_full_text(draft: dict, cap: int = 4000) -> str:
