@@ -38,8 +38,13 @@ into every sentence — measured feedback: "본문에 발췌·원본·참조를 
   - Document: `[2] [문서 제목](URL) — what it contains`
   - Comment: `[3] DL-9062 코멘트 (skcc.x1103, 2026-08-05) — what it said`
 - Every reference line MUST start with `[n] ` — never a numbered list (`1.`), never brackets around the whole line (measured drift: `1. [DL-… — …]`).
+- A table/section exists only when there is content — never emit a history table filled
+  with "확인된 기록 없음" rows, and never a reference whose description is "확인된 기록
+  없음" (measured: both happened when the format was applied to an empty case). If a
+  section has nothing, drop the section.
 - Reuse the same number for the same source. Do not create a reference the body never
-  cites. Short answers (1–2 sources) may keep inline citations — the index is for
+  cites — and never attach a reference that does not actually support the sentence
+  (measured: a bug draft cited an unrelated 적재주기 ticket as [1]). Short answers (1–2 sources) may keep inline citations — the index is for
   density, not ceremony.
 
 ## Tone — 간결한 요약체가 기본

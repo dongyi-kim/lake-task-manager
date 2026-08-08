@@ -112,7 +112,13 @@ class Responder(TextAgent):
         # ★ 자산·주제 조회는 브리프 순서(개념 먼저)가 오히려 방해다 — 실측에서 judge 가
         # "개념 설명이 길어 정작 물어본 값이 안 보인다"고 반복 지적했고, 컬럼 목록처럼
         # 자료에 그대로 있는 값이 답변에서 통째로 빠졌다. 이 유형은 **값이 먼저**다.
-        if state.get("topic_dossier") and not qs and not result:
+        # ★ 자산 형식(현재 값 표·타임라인·참조)은 **자산/지식 질의(ask)에만** — 별도 if 라
+        #   초안·버그 응답까지 덮어써 억지 표와 무관 참조를 만들었다(실측: 버그 초안에
+        #   '히스토리' 표 + 무관 티켓 참조).
+        if state.get("topic_dossier") and not qs and not result \
+                and (state.get("intent") or "") == Intent.ASK \
+                and not state.get("draft", {}).get("items") \
+                and not (state.get("change_plan") or {}).get("key"):
             goal = ("**질문이 요구한 값부터, 읽히는 구조로 답하라.** 형식(가시성 실측 지적 반영):\n"
                     "① 결론 1~2문장 — 물어본 값의 핵심만.\n"
                     "② **현재 값 표** — | 항목 | 값 | 근거 | 3열. 주기·Job·담당·스키마처럼 "

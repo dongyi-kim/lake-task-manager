@@ -15,6 +15,8 @@ find_stale_tickets / get_user_activity)를 몇 번 부르고 숫자를 읽어 �
 
 from __future__ import annotations
 
+import re as _re0
+
 from app.agent.workflow.agents.base import ToolAgent
 from app.agent.prompts.roles import SYSTEM_PMO
 from app.agent.workflow.prompts import persona
@@ -123,8 +125,23 @@ def _ticket_progress(state) -> str:
     # 키 2건이면 두 티켓을 병렬로 — prod 에선 티켓당 5갈래 조회가 통째로 대기가 된다.
     with ThreadPoolExecutor(max_workers=2) as ex:
         reports = list(ex.map(lambda k: progress_report(k), keys))
-    for r in reports:
+    for k, r in zip(keys, reports):
         if r.get("error"):
+            # 미존재 키는 **사실**이다 — 자료로 밝혀야 모델이 '권한 없음'으로 지어내지
+            # 않는다(실측: DL-90933 을 권한 문제라고 답했다). 오탈자 후보도 코드가 찾는다.
+            hint = ""
+            m = _re0.match(r"([A-Z]+-)(\d+)$", k or "")
+            if m and len(m.group(2)) >= 2:
+                # 오탈자 후보: 마지막 자리 삭제(90933→9093) / 앞자리 유지 축약
+                cands = [m.group(1) + m.group(2)[:-1], m.group(1) + m.group(2)[1:]]
+                for cand in cands:
+                    try:
+                        if not progress_report(cand).get("error"):
+                            hint = f" 비슷한 키로 {cand} 가 실재한다 — 오탈자인지 확인하라."
+                            break
+                    except Exception:
+                        pass
+            blocks.append(f"[{k}] 존재하지 않는 티켓이다(권한 문제가 아니라 미존재).{hint}")
             continue
         rows = [f'[{r["key"]}] "{r.get("title", "")}" — 상태 {r.get("status")}'
                 f' · 담당 {r.get("assignee") or "없음"} · 마감 {r.get("due") or "없음"}'

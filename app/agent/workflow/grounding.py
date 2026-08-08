@@ -44,10 +44,17 @@ def check(reply: str) -> dict:
     c = client()
     text = reply or ""
 
+    import re as _re0
     fake_keys, real_titles = [], {}
     for key in dict.fromkeys(KEY_RE.findall(text)):        # 등장 순서 유지 + 중복 제거
         raw = c.get_issue(key) or {}
         if not raw.get("key"):
+            # 답변이 그 키를 **미존재라고 말하는 중**이면 날조가 아니다 — "DL-90933 은
+            # 존재하지 않습니다"에 '존재하지 않는 티켓' 경고를 붙이면 헛소리가 된다(실측).
+            near = "".join(m.group(0) for m in
+                           _re0.finditer(_re0.escape(key) + r"[^\n]{0,40}", text))
+            if _re0.search(r"존재하지\s*않|없는\s*티켓|찾을\s*수\s*없|미존재", near):
+                continue
             fake_keys.append(key)
         else:
             real_titles[key] = ((raw.get("fields") or {}).get("summary") or "").strip()
