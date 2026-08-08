@@ -59,12 +59,15 @@ def check(reply: str) -> dict:
         else:
             real_titles[key] = ((raw.get("fields") or {}).get("summary") or "").strip()
 
-    # 제목 단정 검사 — "KEY: 제목" / "KEY (제목)" / "**KEY**: 제목" 꼴만 본다.
+    # 제목 단정 검사 — "KEY: 제목" / "KEY (제목)" / "**KEY**: 제목" / **KEY "제목"** 꼴.
+    # 따옴표 꼴이 우리 권장 표기인데 정작 검사에서 빠져 있었다(실측: modify 답변이
+    # DL-9062 "리샘플링 기준 논의" 로 제목을 지어냈는데 통과).
     wrong_titles = {}
     for key, real in real_titles.items():
         if not real:
             continue
-        m = re.search(rf"{re.escape(key)}\**\s*[:(]\s*([^)\n**]{{4,80}})", text)
+        m = re.search(rf"{re.escape(key)}\**\s*[:(]\s*([^)\n**]{{4,80}})", text) \
+            or re.search(rf"{re.escape(key)}\**\s*[\"“'']([^\"”'\n]{{4,80}})[\"”'']", text)
         if not m:
             continue
         claimed = m.group(1).strip().rstrip(")").strip()

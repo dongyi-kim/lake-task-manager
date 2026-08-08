@@ -423,6 +423,33 @@ class Historian(ToolAgent):
                     except Exception:
                         pass
 
+            # ── 온보딩/소개 질의 사전 취합 — 모듈 구성은 knowledge(정적 RAG)에, Epic 목록은
+            # find_parent_epic 에 이미 있다. 모델이 검색만 하다 "Epic 정의 없음"으로
+            # 오답했다(실측 E4). 조회는 코드가 한다.
+            if any(w in asked_s for w in ("온보딩", "새로 온", "신규 입사", "소개할", "소개해")) \
+                    and any(w in asked_s for w in ("프로젝트", "모듈", "팀", "구성")):
+                try:
+                    from app.agent import tools as T
+                    rows = []
+                    hits = T.BY_NAME["search_rules"].invoke(
+                        {"question": "모듈 구성 정의 역할", "k": 2}) or []
+                    for h in hits:
+                        if h.get("rule"):
+                            rows.append("[모듈 정의(knowledge)]\n" + str(h["rule"])[:900])
+                            break
+                    eps = T.BY_NAME["find_parent_epic"].invoke({"query": "", "limit": 20}) or []
+                    ep_rows = [f"- {e.get('key')} [{e.get('module') or '-'}] "
+                               f"\"{e.get('summary', '')}\""
+                               for e in eps if isinstance(e, dict) and e.get("key")]
+                    if ep_rows:
+                        rows.append("[주요 Epic 목록(실값)]\n" + "\n".join(ep_rows[:20]))
+                    if rows:
+                        merged = ((state.get("pre_survey") or "") + "\n\n"
+                                  + "\n\n".join(rows)).strip()
+                        state = {**state, "pre_survey": merged[:3500]}
+                except Exception:
+                    pass
+
             # ── 허용값 질의 사전 취합 — "라벨 목록 보여줘·정리 제안" 류는 검색이 아니라
             # **조회**다. 모델이 list_ticket_options 를 고르길 기대했더니 검색만 하다
             # '확인 불가'로 죽었다(실측 2회). 조회는 코드가 한다.

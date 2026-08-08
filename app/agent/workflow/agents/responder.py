@@ -138,7 +138,7 @@ class Responder(TextAgent):
                     "`**참조**` 섹션으로 모은다(그 뒤에 다른 내용 금지 — 화면이 접이식 영역으로 "
                     "그린다). 형식 — **불릿(-) 없이** 번호로 시작하는 한 줄씩:\n"
                     "   `[1] DL-9044 — 적재주기 변경(2시간→30분)의 1차 근거`\n"
-                    "   `[2] http://…/pages/123/문서-제목 — 스키마·Job 정리` "
+                    "   `[2] <실제 문서 URL> — 스키마·Job 정리` (형식 예시다 — 이 줄을 복사하지 마라) "
                     "(문서는 **URL 만** — 제목을 다시 쓰지 마라, 뱃지가 제목을 보여 준다)\n"
                     "   `[3] DL-9062 코멘트 (skcc.x1103, 2026-08-05) — 담당·시간축 불일치`\n"
                     "   같은 근거는 같은 번호 재사용.\n"
@@ -268,7 +268,9 @@ def _dedupe_refs(text: str) -> str:
             return ("ticket", keys)
         return ("text", desc.strip().lower()[:60])
 
-    rows = _re.findall(r"(?:^|\n)\s*-?\s*\[(\d+)\]\s*([^\n]*)", block)
+    rows = [(n, d) for n, d in
+            _re.findall(r"(?:^|\n)\s*-?\s*\[(\d+)\]\s*([^\n]*)", block)
+            if "…" not in d and "<실제 문서" not in d]   # 프롬프트 형식 예시 복사 차단(실측)
     survivors, alias = [], {}          # [(old, desc)], old→대표 old
     seen = {}
     for old, desc in rows:
