@@ -54,16 +54,19 @@ DEPTH_CASES = [
 # ── embedding: 규칙 검색 골든셋 ─────────────────────────────────────
 # 질의 → 그 답이 실제로 들어 있는 knowledge 파일. 순위가 아니라 **맞는 문서를 끌어오는가**.
 EMBED_CASES = [
-    ("Story Point 는 어디에 매길 수 있나", "01-ticket-rules.md"),
-    ("완료 판정은 무엇으로 하나", "01-ticket-rules.md"),
-    ("진척률 분모에서 빠지는 티켓", "02-progress-formula.md"),
-    ("ETL 모듈은 무슨 일을 하나", "03-modules-and-people.md"),
-    ("담당자를 추천할 때 어떤 근거를 쓰나", "03-modules-and-people.md"),
-    ("Epic 으로 격상해도 되는 기준", "04-work-breakdown.md"),
-    ("티켓 본문에 무엇을 적어야 하나", "07-ticket-body-guide.md"),
-    ("Sub-Task 담당을 어떻게 나누나", "07-ticket-body-guide.md"),
-    ("LTM 에서 담당자는 어떻게 바꾸나", "05-ltm-guide.md"),
-    ("적재주기 변경은 어디에 기록되나", "06-data-assets.md"),
+    # 정답을 **집합**으로 둔다 — 한 질문의 답이 두 문서에 걸쳐 있는 경우가 실제로 있다
+    # (완료 판정은 산식 문서에, 티켓 규칙 문서에도 한 줄). 하나만 정답이라고 두면
+    # 맞는 답을 틀렸다고 세게 된다(실측: '완료 판정' 라벨이 그 실수였다).
+    ("Story Point 는 어디에 매길 수 있나", {"01-ticket-rules.md"}),
+    ("완료 판정은 무엇으로 하나", {"02-progress-formula.md", "01-ticket-rules.md"}),
+    ("진척률 분모에서 빠지는 티켓", {"02-progress-formula.md", "01-ticket-rules.md"}),
+    ("ETL 모듈은 무슨 일을 하나", {"03-modules-and-people.md"}),
+    ("담당자를 추천할 때 어떤 근거를 쓰나", {"03-modules-and-people.md"}),
+    ("Epic 으로 격상해도 되는 기준", {"04-work-breakdown.md"}),
+    ("티켓 본문에 무엇을 적어야 하나", {"07-ticket-body-guide.md", "01-ticket-rules.md"}),
+    ("Sub-Task 담당을 어떻게 나누나", {"07-ticket-body-guide.md", "04-work-breakdown.md"}),
+    ("LTM 에서 담당자는 어떻게 바꾸나", {"05-ltm-guide.md"}),
+    ("적재주기 변경은 어디에 기록되나", {"06-data-assets.md"}),
 ]
 
 
@@ -136,8 +139,8 @@ def eval_embed(models):
         for q, want in EMBED_CASES:
             hits = static_index.search(q, k=3)
             srcs = [h.get("source") for h in hits]
-            hit1 += 1 if srcs[:1] == [want] else 0
-            if want in srcs:
+            hit1 += 1 if (srcs[:1] and srcs[0] in want) else 0
+            if set(srcs) & want:
                 hit3 += 1
             else:
                 miss.append(f"{q[:22]}… → {srcs}")
