@@ -51,6 +51,12 @@ user's intent and fix only the facts.
 Bugs additionally need 재현 경로 / 기대 동작 / 실제 동작. Omit 참고 entirely rather than
 padding it with loosely-related tickets.
 
+Lineage matters for a body: anchor 배경 to the parent Epic (reference its key, never copy
+its prose), and check for child Sub-Tasks — in the materials' 하위 list, or planned in the
+seed/prompt. **With children, the body owns "무엇을 왜" (whole scope + whole DoD)**; the
+execution detail belongs to the children, so do not restate child titles as body content —
+make 작업 범위 items consistent with the split instead.
+
 **comment** — short. Decide what kind of comment the user is writing and match it:
 
 | 종류 | 모양 |

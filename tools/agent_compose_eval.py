@@ -66,6 +66,18 @@ CASES = [
         ticket_key="DL-9090", kind="comment", prompt="김치찌개 레시피 알려줘"),
      lambda r: (not r.get("ok") and r.get("needsInfo"))
      or (r.get("ok") and "레시피" not in _txt(r["html"]))),
+
+    # 댓글/본문 비대칭(사용자 지적): 댓글은 문맥 없으면 못 쓰고, 본문은 계보로 쓴다
+    ("CMP8", "자식 있는 부모 본문 — '무엇을 왜'를 맡고 자식 제목을 반복하지 않는다", dict(
+        ticket_key="DL-9090", kind="description",
+        prompt="본문 정리해줘"),
+     lambda r: r.get("ok") and "배경" in r["html"] and "작업 범위" in r["html"]
+     # 자식 실행 세부(예: '그래프 렌더 컴포넌트' 자식 제목)를 DoD 로 그대로 나열하면 실패
+     and _txt(r["html"]).count("컴포넌트") <= 2),
+
+    ("CMP9", "본문은 짧은 프롬프트여도 티켓 맥락으로 쓴다(코멘트보다 관대)", dict(
+        ticket_key="DL-9095", kind="description", prompt="본문 써줘"),
+     lambda r: r.get("ok") and "배경" in r["html"]),
 ]
 
 
