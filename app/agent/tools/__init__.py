@@ -21,6 +21,7 @@ from app.agent.tools.web_tools import search_github, search_web
 from app.agent.tools.search_tools import (find_mentions, find_parent_epic, get_epic_tree,
                                           get_ticket, get_ticket_context, read_document,
                                           run_jql, search_work_history)
+from app.agent.tools.file_tools import list_attachments, read_attachment
 from app.agent.tools.write_tools import (add_ticket_comment, add_ticket_comments,
                                          attach_document, create_epic, create_tickets,
                                          link_tickets, list_child_types, list_ticket_options,
@@ -29,6 +30,7 @@ from app.agent.tools.write_tools import (add_ticket_comment, add_ticket_comments
 
 # 과거를 뒤진다 — 읽기만. deep_search 는 의미 검색까지 가는 비싼 쪽이라 따로 알아볼 수 있게 뒀다.
 SEARCH_TOOLS = [search_work_history, find_mentions, map_ticket_neighborhood, get_ticket,
+                list_attachments, read_attachment,
                 get_ticket_context, read_document, get_epic_tree, find_parent_epic,
                 deep_search, run_jql]
 

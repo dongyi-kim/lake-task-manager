@@ -531,3 +531,46 @@ def test_search_ladder_requires_core_token_match():
         t = (it.get("title") or "")
         assert any(w.lower() in t.lower() for w in ("Iceberg", "Puffin", "NDV", "통계")), \
             f"핵심 토큰 없이 통과: {it}"
+
+
+# ── 첨부파일 인지·읽기 ─────────────────────────────────────────────
+def test_attachment_list_says_what_each_file_is():
+    """목록 자체가 맥락이다 — '로그 첨부했습니다' 옆에 실제로 무엇이 붙어 있는가."""
+    r = T.BY_NAME["list_attachments"].invoke({"ticket_key": "DL-5004"})
+    names = {f["name"]: f for f in r["files"]}
+    assert names, r
+    img = next(f for f in r["files"] if f["name"].endswith(".png"))
+    assert img["readable"] is False and "이미지" in img["kind"]
+    md = next(f for f in r["files"] if f["name"].endswith(".md"))
+    assert md["readable"] is True and md["size"].endswith(("KB", "MB"))
+    assert md["author"] and md["created"]
+
+
+def test_reading_a_text_attachment_returns_its_content():
+    r = T.BY_NAME["read_attachment"].invoke({"ticket_key": "DL-5004",
+                                           "filename": "배포_체크리스트.md"})
+    assert "text" in r and "DL-5004" in r["text"], r
+
+
+def test_partial_filename_is_enough():
+    """모델이 확장자를 흘리는 일이 잦다 — 부분 일치로 받아 준다."""
+    r = T.BY_NAME["read_attachment"].invoke({"ticket_key": "DL-5004",
+                                           "filename": "배포_체크리스트"})
+    assert "text" in r, r
+
+
+def test_binary_and_missing_files_fail_with_a_usable_reason():
+    """'못 읽는다'로 끝내지 말고 **무엇을 해야 하는지**까지 — 모델이 사람에게 물을 수 있게."""
+    img = T.BY_NAME["read_attachment"].invoke({"ticket_key": "DL-5004",
+                                             "filename": "설계_검토.png"})
+    assert "error" in img and "사람에게" in img["error"]
+    gone = T.BY_NAME["read_attachment"].invoke({"ticket_key": "DL-5004", "filename": "없는것.txt"})
+    assert "error" in gone and "있는 것:" in gone["error"], "무엇이 있는지 알려 줘야 다시 시도한다"
+
+
+def test_oversized_attachments_are_refused_before_download():
+    """수십 MB 덤프를 프롬프트에 실으면 토큰도 시간도 감당이 안 된다 — 크기로 먼저 막는다."""
+    from app.agent.tools import file_tools as F
+    assert F.MAX_READ_BYTES <= 512 * 1024
+    assert F._ext("a.LOG") == "log" and F._ext("noext") == ""
+    assert "엑셀" in F._kind("표.xlsx", "") and "열 수 없음" in F._kind("보고.pdf", "")

@@ -321,6 +321,26 @@ function liftCheckboxes(html) {
   });
 }
 
+// AI 자동완성이 낸 HTML 을 **이 편집기가 실제로 파싱하는 모양**으로 맞춘다.
+//
+// 모델에게는 읽기 쉬운 최소 형태(<li data-checked="false">글</li>)로 내게 하고, 편집기가
+// 요구하는 군더더기(data-type·label·<p> 래퍼)는 코드가 채운다 — 프롬프트에 DOM 세부를
+// 적어 두면 모델이 한 군데만 틀려도 조용히 깨진다. liftCheckboxes 가 '불러올 때'를 맡듯이
+// 이 함수가 '끼워 넣을 때'를 맡는다(그쪽은 <input> 평문, 이쪽은 taskList 형태라 짝이 다르다).
+const _AI_TASK_LI = /<li\b([^>]*?)data-checked=["']?(true|false)["']?([^>]*)>([\s\S]*?)<\/li>/gi;
+export function normalizeAiHtml(html) {
+  let out = String(html || "");
+  out = out.replace(_AI_TASK_LI, (m, pre, checked, post, body) => {
+    if (/data-type=["']?taskItem/i.test(pre + post)) return m;      // 이미 맞는 모양
+    const on = String(checked).toLowerCase() === "true";
+    const inner = /<(p|div|ul|ol)\b/i.test(body) ? body : "<p>" + body.trim() + "</p>";
+    return '<li data-checked="' + (on ? "true" : "false") + '" data-type="taskItem">'
+      + '<label><input type="checkbox"' + (on ? ' checked="checked"' : "") + '><span></span></label>'
+      + "<div>" + inner + "</div></li>";
+  });
+  return out;
+}
+
 function sectionExt(T) {
   return T.Node.create({
     name: "sectionTitle",
@@ -1278,8 +1298,9 @@ export default {
         // 한 트랜잭션으로 넣는다 — Ctrl+Z 한 번에 통째로 되돌아가야 사용자가 부담 없이 쓴다.
         const ed = this._ed;
         if (!ed) return;
-        if (this.aiReplace) ed.chain().focus().clearContent().insertContent(r.html).run();
-        else ed.chain().focus().insertContent(r.html).run();
+        const html = normalizeAiHtml(r.html);
+        if (this.aiReplace) ed.chain().focus().clearContent().insertContent(html).run();
+        else ed.chain().focus().insertContent(html).run();
         this.aiNote = r.note || "";
         this.aiOpen = false; this.aiPrompt = "";
         if (r.note) pushToast(r.note, "warn");

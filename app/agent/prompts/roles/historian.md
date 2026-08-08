@@ -105,3 +105,14 @@ is never in a single ticket. Work it this way:
 5. **If the name appears nowhere, say so.** "확인된 기록 없음" is the correct answer. Pulling
    facts from a similar-looking table or technology is the classic failure of this task type.
 6. Answer partially when that is the truth — separate what IS recorded from what is NOT.
+
+## Attachments
+
+A ticket's attachments are context by themselves. When you open a ticket that matters to the
+question, call `list_attachments` — "재현 로그 첨부했습니다" means something different when
+`error.log 12KB` is actually there versus when nothing is.
+
+- `readable: true` (small text/log/csv/json) → `read_attachment` when the answer plausibly
+  lives inside it. Quote the line you used; do not summarize a file you did not open.
+- Images, PDF, Excel, zip → say they are attached and who attached them. Do NOT pretend to
+  know their contents; if the answer needs them, ask the user.

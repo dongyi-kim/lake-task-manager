@@ -102,3 +102,40 @@ def test_route_returns_html_for_the_editor():
     r = cli.post("/api/agent/compose",
                  json={"ticketKey": PROG, "kind": "comment", "prompt": "진행 공유 코멘트"})
     assert r.status_code == 200 and r.json()["ok"] and r.json()["html"]
+
+
+# ── 렌더링 왕복: 우리가 쓰라고 한 표기가 실제로 살아남는가 ──────────
+def test_checklists_survive_the_save_conversion():
+    """에이전트는 taskList 로 쓰고, 저장은 사내 Jira 의 <p><input> 로 평탄화된다.
+
+    이 변환이 깨지면 체크리스트가 그냥 불릿이 된다 — 표기 규칙(knowledge/08)의 근거다.
+    """
+    from app.agent.tools._ctx import client
+    html = ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">2홉 측정</li>'
+            '<li data-checked="true">문서 갱신</li></ul>')
+    stored = str(client().desc_field_value(html))
+    assert stored.count('type="checkbox"') == 2
+    assert 'checked="checked"' in stored, "체크된 항목이 풀리면 안 된다"
+    assert "2홉 측정" in stored and "문서 갱신" in stored
+
+
+def test_markdown_would_not_survive_so_the_prompt_forbids_it():
+    """마크다운 링크는 변환되지 않고 글자로 남는다 — composer.md 가 금지하는 이유."""
+    from app.agent.tools._ctx import client
+    stored = str(client().desc_field_value('<p>[설계 문서](https://x/y)</p>'))
+    assert "](https" in stored, "변환되지 않는다는 사실 자체가 규칙의 근거다"
+
+
+def test_composer_prompt_states_the_rendering_rules():
+    """규칙이 문서에만 있고 프롬프트에 없으면 모델은 모른다."""
+    from app.agent.prompts.roles import SYSTEM_COMPOSER
+    assert "NEVER markdown" in SYSTEM_COMPOSER
+    assert "[~사번]" in SYSTEM_COMPOSER
+    assert "taskList" in SYSTEM_COMPOSER
+
+
+def test_rendering_rules_are_indexed_for_retrieval():
+    """knowledge/08 은 정적 RAG 에 실려야 다른 역할도 같은 규칙을 본다."""
+    from app.agent.retrieval import static_index
+    assert (static_index.knowledge_dir() / "08-editor-and-rendering.md").exists()
