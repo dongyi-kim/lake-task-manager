@@ -360,6 +360,7 @@ def _events(chunk):
     from app.agent.workflow.state import Stage
     _TOOL_KO = {  # 도구명 → 사람이 읽는 라벨. "도구 사용 중"만으로는 어디서 느린지 모른다(사용자 지적)
         "search_work_history": "사내 이력 검색", "deep_search": "의미 기반 재검색(RAG)",
+        "find_mentions": "언급 추적(코멘트 원문까지)", "read_document": "문서 본문 열람",
         "get_ticket": "티켓 열람", "get_ticket_context": "연관 링크 추적",
         "map_ticket_neighborhood": "계보·주변 지도", "get_epic_tree": "Epic 트리 조회",
         "find_parent_epic": "상위 Epic 탐색", "run_jql": "JQL 실행",

@@ -31,7 +31,7 @@ PMO 실무에서 "새 업무"의 상당수는 새롭지 않다 — 이미 누군
 | Self-critique | Reviewer 의 3-Check(근거·규칙·요청부합) — Self-RAG 루브릭 재사용 | `agents/reviewer.py` |
 | **② LangChain/LangGraph** | | |
 | Multi-Agent (단일 미인정) | **7 역할**: Planner·Historian·Refiner·Assigner·Reviewer·Operator·Responder + PMO | `workflow/graph.py` |
-| Tool Calling | LangChain `@tool` 29종 — docstring 을 LLM 명세로 작성 | `agent/tools/` |
+| Tool Calling | LangChain `@tool` 31종 — docstring 을 LLM 명세로 작성 | `agent/tools/` |
 | ReAct | ToolAgent 서브그래프(think ⇄ act → conclude), 걸음 수는 모델이 결정 | `agents/base.py` |
 | Memory | Checkpointer(`thread_id`) — 되묻기·승인 대기가 턴을 넘어 이어짐 | `workflow/session.py` |
 | 조건부 엣지 | 의도 8종 × 라우터 5개 (State 만 보고 결정) | `graph.py::route_*` |
@@ -61,6 +61,15 @@ PMO 실무에서 "새 업무"의 상당수는 새롭지 않다 — 이미 누군
 거부하고, 티켓 검증은 화면의 Bulk 생성과 **같은 함수**(`domain/bulk.validate_bulk`)가 한다.
 프롬프트는 티켓 본문(남이 쓴 글)이 섞이는 곳이라 인젝션에 안전하지 않다.
 
+**흩어진 지식은 코드가 모으고, 모델은 판단만 한다.** "이 테이블 지금 적재주기가?",
+"Schema Registry 정책이 뭐지?" 같은 질문의 답은 어느 티켓에도 통째로 없다 — 요청 게시글,
+개발 티켓 본문, 장애 코멘트, 변경 이력(changelog), 정책 문서, 심지어 **다른 대상 티켓의
+코멘트**에 나뉘어 있다. 검색 실력에 맡기면 조각 하나를 빠뜨린 채 그럴듯한 값을 짓는다.
+그래서 `find_mentions`(매칭 문장 + 작성자·날짜)·`ticket_field_history`(원본 변경 이력)·
+`read_document`(문서 본문)를 코드가 병렬로 돌려 자료로 주입하고, 모델에겐 **"여기 없으면
+확인된 기록 없음"** 을 지시한다. 판정 규칙 하나가 이 유형의 정답률을 가른다 —
+**현재 값 = 가장 최근 변경 기록**(변경 전 값을 현재로 답하는 것이 전형적 오답이다).
+
 **신선도와 비용을 동시에.** 1차 검색은 항상 실시간(방금 만든 티켓도 잡힘), 임베딩은 바뀐
 문서만(manifest 의 `updated`+`content_hash` 2단 판정). 안 바뀐 문서 재임베딩 0건을 테스트가
 **실제 임베딩 호출을 세어** 지킨다.
@@ -83,7 +92,7 @@ PMO 실무에서 "새 업무"의 상당수는 새롭지 않다 — 이미 누군
 | 추론(Reasoning) | ToolAgent 의 think 단계, Reviewer 3-Check |
 | 계획(Planning) | Planner 의도 분류 → 경로 선택, Refiner 의 업무 분해 |
 | 메모리(Memory) | LangGraph Checkpointer(`thread_id`) + RAG 2계층 |
-| 도구(Tools) | LangChain `@tool` 29종 (LTM 내부 직결 + 웹/GitHub) |
+| 도구(Tools) | LangChain `@tool` 31종 (LTM 내부 직결 + 웹/GitHub) |
 | 감지·작동(Perception/Action) | 실시간 Jira/Confluence 검색 → 승인 후 티켓 생성/변경 |
 | 피드백(Feedback) | Reviewer↔Refiner 재작성 루프(≤2회), HITL 승인/거절, Langfuse 트레이스 |
 
@@ -112,7 +121,7 @@ app/agent/
 ├─ mcp_server.py      MCP Tools/Resources/Prompts
 ├─ prompts/           프롬프트 자산 — common.md + roles/*.md (영문, 답변은 한국어 강제)
 ├─ routes.py          /api/agent/* (SSE·설정·승인)
-├─ tools/             29 도구 — search/people/rule/pmo/web/review/write
+├─ tools/             31 도구 — search/people/rule/pmo/web/review/write
 ├─ retrieval/         RAG 2계층 (정적 규칙 + 동적 증분)
 └─ workflow/          LangGraph — state/prompts/graph/session + agents/ 8역할
 knowledge/            정적 지식(티켓 규칙·산식·인력 정책·분해 절차)
