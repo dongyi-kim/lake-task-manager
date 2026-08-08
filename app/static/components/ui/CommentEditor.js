@@ -1020,7 +1020,8 @@ export default {
                     // '' | 'jira' | 'confluence' — '/' 로 연 검색창
                     pick: "",
                     // AI 자동완성 — 팝업 상태. seed 는 "쓰던 글을 재료로 쓸까"다
-                    aiOpen: false, aiPrompt: "", aiSeed: true, aiReplace: false,
+                    aiOpen: false, aiPrompt: "", aiSeed: true, aiReplace: false, aiAsk: "",
+                    aiPopStyle: {},   // fixed 배치 — 에디터 기준 중앙(absolute 는 overflow 에 잘리고 좌로 쏠렸다)
                     // LLM 연결값이 없으면 생성 대신 안내+[설정] — null=아직 확인 전
                     aiReady: null, aiWhy: "", aiSettings: false,
                     aiBusy: false, aiErr: "", aiNote: "",
@@ -1285,7 +1286,24 @@ export default {
     // ── AI 자동완성 ──────────────────────────────────────────────
     // 쓰기가 아니다 — 결과를 에디터에 꽂아 줄 뿐이고 저장은 사용자가 누른다.
     openAi() {
-      this.aiOpen = true; this.aiErr = ""; this.aiNote = "";
+      this.aiOpen = true; this.aiErr = ""; this.aiNote = ""; this.aiAsk = "";
+      // ── 배치: fixed + 에디터 기준 X축 중앙 (실측 지적 3: absolute(right:0)는
+      //    ① 버튼이 왼쪽이라 팝업이 좌로 쏠리고 ② overflow/스택 컨텍스트에 가려지고
+      //    ③ 320px 로 좁았다). fixed 는 어느 조상에도 잘리지 않는다.
+      const host = (this.$el && (this.$el.querySelector(".cmt-ed-host") || this.$el));
+      const btn = this.$refs.aiBtn;
+      if (host && host.getBoundingClientRect) {
+        const r = host.getBoundingClientRect();
+        const b = btn && btn.getBoundingClientRect ? btn.getBoundingClientRect() : r;
+        this.aiPopStyle = {
+          position: "fixed",
+          left: (r.left + r.width / 2) + "px",
+          top: Math.min(b.bottom + 6, window.innerHeight - 260) + "px",
+          transform: "translateX(-50%)",
+          width: Math.max(360, Math.min(560, r.width - 24)) + "px",
+          right: "auto",
+        };
+      }
       // 열 때마다 확인한다 — 설정 창에서 키를 막 넣고 돌아온 직후에도 맞아야 한다.
       agentApi.status()
         .then((s) => { this.aiReady = !!(s && s.llmReady); this.aiWhy = (s && s.llmReason) || ""; })
@@ -1307,7 +1325,13 @@ export default {
           ticketKey: this.ticketKey || "", kind: this.kind || "comment",
           prompt, seedHtml: seed,
         });
-        if (!r || !r.ok) { this.aiErr = (r && r.error) || "생성에 실패했습니다."; return; }
+        if (!r || !r.ok) {
+          // 모호 신호(needsInfo)는 오류가 아니라 **보완 요청**이다 — 팝업을 유지한 채
+          // 무엇을 더 적으면 되는지 보여 준다(피드백 루프, 사용자 요청).
+          if (r && r.needsInfo) { this.aiErr = ""; this.aiAsk = r.error || ""; }
+          else { this.aiAsk = ""; this.aiErr = (r && r.error) || "생성에 실패했습니다."; }
+          return;
+        }
         // 한 트랜잭션으로 넣는다 — Ctrl+Z 한 번에 통째로 되돌아가야 사용자가 부담 없이 쓴다.
         const ed = this._ed;
         if (!ed) return;
@@ -1723,9 +1747,9 @@ export default {
         <!-- AI 자동완성 — 이 에디터가 무엇을(본문/코멘트) 어느 티켓에 쓰는 중인지 서버가 알고
              있으므로, 사용자는 "무엇을 써 달라"만 적으면 된다. 결과는 삽입될 뿐 저장은 사용자가. -->
         <span class="tb-style ai-wrap">
-          <button type="button" class="tb-b tb-ai" :class="{on:aiOpen}" @click.stop="openAi"
+          <button type="button" ref="aiBtn" class="tb-b tb-ai" :class="{on:aiOpen}" @click.stop="openAi"
                   title="AI 자동완성 — 지금 쓰는 글을 이어 쓰거나 새로 초안을 만든다">AI</button>
-          <span v-if="aiOpen" class="ai-pop" @click.stop @keydown.esc="aiOpen=false">
+          <span v-if="aiOpen" class="ai-pop" :style="aiPopStyle" @click.stop @keydown.esc="aiOpen=false">
             <template v-if="aiReady === false">
               <span class="ai-err">AI 를 쓸 수 없습니다 — {{ aiWhy || 'LLM 연결이 설정되지 않았습니다.' }}</span>
               <span class="ai-row">
@@ -1735,7 +1759,7 @@ export default {
               </span>
             </template>
             <template v-else>
-            <textarea ref="aiInput" class="ai-in" v-model="aiPrompt" rows="3"
+            <textarea ref="aiInput" class="ai-in" v-model="aiPrompt" rows="4"
                       :placeholder="kind === 'description'
                         ? '예) 배경·범위·완료 조건까지 본문 초안 잡아줘'
                         : '예) 진행 상황 공유 코멘트 써줘'"
@@ -1746,6 +1770,7 @@ export default {
             <label class="ai-ck">
               <input type="checkbox" v-model="aiReplace"> 전체 교체 (끄면 커서 위치에 이어쓰기)
             </label>
+            <span v-if="aiAsk" class="ai-ask">{{ aiAsk }}</span>
             <span v-if="aiErr" class="ai-err">{{ aiErr }}</span>
             <span class="ai-row">
               <span class="ai-hint">Enter 로 생성 · Ctrl+Z 로 되돌리기</span>

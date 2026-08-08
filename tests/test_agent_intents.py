@@ -323,6 +323,12 @@ def test_reference_index_duplicates_are_merged():
          "- [3] DL-9044 — 같은 티켓 다른 설명\n"
          "- [4] DL-9044 코멘트 (skcc.x1103, 2026-08-06) — 담당\n")
     out = _dedupe_refs(t)
-    assert "잡 [1]" in out and out.count("- [1] DL-9044") == 1
-    assert "- [2] DL-9044 코멘트" in out
+    assert "잡 [1]" in out and out.count("[1] DL-9044") >= 1
+    assert "\n[2] DL-9044 코멘트" in out
+    assert "- [" not in out, "불릿과 [n] 이중 표식 금지(실측 지적)"
     assert _dedupe_refs("참조 없는 답") == "참조 없는 답"
+    # 문서 참조의 "제목 (URL)" 중복 표기는 URL 만 남긴다 — 뱃지가 제목을 보여 준다
+    t2 = ("값 [1].\n\n**참조**\n"
+          "- [1] [데이터카탈로그] 특성 분석 (http://x/pages/1/문서) — 스키마 근거\n")
+    o2 = _dedupe_refs(t2)
+    assert "[1] http://x/pages/1/문서 — 스키마 근거" in o2, o2

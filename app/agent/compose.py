@@ -94,6 +94,14 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     kind = (kind or "comment").strip()
     if not prompt and not seed:
         return {"ok": False, "error": "무엇을 써 드릴지 알려 주세요."}
+    # ── 모호 사전 판정(코드) — 티켓 맥락도 시드도 없는데 프롬프트가 지시어뿐이면
+    # LLM 을 부를 것도 없이 보완을 요청한다(모델 판정은 흔들렸다 — 실측 CMP4 회귀).
+    bare_key = not (ticket_key or "").strip() or (ticket_key or "").startswith("__")
+    seedless = not _re_strip(seed)
+    if bare_key and seedless and len(prompt) < 15:
+        return {"ok": False, "needsInfo": True,
+                "error": ("이대로는 정확한 글을 쓸 수 없습니다 — 무엇에 대한 글인지 목적과 "
+                          "대상을 한 줄만 적어 주세요 (예: 'CDC 파이프라인 개선 작업 본문')")}
 
     ctx = _ticket_context(ticket_key, kind)
     rules = _house_rules(kind, prompt)
@@ -104,6 +112,15 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
 # 명령서
 {what}을 작성하라. 결과는 사용자의 에디터에 그대로 삽입된다 — HTML 본문만 내고,
 인사말·설명·따옴표·코드펜스를 붙이지 마라.
+
+★ **쓸 수 없으면 쓰지 마라 — 단, 쓸 수 있으면 반드시 써라.** 판정 기준:
+- NEED_INFO 는 **대상 자체가 불명**일 때만이다 — 티켓 맥락도 시드도 없는데 지시어뿐
+  ("잘 써줘"), 또는 요청이 이 티켓과 무관한 주제일 때. 그때는 **첫 줄에 `NEED_INFO:`** 와
+  무엇을 알려 주면 되는지 1~2문장(예: `NEED_INFO: 어떤 작업에 대한 본문인지 — 목적과
+  대상을 한 줄만 적어 주세요`).
+- **티켓 맥락이 있으면 세부 수치·결과가 없어도 쓴다** — 검토 요청·확인 요청·진행 질문
+  코멘트는 결과를 몰라도 쓸 수 있는 글이다("측정 결과가 정리되는 대로 검토 부탁드립니다"
+  처럼). 모르는 세부는 비워 두거나 일반적 표현으로 — NEED_INFO 로 되돌리지 마라.
 
 ## 사용자의 요청
 {prompt or "(따로 말한 것 없음 — 아래 작성 중인 글을 완성하라)"}
@@ -122,6 +139,14 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
         return {"ok": False, "error": _friendly_error(e)}
 
     html = _unfence(html)
+    # ── 피드백 루프: 모호해서 못 쓴다는 신호 — 일반론을 지어내는 것보다 낫다(사용자 요청).
+    #    UI 는 팝업을 유지한 채 이 문구를 보여 주고 프롬프트·시드 보완을 유도한다.
+    import re as _re0
+    ni = _re0.match(r"\s*(?:<[^>]+>\s*)*NEED_INFO:\s*(.+?)(?:</|$)", html, _re0.S)
+    if ni:
+        ask = _re0.sub(r"<[^>]+>", "", ni.group(1)).strip()[:300]
+        return {"ok": False, "needsInfo": True,
+                "error": "이대로는 정확한 글을 쓸 수 없습니다 — " + ask}
     if not html:
         return {"ok": False, "error": "생성된 내용이 비어 있습니다. 요청을 조금 더 구체적으로 적어 주세요."}
     # 언급은 전부 **뱃지**여야 한다(사용자 지시: plain text 금지). 모델이 평문으로 남긴
@@ -142,6 +167,12 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     except Exception:
         pass
     return {"ok": True, "html": html, "note": note}
+
+
+def _re_strip(html: str) -> str:
+    """태그를 벗긴 실질 텍스트 — 빈 <p></p> 시드를 '내용 있음'으로 오판하지 않기 위해."""
+    import re
+    return re.sub(r"<[^>]+>", "", html or "").strip()
 
 
 def _badgeify(html: str) -> str:

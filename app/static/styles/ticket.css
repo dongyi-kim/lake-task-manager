@@ -1540,8 +1540,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tb-b.tb-ai { font-weight: 800; font-size: 11px; letter-spacing: .02em; color: var(--accent); }
 .tb-b.tb-ai.on, .tb-b.tb-ai:hover { color: #fff; background: var(--accent); }
 .ai-wrap { position: relative; }
-.ai-pop { position: absolute; top: calc(100% + 4px); right: 0; z-index: 9600;
-  width: 320px; padding: 8px; display: flex; flex-direction: column; gap: 6px;
+.ai-pop { position: absolute; top: calc(100% + 4px); right: 0; z-index: 9800;
+  width: 320px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
   box-shadow: 0 10px 30px rgba(0,0,0,.2); }
 .ai-in { width: 100%; resize: vertical; font: inherit; padding: 6px 8px;
@@ -1564,3 +1564,8 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .cmt-wrap .ProseMirror[contenteditable="false"] { opacity: .6; cursor: progress;
   background: repeating-linear-gradient(135deg, transparent, transparent 10px,
     rgba(127,127,127,.05) 10px, rgba(127,127,127,.05) 20px); }
+
+/* AI 자동완성 — 보완 요청(모호 신호). 오류(빨강)와 달리 "더 알려 달라"는 안내다 */
+.ai-ask { font-size: 12px; line-height: 1.6; color: var(--warn, #b8860b);
+  background: color-mix(in srgb, var(--warn, #b8860b) 12%, transparent);
+  border-radius: 6px; padding: 6px 8px; }

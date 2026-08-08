@@ -68,6 +68,14 @@ function inline(s, slim) {
   s = s
     .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, "$1<i>$2</i>")
+    // [n] 참조 마커 — 클릭하면 참조 칸으로 점프+하이라이트, 호버(title)로 문헌 미리보기.
+    .replace(/\[(\d{1,2})\](?!\()/g, (mm, n) => {
+      const ref = REFS[n];
+      if (!ref) return mm;
+      const tip = ref.replace(/"/g, "&quot;");
+      return `<a href="#" class="ref-mark" data-ref="${n}" title="${tip}">[${n}]</a>`;
+    })
     // 티켓 키는 클릭하면 티켓 다이얼로그가 열린다 — 근거를 바로 확인할 수 있어야 믿을 수 있다.
     // `.tkt[data-key]` 는 **앱 전역 위임 처리기**가 잡는 관례다(app-root).
     // 표 밖에서는 본문 뱃지와 같은 모양(jira-badge)으로 — plain text 금지(사용자 지시).
@@ -88,9 +96,36 @@ function inline(s, slim) {
   return s.replace(/\x00(\d+)\x00/g, (_, i) => stash[+i]);
 }
 
+// [n] 마커가 가리키는 참조 지도(n → 참조 한 줄의 평문). 렌더 한 번 동안만 유효.
+let REFS = {};
+
 export function renderMarkdown(text, people) {
   PEOPLE = people || {};
-  return _render(text);
+  REFS = {};
+  // ── 참조 섹션 분리 — 본문과 별개의 **접이식 영역**으로 그린다(사용자 요청).
+  //    [n] 마커는 여기로 점프+하이라이트하고, 호버 툴팁(title)으로 문헌을 보여 준다.
+  const m = /\n\*\*참조\*\*\s*\n([\s\S]+)$/.exec(text || "");
+  let body = text || "", refItems = [];
+  if (m) {
+    const lines = m[1].split("\n").map((l) => l.trim()).filter(Boolean);
+    const rows = lines.map((l) => /^-?\s*\[(\d{1,2})\]\s*(.*)$/.exec(l)).filter(Boolean);
+    if (rows.length) {
+      body = text.slice(0, m.index);
+      refItems = rows.map((r) => ({ n: r[1], text: r[2] }));
+      refItems.forEach((r) => { REFS[r.n] = r.text; });
+    }
+  }
+  let html = _render(body);
+  if (refItems.length) {
+    const items = refItems.map((r) =>
+      `<div class="agent-ref-item" data-ref="${r.n}">` +
+      `<span class="ref-no">[${r.n}]</span> ` +
+      // 문서 "제목 (URL)" 중복 표기는 URL 만 — 뱃지가 제목을 그린다(서버도 정리하지만 방어).
+      `${inline(esc(r.text.replace(/^([^—]*?)\s*\((https?:\/\/[^\s)]+)\)/, "$2")))}</div>`).join("");
+    html += `<details class="agent-refs"><summary>참조 ${refItems.length}건</summary>` +
+            `<div class="agent-refs-list">${items}</div></details>`;
+  }
+  return html;
 }
 
 function _render(text) {

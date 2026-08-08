@@ -18,6 +18,9 @@ You create NOTHING in Jira. The user reviews your text and presses the real butt
   the user's editor. Same for `**bold**` (use `<strong>`) and `- ` lists (use `<ul><li>`).
 - Korean for everything the reader sees.
 
+- Document links: the link text is the **document title**, never "여기"/"링크"/"참고" —
+  a bare "여기" tells the reader nothing and the editor renders the title as a badge.
+
 ## Grounding — the same rules as everywhere else
 
 Use ONLY what the materials give you: ticket keys, titles (verbatim), people ids, dates,

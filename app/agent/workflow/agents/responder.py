@@ -112,18 +112,22 @@ class Responder(TextAgent):
                     "① 결론 1~2문장 — 물어본 값의 핵심만.\n"
                     "② **현재 값 표** — | 항목 | 값 | 근거 | 3열. 주기·Job·담당·스키마처럼 "
                     "자료에 있는 운영 값을 행으로. 근거 열은 [1] 같은 참조 번호만.\n"
-                    "③ 히스토리는 타임라인 — 한 사건 한 줄: `YYYY-MM-DD 사건 요약 [N]`.\n"
+                    "③ 히스토리는 **표**로 — | 날짜 | 사건 | 근거 | 3열, 한 사건 한 행.\n"
                     "④ 자료에 목록이 있으면(컬럼 8개 등) 생략·요약하지 말고 그대로 옮겨라.\n"
                     "⑤ 없는 값: 사용자가 **실제로 물은 것**에 한해 '확인된 기록 없음'을 밝히되 "
                     "한두 문장으로 묶는다 — 안 물은 항목까지 '없음'으로 나열하는 것 금지"
                     "(실측: 없음 불릿 6줄이 답을 덮었다). 비슷한 다른 대상의 값 전이 금지.\n"
                     "⑥ ★ **참조 인덱스** — 본문 문장마다 티켓 제목·작성자·날짜를 끼워 넣지 "
-                    "마라(가독성을 죽인다). 본문에는 `[1]` `[2]` 번호만 달고, 답 맨 끝에 "
-                    "`**참조**` 섹션으로 모은다. 형식:\n"
+                    "마라(가독성을 죽인다). 본문에는 `[1]` `[2]` 번호만 달고, 답 **맨 끝**에 "
+                    "`**참조**` 섹션으로 모은다(그 뒤에 다른 내용 금지 — 화면이 접이식 영역으로 "
+                    "그린다). 형식 — **불릿(-) 없이** 번호로 시작하는 한 줄씩:\n"
                     "   `[1] DL-9044 — 적재주기 변경(2시간→30분)의 1차 근거`\n"
-                    "   `[2] [문서 제목](URL) — 스키마·Job 정리`\n"
+                    "   `[2] http://…/pages/123/문서-제목 — 스키마·Job 정리` "
+                    "(문서는 **URL 만** — 제목을 다시 쓰지 마라, 뱃지가 제목을 보여 준다)\n"
                     "   `[3] DL-9062 코멘트 (skcc.x1103, 2026-08-05) — 담당·시간축 불일치`\n"
-                    "   제목·출처는 참조 칸에 반드시, 같은 근거는 같은 번호 재사용.\n"
+                    "   같은 근거는 같은 번호 재사용.\n"
+                    "⑦ 서식을 사람 눈을 위해 써라 — 식별자·값·Job 이름은 `인라인 코드`, 섹션은 "
+                    "### 헤딩, 핵심 값은 **볼드**, 원문 인용은 > 인용, 필요하면 구분선(---).\n"
                     "값이 바뀐 적 있으면 '현재 X (이전 Y, 언제 변경 [N])' — 그 값을 **바꾼** "
                     "티켓이 1차 출처다(인용만 한 티켓으로 대체 금지). 담당은 자료의 `[담당]` "
                     "줄이 곧 답이다 — 코멘트 작성자를 담당자로 지어내지 마라.")
@@ -224,7 +228,7 @@ def _dedupe_refs(text: str) -> str:
     같은 티켓의 '티켓 참조'와 '코멘트 참조'는 다른 출처다(내용이 다르다).
     본문에서 안 쓰인 참조는 떨군다 — 규칙상 만들면 안 되는 것이라서다."""
     import re as _re
-    m = _re.search(r"\*\*참조\*\*\s*\n((?:\s*-\s*\[\d+\][^\n]*\n?)+)", text)
+    m = _re.search(r"\*\*참조\*\*\s*\n((?:\s*-?\s*\[\d+\][^\n]*\n?)+)", text)
     if not m:
         return text
     head, block, tail = text[:m.start(1)], m.group(1), text[m.end(1):]
@@ -242,7 +246,7 @@ def _dedupe_refs(text: str) -> str:
             return ("ticket", keys)
         return ("text", desc.strip().lower()[:60])
 
-    rows = _re.findall(r"-\s*\[(\d+)\]\s*([^\n]*)", block)
+    rows = _re.findall(r"(?:^|\n)\s*-?\s*\[(\d+)\]\s*([^\n]*)", block)
     survivors, alias = [], {}          # [(old, desc)], old→대표 old
     seen = {}
     for old, desc in rows:
@@ -265,12 +269,17 @@ def _dedupe_refs(text: str) -> str:
         return text
     newno = {rep: str(i + 1) for i, rep in enumerate(order)}
     mapping = {old: newno[rep] for old, rep in alias.items() if rep in newno}
-    if not mapping or all(k == v for k, v in mapping.items()) and len(order) == len(rows):
+    if not mapping:
         return text
+    # 병합할 게 없어도 계속 간다 — 불릿 제거·문서 중복 표기 정리는 항상 적용된다.
     out_body = _re.sub(r"\[(\d+)\](?!\()",
                        lambda mm: f"[{mapping.get(mm.group(1), mm.group(1))}]", body)
-    lines = [f"- [{newno[old]}] {desc}" for old, desc in survivors if old in newno]
-    lines.sort(key=lambda ln: int(_re.match(r"- \[(\d+)\]", ln).group(1)))
+    # 불릿 없이 — `[n]` 자체가 마커라 `- [n]` 은 이중 표식이다(실측 지적). 문서 참조는
+    # "제목 (URL)" 중복 표기를 URL 만 남긴다 — 뱃지가 제목을 보여 준다.
+    def _clean_desc(d: str) -> str:
+        return _re.sub(r"^([^—\n]*?)\s*\((https?://[^\s)]+)\)", r"\2", d.strip())
+    lines = [f"[{newno[old]}] {_clean_desc(desc)}" for old, desc in survivors if old in newno]
+    lines.sort(key=lambda ln: int(_re.match(r"\[(\d+)\]", ln).group(1)))
     # 참조 섹션을 원래 자리(head 끝)에 다시 꽂는다.
     ref_block = "\n".join(lines) + "\n"
     cut = len(head)

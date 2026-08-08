@@ -122,6 +122,22 @@ export default {
   },
   methods: {
     md(t, people) { return renderMarkdown(t, people); },
+    /** [n] 참조 마커 클릭 — 같은 답변의 참조 칸을 열고 그 항목으로 점프 + 하이라이트. */
+    mdClick(e) {
+      const mark = e.target.closest && e.target.closest(".ref-mark");
+      if (!mark) return;
+      e.preventDefault();
+      const md = mark.closest(".agent-md");
+      if (!md) return;
+      const det = md.querySelector("details.agent-refs");
+      if (det) det.open = true;
+      const item = md.querySelector(`.agent-ref-item[data-ref="${mark.dataset.ref}"]`);
+      if (!item) return;
+      item.scrollIntoView({ behavior: "smooth", block: "center" });
+      item.classList.remove("flash");
+      void item.offsetWidth;               // 재트리거 — 같은 항목을 연속 클릭해도 깜빡인다
+      item.classList.add("flash");
+    },
     /** 답변 속 뱃지 스켈레톤을 실물로 채운다 — 티켓 뱃지는 타입·제목·상태(본문 렌더와 같은
      *  구조), Confluence 뱃지는 URL 슬러그 제목(없으면 서버 og:title). 렌더는 동기, 채움은
      *  비동기 — updated() 훅에서 매번 돌지만 data-filled 마커로 한 번만 손댄다. */
@@ -787,7 +803,7 @@ export default {
         </div>
       </div>
 
-      <div class="agent-scroll" ref="scroller">
+      <div class="agent-scroll" ref="scroller" @click="mdClick">
         <!-- 빈 화면: 중앙 히어로 — 제목 + 추천 칩(입력창이 바로 아래 온다) -->
         <div v-if="empty && !busy" class="agent-empty">
           <h1 class="agent-hero">LTM Agent</h1>
