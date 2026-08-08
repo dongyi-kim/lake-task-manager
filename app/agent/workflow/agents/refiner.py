@@ -201,7 +201,9 @@ class Refiner(ToolAgent):
         defaults = any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠"))
         force_rule = ("\n- ★ 사용자가 **알아서 진행하라고 했다. questions 는 반드시 빈 배열**로 내고 "
                       "지금 아는 것 + 기본값으로 items 를 완성하라. 담당자는 비워 둔다(다음 단계가 "
-                      "정한다). 기한은 사용자가 말한 것을 쓰고, 없으면 비워 둔다.\n"
+                      "정한다) — 단 **사용자가 누구에게 맡길지 말했으면 그대로 적는다**"
+                      "('성능 측정은 x1402' 처럼 지정한 것을 비우면 지시를 버리는 셈이다). "
+                      "기한은 사용자가 말한 것을 쓰고, 없으면 비워 둔다.\n"
                       "- ★ **items 가 빈 배열인 채로 끝내지 마라.** 조사에서 비슷한 티켓이 "
                       "나왔든 정보가 조금 모자라든, 지금 아는 것으로 초안을 만들고 미확정은 "
                       "rationale 에 적는다. 질문만 내고 초안이 0건이면 사용자는 아무것도 "
@@ -268,7 +270,11 @@ class Refiner(ToolAgent):
   산출물 하나를 여럿이 나눠 하는 것이면 그 Task 의 **children 에 Sub-Task 로** 적는다.
 - 이미 같은 일이 진행 중이면 새로 만들지 말고 questions 로 사용자 판단을 구한다 — 단,
   **사용자가 '알아서'라고 했다면 묻지 말고 초안을 내고** rationale 에 "기존 DL-x 와 겹칠 수
-  있음"을 적는다(위임했는데 질문으로 되돌리면 아무것도 안 만들어진다).{force_rule}
+  있음"을 적는다(위임했는데 질문으로 되돌리면 아무것도 안 만들어진다).
+- ★ **새 일을 만들라는 요청에 기존 티켓 변경 계획(change)을 내지 마라.** 조사에서 비슷한
+  티켓이 나왔다고 그 티켓의 제목·본문을 고치는 것은 사용자가 부탁한 일이 아니다 —
+  관련 티켓은 초안의 '참고'에 적고, 새 티켓은 새로 만든다(실측: 새 작업 3건을 요청했는데
+  기존 티켓 하나를 수정하겠다고 답해 초안이 0건이 됐다).{force_rule}
 
 ## 대화
 {conversation(state)}
@@ -295,18 +301,21 @@ class Refiner(ToolAgent):
         # ★ 기계적 가드 — task 배치에 Sub-Task 가 섞이면 그 항목은 뺀다. 프롬프트로 막았는데도
         #   실 모델이 섞어 낸 적이 있고, 그대로 두면 검증 실패 → 재작성 왕복만 태우다
         #   한도 소진으로 끝난다. 빼는 것이 반려보다 낫다(부모 생성 후 2차 승인으로 붙일 수 있다).
-        if mode == "task":
-            subs = [i for i in items if (i.get("type") or "").lower().startswith("sub")]
-            # ★ 전부 Sub-Task 이고 부모가 실재하면 **모드를 승격**한다 — 사용자가 "DL-9090 밑에
-            #   서브태스크 3개" 라고 부모를 지목했는데 mode 만 task 로 잘못 낸 경우다. 여기서
-            #   버리면 "만들겠습니다" 라고 말해 놓고 초안이 0건이 된다(실측: PAR1).
-            # 모델이 parent 를 비운 채 Sub-Task 만 내는 일이 잦다 — 사용자가 "DL-9090 밑에"
-            # 라고 지목했으면 그 키가 부모다(실재는 조사에서 이미 확인됐다).
-            named = [k for k in (state.get("mentioned_keys") or []) if _ticket_exists(k)]
-            if subs and named:
-                for i in subs:
+        # 모델이 parent 를 비운 채 Sub-Task 를 내는 일이 잦다 — 사용자가 "DL-9090 밑에"
+        # 라고 지목했으면 그 키가 부모다(실재는 조사에서 이미 확인됐다). **모드와 무관하게**
+        # 채운다: mode=subtask 로 내면서 parent 만 빠뜨리면 검증에서 통째로 반려돼
+        # "만들겠습니다" 라고 말해 놓고 초안이 0건이 된다(실측: PAR1).
+        named = [k for k in (state.get("mentioned_keys") or []) if _ticket_exists(k)]
+        if named:
+            for i in items:
+                if (i.get("type") or "").lower().startswith("sub") or mode == "subtask":
                     if not str(i.get("parent") or "").strip():
                         i["parent"] = named[0]
+
+        if mode == "task":
+            subs = [i for i in items if (i.get("type") or "").lower().startswith("sub")]
+            # ★ 전부 Sub-Task 이고 부모가 실재하면 **모드를 승격**한다 — 사용자가 부모를
+            #   지목했는데 mode 만 task 로 잘못 낸 경우다(버리면 초안이 0건이 된다).
             if subs and len(subs) == len(items) and all(_ticket_exists(i.get("parent")) for i in subs):
                 mode = "subtask"
                 out["mode"] = "subtask"
@@ -426,6 +435,38 @@ class Refiner(ToolAgent):
                     out["rationale"] = ((out.get("rationale") or "")
                                         + "\n(같은 분량 작업이라 담당을 골고루 나눴다)").strip()
 
+        # ── 제목 하나에 산출물 둘이 들어가면 알린다 ─────────────────────
+        # "A 및 B" 는 대개 티켓 둘이다(모듈·담당·완료 시점이 갈린다). 쪼개는 판단은 사람이
+        # 하되, 조용히 넘어가지는 않는다 — 실측: 모듈 3개 일을 "성능 측정 및 인덱스 조정"
+        # 한 건에 뭉갰다.
+        for it in items:
+            title = str(it.get("summary") or "")
+            if _re.search(r"\s(및|그리고)\s", title) and not it.get("children"):
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(확인 필요: \"{title[:40]}\" 는 한 제목에 두 가지 일이 "
+                                      "들어가 있다 — 모듈·담당이 다르면 티켓을 나누는 게 맞다)").strip()
+                break
+
+        # ── 같은 이름의 Epic 이 이미 있으면 격상을 보류한다 ─────────────
+        # Epic 은 진척 보고 단위라 중복이 생기면 둘 다 영원히 60% 에서 멈춘다. 사용자가
+        # "에픽으로 크게 잡아줘" 라고 해도, 담을 Epic 이 이미 있으면 그걸 쓰는 게 맞다
+        # (knowledge/04 의 격상 조건 ③ '담을 기존 Epic 이 없다'를 코드가 확인한다).
+        if (out.get("mode") or "") == "epic" and items:
+            twin = _existing_epic_like(items[0].get("summary") or "")
+            if twin:
+                qs = (qs or []) + [{
+                    "question": f"{twin['key']} \"{twin.get('summary', '')}\" 가 이미 있습니다. "
+                                "여기에 Task 로 붙일까요, 그래도 새 Epic 을 만들까요?",
+                    "kind": "choice", "field": "epic",
+                    "options": [f"{twin['key']} 아래 Task 로 (권장 — 중복 Epic 은 진척 집계를 흐린다)",
+                                "새 Epic 을 만든다"]}]
+                # draft 는 이 위에서 이미 조립됐고 items 를 **참조로** 공유한다 —
+                # 이름을 다시 묶으면(items = []) 초안에는 반영되지 않는다. 비운다.
+                items.clear()
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(Epic 격상 보류 — {twin['key']} 와 이름이 겹친다)").strip()
+                structure = "single_task"
+
         # ── 컴포넌트가 비면 제목의 [모듈] 접두에서 채운다 ────────────────
         # 우리 제목 규약이 "[모듈] 무엇을 한다"다. 모델이 제목엔 넣고 필드엔 빠뜨리는 일이
         # 잦은데, 컴포넌트가 없으면 워크로드 집계에서 통째로 빠지고 담당도 못 고른다.
@@ -490,6 +531,14 @@ class Refiner(ToolAgent):
 
         # modify 갈래 — 변경 계획. 바꿀 값이 하나도 없는 change 는 계획이 아니다.
         change = out.get("change") if isinstance(out.get("change"), dict) else {}
+        # ★ 새 일을 만들라고 한 요청에는 변경 계획을 만들지 않는다. 조사에서 비슷한 티켓이
+        #   나오면 모델이 그걸 고치겠다고 답하는 일이 있는데(실측), 그러면 사용자가 부탁한
+        #   생성은 통째로 사라지고 시키지도 않은 수정이 승인 카드에 오른다.
+        if change.get("key") and (state.get("intent") or "") != Intent.MODIFY:
+            out["rationale"] = ((out.get("rationale") or "")
+                                + f"\n(참고: {change['key']} 가 비슷한 일이지만, 요청은 "
+                                  "새로 만드는 것이라 변경하지 않았다)").strip()
+            change = {}
         plan = {}
         if change.get("key"):
             fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary",
@@ -725,3 +774,25 @@ def _known_components() -> set:
                                  .get("components") or [])}
     except Exception:
         return set()
+
+
+def _existing_epic_like(summary: str):
+    """제목이 사실상 같은 Epic 이 이미 있나 — 모듈 접두와 조사를 걷어내고 비교한다."""
+    base = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "")).strip()
+    key_words = [w for w in _re.split(r"\s+", base) if len(w) >= 2]
+    if not key_words:
+        return None
+    try:
+        from app.agent.tools.search_tools import find_parent_epic
+        for r in (find_parent_epic.invoke({"query": "", "limit": 25}) or []):
+            if not isinstance(r, dict) or not r.get("key"):
+                continue
+            other = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(r.get("summary") or "")).strip()
+            if not other:
+                continue
+            # 낱말이 전부 겹치면 같은 이름으로 본다("쿼리 성능 개선" ↔ "[ETL] 쿼리 성능 개선")
+            if all(w in other for w in key_words) or all(w in base for w in other.split()):
+                return r
+    except Exception:
+        pass
+    return None

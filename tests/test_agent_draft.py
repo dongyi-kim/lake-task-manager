@@ -24,6 +24,7 @@ from app.agent import approval                                      # noqa: E402
 from app.agent.workflow import graph as G                           # noqa: E402
 from app.agent.workflow.agents.refiner import (Refiner, as_bulk_items,  # noqa: E402
                                                child_items)
+from app.agent.workflow.state import Intent                          # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -211,3 +212,62 @@ def test_saying_it_will_split_without_children_is_flagged():
     """'나눠서 진행한다'고 판단해 놓고 children 이 없으면 그건 판단이 아니라 말뿐이다."""
     r = _applied(structure="task_with_subtasks", structure_why="여러 사람이 나눠서")
     assert "확인 필요" in r["draft"]["rationale"]
+
+
+def test_a_creation_request_never_turns_into_an_edit_of_someone_elses_ticket():
+    """조사에서 비슷한 티켓이 나왔다고 그걸 고치면, 부탁받은 생성은 사라지고
+    시키지도 않은 수정이 승인 카드에 오른다(실측)."""
+    out = {"questions": [], "mode": "task", "items": [dict(_draft()["items"][0])],
+           "change": {"key": "DL-9090", "summary": "제목 바꾸기"}, "rationale": ""}
+    r = Refiner().apply({"intent": Intent.PLAN_WORK}, out)
+    assert not r["change_plan"], r["change_plan"]
+    assert "변경하지 않았다" in r["draft"]["rationale"]
+    assert r["draft"]["items"], "생성 초안은 그대로 남아야 한다"
+
+
+def test_an_explicit_modify_request_still_produces_a_change_plan():
+    out = {"questions": [], "mode": "task", "items": [],
+           "change": {"key": "DL-9090", "priority": "P1-Critical"}, "rationale": ""}
+    r = Refiner().apply({"intent": Intent.MODIFY}, out)
+    assert r["change_plan"].get("key") == "DL-9090"
+
+
+def test_promoting_to_an_epic_stops_when_one_of_that_name_already_exists():
+    """Epic 은 진척 보고 단위다 — 중복이 생기면 둘 다 영원히 60% 에서 멈춘다."""
+    out = {"questions": [], "mode": "epic", "rationale": "",
+           "items": [{"summary": "[ETL] 쿼리 성능 개선", "type": "Epic", "epic_name": "쿼리개선"}]}
+    r = Refiner().apply({}, out)
+    assert not r["draft"]["items"], "중복 Epic 을 그대로 만들면 안 된다"
+    q = r["questions"][0]
+    assert q["kind"] == "choice" and q["field"] == "epic"
+    assert "Epic 격상 보류" in r["draft"]["rationale"]
+
+
+def test_a_genuinely_new_epic_is_not_blocked():
+    out = {"questions": [], "mode": "epic", "rationale": "",
+           "items": [{"summary": "[ETL] 사내 표준 스키마 레지스트리 이관", "type": "Epic",
+                      "epic_name": "레지스트리이관"}]}
+    r = Refiner().apply({}, out)
+    assert r["draft"]["items"], "겹치지 않으면 막을 이유가 없다"
+
+
+def test_subtask_parent_is_filled_even_when_the_model_used_subtask_mode():
+    """mode=subtask 로 내면서 parent 만 빠뜨리면 검증에서 통째로 반려된다(실측 PAR1)."""
+    out = {"questions": [], "mode": "subtask", "rationale": "",
+           "items": [{"summary": "성능 측정", "type": "Sub-Task"},
+                     {"summary": "가이드 작성", "type": "Sub-Task"}]}
+    r = Refiner().apply({"mentioned_keys": ["DL-9090"]}, out)
+    assert all(i.get("parent") == "DL-9090" for i in r["draft"]["items"]), r["draft"]["items"]
+
+
+def test_one_title_holding_two_deliverables_is_flagged():
+    """'A 및 B' 는 대개 티켓 둘이다 — 쪼개는 판단은 사람이 하되 조용히 넘어가지는 않는다."""
+    r = _applied(item={"summary": "[Workbench] 성능 측정 및 인덱스 조정"})
+    assert "두 가지 일이" in r["draft"]["rationale"]
+
+
+def test_a_split_parent_with_children_is_not_flagged():
+    """이미 children 으로 쪼갠 것은 제목에 '및' 이 있어도 문제가 아니다."""
+    r = _applied(item={"summary": "[ETL] 수집 및 적재 정비",
+                       "children": [{"summary": "수집 정비"}, {"summary": "적재 정비"}]})
+    assert "두 가지 일이" not in r["draft"]["rationale"]
