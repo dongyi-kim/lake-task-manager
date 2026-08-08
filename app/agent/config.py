@@ -46,6 +46,31 @@ def available() -> tuple[bool, str]:
     return True, ""
 
 
+def llm_ready() -> tuple[bool, str]:
+    """**연결에 필요한 값이 하나라도 있는가** — 없으면 챗·에디터 AI 를 비활성으로 보인다.
+
+    실제 호출까지 해 보는 것은 probe() 의 몫이다. 여기서는 "키를 안 넣었다"를 빠르게
+    가른다 — 그 상태로 버튼을 살려 두면 사용자는 눌러 보고 나서야 에러로 알게 된다.
+    """
+    p = provider()
+    if p == "fake":
+        return True, ""                     # 테스트 provider — 키가 필요 없다
+    if p == "openai":
+        if _secrets.get("openaiApiKey", "OPENAI_API_KEY"):
+            return True, ""
+        return False, "OpenAI API 키가 설정되지 않았습니다."
+    if p == "aoai":
+        if (_secrets.get("aoaiEndpoint", "AOAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT")
+                and _secrets.get("aoaiApiKey", "AOAI_API_KEY", "AZURE_OPENAI_API_KEY")):
+            return True, ""
+        return False, "Azure OpenAI 엔드포인트/키가 설정되지 않았습니다."
+    if p == "openai_compat":
+        if _secrets.get("compatBaseUrl", "LAKE_AGENT_COMPAT_BASE"):
+            return True, ""
+        return False, "호환 API 주소가 설정되지 않았습니다."
+    return False, f"알 수 없는 provider: {p}"
+
+
 # ── 설정 해석 ──────────────────────────────────────────────────────
 def _pref(key, default=None):
     try:
@@ -234,7 +259,10 @@ def status() -> dict:
     ok, why = available()
     from app.infra import prefs as _prefs
     from app.agent.prompts.base import _project_prompt
+    ready, ready_why = llm_ready()
     return {"available": ok, "reason": why, "provider": provider(),
+            # 하나 이상의 LLM 연결값이 있는가 — 챗·에디터 AI 버튼의 활성/비활성 근거.
+            "llmReady": ready, "llmReason": ready_why,
             "chatModel": chat_model(), "embedModel": embed_model(),
             # 간단한 역할(의도 분류·결정적 실행) 전용 모델 — **설정된 값만**(폴백 없이) 보여
             # 준다. 폴백값을 보여 주면 화면에서 "따로 설정돼 있다"로 오해된다.

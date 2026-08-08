@@ -139,3 +139,27 @@ def test_rendering_rules_are_indexed_for_retrieval():
     """knowledge/08 은 정적 RAG 에 실려야 다른 역할도 같은 규칙을 본다."""
     from app.agent.retrieval import static_index
     assert (static_index.knowledge_dir() / "08-editor-and-rendering.md").exists()
+
+
+# ── LLM 미설정 게이트 ──────────────────────────────────────────────
+def test_llm_ready_says_what_is_missing_per_provider(monkeypatch):
+    """키가 없으면 버튼을 비활성으로 보여야 한다 — 눌러 보고 에러로 아는 것보다 낫다."""
+    from unittest import mock
+    from app.agent import config as C2, secrets as S
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai")   # fake 는 키가 필요 없다
+    with mock.patch.object(S, "get", return_value=""):
+        ok, why = C2.llm_ready()
+        assert ok is False and "키" in why
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "fake")
+    ok2, _ = C2.llm_ready()          # 테스트 provider — 키 없이 살아난다
+    assert ok2 is True
+
+
+def test_compose_refuses_with_needs_setup_when_no_llm(monkeypatch):
+    """서버 쪽에서도 한 번 더 가드 — 버튼이 우회돼도 명확한 사유가 나간다."""
+    from unittest import mock
+    from app.agent import config as C2
+    with mock.patch.object(C2, "llm_ready", return_value=(False, "OpenAI API 키가 설정되지 않았습니다.")):
+        r = C.compose("DL-9090", "comment", "아무거나")
+    assert r["ok"] is False and r.get("needsSetup") is True
+    assert "설정" in r["error"]

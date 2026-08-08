@@ -854,7 +854,14 @@ export default {
       <!-- 입력 — 클로드식 미니멀 채팅 박스. 밑은 코멘트 에디터지만(멘션·/jira·/confluence
            팝업과 뱃지 렌더 재사용) 툴바 등 크롬은 CSS 로 걷어냈다 — 채팅에 서식 메뉴는
            과하다(사용자 지적). 하단 아이콘 줄이 세 기능의 입구다. -->
-      <div class="agent-input agent-input-rich" @keydown.capture="onRichKey">
+      <!-- LLM 연결값이 없으면 입력창 대신 안내+[설정] — 눌러 보고 나서야 에러로 아는 것보다
+           먼저 말해 주는 것이 낫다. 설정을 닫으면 상태를 다시 확인해 입력창이 살아난다. -->
+      <div v-if="status && status.llmReady === false" class="agent-input agent-llmoff">
+        <span class="agent-llmoff-msg">⚠ AI 를 쓸 수 없습니다 — {{ status.llmReason || 'LLM 연결이 설정되지 않았습니다.' }}
+          <b>연결 확인된 LLM API 가 하나 이상 필요합니다.</b></span>
+        <button class="agent-llmoff-btn" @click="settingsOpen = true">설정</button>
+      </div>
+      <div v-else class="agent-input agent-input-rich" @keydown.capture="onRichKey">
         <div class="agent-chatbox">
           <CommentEditor ref="richEd" ticketKey="" kind="agentchat" :hideFooter="true"
                          placeholder="하려는 업무를 적어 주세요 — @ 멘션 · '/' 로 티켓·문서"

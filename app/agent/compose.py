@@ -85,6 +85,10 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     from app.agent.prompts.roles import SYSTEM_COMPOSER
     from app.agent.workflow.prompts import data_block, persona, wrap_data
 
+    ready, why = C.llm_ready()
+    if not ready:
+        return {"ok": False, "needsSetup": True,
+                "error": why + " 설정에서 LLM 연결을 먼저 등록하세요."}
     prompt = (prompt or "").strip()
     seed = (seed_html or "").strip()[:MAX_SEED]
     kind = (kind or "comment").strip()

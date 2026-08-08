@@ -17,6 +17,7 @@ import { debouncedItems } from "../../lib/typeahead.js";
 import { pushToast } from "../../lib/toast.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { beginBusy } from "../../lib/uibusy.js";
+import AgentSettingsDialog from "./AgentSettingsDialog.js";
 
 // 첨부 업로드 재시도 — prod 는 SSO 세션/사내망 탓에 첨부가 간헐적으로 삐끗한다. 한 번 실패했다고
 // 파일을 버리지 않고 최대 이만큼 **다시** 올려 본다(총 시도 횟수).
@@ -984,7 +985,7 @@ function saveEditorHeight(v) {
 
 export default {
   name: "CommentEditor",
-  components: { LinkPicker, MarkdownTableDialog },
+  components: { LinkPicker, MarkdownTableDialog, AgentSettingsDialog },
   props: {
     ticketKey: { type: String, required: true },
     initial: { type: String, default: "" },            // 수정 시 기존 HTML
@@ -1020,6 +1021,8 @@ export default {
                     pick: "",
                     // AI 자동완성 — 팝업 상태. seed 는 "쓰던 글을 재료로 쓸까"다
                     aiOpen: false, aiPrompt: "", aiSeed: true, aiReplace: false,
+                    // LLM 연결값이 없으면 생성 대신 안내+[설정] — null=아직 확인 전
+                    aiReady: null, aiWhy: "", aiSettings: false,
                     aiBusy: false, aiErr: "", aiNote: "",
                     mdTable: false, styleOpen: false, fontOpen: false,
                     colorOpen: false, bgOpen: false,   // 글자색·배경색 팔레트 열림
@@ -1283,6 +1286,10 @@ export default {
     // 쓰기가 아니다 — 결과를 에디터에 꽂아 줄 뿐이고 저장은 사용자가 누른다.
     openAi() {
       this.aiOpen = true; this.aiErr = ""; this.aiNote = "";
+      // 열 때마다 확인한다 — 설정 창에서 키를 막 넣고 돌아온 직후에도 맞아야 한다.
+      agentApi.status()
+        .then((s) => { this.aiReady = !!(s && s.llmReady); this.aiWhy = (s && s.llmReason) || ""; })
+        .catch(() => { this.aiReady = false; this.aiWhy = "에이전트 상태를 확인하지 못했습니다."; });
       this.$nextTick(() => this.$refs.aiInput && this.$refs.aiInput.focus());
     },
     async runAi() {
@@ -1719,6 +1726,15 @@ export default {
           <button type="button" class="tb-b tb-ai" :class="{on:aiOpen}" @click.stop="openAi"
                   title="AI 자동완성 — 지금 쓰는 글을 이어 쓰거나 새로 초안을 만든다">AI</button>
           <span v-if="aiOpen" class="ai-pop" @click.stop @keydown.esc="aiOpen=false">
+            <template v-if="aiReady === false">
+              <span class="ai-err">AI 를 쓸 수 없습니다 — {{ aiWhy || 'LLM 연결이 설정되지 않았습니다.' }}</span>
+              <span class="ai-row">
+                <span class="ai-hint">키를 등록하면 바로 쓸 수 있습니다</span>
+                <button type="button" class="cmt-ed-btn ghost" @click="aiOpen=false">닫기</button>
+                <button type="button" class="cmt-ed-btn primary" @click="aiSettings = true">설정</button>
+              </span>
+            </template>
+            <template v-else>
             <textarea ref="aiInput" class="ai-in" v-model="aiPrompt" rows="3"
                       :placeholder="kind === 'description'
                         ? '예) 배경·범위·완료 조건까지 본문 초안 잡아줘'
@@ -1738,6 +1754,7 @@ export default {
                 {{ aiBusy ? '작성 중…' : '생성' }}
               </button>
             </span>
+            </template>
           </span>
           <span v-if="aiOpen" class="tb-style-back" @click.stop="aiOpen = false"></span>
         </span>
@@ -1745,6 +1762,7 @@ export default {
                 :title="maximized ? '최대화 해제' : '에디터 최대화'">{{ maximized ? '🗗' : '🗖' }}</button>
         <input ref="file" type="file" multiple style="display:none" @change="onFile">
         <span v-if="aiBusy" class="ai-run" aria-live="polite"><i class="ai-spin"></i>AI가 작성 중… 잠시만요</span>
+        <AgentSettingsDialog v-if="aiSettings" @close="aiSettings = false; openAi()" />
         <LinkPicker v-if="pick" :mode="pick" insert @close="pick = ''" @pick="onPick" />
         <MarkdownTableDialog v-if="mdTable" @close="mdTable = false" @insert="insertMdTable" />
       </div>
