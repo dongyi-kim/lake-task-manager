@@ -163,31 +163,33 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
         "due": f.get("duedate") or "", "updated": str(f.get("updated") or "")[:10],
     }
 
-    # ① 필드 변동 — 상태 전이·마감 연기·우선순위 상향은 그 자체가 진척 사건이다
-    try:
-        out["changes"] = [compact({"date": r.get("date"), "who": r.get("author"),
-                                   "field": r.get("field"),
-                                   "from": r.get("from"), "to": r.get("to")})
-                          for r in (c.ticket_field_history(seed) or [])][-8:]
-    except Exception:
-        out["changes"] = []
+    # 다섯 갈래(변동·코멘트·하위·링크·문서)는 서로 독립이다 — **병렬로 모은다**.
+    # mock 은 밀리초라 티가 안 나지만 prod Jira/Confluence 는 호출당 수백 ms~수 초라
+    # 직렬 5갈래(+링크 내부 N회)가 통째로 대기 시간이 된다(사용자 지적: prod 는 느리다).
+    from concurrent.futures import ThreadPoolExecutor
 
-    # ② 코멘트 — 진행 보고의 1차 출처. 최근 것이 뒤에 오게 둔다(시간순 서술을 위해)
-    try:
+    def _changes():
+        # ① 필드 변동 — 상태 전이·마감 연기·우선순위 상향은 그 자체가 진척 사건이다
+        return [compact({"date": r.get("date"), "who": r.get("author"),
+                         "field": r.get("field"),
+                         "from": r.get("from"), "to": r.get("to")})
+                for r in (c.ticket_field_history(seed) or [])][-8:]
+
+    def _comments():
+        # ② 코멘트 — 진행 보고의 1차 출처. 최근 것이 뒤에 오게 둔다(시간순 서술을 위해)
         from app.agent.tools.search_tools import _strip
         # 코멘트는 html 로 온다(본문 키가 body 가 아니다 — 실측). 사번을 함께 남긴다:
         # 이름만 남기면 "누가 무엇을 보고했나"를 답변에서 검증할 수 없다.
-        out["comments"] = [compact({"date": str(m.get("date") or "")[:10],
-                                    "who": m.get("authorId") or m.get("author") or "",
-                                    "text": _strip(m.get("html") or "")[:400]})
-                           for m in (c.issue_comments(seed, comment_limit) or [])]
-        out["comments"].reverse()          # 오래된 것부터 — 진척은 시간순 이야기다
-    except Exception:
-        out["comments"] = []
+        rows = [compact({"date": str(m.get("date") or "")[:10],
+                         "who": m.get("authorId") or m.get("author") or "",
+                         "text": _strip(m.get("html") or "")[:400]})
+                for m in (c.issue_comments(seed, comment_limit) or [])]
+        rows.reverse()                     # 오래된 것부터 — 진척은 시간순 이야기다
+        return rows
 
-    # ④ 하위 Sub-Task — 몇 개 중 몇 개가 끝났는지가 진척의 뼈대다
-    kids, kdone = [], 0
-    try:
+    def _children():
+        # ④ 하위 Sub-Task — 몇 개 중 몇 개가 끝났는지가 진척의 뼈대다
+        kids, kdone = [], 0
         for ch in (c.ticket_children(seed) or []):
             d = (ch.get("statusCat") or ch.get("statusCategory")) == "done"
             kdone += 1 if d else 0
@@ -195,35 +197,31 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
                                  "status": ch.get("status"), "done": d,
                                  "assignee": ch.get("assignee"),
                                  "updated": str(ch.get("updated") or "")[:10]}))
-    except Exception:
-        pass
-    out["children"] = kids
-    out["children_done"] = f"{kdone}/{len(kids)}" if kids else ""
+        return kids, kdone
 
-    # ④-b 링크 티켓 — 특히 **막고 있던 것이 풀렸는지**가 진척을 좌우한다
-    links = []
-    try:
-        for r in (c.ticket_related(seed) or [])[:8]:
-            rk = r.get("key")
-            if not rk:
-                continue
-            ri = ((c.get_issue(rk) or {}).get("fields") or {})
+    def _links():
+        # ④-b 링크 티켓 — 특히 **막고 있던 것이 풀렸는지**가 진척을 좌우한다
+        rels = [r for r in (c.ticket_related(seed) or [])[:8] if r.get("key")]
+
+        def _one(r):
+            ri = ((c.get_issue(r["key"]) or {}).get("fields") or {})
             rst = ri.get("status") or {}
-            links.append(compact({
-                "key": rk, "rel": r.get("rel") or "관련", "title": r.get("summary"),
+            return compact({
+                "key": r["key"], "rel": r.get("rel") or "관련", "title": r.get("summary"),
                 "status": rst.get("name"),
                 "done": ((rst.get("statusCategory") or {}).get("key") == "done"),
-                "updated": str(ri.get("updated") or "")[:10]}))
-    except Exception:
-        pass
-    out["links"] = links
+                "updated": str(ri.get("updated") or "")[:10]})
+        if not rels:
+            return []
+        with ThreadPoolExecutor(max_workers=4) as ex2:
+            return list(ex2.map(_one, rels))
 
-    # ③ 유관 문서 — **결과를 적는 문서의 최근 수정**이 곧 진척 근거다. 본문도 조금 싣는다
-    docs = []
-    try:
+    def _docs():
+        # ③ 유관 문서 — **결과를 적는 문서의 최근 수정**이 곧 진척 근거다. 본문도 조금 싣는다
         from app.agent.retrieval.harvest import _conf_id
         from app.agent.tools._ctx import trim
         from app.agent.tools.search_tools import _strip
+        docs = []
         for d in (c.ticket_documents(seed) or [])[:3]:
             row = {"title": d.get("title"), "url": d.get("url")}
             cid = _conf_id(d.get("url") or "")
@@ -233,9 +231,25 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
                 row["updated"] = ((page.get("version") or {}).get("when") or "")[:10]
                 row["excerpt"] = trim(_strip(body), 900)
             docs.append(compact(row))
-    except Exception:
-        pass
-    out["documents"] = docs
+        return docs
+
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futs = {k: ex.submit(f) for k, f in (
+            ("changes", _changes), ("comments", _comments), ("children", _children),
+            ("links", _links), ("documents", _docs))}
+
+    def _get(k, default):
+        try:
+            return futs[k].result()
+        except Exception:
+            return default
+    out["changes"] = _get("changes", [])
+    out["comments"] = _get("comments", [])
+    kids, kdone = _get("children", ([], 0))
+    out["children"] = kids
+    out["children_done"] = f"{kdone}/{len(kids)}" if kids else ""
+    out["links"] = _get("links", [])
+    out["documents"] = _get("documents", [])
     out["note"] = ("진척은 상태 한 단어가 아니라 이 네 갈래(필드 변동·코멘트·하위 티켓·"
                    "유관 문서)를 이어 붙인 이야기다. 문서의 '최종 수정'은 결과 기록 시점이다.")
     return compact(out)

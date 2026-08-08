@@ -746,9 +746,16 @@ def _placement_material(state) -> str:
     도구로 두면 모델이 부를 때만 보이고, 안 부르면 지어낸다(실측: Task 를 Epic 이라 답하고
     초안엔 안 실었다). 반복 조회는 판단이 아니므로 코드가 한다.
     """
+    # 두 조회는 독립 — 병렬로. prod 는 호출당 수백 ms~수 초라 직렬이 그대로 대기가 된다.
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.agent.tools.write_tools import list_ticket_options
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_epic = ex.submit(_epic_options, state)
+        fut_opts = ex.submit(lambda: list_ticket_options.invoke({"kind": ""}) or {})
     parts = []
     try:
-        rows = _epic_options(state)
+        rows = fut_epic.result()
         if rows:
             parts.append("Epic 후보 (여기서 고른다. 모듈이 다르면 항목마다 다른 Epic 이 정상. "
                          "마땅한 게 없으면 questions 로 물어라):\n"
@@ -758,8 +765,7 @@ def _placement_material(state) -> str:
     except Exception:
         pass
     try:
-        from app.agent.tools.write_tools import list_ticket_options
-        opts = list_ticket_options.invoke({"kind": ""}) or {}
+        opts = fut_opts.result()
         if opts.get("components"):
             parts.append("컴포넌트(모듈) 실값 — **하나만** 고른다: "
                          + ", ".join(str(x) for x in opts["components"][:12]))

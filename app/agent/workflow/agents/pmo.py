@@ -116,10 +116,14 @@ def _ticket_progress(state) -> str:
     if not (progressy or (state.get("intent") or "") == _I.PROGRESS):
         return ""
 
+    from concurrent.futures import ThreadPoolExecutor
+
     from app.agent.tools.survey_tools import progress_report
     blocks = []
-    for k in keys:
-        r = progress_report(k)
+    # 키 2건이면 두 티켓을 병렬로 — prod 에선 티켓당 5갈래 조회가 통째로 대기가 된다.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        reports = list(ex.map(lambda k: progress_report(k), keys))
+    for r in reports:
         if r.get("error"):
             continue
         rows = [f'[{r["key"]}] "{r.get("title", "")}" — 상태 {r.get("status")}'
