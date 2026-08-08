@@ -37,7 +37,7 @@ export default {
   name: "AgentView",
   components: { AgentSettingsDialog, Avatar, CommentEditor, FieldEdit },
   data() {
-    return {
+    return { authNote: "",
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
       reason: "",             // 못 쓰는 이유(설치 누락 등)
       status: null,           // provider·모델 — 지금 무엇으로 도는지 화면에 보인다
@@ -75,6 +75,15 @@ export default {
   },
   mounted() {
     this.convos = this.loadConvos();
+    // 홈 입력창에서 넘어온 첫 질문 — 새 대화로 바로 시작한다(한 번만 소비).
+    try {
+      const seed = sessionStorage.getItem("agent:seed");
+      const note = sessionStorage.getItem("agent:authNote");
+      sessionStorage.removeItem("agent:seed");
+      sessionStorage.removeItem("agent:authNote");
+      if (note) this.authNote = note;
+      if (seed) this.$nextTick(() => { this.reset(); this.text = seed; this.send(); });
+    } catch (e) { /* noop */ }
     this.loadPriorities().then((p) => { this.priorities = p; });
     api.prefs()
       .then((p) => {
@@ -547,6 +556,12 @@ export default {
 
       <!-- 이분할: 티켓 패널이 열리면 대화가 좁아지며 나란히 선다 -->
       <div class="agent-main" :class="{ 'is-empty': empty && !busy }">
+
+      <!-- 홈에서 넘어올 때 인증이 안 됐으면 그 사실을 대화 위에 계속 보여 준다 -->
+      <div v-if="authNote" class="agent-authnote">
+        <span>⚠ {{ authNote }}</span>
+        <button class="an-x" @click="authNote = ''" title="닫기">✕</button>
+      </div>
 
       <!-- 대화 헤더 — 제목(첫 질문) + 우상단 액션(내보내기). 빈 화면에는 없다 -->
       <div v-if="turns.length" class="agent-chat-h">
