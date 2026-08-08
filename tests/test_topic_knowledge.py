@@ -355,3 +355,19 @@ def test_responder_reports_progress_as_a_story_not_a_status_word():
                                "intent": Intent.PROGRESS})})
     assert "남은 일과 리스크" in t and "결과 문서" in t
     assert "하위 Sub-Task 2/3" in t, "취합 자료가 프롬프트에 실려야 한다"
+
+
+def test_follow_up_keeps_the_ticket_in_context():
+    """후속 턴의 지시대명사는 앞 턴 대상을 가리킨다 — 실측: 'DL-9090 진척' 다음 '마감까지
+    위험한 건?'에서 대상을 잃고 프로젝트 전체의 마감 초과 티켓을 답했다."""
+    from app.agent.workflow.agents.planner import _carry_keys
+    prev = {"mentioned_keys": [PROG], "turns": 1, "situation": "조사됨"}
+    assert _carry_keys({**prev, **_msg("마감까지 위험한 건 뭐야?")}, {}) == [PROG]
+    assert _carry_keys({**prev, **_msg("그럼 남은 일은?")}, {}) == [PROG]
+    # 이번 턴이 키를 댔으면 그게 우선
+    assert _carry_keys({**prev, **_msg("DL-101 은?")}, {"mentioned_keys": ["DL-101"]}) == ["DL-101"]
+    # 첫 턴은 이어받을 것이 없다
+    assert _carry_keys(_msg("마감 위험한 거 뭐야?"), {}) == []
+    # 새 주제를 길게 말하면 앞 대상을 끌고 오지 않는다
+    assert _carry_keys({**prev, **_msg("카탈로그 모듈에서 메타데이터 등록이 안 된 테이블들을 "
+                                       "정리하는 작업을 새로 시작하려고 하는데 초안 잡아줘")}, {}) == []

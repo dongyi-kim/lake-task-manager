@@ -13,7 +13,8 @@ from __future__ import annotations
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.prompts.roles import SYSTEM_PLANNER
 from app.agent.workflow.prompts import persona
-from app.agent.workflow.state import AgentState, Intent, Node, conversation, note
+from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
+                                      last_user_text, note)
 
 SCHEMA = {
     "type": "object",
@@ -79,6 +80,33 @@ SCHEMA = {
     },
     "required": ["intent", "keywords", "sufficient"],
 }
+
+
+# 후속 턴의 지시대명사("그럼 마감 위험은?")는 앞 턴의 대상을 가리킨다. 사용자가 키를
+# 다시 대지 않으므로 mentioned_keys 가 비고, 그러면 조사 대상이 사라져 **프로젝트 전체**를
+# 답한다(실측: DL-9090 진척을 묻고 "마감까지 위험한 건?"에 무관한 티켓 3건을 나열).
+import re as _re
+
+# 지시대명사는 **낱말 경계로** 잡는다 — 맨 "그"로 부분일치를 하면 '카탈로그'가 걸린다(실측).
+_ANAPHORA = _re.compile(
+    r"(?:^|\s)(그|그거|그건|그럼|그러면|이거|이건|저거|거기|얘|해당|추가로|또)(?:\s|$|[은는이가을를에])"
+    r"|남은|남는|위험|리스크|블로커|막힌")
+
+
+def _carry_keys(state, out) -> list:
+    """이번 턴이 댄 키가 우선. 없으면 **앞 턴의 대상을 이어받는다**(후속 질문일 때만)."""
+    keys = [k for k in (out.get("mentioned_keys") or []) if str(k).strip()]
+    if keys:
+        return keys
+    prev = [k for k in (state.get("mentioned_keys") or []) if str(k).strip()]
+    if not prev or not (state.get("turns") or state.get("situation")
+                        or state.get("ticket_progress")):
+        return []
+    asked = last_user_text(state).strip()
+    # 짧은 되물음이거나 지시대명사가 있으면 같은 대상 이야기다. 새 주제를 길게 말했으면 아니다.
+    if len(asked) <= 40 or _ANAPHORA.search(asked):
+        return prev
+    return []
 
 
 class Planner(StructuredAgent):
@@ -165,7 +193,7 @@ class Planner(StructuredAgent):
             "intent": intent,
             "keywords": kws,
             "module": out.get("module") or "",
-            "mentioned_keys": [k for k in (out.get("mentioned_keys") or []) if str(k).strip()],
+            "mentioned_keys": _carry_keys(state, out),
             "sufficient": bool(out.get("sufficient")),
             "playbook": out.get("playbook") or "",
             "answer_depth": out.get("answer_depth") or "brief",

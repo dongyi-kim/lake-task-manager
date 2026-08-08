@@ -146,7 +146,11 @@ CASES = [
      )(o.get("reply") or "")),
     ("PROG2", "진척 후속 — 남은 일·리스크를 마감 대비로(멀티턴)", [
         "DL-9090 진척 어때?", "마감까지 위험한 건 뭐야?"],
-     None, lambda o, _: (lambda r: "2026-08-15" in r or "마감" in r)(o.get("reply") or "")),
+     None, lambda o, _: (lambda r: ("DL-9090" in r or "DL-9095" in r)   # 대상을 놓치면 실패
+                         and ("2026-08-15" in r or "마감" in r)
+                         # 무관한 프로젝트 전체 티켓을 끌어오면 실패(실측 결함)
+                         and not any(k in r for k in ("DL-9008", "DL-9028", "DL-9029")))
+     (o.get("reply") or "")),
     ("DATA9", "티켓 0건 — 문서에만 사는 대상. '기록 없음'으로 끝내면 실패", [
         "qms.qms_defect_code_mst 적재주기랑 스키마 알려줘"],
      "ask", lambda o, _: ("주 1회" in (o.get("reply") or "")
