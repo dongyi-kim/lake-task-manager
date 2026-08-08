@@ -37,9 +37,12 @@ def test_chitchat_skips_investigation():
 
 
 def test_everything_else_investigates_first():
-    """조사를 건너뛰고 티켓을 만들어 주는 어시스턴트는 중복 티켓 생성기다."""
-    for intent in (Intent.ASK, Intent.PLAN_WORK, Intent.MODIFY):
+    """조사를 건너뛰고 티켓을 만들어 주는 어시스턴트는 중복 티켓 생성기다.
+    plan_work 는 요청이 구체적(sufficient)일 때 조사부터 — 막연하면 해석 확인이 먼저다."""
+    for intent in (Intent.ASK, Intent.MODIFY):
         assert G.route_after_planner({"intent": intent}) == "investigate"
+    assert G.route_after_planner({"intent": Intent.PLAN_WORK,
+                                  "sufficient": True}) == "investigate"
 
 
 def test_a_plain_question_stops_after_investigation():
@@ -119,11 +122,11 @@ def test_tool_using_roles_really_are_subgraphs():
     node() 를 한 겹 더 감싸면서 xray 가 클로저 속 서브그래프를 못 본다 — 세 역할의 ReAct 는
     build() 로 따로 지킨다.
     """
-    nodes = set(G.build().get_graph(xray=1).nodes)
-    assert f"{Node.REFINER}:think" in nodes and f"{Node.REFINER}:act" in nodes
+    # Refiner 도 node() 를 한 겹 감싼다(질문-도피 재시도 가드) — xray 대신 build() 로 지킨다.
     from app.agent.workflow.agents.assigner import Assigner
     from app.agent.workflow.agents.historian import Historian
-    for role in (Historian(), Assigner()):
+    from app.agent.workflow.agents.refiner import Refiner
+    for role in (Historian(), Assigner(), Refiner()):
         assert {"think", "act"} <= set(role.build().get_graph().nodes)
 
 
@@ -377,8 +380,16 @@ def test_fast_paths_skip_historian_when_safe():
     인터뷰 답변 턴마다 Historian 이 통째로 다시 돌던 것이 턴 시간의 최대 낭비였다
     (턴당 LLM 3~5회). 첫 턴·새 대화는 여전히 조사부터.
     """
-    # 첫 턴 — 조사부터
-    assert G.route_after_planner({"intent": Intent.PLAN_WORK, "turns": 0}) == "investigate"
+    # 첫 턴(구체적 요청) — 조사부터
+    assert G.route_after_planner({"intent": Intent.PLAN_WORK, "turns": 0,
+                                  "sufficient": True}) == "investigate"
+    # 첫 턴(막연한 요청) — 조사 전에 해석 확인(clarify)으로 Refiner 직행
+    assert G.route_after_planner({"intent": Intent.PLAN_WORK, "turns": 0,
+                                  "sufficient": False}) == "refine"
+    # 막연해도 위임("알아서")이면 묻지 않고 조사부터
+    from langchain_core.messages import HumanMessage
+    assert G.route_after_planner({"intent": Intent.PLAN_WORK, "turns": 0, "sufficient": False,
+                                  "messages": [HumanMessage(content="알아서 해줘")]}) == "investigate"
     # 후속 턴 — situation 보유 시 직행
     assert G.route_after_planner({"intent": Intent.PLAN_WORK, "turns": 1,
                                   "situation": "DL-118 에서 검토"}) == "refine"

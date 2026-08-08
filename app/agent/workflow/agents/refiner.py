@@ -121,6 +121,12 @@ QUESTION = {
 SCHEMA = {
     "type": "object",
     "properties": {
+        "interpretation": {
+            "type": "string",
+            "description": ("조사 전 **해석 확인 턴에만** — 요청을 어떻게 이해했는지 2~3문장"
+                            "(무엇을·왜·어떤 산출물로). 사용자가 이 해석을 보고 바로잡는다. "
+                            "그 외 턴에는 빈 문자열"),
+        },
         "questions": {
             "type": "array", "items": QUESTION,
             "description": ("사용자에게 되물을 것. **사용자만 아는 것**만(범위·완료조건·기한·의도). "
@@ -188,6 +194,39 @@ SCHEMA = {
 class Refiner(ToolAgent):
     name = Node.REFINER
     temperature = 0.3          # 초안은 약간의 폭이 필요하다
+    _force_draft = False       # 질문-도피 재시도 플래그(단일 사용자 앱 — 인스턴스 보관으로 충분)
+
+    def node(self):
+        base = super().node()
+
+        def run(state):
+            out = base(state)
+            # ── 질문-도피 가드: "알아서" 위임인데 질문만 내고 초안 0건이면 **한 번 재시도**.
+            # 프롬프트(force_rule)로 막아도 부하·모델 변덕으로 재발한다(스위트 실측 5건).
+            # 해석 확인 턴(조사 전 — situation 없음)은 질문이 정답이므로 제외.
+            try:
+                dodged = (bool(out.get("questions"))
+                          and not ((out.get("draft") or {}).get("items"))
+                          and not ((out.get("change_plan") or {}).get("key"))
+                          and _said_defaults(state)
+                          and (state.get("situation") or "").strip())
+            except Exception:
+                dodged = False
+            if dodged and not Refiner._force_draft:
+                Refiner._force_draft = True
+                try:
+                    out2 = base(state)
+                    if ((out2.get("draft") or {}).get("items")) \
+                            or ((out2.get("change_plan") or {}).get("key")):
+                        out2["trace"] = note(state, self.name,
+                                             f"질문 도피 재시도 → 초안 "
+                                             f"{len((out2.get('draft') or {}).get('items') or [])}건")
+                        return out2
+                finally:
+                    Refiner._force_draft = False
+            return out
+
+        return run
 
     @property
     def tools(self):
@@ -200,6 +239,11 @@ class Refiner(ToolAgent):
         forced = (state.get("turns") or 0) >= MAX_REFINE_TURNS
         extra = ("\n\n★ 되묻기 횟수를 다 썼다. **더 묻지 말고** 아는 것만으로 초안을 만들어라. "
                  "모르는 필드는 비워 두고 rationale 에 '확인 필요'로 남긴다." if forced else "")
+        if Refiner._force_draft:
+            extra += ("\n\n★★ 직전 시도는 사용자의 위임('알아서')을 어기고 질문만 냈다. "
+                      "이번에는 **questions 를 반드시 빈 배열**로 하고, 지금 아는 것과 "
+                      "기본값으로 items 를 완성하라. 미확정 사항은 rationale 에 적는다 — "
+                      "질문만 내고 초안이 없으면 이 턴은 실패다.")
         # 정적 지시는 prompts/roles/refiner.md — 동적 경고(횟수 소진)만 코드가 덧붙인다.
         return persona(state, SYSTEM_REFINER + extra)
 
@@ -212,9 +256,10 @@ class Refiner(ToolAgent):
                       "지금 아는 것 + 기본값으로 items 를 완성하라. **Epic 선택도 묻지 마라** — "
                       "아래 '배치 재료'의 후보 중 이 일의 주제에 가장 맞는 것을 네가 고르고 "
                       "rationale 에 한 줄로 이유를 적는다(후보가 여럿이어도 위임받았으면 고르는 "
-                      "것이 네 일이다. 정 마땅치 않으면 비워서 최상위로). 담당자는 비워 둔다"
-                      "(다음 단계가 정한다) — 단 **사용자가 누구에게 맡길지 말했으면 그대로 "
-                      "적는다**('성능 측정은 x1402' 처럼 지정한 것을 비우면 지시를 버리는 셈이다). "
+                      "것이 네 일이다. 정 마땅치 않으면 비워서 최상위로). "
+                      "★ **사용자가 누구에게 맡길지 말한 항목은 그 사번을 assignee 에 그대로 "
+                      "적는다**('성능 측정은 x1402' 처럼 지정한 것을 비우면 지시를 버리는 셈이다) "
+                      "— 지정하지 않은 항목만 비워 둔다(다음 단계가 정한다). "
                       "기한은 사용자가 말한 것을 쓰고, 없으면 비워 둔다.\n"
                       "- ★ **items 가 빈 배열인 채로 끝내지 마라.** 조사에서 비슷한 티켓이 "
                       "나왔든 정보가 조금 모자라든, 지금 아는 것으로 초안을 만들고 미확정은 "
@@ -242,6 +287,20 @@ class Refiner(ToolAgent):
   끝이다 — 전이·옵션 조회는 댓글과 무관하다(실측: 도구 10번 헤매고 확인 질문으로 샜다).
 - ★ "진행해도 괜찮으신가요?" 류의 **허락 질문 금지.** 승인 카드가 곧 그 확인이다 —
   계획을 완성해서 내면 사용자가 카드에서 승인/취소한다."""
+        elif (state.get("intent") or "") == Intent.PLAN_WORK \
+                and not (state.get("situation") or "").strip():
+            # ── 해석 확인 턴(조사 전) — 혼자 오래 조사하고 한 번에 결론 내는 호흡이
+            # 방향 착오를 낳았다(실측 STARR NDV). 조사 **전에** 해석과 갈림길을 확인받는다.
+            goal = """조사를 시작하기 전에 **요청 해석을 확인받아라. 이번 턴에는 초안을 만들지 마라**(items 는 빈 배열).
+- interpretation 에 **네가 이해한 바**를 2~3문장으로 적어라 — 무엇을(대상·기술), 왜(목적 추정),
+  어떤 산출물로. 사용자의 낱말을 유지하고, 추정한 부분은 "~로 이해했다"로 표시한다.
+- questions 는 **갈림이 큰 것만** 2~3개, choice 우선·네 추천을 맨 앞에:
+  ① 범위/방향 — 어디까지가 1차 목표인가(검토만/PoC/최소 구현), 첫 문장만으로 불명확한 방향
+  ② **모듈** — 어느 모듈(컴포넌트) 소관으로 볼지 갈리면 '배치 재료'의 실값으로 choice
+  ③ **Epic 배치** — kind=choice, field=epic 으로 '배치 재료'의 후보 + "없음(최상위)" +
+    "새 Epic 이 필요할 것 같다" 를 보기로. 후보가 하나로 명백하면 묻지 말고 해석에 적어라.
+  찾아보면 아는 것(관련 티켓 존재 여부·허용값 자체)은 묻지 마라 — 그건 다음 턴 조사가 한다.
+- 마지막 질문 뒤에 사용자가 "알아서"라고 답하면 다음 턴에 조사→초안으로 바로 간다."""
         else:
             goal = """아래 요청을 실행 가능한 티켓 초안으로 만들어라. 정보가 모자라면 **초안 대신 질문**을 내라.
 - ★ 먼저 **구조를 정한다**(structure + structure_why): 단일 Task / Task+Sub-Task /
@@ -278,6 +337,10 @@ class Refiner(ToolAgent):
         #   다시 쓰고, 그 사이 제목·주제가 흘러간다(실측: 원 요청이 Epic 주제로 둔갑).
         prev = draft_full_text(state.get("draft")) if (state.get("turns") or 0) > 0 else ""
         data = wrap_data(
+            data_block("생성 최소 요건 점검 (코드 판정 — ASK 만 물을 후보다. INFER/LATER 는 "
+                       "묻지 말고 방침대로 채운다)",
+                       _slot_audit(state) if (state.get("intent") or "") in Intent.DRAFTS_TICKETS
+                       else ""),
             data_block("지금 고치고 있는 초안 (전문 — 처음부터 다시 쓰지 말고 이걸 고쳐라. "
                        "사용자가 문제 삼지 않은 부분은 유지한다)", prev),
             data_block("Historian 이 정리한 현재 상황", state.get("situation")),
@@ -344,6 +407,14 @@ class Refiner(ToolAgent):
                            "field": q.get("field") or ""})
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
         mode = out.get("mode") or "task"
+        # Sub-Task 는 자식을 가질 수 없다 — subtask 모드 항목에 모델이 children 을 또 달면
+        # (실측: 같은 내용을 items 와 children 에 이중으로) 떼어 낸다.
+        if mode == "subtask":
+            for i in items:
+                i.pop("children", None)
+        # ── 사용자가 입으로 지정한 담당("성능 측정은 x1402")은 **코드가 보장**한다 —
+        # force_rule 로 지시해도 모델이 떨어뜨리는 일이 반복됐다(실측 PAR1 2회).
+        _apply_named_assignees(state, items)
         # ★ 기계적 가드 — task 배치에 Sub-Task 가 섞이면 그 항목은 뺀다. 프롬프트로 막았는데도
         #   실 모델이 섞어 낸 적이 있고, 그대로 두면 검증 실패 → 재작성 왕복만 태우다
         #   한도 소진으로 끝난다. 빼는 것이 반려보다 낫다(부모 생성 후 2차 승인으로 붙일 수 있다).
@@ -362,6 +433,13 @@ class Refiner(ToolAgent):
         # "DL-9090 에 서브태스크 추가해줘" 는 그 티켓 **아래**에 붙이라는 뜻인데, 모델이
         # 감싸는 새 Task 를 만들고 그 밑에 children 을 다는 일이 잦다(실측 SUB1~3) —
         # 그러면 사용자가 말한 티켓은 그대로 두고 엉뚱한 껍데기가 하나 더 생긴다.
+        # "쪼개줘"인데 children 없이 껍데기 Task 만 낸 경우(단계를 작업 범위 글로만 나열 —
+        # 실측 SUB1 재발): 보정 호출로 단계를 뽑아 지목한 부모의 Sub-Task 로 바꾼다.
+        if named and mode == "task" and len(items) == 1 and not items[0].get("children") \
+                and _asks_subtasks(state):
+            fix = _split_into_children(state, items[0])
+            if fix:
+                items[0]["children"] = fix
         if named and mode == "task" and len(items) == 1 and items[0].get("children")                 and _asks_subtasks(state):
             kids0 = [c for c in items[0].get("children") or [] if isinstance(c, dict)]
             if kids0:
@@ -388,6 +466,12 @@ class Refiner(ToolAgent):
                 names = ", ".join(d.get("summary", "") for d in subs)
                 extra_note = f"(Sub-Task {len(subs)}건은 부모 생성 후 별도 승인으로 붙인다: {names})"
                 out["rationale"] = ((out.get("rationale") or "") + "\n" + extra_note).strip()
+        # 변환(껍데기→Sub-Task 승격 등)이 items 를 **재구성**하므로 — 지정 담당을 다시
+        # 강제하고, Sub-Task 항목에 남은 children(이중 산출)을 최종적으로 뗀다.
+        if mode == "subtask":
+            for i in items:
+                i.pop("children", None)
+        _apply_named_assignees(state, items)
         turns = (state.get("turns") or 0) + 1
         # 되묻기 상한을 넘겼는데도 질문만 냈다면 질문을 버린다 — 영원히 안 끝나는 대화를 막는다.
         if qs and turns > MAX_REFINE_TURNS:
@@ -613,8 +697,11 @@ class Refiner(ToolAgent):
                 continue
             taken = [str(c.get("assignee")).strip() for c in kids
                      if str(c.get("assignee") or "").strip()]
-            pool = [u for u in _module_pool(it, taken[0] if taken else "") if u]
-            if not pool:
+            # 폴백 사다리: 자식 담당 → 부모 담당 — 컴포넌트가 로스터 키와 안 맞아도
+            # 부모 담당의 소속 모듈로 풀을 찾는다(실측: 채움이 통째로 무산됐다).
+            fb = taken[0] if taken else str(it.get("assignee") or "").strip()
+            pool = [u for u in _module_pool(it, fb) if u]
+            if not pool or pool == [fb]:
                 continue
             order = [u for u in pool if u not in taken] or pool
             for n, c in enumerate(empty):
@@ -623,12 +710,25 @@ class Refiner(ToolAgent):
                                 + "\n(나눠 맡도록 자식 담당을 모듈 인력에 배분했다 — "
                                   "승인 화면에서 바꿀 수 있다)").strip()
 
-        # ── 구조 판단과 산출이 어긋나면 알린다 ──────────────────────────
-        # "Sub-Task 로 나눈다"고 해 놓고 children 이 없으면 그건 판단이 아니라 말뿐이다.
-        if structure == "task_with_subtasks" and not any(i.get("children") for i in items):
-            out["rationale"] = ((out.get("rationale") or "")
-                                + "\n(확인 필요: 나눠서 진행한다고 판단했는데 Sub-Task 가 "
-                                  "없다 — 한 티켓으로 둘지 쪼갤지 정해야 한다)").strip()
+        # ── 구조 판단과 산출이 어긋나면 고친다/알린다 ─────────────────────
+        # "Sub-Task 로 나눈다"고 해 놓고 children 이 없거나 1개뿐이면 판단이 아니라 말뿐이다
+        # (실측: "30개 나눠서"에 자식 1개). subtask 모드는 제외 — Sub-Task 는 자식이 없다.
+        if structure == "task_with_subtasks" and items and mode != "subtask" \
+                and sum(len(i.get("children") or []) for i in items) < 2:
+            fix = _split_into_children(state, items[0]) if _said_defaults(state) else []
+            if len(fix) >= 2:
+                kept = [c for c in (items[0].get("children") or []) if isinstance(c, dict)]
+                have = {str(c.get("summary") or "") for c in kept}
+                items[0]["children"] = kept + [c for c in fix
+                                               if str(c.get("summary") or "") not in have]
+                _fill_owners(items[0], items[0]["children"])   # 자식 담당 채움 가드는 이미 지나갔다
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(구조 판단대로 단계별 Sub-Task 를 채웠다 — "
+                                      "승인 화면에서 고칠 수 있다)").strip()
+            else:
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(확인 필요: 나눠서 진행한다고 판단했는데 Sub-Task 가 "
+                                      "없다 — 한 티켓으로 둘지 쪼갤지 정해야 한다)").strip()
 
         # ── 하향 편향 보정 — single_task 인데 본문이 다단계·다인 규모면 확인을 받는다.
         # 상향(쪼갬)에는 확인 질문이 붙는데 하향(뭉갬)은 아무도 안 막았다(실측: 파이프라인
@@ -648,6 +748,7 @@ class Refiner(ToolAgent):
                     fix = _split_into_children(state, items[0])
                     if fix:
                         items[0]["children"] = fix
+                        _fill_owners(items[0], fix)
                         structure = "task_with_subtasks"
                         out["structure"] = structure
                         draft["structure"] = structure
@@ -717,10 +818,15 @@ class Refiner(ToolAgent):
         if structure and why and why not in draft["rationale"]:
             draft["rationale"] = (draft["rationale"] + f"\n(구조: {structure} — {why})").strip()
 
+        # 해석 확인 턴의 "제가 이해한 바" — Responder 가 질문에 앞세워 보여 준다.
+        # 그 외 턴에는 지난 해석이 남지 않게 비운다(오래된 해석은 오해가 된다).
+        interp = str(out.get("interpretation") or "").strip() if not items else ""
         return {"questions": qs, "draft": draft, "change_plan": plan, "turns": turns,
+                "interpretation": interp,
                 "trace": note(state, self.name,
                               f"변경 계획 {plan.get('key')}" if plan else
-                              (f"질문 {len(qs)}개 · 초안 {len(items)}건" if qs or items else "초안 없음"))}
+                              ("해석 확인 " if interp and not items else "")
+                              + (f"질문 {len(qs)}개 · 초안 {len(items)}건" if qs or items else "초안 없음"))}
 
 
 def draft_text(draft: dict) -> str:
@@ -739,6 +845,81 @@ def draft_text(draft: dict) -> str:
             bits.append(f"\n    설명: {str(it['description'])[:150]}")
         rows.append("  ".join(bits))
     return f"mode={draft.get('mode')}\n" + "\n".join(rows)
+
+
+def _slot_audit(state) -> str:
+    """티켓 생성 **최소 요건 슬롯**을 코드가 점검한다 — 채워진 것/빈 것/빈 것의 처리 방침.
+
+    모델이 매번 다르게 가리던 것을 표로 굳힌다(knowledge/07 §최소 요건과 같은 룰).
+    해석 확인 턴에는 '무엇을 물을지'의 근거가 되고, 초안 턴에는 '무엇을 기본값으로
+    채웠는지'의 근거가 된다."""
+    req, conv = request_text(state), conversation(state)
+    text = (req + " " + conv).strip()
+    low = text.lower()
+    shape, _w = shape_hint(state)
+    comps = _known_components()
+    module = next((c for c in comps if c.lower() in low), "")
+    rows = []
+
+    def row(name, filled, how, empty_act):
+        rows.append(f"- {name}: " + (f"채워짐({how})" if filled else f"비어 있음 → {empty_act}"))
+
+    row("주제·산출물", bool(req.strip()), "원문 요청", "ASK — 무엇을 만들지부터")
+    row("범위(1차 목표)", any(w in text for w in ("까지만", "범위", "1차", "PoC", "포함", "제외",
+                                             "검토만", "최소 기능", "전체")),
+        "사용자 언급", "ASK — 검토만/PoC/최소 구현 중 choice")
+    row("모듈(컴포넌트)", bool(module), f"'{module}'", "INFER — 조사·제목 접두로 추론, 갈리면 ASK")
+    row("Epic 배치", bool(_re.search(r"\b[A-Z][A-Z0-9]*-\d+\b", text)) or "에픽" in text
+        or "최상위" in text, "사용자 언급",
+        "ASK(choice, field=epic) — 후보 + 없음(최상위) + 새 Epic 필요")
+    row("형태(구조)", bool(shape), f"'{shape}'", "INFER — 규모 신호로 판단, 갈림 크면 확인 질문")
+    row("마감", bool(_re.search(r"\d{4}-\d{2}-\d{2}|다음\s*주|이번\s*주|말까지|주까지|일까지", text)),
+        "사용자 언급", "ASK(date) — 단 위임이면 비워 둔다")
+    row("우선순위", bool(_re.search(r"P[0-4]|긴급|우선순위", text)), "사용자 언급",
+        "INFER — 기본 P3-Minor, 묻지 않는다")
+    row("담당자", False, "", "LATER — 다음 단계(Assigner)가 근거와 함께 정한다, 묻지 않는다")
+    return "\n".join(rows)
+
+
+def _apply_named_assignees(state, items: list) -> None:
+    """"성능 측정은 x1402, 가이드 작성은 x1450" 식의 **입으로 지정한 담당**을 초안에 강제한다.
+
+    패턴: <작업 문구>(은|는) <사번>. 문구의 핵심 낱말이 제목에 들어 있는 항목(자식 포함)의
+    빈 assignee 를 채운다 — 모델이 이미 적은 값은 존중한다(덮지 않는다)."""
+    text = conversation(state) or request_text(state)
+    rows = list(items) + [c for i in items for c in (i.get("children") or [])
+                          if isinstance(c, dict)]
+    if not text or not rows:
+        return
+    for m in _re.finditer(r"([가-힣A-Za-z0-9·/ ]{2,24}?)\s*(?:은|는)\s*(?:skcc\.)?"
+                          r"([a-z]{1,2}\d{2,6})\b", text):
+        phrase, uid = m.group(1).strip(), f"skcc.{m.group(2)}"
+        words = [w for w in _re.split(r"\s+", phrase) if len(w) >= 2][-2:]
+        if not words:
+            continue
+        for r in rows:
+            s = str(r.get("summary") or "")
+            if all(w in s for w in words):
+                # 문구가 맞으면 **덮어쓴다** — 사용자의 명시 지정이 모델 배정보다 우선이다
+                # (실측: 모델이 세 항목 전부 한 사람으로 배정해 지정을 뭉갰다).
+                # 표식을 남겨 Assigner 의 merge 가 다시 덮지 못하게 한다(2차 뭉갬 실측).
+                r["assignee"] = uid
+                r["assignee_source"] = "user"
+
+
+def _fill_owners(item: dict, kids: list) -> None:
+    """빈 자식 담당을 모듈 로스터로 돌려 채운다 — 자식 담당 채움 가드보다 늦게 만들어진
+    (보정 호출) children 용."""
+    fb = str(item.get("assignee") or "").strip()
+    try:
+        pool = [u for u in _module_pool(item, fb) if u]
+    except Exception:
+        pool = []
+    if not pool:
+        return
+    for n, c in enumerate(kids):
+        if not str(c.get("assignee") or "").strip():
+            c["assignee"] = pool[n % len(pool)]
 
 
 def _split_into_children(state, item: dict) -> list:

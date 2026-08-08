@@ -184,6 +184,11 @@ export default {
     },
     async sendRich(html) {
       const text = this.richToText(html);
+      if (this.busy && text.trim()) {
+        pushToast({ kind: "info", key: "agent-busy",
+                    title: "다른 응답이 진행 중입니다 — 완료되면 보낼 수 있습니다" });
+        return;
+      }
       if (!text.trim() || this.busy) return;
       const ed = this.$refs.richEd;
       if (ed && ed._ed) ed._ed.commands.clearContent(true);
@@ -217,6 +222,11 @@ export default {
     send() {
       // 예시 버튼 등 텍스트 경로. 에디터 입력은 sendRich 가 이 아래 dispatch 로 합류한다.
       const text = (this.text || "").trim();
+      if (this.busy && text) {
+        pushToast({ kind: "info", key: "agent-busy",
+                    title: "다른 응답이 진행 중입니다 — 완료되면 보낼 수 있습니다" });
+        return;
+      }
       if (!text || this.busy) return;
       this.text = "";
       this.dispatch(text, null);
@@ -228,6 +238,15 @@ export default {
                      questions: [], assignments: [], review: {}, pending: null, result: null,
                      usage: null };
       this.turns.push(turn);
+      // ── 스트리밍 중에도 다른 대화를 볼 수 있다(사용자 요청 — 막을 이유가 없다).
+      // 이 턴의 결과는 **이 배열**(myTurns)에 쌓이고, 화면이 다른 대화로 가 있으면
+      // UI 갱신만 건너뛴다. active() = 지금 보고 있는 배열이 이 스트림의 배열인가.
+      const myTurns = this.turns;
+      let myTid = this.threadId;
+      this._live = this._live || {};
+      if (myTid) this._live[myTid] = myTurns;
+      const active = () => this.turns === myTurns;
+      this._abortTid = myTid;      // reset()이 "보고 있는 대화의 스트림만" 끊게
       this.busy = true;
       // 플랜은 planner 가 의도를 정하면 서버가 내려준다 — 그때까지는 첫 단계 하나만.
       this.plan = [{ id: "planner", label: "요청 파악", status: "run",
@@ -238,10 +257,14 @@ export default {
         { text, threadId: this.threadId },
         (ev) => {
           if (ev.type === "start") {
-            this.threadId = ev.thread_id || this.threadId;
-            this.saveConvo();          // 첫 전송 즉시 사이드바에 뜬다 — 답변까지 기다리지 않는다
+            myTid = ev.thread_id || myTid;
+            this._live[myTid] = myTurns;
+            this._abortTid = myTid;
+            if (active()) this.threadId = myTid;
+            this.saveConvo(myTid, myTurns);   // 첫 전송 즉시 사이드바에 뜬다
           }
           else if (ev.type === "plan") {
+            if (!active()) return;    // 다른 대화를 보는 중 — 진행 표시는 그 대화 것만
             // 의도가 정해졌다 — 앞으로 지날 단계의 체크리스트. 이미 지난 단계(planner)의
             // 상태·소요시간은 보존한다.
             const old = this.plan;
@@ -253,6 +276,7 @@ export default {
             this.$nextTick(this.scroll);
           }
           else if (ev.type === "node") {
+            if (!active()) return;
             // 단계 하나가 끝났다 — [✓] 로 접고, 건너뛴 단계는 흐리게, 다음 단계를 연다.
             const now = Date.now();
             let i = this.plan.findIndex((p) => p.id === ev.node);
@@ -271,6 +295,7 @@ export default {
             this.$nextTick(this.scroll);
           }
           else if (ev.type === "step") {
+            if (!active()) return;
             // 세부 행위(도구 호출·결과) — 소속 단계 밑에 중첩. "웹 검색 — <검색어>" 가
             // 실행 줄이고, 결과가 오면 같은 줄이 "… 완료 — <얻은 것>" 으로 바뀐다.
             const now = Date.now();
@@ -285,16 +310,18 @@ export default {
             if (s.details.length > 40) s.details.shift();
             this.$nextTick(this.scroll);
           } else if (ev.type === "token") {
+            // 최종 답이 만들어지는 **동안** 그 대화의 턴 객체에 자란다 — 다른 대화를 보고
+            // 있어도 데이터는 쌓이고, 화면 갱신(스크롤·진행 표시)만 건너뛴다.
+            turn.text = (turn.text || "") + (ev.text || "");
+            if (!active()) return;
             const r = this.plan.find((p) => p.id === "responder");
             if (r && r.status !== "done" && r.status !== "run") { r.status = "run"; r.t0 = Date.now(); }
-            // 최종 답이 만들어지는 **동안** 화면에 자란다 — 통째로 기다리면 Responder 생성
-            // 시간(2~7초)이 전부 침묵이다. final 이 오면 완성본으로 교체된다(조립 결과와
-            // 동일함은 서버 쪽에서 검증했다).
-            turn.text = (turn.text || "") + (ev.text || "");
             this.$nextTick(this.scroll);
           } else if (ev.type === "error") {
             turn.text = "문제가 생겼습니다 — " + (ev.message || "알 수 없는 오류");
             this.busy = false;
+            this.saveConvo(myTid, myTurns);
+            if (myTid && this._live) delete this._live[myTid];
           } else if (ev.type === "final") {
             Object.assign(turn, {
               text: ev.reply || "(답변이 비어 있습니다)",
@@ -305,6 +332,16 @@ export default {
               usage: ev.usage || null, people: ev.people || {},
               draftItems: ev.draft_items || [],
             });
+            this.busy = false;
+            this.saveConvo(myTid, myTurns);
+            if (myTid && this._live) delete this._live[myTid];
+            if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
+            if (!active()) {
+              // 다른 대화를 보는 중에 끝났다 — 데이터는 저장됐고, 알림으로만 알린다.
+              pushToast({ kind: "success", key: "agent-done-bg",
+                          title: "이전 대화의 응답이 완료됐습니다 — 사이드바에서 확인하세요" });
+              return;
+            }
             if (ev.pending && ev.pending.items) this.loadEpicTree(ev.pending);
             this.pickedAssignee = {}; this.cardCustom = {}; this.previewOn = {};
             this.customOn = {}; this.qDone = {};
@@ -313,9 +350,6 @@ export default {
             // 생성 컨텍스트 내내 옆에서 자라는 것을 본다.
             const nItems = ((ev.pending && ev.pending.items) || ev.draft_items || []).length;
             this.sideDraft = nItems ? Math.min(this.sideDraft < 0 ? 0 : this.sideDraft, nItems - 1) : -1;
-            this.saveConvo();
-                if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
-            this.busy = false;
             this.plan = [];
             this.$nextTick(this.scroll);
           }
@@ -430,8 +464,12 @@ export default {
     },
 
     reset() {
-      if (this.abort) this.abort();
-      this.threadId = ""; this.turns = []; this.plan = []; this.busy = false;
+      // 새 대화 — 지금 **보고 있는** 대화의 스트림만 끊는다. 다른 대화가 백그라운드로
+      // 응답 중이면 그대로 이어 간다(완료되면 자기 대화에 저장 + 토스트).
+      if (this.busy && this.abort && this._abortTid === this.threadId) {
+        this.abort(); this.abort = null; this.busy = false;
+      }
+      this.threadId = ""; this.turns = []; this.plan = [];
       this.sideDraft = -1;
     },
     /** 우측 패널이 미리보는 초안 턴 — 승인 대기(pending) 또는 **작성 중**(draftItems).
@@ -459,19 +497,26 @@ export default {
       try { return JSON.parse(localStorage.getItem("agentConvos") || "[]"); }
       catch (e) { return []; }
     },
-    saveConvo() {
-      if (!this.threadId || !this.turns.length) return;
-      const first = this.turns.find((t) => t.who === "user");
+    saveConvo(tid, arr) {
+      // 기본은 지금 보는 대화 — 백그라운드 스트림은 자기 tid·배열을 명시해 저장한다
+      // (다른 대화를 보는 중에 this.turns 로 저장하면 남의 대화에 덮어쓴다).
+      tid = tid || this.threadId;
+      arr = arr || this.turns;
+      if (!tid || !arr.length) return;
+      const first = arr.find((t) => t.who === "user");
       const title = ((first && first.text) || "새 대화").slice(0, 42);
-      const rest = this.convos.filter((c) => c.id !== this.threadId);
+      const rest = this.convos.filter((c) => c.id !== tid);
       // 직렬화 가능한 것만 — 함수·프록시 없음. 30개 초과는 오래된 것부터 버린다.
-      this.convos = [{ id: this.threadId, title, at: Date.now(),
-                       turns: JSON.parse(JSON.stringify(this.turns)) }, ...rest].slice(0, 30);
+      this.convos = [{ id: tid, title, at: Date.now(),
+                       turns: JSON.parse(JSON.stringify(arr)) }, ...rest].slice(0, 30);
       try { localStorage.setItem("agentConvos", JSON.stringify(this.convos)); } catch (e) {}
     },
     openConvo(c) {
-      if (this.busy) return;
-      this.threadId = c.id; this.turns = JSON.parse(JSON.stringify(c.turns || []));
+      // 스트리밍 중에도 다른 대화를 볼 수 있다(사용자 요청). 진행 중인 대화로 돌아오면
+      // **라이브 배열**을 다시 잡아 실시간 갱신이 이어진다(_live 에 스트림이 등록해 둔다).
+      const live = this._live && this._live[c.id];
+      this.threadId = c.id;
+      this.turns = live || JSON.parse(JSON.stringify(c.turns || []));
       this.plan = []; this.sideKey = "";
       this.$nextTick(this.scroll);
     },

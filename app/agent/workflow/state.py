@@ -140,6 +140,7 @@ class AgentState(TypedDict, total=False):
     pmo_caution: str                # 읽을 때의 주의(활동 적음 ≠ 태만 등)
 
     # ── Refiner ──
+    interpretation: str             # 조사 전 해석 확인 턴 — "제가 이해한 바" (사용자 검증용)
     questions: list                 # 사용자에게 되물을 것(비면 진행)
     draft: dict                     # {"mode": "task"|"subtask", "items": [...]}  (생성 갈래)
     change_plan: dict               # {"key","changes":{...},"why"}  (modify 갈래 — 기존 티켓 변경)

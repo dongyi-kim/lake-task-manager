@@ -83,6 +83,16 @@ def route_after_planner(state: AgentState) -> str:
     #    변경 요청에 과거 이력 발굴은 대개 불필요하다.
     if intent == Intent.MODIFY and state.get("mentioned_keys"):
         return "refine"
+    # ③ 해석 확인 선행 — 막연한 신규 개발 요청은 **조사보다 사용자 확인이 먼저**다.
+    #    실측(STARR NDV): 혼자 오래 조사하고 한 번에 결론을 내니 방향이 틀렸다. 조사 전에
+    #    해석·범위를 2~3문항으로 확인받으면 조사가 짧고 정확해진다(사용자 피드백: 일방적
+    #    호흡이 길다). 위임("알아서")이면 묻지 않는 기존 원칙이 이긴다.
+    if intent == Intent.PLAN_WORK and not state.get("sufficient") \
+            and not (state.get("situation") or "").strip() \
+            and not (state.get("turns") or 0):
+        from app.agent.workflow.agents.refiner import _said_defaults
+        if not _said_defaults(state):
+            return "refine"
     if intent in Intent.DIRECT_ANSWER:
         # 데이터 자산 질문("fdc.fdc_trace_summary_ic 적재주기는?")이 progress/activity 로
         # 오분류되면 회복이 불가능하다 — pmo 노드에는 검색 도구가 아예 없어서 테이블 이름을

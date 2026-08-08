@@ -170,5 +170,9 @@ def merge_assignments(draft: dict, assignments: list) -> dict:
     for a in assignments or []:
         i = a.get("index")
         if isinstance(i, int) and 0 <= i < len(items) and a.get("user") and a.get("reasons"):
+            # 사용자가 입으로 지정한 담당("성능 측정은 x1402")은 추천이 못 덮는다 —
+            # 지정은 결정이고 추천은 제안이다(실측: 추천이 지정 3건을 전부 한 사람으로 뭉갬).
+            if items[i].get("assignee_source") == "user":
+                continue
             items[i] = dict(items[i], assignee=a["user"])
     return dict(draft or {}, items=items)

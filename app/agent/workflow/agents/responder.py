@@ -37,6 +37,11 @@ class Responder(TextAgent):
                     "있으면 그것만 사유와 함께. 실패·후속 조치·주의 항목을 **지어내지 마라** — "
                     "자료의 created/failed 에 없는 말은 전부 날조다. 사용자가 이미 내린 결정"
                     "(예: Epic 없이 최상위로)을 다시 경고하지 마라. 3~5문장이면 충분하다.")
+        elif qs and (state.get("interpretation") or "").strip():
+            goal = ("조사 전 **해석 확인** 턴이다. ① 자료의 '요청 해석'을 \"제가 이해한 바\"로 "
+                    "먼저 보여라(사용자가 바로잡을 수 있게 — 고치지 말고 그대로) ② 이어서 "
+                    "질문에 답해 달라고 짧게 청하라. 조사는 답을 받은 뒤 시작한다고 말하라. "
+                    "전체 5문장 이내 — 이 턴의 값어치는 빠른 왕복이다.")
         elif qs:
             goal = "지금까지 파악한 상황을 짧게 정리하고, 모자란 정보를 물어라."
         elif (state.get("change_plan") or {}).get("key"):
@@ -116,6 +121,8 @@ class Responder(TextAgent):
                     "없음'일 때만 확인되지 않았다고 답하고, 코멘트 **작성자를 담당자로 지어내지 "
                     "마라** — 작성자는 그 말을 한 사람일 뿐이다.")
         data = wrap_data(
+            data_block("요청 해석 (조사 전 확인용 — \"제가 이해한 바\"로 그대로 보여라)",
+                       state.get("interpretation")),
             data_block("지식 브리프(Curator 정리)", brief),
             data_block("그룹 활동 자료(로스터 전원 — 이것으로 3층을 쓴다)",
                        state.get("group_activity")),
