@@ -377,7 +377,7 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
                         and type(msg).__name__.endswith("Chunk")):
                     yield {"type": "token", "text": piece}
                 continue
-            for ev in _events((ns, payload) if ns != "" or True else payload):
+            for ev in _events(ns, payload):
                 yield ev
     except Exception as e:
         log.exception("[%s] 그래프 실패", tid)
@@ -389,43 +389,119 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
     yield {"type": "final", **final}
 
 
-def _events(chunk):
-    """LangGraph 의 업데이트 청크 → 화면이 읽는 이벤트. 모양이 버전마다 조금씩 다르다."""
-    payload = chunk[1] if isinstance(chunk, tuple) and len(chunk) == 2 else chunk
+_TOOL_KO = {  # 도구명 → 사람이 읽는 라벨. "도구 사용 중"만으로는 어디서 느린지 모른다(사용자 지적)
+    "search_work_history": "사내 이력 검색", "deep_search": "의미 기반 재검색(RAG)",
+    "find_mentions": "언급 추적(코멘트 원문까지)", "read_document": "문서 본문 열람",
+    "get_ticket": "티켓 열람", "get_ticket_context": "연관 링크 추적",
+    "map_ticket_neighborhood": "계보·주변 지도", "get_epic_tree": "Epic 트리 조회",
+    "find_parent_epic": "상위 Epic 탐색", "run_jql": "JQL 실행",
+    "search_rules": "사내 규칙·가이드 검색", "search_web": "웹 검색",
+    "search_github": "GitHub 검색", "get_team_workload": "팀 워크로드 조회",
+    "get_module_people": "모듈 로스터 조회", "get_person_profile": "인물 프로필 조회",
+    "get_ticket_participants": "티켓 유관자 조회", "get_my_workload": "내 일감 조회",
+    "get_progress": "진척률 계산", "find_stale_tickets": "정체 티켓 조회",
+    "find_unassigned_tickets": "미배정 티켓 조회", "get_user_activity": "활동 내역 조회",
+    "whoami": "사용자 확인", "list_ticket_options": "허용값 조회",
+    "list_child_types": "하위 유형 조회", "validate_ticket_plan": "초안 검증",
+    "create_tickets": "티켓 생성", "create_epic": "Epic 생성",
+    "update_ticket": "티켓 변경", "add_ticket_comment": "코멘트 등록",
+}
+
+
+def _plan_for(intent: str) -> list:
+    """의도 → 지날 단계 체크리스트. **코드가 안다** — 그래프 배선이 결정적이라 라우터와
+    같은 지식을 여기 한 번 더 적는 것이고, UI 는 이걸 [ ]→[▸]→[✓] 로 채워 간다.
+    실제로 안 지나는 단계(예: 첫 턴에 curator 미경유)는 화면이 '건너뜀'으로 접는다.
+    """
+    from app.agent.workflow.state import Intent, Stage
+    def _s(*nodes):
+        return [{"id": n, "label": Stage.LABELS.get(n, n)} for n in nodes]
+    if intent in Intent.DRAFTS_TICKETS:            # plan_work / report_bug / modify
+        if intent == Intent.MODIFY:
+            return _s(Node.PLANNER, Node.HISTORIAN, Node.REFINER, Node.RESPONDER)
+        return _s(Node.PLANNER, Node.HISTORIAN, Node.REFINER,
+                  Node.ASSIGNER, Node.REVIEWER, Node.RESPONDER)
+    if intent in Intent.DIRECT_ANSWER:             # my_day / progress / activity
+        return _s(Node.PLANNER, "pmo", Node.RESPONDER)
+    if intent == Intent.ASK:
+        return _s(Node.PLANNER, Node.HISTORIAN, Node.CURATOR, Node.RESPONDER)
+    return _s(Node.PLANNER, Node.RESPONDER)        # chitchat 등
+
+
+def _arg_hint(tool_calls) -> str:
+    """도구 호출 인자에서 사람이 읽을 한 조각 — 대개 검색어·티켓 키다."""
+    for tc in tool_calls:
+        for v in (tc.get("args") or {}).values():
+            if isinstance(v, str) and len(v.strip()) > 2:
+                return v.strip()[:48]
+    return ""
+
+
+def _result_hint(content) -> str:
+    """도구 결과에서 사람이 읽을 한 조각 — URL > 티켓 키 > 앞부분 순으로 고른다."""
+    import re as _re
+    s = content if isinstance(content, str) else str(content or "")
+    m = _re.search(r"https?://([^\s\"'\\)>\]]+)", s)
+    if m:
+        u = m.group(1)
+        return u[:44] + ("…" if len(u) > 44 else "")
+    keys = _re.findall(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", s)
+    if keys:
+        seen = list(dict.fromkeys(keys))[:3]
+        return ", ".join(seen)
+    s = _re.sub(r"[\s{}\[\]\"']+", " ", s).strip()
+    return (s[:44] + "…") if len(s) > 44 else s
+
+
+def _events(ns, payload):
+    """LangGraph 업데이트 → 화면 이벤트.
+
+    화면의 최상위는 **플랜 단계**(의도별 체크리스트)이고, 서브그래프 안의 행위(도구 호출·
+    결과)는 그 단계 밑에 중첩된다(사용자 피드백). `ns` 가 어느 단계 소속인지 알려 준다 —
+    `("historian:uuid",)` 형태라 앞 토막이 부모 노드명이다.
+    """
     if not isinstance(payload, dict):
         return
+    from collections import Counter
+
     from app.agent.workflow.state import Stage
-    _TOOL_KO = {  # 도구명 → 사람이 읽는 라벨. "도구 사용 중"만으로는 어디서 느린지 모른다(사용자 지적)
-        "search_work_history": "사내 이력 검색", "deep_search": "의미 기반 재검색(RAG)",
-        "find_mentions": "언급 추적(코멘트 원문까지)", "read_document": "문서 본문 열람",
-        "get_ticket": "티켓 열람", "get_ticket_context": "연관 링크 추적",
-        "map_ticket_neighborhood": "계보·주변 지도", "get_epic_tree": "Epic 트리 조회",
-        "find_parent_epic": "상위 Epic 탐색", "run_jql": "JQL 실행",
-        "search_rules": "사내 규칙·가이드 검색", "search_web": "웹 검색",
-        "search_github": "GitHub 검색", "get_team_workload": "팀 워크로드 조회",
-        "get_module_people": "모듈 로스터 조회", "get_person_profile": "인물 프로필 조회",
-        "get_ticket_participants": "티켓 유관자 조회", "get_my_workload": "내 일감 조회",
-        "get_progress": "진척률 계산", "find_stale_tickets": "정체 티켓 조회",
-        "find_unassigned_tickets": "미배정 티켓 조회", "get_user_activity": "활동 내역 조회",
-        "whoami": "사용자 확인", "list_ticket_options": "허용값 조회",
-        "list_child_types": "하위 유형 조회", "validate_ticket_plan": "초안 검증",
-        "create_tickets": "티켓 생성", "create_epic": "Epic 생성",
-        "update_ticket": "티켓 변경", "add_ticket_comment": "코멘트 등록",
-    }
+    parent = ""
+    if ns:
+        try:
+            parent = str(ns[0]).split(":")[0]
+        except Exception:
+            parent = ""
     for node, patch in payload.items():
         if node == "think":
-            # think 의 산출(AIMessage)에 다음에 부를 도구가 실려 있다 — 이름을 보여 준다.
-            names = []
-            for m in (patch or {}).get("messages") or []:
-                for tc in (getattr(m, "tool_calls", None) or []):
-                    names.append(_TOOL_KO.get(tc.get("name"), tc.get("name")))
-            yield {"type": "step", "node": node,
-                   "label": (" · ".join(names[:3])) if names else "다음 단계 판단 중"}
+            # think 의 산출(AIMessage)에 다음에 부를 도구가 실려 있다 — 이름과 인자를 보여 준다.
+            calls = [tc for m in ((patch or {}).get("messages") or [])
+                     for tc in (getattr(m, "tool_calls", None) or [])]
+            if calls:
+                cnt = Counter(_TOOL_KO.get(tc.get("name"), tc.get("name")) for tc in calls)
+                label = " · ".join(f"{n} ×{c}" if c > 1 else n for n, c in cnt.items())[:80]
+                yield {"type": "step", "parent": parent, "label": label,
+                       "note": _arg_hint(calls)}
+            else:
+                yield {"type": "step", "parent": parent, "label": "조사 내용 정리 중"}
             continue
         if node == "act":
-            yield {"type": "step", "node": node, "label": "도구 실행 결과 수신"}
+            # "도구 실행 결과 수신" 같은 기계 말 대신 — 무엇이 끝났고 무엇을 얻었는지.
+            msgs = (patch or {}).get("messages") or []
+            names = list(dict.fromkeys(
+                _TOOL_KO.get(getattr(m, "name", "") or "", getattr(m, "name", "") or "도구")
+                for m in msgs))
+            hints = [h for h in (_result_hint(getattr(m, "content", "")) for m in msgs[:2]) if h]
+            if names:
+                yield {"type": "step", "parent": parent, "done": True,
+                       "label": (" · ".join(names[:3]))[:80] + " 완료",
+                       "note": " · ".join(hints)[:80]}
             continue
-        ev = {"type": "node", "node": node, "label": Stage.LABELS.get(node, node)}
+        if node not in Stage.LABELS:
+            continue        # merge·propose·conclude 등 내부 배선은 사람에게 소음이다
+        if node == Node.PLANNER and isinstance(patch, dict) and patch.get("intent"):
+            # 의도가 정해졌다 = 앞으로 지날 단계가 정해졌다. 체크리스트를 먼저 내린다.
+            yield {"type": "plan", "steps": _plan_for(patch["intent"])}
+        ev = {"type": "node", "node": node, "label": Stage.LABELS[node]}
         if isinstance(patch, dict) and patch.get("trace"):
             ev["note"] = (patch["trace"][-1] or {}).get("note", "")
         yield ev

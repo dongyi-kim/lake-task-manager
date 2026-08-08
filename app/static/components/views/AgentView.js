@@ -46,7 +46,10 @@ export default {
       turns: [],              // [{who:"user"|"agent", text, trace, evidence, docs, questions,
                               //   assignments, review, pending, result}]
       busy: false,
-      steps: [],              // 지금 굴러가는 진행(스트리밍 중에만)
+      plan: [],               // 진행 체크리스트(스트리밍 중에만) — [{id,label,status,t0,dur,note,details}]
+                              // status: pending → run → done, 안 지난 단계는 skip.
+                              // 최상위는 **플랜 단계**이고 도구 호출 같은 세부 행위는 details 로
+                              // 그 밑에 중첩된다(사용자 피드백: 상위는 플랜별, 세부는 하위로).
       abort: null,
       approving: false,
       settingsOpen: false,
@@ -71,6 +74,13 @@ export default {
     pending() {
       const last = this.turns[this.turns.length - 1];
       return last && last.who === "agent" && last.pending ? last.pending : null;
+    },
+    // 접힌 헤더에 보이는 요약 — 지금 도는 단계 이름(병렬이면 여럿).
+    planHead() {
+      const run = this.plan.filter((p) => p.status === "run").map((p) => p.label);
+      if (run.length) return run.join(" · ");
+      const done = this.plan.filter((p) => p.status === "done").length;
+      return done ? `${done}/${this.plan.length} 단계` : "시작 중";
     },
   },
   mounted() {
@@ -100,6 +110,12 @@ export default {
   },
   methods: {
     md(t, people) { return renderMarkdown(t, people); },
+    /** 단계 밑에 보여줄 세부 행위 — 접힘: 진행 중 단계의 마지막 한 줄만 / 펼침: 전부. */
+    visibleDetails(s) {
+      if (this.stepsOpen) return s.details;
+      if (s.status === "run" && s.details.length) return [s.details[s.details.length - 1]];
+      return [];
+    },
     use(ex) {
       // 예시를 에디터에 채워 준다 — 바로 보내지 않고 사용자가 고쳐 쓸 수 있게.
       const ed = this.$refs.richEd;
@@ -164,7 +180,9 @@ export default {
                      usage: null };
       this.turns.push(turn);
       this.busy = true;
-      this.steps = [];
+      // 플랜은 planner 가 의도를 정하면 서버가 내려준다 — 그때까지는 첫 단계 하나만.
+      this.plan = [{ id: "planner", label: "요청 파악", status: "run",
+                     t0: Date.now(), dur: null, note: "", details: [] }];
       this.$nextTick(this.scroll);
 
       this.abort = agentApi.stream(
@@ -174,19 +192,52 @@ export default {
             this.threadId = ev.thread_id || this.threadId;
             this.saveConvo();          // 첫 전송 즉시 사이드바에 뜬다 — 답변까지 기다리지 않는다
           }
-          else if (ev.type === "node" || ev.type === "step") {
-            // 같은 라벨이 연달아 오면 한 줄로 묶고, 단계별 **소요시간**을 기록한다 —
-            // 어디서 느린지 보여야 기다림이 납득된다(사용자 지적).
+          else if (ev.type === "plan") {
+            // 의도가 정해졌다 — 앞으로 지날 단계의 체크리스트. 이미 지난 단계(planner)의
+            // 상태·소요시간은 보존한다.
+            const old = this.plan;
+            this.plan = (ev.steps || []).map((st) => {
+              const prev = old.find((p) => p.id === st.id);
+              return prev || { id: st.id, label: st.label, status: "pending",
+                               t0: 0, dur: null, note: "", details: [] };
+            });
+            this.$nextTick(this.scroll);
+          }
+          else if (ev.type === "node") {
+            // 단계 하나가 끝났다 — [✓] 로 접고, 건너뛴 단계는 흐리게, 다음 단계를 연다.
             const now = Date.now();
-            const last = this.steps[this.steps.length - 1];
-            if (last && !last.dur) last.dur = ((now - last.t) / 1000).toFixed(1);
-            if (last && last.label === ev.label) {
-              last.note = ev.note || last.note; last.dur = null; last.t = now;
-            } else {
-              this.steps.push({ label: ev.label, note: ev.note || "", t: now, dur: null });
+            let i = this.plan.findIndex((p) => p.id === ev.node);
+            if (i < 0) {
+              this.plan.push({ id: ev.node, label: ev.label, status: "run",
+                               t0: now, dur: null, note: "", details: [] });
+              i = this.plan.length - 1;
             }
+            const s = this.plan[i];
+            s.status = "done";
+            s.dur = s.t0 ? ((now - s.t0) / 1000).toFixed(1) : null;
+            if (ev.note) s.note = ev.note;
+            this.plan.forEach((p, j) => { if (j < i && p.status === "pending") p.status = "skip"; });
+            const nxt = this.plan.find((p) => p.status === "pending");
+            if (nxt) { nxt.status = "run"; nxt.t0 = now; }
+            this.$nextTick(this.scroll);
+          }
+          else if (ev.type === "step") {
+            // 세부 행위(도구 호출·결과) — 소속 단계 밑에 중첩. "웹 검색 — <검색어>" 가
+            // 실행 줄이고, 결과가 오면 같은 줄이 "… 완료 — <얻은 것>" 으로 바뀐다.
+            const now = Date.now();
+            let s = this.plan.find((p) => p.id === (ev.parent || ""));
+            if (!s) s = this.plan.find((p) => p.status === "run");
+            if (!s) return;
+            if (s.status !== "run") { s.status = "run"; s.t0 = s.t0 || now; }
+            const d = { text: ev.label + (ev.note ? " — " + ev.note : ""), done: !!ev.done };
+            const last = s.details[s.details.length - 1];
+            if (ev.done && last && !last.done) s.details.splice(s.details.length - 1, 1, d);
+            else s.details.push(d);
+            if (s.details.length > 40) s.details.shift();
             this.$nextTick(this.scroll);
           } else if (ev.type === "token") {
+            const r = this.plan.find((p) => p.id === "responder");
+            if (r && r.status !== "done" && r.status !== "run") { r.status = "run"; r.t0 = Date.now(); }
             // 최종 답이 만들어지는 **동안** 화면에 자란다 — 통째로 기다리면 Responder 생성
             // 시간(2~7초)이 전부 침묵이다. final 이 오면 완성본으로 교체된다(조립 결과와
             // 동일함은 서버 쪽에서 검증했다).
@@ -215,7 +266,7 @@ export default {
             this.saveConvo();
                 if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
             this.busy = false;
-            this.steps = [];
+            this.plan = [];
             this.$nextTick(this.scroll);
           }
         });
@@ -266,7 +317,7 @@ export default {
 
     reset() {
       if (this.abort) this.abort();
-      this.threadId = ""; this.turns = []; this.steps = []; this.busy = false;
+      this.threadId = ""; this.turns = []; this.plan = []; this.busy = false;
       this.sideDraft = -1;
     },
     /** 우측 패널이 미리보는 초안 턴 — 승인 대기(pending) 또는 **작성 중**(draftItems).
@@ -307,7 +358,7 @@ export default {
     openConvo(c) {
       if (this.busy) return;
       this.threadId = c.id; this.turns = JSON.parse(JSON.stringify(c.turns || []));
-      this.steps = []; this.sideKey = "";
+      this.plan = []; this.sideKey = "";
       this.$nextTick(this.scroll);
     },
     removeConvo(c) {
@@ -843,17 +894,24 @@ export default {
           </div>
         </div>
 
-        <!-- 진행 상황: 접으면 현재 단계만, 펼치면 전체 + 단계별 소요시간 -->
-        <div v-if="busy && steps.length" class="agent-steps">
+        <!-- 진행 상황: 최상위는 플랜 단계 체크리스트([✓]/[▸]/[ ]), 세부 행위(도구 호출)는
+             각 단계 밑에 중첩. 기본은 진행 중 단계의 마지막 행위 한 줄만 — 펼치면 전부. -->
+        <div v-if="busy && plan.length" class="agent-steps">
           <button class="agent-steps-h" @click="stepsOpen = !stepsOpen">
-            {{ stepsOpen ? '▾' : '▸' }} 진행 {{ steps.length }}단계</button>
-          <div v-for="(s, i) in steps" :key="i" class="agent-step"
-               v-show="stepsOpen || i === steps.length - 1"
-               :class="{ now: i === steps.length - 1 }">
-            <span class="sdot"></span><b>{{ s.label }}</b>
-            <em v-if="s.note">{{ s.note }}</em>
-            <span class="sdur">{{ s.dur ? s.dur + 's' : '…' }}</span>
-          </div>
+            {{ stepsOpen ? '▾' : '▸' }} 진행 — {{ planHead }}</button>
+          <template v-for="s in plan" :key="s.id">
+            <div class="agent-step"
+                 :class="{ now: s.status === 'run', ok: s.status === 'done', skip: s.status === 'skip' }">
+              <span class="smark">{{ s.status === 'done' ? '✓' : s.status === 'run' ? '▸'
+                                     : s.status === 'skip' ? '–' : '○' }}</span>
+              <b>{{ s.label }}</b>
+              <em v-if="s.note && (stepsOpen || s.status !== 'pending')">{{ s.note }}</em>
+              <span class="sdur">{{ s.status === 'done' && s.dur ? s.dur + 's'
+                                    : s.status === 'run' ? '…' : '' }}</span>
+            </div>
+            <div v-for="(d, j) in visibleDetails(s)" :key="s.id + '-' + j"
+                 class="agent-substep" :class="{ run: !d.done }">ㄴ {{ d.text }}</div>
+          </template>
         </div>
       </div>
 

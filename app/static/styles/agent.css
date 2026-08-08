@@ -410,6 +410,14 @@
 .agent-step.now b { color:var(--accent); }
 .agent-step .sdot { width:5px; height:5px; border-radius:50%; background:currentColor; flex:none; }
 .agent-step.now .sdot { animation:agdot 1s infinite; }
+/* 플랜 체크리스트 — 최상위는 단계([✓]/[▸]/[ ]), 세부 행위는 그 밑에 들여쓴다 */
+.agent-step .smark { flex:none; width:14px; text-align:center; font-size:11px; }
+.agent-step.ok .smark { color:var(--green, #2da160); }
+.agent-step.ok b { color:var(--text); font-weight:500; }
+.agent-step.skip { opacity:.4; }
+.agent-substep { padding-left:26px; font-size:11.5px; color:var(--muted-2);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-substep.run { color:var(--accent); animation:agdot 1.2s infinite; }
 
 /* ── 입력 ──────────────────────────────────────────────────── */
 .agent-input { display:flex; gap:8px; align-items:stretch;
