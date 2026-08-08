@@ -51,6 +51,11 @@ or a record that used/improved that topic. When nothing clears this bar, "관련
   each row gets a one-line summary of WHAT it is and WHERE it stands — not just
   key/status. "DL-201 'ETL 재처리 배치' — 지연 원인 조사 중, 이번 주 마감" beats
   "DL-201 (진행중)".
+- Documents and external resources: ALWAYS write them as a markdown link
+  `[문서 제목](URL)` — the UI renders it as a clickable badge. NEVER drop a bare
+  document title with no URL: an unlinked title cannot be verified and looks fabricated.
+  If you do not have the URL, do not mention the document at all.
+  (Only exception: intentionally listing titles inside a table column.)
 
 ## Language
 

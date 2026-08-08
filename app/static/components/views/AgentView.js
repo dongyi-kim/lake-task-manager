@@ -18,6 +18,7 @@ import CommentEditor from "../ui/CommentEditor.js";
 import FieldEdit from "../ui/FieldEdit.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { renderMarkdown } from "../../lib/agentMd.js";
+import { TYPE_BG, typeLabel } from "../../lib/colors.js";
 import { api } from "../../lib/api.js";
 import { pushToast } from "../../lib/toast.js";
 
@@ -105,11 +106,52 @@ export default {
     // 답변 안의 티켓 키(`.tkt[data-key]`)는 앱 전역 위임 처리기가 잡는다(기존 모달) —
     // 우측 패널은 **생성 중인 초안**의 미리보기 전용이다(사용자 정정).
   },
+  updated() {
+    // v-html 재렌더 때마다 — data-filled 마커로 멱등. 뱃지 채움은 비동기라 훅에서 돈다.
+    this.augmentBadges();
+  },
   unmounted() {
     if (this.abort) this.abort();      // 화면을 떠났는데 서버가 계속 일할 이유가 없다
   },
   methods: {
     md(t, people) { return renderMarkdown(t, people); },
+    /** 답변 속 뱃지 스켈레톤을 실물로 채운다 — 티켓 뱃지는 타입·제목·상태(본문 렌더와 같은
+     *  구조), Confluence 뱃지는 URL 슬러그 제목(없으면 서버 og:title). 렌더는 동기, 채움은
+     *  비동기 — updated() 훅에서 매번 돌지만 data-filled 마커로 한 번만 손댄다. */
+    augmentBadges() {
+      const root = this.$el;
+      if (!root || !root.querySelectorAll) return;
+      root.querySelectorAll(".agent-md a.jira-badge[data-key]:not([data-filled])").forEach((a) => {
+        a.dataset.filled = "1";
+        const key = a.getAttribute("data-key");
+        api.ticketBadge(key).then((b) => {
+          if (!b || !a.isConnected) return;
+          const tb = a.querySelector(".jb-type"), nm = a.querySelector(".jb-name"),
+                mt = a.querySelector(".jb-meta");
+          if (!tb || !nm || !mt) return;
+          tb.textContent = typeLabel(b.type || "");
+          tb.style.setProperty("--tc", TYPE_BG[b.type] || "var(--ty-task)");
+          nm.textContent = b.summary || "";
+          mt.textContent = b.status || "";
+          mt.className = "jb-meta st-" + (b.statusCategory || "todo");
+          a.title = key + " " + (b.summary || "");
+        }).catch(() => { /* 조회 실패 — 키만 보여도 클릭은 된다 */ });
+      });
+      root.querySelectorAll(".agent-md a.conf-link[data-conf]:not([data-filled])").forEach((a) => {
+        a.dataset.filled = "1";
+        const href = a.getAttribute("href") || "";
+        const t = a.querySelector(".conf-title");
+        if (!t) return;
+        // 제목이 URL 그대로면(맨 URL 이었단 뜻) 슬러그 → 서버 제목 순으로 사람 말로 바꾼다.
+        if ((t.textContent || "").trim() === href) {
+          const m = href.match(/\/pages\/\d+\/([^/?#]+)\/?$/) || href.match(/\/display\/[^/]+\/([^/?#]+)\/?$/);
+          if (m) t.textContent = decodeURIComponent(m[1].replace(/\+/g, " "));
+          else api.linkTitle(href).then((r) => {
+            if (r && r.title && a.isConnected) t.textContent = r.title;
+          }).catch(() => { /* noop */ });
+        }
+      });
+    },
     /** 단계 밑에 보여줄 세부 행위 — 접힘: 진행 중 단계의 마지막 한 줄만 / 펼침: 전부. */
     visibleDetails(s) {
       if (this.stepsOpen) return s.details;

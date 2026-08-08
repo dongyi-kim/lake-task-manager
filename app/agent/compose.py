@@ -124,6 +124,9 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     html = _unfence(html)
     if not html:
         return {"ok": False, "error": "생성된 내용이 비어 있습니다. 요청을 조금 더 구체적으로 적어 주세요."}
+    # 언급은 전부 **뱃지**여야 한다(사용자 지시: plain text 금지). 모델이 평문으로 남긴
+    # 티켓 키·[~사번] 을 에디터가 뱃지로 파싱하는 마크업으로 바꾼다 — 보장은 코드가 한다.
+    html = _badgeify(html)
 
     # 접지 — 챗과 **같은 검사**를 태운다. 에디터에 꽂히는 글이라고 날조를 봐줄 이유가 없다.
     note = ""
@@ -139,6 +142,41 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     except Exception:
         pass
     return {"ok": True, "html": html, "note": note}
+
+
+def _badgeify(html: str) -> str:
+    """평문 언급 → 에디터 뱃지 마크업.
+
+    · 티켓 키(태그 밖 텍스트의 `DL-123`) → `<a href=".../browse/DL-123">DL-123</a>`
+      — CommentEditor 의 linkBadge 가 `a[href]` 를 파싱해 타입·제목·상태 뱃지로 그린다.
+    · `[~사번]` → `<span data-type="mention" data-id="사번">@사번</span>`
+      — Mention 확장이 같은 모양으로 저장·렌더한다(프로필 칩).
+    이미 앵커 안에 있는 키는 건드리지 않는다(뱃지 안에 뱃지 방지).
+    """
+    import re
+
+    # 표(테이블) 안은 제목·키 나열 자리라 그대로 둔다 — 유일한 예외(사용자 지시).
+    parts = re.split(r"(<table\b.*?</table>)", html, flags=re.S | re.I)
+
+    def _keys(seg: str) -> str:
+        # 태그 밖 텍스트 노드만 — `>`/`<` 사이 조각 단위로 치환한다.
+        out = []
+        for tok in re.split(r"(<[^>]+>)", seg):
+            if tok.startswith("<"):
+                out.append(tok)
+                continue
+            tok = re.sub(r"\[~([A-Za-z0-9._-]+)\]",
+                         r'<span data-type="mention" data-id="\1">@\1</span>', tok)
+            tok = re.sub(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b",
+                         r'<a href="/browse/\1">\1</a>', tok)
+            out.append(tok)
+        joined = "".join(out)
+        # <a href="...">DL-123</a> 처럼 이미 링크였던 것 안에 또 앵커가 생기는 것을 방지 —
+        # 위 분할은 앵커 **텍스트**도 텍스트 노드로 보므로, 중첩 앵커만 사후에 푼다.
+        return re.sub(r'(<a\b[^>]*>)((?:(?!</a>).)*?)<a\b[^>]*>([^<]*)</a>',
+                      r"\1\2\3", joined, flags=re.S)
+
+    return "".join(seg if i % 2 else _keys(seg) for i, seg in enumerate(parts))
 
 
 def _unfence(text: str) -> str:

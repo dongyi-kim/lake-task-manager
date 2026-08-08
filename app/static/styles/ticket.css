@@ -438,20 +438,20 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .tkt-desc a.user-hover { font-weight: 700; color: var(--accent); text-decoration: none; }
 .tkt-desc a.user-hover:hover { text-decoration: underline; }
 /* Confluence 링크 뱃지 — 아이콘+글자 세로 중앙, 텍스트 높이에 맞춤 */
-.tkt-desc .conf-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600;
+.tkt-desc .conf-link, .agent-md .conf-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600;
   line-height: 1.4; color: var(--st-prog); border: 1px solid var(--border); background: var(--panel-2);
   border-radius: 6px; padding: 0 8px; text-decoration: none; max-width: 100%; min-width: 0;
   vertical-align: middle; transform: translateY(-1.5px); }
-.tkt-desc .conf-link::before { content: ""; width: 11px; height: 11px; flex: none; display: block;
+.tkt-desc .conf-link::before, .agent-md .conf-link::before { content: ""; width: 11px; height: 11px; flex: none; display: block;
   background: currentColor; -webkit-mask: var(--conf-ic) center/contain no-repeat; mask: var(--conf-ic) center/contain no-repeat; }
-.tkt-desc .conf-link .conf-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.tkt-desc .conf-link:hover { border-color: var(--st-prog); text-decoration: none; }
+.tkt-desc .conf-link .conf-title, .agent-md .conf-link .conf-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tkt-desc .conf-link:hover, .agent-md .conf-link:hover { border-color: var(--st-prog); text-decoration: none; }
 
 /* Jira 티켓 인라인 뱃지 — 상태 점 + 키 + 요약(말줄임) + 상태·담당자. 클릭 시 인앱 다이얼로그 */
-.tkt-desc .jira-badge { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0;
+.tkt-desc .jira-badge, .agent-md .jira-badge { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0;
   font-size: 11.5px; font-weight: 600; color: var(--text); border: 1px solid var(--border); background: var(--panel-2);
   border-radius: 6px; padding: 1px 8px; text-decoration: none; vertical-align: middle; cursor: pointer; line-height: 1.5; }
-.tkt-desc .jira-badge:hover { border-color: var(--accent); }
+.tkt-desc .jira-badge:hover, .agent-md .jira-badge:hover { border-color: var(--accent); }
 .jira-badge .jb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-todo); }
 .jira-badge .jb-dot.st-inprogress { background: var(--st-prog); }
 .jira-badge .jb-dot.st-done { background: var(--st-done); }
@@ -862,16 +862,16 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   background: color-mix(in srgb, var(--accent) 12%, var(--panel)); font-weight: 700; }
 
 /* 웹 링크 뱃지 — favicon(= --fav, /api/favicon) + 칩. favicon 없으면 빈 사각형으로 폴백. */
-.cmt-ed-host .ProseMirror a.web-badge, .tkt-desc a.web-badge {
+.cmt-ed-host .ProseMirror a.web-badge, .tkt-desc a.web-badge, .agent-md a.web-badge {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
   padding: 1px 8px 1px 6px; border: 1px solid var(--border); border-radius: 999px;
   background: var(--panel-2); color: var(--text); text-decoration: none;
   font-size: 12px; line-height: 1.6; vertical-align: baseline; }
-.cmt-ed-host .ProseMirror a.web-badge::before, .tkt-desc a.web-badge::before {
+.cmt-ed-host .ProseMirror a.web-badge::before, .tkt-desc a.web-badge::before, .agent-md a.web-badge::before {
   content: ""; width: 13px; height: 13px; flex: none; border-radius: 3px;
   background-image: var(--fav); background-size: contain; background-repeat: no-repeat;
   background-position: center; background-color: var(--border); }
-.cmt-ed-host .ProseMirror a.web-badge:hover, .tkt-desc a.web-badge:hover { border-color: var(--accent); }
+.cmt-ed-host .ProseMirror a.web-badge:hover, .tkt-desc a.web-badge:hover, .agent-md a.web-badge:hover { border-color: var(--accent); }
 /* 에디터 안의 뱃지는 **한 덩어리(atom)** — 글자 단위 선택/커서 진입을 막고 더블클릭으로 수정 */
 .cmt-ed-host .ProseMirror a.web-badge { user-select: none; cursor: default; }
 .cmt-ed-host .ProseMirror a.web-badge.ProseMirror-selectednode {
