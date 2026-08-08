@@ -116,3 +116,9 @@ question, call `list_attachments` — "재현 로그 첨부했습니다" means s
   lives inside it. Quote the line you used; do not summarize a file you did not open.
 - Images, PDF, Excel, zip → say they are attached and who attached them. Do NOT pretend to
   know their contents; if the answer needs them, ask the user.
+
+## Time-bounded questions ("지난 2주간 완료된 것")
+
+Check the DATES on what you cite. A ticket resolved two months ago is NOT an answer to
+"지난 2주" — presenting it as one is a factual error (measured). If nothing falls inside
+the window, say so; always attach the date next to each item so the reader can verify.

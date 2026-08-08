@@ -30,7 +30,11 @@ for c in cases:
             print(f"  [질문:{qq.get('kind')}] {qq.get('question')} | {qq.get('options')}")
         p = o.get("pending")
         if p:
-            print(f"  [승인카드] mode={p.get('mode')} items={len(p.get('items') or [])} "
-                  f"children={len(p.get('children') or [])}")
+            if p.get("action") == "update_ticket":
+                print(f"  [변경카드] {p.get('key')} changes={p.get('changes')} "
+                      f"comment={bool(p.get('comment'))}")
+            else:
+                print(f"  [승인카드] mode={p.get('mode')} items={len(p.get('items') or [])} "
+                      f"children={len(p.get('children') or [])}")
         if o.get("error"):
             print(f"  [오류] {o['error']}")

@@ -806,6 +806,15 @@ class Refiner(ToolAgent):
             if str(fields.get("priority") or "").strip():
                 p = str(fields["priority"]).strip()
                 fields["priority"] = _PRI.get(p.upper(), p)
+            # 상대 날짜("다음주 수요일")는 **코드가 계산**한다 — 모델 산술이 흔들렸다
+            # (실측: 같은 질문에 8-12(수·정답)와 8-16(일·오답)을 번갈아 냈다).
+            rel = _relative_due(request_text(state) + " " + last_user_text(state))
+            if rel and str(fields.get("duedate") or "") != rel:
+                if fields.get("duedate"):
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + f"\n(마감을 {rel} 로 계산해 바로잡았다 — 상대 날짜는 "
+                                          "코드가 계산한다)").strip()
+                fields["duedate"] = rel
             cmt = (change.get("comment") or "").strip()
             # 댓글만 남기는 것도 유효한 계획이다 — "이 내용 DL-x 에 댓글로 남겨줘"가 실사용에 있다.
             if fields or cmt:
@@ -952,6 +961,34 @@ def _split_into_children(state, item: dict) -> list:
         return kids[:5] if len(kids) >= 2 else []
     except Exception:
         return []
+
+
+_WEEKDAYS = {"월": 0, "화": 1, "수": 2, "목": 3, "금": 4, "토": 5, "일": 6}
+
+
+def _relative_due(text: str) -> str:
+    """"다음주 수요일"·"이번주 금요일"·"내일"·"모레" → YYYY-MM-DD. 못 알아들으면 "".
+
+    날짜 산술은 판단이 아니라 계산이다 — 모델에게 맡기면 요일이 틀린다(실측)."""
+    from datetime import date, timedelta
+    t = (text or "").replace(" ", "")
+    today = date.today()
+    if "내일" in t:
+        return (today + timedelta(days=1)).isoformat()
+    if "모레" in t:
+        return (today + timedelta(days=2)).isoformat()
+    m = _re.search(r"(다음\s*주|이번\s*주|담주|차주)([월화수목금토일])요일", text or "") \
+        or _re.search(r"(다음주|이번주|담주|차주)([월화수목금토일])", t)
+    if not m:
+        return ""
+    wd = _WEEKDAYS[m.group(2)]
+    # 이번 주 = 오늘이 속한 주(월요일 시작), 다음 주 = 그다음 주.
+    monday = today - timedelta(days=today.weekday())
+    base = monday if m.group(1).replace(" ", "") == "이번주" else monday + timedelta(days=7)
+    d = base + timedelta(days=wd)
+    if d < today:               # 일요일에 "이번주 금요일" = 이미 지난 날 — 다가오는 그 요일로
+        d += timedelta(days=7)
+    return d.isoformat()
 
 
 def _base_title(s: str) -> str:

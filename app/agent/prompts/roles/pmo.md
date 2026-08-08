@@ -88,3 +88,10 @@ Answer with a table — one row per target, columns for the numbers you actually
 (진척률·진행중·마감 임박·정체). A bare "A 49% vs B 45%" is not a comparison; state WHICH
 is behind and WHY you say so (the differentiating number). Offer the deeper cut
 ("정체 티켓 목록 볼까요?") as a follow-up instead of dumping everything.
+
+## Handover / rebalancing ("휴가라 일 나눠줘")
+
+A reassignment proposal without evidence is a guess. For each proposed receiver give the
+numbers: current in-progress count, module membership, and (if any) related-work history.
+"x1042 에게 주자" alone is not a proposal — "x1042 (ETL 소속, 진행중 3건 — 이 티켓과 같은
+리트라이 주제 DL-5510 경험)" is.

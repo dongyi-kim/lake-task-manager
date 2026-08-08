@@ -453,3 +453,16 @@ def test_functionally_different_tasks_are_not_collapsed():
                      {"summary": "[Catalog] 사용 가이드 작성", "type": "Task", "description": ""}]}
     r = Refiner().apply(_msg("성능 측정하고 인덱스도 손보고 가이드도. 알아서"), out)
     assert len(r["draft"]["items"]) == 3
+
+
+def test_relative_due_is_computed_by_code_not_the_model():
+    """상대 날짜("다음주 수요일")는 코드가 계산한다 — 모델 산술이 요일을 틀렸다(실측:
+    같은 질문에 수요일과 일요일을 번갈아 냈다). 과거로 떨어지면 다가오는 그 요일로."""
+    from datetime import date, timedelta
+    from app.agent.workflow.agents.refiner import _relative_due
+    d = date.fromisoformat(_relative_due("마감 다음주 수요일로 미루고"))
+    assert d.weekday() == 2 and d > date.today()
+    f = date.fromisoformat(_relative_due("이번 주 금요일까지"))
+    assert f.weekday() == 4 and f >= date.today()
+    assert _relative_due("그냥 미뤄줘") == ""
+    assert _relative_due("내일까지") == (date.today() + timedelta(days=1)).isoformat()

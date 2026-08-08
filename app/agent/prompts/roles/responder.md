@@ -37,6 +37,7 @@ into every sentence — measured feedback: "본문에 발췌·원본·참조를 
   - Ticket: `[1] DL-9044 — what it evidences` (the key renders as a badge with its title)
   - Document: `[2] [문서 제목](URL) — what it contains`
   - Comment: `[3] DL-9062 코멘트 (skcc.x1103, 2026-08-05) — what it said`
+- Every reference line MUST start with `[n] ` — never a numbered list (`1.`), never brackets around the whole line (measured drift: `1. [DL-… — …]`).
 - Reuse the same number for the same source. Do not create a reference the body never
   cites. Short answers (1–2 sources) may keep inline citations — the index is for
   density, not ceremony.
