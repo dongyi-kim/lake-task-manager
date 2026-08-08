@@ -317,10 +317,15 @@ def _prune_empty_rows(text: str) -> str:
     rows_removed = False
     for ln in (text or "").split("\n"):
         s = ln.strip()
-        if s.startswith("|") and s.count("확인된 기록 없음") >= 2:
-            rows_removed = True
-            continue
-        if _re.match(r"-?\s*\[\d+\]\s*확인된 기록 없음\s*$", s):
+        # 표 행: 첫 셀이 '없음'이거나 두 셀 이상이 '없음'이면 정보가 아니다(변형 실측).
+        if s.startswith("|"):
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if cells and (cells[0].startswith("확인된 기록 없음")
+                          or s.count("확인된 기록 없음") >= 2):
+                rows_removed = True
+                continue
+        # 참조 줄: 출처 자리가 '없음'으로 시작하면 참조가 아니다("[3] 확인된 기록 없음 — …").
+        if _re.match(r"-?\s*\[\d+\]\s*확인된 기록 없음", s):
             continue
         out.append(ln)
     text = "\n".join(out)
