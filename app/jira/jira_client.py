@@ -1752,6 +1752,42 @@ class JiraClient:
                 failed.append({"index": i, "summary": summary, "error": str(e)[:300]})
         return {"ok": not failed, "created": created, "failed": failed}
 
+    def bulk_update(self, items, to_fields):
+        """여러 티켓의 필드를 **차례로** 고친다. 하나 실패해도 나머지는 진행(롤백은 없다).
+
+        `to_fields(key, changes) -> dict|None` 은 라우트가 준다 — editmeta 대조·Epic Link
+        커스텀 필드 id 처리처럼 **세션과 설정을 아는 판단**은 여기 두지 않는다(단일 수정
+        경로와 규칙이 갈라지면 안 된다). None 을 주면 그 항목은 권한 없음으로 실패 처리한다.
+        반환 모양은 bulk_create 와 같다 — 화면·에이전트가 같은 코드로 결과를 그린다."""
+        updated, failed = [], []
+        for i, it in enumerate(items or []):
+            key = (it.get("key") or "").strip()
+            changes = it.get("changes") or {}
+            try:
+                fields = to_fields(key, changes)
+                if not fields:
+                    failed.append({"index": i, "summary": key,
+                                   "error": "편집 권한이 없거나 바꿀 필드가 없습니다."})
+                    continue
+                self.update_fields(key, fields)
+                updated.append({"index": i, "key": key, "fields": sorted(changes)})
+            except Exception as e:
+                failed.append({"index": i, "summary": key, "error": str(e)[:300]})
+        return {"ok": not failed, "updated": updated, "failed": failed}
+
+    def bulk_comment(self, items, to_body=None):
+        """여러 티켓에 코멘트를 **차례로** 남긴다. `to_body(html)` 로 저장 형식을 맞춘다."""
+        created, failed = [], []
+        for i, it in enumerate(items or []):
+            key = (it.get("key") or "").strip()
+            body = it.get("body") or ""
+            try:
+                self.add_comment(key, to_body(body) if to_body else body)
+                created.append({"index": i, "key": key})
+            except Exception as e:
+                failed.append({"index": i, "summary": key, "error": str(e)[:300]})
+        return {"ok": not failed, "created": created, "failed": failed}
+
     def my_task_context(self):
         """현재 사용자의 Task 맥락 — 검색어가 **없을 때** '내 것' 을 위로 올리기 위한 집합.
         반환 {me, modules[], taskKeys[], epicKeys[]} (JSON 캐시라 list). 짧게 캐시한다.

@@ -1480,6 +1480,73 @@ def api_bulk_create(body: _BulkBody):
     return JSONResponse(r)
 
 
+# ── Bulk 수정 / Bulk 코멘트 ────────────────────────────────────────────────────
+# 생성(bulk/create)과 같은 규율: 화면을 믿지 않고 **여기서 다시 검증**하고, 권한은 editmeta 로
+# 판정한다. 필드 변환은 단일 수정 경로(_fields_for_update)와 **같은 함수**를 쓴다 — 규칙이
+# 두 벌이 되면 갈라지고, 그때 더 관대한 쪽이 사고를 낸다.
+class _BulkUpdateBody(BaseModel):
+    items: list[dict]                 # [{key, changes:{assignee|duedate|priority|summary|labels|components|description}}]
+
+
+class _BulkCommentBody(BaseModel):
+    items: list[dict]                 # [{key, body}]  body 는 HTML
+
+
+def _fields_for_update(key: str, changes: dict):
+    """changes(에이전트·화면이 쓰는 이름) → Jira fields. **editmeta 에 없는 필드는 뺀다**."""
+    meta = _client.editmeta(key) or {}
+    out = {}
+
+    def put(fid, value):
+        if fid in meta:
+            out[fid] = value
+
+    for name, value in (changes or {}).items():
+        if name == "priority":
+            put("priority", {"name": value})
+        elif name == "assignee":
+            put("assignee", {"name": value} if value else None)
+        elif name == "duedate":
+            put("duedate", value or None)
+        elif name == "labels":
+            put("labels", list(value or []))
+        elif name == "components":
+            put("components", [{"name": c} for c in (value or [])])
+        elif name == "summary":
+            put("summary", value)
+        elif name == "description":
+            put("description", _client.desc_field_value(value))
+    return out
+
+
+@app.post("/api/bulk/update/validate")
+def api_bulk_update_validate(body: _BulkUpdateBody):
+    """dry-run — 고치지 않고 검증만. {ok, errors[], warnings[]}."""
+    from app.domain import bulk as _bulk
+    return JSONResponse(_bulk.validate_bulk_update(
+        body.items, _client.bulk_lookup(may_edit=_may_edit)))
+
+
+@app.post("/api/bulk/update")
+def api_bulk_update(body: _BulkUpdateBody):
+    """검증 후 차례로 수정. 하나 실패해도 계속 진행하고 결과를 요약해 돌려준다."""
+    from app.domain import bulk as _bulk
+    chk = _bulk.validate_bulk_update(body.items, _client.bulk_lookup(may_edit=_may_edit))
+    if not chk.get("ok"):
+        return JSONResponse({"ok": False, "errors": chk.get("errors", [])}, status_code=400)
+    return JSONResponse(_client.bulk_update(chk.get("items") or body.items, _fields_for_update))
+
+
+@app.post("/api/bulk/comment")
+def api_bulk_comment(body: _BulkCommentBody):
+    """여러 티켓에 같은/다른 코멘트를 한 번에. 회의 결과·공지·일괄 안내에 쓴다."""
+    from app.domain import bulk as _bulk
+    chk = _bulk.validate_bulk_comment(body.items, _client.bulk_lookup(may_edit=_may_edit))
+    if not chk.get("ok"):
+        return JSONResponse({"ok": False, "errors": chk.get("errors", [])}, status_code=400)
+    return JSONResponse(_client.bulk_comment(body.items, to_body=_client.desc_field_value))
+
+
 class _EpicBody(BaseModel):
     summary: str
     epicName: str | None = None

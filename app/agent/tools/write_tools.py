@@ -354,3 +354,81 @@ def transition_ticket(key: str, transition_id: str, approval_token: str,
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
     return {"ok": True, "key": key, "transition": transition_id}
+
+
+@tool
+def update_tickets(items: list, approval_token: str) -> dict:
+    """여러 티켓의 속성을 **한 번에 바꾼다**(담당자·마감·우선순위·제목·라벨·컴포넌트). 승인 토큰 필요.
+
+    "이 다섯 건 마감을 다음 주로", "정체된 티켓들 담당을 나눠서" 처럼 대상이 여러 개일 때
+    update_ticket 을 반복해 부르지 말고 이것을 쓴다 — 승인이 한 번이면 사용자도 한 번만 본다.
+
+    items: [{"key": "DL-123", "changes": {"duedate": "2026-09-01", "priority": "P2-Major"}}]
+    티켓마다 **다른 값**을 줄 수 있다. 준 필드만 바뀌고, 비우려면 빈 문자열/빈 배열을 준다.
+    편집 권한이 없는 필드·티켓은 거부되며 사유가 failed 에 담겨 돌아온다.
+
+    돌려주는 것: {"ok", "updated": [{index,key,fields}], "failed": [{index,summary,error}]}
+    """
+    from app.domain.bulk import validate_bulk_update
+    c = client()
+    rows = [{"key": str((it or {}).get("key") or "").strip(),
+             "changes": dict((it or {}).get("changes") or {})}
+            for it in (items or []) if isinstance(it, dict)]
+    pre = validate_bulk_update(rows, c.bulk_lookup())
+    if not pre.get("ok"):
+        return {"ok": False, "updated": [], "failed": [], "errors": pre.get("errors"),
+                "error": "규칙에 맞지 않아 하나도 바꾸지 않았습니다. 고쳐서 다시 승인을 받으세요."}
+    ok, why = approval.consume(approval_token, "update_tickets", {"items": rows})
+    if not ok:
+        return _denied(why)
+    try:
+        from app.main import _fields_for_update
+    except Exception:      # 라우트 없이 도구만 쓰는 환경(테스트) — 최소 변환으로 대신한다
+        def _fields_for_update(key, changes):
+            out = {}
+            for name, value in (changes or {}).items():
+                if name == "priority":
+                    out["priority"] = {"name": value}
+                elif name == "assignee":
+                    out["assignee"] = {"name": value} if value else None
+                elif name == "components":
+                    out["components"] = [{"name": x} for x in (value or [])]
+                elif name == "description":
+                    out["description"] = client().desc_field_value(value)
+                else:
+                    out[name] = value
+            return out
+    try:
+        return c.bulk_update(rows, _fields_for_update)
+    except Exception as e:
+        return {"ok": False, "updated": [], "failed": [], "error": str(e)[:300]}
+
+
+@tool
+def add_ticket_comments(items: list, approval_token: str) -> dict:
+    """여러 티켓에 코멘트를 **한 번에 남긴다**. 승인 토큰 필요.
+
+    회의 결과 공유, 일괄 공지, 여러 티켓에 같은 결정 사항을 남길 때 쓴다.
+    items: [{"key": "DL-123", "body": "..."}] — 티켓마다 **다른 본문**을 줄 수 있다.
+    사람 언급은 [~사번](예: [~skcc.x1042]), 티켓 키는 평문(DL-123)으로 적으면 링크가 된다.
+
+    사용자가 요청하지 않은 코멘트를 임의로 달지 마라 — 여러 사람에게 알림이 간다.
+
+    돌려주는 것: {"ok", "created": [{index,key}], "failed": [{index,summary,error}]}
+    """
+    from app.domain.bulk import validate_bulk_comment
+    c = client()
+    rows = [{"key": str((it or {}).get("key") or "").strip(),
+             "body": str((it or {}).get("body") or "")}
+            for it in (items or []) if isinstance(it, dict)]
+    pre = validate_bulk_comment(rows, c.bulk_lookup())
+    if not pre.get("ok"):
+        return {"ok": False, "created": [], "failed": [], "errors": pre.get("errors"),
+                "error": "규칙에 맞지 않아 하나도 남기지 않았습니다."}
+    ok, why = approval.consume(approval_token, "add_ticket_comments", {"items": rows})
+    if not ok:
+        return _denied(why)
+    try:
+        return c.bulk_comment(rows, to_body=c.desc_field_value)
+    except Exception as e:
+        return {"ok": False, "created": [], "failed": [], "error": str(e)[:300]}

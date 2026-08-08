@@ -278,3 +278,114 @@ def to_create_kwargs(mode, item):
         "components": [c for c in (item.get("components") or []) if str(c).strip()] or None,
         "labels": [x for x in (item.get("labels") or []) if str(x).strip()] or None,
     }
+
+
+# ── 여러 티켓을 한 번에 **고치기 / 코멘트 달기** ────────────────────
+# 생성(validate_bulk)과 같은 자리에 두는 이유: 규칙이 두 벌이 되면 반드시 갈라지고,
+# 그때 더 관대한 쪽이 사고를 낸다. 상한(MAX_ITEMS)·권한(may_edit)·실값 대조가 전부 같다.
+# 생성과 다른 점 하나 — **대상이 이미 존재한다**. 그래서 검사의 축이 "만들 수 있나"가 아니라
+# "그 키가 있고, 내가 고칠 수 있나"다.
+_EDITABLE = ("assignee", "duedate", "priority", "summary", "labels", "components",
+             "description")
+
+
+def validate_bulk_update(items, lookup=None):
+    """여러 티켓의 필드 변경을 검증한다. `[{key, changes:{...}}]`.
+
+    돌려주는 모양은 `validate_bulk` 와 같다 — 화면·에이전트가 같은 코드로 오류를 그린다.
+    """
+    errors, warnings = [], []
+    if not isinstance(items, list):
+        return {"ok": False, "errors": [_err(None, "items", "items 는 배열이어야 합니다.")],
+                "warnings": []}
+    if not items:
+        return {"ok": False, "errors": [_err(None, "items", "바꿀 항목이 없습니다.")],
+                "warnings": []}
+    if len(items) > MAX_ITEMS:
+        return {"ok": False, "errors": [_err(None, "items",
+                f"한 번에 최대 {MAX_ITEMS}건까지 바꿀 수 있습니다 (현재 {len(items)}건).")],
+                "warnings": []}
+
+    seen = set()
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            errors.append(_err(i, "item", "항목은 객체여야 합니다."))
+            continue
+        key = str(it.get("key") or "").strip()
+        changes = it.get("changes")
+        if not key:
+            errors.append(_err(i, "key", "바꿀 티켓 키가 없습니다."))
+            continue
+        if key in seen:
+            errors.append(_err(i, "key", f"{key} 가 두 번 나옵니다 — 한 티켓은 한 번만 바꿉니다."))
+            continue
+        seen.add(key)
+        if not isinstance(changes, dict) or not changes:
+            errors.append(_err(i, "changes", f"{key}: 바꿀 필드를 하나도 주지 않았습니다."))
+            continue
+        bad = [k for k in changes if k not in _EDITABLE]
+        if bad:
+            errors.append(_err(i, "changes",
+                               f"{key}: 바꿀 수 없는 필드입니다 — {', '.join(sorted(bad))}"))
+        if lookup is not None:
+            if hasattr(lookup, "badge") and not lookup.badge(key):
+                errors.append(_err(i, "key", f"{key} 티켓을 찾을 수 없습니다."))
+                continue
+            if hasattr(lookup, "may_edit") and not lookup.may_edit(key):
+                errors.append(_err(i, "key", f"{key} 는 편집 권한이 없습니다."))
+                continue
+            pri = changes.get("priority")
+            if pri and hasattr(lookup, "priorities"):
+                opts = lookup.priorities() or []
+                canon = _canon(pri, opts)
+                if canon is None:
+                    errors.append(_err(i, "priority", f"{key}: 허용되지 않은 우선순위 '{pri}'"))
+                else:
+                    changes["priority"] = canon
+            comps = changes.get("components")
+            if comps is not None:
+                if not _is_str_list(comps):
+                    errors.append(_err(i, "components", f"{key}: components 는 문자열 배열이어야 합니다."))
+                elif hasattr(lookup, "components"):
+                    opts = lookup.components() or []
+                    fixed = []
+                    for cmp_ in comps:
+                        canon = _canon(cmp_, opts)
+                        if canon is None:
+                            errors.append(_err(i, "components", f"{key}: 없는 컴포넌트 '{cmp_}'"))
+                        else:
+                            fixed.append(canon)
+                    changes["components"] = fixed
+            asg = changes.get("assignee")
+            if asg and hasattr(lookup, "user_exists") and not lookup.user_exists(asg):
+                errors.append(_err(i, "assignee", f"{key}: 없는 사용자 '{asg}'"))
+            labels = changes.get("labels")
+            if labels is not None and not _is_str_list(labels):
+                errors.append(_err(i, "labels", f"{key}: labels 는 문자열 배열이어야 합니다."))
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "items": items}
+
+
+def validate_bulk_comment(items, lookup=None):
+    """여러 티켓에 코멘트를 다는 것을 검증한다. `[{key, body}]`."""
+    errors, warnings = [], []
+    if not isinstance(items, list) or not items:
+        return {"ok": False, "errors": [_err(None, "items", "코멘트를 달 항목이 없습니다.")],
+                "warnings": []}
+    if len(items) > MAX_ITEMS:
+        return {"ok": False, "errors": [_err(None, "items",
+                f"한 번에 최대 {MAX_ITEMS}건까지 남길 수 있습니다 (현재 {len(items)}건).")],
+                "warnings": []}
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            errors.append(_err(i, "item", "항목은 객체여야 합니다."))
+            continue
+        key = str(it.get("key") or "").strip()
+        body = str(it.get("body") or "").strip()
+        if not key:
+            errors.append(_err(i, "key", "티켓 키가 없습니다."))
+            continue
+        if not body:
+            errors.append(_err(i, "body", f"{key}: 빈 코멘트는 남기지 않습니다."))
+        if lookup is not None and hasattr(lookup, "badge") and not lookup.badge(key):
+            errors.append(_err(i, "key", f"{key} 티켓을 찾을 수 없습니다."))
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "items": items}
