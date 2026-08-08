@@ -568,9 +568,100 @@ def test_binary_and_missing_files_fail_with_a_usable_reason():
     assert "error" in gone and "있는 것:" in gone["error"], "무엇이 있는지 알려 줘야 다시 시도한다"
 
 
-def test_oversized_attachments_are_refused_before_download():
-    """수십 MB 덤프를 프롬프트에 실으면 토큰도 시간도 감당이 안 된다 — 크기로 먼저 막는다."""
+def test_size_caps_differ_by_what_reading_costs():
+    """글은 앞부분만 읽으면 되고 표는 훑어야 한다 — 상한이 같을 이유가 없다."""
     from app.agent.tools import file_tools as F
-    assert F.MAX_READ_BYTES <= 512 * 1024
+    assert F._cap("log") < F._cap("csv") <= F._cap("pdf")
     assert F._ext("a.LOG") == "log" and F._ext("noext") == ""
-    assert "엑셀" in F._kind("표.xlsx", "") and "열 수 없음" in F._kind("보고.pdf", "")
+    # 큰 파일은 내려받기 전에 막는다(목록의 size 로 판정)
+    assert not F._readable("dump.csv", 99 * 1024 * 1024)
+    assert F._readable("rows.csv", 3 * 1024 * 1024)
+
+
+def test_each_format_is_classified_by_how_it_can_be_read():
+    """읽는 방식이 다르면 종류도 달라야 한다 — 모델이 무엇을 기대할지 알 수 있게."""
+    from app.agent.tools import file_tools as F
+    assert "표 데이터" in F._kind("현황.xlsx")
+    assert "구조화 데이터" in F._kind("이벤트.ndjson")
+    assert "소스코드" in F._kind("적재.sql") and "소스코드" in F._kind("run.sh")
+    assert "본문 추출 가능" in F._kind("보고서.pdf")
+    assert "읽을 수 없음" in F._kind("화면.png") and "읽을 수 없음" in F._kind("자료.pptx")
+    # 읽을 수 있는 것과 없는 것이 목록에서 구분된다
+    assert F._readable("설계.docx", 1024) and not F._readable("영상.mp4", 1024)
+
+
+def _xlsx_bytes(rows):
+    """엑셀 한 장을 만든다 — 리더가 zip+XML 을 제대로 푸는지 보기 위한 최소 파일."""
+    import io as _io
+    import zipfile as _zip
+    def esc(v):
+        return str(v).replace("&", "&amp;").replace("<", "&lt;")
+    body = "".join(
+        "<row r='%d'>%s</row>" % (i + 1, "".join(
+            "<c r='%s%d' t='inlineStr'><is><t>%s</t></is></c>" % (chr(65 + j), i + 1, esc(v))
+            for j, v in enumerate(r)))
+        for i, r in enumerate(rows))
+    sheet = ("<?xml version='1.0'?><worksheet xmlns='http://schemas.openxmlformats.org/"
+             "spreadsheetml/2006/main'><sheetData>%s</sheetData></worksheet>" % body)
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+    return buf.getvalue()
+
+
+def test_excel_gives_columns_and_only_the_related_rows():
+    """표는 통째로 싣지 않는다 — 컬럼이 무엇인지와 찾는 대상의 행만."""
+    from app.agent.tools import file_tools as F
+    data = _xlsx_bytes([["테이블", "모듈", "행수"],
+                        ["fdc.fdc_trace_summary_ic", "ETL", "120000000"],
+                        ["yms.yms_lot_yield_daily", "Catalog", "8400000"]])
+    r = F._read_xlsx("현황.xlsx", len(data), data, "yms.yms_lot_yield_daily")
+    assert r["columns"] == ["테이블", "모듈", "행수"]
+    assert r["rows_total"] == 2 and r["matched_count"] == 1
+    assert r["matched"][0]["모듈"] == "Catalog"
+    # find 없이 부르면 컬럼 + 표본만(전체를 붓지 않는다)
+    plain = F._read_xlsx("현황.xlsx", len(data), data, "")
+    assert "matched" not in plain and len(plain["sample"]) <= 3
+
+
+def test_ndjson_is_read_as_events_not_as_one_blob():
+    from app.agent.tools import file_tools as F
+    data = ("\n".join(['{"ts":"10:01","table":"fdc.fdc_trace_summary_ic","lag":12}',
+                       '{"ts":"10:02","table":"eqp.eqp_sensor_raw_1s","lag":900}',
+                       "깨진 줄"])).encode("utf-8")
+    r = F._read_ndjson("lag.ndjson", len(data), data, "eqp.eqp_sensor_raw_1s")
+    assert set(r["keys"]) >= {"ts", "table", "lag"}
+    assert r["matched_count"] == 1 and "900" in r["matched"][0]
+    assert "못 읽은 줄 1개" in r["note"], "깨진 줄은 건너뛰되 조용히 넘어가지 않는다"
+
+
+def test_word_documents_are_read_with_the_standard_library():
+    from app.agent.tools import file_tools as F
+    import io as _io
+    import zipfile as _zip
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    doc = ("<?xml version='1.0'?><w:document xmlns:w='%s'><w:body>"
+           "<w:p><w:r><w:t>적재 지연 원인은 커넥션 타임아웃이다.</w:t></w:r></w:p>"
+           "<w:p><w:r><w:t>조치: 재시도 간격을 늘린다.</w:t></w:r></w:p>"
+           "</w:body></w:document>" % W)
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        z.writestr("word/document.xml", doc)
+    data = buf.getvalue()
+    r = F._read_docx("원인분석.docx", len(data), data, "")
+    assert r["paragraphs"] == 2 and "커넥션 타임아웃" in r["text"]
+    hit = F._read_docx("원인분석.docx", len(data), data, "재시도")
+    assert hit["matched_lines"] >= 1 and "재시도" in hit["text"]
+
+
+def test_parquet_says_what_is_missing_instead_of_guessing():
+    """못 읽는 것을 못 읽는다고 말하는 편이, 파일명으로 내용을 짐작하는 것보다 낫다."""
+    from app.agent.tools import file_tools as F
+    try:
+        import pyarrow  # noqa: F401
+        pytest.skip("pyarrow 가 설치돼 있으면 실제로 읽는다")
+    except ImportError:
+        pass
+    r = F._read_parquet("dump.parquet", 100, b"PAR1", "")
+    assert "pyarrow" in r["error"] and "사람에게 요청" in r["error"]

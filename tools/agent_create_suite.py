@@ -91,6 +91,27 @@ CASES = [
         "DL-101 에픽 아래에 CDC 재처리 배치 개선 Task 하나 만들어줘. 알아서"],
      lambda o, _: any((i.get("epic") or "") == "DL-101" for i in items(o))),
 
+    # ── Sub-Task 만들기 세 갈래 ──────────────────────────────────────
+    ("SUB1", "기존 Task 를 여러 Sub-Task 로 분할 — 부모는 그대로 두고 쪼갠다", [
+        "DL-9095 이거 혼자 하기엔 커. 단계별로 서브태스크로 쪼개줘. 알아서"],
+     lambda o, _: (lambda rows: len(rows) >= 2
+                   and all((r.get("parent") or "") == "DL-9095" for r in rows))
+     (items(o) + kids(o))),
+
+    ("SUB2", "기존 Task 하나에 Sub-Task 여러 개 추가 — 이미 있는 자식과 겹치지 않게", [
+        "DL-9090 에 성능 측정이랑 사용 가이드 작성 서브태스크 추가해줘. 알아서"],
+     lambda o, _: (lambda rows: len(rows) >= 2
+                   and all((r.get("parent") or "") == "DL-9090" for r in rows)
+                   # 이미 있는 자식(DL-9093~9095)의 제목을 그대로 다시 만들면 중복이다
+                   and not any("다운스트림" in (r.get("summary") or "") for r in rows))
+     (items(o) + kids(o))),
+
+    ("SUB3", "여러 Task 에 비슷한 Sub-Task 를 각각 추가 — 부모별로 나뉘어야 한다", [
+        "DL-9093 이랑 DL-9094 두 개 다 회귀 테스트 서브태스크 하나씩 붙여줘. 알아서"],
+     lambda o, _: (lambda rows: len({(r.get("parent") or "") for r in rows}) >= 2
+                   and {"DL-9093", "DL-9094"} <= {(r.get("parent") or "") for r in rows})
+     (items(o) + kids(o))),
+
     # ── 남이 쓴 글을 통째로 붙여넣기 ─────────────────────────────────
     ("PASTE1", "VoC 원문 붙여넣기 — 요구를 티켓 언어로 옮긴다", [
         "아래 VoC 그대로 티켓으로 만들어줘. 알아서\n\n"

@@ -1013,6 +1013,21 @@ class World:
            remotelinks=[{"url": self._conf_url(doc1), "title": doc1,
                          "application": {"type": "com.atlassian.confluence", "name": "Confluence"}}])
 
+        # 데이터 포맷 첨부 — "컬럼이 뭐고, 이 테이블 관련 행이 있나" 를 시험한다.
+        # 표를 통째로 프롬프트에 붓지 않고 **컬럼 + 관련 행**만 뽑는지가 요점이다.
+        _csv = "테이블,모듈,담당,등록여부,행수\nfdc.fdc_trace_summary_ic,ETL,skcc.x1042,등록,120000000\nyms.yms_lot_yield_daily,Catalog,skcc.i2044,등록,8400000\neqp.eqp_sensor_raw_1s,Observability,skcc.i2200,미등록,980000000\nwip.wip_lot_track_hist,ETL,skcc.i2011,미등록,15000000\nqms.qms_defect_code_mst,Catalog,skcc.i2044,등록,1200\n"
+        self._fx_attach("DL-9046", "메타데이터_등록현황.csv", "text/csv",
+                        _csv.encode("utf-8"))
+        _json = ('{"검사일": "2026-08-01", "대상": "DL 프로젝트 전체", "결과": ['
+                 '{"table": "fdc.fdc_trace_summary_ic", "컬럼수": 8, "설명누락": 0,'
+                 ' "판정": "통과"},'
+                 '{"table": "eqp.eqp_sensor_raw_1s", "컬럼수": 0, "설명누락": 0,'
+                 ' "판정": "스키마 미등록"},'
+                 '{"table": "wip.wip_lot_track_hist", "컬럼수": 6, "설명누락": 3,'
+                 ' "판정": "보완 필요"}]}')
+        self._fx_attach("DL-9046", "카탈로그_점검_결과.json", "application/json",
+                        _json.encode("utf-8"))
+
         fx("DL-9047", "Task", "[ETL] fdc.fdc_trace_summary_ic 30분 적재 안정화 모니터링", t1,
            module="ETL", component="ETL", assignee="skcc.x1042", reporter="lead",
            statusCategory="inprogress", statusName="In Progress",
