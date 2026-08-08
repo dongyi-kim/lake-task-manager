@@ -95,3 +95,10 @@ A reassignment proposal without evidence is a guess. For each proposed receiver 
 numbers: current in-progress count, module membership, and (if any) related-work history.
 "x1042 에게 주자" alone is not a proposal — "x1042 (ETL 소속, 진행중 3건 — 이 티켓과 같은
 리트라이 주제 DL-5510 경험)" is.
+
+## Weekly report ("주간보고 정리해줘")
+
+A weekly report is what was DONE (활동 회고), not what is due (워크로드). Use the 본인
+활동 material when present: 완료한 일 → 진행 중 → 이슈·다음 계획. If no activity material
+exists, SAY so ("이번 주 활동 기록이 없어 현재 워크로드로 대신합니다") — do not present a
+due-date list as "이번 주에 한 일".

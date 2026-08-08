@@ -101,6 +101,36 @@ def _group_activity(state) -> str:
     return "\n".join(rows)
 
 
+def _self_report(state) -> str:
+    """주간보고류("내가 이번 주 한 일 정리") 사전 취합 — **본인 활동**을 코드가 조회한다.
+
+    my_day 경로는 '앞으로 할 일'(워크로드)을 주는데, 주간보고는 '한 일'(활동 회고)이다 —
+    실측: 주간보고 요청에 지연 티켓 목록만 나왔다."""
+    import re as _re
+    asked = last_user_text(state)
+    reporty = ("주간보고" in asked or "주간 보고" in asked
+               or (("내가" in asked or "제가" in asked) and "한 일" in asked))
+    if not reporty:
+        return ""
+    m = _re.search(r"(\d+)\s*일", asked)
+    days = max(1, min(int(m.group(1)) if m else 7, 30))
+    try:
+        from app.agent import tools as T
+        a = T.BY_NAME["get_user_activity"].invoke({"user_id": "", "days": days}) or {}
+    except Exception:
+        return ""
+    if a.get("denied") or a.get("error"):
+        return ""
+    rows = [f"[본인 활동 — 최근 {days}일] 주간보고 형식(완료한 일 / 진행 중 / 이슈·다음 계획)으로 쓴다"]
+    for t in (a.get("touched") or [])[:10]:
+        rows.append(f"- 티켓 {t.get('key')} \"{t.get('summary', '')}\" ({t.get('status', '')})")
+    for j in (a.get("jiraActivity") or [])[:8]:
+        rows.append(f"- 활동 {j.get('key')} {j.get('what', '')} ({str(j.get('when') or '')[:10]})")
+    for d in (a.get("docActivity") or [])[:5]:
+        rows.append(f"- 문서 「{d.get('title', '')}」 수정")
+    return "\n".join(rows) if len(rows) > 1 else ""
+
+
 def _ticket_progress(state) -> str:
     """티켓 한 건의 진척 질의 — 근거 네 갈래를 **코드가** 모아 자료로 준다.
 
@@ -122,6 +152,25 @@ def _ticket_progress(state) -> str:
 
     from app.agent.tools.survey_tools import progress_report
     blocks = []
+    # Epic 키의 진척은 직계 children 이 아니라 **트리**다 — progress_report 만 보면
+    # "하위 5개 전부 완료"로 오답한다(실측: Epic 아래 열린 Task 다수를 못 봄).
+    from app.agent import tools as T
+
+    def _epic_block(k):
+        try:
+            tr = T.BY_NAME["get_epic_tree"].invoke({"epic_key": k}) or {}
+            rows = tr.get("children") or []
+            if not rows or tr.get("error"):
+                return ""
+            done = sum(1 for t in rows if t.get("done"))
+            lines = [f"[{k} Epic 트리 — 전체 {len(rows)}건 중 완료 {done}건. "
+                     "이 목록이 곧 '이 Epic 아래 티켓 전부'다]"]
+            for t in rows[:30]:
+                lines.append(f"- {t.get('key')} \"{t.get('summary', '')}\" "
+                             f"{t.get('status', '')}{' ✅' if t.get('done') else ''}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
     # 키 2건이면 두 티켓을 병렬로 — prod 에선 티켓당 5갈래 조회가 통째로 대기가 된다.
     with ThreadPoolExecutor(max_workers=2) as ex:
         reports = list(ex.map(lambda k: progress_report(k), keys))
@@ -143,6 +192,9 @@ def _ticket_progress(state) -> str:
                         pass
             blocks.append(f"[{k}] 존재하지 않는 티켓이다(권한 문제가 아니라 미존재).{hint}")
             continue
+        eb = _epic_block(k)
+        if eb:
+            blocks.append(eb)
         rows = [f'[{r["key"]}] "{r.get("title", "")}" — 상태 {r.get("status")}'
                 f' · 담당 {r.get("assignee") or "없음"} · 마감 {r.get("due") or "없음"}'
                 f' · 최근 갱신 {r.get("updated")}']
@@ -187,6 +239,13 @@ class PMO(ToolAgent):
                 pre = ""
             if pre:
                 state = {**state, "group_activity": pre}
+            if not pre:
+                try:
+                    pre = _self_report(state)
+                except Exception:
+                    pre = ""
+                if pre:
+                    state = {**state, "group_activity": pre}
             try:
                 prog = _ticket_progress(state)
             except Exception:
