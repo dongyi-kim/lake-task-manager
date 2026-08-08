@@ -88,6 +88,27 @@ def amend_assignees(token: str, thread_id: str, assignees: dict) -> tuple[bool, 
         return True, ""
 
 
+def amend_payload(token: str, thread_id: str, payload) -> tuple[bool, str]:
+    """승인 **직전**, 스테이징 payload 를 통째로 교체하고 지문을 다시 묶는다.
+
+    카드 인라인 편집(제목·본문·라벨·마감 등)의 서버 반영 경로다. 부분 patch 를 여기서
+    또 조립하면 State draft → as_bulk_items 경로와 **두 벌**이 되어 지문이 어긋난다
+    (담당자 하나일 땐 우연히 맞았지만 list·빈값 처리에서 갈라진다). 그래서 호출자
+    (session.resume)가 State draft 를 고친 뒤 as_bulk_items 산출물을 그대로 넘긴다 —
+    두 경로가 한 함수를 공유한다. 승인 뒤에는 못 고친다(보여 준 것과 다른 실행이 된다)."""
+    with _lock:
+        rec = _pending.get(token or "")
+        if not rec or rec["thread"] != str(thread_id or ""):
+            return False, "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다."
+        if rec["approved"]:
+            return False, "이미 승인된 내용은 고칠 수 없습니다. 취소 후 다시 요청하세요."
+        if rec["action"] not in ("create_tickets", "create_epic"):
+            return False, "카드 편집은 생성 초안에만 적용할 수 있습니다."
+        rec["payload"] = payload
+        rec["fp"] = fingerprint(payload)
+        return True, ""
+
+
 def reject(token: str) -> bool:
     with _lock:
         return _pending.pop(token, None) is not None

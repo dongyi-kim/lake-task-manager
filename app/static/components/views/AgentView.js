@@ -66,6 +66,9 @@ export default {
       convos: [],             // 최근 대화(localStorage) — 좌측 사이드바
       pickedAssignee: {},     // 승인 카드에서 고른 담당자(항목 i → uid)
       cardCustom: {},         // 카드에서 '직접 입력'을 고른 상태(i → bool)
+      cardEdit: {},           // 카드 인라인 편집 열림(i → bool) — 제목·본문·라벨·마감 직접 수정
+      editBuf: {},            // 편집 버퍼(i → {summary,labels,duedate,priority,epic})
+      childBuf: {},           // 자식 편집 버퍼("i-j" → {summary,assignee})
     };
   },
   computed: {
@@ -75,6 +78,10 @@ export default {
     pending() {
       const last = this.turns[this.turns.length - 1];
       return last && last.who === "agent" && last.pending ? last.pending : null;
+    },
+    // 카드에서 뭔가 고쳤나 — 승인 버튼 라벨이 "수정한 내용으로 생성"으로 바뀐다.
+    hasCardEdits() {
+      return Object.keys(this.editBuf).length > 0 || Object.keys(this.childBuf).length > 0;
     },
     // 접힌 헤더에 보이는 요약 — 지금 도는 단계 이름(병렬이면 여럿).
     planHead() {
@@ -301,6 +308,7 @@ export default {
             if (ev.pending && ev.pending.items) this.loadEpicTree(ev.pending);
             this.pickedAssignee = {}; this.cardCustom = {}; this.previewOn = {};
             this.customOn = {}; this.qDone = {};
+            this.cardEdit = {}; this.editBuf = {}; this.childBuf = {};
             // 초안(승인 대기 또는 작성 중)이 오면 우측 미리보기를 **자동으로** 연다 —
             // 생성 컨텍스트 내내 옆에서 자라는 것을 본다.
             const nItems = ((ev.pending && ev.pending.items) || ev.draft_items || []).length;
@@ -314,14 +322,78 @@ export default {
         });
     },
 
+    // ── 카드 인라인 편집 ────────────────────────────────────────
+    toggleEdit(i, it) {
+      if (this.cardEdit[i]) { this.cardEdit[i] = false; return; }
+      // 버퍼는 열 때 원본으로 채운다 — 취소(다시 닫기)하면 버퍼가 무시된다.
+      this.editBuf[i] = {
+        summary: it.summary || "", labels: (it.labels || []).join(", "),
+        duedate: it.duedate || "", priority: it.priority || "", epic: it.epic || "",
+      };
+      const t = this.turns[this.turns.length - 1];
+      this.childrenFor(t, i).forEach((c, j) => {
+        this.childBuf[i + "-" + j] = { summary: c.summary || "", assignee: c.assignee || "" };
+      });
+      this.cardEdit[i] = true;
+    },
+    childrenFor(t, i) {
+      return ((t.pending && t.pending.children) || []).filter((c) => (c.parent_index || 0) === i);
+    },
+    /** 편집 중이 아니면 원본, 편집을 닫았어도 버퍼가 있으면 버퍼 값(수정 유지 표시). */
+    liveVal(i, f, it) {
+      const b = this.editBuf[i];
+      return b && b[f] != null && String(b[f]).trim() ? b[f] : it[f];
+    },
+    childVal(i, j, f, c) {
+      const b = this.childBuf[i + "-" + j];
+      return b && b[f] != null && String(b[f]).trim() ? b[f] : c[f];
+    },
+    noopSubmit() { return Promise.resolve(); },   // 카드 본문 에디터 — 저장은 승인 때 모아서
+    /** 편집 버퍼 → 서버 overrides. 원본과 달라진 것만 보낸다. */
+    editOverrides(t) {
+      const items = {}, children = {};
+      Object.keys(this.editBuf).forEach((i) => {
+        const b = this.editBuf[i] || {};
+        const orig = (t.pending.items || [])[i] || {};
+        const patch = {};
+        if (b.summary.trim() && b.summary !== (orig.summary || "")) patch.summary = b.summary.trim();
+        if (b.labels !== (orig.labels || []).join(", ")) patch.labels = b.labels;
+        if (b.duedate !== (orig.duedate || "")) patch.duedate = b.duedate;
+        if (b.priority !== (orig.priority || "")) patch.priority = b.priority;
+        if (b.epic !== (orig.epic || "")) patch.epic = b.epic.trim();
+        // 본문 — 카드 안 CommentEditor 의 현재 HTML(에디터를 연 적이 있을 때만 존재)
+        const ref = this.$refs["ded" + i];
+        const inst = Array.isArray(ref) ? ref[0] : ref;
+        if (inst && inst._ed) {
+          const html = inst._ed.getHTML();
+          if (html && html !== (orig.description || "")) patch.description = html;
+        }
+        if (Object.keys(patch).length) items[i] = patch;
+      });
+      Object.keys(this.childBuf).forEach((k) => {
+        const [i, j] = k.split("-").map(Number);
+        const orig = this.childrenFor(t, i)[j] || {};
+        const b = this.childBuf[k] || {};
+        const patch = {};
+        if ((b.summary || "").trim() && b.summary !== (orig.summary || "")) patch.summary = b.summary.trim();
+        if ((b.assignee || "") !== (orig.assignee || "")) patch.assignee = b.assignee;
+        if (Object.keys(patch).length) children[k] = patch;
+      });
+      return { items, children };
+    },
+
     async approve() {
       const p = this.pending;
       if (!p || this.approving) return;
       this.approving = true;
       try {
         const last = this.turns[this.turns.length - 1];
+        const ov = Object.assign({}, last ? this.assigneeOverrides(last) : null);
+        const ed = last ? this.editOverrides(last) : { items: {}, children: {} };
+        if (Object.keys(ed.items).length) ov.items = ed.items;
+        if (Object.keys(ed.children).length) ov.children = ed.children;
         const r = await agentApi.approve(this.threadId, p.token,
-                                         last ? this.assigneeOverrides(last) : null);
+                                         Object.keys(ov).length ? ov : null);
         if (r && r.ok === false && r.error) {       // 담당자 검증 실패 등 — 카드는 살아 있다
           pushToast({ kind: "error", key: "agent-made", title: r.error });
           return;
@@ -847,7 +919,30 @@ export default {
                 <li v-for="(it, i) in t.pending.items" :key="i">
                   <div class="ai-top">
                     <span class="ai-type">{{ it.type }}</span>
-                    <span class="ai-sum">{{ it.summary }}</span>
+                    <span v-if="!cardEdit[i]" class="ai-sum">{{ liveVal(i, 'summary', it) }}</span>
+                    <input v-else class="ai-edit-sum" v-model="editBuf[i].summary"
+                           placeholder="제목" />
+                    <button class="ai-edit-btn" :class="{ on: cardEdit[i] }"
+                            @click="toggleEdit(i, it)" title="이 항목을 카드에서 직접 수정">
+                      {{ cardEdit[i] ? '수정 중' : '✎ 수정' }}</button>
+                  </div>
+                  <!-- 인라인 편집 — 승인 전에 제목·본문·라벨·마감·우선순위·Epic 을 카드에서
+                       직접 고친다(사용자 요청: 수정 루프). 서버가 같은 규칙으로 재검증한다. -->
+                  <div v-if="cardEdit[i]" class="ai-edit">
+                    <label>라벨 <input v-model="editBuf[i].labels" placeholder="쉼표로 구분" /></label>
+                    <label>마감 <input v-model="editBuf[i].duedate" type="date" /></label>
+                    <label>우선순위
+                      <select v-model="editBuf[i].priority">
+                        <option value="">(없음)</option>
+                        <option v-for="p in priorities" :key="p" :value="p">{{ p }}</option>
+                      </select></label>
+                    <label>Epic <input v-model="editBuf[i].epic" placeholder="DL-123 (비우면 최상위)" /></label>
+                    <div class="ai-edit-desc">
+                      <div class="ai-edit-desc-h">본문 (저장은 [이대로 생성] 때 함께)</div>
+                      <CommentEditor :ref="'ded' + i" ticket-key="" kind="description"
+                                     :initial="it.description || ''" :hide-footer="true"
+                                     :submit-fn="noopSubmit" />
+                    </div>
                   </div>
                   <div class="ai-fields">
                     <span v-if="it.epic">상위 {{ it.epic }}</span>
@@ -866,6 +961,25 @@ export default {
                     <button class="ai-pv-btn" :class="{ on: sideDraft === i }" @click="sideDraft = i">
                       ▸ 우측에 미리보기</button>
                     <div class="ai-desc">{{ descText(it.description) }}</div>
+                  </div>
+                  <!-- 함께 만들어질 Sub-Task — 안 보이면 부모 하나만 승인한 줄 안다 -->
+                  <div v-if="childrenFor(t, i).length" class="ai-kids">
+                    <div class="ai-kids-h">함께 만들 Sub-Task {{ childrenFor(t, i).length }}건</div>
+                    <div v-for="(c, j) in childrenFor(t, i)" :key="j" class="ai-kid">
+                      └ <template v-if="!cardEdit[i]"><b>{{ childVal(i, j, 'summary', c) }}</b>
+                        <span v-if="childVal(i, j, 'assignee', c)" class="ai-who">
+                          <Avatar :user="childVal(i, j, 'assignee', c)"
+                                  :name="personName(t, childVal(i, j, 'assignee', c))" :size="14" />
+                          {{ personName(t, childVal(i, j, 'assignee', c)) || childVal(i, j, 'assignee', c) }}
+                        </span></template>
+                      <template v-else>
+                        <input class="ai-kid-sum" v-model="childBuf[i + '-' + j].summary" />
+                        <FieldEdit class="aq-fe" ticket="__agent__" field="assignee" local
+                                   :value="childBuf[i + '-' + j].assignee || ''"
+                                   @pick="(v) => { childBuf[i + '-' + j].assignee = v; }">
+                          {{ childBuf[i + '-' + j].assignee || '담당…' }}</FieldEdit>
+                      </template>
+                    </div>
                   </div>
                   <!-- 계보 — 이 초안이 어느 Epic 의 어떤 형제들 옆에 붙는지 -->
                   <div v-if="treeFor(t.pending, it) && treeFor(t.pending, it).length" class="ai-tree">
@@ -927,9 +1041,11 @@ export default {
 
               <div class="agent-card-act">
                 <button class="ag-ok" :disabled="approving" @click="approve">
-                  {{ approving ? '만드는 중…' : '이대로 생성' }}
+                  {{ approving ? '만드는 중…' : (hasCardEdits ? '수정한 내용으로 생성' : '이대로 생성') }}
                 </button>
                 <button class="ag-cancel" :disabled="approving" @click="cancelPending">취소하고 수정 요청</button>
+                <em class="agent-card-hint">✎ 수정으로 카드에서 직접 고치거나, 채팅에 수정 요청을
+                  적으면 초안을 고쳐 다시 보여 드립니다.</em>
               </div>
               </template>
             </div>

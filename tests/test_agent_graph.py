@@ -431,3 +431,33 @@ def _any_real_user():
             return u
     import pytest
     pytest.skip("mock 사용자 확인 불가")
+
+
+def test_card_edits_are_applied_and_survive_the_fingerprint(real_draft):
+    """카드 인라인 편집(제목·라벨·마감) — State draft 를 고치고 지문을 재생성하므로
+    승인·실행이 수정본으로 이루어진다. 두 벌 patch 시절의 지문 어긋남 회귀 방지."""
+    from app.agent.tools import _ctx
+    from app.agent.workflow import session
+    out = session.ask("실시간 수집에 CDC 를 도입해야 한다")
+    tok = out["pending"]["token"]
+    done = session.resume(out["thread_id"], tok, {
+        "items": {"0": {"summary": "[ETL] CDC 파이프라인 도입 — 수정본",
+                        "labels": "cdc, q3-2026", "duedate": "2026-09-30"}}})
+    created = (done.get("result") or {}).get("created") or []
+    assert created, done
+    got = _ctx.client().get_issue(created[0]["key"])
+    f = got.get("fields") or {}
+    assert f.get("summary") == "[ETL] CDC 파이프라인 도입 — 수정본"
+    assert "cdc" in (f.get("labels") or [])
+
+
+def test_card_edit_with_a_bad_duedate_keeps_the_card_alive(real_draft):
+    """형식이 틀리면 실행하지 않고 오류만 — 카드는 살아 있어 다시 고칠 수 있다."""
+    from app.agent.workflow import session
+    out = session.ask("실시간 수집에 CDC 를 도입해야 한다")
+    tok = out["pending"]["token"]
+    r = session.resume(out["thread_id"], tok, {"items": {"0": {"duedate": "다음주"}}})
+    assert r["ok"] is False and "YYYY-MM-DD" in r["error"]
+    # 올바른 값으로 다시 — 같은 토큰이 그대로 쓰인다
+    done = session.resume(out["thread_id"], tok, {"items": {"0": {"duedate": "2026-10-01"}}})
+    assert (done.get("result") or {}).get("created"), done

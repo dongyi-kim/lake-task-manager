@@ -147,39 +147,9 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
     추천을 그대로 받는 게 아니라 후보 중 고르거나 직접 지정할 수 있어야 한다(사용자 요청).
     승인 전에 스테이징 내용과 State 를 **같이** 고쳐 지문을 다시 묶는다.
     """
-    assignees = {str(k): str(v or "").strip()
-                 for k, v in ((overrides or {}).get("assignees") or {}).items()}
-    if assignees:
-        # 실재 검증은 서버가 한다 — 화면 자동완성은 편의일 뿐 보증이 아니다.
-        from app.agent.tools._ctx import client, settings
-        from app.domain.search import search_users
-        for uid in {u for u in assignees.values() if u}:
-            try:
-                found = search_users(client(), settings(), uid, 5) or []
-            except Exception:
-                found = []
-            if not any(str(u.get("id") or "") == uid for u in found):
-                return {"thread_id": thread_id, "ok": False,
-                        "error": f"담당자 '{uid}' 를 찾을 수 없습니다. 사번(skcc.x1042 형식)을 확인하세요."}
-        ok, why = approval.amend_assignees(token, thread_id, assignees)
-        if not ok:
-            return {"thread_id": thread_id, "ok": False, "error": why}
-        # Operator 가 넘길 State 의 draft 에도 같은 값을 — 지문과 실행 인자가 일치해야 한다.
-        try:
-            vals = get_graph().get_state(_config(thread_id)).values or {}
-            draft = dict(vals.get("draft") or {})
-            items = [dict(it) for it in (draft.get("items") or [])]
-            for i, uid in assignees.items():
-                idx = int(i)
-                if 0 <= idx < len(items):
-                    if uid:
-                        items[idx]["assignee"] = uid
-                    else:
-                        items[idx].pop("assignee", None)
-            get_graph().update_state(_config(thread_id), {"draft": dict(draft, items=items)})
-        except Exception as e:
-            return {"thread_id": thread_id, "ok": False,
-                    "error": f"담당자 변경을 반영하지 못했습니다: {str(e)[:120]}"}
+    err = _apply_overrides(thread_id, token, overrides)
+    if err:
+        return {"thread_id": thread_id, "ok": False, "error": err}
     if not approval.approve(token, thread_id):
         return {"thread_id": thread_id, "ok": False,
                 "error": "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다. 다시 요청하세요."}
@@ -200,6 +170,122 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
     out["usage"] = meter.snapshot()
     log.info("[%s] 실행 결과: %s", thread_id, out.get("result"))
     return out
+
+
+# 카드에서 편집 가능한 항목 필드 — 여기 없는 키는 조용히 버린다(클라이언트를 믿지 않는다).
+_EDITABLE = ("summary", "description", "labels", "duedate", "priority", "epic", "assignee")
+_CHILD_EDITABLE = ("summary", "assignee", "duedate")
+
+
+def _apply_overrides(thread_id: str, token: str, overrides: dict) -> str:
+    """승인 카드의 편집(담당자 + 제목·본문·라벨·마감·우선순위·Epic + 자식)을 반영한다.
+    성공이면 빈 문자열, 실패면 사용자에게 보일 오류 문구.
+
+    보증 방식: **State draft 만 고치고**, 스테이징 payload 는 그 draft 로부터
+    `as_bulk_items`/`child_items` 로 **재생성**한다(approval.amend_payload). 승인 지문과
+    Operator 실행 인자가 같은 함수를 지나므로 어긋날 길이 없다 — 담당자만 다루던 시절의
+    부분 patch 두 벌(payload/State)은 list·빈값 처리에서 갈라질 수 있었다.
+    """
+    ov = overrides or {}
+    assignees = {str(k): str(v or "").strip() for k, v in (ov.get("assignees") or {}).items()}
+    item_edits = {str(k): v for k, v in (ov.get("items") or {}).items() if isinstance(v, dict)}
+    child_edits = {str(k): v for k, v in (ov.get("children") or {}).items() if isinstance(v, dict)}
+    if not (assignees or item_edits or child_edits):
+        return ""
+
+    # ── 담당자 실재 검증 — 화면 자동완성은 편의일 뿐 보증이 아니다.
+    from app.agent.tools._ctx import client, settings
+    from app.domain.search import search_users
+    uids = {u for u in assignees.values() if u}
+    uids |= {str(v.get("assignee") or "").strip() for v in item_edits.values() if v.get("assignee")}
+    uids |= {str(v.get("assignee") or "").strip() for v in child_edits.values() if v.get("assignee")}
+    for uid in {u for u in uids if u}:
+        try:
+            found = search_users(client(), settings(), uid, 5) or []
+        except Exception:
+            found = []
+        if not any(str(u.get("id") or "") == uid for u in found):
+            return f"담당자 '{uid}' 를 찾을 수 없습니다. 사번(skcc.x1042 형식)을 확인하세요."
+
+    try:
+        vals = get_graph().get_state(_config(thread_id)).values or {}
+        draft = dict(vals.get("draft") or {})
+        items = [dict(it) for it in (draft.get("items") or [])]
+        for it in items:
+            if it.get("children"):
+                it["children"] = [dict(c) for c in it["children"] if isinstance(c, dict)]
+
+        def _set(row: dict, field: str, val):
+            if field == "labels":
+                vals_ = [str(x).strip() for x in (val if isinstance(val, list) else
+                                                  str(val or "").split(",")) if str(x).strip()]
+                if vals_:
+                    row["labels"] = vals_
+                else:
+                    row.pop("labels", None)
+                return
+            sval = str(val or "").strip()
+            if field == "duedate" and sval:
+                import re as _re2
+                if not _re2.match(r"^\d{4}-\d{2}-\d{2}$", sval):
+                    raise ValueError(f"마감일 형식이 잘못되었습니다: {sval} (YYYY-MM-DD)")
+            if sval:
+                row[field] = sval
+            else:
+                row.pop(field, None)
+
+        for i, uid in assignees.items():
+            idx = int(i)
+            if 0 <= idx < len(items):
+                _set(items[idx], "assignee", uid)
+        for i, patch in item_edits.items():
+            idx = int(i)
+            if not (0 <= idx < len(items)):
+                return f"초안에 없는 항목 번호입니다: {idx}"
+            for f in _EDITABLE:
+                if f in patch:
+                    _set(items[idx], f, patch[f])
+        for ij, patch in child_edits.items():
+            try:
+                pi, ci = (int(x) for x in str(ij).split("-", 1))
+            except ValueError:
+                return f"자식 항목 번호가 잘못되었습니다: {ij}"
+            kids = (items[pi].get("children") or []) if 0 <= pi < len(items) else []
+            if not (0 <= ci < len(kids)):
+                return f"초안에 없는 자식 항목입니다: {ij}"
+            for f in _CHILD_EDITABLE:
+                if f in patch:
+                    _set(kids[ci], f, patch[f])
+
+        new_draft = dict(draft, items=items)
+        from app.agent.workflow.agents.refiner import as_bulk_items, child_items
+        bulk = as_bulk_items(new_draft)
+        mode = new_draft.get("mode") or "task"
+        # 편집 결과도 같은 규칙으로 검증한다 — 카드에서 고쳤다고 규칙을 통과한 것은 아니다.
+        if mode != "epic":
+            from app.domain.bulk import validate_bulk
+            r = validate_bulk(mode, bulk, client().bulk_lookup())
+            if not r.get("ok"):
+                msgs = "; ".join(f"[{e.get('index')}] {e.get('field')}: {e.get('message')}"
+                                 for e in (r.get("errors") or [])[:3])
+                return f"수정한 내용이 규칙에 걸립니다 — {msgs}"
+        if mode == "epic":
+            from app.agent.workflow.agents.refiner import epic_payload
+            payload = epic_payload(new_draft)
+        else:
+            payload = {"mode": mode, "items": bulk}
+            kids = [k for k in child_items(new_draft) if isinstance(k, dict) and k.get("summary")]
+            if kids:
+                payload["children"] = kids
+        ok, why = approval.amend_payload(token, thread_id, payload)
+        if not ok:
+            return why
+        get_graph().update_state(_config(thread_id), {"draft": new_draft})
+        return ""
+    except ValueError as e:
+        return str(e)[:160]
+    except Exception as e:
+        return f"수정을 반영하지 못했습니다: {str(e)[:120]}"
 
 
 def cancel(thread_id: str, token: str) -> dict:
