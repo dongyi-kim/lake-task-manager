@@ -208,9 +208,73 @@ class Responder(TextAgent):
         except Exception:
             pass                            # 검증기가 죽어도 답은 나가야 한다
 
+        # 참조 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
+        # 코드가 접는다. 규칙("같은 근거 같은 번호")은 프롬프트에 있지만 보장은 여기서.
+        text = _dedupe_refs(text)
+
         from langchain_core.messages import AIMessage
         return {"reply": text, "messages": [AIMessage(content=text)],
                 "trace": note(state, self.name, f"{len(text)}자")}
+
+
+def _dedupe_refs(text: str) -> str:
+    """`**참조**` 섹션의 중복 출처를 병합하고 번호를 다시 매긴다.
+
+    출처 정체성: 코멘트(키+괄호 출처) > 문서(URL) > 티켓(키 집합) > 문구.
+    같은 티켓의 '티켓 참조'와 '코멘트 참조'는 다른 출처다(내용이 다르다).
+    본문에서 안 쓰인 참조는 떨군다 — 규칙상 만들면 안 되는 것이라서다."""
+    import re as _re
+    m = _re.search(r"\*\*참조\*\*\s*\n((?:\s*-\s*\[\d+\][^\n]*\n?)+)", text)
+    if not m:
+        return text
+    head, block, tail = text[:m.start(1)], m.group(1), text[m.end(1):]
+    body = head + tail
+
+    def _sig(desc: str):
+        keys = tuple(_re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", desc))
+        com = _re.search(r"코멘트\s*\(([^)]*)\)", desc)
+        if com:
+            return ("comment", keys, com.group(1).strip())
+        url = _re.search(r"\((https?://[^)]+)\)", desc)
+        if url and not keys:
+            return ("doc", url.group(1))
+        if keys:
+            return ("ticket", keys)
+        return ("text", desc.strip().lower()[:60])
+
+    rows = _re.findall(r"-\s*\[(\d+)\]\s*([^\n]*)", block)
+    survivors, alias = [], {}          # [(old, desc)], old→대표 old
+    seen = {}
+    for old, desc in rows:
+        s = _sig(desc)
+        if s in seen:
+            alias[old] = seen[s]
+        else:
+            seen[s] = old
+            alias[old] = old
+            survivors.append((old, desc))
+    # 본문에 실제로 인용된 대표만 남기고 1..k 재부여(본문 등장 순서).
+    cited = _re.findall(r"\[(\d+)\](?!\()", body)
+    order, used = [], set()
+    for c in cited:
+        rep = alias.get(c)
+        if rep and rep not in used:
+            used.add(rep)
+            order.append(rep)
+    if not order:
+        return text
+    newno = {rep: str(i + 1) for i, rep in enumerate(order)}
+    mapping = {old: newno[rep] for old, rep in alias.items() if rep in newno}
+    if not mapping or all(k == v for k, v in mapping.items()) and len(order) == len(rows):
+        return text
+    out_body = _re.sub(r"\[(\d+)\](?!\()",
+                       lambda mm: f"[{mapping.get(mm.group(1), mm.group(1))}]", body)
+    lines = [f"- [{newno[old]}] {desc}" for old, desc in survivors if old in newno]
+    lines.sort(key=lambda ln: int(_re.match(r"- \[(\d+)\]", ln).group(1)))
+    # 참조 섹션을 원래 자리(head 끝)에 다시 꽂는다.
+    ref_block = "\n".join(lines) + "\n"
+    cut = len(head)
+    return out_body[:cut] + ref_block + out_body[cut:]
 
 
 def _violations(g: dict) -> int:

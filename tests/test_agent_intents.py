@@ -312,3 +312,17 @@ def test_description_change_survives_the_token_fingerprint():
     r = T.BY_NAME["update_ticket"].invoke({"key": key, "description": html, "approval_token": tok})
     assert r.get("ok"), r
     assert "description" in (r.get("updated") or [])
+
+
+def test_reference_index_duplicates_are_merged():
+    """같은 출처가 두 번호를 받으면 코드가 접는다([1]·[3] 같은 티켓 — 실측).
+    티켓 참조와 그 티켓의 코멘트 참조는 다른 출처라 남는다."""
+    from app.agent.workflow.agents.responder import _dedupe_refs
+    t = ("주기 [1]. 잡 [3]. 담당 [4].\n\n**참조**\n"
+         "- [1] DL-9044 — 주기 변경 근거\n"
+         "- [3] DL-9044 — 같은 티켓 다른 설명\n"
+         "- [4] DL-9044 코멘트 (skcc.x1103, 2026-08-06) — 담당\n")
+    out = _dedupe_refs(t)
+    assert "잡 [1]" in out and out.count("- [1] DL-9044") == 1
+    assert "- [2] DL-9044 코멘트" in out
+    assert _dedupe_refs("참조 없는 답") == "참조 없는 답"

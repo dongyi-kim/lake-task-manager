@@ -155,14 +155,50 @@ CASES = [
         "qms.qms_defect_code_mst 적재주기랑 스키마 알려줘"],
      "ask", lambda o, _: ("주 1회" in (o.get("reply") or "")
                           and "DEFECT_CD" in (o.get("reply") or ""))),
+
+    # ── 조기 확인(escalation) — 추측으로 긴 답을 던지는 대신 빨리 묻는다(실측 사고 재현)
+    ("DATA10", "오탈자 식별자 — '기록 없음'도 추정 답도 아니고 **후보 객관식 확인**이 정답", [
+        "fdc_flat_summary_ic 데이터의 히스토리"],
+     None, lambda o, _: (any(q.get("kind") == "choice"
+                             and any("fdc_trace_summary_ic" in str(op)
+                                     for op in (q.get("options") or []))
+                             for q in (o.get("questions") or []))
+                         # 추정 대상의 실데이터를 확인 전에 쏟으면 실패
+                         and "DL-9044" not in (o.get("reply") or ""))),
+    ("DATA11", "오탈자 확인 후속 — 고르면 정확 표기로 정상 답변(표+참조 인덱스)", [
+        "fdc_flat_summary_ic 데이터의 히스토리",
+        "fdc.fdc_trace_summary_ic 말한거야"],
+     None, lambda o, _: (_has(o, "30분", "DL-9044")
+                         and _ux_ok(o.get("reply") or ""))),
 ]
 
+
+def _ux_ok(reply: str) -> bool:
+    """가시성 결정적 체커 — judge(주관) 이전의 최소선.
+
+    ① '확인된 기록 없음' 나열 금지(3회 이상이면 벽이다 — 실측 6회)
+    ② 근거 마커 [N] 를 3개 이상 쓰면 반드시 **참조** 섹션이 있어야 한다
+    """
+    if reply.count("확인된 기록 없음") >= 3:
+        return False
+    markers = len(set(re.findall(r"\[(\d{1,2})\](?!\()", reply)))
+    if markers >= 3 and "참조" not in reply:
+        return False
+    return True
+
 JUDGE_SYS = (
-    "너는 PMO 어시스턴트 답변의 채점자다. 사용자 질문과 답변을 보고 4축을 1~5로 채점하라. "
+    "너는 PMO 어시스턴트 답변의 채점자다. 사용자 질문과 답변을 보고 5축을 1~5로 채점하라. "
     "5=흠잡을 데 없음, 3=쓸 만하나 아쉬움, 1=실패. JSON 만 출력: "
-    '{"visibility":n,"clarity":n,"completeness":n,"grounding":n,"worst":"가장 아쉬운 점 한 문장"} '
-    "— visibility(구조·표·소제목으로 눈에 잘 들어오나), clarity(한 번 읽고 이해되나), "
-    "completeness(질문이 요구한 정보를 다 담았나), grounding(주장마다 티켓 키·수치 근거가 있나)")
+    '{"visibility":n,"clarity":n,"completeness":n,"grounding":n,"interaction":n,'
+    '"worst":"가장 아쉬운 점 한 문장"} '
+    "— visibility(구조가 사람을 위해 있나: 값 질문엔 표, 이력엔 타임라인, 근거 3개↑면 "
+    "본문엔 [N] 마커만 두고 끝에 참조 목록. **본문 문장마다 제목·작성자·날짜를 끼워 넣어 "
+    "벽을 만들었으면 2점 이하**. '확인된 기록 없음'을 안 물은 항목까지 나열했으면 감점), "
+    "clarity(한 번 읽고 이해되나 — 결론이 첫 1~2문장에 있나), "
+    "completeness(질문이 요구한 정보를 다 담았나 — 자료의 목록을 요약으로 뭉갰으면 감점), "
+    "grounding(주장마다 근거 번호·티켓 키·수치가 있나, 참조 목록에 제목·출처가 있나), "
+    "interaction(모호한 요청에 추측으로 답하는 대신 확인 질문·후보 선택지를 냈나 — "
+    "확실한데도 되물었으면 그것도 감점)")
 
 
 def judge(question, reply):
