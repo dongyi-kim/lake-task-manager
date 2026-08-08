@@ -390,6 +390,39 @@ class Historian(ToolAgent):
                 if pre:
                     state = {**state, "pre_survey": pre[:2500]}
 
+            # ── 조건 일괄 수정 대상 사전 취합 — "마감 지난 것 전부 P1" 의 대상 집합은
+            # 검색이 아니라 **JQL 조회**다. 모델에게 run_jql 을 기대했더니 텍스트 검색만
+            # 하다 "대상 없음"으로 답했다(실측 2회). 조건 파싱과 조회는 코드가 한다.
+            if (state.get("intent") or "") == "modify" \
+                    and any(w in asked_s for w in ("전부", "모두", "일괄", "다 바꿔", "싹")):
+                import re as _re
+                conds = []
+                if _re.search(r"마감[^.\n]{0,8}(지난|지났|초과|넘)", asked_s):
+                    conds.append('duedate < now() AND statusCategory != done')
+                if "미배정" in asked_s or "담당 없" in asked_s:
+                    conds.append("assignee is EMPTY AND statusCategory != done")
+                mod = next((m for m in ("ETL", "Catalog", "Runtime", "Workbench",
+                                        "DataOps", "DevOps") if m.lower() in asked_s.lower()), "")
+                if conds:
+                    from app.agent import tools as T
+                    # "티켓들"의 상식적 대상은 Task류다 — Epic 은 보고 단위라 일괄 변경에서
+                    # 뺀다(실측: Epic 4건이 P1 일괄 대상에 섞였다).
+                    conds.append("issuetype != Epic")
+                    jql = " AND ".join(([f'component = "{mod}"'] if mod else []) + conds)
+                    try:
+                        rj = T.BY_NAME["run_jql"].invoke({"jql": jql, "limit": 30}) or {}
+                        rows = rj.get("items") or rj.get("tickets") or []
+                        tkeys = [str(t.get("key")) for t in rows if t.get("key")]
+                        if tkeys:
+                            blk = (f"[일괄 수정 대상 — JQL `{jql}` 로 {len(tkeys)}건 확정] "
+                                   + ", ".join(f"{t.get('key')} \"{t.get('summary', '')[:30]}\""
+                                               for t in rows[:30]))
+                            merged = ((state.get("pre_survey") or "") + "\n\n" + blk).strip()
+                            state = {**state, "pre_survey": merged[:3500],
+                                     "bulk_targets": tkeys}
+                    except Exception:
+                        pass
+
             # ── 허용값 질의 사전 취합 — "라벨 목록 보여줘·정리 제안" 류는 검색이 아니라
             # **조회**다. 모델이 list_ticket_options 를 고르길 기대했더니 검색만 하다
             # '확인 불가'로 죽었다(실측 2회). 조회는 코드가 한다.
@@ -565,6 +598,7 @@ class Historian(ToolAgent):
             "pre_survey": state.get("pre_survey") or "",
             "web_context": state.get("web_context") or "",
             "topic_dossier": state.get("topic_dossier") or "",
+            "bulk_targets": state.get("bulk_targets") or [],
             "trace": note(state, self.name,
                           f"근거 {len(ev)}건" + (" · 중복 의심 티켓 있음" if exists else "")),
         }

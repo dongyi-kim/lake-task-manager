@@ -171,6 +171,10 @@ SCHEMA = {
             "description": "**modify 의도일 때만** — 기존 티켓의 변경 계획. 이때 items 는 빈 배열",
             "properties": {
                 "key": {"type": "string", "description": "바꿀 티켓 키. 조사에서 실재 확인된 것만"},
+                "keys": {"type": "array", "items": {"type": "string"},
+                         "description": "**여러 티켓에 같은 변경**을 할 때 — 조사(JQL 등)에서 "
+                                        "확인된 키 전부. 이때 key 는 비워 둔다. "
+                                        "예: '마감 지난 것 전부 P1' → keys 에 대상 전부"},
                 "assignee": {"type": "string", "description": "새 담당자 id. 떼려면 \"\" (빈 문자열), 안 바꾸면 생략"},
                 "duedate": {"type": "string", "description": "새 마감 YYYY-MM-DD. 안 바꾸면 생략"},
                 "priority": {"type": "string", "description": "새 우선순위. 안 바꾸면 생략"},
@@ -208,7 +212,7 @@ class Refiner(ToolAgent):
                 dodged = (bool(out.get("questions"))
                           and not ((out.get("draft") or {}).get("items"))
                           and not ((out.get("change_plan") or {}).get("key"))
-                          and _said_defaults(state)
+                          and (_said_defaults(state) or state.get("bulk_targets"))
                           and (state.get("situation") or "").strip())
             except Exception:
                 dodged = False
@@ -279,6 +283,9 @@ class Refiner(ToolAgent):
             goal = """기존 티켓의 **변경 계획**(change)을 만들어라. items 는 빈 배열로 둔다.
 - key 는 조사에서 **실재가 확인된** 티켓만. 사용자가 댄 키가 조사에 없으면 questions 로 확인하라.
 - 사용자가 바꾸라고 한 필드만 change 에 넣는다 — 시키지 않은 필드를 얹지 마라.
+- **조건 일괄 수정**("마감 지난 것 전부", "정체 티켓 모두")이면 조사 자료의 대상 키
+  **전부를 change.keys 에** 담아라(key 는 비움). 일부만 담으면 나머지는 조용히 누락된다.
+  조사에 대상 목록이 없으면 questions 로 확인하지 말고 rationale 에 "대상 조회 실패"를 적어라.
 - "다음 주 금요일" 같은 상대 날짜는 오늘 날짜 기준으로 계산해 YYYY-MM-DD 로 적는다.
 - 담당자 변경이면 새 담당자 id(skcc.x1042 형식)를 확인하라 — 이름만 있으면 조사 자료의
   참여자·로스터에서 id 를 찾고, 못 찾으면 questions 로 묻는다(assignee 필드 자동완성이 붙는다).
@@ -286,7 +293,10 @@ class Refiner(ToolAgent):
 - ★ **댓글만 남기라는 요청이면 도구를 부르지 마라.** change 에 key 와 comment 만 채우면
   끝이다 — 전이·옵션 조회는 댓글과 무관하다(실측: 도구 10번 헤매고 확인 질문으로 샜다).
 - ★ "진행해도 괜찮으신가요?" 류의 **허락 질문 금지.** 승인 카드가 곧 그 확인이다 —
-  계획을 완성해서 내면 사용자가 카드에서 승인/취소한다."""
+  계획을 완성해서 내면 사용자가 카드에서 승인/취소한다.
+- ★ 아래 제약조건의 Epic·컴포넌트·라벨 **배치 규칙은 생성용이다** — 변경 계획에서는 Epic
+  선택을 묻지 마라(수정과 무관하다). '일괄 수정 대상' 자료가 있으면 물을 것이 없다 —
+  keys 에 전부 담고 바꿀 필드만 채워 계획을 완성하라."""
         elif (state.get("intent") or "") == Intent.PLAN_WORK \
                 and not (state.get("situation") or "").strip():
             # ── 해석 확인 턴(조사 전) — 혼자 오래 조사하고 한 번에 결론 내는 호흡이
@@ -343,6 +353,8 @@ class Refiner(ToolAgent):
                        else ""),
             data_block("지금 고치고 있는 초안 (전문 — 처음부터 다시 쓰지 말고 이걸 고쳐라. "
                        "사용자가 문제 삼지 않은 부분은 유지한다)", prev),
+            data_block("일괄 수정 대상 (코드가 JQL 로 확정 — change.keys 에 이 키 전부를 담아라)",
+                       ", ".join(state.get("bulk_targets") or [])),
             data_block("Historian 이 정리한 현재 상황", state.get("situation")),
             data_block("근거 티켓", ev),
             data_block("배치 재료 (코드가 조회함 — Epic·컴포넌트·라벨은 이 안에서 고른다)",
@@ -403,7 +415,11 @@ class Refiner(ToolAgent):
             elif isinstance(q, dict) and str(q.get("question") or "").strip():
                 qs.append({"question": str(q["question"]).strip(),
                            "kind": q.get("kind") or "text",
-                           "options": [str(o) for o in (q.get("options") or []) if str(o).strip()][:5],
+                           "options": [(o.get("label") or o.get("value") or "").strip()
+                                       if isinstance(o, dict) else str(o).strip()
+                                       for o in (q.get("options") or [])
+                                       if (isinstance(o, dict) and (o.get("label") or o.get("value")))
+                                       or (not isinstance(o, dict) and str(o).strip())][:5],
                            "field": q.get("field") or ""})
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
         mode = out.get("mode") or "task"
@@ -820,6 +836,55 @@ class Refiner(ToolAgent):
             if fields or cmt:
                 plan = {"key": str(change["key"]).strip(), "changes": fields,
                         "comment": cmt, "why": out.get("rationale") or ""}
+        # 조건 일괄 수정 — keys 복수. 실재하는 키만 남긴다(조사에서 온 것이지만 한 번 더).
+        bulk_keys = [str(k).strip() for k in (change.get("keys") or []) if str(k).strip()]
+        # 코드가 확정한 대상(bulk_targets)이 있는데 모델이 keys 를 빠뜨리거나 일부만 담았으면
+        # **전부로 강제한다** — 일부 누락은 조용한 미수정이다(실측: 대상 없음 오답 2회).
+        if state.get("bulk_targets") and (change.get("assignee") is not None
+                                          or change.get("duedate") is not None
+                                          or change.get("priority") is not None
+                                          or change.get("labels") is not None
+                                          or bulk_keys):
+            bulk_keys = [str(k) for k in state["bulk_targets"]]
+        if bulk_keys and not plan:
+            fields = {k: change[k] for k in ("assignee", "duedate", "priority", "labels")
+                      if k in change and change[k] is not None}
+            if str(fields.get("priority") or "").strip():
+                p = str(fields["priority"]).strip()
+                fields["priority"] = _PRI.get(p.upper(), p)
+            real = [k for k in dict.fromkeys(bulk_keys) if _ticket_exists(k)][:30]
+            gone = [k for k in bulk_keys if k not in real]
+            if gone:
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(실재하지 않아 제외: {', '.join(gone[:5])})").strip()
+            if real and fields:
+                plan = {"keys": real, "changes": fields,
+                        "comment": (change.get("comment") or "").strip(),
+                        "why": out.get("rationale") or ""}
+        # ── 최종 보장: 대상(JQL)과 변경 필드(요청 파싱)가 둘 다 확정되면 **코드가 계획을
+        # 조립**한다 — 모델이 Epic 질문으로 새는 것을 두 번의 프롬프트 교정으로도 못 막았다.
+        if not plan and state.get("bulk_targets") \
+                and (state.get("intent") or "") == Intent.MODIFY:
+            req = request_text(state)
+            fields = {}
+            # \b 는 한글 앞에서 안 선다("P1으로") — ASCII 경계만 본다.
+            mp = _re.search(r"(?<![0-9A-Za-z])P([0-4])(?![0-9A-Za-z])", req)
+            if mp and ("우선순위" in req or "올려" in req or "내려" in req or "로 바꿔" in req):
+                fields["priority"] = _PRI["P" + mp.group(1)]
+            rel = _relative_due(req)
+            if rel and "마감" in req:
+                fields["duedate"] = rel
+            mu = _re.search(r"(?<![0-9A-Za-z.])(?:skcc\.)?([a-z]{1,2}\d{2,6})(?![0-9A-Za-z])", req)
+            if mu and ("담당" in req or "에게" in req):
+                fields["assignee"] = f"skcc.{mu.group(1)}"
+            if fields:
+                plan = {"keys": [str(k) for k in state["bulk_targets"]], "changes": fields,
+                        "comment": "",
+                        "why": ((out.get("rationale") or "")
+                                + "\n(조건 일괄 수정 — 대상은 JQL 로, 변경 값은 요청에서 "
+                                  "코드가 확정했다)").strip()}
+                qs = []
+                items.clear()          # 수정 요청에 초안을 만들었어도 계획이 이긴다(참조 공유)
 
         # 가드들이 out["rationale"] 에 덧붙인 경고(Epic 불일치·컴포넌트 정리 등)를 초안에 반영한다
         # — draft 는 items 를 참조로 공유하지만 rationale 은 문자열이라 여기서 맞춰 줘야 한다.

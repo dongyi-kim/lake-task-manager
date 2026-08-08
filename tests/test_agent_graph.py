@@ -472,3 +472,19 @@ def test_card_edit_with_a_bad_duedate_keeps_the_card_alive(real_draft):
     # 올바른 값으로 다시 — 같은 토큰이 그대로 쓰인다
     done = session.resume(out["thread_id"], tok, {"items": {"0": {"duedate": "2026-10-01"}}})
     assert (done.get("result") or {}).get("created"), done
+
+
+def test_bulk_change_plan_stages_the_update_tickets_fingerprint():
+    """조건 일괄 수정 — 승인 지문이 update_tickets(bulk) 도구의 payload 와 같은 모양이어야
+    consume 이 통과한다(E2 실측 갭의 회귀 방지)."""
+    from app.agent import approval
+    approval.clear()
+    plan = {"keys": ["DL-1", "DL-2"], "changes": {"priority": "P1-Critical"}}
+    tok = G._propose({"thread_id": "tb", "change_plan": plan})["approval_token"]
+    rec = approval.peek(tok)
+    assert rec["action"] == "update_tickets"
+    rows = [{"key": "DL-1", "changes": {"priority": "P1-Critical"}},
+            {"key": "DL-2", "changes": {"priority": "P1-Critical"}}]
+    assert rec["fp"] == approval.fingerprint({"items": rows})
+    # 라우터도 keys 만으로 propose 로 간다
+    assert G.route_after_refiner({"questions": [], "change_plan": plan, "draft": {}}) == "propose"

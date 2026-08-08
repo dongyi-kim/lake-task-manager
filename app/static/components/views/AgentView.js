@@ -945,10 +945,15 @@ export default {
                  create(티켓 생성)와 update(기존 티켓 변경) 두 모양이 있다. -->
             <div v-if="t.pending && ti === turns.length - 1" class="agent-card">
               <!-- 변경 카드 -->
-              <template v-if="t.pending.action === 'update_ticket'">
+              <template v-if="t.pending.action === 'update_ticket' || t.pending.action === 'update_tickets'">
                 <div class="agent-card-h">
-                  <b><a href="#" class="tkt" :data-key="t.pending.key">{{ t.pending.key }}</a> 변경</b>
+                  <b v-if="t.pending.keys">일괄 변경 {{ t.pending.keys.length }}건</b>
+                  <b v-else><a href="#" class="tkt" :data-key="t.pending.key">{{ t.pending.key }}</a> 변경</b>
                   <em>아직 바뀌지 않았습니다 — 확인 후 승인하세요</em>
+                </div>
+                <!-- 일괄 대상 — 전부 보여야 승인이 의미 있다(각 키 클릭 검증 가능) -->
+                <div v-if="t.pending.keys" class="agent-chg-keys">
+                  <a v-for="k in t.pending.keys" :key="k" href="#" class="tkt" :data-key="k">{{ k }}</a>
                 </div>
                 <div v-if="t.pending.rationale" class="agent-card-why">{{ t.pending.rationale }}</div>
                 <div class="agent-chg">

@@ -44,6 +44,11 @@ class Responder(TextAgent):
                     "전체 5문장 이내 — 이 턴의 값어치는 빠른 왕복이다.")
         elif qs:
             goal = "지금까지 파악한 상황을 짧게 정리하고, 모자란 정보를 물어라."
+        elif (state.get("change_plan") or {}).get("keys"):
+            n = len(state.get("change_plan", {}).get("keys") or [])
+            goal = (f"**{n}건 일괄 변경** 계획이다 — 대상 키 전부와 공통 변경 내용을 표"
+                    "(| 티켓 | 변경 |)로 보여 주고 승인을 요청하라. 아직 아무것도 바뀌지 "
+                    "않았음을 분명히 하라.")
         elif (state.get("change_plan") or {}).get("key"):
             goal = ("어떤 티켓의 무엇을 어떻게 바꾸려는지 요약하고 **승인을 요청**하라. "
                     "아직 아무것도 바뀌지 않았음을 분명히 하라.")
@@ -163,7 +168,10 @@ class Responder(TextAgent):
             data_block("변경 계획 (아직 바뀌지 않음)",
                        (lambda cp: f"{cp.get('key')}: " + ", ".join(
                            f"{k}→{v}" for k, v in (cp.get('changes') or {}).items())
-                        if cp.get("key") else "")(state.get("change_plan") or {})),
+                        if cp.get("key") else
+                        (f"일괄 {len(cp.get('keys'))}건 [{', '.join(cp.get('keys')[:10])}]: "
+                         + ", ".join(f"{k}→{v}" for k, v in (cp.get('changes') or {}).items())
+                         if cp.get("keys") else ""))(state.get("change_plan") or {})),
             data_block("변경 결과", "\n".join(
                 f"- {u.get('key')} ({', '.join(u.get('fields') or [])})"
                 for u in (result.get("updated") or []))),

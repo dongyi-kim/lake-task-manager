@@ -577,3 +577,10 @@
 @keyframes refflash { 0% { background:color-mix(in srgb, var(--accent) 28%, transparent); }
   100% { background:transparent; } }
 .agent-ref-item.flash { animation:refflash 1.6s ease-out; }
+
+/* 일괄 변경 카드 — 대상 키 전부(클릭 검증 가능) */
+.agent-chg-keys { display:flex; flex-wrap:wrap; gap:6px; padding:6px 0 2px; }
+.agent-chg-keys .tkt { font-size:12px; font-weight:700; color:var(--accent);
+  border:1px solid var(--border); border-radius:6px; padding:1px 7px;
+  background:var(--panel-2); text-decoration:none; }
+.agent-chg-keys .tkt:hover { border-color:var(--accent); }

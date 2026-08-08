@@ -126,6 +126,7 @@ class AgentState(TypedDict, total=False):
     topic_dossier: str              # 주제 한 건(테이블·기술·업무)에 얽힌 조각 전부
 
     # ── Historian ──
+    bulk_targets: list              # 조건 일괄 수정 대상(코드 JQL 조회 — "전부" 요청의 집합)
     situation: str                  # "현재 상황" 서술 — 사용자에게 그대로 보인다
     evidence: list                  # [{"key","title","why"}] 근거. 출처 없는 서술은 금지
     related_docs: list              # [{"title","url"}]

@@ -69,6 +69,24 @@ class Operator(ToolAgent):
 
         def run(state):
             plan = state.get("change_plan") or {}
+            # 조건 일괄 수정 — 지문은 update_tickets(bulk) payload 와 같은 모양이어야 한다.
+            if plan.get("keys") and plan.get("changes"):
+                from app.agent import tools as T
+                rows = [{"key": str(k).strip(), "changes": dict(plan["changes"])}
+                        for k in plan["keys"] if str(k).strip()]
+                r = T.BY_NAME["update_tickets"].invoke(
+                    {"items": rows, "approval_token": state.get("approval_token") or ""})
+                if not r.get("ok") and not (r.get("updated") or []):
+                    return {"result": {"created": [], "updated": [],
+                                       "failed": (r.get("failed") or
+                                                  [{"summary": ", ".join(plan["keys"][:5]),
+                                                    "error": r.get("error") or ""}])},
+                            "trace": note(state, self.name,
+                                          f"일괄 변경 실패 — {str(r.get('error'))[:80]}")}
+                return {"result": {"created": [], "failed": r.get("failed") or [],
+                                   "updated": r.get("updated") or []},
+                        "trace": note(state, self.name,
+                                      f"일괄 변경 {len(r.get('updated') or [])}건")}
             if not plan.get("key"):
                 return self._run_create(state, react)
 

@@ -129,3 +129,10 @@ Search Confluence with the SUBJECT words, not the user's whole phrase — titles
 match verbatim ("[설계] 리니지 뷰어 1차" vs "리니지 뷰어 설계 문서"). When a candidate
 title is close, open it with `read_document` and summarize the BODY; do not settle for a
 loosely-related ticket instead of the document, and never point to an unlinked title.
+
+## Condition-based modify ("~한 티켓 전부 바꿔줘")
+
+The user's condition (마감 지남, 정체, 미배정…) defines a SET — resolve it with `run_jql`
+(e.g. `component = "ETL" AND statusCategory != done AND duedate < now()`), not with text
+search. List every matching key in your findings; the next stage turns them into one bulk
+change plan. Missing keys here = tickets silently not updated.

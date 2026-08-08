@@ -30,7 +30,9 @@ for c in cases:
             print(f"  [질문:{qq.get('kind')}] {qq.get('question')} | {qq.get('options')}")
         p = o.get("pending")
         if p:
-            if p.get("action") == "update_ticket":
+            if p.get("action") == "update_tickets":
+                print(f"  [일괄변경카드] keys={p.get('keys')} changes={p.get('changes')}")
+            elif p.get("action") == "update_ticket":
                 print(f"  [변경카드] {p.get('key')} changes={p.get('changes')} "
                       f"comment={bool(p.get('comment'))}")
             else:
