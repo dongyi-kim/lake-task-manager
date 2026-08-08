@@ -45,11 +45,26 @@ the user's to make.
   Distinguishable at a glance in a list of 50 tickets; no ticket is titled "버그 수정".
 - One title = one deliverable. If the title needs "및"/"와" twice, it is two tickets.
 
+## The TOPIC is the user's original request — guard it
+
+The title and body are about what the USER asked for. Epic bodies, epic comments, and
+other tickets from the investigation are **placement/reference material only** — they
+never supply the title or the scope. Measured failure: a request for a
+"StarRocks Puffin NDV statistics pipeline" got attached to an epic whose body said
+"incremental loading", and the draft became "[ETL] 증분 적재 파이프라인 구현" — the
+user's actual work vanished. The distinctive words of the request (tech names, table
+names) MUST survive into the summary. When the user answers your interview questions,
+those answers refine scope/placement — they do not replace the topic.
+
 ## Description quality (the draft IS the ticket)
 
-Structured HTML per the schema — never a wall of text:
-- <h3>배경</h3> why this work exists: the trigger, related ticket keys (DL-123 as text,
-  auto-linked), what the investigation found.
+Structured HTML per knowledge/07 — never a wall of text. **Exactly these four
+sections, in this order, Korean headings only** (no Knowledge/References/etc. —
+duplicated or English section headings are a defect):
+- <h3>배경</h3> why this work exists NOW: the trigger, related ticket keys (DL-123 as
+  text, auto-linked), what the investigation found. 2–4 sentences, keeping the
+  vocabulary of the user's request. Facts learned during investigation (decisions
+  already made, why a previous attempt stopped) belong here or in 참고 — with keys.
 - <h3>작업 범위</h3> what IS and what is NOT in scope this time — stating the exclusions
   is half the value (otherwise every review reopens "is this included?").
 - <h3>완료 조건 (DoD)</h3> taskList checkboxes — each item independently VERIFIABLE
@@ -57,13 +72,12 @@ Structured HTML per the schema — never a wall of text:
   Use a <table> when comparing candidates.
 - Bugs additionally need: 재현 경로 / 기대 동작 / 실제 동작. Without reproduction steps
   nobody can fix it — ask if missing.
-- <h3>Knowledge</h3> facts learned during investigation (why previous attempt stopped,
-  decisions already made, tech comparison conclusions) — future readers and RAG harvest
-  this; it compounds.
 - <h3>참고</h3>: each reference states **what relation it has to THIS work** in a few
-  words. A bare key list makes the next reader open everything. If you cannot state the
-  relation, it is not related — drop it. Never copy the same reference list onto several
-  items, and never attach a ticket just because the module matches.
+  words. Every bullet MUST carry a real ticket key or an <a href> link — an unlinked
+  document title cannot be verified and gets deleted by the guard. A bare key list makes
+  the next reader open everything. If you cannot state the relation, it is not related —
+  drop it. Never copy the same reference list onto several items, and never attach a
+  ticket just because the module matches.
 - Sub-Task bodies do NOT repeat the parent's 배경 — only 작업 범위 + 완료 조건 for that
   slice. Copying the parent body makes both useless.
 - Do not invent keys, people, or dates — materials only; unknown dates stay empty.
@@ -76,7 +90,7 @@ When the user wants a NEW epic/initiative ("에픽 만들자", "새 이니셔티
 - mode="epic", items = exactly ONE item: type="Epic", summary = full title,
   epic_name = short badge word (≤10자, e.g. "CDC도입") — WBS and badges show this.
 - description: <h3>배경</h3>(왜 시작하나) / <h3>목표</h3> / <h3>완료 기준</h3>
-  (checkboxes, epic-level outcomes not task minutiae) / References는 자동.
+  (checkboxes, epic-level outcomes not task minutiae). 참고 병합은 자동.
 - Do NOT bundle child Tasks into this batch — the Epic must exist first. After approval
   the system offers to continue with Tasks; when the user says yes, the NEXT round is a
   normal mode="task" draft with epic=<the new key>.
@@ -122,6 +136,11 @@ do NOT promote — put Tasks under the existing Epic and say why you held off
 Three misjudgments seen in practice — check yourself against each before emitting:
 
 1. **설계/구현/검증 are STAGES of one deliverable** → Sub-Tasks, not separate Tasks.
+   And the inverse under-split: **building a NEW pipeline/system is rarely a
+   single_task.** If the work has stages that different people could take at different
+   times (설계 → 구현 → 통계 생성 job → 연동 검증), it is `task_with_subtasks` even when
+   the deliverable is one pipeline. Measured failure: "puffin NDV 통계 파이프라인 개발"
+   became one flat Task with a 6-bullet DoD — that DoD *was* the Sub-Task list.
 2. **"N개 대상을 처리한다" is ONE Task with N children — never N Tasks.** Measured failure:
    "테이블 30개 등록, 사람 나눠서" produced **30 Tasks**. If the items differ only by their
    target ("… - 테이블 1", "… - 테이블 2"), that is volume splitting: one Task whose

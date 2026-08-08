@@ -189,7 +189,7 @@ class Planner(StructuredAgent):
     def apply(self, state, out):
         intent = out.get("intent") or Intent.PLAN_WORK
         kws = [k for k in (out.get("keywords") or []) if str(k).strip()]
-        return {
+        patch = {
             "intent": intent,
             "keywords": kws,
             "module": out.get("module") or "",
@@ -202,3 +202,13 @@ class Planner(StructuredAgent):
                           + (f" · 계획: {str(out.get('plan'))[:80]}" if out.get("plan") else
                              f" 핵심어={', '.join(kws) or '없음'}")),
         }
+        # ★ 원 요청 고정 — 생성 갈래의 **첫 요청 턴**의 문장을 보존한다. 후속 턴(질문 답변)
+        #   에서는 덮지 않는다: 제목·본문의 주제는 끝까지 이 문장이다(실측: 이게 없어서
+        #   Epic 본문의 주제가 초안을 잠식했다). 후속 턴 판정은 refine 직행 라우트와 같은
+        #   기준(조사 결과가 있고 되묻기 턴이 지났다)을 쓴다 — 두 판정이 갈리면 안 된다.
+        from app.agent.workflow.state import last_user_text
+        if intent in Intent.DRAFTS_TICKETS:
+            follow_up = bool((state.get("situation") or "").strip()) and (state.get("turns") or 0) > 0
+            if not follow_up or not (state.get("request_text") or "").strip():
+                patch["request_text"] = last_user_text(state)
+        return patch

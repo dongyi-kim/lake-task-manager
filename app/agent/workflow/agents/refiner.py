@@ -22,7 +22,7 @@ from app.agent.prompts.roles import SYSTEM_REFINER
 from app.agent.workflow.agents.base import ToolAgent
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
-                                      conversation, last_user_text, note)
+                                      conversation, last_user_text, note, request_text)
 
 ITEM = {
     "type": "object",
@@ -52,9 +52,10 @@ ITEM = {
                 "관계를 못 적겠으면 관련이 없는 것이니 빼라. 모듈이 같다는 이유로 붙이지 마라.\n"
                 "★ 쪼갤 일은 본문에 '후속 Sub-Task 후보'라고 **글로만 적지 말고** children 에 "
                 "실제 Sub-Task 로 적어라 — 글은 티켓이 되지 않는다.\n"
-                "조사에서 알아낸 사실(왜 멈췄었는지·이미 결정된 것·기술 비교 결론)이 있으면 "
-                "<h3>Knowledge</h3><ul><li>…</li></ul> 로 남겨라 — 나중에 이 티켓을 여는 "
-                "사람과 검색(RAG)이 그걸 다시 쓴다. 여러 후보 비교는 <table> 로."),
+                "★ 섹션은 위 **네 개가 전부**다 — Knowledge·References 같은 섹션을 더 만들지 "
+                "마라(참고 하나로 합친다. 조사에서 알아낸 결정·경위도 참고 불릿에 키와 함께). "
+                "★ 참고 불릿은 **실제 티켓 키 또는 <a href> 링크가 반드시 있어야** 한다 — "
+                "링크 없는 문서 제목 나열은 날조로 취급되어 삭제된다. 비교는 <table> 로."),
         },
         "children": {
             "type": "array",
@@ -265,7 +266,12 @@ class Refiner(ToolAgent):
                      "형태 확인 질문을 자동으로 붙인다(네가 따로 묻지 마라).")
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []))
+        # ★ 후속 턴에는 **지금 고치는 초안 전문**을 준다 — 이게 없으면 모델은 매번 처음부터
+        #   다시 쓰고, 그 사이 제목·주제가 흘러간다(실측: 원 요청이 Epic 주제로 둔갑).
+        prev = draft_full_text(state.get("draft")) if (state.get("turns") or 0) > 0 else ""
         data = wrap_data(
+            data_block("지금 고치고 있는 초안 (전문 — 처음부터 다시 쓰지 말고 이걸 고쳐라. "
+                       "사용자가 문제 삼지 않은 부분은 유지한다)", prev),
             data_block("Historian 이 정리한 현재 상황", state.get("situation")),
             data_block("근거 티켓", ev),
             data_block("배치 재료 (코드가 조회함 — Epic·컴포넌트·라벨은 이 안에서 고른다)",
@@ -279,6 +285,11 @@ class Refiner(ToolAgent):
 
 ## 제약조건
 - 조사 결과에 없는 티켓 키·사람·날짜를 지어내지 않는다.
+- ★ **제목·본문의 주제는 아래 '원문 요청'이다.** Epic 본문·코멘트·조사에서 나온 다른
+  티켓의 주제는 **배치·참고의 근거**일 뿐, 제목이나 작업 범위의 재료가 아니다. 원 요청의
+  고유어(기술명·테이블명 — 예: "StarRocks Puffin NDV")가 제목에 남아 있어야 한다.
+  (실측 사고: "starrocks puffin ndv 통계 파이프라인" 요청이 Epic 본문을 따라
+  "[ETL] 증분 적재용 최소 기능 파이프라인"으로 둔갑 — 사용자가 요청한 일이 사라졌다.)
 - **제목**: "[모듈] 무엇을 어떻게" 형태, 동사로 끝낸다. 제목만으로 다른 티켓과 구분돼야 한다.
 - **description 은 HTML 구조로**: <h3>배경</h3>(계기 + 관련 티켓 키) →
   <h3>완료 조건 (DoD)</h3>(taskList 체크박스 — 각 항목이 **검증 가능**해야 한다) →
@@ -303,7 +314,10 @@ class Refiner(ToolAgent):
 ## 대화
 {conversation(state)}
 
-## 원문 요청
+## 원문 요청 (제목·본문의 주제는 이 문장이다)
+{request_text(state)}
+
+## 이번 턴 사용자의 말
 {last_user_text(state)}{data}"""
 
     def schema(self):
@@ -423,25 +437,45 @@ class Refiner(ToolAgent):
         if structure and why and why not in (draft["rationale"] or ""):
             draft["rationale"] = (draft["rationale"] + f"\n(구조: {structure} — {why})").strip()
 
-        # ── References 자동 첨부 — 조사 결과를 티켓에 박제한다.
+        # ── 조사 근거를 '참고' 섹션에 **병합**한다 — 조사 결과를 티켓에 박제한다.
         # 대화가 끝나면 Historian 의 조사는 증발하지만, 티켓 description 에 남기면 동적 RAG 가
         # 다음 조사에서 그걸 다시 수확한다(지식이 복리로 쌓인다). 습관을 프롬프트에 맡기지 않고
-        # 코드가 보장한다 — 모델이 적었으면 그대로 두고, 안 적었으면 붙인다.
+        # 코드가 보장한다.
+        # ★ 별도 <h3>References</h3> 를 덧붙이던 방식은 폐기 — 모델이 쓴 <h3>참고</h3> 와
+        #   무조건 중복됐다(실측: 한 본문에 참고/Knowledge/References 3벌·한영 혼재).
+        #   섹션은 '참고' 하나이고, 없던 키·링크만 그 ul 에 이어 붙인다(_merge_refs).
         refs = []
         for e in (state.get("evidence") or [])[:5]:
             k, why = (e.get("key") or "").strip(), (e.get("why") or e.get("title") or "").strip()
-            # 티켓 키 모양만 — PMO 근거에는 "ETL" 같은 모듈명이 섞이는데 그건 References 가 아니다.
+            # 티켓 키 모양만 — PMO 근거에는 "ETL" 같은 모듈명이 섞이는데 그건 참고가 아니다.
             if k and _re.match(r"^[A-Z][A-Z0-9]*-[0-9]+$", k):
-                refs.append(f"<li>{k} — {why}</li>" if why else f"<li>{k}</li>")
+                refs.append((k, f"<li>{k} — {why}</li>" if why else f"<li>{k}</li>"))
         for d in (state.get("related_docs") or [])[:3]:
             t, u = (d.get("title") or "").strip(), (d.get("url") or "").strip()
             if t and u:
-                refs.append(f'<li><a href="{u}">{t}</a></li>')
-        if refs:
-            block = "<h3>References</h3><ul>" + "".join(refs) + "</ul>"
-            for it in items:
-                if "References" not in (it.get("description") or ""):
-                    it["description"] = ((it.get("description") or "") + block)
+                refs.append((u, f'<li><a href="{u}">{t}</a></li>'))
+        for it in items:
+            it["description"] = _merge_refs(it.get("description") or "", refs)
+
+        # ── 참고 불릿 가드 — 링크도 키도 없는 불릿은 **날조 문서 제목**이다(실측:
+        # "아키텍처 결정 기록/스프린트 회의록/설계 노트" 가 링크 없이 나열됐다 — mock
+        # 코멘트 속 문구를 문서인 양 옮긴 것). 검증 불가능한 나열은 빼는 것이 맞다.
+        dropped = []
+        for it in items:
+            it["description"], gone = _drop_unlinked_refs(it.get("description") or "")
+            dropped += gone
+        if dropped:
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(참고에서 출처 없는 항목을 뺐다: "
+                                + ", ".join(dropped[:4]) + ")").strip()
+
+        # ── 주제 가드 — 제목·본문이 **원 요청의 고유어**를 유지하는지 확인한다.
+        # 실측: Epic 본문("증분 적재")이 원 요청("starrocks puffin ndv")을 잠식해 전혀
+        # 다른 티켓이 만들어졌다. 판정은 코드가, 고치는 판단은 사람이 한다(경고 노출).
+        drift = _topic_drift(state, items)
+        if drift:
+            out["rationale"] = ((out.get("rationale") or "") + "\n" + drift).strip()
+            draft["topic_drift"] = True     # Reviewer 의 단건 우회(L3b)를 막는 신호
 
         # ── Epic Link 는 **실재하는 Epic** 이어야 한다 ─────────────────────
         # 실측: 사용자가 "기존 에픽 중 맞는 걸로 붙여줘"라고 했는데 모델이 Task(DL-9072)를
@@ -563,6 +597,28 @@ class Refiner(ToolAgent):
                                 + "\n(확인 필요: 나눠서 진행한다고 판단했는데 Sub-Task 가 "
                                   "없다 — 한 티켓으로 둘지 쪼갤지 정해야 한다)").strip()
 
+        # ── 하향 편향 보정 — single_task 인데 본문이 다단계·다인 규모면 확인을 받는다.
+        # 상향(쪼갬)에는 확인 질문이 붙는데 하향(뭉갬)은 아무도 안 막았다(실측: 파이프라인
+        # 신규 구축을 단일 Task 로 뭉갰다). 신호는 본문에서 읽는다 — DoD 불릿 5개↑ 또는
+        # 서로 다른 단계 낱말 3종↑. '알아서' 위임이면 묻지 않고 경고만 남긴다.
+        if structure == "single_task" and src == "inferred" and items and not qs:
+            body = " ".join(str(i.get("description") or "") + " " + str(i.get("summary") or "")
+                            for i in items)
+            dod = body.count("data-checked")
+            stages = sum(1 for w in ("설계", "구현", "검증", "연동", "모니터링", "전환",
+                                     "PoC", "테스트", "배포") if w in body)
+            if dod >= 5 or stages >= 3:
+                msg = ("확인 필요: 설계·구현·검증처럼 단계가 나뉘는 규모로 보이는데 단일 "
+                       "Task 다 — Sub-Task 분할 검토")
+                if _said_defaults(state):
+                    out["rationale"] = ((out.get("rationale") or "") + f"\n({msg})").strip()
+                else:
+                    qs = [{"question": "작업이 여러 단계(설계·구현·검증 등)로 나뉘는 규모로 "
+                                       "보입니다. 어떻게 만들까요?",
+                           "kind": "choice", "field": "",
+                           "options": ["Task 하나 + 단계별 Sub-Task (권장 — 단계·담당이 나뉜다)",
+                                       "단일 Task 로 둔다"]}]
+
         # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
         # Reviewer 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
         # 사용자에게 떠넘겨진다(실측: "P3는 적절한 우선순위가 아닙니다"가 답변에 노출).
@@ -637,6 +693,98 @@ def draft_text(draft: dict) -> str:
             bits.append(f"\n    설명: {str(it['description'])[:150]}")
         rows.append("  ".join(bits))
     return f"mode={draft.get('mode')}\n" + "\n".join(rows)
+
+
+def draft_full_text(draft: dict, cap: int = 4000) -> str:
+    """초안 **전문** — 후속 턴 Refiner 와 Reviewer 가 본다.
+
+    draft_text() 는 본문을 150자로 잘라 채팅 표시엔 맞지만, 그걸 '고칠 대상'이나 '검열
+    대상'으로 주면 중복 섹션·날조 불릿·주제 이탈이 컷 밖에 숨는다(실측). 전문을 준다."""
+    if not draft or not draft.get("items"):
+        return ""
+    rows = [f"mode={draft.get('mode')} · structure={draft.get('structure') or '?'}"]
+    for i, it in enumerate(draft.get("items") or []):
+        head = [f"[{i}] {it.get('type', '')} — {it.get('summary', '')}"]
+        for k, label in (("epic", "상위"), ("parent", "부모"), ("components", "모듈"),
+                         ("labels", "라벨"), ("duedate", "마감"), ("priority", "우선순위"),
+                         ("assignee", "담당")):
+            v = it.get(k)
+            if v:
+                head.append(f"{label}={v if not isinstance(v, list) else ', '.join(map(str, v))}")
+        rows.append("  ".join(head))
+        if it.get("description"):
+            rows.append("  본문:\n  " + str(it["description"]).replace("\n", "\n  "))
+        for c in (it.get("children") or []):
+            if isinstance(c, dict):
+                rows.append(f"  └ Sub-Task: {c.get('summary', '')}"
+                            + (f" (담당 {c.get('assignee')})" if c.get("assignee") else ""))
+    return "\n".join(rows)[:cap]
+
+
+def _merge_refs(desc: str, refs: list) -> str:
+    """조사 근거를 본문의 **'참고' 섹션에 병합**한다. refs = [(중복판정키, "<li>…</li>")].
+
+    별도 <h3>References</h3> 를 덧붙이던 방식은 모델이 쓴 <h3>참고</h3> 와 무조건
+    중복됐다(실측: 참고/Knowledge/References 3벌). 섹션은 '참고' 하나다 —
+    본문에 이미 있는 키·URL 은 붙이지 않고, '참고' h3 가 없을 때만 새로 만든다."""
+    fresh = "".join(li for key, li in refs if key not in (desc or ""))
+    if not fresh:
+        return desc
+    m = _re.search(r"(<h3>\s*참고\s*</h3>\s*<ul[^>]*>)(.*?)(</ul>)", desc or "",
+                   _re.S | _re.I)
+    if m:
+        return desc[:m.end(2)] + fresh + desc[m.end(2):]
+    return (desc or "") + "<h3>참고</h3><ul>" + fresh + "</ul>"
+
+
+def _drop_unlinked_refs(desc: str) -> tuple:
+    """'참고' 섹션에서 **티켓 키도 링크도 없는 불릿**을 뺀다 → (본문, 뺀 것 목록).
+
+    링크 없는 문서 제목("아키텍처 결정 기록" 등)은 검증할 수 없다 — 실측에서 mock 코멘트
+    속 문구가 문서인 양 나열됐다. 챗 답변의 grounding 과 같은 원칙: 출처 없는 것은 안 싣는다."""
+    gone = []
+
+    def _clean(m):
+        head, body, tail = m.group(1), m.group(2), m.group(3)
+        kept = []
+        for li in _re.findall(r"<li[^>]*>.*?</li>", body, _re.S):
+            if _re.search(r"\b[A-Z][A-Z0-9]*-\d+\b", li) or "<a " in li:
+                kept.append(li)
+            else:
+                gone.append(_re.sub(r"<[^>]+>", "", li).strip()[:30])
+        return head + "".join(kept) + tail
+
+    out = _re.sub(r"(<h3>\s*참고\s*</h3>\s*<ul[^>]*>)(.*?)(</ul>)", _clean, desc or "",
+                  flags=_re.S | _re.I)
+    return out, gone
+
+
+def _topic_drift(state, items: list) -> str:
+    """원 요청의 고유어가 제목·본문 어디에도 없으면 경고 문구를 돌려준다(없으면 빈 문자열).
+
+    고유어 = 식별자(테이블명 등) + 영문 기술 토큰(4자↑, 일반어 제외). 판정은 코드가 하고
+    고칠지는 사람이 정한다 — 경고는 rationale 로 승인 카드에 노출된다."""
+    req = request_text(state)
+    if not req or not items:
+        return ""
+    try:
+        from app.agent.tools._ident import find_identifiers
+        terms = set(find_identifiers(req))
+    except Exception:
+        terms = set()
+    _COMMON = {"task", "epic", "jira", "test", "data", "table", "api", "the", "and",
+               "pipeline", "with", "for", "this"}
+    terms |= {w for w in _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{3,}", req)
+              if w.lower() not in _COMMON}
+    if not terms:
+        return ""
+    hay = " ".join(str(i.get("summary") or "") + " " + str(i.get("description") or "")
+                   for i in items).lower()
+    if any(t.lower() in hay for t in terms):
+        return ""
+    shown = ", ".join(sorted(terms)[:4])
+    return (f"(확인 필요: 원 요청의 고유어({shown})가 제목·본문에 없다 — 요청과 다른 "
+            "주제의 티켓일 수 있다. Epic 본문을 따라간 것은 아닌지 검토)")
 
 
 def as_bulk_items(draft: dict) -> list:

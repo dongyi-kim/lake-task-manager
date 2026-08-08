@@ -108,6 +108,9 @@ class AgentState(TypedDict, total=False):
 
     # ── Planner ──
     intent: str                     # Intent.*
+    request_text: str               # ★ 생성 갈래의 **원 요청**(첫 요청 턴의 사용자 문장).
+                                    #   last_user_text 는 후속 턴(질문 답변)에서 원 요청을 잃는다 —
+                                    #   실측: 제목·본문의 주제가 Epic 본문 쪽으로 끌려갔다.
     keywords: list                  # 검색에 쓸 말들(원문 그대로가 아니라 뽑아낸 것)
     module: str                     # 짐작한 모듈. 확신 없으면 빈 문자열
     mentioned_keys: list            # 사용자가 직접 댄 티켓 키
@@ -174,6 +177,15 @@ def last_user_text(state: AgentState) -> str:
         if getattr(m, "type", "") == "human":
             return str(getattr(m, "content", "") or "")
     return ""
+
+
+def request_text(state: AgentState) -> str:
+    """생성 갈래의 **원 요청** — 없으면 마지막 발화로 폴백.
+
+    질문에 답하는 후속 턴에서 last_user_text 를 '원문 요청'이라고 프롬프트에 실으면
+    원 요청("starrocks puffin ndv …")이 사라지고 답변("기한은 9/30")만 남는다 — 그 틈에
+    Epic 본문의 주제가 제목·본문을 잠식했다(실측). Planner 가 첫 요청 턴에 고정해 둔다."""
+    return (state.get("request_text") or "").strip() or last_user_text(state)
 
 
 def conversation(state: AgentState, limit: int = 12) -> str:

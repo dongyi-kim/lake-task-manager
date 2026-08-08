@@ -19,10 +19,10 @@
 from __future__ import annotations
 
 from app.agent.workflow.agents.base import StructuredAgent
-from app.agent.workflow.agents.refiner import as_bulk_items, draft_text
+from app.agent.workflow.agents.refiner import as_bulk_items, draft_full_text
 from app.agent.prompts.roles import SYSTEM_REVIEWER
 from app.agent.workflow.prompts import data_block, persona, wrap_data
-from app.agent.workflow.state import AgentState, Node, last_user_text, note
+from app.agent.workflow.state import AgentState, Node, note, request_text
 
 SCHEMA = {
     "type": "object",
@@ -61,7 +61,11 @@ class Reviewer(StructuredAgent):
             draft = state.get("draft") or {}
             items = draft.get("items") or []
             small = (len(items) == 1 and not (items[0].get("children"))
-                     and (draft.get("mode") or "task") != "epic")
+                     and (draft.get("mode") or "task") != "epic"
+                     # ★ 주제 이탈·확인 필요 경고가 붙은 초안은 우회하지 않는다 —
+                     #   작아 보여도 '틀린 작음'일 수 있다(실측: 뭉개진 단일 Task).
+                     and not draft.get("topic_drift")
+                     and "확인 필요" not in (draft.get("rationale") or ""))
             if small:
                 auto = _machine_check(state)
                 if auto["ok"]:
@@ -97,11 +101,11 @@ class Reviewer(StructuredAgent):
 - 담당자 배정은 별도 절차가 검증한다 — 담당자가 비어 있어도 문제 삼지 마라.
 - 과잉 분해(아직 방식이 안 정해졌는데 실행 단위로 쪼갠 것)도 문제로 잡는다.
 
-## 사용자의 원래 요청
-{last_user_text(state)}
+## 사용자의 원래 요청 (초안의 주제는 이 문장이어야 한다 — 다른 주제로 흘렀으면 problems 로)
+{request_text(state)}
 
-## 검열 대상 초안
-{draft_text(state.get('draft')) or '(초안 없음)'}{data}"""
+## 검열 대상 초안 (전문)
+{draft_full_text(state.get('draft')) or '(초안 없음)'}{data}"""
 
     def schema(self):
         return SCHEMA
@@ -145,11 +149,27 @@ def _machine_check(state: AgentState) -> dict:
     except Exception as e:
         return {"ok": False, "errors": [{"message": str(e)[:200]}], "warnings": [],
                 "text": f"검증을 수행하지 못했다: {str(e)[:200]}"}
+    warnings = list(r.get("warnings") or [])
+    # ★ 본문 접지 — 챗 답변에만 걸던 grounding 을 **티켓 본문에도** 건다. 없는 키·틀린
+    #   제목이 티켓에 박제되면 동적 RAG 가 그 날조를 다음 조사에서 다시 수확한다(실측:
+    #   본문의 날조는 어떤 검사도 안 거치고 통과했다). 실패는 경고로 — 판단은 사람이.
+    try:
+        from app.agent.workflow import grounding
+        body = " ".join(str(i.get("description") or "") + " " + str(i.get("summary") or "")
+                        for i in items)
+        g = grounding.check(body)
+        if not g.get("ok"):
+            for k in (g.get("fake_keys") or [])[:5]:
+                warnings.append({"index": -1, "message": f"본문의 {k} 는 실재하지 않는 티켓이다"})
+            for k, t in list((g.get("wrong_titles") or {}).items())[:3]:
+                warnings.append({"index": -1, "message": f"본문의 {k} 제목이 실제와 다르다: {t}"})
+    except Exception:
+        pass
     lines = [f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
              for e in (r.get("errors") or [])]
-    lines += [f"- (경고) [{w.get('index')}] {w.get('message')}" for w in (r.get("warnings") or [])]
+    lines += [f"- (경고) [{w.get('index')}] {w.get('message')}" for w in warnings]
     return {"ok": bool(r.get("ok")), "errors": r.get("errors") or [],
-            "warnings": r.get("warnings") or [],
+            "warnings": warnings,
             "text": "\n".join(lines) if lines else "통과 — 형식·실값 오류 없음"}
 
 

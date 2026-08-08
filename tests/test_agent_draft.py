@@ -368,3 +368,52 @@ def test_a_plain_single_task_is_not_questioned():
            "items": [dict(_draft()["items"][0])]}
     r = Refiner().apply(_msg("체크박스 하나 추가해줘"), out)
     assert not r["questions"]
+
+
+# ── Q3: 주제 가드·섹션 통일·참고 불릿 가드·하향 편향 (STARR 실측 사고의 회귀) ──
+def test_topic_drift_is_flagged_and_blocks_the_reviewer_bypass():
+    """원 요청의 고유어가 제목·본문에 없으면 경고 + Reviewer 단건 우회 금지 신호."""
+    st = _msg("이번엔 마감을 9월로", request_text="starrocks puffin ndv 통계 파이프라인 개발")
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "user_specified",
+           "items": [{"summary": "[ETL] 증분 적재용 최소 기능 파이프라인 1차 구현",
+                      "type": "Task", "description": "<h3>배경</h3><p>증분 적재</p>"}]}
+    r = Refiner().apply(st, out)
+    assert r["draft"].get("topic_drift") is True
+    assert "고유어" in r["draft"]["rationale"]
+
+
+def test_topic_kept_produces_no_drift_warning():
+    st = _msg("진행해", request_text="starrocks puffin ndv 통계 파이프라인 개발")
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "user_specified",
+           "items": [{"summary": "[ETL] StarRocks Puffin NDV 통계 생성 파이프라인 구축",
+                      "type": "Task", "description": ""}]}
+    r = Refiner().apply(st, out)
+    assert not r["draft"].get("topic_drift")
+
+
+def test_unlinked_reference_bullets_are_dropped_from_the_body():
+    """링크도 키도 없는 참고 불릿(날조 문서 제목)은 코드가 뺀다 — 실측: '아키텍처 결정 기록'."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "s", "type": "Task",
+                      "description": '<h3>참고</h3><ul><li>DL-9072 — 관련</li>'
+                                     '<li>아키텍처 결정 기록</li><li>스프린트 회의록</li></ul>'}]}
+    r = Refiner().apply(_msg("작업 만들어줘"), out)
+    d = r["draft"]["items"][0]["description"]
+    assert "아키텍처 결정 기록" not in d and "스프린트 회의록" not in d
+    assert "DL-9072" in d and "출처 없는 항목" in r["draft"]["rationale"]
+
+
+def test_understructured_single_task_gets_a_shape_question():
+    """설계·구현·검증이 다 든 단일 Task(하향 편향)는 확인 질문을 받는다 — 실측: 파이프라인
+    신규 구축이 DoD 6불릿짜리 한 덩어리로 나왔다."""
+    body = ("<h3>배경</h3><p>파이프라인 설계 후 구현하고 연동 검증과 모니터링까지</p>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            + "".join(f'<li data-checked="false">단계 {i}</li>' for i in range(6)) + "</ul>")
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [{"summary": "[ETL] 통계 파이프라인 개발", "type": "Task",
+                      "description": body}]}
+    r = Refiner().apply(_msg("통계 파이프라인 개발해야 해"), out)
+    assert r["questions"] and "Sub-Task" in str(r["questions"][0].get("options"))

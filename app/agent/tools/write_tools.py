@@ -241,7 +241,7 @@ def create_epic(summary: str, approval_token: str, epic_name: str = "",
     """**최상위 Epic 을 만든다**. 사용자 승인 토큰이 반드시 필요하다.
 
     summary 는 Epic 의 요약(제목), epic_name 은 짧은 단축어(WBS·뱃지에 표시 — 비우면
-    summary 로). description 은 HTML(배경/완료 기준/References 구조).
+    summary 로). description 은 HTML(배경/목표/완료 기준 구조 — 참고는 자동 병합).
     Task/Sub-Task 는 이 도구가 아니라 create_tickets 로 — Epic 이 먼저 실재해야
     그 밑에 달 수 있다(생성 후 두 번째 승인으로 이어진다).
     """

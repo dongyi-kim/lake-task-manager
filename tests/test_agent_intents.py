@@ -246,9 +246,9 @@ def test_pmo_vit_label_is_stripped_unless_user_asked(monkeypatch):
     assert "PMO_VIT" in got2["draft"]["items"][0]["labels"]
 
 
-def test_references_are_stamped_into_every_draft_description():
-    """조사 결과(References)를 티켓에 박제한다 — 대화는 증발하지만 티켓은 RAG 가 다시 수확한다.
-    습관을 프롬프트에 맡기지 않고 코드가 보장한다."""
+def test_references_are_merged_into_the_참고_section():
+    """조사 근거를 티켓에 박제하되 — 섹션은 '참고' **하나**다. 별도 References h3 를
+    덧붙이던 방식은 모델이 쓴 <h3>참고</h3> 와 무조건 중복됐다(실측: 3벌·한영 혼재)."""
     from langchain_core.messages import HumanMessage
     from app.agent.workflow.agents.refiner import Refiner
     st = {"messages": [HumanMessage(content="CDC 도입")], "trace": [],
@@ -258,13 +258,15 @@ def test_references_are_stamped_into_every_draft_description():
            "items": [{"summary": "s", "type": "Task", "description": "<h3>배경</h3><p>x</p>"}]}
     got = Refiner().apply(st, out)
     d = got["draft"]["items"][0]["description"]
-    assert "References" in d and "DL-118" in d and "https://conf/x" in d
-    # 이미 References 를 적었으면 중복으로 붙이지 않는다
+    assert "References" not in d and d.count("<h3>참고</h3>") == 1
+    assert "DL-118" in d and "https://conf/x" in d
+    # 모델이 이미 '참고'를 적었으면 그 ul 에 **병합**되고, 이미 있는 키는 다시 붙지 않는다
     out2 = {"questions": [], "mode": "task", "rationale": "",
             "items": [{"summary": "s", "type": "Task",
-                       "description": "<h3>References</h3><ul><li>DL-1</li></ul>"}]}
+                       "description": "<h3>참고</h3><ul><li>DL-118 — 이미 적음</li></ul>"}]}
     d2 = Refiner().apply(st, out2)["draft"]["items"][0]["description"]
-    assert d2.count("References") == 1
+    assert d2.count("<h3>참고</h3>") == 1 and d2.count("DL-118") == 1
+    assert "https://conf/x" in d2      # 없던 문서는 병합된다
 
 
 def test_comment_only_change_plan_goes_through_approval(monkeypatch):
