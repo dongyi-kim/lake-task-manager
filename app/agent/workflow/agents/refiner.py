@@ -214,6 +214,14 @@ class Refiner(ToolAgent):
                           and not ((out.get("change_plan") or {}).get("key"))
                           and (_said_defaults(state) or state.get("bulk_targets"))
                           and (state.get("situation") or "").strip())
+                # 초안 수정 요청인데 수정본(items)도 유효한 변경 계획도 없다 — 말로만
+                # 설명하고 끝(실측 2회). mentioned_keys 는 오염될 수 있어 조건에 안 쓴다.
+                cp0 = out.get("change_plan") or {}
+                dodged = dodged or (
+                    (state.get("intent") or "") == "modify"
+                    and bool((state.get("draft") or {}).get("items"))
+                    and not ((out.get("draft") or {}).get("items"))
+                    and not (cp0.get("key") or cp0.get("keys")))
             except Exception:
                 dodged = False
             if dodged and not Refiner._force_draft:
@@ -244,10 +252,10 @@ class Refiner(ToolAgent):
         extra = ("\n\n★ 되묻기 횟수를 다 썼다. **더 묻지 말고** 아는 것만으로 초안을 만들어라. "
                  "모르는 필드는 비워 두고 rationale 에 '확인 필요'로 남긴다." if forced else "")
         if Refiner._force_draft:
-            extra += ("\n\n★★ 직전 시도는 사용자의 위임('알아서')을 어기고 질문만 냈다. "
-                      "이번에는 **questions 를 반드시 빈 배열**로 하고, 지금 아는 것과 "
-                      "기본값으로 items 를 완성하라. 미확정 사항은 rationale 에 적는다 — "
-                      "질문만 내고 초안이 없으면 이 턴은 실패다.")
+            extra += ("\n\n★★ 직전 시도는 요구된 산출물을 내지 않았다. 이번에는 **questions 를 "
+                      "반드시 빈 배열**로 하고 items 를 완성하라. 초안 수정 요청이면 "
+                      "'지금 고치고 있는 초안'의 items 에 요청 사항을 반영한 **수정본 전체**를 "
+                      "다시 내라(설명이 아니라 items 로). 미확정 사항은 rationale 에 적는다.")
         # 정적 지시는 prompts/roles/refiner.md — 동적 경고(횟수 소진)만 코드가 덧붙인다.
         return persona(state, SYSTEM_REFINER + extra)
 
@@ -279,6 +287,11 @@ class Refiner(ToolAgent):
 - 원인으로 의심되는 기존 티켓이 조사에서 나왔으면 description 에 키를 적어라.
 - 이미 같은 증상의 Bug 가 열려 있으면 **새로 만들지 말고** questions 로 사용자 판단을 구하라.
 - 버그는 대개 쪼갤 필요가 없다 — Bug 하나면 된다. Sub-Task 로 나누지 마라."""
+        elif (state.get("intent") or "") == Intent.MODIFY                 and not state.get("mentioned_keys")                 and (state.get("draft") or {}).get("items"):
+            goal = """승인 대기 중인 **초안을 고치는 요청**이다 — 기존 티켓의 변경 계획(change)이
+아니다. '지금 고치고 있는 초안' 자료의 items 를 요청대로 수정해 **items 전체를 다시** 내라
+(문제 삼지 않은 부분은 유지). change 는 만들지 마라. questions 도 내지 마라 —
+수정본이 곧 새 승인 카드가 된다."""
         elif (state.get("intent") or "") == Intent.MODIFY:
             goal = """기존 티켓의 **변경 계획**(change)을 만들어라. items 는 빈 배열로 둔다.
 - key 는 조사에서 **실재가 확인된** 티켓만. 사용자가 댄 키가 조사에 없으면 questions 로 확인하라.
@@ -296,7 +309,11 @@ class Refiner(ToolAgent):
   계획을 완성해서 내면 사용자가 카드에서 승인/취소한다.
 - ★ 아래 제약조건의 Epic·컴포넌트·라벨 **배치 규칙은 생성용이다** — 변경 계획에서는 Epic
   선택을 묻지 마라(수정과 무관하다). '일괄 수정 대상' 자료가 있으면 물을 것이 없다 —
-  keys 에 전부 담고 바꿀 필드만 채워 계획을 완성하라."""
+  keys 에 전부 담고 바꿀 필드만 채워 계획을 완성하라.
+- ★ **삭제 요청("티켓 삭제해줘")은 지원되지 않는다** — Jira 삭제는 복구 불가라 이 도구에
+  없다. change 도 items 도 만들지 말고, rationale 에 "삭제는 지원되지 않음"을 적어라 —
+  대안(상태를 닫음/보관으로 전이, 라벨로 보관 표시)을 한 줄 제안하라. 삭제 작업을 하는
+  **새 Task 를 만드는 것은 오답**이다(실측)."""
         elif (state.get("intent") or "") == Intent.PLAN_WORK \
                 and not (state.get("situation") or "").strip():
             # ── 해석 확인 턴(조사 전) — 혼자 오래 조사하고 한 번에 결론 내는 호흡이
@@ -886,6 +903,28 @@ class Refiner(ToolAgent):
                 qs = []
                 items.clear()          # 수정 요청에 초안을 만들었어도 계획이 이긴다(참조 공유)
 
+        # 삭제 요청 — 지원되지 않는다. 모델이 빈 변경+코멘트 카드를 만들던 것(실측)을 코드가
+        # 막는다: 카드 없이 사유·대안만 답하게 한다.
+        if plan and not plan.get("changes") \
+                and _re.search(r"삭제|지워\s*줘|없애",
+                               request_text(state) + " " + last_user_text(state)):
+            plan = {}
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(삭제는 지원되지 않는다 — 상태 전이(닫음)나 보관 라벨을 "
+                                  "대안으로 안내)").strip()
+        # 초안 수정 요청인데 기존 티켓 변경 계획을 냈다(실측: DL-109 로 샜다 — 사용자는
+        # 그 키를 입에 올린 적이 없다) — 버린다. 판정은 **사용자 발화에 그 키가 있는가**로
+        # 한다(mentioned_keys 는 모델·이월로 오염될 수 있다).
+        if plan and plan.get("key") \
+                and ((state.get("draft") or {}).get("items")) and not items:
+            said_by_user = " ".join(str(getattr(m, "content", "") or "")
+                                    for m in (state.get("messages") or [])
+                                    if getattr(m, "type", "") == "human")
+            if plan["key"] not in said_by_user:
+                plan = {}
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(승인 대기 초안에 대한 수정 요청 — 기존 티켓 변경이 "
+                                      "아니라 초안을 고쳐야 한다)").strip()
         # 가드들이 out["rationale"] 에 덧붙인 경고(Epic 불일치·컴포넌트 정리 등)를 초안에 반영한다
         # — draft 는 items 를 참조로 공유하지만 rationale 은 문자열이라 여기서 맞춰 줘야 한다.
         draft["rationale"] = out.get("rationale") or draft.get("rationale") or ""

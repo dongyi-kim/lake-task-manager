@@ -83,6 +83,10 @@ def route_after_planner(state: AgentState) -> str:
     #    변경 요청에 과거 이력 발굴은 대개 불필요하다.
     if intent == Intent.MODIFY and state.get("mentioned_keys"):
         return "refine"
+    # ②-b 승인 대기 초안에 대한 피드백("본문에 롤백 계획도 추가해줘")은 기존 티켓 수정이
+    #    아니라 **초안 수정**이다 — 실측: 엉뚱한 기존 티켓(DL-5106)의 변경 계획이 나왔다.
+    if intent == Intent.MODIFY and not state.get("mentioned_keys")             and (state.get("draft") or {}).get("items"):
+        return "refine"    # approval_token 은 턴마다 리셋되므로 조건에 못 쓴다
     # ③ 해석 확인 선행 — 막연한 신규 개발 요청은 **조사보다 사용자 확인이 먼저**다.
     #    실측(STARR NDV): 혼자 오래 조사하고 한 번에 결론을 내니 방향이 틀렸다. 조사 전에
     #    해석·범위를 2~3문항으로 확인받으면 조사가 짧고 정확해진다(사용자 피드백: 일방적

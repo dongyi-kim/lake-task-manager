@@ -66,16 +66,22 @@ def check(reply: str) -> dict:
     for key, real in real_titles.items():
         if not real:
             continue
-        m = re.search(rf"{re.escape(key)}\**\s*[:(]\s*([^)\n**]{{4,80}})", text) \
-            or re.search(rf"{re.escape(key)}\**\s*[\"“'']([^\"”'\n]{{4,80}})[\"”'']", text)
-        if not m:
+        claims = [mm.group(1).strip().rstrip(")").strip() for mm in
+                  re.finditer(rf"{re.escape(key)}\**\s*[:(]\s*([^)\n**]{{4,80}})", text)]
+        claims += [mm.group(1).strip() for mm in
+                   re.finditer(rf"{re.escape(key)}\**\s*[\"“'']([^\"”'\n]{{4,80}})[\"”'']", text)]
+        claims = [c for c in claims if c]
+        if not claims:
             continue
-        claimed = m.group(1).strip().rstrip(")").strip()
         # 실제 제목의 핵심 토큰이 하나도 안 겹치면 다른 제목을 단정한 것으로 본다.
         # (요약·의역은 허용해야 하므로 완전 일치를 요구하지 않는다.)
+        # 후보 표기 중 **하나라도** 겹치면 제목을 안 것이다 — 콜론 뒤 상태 서술
+        # ("DL-9090: 현재 2/3 완료")이 첫 후보로 잡혀 정확한 따옴표 제목이 무시되던 오탐 방지.
         real_tokens = {t for t in re.split(r"[\s\[\]()\-—·/]+", real) if len(t) >= 2}
-        claim_tokens = {t for t in re.split(r"[\s\[\]()\-—·/]+", claimed) if len(t) >= 2}
-        if real_tokens and claim_tokens and not (real_tokens & claim_tokens):
+        claim_sets = [{t for t in re.split(r"[\s\[\]()\-—·/]+", c) if len(t) >= 2}
+                      for c in claims]
+        claim_sets = [cs for cs in claim_sets if cs]
+        if real_tokens and claim_sets and not any(cs & real_tokens for cs in claim_sets):
             wrong_titles[key] = real
 
     fake_people = []
@@ -103,8 +109,12 @@ def check(reply: str) -> dict:
         # 후자는 역할 낱말이 제목 줄에만 있고 항목 줄엔 없어서 NAME_RE 가 놓쳤다(실측).
         names = [(m.group(1) or m.group(2) or "").strip() for m in NAME_RE.finditer(text)]
         names += [m.group(1).strip() for m in KEY_NAME_RE.finditer(text)]
+        # 상태·시간 낱말은 사람이 아니다 — "DL-9090: 현재 2/3 완료" 의 '현재'가 인물로
+        # 걸렸다(실측 오탐). 이 목록은 오탐이 관측될 때마다 늘린다.
+        _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감",
+                      "상태", "예정", "검토", "확인", "미정", "없음", "전체"}
         for name in names:
-            if not name or name in seen or UID_RE.match(name):
+            if not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES:
                 continue
             seen.add(name)
             if not (search_users(c, s, name) or []):
