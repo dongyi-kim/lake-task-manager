@@ -85,6 +85,49 @@ CASES = [
     ("EDGE13", "변칙 — 모호+오타+복합", [
         "카탈로그쪽 메타 등록 안된 태이블들 정리하는 일 누가 하면 좋을지랑 지금 상황 알려줘"],
      None, lambda o, _: len(o.get("reply") or "") > 100 and "skcc." in (o.get("reply") or "")),
+
+    # ── 지식 추론(DATA*) — 답이 한 티켓에 없다. 여러 티켓·코멘트·changelog·문서를 이어야 나온다.
+    #    데이터셋 질의(DATA1~3,5,6)는 **값 자체를 단언**한다. 틀린 값을 그럴듯하게 말하는 것이
+    #    이 유형의 실패라서, 문장 품질(judge)만으로는 통과시키면 안 된다.
+    ("DATA1", "적재주기 — 변경 티켓 changelog + 코멘트 + 문서를 이어야 나오는 현재 값", [
+        "fdc.fdc_trace_summary_ic 데이터의 현재 적재주기는?"],
+     "ask", lambda o, _: ("30분" in (o.get("reply") or "")
+                          and "DL-9044" in (o.get("reply") or "")
+                          # 변경 전 값(2시간)을 '현재'로 말하면 실패 — 언급하려면 과거로만
+                          and not re.search(r"현재[^.\n]{0,20}2시간", o.get("reply") or ""))),
+
+    ("DATA2", "스키마 + 변경 히스토리 — 컬럼은 문서 본문(발췌 밖)에만 전부 있다", [
+        "fdc.fdc_trace_summary_ic 스키마 정보랑 지금까지 변경 히스토리 알려줘"],
+     "ask", lambda o, _: (_has(o, "CHAMBER_ID", "DL-9045")
+                          and (o.get("reply") or "").count("DL-") >= 2)),
+
+    ("DATA3", "적재 job 이름 + 작업자 — 옛 job 이름을 현재로 말하면 실패", [
+        "fdc.fdc_trace_summary_ic 를 적재하는 job 이름이랑 작업자가 누구야?"],
+     "ask", lambda o, _: ("etl_fdc_trace_summary_ic_30m" in (o.get("reply") or "")
+                          and "skcc.x1042" in (o.get("reply") or ""))),
+
+    ("DATA4", "부분 지식 — 있는 것은 말하고 없는 것은 없다고", [
+        "eqp.eqp_sensor_raw_1s 적재주기랑 스키마 컬럼 알려줘"],
+     "ask", lambda o, _: (any(w in (o.get("reply") or "") for w in ("실시간", "스트리밍"))
+                          and any(w in (o.get("reply") or "")
+                                  for w in ("확인된 기록", "기록 없음", "확인되지 않", "찾지 못")))),
+
+    ("DATA5", "미지 대상 — 정직한 '없음' + 다른 테이블 사실 전이 금지(이 유형의 전형적 실패)", [
+        "mes.mes_wip_move_hist 적재주기랑 담당자 알려줘"],
+     "ask", lambda o, _: (any(w in (o.get("reply") or "")
+                              for w in ("확인된 기록", "기록 없음", "확인되지 않", "찾지 못"))
+                          and not any(k in (o.get("reply") or "")
+                                      for k in ("DL-9042", "DL-9044", "30분", "2시간")))),
+
+    ("DATA6", "교차 비교 — 두 테이블의 사실이 서로 다른 티켓 코멘트에 있다(멀티턴)", [
+        "yms.yms_lot_yield_daily 랑 fdc.fdc_trace_summary_ic 는 뭐가 달라?",
+        "그럼 두 테이블 적재주기를 각각 알려줘"],
+     None, lambda o, _: _has(o, "4시간", "30분")),
+
+    ("DATA7", "테이블이 아닌 주제 — 특정 기술의 사내 현황·현재 정책", [
+        "Schema Registry 우리 어떻게 쓰고 있고 호환성 정책은 지금 뭐야?"],
+     "ask", lambda o, _: ("FULL" in (o.get("reply") or "")
+                          and "DL-9071" in (o.get("reply") or ""))),
 ]
 
 JUDGE_SYS = (

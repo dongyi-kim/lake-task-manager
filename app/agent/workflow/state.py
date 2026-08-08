@@ -113,6 +113,14 @@ class AgentState(TypedDict, total=False):
     mentioned_keys: list            # 사용자가 직접 댄 티켓 키
     sufficient: bool                # 되묻지 않고 진행해도 되나
 
+    # ── Historian 사전 취합(코드가 만든 자료) ──
+    # 선언이 없으면 LangGraph 가 반환값에서 이 키들을 버린다 — 실제로 그래서 Curator 의
+    # "사전 조사" 블록이 늘 비어 있었다(노드 안 지역 사본으로만 존재했다).
+    pre_survey: str                 # 키워드·의미 검색 결과
+    seed_map: str                   # 언급된 티켓 주변 지도(계보·링크·참여자)
+    web_context: str                # 웹·GitHub 조사 결과
+    topic_dossier: str              # 주제 한 건(테이블·기술·업무)에 얽힌 조각 전부
+
     # ── Historian ──
     situation: str                  # "현재 상황" 서술 — 사용자에게 그대로 보인다
     evidence: list                  # [{"key","title","why"}] 근거. 출처 없는 서술은 금지

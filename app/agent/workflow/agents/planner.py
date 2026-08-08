@@ -35,7 +35,9 @@ SCHEMA = {
         "keywords": {
             "type": "array", "items": {"type": "string"},
             "description": "검색에 쓸 핵심어 2~5개. 원문을 그대로 넣지 말고 명사구로 뽑아라. "
-                           "약어와 풀어쓴 말을 함께 넣으면 좋다(예: CDC, 변경데이터캡처, 실시간 수집)",
+                           "약어와 풀어쓴 말을 함께 넣으면 좋다(예: CDC, 변경데이터캡처, 실시간 수집). "
+                           "★ 테이블·Job·제품 이름 같은 **식별자는 원형 그대로** 한 덩어리로 넣어라 "
+                           "— 'fdc.fdc_trace_summary_ic' 를 fdc/trace/summary 로 쪼개면 검색이 깨진다",
         },
         "module": {
             "type": "string",
@@ -54,7 +56,7 @@ SCHEMA = {
             "type": "string",
             "enum": ["", "epic_create", "task_create", "bug_report", "subtask_bulk",
                      "find_people", "find_tickets", "knowledge", "history", "workload",
-                     "assign_fit"],
+                     "assign_fit", "asset_lookup"],
             "description": "요청이 전형적 패턴이면 해당 플레이북 — 사전 정의 플로우가 전 역할에 "
                            "주입돼 실수를 막는다. 애매하면 빈 문자열(자유 진행)",
         },
@@ -114,12 +116,19 @@ class Planner(StructuredAgent):
 - "DL-207 담당자를 x1103 으로 바꿔줘" → modify
 - "DL-207 마감을 다음 주로 미루고 사유도 코멘트로 남겨줘" → modify (★ 코멘트 요청이 섞여도
   기존 티켓의 속성을 바꾸는 것이 본론이면 modify — plan_work 가 아니다)
+- "fdc.fdc_trace_summary_ic 데이터의 현재 적재주기는?" → ask (★ **자산의 속성 조회는
+  progress 가 아니다** — 진척률이 아니라 기록에 적힌 사실을 찾는 일이다)
+- "yms.yms_lot_yield_daily 스키마랑 변경 히스토리 알려줘" → ask
+- "fdc.fdc_trace_summary_ic 적재하는 job 이름이랑 작업자 누구야?" → ask (★ '누구'가 나와도
+  activity 가 아니다 — 사람의 활동이 아니라 **기록에 적힌 담당**을 찾는다)
+- "Schema Registry 우리 어떻게 쓰고 있고 호환성 정책은 뭐야?" → ask (특정 기술의 사내 현황)
 
 ## 계획(plan) 예시 — 의도별 표준 플랜(상황 맞게 다듬어 써라)
 - plan_work: "사내 이력 검색 → (신기술이면 웹 조사) → 되묻기/초안 → 담당 후보 → 검증 → 승인"
 - report_bug: "같은 증상 Bug 검색 → 재현경로 확인 → Bug 초안 → 담당 후보 → 승인"
 - ask(지식): "사내 이력+의미 검색 → 웹 보강 → 개념/우리 상황/공백 정리"
 - ask(적합성): "티켓 열람 → 후보 이력·워크로드 확인 → 근거 판단"
+- ask(자산·주제 조사): "이름으로 언급 추적(코멘트 포함) → 변경 이력 확인 → 문서 본문 → 현재 값 확정"
 - my_day: "내 일감 조회 → 지연·마감·정체 순위 → 오늘 우선순위 제안"
 - progress: "대상 확정 → 진척률/조건 조회(JQL) → 분모 규칙과 함께 보고"
 - activity: "로스터 확정 → 전원 활동 취합 → 로스터/모듈/개인 3층 정리"

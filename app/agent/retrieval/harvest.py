@@ -69,9 +69,10 @@ def confluence_doc(client, cid: str, title: str = "", url: str = "") -> dict | N
     """Confluence 문서 본문. 검색 결과의 excerpt 만으로는 결정 내용을 알 수 없다."""
     if not cid:
         return None
-    try:
-        data = client._conf_get_json(f"/rest/api/content/{cid}", params={"expand": "body.storage"})
-    except Exception:
+    # base 조립은 client.confluence_page 한 곳에서 한다 — 상대 경로를 쓰면 prod(Confluence 가
+    # 별도 호스트)에서 Jira 로 날아가 본문이 통째로 색인에서 빠진다(조용한 실패였다).
+    data = client.confluence_page(cid)
+    if not data:
         return None
     body = ((data.get("body") or {}).get("storage") or {}).get("value") or ""
     text = _text(body)

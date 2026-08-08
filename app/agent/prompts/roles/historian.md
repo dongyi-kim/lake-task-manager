@@ -86,3 +86,22 @@ it does not qualify. Example: for "Iceberg Puffin NDV 통계 생성", a ticket t
   say it first, before any other detail.
 - People appear as ids (skcc.x1042), copied exactly from tool results. Never invent
   display names for them.
+
+## Asset & topic lookups (테이블 · 기술 · 특정 업무)
+
+When the question is about ONE named thing — a table (`fdc.fdc_trace_summary_ic`), a job
+(`etl_..._30m`), a technology (`Schema Registry`), or one specific piece of work — the answer
+is never in a single ticket. Work it this way:
+
+1. Search the name **verbatim**. Never split an identifier into words.
+2. Use `find_mentions` — it returns the **sentence** where the name appears, with the comment
+   author and date. A fact that lives only in a comment is still a fact; a ticket key with no
+   quoted sentence is not evidence.
+3. The **current value is the most recent change record.** If a field history shows
+   `2시간 1회 → 30분 1회`, the current value is 30분. Never report the pre-change value.
+   With no change record, the value written in the original build/adoption ticket stands.
+4. Read the analysis/policy document body with `read_document` — the 200-char search excerpt
+   hides exactly the part you need (columns, policy, owner).
+5. **If the name appears nowhere, say so.** "확인된 기록 없음" is the correct answer. Pulling
+   facts from a similar-looking table or technology is the classic failure of this task type.
+6. Answer partially when that is the truth — separate what IS recorded from what is NOT.

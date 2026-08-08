@@ -56,6 +56,19 @@ def search_work_history(query: str, limit: int = 8) -> dict:
         return search_all(c, s, q, scope="all", limit=lim)
 
     r = _hit(query)
+    # 테이블·Job 이름이 들어온 질의는 **접미형(스키마 제거)으로 한 번 더** 본다 —
+    # 같은 테이블을 어떤 코멘트는 `fdc_trace_summary_ic`, 어떤 티켓은 `fdc.fdc_...` 로 적는다.
+    # 부분문자열 매칭이라 접미형이 상위집합이므로, 원 질의가 빈 경우 여기서 회복된다.
+    if not ((r.get("jira") or {}).get("items")):
+        from app.agent.tools._ident import find_identifiers, variants
+        for ident in find_identifiers(query)[:1]:
+            for v in variants(ident):
+                if v == query:
+                    continue
+                r2 = _hit(v)
+                if (r2.get("jira") or {}).get("items"):
+                    r = r2
+                    break
     # ── 완화 사다리: 검색은 전 토큰 AND 매칭이라 노이즈 단어 하나가 결과를 0으로 만든다.
     # 실측: "UI 회귀 검증 픽스처 테스크" — '테스크'가 제목에 없어서 실존 티켓(DL-9000)을
     # 못 찾고 "이력 없음"으로 답했다. 모델에게 검색어를 다시 쓰라고 시키는 대신 코드가
@@ -71,8 +84,11 @@ def search_work_history(query: str, limit: int = 8) -> dict:
         if not ((r.get("jira") or {}).get("items")) and len(toks) > 1:
             import re as _re2
             score, seen, core_hit = {}, {}, {}
-            # 핵심 토큰 = 영문 기술 용어(Iceberg·Puffin·NDV·CDC…). 이게 질의의 정체성이다.
-            core = [t for t in toks if _re2.fullmatch(r"[A-Za-z][A-Za-z0-9.-]{1,}", t)]
+            # 핵심 토큰 = 영문 기술 용어(Iceberg·Puffin·NDV·CDC…)와 **데이터 자산 이름**.
+            # `_` 를 빼먹었던 탓에 `fdc.fdc_trace_summary_ic` 가 core 로 안 잡혔고, 그 결과
+            # 아래 core_hit 가드가 테이블 질문에서만 무력화돼(core 가 비면 통과) 무관한
+            # 티켓이 "관련 이력"으로 나갔다.
+            core = [t for t in toks if _re2.fullmatch(r"[A-Za-z][A-Za-z0-9._-]{1,}", t)]
             for t in toks:
                 for it in (_hit(t).get("jira") or {}).get("items") or []:
                     k = it.get("key")
@@ -193,6 +209,122 @@ def get_ticket(key: str, comment_limit: int = 5) -> dict:
     except Exception as e:                      # 코멘트가 막혀도 티켓 본문은 쓸모가 있다
         out["comments_error"] = str(e)[:200]
     return out
+
+
+def _strip(html_or_text: str) -> str:
+    """태그·하이라이트 마크를 벗긴 평문. `<mark>` 는 화면용이라 모델에겐 소음이다."""
+    import re as _re
+    return _re.sub(r"\s+", " ", _re.sub(r"<[^>]+>", " ", str(html_or_text or ""))).strip()
+
+
+def _snippet(hay: str, term: str, width: int = 120) -> str:
+    """`term` 이 나온 자리 앞뒤를 잘라 인용문을 만든다. 없으면 빈 문자열."""
+    text = _strip(hay)
+    i = text.lower().find((term or "").lower())
+    if i < 0:
+        return ""
+    a, b = max(0, i - width), min(len(text), i + len(term) + width)
+    return ("…" if a else "") + text[a:b] + ("…" if b < len(text) else "")
+
+
+@tool
+def find_mentions(term: str, limit: int = 8) -> dict:
+    """어떤 **말이 실제로 어디에 적혀 있는지** 찾는다 — 티켓 본문과 **코멘트 원문까지**.
+
+    테이블명·Job 이름·기술 용어처럼 **정확한 낱말**을 추적할 때 쓴다
+    ("fdc.fdc_trace_summary_ic", "etl_yms_lot_yield_daily", "적재주기").
+    search_work_history 는 제목만 돌려주므로 "왜 이 티켓이 걸렸는지"를 알 수 없다.
+    이 도구는 **그 말이 나온 문장을 작성자·날짜와 함께** 돌려주므로, 코멘트에만 적힌 사실
+    (주기 변경·담당 인수인계·다른 테이블과의 비교)을 근거로 인용할 수 있다.
+
+    한 낱말당 **한 번만** 부른다(티켓 본문·코멘트를 여러 건 여는 비싼 조회다).
+    돌려주는 것: {"hits": [{key,title,where(summary|description|comment),author,date,snippet}],
+                 "documents": [{title,url,excerpt}]}
+    아무 데도 안 나오면 hits 가 빈 배열이다 — 그때는 **기록이 없는 것**이고, 비슷한 다른
+    테이블의 사실을 가져다 붙이면 안 된다.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.agent.tools._ident import variants
+    from app.domain.search import search_all
+    c, s = client(), settings()
+    term = (term or "").strip()
+    if not term:
+        return {"term": "", "hits": [], "documents": []}
+    lim = max(1, min(int(limit or 8), 12))
+    vs = variants(term) or [term]
+
+    # 표기 변형별로 검색(접미형이 상위집합) — 키는 합집합, 문서는 먼저 나온 것.
+    seen, docs = {}, []
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        for r in ex.map(lambda v: search_all(c, s, v, scope="all", limit=lim + 4), vs):
+            for it in (r.get("jira") or {}).get("items") or []:
+                seen.setdefault(it.get("key"), it)
+            for d in (r.get("confluence") or {}).get("items") or []:
+                if d.get("title") and all(d["title"] != x["title"] for x in docs):
+                    docs.append({"title": _strip(d.get("title")), "url": d.get("url") or "",
+                                 "excerpt": trim(_strip(d.get("excerpt") or d.get("snippet")), 200)})
+
+    keys = [k for k in list(seen)[:lim] if k]
+
+    def _dig(key):
+        """티켓 하나에서 term 이 적힌 자리를 찾는다 — 요약 → 본문 → 코멘트 순."""
+        rows = []
+        try:
+            raw = c.get_issue(key) or {}
+            f = raw.get("fields") or {}
+            title = f.get("summary") or key
+            for where, hay in (("summary", title), ("description", f.get("description"))):
+                sn = _snippet(hay, term)
+                if sn:
+                    rows.append({"key": key, "title": title, "where": where, "snippet": sn})
+                    break        # 요약에 있으면 본문까지 인용할 이유는 없다
+            for cm in (c.issue_comments(key, 20) or []):
+                sn = _snippet(cm.get("html") or cm.get("body"), term)
+                if sn:
+                    rows.append({"key": key, "title": title, "where": "comment",
+                                 "author": cm.get("authorId") or cm.get("author"),
+                                 "date": (cm.get("date") or "")[:10], "snippet": sn})
+        except Exception:
+            pass                 # 한 티켓이 막혀도 나머지 인용은 살린다
+        return rows
+
+    hits = []
+    if keys:
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            for rows in ex.map(_dig, keys):
+                hits.extend(rows)
+    # 변형 표기로 찾아 term 자체는 안 보이는 티켓도 있다 — 제목만이라도 남긴다.
+    for k in keys:
+        if not any(h["key"] == k for h in hits):
+            hits.append({"key": k, "title": (seen[k] or {}).get("title") or k,
+                         "where": "summary", "snippet": ""})
+    return {"term": term, "variants": vs, "count": len(hits),
+            "hits": [compact(h) for h in hits[:24]], "documents": docs[:5]}
+
+
+@tool
+def read_document(url_or_id: str) -> dict:
+    """Confluence 문서 **본문을 읽는다**. 검색 결과의 발췌(200자)로는 결정 내용을 알 수 없다.
+
+    search_work_history·find_mentions·get_ticket_context 가 준 문서 URL 을 그대로 넣는다
+    (페이지 id 숫자만 넣어도 된다). 분석·설계·정책 문서는 본문에 답이 있고 제목엔 없다.
+
+    돌려주는 것: {"title","url","updated","text"} — 본문은 앞부분 3000자.
+    """
+    from app.agent.retrieval.harvest import _conf_id
+    c = client()
+    raw = str(url_or_id or "").strip()
+    cid = _conf_id(raw) or (raw if raw.isdigit() else "")
+    if not cid:
+        return {"error": "문서 id 를 찾지 못했습니다. Confluence 페이지 URL 이나 페이지 id 를 넣으세요."}
+    data = c.confluence_page(cid)
+    if not data:
+        return {"error": f"문서 {cid} 를 읽지 못했습니다."}
+    body = ((data.get("body") or {}).get("storage") or {}).get("value") or ""
+    return compact({"title": data.get("title") or "", "url": raw if raw.startswith("http") else "",
+                    "updated": ((data.get("version") or {}).get("when") or "")[:10],
+                    "text": trim(_strip(body), 3000)})
 
 
 @tool

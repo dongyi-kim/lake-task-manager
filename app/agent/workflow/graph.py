@@ -84,6 +84,13 @@ def route_after_planner(state: AgentState) -> str:
     if intent == Intent.MODIFY and state.get("mentioned_keys"):
         return "refine"
     if intent in Intent.DIRECT_ANSWER:
+        # 데이터 자산 질문("fdc.fdc_trace_summary_ic 적재주기는?")이 progress/activity 로
+        # 오분류되면 회복이 불가능하다 — pmo 노드에는 검색 도구가 아예 없어서 테이블 이름을
+        # 어디서도 못 찾는다. 분류 실수를 프롬프트로 줄이는 것과 별개로, 코드가 막는다.
+        from app.agent.tools._ident import find_identifiers
+        from app.agent.workflow.state import last_user_text
+        if not state.get("mentioned_keys") and find_identifiers(last_user_text(state)):
+            return "investigate"
         return "pmo"
     return "investigate"
 
@@ -104,8 +111,16 @@ def route_after_historian(state: AgentState) -> str:
         # 않는다 — Curator 스키마엔 사람이 없어서 개념 강의로 새 버린다(실측).
         people_ish = any(w in asked for w in ("누가", "누구에게", "맡", "적절", "추천",
                                               "관련자", "유관자", "활동"))
-        if not people_ish and any(w in asked for w in ("뭐야", "무엇", "뭔지", "정리", "설명",
-                                                       "알려줘", "지식", "개념", "어떻게 쓰")):
+        if people_ish:
+            return "respond"
+        # 데이터 자산 질문은 키워드 목록에 안 걸린다("적재주기는?"). 식별자로 판정한다 —
+        # 조각을 모은 답일수록 개념/우리 상황/출처/공백 구조로 정리돼야 쓸모가 있고,
+        # 특히 **무엇을 확인 못 했는지(gaps)** 가 이 질문 유형의 값어치다.
+        from app.agent.tools._ident import find_identifiers
+        if find_identifiers(asked):
+            return "curate"
+        if any(w in asked for w in ("뭐야", "무엇", "뭔지", "정리", "설명",
+                                    "알려줘", "지식", "개념", "어떻게 쓰")):
             return "curate"
     return "respond"
 

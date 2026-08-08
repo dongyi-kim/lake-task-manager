@@ -60,10 +60,18 @@ class Curator(StructuredAgent):
                 f"- {e.get('key', '')} {e.get('title', '')} — {e.get('why', '')}"
                 for e in (state.get("evidence") or []))),
             data_block("사전 조사(키워드·의미 검색)", state.get("pre_survey")),
+            data_block("주제 조사 자료(티켓·코멘트 인용·필드 변경 이력·문서 본문)",
+                       state.get("topic_dossier")),
             data_block("외부 기술 조사(웹·GitHub)", state.get("web_context")))
         return f"""\
 # 명령서
 아래 자료를 지식 브리프(개념/우리 상황/참고/공백)로 정리하라. 새 조사는 하지 마라.
+
+## 제약조건
+- 자료에 없는 값(적재주기·컬럼·Job 이름·담당자)을 지어내지 마라. 확인 못 한 것은 **gaps**
+  에 그대로 적는다 — 무엇을 모르는지 밝히는 것이 이 브리프의 값어치다.
+- 사실마다 **티켓 키·문서 제목**을 our_context 문장 안에 함께 적는다.
+- 속성의 **현재 값은 가장 최근 변경 기록**이다. 변경 전 값을 현재 값으로 적지 마라.
 
 ## 질문
 {last_user_text(state)}{data}"""

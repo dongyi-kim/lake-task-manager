@@ -118,11 +118,13 @@ class World:
         # ★ 픽스처는 맨 마지막 — 위 자동 생성기들이 픽스처 내용을 덮어쓰지 않게
         self._build_ui_fixtures()     # UI 회귀 검증용 Epic + 하위 티켓
         self._build_mytask_fixtures() # '내 Task' 화면 픽스처(담당 조합·Epic 없음·마감 초과)
+        self._build_dataset_fixtures()  # 데이터셋 지식 픽스처(테이블 하나의 이력을 여러 티켓에 분산)
         self._priorities()            # 우선순위 — 픽스처가 지정한 것은 그대로 두고 나머지만 채운다
         self._sprints()               # 스프린트 — '스프린트 내 티켓만' 필터 검증용
         self._index()
         self._build_activity()
         self._build_confluence()
+        self._build_dataset_docs()    # ★ _build_confluence 뒤 — 그쪽이 self.confluence 에 대입한다
 
     # ── 사용자 ──
     def _make_users(self):
@@ -850,6 +852,370 @@ class World:
                  assignee=self.ME, priority="P2-Major", due=due(-3), epicKey=self.MY_EPIC,
                  statusCategory="done", statusName="Resolved",
                  resolved=d - timedelta(days=1), tresolved="15:00")
+
+    # ── 데이터셋 지식 픽스처 (DL-9040~) ────────────────────────────
+    # 목적: "이 테이블 지금 적재주기가 몇이지?" 처럼 **한 티켓에 답이 없는** 질문을 만든다.
+    #       답의 조각을 VoC 요청 / Job 개발 / 장애 / 주기 변경 changelog / 스키마 변경 /
+    #       Confluence 분석 문서 / **다른 테이블 티켓의 코멘트** 에 일부러 흩어 둔다.
+    #       에이전트가 이걸 모아 답하는지가 지식 추론 검증의 과제다.
+    # 격리: 자체 Epic(DL-9040) — DL-9000 자식은 '[UI]' 접두어가 강제된다(test_ui_fixtures).
+    #       WBS 미등록 + PMO_VIT 없음 → 진척·현안 집계에 안 섞인다. 단 **모듈·담당은 실제**다
+    #       ("적재 job 작업자가 누구냐"에 답하려면 people.yaml 의 실 인력이어야 한다).
+    # ★ rng 미사용 → world 시퀀스 불변.
+    DATA_EPIC = "DL-9040"
+    CONF_BASE = "https://confluence.corp.example"
+
+    def _conf_url(self, title, space="DL"):
+        """Confluence 페이지 URL — id 는 jira820 이 (title, space) 해시로 **파생**시킨다.
+        world 가 id 를 정할 수 없으므로 티켓의 remotelink 는 같은 규칙으로 계산해 맞춘다."""
+        pid = int(hashlib.md5(f"{title}|{space}".encode("utf-8")).hexdigest()[:8], 16)
+        return f"{self.CONF_BASE}/spaces/{space}/pages/{pid}/{title.replace(' ', '+')}"
+
+    def _cmt(self, author, text, days_ago, time_="14:20"):
+        """픽스처 코멘트 한 건 — DL-9007 과 같은 6키 형태.
+        kind/text 를 빠뜨리면 jira_comments() 직렬화가 KeyError 로 죽는다(DL-9036 의 전례)."""
+        return {"author": author, "kind": "note", "text": text, "body": text,
+                "created": self.today - timedelta(days=days_ago), "tcreated": time_}
+
+    def _chg(self, author, days_ago, field, before, after, time_="10:00"):
+        """필드 변경 이력 한 건. 적재주기·스키마처럼 **사내 데이터 속성**도 여기 남는다 —
+        UI 타임라인의 allow-list(TIMELINE_FIELDS)에는 없지만 changelog 원문에는 있다."""
+        return {"author": author, "date": self.today - timedelta(days=days_ago), "time": time_,
+                "items": [{"field": field, "fieldtype": "jira",
+                           "from": None, "fromString": before, "to": None, "toString": after}]}
+
+    def _build_dataset_fixtures(self):
+        d = self.today
+        E = self.DATA_EPIC
+        self._fx(E, "Epic", "[데이터] 데이터셋 카탈로그 지식 픽스처",
+                 module="ETL", component="ETL", assignee="skcc.x1042", reporter="lead",
+                 labels=["dataset-fixture"],
+                 description="테이블 단위 지식이 여러 티켓·문서에 흩어져 있는 상황을 재현한다.")
+
+        def fx(key, itype, summary, tbl, **over):
+            over.setdefault("epicKey", E)
+            over.setdefault("labels", ["dataset-fixture", f"tbl-{tbl}"])
+            return self._fx(key, itype, summary, **over)
+
+        # ── ① fdc.fdc_trace_summary_ic — 최고 밀도(조각 7개, 모듈 ETL) ──
+        t1 = "fdc_trace_summary_ic"
+        fx("DL-9041", "Task", "[VoC] FDC trace 요약(fdc.fdc_trace_summary_ic) 신규 적재 요청", t1,
+           component="사용자 VoC", module="사용자 VoC",
+           assignee="skcc.x1042", reporter="lead",
+           statusCategory="done", statusName="Closed",
+           created=d - timedelta(days=210), resolved=d - timedelta(days=180),
+           tresolved="17:30", updated=d - timedelta(days=180),
+           # 실 VoC 는 시스템이 주입한 'key : value' 블록으로 온다(DL-9018 과 같은 모양).
+           description="\n".join([
+               "VoC 접수 건입니다. FDC trace 요약 테이블을 LAKE 에 신규 적재해 주세요.",
+               "",
+               "==================== 신청정보 ====================",
+               "신청자 : 박지훈 SKCC",
+               "요청 부서 : FDC 엔지니어링",
+               "",
+               "==================== 1 시스템정보 ====================",
+               "시스템명 : FDC Trace Collector",
+               "환경 : 운영",
+               "",
+               "==================== 1 테이블정보 ====================",
+               "스키마 : FDC",
+               "테이블명 : FDC_TRACE_SUMMARY_IC",
+               "희망 적재주기 : 2시간 1회",
+               "보존기간 : 24개월",
+           ]))
+
+        fx("DL-9042", "Task", "[ETL] fdc.fdc_trace_summary_ic 신규 적재 Job 개발", t1,
+           module="ETL", component="ETL", assignee="skcc.x1042", reporter="skcc.x1103",
+           statusCategory="done", statusName="Resolved",
+           created=d - timedelta(days=178), resolved=d - timedelta(days=150),
+           tresolved="18:10", updated=d - timedelta(days=150),
+           links=[{"type": "Relates", "key": "DL-9041"}],
+           description="\n".join([
+               "VoC(DL-9041) 요청에 따라 fdc.fdc_trace_summary_ic 적재 Job 을 신규 개발한다.",
+               "",
+               "h3. Job 정보",
+               "* Job 명: etl_fdc_trace_summary_ic_2h",
+               "* Airflow DAG: dag_fdc_trace_summary_ic",
+               "* 소스: FDC_TRACE_RAW (FDC Trace Collector)",
+               "* 적재주기: 2시간 1회",
+               "* 운영 담당: skcc.x1042",
+               "",
+               "h3. 초기 스키마 (7개 컬럼)",
+               "|| 컬럼 || 타입 || 설명 ||",
+               "| LOT_ID | STRING | 로트 식별자 |",
+               "| EQP_ID | STRING | 설비 식별자 |",
+               "| RECIPE_ID | STRING | 레시피 식별자 |",
+               "| TRACE_TS | TIMESTAMP | 계측 시각 |",
+               "| VALUE_AVG | DOUBLE | 구간 평균 |",
+               "| VALUE_STD | DOUBLE | 구간 표준편차 |",
+               "| PART_DT | STRING | 파티션 키(일자) |",
+           ]))
+
+        # 장애 티켓 — 코멘트 6건(원인·조치가 코멘트에만 있다. get_ticket 기본 5건 상한을 넘긴다)
+        fx("DL-9043", "Bug", "[ETL] fdc.fdc_trace_summary_ic 적재 지연 — 06:00 배치 4시간 지연", t1,
+           module="ETL", component="ETL", assignee="skcc.i2011", reporter="skcc.x1042",
+           priority="P1-Critical",
+           statusCategory="done", statusName="Closed",
+           created=d - timedelta(days=95), resolved=d - timedelta(days=92),
+           tresolved="11:05", updated=d - timedelta(days=92),
+           links=[{"type": "Blocks", "key": "DL-9044"}],
+           description="06:00 배치가 4시간 지연되어 후속 리포트가 밀렸다. 원인 파악 필요.",
+           comments=[
+               self._cmt("skcc.i2011", "소스 파티션 스캔이 폭증했습니다. FDC_TRACE_RAW 의 "
+                                       "일자 파티션이 안 걸린 채 풀스캔되고 있었습니다.", 94, "09:12"),
+               self._cmt("skcc.x1042", "핫픽스로 PART_DT 파티션 프루닝을 넣어 재기동했습니다. "
+                                       "지연 4시간 → 12분으로 회복.", 94, "13:40"),
+               self._cmt("skcc.i2011", "재발 감시를 위해 DataDog 알람 임계치를 30분으로 낮췄습니다.", 93, "10:05"),
+               self._cmt("lead", "2시간 주기로는 지연이 나면 리포트가 통째로 밀립니다. "
+                                 "주기 단축을 검토해 주세요.", 93, "15:20"),
+               self._cmt("skcc.x1042", "주기 단축은 별도 티켓으로 진행하겠습니다.", 92, "09:30"),
+               self._cmt("skcc.i2011", "종료 처리합니다. 근본 조치는 주기 단축 티켓에서 이어집니다.", 92, "11:05"),
+           ])
+
+        # ★ "현재 적재주기" 의 정답이 사는 티켓 — changelog·코멘트·본문 3중 기록
+        fx("DL-9044", "Task", "[ETL] fdc.fdc_trace_summary_ic 적재주기 변경 (2시간 → 30분)", t1,
+           module="ETL", component="ETL", assignee="skcc.x1042", reporter="lead",
+           statusCategory="done", statusName="Resolved",
+           created=d - timedelta(days=88), resolved=d - timedelta(days=80),
+           tresolved="16:00", updated=d - timedelta(days=80),
+           description="지연 장애(DL-9043) 후속. 적재주기를 2시간 1회에서 30분 1회로 단축한다.",
+           changelog=[self._chg("skcc.x1042", 80, "적재주기", "2시간 1회", "30분 1회", "16:00")],
+           comments=[
+               self._cmt("skcc.x1042", "30분 주기로 변경 적용 완료했습니다. Job 이름도 "
+                                       "etl_fdc_trace_summary_ic_2h → etl_fdc_trace_summary_ic_30m "
+                                       "으로 바꿨습니다. 운영 담당은 그대로 저(skcc.x1042)입니다.", 80, "16:10"),
+           ])
+
+        fx("DL-9045", "Task", "[ETL] fdc.fdc_trace_summary_ic 스키마 변경 — CHAMBER_ID 컬럼 추가", t1,
+           module="ETL", component="ETL", assignee="skcc.x1103", reporter="skcc.x1042",
+           statusCategory="done", statusName="Resolved",
+           created=d - timedelta(days=45), resolved=d - timedelta(days=40),
+           tresolved="14:30", updated=d - timedelta(days=40),
+           description="\n".join([
+               "챔버 단위 분석 요구로 CHAMBER_ID 컬럼을 추가한다. 컬럼 수 7개 → 8개.",
+               "",
+               "{code:sql}",
+               "ALTER TABLE fdc.fdc_trace_summary_ic ADD COLUMN CHAMBER_ID STRING;",
+               "{code}",
+           ]),
+           changelog=[self._chg("skcc.x1103", 40, "스키마", "7개 컬럼",
+                                "8개 컬럼 (CHAMBER_ID 추가)", "14:30")])
+
+        doc1 = "[데이터카탈로그] fdc_trace_summary_ic 테이블 특성 분석"
+        fx("DL-9046", "Task", "[Catalog] fdc.fdc_trace_summary_ic 테이블 특성 분석 및 카탈로그 등록", t1,
+           module="Catalog", component="Catalog", assignee="skcc.x1210", reporter="skcc.x1042",
+           statusCategory="done", statusName="Resolved",
+           created=d - timedelta(days=42), resolved=d - timedelta(days=38),
+           tresolved="17:00", updated=d - timedelta(days=38),
+           # 본문 언급과 remotelink 는 **같은 /pages/{id}/ 형태**여야 문서 중복 제거가 1건으로 접는다
+           description=f"테이블 특성 분석 결과를 카탈로그에 등록했다.\n"
+                       f"분석 문서: [{doc1}|{self._conf_url(doc1)}]",
+           remotelinks=[{"url": self._conf_url(doc1), "title": doc1,
+                         "application": {"type": "com.atlassian.confluence", "name": "Confluence"}}])
+
+        fx("DL-9047", "Task", "[ETL] fdc.fdc_trace_summary_ic 30분 적재 안정화 모니터링", t1,
+           module="ETL", component="ETL", assignee="skcc.x1042", reporter="lead",
+           statusCategory="inprogress", statusName="In Progress",
+           created=d - timedelta(days=30), due=d + timedelta(days=10),
+           updated=d - timedelta(days=3),
+           description="30분 주기 전환 후 지연·중복 적재 여부를 2주간 관찰한다.")
+
+        # ── ② eqp.eqp_sensor_raw_1s — 중밀도. **스키마·문서 없음(의도)** ──
+        t2 = "eqp_sensor_raw_1s"
+        fx("DL-9050", "Task", "[Observability] eqp.eqp_sensor_raw_1s 실시간 수집 파이프라인 구축", t2,
+           module="Observability", component="Observability",
+           assignee="skcc.i2200", reporter="lead",
+           statusCategory="done", statusName="Resolved",
+           created=d - timedelta(days=160), resolved=d - timedelta(days=130),
+           tresolved="18:00", updated=d - timedelta(days=130),
+           description="\n".join([
+               "설비 센서 원천을 실시간으로 수집한다.",
+               "",
+               "* Job 명: str_eqp_sensor_raw_1s",
+               "* 소스: Kafka 토픽 eqp.sensor.raw",
+               "* 적재주기: 실시간 스트리밍(1초 마이크로배치)",
+               "* 보존기간: 30일",
+               "* 운영 담당: skcc.i2200",
+           ]))
+
+        fx("DL-9051", "Bug", "[Observability] eqp.eqp_sensor_raw_1s 컨슈머 랙 증가", t2,
+           module="Observability", component="Observability",
+           assignee="skcc.x1560", reporter="skcc.i2200",
+           statusCategory="done", statusName="Closed",
+           created=d - timedelta(days=70), resolved=d - timedelta(days=68),
+           tresolved="15:40", updated=d - timedelta(days=68),
+           description="피크 시간대에 컨슈머 랙이 누적된다.",
+           comments=[
+               self._cmt("skcc.x1560", "파티션 수를 12 → 24 로 늘려 해소했습니다.", 69, "11:20"),
+               # ④ mes.mes_wip_move_hist 의 **유일한 언급** — 이것 말고는 world 어디에도 없다
+               self._cmt("skcc.x1560", "참고로 성격이 비슷한 mes.mes_wip_move_hist 도 같이 봐야 할 수 "
+                                       "있다는 얘기가 나왔는데, 그쪽은 우리 적재 대상이 아닙니다.", 68, "15:30"),
+           ])
+
+        fx("DL-9052", "Task", "[Observability] eqp.eqp_sensor_raw_1s 보존기간 30일 → 90일 변경", t2,
+           module="Observability", component="Observability",
+           assignee="skcc.i2200", reporter="lead",
+           statusCategory="inprogress", statusName="In Progress",
+           created=d - timedelta(days=20), updated=d - timedelta(days=5),
+           description="분석 요구로 보존기간을 90일로 늘린다. 적재주기(실시간)는 변경하지 않는다.",
+           changelog=[self._chg("skcc.i2200", 5, "보존기간", "30일", "90일", "11:00")])
+
+        # ── ③ yms.yms_lot_yield_daily — 담당이 코멘트에만, ①과의 비교 코멘트 보유 ──
+        t3 = "yms_lot_yield_daily"
+        fx("DL-9060", "Task", "[Catalog] yms.yms_lot_yield_daily 일배치 적재 및 카탈로그 등록", t3,
+           module="Catalog", component="Catalog", assignee="skcc.i2044", reporter="skcc.x1210",
+           statusCategory="done", statusName="Resolved",
+           created=d - timedelta(days=140), resolved=d - timedelta(days=120),
+           tresolved="17:20", updated=d - timedelta(days=120),
+           description="\n".join([
+               "로트 단위 일별 수율 집계 테이블을 적재한다.",
+               "",
+               "* Job 명: etl_yms_lot_yield_daily",
+               "* 적재주기: 일 1회 (03:00)",
+               "",
+               "h3. 스키마 (6개 컬럼)",
+               "LOT_ID, PROD_ID, LINE_ID, YIELD_PCT, DEFECT_CNT, BASE_DT",
+           ]))
+
+        fx("DL-9061", "Task", "[Catalog] yms.yms_lot_yield_daily 적재주기 변경 (일 1회 → 4시간 1회)", t3,
+           module="Catalog", component="Catalog", assignee="skcc.x1210", reporter="lead",
+           statusCategory="done", statusName="Resolved",
+           created=d - timedelta(days=60), resolved=d - timedelta(days=55),
+           tresolved="16:40", updated=d - timedelta(days=55),
+           description="수율 모니터링 주기 단축 요구로 일 1회 → 4시간 1회로 변경한다.",
+           changelog=[self._chg("skcc.x1210", 55, "적재주기", "일 1회 (03:00)", "4시간 1회", "16:40")],
+           # 운영 담당 정보가 **코멘트에만** 있는 케이스
+           comments=[self._cmt("skcc.x1210", "변경 적용했습니다. Job 운영 담당은 변경 후에도 "
+                                             "skcc.i2044 그대로입니다.", 55, "16:45")])
+
+        # ★ 교차 비교 — ①의 사실이 **다른 테이블 티켓의 코멘트**에만 적혀 있다
+        fx("DL-9062", "Task",
+           "[Catalog] yms.yms_lot_yield_daily 와 fdc.fdc_trace_summary_ic 지표 정합성 비교", t3,
+           module="Catalog", component="Catalog", assignee="skcc.x1210", reporter="skcc.i2044",
+           statusCategory="inprogress", statusName="In Progress",
+           created=d - timedelta(days=15), updated=d - timedelta(days=2),
+           description="두 테이블을 조인해 수율과 계측값의 상관을 보려 한다. 시간축 정합성 확인이 선결.",
+           comments=[
+               self._cmt("skcc.x1103", "fdc.fdc_trace_summary_ic 는 30분 주기(Job "
+                                       "etl_fdc_trace_summary_ic_30m, 담당 skcc.x1042)라 "
+                                       "yms.yms_lot_yield_daily(4시간)와 시간축이 맞지 않습니다. "
+                                       "조인하려면 30분 → 4시간 리샘플이 필요합니다.", 3, "10:40"),
+               self._cmt("skcc.i2044", "리샘플 기준은 4시간 평균으로 맞추겠습니다.", 2, "09:15"),
+           ])
+
+        # ── ⑤ 기술 주제 — **테이블이 아닌 것도 똑같이 흩어져 있다.**
+        # "Schema Registry 우리 정책이 뭐지?" 의 답은 도입 검토(결정) → 장애(정책 강화) →
+        # 전환 작업(진행 중) → 표준 문서에 나뉘어 있고, 결정적 사실인 '현재 정책'은
+        # **장애 티켓의 changelog + 코멘트**에만 있다.
+        t5 = "schema-registry"
+        fx("DL-9070", "Task", "[DevOps] Kafka Schema Registry 도입 검토", t5,
+           module="DevOps", component="DevOps", assignee="skcc.x1501", reporter="lead",
+           statusCategory="done", statusName="Resolved",
+           created=d - timedelta(days=150), resolved=d - timedelta(days=135),
+           tresolved="17:10", updated=d - timedelta(days=135),
+           description="\n".join([
+               "Kafka 토픽 스키마를 중앙에서 관리하기 위해 Schema Registry 도입을 검토했다.",
+               "",
+               "h3. 결정 사항",
+               "* 제품: Confluent Schema Registry",
+               "* 직렬화 포맷: Avro",
+               "* 초기 호환성 정책: BACKWARD",
+               "* 운영 담당: skcc.x1501",
+           ]))
+
+        fx("DL-9071", "Bug", "[Observability] 스키마 호환성 위반으로 컨슈머 대량 실패", t5,
+           module="Observability", component="Observability",
+           assignee="skcc.i2200", reporter="skcc.x1560", priority="P1-Critical",
+           statusCategory="done", statusName="Closed",
+           created=d - timedelta(days=50), resolved=d - timedelta(days=47),
+           tresolved="14:00", updated=d - timedelta(days=47),
+           description="프로듀서가 필드를 삭제해 배포하자 컨슈머가 대량 실패했다.",
+           # ★ '현재 호환성 정책'의 정답은 여기 changelog + 코멘트에만 있다
+           changelog=[self._chg("skcc.x1501", 47, "호환성 정책", "BACKWARD", "FULL", "14:00")],
+           comments=[
+               self._cmt("skcc.i2200", "Schema Registry 의 BACKWARD 정책은 필드 삭제를 막지 "
+                                       "못합니다. 삭제된 필드를 읽던 컨슈머가 전부 죽었습니다.", 48, "10:30"),
+               self._cmt("skcc.x1501", "호환성 정책을 BACKWARD → FULL 로 강화 적용했습니다. "
+                                       "이제 필드 삭제·추가 양방향이 막힙니다. 레지스트리 운영 "
+                                       "담당은 계속 저(skcc.x1501)입니다.", 47, "14:05"),
+           ])
+
+        fx("DL-9072", "Task", "[ETL] 프로듀서 Avro 직렬화 전환", t5,
+           module="ETL", component="ETL", assignee="skcc.x1103", reporter="skcc.x1501",
+           statusCategory="inprogress", statusName="In Progress",
+           created=d - timedelta(days=40), due=d + timedelta(days=14),
+           updated=d - timedelta(days=4),
+           description="JSON 직렬화 프로듀서를 Avro + Schema Registry 로 전환한다. "
+                       "전체 9개 토픽 중 6개 완료, 3개 남았다.")
+
+        # 교차 언급 — 주제와 무관해 보이는 티켓(보존기간 변경)의 코멘트에 정책이 다시 나온다
+        self.issues["DL-9052"]["comments"] = [
+            self._cmt("skcc.x1560", "보존기간을 늘리면 과거 스키마로 쓰인 메시지도 오래 남습니다. "
+                                    "Schema Registry 호환성 정책이 FULL 이라 읽기는 되지만, "
+                                    "구버전 스키마 정리는 별도로 봐야 합니다.", 4, "11:10"),
+        ]
+
+    def _build_dataset_docs(self):
+        """데이터셋 분석 문서 — 기존 uid 의 문서 목록에 덧붙인다(작성자 = 실 인력).
+        ★ `_build_confluence()` 가 `self.confluence` 에 **대입**하므로 반드시 그 뒤에 부른다.
+        제목은 유일해야 한다 — jira820 이 (title, space) 로 중복 제거한다(먼저 쓴 쪽이 이긴다)."""
+        d = self.today
+        pages = [
+            ("skcc.x1210", "[데이터카탈로그] fdc_trace_summary_ic 테이블 특성 분석", "DL",
+             ["엔지니어링", "파이프라인"], 40, "\n".join([
+                 "fdc.fdc_trace_summary_ic 는 FDC 계측 trace 를 로트·설비 단위로 요약한 테이블이다.",
+                 "",
+                 "h2. 적재 현황",
+                 "* 현재 적재주기: 30분 1회 (이전 2시간 1회, 지연 장애 후속으로 단축)",
+                 "* 적재 Job: etl_fdc_trace_summary_ic_30m (Airflow DAG dag_fdc_trace_summary_ic)",
+                 "* 운영 담당: skcc.x1042",
+                 "* 소스: FDC_TRACE_RAW",
+                 "",
+                 "h2. 스키마 (8개 컬럼)",
+                 "LOT_ID, EQP_ID, RECIPE_ID, TRACE_TS, VALUE_AVG, VALUE_STD, PART_DT, CHAMBER_ID",
+                 "파티션 키는 PART_DT(일자)다. CHAMBER_ID 는 챔버 단위 분석 요구로 나중에 추가됐다.",
+                 "",
+                 "h2. 관련 티켓",
+                 "DL-9042(Job 개발), DL-9044(주기 변경), DL-9045(스키마 변경)",
+             ])),
+            ("skcc.i2044", "[데이터카탈로그] yms_lot_yield_daily 산출 로직", "DL",
+             ["표준·정책", "데이터 거버넌스"], 25, "\n".join([
+                 "yms.yms_lot_yield_daily 는 로트 단위 일별 수율 집계 테이블이다.",
+                 "",
+                 "* 현재 적재주기: 4시간 1회",
+                 "* 적재 Job: etl_yms_lot_yield_daily",
+                 "* 스키마 6개 컬럼: LOT_ID, PROD_ID, LINE_ID, YIELD_PCT, DEFECT_CNT, BASE_DT",
+                 "* YIELD_PCT = (양품 수량 / 투입 수량) * 100, 소수 둘째 자리 반올림",
+             ])),
+            ("skcc.x1042", "[데이터카탈로그] LAKE 적재주기 변경 절차", "DL",
+             ["표준·정책"], 70, "\n".join([
+                 "적재주기를 바꿀 때 지켜야 할 절차와 기록 방식을 정리한다.",
+                 "",
+                 "h2. Job 명명 규칙",
+                 "* 배치: etl_<테이블명>_<주기>  (예: etl_fdc_trace_summary_ic_30m)",
+                 "* 스트리밍: str_<테이블명>    (예: str_eqp_sensor_raw_1s)",
+                 "",
+                 "h2. 기록 규칙",
+                 "주기를 바꾸면 변경 티켓의 changelog('적재주기' 필드)와 코멘트 양쪽에 남긴다.",
+                 "따라서 **현재 주기는 가장 최근 변경 기록**을 보면 된다. 변경 기록이 없으면",
+                 "최초 구축 티켓에 적힌 주기가 현재 주기다.",
+             ])),
+            ("skcc.x1501", "[표준·정책] Kafka 스키마 호환성 정책", "DL",
+             ["표준·정책"], 30, "\n".join([
+                 "Schema Registry(Confluent) 운영 기준을 정리한다.",
+                 "",
+                 "* 직렬화 포맷: Avro",
+                 "* 현재 호환성 정책: FULL (도입 시 BACKWARD 였으나 컨슈머 대량 실패 후 강화)",
+                 "* 레지스트리 운영 담당: skcc.x1501",
+                 "* 신규 토픽은 스키마 등록 후에만 프로듀싱을 허용한다.",
+             ])),
+        ]
+        for uid, title, space, anc, days_ago, body in pages:
+            self.confluence.setdefault(uid, []).append({
+                "title": title, "space": space, "ancestors": anc, "action": "edited",
+                "body": body, "date": d - timedelta(days=days_ago), "time": "15:00"})
+        for uid in {p[0] for p in pages}:
+            self.confluence[uid].sort(key=lambda p: p["date"], reverse=True)
 
     # 우선순위 — 실 Jira 는 모든 이슈가 priority 를 갖는다. 없으면 '내 Task' 정렬의 한 축이
     # 통째로 죽어 화면 검증이 안 된다. ★ rng 미사용(키 해시에서 결정적으로) → world 시퀀스 불변.

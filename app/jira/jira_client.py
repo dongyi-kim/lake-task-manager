@@ -1193,14 +1193,23 @@ class JiraClient:
             self.miss_add()
             return []
 
+    # 캐시에 담아 두는 코멘트 수. 캐시 키(`comments:{env}:{key}`)에 limit 이 없으므로
+    # **적게 요청한 호출이 먼저 오면 많이 요청한 호출까지 그 수에 묶인다** — 실제로
+    # get_ticket(5건)이 먼저 돌면 RAG 색인·본문 검색이 조용히 5건만 받았다. 그래서
+    # 조회는 항상 이 수로 하고, 자르는 것은 **읽는 쪽**이 한다(왕복 수는 그대로).
+    CACHE_COMMENTS = 20
+
     def _issue_comments(self, key, limit=5):
-        """코멘트 — `comments:{env}:{key}` 로 티켓 단위 캐시."""
+        """코멘트 — `comments:{env}:{key}` 로 티켓 단위 캐시(항상 CACHE_COMMENTS 건 보관)."""
+        want = max(1, int(limit or 5))
+
         def do():
             data = self.provider.get_json(
                 f"/rest/api/2/issue/{key}/comment",
-                params={"maxResults": limit, "orderBy": "-created", "expand": "renderedBody"})
+                params={"maxResults": self.CACHE_COMMENTS, "orderBy": "-created",
+                        "expand": "renderedBody"})
             out = []
-            for c in data.get("comments", [])[:limit]:
+            for c in data.get("comments", [])[:self.CACHE_COMMENTS]:
                 rb = c.get("renderedBody")
                 html = sanitize_html(_revive_checkboxes(rb)) if rb and str(rb).strip() else text_to_html(c.get("body") or "")
                 html = tidy_html(html)              # 빈 문단·앞뒤 공백 정리(과도 여백 제거)
@@ -1217,7 +1226,8 @@ class JiraClient:
                     "html": html,       # 정화된 코멘트 HTML (맨션·링크·서식 포함)
                 })
             return out
-        return self.cache.get_or_set(f"comments:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+        rows = self.cache.get_or_set(f"comments:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+        return rows[:want]
 
     # ── 범용 단일 리소스 (env 무관 — /api/issue·/api/epic 리소스 엔드포인트용) ──
     def issue_detail(self, key):
@@ -2592,6 +2602,43 @@ class JiraClient:
             return {"created": f.get("created"), "reporter": f.get("reporter") or {},
                     "histories": (raw.get("changelog") or {}).get("histories") or []}
         return self.cache.get_or_set(f"changelog:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+
+    def confluence_page(self, cid, expand="body.storage"):
+        """Confluence 페이지 원본 조회 — **base 를 붙이는 한 곳**.
+
+        prod 는 Confluence 가 Jira 와 다른 호스트라 상대 경로를 쓰면 Jira 로 날아가 죽는다
+        (RAG 색인이 prod 에서만 문서 본문을 조용히 빠뜨리던 원인). 검색 경로가 이미
+        `confluence_base` 를 붙이고 있으므로 조회 경로도 같은 규칙을 쓴다.
+        """
+        if not cid:
+            return {}
+        base = (self.s.confluence_base or "").rstrip("/")
+        path = f"/rest/api/content/{cid}"
+        try:
+            return self._conf_get_json((base + path) if base else path,
+                                       params={"expand": expand}) or {}
+        except Exception:
+            return {}
+
+    def ticket_field_history(self, key, limit=20):
+        """**필드 종류를 가리지 않는** 변경 이력 — [{date, author, field, from, to}].
+
+        `ticket_timeline` 은 화면용이라 allow-list(TIMELINE_FIELDS)로 status·assignee 등만
+        남긴다. 그런데 사내 운영에서 알고 싶은 변경은 대개 그 밖이다 — 적재주기·보존기간·
+        스키마 같은 **데이터 자산 속성**. 그건 changelog 원문에는 있으니 여기서 그대로 준다.
+        (화면 타임라인은 건드리지 않는다 — 거기 노이즈를 늘리자는 얘기가 아니다.)
+        """
+        cl = self._changelog(key) or {}
+        rows = []
+        for h in (cl.get("histories") or []):
+            who = (h.get("author") or {}).get("displayName") or (h.get("author") or {}).get("name")
+            when = str(h.get("created") or "")[:10]
+            for it in (h.get("items") or []):
+                rows.append({"date": when, "author": real_name(who) if who else "",
+                             "field": it.get("field") or "",
+                             "from": it.get("fromString"), "to": it.get("toString")})
+        rows.sort(key=lambda r: r["date"])
+        return rows[-int(limit or 20):]
 
     def _child_keys(self, key, limit=None):
         """직계 자식 키 — Epic 은 Epic Link 자식, 그 외는 subtasks. (둘 다 기존 캐시 재사용)"""

@@ -95,6 +95,10 @@ class Responder(TextAgent):
             data_block("지식 브리프(Curator 정리)", brief),
             data_block("그룹 활동 자료(로스터 전원 — 이것으로 3층을 쓴다)",
                        state.get("group_activity")),
+            # 주제 조사 원본 — 결론 문장(situation)만 실으면 조각의 출처(코멘트 작성자·
+            # 변경 일자)가 사라져 "근거를 대라"는 요구를 만족시킬 수 없다.
+            data_block("주제 조사 자료 (여기 없는 값은 '확인된 기록 없음'이라고 답한다)",
+                       state.get("topic_dossier")),
             data_block("현재 상황(조사 결과)", state.get("situation")),
             data_block("현황 조회 결과", pmo),
             data_block("읽을 때 주의", state.get("pmo_caution")),
