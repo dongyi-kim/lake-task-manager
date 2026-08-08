@@ -1148,6 +1148,53 @@ class World:
            description="JSON 직렬화 프로듀서를 Avro + Schema Registry 로 전환한다. "
                        "전체 9개 토픽 중 6개 완료, 3개 남았다.")
 
+        # ── ⑤ wip.wip_lot_track_hist — **담당 이관 + 폐기 예정**(다른 실패 유형) ──
+        # 함정: 최초 담당(skcc.x1103)이 인수인계됐다. 옛 담당을 현재 담당으로 답하면 오답이다.
+        #       "아직 쓰는 테이블이냐"의 답(폐기 예정)은 문서에만 있다.
+        t6 = "wip_lot_track_hist"
+        fx("DL-9080", "Task", "[ETL] wip.wip_lot_track_hist 적재 Job 구축", t6,
+           module="ETL", component="ETL", assignee="skcc.x1103", reporter="lead",
+           statusCategory="done", statusName="Closed",
+           created=d - timedelta(days=300), resolved=d - timedelta(days=286),
+           tresolved="16:00", updated=d - timedelta(days=286),
+           description="\n".join([
+               "MES WIP 이동 이력을 로트 단위로 적재한다.",
+               "",
+               "* 적재주기: 일 1회 (03:00)",
+               "* 적재 Job: etl_wip_lot_track_hist",
+               "* 최초 담당: skcc.x1103",
+           ]))
+
+        fx("DL-9081", "Task", "[ETL] wip.wip_lot_track_hist 운영 인수인계", t6,
+           module="ETL", component="ETL", assignee="skcc.i2011", reporter="skcc.x1103",
+           statusCategory="done", statusName="Closed",
+           created=d - timedelta(days=90), resolved=d - timedelta(days=86),
+           tresolved="11:00", updated=d - timedelta(days=86),
+           description="wip.wip_lot_track_hist 운영을 이관한다.",
+           # ★ '현재 담당'의 정답은 이 changelog 뿐 — 최초 구축 티켓만 보면 틀린다
+           changelog=[self._chg("skcc.x1103", 86, "운영 담당", "skcc.x1103", "skcc.i2011", "11:00")],
+           comments=[
+               self._cmt("skcc.i2011", "인수 완료했습니다. 지금부터 wip.wip_lot_track_hist "
+                                       "운영 담당은 저(skcc.i2011)입니다.", 86, "11:05"),
+           ])
+
+        fx("DL-9082", "Bug", "[ETL] wip.wip_lot_track_hist 중복 로트 적재", t6,
+           module="ETL", component="ETL", assignee="skcc.i2011", reporter="skcc.i2011",
+           priority="P2-Major", statusCategory="done", statusName="Closed",
+           created=d - timedelta(days=30), resolved=d - timedelta(days=27),
+           tresolved="15:30", updated=d - timedelta(days=27),
+           description="일 1회 배치가 재실행되며 같은 로트가 두 번 적재됐다.",
+           comments=[
+               self._cmt("skcc.i2011", "원인은 배치 재시도 시 이전 파티션을 지우지 않은 것입니다. "
+                                       "덮어쓰기로 고쳤습니다. 참고로 이 테이블은 신규 "
+                                       "wip.wip_lot_track_v2 로 대체 예정이라 추가 개선은 "
+                                       "하지 않습니다.", 27, "15:35"),
+           ])
+
+        # ── ⑥ qms.qms_defect_code_mst — **티켓이 하나도 없는 대상**(문서만) ──
+        # 함정: 티켓 검색은 0건이다. 여기서 "기록 없음"으로 끝내면 오답 — 문서에 다 있다.
+        #       티켓 0건인 대상도 문서를 읽어 답해야 한다.
+
         # 교차 언급 — 주제와 무관해 보이는 티켓(보존기간 변경)의 코멘트에 정책이 다시 나온다
         self.issues["DL-9052"]["comments"] = [
             self._cmt("skcc.x1560", "보존기간을 늘리면 과거 스키마로 쓰인 메시지도 오래 남습니다. "
@@ -1208,6 +1255,30 @@ class World:
                  "* 현재 호환성 정책: FULL (도입 시 BACKWARD 였으나 컨슈머 대량 실패 후 강화)",
                  "* 레지스트리 운영 담당: skcc.x1501",
                  "* 신규 토픽은 스키마 등록 후에만 프로듀싱을 허용한다.",
+             ])),
+            # ★ 이 테이블은 **티켓이 하나도 없다** — 티켓 검색 0건에서 멈추면 답을 못 낸다.
+            ("skcc.i2044", "[데이터카탈로그] qms_defect_code_mst 코드 마스터 정의", "DL",
+             ["표준·정책", "데이터 거버넌스"], 18, "\n".join([
+                 "qms.qms_defect_code_mst 는 품질 불량 코드의 마스터 테이블이다.",
+                 "티켓으로 관리되지 않고 QMS 원천에서 주 1회 동기화된다.",
+                 "",
+                 "h2. 적재 현황",
+                 "* 현재 적재주기: 주 1회 (월요일 05:00)",
+                 "* 적재 Job: etl_qms_defect_code_mst_w",
+                 "* 운영 담당: skcc.i2044",
+                 "",
+                 "h2. 스키마 (5개 컬럼)",
+                 "DEFECT_CD, DEFECT_NM, CATEGORY_CD, USE_YN, UPD_DT",
+                 "DEFECT_CD 가 기본키다. USE_YN='N' 은 폐기된 코드로 조회에서 제외한다.",
+             ])),
+            # 폐기 예정 판단의 유일한 출처 — 티켓 코멘트에는 '대체 예정'만 스친다
+            ("skcc.i2011", "[데이터카탈로그] wip_lot_track_hist 폐기 계획", "DL",
+             ["엔지니어링"], 12, "\n".join([
+                 "wip.wip_lot_track_hist 는 wip.wip_lot_track_v2 로 대체한다.",
+                 "",
+                 "* 현재 적재주기: 일 1회 (03:00) — 폐기 시점까지 유지",
+                 "* 운영 담당: skcc.i2011 (2026년 인수인계, 최초 구축은 skcc.x1103)",
+                 "* 폐기 예정: v2 병행 운영 3개월 후 중단. 신규 참조는 v2 를 쓸 것",
              ])),
         ]
         for uid, title, space, anc, days_ago, body in pages:

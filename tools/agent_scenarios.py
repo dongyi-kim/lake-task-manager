@@ -131,6 +131,16 @@ CASES = [
         "Schema Registry 우리 어떻게 쓰고 있고 호환성 정책은 지금 뭐야?"],
      "ask", lambda o, _: ("FULL" in (o.get("reply") or "")
                           and "DL-9071" in (o.get("reply") or ""))),
+    ("DATA8", "담당 이관 — 최초 구축 담당을 현재 담당으로 답하면 실패", [
+        "wip.wip_lot_track_hist 지금 담당 누구야?"],
+     "ask", lambda o, _: ("skcc.i2011" in (o.get("reply") or "")
+                          # 옛 담당을 '현재'로 말하면 실패. 이력으로 언급하는 것은 허용
+                          and not re.search(r"(현재|지금)[^.\n]{0,20}skcc\.x1103",
+                                            o.get("reply") or ""))),
+    ("DATA9", "티켓 0건 — 문서에만 사는 대상. '기록 없음'으로 끝내면 실패", [
+        "qms.qms_defect_code_mst 적재주기랑 스키마 알려줘"],
+     "ask", lambda o, _: ("주 1회" in (o.get("reply") or "")
+                          and "DEFECT_CD" in (o.get("reply") or ""))),
 ]
 
 JUDGE_SYS = (

@@ -268,6 +268,17 @@ def _topic_dossier(term: str) -> str:
     # ── 담당은 **코드가 판정한다.** 프롬프트로 "작성자는 담당자가 아니다"라고 두 번 경고해도
     # 모델은 코멘트 작성자를 담당자로 답했다(실측 2회). 담당이라고 **적힌** 것만 담당이다.
     import re as _re
+    # ① 담당이 **이관된 적** 있으면 그 변경 기록이 이긴다 — 최초 구축 티켓만 보고 옛 담당을
+    #    현재로 답하는 것이 이 유형의 전형적 실패다(픽스처가 그렇게 심겨 있다).
+    handover = [(r["date"], r.get("from") or "", r.get("to") or "", k)
+                for k, rows in hist_rows for r in rows
+                if "담당" in (r.get("field") or "") and (r.get("to") or "").strip()]
+    if handover:
+        d0, prev, cur, key0 = max(handover)
+        parts.append(f"[담당] 현재 {cur} — {key0} 에서 {prev} 로부터 이관({d0}). "
+                     f"{prev} 는 **이전** 담당이다. 현재 담당을 물으면 {cur} 라고 답하라.")
+        return "\n\n".join(parts)[:4000]
+
     owners, blob = [], "\n".join(parts)
     for m in _re.finditer(r"담당[^\n]{0,12}?(skcc\.[a-z]\d{3,5})", blob):
         if m.group(1) not in owners:

@@ -271,3 +271,31 @@ def test_dossier_decides_ownership_in_code_not_by_guessing():
     d = _topic_dossier(UNKNOWN)
     assert "[담당] 확인된 기록 없음" in d
     assert "skcc.x1560" not in d.split("[담당]")[1], "코멘트 작성자가 담당 자리에 오면 안 된다"
+
+
+# ── 다른 실패 유형 2종: 담당 이관 / 티켓 0건 ──────────────────────
+HANDOVER = "wip.wip_lot_track_hist"
+DOC_ONLY = "qms.qms_defect_code_mst"
+
+
+def test_handover_fixture_hides_the_current_owner_from_the_build_ticket():
+    """최초 구축 티켓만 읽으면 틀리도록 심었는지 — 이 전제가 깨지면 시험이 무의미하다."""
+    w = _w()
+    assert "skcc.x1103" in w.issues["DL-9080"]["description"]
+    rows = client().ticket_field_history("DL-9081")
+    assert any(r["field"] == "운영 담당" and r["to"] == "skcc.i2011" for r in rows), rows
+
+
+def test_dossier_picks_the_latest_owner_after_a_handover():
+    """이관 기록이 있으면 그게 이긴다 — 옛 담당을 현재로 답하는 것이 이 유형의 전형적 실패."""
+    d = _topic_dossier(HANDOVER)
+    assert "[담당] 현재 skcc.i2011" in d and "skcc.x1103 는 **이전** 담당" in d
+
+
+def test_a_table_with_no_tickets_is_still_answerable_from_documents():
+    """티켓 검색 0건에서 멈추면 오답 — 문서에만 사는 대상도 있다."""
+    hits = [k for k, i in _w().issues.items() if DOC_ONLY in (i["summary"] + i["description"])]
+    assert hits == [], "티켓이 하나도 없어야 이 시험이 성립한다"
+    d = _topic_dossier(DOC_ONLY)
+    for must in ("주 1회", "etl_qms_defect_code_mst_w", "DEFECT_CD", "[담당] skcc.i2044"):
+        assert must in d, f"{must} 가 문서 취합에서 빠졌다"
