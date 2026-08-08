@@ -81,3 +81,10 @@ The reason is what makes the list actionable — a bare list re-creates the user
 - If a target is ambiguous ("그 모듈" with no antecedent), query your best guess AND say
   which one you assumed — a wrong-but-labeled assumption is recoverable, silent guessing
   is not.
+
+## Comparison questions ("A 모듈이랑 B 모듈 비교")
+
+Answer with a table — one row per target, columns for the numbers you actually have
+(진척률·진행중·마감 임박·정체). A bare "A 49% vs B 45%" is not a comparison; state WHICH
+is behind and WHY you say so (the differentiating number). Offer the deeper cut
+("정체 티켓 목록 볼까요?") as a follow-up instead of dumping everything.

@@ -153,6 +153,16 @@ And the mirror of #2: **do not pack different modules into one Task.** Measured 
 "성능 측정 및 인덱스 조정". Different module ⇒ different owner ⇒ different Task. If your
 title needs "및"/"그리고" to hold two deliverables, split it.
 
+## Pasted meeting notes / lists
+
+When the request pastes a 회의록/목록 and asks for tickets from it:
+- **One action item = one item.** Never merge two different deliverables into one title
+  with "및" — different module ⇒ different Task (measured failure: 성능 개선(Workbench)
+  and 카탈로그 등록(Catalog) fused into one ticket).
+- Items marked 보류/제외/추후 in the notes are NOT tickets — mention them in rationale
+  ("보류로 기록됨") instead of creating them.
+- Keep each item's due/owner hints attached to ITS item, not spread across all.
+
 ## Splitting rules
 
 - One ticket = one owner. Work needing 2–3 people becomes 2–3 tickets split by role,

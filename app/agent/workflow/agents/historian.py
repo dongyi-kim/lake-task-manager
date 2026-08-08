@@ -390,6 +390,30 @@ class Historian(ToolAgent):
                 if pre:
                     state = {**state, "pre_survey": pre[:2500]}
 
+            # ── 허용값 질의 사전 취합 — "라벨 목록 보여줘·정리 제안" 류는 검색이 아니라
+            # **조회**다. 모델이 list_ticket_options 를 고르길 기대했더니 검색만 하다
+            # '확인 불가'로 죽었다(실측 2회). 조회는 코드가 한다.
+            asked_v = last_user_text(state)
+            if any(w in asked_v for w in ("라벨", "컴포넌트", "우선순위 종류", "티켓 타입")) \
+                    and any(w in asked_v for w in ("목록", "보여", "정리", "어떤 게", "어떤게",
+                                                   "뭐가 있", "리스트", "종류")):
+                try:
+                    from app.agent import tools as T
+                    opts = T.BY_NAME["list_ticket_options"].invoke({"kind": ""}) or {}
+                    rows = []
+                    for k, label in (("labels", "라벨"), ("components", "컴포넌트"),
+                                     ("priorities", "우선순위"), ("taskTypes", "티켓 타입")):
+                        vals = opts.get(k) or []
+                        if vals:
+                            rows.append(f"[{label} 실값 {len(vals)}종] "
+                                        + ", ".join(str(x) for x in vals[:40]))
+                    if rows:
+                        merged = ((state.get("pre_survey") or "") + "\n\n"
+                                  + "\n".join(rows)).strip()
+                        state = {**state, "pre_survey": merged[:3000]}
+                except Exception:
+                    pass
+
             # ── 사전 조사: 웹·GitHub 를 **코드가** 조사해 자료로 준다.
             # 의무 순서를 명령서에 박아도 모델은 사내 티켓을 여는 데 걸음을 다 썼다(실측 3회).
             # 검색어 생성은 모델이 잘하는 일이니 그것만 시키고, 실행은 코드가 보장한다.
@@ -412,7 +436,12 @@ class Historian(ToolAgent):
             # 취합한 자산 질의에서 또 걸으면 같은 것을 도구로 재확인하며 3~4호출을 태운다
             # (실측: dossier 경로의 think 가 이미 취합된 티켓을 get_ticket 으로 다시 열었다).
             # conclude 한 번이면 된다 — 재료는 task() 의 자료 블록에 이미 실려 있다.
-            if state.get("topic_dossier") and not state.get("web_context")                     and (state.get("intent") or "") == "ask":
+            # ★ 단, dossier 가 **미발견**("찾지 못했다")이면 직결하지 않는다 — 그 문구로
+            # 결론 내리면 다른 도구(허용값 조회 등)로 답할 수 있는 질문까지 '확인 불가'로
+            # 끝난다(실측: 라벨 목록 질의가 list_ticket_options 를 못 써 보고 죽었다).
+            if state.get("topic_dossier") and not state.get("web_context") \
+                    and "찾지 못했다" not in state.get("topic_dossier", "") \
+                    and (state.get("intent") or "") == "ask":
                 try:
                     out = self.apply(state, self._conclude(state, []))
                     out["trace"] = (out.get("trace") or [])                         + [{"node": self.name, "label": "과거 이력 조사",
@@ -469,8 +498,10 @@ class Historian(ToolAgent):
             ext = []
         # 사람 도구 — 담당 적합성 판단("DL-x를 A에게?")·"누가 하면 좋을지"에 필요(실측:
         # 없어서 대답이 개념 강의로 샜다). 규칙 도구 — LTM 사용법·규칙 질문의 1차 출처.
+        # 허용값 도구 — "라벨 목록 보여줘·정리 제안" 같은 관리성 질의에 필요(실측: 없어서
+        # 실값을 코앞에 두고 '확인 불가'로 답했다).
         return (T.SEARCH_TOOLS + T.WEB_TOOLS + T.PEOPLE_TOOLS + T.RULE_TOOLS
-                + [T.BY_NAME["get_progress"]] + ext)
+                + [T.BY_NAME["get_progress"], T.BY_NAME["list_ticket_options"]] + ext)
 
     def system(self, state):
         return persona(state, SYSTEM_HISTORIAN)
