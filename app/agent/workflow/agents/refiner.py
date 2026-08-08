@@ -289,15 +289,29 @@ class Refiner(ToolAgent):
         #   실 모델이 섞어 낸 적이 있고, 그대로 두면 검증 실패 → 재작성 왕복만 태우다
         #   한도 소진으로 끝난다. 빼는 것이 반려보다 낫다(부모 생성 후 2차 승인으로 붙일 수 있다).
         if mode == "task":
-            dropped = [i for i in items if (i.get("type") or "").lower().startswith("sub")]
-            if dropped:
-                items = [i for i in items if i not in dropped]
-                names = ", ".join(d.get("summary", "") for d in dropped)
-                extra_note = f"(Sub-Task {len(dropped)}건은 부모 생성 후 별도 승인으로 붙인다: {names})"
+            subs = [i for i in items if (i.get("type") or "").lower().startswith("sub")]
+            # ★ 전부 Sub-Task 이고 부모가 실재하면 **모드를 승격**한다 — 사용자가 "DL-9090 밑에
+            #   서브태스크 3개" 라고 부모를 지목했는데 mode 만 task 로 잘못 낸 경우다. 여기서
+            #   버리면 "만들겠습니다" 라고 말해 놓고 초안이 0건이 된다(실측: PAR1).
+            if subs and len(subs) == len(items) and all(_ticket_exists(i.get("parent")) for i in subs):
+                mode = "subtask"
+                out["mode"] = "subtask"
+            elif subs:
+                items = [i for i in items if i not in subs]
+                names = ", ".join(d.get("summary", "") for d in subs)
+                extra_note = f"(Sub-Task {len(subs)}건은 부모 생성 후 별도 승인으로 붙인다: {names})"
                 out["rationale"] = ((out.get("rationale") or "") + "\n" + extra_note).strip()
         turns = (state.get("turns") or 0) + 1
         # 되묻기 상한을 넘겼는데도 질문만 냈다면 질문을 버린다 — 영원히 안 끝나는 대화를 막는다.
         if qs and turns > MAX_REFINE_TURNS:
+            qs = []
+        # ★ 사용자가 "알아서" 라고 했으면 **묻지 않는다.** 명령서에 그렇게 적어 두었는데도
+        #   모델이 되물어 초안이 0건으로 끝나는 일이 반복됐다(실측: 지목한 Epic 이 있는데도
+        #   2개를 되물었다). 지시를 코드로 보장한다 — 초안이 있으면 질문을 버린다.
+        if qs and items and _said_defaults(state):
+            asked = "; ".join(str(q.get("question", ""))[:40] for q in qs[:3])
+            out["rationale"] = ((out.get("rationale") or "")
+                                + f"\n(사용자가 '알아서'라고 해서 기본값으로 채웠다: {asked})").strip()
             qs = []
         # 초안 관련 인터뷰의 마지막엔 항상 **자유 의견** 질문 하나를 붙인다(사용자 요청) —
         # 객관식 보기가 못 담는 계획·우려를 받아낼 출구. 코드가 붙이므로 모델이 잊지 못한다.
@@ -576,15 +590,13 @@ def _placement_material(state) -> str:
     """
     parts = []
     try:
-        from app.agent.tools.search_tools import find_parent_epic
-        q = " ".join(str(k) for k in (state.get("keywords") or [])[:3])
-        rows = [r for r in (find_parent_epic.invoke({"query": q, "limit": 8}) or [])
-                if isinstance(r, dict) and r.get("key") and not r.get("error")]
+        rows = _epic_options(state)
         if rows:
-            parts.append("Epic 후보 (이 중에서만 고른다. 모듈이 다르면 항목마다 다른 Epic 이 정상):\n"
-                         + "\n".join(f"- {r['key']} \"{r.get('summary', '')}\""
-                                     f"{' · ' + r['status'] if r.get('status') else ''}"
-                                     for r in rows[:8]))
+            parts.append("Epic 후보 (여기서 고른다. 모듈이 다르면 항목마다 다른 Epic 이 정상. "
+                         "마땅한 게 없으면 questions 로 물어라):\n"
+                         + "\n".join('- {} [{}] "{}"'.format(r["key"], r.get("module") or "-",
+                                                             r.get("summary", ""))
+                                     for r in rows[:10]))
     except Exception:
         pass
     try:
@@ -620,3 +632,34 @@ def _known_labels() -> set:
                                  .get("labels") or [])}
     except Exception:
         return set()
+
+
+def _epic_options(state) -> list:
+    """붙일 수 있는 Epic 목록 — 도구와 **같은 것**을 본다(`find_parent_epic`).
+
+    모듈을 짐작했으면 그 모듈 Epic 을 앞에 둔다. 여러 Task 가 서로 다른 Epic 에 붙는 것이
+    정상이므로 다른 모듈 Epic 도 뒤에 남긴다.
+    """
+    from app.agent.tools.search_tools import find_parent_epic
+    rows = [r for r in (find_parent_epic.invoke({"query": "", "limit": 25}) or [])
+            if isinstance(r, dict) and r.get("key") and not r.get("error")]
+    mod = (state or {}).get("module") or ""
+    if mod:
+        rows.sort(key=lambda r: r.get("module") != mod)
+    return rows
+
+def _said_defaults(state) -> bool:
+    """사용자가 "알아서/기본값/맡길게" 라고 했나 — 되묻기를 끄는 신호."""
+    said = conversation(state)
+    return any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠", "네가 정해", "아무거나"))
+
+
+def _ticket_exists(key) -> bool:
+    k = str(key or "").strip()
+    if not k:
+        return False
+    try:
+        from app.agent.tools._ctx import client
+        return bool((client().get_issue(k) or {}).get("key"))
+    except Exception:
+        return False

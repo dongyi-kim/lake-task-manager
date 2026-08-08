@@ -23,7 +23,7 @@ function _prewarmPickers() {
   _prewarmed = true;
   // 초기 페이지 로딩과 경쟁하지 않게 잠깐 뒤, 결과는 버린다(캐시만 데운다).
   setTimeout(() => {
-    api.epicCandidates("").catch(() => {});     // Sub-Task 상위(Task) 후보
+    api.parentTaskCandidates("").catch(() => {});     // Sub-Task 상위(Task) 후보
     api.options("epics").catch(() => {});        // Task 상위(Epic) 후보
     api.taskTypes().catch(() => {});             // 'Epic 없음' 생성용 타입
   }, 1200);

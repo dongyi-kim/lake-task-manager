@@ -384,14 +384,41 @@ def get_epic_tree(epic_key: str) -> dict:
 
 @tool
 def find_parent_epic(query: str = "", limit: int = 10) -> list:
-    """새 티켓을 매달 **상위 Epic/Task 후보**를 찾는다. 티켓 트리를 제안하기 직전에 부른다.
+    """새 티켓을 매달 **상위 Epic 후보**를 찾는다. 티켓 트리를 제안하기 직전에 부른다.
 
-    빈 문자열로 부르면 최근·활성 후보를 준다. 마땅한 후보가 없으면 Epic 을 새로 만드는 것도
-    선택지다 — 무리하게 관련 없는 Epic 에 매달지 않는다.
+    빈 문자열로 부르면 Epic 전체를 최근순으로 준다. 키·요약·Epic Name 어느 쪽으로 쳐도 찾는다.
+    마땅한 후보가 없으면 사용자에게 물어라 — 관련 없는 Epic 에 매달면 남의 진척률이 오염된다
+    (새 Epic 을 만드는 것은 knowledge/04 의 네 조건을 다 만족할 때만이다).
+
+    돌려주는 것: [{"key","name","summary","module"}]
     """
+    # ★ 예전에는 `epic_candidates()` 를 썼는데 그 함수는 이름과 달리 **Epic 에 넣을 Task**
+    #   후보를 준다(지금은 parent_task_candidates 로 이름을 바로잡았다). 그래서 이 도구가
+    #   Task 를 Epic 이라며 돌려줬고, 초안의 Epic Link 가 매번 비었다(실측). 진짜 Epic 목록은
+    #   `epic_options()` 다 — 화면의 'Epic 편집' 드롭다운이 쓰는 그것.
     try:
-        rows = client().epic_candidates(query or "", limit=max(1, min(int(limit or 10), 25))) or []
+        rows = client().epic_options(query or "") or []
     except Exception as e:
         return [{"error": str(e)[:200]}]
-    return [compact({"key": r.get("key"), "summary": r.get("summary") or r.get("name"),
-                     "type": r.get("type"), "status": r.get("status")}) for r in rows]
+    out = []
+    for r in rows:
+        if not isinstance(r, dict) or not r.get("key"):
+            continue
+        mod = _epic_module(r["key"])
+        if mod == "TEST":
+            continue          # 화면 검증용 픽스처 Epic — 실 업무를 달 자리가 아니다
+        out.append(compact({"key": r["key"], "name": r.get("name"),
+                            "summary": r.get("summary"), "module": mod}))
+        if len(out) >= max(1, min(int(limit or 10), 25)):
+            break
+    return out
+
+
+def _epic_module(key: str) -> str:
+    """그 Epic 의 모듈 — 티켓 컴포넌트와 맞는 Epic 을 고르는 근거가 된다."""
+    try:
+        f = (client().get_issue(key) or {}).get("fields") or {}
+        comps = [c.get("name") for c in (f.get("components") or []) if c.get("name")]
+        return str(comps[0]) if comps else ""
+    except Exception:
+        return ""

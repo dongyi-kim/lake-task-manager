@@ -56,7 +56,7 @@ export default {
       this._t = setTimeout(() => {
         this.candBusy = true;
         const ex = this.excludeEpicLinked ? 1 : 0;      // 서버가 이미-Epic-속한 것을 걸러(자르기 전에)
-        api.raw("/api/epic-candidates?limit=25&excludeLinked=" + ex + "&q=" + encodeURIComponent(q || ""))
+        api.raw("/api/parent-task-candidates?limit=25&excludeLinked=" + ex + "&q=" + encodeURIComponent(q || ""))
           .then((r) => { this.cands = (r && r.items) || []; })
           .catch(() => { this.cands = []; })
           .finally(() => { this.candBusy = false; });

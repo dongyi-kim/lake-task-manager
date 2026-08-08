@@ -92,7 +92,7 @@ export default {
         this.pbusy = true;
         const isSub = this.pickKind === "task";
         const p = isSub
-          ? api.epicCandidates(q).then((r) => (r && r.items) || [])
+          ? api.parentTaskCandidates(q).then((r) => (r && r.items) || [])
           : api.options("epics", q).then((r) => (r || []).map(
               (e) => ({ key: e.key, summary: e.summary || "", name: e.name || e.key, type: "Epic" })));
         p.then((items) => {

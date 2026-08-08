@@ -190,7 +190,8 @@ export const api = {
   bulkCreate: (body) => jsonReq("/api/bulk/create", "POST", body).then((r) => { _memo.clear(); return r; }),
   createTask: (body) => jsonReq("/api/task", "POST", body).then((r) => { _memo.clear(); return r; }),
   createEpic: (body) => jsonReq("/api/epic", "POST", body).then((r) => { _memo.clear(); return r; }),
-  epicCandidates: (q) => req("/api/epic-candidates?limit=25&q=" + encodeURIComponent(q || "")),
+  // Epic 에 넣을 수 있는 **Task** 후보(Sub-Task 의 상위 피커). 진짜 Epic 목록은 options("epics").
+  parentTaskCandidates: (q) => req("/api/parent-task-candidates?limit=25&q=" + encodeURIComponent(q || "")),
   createChild: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/child",
                                       "POST", body)
     // 만든 직후 부모의 하위 목록을 다시 받아야 한다 — memo 를 안 비우면 **늘 만들기 전 목록**이

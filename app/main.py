@@ -1592,12 +1592,12 @@ def api_epic_link(key: str, body: _EpicLinkBody):
         return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=400)
 
 
-@app.get("/api/epic-candidates")
-def api_epic_candidates(q: str = "", limit: int = 20, excludeLinked: int = 0):
+@app.get("/api/parent-task-candidates")
+def api_parent_task_candidates(q: str = "", limit: int = 20, excludeLinked: int = 0):
     """Epic 에 넣을 만한 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외). q 로 제목/키 검색.
     excludeLinked=1 이면 이미 다른 Epic 에 속한 Task 를 뺀다. (Epic 생성 '기존 Task 선택'용)"""
     try:
-        return JSONResponse(_client.epic_candidates(q, limit, exclude_linked=bool(excludeLinked)))
+        return JSONResponse(_client.parent_task_candidates(q, limit, exclude_linked=bool(excludeLinked)))
     except Exception as e:
         return JSONResponse({"error": str(e)[:200], "items": []}, status_code=200)
 

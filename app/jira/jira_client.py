@@ -1823,17 +1823,23 @@ class JiraClient:
         except Exception:
             return {"me": me, "modules": [], "taskKeys": [], "epicKeys": []}
 
-    def epic_candidates(self, q="", limit=20, exclude_linked=False):
-        """상위 Task 피커 후보 — **조립 결과를 통째로 캐시**(긴 TTL). 첫 로딩이 느렸던 이유는
+    def parent_task_candidates(self, q="", limit=20, exclude_linked=False):
+        """**Epic 에 넣을 수 있는 Task** 후보(= Sub-Task 의 상위 Task 피커).
+
+        예전 이름은 `epic_candidates` 였는데 **주는 것은 Epic 이 아니라 Task** 라 오해를 낳았다
+        — 에이전트가 이 결과를 티켓의 Epic Link 로 쓰다가 매번 빈 값이 됐다(실측).
+        진짜 Epic 목록은 `epic_options()` 다.
+
+        조립 결과를 통째로 캐시 — **조립 결과를 통째로 캐시**(긴 TTL). 첫 로딩이 느렸던 이유는
         200건 검색·200건 write-through·소속 Epic 이름 해석·정렬을 매 호출마다 다시 했기 때문.
         q 별로 결과를 캐시하면 재조회는 cache.get 한 번이다(새 Task/Epic Link 변경 시 'epic_cand:' 무효화)."""
         ql = (q or "").strip().lower()
         ck = f"epic_cand:res:{self.env}:{ql}:{int(limit)}:{int(bool(exclude_linked))}"
         return self.cache.get_or_set(
             ck, self.OPTIONS_TTL,
-            lambda: self._epic_candidates_build(q, limit, exclude_linked))[0]
+            lambda: self._parent_task_candidates_build(q, limit, exclude_linked))[0]
 
-    def _epic_candidates_build(self, q="", limit=20, exclude_linked=False):
+    def _parent_task_candidates_build(self, q="", limit=20, exclude_linked=False):
         """Epic 에 넣을 **기존 Task 후보** — 일반 이슈(Epic·Sub-Task 제외). q 로 키/제목 필터.
         exclude_linked=True 면 **이미 다른 Epic 에 속한 Task 를 뺀다**(자르기 전에 걸러야 소속 없는
         후보가 limit 안에 남는다). JQL 은 단순히(project + 최신순), 나머지는 파이썬에서 — mock/prod 공통."""

@@ -119,8 +119,20 @@ and none fits ④ the user wants this tracked as its own reporting unit. If any 
 do NOT promote — put Tasks under the existing Epic and say why you held off
 ("2주 규모라 Epic 격상 보류 — DL-101 아래 Task 로 둠"). It can be promoted later.
 
-Two frequent misjudgments: 설계/구현/검증 are STAGES of one deliverable (→ Sub-Tasks, not
-separate Tasks); and "this feels big" is not evidence (→ count the four conditions).
+Three misjudgments seen in practice — check yourself against each before emitting:
+
+1. **설계/구현/검증 are STAGES of one deliverable** → Sub-Tasks, not separate Tasks.
+2. **"N개 대상을 처리한다" is ONE Task with N children — never N Tasks.** Measured failure:
+   "테이블 30개 등록, 사람 나눠서" produced **30 Tasks**. If the items differ only by their
+   target ("… - 테이블 1", "… - 테이블 2"), that is volume splitting: one Task whose
+   `children` carry the targets, spread across people. More than 3-4 top-level items with
+   near-identical titles means you got this wrong.
+3. **"this feels big" is not evidence** → count the four Epic conditions.
+
+And the mirror of #2: **do not pack different modules into one Task.** Measured failure:
+"성능 측정(Workbench) + 인덱스 조정(Runtime) + 가이드 작성" became a single Task titled
+"성능 측정 및 인덱스 조정". Different module ⇒ different owner ⇒ different Task. If your
+title needs "및"/"그리고" to hold two deliverables, split it.
 
 ## Splitting rules
 
