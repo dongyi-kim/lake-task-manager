@@ -34,6 +34,11 @@ UID_RE = re.compile(r"^[a-z]+\.[a-z]\d+$")
 UID_TOKEN_RE = re.compile(chr(92) + "b([a-z]{2,}" + chr(92) + ".[a-zA-Z]{1,2}[0-9N]{2,6})" + chr(92) + "b")
 # "**DL-123**: 김철수" — 역할 낱말 없이 티켓키→사람 매핑으로 새는 변종(실측).
 KEY_NAME_RE = re.compile(r"[A-Z][A-Z0-9]+-" + r"[0-9]+[*_]*\s*[:\-–]\s*[*_]*([가-힣]{2,4})(?=\s|$|[,.)—-])")
+# "| 담당자 | 한예준 |" — **표 칸**으로 새는 변종(실측 EDGE13). 역할 낱말과 이름 사이가
+# 콜론이 아니라 파이프라 위 두 패턴이 전부 놓쳤다. 답변이 표를 많이 쓰는 화면이라 이 꼴이
+# 흔하다. common.md: "People appear as ids (skcc.x1042)" — 실명은 자료에 없는 표기다.
+TABLE_NAME_RE = re.compile(
+    r"\|[^|\n]*(?:담당|작성자|보고자|리더|사람|인력)[^|\n]*\|\s*\**\s*([가-힣]{2,4})\s*\**\s*\|")
 # 참조 인덱스 줄 — `[1] …` 이 우리 형식이지만, 모델이 `1. …` 로 쓰는 일이 잦다.
 # **금지한 형식이라고 검사에서 빼면 그 형식으로 새어 나간다**(실측: `1.` 로 쓴 참조 줄이
 # 통째로 검사 밖이었고, 그 줄들이 티켓 키에 엉뚱한 문서 URL 을 달고 있었다). 둘 다 본다.
@@ -178,6 +183,7 @@ def check(reply: str) -> dict:
         # 후자는 역할 낱말이 제목 줄에만 있고 항목 줄엔 없어서 NAME_RE 가 놓쳤다(실측).
         names = [(m.group(1) or m.group(2) or "").strip() for m in NAME_RE.finditer(text)]
         names += [m.group(1).strip() for m in KEY_NAME_RE.finditer(text)]
+        names += [m.group(1).strip() for m in TABLE_NAME_RE.finditer(text)]
         # 상태·시간 낱말은 사람이 아니다 — "DL-9090: 현재 2/3 완료" 의 '현재'가 인물로
         # 걸렸다(실측 오탐). 이 목록은 오탐이 관측될 때마다 늘린다.
         _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감",

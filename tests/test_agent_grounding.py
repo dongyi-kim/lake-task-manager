@@ -295,3 +295,13 @@ def test_unknown_titles_are_not_given_a_borrowed_url():
     st = {"topic_dossier": "문서 「A 설계 노트」 (http://x/a) 발췌:\n본문"}
     t = "**참조**\n1. B 운영 런북 — 다른 문서다\n"
     assert _attach_known_doc_urls(t, st) == t
+
+
+def test_real_names_leaking_through_table_cells_are_caught():
+    """"| 담당자 | 한예준 |" — **표 칸**으로 새는 변종(실측 EDGE13). 역할 낱말과 이름 사이가
+    콜론이 아니라 파이프라 기존 두 패턴이 전부 놓쳤다. 답변이 표를 많이 쓰는 화면이라
+    이 꼴이 흔하다. common.md: "People appear as ids (skcc.x1042)"."""
+    from app.agent.workflow.grounding import TABLE_NAME_RE
+    assert [m.group(1) for m in TABLE_NAME_RE.finditer("| 담당자 | 한예준 | [1] |")] == ["한예준"]
+    assert [m.group(1) for m in TABLE_NAME_RE.finditer("| 담당 | skcc.x1042 |")] == []
+    assert [m.group(1) for m in TABLE_NAME_RE.finditer("| 진행 중인 업무 수 | 5건 |")] == []

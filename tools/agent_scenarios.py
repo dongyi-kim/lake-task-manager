@@ -62,8 +62,12 @@ CASES = [
     ("TECH2", "기술 업무 + 분할 제안", [
         "Kafka 컨슈머 랙 모니터링 알림 개발이 필요해. 알아서 초안"],
      "plan_work", lambda o, _: bool(_pending_items(o)) or bool(o.get("questions"))),
+    # ★ 부모는 **Task** 여야 한다 — 예전엔 DL-101(Epic)을 부모로 썼는데, Sub-Task 는 Epic
+    #   밑에 못 붙는다(knowledge/01: Epic → Story/Task → Sub-Task). 에이전트가 "먼저 Task 를
+    #   만들어야 한다"고 지적한 것이 **옳았고 케이스가 틀렸다**. 규칙이 금지한 것을 요구하는
+    #   케이스는 무엇을 재는지 알 수 없다 — 이 케이스가 보는 것은 **지정 담당 보존**이다.
     ("BULK3", "벌크 Sub-Task 개별 속성", [
-        "DL-101 밑에 서브태스크 3개 만들어줘: 설계는 x1103, 구현은 x1042, 검증은 i2011 담당으로. 알아서"],
+        "DL-9090 밑에 서브태스크 3개 만들어줘: 설계는 x1103, 구현은 x1042, 검증은 i2011 담당으로. 알아서"],
      "plan_work", lambda o, _: (lambda it: len(it) >= 3 and len({x.get("assignee") for x in it}) >= 3)
      (_pending_items(o))),
     ("KNOW4", "사내+외부 지식 정리", [
@@ -231,7 +235,7 @@ EXPECT = {
     },
     "BULK3": {
         "story": "분담을 이미 정해 왔다 — 그대로 만들어 주기만 하면 된다",
-        "must": ["Sub-Task 3건이 DL-101 아래로 잡혔다",
+        "must": ["Sub-Task 3건이 DL-9090 아래로 잡혔다",
                  "설계=x1103 · 구현=x1042 · 검증=i2011 이 **말한 그대로** 배정됐다"],
         "must_not": ["세 건을 한 사람에게 몰았다", "이미 말한 분담을 다시 물었다"],
     },
