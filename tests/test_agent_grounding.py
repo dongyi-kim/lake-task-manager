@@ -254,3 +254,19 @@ def test_a_plain_numbered_list_in_the_body_is_not_a_reference():
     """본문의 번호 목록까지 출처로 오인하면 멀쩡한 답에 경고가 붙는다."""
     from app.agent.workflow.grounding import _unlinked_refs
     assert _unlinked_refs("순서는 이렇다.\n\n1. 대상을 정한다\n2. job 을 붙인다\n") == []
+
+
+def test_a_link_slot_without_a_real_url_is_a_violation():
+    """가드가 만든 회피 3번째 — 재작성 지시문의 문구를 **URL 자리에 그대로 복사**했다:
+        1. [DL-9044 — 적재주기 변경](확인할 방법이 없음)
+    예전 검사는 `](` 만 보고 '링크 있음'으로 통과시켰다. 이 저장소가 이미 겪은 부류다
+    (사번 자리표시자 NNNN 을 답에 복사한 사고)."""
+    from app.agent.workflow.grounding import _unlinked_refs
+    for bad in ("**참조**\n1. [DL-9044 — 변경](확인할 방법이 없음)",
+                "**참조**\n[1] [문서 제목]() — 설명",
+                "**참조**\n[1] [문서 제목](URL) — 설명"):
+        assert _unlinked_refs(bad), bad
+    for ok in ("**참조**\n[1] DL-9044 — 적재주기 변경의 근거",
+               "**참조**\n[2] [[데이터카탈로그] 특성 분석](http://x/pages/352/y) — 스키마",
+               "**참조**\n[3] [DL-9044 변경](http://x/browse/DL-9044) — 근거"):
+        assert _unlinked_refs(ok) == [], ok

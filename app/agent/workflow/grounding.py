@@ -38,9 +38,14 @@ KEY_NAME_RE = re.compile(r"[A-Z][A-Z0-9]+-" + r"[0-9]+[*_]*\s*[:\-–]\s*[*_]*([
 # **금지한 형식이라고 검사에서 빼면 그 형식으로 새어 나간다**(실측: `1.` 로 쓴 참조 줄이
 # 통째로 검사 밖이었고, 그 줄들이 티켓 키에 엉뚱한 문서 URL 을 달고 있었다). 둘 다 본다.
 REF_LINE_RE = re.compile(r"^\s*(?:\[(\d{1,2})\]|(\d{1,2})[.)])\s+(.+?)\s*$", re.M)
-# 링크로 인정하는 것: 맨 URL 또는 마크다운 링크의 `](`.
-LINKED_RE = re.compile(r"https?://|\]\(")
+# ★ 링크로 인정하는 것은 **진짜 URL 뿐**이다. 예전엔 `](` 만 봐서 괄호 안에 아무 말이나
+# 넣어도 통과했다 — 실측(가드가 만든 회피 3번째): 재작성 지시문의 문구를 URL 자리에 그대로
+# 복사했다: `1. [DL-9044 — 적재주기 변경](확인할 방법이 없음)`.
+# "지시문을 답에 복사"는 이 저장소가 이미 겪은 부류다(사번 자리표시자 NNNN).
+LINKED_RE = re.compile(r"https?://")
 URL_RE = re.compile(r"https?://[^\s)\]]+")
+# 링크 괄호는 열었는데 안에 URL 이 없는 것 — `](확인할 방법이 없음)` `](URL)` `]()`
+FAKE_LINK_RE = re.compile(r"\]\(\s*(?!https?://)[^)]*\)")
 # 티켓으로 가는 링크인가 — Jira 는 /browse/KEY 다. Confluence 문서 URL 은 /pages/ 를 가진다.
 BROWSE_RE = re.compile(r"/browse/([A-Z][A-Z0-9]+-\d+)")
 
@@ -85,6 +90,10 @@ def _unlinked_refs(text: str) -> list:
     for num, body in _ref_lines(text or ""):
         keys = KEY_RE.findall(body)
         urls = URL_RE.findall(body)
+        # ③ 링크인 척하는 괄호 — 안에 URL 이 없다. 있는 척하는 것이 없는 것보다 나쁘다.
+        if FAKE_LINK_RE.search(body):
+            out.append(f"[{num}] 링크 자리에 URL 이 아닌 것이 들어갔다: {body[:60]}")
+            continue
         if not keys and not LINKED_RE.search(body):
             out.append(f"[{num}] {body[:60]}")
             continue

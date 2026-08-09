@@ -37,11 +37,15 @@ into every sentence — measured feedback: "본문에 발췌·원본·참조를 
   - Ticket: `[1] DL-9044 — what it evidences` (the key renders as a badge with its title)
   - Document: `[2] [문서 제목](URL) — what it contains`
   - Comment: `[3] DL-9062 코멘트 (skcc.x1103, 2026-08-05) — what it said`
-- **A ticket reference takes NO url.** The key alone is the link — the UI renders it.
-  Never attach a document URL to a line that names a ticket: measured failure —
-  `1. [DL-9044 — 적재주기 변경](http://…/pages/…/[데이터카탈로그]…)`. Clicking that opens
-  something else entirely; a wrong link is worse than no link because it looks verified.
-  If you have no URL for a document, **drop that reference** — do not borrow another one.
+- **A ticket reference is the bare key — never a markdown link.** Write
+  `[1] DL-9044 — 적재주기 변경의 근거`. The UI turns the key into a badge with its title.
+  Two measured failures came from wrapping it: attaching an unrelated document URL
+  (`[DL-9044 …](http://…/pages/…)` — clicking opens something else, and a wrong link is
+  worse than none because it looks verified), and putting prose in the URL slot
+  (`[DL-9044 …](확인할 방법이 없음)` — that is instruction text copied into the answer).
+- **A document reference uses the URL that is in your materials** — the 문서 block gives it
+  as `문서 「제목」 (URL)`. Copy that URL. If a document has no URL in your materials, do not
+  cite it at all: never write `](URL)`, `]()`, or any words inside the link parentheses.
 - Every reference line MUST start with `[n] ` — never a numbered list (`1.`), never brackets around the whole line (measured drift: `1. [DL-… — …]`).
 - A table/section exists only when there is content — never emit a history table filled
   with "확인된 기록 없음" rows, and never a reference whose description is "확인된 기록

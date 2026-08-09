@@ -468,6 +468,19 @@ class JiraClient:
         self.s = settings
         self.cache = cache
         self.env = settings.jira_env
+        # ★ dev 세계는 **`today` 기준으로 매 프로세스 재생성**된다(app/mock/world.py). 그런데
+        #   캐시는 파일이라 자정을 넘겨 살아남는다 — 그러면 **어제 세계의 티켓과 오늘 세계의
+        #   티켓이 한 화면에 섞인다.** 실측: 자정을 넘긴 뒤 DL-9090 의 자식이 3건인데 캐시가
+        #   1건만 물고 있어 "하위 Sub-Task 1/1 완료"로 나왔고, 그 상태로 테스트 4건이 깨졌다
+        #   (코드는 멀쩡했다 — 이 부류가 제일 찾기 어렵다).
+        #   네임스페이스에 세계의 날짜를 넣으면 날이 바뀌는 순간 옛 항목이 저절로 안 걸린다.
+        #   prod 는 실 Jira 라 해당 없다 — dev(mock/local)에만 붙인다.
+        if self.env in ("mock", "local"):
+            try:
+                from datetime import date
+                self.env = f"{self.env}@{date.today().isoformat()}"
+            except Exception:
+                pass
         # provider 는 lazy 생성 — 임포트/기동 시 Chrome 을 띄우거나 세션 없음으로 크래시하지 않는다.
         self._provider = None
         self._provider_built = False

@@ -88,3 +88,16 @@ def test_mock_local_parity(tmp_path):
     # 인력 상세 (첫 인력)
     uid = next(iter(people.values()))[0]
     assert _eq(mock.workload_tickets(uid), local.workload_tickets(uid)), "workload tickets differ"
+
+
+# ── 캐시가 어제 세계를 물고 있으면 오늘 세계와 섞인다 (실측: 자정 넘어 테스트 4건 파손) ──
+def test_dev_cache_namespace_carries_the_world_date():
+    """dev 세계는 `today` 기준으로 **매 프로세스 재생성**되는데 캐시는 파일이라 자정을
+    넘겨 살아남는다 — 어제 티켓과 오늘 티켓이 한 화면에 섞인다. 실측: DL-9090 의 자식이
+    3건인데 캐시가 1건만 물어 '하위 Sub-Task 1/1 완료'가 됐고 테스트 4건이 깨졌다.
+    **코드는 멀쩡했다.** 서버는 rev 로 stale 을 확인할 수 있지만 캐시는 그럴 수단도 없었다."""
+    from datetime import date
+    from app.agent.tools._ctx import client
+    env = client().env
+    assert env.startswith("mock@") or env.startswith("local@"), env
+    assert env.endswith(date.today().isoformat()), env

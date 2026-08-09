@@ -533,17 +533,22 @@ for cid, desc, turns, want_intent, check in CASES:
         # 6축 전부를 평균에 넣는다 — interaction 은 채점만 하고 **버리고 있었다**.
         score = round(sum(j.get(k, 0) for k in JUDGE_AXES) / len(JUDGE_AXES), 2) \
             if j and "error" not in j else 0
-        # ★ 품질 하한 — 체커만 통과하고 답이 형편없으면 통과가 아니다.
-        #   answers_original 이 false 면 축 점수와 무관하게 실패다. 축 점수는 "잘 썼는가"를
-        #   보고 이 판정은 "물어본 것에 답했는가"를 본다 — 후자가 아니면 전자는 의미가 없다.
+        # ★ judge 는 **게이트가 아니다.** 한때 품질 하한을 통과 조건에 넣었는데, 그러면
+        #   "judge 는 보조 신호일 뿐 통과 권한이 없다"고 적어 놓고 정작 통과를 judge 가
+        #   정하는 모순이 된다. 실측으로 judge 는 **양방향으로** 틀렸다:
+        #     · 다른 질문에 답한 것에 6축 만점(DATA13)
+        #     · 계약 3항목을 다 만족한 답에 answers_original=False + 틀린 worst(DATA9 —
+        #       "DEFECT_CD 언급이 빠졌다"는데 표에 있었다)
+        #   그래서 게이트는 **결정적 체커**가 쥔다. judge 점수와 answers_original 은
+        #   "읽어 볼 곳"을 알려 주는 표식으로만 찍고, 최종 판정은 덤프를 읽고 한다.
         answered = j.get("answers_original", True) is not False
-        ok_quality = score >= QUALITY_MIN and answered
-        passed = ok_intent and ok_check and ok_quality
+        low_quality = (score and score < QUALITY_MIN) or not answered
+        passed = ok_intent and ok_check
         mark = "✓" if passed else "✗"
         print(f"{mark} {cid} {desc}: intent={last.get('intent')}"
               f"{'' if ok_intent else f'(기대 {want_intent})'} 체커={'ok' if ok_check else 'FAIL'}"
-              f" 품질={score}{'' if ok_quality else f'(하한 {QUALITY_MIN})'} {time.time()-t0:.0f}s")
-        if not passed:
+              f" 품질={score}{' ⚑읽어볼 것' if low_quality else ''} {time.time()-t0:.0f}s")
+        if not passed or low_quality:
             print(f"   reply: {(last.get('reply') or '')[:200]}")
             if j and "error" not in j:
                 print("   축별: " + " · ".join(f"{k}={j.get(k)}" for k in JUDGE_AXES))
@@ -551,7 +556,7 @@ for cid, desc, turns, want_intent, check in CASES:
             print(f"   judge: {j['worst'][:110]}")
         rows.append({"id": cid, "desc": desc, "turns": turns, "passed": passed,
                      "intent": last.get("intent"), "score": score, "judge": j,
-                     "ok_check": ok_check, "ok_quality": ok_quality, "spec": _spec,
+                     "ok_check": ok_check, "low_quality": bool(low_quality), "spec": _spec,
                      # 덤프는 **자르지 않는다** — 사람이 채점하려면 전문이 있어야 한다.
                      "replies": [o.get("reply") or "" for o in outs],
                      "questions": [o.get("questions") or [] for o in outs],
@@ -565,9 +570,10 @@ n_ok = sum(1 for r in rows if r.get("passed"))
 # 평균은 **전 케이스**로 낸다 — 통과분만 평균 내면 실패가 많을수록 평균이 좋아 보인다.
 scored = [r for r in rows if r.get("score")]
 avg = round(sum(r["score"] for r in scored) / max(1, len(scored)), 2)
-n_qfail = sum(1 for r in rows if r.get("ok_check") and not r.get("ok_quality"))
+# 체커는 통과했는데 judge 가 낮게 본 것 — **읽어 볼 곳**의 목록이지 실패가 아니다.
+n_flag = sum(1 for r in rows if r.get("ok_check") and r.get("low_quality"))
 print(f"\n{n_ok}/{len(rows)} 통과 · 품질 평균 {avg}/5 (전 케이스, 하한 {QUALITY_MIN})"
-      f" · 체커는 통과했으나 품질 미달 {n_qfail}건 · 총비용 ${round(total_cost, 3)}")
+      f" · 읽어 볼 것 {n_flag}건 · 총비용 ${round(total_cost, 3)}")
 
 if REPORT:
     lines = [f"# 에이전트 복합 시나리오 리포트 ({MODEL})", "",
