@@ -238,13 +238,18 @@ QUALITY_MIN = float(os.environ.get("LAKE_SCENARIO_QUALITY_MIN", "3.5"))
 JUDGE_AXES = ("visibility", "clarity", "completeness", "grounding", "interaction", "relevance")
 
 JUDGE_SYS = (
-    "너는 PMO 어시스턴트 답변의 채점자다. 아래 6축을 1~5로 채점하라. "
-    "5=흠잡을 데 없음, 3=쓸 만하나 아쉬움, 1=실패. JSON 만 출력: "
-    '{"visibility":n,"clarity":n,"completeness":n,"grounding":n,"interaction":n,'
-    '"relevance":n,"worst":"가장 아쉬운 점 한 문장"} '
-    "★ 채점 기준은 '이 케이스가 보려는 것'이다 — 그것을 못 했으면 문장이 아무리 매끄러워도 "
-    "completeness 는 2점 이하다. 그리고 답의 성격은 **원래 요청**이 정한다: 히스토리를 "
-    "물었는데 현재 값만 답했으면, 그 값이 맞더라도 다른 질문에 답한 것이다.\n"
+    "너는 PMO 어시스턴트 답변의 채점자다. 아래를 채점하라. JSON 만 출력: "
+    '{"answers_original":true|false,"why_not":"아니라면 무엇이 빠졌나 한 문장",'
+    '"visibility":n,"clarity":n,"completeness":n,"grounding":n,"interaction":n,'
+    '"relevance":n,"worst":"가장 아쉬운 점 한 문장"} (n 은 1~5, 5=흠잡을 데 없음)\n"'
+    "★ **먼저 answers_original 을 판정하라.** '이 케이스가 보려는 것'과 '원래 요청'이 요구한 "
+    "것에 답했는가 — 예/아니오로. 답의 성격은 원래 요청이 정한다: **히스토리를 물었는데 "
+    "현재 값만 답했으면 그 값이 다 맞더라도 false 다**(다른 질문에 답한 것이다). 이력을 "
+    "물었는데 시간순 전개와 '지금 어디까지 왔나'가 없으면 false. 목록을 물었는데 요약으로 "
+    "뭉갰으면 false. false 면 completeness 는 반드시 2점 이하로 준다.\n"
+    "이 판정을 점수보다 먼저 하는 이유: 문장이 매끄러우면 축 점수는 전부 올라가고, 정작 "
+    "'다른 질문에 답했다'는 사실이 어디에도 안 남는다(실측: 현재 값만 답한 것에 6축 전부 "
+    "5점을 준 적이 있다).\n"
     "— visibility(구조가 사람을 위해 있나: 값 질문엔 표, **이력 질문엔 시간순 타임라인**, "
     "근거 3개↑면 본문엔 [N] 마커만 두고 끝에 참조 목록. 본문 문장마다 제목·작성자·날짜를 "
     "끼워 넣어 벽을 만들었으면 2점 이하. 티켓 5건 이상을 불릿으로 늘어놓았으면 3점 이하)\n"
@@ -304,7 +309,10 @@ for cid, desc, turns, want_intent, check in CASES:
         score = round(sum(j.get(k, 0) for k in JUDGE_AXES) / len(JUDGE_AXES), 2) \
             if j and "error" not in j else 0
         # ★ 품질 하한 — 체커만 통과하고 답이 형편없으면 통과가 아니다.
-        ok_quality = score >= QUALITY_MIN
+        #   answers_original 이 false 면 축 점수와 무관하게 실패다. 축 점수는 "잘 썼는가"를
+        #   보고 이 판정은 "물어본 것에 답했는가"를 본다 — 후자가 아니면 전자는 의미가 없다.
+        answered = j.get("answers_original", True) is not False
+        ok_quality = score >= QUALITY_MIN and answered
         passed = ok_intent and ok_check and ok_quality
         mark = "✓" if passed else "✗"
         print(f"{mark} {cid} {desc}: intent={last.get('intent')}"

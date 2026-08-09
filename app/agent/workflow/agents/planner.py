@@ -97,6 +97,25 @@ _ANAPHORA = _re.compile(
     r"|남은|남는|위험|리스크|블로커|막힌")
 
 
+def _carry_depth(state, out) -> str:
+    """답변 깊이는 **대화 단위로 잇는다** — 한 번 설명형이면 그 대화는 설명형이다.
+
+    깊이는 여태 매 턴 **마지막 발화만** 보고 다시 정해졌다. 그런데 우리가 확인 질문을 낸
+    다음 턴에서 사용자가 하는 말은 대개 보기 하나다 — 그건 새 질문이 아니라 **우리 질문에
+    대한 답**인데, 분류기에는 값 질문처럼 보인다.
+
+    실측(배터리 DATA13): "fdc flat trace ic 데이터 히스토리 정리"(explain) → 표기 확인
+    질문 → 사용자가 "fdc.fdc_trace_summary_ic" 를 고르자 그 턴이 brief 로 떨어졌고,
+    Responder 의 "물어본 것만 답하라" 지시가 연표를 눌러 티켓 8건 중 2건만 남았다.
+    재료(topic_dossier)에는 연표가 그대로 있었는데도 그랬다.
+
+    **올리는 쪽으로만 붙인다.** explain 이 과했으면 사용자가 다음 턴에 좁히면 되지만,
+    brief 로 떨어지면 물어본 것이 아예 답에서 사라진다 — 되돌릴 기회가 없다.
+    """
+    now = out.get("answer_depth") or "brief"
+    return "explain" if "explain" in (now, str(state.get("answer_depth") or "")) else "brief"
+
+
 def _carry_keys(state, out) -> list:
     """이번 턴이 댄 키가 우선. 없으면 **앞 턴의 대상을 이어받는다**(후속 질문일 때만).
 
@@ -206,7 +225,7 @@ class Planner(StructuredAgent):
             "mentioned_keys": _carry_keys(state, out),
             "sufficient": bool(out.get("sufficient")),
             "playbook": out.get("playbook") or "",
-            "answer_depth": out.get("answer_depth") or "brief",
+            "answer_depth": _carry_depth(state, out),
             "trace": note(state, self.name,
                           f"의도={intent}"
                           + (f" · 계획: {str(out.get('plan'))[:80]}" if out.get("plan") else

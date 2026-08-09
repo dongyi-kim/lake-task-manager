@@ -497,3 +497,18 @@ def test_bulk_change_plan_stages_the_update_tickets_fingerprint():
     assert rec["fp"] == approval.fingerprint({"items": rows})
     # 라우터도 keys 만으로 propose 로 간다
     assert G.route_after_refiner({"questions": [], "change_plan": plan, "draft": {}}) == "propose"
+
+
+# ── 답변 깊이는 대화 단위로 잇는다 (실측: 배터리 DATA13) ────────────────────
+def test_answer_depth_is_carried_forward_across_a_clarifying_turn():
+    """확인 질문에 답한 턴은 **새 질문이 아니다.** 사용자가 보기 하나를 고르면 그 발화는
+    값 질문처럼 보이는데, 거기서 brief 로 떨어지면 Responder 의 '물어본 것만 답하라'가
+    원 요청(히스토리)을 눌러 버린다 — 실측: 티켓 8건 중 2건만 남았다."""
+    from app.agent.workflow.agents.planner import _carry_depth
+    assert _carry_depth({"answer_depth": "explain"}, {"answer_depth": "brief"}) == "explain"
+    assert _carry_depth({"answer_depth": "explain"}, {}) == "explain"
+    # 올리는 쪽으로만 붙인다 — 새 대화가 설명형이면 그대로 설명형이다
+    assert _carry_depth({"answer_depth": "brief"}, {"answer_depth": "explain"}) == "explain"
+    # 처음부터 값 질문이면 brief 다(과하게 붙지 않는다)
+    assert _carry_depth({}, {"answer_depth": "brief"}) == "brief"
+    assert _carry_depth({}, {}) == "brief"
