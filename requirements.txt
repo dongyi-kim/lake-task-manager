@@ -8,7 +8,12 @@ python-multipart>=0.0.9
 
 # local(fake) 서버 = 외부 오픈소스 mock (이 프로젝트 world 주입). https://pypi.org/project/jira820
 # 0.5.0+: 멀티프로젝트(이슈별 project) + 통합검색(JQL text~ / Confluence CQL) 필요.
-jira820>=0.11.1
+# 0.12.0+: Confluence **본문** 읽기(content/{id} + ?expand=body.storage). 이게 없으면
+#   read_document 가 excerpt 만 받아 조용히 빈 본문을 돌려준다 — 에러도 안 난다.
+#   하한을 올리는 이유: `>=` 는 **이미 깔린 옛 버전을 올려 주지 않는다**. 신규 설치는
+#   최신을 받지만, 기존 venv 에 0.11.1 이 있으면 런처의 `pip install -r` 이 "충족됨"으로
+#   보고 넘어간다(실측: 이 저장소 venv 가 0.11.1 에 고여 test_topic_knowledge 4건 실패).
+jira820>=0.12.0
 
 # Prod (corporate SSO) path additionally needs Playwright:
 #   pip install -r requirements-sso.txt   (then `playwright install chromium`)
