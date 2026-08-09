@@ -122,12 +122,21 @@ def test_tool_using_roles_really_are_subgraphs():
     node() 를 한 겹 더 감싸면서 xray 가 클로저 속 서브그래프를 못 본다 — 세 역할의 ReAct 는
     build() 로 따로 지킨다.
     """
-    # Refiner 도 node() 를 한 겹 감싼다(질문-도피 재시도 가드) — xray 대신 build() 로 지킨다.
-    from app.agent.workflow.agents.assigner import Assigner
     from app.agent.workflow.agents.historian import Historian
+    assert {"think", "act"} <= set(Historian().build().get_graph().nodes)
+
+
+def test_draft_roles_do_not_use_tools():
+    """Refiner·Assigner 는 **도구를 쓰지 않는다** — 필요한 재료(허용값·Epic 후보·규칙·
+    유사 이력·로스터 부하)를 전부 코드가 미리 조회해 자료로 준다. 도구로 두면 모델이
+    매 턴 다시 부르고, 도구 호출 한 번이 곧 LLM 왕복 한 번이라 생성 턴 하나에
+    refiner 12회·assigner 5회까지 불어났다(실측 기준선)."""
+    from app.agent.workflow.agents.assigner import Assigner
+    from app.agent.workflow.agents.base import StructuredAgent
     from app.agent.workflow.agents.refiner import Refiner
-    for role in (Historian(), Assigner(), Refiner()):
-        assert {"think", "act"} <= set(role.build().get_graph().nodes)
+    for role in (Refiner(), Assigner()):
+        assert isinstance(role, StructuredAgent)
+        assert not getattr(role, "tools", None), f"{role.name} 이 도구를 갖고 있다"
 
 
 def test_operator_keeps_react_for_creation():

@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from app.agent.workflow.agents.base import ToolAgent
+from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.agents.refiner import draft_text
 from app.agent.prompts.roles import SYSTEM_ASSIGNER
 from app.agent.workflow.prompts import data_block, persona, wrap_data
@@ -85,26 +85,67 @@ def _similar_history(state) -> str:
     return "\n".join(rows)
 
 
-class Assigner(ToolAgent):
+def _roster_load(state) -> str:
+    """후보 로스터와 **현재 부하**를 코드가 조회한다.
+
+    예전엔 도구(get_team_workload·get_module_people)로 두고 모델이 부르게 했다. 그런데
+    부르는 대상이 늘 같았고(초안의 모듈), 도구 호출 한 번이 곧 LLM 왕복 한 번이라
+    배정 하나에 4~5회를 태웠다(실측). 누구를 조회할지는 판단이 아니라 초안이 정한다.
+    """
+    mods = []
+    for it in ((state.get("draft") or {}).get("items") or []):
+        for c in (it.get("components") or []):
+            if str(c).strip() and str(c) not in mods:
+                mods.append(str(c))
+    if not mods and state.get("module"):
+        mods = [str(state["module"])]
+    if not mods:
+        return ""
+    from app.agent.tools.people_tools import get_team_workload
+    rows = []
+    for m in mods[:3]:
+        ppl = (get_team_workload.invoke({"module": m}) or {}).get("people") or []
+        if not ppl:
+            continue
+        rows.append(f"[{m} 로스터·부하]")
+        rows += [f"- {p.get('id')} {p.get('name', '')} — 진행중 {p.get('inProgress', 0)}건 · "
+                 f"열림 {p.get('open', 0)}건 · 최근 완료 {p.get('done28d', 0)}건" for p in ppl]
+    return "\n".join(rows)
+
+
+class Assigner(StructuredAgent):
+    """★ 도구를 쓰지 않는다 — 후보 재료(유사 이력·로스터·부하)를 코드가 미리 조회한다.
+
+    예전엔 ToolAgent 였는데, 부르는 대상이 늘 같았다(초안이 정한 모듈의 사람들).
+    누구를 조회할지가 판단이 아니면 순회할 이유가 없다 — 도구 호출 한 번이 곧 LLM
+    왕복 한 번이라 배정 하나에 4~5회를 태웠다(실측 기준선).
+    """
+
     name = Node.ASSIGNER
     temperature = 0.2
 
-    @property
-    def tools(self):
-        from app.agent import tools as T
-        return T.PEOPLE_TOOLS + T.RULE_TOOLS
-
     def node(self):
-        react = super().node()
+        base = super().node()
 
         def run(state):
+            # 두 조회는 독립 — 병렬로. prod 는 호출당 수백 ms~수 초다.
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                f_hist = ex.submit(_similar_history, state)
+                f_load = ex.submit(_roster_load, state)
             try:
-                hist = _similar_history(state)
+                hist = f_hist.result()
             except Exception:
                 hist = ""            # 검색 실패가 배정 자체를 막으면 안 된다
+            try:
+                load = f_load.result()
+            except Exception:
+                load = ""
             if hist:
                 state = {**state, "similar_history": hist}
-            return react(state)
+            if load:
+                state = {**state, "roster_load": load}
+            return base(state)
 
         return run
 
@@ -118,7 +159,9 @@ class Assigner(ToolAgent):
             data_block("현재 상황", state.get("situation")),
             data_block("유사 티켓(여기 등장한 사람들을 확인하라)", ev),
             data_block("유사 업무 담당 이력 (코드가 검색·집계함 — 근거로 활용하라)",
-                       state.get("similar_history")))
+                       state.get("similar_history")),
+            data_block("후보 로스터와 현재 부하 (코드가 조회함 — 이 안에서 고른다)",
+                       state.get("roster_load")))
         return f"""\
 # 명령서
 아래 티켓 초안의 **각 항목마다** 담당자를 근거와 함께 제안하라.
@@ -126,7 +169,7 @@ class Assigner(ToolAgent):
 ## 제약조건
 - 초안 항목 번호(index)를 그대로 쓴다.
 - 사용자 id 는 `skcc.x1042` 형식이어야 한다. 이름을 적지 마라.
-- 근거는 **네가 도구로 확인한 것만**. 확인 안 한 것을 근거처럼 적지 마라.
+- 근거는 **위 자료에 있는 것만**. 자료에 없는 것을 근거처럼 적지 마라.
 - 근거에는 워크로드 숫자만이 아니라 **유사 업무 이력(티켓 키·건수)** 을 반드시 확인해
   반영하라 — 위 자료의 담당 이력 표가 출발점이다. 이력이 없으면 없다고 적는다.
 - **후보는 한 명이 아니다** — alternates 에 대안 후보를 1명 이상, 왜 1순위가 아닌지와

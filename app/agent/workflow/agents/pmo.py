@@ -284,7 +284,9 @@ def _ticket_progress(state) -> str:
 class PMO(ToolAgent):
     name = "pmo"
     temperature = 0.1
-    max_steps = 12             # 그룹 질의: whoami+로스터+워크로드+인원별 활동 — 6걸음으론 소진
+    # 그룹 질의(whoami+로스터+워크로드+인원별 활동)는 6걸음으로 부족했다. 다만 전원
+    # 조회는 이제 _group_activity 가 코드로 하므로 12 까지 열어 둘 이유가 없다.
+    max_steps = 8
 
     def node(self):
         react = super().node()

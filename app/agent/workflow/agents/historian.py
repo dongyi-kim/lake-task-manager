@@ -369,7 +369,10 @@ class Historian(ToolAgent):
     # 조각을 모아야 하는 질문은 걸음이 더 든다(티켓 열기 3~4 + 문서 읽기 + 확인).
     # 상속값 6 으로는 결론 단계 전에 소진됐다. 사전 취합(_dataset_dossier)이 재료를 미리
     # 실어 주므로 PMO 의 12 까지는 필요 없다.
-    max_steps = 10
+    # 사전취합이 재료를 미리 실어 주므로 걸음은 적을수록 좋다. 10 은 상한까지 도는
+    # 일이 잦았고(실측: 생성 턴에서 11회 LLM = 상한 소진), 그 걸음의 대부분이 이미
+    # 자료로 가진 것을 도구로 재확인하는 데 쓰였다.
+    max_steps = 7
 
     def node(self):
         """진척도를 물었으면 조사 뒤 **코드가** get_progress 를 불러 숫자를 붙인다.
@@ -742,8 +745,12 @@ class Historian(ToolAgent):
         # 없어서 대답이 개념 강의로 샜다). 규칙 도구 — LTM 사용법·규칙 질문의 1차 출처.
         # 허용값 도구 — "라벨 목록 보여줘·정리 제안" 같은 관리성 질의에 필요(실측: 없어서
         # 실값을 코앞에 두고 '확인 불가'로 답했다).
+        # ★ 도구 하나가 곧 비용이다 — 스키마가 **매 think 호출마다** 프롬프트에 실린다
+        #   (실측: 도구 21개 = 4.5k 토큰/호출, 생성 턴에서 historian 만 96k).
+        #   허용값(list_ticket_options)은 관리성 질의 사전취합이 이미 코드로 싣는다 —
+        #   도구로 또 두면 모델이 조사 걸음을 거기에 쓴다(실측: 생성 턴에서 3회 호출).
         return (T.SEARCH_TOOLS + T.WEB_TOOLS + T.PEOPLE_TOOLS + T.RULE_TOOLS
-                + [T.BY_NAME["get_progress"], T.BY_NAME["list_ticket_options"]] + ext)
+                + [T.BY_NAME["get_progress"]] + ext)
 
     def system(self, state):
         return persona(state, SYSTEM_HISTORIAN)

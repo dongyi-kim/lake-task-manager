@@ -8,9 +8,9 @@
 관련 티켓·이전 담당자·모듈 인원·가능한 컴포넌트 목록은 도구로 확인할 수 있다. 반면 범위
 ("어디까지가 이번 일인가")·완료 조건·기한·의도는 사용자 머릿속에만 있다. 그것만 묻는다.
 
-ToolAgent 인 이유는 **컴포넌트·타입·라벨을 지어내지 않기 위해서**다. 없는 컴포넌트를 적으면
-Reviewer 에서 튕기고 왕복이 한 번 늘어난다. 만들기 전에 실제 목록을 보는 편이 싸다.
-쪼개는 기준(SP 8 초과면 쪼갠다, 조사 단계는 과잉 분해하지 않는다)은 `search_rules` 로 읽는다.
+컴포넌트·타입·라벨을 지어내지 않기 위해 **실제 목록을 보고 쓴다.** 다만 그 목록을 도구로
+두지 않고 **코드가 미리 조회해 자료로 준다**(`_placement_material`·`_rules_material`) —
+도구로 두면 모델이 매 턴 다시 부르고, 도구 호출 한 번이 곧 LLM 왕복 한 번이다.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import json
 import re as _re
 
 from app.agent.prompts.roles import SYSTEM_REFINER
-from app.agent.workflow.agents.base import ToolAgent
+from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
                                       conversation, last_user_text, note, request_text)
@@ -205,7 +205,20 @@ SCHEMA = {
 }
 
 
-class Refiner(ToolAgent):
+class Refiner(StructuredAgent):
+    """★ 도구를 쓰지 않는다 — 필요한 재료는 **코드가 전부 미리 조회**한다.
+
+    예전엔 ToolAgent 였다. 그런데 가진 도구가 하나도 빠짐없이 사전취합과 중복이었다:
+    `list_ticket_options`/`list_child_types` → `_placement_material` 이 이미 준다,
+    `find_parent_epic` → `_epic_options` 가 이미 부른다, `list_transitions` → apply 가
+    코드로 해석한다, `validate_ticket_plan` → Reviewer 의 `_machine_check` 가 같은
+    `validate_bulk` 로 한다, `search_rules` → 아래 `_rules_material` 로 싣는다.
+
+    그런데도 모델은 매 턴 그것들을 다시 불렀고, 도구 호출 한 번이 곧 LLM 왕복 한 번이라
+    **생성 턴 하나에 refiner 만 12회 · 86초 · 226k 토큰**을 먹었다(실측 기준선).
+    재료가 이미 손안에 있으면 순회할 이유가 없다 — 한 번 묻고 스키마로 받는다.
+    """
+
     name = Node.REFINER
     temperature = 0.3          # 초안은 약간의 폭이 필요하다
     _force_draft = False       # 질문-도피 재시도 플래그(단일 사용자 앱 — 인스턴스 보관으로 충분)
@@ -250,12 +263,6 @@ class Refiner(ToolAgent):
 
         return run
 
-    @property
-    def tools(self):
-        from app.agent import tools as T
-        # find_parent_epic 을 주는 이유 — 없으면 "Epic Link 는 어디에 연결할까요?"를 **사용자에게**
-        # 묻게 된다(실제로 물었다). 상위 후보는 찾아보면 아는 것이다.
-        return T.RULE_TOOLS + T.REVIEW_TOOLS + [T.BY_NAME["find_parent_epic"]]
 
     def system(self, state):
         forced = (state.get("turns") or 0) >= MAX_REFINE_TURNS
@@ -396,6 +403,9 @@ class Refiner(ToolAgent):
             data_block("근거 티켓", ev),
             data_block("배치 재료 (코드가 조회함 — Epic·컴포넌트·라벨은 이 안에서 고른다)",
                        _placement_material(state)),
+            # 예전엔 `search_rules` 도구로 모델이 직접 읽었다 — 부를 때만 보이고 안 부르면
+            # 규칙 없이 썼다. 초안 작성에 늘 필요한 것이므로 코드가 싣는다(정적 RAG).
+            data_block("적용되는 작성 규칙 (사내 규칙 발췌)", _rules_material(state)),
             data_block("붙일 만한 상위 Epic", state.get("epic_candidate")),
             data_block("이미 같은 일이 있는가", "있음 — 새로 만들기 전에 사용자에게 알릴 것"
                        if state.get("already_exists") else ""))
@@ -1572,6 +1582,21 @@ def _module_pool(item: dict, fallback: str) -> list:
     except Exception:
         pass
     return [fallback] if fallback else []
+
+
+def _rules_material(state) -> str:
+    """초안에 필요한 **작성 규칙 발췌**(정적 RAG). 규칙 전문을 프롬프트에 붓지 않는다.
+
+    Reviewer 의 `_rules_for` 와 같은 재료다 — 검열이 볼 규칙을 작성자도 봐야 왕복이 준다.
+    """
+    try:
+        from app.agent.retrieval import static_index
+        shape = " ".join(str(i.get("type") or "") for i in
+                         (state.get("draft") or {}).get("items") or [])
+        q = ("티켓 작성 규칙 본문 구조 완료 조건 " + shape).strip()
+        return "\n\n".join(h["text"] for h in static_index.search(q, k=3))[:2500]
+    except Exception:
+        return ""
 
 
 def _placement_material(state) -> str:
