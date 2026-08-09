@@ -55,9 +55,11 @@ class Responder(TextAgent):
                     "마지막 줄은 '아래에서 선택해 주세요' 정도면 충분하다.")
         elif (state.get("change_plan") or {}).get("keys"):
             n = len(state.get("change_plan", {}).get("keys") or [])
-            goal = (f"**{n}건 일괄 변경** 계획이다 — 대상 키 전부와 공통 변경 내용을 표"
-                    "(| 티켓 | 변경 |)로 보여 주고 승인을 요청하라. 아직 아무것도 바뀌지 "
-                    "않았음을 분명히 하라.")
+            goal = (f"**{n}건 일괄 변경** 계획이다 — 표(| 티켓 | 제목 | 변경 |)로 보여 주고 "
+                    "승인을 요청하라. **제목을 반드시 넣어라** — 키만 늘어놓으면 무엇의 "
+                    "우선순위를 올리는지 모른 채 승인하게 된다(실측 지적). 표가 길면 "
+                    f"앞의 10건만 쓰고 '나머지 {max(0, n - 10)}건은 승인 카드에서 확인'이라고 "
+                    "밝혀라. 아직 아무것도 바뀌지 않았음을 분명히 하라.")
         elif (state.get("change_plan") or {}).get("key"):
             goal = ("어떤 티켓의 무엇을 어떻게 바꾸려는지 요약하고 **승인을 요청**하라. "
                     "아직 아무것도 바뀌지 않았음을 분명히 하라.")
@@ -193,8 +195,9 @@ class Responder(TextAgent):
                            f"{k}: {(cp.get('before') or {}).get(k) or '없음'}→{v}"
                            for k, v in (cp.get('changes') or {}).items())
                         if cp.get("key") else
-                        (f"일괄 {len(cp.get('keys'))}건 [{', '.join(cp.get('keys')[:10])}]: "
+                        (f"일괄 {len(cp.get('keys'))}건 — 공통 변경: "
                          + ", ".join(f"{k}→{v}" for k, v in (cp.get('changes') or {}).items())
+                         + "\n대상(키 · 제목):\n" + _key_titles(cp.get("keys"))
                          if cp.get("keys") else ""))(state.get("change_plan") or {})),
             data_block("변경 결과", "\n".join(
                 f"- {u.get('key')} ({', '.join(u.get('fields') or [])})"
@@ -399,6 +402,26 @@ def _prune_empty_rows(text: str) -> str:
                    r"(?=(#{2,4}\s|\*\*참조\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)|$))",
                    "\n", text)
     return text
+
+
+def _key_titles(keys) -> str:
+    """일괄 변경 대상의 **제목**을 코드가 조회해 붙인다.
+
+    키만 늘어놓은 표로는 30건의 우선순위를 올리면서도 무엇을 바꾸는지 알 수 없다
+    (실측 U1). 제목은 판단의 재료지 장식이 아니다.
+    """
+    out = []
+    try:
+        from app.agent import tools as T
+        for k in list(keys or [])[:10]:
+            t = T.BY_NAME["get_ticket"].invoke({"key": k}) or {}
+            out.append(f"- {k} · {t.get('summary') or '(제목 확인 안 됨)'}"
+                       f" ({t.get('status') or ''})")
+    except Exception:
+        return "\n".join(f"- {k}" for k in list(keys or [])[:10])
+    if len(keys or []) > 10:
+        out.append(f"- (나머지 {len(keys) - 10}건은 승인 카드에서 확인)")
+    return "\n".join(out)
 
 
 def _doc_body(pre) -> str:

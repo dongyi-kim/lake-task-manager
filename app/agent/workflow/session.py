@@ -419,7 +419,10 @@ def _people_names(out: dict) -> dict:
     바꾼다(사용자 지적: 채팅에 username 만 달랑 나온다). 지도에 없는 사번은 그대로 둔다.
     """
     import re as _re
-    uids = set(_re.findall(r"\b(skcc\.[a-z]{1,2}[0-9]{2,6})\b", out.get("reply") or ""))
+    # ★ `\b` 는 **한글 앞에서 서지 않는다** — "skcc.x1042입니다" 가 매칭에서 빠져
+    #   지도가 비고 화면에 사번이 날것으로 남았다(실측 U2). ASCII 경계로 본다.
+    uids = set(_re.findall(r"(?<![0-9A-Za-z._])(skcc\.[a-z]{1,2}[0-9]{2,6})(?![0-9A-Za-z._])",
+                           out.get("reply") or ""))
     for a in out.get("assignments") or []:
         uids.add(a.get("user") or "")
         for alt in a.get("alternates") or []:
