@@ -46,12 +46,13 @@ export default {
       threadId: "",
       turns: [],              // [{who:"user"|"agent", text, trace, evidence, docs, questions,
                               //   assignments, review, pending, result}]
-      busy: false,
-      plan: [],               // 진행 체크리스트(스트리밍 중에만) — [{id,label,status,t0,dur,note,details}]
+      // 응답 중인 대화 — 여러 대화가 동시에 돌 수 있다. 전역 플래그 하나로 두면
+      // 다른 대화를 보는 동안에도 입력이 막히고 '…'이 떠서 멈춘 것처럼 보인다(사용자 지적).
+      live: {},               // tid → true (응답 중). 사이드바 점·입력창 상태의 근거
+      plans: {},              // tid → 진행 체크리스트 [{id,label,status,t0,dur,note,details}]
                               // status: pending → run → done, 안 지난 단계는 skip.
-                              // 최상위는 **플랜 단계**이고 도구 호출 같은 세부 행위는 details 로
-                              // 그 밑에 중첩된다(사용자 피드백: 상위는 플랜별, 세부는 하위로).
-      abort: null,
+                              // 대화별로 보관해야 다녀와도 진행 표시가 이어진다.
+      aborts: {},             // tid → 스트림 중단 함수
       approving: false,
       settingsOpen: false,
       answers: {},            // 되묻기 폼의 답(qi → 값)
@@ -74,6 +75,11 @@ export default {
   computed: {
     examples() { return EXAMPLES; },
     empty() { return this.turns.length === 0; },
+    // 아직 thread_id 를 못 받은 새 대화는 "_new" 자리에 기록해 두고 start 에서 옮긴다.
+    tidKey() { return this.threadId || "_new"; },
+    // 지금 **보고 있는 대화**가 응답 중인가 — 다른 대화가 도는 것은 여기에 영향이 없다.
+    busy() { return !!this.live[this.tidKey]; },
+    plan() { return this.plans[this.tidKey] || []; },
     // 승인 대기는 **마지막 턴에만** 유효하다. 지난 카드가 계속 눌리면 사용자가 옛 초안을 만든다.
     pending() {
       const last = this.turns[this.turns.length - 1];
@@ -118,7 +124,12 @@ export default {
     this.augmentBadges();
   },
   unmounted() {
-    if (this.abort) this.abort();      // 화면을 떠났는데 서버가 계속 일할 이유가 없다
+    // 화면을 떠났다 — 진행 중인 스트림은 전부 끊고 서버에도 중단을 알린다
+    // (스트림만 끊으면 서버는 끝까지 일한다 = 토큰이 계속 나간다).
+    Object.keys(this.aborts || {}).forEach((k) => {
+      try { this.aborts[k](); } catch (e) { /* noop */ }
+      if (k !== "_new") agentApi.stop(k).catch(() => {});
+    });
   },
   methods: {
     md(t, people) { return renderMarkdown(t, people); },
@@ -259,64 +270,79 @@ export default {
       // UI 갱신만 건너뛴다. active() = 지금 보고 있는 배열이 이 스트림의 배열인가.
       const myTurns = this.turns;
       let myTid = this.threadId;
+      let myKey = myTid || "_new";          // thread_id 를 받기 전 임시 자리
       this._live = this._live || {};
-      if (myTid) this._live[myTid] = myTurns;
+      this._live[myKey] = myTurns;
       const active = () => this.turns === myTurns;
-      this._abortTid = myTid;      // reset()이 "보고 있는 대화의 스트림만" 끊게
-      this.busy = true;
+      this.live[myKey] = true;
       // 플랜은 planner 가 의도를 정하면 서버가 내려준다 — 그때까지는 첫 단계 하나만.
-      this.plan = [{ id: "planner", label: "요청 파악", status: "run",
-                     t0: Date.now(), dur: null, note: "", details: [] }];
+      // 대화별로 보관한다 — 다른 대화를 보고 와도 진행 표시가 그대로 이어져야 한다.
+      this.plans[myKey] = [{ id: "planner", label: "요청 파악", status: "run",
+                             t0: Date.now(), dur: null, note: "", details: [] }];
+      // ★ 반응형 프록시를 잡아서 쓴다 — 원본 배열을 직접 고치면 화면이 안 바뀐다(Vue 3).
+      const myPlan = this.plans[myKey];
+      const settle = () => {                // 이 스트림의 끝 — 진행 표시·라이브 표식을 거둔다
+        delete this.live[myKey];
+        delete this.plans[myKey];
+        delete this.aborts[myKey];
+        if (this._live) delete this._live[myKey];
+      };
       this.$nextTick(this.scroll);
 
-      this.abort = agentApi.stream(
+      this.aborts[myKey] = agentApi.stream(
         { text, threadId: this.threadId },
         (ev) => {
           if (ev.type === "start") {
             myTid = ev.thread_id || myTid;
-            this._live[myTid] = myTurns;
-            this._abortTid = myTid;
+            // 임시 자리("_new")에 쌓아 둔 것을 진짜 thread_id 로 옮긴다.
+            if (myTid && myTid !== myKey) {
+              this._live[myTid] = myTurns;
+              this.live[myTid] = true;
+              this.plans[myTid] = this.plans[myKey];
+              this.aborts[myTid] = this.aborts[myKey];
+              delete this._live[myKey]; delete this.live[myKey];
+              delete this.plans[myKey]; delete this.aborts[myKey];
+              myKey = myTid;
+            }
             if (active()) this.threadId = myTid;
             this.saveConvo(myTid, myTurns);   // 첫 전송 즉시 사이드바에 뜬다
           }
           else if (ev.type === "plan") {
-            if (!active()) return;    // 다른 대화를 보는 중 — 진행 표시는 그 대화 것만
             // 의도가 정해졌다 — 앞으로 지날 단계의 체크리스트. 이미 지난 단계(planner)의
-            // 상태·소요시간은 보존한다.
-            const old = this.plan;
-            this.plan = (ev.steps || []).map((st) => {
-              const prev = old.find((p) => p.id === st.id);
+            // 상태·소요시간은 보존한다. (다른 대화를 보는 중에도 **자기 플랜**은 갱신한다 —
+            // 돌아왔을 때 진행 표시가 이어져야 한다.)
+            const next = (ev.steps || []).map((st) => {
+              const prev = myPlan.find((p) => p.id === st.id);
               return prev || { id: st.id, label: st.label, status: "pending",
                                t0: 0, dur: null, note: "", details: [] };
             });
-            this.$nextTick(this.scroll);
+            myPlan.splice(0, myPlan.length, ...next);
+            if (active()) this.$nextTick(this.scroll);
           }
           else if (ev.type === "node") {
-            if (!active()) return;
             // 단계 하나가 끝났다 — [✓] 로 접고, 건너뛴 단계는 흐리게, 다음 단계를 연다.
             const now = Date.now();
-            let i = this.plan.findIndex((p) => p.id === ev.node);
+            let i = myPlan.findIndex((p) => p.id === ev.node);
             if (i < 0) {
-              this.plan.push({ id: ev.node, label: ev.label, status: "run",
-                               t0: now, dur: null, note: "", details: [] });
-              i = this.plan.length - 1;
+              myPlan.push({ id: ev.node, label: ev.label, status: "run",
+                            t0: now, dur: null, note: "", details: [] });
+              i = myPlan.length - 1;
             }
-            const s = this.plan[i];
+            const s = myPlan[i];
             s.status = "done";
             s.dur = s.t0 ? ((now - s.t0) / 1000).toFixed(1) : null;
             if (ev.note) s.note = ev.note;
-            this.plan.forEach((p, j) => { if (j < i && p.status === "pending") p.status = "skip"; });
-            const nxt = this.plan.find((p) => p.status === "pending");
+            myPlan.forEach((p, j) => { if (j < i && p.status === "pending") p.status = "skip"; });
+            const nxt = myPlan.find((p) => p.status === "pending");
             if (nxt) { nxt.status = "run"; nxt.t0 = now; }
-            this.$nextTick(this.scroll);
+            if (active()) this.$nextTick(this.scroll);
           }
           else if (ev.type === "step") {
-            if (!active()) return;
             // 세부 행위(도구 호출·결과) — 소속 단계 밑에 중첩. "웹 검색 — <검색어>" 가
             // 실행 줄이고, 결과가 오면 같은 줄이 "… 완료 — <얻은 것>" 으로 바뀐다.
             const now = Date.now();
-            let s = this.plan.find((p) => p.id === (ev.parent || ""));
-            if (!s) s = this.plan.find((p) => p.status === "run");
+            let s = myPlan.find((p) => p.id === (ev.parent || ""));
+            if (!s) s = myPlan.find((p) => p.status === "run");
             if (!s) return;
             if (s.status !== "run") { s.status = "run"; s.t0 = s.t0 || now; }
             const d = { text: ev.label + (ev.note ? " — " + ev.note : ""), done: !!ev.done };
@@ -324,20 +350,24 @@ export default {
             if (ev.done && last && !last.done) s.details.splice(s.details.length - 1, 1, d);
             else s.details.push(d);
             if (s.details.length > 40) s.details.shift();
-            this.$nextTick(this.scroll);
+            if (active()) this.$nextTick(this.scroll);
           } else if (ev.type === "token") {
             // 최종 답이 만들어지는 **동안** 그 대화의 턴 객체에 자란다 — 다른 대화를 보고
-            // 있어도 데이터는 쌓이고, 화면 갱신(스크롤·진행 표시)만 건너뛴다.
+            // 있어도 데이터는 쌓이고, 화면 갱신(스크롤)만 건너뛴다.
             turn.text = (turn.text || "") + (ev.text || "");
-            if (!active()) return;
-            const r = this.plan.find((p) => p.id === "responder");
+            const r = myPlan.find((p) => p.id === "responder");
             if (r && r.status !== "done" && r.status !== "run") { r.status = "run"; r.t0 = Date.now(); }
-            this.$nextTick(this.scroll);
+            if (active()) this.$nextTick(this.scroll);
+          } else if (ev.type === "stopped") {
+            // 사용자가 ■ 를 눌렀다 — 서버가 노드 경계에서 빠져나왔다.
+            turn.text = (turn.text ? turn.text + "\n\n" : "") + "⏹ " + (ev.message || "중단했습니다.");
+            turn.stopped = true;
+            settle();
+            this.saveConvo(myTid, myTurns);
           } else if (ev.type === "error") {
             turn.text = "문제가 생겼습니다 — " + (ev.message || "알 수 없는 오류");
-            this.busy = false;
+            settle();
             this.saveConvo(myTid, myTurns);
-            if (myTid && this._live) delete this._live[myTid];
           } else if (ev.type === "final") {
             Object.assign(turn, {
               text: ev.reply || "(답변이 비어 있습니다)",
@@ -348,9 +378,8 @@ export default {
               usage: ev.usage || null, people: ev.people || {},
               draftItems: ev.draft_items || [],
             });
-            this.busy = false;
+            settle();
             this.saveConvo(myTid, myTurns);
-            if (myTid && this._live) delete this._live[myTid];
             if (ev.error) pushToast({ kind: "error", title: ev.error, key: "agent-err" });
             if (!active()) {
               // 다른 대화를 보는 중에 끝났다 — 데이터는 저장됐고, 알림으로만 알린다.
@@ -366,7 +395,6 @@ export default {
             // 생성 컨텍스트 내내 옆에서 자라는 것을 본다.
             const nItems = ((ev.pending && ev.pending.items) || ev.draft_items || []).length;
             this.sideDraft = nItems ? Math.min(this.sideDraft < 0 ? 0 : this.sideDraft, nItems - 1) : -1;
-            this.plan = [];
             this.$nextTick(this.scroll);
           }
         });
@@ -479,13 +507,30 @@ export default {
       this.$refs.input && this.$refs.input.focus();
     },
 
-    reset() {
-      // 새 대화 — 지금 **보고 있는** 대화의 스트림만 끊는다. 다른 대화가 백그라운드로
-      // 응답 중이면 그대로 이어 간다(완료되면 자기 대화에 저장 + 토스트).
-      if (this.busy && this.abort && this._abortTid === this.threadId) {
-        this.abort(); this.abort = null; this.busy = false;
+    /** ■ 중단 — 지금 보고 있는 대화의 응답을 멈춘다.
+     *
+     *  스트림만 끊으면 서버는 끝까지 일한다(토큰이 계속 나간다) — 서버에도 알린다.
+     *  이미 시작된 LLM 호출 하나는 끝나지만 그다음 단계로 넘어가지 않는다. */
+    async stopStream() {
+      const key = this.tidKey;
+      const ab = this.aborts[key];
+      if (key !== "_new") agentApi.stop(key).catch(() => {});
+      const last = this.turns[this.turns.length - 1];
+      if (last && last.who === "agent" && !last.text) {
+        last.text = "⏹ 중단했습니다. 여기까지 진행된 내용은 남아 있어, 이어서 물으면 그 지점부터 계속합니다.";
+        last.stopped = true;
       }
-      this.threadId = ""; this.turns = []; this.plan = [];
+      if (ab) { try { ab(); } catch (e) { /* noop */ } }
+      delete this.live[key]; delete this.plans[key]; delete this.aborts[key];
+      if (this._live) delete this._live[key];
+      if (key !== "_new") this.saveConvo(key, this.turns);
+    },
+
+    reset() {
+      // 새 대화 — 진행 중인 응답은 **끊지 않는다**. 멈추고 싶으면 ■ 버튼이 있고,
+      // 새 질문을 시작한다고 앞 대화를 죽일 이유가 없다(사용자 지적: 여러 대화 관리).
+      // 완료되면 각자 자기 대화에 저장되고 토스트로 알린다.
+      this.threadId = ""; this.turns = [];
       this.sideDraft = -1;
     },
     /** 우측 패널이 미리보는 초안 턴 — 승인 대기(pending) 또는 **작성 중**(draftItems).
@@ -533,7 +578,7 @@ export default {
       const live = this._live && this._live[c.id];
       this.threadId = c.id;
       this.turns = live || JSON.parse(JSON.stringify(c.turns || []));
-      this.plan = []; this.sideKey = "";
+      this.sideKey = "";
       this.$nextTick(this.scroll);
     },
     removeConvo(c) {
@@ -779,8 +824,11 @@ export default {
         <button class="an-new" @click="reset">＋ 새 대화</button>
         <div class="an-h" v-if="convos.length">최근 대화</div>
         <div class="an-list">
-          <div v-for="c in convos" :key="c.id" class="an-item" :class="{ on: c.id === threadId }">
-            <button class="an-open" @click="openConvo(c)" :title="c.title">{{ c.title }}</button>
+          <div v-for="c in convos" :key="c.id" class="an-item"
+               :class="{ on: c.id === threadId, live: !!live[c.id] }">
+            <button class="an-open" @click="openConvo(c)"
+                    :title="live[c.id] ? c.title + ' — 응답 중' : c.title">
+              <span v-if="live[c.id]" class="an-live" title="응답 중"></span>{{ c.title }}</button>
             <button class="an-del" @click.stop="removeConvo(c)" title="삭제">✕</button>
           </div>
         </div>
@@ -823,6 +871,11 @@ export default {
             <div v-if="t.text" class="agent-md" v-html="md(t.text, t.people)"></div>
             <div v-else-if="busy && ti === turns.length - 1" class="agent-thinking">
               <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            </div>
+            <!-- 응답 중이 아닌데 본문이 비었다 = 중단됐거나 새로고침으로 끊겼다.
+                 '…'만 계속 떠 있으면 멈춘 건지 모른다(사용자 지적). -->
+            <div v-else class="agent-stalled">
+              ⏹ 응답이 이어지지 않았습니다 (중단 또는 연결 끊김) — 다시 물어보시면 이어서 진행합니다.
             </div>
 
             <!-- 비용 — 질문 하나로 보이지만 안에서 LLM 을 예닐곱 번 부른다.
@@ -1155,12 +1208,15 @@ export default {
                          placeholder="하려는 업무를 적어 주세요 — @ 멘션 · '/' 로 티켓·문서"
                          :submitFn="sendRich" />
           <div class="agent-chatbox-bar">
-            <button :disabled="busy" @click="edMention" title="사람 멘션 (@)">@</button>
-            <button :disabled="busy" @click="edPick('jira')" title="티켓 링크 (/jira)">🎫</button>
-            <button :disabled="busy" @click="edPick('confluence')" title="문서 링크 (/confluence)">📄</button>
+            <button @click="edMention" title="사람 멘션 (@)">@</button>
+            <button @click="edPick('jira')" title="티켓 링크 (/jira)">🎫</button>
+            <button @click="edPick('confluence')" title="문서 링크 (/confluence)">📄</button>
             <span class="agent-chatbox-space"></span>
-            <button class="agent-send-round" :disabled="busy || ready === null"
-                    @click="submitRich" title="보내기 (Ctrl+Enter)">{{ busy ? '…' : '↑' }}</button>
+            <!-- 응답 중에는 같은 자리가 ■ 중단이다 — 멈출 방법이 없으면 기다리는 수밖에 없다 -->
+            <button v-if="busy" class="agent-send-round is-stop" @click="stopStream"
+                    title="응답 중단">■</button>
+            <button v-else class="agent-send-round" :disabled="ready === null"
+                    @click="submitRich" title="보내기 (Ctrl+Enter)">↑</button>
           </div>
         </div>
       </div>

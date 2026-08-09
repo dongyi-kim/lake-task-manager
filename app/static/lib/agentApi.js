@@ -56,6 +56,8 @@ export const agentApi = {
   approve: (threadId, token, overrides) =>
     post("/api/agent/approve", overrides ? { threadId, token, overrides } : { threadId, token }),
   cancel: (threadId, token) => post("/api/agent/cancel", { threadId, token }),
+  // 진행 중인 턴 중단 — 스트림만 끊으면 서버는 끝까지 일한다(토큰이 계속 나간다).
+  stop: (threadId) => post("/api/agent/chat/stop", { threadId }),
 
   /**
    * SSE. `onEvent(ev)` 가 진행 상황을 받는다. 마지막 `{type:"final", ...}` 이 결과다.

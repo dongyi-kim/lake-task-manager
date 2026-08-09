@@ -175,6 +175,17 @@ def api_chat_stream(body: _ChatBody):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+class _StopBody(BaseModel):
+    threadId: str = ""
+
+
+@router.post("/chat/stop")
+def api_chat_stop(body: _StopBody):
+    """진행 중인 턴 중단. 화면의 ■ 버튼이 부른다 — 스트림만 끊으면 서버는 계속 일한다."""
+    from app.agent.workflow import session
+    return JSONResponse({"ok": session.request_stop(body.threadId)})
+
+
 class _ComposeBody(BaseModel):
     ticketKey: str = ""
     kind: str = "comment"            # comment | description | transition

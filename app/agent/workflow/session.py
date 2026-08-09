@@ -446,6 +446,24 @@ def _people_names(out: dict) -> dict:
     return names
 
 
+_STOP: set[str] = set()          # 사용자가 중단을 누른 thread_id (단일 사용자 앱)
+
+
+def request_stop(thread_id: str) -> bool:
+    """진행 중인 턴을 멈춰 달라는 신호. 다음 노드 경계에서 스트림이 끊긴다.
+
+    LangGraph 는 실행 중인 노드 하나를 중간에 잘라 내지 못한다 — 지금 도는 LLM 호출은
+    끝까지 간다. 대신 **그다음 노드로 넘어가지 않는다**(체크포인터에는 거기까지가 남아
+    이어서 물으면 그 지점부터다).
+    """
+    tid = (thread_id or "").strip()
+    if not tid:
+        return False
+    _STOP.add(tid)
+    log.info("[%s] 중단 요청", tid)
+    return True
+
+
 def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = ""):
     """진행 상황을 흘려보낸다. 조사에 십수 초가 걸리는데 빈 화면을 보여 줄 수는 없다.
 
@@ -461,6 +479,7 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
         return
     log.info("[%s] Q(stream): %s", tid, (text or "")[:500])
     meter = _usage.Meter()
+    _STOP.discard(tid)          # 새 턴은 깨끗한 상태에서 — 지난 중단 신호를 물려받지 않는다
     yield {"type": "start", "thread_id": tid}
     try:
         # updates(진행) + messages(토큰) 를 함께 받는다 — 최종 답이 통째로 도착하기를
@@ -471,6 +490,14 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
                                        stream_mode=["updates", "messages"], subgraphs=True):
             # subgraphs=True + 리스트 모드 → (ns, mode, payload)
             ns, mode, payload = (item if len(item) == 3 else ("", item[0], item[1]))
+            # 중단 — 사용자가 멈추라고 했다. 지금 노드가 끝나는 경계에서 빠져나간다.
+            if tid in _STOP:
+                _STOP.discard(tid)
+                log.info("[%s] 중단됨", tid)
+                yield {"type": "stopped", "thread_id": tid,
+                       "message": "요청하신 대로 중단했습니다. 여기까지 진행된 내용은 "
+                                  "남아 있어 이어서 물으면 그 지점부터 계속합니다."}
+                return
             if mode == "messages":
                 msg, meta = payload
                 node = str((meta or {}).get("langgraph_node") or "")

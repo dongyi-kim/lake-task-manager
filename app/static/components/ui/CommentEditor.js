@@ -1104,6 +1104,17 @@ export default {
             }
             event.preventDefault(); return true;
           }
+          // ── 채팅 입력창은 **서식 없이** 받는다 ─────────────────────────
+          // 웹·문서에서 복사한 글에는 인라인 배경색이 딸려오는데, 우리 textStyle 확장이
+          // 그것을 흡수해 "드래그한 것 같은 하이라이팅"이 남는다(사용자 지적). 채팅에는
+          // 서식 도구가 없어 지울 방법도 없다 — 애초에 글자만 받는다.
+          if (self.kind === "agentchat" && txt) {
+            const lines = txt.replace(/\r/g, "").split("\n");
+            self._ed.chain().focus().insertContent(
+              lines.map((ln, i) => (i ? [{ type: "hardBreak" }] : []).concat(
+                ln ? [{ type: "text", text: ln }] : [])).flat()).run();
+            event.preventDefault(); return true;
+          }
           return false;
         },
         handleDrop: (view, event) => {

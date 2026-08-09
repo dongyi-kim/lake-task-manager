@@ -73,8 +73,12 @@ function inline(s, slim) {
     .replace(/\[(\d{1,2})\](?!\()/g, (mm, n) => {
       const ref = REFS[n];
       if (!ref) return mm;
-      const tip = ref.replace(/"/g, "&quot;");
-      return `<a href="#" class="ref-mark" data-ref="${n}" title="${tip}">[${n}]</a>`;
+      // 툴팁은 **평문**이어야 한다. escape 하고 따옴표까지 실체참조로 바꾼다.
+      const tip = esc(ref).replace(/"/g, "&quot;");
+      // ★ 결과를 스태시한다 — 그러지 않으면 아래 티켓 키·사번 치환이 **title 속성 안의
+      //   글자까지** 뱃지 HTML 로 바꿔 속성이 조기 종료되고, 남은 조각이 본문에 새어
+      //   나온다(실측: `… 근거">[3]` 이 글자로 보였다).
+      return keep(`<a href="#" class="ref-mark" data-ref="${n}" title="${tip}">[${n}]</a>`);
     })
     // 티켓 키는 클릭하면 티켓 다이얼로그가 열린다 — 근거를 바로 확인할 수 있어야 믿을 수 있다.
     // `.tkt[data-key]` 는 **앱 전역 위임 처리기**가 잡는 관례다(app-root).

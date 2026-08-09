@@ -584,3 +584,13 @@
   border:1px solid var(--border); border-radius:6px; padding:1px 7px;
   background:var(--panel-2); text-decoration:none; }
 .agent-chg-keys .tkt:hover { border-color:var(--accent); }
+
+/* ── 여러 대화를 동시에 굴릴 때의 상태 표시(사용자 지적) ─────────────────────
+   ① 사이드바: 어느 대화가 응답 중인지 ② 중단 버튼 ③ 끊긴 턴은 '…'이 아니라 말로. */
+.an-live { display:inline-block; width:6px; height:6px; margin-right:6px; border-radius:50%;
+  background:var(--accent); animation:agdot 1.2s infinite ease-in-out; vertical-align:middle; }
+.an-item.live .an-open { color:var(--text); }
+.agent-send-round.is-stop { background:var(--panel-2) !important; color:var(--text) !important;
+  border:1px solid var(--border) !important; font-size:11px !important; }
+.agent-send-round.is-stop:hover { border-color:var(--accent) !important; filter:none; }
+.agent-stalled { padding:6px 0; font-size:12px; color:var(--muted-2); }
