@@ -343,12 +343,31 @@ def _topic_dossier(term: str, history: bool = False) -> str:
         + (f" (해결 {m['done']})" if m["done"] else "")
         for m in metas)
     if tix and history:
+        # ★ 이력 질문에서는 **연표를 하나로 합쳐서** 준다 — 티켓 사건과 필드 변경을 따로
+        #   주면 모델이 **둘 중 하나만** 옮긴다. 실측(DATA11): 변경 이력 블록만 보고 2건짜리
+        #   표를 냈다(같은 케이스 다른 실행은 5건·8건 — 재료가 갈려 있으면 이 변동이 산다).
+        #   한 표로 주면 고를 여지가 없고, 모델이 할 일은 옮겨 적는 것뿐이다.
+        events = []
+        for m in metas:
+            events.append((m["when"] or "", f"{m['key']} \"{titles.get(m['key'], '')}\""
+                                            f" · {m['status'] or ''}"
+                                            + (f" (해결 {m['done']})" if m["done"] else "")))
+        for k, rows in hist_rows:
+            for r in rows:
+                f = str(r.get("field") or "")
+                if f in ("status", "resolution", "description", "assignee"):
+                    continue
+                events.append((str(r.get("date") or ""),
+                               f"[{f}] {r.get('from') or '(없음)'} → {r.get('to') or '(없음)'}"
+                               f" · {k} · {r.get('author') or ''}"))
+        events.sort(key=lambda e: e[0] or "9999-99-99")
         parts.append(
-            "관련 티켓 — **시간순. 이 목록이 곧 이 대상의 연표다**:\n" + tix
-            + "\n★ 사용자가 이력·경위를 물었다. **이 목록을 처음부터 지금까지 훑어 서술한다.** "
-              "아래 '코멘트 근거'나 '변경 이력'에 안 걸린 티켓도 **사건이다** — 요청·구축·"
-              "장애·진행 중인 일이 거기 있고, 빠뜨리면 '왜 이렇게 됐나'와 '지금 어디까지 "
-              "왔나'가 답에서 사라진다. 미해결(진행 중) 항목은 현재 상태로 반드시 언급한다.")
+            "이 대상의 **연표** (티켓 사건 + 필드 변경을 날짜순으로 합친 것):\n"
+            + "\n".join(f"- {d or '날짜 미상'} · {t}" for d, t in events)
+            + "\n★ 사용자가 이력·경위를 물었다. **이 연표를 처음부터 지금까지 그대로 옮겨 "
+              "서술한다** — 여기서 몇 줄만 고르면 '왜 이렇게 됐나'(요청·구축·장애)와 "
+              "'지금 어디까지 왔나'(진행 중)가 답에서 사라진다. 미해결(진행 중) 항목은 "
+              "현재 상태로 반드시 언급한다.")
     elif tix:
         # ★ 이력을 묻지 **않은** 질문에는 연표를 쏟지 않는다. 실측(DATA1): "현재 적재주기는?"
         #   한 줄을 물었는데 8행 연표 + 참조 10개가 나왔다 — 이력 지시를 모든 경로에 실은

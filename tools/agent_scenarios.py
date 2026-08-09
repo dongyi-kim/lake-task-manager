@@ -196,8 +196,10 @@ CASES = [
     ("DATA13", "확인 턴을 지나도 원 요청이 답의 성격을 정한다 — 보기 하나만 고른 턴", [
         "fdc flat trace ic 데이터 히스토리 정리",
         "fdc.fdc_trace_summary_ic"],
+     # 이 케이스가 보는 것은 **깊이 유지**다(연표가 나오는가) — 망라는 DATA11·12 가 본다.
+     # 체커를 계약보다 세게 잡으면 통과/실패가 케이스의 뜻과 무관해진다.
      None, lambda o, outs: (bool(outs[0].get("questions"))
-                            and _history_ok(o.get("reply") or ""))),
+                            and _history_ok(o.get("reply") or "", need=4))),
 ]
 
 # ── 케이스별 기대 계약 ────────────────────────────────────────────────────

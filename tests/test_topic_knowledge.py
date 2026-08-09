@@ -196,13 +196,26 @@ def test_history_instruction_only_rides_when_history_was_asked():
     """이력 지시를 모든 경로에 실으면 값 하나 묻는 질문에도 연표가 쏟아진다
     (실측 DATA1: '현재 적재주기는?' 에 8행 연표 + 참조 10개)."""
     hist = _topic_dossier(TABLE, history=True)
-    assert "이 목록이 곧 이 대상의 연표다" in hist
-    assert "처음부터 지금까지 훑어 서술한다" in hist
+    assert "이 대상의 **연표**" in hist
+    assert "그대로 옮겨 서술한다" in hist
     plain = _topic_dossier(TABLE, history=False)
-    assert "이 목록이 곧 이 대상의 연표다" not in plain
+    assert "이 대상의 **연표**" not in plain
     assert "물어본 것만 답한다" in plain
     # 목록 자체는 양쪽 다 남는다 — 값의 출처를 찾는 지도로는 여전히 필요하다
     assert "DL-9041" in plain and "DL-9047" in plain
+
+
+def test_history_material_merges_ticket_events_and_field_changes_into_one_table():
+    """재료가 두 갈래면 그 변동이 산다 — 실측(DATA11): 모델이 '변경 이력' 블록만 보고
+    2건짜리 표를 냈다(같은 케이스 다른 실행은 5건·8건). 한 표로 주면 고를 여지가 없다."""
+    hist = _topic_dossier(TABLE, history=True)
+    chrono = hist.split("이 대상의 **연표**")[1].split("★")[0]
+    for must in ("DL-9041", "DL-9042", "DL-9043", "DL-9047"):     # 요청·구축·장애·진행중
+        assert must in chrono, f"{must} 가 연표에서 빠졌다"
+    assert "[적재주기]" in chrono and "[스키마]" in chrono         # 필드 변경도 같은 표에
+    assert "In Progress" in chrono                                 # 진행 중 상태가 보인다
+    dates = [ln.split("·")[0].strip("- ").strip() for ln in chrono.strip().splitlines()]
+    assert dates == sorted(dates), "연표가 시간순이 아니다"
 
 
 def test_dossier_does_not_contaminate_an_unknown_subject():
