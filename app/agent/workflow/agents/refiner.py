@@ -190,6 +190,14 @@ SCHEMA = {
                                                "고치라는 요청일 때만. 안 바꾸면 생략"},
                 "labels": {"type": "array", "items": {"type": "string"},
                            "description": "라벨 전체 교체값. 안 바꾸면 생략"},
+                # ★ 이 필드가 **스키마에 없어서** 모델이 컴포넌트 변경을 표현할 방법이
+                #   없었다(실측 MOD8: "컴포넌트를 Catalog 로 바꿔줘" 가 조용히 사라졌고,
+                #   라벨 변경만 남아 체커가 '변경 계획 있음'으로 통과시켰다).
+                #   쓰기 도구(update_ticket)는 처음부터 components 를 받고 있었다 —
+                #   계획을 세우는 쪽에만 구멍이 있었다.
+                "components": {"type": "array", "items": {"type": "string"},
+                               "description": "컴포넌트(모듈) 교체값 — **하나만** 담는다. "
+                                              "둘이면 워크로드가 이중 계상된다. 안 바꾸면 생략"},
                 "status": {"type": "string",
                            "description": "옮길 **상태 이름**(예: '리뷰 대기', 'In Progress'). "
                                           "상태 전이 요청일 때만 — 전이 id 해석은 코드가 한다"},
@@ -993,6 +1001,17 @@ class Refiner(StructuredAgent):
 
         # 변경 계획(modify)은 갈래가 통째로 다르다 — `_change_plan` 이 맡는다.
         plan, qs = _change_plan(state, out, items, qs)
+        # ★ 바꿀 값을 **정확히 말한** 수정 요청에는 되묻지 않는다. 계획이 이미 섰으면
+        #   승인 카드가 곧 확인 단계다(refiner.md: "NEVER ask permission to proceed").
+        #   실측(MOD8): "라벨 data-quality 추가하고 컴포넌트를 Catalog 로" 처럼 값을 다 준
+        #   요청에 "새 라벨을 추가할까요?" 로 선회하는 일이 실행마다 갈렸다 —
+        #   MODEL-COMPARISON 에도 같은 관측이 있다(4o/5 는 되묻고 mini 는 즉시 카드).
+        #   신규 라벨은 카드에 '신규'로 표시되므로 사용자는 거기서 보고 판단한다.
+        if qs and (plan or {}).get("key") and (plan or {}).get("changes"):
+            qs = []
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(바꿀 값이 다 정해져 있어 되묻지 않았다 — "
+                                  "승인 카드에서 확인하고 취소할 수 있다)").strip()
         # ── "하나 더 추가해줘" — 승인 전 초안은 통째로 사라지면 안 된다 ────────
         # 실측(O1): 승인 대기 초안이 있는 상태에서 항목 추가를 요청하니 모델이 **기존 항목만**
         # 다시 내고 새 항목을 빠뜨렸다(반대로 새 항목만 내고 기존을 버리기도 한다).
@@ -1065,7 +1084,7 @@ def _change_plan(state, out, items, qs):
     plan = {}
     if change.get("key"):
         fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary",
-                                         "labels", "description")
+                                         "labels", "components", "description")
                   if k in change and change[k] is not None}
         # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
         # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
@@ -1194,7 +1213,8 @@ def _change_plan(state, out, items, qs):
                                       or bulk_keys):
         bulk_keys = [str(k) for k in state["bulk_targets"]]
     if bulk_keys and not plan:
-        fields = {k: change[k] for k in ("assignee", "duedate", "priority", "labels")
+        fields = {k: change[k] for k in ("assignee", "duedate", "priority", "labels",
+                                         "components")
                   if k in change and change[k] is not None}
         if str(fields.get("priority") or "").strip():
             p = str(fields["priority"]).strip()

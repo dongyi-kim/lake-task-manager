@@ -80,9 +80,14 @@ CASES = [
         "LTM에서 티켓 담당자는 어떻게 바꿔? 그리고 강제 새로고침은 어디 있어?"],
      None, lambda o, _: any(w in (o.get("reply") or "") for w in ("인라인", "클릭", "다이얼로그"))
      and "새로고침" in (o.get("reply") or "")),
+    # 체커가 "changes 가 비어 있지 않다"만 봐서, **컴포넌트 변경이 조용히 사라져도**
+    # 라벨 하나로 통과했다(실측: change 스키마에 components 가 아예 없었다). 둘 다 본다.
     ("MOD8", "라벨·컴포넌트 수정", [
         "DL-101에 라벨 data-quality 추가하고 컴포넌트를 Catalog로 바꿔줘"],
-     "modify", lambda o, _: bool((o.get("pending") or {}).get("changes"))),
+     "modify", lambda o, _: (lambda ch: bool(ch)
+                             and any("data-quality" in str(v) for v in ch.values())
+                             and any("Catalog" in str(v) for v in ch.values()))
+     ((o.get("pending") or {}).get("changes") or {})),
     ("REC9", "할 일 추천 → 좁히기(멀티턴)", [
         "지금 내가 할 만한 일 추천해줘",
         "그중에 마감이 아직 안 지난 것만 다시 보여줘"],
