@@ -84,6 +84,26 @@ def _group_activity(state) -> str:
     if not roster:
         return ""
     rows = [f"[로스터] {who}: {', '.join(roster)} ({len(roster)}명)", f"[조회 기간] 최근 {days}일"]
+    # ── "얼마나 바쁜지"를 물었으면 **부하 수치**가 답이다 ───────────────────
+    # 실측: "ETL 사람들 요즘 얼마나 바쁜지"에 무슨 일을 했는지만 나열하고 정작
+    # 바쁨의 정도(진행중 건수·지연·최근 처리량)는 한 줄도 없었다. 활동 회고와
+    # 부하 판단은 다른 질문이다 — 코드가 워크로드를 함께 실어 준다.
+    if _re.search(r"바쁘|바쁨|부하|여유|한가|워크로드|일이 많|얼마나 (?:많|바)", asked):
+        try:
+            wl = T.BY_NAME["get_team_workload"].invoke({"module": who}) or {}
+            people = wl.get("people") or []
+            if people:
+                rows.append("[부하 — 이 수치로 '얼마나 바쁜지'를 판단해 답하라. "
+                            "진행중이 팀 평균을 크게 넘으면 과부하, 훨씬 적으면 여유다]")
+                avg = sum(int(x.get("inProgress") or 0) for x in people) / max(1, len(people))
+                for x in people:
+                    rows.append(
+                        f"- {x.get('id')} {x.get('name', '')}: 진행중 {x.get('inProgress')}건 · "
+                        f"열림 {x.get('open')}건 · 최근 {wl.get('doneWindowDays', 28)}일 완료 "
+                        f"{x.get('done28d')}건")
+                rows.append(f"- 팀 진행중 평균 {avg:.1f}건")
+        except Exception:
+            pass
     # 전원 활동 조회를 병렬로 — N명 직렬(사람당 1~2초)이 턴 시간의 큰 몫이었다.
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=4) as ex:

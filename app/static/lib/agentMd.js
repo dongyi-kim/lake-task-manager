@@ -23,7 +23,9 @@ const KEY_RE = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 // 중복이다 — 뱃지 렌더에서만 접는다(표 셀의 슬림 링크에서는 제목이 정보라 남긴다).
 // 입력은 이미 esc() 를 거쳤으므로 곧은따옴표는 &quot; 로 온다.
 const KEY_TITLED_RE = /\b([A-Z][A-Z0-9]*-\d+)\b(?:\s*(?:&quot;|[“‘'])[^“”‘’'\n]{2,80}?(?:&quot;|[”’']))?/g;
-const UID_RE = /\b(skcc\.[a-z]{1,2}\d{2,6})\b/g;
+// 모델이 사번 옆에 이름을 병기하는 일이 잦다(`skcc.x1042 최민서`, `최민서(skcc.x1042)`).
+// 칩이 이미 이름을 그리므로 그대로 두면 이름이 두 번 보인다(실측) — 함께 삼킨다.
+const UID_RE = /(?:([가-힣]{2,4})\s*[(（]\s*(skcc\.[a-z]{1,2}\d{2,6})\s*[)）]|\b(skcc\.[a-z]{1,2}\d{2,6})\b(?:\s+([가-힣]{2,4})(?![가-힣]))?)/g;
 // 문서 제목에 대괄호가 흔하다(`[데이터카탈로그] …`) — 제목 안의 `]` 를 허용하고
 // `](http` 로 끝을 잡는다. 예전 패턴은 첫 `]` 에서 끊겨 링크가 통째로 평문이 됐다.
 const MDLINK_RE = /\[([^\n]+?)\]\((https?:\/\/[^\s)]+)\)/g;
@@ -115,9 +117,12 @@ function inline(s, slim) {
                   : (m, k) => keep(keyBadge(k)))
     // 사번은 프사+본명 칩으로 — "skcc.x1042 만 달랑"은 읽는 사람에게 아무 정보가 없다
     // (사용자 지적). 본명을 모르는 사번(지도에 없음)은 건드리지 않는다.
-    .replace(UID_RE, (m, uid) => {
+    .replace(UID_RE, (m, n1, u1, u2, n2) => {
+      const uid = u1 || u2;
       const name = PEOPLE[uid];
-      if (!name) return m;
+      const side = (n1 || n2 || "").trim();
+      // 병기된 이름이 **다른 사람**이면 손대지 않는다(잘못 삼키면 사실이 바뀐다).
+      if (!name || (side && side !== name)) return m;
       // 참조·표처럼 나열하는 자리에서는 칩이 과하다 — 이름만 쓴다(사번은 title 로).
       if (slim) return `<span class="md-person-plain" title="${esc(uid)}">${esc(name)}</span>`;
       // 프사가 없는 사용자가 많다(mock 은 전원 404) — 다른 화면과 같은 **이니셜 폴백**을

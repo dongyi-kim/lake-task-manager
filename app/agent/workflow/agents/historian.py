@@ -150,19 +150,47 @@ def _presurvey(state) -> str:
     # "누가 하면 좋을지"류 — 후보 재료(모듈 로스터+워크로드)를 코드가 주입한다.
     # md 규칙만으로는 모델이 '기록 없음'으로 종결했다(실측 2회, gpt-4o 포함).
     if any(w in asked for w in ("누가", "누구", "맡길", "맡으면", "추천")):
-        module = state.get("module") or ""
-        if module:
-            try:
-                from app.agent.tools.people_tools import get_team_workload
-                tw = get_team_workload.invoke({"module": module}) or {}
-                ppl = (tw.get("people") or [])[:6]
-                if ppl:
-                    parts.append(f"후보 재료 — {module} 로스터·워크로드 (누가 할지는 이걸로 "
-                                 "2~3명 후보+근거를 제시하라. '없음'으로 끝내지 마라):\n" + "\n".join(
-                        f"- {p.get('id')} 진행중 {p.get('inProgress', 0)} · 열림 {p.get('open', 0)}"
-                        f" · 최근 완료 {p.get('done28d', 0)}" for p in ppl))
-            except Exception:
-                pass
+        try:
+            from app.agent.tools.people_tools import get_team_workload
+            module = state.get("module") or ""
+            rows_p, src = [], ""
+            if module:
+                ppl = ((get_team_workload.invoke({"module": module}) or {}).get("people") or [])[:6]
+                src = f"{module} 로스터·워크로드"
+                rows_p = [f"- {p.get('id')} {p.get('name', '')} 진행중 {p.get('inProgress', 0)}"
+                          f" · 열림 {p.get('open', 0)} · 최근 완료 {p.get('done28d', 0)}"
+                          for p in ppl]
+            if not rows_p:
+                # 모듈을 못 짚는 주제("Iceberg 통계")에서는 가드가 통째로 꺼져 **이름 없는
+                # 답**이 나갔다(실측 S3: "추천할 수 있는 정보가 부족합니다"로 종결).
+                # ① 주제와 닿는 티켓의 담당 이력 ② 그래도 없으면 전 모듈에서 여유 있는 사람.
+                seen: dict[str, list] = {}
+                for t in (jira or [])[:12]:
+                    a = str(t.get("assignee") or "").strip()
+                    if a:
+                        seen.setdefault(a, []).append(
+                            f"{t.get('key')} \"{t.get('summary', '')}\"")
+                if seen:
+                    src = "주제와 닿는 티켓의 담당 이력"
+                    rows_p = [f"- {a} — {', '.join(v[:3])}" for a, v in list(seen.items())[:5]]
+                else:
+                    src = "전 모듈 워크로드(주제 이력이 없어 부하 기준)"
+                    pool = []
+                    for mod in ("ETL", "Catalog", "Runtime", "Workbench", "DataOps"):
+                        for p2 in ((get_team_workload.invoke({"module": mod}) or {})
+                                   .get("people") or []):
+                            pool.append((int(p2.get("inProgress") or 0), mod, p2))
+                    pool.sort(key=lambda x: x[0])
+                    rows_p = [f"- {p2.get('id')} {p2.get('name', '')} ({mod}) 진행중 {n}"
+                              f" · 최근 완료 {p2.get('done28d', 0)}" for n, mod, p2 in pool[:5]]
+            if rows_p:
+                parts.append(
+                    f"후보 재료 — {src} (★ 누가 할지는 이걸로 **2~3명의 이름과 근거**를 대라. "
+                    "'추천할 정보가 부족하다'로 끝내는 것은 답이 아니다. 주제 이력이 없으면 "
+                    "그 사실을 한 줄로 밝히고 **모듈 경험·부하 기준으로** 추천하라):\n"
+                    + "\n".join(rows_p))
+        except Exception:
+            pass
     knowledge_ish = any(w in asked for w in (
         "히스토리", "근황", "최근", "현황", "정리", "알려줘", "설명", "무슨", "어떤", "왜", "지식"))
     if knowledge_ish or len(jira) < 2:
