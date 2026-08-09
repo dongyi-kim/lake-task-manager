@@ -256,17 +256,40 @@ class PMO(ToolAgent):
                     pre = ""
                 if pre:
                     state = {**state, "group_activity": pre}
+            # PMO_VIT 현안 질의 — 라벨 필터 조회다. 전체 진척률 덤프로 답하던 것(실측)을
+            # 코드가 현안 목록(키·제목·상태·담당)으로 바꾼다.
+            asked_v = last_user_text(state)
+            if "PMO_VIT" in asked_v.upper() or "현안" in asked_v:
+                try:
+                    from app.agent import tools as T
+                    rj = T.BY_NAME["run_jql"].invoke(
+                        {"jql": 'labels = "PMO_VIT" ORDER BY duedate ASC', "limit": 20}) or {}
+                    rows = rj.get("items") or rj.get("tickets") or []
+                    if rows:
+                        blk = ("[PMO_VIT 현안 " + str(len(rows)) + "건 — 이 목록이 곧 답이다. "
+                               "건별 상태·담당·마감으로 답하라]\n"
+                               + "\n".join(f"- {t.get('key')} \"{t.get('summary', '')}\" "
+                                           f"{t.get('status', '')} (담당 {t.get('assignee') or '없음'}"
+                                           f"{', 마감 ' + str(t.get('duedate')) if t.get('duedate') else ''})"
+                                           for t in rows[:20]))
+                        state = {**state, "ticket_progress":
+                                 ((state.get("ticket_progress") or "") + "\n\n" + blk).strip()}
+                except Exception:
+                    pass
             try:
                 prog = _ticket_progress(state)
             except Exception:
                 prog = ""
             if prog:
-                state = {**state, "ticket_progress": prog}
+                # VIT 현안 블록 등 앞선 사전취합을 덮지 않는다 — 병합.
+                merged = ((state.get("ticket_progress") or "") + "\n\n" + prog).strip()
+                state = {**state, "ticket_progress": merged}
+            vit_blk = state.get("ticket_progress") or ""
             from app.agent.tools.search_tools import take_last_jql
             take_last_jql()                    # 이전 턴 잔여 비우기
             # ── L3a 직결: 진척/그룹활동 재료를 코드가 전부 취합했으면 걷지 않는다.
             # (JQL 요구는 예외 — run_jql 실행 자체가 요청의 일부다.)
-            if (prog or pre) and "JQL" not in last_user_text(state).upper():
+            if (prog or pre or vit_blk) and "JQL" not in last_user_text(state).upper():
                 try:
                     out = self.apply(state, self._conclude(state, []))
                     if pre:

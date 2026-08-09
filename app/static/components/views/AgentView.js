@@ -959,7 +959,7 @@ export default {
                 <div class="agent-chg">
                   <div v-for="(v, k) in t.pending.changes" :key="k" class="agent-chg-row">
                     <span class="chg-k">{{ ({assignee:'담당자', duedate:'마감일', priority:'우선순위',
-                                            summary:'제목', labels:'라벨'})[k] || k }}</span>
+                                            summary:'제목', labels:'라벨', status:'상태 전이', link:'링크'})[k] || k }}</span>
                     <span class="chg-v">{{ Array.isArray(v) ? v.join(', ') : (v || '(비움)') }}</span>
                   </div>
                   <div v-if="t.pending.comment" class="agent-chg-row">

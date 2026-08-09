@@ -69,6 +69,42 @@ class Operator(ToolAgent):
 
         def run(state):
             plan = state.get("change_plan") or {}
+            # 상태 전이 — transition_ticket 도구로(지문은 _propose 가 같은 모양으로 봉인).
+            if plan.get("key") and (plan.get("transition") or {}).get("id"):
+                from app.agent import tools as T
+                cmt = (plan.get("comment") or "").strip()
+                args = {"key": plan["key"], "transition_id": str(plan["transition"]["id"]),
+                        "approval_token": state.get("approval_token") or ""}
+                if cmt:
+                    args["comment"] = cmt
+                r = T.BY_NAME["transition_ticket"].invoke(args)
+                if not r.get("ok"):
+                    return {"result": {"created": [], "updated": [],
+                                       "failed": [{"summary": plan["key"],
+                                                   "error": r.get("error") or ""}]},
+                            "trace": note(state, self.name, "전이 실패")}
+                return {"result": {"created": [], "failed": [],
+                                   "updated": [{"key": plan["key"],
+                                                "fields": [f"status→{plan['transition'].get('name')}"]}]},
+                        "trace": note(state, self.name,
+                                      f"전이 {plan['transition'].get('name')}")}
+            # 티켓 링크 — link_tickets 도구로.
+            if plan.get("key") and (plan.get("link") or {}).get("other"):
+                from app.agent import tools as T
+                lk = plan["link"]
+                r = T.BY_NAME["link_tickets"].invoke(
+                    {"key": plan["key"], "other_key": lk["other"],
+                     "relation": lk.get("relation") or "Relates",
+                     "approval_token": state.get("approval_token") or ""})
+                if not r.get("ok"):
+                    return {"result": {"created": [], "updated": [],
+                                       "failed": [{"summary": plan["key"],
+                                                   "error": r.get("error") or ""}]},
+                            "trace": note(state, self.name, "링크 실패")}
+                return {"result": {"created": [], "failed": [],
+                                   "updated": [{"key": plan["key"],
+                                                "fields": [f"link {lk.get('relation')}→{lk['other']}"]}]},
+                        "trace": note(state, self.name, f"링크 {lk['other']}")}
             # 조건 일괄 수정 — 지문은 update_tickets(bulk) payload 와 같은 모양이어야 한다.
             if plan.get("keys") and plan.get("changes"):
                 from app.agent import tools as T

@@ -245,6 +245,19 @@ def _propose(state: AgentState) -> dict:
     # modify 갈래 — 변경 승인. 토큰은 update_ticket 도구가 만들 payload 와 **같은 모양**이어야
     # 지문이 맞는다(도구는 kwargs 를 compact 해서 {"key","changes"} 로 만든다).
     plan = state.get("change_plan") or {}
+    # 상태 전이 — 지문은 transition_ticket 도구의 payload 와 같은 모양(comment 없을 때).
+    if plan.get("key") and (plan.get("transition") or {}).get("id"):
+        p = {"key": plan["key"], "transition": str(plan["transition"]["id"])}
+        cmt = (plan.get("comment") or "").strip()
+        if cmt:
+            p["comment"] = cmt
+        return {"approval_token": approval.stage(tid, "transition_ticket", p)}
+    # 티켓 링크 — link_tickets 도구의 payload 와 같은 모양.
+    if plan.get("key") and (plan.get("link") or {}).get("other"):
+        lk = plan["link"]
+        return {"approval_token": approval.stage(
+            tid, "link_tickets",
+            {"key": plan["key"], "other": lk["other"], "relation": lk.get("relation") or "Relates"})}
     # 조건 일괄 수정("마감 지난 것 전부 P1") — keys 복수면 update_tickets(bulk) 지문으로.
     if (plan.get("keys") or []) and plan.get("changes"):
         rows = [{"key": str(k).strip(), "changes": dict(plan["changes"])}

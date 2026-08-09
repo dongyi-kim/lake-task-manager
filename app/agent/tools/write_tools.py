@@ -329,8 +329,10 @@ def list_transitions(key: str) -> list:
     상태 이름은 프로젝트마다 다르다 — 지어내지 말고 여기서 얻은 id 를 transition_ticket 에 넘긴다.
     """
     try:
-        return [compact({"id": t.get("id"), "name": t.get("name"),
-                         "to": (t.get("to") or {}).get("name")})
+        # client.transitions 는 이미 정규화된 모양({"id","name","to"(문자열)})을 준다 —
+        # 원시 Jira 모양((t["to"]["name"]))으로 다시 벗기면 문자열에 .get 을 불러 죽는다
+        # (실측: 이 도구가 mock 에서 늘 error 만 돌려주고 있었다).
+        return [compact({"id": t.get("id"), "name": t.get("name"), "to": t.get("to")})
                 for t in (client().transitions(key) or [])]
     except Exception as e:
         return [{"error": str(e)[:200]}]

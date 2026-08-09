@@ -325,7 +325,20 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
     # 승인 카드 — 무엇을 승인하는지가 화면과 토큰에 **같은 내용**으로 담겨야 한다.
     if waiting and data.get("approval_token"):
         plan = data.get("change_plan") or {}
-        if plan.get("keys"):
+        if plan.get("key") and (plan.get("transition") or {}).get("id"):
+            # 전이·링크는 update 카드 UI 를 재사용한다 — changes dict 가 곧 표시 행이다.
+            out["pending"] = {"token": data["approval_token"], "action": "update_ticket",
+                              "key": plan["key"],
+                              "changes": {"status": plan["transition"].get("name") or ""},
+                              "comment": plan.get("comment") or "",
+                              "rationale": plan.get("why") or ""}
+        elif plan.get("key") and (plan.get("link") or {}).get("other"):
+            lk = plan["link"]
+            out["pending"] = {"token": data["approval_token"], "action": "update_ticket",
+                              "key": plan["key"],
+                              "changes": {"link": f"{lk.get('relation')} → {lk['other']}"},
+                              "comment": "", "rationale": plan.get("why") or ""}
+        elif plan.get("keys"):
             # 조건 일괄 수정 — 대상 전부와 공통 변경이 카드에 보여야 승인이 의미가 있다.
             out["pending"] = {"token": data["approval_token"], "action": "update_tickets",
                               "keys": plan["keys"], "changes": plan.get("changes") or {},

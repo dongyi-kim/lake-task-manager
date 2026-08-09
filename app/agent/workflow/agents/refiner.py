@@ -184,6 +184,16 @@ SCHEMA = {
                                                "고치라는 요청일 때만. 안 바꾸면 생략"},
                 "labels": {"type": "array", "items": {"type": "string"},
                            "description": "라벨 전체 교체값. 안 바꾸면 생략"},
+                "status": {"type": "string",
+                           "description": "옮길 **상태 이름**(예: '리뷰 대기', 'In Progress'). "
+                                          "상태 전이 요청일 때만 — 전이 id 해석은 코드가 한다"},
+                "link": {"type": "object",
+                         "description": "티켓 링크 요청('A가 B를 막는다')일 때만",
+                         "properties": {
+                             "other": {"type": "string", "description": "상대 티켓 키"},
+                             "relation": {"type": "string",
+                                          "description": "링크 타입 이름(Blocks/Relates 등 — "
+                                                         "실재하는 타입만)"}}},
                 "comment": {"type": "string",
                             "description": "변경과 함께 남길 코멘트(왜 바꾸는지). 없으면 생략"},
             },
@@ -303,6 +313,9 @@ class Refiner(ToolAgent):
 - 담당자 변경이면 새 담당자 id(skcc.x1042 형식)를 확인하라 — 이름만 있으면 조사 자료의
   참여자·로스터에서 id 를 찾고, 못 찾으면 questions 로 묻는다(assignee 필드 자동완성이 붙는다).
 - 사용자가 코멘트도 남기라고 했으면 comment 에 그 내용을 담는다.
+- **상태를 옮겨 달라**는 요청은 change.status 에 목표 상태 이름을 적어라(전이 id 해석은
+  코드가 한다). **링크 요청**("A가 B를 막는다")은 change.link {other, relation} 으로 —
+  코멘트로 대신하지 마라(코멘트는 링크가 아니다).
 - ★ **댓글만 남기라는 요청이면 도구를 부르지 마라.** change 에 key 와 comment 만 채우면
   끝이다 — 전이·옵션 조회는 댓글과 무관하다(실측: 도구 10번 헤매고 확인 질문으로 샜다).
 - ★ "진행해도 괜찮으신가요?" 류의 **허락 질문 금지.** 승인 카드가 곧 그 확인이다 —
@@ -865,6 +878,43 @@ class Refiner(ToolAgent):
             if fields or cmt:
                 plan = {"key": str(change["key"]).strip(), "changes": fields,
                         "comment": cmt, "why": out.get("rationale") or ""}
+            # ── 상태 전이 — 이름을 전이 id 로 **코드가** 해석한다(실측: status 필드가 없어
+            # '정보 확인 안 됨'으로 죽었다). 못 찾으면 가능한 전이를 choice 로 묻는다.
+            k0 = str(change.get("key") or "").strip()
+            want = str(change.get("status") or "").strip()
+            # 사용자 문장의 상태명이 **1차**다 — 모델이 불가능한 목표('리뷰 대기')를 임의로
+            # 다른 상태('Open')로 바꿔치기한 실측. 요청과 다르면 요청 쪽을 쓴다.
+            mu_t = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
+                              request_text(state) + " " + last_user_text(state))
+            if mu_t:
+                want = mu_t.group(1).strip()
+            if k0 and want and not fields and not plan:
+                try:
+                    from app.agent import tools as T
+                    cands = [t for t in (T.BY_NAME["list_transitions"].invoke({"key": k0}) or [])
+                             if isinstance(t, dict) and not t.get("error")]
+                    hit = next((t for t in cands
+                                if want.lower() in str(t.get("name", "")).lower()
+                                or str(t.get("name", "")).lower() in want.lower()
+                                or want.lower() in str(t.get("to", "")).lower()), None)
+                    if hit:
+                        plan = {"key": k0, "transition": {"id": str(hit.get("id")),
+                                                          "name": hit.get("to") or hit.get("name")},
+                                "comment": cmt, "why": out.get("rationale") or ""}
+                    elif cands:
+                        qs = [{"question": f"{k0} 를 '{want}' 로 옮길 전이가 없습니다. "
+                                           "가능한 전이 중에서 골라 주세요.",
+                               "kind": "choice", "field": "",
+                               "options": [str(t.get("name") or t.get("to")) for t in cands][:5]}]
+                except Exception:
+                    pass
+            # ── 티켓 링크 — link_tickets 도구가 실행한다(실측: 링크 요청이 코멘트로 우회됐다).
+            lk = change.get("link") if isinstance(change.get("link"), dict) else {}
+            if k0 and lk.get("other") and not plan:
+                plan = {"key": k0,
+                        "link": {"other": str(lk["other"]).strip(),
+                                 "relation": str(lk.get("relation") or "Relates").strip()},
+                        "comment": "", "why": out.get("rationale") or ""}
         # 조건 일괄 수정 — keys 복수. 실재하는 키만 남긴다(조사에서 온 것이지만 한 번 더).
         bulk_keys = [str(k).strip() for k in (change.get("keys") or []) if str(k).strip()]
         # 코드가 확정한 대상(bulk_targets)이 있는데 모델이 keys 를 빠뜨리거나 일부만 담았으면
@@ -890,6 +940,61 @@ class Refiner(ToolAgent):
                 plan = {"keys": real, "changes": fields,
                         "comment": (change.get("comment") or "").strip(),
                         "why": out.get("rationale") or ""}
+        # ── 전이 최종 보장: "DL-x 를 <상태>로 옮겨/바꿔" 인데 모델이 change.status 를
+        # 안 쓰고 엉뚱한 초안을 냈다(실측: '상태로 옮김' Task 를 새로 만듦) — 코드가
+        # 요청에서 상태명을 뽑아 전이를 조립하고 초안을 버린다.
+        if not plan and (state.get("intent") or "") == Intent.MODIFY \
+                and (state.get("mentioned_keys") or []):
+            req_t = request_text(state) + " " + last_user_text(state)
+            mt = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
+                            req_t)
+            if mt:
+                want_t = mt.group(1).strip()
+                k_t = str(state["mentioned_keys"][0]).strip()
+                try:
+                    from app.agent import tools as T
+                    cands_t = [t for t in
+                               (T.BY_NAME["list_transitions"].invoke({"key": k_t}) or [])
+                               if isinstance(t, dict) and not t.get("error")]
+                    hit_t = next((t for t in cands_t
+                                  if want_t.lower() in str(t.get("name", "")).lower()
+                                  or want_t.lower() in str(t.get("to", "")).lower()), None)
+                    if hit_t:
+                        plan = {"key": k_t,
+                                "transition": {"id": str(hit_t.get("id")),
+                                               "name": hit_t.get("to") or hit_t.get("name")},
+                                "comment": "",
+                                "why": ((out.get("rationale") or "")
+                                        + "\n(상태 전이 — 전이 id 는 코드가 확정)").strip()}
+                        qs = []
+                        items.clear()
+                    elif cands_t:
+                        # 모델이 낸 잡질문("제목을 알려주실…")은 버린다 — 정확한 choice 하나가 답이다.
+                        qs = [{"question": f"{k_t} 를 '{want_t}' 로 옮길 전이가 없습니다. "
+                                           "가능한 전이 중에서 골라 주세요.",
+                               "kind": "choice", "field": "",
+                               "options": [str(t.get("to") or t.get("name"))
+                                           for t in cands_t][:5]}]
+                        items.clear()
+                except Exception:
+                    pass
+
+        # ── 링크 최종 보장: "A 가 B 를 막는 관계로 연결" — 키 둘 + 관계 낱말이면 조립.
+        # (실측: 모델이 change.link 대신 무의미한 확인 질문 4개를 냈다.)
+        if not plan and (state.get("intent") or "") == Intent.MODIFY:
+            req_l = request_text(state) + " " + last_user_text(state)
+            keys_l = _re.findall(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", req_l)
+            if len(dict.fromkeys(keys_l)) >= 2 and _re.search(r"연결|링크|link", req_l):
+                a, b = list(dict.fromkeys(keys_l))[:2]
+                rel = "Blocks" if _re.search(r"막|block", req_l, _re.I) else "Relates"
+                if _ticket_exists(a) and _ticket_exists(b):
+                    plan = {"key": a, "link": {"other": b, "relation": rel},
+                            "comment": "",
+                            "why": ((out.get("rationale") or "")
+                                    + f"\n(링크 {rel}: {a} → {b} — 요청에서 코드가 확정)").strip()}
+                    qs = []
+                    items.clear()
+
         # ── 최종 보장: 대상(JQL)과 변경 필드(요청 파싱)가 둘 다 확정되면 **코드가 계획을
         # 조립**한다 — 모델이 Epic 질문으로 새는 것을 두 번의 프롬프트 교정으로도 못 막았다.
         if not plan and state.get("bulk_targets") \
