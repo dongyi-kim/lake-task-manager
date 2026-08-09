@@ -466,3 +466,15 @@ def test_relative_due_is_computed_by_code_not_the_model():
     assert f.weekday() == 4 and f >= date.today()
     assert _relative_due("그냥 미뤄줘") == ""
     assert _relative_due("내일까지") == (date.today() + timedelta(days=1)).isoformat()
+
+
+def test_epic_typed_items_promote_the_mode_to_epic():
+    """"새 Epic 만들어줘"에 모델이 type=Epic 항목을 내면서 mode 를 task 로 두면 —
+    epic 경로를 못 타 validate_bulk 가 거부하고 승인 카드 없이 죽었다(실측 Round K)."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "new_epic", "structure_source": "user_specified",
+           "items": [{"summary": "[DataOps] 데이터 품질 모니터링", "type": "Epic",
+                      "epic_name": "품질모니터링", "description": ""}]}
+    r = Refiner().apply(_msg("데이터 품질 모니터링 Epic 만들어줘. 알아서"), out)
+    assert r["draft"]["mode"] == "epic"
+    assert len(r["draft"]["items"]) == 1

@@ -487,6 +487,18 @@ class Refiner(ToolAgent):
                                     + f"\n({named[0]} 아래에 바로 붙였다 — 감싸는 Task 를 "
                                       "새로 만들지 않았다)").strip()
 
+        # ── Epic 모드 승격 — "새 Epic 만들어줘"에 모델이 type=Epic 항목을 내면서 mode 는
+        # task 로 두는 일이 잦다(실측: epic 경로를 못 타 validate_bulk 가 Epic 타입을
+        # 거부 → 재작성 소진 → 승인 카드 없이 종료). 산출물이 Epic 이면 모드도 epic 이다.
+        if mode == "task" and items and (items[0].get("type") or "").strip() == "Epic":
+            mode = "epic"
+            out["mode"] = "epic"
+            if len(items) > 1:      # epic 모드는 Epic 1건 — 나머지는 승인 후 연쇄로
+                extra_items = ", ".join(str(i.get("summary") or "") for i in items[1:])
+                del items[1:]
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(Epic 승인 후 이어서: {extra_items[:120]})").strip()
+
         if mode == "task":
             subs = [i for i in items if (i.get("type") or "").lower().startswith("sub")]
             # ★ 전부 Sub-Task 이고 부모가 실재하면 **모드를 승격**한다 — 사용자가 부모를
