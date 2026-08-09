@@ -212,6 +212,19 @@ class Planner(StructuredAgent):
                           + (f" · 계획: {str(out.get('plan'))[:80]}" if out.get("plan") else
                              f" 핵심어={', '.join(kws) or '없음'}")),
         }
+        # ── 요약·브리핑 요청은 조회다 — "스탠드업 3줄 요약 만들어줘"가 plan_work 로
+        # 분류되어 Epic 배치 인터뷰까지 갔다(실측). '만들어줘'의 대상이 글이면 ask.
+        from app.agent.workflow.state import last_user_text as _lut
+        _req = _lut(state)
+        if intent == Intent.PLAN_WORK \
+                and any(w in _req for w in ("요약", "브리핑", "정리해", "보고서")) \
+                and not any(w in _req for w in ("티켓", "태스크", "테스크", "Task", "task",
+                                                "이슈 등록", "에픽", "Epic")):
+            # 모듈 현황 요약이면 집계(pmo)가 맞고, 지식·문서 요약이면 조사(ask)가 맞다.
+            mods = ("ETL", "Catalog", "Runtime", "Workbench", "DataOps", "DevOps")
+            intent = Intent.PROGRESS if any(m.lower() in _req.lower() for m in mods) \
+                else Intent.ASK
+            patch["intent"] = intent
         # ★ 원 요청 고정 — 생성 갈래의 **첫 요청 턴**의 문장을 보존한다. 후속 턴(질문 답변)
         #   에서는 덮지 않는다: 제목·본문의 주제는 끝까지 이 문장이다(실측: 이게 없어서
         #   Epic 본문의 주제가 초안을 잠식했다). 후속 턴 판정은 refine 직행 라우트와 같은

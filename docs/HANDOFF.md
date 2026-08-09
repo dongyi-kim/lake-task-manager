@@ -117,13 +117,18 @@ token(Responder 스트리밍) → final`. UI 는 플랜 단위 [✓]/[▸]/[ ] +
 "배터리 green ≠ 품질" 규율 확립 → 33ac843~6eb8812 라운드로 교정. 상세 갭 장부는
 DRAFT-COMPARISON.md.
 
-## 6. 현재 상태
+## 6. 현재 상태 (2026-08-09 지속 루프 Round A~N 후)
 
-- 589 pytest green · 생성 스위트: 이전 실패 7건 전부 원인별 가드로 교정 후 개별 재실측
-  green (STR1/STR2/PAR1/PAR2/SUB1/SUB3/ATTR1 — 단 **전체 20케이스 일괄 재실행은 아직**,
-  TPM 여유 있을 때 1회 권장)
-- 서버는 rev 6eb8812 로 재기동 필요할 수 있음(마지막 재기동은 8ea1805)
-- 미커밋 산출물 없음(작업 전 `git status` 확인)
+- **596 pytest green**. 지속 시나리오 루프(probe 러너 `tools/agent_probe.py` — 체커 없는
+  정성 판독)를 Round A~N 까지 돌며 실측 결함 **38건 수정**, 기능 3종 추가(조건 일괄
+  수정 update_tickets 카드 / 상태 전이 change.status / 티켓 링크 change.link),
+  도구 버그 1건 발굴(list_transitions 가 mock 에서 항상 error)
+- 사전취합(코드 보장) 추가분: 허용값(라벨 목록)·온보딩(모듈+Epic)·첨부(목록+내용)·
+  PMO_VIT 현안·재배분 후보·일괄 수정 대상(JQL)·주간보고(본인 활동)·Epic 트리
+- 최종 보장(코드 조립) 추가분: 전이(요청 상태명 1차)·링크(키 2+관계 낱말)·일괄
+  변경(P/마감/담당 파싱)·Epic mode 승격·초안 피드백(승인 대기 draft 수정 재시도)
+- mentioned_keys 는 티켓 키 형식만 통과(사번 오염이 조사를 건너뛰게 했던 근본 원인)
+- 서버 재기동 시 rev 가 HEAD 인지 확인. 미커밋 산출물 없음(작업 전 `git status`)
 
 ## 7. Future work (우선순위순)
 
