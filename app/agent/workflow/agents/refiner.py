@@ -626,6 +626,11 @@ class Refiner(ToolAgent):
                                 + "\n(참고에서 출처 없는 항목을 뺐다: "
                                 + ", ".join(dropped[:4]) + ")").strip()
 
+        # ── 빈 섹션은 없느니만 못하다 — 헤딩만 남은 '참고'가 티켓에 박제됐다(실측 S4).
+        # 참고가 비는 것은 정상이다(관련 이력이 없을 수 있다). 그러면 섹션을 지운다.
+        for it in items:
+            it["description"] = _drop_empty_sections(it.get("description") or "")
+
         # ── 주제 가드 — 제목·본문이 **원 요청의 고유어**를 유지하는지 확인한다.
         # 실측: Epic 본문("증분 적재")이 원 요청("starrocks puffin ndv")을 잠식해 전혀
         # 다른 티켓이 만들어졌다. 판정은 코드가, 고치는 판단은 사람이 한다(경고 노출).
@@ -1391,6 +1396,21 @@ def _merge_refs(desc: str, refs: list) -> str:
     if m:
         return desc[:m.end(2)] + fresh + desc[m.end(2):]
     return (desc or "") + "<h3>참고</h3><ul>" + fresh + "</ul>"
+
+
+def _drop_empty_sections(desc: str) -> str:
+    """내용 없는 섹션(헤딩 + 빈 목록/공백)을 걷어낸다.
+
+    실측: 참고에 실을 것이 없는데 `<h3>참고</h3><ul></ul>` 이 그대로 남아 티켓에
+    박제됐다. 빈 섹션은 "여기 뭔가 있어야 하는데 빠졌다"로 읽힌다 — 없는 게 낫다.
+    """
+    if not desc:
+        return desc
+    # ① 빈 목록/문단 제거 → ② 그 결과 헤딩만 남은 섹션 제거
+    out = _re.sub(r"<(ul|ol)>\s*(?:<li>\s*</li>\s*)*</\1>", "", desc)
+    out = _re.sub(r"<p>\s*(?:&nbsp;)?\s*</p>", "", out)
+    out = _re.sub(r"<h([1-6])>[^<]*</h\1>\s*(?=(<h[1-6]>|$))", "", out)
+    return out.strip()
 
 
 def _drop_unlinked_refs(desc: str) -> tuple:

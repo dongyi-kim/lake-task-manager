@@ -45,7 +45,8 @@ def render_findings(html: str, text: str) -> list[str]:
         seg = refs[1]
         hit("jira-badge" in seg, "참조에 무거운 티켓 뱃지가 쓰였다(슬림 링크여야 한다)")
         hit("conf-link" in seg or "web-badge" in seg, "참조에 문서 뱃지가 쓰였다")
-        hit("md-person" in seg, "참조에 사람 칩이 쓰였다(이름 글자면 된다)")
+        hit(re.search(r'class="[^"]*md-person(?![-\w])', seg),
+            "참조에 사람 칩이 쓰였다(이름 글자면 된다)")
     # ⑤ 빈 껍데기
     hit(re.search(r"확인된 기록 없음", text), "'확인된 기록 없음' 이 답변에 남았다")
     hit(re.search(r"(?:^|\n)#{2,4}[^\n]*\n\s*(?:\n|$)", text), "내용 없는 섹션 헤딩이 있다")
@@ -72,7 +73,8 @@ READ_TEXT_JS = """
   });
   c.querySelectorAll('.md-person, .md-person-plain').forEach((s) => {
     const nm = (s.querySelector('.md-person-nm') || {}).textContent || s.textContent || '';
-    s.replaceWith(document.createTextNode(nm.trim() + '[' + (s.getAttribute('data-uid') || '') + ']'));
+    const uid = s.getAttribute('data-uid') || s.getAttribute('title') || '';
+    s.replaceWith(document.createTextNode(nm.trim() + (uid ? '[' + uid + ']' : '')));
   });
   c.querySelectorAll('.conf-link, .web-badge, .ref-link').forEach((a) => {
     a.replaceWith(document.createTextNode((a.textContent || '').trim()));
@@ -83,6 +85,10 @@ READ_TEXT_JS = """
   return t;
 }
 """
+
+
+# 초안 전문 추출기 — 별도 파일이다(파이썬 문자열에 JS 를 섞으면 개행이 깨진다).
+DRAFT_JS = (Path(__file__).with_name("_draft_snapshot.js")).read_text(encoding="utf-8")
 
 
 def run(cases: list[dict], out_path: Path | None) -> int:
@@ -131,6 +137,16 @@ def run(cases: list[dict], out_path: Path | None) -> int:
                     pg.wait_for_timeout(600)
                     html = bubble.inner_html()
                     text = pg.evaluate(READ_TEXT_JS, bubble.element_handle())
+
+                # 승인 카드가 떴으면 **티켓 본문 전문**을 서버 스냅샷에서 읽는다.
+                draft_txt = pg.evaluate(DRAFT_JS) or ""
+                if draft_txt.strip():
+                    print("\n  [초안 전문]")
+                    print("\n".join("  " + ln for ln in draft_txt.split("\n")))
+                    report.append("\n```\n" + draft_txt + "\n```\n")
+                    if not re.search(r"완료\s*조건|DoD", draft_txt, re.I):
+                        print("  [본문 품질] 완료 조건(DoD) 없음")
+                        report.append("- 본문 품질: 완료 조건(DoD) 없음\n")
 
                 qs = pg.locator(".agent-qform .aq-q")
                 cards = {

@@ -526,3 +526,13 @@ def test_only_the_fields_the_user_asked_for_are_changed():
     r = Refiner().apply(_msg("두 번째 거 마감을 다음 주 금요일로 미뤄줘", intent=Intent.MODIFY), out)
     ch = r["change_plan"].get("changes") or {}
     assert "duedate" in ch and "priority" not in ch, ch
+
+
+def test_empty_body_sections_are_removed():
+    """참고에 실을 것이 없으면 섹션째 지운다 — 헤딩만 남은 '참고'가 티켓에 박제됐다(실측 S4)."""
+    from app.agent.workflow.agents.refiner import _drop_empty_sections
+    d = ("<h3>배경</h3><p>왜 하는가</p><h3>완료 조건 (DoD)</h3><ul><li>검증</li></ul>"
+         "<h3>참고</h3><ul></ul>")
+    out = _drop_empty_sections(d)
+    assert "참고" not in out
+    assert "배경" in out and "완료 조건" in out and "검증" in out

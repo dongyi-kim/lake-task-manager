@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import re as _re
+
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.agents.refiner import as_bulk_items, draft_full_text
 from app.agent.prompts.roles import SYSTEM_REVIEWER
@@ -68,7 +70,11 @@ class Reviewer(StructuredAgent):
                      and "확인 필요" not in (draft.get("rationale") or ""))
             if small:
                 auto = _machine_check(state)
-                if auto["ok"]:
+                # 완료 조건(DoD)이 없으면 작아도 통과시키지 않는다 — 우회하면 apply 의
+                # 재작성 요구가 아예 안 걸린다(실측: 단건 초안이 DoD 없이 카드까지 갔다).
+                dod_missing = any("완료 조건" in str(w.get("message") or "")
+                                  for w in auto["warnings"])
+                if auto["ok"] and not dod_missing:
                     return {"review": {"ok": True, "checks": {}, "problems": [],
                                        "errors": [], "warnings": auto["warnings"],
                                        "summary": "단건 초안 — 기계 검증 통과(자동)"},
@@ -116,6 +122,16 @@ class Reviewer(StructuredAgent):
         checks = {"grounded": bool(out.get("grounded")),
                   "rule_compliant": bool(out.get("rule_compliant")),
                   "answers_request": bool(out.get("answers_request"))}
+        # 완료 조건(DoD) 누락은 **한 번은 되돌려 보낸다** — 언제 끝난 것인지 못 박지 않은
+        # 티켓은 나중에 아무도 닫지 못한다(실측: 배경·작업 범위만 쓰고 승인 카드까지 갔다).
+        # 재작성 한도는 그래프가 쥐고 있으므로 무한 왕복은 나지 않는다.
+        if (state.get("revisions") or 0) < 1:
+            for w in auto["warnings"]:
+                if "완료 조건" in str(w.get("message") or ""):
+                    problems.append({"index": w.get("index", -1),
+                                     "message": w["message"],
+                                     "fix": "본문에 '완료 조건 (DoD)' 섹션을 넣고 "
+                                            "검증 가능한 불릿 2~5개를 적어라"})
         # 기계 판정이 이긴다 — 모델이 "문제없다"고 해도 validate_bulk 가 막으면 막힌 것이다.
         ok = auto["ok"] and all(checks.values()) and not problems
         review = {"ok": ok, "checks": checks, "problems": problems,
@@ -165,6 +181,17 @@ def _machine_check(state: AgentState) -> dict:
                 warnings.append({"index": -1, "message": f"본문의 {k} 제목이 실제와 다르다: {t}"})
     except Exception:
         pass
+    # ★ 본문 골격 — 완료 조건(DoD)이 없는 티켓은 "언제 끝난 것인지" 아무도 모른다.
+    #   knowledge/07 이 정한 4섹션 중 이것만 유독 잘 빠진다(실측: 배경·작업 범위만 쓰고
+    #   DoD 없이 승인 카드까지 갔다). 경고로 올려 재작성 루프가 채우게 한다.
+    for i, it in enumerate(items):
+        desc = str(it.get("description") or "")
+        if not desc.strip():
+            continue
+        if not _re.search(r"완료\s*조건|DoD|Definition of Done", desc, _re.I):
+            warnings.append({"index": i, "message":
+                             "완료 조건(DoD)이 없다 — 무엇을 만족하면 끝인지 적어야 한다"})
+
     lines = [f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
              for e in (r.get("errors") or [])]
     lines += [f"- (경고) [{w.get('index')}] {w.get('message')}" for w in warnings]
