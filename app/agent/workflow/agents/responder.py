@@ -42,7 +42,10 @@ class Responder(TextAgent):
         elif qs and (state.get("interpretation") or "").strip():
             goal = ("조사 전 **해석 확인** 턴이다. ① 자료의 '요청 해석'을 \"제가 이해한 바\"로 "
                     "먼저 보여라(사용자가 바로잡을 수 있게 — 고치지 말고 그대로) ② 이어서 "
-                    "질문에 답해 달라고 짧게 청하라. 조사는 답을 받은 뒤 시작한다고 말하라. "
+                    "질문에 답해 달라고 짧게 청하라. 답을 받은 뒤에 다음 단계로 간다고 "
+                    "말하되, **그 단계를 정확히** 말하라 — 조사가 필요한 요청이면 '조사', "
+                    "변경 요청이면 '변경 카드를 만들겠다'다(실측: 상태 전이 요청에 "
+                    "'조사를 시작하겠습니다'라고 답했다). "
                     "전체 5문장 이내 — 이 턴의 값어치는 빠른 왕복이다.")
         elif qs:
             goal = ("지금까지 파악한 상황을 **2~3문장으로** 정리하고 끝내라. "
@@ -202,6 +205,11 @@ class Responder(TextAgent):
             data_block("지목 티켓의 현재 값 (코드가 조회로 확정 — 요약과 다르면 이쪽이 맞다)",
                        "\n".join(l for l in str(state.get("pre_survey") or "").splitlines()
                                  if _re.match(r"\[[A-Z]+-\d+ (현재|변동|코멘트|하위|링크)\]", l))),
+            # 문서 요약 요청의 재료는 **문서 본문**이다. Historian 요약은 "절차가 정리되어
+            # 있습니다" 같은 메타 서술로 뭉개진다(실측 T3) — 원문을 그대로 준다.
+            data_block("문서 본문 (요약은 이걸로 — 문서가 정한 규칙·명명 규약·기준을 "
+                       "빠뜨리지 말고, 출처 링크를 함께 남겨라)",
+                       _doc_body(state.get("pre_survey"))),
             data_block("쪼갠 이유", (state.get("draft") or {}).get("rationale")),
             data_block("담당자 제안과 근거", asg),
             data_block("검증에서 걸린 것", errors),
@@ -270,6 +278,16 @@ class Responder(TextAgent):
         text = _prune_empty_rows(text)
         # 되묻는 턴 — 폼이 묻는 것을 본문에서 걷어낸다. 프롬프트로 두 번 금지했는데도
         # 질문·보기를 통째로 베껴 화면에 같은 말이 두 벌 뜬다(사용자 지적).
+        # 문서를 요약해 놓고 **어느 문서인지 안 밝히면** 확인할 방법이 없다("자세한 내용은
+        # 문서에서 확인할 수 있습니다"로 끝났다 — 실측 T3). 출처는 코드가 보장한다.
+        _db = _doc_body(state.get("pre_survey"))
+        if _db:
+            for _t, _u in _re.findall(r"문서 본문 「([^」]+)」 \((https?://[^)\s]+)\)", _db)[:2]:
+                if _u not in text:
+                    text = text.rstrip() + f"
+
+출처: [{_t}]({_u})"
+
         _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         if _qs:
             text = _drop_form_echo(text, _qs)
@@ -383,6 +401,13 @@ def _prune_empty_rows(text: str) -> str:
                    r"(?=(#{2,4}\s|\*\*참조\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)|$))",
                    "\n", text)
     return text
+
+
+def _doc_body(pre) -> str:
+    """사전 조사에서 **문서 본문** 블록만 뽑는다(있을 때만)."""
+    src = str(pre or "")
+    i = src.find("문서 본문 「")
+    return src[i:i + 4000] if i >= 0 else ""
 
 
 def _drop_form_echo(text: str, qs: list) -> str:

@@ -14,6 +14,8 @@ ToolAgent 인 이유 — 몇 번 검색해야 충분한지는 미리 알 수 없
 
 from __future__ import annotations
 
+import re as _re
+
 from app.agent.workflow.agents.base import ToolAgent
 from app.agent.prompts.roles import SYSTEM_HISTORIAN
 from app.agent.workflow.prompts import data_block, persona, wrap_data
@@ -132,6 +134,40 @@ def _presurvey(state) -> str:
             f"- {d.get('title')} ({d.get('url')})" for d in r["confluence"][:4]))
 
     asked = last_user_text(state)
+    # ── 문서를 요약해 달라면 **본문을 읽어야** 한다 ─────────────────────────
+    # 실측(T3): "적재주기 변경 절차 문서 요약해줘"에 제목과 한 줄 인상만 답하고
+    # 정작 문서가 정한 규칙(job 명명·'현재값=최신 변경기록')은 하나도 못 옮겼다.
+    # 검색 결과의 excerpt 는 180자라 요약의 재료가 못 된다 — 코드가 본문을 연다.
+    if any(w in asked for w in ("문서", "가이드", "절차", "규정", "위키", "페이지")) \
+            and any(w in asked for w in ("요약", "정리", "알려줘", "설명", "내용", "뭐라고")):
+        try:
+            from app.agent import tools as T
+            docs = (r.get("confluence") or [])[:2]
+            if not docs:
+                # 키워드 검색이 문서를 못 집는 일이 잦다(실측 T3: 제목이 그대로 있는
+                # 문서를 "확인되지 않았다"고 답했다) — 문서만 따로 한 번 더 찾는다.
+                from app.agent.tools._ctx import client as _c, settings as _s
+                from app.domain.search import search_all as _sa
+                q = _re.sub(r"(문서|가이드|절차|규정|위키|페이지|요약|정리|해줘|알려줘|"
+                            r"설명|내용|뭐라고)", " ", asked)
+                q = _re.sub(r"\s+", " ", q).strip()
+                if q:
+                    rr = _sa(_c(), _s(), q, scope="all", limit=8, only=["confluence"]) or {}
+                    docs = [{"title": x.get("title"), "url": x.get("url")}
+                            for x in ((rr.get("confluence") or {}).get("items") or [])][:2]
+            for d in docs:
+                u = (d.get("url") or "").strip()
+                if not u:
+                    continue
+                rd = T.BY_NAME["read_document"].invoke({"url_or_id": u}) or {}
+                body = str(rd.get("text") or rd.get("body") or "")[:2500]
+                if body:
+                    parts.append(
+                        f"문서 본문 「{d.get('title')}」 ({u}) — ★ 요약은 **이 본문**으로 한다. "
+                        "문서가 정한 규칙·기준·명명 규약을 빠뜨리지 말고, 답변에 "
+                        f"출처 링크를 함께 남겨라:\n{body}")
+        except Exception:
+            pass
     # LTM 사용법·사내 규칙 질문 — 정적 지식(search_rules)도 코드가 돌려 넣는다.
     # md 지시만으로는 모델이 티켓 검색 결과에 끌려 규칙 검색을 건너뛰었다(실측).
     if ("LTM" in asked.upper()) or any(w in asked for w in ("사용법", "어떻게 해", "어떻게 바꿔",
@@ -418,7 +454,10 @@ class Historian(ToolAgent):
                 except Exception:
                     pre = ""
                 if pre:
-                    state = {**state, "pre_survey": pre[:2500]}
+                    # 문서 본문을 실은 경우엔 상한을 늘린다 — 2500자에서 잘려 정작
+                    # 요약의 재료(문서가 정한 규칙)가 사라졌다(실측 T3).
+                    cap = 6000 if "문서 본문 「" in pre else 2500
+                    state = {**state, "pre_survey": pre[:cap]}
 
             # ── 첨부파일 질의 사전 취합 — "첨부 뭐 있어?" 는 검색이 아니라 조회다.
             # ── 지목한 티켓의 **현재 사실**은 코드가 확정한다 ────────────────

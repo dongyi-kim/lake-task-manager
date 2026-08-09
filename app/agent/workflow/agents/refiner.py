@@ -977,10 +977,20 @@ class Refiner(ToolAgent):
                                                           "name": hit.get("to") or hit.get("name")},
                                 "comment": cmt, "why": out.get("rationale") or ""}
                     elif cands:
-                        qs = [{"question": f"{k0} 를 '{want}' 로 옮길 전이가 없습니다. "
-                                           "가능한 전이 중에서 골라 주세요.",
+                        # 보기는 **도착 상태 이름**으로 — 전이 이름("To Resolved")을 그대로
+                        # 내밀면 사용자가 읽는 상태명과 어긋난다(실측 T2).
+                        opts, seen_o = [], set()
+                        for t in cands:
+                            nm = str(t.get("to") or t.get("name") or "").strip()
+                            nm = _re.sub(r"^(?:To|이동|전이)\s+", "", nm).strip()
+                            if nm and nm not in seen_o:
+                                seen_o.add(nm)
+                                opts.append(nm)
+                        qs = [{"question": f"{k0} 를 '{want}' 상태로 옮길 수는 없습니다. "
+                                           "지금 갈 수 있는 상태는 다음뿐입니다 — 고르시면 "
+                                           "그대로 변경 카드를 만들어 드립니다.",
                                "kind": "choice", "field": "",
-                               "options": [str(t.get("name") or t.get("to")) for t in cands][:5]}]
+                               "options": opts[:5]}]
                 except Exception:
                     pass
             # ── 티켓 링크 — link_tickets 도구가 실행한다(실측: 링크 요청이 코멘트로 우회됐다).

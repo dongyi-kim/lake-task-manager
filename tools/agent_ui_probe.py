@@ -38,6 +38,8 @@ def render_findings(html: str, text: str) -> list[str]:
     # ③ 미치환 마크다운
     hit("**" in text, "굵게(**)가 변환되지 않았다")
     hit(re.search(r"\]\(https?://", text), "마크다운 링크가 변환되지 않았다")
+    # 열린 대괄호만 남은 링크 토막("[설정 가이드가 있습니다") — 모델이 쓰다 만 것
+    hit(re.search(r"\[[^\]\n]{2,40}(?:\n|$)", text), "링크 대괄호가 닫히지 않았다")
     hit(re.search(r"^\s*\|.*\|\s*$", text, re.M), "표가 파이프 글자 그대로 남았다")
     # ④ 참조 규율 — 나열 자리에는 무거운 뱃지를 쓰지 않는다(사용자 지시)
     refs = html.split('class="agent-refs-list"')
