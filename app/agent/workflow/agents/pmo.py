@@ -134,13 +134,14 @@ def _my_day(state) -> str:
     from concurrent.futures import ThreadPoolExecutor
 
     from app.agent import tools as T
+    asked = last_user_text(state)
     with ThreadPoolExecutor(max_workers=3) as ex:
         f_me = ex.submit(lambda: T.BY_NAME["whoami"].invoke({}) or {})
         f_load = ex.submit(lambda: T.BY_NAME["get_my_workload"].invoke({}) or {})
         f_stale = ex.submit(lambda: T.BY_NAME["find_stale_tickets"].invoke({"days": 14}) or {})
-    rows = []
+    rows, me = [], {}
     try:
-        me = f_me.result()
+        me = f_me.result() or {}
         rows.append(f"[나] {me.get('id')} {me.get('name', '')} · 모듈 {me.get('module', '-')}"
                     f" · 매니저 {'예' if me.get('manager') else '아니오'}")
     except Exception:
@@ -169,6 +170,26 @@ def _my_day(state) -> str:
                         f"{t.get('staleDays')}일째 · 담당 {t.get('assignee') or '없음'}")
     except Exception:
         pass
+    # ── "담당자 없는 일 하나 집고 싶다" 는 **다른 기준**이다 ─────────────────
+    # 내 일감(위)으로 답하면 물은 것과 다른 답이 나간다. 사전취합이 자료를 실어 주면
+    # 모델은 순회를 건너뛰는데, 그때 이 기준만 조회에서 빠지면 조용히 틀린다 —
+    # 재료에 넣어야 할 것은 "모델이 부를 법한 것"이 아니라 **질문이 요구하는 것**이다.
+    if _re0.search(r"미배정|담당자\s*(?:가\s*)?없|주인\s*없|안\s*맡|집을|집고|맡을\s*(?:만한|일)", asked):
+        try:
+            mod = str((me or {}).get("module") or "")
+            un = T.BY_NAME["find_unassigned_tickets"].invoke(
+                {"module": mod} if mod else {}) or {}
+            got = (un.get("tickets") or un.get("results") or [])[:8]
+            rows.append(f"[미배정 — 사용자가 물은 기준. 이 목록이 곧 답이다 "
+                        f"(모듈 {mod or '전체'}, {len(got)}건)]")
+            for t in got:
+                rows.append(f"- {t.get('key')} \"{t.get('summary', '')}\" "
+                            f"({t.get('status', '')}, 우선 {t.get('priority') or '-'}, "
+                            f"마감 {t.get('duedate') or '없음'})")
+            if not got:
+                rows.append("- 없음 — '없습니다'라고 단정적으로 답하고 확인한 기준을 밝혀라")
+        except Exception:
+            pass
     return ("[오늘 할 일 재료 — 코드가 조회함. 이 안에서 우선순위를 판단해 답하라]\n"
             + "\n".join(rows)) if rows else ""
 
@@ -223,18 +244,27 @@ def _module_compare(state) -> str:
         rows = ["(코드가 조회한 모듈 지표 — 비교는 이 표로만 한다. "
                 "'밀렸다'는 **완료율이 낮다**는 뜻이고, 마감이 지난 건수로 뒷받침한다. "
                 "전사 진척률(overallPct)은 모듈 비교에 쓰지 마라)"]
-        for n in picked:
-            pr = T.BY_NAME["get_progress"].invoke({"target": n}) or {}
-            mod = ((pr.get("modules") or [{}])[0]) if not pr.get("error") else {}
-            st = T.BY_NAME["find_stale_tickets"].invoke({"module": n, "days": 14}) or {}
-            stale = st.get("tickets") or st.get("results") or []
-            wl = T.BY_NAME["get_team_workload"].invoke({"module": n}) or {}
-            people = wl.get("people") or []
-            rows.append(
-                f"- {n}: 완료율 {mod.get('donePct', '?')}% · 14일+ 정체 {len(stale)}건 · "
-                f"인원 {len(people)}명 · 진행중 "
-                f"{sum(int(p.get('inProgress') or 0) for p in people)}건 · "
-                f"최근 28일 완료 {sum(int(p.get('done28d') or 0) for p in people)}건")
+        # 모듈 3개 × 지표 3종 = 최대 9회. 전부 독립이라 직렬로 기다릴 이유가 없다.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futs = [(n,
+                     ex.submit(lambda x=n: T.BY_NAME["get_progress"].invoke({"target": x}) or {}),
+                     ex.submit(lambda x=n: T.BY_NAME["find_stale_tickets"].invoke(
+                         {"module": x, "days": 14}) or {}),
+                     ex.submit(lambda x=n: T.BY_NAME["get_team_workload"].invoke(
+                         {"module": x}) or {}))
+                    for n in picked]
+            for n, f_pr, f_st, f_wl in futs:
+                pr = f_pr.result()
+                mod = ((pr.get("modules") or [{}])[0]) if not pr.get("error") else {}
+                st = f_st.result()
+                stale = st.get("tickets") or st.get("results") or []
+                people = (f_wl.result()).get("people") or []
+                rows.append(
+                    f"- {n}: 완료율 {mod.get('donePct', '?')}% · 14일+ 정체 {len(stale)}건 · "
+                    f"인원 {len(people)}명 · 진행중 "
+                    f"{sum(int(p.get('inProgress') or 0) for p in people)}건 · "
+                    f"최근 28일 완료 {sum(int(p.get('done28d') or 0) for p in people)}건")
         return "\n".join(rows)
     except Exception:
         return ""
@@ -422,8 +452,9 @@ class PMO(ToolAgent):
                         out["group_activity"] = pre
                     if prog:
                         out["ticket_progress"] = prog
-                    out["trace"] = (out.get("trace") or [])                         + [{"node": self.name, "label": "현황 조회",
-                            "note": "사전 취합 자료로 바로 정리(조회 생략)"}]
+                    out["trace"] = (out.get("trace") or []) + [
+                        {"node": self.name, "label": "현황 조회",
+                         "note": "사전 취합 자료로 바로 정리(조회 생략)"}]
                     return out
                 except Exception:
                     pass
@@ -517,18 +548,27 @@ class PMO(ToolAgent):
         m_who = _re0.search(r"(?:skcc\.)?([a-z]{1,2}\d{2,6})", last_user_text(state))
         who = f"skcc.{m_who.group(1)}" if m_who else ""
         if who and (state.get("intent") or "") == Intent.MY_DAY:
+            # 담당자 확인은 항목마다 독립이다 — 직렬로 돌면 10건에 조회 10번을 그대로
+            # 기다린다(mock 은 ms 지만 prod Jira 는 호출당 수백 ms). 병렬로 한 번에.
+            from concurrent.futures import ThreadPoolExecutor
+
+            from app.agent import tools as T
+
+            def _assignee(k: str) -> str:
+                try:
+                    return str((T.BY_NAME["get_ticket"].invoke({"key": k}) or {})
+                               .get("assignee") or "").strip()
+                except Exception:
+                    return ""
+
+            keyed = [str(f.get("key") or "").strip() for f in finds]
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                asgs = list(ex.map(lambda k: _assignee(k) if k else "", keyed))
             kept, dropped = [], []
-            for f in finds:
-                k = str(f.get("key") or "").strip()
+            for f, k, asg in zip(finds, keyed, asgs):
                 if not k:
                     kept.append(f)
                     continue
-                try:
-                    from app.agent import tools as T
-                    asg = str((T.BY_NAME["get_ticket"].invoke({"key": k}) or {})
-                              .get("assignee") or "").strip()
-                except Exception:
-                    asg = ""
                 (kept if (not asg or asg == who) else dropped).append(f)
             if dropped:
                 finds = kept

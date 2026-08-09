@@ -582,3 +582,64 @@ def test_creation_turns_keep_every_creation_section():
     for t in ("Choosing the SHAPE", "Splitting rules", "Description quality",
               "EPIC creation", "Title conventions"):
         assert t in md
+
+
+# ── 정성 판독(실 LLM)에서 잡힌 결함의 회귀 ──────────────────────────────────
+def test_repeated_sentence_is_folded():
+    """같은 문장을 두 번 쓰면 접는다 — 표·목록의 정당한 반복은 놔둔다.
+
+    실측: "아래 카드에서 확인 후 승인해 주세요."가 문단 끝과 그다음 줄에 각각 나왔다.
+    모델은 자기가 두 번 썼다는 걸 모르므로 프롬프트로 막을 종류가 아니다.
+    """
+    from app.agent.workflow.agents.responder import _dedupe_sentences
+
+    got = _dedupe_sentences(
+        "DL-101 의 마감을 옮길 계획입니다. 아래 카드에서 확인 후 승인해 주세요.\n\n"
+        "아래 카드에서 확인 후 승인해 주세요.")
+    assert got.count("아래 카드에서 확인 후 승인해 주세요") == 1
+    assert "마감을 옮길 계획입니다" in got
+
+    table = "| 티켓 | 상태 |\n| DL-1 | 진행 중입니다 |\n| DL-2 | 진행 중입니다 |"
+    assert _dedupe_sentences(table) == table
+    lst = "- DL-1 은 진행 중입니다.\n- DL-2 는 진행 중입니다."
+    assert _dedupe_sentences(lst) == lst
+
+
+def test_duedate_change_against_the_users_word_is_flagged():
+    """"미뤄 줘"인데 현재 마감보다 **앞** 날짜면 확인을 요청한다.
+
+    실측: DL-101(마감 2026-08-27)에 "다음 주 금요일로 미뤄 줘" → 2026-08-14 를 아무 말
+    없이 카드에 올렸다. 사용자가 현재 마감을 기억하고 말하는 일은 드물다.
+    """
+    import re
+
+    from app.agent.workflow.agents import refiner as R
+
+    got = {}
+
+    class _FakeTicket:
+        def invoke(self, args):
+            return {"key": args["key"], "duedate": "2026-08-27", "summary": "x"}
+
+    real = R._relative_due
+    R._relative_due = lambda t: "2026-08-14"
+    try:
+        import app.agent.tools as T
+        keep = T.BY_NAME.get("get_ticket")
+        T.BY_NAME["get_ticket"] = _FakeTicket()
+        try:
+            state = {"intent": "modify", "messages": [], "request_text": "",
+                     "mentioned_keys": ["DL-101"]}
+            from langchain_core.messages import HumanMessage
+            state["messages"] = [HumanMessage(content="DL-101 마감을 다음 주 금요일로 미뤄줘")]
+            out = {"change": {"key": "DL-101", "duedate": "2026-08-14"}}
+            plan, _qs = R._change_plan(state, out, [], [])
+            got = plan
+        finally:
+            if keep is not None:
+                T.BY_NAME["get_ticket"] = keep
+    finally:
+        R._relative_due = real
+
+    assert got.get("key") == "DL-101", got
+    assert re.search(r"확인 필요.*2026-08-27.*반대", got.get("why") or "", re.S), got.get("why")

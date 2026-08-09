@@ -30,8 +30,10 @@ Do NOT invent problems:
 - NOVEL work (no similar history exists anywhere) never has history-based grounds —
   workload numbers + module membership + "이력 없음" stated IS the best possible evidence.
   Rejecting it as "근거 부족" blocks every new-technology ticket forever.
-- "후속 Sub-Task 후보" inside the description is a list of CANDIDATES, not created
-  tickets — its granularity is not rule-checkable and never a problem.
+- Sub-Task granularity itself is a judgment call, not a rule violation — do not fail a
+  draft for how finely `children` were cut. (But prose listing "후속 Sub-Task 후보" in the
+  description while `children` is EMPTY *is* a problem: prose does not become a ticket.
+  The fix is to move those lines into `children`.)
 - The user saying "맡길게/알아서" is an input to respect, not a problem to report.
 - Style preferences (wording, ordering) are not problems.
 - Mechanical normalization (P3 → P3-Minor) is code's job and already done — if you still

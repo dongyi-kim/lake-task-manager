@@ -91,3 +91,49 @@ def test_templates_do_not_call_imported_modules(path: Path):
         for mm in re.finditer(r'[@:]?[\w.-]+="[^"]*\b' + re.escape(name) + r"\.\w", tpl):
             bad.append(mm.group(0)[:60])
     assert not bad, f"{_rel(path)} 템플릿이 모듈을 직접 부른다: {bad[:3]}"
+
+
+# ── 파이썬 소스 위생 ────────────────────────────────────────────────────────
+# 같은 편집 사고의 파이썬 판. heredoc 으로 소스를 고치면 줄바꿈이 **공백으로 뭉개져**
+# `if a  <공백 17칸>  and b:` 같은 줄이 남는다. 문법은 멀쩡해서 테스트도 전부 통과하고
+# 리뷰에서도 넘어가지만, 그 줄은 아무도 다시 읽지 못한다(실측 5건).
+AGENT_PY = sorted((Path(__file__).resolve().parents[1] / "app" / "agent").rglob("*.py"))
+
+
+def _code_only(src: str) -> list:
+    """문자열·주석 **내용**을 지운 줄 목록. 리터럴 안의 정렬 공백은 정상이다."""
+    import io
+    import token as T
+    import tokenize
+    lines = src.splitlines()
+    masked = list(lines)
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type not in (T.STRING, T.COMMENT):
+            continue
+        (r1, c1), (r2, c2) = tok.start, tok.end
+        if r1 == r2:
+            ln = masked[r1 - 1]
+            masked[r1 - 1] = ln[:c1] + "X" * (c2 - c1) + ln[c2:]
+        else:
+            for r in range(r1, r2 + 1):
+                masked[r - 1] = ""
+    return masked
+
+
+@pytest.mark.parametrize("path", AGENT_PY, ids=lambda p: p.name)
+def test_agent_source_has_no_collapsed_newlines(path):
+    src = path.read_text(encoding="utf-8")
+    bad = [(i, raw.strip()[:90])
+           for i, (raw, m) in enumerate(zip(src.splitlines(), _code_only(src)), 1)
+           if len(raw) > 100 and m.strip() and "      " in m.lstrip()]
+    assert not bad, (
+        f"{path.name} 에 줄바꿈이 공백으로 뭉개진 코드 줄이 있다 — "
+        + "; ".join(f"L{i}: {s}" for i, s in bad)
+        + " (heredoc 대신 Edit 도구로 고칠 것)")
+
+
+@pytest.mark.parametrize("path", AGENT_PY, ids=lambda p: p.name)
+def test_agent_source_has_no_control_chars(path):
+    hit = CTRL_RE.search(path.read_text(encoding="utf-8"))
+    assert not hit, (f"{path.name} 에 제어문자 0x{ord(hit.group()):02x} 가 박혔다 — "
+                     r"정규식의 \b 가 백스페이스로 변한 그 사고다")

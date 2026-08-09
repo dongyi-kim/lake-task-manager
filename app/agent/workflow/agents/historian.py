@@ -689,8 +689,9 @@ class Historian(ToolAgent):
                 # 걸어야 나온다(실측: 직결이 잡아 목록만 답하고 내용은 '없음').
                 try:
                     out = self.apply(state, self._conclude(state, []))
-                    out["trace"] = (out.get("trace") or [])                         + [{"node": self.name, "label": "과거 이력 조사",
-                            "note": "사전 취합 자료로 바로 정리(조사 생략)"}]
+                    out["trace"] = (out.get("trace") or []) + [
+                        {"node": self.name, "label": "과거 이력 조사",
+                         "note": "사전 취합 자료로 바로 정리(조사 생략)"}]
                     return out
                 except Exception:
                     pass          # 직결이 죽으면 정상 경로로 — 최적화가 답을 막으면 안 된다

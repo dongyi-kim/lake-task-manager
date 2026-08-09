@@ -75,7 +75,7 @@ def route_after_planner(state: AgentState) -> str:
     # ── 빠른 경로 2종 (턴 시간의 최대 낭비 제거) ──────────────────
     # ① 후속 턴: 같은 대화에서 조사 결과(situation)가 이미 있으면 재조사하지 않는다 —
     #    인터뷰 답변 턴마다 Historian 이 통째로 다시 돌던 것이 실측 낭비의 최대 항목
-    #    (턴당 LLM 3~5회). 새 정보가 필요하면 Refiner 가 자기 도구로 확인한다.
+    #    (턴당 LLM 3~5회). Refiner 가 쓸 배치·규칙 재료는 코드가 그 자리에서 다시 모은다.
     if intent in Intent.DRAFTS_TICKETS and (state.get("situation") or "").strip() \
             and (state.get("turns") or 0) > 0:
         return "refine"
@@ -85,7 +85,8 @@ def route_after_planner(state: AgentState) -> str:
         return "refine"
     # ②-b 승인 대기 초안에 대한 피드백("본문에 롤백 계획도 추가해줘")은 기존 티켓 수정이
     #    아니라 **초안 수정**이다 — 실측: 엉뚱한 기존 티켓(DL-5106)의 변경 계획이 나왔다.
-    if intent == Intent.MODIFY and not state.get("mentioned_keys")             and (state.get("draft") or {}).get("items"):
+    if (intent == Intent.MODIFY and not state.get("mentioned_keys")
+            and (state.get("draft") or {}).get("items")):
         return "refine"    # approval_token 은 턴마다 리셋되므로 조건에 못 쓴다
     # ③ 해석 확인 선행 — 막연한 신규 개발 요청은 **조사보다 사용자 확인이 먼저**다.
     #    실측(STARR NDV): 혼자 오래 조사하고 한 번에 결론을 내니 방향이 틀렸다. 조사 전에

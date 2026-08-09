@@ -5,7 +5,7 @@
 
   **찾아보면 아는 것은 묻지 않는다. 사용자만 아는 것만 묻는다.**
 
-관련 티켓·이전 담당자·모듈 인원·가능한 컴포넌트 목록은 도구로 확인할 수 있다. 반면 범위
+관련 티켓·이전 담당자·모듈 인원·가능한 컴포넌트 목록은 **자료에 이미 실려 있다**. 반면 범위
 ("어디까지가 이번 일인가")·완료 조건·기한·의도는 사용자 머릿속에만 있다. 그것만 묻는다.
 
 컴포넌트·타입·라벨을 지어내지 않기 위해 **실제 목록을 보고 쓴다.** 다만 그 목록을 도구로
@@ -307,7 +307,9 @@ class Refiner(StructuredAgent):
 - 원인으로 의심되는 기존 티켓이 조사에서 나왔으면 description 에 키를 적어라.
 - 이미 같은 증상의 Bug 가 열려 있으면 **새로 만들지 말고** questions 로 사용자 판단을 구하라.
 - 버그는 대개 쪼갤 필요가 없다 — Bug 하나면 된다. Sub-Task 로 나누지 마라."""
-        elif (state.get("intent") or "") == Intent.MODIFY                 and not state.get("mentioned_keys")                 and (state.get("draft") or {}).get("items"):
+        elif ((state.get("intent") or "") == Intent.MODIFY
+                and not state.get("mentioned_keys")
+                and (state.get("draft") or {}).get("items")):
             goal = """승인 대기 중인 **초안을 고치는 요청**이다 — 기존 티켓의 변경 계획(change)이
 아니다. '지금 고치고 있는 초안' 자료의 items 를 요청대로 수정해 **items 전체를 다시** 내라
 (문제 삼지 않은 부분은 유지). change 는 만들지 마라. questions 도 내지 마라 —
@@ -326,8 +328,8 @@ class Refiner(StructuredAgent):
 - **상태를 옮겨 달라**는 요청은 change.status 에 목표 상태 이름을 적어라(전이 id 해석은
   코드가 한다). **링크 요청**("A가 B를 막는다")은 change.link {other, relation} 으로 —
   코멘트로 대신하지 마라(코멘트는 링크가 아니다).
-- ★ **댓글만 남기라는 요청이면 도구를 부르지 마라.** change 에 key 와 comment 만 채우면
-  끝이다 — 전이·옵션 조회는 댓글과 무관하다(실측: 도구 10번 헤매고 확인 질문으로 샜다).
+- ★ **댓글만 남기라는 요청이면 그것만 해라.** change 에 key 와 comment 만 채우면 끝이다 —
+  필드 변경·전이를 얹지 마라(실측: 물어보지 않은 변경이 승인 카드에 같이 올라갔다).
 - ★ "진행해도 괜찮으신가요?" 류의 **허락 질문 금지.** 승인 카드가 곧 그 확인이다 —
   계획을 완성해서 내면 사용자가 카드에서 승인/취소한다.
 - ★ 아래 제약조건의 Epic·컴포넌트·라벨 **배치 규칙은 생성용이다** — 변경 계획에서는 Epic
@@ -506,7 +508,8 @@ class Refiner(StructuredAgent):
             fix = _split_into_children(state, items[0])
             if fix:
                 items[0]["children"] = fix
-        if named and mode == "task" and len(items) == 1 and items[0].get("children")                 and _asks_subtasks(state):
+        if (named and mode == "task" and len(items) == 1 and items[0].get("children")
+                and _asks_subtasks(state)):
             kids0 = [c for c in items[0].get("children") or [] if isinstance(c, dict)]
             if kids0:
                 items[:] = [{"summary": c.get("summary") or "", "type": "Sub-Task",
@@ -749,11 +752,14 @@ class Refiner(StructuredAgent):
                 items.clear()
                 items.append(head)
                 structure = "task_with_subtasks"
-                out["structure"] = structure
+                # 구조를 코드가 바꿨으면 **그 이유도 바꾼다** — 모델이 쓴 옛 이유("간단해
+                # 보인다")가 새 구조 옆에 그대로 붙어 승인 카드에서 앞뒤가 안 맞았다(실측).
+                why = "번호만 다른 Task 들은 같은 산출물의 분량 분할이라 한 Task 로 접었다"
+                out["structure"], out["structure_why"] = structure, why
                 out["rationale"] = ((out.get("rationale") or "")
                                     + "\n(번호만 다른 Task 들은 같은 산출물의 분량 분할이라 "
                                       "한 Task + Sub-Task 로 접었다)").strip()
-                draft["structure"] = structure
+                draft["structure"], draft["structure_why"] = structure, why
 
         # ── 분량 분할 Sub-Task 는 골고루 ───────────────────────────────
         # "사람 나눠서" 라고 말한 일을 한 사람에게 몰아 주면 쪼갠 의미가 없다. 프롬프트로
@@ -879,8 +885,10 @@ class Refiner(StructuredAgent):
                         items[0]["children"] = fix
                         _fill_owners(items[0], fix)
                         structure = "task_with_subtasks"
-                        out["structure"] = structure
-                        draft["structure"] = structure
+                        why = ("설계·구현·검증처럼 단계가 나뉘고 담당이 갈릴 규모라 "
+                               "단계별 Sub-Task 로 나눴다")
+                        out["structure"], out["structure_why"] = structure, why
+                        draft["structure"], draft["structure_why"] = structure, why
                         out["rationale"] = ((out.get("rationale") or "")
                                             + "\n(다단계 규모라 단계별 Sub-Task 로 나눴다 — "
                                               "위임에 따라 자동. 승인 화면에서 고칠 수 있다)").strip()
@@ -899,10 +907,6 @@ class Refiner(StructuredAgent):
         # Reviewer 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
         # 사용자에게 떠넘겨진다(실측: "P3는 적절한 우선순위가 아닙니다"가 답변에 노출).
         # 판단이 아니라 표기 문제다 — 코드가 정규화한다.
-        _PRI = {"P0": "P0-Blocker", "P1": "P1-Critical", "P2": "P2-Major",
-                "P3": "P3-Minor", "P4": "P4-Trivial",
-                "BLOCKER": "P0-Blocker", "CRITICAL": "P1-Critical", "MAJOR": "P2-Major",
-                "MINOR": "P3-Minor", "TRIVIAL": "P4-Trivial"}
         for it in items:
             p = str(it.get("priority") or "").strip()
             if p:
@@ -917,283 +921,8 @@ class Refiner(StructuredAgent):
                 if it.get("labels"):
                     it["labels"] = [x for x in it["labels"] if str(x).upper() != "PMO_VIT"]
 
-        # modify 갈래 — 변경 계획. 바꿀 값이 하나도 없는 change 는 계획이 아니다.
-        change = out.get("change") if isinstance(out.get("change"), dict) else {}
-        # ★ 새 일을 만들라고 한 요청에는 변경 계획을 만들지 않는다. 조사에서 비슷한 티켓이
-        #   나오면 모델이 그걸 고치겠다고 답하는 일이 있는데(실측), 그러면 사용자가 부탁한
-        #   생성은 통째로 사라지고 시키지도 않은 수정이 승인 카드에 오른다.
-        if change.get("key") and (state.get("intent") or "") != Intent.MODIFY:
-            out["rationale"] = ((out.get("rationale") or "")
-                                + f"\n(참고: {change['key']} 가 비슷한 일이지만, 요청은 "
-                                  "새로 만드는 것이라 변경하지 않았다)").strip()
-            change = {}
-        plan = {}
-        if change.get("key"):
-            fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary",
-                                             "labels", "description")
-                      if k in change and change[k] is not None}
-            # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
-            # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
-            # 떴다. 담당 해제("assignee": "")만 예외로 인정한다(사용자가 뗄 때 쓴다).
-            _said = request_text(state) + " " + last_user_text(state)
-            _wipe = _re.search(r"(담당|assignee)\w*\s*(해제|비워|없애|제거)", _said)
-            fields = {k: v for k, v in fields.items()
-                      if (isinstance(v, list) and v) or str(v or "").strip()
-                      or (k == "assignee" and _wipe)}
-            # 말하지 않은 필드는 바꾸지 않는다 — 마감만 미뤄 달라고 했는데 우선순위까지
-            # 카드에 얹히면(실측 Round P: priority=P3-Minor) 사용자가 모르고 승인한다.
-            _WORDS = {"priority": r"우선순위|priority|P[0-4]|긴급|중요|사소",
-                      "duedate": r"마감|기한|due|날짜|미뤄|당겨|연장|늦춰|앞당",
-                      "assignee": r"담당|배정|할당|넘겨|맡",
-                      "summary": r"제목|이름|타이틀|summary",
-                      "labels": r"라벨|label|태그",
-                      "description": r"본문|설명|내용|description"}
-            _extra = [k for k in list(fields)
-                      if k in _WORDS and not _re.search(_WORDS[k], _said, _re.I)] \
-                if _said.strip() else []      # 발화가 없으면 근거도 없다 — 지우지 않는다
-            for k in _extra:
-                fields.pop(k, None)
-            if _extra:
-                out["rationale"] = ((out.get("rationale") or "")
-                                    + f"\n(요청에 없던 {', '.join(_extra)} 변경은 뺐다 — "
-                                      "말한 것만 바꾼다)").strip()
-            if str(fields.get("priority") or "").strip():
-                p = str(fields["priority"]).strip()
-                fields["priority"] = _PRI.get(p.upper(), p)
-            # 상대 날짜("다음주 수요일")는 **코드가 계산**한다 — 모델 산술이 흔들렸다
-            # (실측: 같은 질문에 8-12(수·정답)와 8-16(일·오답)을 번갈아 냈다).
-            rel = _relative_due(request_text(state) + " " + last_user_text(state))
-            if rel and str(fields.get("duedate") or "") != rel:
-                if fields.get("duedate"):
-                    out["rationale"] = ((out.get("rationale") or "")
-                                        + f"\n(마감을 {rel} 로 계산해 바로잡았다 — 상대 날짜는 "
-                                          "코드가 계산한다)").strip()
-                fields["duedate"] = rel
-            cmt = (change.get("comment") or "").strip()
-            # 댓글만 남기는 것도 유효한 계획이다 — "이 내용 DL-x 에 댓글로 남겨줘"가 실사용에 있다.
-            if fields or cmt:
-                plan = {"key": str(change["key"]).strip(), "changes": fields,
-                        "comment": cmt, "why": out.get("rationale") or ""}
-                # 바뀌기 **전** 값은 코드가 조회해 싣는다 — 모델이 "변경 전: 미정"이라고
-                # 지어냈다(실측 Round P: 실제로는 마감이 있었다).
-                try:
-                    from app.agent import tools as T
-                    cur = T.BY_NAME["get_ticket"].invoke({"key": plan["key"]}) or {}
-                    if not cur.get("error"):
-                        plan["before"] = {k: (cur.get(k) or "") for k in fields}
-                except Exception:
-                    pass
-            # ── 상태 전이 — 이름을 전이 id 로 **코드가** 해석한다(실측: status 필드가 없어
-            # '정보 확인 안 됨'으로 죽었다). 못 찾으면 가능한 전이를 choice 로 묻는다.
-            k0 = str(change.get("key") or "").strip()
-            want = str(change.get("status") or "").strip()
-            # 사용자 문장의 상태명이 **1차**다 — 모델이 불가능한 목표('리뷰 대기')를 임의로
-            # 다른 상태('Open')로 바꿔치기한 실측. 요청과 다르면 요청 쪽을 쓴다.
-            mu_t = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
-                              request_text(state) + " " + last_user_text(state))
-            if mu_t:
-                want = mu_t.group(1).strip()
-            if k0 and want and not fields and not plan:
-                try:
-                    from app.agent import tools as T
-                    cands = [t for t in (T.BY_NAME["list_transitions"].invoke({"key": k0}) or [])
-                             if isinstance(t, dict) and not t.get("error")]
-                    hit = next((t for t in cands
-                                if want.lower() in str(t.get("name", "")).lower()
-                                or str(t.get("name", "")).lower() in want.lower()
-                                or want.lower() in str(t.get("to", "")).lower()), None)
-                    if hit:
-                        plan = {"key": k0, "transition": {"id": str(hit.get("id")),
-                                                          "name": hit.get("to") or hit.get("name")},
-                                "comment": cmt, "why": out.get("rationale") or ""}
-                    elif cands:
-                        # 보기는 **도착 상태 이름**으로 — 전이 이름("To Resolved")을 그대로
-                        # 내밀면 사용자가 읽는 상태명과 어긋난다(실측 T2).
-                        opts, seen_o = [], set()
-                        for t in cands:
-                            nm = str(t.get("to") or t.get("name") or "").strip()
-                            nm = _re.sub(r"^(?:To|이동|전이)\s+", "", nm).strip()
-                            if nm and nm not in seen_o:
-                                seen_o.add(nm)
-                                opts.append(nm)
-                        qs = [{"question": f"{k0} 를 '{want}' 상태로 옮길 수는 없습니다. "
-                                           "지금 갈 수 있는 상태는 다음뿐입니다 — 고르시면 "
-                                           "그대로 변경 카드를 만들어 드립니다.",
-                               "kind": "choice", "field": "",
-                               "options": opts[:5]}]
-                except Exception:
-                    pass
-            # ── 티켓 링크 — link_tickets 도구가 실행한다(실측: 링크 요청이 코멘트로 우회됐다).
-            lk = change.get("link") if isinstance(change.get("link"), dict) else {}
-            if k0 and lk.get("other") and not plan:
-                plan = {"key": k0,
-                        "link": {"other": str(lk["other"]).strip(),
-                                 "relation": str(lk.get("relation") or "Relates").strip()},
-                        "comment": "", "why": out.get("rationale") or ""}
-        # 조건 일괄 수정 — keys 복수. 실재하는 키만 남긴다(조사에서 온 것이지만 한 번 더).
-        bulk_keys = [str(k).strip() for k in (change.get("keys") or []) if str(k).strip()]
-        # 코드가 확정한 대상(bulk_targets)이 있는데 모델이 keys 를 빠뜨리거나 일부만 담았으면
-        # **전부로 강제한다** — 일부 누락은 조용한 미수정이다(실측: 대상 없음 오답 2회).
-        if state.get("bulk_targets") and (change.get("assignee") is not None
-                                          or change.get("duedate") is not None
-                                          or change.get("priority") is not None
-                                          or change.get("labels") is not None
-                                          or bulk_keys):
-            bulk_keys = [str(k) for k in state["bulk_targets"]]
-        if bulk_keys and not plan:
-            fields = {k: change[k] for k in ("assignee", "duedate", "priority", "labels")
-                      if k in change and change[k] is not None}
-            if str(fields.get("priority") or "").strip():
-                p = str(fields["priority"]).strip()
-                fields["priority"] = _PRI.get(p.upper(), p)
-            # 빈 문자열 값은 변경이 아니다 — 모델이 안 바꿀 필드를 "" 로 채워 빈 changes
-            # 일괄 카드가 떴다(실측). 해제(비우기)는 단건 change 로만 받는다.
-            fields = {k: v for k, v in fields.items()
-                      if (isinstance(v, list) and v) or str(v or "").strip()}
-            real = [k for k in dict.fromkeys(bulk_keys) if _ticket_exists(k)][:30]
-            gone = [k for k in bulk_keys if k not in real]
-            if gone:
-                out["rationale"] = ((out.get("rationale") or "")
-                                    + f"\n(실재하지 않아 제외: {', '.join(gone[:5])})").strip()
-            if real and fields:
-                if len(real) == 1:
-                    # 단건이면 단건 카드다 — 일괄 카드는 대상이 여럿일 때만.
-                    plan = {"key": real[0], "changes": fields,
-                            "comment": (change.get("comment") or "").strip(),
-                            "why": out.get("rationale") or ""}
-                else:
-                    plan = {"keys": real, "changes": fields,
-                            "comment": (change.get("comment") or "").strip(),
-                            "why": out.get("rationale") or ""}
-        # ── 전이 최종 보장: "DL-x 를 <상태>로 옮겨/바꿔" 인데 모델이 change.status 를
-        # 안 쓰고 엉뚱한 초안을 냈다(실측: '상태로 옮김' Task 를 새로 만듦) — 코드가
-        # 요청에서 상태명을 뽑아 전이를 조립하고 초안을 버린다.
-        if not plan and (state.get("intent") or "") == Intent.MODIFY \
-                and (state.get("mentioned_keys") or []):
-            req_t = request_text(state) + " " + last_user_text(state)
-            mt = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
-                            req_t)
-            if mt:
-                want_t = mt.group(1).strip()
-                k_t = str(state["mentioned_keys"][0]).strip()
-                try:
-                    from app.agent import tools as T
-                    cands_t = [t for t in
-                               (T.BY_NAME["list_transitions"].invoke({"key": k_t}) or [])
-                               if isinstance(t, dict) and not t.get("error")]
-                    hit_t = next((t for t in cands_t
-                                  if want_t.lower() in str(t.get("name", "")).lower()
-                                  or want_t.lower() in str(t.get("to", "")).lower()), None)
-                    if hit_t:
-                        plan = {"key": k_t,
-                                "transition": {"id": str(hit_t.get("id")),
-                                               "name": hit_t.get("to") or hit_t.get("name")},
-                                "comment": "",
-                                "why": ((out.get("rationale") or "")
-                                        + "\n(상태 전이 — 전이 id 는 코드가 확정)").strip()}
-                        qs = []
-                        items.clear()
-                    elif cands_t:
-                        # 모델이 낸 잡질문("제목을 알려주실…")은 버린다 — 정확한 choice 하나가 답이다.
-                        qs = [{"question": f"{k_t} 를 '{want_t}' 로 옮길 전이가 없습니다. "
-                                           "가능한 전이 중에서 골라 주세요.",
-                               "kind": "choice", "field": "",
-                               "options": [str(t.get("to") or t.get("name"))
-                                           for t in cands_t][:5]}]
-                        items.clear()
-                except Exception:
-                    pass
-
-        # ── 링크 최종 보장: "A 가 B 를 막는 관계로 연결" — 키 둘 + 관계 낱말이면 조립.
-        # (실측: 모델이 change.link 대신 무의미한 확인 질문 4개를 냈다.)
-        if not plan and (state.get("intent") or "") == Intent.MODIFY:
-            req_l = request_text(state) + " " + last_user_text(state)
-            keys_l = _re.findall(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", req_l)
-            if len(dict.fromkeys(keys_l)) >= 2 and _re.search(r"연결|링크|link", req_l):
-                a, b = list(dict.fromkeys(keys_l))[:2]
-                rel = "Blocks" if _re.search(r"막|block", req_l, _re.I) else "Relates"
-                if _ticket_exists(a) and _ticket_exists(b):
-                    plan = {"key": a, "link": {"other": b, "relation": rel},
-                            "comment": "",
-                            "why": ((out.get("rationale") or "")
-                                    + f"\n(링크 {rel}: {a} → {b} — 요청에서 코드가 확정)").strip()}
-                    qs = []
-                    items.clear()
-
-        # ── 최종 보장: 대상(JQL)과 변경 필드(요청 파싱)가 둘 다 확정되면 **코드가 계획을
-        # 조립**한다 — 모델이 Epic 질문으로 새는 것을 두 번의 프롬프트 교정으로도 못 막았다.
-        if not plan and state.get("bulk_targets") \
-                and (state.get("intent") or "") == Intent.MODIFY:
-            req = request_text(state)
-            fields = {}
-            # \b 는 한글 앞에서 안 선다("P1으로") — ASCII 경계만 본다.
-            mp = _re.search(r"(?<![0-9A-Za-z])P([0-4])(?![0-9A-Za-z])", req)
-            if mp and ("우선순위" in req or "올려" in req or "내려" in req or "로 바꿔" in req):
-                fields["priority"] = _PRI["P" + mp.group(1)]
-            rel = _relative_due(req)
-            if rel and "마감" in req:
-                fields["duedate"] = rel
-            mu = _re.search(r"(?<![0-9A-Za-z.])(?:skcc\.)?([a-z]{1,2}\d{2,6})(?![0-9A-Za-z])", req)
-            if mu and ("담당" in req or "에게" in req):
-                fields["assignee"] = f"skcc.{mu.group(1)}"
-            if fields:
-                plan = {"keys": [str(k) for k in state["bulk_targets"]], "changes": fields,
-                        "comment": "",
-                        "why": ((out.get("rationale") or "")
-                                + "\n(조건 일괄 수정 — 대상은 JQL 로, 변경 값은 요청에서 "
-                                  "코드가 확정했다)").strip()}
-                qs = []
-                items.clear()          # 수정 요청에 초안을 만들었어도 계획이 이긴다(참조 공유)
-
-        # 담당 변경의 사번은 **초안 단계에서 실재 검증** — 미실재면 카드 대신 정확한 안내
-        # (실측: 없는 사번에 '이메일 주소를 알려달라'는 엉뚱한 질문이 나갔다).
-        _asg = (plan.get("changes") or {}).get("assignee") if plan else None
-        if _asg:
-            try:
-                from app.agent.tools._ctx import client as _c2, settings as _s2
-                from app.domain.search import search_users as _su
-                found = _su(_c2(), _s2(), _asg, 5) or []
-                if not any(str(u.get("id") or "") == _asg for u in found):
-                    plan = {}
-                    qs = [{"question": f"'{_asg}' 는 존재하지 않는 사번입니다. 올바른 사번을 "
-                                       "알려 주세요 (skcc.x1042 형식 — 자동완성이 붙습니다).",
-                           "kind": "text", "options": [], "field": "assignee"}]
-            except Exception:
-                pass
-
-        # 삭제 요청 — 지원되지 않는다. 모델이 빈 변경+코멘트 카드를 만들던 것(실측)을 코드가
-        # 막는다: 카드 없이 사유·대안만 답하게 한다.
-        if plan and not plan.get("changes") \
-                and _re.search(r"삭제|지워\s*줘|없애",
-                               request_text(state) + " " + last_user_text(state)):
-            plan = {}
-            out["rationale"] = ((out.get("rationale") or "")
-                                + "\n(삭제는 지원되지 않는다 — 상태 전이(닫음)나 보관 라벨을 "
-                                  "대안으로 안내)").strip()
-        # 에이전트가 바꿀 수 없는 필드 — 빈 카드 대신 무엇을 못 하는지 말한다.
-        # (update_ticket 은 담당/마감/우선순위/제목/라벨/컴포넌트/본문만 다룬다.
-        #  스토리포인트는 티켓 화면에서 직접, 그것도 Story 에만 설정된다 — 도메인 제약.)
-        if not plan and not items and _re.search(
-                r"스토리\s*포인트|story\s*point|\bSP\b",
-                request_text(state) + " " + last_user_text(state), _re.I):
-            out["rationale"] = ((out.get("rationale") or "")
-                                + "\n(스토리포인트는 에이전트가 바꾸지 못한다 — 티켓 화면에서 "
-                                  "직접 입력해야 하고, 애초에 Story 타입에만 설정된다. "
-                                  "바꿀 수 있는 것: 담당·마감·우선순위·제목·라벨·컴포넌트·본문)"
-                                ).strip()
-        # 초안 수정 요청인데 기존 티켓 변경 계획을 냈다(실측: DL-109 로 샜다 — 사용자는
-        # 그 키를 입에 올린 적이 없다) — 버린다. 판정은 **사용자 발화에 그 키가 있는가**로
-        # 한다(mentioned_keys 는 모델·이월로 오염될 수 있다).
-        if plan and plan.get("key") \
-                and ((state.get("draft") or {}).get("items")) and not items:
-            said_by_user = " ".join(str(getattr(m, "content", "") or "")
-                                    for m in (state.get("messages") or [])
-                                    if getattr(m, "type", "") == "human")
-            if plan["key"] not in said_by_user:
-                plan = {}
-                out["rationale"] = ((out.get("rationale") or "")
-                                    + "\n(승인 대기 초안에 대한 수정 요청 — 기존 티켓 변경이 "
-                                      "아니라 초안을 고쳐야 한다)").strip()
+        # 변경 계획(modify)은 갈래가 통째로 다르다 — `_change_plan` 이 맡는다.
+        plan, qs = _change_plan(state, out, items, qs)
         # ── "하나 더 추가해줘" — 승인 전 초안은 통째로 사라지면 안 된다 ────────
         # 실측(O1): 승인 대기 초안이 있는 상태에서 항목 추가를 요청하니 모델이 **기존 항목만**
         # 다시 내고 새 항목을 빠뜨렸다(반대로 새 항목만 내고 기존을 버리기도 한다).
@@ -1232,8 +961,325 @@ class Refiner(StructuredAgent):
                               + (f"질문 {len(qs)}개 · 초안 {len(items)}건" if qs or items else "초안 없음"))}
 
 
+# 우선순위 표기 정규화 표 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
+_PRI = {"P0": "P0-Blocker", "P1": "P1-Critical", "P2": "P2-Major",
+        "P3": "P3-Minor", "P4": "P4-Trivial",
+        "BLOCKER": "P0-Blocker", "CRITICAL": "P1-Critical", "MAJOR": "P2-Major",
+        "MINOR": "P3-Minor", "TRIVIAL": "P4-Trivial"}
+
+
+def _change_plan(state, out, items, qs):
+    """modify 갈래 — **기존 티켓 변경 계획**을 확정한다. `(plan, qs)` 를 돌려준다.
+
+    초안(items)을 다듬는 일과 기존 티켓을 고치는 일은 재료도 실패 방식도 다르다.
+    한 함수에 같이 두었더니 `apply` 가 773줄이 되어 어느 가드가 어느 갈래의 것인지
+    읽어서는 알 수 없었다 — 여기 있는 것은 전부 **변경 계획** 쪽 가드다.
+    (필드 범위 제한 · 상대 날짜 계산 · 전이 해석 · 링크 조립 · 벌크 대상 확정)
+    """
+    # modify 갈래 — 변경 계획. 바꿀 값이 하나도 없는 change 는 계획이 아니다.
+    change = out.get("change") if isinstance(out.get("change"), dict) else {}
+    # ★ 새 일을 만들라고 한 요청에는 변경 계획을 만들지 않는다. 조사에서 비슷한 티켓이
+    #   나오면 모델이 그걸 고치겠다고 답하는 일이 있는데(실측), 그러면 사용자가 부탁한
+    #   생성은 통째로 사라지고 시키지도 않은 수정이 승인 카드에 오른다.
+    if change.get("key") and (state.get("intent") or "") != Intent.MODIFY:
+        out["rationale"] = ((out.get("rationale") or "")
+                            + f"\n(참고: {change['key']} 가 비슷한 일이지만, 요청은 "
+                              "새로 만드는 것이라 변경하지 않았다)").strip()
+        change = {}
+    plan = {}
+    if change.get("key"):
+        fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary",
+                                         "labels", "description")
+                  if k in change and change[k] is not None}
+        # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
+        # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
+        # 떴다. 담당 해제("assignee": "")만 예외로 인정한다(사용자가 뗄 때 쓴다).
+        _said = request_text(state) + " " + last_user_text(state)
+        _wipe = _re.search(r"(담당|assignee)\w*\s*(해제|비워|없애|제거)", _said)
+        fields = {k: v for k, v in fields.items()
+                  if (isinstance(v, list) and v) or str(v or "").strip()
+                  or (k == "assignee" and _wipe)}
+        # 말하지 않은 필드는 바꾸지 않는다 — 마감만 미뤄 달라고 했는데 우선순위까지
+        # 카드에 얹히면(실측 Round P: priority=P3-Minor) 사용자가 모르고 승인한다.
+        _WORDS = {"priority": r"우선순위|priority|P[0-4]|긴급|중요|사소",
+                  "duedate": r"마감|기한|due|날짜|미뤄|당겨|연장|늦춰|앞당",
+                  "assignee": r"담당|배정|할당|넘겨|맡",
+                  "summary": r"제목|이름|타이틀|summary",
+                  "labels": r"라벨|label|태그",
+                  "description": r"본문|설명|내용|description"}
+        _extra = [k for k in list(fields)
+                  if k in _WORDS and not _re.search(_WORDS[k], _said, _re.I)] \
+            if _said.strip() else []      # 발화가 없으면 근거도 없다 — 지우지 않는다
+        for k in _extra:
+            fields.pop(k, None)
+        if _extra:
+            out["rationale"] = ((out.get("rationale") or "")
+                                + f"\n(요청에 없던 {', '.join(_extra)} 변경은 뺐다 — "
+                                  "말한 것만 바꾼다)").strip()
+        if str(fields.get("priority") or "").strip():
+            p = str(fields["priority"]).strip()
+            fields["priority"] = _PRI.get(p.upper(), p)
+        # 상대 날짜("다음주 수요일")는 **코드가 계산**한다 — 모델 산술이 흔들렸다
+        # (실측: 같은 질문에 8-12(수·정답)와 8-16(일·오답)을 번갈아 냈다).
+        rel = _relative_due(request_text(state) + " " + last_user_text(state))
+        if rel and str(fields.get("duedate") or "") != rel:
+            if fields.get("duedate"):
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(마감을 {rel} 로 계산해 바로잡았다 — 상대 날짜는 "
+                                      "코드가 계산한다)").strip()
+            fields["duedate"] = rel
+        cmt = (change.get("comment") or "").strip()
+        # 댓글만 남기는 것도 유효한 계획이다 — "이 내용 DL-x 에 댓글로 남겨줘"가 실사용에 있다.
+        if fields or cmt:
+            plan = {"key": str(change["key"]).strip(), "changes": fields,
+                    "comment": cmt, "why": out.get("rationale") or ""}
+            # 바뀌기 **전** 값은 코드가 조회해 싣는다 — 모델이 "변경 전: 미정"이라고
+            # 지어냈다(실측 Round P: 실제로는 마감이 있었다).
+            try:
+                from app.agent import tools as T
+                cur = T.BY_NAME["get_ticket"].invoke({"key": plan["key"]}) or {}
+                if not cur.get("error"):
+                    plan["before"] = {k: (cur.get(k) or "") for k in fields}
+                    # ── 말과 방향이 어긋나면 짚는다 ─────────────────────────
+                    # 실측: "DL-101 마감을 다음 주 금요일로 **미뤄** 줘" 에 8-27 → 8-14
+                    # (오히려 당기는 것)를 아무 말 없이 카드에 올렸다. 사용자가 현재
+                    # 마감을 기억하고 말하는 일은 드물다 — 어긋남을 알아채는 건 코드 몫이다.
+                    _old = str(plan["before"].get("duedate") or "")
+                    _new = str(fields.get("duedate") or "")
+                    if _re.match(r"^\d{4}-\d{2}-\d{2}$", _old) and _new and _old != _new:
+                        _later = _re.search(r"미뤄|미루|연장|늦춰|늦추|뒤로", _said)
+                        _sooner = _re.search(r"당겨|앞당|땡겨|앞으로", _said)
+                        _warn = ("앞당기는" if (_later and _new < _old)
+                                 else ("미루는" if (_sooner and _new > _old) else ""))
+                        if _warn:
+                            out["rationale"] = (
+                                (out.get("rationale") or "")
+                                + f"\n(확인 필요: 현재 마감이 {_old} 라 {_new} 로 바꾸면 "
+                                  f"말씀과 반대로 {_warn} 셈이다 — 날짜가 맞는지 봐 달라)"
+                            ).strip()
+                            plan["why"] = out["rationale"]
+            except Exception:
+                pass
+        # ── 상태 전이 — 이름을 전이 id 로 **코드가** 해석한다(실측: status 필드가 없어
+        # '정보 확인 안 됨'으로 죽었다). 못 찾으면 가능한 전이를 choice 로 묻는다.
+        k0 = str(change.get("key") or "").strip()
+        want = str(change.get("status") or "").strip()
+        # 사용자 문장의 상태명이 **1차**다 — 모델이 불가능한 목표('리뷰 대기')를 임의로
+        # 다른 상태('Open')로 바꿔치기한 실측. 요청과 다르면 요청 쪽을 쓴다.
+        mu_t = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
+                          request_text(state) + " " + last_user_text(state))
+        if mu_t:
+            want = mu_t.group(1).strip()
+        if k0 and want and not fields and not plan:
+            try:
+                from app.agent import tools as T
+                cands = [t for t in (T.BY_NAME["list_transitions"].invoke({"key": k0}) or [])
+                         if isinstance(t, dict) and not t.get("error")]
+                hit = next((t for t in cands
+                            if want.lower() in str(t.get("name", "")).lower()
+                            or str(t.get("name", "")).lower() in want.lower()
+                            or want.lower() in str(t.get("to", "")).lower()), None)
+                if hit:
+                    plan = {"key": k0, "transition": {"id": str(hit.get("id")),
+                                                      "name": hit.get("to") or hit.get("name")},
+                            "comment": cmt, "why": out.get("rationale") or ""}
+                elif cands:
+                    # 보기는 **도착 상태 이름**으로 — 전이 이름("To Resolved")을 그대로
+                    # 내밀면 사용자가 읽는 상태명과 어긋난다(실측 T2).
+                    opts, seen_o = [], set()
+                    for t in cands:
+                        nm = str(t.get("to") or t.get("name") or "").strip()
+                        nm = _re.sub(r"^(?:To|이동|전이)\s+", "", nm).strip()
+                        if nm and nm not in seen_o:
+                            seen_o.add(nm)
+                            opts.append(nm)
+                    qs = [{"question": f"{k0} 를 '{want}' 상태로 옮길 수는 없습니다. "
+                                       "지금 갈 수 있는 상태는 다음뿐입니다 — 고르시면 "
+                                       "그대로 변경 카드를 만들어 드립니다.",
+                           "kind": "choice", "field": "",
+                           "options": opts[:5]}]
+            except Exception:
+                pass
+        # ── 티켓 링크 — link_tickets 도구가 실행한다(실측: 링크 요청이 코멘트로 우회됐다).
+        lk = change.get("link") if isinstance(change.get("link"), dict) else {}
+        if k0 and lk.get("other") and not plan:
+            plan = {"key": k0,
+                    "link": {"other": str(lk["other"]).strip(),
+                             "relation": str(lk.get("relation") or "Relates").strip()},
+                    "comment": "", "why": out.get("rationale") or ""}
+    # 조건 일괄 수정 — keys 복수. 실재하는 키만 남긴다(조사에서 온 것이지만 한 번 더).
+    bulk_keys = [str(k).strip() for k in (change.get("keys") or []) if str(k).strip()]
+    # 코드가 확정한 대상(bulk_targets)이 있는데 모델이 keys 를 빠뜨리거나 일부만 담았으면
+    # **전부로 강제한다** — 일부 누락은 조용한 미수정이다(실측: 대상 없음 오답 2회).
+    if state.get("bulk_targets") and (change.get("assignee") is not None
+                                      or change.get("duedate") is not None
+                                      or change.get("priority") is not None
+                                      or change.get("labels") is not None
+                                      or bulk_keys):
+        bulk_keys = [str(k) for k in state["bulk_targets"]]
+    if bulk_keys and not plan:
+        fields = {k: change[k] for k in ("assignee", "duedate", "priority", "labels")
+                  if k in change and change[k] is not None}
+        if str(fields.get("priority") or "").strip():
+            p = str(fields["priority"]).strip()
+            fields["priority"] = _PRI.get(p.upper(), p)
+        # 빈 문자열 값은 변경이 아니다 — 모델이 안 바꿀 필드를 "" 로 채워 빈 changes
+        # 일괄 카드가 떴다(실측). 해제(비우기)는 단건 change 로만 받는다.
+        fields = {k: v for k, v in fields.items()
+                  if (isinstance(v, list) and v) or str(v or "").strip()}
+        real = [k for k in dict.fromkeys(bulk_keys) if _ticket_exists(k)][:30]
+        gone = [k for k in bulk_keys if k not in real]
+        if gone:
+            out["rationale"] = ((out.get("rationale") or "")
+                                + f"\n(실재하지 않아 제외: {', '.join(gone[:5])})").strip()
+        if real and fields:
+            if len(real) == 1:
+                # 단건이면 단건 카드다 — 일괄 카드는 대상이 여럿일 때만.
+                plan = {"key": real[0], "changes": fields,
+                        "comment": (change.get("comment") or "").strip(),
+                        "why": out.get("rationale") or ""}
+            else:
+                plan = {"keys": real, "changes": fields,
+                        "comment": (change.get("comment") or "").strip(),
+                        "why": out.get("rationale") or ""}
+    # ── 전이 최종 보장: "DL-x 를 <상태>로 옮겨/바꿔" 인데 모델이 change.status 를
+    # 안 쓰고 엉뚱한 초안을 냈다(실측: '상태로 옮김' Task 를 새로 만듦) — 코드가
+    # 요청에서 상태명을 뽑아 전이를 조립하고 초안을 버린다.
+    if not plan and (state.get("intent") or "") == Intent.MODIFY \
+            and (state.get("mentioned_keys") or []):
+        req_t = request_text(state) + " " + last_user_text(state)
+        mt = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
+                        req_t)
+        if mt:
+            want_t = mt.group(1).strip()
+            k_t = str(state["mentioned_keys"][0]).strip()
+            try:
+                from app.agent import tools as T
+                cands_t = [t for t in
+                           (T.BY_NAME["list_transitions"].invoke({"key": k_t}) or [])
+                           if isinstance(t, dict) and not t.get("error")]
+                hit_t = next((t for t in cands_t
+                              if want_t.lower() in str(t.get("name", "")).lower()
+                              or want_t.lower() in str(t.get("to", "")).lower()), None)
+                if hit_t:
+                    plan = {"key": k_t,
+                            "transition": {"id": str(hit_t.get("id")),
+                                           "name": hit_t.get("to") or hit_t.get("name")},
+                            "comment": "",
+                            "why": ((out.get("rationale") or "")
+                                    + "\n(상태 전이 — 전이 id 는 코드가 확정)").strip()}
+                    qs = []
+                    items.clear()
+                elif cands_t:
+                    # 모델이 낸 잡질문("제목을 알려주실…")은 버린다 — 정확한 choice 하나가 답이다.
+                    qs = [{"question": f"{k_t} 를 '{want_t}' 로 옮길 전이가 없습니다. "
+                                       "가능한 전이 중에서 골라 주세요.",
+                           "kind": "choice", "field": "",
+                           "options": [str(t.get("to") or t.get("name"))
+                                       for t in cands_t][:5]}]
+                    items.clear()
+            except Exception:
+                pass
+
+    # ── 링크 최종 보장: "A 가 B 를 막는 관계로 연결" — 키 둘 + 관계 낱말이면 조립.
+    # (실측: 모델이 change.link 대신 무의미한 확인 질문 4개를 냈다.)
+    if not plan and (state.get("intent") or "") == Intent.MODIFY:
+        req_l = request_text(state) + " " + last_user_text(state)
+        keys_l = _re.findall(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", req_l)
+        if len(dict.fromkeys(keys_l)) >= 2 and _re.search(r"연결|링크|link", req_l):
+            a, b = list(dict.fromkeys(keys_l))[:2]
+            rel = "Blocks" if _re.search(r"막|block", req_l, _re.I) else "Relates"
+            if _ticket_exists(a) and _ticket_exists(b):
+                plan = {"key": a, "link": {"other": b, "relation": rel},
+                        "comment": "",
+                        "why": ((out.get("rationale") or "")
+                                + f"\n(링크 {rel}: {a} → {b} — 요청에서 코드가 확정)").strip()}
+                qs = []
+                items.clear()
+
+    # ── 최종 보장: 대상(JQL)과 변경 필드(요청 파싱)가 둘 다 확정되면 **코드가 계획을
+    # 조립**한다 — 모델이 Epic 질문으로 새는 것을 두 번의 프롬프트 교정으로도 못 막았다.
+    if not plan and state.get("bulk_targets") \
+            and (state.get("intent") or "") == Intent.MODIFY:
+        req = request_text(state)
+        fields = {}
+        # \b 는 한글 앞에서 안 선다("P1으로") — ASCII 경계만 본다.
+        mp = _re.search(r"(?<![0-9A-Za-z])P([0-4])(?![0-9A-Za-z])", req)
+        if mp and ("우선순위" in req or "올려" in req or "내려" in req or "로 바꿔" in req):
+            fields["priority"] = _PRI["P" + mp.group(1)]
+        rel = _relative_due(req)
+        if rel and "마감" in req:
+            fields["duedate"] = rel
+        mu = _re.search(r"(?<![0-9A-Za-z.])(?:skcc\.)?([a-z]{1,2}\d{2,6})(?![0-9A-Za-z])", req)
+        if mu and ("담당" in req or "에게" in req):
+            fields["assignee"] = f"skcc.{mu.group(1)}"
+        if fields:
+            plan = {"keys": [str(k) for k in state["bulk_targets"]], "changes": fields,
+                    "comment": "",
+                    "why": ((out.get("rationale") or "")
+                            + "\n(조건 일괄 수정 — 대상은 JQL 로, 변경 값은 요청에서 "
+                              "코드가 확정했다)").strip()}
+            qs = []
+            items.clear()          # 수정 요청에 초안을 만들었어도 계획이 이긴다(참조 공유)
+
+    # 담당 변경의 사번은 **초안 단계에서 실재 검증** — 미실재면 카드 대신 정확한 안내
+    # (실측: 없는 사번에 '이메일 주소를 알려달라'는 엉뚱한 질문이 나갔다).
+    _asg = (plan.get("changes") or {}).get("assignee") if plan else None
+    if _asg:
+        try:
+            from app.agent.tools._ctx import client as _c2, settings as _s2
+            from app.domain.search import search_users as _su
+            found = _su(_c2(), _s2(), _asg, 5) or []
+            if not any(str(u.get("id") or "") == _asg for u in found):
+                plan = {}
+                qs = [{"question": f"'{_asg}' 는 존재하지 않는 사번입니다. 올바른 사번을 "
+                                   "알려 주세요 (skcc.x1042 형식 — 자동완성이 붙습니다).",
+                       "kind": "text", "options": [], "field": "assignee"}]
+        except Exception:
+            pass
+
+    # 삭제 요청 — 지원되지 않는다. 모델이 빈 변경+코멘트 카드를 만들던 것(실측)을 코드가
+    # 막는다: 카드 없이 사유·대안만 답하게 한다.
+    if plan and not plan.get("changes") \
+            and _re.search(r"삭제|지워\s*줘|없애",
+                           request_text(state) + " " + last_user_text(state)):
+        plan = {}
+        out["rationale"] = ((out.get("rationale") or "")
+                            + "\n(삭제는 지원되지 않는다 — 상태 전이(닫음)나 보관 라벨을 "
+                              "대안으로 안내)").strip()
+    # 에이전트가 바꿀 수 없는 필드 — 빈 카드 대신 무엇을 못 하는지 말한다.
+    # (update_ticket 은 담당/마감/우선순위/제목/라벨/컴포넌트/본문만 다룬다.
+    #  스토리포인트는 티켓 화면에서 직접, 그것도 Story 에만 설정된다 — 도메인 제약.)
+    if not plan and not items and _re.search(
+            r"스토리\s*포인트|story\s*point|\bSP\b",
+            request_text(state) + " " + last_user_text(state), _re.I):
+        out["rationale"] = ((out.get("rationale") or "")
+                            + "\n(스토리포인트는 에이전트가 바꾸지 못한다 — 티켓 화면에서 "
+                              "직접 입력해야 하고, 애초에 Story 타입에만 설정된다. "
+                              "바꿀 수 있는 것: 담당·마감·우선순위·제목·라벨·컴포넌트·본문)"
+                            ).strip()
+    # 초안 수정 요청인데 기존 티켓 변경 계획을 냈다(실측: DL-109 로 샜다 — 사용자는
+    # 그 키를 입에 올린 적이 없다) — 버린다. 판정은 **사용자 발화에 그 키가 있는가**로
+    # 한다(mentioned_keys 는 모델·이월로 오염될 수 있다).
+    if plan and plan.get("key") \
+            and ((state.get("draft") or {}).get("items")) and not items:
+        said_by_user = " ".join(str(getattr(m, "content", "") or "")
+                                for m in (state.get("messages") or [])
+                                if getattr(m, "type", "") == "human")
+        if plan["key"] not in said_by_user:
+            plan = {}
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(승인 대기 초안에 대한 수정 요청 — 기존 티켓 변경이 "
+                                  "아니라 초안을 고쳐야 한다)").strip()
+    return plan, qs
+
 def draft_text(draft: dict) -> str:
-    """초안을 프롬프트/화면에 실을 수 있는 글로. Assigner·Reviewer 가 같은 걸 본다."""
+    """초안을 프롬프트/화면에 실을 수 있는 글로. Assigner 가 이걸 보고 배정한다.
+
+    **자식(Sub-Task)도 번호와 함께 보여 준다.** 안 보여 줬더니 Assigner 는 부모 담당만
+    정했고, 자식은 Refiner 가 모듈 명단을 순번으로 돌려 채웠다 — 그래서 Assigner 가
+    "부하가 높아 부적합"이라 적은 사람이 자식 담당으로 들어갔다(실측).
+    """
     if not draft or not draft.get("items"):
         return ""
     rows = []
@@ -1247,6 +1293,11 @@ def draft_text(draft: dict) -> str:
         if it.get("description"):
             bits.append(f"\n    설명: {str(it['description'])[:150]}")
         rows.append("  ".join(bits))
+        for j, c in enumerate(it.get("children") or []):
+            if isinstance(c, dict):
+                rows.append(f"    └ 하위[{j}] {c.get('summary', '')}"
+                            + (f" (현재 담당 {c['assignee']} — 코드가 모듈 명단으로 임시로 "
+                               "채운 값이다. 부하를 보고 고쳐라)" if c.get("assignee") else ""))
     return f"mode={draft.get('mode')}\n" + "\n".join(rows)
 
 

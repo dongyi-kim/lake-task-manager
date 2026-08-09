@@ -279,6 +279,10 @@ class Responder(TextAgent):
         # '확인된 기록 없음'만 채운 표 행·참조 줄은 정보가 아니라 소음이다 — md 로 두 번
         # 금지했는데 재발(실측 2회). 코드가 걷어낸다.
         text = _prune_empty_rows(text)
+        # 같은 문장을 두 번 쓰는 버릇 — "아래 카드에서 확인 후 승인해 주세요."가 문단 끝과
+        # 그다음 줄에 각각 나왔다(실측). 프롬프트로 막을 종류가 아니다(모델은 두 번 쓴 걸
+        # 모른다). 표·목록은 같은 문구가 정당하게 반복되므로 **평문 문장만** 접는다.
+        text = _dedupe_sentences(text)
         # 되묻는 턴 — 폼이 묻는 것을 본문에서 걷어낸다. 프롬프트로 두 번 금지했는데도
         # 질문·보기를 통째로 베껴 화면에 같은 말이 두 벌 뜬다(사용자 지적).
         # 문서를 요약해 놓고 **어느 문서인지 안 밝히면** 확인할 방법이 없다("자세한 내용은
@@ -317,6 +321,36 @@ class Responder(TextAgent):
         from langchain_core.messages import AIMessage
         return {"reply": text, "messages": [AIMessage(content=text)],
                 "trace": note(state, self.name, f"{len(text)}자")}
+
+
+def _dedupe_sentences(text: str) -> str:
+    """평문에서 **똑같이 반복된 문장**을 뒤엣것부터 지운다.
+
+    표(`|`)·목록(`-`,`1.`)·인용·참조 줄은 건드리지 않는다 — 거기서는 같은 문구가
+    정당하게 되풀이된다. 문장 하나가 통째로 겹칠 때만 접으므로, 비슷하지만 다른
+    문장은 둘 다 남는다.
+    """
+    import re as _re
+    seen, out_lines = set(), []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith(("|", "-", "*", ">", "#", "[")) or _re.match(r"^\d+[.)]", s):
+            out_lines.append(line)
+            continue
+        parts = _re.split(r"(?<=[.!?])\s+|(?<=다\.)\s+", s)
+        kept = []
+        for p in parts:
+            k = _re.sub(r"\s+", " ", p).strip()
+            if len(k) >= 10 and k in seen:
+                continue                    # 이미 한 말이다
+            if len(k) >= 10:
+                seen.add(k)
+            kept.append(p)
+        joined = " ".join(x for x in kept if x.strip())
+        if joined.strip():
+            out_lines.append(line[:len(line) - len(line.lstrip())] + joined)
+    # 문장이 통째로 빠져 생긴 빈 줄 3연속은 2줄로
+    return _re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
 
 
 def _dedupe_refs(text: str) -> str:

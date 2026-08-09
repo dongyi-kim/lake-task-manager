@@ -47,6 +47,18 @@ SCHEMA = {
                             "why": {"type": "string", "description": "대안인 이유와 한계를 함께"}}},
                         "description": "대안 1~2명. 왜 1순위가 아닌지도 적는다",
                     },
+                    # 자식 담당도 **여기서** 정한다 — 사람을 고르는 일은 한 역할의 것이다.
+                    "children": {
+                        "type": "array",
+                        "items": {"type": "object", "properties": {
+                            "index": {"type": "integer", "description": "이 항목의 하위 번호(0부터)"},
+                            "user": {"type": "string", "description": "Jira user id"},
+                            "why": {"type": "string",
+                                    "description": "왜 이 사람인가 — 숫자나 티켓 키를 넣어라"}}},
+                        "description": ("하위(Sub-Task)가 있으면 **하위별 담당**도 정한다. "
+                                        "부하가 높다고 스스로 판단해 뺀 사람을 하위에 넣지 "
+                                        "마라 — 앞뒤가 맞지 않는다. 하위가 없으면 빈 배열"),
+                    },
                 },
                 "required": ["index", "user", "reasons"],
             },
@@ -175,6 +187,9 @@ class Assigner(StructuredAgent):
 - **후보는 한 명이 아니다** — alternates 에 대안 후보를 1명 이상, 왜 1순위가 아닌지와
   함께 적는다. 사용자가 화면에서 후보 중 고른다.
 - 같은 사람을 모든 항목에 몰지 마라 — 그건 배분이 아니다.
+- **하위(Sub-Task)가 있으면 하위 담당도 네가 정한다**(children). 아래 초안에 붙은 현재
+  하위 담당은 코드가 모듈 명단을 순번으로 돌린 임시값이니 부하를 보고 고쳐라.
+  대안에서 "부하가 높아 부적합"이라 적은 사람을 하위에 넣지 마라 — 앞뒤가 안 맞는다.
 
 ## 티켓 초안
 {draft_text(state.get('draft')) or '(초안 없음)'}
@@ -195,8 +210,13 @@ class Assigner(StructuredAgent):
             if not (0 <= idx < n_items):
                 continue
             reasons = [r for r in (a.get("reasons") or []) if str(r).strip()]
+            kids = [{"index": int(c.get("index") or 0),
+                     "user": str(c.get("user") or "").strip(),
+                     "why": str(c.get("why") or "").strip()}
+                    for c in (a.get("children") or [])
+                    if isinstance(c, dict) and str(c.get("user") or "").strip()]
             rows.append({"index": idx, "user": (a.get("user") or "").strip(),
-                         "reasons": reasons,
+                         "reasons": reasons, "children": kids,
                          "alternates": [x for x in (a.get("alternates") or [])
                                         if isinstance(x, dict) and x.get("user")][:2]})
         named = sum(1 for r in rows if r["user"])
@@ -208,14 +228,32 @@ class Assigner(StructuredAgent):
 
 def merge_assignments(draft: dict, assignments: list) -> dict:
     """제안된 담당자를 초안에 실제로 꽂는다. **근거가 없는 제안은 반영하지 않는다** —
-    근거 없이 배정된 담당자는 승인 화면에서 사용자가 검증할 방법이 없다."""
+    근거 없이 배정된 담당자는 승인 화면에서 사용자가 검증할 방법이 없다.
+
+    자식(Sub-Task) 담당도 여기서 덮는다. Refiner 의 `_fill_owners` 는 모듈 명단을
+    **순번으로** 돌릴 뿐 부하를 보지 않는다 — 실측: Assigner 가 "x1450 은 진행중 15건이라
+    부적합"이라 써 놓고 자식 2건이 그 사람에게 갔다. 사람을 고르는 일은 한 역할의 것이다.
+    """
     items = list((draft or {}).get("items") or [])
     for a in assignments or []:
         i = a.get("index")
-        if isinstance(i, int) and 0 <= i < len(items) and a.get("user") and a.get("reasons"):
+        if not (isinstance(i, int) and 0 <= i < len(items)):
+            continue
+        if a.get("user") and a.get("reasons"):
             # 사용자가 입으로 지정한 담당("성능 측정은 x1402")은 추천이 못 덮는다 —
             # 지정은 결정이고 추천은 제안이다(실측: 추천이 지정 3건을 전부 한 사람으로 뭉갬).
-            if items[i].get("assignee_source") == "user":
-                continue
-            items[i] = dict(items[i], assignee=a["user"])
+            if items[i].get("assignee_source") != "user":
+                items[i] = dict(items[i], assignee=a["user"])
+        kids = [dict(c) for c in (items[i].get("children") or []) if isinstance(c, dict)]
+        if not kids:
+            continue
+        touched = False
+        for c in a.get("children") or []:
+            j, who = c.get("index"), str(c.get("user") or "").strip()
+            if isinstance(j, int) and 0 <= j < len(kids) and who \
+                    and kids[j].get("assignee_source") != "user":
+                kids[j]["assignee"] = who
+                touched = True
+        if touched:
+            items[i] = dict(items[i], children=kids)
     return dict(draft or {}, items=items)
