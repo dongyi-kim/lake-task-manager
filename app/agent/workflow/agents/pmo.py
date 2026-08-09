@@ -131,6 +131,43 @@ def _self_report(state) -> str:
     return "\n".join(rows) if len(rows) > 1 else ""
 
 
+def _module_compare(state) -> str:
+    """모듈 비교 질의("Catalog 랑 ETL 중에 어디가 더 밀렸어?") — 지표를 **코드가** 조회한다.
+
+    실측(Round Q): 모델이 target 없이 get_progress 를 불러 전사 진척률(overallPct)을
+    받고는 "두 모듈이 48.6%로 동일"이라 했고, 이어 "완료율이 **높은** ETL 이 더 밀렸다"는
+    거꾸로 된 결론을 냈다. 비교는 같은 지표를 나란히 놓고 정의를 못 박아야 한다.
+    """
+    asked = last_user_text(state)
+    if not _re0.search(r"중에|보다|어느|어디가|비교|대비", asked):
+        return ""
+    try:
+        from app.agent import tools as T
+        opts = T.BY_NAME["list_ticket_options"].invoke({"kind": "components"}) or {}
+        names = [str(x) for x in (opts.get("components") or opts.get("values") or [])]
+        picked = [n for n in names if n and n.lower() in asked.lower()][:3]
+        if len(picked) < 2:
+            return ""
+        rows = ["(코드가 조회한 모듈 지표 — 비교는 이 표로만 한다. "
+                "'밀렸다'는 **완료율이 낮다**는 뜻이고, 마감이 지난 건수로 뒷받침한다. "
+                "전사 진척률(overallPct)은 모듈 비교에 쓰지 마라)"]
+        for n in picked:
+            pr = T.BY_NAME["get_progress"].invoke({"target": n}) or {}
+            mod = ((pr.get("modules") or [{}])[0]) if not pr.get("error") else {}
+            st = T.BY_NAME["find_stale_tickets"].invoke({"module": n, "days": 14}) or {}
+            stale = st.get("tickets") or st.get("results") or []
+            wl = T.BY_NAME["get_team_workload"].invoke({"module": n}) or {}
+            people = wl.get("people") or []
+            rows.append(
+                f"- {n}: 완료율 {mod.get('donePct', '?')}% · 14일+ 정체 {len(stale)}건 · "
+                f"인원 {len(people)}명 · 진행중 "
+                f"{sum(int(p.get('inProgress') or 0) for p in people)}건 · "
+                f"최근 28일 완료 {sum(int(p.get('done28d') or 0) for p in people)}건")
+        return "\n".join(rows)
+    except Exception:
+        return ""
+
+
 def _ticket_progress(state) -> str:
     """티켓 한 건의 진척 질의 — 근거 네 갈래를 **코드가** 모아 자료로 준다.
 
@@ -276,6 +313,13 @@ class PMO(ToolAgent):
                                  ((state.get("ticket_progress") or "") + "\n\n" + blk).strip()}
                 except Exception:
                     pass
+            try:
+                cmp_blk = _module_compare(state)
+            except Exception:
+                cmp_blk = ""
+            if cmp_blk:
+                state = {**state, "ticket_progress":
+                         ((state.get("ticket_progress") or "") + "\n\n" + cmp_blk).strip()}
             try:
                 prog = _ticket_progress(state)
             except Exception:
