@@ -37,6 +37,11 @@ into every sentence — measured feedback: "본문에 발췌·원본·참조를 
   - Ticket: `[1] DL-9044 — what it evidences` (the key renders as a badge with its title)
   - Document: `[2] [문서 제목](URL) — what it contains`
   - Comment: `[3] DL-9062 코멘트 (skcc.x1103, 2026-08-05) — what it said`
+- **A ticket reference takes NO url.** The key alone is the link — the UI renders it.
+  Never attach a document URL to a line that names a ticket: measured failure —
+  `1. [DL-9044 — 적재주기 변경](http://…/pages/…/[데이터카탈로그]…)`. Clicking that opens
+  something else entirely; a wrong link is worse than no link because it looks verified.
+  If you have no URL for a document, **drop that reference** — do not borrow another one.
 - Every reference line MUST start with `[n] ` — never a numbered list (`1.`), never brackets around the whole line (measured drift: `1. [DL-… — …]`).
 - A table/section exists only when there is content — never emit a history table filled
   with "확인된 기록 없음" rows, and never a reference whose description is "확인된 기록

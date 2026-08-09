@@ -228,3 +228,29 @@ def test_post_processing_damage_is_caught_by_a_late_recheck():
           "[1] [[데이터카탈로그] qms 정의](http://wiki/x) — 주 1회\n")
     out = r.apply({"messages": [], "intent": "ask"}, {"text": ok})
     assert "자동 검증 경고" not in (out.get("reply") or ""), out.get("reply")
+
+
+# ── 가드가 만든 회피 경로: 링크가 없으면 아무 URL 이나 붙인다 (실측) ──────────
+def test_a_ticket_reference_pointing_at_a_document_url_is_a_violation():
+    """①(링크 없음)을 막았더니 모델이 아무 URL 이나 붙여 통과했다:
+        1. [DL-9044 — 적재주기 변경](http://…/pages/…/[데이터카탈로그]+특성+분석)
+    클릭하면 전혀 다른 것이 열린다 — **링크가 없는 것보다 나쁘다**(있는 척한다)."""
+    from app.agent.workflow.grounding import _unlinked_refs
+    bad = ("**참조**\n1. [DL-9044 — 적재주기 변경]"
+           "(http://x/spaces/DL/pages/352/%EB%AC%B8%EC%84%9C)")
+    assert _unlinked_refs(bad), bad
+    ok = "**참조**\n[1] [DL-9044 적재주기 변경](http://x/browse/DL-9044) — 근거"
+    assert _unlinked_refs(ok) == []
+
+
+def test_a_numbered_reference_form_is_checked_too():
+    """금지한 형식(`1.`)이라고 검사에서 빼면 **그 형식으로 새어 나간다** — 실측으로
+    `1.` 참조 줄이 통째로 검사 밖이었다."""
+    from app.agent.workflow.grounding import _unlinked_refs
+    assert _unlinked_refs("**참조**\n1. [데이터카탈로그] 정의 — 링크 없음")
+
+
+def test_a_plain_numbered_list_in_the_body_is_not_a_reference():
+    """본문의 번호 목록까지 출처로 오인하면 멀쩡한 답에 경고가 붙는다."""
+    from app.agent.workflow.grounding import _unlinked_refs
+    assert _unlinked_refs("순서는 이렇다.\n\n1. 대상을 정한다\n2. job 을 붙인다\n") == []

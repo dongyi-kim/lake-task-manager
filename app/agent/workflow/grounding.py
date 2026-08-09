@@ -34,29 +34,65 @@ UID_RE = re.compile(r"^[a-z]+\.[a-z]\d+$")
 UID_TOKEN_RE = re.compile(chr(92) + "b([a-z]{2,}" + chr(92) + ".[a-zA-Z]{1,2}[0-9N]{2,6})" + chr(92) + "b")
 # "**DL-123**: 김철수" — 역할 낱말 없이 티켓키→사람 매핑으로 새는 변종(실측).
 KEY_NAME_RE = re.compile(r"[A-Z][A-Z0-9]+-" + r"[0-9]+[*_]*\s*[:\-–]\s*[*_]*([가-힣]{2,4})(?=\s|$|[,.)—-])")
-# 참조 인덱스 줄 — `[1] …`. responder.md 가 정한 형식이라 이 꼴만 본다.
-REF_LINE_RE = re.compile(r"^\s*\[(\d{1,2})\]\s+(.+?)\s*$", re.M)
+# 참조 인덱스 줄 — `[1] …` 이 우리 형식이지만, 모델이 `1. …` 로 쓰는 일이 잦다.
+# **금지한 형식이라고 검사에서 빼면 그 형식으로 새어 나간다**(실측: `1.` 로 쓴 참조 줄이
+# 통째로 검사 밖이었고, 그 줄들이 티켓 키에 엉뚱한 문서 URL 을 달고 있었다). 둘 다 본다.
+REF_LINE_RE = re.compile(r"^\s*(?:\[(\d{1,2})\]|(\d{1,2})[.)])\s+(.+?)\s*$", re.M)
 # 링크로 인정하는 것: 맨 URL 또는 마크다운 링크의 `](`.
 LINKED_RE = re.compile(r"https?://|\]\(")
+URL_RE = re.compile(r"https?://[^\s)\]]+")
+# 티켓으로 가는 링크인가 — Jira 는 /browse/KEY 다. Confluence 문서 URL 은 /pages/ 를 가진다.
+BROWSE_RE = re.compile(r"/browse/([A-Z][A-Z0-9]+-\d+)")
+
+
+REF_HEAD_RE = re.compile(r"^\s*[*_#\s]*참조[*_\s]*$|^\s*[*_#\s]*references[*_\s]*$",
+                         re.M | re.I)
+
+
+def _ref_lines(text: str):
+    """참조 줄을 (번호, 내용) 으로 돌려준다 — `[1] …` 과 `1. …` 둘 다.
+
+    `1. …` 은 **참조 섹션 뒤에서만** 참조로 본다. 본문의 평범한 번호 목록
+    ("1. 먼저 설계한다")까지 출처로 오인하면 멀쩡한 답에 경고가 붙는다.
+    """
+    t = text or ""
+    m0 = REF_HEAD_RE.search(t)
+    ref_from = m0.end() if m0 else len(t) + 1
+    for m in REF_LINE_RE.finditer(t):
+        bracketed = m.group(1) is not None
+        if not bracketed and m.start() < ref_from:
+            continue                      # 본문의 번호 목록이다
+        yield (m.group(1) or m.group(2) or "?"), m.group(3)
 
 
 def _unlinked_refs(text: str) -> list:
-    """참조 줄인데 **티켓 키도 링크도 없는** 것 — 검증할 방법이 없는 출처다.
+    """참조 줄의 **검증 불가** 항목 — 두 부류를 잡는다.
 
-    common.md: "NEVER drop a bare document title with no URL: an unlinked title cannot be
-    verified and looks fabricated." 프롬프트가 두 곳(common·responder)에서 말하는데도
-    실측으로 샜다: `[4] [데이터카탈로그] fdc_trace_summary_ic 테이블 특성 분석 — 적재 Job
-    정보`. 재료에는 그 문서의 URL 이 실려 있었으므로 **쓸 수 있었는데 안 쓴 것**이다.
+    ① 티켓 키도 링크도 없는 줄. common.md 가 "NEVER drop a bare document title with no
+       URL" 이라 못 박는데도 샜다(실측: `[4] [데이터카탈로그] … — 적재 Job 정보`).
+       재료에는 그 문서의 URL 이 실려 있었으므로 **쓸 수 있었는데 안 쓴 것**이다.
 
-    본문 참고 불릿에는 이미 같은 가드가 있다(`refiner._drop_unlinked_refs`) — 답변 텍스트
+    ② ★ 티켓 키를 단 참조에 **그 티켓이 아닌 URL**이 붙은 줄. 실측(가드가 만든 회피 경로):
+       ①을 막았더니 모델이 아무 URL 이나 붙여 통과했다 —
+         `1. [DL-9044 — 적재주기 변경](http://…/pages/…/[데이터카탈로그]+…+특성+분석)`
+       클릭하면 전혀 다른 것이 열린다. 링크가 없는 것보다 **나쁘다**(있는 척한다).
+       티켓으로 가는 링크는 /browse/KEY 여야 한다 — 다른 키를 가리켜도 위반이다.
+
+    본문 참고 불릿에는 ①의 가드가 이미 있다(`refiner._drop_unlinked_refs`) — 답변 텍스트
     쪽에만 없었다. 같은 규칙이 두 산출물에 다 걸려야 한다.
     """
     out = []
-    for m in REF_LINE_RE.finditer(text or ""):
-        body = m.group(2)
-        if KEY_RE.search(body) or LINKED_RE.search(body):
+    for num, body in _ref_lines(text or ""):
+        keys = KEY_RE.findall(body)
+        urls = URL_RE.findall(body)
+        if not keys and not LINKED_RE.search(body):
+            out.append(f"[{num}] {body[:60]}")
             continue
-        out.append(f"[{m.group(1)}] {body[:60]}")
+        if keys and urls:
+            # 키를 말해 놓고 붙인 링크가 그 티켓이 아니면 위조다.
+            linked = {m for u in urls for m in BROWSE_RE.findall(u)}
+            if not (linked & set(keys)):
+                out.append(f"[{num}] {keys[0]} 인데 링크는 그 티켓이 아니다: {urls[0][:60]}")
     return out
 
 

@@ -37,6 +37,21 @@ def _has(o, *words):
     return all(w in r for w in words)
 
 
+def _duedate(key: str) -> str:
+    """그 티켓의 **지금** 마감일. 절대 날짜를 배터리에 박으면 안 된다.
+
+    mock world 는 `today` 기준 결정적 생성이라 **날이 바뀌면 전 데이터가 하루 밀린다.**
+    실측: 배터리에 박아 둔 "2026-08-15" 가 이틀 만에 2026-08-17 이 됐다 — 체커에 `or "마감"`
+    폴백이 있어 **조용히 통과하고 있었다**(기대는 이미 틀렸는데 판정은 green).
+    날짜가 필요하면 그때 세계에 물어본다.
+    """
+    try:
+        from app.agent.tools._ctx import client
+        return str(((client().get_issue(key) or {}).get("fields") or {}).get("duedate") or "")
+    except Exception:
+        return "\0"        # 조회 실패 시 어떤 답에도 안 걸리는 값(폴백이 판정을 대신하게)
+
+
 # (ID, 설명, [질의들], 기대 intent(마지막 턴), 체커(마지막 out, 전체 outs))
 CASES = [
     ("EPIC1", "Epic 생성 인터뷰 → 초안 (기존 에픽 확인 질문 포함 2턴)", [
@@ -151,7 +166,7 @@ CASES = [
     ("PROG2", "진척 후속 — 남은 일·리스크를 마감 대비로(멀티턴)", [
         "DL-9090 진척 어때?", "마감까지 위험한 건 뭐야?"],
      None, lambda o, _: (lambda r: ("DL-9090" in r or "DL-9095" in r)   # 대상을 놓치면 실패
-                         and ("2026-08-15" in r or "마감" in r)
+                         and (_duedate("DL-9090") in r or "마감" in r)
                          # 무관한 프로젝트 전체 티켓을 끌어오면 실패(실측 결함)
                          and not any(k in r for k in ("DL-9008", "DL-9028", "DL-9029")))
      (o.get("reply") or "")),
@@ -340,7 +355,8 @@ EXPECT = {
     },
     "PROG2": {
         "story": "마감 대비 위험을 알고 싶다",
-        "must": ["마감(2026-08-15) 대비로 남은 일을 말했다", "리스크를 근거와 함께 짚었다"],
+        "must": ["그 티켓의 **실제 마감일**(세계에서 조회한 값) 대비로 남은 일을 말했다",
+                 "리스크를 근거와 함께 짚었다"],
         "must_not": ["무관한 다른 티켓(DL-9008·9028·9029 류)을 리스크로 끌어왔다"],
     },
     "DATA9": {
