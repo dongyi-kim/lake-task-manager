@@ -484,3 +484,26 @@ def test_the_guide_material_does_not_disable_the_direct_path():
     for must in ("인라인", "새로고침", "↻"):
         assert must in g, f"{must} 가 가이드에서 빠졌다"
     assert "티켓이 아니다" in g and "이력" in g
+
+
+def test_module_only_evidence_is_dropped_but_named_keys_survive():
+    """common.md 의 관련성 기준이 **산문으로만** 있어 반복해 샜다 — REL14 는 "Iceberg
+    Puffin NDV 통계" 에 모듈만 같은 DL-5487·5876 을, EDGE13 은 "메타 등록 안 된 테이블" 에
+    UI 회귀 픽스처 DL-9001 을 근거로 붙였다. 노이즈는 신뢰를 깎고, 문서 자신이 "관련 이력
+    없음이 정답인 자리를 채우는 것이 더 나쁘다"고 적어 뒀다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.historian import _relevant_only
+    req = "ETL 파이프라인에서 Iceberg Puffin NDV 통계정보를 생성하는 단계를 추가하려고해"
+    st = {"messages": [HumanMessage(content=req)], "request_text": req}
+    ev = [{"key": "DL-5487", "title": "[ETL] 경계값 오류 수정", "why": "ETL 모듈"},
+          {"key": "DL-9100", "title": "[ETL] Iceberg 테이블 통계 수집 검토", "why": "같은 주제"}]
+    assert [e["key"] for e in _relevant_only(st, ev)] == ["DL-9100"]
+
+    # 사용자가 직접 댄 키는 관련성 판단의 대상이 아니다
+    st2 = {"messages": [HumanMessage(content="DL-5487 어떻게 됐어?")],
+           "request_text": "DL-5487 어떻게 됐어?", "mentioned_keys": ["DL-5487"]}
+    assert len(_relevant_only(st2, [ev[0]])) == 1
+
+    # 고유어가 없는 질문에서는 **아무것도 빼지 않는다** — 판정 근거가 없으면 판정하지 않는다
+    st3 = {"messages": [HumanMessage(content="안녕")], "request_text": "안녕"}
+    assert len(_relevant_only(st3, ev)) == 2

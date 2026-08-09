@@ -276,6 +276,46 @@ _HOWTO_WORDS = ("LTM", "이 앱", "이 도구", "화면에서", "어디 있", "�
                 "어떻게 해", "어떻게 하나", "사용법", "쓰는 법", "단축키", "새로고침")
 
 
+def _relevant_only(state, ev: list) -> list:
+    """근거에서 **질문의 고유어를 하나도 안 가진 티켓**을 뺀다.
+
+    common.md 의 관련성 기준: "'Related' means related to the QUESTION'S SPECIFIC CONCEPTS
+    …, not merely the same module or the same team." historian.md 도 같은 말을 하는데,
+    **산문으로만** 있어서 실측으로 반복해 샜다:
+      · REL14 "Iceberg Puffin NDV 통계" 에 모듈만 같은 DL-5487·5876·5122
+      · EDGE13 "메타 등록 안 된 테이블" 에 UI 회귀 픽스처 DL-9001
+    노이즈는 신뢰를 깎는다 — "관련 이력 없음"이 정답인 자리를 채워 넣는 것이 더 나쁘다.
+
+    **사용자가 키를 직접 댄 티켓은 건드리지 않는다**(그건 관련성 판단의 대상이 아니다).
+    고유어가 아예 없는 질문(일반 대화)에서는 아무것도 빼지 않는다 — 판정 근거가 없으면
+    판정하지 않는다.
+    """
+    req = f"{request_text(state)} {last_user_text(state)}"
+    named = {str(k).upper() for k in (state.get("mentioned_keys") or [])}
+    try:
+        from app.agent.tools._ident import find_identifiers
+        terms = set(find_identifiers(req))
+    except Exception:
+        terms = set()
+    _COMMON = {"task", "epic", "jira", "test", "data", "table", "api", "the", "and",
+               "pipeline", "with", "for", "this", "etl"}
+    terms |= {w for w in _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{3,}", req)
+              if w.lower() not in _COMMON}
+    # 한글 고유어도 본다 — 3자 이상 명사가 제목에 그대로 있으면 같은 주제로 인정한다.
+    terms |= {w for w in _re.findall(r"[가-힣]{3,}", req)}
+    if not terms:
+        return ev
+    keep = []
+    for e in ev:
+        if str(e.get("key") or "").upper() in named:
+            keep.append(e)
+            continue
+        hay = f"{e.get('key', '')} {e.get('title', '')} {e.get('why', '')}".lower()
+        if any(t.lower() in hay for t in terms):
+            keep.append(e)
+    return keep
+
+
 def _ltm_guide() -> str:
     """LTM 사용 가이드 **전문**(knowledge/05). 3KB — 검색보다 싸고 확실하다.
 
@@ -971,6 +1011,7 @@ class Historian(ToolAgent):
 
     def apply(self, state, out):
         ev = [e for e in (out.get("evidence") or []) if isinstance(e, dict)][:8]
+        ev = _relevant_only(state, ev)
         exists = bool(out.get("already_exists"))
         return {
             "situation": out.get("situation") or "",
