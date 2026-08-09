@@ -250,6 +250,10 @@ def _presurvey(state) -> str:
 _HIST_WORDS = ("히스토리", "이력", "연혁", "경위", "근황", "변천", "타임라인", "어떻게 되어",
                "어떻게 왔", "그동안")
 
+# 이 도구(LTM)를 **어떻게 쓰는가**를 묻는 말. 티켓에 답이 없고 knowledge/05 에 있다.
+_HOWTO_WORDS = ("LTM", "이 앱", "이 도구", "화면에서", "어디 있", "어디서 바꾸", "어떻게 바꾸",
+                "어떻게 해", "어떻게 하나", "사용법", "쓰는 법", "단축키", "새로고침")
+
 
 def _topic_dossier(term: str, history: bool = False) -> str:
     """**주제 하나**(테이블·기술·특정 업무 무엇이든)에 얽힌 조각을 코드가 전부 모아 온다.
@@ -532,7 +536,16 @@ class Historian(ToolAgent):
                     _hist_ask = any(
                         w in (request_text(state) + " " + asked_s) for w in _HIST_WORDS) \
                         or (state.get("answer_depth") or "") == "explain"
-                    dossier = _topic_dossier(subject, history=_hist_ask)
+                    # ★ **사용법 질문은 dossier 로 보내지 않는다.** 답이 티켓에 없고
+                    #   knowledge/05 에 있는데, 주제 dossier 가 티켓을 물어와 그것으로
+                    #   답해 버린다(실측 GUIDE7: "티켓 담당자 어떻게 바꿔?" 에 UI 회귀
+                    #   픽스처 티켓 DL-9010 을 답으로 냈다).
+                    #   §5-c 의 "사전취합이 자라면 ReAct 에만 있던 도구가 조용히 도달 불능이
+                    #   된다"가 그대로 실현된 것인데, 여기서 도달 불능이 된 것은 도구가 아니라
+                    #   **_presurvey 에 이미 있던 search_rules 배선**이었다(사전취합이 사전취합을
+                    #   가렸다). dossier 를 비우면 _presurvey 가 돌고 거기서 규칙을 싣는다.
+                    dossier = ("" if any(w in asked_s for w in _HOWTO_WORDS)
+                               else _topic_dossier(subject, history=_hist_ask))
                 except Exception:
                     dossier = ""
                 # ── 표기 후보 — 추정으로 답하지 않고 **객관식으로 확인**받는다(사용자 결정).

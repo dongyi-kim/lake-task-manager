@@ -410,3 +410,20 @@ def test_follow_up_keeps_the_ticket_in_context():
     # 새 주제를 길게 말하면 앞 대상을 끌고 오지 않는다
     assert _carry_keys({**prev, **_msg("카탈로그 모듈에서 메타데이터 등록이 안 된 테이블들을 "
                                        "정리하는 작업을 새로 시작하려고 하는데 초안 잡아줘")}, {}) == []
+
+
+def test_how_to_questions_do_not_take_the_dossier_shortcut():
+    """사용법 질문의 답은 티켓이 아니라 knowledge/05 에 있다. 그런데 주제 dossier 직결이
+    티켓을 물어와 그것으로 답해 버렸다(실측 GUIDE7: "티켓 담당자 어떻게 바꿔?" 에 UI 회귀
+    픽스처 티켓 DL-9010).
+
+    §5-c 의 "사전취합이 자라면 ReAct 에만 있던 도구가 조용히 도달 불능이 된다"가 한 겹 더
+    깊게 재현된 것 — 이번에 도달 불능이 된 것은 도구가 아니라 **_presurvey 에 이미 있던
+    search_rules 배선**이었다. 사전취합이 사전취합을 가렸다."""
+    from app.agent.workflow.agents.historian import _HOWTO_WORDS
+    for q in ("LTM에서 티켓 담당자는 어떻게 바꿔?", "강제 새로고침은 어디 있어?",
+              "이 앱에서 단축키 뭐 있어?"):
+        assert any(w in q for w in _HOWTO_WORDS), q
+    # 자산 질의는 여전히 dossier 로 간다 — 사용법 낱말이 걸리면 안 된다
+    for q in ("fdc.fdc_trace_summary_ic 적재주기는?", "wip.wip_lot_track_hist 지금 담당 누구야?"):
+        assert not any(w in q for w in _HOWTO_WORDS), q
