@@ -332,8 +332,18 @@
 
 /* 답변 본문 속 사람 칩 — 프사+본명 (사번은 title 로) */
 .md-person { display:inline-flex; align-items:center; gap:4px; vertical-align:-2px;
-  font-weight:600; }
-.md-avt { width:15px; height:15px; border-radius:50%; object-fit:cover; }
+  padding:0 6px 0 3px; border-radius:11px; font-weight:600;
+  background:color-mix(in srgb, var(--accent) 12%, transparent); color:var(--text); }
+/* 프사 자리 — 이니셜 원이 바탕이고, 사진이 로드되면 그 위를 덮는다(없는 사람이 더 많다) */
+.md-avt-wrap { position:relative; display:inline-flex; align-items:center; justify-content:center;
+  width:16px; height:16px; border-radius:50%; overflow:hidden; flex:none;
+  font-size:8.5px; font-weight:800; color:#fff; }
+.md-avt { position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
+  opacity:0; transition:opacity .12s; }
+.md-avt.on { opacity:1; }
+/* 참조·표 안의 문서 링크 — 뱃지가 아니라 제목이 걸린 평범한 링크(사용자 지시) */
+.ref-link { color:var(--accent); text-decoration:none; }
+.ref-link:hover { text-decoration:underline; }
 
 /* 진행 표시 — 폴딩 토글 + 단계별 소요시간 */
 .agent-steps-h { display:block; background:none; border:0; padding:2px 0 6px; cursor:pointer;

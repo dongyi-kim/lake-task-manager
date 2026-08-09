@@ -16,14 +16,21 @@
 //   유일한 예외는 **표 안** — 제목을 나열하는 자리라 셀에서는 가벼운 키 링크만 쓴다.
 //   뱃지의 타입·상태 채움은 AgentView.augmentBadges() 가 비동기로 한다(렌더는 동기라서).
 
+import { sigColor, initialOf } from "./colors.js";
+
 const KEY_RE = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 // 키 뒤에 모델이 붙인 따옴표 제목(`DL-118 "CDC 도입"`)은 뱃지가 실제 제목을 보여 주므로
 // 중복이다 — 뱃지 렌더에서만 접는다(표 셀의 슬림 링크에서는 제목이 정보라 남긴다).
 // 입력은 이미 esc() 를 거쳤으므로 곧은따옴표는 &quot; 로 온다.
 const KEY_TITLED_RE = /\b([A-Z][A-Z0-9]*-\d+)\b(?:\s*(?:&quot;|[“‘'])[^“”‘’'\n]{2,80}?(?:&quot;|[”’']))?/g;
 const UID_RE = /\b(skcc\.[a-z]{1,2}\d{2,6})\b/g;
-const MDLINK_RE = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
-const URL_RE = /(^|[\s(])(https?:\/\/[^\s<>()\[\]]+[^\s<>()\[\].,;:!?'"])/g;
+// 문서 제목에 대괄호가 흔하다(`[데이터카탈로그] …`) — 제목 안의 `]` 를 허용하고
+// `](http` 로 끝을 잡는다. 예전 패턴은 첫 `]` 에서 끊겨 링크가 통째로 평문이 됐다.
+const MDLINK_RE = /\[([^\n]+?)\]\((https?:\/\/[^\s)]+)\)/g;
+// Confluence 슬러그에도 대괄호가 그대로 들어온다 — URL 로 인정한다(마크다운 링크는
+// 위에서 먼저 스태시하므로 충돌하지 않는다). 그러지 않으면 URL 이 중간에서 잘려
+// 뒷부분이 평문으로 남았다(실측: `…/pages/123/` + `[데이터카탈로그]+…`).
+const URL_RE = /(^|[\s(])(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 const CONF_RE = /confluence|\/pages\/\d+|\/display\/|\/wiki\//i;
 
 function esc(s) {
@@ -36,14 +43,33 @@ function esc(s) {
 let PEOPLE = {};
 
 /** 문서/웹 링크 → 뱃지. Confluence 는 conf-link(문서 제목), 그 외는 web-badge(favicon). */
-function linkBadge(title, url) {
+function linkBadge(title, url, slim) {
   const t = (title || "").trim() || url;
+  // 참조·표처럼 **나열하는 자리**는 뱃지가 과하다 — 제목이 걸린 평범한 링크면 충분하다
+  // (사용자 지시: "참조나 근거의 문서·티켓은 하이퍼링크면 된다").
+  if (slim) {
+    // 제목이 없으면 Confluence URL 의 슬러그를 사람이 읽는 제목으로 편다 —
+    // 참조에 `…/pages/123/[데이터카탈로그]+LAKE+적재주기+변경+절차` 가 통째로
+    // 노출됐다(실측). 슬러그도 없으면 URL 그대로.
+    return `<a class="ref-link" href="${url}" target="_blank" rel="noopener">` +
+           `${t === url ? (slugTitle(url) || url) : t}</a>`;
+  }
   if (CONF_RE.test(url)) {
     return `<a class="conf-link" href="${url}" target="_blank" rel="noopener" ` +
            `data-conf="1"><span class="conf-title">${t}</span></a>`;
   }
   return `<a class="web-badge" href="${url}" target="_blank" rel="noopener" ` +
          `style="--fav:url('/api/favicon?u=${encodeURIComponent(url)}')">${t}</a>`;
+}
+
+/** Confluence URL 의 마지막 조각(제목 슬러그) → 읽을 수 있는 제목. `+`·%인코딩을 편다. */
+function slugTitle(url) {
+  try {
+    const seg = String(url).split("?")[0].split("#")[0].split("/").filter(Boolean).pop() || "";
+    if (!seg || /^\d+$/.test(seg)) return "";
+    const t = decodeURIComponent(seg.replace(/\+/g, " ")).trim();
+    return t.length >= 2 && !/^https?:/i.test(t) ? esc(t) : "";
+  } catch (e) { return ""; }
 }
 
 /** 티켓 키 → 본문·코멘트와 **같은 구조**의 jira-badge 스켈레톤. 타입·제목·상태는
@@ -63,8 +89,8 @@ function inline(s, slim) {
   const stash = [];
   const keep = (html) => { stash.push(html); return `\x00${stash.length - 1}\x00`; };
   s = s
-    .replace(MDLINK_RE, (_, t, u) => keep(linkBadge(t, u)))
-    .replace(URL_RE, (_, pre, u) => pre + keep(linkBadge("", u)));
+    .replace(MDLINK_RE, (_, t, u) => keep(linkBadge(t, u, slim)))
+    .replace(URL_RE, (_, pre, u) => pre + keep(linkBadge("", u, slim)));
   s = s
     .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
@@ -92,9 +118,14 @@ function inline(s, slim) {
     .replace(UID_RE, (m, uid) => {
       const name = PEOPLE[uid];
       if (!name) return m;
-      return `<span class="md-person" title="${uid}">` +
-             `<img class="md-avt" src="/api/avatar/${uid}" alt="" ` +
-             `onerror="this.style.display='none'">${name}</span>`;
+      // 프사가 없는 사용자가 많다(mock 은 전원 404) — 다른 화면과 같은 **이니셜 폴백**을
+      // 먼저 그리고, 사진이 실제로 로드되면 그 위를 덮는다. 인라인 onerror 는 쓰지 않는다
+      // (CSP 에서 막히면 깨진 이미지가 그대로 남는다 — 실측).
+      return `<span class="md-person" title="${esc(uid)}">` +
+             `<span class="md-avt-wrap" style="background:${sigColor(uid)}">` +
+             `${esc(initialOf(name, uid))}` +
+             `<img class="md-avt" src="/api/avatar/${encodeURIComponent(uid)}" alt="">` +
+             `</span>${esc(name)}</span>`;
     });
   // ② 스태시 복원
   return s.replace(/\x00(\d+)\x00/g, (_, i) => stash[+i]);
@@ -124,8 +155,11 @@ export function renderMarkdown(text, people) {
     const items = refItems.map((r) =>
       `<div class="agent-ref-item" data-ref="${r.n}">` +
       `<span class="ref-no">[${r.n}]</span> ` +
-      // 문서 "제목 (URL)" 중복 표기는 URL 만 — 뱃지가 제목을 그린다(서버도 정리하지만 방어).
-      `${inline(esc(r.text.replace(/^([^—]*?)\s*\((https?:\/\/[^\s)]+)\)/, "$2")))}</div>`).join("");
+      // 문서 "제목 (URL)" 은 **제목이 걸린 링크 하나**로 접는다. 예전엔 URL 만 남기고
+      // 뱃지가 제목을 그리게 했는데, 참조를 슬림 링크로 바꾸면서 URL 슬러그가 그대로
+      // 보여 제목이 두 번 나왔다(실측: "…절차" 밑에 "…+절차").
+      `${inline(esc(r.text.replace(/^([^—]*?)\s*\((https?:\/\/[^\s)]+)\)/,
+                                   (mm, t, u) => `[${t.trim() || u}](${u})`)), true)}</div>`).join("");
     html += `<details class="agent-refs"><summary>참조 ${refItems.length}건</summary>` +
             `<div class="agent-refs-list">${items}</div></details>`;
   }

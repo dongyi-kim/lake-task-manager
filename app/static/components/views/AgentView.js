@@ -155,6 +155,16 @@ export default {
     augmentBadges() {
       const root = this.$el;
       if (!root || !root.querySelectorAll) return;
+      // 사람 칩의 프사 — 로드에 **성공했을 때만** 이니셜 위에 덮는다. 인라인 onerror 없이
+      // (CSP 안전) 처리하려면 리스너를 여기서 붙여야 한다. 마커로 멱등.
+      root.querySelectorAll(".agent-md img.md-avt:not([data-filled])").forEach((img) => {
+        img.dataset.filled = "1";
+        if (img.complete && img.naturalWidth > 0) { img.classList.add("on"); return; }
+        img.addEventListener("load", () => {
+          if (img.naturalWidth > 0) img.classList.add("on");
+        });
+        img.addEventListener("error", () => img.remove());   // 프사 없음 — 이니셜만 남는다
+      });
       root.querySelectorAll(".agent-md a.jira-badge[data-key]:not([data-filled])").forEach((a) => {
         a.dataset.filled = "1";
         const key = a.getAttribute("data-key");
@@ -588,6 +598,12 @@ export default {
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
+    /** 답변이 **참조** 영역을 갖고 있는가 — 그러면 근거·관련문서 블록은 같은 말이다
+     *  (사용자 지적: "근거랑 참조문헌이 상당히 중복"). 참조는 번호 인용까지 달려 있어
+     *  더 정확한 상위 표현이다. */
+    hasRefs(t) {
+      return /\n\*\*참조\*\*\s*\n\s*-?\s*\[\d/.test(String((t && t.text) || ""));
+    },
     /** 대화 제목 — 첫 사용자 발화. 사이드바 목록과 같은 규칙이라 헷갈리지 않는다. */
     convoTitle() {
       const first = this.turns.find((t) => t.who === "user");
@@ -893,7 +909,7 @@ export default {
                  본문이 이미 키+제목을 담고 있어서 근거 목록은 검증하고 싶을 때만 펼친다. -->
             <!-- 근거 — 티켓 키만 클릭 가능. PMO 조회의 근거에는 모듈명("ETL")처럼 티켓이
                  아닌 항목이 섞이는데, 그걸 버튼으로 만들면 눌렀을 때 '없는 티켓'이 뜬다(실측). -->
-            <div v-if="t.evidence && t.evidence.length" class="agent-ev">
+            <div v-if="t.evidence && t.evidence.length && !hasRefs(t)" class="agent-ev">
               <button class="agent-ev-h agent-ev-toggle" @click="evOpen[ti] = !evOpen[ti]">
                 {{ evOpen[ti] ? '▾' : '▸' }} 근거 {{ t.evidence.length }}건</button>
               <template v-if="evOpen[ti]">
@@ -908,7 +924,7 @@ export default {
                 </template>
               </template>
             </div>
-            <div v-if="t.docs && t.docs.length" class="agent-docs">
+            <div v-if="t.docs && t.docs.length && !hasRefs(t)" class="agent-docs">
               <div class="agent-ev-h">관련 문서</div>
               <a v-for="d in t.docs" :key="d.url || d.title" :href="d.url || '#'"
                  target="_blank" rel="noopener">{{ d.title }}</a>
