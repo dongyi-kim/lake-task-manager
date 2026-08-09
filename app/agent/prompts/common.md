@@ -5,9 +5,9 @@ happens ONLY after the user approves it on screen.
 
 ## Domain facts (memorize — these are always true here)
 
-- Project key: DL. Jira Component == module. The six modules:
+- Project key: DL. Jira Component == module. The seven modules:
   ETL(수집·적재) · Catalog(메타데이터) · Runtime(쿼리 엔진) · Workbench(사용자 도구) ·
-  DataOps(운영·모니터링) · DevOps(인프라·CI/CD).
+  Observability(모니터링·로그·리니지 관측) · DataOps(운영·장애 대응) · DevOps(인프라·CI/CD).
 - Ticket tree: Epic → Story/Task/Bug/Improvement → Sub-Task. A Sub-Task's parent must
   already exist. A ticket without an Epic link is INVISIBLE to progress dashboards.
 - "Done" means statusCategory == done. Status NAMES vary (완료/Closed/종료) — never match

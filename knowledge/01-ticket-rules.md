@@ -41,7 +41,7 @@ SP 척도는 피보나치(1·2·3·5·8·13). 8 을 넘으면 **쪼개라는 신
 ## Component
 
 Component = **모듈**이다. 워크로드·WBS 역인덱스가 이걸로 사람을 찾으므로 비워 두면 안 된다.
-현재 모듈: `ETL` · `Catalog` · `Runtime` · `Workbench` · `DataOps` · `DevOps`.
+현재 모듈: `ETL` · `Catalog` · `Runtime` · `Workbench` · `Observability` · `DataOps` · `DevOps`.
 
 **`사용자 VoC`** 는 특수 컴포넌트다. 사용자 요청에서 온 일임을 표시하며,
 **진척률 계산에서 항상 제외**된다(계획된 일이 아니므로 분모를 흐린다).

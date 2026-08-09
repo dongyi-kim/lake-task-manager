@@ -86,6 +86,33 @@ def test_converted_role_md_declares_it_has_no_tools(name):
         "모델은 그걸 모른 채 조회하려 든다.")
 
 
+# ── 모듈 목록: config 가 원본이고 md 는 사본이다 ─────────────────────────
+# 실측: config(dev·prod 양쪽)에는 모듈이 7개인데 common.md·knowledge/03 은 6개로 적혀
+# `Observability` 가 통째로 빠져 있었다. 그 모듈의 인력 2명은 담당 추천 지침에서 보이지
+# 않았고, 모델이 Jira 컴포넌트 목록에서 Observability 를 집으면 자기 지시와 모순됐다.
+# 도구 목록이 갈라진 §5-c 사고와 같은 부류라 같은 방식으로 막는다.
+_MODULE_DOCS = ("app/agent/prompts/common.md",
+                "app/agent/prompts/common-lite.md",
+                "knowledge/01-ticket-rules.md",
+                "knowledge/03-modules-and-people.md")
+# TEST 는 UI 회귀 픽스처 전용(개발 world 한정) — prod config 에 없고 md 에도 없어야 한다.
+_DEV_ONLY_MODULES = {"TEST"}
+
+
+@pytest.mark.parametrize("rel", _MODULE_DOCS)
+def test_module_list_in_docs_matches_the_roster_config(rel):
+    from app.infra.settings import load_people
+    root = pathlib.Path(__file__).resolve().parents[1]
+    text = (root / rel).read_text(encoding="utf-8")
+    want = set(load_people() or {}) - _DEV_ONLY_MODULES
+    missing = sorted(m for m in want if not re.search(rf"\b{re.escape(m)}\b", text))
+    assert not missing, (
+        f"{rel} 에 모듈 {missing} 이 없다 — config/people.yaml 이 원본이고 이 문서는 사본이다. "
+        "빠진 모듈은 담당 추천·배치 판단에서 통째로 보이지 않는다.")
+    leaked = sorted(m for m in _DEV_ONLY_MODULES if re.search(rf"\b{re.escape(m)}\b", text))
+    assert not leaked, f"{rel} 에 개발 전용 모듈 {leaked} 이 새어 들어갔다"
+
+
 def test_every_role_md_is_loaded_by_the_loader():
     """roles/ 의 md 는 전부 로더 상수로 노출돼야 한다 — 고아 파일은 조용히 안 쓰인다."""
     from app.agent.prompts import roles as R
