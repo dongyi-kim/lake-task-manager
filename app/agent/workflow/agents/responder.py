@@ -284,9 +284,7 @@ class Responder(TextAgent):
         if _db:
             for _t, _u in _re.findall(r"문서 본문 「([^」]+)」 \((https?://[^)\s]+)\)", _db)[:2]:
                 if _u not in text:
-                    text = text.rstrip() + f"
-
-출처: [{_t}]({_u})"
+                    text = text.rstrip() + "\n\n출처: [" + _t + "](" + _u + ")"
 
         _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         if _qs:
