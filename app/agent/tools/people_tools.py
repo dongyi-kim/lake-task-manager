@@ -37,13 +37,25 @@ def get_team_workload(module: str = "") -> dict:
     다만 **건수만으로 정하지 않는다** — 일이 적은 사람이 그 일을 할 줄 안다는 뜻은 아니다.
     ②③④ 신호와 함께 읽는다.
 
-    돌려주는 것: {"module": …, "people": [{id,name,open,inProgress,done28d}...]}
+    준 module 이 인력 명단(people.yaml)에 없으면 **전원**으로 넓혀서 돌려주되, "module" 에
+    그 사실을 적어 돌려준다 — 그 목록은 물어본 모듈의 로스터가 아니다.
+
+    돌려주는 것: {"module": …, "resolved": true|false|null,
+                 "people": [{id,name,module,open,inProgress,done28d}...]}
     """
-    from app.infra.settings import load_people
+    from app.infra.settings import load_people, resolve_module
     from app.domain.workload import build_workload_person
     c = client()
     roster = load_people() or {}
-    mods = [module] if module and module in roster else list(roster)
+    asked = (module or "").strip()
+    # 컴포넌트 이름과 로스터 키는 사람이 각각 적는 두 벌이라 표기에서 갈린다 — 정규화로 한 번 더 본다.
+    key = asked if asked in roster else resolve_module(asked)
+    # ★ 못 찾았을 때 **조용히 전원으로 넓히지 않는다.** 지금까지는 넓힌 결과가
+    #   "[ETL 로스터·부하]" 라는 이름표를 달고 Assigner 재료로 들어갔다 — 컴포넌트 이름
+    #   하나가 안 맞으면 전사 명단이 그 모듈인 척한다(실측 갭: 로스터 키 불일치).
+    #   넓히는 것 자체는 유지한다(후보 0명이 배정을 통째로 막는 것이 더 나쁘다). 다만
+    #   **이름표는 사실대로** 달아, 읽는 쪽이 그 목록을 그 모듈이라고 믿지 않게 한다.
+    mods = [key] if key else list(roster)
     rows, seen = [], set()
     for m in mods:
         for uid in roster.get(m) or []:
@@ -59,7 +71,9 @@ def get_team_workload(module: str = "") -> dict:
                                  "inProgress": _count(b.get("inProgress")),
                                  "done28d": _count(b.get("done7d"))}))
     rows.sort(key=lambda r: (r.get("inProgress", 0), r.get("open", 0)))
-    return {"module": module or "전체", "doneWindowDays": 28, "people": rows}
+    label = key or (f"전체(요청한 '{asked}' 는 인력 명단에 없다)" if asked else "전체")
+    return {"module": label, "resolved": (bool(key) if asked else None),
+            "doneWindowDays": 28, "people": rows}
 
 
 @tool

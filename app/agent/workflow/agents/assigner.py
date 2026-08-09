@@ -116,10 +116,14 @@ def _roster_load(state) -> str:
     from app.agent.tools.people_tools import get_team_workload
     rows = []
     for m in mods[:3]:
-        ppl = (get_team_workload.invoke({"module": m}) or {}).get("people") or []
+        res = get_team_workload.invoke({"module": m}) or {}
+        ppl = res.get("people") or []
         if not ppl:
             continue
-        rows.append(f"[{m} 로스터·부하]")
+        # 이름표는 **도구가 판정한 것**을 쓴다. 컴포넌트가 로스터 키와 안 맞으면 도구가
+        # 전원으로 넓혀 오는데, 그걸 "[<컴포넌트> 로스터·부하]" 라고 적으면 Assigner 가
+        # 남의 모듈 사람을 그 모듈 소속으로 읽고 근거 문장에 그렇게 쓴다(실측 갭).
+        rows.append(f"[{res.get('module') or m} 로스터·부하]")
         rows += [f"- {p.get('id')} {p.get('name', '')} — 진행중 {p.get('inProgress', 0)}건 · "
                  f"열림 {p.get('open', 0)}건 · 최근 완료 {p.get('done28d', 0)}건" for p in ppl]
     return "\n".join(rows)

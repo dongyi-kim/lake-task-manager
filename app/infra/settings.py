@@ -328,6 +328,33 @@ def modules_of(user_id):
     return list(module_dir()["byUser"].get(str(user_id or "").strip().lower(), []))
 
 
+def _norm_module(s):
+    """표기 차이만 지운다 — 대소문자·공백·하이픈·언더바·슬래시."""
+    import re as _re
+    return _re.sub(r"[\s_\-/]+", "", str(s or "")).strip().casefold()
+
+
+def resolve_module(name):
+    """Jira Component 이름 → **people.yaml 의 정식 모듈 키**. 못 찾으면 "".
+
+    이 둘은 사람이 각각 손으로 적는 **두 벌의 이름**이라 표기에서 갈린다
+    ("Query Engine" vs "query-engine", "ETL " vs "ETL"). 정확 일치만 보면 로스터가
+    통째로 비어 담당 추천·자식 담당 채움이 조용히 무산된다(실측: 부모 담당 폴백으로만
+    겨우 완화돼 있었다).
+
+    **표기만 맞춘다 — 뜻으로 추측하지 않는다.** 모듈은 워크로드 집계의 축이라
+    "쿼리 엔진"을 Runtime 으로 넘겨짚으면 남의 모듈에 조용히 계상된다. 뜻의 매핑은
+    사람이 config 에서 이름을 맞추는 것이 맞다.
+    """
+    t = _norm_module(name)
+    if not t:
+        return ""
+    for k in module_dir()["modules"]:
+        if _norm_module(k) == t:
+            return str(k)
+    return ""
+
+
 def reload_people():
     """people.yaml 캐시 무효화 — config 를 고쳤을 때(/api/refresh) 다음 조회부터 반영."""
     _PEOPLE_CACHE["data"] = None
