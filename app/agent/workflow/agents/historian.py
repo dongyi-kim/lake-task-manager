@@ -413,11 +413,17 @@ def _topic_dossier(term: str, history: bool = False) -> str:
         try:
             f = (c.get_issue(k) or {}).get("fields") or {}
             done = (f.get("resolutiondate") or "")[:10]
+            # ★ 본문도 같이 들고 온다 — 이미 이 티켓을 읽고 있으니 **공짜**다.
+            #   구축 티켓 본문에 방식·주기·Job 이름이 적히는데(실측 DL-9050:
+            #   "적재주기: 실시간 스트리밍(1초 마이크로배치)"), 여태 dossier 에는 **제목만**
+            #   실렸다. 그래서 "변경 기록이 없으면 구축 티켓의 값이 현재 값"이라는 지시가
+            #   있어도 모델이 옮겨 적을 값 자체가 손에 없었다.
+            body = _re.sub(r"<[^>]+>", " ", str(f.get("description") or ""))
             return {"key": k, "status": ((f.get("status") or {}).get("name") or ""),
-                    "done": done,
+                    "done": done, "desc": _re.sub(r"[ \t]+", " ", body).strip()[:600],
                     "when": done or (f.get("created") or f.get("updated") or "")[:10]}
         except Exception:
-            return {"key": k, "status": "", "done": "", "when": ""}
+            return {"key": k, "status": "", "done": "", "when": "", "desc": ""}
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         fut_hist = ex.submit(lambda: list(map(_hist, keys[:5])))
@@ -462,10 +468,41 @@ def _topic_dossier(term: str, history: bool = False) -> str:
         parts.append(
             "이 대상의 **연표** (티켓 사건 + 필드 변경을 날짜순으로 합친 것):\n"
             + "\n".join(f"- {d or '날짜 미상'} · {t}" for d, t in events)
-            + "\n★ 사용자가 이력·경위를 물었다. **이 연표를 처음부터 지금까지 그대로 옮겨 "
-              "서술한다** — 여기서 몇 줄만 고르면 '왜 이렇게 됐나'(요청·구축·장애)와 "
-              "'지금 어디까지 왔나'(진행 중)가 답에서 사라진다. 미해결(진행 중) 항목은 "
-              "현재 상태로 반드시 언급한다.")
+            + "\n★ 사용자가 이력·경위를 물었다. **이 연표를 처음부터 지금까지 빠짐없이, "
+              "날짜·사건·근거 3열 표로** 옮긴다 — 여기서 몇 줄만 고르면 '왜 이렇게 "
+              "됐나'(요청·구축·장애)와 '지금 어디까지 왔나'(진행 중)가 답에서 사라진다. "
+              "**줄글로 늘어놓지 마라** — 사건이 다섯 건을 넘으면 문단은 읽히지 않는다"
+              "(실측: 같은 재료로 표를 낸 실행은 읽히고, 줄글로 푼 실행은 8건이 뭉갰다).")
+
+        # ★ **연표만 내면 답이 아니다 — '그래서 지금 어떤가'가 빠진다.**
+        #   실사용 지적(2026-08-10): 히스토리 질문에 8행짜리 표만 달랑 나왔다. 표에 진행 중
+        #   티켓이 한 줄로 들어 있어 체커는 통과했지만, 읽는 사람이 알고 싶은 **현재 값·
+        #   지금 진행 중인 일**은 표에서 스스로 재구성해야 했다. 연표는 과거이고, 질문의
+        #   끝은 늘 현재다. 그래서 현재 상태를 **코드가 따로 조립해** 별도 슬롯으로 준다
+        #   (모델이 표에서 다시 뽑게 두면 실행마다 들쭉날쭉해진다 — 이 파일의 반복된 교훈).
+        now_lines = []
+        latest = {}
+        for k, rows in hist_rows:
+            for r in rows:
+                f = str(r.get("field") or "")
+                if f in ("status", "resolution", "description", "assignee") or not r.get("to"):
+                    continue
+                d = str(r.get("date") or "")
+                if d >= latest.get(f, ("", "", ""))[0]:
+                    latest[f] = (d, str(r.get("to")), k)
+        for f, (d, val, k) in latest.items():
+            now_lines.append(f"- {f}: **{val}** (가장 최근 변경 {d} · {k})")
+        ongoing = [m for m in metas if "progress" in (m.get("status") or "").lower()
+                   or (m.get("status") or "") in ("In Progress", "Open", "To Do", "Reopened")]
+        for m in ongoing:
+            now_lines.append(f"- 진행 중: {m['key']} \"{titles.get(m['key'], '')}\" "
+                             f"({m['status']}, {m['when']} 시작)")
+        if now_lines:
+            parts.append("**현재 상태** (연표와 별개로 반드시 답에 넣는다 — 사용자가 이력을 "
+                         "묻는 이유는 결국 '지금 어떤가'를 알기 위해서다):\n"
+                         + "\n".join(now_lines)
+                         + "\n★ 답은 **연표 + 현재 상태 정리** 두 덩어리다. 표만 내고 끝내지 "
+                           "마라. 진행 중인 일이 있으면 그것이 '지금'이다.")
     elif tix:
         # ★ 이력을 묻지 **않은** 질문에는 연표를 쏟지 않는다. 실측(DATA1): "현재 적재주기는?"
         #   한 줄을 물었는데 8행 연표 + 참조 10개가 나왔다 — 이력 지시를 모든 경로에 실은
@@ -487,10 +524,16 @@ def _topic_dossier(term: str, history: bool = False) -> str:
              or [m for m in metas if any(w in (titles.get(m["key"]) or "") for w in _ORIGIN)])
     if built:
         b = built[0]        # metas 는 시간순 — 가장 이른 것이 최초다
-        parts.append(f"최초 도입·구축: {b['when']} · {b['key']} \"{titles.get(b['key'], '')}\"\n"
-                     "★ **변경 기록이 없는 속성의 현재 값은 이 티켓에 적힌 값이다**"
-                     "(knowledge/06). 제목·본문에 방식·주기·이름이 적혀 있으면 그것이 답이다 — "
-                     "변경 이력에 없다고 '확인된 기록 없음'으로 답하지 마라.")
+        # ★ **본문을 함께 싣는다.** 지시만 있고 값이 없으면 모델은 지시를 지킬 수가 없다 —
+        #   실측(DATA4 ×4): dossier 에 이 티켓과 지시가 다 있는데도 3회가 "확인된 기록 없음"
+        #   이었고, 그중 하나는 "DL-9050에 명시된 값으로, 변경 기록이 없으므로 확인된 바가
+        #   없습니다"라고 **티켓을 짚으면서 값을 못 말했다.** 제목("실시간 수집 파이프라인
+        #   구축")은 사업 이름이지 속성 값이 아니다. 값은 본문에 있다.
+        parts.append(f"최초 도입·구축: {b['when']} · {b['key']} \"{titles.get(b['key'], '')}\""
+                     + (f"\n  본문: {b['desc']}" if b.get("desc") else "")
+                     + "\n★ **변경 기록이 없는 속성의 현재 값은 이 티켓에 적힌 값이다**"
+                       "(knowledge/06). 위 본문에 방식·주기·이름이 적혀 있으면 **그 값을 그대로 "
+                       "답하라** — 변경 이력에 없다고 '확인된 기록 없음'으로 답하지 마라.")
     quotes = [f"- {h['key']} · {h.get('author') or '작성자 미상'} · {h.get('date') or ''}: "
               f"\"{h['snippet']}\""
               for h in hits if h.get("where") == "comment" and h.get("snippet")]
@@ -539,7 +582,11 @@ def _topic_dossier(term: str, history: bool = False) -> str:
 
     # ── 담당은 **코드가 판정한다.** 프롬프트로 "작성자는 담당자가 아니다"라고 두 번 경고해도
     # 모델은 코멘트 작성자를 담당자로 답했다(실측 2회). 담당이라고 **적힌** 것만 담당이다.
-    import re as _re
+    # ★ 여기 있던 `import re as _re` 를 지웠다 — 모듈 맨 위(17행)에 이미 있는데 **함수 안에서
+    #   다시 import 하면 `_re` 가 이 함수의 지역 이름이 되어**, 위쪽 중첩 함수(`_meta`)가
+    #   그것을 참조하는 순간 NameError 가 난다. 그런데 `_meta` 의 `except Exception` 이
+    #   그걸 삼켜서, **모든 티켓의 날짜·상태가 조용히 '미상'으로 떨어졌다**(실측: 연표가
+    #   통째로 '날짜 미상'이 됐다). 함수 안 재import 는 이 파일에서 금지한다.
     # ① 담당이 **이관된 적** 있으면 그 변경 기록이 이긴다 — 최초 구축 티켓만 보고 옛 담당을
     #    현재로 답하는 것이 이 유형의 전형적 실패다(픽스처가 그렇게 심겨 있다).
     handover = [(r["date"], r.get("from") or "", r.get("to") or "", k)

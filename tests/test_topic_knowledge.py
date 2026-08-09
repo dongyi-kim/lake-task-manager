@@ -197,7 +197,11 @@ def test_history_instruction_only_rides_when_history_was_asked():
     (실측 DATA1: '현재 적재주기는?' 에 8행 연표 + 참조 10개)."""
     hist = _topic_dossier(TABLE, history=True)
     assert "이 대상의 **연표**" in hist
-    assert "그대로 옮겨 서술한다" in hist
+    # ★ **표로** 옮기라고 시켜야 한다 — 예전 문구("그대로 옮겨 서술한다")는 줄글을 시키는
+    #   말이었고, 실제로 티켓 8건을 표 없이 늘어놓은 실행이 나왔다(실측 DATA11).
+    assert "3열 표로" in hist and "줄글로 늘어놓지 마라" in hist
+    # 이력 질문의 답은 **연표 + 현재 상태** 두 덩어리다(실사용 지적: 연표만 달랑 나왔다)
+    assert "**현재 상태**" in hist and "표만 내고 끝내지" in hist
     plain = _topic_dossier(TABLE, history=False)
     assert "이 대상의 **연표**" not in plain
     assert "물어본 것만 답한다" in plain

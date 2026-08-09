@@ -447,7 +447,12 @@ def _ux_ok(reply: str) -> bool:
         return False
     if _unlinked_refs(reply):
         return False
-    sents = [s.strip() for s in re.split(r"[.\n]", reply) if len(s.strip()) >= 25]
+    # ★ 마침표만 보고 자르면 **점 찍힌 식별자가 조각난다** — `yms.yms_lot_yield_daily 와
+    #   fdc.fdc_trace_summary_ic` 가 "yms_lot_yield_daily 와 fdc" 같은 파편이 되고, 그 파편이
+    #   답 안에서 두 번 나오면 **멀쩡한 답이 '중복 문장'으로 떨어진다**(실측 DATA11).
+    #   문장 끝은 마침표 **뒤에 공백/줄바꿈**이 오는 자리다. 우리 도메인은 테이블 이름이
+    #   본문에 늘 나오므로 이 구분이 필수다.
+    sents = [s.strip() for s in re.split(r"(?<=[.?!])\s+|\n", reply) if len(s.strip()) >= 25]
     if len(sents) != len(set(sents)):
         return False
     if len(set(re.findall(r"\bDL-\d+", reply))) >= 5 and reply.count("|") < 6:
@@ -526,17 +531,28 @@ def judge(question, reply, original="", expect=""):
 #   전부 통과했다. 케이스가 흔들린 게 아니라 **색인 상태가 실행 내내 자란 것**이다.
 #   케이스마다 비우지는 않는다 — 멀티턴 케이스는 자기 턴 사이의 누적이 필요하다.
 #   실행 단위로 같은 출발점을 주는 것이 목적이다.
-try:
-    from app.agent.retrieval import dynamic_index
-    dynamic_index.reset()
-    print("(동적 색인을 비우고 시작한다 — 실행 간 재현을 위해)")
-except Exception as _e:                      # 색인이 없거나 임베딩 미설정이면 그냥 진행
-    print(f"(동적 색인 초기화 생략: {str(_e)[:80]})")
+def _reset_index():
+    try:
+        from app.agent.retrieval import dynamic_index
+        dynamic_index.reset()
+        return True
+    except Exception:            # 색인이 없거나 임베딩 미설정이면 그냥 진행
+        return False
+
+
+print("(케이스마다 동적 색인을 비운다 — 앞 케이스의 재료가 뒤 케이스에 새지 않게)"
+      if _reset_index() else "(동적 색인 초기화 생략)")
 
 rows, total_cost = [], 0.0
 for cid, desc, turns, want_intent, check in CASES:
     if ONLY and cid not in ONLY:
         continue
+    # ★ **케이스마다 비운다.** 케이스 안의 여러 턴은 서로 이어져야 하지만(그건 이 안에서
+    #   쌓인다), 케이스끼리는 남남이다. 실측(DATA4): 앞의 DATA1~3 이 'fdc 적재주기' 문서를
+    #   잔뜩 색인해 두니, eqp 테이블을 물었을 때 **그 테이블의 사실 대신 일반 '적재주기 변경
+    #   절차' 문서**가 올라와 "확인된 기록 없음"으로 답했다 — 인용한 근거가 그 증거다.
+    #   실행 시작에 한 번만 비웠을 때는 이 누출이 실행 중반부터 다시 생겼다.
+    _reset_index()
     t0, outs, tid = time.time(), [], ""
     try:
         for q in turns:
