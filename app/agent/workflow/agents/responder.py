@@ -328,6 +328,11 @@ class Responder(TextAgent):
         # 쓰다 만 링크 토막("[여기에서 확인할 수 있습니다.") — 여는 대괄호만 남으면
         # 화면에 대괄호가 글자로 보인다(실측). 짝 없는 `[` 는 지운다.
         text = _drop_dangling_bracket(text)
+        # ★ 참조의 문서 URL 은 **코드가 붙인다.** 재료에는 URL 이 있는데(dossier 의
+        #   `문서 「제목」 (URL)`) 모델이 참조 줄로 옮기지 않는 일이 반복됐다 — 프롬프트로
+        #   두 라운드 고쳤는데도 실측 DATA9 는 세 줄 다 제목만 남겼다. 우리가 아는 URL 을
+        #   그 제목에 붙이는 것은 **지어내는 것이 아니라 옮기는 것**이라 코드가 할 수 있다.
+        text = _attach_known_doc_urls(text, state)
         # ★ 여기서 **한 번 더** 본다. 위의 후처리들은 접지 검사 **뒤에** 돌기 때문에,
         #   후처리가 만든 결함은 검사를 통과한 셈이 된다. 실측: 대괄호 정리가 문서 링크를
         #   먹어 참조가 URL 없는 제목만 남았는데 아무도 못 잡았다. 마지막에 다시 보고,
@@ -558,6 +563,54 @@ def _drop_form_echo(text: str, qs: list) -> str:
     out = _re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
     # 전부 걷어내 버렸다면(질문만 있던 답변) 최소한의 안내는 남긴다.
     return out or "확인이 필요합니다 — 아래에서 골라 주세요."
+
+
+def _known_doc_urls(state) -> dict:
+    """이 턴의 재료에 실린 **문서 제목 → URL**. 세 군데에서 모은다(모두 코드가 만든 자료다).
+
+    · topic_dossier 의 `문서 「제목」 (URL) 발췌:`
+    · pre_survey 의 `- 제목 (URL)`
+    · state["related_docs"] 의 {title, url}
+    """
+    out = {}
+    blob = " ".join(str(state.get(k) or "") for k in ("topic_dossier", "pre_survey"))
+    for t, u in _re.findall(r"「([^」]+)」\s*\((https?://[^)\s]+)\)", blob):
+        out.setdefault(t.strip(), u)
+    for t, u in _re.findall(r"^-\s*(.+?)\s*\((https?://[^)\s]+)\)\s*$", blob, _re.M):
+        out.setdefault(t.strip(), u)
+    for d in (state.get("related_docs") or []):
+        t, u = str(d.get("title") or "").strip(), str(d.get("url") or "").strip()
+        if t and u:
+            out.setdefault(t, u)
+    return out
+
+
+def _attach_known_doc_urls(text: str, state) -> str:
+    """참조 줄이 문서를 **제목만으로** 인용했으면, 재료에 있는 URL 을 코드가 붙인다.
+
+    재료에는 URL 이 있는데 모델이 참조로 옮기지 않는 일이 반복됐다(실측 DATA9: 세 줄 다
+    제목만). 프롬프트로 두 라운드 고쳤는데도 재발했다 — **우리가 아는 URL 을 그 제목에
+    붙이는 것은 지어내는 것이 아니라 옮기는 것**이라, 부탁할 일이 아니라 코드가 할 일이다.
+
+    제목이 **정확히 그대로** 들어 있을 때만 바꾼다(부분 일치로 엉뚱한 문서를 붙이지 않는다).
+    이미 링크가 있는 줄은 건드리지 않는다.
+    """
+    urls = _known_doc_urls(state)
+    if not urls:
+        return text
+    from app.agent.workflow.grounding import LINKED_RE, REF_LINE_RE
+    # 긴 제목부터 — 짧은 제목이 긴 제목의 일부일 때 잘못 걸리지 않게.
+    titles = sorted(urls, key=len, reverse=True)
+
+    def fix(m):
+        line = m.group(0)
+        if LINKED_RE.search(line):
+            return line
+        for t in titles:
+            if t in line:
+                return line.replace(t, f"[{t}]({urls[t]})", 1)
+        return line
+    return REF_LINE_RE.sub(fix, text or "")
 
 
 def _drop_dangling_bracket(text: str) -> str:

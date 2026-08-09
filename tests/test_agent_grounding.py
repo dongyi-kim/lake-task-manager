@@ -270,3 +270,28 @@ def test_a_link_slot_without_a_real_url_is_a_violation():
                "**참조**\n[2] [[데이터카탈로그] 특성 분석](http://x/pages/352/y) — 스키마",
                "**참조**\n[3] [DL-9044 변경](http://x/browse/DL-9044) — 근거"):
         assert _unlinked_refs(ok) == [], ok
+
+
+def test_document_urls_are_attached_by_code_not_asked_for():
+    """재료에는 URL 이 있는데 모델이 참조로 옮기지 않는 일이 반복됐다(실측 DATA9: 참조
+    세 줄이 전부 제목만). 프롬프트로 두 라운드 고쳤는데도 재발했다 — **아는 URL 을 그
+    제목에 붙이는 것은 지어내는 것이 아니라 옮기는 것**이라 코드가 할 일이다."""
+    from app.agent.workflow.agents.responder import _attach_known_doc_urls
+    from app.agent.workflow.grounding import _unlinked_refs
+    st = {"topic_dossier": "문서 「[데이터카탈로그] qms 정의」 (http://x/pages/239/y) 발췌:\n본문"}
+    t = ("**참조**\n1. [데이터카탈로그] qms 정의 — 적재주기\n"
+         "[2] DL-9044 — 티켓 참조는 그대로\n"
+         "[3] [다른 문서](http://z/a) — 이미 링크\n")
+    out = _attach_known_doc_urls(t, st)
+    assert "](http://x/pages/239/y)" in out
+    assert "[2] DL-9044 — 티켓 참조는 그대로" in out      # 티켓 줄은 안 건드린다
+    assert out.count("http://z/a") == 1                     # 이미 링크인 줄도 그대로
+    assert _unlinked_refs(out) == []
+
+
+def test_unknown_titles_are_not_given_a_borrowed_url():
+    """부분 일치로 엉뚱한 문서를 붙이면 그게 곧 위조다 — 제목이 그대로 있을 때만 붙인다."""
+    from app.agent.workflow.agents.responder import _attach_known_doc_urls
+    st = {"topic_dossier": "문서 「A 설계 노트」 (http://x/a) 발췌:\n본문"}
+    t = "**참조**\n1. B 운영 런북 — 다른 문서다\n"
+    assert _attach_known_doc_urls(t, st) == t
