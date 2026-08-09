@@ -999,3 +999,41 @@ def test_the_split_falls_back_to_the_dod_when_the_llm_call_comes_back_empty():
             '<li data-checked="false">p95 2초 미만 측정</li></ul>'}
     assert _children_from_dod(real) == []
     assert _children_from_dod({}) == []
+
+
+def test_a_missing_background_is_filled_from_the_original_request():
+    """보정 호출이 빈손이어도 **배경만은 남는다.**
+
+    배경은 지어낼 것이 없다 — 왜 이 일을 하느냐는 사용자가 이미 말했고, 그 문장이 원
+    요청이다. 실측(STARR1): 20케이스 한 실행에서 이 한 건('배경' 섹션 없음)으로 떨어졌는데
+    따로 3회 돌리면 3회 다 통과했다 — 케이스가 아니라 보정 호출이 흔들린 것이다.
+    """
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [{"summary": "[ETL] 통계 파이프라인 개발", "type": "Task",
+                      "description": "<h3>작업 범위</h3><ul><li>포함: 구현</li>"
+                                     "<li>제외: 최적화</li></ul>"}]}
+    # ★ "알아서" 를 붙인다 — 위임이 아니면 구조 확인 **질문**이 붙고, 질문이 있는 턴은
+    #   본문 보정을 돌리지 않는다(초안이 버려질 수 있어 왕복을 아낀다). 실사용 STARR1 의
+    #   2턴도 "알아서 진행해"라 이 경로다.
+    r = Refiner().apply(_msg("starrocks puffin ndv 통계정보 파이프라인을 개발해야해. 알아서"), out)
+    body = r["draft"]["items"][0]["description"]
+    assert "<h3>배경</h3>" in body, body[:200]
+    assert "starrocks" in body.lower(), "배경은 원 요청에서 온다 — 지어내지 않는다"
+
+
+def test_every_thin_body_gets_a_background_not_just_the_first():
+    """배경 채우기는 **LLM 호출이 없다 — 전 항목에 건다.**
+
+    실측(STR2): 초안이 4건으로 갈린 실행에서 둘 이상이 얇았는데 첫 건만 고쳐진 채 나갔다
+    (`[2] '배경' 섹션 없음`). 공짜인 수리를 아낄 이유가 없다.
+    """
+    thin = {"type": "Task",
+            "description": "<h3>작업 범위</h3><ul><li>포함: a</li><li>제외: b</li></ul>"}
+    out = {"questions": [], "mode": "task", "rationale": "", "structure": "multiple_tasks",
+           "structure_source": "inferred",
+           "items": [dict(thin, summary="[ETL] 하나"), dict(thin, summary="[ETL] 둘"),
+                     dict(thin, summary="[ETL] 셋")]}
+    r = Refiner().apply(_msg("적재 파이프라인 정리해줘. 알아서"), out)
+    bodies = [i["description"] for i in r["draft"]["items"]]
+    assert all("<h3>배경</h3>" in b for b in bodies), bodies

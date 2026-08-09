@@ -1827,18 +1827,33 @@ def _fill_thin_bodies(state, items) -> bool:
     아니라 요청 해석 문제라 다른 가드가 볼 일이다. Sub-Task 는 대상이 아니다(knowledge/07:
     자식 본문에 배경을 반복해 쓰지 않는다).
     """
-    for it in items[:6]:
-        if not isinstance(it, dict) or str(it.get("type") or "").lower().startswith("sub"):
-            continue
+    tops = [i for i in items[:6]
+            if isinstance(i, dict) and not str(i.get("type") or "").lower().startswith("sub")]
+    # ① 배경 채우기는 **LLM 호출이 없다 — 전 항목에 건다.** 처음엔 아래 보정과 함께 "한 건만"
+    #    고치게 뒀는데, 초안이 4건으로 갈린 실행에서 **둘 이상이 얇아** 첫 건만 고쳐진 채
+    #    나갔다(실측 STR2: `[2] '배경' 섹션 없음`). 공짜인 수리를 아낄 이유가 없다.
+    req = request_text(state).strip()
+    hit = False
+    if req:
+        for it in tops:
+            body = str(it.get("description") or "")
+            if "배경" not in body:
+                it["description"] = f"<h3>배경</h3><p>{_esc(req[:400])}</p>" + body
+                hit = True
+    # ② 그러고도 4섹션을 못 채우는 항목 **하나**만 보정 호출로 다시 쓴다(왕복 비용).
+    for it in tops:
         if _task_grade_body(it.get("description")):
             continue
         mod = str((it.get("components") or [""])[0] or "")
+        # ★ 보정 호출은 LLM 한 방이라 그냥 빈손일 때가 있다(실측 STARR1: 20케이스 한 실행에서
+        #   이 한 건 때문에 떨어졌는데, 따로 3회 돌리면 3회 다 통과했다 — 즉 호출 실패다).
+        #   그래서 ①의 배경 채우기를 **먼저** 돌려 두고, 여기 실패는 원본 유지로 끝낸다.
         full = _task_for_module(state, mod, it, want=str(it.get("summary") or ""))
         if full.get("description"):
             it["description"] = full["description"]
-            return True
-        return False          # 보정이 빈손이면 원본을 그대로 둔다(더 나쁘게 만들지 않는다)
-    return False
+            hit = True
+        break                 # 왕복은 한 초안에 한 번. 나머지는 ①이 이미 최소선을 채웠다
+    return hit
 
 
 def _esc(s) -> str:
