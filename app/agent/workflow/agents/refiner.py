@@ -666,6 +666,16 @@ class Refiner(ToolAgent):
                                       f"이중 계상된다. {', '.join(comps[1:])} 몫은 별도 티켓으로 "
                                       "나누는 것이 맞다)").strip()
 
+        # ── 제목의 모듈 접두는 관행이다(knowledge/01 §제목) — 코드가 붙인다 ─────
+        # 대개는 모델이 붙이지만 재료가 길면(회의록 붙여넣기 등) 빠뜨린다(실측 Round P).
+        # 검색이 접두로 걸리기 때문에 빠지면 나중에 안 찾힌다.
+        for it in items:
+            comp = next((str(c).strip() for c in (it.get("components") or []) if str(c).strip()),
+                        "")
+            s = str(it.get("summary") or "").strip()
+            if comp and s and not s.startswith("["):
+                it["summary"] = f"[{comp}] {s}"
+
         # ── 번호·단계만 다른 Task N개는 한 산출물이다 — 하나로 접고 children 으로 ──
         # refiner.md 오판 #1(단계를 Task 로)·#2("테이블 30개 → 30 Tasks")를 코드가
         # 보장한다(실측 재발 2종: "테이블 1~5" Task 5개 / "…설계·…구현·…검증" Task 3개).
@@ -890,11 +900,28 @@ class Refiner(ToolAgent):
             # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
             # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
             # 떴다. 담당 해제("assignee": "")만 예외로 인정한다(사용자가 뗄 때 쓴다).
-            _wipe = _re.search(r"(담당|assignee)\w*\s*(해제|비워|없애|제거)",
-                               request_text(state) + " " + last_user_text(state))
+            _said = request_text(state) + " " + last_user_text(state)
+            _wipe = _re.search(r"(담당|assignee)\w*\s*(해제|비워|없애|제거)", _said)
             fields = {k: v for k, v in fields.items()
                       if (isinstance(v, list) and v) or str(v or "").strip()
                       or (k == "assignee" and _wipe)}
+            # 말하지 않은 필드는 바꾸지 않는다 — 마감만 미뤄 달라고 했는데 우선순위까지
+            # 카드에 얹히면(실측 Round P: priority=P3-Minor) 사용자가 모르고 승인한다.
+            _WORDS = {"priority": r"우선순위|priority|P[0-4]|긴급|중요|사소",
+                      "duedate": r"마감|기한|due|날짜|미뤄|당겨|연장|늦춰|앞당",
+                      "assignee": r"담당|배정|할당|넘겨|맡",
+                      "summary": r"제목|이름|타이틀|summary",
+                      "labels": r"라벨|label|태그",
+                      "description": r"본문|설명|내용|description"}
+            _extra = [k for k in list(fields)
+                      if k in _WORDS and not _re.search(_WORDS[k], _said, _re.I)] \
+                if _said.strip() else []      # 발화가 없으면 근거도 없다 — 지우지 않는다
+            for k in _extra:
+                fields.pop(k, None)
+            if _extra:
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(요청에 없던 {', '.join(_extra)} 변경은 뺐다 — "
+                                      "말한 것만 바꾼다)").strip()
             if str(fields.get("priority") or "").strip():
                 p = str(fields["priority"]).strip()
                 fields["priority"] = _PRI.get(p.upper(), p)
@@ -912,6 +939,15 @@ class Refiner(ToolAgent):
             if fields or cmt:
                 plan = {"key": str(change["key"]).strip(), "changes": fields,
                         "comment": cmt, "why": out.get("rationale") or ""}
+                # 바뀌기 **전** 값은 코드가 조회해 싣는다 — 모델이 "변경 전: 미정"이라고
+                # 지어냈다(실측 Round P: 실제로는 마감이 있었다).
+                try:
+                    from app.agent import tools as T
+                    cur = T.BY_NAME["get_ticket"].invoke({"key": plan["key"]}) or {}
+                    if not cur.get("error"):
+                        plan["before"] = {k: (cur.get(k) or "") for k in fields}
+                except Exception:
+                    pass
             # ── 상태 전이 — 이름을 전이 id 로 **코드가** 해석한다(실측: status 필드가 없어
             # '정보 확인 안 됨'으로 죽었다). 못 찾으면 가능한 전이를 choice 로 묻는다.
             k0 = str(change.get("key") or "").strip()

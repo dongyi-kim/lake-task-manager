@@ -384,6 +384,32 @@ class PMO(ToolAgent):
 
     def apply(self, state, out):
         finds = [f for f in (out.get("findings") or []) if isinstance(f, dict)][:10]
+        # ── "누구는 뭐부터 해야 하나"에 **남의 티켓**을 섞지 않는다 ─────────────
+        # 실측(Round P): x1210 의 할 일 1번이 i2044 담당 티켓이었다. 사람을 지목한
+        # my_day 질문에서는 코드가 담당자를 조회해 다른 사람 것을 걷어낸다
+        # (담당 없는 티켓은 "집을 수 있는 일"이라 남긴다).
+        m_who = _re0.search(r"(?:skcc\.)?([a-z]{1,2}\d{2,6})", last_user_text(state))
+        who = f"skcc.{m_who.group(1)}" if m_who else ""
+        if who and (state.get("intent") or "") == Intent.MY_DAY:
+            kept, dropped = [], []
+            for f in finds:
+                k = str(f.get("key") or "").strip()
+                if not k:
+                    kept.append(f)
+                    continue
+                try:
+                    from app.agent import tools as T
+                    asg = str((T.BY_NAME["get_ticket"].invoke({"key": k}) or {})
+                              .get("assignee") or "").strip()
+                except Exception:
+                    asg = ""
+                (kept if (not asg or asg == who) else dropped).append(f)
+            if dropped:
+                finds = kept
+                out["caution"] = ((out.get("caution") or "")
+                                  + f" ({who} 담당이 아닌 "
+                                    f"{', '.join(str(d.get('key')) for d in dropped)} 은 "
+                                    "제외했다)").strip()
         # Responder 가 근거 카드로 그릴 수 있게 evidence 모양으로도 옮겨 준다.
         ev = [{"key": f.get("key") or "", "title": f.get("point") or "",
                "why": f.get("action") or ""} for f in finds if f.get("key")]

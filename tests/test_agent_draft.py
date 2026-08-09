@@ -503,3 +503,26 @@ def test_a_plain_edit_request_does_not_resurrect_removed_items():
            "items": [{"summary": "[Catalog] A 작업", "type": "Task"}]}
     r = Refiner().apply(_msg("B 는 빼줘", draft=prev, turns=1), out)
     assert len(r["draft"]["items"]) == 1
+
+
+def test_the_module_prefix_is_added_to_titles_when_the_model_forgets():
+    """제목의 `[모듈]` 접두는 검색이 걸리는 관행이다(knowledge/01) — 긴 재료를
+    붙여넣으면 모델이 빠뜨린다(실측 Round P). 코드가 붙인다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "검색 응답시간 지표 대시보드 노출", "type": "Task",
+                      "components": ["Catalog"]},
+                     {"summary": "[ETL] 이미 붙어 있으면 그대로", "type": "Task",
+                      "components": ["ETL"]}]}
+    r = Refiner().apply(_msg("회의 메모에서 할 일 뽑아서 티켓 만들어줘. 알아서"), out)
+    sums = [i["summary"] for i in r["draft"]["items"]]
+    assert sums[0].startswith("[Catalog] "), sums
+    assert sums[1] == "[ETL] 이미 붙어 있으면 그대로"
+
+
+def test_only_the_fields_the_user_asked_for_are_changed():
+    """마감만 미뤄 달라고 했는데 우선순위까지 카드에 얹히면 모르고 승인한다(실측 Round P)."""
+    out = {"questions": [], "mode": "task", "items": [], "rationale": "",
+           "change": {"key": "DL-9090", "duedate": "2026-08-14", "priority": "P3-Minor"}}
+    r = Refiner().apply(_msg("두 번째 거 마감을 다음 주 금요일로 미뤄줘", intent=Intent.MODIFY), out)
+    ch = r["change_plan"].get("changes") or {}
+    assert "duedate" in ch and "priority" not in ch, ch

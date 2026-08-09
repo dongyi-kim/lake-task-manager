@@ -183,7 +183,8 @@ class Responder(TextAgent):
             data_block("티켓 초안 (아직 만들어지지 않음)", draft_text(state.get("draft"))),
             data_block("변경 계획 (아직 바뀌지 않음)",
                        (lambda cp: f"{cp.get('key')}: " + ", ".join(
-                           f"{k}→{v}" for k, v in (cp.get('changes') or {}).items())
+                           f"{k}: {(cp.get('before') or {}).get(k) or '없음'}→{v}"
+                           for k, v in (cp.get('changes') or {}).items())
                         if cp.get("key") else
                         (f"일괄 {len(cp.get('keys'))}건 [{', '.join(cp.get('keys')[:10])}]: "
                          + ", ".join(f"{k}→{v}" for k, v in (cp.get('changes') or {}).items())
@@ -263,6 +264,13 @@ class Responder(TextAgent):
         # '확인된 기록 없음'만 채운 표 행·참조 줄은 정보가 아니라 소음이다 — md 로 두 번
         # 금지했는데 재발(실측 2회). 코드가 걷어낸다.
         text = _prune_empty_rows(text)
+        # 카드의 값과 문장의 값이 다르면 **카드가 사실**이다. 상대 날짜는 코드가 계산해
+        # 계획에 넣는데(모델 산술이 흔들린다), 답변 문장에는 모델이 제 값을 그대로 써서
+        # "2026-08-18로 연장" ↔ 카드 2026-08-14 로 어긋났다(실측 Round P).
+        due = str(((state.get("change_plan") or {}).get("changes") or {}).get("duedate") or "")
+        if _re.match(r"^\d{4}-\d{2}-\d{2}$", due):
+            text = _re.sub(r"\b\d{4}-\d{2}-\d{2}\b",
+                           lambda m: due if m.group(0) != due else m.group(0), text)
 
         from langchain_core.messages import AIMessage
         return {"reply": text, "messages": [AIMessage(content=text)],
