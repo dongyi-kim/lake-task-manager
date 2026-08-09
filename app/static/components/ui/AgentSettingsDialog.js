@@ -29,7 +29,7 @@ const PROVIDERS = [
 
 export default {
   name: "AgentSettingsDialog",
-  emits: ["close"],
+  emits: ["close", "saved"],
   data() {
     return {
       st: null, err: "", busy: false, saving: false,
@@ -134,6 +134,9 @@ export default {
         for (const [k, v] of Object.entries(this.secrets)) if ((v || "").trim()) s[k] = v.trim();
         if (Object.keys(s).length) body.secrets = s;
         this.st = await agentApi.saveSettings(body);
+        // 저장 즉시 부모에게 알린다 — 좌상단 모델 표시가 옛 값으로 남아 있으면
+        // 무엇으로 도는지 화면이 거짓말을 한다(사용자 지적).
+        this.$emit("saved", this.st);
         this.secrets = {};
         this.loadModels();                 // provider·키가 바뀌었으니 목록도 새 것으로
         await this.test();                 // 저장했으면 되는지까지 확인해 주는 게 맞다

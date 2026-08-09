@@ -29,3 +29,7 @@ duckduckgo-search==7.5.2
 
 # MCP 서버(선택요소 B) — LTM 도구를 외부 AI 클라이언트(Claude Desktop 등)에 개방
 mcp==1.29.0
+
+# 정적 자산 검사(tests/test_static_assets.py) — 우리 JS 가 문법적으로 성립하는지.
+# 없으면 그 테스트만 건너뛴다(개발 편의 도구).
+esprima==4.0.1

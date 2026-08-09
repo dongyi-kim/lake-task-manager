@@ -118,14 +118,18 @@ function inline(s, slim) {
     .replace(UID_RE, (m, uid) => {
       const name = PEOPLE[uid];
       if (!name) return m;
+      // 참조·표처럼 나열하는 자리에서는 칩이 과하다 — 이름만 쓴다(사번은 title 로).
+      if (slim) return `<span class="md-person-plain" title="${esc(uid)}">${esc(name)}</span>`;
       // 프사가 없는 사용자가 많다(mock 은 전원 404) — 다른 화면과 같은 **이니셜 폴백**을
       // 먼저 그리고, 사진이 실제로 로드되면 그 위를 덮는다. 인라인 onerror 는 쓰지 않는다
       // (CSP 에서 막히면 깨진 이미지가 그대로 남는다 — 실측).
-      return `<span class="md-person mention" title="${esc(uid)}">` +
+      // 이니셜 원만 그린다 — 프사는 **있는 사람만** AgentView.augmentBadges() 가 뒤에
+      // 얹는다. 처음부터 <img> 를 넣으면 프사 없는 사용자(mock 은 전원 404)에게
+      // 깨진 이미지가 잠깐이라도 보인다(실측).
+      return `<span class="md-person mention" data-uid="${esc(uid)}" title="${esc(uid)}">` +
              `<span class="md-avt-wrap" style="background:${sigColor(uid)}">` +
-             `${esc(initialOf(name, uid))}` +
-             `<img class="md-avt" src="/api/avatar/${encodeURIComponent(uid)}" alt="">` +
-             `</span>${esc(name)}</span>`;
+             `${esc(initialOf(name, uid))}</span>` +
+             `<span class="md-person-nm">${esc(name)}</span></span>`;
     });
   // ② 스태시 복원
   return s.replace(/\x00(\d+)\x00/g, (_, i) => stash[+i]);
@@ -152,18 +156,41 @@ export function renderMarkdown(text, people) {
   }
   let html = _render(body);
   if (refItems.length) {
-    const items = refItems.map((r) =>
-      `<div class="agent-ref-item" data-ref="${r.n}">` +
-      `<span class="ref-no">[${r.n}]</span> ` +
-      // 문서 "제목 (URL)" 은 **제목이 걸린 링크 하나**로 접는다. 예전엔 URL 만 남기고
-      // 뱃지가 제목을 그리게 했는데, 참조를 슬림 링크로 바꾸면서 URL 슬러그가 그대로
-      // 보여 제목이 두 번 나왔다(실측: "…절차" 밑에 "…+절차").
-      `${inline(esc(r.text.replace(/^([^—]*?)\s*\((https?:\/\/[^\s)]+)\)/,
-                                   (mm, t, u) => `[${t.trim() || u}](${u})`)), true)}</div>`).join("");
     html += `<details class="agent-refs"><summary>참조 ${refItems.length}건</summary>` +
-            `<div class="agent-refs-list">${items}</div></details>`;
+            `<div class="agent-refs-list">${refItems.map(refRow).join("")}</div></details>`;
   }
   return html;
+}
+
+/** 참조 한 줄 → **출처 / 설명 두 층**.
+ *
+ *  실측 지적: "하이퍼링크랑 뱃지랑 섞여 있고, 티켓 제목이 없고, 출처와 인용 문구가
+ *  한 줄에 뒤섞였다." 그래서 ① 출처(무엇)와 설명(왜)을 줄로 가르고 ② 출처 모양을
+ *  **하나로 통일**한다(티켓=키+제목, 문서=제목). 티켓 제목은 렌더가 동기라 비워 두고
+ *  AgentView.augmentBadges() 가 채운다.
+ */
+function refRow(r) {
+  const raw = String(r.text || "").trim();
+  // "출처 — 설명" · "출처 - 설명" · "출처: 설명" 중 **처음** 나오는 구분자에서 한 번만 자른다.
+  const cut = /^(.*?)\s+(?:—|–|--)\s+(.*)$/.exec(raw);
+  let src = (cut ? cut[1] : raw).trim();
+  const why = (cut ? cut[2] : "").trim();
+  // 문서 "제목 (URL)" → 제목이 걸린 링크 하나. URL 만 있으면 슬러그를 제목으로 편다.
+  src = src.replace(/^(.*?)\s*\((https?:\/\/[^\s)]+)\)$/, (mm, t, u) => `[${t.trim() || u}](${u})`);
+  const key = /^([A-Z][A-Z0-9]*-\d+)\b(.*)$/.exec(src);
+  // 키 뒤에 붙은 글("DL-9062 코멘트 (…)")은 **제목이 아니다** — 설명 쪽으로 옮긴다.
+  // 제목은 항상 조회로 채운다(사용자 지시: 티켓 표기에 이름을 포함하라).
+  const tail = key ? key[2].trim().replace(/^[—–\-:,]\s*/, "") : "";
+  const why2 = [tail, why].filter(Boolean).join(" · ");
+  const srcHtml = key
+    ? `<a href="#" class="ref-link ref-tkt tkt" data-key="${key[1]}">` +
+      `<b>${key[1]}</b><span class="ref-ttl"></span></a>`
+    : inline(esc(src), true);
+  return `<div class="agent-ref-item" data-ref="${r.n}">` +
+         `<span class="ref-no">[${r.n}]</span>` +
+         `<span class="ref-src">${srcHtml}</span>` +
+         (why2 ? `<div class="ref-why">${inline(esc(why2), true)}</div>` : "") +
+         `</div>`;
 }
 
 function _render(text) {

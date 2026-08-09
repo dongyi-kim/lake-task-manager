@@ -22,6 +22,9 @@ import { TYPE_BG, typeLabel } from "../../lib/colors.js";
 import { api } from "../../lib/api.js";
 import { pushToast } from "../../lib/toast.js";
 
+// 프사가 없는 사용자 — 세션 동안 기억한다(렌더마다 404 를 다시 쏘지 않게).
+const AVATAR_MISSING = new Set();
+
 // 빈 화면에 예시를 둔다 — 무엇을 할 수 있는 도구인지 설명하는 가장 빠른 방법이고,
 // 사용자가 첫 문장을 어떻게 쓸지 몰라 멈추는 것을 막는다.
 const EXAMPLES = [
@@ -155,15 +158,23 @@ export default {
     augmentBadges() {
       const root = this.$el;
       if (!root || !root.querySelectorAll) return;
-      // 사람 칩의 프사 — 로드에 **성공했을 때만** 이니셜 위에 덮는다. 인라인 onerror 없이
-      // (CSP 안전) 처리하려면 리스너를 여기서 붙여야 한다. 마커로 멱등.
-      root.querySelectorAll(".agent-md img.md-avt:not([data-filled])").forEach((img) => {
-        img.dataset.filled = "1";
-        if (img.complete && img.naturalWidth > 0) { img.classList.add("on"); return; }
-        img.addEventListener("load", () => {
-          if (img.naturalWidth > 0) img.classList.add("on");
-        });
-        img.addEventListener("error", () => img.remove());   // 프사 없음 — 이니셜만 남는다
+      // 사람 칩의 프사 — **로드에 성공한 경우에만** 이니셜 원 위에 얹는다. 없는 사용자가
+      // 더 많아서(mock 은 전원 404) 미리 <img> 를 심으면 깨진 아이콘이 보인다.
+      // 없는 사용자는 세션 동안 기억해 매 렌더마다 재요청하지 않는다(Avatar.js 와 같은 관례).
+      root.querySelectorAll(".agent-md .md-person[data-uid]:not([data-filled])").forEach((el) => {
+        el.dataset.filled = "1";
+        const uid = el.getAttribute("data-uid");
+        const wrap = el.querySelector(".md-avt-wrap");
+        if (!uid || !wrap || AVATAR_MISSING.has(uid)) return;
+        const img = new Image();
+        img.onload = () => {
+          if (!img.naturalWidth || !wrap.isConnected) return;
+          img.className = "md-avt on";
+          img.alt = "";
+          wrap.appendChild(img);
+        };
+        img.onerror = () => AVATAR_MISSING.add(uid);
+        img.src = "/api/avatar/" + encodeURIComponent(uid);
       });
       root.querySelectorAll(".agent-md a.jira-badge[data-key]:not([data-filled])").forEach((a) => {
         a.dataset.filled = "1";
@@ -179,6 +190,18 @@ export default {
           mt.textContent = b.status || "";
           mt.className = "jb-meta st-" + (b.statusCategory || "todo");
           a.title = key + " " + (b.summary || "");
+        }).catch(() => { /* 조회 실패 — 키만 보여도 클릭은 된다 */ });
+      });
+      // 참조의 티켓 — 키만으로는 무엇인지 모른다. 제목(+상태)을 채운다.
+      root.querySelectorAll(".agent-md a.ref-tkt[data-key]:not([data-filled])").forEach((a) => {
+        a.dataset.filled = "1";
+        const key = a.getAttribute("data-key");
+        const ttl = a.querySelector(".ref-ttl");
+        if (!ttl || ttl.textContent.trim()) return;      // 이미 제목이 적혀 있으면 그대로
+        api.ticketBadge(key).then((b) => {
+          if (!b || !ttl.isConnected) return;
+          ttl.textContent = b.summary || "";
+          a.title = key + " " + (b.summary || "") + (b.status ? " · " + b.status : "");
         }).catch(() => { /* 조회 실패 — 키만 보여도 클릭은 된다 */ });
       });
       root.querySelectorAll(".agent-md a.conf-link[data-conf]:not([data-filled])").forEach((a) => {
@@ -595,6 +618,13 @@ export default {
       this.convos = this.convos.filter((x) => x.id !== c.id);
       try { localStorage.setItem("agentConvos", JSON.stringify(this.convos)); } catch (e) {}
       if (this.threadId === c.id) this.reset();
+    },
+
+    /** 지금 무엇으로 도는지(provider·모델)를 다시 읽는다 — 설정에서 바꾸면 즉시.
+     *  ★ 템플릿에서 직접 agentApi 를 부르면 안 된다(템플릿 스코프에 모듈이 없어
+     *  조용히 실행되지 않는다 — 모델을 바꿔도 좌상단이 그대로였던 실측 원인). */
+    async refreshStatus() {
+      try { this.status = await agentApi.status(); } catch (e) { /* 표시만 못 할 뿐 */ }
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
@@ -1244,7 +1274,8 @@ export default {
       </div>
       </div>
       <AgentSettingsDialog v-if="settingsOpen"
-        @close="settingsOpen = false; agentApi.status().then((s) => { status = s; }).catch(() => {})" />
+        @saved="refreshStatus"
+        @close="settingsOpen = false; refreshStatus()" />
 
       <!-- 우측 채널 — **생성하려는 초안**의 미리보기 공간(사용자 정정). 만들 실물을 티켓
            모양으로 옆에 두고 카드에서 담당자를 고르며 승인한다. 실존 티켓 클릭은 기존
