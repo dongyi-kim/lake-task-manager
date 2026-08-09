@@ -40,7 +40,9 @@ JIRA_ENV=mock python -m uvicorn app.main:app --port 8000     # 서버 (mock 세�
 |---|---|---|
 | 전체 pytest | `python -m pytest tests/ -q` | **fake LLM + mock** — 그래프 분기·가드·도구 계약·회귀. 현재 **589 passed**, ~2분, $0 |
 | 이벤트 스모크 | `LLM_PROVIDER=fake JIRA_ENV=mock python -X utf8 <스크립트>` 로 `session.stream()` 소비 | SSE 이벤트 모양(plan/step/node/token) 확인, $0 |
-| 성능 | `python -X utf8 tools/agent_perf.py` | 실 LLM(mini). 4시나리오 역할별 시간·토큰·캐시·TTFT. 합계 ~125s 기준 |
+| 성능 | `python -X utf8 tools/agent_perf.py` | 실 LLM(mini). 4시나리오 역할별 시간·토큰·캐시·TTFT. **현재 기준 53s · 18회 · 106k tok** |
+| **UI 시나리오** | `python -X utf8 tools/agent_ui_probe.py cases.json [--out r.md]` | 실 LLM + 브라우저. 답변 전문 + **렌더 위반** + **초안 본문 전문**(서버 스냅샷). 텍스트 probe 로는 절반만 보인다 |
+| 정적 자산 | (pytest 에 포함) `tests/test_static_assets.py` | 제어문자·JS 파싱·템플릿의 모듈 직접 호출·인라인 핸들러. **조용히 깨지는 렌더 사고**를 커밋 전에 잡는다, $0 |
 | 조회·지식 배터리 | `python -X utf8 tools/agent_scenarios.py gpt-4o-mini DATA1 DATA5 PROG1 …` | 실 LLM. 체커+judge. DATA*=자산 지식, PROG*=진척 |
 | **생성 스위트** | `python -X utf8 tools/agent_create_suite.py gpt-4o-mini [케이스ID…]` | 실 LLM. **20케이스**(ONE/STR/PAR/SUB/PASTE/ASK/DUP/ATTR/RULE/STARR1). 전체 ~$0.3 |
 | 초안 심층 평가 | `python -X utf8 tools/agent_draft_eval.py` | 실 LLM. 정량 축 + judge **5축**(topic/body/roles/refs/placement) |
@@ -116,6 +118,35 @@ token(Responder 스트리밍) → final`. UI 는 플랜 단위 [✓]/[▸]/[ ] +
 배경 사건: 실사용 STARR NDV 테스트에서 주제 이탈·본문 오염·구조 오판이 드러남 →
 "배터리 green ≠ 품질" 규율 확립 → 33ac843~6eb8812 라운드로 교정. 상세 갭 장부는
 DRAFT-COMPARISON.md.
+
+## 5-b. 성능 설계 원칙 (2026-08-09 최적화 라운드에서 확립)
+
+> **재료가 이미 손안에 있으면 순회하지 않는다.**
+
+도구 호출 한 번은 곧 **LLM 왕복 한 번**이다. 그런데 역할이 가진 도구가 코드 사전취합과
+중복이면 모델은 그것을 매 턴 다시 부른다 — 생성 턴 하나에 refiner 만 12회·226k 토큰을
+먹은 것이 그래서였다. 판단이 아닌 조회는 코드가 하고, 모델에게는 **결과만** 준다.
+
+| 역할 | 형태 | 근거 |
+|---|---|---|
+| Refiner | **StructuredAgent(도구 0)** | 허용값·Epic 후보·규칙·전이·검증이 전부 사전취합/Reviewer 와 중복이었다 |
+| Assigner | **StructuredAgent(도구 0)** | 부르는 대상이 늘 같다(초안이 정한 모듈) → `_roster_load` 병렬 조회 |
+| PMO | ToolAgent(max_steps 8) | my_day·그룹활동·비교·주간보고는 사전취합, 자유 조회만 ReAct |
+| Historian | ToolAgent(max_steps 7) | **진짜 조사** — 몇 번 검색해야 충분한지는 미리 모른다. 여기는 남긴다 |
+
+프롬프트도 같은 원리다 — `prompts/roles.py::compose()` 로 **경로에 안 쓰이는 절**을 뺀다
+(순수 modify 턴에서 생성 지시 2.3k 토큰). 절 제목이 어긋나면 조용히 아무것도 안 빠지므로
+제목 존재를 테스트가 지킨다(`test_section_titles_used_for_pruning_really_exist`).
+
+**측정 기록**(gpt-4o-mini, agent_perf 4시나리오):
+
+| | 시간 | LLM 호출 | 토큰 |
+|---|---|---|---|
+| 최적화 전 | 163s | 39회 | 374k |
+| 최적화 후 | **53s** | **18회** | **106k** |
+| | −67% | −54% | −72% |
+
+생성 턴 119s/276k → 24s/54k · 조회 턴 18s/30k → 13s/13k
 
 ## 6. 현재 상태 (2026-08-09 지속 루프 Round A~N 후)
 
