@@ -165,12 +165,46 @@ CASES = [
                              for q in (o.get("questions") or []))
                          # 추정 대상의 실데이터를 확인 전에 쏟으면 실패
                          and "DL-9044" not in (o.get("reply") or ""))),
-    ("DATA11", "오탈자 확인 후속 — 고르면 정확 표기로 정상 답변(표+참조 인덱스)", [
+    ("DATA11", "오탈자 확인 후속 — 고르면 정확 표기로 **연표**가 나온다(현재 값만이면 실패)", [
         "fdc_flat_summary_ic 데이터의 히스토리",
         "fdc.fdc_trace_summary_ic 말한거야"],
      None, lambda o, _: (_has(o, "30분", "DL-9044")
-                         and _ux_ok(o.get("reply") or ""))),
+                         and _ux_ok(o.get("reply") or "")
+                         and _history_ok(o.get("reply") or ""))),
+    ("DATA12", "히스토리 단일턴 — 요청·구축·장애·변경·진행중을 **처음부터 지금까지**", [
+        "fdc trace summary ic 데이터의 히스토리"],
+     None, lambda o, _: _history_ok(o.get("reply") or "")),
+    ("DATA13", "확인 턴을 지나도 원 요청이 답의 성격을 정한다 — 보기 하나만 고른 턴", [
+        "fdc flat trace ic 데이터 히스토리 정리",
+        "fdc.fdc_trace_summary_ic"],
+     None, lambda o, outs: (bool(outs[0].get("questions"))
+                            and _history_ok(o.get("reply") or ""))),
 ]
+
+# 이 대상의 사내 이력 전부 — 재료(topic_dossier)에는 늘 8건이 실린다.
+_FDC_TICKETS = ("DL-9041", "DL-9042", "DL-9043", "DL-9044",
+                "DL-9045", "DL-9046", "DL-9047", "DL-9062")
+
+
+def _history_ok(reply: str, keys=_FDC_TICKETS, need: int = 6) -> bool:
+    """히스토리 질문의 최소선 — **연표가 나왔는가.**
+
+    실측 사고: 재료에는 관련 티켓 8건이 전부(문서 2건도 URL 까지) 실려 있는데 답은 3건만
+    썼다. 인용된 3건은 '변경 이력'·'코멘트 근거'에 사실 한 줄이 붙은 것과 정확히 일치했다 —
+    나머지는 제목뿐이라 모델이 할 말이 없어 버렸다. 그래서 탄생(VoC 요청 → Job 개발)도,
+    주기 단축의 계기가 된 지연 장애도, 지금 진행 중인 안정화도 빠졌다.
+
+    ★ 이 체커를 왜 늘렸나: DATA11 이 **이미 이 흐름을 돌고 있었는데** 체커가 '30분·DL-9044'
+    만 봐서 2/8 짜리 답을 green 으로 넘겼다. 배터리가 통과한다고 품질이 보장되지 않는다는
+    이 저장소의 규율이 정확히 여기서 증명된다 — 체커는 **답이 아니라 기대**를 적어야 한다.
+
+    셋을 본다: ①이력 대부분을 인용했는가 ②진행 중인 일을 말했는가(안 하면 '지금'이 없다)
+    ③확인 불가한 출처가 없는가(참조에 키도 링크도 없는 줄).
+    """
+    from app.agent.workflow.grounding import _unlinked_refs
+    cited = sum(1 for k in keys if k in reply)
+    ongoing = any(k in reply for k in ("DL-9047", "DL-9062"))
+    return cited >= need and ongoing and not _unlinked_refs(reply)
 
 
 def _ux_ok(reply: str) -> bool:
