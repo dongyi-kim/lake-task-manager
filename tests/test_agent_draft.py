@@ -550,3 +550,35 @@ def test_data_fixture_labels_are_dropped():
     labels = r["draft"]["items"][0].get("labels") or []
     assert "ui-fixture" not in labels and "tbl-lineage_ui" not in labels
     assert "성능" in labels, "일반 라벨은 남아야 한다"
+
+
+# ── 경로별 프롬프트 조립 ────────────────────────────────────────────
+def test_section_titles_used_for_pruning_really_exist():
+    """제목이 하나라도 어긋나면 **조용히 아무것도 안 빠진다** — 그러면 최적화가
+    사라진 줄도 모르고 토큰만 계속 나간다. 제목 존재를 테스트가 지킨다."""
+    from app.agent.prompts.roles import SYSTEM_REFINER, sections
+    from app.agent.workflow.agents.refiner import _CREATE_ONLY, _MODIFY_ONLY
+    have = set(sections(SYSTEM_REFINER))
+    for t in _CREATE_ONLY + _MODIFY_ONLY:
+        assert t in have, f"refiner.md 에 '## {t}' 절이 없다"
+
+
+def test_modify_turns_drop_the_creation_only_sections():
+    """기존 티켓의 필드를 바꾸는 턴에 '어떻게 쪼갤 것인가'·'본문 4섹션' 지시는
+    판단에 쓰이지 않으면서 매 호출 2천 토큰을 태운다."""
+    from app.agent.workflow.agents.refiner import _role_md
+    md = _role_md({"intent": Intent.MODIFY})
+    assert "Splitting rules" not in md and "Choosing the SHAPE" not in md
+    assert "Modify path" in md, "변경 경로 지시는 남아야 한다"
+    # 초안을 고치는 modify 턴은 생성 지시가 필요하다 — 빼면 안 된다.
+    md2 = _role_md({"intent": Intent.MODIFY, "draft": {"items": [{"summary": "s"}]}})
+    assert "Splitting rules" in md2
+
+
+def test_creation_turns_keep_every_creation_section():
+    """초안을 만드는 턴에서는 품질이 먼저다 — 생성 지시를 빼지 않는다."""
+    from app.agent.workflow.agents.refiner import _role_md
+    md = _role_md({"intent": Intent.PLAN_WORK})
+    for t in ("Choosing the SHAPE", "Splitting rules", "Description quality",
+              "EPIC creation", "Title conventions"):
+        assert t in md

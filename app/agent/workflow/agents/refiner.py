@@ -274,7 +274,10 @@ class Refiner(StructuredAgent):
                       "'지금 고치고 있는 초안'의 items 에 요청 사항을 반영한 **수정본 전체**를 "
                       "다시 내라(설명이 아니라 items 로). 미확정 사항은 rationale 에 적는다.")
         # 정적 지시는 prompts/roles/refiner.md — 동적 경고(횟수 소진)만 코드가 덧붙인다.
-        return persona(state, SYSTEM_REFINER + extra)
+        # ★ 경로에 안 쓰이는 절은 싣지 않는다. 기존 티켓의 필드를 바꾸는 턴에 '어떻게
+        #   쪼갤 것인가'·'본문 4섹션'·'Epic 생성' 지시는 판단에 쓰이지 않으면서 매 호출
+        #   2천 토큰을 태운다(refiner system 4.2k tok 중 절반이 생성 전용이었다).
+        return persona(state, _role_md(state) + extra)
 
     def task(self, state):
         # "알아서/기본값" 은 명령서 수준에서 강제한다 — 되묻기 기준(시스템)만으로는 담당자·기한을
@@ -1599,6 +1602,33 @@ def _module_pool(item: dict, fallback: str) -> list:
     except Exception:
         pass
     return [fallback] if fallback else []
+
+
+# 경로별로 **안 쓰이는** 역할 지시 절. 제목은 refiner.md 의 `## …` 과 정확히 같아야 한다
+# (오타는 조용히 아무것도 안 빼므로, 아래 테스트가 제목 존재를 지킨다).
+_CREATE_ONLY = ["Choosing the SHAPE — decide this before writing anything",
+                "Splitting rules", "Description quality (the draft IS the ticket)",
+                'EPIC creation (mode="epic")', 'Bulk Sub-Task interviews (mode="subtask")',
+                "Pasted meeting notes / lists", "Title conventions",
+                "The TOPIC is the user's original request — guard it"]
+_MODIFY_ONLY = ["Comment bodies (modify path)", "Modify path (existing tickets)"]
+
+
+def _role_md(state) -> str:
+    """이번 경로에 필요한 절만 조립한다.
+
+    ★ 초안을 만드는 턴(생성·버그·초안 수정)에는 **전부** 싣는다 — 품질이 먼저다.
+    빼는 것은 기존 티켓의 필드를 바꾸는 순수 modify 턴뿐이고, 거기서는 생성 지시가
+    판단에 쓰이지 않는다(초안 items 를 내지 않는 경로다).
+    """
+    from app.agent.prompts.roles import compose
+    intent = (state.get("intent") or "").strip()
+    editing_draft = bool((state.get("draft") or {}).get("items"))
+    if intent == Intent.MODIFY and not editing_draft:
+        return compose(SYSTEM_REFINER, _CREATE_ONLY)
+    if intent in Intent.DRAFTS_TICKETS:
+        return compose(SYSTEM_REFINER, _MODIFY_ONLY)
+    return SYSTEM_REFINER
 
 
 def _rules_material(state) -> str:

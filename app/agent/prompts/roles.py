@@ -49,6 +49,32 @@ SYSTEM_CURATOR = _load("curator")
 SYSTEM_COMPOSER = _load("composer")   # 에디터 안에서 본문·코멘트를 써 주는 역할
 
 
+def sections(md: str) -> dict:
+    """`## 제목` 단위로 쪼갠다 — 머리말은 키 `""` 로.
+
+    같은 역할이라도 **경로마다 필요한 절이 다르다.** 기존 티켓의 필드를 바꾸는 턴에
+    '어떻게 쪼갤 것인가'·'본문 4섹션'·'Epic 생성' 지시를 실어 봐야 판단에 쓰이지 않고
+    매 호출 2천 토큰을 태운다. 파일은 그대로 두고(편집 자산) 조립만 골라서 한다.
+    """
+    out: dict[str, str] = {}
+    cur, buf = "", []
+    for line in (md or "").splitlines():
+        if line.startswith("## "):
+            out[cur] = "\n".join(buf).strip()
+            cur, buf = line[3:].strip(), [line]
+        else:
+            buf.append(line)
+    out[cur] = "\n".join(buf).strip()
+    return out
+
+
+def compose(md: str, drop: list) -> str:
+    """`drop` 에 든 제목의 절을 뺀 나머지를 원래 순서대로 잇는다."""
+    secs = sections(md)
+    skip = {str(d).strip() for d in (drop or [])}
+    return "\n\n".join(v for k, v in secs.items() if v and k not in skip)
+
+
 def _load_playbooks() -> dict:
     """playbooks.md 의 `## id` 절들 → {id: 본문}. 전형적 요청의 사전 정의 플로우."""
     text = (_DIR.parent / "playbooks.md").read_text(encoding="utf-8")
