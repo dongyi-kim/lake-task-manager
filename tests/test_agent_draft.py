@@ -478,3 +478,28 @@ def test_epic_typed_items_promote_the_mode_to_epic():
     r = Refiner().apply(_msg("데이터 품질 모니터링 Epic 만들어줘. 알아서"), out)
     assert r["draft"]["mode"] == "epic"
     assert len(r["draft"]["items"]) == 1
+
+
+def test_adding_one_more_item_keeps_the_pending_draft_items():
+    """승인 전 초안에 "하나 더 추가"를 요청했는데 모델이 새 항목만 내면 —
+    기존 항목이 통째로 사라진다(실측 Round O). 코드가 병합해 유지한다."""
+    prev = {"mode": "task", "items": [{"summary": "[Catalog] 카탈로그 검색 성능 개선",
+                                       "type": "Task", "description": "본문"}]}
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "[Catalog] 성능 측정 대시보드 구축", "type": "Task",
+                      "description": "본문"}]}
+    r = Refiner().apply(_msg("좋아. 하나 더 추가해줘 — 성능 측정 대시보드 구축",
+                             draft=prev, turns=1), out)
+    sums = [i["summary"] for i in r["draft"]["items"]]
+    assert len(sums) == 2, sums
+    assert "검색 성능 개선" in sums[0] and "대시보드" in sums[1]
+
+
+def test_a_plain_edit_request_does_not_resurrect_removed_items():
+    """추가 요청이 아닌 수정 요청에는 병합이 발동하지 않는다(빼 달라는 요청을 되살리면 안 된다)."""
+    prev = {"mode": "task", "items": [{"summary": "[Catalog] A 작업", "type": "Task"},
+                                      {"summary": "[Catalog] B 작업", "type": "Task"}]}
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "[Catalog] A 작업", "type": "Task"}]}
+    r = Refiner().apply(_msg("B 는 빼줘", draft=prev, turns=1), out)
+    assert len(r["draft"]["items"]) == 1

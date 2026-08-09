@@ -382,7 +382,10 @@ class Refiner(ToolAgent):
                        _slot_audit(state) if (state.get("intent") or "") in Intent.DRAFTS_TICKETS
                        else ""),
             data_block("지금 고치고 있는 초안 (전문 — 처음부터 다시 쓰지 말고 이걸 고쳐라. "
-                       "사용자가 문제 삼지 않은 부분은 유지한다)", prev),
+                       "사용자가 문제 삼지 않은 부분은 유지한다. ★ '하나 더/추가' 요청이면 "
+                       "**기존 items 를 전부 그대로 유지한 채** 새 항목을 뒤에 추가하라 — "
+                       "기존 항목·children 을 빼먹으면 아직 승인 전이라 통째로 사라진다. "
+                       "기존 children 을 새 항목에 복사하지도 마라)", prev),
             data_block("일괄 수정 대상 (코드가 JQL 로 확정 — change.keys 에 이 키 전부를 담아라)",
                        ", ".join(state.get("bulk_targets") or [])),
             data_block("Historian 이 정리한 현재 상황", state.get("situation")),
@@ -667,6 +670,25 @@ class Refiner(ToolAgent):
         # refiner.md 오판 #1(단계를 Task 로)·#2("테이블 30개 → 30 Tasks")를 코드가
         # 보장한다(실측 재발 2종: "테이블 1~5" Task 5개 / "…설계·…구현·…검증" Task 3개).
         # 제목에서 꼬리 번호·단계 낱말을 떼면 같은 제목 = 같은 산출물.
+        # 제목이 **순수 단계어**("구현 단계", "검증 단계")인 항목은 독립 Task 가 아니라
+        # 첫 실질 항목의 Sub-Task 다(실측: 재구축+구현 단계+검증 단계 3 Task).
+        if mode == "task" and len(items) >= 2:
+            stage_only = [i for i in items[1:] if _re.match(
+                r"^(설계|구현|검증|테스트|배포|모니터링|문서화|분석|리뷰)\s*(단계)?$",
+                str(i.get("summary") or "").strip())]
+            if stage_only:
+                head0 = items[0]
+                kids0 = [c for c in (head0.get("children") or []) if isinstance(c, dict)]
+                for s_it in stage_only:
+                    kids0.append({"summary": f"{s_it.get('summary')} — "
+                                             f"{str(head0.get('summary'))[:30]}",
+                                  **({"assignee": s_it["assignee"]}
+                                     if s_it.get("assignee") else {})})
+                    items.remove(s_it)
+                head0["children"] = kids0
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(단계 항목은 독립 Task 가 아니라 Sub-Task 로 접었다)").strip()
+
         need = 2 if structure == "task_with_subtasks" else 3
         if mode == "task" and len(items) >= need:
             base = _base_title(str(items[0].get("summary") or ""))
@@ -935,15 +957,25 @@ class Refiner(ToolAgent):
             if str(fields.get("priority") or "").strip():
                 p = str(fields["priority"]).strip()
                 fields["priority"] = _PRI.get(p.upper(), p)
+            # 빈 문자열 값은 변경이 아니다 — 모델이 안 바꿀 필드를 "" 로 채워 빈 changes
+            # 일괄 카드가 떴다(실측). 해제(비우기)는 단건 change 로만 받는다.
+            fields = {k: v for k, v in fields.items()
+                      if (isinstance(v, list) and v) or str(v or "").strip()}
             real = [k for k in dict.fromkeys(bulk_keys) if _ticket_exists(k)][:30]
             gone = [k for k in bulk_keys if k not in real]
             if gone:
                 out["rationale"] = ((out.get("rationale") or "")
                                     + f"\n(실재하지 않아 제외: {', '.join(gone[:5])})").strip()
             if real and fields:
-                plan = {"keys": real, "changes": fields,
-                        "comment": (change.get("comment") or "").strip(),
-                        "why": out.get("rationale") or ""}
+                if len(real) == 1:
+                    # 단건이면 단건 카드다 — 일괄 카드는 대상이 여럿일 때만.
+                    plan = {"key": real[0], "changes": fields,
+                            "comment": (change.get("comment") or "").strip(),
+                            "why": out.get("rationale") or ""}
+                else:
+                    plan = {"keys": real, "changes": fields,
+                            "comment": (change.get("comment") or "").strip(),
+                            "why": out.get("rationale") or ""}
         # ── 전이 최종 보장: "DL-x 를 <상태>로 옮겨/바꿔" 인데 모델이 change.status 를
         # 안 쓰고 엉뚱한 초안을 냈다(실측: '상태로 옮김' Task 를 새로 만듦) — 코드가
         # 요청에서 상태명을 뽑아 전이를 조립하고 초안을 버린다.
@@ -1024,6 +1056,22 @@ class Refiner(ToolAgent):
                 qs = []
                 items.clear()          # 수정 요청에 초안을 만들었어도 계획이 이긴다(참조 공유)
 
+        # 담당 변경의 사번은 **초안 단계에서 실재 검증** — 미실재면 카드 대신 정확한 안내
+        # (실측: 없는 사번에 '이메일 주소를 알려달라'는 엉뚱한 질문이 나갔다).
+        _asg = (plan.get("changes") or {}).get("assignee") if plan else None
+        if _asg:
+            try:
+                from app.agent.tools._ctx import client as _c2, settings as _s2
+                from app.domain.search import search_users as _su
+                found = _su(_c2(), _s2(), _asg, 5) or []
+                if not any(str(u.get("id") or "") == _asg for u in found):
+                    plan = {}
+                    qs = [{"question": f"'{_asg}' 는 존재하지 않는 사번입니다. 올바른 사번을 "
+                                       "알려 주세요 (skcc.x1042 형식 — 자동완성이 붙습니다).",
+                           "kind": "text", "options": [], "field": "assignee"}]
+            except Exception:
+                pass
+
         # 삭제 요청 — 지원되지 않는다. 모델이 빈 변경+코멘트 카드를 만들던 것(실측)을 코드가
         # 막는다: 카드 없이 사유·대안만 답하게 한다.
         if plan and not plan.get("changes") \
@@ -1046,6 +1094,27 @@ class Refiner(ToolAgent):
                 out["rationale"] = ((out.get("rationale") or "")
                                     + "\n(승인 대기 초안에 대한 수정 요청 — 기존 티켓 변경이 "
                                       "아니라 초안을 고쳐야 한다)").strip()
+        # ── "하나 더 추가해줘" — 승인 전 초안은 통째로 사라지면 안 된다 ────────
+        # 실측(O1): 승인 대기 초안이 있는 상태에서 항목 추가를 요청하니 모델이 **기존 항목만**
+        # 다시 내고 새 항목을 빠뜨렸다(반대로 새 항목만 내고 기존을 버리기도 한다).
+        # 프롬프트 지시는 이미 있지만 mini 는 지킬 때와 아닐 때가 갈린다 → 코드가 병합한다.
+        # 판정은 사용자 발화의 추가 낱말로만 한다(수정·교체 요청에는 발동하지 않는다).
+        prev_items = [i for i in ((state.get("draft") or {}).get("items") or [])
+                      if isinstance(i, dict) and i.get("summary")]
+        if items and prev_items and mode == ((state.get("draft") or {}).get("mode") or "task") \
+                and _re.search(r"(하나|한\s*개|1개|항목|티켓)?\s*더\s*(추가|만들|넣)|"
+                               r"추가(해|로)\s*(줘|주세요)|덧붙",
+                               last_user_text(state)):
+            have = {_base_title(str(i.get("summary") or "")) for i in items}
+            missing = [p for p in prev_items
+                       if _base_title(str(p.get("summary") or "")) not in have]
+            if missing:
+                items[:0] = missing          # 기존 항목을 앞에, 새 항목은 뒤에
+                draft["items"] = items
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(승인 전 초안 {len(missing)}건을 유지한 채 새 항목을 "
+                                      "덧붙였다)").strip()
+
         # 가드들이 out["rationale"] 에 덧붙인 경고(Epic 불일치·컴포넌트 정리 등)를 초안에 반영한다
         # — draft 는 items 를 참조로 공유하지만 rationale 은 문자열이라 여기서 맞춰 줘야 한다.
         draft["rationale"] = out.get("rationale") or draft.get("rationale") or ""

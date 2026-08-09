@@ -106,6 +106,8 @@ class Responder(TextAgent):
                              for p in (review.get("problems") or []))
         errors = "\n".join(f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
                            for e in (review.get("errors") or []))
+        draft_items = [i for i in ((state.get("draft") or {}).get("items") or [])
+                       if isinstance(i, dict) and i.get("summary")]
         made = "\n".join(f"- {c.get('key')} {c.get('summary','')}" for c in (result.get("created") or []))
         bad = "\n".join(f"- {f.get('summary','')}: {f.get('error','')}" for f in (result.get("failed") or []))
 
@@ -190,7 +192,11 @@ class Responder(TextAgent):
             data_block("쪼갠 이유", (state.get("draft") or {}).get("rationale")),
             data_block("담당자 제안과 근거", asg),
             data_block("검증에서 걸린 것", errors),
-            data_block("검토 의견", problems),
+            # 검토 의견은 **미해결일 때만** 사용자 몫이다. 검증을 통과해 승인 카드가 뜨는
+            # 턴에 내부 지적("하나의 Task 로 통합하는 것이 좋습니다")을 그대로 옮기면
+            # 카드와 모순되는 안내가 된다(실측 Round O, 2회 재발). 반영 여부는 Refiner 가
+            # 이미 판단했고 근거는 rationale 에 남는다.
+            data_block("검토 의견", "" if (draft_items and not errors) else problems),
             data_block("되물을 것", "\n".join(f"- {q}" for q in qs)),
             data_block("실제로 만들어진 티켓", made),
             data_block("실패한 항목", bad))
