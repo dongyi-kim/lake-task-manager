@@ -208,39 +208,73 @@ def _history_ok(reply: str, keys=_FDC_TICKETS, need: int = 6) -> bool:
 
 
 def _ux_ok(reply: str) -> bool:
-    """가시성 결정적 체커 — judge(주관) 이전의 최소선.
+    """가시성 결정적 체커 — judge(주관) 이전의 **최소선**.
 
     ① '확인된 기록 없음' 나열 금지(3회 이상이면 벽이다 — 실측 6회)
     ② 근거 마커 [N] 를 3개 이상 쓰면 반드시 **참조** 섹션이 있어야 한다
+    ③ 참조 줄에 티켓 키도 링크도 없으면 검증 불가한 출처다(실측: 링크 없는 문서 제목)
+    ④ 같은 문장을 두 번 쓰지 않는다(실측 재발 — 프롬프트로 막을 종류가 아니다)
+    ⑤ 티켓을 5건 이상 나열하면 표로 준다 — 불릿 벽은 읽히지 않는다(responder.md 규칙)
     """
+    from app.agent.workflow.grounding import _unlinked_refs
     if reply.count("확인된 기록 없음") >= 3:
         return False
     markers = len(set(re.findall(r"\[(\d{1,2})\](?!\()", reply)))
     if markers >= 3 and "참조" not in reply:
         return False
+    if _unlinked_refs(reply):
+        return False
+    sents = [s.strip() for s in re.split(r"[.\n]", reply) if len(s.strip()) >= 25]
+    if len(sents) != len(set(sents)):
+        return False
+    if len(set(re.findall(r"\bDL-\d+", reply))) >= 5 and reply.count("|") < 6:
+        return False
     return True
 
+# 품질 하한 — 체커만 통과하고 답이 형편없으면 그건 통과가 아니다.
+# 여태 passed 는 결정적 체커만 봤고 judge 점수는 **표시만** 했다. 그래서 2점짜리 답이
+# green 으로 집계됐다(실측 DATA11). 환경변수로 낮출 수는 있게 두되 기본은 조인다.
+QUALITY_MIN = float(os.environ.get("LAKE_SCENARIO_QUALITY_MIN", "3.5"))
+JUDGE_AXES = ("visibility", "clarity", "completeness", "grounding", "interaction", "relevance")
+
 JUDGE_SYS = (
-    "너는 PMO 어시스턴트 답변의 채점자다. 사용자 질문과 답변을 보고 5축을 1~5로 채점하라. "
+    "너는 PMO 어시스턴트 답변의 채점자다. 아래 6축을 1~5로 채점하라. "
     "5=흠잡을 데 없음, 3=쓸 만하나 아쉬움, 1=실패. JSON 만 출력: "
     '{"visibility":n,"clarity":n,"completeness":n,"grounding":n,"interaction":n,'
-    '"worst":"가장 아쉬운 점 한 문장"} '
-    "— visibility(구조가 사람을 위해 있나: 값 질문엔 표, 이력엔 타임라인, 근거 3개↑면 "
-    "본문엔 [N] 마커만 두고 끝에 참조 목록. **본문 문장마다 제목·작성자·날짜를 끼워 넣어 "
-    "벽을 만들었으면 2점 이하**. '확인된 기록 없음'을 안 물은 항목까지 나열했으면 감점), "
-    "clarity(한 번 읽고 이해되나 — 결론이 첫 1~2문장에 있나), "
-    "completeness(질문이 요구한 정보를 다 담았나 — 자료의 목록을 요약으로 뭉갰으면 감점), "
-    "grounding(주장마다 근거 번호·티켓 키·수치가 있나, 참조 목록에 제목·출처가 있나), "
-    "interaction(모호한 요청에 추측으로 답하는 대신 확인 질문·후보 선택지를 냈나 — "
-    "확실한데도 되물었으면 그것도 감점)")
+    '"relevance":n,"worst":"가장 아쉬운 점 한 문장"} '
+    "★ 채점 기준은 '이 케이스가 보려는 것'이다 — 그것을 못 했으면 문장이 아무리 매끄러워도 "
+    "completeness 는 2점 이하다. 그리고 답의 성격은 **원래 요청**이 정한다: 히스토리를 "
+    "물었는데 현재 값만 답했으면, 그 값이 맞더라도 다른 질문에 답한 것이다.\n"
+    "— visibility(구조가 사람을 위해 있나: 값 질문엔 표, **이력 질문엔 시간순 타임라인**, "
+    "근거 3개↑면 본문엔 [N] 마커만 두고 끝에 참조 목록. 본문 문장마다 제목·작성자·날짜를 "
+    "끼워 넣어 벽을 만들었으면 2점 이하. 티켓 5건 이상을 불릿으로 늘어놓았으면 3점 이하)\n"
+    "— clarity(한 번 읽고 이해되나 — 결론이 첫 1~2문장에 있나. 군말·되풀이는 감점)\n"
+    "— completeness(**케이스가 보려는 것과 원래 요청이 요구한 것을 다 담았나.** 자료에 목록이 "
+    "있는데 요약으로 뭉갰으면 감점. 이력 질문에서 시작(요청·구축)이나 **현재 진행 중인 일**이 "
+    "빠졌으면 3점 이하 — '왜 이렇게 됐나'와 '지금 어디까지 왔나'가 이력의 알맹이다)\n"
+    "— grounding(주장마다 근거 번호·티켓 키·수치가 있나. **참조 줄에 티켓 키도 링크도 없으면 "
+    "검증 불가한 출처다 — 그런 줄이 하나라도 있으면 2점 이하**. 티켓 키는 제목과 짝지어 쓰나)\n"
+    "— interaction(모호한 요청에 추측으로 답하는 대신 확인 질문·후보 선택지를 냈나 — "
+    "확실한데도 되물었으면 그것도 감점)\n"
+    "— relevance(질문의 **구체적 개념**과 관련된 것만 실었나. 모듈이 같다거나 팀이 같다는 "
+    "이유로 끌어온 티켓·문서는 노이즈다 — 하나라도 있으면 3점 이하. 관련 이력이 없으면 "
+    "'없음'이 정답이고, 그렇게 답했다면 감점하지 마라)")
 
 
-def judge(question, reply):
+def judge(question, reply, original="", expect=""):
+    """original = **첫 턴의 원 요청**, expect = 이 케이스가 보려는 것.
+
+    둘 다 없으면 judge 는 마지막 턴만 보고 채점한다 — 그건 draft judge 에서 이미 데인
+    맹점이다(확인 질문에 답한 턴은 마지막 발화가 '보기 하나'라, 그것만 주면 무엇을 묻는
+    대화인지 알 수 없어 현재 값만 답한 것을 만점으로 준다). 여기도 같은 구멍이 있었다.
+    """
     from app.agent import config as C
     try:
         out = C.get_llm(temperature=0, tier="simple").invoke([
             ("system", JUDGE_SYS),
-            ("user", f"### 질문\n{question}\n\n### 답변\n{reply[:4000]}")])
+            ("user", f"### 이 케이스가 보려는 것\n{expect or '(명시 없음)'}\n\n"
+                     f"### 원래 요청 (첫 턴 — 답의 성격은 이것이 정한다)\n{original or question}\n\n"
+                     f"### 이번 턴 질문\n{question}\n\n### 답변\n{reply[:4000]}")])
         txt = str(getattr(out, "content", "") or "")
         m = re.search(r"\{.*\}", txt, re.S)
         return json.loads(m.group(0)) if m else {}
@@ -262,28 +296,41 @@ for cid, desc, turns, want_intent, check in CASES:
         last = outs[-1]
         ok_intent = (want_intent is None) or (last.get("intent") == want_intent)
         ok_check = bool(check(last, outs))
-        passed = ok_intent and ok_check
-        j = judge(turns[-1], last.get("reply") or "") if passed else {}
-        score = round(sum(j.get(k, 0) for k in ("visibility", "clarity", "completeness",
-                                                "grounding")) / 4, 2) if j and "error" not in j else 0
+        # ★ judge 는 **실패한 케이스에도** 돌린다. 예전엔 통과했을 때만 채점해서, 정작
+        #   진단이 가장 필요한 실패 케이스에 품질 정보가 없었다(그리고 평균은 통과분만
+        #   집계돼 실패가 많을수록 평균이 좋아 보였다).
+        j = judge(turns[-1], last.get("reply") or "", original=turns[0], expect=desc)
+        # 6축 전부를 평균에 넣는다 — interaction 은 채점만 하고 **버리고 있었다**.
+        score = round(sum(j.get(k, 0) for k in JUDGE_AXES) / len(JUDGE_AXES), 2) \
+            if j and "error" not in j else 0
+        # ★ 품질 하한 — 체커만 통과하고 답이 형편없으면 통과가 아니다.
+        ok_quality = score >= QUALITY_MIN
+        passed = ok_intent and ok_check and ok_quality
         mark = "✓" if passed else "✗"
         print(f"{mark} {cid} {desc}: intent={last.get('intent')}"
               f"{'' if ok_intent else f'(기대 {want_intent})'} 체커={'ok' if ok_check else 'FAIL'}"
-              f" 품질={score} {time.time()-t0:.0f}s")
+              f" 품질={score}{'' if ok_quality else f'(하한 {QUALITY_MIN})'} {time.time()-t0:.0f}s")
         if not passed:
             print(f"   reply: {(last.get('reply') or '')[:200]}")
+            if j and "error" not in j:
+                print("   축별: " + " · ".join(f"{k}={j.get(k)}" for k in JUDGE_AXES))
         if j.get("worst"):
             print(f"   judge: {j['worst'][:110]}")
         rows.append({"id": cid, "desc": desc, "turns": turns, "passed": passed,
                      "intent": last.get("intent"), "score": score, "judge": j,
+                     "ok_check": ok_check, "ok_quality": ok_quality,
                      "reply": (last.get("reply") or "")[:1500]})
     except Exception as e:
         print(f"✗ {cid}: 예외 {str(e)[:150]}")
         rows.append({"id": cid, "desc": desc, "passed": False, "error": str(e)[:300]})
 
 n_ok = sum(1 for r in rows if r.get("passed"))
-avg = round(sum(r.get("score", 0) for r in rows if r.get("passed")) / max(1, n_ok), 2)
-print(f"\n{n_ok}/{len(rows)} 통과 · 품질 평균 {avg} · 총비용 ${round(total_cost, 3)}")
+# 평균은 **전 케이스**로 낸다 — 통과분만 평균 내면 실패가 많을수록 평균이 좋아 보인다.
+scored = [r for r in rows if r.get("score")]
+avg = round(sum(r["score"] for r in scored) / max(1, len(scored)), 2)
+n_qfail = sum(1 for r in rows if r.get("ok_check") and not r.get("ok_quality"))
+print(f"\n{n_ok}/{len(rows)} 통과 · 품질 평균 {avg}/5 (전 케이스, 하한 {QUALITY_MIN})"
+      f" · 체커는 통과했으나 품질 미달 {n_qfail}건 · 총비용 ${round(total_cost, 3)}")
 
 if REPORT:
     lines = [f"# 에이전트 복합 시나리오 리포트 ({MODEL})", "",

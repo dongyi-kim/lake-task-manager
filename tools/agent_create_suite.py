@@ -50,6 +50,56 @@ def _owners(rows):
     return [str(r.get("assignee") or "") for r in rows]
 
 
+# ── 본문 품질 게이트 (전 케이스 공통) ─────────────────────────────────────
+# 여태 이 스위트는 **구조만** 봤다 — 몇 건인가, 자식이 붙었나, 부모가 맞나. 본문이
+# 비어 있든 섹션이 세 벌이든 통과했다. 실사용 사고(STARR NDV)는 구조가 아니라 본문에서
+# 났고, DRAFT-COMPARISON 의 갭 3종도 전부 본문 이야기다. 그래서 knowledge/07 의 규율을
+# 결정적 검사로 내려 전 케이스에 건다 — judge(주관) 이전의 최소선이다.
+_DOD_VAGUE = ("테스트 완료", "정상 동작", "잘 동작", "이상 없음", "문제 없음",
+              "성공적으로 완료", "완료됨", "구현 완료")
+
+
+def _body_flaws(o) -> list:
+    """상위 항목 본문의 규율 위반 목록. 빈 리스트면 통과.
+
+    Sub-Task 본문은 대상이 아니다(배경을 쓰지 않는 것이 규칙이다 — knowledge/07).
+    """
+    flaws = []
+    for i, it in enumerate(items(o)):
+        if str(it.get("type") or "").lower().startswith("sub"):
+            continue
+        b = _body(it)
+        if len(b.strip()) < 60:
+            flaws.append(f"[{i}] 본문이 사실상 비었다")
+            continue
+        for sec in ("배경", "작업 범위", "완료 조건"):
+            if sec not in b:
+                flaws.append(f"[{i}] '{sec}' 섹션 없음")
+        # 중복·영문 섹션 — 실측 사고(참고/Knowledge/References 3벌)
+        if b.count("<h3>참고</h3>") > 1:
+            flaws.append(f"[{i}] 참고 섹션이 두 벌")
+        for bad in ("References", "<h3>Knowledge</h3>", "Acceptance Criteria"):
+            if bad in b:
+                flaws.append(f"[{i}] 영문 중복 섹션 '{bad}'")
+        # 범위의 제외 — "하지 않는 것을 적는 게 절반"(knowledge/07)
+        if "작업 범위" in b and not re.search(r"제외|하지\s*않", b):
+            flaws.append(f"[{i}] 작업 범위에 제외가 없다")
+        # DoD 판정 방법 — "테스트 완료"는 언제 끝인지 모른다
+        dods = re.findall(r'data-checked="[^"]*"[^>]*>(.*?)</li>', b, re.S)
+        dods = [re.sub(r"<[^>]+>", "", d).strip() for d in dods]
+        dods = [d for d in dods if d]
+        if dods:
+            vague = [d for d in dods if any(v in d for v in _DOD_VAGUE) and len(d) < 24]
+            if len(vague) * 2 > len(dods):
+                flaws.append(f"[{i}] DoD 절반 이상이 판정 방법 없음: {vague[:2]}")
+        # 링크도 키도 없는 참고 불릿은 날조로 취급된다(코드 가드가 지우지만 재발 감시)
+        for m in re.finditer(r"<li>(?!.*?(?:[A-Z]{2,}-\d+|<a href))(.{6,80}?)</li>", b):
+            if "참고" in b[max(0, m.start() - 400):m.start()]:
+                flaws.append(f"[{i}] 참고에 출처 없는 불릿: {m.group(1)[:30]}")
+                break
+    return flaws
+
+
 # (ID, 설명, [질의…], 체커(마지막 out, 전체 outs))
 CASES = [
     # ── 한 줄 요청: 되묻지 않고 기본값으로 끝내야 하는 것들 ──────────
@@ -196,7 +246,9 @@ def run(cid, desc, turns, check):
             tid = o["thread_id"]
             outs.append(o)
         last = outs[-1]
-        ok = bool(check(last, outs))
+        ok_struct = bool(check(last, outs))
+        flaws = _body_flaws(last)           # 구조가 맞아도 본문이 규율을 어기면 통과가 아니다
+        ok = ok_struct and not flaws
     except Exception as e:
         print(f"✗ {cid} {desc}: 예외 {str(e)[:160]}")
         return False, 0
@@ -204,8 +256,11 @@ def run(cid, desc, turns, check):
     print(f"{'✓' if ok else '✗'} {cid} {desc}: 초안 {n}건"
           f"{' + 자식 ' + str(len(kids(last))) if kids(last) else ''}"
           f" · 질문 {len(last.get('questions') or [])}"
-          f" · 구조 {pend(last, 'structure') or '-'} · {time.time() - t0:.0f}s")
-    if not ok:
+          f" · 구조 {pend(last, 'structure') or '-'}"
+          f" · 본문 {'ok' if not flaws else f'{len(flaws)}건'} · {time.time() - t0:.0f}s")
+    if flaws:
+        print(f"    본문 결함: {' / '.join(flaws[:4])}")
+    if not ok_struct:
         print(f"    reply: {(last.get('reply') or '')[:200]}")
         print(f"    items: {json.dumps(items(last), ensure_ascii=False)[:300]}")
     return ok, (last.get("usage") or {}).get("costUsd", 0) or 0
