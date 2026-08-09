@@ -601,3 +601,54 @@
 .agent-md a.ref-tkt .ref-ttl { color:var(--text); font-weight:600; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; }
 .agent-md a.ref-tkt:hover .ref-ttl { text-decoration:underline; }
+
+/* ── 좌/우 패널 폭 조절·접기 ────────────────────────────────────────
+ * 몸짓·모양은 **티켓 다이얼로그(.spine-grip / .tl-grip / .stub)와 같다.** 같은 앱에서
+ * 같은 일을 다른 손잡이로 하게 하면 배우는 것만 늘어난다. 색·두께도 그쪽 값을 따른다. */
+.agent-nav { position:relative; }
+.agent-nav[style*="--nav-w"] { flex:0 0 var(--nav-w); }
+.agent-side[style*="--side-w"] { flex:0 0 var(--side-w); width:var(--side-w); max-width:78vw; }
+
+.ag-grip { position:absolute; top:0; width:7px; height:100%; z-index:6; cursor:col-resize; }
+.ag-grip.nav { right:-3px; }
+.ag-grip.side { left:-3px; }
+.ag-grip::after { content:""; position:absolute; top:0; width:2px; height:100%;
+  background:transparent; transition:background .12s; }
+.ag-grip.nav::after { right:3px; }
+.ag-grip.side::after { left:3px; }
+.ag-grip:hover::after { background:var(--accent); }
+
+/* 경계선 위에 얹히는 접기 버튼 — 세로 가운데. 티켓 쪽은 스크롤 중앙을 계산하지만
+ * 여기 두 패널은 자기 높이가 곧 화면 높이라 50% 로 충분하다. */
+.ag-hide, .ag-show { position:absolute; top:50%; transform:translateY(-50%);
+  width:18px; height:44px; padding:0; z-index:7; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  font-size:12px; line-height:1; color:var(--muted-2);
+  background:var(--panel); border:1px solid var(--border); border-radius:5px; }
+.ag-hide:hover, .ag-show:hover { color:var(--accent); border-color:var(--accent); }
+.ag-hide.nav { right:-9px; }     /* 경계선 위 — 폭(18)의 절반 */
+.ag-hide.side { left:-9px; }
+
+/* 접힌 상태의 얇은 레일 — 무엇이 접혀 있는지 글자로 남긴다(빈 띠는 눌러 볼 생각이 안 든다) */
+.ag-show.stub { position:relative; top:auto; transform:none; flex:0 0 26px;
+  width:26px; height:100%; border-radius:0; gap:8px;
+  flex-direction:column; padding:10px 0; justify-content:center;
+  background:var(--panel-2); }
+.ag-show.stub.nav { border-left:0; }
+.ag-show.stub.side { border-right:0; }
+.ag-show.stub .st-ic { position:absolute; top:50%; transform:translateY(-50%);
+  width:18px; height:44px; display:flex; align-items:center; justify-content:center;
+  background:var(--panel); border:1px solid var(--border); border-radius:5px; }
+.ag-show.stub.nav .st-ic { right:-9px; }
+.ag-show.stub.side .st-ic { left:-9px; }
+.ag-show.stub:hover .st-ic { color:var(--accent); border-color:var(--accent); }
+.ag-show.stub .st-label { writing-mode:vertical-rl; font-size:11px; letter-spacing:.04em;
+  color:var(--muted-2); white-space:nowrap; }
+.ag-show.stub .st-dots { flex:none; display:flex; flex-direction:column; gap:3px; }
+.ag-show.stub .st-dots i { width:3px; height:3px; border-radius:50%; background:var(--border-hi); }
+.ag-show.stub:hover .st-dots i { background:var(--accent); }
+
+/* 좁은 화면에선 접기·폭조절이 무의미하다 — 손잡이를 감춘다(티켓 쪽과 같은 판단) */
+@media (max-width: 1100px) {
+  .ag-grip, .ag-hide, .ag-show.stub { display:none; }
+}

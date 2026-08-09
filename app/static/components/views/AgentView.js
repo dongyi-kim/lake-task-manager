@@ -37,11 +37,37 @@ const EXAMPLES = [
 
 // 역할 선택 UI 는 없다 — 매니저 여부는 선택이 아니라 사실이라, 서버가 로그인 사용자로 판별한다.
 
+// ── 좌/우 패널 폭 조절·접기 ────────────────────────────────────────────
+// 규칙은 **티켓 다이얼로그(TicketDialog 의 spine/timeline)와 같다** — 이 앱에서 이미
+// 쓰는 몸짓이라 여기서 다르게 굴면 배우는 것이 하나 더 늘어난다:
+//   · 경계선을 끌어 폭 조절(그립), 각 패널이 자기 폭을 localStorage 에 기억한다
+//   · 경계선 가운데 버튼으로 접기, 접히면 얇은 레일(stub)이 남아 다시 편다
+//   · 폭은 클램프한다 — 너무 좁으면 목록이 잘리고 너무 넓으면 대화가 눌린다
+// 0 은 "아직 안 건드림"이다 → CSS 기본값(반응형 min(760px,48vw) 등)이 그대로 산다.
+const NAV_W_KEY = "agent.navW", NAV_HIDE_KEY = "agent.navHidden";
+const SIDE_W_KEY = "agent.sideW", SIDE_HIDE_KEY = "agent.sideHidden";
+const NAV_MIN = 170, NAV_MAX = 420, SIDE_MIN = 340, SIDE_MAX = 1200;
+
+function loadW(key, min, max) {
+  try { const v = parseInt(localStorage.getItem(key), 10); if (v >= min && v <= max) return v; }
+  catch (e) { /* noop */ }
+  return 0;                      // 0 = 지정 없음(CSS 기본값 사용)
+}
+function loadHidden(key) {
+  try { return localStorage.getItem(key) === "1"; } catch (e) { return false; }
+}
+function saveLS(key, val) {
+  try { localStorage.setItem(key, String(val)); } catch (e) { /* noop */ }
+}
+
 export default {
   name: "AgentView",
   components: { AgentSettingsDialog, Avatar, CommentEditor, FieldEdit },
   data() {
     return { authNote: "",
+      // 좌(대화 목록)·우(초안 미리보기) 패널 — 폭 조절·접기(각자 저장). TicketDialog 와 같은 규칙.
+      navW: loadW(NAV_W_KEY, NAV_MIN, NAV_MAX), navHidden: loadHidden(NAV_HIDE_KEY),
+      sideW: loadW(SIDE_W_KEY, SIDE_MIN, SIDE_MAX), sideHidden: loadHidden(SIDE_HIDE_KEY),
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
       reason: "",             // 못 쓰는 이유(설치 누락 등)
       status: null,           // provider·모델 — 지금 무엇으로 도는지 화면에 보인다
@@ -135,6 +161,41 @@ export default {
     });
   },
   methods: {
+    // ── 패널 폭 조절·접기 (TicketDialog 의 spine/timeline 과 같은 규칙) ──────
+    setNavHidden(v) { this.navHidden = v; saveLS(NAV_HIDE_KEY, v ? "1" : "0"); },
+    setSideHidden(v) { this.sideHidden = v; saveLS(SIDE_HIDE_KEY, v ? "1" : "0"); },
+    /** 경계선 드래그. `ref` 로 지금 실제 폭을 읽어 시작한다 — 저장값이 없을 때(0=CSS
+     *  기본값)도 그 자리에서 자연스럽게 이어지게. `sign` 은 오른쪽 패널이 **왼쪽으로**
+     *  끌 때 넓어지기 때문에 부호가 반대인 것을 담는다. */
+    _startDrag(e, ref, sign, min, max, apply, done) {
+      const el = this.$refs[ref];
+      const w0 = (el && el.getBoundingClientRect().width) || min;
+      const x0 = e.clientX;
+      const onMove = (ev) => apply(Math.max(min, Math.min(max, w0 + sign * (ev.clientX - x0))));
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.userSelect = "";
+        done();
+      };
+      document.body.style.userSelect = "none";   // 드래그 중 글자 선택 방지
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    startNavDrag(e) {
+      this._startDrag(e, "nav", +1, NAV_MIN, NAV_MAX,
+                      (w) => { this.navW = Math.round(w); },
+                      () => saveLS(NAV_W_KEY, this.navW));
+    },
+    startSideDrag(e) {
+      this._startDrag(e, "side", -1, SIDE_MIN, SIDE_MAX,
+                      (w) => { this.sideW = Math.round(w); },
+                      () => saveLS(SIDE_W_KEY, this.sideW));
+    },
+    /** 더블클릭하면 기본 폭으로 되돌린다 — 끌다 망가뜨렸을 때 되돌릴 길(사용자가 폭을
+     *  잘못 잡으면 그 상태가 저장돼 다음에도 그대로 뜬다). */
+    resetNavW() { this.navW = 0; saveLS(NAV_W_KEY, 0); },
+    resetSideW() { this.sideW = 0; saveLS(SIDE_W_KEY, 0); },
     md(t, people) { return renderMarkdown(t, people); },
     /** [n] 참조 마커 클릭 — 같은 답변의 참조 칸을 열고 그 항목으로 점프 + 하이라이트. */
     mdClick(e) {
@@ -859,7 +920,18 @@ export default {
     <template v-else>
       <!-- 정통 에이전트 레이아웃(사용자 요청): 좌측 사이드바(새 대화·최근 대화·설정) +
            본문. 빈 화면은 중앙 히어로(제목·추천 칩·입력창)로. -->
-      <aside class="agent-nav">
+      <!-- 접힌 대화 목록을 다시 펴는 손잡이(얇은 레일) — 티켓 다이얼로그의 stub 과 같은 꼴 -->
+      <button v-if="navHidden" class="ag-show stub nav" title="대화 목록 펼치기"
+              @click="setNavHidden(false)">
+        <span class="st-ic">›</span>
+        <span class="st-label">대화 목록</span>
+        <span class="st-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      </button>
+      <aside class="agent-nav" ref="nav" v-show="!navHidden">
+        <button class="ag-hide nav" title="대화 목록 접기" @click="setNavHidden(true)">‹</button>
+        <!-- 오른쪽 가장자리를 끌어 폭 조절 · 더블클릭하면 기본 폭 -->
+        <div class="ag-grip nav" title="너비 조절 — 드래그 (더블클릭: 기본 폭)"
+             @mousedown.prevent="startNavDrag" @dblclick="resetNavW"></div>
         <!-- 모델·설정은 좌상단 — 지금 무엇으로 도는지가 먼저 보인다(사용자 요청) -->
         <div class="an-top">
           <span v-if="status" class="agent-prov" :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
@@ -1280,7 +1352,19 @@ export default {
       <!-- 우측 채널 — **생성하려는 초안**의 미리보기 공간(사용자 정정). 만들 실물을 티켓
            모양으로 옆에 두고 카드에서 담당자를 고르며 승인한다. 실존 티켓 클릭은 기존
            전역 모달(TicketDialog)이 그대로 뜬다. -->
-      <div v-if="draftTurn() && sideDraft >= 0" class="agent-side">
+      <!-- 접힌 미리보기를 다시 펴는 손잡이 — 접기는 초안을 **버리지 않는다**(✕ 는 버린다) -->
+      <button v-if="draftTurn() && sideDraft >= 0 && sideHidden" class="ag-show stub side"
+              title="초안 미리보기 펼치기" @click="setSideHidden(false)">
+        <span class="st-ic">‹</span>
+        <span class="st-label">초안 미리보기</span>
+        <span class="st-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      </button>
+      <div v-if="draftTurn() && sideDraft >= 0 && !sideHidden" class="agent-side" ref="side">
+        <button class="ag-hide side" title="미리보기 접기(초안은 그대로 둔다)"
+                @click="setSideHidden(true)">›</button>
+        <!-- 왼쪽 가장자리를 끌어 폭 조절 — 오른쪽 패널이라 왼쪽으로 끌면 넓어진다 -->
+        <div class="ag-grip side" title="너비 조절 — 드래그 (더블클릭: 기본 폭)"
+             @mousedown.prevent="startSideDrag" @dblclick="resetSideW"></div>
         <div class="agent-side-h">
           <b>{{ sidePendingReady() ? '만들 티켓 미리보기' : '티켓 초안 (작성 중)' }}</b>
           <span v-if="sideItems().length > 1" class="agent-side-nav">
