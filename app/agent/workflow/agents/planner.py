@@ -253,4 +253,14 @@ class Planner(StructuredAgent):
             follow_up = bool((state.get("situation") or "").strip()) and (state.get("turns") or 0) > 0
             if not follow_up or not (state.get("request_text") or "").strip():
                 patch["request_text"] = last_user_text(state)
+        elif not (state.get("request_text") or "").strip():
+            # ★ 조회 갈래에도 원 요청을 고정한다. 이 장치는 생성 갈래에만 걸려 있었는데,
+            #   **답의 성격을 원 요청이 정하는 것은 조회도 같다**: "…히스토리" 로 시작한
+            #   대화에서 표기 확인 질문에 답하면 그 턴의 발화는 "fdc.… 말한거야" 뿐이라,
+            #   request_text 가 거기로 폴백되며 '히스토리'가 사라진다(실측 DATA11 —
+            #   연표 대신 현재 값 표가 나왔다. 같은 흐름의 DATA13 은 1턴 문구가 우연히
+            #   explain 으로 분류돼 그쪽 경로로만 살아남았다).
+            #   비어 있을 때만 채운다 — 대화 도중 주제가 바뀌어도 대상은 식별자·핵심어가
+            #   따라가고, 여기서 남는 것은 "무엇을 묻는 대화인가"뿐이다.
+            patch["request_text"] = last_user_text(state)
         return patch

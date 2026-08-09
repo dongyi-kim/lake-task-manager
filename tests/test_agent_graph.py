@@ -512,3 +512,24 @@ def test_answer_depth_is_carried_forward_across_a_clarifying_turn():
     # 처음부터 값 질문이면 brief 다(과하게 붙지 않는다)
     assert _carry_depth({}, {"answer_depth": "brief"}) == "brief"
     assert _carry_depth({}, {}) == "brief"
+
+
+def test_the_original_request_is_pinned_for_lookup_flows_too():
+    """원 요청 고정은 **생성 갈래에만** 걸려 있었다 — 조회도 답의 성격은 원 요청이 정한다.
+    실측(DATA11): "…데이터의 히스토리" 로 시작해 표기 확인 질문에 답하자, 그 턴의 발화가
+    "fdc.… 말한거야" 뿐이라 request_text 가 거기로 폴백되며 '히스토리'가 사라졌고,
+    연표 대신 현재 값 표가 나왔다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.planner import Planner
+    from app.agent.workflow.state import Intent
+
+    def _m(t):
+        return {"messages": [HumanMessage(content=t)]}
+    st = _m("fdc_flat_summary_ic 데이터의 히스토리")
+    got = Planner().apply(st, {"intent": Intent.ASK, "keywords": ["fdc_flat_summary_ic"]})
+    assert got.get("request_text") == "fdc_flat_summary_ic 데이터의 히스토리", got
+    # 이미 고정돼 있으면 후속 턴이 덮지 않는다
+    st2 = {**_m("fdc.fdc_trace_summary_ic 말한거야"),
+           "request_text": "fdc_flat_summary_ic 데이터의 히스토리"}
+    got2 = Planner().apply(st2, {"intent": Intent.ASK, "keywords": []})
+    assert "request_text" not in got2, got2
