@@ -151,3 +151,27 @@ def test_the_form_echo_filter_keeps_a_normal_answer_intact():
     text = "DL-9044 에서 적재주기가 30분으로 바뀌었습니다.\n담당은 skcc.x1042 입니다."
     qs = [{"question": "어느 모듈로 볼까요?", "kind": "choice", "options": ["ETL", "Catalog"]}]
     assert _drop_form_echo(text, qs) == text
+
+
+# ── 참조에 링크·키가 없으면 확인할 방법이 없다 (실측: fdc 히스토리 답변) ──────
+def test_a_reference_without_a_key_or_link_is_a_violation():
+    """common.md 가 두 곳에서 금지하는데도 샜다 — `[4] [데이터카탈로그] … — 적재 Job 정보`.
+    재료에는 그 문서의 URL 이 실려 있었으므로 **쓸 수 있었는데 안 쓴 것**이다.
+    본문 참고 불릿에는 같은 가드가 이미 있었고(refiner), 답변 텍스트 쪽에만 없었다."""
+    from app.agent.workflow import grounding
+    bad = "**참조**\n[4] [데이터카탈로그] fdc_trace_summary_ic 테이블 특성 분석 — 적재 Job 정보"
+    r = grounding.check(bad)
+    assert not r["ok"] and r["unlinked_refs"], r
+    assert "확인할 방법이 없다" in grounding.violation_note(r)
+
+
+def test_verifiable_references_are_not_flagged():
+    """티켓 키·마크다운 링크·맨 URL 은 전부 확인 가능한 출처다. 본문 속 [n] 마커도 참조 줄이
+    아니다 — 줄 머리 형식(`[n] `)만 본다."""
+    from app.agent.workflow.grounding import _unlinked_refs
+    ok = ("현재 30분 주기다 [1]. 자세한 것은 [2] 참고.\n\n**참조**\n"
+          "[1] DL-9044 — 적재주기 변경의 근거\n"
+          "[2] [문서 제목](http://wiki/x) — 무엇을 볼 수 있는지\n"
+          "[3] DL-9062 코멘트 (skcc.x1103, 2026-08-06) — 운영 담당자\n"
+          "[4] 설계 노트 http://wiki/y")
+    assert _unlinked_refs(ok) == []

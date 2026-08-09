@@ -34,6 +34,30 @@ UID_RE = re.compile(r"^[a-z]+\.[a-z]\d+$")
 UID_TOKEN_RE = re.compile(chr(92) + "b([a-z]{2,}" + chr(92) + ".[a-zA-Z]{1,2}[0-9N]{2,6})" + chr(92) + "b")
 # "**DL-123**: 김철수" — 역할 낱말 없이 티켓키→사람 매핑으로 새는 변종(실측).
 KEY_NAME_RE = re.compile(r"[A-Z][A-Z0-9]+-" + r"[0-9]+[*_]*\s*[:\-–]\s*[*_]*([가-힣]{2,4})(?=\s|$|[,.)—-])")
+# 참조 인덱스 줄 — `[1] …`. responder.md 가 정한 형식이라 이 꼴만 본다.
+REF_LINE_RE = re.compile(r"^\s*\[(\d{1,2})\]\s+(.+?)\s*$", re.M)
+# 링크로 인정하는 것: 맨 URL 또는 마크다운 링크의 `](`.
+LINKED_RE = re.compile(r"https?://|\]\(")
+
+
+def _unlinked_refs(text: str) -> list:
+    """참조 줄인데 **티켓 키도 링크도 없는** 것 — 검증할 방법이 없는 출처다.
+
+    common.md: "NEVER drop a bare document title with no URL: an unlinked title cannot be
+    verified and looks fabricated." 프롬프트가 두 곳(common·responder)에서 말하는데도
+    실측으로 샜다: `[4] [데이터카탈로그] fdc_trace_summary_ic 테이블 특성 분석 — 적재 Job
+    정보`. 재료에는 그 문서의 URL 이 실려 있었으므로 **쓸 수 있었는데 안 쓴 것**이다.
+
+    본문 참고 불릿에는 이미 같은 가드가 있다(`refiner._drop_unlinked_refs`) — 답변 텍스트
+    쪽에만 없었다. 같은 규칙이 두 산출물에 다 걸려야 한다.
+    """
+    out = []
+    for m in REF_LINE_RE.finditer(text or ""):
+        body = m.group(2)
+        if KEY_RE.search(body) or LINKED_RE.search(body):
+            continue
+        out.append(f"[{m.group(1)}] {body[:60]}")
+    return out
 
 
 def check(reply: str) -> dict:
@@ -122,9 +146,11 @@ def check(reply: str) -> dict:
     except Exception:
         pass          # 사람 검증이 안 되는 환경이면 키 검사만으로 간다
 
+    unlinked_refs = _unlinked_refs(text)
     return {"fake_keys": fake_keys, "wrong_titles": wrong_titles,
             "fake_people": fake_people, "real_titles": real_titles,
-            "ok": not (fake_keys or wrong_titles or fake_people)}
+            "unlinked_refs": unlinked_refs,
+            "ok": not (fake_keys or wrong_titles or fake_people or unlinked_refs)}
 
 
 def violation_note(result: dict) -> str:
@@ -138,6 +164,10 @@ def violation_note(result: dict) -> str:
         lines.append(f"- '{n}': 존재하지 않거나 확인되지 않는 사람이다. **자료의 참여자 목록에 "
                      "실제로 있는 사번만** 쓰고, 자료에 없으면 그 역할 줄을 통째로 지워라. "
                      "예시·자리표시자 표기를 만들어 넣지 마라.")
+    for r in result.get("unlinked_refs") or []:
+        lines.append(f"- 참조 `{r}`: 티켓 키도 링크도 없어 **확인할 방법이 없다**. 자료에 그 "
+                     "문서의 URL 이 있으면 `[제목](URL)` 마크다운 링크로 고쳐라. URL 이 자료에 "
+                     "없으면 그 참조 줄을 지우고 본문의 [n] 마커도 함께 지워라.")
     return "\n".join(lines)
 
 
@@ -147,6 +177,7 @@ def warning_block(result: dict) -> str:
     items += [f"`{k}` (존재하지 않는 티켓)" for k in result.get("fake_keys") or []]
     items += [f"`{k}` (실제 제목: {v})" for k, v in (result.get("wrong_titles") or {}).items()]
     items += [f"'{n}' (확인되지 않는 인물)" for n in result.get("fake_people") or []]
+    items += [f"`{r}` (링크·키가 없어 확인 불가한 출처)" for r in result.get("unlinked_refs") or []]
     if not items:
         return ""
     return ("\n\n---\n⚠️ **자동 검증 경고** — 아래 항목은 실제 데이터와 대조되지 않았습니다. "

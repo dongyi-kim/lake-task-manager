@@ -303,15 +303,45 @@ def _topic_dossier(term: str) -> str:
         except Exception:
             return d, ""
 
+    def _meta(k):
+        """그 티켓이 **언제 일어난 무슨 사건인가** — 상태와 날짜."""
+        try:
+            f = (c.get_issue(k) or {}).get("fields") or {}
+            done = (f.get("resolutiondate") or "")[:10]
+            return {"key": k, "status": ((f.get("status") or {}).get("name") or ""),
+                    "done": done,
+                    "when": done or (f.get("created") or f.get("updated") or "")[:10]}
+        except Exception:
+            return {"key": k, "status": "", "done": "", "when": ""}
+
     with ThreadPoolExecutor(max_workers=4) as ex:
         fut_hist = ex.submit(lambda: list(map(_hist, keys[:5])))
         fut_docs = ex.submit(lambda: list(map(_body, docs[:2])))
-        hist_rows, doc_rows = fut_hist.result(), fut_docs.result()
+        fut_meta = ex.submit(lambda: list(map(_meta, keys[:10])))
+        hist_rows, doc_rows, metas = fut_hist.result(), fut_docs.result(), fut_meta.result()
 
     parts = [f"[대상] {term}"]
-    tix = "\n".join(f"- {k} \"{titles[k]}\"" for k in keys[:10])
+    # ★ 상태·날짜를 싣고 **시간순으로** 정렬한다. 예전엔 `- KEY "제목"` 뿐이었는데, 그러면
+    #   코멘트·변경 이력에 사실 한 줄이 잡힌 티켓만 답에 남고 **나머지는 통째로 증발한다** —
+    #   모델이 그것들에 대해 할 말이 없기 때문이다.
+    #   실측(fdc.fdc_trace_summary_ic 히스토리 질의): 재료에 8건이 다 있었는데 답변은
+    #   변경 이력·코멘트에 걸린 DL-9044·9045·9062 **3건만** 인용했다. 탄생(VoC 요청 →
+    #   Job 개발)도, 주기 단축의 계기가 된 지연 장애도, 지금 진행 중인 안정화 모니터링도
+    #   빠져 "왜 30분이 됐나"와 "지금 어디까지 왔나"가 답에서 사라졌다.
+    #   날짜와 상태가 붙으면 **줄마다 사건이 되고**, 정렬된 목록이 곧 연표가 된다.
+    metas.sort(key=lambda m: m["when"] or "9999-99-99")
+    tix = "\n".join(
+        f"- {m['when'] or '날짜 미상'} · {m['key']} \"{titles.get(m['key'], '')}\""
+        f" · {m['status'] or '상태 미상'}"
+        + (f" (해결 {m['done']})" if m["done"] else "")
+        for m in metas)
     if tix:
-        parts.append("관련 티켓:\n" + tix)
+        parts.append(
+            "관련 티켓 — **시간순. 이 목록이 곧 이 대상의 연표다**:\n" + tix
+            + "\n★ 히스토리·경위·근황을 물으면 **이 목록을 처음부터 지금까지 훑어 서술한다.** "
+              "아래 '코멘트 근거'나 '변경 이력'에 안 걸린 티켓도 **사건이다** — 요청·구축·"
+              "장애·진행 중인 일이 거기 있고, 빠뜨리면 '왜 이렇게 됐나'와 '지금 어디까지 "
+              "왔나'가 답에서 사라진다. 미해결(진행 중) 항목은 현재 상태로 반드시 언급한다.")
     quotes = [f"- {h['key']} · {h.get('author') or '작성자 미상'} · {h.get('date') or ''}: "
               f"\"{h['snippet']}\""
               for h in hits if h.get("where") == "comment" and h.get("snippet")]

@@ -530,4 +530,4 @@ def _drop_form_echo(text: str, qs: list) -> str:
 
 def _violations(g: dict) -> int:
     return len(g.get("fake_keys") or []) + len(g.get("wrong_titles") or {}) \
-        + len(g.get("fake_people") or [])
+        + len(g.get("fake_people") or []) + len(g.get("unlinked_refs") or [])
