@@ -45,9 +45,14 @@ def _dump(tag, out):
     for c in pend.get("children") or []:
         print(f"  └ 하위: {c.get('summary')} (담당 {c.get('assignee')})")
     for a in out.get("assignments") or []:
-        print(f"\n--- 담당 제안: {a.get('user')} ---\n  {a.get('reason')}")
+        # 스키마상 `reasons` 는 **리스트**다 — `reason` 으로 읽어 None 이 찍혔다.
+        print(f"\n--- 담당 제안: {a.get('user')} ---")
+        for r in a.get("reasons") or ["(근거 없음)"]:
+            print(f"  · {r}")
+        for c in a.get("children") or []:
+            print(f"  └ 하위[{c.get('index')}] → {c.get('user')} : {c.get('why')}")
         for alt in a.get("alternates") or []:
-            print(f"  대안: {alt}")
+            print(f"  대안: {alt.get('user')} — {alt.get('why')}")
     if out.get("questions"):
         print("\n--- 질문 ---")
         for q in out["questions"]:

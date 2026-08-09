@@ -624,8 +624,9 @@ class Refiner(StructuredAgent):
                    "options": _shape_options(structure)}]
         if draft_new_labels:
             draft["new_labels"] = draft_new_labels
-        if structure and why and why not in (draft["rationale"] or ""):
-            draft["rationale"] = (draft["rationale"] + f"\n(구조: {structure} — {why})").strip()
+        # (구조: …) 줄은 **맨 끝에서 한 번만** 붙인다 — 여기서도 붙이던 것을 뺐다.
+        # 뒤의 가드가 구조를 바꾸면 이유도 바뀌는데, 여기서 이미 붙여 둔 옛 이유가
+        # 남아 카드에 서로 다른 두 줄이 떴다(실측: 재작성 왕복이 있던 턴).
 
         # ── 조사 근거를 '참고' 섹션에 **병합**한다 — 조사 결과를 티켓에 박제한다.
         # 대화가 끝나면 Historian 의 조사는 증발하지만, 티켓 description 에 남기면 동적 RAG 가
@@ -947,8 +948,14 @@ class Refiner(StructuredAgent):
         # 가드들이 out["rationale"] 에 덧붙인 경고(Epic 불일치·컴포넌트 정리 등)를 초안에 반영한다
         # — draft 는 items 를 참조로 공유하지만 rationale 은 문자열이라 여기서 맞춰 줘야 한다.
         draft["rationale"] = out.get("rationale") or draft.get("rationale") or ""
-        if structure and why and why not in draft["rationale"]:
+        if structure and why:
+            # 앞선 왕복에서 붙은 (구조: …) 줄은 **지우고** 지금 것으로 다시 쓴다 —
+            # Reviewer 반려로 재작성이 돌면 이유가 바뀌는데, 옛 줄이 남아 카드에 서로
+            # 다른 두 이유가 떴다(실측). 구조 이유는 언제나 한 줄이어야 한다.
+            draft["rationale"] = _re.sub(r"\n?\(구조: [^\n]*\)", "",
+                                         draft["rationale"]).strip()
             draft["rationale"] = (draft["rationale"] + f"\n(구조: {structure} — {why})").strip()
+            draft["structure_why"] = why    # 카드 헤더와 근거 줄이 같은 값을 쓴다
 
         # 해석 확인 턴의 "제가 이해한 바" — Responder 가 질문에 앞세워 보여 준다.
         # 그 외 턴에는 지난 해석이 남지 않게 비운다(오래된 해석은 오해가 된다).

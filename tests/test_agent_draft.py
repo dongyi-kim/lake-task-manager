@@ -643,3 +643,28 @@ def test_duedate_change_against_the_users_word_is_flagged():
 
     assert got.get("key") == "DL-101", got
     assert re.search(r"확인 필요.*2026-08-27.*반대", got.get("why") or "", re.S), got.get("why")
+
+
+def test_structure_reason_line_appears_once_and_matches_the_card():
+    """`(구조: …)` 근거 줄은 **한 줄**이고 카드 헤더의 structure_why 와 같아야 한다.
+
+    실측: Reviewer 반려로 재작성이 돌면 구조 이유가 바뀌는데, 앞선 왕복에서 붙은 옛
+    줄이 남아 승인 카드에 서로 다른 두 이유가 떴다(헤더는 새 것, 근거 줄은 옛 것).
+    """
+    import re
+
+    from app.agent.workflow.agents.refiner import Refiner
+
+    state = {"intent": "plan_work", "messages": [], "draft": {}}
+    out = {"mode": "task", "structure": "single_task",
+           "structure_why": "단일 산출물이라 Task 하나면 된다",
+           "rationale": "(구조: task_with_subtasks — 옛 왕복에서 남은 이유)",
+           "items": [{"type": "Task", "summary": "[ETL] 적재 재시도 로직 추가",
+                      "description": "<h3>배경</h3><p>x</p>", "components": ["ETL"]}]}
+    got = Refiner().apply(state, out)
+    rat = (got.get("draft") or {}).get("rationale") or ""
+    lines = re.findall(r"\(구조: [^\n]*\)", rat)
+    assert len(lines) == 1, f"구조 줄이 {len(lines)}개다: {rat}"
+    assert "옛 왕복에서 남은 이유" not in rat, rat
+    assert (got["draft"].get("structure_why") or "") in lines[0], (
+        f"카드 헤더({got['draft'].get('structure_why')})와 근거 줄({lines[0]})이 다르다")
