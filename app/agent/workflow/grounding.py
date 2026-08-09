@@ -158,7 +158,7 @@ def check(reply: str) -> dict:
         if real_tokens and claim_sets and not any(cs & real_tokens for cs in claim_sets):
             wrong_titles[key] = real
 
-    fake_people = []
+    fake_people, name_as_id = [], {}
     try:
         from app.domain.search import search_users
         s = settings()
@@ -192,16 +192,27 @@ def check(reply: str) -> dict:
             if not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES:
                 continue
             seen.add(name)
-            if not (search_users(c, s, name) or []):
+            hits = search_users(c, s, name) or []
+            if not hits:
                 fake_people.append(name)
+            else:
+                # ★ **실재하는 실명도 위반이다.** responder.md: "never translate ids into
+                #   names". 여태 이 검사는 **날조만** 봤기 때문에 실명이 그냥 통과했다
+                #   (실측 EDGE13: "담당자 한예준"). 화면은 사번을 뱃지·프로필로 렌더하고,
+                #   실명은 동명이인·표기 흔들림에 취약해 검증도 안 된다.
+                #   실값을 알고 있으니 고칠 값까지 쥐여 준다.
+                uid = str((hits[0] or {}).get("id") or "")
+                if uid:
+                    name_as_id[name] = uid
     except Exception:
         pass          # 사람 검증이 안 되는 환경이면 키 검사만으로 간다
 
     unlinked_refs = _unlinked_refs(text)
     return {"fake_keys": fake_keys, "wrong_titles": wrong_titles,
             "fake_people": fake_people, "real_titles": real_titles,
-            "unlinked_refs": unlinked_refs,
-            "ok": not (fake_keys or wrong_titles or fake_people or unlinked_refs)}
+            "unlinked_refs": unlinked_refs, "name_as_id": name_as_id,
+            "ok": not (fake_keys or wrong_titles or fake_people
+                       or unlinked_refs or name_as_id)}
 
 
 def violation_note(result: dict) -> str:
@@ -215,6 +226,10 @@ def violation_note(result: dict) -> str:
         lines.append(f"- '{n}': 존재하지 않거나 확인되지 않는 사람이다. **자료의 참여자 목록에 "
                      "실제로 있는 사번만** 쓰고, 자료에 없으면 그 역할 줄을 통째로 지워라. "
                      "예시·자리표시자 표기를 만들어 넣지 마라.")
+    for n, uid in (result.get("name_as_id") or {}).items():
+        lines.append(f"- '{n}': 사람은 **사번으로** 쓴다. '{n}' 을 `{uid}` 로 바꿔라 — "
+                     "화면이 사번을 뱃지·프로필로 렌더하고, 실명은 동명이인·표기 흔들림에 "
+                     "취약해 검증이 안 된다. 이름을 지우지 말고 **사번으로 바꿔** 쓸 것.")
     for r in result.get("unlinked_refs") or []:
         lines.append(f"- 참조 `{r}`: 티켓 키도 링크도 없어 **확인할 방법이 없다**. 자료에 그 "
                      "문서의 URL 이 있으면 `[제목](URL)` 마크다운 링크로 고쳐라. URL 이 자료에 "
@@ -228,6 +243,7 @@ def warning_block(result: dict) -> str:
     items += [f"`{k}` (존재하지 않는 티켓)" for k in result.get("fake_keys") or []]
     items += [f"`{k}` (실제 제목: {v})" for k, v in (result.get("wrong_titles") or {}).items()]
     items += [f"'{n}' (확인되지 않는 인물)" for n in result.get("fake_people") or []]
+    items += [f"'{n}' (사번 `{u}` 로 써야 한다)" for n, u in (result.get("name_as_id") or {}).items()]
     items += [f"`{r}` (링크·키가 없어 확인 불가한 출처)" for r in result.get("unlinked_refs") or []]
     if not items:
         return ""

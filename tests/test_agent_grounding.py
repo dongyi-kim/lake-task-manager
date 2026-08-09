@@ -305,3 +305,17 @@ def test_real_names_leaking_through_table_cells_are_caught():
     assert [m.group(1) for m in TABLE_NAME_RE.finditer("| 담당자 | 한예준 | [1] |")] == ["한예준"]
     assert [m.group(1) for m in TABLE_NAME_RE.finditer("| 담당 | skcc.x1042 |")] == []
     assert [m.group(1) for m in TABLE_NAME_RE.finditer("| 진행 중인 업무 수 | 5건 |")] == []
+
+
+def test_a_real_display_name_is_still_a_violation_with_its_id_as_the_fix():
+    """responder.md: "never translate ids into names". 그런데 이 검사는 **날조만** 봐서
+    실재하는 실명은 그냥 통과했다(실측 EDGE13: "담당자 한예준"). 화면은 사번을 뱃지·프로필로
+    렌더하고, 실명은 동명이인·표기 흔들림에 취약해 검증이 안 된다.
+    실값을 알고 있으니 **고칠 사번까지** 쥐여 준다 — '지워라'가 아니라 '바꿔라'다."""
+    from app.agent.workflow import grounding
+    r = grounding.check("| 항목 | 값 |\n|---|---|\n| 담당자 | 한예준 |\n")
+    assert not r["ok"] and r["name_as_id"].get("한예준") == "skcc.x1210", r
+    note = grounding.violation_note(r)
+    assert "skcc.x1210" in note and "바꿔" in note, note
+    # 사번으로 쓴 답은 통과한다
+    assert grounding.check("담당 후보는 skcc.x1210 입니다.")["ok"]
