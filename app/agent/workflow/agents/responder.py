@@ -45,7 +45,11 @@ class Responder(TextAgent):
                     "질문에 답해 달라고 짧게 청하라. 조사는 답을 받은 뒤 시작한다고 말하라. "
                     "전체 5문장 이내 — 이 턴의 값어치는 빠른 왕복이다.")
         elif qs:
-            goal = "지금까지 파악한 상황을 짧게 정리하고, 모자란 정보를 물어라."
+            goal = ("지금까지 파악한 상황을 **2~3문장으로** 정리하고 끝내라. "
+                    "★ 질문은 **아래 폼이 묻는다** — 질문 문장·보기·번호 목록을 산문으로 "
+                    "다시 쓰지 마라(실측: 폼에 있는 것을 통째로 베껴 화면에 같은 말이 두 벌 "
+                    "떴다). 폼에 없는 것을 추가로 요구하지도 마라. "
+                    "마지막 줄은 '아래에서 선택해 주세요' 정도면 충분하다.")
         elif (state.get("change_plan") or {}).get("keys"):
             n = len(state.get("change_plan", {}).get("keys") or [])
             goal = (f"**{n}건 일괄 변경** 계획이다 — 대상 키 전부와 공통 변경 내용을 표"
@@ -264,6 +268,11 @@ class Responder(TextAgent):
         # '확인된 기록 없음'만 채운 표 행·참조 줄은 정보가 아니라 소음이다 — md 로 두 번
         # 금지했는데 재발(실측 2회). 코드가 걷어낸다.
         text = _prune_empty_rows(text)
+        # 되묻는 턴 — 폼이 묻는 것을 본문에서 걷어낸다. 프롬프트로 두 번 금지했는데도
+        # 질문·보기를 통째로 베껴 화면에 같은 말이 두 벌 뜬다(사용자 지적).
+        _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
+        if _qs:
+            text = _drop_form_echo(text, _qs)
         # 카드의 값과 문장의 값이 다르면 **카드가 사실**이다. 상대 날짜는 코드가 계산해
         # 계획에 넣는데(모델 산술이 흔들린다), 답변 문장에는 모델이 제 값을 그대로 써서
         # "2026-08-18로 연장" ↔ 카드 2026-08-14 로 어긋났다(실측 Round P).
@@ -374,6 +383,55 @@ def _prune_empty_rows(text: str) -> str:
                    r"(?=(#{2,4}\s|\*\*참조\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)|$))",
                    "\n", text)
     return text
+
+
+def _drop_form_echo(text: str, qs: list) -> str:
+    """되묻기 폼에 이미 있는 것을 본문에서 걷어낸다.
+
+    화면은 질문을 **카드 폼**으로 그린다. 같은 질문과 보기를 답변 산문에도 늘어놓으면
+    같은 말이 두 벌 보이고, 정작 상황 요약이 묻힌다(사용자 지적). 판정은 폼의 실제
+    질문·보기 문자열로만 한다 — 모델이 무슨 말을 썼는지 추측하지 않는다.
+    """
+    def norm(s):
+        return _re.sub(r"\s+", "", str(s or "")).strip(" .·—-…?!\"'`*").lower()
+
+    qtexts = [norm(q.get("question")) for q in qs if isinstance(q, dict)]
+    opts = [norm(o) for q in qs if isinstance(q, dict) for o in (q.get("options") or [])]
+    qtexts = [t for t in qtexts if len(t) >= 8]
+    opts = [o for o in opts if len(o) >= 3]
+
+    kept, dropped = [], 0
+    for line in (text or "").split("\n"):
+        core = norm(_re.sub(r"^\s*(?:[-*>]|\d+[).]|\(\d+\))\s*", "", line))
+        if not core:
+            kept.append(line)
+            continue
+        # ① 폼의 질문 문장을 그대로 옮긴 줄. **통째로 겹칠 때만** — 앞부분만 비교하면
+        #    같은 식별자를 언급한 상황 요약까지 날아간다(자체 실측).
+        echo_q = any(t in core or (len(core) >= 12 and core in t) for t in qtexts)
+        # ② 보기 하나만으로 이뤄진 줄("1) fdc.fdc_trace_summary_ic")
+        echo_o = any(core == o or (o in core and len(core) <= len(o) + 12) for o in opts)
+        # ③ 폼으로 넘기는 유도 문구만 있는 줄
+        lead = bool(_re.match(r"^(확인\s*(부탁|필요)|아래\s*중|다음\s*질문|아래\s*질문|"
+                              r"질문에\s*답)", core))
+        # ④ 폼에 없는 것을 산문으로 추가로 묻는 줄 — 물어볼 것은 폼에만 있어야 한다
+        #    (responder.md 의 규칙인데 실측에서 "대상 환경/조회 범위/맥락"을 덧붙였다).
+        #    화면으로 넘기는 안내("아래에서 골라 주세요")는 남긴다.
+        asks = bool(_re.search(r"(\?|알려\s*주세요|알려주세요|적어\s*주세요|"
+                               r"입력해\s*주세요|말씀해\s*주세요)$", core)) \
+            and not _re.search(r"아래|폼|카드|선택", core)
+        # ⑤ ④ 로 지운 요구의 하위 항목("대상 환경: 개발/스테이징/운영")은 함께 지운다
+        follow = bool(dropped and kept and not kept[-1].strip()
+                      and _re.match(r"^[^:：\n]{2,14}[:：]\s*\S", line.strip()))
+        if echo_q or echo_o or lead or asks or follow:
+            dropped += 1
+            continue
+        kept.append(line)
+    if not dropped:
+        return text
+    out = _re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    # 전부 걷어내 버렸다면(질문만 있던 답변) 최소한의 안내는 남긴다.
+    return out or "확인이 필요합니다 — 아래에서 골라 주세요."
 
 
 def _violations(g: dict) -> int:

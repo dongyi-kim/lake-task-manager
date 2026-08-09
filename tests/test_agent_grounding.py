@@ -124,3 +124,30 @@ def test_fabricated_uid_with_real_suffix_is_caught():
     from app.agent.workflow import grounding
     r = grounding.check("ETL 소속 etl.x1001 의 최근 활동이 없습니다.")
     assert not r["ok"] and "etl.x1001" in r["fake_people"], r
+
+
+# ── 되묻기 턴: 폼에 있는 것을 본문에 또 쓰지 않는다 (사용자 지적) ──────────
+def test_the_reply_does_not_echo_the_question_form():
+    """질문은 카드 폼이 묻는다. 같은 질문·보기를 산문에 늘어놓으면 같은 말이 두 벌 뜬다."""
+    from app.agent.workflow.agents.responder import _drop_form_echo
+    text = ("요약: 'fdc_flat_summary_ic' 표기로는 기록을 찾지 못했습니다. 유사 식별자 "
+            "1건(fdc.fdc_trace_summary_ic)을 확인했습니다.\n\n"
+            "확인 부탁\n\n아래 중 어떤 것을 말씀하신 건가요?\n"
+            "1) fdc.fdc_trace_summary_ic\n\n2) 이 중에 없음 — 정확한 표기를 알려주세요\n\n"
+            "대상 환경: 개발/스테이징/운영")
+    qs = [{"question": "'fdc_flat_summary_ic' 표기로는 기록을 찾지 못했습니다. 이 중 어느 것을 "
+                       "말씀하신 건가요?",
+           "kind": "choice",
+           "options": ["fdc.fdc_trace_summary_ic", "이 중에 없음 — 정확한 표기를 알려주세요"]}]
+    out = _drop_form_echo(text, qs)
+    assert "유사 식별자" in out, "상황 요약은 남아야 한다"
+    assert "아래 중 어떤" not in out and "1) fdc" not in out
+    assert "이 중에 없음" not in out and "대상 환경" not in out
+
+
+def test_the_form_echo_filter_keeps_a_normal_answer_intact():
+    """질문이 없는 턴이나 폼과 무관한 문장은 건드리지 않는다."""
+    from app.agent.workflow.agents.responder import _drop_form_echo
+    text = "DL-9044 에서 적재주기가 30분으로 바뀌었습니다.\n담당은 skcc.x1042 입니다."
+    qs = [{"question": "어느 모듈로 볼까요?", "kind": "choice", "options": ["ETL", "Catalog"]}]
+    assert _drop_form_echo(text, qs) == text
