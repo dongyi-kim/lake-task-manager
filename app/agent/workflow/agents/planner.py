@@ -98,8 +98,14 @@ _ANAPHORA = _re.compile(
 
 
 def _carry_keys(state, out) -> list:
-    """이번 턴이 댄 키가 우선. 없으면 **앞 턴의 대상을 이어받는다**(후속 질문일 때만)."""
-    keys = [k for k in (out.get("mentioned_keys") or []) if str(k).strip()]
+    """이번 턴이 댄 키가 우선. 없으면 **앞 턴의 대상을 이어받는다**(후속 질문일 때만).
+
+    티켓 키 **형식만** 통과시킨다 — 스키마에 'DL-123 형식만'이라고 적어도 모델이 사번
+    (skcc.x1450)을 넣었고, 그 오염이 modify 빠른 경로를 태워 조사를 통째로 건너뛰었다
+    (실측 M2: 재배분 후보 사전취합이 실행될 기회조차 없었다)."""
+    import re as _re
+    keys = [k for k in (out.get("mentioned_keys") or [])
+            if _re.match(r"^[A-Z][A-Z0-9]{1,9}-\d+$", str(k).strip())]
     if keys:
         return keys
     prev = [k for k in (state.get("mentioned_keys") or []) if str(k).strip()]

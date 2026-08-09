@@ -386,6 +386,10 @@ class Refiner(ToolAgent):
             data_block("일괄 수정 대상 (코드가 JQL 로 확정 — change.keys 에 이 키 전부를 담아라)",
                        ", ".join(state.get("bulk_targets") or [])),
             data_block("Historian 이 정리한 현재 상황", state.get("situation")),
+            # 사전 조사(코드 취합) — 재배분 후보처럼 **키 목록이 곧 재료**인 자료가 여기
+            # 실린다. situation(모델 요약)만 주면 목록이 요약에서 증발한다(실측 M2).
+            data_block("사전 조사 자료 (코드가 취합 — 키 목록은 여기서 고른다)",
+                       (state.get("pre_survey") or "")[:2000]),
             data_block("근거 티켓", ev),
             data_block("배치 재료 (코드가 조회함 — Epic·컴포넌트·라벨은 이 안에서 고른다)",
                        _placement_material(state)),

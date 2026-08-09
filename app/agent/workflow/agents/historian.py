@@ -435,6 +435,32 @@ class Historian(ToolAgent):
                 except Exception:
                     pass
 
+            # ── 재배분 사전 취합 — "x1450 일이 많으니 두어 개 x1402 에게" 는 소스 사용자의
+            # 미시작 티켓 목록이 재료다. 조회하면 되는 것을 사용자에게 물었다(실측).
+            if (state.get("intent") or "") == "modify" \
+                    and any(w in asked_s for w in ("넘겨", "재배분", "나눠", "옮겨 줘", "분산")):
+                import re as _re
+                uids = _re.findall(r"(?:skcc\.)?([a-z]{1,2}\d{2,6})", asked_s)
+                if len(uids) >= 2:
+                    src = f"skcc.{uids[0]}"
+                    try:
+                        from app.agent import tools as T
+                        w = T.BY_NAME["get_my_workload"].invoke({"user_id": src}) or {}
+                        opens = [t for t in (w.get("tickets") or [])
+                                 if str(t.get("status", "")).lower() in
+                                 ("open", "to do", "reopened")][:10]
+                        if opens:
+                            blk = (f"[재배분 후보 — {src} 의 미시작 티켓 {len(opens)}건. "
+                                   f"이 중 요청 개수만큼 골라 change.keys 에 담고 "
+                                   f"assignee 를 skcc.{uids[1]} 로]\n"
+                                   + "\n".join(f"- {t.get('key')} \"{t.get('summary', '')}\" "
+                                               f"(마감 {t.get('duedate') or '없음'})"
+                                               for t in opens))
+                            merged = ((state.get("pre_survey") or "") + "\n\n" + blk).strip()
+                            state = {**state, "pre_survey": merged[:3500]}
+                    except Exception:
+                        pass
+
             # ── 조건 일괄 수정 대상 사전 취합 — "마감 지난 것 전부 P1" 의 대상 집합은
             # 검색이 아니라 **JQL 조회**다. 모델에게 run_jql 을 기대했더니 텍스트 검색만
             # 하다 "대상 없음"으로 답했다(실측 2회). 조건 파싱과 조회는 코드가 한다.
