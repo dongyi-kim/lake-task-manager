@@ -156,6 +156,37 @@ def test_volume_split_subtasks_get_spread_across_the_module():
     assert set(owners) <= set(load_people()["ETL"]), "로스터 밖 사람을 지어내면 안 된다"
 
 
+def test_volume_split_is_respread_after_the_assigner_overwrites_it():
+    """자식 담당의 주인이 Assigner 로 옮겨 가면서(§5-c) '골고루' 가드가 덮어쓰기 **뒤편**에
+    남았다 — 실측(생성 스위트 STR1): Refiner 가 고루 나눈 테이블 29건이 제안으로 전부
+    skcc.x1210 이 됐다. 배정이 바뀐 뒤 한 번 더 봐야 한다."""
+    from app.agent.workflow.agents.assigner import merge_assignments
+    from app.agent.workflow.agents.refiner import spread_volume_split
+    draft = {"mode": "task", "items": [{
+        "summary": "[Catalog] 메타데이터 미등록 테이블 등록", "type": "Task",
+        "components": ["Catalog"],
+        "children": [{"summary": f"테이블 {n} 등록", "assignee": "skcc.i2044"}
+                     for n in range(1, 6)]}]}
+    merged = merge_assignments(draft, [{"index": 0, "user": "skcc.x1210",
+                                        "reasons": "Catalog 소속 · 진행중 2건",
+                                        "children": [{"index": j, "user": "skcc.x1210"}
+                                                     for j in range(5)]}])
+    kids = merged["items"][0]["children"]
+    assert {c["assignee"] for c in kids} == {"skcc.x1210"}, "제안이 한 사람으로 뭉친 상태"
+    spread_volume_split(merged["items"])
+    assert len({c["assignee"] for c in kids}) > 1, kids
+
+
+def test_user_named_child_owners_survive_the_respread():
+    """지정은 결정이고 배분은 제안이다 — 골고루가 사용자의 지정을 덮으면 안 된다."""
+    from app.agent.workflow.agents.refiner import spread_volume_split
+    items = [{"summary": "[Catalog] 등록", "components": ["Catalog"],
+              "children": [{"summary": f"{n}", "assignee": "skcc.x1210",
+                            "assignee_source": "user"} for n in range(3)]}]
+    assert spread_volume_split(items) is False
+    assert {c["assignee"] for c in items[0]["children"]} == {"skcc.x1210"}
+
+
 def test_functional_subtasks_keep_their_own_owners():
     """기능이 다른 일은 각자 그 일의 사람에게 — 골고루 규칙이 이걸 헤집으면 안 된다."""
     kids = [{"summary": "스키마 호환성 검증 스크립트 작성", "assignee": "skcc.x1042"},
@@ -258,6 +289,43 @@ def test_subtask_parent_is_filled_even_when_the_model_used_subtask_mode():
                      {"summary": "가이드 작성", "type": "Sub-Task"}]}
     r = Refiner().apply({"mentioned_keys": ["DL-9090"]}, out)
     assert all(i.get("parent") == "DL-9090" for i in r["draft"]["items"]), r["draft"]["items"]
+
+
+def test_parentless_subtask_mode_is_demoted_to_task_and_folded():
+    """부모로 삼을 티켓이 없는데 mode=subtask 로 내면 **만들 수 없는 초안**이다.
+
+    실측(생성 스위트 STR1): "테이블 30개 등록, 사람 나눠서" 에 최상위 Sub-Task 8건이
+    부모 없이 올라왔다. 지금까지 승격(task→subtask)만 있고 강등이 없어 그대로 통과했다.
+    강등되면 뒤의 번호 접기가 이어받아 'Task 하나 + Sub-Task N' 이 된다."""
+    out = {"questions": [], "mode": "subtask", "rationale": "",
+           "items": [{"summary": f"메타데이터 미등록 테이블 등록 - 테이블 {n}",
+                      "type": "Sub-Task", "components": ["Catalog"]} for n in range(1, 9)]}
+    r = Refiner().apply({}, out)
+    d = r["draft"]
+    assert d["mode"] == "task", d["mode"]
+    assert len(d["items"]) == 1, [i["summary"] for i in d["items"]]
+    assert len(d["items"][0].get("children") or []) == 8
+    assert not any(i.get("parent") for i in d["items"])
+
+
+def test_a_lone_parentless_subtask_does_not_reach_the_card_as_a_subtask():
+    """실측(생성 스위트 RULE1): "부모는 없어도 돼" 에 답변은 '만들 수 없다' 였는데
+    초안에는 부모 없는 Sub-Task 가 그대로 실려 승인 카드까지 올라갔다."""
+    out = {"questions": [], "mode": "subtask", "rationale": "",
+           "items": [{"summary": "[ETL] 서브태스크 생성", "type": "Sub-Task"}]}
+    r = Refiner().apply({}, out)
+    assert all(i["type"] != "Sub-Task" for i in r["draft"]["items"]), r["draft"]["items"]
+    assert "부모가 이미 있어야" in r["draft"]["rationale"]
+
+
+def test_demotion_does_not_touch_subtasks_that_do_have_a_parent():
+    """강등은 **부모가 아무 데도 없을 때만**이다 — 실재하는 부모를 헤집으면 안 된다."""
+    out = {"questions": [], "mode": "subtask", "rationale": "",
+           "items": [{"summary": "회귀 테스트", "type": "Sub-Task", "parent": "DL-9093"},
+                     {"summary": "성능 측정", "type": "Sub-Task", "parent": "DL-9094"}]}
+    r = Refiner().apply({}, out)
+    assert r["draft"]["mode"] == "subtask"
+    assert all(i["type"] == "Sub-Task" for i in r["draft"]["items"])
 
 
 def test_one_title_holding_two_deliverables_is_flagged():
@@ -405,6 +473,27 @@ def test_unlinked_reference_bullets_are_dropped_from_the_body():
     assert "DL-9072" in d and "출처 없는 항목" in r["draft"]["rationale"]
 
 
+def test_a_scope_without_exclusions_is_flagged_but_never_invented():
+    """knowledge/07: '하지 않는 것을 적는 게 절반이다'. 제외가 빠지면 리뷰 때마다 '이것도
+    포함인가요?'가 반복된다(DRAFT-COMPARISON 갭 ③ — 체커만 있고 가드가 없었다).
+    무엇을 빼는지는 사용자만 아는 것이라 **채워 넣지는 않는다** — 알리기만 한다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "[ETL] 적재 배치 재시도 로직 추가", "type": "Task",
+                      "description": "<h3>작업 범위</h3><ul><li>포함: 재시도 로직</li></ul>"}]}
+    r = Refiner().apply(_msg("재시도 로직 추가해줘"), out)
+    assert "하지 않는 것" in r["draft"]["rationale"]
+    assert "제외" not in r["draft"]["items"][0]["description"], "지어내지는 않는다"
+
+
+def test_a_scope_that_states_exclusions_is_not_flagged():
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "[ETL] 적재 배치 재시도 로직 추가", "type": "Task",
+                      "description": "<h3>작업 범위</h3><ul><li>포함: 재시도 로직</li>"
+                                     "<li>제외: 알림 채널 개편</li></ul>"}]}
+    r = Refiner().apply(_msg("재시도 로직 추가해줘"), out)
+    assert "하지 않는 것" not in r["draft"]["rationale"]
+
+
 def test_understructured_single_task_gets_a_shape_question():
     """설계·구현·검증이 다 든 단일 Task(하향 편향)는 확인 질문을 받는다 — 실측: 파이프라인
     신규 구축이 DoD 6불릿짜리 한 덩어리로 나왔다."""
@@ -416,6 +505,23 @@ def test_understructured_single_task_gets_a_shape_question():
            "items": [{"summary": "[ETL] 통계 파이프라인 개발", "type": "Task",
                       "description": body}]}
     r = Refiner().apply(_msg("통계 파이프라인 개발해야 해"), out)
+    assert r["questions"] and "Sub-Task" in str(r["questions"][0].get("options"))
+
+
+def test_a_thin_body_does_not_let_a_new_build_slip_through_as_one_task():
+    """본문 신호만 보면 **모델이 본문을 얇게 쓸수록 가드가 헐거워진다** — 뭉갠 초안은 대개
+    본문도 얇으니 거꾸로 된 판정이다. 실측(생성 스위트 STARR1 재발): 파이프라인 신규 구축이
+    DoD 2불릿·단계낱말 0으로 나와 위 가드를 그대로 통과했다. 원 요청은 모델이 못 바꾼다."""
+    body = ('<h3>배경</h3><p>StarRocks 조회 최적화를 위해 통계가 필요하다</p>'
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">통계 생성 확인</li>'
+            '<li data-checked="false">쿼리 플랜 반영 확인</li></ul>')
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [{"summary": "[ETL] 실시간 수집 파이프라인 개발", "type": "Task",
+                      "description": body}]}
+    assert body.count("data-checked") < 5, "본문 신호로는 안 걸리는 초안이어야 의미가 있다"
+    r = Refiner().apply(_msg("실시간 수집 파이프라인을 개발해야 해"), out)
     assert r["questions"] and "Sub-Task" in str(r["questions"][0].get("options"))
 
 
@@ -431,6 +537,51 @@ def test_numbered_volume_split_tasks_are_collapsed_into_children():
     d = r["draft"]
     assert len(d["items"]) == 1 and len(d["items"][0]["children"]) == 5
     assert d["structure"] == "task_with_subtasks"
+
+
+def test_folding_survives_a_couple_of_odd_titles():
+    """전원일치를 요구하면 **30개 중 하나만 어긋나도 접기가 통째로 무산된다** — 실측
+    STR1 은 같은 요청이 8건·30건·1+30 으로 매번 다르게 나온다. 최빈 몸통이 2건 이내를
+    남기고 덮으면 접고, 몸통이 다른 것은 독립 Task 로 그대로 둔다(오차 허용이지 그룹핑이
+    아니다)."""
+    rows = [{"summary": f"[Catalog] 메타데이터 미등록 테이블 {i} 등록", "type": "Task",
+             "components": ["Catalog"], "description": ""} for i in range(1, 9)]
+    rows.append({"summary": "[Catalog] 등록 결과 검수 보고", "type": "Task",
+                 "components": ["Catalog"], "description": ""})
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "multiple_tasks", "structure_source": "inferred", "items": rows}
+    r = Refiner().apply(_msg("테이블 8개 등록하고 결과 보고도. 알아서"), out)
+    d = r["draft"]["items"]
+    assert len(d) == 2, [i["summary"] for i in d]
+    assert len(d[0].get("children") or []) == 8
+    assert "검수 보고" in d[1]["summary"], "몸통이 다른 것까지 빨려 들어가면 안 된다"
+
+
+def test_three_unrelated_tasks_are_not_folded_together():
+    """오차 허용이 그룹핑이 되면 서로 다른 산출물이 한 Task 밑으로 빨려 들어간다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "multiple_tasks", "structure_source": "inferred",
+           "items": [{"summary": "[ETL] 적재 배치 재시도 로직 추가", "type": "Task"},
+                     {"summary": "[Runtime] 쿼리 타임아웃 상향", "type": "Task"},
+                     {"summary": "[Catalog] 스키마 변경 알림 추가", "type": "Task"}]}
+    r = Refiner().apply(_msg("세 가지 해줘. 알아서"), out)
+    assert len(r["draft"]["items"]) == 3
+
+
+def test_structure_is_filled_from_the_shape_when_the_model_omits_it():
+    """모델이 structure 를 빠뜨리면 **구조 가드 둘이 조용히 꺼진다** — 하향 편향은
+    single_task 를, 산출 어긋남 보정은 task_with_subtasks 를 키로 보기 때문이다
+    (실측 STR1 4회 중 2회가 구조 미지정이었고 그때 두 가드 다 안 돌았다).
+    채우는 것은 의도 추측이 아니라 **산출물 모양의 기술**이다."""
+    with_kids = {"questions": [], "mode": "task", "rationale": "",
+                 "items": [{"summary": "[ETL] 재시도 로직 추가", "type": "Task",
+                            "children": [{"summary": "a"}, {"summary": "b"}]}]}
+    assert Refiner().apply(_msg("재시도 로직 추가해줘"),
+                           with_kids)["draft"]["structure"] == "task_with_subtasks"
+    alone = {"questions": [], "mode": "task", "rationale": "",
+             "items": [{"summary": "[ETL] 재시도 로직 추가", "type": "Task"}]}
+    assert Refiner().apply(_msg("재시도 로직 추가해줘"),
+                           alone)["draft"]["structure"] == "single_task"
 
 
 def test_stage_split_tasks_are_collapsed_too():

@@ -201,6 +201,12 @@ def _merge_assignments(state: AgentState) -> dict:
     여기 코드가 보장한다 — validate_bulk 와 같은 lookup 을 쓴다.
     """
     draft = merge_assignments(state.get("draft"), state.get("assignments"))
+    # ★ 분량 분할은 골고루 — **배정이 바뀐 뒤 한 번 더** 본다. 이 규칙은 Refiner 에서만
+    #   돌았는데, 자식 담당의 주인이 Assigner 로 옮겨 가면서(§5-c) 덮어쓰기 뒤편에 남았다:
+    #   실측(생성 스위트 STR1) 테이블 29건이 Refiner 에서 고루 나뉜 뒤 제안으로 전부 한
+    #   사람에게 갔다. 규칙은 refiner.spread_volume_split 한 벌이고, 부르는 자리가 둘이다.
+    from app.agent.workflow.agents.refiner import spread_volume_split
+    spread_volume_split(draft.get("items") or [])
     try:
         from app.agent.tools._ctx import client
         exists = client().bulk_lookup().user_exists
