@@ -390,6 +390,51 @@ class Historian(ToolAgent):
                 if pre:
                     state = {**state, "pre_survey": pre[:2500]}
 
+            # ── 첨부파일 질의 사전 취합 — "첨부 뭐 있어?" 는 검색이 아니라 조회다.
+            # dossier 직결이 첨부 목록 도구를 건너뛰어 파일은 읽으면서 목록은 '없음'이라는
+            # 모순 답이 나왔다(실측). 목록은 코드가 준다.
+            if keys0 and any(w in asked_s for w in ("첨부", "파일 목록", "attachment")):
+                try:
+                    from app.agent import tools as T
+                    rows = []
+                    for k in keys0:
+                        la = T.BY_NAME["list_attachments"].invoke({"ticket_key": k}) or {}
+                        files = la.get("files") or []
+                        if files:
+                            rows.append(f"[{k} 첨부 {len(files)}건] " + "; ".join(
+                                f"{f.get('name')} ({f.get('size') or '?'}, {f.get('kind') or ''}"
+                                f"{', 읽기 가능' if f.get('readable') else ''})"
+                                for f in files[:10]))
+                            # 내용까지 물었으면(요약해줘) 읽기도 코드가 한다 — 모델이
+                            # read_attachment 를 안 골라 '내용 확인 불가'로 답했다(실측).
+                            if any(w in asked_s for w in ("내용", "요약", "들어있", "뭐가 있")):
+                                low = asked_s.lower()
+                                pick = next(
+                                    (f for f in files if f.get("readable") and any(
+                                        t and t in low for t in
+                                        str(f.get("name", "")).lower()
+                                        .replace(".", "_").split("_"))),
+                                    next((f for f in files if f.get("readable")), None))
+                                if pick:
+                                    ra = T.BY_NAME["read_attachment"].invoke(
+                                        {"ticket_key": k, "filename": pick.get("name")}) or {}
+                                    if ra.get("columns"):     # 표 형식(csv/xlsx/parquet)
+                                        body = (f"컬럼: {ra.get('columns')} · "
+                                                f"행 {ra.get('rows_total')}건 · 샘플: "
+                                                + str(ra.get("sample") or ra.get("matched"))[:600])
+                                    else:
+                                        body = str(ra.get("text") or "")[:800]
+                                    if body:
+                                        rows.append(f"[{pick.get('name')} 내용 발췌]\n{body}")
+                        else:
+                            rows.append(f"[{k}] 첨부파일 없음")
+                    if rows:
+                        merged = ((state.get("pre_survey") or "") + "\n\n"
+                                  + "\n".join(rows)).strip()
+                        state = {**state, "pre_survey": merged[:3500]}
+                except Exception:
+                    pass
+
             # ── 조건 일괄 수정 대상 사전 취합 — "마감 지난 것 전부 P1" 의 대상 집합은
             # 검색이 아니라 **JQL 조회**다. 모델에게 run_jql 을 기대했더니 텍스트 검색만
             # 하다 "대상 없음"으로 답했다(실측 2회). 조건 파싱과 조회는 코드가 한다.
@@ -501,7 +546,10 @@ class Historian(ToolAgent):
             # 끝난다(실측: 라벨 목록 질의가 list_ticket_options 를 못 써 보고 죽었다).
             if state.get("topic_dossier") and not state.get("web_context") \
                     and "찾지 못했다" not in state.get("topic_dossier", "") \
+                    and "첨부" not in asked_s \
                     and (state.get("intent") or "") == "ask":
+                # 첨부 질의를 직결에서 뺀 이유: 파일 **내용** 요약은 read_attachment 를
+                # 걸어야 나온다(실측: 직결이 잡아 목록만 답하고 내용은 '없음').
                 try:
                     out = self.apply(state, self._conclude(state, []))
                     out["trace"] = (out.get("trace") or [])                         + [{"node": self.name, "label": "과거 이력 조사",
