@@ -19,7 +19,8 @@ from app.agent.workflow.agents.base import TextAgent
 from app.agent.workflow.agents.refiner import draft_text
 from app.agent.prompts.roles import SYSTEM_RESPONDER
 from app.agent.workflow.prompts import data_block, persona, wrap_data
-from app.agent.workflow.state import AgentState, Intent, Node, last_user_text, note
+from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
+                                      request_text)
 
 
 class Responder(TextAgent):
@@ -243,7 +244,17 @@ class Responder(TextAgent):
                      "'변경 경위나 관련 티켓 내용이 더 궁금하면 말씀 주세요.' 여러 줄로 늘어놓거나 "
                      "승인·생성을 다시 묻지는 마라.")
 
-        return f"# 명령서\n{goal}\n\n## 사용자의 요청\n{last_user_text(state)}{data}"
+        # ── 원 요청을 함께 싣는다 — **답의 성격은 마지막 발화가 아니라 원 요청이 정한다.**
+        # 실측: "fdc flat trace ic 데이터 히스토리 정리" → 표기 확인 질문 → 사용자가 보기
+        # 하나("fdc.fdc_trace_summary_ic")를 고르자, 이 자리에 그 한 낱말만 실려서 답이
+        # **연표가 아니라 현재 값 표**로 나왔다(티켓 8건 중 2건만 인용). 확인 턴을 지난
+        # 대화는 마지막 발화가 짧은 선택지라, 그것만 보면 무엇을 묻는 대화인지 알 수 없다.
+        # request_text 는 원 요청을 고정해 두려고 만든 장치인데 여기에만 연결이 없었다.
+        req, last = (request_text(state) or "").strip(), (last_user_text(state) or "").strip()
+        asked = (f"## 원래 요청 (이 대화가 시작된 질문 — **답의 성격은 이것이 정한다**)\n{req}\n\n"
+                 f"## 이번 턴 사용자의 말\n{last}") if req and req != last else \
+                f"## 사용자의 요청\n{last}"
+        return f"# 명령서\n{goal}\n\n{asked}{data}"
 
     def apply(self, state, out):
         text = out.get("text") or ""
@@ -253,25 +264,36 @@ class Responder(TextAgent):
         # 프롬프트로 세 번 막아 봤지만 재발 — 이 부류는 부탁할 일이 아니라 **검증할 일**이다.
         # 위반이 나오면 실값을 쥐여 주고 한 번 다시 쓰게 하고, 그래도 남으면 경고를 붙인다.
         # 조용히 고치지 않는 이유: 무엇이 걸렀는지 보여야 사용자가 시스템을 믿을 수 있다.
+        # ★ 탐지와 교정을 분리한다. 예전엔 둘이 한 try 안에 있어서 **재작성 호출이 실패하면
+        #   탐지 결과까지 통째로 버려졌다** — 검증기가 잡았는데 사용자는 아무것도 못 본다.
+        #   실측: 위반(링크 없는 참조)이 잡힌 턴의 답에 경고도 재작성도 없이 그대로 나갔다.
+        #   재작성은 시스템 프롬프트 전체 + 답 전문을 다시 보내는 **두 번째 LLM 호출**이라
+        #   레이트리밋·길이로 죽을 수 있다. 그건 교정의 실패이지 탐지의 무효가 아니다.
         from app.agent.workflow import grounding
         try:
             g = grounding.check(text)
-            if not g["ok"]:
+        except Exception:
+            g = None                        # 검증기가 죽으면 답은 그대로 나간다
+        if g and not g["ok"]:
+            text2, g2 = "", None
+            try:
                 fixed = self.llm().invoke([
                     ("system", self.system(state)),
                     ("user", f"방금 쓴 답에 사실 오류가 있다. 아래만 고쳐 전체를 다시 써라. "
                              f"다른 내용은 유지하라.\n{grounding.violation_note(g)}\n\n"
                              f"### 방금 쓴 답\n{text}")])
-                text2 = str(getattr(fixed, "content", "") or "").strip() or text
-                g2 = grounding.check(text2)
-                if g2["ok"]:
-                    text = text2
-                else:                       # 재작성으로도 못 고침 — 덜 틀린 쪽에 경고를 단다
-                    better = text2 if _violations(g2) <= _violations(g) else text
-                    gb = g2 if better is text2 else g
-                    text = better + grounding.warning_block(gb)
-        except Exception:
-            pass                            # 검증기가 죽어도 답은 나가야 한다
+                text2 = str(getattr(fixed, "content", "") or "").strip()
+                if text2:
+                    g2 = grounding.check(text2)
+            except Exception:
+                text2, g2 = "", None        # 교정 실패 — 아래에서 원문 + 경고로 간다
+            if g2 and g2["ok"] and _kept_substance(text, text2):
+                text = text2
+            else:                           # 못 고침 — 덜 틀린 쪽에 **반드시 경고를 단다**
+                use2 = bool(g2) and _violations(g2) < _violations(g) \
+                    and _kept_substance(text, text2)
+                better, gb = (text2, g2) if use2 else (text, g)
+                text = better + grounding.warning_block(gb)
 
         # 참조 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
         # 코드가 접는다. 규칙("같은 근거 같은 번호")은 프롬프트에 있지만 보장은 여기서.
@@ -531,3 +553,22 @@ def _drop_form_echo(text: str, qs: list) -> str:
 def _violations(g: dict) -> int:
     return len(g.get("fake_keys") or []) + len(g.get("wrong_titles") or {}) \
         + len(g.get("fake_people") or []) + len(g.get("unlinked_refs") or [])
+
+
+def _kept_substance(before: str, after: str) -> bool:
+    """재작성이 답을 **망가뜨리지 않았는지** — 검사를 통과했다고 좋은 답은 아니다.
+
+    위반을 없애는 가장 쉬운 방법은 **내용을 지우는 것**이다. 실측(fake 프로브): 재작성
+    결과가 지시문을 복창한 껍데기였는데, 거기엔 티켓 키도 참조도 없으니 검사는 깨끗이
+    통과했고 그 껍데기가 멀쩡한 답을 대체했다. 검사 통과만으로 채택하면 이 길이 열린다.
+
+    두 가지만 본다 — 분량이 절반 아래로 줄지 않았는가, 원래 인용한 티켓 키가 절반은
+    남아 있는가(위반 키는 지워지는 게 맞으므로 전부 유지를 요구하지는 않는다).
+    """
+    from app.agent.workflow.grounding import KEY_RE
+    if not after or len(after) < len(before) * 0.5:
+        return False
+    keys_b = set(KEY_RE.findall(before or ""))
+    if not keys_b:
+        return True
+    return len(set(KEY_RE.findall(after)) & keys_b) >= max(1, len(keys_b) // 2)

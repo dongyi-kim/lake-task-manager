@@ -175,3 +175,30 @@ def test_verifiable_references_are_not_flagged():
           "[3] DL-9062 코멘트 (skcc.x1103, 2026-08-06) — 운영 담당자\n"
           "[4] 설계 노트 http://wiki/y")
     assert _unlinked_refs(ok) == []
+
+
+# ── 탐지와 교정을 분리한다 (실측: 위반이 잡혔는데 경고도 재작성도 없이 나갔다) ──────
+def test_a_failed_rewrite_still_attaches_the_warning(monkeypatch):
+    """재작성은 시스템 프롬프트 전체 + 답 전문을 다시 보내는 **두 번째 LLM 호출**이라
+    레이트리밋·길이로 죽을 수 있다. 그건 교정의 실패이지 탐지의 무효가 아니다 —
+    예전엔 둘이 한 try 안에 있어 재작성이 죽으면 탐지 결과까지 통째로 버려졌다."""
+    from app.agent.workflow.agents.responder import Responder
+    r = Responder()
+    monkeypatch.setattr(Responder, "llm",
+                        lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("429")))
+    bad = ("DL-9044 에서 30분으로 바뀌었습니다 [1].\n\n**참조**\n"
+           "[1] DL-9044 — 적재주기 변경\n"
+           "[2] [데이터카탈로그] 테이블 특성 분석 — 스키마 정보\n")
+    out = r.apply({"messages": [], "intent": "ask"}, {"text": bad})
+    assert "자동 검증 경고" in (out.get("reply") or ""), out.get("reply")
+
+
+def test_a_rewrite_that_guts_the_answer_is_rejected():
+    """위반을 없애는 가장 쉬운 방법은 **내용을 지우는 것**이다 — 그 길을 막는다.
+    실측(fake 프로브): 지시문을 복창한 껍데기가 검사를 통과해 멀쩡한 답을 대체했다."""
+    from app.agent.workflow.agents.responder import _kept_substance
+    full = ("DL-9041·DL-9042·DL-9043 를 시간순으로 정리하면 다음과 같습니다. "
+            "각 티켓의 경위와 현재 상태를 아래 표에 담았습니다.")
+    assert _kept_substance(full, full.replace("DL-9043", "DL-9046")) is True
+    assert _kept_substance(full, "[fake] 방금 쓴 답에 사실 오류가 있다") is False
+    assert _kept_substance(full, "") is False
