@@ -121,6 +121,58 @@ def _group_activity(state) -> str:
     return "\n".join(rows)
 
 
+def _my_day(state) -> str:
+    """"나 오늘 뭐 해야 할까" — 재료를 **코드가 병렬로** 조회한다.
+
+    my_day 가 쓰는 도구는 늘 같다(내가 누구인가 → 내 일감 → 정체된 것). 무엇을 부를지가
+    판단이 아니면 순회할 이유가 없다 — 도구 호출 한 번이 곧 LLM 왕복 한 번이라
+    조회 하나에 4회를 태웠다(실측 기준선: 21k 토큰).
+    """
+    from app.agent.workflow.state import Intent as _I
+    if (state.get("intent") or "") != _I.MY_DAY:
+        return ""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.agent import tools as T
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_me = ex.submit(lambda: T.BY_NAME["whoami"].invoke({}) or {})
+        f_load = ex.submit(lambda: T.BY_NAME["get_my_workload"].invoke({}) or {})
+        f_stale = ex.submit(lambda: T.BY_NAME["find_stale_tickets"].invoke({"days": 14}) or {})
+    rows = []
+    try:
+        me = f_me.result()
+        rows.append(f"[나] {me.get('id')} {me.get('name', '')} · 모듈 {me.get('module', '-')}"
+                    f" · 매니저 {'예' if me.get('manager') else '아니오'}")
+    except Exception:
+        pass
+    try:
+        wl = f_load.result()
+        tickets = [t for t in (wl.get("tickets") or []) if not t.get("done")]
+        today = str(wl.get("today") or "")
+        # 마감 지난 것 → 임박 → 나머지. 판단(무엇부터)은 모델이 하되 **순서의 근거**는
+        # 코드가 붙여 준다("마감 3일 지남"이 있어야 우선순위를 말로 설명할 수 있다).
+        def _key(t):
+            d = str(t.get("duedate") or "")
+            return (0, d) if d and today and d < today else ((1, d) if d else (2, ""))
+        rows.append(f"[내 일감] 열린 것 {len(tickets)}건 (전체 {wl.get('count')}건)")
+        for t in sorted(tickets, key=_key)[:12]:
+            d = str(t.get("duedate") or "")
+            late = " · 마감 지남" if d and today and d < today else ""
+            rows.append(f"- {t.get('key')} \"{t.get('summary', '')}\" ({t.get('status', '')}"
+                        f", 우선 {t.get('priority') or '-'}, 마감 {d or '없음'}{late})")
+    except Exception:
+        pass
+    try:
+        st = f_stale.result()
+        for t in (st.get("tickets") or [])[:5]:
+            rows.append(f"[정체] {t.get('key')} \"{t.get('summary', '')}\" "
+                        f"{t.get('staleDays')}일째 · 담당 {t.get('assignee') or '없음'}")
+    except Exception:
+        pass
+    return ("[오늘 할 일 재료 — 코드가 조회함. 이 안에서 우선순위를 판단해 답하라]\n"
+            + "\n".join(rows)) if rows else ""
+
+
 def _self_report(state) -> str:
     """주간보고류("내가 이번 주 한 일 정리") 사전 취합 — **본인 활동**을 코드가 조회한다.
 
@@ -335,6 +387,14 @@ class PMO(ToolAgent):
                                  ((state.get("ticket_progress") or "") + "\n\n" + blk).strip()}
                 except Exception:
                     pass
+            # "오늘 뭐 해야 할까" — 부를 도구가 정해져 있다. 코드가 병렬로 조회한다.
+            try:
+                day_blk = _my_day(state)
+            except Exception:
+                day_blk = ""
+            if day_blk:
+                state = {**state, "ticket_progress":
+                         ((state.get("ticket_progress") or "") + "\n\n" + day_blk).strip()}
             try:
                 cmp_blk = _module_compare(state)
             except Exception:
