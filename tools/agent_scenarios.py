@@ -15,10 +15,14 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
 os.environ["LAKE_AGENT_PROVIDER"] = "openai"
-_args = [a for a in sys.argv[1:] if a != "--report"]
+_args = [a for a in sys.argv[1:] if not a.startswith("--")]
 MODEL = _args[0] if _args and not _args[0].isupper() else "gpt-4o-mini"
 ONLY = set(a for a in _args if a.isupper())
 REPORT = "--report" in sys.argv
+# --dump: **사람(또는 Claude)이 직접 채점하기 위한** 전문 덤프. 요약 표가 아니라 대화 전문 +
+# 기대 계약을 나란히 적는다. LLM judge 는 보조 신호일 뿐 통과 권한이 없다는 것이 이 배터리의
+# 입장이고(실측: 다른 질문에 답한 것에 6축 만점), 그러면 **읽을 수 있는 산출물**이 있어야 한다.
+DUMP = "--dump" in sys.argv
 os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
 
 from app.agent.workflow import session  # noqa: E402
@@ -181,6 +185,198 @@ CASES = [
                             and _history_ok(o.get("reply") or ""))),
 ]
 
+# ── 케이스별 기대 계약 ────────────────────────────────────────────────────
+# **이 배터리의 품질 하한은 여기 적힌 문장이다.** 결정적 체커는 낱말이 있는지만 보고,
+# LLM judge 는 문장이 매끄러우면 후하다(실측: 다른 질문에 답한 것에 6축 전부 5점).
+# 그래서 "무엇이 성립해야 이 답이 쓸 만한가"를 **미리 사람 말로 적어 두고** 그것과
+# 대조한다 — 이 저장소의 평가 규율 ②(사전에 설계한 기대 결과와 대조)를 코드로 옮긴 것이다.
+#
+#   story    : 사용자가 무엇을 기대하고 이 대화를 시작했나(한 줄)
+#   must     : 하나라도 빠지면 **실패**. 답에 그 사실·형태가 실제로 있어야 한다.
+#   must_not : 하나라도 있으면 **실패**. 실측된 오답 패턴이다.
+#
+# 채점은 사람(또는 Claude)이 tools/agent_quality_gate.py 의 덤프를 읽고 한다.
+# judge 는 보조 신호일 뿐 통과 권한이 없다.
+EXPECT = {
+    "EPIC1": {
+        "story": "이니셔티브를 하나 세우려 한다 — 목표를 말했으니 Epic 한 건이 서야 한다",
+        "must": ["Epic 1건만 초안에 있다(자식 Task 를 같은 배치에 섞지 않았다)",
+                 "보드에 뜨는 짧은 Epic Name(10자 이내)이 붙어 있다",
+                 "본문에 배경·목표·완료 기준이 있고 목표가 사용자가 말한 '등록률 100%' 를 담는다"],
+        "must_not": ["Epic 과 하위 Task 를 한 승인 배치에 섞었다",
+                     "이미 있는 유사 Epic 을 확인하지 않고 만들었다"],
+    },
+    "TECH2": {
+        "story": "신규 개발 건을 착수하려 한다 — 규모 판단이 먼저다",
+        "must": ["초안을 내거나, 범위·완료조건을 묻는 질문을 냈다(둘 중 하나는 해야 한다)",
+                 "낸 것이 초안이면 모듈이 Observability 또는 DataOps 로 잡혀 있다(컨슈머 랙 감시)"],
+        "must_not": ["방식이 안 정해졌는데 실행 단계를 미리 쪼갰다"],
+    },
+    "BULK3": {
+        "story": "분담을 이미 정해 왔다 — 그대로 만들어 주기만 하면 된다",
+        "must": ["Sub-Task 3건이 DL-101 아래로 잡혔다",
+                 "설계=x1103 · 구현=x1042 · 검증=i2011 이 **말한 그대로** 배정됐다"],
+        "must_not": ["세 건을 한 사람에게 몰았다", "이미 말한 분담을 다시 물었다"],
+    },
+    "KNOW4": {
+        "story": "개념과 우리 현황을 함께 알고 싶다",
+        "must": ["개념 설명이 한두 문장으로 있다",
+                 "우리 프로젝트 이력을 티켓 키와 함께 대거나, 없으면 '사내 이력 없음'이라 못 박았다"],
+        "must_not": ["모듈이 같다는 이유로 무관한 티켓을 관련 이력이라 붙였다"],
+    },
+    "ACT5": {
+        "story": "이 티켓 주변 사람들이 요즘 뭘 하는지 알고 싶다",
+        "must": ["관련자를 사번으로 나열했다",
+                 "사람마다 '주로 하는 일'을 문장으로 요약하고 근거 티켓을 붙였다"],
+        "must_not": ["한 사람만 보고 끝냈다", "활동이 적은 것을 태만으로 단정했다"],
+    },
+    "GUIDE7": {
+        "story": "이 도구 쓰는 법을 묻는다",
+        "must": ["담당자 변경은 티켓 다이얼로그에서 값을 클릭하는 인라인 편집이라고 답했다",
+                 "강제 새로고침의 위치(좌하단 ↻)를 답했다"],
+        "must_not": ["가이드에 없는 화면·버튼을 지어냈다"],
+    },
+    "MOD8": {
+        "story": "기존 티켓 두 필드를 바꿔 달라 — 승인 카드가 바로 서야 한다",
+        "must": ["변경 계획에 라벨 추가와 컴포넌트 변경이 **둘 다** 있다",
+                 "대상이 DL-101 이다"],
+        "must_not": ["말하지 않은 필드까지 바꾸려 했다", "새 티켓을 만들려 했다"],
+    },
+    "REC9": {
+        "story": "지금 집을 일을 고르고 싶고, 그다음 조건을 좁힌다",
+        "must": ["티켓마다 **왜 목록에 있는지**(마감 D-n · n일째 정체 등)를 붙였다",
+                 "후속 턴에서 '마감 안 지난 것'이라는 **사용자의 기준 그대로** 좁혔다"],
+        "must_not": ["물은 기준을 다른 기준으로 바꿔치기했다", "이유 없는 키 목록만 나열했다"],
+    },
+    "JQL10": {
+        "story": "조건 검색을 JQL 로 받아 재사용하고 싶다",
+        "must": ["실행한 JQL 한 줄이 답에 그대로 실렸다",
+                 "결과가 있으면 표로, 없으면 '없습니다' + 확인한 기준을 밝혔다"],
+        "must_not": ["JQL 을 요구했는데 결과만 주고 쿼리를 뺐다"],
+    },
+    "FIT11": {
+        "story": "이 사람에게 맡겨도 되는지 판단을 돕는 근거가 필요하다",
+        "must": ["적합/부담 판단 문장이 있고 **숫자(진행중 건수)와 티켓 키**가 함께 있다",
+                 "i2011 이 운영 인력(i 접두)이라는 점을 판단에 반영했다",
+                 "부적합하면 대안 1명을 근거와 함께 냈다"],
+        "must_not": ["'적합해 보입니다' 처럼 근거 없는 인상만 말했다",
+                     "배정을 확정했다(결정은 사람 몫이다)"],
+    },
+    "CMT12": {
+        "story": "댓글 하나만 남기려 한다",
+        "must": ["코멘트 본문에 [~skcc.x1103] 멘션 표기가 그대로 들어갔다",
+                 "코멘트만 계획했다"],
+        "must_not": ["코멘트 외에 필드 변경·상태 전이를 함께 냈다",
+                     "'댓글을 남길까요?' 하고 허락을 다시 물었다"],
+    },
+    "REL14": {
+        "story": "신기술 도입 단계를 추가하려 한다 — 관련 없는 과거를 끌어오면 신뢰가 깎인다",
+        "must": ["Iceberg/Puffin/NDV/통계 라는 원 요청의 고유어가 제목에 남았다",
+                 "관련 이력이 없으면 '없음'이라고 말했다"],
+        "must_not": ["모듈만 같은 무관한 티켓(DL-5487·DL-5876·DL-5122 류)을 근거로 붙였다"],
+    },
+    "EPICQ15": {
+        "story": "새 일을 시작하는데 어느 Epic 에 달지는 내가 정해야 한다",
+        "must": ["Epic 을 묻는다면 객관식(choice)이고 보기에 '없음(최상위)' 이 있다"],
+        "must_not": ["Epic 키를 자유 입력(text)으로 물었다", "조용히 아무 Epic 에 붙였다"],
+    },
+    "EDGE13": {
+        "story": "오타 섞인 모호한 복합 요청 — 상황 파악과 사람 추천을 함께 원한다",
+        "must": ["상황 요약과 담당 후보가 **둘 다** 있다",
+                 "후보마다 근거(워크로드 숫자 또는 관련 이력 키)가 붙었다"],
+        "must_not": ["'기록을 찾지 못했다'로 끝내고 후보를 안 냈다"],
+    },
+    "DATA1": {
+        "story": "이 테이블 지금 적재주기가 몇인지 하나만 알고 싶다",
+        "must": ["현재 값이 30분이라고 단언했다", "근거로 DL-9044 를 댔다"],
+        "must_not": ["변경 전 값(2시간)을 현재 값으로 말했다", "값 하나 물었는데 개념 강의를 붙였다"],
+    },
+    "DATA2": {
+        "story": "스키마와 변경 내력을 함께 보고 싶다",
+        "must": ["컬럼 8개를 실제로 나열했다(CHAMBER_ID 포함)",
+                 "스키마 변경(DL-9045)과 주기 변경(DL-9044)을 날짜와 함께 짚었다"],
+        "must_not": ["컬럼 수만 말하고 목록을 생략했다(문서 본문에 있는데 안 읽은 것이다)"],
+    },
+    "DATA3": {
+        "story": "이 테이블을 적재하는 job 과 담당을 알고 싶다",
+        "must": ["job 이름이 etl_fdc_trace_summary_ic_30m 이다", "담당이 skcc.x1042 다"],
+        "must_not": ["주기가 바뀌기 전 job 이름(…_2h 류)을 현재로 말했다",
+                     "코멘트 작성자를 담당자로 둔갑시켰다"],
+    },
+    "DATA4": {
+        "story": "아는 것과 모르는 것을 구분해 듣고 싶다",
+        "must": ["적재 방식이 실시간/스트리밍임을 답했다",
+                 "스키마 컬럼은 **확인된 기록이 없다**고 명시했다"],
+        "must_not": ["없는 컬럼 목록을 지어냈다"],
+    },
+    "DATA5": {
+        "story": "기록에 없는 대상을 물었다 — 정직한 '없음'이 정답이다",
+        "must": ["확인된 기록이 없다고 답했다",
+                 "근거가 있다면 DL-9051 코멘트('우리 적재 대상이 아니다')를 댔다"],
+        "must_not": ["다른 테이블(fdc)의 주기·담당을 끌어다 붙였다",
+                     "코멘트 작성자를 이 대상의 담당자라고 했다"],
+    },
+    "DATA6": {
+        "story": "두 테이블을 비교하고, 이어서 각각의 주기를 확인한다",
+        "must": ["yms=4시간 · fdc=30분 을 각각 짚었다", "차이(시간축 불일치)를 한 문장으로 말했다"],
+        "must_not": ["두 테이블의 값을 뒤바꿔 말했다"],
+    },
+    "DATA7": {
+        "story": "이 기술을 우리가 어떻게 쓰고 정책이 뭔지 알고 싶다",
+        "must": ["호환성 정책이 현재 FULL 이라고 답하고 DL-9071 을 댔다"],
+        "must_not": ["초기 값(BACKWARD)을 현재 정책으로 말했다"],
+    },
+    "DATA8": {
+        "story": "지금 담당이 누구인지가 알고 싶다 — 이관이 있었다",
+        "must": ["현재 담당이 skcc.i2011 이라고 답했다"],
+        "must_not": ["이관 전 담당(skcc.x1103)을 현재 담당으로 말했다"],
+    },
+    "PROG1": {
+        "story": "이 티켓이 어디까지 왔는지, 남은 게 뭔지 알고 싶다",
+        "must": ["하위 3건 중 2건 완료·1건 진행중을 짚었다",
+                 "막고 있던 DL-9092 가 해소됐다는 사실을 코멘트 근거로 댔다",
+                 "남은 일(성능 측정·가이드)을 말했다"],
+        "must_not": ["상태 한 단어('진행중')로 끝냈다", "진척 숫자를 스스로 지어냈다"],
+    },
+    "PROG2": {
+        "story": "마감 대비 위험을 알고 싶다",
+        "must": ["마감(2026-08-15) 대비로 남은 일을 말했다", "리스크를 근거와 함께 짚었다"],
+        "must_not": ["무관한 다른 티켓(DL-9008·9028·9029 류)을 리스크로 끌어왔다"],
+    },
+    "DATA9": {
+        "story": "티켓이 하나도 없는 대상 — 문서에만 산다",
+        "must": ["주기가 주 1회임을 답했다", "컬럼 DEFECT_CD 를 댔다", "출처 문서를 링크와 함께 댔다"],
+        "must_not": ["'기록 없음'으로 끝냈다(문서를 안 읽은 것이다)"],
+    },
+    "DATA10": {
+        "story": "표기를 틀리게 물었다 — 추측하지 말고 확인받아야 한다",
+        "must": ["유사 표기 후보를 객관식으로 물었다", "보기에 '이 중에 없음' 탈출구가 있다"],
+        "must_not": ["확인 전에 추정 대상의 실데이터(30분·DL-9044)를 쏟았다",
+                     "'기록 없음'으로 끝냈다"],
+    },
+    "DATA11": {
+        "story": "표기를 고른 뒤 — **처음에 물은 것은 히스토리다**",
+        "must": ["관련 티켓 8건 중 6건 이상을 인용했다",
+                 "시간순으로 전개했다(요청 → 구축 → 장애 → 변경 → 현재)",
+                 "진행 중인 일(DL-9047 또는 DL-9062)을 현재 상태로 말했다"],
+        "must_not": ["현재 값 표만 주고 이력을 생략했다",
+                     "참조 줄에 티켓 키도 링크도 없는 출처가 있다"],
+    },
+    "DATA12": {
+        "story": "이 데이터가 어떻게 여기까지 왔는지 통째로 알고 싶다",
+        "must": ["탄생(VoC 요청 DL-9041 → 구축 DL-9042)을 짚었다",
+                 "주기 단축의 계기가 된 지연 장애(DL-9043)를 짚었다",
+                 "진행 중인 일을 현재 상태로 말했다"],
+        "must_not": ["변경 2건(주기·스키마)만 말하고 끝냈다"],
+    },
+    "DATA13": {
+        "story": "오타로 물었고, 확인 보기를 골랐다 — 원래 물은 것은 히스토리다",
+        "must": ["첫 턴에서 확인 질문을 냈다",
+                 "고른 뒤 답이 **연표**다(현재 값 요약이 아니다)"],
+        "must_not": ["확인 턴을 지나며 원 요청(히스토리)이 값 조회로 축소됐다"],
+    },
+}
+
 # 이 대상의 사내 이력 전부 — 재료(topic_dossier)에는 늘 8건이 실린다.
 _FDC_TICKETS = ("DL-9041", "DL-9042", "DL-9043", "DL-9044",
                 "DL-9045", "DL-9046", "DL-9047", "DL-9062")
@@ -261,6 +457,13 @@ JUDGE_SYS = (
     "검증 불가한 출처다 — 그런 줄이 하나라도 있으면 2점 이하**. 티켓 키는 제목과 짝지어 쓰나)\n"
     "— interaction(모호한 요청에 추측으로 답하는 대신 확인 질문·후보 선택지를 냈나 — "
     "확실한데도 되물었으면 그것도 감점)\n"
+    "★★ **이번 턴이 '확인 질문'이면 채점 잣대가 다르다.** 되묻는 것이 정답인 턴에서는 답이 "
+    "짧고 근거가 없는 것이 **정상**이다(아직 답할 때가 아니다). 그 턴에는 "
+    "grounding·completeness·visibility 를 **5점으로 두고**, interaction 과 clarity 만 "
+    "실제로 채점하라 — 물어야 할 것을 정확히 물었나, 보기가 고르기 쉬운가. "
+    "확인 전에 추정 데이터를 쏟았으면 그때만 grounding 을 깎는다. "
+    "(실측: 되묻기가 정답인 케이스에 근거가 없다며 grounding 1점을 줘 평균 1.83 이 나왔다 — "
+    "축을 잘못 댄 것이지 답이 나쁜 것이 아니었다.)\n"
     "— relevance(질문의 **구체적 개념**과 관련된 것만 실었나. 모듈이 같다거나 팀이 같다는 "
     "이유로 끌어온 티켓·문서는 노이즈다 — 하나라도 있으면 3점 이하. 관련 이력이 없으면 "
     "'없음'이 정답이고, 그렇게 답했다면 감점하지 마라)")
@@ -304,7 +507,13 @@ for cid, desc, turns, want_intent, check in CASES:
         # ★ judge 는 **실패한 케이스에도** 돌린다. 예전엔 통과했을 때만 채점해서, 정작
         #   진단이 가장 필요한 실패 케이스에 품질 정보가 없었다(그리고 평균은 통과분만
         #   집계돼 실패가 많을수록 평균이 좋아 보였다).
-        j = judge(turns[-1], last.get("reply") or "", original=turns[0], expect=desc)
+        _spec = EXPECT.get(cid) or {}
+        # 기대 계약을 judge 에게도 그대로 준다 — desc 한 줄보다 must/must_not 이 훨씬 구체적이다.
+        _exp_text = "\n".join(
+            [_spec.get("story", desc)]
+            + [f"- 반드시: {x}" for x in _spec.get("must", [])]
+            + [f"- 있으면 실패: {x}" for x in _spec.get("must_not", [])]) or desc
+        j = judge(turns[-1], last.get("reply") or "", original=turns[0], expect=_exp_text)
         # 6축 전부를 평균에 넣는다 — interaction 은 채점만 하고 **버리고 있었다**.
         score = round(sum(j.get(k, 0) for k in JUDGE_AXES) / len(JUDGE_AXES), 2) \
             if j and "error" not in j else 0
@@ -326,7 +535,11 @@ for cid, desc, turns, want_intent, check in CASES:
             print(f"   judge: {j['worst'][:110]}")
         rows.append({"id": cid, "desc": desc, "turns": turns, "passed": passed,
                      "intent": last.get("intent"), "score": score, "judge": j,
-                     "ok_check": ok_check, "ok_quality": ok_quality,
+                     "ok_check": ok_check, "ok_quality": ok_quality, "spec": _spec,
+                     # 덤프는 **자르지 않는다** — 사람이 채점하려면 전문이 있어야 한다.
+                     "replies": [o.get("reply") or "" for o in outs],
+                     "questions": [o.get("questions") or [] for o in outs],
+                     "pending": (last.get("pending") or {}),
                      "reply": (last.get("reply") or "")[:1500]})
     except Exception as e:
         print(f"✗ {cid}: 예외 {str(e)[:150]}")
@@ -352,3 +565,42 @@ if REPORT:
     with open(p, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print("리포트:", p)
+
+if DUMP:
+    # 사람이 읽고 채점하는 산출물 — 요약이 아니라 **대화 전문 + 기대 계약**을 나란히.
+    # 자동 판정(체커·judge)은 참고로만 적는다. 최종 판정은 읽는 사람이 한다.
+    d = [f"# 정성 판독용 전문 덤프 ({MODEL})", "",
+         "각 케이스: **기대 계약**(무엇이 성립해야 쓸 만한가) → 대화 전문 → 자동 판정.",
+         "자동 판정은 참고다 — judge 는 문장이 매끄러우면 후하고(실측: 다른 질문에 답한 것에",
+         "6축 만점), 체커는 낱말만 본다. **판정은 읽고 하는 것이다.**", ""]
+    for r in rows:
+        d += [f"## {r['id']} — {r['desc']}", ""]
+        sp = r.get("spec") or {}
+        if sp:
+            d += [f"> **사용자 스토리**: {sp.get('story', '')}", ""]
+            if sp.get("must"):
+                d += ["**반드시 성립 (하나라도 빠지면 실패)**"] + \
+                     [f"- [ ] {x}" for x in sp["must"]] + [""]
+            if sp.get("must_not"):
+                d += ["**있으면 실패**"] + [f"- [ ] {x}" for x in sp["must_not"]] + [""]
+        else:
+            d += ["> (기대 계약 미작성 — EXPECT 에 추가할 것)", ""]
+        for i, q in enumerate(r.get("turns") or []):
+            d += [f"### 턴 {i + 1} · 사용자", "", "```", q, "```", "", f"### 턴 {i + 1} · 에이전트", ""]
+            for qq in (r.get("questions") or [[]])[i] if i < len(r.get("questions") or []) else []:
+                d += [f"- **[질문:{qq.get('kind')}]** {qq.get('question')}",
+                      f"  - 보기: {' | '.join(str(x) for x in (qq.get('options') or [])) or '(자유 입력)'}"]
+            d += [(r.get("replies") or [""])[i] if i < len(r.get("replies") or []) else "(없음)", ""]
+        if r.get("pending", {}).get("items"):
+            d += ["**승인 대기 초안**", "", "```json",
+                  json.dumps(r["pending"]["items"], ensure_ascii=False, indent=1)[:4000], "```", ""]
+        jj = r.get("judge") or {}
+        d += [f"**자동 판정(참고)** — 체커={'ok' if r.get('ok_check') else 'FAIL'}"
+              f" · judge 평균={r.get('score')}"
+              f" · answers_original={jj.get('answers_original')}"
+              f" · worst: {jj.get('worst', '')}", "", "---", ""]
+    p2 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      "docs", "agent-quality-run.md")
+    with open(p2, "w", encoding="utf-8") as f:
+        f.write("\n".join(d) + "\n")
+    print("전문 덤프:", p2)

@@ -167,16 +167,42 @@ from app.agent.workflow.agents.historian import _topic_dossier   # noqa: E402
 def test_dossier_gathers_every_fragment_for_a_table():
     d = _topic_dossier(TABLE)
     for must in ("DL-9044", "30분", "etl_fdc_trace_summary_ic_30m", "skcc.x1042",
-                 "CHAMBER_ID", "적재주기 2시간 1회 → 30분 1회"):
+                 "CHAMBER_ID", "2시간 1회 → 30분 1회"):
         assert must in d, f"{must} 가 취합에서 빠졌다"
+    # 변경 이력은 **필드별로 묶여** 있어야 한다 — 한 줄씩 섞어 두면 모델이 다른 필드의 값을
+    # 물어본 필드의 값으로 옮겨 적는다(실측 DATA4: '보존기간 30→90일'을 '적재주기 90일'로).
+    assert "[적재주기]" in d, d[:400]
     assert len(d) <= 4000
+
+
+def test_change_history_is_grouped_by_field_so_values_cannot_cross_wires():
+    """대상은 맞고 **필드만 틀린** 오답은 눈에 잘 안 띄는데 사용자는 그 숫자를 그대로
+    보고서에 옮긴다. 묶어 두면 '이 값이 무슨 필드의 값인가'가 구조로 보인다."""
+    d = _topic_dossier("eqp.eqp_sensor_raw_1s")
+    assert "[보존기간]" in d and "30일 → 90일" in d, d[:500]
+    # 적재주기 변경 기록이 없는 대상이므로 그 필드 블록이 있어서는 안 된다 —
+    # 있으면 다른 필드의 값을 옮겨 적을 자리가 생긴다.
+    assert "[적재주기]" not in d, d[:500]
 
 
 def test_dossier_works_for_a_technology_not_just_a_table():
     """테이블만의 이야기가 아니다 — 특정 기술도 조각이 똑같이 흩어져 있다."""
     d = _topic_dossier("Schema Registry")
-    assert "호환성 정책 BACKWARD → FULL" in d and "DL-9071" in d
+    assert "[호환성 정책]" in d and "BACKWARD → FULL" in d and "DL-9071" in d
     assert "skcc.x1501" in d
+
+
+def test_history_instruction_only_rides_when_history_was_asked():
+    """이력 지시를 모든 경로에 실으면 값 하나 묻는 질문에도 연표가 쏟아진다
+    (실측 DATA1: '현재 적재주기는?' 에 8행 연표 + 참조 10개)."""
+    hist = _topic_dossier(TABLE, history=True)
+    assert "이 목록이 곧 이 대상의 연표다" in hist
+    assert "처음부터 지금까지 훑어 서술한다" in hist
+    plain = _topic_dossier(TABLE, history=False)
+    assert "이 목록이 곧 이 대상의 연표다" not in plain
+    assert "물어본 것만 답한다" in plain
+    # 목록 자체는 양쪽 다 남는다 — 값의 출처를 찾는 지도로는 여전히 필요하다
+    assert "DL-9041" in plain and "DL-9047" in plain
 
 
 def test_dossier_does_not_contaminate_an_unknown_subject():

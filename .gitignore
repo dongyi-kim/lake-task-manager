@@ -33,3 +33,8 @@ Thumbs.db
 
 # 런타임 사용자 설정(Bitbucket 연동 등) — 사용자별 상태, 커밋 금지
 app_prefs.json
+
+# 배터리 실행 산출물 — 매 실행마다 바뀐다(리포지토리가 아니라 그때 읽는 것)
+docs/agent-quality-run.md
+docs/agent-scenarios-report.md
+tools/draft_eval_last.json

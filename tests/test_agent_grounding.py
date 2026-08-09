@@ -202,3 +202,29 @@ def test_a_rewrite_that_guts_the_answer_is_rejected():
     assert _kept_substance(full, full.replace("DL-9043", "DL-9046")) is True
     assert _kept_substance(full, "[fake] 방금 쓴 답에 사실 오류가 있다") is False
     assert _kept_substance(full, "") is False
+
+
+# ── 후처리가 마크다운 링크를 먹던 것 (실측: 문서 참조가 제목만/URL만 남았다) ──────
+def test_bracketed_link_titles_survive_the_dangling_bracket_cleanup():
+    """우리 Confluence 제목은 전부 `[데이터카탈로그] …` 꼴이라 링크 텍스트에 대괄호가 있다.
+    옛 정규식은 60자를 내다보는 lookahead 라 그 링크를 통째로 뭉갰다 — "링크 없는 문서
+    제목" 사고를 프롬프트로 몇 라운드나 쫓았는데 모델은 제대로 쓰고 있었다."""
+    from app.agent.workflow.agents.responder import _drop_dangling_bracket as f
+    keep = "[1] [[데이터카탈로그] qms_defect_code_mst 정의](http://wiki/x) — 주 1회"
+    assert f(keep) == keep
+    assert f("[2] [설계 노트](http://wiki/z) — 무엇") == "[2] [설계 노트](http://wiki/z) — 무엇"
+    assert f("현재 30분이다 [1].") == "현재 30분이다 [1]."
+    # 쓰다 만 토막은 여전히 지운다(원래 목적)
+    assert f("자세한 것은 [여기에서 확인") == "자세한 것은 여기에서 확인"
+
+
+def test_post_processing_damage_is_caught_by_a_late_recheck():
+    """접지 검사는 후처리 **앞**에 있어서, 후처리가 만든 결함은 검사를 통과한 셈이 됐다.
+    마지막에 한 번 더 본다 — 재작성은 이미 끝난 자리라 경고만 붙인다."""
+    from app.agent.workflow.agents.responder import Responder
+    r = Responder()
+    # 링크가 온전하면 경고가 붙지 않는다
+    ok = ("주 1회 동기화된다 [1].\n\n**참조**\n"
+          "[1] [[데이터카탈로그] qms 정의](http://wiki/x) — 주 1회\n")
+    out = r.apply({"messages": [], "intent": "ask"}, {"text": ok})
+    assert "자동 검증 경고" not in (out.get("reply") or ""), out.get("reply")

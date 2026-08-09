@@ -327,7 +327,17 @@ class Responder(TextAgent):
                 text = text.rstrip() + "\n\n출처: [" + _t + "](" + _u + ")"
         # 쓰다 만 링크 토막("[여기에서 확인할 수 있습니다.") — 여는 대괄호만 남으면
         # 화면에 대괄호가 글자로 보인다(실측). 짝 없는 `[` 는 지운다.
-        text = _re.sub(r"\[(?=[^\]\n]{0,60}(?:\n|$))", "", text)
+        text = _drop_dangling_bracket(text)
+        # ★ 여기서 **한 번 더** 본다. 위의 후처리들은 접지 검사 **뒤에** 돌기 때문에,
+        #   후처리가 만든 결함은 검사를 통과한 셈이 된다. 실측: 대괄호 정리가 문서 링크를
+        #   먹어 참조가 URL 없는 제목만 남았는데 아무도 못 잡았다. 마지막에 다시 보고,
+        #   후처리가 부순 것이면 조용히 넘기지 않는다(재작성은 이미 끝난 자리라 경고만).
+        try:
+            _late = grounding._unlinked_refs(text)
+            if _late and (not g or not g.get("unlinked_refs")):
+                text += grounding.warning_block({"unlinked_refs": _late})
+        except Exception:
+            pass
 
         _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         if _qs:
@@ -548,6 +558,30 @@ def _drop_form_echo(text: str, qs: list) -> str:
     out = _re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
     # 전부 걷어내 버렸다면(질문만 있던 답변) 최소한의 안내는 남긴다.
     return out or "확인이 필요합니다 — 아래에서 골라 주세요."
+
+
+def _drop_dangling_bracket(text: str) -> str:
+    """쓰다 만 링크 토막("[여기에서 확인할 수 있습니다.")의 **여는 대괄호만** 지운다.
+
+    ★ 완성된 마크다운 링크는 건드리지 않는다. 예전에는 `\\[(?=[^\\]\\n]{0,60}(?:\\n|$))`
+    로 60자를 내다봤는데, 그 lookahead 는 **제목 자체에 대괄호가 든 링크**를 링크째 뭉갰다:
+
+        [1] [[데이터카탈로그] qms_… 정의](http://…) — 주 1회   ← 모델이 제대로 쓴 것
+        [1] http://… — 주 1회                                  ← 코드가 먹은 뒤
+
+    우리 Confluence 문서 제목은 **전부** `[데이터카탈로그] …` 꼴이라 이 경로를 늘 탔다.
+    그래서 답변의 문서 참조가 제목만 남거나 URL 만 남았고, "링크 없는 문서 제목"을
+    프롬프트로 몇 라운드나 쫓았다 — 모델은 링크를 제대로 쓰고 있었다.
+
+    지금은 줄 단위로 **닫는 짝이 아예 없는 마지막 `[` 하나만** 지운다.
+    """
+    out = []
+    for ln in (text or "").split("\n"):
+        i = ln.rfind("[")
+        if i >= 0 and "]" not in ln[i + 1:]:
+            ln = ln[:i] + ln[i + 1:]
+        out.append(ln)
+    return "\n".join(out)
 
 
 def _violations(g: dict) -> int:

@@ -19,7 +19,8 @@ import re as _re
 from app.agent.workflow.agents.base import ToolAgent
 from app.agent.prompts.roles import SYSTEM_HISTORIAN
 from app.agent.workflow.prompts import data_block, persona, wrap_data
-from app.agent.workflow.state import AgentState, Node, last_user_text, note
+from app.agent.workflow.state import (AgentState, Node, last_user_text, note,
+                                      request_text)
 
 SCHEMA = {
     "type": "object",
@@ -244,7 +245,13 @@ def _presurvey(state) -> str:
     return "\n\n".join(parts)
 
 
-def _topic_dossier(term: str) -> str:
+# 이력을 **묻는** 낱말 — 연표 서술을 요구할지 가르는 기준. 'digs'(조사할 값어치가 있나)
+# 보다 좁다: "정리해줘"·"알려줘"는 값 질문에도 붙는 말이라 여기 넣으면 안 된다(실측 DATA1).
+_HIST_WORDS = ("히스토리", "이력", "연혁", "경위", "근황", "변천", "타임라인", "어떻게 되어",
+               "어떻게 왔", "그동안")
+
+
+def _topic_dossier(term: str, history: bool = False) -> str:
     """**주제 하나**(테이블·기술·특정 업무 무엇이든)에 얽힌 조각을 코드가 전부 모아 온다.
 
     이런 질문("fdc.fdc_trace_summary_ic 적재주기가?", "Schema Registry 우리 정책이 뭐지?",
@@ -335,13 +342,21 @@ def _topic_dossier(term: str) -> str:
         f" · {m['status'] or '상태 미상'}"
         + (f" (해결 {m['done']})" if m["done"] else "")
         for m in metas)
-    if tix:
+    if tix and history:
         parts.append(
             "관련 티켓 — **시간순. 이 목록이 곧 이 대상의 연표다**:\n" + tix
-            + "\n★ 히스토리·경위·근황을 물으면 **이 목록을 처음부터 지금까지 훑어 서술한다.** "
+            + "\n★ 사용자가 이력·경위를 물었다. **이 목록을 처음부터 지금까지 훑어 서술한다.** "
               "아래 '코멘트 근거'나 '변경 이력'에 안 걸린 티켓도 **사건이다** — 요청·구축·"
               "장애·진행 중인 일이 거기 있고, 빠뜨리면 '왜 이렇게 됐나'와 '지금 어디까지 "
               "왔나'가 답에서 사라진다. 미해결(진행 중) 항목은 현재 상태로 반드시 언급한다.")
+    elif tix:
+        # ★ 이력을 묻지 **않은** 질문에는 연표를 쏟지 않는다. 실측(DATA1): "현재 적재주기는?"
+        #   한 줄을 물었는데 8행 연표 + 참조 10개가 나왔다 — 이력 지시를 모든 경로에 실은
+        #   탓이다. 목록 자체는 어디서 찾을지 알려 주는 **지도**라 남기되, 서술은 시키지 않는다.
+        parts.append(
+            "관련 티켓 (지도 — 어느 티켓에 무엇이 있는지):\n" + tix
+            + "\n★ 사용자는 이력을 묻지 않았다. **물어본 것만 답한다** — 이 목록은 값의 출처를 "
+              "찾는 데 쓰고, 연표로 늘어놓지 마라. 근거로 필요한 티켓만 골라 인용한다.")
     quotes = [f"- {h['key']} · {h.get('author') or '작성자 미상'} · {h.get('date') or ''}: "
               f"\"{h['snippet']}\""
               for h in hits if h.get("where") == "comment" and h.get("snippet")]
@@ -357,14 +372,29 @@ def _topic_dossier(term: str) -> str:
     # 변경 이력에는 **티켓 제목을 반드시 함께** 싣는다 — 키만 있으면 그 변경이 무엇에 대한
     # 것인지 모델이 알 수 없다. 실측 사고: 주제(Schema Registry)를 코멘트에서 언급했을 뿐인
     # 다른 티켓의 '보존기간 30→90일'을 주제의 속성인 것처럼 답했다.
-    chg = [f"- {k} \"{titles.get(k, '')}\" · {r['date']} · {r.get('author') or ''}: "
-           f"{r['field']} {r.get('from') or '(없음)'} → {r.get('to') or '(없음)'}"
-           for k, rows in hist_rows for r in rows
-           if r.get("field") not in ("status", "resolution", "description", "assignee")]
-    if chg:
-        parts.append("변경 이력 (현재 값 = 가장 최근 변경. ★ 각 행은 **그 티켓의 대상**에 대한 "
-                     "변경이다 — 제목을 보고 지금 묻는 대상의 속성인지 확인하고, 아니면 인용하지 "
-                     "마라):\n" + "\n".join(chg[:10]))
+    # ★ **필드별로 묶는다.** 한 줄씩 섞어 두면 모델이 다른 필드의 값을 물어본 필드의 값으로
+    #   옮겨 적는다 — 실측(DATA4): "보존기간 30일 → 90일" 변경을 보고 **"적재주기는 90일"**
+    #   이라 단언했다. 대상은 맞고 필드만 틀린 오답이라 눈에 잘 안 띄고, 사용자는 그 숫자를
+    #   그대로 보고서에 옮긴다. 묶어 두면 "이 값이 무슨 필드의 값인가"가 구조로 보인다.
+    by_field = {}
+    for k, rows in hist_rows:
+        for r in rows:
+            f = str(r.get("field") or "")
+            if f in ("status", "resolution", "description", "assignee"):
+                continue
+            by_field.setdefault(f, []).append(
+                f"  - {r['date']} · {r.get('author') or ''}: "
+                f"{r.get('from') or '(없음)'} → {r.get('to') or '(없음)'}"
+                f"   ({k} \"{titles.get(k, '')}\")")
+    if by_field:
+        blocks = []
+        for f, rows in list(by_field.items())[:6]:
+            blocks.append(f"[{f}]\n" + "\n".join(rows[:5]))
+        parts.append("변경 이력 — **필드별**. 현재 값 = 그 필드의 가장 최근 변경.\n"
+                     "★ 묻지 않은 필드의 값을 물어본 필드의 값으로 옮겨 적지 마라 — "
+                     "'보존기간'이 바뀐 것을 '적재주기'라고 답하는 것이 이 자료의 전형적 오독이다.\n"
+                     "★ 각 행은 그 티켓의 **대상**에 대한 변경이다 — 제목을 보고 지금 묻는 "
+                     "대상의 속성인지도 함께 확인하라.\n" + "\n".join(blocks))
     for d, body in doc_rows:
         if body:
             parts.append(f"문서 「{d.get('title')}」 ({d.get('url')}) 발췌:\n{body}")
@@ -457,7 +487,12 @@ class Historian(ToolAgent):
                                               "누가", "어디", "뭐", "지식", "현재"))
             if subject and (find_identifiers(asked_s, " ".join(state.get("keywords") or [])) or digs):
                 try:
-                    dossier = _topic_dossier(subject)
+                    # 이력을 물었는가 — 원 요청과 이번 턴 **둘 다** 본다. 확인 질문에 답한
+                    # 턴은 발화가 '보기 하나'라 거기엔 이력 낱말이 없다(실측 DATA13).
+                    _hist_ask = any(
+                        w in (request_text(state) + " " + asked_s) for w in _HIST_WORDS) \
+                        or (state.get("answer_depth") or "") == "explain"
+                    dossier = _topic_dossier(subject, history=_hist_ask)
                 except Exception:
                     dossier = ""
                 # ── 표기 후보 — 추정으로 답하지 않고 **객관식으로 확인**받는다(사용자 결정).
