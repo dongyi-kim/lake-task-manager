@@ -887,6 +887,14 @@ class Refiner(ToolAgent):
             fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary",
                                              "labels", "description")
                       if k in change and change[k] is not None}
+            # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
+            # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
+            # 떴다. 담당 해제("assignee": "")만 예외로 인정한다(사용자가 뗄 때 쓴다).
+            _wipe = _re.search(r"(담당|assignee)\w*\s*(해제|비워|없애|제거)",
+                               request_text(state) + " " + last_user_text(state))
+            fields = {k: v for k, v in fields.items()
+                      if (isinstance(v, list) and v) or str(v or "").strip()
+                      or (k == "assignee" and _wipe)}
             if str(fields.get("priority") or "").strip():
                 p = str(fields["priority"]).strip()
                 fields["priority"] = _PRI.get(p.upper(), p)
@@ -1081,6 +1089,17 @@ class Refiner(ToolAgent):
             out["rationale"] = ((out.get("rationale") or "")
                                 + "\n(삭제는 지원되지 않는다 — 상태 전이(닫음)나 보관 라벨을 "
                                   "대안으로 안내)").strip()
+        # 에이전트가 바꿀 수 없는 필드 — 빈 카드 대신 무엇을 못 하는지 말한다.
+        # (update_ticket 은 담당/마감/우선순위/제목/라벨/컴포넌트/본문만 다룬다.
+        #  스토리포인트는 티켓 화면에서 직접, 그것도 Story 에만 설정된다 — 도메인 제약.)
+        if not plan and not items and _re.search(
+                r"스토리\s*포인트|story\s*point|\bSP\b",
+                request_text(state) + " " + last_user_text(state), _re.I):
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(스토리포인트는 에이전트가 바꾸지 못한다 — 티켓 화면에서 "
+                                  "직접 입력해야 하고, 애초에 Story 타입에만 설정된다. "
+                                  "바꿀 수 있는 것: 담당·마감·우선순위·제목·라벨·컴포넌트·본문)"
+                                ).strip()
         # 초안 수정 요청인데 기존 티켓 변경 계획을 냈다(실측: DL-109 로 샜다 — 사용자는
         # 그 키를 입에 올린 적이 없다) — 버린다. 판정은 **사용자 발화에 그 키가 있는가**로
         # 한다(mentioned_keys 는 모델·이월로 오염될 수 있다).

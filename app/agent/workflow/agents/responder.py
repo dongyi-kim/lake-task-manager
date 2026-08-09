@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import re as _re
+
 from app.agent.workflow.agents.base import TextAgent
 from app.agent.workflow.agents.refiner import draft_text
 from app.agent.prompts.roles import SYSTEM_RESPONDER
@@ -189,6 +191,12 @@ class Responder(TextAgent):
             data_block("변경 결과", "\n".join(
                 f"- {u.get('key')} ({', '.join(u.get('fields') or [])})"
                 for u in (result.get("updated") or []))),
+            # 코드가 조회로 확정한 티켓 현재 값 — Historian 요약이 담당·마감을 떨구는 일이
+            # 잦다(실측 Round P: 담당 skcc.x1402 를 "확인되지 않음"으로). 요약과 다르면
+            # 이쪽이 사실이다.
+            data_block("지목 티켓의 현재 값 (코드가 조회로 확정 — 요약과 다르면 이쪽이 맞다)",
+                       "\n".join(l for l in str(state.get("pre_survey") or "").splitlines()
+                                 if _re.match(r"\[[A-Z]+-\d+ (현재|변동|코멘트|하위|링크)\]", l))),
             data_block("쪼갠 이유", (state.get("draft") or {}).get("rationale")),
             data_block("담당자 제안과 근거", asg),
             data_block("검증에서 걸린 것", errors),
@@ -352,7 +360,10 @@ def _prune_empty_rows(text: str) -> str:
         text = _re.sub(r"(?:^|\n)\|[^\n]*\|\n\|[\s:|-]+\|(?=\n(?!\|)|$)", "", text)
     # 내용 없는 섹션 헤딩("### 히스토리" 뒤가 바로 다음 헤딩/참조/끝) — 헤딩만 남기지 않는다
     # (실측: 표를 걷어낸 뒤, 또는 모델이 애초에 빈 헤딩을 냈다).
-    text = _re.sub(r"(?:^|\n)(#{2,4}\s+[^\n]+|\*\*[^\n*]+\*\*)\n+(?=(#{2,4}\s|\*\*참조\*\*|$))",
+    # 맺음말("…더 궁금하면 말씀 주세요")도 섹션 내용이 아니다 — 그 앞의 빈 헤딩을 살려
+    # 두면 "### 히스토리" 밑에 안내문만 붙는 꼴이 된다(실측 Round P).
+    text = _re.sub(r"(?:^|\n)(#{2,4}\s+[^\n]+|\*\*[^\n*]+\*\*)\n+"
+                   r"(?=(#{2,4}\s|\*\*참조\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)|$))",
                    "\n", text)
     return text
 

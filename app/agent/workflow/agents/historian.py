@@ -391,6 +391,45 @@ class Historian(ToolAgent):
                     state = {**state, "pre_survey": pre[:2500]}
 
             # ── 첨부파일 질의 사전 취합 — "첨부 뭐 있어?" 는 검색이 아니라 조회다.
+            # ── 지목한 티켓의 **현재 사실**은 코드가 확정한다 ────────────────
+            # 실측(Round P): "DL-9093 이거 왜 늦어지는거지?" 에 이미 Closed 인 티켓을
+            # "진행 중", 담당(최하은)을 "확인되지 않음"이라고 답했다 — 이웃 지도(seed_map)만
+            # 보고 본체 필드를 안 읽은 것이다. 상태·담당·마감·우선순위와 변동/코멘트를
+            # 코드가 실어 준다("왜/지연/상황" 류 질문에서 특히 답의 뼈대다).
+            if keys0 and any(w in asked_s for w in ("왜", "늦", "지연", "밀리", "막힘", "블로",
+                                                    "상황", "어디까지", "진행", "언제 끝",
+                                                    "경위", "문제")):
+                try:
+                    from app.agent import tools as T
+                    rows = []
+                    for k in keys0:
+                        gt = T.BY_NAME["get_ticket"].invoke({"key": k}) or {}
+                        if gt.get("error"):
+                            continue
+                        rows.append(f"[{k} 현재] " + " · ".join(
+                            f"{lab}={gt.get(f) or '없음'}" for lab, f in
+                            (("상태", "status"), ("담당", "assignee"), ("마감", "duedate"),
+                             ("우선순위", "priority"), ("타입", "type"), ("Epic", "epic"))))
+                        from app.agent.tools.survey_tools import progress_report
+                        pr = progress_report(k) or {}
+                        for lab, fld in (("변동", "timeline"), ("코멘트", "comments"),
+                                         ("하위", "children"), ("링크", "links")):
+                            vals = pr.get(fld) or []
+                            if vals:
+                                rows.append(f"[{k} {lab}] " + "; ".join(
+                                    str(v if not isinstance(v, dict) else
+                                        " ".join(str(v.get(x)) for x in
+                                                 ("date", "when", "who", "field", "from",
+                                                  "to", "key", "rel", "status", "title",
+                                                  "text", "summary") if v.get(x)))[:180]
+                                    for v in vals[:6]))
+                    if rows:
+                        merged = ((state.get("pre_survey") or "") + "\n\n"
+                                  + "\n".join(rows)).strip()
+                        state = {**state, "pre_survey": merged[:3500]}
+                except Exception:
+                    pass
+
             # dossier 직결이 첨부 목록 도구를 건너뛰어 파일은 읽으면서 목록은 '없음'이라는
             # 모순 답이 나왔다(실측). 목록은 코드가 준다.
             if keys0 and any(w in asked_s for w in ("첨부", "파일 목록", "attachment")):
