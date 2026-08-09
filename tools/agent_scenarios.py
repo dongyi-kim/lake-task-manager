@@ -517,6 +517,22 @@ def judge(question, reply, original="", expect=""):
         return {"error": str(e)[:120]}
 
 
+# ★ **동적 색인을 비우고 시작한다 — 안 그러면 배터리가 재현되지 않는다.**
+#   동적 색인(`CACHE_DIR/agent_index/dynamic`)은 에이전트가 본 것을 **누적**한다. 제품에서는
+#   그게 기능이지만, 배터리에서는 앞 케이스가 훑은 티켓·문서가 뒤 케이스의 의미 검색에
+#   섞여 들어와 **실행할 때마다 다른 케이스가 떨어진다.**
+#   실측: 29케이스 한 실행을 두 번 돌렸더니 둘 다 26/29 였는데 **실패 집합이 서로 달랐고**
+#   (MOD8·DATA5·PROG1 / REC9·PROG1·DATA11), 그 케이스들을 2~3건짜리 작은 배치로 돌리면
+#   전부 통과했다. 케이스가 흔들린 게 아니라 **색인 상태가 실행 내내 자란 것**이다.
+#   케이스마다 비우지는 않는다 — 멀티턴 케이스는 자기 턴 사이의 누적이 필요하다.
+#   실행 단위로 같은 출발점을 주는 것이 목적이다.
+try:
+    from app.agent.retrieval import dynamic_index
+    dynamic_index.reset()
+    print("(동적 색인을 비우고 시작한다 — 실행 간 재현을 위해)")
+except Exception as _e:                      # 색인이 없거나 임베딩 미설정이면 그냥 진행
+    print(f"(동적 색인 초기화 생략: {str(_e)[:80]})")
+
 rows, total_cost = [], 0.0
 for cid, desc, turns, want_intent, check in CASES:
     if ONLY and cid not in ONLY:
