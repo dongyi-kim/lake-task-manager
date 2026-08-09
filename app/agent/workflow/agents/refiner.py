@@ -559,18 +559,48 @@ class Refiner(StructuredAgent):
                 out["rationale"] = ((out.get("rationale") or "")
                                     + f"\n(Epic 승인 후 이어서: {extra_items[:120]})").strip()
 
+        # ★ 부모로 지목된 것이 **Epic 이면 버리지 말고 Epic Link 로 옮긴다.**
+        #   Epic 밑에 Sub-Task 는 못 달지만 Task 는 정상이고, 사용자가 말한 것은
+        #   "저 밑에서 진행하자"였다. 이 처리를 안 넣었더니 아래 `elif subs` 가 항목을
+        #   **전부 걷어내 초안이 0건**이 됐다(실측 STR1: 답변만 남고 승인할 것이 없었다) —
+        #   나쁜 초안을 고치려던 가드가 **초안 없음**을 만들었다. 그쪽이 더 나쁘다.
+        for i in items:
+            if (i.get("type") or "").lower().startswith("sub") and _is_epic(i.get("parent")):
+                i["epic"] = i.pop("parent")
+                i["type"] = "Task"
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n({i['epic']} 이 Epic 이라 Sub-Task 대신 그 아래 "
+                                      "Task 로 뒀다 — Epic 밑에는 Sub-Task 를 달 수 없다)").strip()
+
         if mode == "task":
             subs = [i for i in items if (i.get("type") or "").lower().startswith("sub")]
             # ★ 전부 Sub-Task 이고 부모가 실재하면 **모드를 승격**한다 — 사용자가 부모를
             #   지목했는데 mode 만 task 로 잘못 낸 경우다(버리면 초안이 0건이 된다).
-            if subs and len(subs) == len(items) and all(_ticket_exists(i.get("parent")) for i in subs):
+            if subs and len(subs) == len(items) \
+                    and all(_can_parent_subtask(i.get("parent")) for i in subs):
                 mode = "subtask"
                 out["mode"] = "subtask"
             elif subs:
-                items = [i for i in items if i not in subs]
-                names = ", ".join(d.get("summary", "") for d in subs)
-                extra_note = f"(Sub-Task {len(subs)}건은 부모 생성 후 별도 승인으로 붙인다: {names})"
-                out["rationale"] = ((out.get("rationale") or "") + "\n" + extra_note).strip()
+                rest = [i for i in items if i not in subs]
+                # ★ **떼어 내면 남는 게 있을 때만 뗀다.** 이 분기는 "부모가 이 초안 안에 같이
+                #   있으니 자식은 나중에 붙이자"는 뜻인데, 전부가 Sub-Task 면 뗀 결과가
+                #   **초안 0건**이다 — 답변은 "부모 티켓을 생성하여 진행하겠습니다"라고 말하고
+                #   승인할 것은 없는 먹통이 된다(실측 STR1: 이 케이스가 세션 내내 네 가지
+                #   모양으로 흔들린 뿌리가 여기였다). 남는 게 없으면 **Task 로 강등**하고,
+                #   접기·자식 담당 채움 가드가 이어받아 "Task 하나 + Sub-Task N" 으로 만든다.
+                if rest:
+                    items = rest
+                    names = ", ".join(d.get("summary", "") for d in subs)
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + f"\n(Sub-Task {len(subs)}건은 부모 생성 후 별도 승인으로 "
+                                          f"붙인다: {names})").strip()
+                else:
+                    for i in subs:
+                        i["type"] = "Task"
+                        i.pop("parent", None)
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + "\n(부모로 삼을 티켓이 없어 Sub-Task 가 아니라 Task 로 "
+                                          "냈다 — Sub-Task 는 부모가 이미 있어야 만들 수 있다)").strip()
         # ★ 반대 방향 — mode=subtask 인데 **부모가 아무 데도 없으면** task 로 강등한다.
         # Sub-Task 는 부모가 이미 있어야 만들 수 있다(knowledge/01). 부모 없는 Sub-Task 는
         # 승인 카드까지 올라가 봐야 생성에서 100% 실패하는데, 지금까지 이 방향만 막는 곳이
@@ -580,15 +610,23 @@ class Refiner(StructuredAgent):
         # 강등만 해 두면 아래 가드들이 이어받는다 — 번호 접기(_base_title)가 "Task 하나 +
         # Sub-Task N" 으로 접고, 자식 담당 채움이 로스터로 나눈다. 접기를 여기서 또 구현하지
         # 않는 이유다(가드가 두 벌이 되면 더 관대한 쪽이 사고를 낸다).
-        if mode == "subtask" and items and not any(_ticket_exists(i.get("parent")) for i in items):
+        # ★ "부모가 없다"에는 **Epic 을 부모로 지목한 경우**도 들어간다 — Jira 에서 Epic 밑에는
+        #   Sub-Task 를 못 단다. 실재 검사만 하던 때 STR1 이 Epic DL-5982 를 부모로 한
+        #   Sub-Task 10건을 그대로 승인 카드까지 올렸다(답변에서는 스스로 "Epic이라 부적합"
+        #   이라고 적으면서). 생성에서 100% 실패하는 초안이라 결과는 부모 없는 것과 같다.
+        if mode == "subtask" and items \
+                and not any(_can_parent_subtask(i.get("parent")) for i in items):
+            epic_parent = any(_ticket_exists(i.get("parent")) for i in items)
             for i in items:
                 i["type"] = "Task"
                 i.pop("parent", None)
             mode = "task"
             out["mode"] = "task"
             out["rationale"] = ((out.get("rationale") or "")
-                                + "\n(부모로 삼을 티켓이 없어 Sub-Task 가 아니라 Task 로 냈다 — "
-                                  "Sub-Task 는 부모가 이미 있어야 만들 수 있다)").strip()
+                                + ("\n(부모로 지목한 것이 Epic 이라 Sub-Task 가 아니라 Task 로 냈다 — "
+                                   "Epic 밑에는 Sub-Task 를 달 수 없다)" if epic_parent else
+                                   "\n(부모로 삼을 티켓이 없어 Sub-Task 가 아니라 Task 로 냈다 — "
+                                   "Sub-Task 는 부모가 이미 있어야 만들 수 있다)")).strip()
         # 변환(껍데기→Sub-Task 승격 등)이 items 를 **재구성**하므로 — 지정 담당을 다시
         # 강제하고, Sub-Task 항목에 남은 children(이중 산출)을 최종적으로 뗀다.
         if mode == "subtask":
@@ -878,6 +916,29 @@ class Refiner(StructuredAgent):
                                     + f"\n(Epic 격상 보류 — {twin['key']} 와 이름이 겹친다)").strip()
                 structure = "single_task"
 
+        # ── "Epic 은 네가 골라줘" 는 **고르라는 말이지 만들라는 말이 아니다** ──────
+        # 실측 STARR1: "Epic 은 네가 골라줘. … 알아서 진행해" 에 모델이 **새 Epic** 을
+        # 만들었다(본문도 빈 채로). 위임은 선택을 맡긴 것이지 격상 권한을 준 것이 아닌데,
+        # 모델은 "알아서"를 격상 승인으로 읽는다. 새 Epic 은 진척 보고 단위가 하나 더 생기는
+        # 일이라 되돌리기가 가장 비싸다 — knowledge/04 의 격상 조건도 보수적으로 적혀 있다.
+        # 담을 Epic 이 하나도 없으면 격상을 그대로 둔다(그때는 만드는 것이 맞다).
+        if (out.get("mode") or "") == "epic" and items and not qs and _re.search(
+                r"(에픽|epic)[^.\n]{0,12}(골라|정해|선택)", conversation(state), _re.I):
+            pick = _pick_parent_epic(str(items[0].get("summary") or ""))
+            if pick:
+                items[0]["type"] = "Task"
+                items[0]["epic"] = pick["key"]
+                # ★ `draft` 는 이 위에서 이미 조립됐다 — `out` 만 고치면 승인 카드는 여전히
+                #   Epic 이다(items 는 참조로 공유돼 항목만 바뀐 채 mode 는 epic). 코드가
+                #   만든 값이 소비하는 쪽에 안 닿는 §5-f 의 그 부류라, 두 벌 다 쓴다.
+                mode = out["mode"] = draft["mode"] = "task"
+                structure = out["structure"] = draft["structure"] = "single_task"
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(Epic 을 **고르라**고 해서 {pick['key']} "
+                                      f"\"{str(pick.get('summary') or '')[:40]}\" 아래 Task 로 뒀다 — "
+                                      "새 Epic 은 진척 보고 단위가 하나 더 생기는 일이라 "
+                                      "말하지 않았으면 만들지 않는다)").strip()
+
         # ── 컴포넌트가 비면 제목의 [모듈] 접두에서 채운다 ────────────────
         # 우리 제목 규약이 "[모듈] 무엇을 한다"다. 모델이 제목엔 넣고 필드엔 빠뜨리는 일이
         # 잦은데, 컴포넌트가 없으면 워크로드 집계에서 통째로 빠지고 담당도 못 고른다.
@@ -947,7 +1008,13 @@ class Refiner(StructuredAgent):
         # 초안은 대개 본문도 얇으니 정확히 거꾸로 된 판정이다(실측 STARR1 재발 — 프롬프트
         # 넛지는 같은 낱말로 이미 경고하고 있었는데 코드가 안 받쳤다). 원 요청은 모델이
         # 못 바꾸는 입력이라 이 판정의 바닥이 된다.
-        if structure == "single_task" and not said_shape and items and not qs:
+        # ★ 판정은 **구조 이름이 아니라 산출물 모양**으로 한다. 처음엔 `single_task` 만 봤는데,
+        #   같은 요청에서 모델이 `new_epic` 이라고 적은 실행은 가드가 통째로 비껴갔다
+        #   (실측 STARR1: 실행마다 single_task / new_epic 로 갈렸다). 게다가 자식 없는
+        #   Task 하나짜리 `new_epic` 은 그 자체로 앞뒤가 안 맞는다 — Epic 은 여러 일을
+        #   묶으려고 만드는 것이라, 밑에 하나뿐이면 Epic 일 이유가 없다.
+        if structure in ("single_task", "new_epic") and not said_shape and not qs \
+                and len(items) == 1 and not (items[0].get("children") or []):
             body = " ".join(str(i.get("description") or "") + " " + str(i.get("summary") or "")
                             for i in items)
             dod = body.count("data-checked")
@@ -980,6 +1047,112 @@ class Refiner(StructuredAgent):
                            "kind": "choice", "field": "",
                            "options": ["Task 하나 + 단계별 Sub-Task (권장 — 단계·담당이 나뉜다)",
                                        "단일 Task 로 둔다"]}]
+
+        # ── 모듈이 갈리는 자식은 **형제 Task 로 올린다** ─────────────────────────
+        # knowledge/03: 요청이 두 모듈에 걸치면 컴포넌트를 둘 다 넣지 말고 **티켓을 나눠서
+        # 링크**한다. 이유는 집계다 — Sub-Task 는 부모 컴포넌트에 딸려 세어지므로, 모듈이
+        # 다른 일을 자식으로 넣으면 **Runtime 일이 Workbench 로 계상된다.** 티켓은 멀쩡해
+        # 보이고 어디서도 안 터지는데 워크로드만 조용히 틀린다(실측 STR2: "리니지 뷰어
+        # 성능 측정 + 쿼리 엔진 인덱스 + 사용 가이드"를 한 Task 의 자식 둘로 뭉갰다).
+        #
+        # 판정은 **사람이 적은 별칭 표**(config/module-aliases.yaml)로만 한다 — 코드가
+        # 뜻을 넘겨짚으면 남의 모듈에 계상하는 것이 바로 이 결함이라, 가드가 결함을 재현하는
+        # 꼴이 된다. 모듈이 **하나로 딱 떨어지는** 자식만 올린다(둘 이상 걸리면 모호하니 둔다).
+        # 사용자가 형태를 입으로 말했으면(said_shape) 건드리지 않는다.
+        promoted = False
+        if items and not said_shape and mode != "subtask":
+            from app.infra.settings import modules_in_text, resolve_module
+            for it in items:
+                # 컴포넌트가 비어 있으면 제 본문이 부른 모듈로 채운다 — 비어 있으면 담당
+                # 찾기가 전사 명단으로 넓어진다(§5-e `resolve_module` 과 같은 갈래).
+                # ★ **제목만** 본다. 본문까지 넣었더니 "리니지 뷰어 성능 측정" 티켓의 배경에
+                #   적힌 "쿼리 엔진 인덱스 조정"까지 잡혀 모듈이 둘로 갈렸고, 그래서 채우기가
+                #   조용히 무산됐다(실측 STR2). 본문은 **옆 티켓 이야기**를 하는 자리다 —
+                #   이 티켓이 무엇인가는 제목이 말한다.
+                if not (it.get("components") or []):
+                    own = modules_in_text(str(it.get("summary") or ""))
+                    if len(own) == 1:
+                        it["components"] = [own[0]]
+            for it in list(items):
+                kids = [c for c in (it.get("children") or []) if isinstance(c, dict)]
+                if not kids:
+                    continue
+                parent_mod = resolve_module((it.get("components") or [""])[0]) or \
+                    (modules_in_text(str(it.get("summary") or "")) or [""])[0]
+                if not parent_mod:
+                    continue
+                moved, stay = [], []
+                for c in kids:
+                    mods = modules_in_text(str(c.get("summary") or ""))
+                    (moved if len(mods) == 1 and mods[0] != parent_mod else stay).append(c)
+                if not moved:
+                    continue
+                promoted = True
+                it["children"] = stay
+                for c in moved:
+                    c.pop("parent", None)
+                    c["type"] = "Task"
+                    c["components"] = [modules_in_text(str(c.get("summary") or ""))[0]]
+                    c.setdefault("priority", it.get("priority"))
+                    if it.get("epic"):
+                        c.setdefault("epic", it["epic"])   # 형제가 됐으니 배치도 형제와 같다
+                    # ★ 자리를 옮기면 **본문 규율도 바뀐다.** Sub-Task 본문은 배경을 쓰지
+                    #   않는 것이 규칙이라(knowledge/07) 짧게 쓰여 있는데, 최상위 Task 로
+                    #   올라오면 배경·범위(포함/제외)·완료 조건을 갖춰야 한다. 처음엔 몸통을
+                    #   그대로 들고 올려서 실측 STR2 가 "작업 범위에 제외가 없다" 2건으로
+                    #   떨어졌다 — 구조는 고쳐 놓고 본문 계약을 깨뜨린 셈이다.
+                    if not _task_grade_body(c.get("description")):
+                        full = _task_for_module(state, c["components"][0], it,
+                                                want=str(c.get("summary") or ""))
+                        if full.get("description"):
+                            c["description"] = full["description"]
+                # 부모 **바로 뒤**에 순서대로 넣는다. `items.index` 는 dict 를 값으로 비교해
+                # 내용이 같은 다른 항목을 짚을 수 있어 **동일성**으로 찾는다.
+                at = next(n for n, x in enumerate(items) if x is it)
+                items[at + 1:at + 1] = moved
+                names = ", ".join(str(c.get("components")[0]) for c in moved)
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(모듈이 다른 작업({names})은 별도 Task 로 나눴다 — "
+                                      "Sub-Task 로 두면 부모 모듈로 워크로드가 잘못 집계된다)").strip()
+            # ★ 승격이 **실제로 일어났을 때만** 구조를 다시 쓴다. 처음엔 이 갱신이 루프
+            #   밖 조건문 하나로 걸려 있어서, 승격이 없는 초안까지 모양을 덮어썼다
+            #   (자식 있는 항목이 섞인 multiple_tasks → task_with_subtasks). 가드가
+            #   제 일 아닌 것을 건드리는 전형이다.
+            if promoted:
+                structure = out["structure"] = draft["structure"] = \
+                    "task_with_subtasks" if any(i.get("children") for i in items) \
+                    else "multiple_tasks"
+
+            # ── 요청한 모듈 하나가 통째로 빠졌으면 그 Task 를 만든다 ─────────────
+            # 실측 STR2: "리니지 뷰어 성능 측정하고 **쿼리 엔진 인덱스도** 손봐야 해" 에
+            # 모델이 Workbench Task 하나만 내고, 본문 작업 범위에
+            # **"제외: 쿼리 엔진 인덱스 조정은 별도의 작업으로 진행"** 이라고 적었다.
+            # 뭉갠 것보다 나쁘다 — 사용자가 시킨 일의 절반이 **없어졌는데** 초안은 멀쩡해
+            # 보이고, 제외 문구가 그것을 정당해 보이게 만든다. 모델 자신이 "별도 작업"이라고
+            # 판단했으니 남은 것은 그 별도 작업을 **만드는 일**뿐이다.
+            want = modules_in_text(request_text(state))
+            have = {resolve_module((i.get("components") or [""])[0]) for i in items}
+            missing = [m for m in want if m not in have]
+            if missing and _said_defaults(state) and not qs and len(want) >= 2:
+                for mod in missing[:2]:
+                    extra = _task_for_module(state, mod, items[0])
+                    if extra:
+                        items.append(extra)
+                        structure = out["structure"] = draft["structure"] = "multiple_tasks"
+                        out["rationale"] = ((out.get("rationale") or "")
+                                            + f"\n(요청에 있던 {mod} 작업이 초안에서 빠져 "
+                                              "별도 Task 로 채웠다 — 승인 화면에서 뺄 수 있다)").strip()
+                    else:
+                        out["rationale"] = ((out.get("rationale") or "")
+                                            + f"\n(확인 필요: 요청에 {mod} 작업이 있는데 초안에 "
+                                              "없다 — 별도 티켓으로 만들지 정해야 한다)").strip()
+
+        # ── 완료 조건이 흐리면 판정 가능한 문장으로 다시 쓴다 ────────────────
+        # 승인하는 사람에게 제일 중요한 줄이 "테스트 완료"면 티켓이 언제 닫히는지 아무도
+        # 모른다. knowledge/07 이 금지하는데 코드로 받치는 자리가 없었다(실측 STR2).
+        if items and not qs:
+            _sharpen_dod(state, items)
+            _fill_thin_bodies(state, items)
 
         # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
         # Reviewer 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
@@ -1511,6 +1684,168 @@ def _split_into_children(state, item: dict) -> list:
     return _children_from_dod(item)
 
 
+def _task_grade_body(body) -> bool:
+    """최상위 Task 본문의 최소선 — 배경·작업 범위(제외 포함)·완료 조건이 다 있나.
+
+    `tools/agent_create_suite.py` 의 본문 게이트와 **같은 규율**을 코드 쪽에서 본다.
+    검사만 있고 고칠 자리가 없으면 배터리에서만 잡히고 실사용에서는 그대로 나간다.
+    """
+    b = str(body or "")
+    return (len(b) >= 80 and all(s in b for s in ("배경", "작업 범위", "완료"))
+            and bool(_re.search(r"제외|하지\s*않", b)))
+
+
+def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
+    """요청에는 있는데 초안에서 빠진 **모듈 하나의 Task** 를 보정 호출 1회로 만든다.
+
+    실측 STR2: 모델이 둘째 모듈 일을 본문 '제외'에 적어 놓고 티켓은 안 만들었다. 그러면
+    사용자가 시킨 일의 절반이 없어지는데 초안은 멀쩡해 보인다.
+
+    **본문은 이 저장소의 4섹션 규율을 그대로 지킨다** — 얇게 만들어 붙이면 본문 게이트에서
+    걸리고, 무엇보다 사람이 승인 화면에서 판단할 재료가 없다. 실패하면 빈 dict 를 돌려
+    경고 경로로 간다(보정이 본 흐름을 죽이면 안 된다).
+    """
+    try:
+        from app.agent import config as C
+        # ★ **HTML 을 모델에게 받지 않는다 — 조각만 받고 코드가 조립한다.** 처음엔 본문
+        #   전체를 HTML 로 받았는데, 모델이 <h1>/<h2> 로 쓰고 '배경'·'완료 조건' 절을 빼서
+        #   본문 게이트에 걸려 매번 빈손이 됐다(실측). 섹션 순서·이름·체크박스 형식은
+        #   knowledge/07 이 정해 둔 **형식**이지 판단이 아니다 — 코드가 하면 항상 맞는다.
+        schema = {"title": "module_task", "type": "object", "properties": {
+            "summary": {"type": "string", "description": f"[{mod}] 로 시작하는 한 줄 제목"},
+            "background": {"type": "string", "description": "왜 이 일이 필요한가 — 2~3문장"},
+            "includes": {"type": "array", "items": {"type": "string"},
+                         "description": "이 티켓이 하는 일"},
+            "excludes": {"type": "array", "items": {"type": "string"},
+                         "description": "**하지 않는 일** — 옆 티켓이 맡는 것을 여기 적는다"},
+            "dod": {"type": "array", "items": {"type": "string"},
+                    "description": "완료 판정 — '무엇을 보고' 끝났다고 하는지까지"}},
+            "required": ["summary", "background", "includes", "excludes", "dod"]}
+        llm = C.get_llm(temperature=0.1, tier="simple").with_structured_output(schema)
+        r = llm.invoke([
+            ("system", "너는 PMO 티켓 설계자다. 요청에 있으나 초안에서 빠진 작업 하나를 "
+                       "티켓으로 만든다. 요청에 없는 일을 지어내지 않는다. JSON 만 출력한다."),
+            ("user", f"원 요청: {request_text(state)}\n\n"
+                     f"이미 만든 티켓: {ref.get('summary')}\n"
+                     f"이 티켓이 맡을 모듈: {mod}\n"
+                     + (f"이 티켓의 제목(이미 정해졌다): {want}\n" if want else "")
+                     + f"\n원 요청 중 **{mod} 모듈이 맡을 부분만** 티켓 하나로 써라. 이미 만든 "
+                     "티켓과 범위가 겹치면 안 된다 — 그쪽이 하는 일은 excludes 에 적는다. "
+                     "dod 는 '테스트 완료' 같은 말 대신 무엇을 보고 끝났다고 하는지 적는다.")])
+        r = r or {}
+        s = (want or str(r.get("summary") or "")).strip()
+        inc = [str(x).strip() for x in (r.get("includes") or []) if str(x).strip()]
+        exc = [str(x).strip() for x in (r.get("excludes") or []) if str(x).strip()]
+        dod = [str(x).strip() for x in (r.get("dod") or []) if str(x).strip()]
+        bg = str(r.get("background") or "").strip()
+        if len(s) >= 4 and bg and inc and exc and len(dod) >= 2:
+            body = ("<h3>배경</h3><p>" + _esc(bg) + "</p>"
+                    "<h3>작업 범위</h3><ul>"
+                    + "".join(f"<li>포함: {_esc(x)}</li>" for x in inc)
+                    + "".join(f"<li>제외: {_esc(x)}</li>" for x in exc)
+                    + "</ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                    + "".join(f'<li data-checked="false">{_esc(x)}</li>' for x in dod)
+                    + "</ul>")
+            if not s.startswith("["):
+                s = f"[{mod}] {s}"
+            return {"summary": s, "type": "Task", "description": body, "components": [mod],
+                    "priority": ref.get("priority"), "epic": ref.get("epic")}
+    except Exception:
+        pass
+    return {}
+
+
+# "언제 끝났다고 할 수 있나"가 안 적힌 완료 조건의 전형. knowledge/07 이 이미 금지하는데
+# 코드로 받치는 자리가 없어 그때그때 통과했다. **여기가 원본이고 배터리가 이것을 import 한다**
+# — 같은 규칙을 두 벌로 적으면 더 관대한 쪽이 사고를 낸다(§5-e).
+DOD_VAGUE = ("테스트 완료", "정상 동작", "잘 동작", "이상 없음", "문제 없음",
+             "성공적으로 완료", "완료됨", "구현 완료")
+
+
+def _vague_dod(rows) -> list:
+    """판정 방법이 없는 완료 조건 줄들. 짧고 뭉뚱그린 것만 — 길게 쓴 것은 방법이 들어 있다."""
+    return [d for d in rows if any(v in d for v in DOD_VAGUE) and len(d) < 24]
+
+
+def _dod_rows(body) -> list:
+    rows = _re.findall(r'data-checked="[^"]*"[^>]*>(.*?)</li>', str(body or ""), _re.S)
+    return [x for x in (_re.sub(r"<[^>]+>", "", d).strip() for d in rows) if x]
+
+
+def _sharpen_dod(state, items) -> bool:
+    """완료 조건이 "테스트 완료" 수준이면 **무엇을 보고 끝났다고 하는지**로 다시 쓴다.
+
+    실측 STR2: 구조를 다 고치고도 "인덱스 수정 후 성능 테스트 완료" 한 줄에서 떨어졌다.
+    승인하는 사람 입장에선 이게 제일 중요한 줄이다 — 여기가 흐리면 티켓이 언제 닫히는지
+    아무도 모른다. 판단(무엇을 재나)은 모델이 하고, 줄을 갈아 끼우는 것은 코드가 한다.
+    호출은 초안당 최대 2건으로 묶는다(왕복 비용).
+    """
+    hit = False
+    for it in items[:6]:
+        # ★ 보정이 본 흐름을 죽이면 안 된다 — 여기서 예외가 나면 초안이 통째로 사라진다.
+        #   항목이 dict 가 아닌 실행이 있다(모델 산출은 무엇이든 올 수 있다).
+        if not isinstance(it, dict) or str(it.get("type") or "").lower().startswith("sub"):
+            continue                      # Sub-Task 본문은 규율이 다르다(knowledge/07)
+        body = str(it.get("description") or "")
+        rows = _dod_rows(body)
+        bad = _vague_dod(rows)
+        if not rows or len(bad) * 2 <= len(rows):
+            continue
+        try:
+            from app.agent import config as C
+            schema = {"title": "dod", "type": "object", "properties": {
+                "rows": {"type": "array", "items": {"type": "string"},
+                         "description": "다시 쓴 완료 조건 — 입력과 **같은 개수·같은 순서**"}},
+                "required": ["rows"]}
+            llm = C.get_llm(temperature=0.1, tier="simple").with_structured_output(schema)
+            r = llm.invoke([
+                ("system", "너는 PMO 티켓 설계자다. 완료 조건을 **판정 가능한 문장**으로 "
+                           "다시 쓴다. 없는 사실을 지어내지 않는다. JSON 만 출력한다."),
+                ("user", f"티켓: {it.get('summary')}\n원 요청: {request_text(state)}\n\n"
+                         "아래 완료 조건들을 각각 '무엇을 보고 끝났다고 하는지'까지 적어라 "
+                         "(예: '테스트 완료' → 'p95 응답시간이 200ms 이하임을 부하 테스트 "
+                         "리포트로 확인'). 개수와 순서는 그대로 두고 문장만 고친다.\n"
+                         + "\n".join(f"- {x}" for x in rows))])
+            new = [str(x).strip() for x in ((r or {}).get("rows") or []) if str(x).strip()]
+            if len(new) != len(rows) or _vague_dod(new):
+                continue                  # 다시 써 온 것이 그대로면 건드리지 않는다
+            for old, fresh in zip(rows, new):
+                body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
+            it["description"], hit = body, True
+        except Exception:
+            continue
+    return hit
+
+
+def _fill_thin_bodies(state, items) -> bool:
+    """최상위 Task 본문이 4섹션 규율을 못 채우면 **조각을 받아 코드가 다시 조립한다.**
+
+    실측 STR1: 구조(부모 1 + 자식 30)를 다 맞추고도 부모 본문에 '배경'이 없어서 떨어졌다.
+    승인 화면에서 사람이 판단할 재료가 본문인데, 그게 얇으면 구조가 맞아도 쓸모가 없다.
+
+    **한 초안에 한 건만** 고친다 — 왕복 비용이고, 여러 건이 동시에 얇으면 그건 본문 문제가
+    아니라 요청 해석 문제라 다른 가드가 볼 일이다. Sub-Task 는 대상이 아니다(knowledge/07:
+    자식 본문에 배경을 반복해 쓰지 않는다).
+    """
+    for it in items[:6]:
+        if not isinstance(it, dict) or str(it.get("type") or "").lower().startswith("sub"):
+            continue
+        if _task_grade_body(it.get("description")):
+            continue
+        mod = str((it.get("components") or [""])[0] or "")
+        full = _task_for_module(state, mod, it, want=str(it.get("summary") or ""))
+        if full.get("description"):
+            it["description"] = full["description"]
+            return True
+        return False          # 보정이 빈손이면 원본을 그대로 둔다(더 나쁘게 만들지 않는다)
+    return False
+
+
+def _esc(s) -> str:
+    """모델이 준 조각을 HTML 로 넣기 전에 — 꺾쇠가 그대로 들어가면 본문이 깨진다."""
+    return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
 def _children_from_dod(item: dict) -> list:
     """본문 DoD 불릿을 실행 단위 Sub-Task 로 — LLM 없이. 조건이 안 맞으면 빈 리스트.
 
@@ -1942,6 +2277,46 @@ def _ticket_exists(key) -> bool:
         return False
 
 
+def _is_epic(key) -> bool:
+    """그 티켓이 Epic 인가. 부모로 지목된 것이 Epic 이면 **버릴 게 아니라 Epic Link 로 옮긴다**
+    — 사용자는 "저 밑에서 진행하자"고 말한 것이고, Epic 밑에 Task 를 다는 것은 정상이다."""
+    k = str(key or "").strip()
+    if not k:
+        return False
+    try:
+        from app.agent.tools._ctx import client
+        t = client().get_issue(k) or {}
+        kind = str((t.get("fields") or {}).get("issuetype", {}).get("name")
+                   or t.get("issuetype") or t.get("type") or "")
+        return bool(t.get("key")) and "epic" in kind.lower()
+    except Exception:
+        return False
+
+
+def _can_parent_subtask(key) -> bool:
+    """그 티켓이 **Sub-Task 의 부모가 될 수 있나** — 실재하고, Epic 이 아니어야 한다.
+
+    실재 여부만 보던 자리들이 있었는데, Jira 에서 **Epic 밑에는 Sub-Task 를 못 단다**
+    (Epic 의 자식은 Story/Task 다). 실측 STR1: 모델이 Epic DL-5982 를 부모로 지목한
+    Sub-Task 10건을 냈고 — 답변에서 스스로 "Epic이라 부모로 적합하지 않다"고 적으면서도
+    초안에는 그대로 실었다. 실재 검사는 통과하니 강등 가드도 안 걸렸다.
+    같은 규칙을 BULK3 케이스에서 이미 확인했다(그때는 **케이스가** 틀렸었다 — §8).
+    """
+    k = str(key or "").strip()
+    if not k:
+        return False
+    try:
+        from app.agent.tools._ctx import client
+        t = (client().get_issue(k) or {})
+        if not t.get("key"):
+            return False
+        kind = str((t.get("fields") or {}).get("issuetype", {}).get("name")
+                   or t.get("issuetype") or t.get("type") or "")
+        return "epic" not in kind.lower()
+    except Exception:
+        return False
+
+
 def _known_components() -> set:
     try:
         from app.agent.tools.write_tools import list_ticket_options
@@ -1971,6 +2346,32 @@ def _existing_epic_like(summary: str):
     except Exception:
         pass
     return None
+
+
+def _pick_parent_epic(summary: str):
+    """이 일을 담을 만한 **기존 Epic** 하나 — 낱말이 가장 많이 겹치는 것. 없으면 None.
+
+    `_existing_epic_like` 는 "이름이 사실상 같은가"를 보고(중복 격상 방지), 이쪽은
+    "담을 데가 있나"를 본다. 겹치는 낱말이 하나도 없으면 고르지 않는다 — 아무 Epic 에나
+    넣으면 그 Epic 의 진척률이 남의 일로 흐려진다.
+    """
+    base = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "")).strip()
+    words = [w for w in _re.split(r"[\s·,/]+", base) if len(w) >= 2]
+    if not words:
+        return None
+    best, score = None, 0
+    try:
+        from app.agent.tools.search_tools import find_parent_epic
+        for r in (find_parent_epic.invoke({"query": "", "limit": 25}) or []):
+            if not isinstance(r, dict) or not r.get("key"):
+                continue
+            other = str(r.get("summary") or "")
+            n = sum(1 for w in words if w in other)
+            if n > score:
+                best, score = r, n
+    except Exception:
+        return None
+    return best if score else None
 
 
 def _asks_subtasks(state) -> bool:

@@ -250,7 +250,18 @@ class Planner(StructuredAgent):
         #   기준(조사 결과가 있고 되묻기 턴이 지났다)을 쓴다 — 두 판정이 갈리면 안 된다.
         from app.agent.workflow.state import last_user_text
         if intent in Intent.DRAFTS_TICKETS:
-            follow_up = bool((state.get("situation") or "").strip()) and (state.get("turns") or 0) > 0
+            # ★ 후속 턴 판정에 **조사 결과(situation)만** 보면, 조사 전에 되묻는 흐름에서
+            #   고정이 통째로 무너진다. 해석 확인 선행 턴(`6eb8812`)은 Historian 을 안 타고
+            #   질문부터 내므로 situation 이 빈 채 2턴이 시작되고, 그러면 여기서 원 요청이
+            #   **사용자의 답변으로 덮인다.** 실측 STARR1: request_text 가
+            #   "Epic 은 네가 골라줘…" 로 바뀌면서 원 요청의 "파이프라인"이 사라졌고,
+            #   그 낱말에 걸려 있던 다단계 분할 가드(BUILD_WORDS)가 조용히 꺼졌다 —
+            #   초안이 단일 Task 로 뭉갠 채 나갔는데 어디에도 경고가 없었다.
+            #   **우리가 뭔가를 물었으면(questions·interpretation) 그 다음 턴은 답변 턴이다.**
+            prior = (state.get("questions") or []) or (state.get("interpretation") or "").strip() \
+                or ((state.get("draft") or {}).get("items") or []) \
+                or (state.get("situation") or "").strip()
+            follow_up = bool(prior) and (state.get("turns") or 0) > 0
             if not follow_up or not (state.get("request_text") or "").strip():
                 patch["request_text"] = last_user_text(state)
         elif not (state.get("request_text") or "").strip():

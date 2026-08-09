@@ -342,9 +342,10 @@ def resolve_module(name):
     통째로 비어 담당 추천·자식 담당 채움이 조용히 무산된다(실측: 부모 담당 폴백으로만
     겨우 완화돼 있었다).
 
-    **표기만 맞춘다 — 뜻으로 추측하지 않는다.** 모듈은 워크로드 집계의 축이라
-    "쿼리 엔진"을 Runtime 으로 넘겨짚으면 남의 모듈에 조용히 계상된다. 뜻의 매핑은
-    사람이 config 에서 이름을 맞추는 것이 맞다.
+    **코드가 뜻으로 추측하지는 않는다.** 모듈은 워크로드 집계의 축이라 "쿼리 엔진"을
+    Runtime 으로 넘겨짚으면 남의 모듈에 조용히 계상된다 — 틀려도 아무 데서도 안 터진다.
+    그래서 뜻의 매핑은 **사람이 `config/module-aliases.yaml` 에 적어 두고**, 코드는
+    거기 적힌 것만 본다. 표기 정규화 → 별칭 순으로 보고, 둘 다 없으면 "" 다.
     """
     t = _norm_module(name)
     if not t:
@@ -352,13 +353,65 @@ def resolve_module(name):
     for k in module_dir()["modules"]:
         if _norm_module(k) == t:
             return str(k)
-    return ""
+    return module_aliases().get(t, "")
+
+
+# 별칭 표도 people.yaml 과 같은 이유로 캐시한다(디스크 읽기 · 조회가 잦다).
+# reload_people() 이 함께 비운다 — 두 파일은 같은 것(모듈)의 앞뒤라 따로 놀면 안 된다.
+_ALIAS_CACHE = {"map": None}
+
+
+def module_aliases():
+    """{정규화된 별칭 → 정식 모듈 키}. 사람이 적은 `config/module-aliases.yaml` 이 원본.
+
+    people.yaml 에 없는 모듈 키는 **버린다** — 두 파일이 어긋난 채로 매핑이 살아 있으면
+    존재하지 않는 모듈로 담당을 찾다가 조용히 빈손이 된다.
+    """
+    m = _ALIAS_CACHE["map"]
+    if m is None:
+        mods = {_norm_module(k): str(k) for k in module_dir()["modules"]}
+        m = _ALIAS_CACHE["map"] = {}
+        for mod, names in (_read_yaml(CONFIG_DIR / "module-aliases.yaml") or {}).items():
+            real = mods.get(_norm_module(mod))
+            if not real:
+                continue
+            for n in (names or []):
+                key = _norm_module(n)
+                if key:
+                    m.setdefault(key, real)
+    return m
+
+
+def modules_in_text(text):
+    """본문에 **이름이나 별칭이 그대로 나온** 모듈들 — 등장 순서, 중복 제거.
+
+    "요청이 두 모듈에 걸치는가"를 코드가 판정하는 자리에 쓴다(knowledge/03: 두 모듈에
+    걸치면 컴포넌트를 둘 다 넣지 말고 **티켓을 나눠서 링크**한다 — 컴포넌트가 둘이면
+    워크로드가 이중 계상된다).
+
+    공백을 지운 문자열에서 **부분 일치**로 찾는다("쿼리 엔진"·"쿼리엔진" 둘 다 잡힌다).
+    적힌 말만 보므로 못 찾는 쪽으로 틀린다 — 나눌지 말지를 바꾸는 판정이라 그쪽이 맞다.
+    """
+    t = _norm_module(text)
+    if not t:
+        return []
+    hits = []
+    for alias, mod in list(module_aliases().items()) + \
+            [(_norm_module(k), str(k)) for k in module_dir()["modules"]]:
+        if alias and alias in t:
+            hits.append((t.index(alias), mod))
+    out = []
+    for _, mod in sorted(hits):
+        if mod not in out:
+            out.append(mod)
+    return out
 
 
 def reload_people():
     """people.yaml 캐시 무효화 — config 를 고쳤을 때(/api/refresh) 다음 조회부터 반영."""
     _PEOPLE_CACHE["data"] = None
     _PEOPLE_CACHE["dir"] = None
+    _ALIAS_CACHE["map"] = None       # 별칭 표는 모듈 목록을 참조해 만든다 — 함께 비운다
 
 
 def validate_plan(plan):

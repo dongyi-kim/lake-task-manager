@@ -429,6 +429,162 @@ def test_delegation_still_beats_the_shape_question():
     assert not r["questions"]
 
 
+def _kids(*kids, **over):
+    """부모 하나 + 자식들 — 모듈 갈림 검사용 초안."""
+    it = dict(_draft()["items"][0])
+    it.update(over)
+    it["children"] = [dict(k) for k in kids]
+    return {"questions": [], "mode": "task", "rationale": "",
+            "structure": "task_with_subtasks", "structure_source": "inferred",
+            "items": [it]}
+
+
+def test_a_child_in_another_module_is_promoted_to_a_sibling_task():
+    """Sub-Task 는 **부모 컴포넌트로 집계된다** — 모듈이 다른 일을 자식으로 두면 Runtime
+    일이 Catalog 로 계상되고, 티켓은 멀쩡해 보여서 아무 데서도 안 터진다(실측 STR2)."""
+    out = _kids({"summary": "쿼리 엔진 인덱스 튜닝"}, {"summary": "리니지 뷰어 응답 측정"},
+                summary="[Catalog] 리니지 뷰어 성능 측정", components=["Catalog"])
+    r = Refiner().apply(_msg("리니지 뷰어 성능 측정하고 쿼리 엔진 인덱스도 손봐줘. 알아서"), out)
+    items = r["draft"]["items"]
+    assert len(items) == 2, "모듈이 다른 자식은 형제 Task 로 올라온다"
+    assert items[1]["components"] == ["Runtime"] and items[1]["type"] == "Task"
+    assert "parent" not in items[1]
+    assert [c["summary"] for c in items[0]["children"]] == ["리니지 뷰어 응답 측정"], \
+        "같은 모듈 자식은 그대로 자식이다"
+    assert "워크로드" in str(r["draft"].get("rationale") or r.get("rationale") or ""), \
+        "왜 나눴는지 사용자가 읽을 수 있어야 한다"
+
+
+def test_a_child_whose_module_is_unclear_stays_a_child():
+    """별칭 표에 없는 말은 **모르는 것**이다 — 넘겨짚어 올리면 그게 곧 오집계다."""
+    out = _kids({"summary": "문서 정리하고 공유"}, {"summary": "회의 잡기"},
+                components=["Catalog"])
+    r = Refiner().apply(_msg("리니지 관련 정리 좀 해줘. 알아서"), out)
+    assert len(r["draft"]["items"]) == 1
+    assert len(r["draft"]["items"][0]["children"]) == 2
+
+
+def test_a_shape_the_user_named_survives_the_module_split():
+    """사용자가 'Sub-Task 로' 라고 말했으면 코드가 그 형태를 뒤집지 않는다."""
+    out = _kids({"summary": "쿼리 엔진 인덱스 튜닝"}, components=["Catalog"])
+    r = Refiner().apply(_msg("리니지 뷰어 건 서브태스크로 쪼개줘"), out)
+    assert len(r["draft"]["items"]) == 1
+
+
+def test_an_empty_component_is_filled_from_the_items_own_words():
+    """컴포넌트가 비면 담당 찾기가 **전사 명단**으로 넓어진다(§5-e 와 같은 갈래)."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [{"summary": "쿼리 엔진 버전 올리기", "type": "Task",
+                      "description": "<h3>배경</h3><p>x</p>"}]}
+    r = Refiner().apply(_msg("쿼리 엔진 버전 올려줘. 알아서"), out)
+    assert r["draft"]["items"][0]["components"] == ["Runtime"]
+
+
+def test_the_body_gate_and_the_code_share_one_vague_dod_list():
+    """같은 규칙을 두 벌로 적으면 **더 관대한 쪽이 사고를 낸다**(§5-e).
+
+    배터리가 재는 "판정 방법 없는 완료 조건"과 코드가 고치는 그것은 한 목록이어야 한다.
+    """
+    # ★ 배터리 모듈을 **import 하지 않는다** — 그 모듈은 import 시점에 LLM 모델 환경변수를
+    #   덮어써서(도구로 쓰라고 그렇게 만들어져 있다) 다른 테스트가 깨진다. 실제로 처음에
+    #   import 로 짰다가 `test_settings_put_stores_the_model_in_the_right_slot` 이 죽었다.
+    #   보려는 것은 "두 벌로 적지 않았나" 이므로 소스를 읽으면 충분하다.
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "tools" / "agent_create_suite.py") \
+        .read_text(encoding="utf-8")
+    assert "from app.agent.workflow.agents.refiner import DOD_VAGUE" in src, \
+        "배터리는 refiner 의 목록을 가져다 쓴다 — 여기에 다시 적으면 두 규칙이 갈린다"
+    assert '_DOD_VAGUE = ("' not in src, "목록을 배터리에 다시 적었다"
+
+
+def test_a_dod_row_with_a_verification_method_is_left_alone():
+    """길게 쓴 완료 조건에는 판정 방법이 들어 있다 — 건드리면 오히려 나빠진다."""
+    from app.agent.workflow.agents.refiner import _vague_dod
+    assert _vague_dod(["테스트 완료"]) == ["테스트 완료"]
+    assert _vague_dod(["p95 응답시간 200ms 이하를 부하 테스트 리포트로 확인"]) == []
+
+
+def test_choose_an_epic_does_not_mean_create_one():
+    """"Epic 은 네가 골라줘"는 **고르라는 말**이다 — 위임이 격상 권한은 아니다.
+
+    실측 STARR1: "Epic 은 네가 골라줘. … 알아서 진행해" 에 모델이 새 Epic 을 만들었다.
+    새 Epic 은 진척 보고 단위가 하나 더 생기는 일이라 되돌리기가 가장 비싸다.
+    """
+    out = {"questions": [], "mode": "task", "rationale": "", "structure": "new_epic",
+           "structure_source": "inferred",
+           "items": [{"summary": "[ETL] 실시간 처리 파이프라인 개발", "type": "Epic",
+                      "description": "<h3>배경</h3><p>x</p>"}]}
+    r = Refiner().apply(_msg("실시간 처리 파이프라인 개발해줘. Epic 은 네가 골라줘. 알아서"), out)
+    d = r["draft"]
+    assert d["mode"] == "task", "새 Epic 을 만들지 않는다"
+    assert d["items"][0].get("epic"), "고른 Epic 아래에 둔다"
+    assert d["items"][0]["type"] != "Epic"
+
+
+def test_stripping_orphan_subtasks_never_empties_the_draft():
+    """"부모는 나중에" 로 떼어 내는 분기는 **남는 게 있을 때만** 뗀다.
+
+    실측 STR1: 전부가 부모 없는 Sub-Task 였더니 뗀 결과가 초안 0건이었다 — 답변은
+    "부모 티켓을 생성하여 진행하겠습니다"라고 말하고 승인할 것은 없는 먹통.
+    """
+    out = {"questions": [], "mode": "task", "rationale": "", "items": [
+        {"summary": "테이블 1 등록", "type": "Sub-Task"},
+        {"summary": "테이블 2 등록", "type": "Sub-Task"}]}
+    r = Refiner().apply(_msg("테이블 30개 등록해줘. 사람 나눠서. 알아서"), out)
+    got = r["draft"]["items"]
+    assert got, "떼어 내서 0건이 될 바에는 Task 로 강등한다"
+    assert all((i.get("type") or "") != "Sub-Task" for i in got), got
+
+
+def test_an_orphan_subtask_is_still_stripped_when_a_parent_remains():
+    """부모가 초안 안에 같이 있으면 원래대로 뗀다 — 위 수정이 이 갈래를 덮으면 안 된다."""
+    out = {"questions": [], "mode": "task", "rationale": "", "items": [
+        {"summary": "[ETL] 상위 작업", "type": "Task"},
+        {"summary": "테이블 1 등록", "type": "Sub-Task"}]}
+    r = Refiner().apply(_msg("작업 만들어줘. 알아서"), out)
+    got = r["draft"]["items"]
+    assert [i["summary"] for i in got] == ["[ETL] 상위 작업"], got
+
+
+def test_subtasks_hung_off_an_epic_are_demoted_to_tasks():
+    """Jira 에서 **Epic 밑에는 Sub-Task 를 못 단다** — 실재 검사만으로는 안 걸린다.
+
+    실측 STR1: 모델이 Epic DL-5982 를 부모로 지목한 Sub-Task 10건을 냈다. 답변에서는
+    스스로 "Epic이라 부모로 적합하지 않다"고 적으면서 초안에는 그대로 실었다 —
+    생성에서 100% 실패할 초안이 승인 카드까지 올라간다.
+    """
+    out = {"questions": [], "mode": "subtask", "rationale": "", "items": [
+        {"summary": "테이블 1 등록", "type": "Sub-Task", "parent": "DL-5982"},
+        {"summary": "테이블 2 등록", "type": "Sub-Task", "parent": "DL-5982"}]}
+    r = Refiner().apply(_msg("메타데이터 미등록 테이블 등록해줘. 알아서"), out)
+    got = r["draft"]["items"]
+    assert got, "★ 나쁜 초안을 고치려다 **초안 없음**을 만들면 안 된다(실측 STR1)"
+    assert r["draft"]["mode"] == "task"
+    assert all((i.get("type") or "") != "Sub-Task" for i in got), got
+    assert all("parent" not in i for i in got)
+    assert all(i.get("epic") == "DL-5982" for i in got), \
+        "사용자가 말한 것은 '저 밑에서 진행하자'다 — Epic Link 로 옮긴다"
+    assert "Epic" in str(r["draft"].get("rationale") or r.get("rationale") or ""), \
+        "왜 Task 로 냈는지 사용자가 읽을 수 있어야 한다"
+
+
+def test_a_lone_task_labelled_new_epic_is_still_treated_as_lumped():
+    """구조 **이름**이 아니라 산출물 **모양**으로 판정한다.
+
+    실측 STARR1: 같은 요청이 실행마다 `single_task` / `new_epic` 으로 갈렸고, 가드가
+    앞의 것만 봐서 뒤의 실행은 통째로 비껴갔다. 자식 없는 Task 하나짜리 `new_epic` 은
+    그 자체로 앞뒤가 안 맞기도 하다 — Epic 은 여러 일을 묶으려고 만드는 것이다.
+    """
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "new_epic", "structure_source": "inferred",
+           "items": [{"summary": "통계 파이프라인 개발", "type": "Task",
+                      "description": "<h3>배경</h3><p>x</p>"}]}
+    r = Refiner().apply(_msg("통계정보를 생성하는 파이프라인을 개발해야해"), out)
+    # 위임을 안 했으니 물어야 한다 — 뭉갠 채로 조용히 통과하면 안 된다
+    assert r["questions"], "구조 이름이 new_epic 이어도 뭉갠 것은 뭉갠 것이다"
+
+
 def test_a_plain_single_task_is_not_questioned():
     """기본값(티켓 하나)은 갈림이 없다 — 물을 이유가 없다."""
     out = {"questions": [], "mode": "task", "rationale": "",

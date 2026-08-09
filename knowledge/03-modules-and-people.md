@@ -23,6 +23,9 @@ Lake 는 7개 모듈로 나뉜다. **Component 필드가 곧 모듈**이며, 워
 나머지는 **별도 티켓으로 나눈 뒤 링크**한다. 컴포넌트가 둘이면 워크로드가 이중 계상된다.
 
 모듈 ↔ 인력 매핑은 `config/people.yaml`, 모듈 ↔ WBS ↔ Epic 매핑은 `config/wbs_config.yaml`.
+위 표의 **다른 이름**("쿼리 엔진" = Runtime, "리니지" = Catalog)은 `config/module-aliases.yaml`
+에 사람이 적어 두고, 코드는 거기 적힌 것만 본다 — 뜻을 넘겨짚으면 남의 모듈에 조용히
+계상되기 때문이다. 표를 고치면 그 파일도 같이 고친다.
 
 ## 사번 규칙
 

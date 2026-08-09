@@ -55,8 +55,9 @@ def _owners(rows):
 # 비어 있든 섹션이 세 벌이든 통과했다. 실사용 사고(STARR NDV)는 구조가 아니라 본문에서
 # 났고, DRAFT-COMPARISON 의 갭 3종도 전부 본문 이야기다. 그래서 knowledge/07 의 규율을
 # 결정적 검사로 내려 전 케이스에 건다 — judge(주관) 이전의 최소선이다.
-_DOD_VAGUE = ("테스트 완료", "정상 동작", "잘 동작", "이상 없음", "문제 없음",
-              "성공적으로 완료", "완료됨", "구현 완료")
+# ★ 목록을 여기 다시 적지 않는다 — 코드가 지키는 규칙과 배터리가 재는 규칙이 갈리면
+#   더 관대한 쪽이 사고를 낸다(§5-e). refiner 가 원본이고 여기는 그것을 가져다 쓴다.
+from app.agent.workflow.agents.refiner import DOD_VAGUE as _DOD_VAGUE  # noqa: E402
 
 
 def _body_flaws(o) -> list:
