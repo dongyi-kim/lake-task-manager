@@ -884,7 +884,9 @@ export default {
           <div v-else-if="t.who === 'user'" class="agent-bubble user">{{ t.text }}</div>
 
           <div v-else class="agent-bubble agent">
-            <div v-if="t.text" class="agent-md" v-html="md(t.text, t.people)"></div>
+            <!-- tkt-desc 를 함께 단다 — 헤딩·인용·콜아웃·표·뱃지·멘션을 티켓 본문/댓글과
+                 **같은 CSS** 로 그린다(사용자 지시: 렌더 체계는 하나여야 한다). -->
+            <div v-if="t.text" class="agent-md tkt-desc" v-html="md(t.text, t.people)"></div>
             <div v-else-if="busy && ti === turns.length - 1" class="agent-thinking">
               <span class="dot"></span><span class="dot"></span><span class="dot"></span>
             </div>

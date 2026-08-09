@@ -435,6 +435,19 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .zoom-btn svg { width: 13px; height: 13px; }
 .tkt-desc hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
 /* 맨션 — 실 Jira DC 프로필 링크(a.user-hover). 뱃지 아님, 볼드+컬러로만 구분(y축 자동 정렬) */
+/* 사람 멘션 — 티켓 본문·댓글·에이전트 답변이 **같은 모양**이다(사용자 지시).
+   프사가 없는 사용자가 더 많아 이니셜 원이 바탕이고, 사진이 로드되면 그 위를 덮는다. */
+.tkt-desc .mention, .agent-md .md-person {
+  display: inline-flex; align-items: center; gap: 4px; vertical-align: -2px;
+  padding: 0 6px 0 3px; border-radius: 11px; font-weight: 600; color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.md-avt-wrap { position: relative; display: inline-flex; align-items: center;
+  justify-content: center; width: 16px; height: 16px; border-radius: 50%;
+  overflow: hidden; flex: none; font-size: 8.5px; font-weight: 800; color: #fff; }
+.md-avt { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  opacity: 0; transition: opacity .12s; }
+.md-avt.on { opacity: 1; }
+
 .tkt-desc a.user-hover { font-weight: 700; color: var(--accent); text-decoration: none; }
 .tkt-desc a.user-hover:hover { text-decoration: underline; }
 /* Confluence 링크 뱃지 — 아이콘+글자 세로 중앙, 텍스트 높이에 맞춤 */

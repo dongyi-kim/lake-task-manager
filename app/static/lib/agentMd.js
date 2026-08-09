@@ -121,7 +121,7 @@ function inline(s, slim) {
       // 프사가 없는 사용자가 많다(mock 은 전원 404) — 다른 화면과 같은 **이니셜 폴백**을
       // 먼저 그리고, 사진이 실제로 로드되면 그 위를 덮는다. 인라인 onerror 는 쓰지 않는다
       // (CSP 에서 막히면 깨진 이미지가 그대로 남는다 — 실측).
-      return `<span class="md-person" title="${esc(uid)}">` +
+      return `<span class="md-person mention" title="${esc(uid)}">` +
              `<span class="md-avt-wrap" style="background:${sigColor(uid)}">` +
              `${esc(initialOf(name, uid))}` +
              `<img class="md-avt" src="/api/avatar/${encodeURIComponent(uid)}" alt="">` +
@@ -199,12 +199,33 @@ function _render(text) {
     if (!line.trim()) { closeList(); continue; }
 
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
-    if (h) { closeList(); out.push(`<h${h[1].length + 2}>${inline(h[2])}</h${h[1].length + 2}>`); continue; }
+    if (h) {
+      closeList();
+      // 답변의 `#`~`####` → h2~h4. 티켓 본문 CSS 가 h1~h4 만 꾸미므로 그 범위를 넘지
+      // 않는다(넘기면 답변에서만 헤딩이 밋밋해진다 — 렌더 체계를 하나로).
+      const lv = Math.min(h[1].length + 1, 4);
+      out.push(`<h${lv}>${inline(h[2])}</h${lv}>`);
+      continue;
+    }
 
     if (/^(-{3,}|\*{3,})$/.test(line.trim())) { closeList(); out.push("<hr>"); continue; }
 
     const q = /^&gt;\s?(.*)$/.exec(line);
-    if (q) { closeList(); out.push(`<blockquote>${inline(q[1])}</blockquote>`); continue; }
+    if (q) {
+      closeList();
+      // GitHub 식 알림 인용(`> [!NOTE]`)은 티켓 본문의 **콜아웃**과 같은 마크업으로 —
+      // 에디터·티켓 화면이 이미 그 CSS 를 갖고 있다(사용자 지시: 렌더 체계는 하나).
+      const co = /^\[!(NOTE|INFO|TIP|SUCCESS|WARNING|CAUTION|ERROR|DANGER)\]\s*(.*)$/i
+        .exec(q[1]);
+      if (co) {
+        const kind = { caution: "warning", danger: "error" }[co[1].toLowerCase()]
+          || co[1].toLowerCase();
+        out.push(`<div class="callout callout-${kind}">${inline(co[2])}</div>`);
+      } else {
+        out.push(`<blockquote>${inline(q[1])}</blockquote>`);
+      }
+      continue;
+    }
 
     const ul = /^\s*[-*]\s+(.*)$/.exec(line);
     if (ul) {
