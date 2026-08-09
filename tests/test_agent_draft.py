@@ -536,3 +536,17 @@ def test_empty_body_sections_are_removed():
     out = _drop_empty_sections(d)
     assert "참고" not in out
     assert "배경" in out and "완료 조건" in out and "검증" in out
+
+
+def test_data_fixture_labels_are_dropped():
+    """배치 재료로 기존 라벨 목록을 주니 모델이 데이터 관리용 표식을 집었다(실측:
+    카탈로그 검색 티켓에 `ui-fixture`). 그 필터로 조회하는 화면이 오염된다.
+    일반 라벨은 건드리지 않는다 — 적절성은 사용자가 카드에서 판단한다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "[Catalog] 검색 성능 개선", "type": "Task",
+                      "components": ["Catalog"],
+                      "labels": ["ui-fixture", "tbl-lineage_ui", "성능"]}]}
+    r = Refiner().apply(_msg("카탈로그 검색 성능 개선 티켓 만들어줘. 알아서"), out)
+    labels = r["draft"]["items"][0].get("labels") or []
+    assert "ui-fixture" not in labels and "tbl-lineage_ui" not in labels
+    assert "성능" in labels, "일반 라벨은 남아야 한다"

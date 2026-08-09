@@ -565,6 +565,23 @@ class Refiner(StructuredAgent):
             qs.append({"question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 "
                                    "적어 주세요 (없으면 건너뛰어도 됩니다)",
                        "kind": "text", "options": [], "field": ""})
+        # ── 시스템·픽스처 라벨은 사람이 붙이는 것이 아니다 ────────────────
+        # 배치 재료로 기존 라벨 **목록**을 주니 모델이 거기서 아무거나 집었다(실측:
+        # 카탈로그 검색 개선 티켓에 `ui-fixture`). 데이터 관리용 표식은 업무 티켓의
+        # 라벨이 아니고, 잘못 붙으면 그 필터로 조회하는 화면이 오염된다.
+        # 판정은 **딱 이 부류만** — 일반 라벨의 적절성은 사용자가 카드에서 판단한다.
+        said_all = (request_text(state) + " " + last_user_text(state)).lower()
+        for it in items:
+            drop_l = [str(lb) for lb in (it.get("labels") or [])
+                      if _re.match(r"^(ui|dataset|test|demo|sample)[-_]?fixture$|^tbl[-_]",
+                                   str(lb).strip(), _re.I)
+                      and str(lb).strip().lower() not in said_all]
+            if drop_l:
+                it["labels"] = [lb for lb in (it.get("labels") or []) if str(lb) not in drop_l]
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(데이터 관리용 라벨은 뺐다: {', '.join(drop_l[:4])})"
+                                    ).strip()
+
         # 신규 라벨은 막지 않되 **표시**한다(사용자 결정) — 오탈자·동의어가 검색을 망가뜨린다.
         known = _known_labels()
         if known:

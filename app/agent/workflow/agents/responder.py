@@ -283,11 +283,25 @@ class Responder(TextAgent):
         # 질문·보기를 통째로 베껴 화면에 같은 말이 두 벌 뜬다(사용자 지적).
         # 문서를 요약해 놓고 **어느 문서인지 안 밝히면** 확인할 방법이 없다("자세한 내용은
         # 문서에서 확인할 수 있습니다"로 끝났다 — 실측 T3). 출처는 코드가 보장한다.
-        _db = _doc_body(state.get("pre_survey"))
-        if _db:
-            for _t, _u in _re.findall(r"문서 본문 「([^」]+)」 \((https?://[^)\s]+)\)", _db)[:2]:
-                if _u not in text:
-                    text = text.rstrip() + "\n\n출처: [" + _t + "](" + _u + ")"
+        _src = _re.findall(r"문서 본문 「([^」]+)」 \((https?://[^)\s]+)\)",
+                           _doc_body(state.get("pre_survey")))
+        # 조사에서 나온 문서도 후보다 — 본문을 안 읽고 답한 턴에도 출처는 있어야 한다.
+        _src += [(str(d.get("title") or "문서"), str(d.get("url") or ""))
+                 for d in (state.get("related_docs") or []) if d.get("url")]
+        # 사전 조사의 문서 목록("- 제목 (URL)")까지 — 모델이 related_docs 를 안 채우는
+        # 턴이 있다(실측: 문서를 요약해 놓고 "문서 링크를 참고하세요"로 끝냈다).
+        _src += _re.findall(r"^-\s*(.+?)\s*\((https?://[^)\s]+)\)\s*$",
+                            str(state.get("pre_survey") or ""), _re.M)
+        if _src and _re.search(r"문서|가이드|절차|규정", last_user_text(state)):
+            seen_u = set()
+            for _t, _u in _src[:2]:
+                if not _u or _u in text or _u in seen_u:
+                    continue
+                seen_u.add(_u)
+                text = text.rstrip() + "\n\n출처: [" + _t + "](" + _u + ")"
+        # 쓰다 만 링크 토막("[여기에서 확인할 수 있습니다.") — 여는 대괄호만 남으면
+        # 화면에 대괄호가 글자로 보인다(실측). 짝 없는 `[` 는 지운다.
+        text = _re.sub(r"\[(?=[^\]\n]{0,60}(?:\n|$))", "", text)
 
         _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         if _qs:
