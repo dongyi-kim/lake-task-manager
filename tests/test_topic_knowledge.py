@@ -427,3 +427,31 @@ def test_how_to_questions_do_not_take_the_dossier_shortcut():
     # 자산 질의는 여전히 dossier 로 간다 — 사용법 낱말이 걸리면 안 된다
     for q in ("fdc.fdc_trace_summary_ic 적재주기는?", "wip.wip_lot_track_hist 지금 담당 누구야?"):
         assert not any(w in q for w in _HOWTO_WORDS), q
+
+
+def test_how_to_material_is_the_guide_only_not_ticket_search():
+    """답이 티켓에 없는데 재료에 티켓이 있으면 모델은 그걸 고른다 — 규칙 발췌를 '1차 출처'라
+    못 박아 나란히 줘도 졌다(실측 GUIDE7). 고르게 두지 말고 **줄 것만 준다.**
+
+    그리고 출처 문서를 **이름으로 아는** 질문이라 의미 검색의 운에 맡기지 않는다: k=6 까지
+    늘려도 05-ltm-guide 에서 한 절만 오고 나머지는 티켓 작성 규칙이 유사도에서 이겨,
+    '담당자 변경'은 답하고 '강제 새로고침'은 "확인되지 않았다"고 했다. 가이드는 3KB 다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.historian import _presurvey
+    st = {"messages": [HumanMessage(content="LTM에서 티켓 담당자는 어떻게 바꿔? "
+                                            "그리고 강제 새로고침은 어디 있어?")],
+          "keywords": ["티켓 담당자", "강제 새로고침", "LTM"]}
+    m = _presurvey(st)
+    assert "LTM 사용 가이드" in m
+    for must in ("인라인", "새로고침", "↻"):        # 두 질문의 답이 **둘 다** 있어야 한다
+        assert must in m, f"{must} 가 재료에서 빠졌다"
+    assert "키워드 검색" not in m and "의미 검색" not in m, "이 갈래에서 티켓은 소음이다"
+
+
+def test_asset_questions_still_get_ticket_search():
+    """사용법 차단이 자산 질의까지 굶기면 안 된다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.historian import _presurvey
+    st = {"messages": [HumanMessage(content="fdc.fdc_trace_summary_ic 적재주기는?")],
+          "keywords": ["fdc.fdc_trace_summary_ic", "적재주기"]}
+    assert "키워드 검색" in _presurvey(st)

@@ -124,17 +124,22 @@ def _presurvey(state) -> str:
     fut_deep = ex.submit(lambda: deep_search.invoke({"topic": q, "limit": 8}) or {})
     r = fut_kw.result()
     jira = sorted(r.get("jira") or [], key=lambda x: str(x.get("updated") or ""), reverse=True)
+    asked = last_user_text(state)
+    # ★ 사용법 질문에는 **티켓 검색 결과를 싣지 않는다.** 답이 티켓에 없는데 재료에 있으면
+    #   모델은 그걸 고른다 — 규칙 발췌를 "1차 출처"라 못 박아 나란히 줘도 졌다(실측 GUIDE7:
+    #   "담당자 어떻게 바꿔?" 에 UI 회귀 픽스처 티켓 DL-9010 을 답으로 냈고, 재료에서
+    #   dossier 를 걷어낸 뒤에도 같은 답이 나왔다).
+    #   고르게 두지 말고 **줄 것만 준다** — 이 갈래에서 티켓은 답이 아니라 소음이다.
+    howto = any(w in asked for w in _HOWTO_WORDS)
     parts = []
-    if jira:
+    if jira and not howto:
         parts.append("키워드 검색 (최근 갱신순):\n" + "\n".join(
             f"- {it.get('key')} \"{it.get('title', '')}\" ({it.get('status', '')}"
             f", 담당 {it.get('assignee') or '없음'}, 갱신 {str(it.get('updated') or '')[:10]})"
             for it in jira[:8]))
-    if r.get("confluence"):
+    if r.get("confluence") and not howto:
         parts.append("문서:\n" + "\n".join(
             f"- {d.get('title')} ({d.get('url')})" for d in r["confluence"][:4]))
-
-    asked = last_user_text(state)
     # ── 문서를 요약해 달라면 **본문을 읽어야** 한다 ─────────────────────────
     # 실측(T3): "적재주기 변경 절차 문서 요약해줘"에 제목과 한 줄 인상만 답하고
     # 정작 문서가 정한 규칙(job 명명·'현재값=최신 변경기록')은 하나도 못 옮겼다.
@@ -174,6 +179,21 @@ def _presurvey(state) -> str:
     if ("LTM" in asked.upper()) or any(w in asked for w in ("사용법", "어떻게 해", "어떻게 바꿔",
                                                             "어디 있", "가이드", "규칙",
                                                             "적재주기", "스키마", "테이블", "정책")):
+        # ★ 사용법 질문은 **출처 문서를 이름으로 안다** — 의미 검색의 운에 맡기지 않는다.
+        #   실측(GUIDE7): k 를 6까지 늘려도 05-ltm-guide 에서 한 절만 오고 나머지는 티켓
+        #   작성 규칙이 유사도에서 이겼다. 그래서 "담당자 변경"은 답했는데 "강제 새로고침"은
+        #   "확인되지 않았다"고 했다 — 가이드의 다른 절에 버젓이 있는데도.
+        #   가이드는 3KB 다. 통째로 싣는 것이 검색보다 싸고 확실하다.
+        if howto:
+            try:
+                from pathlib import Path as _P
+                _g = _P(__file__).resolve().parents[4] / "knowledge" / "05-ltm-guide.md"
+                if _g.exists():
+                    parts.append("LTM 사용 가이드 (**이 질문의 답은 여기 있다. 티켓이 아니다.** "
+                                 "여기 없는 화면·버튼을 지어내지 말고, 없으면 없다고 답하라):\n"
+                                 + _g.read_text(encoding="utf-8"))
+            except Exception:
+                pass
         try:
             from app.agent.tools.rag_tools import search_rules
             hits = search_rules.invoke({"question": asked, "k": 4}) or []
@@ -232,7 +252,8 @@ def _presurvey(state) -> str:
             pass
     knowledge_ish = any(w in asked for w in (
         "히스토리", "근황", "최근", "현황", "정리", "알려줘", "설명", "무슨", "어떤", "왜", "지식"))
-    if knowledge_ish or len(jira) < 2:
+    # 사용법 질문은 의미 검색도 티켓을 물어 온다 — 이 갈래에서 티켓은 답이 아니라 소음이다.
+    if (knowledge_ish or len(jira) < 2) and not howto:
         try:
             d = fut_deep.result(timeout=30) or {}
         except Exception:
