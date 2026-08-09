@@ -290,7 +290,18 @@ def _relevant_only(state, ev: list) -> list:
     고유어가 아예 없는 질문(일반 대화)에서는 아무것도 빼지 않는다 — 판정 근거가 없으면
     판정하지 않는다.
     """
+    # ★ **티켓 키를 중심으로 묻는 질문에는 이 필터를 걸지 않는다.** 그때의 근거는 자식·
+    #   차단·형제처럼 **구조로** 이어진 티켓이라 제목에 질문 낱말이 없는 것이 정상이다.
+    #   실측(PROG1): "DL-9090 지금 어디까지?" 에서 막고 있던 DL-9092 가 통째로 걸러졌다.
+    if state.get("mentioned_keys"):
+        return ev
     req = f"{request_text(state)} {last_user_text(state)}"
+    # ★ 사용자가 **틀린 표기**로 물었으면 원문 낱말은 실제 제목과 한 글자도 안 겹친다
+    #   (실측 DATA11: 'fdc_flat_summary_ic' 로 물어 확인 후 정확 표기를 골랐는데, 필터가
+    #   원문만 보고 근거를 전멸시켰다). 코드가 확정한 **대상**을 판정 낱말에 함께 넣는다.
+    subj = _re.match(r"\[대상\]\s*(.+)", str(state.get("topic_dossier") or ""))
+    if subj:
+        req += " " + subj.group(1).strip()
     named = {str(k).upper() for k in (state.get("mentioned_keys") or [])}
     try:
         from app.agent.tools._ident import find_identifiers

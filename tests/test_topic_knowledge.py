@@ -507,3 +507,26 @@ def test_module_only_evidence_is_dropped_but_named_keys_survive():
     # 고유어가 없는 질문에서는 **아무것도 빼지 않는다** — 판정 근거가 없으면 판정하지 않는다
     st3 = {"messages": [HumanMessage(content="안녕")], "request_text": "안녕"}
     assert len(_relevant_only(st3, ev)) == 2
+
+
+def test_the_relevance_filter_does_not_starve_key_centric_or_typo_questions():
+    """가드가 잘못 막는 쪽을 **같은 자리에서** 고정한다 — 이 필터는 넣자마자 두 케이스를
+    깨뜨렸다(내가 바로 앞 커밋에 "가드는 옆 케이스와 함께 재라"고 적어 놓고 5케이스만 봤다):
+
+      · PROG1 — "DL-9090 지금 어디까지?" 의 근거는 자식·차단처럼 **구조로** 이어진 티켓이라
+        제목에 질문 낱말이 없는 것이 정상인데, 막고 있던 DL-9092 가 통째로 걸러졌다.
+      · DATA11 — 오탈자로 물었으니 원문 낱말이 실제 제목과 한 글자도 안 겹쳐 근거가 전멸했다.
+    """
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.historian import _relevant_only
+    key_centric = {"messages": [HumanMessage(content="DL-9090 지금 어디까지 진행됐어?")],
+                   "request_text": "DL-9090 지금 어디까지 진행됐어?",
+                   "mentioned_keys": ["DL-9090"]}
+    ev = [{"key": "DL-9092", "title": "[Workbench] 인덱스 추가", "why": "막고 있던 것"}]
+    assert len(_relevant_only(key_centric, ev)) == 1, "키 중심 질문에는 필터를 걸지 않는다"
+
+    typo = {"messages": [HumanMessage(content="fdc.fdc_trace_summary_ic 말한거야")],
+            "request_text": "fdc_flat_summary_ic 데이터의 히스토리",
+            "topic_dossier": "[대상] fdc.fdc_trace_summary_ic\n관련 티켓…"}
+    ev2 = [{"key": "DL-9044", "title": "[ETL] fdc.fdc_trace_summary_ic 적재주기 변경", "why": ""}]
+    assert len(_relevant_only(typo, ev2)) == 1, "코드가 확정한 대상도 판정 낱말이다"
