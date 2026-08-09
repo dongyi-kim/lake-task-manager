@@ -455,3 +455,20 @@ def test_asset_questions_still_get_ticket_search():
     st = {"messages": [HumanMessage(content="fdc.fdc_trace_summary_ic 적재주기는?")],
           "keywords": ["fdc.fdc_trace_summary_ic", "적재주기"]}
     assert "키워드 검색" in _presurvey(st)
+
+
+def test_candidate_material_reaches_the_responder():
+    """코드가 로스터·부하까지 조회해 실어 줬는데 **Responder 에 오지 않았다** —
+    pre_survey 에서 티켓 현재값과 문서 본문만 잘라 썼기 때문이다. 그래서 후보가 Historian
+    의 situation 요약 한 겹을 지나며 사라졌다(실측 EDGE13: "누가 하면 좋을지랑 지금 상황"
+    에 상황만 답하고 후보를 통째로 뺐다 — 세 번 연속, 재료에는 사번까지 있었다)."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.historian import _presurvey
+    from app.agent.workflow.agents.responder import _candidate_block
+    q = "카탈로그쪽 메타 등록 안된 태이블들 정리하는 일 누가 하면 좋을지랑 지금 상황 알려줘"
+    pre = _presurvey({"messages": [HumanMessage(content=q)],
+                      "keywords": ["메타 등록", "테이블", "카탈로그"], "module": "Catalog"})
+    block = _candidate_block(pre)
+    assert "skcc." in block and "진행중" in block, block[:300]
+    # 후보를 안 물은 질의에서는 비어 있어야 한다 — 늘 실으면 토큰만 먹는다
+    assert _candidate_block("키워드 검색:\n- DL-1 x") == ""

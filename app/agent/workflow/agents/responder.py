@@ -214,6 +214,15 @@ class Responder(TextAgent):
             data_block("문서 본문 (요약은 이걸로 — 문서가 정한 규칙·명명 규약·기준을 "
                        "빠뜨리지 말고, 출처 링크를 함께 남겨라)",
                        _doc_body(state.get("pre_survey"))),
+            # ★ 담당 후보 재료 — 여태 Responder 에 **안 왔다**. pre_survey 에서 티켓 현재값과
+            #   문서 본문만 잘라 썼기 때문에, 코드가 로스터·부하까지 조회해 실어 준 후보가
+            #   Historian 의 situation 요약 한 겹을 지나며 사라졌다(실측 EDGE13: "누가 하면
+            #   좋을지랑 지금 상황" 에 상황만 답하고 후보를 통째로 뺐다 — 세 번 연속).
+            #   사람 이름은 사번 그대로 옮겨야 하므로 원문을 준다.
+            data_block("담당 후보 재료 (코드가 로스터·부하를 조회함 — 사용자가 '누가'를 "
+                       "물었으면 여기서 2~3명을 **사번으로** 대고 근거를 붙여라. "
+                       "'추천할 정보가 부족하다'로 끝내지 마라)",
+                       _candidate_block(state.get("pre_survey"))),
             data_block("쪼갠 이유", (state.get("draft") or {}).get("rationale")),
             data_block("담당자 제안과 근거", asg),
             data_block("검증에서 걸린 것", errors),
@@ -514,6 +523,22 @@ def _doc_body(pre) -> str:
     src = str(pre or "")
     i = src.find("문서 본문 「")
     return src[i:i + 4000] if i >= 0 else ""
+
+
+def _candidate_block(pre) -> str:
+    """사전 조사에서 **담당 후보(로스터·부하)** 블록만 뽑는다(있을 때만).
+
+    이 블록은 Responder 에 **오지 않고 있었다** — pre_survey 에서 티켓 현재값과 문서 본문만
+    잘라 썼기 때문이다. 그래서 코드가 로스터·부하까지 조회해 실어 준 후보가 Historian 의
+    situation 요약 한 겹을 지나며 사라졌다(실측 EDGE13: "누가 하면 좋을지랑 지금 상황" 에
+    상황만 답하고 후보를 통째로 뺐다 — 세 번 연속, 재료에는 사번까지 있었다).
+    """
+    src = str(pre or "")
+    i = src.find("후보 재료 —")
+    if i < 0:
+        return ""
+    j = src.find("\n\n", i)
+    return src[i:j if j > 0 else len(src)][:2500]
 
 
 def _drop_form_echo(text: str, qs: list) -> str:
