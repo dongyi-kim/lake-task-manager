@@ -244,6 +244,20 @@ class Planner(StructuredAgent):
             intent = Intent.PROGRESS if any(m.lower() in _req.lower() for m in mods) \
                 else Intent.ASK
             patch["intent"] = intent
+        # ── "내가 할 만한 일" 은 **내 일감**이지 진척 집계가 아니다 ────────────
+        # 실측(REC9): "지금 내가 할 만한 일 추천해줘" 가 실행마다 my_day / progress 로
+        # 갈렸다. 두 갈래는 지나는 노드와 재료가 통째로 달라서(내 일감 사전취합 vs 진척률),
+        # 갈리는 순간 답의 성격이 바뀐다. **1인칭 + '할 일'** 이라는 낱말 판정은 흔들릴
+        # 이유가 없는 종류라 코드가 확정한다(이 저장소의 규율: 낱말 판정은 코드가 한다).
+        # '추천' 하나만으로는 판정하지 않는다 — "내가 만들 티켓 추천해줘"는 생성이다.
+        # 1인칭 판정은 **낱말 단위**로 한다 — 부분 문자열로 보면 "하나 더"의 '나'가 걸린다.
+        _ME = {"나", "내", "내가", "나는", "나도", "나한테", "제가", "저", "저는", "저도", "저한테"}
+        _mine = any(t.strip("의,.?!·").split("의")[0] in _ME for t in _req.split())
+        if intent in (Intent.PROGRESS, Intent.ASK) and _mine \
+                and any(w in _req for w in ("할 만한", "할만한", "할 일", "할일",
+                                            "뭐 하지", "뭐부터", "무엇부터", "뭘 해야")):
+            intent = patch["intent"] = Intent.MY_DAY
+
         # ★ 원 요청 고정 — 생성 갈래의 **첫 요청 턴**의 문장을 보존한다. 후속 턴(질문 답변)
         #   에서는 덮지 않는다: 제목·본문의 주제는 끝까지 이 문장이다(실측: 이게 없어서
         #   Epic 본문의 주제가 초안을 잠식했다). 후속 턴 판정은 refine 직행 라우트와 같은

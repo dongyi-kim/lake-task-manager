@@ -533,3 +533,26 @@ def test_the_original_request_is_pinned_for_lookup_flows_too():
            "request_text": "fdc_flat_summary_ic 데이터의 히스토리"}
     got2 = Planner().apply(st2, {"intent": Intent.ASK, "keywords": []})
     assert "request_text" not in got2, got2
+
+
+def test_my_own_work_request_is_pinned_to_my_day_by_code():
+    """"내가 할 만한 일" 은 **내 일감**이지 진척 집계가 아니다.
+
+    실측(REC9): 같은 문장이 실행마다 my_day / progress 로 갈렸다. 두 갈래는 지나는 노드와
+    재료가 통째로 달라(내 일감 사전취합 vs 진척률) 갈리는 순간 답의 성격이 바뀐다.
+    낱말로 하는 판정은 흔들릴 이유가 없으므로 코드가 확정한다.
+    """
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.planner import Planner
+    from app.agent.workflow.state import Intent
+
+    def _intent(text, model_said):
+        st = {"messages": [HumanMessage(content=text)]}
+        return Planner().apply(st, {"intent": model_said, "keywords": []})["intent"]
+
+    assert _intent("지금 내가 할 만한 일 추천해줘", Intent.PROGRESS) == Intent.MY_DAY
+    assert _intent("나 오늘 뭐부터 하지?", Intent.ASK) == Intent.MY_DAY
+    # ★ '추천' 하나로는 판정하지 않는다 — 생성 요청을 빼앗으면 안 된다
+    assert _intent("내가 만들 티켓 추천해줘", Intent.PLAN_WORK) == Intent.PLAN_WORK
+    # 남의 진척을 묻는 것은 그대로 progress
+    assert _intent("ETL 모듈 진척 어때?", Intent.PROGRESS) == Intent.PROGRESS
