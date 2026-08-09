@@ -472,3 +472,15 @@ def test_candidate_material_reaches_the_responder():
     assert "skcc." in block and "진행중" in block, block[:300]
     # 후보를 안 물은 질의에서는 비어 있어야 한다 — 늘 실으면 토큰만 먹는다
     assert _candidate_block("키워드 검색:\n- DL-1 x") == ""
+
+
+def test_the_guide_material_does_not_disable_the_direct_path():
+    """직결 경로는 dossier 에 '찾지 못했다'가 있으면 꺼진다(미발견 dossier 로 결론 내지
+    않으려는 가드). 처음 쓴 가이드 헤더에 그 문구가 들어가 **지시문이 자기가 타야 할
+    경로를 막는** 꼴이었다."""
+    from app.agent.workflow.agents.historian import _ltm_guide
+    g = _ltm_guide()
+    assert g and "찾지 못했다" not in g, g[:200]
+    for must in ("인라인", "새로고침", "↻"):
+        assert must in g, f"{must} 가 가이드에서 빠졌다"
+    assert "티켓이 아니다" in g and "이력" in g

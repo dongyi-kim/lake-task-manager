@@ -819,3 +819,27 @@ def test_structure_reason_line_appears_once_and_matches_the_card():
     assert "옛 왕복에서 남은 이유" not in rat, rat
     assert (got["draft"].get("structure_why") or "") in lines[0], (
         f"카드 헤더({got['draft'].get('structure_why')})와 근거 줄({lines[0]})이 다르다")
+
+
+def test_the_split_falls_back_to_the_dod_when_the_llm_call_comes_back_empty():
+    """보정 호출은 LLM 한 방이라 레이트리밋·흔들림으로 그냥 실패한다. 그러면 다단계 규모가
+    **조용히 단일 Task 로 남았다**(실측 STARR1: 같은 케이스가 실행마다 통과/실패로 뒤집혔다).
+
+    knowledge/07 이 이미 규정한다 — "DoD 가 5개를 넘고 서로 다른 단계라면 그건 DoD 가 아니라
+    Sub-Task 목록이다". 판단이 문서에 있으니 코드가 집행한다."""
+    from app.agent.workflow.agents.refiner import _children_from_dod
+    staged = {"description":
+              '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+              '<li data-checked="false">대상 테이블 선정 및 수집 범위 설계</li>'
+              '<li data-checked="false">Puffin NDV 통계 생성 job 구현</li>'
+              '<li data-checked="false">StarRocks 플랜 반영 연동 검증</li>'
+              '<li data-checked="false">실행 절차 문서화</li></ul>'}
+    got = [c["summary"] for c in _children_from_dod(staged)]
+    assert len(got) == 4 and "구현" in " ".join(got) and "검증" in " ".join(got), got
+    # 진짜 DoD 는 건드리지 않는다 — 단계가 안 갈리면 그건 완료 조건이지 할 일 목록이 아니다
+    real = {"description":
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">비교표 문서화</li>'
+            '<li data-checked="false">p95 2초 미만 측정</li></ul>'}
+    assert _children_from_dod(real) == []
+    assert _children_from_dod({}) == []

@@ -276,6 +276,28 @@ _HOWTO_WORDS = ("LTM", "이 앱", "이 도구", "화면에서", "어디 있", "�
                 "어떻게 해", "어떻게 하나", "사용법", "쓰는 법", "단축키", "새로고침")
 
 
+def _ltm_guide() -> str:
+    """LTM 사용 가이드 **전문**(knowledge/05). 3KB — 검색보다 싸고 확실하다.
+
+    이 부류의 답이 어느 문서에 있는지 우리는 **이름으로 안다**. 의미 검색에 맡기면 k 를
+    늘려도 티켓 작성 규칙이 유사도에서 이겨 가이드의 다른 절이 안 온다(실측 GUIDE7:
+    "담당자 변경"은 답하고 "강제 새로고침"은 "확인되지 않았다"고 했다).
+    **어디에 답이 있는지 아는 질문에 검색을 쓰는 것은 낭비이자 위험이다.**
+    """
+    try:
+        from pathlib import Path as _P
+        g = _P(__file__).resolve().parents[4] / "knowledge" / "05-ltm-guide.md"
+        if not g.exists():
+            return ""
+        head = ("[LTM 사용 가이드 — **이 질문의 답은 여기 있다. 티켓이 아니다.**\n"
+                " 여기 없는 화면·버튼을 지어내지 말고, 없으면 없다고 답하라.\n"
+                " **과거 이력을 찾는 질문이 아니다** — 이력이 없다는 식으로 끝내는 것은\n"
+                " 이 질문에 대해서는 틀린 답이다. 가이드에 적힌 조작 방법을 그대로 알려라]\n")
+        return head + g.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
 def _topic_dossier(term: str, history: bool = False) -> str:
     """**주제 하나**(테이블·기술·특정 업무 무엇이든)에 얽힌 조각을 코드가 전부 모아 온다.
 
@@ -550,7 +572,15 @@ class Historian(ToolAgent):
             digs = any(w in asked_s for w in ("히스토리", "이력", "근황", "최근", "경위", "정리",
                                               "알려줘", "설명", "무슨", "어떤", "왜", "언제",
                                               "누가", "어디", "뭐", "지식", "현재"))
-            if subject and (find_identifiers(asked_s, " ".join(state.get("keywords") or [])) or digs):
+            # ★ 사용법 질문은 **가이드를 재료로 직결**한다. 조사 경로로 보내면 Historian 의
+            #   존재 이유가 "이 일이 처음인가 — 과거 이력 조사"라, 찾을 이력이 없는 질문에
+            #   "발견되지 않았습니다"로 끝난다(실측 GUIDE7: 재료는 가이드인데 프레이밍이
+            #   조사였다). 답이 어느 문서에 있는지 아는 질문이니 그 문서를 주고 바로 답한다.
+            if any(w in asked_s for w in _HOWTO_WORDS):
+                guide = _ltm_guide()
+                if guide:
+                    state = {**state, "topic_dossier": guide}
+            elif subject and (find_identifiers(asked_s, " ".join(state.get("keywords") or [])) or digs):
                 try:
                     # 이력을 물었는가 — 원 요청과 이번 턴 **둘 다** 본다. 확인 질문에 답한
                     # 턴은 발화가 '보기 하나'라 거기엔 이력 낱말이 없다(실측 DATA13).

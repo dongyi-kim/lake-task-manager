@@ -1479,9 +1479,32 @@ def _split_into_children(state, item: dict) -> list:
         kids = [{"summary": str(c.get("summary") or "").strip()}
                 for c in (r or {}).get("children") or []
                 if str(c.get("summary") or "").strip()]
-        return kids[:5] if len(kids) >= 2 else []
+        if len(kids) >= 2:
+            return kids[:5]
     except Exception:
-        return []
+        pass
+    # ★ 보정 호출이 빈손이면 **DoD 에서 코드가 뽑는다.** 이 호출은 LLM 한 방이라 레이트리밋·
+    #   흔들림으로 그냥 실패하는데, 그러면 다단계 규모가 조용히 단일 Task 로 남았다
+    #   (실측 STARR1: 같은 케이스가 실행마다 통과/실패로 뒤집혔다).
+    #   knowledge/07 이 이미 규정한다 — "DoD 가 5개를 넘고 서로 다른 단계라면 그건 DoD 가
+    #   아니라 **Sub-Task 목록**이다". 규정이 있으니 코드가 그대로 집행한다.
+    return _children_from_dod(item)
+
+
+def _children_from_dod(item: dict) -> list:
+    """본문 DoD 불릿을 실행 단위 Sub-Task 로 — LLM 없이. 조건이 안 맞으면 빈 리스트.
+
+    knowledge/07: "DoD 가 5개를 넘고 서로 다른 단계(설계/구현/검증/연동)라면 그건 DoD 가
+    아니라 Sub-Task 목록이다 — 구조를 다시 판단하라." 판단은 이미 문서에 있다.
+    """
+    body = str(item.get("description") or "")
+    rows = [_re.sub(r"<[^>]+>", "", d).strip()
+            for d in _re.findall(r'data-checked="[^"]*"[^>]*>(.*?)</li>', body, _re.S)]
+    rows = [r for r in rows if 6 <= len(r) <= 60]
+    stages = ("설계", "구현", "검증", "연동", "테스트", "배포", "모니터링", "전환", "분석", "문서")
+    if len(rows) < 3 or sum(1 for w in stages if any(w in r for r in rows)) < 2:
+        return []          # 단계가 안 갈리면 그건 진짜 DoD 다 — 건드리지 않는다
+    return [{"summary": r} for r in rows[:5]]
 
 
 _WEEKDAYS = {"월": 0, "화": 1, "수": 2, "목": 3, "금": 4, "토": 5, "일": 6}
