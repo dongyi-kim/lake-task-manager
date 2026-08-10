@@ -181,3 +181,65 @@ def test_a_confirmed_person_is_remembered_for_that_conversation_only(monkeypatch
     P.set_person_context("th-5", [])                     # 다른 대화 — 남의 확인을 끌어오지 않는다
     r2 = P.find_person.invoke({"name": "박지영"})
     assert not r2["resolved"], r2
+
+
+def test_same_name_across_module_outside_module_and_outside_project(monkeypatch):
+    """동명이인 세 종류가 섞인 경우 — **우리 모듈 > 다른 모듈 > 프로젝트 밖**.
+
+    사용자 요청으로 넣는다. 셋이 섞이는 것이 실제 상황이다: 같은 이름이 우리 모듈에도,
+    옆 모듈에도, 회사 어딘가에도 있다. config 안이면 ①층이라 옆 모듈도 같은 층이 되므로
+    **둘 다 config 면 묻는다** — 층이 같으면 코드가 고르지 않는다는 규칙 그대로다.
+    """
+    # (1) 우리 모듈 1명 + 프로젝트 밖 1명 → config 층이 하나뿐이라 고른다
+    P = _fake_dir(monkeypatch, [
+        {"name": "skcc.mine", "displayName": "이수민 데이터", "emailAddress": "a@x"},
+        {"name": "far.9999", "displayName": "이수민 타사", "emailAddress": "b@x"},
+    ])
+    monkeypatch.setattr("app.infra.settings.load_people", lambda *a, **k: {"ETL": ["skcc.mine"]})
+    P.set_person_context("mix-1", [])
+    r = P.find_person.invoke({"name": "이수민"})
+    assert r["resolved"] == "skcc.mine" and "config" in r["why"], r
+
+    # (2) 우리 모듈 1명 + **다른 모듈** 1명 → 둘 다 config(①층) → 묻는다
+    P = _fake_dir(monkeypatch, [
+        {"name": "skcc.etl", "displayName": "이수민 ETL", "emailAddress": "a@x"},
+        {"name": "skcc.cat", "displayName": "이수민 Catalog", "emailAddress": "b@x"},
+    ])
+    monkeypatch.setattr("app.infra.settings.load_people",
+                        lambda *a, **k: {"ETL": ["skcc.etl"], "Catalog": ["skcc.cat"]})
+    P.set_person_context("mix-2", [])
+    r = P.find_person.invoke({"name": "이수민"})
+    assert r["ambiguous"] and not r["resolved"], r
+    # 보기에 **어느 모듈 사람인지**가 실려야 사용자가 고를 수 있다
+    assert {c.get("module") for c in r["candidates"]} == {"ETL", "Catalog"}, r["candidates"]
+
+    # (3) 전부 프로젝트 밖 → 고르지 않는다(우리 쪽 근거가 없다)
+    P = _fake_dir(monkeypatch, [
+        {"name": "far.1", "displayName": "이수민 가", "emailAddress": "a@x"},
+        {"name": "far.2", "displayName": "이수민 나", "emailAddress": "b@x"},
+    ])
+    monkeypatch.setattr("app.infra.settings.load_people", lambda *a, **k: {})
+    P.set_person_context("mix-3", [])
+    r = P.find_person.invoke({"name": "이수민"})
+    assert r["ambiguous"] and not r["resolved"], r
+
+
+def test_a_mention_or_user_id_is_never_ambiguous(monkeypatch):
+    """사용자가 **사번으로 지목**했으면 헷갈릴 일이 없다(사용자 요청).
+
+    멘션 `[~skcc.x1042]` 은 이름이 아니라 **식별자**다. 동명이인 판정에 넣을 이유가 없고,
+    넣으면 지목한 사람을 두고 되묻게 된다 — 사용자가 이미 답한 것을 다시 묻는 셈이다.
+    """
+    P = _fake_dir(monkeypatch, [
+        {"name": "skcc.a", "displayName": "이수민 가", "emailAddress": "a@x"},
+        {"name": "skcc.b", "displayName": "이수민 나", "emailAddress": "b@x"},
+    ])
+    monkeypatch.setattr("app.infra.settings.load_people",
+                        lambda *a, **k: {"ETL": ["skcc.a", "skcc.b"]})
+    P.set_person_context("mention-1", [])
+    assert P.find_person.invoke({"name": "이수민"})["ambiguous"], "동명이인 상황이 아니다"
+
+    for typed in ("[~skcc.b]", "skcc.b", "@skcc.b", " [~ skcc.b ] "):
+        r = P.find_person.invoke({"name": typed})
+        assert r["resolved"] == "skcc.b" and not r["ambiguous"], (typed, r)
+        assert "지목" in r["why"], r

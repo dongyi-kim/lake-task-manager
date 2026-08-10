@@ -41,3 +41,5 @@ tools/draft_eval_last.json
 dev-server.log
 dev-server.log.err
 docs/agent-user-review.md
+compose-run.txt
+user-review-run.txt

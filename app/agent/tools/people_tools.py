@@ -39,6 +39,11 @@ _FIXTURE_MODULES = {"TEST"}
 # 사람을 내 대화에 끌어오면 그게 바로 새 오답이다.
 _pctx = {"id": "", "keys": [], "known": {}}
 
+# 멘션·사번 표기 — `[~skcc.x1042]` / `@skcc.x1042` / `skcc.x1042` 를 한 벌로 본다.
+# 사내 id 포맷은 "{회사코드}.{사번}" 이다(config/people.yaml 머리말).
+import re as _re_mod                                            # noqa: E402
+_re_uid = _re_mod.compile(r"[\[@~\s]*~?\s*([a-zA-Z][\w-]*\.[\w-]+)\s*\]?")
+
 
 def set_person_context(thread_id: str, keys=None):
     """턴마다 세션이 불러 준다 — 이 대화가 **방금 보던 티켓**이 무엇인지 알려 준다.
@@ -253,6 +258,15 @@ def find_person(name: str) -> dict:
     q = strip_title(name)
     if not q:
         return {"query": "", "candidates": [], "resolved": "", "ambiguous": False}
+    # ★ **사용자가 사번으로 지목했으면 헷갈릴 일이 없다**(사용자 지시). 멘션 표기
+    #   `[~skcc.x1042]` 든 사번을 그대로 적었든, 그건 이름이 아니라 **식별자**다 —
+    #   동명이인 판정에 넣을 이유가 없고, 넣으면 지목한 사람을 두고 되묻게 된다.
+    _m = _re_uid.fullmatch(str(name or "").strip())
+    if _m:
+        uid = _m.group(1)
+        return {"query": uid, "candidates": [], "resolved": uid, "ambiguous": False,
+                "why": "사용자가 사번으로 지목", "assigned": _assigned_now(uid)}
+
     # ★ 이 대화에서 **이미 확인한 이름**이면 다시 묻지 않는다(사용자 지시).
     if q in _pctx["known"]:
         uid = _pctx["known"][q]
