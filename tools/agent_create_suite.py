@@ -234,6 +234,35 @@ CASES = [
                    and "References" not in _body(its[0])
                    and "<h3>Knowledge</h3>" not in _body(its[0]))(items(o))),
 
+    # ── 버그 신고 갈래 (report_bug) ──────────────────────────────────
+    # 규율은 refiner 에 적혀 있는데 배터리가 CHIP2 하나뿐이었다. 이 갈래의 실패는 셋이다:
+    #   ① 재현 경로 없이 티켓을 만들어 버린다(아무도 못 잡는 티켓이 생긴다)
+    #   ② 기대/실제를 안 나눠 적어 무엇이 잘못인지 안 보인다
+    #   ③ 버그를 Sub-Task 로 쪼개 관리 단위를 흩뜨린다
+    ("BUG1", "재현 경로가 없으면 만들지 말고 묻는다", [
+        "리니지 뷰어가 가끔 안 뜬다. 버그로 올려줘"],
+     lambda o, _: (bool(o.get("questions"))
+                   # 재현·조건을 묻는다(그냥 "더 알려주세요"가 아니라)
+                   and any(w in json.dumps(o.get("questions") or [], ensure_ascii=False)
+                           for w in ("재현", "언제", "어떤 경우", "조건", "빈도"))
+                   # 재현 경로도 없이 초안을 지어내면 실패
+                   and not items(o))),
+
+    ("BUG2", "재현 경로를 주면 Bug 로 — 기대/실제가 본문에 나뉜다", [
+        "리니지 뷰어에서 2홉 이상 펼치면 화면이 빈다. 크롬에서 재현되고, "
+        "기대는 그래프가 그려지는 것. 버그로 올려줘. 알아서"],
+     lambda o, _: (lambda its: bool(its)
+                   and any((i.get("type") or "") == "Bug" for i in its)
+                   # ★ 기대/실제가 **나뉘어** 적혀야 한다 — 섞어 쓰면 무엇이 잘못인지 안 보인다
+                   and all(w in _body(its[0]) for w in ("재현", "기대"))
+                   # 버그는 쪼개지 않는다(관리 단위가 흩어진다)
+                   and not kids(o))(items(o))),
+
+    ("BUG3", "이미 같은 증상의 Bug 가 있으면 새로 만들지 않는다", [
+        "야간 배치가 커넥션 타임아웃으로 실패한다. 버그로 등록해줘"],
+     lambda o, _: (bool(o.get("questions"))
+                   or "DL-" in (o.get("reply") or ""))),
+
     # ── 규칙 위반을 요구 ─────────────────────────────────────────────
     ("RULE1", "Sub-Task 를 최상위로 만들어 달라 — 규칙대로 거절하거나 부모를 묻는다", [
         "서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼"],

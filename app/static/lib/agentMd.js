@@ -155,10 +155,27 @@ export function renderMarkdown(text, people) {
   let body = text || "", refItems = [];
   if (m) {
     const lines = m[1].split("\n").map((l) => l.trim()).filter(Boolean);
-    const rows = lines.map((l) => /^-?\s*\[(\d{1,2})\]\s*(.*)$/.exec(l)).filter(Boolean);
+    // ★ **번호 목록 형태도 받는다.** `[1] DL-9045` 만 인식하던 탓에 모델이
+    //   `1. DL-9045 — …` 로 내면 참조 섹션이 통째로 본문에 남아 **접기·하이퍼링크·2층
+    //   표시가 전부 안 걸렸다**(실사용 지적). 같은 뜻을 두 표기로 쓰는 것은 모델의
+    //   자유이고, 그걸 받아 주는 것이 화면의 일이다.
+    const rows = lines.map((l) => /^-?\s*(?:\[(\d{1,2})\]|(\d{1,2})[.)])\s*(.*)$/.exec(l))
+                      .filter(Boolean)
+                      .map((r) => ({ n: r[1] || r[2], text: r[3] }));
     if (rows.length) {
       body = text.slice(0, m.index);
-      refItems = rows.map((r) => ({ n: r[1], text: r[2] }));
+      // ★ **같은 출처를 두 번 싣지 않는다** — 모델이 표의 근거 칸마다 번호를 새로 매겨
+      //   DL-9044 가 [2] 와 [6] 으로 두 번 나왔다(실사용 지적: "근거랑 중복되지 말라").
+      //   먼저 나온 번호를 남기고, 뒤엣것은 그 번호로 접어 준다.
+      const bySrc = new Map();
+      refItems = [];
+      rows.forEach((r) => {
+        const src = String(r.text || "").split(/\s+(?:—|–|--|:)\s+/)[0].trim();
+        const seen = bySrc.get(src);
+        if (seen) { REFS[r.n] = seen.text; return; }   // 마커는 살리되 목록엔 한 번만
+        bySrc.set(src, r);
+        refItems.push(r);
+      });
       refItems.forEach((r) => { REFS[r.n] = r.text; });
     }
   }

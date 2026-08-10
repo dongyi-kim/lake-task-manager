@@ -1075,3 +1075,26 @@ def test_an_unrelated_capability_notice_is_stripped_from_the_reason_line():
             "change": {}}
     _change_plan(_msg("DL-9090 삭제해줘"), out2, [], [])
     assert "삭제는 지원되지" in (out2.get("rationale") or "")
+
+
+def test_a_bug_report_keeps_its_body_rules_even_if_intent_slips():
+    """버그 초안은 **의도가 아니라 요청의 내용**으로 고른다(사용자 지적).
+
+    `report_bug` 는 `plan_work` 와 지나는 노드도 도구도 같다 — 다른 것은 Refiner 의 goal
+    하나뿐이라, 결국 "Task 를 만드는데 type 이 Bug"다. 갈래로 두면 분류가 틀릴 때
+    본문 템플릿이 통째로 바뀐다(재현·기대·실제 → 배경·범위·DoD). 바뀌면 안 되는 것이다.
+    """
+    from app.agent.workflow.agents.refiner import Refiner
+    from app.agent.workflow.state import Intent
+
+    r = Refiner()
+    # 의도가 plan_work 로 **미끄러져도** 버그 본문 규율이 적용된다
+    task = r.task({"messages": _msg("적재 배치가 어젯밤부터 계속 실패한다. 버그로 올려줘"
+                                    )["messages"],
+                   "intent": Intent.PLAN_WORK, "situation": "조사 결과"})
+    assert "재현 경로" in task and "기대 동작" in task, "버그 본문 규율이 빠졌다"
+
+    # 버그 이야기가 아니면 평소 규율이다 — 아무 요청에나 버그 템플릿을 씌우면 안 된다
+    plain = r.task({"messages": _msg("메타데이터 등록 작업 만들어줘")["messages"],
+                    "intent": Intent.PLAN_WORK, "situation": "조사 결과"})
+    assert "재현 경로" not in plain

@@ -313,7 +313,19 @@ class Refiner(StructuredAgent):
                       "승인할 수 없다 — 위임받고 아무것도 안 한 셈이다."
                       if defaults else "")
         # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
-        if (state.get("intent") or "") == Intent.REPORT_BUG:
+        # ★ **버그 초안은 의도가 아니라 요청의 내용으로 고른다**(사용자 지적).
+        #   `report_bug` 는 `plan_work` 와 **지나는 노드도 도구도 같다** — 코드 전체에서
+        #   다르게 쓰이는 곳이 이 goal 하나뿐이다. 결국 "Task 를 만드는데 type 이 Bug"인
+        #   것이고, 갈래가 아니라 **산출물 유형**이다(Intent 주석의 "노드가 다르다"는
+        #   MY_DAY 에는 맞지만 REPORT_BUG 에는 사실이 아니다 — 주석을 고쳐 뒀다).
+        #   그래서 분류가 흔들려도 본문 규율이 바뀌지 않게 **요청의 낱말도 함께** 본다:
+        #   "적재 배치가 계속 실패한다"가 plan_work 로 분류되면 재현·기대·실제 없이
+        #   배경·범위·DoD 짜리 Task 가 나온다 — 바뀌면 안 되는 것이 바뀐다.
+        _said = request_text(state) + " " + conversation(state)
+        _is_bug = ((state.get("intent") or "") == Intent.REPORT_BUG
+                   or _re.search(r"버그|bug|장애|오류|에러|안\s*(?:떠|나와|돼|된다)|"
+                                 r"실패한다|깨졌|먹통|안\s*먹", _said))
+        if _is_bug and (state.get("intent") or "") in Intent.DRAFTS_TICKETS:
             goal = """버그 신고를 **Bug 티켓 초안**으로 만들어라.
 - type 은 Bug. 제목은 증상을 담는다("[모듈] ~~가 ~~할 때 ~~된다").
 - description 에 **재현 경로 / 기대 동작 / 실제 동작**을 나눠 적는다. 사용자가 안 준 것은
@@ -426,7 +438,14 @@ class Refiner(StructuredAgent):
         data = wrap_data(
             data_block("생성 최소 요건 점검 (코드 판정 — ASK 만 물을 후보다. INFER/LATER 는 "
                        "묻지 말고 방침대로 채운다)",
-                       _slot_audit(state) if (state.get("intent") or "") in Intent.DRAFTS_TICKETS
+                       # ★ **새 티켓을 만드는 갈래에만** 건다. `DRAFTS_TICKETS` 에는 MODIFY 도
+                       #   들어 있어서, "티켓 전부에 코멘트 남겨줘" 같은 요청에 배경·완료
+                       #   조건·분할 여부를 물었다 — 코멘트 남기는 일에 "완료 조건이
+                       #   무엇인가요"는 부조리하다(사용자 관점 리뷰 F4, blocker 2건).
+                       #   오늘 슬롯을 늘리면서 이 갈래까지 샌 것이고, 계약 배터리는
+                       #   change_plan 만 보느라 못 잡았다.
+                       _slot_audit(state)
+                       if (state.get("intent") or "") in (Intent.PLAN_WORK, Intent.REPORT_BUG)
                        else ""),
             data_block("지금 고치고 있는 초안 (전문 — 처음부터 다시 쓰지 말고 이걸 고쳐라. "
                        "사용자가 문제 삼지 않은 부분은 유지한다. ★ '하나 더/추가' 요청이면 "
@@ -1772,14 +1791,24 @@ def _slot_audit(state) -> str:
     # 읽는 것은 배치가 아니라 **배경·완료 조건**이고, 나중에 "이거 왜 만들었지"·"이거 끝난
     # 거 맞나"가 갈리는 자리도 거기다. 이 셋이 비면 코드가 채울 수 있는 것은 형식뿐이라
     # (배경은 원 요청을 옮기고, DoD 는 모델이 지어낸다) 결국 **물어야 좋아진다**.
+    # ★ **이미 물었고 사용자가 답했으면 채워진 것이다.** 판정 낱말만 보면 답을 놓친다 —
+    #   실측(사용자 관점 리뷰 F1): "배경은 StarRocks QueryQueueV2 Estimation 성능 개선"
+    #   이라고 답했는데 그 문장에 판정 낱말("때문"·"위해"…)이 하나도 없어 **또 물었다**.
+    #   슬롯 이름 자체가 대화에 나왔다는 것은 그 질문이 오갔다는 뜻이다.
+    def _answered(*names):
+        return any(n in conv for n in names)
+
     row("배경(왜 지금 필요한가)",
+        _answered("배경") or
         any(w in text for w in ("때문", "위해", "요청이", "VoC", "장애", "이슈", "불편",
-                                "느려", "실패", "필요해서", "라서", "니까", "목표")),
+                                "느려", "실패", "필요해서", "라서", "니까", "목표",
+                                "개선", "성능", "부하", "요구")),
         "사용자 언급",
         "ASK — 계기를 한 줄로. 없으면 배경이 원 요청 복사가 된다(승인자가 판단할 수 없다)")
     row("완료 조건(무엇을 보고 끝났다고 하나)",
+        _answered("완료 조건", "DoD") or
         any(w in text for w in ("완료 조건", "DoD", "끝났다고", "판정", "기준은", "확인되면",
-                                "까지 되면", "성공하면", "리포트", "지표")),
+                                "까지 되면", "성공하면", "리포트", "지표", "구현", "적용")),
         "사용자 언급",
         "ASK — '무엇을 보고' 끝인지. 없으면 '테스트 완료' 같은 판정 불가 문장이 남는다")
     row("분할 여부(한 사람이 며칠에 끝나나)",
@@ -1853,12 +1882,23 @@ def _split_into_children(state, item: dict) -> list:
             ("user", f"원 요청: {request_text(state)}\n\n"
                      f"Task 제목: {item.get('summary')}\n"
                      f"본문: {str(item.get('description') or '')[:1200]}\n\n"
-                     "이 Task 를 Sub-Task 2~5개로 나눠라. 각 제목은 단계·대상을 담아 서로 "
-                     "구분돼야 한다(예: '통계 생성 job 구현', 'StarRocks 연동 검증').")])
+                     "이 Task 를 Sub-Task 2~5개로 나눠라. "
+                     "★ 제목은 **무슨 작업인지가 제목만으로 보여야** 한다. '설계 단계'·"
+                     "'구현 단계'·'검증 단계' 처럼 **단계 이름만** 쓰면 안 된다 — 어느 일에나 "
+                     "붙는 말이라 담당자가 티켓을 열기 전에는 시작할 수 없고, 목록에서는 "
+                     "세 줄이 똑같아 보인다. "
+                     "나쁨: '설계 단계 / 구현 단계 / 검증 단계'. "
+                     "좋음: 'Puffin NDV 통계 스키마 설계 / 통계 생성 배치 Job 구현 / "
+                     "StarRocks 플랜 반영 검증'. "
+                     "즉 **대상(무엇을)** 을 반드시 넣어라 — 단계는 그다음이다.")])
         kids = [{"summary": str(c.get("summary") or "").strip()}
                 for c in (r or {}).get("children") or []
                 if str(c.get("summary") or "").strip()]
-        if len(kids) >= 2:
+        # ★ **"설계 단계"는 제목이 아니다** — 어느 일에나 붙는 이름이라 티켓을 열기 전에는
+        #   무슨 일인지 알 수 없다(사용자 지적). 프롬프트에 예시까지 줬는데도 나온다.
+        #   하나라도 이 꼴이면 이 분할을 **버리고** DoD 기반 분할로 떨어진다 — 거기 제목은
+        #   본문에서 온 것이라 구체적이다.
+        if len(kids) >= 2 and not any(_generic_title(k["summary"]) for k in kids):
             return kids[:5]
     except Exception:
         pass
@@ -2048,6 +2088,26 @@ def _fill_thin_bodies(state, items, repair: bool = True) -> bool:
 def _esc(s) -> str:
     """모델이 준 조각을 HTML 로 넣기 전에 — 꺾쇠가 그대로 들어가면 본문이 깨진다."""
     return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+
+# 어느 일에나 붙는 껍데기 제목 — 이것만으로는 무슨 작업인지 알 수 없다.
+_STAGE_ONLY = _re.compile(
+    r"^(설계|구현|개발|검증|테스트|배포|분석|조사|문서화|리뷰|기획|적용|점검)"
+    r"\s*(단계|작업|하기|진행)?$")
+
+
+def _generic_title(summary: str) -> bool:
+    """제목이 **단계 이름뿐**인가 — "설계 단계"·"구현"·"검증 작업" 같은 것.
+
+    실사용 지적: Sub-Task 가 '설계 단계 / 구현 단계 / 검증 단계' 로 나왔다. 세 티켓의
+    제목이 서로 구분은 되지만 **무슨 일인지는 어느 것도 말해 주지 않는다** — 담당자가
+    티켓을 열기 전에는 시작할 수 없고, 목록에서는 세 줄이 똑같아 보인다.
+    """
+    t = str(summary or "").strip().strip("[]()")
+    if not t:
+        return True
+    return bool(_STAGE_ONLY.match(t)) or len(t) <= 4
 
 
 def _children_from_dod(item: dict) -> list:

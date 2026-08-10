@@ -201,7 +201,10 @@ def test_history_instruction_only_rides_when_history_was_asked():
     #   말이었고, 실제로 티켓 8건을 표 없이 늘어놓은 실행이 나왔다(실측 DATA11).
     assert "3열 표로" in hist and "줄글로 늘어놓지 마라" in hist
     # 이력 질문의 답은 **연표 + 현재 상태** 두 덩어리다(실사용 지적: 연표만 달랑 나왔다)
-    assert "**현재 상태**" in hist and "표만 내고 끝내지" in hist
+    # 답은 **현재 상태 + 현재 진행 중인 Task + 연표** 세 덩어리다(사용자 지적으로 진행 중
+    # 작업이 자기 제목을 갖게 됐다 — 표 아래에 줄로 흘리면 표의 꼬리처럼 읽힌다).
+    assert "**현재 상태**" in hist and "현재 진행 중인 Task" in hist
+    assert "세 덩어리" in hist
     plain = _topic_dossier(TABLE, history=False)
     assert "이 대상의 **연표**" not in plain
     assert "물어본 것만 답한다" in plain

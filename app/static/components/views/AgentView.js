@@ -74,6 +74,7 @@ export default {
       navW: loadW(NAV_W_KEY, NAV_MIN, NAV_MAX), navHidden: loadHidden(NAV_HIDE_KEY),
       sideW: loadW(SIDE_W_KEY, SIDE_MIN, SIDE_MAX), sideHidden: loadHidden(SIDE_HIDE_KEY),
       refTip: null,             // [n] 마커 호버 상자 {text, style}
+      epicTitles: {},           // 상위 Epic 키 → 제목(미리보기 패널용)
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
       reason: "",             // 못 쓰는 이유(설치 누락 등)
       status: null,           // provider·모델 — 지금 무엇으로 도는지 화면에 보인다
@@ -524,6 +525,10 @@ export default {
             // 생성 컨텍스트 내내 옆에서 자라는 것을 본다.
             const nItems = ((ev.pending && ev.pending.items) || ev.draft_items || []).length;
             this.sideDraft = nItems ? Math.min(this.sideDraft < 0 ? 0 : this.sideDraft, nItems - 1) : -1;
+            // ★ **새 미리보기가 오면 접혀 있어도 편다**(사용자 요청). 한 번 접어 둔 상태가
+            //   저장돼 있으면, 다음 초안이 와도 화면에 아무 변화가 없어 **만들어진 줄 모른다** —
+            //   접기는 "지금 이건 안 볼래"이지 "앞으로 영영 안 볼래"가 아니다.
+            if (nItems && this.sideHidden) this.setSideHidden(false);
             this.$nextTick(this.scroll);
           }
         });
@@ -674,7 +679,18 @@ export default {
       const t = this.draftTurn();
       return t ? ((t.pending && t.pending.items) || t.draftItems || []) : [];
     },
-    sideItem() { return this.sideItems()[this.sideDraft] || {}; },
+    sideItem() {
+      const it = this.sideItems()[this.sideDraft] || {};
+      // 상위 Epic 제목을 한 번만 받아 둔다 — 키만 보여 주면 어느 Epic 인지 모른다.
+      const k = it.epic;
+      if (k && !(k in this.epicTitles)) {
+        this.epicTitles[k] = "";                       // 재요청 방지(빈 값이 '조회 중')
+        api.ticketBadge(k).then((b) => {
+          if (b && b.summary) this.epicTitles[k] = b.summary;
+        }).catch(() => {});
+      }
+      return it;
+    },
     sidePendingReady() {
       const t = this.draftTurn();
       return !!(t && t.pending && (t.pending.items || []).length);
@@ -902,6 +918,16 @@ export default {
       if (i >= 0) cur.splice(i, 1); else cur.push(opt);
       this.answers[k] = cur.join(" | ");
     },
+    /** 지금 안 정해도 되는 질문인가 — **담당자·일정**(사용자 요청).
+     *  이 둘은 승인 카드와 티켓 화면에서 언제든 바꿀 수 있는 값이다. 여기서 멈춰 세우면
+     *  초안까지 가는 길만 길어진다 — "나중에 직접 선택"이 실제로 가장 흔한 답이다. */
+    deferrable(q) {
+      const f = (q && q.field) || "";
+      const k = (q && q.kind) || "";
+      const txt = String((q && q.question) || "");
+      return f === "duedate" || f === "assignee" || k === "date"
+             || /마감|기한|일정|담당자|담당 /.test(txt);
+    },
     isPicked(qi, q, opt) {
       const a = this.answers[this.qKey(qi)] || "";
       if (q.kind === "multi") return a.split(" | ").includes(opt);
@@ -1115,6 +1141,13 @@ export default {
                             :disabled="!(answers[qKey(qi)] || '').trim()"
                             @click="qDone[qi] = true">
                       선택 완료 ({{ (answers[qKey(qi)] || '').split(' | ').filter(Boolean).length }}개)</button>
+                    <!-- ★ **담당자·일정은 지금 안 정해도 된다**(사용자 요청). 이 둘은
+                         승인 카드와 티켓 화면에서 언제든 바꿀 수 있는 값이라, 여기서
+                         멈춰 세우면 초안까지 가는 길이 길어지기만 한다. -->
+                    <button v-if="deferrable(q)" class="aq-card aq-defer"
+                            @click="customOn[qi] = false; pickOpt(qi, '나중에 직접 선택 (기본값으로)');
+                                    qDone[qi] = true">
+                      나중에 직접 선택 <em>기본값으로</em></button>
                     <div v-if="q.field !== 'priority'" class="aq-card aq-custom"
                          :class="{ on: customOn[qi] }" @click="customOn[qi] = true">
                       <span v-if="!customOn[qi]">직접 입력…</span>
@@ -1436,8 +1469,16 @@ export default {
               <b>{{ sideItem().summary }}</b>
             </div>
             <div class="tv-meta">
+              <!-- ★ 상위 티켓은 **키만 달랑 쓰지 않는다**(사용자 지적) — DL-102 만 보고는
+                   어느 Epic 인지 모른다. `.tkt` 뱃지는 augmentBadges 가 제목을 채운다. -->
+              <!-- ★ 상위 티켓은 **키만 달랑 쓰지 않는다**(사용자 지적) — DL-102 만 보고는
+                   어느 Epic 인지 모른다. 이 패널은 `.agent-md` 밖이라 기존 뱃지 augment 가
+                   안 닿아서, 제목을 데이터로 직접 받아 건다(epicTitles). -->
               <span v-if="sideItem().epic">상위
-                <a href="#" class="tkt" :data-key="sideItem().epic">{{ sideItem().epic }}</a></span>
+                <a href="#" class="tkt" :data-key="sideItem().epic"
+                   :title="sideItem().epic + ' ' + (epicTitles[sideItem().epic] || '')">
+                  {{ sideItem().epic }}<template v-if="epicTitles[sideItem().epic]">
+                  "{{ epicTitles[sideItem().epic] }}"</template></a></span>
               <span v-if="(sideItem().components || []).length">
                 모듈 {{ sideItem().components.join(', ') }}</span>
               <span v-for="lb in (sideItem().labels || [])" :key="lb" class="tv-label">{{ lb }}</span>
@@ -1451,6 +1492,19 @@ export default {
                    || pickFor(draftTurn(), sideDraft, sideItem()) }}</span>
             </div>
             <div class="ai-desc-html" v-html="descPreview(sideItem().description)"></div>
+            <!-- ★ Sub-Task 목록 — 승인하면 **함께 만들어지는 것들**이다(사용자 지적).
+                 부모만 보여 주면 무엇이 생기는지 절반만 보고 승인하게 된다.
+                 담당이 갈려 있으면 그것도 여기서 보여야 재배분 판단이 된다. -->
+            <div v-if="(sideItem().children || []).length" class="tv-kids">
+              <div class="tv-kids-h">함께 만들 Sub-Task {{ sideItem().children.length }}건</div>
+              <div v-for="(c, ci) in sideItem().children" :key="ci" class="tv-kid">
+                <span class="tv-kid-n">{{ ci + 1 }}</span>
+                <span class="tv-kid-s">{{ c.summary }}</span>
+                <span v-if="c.assignee" class="tv-kid-a">
+                  <Avatar :user="c.assignee" :name="personName(draftTurn(), c.assignee)" :size="13" />
+                  {{ personName(draftTurn(), c.assignee) || c.assignee }}</span>
+              </div>
+            </div>
             <div class="tv-hint">{{ sidePendingReady()
               ? '담당자 변경·승인은 왼쪽 카드에서 합니다 — 선택하면 여기 즉시 반영됩니다.'
               : '아직 작성 중인 초안입니다 — 질문에 답하거나 피드백을 주면 이 내용이 바뀝니다.' }}</div>

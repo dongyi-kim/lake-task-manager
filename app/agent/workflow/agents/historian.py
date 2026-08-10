@@ -276,6 +276,30 @@ _HOWTO_WORDS = ("LTM", "이 앱", "이 도구", "화면에서", "어디 있", "�
                 "어떻게 해", "어떻게 하나", "사용법", "쓰는 법", "단축키", "새로고침")
 
 
+
+def _superseded(value: str, hits, doc_rows) -> bool:
+    """구축 티켓에 적힌 값이 **나중에 바뀐 것**인가 — 그러면 '현재'로 실으면 안 된다.
+
+    구축 티켓 본문은 그 시점의 값이다. 이후 변경이 changelog 가 아니라 **코멘트·문서**로만
+    남는 일이 흔하다(실측: Job 이름이 `..._2h` → `..._30m` 으로 바뀐 기록이 코멘트에만
+    있다). 그걸 모르고 바탕값으로 깔면 **옛 값이 현재 값으로 둔갑한다** — 이 저장소가
+    DATA3 로 따로 막고 있는 바로 그 실패다.
+
+    판정: 나중 자료(코멘트·문서 발췌)에 **같은 뿌리로 시작하지만 다른** 토큰이 있으면
+    바뀐 것으로 본다. 뿌리는 값의 앞 12글자 — 짧은 값은 검사하지 않는다(오탐이 는다).
+    """
+    v = str(value or "").strip()
+    if len(v) < 12:
+        return False
+    root = v[:12]
+    later = " ".join([str(h.get("snippet") or "") for h in (hits or [])]
+                     + [str(b or "") for _d, b in (doc_rows or [])])
+    for tok in _re.findall(r"[A-Za-z0-9_.\-]{12,}", later):
+        if tok.startswith(root) and tok != v:
+            return True
+    return False
+
+
 def _relevant_only(state, ev: list) -> list:
     """근거에서 **질문의 고유어를 하나도 안 가진 티켓**을 뺀다.
 
@@ -446,16 +470,41 @@ def _topic_dossier(term: str, history: bool = False) -> str:
         f" · {m['status'] or '상태 미상'}"
         + (f" (해결 {m['done']})" if m["done"] else "")
         for m in metas)
+    # 최초 도입·구축 티켓 — **현재 상태의 바탕값**(안 바뀐 값)과 아래 '최초 도입' 블록이
+    # 둘 다 이것을 쓴다. 그래서 두 블록보다 먼저 정한다(예전엔 뒤에 있어 UnboundLocalError).
+    _BUILT = ("구축", "개발", "생성")
+    _ORIGIN = _BUILT + ("도입", "신규")
+    built = ([m for m in metas if any(w in (titles.get(m["key"]) or "") for w in _BUILT)]
+             or [m for m in metas if any(w in (titles.get(m["key"]) or "") for w in _ORIGIN)])
     if tix and history:
         # ★ 이력 질문에서는 **연표를 하나로 합쳐서** 준다 — 티켓 사건과 필드 변경을 따로
         #   주면 모델이 **둘 중 하나만** 옮긴다. 실측(DATA11): 변경 이력 블록만 보고 2건짜리
         #   표를 냈다(같은 케이스 다른 실행은 5건·8건 — 재료가 갈려 있으면 이 변동이 산다).
         #   한 표로 주면 고를 여지가 없고, 모델이 할 일은 옮겨 적는 것뿐이다.
+        # ★ **사건에는 '무슨 일이 있었나'가 있어야 한다**(사용자 지적: "연표 사건에 왜 죄다
+        #   티켓 이름만 있는지? 실제로 무슨 변동이 있었는지를 정리해야지").
+        #   제목은 그 티켓의 **이름**이지 사건의 내용이 아니다 — "적재 지연" 이라는 제목만
+        #   보고는 무엇이 어떻게 됐는지 모른다. 티켓 본문 첫 줄과 그 티켓의 코멘트 한 줄을
+        #   붙여 준다(둘 다 코드가 이미 손에 쥐고 있다 — 안 실어 준 것뿐이었다).
         events = []
+        cmt_of = {}
+        for h in hits:
+            if h.get("where") == "comment" and h.get("snippet") and h.get("key"):
+                cmt_of.setdefault(h["key"], str(h["snippet"]).strip()[:90])
         for m in metas:
+            gist = ""
+            for ln in str(m.get("desc") or "").splitlines():
+                ln = ln.strip(" *-·")
+                if len(ln) >= 8 and not ln.startswith("<"):
+                    gist = ln[:90]
+                    break
+            detail = " · ".join(x for x in (gist, cmt_of.get(m["key"], "")) if x)
             events.append((m["when"] or "", f"{m['key']} \"{titles.get(m['key'], '')}\""
                                             f" · {m['status'] or ''}"
-                                            + (f" (해결 {m['done']})" if m["done"] else "")))
+                                            + (f" (해결 {m['done']})" if m["done"] else "")
+                                            # ★ **한 줄에 한 사건** — 줄을 나누면 이 목록을
+                                            #   줄 단위로 읽는 쪽(정렬·테스트)이 깨진다.
+                                            + (f" — 내용: {detail}" if detail else "")))
         for k, rows in hist_rows:
             for r in rows:
                 f = str(r.get("field") or "")
@@ -471,6 +520,10 @@ def _topic_dossier(term: str, history: bool = False) -> str:
             + "\n★ 사용자가 이력·경위를 물었다. **이 연표를 처음부터 지금까지 빠짐없이, "
               "날짜·사건·근거 3열 표로** 옮긴다 — 여기서 몇 줄만 고르면 '왜 이렇게 "
               "됐나'(요청·구축·장애)와 '지금 어디까지 왔나'(진행 중)가 답에서 사라진다. "
+              "★ **사건 칸에 티켓 제목만 옮기지 마라** — 제목은 그 티켓의 이름이지 사건의 "
+              "내용이 아니다. 위 `└ 내용:` 줄에 있는 **실제 변동**(무엇이 어떻게 됐나)을 "
+              "한 줄로 적고, 티켓 키는 근거 칸에 둔다. 예: '적재 지연 — 06:00 배치가 4시간 "
+              "밀렸고 파티션 수를 늘려 해소' 처럼. "
               "**줄글로 늘어놓지 마라** — 사건이 다섯 건을 넘으면 문단은 읽히지 않는다"
               "(실측: 같은 재료로 표를 낸 실행은 읽히고, 줄글로 푼 실행은 8건이 뭉갰다).")
 
@@ -482,6 +535,20 @@ def _topic_dossier(term: str, history: bool = False) -> str:
         #   (모델이 표에서 다시 뽑게 두면 실행마다 들쭉날쭉해진다 — 이 파일의 반복된 교훈).
         now_lines = []
         latest = {}
+        # ★ **안 바뀐 사실도 현재 상태다.** 여태 `latest` 는 티켓 changelog 의 *변경*만
+        #   모아서, 한 번도 안 바뀐 값(Job 이름·소스·보존기간)은 구축 티켓 본문에 버젓이
+        #   있는데도 표에서 빠졌다 — 사용자 지적("현재 상태에 왜 이렇게 데이터가 적지?").
+        #   구축 티켓 본문의 `* 항목: 값` 줄을 **바탕값**으로 깔고, 변경 이력이 있으면
+        #   그것이 덮는다(변경이 최신이므로).
+        if built:
+            _b0 = built[0]
+            for ln in str(_b0.get("desc") or "").splitlines():
+                mkv = _re.match(r"\s*[*\-·]\s*([^:：]{2,14})\s*[:：]\s*(.+)", ln)
+                if mkv:
+                    fld, val = mkv.group(1).strip(), mkv.group(2).strip()[:60]
+                    if fld and val and fld not in ("담당", "운영 담당") \
+                            and not _superseded(val, hits, doc_rows):
+                        latest[fld] = (_b0.get("when") or "", val, _b0["key"])
         for k, rows in hist_rows:
             for r in rows:
                 f = str(r.get("field") or "")
@@ -500,20 +567,23 @@ def _topic_dossier(term: str, history: bool = False) -> str:
         # ★ **상태 낱말을 답에 옮겨 적지 않는다** — 화면이 티켓 키를 뱃지로 그리고 거기
         #   진행 여부가 이미 붙는다. "(In Progress, …)" 를 덧붙이면 같은 말이 두 번이다
         #   (사용자 지적). 여기 재료에도 상태를 넣지 않아 옮겨 적을 것 자체를 없앤다.
-        for m in ongoing:
-            now_lines.append(f"진행 중 · {m['key']} \"{titles.get(m['key'], '')}\" "
-                             f"({m['when']} 시작)")
-        if now_lines:
+        # ★ 진행 중 작업은 **자기 제목을 가진 덩어리**다(사용자 지적) — 현재 값 표 아래에
+        #   줄로 흘려 두면 표의 꼬리처럼 읽힌다. 지금 무엇이 돌고 있는지는 따로 볼 것이다.
+        run_lines = [f"- {m['key']} \"{titles.get(m['key'], '')}\" ({m['when']} 시작)"
+                     for m in ongoing]
+        if now_lines or run_lines:
             parts.append("**현재 상태** (연표와 별개로 반드시 답에 넣는다 — 사용자가 이력을 "
                          "묻는 이유는 결국 '지금 어떤가'를 알기 위해서다):\n"
                          + "\n".join(now_lines)
+                         + ("\n[현재 진행 중인 Task]\n" + "\n".join(run_lines) if run_lines else "")
                          + "\n★ 현재 값은 **표로** 낸다 — `| 항목 | 값 | 근거 |` 3열, 위 줄을 "
                            "그대로 옮기면 된다. **근거 칸에는 연표와 같은 참조 마커([1],[2]…)를 "
                            "쓰고** 하단 참조 목록에 그 티켓을 적는다 — 값 옆 괄호에 티켓 키를 "
                            "박아 넣지 마라(참조 체계가 둘로 갈린다).\n"
-                           "★ 진행 중 작업은 **키와 제목만** 적는다. 'In Progress' 같은 상태 "
-                           "낱말을 덧붙이지 마라 — 화면 뱃지가 이미 보여 준다.\n"
-                           "★ 답은 **현재 상태 + 연표** 두 덩어리다. 표만 내고 끝내지 마라.")
+                           "★ 진행 중 작업은 **`### 현재 진행 중인 Task` 라는 자기 제목**을 "
+                           "달아 표 아래에 따로 낸다. 키와 제목만 적고 'In Progress' 같은 상태 "
+                           "낱말은 덧붙이지 마라 — 화면 뱃지가 이미 보여 준다.\n"
+                           "★ 답은 **현재 상태 + 현재 진행 중인 Task + 연표** 세 덩어리다.")
     elif tix:
         # ★ 이력을 묻지 **않은** 질문에는 연표를 쏟지 않는다. 실측(DATA1): "현재 적재주기는?"
         #   한 줄을 물었는데 8행 연표 + 참조 10개가 나왔다 — 이력 지시를 모든 경로에 실은
@@ -529,10 +599,6 @@ def _topic_dossier(term: str, history: bool = False) -> str:
     #   규칙이 실행 가능하려면 그 티켓을 짚어 줘야 한다.
     # 만든 티켓을 먼저 본다 — 요청(VoC)에는 "무엇을 원한다"가 적히고, **구축 티켓에 실제
     # 방식·이름·주기가 적힌다**. 둘 다 없으면 가장 이른 것으로 떨어진다.
-    _BUILT = ("구축", "개발", "생성")
-    _ORIGIN = _BUILT + ("도입", "신규")
-    built = ([m for m in metas if any(w in (titles.get(m["key"]) or "") for w in _BUILT)]
-             or [m for m in metas if any(w in (titles.get(m["key"]) or "") for w in _ORIGIN)])
     if built:
         b = built[0]        # metas 는 시간순 — 가장 이른 것이 최초다
         # ★ **본문을 함께 싣는다.** 지시만 있고 값이 없으면 모델은 지시를 지킬 수가 없다 —
@@ -733,12 +799,19 @@ class Historian(ToolAgent):
                     import re as _re
                     cands = _re.findall(r"- (\S+) \(", dossier)[:4]
                     return {
-                        "situation": (f"'{subject}' 표기로는 사내 기록이 없다. "
-                                      f"유사 식별자 {len(cands)}건을 찾았다 — 사용자 확인 대기."),
+                        # ★ **찾은 것을 먼저 말한다**(두괄식). "기록이 없습니다"를 앞세우면
+                        #   사용자는 그 한 줄에서 '없구나'로 읽고 멈춘다 — 정작 후보를
+                        #   찾아 놓고도 그렇다(사용자 관점 리뷰 F2, blocker).
+                        #   있는 것을 먼저, 없는 것은 그 뒤에.
+                        "situation": (f"비슷한 이름 {len(cands)}건을 찾았다: "
+                                      f"{', '.join(cands)}. "
+                                      f"입력한 '{subject}' 표기 그대로의 기록은 없다 — "
+                                      "어느 것인지 확인받고 그 표기로 조사한다."),
                         "evidence": [],
                         "questions": [{
-                            "question": f"'{subject}' 표기로는 기록을 찾지 못했습니다. "
-                                        "이 중 어느 것을 말씀하신 건가요?",
+                            "question": f"비슷한 이름을 {len(cands)}건 찾았습니다 — "
+                                        f"어느 것인가요? (입력하신 '{subject}' 표기 "
+                                        "그대로는 기록이 없습니다)",
                             "kind": "choice",
                             "options": cands + ["이 중에 없음 — 정확한 표기를 알려주세요"],
                             "field": ""}],
