@@ -29,7 +29,11 @@ def test_only_composite_output_needs_a_structure_round():
     assert not is_composite([{"summary": "하나"}])
     assert not is_composite([{"summary": "하나", "children": [{"summary": "a"}]}])
     assert is_composite([{"summary": "하나"}, {"summary": "둘"}])
-    assert is_composite([{"summary": "하나", "children": [{"summary": "a"}, {"summary": "b"}]}])
+    # ★ 자식이 둘셋 붙은 모양은 **복합이 아니다** — 관계가 단순해 본문까지 함께 봐도 된다.
+    #   처음엔 2건부터 복합으로 봤다가 생성 스위트가 20/20 → 16/20 으로 떨어졌다
+    #   ("Task 만들어줘, P1, 금요일까지" 같은 단순 요청까지 구조 확인을 받았다).
+    assert not is_composite([{"summary": "하나", "children": [{"summary": "a"}, {"summary": "b"}]}])
+    assert is_composite([{"summary": "하나", "children": [{"summary": c} for c in "abcd"]}])
 
 
 def test_approval_with_an_edit_attached_is_not_approval():

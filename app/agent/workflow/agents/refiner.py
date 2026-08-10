@@ -397,6 +397,15 @@ class Refiner(StructuredAgent):
         # 다르게 읽지 않도록. 말했으면 그대로 따르고, 열려 있으면 판단하되 갈림이 크면
         # 시스템이 확인 질문을 붙인다(모델이 임의로 되묻지 않게).
         shape, word = shape_hint(state)
+        # ★ 구조가 **이미 합의된** 턴 — 이제 할 일은 살을 붙이는 것뿐이다. 이 지시가 없으면
+        #   모델이 첫 항목만 제대로 쓰고 나머지는 제목만 남긴다(실측 STR2: 3건 중 2건이
+        #   '작업 범위'·'완료 조건' 없이 나왔다). 뼈대 단계에서 본문을 지운 뒤라 **처음부터
+        #   쓰는 것**이므로, 몇 건이든 전부 채우라고 못 박아야 한다.
+        if state.get("structure_ok") and (state.get("structure_plan") or []):
+            goal += ("\n- ★ **구조는 이미 합의됐다**(위 '합의 중인 구조'). 항목을 더하거나 "
+                     "빼지 말고, **모든 항목의 본문을 빠짐없이** 배경·작업 범위(포함/제외)·"
+                     "완료 조건으로 채워라 — 첫 항목만 쓰고 나머지를 제목만 남기면 승인 "
+                     "화면에서 판단할 재료가 없다.")
         if shape:
             goal += (f"\n- ★ 사용자가 만들 **형태를 말했다**('{word}' → {shape}). 그대로 따르고 "
                      "structure_source 를 \"user_specified\" 로 적어라. 다른 형태를 권하지 마라.")
@@ -1194,7 +1203,10 @@ class Refiner(StructuredAgent):
         struct_stage = False
         # `plan`(변경 계획)은 이 아래 `_change_plan()` 에서 만들어진다 — 여기서 참조하면
         # UnboundLocalError 다. 변경 갈래는 **의도**로 거른다(그쪽엔 items 도 없다).
-        if items and not qs and mode != "subtask" \
+        # ★ 사용자가 **형태를 이미 말했으면 묻지 않는다**(said_shape). "사람 나눠서 진행하게"
+        #   라고 한 사람에게 "이 구조로 할까요?"를 다시 묻는 것은 취조다 — 그 요청 자체가
+        #   구조 지시였다(실측 STR1: 이것 때문에 본문 없는 초안이 카드에 올라갔다).
+        if items and not qs and mode != "subtask" and not said_shape \
                 and (state.get("intent") or "") != Intent.MODIFY \
                 and (state.get("situation") or "").strip() \
                 and is_composite(items) and not state.get("structure_ok"):
@@ -2623,7 +2635,11 @@ _SHAPE_WORDS = (
     ("new_epic", ("에픽으로", "epic 으로", "에픽 만들", "에픽으로 크게", "이니셔티브")),
     ("subtask", ("서브태스크", "서브 태스크", "sub-task", "subtask", "하위 작업", "하위작업",
                  "쪼개", "분할")),
-    ("multiple_tasks", ("각각 티켓", "티켓 여러", "테스크 여러", "따로따로", "나눠서 만들")),
+    # ★ "사람 나눠서 진행하게" 도 **형태를 말한 것**이다 — 낱말이 "나눠서 만들" 하나뿐이라
+    #   이 표현을 못 알아듣고 구조 확인을 다시 물었다(실측 STR1). 사용자가 이미 말한 것을
+    #   되묻는 것은 취조다.
+    ("multiple_tasks", ("각각 티켓", "티켓 여러", "테스크 여러", "따로따로", "나눠서 만들",
+                        "나눠서 진행", "사람 나눠", "담당 나눠", "나눠 맡")),
     ("single_task", ("하나만", "한 건만", "티켓 하나", "테스크 하나", "단일")),
 )
 
@@ -2698,12 +2714,22 @@ def structure_accepted(state) -> bool:
 
 
 def is_composite(items) -> bool:
-    """뼈대 합의가 필요한 **복합** 산출물인가 — 여러 Task 이거나 자식이 둘 이상."""
+    """뼈대 합의가 필요한 **복합** 산출물인가.
+
+    ★ 기준을 좁힌 이유(실측): 처음엔 "자식 2건 이상"도 복합으로 봤더니 생성 스위트가
+    20/20 → **16/20** 으로 떨어졌다. "Task 만들어줘, P1, 금요일까지"(ATTR1) 같은 단순
+    요청까지 구조 확인을 받아 왕복이 두 배가 됐고, 본문 없는 초안이 카드에 올라갔다.
+
+    구조 합의가 값을 하는 자리는 **최상위가 갈릴 때**다 — 사용자가 든 예도
+    "두 개의 Task + 각 Task 의 SubTask" 였다. Task 하나에 자식이 붙는 모양은 관계가
+    단순해서 본문까지 함께 봐도 판단할 수 있다. 다만 자식이 **아주 많으면**(4건 이상)
+    그것도 한눈에 안 들어오므로 합의 대상이다.
+    """
     rows = [i for i in (items or []) if isinstance(i, dict)]
     if len(rows) > 1:
         return True
     return bool(rows) and len([c for c in (rows[0].get("children") or [])
-                               if isinstance(c, dict)]) >= 2
+                               if isinstance(c, dict)]) >= 4
 
 
 def structure_tree(items, epic: str = "") -> str:
