@@ -556,3 +556,50 @@ def test_my_own_work_request_is_pinned_to_my_day_by_code():
     assert _intent("내가 만들 티켓 추천해줘", Intent.PLAN_WORK) == Intent.PLAN_WORK
     # 남의 진척을 묻는 것은 그대로 progress
     assert _intent("ETL 모듈 진척 어때?", Intent.PROGRESS) == Intent.PROGRESS
+
+
+def test_structured_agent_survives_a_server_without_function_calling(monkeypatch):
+    """구조화 출력이 안 되는 서버에서도 역할이 죽지 않는다.
+
+    실사용 사고: 자체 LLM 으로 붙이면 "Invalid json output" 이 반복됐다. langchain 의
+    `with_structured_output` 은 기본적으로 OpenAI 의 **함수 호출**로 스키마를 강제하는데,
+    사내 게이트웨이나 자체 서빙(vLLM·TGI 등)은 그 기능이 없거나 반쪽이라 모델이 평문이나
+    ```json 으로 감싼 텍스트를 그대로 뱉는다 — 그러면 파서가 죽고 그 역할이 통째로 실패한다.
+
+    우리가 원하는 건 '함수 호출'이 아니라 **JSON 한 덩이**다. 한 번 더 묻되 스키마를 말로
+    주고, 형식 맞추는 일만 코드가 받아 낸다(판단은 그대로 모델이 한다).
+    """
+    from langchain_core.messages import AIMessage
+
+    from app.agent.workflow.agents.base import StructuredAgent
+
+    class _Broken:                      # with_structured_output 이 죽는 서버 흉내
+        def with_structured_output(self, *a, **k):
+            class _S:
+                def invoke(self, *a, **k):
+                    raise ValueError("Invalid json output: 여기 결과입니다 ...")
+            return _S()
+
+        def invoke(self, *a, **k):      # 평문으로는 잘 답한다(코드펜스까지 씌워서)
+            return AIMessage(content='```json\n{"picked": "ok"}\n```')
+
+    class _A(StructuredAgent):
+        name = "tester"
+
+        def system(self, state):
+            return "sys"
+
+        def task(self, state):
+            return "task"
+
+        def schema(self):
+            return {"type": "object", "properties": {"picked": {"type": "string"}}}
+
+        def apply(self, state, out):
+            return {"got": out}
+
+    a = _A()
+    monkeypatch.setattr(a, "llm", lambda **kw: _Broken())
+    r = a.node()({})
+    assert r.get("got") == {"picked": "ok"}, r
+    assert "error" not in r, "폴백이 있는데도 실패로 떨어졌다"

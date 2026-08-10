@@ -40,6 +40,59 @@ from app.agent.workflow.state import AgentState, note
 MAX_TOOL_STEPS = 6      # 도구 왕복 상한. 모델이 같은 도구를 맴돌 때 대화를 끝까지 태우지 않는다
 
 
+def _loads_loose(text: str):
+    """모델이 뱉은 텍스트에서 **JSON 한 덩이**를 건져 낸다. 못 건지면 None.
+
+    구조화 출력을 지원하지 않는 서버에서는 답이 이런 꼴로 온다:
+        ```json
+{...}
+```        /        여기 결과입니다: {...}
+    엄격한 파서는 둘 다 거부한다 — 그런데 **안에 든 것은 우리가 원하던 그 JSON** 이다.
+    관대하게 받아 내되, 지어내지는 않는다(못 찾으면 None 을 돌려 원래 실패 경로로 간다).
+    """
+    import json
+    import re as _re
+    t = (text or "").strip()
+    if not t:
+        return None
+    m = _re.search(r"```(?:json)?\s*(.+?)```", t, _re.S)     # 코드펜스 안이 우선
+    if m:
+        t = m.group(1).strip()
+    try:
+        v = json.loads(t)
+        return v if isinstance(v, dict) else None
+    except Exception:
+        pass
+    # 앞뒤에 말이 붙은 경우 — 처음 여는 중괄호부터 **짝이 맞는** 자리까지만 떼어 낸다.
+    i = t.find("{")
+    if i < 0:
+        return None
+    depth, in_str, esc = 0, False, False
+    for j in range(i, len(t)):
+        c = t[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    v = json.loads(t[i:j + 1])
+                    return v if isinstance(v, dict) else None
+                except Exception:
+                    return None
+    return None
+
+
 class Agent(ABC):
     """역할 하나. `name` 은 그래프 노드명과 같아야 한다(State.Node 의 상수를 쓴다)."""
 
@@ -108,7 +161,35 @@ class StructuredAgent(Agent):
                  HumanMessage(content=self.task(state))])
             return self.apply(state, _as_dict(out))
         except Exception as e:
+            # ★ **구조화 출력이 안 되는 서버가 있다**(실사용: 자체 LLM 에서 "Invalid json
+            #   output" 이 반복). langchain 의 `with_structured_output` 은 기본적으로
+            #   OpenAI 의 **함수 호출**로 스키마를 강제하는데, 사내 게이트웨이나 자체 서빙
+            #   (vLLM·TGI 등)은 그 기능이 없거나 반쪽이라 모델이 **평문·```json 감싼 텍스트**
+            #   를 그대로 뱉는다. 그러면 파서가 죽고, 그 역할은 통째로 실패로 떨어진다.
+            #
+            #   우리가 원하는 건 '함수 호출'이 아니라 **JSON 한 덩이**다. 그러니 한 번 더,
+            #   이번엔 스키마를 **말로 주고** 평문으로 받아 코드가 관대하게 파싱한다.
+            #   판단은 그대로 모델이 하고, 형식을 맞추는 일만 코드가 받아 낸다.
+            alt = self._json_fallback(state)
+            if alt is not None:
+                return self.apply(state, alt)
             return self.fallback(state, e)
+
+    def _json_fallback(self, state: AgentState):
+        """스키마를 프롬프트로 주고 평문 JSON 을 받아 낸다. 실패하면 None."""
+        import json
+        try:
+            msg = self.llm().invoke([
+                SystemMessage(content=self.system(state)),
+                HumanMessage(content=(
+                    self.task(state)
+                    + "\n\n---\n**출력 형식(엄수)**: 아래 JSON Schema 를 만족하는 JSON "
+                      "객체 **하나만** 출력하라. 설명·머리말·코드펜스 없이 중괄호로 "
+                      "시작해서 중괄호로 끝나야 한다.\n"
+                    + json.dumps(self.schema(), ensure_ascii=False)))])
+            return _loads_loose(str(getattr(msg, "content", msg) or ""))
+        except Exception:
+            return None
 
 
 class TextAgent(Agent):

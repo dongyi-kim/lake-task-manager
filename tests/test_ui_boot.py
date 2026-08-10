@@ -118,3 +118,30 @@ def test_the_app_actually_mounts_in_a_browser(live_server):
     assert up, (f"앱이 마운트되지 않았다. 화면: {body!r}\n"
                 f"페이지 오류: {errors[:2]}")
     assert not errors, f"콘솔 페이지 오류: {errors[:2]}"
+
+
+# ── ③ 템플릿의 `<div>` 짝이 맞는가 ────────────────────────────────────
+# 실측 사고(2026-08-10): 섹션 하나를 들어내면서 닫는 `</div>` 가 **한 개 남았다.**
+# 그 한 줄이 `.ag-body`(스크롤 영역)를 일찍 닫아, 뒤따르던 'RAG 색인' 절이 본문 밖으로
+# 밀려나 하단에 고정된 이상한 띠처럼 보였다.
+#
+# 왜 다른 검사가 못 잡았나: Vue 는 남는 닫는 태그를 **에러 없이 넘긴다.** 앱은 정상적으로
+# 뜨고(위 ① 통과), 파서도 통과하고(esprima), 오직 **배치만** 무너진다. 사람이 화면을
+# 봐야만 아는 종류였다 — 그런데 그 판정을 코드로 옮길 수 있다: 짝은 세면 된다.
+@pytest.mark.parametrize(
+    "path", sorted(p for p in STATIC.rglob("*.js")
+                   if "vendor" not in p.parts and "components" in p.parts),
+    ids=lambda p: str(p.relative_to(STATIC.parent.parent)))
+def test_template_div_tags_are_balanced(path: Path):
+    """컴포넌트 template 의 여는 `<div`/닫는 `</div>` 개수가 같아야 한다."""
+    src = path.read_text(encoding="utf-8")
+    # template 리터럴만 본다 — 주석·문자열의 `<div` 문구까지 세면 오탐이 난다.
+    m = re.search(r"template:\s*`(.*?)`,\s*\n\s*\}", src, re.S)
+    if not m:
+        pytest.skip("template 리터럴이 없다")
+    body = m.group(1)
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.S)      # HTML 주석 제외
+    opens = len(re.findall(r"<div\b", body))
+    closes = len(re.findall(r"</div>", body))
+    assert opens == closes, (f"{path.name}: <div {opens}개 / </div> {closes}개 — "
+                             f"짝이 안 맞으면 뒤 절이 부모 밖으로 밀려난다")

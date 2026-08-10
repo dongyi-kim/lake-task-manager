@@ -560,8 +560,6 @@ export default {
           <div class="ag-hint">설정하지 않아도 동작합니다. 질의·응답은 어차피 파일 로그로 남습니다.</div>
         </div>
 
-        </div>
-
         <!-- 색인 -->
         <div v-if="index" class="ag-sec">
           <div class="ag-lab">RAG 색인</div>
