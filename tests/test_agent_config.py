@@ -200,7 +200,11 @@ def test_playbooks_load_and_inject(clean_env):
               "find_tickets", "knowledge", "history", "workload", "assign_fit"}
     assert expect <= set(PLAYBOOKS), set(PLAYBOOKS)
     for k in expect:
-        assert "플로우" in PLAYBOOKS[k] and "주의" in PLAYBOOKS[k], k
+        # 언어 실험 브랜치(exp/prompts-*)에서는 이 자산이 영어일 수 있다 — 여기서 지킬
+        # 것은 **절의 뼈대가 있는가**이지 어느 언어로 썼는가가 아니다.
+        _body = PLAYBOOKS[k]
+        assert (("플로우" in _body and "주의" in _body)
+                or ("Flow:" in _body and "Caution:" in _body)), k
     # Planner enum 과 자산이 어긋나면 조용히 주입이 빠진다 — 함께 묶어 검증
     assert expect <= set(SCHEMA["properties"]["playbook"]["enum"])
     p = persona({"playbook": "subtask_bulk"})
