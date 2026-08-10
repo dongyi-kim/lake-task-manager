@@ -432,3 +432,64 @@ def test_compat_sends_bearer_and_the_same_extra_headers_everywhere(monkeypatch):
     for path, h in seen:
         assert h.get("authorization") == "Bearer k-123456", (path, h.get("authorization"))
         assert h.get("x-auth") == "team-token", f"{path} 에 추가 헤더가 안 실렸다"
+
+
+def test_embeddings_do_not_reach_out_to_tiktoken(monkeypatch):
+    """임베딩이 **외부 인코딩 파일을 받으러 나가지 않는다**.
+
+    실사용 사고: "임베딩 모델만 자꾸 SSL verify failed, max retries."
+    원인은 SSL 설정도 임베딩 서버도 아니었다 — langchain 의 `OpenAIEmbeddings` 가 기본값에서
+    보내기 전에 **tiktoken 으로 토큰을 세고**, 그 tiktoken 이 인코딩 파일을 처음 쓸 때
+    `openaipublic.blob.core.windows.net` 에서 requests 로 내려받는다. 사내망의 TLS
+    가로채기에 걸리면 `SSLError ... Max retries exceeded`. 채팅은 토큰을 안 세니 멀쩡해서,
+    **임베딩만** 죽는 것처럼 보인다.
+
+    우리는 색인 전에 이미 1200자로 자르므로(retrieval/chunk.py) 그 쪼개기가 필요 없다 —
+    얻는 것 없이 외부 네트워크 의존만 늘린다.
+
+    tiktoken 을 **막아 두고** 임베딩이 되는지로 잰다. 되면 그 경로를 안 타는 것이다.
+    """
+    import http.server
+    import json as _json
+    import socket
+    import threading
+
+    import tiktoken
+
+    import app.agent.config as C
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            b = _json.dumps({"object": "list",
+                             "data": [{"object": "embedding", "index": 0,
+                                       "embedding": [0.1] * 8}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def log_message(self, *a):
+            pass
+
+    sk = socket.socket()
+    sk.bind(("127.0.0.1", 0))
+    port = sk.getsockname()[1]
+    sk.close()
+    srv = http.server.HTTPServer(("127.0.0.1", port), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def _boom(*a, **k):
+        raise RuntimeError("tiktoken 이 외부에서 인코딩을 받으려 했다")
+
+    monkeypatch.setattr(tiktoken, "encoding_for_model", _boom)
+    monkeypatch.setattr(tiktoken, "get_encoding", _boom)
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", f"http://127.0.0.1:{port}/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "k")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_EMBED", "m1")
+    try:
+        assert len(C.get_embeddings().embed_query("hi")) == 8
+    finally:
+        srv.shutdown()

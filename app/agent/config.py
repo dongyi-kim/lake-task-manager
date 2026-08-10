@@ -385,6 +385,25 @@ def _no_model_msg(p: str, tier: str = "complex", embed: bool = False) -> str:
 
 
 def get_embeddings(**kwargs):
+    """임베딩 클라이언트.
+
+    ★ **`check_embedding_ctx_length=False` 를 기본으로 준다**(실사용 사고: "임베딩 모델만
+      자꾸 SSL verify failed, max retries").
+
+      원인은 SSL 설정도 임베딩 서버도 아니었다. langchain 의 `OpenAIEmbeddings` 는 기본값에서
+      **보내기 전에 tiktoken 으로 토큰 수를 세어** 모델 한도에 맞춰 쪼갠다. 그 tiktoken 이
+      인코딩 파일을 처음 쓸 때 `openaipublic.blob.core.windows.net` 에서 **requests 로
+      내려받는다** — 사내망의 TLS 가로채기에 걸려 `SSLError ... Max retries exceeded` 가 난다.
+      채팅은 토큰을 안 세니 멀쩡하다. 그래서 **임베딩만** 실패한다(실측으로 확인:
+      tiktoken 을 막아 두면 채팅은 통과하고 임베딩만 죽는다).
+
+      우리에게 그 쪼개기는 **필요가 없다.** 색인에 넣기 전에 `retrieval/chunk.py` 가 이미
+      1200자 상한으로 자른다(어떤 임베딩 모델의 한도보다도 한참 아래다). 즉 이 기능은
+      우리 쪽에서 얻는 것 없이 **외부 네트워크 의존만 늘린다.**
+
+      호출부가 명시적으로 넘기면 그 값을 존중한다(kwargs 우선).
+    """
+    kwargs.setdefault("check_embedding_ctx_length", False)
     p = provider()
     if p == "fake":
         from app.agent.fake import FakeEmbeddings
@@ -756,6 +775,15 @@ def diagnose(timeout: float = 30.0) -> dict:
          lambda: f"{len(get_embeddings().embed_query('ping'))}차원")
 
     bad = [c for c in out["calls"] if not c.get("ok")]
+    # ★ **임베딩만** SSL 로 죽는 경우가 있다 — 서버가 아니라 tiktoken 이 인코딩 파일을
+    #   openaipublic 에서 받으려다 사내 TLS 가로채기에 걸리는 것이다(실사용 사고).
+    #   그 증상은 "임베딩 서버가 이상하다"로 읽히므로 여기서 이름을 붙여 준다.
+    _emb_bad = [c for c in bad if "임베딩" in str(c.get("단계") or "")]
+    if _emb_bad and "SSL" in str(_emb_bad[0].get("오류") or "").upper():
+        out["hint"] = ("임베딩만 SSL 오류 — 임베딩 서버가 아니라 **토큰 계산용 인코딩 파일**을 "
+                       "외부(openaipublic.blob.core.windows.net)에서 받으려다 막힌 것일 수 "
+                       "있습니다. 이 앱은 그 경로를 끄고 씁니다(v2026.08.10.10+) — 옛 버전이면 "
+                       "업데이트하세요.")
     if bad and not out["hint"]:
         first = bad[0]
         if "403" in str(first.get("오류") or ""):
