@@ -383,6 +383,18 @@ class Responder(TextAgent):
             text = _re.sub(r"\b\d{4}-\d{2}-\d{2}\b",
                            lambda m: due if m.group(0) != due else m.group(0), text)
 
+        # ── 후검증 — **플레이북별 최소선**(사용자 지시: 주요 태스크는 결과도 검증)
+        # 프롬프트에 적어 두면 '대체로' 지켜진다. 문제는 그 '대체로'다 — 같은 요청이
+        # 어떤 날은 연표만 나오고 어떤 날은 현재 상태까지 나온다. 흔들림은 지시로 못 잡으니
+        # **잴 수 있는 것은 코드가 재고**, 못 지켰으면 숨기지 않고 드러낸다.
+        try:
+            from app.agent.workflow import postcheck
+            _bad = postcheck.check(state, text)
+            if _bad:
+                text += postcheck.note(_bad)
+        except Exception:
+            pass
+
         from langchain_core.messages import AIMessage
         return {"reply": text, "messages": [AIMessage(content=text)],
                 "trace": note(state, self.name, f"{len(text)}자")}
