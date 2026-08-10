@@ -555,7 +555,7 @@ def _plan_for(intent: str) -> list:
     from app.agent.workflow.state import Intent, Stage
     def _s(*nodes):
         return [{"id": n, "label": Stage.LABELS.get(n, n)} for n in nodes]
-    if intent in Intent.DRAFTS_TICKETS:            # plan_work / report_bug / modify
+    if intent in Intent.DRAFTS_TICKETS:            # plan_work(버그 포함) / modify
         if intent == Intent.MODIFY:
             return _s(Node.PLANNER, Node.HISTORIAN, Node.REFINER, Node.RESPONDER)
         return _s(Node.PLANNER, Node.HISTORIAN, Node.REFINER,

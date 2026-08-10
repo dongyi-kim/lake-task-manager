@@ -51,7 +51,8 @@ from app.agent.workflow.agents.pmo import PMO
 from app.agent.workflow.agents.refiner import Refiner
 from app.agent.workflow.agents.responder import Responder
 from app.agent.workflow.agents.reviewer import Reviewer
-from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node)
+from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node,
+                                      reads_as_bug, request_text)
 
 _compiled = {"graph": None}
 
@@ -92,9 +93,14 @@ def route_after_planner(state: AgentState) -> str:
     #    실측(STARR NDV): 혼자 오래 조사하고 한 번에 결론을 내니 방향이 틀렸다. 조사 전에
     #    해석·범위를 2~3문항으로 확인받으면 조사가 짧고 정확해진다(사용자 피드백: 일방적
     #    호흡이 길다). 위임("알아서")이면 묻지 않는 기존 원칙이 이긴다.
+    #    ★ **버그 신고는 여기 해당 없다** — "2홉 이상 펼치면 화면이 빈다"는 막연한 것이
+    #    아니라 증상이 이미 문장에 있다. 물을 것은 해석이 아니라 재현 경로이고, 그 전에
+    #    **같은 증상의 Bug 가 이미 열려 있는지**를 봐야 한다(중복 티켓). 갈래를 걷어내며
+    #    이 자리가 조용히 넓어졌던 것을 낱말 판정으로 되돌린다(§7 16-b).
     if intent == Intent.PLAN_WORK and not state.get("sufficient") \
             and not (state.get("situation") or "").strip() \
-            and not (state.get("turns") or 0):
+            and not (state.get("turns") or 0) \
+            and not reads_as_bug(request_text(state)):
         from app.agent.workflow.agents.refiner import _said_defaults
         if not _said_defaults(state):
             return "refine"

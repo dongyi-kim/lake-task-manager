@@ -1470,10 +1470,10 @@ export default {
             </div>
             <div class="tv-meta">
               <!-- ★ 상위 티켓은 **키만 달랑 쓰지 않는다**(사용자 지적) — DL-102 만 보고는
-                   어느 Epic 인지 모른다. `.tkt` 뱃지는 augmentBadges 가 제목을 채운다. -->
-              <!-- ★ 상위 티켓은 **키만 달랑 쓰지 않는다**(사용자 지적) — DL-102 만 보고는
-                   어느 Epic 인지 모른다. 이 패널은 `.agent-md` 밖이라 기존 뱃지 augment 가
-                   안 닿아서, 제목을 데이터로 직접 받아 건다(epicTitles). -->
+                   어느 Epic 인지 모른다. 이 패널은 .agent-md 밖이라 기존 뱃지 augment 가
+                   안 닿아서, 제목을 데이터로 직접 받아 건다(epicTitles).
+                   ※ 이 주석에 백틱을 쓰지 마라 — 위 1067 줄의 경고와 같은 이유로 template
+                     문자열이 그 자리에서 끊긴다(실제로 앱이 통째로 안 떴다). -->
               <span v-if="sideItem().epic">상위
                 <a href="#" class="tkt" :data-key="sideItem().epic"
                    :title="sideItem().epic + ' ' + (epicTitles[sideItem().epic] || '')">

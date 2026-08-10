@@ -1,4 +1,4 @@
-"""새 의도 4종(report_bug / my_day / progress / activity) — 라우팅 · PMO 도구 · 권한.
+"""의도별 라우팅 · PMO 도구 · 권한.
 
 전부 fake 로 돈다. 문장 품질은 실 LLM 검증(1회)에서 보고, 여기서는 **구조**를 지킨다:
 어느 의도가 어느 길로 가는지, PMO 도구가 옳은 숫자를 주는지, 매니저 게이트가 실제로 막는지.
@@ -35,9 +35,22 @@ def test_direct_answer_intents_skip_the_historian():
 
 
 def test_bug_reports_still_go_through_investigation():
-    """버그도 조사를 지난다 — 같은 증상의 Bug 가 이미 열려 있으면 새로 만들면 안 된다."""
-    assert G.route_after_planner({"intent": Intent.REPORT_BUG}) == "investigate"
-    assert G.route_after_historian({"intent": Intent.REPORT_BUG}) == "refine"
+    """버그도 조사를 지난다 — 같은 증상의 Bug 가 이미 열려 있으면 새로 만들면 안 된다.
+
+    ★ 버그 신고는 **갈래가 아니다**(`report_bug` enum 제거, §7 16-b) — 만드는 것이
+      Task 이고 type 만 Bug 다. 여기서 지킬 것은 그것이 `plan_work` 와 **같은 길**을
+      지난다는 것, 그리고 갈래가 되살아나지 않는다는 것이다.
+    """
+    from langchain_core.messages import HumanMessage
+    bug = {"intent": Intent.PLAN_WORK,
+           "messages": [HumanMessage(content="리니지 뷰어에서 2홉 이상 펼치면 화면이 빈다")]}
+    assert not hasattr(Intent, "REPORT_BUG"), "갈래로 되돌리지 마라 — 산출물 유형이다"
+    assert G.route_after_planner(bug) == "investigate"
+    assert G.route_after_historian(bug) == "refine"
+    # ★ sufficient 가 안 붙어도 조사로 간다 — 버그는 "막연한 신규 개발"이 아니다.
+    #   같은 문장에서 낱말이 빠지면(=버그가 아니면) 해석 확인이 먼저다.
+    vague = dict(bug, messages=[HumanMessage(content="리니지 뷰어를 개선하고 싶다")])
+    assert G.route_after_planner(vague) == "refine"
 
 
 def test_pmo_node_exists_and_flows_to_responder():
@@ -162,17 +175,17 @@ def test_bug_body_rules_follow_the_request_not_the_intent():
     """버그 초안 규율은 **요청의 내용**으로 고른다 — 의도가 미끄러져도 바뀌면 안 된다.
 
     ★ 이 테스트는 원래 "intent 로 분기한다"를 단언했다. 그런데 `report_bug` 는 `plan_work`
-    와 지나는 노드도 도구도 같고 다른 것은 이 goal 하나뿐이다(사용자 지적: "결국 Task
+    와 지나는 노드도 도구도 같고 다른 것은 이 goal 하나뿐이었다(사용자 지적: "결국 Task
     생성 아니야? type 이 Bug 일 뿐이지"). 갈래로 두면 **분류가 틀릴 때 본문 템플릿이
     통째로 바뀐다** — 재현·기대·실제가 배경·범위·DoD 로 뒤바뀐다. 그래서 판정을 요청의
-    낱말로 옮겼고, 이 테스트도 그 규율을 잰다.
+    낱말로 옮겼고(갈래는 §7 16-b 에서 제거), 이 테스트도 그 규율을 잰다.
     """
     from langchain_core.messages import HumanMessage
     from app.agent.workflow.agents.refiner import Refiner
-    st = {"messages": [HumanMessage(content="배치가 실패한다")], "intent": Intent.REPORT_BUG}
+    st = {"messages": [HumanMessage(content="배치가 실패한다")], "intent": Intent.PLAN_WORK}
     assert "재현 경로" in Refiner().task(st)
-    # 의도가 plan_work 로 미끄러져도 **버그 이야기면** 규율이 유지된다
-    assert "재현 경로" in Refiner().task(dict(st, intent=Intent.PLAN_WORK))
+    # 의도가 modify 로 미끄러져도 **버그 이야기면** 규율이 유지된다
+    assert "재현 경로" in Refiner().task(dict(st, intent=Intent.MODIFY))
     # 버그 이야기가 아니면 평소 규율 — 아무 요청에나 버그 템플릿을 씌우면 안 된다
     plain = {"messages": [HumanMessage(content="메타데이터 등록 작업이 필요해")],
              "intent": Intent.PLAN_WORK}
@@ -182,7 +195,7 @@ def test_bug_body_rules_follow_the_request_not_the_intent():
 def test_planner_schema_covers_all_new_intents():
     from app.agent.workflow.agents.planner import SCHEMA
     enum = SCHEMA["properties"]["intent"]["enum"]
-    for i in (Intent.REPORT_BUG, Intent.MY_DAY, Intent.PROGRESS, Intent.ACTIVITY):
+    for i in (Intent.PLAN_WORK, Intent.MY_DAY, Intent.PROGRESS, Intent.ACTIVITY):
         assert i in enum
 
 

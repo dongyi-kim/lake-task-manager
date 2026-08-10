@@ -319,3 +319,24 @@ def test_a_real_display_name_is_still_a_violation_with_its_id_as_the_fix():
     assert "skcc.x1210" in note and "바꿔" in note, note
     # 사번으로 쓴 답은 통과한다
     assert grounding.check("담당 후보는 skcc.x1210 입니다.")["ok"]
+
+def test_a_quoted_title_sharing_only_common_words_is_flagged():
+    """실측(사용자 관점 리뷰 F6, blocker): 흔한 낱말 둘로 제목을 안 척했다.
+
+    답변은 `DL-9008 '[내Task] Epic 없는 내 Task — 마감 초과'` 라고 단정했는데 실물은
+    `[UI] 마감 초과(D+) — 기한 붉은 강조` 였다. 겹친 것은 '마감'·'초과' — **아무 티켓에나
+    있는 말**이다. "한 토큰이라도 겹치면 통과"면 이 가드는 있으나 마나다.
+    """
+    key, title = _real_key_and_title()
+    g = grounding.check(f"- **{key} '[내Task] Epic 없는 내 Task — 마감 초과'** — 진행 중")
+    # 실제 제목과 겹치는 흔한 낱말이 있어도, 없던 말을 잔뜩 더한 **따옴표 단정**은 걸린다.
+    if not (set(title.split()) & {"마감", "초과"}):
+        assert key in g["wrong_titles"], (title, g)
+
+
+def test_a_shortened_quoted_title_is_not_flagged():
+    """줄여 부르는 것은 정당하다 — 부분집합이면 통과."""
+    key, title = _real_key_and_title()
+    head = " ".join(title.replace("[", "").replace("]", "").split()[:2])
+    g = grounding.check(f'{key} "{head}" 는 진행 중')
+    assert key not in g["wrong_titles"], (title, g)

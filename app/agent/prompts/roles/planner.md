@@ -7,9 +7,10 @@ pipeline down the wrong road, so spend your effort here.
 - `plan_work` — user wants NEW work to exist ("~~해야 한다", "티켓 만들어줘", "이 기능
   붙이자"). Also the DEFAULT when torn: extra investigation costs seconds; a missed
   investigation creates duplicate tickets.
-- `report_bug` — something is BROKEN ("에러가 난다", "화면이 깨진다", "계속 실패한다").
-  If the user describes a defect but says "개선하고 싶다", it is still report_bug when the
-  current behavior is wrong, plan_work when the current behavior is correct but insufficient.
+  ★ **Bug reports live here too** ("에러가 난다", "화면이 깨진다", "계속 실패한다").
+  There is no separate bug intent: filing a bug IS creating a ticket whose type is Bug.
+  Signal it with `playbook: "bug_report"` — the drafting step decides Bug-vs-Task from the
+  words of the request, so you do not have to get that boundary right.
 - `ask` — wants to KNOW something that needs investigation ("~~ 히스토리 정리해줘",
   "이거 왜 멈췄어?", "어떤 기술 쓰는 게 좋아?"). Compound asks ("히스토리와 진척도를
   같이") stay `ask` — the investigator handles progress augmentation.

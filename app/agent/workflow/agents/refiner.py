@@ -22,7 +22,8 @@ from app.agent.prompts.roles import SYSTEM_REFINER
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
-                                      conversation, last_user_text, note, request_text)
+                                      conversation, last_user_text, note, reads_as_bug,
+                                      request_text)
 
 # 신규 구축 규모의 신호 — **프롬프트 넛지와 하향 편향 가드가 같은 목록을 본다.**
 # 갈라지면 "프롬프트는 시키는데 코드는 안 막는" 상태가 되고, 그건 이 저장소가 반복해서
@@ -313,18 +314,14 @@ class Refiner(StructuredAgent):
                       "승인할 수 없다 — 위임받고 아무것도 안 한 셈이다."
                       if defaults else "")
         # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
-        # ★ **버그 초안은 의도가 아니라 요청의 내용으로 고른다**(사용자 지적).
-        #   `report_bug` 는 `plan_work` 와 **지나는 노드도 도구도 같다** — 코드 전체에서
-        #   다르게 쓰이는 곳이 이 goal 하나뿐이다. 결국 "Task 를 만드는데 type 이 Bug"인
-        #   것이고, 갈래가 아니라 **산출물 유형**이다(Intent 주석의 "노드가 다르다"는
-        #   MY_DAY 에는 맞지만 REPORT_BUG 에는 사실이 아니다 — 주석을 고쳐 뒀다).
-        #   그래서 분류가 흔들려도 본문 규율이 바뀌지 않게 **요청의 낱말도 함께** 본다:
-        #   "적재 배치가 계속 실패한다"가 plan_work 로 분류되면 재현·기대·실제 없이
-        #   배경·범위·DoD 짜리 Task 가 나온다 — 바뀌면 안 되는 것이 바뀐다.
+        # ★ **버그 초안은 의도가 아니라 요청의 낱말로 고른다**(사용자 지적 — "결국 버그
+        #   신고도 Task 생성 아니야? type 이 Bug 일 뿐이지"). 예전에는 `report_bug` 라는
+        #   갈래가 있었지만 `plan_work` 와 지나는 노드도 도구도 같았고, 코드에서 다르게
+        #   쓰이는 곳이 이 goal 하나뿐이었다 — **갈래가 아니라 산출물 유형**이다.
+        #   낱말로 고르면 분류가 흔들려도 본문 규율이 안 바뀐다: "적재 배치가 계속
+        #   실패한다"가 어느 갈래로 가든 재현·기대·실제가 유지된다.
         _said = request_text(state) + " " + conversation(state)
-        _is_bug = ((state.get("intent") or "") == Intent.REPORT_BUG
-                   or _re.search(r"버그|bug|장애|오류|에러|안\s*(?:떠|나와|돼|된다)|"
-                                 r"실패한다|깨졌|먹통|안\s*먹", _said))
+        _is_bug = reads_as_bug(_said)      # 판정은 state.reads_as_bug 한 곳에만 있다
         if _is_bug and (state.get("intent") or "") in Intent.DRAFTS_TICKETS:
             goal = """버그 신고를 **Bug 티켓 초안**으로 만들어라.
 - type 은 Bug. 제목은 증상을 담는다("[모듈] ~~가 ~~할 때 ~~된다").
@@ -445,7 +442,7 @@ class Refiner(StructuredAgent):
                        #   오늘 슬롯을 늘리면서 이 갈래까지 샌 것이고, 계약 배터리는
                        #   change_plan 만 보느라 못 잡았다.
                        _slot_audit(state)
-                       if (state.get("intent") or "") in (Intent.PLAN_WORK, Intent.REPORT_BUG)
+                       if (state.get("intent") or "") == Intent.PLAN_WORK
                        else ""),
             data_block("지금 고치고 있는 초안 (전문 — 처음부터 다시 쓰지 말고 이걸 고쳐라. "
                        "사용자가 문제 삼지 않은 부분은 유지한다. ★ '하나 더/추가' 요청이면 "

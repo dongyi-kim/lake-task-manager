@@ -140,22 +140,48 @@ def check(reply: str) -> dict:
     for key, real in real_titles.items():
         if not real:
             continue
-        claims = [mm.group(1).strip().rstrip(")").strip() for mm in
-                  re.finditer(rf"{re.escape(key)}\**\s*[:(]\s*([^)\n**]{{4,80}})", text)]
-        claims += [mm.group(1).strip() for mm in
-                   re.finditer(rf"{re.escape(key)}\**\s*[\"“'']([^\"”'\n]{{4,80}})[\"”'']", text)]
-        claims = [c for c in claims if c]
+        # 두 꼴을 **따로** 모은다 — 단정의 세기가 다르기 때문이다(아래 판정에서 갈린다).
+        loose = [mm.group(1).strip().rstrip(")").strip() for mm in
+                 re.finditer(rf"{re.escape(key)}\**\s*[:(]\s*([^)\n**]{{4,80}})", text)]
+        quoted = [mm.group(1).strip() for mm in
+                  re.finditer(rf"{re.escape(key)}\**\s*[\"“'']([^\"”'\n]{{4,80}})[\"”'']", text)]
+        loose = [c for c in loose if c]
+        quoted = [c for c in quoted if c]
+        claims = loose + quoted
         if not claims:
             continue
-        # 실제 제목의 핵심 토큰이 하나도 안 겹치면 다른 제목을 단정한 것으로 본다.
-        # (요약·의역은 허용해야 하므로 완전 일치를 요구하지 않는다.)
-        # 후보 표기 중 **하나라도** 겹치면 제목을 안 것이다 — 콜론 뒤 상태 서술
-        # ("DL-9090: 현재 2/3 완료")이 첫 후보로 잡혀 정확한 따옴표 제목이 무시되던 오탐 방지.
-        real_tokens = {t for t in re.split(r"[\s\[\]()\-—·/]+", real) if len(t) >= 2}
-        claim_sets = [{t for t in re.split(r"[\s\[\]()\-—·/]+", c) if len(t) >= 2}
-                      for c in claims]
-        claim_sets = [cs for cs in claim_sets if cs]
-        if real_tokens and claim_sets and not any(cs & real_tokens for cs in claim_sets):
+        # 요약·의역은 허용해야 하므로 완전 일치를 요구하지 않는다. 후보 표기 중
+        # **하나라도** 제목을 안 것으로 보이면 통과 — 콜론 뒤 상태 서술("DL-9090: 현재
+        # 2/3 완료")이 첫 후보로 잡혀 정확한 따옴표 제목이 무시되던 오탐 방지.
+        #
+        # ★ **따옴표 꼴에만** 엄격한 잣대를 댄다(사용자 관점 리뷰 F6, blocker).
+        #   `DL-9008 '[내Task] Epic 없는 내 Task — 마감 초과'` 가 통과했는데 실물은
+        #   `[UI] 마감 초과(D+) — 기한 붉은 강조` 였다 — 겹친 것은 '마감'·'초과' 둘뿐,
+        #   **둘 다 아무 티켓에나 있는 말**이다. 흔한 낱말 하나로 제목을 안 척할 수 있으면
+        #   이 가드는 있으나 마나다.
+        #   그렇다고 모든 꼴에 엄격하게 대면 오탐이 난다 — 콜론 뒤는 대개 제목이 아니라
+        #   **상태 서술**("DL-101: 성능 관련 작업이 진행 중")이라 원래 안 겹친다. 오탐은
+        #   공짜가 아니다: 재작성 LLM 이 한 번 더 돌고, 못 고치면 답에 경고가 붙는다.
+        #   그래서 세기를 나눈다 — **따옴표는 제목을 단정한 것**, 콜론은 서술.
+        #     · 따옴표: 실제 제목의 부분집합(줄여 부르기)이거나 토큰 40% 이상을 덮을 것
+        #       — F6 은 없던 말 5개를 더했고(부분집합 아님) 겹침도 2/7=29% 라 걸린다
+        #     · 콜론·괄호: 예전대로 한 토큰이라도 겹치면 통과
+        def _tok(s: str) -> set:
+            return {t for t in re.split(r"[\s\[\]()\-—·/]+", s) if len(t) >= 2}
+
+        real_tokens = _tok(real)
+        if not real_tokens:
+            continue
+        need = max(1, round(len(real_tokens) * 0.4))
+        ok_loose = any(_tok(c) & real_tokens for c in loose)
+        ok_quoted = any(_tok(c) <= real_tokens or len(_tok(c) & real_tokens) >= need
+                        for c in quoted if _tok(c))
+        # 따옴표로 제목을 단정했으면 **그 단정이 맞아야** 한다 — 옆줄의 느슨한 표기가
+        # 통과했다고 해서 틀린 단정이 사면되지 않는다.
+        if quoted:
+            if not ok_quoted:
+                wrong_titles[key] = real
+        elif loose and not ok_loose:
             wrong_titles[key] = real
 
     fake_people, name_as_id = [], {}

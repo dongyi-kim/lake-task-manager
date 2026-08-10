@@ -21,12 +21,12 @@ SCHEMA = {
     "properties": {
         "intent": {
             "type": "string",
-            "enum": [Intent.ASK, Intent.PLAN_WORK, Intent.REPORT_BUG, Intent.MY_DAY,
+            "enum": [Intent.ASK, Intent.PLAN_WORK, Intent.MY_DAY,
                      Intent.PROGRESS, Intent.ACTIVITY, Intent.MODIFY, Intent.CHITCHAT],
             "description": (
                 "ask=이미 있는 것에 대해 물음(이력·경위) / "
-                "plan_work=새 업무를 시작하려 함(티켓 트리까지) / "
-                "report_bug=버그·장애를 발견했다고 알림(Bug 티켓 생성까지) / "
+                "plan_work=새 업무를 시작하려 함(티켓 트리까지). "
+                "**버그·장애 신고도 여기다** — 만드는 것이 Task 이고 type 만 Bug 다 / "
                 "my_day=자기가 오늘/이번주 뭘 해야 하는지 물음 / "
                 "progress=Epic·모듈·WBS 의 진척도/현황, 또는 **팀 상태 점검**"
                 "(정체·오래 업데이트 없는·마감 지난·미배정 티켓이 있는지) / "
@@ -147,7 +147,7 @@ class Planner(StructuredAgent):
         return persona(state, SYSTEM_PLANNER, lite=True)   # 분류엔 축약판 — 호출당 1k+ 토큰 절감
 
     def task(self, state):
-        # Few-shot — 경계가 애매한 갈래(ask↔progress↔activity, plan_work↔report_bug)를
+        # Few-shot — 경계가 애매한 갈래(ask↔progress↔activity, ask↔modify)를
         # 예시로 가른다. 규칙 문장보다 예시가 분류를 훨씬 안정시킨다(In-Context Learning).
         return f"""\
 # 명령서
@@ -162,7 +162,9 @@ class Planner(StructuredAgent):
 - "실시간 수집에 CDC를 도입해야 한다" → plan_work (새 일을 벌인다)
 - "데이터 거버넌스 에픽 하나 새로 만들자" → plan_work (Epic 생성도 새 일 벌이기다)
 - "DL-1234 밑에 서브태스크 여러 개 만들어줘" → plan_work (벌크 Sub-Task 생성)
-- "적재 배치가 어젯밤부터 계속 실패한다" → report_bug (깨진 것을 알린다)
+- "적재 배치가 어젯밤부터 계속 실패한다" → plan_work (★ **버그 신고도 티켓 생성이다** —
+  갈래를 따로 두지 않는다. type 이 Bug 인 것은 초안 단계가 요청의 낱말로 판단한다.
+  playbook 에 bug_report 를 담아 흐름만 알려 준다)
 - "DL-101 어떻게 진행되고 있어?" → progress (티켓·Epic 의 진척 상태)
 - "ETL 모듈 진척률 알려줘" → progress
 - "ETL 마이그레이션 업무의 히스토리와 진척도, 최근 업데이트 알려줘" → ask (★ **복합 질의는
@@ -200,7 +202,7 @@ class Planner(StructuredAgent):
 
 ## 계획(plan) 예시 — 의도별 표준 플랜(상황 맞게 다듬어 써라)
 - plan_work: "사내 이력 검색 → (신기술이면 웹 조사) → 되묻기/초안 → 담당 후보 → 검증 → 승인"
-- report_bug: "같은 증상 Bug 검색 → 재현경로 확인 → Bug 초안 → 담당 후보 → 승인"
+- plan_work(버그): "같은 증상 Bug 검색 → 재현경로 확인 → Bug 초안 → 담당 후보 → 승인"
 - ask(지식): "사내 이력+의미 검색 → 웹 보강 → 개념/우리 상황/공백 정리"
 - ask(적합성): "티켓 열람 → 후보 이력·워크로드 확인 → 근거 판단"
 - ask(자산·주제 조사): "이름으로 언급 추적(코멘트 포함) → 변경 이력 확인 → 문서 본문 → 현재 값 확정"

@@ -12,6 +12,7 @@ State 는 대화 하나(=`thread_id`)의 수명을 갖는다. Checkpointer 가 �
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph.message import add_messages
@@ -36,17 +37,17 @@ class Intent:
     같다면(조사→답변) 같은 의도로 묶고 도구 선택은 모델에게 맡긴다 — MY_DAY·PROGRESS·
     ACTIVITY 를 나눈 이유는 지나는 노드와 도구 묶음이 실제로 다르기 때문이다.
 
-    ★ **REPORT_BUG 는 이 규칙의 예외로 남아 있다**(사용자 지적, 2026-08-10).
-      PLAN_WORK 와 지나는 노드도 도구도 같고, 코드 전체에서 다르게 쓰이는 곳은 Refiner 의
-      goal 문자열 하나뿐이다 — 결국 "Task 를 만드는데 type 이 Bug" 인 것이라 **갈래가
-      아니라 산출물 유형**이다. 그런데 갈래로 두면 Planner 가 plan_work↔report_bug 경계를
-      맞춰야 하고(few-shot 까지 붙어 있다), 틀리면 본문 템플릿이 통째로 바뀐다.
-      그래서 **본문 규율은 의도가 아니라 요청의 낱말로** 고르도록 Refiner 를 고쳤다 —
-      분류가 흔들려도 결과가 안 바뀐다. enum 자체를 걷어내는 것은 남은 일이다(§7).
+    ★ **버그 신고는 갈래가 아니다**(사용자 지적, 2026-08-10 — "결국 버그 신고도 Task
+      생성 아니야? Task Type 이 Bug 일 뿐이지"). 예전에는 `report_bug` 가 따로 있었는데
+      PLAN_WORK 와 지나는 노드도 도구도 같았고, 코드 전체에서 다르게 쓰이는 곳은 Refiner 의
+      goal 문자열 하나뿐이었다 — **갈래가 아니라 산출물 유형**이다.
+      갈래로 두면 Planner 가 plan_work↔report_bug 경계를 맞춰야 하고(few-shot 까지 붙었다),
+      틀리는 날 본문 템플릿이 통째로 바뀌었다. 지금은 **본문 규율을 요청의 낱말로** 고른다
+      (Refiner `_is_bug`) — 분류가 흔들려도 재현·기대·실제가 유지된다. 흐름 지시는
+      `playbook="bug_report"` 가 그대로 나른다.
     """
     ASK = "ask"                # 그냥 물어본 것 — 찾아서 답하면 끝
-    PLAN_WORK = "plan_work"    # "~~한 업무를 해야 한다" — 티켓 트리까지 간다
-    REPORT_BUG = "report_bug"  # "~~한 버그가 발견됐다" — Bug 티켓 + 담당 추천 + 링크까지
+    PLAN_WORK = "plan_work"    # "~~한 업무를 해야 한다" — 티켓 트리까지 간다(버그 신고 포함)
     MY_DAY = "my_day"          # "나 오늘 뭐 해야 할까" — 내 일감을 보고 우선순위를 제안
     PROGRESS = "progress"      # "~~ 진척도 확인" — Epic/모듈/WBS 진척률과 그 이유
     ACTIVITY = "activity"      # "A가 최근 뭐 했어?" — 타인 활동 조회(매니저 게이트는 도구가 건다)
@@ -54,8 +55,8 @@ class Intent:
     CHITCHAT = "chitchat"      # 업무 요청이 아님
 
     # 조사(historian)가 필요한 갈래 / 티켓 초안까지 가는 갈래 — 라우터가 이 집합만 본다.
-    NEEDS_RESEARCH = (ASK, PLAN_WORK, REPORT_BUG, MODIFY)
-    DRAFTS_TICKETS = (PLAN_WORK, REPORT_BUG, MODIFY)
+    NEEDS_RESEARCH = (ASK, PLAN_WORK, MODIFY)
+    DRAFTS_TICKETS = (PLAN_WORK, MODIFY)
     DIRECT_ANSWER = (MY_DAY, PROGRESS, ACTIVITY)   # 검색 대신 PMO 도구로 바로 답한다
 
 
@@ -219,6 +220,26 @@ def conversation(state: AgentState, limit: int = 12) -> str:
         if who and body:
             rows.append(f"{who}: {body}")
     return "\n".join(rows)
+
+
+_BUG_WORDS = re.compile(r"버그|bug|장애|오류|에러|안\s*(?:떠|나와|돼|된다)|"
+                        r"실패한다|깨졌|먹통|안\s*먹|"
+                        # 낱말이 없어도 증상 서술이면 버그다 — "화면이 빈다"에는 위의 어떤
+                        # 말도 없다(실측: 사용자 관점 리뷰 F5 의 원문). 다만 넓히면 평범한
+                        # 요청이 버그가 되므로 **증상으로만 쓰이는 꼴**만 더한다.
+                        r"화면이\s*(?:비|빈)|빈\s*화면|안\s*보(?:인다|여|임)|"
+                        r"재현\s*(?:경로|되|됩)")
+
+
+def reads_as_bug(text: str) -> bool:
+    """이 요청이 '뭔가 깨졌다'는 말인가 — **갈래가 아니라 낱말로** 판정한다.
+
+    `report_bug` 갈래를 걷어내면서(§7 16-b) 판정을 여기로 모았다. 정의가 두 벌이면
+    한쪽만 고쳐지는 날이 오고, 그날 라우팅과 본문 규율이 서로 다른 말을 한다 —
+    Refiner(본문에 재현·기대·실제를 넣을 것인가)와 그래프(해석 확인을 앞세울 것인가)가
+    **같은 문장을 보고 같은 답**을 해야 한다.
+    """
+    return bool(_BUG_WORDS.search(text or ""))
 
 
 def as_dict(state: AgentState) -> dict[str, Any]:
