@@ -1500,10 +1500,15 @@ def _change_plan(state, out, items, qs):
     bulk_keys = [str(k).strip() for k in (change.get("keys") or []) if str(k).strip()]
     # 코드가 확정한 대상(bulk_targets)이 있는데 모델이 keys 를 빠뜨리거나 일부만 담았으면
     # **전부로 강제한다** — 일부 누락은 조용한 미수정이다(실측: 대상 없음 오답 2회).
+    # ★ **코멘트만 남기는 일괄도 있다.** 여기 조건이 '바꿀 필드가 있는가'만 봐서, "티켓
+    #   전부에 담당자를 멘션해 상태 점검을 요청" 같은 요청이 통째로 일괄 경로를 못 탔다
+    #   (실측 CMTB1: 대상이 안 잡히자 모델이 아무 티켓 둘을 골라 이야기했다).
+    #   코멘트는 필드가 아니지만 **N건에 쓰는 일**이라는 점은 같다.
     if state.get("bulk_targets") and (change.get("assignee") is not None
                                       or change.get("duedate") is not None
                                       or change.get("priority") is not None
                                       or change.get("labels") is not None
+                                      or str(change.get("comment") or "").strip()
                                       or bulk_keys):
         bulk_keys = [str(k) for k in state["bulk_targets"]]
     if bulk_keys and not plan:
@@ -1522,7 +1527,8 @@ def _change_plan(state, out, items, qs):
         if gone:
             out["rationale"] = ((out.get("rationale") or "")
                                 + f"\n(실재하지 않아 제외: {', '.join(gone[:5])})").strip()
-        if real and fields:
+        # 필드가 없어도 **코멘트가 있으면** 일괄이다(위 주석 참조).
+        if real and (fields or str(change.get("comment") or "").strip()):
             if len(real) == 1:
                 # 단건이면 단건 카드다 — 일괄 카드는 대상이 여럿일 때만.
                 plan = {"key": real[0], "changes": fields,
@@ -1532,6 +1538,14 @@ def _change_plan(state, out, items, qs):
                 plan = {"keys": real, "changes": fields,
                         "comment": (change.get("comment") or "").strip(),
                         "why": out.get("rationale") or ""}
+                # ★ **티켓별 코멘트를 코드가 미리 조립한다**(사용자 요청).
+                #   "담당자를 멘션해서 상태 점검을 요청" 같은 일괄 코멘트는 **티켓마다 문구가
+                #   다르다** — 멘션 대상이 그 티켓의 담당자이기 때문이다. 한 문장을 N건에
+                #   그대로 붙이면 멘션이 틀리거나 통째로 빠진다. 승인 화면이 "무엇이 어디에
+                #   달리는가"를 티켓별로 보여 줘야 승인이 의미를 갖는다.
+                pv = _bulk_comment_preview(real, plan["comment"])
+                if pv:
+                    plan["comments"] = pv
     # ── 전이 최종 보장: "DL-x 를 <상태>로 옮겨/바꿔" 인데 모델이 change.status 를
     # 안 쓰고 엉뚱한 초안을 냈다(실측: '상태로 옮김' Task 를 새로 만듦) — 코드가
     # 요청에서 상태명을 뽑아 전이를 조립하고 초안을 버린다.
@@ -1661,6 +1675,21 @@ def _change_plan(state, out, items, qs):
             out["rationale"] = ((out.get("rationale") or "")
                                 + "\n(승인 대기 초안에 대한 수정 요청 — 기존 티켓 변경이 "
                                   "아니라 초안을 고쳐야 한다)").strip()
+
+    # ── ★ **묻지 않은 것에 대한 안내를 근거 줄에 싣지 않는다** ────────────────
+    # 승인 카드의 근거 줄은 사용자가 **판단하는 자리**다. 무관한 문장이 있으면 무엇을
+    # 근거로 승인하는지가 흐려진다. 실측(CMTB1): 일괄 코멘트 계획의 why 가
+    # "삭제는 지원되지 않음. 상태를 닫음으로 전이하거나…" 였다 — 삭제 요청이 아니었다.
+    # 프롬프트에 적힌 예외 안내(삭제·스토리포인트)를 모델이 아무 데나 옮겨 적는다.
+    said_all = request_text(state) + " " + conversation(state)
+    for pat, need in ((r"삭제[^)\n]{0,20}지원되지\s*않", ("삭제", "지워", "없애")),
+                      (r"스토리\s*포인트[^)\n]{0,20}(?:설정할 수 없|지원)", ("포인트", "SP"))):
+        if _re.search(pat, str(out.get("rationale") or "")) \
+                and not any(w in said_all for w in need):
+            out["rationale"] = _re.sub(r"\n?\([^)\n]*" + pat + r"[^)\n]*\)", "",
+                                       out["rationale"]).strip()
+            if isinstance(plan, dict) and plan.get("why"):
+                plan["why"] = _re.sub(pat + r"[^\n]*", "", str(plan["why"])).strip(" .·\n")
     return plan, qs
 
 def draft_text(draft: dict) -> str:
@@ -2485,6 +2514,40 @@ def _can_parent_subtask(key) -> bool:
 # 가 컴포넌트 이름 'TEST' 와 부분 일치해 모듈이 TEST 로 잡혔고, 담당까지 픽스처 계정
 # (test.ui02)으로 제안됐다. 사람이 보면 바로 아는 오류지만 초안은 멀쩡해 보인다.
 _FIXTURE_COMPONENTS = {"TEST"}
+
+
+
+def _bulk_comment_preview(keys: list, body: str) -> list:
+    """일괄 코멘트의 **티켓별 미리보기** — [{key, title, assignee, body}].
+
+    `[~담당자]` 자리표시자가 있으면 그 티켓의 실제 담당으로 바꿔 준다. 담당이 없으면
+    멘션을 빼고 문장을 살린다(존재하지 않는 사람을 멘션하면 알림이 안 가고 링크만 깨진다).
+    """
+    if not body:
+        return []
+    rows = []
+    for k in keys[:30]:
+        try:
+            f = (_client_issue(k) or {}).get("fields") or {}
+        except Exception:
+            f = {}
+        who = ((f.get("assignee") or {}).get("name") or "").strip()
+        # ★ **멘션은 티켓마다 그 티켓의 담당이어야 한다.** 모델은 대상 담당자를 전부 모아
+        #   한 문장에 넣는다(실측 CMTB1: 두 티켓의 코멘트가 똑같이
+        #   "[~skcc.x1042] [~skcc.i2011]" 였다) — 그러면 남의 티켓 알림이 모두에게 간다.
+        #   그래서 본문의 멘션을 **전부 걷어내고** 이 티켓의 담당만 앞에 붙인다.
+        text = _re.sub(r"\[~[^\]]*\]", "", body)
+        text = _re.sub(r"\s{2,}", " ", text).strip(" ,·")
+        if who:
+            text = f"[~{who}] " + text        # 담당자에게 알리는 것이 이 코멘트의 목적이다
+        rows.append({"key": k, "title": str(f.get("summary") or ""),
+                     "assignee": who, "body": text})
+    return rows
+
+
+def _client_issue(key: str):
+    from app.agent.tools._ctx import client
+    return client().get_issue(key)
 
 
 def _known_components() -> set:

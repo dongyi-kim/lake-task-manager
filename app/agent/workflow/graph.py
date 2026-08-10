@@ -271,6 +271,20 @@ def _propose(state: AgentState) -> dict:
                 for k in plan["keys"] if str(k).strip()]
         if rows:
             return {"approval_token": approval.stage(tid, "update_tickets", {"items": rows})}
+    # ★ **코멘트만 남기는 일괄** — 필드 변경이 없어 위 갈래를 못 탄다. 그러면 승인 토큰이
+    #   안 만들어져 **카드가 아예 안 뜨고**, 사용자는 무엇을 승인할지 볼 수 없다
+    #   (실측 CMTB1: change_plan 은 섰는데 pending 이 비어 있었다).
+    #   지문은 add_ticket_comments(복수) 도구의 payload 와 같은 모양이다 — 티켓마다
+    #   본문이 다르므로(멘션) `comments` 미리보기를 그대로 싣는다.
+    if (plan.get("keys") or []) and (plan.get("comments") or
+                                     (plan.get("comment") or "").strip()):
+        pv = plan.get("comments") or []
+        rows = ([{"key": c.get("key"), "body": c.get("body") or ""} for c in pv if c.get("key")]
+                or [{"key": str(k).strip(), "body": (plan.get("comment") or "").strip()}
+                    for k in plan["keys"] if str(k).strip()])
+        if rows:
+            return {"approval_token": approval.stage(tid, "add_ticket_comments",
+                                                     {"items": rows})}
     if plan.get("key") and (plan.get("changes") or (plan.get("comment") or "").strip()):
         cmt = (plan.get("comment") or "").strip()
         if plan.get("changes"):

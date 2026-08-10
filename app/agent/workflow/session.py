@@ -340,8 +340,13 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
                               "comment": "", "rationale": plan.get("why") or ""}
         elif plan.get("keys"):
             # 조건 일괄 수정 — 대상 전부와 공통 변경이 카드에 보여야 승인이 의미가 있다.
+            # ★ 코멘트도 함께 싣는다 — **코멘트만 남기는 일괄**이 있고(사용자 요청),
+            #   그때 카드에 아무것도 안 보이면 무엇을 승인하는지 알 수 없다.
+            #   `comments` 는 티켓별 미리보기(멘션이 티켓마다 다르다).
             out["pending"] = {"token": data["approval_token"], "action": "update_tickets",
                               "keys": plan["keys"], "changes": plan.get("changes") or {},
+                              "comment": plan.get("comment") or "",
+                              "comments": plan.get("comments") or [],
                               "rationale": plan.get("why") or ""}
         elif plan.get("key"):
             out["pending"] = {"token": data["approval_token"], "action": "update_ticket",

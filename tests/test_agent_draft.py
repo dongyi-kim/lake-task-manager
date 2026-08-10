@@ -1053,3 +1053,25 @@ def test_a_draft_that_vanishes_leaves_a_trace_and_a_question():
         assert r["questions"], "초안이 0건이면 최소한 다음 수를 물어야 한다"
         assert "제외" in str(r["draft"].get("rationale") or ""), \
             "무엇이 사라졌는지 기록이 남아야 사후에 추적할 수 있다"
+
+
+def test_an_unrelated_capability_notice_is_stripped_from_the_reason_line():
+    """승인 카드의 근거 줄은 사용자가 **판단하는 자리**다 — 묻지 않은 안내가 있으면 안 된다.
+
+    실측(CMTB1): 일괄 코멘트 계획의 why 가 "삭제는 지원되지 않음. 상태를 닫음으로 전이…"
+    였다. 삭제 요청이 아니었는데 프롬프트의 예외 안내를 모델이 옮겨 적은 것이다.
+    """
+    from app.agent.workflow.agents.refiner import _change_plan
+    out = {"rationale": "(삭제는 지원되지 않는다 — 상태 전이(닫음)나 보관 라벨을 대안으로 안내)",
+           "change": {}}
+    plan = {"keys": ["DL-9090"], "changes": {},
+            "why": "삭제는 지원되지 않음. 상태를 닫음으로 전이하세요."}
+    st = _msg("ETL 티켓 전부에 상태 점검 코멘트 남겨줘")     # 삭제 이야기가 없다
+    got, _qs = _change_plan(st, out, [], [])
+    assert "삭제는 지원되지" not in (out.get("rationale") or ""), out.get("rationale")
+
+    # 진짜 삭제 요청이면 안내가 남아야 한다 — 지우는 가드가 필요한 안내까지 지우면 안 된다
+    out2 = {"rationale": "(삭제는 지원되지 않는다 — 상태 전이(닫음)나 보관 라벨을 대안으로 안내)",
+            "change": {}}
+    _change_plan(_msg("DL-9090 삭제해줘"), out2, [], [])
+    assert "삭제는 지원되지" in (out2.get("rationale") or "")

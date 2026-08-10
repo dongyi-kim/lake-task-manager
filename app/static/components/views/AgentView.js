@@ -1171,10 +1171,26 @@ export default {
                                             summary:'제목', labels:'라벨', status:'상태 전이', link:'링크'})[k] || k }}</span>
                     <span class="chg-v">{{ Array.isArray(v) ? v.join(', ') : (v || '(비움)') }}</span>
                   </div>
-                  <div v-if="t.pending.comment" class="agent-chg-row">
+                  <div v-if="t.pending.comment && !t.pending.comments" class="agent-chg-row">
                     <span class="chg-k">코멘트</span><span class="chg-v">{{ t.pending.comment }}</span>
                   </div>
                 </div>
+                <!-- ★ 티켓별 코멘트 미리보기 — 일괄 코멘트는 **티켓마다 문구가 다르다**
+                     (멘션 대상이 그 티켓의 담당자다). 무엇이 어디에 달리는지 보여야 승인이
+                     의미를 갖는다. 건수가 많으면 화면을 덮으므로 **기본 접힘**(사용자 요청). -->
+                <details v-if="t.pending.comments" class="agent-cmt-pv"
+                         :open="t.pending.comments.length <= 5">
+                  <summary>티켓별 코멘트 미리보기 {{ t.pending.comments.length }}건
+                    <em v-if="t.pending.comments.some(c => !c.assignee)">
+                      · 담당 없는 티켓은 멘션 없이 남습니다</em></summary>
+                  <div v-for="c in t.pending.comments" :key="c.key" class="agent-cmt-row">
+                    <div class="cmt-h">
+                      <a href="#" class="tkt" :data-key="c.key">{{ c.key }}</a>
+                      <span class="cmt-t">{{ c.title }}</span>
+                    </div>
+                    <div class="cmt-b">{{ c.body }}</div>
+                  </div>
+                </details>
                 <div class="agent-card-act">
                   <button class="ag-ok" :disabled="approving" @click="approve">
                     {{ approving ? '변경 중…' : '이대로 변경' }}</button>

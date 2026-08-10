@@ -880,6 +880,16 @@ class Historian(ToolAgent):
                     conds.append('duedate < now() AND statusCategory != done')
                 if "미배정" in asked_s or "담당 없" in asked_s:
                     conds.append("assignee is EMPTY AND statusCategory != done")
+                # ★ "N개월/N주/N일 이상 업데이트 없는" — 정체 티켓을 조건으로 잡는다.
+                #   실사용 예: "ETL 모듈 3개월 이상 업데이트 없는 티켓에 담당자를 멘션해서
+                #   상태 점검을 요청" — 이 조건이 없으면 대상 집합이 안 잡혀 일괄 경로가
+                #   통째로 꺼지고, 모델이 아무 티켓이나 골라 댓글을 달게 된다.
+                mstale = _re.search(r"(\d+)\s*(개월|달|주|일)[^.\n]{0,14}없", asked_s)
+                if mstale:
+                    _n = int(mstale.group(1))
+                    _d = _n * 30 if mstale.group(2) in ("개월", "달") else (
+                        _n * 7 if mstale.group(2) == "주" else _n)
+                    conds.append(f"updated <= -{_d}d AND statusCategory != done")
                 mod = next((m for m in ("ETL", "Catalog", "Runtime", "Workbench",
                                         "DataOps", "DevOps") if m.lower() in asked_s.lower()), "")
                 if conds:
@@ -887,13 +897,26 @@ class Historian(ToolAgent):
                     # "티켓들"의 상식적 대상은 Task류다 — Epic 은 보고 단위라 일괄 변경에서
                     # 뺀다(실측: Epic 4건이 P1 일괄 대상에 섞였다).
                     conds.append("issuetype != Epic")
+                    # ★ **범위를 좁히고 그 사실을 밝힌다**(사용자 요청 ①구체화).
+                    #   Sub-Task 와 VoC 는 성격이 달라 "티켓 전부"에 넣을지가 매번 갈린다 —
+                    #   짐작해서 넣으면 남의 일에 알림이 가고, 빼면 정작 필요한 것이 빠진다.
+                    #   말하지 않았으면 기본은 Task 류만으로 좁히고, 답변이 그 사실을 말한다.
+                    if any(w in asked_s for w in ("서브태스크", "서브 태스크", "sub-task",
+                                                  "하위", "전 유형", "voc", "VoC")):
+                        scope_note = "[범위] 사용자가 말한 대로 하위 유형까지 포함했다."
+                    else:
+                        conds.append("issuetype != Sub-task")
+                        scope_note = ("[범위] Sub-Task 는 **뺐다**(사용자가 말하지 않았다). "
+                                      "답변에서 이 사실을 한 줄로 밝히고, 포함하려면 말씀해 "
+                                      "달라고 안내하라 — 대상 집합이 곧 이 작업의 영향 범위다.")
                     jql = " AND ".join(([f'component = "{mod}"'] if mod else []) + conds)
                     try:
                         rj = T.BY_NAME["run_jql"].invoke({"jql": jql, "limit": 30}) or {}
                         rows = rj.get("items") or rj.get("tickets") or []
                         tkeys = [str(t.get("key")) for t in rows if t.get("key")]
                         if tkeys:
-                            blk = (f"[일괄 수정 대상 — JQL `{jql}` 로 {len(tkeys)}건 확정] "
+                            blk = (scope_note + "\n"
+                                   + f"[일괄 수정 대상 — JQL `{jql}` 로 {len(tkeys)}건 확정] "
                                    + ", ".join(f"{t.get('key')} \"{t.get('summary', '')[:30]}\""
                                                for t in rows[:30]))
                             merged = ((state.get("pre_survey") or "") + "\n\n" + blk).strip()
