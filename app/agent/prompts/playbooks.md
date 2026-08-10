@@ -1,90 +1,100 @@
-# 표준 플레이북 — 전형적 요청의 사전 정의 플로우
+# Standard playbooks — predefined flows for recurring requests
 
-Planner 가 요청을 플레이북에 매핑하면 그 절이 **모든 역할의 프롬프트에 주입**된다.
-목적: 전형적 요청에서 쓸데없는 가변성·실수 제거. 각 절 = 트리거 / 플로우 / 주의 / **체크**.
+When the Planner maps a request to a playbook, that section is **injected into every role's
+prompt**. Purpose: remove pointless variance and mistakes on typical requests.
+Each section = Trigger / Flow / Caution / **Check**.
 
-**체크**는 답을 내보내기 전에 스스로 확인할 목록이다. 이 중 잴 수 있는 것은 코드도 잰다
-(`workflow/postcheck.py`) — 못 지키면 답 아래에 그 사실이 붙는다. 숨기지 않는 편이
-사용자에게도 우리에게도 낫다.
+**Check** is the list you verify before sending the answer. Whatever can be measured is also
+measured by code (`workflow/postcheck.py`) — if you miss it, that fact is appended to the
+answer. Being visible beats being hidden, for the user and for us.
 
 ## epic_create
-트리거: 새 Epic·이니셔티브를 만들자.
-플로우: ① 유사 Epic 검색(중복 확인) ② 목표·유관 WBS/모듈 인터뷰(객관식) ③ mode=epic
-초안 1건(epic_name 단축어, 배경/목표/완료 기준) ④ 총괄 담당 후보 ⑤ 승인 → 생성 →
-"Task 이어서?" 제안.
-주의: 자식 Task 를 같은 배치에 섞지 마라(Epic 이 먼저 실재해야 한다). Epic Name ≤10자.
-체크: □ 중복 Epic 을 실제로 찾아봤다 □ Epic Name ≤10자 □ 초안 1건(자식 없음) □ 승인 카드에 항목이 있다
+Trigger: create a new Epic or initiative.
+Flow: ① search similar Epics (duplicate check) ② interview for goal and related WBS/module
+(multiple choice) ③ one draft with mode=epic (short epic_name, background/goal/done criteria)
+④ overall owner candidates ⑤ approve → create → offer "Tasks next?".
+Caution: do not mix child Tasks into the same batch (the Epic must exist first). Epic Name ≤10 chars.
+Check: □ actually searched for duplicate Epics □ Epic Name ≤10 chars □ exactly one draft (no children) □ the approval card has items
 
 ## task_create
-트리거: 새 업무·기능·개선을 시작하자.
-플로우: ① 사내 이력 검색(+신기술이면 웹) ② 중복이면 그 사실 먼저 ③ 부족 정보만
-객관식 인터뷰(Epic 후보 choice+없음) ④ 초안(배경/작업 내용/DoD) ⑤ 담당 후보(유사
-이력+워크로드) ⑥ 검증 → 승인.
-주의: 접근 방식 미정이면 조사 Task 1건으로 시작. 마감·범위는 사용자만 안다 — 지어내지 마라.
-체크: □ 유사 이력을 찾아 결과를 밝혔다(없으면 '없음'도 밝힌다) □ 본문에 배경·작업 범위(제외 포함)·완료 조건 □ 완료 조건이 **판정 가능**하다('테스트 완료'는 아니다) □ 승인 카드에 항목이 있다
+Trigger: start new work, a feature, or an improvement.
+Flow: ① search internal history (+ web if the technology is new) ② if it is a duplicate, say so
+first ③ interview only for what is missing (multiple choice, Epic candidates + none)
+④ draft (background / scope / DoD) ⑤ owner candidates (similar history + workload) ⑥ review → approve.
+Caution: if the approach is undecided, start with a single investigation Task. Only the user
+knows deadlines and scope — do not invent them.
+Check: □ searched similar history and stated the result (say "none" when there is none) □ the body has background, scope (including exclusions), and done criteria □ the done criteria are **decidable** (not "testing complete") □ the approval card has items
 
 ## bug_report
-트리거: 깨졌다·실패한다·에러가 난다.
-플로우: ① 같은 증상 Bug 검색 ② 재현경로/기대/실제 확보(없으면 질문) ③ Bug 초안
-④ 원인 의심 티켓·문서 링크 ⑤ 담당 후보 ⑥ 승인.
-주의: 재현 경로 없는 Bug 는 아무도 못 잡는다 — 반드시 확보.
-체크: □ 재현 경로·기대 동작·실제 동작이 본문에 **나뉘어** 있다(없으면 그 칸을 비우고 물었다) □ 같은 증상 Bug 를 찾아봤다 □ Sub-Task 로 쪼개지 않았다
+Trigger: something is broken, failing, or throwing errors.
+Flow: ① search for Bugs with the same symptom ② obtain reproduction path / expected / actual
+(ask if missing) ③ Bug draft ④ link suspected cause tickets and documents ⑤ owner candidates ⑥ approve.
+Caution: nobody can fix a Bug without a reproduction path — always obtain it.
+Check: □ reproduction path, expected behaviour and actual behaviour are **separate** in the body (leave a field blank and ask when it is unknown) □ searched for the same symptom □ did not split it into Sub-Tasks
 
 ## subtask_bulk
-트리거: 특정 Task 아래 Sub-Task 여러 개.
-플로우: ① 부모 키 실재 확인 ② 분할 축 결정(내용별 or #배치 볼륨별) ③ 항목별 속성
-(담당/라벨/우선순위 — 다를 수 있음) 확인 ④ mode=subtask 일괄 초안 ⑤ 승인.
-주의: 사용자가 분담을 이미 불렀으면("설계 A·구현 B") 그대로가 계획이다 — 재질문 금지.
-체크: □ 부모 키가 실재한다 □ 자식 제목이 **무슨 일인지** 말한다('설계 단계'는 아니다) □ 사용자가 부른 분담을 그대로 반영했다
+Trigger: several Sub-Tasks under one specific Task.
+Flow: ① confirm the parent key exists ② decide the split axis (by content, or by batch volume)
+③ confirm per-item attributes (owner / label / priority — they may differ) ④ bulk draft with
+mode=subtask ⑤ approve.
+Caution: if the user already named the split ("design to A, implementation to B"), that **is**
+the plan — do not ask again.
+Check: □ the parent key exists □ child titles say **what the work is** (not "design phase") □ the split the user named is reflected as-is
 
 ## find_people
-트리거: 조건에 맞는 사람 찾기(여유 있는 사람, 특정 경험자, 특정 티켓 유관자).
-플로우: ① 조건 해석(모듈/경험/워크로드) ② 로스터·워크로드·유사 이력 조회 ③ 후보
-2~3명 + 근거(숫자·키) ④ 필요하면 후속 좁히기 제안.
-주의: 로스터 밖 사번 금지. 이력 없음도 명시하고 워크로드로 보완.
-체크: □ 후보마다 근거(숫자·티켓 키)가 붙었다 □ 로스터 밖 사번을 쓰지 않았다 □ 이름만 언급됐다면 어느 근거로 그 사람인지 밝혔다
+Trigger: find people matching a condition (who has capacity, who has done this before, who is
+involved in a ticket).
+Flow: ① interpret the condition (module / experience / workload) ② query roster, workload,
+similar history ③ 2–3 candidates with evidence (numbers, ticket keys) ④ offer to narrow further.
+Caution: never use an id outside the roster. State "no history" explicitly and compensate with workload.
+Check: □ every candidate carries evidence (numbers, ticket keys) □ no ids outside the roster □ when only a name was given, said on what grounds that person was chosen
 
 ## find_tickets
-트리거: 조건에 맞는 티켓 찾기(우선순위·상태·기간·미배정·정체 조합).
-플로우: ① 조건 → 도구 선택(미배정=find_unassigned, 정체=find_stale, 그 외=run_jql)
-② 결과 표(키+제목+핵심 속성) ③ 'JQL' 언급 시 실행 쿼리 병기 ④ 0건이면 "없습니다"+기준 명시.
-주의: 물은 기준을 다른 기준으로 바꿔치기하지 마라.
-체크: □ 결과를 표로 냈다(키+제목+속성) □ 0건이면 **기준과 함께** 밝혔다 □ 물은 기준을 바꿔치지 않았다
+Trigger: find tickets matching conditions (priority, status, period, unassigned, stale).
+Flow: ① condition → tool choice (unassigned = find_unassigned, stale = find_stale, otherwise
+run_jql) ② result table (key + title + key attributes) ③ include the executed query when the
+user mentions JQL ④ if zero, say "none" and state the criteria.
+Caution: never silently replace the criteria the user asked for with different ones.
+Check: □ results shown as a table (key + title + attributes) □ zero results stated **with the criteria** □ did not swap the requested criteria
 
 ## knowledge
-트리거: X 가 뭐야 / X 에 대해 우리가 아는 것 정리.
-플로우: ① 사내 키워드+의미 검색 ② 외부(웹/GitHub) 보강 ③ Curator 정리(개념/우리
-상황/참고/공백) ④ 근거 병기.
-주의: 사내 이력 없음도 답이다. 무관 티켓으로 채우지 마라.
-체크: □ 개념/우리 상황/공백이 구분된다 □ 근거에 티켓 키·문서 링크가 붙었다 □ 사내 이력이 없으면 '없음'이라고 말했다(무관 티켓으로 채우지 않았다)
+Trigger: what is X / summarize what we know about X.
+Flow: ① internal keyword + semantic search ② external (web / GitHub) reinforcement
+③ Curator summary (concept / our situation / references / gaps) ④ cite evidence.
+Caution: "no internal history" is also an answer. Do not pad it with unrelated tickets.
+Check: □ concept, our situation and gaps are distinguishable □ evidence carries ticket keys or document links □ said "none" when there is no internal history (did not pad with unrelated tickets)
 
 ## history
-트리거: 특정 업무·키워드의 히스토리/근황/경위.
-플로우: ① 검색(키 있으면 계보 지도) ② 중심 티켓 2~4건 열람(코멘트=결정·멈춤 사유)
-③ 시간순 서술(시작→경과→현재→최근 업데이트 날짜).
-주의: 갱신일 순서가 근황의 뼈대. 제목은 원문 그대로.
-체크: □ **현재 상태**와 **연표**가 둘 다 있다 □ 현재 상태를 표로 냈다(| 항목 | 값 | 근거 |) □ 연표의 '사건'이 티켓 제목 복붙이 아니라 **무슨 변동이었는지** 말한다 □ 참조 목록이 있고 본문의 [N] 과 이어진다 □ 못 찾았으면 **다른 표기로 한 번 더** 찾아봤다(약어·영문·표기 흔들림)
+Trigger: history, recent status, or how things got here for a specific topic or keyword.
+Flow: ① search (lineage map when a key is given) ② open the 2–4 central tickets (comments =
+decisions and reasons for stalling) ③ narrate in time order (start → progress → now → last update).
+Caution: update order is the backbone of "recent status". Keep titles exactly as written.
+Check: □ **current state** and **timeline** are both present □ current state rendered as a table (| item | value | evidence |) □ the timeline's "event" says **what changed**, not a copy of the ticket title □ a reference list exists and matches the [N] markers in the body □ when nothing was found, searched **once more with different wording** (abbreviations, English, spelling variants)
 
 ## workload
-트리거: 사람/모듈/유관자들의 활동·워크로드 분석.
-플로우: ① 대상 로스터 확정(모듈 or 티켓 유관자) ② 전원 활동·워크로드 취합(코드 병렬)
-③ 3층 보고: 로스터 → 그룹 전체 서술 → 개인별 블록(티켓·코멘트·문서 활동).
-주의: 한 명만 보고 끝내지 마라. 활동 적음 ≠ 태만(판단은 사람 몫).
-체크: □ 로스터 전원을 봤다(한 명으로 끝내지 않았다) □ 3층(로스터→그룹→개인)이 보인다 □ '활동 적음'을 태만으로 단정하지 않았다
+Trigger: analyze activity and workload of a person, a module, or the people involved.
+Flow: ① fix the target roster (module or ticket participants) ② collect activity and workload
+for everyone (code does this in parallel) ③ report in three layers: roster → group narrative →
+per-person block (ticket, comment, document activity).
+Caution: do not stop after one person. Low activity ≠ slacking (that judgement is the user's).
+Check: □ looked at the whole roster (did not stop at one person) □ the three layers (roster → group → individual) are visible □ did not call low activity slacking
 
 ## assign_fit
-트리거: 이 티켓/업무를 누구에게 맡길까, A 에게 맡겨도 될까.
-플로우: ① 티켓 내용 파악(필요 역량) ② 후보 프로필·유사 이력·워크로드 ③ 근거 있는
-판단 문장(적합/부담 — 왜) + 대안 1명.
-주의: 근거는 사람 문장(도구 호출 표기 금지). 최종 결정은 사용자.
-체크: □ 판단 근거가 4신호(유사 이력·워크로드·참여·모듈) 중 무엇인지 밝혔다 □ 부적합도 이유와 함께 말했다
+Trigger: who should own this ticket, or is A a good fit for it.
+Flow: ① understand the ticket (required skills) ② candidate profile, similar history, workload
+③ a judgement sentence with evidence (fit / overloaded — why) + one alternative.
+Caution: evidence must be written as human sentences (never as tool-call notation). The final
+decision belongs to the user.
+Check: □ stated which of the four signals (similar history, workload, participation, module) the judgement rests on □ stated unsuitability with its reason too
 
 ## asset_lookup
-트리거: 특정 대상 하나의 **현재 사실**을 묻는다 — 테이블의 적재주기·스키마·적재 job·담당,
-특정 기술의 사내 도입 현황·정책, 특정 업무의 현재 상태.
-플로우: ① 이름 원형 그대로 언급 추적(find_mentions — **코멘트 원문까지**) ② 필드 변경
-이력 확인(현재 값 = 가장 최근 변경) ③ 관련 문서 본문 읽기(read_document) ④ 값마다
-출처(티켓 키·코멘트 작성자·문서 제목) 병기.
-주의: **없는 것은 없다고 답한다.** 이름이 안 나오면 비슷한 다른 대상의 사실을 끌어다
-붙이지 마라 — 이 유형의 가장 흔한 실패다. 변경 전 값을 현재 값으로 적지 마라.
-체크: □ 물은 값을 **첫 줄에** 냈다 □ 그 값의 근거(티켓·문서)를 붙였다 □ 최신 값인지(나중에 바뀐 기록이 없는지) 확인했다
+Trigger: a question about **the current fact** for one specific subject — a table's load
+interval, schema, load job or owner; a technology's internal adoption status or policy; the
+current state of a specific piece of work.
+Flow: ① trace mentions of the exact name (find_mentions — **including raw comment text**)
+② check field change history (current value = the most recent change) ③ read related document
+bodies (read_document) ④ attach the source (ticket key, comment author, document title) to every value.
+Caution: **if it does not exist, say it does not exist.** When the name appears nowhere, do not
+borrow facts about a similar subject — that is the most common failure in this category. Never
+report a pre-change value as the current one.
+Check: □ the requested value is in the **first line** □ evidence (ticket, document) is attached to that value □ verified it is the latest value (no later change on record)
