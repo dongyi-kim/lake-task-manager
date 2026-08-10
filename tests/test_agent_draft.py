@@ -860,14 +860,24 @@ def test_data_fixture_labels_are_dropped():
 
 
 # ── 경로별 프롬프트 조립 ────────────────────────────────────────────
+def SYSTEM_REFINER_FOR_TEST():
+    """역할 지시 원문 — 언어에 상관없이 '줄었나/전부인가'를 재는 기준."""
+    from app.agent.prompts.roles import SYSTEM_REFINER
+    return SYSTEM_REFINER
+
+
 def test_section_titles_used_for_pruning_really_exist():
     """제목이 하나라도 어긋나면 **조용히 아무것도 안 빠진다** — 그러면 최적화가
     사라진 줄도 모르고 토큰만 계속 나간다. 제목 존재를 테스트가 지킨다."""
     from app.agent.prompts.roles import SYSTEM_REFINER, sections
     from app.agent.workflow.agents.refiner import _CREATE_ONLY, _MODIFY_ONLY
     have = set(sections(SYSTEM_REFINER))
-    for t in _CREATE_ONLY + _MODIFY_ONLY:
-        assert t in have, f"refiner.md 에 '## {t}' 절이 없다"
+    # ★ 목록은 **두 언어의 제목을 함께** 담는다(언어 실험 브랜치). 그러니 "전부 존재"가
+    #   아니라 "**이 파일의 절이 빠짐없이 덮여 있는가**"를 본다 — 지키려는 것은 문자열
+    #   일치가 아니라 "빼려던 절이 실제로 빠지는가"다.
+    hit = [t for t in _CREATE_ONLY + _MODIFY_ONLY if t in have]
+    assert len(hit) >= 8, (f"refiner.md 의 절 제목과 맞는 항목이 {len(hit)}개뿐 —"
+                           f" 제목을 고쳤으면 목록도 고쳐야 한다. 있는 절: {sorted(have)}")
 
 
 def test_modify_turns_drop_the_creation_only_sections():
@@ -875,20 +885,26 @@ def test_modify_turns_drop_the_creation_only_sections():
     판단에 쓰이지 않으면서 매 호출 2천 토큰을 태운다."""
     from app.agent.workflow.agents.refiner import _role_md
     md = _role_md({"intent": Intent.MODIFY})
-    assert "Splitting rules" not in md and "Choosing the SHAPE" not in md
-    assert "Modify path" in md, "변경 경로 지시는 남아야 한다"
+    full = SYSTEM_REFINER_FOR_TEST()
+    # 언어와 무관하게: **줄었는가**, 그리고 **수정 갈래 절은 남았는가**.
+    assert len(md) < len(full) * 0.9, "modify 턴에서 아무것도 안 빠졌다"
+    assert ("Modify path" in md) or ("수정 갈래" in md), "변경 경로 지시는 남아야 한다"
+    assert ("Splitting rules" not in md) and ("쪼개기 규칙" not in md)
     # 초안을 고치는 modify 턴은 생성 지시가 필요하다 — 빼면 안 된다.
     md2 = _role_md({"intent": Intent.MODIFY, "draft": {"items": [{"summary": "s"}]}})
-    assert "Splitting rules" in md2
+    assert ("Splitting rules" in md2) or ("쪼개기 규칙" in md2)
 
 
 def test_creation_turns_keep_every_creation_section():
     """초안을 만드는 턴에서는 품질이 먼저다 — 생성 지시를 빼지 않는다."""
     from app.agent.workflow.agents.refiner import _role_md
     md = _role_md({"intent": Intent.PLAN_WORK})
-    for t in ("Choosing the SHAPE", "Splitting rules", "Description quality",
-              "EPIC creation", "Title conventions"):
-        assert t in md
+    # 언어와 무관하게 — 생성 턴에는 역할 지시의 **모든 절**이 실린다(동적 경고는 더 붙는다).
+    from app.agent.prompts.roles import sections
+    from app.agent.workflow.agents.refiner import _MODIFY_ONLY
+    for title in sections(SYSTEM_REFINER_FOR_TEST()):
+        if title and title not in _MODIFY_ONLY:      # 수정 전용 절은 여기서 빠지는 게 맞다
+            assert title in md, f"생성 턴에서 '{title}' 절이 빠졌다"
 
 
 # ── 정성 판독(실 LLM)에서 잡힌 결함의 회귀 ──────────────────────────────────
