@@ -34,6 +34,9 @@ def test_comment_context_leads_with_the_recent_conversation():
     ctx = C._ticket_context(PROG, "comment")
     assert "최근 코멘트" in ctx and "skcc.x1402" in ctx
     assert "하위 2/3 완료" in ctx and "DL-9092" in ctx
+    assert "명시적 미완료(완료로 쓰지 말 것)" in ctx
+    assert "성능 측정" in ctx and "사용 가이드 작성" in ctx
+    assert "DL-9095" in ctx and "미완료: In Progress" in ctx
 
 
 def test_description_context_carries_the_current_body_instead_of_chatter():
@@ -77,6 +80,71 @@ def test_fenced_output_is_unwrapped():
     """```html 로 감싸 오는 모델이 있다 — 그대로 꽂으면 에디터에 백틱이 남는다."""
     assert C._unfence("```html\n<p>안녕</p>\n```") == "<p>안녕</p>"
     assert C._unfence("<p>안녕</p>") == "<p>안녕</p>"
+
+
+def test_need_info_signal_survives_inline_code_and_html_wrappers():
+    """실모델이 NEED_INFO를 `...` 또는 <code>...</code>로 감싸도 성공 본문이 아니다."""
+    assert C._need_info("`NEED_INFO: 검토 대상을 알려 주세요`") == "검토 대상을 알려 주세요"
+    assert C._need_info("<p><code>NEED_INFO: 목적을 한 줄 적어 주세요</code></p>") == \
+        "목적을 한 줄 적어 주세요"
+
+
+def test_explicitly_remaining_work_cannot_be_changed_to_completed():
+    ctx = ("[DL-9090] 작업 — In Progress\n"
+           "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 사용 가이드 작성")
+    assert C._status_conflicts("<p>성능 측정이 완료되었습니다.</p>", ctx) == ["성능 측정"]
+    assert C._status_conflicts("<p>성능 측정을 진행할 예정입니다.</p>", ctx) == []
+    assert C._status_conflicts("<p>성능 측정 완료 여부를 검토해 주세요.</p>", ctx) == []
+
+
+def test_future_dod_is_not_mistaken_for_a_current_completion_claim():
+    ctx = "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 사용 가이드 작성"
+    unchecked = ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                 '<li data-checked="false">성능 측정 완료</li></ul>')
+    assert C._status_conflicts(unchecked, ctx) == []
+    # 체크된 조건이나 일반 본문은 현재 완료를 나타내므로 계속 차단한다.
+    checked = ('<ul data-type="taskList">'
+               '<li data-checked="true">성능 측정 완료</li></ul>')
+    assert C._status_conflicts(checked, ctx) == ["성능 측정"]
+
+
+def test_compose_blocks_a_status_claim_that_conflicts_with_materials(monkeypatch):
+    """경고 토스트 뒤 삽입이 아니라 서버 성공 응답 자체를 막는다."""
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "<p>성능 측정이 완료되었습니다.</p>"
+
+    class _Llm:
+        def invoke(self, _messages):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: (
+        "[DL-9090] 작업 — In Progress\n"
+        "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 문서 정리"))
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    r = C.compose(PROG, "comment", "상태 공유")
+    assert r["ok"] is False and r.get("contentConflict") is True
+    assert "성능 측정" in r["error"] and "삽입하지 않았" in r["error"]
+
+
+def test_compose_recognizes_backticked_need_info_as_feedback(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "`NEED_INFO: 어떤 결과를 검토할지 알려 주세요`"
+
+    class _Llm:
+        def invoke(self, _messages):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "[DL-9090] 작업 — In Progress")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    r = C.compose(PROG, "comment", "검토 요청")
+    assert r["ok"] is False and r.get("needsInfo") is True
+    assert "어떤 결과" in r["error"]
 
 
 def test_fabricated_keys_come_back_as_a_warning_not_silently():

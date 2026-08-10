@@ -55,14 +55,15 @@ CASES = [
      lambda r: (not r.get("ok")) and r.get("needsInfo")
      and any(w in (r.get("error") or "") for w in ("무엇", "어떤", "대상", "목적", "알려", "적어"))),
 
-    ("CMP5", "모호하지 않음 — 티켓 맥락이 있으면 짧은 프롬프트로도 쓴다(과잉 NEED_INFO 금지)", dict(
+    ("CMP5", "상태 공유 — 짧은 프롬프트로 쓰되 명시적 미완료를 완료로 뒤집지 않는다", dict(
         ticket_key="DL-9090", kind="comment", prompt="상태 공유"),
-     lambda r: r.get("ok"), ),
+     lambda r: r.get("ok")
+     and not re.search(r"성능\s*측정.{0,12}완료(?:되|됐|했|함|됨)", _txt(r["html"]))),
 
     ("CMP6", "멘션·키 — 담당 멘션은 뱃지 마크업, 키는 앵커(뱃지 렌더)로", dict(
         ticket_key="DL-9090", kind="comment",
         prompt="담당자를 멘션해서 성능 측정 결과 검토 요청 코멘트 써줘"),
-     lambda r: r.get("ok") and ('data-type="mention"' in r["html"] or "@" in _txt(r["html"]))),
+     lambda r: r.get("ok") and 'data-type="mention"' in r["html"]),
 
     ("CMP7", "무관 요청 — 티켓과 무관한 글은 짓지 말고 보완 요청 또는 맥락 확인", dict(
         ticket_key="DL-9090", kind="comment", prompt="김치찌개 레시피 알려줘"),

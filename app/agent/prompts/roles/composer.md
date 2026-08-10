@@ -37,6 +37,11 @@ Two failures seen in practice — do not repeat them:
 When the user's seed text (what they already typed) conflicts with the materials, keep the
 user's intent and fix only the facts.
 
+Preserve the **subject and state** of every fact. A number reported for a linked ticket or a
+document excerpt is not automatically the current ticket's result. Never turn an item marked
+`명시적 미완료`, 남은, 예정, 진행 중, or 미완료 into a completed result. In particular,
+do not transfer a linked Bug's latency improvement to an unfinished performance measurement.
+
 ## By editor kind
 
 **description** — this IS the ticket body. Follow the house guide exactly, in this order:
@@ -67,6 +72,11 @@ make 작업 범위 items consistent with the split instead.
 
 No headings for a 3-line comment. No "안녕하세요" preamble, no "감사합니다" closer unless
 the user's seed already has that tone.
+
+If the user asks to mention the assignee and the materials contain `담당 사번`, use that id as
+`[~사번]`. A review request can be written before the review result exists: ask them to review
+the available target or result when ready. Do not answer NEED_INFO merely because the review
+outcome is not known yet.
 
 **transition** — 상태를 바꾸며 남기는 말이다. 왜 넘기는지 한두 문장이면 충분하다.
 

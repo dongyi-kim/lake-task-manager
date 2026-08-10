@@ -15,8 +15,41 @@
 
 from __future__ import annotations
 
+import html as _html
+import re
+
 MAX_SEED = 6000        # 사용자가 쓰던 글. 이보다 길면 앞부분만 — 시드는 의도 파악용이다
 MAX_CONTEXT = 5000     # 티켓 맥락. 프롬프트가 커지면 응답이 느려지고 커서는 계속 멈춰 있다
+
+
+def _plain_text(value: str) -> str:
+    """HTML/엔티티를 걷은 비교용 평문. 모델 출력과 자료의 상태를 대조할 때 쓴다."""
+    return _html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
+
+
+def _remaining_items(value: str) -> list[str]:
+    """자료가 명시한 ``남은 건/남은 일``을 항목 단위로 보존한다.
+
+    모델이 관련 문서의 완료 수치를 현재 티켓 결과로 옮기면서, 같은 자료의 "남은 일"을
+    완료로 뒤집은 실측 사고(CMP5)가 있었다. 의미 판단 전체를 정규식에 맡기지 않고 자료가
+    직접 미완료라고 표시한 짧은 구절만 뽑는다.
+    """
+    out: list[str] = []
+    plain = _plain_text(value)
+    for match in re.finditer(r"남은\s*(?:건|일)\s*(?:은|:)?\s*([^\n.]+)", plain):
+        raw = re.split(r"\bh[1-6]\.\s*|(?:미결|참고)\s*:", match.group(1), 1)[0]
+        for chunk in re.split(r"\s*[,;]\s*", raw):
+            chunk = re.sub(r"\([^)]*\)", "", chunk).strip(" -*:;")
+            chunk = re.sub(r"(?:입니다|이다|남았습니다|예정입니다)$", "", chunk).strip()
+            # 한국어 접속 조사(성능 측정과 문서 정리). '결과 정리'의 한 글자 '결'처럼
+            # 단어 내부의 과를 자르지 않도록 왼쪽이 두 글자 이상일 때만 둘로 나눈다.
+            pair = re.match(r"^(.{2,40}?)(?:과|와)\s+(.{2,60})$", chunk)
+            pieces = list(pair.groups()) if pair else [chunk]
+            for item in pieces:
+                item = item.strip(" -*:;")
+                if 2 <= len(item) <= 80 and item not in out:
+                    out.append(item)
+    return out
 
 
 def _ticket_context(key: str, kind: str) -> str:
@@ -33,9 +66,15 @@ def _ticket_context(key: str, kind: str) -> str:
         parts.append(f'[{r["key"]}] "{r.get("title", "")}" — {r.get("status")}'
                      f' · 담당 {r.get("assignee") or "없음"}'
                      f' · 마감 {r.get("due") or "없음"}')
+        remaining = _remaining_items("\n".join(
+            [str(m.get("text") or "") for m in (r.get("comments") or [])]
+            + [str(d.get("excerpt") or "") for d in (r.get("documents") or [])]))
+        if remaining:
+            parts.append("명시적 미완료(완료로 쓰지 말 것): " + " | ".join(remaining))
         if r.get("children"):
             parts.append(f'하위 {r.get("children_done")} 완료: ' + ", ".join(
-                f'{c["key"]} "{c.get("title", "")}"{"(완료)" if c.get("done") else ""}'
+                f'{c["key"]} "{c.get("title", "")}"'
+                f'{"(완료)" if c.get("done") else "(미완료: " + str(c.get("status") or "상태 미상") + ")"}'
                 for c in r["children"][:6]))
         if r.get("links"):
             parts.append("연결: " + ", ".join(
@@ -130,6 +169,10 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
   대부분 정해진다. 티켓 맥락이 있으면 프롬프트가 짧아도 NEED_INFO 없이 쓴다.
 - 티켓 맥락이 있으면 세부 수치·결과가 없어도 쓴다 — 검토 요청·확인 요청·진행 질문
   코멘트는 결과를 몰라도 쓸 수 있는 글이다. 모르는 세부는 비워 두거나 일반적 표현으로.
+- 사용자가 담당자를 멘션해 검토를 요청하면, 자료 첫 줄의 `담당 사번`을 `[~사번]`으로 쓰고
+  확인할 대상과 요청을 적는다. 검토 결과가 아직 없다는 이유로 NEED_INFO를 내지 않는다.
+- **사실의 주어와 상태를 바꾸지 마라.** 연결 티켓·관련 문서의 수치가 현재 티켓의 결과라는
+  뜻은 아니다. 자료의 `명시적 미완료` 항목과 `남은/예정/진행 중`인 일은 완료로 쓰지 않는다.
 - **자식 Sub-Task 가 있거나(자료의 '하위' 목록) 시드·프롬프트에 분할 계획이 보이면**,
   본문은 '무엇을 왜'(전체 범위·전체 DoD)를 맡는다 — 실행 세부는 자식의 몫이니 자식
   제목을 본문에 반복하지 말고, 범위 항목이 자식들과 정합하게 쓴다(knowledge/07 역할표).
@@ -153,10 +196,8 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     html = _unfence(html)
     # ── 피드백 루프: 모호해서 못 쓴다는 신호 — 일반론을 지어내는 것보다 낫다(사용자 요청).
     #    UI 는 팝업을 유지한 채 이 문구를 보여 주고 프롬프트·시드 보완을 유도한다.
-    import re as _re0
-    ni = _re0.match(r"\s*(?:<[^>]+>\s*)*NEED_INFO:\s*(.+?)(?:</|$)", html, _re0.S)
-    if ni:
-        ask = _re0.sub(r"<[^>]+>", "", ni.group(1)).strip()[:300]
+    ask = _need_info(html)
+    if ask:
         return {"ok": False, "needsInfo": True,
                 "error": "이대로는 정확한 글을 쓸 수 없습니다 — " + ask}
     if not html:
@@ -164,6 +205,15 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     # 언급은 전부 **뱃지**여야 한다(사용자 지시: plain text 금지). 모델이 평문으로 남긴
     # 티켓 키·[~사번] 을 에디터가 뱃지로 파싱하는 마크업으로 바꾼다 — 보장은 코드가 한다.
     html = _badgeify(html)
+
+    # 의미 후검증 — 자료가 명시적으로 '남은 일'이라고 한 대상을 완료로 뒤집은 문장은
+    # 사용자가 자기 이름으로 게시하기 전에 차단한다. 경고만 띄우고 삽입하면 토스트를 놓친
+    # 사용자가 그대로 저장할 수 있으므로, 이 충돌은 성공 응답으로 내리지 않는다.
+    conflicts = _status_conflicts(html, ctx)
+    if conflicts:
+        return {"ok": False, "contentConflict": True,
+                "error": ("AI 생성문이 현재 자료와 충돌해 삽입하지 않았습니다 — 자료상 아직 "
+                          "남은 항목을 완료로 썼습니다: " + ", ".join(conflicts[:4]))}
 
     # 접지 — 챗과 **같은 검사**를 태운다. 에디터에 꽂히는 글이라고 날조를 봐줄 이유가 없다.
     note = ""
@@ -185,6 +235,42 @@ def _re_strip(html: str) -> str:
     """태그를 벗긴 실질 텍스트 — 빈 <p></p> 시드를 '내용 있음'으로 오판하지 않기 위해."""
     import re
     return re.sub(r"<[^>]+>", "", html or "").strip()
+
+
+def _need_info(value: str) -> str:
+    """모델의 보완 요청 신호를 HTML·인라인 코드 래퍼와 무관하게 읽는다."""
+    plain = _plain_text(_unfence(value)).strip().strip("`'\"“”‘’ ")
+    match = re.match(r"NEED_INFO:\s*(.+)", plain, re.S | re.I)
+    return match.group(1).strip().strip("`'\"“”‘’ ")[:300] if match else ""
+
+
+def _status_conflicts(rendered: str, context: str) -> list[str]:
+    """명시적 미완료 항목을 완료로 단정한 생성문을 찾는다."""
+    marker = re.search(r"명시적 미완료\(완료로 쓰지 말 것\):\s*([^\n]+)", context or "")
+    if not marker:
+        return []
+    # DoD의 "성능 측정 완료"는 **현재 상태 주장**이 아니라 미래 완료 기준이다. 미체크
+    # task item과 완료 조건 절을 검사하면 올바른 부모 본문까지 거절한다(CMP8 실측).
+    claims = re.sub(
+        r"<li\b[^>]*data-checked=[\"']?false[\"']?[^>]*>.*?</li>", " ",
+        rendered or "", flags=re.S | re.I)
+    claims = re.sub(
+        r"<h([1-6])\b[^>]*>\s*(?:완료\s*조건|DoD).*?</h\1>.*?(?=<h[1-6]\b|$)",
+        " ", claims, flags=re.S | re.I)
+    text = re.sub(r"\s+", " ", _plain_text(claims)).strip()
+    done = (r"(?:완료(?:되었|됐|했|함|됨|된|되었습니다|됐습니다|했습니다)|"
+            r"완료(?=\s*(?:[.!?]|$))|"
+            r"끝났(?:습니다)?|마쳤(?:습니다)?)")
+    bad = []
+    for raw in marker.group(1).split("|"):
+        topic = raw.strip()
+        if not topic:
+            continue
+        pattern = (re.escape(topic)
+                   + r"(?:은|는|이|가|을|를)?\s*(?:이미\s*)?" + done)
+        if re.search(pattern, text):
+            bad.append(topic)
+    return bad
 
 
 def _badgeify(html: str) -> str:
