@@ -353,3 +353,82 @@ def test_env_injected_settings_skip_the_gate(monkeypatch, tmp_path):
                         lambda f, *a: "sk-injected" if f == "openaiApiKey" else "")
     monkeypatch.setattr(C._secrets, "env_overrides", lambda: {"openaiApiKey": "OPENAI_API_KEY"})
     assert C.llm_ready()[0], "환경변수 주입 환경까지 잠그면 안 된다"
+
+
+def test_compat_sends_bearer_and_the_same_extra_headers_everywhere(monkeypatch):
+    """호환 provider 의 인증은 **세 호출에 똑같이** 걸려야 한다.
+
+    실측(스텁 서버가 받은 헤더를 찍어 확인): `Authorization: Bearer <key>` 는 세 곳 다
+    나가는데 **추가 헤더는 임베딩에만 빠져 있었다.** 게이트웨이가 X-Auth 같은 헤더로 팀을
+    가르는 환경이면 **채팅은 되는데 임베딩만 401/403** 이 나고, 그 증상은 '모델 권한 문제'로
+    읽힌다 — 실제 원인은 인증 헤더 누락이다.
+
+    ★ SDK 내부 구조를 들여다보지 않고 **실제로 한 번씩 쏴서 받은 헤더**를 본다.
+      내부 필드는 버전마다 바뀌지만 "무엇이 서버에 도착했나"는 안 바뀐다.
+    """
+    import http.server
+    import json as _json
+    import socket
+    import threading
+
+    import app.agent.config as C
+
+    seen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def _j(self, obj):
+            b = _json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def _note(self):
+            seen.append((self.path, {k.lower(): v for k, v in self.headers.items()}))
+
+        def do_GET(self):
+            self._note()
+            self._j({"object": "list", "data": [{"id": "m1", "object": "model"}]})
+
+        def do_POST(self):
+            self._note()
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self.path.endswith("/embeddings"):
+                self._j({"object": "list",
+                         "data": [{"object": "embedding", "index": 0, "embedding": [0.1] * 4}]})
+            else:
+                self._j({"id": "c", "object": "chat.completion",
+                         "choices": [{"index": 0, "finish_reason": "stop",
+                                      "message": {"role": "assistant", "content": "pong"}}]})
+
+        def log_message(self, *a):
+            pass
+
+    sk = socket.socket()
+    sk.bind(("127.0.0.1", 0))
+    port = sk.getsockname()[1]
+    sk.close()
+    srv = http.server.HTTPServer(("127.0.0.1", port), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+        monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", f"http://127.0.0.1:{port}/v1")
+        monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "k-123456")
+        monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "m1")
+        monkeypatch.setenv("LAKE_AGENT_COMPAT_EMBED", "m1")
+        monkeypatch.setenv("LAKE_AGENT_COMPAT_HEADERS", '{"X-Auth": "team-token"}')
+
+        C.list_models(timeout=5)
+        C.get_llm(temperature=0, max_tokens=3).invoke("hi")
+        C.get_embeddings().embed_query("hi")
+    finally:
+        srv.shutdown()
+
+    paths = {p for p, _ in seen}
+    assert any(p.endswith("/models") for p in paths), paths
+    assert any(p.endswith("/chat/completions") for p in paths), paths
+    assert any(p.endswith("/embeddings") for p in paths), paths
+    for path, h in seen:
+        assert h.get("authorization") == "Bearer k-123456", (path, h.get("authorization"))
+        assert h.get("x-auth") == "team-token", f"{path} 에 추가 헤더가 안 실렸다"

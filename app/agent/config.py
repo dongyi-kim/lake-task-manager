@@ -408,8 +408,13 @@ def get_embeddings(**kwargs):
     if p == "openai":
         return OpenAIEmbeddings(api_key=_secrets.get("openaiApiKey"),
                                 model=embed_model(), **kwargs)
+    # ★ **추가 헤더를 여기도 보낸다.** 채팅·모델목록에는 실리는데 임베딩에만 안 실려 있었다
+    #   (실측: 스텁 서버가 받은 헤더를 찍어 보고 발견). 게이트웨이가 X-Auth 같은 헤더로
+    #   팀을 가르는 환경이면 **채팅은 되는데 임베딩만 401/403** 이 나고, 그 증상은 모델
+    #   권한 문제로 읽힌다. 같은 인증은 같은 provider 의 모든 호출에 똑같이 걸려야 한다.
     return OpenAIEmbeddings(api_key=_secrets.get("compatApiKey") or "unused",
                             base_url=compat_base(),
+                            default_headers=_compat_headers() or None,
                             model=embed_model(), **kwargs)
 
 
@@ -693,19 +698,24 @@ def diagnose(timeout: float = 30.0) -> dict:
     key = ""
     if p == "aoai":
         base, key = _secrets.get("aoaiEndpoint"), _secrets.get("aoaiApiKey")
-        out["targets"] = {"endpoint": base, "api-version": api_version(),
+        out["targets"] = {"인증 방식": "api-key: <API 키> (Azure 규격 — Bearer 아님)",
+                          "endpoint": base, "api-version": api_version(),
                           "url(chat)": f"{(base or '').rstrip('/')}/openai/deployments/"
                                        f"{chat_model('complex') or '(비어 있음)'}/chat/completions"}
     elif p == "openai_compat":
         base, key = compat_base(), _secrets.get("compatApiKey")
-        out["targets"] = {"base_url(입력값)": _secrets.get("compatBaseUrl"),
+        # 인증이 **어떤 꼴로** 나가는지 못 박아 보여 준다 — 게이트웨이가 Bearer 가 아니라
+        # 자체 헤더를 요구하는 경우가 있고, 그때는 '추가 헤더'에 넣어야 한다.
+        out["targets"] = {"인증 방식": "Authorization: Bearer <API 키>",
+                          "base_url(입력값)": _secrets.get("compatBaseUrl"),
                           "base_url(실제 사용)": base,
                           "url(chat)": f"{base}/chat/completions",
                           "url(models)": f"{base}/models",
                           "추가 헤더": sorted(_compat_headers().keys()) or "(없음)"}
     elif p == "openai":
         key = _secrets.get("openaiApiKey")
-        out["targets"] = {"base_url": "https://api.openai.com/v1"}
+        out["targets"] = {"인증 방식": "Authorization: Bearer <API 키>",
+                          "base_url": "https://api.openai.com/v1"}
     out["targets"]["api key"] = (f"…{key[-4:]} (길이 {len(key)})" if key else "(없음)")
 
     # ★ 세 이름을 **각각** 보인다. "골랐는데 안 된다"의 대부분이 여기서 갈린다.
