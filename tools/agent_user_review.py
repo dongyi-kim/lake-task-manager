@@ -180,9 +180,14 @@ def _facts(text: str) -> dict:
     try:
         from app.agent.workflow.grounding import check
         r = check(text) or {}
-        out["코드 검증"] = {"날조된 키": r.get("fake_keys") or [],
-                          "제목이 틀린 키": r.get("wrong_titles") or {},
-                          "없는 사람": r.get("fake_people") or []}
+        # ★ **깨끗하면 '이상 없음' 한 줄로 말한다.** 예전엔 빈 배열을 그대로 실었는데,
+        #   평가자가 `"날조된 키": []` 를 보고 "검증이 안 됐다"며 blocker 를 매겼다
+        #   (첫 실행 blocker 6건 중 3건이 이 오탐이었다). 빈 그릇은 사람에게도 모델에게도
+        #   "없음"이 아니라 "모름"으로 읽힌다 — 판정 결과는 **문장으로** 줘야 한다.
+        bad = {k: v for k, v in (("날조된 키", r.get("fake_keys") or []),
+                                 ("제목이 틀린 키", r.get("wrong_titles") or {}),
+                                 ("없는 사람", r.get("fake_people") or [])) if v}
+        out["코드 검증"] = bad or "이상 없음 — 답변의 티켓 키·제목·인명이 실물과 일치한다"
     except Exception as e:
         out["코드 검증"] = {"오류": str(e)[:120]}
     try:
@@ -193,9 +198,10 @@ def _facts(text: str) -> dict:
             f = (c.get_issue(k) or {}).get("fields") or {}
             real[k] = {"실제 제목": f.get("summary"),
                        "상태": (f.get("status") or {}).get("name")} if f else "존재하지 않음"
-        out["언급된 키의 실물"] = real
+        # 대조용 참고 자료지 결함 목록이 아니다 — 이름으로 그것을 분명히 한다.
+        out["[참고] 언급된 키의 실제 제목·상태 (대조용)"] = real or "언급된 티켓 키 없음"
     except Exception as e:
-        out["언급된 키의 실물"] = {"오류": str(e)[:120]}
+        out["[참고] 언급된 키의 실제 제목·상태 (대조용)"] = {"오류": str(e)[:120]}
     return out
 
 
