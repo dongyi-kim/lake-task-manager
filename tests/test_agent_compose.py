@@ -130,7 +130,8 @@ def test_markdown_would_not_survive_so_the_prompt_forbids_it():
 def test_composer_prompt_states_the_rendering_rules():
     """규칙이 문서에만 있고 프롬프트에 없으면 모델은 모른다."""
     from app.agent.prompts.roles import SYSTEM_COMPOSER
-    assert "NEVER markdown" in SYSTEM_COMPOSER
+    # 규칙의 존재를 본다 — 문구는 언어 실험 브랜치에서 달라질 수 있다.
+    assert ("NEVER markdown" in SYSTEM_COMPOSER) or ("마크다운 금지" in SYSTEM_COMPOSER)
     assert "[~사번]" in SYSTEM_COMPOSER
     assert "taskList" in SYSTEM_COMPOSER
 

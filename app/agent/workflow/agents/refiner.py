@@ -2494,12 +2494,23 @@ def _module_pool(item: dict, fallback: str) -> list:
 
 # 경로별로 **안 쓰이는** 역할 지시 절. 제목은 refiner.md 의 `## …` 과 정확히 같아야 한다
 # (오타는 조용히 아무것도 안 빼므로, 아래 테스트가 제목 존재를 지킨다).
+# ★ 언어 실험(exp/prompts-ko)에서 드러난 것: **절 제목은 코드가 잡고 있는 손잡이다.**
+#   제목을 번역하면 이 목록이 조용히 아무것도 못 빼고, 그러면 modify 턴에 생성 지시가
+#   통째로 실린다(토큰만 늘고 판단은 안 바뀐다). 그래서 **두 언어의 제목을 함께** 둔다 —
+#   어느 쪽이 오든 같은 절이 빠진다.
 _CREATE_ONLY = ["Choosing the SHAPE — decide this before writing anything",
                 "Splitting rules", "Description quality (the draft IS the ticket)",
                 'EPIC creation (mode="epic")', 'Bulk Sub-Task interviews (mode="subtask")',
                 "Pasted meeting notes / lists", "Title conventions",
-                "The TOPIC is the user's original request — guard it"]
-_MODIFY_ONLY = ["Comment bodies (modify path)", "Modify path (existing tickets)"]
+                "The TOPIC is the user's original request — guard it",
+                # 한글판(exp/prompts-ko)
+                "모양 고르기 — 아무것도 쓰기 전에 이것부터 정한다",
+                "쪼개기 규칙", "본문 품질 (초안이 곧 티켓이다)",
+                'Epic 생성 (mode="epic")', '일괄 Sub-Task 인터뷰 (mode="subtask")',
+                "붙여 넣은 회의록 · 목록", "제목 규약",
+                "주제는 **사용자의 원 요청**이다 — 지켜라"]
+_MODIFY_ONLY = ["Comment bodies (modify path)", "Modify path (existing tickets)",
+                "코멘트 본문 (수정 갈래)", "수정 갈래 (기존 티켓)"]
 
 
 def _role_md(state) -> str:
