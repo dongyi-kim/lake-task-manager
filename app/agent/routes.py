@@ -124,6 +124,20 @@ def api_models():
     return JSONResponse(_cfg.list_models())
 
 
+class _VerifyBody(BaseModel):
+    models: list = []
+
+
+@router.post("/models/verify")
+def api_models_verify(body: _VerifyBody):
+    """후보 모델을 하나씩 실제로 불러 본다 — **권한 없는 것을 골라내기 위해서**.
+
+    `/models` 와 나눈 이유: 이건 모델 수만큼 **과금되는 호출**이다. 목록을 보여 주는 일이
+    조용히 N 번의 요청을 일으키면 안 된다 — 사용자가 버튼을 눌렀을 때만 돈다.
+    """
+    return JSONResponse(_cfg.verify_models(body.models))
+
+
 @router.get("/index")
 def api_index_stats():
     """RAG 색인 현황. 규칙 문서가 몇 조각인지, 티켓을 몇 건 쌓았는지."""

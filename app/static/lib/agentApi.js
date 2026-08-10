@@ -46,6 +46,8 @@ export const agentApi = {
   probe: () => post("/api/agent/probe", {}),
   indexStats: () => getJson("/api/agent/index"),
   models: () => getJson("/api/agent/models"),
+  // 권한 확인 — 모델 수만큼 **실제 호출**이 나간다. 버튼을 눌렀을 때만 부른다.
+  verifyModels: (models) => post("/api/agent/models/verify", { models }),
   resetIndex: () => post("/api/agent/index/reset", {}),
 
   ask: (body) => post("/api/agent/chat", body),

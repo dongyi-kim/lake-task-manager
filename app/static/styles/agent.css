@@ -728,3 +728,6 @@
 .aq-card.aq-defer { color:var(--muted); border-style:dashed; }
 .aq-card.aq-defer em { font-style:normal; margin-left:6px; font-size:11px; color:var(--muted-2); }
 .aq-card.aq-defer:hover { border-color:var(--accent); color:var(--text); }
+
+/* 목록이 비었을 때도 드롭다운은 뜬다 — 버튼이 먹통으로 보이지 않게(사용자 지적). */
+.ag-combo-empty { padding:8px 10px; font-size:12px; color:var(--muted); white-space:nowrap; }

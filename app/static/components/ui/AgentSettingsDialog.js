@@ -44,7 +44,10 @@ export default {
       // (목록은 참고이지 제약이 아니다).
       models: { chat: [], embed: [], error: "" },
       modelsBusy: false,
+      // 권한 확인 결과 — { ok:[...], denied:{name:사유} }. 누르기 전엔 null.
+      verify: null, verifyBusy: false,
       comboOpen: "",            // "chat" | "embed" | "" — 열려 있는 모델 드롭다운
+      comboAll: false,          // ▾ 로 열었나(전체) vs 타이핑 중인가(걸러 보기)
       // 실행 환경(mock/local/prod) — provider 목록을 가리는 데 쓴다. 아래 providers() 참고.
       env: "",
       // ── 인증 변경 팝업 ──────────────────────────────────────────────
@@ -113,11 +116,15 @@ export default {
       this.loadModels();
     },
 
-    /** 보이는 콤보박스 — datalist 는 화살표가 없어 목록이 있는지조차 안 보인다(사용자 지적).
-     *  ▾ 를 누르면 전체 목록, 타이핑하면 걸러진 목록. 직접 입력도 그대로 유효하다. */
+    /** ▾ 버튼 = **전체 목록 열기**. 값이 들어 있어도 걸러내지 않는다(사용자 지적).
+     *  예전엔 comboOpts 가 늘 입력값으로 걸러서, 목록에 없는 이름을 직접 쳐 넣었거나
+     *  우리가 걸러 낸 모델을 쓰고 있으면 후보가 0개가 되고 **드롭다운이 아예 안 떴다** —
+     *  버튼이 고장 난 것처럼 보인다. 거르기는 '타이핑 중'의 기능이지 '열기'의 기능이 아니다. */
     toggleCombo(kind) {
-      this.comboOpen = this.comboOpen === kind ? "" : kind;
-      if (this.comboOpen && !this.models.chat.length && !this.modelsBusy) this.loadModels();
+      const open = this.comboOpen !== kind;
+      this.comboOpen = open ? kind : "";
+      this.comboAll = open;                 // 버튼으로 열면 전체
+      if (open && !this.models.chat.length && !this.modelsBusy) this.loadModels();
     },
     comboVal(kind) {
       return kind === "chat" ? this.chatModel
@@ -125,9 +132,14 @@ export default {
     },
     comboOpts(kind) {
       // simple 도 채팅 모델 목록에서 고른다 — 같은 provider 의 같은 종류다.
-      const list = kind === "embed" ? this.models.embed : this.models.chat;
+      let list = kind === "embed" ? this.models.embed : this.models.chat;
+      // 권한 확인을 했으면 **못 쓰는 것은 후보에서 뺀다** — 고르고 나서 403 을 보는 것보다
+      // 애초에 안 보이는 편이 낫다. 확인 전에는 서버가 준 그대로 둔다(짐작으로 안 지운다).
+      if (kind !== "embed" && this.verify && (this.verify.ok || []).length) {
+        list = list.filter((m) => this.verify.ok.includes(m));
+      }
       const cur = this.comboVal(kind).trim().toLowerCase();
-      if (!cur || list.some((m) => m.toLowerCase() === cur)) return list;
+      if (this.comboAll || !cur || list.some((m) => m.toLowerCase() === cur)) return list;
       return list.filter((m) => m.toLowerCase().includes(cur));
     },
     pickModel(kind, m) {
@@ -140,9 +152,20 @@ export default {
     async loadModels() {
       if (this.modelsBusy) return;
       this.modelsBusy = true;
+      this.verify = null;                  // 목록이 바뀌면 예전 권한 결과는 무효다
       try { this.models = await agentApi.models(); }
       catch (e) { this.models = { chat: [], embed: [], error: (e && e.message) || "조회 실패" }; }
       finally { this.modelsBusy = false; }
+    },
+
+    /** 후보 모델을 **하나씩 실제로 불러 본다** — 게이트웨이가 권한을 안 알려 줄 때.
+     *  자동으로 안 돈다: 모델 수만큼 호출이 나가고 그건 돈과 시간이다. */
+    async verifyModels() {
+      if (this.verifyBusy) return;
+      this.verifyBusy = true;
+      try { this.verify = await agentApi.verifyModels(this.models.chat || []); }
+      catch (e) { this.verify = { ok: [], denied: {}, error: (e && e.message) || "확인 실패" }; }
+      finally { this.verifyBusy = false; }
     },
 
     /** 이미 저장된 키는 자리표시자로만 보인다 — 다시 칠 필요가 없어야 한다. */
@@ -292,6 +315,15 @@ export default {
                    :value="hasKey(f[0]) ? keyShown(f[0]) : ''"
                    :placeholder="hasKey(f[0]) ? '' : (f[2] || '아직 설정되지 않았습니다')">
           </div>
+          <!-- ★ 환경변수가 이기고 있으면 **그 사실을 말한다**(사용자 지적: "저장/반영되는 거
+               맞니? 수상해"). 저장은 됐는데 가려진 상태를 안 알려 주면, 화면에 보이는 값과
+               실제로 쓰이는 값이 다른 채로 사용자가 원인을 찾아 헤맨다. -->
+          <div v-for="f in cur.fields" :key="'env-' + f[0]">
+            <div v-if="st.envOverrides && st.envOverrides[f[0]]" class="ag-warn">
+              <b>{{ f[1] }}</b> 는 환경변수 <code>{{ st.envOverrides[f[0]] }}</code> 가 쓰이고 있습니다 —
+              여기 저장한 값은 <b>가려집니다</b>. 저장값을 쓰려면 그 환경변수를 지우고 앱을 다시 시작하세요.
+            </div>
+          </div>
           <div class="ag-keyrow one">
             <button class="ag-mini" @click="openAuthEdit()">
               {{ anyKey() ? '인증 정보 변경' : '인증 정보 입력' }}</button>
@@ -308,6 +340,14 @@ export default {
             <button class="ag-mini" :disabled="modelsBusy" @click="loadModels"
                     title="현재 저장된 provider 기준으로 사용 가능한 목록을 다시 조회">
               {{ modelsBusy ? '조회 중…' : '목록 새로고침 ↻' }}</button>
+            <!-- ★ 권한 확인은 **버튼을 눌러야** 돈다(사용자 요청: 권한 없는 모델 거르기).
+                 게이트웨이는 자기가 아는 모델을 다 늘어놓고, 그중 내 키로 못 부르는 것이
+                 섞여 있다 — 골라 놓고 나서야 403 을 본다. 다만 확인은 후보 수만큼 **실제
+                 호출**이라 비용이 든다. 목록을 보는 일이 조용히 과금되면 안 된다. -->
+            <button v-if="models.chat.length" class="ag-mini" :disabled="verifyBusy"
+                    @click="verifyModels"
+                    :title="'후보 ' + models.chat.length + '개를 하나씩 실제로 불러 봅니다 (호출 발생)'">
+              {{ verifyBusy ? '확인 중…' : '권한 확인' }}</button>
             <!-- ★ **서버가 준 개수까지** 보인다(사용자 지적: "직접 /v1/models 날려본 것과
                  목록이 다르다"). 거르는 것 자체는 필요하지만 — 음성·이미지 모델을 다 보이면
                  목록이 소음이 된다 — **몇 개를 걸렀는지는 사용자가 알아야 할 사실**이다.
@@ -320,24 +360,38 @@ export default {
           <div class="ag-f"><span>{{ cur.models[0] }}</span>
             <div class="ag-combo">
               <input v-model="chatModel" spellcheck="false" autocomplete="off"
-                     @focus="comboOpen = 'chat'" @input="comboOpen = 'chat'">
+                     @focus="comboOpen = 'chat'; comboAll = false"
+                     @input="comboOpen = 'chat'; comboAll = false">
               <button class="ag-combo-btn" @click="toggleCombo('chat')" title="목록 열기">▾</button>
-              <div v-if="comboOpen === 'chat' && comboOpts('chat').length" class="ag-combo-drop">
+              <!-- 열려 있으면 **비어 있어도 뜬다** — 버튼을 눌렀는데 아무 일도 안 일어나면
+                   고장으로 읽힌다. 왜 비었는지(조회 실패·미조회)를 그 자리에서 말해 준다. -->
+              <div v-if="comboOpen === 'chat'" class="ag-combo-drop">
                 <button v-for="m in comboOpts('chat')" :key="m"
                         :class="{ on: m === chatModel }"
                         @mousedown.prevent="pickModel('chat', m)">{{ m }}</button>
+                <div v-if="!comboOpts('chat').length" class="ag-combo-empty">
+                  {{ modelsBusy ? '조회 중…' : (models.error ? '목록을 못 불러왔습니다 — 직접 입력하세요'
+                     : '목록이 비어 있습니다 — 직접 입력하세요') }}
+                </div>
               </div>
             </div>
           </div>
           <div class="ag-f"><span>{{ cur.models[1] }}</span>
             <div class="ag-combo">
               <input v-model="embedModel" spellcheck="false" autocomplete="off"
-                     @focus="comboOpen = 'embed'" @input="comboOpen = 'embed'">
+                     @focus="comboOpen = 'embed'; comboAll = false"
+                     @input="comboOpen = 'embed'; comboAll = false">
               <button class="ag-combo-btn" @click="toggleCombo('embed')" title="목록 열기">▾</button>
-              <div v-if="comboOpen === 'embed' && comboOpts('embed').length" class="ag-combo-drop">
+              <!-- 열려 있으면 **비어 있어도 뜬다** — 버튼을 눌렀는데 아무 일도 안 일어나면
+                   고장으로 읽힌다. 왜 비었는지(조회 실패·미조회)를 그 자리에서 말해 준다. -->
+              <div v-if="comboOpen === 'embed'" class="ag-combo-drop">
                 <button v-for="m in comboOpts('embed')" :key="m"
                         :class="{ on: m === embedModel }"
                         @mousedown.prevent="pickModel('embed', m)">{{ m }}</button>
+                <div v-if="!comboOpts('embed').length" class="ag-combo-empty">
+                  {{ modelsBusy ? '조회 중…' : (models.error ? '목록을 못 불러왔습니다 — 직접 입력하세요'
+                     : '목록이 비어 있습니다 — 직접 입력하세요') }}
+                </div>
               </div>
             </div>
           </div>
@@ -347,18 +401,33 @@ export default {
             <div class="ag-combo">
               <input v-model="chatModelSimple" spellcheck="false" autocomplete="off"
                      placeholder="비우면 기본 모델 사용"
-                     @focus="comboOpen = 'simple'" @input="comboOpen = 'simple'">
+                     @focus="comboOpen = 'simple'; comboAll = false"
+                     @input="comboOpen = 'simple'; comboAll = false">
               <button class="ag-combo-btn" @click="toggleCombo('simple')" title="목록 열기">▾</button>
-              <div v-if="comboOpen === 'simple' && comboOpts('simple').length" class="ag-combo-drop">
+              <!-- 열려 있으면 **비어 있어도 뜬다** — 버튼을 눌렀는데 아무 일도 안 일어나면
+                   고장으로 읽힌다. 왜 비었는지(조회 실패·미조회)를 그 자리에서 말해 준다. -->
+              <div v-if="comboOpen === 'simple'" class="ag-combo-drop">
                 <button v-for="m in comboOpts('simple')" :key="m"
                         :class="{ on: m === chatModelSimple }"
                         @mousedown.prevent="pickModel('simple', m)">{{ m }}</button>
+                <div v-if="!comboOpts('simple').length" class="ag-combo-empty">
+                  {{ modelsBusy ? '조회 중…' : (models.error ? '목록을 못 불러왔습니다 — 직접 입력하세요'
+                     : '목록이 비어 있습니다 — 직접 입력하세요') }}
+                </div>
               </div>
             </div>
           </div>
           <div class="ag-hint">간단한 역할 = 의도 분류(Planner)·티켓 실행(Operator).
             조사·초안·검토·답변은 기본 모델을 씁니다. 예) 기본 gpt-4o + 간단 gpt-4o-mini</div>
           <div v-if="models.error" class="ag-hint">목록 조회 실패 — 직접 입력하세요. ({{ models.error }})</div>
+          <div v-if="verify" class="ag-hint">
+            <template v-if="verify.error">권한 확인 실패 — {{ verify.error }}</template>
+            <template v-else>권한 확인: 사용 가능 <b>{{ (verify.ok || []).length }}</b>개<template
+              v-if="Object.keys(verify.denied || {}).length"> · 제외 {{ Object.keys(verify.denied).length }}개
+              <span class="ag-denied">({{ Object.keys(verify.denied).slice(0, 4).join(', ') }}{{
+                Object.keys(verify.denied).length > 4 ? ' …' : '' }})</span></template>
+            </template>
+          </div>
           <label v-if="provider === 'aoai'" class="ag-f"><span>api-version</span>
             <input v-model="apiVersion" placeholder="2024-10-21" spellcheck="false"></label>
           <div v-if="provider === 'aoai'" class="ag-hint">

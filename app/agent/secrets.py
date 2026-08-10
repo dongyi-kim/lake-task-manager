@@ -76,13 +76,52 @@ def save(patch: dict) -> dict:
         return masked(cur)
 
 
+# 필드 -> 이 값을 덮어쓸 수 있는 환경변수. **여기가 유일한 정의다.**
+# 예전에는 호출하는 쪽이 각자 이름을 적어 넣었고, 그 결과 같은 필드를 서로 다르게 읽었다:
+#   llm_ready()   는 aoaiEndpoint 를 AOAI_ENDPOINT + AZURE_OPENAI_ENDPOINT 로 봤고
+#   get_llm()     은 AOAI_ENDPOINT 만 봤다
+# → 설정 화면은 "연결 준비됨"인데 실제 호출은 엔드포인트 없이 나간다. 이런 어긋남은
+#   증상이 엉뚱한 곳에서 터져서 원인을 못 찾는다.
+ENV_NAMES = {
+    "aoaiEndpoint": ("AOAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT"),
+    "aoaiApiKey": ("AOAI_API_KEY", "AZURE_OPENAI_API_KEY"),
+    "openaiApiKey": ("OPENAI_API_KEY",),
+    "compatBaseUrl": ("LAKE_AGENT_COMPAT_BASE",),
+    "compatApiKey": ("LAKE_AGENT_COMPAT_KEY",),
+    "compatHeaders": ("LAKE_AGENT_COMPAT_HEADERS",),
+    "langfusePublicKey": ("LANGFUSE_PUBLIC_KEY",),
+    "langfuseSecretKey": ("LANGFUSE_SECRET_KEY",),
+    "langfuseHost": ("LANGFUSE_HOST",),
+}
+
+
 def get(field: str, *env_names: str) -> str:
-    """환경변수 우선, 없으면 저장된 값. 채점/사내 환경의 주입을 이기지 않게 이 순서를 지킨다."""
-    for name in env_names:
+    """환경변수 우선, 없으면 저장된 값. 채점/사내 환경의 주입을 이기지 않게 이 순서를 지킨다.
+
+    env_names 를 따로 주지 않으면 ENV_NAMES 를 쓴다 — 그쪽이 정본이다.
+    """
+    for name in (env_names or ENV_NAMES.get(field, ())):
         v = os.getenv(name)
         if v:
             return v.strip()
     return (load().get(field) or "").strip()
+
+
+def env_overrides() -> dict:
+    """지금 **환경변수가 이기고 있는** 필드 -> 그 변수 이름.
+
+    화면이 이걸 보여 줘야 하는 이유: 설정창에 저장한 값이 보이는데 실제로는 환경변수가
+    쓰이면, 사용자는 "저장이 안 되나?" 로 읽는다(실사용 지적). 저장은 됐고 **가려져 있을**
+    뿐이라는 것을 말해 줘야 고칠 수 있다 — 우선순위 자체는 바꾸지 않는다(채점/사내 환경이
+    주입한 값이 이기는 것이 정상 경로다).
+    """
+    out = {}
+    for f, names in ENV_NAMES.items():
+        for n in names:
+            if os.getenv(n):
+                out[f] = n
+                break
+    return out
 
 
 def masked(values: dict = None) -> dict:
