@@ -67,3 +67,31 @@ def test_unrelated_tickets_still_do_not_leak(stub):
 def test_a_plain_query_that_matches_directly_is_untouched(stub):
     """원 질의가 바로 잡히면 사다리는 타지 않는다(결과가 달라지면 안 된다)."""
     assert _keys(stub.invoke({"query": "오류 수정"})) == ["DL-7002"]
+
+
+def test_the_topic_path_gets_the_same_recovery(monkeypatch):
+    """주제 조사 경로(`find_mentions`)도 **같은 사다리**를 탄다.
+
+    실사용 사고가 정확히 이 경로에서 났다. 완화 사다리가 `search_work_history` 안에만
+    있어서, 같은 질문이 어느 도구를 타느냐에 따라 찾히고 안 찾히고가 갈렸다.
+    **가드도 회복 경로도 '만드는 자리와 읽는 자리 양쪽'에 있어야 한다.**
+    """
+    def fake(c, s, q, scope="all", limit=8):
+        hits = [t for t in (_TARGET, _NOISE)
+                if all(w.lower() in t["title"].lower() for w in q.split())]
+        return {"jira": {"items": hits}, "confluence": {"items": []}}
+
+    import app.domain.search
+    monkeypatch.setattr(app.domain.search, "search_all", fake)
+
+    class _C:
+        def get_issue(self, key):
+            return {"fields": {"summary": _TARGET["title"], "description": ""}}
+
+        def issue_comments(self, key, n=20):
+            return []
+
+    monkeypatch.setattr("app.agent.tools.search_tools.client", lambda: _C())
+    from app.agent.tools.search_tools import find_mentions
+    r = find_mentions.invoke({"term": "iceberg 통계데이터 생성"})
+    assert any(h.get("key") == "DL-7001" for h in (r.get("hits") or [])), r

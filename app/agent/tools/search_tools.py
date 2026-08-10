@@ -69,53 +69,12 @@ def search_work_history(query: str, limit: int = 8) -> dict:
                 if (r2.get("jira") or {}).get("items"):
                     r = r2
                     break
-    # ── 완화 사다리: 검색은 전 토큰 AND 매칭이라 노이즈 단어 하나가 결과를 0으로 만든다.
-    # 실측: "UI 회귀 검증 픽스처 테스크" — '테스크'가 제목에 없어서 실존 티켓(DL-9000)을
-    # 못 찾고 "이력 없음"으로 답했다. 모델에게 검색어를 다시 쓰라고 시키는 대신 코드가
-    # ① 일반어(테스크·티켓·업무…)를 떼고 재검색 ② 그래도 비면 토큰별로 찾아 매칭 수로
-    # 랭킹한다. 원 질의가 잡히면 사다리는 안 탄다.
-    _STOP = {"테스크", "태스크", "티켓", "업무", "작업", "관련", "정리", "확인", "현황",
-             "무슨", "무엇", "어떤", "하는", "해줘", "주세요", "요청", "진행"}
+    # 원 질의가 비면 **완화 사다리**를 탄다 — 정의는 `_relaxed` 한 곳에만 둔다
+    # (예전엔 이 도구 안에만 있어서 주제 조사 경로가 회복을 못 받았다).
     if not ((r.get("jira") or {}).get("items")):
-        toks = [t.strip("[]()\"'") for t in query.split()]
-        toks = [t for t in toks if len(t) >= 2 and t not in _STOP]
-        if toks and " ".join(toks) != query:
-            r = _hit(" ".join(toks))
-        if not ((r.get("jira") or {}).get("items")) and len(toks) > 1:
-            import re as _re2
-            score, seen, core_hit = {}, {}, {}
-            # 핵심 토큰 = 영문 기술 용어(Iceberg·Puffin·NDV·CDC…)와 **데이터 자산 이름**.
-            # `_` 를 빼먹었던 탓에 `fdc.fdc_trace_summary_ic` 가 core 로 안 잡혔고, 그 결과
-            # 아래 core_hit 가드가 테이블 질문에서만 무력화돼(core 가 비면 통과) 무관한
-            # 티켓이 "관련 이력"으로 나갔다.
-            core = [t for t in toks if _re2.fullmatch(r"[A-Za-z][A-Za-z0-9._-]{1,}", t)]
-            _token_hit = set()          # 한 건이라도 잡은 토큰 = 우리도 쓰는 말
-            for t in toks:
-                for it in (_hit(t).get("jira") or {}).get("items") or []:
-                    k = it.get("key")
-                    if k:
-                        _token_hit.add(t)
-                        score[k] = score.get(k, 0) + 1
-                        seen[k] = it
-                        if t in core:
-                            core_hit[k] = True
-            best = sorted(score, key=lambda k: -score[k])[:lim]
-            # 절반 이상(올림) 토큰이 맞아야 하고, 질의에 영문 기술 토큰이 있으면 그중
-            # **최소 1개**는 맞아야 한다 — 'ETL·파이프라인' 같은 일반어만 겹친 티켓을
-            # "관련 이력"으로 내밀던 실측 사고("Iceberg Puffin NDV" 질문에 '경계값 오류
-            # 수정'이 관련이라고 나옴)의 재발 방지.
-            #
-            # ★ 다만 분모는 **우리 말뭉치에 실제로 있는 토큰**이어야 한다(실사용 사고).
-            #   "iceberg 통계데이터 생성" 으로 물었을 때 실존 티켓
-            #   `Lake Data의 Iceberg Puffin 통계적용 PoC` 를 못 찾았다 —
-            #   'iceberg' 는 맞았는데 '통계데이터'·'생성' 이 한 건도 안 맞아 need=2 에 걸렸다.
-            #   **아무 티켓에도 없는 낱말은 사용자가 우리와 다르게 부른 것**이지, 관련성을
-            #   재는 잣대가 아니다. 안 맞은 토큰까지 분모에 넣으면 **길게 물을수록 못 찾는다.**
-            useful = [t for t in toks if t in _token_hit]
-            need = max(1, (len(useful or toks) + 1) // 2)
-            r = {"jira": {"items": [seen[k] for k in best
-                                    if score[k] >= need and (not core or core_hit.get(k))]},
-                 "confluence": r.get("confluence") or {}}
+        _items = _relaxed(query, lim)
+        if _items:
+            r = {"jira": {"items": _items}, "confluence": r.get("confluence") or {}}
     return {
         "query": query,
         "jira": [compact({k: it.get(k) for k in
@@ -292,6 +251,16 @@ def find_mentions(term: str, limit: int = 8) -> dict:
                 if d.get("title") and all(d["title"] != x["title"] for x in docs):
                     docs.append({"title": _strip(d.get("title")), "url": d.get("url") or "",
                                  "excerpt": trim(_strip(d.get("excerpt") or d.get("snippet")), 200)})
+
+    # ★ **여기에도 완화 사다리를 태운다**(실사용 사고). `search_work_history` 에만 있어서,
+    #   주제 조사 경로(`_topic_dossier` → 이 도구)는 여전히 전 토큰 AND 로만 찾고 있었다 —
+    #   "iceberg 통계데이터 생성" 같은 여러 낱말 주제가 통째로 0건이 되고, 실존 티켓이
+    #   있는데도 "사내 어디에서도 못 찾았다"로 답했다.
+    #   **가드도 사다리도 '만드는 자리와 읽는 자리 양쪽'에 있어야 한다** — 이 저장소가
+    #   반복해서 배운 것이고, 이번엔 회복 경로가 한쪽에만 있었다.
+    if not seen and " " in term:
+        for it in _relaxed(term, lim + 4):
+            seen.setdefault(it.get("key"), it)
 
     keys = [k for k in list(seen)[:lim] if k]
 
@@ -494,3 +463,65 @@ def _epic_module(key: str) -> str:
         return str(comps[0]) if comps else ""
     except Exception:
         return ""
+
+
+# ── 완화 사다리 — 전 토큰 AND 검색이 0건일 때의 회복 경로(**공용**) ──────────
+# 검색은 전 토큰 AND 매칭이라 노이즈 단어 하나가 결과를 0으로 만든다. 실측: "UI 회귀 검증
+# 픽스처 테스크" — '테스크'가 제목에 없어서 실존 티켓(DL-9000)을 못 찾고 "이력 없음"으로
+# 답했다. 모델에게 검색어를 다시 쓰라고 시키는 대신 코드가
+#   ① 일반어(테스크·티켓·업무…)를 떼고 재검색 ② 그래도 비면 토큰별로 찾아 매칭 수로 랭킹.
+#
+# ★ **정의는 한 곳에만 둔다.** 예전엔 `search_work_history` 안에만 있어서, 주제 조사 경로
+#   (`_topic_dossier` → `find_mentions`)는 이 회복을 못 받았다 — 같은 질문이 어느 도구를
+#   타느냐에 따라 찾히고 안 찾히고가 갈렸다. 실사용 사고가 정확히 그 경로에서 났다.
+_STOP = {"테스크", "태스크", "티켓", "업무", "작업", "관련", "정리", "확인", "현황",
+         "무슨", "무엇", "어떤", "하는", "해줘", "주세요", "요청", "진행", "내역", "총정리"}
+
+
+def _relaxed(query: str, lim: int = 8) -> list:
+    """완화 검색 결과(jira items 목록). 회복하지 못하면 빈 목록."""
+    import re as _re2
+
+    from app.domain.search import search_all
+    c, s = client(), settings()
+
+    def _hit(q):
+        return (search_all(c, s, q, scope="all", limit=lim).get("jira") or {}).get("items") or []
+
+    toks = [t.strip("[]()\"'") for t in (query or "").split()]
+    toks = [t for t in toks if len(t) >= 2 and t not in _STOP]
+    if not toks:
+        return []
+    if " ".join(toks) != (query or "").strip():
+        got = _hit(" ".join(toks))
+        if got:
+            return got
+    if len(toks) < 2:
+        return []
+
+    # 핵심 토큰 = 영문 기술 용어(Iceberg·Puffin·NDV·CDC…)와 데이터 자산 이름.
+    core = [t for t in toks if _re2.fullmatch(r"[A-Za-z][A-Za-z0-9._-]{1,}", t)]
+    score, seen, core_hit, token_hit = {}, {}, {}, set()
+    for t in toks:
+        for it in _hit(t):
+            k = it.get("key")
+            if not k:
+                continue
+            token_hit.add(t)
+            score[k] = score.get(k, 0) + 1
+            seen[k] = it
+            if t in core:
+                core_hit[k] = True
+
+    # 절반 이상(올림)이 맞아야 하고, 질의에 영문 기술 토큰이 있으면 그중 **최소 1개**는
+    # 맞아야 한다 — 일반어만 겹친 티켓을 "관련 이력"으로 내밀던 실측 사고의 재발 방지.
+    #
+    # ★ 분모는 **우리 말뭉치에 실제로 있는 토큰**이다(실사용 사고). "iceberg 통계데이터 생성"
+    #   으로 물었을 때 `Iceberg Puffin 통계적용 PoC` 를 못 찾았다 — 'iceberg' 는 맞았는데
+    #   '통계데이터'·'생성' 이 한 건도 안 맞아 문턱에 걸렸다. **아무 티켓에도 없는 낱말은
+    #   사용자가 우리와 다르게 부른 것**이지 관련성의 잣대가 아니다. 그것까지 분모에 넣으면
+    #   자세히 물을수록 결과가 사라진다.
+    useful = [t for t in toks if t in token_hit]
+    need = max(1, (len(useful or toks) + 1) // 2)
+    best = sorted(score, key=lambda k: -score[k])[:lim]
+    return [seen[k] for k in best if score[k] >= need and (not core or core_hit.get(k))]
