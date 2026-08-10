@@ -82,5 +82,5 @@ tools/agent_scenarios.py     복합 시나리오 12종 + LLM 품질 채점
 - 브라우저는 최초 접속 시 CDN(에디터 라이브러리)에서 리소스를 받습니다 — 인터넷이
   연결된 환경에서 실행해 주세요(LLM API 호출을 위해서도 필요합니다).
 - Docker 없이 실행하려면: Python 3.11+ 에서
-  `pip install -r requirements.txt -r requirements-agent.txt` 후
+  `pip install -r requirements.txt` 후
   `python -m uvicorn app.main:app --port 8000` (환경변수 `JIRA_ENV=mock`).

@@ -99,7 +99,7 @@ PMO 실무에서 "새 업무"의 상당수는 새롭지 않다 — 이미 누군
 ## 6. 실행
 
 ```bash
-pip install -r requirements.txt -r requirements-agent.txt
+pip install -r requirements.txt
 python run.py                       # http://127.0.0.1:8000 — 메인 페이지가 에이전트 대화
 ```
 

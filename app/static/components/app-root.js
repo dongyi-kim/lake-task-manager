@@ -32,7 +32,10 @@ const ROUTES = { home: HomeView, guide: HomeView, ai: AgentView, wbs: WbsView, v
 // 탭 정의 한곳 — 라벨과 접근 권한이 갈라지지 않게. manager: true 면 매니저에게만 보인다.
 // (티켓 뷰/다이얼로그·검색은 역할과 무관하다 — 여기 없는 건 다 누구나 쓴다.)
 const TABS = [
-  { k: "ai", label: "AI" },
+  // ✨ 는 **AI 탭에만** 붙는다(사용자 요청) — 새로 생긴 기능이라 눈이 먼저 가야 한다.
+  //    라벨 문자열에 이모지를 섞지 않고 플래그로 두는 이유: 라벨은 라우팅·검색·
+  //    접근성 텍스트에도 쓰여서, 거기까지 이모지가 따라가면 안 된다.
+  { k: "ai", label: "AI", spark: true },
   { k: "wbs", label: "WBS Dashboard", manager: true },
   { k: "vit", label: "현안 (PMO_VIT)" },
   // 인력 워크로드 — 매니저는 전체 모듈, 비매니저도 **자기 모듈**은 볼 수 있다(백엔드가 사번→모듈로
@@ -250,7 +253,8 @@ export default {
         </a>
         <nav class="tabs">
           <a v-for="t in tabs" :key="t.k" :class="{ on: route === t.k }"
-             :href="'#/' + t.k">{{ t.label }}</a>
+             :href="'#/' + t.k">{{ t.label }}<span v-if="t.spark" class="tab-spark"
+             aria-hidden="true">✨</span></a>
         </nav>
         <div class="top-actions">
           <button v-if="update && update.available" class="update-trig" :class="{ busy: updating }"

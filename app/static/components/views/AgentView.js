@@ -974,8 +974,8 @@ export default {
     <div v-if="ready === false" class="agent-off">
       <h2>AI 에이전트가 켜져 있지 않습니다</h2>
       <p>{{ reason || '설정을 확인하세요.' }}</p>
-      <pre>pip install -r requirements-agent.txt</pre>
-      <p class="hint">설치 후 앱을 다시 시작하고, 우상단 <b>설정 → AI 에이전트</b> 에서 키를 넣으세요.</p>
+      <p class="hint">앱을 다시 시작하면 설치가 이어집니다. 그래도 같으면 <code>run.bat setup</code>.<br>
+         설치가 끝나면 우상단 <b>설정 → AI 에이전트</b> 에서 키를 넣으세요.</p>
     </div>
 
     <template v-else>

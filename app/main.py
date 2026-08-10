@@ -1946,7 +1946,7 @@ class _RevalidatedStatic(StaticFiles):
 
 
 # ── AI 에이전트 (선택 설치) ────────────────────────────────────────────────
-# `requirements-agent.txt` 가 설치돼 있을 때만 `/api/agent/*` 가 붙는다. 대시보드만 쓰는
+# 에이전트 의존이 import 될 때만 `/api/agent/*` 가 붙는다. 대시보드만 쓰는
 # 사용자에게 langchain·faiss 200MB+ 를 강요하지 않는다(devtools 게이팅과 같은 방식).
 # ★ 정적 마운트보다 **먼저** — 아래 mount("/") 가 모든 경로를 먹는다.
 try:

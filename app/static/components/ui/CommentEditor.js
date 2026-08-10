@@ -1759,7 +1759,7 @@ export default {
              있으므로, 사용자는 "무엇을 써 달라"만 적으면 된다. 결과는 삽입될 뿐 저장은 사용자가. -->
         <span class="tb-style ai-wrap">
           <button type="button" ref="aiBtn" class="tb-b tb-ai" :class="{on:aiOpen}" @click.stop="openAi"
-                  title="AI 자동완성 — 지금 쓰는 글을 이어 쓰거나 새로 초안을 만든다">AI</button>
+                  title="AI 자동완성 — 지금 쓰는 글을 이어 쓰거나 새로 초안을 만든다">AI<span class="tb-ai-spark" aria-hidden="true">✨</span></button>
           <span v-if="aiOpen" class="ai-pop" :style="aiPopStyle" @click.stop @keydown.esc="aiOpen=false">
             <template v-if="aiReady === false">
               <span class="ai-err">AI 를 쓸 수 없습니다 — {{ aiWhy || 'LLM 연결이 설정되지 않았습니다.' }}</span>

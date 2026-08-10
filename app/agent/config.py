@@ -41,8 +41,10 @@ def available() -> tuple[bool, str]:
         import langchain_core  # noqa: F401
         import langgraph       # noqa: F401
     except Exception as e:
-        return False, f"에이전트 의존이 설치되지 않았습니다: {e} " \
-                      "(pip install -r requirements-agent.txt)"
+        # 의존은 requirements.txt 에 들어 있다 — 여기 오면 **설치가 덜 끝난 것**이지
+        # 사용자가 뭘 안 한 게 아니다. 그래서 pip 명령이 아니라 재시작을 안내한다.
+        return False, f"에이전트 의존이 아직 설치되지 않았습니다({e}). " \
+                      "앱을 다시 시작하면 설치가 이어집니다 — 반복되면 run.bat setup."
     return True, ""
 
 

@@ -214,7 +214,7 @@ export default {
       <div class="sm-sec">
         <div class="sm-h">AI 에이전트</div>
         <button v-if="agentOn" class="sm-btn" @click="agentDlg = true; close()">설정 · 연결 테스트 →</button>
-        <div v-else class="sm-hint">{{ agentWhy || '설치되지 않았습니다 (requirements-agent.txt)' }}</div>
+        <div v-else class="sm-hint">{{ agentWhy || '아직 설치되지 않았습니다 — 앱을 다시 시작하세요.' }}</div>
       </div>
 
       <!-- Dev Tools — 매니저 전용 -->
