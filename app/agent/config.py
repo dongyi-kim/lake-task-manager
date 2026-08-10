@@ -149,6 +149,32 @@ def api_version() -> str:
     return os.getenv("AOAI_API_VERSION") or _pref("agentApiVersion") or DEFAULT_API_VERSION
 
 
+def compat_base() -> str:
+    """OpenAI 호환 엔드포인트의 base URL — **경로가 없으면 `/v1` 을 붙인다.**
+
+    OpenAI SDK 는 base_url 뒤에 `/models`·`/chat/completions` 를 상대로 붙인다. 그래서
+    사용자가 `https://llm.example` 만 넣으면 `https://llm.example/models` 를 부르고, 대부분의
+    호환 서버(vLLM · Ollama · LM Studio · TGI)는 거기에 아무것도 없어 404 다. 화면에는
+    "목록 조회 실패"로만 보이고, 무엇이 잘못인지는 안 보인다.
+
+    ★ 이미 경로가 있으면 **그대로 둔다** — `/v1` 이든 `/openai/v1` 이든 `/api/v1` 이든
+      사용자가 적어 넣은 것이 정답이다. 우리가 아는 것은 "경로가 아예 없으면 `/v1`" 하나뿐.
+
+    ★ 이 함수를 **채팅·임베딩·모델목록 세 곳이 다 쓴다.** 한 곳만 고치면 "대화는 되는데
+      모델 목록만 빈다"(또는 그 반대)가 되고, 그건 원인을 찾기 가장 어려운 종류의 어긋남이다.
+    """
+    raw = (_secrets.get("compatBaseUrl", "LAKE_AGENT_COMPAT_BASE") or "").strip().rstrip("/")
+    if not raw:
+        return raw
+    try:
+        from urllib.parse import urlsplit
+        if not urlsplit(raw).path:            # 호스트만 적었다 — 규격 경로를 붙여 준다
+            return raw + "/v1"
+    except Exception:
+        pass
+    return raw
+
+
 def _compat_headers() -> dict:
     """자체 LLM 이 요구하는 추가 헤더(JSON 문자열로 보관). 인증 방식이 표준과 다를 때 쓴다."""
     raw = _secrets.get("compatHeaders", "LAKE_AGENT_COMPAT_HEADERS")
@@ -221,7 +247,7 @@ def get_llm(temperature: float = 0.2, tier: str = "complex", **kwargs):
                           model=model, **temp_kw, **kwargs)
     # openai_compat — base_url + 커스텀 헤더. 인증이 표준과 달라도 여기서 흡수한다.
     return ChatOpenAI(api_key=_secrets.get("compatApiKey", "LAKE_AGENT_COMPAT_KEY") or "unused",
-                      base_url=_secrets.get("compatBaseUrl", "LAKE_AGENT_COMPAT_BASE"),
+                      base_url=compat_base(),
                       model=model, **temp_kw,
                       default_headers=_compat_headers() or None, **kwargs)
 
@@ -248,7 +274,7 @@ def get_embeddings(**kwargs):
         return OpenAIEmbeddings(api_key=_secrets.get("openaiApiKey", "OPENAI_API_KEY"),
                                 model=embed_model(), **kwargs)
     return OpenAIEmbeddings(api_key=_secrets.get("compatApiKey", "LAKE_AGENT_COMPAT_KEY") or "unused",
-                            base_url=_secrets.get("compatBaseUrl", "LAKE_AGENT_COMPAT_BASE"),
+                            base_url=compat_base(),
                             model=embed_model(), **kwargs)
 
 
@@ -339,10 +365,10 @@ def list_models(timeout: float = 10.0) -> dict:
     """
     p = provider()
     if p == "fake":
-        return {"chat": ["fake-chat"], "embed": ["fake-embed"], "error": ""}
+        return {"chat": ["fake-chat"], "embed": ["fake-embed"], "total": 2, "error": ""}
     ok, why = available()
     if not ok:
-        return {"chat": [], "embed": [], "error": why}
+        return {"chat": [], "embed": [], "total": 0, "error": why}
 
     try:
         if p == "aoai":
@@ -352,7 +378,8 @@ def list_models(timeout: float = 10.0) -> dict:
             base = (_secrets.get("aoaiEndpoint", "AOAI_ENDPOINT") or "").rstrip("/")
             key = _secrets.get("aoaiApiKey", "AOAI_API_KEY")
             if not (base and key):
-                return {"chat": [], "embed": [], "error": "엔드포인트/키가 설정되지 않았습니다."}
+                return {"chat": [], "embed": [], "total": 0,
+                        "error": "엔드포인트/키가 설정되지 않았습니다."}
             r = httpx.get(f"{base}/openai/deployments",
                           params={"api-version": "2023-03-15-preview"},
                           headers={"api-key": key}, timeout=timeout)
@@ -368,19 +395,37 @@ def list_models(timeout: float = 10.0) -> dict:
             cli = OpenAI(api_key=_secrets.get("openaiApiKey", "OPENAI_API_KEY"), timeout=timeout)
         else:
             cli = OpenAI(api_key=_secrets.get("compatApiKey", "LAKE_AGENT_COMPAT_KEY") or "unused",
-                         base_url=_secrets.get("compatBaseUrl", "LAKE_AGENT_COMPAT_BASE"),
+                         base_url=compat_base(),
                          default_headers=_compat_headers() or None, timeout=timeout)
-        ids = [m.id for m in cli.models.list()]
-        embed = sorted(i for i in ids if "embed" in i)
+        ids = [m.id for m in cli.models.list()]      # GET {base_url}/models
+        # 임베딩 판정도 이름에 기댄다. 호환 서버의 임베딩 모델은 'embed' 를 안 달고 오는
+        # 일이 흔해서(bge-m3 · e5-large · gte · jina · nomic) 그 이름들을 함께 본다.
+        _emb = ("embed", "bge", "e5-", "gte-", "jina", "minilm", "nomic")
+        embed = sorted(i for i in ids
+                       if ("embed" in i if p != "openai_compat"
+                           else any(x in i.lower() for x in _emb)))
         # 채팅에 못 쓰는 것(음성·이미지·중재 등)을 걸러낸다 — 다 보여 주면 목록이 소음이 된다.
         noise = ("audio", "tts", "whisper", "image", "dall-e", "realtime",
                  "transcribe", "moderation", "computer-use", "codex")
-        chat = sorted(i for i in ids
-                      if ("gpt" in i or i.startswith("o")) and "embed" not in i
-                      and not any(x in i for x in noise))
-        return {"chat": chat, "embed": embed, "error": ""}
+        # 채팅 후보에서 **임베딩으로 분류된 것을 뺀다** — 판정을 넓히면(bge·e5·gte…) 그
+        # 이름들이 양쪽에 다 뜬다. 한 모델이 두 칸에 있으면 어느 쪽이 맞는지 화면이 말을
+        # 못 한다(실측: 스텁 서버에서 bge-m3 가 채팅 목록에도 있었다).
+        _emb_set = set(embed)
+        keep = [i for i in ids if i not in _emb_set and not any(x in i for x in noise)]
+        # ★ **이름 화이트리스트는 OpenAI 에만 건다.** `gpt` 를 포함하거나 `o` 로 시작하는
+        #   것만 남기는 규칙은 OpenAI 카탈로그를 두고 만든 것이라, 호환 서버에 대면
+        #   `llama-3-70b`·`qwen2.5`·`solar-pro`·`mistral` 이 **한 줄도 안 남는다** —
+        #   조회는 성공했는데 목록이 비어, 화면에는 "실패"조차 안 뜨고 그냥 빈 채로 보인다.
+        #   호환 쪽은 소음만 걷어내고 **서버가 준 것을 그대로 보여 준다**: 무엇이 채팅
+        #   모델인지 아는 것은 우리가 아니라 그 서버다.
+        chat = sorted(keep if p == "openai_compat"
+                      else [i for i in keep if "gpt" in i or i.startswith("o")])
+        # `total` — **서버가 실제로 준 개수**. 우리가 걸러낸 것이 있으면 화면이 그 사실을
+        #   말해 줘야 한다(사용자 지적: "직접 /v1/models 날려본 것과 목록이 다르다").
+        #   거르는 것 자체는 필요하지만, **몇 개를 거를지는 사용자가 알아야 할 사실**이다.
+        return {"chat": chat, "embed": embed, "total": len(ids), "error": ""}
     except Exception as e:
-        return {"chat": [], "embed": [], "error": _brief(e)}
+        return {"chat": [], "embed": [], "total": 0, "error": _brief(e)}
 
 
 def _brief(e: Exception) -> str:

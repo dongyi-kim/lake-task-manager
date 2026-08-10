@@ -308,7 +308,14 @@ export default {
             <button class="ag-mini" :disabled="modelsBusy" @click="loadModels"
                     title="현재 저장된 provider 기준으로 사용 가능한 목록을 다시 조회">
               {{ modelsBusy ? '조회 중…' : '목록 새로고침 ↻' }}</button>
-            <em v-if="models.chat.length" class="ag-mini-hint">{{ models.chat.length + models.embed.length }}개 확인됨</em>
+            <!-- ★ **서버가 준 개수까지** 보인다(사용자 지적: "직접 /v1/models 날려본 것과
+                 목록이 다르다"). 거르는 것 자체는 필요하지만 — 음성·이미지 모델을 다 보이면
+                 목록이 소음이 된다 — **몇 개를 걸렀는지는 사용자가 알아야 할 사실**이다.
+                 걸러진 것도 직접 입력하면 그대로 쓸 수 있다(목록은 참고이지 제약이 아니다). -->
+            <em v-if="models.total" class="ag-mini-hint">서버 {{ models.total }}개 ·
+              채팅 {{ models.chat.length }} · 임베딩 {{ models.embed.length }}
+              <template v-if="models.total > models.chat.length + models.embed.length">(나머지는
+                음성·이미지 등으로 걸러 냄 — 필요하면 직접 입력)</template></em>
           </div>
           <div class="ag-f"><span>{{ cur.models[0] }}</span>
             <div class="ag-combo">

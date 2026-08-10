@@ -228,3 +228,63 @@ def test_fake_provider_is_refused_in_prod(monkeypatch):
     _S.jira_env = "mock"                      # 개발 경로는 그대로 — 여기선 정당한 용도다
     assert C.provider() == "fake"
 
+
+
+def test_compat_base_url_gets_the_v1_path_when_the_user_typed_only_the_host(monkeypatch):
+    """호환 엔드포인트에 경로가 없으면 `/v1` 을 붙인다.
+
+    OpenAI SDK 는 base_url 뒤에 `/models`·`/chat/completions` 를 **상대로** 붙인다.
+    사용자가 호스트만 넣으면 `{host}/models` 를 부르고, 호환 서버(vLLM·Ollama·LM Studio·
+    TGI)는 거기에 아무것도 없어 404 다 — 화면에는 "조회 실패"로만 보인다.
+    이미 경로가 있으면 손대지 않는다(`/openai/v1` 같은 배치도 있다).
+    """
+    import app.agent.config as C
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "https://llm.example")
+    assert C.compat_base() == "https://llm.example/v1"
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "https://llm.example/")
+    assert C.compat_base() == "https://llm.example/v1"
+    for typed in ("https://llm.example/v1", "https://llm.example/openai/v1",
+                  "https://llm.example/api/v1"):
+        monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", typed)
+        assert C.compat_base() == typed, typed
+
+
+def test_compat_model_list_is_not_filtered_by_openai_naming(monkeypatch):
+    """호환 서버 목록에 **이름 화이트리스트를 걸지 않는다**(사용자 지적).
+
+    실측: "설정창에서 불러온 모델과 직접 /v1/models 날려 본 것이 다르다."
+    원인은 조회가 아니라 **거르기**였다 — `gpt` 를 포함하거나 `o` 로 시작하는 것만 남기는
+    규칙은 OpenAI 카탈로그를 두고 만든 것이라, 사내 모델(llama·qwen·solar·mistral)이
+    한 줄도 안 남는다. 조회는 성공했는데 목록이 비어서 실패조차 안 보인다.
+
+    무엇이 채팅 모델인지 아는 것은 우리가 아니라 **그 서버**다 — 소음(음성·이미지)만 걷어낸다.
+    """
+    import app.agent.config as C
+
+    ids = ["llama-3.1-70b-instruct", "qwen2.5-32b", "solar-pro", "bge-m3",
+           "text-embedding-3-small", "whisper-large-v3", "gpt-4o"]
+
+    class _M:
+        def __init__(self, i):
+            self.id = i
+
+    class _Models:
+        def list(self):
+            return [_M(i) for i in ids]
+
+    class _Cli:
+        def __init__(self, *a, **k):
+            self.models = _Models()
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "https://llm.example/v1")
+    monkeypatch.setattr("openai.OpenAI", _Cli)
+
+    r = C.list_models(timeout=1)
+    assert not r["error"], r
+    for m in ("llama-3.1-70b-instruct", "qwen2.5-32b", "solar-pro"):
+        assert m in r["chat"], (m, r["chat"])      # 사내 모델이 살아 있다
+    assert "whisper-large-v3" not in r["chat"]     # 소음은 여전히 걷어낸다
+    assert "bge-m3" in r["embed"]                  # embed 를 안 달고 와도 임베딩으로
+    assert not (set(r["chat"]) & set(r["embed"])), "한 모델이 두 칸에 있다"
+    assert r["total"] == len(ids), "서버가 준 개수를 그대로 알려야 한다"
