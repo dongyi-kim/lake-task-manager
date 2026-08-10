@@ -36,7 +36,11 @@ _DEFAULTS = {"bitbucketEnabled": False,
              # 지금 설정의 지문과 같을 때만 AI 기능이 켜진다. 모델이나 키를 바꾸면 지문이
              # 달라지고, 그 조합은 확인된 적이 없으므로 다시 확인해야 한다.
              # (여기 등록하지 않으면 prefs.save 가 **조용히 버린다** — 화이트리스트 방식이다.)
-             "agentVerifiedSig": "",
+             # 인증만 확인한 조합의 지문(모델과 별개 — 사용자 지시).
+             "agentAuthOkSig": "",
+             "agentModelOkSig": "",     # ② 모델까지 확인된 조합
+             "agentActiveSig": "",      # ③ 사용자가 [이 설정 사용]을 누른 조합
+             "agentVerifiedSig": "",    # (구버전 호환 — 지금은 안 읽는다)
              # 사용자별 시스템 프롬프트 추가분 — 모든 역할의 페르소나 뒤에 붙는다.
              # 프로젝트 공용 추가분은 여기가 아니라 config/agent-prompt.md (repo 커밋 대상).
              "agentUserPrompt": ""}

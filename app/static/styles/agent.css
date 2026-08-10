@@ -738,3 +738,8 @@
 .ag-gate.on  { background:color-mix(in srgb, var(--ok, #2e7d32) 12%, transparent); }
 .ag-gate.off { background:color-mix(in srgb, var(--warn, #b26a00) 14%, transparent); }
 .ag-gate b:first-child { flex:none; }
+
+/* 두 확인의 진행 상태 — 인증 / 모델을 각각 배지로. */
+.ag-step { display:inline-block; margin-right:8px; padding:1px 7px; border-radius:10px;
+  font-size:11.5px; border:1px solid var(--border); color:var(--muted); }
+.ag-step.ok { border-color:var(--accent); color:var(--accent); font-weight:700; }

@@ -33,7 +33,7 @@ export default {
   emits: ["close", "saved"],
   data() {
     return {
-      st: null, err: "", busy: false, saving: false,
+      st: null, err: "", busy: false, saving: false, activating: false,
       provider: "aoai", chatModel: "", chatModelSimple: "", embedModel: "", apiVersion: "",
       userPrompt: "",           // 사용자별 시스템 프롬프트(로컬 저장, 커밋 안 됨)
       showProjPrompt: false,    // 프로젝트 공용 프롬프트(읽기 전용) 펼침
@@ -215,12 +215,15 @@ export default {
         if (this.provider === "aoai" && this.apiVersion) body.apiVersion = this.apiVersion;
         this.st = await agentApi.saveSettings(body);
         this.$emit("saved", this.st);
-        a.result = await agentApi.probe();          // ① 되는지
-        await this.loadModels();                    // ② 무엇을 쓸 수 있는지
-        this.probe = a.result;
-        if (this.probeOk(a.result)) {
-          // 성공이면 닫는다 — 확인이 목적이었고, 결과는 아래 '연결 상태'에 남는다.
-          this.authEdit = null;
+        // ★ **인증만** 확인한다 — 모델 이름이 안 실리는 호출(목록 조회)로(사용자 지적).
+        //   예전엔 여기서 chat/completions 를 불렀는데 그 호출에는 모델 이름이 실린다.
+        //   아직 모델을 안 골랐거나 권한이 없으면 403 이 나고, 화면에는 "방금 넣은 인증이
+        //   틀렸다"로 보인다 — 키는 멀쩡한데 사용자가 키를 다시 친다.
+        a.result = await agentApi.probeAuth();
+        await this.loadModels();                    // 인증이 되면 목록이 따라온다
+        try { this.st = await agentApi.status(); } catch (e) { /* 표시만 */ }
+        if (a.result && a.result.ok) {
+          this.authEdit = null;   // 인증 확인이 목적이었다. 모델 확인은 아래에서 따로.
         }
       } catch (e) { a.err = (e && e.message) || "저장에 실패했습니다"; }
       finally { if (this.authEdit) this.authEdit.busy = false; }
@@ -255,12 +258,48 @@ export default {
       finally { this.saving = false; }
     },
 
+    /** 모델 연결 확인 — 지금 고른 채팅·임베딩 이름으로 실제 호출을 한 번씩.
+     *  통과하면 서버가 '활성' 지문을 찍으므로, 끝나고 status 를 다시 읽어 화면에 반영한다. */
+    /** ② 모델정보 저장 + 확인 — **저장이 먼저다.**
+     *  콤보에 친 이름은 저장 전에는 서버가 모른다. 예전엔 저장 없이 확인만 눌러서
+     *  "모델이 설정되지 않았습니다"가 떴다 — 화면에는 분명히 골라 놓았는데도(실측). */
+    async saveModels() {
+      if (this.busy || this.saving) return;
+      this.saving = true; this.err = ""; this.probe = null;
+      try {
+        const body = { provider: this.provider, chatModel: this.chatModel,
+                       chatModelSimple: this.chatModelSimple, embedModel: this.embedModel };
+        if (this.provider === "aoai") body.apiVersion = this.apiVersion;
+        this.st = await agentApi.saveSettings(body);
+        this.$emit("saved", this.st);
+      } catch (e) {
+        this.err = (e && e.message) || "저장에 실패했습니다";
+        this.saving = false;
+        return;
+      }
+      this.saving = false;
+      await this.test();
+    },
+
     async test() {
       if (this.busy) return;
       this.busy = true; this.probe = null; this.err = "";
       try { this.probe = await agentApi.probe(); }
       catch (e) { this.err = (e && e.message) || "연결 테스트를 실행하지 못했습니다"; }
       finally { this.busy = false; }
+      try { this.st = await agentApi.status(); this.$emit("saved", this.st); } catch (e) { /* 표시만 */ }
+    },
+
+    /** ③ 이 설정 사용 — 서버가 ①②를 다시 확인하고 활성 지문을 찍는다. */
+    async useThis() {
+      if (this.activating) return;
+      this.activating = true; this.err = "";
+      try {
+        const r = await agentApi.activate();
+        if (r && r.ok === false) this.err = r.error || "활성화하지 못했습니다";
+        this.st = r; this.$emit("saved", this.st);
+      } catch (e) { this.err = (e && e.message) || "활성화하지 못했습니다"; }
+      finally { this.activating = false; }
     },
 
     async resetIndex() {
@@ -350,6 +389,11 @@ export default {
                     @click="verifyModels"
                     :title="'후보 ' + models.chat.length + '개를 하나씩 실제로 불러 봅니다 (호출 발생)'">
               {{ verifyBusy ? '확인 중…' : '권한 확인' }}</button>
+            <!-- ★ 모델 확인은 **인증 확인과 별개의 버튼**이다(사용자 지시). 여기서 고른
+                 채팅·임베딩 이름으로 실제 호출을 한 번씩 해 본다. 이게 통과해야 활성화된다. -->
+            <button class="ag-mini" :disabled="busy || saving" @click="saveModels"
+                    title="고른 모델을 저장한 뒤, 그 이름으로 실제 호출을 한 번씩 합니다">
+              {{ (busy || saving) ? '확인 중…' : '저장하고 모델 확인' }}</button>
             <!-- ★ **서버가 준 개수까지** 보인다(사용자 지적: "직접 /v1/models 날려본 것과
                  목록이 다르다"). 거르는 것 자체는 필요하지만 — 음성·이미지 모델을 다 보이면
                  목록이 소음이 된다 — **몇 개를 걸렀는지는 사용자가 알아야 할 사실**이다.
@@ -472,11 +516,19 @@ export default {
                예전에는 "설정은 다 했는데 왜 안 되지"가 실제 사용 중에야 403 으로 드러났다. -->
           <div v-if="st.envSupplied" class="ag-hint">환경변수로 주입된 설정입니다 — 확인 절차 없이
             그대로 씁니다.</div>
-          <div v-else class="ag-gate" :class="st.verified ? 'on' : 'off'">
+          <!-- ★ **두 확인을 따로 보인다**(사용자 지시: 인증정보 변경과 모델 설정은 별개의
+               확인을 거친다). 어디까지 됐는지가 한 줄로 보여야, 실패했을 때 무엇을 고칠지
+               사람이 안다 — 예전엔 둘이 한 덩어리라 "키가 틀렸나 모델이 틀렸나"를 몰랐다. -->
+          <div class="ag-gate" :class="st.verified ? 'on' : 'off'">
             <b>{{ st.verified ? '활성' : '비활성' }}</b>
-            <span v-if="st.verified">채팅·임베딩 확인 완료 — AI 기능을 쓸 수 있습니다.</span>
-            <span v-else>채팅과 임베딩이 <b>둘 다</b> 통과하고 저장돼야 켜집니다.
-              아래 <b>저장하고 확인</b>을 누르세요. (키·모델을 바꾸면 다시 확인합니다)</span>
+            <span>
+              <span :class="st.authOk ? 'ag-step ok' : 'ag-step'">① 인증 {{ st.authOk ? '확인됨' : '미확인' }}</span>
+              <span :class="st.modelsOk ? 'ag-step ok' : 'ag-step'">② 모델 {{ st.modelsOk ? '확인됨' : '미확인' }}</span>
+              <span :class="st.verified ? 'ag-step ok' : 'ag-step'">③ {{ st.verified ? '사용 중' : '미적용' }}</span>
+              <template v-if="!st.authOk"><br>인증 정보에서 <b>저장하고 연결 확인</b>을 누르세요.</template>
+              <template v-else-if="!st.modelsOk"><br>모델을 고르고 <b>저장하고 모델 확인</b>을 누르세요.</template>
+              <template v-else-if="!st.verified"><br>확인이 끝났습니다 — 아래 <b>이 설정 사용</b>을 누르면 켜집니다.</template>
+            </span>
           </div>
           <div v-if="!probe" class="ag-hint">아직 확인하지 않았습니다 — 키를 입력하거나 저장하면
             바로 확인합니다.</div>
@@ -516,9 +568,15 @@ export default {
         <div v-if="err" class="ag-err">{{ err }}</div>
       </div>
 
+      <!-- ★ ③ **이 설정 사용** — ①인증·②모델이 다 확인돼야 눌린다(사용자가 정한 절차).
+           확인이 통과했다고 자동으로 켜지 않는다: 확인은 '되는지 보는 일'이고 활성화는
+           '이걸 쓰겠다는 결정'이다. 붙여 두면 시험 삼아 눌러 본 조합이 운영 설정이 된다. -->
       <div class="ag-act">
-        <button class="ag-ok" :disabled="saving" @click="save">
-          {{ saving ? '저장 중…' : '저장하고 확인' }}
+        <button class="ag-ok" :disabled="activating || !(st.authOk && st.modelsOk)"
+                :title="(st.authOk && st.modelsOk) ? '이 조합을 실제 사용 설정으로 켭니다'
+                        : '① 인증 확인과 ② 모델 확인을 먼저 마치세요'"
+                @click="useThis">
+          {{ activating ? '적용 중…' : (st.verified ? '적용됨 · 다시 적용' : '이 설정 사용') }}
         </button>
         <button class="ag-cancel" @click="$emit('close')">닫기</button>
       </div>
@@ -540,24 +598,18 @@ export default {
                      @keydown.enter.prevent="applyAuth">
             </div>
             <div class="ag-hint">비워 둔 칸은 <b>지금 값을 그대로 둡니다</b> — 바꿀 것만 치세요.
-              저장하면 곧바로 연결을 확인하고 모델 목록을 다시 불러옵니다.</div>
+              저장하면 <b>인증만</b> 확인합니다(모델은 아래에서 따로 고르고 확인).</div>
+            <!-- 인증 확인 결과 — **모델 이야기는 여기 없다.** 여기서 묻는 것은 오직
+                 "이 주소·키가 옳은가"이고, 그 답은 모델 목록 조회 하나로 충분하다. -->
             <div v-if="authEdit.result" class="ag-probe">
-              <div class="ag-row" :class="authEdit.result.chat && authEdit.result.chat.ok ? 'ok' : 'no'">
-                <b>채팅</b>
-                <template v-if="authEdit.result.chat && authEdit.result.chat.ok">
-                  <span>정상 · {{ authEdit.result.chat.ms }}ms</span>
+              <div class="ag-row" :class="authEdit.result.ok ? 'ok' : 'no'">
+                <b>인증</b>
+                <template v-if="authEdit.result.ok">
+                  <span>정상 · {{ authEdit.result.ms }}ms · 모델
+                    {{ (authEdit.result.models || {}).total }}개 확인</span>
                 </template>
                 <template v-else>
-                  <span>실패</span><em>{{ authEdit.result.chat && authEdit.result.chat.error }}</em>
-                </template>
-              </div>
-              <div class="ag-row" :class="authEdit.result.embeddings && authEdit.result.embeddings.ok ? 'ok' : 'no'">
-                <b>임베딩</b>
-                <template v-if="authEdit.result.embeddings && authEdit.result.embeddings.ok">
-                  <span>정상 · {{ authEdit.result.embeddings.dim }}차원</span>
-                </template>
-                <template v-else>
-                  <span>실패</span><em>{{ authEdit.result.embeddings && authEdit.result.embeddings.error }}</em>
+                  <span>실패</span><em>{{ authEdit.result.error }}</em>
                 </template>
               </div>
             </div>

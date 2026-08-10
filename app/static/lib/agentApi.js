@@ -43,7 +43,11 @@ const getJson = (p) => fetch(p).then((r) => {
 export const agentApi = {
   status: () => getJson("/api/agent/status"),
   saveSettings: (body) => put("/api/agent/settings", body),
+  // 확인은 **둘로 나뉜다**(사용자 지시): 인증(모델 무관) / 모델 연결.
+  probeAuth: () => post("/api/agent/probe/auth", {}),
   probe: () => post("/api/agent/probe", {}),
+  // ③ 이 설정 사용 — ①②가 다 끝났을 때만 서버가 받아 준다.
+  activate: () => post("/api/agent/activate", {}),
   indexStats: () => getJson("/api/agent/index"),
   models: () => getJson("/api/agent/models"),
   // 권한 확인 — 모델 수만큼 **실제 호출**이 나간다. 버튼을 눌렀을 때만 부른다.

@@ -138,6 +138,29 @@ def api_models_verify(body: _VerifyBody):
     return JSONResponse(_cfg.verify_models(body.models))
 
 
+@router.post("/probe/auth")
+def api_probe_auth():
+    """**인증만** 확인한다 — 모델 이름이 안 실리는 호출로(모델 목록 조회).
+
+    사용자 지적: "인증정보 변경하는데 왜 모델 403 이 나냐. 별개의 확인을 거치게 하라."
+    맞다 — 키를 바꾼 사람이 알고 싶은 것은 "이 키·주소가 옳은가"이지 "저 모델을 쓸 수
+    있는가"가 아니다. 둘을 한 호출로 묶으면 **멀쩡한 키를 틀렸다고 말하게 된다.**
+    """
+    return JSONResponse(_cfg.probe_auth())
+
+
+@router.post("/activate")
+def api_activate():
+    """③ '이 설정 사용' — ①인증·②모델 확인이 **둘 다** 끝났을 때만 켠다.
+
+    확인이 통과했다고 자동으로 켜지 않는다: 확인은 '되는지 보는 일'이고 활성화는 '이걸
+    쓰겠다는 결정'이다. 붙여 두면 시험 삼아 눌러 본 조합이 그대로 운영 설정이 된다.
+    """
+    r = _cfg.activate()
+    _reset_runtime()
+    return JSONResponse({**r, **_cfg.status()})
+
+
 @router.get("/diagnose")
 def api_diagnose():
     """LLM 연결 **해부** — 무엇을 어디로 어떤 모델 이름으로 보내고 뭘 받았나.

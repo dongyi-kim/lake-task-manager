@@ -62,6 +62,63 @@ def available() -> tuple[bool, str]:
 #
 # ★ 환경변수로 주입된 환경은 **면제한다.** 채점/사내 배포는 `AOAI_*` 를 프로세스에 넣어 주고
 #   설정 화면을 아무도 안 연다. 거기서 게이트를 걸면 정상 경로가 죽는다.
+# 사용자가 정한 절차(2026-08-10):
+#   ① 인증정보 변경 → [저장하고 연결 확인] → API·토큰 유효성 검증 후 저장
+#   ② 모델정보 변경 → 목록 받아 콤보에서 고름 → [저장하고 모델 확인] → 사용 가능 여부 검증 후 저장
+#   ③ ①②가 **모두** 확인된 경우에만 [이 설정 사용] 이 눌린다 → 그때 활성화된다
+# 지문을 셋으로 나눠 두는 이유: 어느 단계까지 됐는지를 **상태로** 남겨야 화면이 그것을
+# 말할 수 있고, 무엇을 고쳐야 하는지도 그 자리에서 정해진다.
+_AUTH_KEY = "agentAuthOkSig"       # ① 인증만 (모델 이름 제외)
+_MODEL_KEY = "agentModelOkSig"     # ② 모델까지 (인증 + 모델 3종)
+_ACTIVE_KEY = "agentActiveSig"     # ③ 사용자가 '이 설정 사용'을 누른 조합
+
+
+def _auth_signature() -> str:
+    """**인증에만** 관계된 값들의 지문 — 모델 이름은 안 들어간다(별개의 확인이므로)."""
+    import hashlib
+    p = provider()
+    key = (_secrets.get("aoaiApiKey") if p == "aoai" else
+           _secrets.get("openaiApiKey") if p == "openai" else
+           _secrets.get("compatApiKey"))
+    base = (_secrets.get("aoaiEndpoint") if p == "aoai" else
+            compat_base() if p == "openai_compat" else "")
+    parts = [p, base, (key or "")[-4:], _secrets.get("compatHeaders") or "",
+             api_version() if p == "aoai" else ""]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def _mark(key: str, sig: str) -> str:
+    try:
+        from app.infra import prefs
+        prefs.save({key: sig})
+    except Exception:
+        pass
+    return sig
+
+
+def auth_ok() -> bool:
+    """① 인증 확인을 통과한 조합인가(모델과 무관)."""
+    return _env_supplied() or _pref(_AUTH_KEY) == _auth_signature()
+
+
+def models_ok() -> bool:
+    """② 지금 고른 모델로 실제 호출이 통과한 조합인가."""
+    return _env_supplied() or _pref(_MODEL_KEY) == settings_signature()
+
+
+def activate() -> dict:
+    """③ '이 설정 사용' — **①②가 다 끝났을 때만** 켠다.
+
+    확인이 통과했다고 자동으로 켜지 않는 이유: 확인은 '되는지 보는 일'이고 활성화는
+    '이걸 쓰겠다는 결정'이다. 둘을 붙이면 시험 삼아 눌러 본 조합이 그대로 운영 설정이 된다.
+    """
+    if not auth_ok():
+        return {"ok": False, "error": "① 인증 확인이 아직입니다 — 인증 정보를 저장하고 연결을 확인하세요."}
+    if not models_ok():
+        return {"ok": False, "error": "② 모델 확인이 아직입니다 — 모델을 고르고 저장하고 모델 확인을 누르세요."}
+    return {"ok": True, "sig": _mark(_ACTIVE_KEY, settings_signature())}
+
+
 def settings_signature() -> str:
     """지금 '연결에 쓰이는 값들'의 지문. 비밀 원문은 안 들어간다(끝 4자만)."""
     import hashlib
@@ -85,18 +142,20 @@ def _env_supplied() -> bool:
 
 
 def mark_verified() -> str:
-    """확인에 통과한 조합을 기록한다. probe() 가 **완전히** 성공했을 때만 불린다."""
-    sig = settings_signature()
-    try:
-        from app.infra import prefs
-        prefs.save({"agentVerifiedSig": sig})
-    except Exception:
-        pass
-    return sig
+    """② 모델 확인 통과를 기록한다. probe() 가 **완전히** 성공했을 때만 불린다.
+
+    인증 지문도 함께 찍는다 — 모델 호출이 됐다면 인증은 당연히 통과한 것이다.
+    ★ 여기서 **활성화하지는 않는다.** 그건 사용자가 [이 설정 사용]으로 결정한다.
+    """
+    _mark(_AUTH_KEY, _auth_signature())
+    return _mark(_MODEL_KEY, settings_signature())
 
 
 def verified() -> bool:
-    return _env_supplied() or _pref("agentVerifiedSig") == settings_signature()
+    """지금 이 조합이 **활성**인가 — 사용자가 '이 설정 사용'을 누른 그 조합인가."""
+    if _env_supplied():
+        return True
+    return _pref(_ACTIVE_KEY) == settings_signature()
 
 
 def llm_ready() -> tuple[bool, str]:
@@ -400,9 +459,41 @@ def status() -> dict:
             "envOverrides": _secrets.env_overrides(),
             # 이중 확인 통과 여부 — 화면이 "왜 아직 안 켜졌나"를 말할 수 있어야 한다.
             "verified": verified(), "envSupplied": _env_supplied(),
+            # 두 확인을 **따로** 보고한다 — 화면이 "어디까지 됐나"를 말할 수 있어야 한다.
+            "authOk": auth_ok(), "modelsOk": models_ok(),
             # 프롬프트 레이어 — 사용자별은 편집 가능, 프로젝트 공용은 읽기 전용 표시.
             "userPrompt": str(_prefs.load().get("agentUserPrompt") or ""),
             "projectPrompt": _project_prompt()}
+
+
+def probe_auth(timeout: float = 20.0) -> dict:
+    """**인증만** 확인한다 — 모델 이름을 쓰지 않는 호출로.
+
+    ★ 사용자 지적: "인증정보 변경하는데 왜 모델 403 이 나냐. 인증 확인이랑 모델 설정은
+      별개의 확인을 거치게 하라."  맞는 말이고, 예전 구현이 틀렸다.
+      키를 바꾸면 곧바로 `chat/completions` 를 불렀는데 그 호출에는 **모델 이름이 실린다.**
+      아직 모델을 안 골랐거나 그 팀에 권한이 없으면 403/404 가 나고, 화면에는 "방금 넣은
+      인증이 틀렸다"로 보인다. **키는 멀쩡한데** 사용자는 키를 다시 친다.
+
+    그래서 인증 확인은 **모델이 필요 없는 엔드포인트**로 한다:
+      · OpenAI · 호환 : `GET {base_url}/models`
+      · AOAI          : `GET {endpoint}/openai/deployments` (api-key 로 열린다)
+    이 호출이 되면 "주소·키는 옳다"가 증명된다. 모델이 되는지는 **그다음 질문**이다.
+    """
+    out = {"provider": provider(), "ok": False}
+    ok, why = available()
+    if not ok:
+        return {**out, "error": why}
+    t0 = time.time()
+    r = list_models(timeout=timeout)
+    out["ms"] = int((time.time() - t0) * 1000)
+    if r.get("error"):
+        return {**out, "error": r["error"]}
+    out["ok"] = True
+    out["models"] = {"chat": len(r.get("chat") or []), "embed": len(r.get("embed") or []),
+                     "total": r.get("total")}
+    _mark(_AUTH_KEY, _auth_signature())
+    return out
 
 
 def probe(timeout: float = 30.0) -> dict:

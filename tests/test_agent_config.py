@@ -291,7 +291,9 @@ def test_compat_model_list_is_not_filtered_by_openai_naming(monkeypatch):
 
 
 def test_settings_are_inactive_until_both_checks_pass(monkeypatch, tmp_path):
-    """이중 확인 게이트 — **값이 있다**와 **그 조합이 된다**는 다른 말이다(사용자 지시).
+    """세 단계 게이트 — ①인증 확인 ②모델 확인 ③이 설정 사용(사용자가 정한 절차).
+
+    **값이 있다**와 **그 조합이 된다**와 **이걸 쓰겠다**는 각각 다른 말이다.
 
     예전에는 앞엣것만 보고 챗·에디터 AI 를 켰다. 그래서 키는 맞는데 모델 이름이 비었거나
     팀에 권한이 없는 모델이 골라져 있어도 화면은 "쓸 수 있음"이었고, 실패는 사용자가 실제로
@@ -313,12 +315,25 @@ def test_settings_are_inactive_until_both_checks_pass(monkeypatch, tmp_path):
     ok, why = C.llm_ready()
     assert not ok and "확인" in why, (ok, why)      # 값은 다 있는데 아직 확인 전
 
-    C.mark_verified()                                # probe 가 완전히 통과했을 때 일어나는 일
-    assert C.llm_ready()[0], "확인 뒤에는 켜져야 한다"
+    # ① 인증 확인만 하면 아직이다 — 모델이 남았다.
+    C._mark(C._AUTH_KEY, C._auth_signature())
+    assert C.auth_ok() and not C.models_ok()
+    assert not C.llm_ready()[0], "인증만 되고도 켜졌다"
+
+    # ② 모델 확인까지 — 그래도 **아직 안 켠다.** 켜는 것은 사용자의 결정이다.
+    C.mark_verified()
+    assert C.models_ok() and not C.verified(), "확인이 곧 활성화가 되면 안 된다"
+    assert not C.llm_ready()[0]
+
+    # ③ '이 설정 사용' — 여기서 켜진다.
+    assert C.activate()["ok"]
+    assert C.llm_ready()[0], "세 단계를 다 밟았는데 안 켜졌다"
 
     # ★ 모델을 바꾸면 **그 조합은 확인된 적이 없다** — 다시 잠근다.
     monkeypatch.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-4o")
-    assert not C.llm_ready()[0], "조합이 바뀌었는데 확인 상태가 따라왔다"
+    assert not C.llm_ready()[0], "조합이 바뀌었는데 활성 상태가 따라왔다"
+    assert C.auth_ok(), "인증은 그대로여야 한다 — 바뀐 것은 모델이다"
+    assert not C.activate()["ok"], "모델 확인 없이 활성화가 됐다"
 
 
 def test_env_injected_settings_skip_the_gate(monkeypatch, tmp_path):
