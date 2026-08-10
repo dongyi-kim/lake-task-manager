@@ -8,7 +8,7 @@
 #   ② 계약 — 코드가 잴 수 있는 최소선(초안 항목·표·참조·근거 위반·후검증)
 #   ③ 정성 — **답변 전문**과 승인 카드. 보고서에 그대로 실어 사람이 비교한다.
 #
-# 실행: python -X utf8 -u tools/agent_lang_ab.py <출력.json> [모델]
+# 실행: python -X utf8 -u tools/agent_lang_ab.py <출력.json> [모델] [시나리오 ID...]
 #       (브랜치별 워크트리에서 각각 돌리고 두 json 을 비교한다)
 import io
 import json
@@ -23,6 +23,7 @@ os.environ["LAKE_AGENT_PROVIDER"] = "openai"
 os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"      # 사람이 없는 실행 — 설정 확인 게이트 면제
 OUT = sys.argv[1] if len(sys.argv) > 1 else "lang-ab.json"
 MODEL = sys.argv[2] if len(sys.argv) > 2 else "gpt-4o-mini"
+ONLY = {x.upper() for x in sys.argv[3:]}
 os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
 os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", MODEL)
 
@@ -47,22 +48,36 @@ _KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 _TABLE = re.compile(r"^\s*\|.+\|\s*$", re.M)
 
 
-def _checks(out: dict) -> dict:
+def _checks(out: dict, user_text: str = "") -> dict:
     """코드가 **잴 수 있는 것**만. 문장의 좋고 나쁨은 사람이 본다."""
     text = out.get("reply") or ""
-    items = ((out.get("pending") or {}).get("items")
-             or (out.get("draft") or {}).get("items") or [])
+    pending = out.get("pending") or {}
+    items = (pending.get("items") or (out.get("draft") or {}).get("items") or [])
+    # API 승인 shape는 부모 `items`와 자식 `children`을 분리한다. 예전 하네스는 items 안의
+    # nested children만 세서 실제 트리도 전부 0건으로 기록했다 — 보고서의 S1 오판 원인.
+    flat_kids = pending.get("children") or []
+    child_count = (len(flat_kids) if flat_kids else
+                   sum(len(i.get("children") or []) for i in items))
     c = {
         "글자수": len(text),
         "표": len(_TABLE.findall(text)) >= 2,
         "참조절": "참조" in text and bool(_KEY.search(text)),
         "초안항목": len(items),
-        "자식합계": sum(len(i.get("children") or []) for i in items),
+        "자식합계": child_count,
         "질문수": len(out.get("questions") or []),
         # 어투 — 정보 전달 줄의 종결어미(사용자 지시: 종결어미 생략·개조식)
         "종결어미줄": len(re.findall(r"(?:입니다|습니다|합니다)[.\s]*$", text, re.M)),
         "맺음상투구": bool(re.search(r"(?:궁금|필요).{0,20}(?:말씀|알려)", text)),
     }
+    wants_kids = bool(re.search(
+        r"단계별\s*(?:sub-?task|서브\s*태스크)|하위\s*작업으로\s*나눠|단계별로\s*쪼개",
+        user_text or "", re.I))
+    claims_kids = bool(re.search(
+        r"(?:^|\n)#{1,4}\s*하위\s*작업|(?:sub-?task|서브\s*태스크)로\s*나누",
+        text, re.I))
+    c["요구구조불일치"] = bool(wants_kids and items and not out.get("questions")
+                             and c["자식합계"] < 2)
+    c["응답카드불일치"] = bool(claims_kids and items and c["자식합계"] == 0)
     try:
         from app.agent.workflow import grounding
         g = grounding.check(text) or {}
@@ -81,6 +96,8 @@ def _checks(out: dict) -> dict:
 def run():
     rows = []
     for sid, turns in SCENARIOS:
+        if ONLY and sid.split("-", 1)[0].upper() not in ONLY and sid.upper() not in ONLY:
+            continue
         tid, per = "", []
         for q in turns:
             t0 = time.time()
@@ -98,13 +115,17 @@ def run():
                 "완성토큰": u.get("completionTokens"), "총토큰": u.get("totalTokens"),
                 "캐시토큰": u.get("cachedTokens", 0),
                 "역할별": u.get("byNode") or {},
-                "검사": _checks(out),
+                "검사": _checks(out, q),
                 "답변": out.get("reply") or "",
                 "카드": [{"타입": i.get("type"), "제목": i.get("summary"),
                           "본문": (i.get("description") or "")[:900],
-                          "자식": [c.get("summary") for c in (i.get("children") or [])]}
-                         for i in (((out.get("pending") or {}).get("items")
-                                    or (out.get("draft") or {}).get("items") or [])[:4])],
+                          "자식": ([c.get("summary") for c in (i.get("children") or [])]
+                                   or [c.get("summary") for c in
+                                       ((out.get("pending") or {}).get("children") or [])
+                                       if c.get("parent_index") == idx])}
+                         for idx, i in enumerate(
+                             ((out.get("pending") or {}).get("items")
+                              or (out.get("draft") or {}).get("items") or [])[:4])],
                 "질문폼": [q2.get("question") for q2 in (out.get("questions") or [])],
             })
             print(f"  {sid} · {per[-1].get('초')}s · {per[-1].get('총토큰')}tok", flush=True)
@@ -113,7 +134,8 @@ def run():
 
     tot = {"턴수": 0, "초": 0.0, "총토큰": 0, "프롬프트토큰": 0, "완성토큰": 0,
            "캐시토큰": 0, "LLM호출": 0, "근거위반": 0, "후검증위반": 0,
-           "종결어미줄": 0, "맺음상투구": 0}
+           "종결어미줄": 0, "맺음상투구": 0, "요구구조불일치": 0,
+           "응답카드불일치": 0}
     for r in rows:
         for t in r["턴"]:
             if "오류" in t:
@@ -126,6 +148,8 @@ def run():
             tot["후검증위반"] += len(ck.get("후검증위반") or [])
             tot["종결어미줄"] += ck.get("종결어미줄") or 0
             tot["맺음상투구"] += 1 if ck.get("맺음상투구") else 0
+            tot["요구구조불일치"] += 1 if ck.get("요구구조불일치") else 0
+            tot["응답카드불일치"] += 1 if ck.get("응답카드불일치") else 0
     tot["초"] = round(tot["초"], 1)
     io.open(OUT, "w", encoding="utf-8", newline="\n").write(
         json.dumps({"model": MODEL, "합계": tot, "시나리오": rows},

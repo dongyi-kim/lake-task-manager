@@ -60,6 +60,25 @@ def test_no_playbook_means_no_opinion():
     assert P.check({}, "") == []
 
 
+def test_pending_card_still_gets_draft_checks_without_playbook_metadata():
+    """API 반환 shape에는 playbook이 없어도 pending 카드와 마지막 요청은 남는다."""
+    from langchain_core.messages import HumanMessage
+    state = {"messages": [HumanMessage(content="단계별 Sub-Task 로 나눠줘")],
+             "pending": {"items": [{"summary": "x", "children": []}]}}
+    bad = P.check(state, "### 하위 작업\n1. 설계\n2. 구현")
+    assert any("자식이 0건" in x for x in bad), bad
+
+
+def test_pending_flat_children_are_counted_separately_from_parent_items():
+    """승인 API는 부모와 자식을 분리한다 — items 안에 children이 없는 것은 정상이다."""
+    from langchain_core.messages import HumanMessage
+    state = {"messages": [HumanMessage(content="단계별 Sub-Task 로 나눠줘")],
+             "pending": {"items": [{"summary": "부모"}],
+                         "children": [{"parent_index": 0, "summary": "설계"},
+                                      {"parent_index": 0, "summary": "구현"}]}}
+    assert not P.check(state, "### 하위 작업\n1. 설계\n2. 구현")
+
+
 def test_the_note_is_visible_and_bounded():
     """붙이는 경고는 **보이되 답을 덮지 않는다** — 최대 4줄."""
     note = P.note(["a", "b", "c", "d", "e", "f"])

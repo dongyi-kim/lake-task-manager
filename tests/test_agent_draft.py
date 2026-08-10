@@ -245,6 +245,87 @@ def test_saying_it_will_split_without_children_is_flagged():
     assert "확인 필요" in r["draft"]["rationale"]
 
 
+def test_explicit_new_work_subtask_shape_overrides_a_single_task(monkeypatch):
+    """사용자가 단계별 Sub-Task 를 지정했으면 모델의 single_task 판단보다 사용자가 이긴다.
+
+    실측 언어 비교 S1: 네 암 모두 응답에는 하위 작업 3건을 썼지만 승인 카드 children 은
+    0건이었다. `structure_source=user_specified` 표지만 고치고 실제 구조는 안 고친 탓이다.
+    """
+    import app.agent.workflow.agents.refiner as mod
+    monkeypatch.setattr(mod, "_split_into_children", lambda _state, _item: [
+        {"summary": "NDV Batch Job 설계"},
+        {"summary": "NDV Batch Job 구현"},
+        {"summary": "NDV Batch Job 검증"},
+    ])
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [dict(_draft()["items"][0])]}
+    r = Refiner().apply(_msg("단계별 Sub-Task 로 나눠줘. 알아서"), out)
+    d = r["draft"]
+    assert d["structure"] == "task_with_subtasks"
+    assert d["structure_source"] == "user_specified"
+    assert [c["summary"] for c in d["items"][0]["children"]] == [
+        "NDV Batch Job 설계", "NDV Batch Job 구현", "NDV Batch Job 검증"]
+
+
+def test_explicit_new_tree_does_not_attach_to_a_parent_the_user_never_named():
+    """새 부모 Task를 요청했는데 모델이 임의의 기존 부모 아래 Sub-Task만 내면 안 된다."""
+    out = {"questions": [], "mode": "subtask", "rationale": "",
+           "structure": "task_with_subtasks", "structure_source": "user_specified",
+           "items": [{"summary": f"[ETL] Iceberg Puffin NDV Batch Job {stage}",
+                      "type": "Sub-Task", "parent": "DL-9090", "description": ""}
+                     for stage in ("설계", "구현", "검증")]}
+    r = Refiner().apply(_msg("새 Batch Job을 단계별 Sub-Task 로 나눠줘. 알아서"), out)
+    d = r["draft"]
+    assert d["mode"] == "task"
+    assert d["structure"] == "task_with_subtasks"
+    assert len(d["items"]) == 1 and len(d["items"][0].get("children") or []) == 3
+    assert all(not c.get("parent") for c in d["items"][0]["children"])
+
+
+def test_blocking_questions_suppress_the_competing_draft():
+    """답이 없어서 묻는 턴에 임의 초안을 함께 내면 질문과 승인 카드가 서로 모순된다."""
+    out = {"questions": [{"question": "어느 범위까지 할까요?", "kind": "choice",
+                          "options": ["널 비율만", "전체 품질 규칙"], "field": "scope"}],
+           "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [dict(_draft()["items"][0])]}
+    r = Refiner().apply(_msg("데이터 품질 개선 작업 하나 만들어줘"), out)
+    assert r["questions"]
+    assert not r["draft"]["items"], "질문에 답하기 전 임의 초안은 승인 카드에 오르면 안 된다"
+
+
+def test_delegation_keeps_the_draft_and_suppresses_model_questions():
+    """사용자가 판단을 위임했으면 기존 계약대로 질문이 아니라 완성된 초안을 낸다."""
+    out = {"questions": [{"question": "범위를 고를까요?", "kind": "choice",
+                          "options": ["최소", "전체"], "field": "scope"}],
+           "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [dict(_draft()["items"][0])]}
+    r = Refiner().apply(_msg("데이터 품질 개선 작업 만들어줘. 알아서"), out)
+    assert not r["questions"]
+    assert r["draft"]["items"]
+
+
+def test_postcheck_catches_a_subtask_reply_with_an_empty_card():
+    """자연어와 승인 카드가 갈라진 S1을 grounding=0으로 통과시키지 않는다."""
+    from app.agent.workflow import postcheck
+    state = _msg("단계별 Sub-Task 로 나눠줘. 알아서",
+                 playbook="task_create", questions=[],
+                 draft={"items": [dict(_draft()["items"][0])]})
+    bad = postcheck.check(state, "### 하위 작업\n1. 설계\n2. 구현\n3. 검증")
+    assert any("자식이 0건" in x for x in bad), bad
+
+
+def test_postcheck_accepts_the_same_reply_when_children_exist():
+    from app.agent.workflow import postcheck
+    item = dict(_draft()["items"][0])
+    item["children"] = [{"summary": "설계"}, {"summary": "구현"}, {"summary": "검증"}]
+    state = _msg("단계별 Sub-Task 로 나눠줘. 알아서",
+                 playbook="task_create", questions=[], draft={"items": [item]})
+    assert not postcheck.check(state, "### 하위 작업\n1. 설계\n2. 구현\n3. 검증")
+
+
 def test_a_creation_request_never_turns_into_an_edit_of_someone_elses_ticket():
     """조사에서 비슷한 티켓이 나왔다고 그걸 고치면, 부탁받은 생성은 사라지고
     시키지도 않은 수정이 승인 카드에 오른다(실측)."""
@@ -394,6 +475,8 @@ def test_shape_words_are_detected_by_code_not_guessed():
     from app.agent.workflow.agents.refiner import shape_hint
     assert shape_hint(_msg("이거 에픽으로 크게 잡아줘"))[0] == "new_epic"
     assert shape_hint(_msg("DL-9090 서브태스크로 쪼개줘"))[0] == "subtask"
+    assert shape_hint(_msg("새 Batch Job을 단계별 Sub-Task 로 나눠줘"))[0] == \
+        "task_with_subtasks"
     assert shape_hint(_msg("테스크 하나만 만들어줘"))[0] == "single_task"
     assert shape_hint(_msg("메타데이터 등록 작업이 필요해"))[0] == "", "형태를 안 말했으면 열려 있다"
 
@@ -627,6 +710,35 @@ def test_unlinked_reference_bullets_are_dropped_from_the_body():
     d = r["draft"]["items"][0]["description"]
     assert "아키텍처 결정 기록" not in d and "스프린트 회의록" not in d
     assert "DL-9072" in d and "출처 없는 항목" in r["draft"]["rationale"]
+
+
+def test_unlinked_bullets_under_reference_variant_are_dropped_too():
+    """모델이 '참고 사항'이라고 써도 같은 출처 계약이다."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "s", "type": "Task",
+                      "description": '<h3>참고 사항</h3><ul>'
+                                     '<li>운영팀 구두 요청</li></ul>'}]}
+    r = Refiner().apply(_msg("작업 만들어줘"), out)
+    assert "운영팀 구두 요청" not in r["draft"]["items"][0]["description"]
+
+
+def test_reference_cleanup_runs_again_after_body_repair(monkeypatch):
+    """본문 보정 호출이 참고를 새로 만들면 생산자 뒤의 두 번째 가드가 걷어낸다."""
+    from app.agent.workflow.agents import refiner as R
+
+    repaired = ("<h3>배경</h3><p>요청</p><h3>작업 범위</h3>"
+                "<ul><li>포함: 화면 표시</li><li>제외: 편집</li></ul>"
+                '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                '<li data-checked="false">화면에서 설명 표시 확인</li></ul>'
+                "<h3>참고 자료</h3><ul><li>운영팀 구두 요청</li></ul>")
+    monkeypatch.setattr(R, "_task_for_module",
+                        lambda *_a, **_k: {"description": repaired})
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "items": [{"summary": "[Catalog] 컬럼 설명 표시", "type": "Task",
+                      "description": "", "components": ["Catalog"]}]}
+    r = Refiner().apply(_msg("컬럼 설명을 화면에 보여줘. 알아서"), out)
+    assert "운영팀 구두 요청" not in r["draft"]["items"][0]["description"]
+    assert "본문 보정 뒤" in r["draft"]["rationale"]
 
 
 def test_a_scope_without_exclusions_is_flagged_but_never_invented():
@@ -1001,6 +1113,25 @@ def test_the_split_falls_back_to_the_dod_when_the_llm_call_comes_back_empty():
     assert _children_from_dod({}) == []
 
 
+def test_an_explicit_stage_split_never_falls_back_to_zero_children(monkeypatch):
+    """보정 LLM과 얇은 DoD가 모두 빈손이어도 사용자 지정 구조는 실제 카드가 되어야 한다."""
+    from app.agent import config as C
+    from app.agent.workflow.agents.refiner import _split_into_children
+
+    def fail_llm(*_args, **_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(C, "get_llm", fail_llm)
+    item = {"summary": "[ETL] Iceberg Puffin NDV 통계 생성 Batch Job 구현",
+            "description": '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                           '<li data-checked="false">Batch Job 실행 성공</li>'
+                           '<li data-checked="false">통계 정확성 확인</li></ul>'}
+    kids = _split_into_children(_msg("단계별 Sub-Task 로 나눠줘. 알아서"), item)
+    assert len(kids) == 3
+    assert all("Iceberg Puffin NDV" in c["summary"] for c in kids), kids
+    assert [c["summary"].split()[-1] for c in kids] == ["설계", "구현", "검증"]
+
+
 def test_a_missing_background_is_filled_from_the_original_request():
     """보정 호출이 빈손이어도 **배경만은 남는다.**
 
@@ -1171,4 +1302,3 @@ def test_boilerplate_closers_are_stripped_by_code_not_asked_for():
                  "DL-9044 를 확인해 주세요.",
                  "**참조**\n[1] DL-9044 — 적재주기 변경"):
         assert keep.splitlines()[-1] in f("결론 한 줄\n\n" + keep), keep
-

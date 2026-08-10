@@ -550,6 +550,10 @@ class Refiner(StructuredAgent):
                                        if (isinstance(o, dict) and (o.get("label") or o.get("value")))
                                        or (not isinstance(o, dict) and str(o).strip())][:5],
                            "field": q.get("field") or ""})
+        # 모델이 낸 질문은 **초안을 만들기 전에 답이 필요한 질문**이다. 뒤에서 코드가
+        # 붙이는 구조 확인 질문과 구분해 둔다 — 전자는 초안과 함께 내면 사용자가 무엇을
+        # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
+        model_questions = bool(qs)
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
         mode = out.get("mode") or "task"
         # Sub-Task 는 자식을 가질 수 없다 — subtask 모드 항목에 모델이 children 을 또 달면
@@ -573,6 +577,22 @@ class Refiner(StructuredAgent):
                 if (i.get("type") or "").lower().startswith("sub") or mode == "subtask":
                     if not str(i.get("parent") or "").strip():
                         i["parent"] = named[0]
+
+        # ★ 새 일을 "단계별 Sub-Task"로 만들라는 요청인데 모델이 임의의 기존 티켓을 골라
+        # mode=subtask 로 내면, 사용자가 요청한 **새 부모 Task가 사라진다**. S1 재검증에서
+        # 부모 키를 말하지 않았는데 Sub-Task 3건만 승인 카드에 올랐다. 지목한 부모가 없는
+        # 새 일은 Task 배치로 되돌려 아래 단계/번호 접기가 `Task 1 + children N`으로 만든다.
+        explicit_new_tree = shape_hint(state)[0] == "task_with_subtasks" and not named
+        if explicit_new_tree and mode == "subtask" and items:
+            for i in items:
+                i["type"] = "Task"
+                i.pop("parent", None)
+            mode = "task"
+            out["mode"] = "task"
+            out["structure"] = "task_with_subtasks"
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(새 일의 단계별 Sub-Task 요청이라 임의의 기존 부모에 "
+                                  "붙이지 않고 새 Task 아래로 묶었다)").strip()
 
         # ── 지목한 티켓이 부모다: 껍데기 Task 를 만들지 않는다 ─────────────
         # "DL-9090 에 서브태스크 추가해줘" 는 그 티켓 **아래**에 붙이라는 뜻인데, 모델이
@@ -698,6 +718,16 @@ class Refiner(StructuredAgent):
             out["rationale"] = ((out.get("rationale") or "")
                                 + f"\n(사용자가 '알아서'라고 해서 기본값으로 채웠다: {asked})").strip()
             qs = []
+        # ★ **질문 또는 초안**이지, 질문과 초안이 동시에 아니다. "재현 경로가 무엇인가요"를
+        # 물으면서 근거 없는 Bug 초안을 함께 승인 카드에 올리거나, 범위를 물으면서 임의의
+        # Task 를 만드는 실측 실패가 반복됐다(ASK1/BUG1). 사용자가 '알아서'라고 위임한
+        # 경우는 바로 위에서 질문을 버리고 초안을 유지한다. 여기서 비우는 것은 모델이 낸
+        # blocking 질문이 남은 경우뿐이라, 뒤에서 코드가 붙이는 구조 확인 질문에는 영향 없다.
+        if model_questions and qs and items:
+            items.clear()
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(답이 필요한 질문이 남아 있어 임의 초안은 보류했다)"
+                                ).strip()
         # 초안 관련 인터뷰의 마지막엔 항상 **자유 의견** 질문 하나를 붙인다(사용자 요청) —
         # 객관식 보기가 못 담는 계획·우려를 받아낼 출구. 코드가 붙이므로 모델이 잊지 못한다.
         # ★ 이미 넷 이상 물었으면 **자유 의견 칸은 붙이지 않는다.** 슬롯이 늘어(배경·완료
@@ -757,6 +787,13 @@ class Refiner(StructuredAgent):
         why = (out.get("structure_why") or "").strip()
         src = out.get("structure_source") or ""
         said_shape, _word = shape_hint(state)
+        # 사용자가 새 일의 형태를 "단계별 Sub-Task"로 지정했는데 모델이 single_task 를
+        # 내면 `user_specified` 표지만 붙고 산출 구조는 사용자 지정과 달라진다. 표식은
+        # 보장이 아니므로 실제 structure도 코드가 맞춘다.
+        # 기존 부모에 붙이는 mode=subtask 는 앞의 named-parent 경로가 이미 처리한다.
+        if said_shape == "task_with_subtasks" and mode != "subtask" and items:
+            structure = "task_with_subtasks"
+            out["structure"] = structure
         if said_shape:                      # 사용자가 말한 것은 판단이 아니다 — 코드가 확정한다
             src = "user_specified"
         draft = {"mode": out.get("mode") or "task", "items": items,
@@ -1038,7 +1075,8 @@ class Refiner(StructuredAgent):
         # (실측: "30개 나눠서"에 자식 1개). subtask 모드는 제외 — Sub-Task 는 자식이 없다.
         if structure == "task_with_subtasks" and items and mode != "subtask" \
                 and sum(len(i.get("children") or []) for i in items) < 2:
-            fix = _split_into_children(state, items[0]) if _said_defaults(state) else []
+            fix = (_split_into_children(state, items[0])
+                   if _said_defaults(state) or said_shape == "task_with_subtasks" else [])
             if len(fix) >= 2:
                 kept = [c for c in (items[0].get("children") or []) if isinstance(c, dict)]
                 have = {str(c.get("summary") or "") for c in kept}
@@ -1247,6 +1285,17 @@ class Refiner(StructuredAgent):
         #     · DoD 다듬기·본문 재작성은 LLM 왕복이라 **질문이 없을 때만**(초안이 확정 단계)
         if items and not struct_stage:
             _fill_thin_bodies(state, items, repair=not qs)
+            # 본문 보정은 위의 참고 불릿 가드 **뒤에서** 새 HTML을 만든다. 생산자 뒤에서
+            # 다시 검사하지 않으면 보정 호출이 만든 출처 없는 참고가 그대로 승인 카드로 간다
+            # (PASTE1/PASTE2 실측). 같은 함수로 한 번 더 보며 규칙은 복제하지 않는다.
+            late_dropped = []
+            for it in items:
+                it["description"], gone = _drop_unlinked_refs(it.get("description") or "")
+                late_dropped += gone
+            if late_dropped:
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(본문 보정 뒤 참고에서 출처 없는 항목을 뺐다: "
+                                    + ", ".join(late_dropped[:4]) + ")").strip()
             if not qs:
                 _sharpen_dod(state, items)
 
@@ -1904,7 +1953,18 @@ def _split_into_children(state, item: dict) -> list:
     #   (실측 STARR1: 같은 케이스가 실행마다 통과/실패로 뒤집혔다).
     #   knowledge/07 이 이미 규정한다 — "DoD 가 5개를 넘고 서로 다른 단계라면 그건 DoD 가
     #   아니라 **Sub-Task 목록**이다". 규정이 있으니 코드가 그대로 집행한다.
-    return _children_from_dod(item)
+    fallback = _children_from_dod(item)
+    if fallback:
+        return fallback
+    # 사용자가 **새 일의 단계별 Sub-Task 형태를 명시**한 경우에는 빈 리스트로 돌아가면
+    # 안 된다. 보정 LLM이 일반적인 단계명만 내어 필터에 걸리고 DoD도 두 줄뿐이면 두
+    # 폴백이 모두 빈손이 될 수 있다. 구조 판단은 사용자가 이미 했으므로 빈 산출을 허용하지 않는다.
+    # 코드가 부모 제목의 대상을 보존한 최소 3단계를 만든다.
+    if shape_hint(state)[0] == "task_with_subtasks":
+        base = _base_title(str(item.get("summary") or "")).strip()
+        if base:
+            return [{"summary": f"{base} {stage}"} for stage in ("설계", "구현", "검증")]
+    return []
 
 
 def _task_grade_body(body) -> bool:
@@ -1985,7 +2045,9 @@ def _bug_body_for(state, it) -> str:
     html.append("<h3>기대 동작</h3><p>" + _esc(expected or _ASK_REPORTER) + "</p>")
     html.append("<h3>실제 동작</h3><p>" + _esc(actual) + "</p>")
     if notes:
-        html.append("<h3>참고</h3><ul>"
+        # 신고자가 준 브라우저·시간대 등은 출처 문서가 아니라 **환경 정보**다. '참고'에
+        # 두면 출처 없는 문서/키로 오인되어 참고 가드가 지운다(PASTE2 실측).
+        html.append("<h3>환경 및 추가 정보</h3><ul>"
                     + "".join(f"<li>{_esc(x)}</li>" for x in notes) + "</ul>")
     return "".join(html)
 
@@ -2321,7 +2383,8 @@ def _drop_unlinked_refs(desc: str) -> tuple:
                 gone.append(_re.sub(r"<[^>]+>", "", li).strip()[:30])
         return head + "".join(kept) + tail
 
-    out = _re.sub(r"(<h3>\s*참고\s*</h3>\s*<ul[^>]*>)(.*?)(</ul>)", _clean, desc or "",
+    out = _re.sub(r"(<h3>\s*참고(?:\s*(?:사항|자료|문서))?\s*</h3>\s*<ul[^>]*>)"
+                  r"(.*?)(</ul>)", _clean, desc or "",
                   flags=_re.S | _re.I)
     return out, gone
 
@@ -2775,6 +2838,12 @@ def _asks_subtasks(state) -> bool:
 # 맡기면 흔들리므로(같은 문장에 다른 답), 낱말로 하는 판정은 코드가 한다.
 _SHAPE_WORDS = (
     ("new_epic", ("에픽으로", "epic 으로", "에픽 만들", "에픽으로 크게", "이니셔티브")),
+    # 새 일의 "단계별 Sub-Task"는 **Task 하나 + children**이다. 기존 코드에서는 아래의
+    # generic `subtask`에 먼저 걸려, 사용자가 구조를 말했는데도 single_task 산출을 고치지
+    # 못했다. 기존 부모 키를 지목한 경우는 shape_hint 의 선행 분기가 mode=subtask 로 본다.
+    ("task_with_subtasks", ("단계별 서브태스크", "단계별 서브 태스크",
+                            "단계별 sub-task", "단계별 subtask", "하위 작업으로 나눠",
+                            "하위작업으로 나눠", "단계로 쪼개", "단계별로 쪼개")),
     ("subtask", ("서브태스크", "서브 태스크", "sub-task", "subtask", "하위 작업", "하위작업",
                  "쪼개", "분할")),
     # ★ "사람 나눠서 진행하게" 도 **형태를 말한 것**이다 — 낱말이 "나눠서 만들" 하나뿐이라
@@ -2789,9 +2858,16 @@ _SHAPE_WORDS = (
 def shape_hint(state) -> tuple:
     """(사용자가 말한 형태 | "", 근거 낱말). 말하지 않았으면 열려 있는 것이다."""
     said = last_user_text(state)
+    said_l = said.lower()
+    # 실재/지목 부모 아래에 붙이는 요청은 새 Task+children 구조가 아니라 Sub-Task 배치다.
+    # "DL-9090을 단계별로 쪼개줘"도 이쪽이므로 구체적인 새-일 패턴보다 먼저 판정한다.
+    if _re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", said, _re.I) and any(
+            w in said_l for w in ("서브태스크", "서브 태스크", "sub-task", "subtask",
+                                  "하위 작업", "하위작업", "쪼개", "분할")):
+        return "subtask", "기존 부모 키"
     for kind, words in _SHAPE_WORDS:
         for w in words:
-            if w in said:
+            if w.lower() in said_l:
                 return kind, w
     return "", ""
 

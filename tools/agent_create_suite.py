@@ -60,6 +60,7 @@ def _owners(rows):
 # ★ 목록을 여기 다시 적지 않는다 — 코드가 지키는 규칙과 배터리가 재는 규칙이 갈리면
 #   더 관대한 쪽이 사고를 낸다(§5-e). refiner 가 원본이고 여기는 그것을 가져다 쓴다.
 from app.agent.workflow.agents.refiner import DOD_VAGUE as _DOD_VAGUE  # noqa: E402
+from app.agent.workflow.agents.refiner import _bug_grade_body  # noqa: E402
 
 
 def _body_flaws(o) -> list:
@@ -75,9 +76,18 @@ def _body_flaws(o) -> list:
         if len(b.strip()) < 60:
             flaws.append(f"[{i}] 본문이 사실상 비었다")
             continue
-        for sec in ("배경", "작업 범위", "완료 조건"):
-            if sec not in b:
-                flaws.append(f"[{i}] '{sec}' 섹션 없음")
+        is_bug = str(it.get("type") or "").strip().lower() == "bug"
+        # Bug는 Task의 배경/범위/DoD가 아니라 재현/기대/실제 세 칸이 계약이다. 전 케이스
+        # 공통 Task 게이트를 걸어 PASTE2·BUG2가 올바른 Bug 본문인데도 항상 실패했다.
+        if is_bug:
+            if not _bug_grade_body(b):
+                for sec in ("재현", "기대", "실제"):
+                    if sec not in b:
+                        flaws.append(f"[{i}] Bug '{sec}' 섹션 없음")
+        else:
+            for sec in ("배경", "작업 범위", "완료 조건"):
+                if sec not in b:
+                    flaws.append(f"[{i}] '{sec}' 섹션 없음")
         # 중복·영문 섹션 — 실측 사고(참고/Knowledge/References 3벌)
         if b.count("<h3>참고</h3>") > 1:
             flaws.append(f"[{i}] 참고 섹션이 두 벌")
@@ -85,19 +95,23 @@ def _body_flaws(o) -> list:
             if bad in b:
                 flaws.append(f"[{i}] 영문 중복 섹션 '{bad}'")
         # 범위의 제외 — "하지 않는 것을 적는 게 절반"(knowledge/07)
-        if "작업 범위" in b and not re.search(r"제외|하지\s*않", b):
+        if not is_bug and "작업 범위" in b and not re.search(r"제외|하지\s*않", b):
             flaws.append(f"[{i}] 작업 범위에 제외가 없다")
         # DoD 판정 방법 — "테스트 완료"는 언제 끝인지 모른다
         dods = re.findall(r'data-checked="[^"]*"[^>]*>(.*?)</li>', b, re.S)
         dods = [re.sub(r"<[^>]+>", "", d).strip() for d in dods]
         dods = [d for d in dods if d]
-        if dods:
+        if not is_bug and dods:
             vague = [d for d in dods if any(v in d for v in _DOD_VAGUE) and len(d) < 24]
             if len(vague) * 2 > len(dods):
                 flaws.append(f"[{i}] DoD 절반 이상이 판정 방법 없음: {vague[:2]}")
-        # 링크도 키도 없는 참고 불릿은 날조로 취급된다(코드 가드가 지우지만 재발 감시)
-        for m in re.finditer(r"<li>(?!.*?(?:[A-Z]{2,}-\d+|<a href))(.{6,80}?)</li>", b):
-            if "참고" in b[max(0, m.start() - 400):m.start()]:
+        # 링크도 키도 없는 **참고 섹션 안의** 불릿은 날조로 취급한다. 예전의 앞 400자
+        # 탐색은 뒤의 '환경 및 추가 정보'까지 참고로 오인했다 — HTML 섹션 경계를 직접 본다.
+        for sec in re.finditer(
+                r"<h3>\s*참고(?:\s*(?:사항|자료|문서))?\s*</h3>\s*<ul[^>]*>(.*?)</ul>",
+                b, re.S | re.I):
+            for m in re.finditer(r"<li>(?!.*?(?:[A-Z]{2,}-\d+|<a href))(.{6,80}?)</li>",
+                                 sec.group(1), re.S):
                 flaws.append(f"[{i}] 참고에 출처 없는 불릿: {m.group(1)[:30]}")
                 break
     return flaws
@@ -192,7 +206,7 @@ CASES = [
     # ── 정보가 모자란 요청: 물어야 한다 ──────────────────────────────
     ("ASK1", "범위가 없으면 되묻는다(무턱대고 만들지 않는다)", [
         "데이터 품질 개선 작업 하나 만들어줘"],
-     lambda o, _: bool(o.get("questions"))),
+     lambda o, _: bool(o.get("questions")) and not items(o)),
 
     ("ASK2", "되물은 뒤 답을 반영해 초안으로", [
         "데이터 품질 개선 작업 하나 만들어줘",
@@ -202,8 +216,8 @@ CASES = [
     # ── 중복·기존 것 처리 ────────────────────────────────────────────
     ("DUP1", "이미 있는 일이면 새로 만들지 말고 알린다", [
         "프로듀서를 Avro 로 전환하는 작업을 새로 만들자"],
-     lambda o, _: (bool(o.get("questions"))
-                   or "DL-9072" in (o.get("reply") or ""))),
+     lambda o, _: not items(o) and (bool(o.get("questions"))
+                                    or "DL-9072" in (o.get("reply") or ""))),
 
     # ── 속성 지정이 섞인 요청 ────────────────────────────────────────
     ("ATTR1", "우선순위·마감·라벨을 말로 지정", [
@@ -262,14 +276,13 @@ CASES = [
 
     ("BUG3", "이미 같은 증상의 Bug 가 있으면 새로 만들지 않는다", [
         "야간 배치가 커넥션 타임아웃으로 실패한다. 버그로 등록해줘"],
-     lambda o, _: (bool(o.get("questions"))
-                   or "DL-" in (o.get("reply") or ""))),
+     lambda o, _: not items(o) and (bool(o.get("questions"))
+                                    or "DL-" in (o.get("reply") or ""))),
 
     # ── 규칙 위반을 요구 ─────────────────────────────────────────────
     ("RULE1", "Sub-Task 를 최상위로 만들어 달라 — 규칙대로 거절하거나 부모를 묻는다", [
         "서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼"],
-     lambda o, _: bool(o.get("questions"))
-     or all((i.get("type") or "") != "Sub-Task" for i in items(o))),
+     lambda o, _: bool(o.get("questions")) and not items(o)),
 
     ("RULE2", "Story Point 를 넣어 달라 — 생성 시에는 넣지 않는다", [
         "리니지 3홉 확장 Story 만들고 스토리포인트 5로 넣어줘. 알아서"],
@@ -300,7 +313,7 @@ def run(cid, desc, turns, check):
           f" · 본문 {'ok' if not flaws else f'{len(flaws)}건'} · {time.time() - t0:.0f}s")
     if flaws:
         print(f"    본문 결함: {' / '.join(flaws[:4])}")
-    if not ok_struct:
+    if not ok:
         print(f"    reply: {(last.get('reply') or '')[:200]}")
         print(f"    items: {json.dumps(items(last), ensure_ascii=False)[:300]}")
     return ok, (last.get("usage") or {}).get("costUsd", 0) or 0

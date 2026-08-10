@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import re
 
+from app.agent.workflow.state import last_user_text
+
 _KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 _REF_MARK = re.compile(r"\[\d{1,2}\]")
 _TABLE_ROW = re.compile(r"^\s*\|.+\|\s*$", re.M)
@@ -82,10 +84,31 @@ def _check_draft(text: str, state: dict) -> list:
     "질문만 내고 초안 0건"은 실사용에서 먹통으로 읽힌다(실측 2회). 다만 되묻는 턴은
     정당하므로, **질문도 없고 항목도 없을 때만** 위반이다.
     """
-    items = ((state or {}).get("draft") or {}).get("items") or []
-    if items or (state or {}).get("questions") or (state or {}).get("change_plan"):
-        return []
-    return ["초안도 질문도 없다 — 사용자가 할 수 있는 일이 없는 답이다"]
+    draft = (state or {}).get("draft") or (state or {}).get("pending") or {}
+    items = draft.get("items") or []
+    if not items and not (state or {}).get("questions") \
+            and not (state or {}).get("change_plan"):
+        return ["초안도 질문도 없다 — 사용자가 할 수 있는 일이 없는 답이다"]
+
+    bad = []
+    # API pending shape는 부모 items와 자식 children을 **분리**한다. items 안만 보면 모든
+    # 트리가 자식 0건처럼 보인다(A/B 하네스가 실제로 이 오판을 했다). 내부 draft shape는
+    # nested children이므로 둘 중 해당하는 한쪽을 센다.
+    flat_kids = draft.get("children") or []
+    kids = (len(flat_kids) if flat_kids else
+            sum(len(i.get("children") or []) for i in items if isinstance(i, dict)))
+    said = last_user_text(state or {}).lower()
+    wants_kids = any(w in said for w in (
+        "단계별 sub-task", "단계별 subtask", "단계별 서브태스크", "단계별 서브 태스크",
+        "하위 작업으로 나눠", "하위작업으로 나눠", "단계별로 쪼개"))
+    claims_kids = bool(re.search(
+        r"(?:^|\n)#{1,4}\s*하위\s*작업|(?:단계별\s*)?(?:sub-?task|서브\s*태스크)로\s*나누",
+        text or "", re.I))
+    if items and not (state or {}).get("questions") and kids == 0 and wants_kids:
+        bad.append("사용자가 단계별 Sub-Task를 요구했지만 승인 카드의 자식이 0건이다")
+    if items and kids == 0 and claims_kids:
+        bad.append("답변은 하위 작업이 있다고 하지만 승인 카드의 자식이 0건이다")
+    return bad
 
 
 CHECKS = {
@@ -108,6 +131,11 @@ def check(state: dict, text: str) -> list:
     무엇을 하려는 요청인지 모르는 상태에서 형식을 강요하면 그게 더 나쁘다.
     """
     pb = str((state or {}).get("playbook") or "").strip()
+    # 세션의 사용자 반환 shape에는 playbook이 빠지지만 pending 카드는 남는다. 산출물이
+    # 명백한데 메타 필드 하나가 없다는 이유로 후검증을 끄면 바로 S1 불일치를 놓친다.
+    if not pb and (((state or {}).get("draft") or (state or {}).get("pending") or {})
+                   .get("items")):
+        pb = "task_create"
     fns = CHECKS.get(pb) or []
     out = []
     for fn in fns:

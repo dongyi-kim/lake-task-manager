@@ -92,6 +92,12 @@ def test_plain_hangul_words_are_not_mistaken_for_names():
     assert g["fake_people"] == []
 
 
+def test_role_match_does_not_cross_a_newline_into_the_next_label():
+    """`1건 담당\n- **대안**:`에서 '대안'은 사람 이름이 아니다(S1 실측 오탐)."""
+    g = grounding.check("- 유사 업무 1건 담당\n- **대안**:\n  - skcc.x1042")
+    assert "대안" not in g["fake_people"], g
+
+
 def test_violation_note_carries_real_values():
     key, title = _real_key_and_title()
     g = grounding.check(f"{key}: 전사 보안 패치. 담당자: 김철수. 그리고 ZZZZ-1 도 관련.")
@@ -103,6 +109,7 @@ def test_warning_block_is_visible_not_silent():
     g = {"fake_keys": ["ZZZZ-1"], "wrong_titles": {}, "fake_people": ["김철수"]}
     w = grounding.warning_block(g)
     assert "자동 검증 경고" in w and "ZZZZ-1" in w and "김철수" in w
+    assert "승인하지 말고" in w and "무시하고" not in w
 
 
 def test_responder_appends_warning_when_rewrite_cannot_fix(monkeypatch):
