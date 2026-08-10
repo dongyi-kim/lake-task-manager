@@ -46,6 +46,9 @@ export default {
       modelsBusy: false,
       // 권한 확인 결과 — { ok:[...], denied:{name:사유} }. 누르기 전엔 null.
       verify: null, verifyBusy: false,
+      // 인증 확인 결과 — **팝업이 닫혀도 남는다.** 오류는 그 항목 바로 아래에
+      // 붙어 있어야 무엇을 고칠지 알 수 있다(사용자 지시).
+      authProbe: null,
       comboOpen: "",            // "chat" | "embed" | "" — 열려 있는 모델 드롭다운
       comboAll: false,          // ▾ 로 열었나(전체) vs 타이핑 중인가(걸러 보기)
       // 실행 환경(mock/local/prod) — provider 목록을 가리는 데 쓴다. 아래 providers() 참고.
@@ -219,7 +222,7 @@ export default {
         //   예전엔 여기서 chat/completions 를 불렀는데 그 호출에는 모델 이름이 실린다.
         //   아직 모델을 안 골랐거나 권한이 없으면 403 이 나고, 화면에는 "방금 넣은 인증이
         //   틀렸다"로 보인다 — 키는 멀쩡한데 사용자가 키를 다시 친다.
-        a.result = await agentApi.probeAuth();
+        a.result = this.authProbe = await agentApi.probeAuth();
         await this.loadModels();                    // 인증이 되면 목록이 따라온다
         try { this.st = await agentApi.status(); } catch (e) { /* 표시만 */ }
         if (a.result && a.result.ok) {
@@ -334,6 +337,26 @@ export default {
           </ol>
         </div>
 
+        <!-- ★ **연결 상태가 맨 위다**(사용자 지시). 이 창에 들어온 사람이 가장 먼저 알아야
+             하는 것은 "지금 켜져 있나, 아니면 뭘 더 해야 하나"이지 provider 목록이 아니다.
+             ①인증 ②모델 ③사용 중 — 어디까지 됐는지가 배지로 보이고, 다음 할 일이 한 줄 뜬다. -->
+        <div class="ag-sec">
+          <div class="ag-lab">연결 상태</div>
+          <div v-if="st.envSupplied" class="ag-hint">환경변수로 주입된 설정입니다 — 확인 절차 없이
+            그대로 씁니다.</div>
+          <div class="ag-gate" :class="st.verified ? 'on' : 'off'">
+            <b>{{ st.verified ? '활성' : '비활성' }}</b>
+            <span>
+              <span :class="st.authOk ? 'ag-step ok' : 'ag-step'">① 인증 {{ st.authOk ? '확인됨' : '미확인' }}</span>
+              <span :class="st.modelsOk ? 'ag-step ok' : 'ag-step'">② 모델 {{ st.modelsOk ? '확인됨' : '미확인' }}</span>
+              <span :class="st.verified ? 'ag-step ok' : 'ag-step'">③ {{ st.verified ? '사용 중' : '미적용' }}</span>
+              <template v-if="!st.authOk"><br>아래 <b>인증</b>에서 <b>저장하고 연결 확인</b>을 누르세요.</template>
+              <template v-else-if="!st.modelsOk"><br>아래 <b>모델</b>에서 고른 뒤 <b>저장하고 모델 확인</b>을 누르세요.</template>
+              <template v-else-if="!st.verified"><br>확인이 끝났습니다 — 맨 아래 <b>이 설정 사용</b>을 누르면 켜집니다.</template>
+            </span>
+          </div>
+        </div>
+
         <!-- provider -->
         <div class="ag-sec">
           <div class="ag-lab">연결 방식</div>
@@ -368,6 +391,17 @@ export default {
           <div class="ag-keyrow one">
             <button class="ag-mini" @click="openAuthEdit()">
               {{ anyKey() ? '인증 정보 변경' : '인증 정보 입력' }}</button>
+          </div>
+          <!-- ★ 인증 결과는 **인증 아래에** 붙는다(사용자 지시). 오류가 화면 저 끝에 있으면
+               무엇을 고쳐야 하는지 눈이 못 잇는다. -->
+          <div v-if="authProbe" class="ag-probe">
+            <div class="ag-row" :class="authProbe.ok ? 'ok' : 'no'">
+              <b>인증</b>
+              <template v-if="authProbe.ok">
+                <span>정상 · {{ authProbe.ms }}ms · 모델 {{ (authProbe.models || {}).total }}개 확인</span>
+              </template>
+              <template v-else><span>실패</span><em>{{ authProbe.error }}</em></template>
+            </div>
           </div>
           <div class="ag-hint">키는 이 PC 에만 저장되고 <b>원문은 화면으로 다시 내려오지 않습니다</b>.
             {{ cur.fields.length > 1 ? '항목을 모두 넣은 뒤' : '입력하면' }} 그 자리에서 연결을
@@ -474,6 +508,25 @@ export default {
                 Object.keys(verify.denied).length > 4 ? ' …' : '' }})</span></template>
             </template>
           </div>
+          <!-- ★ 모델 확인 결과도 **모델 아래에**. 채팅과 임베딩을 따로 보여야, 어느 이름이
+               막혔는지가 바로 보인다(하나만 고르고 나머지를 비워 두는 것이 흔한 실수다). -->
+          <div v-if="probe" class="ag-probe">
+            <div class="ag-row" :class="probe.chat && probe.chat.ok ? 'ok' : 'no'">
+              <b>채팅</b>
+              <template v-if="probe.chat && probe.chat.ok">
+                <span>정상 · {{ probe.chat.ms }}ms</span><em>{{ probe.chat.sample }}</em>
+              </template>
+              <template v-else><span>실패</span><em>{{ probe.chat && probe.chat.error }}</em></template>
+            </div>
+            <div class="ag-row" :class="probe.embeddings && probe.embeddings.ok ? 'ok' : 'no'">
+              <b>임베딩</b>
+              <template v-if="probe.embeddings && probe.embeddings.ok">
+                <span>정상 · {{ probe.embeddings.ms }}ms · {{ probe.embeddings.dim }}차원</span>
+              </template>
+              <template v-else><span>실패</span><em>{{ probe.embeddings && probe.embeddings.error }}</em></template>
+            </div>
+            <div v-if="probe.error" class="ag-row no"><b>설정</b><em>{{ probe.error }}</em></div>
+          </div>
           <label v-if="provider === 'aoai'" class="ag-f"><span>api-version</span>
             <input v-model="apiVersion" placeholder="2024-10-21" spellcheck="false"></label>
           <div v-if="provider === 'aoai'" class="ag-hint">
@@ -507,48 +560,6 @@ export default {
           <div class="ag-hint">설정하지 않아도 동작합니다. 질의·응답은 어차피 파일 로그로 남습니다.</div>
         </div>
 
-        <!-- 연결 상태 — **버튼이 없다.** 확인은 키를 넣을 때와 저장할 때 자동으로 한다.
-             사용자가 알고 싶은 건 "지금 되느냐"이지 '확인'을 누르는 일이 아니다. -->
-        <div class="ag-sec">
-          <div class="ag-lab">연결 상태</div>
-          <!-- ★ **활성화 여부를 맨 위에 말한다**(사용자 지시: 인증 확인 AND 모델 연결 확인 →
-               저장까지 마쳐야 활성). 값이 채워진 것과 그 조합이 실제로 되는 것은 다른 말이라,
-               예전에는 "설정은 다 했는데 왜 안 되지"가 실제 사용 중에야 403 으로 드러났다. -->
-          <div v-if="st.envSupplied" class="ag-hint">환경변수로 주입된 설정입니다 — 확인 절차 없이
-            그대로 씁니다.</div>
-          <!-- ★ **두 확인을 따로 보인다**(사용자 지시: 인증정보 변경과 모델 설정은 별개의
-               확인을 거친다). 어디까지 됐는지가 한 줄로 보여야, 실패했을 때 무엇을 고칠지
-               사람이 안다 — 예전엔 둘이 한 덩어리라 "키가 틀렸나 모델이 틀렸나"를 몰랐다. -->
-          <div class="ag-gate" :class="st.verified ? 'on' : 'off'">
-            <b>{{ st.verified ? '활성' : '비활성' }}</b>
-            <span>
-              <span :class="st.authOk ? 'ag-step ok' : 'ag-step'">① 인증 {{ st.authOk ? '확인됨' : '미확인' }}</span>
-              <span :class="st.modelsOk ? 'ag-step ok' : 'ag-step'">② 모델 {{ st.modelsOk ? '확인됨' : '미확인' }}</span>
-              <span :class="st.verified ? 'ag-step ok' : 'ag-step'">③ {{ st.verified ? '사용 중' : '미적용' }}</span>
-              <template v-if="!st.authOk"><br>인증 정보에서 <b>저장하고 연결 확인</b>을 누르세요.</template>
-              <template v-else-if="!st.modelsOk"><br>모델을 고르고 <b>저장하고 모델 확인</b>을 누르세요.</template>
-              <template v-else-if="!st.verified"><br>확인이 끝났습니다 — 아래 <b>이 설정 사용</b>을 누르면 켜집니다.</template>
-            </span>
-          </div>
-          <div v-if="!probe" class="ag-hint">아직 확인하지 않았습니다 — 키를 입력하거나 저장하면
-            바로 확인합니다.</div>
-          <div v-if="probe" class="ag-probe">
-            <div class="ag-row" :class="probe.chat && probe.chat.ok ? 'ok' : 'no'">
-              <b>채팅</b>
-              <template v-if="probe.chat && probe.chat.ok">
-                <span>정상 · {{ probe.chat.ms }}ms</span><em>{{ probe.chat.sample }}</em>
-              </template>
-              <template v-else><span>실패</span><em>{{ probe.chat && probe.chat.error }}</em></template>
-            </div>
-            <div class="ag-row" :class="probe.embeddings && probe.embeddings.ok ? 'ok' : 'no'">
-              <b>임베딩</b>
-              <template v-if="probe.embeddings && probe.embeddings.ok">
-                <span>정상 · {{ probe.embeddings.ms }}ms · {{ probe.embeddings.dim }}차원</span>
-              </template>
-              <template v-else><span>실패</span><em>{{ probe.embeddings && probe.embeddings.error }}</em></template>
-            </div>
-            <div v-if="probe.error" class="ag-row no"><b>설정</b><em>{{ probe.error }}</em></div>
-          </div>
         </div>
 
         <!-- 색인 -->
