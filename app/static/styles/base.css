@@ -75,6 +75,19 @@ nav.tabs a { display: inline-flex; align-items: center; font-size: 13.5px; color
   text-decoration: none; padding: 0 16px; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; }
 nav.tabs a:hover { color: var(--text); background: var(--panel-2); }
 nav.tabs a.on { color: var(--accent); font-weight: 700; border-bottom-color: var(--accent); }
+/* ✨ — AI 탭·에디터 AI 버튼에만. 새 기능이라 눈이 먼저 가야 하지만, 업무 화면에서
+   계속 깜빡이면 피로하다. 그래서 **느리고 얕게**(4초 주기, 0.55~1) 숨 쉬듯 한다.
+   prefers-reduced-motion 이면 멈춘다 — 움직임에 민감한 사람에게는 통증이다. */
+.tab-spark, .tb-ai-spark { display: inline-block; margin-left: 4px; font-size: .85em;
+  line-height: 1; animation: spark-breathe 4s ease-in-out infinite; }
+.tb-ai-spark { margin-left: 3px; font-size: 1em; }
+@keyframes spark-breathe {
+  0%, 100% { opacity: .55; transform: scale(1); }
+  50%      { opacity: 1;   transform: scale(1.12); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tab-spark, .tb-ai-spark { animation: none; opacity: .9; }
+}
 .lnk { color: var(--accent); text-decoration: none; } .lnk:hover { text-decoration: underline; }
 .muted { color: var(--muted); }
 

@@ -4,7 +4,7 @@
 대화로 구체화한 뒤 description·label·component·assignee 를 **근거와 함께** 제안해
 Epic/Story/Sub-Task 트리를 만든다. 모든 쓰기는 **사용자 승인 후**(HITL).
 
-**선택 설치** — `pip install -r requirements.txt -r requirements-agent.txt`.
+**설치** — `pip install -r requirements.txt` (에이전트 의존이 여기 들어 있다). 설치돼 있어도 **LLM 키가 없으면** 라우트만 살고 화면은 비활성이다.
 설치 안 돼 있으면 라우트·설정 패널이 아예 안 붙는다(`config.available()` 게이팅).
 
 ## 파일

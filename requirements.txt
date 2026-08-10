@@ -15,5 +15,43 @@ python-multipart>=0.0.9
 #   보고 넘어간다(실측: 이 저장소 venv 가 0.11.1 에 고여 test_topic_knowledge 4건 실패).
 jira820>=0.12.0
 
+# ── AI 에이전트 (LTM Agent) ────────────────────────────────────────────────
+#
+# ★ 예전에는 `requirements-agent.txt` 로 **따로** 뒀다. 대시보드만 쓰는 사람에게 200MB+
+#   의존을 강요하지 않으려던 것인데, 실제로 벌어진 일은 이랬다:
+#     · 런처(배포 repo 의 run-core.ps1)는 `requirements-sso.txt` → `requirements.txt` 만 깐다
+#     · 그래서 앱을 켜면 AI 탭이 "AI 에이전트가 켜져 있지 않습니다 — pip install …" 화면
+#     · 유저의 배포 repo 는 **대개 최신이 아니라**, 런처를 고쳐도 그 유저에게는 안 간다
+#   설치 안내를 읽고 손으로 pip 를 치는 유저는 없다. 기능을 껐다 켜는 스위치가 아니라
+#   **그냥 안 되는 기능**이 된다.
+#
+#   그래서 합친다. 여기 있으면 **런처를 안 고쳐도, 배포 repo 가 낡았어도** 다음 실행에
+#   깔린다 — 이미 나가 있는 모든 런처가 이 파일을 읽기 때문이다.
+#   (키가 없으면 AI 탭만 비활성이고 나머지 화면은 그대로 쓴다 — 그 게이팅은 그대로다.)
+#
+# 버전은 사내 AI Bootcamp 실습에서 검증된 조합을 기준선으로 고정한다.
+# langchain 0.3.x ↔ langgraph 0.3.x ↔ AOAI api-version 은 호환성 문제가 잦아, 원인 불명
+# 에러가 나면 버전부터 확인한다.
+langchain==0.3.19
+langchain-openai==0.3.7
+langchain-community==0.3.18
+langgraph==0.3.2
+openai==1.65.2
+
+# RAG — 로컬 임베디드 벡터 스토어(서버 불필요). 인덱스는 파일로 떨어진다.
+faiss-cpu==1.10.0
+
+# 토큰 수 계산(비용 표시 + 과다 입력 차단)
+tiktoken==0.9.0
+
+# LLM 호출 트레이싱. 자체 호스팅/클라우드 모두 가능하며, 없어도 앱은 돈다(설정 안 하면 비활성).
+langfuse==2.59.7
+
+# 웹 검색(강의 7장 §2 와 같은 선택 — 무키·무등록). 일반 기술 지식 보강용, 폐쇄망이면 자동 무력화
+duckduckgo-search==7.5.2
+
+# MCP 서버(선택요소 B) — LTM 도구를 외부 AI 클라이언트(Claude Desktop 등)에 개방
+mcp==1.29.0
+
 # Prod (corporate SSO) path additionally needs Playwright:
 #   pip install -r requirements-sso.txt   (then `playwright install chromium`)

@@ -1,7 +1,7 @@
 """agent/routes.py — `/api/agent/*`. 화면과 그래프 사이의 유일한 통로.
 
 **라우터를 따로 둔 이유** — 나머지 라우트는 `main.py` 에 `@app.get` 으로 붙지만 여기는
-`APIRouter` 다. 에이전트는 **선택 설치**라(`requirements-agent.txt`) langchain 이 없으면 라우트가
+`APIRouter` 다. 설치가 덜 끝나 langchain 이 없으면 라우트가
 아예 붙지 않아야 하고, 그러려면 등록 자체가 조건부여야 한다. `main.py` 안에 두면
 "import 는 됐는데 부르면 죽는" 라우트가 생긴다.
 

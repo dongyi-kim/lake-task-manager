@@ -1,35 +1,16 @@
-# Lake PMO Agent — AI 어시스턴트 경로 (선택 설치)
+# Lake PMO Agent — **이제 requirements.txt 에 합쳐졌다.**
 #
-#   pip install -r requirements.txt -r requirements-agent.txt
+# 왜 합쳤나: 런처(배포 repo 의 run-core.ps1)는 `requirements-sso.txt` → `requirements.txt`
+# 만 설치한다. 에이전트 의존을 따로 두면 유저는 앱을 켤 때마다 "AI 에이전트가 켜져 있지
+# 않습니다 — pip install -r requirements-agent.txt" 화면을 본다. 유저의 배포 repo 는 대개
+# 최신이 아니라 **런처를 고쳐도 그 유저에게는 안 간다**. 안내를 읽고 손으로 pip 를 치는
+# 유저는 없다 — 선택 설치가 아니라 그냥 안 되는 기능이 된다.
 #
-# 기본 앱(requirements.txt)에 넣지 않는 이유: 대시보드만 쓰는 사용자에게 200MB+ 의존을 강요하지
-# 않는다. Agent 라우트/설정 패널은 이 패키지들이 **설치돼 있을 때만** 켜진다(devtools 게이팅과 동일).
-#
-# 버전은 사내 AI Bootcamp 실습에서 검증된 조합을 기준선으로 고정한다.
-# langchain 0.3.x ↔ langgraph 0.3.x ↔ AOAI api-version 은 호환성 문제가 잦아, 원인 불명 에러가
-# 나면 버전부터 확인한다.
+# 이 파일은 **옛 안내·스크립트가 깨지지 않도록** 남겨 둔 얇은 껍데기다.
+#   pip install -r requirements.txt            ← 이것만으로 에이전트까지 다 깔린다
+#   pip install -r requirements-agent.txt      ← 같은 결과(아래 include)
+-r requirements.txt
 
-langchain==0.3.19
-langchain-openai==0.3.7
-langchain-community==0.3.18
-langgraph==0.3.2
-openai==1.65.2
-
-# RAG — 로컬 임베디드 벡터 스토어(서버 불필요). 인덱스는 파일로 떨어진다.
-faiss-cpu==1.10.0
-
-# 토큰 수 계산(비용 표시 + 과다 입력 차단)
-tiktoken==0.9.0
-
-# LLM 호출 트레이싱. 자체 호스팅/클라우드 모두 가능하며, 없어도 앱은 돈다(설정 안 하면 비활성).
-langfuse==2.59.7
-
-# 웹 검색(강의 7장 §2 와 같은 선택 — 무키·무등록). 일반 기술 지식 보강용, 폐쇄망이면 자동 무력화
-duckduckgo-search==7.5.2
-
-# MCP 서버(선택요소 B) — LTM 도구를 외부 AI 클라이언트(Claude Desktop 등)에 개방
-mcp==1.29.0
-
-# 정적 자산 검사(tests/test_static_assets.py) — 우리 JS 가 문법적으로 성립하는지.
-# 없으면 그 테스트만 건너뛴다(개발 편의 도구).
+# 개발 편의 도구 — 정적 자산 검사(tests/test_static_assets.py)가 우리 JS 의 문법을 본다.
+# 앱 실행에는 필요 없다(없으면 그 테스트만 건너뛴다). 그래서 여기만 남긴다.
 esprima==4.0.1
