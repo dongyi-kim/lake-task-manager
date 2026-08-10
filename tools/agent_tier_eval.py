@@ -16,6 +16,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
 os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+# 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
+os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
 
 # ── simple 티어: 의도 분류 골든셋 ───────────────────────────────────
 # 배터리에서 실제로 갈렸던 경계들을 담았다 — 쉬운 것만 모으면 어떤 모델이든 만점이다.
