@@ -23,6 +23,80 @@ from app.agent.tools._ctx import client, compact, settings, trim
 _FIXTURE_MODULES = {"TEST"}
 
 
+# ── 이름 해석의 문맥 ────────────────────────────────────────────────
+# 사용자 지시(2026-08-10): 사람을 **단순 이름**으로 부르면 동명이인 문제가 생긴다. 우선순위로
+# 추리되, 그래도 갈리면 물어보고 **그 대화 안에서는 계속 기억**할 것.
+#
+#   ① config 유저 목록(people.yaml)에 있는 사람
+#   ② 최근 확인한 Task 에 관련된 사람(담당·보고·코멘트)
+#   ③ 현재 Jira 프로젝트에 참가하고 있는 사람
+#
+# 왜 이 순서인가 — **가까운 맥락일수록 그 사람일 확률이 높다.** "이다은"이라고만 했을 때
+# 우리 팀 이다은일 확률이, 방금 보던 티켓의 이다은일 확률이, 그 다음이 전사의 이다은이다.
+# 순위를 코드가 매기고 **고르는 것은 근거가 하나로 좁혀졌을 때만** 한다(짐작 금지).
+#
+# 스레드별로 들고 있는 이유: 같은 프로세스에서 여러 대화가 돈다. 남의 대화에서 확인한
+# 사람을 내 대화에 끌어오면 그게 바로 새 오답이다.
+_pctx = {"id": "", "keys": [], "known": {}}
+
+
+def set_person_context(thread_id: str, keys=None):
+    """턴마다 세션이 불러 준다 — 이 대화가 **방금 보던 티켓**이 무엇인지 알려 준다.
+
+    thread 가 바뀌면 기억을 버린다(대화가 다르면 '그 사람'도 다르다).
+    """
+    tid = str(thread_id or "")
+    if _pctx["id"] != tid:
+        _pctx.update(id=tid, keys=[], known={})
+    for k in (keys or []):
+        k = str(k or "").strip().upper()
+        if k and k not in _pctx["keys"]:
+            _pctx["keys"].append(k)
+    del _pctx["keys"][8:]              # 최근 것 위주 — 오래 끌면 '가까운 맥락'이 아니게 된다
+
+
+def remember_person(name: str, user_id: str) -> None:
+    """이 대화 안에서 '그 이름 = 이 사람'으로 굳힌다(사용자 확인 또는 단독 해석)."""
+    n = strip_title(name)
+    if n and user_id:
+        _pctx["known"][n] = str(user_id)
+
+
+def _related_people(keys) -> set:
+    """② 최근 확인한 Task 에 얽힌 사람들 — 담당·보고·코멘트 작성자."""
+    out = set()
+    if not keys:
+        return out
+    c = client()
+    for k in list(keys)[:5]:
+        try:
+            raw = c.get_issue(k) or {}
+        except Exception:
+            continue
+        f = raw.get("fields") or {}
+        for who in (f.get("assignee"), f.get("reporter")):
+            uid = (who or {}).get("name") or ""
+            if uid:
+                out.add(uid)
+        for cm in ((f.get("comment") or {}).get("comments") or [])[:20]:
+            uid = ((cm.get("author") or {}).get("name")) or ""
+            if uid:
+                out.add(uid)
+    return out
+
+
+def _in_project(uid: str) -> bool:
+    """③ 이 사람이 지금 프로젝트에 발을 담그고 있나 — 담당이든 보고든 한 건이라도."""
+    try:
+        pk = settings().project_key
+        safe = str(uid).replace('"', " ")
+        r = client().search_issues(
+            f'project = {pk} AND (assignee = "{safe}" OR reporter = "{safe}")', max_results=1)
+        return bool(r)
+    except Exception:
+        return False
+
+
 def _count(bucket) -> int:
     """워크로드 번들의 한 버킷 → 건수. 화면은 타입별로 쪼개 보여주지만 추천엔 총량이면 된다."""
     if not isinstance(bucket, dict):
@@ -179,6 +253,11 @@ def find_person(name: str) -> dict:
     q = strip_title(name)
     if not q:
         return {"query": "", "candidates": [], "resolved": "", "ambiguous": False}
+    # ★ 이 대화에서 **이미 확인한 이름**이면 다시 묻지 않는다(사용자 지시).
+    if q in _pctx["known"]:
+        uid = _pctx["known"][q]
+        return {"query": q, "candidates": [], "resolved": uid, "ambiguous": False,
+                "why": "이 대화에서 이미 확인한 사람", "assigned": _assigned_now(uid)}
     c = client()
     try:
         raw = c.provider.get_json("/rest/api/2/user/search",
@@ -201,13 +280,58 @@ def find_person(name: str) -> dict:
         out["note"] = (f"'{q}' 은(는) 우리 Jira 사용자 디렉토리에 없다 — **존재하지 않는 "
                        "사람으로 본다.** 비슷한 이름을 지어내거나 다른 사람으로 바꿔 답하지 마라.")
         return out
-    if len(cands) > 1:
-        out["note"] = ("동명이인이다 — **고르지 말고 사용자에게 확인받아라.** 보기에는 표시 "
-                       "이름(소속 포함)과 이메일을 함께 적어야 사용자가 구분할 수 있다.")
+
+    # ── 우선순위로 추린다(사용자 지시) ─────────────────────────────
+    # ① config 유저 목록 → ② 최근 확인한 Task 관련자 → ③ 프로젝트 참가자.
+    # **가까운 맥락일수록 그 사람일 확률이 높다.** 다만 순위는 '고르는 근거'이지 '고르는
+    # 권한'이 아니다 — 같은 층에 둘이 남으면 코드는 손을 떼고 사용자에게 묻는다.
+    related = _related_people(_pctx["keys"]) if len(cands) > 1 else set()
+    for cd in cands:
+        uid = cd["id"]
+        if uid in mod_of and mod_of[uid] not in _FIXTURE_MODULES:
+            cd["tier"], cd["why"] = 1, f"config 인력({mod_of[uid]})"
+        elif uid in related:
+            cd["tier"], cd["why"] = 2, "최근 확인한 Task 관련자"
+        elif len(cands) > 1 and _in_project(uid):
+            cd["tier"], cd["why"] = 3, "이 프로젝트 참가자"
+        else:
+            cd["tier"], cd["why"] = 9, "우리 프로젝트에서 확인되지 않음"
+    cands.sort(key=lambda c: c["tier"])
+    top = [c for c in cands if c["tier"] == cands[0]["tier"] and c["tier"] < 9]
+
+    if len(top) == 1:
+        # 한 층에 한 명뿐 — **근거가 하나로 좁혀졌다.** 고르고, 이 대화에서 기억한다.
+        pick = top[0]
+        out.update(resolved=pick["id"], ambiguous=False,
+                   why=pick["why"], assigned=_assigned_now(pick["id"]))
+        remember_person(q, pick["id"])
+        if len(cands) > 1:
+            out["note"] = (f"동명이인이 {len(cands)}명이지만 **{pick['why']}** 근거로 "
+                           f"{pick['display']} 로 봤다. 답변에 그 근거를 한 줄 밝혀라.")
         return out
-    out["resolved"] = cands[0]["id"]
-    out["assigned"] = _assigned_now(cands[0]["id"])
+
+    # 같은 층에 둘 이상이거나(진짜 동명이인) 아무도 우리 쪽이 아니다 — **묻는다.**
+    out["ambiguous"] = True
+    out["note"] = ("동명이인이다 — **고르지 말고 사용자에게 확인받아라.** 보기에는 표시 "
+                   "이름(소속 포함)·이메일과 함께 `why`(어느 근거로 후보인지)를 적어라. "
+                   "사용자가 고르면 `confirm_person` 으로 굳혀서 이 대화에서 다시 묻지 마라.")
     return out
+
+
+@tool
+def confirm_person(name: str, user_id: str) -> dict:
+    """사용자가 고른 사람을 **이 대화에서 굳힌다** — 같은 이름을 두 번 묻지 않기 위해.
+
+    동명이인 확인을 받은 **직후에 부른다.** 이후 이 대화에서 그 이름은 이 사람이다.
+    (대화가 바뀌면 잊는다 — 남의 대화에서 확인한 사람을 끌어오면 그게 새 오답이다.)
+    """
+    n = strip_title(name)
+    if not (n and user_id):
+        return {"ok": False, "error": "이름과 사번이 모두 필요하다"}
+    remember_person(n, user_id)
+    return {"ok": True, "name": n, "user_id": user_id,
+            "assigned": _assigned_now(user_id),
+            "note": f"이 대화에서 '{n}' 은(는) {user_id} 다 — 다시 묻지 마라."}
 
 
 # 사람 이름 뒤에 붙는 **호칭·직함** — 실사용에서 이대로 들어온다(사용자 지적):

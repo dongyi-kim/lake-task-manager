@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from app.agent.tools._ctx import bind, client, settings         # noqa: F401
-from app.agent.tools.people_tools import (find_person, get_module_people,
+from app.agent.tools.people_tools import (confirm_person, find_person, get_module_people,
                                           get_person_profile, get_team_workload,
                                           get_ticket_participants)
 from app.agent.tools.pmo_tools import (find_stale_tickets, find_unassigned_tickets,
@@ -38,7 +38,7 @@ SEARCH_TOOLS = [search_work_history, find_mentions, map_ticket_neighborhood, get
 # 담당자 근거를 모은다 — 읽기만.
 # ★ find_person 이 맨 앞이다 — 사람 이야기는 **이름 해석부터**다. 이 도구가 없어서
 #   모델이 모듈 로스터·활동 창으로 밀려나 '있는 사람을 없다'고 답했다(실사용 사고).
-PEOPLE_TOOLS = [find_person, get_team_workload, get_ticket_participants,
+PEOPLE_TOOLS = [find_person, confirm_person, get_team_workload, get_ticket_participants,
                 get_person_profile, get_module_people]
 
 # 사내 규칙(정적 RAG). 초안을 짜는 쪽과 검사하는 쪽 **양쪽**이 본다.
@@ -49,7 +49,7 @@ RULE_TOOLS = [search_rules]
 # 쉬운데(실측), **담당 티켓과 최근 활동은 다른 것**이다. 이름을 풀 수단이 이 역할에
 # 없으면 '최근 3일 활동 기록이 없습니다'로 끝난다 — 그 사람이 21건을 들고 있어도.
 PMO_TOOLS = [whoami, get_my_workload, get_progress, find_stale_tickets,
-             find_unassigned_tickets, get_user_activity, find_person]
+             find_unassigned_tickets, get_user_activity, find_person, confirm_person]
 
 # 외부 지식(웹·GitHub) — 일반 기술 지식 보강. 폐쇄망이면 "막혀 있다"를 돌려준다(의존 아님).
 WEB_TOOLS = [search_web, search_github]

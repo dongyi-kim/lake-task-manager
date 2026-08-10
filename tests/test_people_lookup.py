@@ -100,3 +100,84 @@ def test_an_unresolvable_module_is_asked_not_guessed():
     # "우리 팀" 은 지시어다 — 세션 사용자가 픽스처/무소속이면 풀 수 없다
     assert _needs_module(st("우리 팀 최근 7일 업무 내역")) in (True, False)  # 환경 의존
     assert len(_MODULES) >= 6, "보기로 낼 컴포넌트 목록"
+
+
+# ── 이름만 댔을 때의 해석 순서 (사용자 지시 2026-08-10) ──────────────
+#   ① config 유저 목록 → ② 최근 확인한 Task 관련자 → ③ 프로젝트 참가자
+#   그래도 갈리면 **묻고**, 확인받은 것은 **그 대화 안에서 기억**한다.
+def _fake_dir(monkeypatch, users):
+    """Jira 사용자 검색을 흉내 낸다 — 동명이인은 실제 world 에 없어서 만들어 준다."""
+    from app.agent.tools import people_tools as P
+
+    class _P:
+        def get_json(self, path, params=None):
+            return users
+
+    class _C:
+        provider = _P()
+
+        def get_issue(self, key):
+            return {"fields": {"assignee": {"name": "dup.second"}, "reporter": None,
+                               "comment": {"comments": []}}}
+
+        def search_issues(self, jql, max_results=1):
+            return []
+
+    monkeypatch.setattr(P, "client", lambda: _C())
+    monkeypatch.setattr(P, "_assigned_now", lambda uid: {"count": 0, "tickets": []})
+    return P
+
+
+def test_a_name_in_the_config_roster_wins(monkeypatch):
+    """①이 가장 세다 — 우리 팀 사람일 확률이 가장 높다."""
+    P = _fake_dir(monkeypatch, [
+        {"name": "skcc.x1042", "displayName": "이다은 데이터메이커", "emailAddress": "a@x"},
+        {"name": "out.9999", "displayName": "이다은 다른회사", "emailAddress": "b@x"},
+    ])
+    monkeypatch.setattr("app.infra.settings.load_people", lambda *a, **k: {"ETL": ["skcc.x1042"]})
+    P.set_person_context("th-1", [])
+    r = P.find_person.invoke({"name": "이다은"})
+    assert r["resolved"] == "skcc.x1042", r
+    assert not r["ambiguous"] and "config" in r["why"], r
+    assert "근거" in (r.get("note") or ""), "왜 그 사람인지 답변에 밝히라는 지시가 없다"
+
+
+def test_recently_seen_ticket_breaks_the_tie(monkeypatch):
+    """②는 ①이 없을 때 — 방금 보던 티켓에 얽힌 사람이 '그 사람'일 확률이 높다."""
+    P = _fake_dir(monkeypatch, [
+        {"name": "dup.first", "displayName": "김철수 가", "emailAddress": "a@x"},
+        {"name": "dup.second", "displayName": "김철수 나", "emailAddress": "b@x"},
+    ])
+    monkeypatch.setattr("app.infra.settings.load_people", lambda *a, **k: {"ETL": []})
+    P.set_person_context("th-2", ["DL-9090"])          # 이 티켓 담당이 dup.second 다
+    r = P.find_person.invoke({"name": "김철수"})
+    assert r["resolved"] == "dup.second", r
+    assert "최근" in r["why"], r
+
+
+def test_a_real_tie_is_asked_not_guessed(monkeypatch):
+    """같은 층에 둘이면 **코드는 손을 뗀다.** 짐작이 가장 나쁜 실패다."""
+    P = _fake_dir(monkeypatch, [
+        {"name": "skcc.a", "displayName": "박지영 가", "emailAddress": "a@x"},
+        {"name": "skcc.b", "displayName": "박지영 나", "emailAddress": "b@x"},
+    ])
+    monkeypatch.setattr("app.infra.settings.load_people",
+                        lambda *a, **k: {"ETL": ["skcc.a", "skcc.b"]})
+    P.set_person_context("th-3", [])
+    r = P.find_person.invoke({"name": "박지영차장"})
+    assert r["ambiguous"] and not r["resolved"], r
+    assert "확인받아라" in r["note"]
+
+
+def test_a_confirmed_person_is_remembered_for_that_conversation_only(monkeypatch):
+    """확인받은 것은 그 대화에서 기억한다 — 그리고 **그 대화에서만**."""
+    P = _fake_dir(monkeypatch, [])
+    monkeypatch.setattr("app.infra.settings.load_people", lambda *a, **k: {})
+    P.set_person_context("th-4", [])
+    P.confirm_person.invoke({"name": "박지영차장", "user_id": "skcc.b"})
+    r = P.find_person.invoke({"name": "박지영 차장님"})   # 호칭이 달라도 같은 이름이다
+    assert r["resolved"] == "skcc.b" and not r["ambiguous"], r
+
+    P.set_person_context("th-5", [])                     # 다른 대화 — 남의 확인을 끌어오지 않는다
+    r2 = P.find_person.invoke({"name": "박지영"})
+    assert not r2["resolved"], r2

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import re as _re
+
 import logging
 import uuid
 
@@ -110,9 +112,21 @@ def _detect_role() -> str:
         return Role.MEMBER
 
 
+_KEY_RE = _re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
+
+
+def _recent_keys(text: str) -> list:
+    """이번 발화에 나온 티켓 키. 누적은 `set_person_context` 가 한다(최근 8건까지)."""
+    return _KEY_RE.findall(str(text or ""))
+
+
 def _initial(thread_id, text, user_role, user_id) -> dict:
     from app.agent.tools import set_thread
+    from app.agent.tools.people_tools import set_person_context
     set_thread(thread_id)       # 쓰기 도구가 자기 대화를 안다(모델이 남의 thread 를 못 적게)
+    # ★ 이름 해석에 쓸 **가까운 맥락** — 이 대화에서 방금 본 티켓들(사용자 지시).
+    #   "이다은"처럼 이름만 대면, 그 티켓에 얽힌 사람이 우선이다. thread 가 바뀌면 잊는다.
+    set_person_context(thread_id, _recent_keys(text))
     return {"messages": [HumanMessage(content=text)], "thread_id": thread_id,
             "user_role": user_role or _detect_role(), "user_id": user_id or "",
             "user_identity": _identity(),
