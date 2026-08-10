@@ -44,6 +44,11 @@ export default {
       models: { chat: [], embed: [], error: "" },
       modelsBusy: false,
       comboOpen: "",            // "chat" | "embed" | "" — 열려 있는 모델 드롭다운
+      // ── 키 변경 팝업 ────────────────────────────────────────────────
+      // 왜 팝업인가: 키는 **한 번 정하고 오래 안 건드리는 값**인데, 입력칸으로 늘 열어 두면
+      // ①설정됐는지가 안 보이고(빈 칸은 '없음'처럼 보인다) ②실수로 지울 수 있다.
+      // 평소에는 마스킹된 값을 **읽기 전용으로 보여 주고**, 바꿀 때만 팝업을 연다.
+      keyEdit: null,            // { field, label, ph, value, busy, result, err }
     };
   },
   watch: {
@@ -55,6 +60,13 @@ export default {
     providers() { return PROVIDERS; },
     cur() { return PROVIDERS.find((p) => p.k === this.provider) || PROVIDERS[0]; },
     masked() { return (this.st && this.st.secrets) || {}; },
+    /** 아직 아무 키도 안 잡힌 상태 — 첫 사용 안내를 띄울지의 기준.
+     *  'fake' 는 키가 필요 없는 provider 라 안내가 필요 없다. */
+    needsSetup() {
+      if (this.provider === "fake") return false;
+      const need = this.cur.fields.filter((f) => f[3]).map((f) => f[0]);
+      return need.length > 0 && !need.some((k) => this.masked[k]);
+    },
   },
   mounted() {
     this.load();
@@ -121,6 +133,49 @@ export default {
       return m ? m + " (비워 두면 유지)" : (fallback || "");
     },
 
+    /** 저장된 키를 **입력칸 안에** 마스킹해서 보여 준다 — 빈 칸은 '설정 안 됨'으로 읽힌다.
+     *  서버는 원문을 절대 안 내려 준다(단방향). 여기 보이는 것은 서버가 만든 마스킹 문자열. */
+    keyShown(field) {
+      const m = this.masked[field] || "";
+      return m ? m.replace("설정됨 ", "") : "";
+    },
+    hasKey(field) { return !!this.masked[field]; },
+
+    openKeyEdit(f) {
+      this.keyEdit = { field: f[0], label: f[1], ph: f[2] || "", secret: !!f[3],
+                       value: "", busy: false, result: null, err: "" };
+    },
+    closeKeyEdit() { this.keyEdit = null; },
+
+    /** 키를 넣는 **그 자리에서** 연결을 확인하고 모델 목록을 갱신한다.
+     *  예전엔 저장과 '지금 확인' 버튼이 따로였는데, 키를 바꾼 사람이 알고 싶은 것은 정확히
+     *  "이 키가 되느냐"다 — 그 답을 받으러 버튼을 한 번 더 찾아 누르게 할 이유가 없다. */
+    async applyKey() {
+      const k = this.keyEdit;
+      if (!k || k.busy) return;
+      const v = (k.value || "").trim();
+      if (!v) { k.err = "새 키를 입력하세요"; return; }
+      k.busy = true; k.err = ""; k.result = null;
+      try {
+        const body = { provider: this.provider, secrets: { [k.field]: v } };
+        if (this.provider === "aoai" && this.apiVersion) body.apiVersion = this.apiVersion;
+        this.st = await agentApi.saveSettings(body);
+        this.$emit("saved", this.st);
+        k.result = await agentApi.probe();          // ① 되는지
+        await this.loadModels();                    // ② 무엇을 쓸 수 있는지
+        this.probe = k.result;
+        if (this.probeOk(k.result)) {
+          // 성공이면 닫는다 — 확인이 목적이었고, 결과는 아래 '연결 상태'에 남는다.
+          this.keyEdit = null;
+        }
+      } catch (e) { k.err = (e && e.message) || "저장에 실패했습니다"; }
+      finally { if (this.keyEdit) this.keyEdit.busy = false; }
+    },
+
+    probeOk(p) {
+      return !!(p && p.chat && p.chat.ok);   // 임베딩은 없어도 대화는 된다(색인만 못 만든다)
+    },
+
     async save() {
       if (this.saving) return;
       this.saving = true; this.err = ""; this.probe = null;
@@ -171,6 +226,19 @@ export default {
       <div v-else class="ag-body">
         <div v-if="!st.available" class="ag-warn">{{ st.reason }}</div>
 
+        <!-- 처음 여는 사람에게 **순서**를 준다. 탭·입력칸·모델 콤보가 한꺼번에 보이면
+             어디가 시작인지 알 수 없다. 키가 하나라도 잡히면 이 안내는 사라진다. -->
+        <div v-if="needsSetup" class="ag-start">
+          <b>처음이신가요? 세 단계면 됩니다.</b>
+          <ol>
+            <li>아래에서 <b>연결 방식</b>을 고릅니다 <em>— 사내는 Azure OpenAI, 개인 키는 OpenAI</em></li>
+            <li><b>API 키</b> 옆 <b>입력</b>을 눌러 키를 넣습니다 <em>— 넣는 즉시 연결을 확인하고
+              쓸 수 있는 모델 목록을 불러옵니다</em></li>
+            <li>불러온 목록에서 <b>모델</b>을 고르고 <b>저장</b>합니다
+              <em>— 키 없이 둘러보려면 '테스트(가짜)'를 고르세요</em></li>
+          </ol>
+        </div>
+
         <!-- provider -->
         <div class="ag-sec">
           <div class="ag-lab">연결 방식</div>
@@ -181,18 +249,22 @@ export default {
           <div class="ag-hint">{{ cur.hint }}</div>
         </div>
 
-        <!-- 키 -->
+        <!-- 키 — 설정돼 있으면 **마스킹된 값이 칸 안에** 보인다.
+             빈 칸은 '설정 안 됨'으로 읽히므로, 있는 것을 있다고 보여 주는 것이 먼저다. -->
         <div v-if="cur.fields.length" class="ag-sec">
           <div class="ag-lab">인증</div>
-          <label v-for="f in cur.fields" :key="f[0]" class="ag-f">
+          <div v-for="f in cur.fields" :key="f[0]" class="ag-f">
             <span>{{ f[1] }}</span>
-            <input :type="f[3] ? 'password' : 'text'" :placeholder="ph(f[0], f[2])"
-                   v-model="secrets[f[0]]" autocomplete="off" spellcheck="false">
-            <!-- 보안상 저장된 키 원문은 안 내려온다 — 빈 입력칸이 "키 없음"으로 오해되지
-                 않게, 저장 여부를 명시적인 줄로 보여 준다(사용자 지적). -->
-            <em v-if="masked[f[0]] && !(secrets[f[0]] || '').trim()" class="ag-keyok">
-              ✓ 저장된 키 사용 중 {{ masked[f[0]].replace('설정됨 ', '') }} — 새로 입력하면 교체됩니다</em>
-          </label>
+            <div class="ag-keyrow">
+              <input class="ag-keyin" :class="{ set: hasKey(f[0]) }" readonly
+                     :value="hasKey(f[0]) ? keyShown(f[0]) : ''"
+                     :placeholder="hasKey(f[0]) ? '' : (f[2] || '아직 설정되지 않았습니다')">
+              <button class="ag-mini" @click="openKeyEdit(f)">
+                {{ hasKey(f[0]) ? '변경' : '입력' }}</button>
+            </div>
+          </div>
+          <div class="ag-hint">키는 이 PC 에만 저장되고 **원문은 화면으로 다시 내려오지 않습니다**.
+            변경할 때 그 자리에서 연결을 확인하고 모델 목록을 갱신합니다.</div>
         </div>
 
         <!-- 모델 — 콤보박스(datalist): 목록에서 고르거나 직접 친다.
@@ -279,12 +351,12 @@ export default {
           <div class="ag-hint">설정하지 않아도 동작합니다. 질의·응답은 어차피 파일 로그로 남습니다.</div>
         </div>
 
-        <!-- 연결 테스트 -->
+        <!-- 연결 상태 — **버튼이 없다.** 확인은 키를 넣을 때와 저장할 때 자동으로 한다.
+             사용자가 알고 싶은 건 "지금 되느냐"이지 '확인'을 누르는 일이 아니다. -->
         <div class="ag-sec">
-          <div class="ag-lab">연결 테스트</div>
-          <button class="ag-cancel" :disabled="busy" @click="test">
-            {{ busy ? '확인 중…' : '지금 확인' }}
-          </button>
+          <div class="ag-lab">연결 상태</div>
+          <div v-if="!probe" class="ag-hint">아직 확인하지 않았습니다 — 키를 입력하거나 저장하면
+            바로 확인합니다.</div>
           <div v-if="probe" class="ag-probe">
             <div class="ag-row" :class="probe.chat && probe.chat.ok ? 'ok' : 'no'">
               <b>채팅</b>
@@ -326,6 +398,57 @@ export default {
           {{ saving ? '저장 중…' : '저장하고 확인' }}
         </button>
         <button class="ag-cancel" @click="$emit('close')">닫기</button>
+      </div>
+
+      <!-- 키 변경 팝업 — 지금 무엇이 들어 있는지 보여 주고, 새 것을 받고, **그 자리에서**
+           연결까지 확인한다. 확인이 목적이므로 성공하면 스스로 닫힌다. -->
+      <div v-if="keyEdit" class="ag-back inner" @click.self="closeKeyEdit">
+        <div class="ag-dlg small">
+          <div class="ag-h">
+            <h3>{{ keyEdit.label }} {{ hasKey(keyEdit.field) ? '변경' : '입력' }}</h3>
+            <button class="ag-x" @click="closeKeyEdit" aria-label="닫기">✕</button>
+          </div>
+          <div class="ag-body">
+            <div class="ag-f" v-if="hasKey(keyEdit.field)">
+              <span>현재 값</span>
+              <input class="ag-keyin set" readonly :value="keyShown(keyEdit.field)">
+            </div>
+            <div class="ag-f">
+              <span>새 {{ keyEdit.label }}</span>
+              <input :type="keyEdit.secret ? 'password' : 'text'" v-model="keyEdit.value"
+                     :placeholder="keyEdit.ph" autocomplete="off" spellcheck="false"
+                     @keydown.enter.prevent="applyKey" ref="keyin">
+            </div>
+            <div class="ag-hint">저장하면 곧바로 연결을 확인하고, 이 provider 에서 쓸 수 있는
+              모델 목록을 다시 불러옵니다.</div>
+            <div v-if="keyEdit.result" class="ag-probe">
+              <div class="ag-row" :class="keyEdit.result.chat && keyEdit.result.chat.ok ? 'ok' : 'no'">
+                <b>채팅</b>
+                <template v-if="keyEdit.result.chat && keyEdit.result.chat.ok">
+                  <span>정상 · {{ keyEdit.result.chat.ms }}ms</span>
+                </template>
+                <template v-else>
+                  <span>실패</span><em>{{ keyEdit.result.chat && keyEdit.result.chat.error }}</em>
+                </template>
+              </div>
+              <div class="ag-row" :class="keyEdit.result.embeddings && keyEdit.result.embeddings.ok ? 'ok' : 'no'">
+                <b>임베딩</b>
+                <template v-if="keyEdit.result.embeddings && keyEdit.result.embeddings.ok">
+                  <span>정상 · {{ keyEdit.result.embeddings.dim }}차원</span>
+                </template>
+                <template v-else>
+                  <span>실패</span><em>{{ keyEdit.result.embeddings && keyEdit.result.embeddings.error }}</em>
+                </template>
+              </div>
+            </div>
+            <div v-if="keyEdit.err" class="ag-err">{{ keyEdit.err }}</div>
+          </div>
+          <div class="ag-act">
+            <button class="ag-ok" :disabled="keyEdit.busy" @click="applyKey">
+              {{ keyEdit.busy ? '확인 중…' : '저장하고 연결 확인' }}</button>
+            <button class="ag-cancel" @click="closeKeyEdit">취소</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>`,

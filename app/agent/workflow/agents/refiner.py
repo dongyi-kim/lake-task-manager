@@ -360,12 +360,24 @@ class Refiner(StructuredAgent):
             goal = """조사를 시작하기 전에 **요청 해석을 확인받아라. 이번 턴에는 초안을 만들지 마라**(items 는 빈 배열).
 - interpretation 에 **네가 이해한 바**를 2~3문장으로 적어라 — 무엇을(대상·기술), 왜(목적 추정),
   어떤 산출물로. 사용자의 낱말을 유지하고, 추정한 부분은 "~로 이해했다"로 표시한다.
-- questions 는 **갈림이 큰 것만** 2~3개, choice 우선·네 추천을 맨 앞에:
+- questions 는 **갈림이 큰 것만** 3~5개, choice 우선·네 추천을 맨 앞에. 위 '생성 최소 요건
+  점검'에서 **ASK 로 표시된 것**이 물을 후보다(INFER/LATER 는 묻지 마라):
   ① 범위/방향 — 어디까지가 1차 목표인가(검토만/PoC/최소 구현), 첫 문장만으로 불명확한 방향
-  ② **모듈** — 어느 모듈(컴포넌트) 소관으로 볼지 갈리면 '배치 재료'의 실값으로 choice
-  ③ **Epic 배치** — kind=choice, field=epic 으로 '배치 재료'의 후보 + "없음(최상위)" +
+  ② **배경** — 왜 지금 필요해졌나(계기: VoC·장애·규제·선행 티켓). 한 줄이면 된다.
+    이걸 안 물으면 본문의 배경이 **원 요청을 옮겨 적은 것**이 되고, 승인하는 사람은
+    "그래서 왜?"를 판단할 재료가 없다. 계기가 대화에 이미 있으면 묻지 말고 해석에 적어라.
+  ③ **완료 조건** — 무엇을 **보고** 끝났다고 할지(리포트·지표·화면·리뷰 승인 중 무엇).
+    이걸 안 물으면 "테스트 완료" 같은 판정 불가 문장이 남아 티켓이 언제 닫히는지 아무도
+    모른다. choice 로 후보를 주고 "직접 입력"을 함께 둔다.
+  ④ **분할 여부** — 한 사람이 며칠에 끝날 일인가. kind=choice 로
+    "한 티켓으로" / "단계별 Sub-Task 로 나눠서" / "담당을 나눠 여러 건으로" 를 보기로.
+    사용자가 형태를 이미 말했으면(코드가 알려 준다) 묻지 마라.
+  ⑤ **모듈** — 어느 모듈(컴포넌트) 소관으로 볼지 갈리면 '배치 재료'의 실값으로 choice
+  ⑥ **Epic 배치** — kind=choice, field=epic 으로 '배치 재료'의 후보 + "없음(최상위)" +
     "새 Epic 이 필요할 것 같다" 를 보기로. 후보가 하나로 명백하면 묻지 말고 해석에 적어라.
   찾아보면 아는 것(관련 티켓 존재 여부·허용값 자체)은 묻지 마라 — 그건 다음 턴 조사가 한다.
+  ★ **이미 답이 나온 것은 묻지 않는다.** 대화에 있는 것을 다시 물으면 취조가 된다 —
+  위 점검표에서 '채워짐'인 항목은 건너뛴다.
 - 마지막 질문 뒤에 사용자가 "알아서"라고 답하면 다음 턴에 조사→초안으로 바로 간다."""
         else:
             goal = """아래 요청을 실행 가능한 티켓 초안으로 만들어라. 정보가 모자라면 **초안 대신 질문**을 내라.
@@ -484,8 +496,10 @@ class Refiner(StructuredAgent):
 
     def apply(self, state, out):
         # 문자열로 오면(구모델·fake) 구조로 승격한다 — 화면은 dict 만 다루면 된다.
+        # 상한 3 → 5. 해석 확인 턴이 물을 것이 늘었다(배경·완료 조건·분할 여부가 슬롯으로
+        # 들어왔다 — 사용자 요청). 3에서 자르면 새 슬롯이 **조용히 버려진다.**
         qs = []
-        for q in (out.get("questions") or [])[:3]:
+        for q in (out.get("questions") or [])[:5]:
             if isinstance(q, str) and q.strip():
                 qs.append({"question": q.strip(), "kind": "text", "options": [], "field": ""})
             elif isinstance(q, dict) and str(q.get("question") or "").strip():
@@ -647,7 +661,12 @@ class Refiner(StructuredAgent):
             qs = []
         # 초안 관련 인터뷰의 마지막엔 항상 **자유 의견** 질문 하나를 붙인다(사용자 요청) —
         # 객관식 보기가 못 담는 계획·우려를 받아낼 출구. 코드가 붙이므로 모델이 잊지 못한다.
-        if qs and not any(q.get("kind") == "text" and "자유" in q.get("question", "") for q in qs):
+        # ★ 이미 넷 이상 물었으면 **자유 의견 칸은 붙이지 않는다.** 슬롯이 늘어(배경·완료
+        #   조건·분할) 질문이 6개까지 나왔는데(실측 ASK1·DUP1·RULE1), 그쯤 되면 출구가
+        #   하나 더 있는 것이 아니라 **취조로 읽힌다.** 자유 의견은 물을 것이 적을 때
+        #   객관식이 못 담는 말을 받으려던 장치다 — 많이 물었으면 이미 받은 것이다.
+        if qs and len(qs) < 4 \
+                and not any(q.get("kind") == "text" and "자유" in q.get("question", "") for q in qs):
             qs.append({"question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 "
                                    "적어 주세요 (없으면 건너뛰어도 됩니다)",
                        "kind": "text", "options": [], "field": ""})
@@ -1150,9 +1169,15 @@ class Refiner(StructuredAgent):
         # ── 완료 조건이 흐리면 판정 가능한 문장으로 다시 쓴다 ────────────────
         # 승인하는 사람에게 제일 중요한 줄이 "테스트 완료"면 티켓이 언제 닫히는지 아무도
         # 모른다. knowledge/07 이 금지하는데 코드로 받치는 자리가 없었다(실측 STR2).
-        if items and not qs:
-            _sharpen_dod(state, items)
-            _fill_thin_bodies(state, items)
+        # ★ **질문이 붙는 턴에도 초안은 화면에 보인다** — 되묻는 턴이라고 본문을 방치하면
+        #   그 얇은 본문이 그대로 사용자에게 간다("확인을 받되 초안은 그대로 보여 준다"가
+        #   이 저장소의 규칙이다). 다만 왕복 비용은 갈라 쓴다:
+        #     · 배경 채우기(_fill_thin_bodies ①)는 **호출이 없으니 언제나** 돈다
+        #     · DoD 다듬기·본문 재작성은 LLM 왕복이라 **질문이 없을 때만**(초안이 확정 단계)
+        if items:
+            _fill_thin_bodies(state, items, repair=not qs)
+            if not qs:
+                _sharpen_dod(state, items)
 
         # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
         # Reviewer 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
@@ -1217,6 +1242,38 @@ class Refiner(StructuredAgent):
                                          draft["rationale"]).strip()
             draft["rationale"] = (draft["rationale"] + f"\n(구조: {structure} — {why})").strip()
             draft["structure_why"] = why    # 카드 헤더와 근거 줄이 같은 값을 쓴다
+
+        # ── ★ **초안이 통째로 사라진 채 끝나지 않는다** ────────────────────────
+        # 모델은 항목을 냈는데 가드들을 지나며 전부 걷힌 실행이 있었다(실측 STARR1:
+        # 답변은 "Epic을 제안합니다"인데 items 가 비고 질문도 0건 — 사용자에게는 실패가
+        # 아니라 **먹통**이다). 같은 부류를 이미 두 번 고쳤지만(전량 삭제 분기·부모 검사
+        # 연쇄) 어느 가드가 지웠는지는 **사후에 알 수 없었다** — 지운 자리에 기록이 없어서다.
+        #
+        # 그래서 두 가지를 한다:
+        #   ① 들어온 항목 수와 나가는 수를 비교해 **없어졌다는 사실을 rationale·trace 에 남긴다**
+        #   ② 질문도 없으면 **어떻게 할지 묻는다** — 아무것도 없이 끝내는 것보다 낫다.
+        # 여기서 초안을 되살리지는 않는다. 왜 걷혔는지 모른 채 되살리면 가드가 막으려던
+        # 것(부모 없는 Sub-Task 등)이 그대로 승인 카드로 간다.
+        came_in = len([i for i in (out.get("items") or []) if isinstance(i, dict)
+                       and str(i.get("summary") or "").strip()])
+        # 해석 확인 턴은 초안이 없는 것이 정상이다 — 대신 '제가 이해한 바'가 나가고 사용자가
+        # 거기에 답한다. 그것마저 비었으면 아래 갈래다(막다른 턴이라는 점은 같다).
+        interp_turn = bool(str(out.get("interpretation") or "").strip())
+        if not items and not plan and not qs and not interp_turn:
+            # 들어온 것이 있었으면 **몇 건이 걷혔는지** 남긴다. 애초에 없었으면(모델이 빈손)
+            # 그 사실만으로도 이 갈래다 — 실측(PASTE2): 답변은 "버그 티켓을 등록하겠습니다.
+            # 아래 카드에서 확인 후 승인해 주세요"인데 items 가 비어 카드가 없었다.
+            # **초안도 질문도 없이 끝나는 턴은 어느 경우에도 정상이 아니다.**
+            if came_in:
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(초안 {came_in}건이 검증 과정에서 모두 제외됐다)").strip()
+                draft["rationale"] = out["rationale"]
+            qs = [{"question": "요청하신 내용으로는 만들 수 있는 티켓이 없었습니다. "
+                               "어떻게 할까요?",
+                       "kind": "choice", "field": "",
+                       "options": ["범위를 다시 알려주면 그것으로 다시 잡는다",
+                                   "부모/Epic 을 지정해 그 아래로 만든다",
+                                   "이번엔 만들지 않는다"]}]
 
         # 해석 확인 턴의 "제가 이해한 바" — Responder 가 질문에 앞세워 보여 준다.
         # 그 외 턴에는 지난 해석이 남지 않게 비운다(오래된 해석은 오해가 된다).
@@ -1601,6 +1658,27 @@ def _slot_audit(state) -> str:
     row("우선순위", bool(_re.search(r"P[0-4]|긴급|우선순위", text)), "사용자 언급",
         "INFER — 기본 P3-Minor, 묻지 않는다")
     row("담당자", False, "", "LATER — 다음 단계(Assigner)가 근거와 함께 정한다, 묻지 않는다")
+
+    # ── ★ 여기부터는 **티켓의 질**을 정하는 슬롯이다(사용자 요청으로 신설) ──────────
+    # 위 슬롯들은 티켓을 **어디에 놓을지**(모듈·Epic·마감)를 정한다. 그런데 승인하는 사람이
+    # 읽는 것은 배치가 아니라 **배경·완료 조건**이고, 나중에 "이거 왜 만들었지"·"이거 끝난
+    # 거 맞나"가 갈리는 자리도 거기다. 이 셋이 비면 코드가 채울 수 있는 것은 형식뿐이라
+    # (배경은 원 요청을 옮기고, DoD 는 모델이 지어낸다) 결국 **물어야 좋아진다**.
+    row("배경(왜 지금 필요한가)",
+        any(w in text for w in ("때문", "위해", "요청이", "VoC", "장애", "이슈", "불편",
+                                "느려", "실패", "필요해서", "라서", "니까", "목표")),
+        "사용자 언급",
+        "ASK — 계기를 한 줄로. 없으면 배경이 원 요청 복사가 된다(승인자가 판단할 수 없다)")
+    row("완료 조건(무엇을 보고 끝났다고 하나)",
+        any(w in text for w in ("완료 조건", "DoD", "끝났다고", "판정", "기준은", "확인되면",
+                                "까지 되면", "성공하면", "리포트", "지표")),
+        "사용자 언급",
+        "ASK — '무엇을 보고' 끝인지. 없으면 '테스트 완료' 같은 판정 불가 문장이 남는다")
+    row("분할 여부(한 사람이 며칠에 끝나나)",
+        bool(shape) or any(w in text for w in ("나눠", "쪼개", "단계", "며칠", "주 정도",
+                                               "혼자", "같이", "분담")),
+        "사용자 언급 또는 형태 지정",
+        "ASK(choice) — 한 티켓 / 단계별 Sub-Task / 담당 나눠 여러 건")
     return "\n".join(rows)
 
 
@@ -1817,7 +1895,7 @@ def _sharpen_dod(state, items) -> bool:
     return hit
 
 
-def _fill_thin_bodies(state, items) -> bool:
+def _fill_thin_bodies(state, items, repair: bool = True) -> bool:
     """최상위 Task 본문이 4섹션 규율을 못 채우면 **조각을 받아 코드가 다시 조립한다.**
 
     실측 STR1: 구조(부모 1 + 자식 30)를 다 맞추고도 부모 본문에 '배경'이 없어서 떨어졌다.
@@ -1841,6 +1919,9 @@ def _fill_thin_bodies(state, items) -> bool:
                 it["description"] = f"<h3>배경</h3><p>{_esc(req[:400])}</p>" + body
                 hit = True
     # ② 그러고도 4섹션을 못 채우는 항목 **하나**만 보정 호출로 다시 쓴다(왕복 비용).
+    #    되묻는 턴에서는 이 왕복을 건너뛴다 — 초안이 아직 확정 전이라 다시 쓸 값이 바뀐다.
+    if not repair:
+        return hit
     for it in tops:
         if _task_grade_body(it.get("description")):
             continue

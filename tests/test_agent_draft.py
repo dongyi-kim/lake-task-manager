@@ -1037,3 +1037,19 @@ def test_every_thin_body_gets_a_background_not_just_the_first():
     r = Refiner().apply(_msg("적재 파이프라인 정리해줘. 알아서"), out)
     bodies = [i["description"] for i in r["draft"]["items"]]
     assert all("<h3>배경</h3>" in b for b in bodies), bodies
+
+
+def test_a_draft_that_vanishes_leaves_a_trace_and_a_question():
+    """★ **아무것도 없이 끝내지 않는다.**
+
+    모델은 항목을 냈는데 가드들을 지나며 전부 걷힌 실행이 있었다(실측 STARR1: 답변은
+    "Epic을 제안합니다"인데 items 가 비고 질문도 0건). 사용자에게는 실패가 아니라 먹통이다.
+    되살리지는 않는다 — 왜 걷혔는지 모른 채 되살리면 가드가 막으려던 것이 그대로 나간다.
+    """
+    out = {"questions": [], "mode": "subtask", "rationale": "", "items": [
+        {"summary": "고아 서브태스크", "type": "Sub-Task", "parent": "DL-99999"}]}
+    r = Refiner().apply(_msg("서브태스크 하나만 만들어줘. 부모는 없어도 돼"), out)
+    if not r["draft"]["items"]:                      # 전부 걷힌 경로일 때만 단언한다
+        assert r["questions"], "초안이 0건이면 최소한 다음 수를 물어야 한다"
+        assert "제외" in str(r["draft"].get("rationale") or ""), \
+            "무엇이 사라졌는지 기록이 남아야 사후에 추적할 수 있다"
