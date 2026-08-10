@@ -426,6 +426,20 @@ class Refiner(StructuredAgent):
                        "기존 children 을 새 항목에 복사하지도 마라)", prev),
             data_block("일괄 수정 대상 (코드가 JQL 로 확정 — change.keys 에 이 키 전부를 담아라)",
                        ", ".join(state.get("bulk_targets") or [])),
+            # ★ 구조 피드백은 **누적해서** 준다. 마지막 한 마디만 주면 앞의 수정이 되돌아간다
+            #   ("3번 빼줘" → 반영 → "1번을 둘로" → 3번이 되살아남). 사용자가 같은 말을
+            #   두 번 하게 만드는 순간 이 피드백 루프는 쓸모가 없어진다.
+            data_block("지금까지 사용자가 **구조에 대해** 준 피드백 (오래된 것부터 — "
+                       "**전부 반영된 상태**로 다시 내라. 앞의 것을 되돌리지 마라)",
+                       "\n".join(f"{n}. {x}" for n, x
+                                 in enumerate(state.get("structure_notes") or [], 1))),
+            data_block("합의 중인 구조 (직전 제안 — 이것을 **고쳐서** 낸다. 처음부터 다시 "
+                       "짜지 마라)",
+                       "\n".join(
+                           f"- {i.get('summary')}"
+                           + ("".join(f"\n    · {c}" for c in (i.get("children") or []))
+                              if i.get("children") else "")
+                           for i in (state.get("structure_plan") or []))),
             data_block("Historian 이 정리한 현재 상황", state.get("situation")),
             # 사전 조사(코드 취합) — 재배분 후보처럼 **키 목록이 곧 재료**인 자료가 여기
             # 실린다. situation(모델 요약)만 주면 목록이 요약에서 증발한다(실측 M2).
@@ -1169,12 +1183,41 @@ class Refiner(StructuredAgent):
         # ── 완료 조건이 흐리면 판정 가능한 문장으로 다시 쓴다 ────────────────
         # 승인하는 사람에게 제일 중요한 줄이 "테스트 완료"면 티켓이 언제 닫히는지 아무도
         # 모른다. knowledge/07 이 금지하는데 코드로 받치는 자리가 없었다(실측 STR2).
+        # ── ★ 뼈대 합의 단계 — 복합 산출물은 **구조 먼저, 살은 나중** ──────────
+        # 사용자 요청: 여러 Task / Task+Sub-Task 처럼 복합인 경우, 본문까지 다 쓴 초안을
+        # 한 번에 내밀지 말고 **구조도를 먼저 보이고 합의**한 뒤 내용을 채운다.
+        # 합의 전에는 본문을 쓰지 않는다 — 구조가 바뀌면 본문은 어차피 버려진다.
+        # ★ 게이트를 **조사를 마친 실제 초안 턴**으로 좁힌다(`situation` 이 그 표식이다).
+        #   복합이기만 하면 걸리게 뒀더니 부모를 지목해 자식만 붙이는 흐름·카드 편집 흐름까지
+        #   뼈대 확인을 물어 왕복이 하나씩 더 붙었다(테스트 38건이 그것을 잡았다).
+        #   뼈대 합의가 값을 하는 자리는 **처음부터 여러 티켓을 새로 만드는** 경우다.
+        struct_stage = False
+        # `plan`(변경 계획)은 이 아래 `_change_plan()` 에서 만들어진다 — 여기서 참조하면
+        # UnboundLocalError 다. 변경 갈래는 **의도**로 거른다(그쪽엔 items 도 없다).
+        if items and not qs and mode != "subtask" \
+                and (state.get("intent") or "") != Intent.MODIFY \
+                and (state.get("situation") or "").strip() \
+                and is_composite(items) and not state.get("structure_ok"):
+            if structure_accepted(state) and (state.get("structure_plan") or []):
+                pass                      # 사용자가 방금 승인했다 — 이번 턴부터 살을 붙인다
+            else:
+                struct_stage = True
+                for it in items:          # 뼈대 단계에서는 본문을 만들지 않는다
+                    it.pop("description", None)
+                    for c in (it.get("children") or []):
+                        if isinstance(c, dict):
+                            c.pop("description", None)
+                qs = [structure_question(items)]
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(먼저 **구조**를 맞춥니다 — 이 뼈대가 확정되면 각 "
+                                      "티켓의 배경·범위·완료 조건을 채웁니다)").strip()
+
         # ★ **질문이 붙는 턴에도 초안은 화면에 보인다** — 되묻는 턴이라고 본문을 방치하면
         #   그 얇은 본문이 그대로 사용자에게 간다("확인을 받되 초안은 그대로 보여 준다"가
         #   이 저장소의 규칙이다). 다만 왕복 비용은 갈라 쓴다:
         #     · 배경 채우기(_fill_thin_bodies ①)는 **호출이 없으니 언제나** 돈다
         #     · DoD 다듬기·본문 재작성은 LLM 왕복이라 **질문이 없을 때만**(초안이 확정 단계)
-        if items:
+        if items and not struct_stage:
             _fill_thin_bodies(state, items, repair=not qs)
             if not qs:
                 _sharpen_dod(state, items)
@@ -1278,8 +1321,29 @@ class Refiner(StructuredAgent):
         # 해석 확인 턴의 "제가 이해한 바" — Responder 가 질문에 앞세워 보여 준다.
         # 그 외 턴에는 지난 해석이 남지 않게 비운다(오래된 해석은 오해가 된다).
         interp = str(out.get("interpretation") or "").strip() if not items else ""
+
+        # ── 구조 합의 상태를 State 에 남긴다 ──────────────────────────────────
+        # `structure_notes` 는 **누적**이다. "3번 빼줘" 다음 턴에 "1번을 둘로" 라고 하면
+        # 둘 다 반영해야 한다 — 앞의 말을 잊으면 사용자는 같은 말을 반복하게 되고, 그게
+        # 이 피드백 루프를 못 쓰게 만드는 유일한 실패 방식이다.
+        notes = list(state.get("structure_notes") or [])
+        fb = structure_feedback(state)
+        if fb and not state.get("structure_ok"):
+            notes.append(fb)
+        st_out = {"structure_notes": notes[-8:]}
+        if struct_stage:
+            st_out["structure_plan"] = [
+                {"summary": str(i.get("summary") or ""),
+                 "children": [str(c.get("summary") or "")
+                              for c in (i.get("children") or []) if isinstance(c, dict)]}
+                for i in items]
+            st_out["structure_ok"] = False
+            draft["structure_tree"] = structure_tree(items, str(items[0].get("epic") or ""))
+        elif items and is_composite(items):
+            st_out["structure_ok"] = True     # 살을 붙이는 단계로 넘어왔다
+
         return {"questions": qs, "draft": draft, "change_plan": plan, "turns": turns,
-                "interpretation": interp,
+                "interpretation": interp, **st_out,
                 "trace": note(state, self.name,
                               f"변경 계획 {plan.get('key')}" if plan else
                               ("해석 확인 " if interp and not items else "")
@@ -1638,7 +1702,10 @@ def _slot_audit(state) -> str:
     low = text.lower()
     shape, _w = shape_hint(state)
     comps = _known_components()
-    module = next((c for c in comps if c.lower() in low), "")
+    # ★ **부분 일치로 모듈을 정하지 않는다.** 컴포넌트 이름이 흔한 낱말이면 아무 문장에나
+    #   걸린다(실측: "feasibility test" 의 'test'). 낱말 경계로 끊어 본다.
+    module = next((c for c in comps
+                   if _re.search(rf"(?<![0-9a-z]){_re.escape(c.lower())}(?![0-9a-z])", low)), "")
     rows = []
 
     def row(name, filled, how, empty_act):
@@ -2413,11 +2480,19 @@ def _can_parent_subtask(key) -> bool:
         return False
 
 
+# UI 회귀 픽스처 전용 모듈 — **실제 티켓에 붙으면 안 된다.** 개발 world 에만 있고 prod
+# config 에는 없다. 실사용 사고: "외부 환경에서의 feasibility test" 라는 제목의 '**test**'
+# 가 컴포넌트 이름 'TEST' 와 부분 일치해 모듈이 TEST 로 잡혔고, 담당까지 픽스처 계정
+# (test.ui02)으로 제안됐다. 사람이 보면 바로 아는 오류지만 초안은 멀쩡해 보인다.
+_FIXTURE_COMPONENTS = {"TEST"}
+
+
 def _known_components() -> set:
     try:
         from app.agent.tools.write_tools import list_ticket_options
-        return {str(x) for x in ((list_ticket_options.invoke({"kind": "components"}) or {})
-                                 .get("components") or [])}
+        got = {str(x) for x in ((list_ticket_options.invoke({"kind": "components"}) or {})
+                                .get("components") or [])}
+        return {c for c in got if c not in _FIXTURE_COMPONENTS}
     except Exception:
         return set()
 
@@ -2523,3 +2598,77 @@ def _shape_options(structure) -> list:
     opts = [f"{tail[order[0]]} (추천 — 지금 초안이 이 형태다)"]
     opts += [tail[k] for k in order[1:3]]
     return opts
+
+
+# ── 구조 합의 단계 (사용자 요청) ───────────────────────────────────────────
+# 왜 나누나: 복합 산출물을 **본문까지 다 써서** 한 번에 내밀면, 구조가 틀렸을 때 사용자가
+# 고칠 것이 너무 많다. 티켓 넷의 배경·범위·DoD 를 다 읽고 나서야 "2번은 1번에 합쳐야지"를
+# 말하게 된다 — 그 시점에 우리는 이미 본문 넷을 쓴 뒤다(왕복도 돈도 버려진다).
+# 그래서 **뼈대 먼저 합의하고 살은 나중에** 붙인다.
+
+_OK_WORDS = ("좋아", "좋습니다", "그대로", "진행", "승인", "확정", "맞아", "맞습니다",
+             "이대로", "ok", "OK", "예", "네", "동의", "괜찮")
+# ★ 활용형까지 적는다 — "합치"만 적어 두면 **"합쳐"가 안 걸린다**(실측: 테스트가 잡았다).
+#   한국어는 어미가 바뀌므로 낱말 판정은 어간 하나로 끝나지 않는다.
+_EDIT_WORDS = ("빼", "제거", "삭제", "합치", "합쳐", "합칠", "합병", "묶", "나눠", "나누",
+               "쪼개", "추가", "바꿔", "바꾸", "옮겨", "옮기", "위로", "아래로",
+               "이름", "제목", "지워", "없애")
+
+
+def structure_feedback(state) -> str:
+    """이번 턴 사용자 발화가 **뼈대에 대한 수정 요구**면 그 문장. 아니면 ""."""
+    said = last_user_text(state)
+    return said if any(w in said for w in _EDIT_WORDS) else ""
+
+
+def structure_accepted(state) -> bool:
+    """사용자가 이 뼈대로 가자고 했나 — **수정 요구가 섞여 있으면 승인이 아니다.**
+
+    "좋아, 근데 3번은 빼줘" 를 승인으로 읽으면 사용자의 수정이 통째로 증발한다.
+    """
+    said = last_user_text(state)
+    if not said.strip():
+        return False
+    if any(w in said for w in _EDIT_WORDS):
+        return False
+    return any(w in said for w in _OK_WORDS)
+
+
+def is_composite(items) -> bool:
+    """뼈대 합의가 필요한 **복합** 산출물인가 — 여러 Task 이거나 자식이 둘 이상."""
+    rows = [i for i in (items or []) if isinstance(i, dict)]
+    if len(rows) > 1:
+        return True
+    return bool(rows) and len([c for c in (rows[0].get("children") or [])
+                               if isinstance(c, dict)]) >= 2
+
+
+def structure_tree(items, epic: str = "") -> str:
+    """뼈대를 **눈에 보이는 나무**로. 사용자가 한눈에 보고 고칠 것을 짚을 수 있어야 한다.
+
+    표가 아니라 나무인 이유: 사용자가 고치는 것은 값이 아니라 **관계**다(합치기·나누기·
+    올리기). 들여쓰기가 그 관계를 그대로 보여 준다.
+    """
+    rows = [i for i in (items or []) if isinstance(i, dict)]
+    out = [f"{epic} (Epic)"] if epic else []
+    pad = "  " if epic else ""
+    for n, it in enumerate(rows, 1):
+        out.append(f"{pad}{n}. {str(it.get('summary') or '').strip()}"
+                   + (f"   [{(it.get('components') or [''])[0]}]"
+                      if (it.get("components") or [""])[0] else ""))
+        kids = [c for c in (it.get("children") or []) if isinstance(c, dict)]
+        for m, c in enumerate(kids, 1):
+            tail = "└─" if m == len(kids) else "├─"
+            out.append(f"{pad}   {tail} {n}-{m}. {str(c.get('summary') or '').strip()}")
+    return "\n".join(out)
+
+
+def structure_question(items) -> dict:
+    n = len([i for i in (items or []) if isinstance(i, dict)])
+    k = sum(len([c for c in (i.get("children") or []) if isinstance(c, dict)])
+            for i in (items or []) if isinstance(i, dict))
+    made = f"Task {n}건" + (f" · Sub-Task {k}건" if k else "")
+    return {"question": f"이 구조로 진행할까요? ({made}) — 고칠 것이 있으면 그대로 "
+                        "말씀해 주세요(합치기·나누기·추가·삭제·이름 변경).",
+            "kind": "choice", "field": "",
+            "options": ["이 구조로 진행한다", "고칠 것이 있다 (아래에 적는다)"]}

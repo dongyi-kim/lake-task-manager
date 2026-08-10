@@ -38,3 +38,5 @@ app_prefs.json
 docs/agent-quality-run.md
 docs/agent-scenarios-report.md
 tools/draft_eval_last.json
+dev-server.log
+dev-server.log.err

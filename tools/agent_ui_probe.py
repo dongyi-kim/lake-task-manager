@@ -47,7 +47,7 @@ def render_findings(html: str, text: str) -> list[str]:
         seg = refs[1]
         hit("jira-badge" in seg, "참조에 무거운 티켓 뱃지가 쓰였다(슬림 링크여야 한다)")
         hit("conf-link" in seg or "web-badge" in seg, "참조에 문서 뱃지가 쓰였다")
-        hit(re.search(r'class="[^"]*md-person(?![-\w])', seg),
+        hit(re.search(r'class="[^"]*\bmd-person\b(?![-\w])', seg),
             "참조에 사람 칩이 쓰였다(이름 글자면 된다)")
     # ⑤ 빈 껍데기
     hit(re.search(r"확인된 기록 없음", text), "'확인된 기록 없음' 이 답변에 남았다")

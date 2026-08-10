@@ -680,3 +680,12 @@
 @media (max-width: 1100px) {
   .ag-grip, .ag-hide, .ag-show.stub { display:none; }
 }
+
+/* 참조 마커 호버 상자 — 하단 참조 목록과 **같은 모양**이어야 한다(브라우저 기본 노란 상자는
+ * 생김새가 따로 놀고 늦게 뜨며 줄바꿈도 없다 — 사용자 지적).
+ * ★ z 축: 마커가 표 안에 있을 때 셀의 `overflow-x:auto` 에 잘리지 않도록 **fixed** 로 띄우고
+ *   좌표만 계산한다(AgentView.refOver). 다이얼로그(1200)보다는 낮게, 본문 위로는 확실히. */
+.ref-tip { position:fixed; z-index:1100; max-width:330px; padding:8px 11px;
+  font-size:12px; line-height:1.65; color:var(--text); background:var(--panel);
+  border:1px solid var(--border-hi); border-radius:8px; box-shadow:var(--shadow);
+  white-space:pre-wrap; word-break:break-word; pointer-events:none; }

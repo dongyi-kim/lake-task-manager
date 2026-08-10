@@ -27,12 +27,17 @@ const AVATAR_MISSING = new Set();
 
 // 빈 화면에 예시를 둔다 — 무엇을 할 수 있는 도구인지 설명하는 가장 빠른 방법이고,
 // 사용자가 첫 문장을 어떻게 쓸지 몰라 멈추는 것을 막는다.
+// ★ 다섯 개는 **다섯 갈래**를 하나씩 연다(사용자 지정): 생성 · 버그 · 내 일 · 조사 · 팀 현황.
+//   예전 목록은 구체적인 문장이라 "내 상황과 다르다"로 읽혔다 — 그러면 칩이 예시가 아니라
+//   남의 이야기가 된다. 지금 것은 **의도**를 말하고, 구체는 에이전트가 되물어 채운다.
+//   추천 칩은 첫 화면의 유일한 행동 유도라 사용 빈도가 압도적이다 — 배터리에서 이 다섯을
+//   따로 재는 이유다(tools/agent_scenarios.py CHIP1~5).
 const EXAMPLES = [
-  "실시간 수집 파이프라인에 CDC 방식을 도입해야 한다",
-  "적재 배치가 어젯밤부터 계속 실패한다 — Workbench 에서 쿼리 결과가 안 나와",
-  "나 오늘 뭐 해야 할까",
-  "ETL 모듈 진척률 어떻게 되고 있어?",
-  "skcc.x1042 최근 3일간 어떤 업무들을 했어?",
+  "업무 테스크를 생성하고 싶어",
+  "버그를 제보하고 싶어",
+  "지금 무슨 업무를 시작해야 할까",
+  "특정 주제를 조사하고 싶어 (히스토리, 지식 등)",
+  "우리 모듈의 최근 7일 업무 내역이 궁금해",
 ];
 
 // 역할 선택 UI 는 없다 — 매니저 여부는 선택이 아니라 사실이라, 서버가 로그인 사용자로 판별한다.
@@ -68,6 +73,7 @@ export default {
       // 좌(대화 목록)·우(초안 미리보기) 패널 — 폭 조절·접기(각자 저장). TicketDialog 와 같은 규칙.
       navW: loadW(NAV_W_KEY, NAV_MIN, NAV_MAX), navHidden: loadHidden(NAV_HIDE_KEY),
       sideW: loadW(SIDE_W_KEY, SIDE_MIN, SIDE_MAX), sideHidden: loadHidden(SIDE_HIDE_KEY),
+      refTip: null,             // [n] 마커 호버 상자 {text, style}
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
       reason: "",             // 못 쓰는 이유(설치 누락 등)
       status: null,           // provider·모델 — 지금 무엇으로 도는지 화면에 보인다
@@ -197,6 +203,35 @@ export default {
     resetNavW() { this.navW = 0; saveLS(NAV_W_KEY, 0); },
     resetSideW() { this.sideW = 0; saveLS(SIDE_W_KEY, 0); },
     md(t, people) { return renderMarkdown(t, people); },
+    /** [n] 마커 호버 — **하단 참조 목록과 같은 모양의** 커스텀 상자를 띄운다.
+     *
+     *  브라우저 기본 툴팁(title)을 쓰지 않는 이유가 셋이다: ①노란 기본 상자가 하단 참조
+     *  목록과 생김새가 따로 논다 ②뜨는 데 1초 넘게 걸린다 ③줄바꿈을 못 준다(사용자 지적).
+     *
+     *  ★ **z 축** — 마커는 표 안에도 들어간다. 표는 가로 스크롤 컨테이너(`overflow-x:auto`)라
+     *  거기 붙인 절대 위치 상자는 **셀 밖으로 나가는 순간 잘린다.** 그래서 상자를 마커의
+     *  자식으로 두지 않고 **본문 최상위에 fixed 로 띄우고** 좌표만 계산한다 — 어떤 조상이
+     *  overflow 를 걸어도 잘리지 않고, 스택 문맥에도 갇히지 않는다. */
+    refOver(e) {
+      const mark = e.target.closest && e.target.closest(".ref-mark[data-tip]");
+      if (!mark) { if (this.refTip) this.refTip = null; return; }
+      const r = mark.getBoundingClientRect();
+      // 위에 자리가 없으면 아래로 — 첫 줄에 있는 마커가 화면 밖으로 나가지 않게.
+      const above = r.top > 120;
+      this.refTip = {
+        text: mark.dataset.tip || "",
+        style: {
+          left: Math.min(Math.max(12, r.left - 8), window.innerWidth - 340) + "px",
+          [above ? "bottom" : "top"]: (above ? window.innerHeight - r.top + 8
+                                             : r.bottom + 8) + "px",
+        },
+      };
+    },
+    refOut(e) {
+      if (!e.relatedTarget || !e.relatedTarget.closest ||
+          !e.relatedTarget.closest(".ref-mark")) this.refTip = null;
+    },
+
     /** [n] 참조 마커 클릭 — 같은 답변의 참조 칸을 열고 그 항목으로 점프 + 하이라이트. */
     mdClick(e) {
       const mark = e.target.closest && e.target.closest(".ref-mark");
@@ -969,7 +1004,8 @@ export default {
         </div>
       </div>
 
-      <div class="agent-scroll" ref="scroller" @click="mdClick">
+      <div class="agent-scroll" ref="scroller" @click="mdClick"
+           @mouseover="refOver" @mouseout="refOut" @scroll="refTip = null">
         <!-- 빈 화면: 중앙 히어로 — 제목 + 추천 칩(입력창이 바로 아래 온다) -->
         <div v-if="empty && !busy" class="agent-empty">
           <h1 class="agent-hero">LTM Agent</h1>
@@ -1345,6 +1381,10 @@ export default {
         <a href="#/guide">서비스 안내</a>
       </div>
       </div>
+      <!-- 참조 마커 호버 상자 — **본문 최상위에 fixed**. 표(가로 스크롤) 안의 마커에서도
+           잘리지 않게 하려면 마커의 자식이 아니라 여기 있어야 한다(refOver 주석 참조). -->
+      <div v-if="refTip" class="ref-tip" :style="refTip.style">{{ refTip.text }}</div>
+
       <AgentSettingsDialog v-if="settingsOpen"
         @saved="refreshStatus"
         @close="settingsOpen = false; refreshStatus()" />

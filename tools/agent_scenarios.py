@@ -209,6 +209,120 @@ CASES = [
      # 체커를 계약보다 세게 잡으면 통과/실패가 케이스의 뜻과 무관해진다.
      None, lambda o, outs: (bool(outs[0].get("questions"))
                             and _history_ok(o.get("reply") or "", need=4))),
+
+    # ── 사람 조사 (실사용 사고 재현) ─────────────────────────────────
+    # 사고: "지금 이다은이 담당한 테스크들" 에 ①"최근 3일 활동 기록이 없습니다"
+    # ②"그 모듈 로스터에 없습니다" 로 답했다. 둘 다 틀렸다 — 그 사람은 ETL 모듈이고
+    # 미완료 티켓을 21건 들고 있었다. **일하고 있는 사람을 놀고 있다고 말한 것**이다.
+    ("WHO1", "사람 담당 업무 — 모듈로 좁히지 말고 프로젝트 전체에서", [
+        "지금 이다은이 담당한 테스크들"],
+     None, lambda o, _: (lambda r: (
+         # ① 실제 담당 티켓 키가 답에 있다(없다고 하면 즉시 실패)
+         len(set(re.findall(r"DL-\d+", r))) >= 3
+         # ② '없다/기록 없음' 으로 끝내지 않았다
+         and not any(w in r for w in ("활동 기록이 없", "담당한 테스크는 없", "확인된 기록이 없"))
+         # ③ 로스터 없음을 이유로 대지 않았다
+         and "로스터" not in r
+     ))(o.get("reply") or "")),
+
+    ("WHO2", "호칭이 붙은 이름 — 직함째로 못 찾았다고 하면 실패", [
+        "이다은 책임이 지금 맡고 있는 일 알려줘"],
+     None, lambda o, _: (lambda r: (
+         len(set(re.findall(r"DL-\d+", r))) >= 3
+         and not any(w in r for w in ("찾지 못", "없습니다만", "존재하지 않"))
+     ))(o.get("reply") or "")),
+
+    ("WHO3", "우리 Jira 에 없는 사람 — 얼버무리지 말고 없다고", [
+        "존재하지않는사람 담당 업무 알려줘"],
+     None, lambda o, _: (lambda r: (
+         # 없다고 분명히 말한다
+         any(w in r for w in ("없", "확인되지 않", "찾지 못"))
+         # ★ 다른 사람으로 바꿔 답하지 않았다 — 실재 사번·키를 끌어오면 실패
+         and not re.search(r"skcc\.[a-z]\d+", r)
+         and len(set(re.findall(r"DL-\d+", r))) == 0
+     ))(o.get("reply") or "")),
+
+    # ── 추천 칩 5갈래 — 첫 화면의 유일한 행동 유도라 사용 빈도가 압도적이다.
+    #    다섯 전부 **의도만 말하고 구체는 비어 있다** — 에이전트가 되물어 채워야 한다.
+    #    "모르겠습니다"로 끝나거나 엉뚝한 걸 지어내면 첫 인상이 그것으로 굳는다.
+    ("CHIP1", "추천 칩 — 테스크 생성(의도만 말했다)", [
+        "업무 테스크를 생성하고 싶어"],
+     "plan_work", lambda o, _: (bool(o.get("questions"))
+                                # 무엇을 만드는지도 모르면서 초안을 지어내면 실패
+                                and not _pending_items(o))),
+
+    ("CHIP2", "추천 칩 — 버그 제보", [
+        "버그를 제보하고 싶어"],
+     # ★ 기대 의도는 report_bug 다 — 처음에 plan_work 로 적었다가 실측에서 틀린 것이
+     #   **케이스 쪽**임을 확인했다(Intent.REPORT_BUG 는 정식 갈래다).
+     "report_bug", lambda o, _: (lambda r: (
+         bool(o.get("questions"))
+         # 버그라는 것을 알아듣고 **재현·증상·범위** 같은 버그의 재료를 묻는다
+         and any(w in (r + json.dumps(o.get("questions") or [], ensure_ascii=False))
+                 for w in ("재현", "증상", "언제", "어디서", "로그", "영향"))
+     ))(o.get("reply") or "")),
+
+    ("CHIP3", "추천 칩 — 내 일 추천(즉답이어야 한다)", [
+        "지금 무슨 업무를 시작해야 할까"],
+     "my_day", lambda o, _: _has(o, "DL-")),
+
+    ("CHIP4", "추천 칩 — 주제 조사(대상을 묻는다)", [
+        "특정 주제를 조사하고 싶어 (히스토리, 지식 등)"],
+     None, lambda o, _: (bool(o.get("questions"))
+                         # 대상이 없는데 아무 티켓이나 긁어오면 실패
+                         and len(set(re.findall(r"DL-\d+", o.get("reply") or ""))) <= 2)),
+
+    ("CHIP5", "추천 칩 — 우리 모듈 최근 7일", [
+        "우리 모듈의 최근 7일 업무 내역이 궁금해"],
+     None, lambda o, _: (lambda r: (
+         # 사람과 티켓이 함께 나오거나, 모듈을 모르면 되묻는다
+         (("skcc." in r) and len(set(re.findall(r"DL-\d+", r))) >= 2)
+         or bool(o.get("questions"))
+     ))(o.get("reply") or "")),
+
+    # ── 구조 합의 단계 (사용자 요청) ─────────────────────────────────
+    # 복합 산출물은 **뼈대 먼저 합의하고 살은 나중**이다. 본문까지 다 써서 내밀면 구조가
+    # 틀렸을 때 사용자가 고칠 것이 너무 많다 — 티켓 넷의 배경·범위·DoD 를 다 읽고 나서야
+    # "2번은 1번에 합쳐야지"를 말하게 된다.
+    ("STRUCT1", "복합 요청 — 본문 대신 **구조도부터**", [
+        "우리 기존 etl 파이프라인에 iceberg puffin ndv 통계정보를 생성하는 기능을 추가구현하고 싶어",
+        "1차 목표는 외부 feasibility test 후 일부 데이터 PoC, 검증 후 전체적용. "
+        "많은 유저 클러스터가 SR Analyze 를 직접 수행해 콜드스타트 부하가 크다. "
+        "완료 조건은 통계정보 생성 배치잡 개발·적용. 단계별 Sub-Task 로, Epic 은 DL-102. 알아서"],
+     None, lambda o, _: (lambda r: (
+         # ① 구조가 **눈에 보이는 나무**로 나왔다(관계가 보여야 고칠 수 있다)
+         ("├─" in r or "└─" in r or re.search(r"\d+-\d+\.", r))
+         # ② 아직 내용을 쓰지 않았다고 분명히 했다
+         and any(w in r for w in ("구조", "뼈대"))
+         # ③ ★ 본문을 미리 쓰지 않았다 — 이 단계에서 배경/완료 조건이 나오면 실패다
+         and not any(w in r for w in ("### 배경", "**배경**", "완료 조건 (DoD)"))
+     ))(o.get("reply") or "")),
+
+    ("STRUCT2", "승인에 수정이 섞여 있으면 **승인이 아니다**", [
+        "메타데이터 표준화를 하려고 해. 수집·검증·문서화 세 갈래로 나뉠 것 같아. 알아서",
+        "좋아, 근데 문서화는 빼줘"],
+     None, lambda o, _: (lambda r: (
+         # 뺀 것이 실제로 빠졌다 — 승인으로 읽고 그대로 진행하면 실패
+         "문서화" not in r
+         # 그리고 아직 구조 단계에 머문다(다시 확인을 받는다)
+         and ("├─" in r or "└─" in r or re.search(r"\d+\.\s", r))
+     ))(o.get("reply") or "")),
+
+    ("STRUCT3", "피드백은 **누적**된다 — 앞의 수정이 되돌아가면 실패", [
+        "카탈로그 품질 점검 자동화. 룰 정의·배치 개발·리포트 세 갈래. 알아서",
+        "리포트는 빼줘",
+        "그리고 배치 개발을 개발과 검증 둘로 나눠줘"],
+     None, lambda o, _: (lambda r: (
+         "리포트" not in r                    # ★ 첫 턴의 수정이 살아 있어야 한다
+         and ("검증" in r)                    # 둘째 턴의 수정도 반영
+     ))(o.get("reply") or "")),
+
+    ("WHO4", "담당 ≠ 최근 활동 — 활동 창으로 담당을 답하면 실패", [
+        "이다은이 지금 들고 있는 미완료 티켓 몇 건이야?"],
+     None, lambda o, _: (lambda r: (
+         len(set(re.findall(r"DL-\d+", r))) >= 3 or re.search(r"\d+\s*건", r)
+     ) and not any(w in r for w in ("최근 3일", "최근 7일", "활동 기록이 없"))
+     )(o.get("reply") or "")),
 ]
 
 # ── 케이스별 기대 계약 ────────────────────────────────────────────────────
@@ -455,7 +569,7 @@ def _ux_ok(reply: str) -> bool:
     sents = [s.strip() for s in re.split(r"(?<=[.?!])\s+|\n", reply) if len(s.strip()) >= 25]
     if len(sents) != len(set(sents)):
         return False
-    if len(set(re.findall(r"\bDL-\d+", reply))) >= 5 and reply.count("|") < 6:
+    if len(set(re.findall(r"DL-\d+", reply))) >= 5 and reply.count("|") < 6:
         return False
     return True
 

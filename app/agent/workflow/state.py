@@ -142,6 +142,18 @@ class AgentState(TypedDict, total=False):
 
     # ── Refiner ──
     interpretation: str             # 조사 전 해석 확인 턴 — "제가 이해한 바" (사용자 검증용)
+    # ── 구조 합의 단계(사용자 요청) ─────────────────────────────────────
+    # 복합 산출물(여러 Task, Task+Sub-Task)을 **본문까지 다 써서** 한 번에 내밀면, 구조가
+    # 틀렸을 때 사용자가 고칠 것이 너무 많다 — 티켓 넷의 배경·범위·DoD 를 다 읽고 나서야
+    # "2번은 1번에 합쳐야지"를 말하게 된다. 그래서 **뼈대 먼저 합의하고 살은 나중에** 붙인다.
+    #   structure_plan  : 합의 중/합의된 뼈대 [{"summary","children":[제목…]}]
+    #   structure_ok    : 사용자가 이 뼈대로 가자고 한 순간 True — 그때부터 본문을 쓴다
+    #   structure_notes : 뼈대에 대해 사용자가 준 피드백의 **누적**. 매 왕복마다 쌓는다 —
+    #                     "3번 빼줘" 다음 턴에 "1번을 둘로" 라고 하면 둘 다 반영해야 한다
+    #                     (앞의 말을 잊으면 사용자는 같은 말을 반복하게 된다)
+    structure_plan: list
+    structure_ok: bool
+    structure_notes: list
     questions: list                 # 사용자에게 되물을 것(비면 진행)
     draft: dict                     # {"mode": "task"|"subtask", "items": [...]}  (생성 갈래)
     change_plan: dict               # {"key","changes":{...},"why"}  (modify 갈래 — 기존 티켓 변경)

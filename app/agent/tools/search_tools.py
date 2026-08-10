@@ -162,6 +162,7 @@ def run_jql(jql: str, limit: int = 20) -> dict:
     cap = max(1, min(int(limit or 20), 50))
     try:
         raws = c.search_issues(q, max_results=cap)
+        raws = _drop_fixtures(raws)
     except Exception as e:
         return {"error": f"JQL 실행 실패: {str(e)[:200]} — 문법을 고쳐 다시 시도하라.", "jql": q}
     rows = []
@@ -177,6 +178,23 @@ def run_jql(jql: str, limit: int = 20) -> dict:
     _last_jql["q"] = q
     return {"jql": q, "count": len(rows), "tickets": rows}
 
+
+
+# UI 회귀 픽스처 티켓 — 개발 world 에만 있고 **사용자 답변에 나오면 안 된다.**
+# 실측(추천 칩 CHIP5 "우리 모듈 최근 7일"): 답이 통째로 [UI] 픽스처 다섯 건이었다.
+# 초안 쪽에서 픽스처 모듈을 막아 뒀는데 **조회 쪽에는 같은 가드가 없었다** — 가드는
+# 만드는 자리와 읽는 자리 양쪽에 있어야 한다.
+_FIXTURE_COMPONENT = "TEST"
+
+
+def _drop_fixtures(raws):
+    out = []
+    for it in (raws or []):
+        comps = [c.get("name") for c in ((it.get("fields") or {}).get("components") or [])]
+        if _FIXTURE_COMPONENT in comps:
+            continue
+        out.append(it)
+    return out
 
 @tool
 def get_ticket(key: str, comment_limit: int = 5) -> dict:

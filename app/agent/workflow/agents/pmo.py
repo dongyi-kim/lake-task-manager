@@ -76,11 +76,38 @@ def _group_activity(state) -> str:
         roster = [x.get("id") if isinstance(x, dict) else x for x in (p.get("people") or [])]
         roster = [x for x in roster if x][:8]
     else:
-        module = state.get("module") or next((mm for mm in _MODULES if mm.lower() in asked.lower()), "")
+        # ★ **모듈은 여럿일 수 있다** — "ETL 이랑 Catalog 최근 7일" 처럼 묻는다(사용자 지적).
+        #   하나만 집으면 나머지가 조용히 빠진 채 답이 나간다.
+        named = [mm for mm in _MODULES if mm.lower() in asked.lower()]
+        module = state.get("module") or (named[0] if named else "")
+        # ★ **"우리 모듈"은 이름이 아니라 지시어다** — 로그인 사용자가 속한 모듈로 푼다.
+        #   실측(추천 칩 CHIP5 "우리 모듈의 최근 7일 업무 내역"): 모듈 이름이 없어 사전취합이
+        #   통째로 꺼졌고, 그 자리를 ReAct 가 메우며 **UI 픽스처 티켓 다섯 건**을 답으로 냈다.
+        #   첫 화면 추천 칩이라 빈도가 높은데 답이 남의 데이터였다.
+        if not module and any(w in asked for w in ("우리 모듈", "our module", "내 모듈",
+                                                   "우리팀", "우리 팀", "우리 모듈의")):
+            try:
+                from app.agent.tools.people_tools import _FIXTURE_MODULES
+                from app.infra.settings import modules_of
+                me = (T.BY_NAME["whoami"].invoke({}) or {}).get("id") or ""
+                # ★ **픽스처 모듈은 답이 될 수 없다.** 개발 world 의 세션 사용자가 UI 픽스처
+                #   계정이라 "우리 모듈"이 그쪽으로 풀렸고, 답이 통째로 [UI] 픽스처 티켓이
+                #   됐다(실측 CHIP5). 못 고르면 비워 두는 편이 낫다 — 그러면 되묻는다.
+                mine = [m for m in (modules_of(me) if me else [])
+                        if m not in _FIXTURE_MODULES]
+                module = mine[0] if mine else ""
+            except Exception:
+                module = ""
         if not module:
             return ""
-        who = module
-        roster = (T.BY_NAME["get_module_people"].invoke({"key_or_component": module}) or {}).get("people") or []
+        mods = named or [module]
+        who = " · ".join(mods)
+        roster = []
+        for mm in mods:                    # 여러 모듈이면 로스터를 합친다(중복 제거)
+            for uid in ((T.BY_NAME["get_module_people"].invoke({"key_or_component": mm})
+                         or {}).get("people") or []):
+                if uid not in roster:
+                    roster.append(uid)
     if not roster:
         return ""
     rows = [f"[로스터] {who}: {', '.join(roster)} ({len(roster)}명)", f"[조회 기간] 최근 {days}일"]
@@ -119,6 +146,31 @@ def _group_activity(state) -> str:
         docs = ", ".join(d.get("title", "") for d in (a.get("docActivity") or [])[:3]) or "없음"
         rows.append(f"[{uid}] 담당/변경 티켓: {touched} | 코멘트 등 활동: {cmts} | 문서 활동: {docs}")
     return "\n".join(rows)
+
+
+
+def _needs_module(state) -> bool:
+    """모듈 이야기인데 **어느 모듈인지 알 수 없는가** — 그러면 물어야 한다.
+
+    소속이 config 에 없는 사람, 픽스처 계정, "우리 팀" 같은 지시어가 여기 걸린다.
+    이미 이름을 댔거나(ETL…), 티켓 유관자 질의이거나, 개인 질문이면 물을 것이 없다.
+    """
+    asked = last_user_text(state)
+    if not any(w in asked for w in ("모듈", "인력", "구성원", "팀")):
+        return False
+    if any(w in asked for w in ("관련자", "유관자")) and (state.get("mentioned_keys") or []):
+        return False
+    if state.get("module") or any(mm.lower() in asked.lower() for mm in _MODULES):
+        return False
+    try:
+        from app.agent import tools as T
+        from app.agent.tools.people_tools import _FIXTURE_MODULES
+        from app.infra.settings import modules_of
+        me = (T.BY_NAME["whoami"].invoke({}) or {}).get("id") or ""
+        mine = [m for m in (modules_of(me) if me else []) if m not in _FIXTURE_MODULES]
+        return not mine
+    except Exception:
+        return True
 
 
 def _my_day(state) -> str:
@@ -398,6 +450,18 @@ class PMO(ToolAgent):
                                                    "어느 티켓을 말씀하시는 건가요? (키 또는 제목)",
                                        "kind": "text", "options": [], "field": ""}],
                         "trace": note(state, self.name, "지시어 대상 없음 — 확인 질문")}
+            # ── ★ 모듈을 못 풀면 **되묻는다** — 짐작해서 남의 모듈을 답하지 않는다.
+            #    config 에 소속이 안 적힌 사람이 있고(사용자 지적), "우리 모듈"이 그런
+            #    사용자에게서 오면 풀 길이 없다. 그때 조용히 넘어가면 ReAct 가 아무 데이터나
+            #    긁어 답한다(실측 CHIP5: 답이 통째로 UI 픽스처 티켓이었다).
+            #    **복수 선택을 허용한다** — 대화가 두 모듈을 가리킬 수 있다(사용자 지적).
+            if (state.get("intent") or "") == Intent.ACTIVITY and _needs_module(state):
+                opts = list(_MODULES)
+                return {"questions": [{
+                    "question": "어느 모듈의 활동을 볼까요? (여러 개면 함께 말씀해 주세요)",
+                    "kind": "choice", "field": "module",
+                    "options": opts + ["잘 모르겠다 — 내가 속한 곳으로"]}],
+                    "trace": note(state, self.name, "모듈 미해결 — 컴포넌트 확인 질문")}
             try:
                 pre = _group_activity(state)
             except Exception:

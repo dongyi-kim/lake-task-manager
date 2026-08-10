@@ -19,6 +19,10 @@ from langchain_core.tools import tool
 from app.agent.tools._ctx import client, compact, settings, trim
 
 
+# UI 회귀 픽스처 전용 모듈 — 개발 world 한정. 담당 후보 풀에 들어가면 안 된다.
+_FIXTURE_MODULES = {"TEST"}
+
+
 def _count(bucket) -> int:
     """워크로드 번들의 한 버킷 → 건수. 화면은 타입별로 쪼개 보여주지만 추천엔 총량이면 된다."""
     if not isinstance(bucket, dict):
@@ -55,7 +59,10 @@ def get_team_workload(module: str = "") -> dict:
     #   하나가 안 맞으면 전사 명단이 그 모듈인 척한다(실측 갭: 로스터 키 불일치).
     #   넓히는 것 자체는 유지한다(후보 0명이 배정을 통째로 막는 것이 더 나쁘다). 다만
     #   **이름표는 사실대로** 달아, 읽는 쪽이 그 목록을 그 모듈이라고 믿지 않게 한다.
-    mods = [key] if key else list(roster)
+    # ★ 전원으로 넓힐 때 **UI 회귀 픽스처 모듈은 뺀다** — 개발 world 에만 있는 계정이
+    #   담당 후보로 올라온다(실사용 사고: 담당 제안이 test.ui02 였다). 그 모듈을 콕 집어
+    #   물었을 때만 보여 준다(픽스처를 점검할 일도 있다).
+    mods = [key] if key else [m for m in roster if m not in _FIXTURE_MODULES]
     rows, seen = [], set()
     for m in mods:
         for uid in roster.get(m) or []:
@@ -147,3 +154,125 @@ def get_module_people(key_or_component: str) -> dict:
         return {"module": None, "people": [], "error": str(e)[:200]}
     mod = next((m for m, ids in roster.items() if uids and set(uids) & set(ids or [])), None)
     return {"module": mod, "people": list(uids)[:30]}
+
+
+@tool
+def find_person(name: str) -> dict:
+    """**이름으로 사람을 찾는다** — 모듈 로스터가 아니라 Jira 사용자 전체에서.
+
+    왜 이 도구가 따로 있나(실사용 사고): "지금 이다은이 담당한 테스크들"에 에이전트가
+    ①최근 3일 활동만 보고 "기록 없음" ②"'TEST' 모듈 로스터에 없다"로 답했다. 둘 다 틀렸다 —
+    이다은은 ETL 모듈 사람이고 **진행 중 티켓이 8건** 있었다. 원인은 사람을 **이름으로**
+    찾을 방법이 도구에 없어서, 모델이 모듈 로스터와 활동 창으로 밀려난 것이다.
+
+    규칙(사용자 지시):
+      · 대화에서 모듈을 **한정하지 않았으면 모듈로 좁히지 않는다** — 다른 모듈 사람도 조사한다.
+      · Jira 사용자 디렉토리에 없으면 **존재하지 않는 사람**으로 본다(추측하지 않는다).
+      · **동명이인**이면 고르지 말고 `candidates` 를 그대로 사용자에게 보여 확인받는다 —
+        표시 이름(소속 포함)과 이메일을 함께 내야 사용자가 고를 수 있다.
+
+    반환: {query, candidates:[{id, display, name, email, module}], resolved, ambiguous, assigned}
+      resolved 가 있으면 그 사람이 **지금 들고 있는 일**(assigned)까지 함께 담는다 —
+      한 번 찾았으면 다시 순회할 이유가 없다(이 저장소의 사전취합 규율).
+    """
+    from app.infra.settings import load_people
+    q = strip_title(name)
+    if not q:
+        return {"query": "", "candidates": [], "resolved": "", "ambiguous": False}
+    c = client()
+    try:
+        raw = c.provider.get_json("/rest/api/2/user/search",
+                                  params={"username": q, "maxResults": 10}) or []
+    except Exception as e:
+        return {"query": q, "candidates": [], "error": str(e)[:150]}
+    roster = load_people() or {}
+    mod_of = {uid: mod for mod, ids in roster.items() for uid in (ids or [])}
+    cands = []
+    for u in raw:
+        uid = u.get("name") or u.get("key") or ""
+        if not uid:
+            continue
+        disp = u.get("displayName") or uid
+        cands.append(compact({"id": uid, "display": disp, "name": _real(disp),
+                              "email": u.get("emailAddress") or "",
+                              "module": mod_of.get(uid, "")}))
+    out = {"query": q, "candidates": cands, "resolved": "", "ambiguous": len(cands) > 1}
+    if not cands:
+        out["note"] = (f"'{q}' 은(는) 우리 Jira 사용자 디렉토리에 없다 — **존재하지 않는 "
+                       "사람으로 본다.** 비슷한 이름을 지어내거나 다른 사람으로 바꿔 답하지 마라.")
+        return out
+    if len(cands) > 1:
+        out["note"] = ("동명이인이다 — **고르지 말고 사용자에게 확인받아라.** 보기에는 표시 "
+                       "이름(소속 포함)과 이메일을 함께 적어야 사용자가 구분할 수 있다.")
+        return out
+    out["resolved"] = cands[0]["id"]
+    out["assigned"] = _assigned_now(cands[0]["id"])
+    return out
+
+
+# 사람 이름 뒤에 붙는 **호칭·직함** — 실사용에서 이대로 들어온다(사용자 지적):
+#   "김동이 M", "윤산성매니저", "박지영차장", "홍길동 TL", "이재민파트장님"
+# 붙여 쓰기도 하고 띄어 쓰기도 하며, 영문 약칭(M/TL/PL/PM/PO)도 섞인다. 이걸 그대로 검색에
+# 넣으면 Jira 사용자 디렉토리에서 **못 찾고**, 그러면 "존재하지 않는 사람"으로 답하게 된다 —
+# 실제로 있는 동료를 없다고 하는 것이 이 부류에서 가장 나쁜 실패다.
+_TITLES = ("파트장", "그룹장", "본부장", "팀장", "실장", "부장", "차장", "과장", "대리",
+           "사원", "선임", "책임", "수석", "매니저", "리더", "님", "씨")
+_TITLES_EN = ("TL", "PL", "PM", "PO", "EM", "M", "L")
+
+
+def strip_title(name: str) -> str:
+    """이름에서 호칭·직함을 떼어 낸다. 뗄 것이 없으면 원문 그대로.
+
+    떼고 나서 **두 글자 미만이면 원문을 쓴다** — "이 M" 같은 입력에서 이름까지 깎아
+    아무나 걸리게 하는 것보다, 못 찾는 편이 낫다(찾는 척하는 것이 더 나쁘다).
+    """
+    import re as _r
+    s = str(name or "").strip()
+    if not s:
+        return ""
+    base = s
+    for _ in range(3):                      # "이재민파트장님" 처럼 두 겹으로 붙는다
+        for t in _TITLES:
+            if base.endswith(t) and len(base) - len(t) >= 2:
+                base = base[: -len(t)].strip()
+                break
+        else:
+            break
+    # 영문 약칭은 **낱말로 떨어져 있을 때만** 뗀다 — "김동이 M" 의 M 은 호칭이지만
+    # 이름 안의 글자를 지우면 안 된다.
+    m = _r.match(r"^(.+?)[\s./,-]+([A-Za-z]{1,2})$", base)
+    if m and m.group(2).upper() in _TITLES_EN and len(m.group(1).strip()) >= 2:
+        base = m.group(1).strip()
+    base = base.strip(" ·,./-")
+    return base if len(base) >= 2 else s
+
+
+def _real(display: str) -> str:
+    """'{본명} {회사}' → 본명. 표시용 짧은 이름."""
+    try:
+        from app.jira.jira_client import real_name
+        return real_name(display) or display
+    except Exception:
+        return display
+
+
+def _assigned_now(uid: str) -> dict:
+    """그 사람이 **지금 들고 있는 일** — 진행 중과 열린 것. 모듈로 좁히지 않는다.
+
+    "담당한 테스크"는 활동 로그(최근 며칠 무엇을 만졌나)가 아니라 **할당된 티켓**이다.
+    이 둘을 섞어서 "최근 3일 활동 기록이 없습니다"로 답한 것이 실사용 사고였다.
+    """
+    from app.agent.tools.search_tools import run_jql
+    try:
+        # ★ 반환 키는 `tickets` 다(`issues` 가 아니다) — 처음 `issues` 로 읽어 **8건 있는
+        #   사람을 0건으로** 돌려줬다. 도구 계약을 눈으로 확인하지 않고 이름을 짐작한 탓이다.
+        r = run_jql.invoke({
+            "jql": f'assignee = "{uid}" AND statusCategory in (new, indeterminate) '
+                   "ORDER BY updated DESC", "limit": 40}) or {}
+        rows = r.get("tickets") or []
+        return {"jql": r.get("jql"), "count": len(rows), "tickets": rows[:40],
+                "note": "할당된 **미완료** 티켓 전부다(모듈로 좁히지 않았다). "
+                        "'최근 활동'과 다른 것이다 — 활동은 며칠간 무엇을 만졌나이고, "
+                        "이건 지금 손에 들고 있는 일이다."}
+    except Exception as e:
+        return {"error": str(e)[:150]}
