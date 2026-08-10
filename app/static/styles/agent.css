@@ -731,3 +731,10 @@
 
 /* 목록이 비었을 때도 드롭다운은 뜬다 — 버튼이 먹통으로 보이지 않게(사용자 지적). */
 .ag-combo-empty { padding:8px 10px; font-size:12px; color:var(--muted); white-space:nowrap; }
+
+/* 활성/비활성 — 이중 확인 게이트의 결과를 연결 상태 맨 위에 못 박는다. */
+.ag-gate { display:flex; align-items:baseline; gap:8px; padding:9px 12px; margin-bottom:10px;
+  border-radius:7px; font-size:12.5px; line-height:1.5; }
+.ag-gate.on  { background:color-mix(in srgb, var(--ok, #2e7d32) 12%, transparent); }
+.ag-gate.off { background:color-mix(in srgb, var(--warn, #b26a00) 14%, transparent); }
+.ag-gate b:first-child { flex:none; }

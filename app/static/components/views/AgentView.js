@@ -988,7 +988,12 @@ export default {
         <span class="st-label">대화 목록</span>
         <span class="st-dots" aria-hidden="true"><i></i><i></i><i></i></span>
       </button>
-      <aside class="agent-nav" ref="nav" v-show="!navHidden">
+      <!-- ★ 폭은 **인라인 CSS 변수**로 내려간다 — agent.css 의 [style*=--nav-w] 규칙이
+           그때만 flex-basis 를 잡는다. 이 바인딩이 빠져 있어서 끌어도 아무 일이 없었다
+           (navW 는 계산·저장까지 다 되고 있었는데 화면에 닿는 줄이 없었다 — 사용자 지적).
+           0 이면 아무것도 안 붙여 기본 폭(CSS)이 그대로 산다. -->
+      <aside class="agent-nav" ref="nav" v-show="!navHidden"
+             :style="navW ? { '--nav-w': navW + 'px' } : null">
         <button class="ag-hide nav" title="대화 목록 접기" @click="setNavHidden(true)">‹</button>
         <!-- 오른쪽 가장자리를 끌어 폭 조절 · 더블클릭하면 기본 폭 -->
         <div class="ag-grip nav" title="너비 조절 — 드래그 (더블클릭: 기본 폭)"
@@ -1448,7 +1453,8 @@ export default {
         <span class="st-label">초안 미리보기</span>
         <span class="st-dots" aria-hidden="true"><i></i><i></i><i></i></span>
       </button>
-      <div v-if="draftTurn() && sideDraft >= 0 && !sideHidden" class="agent-side" ref="side">
+      <div v-if="draftTurn() && sideDraft >= 0 && !sideHidden" class="agent-side" ref="side"
+           :style="sideW ? { '--side-w': sideW + 'px' } : null">
         <button class="ag-hide side" title="미리보기 접기(초안은 그대로 둔다)"
                 @click="setSideHidden(true)">›</button>
         <!-- 왼쪽 가장자리를 끌어 폭 조절 — 오른쪽 패널이라 왼쪽으로 끌면 넓어진다 -->

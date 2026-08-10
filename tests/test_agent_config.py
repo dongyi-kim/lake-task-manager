@@ -288,3 +288,53 @@ def test_compat_model_list_is_not_filtered_by_openai_naming(monkeypatch):
     assert "bge-m3" in r["embed"]                  # embed 를 안 달고 와도 임베딩으로
     assert not (set(r["chat"]) & set(r["embed"])), "한 모델이 두 칸에 있다"
     assert r["total"] == len(ids), "서버가 준 개수를 그대로 알려야 한다"
+
+
+def test_settings_are_inactive_until_both_checks_pass(monkeypatch, tmp_path):
+    """이중 확인 게이트 — **값이 있다**와 **그 조합이 된다**는 다른 말이다(사용자 지시).
+
+    예전에는 앞엣것만 보고 챗·에디터 AI 를 켰다. 그래서 키는 맞는데 모델 이름이 비었거나
+    팀에 권한이 없는 모델이 골라져 있어도 화면은 "쓸 수 있음"이었고, 실패는 사용자가 실제로
+    무언가를 시킨 뒤 403/404 로 나타났다 — 실패를 뒤로 미룬 셈이다.
+    """
+    import app.agent.config as C
+    import app.infra.prefs as P
+    import app.infra.settings as S
+
+    monkeypatch.setattr(S, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(P, "_path", lambda: tmp_path / "prefs.json")
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai")
+    monkeypatch.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-4o-mini")
+    # 키는 저장값으로 준다 — 환경변수로 주면 '주입 환경'이라 게이트가 면제된다(아래에서 따로 잰다).
+    monkeypatch.setattr(C._secrets, "get",
+                        lambda f, *a: "sk-test-1234" if f == "openaiApiKey" else "")
+    monkeypatch.setattr(C._secrets, "env_overrides", lambda: {})
+
+    ok, why = C.llm_ready()
+    assert not ok and "확인" in why, (ok, why)      # 값은 다 있는데 아직 확인 전
+
+    C.mark_verified()                                # probe 가 완전히 통과했을 때 일어나는 일
+    assert C.llm_ready()[0], "확인 뒤에는 켜져야 한다"
+
+    # ★ 모델을 바꾸면 **그 조합은 확인된 적이 없다** — 다시 잠근다.
+    monkeypatch.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-4o")
+    assert not C.llm_ready()[0], "조합이 바뀌었는데 확인 상태가 따라왔다"
+
+
+def test_env_injected_settings_skip_the_gate(monkeypatch, tmp_path):
+    """채점/사내 환경은 `AOAI_*` 를 주입하고 **설정 화면을 아무도 안 연다.**
+
+    거기에 게이트를 걸면 정상 경로가 죽는다 — 면제가 이 규칙의 일부다.
+    """
+    import app.agent.config as C
+    import app.infra.prefs as P
+    import app.infra.settings as S
+
+    monkeypatch.setattr(S, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(P, "_path", lambda: tmp_path / "prefs.json")
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai")
+    monkeypatch.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-4o-mini")
+    monkeypatch.setattr(C._secrets, "get",
+                        lambda f, *a: "sk-injected" if f == "openaiApiKey" else "")
+    monkeypatch.setattr(C._secrets, "env_overrides", lambda: {"openaiApiKey": "OPENAI_API_KEY"})
+    assert C.llm_ready()[0], "환경변수 주입 환경까지 잠그면 안 된다"

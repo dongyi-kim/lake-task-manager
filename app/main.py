@@ -437,6 +437,21 @@ if _devtools.enabled(_settings, "pat_probe"):
          "note": "토큰 값은 앞 6자만 보여 주고 저장하지 않습니다. 회수 실패 시 응답에 표시됩니다.",
          "body": {"name": "lake-task-manager-probe", "days": 1, "cleanup": True}},
     ]
+# LLM 진단 — 에이전트가 설치돼 있을 때만(라우트 자체가 그때만 붙는다).
+# ★ Dev Tools 목록에 올리는 이유: 403·404 가 났을 때 **어느 호출의 어느 모델 이름**인지
+#   보여 주는 것이 유일한 실마리다. 설정 화면의 '연결 확인'은 되고/안 되고만 말한다.
+# (이 목록은 파일 위쪽에서 만들어진다 — 에이전트 설치는 맨 아래에서 붙으므로 그 결과를
+#  여기서 못 본다. import 가능 여부만 미리 본다. config 모듈 자체는 langchain 없이도 뜬다.)
+try:
+    from app.agent import config as _agent_cfg
+    _agent_ok = bool(_agent_cfg.available()[0])
+except Exception:
+    _agent_ok = False
+if _agent_ok:
+    _DEV_ENDPOINTS.append(
+        {"path": "/api/agent/diagnose", "method": "GET",
+         "label": "LLM 연결 해부 (대상 URL · 모델 3종 · 각 호출의 원문 오류)",
+         "note": "키는 끝 4자만 보입니다. 채팅·간단한 역할·임베딩을 각각 한 번씩 부릅니다."})
 _DEV_ENDPOINTS.append({"path": "/api/dev/tools", "label": "dev tools 목록", "method": "GET"})
 
 

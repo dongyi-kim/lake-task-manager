@@ -48,6 +48,57 @@ def available() -> tuple[bool, str]:
     return True, ""
 
 
+# ── 이중 확인 게이트 ───────────────────────────────────────────────
+# 사용자 지시: "인증정보 확인 AND 모델 연결 확인 → 저장까지 완료해야 해당 AI config 가
+# 활성화되고 LLM 에서 활용 가능하게."
+#
+# 왜 필요한가 — 값이 **채워져 있다**와 **그 조합이 실제로 된다**는 다른 말이다. 예전에는
+# 앞엣것만 보고 챗·에디터 AI 를 켰다. 그래서 키는 맞는데 모델 이름이 비었거나, 그 팀에
+# 권한이 없는 모델을 골라 둔 상태로도 화면은 "쓸 수 있음"이었고, 실패는 **사용자가 실제로
+# 무언가를 시킨 뒤에** 403/404 로 나타났다. 실패를 뒤로 미룬 셈이다.
+#
+# 그래서 **확인에 통과한 설정 조합의 지문**을 남기고, 지금 설정이 그 지문과 같을 때만 켠다.
+# 지문이 달라지면(모델을 바꿨든 키를 갈았든) 다시 확인해야 한다 — 바뀐 조합은 확인된 적이 없다.
+#
+# ★ 환경변수로 주입된 환경은 **면제한다.** 채점/사내 배포는 `AOAI_*` 를 프로세스에 넣어 주고
+#   설정 화면을 아무도 안 연다. 거기서 게이트를 걸면 정상 경로가 죽는다.
+def settings_signature() -> str:
+    """지금 '연결에 쓰이는 값들'의 지문. 비밀 원문은 안 들어간다(끝 4자만)."""
+    import hashlib
+    p = provider()
+    key = (_secrets.get("aoaiApiKey") if p == "aoai" else
+           _secrets.get("openaiApiKey") if p == "openai" else
+           _secrets.get("compatApiKey"))
+    base = (_secrets.get("aoaiEndpoint") if p == "aoai" else
+            compat_base() if p == "openai_compat" else "")
+    parts = [p, base, (key or "")[-4:], api_version() if p == "aoai" else "",
+             chat_model("complex"), chat_model("simple"), embed_model()]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def _env_supplied() -> bool:
+    """이 provider 의 연결값이 **환경변수에서** 오고 있나 — 그러면 게이트를 면제한다."""
+    ov = _secrets.env_overrides()
+    need = {"aoai": ("aoaiApiKey",), "openai": ("openaiApiKey",),
+            "openai_compat": ("compatBaseUrl",)}.get(provider(), ())
+    return any(k in ov for k in need)
+
+
+def mark_verified() -> str:
+    """확인에 통과한 조합을 기록한다. probe() 가 **완전히** 성공했을 때만 불린다."""
+    sig = settings_signature()
+    try:
+        from app.infra import prefs
+        prefs.save({"agentVerifiedSig": sig})
+    except Exception:
+        pass
+    return sig
+
+
+def verified() -> bool:
+    return _env_supplied() or _pref("agentVerifiedSig") == settings_signature()
+
+
 def llm_ready() -> tuple[bool, str]:
     """**연결에 필요한 값이 하나라도 있는가** — 없으면 챗·에디터 AI 를 비활성으로 보인다.
 
@@ -59,18 +110,26 @@ def llm_ready() -> tuple[bool, str]:
         return True, ""                     # 테스트 provider — 키가 필요 없다
     if p == "openai":
         if _secrets.get("openaiApiKey"):
-            return True, ""
+            return _gate()
         return False, "OpenAI API 키가 설정되지 않았습니다."
     if p == "aoai":
         if (_secrets.get("aoaiEndpoint")
                 and _secrets.get("aoaiApiKey")):
-            return True, ""
+            return _gate()
         return False, "Azure OpenAI 엔드포인트/키가 설정되지 않았습니다."
     if p == "openai_compat":
         if _secrets.get("compatBaseUrl"):
-            return True, ""
+            return _gate()
         return False, "호환 API 주소가 설정되지 않았습니다."
     return False, f"알 수 없는 provider: {p}"
+
+
+def _gate() -> tuple[bool, str]:
+    """값은 다 있다 — **그 조합이 확인됐나**가 남은 질문이다(위 '이중 확인 게이트' 참고)."""
+    if verified():
+        return True, ""
+    return False, ("설정이 아직 확인되지 않았습니다 — 설정 → AI 에이전트에서 모델을 고르고 "
+                   "**저장하고 확인**을 누르면 켜집니다. (키·모델을 바꾸면 다시 확인해야 합니다)")
 
 
 # ── 설정 해석 ──────────────────────────────────────────────────────
@@ -339,6 +398,8 @@ def status() -> dict:
             #   말해 주지 않으면 사용자는 "저장이 안 되나?"로 읽는다(실사용 지적).
             #   우선순위 자체는 안 바꾼다 — 채점/사내 환경의 주입이 이기는 것이 정상 경로다.
             "envOverrides": _secrets.env_overrides(),
+            # 이중 확인 통과 여부 — 화면이 "왜 아직 안 켜졌나"를 말할 수 있어야 한다.
+            "verified": verified(), "envSupplied": _env_supplied(),
             # 프롬프트 레이어 — 사용자별은 편집 가능, 프로젝트 공용은 읽기 전용 표시.
             "userPrompt": str(_prefs.load().get("agentUserPrompt") or ""),
             "projectPrompt": _project_prompt()}
@@ -372,6 +433,10 @@ def probe(timeout: float = 30.0) -> dict:
         out["embeddings"] = {"ok": False, "ms": int((time.time() - t1) * 1000), "error": _brief(e)}
 
     out["ok"] = bool(out["chat"]["ok"] and out["embeddings"]["ok"])
+    # ★ **둘 다 통과했을 때만** 이 조합을 확인된 것으로 남긴다(사용자 지시: 이중 확인).
+    #   채팅만 되고 임베딩이 막힌 상태를 '됐다'로 치면, 색인이 필요한 순간에 다시 터진다.
+    if out["ok"]:
+        out["verifiedSig"] = mark_verified()
     return out
 
 
@@ -507,3 +572,93 @@ def verify_models(names: list, timeout: float = 15.0) -> dict:
 def _brief(e: Exception) -> str:
     s = str(e).strip().replace("\n", " ")
     return (s[:300] + "…") if len(s) > 300 else s
+
+
+def diagnose(timeout: float = 30.0) -> dict:
+    """LLM 연결 **해부 보고서** — 무엇을 어디로 어떤 이름으로 보내고 뭘 받았나.
+
+    왜 probe() 로 부족한가(사용자 요청): probe 는 "됐다/안 됐다"만 말한다. 실사용에서 나온
+    질문은 그보다 구체적이다 —
+
+      "403 team not allowed to access this model 이 뜨는데, **목록에 있는 모델을 골랐는데도**
+       계속 난다"
+
+    이때 알아야 하는 것은 **실제로 어떤 이름이 어느 호출에 실려 나갔는가**다. 우리 설정에는
+    모델 이름이 **세 개**(채팅 / 간단한 역할 / 임베딩) 있고, 셋은 각자 다른 자리에서 온다.
+    하나만 고르고 나머지를 비워 두면, 화면에서 고른 것과 **다른 이름**으로 나가는 호출이
+    남는다 — 그런데 오류 메시지는 어느 호출인지 말해 주지 않는다.
+
+    그래서 셋을 **따로따로** 부르고 각각의 (요청 대상 · 실린 모델명 · 원문 응답)을 보인다.
+    비밀값은 싣지 않는다 — 키는 끝 4자만, 헤더는 이름만.
+    """
+    p = provider()
+    out = {"provider": p, "env": {}, "targets": {}, "calls": [], "hint": ""}
+    ok, why = available()
+    if not ok:
+        out["error"] = why
+        return out
+
+    out["env"] = _secrets.env_overrides()
+    key = ""
+    if p == "aoai":
+        base, key = _secrets.get("aoaiEndpoint"), _secrets.get("aoaiApiKey")
+        out["targets"] = {"endpoint": base, "api-version": api_version(),
+                          "url(chat)": f"{(base or '').rstrip('/')}/openai/deployments/"
+                                       f"{chat_model('complex') or '(비어 있음)'}/chat/completions"}
+    elif p == "openai_compat":
+        base, key = compat_base(), _secrets.get("compatApiKey")
+        out["targets"] = {"base_url(입력값)": _secrets.get("compatBaseUrl"),
+                          "base_url(실제 사용)": base,
+                          "url(chat)": f"{base}/chat/completions",
+                          "url(models)": f"{base}/models",
+                          "추가 헤더": sorted(_compat_headers().keys()) or "(없음)"}
+    elif p == "openai":
+        key = _secrets.get("openaiApiKey")
+        out["targets"] = {"base_url": "https://api.openai.com/v1"}
+    out["targets"]["api key"] = (f"…{key[-4:]} (길이 {len(key)})" if key else "(없음)")
+
+    # ★ 세 이름을 **각각** 보인다. "골랐는데 안 된다"의 대부분이 여기서 갈린다.
+    names = {"채팅(complex)": chat_model("complex"),
+             "간단한 역할(simple)": chat_model("simple"),
+             "임베딩": embed_model()}
+    out["models"] = {k: (v or "(비어 있음)") for k, v in names.items()}
+    if names["채팅(complex)"] and names["간단한 역할(simple)"] != names["채팅(complex)"]:
+        out["hint"] = ("간단한 역할 모델이 채팅 모델과 **다릅니다** — 권한이 없는 쪽이 있으면 "
+                       "일부 턴만 실패합니다. 하나로 맞추려면 '간단한 역할 모델'을 비우세요.")
+
+    def _try(label, fn):
+        t0 = time.time()
+        row = {"단계": label}
+        try:
+            row["결과"] = fn()
+            row["ok"] = True
+        except Exception as e:
+            row["ok"] = False
+            row["오류"] = _brief(e)
+            row["오류종류"] = type(e).__name__
+            for attr in ("status_code", "code"):
+                v = getattr(e, attr, None)
+                if v is not None:
+                    row[attr] = v
+        row["ms"] = int((time.time() - t0) * 1000)
+        out["calls"].append(row)
+
+    _try(f"모델 목록 ({p})", lambda: (lambda r: f"{len(r.get('chat') or [])}개 / 오류={r.get('error') or '없음'}")(
+        list_models(timeout=timeout)))
+    _try(f"채팅 · model={names['채팅(complex)'] or '(비어 있음)'}",
+         lambda: str(getattr(get_llm(temperature=0, max_tokens=5).invoke("ping"), "content", ""))[:60])
+    if names["간단한 역할(simple)"] != names["채팅(complex)"]:
+        _try(f"간단한 역할 · model={names['간단한 역할(simple)'] or '(비어 있음)'}",
+             lambda: str(getattr(get_llm(temperature=0, max_tokens=5, tier="simple").invoke("ping"),
+                                 "content", ""))[:60])
+    _try(f"임베딩 · model={names['임베딩'] or '(비어 있음)'}",
+         lambda: f"{len(get_embeddings().embed_query('ping'))}차원")
+
+    bad = [c for c in out["calls"] if not c.get("ok")]
+    if bad and not out["hint"]:
+        first = bad[0]
+        if "403" in str(first.get("오류") or ""):
+            out["hint"] = (f"'{first['단계']}' 에서 403 — **그 단계에 실린 모델 이름**이 허용 목록에 "
+                           "있는지 보세요. 채팅만 고르고 임베딩을 비워 두면 임베딩 호출이 빈 이름 "
+                           "또는 기본값으로 나갑니다.")
+    return out

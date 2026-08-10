@@ -138,6 +138,18 @@ def api_models_verify(body: _VerifyBody):
     return JSONResponse(_cfg.verify_models(body.models))
 
 
+@router.get("/diagnose")
+def api_diagnose():
+    """LLM 연결 **해부** — 무엇을 어디로 어떤 모델 이름으로 보내고 뭘 받았나.
+
+    probe 는 "됐다/안 됐다"만 말한다. 실사용에서 막히는 지점은 그보다 구체적이다:
+    "목록에 있는 모델을 골랐는데도 403" — 우리 설정에는 모델 이름이 **셋**(채팅·간단한
+    역할·임베딩)이고, 하나만 고르면 나머지는 다른 이름으로 나간다. 여기서 셋을 따로 부른다.
+    비밀값은 안 싣는다(키는 끝 4자, 헤더는 이름만).
+    """
+    return JSONResponse(_cfg.diagnose())
+
+
 @router.get("/index")
 def api_index_stats():
     """RAG 색인 현황. 규칙 문서가 몇 조각인지, 티켓을 몇 건 쌓았는지."""

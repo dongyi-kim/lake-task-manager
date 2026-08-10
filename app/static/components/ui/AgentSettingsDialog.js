@@ -249,6 +249,8 @@ export default {
         this.secrets = {};
         this.loadModels();                 // provider·키가 바뀌었으니 목록도 새 것으로
         await this.test();                 // 저장했으면 되는지까지 확인해 주는 게 맞다
+        // 확인이 통과하면 서버가 '활성' 지문을 남긴다 — 그 결과를 다시 읽어 화면에 반영한다.
+        try { this.st = await agentApi.status(); this.$emit("saved", this.st); } catch (e) { /* 표시만 */ }
       } catch (e) { this.err = (e && e.message) || "저장에 실패했습니다"; }
       finally { this.saving = false; }
     },
@@ -465,6 +467,17 @@ export default {
              사용자가 알고 싶은 건 "지금 되느냐"이지 '확인'을 누르는 일이 아니다. -->
         <div class="ag-sec">
           <div class="ag-lab">연결 상태</div>
+          <!-- ★ **활성화 여부를 맨 위에 말한다**(사용자 지시: 인증 확인 AND 모델 연결 확인 →
+               저장까지 마쳐야 활성). 값이 채워진 것과 그 조합이 실제로 되는 것은 다른 말이라,
+               예전에는 "설정은 다 했는데 왜 안 되지"가 실제 사용 중에야 403 으로 드러났다. -->
+          <div v-if="st.envSupplied" class="ag-hint">환경변수로 주입된 설정입니다 — 확인 절차 없이
+            그대로 씁니다.</div>
+          <div v-else class="ag-gate" :class="st.verified ? 'on' : 'off'">
+            <b>{{ st.verified ? '활성' : '비활성' }}</b>
+            <span v-if="st.verified">채팅·임베딩 확인 완료 — AI 기능을 쓸 수 있습니다.</span>
+            <span v-else>채팅과 임베딩이 <b>둘 다</b> 통과하고 저장돼야 켜집니다.
+              아래 <b>저장하고 확인</b>을 누르세요. (키·모델을 바꾸면 다시 확인합니다)</span>
+          </div>
           <div v-if="!probe" class="ag-hint">아직 확인하지 않았습니다 — 키를 입력하거나 저장하면
             바로 확인합니다.</div>
           <div v-if="probe" class="ag-probe">
