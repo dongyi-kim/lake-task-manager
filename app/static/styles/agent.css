@@ -469,6 +469,9 @@
 /* 키 줄 — **설정돼 있으면 칸 안에 마스킹된 값이 보인다.** 빈 칸은 '설정 안 됨'으로 읽히므로
  * 있는 것을 있다고 보여 주는 것이 먼저다. 원문은 서버가 절대 안 내려 준다(단방향). */
 .ag-keyrow { flex:1; min-width:0; display:flex; align-items:center; gap:8px; }
+/* 인증 항목이 여럿인 provider(AOAI·OpenAI 호환)는 **한 팝업에서 한꺼번에** 고친다 —
+   그래서 버튼이 칸마다가 아니라 섹션에 하나다. 라벨 열만큼 들여 칸과 줄을 맞춘다. */
+.ag-keyrow.one { justify-content:flex-end; margin-top:2px; }
 .ag-keyin { flex:1; min-width:0; padding:7px 10px; font:inherit; font-size:12.5px;
   font-family:ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.02em;
   color:var(--muted-2); background:var(--panel-2); border:1px solid var(--border);

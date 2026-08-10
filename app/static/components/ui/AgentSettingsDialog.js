@@ -8,6 +8,7 @@
 // 비밀값은 **한 방향으로만** 흐른다 — 저장은 여기서 보내고, 조회는 마스킹된 것만 받는다.
 // 이미 저장된 키는 자리표시자로만 보이고, 비워 두면 기존 값이 유지된다(다시 칠 필요 없다).
 import { agentApi } from "../../lib/agentApi.js";
+import { api } from "../../lib/api.js";
 
 // provider 마다 물어볼 것이 다르다. 여기 한 곳에 모아 두면 화면과 서버가 갈라지지 않는다.
 const PROVIDERS = [
@@ -44,11 +45,19 @@ export default {
       models: { chat: [], embed: [], error: "" },
       modelsBusy: false,
       comboOpen: "",            // "chat" | "embed" | "" — 열려 있는 모델 드롭다운
-      // ── 키 변경 팝업 ────────────────────────────────────────────────
+      // 실행 환경(mock/local/prod) — provider 목록을 가리는 데 쓴다. 아래 providers() 참고.
+      env: "",
+      // ── 인증 변경 팝업 ──────────────────────────────────────────────
       // 왜 팝업인가: 키는 **한 번 정하고 오래 안 건드리는 값**인데, 입력칸으로 늘 열어 두면
       // ①설정됐는지가 안 보이고(빈 칸은 '없음'처럼 보인다) ②실수로 지울 수 있다.
       // 평소에는 마스킹된 값을 **읽기 전용으로 보여 주고**, 바꿀 때만 팝업을 연다.
-      keyEdit: null,            // { field, label, ph, value, busy, result, err }
+      //
+      // ★ 항목 **하나가 아니라 provider 의 인증 항목 전부**를 한 팝업에서 받는다(사용자 지적).
+      //   예전엔 칸마다 팝업이 따로였고 각각이 저장·연결확인을 했다 — AOAI(엔드포인트+키)나
+      //   OpenAI 호환(Base URL+키+헤더)에서는 **첫 칸만 넣은 상태로 연결 테스트가 돌아**
+      //   당연히 실패했다. 사용자에게는 "방금 넣은 게 틀렸다"로 보인다. 한 벌이어야 의미가
+      //   생기는 값들이므로 입력도 검증도 한 번에 한다.
+      authEdit: null,           // { fields: [...], values: {}, busy, result, err }
     };
   },
   watch: {
@@ -57,7 +66,13 @@ export default {
     provider() { this.models = { chat: [], embed: [], error: "" }; },
   },
   computed: {
-    providers() { return PROVIDERS; },
+    /** prod 에서는 **테스트(가짜)를 뺀다**(사용자 지적).
+     *  실 Jira 를 보는 화면에서 가짜 모델로 답을 만들면, 그 답이 진짜처럼 보인다 —
+     *  고를 수 있게 두는 것 자체가 사고의 씨앗이다. mock/local 에서는 그대로 둔다
+     *  (거기서는 키 없이 흐름을 보는 것이 정당한 용도다). */
+    providers() {
+      return this.env === "prod" ? PROVIDERS.filter((p) => p.k !== "fake") : PROVIDERS;
+    },
     cur() { return PROVIDERS.find((p) => p.k === this.provider) || PROVIDERS[0]; },
     masked() { return (this.st && this.st.secrets) || {}; },
     /** 아직 아무 키도 안 잡힌 상태 — 첫 사용 안내를 띄울지의 기준.
@@ -91,6 +106,9 @@ export default {
         this.apiVersion = this.st.apiVersion || "";
         this.userPrompt = this.st.userPrompt || "";
       } catch (e) { this.err = (e && e.message) || "설정을 불러오지 못했습니다"; }
+      // 실행 환경 — prod 면 '테스트(가짜)' provider 를 목록에서 뺀다(providers() 참고).
+      // 실패하면 빈 문자열로 남고, 그때는 아무것도 가리지 않는다(모르면 막지 않는다).
+      api.health().then((h) => { this.env = (h && h.env) || ""; }).catch(() => {});
       agentApi.indexStats().then((r) => { this.index = r; }).catch(() => {});
       this.loadModels();
     },
@@ -141,35 +159,48 @@ export default {
     },
     hasKey(field) { return !!this.masked[field]; },
 
-    openKeyEdit(f) {
-      this.keyEdit = { field: f[0], label: f[1], ph: f[2] || "", secret: !!f[3],
-                       value: "", busy: false, result: null, err: "" };
+    /** provider 의 인증 항목 **전부**를 한 팝업으로 연다.
+     *  칸마다 따로 열면 한 벌이어야 의미가 생기는 값(엔드포인트+키)이 반쪽인 채로
+     *  연결 테스트를 타고, 사용자에게는 "방금 넣은 게 틀렸다"로 보인다. */
+    openAuthEdit() {
+      const values = {};
+      for (const f of this.cur.fields) values[f[0]] = "";
+      this.authEdit = { fields: this.cur.fields, values, busy: false, result: null, err: "" };
+      this.$nextTick(() => { const el = this.$refs.authin; (el && el[0] ? el[0] : el)?.focus(); });
     },
-    closeKeyEdit() { this.keyEdit = null; },
+    closeAuthEdit() { this.authEdit = null; },
+    /** 이 provider 의 인증이 하나라도 잡혀 있나 — 버튼 문구('변경' vs '입력')를 정한다. */
+    anyKey() { return this.cur.fields.some((f) => this.hasKey(f[0])); },
 
-    /** 키를 넣는 **그 자리에서** 연결을 확인하고 모델 목록을 갱신한다.
+    /** 입력을 **한 번에** 저장하고, 그 자리에서 연결을 확인하고 모델 목록을 갱신한다.
      *  예전엔 저장과 '지금 확인' 버튼이 따로였는데, 키를 바꾼 사람이 알고 싶은 것은 정확히
-     *  "이 키가 되느냐"다 — 그 답을 받으러 버튼을 한 번 더 찾아 누르게 할 이유가 없다. */
-    async applyKey() {
-      const k = this.keyEdit;
-      if (!k || k.busy) return;
-      const v = (k.value || "").trim();
-      if (!v) { k.err = "새 키를 입력하세요"; return; }
-      k.busy = true; k.err = ""; k.result = null;
+     *  "이게 되느냐"다 — 그 답을 받으러 버튼을 한 번 더 찾아 누르게 할 이유가 없다. */
+    async applyAuth() {
+      const a = this.authEdit;
+      if (!a || a.busy) return;
+      // 빈 칸은 **보내지 않는다** — 빈 문자열을 보내면 저장된 값을 지우게 된다.
+      // (그래서 "바꿀 것만 치고 나머지는 비워 두기"가 그대로 성립한다.)
+      const secrets = {};
+      for (const f of a.fields) {
+        const v = (a.values[f[0]] || "").trim();
+        if (v) secrets[f[0]] = v;
+      }
+      if (!Object.keys(secrets).length) { a.err = "바꿀 값을 하나 이상 입력하세요"; return; }
+      a.busy = true; a.err = ""; a.result = null;
       try {
-        const body = { provider: this.provider, secrets: { [k.field]: v } };
+        const body = { provider: this.provider, secrets };
         if (this.provider === "aoai" && this.apiVersion) body.apiVersion = this.apiVersion;
         this.st = await agentApi.saveSettings(body);
         this.$emit("saved", this.st);
-        k.result = await agentApi.probe();          // ① 되는지
+        a.result = await agentApi.probe();          // ① 되는지
         await this.loadModels();                    // ② 무엇을 쓸 수 있는지
-        this.probe = k.result;
-        if (this.probeOk(k.result)) {
+        this.probe = a.result;
+        if (this.probeOk(a.result)) {
           // 성공이면 닫는다 — 확인이 목적이었고, 결과는 아래 '연결 상태'에 남는다.
-          this.keyEdit = null;
+          this.authEdit = null;
         }
-      } catch (e) { k.err = (e && e.message) || "저장에 실패했습니다"; }
-      finally { if (this.keyEdit) this.keyEdit.busy = false; }
+      } catch (e) { a.err = (e && e.message) || "저장에 실패했습니다"; }
+      finally { if (this.authEdit) this.authEdit.busy = false; }
     },
 
     probeOk(p) {
@@ -253,18 +284,21 @@ export default {
              빈 칸은 '설정 안 됨'으로 읽히므로, 있는 것을 있다고 보여 주는 것이 먼저다. -->
         <div v-if="cur.fields.length" class="ag-sec">
           <div class="ag-lab">인증</div>
+          <!-- 읽기 전용 현황 — 무엇이 잡혀 있는지 한눈에. 고치는 것은 아래 버튼 하나로
+               연다(칸마다 팝업이 따로면 반쪽 입력으로 연결 테스트가 돈다 — 사용자 지적). -->
           <div v-for="f in cur.fields" :key="f[0]" class="ag-f">
             <span>{{ f[1] }}</span>
-            <div class="ag-keyrow">
-              <input class="ag-keyin" :class="{ set: hasKey(f[0]) }" readonly
-                     :value="hasKey(f[0]) ? keyShown(f[0]) : ''"
-                     :placeholder="hasKey(f[0]) ? '' : (f[2] || '아직 설정되지 않았습니다')">
-              <button class="ag-mini" @click="openKeyEdit(f)">
-                {{ hasKey(f[0]) ? '변경' : '입력' }}</button>
-            </div>
+            <input class="ag-keyin" :class="{ set: hasKey(f[0]) }" readonly
+                   :value="hasKey(f[0]) ? keyShown(f[0]) : ''"
+                   :placeholder="hasKey(f[0]) ? '' : (f[2] || '아직 설정되지 않았습니다')">
           </div>
-          <div class="ag-hint">키는 이 PC 에만 저장되고 **원문은 화면으로 다시 내려오지 않습니다**.
-            변경할 때 그 자리에서 연결을 확인하고 모델 목록을 갱신합니다.</div>
+          <div class="ag-keyrow one">
+            <button class="ag-mini" @click="openAuthEdit()">
+              {{ anyKey() ? '인증 정보 변경' : '인증 정보 입력' }}</button>
+          </div>
+          <div class="ag-hint">키는 이 PC 에만 저장되고 <b>원문은 화면으로 다시 내려오지 않습니다</b>.
+            {{ cur.fields.length > 1 ? '항목을 모두 넣은 뒤' : '입력하면' }} 그 자리에서 연결을
+            확인하고 모델 목록을 갱신합니다.</div>
         </div>
 
         <!-- 모델 — 콤보박스(datalist): 목록에서 고르거나 직접 친다.
@@ -400,53 +434,50 @@ export default {
         <button class="ag-cancel" @click="$emit('close')">닫기</button>
       </div>
 
-      <!-- 키 변경 팝업 — 지금 무엇이 들어 있는지 보여 주고, 새 것을 받고, **그 자리에서**
-           연결까지 확인한다. 확인이 목적이므로 성공하면 스스로 닫힌다. -->
-      <div v-if="keyEdit" class="ag-back inner" @click.self="closeKeyEdit">
+      <!-- 인증 변경 팝업 — 이 provider 가 요구하는 것을 **한 번에** 받고, 저장한 뒤
+           그 자리에서 연결까지 확인한다. 확인이 목적이므로 성공하면 스스로 닫힌다. -->
+      <div v-if="authEdit" class="ag-back inner" @click.self="closeAuthEdit">
         <div class="ag-dlg small">
           <div class="ag-h">
-            <h3>{{ keyEdit.label }} {{ hasKey(keyEdit.field) ? '변경' : '입력' }}</h3>
-            <button class="ag-x" @click="closeKeyEdit" aria-label="닫기">✕</button>
+            <h3>{{ cur.label }} 인증 {{ anyKey() ? '변경' : '입력' }}</h3>
+            <button class="ag-x" @click="closeAuthEdit" aria-label="닫기">✕</button>
           </div>
           <div class="ag-body">
-            <div class="ag-f" v-if="hasKey(keyEdit.field)">
-              <span>현재 값</span>
-              <input class="ag-keyin set" readonly :value="keyShown(keyEdit.field)">
+            <div v-for="(f, fi) in authEdit.fields" :key="f[0]" class="ag-f">
+              <span>{{ f[1] }}</span>
+              <input :type="f[3] ? 'password' : 'text'" v-model="authEdit.values[f[0]]"
+                     :placeholder="hasKey(f[0]) ? keyShown(f[0]) + ' (비워 두면 유지)' : (f[2] || '')"
+                     autocomplete="off" spellcheck="false" ref="authin"
+                     @keydown.enter.prevent="applyAuth">
             </div>
-            <div class="ag-f">
-              <span>새 {{ keyEdit.label }}</span>
-              <input :type="keyEdit.secret ? 'password' : 'text'" v-model="keyEdit.value"
-                     :placeholder="keyEdit.ph" autocomplete="off" spellcheck="false"
-                     @keydown.enter.prevent="applyKey" ref="keyin">
-            </div>
-            <div class="ag-hint">저장하면 곧바로 연결을 확인하고, 이 provider 에서 쓸 수 있는
-              모델 목록을 다시 불러옵니다.</div>
-            <div v-if="keyEdit.result" class="ag-probe">
-              <div class="ag-row" :class="keyEdit.result.chat && keyEdit.result.chat.ok ? 'ok' : 'no'">
+            <div class="ag-hint">비워 둔 칸은 <b>지금 값을 그대로 둡니다</b> — 바꿀 것만 치세요.
+              저장하면 곧바로 연결을 확인하고 모델 목록을 다시 불러옵니다.</div>
+            <div v-if="authEdit.result" class="ag-probe">
+              <div class="ag-row" :class="authEdit.result.chat && authEdit.result.chat.ok ? 'ok' : 'no'">
                 <b>채팅</b>
-                <template v-if="keyEdit.result.chat && keyEdit.result.chat.ok">
-                  <span>정상 · {{ keyEdit.result.chat.ms }}ms</span>
+                <template v-if="authEdit.result.chat && authEdit.result.chat.ok">
+                  <span>정상 · {{ authEdit.result.chat.ms }}ms</span>
                 </template>
                 <template v-else>
-                  <span>실패</span><em>{{ keyEdit.result.chat && keyEdit.result.chat.error }}</em>
+                  <span>실패</span><em>{{ authEdit.result.chat && authEdit.result.chat.error }}</em>
                 </template>
               </div>
-              <div class="ag-row" :class="keyEdit.result.embeddings && keyEdit.result.embeddings.ok ? 'ok' : 'no'">
+              <div class="ag-row" :class="authEdit.result.embeddings && authEdit.result.embeddings.ok ? 'ok' : 'no'">
                 <b>임베딩</b>
-                <template v-if="keyEdit.result.embeddings && keyEdit.result.embeddings.ok">
-                  <span>정상 · {{ keyEdit.result.embeddings.dim }}차원</span>
+                <template v-if="authEdit.result.embeddings && authEdit.result.embeddings.ok">
+                  <span>정상 · {{ authEdit.result.embeddings.dim }}차원</span>
                 </template>
                 <template v-else>
-                  <span>실패</span><em>{{ keyEdit.result.embeddings && keyEdit.result.embeddings.error }}</em>
+                  <span>실패</span><em>{{ authEdit.result.embeddings && authEdit.result.embeddings.error }}</em>
                 </template>
               </div>
             </div>
-            <div v-if="keyEdit.err" class="ag-err">{{ keyEdit.err }}</div>
+            <div v-if="authEdit.err" class="ag-err">{{ authEdit.err }}</div>
           </div>
           <div class="ag-act">
-            <button class="ag-ok" :disabled="keyEdit.busy" @click="applyKey">
-              {{ keyEdit.busy ? '확인 중…' : '저장하고 연결 확인' }}</button>
-            <button class="ag-cancel" @click="closeKeyEdit">취소</button>
+            <button class="ag-ok" :disabled="authEdit.busy" @click="applyAuth">
+              {{ authEdit.busy ? '확인 중…' : '저장하고 연결 확인' }}</button>
+            <button class="ag-cancel" @click="closeAuthEdit">취소</button>
           </div>
         </div>
       </div>

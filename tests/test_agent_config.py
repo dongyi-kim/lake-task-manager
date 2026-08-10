@@ -206,3 +206,25 @@ def test_playbooks_load_and_inject(clean_env):
     p = persona({"playbook": "subtask_bulk"})
     assert "Standard playbook" in p and "재질문 금지" in p
     assert "Standard playbook" not in persona({})
+
+def test_fake_provider_is_refused_in_prod(monkeypatch):
+    """prod 에서 '테스트(가짜)' 는 없는 것으로 친다(사용자 지적).
+
+    실 Jira 를 보는 화면에서 가짜 모델이 답을 만들면 **그 답이 진짜처럼 보인다.** 화면에서
+    고르지 못하게 한 것만으로는 부족하다 — 예전에 고른 값이 prefs 에 남아 있을 수도,
+    환경변수로 들어올 수도 있다. 가드는 고르는 자리와 **쓰는 자리** 양쪽에 있어야 한다.
+    """
+    import app.agent.config as C
+    import app.infra.settings as S
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "fake")
+
+    class _S:
+        jira_env = "prod"
+
+    monkeypatch.setattr(S, "get_settings", lambda *a, **k: _S())
+    assert C.provider() == C.DEFAULT_PROVIDER, "prod 에서 fake 가 살아 있다"
+
+    _S.jira_env = "mock"                      # 개발 경로는 그대로 — 여기선 정당한 용도다
+    assert C.provider() == "fake"
+

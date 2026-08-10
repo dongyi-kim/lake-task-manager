@@ -85,7 +85,21 @@ def _pref(key, default=None):
 
 def provider() -> str:
     p = (os.getenv("LAKE_AGENT_PROVIDER") or _pref("agentProvider") or DEFAULT_PROVIDER).strip().lower()
-    return p if p in PROVIDERS else DEFAULT_PROVIDER
+    if p not in PROVIDERS:
+        return DEFAULT_PROVIDER
+    # ★ **prod 에서 'fake' 는 없는 것으로 친다**(사용자 지적). 실 Jira 를 보는 화면에서 가짜
+    #   모델이 답을 만들면 그 답이 진짜처럼 보인다 — 화면에서 고르지 못하게 한 것만으로는
+    #   부족하다(예전에 고른 값이 prefs 에 남아 있거나, 환경변수로 들어올 수 있다).
+    #   가드는 **고르는 자리와 쓰는 자리 양쪽**에 있어야 한다 — 이 저장소가 반복해 배운 것.
+    #   env 판정이 실패하면 막지 않는다(모르면 막지 않는다 — 개발 경로를 죽이지 않기 위해).
+    if p == "fake":
+        try:
+            from app.infra.settings import get_settings
+            if (get_settings().jira_env or "").lower() == "prod":
+                return DEFAULT_PROVIDER
+        except Exception:
+            pass
+    return p
 
 
 def chat_model(tier: str = "complex") -> str:
