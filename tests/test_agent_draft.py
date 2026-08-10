@@ -1098,3 +1098,48 @@ def test_a_bug_report_keeps_its_body_rules_even_if_intent_slips():
     plain = r.task({"messages": _msg("메타데이터 등록 작업 만들어줘")["messages"],
                     "intent": Intent.PLAN_WORK, "situation": "조사 결과"})
     assert "재현 경로" not in plain
+
+def test_a_bug_body_is_never_overwritten_with_the_task_template(monkeypatch):
+    """Bug 본문에 **재현 경로·기대·실제**가 남는가 — 코드가 보장한다.
+
+    실측 사고(사용자 관점 리뷰 F5, blocker): 사용자가 "크롬에서 재현되고 기대는 그래프가
+    그려지는 것"까지 줬는데 승인 카드의 본문은 **배경 · 작업 범위 · 완료 조건**이었다.
+    재현 경로가 통째로 사라진 Bug 티켓은 아무도 못 잡는다.
+
+    원인은 판단이 아니라 **배선**이었다. 지시문은 갈래를 나눠 옳게 시켰는데, 본문이 얇을 때
+    다시 쓰는 `_fill_thin_bodies` 가 **Task 템플릿밖에 몰라서** 모델이 옳게 쓴 것을 덮었다.
+    (이 저장소가 반복해 배운 것: 판단이 갈리면 **보장도 같이 갈려야 한다**.)
+
+    LLM 은 막아 둔다 — 보정 호출이 빈손이어도 최소선은 서야 한다는 것까지 재는 테스트다.
+    """
+    from app.agent.workflow.agents import refiner as R
+
+    # 보정 LLM 을 끊는다 — 예외가 나도 본문은 나가야 한다(코드가 조립하는 부분만 남는다)
+    monkeypatch.setattr("app.agent.config.get_llm",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no llm")))
+
+    st = _msg("리니지 뷰어에서 2홉 이상 펼치면 화면이 빈다. 크롬에서 재현되고 "
+              "기대는 그래프가 그려지는 것. 버그로 올려줘")
+    items = [{"summary": "[Workbench] 리니지 뷰어에서 2홉 이상 펼치면 화면이 빈다",
+              "type": "Bug", "description": "<h3>배경</h3><p>증상이 발생하고 있습니다.</p>",
+              "components": ["Workbench"]}]
+    R._fill_thin_bodies(st, items, repair=True)
+    body = items[0]["description"]
+    for sec in ("재현", "기대", "실제"):
+        assert sec in body, (sec, body)
+    # Task 템플릿이 섞여 들어오지 않는다 — 버그에 작업 범위·DoD 는 잡는 데 안 쓰인다
+    assert "작업 범위" not in body and "완료 조건" not in body, body
+
+
+def test_a_plain_task_still_gets_the_task_template(monkeypatch):
+    """반대편 — 버그가 아니면 배경이 채워지는 기존 규율은 그대로다."""
+    from app.agent.workflow.agents import refiner as R
+    monkeypatch.setattr("app.agent.config.get_llm",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no llm")))
+    st = _msg("메타데이터 등록 작업이 필요해")
+    items = [{"summary": "[Catalog] 메타데이터 등록", "type": "Task",
+              "description": "", "components": ["Catalog"]}]
+    R._fill_thin_bodies(st, items, repair=True)
+    assert "배경" in items[0]["description"]
+    assert "재현" not in items[0]["description"]
+

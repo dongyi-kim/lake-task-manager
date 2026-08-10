@@ -1918,6 +1918,78 @@ def _task_grade_body(body) -> bool:
             and bool(_re.search(r"제외|하지\s*않", b)))
 
 
+def _is_bug_item(it) -> bool:
+    return str((it or {}).get("type") or "").strip().lower() == "bug"
+
+
+def _bug_grade_body(body) -> bool:
+    """Bug 본문의 최소선 — **재현 경로·기대 동작·실제 동작**이 다 있나.
+
+    Task 와 규율이 다르다. 버그 티켓에 배경·작업 범위·DoD 를 적어 봐야 잡는 사람에게
+    쓸모가 없다 — 필요한 것은 "어떻게 하면 재현되고, 무엇이 나와야 하는데, 무엇이
+    나오는가" 셋이다.
+    """
+    b = str(body or "")
+    return len(b) >= 60 and all(s in b for s in ("재현", "기대", "실제"))
+
+
+_ASK_REPORTER = "확인 필요 — 신고자에게 물을 것"
+
+
+def _bug_body_for(state, it) -> str:
+    """Bug 본문을 **조각으로 받아 코드가 조립한다** — Task 쪽과 같은 방식.
+
+    실측(사용자 관점 리뷰 F5, blocker): 사용자가 "크롬에서 재현되고 기대는 그래프가
+    그려지는 것"까지 줬는데 본문은 **배경·작업 범위·DoD** 로 나갔다. 재현 경로가 통째로
+    사라진 Bug 티켓은 아무도 못 잡는다.
+
+    원인은 판단이 아니라 **배선**이었다. 지시문은 갈래를 나눠 "재현/기대/실제를 적어라"고
+    했는데, 본문이 얇을 때 다시 쓰는 `_fill_thin_bodies` 는 **Task 템플릿밖에 몰랐다** —
+    모델이 옳게 써 놔도 코드가 Task 모양으로 덮어썼다.
+    (이 저장소가 반복해서 배운 것: **판단이 갈리면 보장도 같이 갈려야 한다.**)
+
+    사용자가 안 준 칸은 지어내지 않고 "확인 필요"로 남긴다 — 빈 칸이 거짓말보다 낫고,
+    질문 갈래(BUG1)가 그 칸을 채우러 간다.
+    """
+    said = (request_text(state) + "\n" + conversation(state)).strip()
+    steps, expected, actual, notes = [], "", "", []
+    try:
+        from app.agent import config as C
+        schema = {"title": "bug_body", "type": "object", "properties": {
+            "steps": {"type": "array", "items": {"type": "string"},
+                      "description": "재현 경로 — 사용자가 말한 순서대로. 없으면 빈 배열"},
+            "expected": {"type": "string", "description": "기대 동작. 없으면 빈 문자열"},
+            "actual": {"type": "string", "description": "실제 동작(증상). 없으면 빈 문자열"},
+            "notes": {"type": "array", "items": {"type": "string"},
+                      "description": "관련 티켓 키·환경 등 참고. 없으면 빈 배열"}},
+            "required": ["steps", "expected", "actual", "notes"]}
+        llm = C.get_llm(temperature=0.1, tier="simple").with_structured_output(schema)
+        r = llm.invoke([
+            ("system", "너는 QA 다. 신고 내용에서 재현 경로·기대·실제를 **있는 그대로** "
+                       "뽑는다. 없는 것을 지어내지 마라 — 없으면 비워 둔다. JSON 만 출력."),
+            ("user", f"버그 제목: {it.get('summary')}\n\n신고 내용:\n{said[:1500]}")]) or {}
+        steps = [str(x).strip() for x in (r.get("steps") or []) if str(x).strip()]
+        expected = str(r.get("expected") or "").strip()
+        actual = str(r.get("actual") or "").strip()
+        notes = [str(x).strip() for x in (r.get("notes") or []) if str(x).strip()]
+    except Exception:
+        pass
+    # 보정 호출이 빈손이어도 본문은 나가야 한다 — 신고 문장 자체가 최소한의 '실제 동작'이다.
+    if not actual:
+        actual = request_text(state).strip()[:300] or _ASK_REPORTER
+    html = ["<h3>재현 경로</h3>"]
+    if steps:
+        html.append("<ol>" + "".join(f"<li>{_esc(x)}</li>" for x in steps) + "</ol>")
+    else:
+        html.append(f"<p>{_ASK_REPORTER}</p>")
+    html.append("<h3>기대 동작</h3><p>" + _esc(expected or _ASK_REPORTER) + "</p>")
+    html.append("<h3>실제 동작</h3><p>" + _esc(actual) + "</p>")
+    if notes:
+        html.append("<h3>참고</h3><ul>"
+                    + "".join(f"<li>{_esc(x)}</li>" for x in notes) + "</ul>")
+    return "".join(html)
+
+
 def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
     """요청에는 있는데 초안에서 빠진 **모듈 하나의 Task** 를 보정 호출 1회로 만든다.
 
@@ -2059,6 +2131,12 @@ def _fill_thin_bodies(state, items, repair: bool = True) -> bool:
     hit = False
     if req:
         for it in tops:
+            # ★ **Bug 은 이 수리의 대상이 아니다**(사용자 관점 리뷰 F5, blocker).
+            #   여기서 '배경'을 붙이면 Bug 본문이 Task 모양으로 오염되고, 아래 ②의 게이트
+            #   (`_task_grade_body`)도 통과해 버려 **재현 경로가 영영 안 들어간다**.
+            #   버그는 아래 ②-b 가 자기 규율로 따로 채운다.
+            if _is_bug_item(it):
+                continue
             body = str(it.get("description") or "")
             if "배경" not in body:
                 it["description"] = f"<h3>배경</h3><p>{_esc(req[:400])}</p>" + body
@@ -2067,8 +2145,15 @@ def _fill_thin_bodies(state, items, repair: bool = True) -> bool:
     #    되묻는 턴에서는 이 왕복을 건너뛴다 — 초안이 아직 확정 전이라 다시 쓸 값이 바뀐다.
     if not repair:
         return hit
+    # ②-b Bug 은 **다른 최소선**을 본다 — 재현 경로·기대·실제. 판단(무엇이 버그 규율인가)이
+    #     갈렸으면 보장도 같이 갈려야 한다. 예전엔 여기가 Task 템플릿 하나뿐이어서, 모델이
+    #     옳게 써 놔도 코드가 덮어썼다.
     for it in tops:
-        if _task_grade_body(it.get("description")):
+        if _is_bug_item(it) and not _bug_grade_body(it.get("description")):
+            it["description"] = _bug_body_for(state, it)
+            hit = True
+    for it in tops:
+        if _is_bug_item(it) or _task_grade_body(it.get("description")):
             continue
         mod = str((it.get("components") or [""])[0] or "")
         # ★ 보정 호출은 LLM 한 방이라 그냥 빈손일 때가 있다(실측 STARR1: 20케이스 한 실행에서
