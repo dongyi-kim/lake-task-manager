@@ -1143,3 +1143,32 @@ def test_a_plain_task_still_gets_the_task_template(monkeypatch):
     assert "배경" in items[0]["description"]
     assert "재현" not in items[0]["description"]
 
+def test_boilerplate_closers_are_stripped_by_code_not_asked_for():
+    """맺음말 상투구는 **버릇**이라 프롬프트로 안 잡힌다 — 코드가 지운다.
+
+    common.md 가 "맺음말·상투구 금지"를 이미 적어 뒀는데, 사용자 관점 리뷰의 다섯 흐름 중
+    넷에 그대로 나왔다. 이 한 줄은 어떤 문맥에서도 '틀리지' 않아서, 모델은 규칙을 읽고도
+    예의상 계속 붙인다. **판단이 아니면 코드가 지운다**(이 저장소의 규율).
+
+    ★ 지우는 것은 아무것도 제안하지 않는 되물음뿐이다 — 구체적인 다음 행동을 제안하는 줄은
+      정보라서 남는다. 둘을 못 가르면 이 가드는 답을 깎아 먹는다.
+    """
+    from app.agent.workflow.agents.responder import _drop_boilerplate_closers as f
+
+    for junk in ("변경 경위나 관련 티켓 내용이 더 궁금하면 말씀 주세요.",
+                 "추가적인 정보가 필요하면 말씀 주세요.",
+                 "남은 일과 리스크에 대한 추가 정보가 필요하면 말씀해 주세요."):
+        out = f("적재주기: 30분 1회\n\n" + junk)
+        assert junk not in out, junk
+        assert "적재주기: 30분 1회" in out          # 내용은 그대로
+
+    # 줄 끝에 붙어 오는 꼴도 문장 단위로 떼어 낸다
+    out = f("즉시 DL-9029 부터. 추가적인 세부사항이 더 궁금하면 말씀 주세요.")
+    assert "궁금" not in out and "DL-9029" in out
+
+    # 남겨야 하는 것 — 구체적 제안 · 티켓을 가리키는 요청 · 참조 목록
+    for keep in ("다음은 성능 측정 티켓을 잡을까요?",
+                 "DL-9044 를 확인해 주세요.",
+                 "**참조**\n[1] DL-9044 — 적재주기 변경"):
+        assert keep.splitlines()[-1] in f("결론 한 줄\n\n" + keep), keep
+

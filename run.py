@@ -1488,6 +1488,58 @@ def _run_plain(s):
     uvicorn.run("app.main:app", host=s.app_host, port=s.app_port, log_level="info")
 
 
+def _ensure_deps() -> None:
+    """빠진 의존을 **앱이 스스로** 채운다. 실패해도 앱은 그대로 뜬다(최선 노력).
+
+    왜 여기냐 — 설치를 결정하는 곳이 **런처가 아니라 앱이어야 하는 경우**가 있다.
+
+      · 런처(배포 repo `bin/run-core.ps1`)는 `.venv/.setup_done` 가 있으면
+        `import pystray, PIL, playwright, multipart` 만 찍어 보고 **pip 를 아예 건너뛴다.**
+        그 목록에 없는 패키지를 requirements.txt 에 새로 넣어도 기존 사용자에게는
+        영원히 안 깔린다(실측: 에이전트 의존을 합쳤는데 prod 에서 "아직 설치되지
+        않았습니다"가 그대로 떴다).
+      · 런처를 고쳐도 소용이 없다. 런처는 **배포 repo** 에 있고 그 repo 가 낡은 사용자에게는
+        고친 런처가 안 간다(사용자 지적). 반면 **앱 소스는 릴리즈 태그로 항상 최신**이다.
+
+    > ★ 자동으로 갱신되는 쪽에 자가 치유를 둔다. 갱신이 안 되는 쪽에 두면 그 로직 자체가
+    >   낡은 채로 남는다.
+
+    같은 버전으로 한 번 실패했으면 다시 시도하지 않는다 — 폐쇄망에서 매번 몇 분씩 pip 가
+    붙들고 있으면 그게 더 나쁘다. `run.bat setup` 이나 새 버전이 그 표식을 지운다.
+    """
+    import importlib.util
+    if all(importlib.util.find_spec(m) for m in ("langgraph", "langchain_core", "faiss")):
+        return                                  # 이미 있다 — 평소 기동에 비용 0
+    try:
+        from app.infra.settings import APP_ROOT, CACHE_DIR
+        req = Path(APP_ROOT) / "lake-task-manager" / "requirements.txt"
+        if not req.is_file():
+            req = Path(__file__).with_name("requirements.txt")
+        if not req.is_file():
+            return
+        stamp = Path(CACHE_DIR) / ".deps-attempt"
+        sig = f"{req.stat().st_mtime_ns}:{sys.version_info[:2]}"
+        if stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == sig:
+            return                              # 이 목록으로는 이미 해 봤다
+        print("  - AI 기능에 필요한 패키지를 설치합니다 (처음 한 번, 몇 분 걸립니다) ...",
+              flush=True)
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(sig, encoding="utf-8")   # **먼저** 남긴다 — 중간에 죽어도 무한 재시도 방지
+        import subprocess
+        r = subprocess.run([sys.executable, "-m", "pip", "install",
+                            "--disable-pip-version-check", "-r", str(req)],
+                           timeout=1800)
+        if r.returncode == 0:
+            stamp.unlink(missing_ok=True)         # 성공 — 표식을 지워 다음 변경 때 다시 본다
+            print("  - 설치 완료. AI 탭을 쓸 수 있습니다.", flush=True)
+        else:
+            print(f"  - 설치를 마치지 못했습니다(코드 {r.returncode}). "
+                  f"AI 탭만 비활성이고 나머지 기능은 그대로 씁니다.\n"
+                  f"    직접 설치: \"{sys.executable}\" -m pip install -r \"{req}\"", flush=True)
+    except Exception as e:                        # noqa: BLE001 — 설치 실패가 앱을 막으면 안 된다
+        print(f"  - 패키지 설치를 건너뜁니다({str(e)[:120]}).", flush=True)
+
+
 def main():
     # Windows 콘솔(cp949)에서도 유니코드 출력이 크래시하지 않도록 utf-8 로 강제.
     for _stream in (sys.stdout, sys.stderr):
@@ -1495,6 +1547,8 @@ def main():
             _stream.reconfigure(encoding="utf-8")
         except Exception:
             pass
+
+    _ensure_deps()
 
     s = get_settings()
 
