@@ -89,10 +89,12 @@ def search_work_history(query: str, limit: int = 8) -> dict:
             # 아래 core_hit 가드가 테이블 질문에서만 무력화돼(core 가 비면 통과) 무관한
             # 티켓이 "관련 이력"으로 나갔다.
             core = [t for t in toks if _re2.fullmatch(r"[A-Za-z][A-Za-z0-9._-]{1,}", t)]
+            _token_hit = set()          # 한 건이라도 잡은 토큰 = 우리도 쓰는 말
             for t in toks:
                 for it in (_hit(t).get("jira") or {}).get("items") or []:
                     k = it.get("key")
                     if k:
+                        _token_hit.add(t)
                         score[k] = score.get(k, 0) + 1
                         seen[k] = it
                         if t in core:
@@ -102,7 +104,15 @@ def search_work_history(query: str, limit: int = 8) -> dict:
             # **최소 1개**는 맞아야 한다 — 'ETL·파이프라인' 같은 일반어만 겹친 티켓을
             # "관련 이력"으로 내밀던 실측 사고("Iceberg Puffin NDV" 질문에 '경계값 오류
             # 수정'이 관련이라고 나옴)의 재발 방지.
-            need = max(1, (len(toks) + 1) // 2)
+            #
+            # ★ 다만 분모는 **우리 말뭉치에 실제로 있는 토큰**이어야 한다(실사용 사고).
+            #   "iceberg 통계데이터 생성" 으로 물었을 때 실존 티켓
+            #   `Lake Data의 Iceberg Puffin 통계적용 PoC` 를 못 찾았다 —
+            #   'iceberg' 는 맞았는데 '통계데이터'·'생성' 이 한 건도 안 맞아 need=2 에 걸렸다.
+            #   **아무 티켓에도 없는 낱말은 사용자가 우리와 다르게 부른 것**이지, 관련성을
+            #   재는 잣대가 아니다. 안 맞은 토큰까지 분모에 넣으면 **길게 물을수록 못 찾는다.**
+            useful = [t for t in toks if t in _token_hit]
+            need = max(1, (len(useful or toks) + 1) // 2)
             r = {"jira": {"items": [seen[k] for k in best
                                     if score[k] >= need and (not core or core_hit.get(k))]},
                  "confluence": r.get("confluence") or {}}
