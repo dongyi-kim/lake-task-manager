@@ -987,19 +987,18 @@ def test_modify_turns_drop_the_creation_only_sections():
     판단에 쓰이지 않으면서 매 호출 2천 토큰을 태운다."""
     from app.agent.workflow.agents.refiner import _role_md
     md = _role_md({"intent": Intent.MODIFY})
-    assert "Splitting rules" not in md and "Choosing the SHAPE" not in md
-    assert "Modify path" in md, "변경 경로 지시는 남아야 한다"
+    assert "분할 규칙" not in md and "구조 선택" not in md
+    assert "기존 ticket 변경" in md, "변경 경로 지시는 남아야 한다"
     # 초안을 고치는 modify 턴은 생성 지시가 필요하다 — 빼면 안 된다.
     md2 = _role_md({"intent": Intent.MODIFY, "draft": {"items": [{"summary": "s"}]}})
-    assert "Splitting rules" in md2
+    assert "분할 규칙" in md2
 
 
 def test_creation_turns_keep_every_creation_section():
     """초안을 만드는 턴에서는 품질이 먼저다 — 생성 지시를 빼지 않는다."""
     from app.agent.workflow.agents.refiner import _role_md
     md = _role_md({"intent": Intent.PLAN_WORK})
-    for t in ("Choosing the SHAPE", "Splitting rules", "Description quality",
-              "EPIC creation", "Title conventions"):
+    for t in ("구조 선택", "분할 규칙", "본문 품질 계약", "Epic 생성", "제목과 주제 보존"):
         assert t in md
 
 

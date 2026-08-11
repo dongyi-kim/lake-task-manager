@@ -204,7 +204,7 @@ def test_playbooks_load_and_inject(clean_env):
     # Planner enum 과 자산이 어긋나면 조용히 주입이 빠진다 — 함께 묶어 검증
     assert expect <= set(SCHEMA["properties"]["playbook"]["enum"])
     p = persona({"playbook": "subtask_bulk"})
-    assert "Standard playbook" in p and "재질문 금지" in p
+    assert "적용할 표준 플레이북" in p and "재질문 금지" in p
     assert "Standard playbook" not in persona({})
 
 def test_fake_provider_is_refused_in_prod(monkeypatch):

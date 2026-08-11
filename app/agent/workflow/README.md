@@ -5,30 +5,43 @@
 ## 흐름
 
 ```
-START ─> planner ─┬─ chitchat ────────────────────────────────> responder ─> END
-                  └─> historian ─┬─ ask ─────────────────────> responder
-                                 └─> refiner ─┬─ 질문 있음 ───> responder
-                                        ▲     └─> assigner ─> reviewer
-                                        └─ 재작성(≤2회) ──────────┤
-                                                                 └─ 통과 ─> propose
-                                                                              │
-                                          ┌─ 승인 대기 (interrupt) ─ responder ┘
-                                          ▼
-                                      operator ─> responder ─> END
+START ─> Request Architect ─┬─ chitchat ─────────────────────────────> Result Integrator
+                            ├─ my_day/progress/activity ─> Portfolio Analyst ─┘
+                            └─ Query Specialist ─> Query Runner ─> Research Analyst
+                                                                       ├─ 지식 ─> Knowledge Curator ─┐
+                                                                       ├─ 답변 ──────────────────────┤
+                                                                       └─ 생성/변경 ─> Work Architect
+                                                                                         ├─ 질문 ─────┤
+                                                                                         └─ People Advisor ∥ Auditor
+                                                                                                      │
+                                                            재작성(≤2회) <──────────────────────────────┤
+                                                                                                      └─ propose
+                                                                                                           │
+                                                         승인 대기(interrupt) ─────────────────────────────┤
+                                                                                                           ▼
+                                                                                                     Action Executor
+                                                                                                           │
+                                                                                                     Result Integrator ─> END
 ```
 
 ## 역할
 
 | 역할 | 형태 | 하는 일 | 왜 나눴나 |
 |---|---|---|---|
-| **Planner** | Structured | 의도·핵심어·모듈 분류 | 질문 하나에 전 경로를 태우면 느리고 비싸다 |
-| **Historian** | **ToolAgent** | 과거 이력 조사 → 현재 상황 | **이 서비스의 값어치.** 조사를 건너뛰면 중복 티켓 생성기다 |
-| **Refiner** | Structured | 되묻기 / 티켓 초안 | 컴포넌트·타입을 지어내지 않으려면 실제 목록을 봐야 한다 — 그 목록은 **코드가 미리 실어 준다** |
-| **Assigner** | Structured | 담당자 + **근거 4종** | 이름만 던지면 리더가 검증할 수 없다. 부르는 대상이 늘 같아 조회도 코드 몫이다 |
-| **PMO** | **ToolAgent** | 현황 조회(my_day·진척·활동) | 전형적 질의는 사전취합, 자유 조회만 ReAct |
-| **Reviewer** | Structured | 기계 검증 + 자기검열 3종 | 자기가 쓴 걸 자기가 보면 다 괜찮아 보인다 |
-| **Operator** | **ToolAgent** | 승인된 것 실행 | 유일하게 쓰기 도구를 가진 노드 |
-| Responder | Text | 사용자에게 말하기 | 말하는 입을 하나로 모아야 말투가 안 갈린다 |
+| Request Architect (`Planner`) | Structured/simple | routing + atomic task DAG | 복합 요청의 조회·작성·write 의존성을 먼저 명시 |
+| Query Specialist | Structured/simple | typed `QueryPlan` | 조건 설계와 결과 해석을 분리 |
+| Query Runner | deterministic | scope·pagination 강제 조회 | 자유 JQL도 config 밖으로 못 나가며 전체 target을 model 밖에서 보존 |
+| Research Analyst (`Historian`) | **ToolAgent/complex** | 내부·외부 전문 조사 | 추가 탐색이 필요한 횟수만 모델이 판단 |
+| Knowledge Curator | Structured/complex | 재사용 가능한 지식 브리프 | 개념·사내 사실·출처·공백 분리 |
+| Portfolio Analyst (`PMO`) | **ToolAgent/complex** | 현황·위험·우선순위 | 대시보드 산식과 권한 결과 재사용 |
+| Work Architect · Draft Author (`Refiner`) | Structured/complex | 구조 합의 + 생성/변경 draft | tier와 issue type을 분리하고 본문 전 구조를 먼저 합의 |
+| People Advisor (`Assigner`) | Structured/complex | 근거 기반 후보·대안 | 사람 조회와 추천 판단 분리 |
+| Auditor (`Reviewer`) | Structured/complex | blocking error·warning | 기계 검증을 우선하고 의미 누락만 판단 |
+| Action Executor (`Operator`) | deterministic 우선 | 승인 payload 실행 | 유일한 write 권한 |
+| Result Integrator (`Responder`) | Text/complex | 최종 한국어 답변 | 새 사실을 더하지 않는 하나의 사용자 대면 입 |
+
+정확한 input/output state key와 tool group은 `role_manifest.py`가 source of truth다. editor의
+description/comment 작성은 graph 밖의 `Editor Ticket · Comment Author`(`compose.py`)가 담당한다.
 
 **서브그래프는 도구를 쓰는 쪽만 갖는다**(`base.ToolAgent`). 한 번 부르고 끝나는 역할에 그래프를
 씌우는 건 장식이다. 도구 루프는 서브그래프여야 종료 조건이 한곳에 모이고,
@@ -38,7 +51,9 @@ START ─> planner ─┬─ chitchat ──────────────
 허용값, Assigner 의 모듈 로스터 — 코드가 미리 조회해 자료로 주는 것이 옳다. 도구 호출 한
 번은 곧 LLM 왕복 한 번이고, 도구로 두면 모델은 그걸 **매 턴 다시 부른다**(실측: Refiner
 한 역할이 생성 턴 하나에 12회·86초·226k 토큰). 반대로 몇 번 검색해야 충분한지를 미리
-모르는 조사(Historian)는 ToolAgent 로 남긴다 — 거기서는 순회가 곧 값어치다.
+모르는 조사(Research Analyst)는 ToolAgent 로 남긴다 — 거기서는 순회가 곧 값어치다.
+조회 plan 실행과 승인 payload 실행은 판단이 아니므로 각각 Query Runner와 Action Executor의
+deterministic 경로가 맡는다.
 
 **노드는 전부 State 의 갱신분만 돌려준다.** 컴파일된 서브그래프를 그대로 노드로 붙이면 전체
 State 가 반환값이 되어 부모의 `add_messages` 리듀서에 통째로 다시 먹힌다. 그래서 바깥 그래프에

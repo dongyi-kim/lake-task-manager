@@ -11,5 +11,5 @@ task(명령서) 는 State 를 인자로 받아 조립해야 해서 각 역할 �
 **정적인 지시문**은 전부 여기서 온다.
 """
 
-from app.agent.prompts.base import (BASE_PERSONA, DATA_HEADER, ROLE_HINT,   # noqa: F401
+from app.agent.prompts.base import (BASE_PERSONA, DATA_HEADER, PROMPT_VERSION, ROLE_HINT,   # noqa: F401
                                     data_block, persona, wrap_data)

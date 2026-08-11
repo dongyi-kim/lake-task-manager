@@ -1,4 +1,4 @@
-"""agent/workflow/graph.py — 여섯 역할을 잇는다.
+"""agent/workflow/graph.py — 역할 manifest의 graph runtime을 잇는다.
 
 ```
 START ─> planner ─┬─ chitchat ─────────────────────────────────────────> responder ─> END
@@ -48,6 +48,8 @@ from app.agent.workflow.agents.historian import Historian
 from app.agent.workflow.agents.operator import Operator
 from app.agent.workflow.agents.planner import Planner
 from app.agent.workflow.agents.pmo import PMO
+from app.agent.workflow.agents.query_runner import QueryRunner
+from app.agent.workflow.agents.query_specialist import QuerySpecialist
 from app.agent.workflow.agents.refiner import Refiner
 from app.agent.workflow.agents.responder import Responder
 from app.agent.workflow.agents.reviewer import Reviewer
@@ -331,6 +333,8 @@ def build(checkpointer=None):
     g = StateGraph(AgentState)
 
     g.add_node(Node.PLANNER, _node(Planner()))
+    g.add_node(Node.QUERY_SPECIALIST, _node(QuerySpecialist()))
+    g.add_node(Node.QUERY_RUNNER, _node(QueryRunner()))
     g.add_node("pmo", _node(PMO()))
     g.add_node(Node.HISTORIAN, _node(Historian()))
     g.add_node(Node.CURATOR, _node(Curator()))
@@ -344,8 +348,10 @@ def build(checkpointer=None):
 
     g.add_edge(START, Node.PLANNER)
     g.add_conditional_edges(Node.PLANNER, route_after_planner,
-                            {"investigate": Node.HISTORIAN, "pmo": "pmo",
+                            {"investigate": Node.QUERY_SPECIALIST, "pmo": "pmo",
                              "refine": Node.REFINER, "respond": Node.RESPONDER})
+    g.add_edge(Node.QUERY_SPECIALIST, Node.QUERY_RUNNER)
+    g.add_edge(Node.QUERY_RUNNER, Node.HISTORIAN)
     g.add_edge("pmo", Node.RESPONDER)
     g.add_conditional_edges(Node.HISTORIAN, route_after_historian,
                             {"refine": Node.REFINER, "respond": Node.RESPONDER,

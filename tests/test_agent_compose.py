@@ -198,9 +198,35 @@ def test_markdown_would_not_survive_so_the_prompt_forbids_it():
 def test_composer_prompt_states_the_rendering_rules():
     """규칙이 문서에만 있고 프롬프트에 없으면 모델은 모른다."""
     from app.agent.prompts.roles import SYSTEM_COMPOSER
-    assert "NEVER markdown" in SYSTEM_COMPOSER
+    assert "markdown은 쓰지 않는다" in SYSTEM_COMPOSER
     assert "[~사번]" in SYSTEM_COMPOSER
     assert "taskList" in SYSTEM_COMPOSER
+
+
+def test_legacy_reference_placeholders_cannot_wrap_generated_badges():
+    from app.agent.compose import _badgeify, _legacy_reference_tokens
+
+    rendered = _badgeify(_legacy_reference_tokens(
+        "<p>상위 {{ref:DL-9090}} 담당 {{mention:skcc.x1402}}</p>"))
+    assert "{{ref:" not in rendered and "{{mention:" not in rendered
+    assert rendered.count('data-key="DL-9090"') == 1
+    assert rendered.count('data-type="mention"') == 1
+    assert "{{" not in rendered and "}}" not in rendered
+
+    nested = _badgeify(_legacy_reference_tokens(
+        "<p>상위 {{{{ref:DL-9090}}}} 또는 {{DL-9090}} 및 [DL-9090]</p>"))
+    assert "{{" not in nested and "}}" not in nested
+    assert nested.count('data-key="DL-9090"') == 3
+    assert "[<a" not in nested
+
+
+def test_non_done_child_is_added_to_the_explicit_remaining_guard():
+    from app.agent.compose import _status_conflicts
+
+    context = "명시적 미완료(완료로 쓰지 말 것): 다운스트림 조회 연동"
+    assert _status_conflicts("<p>다운스트림 조회 연동 작업은 완료되었습니다.</p>", context)
+    assert _status_conflicts("<p>다운스트림 조회 연동을 완료하였습니다.</p>", context)
+    assert not _status_conflicts("<p>다운스트림 조회 연동 작업은 진행 중입니다.</p>", context)
 
 
 def test_rendering_rules_are_indexed_for_retrieval():

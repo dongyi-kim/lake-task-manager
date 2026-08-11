@@ -14,9 +14,10 @@ ToolAgent 인 이유 — 몇 번 검색해야 충분한지는 미리 알 수 없
 
 from __future__ import annotations
 
+import json
 import re as _re
 
-from app.agent.workflow.agents.base import ToolAgent
+from app.agent.workflow.agents.base import ToolAgent, invoke_schema
 from app.agent.prompts.roles import SYSTEM_HISTORIAN
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (AgentState, Node, last_user_text, note,
@@ -67,7 +68,7 @@ def _research_outside(agent, asked: str) -> str:
     외부가 막혀 있으면(폐쇄망) 빈 문자열 — 조사는 사내만으로 진행된다.
     """
     try:
-        qs = agent.llm(temperature=0).with_structured_output({
+        schema = {
             "title": "web_queries", "type": "object",
             "properties": {
                 "web_query": {"type": "string",
@@ -76,8 +77,11 @@ def _research_outside(agent, asked: str) -> str:
                 "github_query": {"type": "string",
                                  "description": "GitHub 저장소 검색어(일반 기술 용어만)"},
             }, "required": ["web_query", "github_query"],
-        }).invoke("다음 요청의 기술 조사를 위한 검색어 2개를 만들어라. "
-                  "사내 명칭은 절대 넣지 마라.\n" + asked)
+        }
+        qs = invoke_schema(schema, [
+            ("user", "다음 요청의 기술 조사를 위한 검색어 2개를 만들어라. "
+             "사내 명칭은 절대 넣지 마라.\n" + asked)],
+            tier=agent.tier, temperature=0, name="web_queries")
     except Exception:
         return ""
 
@@ -1180,6 +1184,12 @@ class Historian(ToolAgent):
    + "★ 같은 검색을 반복하지 마라. 여기 나온 후보 중 **유망한 것만 get_ticket 으로 열어** "
    + "내용을 확인하라. 제목은 표기 그대로 옮긴다. 근황을 물었으면 갱신일 순서가 곧 답의 "
    + "뼈대다." + chr(10) + state.get("pre_survey")) if state.get("pre_survey") else ""}
+
+{("### Query Specialist 계획을 deterministic runner가 실행한 결과" + chr(10)
+   + "★ project/space 범위와 pagination은 코드가 보장했다. 같은 조회를 반복하지 말고, "
+   + "contextTruncated=true이면 총량·artifactId를 밝혀라. 아래 결과에 없는 사실을 만들지 마라."
+   + chr(10) + json.dumps(state.get("query_results"), ensure_ascii=False, default=str))
+  if state.get("query_results") else ""}
 
 {("### 주제 조사 자료 (코드가 이미 취합 — 티켓·코멘트 인용·필드 변경 이력·문서 본문)" + chr(10)
    + "★ **이 자료가 사실의 전부다.** 여기 없는 값(주기·정책·이름·담당자·날짜)을 지어내지 말고, "

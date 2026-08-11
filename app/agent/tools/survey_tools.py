@@ -15,14 +15,14 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from app.agent.tools._ctx import client, compact, settings
+from app.agent.tools._ctx import client, compact, jira_key_allowed, jira_scope
 
 MAX_PER_SIGNAL = 12
 MAX_OUT = 25
 
 
 def _add(cand: dict, key: str, via: str, title: str = "", status: str = "", done=None):
-    if not key:
+    if not key or not jira_key_allowed(key):
         return
     row = cand.setdefault(key, {"key": key, "via": [], "title": "", "status": "", "done": None})
     if via not in row["via"]:
@@ -37,6 +37,8 @@ def neighborhood(seed_key: str) -> dict:
     """한 티켓 주변의 후보 지도(순수 코드 — LLM 없음). 도구와 사전 주입 양쪽이 쓴다."""
     c = client()
     seed = (seed_key or "").strip()
+    if not jira_key_allowed(seed):
+        return {"error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
     raw = c.get_issue(seed) or {}
     if not raw.get("key"):
         return {"error": f"{seed} 티켓을 찾을 수 없습니다."}
@@ -81,14 +83,13 @@ def neighborhood(seed_key: str) -> dict:
         pass
 
     # ── 같은 라벨 / 같은 컴포넌트 최근 — JQL 로 결정적으로
-    s = settings()
     labels = [x for x in (f.get("labels") or []) if x and x != "mock"]
     comps = [x.get("name") for x in (f.get("components") or []) if x.get("name")]
     try:
         if labels:
             lab = ", ".join(f'"{x}"' for x in labels[:3])
             for it in c.search_issues(
-                    f"project = {s.project_key} AND labels in ({lab}) ORDER BY updated DESC",
+                    jira_scope(f"labels in ({lab})") + " ORDER BY updated DESC",
                     max_results=MAX_PER_SIGNAL):
                 fld = it.get("fields") or {}
                 _add(cand, it.get("key"), f"라벨({labels[0]})", fld.get("summary", ""),
@@ -98,8 +99,8 @@ def neighborhood(seed_key: str) -> dict:
     try:
         if comps:
             for it in c.search_issues(
-                    f'project = {s.project_key} AND component = "{comps[0]}" '
-                    "AND statusCategory != done ORDER BY updated DESC",
+                    jira_scope(f'component = "{comps[0]}" AND statusCategory != done')
+                    + " ORDER BY updated DESC",
                     max_results=MAX_PER_SIGNAL):
                 fld = it.get("fields") or {}
                 _add(cand, it.get("key"), f"컴포넌트({comps[0]})", fld.get("summary", ""), done=False)
@@ -149,6 +150,8 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
     """한 티켓의 진척 재료를 전부 모은다(순수 코드 — LLM 없음)."""
     c = client()
     seed = (key or "").strip().upper()
+    if not jira_key_allowed(seed):
+        return {"error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
     raw = c.get_issue(seed) or {}
     if not raw.get("key"):
         return {"error": f"{seed} 티켓을 찾을 수 없습니다."}

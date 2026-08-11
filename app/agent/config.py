@@ -556,6 +556,17 @@ def probe(timeout: float = 30.0) -> dict:
     except Exception as e:
         out["embeddings"] = {"ok": False, "ms": int((time.time() - t1) * 1000), "error": _brief(e)}
 
+    # plain chat 성공만으로 structured output/tool calling까지 된다고 간주하지 않는다.
+    # 프로젝트 데이터가 전혀 없는 합성 요청으로 tier별 capability를 분리 진단한다.
+    if out["chat"]["ok"]:
+        try:
+            from app.agent.capabilities import probe_all
+            out["capabilities"] = probe_all()
+            out["degraded"] = any(x.get("degraded") for x in out["capabilities"].values())
+        except Exception as e:
+            out["capabilities"] = {"error": _brief(e)}
+            out["degraded"] = True
+
     out["ok"] = bool(out["chat"]["ok"] and out["embeddings"]["ok"])
     # ★ **둘 다 통과했을 때만** 이 조합을 확인된 것으로 남긴다(사용자 지시: 이중 확인).
     #   채팅만 되고 임베딩이 막힌 상태를 '됐다'로 치면, 색인이 필요한 순간에 다시 터진다.

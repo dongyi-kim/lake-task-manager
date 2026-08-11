@@ -21,6 +21,8 @@ from langgraph.graph.message import add_messages
 class Node:
     """노드 이름. 그래프 조립과 UI 표시가 같은 문자열을 봐야 한다."""
     PLANNER = "planner"
+    QUERY_SPECIALIST = "query_specialist"
+    QUERY_RUNNER = "query_runner"
     HISTORIAN = "historian"
     REFINER = "refiner"
     ASSIGNER = "assigner"
@@ -75,6 +77,8 @@ class Stage:
     """UI 가 진행 상황을 보여줄 때 쓰는 라벨(한국어)."""
     LABELS = {
         Node.PLANNER: "요청 파악",
+        Node.QUERY_SPECIALIST: "조회 설계",
+        Node.QUERY_RUNNER: "조회 실행",
         Node.HISTORIAN: "과거 이력 조사",
         Node.REFINER: "업무 구체화",
         Node.ASSIGNER: "담당자 검토",
@@ -125,6 +129,12 @@ class AgentState(TypedDict, total=False):
     mentioned_keys: list            # 사용자가 직접 댄 티켓 키
     sufficient: bool                # 되묻지 않고 진행해도 되나
     answer_depth: str               # "brief"(값·결론만) | "explain"(개념·배경까지)
+    request_plan: dict              # Request Architect의 원자 작업 DAG
+
+    # ── Query Specialist / deterministic Query Runner ──
+    query_plan: dict
+    query_results: list             # LLM에 전달할 compact 결과
+    query_artifacts: dict           # 전체 target key snapshot 등 모델 밖 실행 자료
 
     # ── Historian 사전 취합(코드가 만든 자료) ──
     # 선언이 없으면 LangGraph 가 반환값에서 이 키들을 버린다 — 실제로 그래서 Curator 의

@@ -19,7 +19,7 @@ import json
 import re as _re
 
 from app.agent.prompts.roles import SYSTEM_REFINER
-from app.agent.workflow.agents.base import StructuredAgent
+from app.agent.workflow.agents.base import StructuredAgent, invoke_schema
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
                                       conversation, last_user_text, note, reads_as_bug,
@@ -35,6 +35,10 @@ ITEM = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "동사로 끝나는 제목. 제목만으로 구분되어야 한다"},
+        "tier": {"type": "string", "enum": ["epic", "task", "subtask"],
+                 "description": "계층 단계. Bug/Story/Improvement/Feature는 모두 task"},
+        "issue_type": {"type": "string",
+                       "description": "project createmeta가 허용하는 실제 issue type 이름"},
         "type": {"type": "string", "description": "Task/Story/Bug/Improvement/Sub-Task 중 실제 허용된 값"},
         "epic": {"type": "string", "description": "task 모드에서 상위 Epic 키. 최상위로 둘 거면 빈 문자열"},
         "epic_name": {"type": "string",
@@ -555,6 +559,9 @@ class Refiner(StructuredAgent):
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
         model_questions = bool(qs)
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        for item in items:
+            if item.get("issue_type") and not item.get("type"):
+                item["type"] = item["issue_type"]
         mode = out.get("mode") or "task"
         # Sub-Task 는 자식을 가질 수 없다 — subtask 모드 항목에 모델이 children 을 또 달면
         # (실측: 같은 내용을 items 와 children 에 이중으로) 떼어 낸다.
@@ -1419,6 +1426,21 @@ class Refiner(StructuredAgent):
         elif items and is_composite(items):
             st_out["structure_ok"] = True     # 살을 붙이는 단계로 넘어왔다
 
+        # tier와 issue_type을 분리해 downstream/보고서가 Bug를 별도 계층으로 오해하지 않게 한다.
+        # 기존 write adapter가 쓰는 `type`은 호환을 위해 함께 유지한다.
+        for item in items:
+            issue_type = str(item.get("issue_type") or item.get("type") or "Task").strip()
+            tier = str(item.get("tier") or "").strip().lower()
+            if not tier:
+                tier = "epic" if issue_type.lower() == "epic" or mode == "epic" else \
+                    ("subtask" if issue_type.lower().replace("-", "").startswith("subtask")
+                     or mode == "subtask" else "task")
+            item["tier"], item["issue_type"], item["type"] = tier, issue_type, issue_type
+            for child in (item.get("children") or []):
+                if isinstance(child, dict):
+                    child_type = str(child.get("issue_type") or child.get("type") or "Sub-Task")
+                    child["tier"], child["issue_type"] = "subtask", child_type
+
         return {"questions": qs, "draft": draft, "change_plan": plan, "turns": turns,
                 "interpretation": interp, **st_out,
                 "trace": note(state, self.name,
@@ -1912,7 +1934,6 @@ def _split_into_children(state, item: dict) -> list:
     위임("알아서") 케이스 전용 — 물을 수 없으니 나눠서 내고, 승인 카드에서 사람이 고친다.
     실패하면 빈 리스트(경고 경로로 폴백) — 보정이 본 흐름을 죽이면 안 된다."""
     try:
-        from app.agent import config as C
         schema = {"title": "split_children", "type": "object", "properties": {
             "children": {"type": "array", "items": {
                 "type": "object", "properties": {
@@ -1921,8 +1942,7 @@ def _split_into_children(state, item: dict) -> list:
                                                "이 조각이 무엇을 어떻게 끝내는지"}},
                 "required": ["summary"]}}},
             "required": ["children"]}
-        llm = C.get_llm(temperature=0.1, tier="simple").with_structured_output(schema)
-        r = llm.invoke([
+        r = invoke_schema(schema, [
             ("system", "너는 PMO 티켓 설계자다. 다단계 작업을 한 사람이 며칠 안에 끝낼 "
                        "실행 단위 Sub-Task 로 나눈다. JSON 만 출력한다."),
             ("user", f"원 요청: {request_text(state)}\n\n"
@@ -1936,7 +1956,8 @@ def _split_into_children(state, item: dict) -> list:
                      "나쁨: '설계 단계 / 구현 단계 / 검증 단계'. "
                      "좋음: 'Puffin NDV 통계 스키마 설계 / 통계 생성 배치 Job 구현 / "
                      "StarRocks 플랜 반영 검증'. "
-                     "즉 **대상(무엇을)** 을 반드시 넣어라 — 단계는 그다음이다.")])
+                     "즉 **대상(무엇을)** 을 반드시 넣어라 — 단계는 그다음이다.")],
+            tier="simple", temperature=0.1, name="split_children")
         kids = [{"summary": str(c.get("summary") or "").strip()}
                 for c in (r or {}).get("children") or []
                 if str(c.get("summary") or "").strip()]
@@ -2014,7 +2035,6 @@ def _bug_body_for(state, it) -> str:
     said = (request_text(state) + "\n" + conversation(state)).strip()
     steps, expected, actual, notes = [], "", "", []
     try:
-        from app.agent import config as C
         schema = {"title": "bug_body", "type": "object", "properties": {
             "steps": {"type": "array", "items": {"type": "string"},
                       "description": "재현 경로 — 사용자가 말한 순서대로. 없으면 빈 배열"},
@@ -2023,11 +2043,11 @@ def _bug_body_for(state, it) -> str:
             "notes": {"type": "array", "items": {"type": "string"},
                       "description": "관련 티켓 키·환경 등 참고. 없으면 빈 배열"}},
             "required": ["steps", "expected", "actual", "notes"]}
-        llm = C.get_llm(temperature=0.1, tier="simple").with_structured_output(schema)
-        r = llm.invoke([
+        r = invoke_schema(schema, [
             ("system", "너는 QA 다. 신고 내용에서 재현 경로·기대·실제를 **있는 그대로** "
                        "뽑는다. 없는 것을 지어내지 마라 — 없으면 비워 둔다. JSON 만 출력."),
-            ("user", f"버그 제목: {it.get('summary')}\n\n신고 내용:\n{said[:1500]}")]) or {}
+            ("user", f"버그 제목: {it.get('summary')}\n\n신고 내용:\n{said[:1500]}")],
+            tier="simple", temperature=0.1, name="bug_body") or {}
         steps = [str(x).strip() for x in (r.get("steps") or []) if str(x).strip()]
         expected = str(r.get("expected") or "").strip()
         actual = str(r.get("actual") or "").strip()
@@ -2063,7 +2083,6 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
     경고 경로로 간다(보정이 본 흐름을 죽이면 안 된다).
     """
     try:
-        from app.agent import config as C
         # ★ **HTML 을 모델에게 받지 않는다 — 조각만 받고 코드가 조립한다.** 처음엔 본문
         #   전체를 HTML 로 받았는데, 모델이 <h1>/<h2> 로 쓰고 '배경'·'완료 조건' 절을 빼서
         #   본문 게이트에 걸려 매번 빈손이 됐다(실측). 섹션 순서·이름·체크박스 형식은
@@ -2078,8 +2097,7 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
             "dod": {"type": "array", "items": {"type": "string"},
                     "description": "완료 판정 — '무엇을 보고' 끝났다고 하는지까지"}},
             "required": ["summary", "background", "includes", "excludes", "dod"]}
-        llm = C.get_llm(temperature=0.1, tier="simple").with_structured_output(schema)
-        r = llm.invoke([
+        r = invoke_schema(schema, [
             ("system", "너는 PMO 티켓 설계자다. 요청에 있으나 초안에서 빠진 작업 하나를 "
                        "티켓으로 만든다. 요청에 없는 일을 지어내지 않는다. JSON 만 출력한다."),
             ("user", f"원 요청: {request_text(state)}\n\n"
@@ -2088,7 +2106,8 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
                      + (f"이 티켓의 제목(이미 정해졌다): {want}\n" if want else "")
                      + f"\n원 요청 중 **{mod} 모듈이 맡을 부분만** 티켓 하나로 써라. 이미 만든 "
                      "티켓과 범위가 겹치면 안 된다 — 그쪽이 하는 일은 excludes 에 적는다. "
-                     "dod 는 '테스트 완료' 같은 말 대신 무엇을 보고 끝났다고 하는지 적는다.")])
+                     "dod 는 '테스트 완료' 같은 말 대신 무엇을 보고 끝났다고 하는지 적는다.")],
+            tier="simple", temperature=0.1, name="module_task")
         r = r or {}
         s = (want or str(r.get("summary") or "")).strip()
         inc = [str(x).strip() for x in (r.get("includes") or []) if str(x).strip()]
@@ -2149,20 +2168,19 @@ def _sharpen_dod(state, items) -> bool:
         if not rows or len(bad) * 2 <= len(rows):
             continue
         try:
-            from app.agent import config as C
             schema = {"title": "dod", "type": "object", "properties": {
                 "rows": {"type": "array", "items": {"type": "string"},
                          "description": "다시 쓴 완료 조건 — 입력과 **같은 개수·같은 순서**"}},
                 "required": ["rows"]}
-            llm = C.get_llm(temperature=0.1, tier="simple").with_structured_output(schema)
-            r = llm.invoke([
+            r = invoke_schema(schema, [
                 ("system", "너는 PMO 티켓 설계자다. 완료 조건을 **판정 가능한 문장**으로 "
                            "다시 쓴다. 없는 사실을 지어내지 않는다. JSON 만 출력한다."),
                 ("user", f"티켓: {it.get('summary')}\n원 요청: {request_text(state)}\n\n"
                          "아래 완료 조건들을 각각 '무엇을 보고 끝났다고 하는지'까지 적어라 "
                          "(예: '테스트 완료' → 'p95 응답시간이 200ms 이하임을 부하 테스트 "
                          "리포트로 확인'). 개수와 순서는 그대로 두고 문장만 고친다.\n"
-                         + "\n".join(f"- {x}" for x in rows))])
+                         + "\n".join(f"- {x}" for x in rows))],
+                tier="simple", temperature=0.1, name="dod")
             new = [str(x).strip() for x in ((r or {}).get("rows") or []) if str(x).strip()]
             if len(new) != len(rows) or _vague_dod(new):
                 continue                  # 다시 써 온 것이 그대로면 건드리지 않는다
@@ -2557,12 +2575,9 @@ def _module_pool(item: dict, fallback: str) -> list:
 
 # 경로별로 **안 쓰이는** 역할 지시 절. 제목은 refiner.md 의 `## …` 과 정확히 같아야 한다
 # (오타는 조용히 아무것도 안 빼므로, 아래 테스트가 제목 존재를 지킨다).
-_CREATE_ONLY = ["Choosing the SHAPE — decide this before writing anything",
-                "Splitting rules", "Description quality (the draft IS the ticket)",
-                'EPIC creation (mode="epic")', 'Bulk Sub-Task interviews (mode="subtask")',
-                "Pasted meeting notes / lists", "Title conventions",
-                "The TOPIC is the user's original request — guard it"]
-_MODIFY_ONLY = ["Comment bodies (modify path)", "Modify path (existing tickets)"]
+_CREATE_ONLY = ["구조 선택", "분할 규칙", "본문 품질 계약", "Epic 생성",
+                "Sub-Task 일괄 생성", "붙여넣은 회의록과 목록", "제목과 주제 보존"]
+_MODIFY_ONLY = ["코멘트 본문", "기존 ticket 변경"]
 
 
 def _role_md(state) -> str:

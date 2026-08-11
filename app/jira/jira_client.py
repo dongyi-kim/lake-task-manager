@@ -878,6 +878,56 @@ class JiraClient:
         그대로 재사용되므로 캐시 가치가 크다(담당/상태 변경 시 'mt:' 프리픽스째 무효화한다)."""
         return self._search(jql, cache_key=cache_key, max_results=max_results)
 
+    def search_issues_page(self, jql, start_at=0, max_results=100, fields=None, light=True):
+        """JQL 검색 결과 한 페이지와 Jira pagination metadata를 그대로 돌려준다.
+
+        ``search_issues``는 화면용 편의를 위해 내부에서 모든 페이지를 합쳐 list만 반환한다.
+        에이전트 조회는 그 방식으로는 전체 건수와 다음 페이지를 알 수 없고, 임의의 50건
+        상한을 두게 된다. 이 메서드는 Jira의 ``startAt``/``maxResults``/``total`` 계약을
+        보존한다. 호출자가 페이지를 이어 붙일 때에는 안정적인 ORDER BY와 key 중복 제거를
+        책임진다.
+        """
+        start = max(0, int(start_at or 0))
+        size = max(1, min(int(max_results or 100), 100))
+        requested_fields = fields
+        if isinstance(requested_fields, (list, tuple, set)):
+            requested_fields = ",".join(str(x) for x in requested_fields if str(x).strip())
+        requested_fields = (requested_fields or self._issue_fields(light=light)).strip()
+        data = self.provider.get_json("/rest/api/2/search", params={
+            "jql": jql, "fields": requested_fields,
+            "startAt": start, "maxResults": size})
+        if not isinstance(data, dict) or "issues" not in data:
+            if self._looks_anonymous(data):
+                raise SessionExpired("익명 응답(검색) — 세션 끊김(재인증 필요).")
+            messages = " ".join((data or {}).get("errorMessages") or []) \
+                if isinstance(data, dict) else str(data or "")
+            raise ValueError(messages or "Jira 검색 응답 형식이 올바르지 않습니다.")
+        issues = list(data.get("issues") or [])
+        # 반환된 실제 페이지 크기를 기준으로 다음 위치를 잡는다. Jira는 요청한 maxResults보다
+        # 작은 서버 상한을 적용할 수 있으므로 start+요청크기로 넘기면 결과를 건너뛸 수 있다.
+        returned = len(issues)
+        total = data.get("total")
+        try:
+            total = int(total) if total is not None else None
+        except (TypeError, ValueError):
+            total = None
+        next_start = start + returned
+        has_more = bool(returned) and (total is None or next_start < total)
+        pfx = "issueL" if light else "issue"
+        for it in issues:
+            key = (it or {}).get("key")
+            if key:
+                self.cache.set(f"{pfx}:{self.env}:{key}", it, self.s.cache_ttl_seconds)
+        return {
+            "startAt": start,
+            "maxResults": int(data.get("maxResults") or size),
+            "total": total,
+            "issues": issues,
+            "returned": returned,
+            "hasMore": has_more,
+            "nextStartAt": next_start if has_more else None,
+        }
+
     def issues_by_keys(self, keys):
         """키 목록 → 원본 이슈들. 캐시에 있으면 그대로 쓰고 없는 것만 한 번에 받는다."""
         keys = [k for k in dict.fromkeys(keys) if k]

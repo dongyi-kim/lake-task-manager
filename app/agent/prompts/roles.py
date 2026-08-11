@@ -38,6 +38,7 @@ def _load(name: str) -> str:
 
 
 SYSTEM_PLANNER = _load("planner")
+SYSTEM_QUERY_SPECIALIST = _load("query_specialist")
 SYSTEM_HISTORIAN = _load("historian")
 SYSTEM_REFINER = _load("refiner")
 SYSTEM_ASSIGNER = _load("assigner")

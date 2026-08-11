@@ -75,6 +75,23 @@ SCHEMA = {
                 "'무슨 일이었는지', 처음 듣는 기술·용어를 물을 때). "
                 "애매하면 brief — 사용자는 더 필요하면 다시 묻는다"),
         },
+        "goal": {"type": "string", "description": "복합 요청 전체가 달성하려는 결과 한 문장"},
+        "tasks": {
+            "type": "array", "items": {"type": "object", "properties": {
+                "id": {"type": "string"},
+                "kind": {"type": "string", "enum": [
+                    "query", "research", "analyze", "plan", "ticket", "comment", "write", "respond"]},
+                "instruction": {"type": "string"},
+                "depends_on": {"type": "array", "items": {"type": "string"}},
+                "write_intent": {"type": "boolean"},
+                "completion_criteria": {"type": "array", "items": {"type": "string"}},
+            }, "required": ["id", "kind", "instruction", "depends_on", "write_intent",
+                            "completion_criteria"], "additionalProperties": False},
+            "description": "요청을 독립 실행 가능한 작업 DAG로 분해한 것. 단순 요청도 한 항목",
+        },
+        "blocking_questions": {"type": "array", "items": {"type": "string"},
+                               "description": "답 없이는 결과가 달라지는 질문만"},
+        "assumptions": {"type": "array", "items": {"type": "string"}},
         "plan": {
             "type": "string",
             "description": "이 요청을 처리할 실행 계획 한 줄(2~4단계 화살표). "
@@ -228,6 +245,17 @@ class Planner(StructuredAgent):
             "sufficient": bool(out.get("sufficient")),
             "playbook": out.get("playbook") or "",
             "answer_depth": _carry_depth(state, out),
+            "request_plan": {
+                "goal": out.get("goal") or last_user_text(state),
+                "tasks": out.get("tasks") or [{
+                    "id": "task-1", "kind": "query" if intent in Intent.NEEDS_RESEARCH else "respond",
+                    "instruction": last_user_text(state), "depends_on": [],
+                    "write_intent": intent in Intent.DRAFTS_TICKETS,
+                    "completion_criteria": ["사용자 요청에 직접 답한다"],
+                }],
+                "blocking_questions": out.get("blocking_questions") or [],
+                "assumptions": out.get("assumptions") or [],
+            },
             "trace": note(state, self.name,
                           f"의도={intent}"
                           + (f" · 계획: {str(out.get('plan'))[:80]}" if out.get("plan") else
@@ -273,7 +301,6 @@ class Planner(StructuredAgent):
         #   에서는 덮지 않는다: 제목·본문의 주제는 끝까지 이 문장이다(실측: 이게 없어서
         #   Epic 본문의 주제가 초안을 잠식했다). 후속 턴 판정은 refine 직행 라우트와 같은
         #   기준(조사 결과가 있고 되묻기 턴이 지났다)을 쓴다 — 두 판정이 갈리면 안 된다.
-        from app.agent.workflow.state import last_user_text
         if intent in Intent.DRAFTS_TICKETS:
             # ★ 후속 턴 판정에 **조사 결과(situation)만** 보면, 조사 전에 되묻는 흐름에서
             #   고정이 통째로 무너진다. 해석 확인 선행 턴(`6eb8812`)은 Historian 을 안 타고

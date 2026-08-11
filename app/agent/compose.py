@@ -69,13 +69,22 @@ def _ticket_context(key: str, kind: str) -> str:
         remaining = _remaining_items("\n".join(
             [str(m.get("text") or "") for m in (r.get("comments") or [])]
             + [str(d.get("excerpt") or "") for d in (r.get("documents") or [])]))
-        if remaining:
-            parts.append("명시적 미완료(완료로 쓰지 말 것): " + " | ".join(remaining))
         if r.get("children"):
+            # child status는 관련 ticket/document의 성공보다 우선하는 현재 작업 상태다.
+            # 모델이 "API 개선됨"을 "연동 완료"로 비약한 실측(CMP5)을 후검증할 수 있게
+            # 미완료 child 제목도 동일한 deterministic marker에 넣는다.
+            for child in r["children"]:
+                if child.get("done"):
+                    continue
+                title = re.sub(r"^\s*\[[^\]]+\]\s*", "", str(child.get("title") or "")).strip()
+                if title and title not in remaining:
+                    remaining.append(title)
             parts.append(f'하위 {r.get("children_done")} 완료: ' + ", ".join(
                 f'{c["key"]} "{c.get("title", "")}"'
                 f'{"(완료)" if c.get("done") else "(미완료: " + str(c.get("status") or "상태 미상") + ")"}'
                 for c in r["children"][:6]))
+        if remaining:
+            parts.append("명시적 미완료(완료로 쓰지 말 것): " + " | ".join(remaining))
         if r.get("links"):
             parts.append("연결: " + ", ".join(
                 f'{x["key"]}({x.get("rel")}) "{x.get("title", "")}"'
@@ -184,14 +193,28 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     data_block("이 에디터가 붙어 있는 티켓의 맥락 (여기 없는 사실은 쓰지 마라)", ctx),
     data_block("사내 작성 규율", rules))}"""
 
+    llm_usage = {}
     try:
+        from app.agent.usage import Meter, callback
+        meter = Meter()
+        handler = callback(meter)
         state = {"user_id": user_id or "", "user_identity": ""}
-        msg = C.get_llm(temperature=0.3).invoke(
-            [("system", persona(state, SYSTEM_COMPOSER)), ("user", task)])
+        invoke_config = {"callbacks": [handler]} if handler else {}
+        llm = C.get_llm(temperature=0.3)
+        messages = [("system", persona(state, SYSTEM_COMPOSER)), ("user", task)]
+        try:
+            msg = llm.invoke(messages, config=invoke_config)
+        except TypeError as exc:
+            # 최소 custom/OpenAI-compatible adapter 중 Runnable ``config`` 인자를 구현하지
+            # 않은 것도 있다. 계량 때문에 본 기능을 막지 않고 unmetered 호출로 폴백한다.
+            if "unexpected keyword argument 'config'" not in str(exc):
+                raise
+            msg = llm.invoke(messages)
+        llm_usage = meter.snapshot()
         html = str(getattr(msg, "content", msg) or "").strip()
     except Exception as e:
         from app.agent.workflow.session import _friendly_error
-        return {"ok": False, "error": _friendly_error(e)}
+        return {"ok": False, "error": _friendly_error(str(e))}
 
     html = _unfence(html)
     # ── 피드백 루프: 모호해서 못 쓴다는 신호 — 일반론을 지어내는 것보다 낫다(사용자 요청).
@@ -199,11 +222,17 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     ask = _need_info(html)
     if ask:
         return {"ok": False, "needsInfo": True,
-                "error": "이대로는 정확한 글을 쓸 수 없습니다 — " + ask}
+                "error": "이대로는 정확한 글을 쓸 수 없습니다 — " + ask,
+                "usage": llm_usage}
     if not html:
         return {"ok": False, "error": "생성된 내용이 비어 있습니다. 요청을 조금 더 구체적으로 적어 주세요."}
     # 언급은 전부 **뱃지**여야 한다(사용자 지시: plain text 금지). 모델이 평문으로 남긴
     # 티켓 키·[~사번] 을 에디터가 뱃지로 파싱하는 마크업으로 바꾼다 — 보장은 코드가 한다.
+    # Composer는 아직 plain HTML을 반환하는 legacy adapter다. 새 role contract의
+    # ``{{ref:id}}``/``{{mention:id}}``를 모델이 흉내 내더라도 그대로 badgeify하면
+    # ``{{ref:<a ...>DL-1</a>}}``처럼 placeholder 안에 anchor가 생긴다. 이 경로에서는
+    # 확인 가능한 key/uid를 legacy 표기로 먼저 내린 뒤 기존 parser가 뱃지화한다.
+    html = _legacy_reference_tokens(html)
     html = _badgeify(html)
 
     # 의미 후검증 — 자료가 명시적으로 '남은 일'이라고 한 대상을 완료로 뒤집은 문장은
@@ -213,7 +242,8 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     if conflicts:
         return {"ok": False, "contentConflict": True,
                 "error": ("AI 생성문이 현재 자료와 충돌해 삽입하지 않았습니다 — 자료상 아직 "
-                          "남은 항목을 완료로 썼습니다: " + ", ".join(conflicts[:4]))}
+                          "남은 항목을 완료로 썼습니다: " + ", ".join(conflicts[:4])),
+                "usage": llm_usage}
 
     # 접지 — 챗과 **같은 검사**를 태운다. 에디터에 꽂히는 글이라고 날조를 봐줄 이유가 없다.
     note = ""
@@ -228,7 +258,20 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
                         + ", ".join(str(x) for x in items[:5]))
     except Exception:
         pass
-    return {"ok": True, "html": html, "note": note}
+    # UI가 ticket/person/document를 다시 regex 추측하지 않도록 canonical reference bundle을
+    # 함께 보낸다. 해결 실패는 malformed anchor를 만들지 않고 note로 노출한다.
+    references = []
+    try:
+        from app.agent.references import resolve_references
+        resolved = resolve_references(_reference_candidates(html))
+        references = resolved.get("references") or []
+        if resolved.get("unresolved"):
+            message = ", ".join(str(x.get("id") or "") for x in resolved["unresolved"][:5])
+            note = (note + " " if note else "") + f"확인되지 않은 참조: {message}"
+    except Exception:
+        pass
+    return {"ok": True, "html": html, "note": note, "references": references,
+            "usage": llm_usage}
 
 
 def _re_strip(html: str) -> str:
@@ -258,7 +301,7 @@ def _status_conflicts(rendered: str, context: str) -> list[str]:
         r"<h([1-6])\b[^>]*>\s*(?:완료\s*조건|DoD).*?</h\1>.*?(?=<h[1-6]\b|$)",
         " ", claims, flags=re.S | re.I)
     text = re.sub(r"\s+", " ", _plain_text(claims)).strip()
-    done = (r"(?:완료(?:되었|됐|했|함|됨|된|되었습니다|됐습니다|했습니다)|"
+    done = (r"(?:완료(?:되었|됐|했|함|됨|된|하였|되었습니다|됐습니다|했습니다|하였습니다)|"
             r"완료(?=\s*(?:[.!?]|$))|"
             r"끝났(?:습니다)?|마쳤(?:습니다)?)")
     bad = []
@@ -267,7 +310,8 @@ def _status_conflicts(rendered: str, context: str) -> list[str]:
         if not topic:
             continue
         pattern = (re.escape(topic)
-                   + r"(?:은|는|이|가|을|를)?\s*(?:이미\s*)?" + done)
+                   + r"(?:\s*(?:작업|기능|항목|건|상태))?"
+                     r"(?:은|는|이|가|을|를)?\s*(?:이미\s*)?" + done)
         if re.search(pattern, text):
             bad.append(topic)
     return bad
@@ -282,30 +326,128 @@ def _badgeify(html: str) -> str:
       — Mention 확장이 같은 모양으로 저장·렌더한다(프로필 칩).
     이미 앵커 안에 있는 키는 건드리지 않는다(뱃지 안에 뱃지 방지).
     """
-    import re
+    import html as _html
+    from html.parser import HTMLParser
+    from app.agent.tools._ctx import jira_key_allowed
 
-    # 표(테이블) 안은 제목·키 나열 자리라 그대로 둔다 — 유일한 예외(사용자 지시).
-    parts = re.split(r"(<table\b.*?</table>)", html, flags=re.S | re.I)
+    class BadgeParser(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.out, self.stack = [], []
 
-    def _keys(seg: str) -> str:
-        # 태그 밖 텍스트 노드만 — `>`/`<` 사이 조각 단위로 치환한다.
-        out = []
-        for tok in re.split(r"(<[^>]+>)", seg):
-            if tok.startswith("<"):
-                out.append(tok)
-                continue
-            tok = re.sub(r"\[~([A-Za-z0-9._-]+)\]",
-                         r'<span data-type="mention" data-id="\1">@\1</span>', tok)
-            tok = re.sub(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b",
-                         r'<a href="/browse/\1">\1</a>', tok)
-            out.append(tok)
-        joined = "".join(out)
-        # <a href="...">DL-123</a> 처럼 이미 링크였던 것 안에 또 앵커가 생기는 것을 방지 —
-        # 위 분할은 앵커 **텍스트**도 텍스트 노드로 보므로, 중첩 앵커만 사후에 푼다.
-        return re.sub(r'(<a\b[^>]*>)((?:(?!</a>).)*?)<a\b[^>]*>([^<]*)</a>',
-                      r"\1\2\3", joined, flags=re.S)
+        def handle_starttag(self, tag, attrs):
+            self.stack.append(tag.lower())
+            if tag.lower() == "a":
+                pairs = [(str(k), str(v or "")) for k, v in attrs]
+                href = next((v for k, v in pairs if k.lower() == "href"), "")
+                hit = (re.fullmatch(r"([A-Z][A-Z0-9]{1,9}-\d+)", href.strip(), re.I)
+                       or re.search(r"/browse/([A-Z][A-Z0-9]{1,9}-\d+)(?:$|[?#])",
+                                    href.strip(), re.I))
+                key = hit.group(1).upper() if hit else ""
+                if key and jira_key_allowed(key):
+                    # 모델이 ``href="DL-1"``이나 절대 Jira URL을 내도 editor가 이해하는
+                    # canonical ticket badge anchor 하나로 정규화한다.
+                    attrs = [("class", "jira-badge tkt"), ("data-key", key),
+                             ("href", f"/browse/{key}")]
+            rendered = "".join(
+                f' {_html.escape(str(k), quote=True)}="{_html.escape(str(v or ""), quote=True)}"'
+                for k, v in attrs)
+            self.out.append(f"<{tag}{rendered}>")
 
-    return "".join(seg if i % 2 else _keys(seg) for i, seg in enumerate(parts))
+        def handle_startendtag(self, tag, attrs):
+            rendered = "".join(
+                f' {_html.escape(str(k), quote=True)}="{_html.escape(str(v or ""), quote=True)}"'
+                for k, v in attrs)
+            self.out.append(f"<{tag}{rendered}/>")
+
+        def handle_endtag(self, tag):
+            self.out.append(f"</{tag}>")
+            if tag.lower() in self.stack:
+                idx = len(self.stack) - 1 - self.stack[::-1].index(tag.lower())
+                del self.stack[idx:]
+
+        def handle_data(self, data):
+            if any(x in self.stack for x in ("a", "table", "code", "pre")):
+                self.out.append(data); return
+            pattern = re.compile(r"\[~([A-Za-z0-9._-]+)\]|\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
+            pos = 0
+            for match in pattern.finditer(data):
+                self.out.append(data[pos:match.start()])
+                uid, key = match.group(1), match.group(2)
+                if uid:
+                    self.out.append(f'<span data-type="mention" data-id="{_html.escape(uid)}">'
+                                    f'@{_html.escape(uid)}</span>')
+                elif jira_key_allowed(key):
+                    self.out.append(f'<a class="jira-badge tkt" data-key="{key}" '
+                                    f'href="/browse/{key}">{key}</a>')
+                else:
+                    self.out.append(key)
+                pos = match.end()
+            self.out.append(data[pos:])
+
+        def handle_entityref(self, name): self.out.append(f"&{name};")
+        def handle_charref(self, name): self.out.append(f"&#{name};")
+        def handle_comment(self, data): self.out.append(f"<!--{data}-->")
+
+    parser = BadgeParser()
+    try:
+        parser.feed(str(html or "")); parser.close()
+        return "".join(parser.out)
+    except Exception:
+        return str(html or "")
+
+
+def _legacy_reference_tokens(value: str) -> str:
+    """새 reference placeholder를 legacy Composer 표기로 안전하게 내린다.
+
+    Composer의 현재 출력 schema는 HTML string 하나라 별도 ``references[]``를 받을 수 없다.
+    ticket key와 uid처럼 자체 식별 가능한 값만 변환하고, 알 수 없는 id는 wrapper를 벗긴
+    평문으로 남겨 malformed HTML을 만들지 않는다. 실제 resolve 결과는 compose()가 아래에서
+    canonical reference bundle로 다시 제공한다.
+    """
+    text = str(value or "")
+    text = re.sub(r"\{\{\s*ref\s*:\s*([A-Z][A-Z0-9]{1,9}-\d+)\s*\}\}",
+                  lambda m: m.group(1).upper(), text, flags=re.I)
+    text = re.sub(r"\{\{\s*mention\s*:\s*([A-Za-z0-9._-]+)\s*\}\}",
+                  lambda m: f"[~{m.group(1)}]", text, flags=re.I)
+    text = re.sub(r"\{\{\s*(?:ref|mention)\s*:\s*([^{}<>]{1,120})\s*\}\}",
+                  lambda m: m.group(1).strip(), text, flags=re.I)
+    # 일부 모델은 예시 placeholder를 한 번 더 escape해 ``{{{{ref:DL-1}}}}``로 낸다.
+    # 안쪽을 내린 뒤 남는 ``{{DL-1}}``도 plain key로 정규화한다.
+    text = re.sub(r"(?:\{\{\s*)+([A-Z][A-Z0-9]{1,9}-\d+)(?:\s*\}\})+",
+                  lambda m: m.group(1).upper(), text, flags=re.I)
+    # Markdown link가 아닌 단순 key 장식 ``[DL-1]``은 badge 바깥에 대괄호가 남지 않게 한다.
+    return re.sub(r"\[([A-Z][A-Z0-9]{1,9}-\d+)\]", lambda m: m.group(1).upper(), text)
+
+
+def _reference_candidates(rendered: str) -> list[dict]:
+    """생성 HTML에서 typed reference 후보를 추출한다. label/url 검증은 resolver가 한다."""
+    from urllib.parse import urlsplit
+    from app.agent.retrieval.harvest import _conf_id
+    from app.agent.tools._ctx import settings
+
+    refs, seen = [], set()
+    for key in re.findall(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b", rendered or ""):
+        rid = "ticket:" + key
+        if rid not in seen:
+            seen.add(rid); refs.append({"id": rid, "kind": "ticket", "key": key})
+    for uid in re.findall(r'data-id=["\']([A-Za-z0-9._-]+)["\']', rendered or ""):
+        rid = "person:" + uid
+        if rid not in seen:
+            seen.add(rid); refs.append({"id": rid, "kind": "person", "user_id": uid})
+    for url in re.findall(r'href=["\'](https?://[^"\']+)["\']', rendered or ""):
+        rid = "url:" + str(len(refs))
+        if url not in seen:
+            seen.add(url)
+            conf_base = str(getattr(settings(), "confluence_base", "") or "")
+            same_conf = bool(conf_base and urlsplit(conf_base).netloc.lower()
+                             == urlsplit(url).netloc.lower())
+            page_id = _conf_id(url) if same_conf else ""
+            if page_id:
+                refs.append({"id": rid, "kind": "document", "page_id": page_id, "url": url})
+            else:
+                refs.append({"id": rid, "kind": "external", "url": url})
+    return refs
 
 
 def _unfence(text: str) -> str:

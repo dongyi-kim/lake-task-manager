@@ -25,9 +25,16 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else "lang-ab.json"
 MODEL = sys.argv[2] if len(sys.argv) > 2 else "gpt-4o-mini"
 ONLY = {x.upper() for x in sys.argv[3:]}
 os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
-os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", MODEL)
+# 언어/프롬프트 비교에서도 production routing을 유지한다. 모델을 하나로
+# 평준화하면 프롬프트뿐 아니라 실행 환경까지 바뀌어 주 비교 결과가 무효가 된다.
+os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
 from app.agent.workflow import session          # noqa: E402
+try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
+    from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
+except ImportError:  # legacy asset에는 version 상수가 없었다.
+    PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
 #    (인터뷰 → 초안이 이 도구의 핵심 갈래다).
@@ -152,7 +159,9 @@ def run():
             tot["응답카드불일치"] += 1 if ck.get("응답카드불일치") else 0
     tot["초"] = round(tot["초"], 1)
     io.open(OUT, "w", encoding="utf-8", newline="\n").write(
-        json.dumps({"model": MODEL, "합계": tot, "시나리오": rows},
+        json.dumps({"model": MODEL, "simpleModel": SIMPLE_MODEL,
+                    "promptVersion": PROMPT_VERSION,
+                    "합계": tot, "시나리오": rows},
                    ensure_ascii=False, indent=1))
     print(json.dumps(tot, ensure_ascii=False), flush=True)
     print(f"→ {OUT}", flush=True)

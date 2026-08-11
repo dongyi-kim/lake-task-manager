@@ -20,6 +20,7 @@ from app.agent.workflow.agents.historian import Historian
 from app.agent.workflow.agents.operator import Operator
 from app.agent.workflow.agents.planner import Planner
 from app.agent.workflow.agents.pmo import PMO
+from app.agent.workflow.agents.query_specialist import QuerySpecialist
 from app.agent.workflow.agents.refiner import Refiner
 from app.agent.workflow.agents.responder import Responder
 from app.agent.workflow.agents.reviewer import Reviewer
@@ -28,6 +29,7 @@ ROLES = {
     "planner": Planner, "historian": Historian, "refiner": Refiner,
     "assigner": Assigner, "reviewer": Reviewer, "operator": Operator,
     "responder": Responder, "pmo": PMO, "curator": Curator,
+    "query_specialist": QuerySpecialist,
 }
 MD_DIR = pathlib.Path(__file__).resolve().parents[1] / "app/agent/prompts/roles"
 
@@ -54,6 +56,12 @@ def test_role_md_does_not_order_tools_the_role_lacks(name):
     if not p.exists():
         pytest.skip(f"{name}.md 없음")
     known, own = _all_tool_names(), _own_tool_names(ROLES[name])
+    # Query Specialist는 실행자가 아니라 Query Runner용 typed query contract를 작성한다.
+    # 따라서 downstream tool 이름을 명세할 수 있지만 직접 호출 금지는 별도로 강제한다.
+    if name == "query_specialist":
+        text = p.read_text(encoding="utf-8")
+        assert "도구가 없" in text and "직접 호출하지 않는다" in text
+        return
     ghosts = {}
     for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
         if _ANTI_EXAMPLE.match(line):
@@ -120,3 +128,64 @@ def test_every_role_md_is_loaded_by_the_loader():
     for p in sorted(MD_DIR.glob("*.md")):
         body = p.read_text(encoding="utf-8").strip()
         assert body in loaded, f"{p.name} 이 어떤 SYSTEM_* 상수로도 로드되지 않는다"
+
+
+# ── 한국어 원문형 prompt + 기계 식별자 보존 ──────────────────────────────
+def test_role_prompts_are_korean_originals_not_legacy_english_blocks():
+    """자연어 지시를 한국어 원문형으로 관리한다.
+
+    code/tool/schema 식별자의 영어는 정상이다. 여기서는 과거 prompt의 영문 지시문 머리말과
+    강제어가 통째로 되살아나는 회귀만 잡는다.
+    """
+    banned = ("You are ", "Your job", "## Hard rules", "## Output format",
+              "## Grounding", "## Steps", "NEVER ", "Do NOT ")
+    for p in sorted(MD_DIR.glob("*.md")):
+        text = p.read_text(encoding="utf-8")
+        assert re.search(r"[가-힣]", text), f"{p.name} 에 한국어 자연어 지시가 없다"
+        found = [token for token in banned if token in text]
+        assert not found, f"{p.name} 에 기존 영문 지시 block이 남았다: {found}"
+
+
+def test_machine_contract_identifiers_survive_korean_refactor():
+    """한국어로 다시 써도 function/parameter/schema/enum/Jira 계약은 원형을 지킨다."""
+    from app.agent.prompts.base import BASE_PERSONA, PROMPT_VERSION
+    from app.agent.prompts.roles import (SYSTEM_COMPOSER, SYSTEM_HISTORIAN,
+                                         SYSTEM_OPERATOR, SYSTEM_PLANNER,
+                                         SYSTEM_REFINER)
+
+    assert PROMPT_VERSION == "ko-role-contract-v2"
+    for token in ("approval_token", "statusCategory", "Epic Link", "Story Point",
+                  "Sub-Task", "PMO_VIT"):
+        assert token in BASE_PERSONA, f"공통 계약에서 식별자 {token!r}가 번역·유실됐다"
+
+    for token in ("plan_work", "ask", "my_day", "progress", "activity", "modify",
+                  "chitchat", 'playbook="bug_report"'):
+        assert token in SYSTEM_PLANNER, f"Planner enum {token!r}가 번역·유실됐다"
+
+    for token in ("destination_project", "temp_id", "tier", "issue_type", "parent_ref",
+                  "structure_plan", 'mode="subtask"', "questions=[]", "summary",
+                  "description", "children", "parent", "rationale"):
+        assert token in SYSTEM_REFINER, f"Refiner schema 식별자 {token!r}가 번역·유실됐다"
+
+    for token in ("get_ticket", "read_document", "run_jql_v2", "search_documents",
+                  "search_comments", "query_people", "pagination"):
+        assert token in SYSTEM_HISTORIAN, f"Historian tool {token!r}가 번역·유실됐다"
+
+    for token in ("<h3>", 'data-type="taskList"', 'data-checked="false"',
+                  "typed reference", "{{ref:id}}", "{{mention:id}}", "[~사번]"):
+        assert token in SYSTEM_COMPOSER, f"Composer markup {token!r}가 번역·유실됐다"
+
+    for token in ("approval_token", "mode=task", "create_tickets", "created"):
+        assert token in SYSTEM_OPERATOR, f"Operator 실행 계약 {token!r}가 번역·유실됐다"
+
+
+def test_evaluation_harnesses_preserve_production_model_routing():
+    """Prompt 후보 사이에서는 model topology가 아니라 prompt만 달라야 한다."""
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for rel in ("tools/agent_lang_ab.py", "tools/agent_compose_eval.py",
+                "tools/agent_create_suite.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert 'setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")' in text, (
+            f"{rel}가 production simple tier를 고정하지 않는다")
+        assert 'setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", MODEL)' not in text, (
+            f"{rel}가 main model을 simple tier에 강제로 덮어쓴다")

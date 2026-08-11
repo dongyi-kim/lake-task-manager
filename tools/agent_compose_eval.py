@@ -1,6 +1,6 @@
 # tools/agent_compose_eval.py — Editor AI(compose) 검증 배터리 (실 LLM, 수동 실행).
 #
-# 실행: python -X utf8 tools/agent_compose_eval.py [모델] [케이스ID ...]
+# 실행: python -X utf8 tools/agent_compose_eval.py [모델] [케이스ID ...] [--out 결과.json]
 #
 # 검증 축(사용자 지시):
 #   ① 문맥 적합성 — 티켓 컨텍스트(제목·코멘트·문서)에 맞는 Description/Comment 인가
@@ -8,6 +8,7 @@
 #   ③ 시드 활용 — 쓰던 글의 말투·내용을 이어 쓰는가 / 형식(멘션·뱃지·4섹션)을 지키는가
 #
 # 체커는 최소선이고, 출력 전문을 사람이 읽는 것이 최종 게이트다(battery green ≠ 품질).
+import json
 import os
 import re
 import sys
@@ -18,13 +19,26 @@ os.environ.setdefault("JIRA_ENV", "mock")
 os.environ["LAKE_AGENT_PROVIDER"] = "openai"
 # 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
 os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
-_args = [a for a in sys.argv[1:] if not a.startswith("-")]
+_raw_args = list(sys.argv[1:])
+OUT = None
+for i, arg in enumerate(_raw_args):
+    if arg.startswith("--out="):
+        OUT = arg.split("=", 1)[1]
+    elif arg == "--out" and i + 1 < len(_raw_args):
+        OUT = _raw_args[i + 1]
+_args = [a for i, a in enumerate(_raw_args)
+         if not a.startswith("-") and not (i and _raw_args[i - 1] == "--out")]
 MODEL = _args[0] if _args and not _args[0].isupper() else "gpt-4o-mini"
 ONLY = {a for a in _args if a.isupper()}
 os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
 os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
 from app.agent import compose as CP  # noqa: E402
+try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
+    from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
+except ImportError:  # legacy asset에는 version 상수가 없었다.
+    PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
 def _txt(html):
@@ -85,7 +99,8 @@ CASES = [
 
 
 if __name__ == "__main__":
-    hits, run = 0, [c for c in CASES if not ONLY or c[0] in ONLY]
+    hits, records = 0, []
+    run = [c for c in CASES if not ONLY or c[0] in ONLY]
     for cid, desc, kw, check in run:
         t0 = time.time()
         try:
@@ -93,9 +108,31 @@ if __name__ == "__main__":
             ok = bool(check(r))
         except Exception as e:
             print(f"✗ {cid} {desc}: 예외 {str(e)[:140]}")
+            records.append({"id": cid, "설명": desc, "입력": kw, "통과": False,
+                            "초": round(time.time() - t0, 1), "오류": str(e)})
             continue
-        print(f"{'✓' if ok else '✗'} {cid} {desc}: {time.time()-t0:.0f}s")
+        elapsed = round(time.time() - t0, 1)
+        print(f"{'✓' if ok else '✗'} {cid} {desc}: {elapsed:.0f}s")
         body = (r.get("html") or r.get("error") or "")
         print(f"    {'html' if r.get('ok') else 'resp'}: {body[:260]}")
+        records.append({"id": cid, "설명": desc, "입력": kw, "통과": ok,
+                        "초": elapsed, "결과": r})
         hits += 1 if ok else 0
     print(f"\n{hits}/{len(run)} 통과")
+    if OUT:
+        usage = {"calls": 0, "promptTokens": 0, "completionTokens": 0,
+                 "totalTokens": 0, "cachedTokens": 0, "costUsd": 0.0}
+        for record in records:
+            current = ((record.get("결과") or {}).get("usage") or {})
+            for key in ("calls", "promptTokens", "completionTokens", "totalTokens",
+                        "cachedTokens"):
+                usage[key] += current.get(key) or 0
+            usage["costUsd"] += current.get("costUsd") or 0
+        usage["costUsd"] = round(usage["costUsd"], 6)
+        with open(OUT, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({"model": MODEL, "simpleModel": SIMPLE_MODEL,
+                       "promptVersion": PROMPT_VERSION,
+                       "합계": {"통과": hits, "전체": len(run),
+                                "초": round(sum(r["초"] for r in records), 1), **usage},
+                       "케이스": records}, f, ensure_ascii=False, indent=1, default=str)
+        print(f"→ {OUT}")

@@ -33,6 +33,43 @@ def settings():
     return get_settings()
 
 
+def search_projects() -> list[str]:
+    """검색 허용 Jira 프로젝트. ``project_key``로 fallback하지 않는다."""
+    out = []
+    for raw in getattr(settings(), "search_jira_projects", None) or []:
+        value = str(raw or "").strip()
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
+def search_spaces() -> list[str]:
+    """검색 허용 Confluence space. 빈 설정은 '전체'가 아니라 조회 불가다."""
+    out = []
+    for raw in getattr(settings(), "search_confluence_spaces", None) or []:
+        value = str(raw or "").strip()
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
+def jira_scope(condition: str = "") -> str:
+    """search config를 바깥 AND 절로 강제한 JQL 조건을 만든다."""
+    projects = search_projects()
+    if not projects:
+        raise ValueError("검색 범위 미설정 — search.jira.projects를 지정하세요")
+    quoted = ", ".join('"' + p.replace('"', '') + '"' for p in projects)
+    base = f"project in ({quoted})"
+    cond = str(condition or "").strip()
+    return f"{base} AND ({cond})" if cond else base
+
+
+def jira_key_allowed(key: str) -> bool:
+    """티켓 key가 agent 검색 허용 프로젝트에 속하는지 확인한다."""
+    project = str(key or "").strip().upper().split("-", 1)[0]
+    return bool(project) and project in {p.upper() for p in search_projects()}
+
+
 def jira_base() -> str:
     try:
         return (getattr(settings(), "jira_base_url", "") or "").rstrip("/")

@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from app.agent.tools._ctx import client, compact, settings, trim
+from app.agent.tools._ctx import (client, compact, jira_key_allowed, jira_scope,
+                                  search_projects, search_spaces, settings, trim)
 
 
 # UI 회귀 픽스처 전용 모듈 — 개발 world 한정. 담당 후보 풀에 들어가면 안 된다.
@@ -91,12 +92,11 @@ def _related_people(keys) -> set:
 
 
 def _in_project(uid: str) -> bool:
-    """③ 이 사람이 지금 프로젝트에 발을 담그고 있나 — 담당이든 보고든 한 건이라도."""
+    """③ 이 사람이 search config 프로젝트에 참여 중인가 — 담당/보고 한 건이라도."""
     try:
-        pk = settings().project_key
         safe = str(uid).replace('"', " ")
         r = client().search_issues(
-            f'project = {pk} AND (assignee = "{safe}" OR reporter = "{safe}")', max_results=1)
+            jira_scope(f'(assignee = "{safe}" OR reporter = "{safe}")'), max_results=1)
         return bool(r)
     except Exception:
         return False
@@ -110,6 +110,50 @@ def _count(bucket) -> int:
     if isinstance(c, dict):
         return sum(v for v in c.values() if isinstance(v, (int, float)))
     return int(c or 0)
+
+
+def scoped_person_workload(user_id: str, done_days: int = 28) -> dict:
+    """Agent용 사람 workload. 화면용 ``workload_person(project_key)``를 사용하지 않는다.
+
+    각 bucket은 ``search.jira.projects`` 전체를 강제한 JQL을 끝까지 pagination한다. 설정이
+    비어 있으면 primary project로 넓히지 않고 ``jira_scope``의 명시적 오류를 전달한다.
+    """
+    c = client()
+    safe = str(user_id or "").replace('"', " ").strip()
+    if not safe:
+        raise ValueError("user_id가 비었습니다.")
+
+    def bucket(condition: str) -> dict:
+        jql = jira_scope(f'assignee = "{safe}" AND {condition}') + \
+            " ORDER BY updated DESC, key ASC"
+        start, counts = 0, {}
+        while True:
+            page = c.search_issues_page(jql, start_at=start, max_results=100,
+                                        fields=["project", "issuetype", "status", "updated"],
+                                        light=True)
+            for raw in page.get("issues") or []:
+                key = str(raw.get("key") or "")
+                if not jira_key_allowed(key):
+                    continue
+                name = ((raw.get("fields") or {}).get("issuetype") or {}).get("name") or "Unknown"
+                counts[name] = counts.get(name, 0) + 1
+            nxt = page.get("nextStartAt")
+            if not page.get("hasMore") or nxt is None or int(nxt) <= start:
+                break
+            start = int(nxt)
+        return {"count": counts}
+
+    display = ""
+    try:
+        data = c.provider.get_json("/rest/api/2/user", params={"username": safe}) or {}
+        display = data.get("displayName") or data.get("name") or safe
+    except Exception:
+        display = safe
+    days = max(1, min(int(done_days or 28), 365))
+    return {"displayName": display, "scopeProjects": search_projects(),
+            "open": bucket("statusCategory = new"),
+            "inProgress": bucket("statusCategory = indeterminate"),
+            "done7d": bucket(f"statusCategory = done AND resolutiondate >= -{days}d")}
 
 
 @tool
@@ -127,7 +171,6 @@ def get_team_workload(module: str = "") -> dict:
                  "people": [{id,name,module,open,inProgress,done28d}...]}
     """
     from app.infra.settings import load_people, resolve_module
-    from app.domain.workload import build_workload_person
     c = client()
     roster = load_people() or {}
     asked = (module or "").strip()
@@ -149,7 +192,7 @@ def get_team_workload(module: str = "") -> dict:
                 continue
             seen.add(uid)
             try:
-                b = build_workload_person(c, uid, 28)
+                b = scoped_person_workload(uid, 28)
             except Exception:
                 continue
             rows.append(compact({"id": uid, "name": b.get("name"), "module": m,
@@ -170,6 +213,9 @@ def get_ticket_participants(key: str) -> dict:
     정작 그 논의를 끌고 간 사람은 코멘트에만 있는 경우가 많다.
     Historian 이 찾은 유사 티켓 2~3건에 대해 부른다.
     """
+    if not jira_key_allowed(key):
+        return {"key": key, "people": [],
+                "error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
     from app.domain.search import _ticket_people
     try:
         uids = _ticket_people(client(), key) or []
@@ -187,7 +233,6 @@ def get_person_profile(user_id: str) -> dict:
     비슷한 일이 이미 손에 있으면 그것 자체가 추천 근거가 된다(문맥 전환 비용이 없다).
     """
     from app.infra.settings import load_people
-    from app.domain.workload import build_workload_person
     c = client()
     out = {"id": user_id}
     for mod, ids in (load_people() or {}).items():
@@ -195,7 +240,7 @@ def get_person_profile(user_id: str) -> dict:
             out["module"] = mod
             break
     try:
-        b = build_workload_person(c, user_id, 28)
+        b = scoped_person_workload(user_id, 28)
         out["name"] = b.get("name")
         out["workload"] = {"open": _count(b.get("open")), "inProgress": _count(b.get("inProgress")),
                            "done28d": _count(b.get("done7d"))}
@@ -205,10 +250,14 @@ def get_person_profile(user_id: str) -> dict:
         act = c.activity(user_id) or {}
         out["recentJira"] = [compact({"key": a.get("key"), "what": trim(a.get("summary"), 90),
                                       "when": (a.get("updated") or "")[:10]})
-                             for a in (act.get("jira") or [])[:8]]
+                             for a in (act.get("jira") or []) if jira_key_allowed(a.get("key"))][:8]
+        allowed_spaces = {x.upper() for x in search_spaces()}
         out["recentDocs"] = [compact({"title": trim(a.get("title"), 90),
-                                      "when": (a.get("updated") or "")[:10]})
-                             for a in (act.get("confluence") or [])[:5]]
+                                      "when": (a.get("updated") or "")[:10],
+                                      "space": a.get("space") or a.get("spaceKey")})
+                             for a in (act.get("confluence") or [])
+                             if str(a.get("space") or a.get("spaceKey") or "").upper()
+                             in allowed_spaces][:5]
     except Exception as e:
         out["activity_error"] = str(e)[:150]
     return compact(out)
@@ -225,6 +274,9 @@ def get_module_people(key_or_component: str) -> dict:
     from app.domain.search import _module_people
     roster = load_people() or {}
     tok = (key_or_component or "").strip()
+    if _re_mod.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,9}-\d+", tok) and not jira_key_allowed(tok):
+        return {"module": None, "people": [],
+                "error": "티켓이 search.jira.projects 범위 밖입니다."}
     if tok in roster:
         return {"module": tok, "people": list(roster[tok])}
     try:

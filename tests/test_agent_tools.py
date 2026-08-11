@@ -463,13 +463,18 @@ def test_group_activity_preaggregates_whole_roster():
     assert "최근 14일" in pre14
 
 
-def test_run_jql_forces_project_scope_and_caps():
-    """JQL 은 모델이 쓰되 안전은 코드가 — 프로젝트 한정 강제, 타 프로젝트 거부, 결과 캡."""
+def test_run_jql_forces_all_search_config_projects_without_primary_fallback():
+    """JQL 바깥 범위는 search config 전체이며 project_key는 관여하지 않는다."""
     r = _run(T.BY_NAME["run_jql"], jql="statusCategory = indeterminate ORDER BY updated DESC", limit=5)
-    assert r.get("count") is not None and r["jql"].startswith("project = DL"), r.get("jql")
+    assert r.get("count") is not None, r
+    assert r["jql"].startswith('project in ("DL", "JIRA820") AND ('), r.get("jql")
+    assert r.get("scopeProjects") == ["DL", "JIRA820"]
     assert len(r["tickets"]) <= 5
+
+    # 사용자가 project 조건을 넣어도 설정 범위와 바깥 AND로 결합되어 탈출할 수 없다.
     bad = _run(T.BY_NAME["run_jql"], jql='project = OTHER AND status = Open')
-    assert "밖은 조회할 수 없습니다" in (bad.get("error") or "")
+    assert bad["jql"].startswith('project in ("DL", "JIRA820") AND (project = OTHER')
+    assert not bad["tickets"]
 
 
 def test_create_epic_needs_token_and_matches_fingerprint():
