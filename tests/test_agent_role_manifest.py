@@ -1,19 +1,52 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 from app.agent.workflow.role_manifest import ROLE_SPECS
-from app.agent.workflow.state import AgentState
+from app.agent.workflow.state import AgentState, Node
 
 
-def test_role_ids_runtime_names_and_prompt_assets_are_unique():
+def test_role_ids_names_and_prompt_assets_are_canonical_and_unique():
     assert len(ROLE_SPECS) == len(set(ROLE_SPECS))
     names = [spec.name for spec in ROLE_SPECS.values()]
     assert len(names) == len(set(names))
     prompt_dir = Path(__file__).resolve().parents[1] / "app/agent/prompts/roles"
-    for spec in ROLE_SPECS.values():
+    for role_id, spec in ROLE_SPECS.items():
+        assert spec.id == role_id
+        assert not hasattr(spec, "runtime"), "runtime alias를 다시 만들지 않는다"
         if spec.prompt_asset:
-            assert (prompt_dir / spec.prompt_asset).is_file(), spec
+            prompt = prompt_dir / spec.prompt_asset
+            assert spec.prompt_asset == f"{role_id}.md"
+            assert prompt.is_file(), spec
+            assert prompt.read_text(encoding="utf-8").splitlines()[0] == f"# {spec.name}"
+
+
+def test_role_module_class_and_graph_node_use_the_same_canonical_id():
+    """Role lookup에 alias table이나 legacy fallback이 다시 생기지 않게 한다."""
+    node_values = {value for key, value in vars(Node).items()
+                   if key.isupper() and isinstance(value, str)}
+    for role_id in ROLE_SPECS:
+        module_name = ("app.agent.editor_author" if role_id == "editor_author"
+                       else f"app.agent.workflow.agents.{role_id}")
+        module = importlib.import_module(module_name)
+        class_name = "".join(part.title() for part in role_id.split("_"))
+        role_class = getattr(module, class_name)
+        assert role_class.name == role_id
+        if role_id != "editor_author":
+            assert role_id in node_values
+
+
+def test_legacy_role_alias_modules_and_prompts_do_not_return():
+    root = Path(__file__).resolve().parents[1] / "app/agent"
+    legacy = {"planner", "historian", "curator", "pmo", "refiner", "assigner",
+              "reviewer", "operator", "responder", "composer"}
+    agent_modules = root / "workflow/agents"
+    prompt_dir = root / "prompts/roles"
+    assert not [agent_modules / f"{name}.py" for name in legacy
+                if (agent_modules / f"{name}.py").exists()]
+    assert not [prompt_dir / f"{name}.md" for name in legacy
+                if (prompt_dir / f"{name}.md").exists()]
 
 
 def test_graph_role_state_contracts_name_real_state_keys():

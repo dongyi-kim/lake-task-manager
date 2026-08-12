@@ -1,4 +1,4 @@
-"""agent/tools/write_tools.py — 검증(Reviewer)과 실행(Operator).
+"""agent/tools/write_tools.py — 검증(Auditor)과 실행(ActionExecutor).
 
 두 종류를 한 파일에 두되 성격은 정반대다.
 

@@ -1,4 +1,4 @@
-"""Responder — 지금까지 나온 것을 **사람이 읽을 한 덩어리**로 만든다.
+"""Result Integrator — 지금까지 나온 것을 **사람이 읽을 한 덩어리**로 만든다.
 
 앞의 다섯 역할은 전부 구조화된 데이터를 내놓는다. 그걸 화면이 표로 그리기도 하지만, 대화창에는
 결국 문장이 필요하다. 그 문장을 각 역할이 조금씩 쓰게 하면 말투가 다섯 개가 되고 중복이 생긴다.
@@ -16,19 +16,19 @@ from __future__ import annotations
 import re as _re
 
 from app.agent.workflow.agents.base import TextAgent
-from app.agent.workflow.agents.refiner import draft_text
-from app.agent.prompts.roles import SYSTEM_RESPONDER
+from app.agent.workflow.agents.work_architect import draft_text
+from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
                                       request_text)
 
 
-class Responder(TextAgent):
-    name = Node.RESPONDER
+class ResultIntegrator(TextAgent):
+    name = Node.RESULT_INTEGRATOR
     temperature = 0.4          # 사람에게 보일 문장이라 약간의 자연스러움이 필요하다
 
     def system(self, state):
-        return persona(state, SYSTEM_RESPONDER)
+        return persona(state, SYSTEM_RESULT_INTEGRATOR)
 
     def task(self, state):
         intent = state.get("intent") or Intent.PLAN_WORK
@@ -143,7 +143,7 @@ class Responder(TextAgent):
         pmo = "\n".join(
             f"- {f.get('key','')} {f.get('point','')}" + (f" → {f['action']}" if f.get("action") else "")
             for f in (state.get("pmo_findings") or []))
-        # 지식 브리프(Curator) — 있으면 답변의 뼈대다: 개념 → 우리 상황 → 참고 → 공백 순.
+        # 지식 브리프(KnowledgeCurator) — 있으면 답변의 뼈대다: 개념 → 우리 상황 → 참고 → 공백 순.
         kb = state.get("knowledge_brief") or {}
         brief = ""
         if kb:
@@ -193,7 +193,7 @@ class Responder(TextAgent):
         data = wrap_data(
             data_block("요청 해석 (조사 전 확인용 — \"제가 이해한 바\"로 그대로 보여라)",
                        state.get("interpretation")),
-            data_block("지식 브리프(Curator 정리)", brief),
+            data_block("지식 브리프(KnowledgeCurator 정리)", brief),
             data_block("그룹 활동 자료(로스터 전원 — 이것으로 3층을 쓴다)",
                        state.get("group_activity")),
             data_block("티켓 진척 자료 (코드가 변동·코멘트·하위·문서를 취합함)",
@@ -220,20 +220,20 @@ class Responder(TextAgent):
             data_block("변경 결과", "\n".join(
                 f"- {u.get('key')} ({', '.join(u.get('fields') or [])})"
                 for u in (result.get("updated") or []))),
-            # 코드가 조회로 확정한 티켓 현재 값 — Historian 요약이 담당·마감을 떨구는 일이
+            # 코드가 조회로 확정한 티켓 현재 값 — ResearchAnalyst 요약이 담당·마감을 떨구는 일이
             # 잦다(실측 Round P: 담당 skcc.x1402 를 "확인되지 않음"으로). 요약과 다르면
             # 이쪽이 사실이다.
             data_block("지목 티켓의 현재 값 (코드가 조회로 확정 — 요약과 다르면 이쪽이 맞다)",
                        "\n".join(l for l in str(state.get("pre_survey") or "").splitlines()
                                  if _re.match(r"\[[A-Z]+-\d+ (현재|변동|코멘트|하위|링크)\]", l))),
-            # 문서 요약 요청의 재료는 **문서 본문**이다. Historian 요약은 "절차가 정리되어
+            # 문서 요약 요청의 재료는 **문서 본문**이다. ResearchAnalyst 요약은 "절차가 정리되어
             # 있습니다" 같은 메타 서술로 뭉개진다(실측 T3) — 원문을 그대로 준다.
             data_block("문서 본문 (요약은 이걸로 — 문서가 정한 규칙·명명 규약·기준을 "
                        "빠뜨리지 말고, 출처 링크를 함께 남겨라)",
                        _doc_body(state.get("pre_survey"))),
-            # ★ 담당 후보 재료 — 여태 Responder 에 **안 왔다**. pre_survey 에서 티켓 현재값과
+            # ★ 담당 후보 재료 — 여태 ResultIntegrator 에 **안 왔다**. pre_survey 에서 티켓 현재값과
             #   문서 본문만 잘라 썼기 때문에, 코드가 로스터·부하까지 조회해 실어 준 후보가
-            #   Historian 의 situation 요약 한 겹을 지나며 사라졌다(실측 EDGE13: "누가 하면
+            #   ResearchAnalyst 의 situation 요약 한 겹을 지나며 사라졌다(실측 EDGE13: "누가 하면
             #   좋을지랑 지금 상황" 에 상황만 답하고 후보를 통째로 뺐다 — 세 번 연속).
             #   사람 이름은 사번 그대로 옮겨야 하므로 원문을 준다.
             data_block("담당 후보 재료 (코드가 로스터·부하를 조회함 — 사용자가 '누가'를 "
@@ -245,7 +245,7 @@ class Responder(TextAgent):
             data_block("검증에서 걸린 것", errors),
             # 검토 의견은 **미해결일 때만** 사용자 몫이다. 검증을 통과해 승인 카드가 뜨는
             # 턴에 내부 지적("하나의 Task 로 통합하는 것이 좋습니다")을 그대로 옮기면
-            # 카드와 모순되는 안내가 된다(실측 Round O, 2회 재발). 반영 여부는 Refiner 가
+            # 카드와 모순되는 안내가 된다(실측 Round O, 2회 재발). 반영 여부는 WorkArchitect 가
             # 이미 판단했고 근거는 rationale 에 남는다.
             data_block("검토 의견", "" if (draft_items and review.get("ok") and not errors)
                        else problems),
@@ -255,7 +255,7 @@ class Responder(TextAgent):
 
         # ── 답변 깊이 — 물어본 만큼만 답한다(사용자 요청).
         # 값 하나를 물었는데 개념 강의가 앞에 붙으면 정작 답이 묻힌다(judge 가 반복 지적).
-        # 반대로 "왜/어떻게"를 물었는데 값만 던지면 불친절하다. Planner 가 가른다.
+        # 반대로 "왜/어떻게"를 물었는데 값만 던지면 불친절하다. RequestArchitect 가 가른다.
         # 어느 쪽이든 **더 깊은 설명은 다음 턴에** — 사용자가 요청하면 그때 푼다.
         depth = state.get("answer_depth") or "brief"
         if not qs:                       # 되묻는 턴은 질문 폼이 주인공이라 건드리지 않는다
@@ -442,7 +442,7 @@ def _strip_instruction_echo(text: str) -> str:
 
 
 def _render_reply_tokens(text: str) -> str:
-    """Responder placeholder를 깨지지 않는 canonical Markdown link/mention으로 렌더한다."""
+    """ResultIntegrator placeholder를 깨지지 않는 canonical Markdown link/mention으로 렌더한다."""
     try:
         from app.infra.settings import get_settings
         base = str(get_settings().jira_base or "").rstrip("/")
@@ -503,8 +503,8 @@ def _align_draft_claims(text: str, state) -> str:
 
 
 def _drop_resolved_review_feedback(text: str, items: list) -> str:
-    """최종 payload에서 이미 고친 DoD에 대한 이전 Reviewer 의견을 답변에서 걷는다."""
-    from app.agent.workflow.agents.refiner import _dod_rows, _vague_dod
+    """최종 payload에서 이미 고친 DoD에 대한 이전 Auditor 의견을 답변에서 걷는다."""
+    from app.agent.workflow.agents.work_architect import _dod_rows, _vague_dod
 
     targets = list(items)
     targets += [c for i in items for c in (i.get("children") or []) if isinstance(c, dict)]
@@ -800,7 +800,7 @@ def _drop_unsupported_assignment_experience(text: str, state) -> str:
 
 
 def _align_workload_claims(text: str, state) -> str:
-    """사번 옆 진행중 건수와 부하의 정성 표현을 최종 Assigner 근거와 맞춘다."""
+    """사번 옆 진행중 건수와 부하의 정성 표현을 최종 PeopleAdvisor 근거와 맞춘다."""
     loads = {}
     for row in (state.get("assignments") or []):
         if not isinstance(row, dict):
@@ -1135,8 +1135,8 @@ def _doc_body(pre) -> str:
 def _candidate_block(pre) -> str:
     """사전 조사에서 **담당 후보(로스터·부하)** 블록만 뽑는다(있을 때만).
 
-    이 블록은 Responder 에 **오지 않고 있었다** — pre_survey 에서 티켓 현재값과 문서 본문만
-    잘라 썼기 때문이다. 그래서 코드가 로스터·부하까지 조회해 실어 준 후보가 Historian 의
+    이 블록은 ResultIntegrator 에 **오지 않고 있었다** — pre_survey 에서 티켓 현재값과 문서 본문만
+    잘라 썼기 때문이다. 그래서 코드가 로스터·부하까지 조회해 실어 준 후보가 ResearchAnalyst 의
     situation 요약 한 겹을 지나며 사라졌다(실측 EDGE13: "누가 하면 좋을지랑 지금 상황" 에
     상황만 답하고 후보를 통째로 뺐다 — 세 번 연속, 재료에는 사번까지 있었다).
     """
@@ -1178,7 +1178,7 @@ def _drop_form_echo(text: str, qs: list) -> str:
         lead = bool(_re.match(r"^(확인\s*(부탁|필요)|아래\s*중|다음\s*질문|아래\s*질문|"
                               r"질문에\s*답)", core))
         # ④ 폼에 없는 것을 산문으로 추가로 묻는 줄 — 물어볼 것은 폼에만 있어야 한다
-        #    (responder.md 의 규칙인데 실측에서 "대상 환경/조회 범위/맥락"을 덧붙였다).
+        #    (result_integrator.md 의 규칙인데 실측에서 "대상 환경/조회 범위/맥락"을 덧붙였다).
         #    화면으로 넘기는 안내("아래에서 골라 주세요")는 남긴다.
         asks = bool(_re.search(r"(\?|알려\s*주세요|알려주세요|적어\s*주세요|"
                                r"입력해\s*주세요|말씀해\s*주세요)$", core)) \

@@ -1,6 +1,6 @@
-"""PMO — 현황을 조회해서 바로 답하는 길(my_day / progress / activity).
+"""Portfolio Analyst — 현황을 조회해서 바로 답하는 길(my_day / progress / activity).
 
-이 셋은 "과거 이력을 발굴"하는 요청이 아니라 **지금 상태를 집계**하는 요청이다. Historian 의
+이 셋은 "과거 이력을 발굴"하는 요청이 아니라 **지금 상태를 집계**하는 요청이다. ResearchAnalyst 의
 검색-열람-링크 추적은 여기서 낭비다 — 필요한 건 PMO 도구(get_my_workload / get_progress /
 find_stale_tickets / get_user_activity)를 몇 번 부르고 숫자를 읽어 주는 것이다.
 
@@ -18,9 +18,9 @@ from __future__ import annotations
 import re as _re0
 
 from app.agent.workflow.agents.base import ToolAgent
-from app.agent.prompts.roles import SYSTEM_PMO
+from app.agent.prompts.roles import SYSTEM_PORTFOLIO_ANALYST
 from app.agent.workflow.prompts import persona
-from app.agent.workflow.state import AgentState, Intent, last_user_text, note
+from app.agent.workflow.state import AgentState, Intent, Node, last_user_text, note
 
 SCHEMA = {
     "type": "object",
@@ -429,8 +429,8 @@ def _ticket_progress(state) -> str:
     return (chr(10) + chr(10)).join(blocks)[:4000]
 
 
-class PMO(ToolAgent):
-    name = "pmo"
+class PortfolioAnalyst(ToolAgent):
+    name = Node.PORTFOLIO_ANALYST
     temperature = 0.1
     # 그룹 질의(whoami+로스터+워크로드+인원별 활동)는 6걸음으로 부족했다. 다만 전원
     # 조회는 이제 _group_activity 가 코드로 하므로 12 까지 열어 둘 이유가 없다.
@@ -540,7 +540,7 @@ class PMO(ToolAgent):
             if pre:
                 out["group_activity"] = pre
             if prog:
-                out["ticket_progress"] = prog    # Responder 도 이 자료로 3층을 쓴다 — State 에 싣는다
+                out["ticket_progress"] = prog    # ResultIntegrator 도 이 자료로 3층을 쓴다 — State 에 싣는다
             q = take_last_jql()
             if q and "JQL" in last_user_text(state).upper():
                 # 사용자가 JQL 을 원했다 — 어느 조회 도구를 썼든 **실행된 쿼리**를 코드가
@@ -561,7 +561,7 @@ class PMO(ToolAgent):
                               T.BY_NAME["get_ticket_participants"]]  # 특정 티켓 유관자 대상 질의
 
     def system(self, state):
-        return persona(state, SYSTEM_PMO)
+        return persona(state, SYSTEM_PORTFOLIO_ANALYST)
 
     def task(self, state):
         intent = state.get("intent") or ""
@@ -654,7 +654,7 @@ class PMO(ToolAgent):
                                   + f" ({who} 담당이 아닌 "
                                     f"{', '.join(str(d.get('key')) for d in dropped)} 은 "
                                     "제외했다)").strip()
-        # Responder 가 근거 카드로 그릴 수 있게 evidence 모양으로도 옮겨 준다.
+        # ResultIntegrator 가 근거 카드로 그릴 수 있게 evidence 모양으로도 옮겨 준다.
         ev = [{"key": f.get("key") or "", "title": f.get("point") or "",
                "why": f.get("action") or ""} for f in finds if f.get("key")]
         return {"situation": out.get("headline") or "",

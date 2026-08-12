@@ -21,7 +21,7 @@ from app.agent.workflow.state import Role
 # 공통 페르소나 + 도메인 지식 + 절대 규칙 — 내용은 common.md(한국어 원문형).
 BASE_PERSONA = (Path(__file__).parent / "common.md").read_text(encoding="utf-8").strip()
 
-# 축약판 — 분류만 하는 Planner, 결정적 실행 위주인 Operator 용. 도메인 표·연관성 기준·
+# 축약판 — 분류만 하는 RequestArchitect, 결정적 실행 위주인 ActionExecutor 용. 도메인 표·연관성 기준·
 # 티켓 표기 규칙은 이 둘의 일에 안 쓰이는데 매 호출 1k+ 토큰을 먹었다(P-1 프롬프트 다이어트).
 LITE_PERSONA = (Path(__file__).parent / "common-lite.md").read_text(encoding="utf-8").strip()
 
@@ -82,7 +82,7 @@ def persona(state, extra: str = "", lite: bool = False) -> str:
     who = (state or {}).get("user_identity") or ""
     if who:
         hint = (who + " " + hint).strip()
-    # 표준 플레이북 — Planner 가 전형적 요청으로 분류하면 그 플로우가 전 역할에 깔린다.
+    # 표준 플레이북 — RequestArchitect 가 전형적 요청으로 분류하면 그 플로우가 전 역할에 깔린다.
     # 전형적 요청에서 쓸데없는 가변성·실수를 줄이는 사전 정의 대응(사용자 요청).
     pb = ""
     pb_id = (state or {}).get("playbook") or ""

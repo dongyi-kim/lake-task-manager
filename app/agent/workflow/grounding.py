@@ -92,7 +92,7 @@ def _unlinked_refs(text: str) -> list:
        클릭하면 전혀 다른 것이 열린다. 링크가 없는 것보다 **나쁘다**(있는 척한다).
        티켓으로 가는 링크는 /browse/KEY 여야 한다 — 다른 키를 가리켜도 위반이다.
 
-    본문 참고 불릿에는 ①의 가드가 이미 있다(`refiner._drop_unlinked_refs`) — 답변 텍스트
+    본문 참고 불릿에는 ①의 가드가 이미 있다(`work_architect._drop_unlinked_refs`) — 답변 텍스트
     쪽에만 없었다. 같은 규칙이 두 산출물에 다 걸려야 한다.
     """
     out = []
@@ -229,7 +229,7 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
             if not hits:
                 fake_people.append(name)
             else:
-                # ★ **실재하는 실명도 위반이다.** responder.md: "never translate ids into
+                # ★ **실재하는 실명도 위반이다.** result_integrator.md: "never translate ids into
                 #   names". 여태 이 검사는 **날조만** 봤기 때문에 실명이 그냥 통과했다
                 #   (실측 EDGE13: "담당자 한예준"). 화면은 사번을 뱃지·프로필로 렌더하고,
                 #   실명은 동명이인·표기 흔들림에 취약해 검증도 안 된다.

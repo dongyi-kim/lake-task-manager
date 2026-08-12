@@ -7,7 +7,7 @@
 # 하는 일(의도 분류)과 임베딩이 하는 일(규칙 검색)은 성격이 완전히 달라서, **각자의 실패**를
 # 각자의 잣대로 봐야 한다. 문장 품질 judge 로는 둘 다 안 보인다.
 #
-#   simple — Planner 의 의도 분류 정확도. 정답이 있으므로 judge 가 필요 없다(결정적 채점).
+#   simple — Request Architect의 의도 분류 정확도. 정답이 있으므로 judge가 필요 없다.
 #   embed  — 규칙 질의가 맞는 문서를 끌어오는가(recall@k). 이것도 정답이 있다.
 import os
 import sys
@@ -74,7 +74,7 @@ EMBED_CASES = [
 
 def eval_simple(models):
     from app.agent import config as C
-    from app.agent.workflow.agents.planner import Planner
+    from app.agent.workflow.agents.request_architect import RequestArchitect
     rows = []
     for m in models:
         os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"] = m
@@ -82,7 +82,7 @@ def eval_simple(models):
         from app.agent import usage as _usage
         meter = _usage.Meter()
         cb = _usage.callback(meter)
-        agent, hit, dhit, t0, wrong = Planner(), 0, 0, time.time(), []
+        agent, hit, dhit, t0, wrong = RequestArchitect(), 0, 0, time.time(), []
         for text, want in INTENT_CASES:
             got = _classify(agent, text, cb)
             hit += 1 if got.get("intent") == want else 0
@@ -108,7 +108,7 @@ def eval_simple(models):
 
 
 def _classify(agent, text, cb=None):
-    """Planner 한 건만 돌린다 — 그래프를 태우면 다른 역할의 비용이 섞인다.
+    """Request Architect 한 건만 돌린다 — 그래프를 태우면 다른 역할의 비용이 섞인다.
 
     ★ 호출은 **에이전트 자신의 경로**(`structured()`)로 한다. 여기서 LLM 호출을 다시 짜면
     스키마에 이름을 붙이는 처리가 빠져 `Unsupported function` 으로 전건 실패한다(실측) —

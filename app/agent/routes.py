@@ -253,8 +253,8 @@ def api_compose(body: _ComposeBody):
 
     쓰기가 아니다(승인 토큰 없음). 저장은 사용자가 에디터에서 누른다.
     """
-    from app.agent import compose as _compose
-    r = _compose.compose(body.ticketKey, body.kind, body.prompt, body.seedHtml, body.userId)
+    from app.agent.editor_author import EditorAuthor
+    r = EditorAuthor().compose(body.ticketKey, body.kind, body.prompt, body.seedHtml, body.userId)
     return JSONResponse(r, status_code=200 if r.get("ok") else 400)
 
 

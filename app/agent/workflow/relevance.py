@@ -19,7 +19,7 @@ def negative_relation(text: str) -> bool:
 
 
 def evidence_is_relevant(evidence: dict) -> bool:
-    """Historian이 무관/관련 없음이라고 명시한 항목은 참고 근거로 승격하지 않는다."""
+    """ResearchAnalyst이 무관/관련 없음이라고 명시한 항목은 참고 근거로 승격하지 않는다."""
     return isinstance(evidence, dict) and not negative_relation(evidence.get("why") or "")
 
 

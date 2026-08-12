@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """검색 hit를 관련 근거/유사 경험으로 과장하지 않는 후단 계약."""
 
-from app.agent.workflow.agents.assigner import Assigner
+from app.agent.workflow.agents.people_advisor import PeopleAdvisor
 from app.agent.workflow.agents.query_specialist import (QuerySpecialist,
                                                         _external_research_allowed)
-from app.agent.workflow.agents.historian import Historian, _relevant_only
+from app.agent.workflow.agents.research_analyst import ResearchAnalyst, _relevant_only
 from app.agent.workflow.relevance import (discriminating_keywords, evidence_is_relevant,
                                           matches_focus, negative_relation)
 
@@ -23,7 +23,7 @@ def test_a_model_written_why_cannot_make_a_generic_title_relevant():
     evidence = [{"key": "DL-5431", "title": "[Catalog] 코드 리뷰 반영",
                  "why": "메타데이터 등록과 관련 있을 가능성이 있다"}]
     assert _relevant_only(state, evidence) == []
-    got = Historian().apply(state, {"situation": "DL-5431과 유사하다",
+    got = ResearchAnalyst().apply(state, {"situation": "DL-5431과 유사하다",
                                     "evidence": evidence, "already_exists": True})
     assert not got["evidence"] and not got["already_exists"]
     assert "직접 일치" in got["situation"] and "DL-5431" not in got["situation"]
@@ -44,8 +44,8 @@ def test_assigner_does_not_receive_or_repeat_irrelevant_history():
                       "why": "같은 모듈이지만 현재 요청과 직접적인 관련은 없음"}],
         "similar_history": "",
     }
-    assert "DL-5122" not in Assigner().task(state)
-    got = Assigner().apply(state, {"assignments": [{
+    assert "DL-5122" not in PeopleAdvisor().task(state)
+    got = PeopleAdvisor().apply(state, {"assignments": [{
         "index": 0, "user": "skcc.x1402",
         "reasons": ["유사 티켓 DL-5122 담당(1건)", "현재 진행중 1건"],
         "alternates": [{"user": "skcc.x1450", "why": "유사 티켓 4건 담당"}],
@@ -62,14 +62,14 @@ def test_key_centric_research_keeps_named_and_structural_evidence_only():
         {"key": "DL-9092", "title": "API", "why": "DL-9093을 차단하는 선행 작업"},
         {"key": "DL-5326", "title": "쿼리 튜닝", "why": "같은 모듈의 진행 중 작업"},
     ]
-    got = Historian().apply(state, {"situation": "조사", "evidence": evidence})
+    got = ResearchAnalyst().apply(state, {"situation": "조사", "evidence": evidence})
     assert [e["key"] for e in got["evidence"]] == ["DL-9093", "DL-9092"]
 
 
 def test_assigner_cannot_credit_another_users_similar_ticket(monkeypatch):
     state = {"draft": {"items": [{"summary": "[Catalog] 리니지 오류", "type": "Bug"}]},
              "similar_history": '- skcc.x1402 — 유사 1건: DL-9090 "리니지 뷰어"(Open)'}
-    got = Assigner().apply(state, {"assignments": [{
+    got = PeopleAdvisor().apply(state, {"assignments": [{
         "index": 0, "user": "skcc.x1210",
         "reasons": ["유사 티켓 DL-9090 담당(1건)", "진행중 10건"],
         "alternates": []}]})

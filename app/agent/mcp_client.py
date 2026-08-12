@@ -2,7 +2,7 @@
 
 우리는 MCP 서버(mcp_server.py)를 노출하는 쪽만 있었다 — 이 모듈은 반대 방향이다:
 배포 설정(config/agent-mcp.json)에 적힌 stdio MCP 서버들을 클라이언트로 붙어,
-그 도구들을 LangChain `@tool` 모양으로 감싸 Historian 의 조사 도구 옆에 놓는다.
+그 도구들을 LangChain `@tool` 모양으로 감싸 ResearchAnalyst 의 조사 도구 옆에 놓는다.
 예: `mcp-server-fetch`(웹 페이지 본문 열기 — DuckDuckGo 검색은 스니펫만 준다).
 
 원칙:

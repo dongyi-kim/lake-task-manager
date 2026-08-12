@@ -1,4 +1,4 @@
-"""Reviewer — 사용자에게 보이기 전에 초안을 **스스로 검열**한다(Self-Check 3종).
+"""Auditor — 사용자에게 보이기 전에 초안을 **스스로 검열**한다(Self-Check 3종).
 
 여기서 걸러야 할 것은 두 종류이고, 성격이 완전히 다르다.
 
@@ -21,8 +21,8 @@ from __future__ import annotations
 import re as _re
 
 from app.agent.workflow.agents.base import StructuredAgent
-from app.agent.workflow.agents.refiner import as_bulk_items, draft_full_text
-from app.agent.prompts.roles import SYSTEM_REVIEWER
+from app.agent.workflow.agents.work_architect import as_bulk_items, draft_full_text
+from app.agent.prompts.roles import SYSTEM_AUDITOR
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, note, request_text
 
@@ -48,8 +48,8 @@ SCHEMA = {
 }
 
 
-class Reviewer(StructuredAgent):
-    name = Node.REVIEWER
+class Auditor(StructuredAgent):
+    name = Node.AUDITOR
     temperature = 0.0          # 검열은 흔들리면 안 된다
 
     def node(self):
@@ -87,14 +87,14 @@ class Reviewer(StructuredAgent):
         return run
 
     def system(self, state):
-        return persona(state, SYSTEM_REVIEWER)
+        return persona(state, SYSTEM_AUDITOR)
 
     def task(self, state):
         auto = _machine_check(state)
         rules = _rules_for(state)
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')}"
                        for e in (state.get("evidence") or []))
-        # 담당자 제안은 여기 없다 — Assigner 와 병렬로 돌기 때문. 근거 없는 배정은
+        # 담당자 제안은 여기 없다 — PeopleAdvisor 와 병렬로 돌기 때문. 근거 없는 배정은
         # merge_assignments 의 코드 가드가 걸러내므로 검열 대상에서 뺀다.
         data = wrap_data(
             data_block("자동 검증 결과 (기계 판정 — 이건 이미 확정이다)", auto["text"]),
@@ -175,7 +175,7 @@ def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, 
     """정책 차단과 편집 조언을 나눈다.
 
     LLM Auditor가 실제 Jira/LTM 제약이 아닌 문체 취향을 `problems`로 올리면 불필요한
-    Refiner 왕복이 생기고, 한도 뒤에는 정상 초안도 `review.ok=false`로 남는다. 아래는
+    WorkArchitect 왕복이 생기고, 한도 뒤에는 정상 초안도 `review.ok=false`로 남는다. 아래는
     관찰된 취향성 오판만 좁게 비차단으로 내린다. 근거·부모 계층·요청 누락은 건드리지 않는다.
     """
     draft = state.get("draft") or {}

@@ -1,11 +1,11 @@
-"""Assigner — 담당자를 **근거와 함께** 제안한다. 이름만 던지면 PM 이 검증할 수 없다.
+"""People Advisor — 담당자를 **근거와 함께** 제안한다. 이름만 던지면 PM 이 검증할 수 없다.
 
 담당자 추천이 쓸모없어지는 방식은 정해져 있다: "적합해 보입니다"로 끝나는 것. 리더는 그걸
 검증할 수 없으니 결국 자기가 다시 판단한다 — 그러면 에이전트가 한 일이 없다.
 
 그래서 네 신호를 **각각 확인하고 숫자와 티켓 키로** 말하게 한다.
   ① 지금 얼마나 물려 있나   `get_team_workload`
-  ② 비슷한 일을 해 봤나     Historian 의 근거 티켓 + `get_ticket_participants`
+  ② 비슷한 일을 해 봤나     ResearchAnalyst 의 근거 티켓 + `get_ticket_participants`
   ③ 그 논의에 실제로 꼈나   `get_ticket_participants` — 담당자 필드엔 없지만 코멘트엔 있는 사람
   ④ 그 모듈 사람인가        `get_module_people` / `get_person_profile`
 
@@ -17,8 +17,8 @@
 from __future__ import annotations
 
 from app.agent.workflow.agents.base import StructuredAgent
-from app.agent.workflow.agents.refiner import draft_text
-from app.agent.prompts.roles import SYSTEM_ASSIGNER
+from app.agent.workflow.agents.work_architect import draft_text
+from app.agent.prompts.roles import SYSTEM_PEOPLE_ADVISOR
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, note
 
@@ -127,7 +127,7 @@ def _roster_load(state) -> str:
         if not ppl:
             continue
         # 이름표는 **도구가 판정한 것**을 쓴다. 컴포넌트가 로스터 키와 안 맞으면 도구가
-        # 전원으로 넓혀 오는데, 그걸 "[<컴포넌트> 로스터·부하]" 라고 적으면 Assigner 가
+        # 전원으로 넓혀 오는데, 그걸 "[<컴포넌트> 로스터·부하]" 라고 적으면 PeopleAdvisor 가
         # 남의 모듈 사람을 그 모듈 소속으로 읽고 근거 문장에 그렇게 쓴다(실측 갭).
         rows.append(f"[{res.get('module') or m} 로스터·부하]")
         rows += [f"- {p.get('id')} {p.get('name', '')} — 진행중 {p.get('inProgress', 0)}건 · "
@@ -135,7 +135,7 @@ def _roster_load(state) -> str:
     return "\n".join(rows)
 
 
-class Assigner(StructuredAgent):
+class PeopleAdvisor(StructuredAgent):
     """★ 도구를 쓰지 않는다 — 후보 재료(유사 이력·로스터·부하)를 코드가 미리 조회한다.
 
     예전엔 ToolAgent 였는데, 부르는 대상이 늘 같았다(초안이 정한 모듈의 사람들).
@@ -143,7 +143,7 @@ class Assigner(StructuredAgent):
     왕복 한 번이라 배정 하나에 4~5회를 태웠다(실측 기준선).
     """
 
-    name = Node.ASSIGNER
+    name = Node.PEOPLE_ADVISOR
     temperature = 0.2
 
     def node(self):
@@ -172,7 +172,7 @@ class Assigner(StructuredAgent):
         return run
 
     def system(self, state):
-        return persona(state, SYSTEM_ASSIGNER)
+        return persona(state, SYSTEM_PEOPLE_ADVISOR)
 
     def task(self, state):
         from app.agent.workflow.relevance import evidence_is_relevant
@@ -373,8 +373,8 @@ def merge_assignments(draft: dict, assignments: list) -> dict:
     """제안된 담당자를 초안에 실제로 꽂는다. **근거가 없는 제안은 반영하지 않는다** —
     근거 없이 배정된 담당자는 승인 화면에서 사용자가 검증할 방법이 없다.
 
-    자식(Sub-Task) 담당도 여기서 덮는다. Refiner 의 `_fill_owners` 는 모듈 명단을
-    **순번으로** 돌릴 뿐 부하를 보지 않는다 — 실측: Assigner 가 "x1450 은 진행중 15건이라
+    자식(Sub-Task) 담당도 여기서 덮는다. WorkArchitect 의 `_fill_owners` 는 모듈 명단을
+    **순번으로** 돌릴 뿐 부하를 보지 않는다 — 실측: PeopleAdvisor 가 "x1450 은 진행중 15건이라
     부적합"이라 써 놓고 자식 2건이 그 사람에게 갔다. 사람을 고르는 일은 한 역할의 것이다.
     """
     items = list((draft or {}).get("items") or [])

@@ -1,6 +1,6 @@
 """역할 프롬프트(md)와 실제 역할 코드가 어긋나지 않는지 — **구조적 방어장치**.
 
-왜 테스트로 두는가: 성능 라운드에서 Refiner·Assigner 를 `ToolAgent` → `StructuredAgent`
+왜 테스트로 두는가: 성능 라운드에서 WorkArchitect·PeopleAdvisor 를 `ToolAgent` → `StructuredAgent`
 로 바꾸며 도구를 전부 걷어냈는데, **md 는 그대로 남아** "먼저 `search_rules` 를 불러라",
 "`get_module_people` 로 후보를 모아라" 하고 열 군데서 시켰다. 코드는 멀쩡히 돌고 테스트도
 전부 통과하니 아무도 몰랐다 — 모델만 없는 도구를 찾아 헤맸다.
@@ -14,21 +14,22 @@ import re
 
 import pytest
 
-from app.agent.workflow.agents.assigner import Assigner
-from app.agent.workflow.agents.curator import Curator
-from app.agent.workflow.agents.historian import Historian
-from app.agent.workflow.agents.operator import Operator
-from app.agent.workflow.agents.planner import Planner
-from app.agent.workflow.agents.pmo import PMO
+from app.agent.workflow.agents.people_advisor import PeopleAdvisor
+from app.agent.workflow.agents.knowledge_curator import KnowledgeCurator
+from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+from app.agent.workflow.agents.action_executor import ActionExecutor
+from app.agent.workflow.agents.request_architect import RequestArchitect
+from app.agent.workflow.agents.portfolio_analyst import PortfolioAnalyst
 from app.agent.workflow.agents.query_specialist import QuerySpecialist
-from app.agent.workflow.agents.refiner import Refiner
-from app.agent.workflow.agents.responder import Responder
-from app.agent.workflow.agents.reviewer import Reviewer
+from app.agent.workflow.agents.work_architect import WorkArchitect
+from app.agent.workflow.agents.result_integrator import ResultIntegrator
+from app.agent.workflow.agents.auditor import Auditor
 
 ROLES = {
-    "planner": Planner, "historian": Historian, "refiner": Refiner,
-    "assigner": Assigner, "reviewer": Reviewer, "operator": Operator,
-    "responder": Responder, "pmo": PMO, "curator": Curator,
+    "request_architect": RequestArchitect, "research_analyst": ResearchAnalyst, "work_architect": WorkArchitect,
+    "people_advisor": PeopleAdvisor, "auditor": Auditor, "action_executor": ActionExecutor,
+    "result_integrator": ResultIntegrator, "portfolio_analyst": PortfolioAnalyst,
+    "knowledge_curator": KnowledgeCurator,
     "query_specialist": QuerySpecialist,
 }
 MD_DIR = pathlib.Path(__file__).resolve().parents[1] / "app/agent/prompts/roles"
@@ -80,9 +81,9 @@ def test_role_md_does_not_order_tools_the_role_lacks(name):
 # **조회하던 것을 코드 사전취합으로 옮긴** 역할들. 이들에게만 "도구가 없다"는 선언을
 # 요구한다 — 그전까지 md 가 "먼저 불러라"고 시키던 자리라서, 없다고 못 박지 않으면 모델이
 # "확인해 보겠습니다"로 답하거나 조회한 척한다.
-# (Planner·Reviewer·Curator·Responder 는 처음부터 도구가 없었고 md 도 조회를 시킨 적이
+# (RequestArchitect·Auditor·KnowledgeCurator·ResultIntegrator 는 처음부터 도구가 없었고 md 도 조회를 시킨 적이
 #  없으므로 대상이 아니다 — 안 하던 말을 새로 넣는 건 토큰만 늘린다.)
-_CONVERTED_TO_MATERIALS = ("refiner", "assigner")
+_CONVERTED_TO_MATERIALS = ("work_architect", "people_advisor")
 
 
 @pytest.mark.parametrize("name", _CONVERTED_TO_MATERIALS)
@@ -149,9 +150,9 @@ def test_role_prompts_are_korean_originals_not_legacy_english_blocks():
 def test_machine_contract_identifiers_survive_korean_refactor():
     """한국어로 다시 써도 function/parameter/schema/enum/Jira 계약은 원형을 지킨다."""
     from app.agent.prompts.base import BASE_PERSONA, PROMPT_VERSION
-    from app.agent.prompts.roles import (SYSTEM_COMPOSER, SYSTEM_HISTORIAN,
-                                         SYSTEM_OPERATOR, SYSTEM_PLANNER,
-                                         SYSTEM_REFINER)
+    from app.agent.prompts.roles import (SYSTEM_EDITOR_AUTHOR, SYSTEM_RESEARCH_ANALYST,
+                                         SYSTEM_ACTION_EXECUTOR, SYSTEM_REQUEST_ARCHITECT,
+                                         SYSTEM_WORK_ARCHITECT)
 
     assert PROMPT_VERSION == "ko-role-contract-v3"
     for token in ("approval_token", "statusCategory", "Epic Link", "Story Point",
@@ -160,23 +161,23 @@ def test_machine_contract_identifiers_survive_korean_refactor():
 
     for token in ("plan_work", "ask", "my_day", "progress", "activity", "modify",
                   "chitchat", 'playbook="bug_report"'):
-        assert token in SYSTEM_PLANNER, f"Planner enum {token!r}가 번역·유실됐다"
+        assert token in SYSTEM_REQUEST_ARCHITECT, f"RequestArchitect enum {token!r}가 번역·유실됐다"
 
     for token in ("destination_project", "temp_id", "tier", "issue_type", "parent_ref",
                   "structure_plan", 'mode="subtask"', "questions=[]", "summary",
                   "description", "children", "parent", "rationale"):
-        assert token in SYSTEM_REFINER, f"Refiner schema 식별자 {token!r}가 번역·유실됐다"
+        assert token in SYSTEM_WORK_ARCHITECT, f"WorkArchitect schema 식별자 {token!r}가 번역·유실됐다"
 
     for token in ("get_ticket", "read_document", "run_jql_v2", "search_documents",
                   "search_comments", "query_people", "pagination"):
-        assert token in SYSTEM_HISTORIAN, f"Historian tool {token!r}가 번역·유실됐다"
+        assert token in SYSTEM_RESEARCH_ANALYST, f"ResearchAnalyst tool {token!r}가 번역·유실됐다"
 
     for token in ("<h3>", 'data-type="taskList"', 'data-checked="false"',
                   "typed reference", "{{ref:id}}", "{{mention:id}}", "[~사번]"):
-        assert token in SYSTEM_COMPOSER, f"Composer markup {token!r}가 번역·유실됐다"
+        assert token in SYSTEM_EDITOR_AUTHOR, f"Composer markup {token!r}가 번역·유실됐다"
 
     for token in ("approval_token", "mode=task", "create_tickets", "created"):
-        assert token in SYSTEM_OPERATOR, f"Operator 실행 계약 {token!r}가 번역·유실됐다"
+        assert token in SYSTEM_ACTION_EXECUTOR, f"ActionExecutor 실행 계약 {token!r}가 번역·유실됐다"
 
 
 def test_prompt_exposes_the_enforced_ticket_action_contract():

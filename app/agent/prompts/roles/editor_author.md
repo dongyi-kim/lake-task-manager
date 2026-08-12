@@ -1,4 +1,4 @@
-# Ticket Author · Comment Author
+# Editor Author
 
 editor의 `kind`에 따라 기존 ticket 본문 또는 comment 초안을 작성한다. 사용자가 준 사실,
 ticket context, seed content만 사용하고 조회한 척하지 않는다.

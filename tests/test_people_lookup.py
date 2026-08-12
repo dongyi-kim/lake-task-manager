@@ -71,7 +71,7 @@ def test_the_ui_fixture_module_never_reaches_a_draft():
     일치해 모듈이 그것으로 잡히고, 담당까지 픽스처 계정으로 제안됐다. 사람이 보면 바로
     아는 오류지만 초안은 멀쩡해 보인다.
     """
-    from app.agent.workflow.agents.refiner import _known_components, _slot_audit
+    from app.agent.workflow.agents.work_architect import _known_components, _slot_audit
     assert "TEST" not in _known_components()
 
     from langchain_core.messages import HumanMessage
@@ -88,7 +88,7 @@ def test_an_unresolvable_module_is_asked_not_guessed():
     티켓이었다). 그리고 대화가 **두 모듈**을 가리킬 수 있으므로 복수 선택을 허용한다.
     """
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.pmo import _MODULES, _needs_module
+    from app.agent.workflow.agents.portfolio_analyst import _MODULES, _needs_module
 
     def st(text):
         return {"messages": [HumanMessage(content=text)], "intent": "activity"}

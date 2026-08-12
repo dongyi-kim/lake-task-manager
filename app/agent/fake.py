@@ -8,7 +8,7 @@
 구조 검증이 목적이므로 문장은 그럴듯하지 않아도 된다 — 대신 **입력을 되비추어** 어떤 프롬프트가
 그 노드에 들어갔는지 테스트에서 확인할 수 있게 한다.
 
-Structured Output(`with_structured_output`)도 지원한다. Planner 의 의도 분류처럼 스키마를 강제하는
+Structured Output(`with_structured_output`)도 지원한다. RequestArchitect 의 의도 분류처럼 스키마를 강제하는
 노드가 많아서, 이게 없으면 fake 로는 그래프를 한 걸음도 못 굴린다.
 """
 

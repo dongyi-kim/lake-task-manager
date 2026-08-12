@@ -15,7 +15,7 @@ os.environ.setdefault("JIRA_ENV", "mock")
 
 pytest.importorskip("langgraph", reason="requirements-agent.txt 미설치")
 
-from app.agent.workflow.agents.refiner import (   # noqa: E402
+from app.agent.workflow.agents.work_architect import (   # noqa: E402
     is_composite, structure_accepted, structure_feedback, structure_question, structure_tree)
 
 
@@ -85,15 +85,15 @@ def test_structure_feedback_never_becomes_a_ticket_modification():
     실측(STRUCT2): 뼈대 제안 다음 턴의 "좋아, 근데 문서화는 빼줘" 가 intent=modify 로 갔다.
     그 갈래로 새면 사용자의 수정은 초안에 반영되지 않고 변경 카드만 헛돈다.
     """
-    from app.agent.workflow.agents.planner import Planner
+    from app.agent.workflow.agents.request_architect import RequestArchitect
     from app.agent.workflow.state import Intent
 
     st = dict(_msg("좋아, 근데 문서화는 빼줘"),
               structure_plan=[{"summary": "수집"}, {"summary": "문서화"}], structure_ok=False)
-    assert Planner().apply(st, {"intent": Intent.MODIFY, "keywords": []})["intent"] \
+    assert RequestArchitect().apply(st, {"intent": Intent.MODIFY, "keywords": []})["intent"] \
         == Intent.PLAN_WORK
 
     # 합의가 끝났으면 원래대로 — 그때부터 "빼줘"는 진짜 티켓 변경일 수 있다
     st2 = dict(st, structure_ok=True)
-    assert Planner().apply(st2, {"intent": Intent.MODIFY, "keywords": []})["intent"] \
+    assert RequestArchitect().apply(st2, {"intent": Intent.MODIFY, "keywords": []})["intent"] \
         == Intent.MODIFY

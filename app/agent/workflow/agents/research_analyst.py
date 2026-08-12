@@ -1,4 +1,4 @@
-"""Historian — "이 일이 처음인가"를 밝힌다. 이 에이전트가 이 서비스의 값어치다.
+"""Research Analyst — "이 일이 처음인가"를 밝힌다. 이 에이전트가 이 서비스의 값어치다.
 
 실무에서 "새 업무"의 상당수는 **이미 누군가 시작했거나, 논의만 하고 멈췄거나, 비슷한 걸 다른
 이름으로 하고 있다.** 그걸 모른 채 티켓을 새로 만들면 중복이 생기고, 앞사람이 부딪힌 벽에
@@ -18,7 +18,7 @@ import json
 import re as _re
 
 from app.agent.workflow.agents.base import ToolAgent, invoke_schema
-from app.agent.prompts.roles import SYSTEM_HISTORIAN
+from app.agent.prompts.roles import SYSTEM_RESEARCH_ANALYST
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
                                       request_text)
@@ -308,7 +308,7 @@ def _relevant_only(state, ev: list) -> list:
     """근거에서 **질문의 고유어를 하나도 안 가진 티켓**을 뺀다.
 
     common.md 의 관련성 기준: "'Related' means related to the QUESTION'S SPECIFIC CONCEPTS
-    …, not merely the same module or the same team." historian.md 도 같은 말을 하는데,
+    …, not merely the same module or the same team." research_analyst.md 도 같은 말을 하는데,
     **산문으로만** 있어서 실측으로 반복해 샜다:
       · REL14 "Iceberg Puffin NDV 통계" 에 모듈만 같은 DL-5487·5876·5122
       · EDGE13 "메타 등록 안 된 테이블" 에 UI 회귀 픽스처 DL-9001
@@ -694,8 +694,8 @@ def _topic_dossier(term: str, history: bool = False) -> str:
     return "\n\n".join(parts)[:4000]
 
 
-class Historian(ToolAgent):
-    name = Node.HISTORIAN
+class ResearchAnalyst(ToolAgent):
+    name = Node.RESEARCH_ANALYST
     temperature = 0.1
     # 조각을 모아야 하는 질문은 걸음이 더 든다(티켓 열기 3~4 + 문서 읽기 + 확인).
     # 상속값 6 으로는 결론 단계 전에 소진됐다. 사전 취합(_dataset_dossier)이 재료를 미리
@@ -775,7 +775,7 @@ class Historian(ToolAgent):
                         "kind": "text", "options": [], "field": ""}],
                     "trace": note(state, self.name, "조사 대상 확인 질문 — 대상 미지정")}
 
-            # ★ 사용법 질문은 **가이드를 재료로 직결**한다. 조사 경로로 보내면 Historian 의
+            # ★ 사용법 질문은 **가이드를 재료로 직결**한다. 조사 경로로 보내면 ResearchAnalyst 의
             #   존재 이유가 "이 일이 처음인가 — 과거 이력 조사"라, 찾을 이력이 없는 질문에
             #   "발견되지 않았습니다"로 끝난다(실측 GUIDE7: 재료는 가이드인데 프레이밍이
             #   조사였다). 답이 어느 문서에 있는지 아는 질문이니 그 문서를 주고 바로 답한다.
@@ -1098,7 +1098,7 @@ class Historian(ToolAgent):
                 # 첨부 질의를 직결에서 뺀 이유: 파일 **내용** 요약은 read_attachment 를
                 # 걸어야 나온다(실측: 직결이 잡아 목록만 답하고 내용은 '없음').
                 try:
-                    direct_state = {**state, "_historian_prefetched": True}
+                    direct_state = {**state, "_research_analyst_prefetched": True}
                     out = self.apply(direct_state, self._conclude(direct_state, []))
                     out["trace"] = (out.get("trace") or []) + [
                         {"node": self.name, "label": "과거 이력 조사",
@@ -1108,7 +1108,7 @@ class Historian(ToolAgent):
                     pass          # 직결이 죽으면 정상 경로로 — 최적화가 답을 막으면 안 된다
 
             # ── 생성/계획 직결: Query Specialist와 deterministic runner가 조회를 끝냈으면
-            # Historian이 같은 도구를 다시 순회하지 않는다. 생성 배터리에서 Historian 91회가
+            # ResearchAnalyst이 같은 도구를 다시 순회하지 않는다. 생성 배터리에서 ResearchAnalyst 91회가
             # 144만 토큰(전체 66%)을 썼고, 대부분은 이미 pre_survey/query_results/seed_map에
             # 있는 티켓을 재검색·재조회한 비용이었다. 이 갈래의 판단은 "무엇을 더 찾을까"가
             # 아니라 "확정된 자료를 어떻게 요약할까"이므로 structured conclusion 한 번이면 된다.
@@ -1117,7 +1117,7 @@ class Historian(ToolAgent):
                               or state.get("seed_map") or state.get("topic_dossier"))
             if (state.get("intent") or "") == Intent.PLAN_WORK and prefetched:
                 try:
-                    direct_state = {**state, "_historian_prefetched": True}
+                    direct_state = {**state, "_research_analyst_prefetched": True}
                     out = self.apply(direct_state, self._conclude(direct_state, []))
                     out["trace"] = (out.get("trace") or []) + [
                         {"node": self.name, "label": "과거 이력 조사",
@@ -1165,7 +1165,7 @@ class Historian(ToolAgent):
         # 기본형이다. 진척률 도구가 없으면 "여러 작업이 진행 중"이라는 숫자 없는 서술로 때운다
         # (실측). 조사와 집계를 한 번의 ReAct 에서 섞을 수 있어야 한다.
         # 웹·GitHub 도 조사 범위다 — "CDC 방식 비교" 같은 일반 기술 지식은 사내에 없다.
-        # 경계(사내 정보는 검색어에 안 넣는다)는 도구 docstring 과 SYSTEM_HISTORIAN 이 지킨다.
+        # 경계(사내 정보는 검색어에 안 넣는다)는 도구 docstring 과 SYSTEM_RESEARCH_ANALYST 이 지킨다.
         # 외부 MCP 서버 도구(config/agent-mcp.json)도 조사 도구로 합류한다 — 없으면 빈 목록.
         try:
             from app.agent import mcp_client
@@ -1177,7 +1177,7 @@ class Historian(ToolAgent):
         # 허용값 도구 — "라벨 목록 보여줘·정리 제안" 같은 관리성 질의에 필요(실측: 없어서
         # 실값을 코앞에 두고 '확인 불가'로 답했다).
         # ★ 도구 하나가 곧 비용이다 — 스키마가 **매 think 호출마다** 프롬프트에 실린다
-        #   (실측: 도구 21개 = 4.5k 토큰/호출, 생성 턴에서 historian 만 96k).
+        #   (실측: 도구 21개 = 4.5k 토큰/호출, 생성 턴에서 research_analyst 만 96k).
         #   허용값(list_ticket_options)은 관리성 질의 사전취합이 이미 코드로 싣는다 —
         #   도구로 또 두면 모델이 조사 걸음을 거기에 쓴다(실측: 생성 턴에서 3회 호출).
         return (T.SEARCH_TOOLS + T.WEB_TOOLS + T.PEOPLE_TOOLS + T.RULE_TOOLS
@@ -1187,8 +1187,8 @@ class Historian(ToolAgent):
         # 이미 취합된 자료를 한 번 요약하는 직결 경로에는 분류/권한/검색 규칙이 반복된
         # full common prompt가 필요 없다. 역할 계약과 절대 안전 규칙만 담은 lite persona를
         # 사용해 정적 입력도 줄인다. 실제 탐색(ReAct) 경로는 기존 full persona를 유지한다.
-        return persona(state, SYSTEM_HISTORIAN,
-                       lite=bool(state.get("_historian_prefetched")))
+        return persona(state, SYSTEM_RESEARCH_ANALYST,
+                       lite=bool(state.get("_research_analyst_prefetched")))
 
     def task(self, state):
         kws = ", ".join(state.get("keywords") or []) or last_user_text(state)
@@ -1259,7 +1259,7 @@ class Historian(ToolAgent):
             "epic_candidate": (out.get("epic_candidate") or "").strip(),
             "already_exists": exists,
             # 사전 취합 자료를 **State 에 올린다** — 여태 node() 안 지역 사본이라 다음 역할
-            # (Curator·Responder)의 자료 블록이 늘 비어 있었다. 결론 문장만으로는 조각의
+            # (KnowledgeCurator·ResultIntegrator)의 자료 블록이 늘 비어 있었다. 결론 문장만으로는 조각의
             # 출처(코멘트 작성자·변경 일자)가 사라진다.
             "pre_survey": state.get("pre_survey") or "",
             "web_context": state.get("web_context") or "",

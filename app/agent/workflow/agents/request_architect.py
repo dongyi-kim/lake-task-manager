@@ -1,4 +1,4 @@
-"""Planner — 무엇을 원하는 요청인지 가른다. 그래프의 첫 분기가 여기서 정해진다.
+"""Request Architect — 무엇을 원하는 요청인지 가른다. 그래프의 첫 분기가 여기서 정해진다.
 
 "DL-118 어떻게 됐어?"와 "CDC 도입해야 해"는 들어가야 할 길이 완전히 다르다. 전자는 찾아서
 답하면 끝이고, 후자는 조사→구체화→담당자→검증→생성까지 간다. 이걸 매번 전 경로로 태우면
@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from app.agent.workflow.agents.base import StructuredAgent
-from app.agent.prompts.roles import SYSTEM_PLANNER
+from app.agent.prompts.roles import SYSTEM_REQUEST_ARCHITECT
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
                                       last_user_text, note)
@@ -123,7 +123,7 @@ def _carry_depth(state, out) -> str:
 
     실측(배터리 DATA13): "fdc flat trace ic 데이터 히스토리 정리"(explain) → 표기 확인
     질문 → 사용자가 "fdc.fdc_trace_summary_ic" 를 고르자 그 턴이 brief 로 떨어졌고,
-    Responder 의 "물어본 것만 답하라" 지시가 연표를 눌러 티켓 8건 중 2건만 남았다.
+    ResultIntegrator 의 "물어본 것만 답하라" 지시가 연표를 눌러 티켓 8건 중 2건만 남았다.
     재료(topic_dossier)에는 연표가 그대로 있었는데도 그랬다.
 
     **올리는 쪽으로만 붙인다.** explain 이 과했으면 사용자가 다음 턴에 좁히면 되지만,
@@ -155,13 +155,13 @@ def _carry_keys(state, out) -> list:
     return []
 
 
-class Planner(StructuredAgent):
-    name = Node.PLANNER
+class RequestArchitect(StructuredAgent):
+    name = Node.REQUEST_ARCHITECT
     temperature = 0.0          # 분류는 흔들리면 안 된다
     tier = "simple"            # Few-shot 8예시가 실려서 분류는 저렴한 모델로 충분하다
 
     def system(self, state):
-        return persona(state, SYSTEM_PLANNER, lite=True)   # 분류엔 축약판 — 호출당 1k+ 토큰 절감
+        return persona(state, SYSTEM_REQUEST_ARCHITECT, lite=True)   # 분류엔 축약판 — 호출당 1k+ 토큰 절감
 
     def task(self, state):
         # Few-shot — 경계가 애매한 갈래(ask↔progress↔activity, ask↔modify)를
@@ -303,7 +303,7 @@ class Planner(StructuredAgent):
         #   기준(조사 결과가 있고 되묻기 턴이 지났다)을 쓴다 — 두 판정이 갈리면 안 된다.
         if intent in Intent.DRAFTS_TICKETS:
             # ★ 후속 턴 판정에 **조사 결과(situation)만** 보면, 조사 전에 되묻는 흐름에서
-            #   고정이 통째로 무너진다. 해석 확인 선행 턴(`6eb8812`)은 Historian 을 안 타고
+            #   고정이 통째로 무너진다. 해석 확인 선행 턴(`6eb8812`)은 ResearchAnalyst 을 안 타고
             #   질문부터 내므로 situation 이 빈 채 2턴이 시작되고, 그러면 여기서 원 요청이
             #   **사용자의 답변으로 덮인다.** 실측 STARR1: request_text 가
             #   "Epic 은 네가 골라줘…" 로 바뀌면서 원 요청의 "파이프라인"이 사라졌고,

@@ -5,7 +5,7 @@
   · **대화를 잇는다** — `thread_id` 로 Checkpointer 에 State 를 맡긴다. 되묻기가 가능해지는 이유.
   · **관측을 붙인다** — Langfuse `CallbackHandler(session_id=thread_id)` 를 모든 실행에 단다.
     한 대화가 한 세션으로 묶여야 트레이스를 읽을 수 있다.
-  · **승인 대기를 노출한다** — 그래프가 Operator 앞에서 멈췄다는 사실과, 무엇을 승인해야 하는지를
+  · **승인 대기를 노출한다** — 그래프가 ActionExecutor 앞에서 멈췄다는 사실과, 무엇을 승인해야 하는지를
     화면이 알 수 있는 형태로 돌려준다.
 
 **질의·응답은 파일로도 남긴다.** Langfuse 가 없는 환경(폐쇄망·미설정)에서도 무엇을 물었고 무엇을
@@ -131,7 +131,7 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             "user_role": user_role or _detect_role(), "user_id": user_id or "",
             "user_identity": _identity(),
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
-            # responder 가 다시 '승인 대기'로 흘러간다.
+            # result_integrator 가 다시 '승인 대기'로 흘러간다.
             "approval_token": "", "comment_token": "", "result": {}, "revisions": 0,
             # trace 는 리듀서 필드라 [] 대입으로는 안 비워진다 — 리셋 신호를 앞에 싣는다.
             "trace": [TRACE_RESET], "change_plan": {}, "questions": []}
@@ -154,7 +154,7 @@ def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") 
 
 
 def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
-    """사용자가 승인했다. 멈춰 있던 자리(Operator)에서 다시 굴린다.
+    """사용자가 승인했다. 멈춰 있던 자리(ActionExecutor)에서 다시 굴린다.
 
     승인 표시는 여기서 한다 — 그래야 토큰이 **이 대화의 것**인지 확인할 수 있다.
     `overrides["assignees"]` 는 사용자가 승인 카드에서 고른 담당자({항목번호: uid}) —
@@ -178,7 +178,7 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
     set_thread(thread_id)
     log.info("[%s] 승인됨 — 실행 시작", thread_id)
     meter = _usage.Meter()
-    # None = 멈춘 자리(Operator 앞)에서 이어서
+    # None = 멈춘 자리(ActionExecutor 앞)에서 이어서
     state = get_graph().invoke(None, _config(thread_id, meter))
     out = _shape(thread_id, state)
     out["usage"] = meter.snapshot()
@@ -197,7 +197,7 @@ def _apply_overrides(thread_id: str, token: str, overrides: dict) -> str:
 
     보증 방식: **State draft 만 고치고**, 스테이징 payload 는 그 draft 로부터
     `as_bulk_items`/`child_items` 로 **재생성**한다(approval.amend_payload). 승인 지문과
-    Operator 실행 인자가 같은 함수를 지나므로 어긋날 길이 없다 — 담당자만 다루던 시절의
+    ActionExecutor 실행 인자가 같은 함수를 지나므로 어긋날 길이 없다 — 담당자만 다루던 시절의
     부분 patch 두 벌(payload/State)은 list·빈값 처리에서 갈라질 수 있었다.
     """
     ov = overrides or {}
@@ -272,7 +272,7 @@ def _apply_overrides(thread_id: str, token: str, overrides: dict) -> str:
                     _set(kids[ci], f, patch[f])
 
         new_draft = dict(draft, items=items)
-        from app.agent.workflow.agents.refiner import as_bulk_items, child_items
+        from app.agent.workflow.agents.work_architect import as_bulk_items, child_items
         bulk = as_bulk_items(new_draft)
         mode = new_draft.get("mode") or "task"
         # 편집 결과도 같은 규칙으로 검증한다 — 카드에서 고쳤다고 규칙을 통과한 것은 아니다.
@@ -284,7 +284,7 @@ def _apply_overrides(thread_id: str, token: str, overrides: dict) -> str:
                                  for e in (r.get("errors") or [])[:3])
                 return f"수정한 내용이 규칙에 걸립니다 — {msgs}"
         if mode == "epic":
-            from app.agent.workflow.agents.refiner import epic_payload
+            from app.agent.workflow.agents.work_architect import epic_payload
             payload = epic_payload(new_draft)
         else:
             payload = {"mode": mode, "items": bulk}
@@ -325,7 +325,7 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
             snap = get_graph().get_state(_config(thread_id))
         except Exception:
             snap = None
-    waiting = bool(snap and Node.OPERATOR in (getattr(snap, "next", None) or ()))
+    waiting = bool(snap and Node.ACTION_EXECUTOR in (getattr(snap, "next", None) or ()))
 
     data = as_dict(state or {})
     out = {"thread_id": thread_id, "ok": not data.get("error"),
@@ -368,7 +368,7 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
                               "comment": plan.get("comment") or "",
                               "rationale": plan.get("why") or ""}
         else:
-            from app.agent.workflow.agents.refiner import as_bulk_items, child_items
+            from app.agent.workflow.agents.work_architect import as_bulk_items, child_items
             draft = data.get("draft") or {}
             out["pending"] = {"token": data["approval_token"], "action": "create_tickets",
                               "mode": draft.get("mode") or "task", "items": as_bulk_items(draft),
@@ -505,7 +505,7 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
     yield {"type": "start", "thread_id": tid}
     try:
         # updates(진행) + messages(토큰) 를 함께 받는다 — 최종 답이 통째로 도착하기를
-        # 기다리면 Responder 생성 시간(2~7초)이 전부 침묵이 된다. Responder 의 토큰만
+        # 기다리면 ResultIntegrator 생성 시간(2~7초)이 전부 침묵이 된다. ResultIntegrator 의 토큰만
         # 흘리는 이유: 중간 역할(think·conclude)의 글은 사용자용 문장이 아니다.
         for item in get_graph().stream(_initial(tid, text, user_role, user_id),
                                        _config(tid, meter),
@@ -526,7 +526,7 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
                 piece = getattr(msg, "content", "") or ""
                 # ★ Chunk 타입만 — 스트림이 끝나면 **완성 메시지**가 한 번 더 흘러온다
                 #   (실측: 같은 답이 두 번 조립됐다). 조각과 완성본을 둘 다 받으면 두 배가 된다.
-                if (node == Node.RESPONDER and piece
+                if (node == Node.RESULT_INTEGRATOR and piece
                         and type(msg).__name__.endswith("Chunk")):
                     yield {"type": "token", "text": piece}
                 continue
@@ -564,21 +564,21 @@ _TOOL_KO = {  # 도구명 → 사람이 읽는 라벨. "도구 사용 중"만으
 def _plan_for(intent: str) -> list:
     """의도 → 지날 단계 체크리스트. **코드가 안다** — 그래프 배선이 결정적이라 라우터와
     같은 지식을 여기 한 번 더 적는 것이고, UI 는 이걸 [ ]→[▸]→[✓] 로 채워 간다.
-    실제로 안 지나는 단계(예: 첫 턴에 curator 미경유)는 화면이 '건너뜀'으로 접는다.
+    실제로 안 지나는 단계(예: 첫 턴에 knowledge_curator 미경유)는 화면이 '건너뜀'으로 접는다.
     """
     from app.agent.workflow.state import Intent, Stage
     def _s(*nodes):
         return [{"id": n, "label": Stage.LABELS.get(n, n)} for n in nodes]
     if intent in Intent.DRAFTS_TICKETS:            # plan_work(버그 포함) / modify
         if intent == Intent.MODIFY:
-            return _s(Node.PLANNER, Node.HISTORIAN, Node.REFINER, Node.RESPONDER)
-        return _s(Node.PLANNER, Node.HISTORIAN, Node.REFINER,
-                  Node.ASSIGNER, Node.REVIEWER, Node.RESPONDER)
+            return _s(Node.REQUEST_ARCHITECT, Node.RESEARCH_ANALYST, Node.WORK_ARCHITECT, Node.RESULT_INTEGRATOR)
+        return _s(Node.REQUEST_ARCHITECT, Node.RESEARCH_ANALYST, Node.WORK_ARCHITECT,
+                  Node.PEOPLE_ADVISOR, Node.AUDITOR, Node.RESULT_INTEGRATOR)
     if intent in Intent.DIRECT_ANSWER:             # my_day / progress / activity
-        return _s(Node.PLANNER, "pmo", Node.RESPONDER)
+        return _s(Node.REQUEST_ARCHITECT, Node.PORTFOLIO_ANALYST, Node.RESULT_INTEGRATOR)
     if intent == Intent.ASK:
-        return _s(Node.PLANNER, Node.HISTORIAN, Node.CURATOR, Node.RESPONDER)
-    return _s(Node.PLANNER, Node.RESPONDER)        # chitchat 등
+        return _s(Node.REQUEST_ARCHITECT, Node.RESEARCH_ANALYST, Node.KNOWLEDGE_CURATOR, Node.RESULT_INTEGRATOR)
+    return _s(Node.REQUEST_ARCHITECT, Node.RESULT_INTEGRATOR)        # chitchat 등
 
 
 def _arg_hint(tool_calls) -> str:
@@ -611,7 +611,7 @@ def _events(ns, payload):
 
     화면의 최상위는 **플랜 단계**(의도별 체크리스트)이고, 서브그래프 안의 행위(도구 호출·
     결과)는 그 단계 밑에 중첩된다(사용자 피드백). `ns` 가 어느 단계 소속인지 알려 준다 —
-    `("historian:uuid",)` 형태라 앞 토막이 부모 노드명이다.
+    `("research_analyst:uuid",)` 형태라 앞 토막이 부모 노드명이다.
     """
     if not isinstance(payload, dict):
         return
@@ -651,7 +651,7 @@ def _events(ns, payload):
             continue
         if node not in Stage.LABELS:
             continue        # merge·propose·conclude 등 내부 배선은 사람에게 소음이다
-        if node == Node.PLANNER and isinstance(patch, dict) and patch.get("intent"):
+        if node == Node.REQUEST_ARCHITECT and isinstance(patch, dict) and patch.get("intent"):
             # 의도가 정해졌다 = 앞으로 지날 단계가 정해졌다. 체크리스트를 먼저 내린다.
             yield {"type": "plan", "steps": _plan_for(patch["intent"])}
         ev = {"type": "node", "node": node, "label": Stage.LABELS[node]}

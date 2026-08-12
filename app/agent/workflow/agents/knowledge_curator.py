@@ -1,16 +1,16 @@
-"""Curator — 지식 질문 전담(사용자 요청으로 신설). 조사 결과를 **재사용 가능한 브리프**로.
+"""Knowledge KnowledgeCurator — 지식 질문 전담. 조사 결과를 **재사용 가능한 브리프**로.
 
-"X가 뭐야 / X에 대해 우리가 아는 것 정리"류 질문은 조사(Historian)만으로는 답의 절반이다 —
-찾은 것을 개념/우리 상황/참고/공백으로 **정리하는 일**이 남는다. Responder 는 문장을 만드는
+"X가 뭐야 / X에 대해 우리가 아는 것 정리"류 질문은 조사(ResearchAnalyst)만으로는 답의 절반이다 —
+찾은 것을 개념/우리 상황/참고/공백으로 **정리하는 일**이 남는다. ResultIntegrator 는 문장을 만드는
 역할이지 지식을 구조화하는 역할이 아니라서, 정리를 스키마로 강제하는 자리가 따로 필요했다.
 
-새 조사는 하지 않는다(도구 없음) — Historian 이 모은 것(사내 이력·웹 조사)을 정리만 한다.
-브리프는 Responder 의 자료가 되고, 사내 이력이 '없다'는 사실도 정리 대상이다.
+새 조사는 하지 않는다(도구 없음) — ResearchAnalyst 이 모은 것(사내 이력·웹 조사)을 정리만 한다.
+브리프는 ResultIntegrator 의 자료가 되고, 사내 이력이 '없다'는 사실도 정리 대상이다.
 """
 
 from __future__ import annotations
 
-from app.agent.prompts.roles import SYSTEM_CURATOR
+from app.agent.prompts.roles import SYSTEM_KNOWLEDGE_CURATOR
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, last_user_text, note
@@ -46,12 +46,12 @@ SCHEMA = {
 }
 
 
-class Curator(StructuredAgent):
-    name = Node.CURATOR
+class KnowledgeCurator(StructuredAgent):
+    name = Node.KNOWLEDGE_CURATOR
     temperature = 0.2
 
     def system(self, state):
-        return persona(state, SYSTEM_CURATOR)
+        return persona(state, SYSTEM_KNOWLEDGE_CURATOR)
 
     def task(self, state):
         data = wrap_data(

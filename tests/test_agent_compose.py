@@ -15,7 +15,7 @@ os.environ.setdefault("JIRA_ENV", "mock")
 
 pytest.importorskip("langchain_core", reason="requirements-agent.txt 미설치")
 
-from app.agent import compose as C                                # noqa: E402
+from app.agent import editor_author as C                                # noqa: E402
 
 PROG = "DL-9090"
 
@@ -190,7 +190,7 @@ def test_checklists_survive_the_save_conversion():
 
 
 def test_markdown_would_not_survive_so_the_prompt_forbids_it():
-    """마크다운 링크는 변환되지 않고 글자로 남는다 — composer.md 가 금지하는 이유."""
+    """마크다운 링크는 변환되지 않고 글자로 남는다 — editor_author.md 가 금지하는 이유."""
     from app.agent.tools._ctx import client
     stored = str(client().desc_field_value('<p>[설계 문서](https://x/y)</p>'))
     assert "](https" in stored, "변환되지 않는다는 사실 자체가 규칙의 근거다"
@@ -198,14 +198,14 @@ def test_markdown_would_not_survive_so_the_prompt_forbids_it():
 
 def test_composer_prompt_states_the_rendering_rules():
     """규칙이 문서에만 있고 프롬프트에 없으면 모델은 모른다."""
-    from app.agent.prompts.roles import SYSTEM_COMPOSER
-    assert "markdown은 쓰지 않는다" in SYSTEM_COMPOSER
-    assert "[~사번]" in SYSTEM_COMPOSER
-    assert "taskList" in SYSTEM_COMPOSER
+    from app.agent.prompts.roles import SYSTEM_EDITOR_AUTHOR
+    assert "markdown은 쓰지 않는다" in SYSTEM_EDITOR_AUTHOR
+    assert "[~사번]" in SYSTEM_EDITOR_AUTHOR
+    assert "taskList" in SYSTEM_EDITOR_AUTHOR
 
 
 def test_legacy_reference_placeholders_cannot_wrap_generated_badges():
-    from app.agent.compose import _badgeify, _legacy_reference_tokens
+    from app.agent.editor_author import _badgeify, _legacy_reference_tokens
 
     rendered = _badgeify(_legacy_reference_tokens(
         "<p>상위 {{ref:DL-9090}} 담당 {{mention:skcc.x1402}}</p>"))
@@ -222,7 +222,7 @@ def test_legacy_reference_placeholders_cannot_wrap_generated_badges():
 
 
 def test_non_done_child_is_added_to_the_explicit_remaining_guard():
-    from app.agent.compose import _status_conflicts
+    from app.agent.editor_author import _status_conflicts
 
     context = "명시적 미완료(완료로 쓰지 말 것): 다운스트림 조회 연동"
     assert _status_conflicts("<p>다운스트림 조회 연동 작업은 완료되었습니다.</p>", context)
@@ -231,7 +231,7 @@ def test_non_done_child_is_added_to_the_explicit_remaining_guard():
 
 
 def test_conflicting_completion_is_qualified_as_a_specific_open_fact():
-    from app.agent.compose import _qualify_status_conflicts, _status_conflicts
+    from app.agent.editor_author import _qualify_status_conflicts, _status_conflicts
 
     context = "명시적 미완료(완료로 쓰지 말 것): 다운스트림 조회 연동"
     html = "<ul><li>다운스트림 조회 연동 작업은 API 개선 덕분에 완료되었습니다.</li></ul>"
@@ -247,7 +247,7 @@ def test_conflicting_completion_is_qualified_as_a_specific_open_fact():
 
 
 def test_unsupported_metric_is_replaced_but_seed_metric_is_preserved():
-    from app.agent.compose import _ground_acceptance_metrics
+    from app.agent.editor_author import _ground_acceptance_metrics
 
     made_up = _ground_acceptance_metrics(
         "<li>성능이 20% 이상 개선되었음을 보고서로 확인</li>", "성능 개선 작업")

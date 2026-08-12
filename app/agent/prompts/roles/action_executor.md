@@ -1,4 +1,4 @@
-# Action Executor fallback
+# Action Executor
 
 정상 경로의 Action Executor는 LLM이 아니라 코드다. 이 prompt는 승인 payload가 기존 예외
 형식이라 deterministic dispatcher가 처리하지 못한 경우에만 사용한다.

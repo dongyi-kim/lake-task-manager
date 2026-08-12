@@ -572,7 +572,7 @@ def _ux_ok(reply: str) -> bool:
     ② 근거 마커 [N] 를 3개 이상 쓰면 반드시 **참조** 섹션이 있어야 한다
     ③ 참조 줄에 티켓 키도 링크도 없으면 검증 불가한 출처다(실측: 링크 없는 문서 제목)
     ④ 같은 문장을 두 번 쓰지 않는다(실측 재발 — 프롬프트로 막을 종류가 아니다)
-    ⑤ 티켓을 5건 이상 나열하면 표로 준다 — 불릿 벽은 읽히지 않는다(responder.md 규칙)
+    ⑤ 티켓을 5건 이상 나열하면 표로 준다 — 불릿 벽은 읽히지 않는다(result_integrator.md 규칙)
     """
     from app.agent.workflow.grounding import _unlinked_refs
     if reply.count("확인된 기록 없음") >= 3:

@@ -56,24 +56,27 @@
 
 ## 3. 역할 경계
 
-`workflow/role_manifest.py`가 유일한 roster다. runtime class 이름은 checkpoint·trace 호환을 위해 남아 있을 수 있다.
+`workflow/role_manifest.py`가 유일한 roster다. Role은 alias 없이 canonical id 하나로 식별한다.
+그 id를 graph node, module filename, prompt filename에 그대로 쓰고 class 이름만 PascalCase로 변환한다.
 
 | 역할 | 책임 | 권한·출력 |
 |---|---|---|
-| Request Architect (`Planner`) | 복합 요청을 atomic task와 route로 분해 | `intent`, `request_plan`; tool 없음 |
+| Request Architect | 복합 요청을 atomic task와 route로 분해 | `intent`, `request_plan`; tool 없음 |
 | Query Specialist | 자연어 조회를 typed `QueryPlan`으로 변환 | query 작성만, 실행 없음 |
 | Query Runner | scope·pagination 계약에 따라 query 실행 | read-only, 전체 artifact 보존 |
-| Research Analyst (`Historian`) | Jira·Confluence·comment·people·외부 근거 취합 | 사실·추론·공백 분리, read-only |
+| Research Analyst | Jira·Confluence·comment·people·외부 근거 취합 | 사실·추론·공백 분리, read-only |
 | Knowledge Curator | 조사 결과를 재사용 가능한 전문 brief로 정리 | `knowledge_brief` |
-| Portfolio Analyst (`PMO`) | 진척·업무량·정체·활동 해석 | 근거가 있는 finding/caution |
-| Work Architect · Draft Author (`Refiner`) | 질문, 구조, create/change draft 작성 | draft-only |
-| People Advisor (`Assigner`) | 실제 roster·이력·workload로 담당 후보 제안 | 근거와 대안, draft-only |
-| Auditor (`Reviewer`) | schema·계층·근거·요청 충족 감사 | blocking error와 warning 분리 |
-| Action Executor (`Operator`) | 승인된 exact payload 실행 | 유일한 write 권한 |
-| Result Integrator (`Responder`) | 최종 state와 미해결 항목을 한국어로 통합 | 새 조회·write 금지 |
-| Editor Ticket · Comment Author (`compose`) | 기존 본문을 보존하며 description/comment 초안 작성 | draft-only |
+| Portfolio Analyst | 진척·업무량·정체·활동 해석 | 근거가 있는 finding/caution |
+| Work Architect | 질문, 구조, create/change draft 작성 | draft-only |
+| People Advisor | 실제 roster·이력·workload로 담당 후보 제안 | 근거와 대안, draft-only |
+| Auditor | schema·계층·근거·요청 충족 감사 | blocking error와 warning 분리 |
+| Action Executor | 승인된 exact payload 실행 | 유일한 write 권한 |
+| Result Integrator | 최종 state와 미해결 항목을 한국어로 통합 | 새 조회·write 금지 |
+| Editor Author | 기존 본문을 보존하며 description/comment 초안 작성 | draft-only |
 
 역할을 추가하거나 합치기 전에 기존 역할의 I/O와 실패 기준으로 책임을 표현할 수 없는지 확인한다. 역할 수 증가 자체는 목표가 아니다.
+`Planner`, `Historian` 같은 legacy 이름이나 `Portfolio Analyst (PMO)` 같은 alias 표기를 추가하지 않는다.
+호환이 필요해도 alias lookup을 만들지 말고 checkpoint 수명과 외부 API 영향을 검토해 명시적으로 migration한다.
 
 ## 4. prompt와 tool contract 작성법
 
@@ -112,7 +115,7 @@
 2. 원인을 `prompt`, 누락 data, tool contract, schema, deterministic code, evaluator/fixture 중 하나로 분류한다.
 3. code로 판정 가능한 회귀 test를 먼저 추가한다. 의미 품질은 battery case와 human rubric으로 남긴다.
 4. owner 계층 한 곳만 수정하고 중복 prompt를 제거한다.
-5. role output과 payload를 바꿨다면 Responder, compose, approval fingerprint, rendering까지 추적한다.
+5. role output과 payload를 바꿨다면 Result Integrator, Editor Author, approval fingerprint, rendering까지 추적한다.
 6. 관련 unit test를 실행한 뒤 전체 suite를 실행한다.
 7. 실 LLM 호출이 필요하면 기존 project secret을 재사용하고, 사용자 승인 없이 새 key를 만들거나 secret 원문을 출력하지 않는다.
 8. prompt 후보 비교에서는 model topology, mock world, case, run order, evaluator를 동일하게 유지한다.
@@ -154,6 +157,7 @@ production routing 비교의 기본은 main/complex=`gpt-4o`, simple=`gpt-4o-min
 ## 7. 완료 조건
 
 - 변경한 역할의 input/output/tool/effect가 `role_manifest.py`와 일치한다.
+- 모든 role id가 module, graph node, prompt asset과 정확히 일치하며 role alias/fallback이 없다.
 - prompt asset이 loader에 연결되고 section pruning 이름이 실제 제목과 일치한다.
 - 존재하지 않는 tool, 번역된 identifier, generic placeholder가 없다.
 - reply·payload·source state가 일치하고 link/mention/badge가 깨지지 않는다.

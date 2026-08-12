@@ -1,4 +1,4 @@
-"""Operator — 승인된 것을 **실행**한다. 그래프에서 유일하게 쓰기 도구를 가진 노드.
+"""Action Executor — 승인된 것을 **실행**한다. 그래프에서 유일하게 쓰기 도구를 가진 노드.
 
 이 노드 **앞에서 그래프가 멈춘다**(`interrupt_before`). 사용자가 화면에서 승인 카드를 누르기
 전까지는 아예 여기 도달하지 않는다. 승인이 나면 `approval_token` 이 State 에 실려 재개된다.
@@ -16,8 +16,8 @@
 from __future__ import annotations
 
 from app.agent.workflow.agents.base import ToolAgent
-from app.agent.workflow.agents.refiner import draft_json, draft_text
-from app.agent.prompts.roles import SYSTEM_OPERATOR
+from app.agent.workflow.agents.work_architect import draft_json, draft_text
+from app.agent.prompts.roles import SYSTEM_ACTION_EXECUTOR
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import AgentState, Node, note
 
@@ -50,8 +50,8 @@ SCHEMA = {
 }
 
 
-class Operator(ToolAgent):
-    name = Node.OPERATOR
+class ActionExecutor(ToolAgent):
+    name = Node.ACTION_EXECUTOR
     temperature = 0.0          # 실행은 창의적일 필요가 없다
     tier = "simple"            # 승인된 JSON 을 그대로 넘기는 일이다 — 판단이 얕다
                                # (modify 는 아예 LLM 없이 돌고, create 도 인자 전달 + 결과 보고뿐)
@@ -171,7 +171,7 @@ class Operator(ToolAgent):
         """생성 실행 — 승인된 초안을 create_tickets/create_epic 한 번에 넘긴다.
         결과는 도구가 준 그대로."""
         from app.agent import tools as T
-        from app.agent.workflow.agents.refiner import as_bulk_items, epic_payload
+        from app.agent.workflow.agents.work_architect import as_bulk_items, epic_payload
         draft = state.get("draft") or {}
 
         if (draft.get("mode") or "task") == "epic":
@@ -193,7 +193,7 @@ class Operator(ToolAgent):
         items = as_bulk_items(draft)
         if not items:
             return react(state)          # 계획이 없다 — 예외 경로만 모델에게
-        from app.agent.workflow.agents.refiner import child_items
+        from app.agent.workflow.agents.work_architect import child_items
         kids = child_items(draft)
         r = T.BY_NAME["create_tickets"].invoke(
             {"mode": draft.get("mode") or "task", "items": items,
@@ -216,7 +216,7 @@ class Operator(ToolAgent):
         return T.WRITE_TOOLS + T.REVIEW_TOOLS
 
     def system(self, state):
-        return persona(state, SYSTEM_OPERATOR, lite=True)  # 결정적 실행 위주 — 축약판이면 충분
+        return persona(state, SYSTEM_ACTION_EXECUTOR, lite=True)  # 결정적 실행 위주 — 축약판이면 충분
 
     def task(self, state):
         draft = state.get("draft") or {}

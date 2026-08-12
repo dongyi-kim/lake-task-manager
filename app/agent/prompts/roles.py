@@ -4,19 +4,18 @@
 **편집하는 자산**이다. md 파일이면 diff 가 깨끗하고, 이스케이프 지옥이 없고, 비개발자도 고칠
 수 있고, 프롬프트만 바꾼 커밋이 코드 리뷰에 섞이지 않는다.
 
-앱 시작 때 한 번 읽어 상수로 노출한다 — 기존 import 경로(`from app.agent.prompts.roles import
-SYSTEM_X`)는 그대로 살아 있어 역할 코드는 아무것도 몰라도 된다.
+앱 시작 때 한 번 읽어 상수로 노출한다. 상수와 파일명 모두 canonical Role 이름을 따른다.
 
 | 파일 | 쓰는 곳 |
 |---|---|
-| planner.md   | Planner — 의도 분류만, 답 만들지 않기 |
-| historian.md | Historian — 조사 요령·외부 검색 경계·브리핑 요령 |
-| refiner.md   | Refiner — 되묻기 기준·쪼개기 기준 (동적 경고는 코드가 덧붙인다) |
-| assigner.md  | Assigner — 근거 4신호·금지 사항 |
-| reviewer.md  | Reviewer — 3-Check·기계 판정 우선 |
-| operator.md  | Operator — 승인 토큰 규율·실패 보고 |
-| responder.md | Responder — 근거 문장·표 사용·키 날조 금지 |
-| pmo.md       | PMO — 현황 조회 판단 기준·권한 거부 존중 |
+| request_architect.md | Request Architect — 의도 분류만, 답 만들지 않기 |
+| research_analyst.md | Research Analyst — 조사 요령·외부 검색 경계·브리핑 요령 |
+| work_architect.md | Work Architect — 되묻기 기준·쪼개기 기준 |
+| people_advisor.md | People Advisor — 근거 4신호·금지 사항 |
+| auditor.md | Auditor — 3-Check·기계 판정 우선 |
+| action_executor.md | Action Executor — 승인 토큰 규율·실패 보고 |
+| result_integrator.md | Result Integrator — 근거 문장·표 사용·키 날조 금지 |
+| portfolio_analyst.md | Portfolio Analyst — 현황 조회 판단 기준·권한 거부 존중 |
 
 새 역할을 추가하면: md 를 만들고 아래 목록에 이름을 넣는다. 파일이 없으면 **시작 시점에
 바로 죽는다** — 프롬프트가 빈 채로 조용히 돌아가는 것보다 낫다.
@@ -37,17 +36,17 @@ def _load(name: str) -> str:
     return text
 
 
-SYSTEM_PLANNER = _load("planner")
+SYSTEM_REQUEST_ARCHITECT = _load("request_architect")
 SYSTEM_QUERY_SPECIALIST = _load("query_specialist")
-SYSTEM_HISTORIAN = _load("historian")
-SYSTEM_REFINER = _load("refiner")
-SYSTEM_ASSIGNER = _load("assigner")
-SYSTEM_REVIEWER = _load("reviewer")
-SYSTEM_OPERATOR = _load("operator")
-SYSTEM_RESPONDER = _load("responder")
-SYSTEM_PMO = _load("pmo")
-SYSTEM_CURATOR = _load("curator")
-SYSTEM_COMPOSER = _load("composer")   # 에디터 안에서 본문·코멘트를 써 주는 역할
+SYSTEM_RESEARCH_ANALYST = _load("research_analyst")
+SYSTEM_WORK_ARCHITECT = _load("work_architect")
+SYSTEM_PEOPLE_ADVISOR = _load("people_advisor")
+SYSTEM_AUDITOR = _load("auditor")
+SYSTEM_ACTION_EXECUTOR = _load("action_executor")
+SYSTEM_RESULT_INTEGRATOR = _load("result_integrator")
+SYSTEM_PORTFOLIO_ANALYST = _load("portfolio_analyst")
+SYSTEM_KNOWLEDGE_CURATOR = _load("knowledge_curator")
+SYSTEM_EDITOR_AUTHOR = _load("editor_author")
 
 
 def sections(md: str) -> dict:

@@ -1,4 +1,4 @@
-"""Refiner — 막연한 요구를 실행 가능한 티켓 트리 초안으로 만든다. 모자라면 **되묻는다**.
+"""Work Architect — 막연한 요구를 실행 가능한 티켓 트리 초안으로 만든다. 모자라면 **되묻는다**.
 
 이 에이전트의 어려운 점은 "만들기"가 아니라 **"언제 묻고 언제 만들 것인가"**다.
 다 물어보면 취조가 되고, 안 물어보면 엉뚱한 걸 만든다. 기준은 하나다:
@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re as _re
 
-from app.agent.prompts.roles import SYSTEM_REFINER
+from app.agent.prompts.roles import SYSTEM_WORK_ARCHITECT
 from app.agent.workflow.agents.base import StructuredAgent, invoke_schema
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
@@ -224,21 +224,21 @@ SCHEMA = {
 }
 
 
-class Refiner(StructuredAgent):
+class WorkArchitect(StructuredAgent):
     """★ 도구를 쓰지 않는다 — 필요한 재료는 **코드가 전부 미리 조회**한다.
 
     예전엔 ToolAgent 였다. 그런데 가진 도구가 하나도 빠짐없이 사전취합과 중복이었다:
     `list_ticket_options`/`list_child_types` → `_placement_material` 이 이미 준다,
     `find_parent_epic` → `_epic_options` 가 이미 부른다, `list_transitions` → apply 가
-    코드로 해석한다, `validate_ticket_plan` → Reviewer 의 `_machine_check` 가 같은
+    코드로 해석한다, `validate_ticket_plan` → Auditor 의 `_machine_check` 가 같은
     `validate_bulk` 로 한다, `search_rules` → 아래 `_rules_material` 로 싣는다.
 
     그런데도 모델은 매 턴 그것들을 다시 불렀고, 도구 호출 한 번이 곧 LLM 왕복 한 번이라
-    **생성 턴 하나에 refiner 만 12회 · 86초 · 226k 토큰**을 먹었다(실측 기준선).
+    **생성 턴 하나에 work_architect 만 12회 · 86초 · 226k 토큰**을 먹었다(실측 기준선).
     재료가 이미 손안에 있으면 순회할 이유가 없다 — 한 번 묻고 스키마로 받는다.
     """
 
-    name = Node.REFINER
+    name = Node.WORK_ARCHITECT
     temperature = 0.3          # 초안은 약간의 폭이 필요하다
     _force_draft = False       # 질문-도피 재시도 플래그(단일 사용자 앱 — 인스턴스 보관으로 충분)
 
@@ -266,8 +266,8 @@ class Refiner(StructuredAgent):
                     and not (cp0.get("key") or cp0.get("keys")))
             except Exception:
                 dodged = False
-            if dodged and not Refiner._force_draft:
-                Refiner._force_draft = True
+            if dodged and not WorkArchitect._force_draft:
+                WorkArchitect._force_draft = True
                 try:
                     out2 = base(state)
                     if ((out2.get("draft") or {}).get("items")) \
@@ -277,7 +277,7 @@ class Refiner(StructuredAgent):
                                              f"{len((out2.get('draft') or {}).get('items') or [])}건")
                         return out2
                 finally:
-                    Refiner._force_draft = False
+                    WorkArchitect._force_draft = False
             return out
 
         return run
@@ -287,15 +287,15 @@ class Refiner(StructuredAgent):
         forced = (state.get("turns") or 0) >= MAX_REFINE_TURNS
         extra = ("\n\n★ 되묻기 횟수를 다 썼다. **더 묻지 말고** 아는 것만으로 초안을 만들어라. "
                  "모르는 필드는 비워 두고 rationale 에 '확인 필요'로 남긴다." if forced else "")
-        if Refiner._force_draft:
+        if WorkArchitect._force_draft:
             extra += ("\n\n★★ 직전 시도는 요구된 산출물을 내지 않았다. 이번에는 **questions 를 "
                       "반드시 빈 배열**로 하고 items 를 완성하라. 초안 수정 요청이면 "
                       "'지금 고치고 있는 초안'의 items 에 요청 사항을 반영한 **수정본 전체**를 "
                       "다시 내라(설명이 아니라 items 로). 미확정 사항은 rationale 에 적는다.")
-        # 정적 지시는 prompts/roles/refiner.md — 동적 경고(횟수 소진)만 코드가 덧붙인다.
+        # 정적 지시는 prompts/roles/work_architect.md — 동적 경고(횟수 소진)만 코드가 덧붙인다.
         # ★ 경로에 안 쓰이는 절은 싣지 않는다. 기존 티켓의 필드를 바꾸는 턴에 '어떻게
         #   쪼갤 것인가'·'본문 4섹션'·'Epic 생성' 지시는 판단에 쓰이지 않으면서 매 호출
-        #   2천 토큰을 태운다(refiner system 4.2k tok 중 절반이 생성 전용이었다).
+        #   2천 토큰을 태운다(work_architect system 4.2k tok 중 절반이 생성 전용이었다).
         return persona(state, _role_md(state) + extra)
 
     def task(self, state):
@@ -473,14 +473,14 @@ class Refiner(StructuredAgent):
                            + ("".join(f"\n    · {c}" for c in (i.get("children") or []))
                               if i.get("children") else "")
                            for i in (state.get("structure_plan") or []))),
-            data_block("Historian 이 정리한 현재 상황", state.get("situation")),
+            data_block("ResearchAnalyst 이 정리한 현재 상황", state.get("situation")),
             # 사전 조사(코드 취합) — 재배분 후보처럼 **키 목록이 곧 재료**인 자료가 여기
             # 실린다. situation(모델 요약)만 주면 목록이 요약에서 증발한다(실측 M2).
             data_block("사전 조사 자료 (코드가 취합 — 키 목록은 여기서 고른다)",
                        (state.get("pre_survey") or "")[:2000]),
             data_block("근거 티켓", ev),
-            # 외부 기술 조사는 지금까지 Historian·Curator 에만 갔다. 그런데 **본문의 배경과
-            # 범위를 쓰는 것은 Refiner** 다 — 그래서 "StarRocks 가 읽는 Iceberg 테이블의
+            # 외부 기술 조사는 지금까지 ResearchAnalyst·KnowledgeCurator 에만 갔다. 그런데 **본문의 배경과
+            # 범위를 쓰는 것은 WorkArchitect** 다 — 그래서 "StarRocks 가 읽는 Iceberg 테이블의
             # 통계", "플랜 반영 확인" 같은 도메인 관계가 조사에는 있는데 초안에는 안 실렸고,
             # Sub-Task 제목이 "설계 완료/테스트 수행" 처럼 일반어로 떨어졌다
             # (DRAFT-COMPARISON 갭 ①). data_block 은 비면 빈 문자열이라, 웹 조사가 돈
@@ -909,7 +909,7 @@ class Refiner(StructuredAgent):
         # 남아 카드에 서로 다른 두 줄이 떴다(실측: 재작성 왕복이 있던 턴).
 
         # ── 조사 근거를 '참고' 섹션에 **병합**한다 — 조사 결과를 티켓에 박제한다.
-        # 대화가 끝나면 Historian 의 조사는 증발하지만, 티켓 description 에 남기면 동적 RAG 가
+        # 대화가 끝나면 ResearchAnalyst 의 조사는 증발하지만, 티켓 description 에 남기면 동적 RAG 가
         # 다음 조사에서 그걸 다시 수확한다(지식이 복리로 쌓인다). 습관을 프롬프트에 맡기지 않고
         # 코드가 보장한다.
         # ★ 별도 <h3>References</h3> 를 덧붙이던 방식은 폐기 — 모델이 쓴 <h3>참고</h3> 와
@@ -992,7 +992,7 @@ class Refiner(StructuredAgent):
         drift = _topic_drift(state, items)
         if drift:
             out["rationale"] = ((out.get("rationale") or "") + "\n" + drift).strip()
-            draft["topic_drift"] = True     # Reviewer 의 단건 우회(L3b)를 막는 신호
+            draft["topic_drift"] = True     # Auditor 의 단건 우회(L3b)를 막는 신호
 
         # ── Epic Link 는 **실재하고 관련 있는 write-project Epic** 이어야 한다 ─────
         # 실측: 사용자가 "기존 에픽 중 맞는 걸로 붙여줘"라고 했는데 모델이 Task(DL-9072)를
@@ -1082,7 +1082,7 @@ class Refiner(StructuredAgent):
                                         + f"\n({detail})").strip()
 
         # ── 번호·단계만 다른 Task N개는 한 산출물이다 — 하나로 접고 children 으로 ──
-        # refiner.md 오판 #1(단계를 Task 로)·#2("테이블 30개 → 30 Tasks")를 코드가
+        # work_architect.md 오판 #1(단계를 Task 로)·#2("테이블 30개 → 30 Tasks")를 코드가
         # 보장한다(실측 재발 2종: "테이블 1~5" Task 5개 / "…설계·…구현·…검증" Task 3개).
         # 제목에서 꼬리 번호·단계 낱말을 떼면 같은 제목 = 같은 산출물.
         # 제목이 **순수 단계어**("구현 단계", "검증 단계")인 항목은 독립 Task 가 아니라
@@ -1211,7 +1211,7 @@ class Refiner(StructuredAgent):
                 it["components"] = [name]
 
         # ── 자식 담당을 비워 두지 않는다 ─────────────────────────────────
-        # "사람 나눠서" 라고 한 일에 담당이 하나도 없으면 나눈 의미가 없다. Assigner 는
+        # "사람 나눠서" 라고 한 일에 담당이 하나도 없으면 나눈 의미가 없다. PeopleAdvisor 는
         # 상위 items 만 보므로(자식은 그 뒤에 생긴다) 여기서 코드가 채운다 — 사용자가
         # 지정한 자식 담당은 건드리지 않고, **빈 것만** 모듈 로스터로 돌린다.
         for it in items:
@@ -1506,7 +1506,7 @@ class Refiner(StructuredAgent):
                 _drop_unrequested_deployment_dod(state, items)
 
         # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
-        # Reviewer 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
+        # Auditor 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
         # 사용자에게 떠넘겨진다(실측: "P3는 적절한 우선순위가 아닙니다"가 답변에 노출).
         # 판단이 아니라 표기 문제다 — 코드가 정규화한다.
         for it in items:
@@ -1526,7 +1526,7 @@ class Refiner(StructuredAgent):
         # 변경 계획(modify)은 갈래가 통째로 다르다 — `_change_plan` 이 맡는다.
         plan, qs = _change_plan(state, out, items, qs)
         # ★ 바꿀 값을 **정확히 말한** 수정 요청에는 되묻지 않는다. 계획이 이미 섰으면
-        #   승인 카드가 곧 확인 단계다(refiner.md: "NEVER ask permission to proceed").
+        #   승인 카드가 곧 확인 단계다(work_architect.md: "NEVER ask permission to proceed").
         #   실측(MOD8): "라벨 data-quality 추가하고 컴포넌트를 Catalog 로" 처럼 값을 다 준
         #   요청에 "새 라벨을 추가할까요?" 로 선회하는 일이 실행마다 갈렸다 —
         #   MODEL-COMPARISON 에도 같은 관측이 있다(4o/5 는 되묻고 mini 는 즉시 카드).
@@ -1565,7 +1565,7 @@ class Refiner(StructuredAgent):
                 r"[^.\n]{0,140}(?:선택|연결|붙였|배치|포함|생성)[^.\n]*(?:\.|$)", "",
                 str(out.get("rationale") or ""), flags=_re.I).strip()
         # `알아서` 위임으로 초안을 이미 만들었는데 초기 질문을 rationale에 옮겨 적으면
-        # Responder가 다시 범위/완료조건 입력을 요구한다. 질문 payload가 비었고 승인 카드가
+        # ResultIntegrator가 다시 범위/완료조건 입력을 요구한다. 질문 payload가 비었고 승인 카드가
         # 존재하므로 그 문구는 상태와 모순이다.
         if items and not qs and _said_defaults(state):
             out["rationale"] = _re.sub(
@@ -1577,7 +1577,7 @@ class Refiner(StructuredAgent):
         draft["rationale"] = out.get("rationale") or draft.get("rationale") or ""
         if structure and why:
             # 앞선 왕복에서 붙은 (구조: …) 줄은 **지우고** 지금 것으로 다시 쓴다 —
-            # Reviewer 반려로 재작성이 돌면 이유가 바뀌는데, 옛 줄이 남아 카드에 서로
+            # Auditor 반려로 재작성이 돌면 이유가 바뀌는데, 옛 줄이 남아 카드에 서로
             # 다른 두 이유가 떴다(실측). 구조 이유는 언제나 한 줄이어야 한다.
             draft["rationale"] = _re.sub(r"\n?\(구조: [^\n]*\)", "",
                                          draft["rationale"]).strip()
@@ -1617,7 +1617,7 @@ class Refiner(StructuredAgent):
                                    "부모/Epic 을 지정해 그 아래로 만든다",
                                    "이번엔 만들지 않는다"]}]
 
-        # 해석 확인 턴의 "제가 이해한 바" — Responder 가 질문에 앞세워 보여 준다.
+        # 해석 확인 턴의 "제가 이해한 바" — ResultIntegrator 가 질문에 앞세워 보여 준다.
         # 그 외 턴에는 지난 해석이 남지 않게 비운다(오래된 해석은 오해가 된다).
         interp = (str(out.get("interpretation") or "").strip()
                   if not items and not state.get("situation") else "")
@@ -2055,10 +2055,10 @@ def _change_plan(state, out, items, qs):
     return plan, qs
 
 def draft_text(draft: dict) -> str:
-    """초안을 프롬프트/화면에 실을 수 있는 글로. Assigner 가 이걸 보고 배정한다.
+    """초안을 프롬프트/화면에 실을 수 있는 글로. PeopleAdvisor 가 이걸 보고 배정한다.
 
-    **자식(Sub-Task)도 번호와 함께 보여 준다.** 안 보여 줬더니 Assigner 는 부모 담당만
-    정했고, 자식은 Refiner 가 모듈 명단을 순번으로 돌려 채웠다 — 그래서 Assigner 가
+    **자식(Sub-Task)도 번호와 함께 보여 준다.** 안 보여 줬더니 PeopleAdvisor 는 부모 담당만
+    정했고, 자식은 WorkArchitect 가 모듈 명단을 순번으로 돌려 채웠다 — 그래서 PeopleAdvisor 가
     "부하가 높아 부적합"이라 적은 사람이 자식 담당으로 들어갔다(실측).
     """
     if not draft or not draft.get("items"):
@@ -2115,7 +2115,7 @@ def _slot_audit(state) -> str:
         "사용자 언급", "ASK(date) — 단 위임이면 비워 둔다")
     row("우선순위", bool(_re.search(r"P[0-4]|긴급|우선순위", text)), "사용자 언급",
         "INFER — 기본 P3-Minor, 묻지 않는다")
-    row("담당자", False, "", "LATER — 다음 단계(Assigner)가 근거와 함께 정한다, 묻지 않는다")
+    row("담당자", False, "", "LATER — 다음 단계(PeopleAdvisor)가 근거와 함께 정한다, 묻지 않는다")
 
     # ── ★ 여기부터는 **티켓의 질**을 정하는 슬롯이다(사용자 요청으로 신설) ──────────
     # 위 슬롯들은 티켓을 **어디에 놓을지**(모듈·Epic·마감)를 정한다. 그런데 승인하는 사람이
@@ -2171,7 +2171,7 @@ def _apply_named_assignees(state, items: list) -> None:
             if all(w in s for w in words):
                 # 문구가 맞으면 **덮어쓴다** — 사용자의 명시 지정이 모델 배정보다 우선이다
                 # (실측: 모델이 세 항목 전부 한 사람으로 배정해 지정을 뭉갰다).
-                # 표식을 남겨 Assigner 의 merge 가 다시 덮지 못하게 한다(2차 뭉갬 실측).
+                # 표식을 남겨 PeopleAdvisor 의 merge 가 다시 덮지 못하게 한다(2차 뭉갬 실측).
                 r["assignee"] = uid
                 r["assignee_source"] = "user"
 
@@ -2414,7 +2414,7 @@ def _bug_body_for(state, it) -> str:
     steps0 = _reported_steps(said, symptom0)
     steps, expected, actual, notes = steps0, expected0, symptom0, []
     # 화면·증상·희망이 원문에 모두 명시된 VoC는 이미 추출 판단이 끝났다. 같은 문장을
-    # simple LLM에 다시 보내던 보정 호출을 생략한다(PASTE1: Refiner 2 calls→1 call).
+    # simple LLM에 다시 보내던 보정 호출을 생략한다(PASTE1: WorkArchitect 2 calls→1 call).
     direct_report = bool(steps and expected and actual)
     try:
         if direct_report:
@@ -2896,7 +2896,7 @@ def _base_title(s: str) -> str:
 
 
 def draft_full_text(draft: dict, cap: int = 4000) -> str:
-    """초안 **전문** — 후속 턴 Refiner 와 Reviewer 가 본다.
+    """초안 **전문** — 후속 턴 WorkArchitect 와 Auditor 가 본다.
 
     draft_text() 는 본문을 150자로 잘라 채팅 표시엔 맞지만, 그걸 '고칠 대상'이나 '검열
     대상'으로 주면 중복 섹션·날조 불릿·주제 이탈이 컷 밖에 숨는다(실측). 전문을 준다."""
@@ -3048,7 +3048,7 @@ def as_bulk_items(draft: dict) -> list:
     mode = (draft or {}).get("mode") or "task"
     if mode == "epic":
         # Epic 은 bulk 생성 대상이 아니다 — 화면·검증 표시용 한 줄만 만든다.
-        # 실행은 Operator 가 create_epic 도구로 한다(승인 지문은 epic_payload 가 정의).
+        # 실행은 ActionExecutor 가 create_epic 도구로 한다(승인 지문은 epic_payload 가 정의).
         out = []
         for it in (draft or {}).get("items") or []:
             out.append({"summary": (it.get("summary") or "").strip(), "type": "Epic",
@@ -3079,7 +3079,7 @@ def child_items(draft: dict) -> list:
     """초안의 children 을 부모 index 와 함께 평평하게 편다 — 승인 지문·연쇄 생성이 같은 것을 본다.
 
     Sub-Task 는 부모 키가 있어야 만들 수 있는데(도메인 규칙), 부모는 아직 없다. 그래서
-    **부모 index** 로 묶어 두고 Operator 가 부모 생성 결과 키로 치환한다.
+    **부모 index** 로 묶어 두고 ActionExecutor 가 부모 생성 결과 키로 치환한다.
     """
     rows = []
     for i, it in enumerate((draft or {}).get("items") or []):
@@ -3129,10 +3129,10 @@ def spread_volume_split(items: list) -> bool:
     의미가 없다. 프롬프트로 지시하되 몰아준 경우 코드가 되돌린다(새 사람을 지어내지 않고
     그 모듈 로스터 안에서만 돌린다).
 
-    **부르는 자리가 둘이다** — Refiner 직후(배정 전)와 `merge_assignments` 직후(배정 후).
-    자식 담당의 주인이 Assigner 로 옮겨 가면서(역할 정합 감사 §5-c) Refiner 에서만 돌던
-    이 가드가 **덮어쓰기 뒤편에 남았다**: 실측(생성 스위트 STR1) 테이블 29건이 Refiner
-    에서 고루 나뉜 뒤 Assigner 제안으로 전부 skcc.x1210 이 됐다. 규칙은 한 벌이고 부르는
+    **부르는 자리가 둘이다** — WorkArchitect 직후(배정 전)와 `merge_assignments` 직후(배정 후).
+    자식 담당의 주인이 PeopleAdvisor 로 옮겨 가면서(역할 정합 감사 §5-c) WorkArchitect 에서만 돌던
+    이 가드가 **덮어쓰기 뒤편에 남았다**: 실측(생성 스위트 STR1) 테이블 29건이 WorkArchitect
+    에서 고루 나뉜 뒤 PeopleAdvisor 제안으로 전부 skcc.x1210 이 됐다. 규칙은 한 벌이고 부르는
     자리만 둘이다 — 가드를 두 벌로 베끼면 더 관대한 쪽이 사고를 낸다.
 
     사용자가 입으로 지정한 담당(`assignee_source == "user"`)은 건드리지 않는다.
@@ -3177,7 +3177,7 @@ def _module_pool(item: dict, fallback: str) -> list:
     return [fallback] if fallback else []
 
 
-# 경로별로 **안 쓰이는** 역할 지시 절. 제목은 refiner.md 의 `## …` 과 정확히 같아야 한다
+# 경로별로 **안 쓰이는** 역할 지시 절. 제목은 work_architect.md 의 `## …` 과 정확히 같아야 한다
 # (오타는 조용히 아무것도 안 빼므로, 아래 테스트가 제목 존재를 지킨다).
 _CREATE_ONLY = ["구조 선택", "분할 규칙", "본문 품질 계약", "Epic 생성",
                 "Sub-Task 일괄 생성", "붙여넣은 회의록과 목록", "제목과 주제 보존"]
@@ -3195,16 +3195,16 @@ def _role_md(state) -> str:
     intent = (state.get("intent") or "").strip()
     editing_draft = bool((state.get("draft") or {}).get("items"))
     if intent == Intent.MODIFY and not editing_draft:
-        return compose(SYSTEM_REFINER, _CREATE_ONLY)
+        return compose(SYSTEM_WORK_ARCHITECT, _CREATE_ONLY)
     if intent in Intent.DRAFTS_TICKETS:
-        return compose(SYSTEM_REFINER, _MODIFY_ONLY)
-    return SYSTEM_REFINER
+        return compose(SYSTEM_WORK_ARCHITECT, _MODIFY_ONLY)
+    return SYSTEM_WORK_ARCHITECT
 
 
 def _rules_material(state) -> str:
     """초안에 필요한 **작성 규칙 발췌**(정적 RAG). 규칙 전문을 프롬프트에 붓지 않는다.
 
-    Reviewer 의 `_rules_for` 와 같은 재료다 — 검열이 볼 규칙을 작성자도 봐야 왕복이 준다.
+    Auditor 의 `_rules_for` 와 같은 재료다 — 검열이 볼 규칙을 작성자도 봐야 왕복이 준다.
     """
     try:
         from app.agent.retrieval import static_index

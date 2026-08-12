@@ -1,4 +1,4 @@
-"""agent/tools/people_tools.py — Assigner 의 **근거 수집** 도구.
+"""agent/tools/people_tools.py — PeopleAdvisor 의 **근거 수집** 도구.
 
 담당자 추천에서 중요한 건 이름이 아니라 **왜 그 사람인가**다. "한가해 보여서"는 근거가 아니다.
 그래서 도구는 순위를 매겨 주지 않고 **신호를 모아만 준다** — 판단과 문장은 모델이 한다.
@@ -7,7 +7,7 @@
 네 가지 신호를 각각 다른 도구로 나눠 둔 이유는, 셋만 필요한 경우가 대부분이기 때문이다.
 
   ① 지금 얼마나 물려 있나   → get_team_workload
-  ② 비슷한 일을 해 봤나     → search_work_history 결과의 assignee (Historian 이 이미 갖고 있다)
+  ② 비슷한 일을 해 봤나     → search_work_history 결과의 assignee (ResearchAnalyst 이 이미 갖고 있다)
   ③ 그 논의에 실제로 꼈나   → get_ticket_participants   (코멘트·멘션까지 본다)
   ④ 그 모듈 사람인가        → get_person_profile        (+ 최근 활동)
 """
@@ -177,7 +177,7 @@ def get_team_workload(module: str = "") -> dict:
     # 컴포넌트 이름과 로스터 키는 사람이 각각 적는 두 벌이라 표기에서 갈린다 — 정규화로 한 번 더 본다.
     key = asked if asked in roster else resolve_module(asked)
     # ★ 못 찾았을 때 **조용히 전원으로 넓히지 않는다.** 지금까지는 넓힌 결과가
-    #   "[ETL 로스터·부하]" 라는 이름표를 달고 Assigner 재료로 들어갔다 — 컴포넌트 이름
+    #   "[ETL 로스터·부하]" 라는 이름표를 달고 PeopleAdvisor 재료로 들어갔다 — 컴포넌트 이름
     #   하나가 안 맞으면 전사 명단이 그 모듈인 척한다(실측 갭: 로스터 키 불일치).
     #   넓히는 것 자체는 유지한다(후보 0명이 배정을 통째로 막는 것이 더 나쁘다). 다만
     #   **이름표는 사실대로** 달아, 읽는 쪽이 그 목록을 그 모듈이라고 믿지 않게 한다.
@@ -211,7 +211,7 @@ def get_ticket_participants(key: str) -> dict:
 
     "예전에 이 문제를 다뤄 본 사람"을 찾는 가장 강한 신호다. 담당자 필드만 보면 놓친다 —
     정작 그 논의를 끌고 간 사람은 코멘트에만 있는 경우가 많다.
-    Historian 이 찾은 유사 티켓 2~3건에 대해 부른다.
+    ResearchAnalyst 이 찾은 유사 티켓 2~3건에 대해 부른다.
     """
     if not jira_key_allowed(key):
         return {"key": key, "people": [],

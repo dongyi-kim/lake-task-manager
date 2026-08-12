@@ -20,20 +20,21 @@ from langgraph.graph.message import add_messages
 
 class Node:
     """노드 이름. 그래프 조립과 UI 표시가 같은 문자열을 봐야 한다."""
-    PLANNER = "planner"
+    REQUEST_ARCHITECT = "request_architect"
     QUERY_SPECIALIST = "query_specialist"
     QUERY_RUNNER = "query_runner"
-    HISTORIAN = "historian"
-    REFINER = "refiner"
-    ASSIGNER = "assigner"
-    REVIEWER = "reviewer"
-    OPERATOR = "operator"
-    RESPONDER = "responder"
-    CURATOR = "curator"        # 지식 질문 전담 — 조사 결과를 재사용 가능한 브리프로 정리
+    RESEARCH_ANALYST = "research_analyst"
+    KNOWLEDGE_CURATOR = "knowledge_curator"
+    PORTFOLIO_ANALYST = "portfolio_analyst"
+    WORK_ARCHITECT = "work_architect"
+    PEOPLE_ADVISOR = "people_advisor"
+    AUDITOR = "auditor"
+    ACTION_EXECUTOR = "action_executor"
+    RESULT_INTEGRATOR = "result_integrator"
 
 
 class Intent:
-    """Planner 가 고르는 갈래. 이 값이 그래프의 첫 분기를 결정한다.
+    """RequestArchitect 가 고르는 갈래. 이 값이 그래프의 첫 분기를 결정한다.
 
     갈래를 늘릴 때는 **다른 길이 필요할 때만** 늘린다. "무엇을 조회하나"가 다를 뿐 길이
     같다면(조사→답변) 같은 의도로 묶고 도구 선택은 모델에게 맡긴다 — MY_DAY·PROGRESS·
@@ -41,11 +42,11 @@ class Intent:
 
     ★ **버그 신고는 갈래가 아니다**(사용자 지적, 2026-08-10 — "결국 버그 신고도 Task
       생성 아니야? Task Type 이 Bug 일 뿐이지"). 예전에는 `report_bug` 가 따로 있었는데
-      PLAN_WORK 와 지나는 노드도 도구도 같았고, 코드 전체에서 다르게 쓰이는 곳은 Refiner 의
+      PLAN_WORK 와 지나는 노드도 도구도 같았고, 코드 전체에서 다르게 쓰이는 곳은 WorkArchitect 의
       goal 문자열 하나뿐이었다 — **갈래가 아니라 산출물 유형**이다.
-      갈래로 두면 Planner 가 plan_work↔report_bug 경계를 맞춰야 하고(few-shot 까지 붙었다),
+      갈래로 두면 RequestArchitect 가 plan_work↔report_bug 경계를 맞춰야 하고(few-shot 까지 붙었다),
       틀리는 날 본문 템플릿이 통째로 바뀌었다. 지금은 **본문 규율을 요청의 낱말로** 고른다
-      (Refiner `_is_bug`) — 분류가 흔들려도 재현·기대·실제가 유지된다. 흐름 지시는
+      (WorkArchitect `_is_bug`) — 분류가 흔들려도 재현·기대·실제가 유지된다. 흐름 지시는
       `playbook="bug_report"` 가 그대로 나른다.
     """
     ASK = "ask"                # 그냥 물어본 것 — 찾아서 답하면 끝
@@ -56,7 +57,7 @@ class Intent:
     MODIFY = "modify"          # 기존 티켓의 속성을 바꿔 달라
     CHITCHAT = "chitchat"      # 업무 요청이 아님
 
-    # 조사(historian)가 필요한 갈래 / 티켓 초안까지 가는 갈래 — 라우터가 이 집합만 본다.
+    # 조사(research_analyst)가 필요한 갈래 / 티켓 초안까지 가는 갈래 — 라우터가 이 집합만 본다.
     NEEDS_RESEARCH = (ASK, PLAN_WORK, MODIFY)
     DRAFTS_TICKETS = (PLAN_WORK, MODIFY)
     DIRECT_ANSWER = (MY_DAY, PROGRESS, ACTIVITY)   # 검색 대신 PMO 도구로 바로 답한다
@@ -76,22 +77,22 @@ class Role:
 class Stage:
     """UI 가 진행 상황을 보여줄 때 쓰는 라벨(한국어)."""
     LABELS = {
-        Node.PLANNER: "요청 파악",
+        Node.REQUEST_ARCHITECT: "요청 파악",
         Node.QUERY_SPECIALIST: "조회 설계",
         Node.QUERY_RUNNER: "조회 실행",
-        Node.HISTORIAN: "과거 이력 조사",
-        Node.REFINER: "업무 구체화",
-        Node.ASSIGNER: "담당자 검토",
-        Node.REVIEWER: "규칙 검증",
-        Node.OPERATOR: "티켓 생성",
-        Node.RESPONDER: "답변 정리",
-        Node.CURATOR: "지식 정리",
-        "pmo": "현황 조회",
+        Node.RESEARCH_ANALYST: "과거 이력 조사",
+        Node.WORK_ARCHITECT: "업무 구체화",
+        Node.PEOPLE_ADVISOR: "담당자 검토",
+        Node.AUDITOR: "규칙 검증",
+        Node.ACTION_EXECUTOR: "티켓 생성",
+        Node.RESULT_INTEGRATOR: "답변 정리",
+        Node.KNOWLEDGE_CURATOR: "지식 정리",
+        Node.PORTFOLIO_ANALYST: "현황 조회",
     }
 
 
 MAX_REFINE_TURNS = 4       # 되묻기 상한. 넘으면 아는 것만으로 초안을 만든다
-MAX_REVISIONS = 2          # Reviewer↔Refiner 왕복 상한. 안 걸면 무한 루프가 된다
+MAX_REVISIONS = 2          # Auditor↔WorkArchitect 왕복 상한. 안 걸면 무한 루프가 된다
 
 TRACE_RESET = {"reset": True}    # 턴 시작에 trace 를 비우는 신호 — 리듀서엔 "대입"이 없다
 
@@ -117,9 +118,9 @@ class AgentState(TypedDict, total=False):
     user_role: str                  # Role.*
     user_id: str
     user_identity: str              # "이름(사번), 모듈, 매니저 여부" — 세션 시작에 코드가 해석
-    playbook: str                   # Planner 가 고른 표준 플레이북 id — 전 역할 프롬프트에 주입
+    playbook: str                   # RequestArchitect 가 고른 표준 플레이북 id — 전 역할 프롬프트에 주입
 
-    # ── Planner ──
+    # ── RequestArchitect ──
     intent: str                     # Intent.*
     request_text: str               # ★ 생성 갈래의 **원 요청**(첫 요청 턴의 사용자 문장).
                                     #   last_user_text 는 후속 턴(질문 답변)에서 원 요청을 잃는다 —
@@ -136,15 +137,15 @@ class AgentState(TypedDict, total=False):
     query_results: list             # LLM에 전달할 compact 결과
     query_artifacts: dict           # 전체 target key snapshot 등 모델 밖 실행 자료
 
-    # ── Historian 사전 취합(코드가 만든 자료) ──
-    # 선언이 없으면 LangGraph 가 반환값에서 이 키들을 버린다 — 실제로 그래서 Curator 의
+    # ── ResearchAnalyst 사전 취합(코드가 만든 자료) ──
+    # 선언이 없으면 LangGraph 가 반환값에서 이 키들을 버린다 — 실제로 그래서 KnowledgeCurator 의
     # "사전 조사" 블록이 늘 비어 있었다(노드 안 지역 사본으로만 존재했다).
     pre_survey: str                 # 키워드·의미 검색 결과
     seed_map: str                   # 언급된 티켓 주변 지도(계보·링크·참여자)
     web_context: str                # 웹·GitHub 조사 결과
     topic_dossier: str              # 주제 한 건(테이블·기술·업무)에 얽힌 조각 전부
 
-    # ── Historian ──
+    # ── ResearchAnalyst ──
     bulk_targets: list              # 조건 일괄 수정 대상(코드 JQL 조회 — "전부" 요청의 집합)
     situation: str                  # "현재 상황" 서술 — 사용자에게 그대로 보인다
     evidence: list                  # [{"key","title","why"}] 근거. 출처 없는 서술은 금지
@@ -156,10 +157,10 @@ class AgentState(TypedDict, total=False):
     pmo_findings: list              # [{"key","point","action"}] 조회에서 확인한 사실
     group_activity: str             # PMO — 로스터 전원 활동 사전 취합(그룹 질의의 3층 자료)
     ticket_progress: str            # PMO — 티켓 한 건의 진척 근거 4갈래 사전 취합
-    knowledge_brief: dict           # Curator — {concepts, our_context, references, gaps}
+    knowledge_brief: dict           # KnowledgeCurator — {concepts, our_context, references, gaps}
     pmo_caution: str                # 읽을 때의 주의(활동 적음 ≠ 태만 등)
 
-    # ── Refiner ──
+    # ── WorkArchitect ──
     interpretation: str             # 조사 전 해석 확인 턴 — "제가 이해한 바" (사용자 검증용)
     # ── 구조 합의 단계(사용자 요청) ─────────────────────────────────────
     # 복합 산출물(여러 Task, Task+Sub-Task)을 **본문까지 다 써서** 한 번에 내밀면, 구조가
@@ -178,14 +179,14 @@ class AgentState(TypedDict, total=False):
     change_plan: dict               # {"key","changes":{...},"why"}  (modify 갈래 — 기존 티켓 변경)
     turns: int
 
-    # ── Assigner ──
+    # ── PeopleAdvisor ──
     assignments: list               # [{"index","user","reasons":[...],"alternates":[...]}]
 
-    # ── Reviewer ──
+    # ── Auditor ──
     review: dict                    # {"ok","errors","warnings","critique"}
     revisions: int
 
-    # ── Operator (승인 후) ──
+    # ── ActionExecutor (승인 후) ──
     approval_token: str
     comment_token: str              # 변경과 함께 남길 코멘트의 승인 토큰(카드에 코멘트가 보였을 때만)
     result: dict                    # {"created":[...], "failed":[...]}
@@ -199,7 +200,7 @@ class AgentState(TypedDict, total=False):
 def note(state: AgentState, node: str, text: str) -> list:
     """trace 한 줄 — **추가분만** 반환한다. 이어 붙이는 것은 `merge_trace` 리듀서의 몫이다.
 
-    노드가 `이전 전체 + 새 줄` 을 반환하던 방식은 병렬 fan-out(Assigner∥Reviewer)에서
+    노드가 `이전 전체 + 새 줄` 을 반환하던 방식은 병렬 fan-out(PeopleAdvisor∥Auditor)에서
     같은 스텝에 두 노드가 trace 를 쓰는 순간 충돌한다 — 리듀서 + 델타 반환으로 바꿨다.
     (state 인자는 호출부 호환용으로 남겼다.)"""
     return [{"node": node, "label": Stage.LABELS.get(node, node), "note": text}]
@@ -217,7 +218,7 @@ def request_text(state: AgentState) -> str:
 
     질문에 답하는 후속 턴에서 last_user_text 를 '원문 요청'이라고 프롬프트에 실으면
     원 요청("starrocks puffin ndv …")이 사라지고 답변("기한은 9/30")만 남는다 — 그 틈에
-    Epic 본문의 주제가 제목·본문을 잠식했다(실측). Planner 가 첫 요청 턴에 고정해 둔다."""
+    Epic 본문의 주제가 제목·본문을 잠식했다(실측). RequestArchitect 가 첫 요청 턴에 고정해 둔다."""
     return (state.get("request_text") or "").strip() or last_user_text(state)
 
 
@@ -246,7 +247,7 @@ def reads_as_bug(text: str) -> bool:
 
     `report_bug` 갈래를 걷어내면서(§7 16-b) 판정을 여기로 모았다. 정의가 두 벌이면
     한쪽만 고쳐지는 날이 오고, 그날 라우팅과 본문 규율이 서로 다른 말을 한다 —
-    Refiner(본문에 재현·기대·실제를 넣을 것인가)와 그래프(해석 확인을 앞세울 것인가)가
+    WorkArchitect(본문에 재현·기대·실제를 넣을 것인가)와 그래프(해석 확인을 앞세울 것인가)가
     **같은 문장을 보고 같은 답**을 해야 한다.
     """
     return bool(_BUG_WORDS.search(text or ""))

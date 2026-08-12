@@ -1,4 +1,4 @@
-"""agent/compose.py — 에디터 안에서 본문·코멘트를 써 준다.
+"""agent/editor_author.py — Editor Author가 에디터 본문·코멘트를 써 준다.
 
 챗과 다른 점이 셋이다.
 
@@ -138,11 +138,21 @@ def _house_rules(kind: str, prompt: str) -> str:
         return ""
 
 
+class EditorAuthor:
+    """Canonical Editor Author entrypoint. API endpoint 이름과 Role 식별자를 섞지 않는다."""
+
+    name = "editor_author"
+
+    def compose(self, ticket_key: str = "", kind: str = "comment", prompt: str = "",
+                seed_html: str = "", user_id: str = "") -> dict:
+        return compose(ticket_key, kind, prompt, seed_html, user_id)
+
+
 def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
             seed_html: str = "", user_id: str = "") -> dict:
     """에디터에 꽂을 HTML 을 만든다. 돌려주는 것: {ok, html, note}."""
     from app.agent import config as C
-    from app.agent.prompts.roles import SYSTEM_COMPOSER
+    from app.agent.prompts.roles import SYSTEM_EDITOR_AUTHOR
     from app.agent.workflow.prompts import data_block, persona, wrap_data
 
     ready, why = C.llm_ready()
@@ -211,7 +221,7 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
         state = {"user_id": user_id or "", "user_identity": ""}
         invoke_config = {"callbacks": [handler]} if handler else {}
         llm = C.get_llm(temperature=0.3)
-        messages = [("system", persona(state, SYSTEM_COMPOSER)), ("user", task)]
+        messages = [("system", persona(state, SYSTEM_EDITOR_AUTHOR)), ("user", task)]
         try:
             msg = llm.invoke(messages, config=invoke_config)
         except TypeError as exc:

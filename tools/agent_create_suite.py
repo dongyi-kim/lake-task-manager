@@ -71,10 +71,10 @@ def _owners(rows):
 # 났고, DRAFT-COMPARISON 의 갭 3종도 전부 본문 이야기다. 그래서 knowledge/07 의 규율을
 # 결정적 검사로 내려 전 케이스에 건다 — judge(주관) 이전의 최소선이다.
 # ★ 목록을 여기 다시 적지 않는다 — 코드가 지키는 규칙과 배터리가 재는 규칙이 갈리면
-#   더 관대한 쪽이 사고를 낸다(§5-e). refiner 가 원본이고 여기는 그것을 가져다 쓴다.
-from app.agent.workflow.agents.refiner import DOD_VAGUE as _DOD_VAGUE  # noqa: E402
-from app.agent.workflow.agents.refiner import _bug_grade_body  # noqa: E402
-from app.agent.workflow.agents.refiner import _has_placeholder_body  # noqa: E402
+#   더 관대한 쪽이 사고를 낸다(§5-e). Work Architect가 원본이고 여기는 그것을 가져다 쓴다.
+from app.agent.workflow.agents.work_architect import DOD_VAGUE as _DOD_VAGUE  # noqa: E402
+from app.agent.workflow.agents.work_architect import _bug_grade_body  # noqa: E402
+from app.agent.workflow.agents.work_architect import _has_placeholder_body  # noqa: E402
 
 
 def _body_flaws(o) -> list:
@@ -282,7 +282,7 @@ CASES = [
                    and "<h3>Knowledge</h3>" not in _body(its[0]))(items(o))),
 
     # ── 버그 신고 갈래 (report_bug) ──────────────────────────────────
-    # 규율은 refiner 에 적혀 있는데 배터리가 CHIP2 하나뿐이었다. 이 갈래의 실패는 셋이다:
+    # 규율은 Work Architect에 적혀 있는데 배터리가 CHIP2 하나뿐이었다. 이 갈래의 실패는 셋이다:
     #   ① 재현 경로 없이 티켓을 만들어 버린다(아무도 못 잡는 티켓이 생긴다)
     #   ② 기대/실제를 안 나눠 적어 무엇이 잘못인지 안 보인다
     #   ③ 버그를 Sub-Task 로 쪼개 관리 단위를 흩뜨린다

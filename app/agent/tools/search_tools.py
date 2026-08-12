@@ -1,4 +1,4 @@
-"""agent/tools/search_tools.py — Historian 의 탐색 도구.
+"""agent/tools/search_tools.py — ResearchAnalyst 의 탐색 도구.
 
 "~~한 업무를 해야 한다" 는 막연한 요구에서 **현재 상황**을 복원하는 것이 이 도구들의 일이다.
 한 방에 되지 않는다: 검색으로 실마리를 잡고(①) → 티켓을 열어 읽고(②) → 거기서 링크를 타고
@@ -160,7 +160,7 @@ def get_ticket(key: str, comment_limit: int = 5) -> dict:
     out["description"] = trim(((raw.get("fields") or {}).get("description")), 1200)
     # comments 는 **비어 있어도 싣는다** — "코멘트가 없다"와 "안 가져왔다"는 모델에게 다른 정보다.
     # ★ 코멘트 행의 본문은 `html`, 일시는 `date` 다(body/created 아님). 처음에 body 로 읽는 바람에
-    #   모델이 **빈 코멘트**를 받고 있었다 — "코멘트까지 읽는다"던 Historian 이 작성자·날짜만
+    #   모델이 **빈 코멘트**를 받고 있었다 — "코멘트까지 읽는다"던 ResearchAnalyst 이 작성자·날짜만
     #   보고 있던 셈이다. 테스트가 머리글만 확인해서 놓쳤다(약한 단언의 값).
     import re as _re
     try:

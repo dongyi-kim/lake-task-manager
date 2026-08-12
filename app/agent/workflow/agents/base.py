@@ -3,14 +3,14 @@
 여섯 역할이 하는 일은 제각각이지만 **모양은 두 가지뿐**이다.
 
   · `StructuredAgent` — 한 번 묻고 스키마로 받는다. **재료가 이미 손안에 있는** 역할
-    (Planner·Reviewer·Refiner·Assigner·Curator).
-  · `ToolAgent` — 도구를 부르며 스스로 몇 걸음 걷는다(Historian·PMO·Operator).
+    (RequestArchitect·Auditor·WorkArchitect·PeopleAdvisor·KnowledgeCurator).
+  · `ToolAgent` — 도구를 부르며 스스로 몇 걸음 걷는다(ResearchAnalyst·PMO·ActionExecutor).
     이게 ReAct 다: 생각 → 도구 → 결과를 보고 다시 생각. 몇 걸음 걸을지는 **모델이 정한다**.
 
-**어느 쪽인지는 "무엇을 부를지가 판단인가"로 갈린다.** 부를 대상이 늘 같으면(Refiner 의
-허용값, Assigner 의 모듈 로스터) 코드가 미리 조회해 자료로 주는 것이 옳다 — 도구 호출
-한 번은 LLM 왕복 한 번이고, 모델은 매 턴 그걸 다시 부른다(실측: Refiner 12회·86초·226k).
-반대로 몇 번 검색해야 충분한지를 **미리 모르는** 조사(Historian)는 ToolAgent 로 남긴다.
+**어느 쪽인지는 "무엇을 부를지가 판단인가"로 갈린다.** 부를 대상이 늘 같으면(WorkArchitect 의
+허용값, PeopleAdvisor 의 모듈 로스터) 코드가 미리 조회해 자료로 주는 것이 옳다 — 도구 호출
+한 번은 LLM 왕복 한 번이고, 모델은 매 턴 그걸 다시 부른다(실측: WorkArchitect 12회·86초·226k).
+반대로 몇 번 검색해야 충분한지를 **미리 모르는** 조사(ResearchAnalyst)는 ToolAgent 로 남긴다.
 
 **서브그래프는 도구를 쓰는 쪽만 갖는다.** 한 번 부르고 끝나는 역할에 그래프를 씌우는 건 장식이다.
 반면 도구 루프는 서브그래프여야 값어치가 있다 — 종료 조건이 한곳에 모이고, 역할마다 도구·모델을
@@ -325,7 +325,7 @@ class TextAgent(Agent):
 class _Scratch(TypedDict, total=False):
     """도구 루프의 **작업 메모**. 바깥 대화(messages)와 섞지 않는다.
 
-    Historian 이 도구를 여덟 번 부른 기록이 사용자 대화창에 남으면 안 되고, 다음 턴의
+    ResearchAnalyst 이 도구를 여덟 번 부른 기록이 사용자 대화창에 남으면 안 되고, 다음 턴의
     컨텍스트에 그게 다시 실리면 토큰만 먹는다. 결론만 State 로 올린다.
     """
     messages: Annotated[list, add_messages]

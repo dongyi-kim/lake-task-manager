@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.compose import _badgeify
+from app.agent.editor_author import _badgeify
 from app.agent.references import render_template, resolve_references
 from app.agent.tools import _ctx
 

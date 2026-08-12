@@ -19,7 +19,7 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 - data/query 누락: Query Specialist, Query Runner, tool, search config
 - schema/I/O 불일치: `workflow/contracts.py`, `state.py`, `role_manifest.py`
 - 안전 불변조건: approval, grounding, postcheck, `domain/ticket_actions.py`
-- 표현·렌더링: Responder, compose, canonical reference renderer
+- 표현·렌더링: Result Integrator, Editor Author, canonical reference renderer
 - evaluator/fixture 결함: battery checker 또는 mock world
 
 한 실패를 막기 위해 여러 prompt 계층에 같은 문장을 추가하지 않는다. deterministic하게 판정 가능한 조건은 코드와 test로 구현한다.
@@ -28,7 +28,8 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 
 1. 회귀 test를 먼저 추가하거나 기존 battery case에 기대 계약을 명시한다.
 2. 가장 좁은 owner 계층만 수정하고 중복·모순 prompt를 함께 제거한다.
-3. role I/O, tool 목록 또는 effect를 바꾸면 `role_manifest.py`, graph, state, contracts, Responder까지 함께 맞춘다.
+3. role I/O, tool 목록 또는 effect를 바꾸면 `role_manifest.py`, graph, state, contracts, Result Integrator까지 함께 맞춘다.
+   Role id는 module, graph node, prompt asset에 그대로 쓰며 alias table이나 legacy fallback을 만들지 않는다.
 4. Jira write에는 approval fingerprint를 유지한다. Done·ticket tier·search scope·pagination 규칙을 우회하지 않는다.
 5. 모호한 사실은 구체적으로 질문하거나 open fact로 남긴다. 숫자·담당·parent·status·metric을 만들지 않는다.
 6. code, function/tool name, parameter, schema key/enum, Jira field/type, JQL, HTML, key, user ID, URL은 번역하지 않는다.
