@@ -93,6 +93,28 @@ def test_templates_do_not_call_imported_modules(path: Path):
     assert not bad, f"{_rel(path)} 템플릿이 모듈을 직접 부른다: {bad[:3]}"
 
 
+def test_create_dialog_descriptions_do_not_share_comment_drafts():
+    """생성창의 본문은 새 댓글 초안 저장소를 쓰면 안 된다.
+
+    ticket key가 생성 전 `__new__`였다가 생성 후 실 key로 바뀌므로, comment kind로 두면 제출 때
+    다른 key를 삭제하고 `new:__new__`에 완료된 본문이 남아 다음 Task 본문에 복원된다.
+    """
+    for name in ("EpicCreateDialog.js", "NewChildDialog.js"):
+        src = (STATIC / "components" / "ui" / name).read_text(encoding="utf-8")
+        editors = re.findall(r"<CommentEditor\b[^>]+>", src, re.S)
+        assert editors and all('kind="description"' in tag for tag in editors), name
+
+
+def test_comment_submit_waits_for_pending_draft_before_final_delete():
+    """제출 성공 뒤 예약된 saveDraft가 완료 글을 되살리는 경쟁 상태를 막는다."""
+    src = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    success = src.index("await this.submitFn(html);")
+    cancel = src.index("clearTimeout(this._dt)", success)
+    wait = src.index("await this._draftWrite", cancel)
+    delete = src.index("await clearDraft(dk)", wait)
+    assert success < cancel < wait < delete
+
+
 # ── 파이썬 소스 위생 ────────────────────────────────────────────────────────
 # 같은 편집 사고의 파이썬 판. heredoc 으로 소스를 고치면 줄바꿈이 **공백으로 뭉개져**
 # `if a  <공백 17칸>  and b:` 같은 줄이 남는다. 문법은 멀쩡해서 테스트도 전부 통과하고

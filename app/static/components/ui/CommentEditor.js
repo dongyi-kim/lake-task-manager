@@ -1133,6 +1133,7 @@ export default {
   },
   beforeUnmount() {
     this._dead = true;
+    clearTimeout(this._dt); this._dt = null;       // 제출/이동 뒤 예약 저장이 옛 초안을 되살리지 않게
     if (this._upTick) { clearInterval(this._upTick); this._upTick = null; }   // 업로드 경과 타이머
     try { for (const u of this._pending.keys()) URL.revokeObjectURL(u); } catch (e) { /* noop */ }
     try { if (this._ed) this._ed.destroy(); } catch (e) { /* noop */ }
@@ -1539,8 +1540,10 @@ export default {
           html = html.split(url).join(token);
           imgs.push({ token, name: info.name, blob: info.blob });
         }
-        if (!text && !imgs.length) { clearDraft(k); return; }   // 빈 초안은 남기지 않는다
-        saveDraft(k, { html, images: imgs });
+        if (!text && !imgs.length) {
+          this._draftWrite = clearDraft(k); return;             // 빈 초안은 남기지 않는다
+        }
+        this._draftWrite = saveDraft(k, { html, images: imgs });
       }, 700);
     },
     async restoreDraft() {
@@ -1644,9 +1647,20 @@ export default {
         }
         await this.submitFn(html);
         const dk = this.draftKey();
-        if (dk) clearDraft(dk);                      // 제출 성공 → 임시저장 삭제
+        // 제출 직전 onUpdate가 예약한 saveDraft가 clearDraft **뒤에** 끝나면 완료된 글이 다시
+        // 살아난다. 예약을 취소하고 이미 시작한 write까지 기다린 다음 마지막으로 삭제한다.
+        clearTimeout(this._dt); this._dt = null;
+        if (this._draftWrite) { try { await this._draftWrite; } catch (_) { /* IndexedDB 실패는 무해 */ } }
+        if (dk) await clearDraft(dk);                 // 제출 성공 → 임시저장 삭제(마지막 write)
+        this._draftWrite = null;
         for (const u of this._pending.keys()) URL.revokeObjectURL(u);
         this._pending.clear();
+        // 새 댓글 editor를 부모가 계속 mount해도 다음 입력은 빈 상태여야 한다. 수정/본문은
+        // 서버 원문을 유지해야 하므로 새 comment에만 적용한다. false=onUpdate/draft 저장 미발생.
+        if (this.kind === "comment" && !this.initial && this._ed && !this._dead) {
+          this._ed.commands.clearContent(false);
+          this.restored = false;
+        }
         // 본문 저장까지 성공한 뒤에야 '일부 파일 실패'를 알린다 — 본문은 확실히 저장됐고, 어떤
         // 파일이 빠졌는지 우하단 알림으로 분명히 남긴다(다이얼로그가 닫혀도 보이도록 토스트로).
         if (failed.length) {

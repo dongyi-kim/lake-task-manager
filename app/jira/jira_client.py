@@ -1561,6 +1561,75 @@ class JiraClient:
         except Exception:
             return self.issue_types()
 
+    def create_fields(self, issue_type):
+        """이 project·issue type에서 **생성 시 실제로 설정 가능한** field metadata.
+
+        custom field id는 Jira instance마다 다르다. `/field`의 전역 목록에 존재한다는 이유만으로
+        create payload에 넣으면, 해당 project의 create screen에 없는 field는 Jira가
+        ``cannot be set``으로 거절한다. 따라서 `createmeta`의 issue type별 fields만 신뢰한다.
+        """
+        itype = (issue_type or "").strip()
+        if not itype:
+            return {}
+
+        def do():
+            data = self.provider.get_json(
+                "/rest/api/2/issue/createmeta",
+                params={"projectKeys": self.s.project_key, "issuetypeNames": itype,
+                        "expand": "projects.issuetypes.fields"}) or {}
+            projects = data.get("projects") or []
+            project = next((p for p in projects if (p.get("key") or "") == self.s.project_key),
+                           projects[0] if len(projects) == 1 else None)
+            if not project:
+                return {}
+            types = project.get("issuetypes") or []
+            meta = next((t for t in types if (t.get("name") or "").casefold() == itype.casefold()),
+                        types[0] if len(types) == 1 else None)
+            return (meta or {}).get("fields") or {}
+
+        ck = f"createmeta:{self.env}:{self.s.project_key}:{itype.casefold()}"
+        try:
+            return self.cache.get_or_set(ck, self.OPTIONS_TTL, do)[0]
+        except SessionExpired:
+            raise
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _is_epic_name_meta(field):
+        """Jira Software의 Epic Name field인가.
+
+        표시 name은 locale/관리자 설정의 영향을 받을 수 있어 plugin schema id를 우선한다.
+        `issueFunction`처럼 우연히 같은 numeric id를 가진 전혀 다른 field는 통과시키지 않는다.
+        """
+        field = field or {}
+        schema = field.get("schema") or {}
+        custom = (schema.get("custom") or "").casefold()
+        name = " ".join(str(field.get("name") or "").casefold().split())
+        return "gh-epic-label" in custom or name in {"epic name", "epic 이름"}
+
+    def epic_name_create_field(self, epic_type="Epic"):
+        """Epic 생성 payload에 넣을 검증된 Epic Name field id. 없으면 ``None``.
+
+        configured id가 `createmeta`에서 Epic Name으로 확인될 때만 사용하고, 다르면 metadata에서
+        실제 field를 찾는다. prod에서 metadata를 확인하지 못한 경우에는 안전하게 생략한다.
+        """
+        fields = self.create_fields(epic_type)
+        configured = getattr(self.s, "epic_name_field_id", None)
+        if fields:
+            if configured and configured in fields and self._is_epic_name_meta(fields[configured]):
+                return configured
+            found = next((fid for fid, meta in fields.items() if self._is_epic_name_meta(meta)), None)
+            if found and found != configured:
+                self._log_once("epic-name-field",
+                               f"[fields] Epic Name field 보정: {configured or '(없음)'} -> {found}")
+            return found
+        # jira820 mock/local은 createmeta fields를 제공하지 않는 버전이 있다. 개발 환경에서만
+        # 기존 mapping을 유지한다. prod는 검증되지 않은 custom field를 쓰기 payload에 넣지 않는다.
+        if str(self.env).startswith(("mock", "local")):
+            return configured
+        return None
+
     def child_types(self, parent_key):
         """이 티켓 **밑에** 만들 수 있는 타입.
 
@@ -1709,8 +1778,9 @@ class JiraClient:
             fields["assignee"] = {"name": assignee}
         if components:
             fields["components"] = [{"name": c} for c in components if c]
-        # Epic Name(단축어) — 검색·뱃지가 요약이 아니라 이 이름을 쓴다. 없으면 요약으로.
-        enf = getattr(self.s, "epic_name_field_id", None)
+        # Epic Name(단축어) — instance마다 custom field id가 다르므로 createmeta에서 검증한다.
+        # 잘못된 id를 보내면 field가 존재해도 create screen에 없다는 이유로 Epic 전체 생성이 실패한다.
+        enf = self.epic_name_create_field(etype)
         if enf:
             fields[enf] = epic_name or summary
         with write_upstream():

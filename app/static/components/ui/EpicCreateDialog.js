@@ -196,7 +196,8 @@ export default {
         <span class="nk-desc-cav">{{ descOpen ? '▾' : '▸' }}</span>설명 {{ descOpen ? '접기' : '추가 (선택)' }}
       </button>
       <div v-show="descOpen" class="nk-desc-body">
-        <CommentEditor ref="ded" :ticket-key="createdKey || '__new__'" :submit-fn="saveDesc" hide-footer />
+        <CommentEditor ref="ded" :ticket-key="createdKey || '__new__'" kind="description"
+                       :submit-fn="saveDesc" hide-footer />
         <div class="nk-desc-hint">이미지·파일은 붙여넣거나 끌어다 놓으면 Epic 생성 후 함께 첨부됩니다.</div>
       </div>
     </div>
