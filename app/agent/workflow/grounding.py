@@ -27,7 +27,11 @@ KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
 #   허용하지 않으면 정확히 그 꼴만 새어 나간다(실측: 첫 배포에서 전부 놓쳤다).
 # 역할 낱말은 실측된 답변에서 계속 늘려 왔다 — "실무자: 이영희"가 목록에 없어 새어 나간 적 있다.
 _ROLE = r"(?:PM|리더|담당자?|개발자|디자이너|리포터|작성자|검토자|매니저|QA|실무자|엔지니어|기획자|운영자)"
-NAME_RE = re.compile(rf"{_ROLE}[\*_]*\s*[:\-–]\s*[\*_]*([가-힣]{{2,4}})\b|([가-힣]{{2,4}})\s*님\b")
+# 역할과 이름은 **같은 줄**이어야 한다. `\s*`는 줄바꿈까지 먹어서
+# `유사 업무 1건 담당\n- **대안**:`의 '담당'을 역할로, '대안'을 사람 이름으로 오인했다.
+NAME_RE = re.compile(
+    rf"{_ROLE}[\*_]*[ \t]*[:\-–][ \t]*[\*_]*([가-힣]{{2,4}})\b|"
+    rf"([가-힣]{{2,4}})[ \t]*님\b")
 UID_RE = re.compile(r"^[a-z]+\.[a-z]\d+$")
 # 답변 속 사번 꼴 토큰 — 실재 검증 대상. NNNN 같은 자리표시자는 그 자체로 위반이다
 # (재작성 지시문의 예시 표기를 답에 그대로 복사한 실측 사고).
@@ -88,7 +92,7 @@ def _unlinked_refs(text: str) -> list:
        클릭하면 전혀 다른 것이 열린다. 링크가 없는 것보다 **나쁘다**(있는 척한다).
        티켓으로 가는 링크는 /browse/KEY 여야 한다 — 다른 키를 가리켜도 위반이다.
 
-    본문 참고 불릿에는 ①의 가드가 이미 있다(`refiner._drop_unlinked_refs`) — 답변 텍스트
+    본문 참고 불릿에는 ①의 가드가 이미 있다(`work_architect._drop_unlinked_refs`) — 답변 텍스트
     쪽에만 없었다. 같은 규칙이 두 산출물에 다 걸려야 한다.
     """
     out = []
@@ -110,13 +114,14 @@ def _unlinked_refs(text: str) -> list:
     return out
 
 
-def check(reply: str) -> dict:
+def check(reply: str, allowed_people: set[str] | None = None) -> dict:
     """답변을 실물과 대조한다. 반환:
     {"fake_keys": [...], "wrong_titles": {key: 실제제목}, "fake_people": [...], "ok": bool}
     """
     from app.agent.tools._ctx import client, settings
     c = client()
     text = reply or ""
+    allowed_people = {str(x).strip() for x in (allowed_people or set()) if str(x).strip()}
 
     import re as _re0
     fake_keys, real_titles = [], {}
@@ -144,7 +149,8 @@ def check(reply: str) -> dict:
         loose = [mm.group(1).strip().rstrip(")").strip() for mm in
                  re.finditer(rf"{re.escape(key)}\**\s*[:(]\s*([^)\n**]{{4,80}})", text)]
         quoted = [mm.group(1).strip() for mm in
-                  re.finditer(rf"{re.escape(key)}\**\s*[\"“'']([^\"”'\n]{{4,80}})[\"”'']", text)]
+                  re.finditer(rf"{re.escape(key)}\**\s*[\"“''](?=\S)([^\"”'\n]{{4,80}})"
+                              rf"[\"”'']", text)]
         loose = [c for c in loose if c]
         quoted = [c for c in quoted if c]
         claims = loose + quoted
@@ -213,16 +219,17 @@ def check(reply: str) -> dict:
         # 상태·시간 낱말은 사람이 아니다 — "DL-9090: 현재 2/3 완료" 의 '현재'가 인물로
         # 걸렸다(실측 오탐). 이 목록은 오탐이 관측될 때마다 늘린다.
         _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감",
-                      "상태", "예정", "검토", "확인", "미정", "없음", "전체"}
+                      "상태", "예정", "검토", "확인", "미정", "없음", "전체", "작업"}
         for name in names:
-            if not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES:
+            if (not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES
+                    or name in allowed_people):
                 continue
             seen.add(name)
             hits = search_users(c, s, name) or []
             if not hits:
                 fake_people.append(name)
             else:
-                # ★ **실재하는 실명도 위반이다.** responder.md: "never translate ids into
+                # ★ **실재하는 실명도 위반이다.** result_integrator.md: "never translate ids into
                 #   names". 여태 이 검사는 **날조만** 봤기 때문에 실명이 그냥 통과했다
                 #   (실측 EDGE13: "담당자 한예준"). 화면은 사번을 뱃지·프로필로 렌더하고,
                 #   실명은 동명이인·표기 흔들림에 취약해 검증도 안 된다.
@@ -274,4 +281,5 @@ def warning_block(result: dict) -> str:
     if not items:
         return ""
     return ("\n\n---\n⚠️ **자동 검증 경고** — 아래 항목은 실제 데이터와 대조되지 않았습니다. "
-            "무시하고 읽으세요:\n" + "\n".join(f"- {x}" for x in items))
+            "이 상태로 승인하지 말고 실제 값을 확인하세요:\n"
+            + "\n".join(f"- {x}" for x in items))

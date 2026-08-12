@@ -1,4 +1,4 @@
-"""agent/tools/write_tools.py — 검증(Reviewer)과 실행(Operator).
+"""agent/tools/write_tools.py — 검증(Auditor)과 실행(ActionExecutor).
 
 두 종류를 한 파일에 두되 성격은 정반대다.
 
@@ -177,7 +177,9 @@ def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: 
     준 것만 바뀐다. 비우려면 빈 문자열/빈 배열을 명시적으로 준다.
     담당자를 뗄 때는 assignee="" 다. duedate 는 YYYY-MM-DD.
 
-    그 티켓 화면에서 **편집할 수 없는 필드는 거부**된다(권한·워크플로우). 실패하면 사유가 돌아온다.
+    `statusCategory=done`이면 속성을 바꿀 수 없다. `list_transitions`에 실제 Reopened 전이가
+    있으면 먼저 그 전이를 별도 승인·실행하고, 열린 상태에서 새 변경 승인을 받아야 한다.
+    완료 티켓에도 코멘트는 남길 수 있다. 그 밖에도 화면에서 **편집할 수 없는 필드는 거부**된다.
     """
     changes = compact({"assignee": assignee, "duedate": duedate, "priority": priority,
                        "summary": summary, "labels": labels, "components": components,
@@ -190,11 +192,22 @@ def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: 
     if not changes:
         return {"ok": False, "error": "바꿀 필드를 하나도 주지 않았습니다."}
 
+    c = client()
+    try:
+        from app.domain.ticket_actions import field_update_error
+        current = c.ticket_badge(key)
+        if not current:
+            return {"ok": False, "error": "티켓 상태를 확인할 수 없어 속성을 바꾸지 않았습니다."}
+        state_error = field_update_error(current, changes)
+        if state_error:
+            return {"ok": False, "error": state_error}
+    except Exception as e:
+        return {"ok": False, "error": f"티켓 상태를 확인하지 못했습니다: {str(e)[:200]}"}
+
     ok, why = approval.consume(approval_token, "update_ticket", {"key": key, "changes": changes})
     if not ok:
         return _denied(why)
 
-    c = client()
     try:
         meta = c.editmeta(key)                      # 화면에 없는 필드를 밀어 넣으면 Jira 가 400 을 낸다
     except Exception as e:
@@ -272,7 +285,8 @@ def add_ticket_comment(key: str, body: str, approval_token: str) -> dict:
     """티켓에 **코멘트를 남긴다**. 승인 토큰 필요.
 
     티켓을 만든 뒤 "왜 이렇게 쪼갰는지 / 왜 이 담당자인지"를 남겨 두면, 나중에 이 대화를 못 본
-    사람도 맥락을 안다. 다만 사용자가 요청하지 않은 코멘트를 임의로 달지는 않는다.
+    사람도 맥락을 안다. `statusCategory=done`인 완료 티켓에도 코멘트는 남길 수 있다.
+    다만 사용자가 요청하지 않은 코멘트를 임의로 달지는 않는다.
     """
     ok, why = approval.consume(approval_token, "add_ticket_comment", {"key": key, "body": body})
     if not ok:
@@ -332,7 +346,8 @@ def list_transitions(key: str) -> list:
         # client.transitions 는 이미 정규화된 모양({"id","name","to"(문자열)})을 준다 —
         # 원시 Jira 모양((t["to"]["name"]))으로 다시 벗기면 문자열에 .get 을 불러 죽는다
         # (실측: 이 도구가 mock 에서 늘 error 만 돌려주고 있었다).
-        return [compact({"id": t.get("id"), "name": t.get("name"), "to": t.get("to")})
+        return [compact({"id": t.get("id"), "name": t.get("name"), "to": t.get("to"),
+                         "toCategory": t.get("toCategory")})
                 for t in (client().transitions(key) or [])]
     except Exception as e:
         return [{"error": str(e)[:200]}]
@@ -343,7 +358,9 @@ def transition_ticket(key: str, transition_id: str, approval_token: str,
                       comment: str = None, assignee: str = None) -> dict:
     """티켓 **상태를 옮긴다**(예: 진행중 → 완료). 승인 토큰 필요.
 
-    transition_id 는 list_transitions 에서 얻은 값이어야 한다. 그 전이 화면에 없는 필드
+    완료 티켓을 다시 열 때도 이름을 지어내지 말고 `list_transitions`가 돌려준 Reopened
+    전이 id를 쓴다. 전이와 속성 변경은 서로 다른 승인/실행이다. transition_id 는
+    list_transitions 에서 얻은 값이어야 한다. 그 전이 화면에 없는 필드
     (comment·assignee 등)를 주면 Jira 가 거부하므로, 전이 목록에서 확인한 것만 넘긴다.
     """
     payload = compact({"key": key, "transition": transition_id,
@@ -367,7 +384,8 @@ def update_tickets(items: list, approval_token: str) -> dict:
 
     items: [{"key": "DL-123", "changes": {"duedate": "2026-09-01", "priority": "P2-Major"}}]
     티켓마다 **다른 값**을 줄 수 있다. 준 필드만 바뀌고, 비우려면 빈 문자열/빈 배열을 준다.
-    편집 권한이 없는 필드·티켓은 거부되며 사유가 failed 에 담겨 돌아온다.
+    `statusCategory=done`인 티켓이 하나라도 있으면 전체 batch를 시작하지 않는다. 먼저
+    Reopened 전이를 별도 실행해야 한다. 편집 권한이 없는 필드·티켓도 거부된다.
 
     돌려주는 것: {"ok", "updated": [{index,key,fields}], "failed": [{index,summary,error}]}
     """
@@ -414,7 +432,8 @@ def add_ticket_comments(items: list, approval_token: str) -> dict:
     items: [{"key": "DL-123", "body": "..."}] — 티켓마다 **다른 본문**을 줄 수 있다.
     사람 언급은 [~사번](예: [~skcc.x1042]), 티켓 키는 평문(DL-123)으로 적으면 링크가 된다.
 
-    사용자가 요청하지 않은 코멘트를 임의로 달지 마라 — 여러 사람에게 알림이 간다.
+    완료 티켓에도 코멘트는 허용된다. 사용자가 요청하지 않은 코멘트를 임의로 달지 마라 —
+    여러 사람에게 알림이 간다.
 
     돌려주는 것: {"ok", "created": [{index,key}], "failed": [{index,summary,error}]}
     """

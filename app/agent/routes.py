@@ -41,6 +41,10 @@ class _ApproveBody(BaseModel):
     overrides: dict = None         # {"assignees": {"0": "skcc.x1042"}} — 카드에서 고른 담당자
 
 
+class _ReferencesBody(BaseModel):
+    references: list[dict]
+
+
 class _SettingsBody(BaseModel):
     """설정 패널이 보내는 것. **모두 선택** — 준 것만 바꾼다(빈 문자열은 '지우기')."""
     provider: str = None
@@ -249,9 +253,17 @@ def api_compose(body: _ComposeBody):
 
     쓰기가 아니다(승인 토큰 없음). 저장은 사용자가 에디터에서 누른다.
     """
-    from app.agent import compose as _compose
-    r = _compose.compose(body.ticketKey, body.kind, body.prompt, body.seedHtml, body.userId)
+    from app.agent.editor_author import EditorAuthor
+    r = EditorAuthor().compose(body.ticketKey, body.kind, body.prompt, body.seedHtml, body.userId)
     return JSONResponse(r, status_code=200 if r.get("ok") else 400)
+
+
+@router.post("/references/resolve")
+def api_resolve_references(body: _ReferencesBody):
+    """참조를 한 번에 검증해 UI와 writer가 같은 canonical 링크·label을 쓰게 한다."""
+    from app.agent.references import resolve_references
+    result = resolve_references(body.references)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 422)
 
 
 @router.get("/snapshot/{thread_id}")
@@ -279,6 +291,11 @@ def _reset_runtime():
     try:
         from app.agent.workflow import graph
         graph.reset()
+    except Exception:
+        pass
+    try:
+        from app.agent import capabilities
+        capabilities.reset()
     except Exception:
         pass
     try:

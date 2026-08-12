@@ -14,7 +14,7 @@ os.environ.setdefault("JIRA_ENV", "mock")
 pytest.importorskip("langgraph", reason="requirements-agent.txt 미설치")
 
 from app.agent.workflow import graph as G                     # noqa: E402
-from app.agent.workflow.state import Intent                   # noqa: E402
+from app.agent.workflow.state import Intent, Node             # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +31,7 @@ def fake(monkeypatch, tmp_path):
 def test_direct_answer_intents_skip_the_historian():
     """my_day·progress·activity 는 과거 발굴이 아니라 지금 상태의 집계다."""
     for i in (Intent.MY_DAY, Intent.PROGRESS, Intent.ACTIVITY):
-        assert G.route_after_planner({"intent": i}) == "pmo"
+        assert G.route_after_request_architect({"intent": i}) == Node.PORTFOLIO_ANALYST
 
 
 def test_bug_reports_still_go_through_investigation():
@@ -45,17 +45,17 @@ def test_bug_reports_still_go_through_investigation():
     bug = {"intent": Intent.PLAN_WORK,
            "messages": [HumanMessage(content="리니지 뷰어에서 2홉 이상 펼치면 화면이 빈다")]}
     assert not hasattr(Intent, "REPORT_BUG"), "갈래로 되돌리지 마라 — 산출물 유형이다"
-    assert G.route_after_planner(bug) == "investigate"
-    assert G.route_after_historian(bug) == "refine"
+    assert G.route_after_request_architect(bug) == "investigate"
+    assert G.route_after_research_analyst(bug) == "refine"
     # ★ sufficient 가 안 붙어도 조사로 간다 — 버그는 "막연한 신규 개발"이 아니다.
     #   같은 문장에서 낱말이 빠지면(=버그가 아니면) 해석 확인이 먼저다.
     vague = dict(bug, messages=[HumanMessage(content="리니지 뷰어를 개선하고 싶다")])
-    assert G.route_after_planner(vague) == "refine"
+    assert G.route_after_request_architect(vague) == "refine"
 
 
-def test_pmo_node_exists_and_flows_to_responder():
+def test_portfolio_analyst_node_exists_and_flows_to_result_integrator():
     g = G.build().get_graph()
-    assert "pmo" in g.nodes
+    assert Node.PORTFOLIO_ANALYST in g.nodes
 
 
 # ── PMO 도구: 숫자가 실물과 같은가 ──────────────────────────────────
@@ -181,19 +181,19 @@ def test_bug_body_rules_follow_the_request_not_the_intent():
     낱말로 옮겼고(갈래는 §7 16-b 에서 제거), 이 테스트도 그 규율을 잰다.
     """
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.refiner import Refiner
+    from app.agent.workflow.agents.work_architect import WorkArchitect
     st = {"messages": [HumanMessage(content="배치가 실패한다")], "intent": Intent.PLAN_WORK}
-    assert "재현 경로" in Refiner().task(st)
+    assert "재현 경로" in WorkArchitect().task(st)
     # 의도가 modify 로 미끄러져도 **버그 이야기면** 규율이 유지된다
-    assert "재현 경로" in Refiner().task(dict(st, intent=Intent.MODIFY))
+    assert "재현 경로" in WorkArchitect().task(dict(st, intent=Intent.MODIFY))
     # 버그 이야기가 아니면 평소 규율 — 아무 요청에나 버그 템플릿을 씌우면 안 된다
     plain = {"messages": [HumanMessage(content="메타데이터 등록 작업이 필요해")],
              "intent": Intent.PLAN_WORK}
-    assert "재현 경로" not in Refiner().task(plain)
+    assert "재현 경로" not in WorkArchitect().task(plain)
 
 
 def test_planner_schema_covers_all_new_intents():
-    from app.agent.workflow.agents.planner import SCHEMA
+    from app.agent.workflow.agents.request_architect import SCHEMA
     enum = SCHEMA["properties"]["intent"]["enum"]
     for i in (Intent.PLAN_WORK, Intent.MY_DAY, Intent.PROGRESS, Intent.ACTIVITY):
         assert i in enum
@@ -202,7 +202,7 @@ def test_planner_schema_covers_all_new_intents():
 # ── modify 실행 경로 — 변경 계획 → 승인 → update_ticket ────────────
 def test_change_plan_routes_to_approval_not_assignment():
     """변경 계획은 담당자 추천·생성 검증을 지나지 않는다 — 해당이 없는 단계다."""
-    assert G.route_after_refiner({"questions": [],
+    assert G.route_after_work_architect({"questions": [],
                                   "change_plan": {"key": "DL-1", "changes": {"duedate": "2026-09-01"}},
                                   "draft": {}}) == "propose"
 
@@ -219,11 +219,11 @@ def test_propose_stages_an_update_token_matching_the_tool_payload():
 
 
 def test_modify_end_to_end_updates_the_real_ticket(monkeypatch):
-    """modify 이음매 전체 — Planner/Refiner 만 고정. **Operator 는 실물이다**(변경 실행이
+    """modify 이음매 전체 — RequestArchitect/WorkArchitect 만 고정. **ActionExecutor 는 실물이다**(변경 실행이
     결정적이라 LLM 없이 돈다). interrupt·이중 토큰·update·코멘트까지 진짜로 굴린다."""
     from app.agent.workflow import session
-    from app.agent.workflow.agents.planner import Planner
-    from app.agent.workflow.agents.refiner import Refiner
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.agents.work_architect import WorkArchitect
     from app.agent.tools import _ctx
     import app.agent.tools as T
 
@@ -231,9 +231,9 @@ def test_modify_end_to_end_updates_the_real_ticket(monkeypatch):
     plan = {"key": key, "changes": {"duedate": "2026-11-11"},
             "comment": "의존 작업 지연으로 일정 조정", "why": "일정 조정"}
 
-    monkeypatch.setattr(Planner, "node", lambda self: (lambda st: {
+    monkeypatch.setattr(RequestArchitect, "node", lambda self: (lambda st: {
         "intent": Intent.MODIFY, "keywords": [key], "mentioned_keys": [key], "sufficient": True}))
-    monkeypatch.setattr(Refiner, "node", lambda self: (lambda st: {
+    monkeypatch.setattr(WorkArchitect, "node", lambda self: (lambda st: {
         "questions": [], "change_plan": dict(plan), "turns": 1, "draft": {}}))
     G.reset()
 
@@ -259,8 +259,8 @@ def test_pmo_vit_label_is_stripped_unless_user_asked(monkeypatch):
     """PMO_VIT 는 경영진 현안 전용·최상위 하나에만 — 모델이 신규 티켓 셋에 전부 붙였다(실측).
     사용자가 입에 올리지 않았으면 기계적으로 뗀다."""
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.refiner import Refiner
-    r = Refiner()
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+    r = WorkArchitect()
     out = {"questions": [], "mode": "task", "rationale": "",
            "items": [{"summary": "s", "type": "Task", "labels": ["PMO_VIT", "quality"]}]}
     st = {"messages": [HumanMessage(content="품질 규칙 기능 만들어줘")], "trace": []}
@@ -275,13 +275,13 @@ def test_references_are_merged_into_the_참고_section():
     """조사 근거를 티켓에 박제하되 — 섹션은 '참고' **하나**다. 별도 References h3 를
     덧붙이던 방식은 모델이 쓴 <h3>참고</h3> 와 무조건 중복됐다(실측: 3벌·한영 혼재)."""
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.refiner import Refiner
+    from app.agent.workflow.agents.work_architect import WorkArchitect
     st = {"messages": [HumanMessage(content="CDC 도입")], "trace": [],
           "evidence": [{"key": "DL-118", "why": "소스 DB 부하로 중단됐던 선행 검토"}],
           "related_docs": [{"title": "CDC 설계 문서", "url": "https://conf/x"}]}
     out = {"questions": [], "mode": "task", "rationale": "",
            "items": [{"summary": "s", "type": "Task", "description": "<h3>배경</h3><p>x</p>"}]}
-    got = Refiner().apply(st, out)
+    got = WorkArchitect().apply(st, out)
     d = got["draft"]["items"][0]["description"]
     assert "References" not in d and d.count("<h3>참고</h3>") == 1
     assert "DL-118" in d and "https://conf/x" in d
@@ -289,7 +289,7 @@ def test_references_are_merged_into_the_참고_section():
     out2 = {"questions": [], "mode": "task", "rationale": "",
             "items": [{"summary": "s", "type": "Task",
                        "description": "<h3>참고</h3><ul><li>DL-118 — 이미 적음</li></ul>"}]}
-    d2 = Refiner().apply(st, out2)["draft"]["items"][0]["description"]
+    d2 = WorkArchitect().apply(st, out2)["draft"]["items"][0]["description"]
     assert d2.count("<h3>참고</h3>") == 1 and d2.count("DL-118") == 1
     assert "https://conf/x" in d2      # 없던 문서는 병합된다
 
@@ -298,17 +298,17 @@ def test_comment_only_change_plan_goes_through_approval(monkeypatch):
     """"이 내용 DL-x 에 댓글로 남겨줘" — 변경 필드 없이 댓글만도 승인→실행이 돼야 한다."""
     from langchain_core.messages import HumanMessage
     from app.agent.workflow import session
-    from app.agent.workflow.agents.planner import Planner
-    from app.agent.workflow.agents.refiner import Refiner
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.agents.work_architect import WorkArchitect
     from app.agent.tools import _ctx
     import app.agent.tools as T
 
     key = _ctx.client().search_issues(
         "statusCategory = indeterminate ORDER BY updated DESC", max_results=3)[0]["key"]
     plan = {"key": key, "changes": {}, "comment": "회의 결정: 다음 릴리스로 미룸", "why": ""}
-    monkeypatch.setattr(Planner, "node", lambda self: (lambda st: {
+    monkeypatch.setattr(RequestArchitect, "node", lambda self: (lambda st: {
         "intent": Intent.MODIFY, "keywords": [key], "mentioned_keys": [key], "sufficient": True}))
-    monkeypatch.setattr(Refiner, "node", lambda self: (lambda st: {
+    monkeypatch.setattr(WorkArchitect, "node", lambda self: (lambda st: {
         "questions": [], "change_plan": dict(plan), "turns": 1, "draft": {}}))
     G.reset()
 
@@ -342,7 +342,7 @@ def test_description_change_survives_the_token_fingerprint():
 def test_reference_index_duplicates_are_merged():
     """같은 출처가 두 번호를 받으면 코드가 접는다([1]·[3] 같은 티켓 — 실측).
     티켓 참조와 그 티켓의 코멘트 참조는 다른 출처라 남는다."""
-    from app.agent.workflow.agents.responder import _dedupe_refs
+    from app.agent.workflow.agents.result_integrator import _dedupe_refs
     t = ("주기 [1]. 잡 [3]. 담당 [4].\n\n**참조**\n"
          "- [1] DL-9044 — 주기 변경 근거\n"
          "- [3] DL-9044 — 같은 티켓 다른 설명\n"

@@ -15,6 +15,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
 os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+# 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
+os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
 _args = [a for a in sys.argv[1:] if not a.startswith("--")]
 MODEL = _args[0] if _args and not _args[0].isupper() else "gpt-4o-mini"
 ONLY = set(a for a in _args if a.isupper())
@@ -570,7 +572,7 @@ def _ux_ok(reply: str) -> bool:
     ② 근거 마커 [N] 를 3개 이상 쓰면 반드시 **참조** 섹션이 있어야 한다
     ③ 참조 줄에 티켓 키도 링크도 없으면 검증 불가한 출처다(실측: 링크 없는 문서 제목)
     ④ 같은 문장을 두 번 쓰지 않는다(실측 재발 — 프롬프트로 막을 종류가 아니다)
-    ⑤ 티켓을 5건 이상 나열하면 표로 준다 — 불릿 벽은 읽히지 않는다(responder.md 규칙)
+    ⑤ 티켓을 5건 이상 나열하면 표로 준다 — 불릿 벽은 읽히지 않는다(result_integrator.md 규칙)
     """
     from app.agent.workflow.grounding import _unlinked_refs
     if reply.count("확인된 기록 없음") >= 3:
@@ -759,7 +761,9 @@ if REPORT:
         lines.append(f"| {r['id']} | {r['desc']} | {'통과' if r.get('passed') else '실패'} "
                      f"| {r.get('score', '-')} | {(r.get('judge') or {}).get('worst', '')[:80]} |")
     p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "docs", "agent-scenarios-report.md")
+                     "research", "agent-improvement", "reports",
+                     "agent-scenarios-report.md")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print("리포트:", p)
@@ -798,7 +802,9 @@ if DUMP:
               f" · answers_original={jj.get('answers_original')}"
               f" · worst: {jj.get('worst', '')}", "", "---", ""]
     p2 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                      "docs", "agent-quality-run.md")
+                      "research", "agent-improvement", "reports",
+                      "agent-quality-run.md")
+    os.makedirs(os.path.dirname(p2), exist_ok=True)
     with open(p2, "w", encoding="utf-8") as f:
         f.write("\n".join(d) + "\n")
     print("전문 덤프:", p2)

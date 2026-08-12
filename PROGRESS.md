@@ -1,7 +1,7 @@
 # Lake Task Manager — 진행 상황 / TODO / History
 
 > 이 파일은 프로젝트의 **TODO 와 작업 History** 를 관리한다.
-> 배경·설계 원칙은 `CLAUDE.md`, 실행 계획 세부는 각 Phase 항목 참고.
+> 배경·설계 원칙은 `AGENTS.md`, 실행 계획 세부는 각 Phase 항목 참고.
 > 작업을 마칠 때마다 아래 **History** 에 날짜와 함께 한 줄 추가한다.
 
 ## 현재 상태

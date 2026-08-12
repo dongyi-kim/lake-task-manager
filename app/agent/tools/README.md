@@ -15,7 +15,7 @@
 **검증 규칙을 두 벌 만들지 않는다.** `validate_ticket_plan` 은 화면의 Bulk 생성이 쓰는
 `domain/bulk.validate_bulk` 를 그대로 부른다. 규칙이 갈라지면 더 관대한 쪽이 사고를 낸다.
 
-**역할 분리는 프롬프트가 아니라 도구 목록으로 한다.** 전부 다 주면 Historian 이 티켓을 만든다.
+**역할 분리는 프롬프트가 아니라 도구 목록으로 한다.** 전부 다 주면 Research Analyst 이 티켓을 만든다.
 
 ## 묶음
 
@@ -36,7 +36,7 @@
 어디까지 갈지는 모델이 정한다(ReAct). 한 도구가 다 하면 매번 최대 비용을 치른다.
 
 담당자 근거 네 신호: **① 현재 워크로드**(`get_team_workload`) · **② 유사 티켓 담당 이력**
-(Historian 의 검색 결과) · **③ 코멘트·멘션 참여**(`get_ticket_participants`) ·
+(Research Analyst 의 검색 결과) · **③ 코멘트·멘션 참여**(`get_ticket_participants`) ·
 **④ 모듈 소속 + 최근 활동**(`get_module_people` / `get_person_profile`).
 도구는 **순위를 매기지 않는다** — 신호만 모으고 판단과 문장은 모델이 한다.
 
@@ -53,3 +53,6 @@
 - Bulk 는 `mode` 가 하나뿐 — Sub-Task 는 부모가 이미 있어야 하므로 **두 번 나눠** 부른다
 - 한 번에 100건 상한(`MAX_ITEMS`)
 - 상태명·필드 id 를 하드코딩하지 않는다 → `list_transitions` / `list_ticket_options` 로 확인
+- `Epic → Task-tier → Sub-Task` 계층과 허용 field/action은
+  `app/domain/ticket_actions.py`가 집행한다. `statusCategory=done`에서는 field update를
+  거부하지만 comment와 현재 Jira가 제공한 `Reopened` 전이는 허용한다. 전이 후 변경은 새 승인이다.

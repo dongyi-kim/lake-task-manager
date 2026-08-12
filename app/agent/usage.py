@@ -122,7 +122,7 @@ class Meter:
 
     LangChain 콜백으로 붙어 **모델이 알려 준 실제 사용량**을 모은다. 에이전트 한 턴이 LLM 을
     여러 번 부르므로, 역할별로 나눠 담아야 "어디가 비싼가"를 볼 수 있다 — 대개 도구 결과를
-    통째로 다시 싣는 Historian 이 제일 비싸다.
+    통째로 다시 싣는 ResearchAnalyst 이 제일 비싸다.
     """
 
     def __init__(self):
@@ -199,7 +199,7 @@ def callback(meter: Meter):
             import time as _t
             md = kwargs.get("metadata") or {}
             # 서브그래프 안에서는 노드명이 think/act 다 — 체크포인트 네임스페이스의 부모
-            # (historian:.. → historian)로 바꿔야 역할별 집계가 된다.
+            # (research_analyst:.. → research_analyst)로 바꿔야 역할별 집계가 된다.
             ns = str(md.get("langgraph_checkpoint_ns") or "")
             node = ns.split(":", 1)[0] if ns else str(md.get("langgraph_node") or "")
             self._t0[str(run_id)] = (_t.time(), node)

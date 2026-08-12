@@ -55,6 +55,26 @@ def test_fabricated_person_in_role_context_is_flagged():
     assert "김철수" in g["fake_people"]
 
 
+def test_user_supplied_dialogue_speaker_is_not_treated_as_an_assignee_claim():
+    g = grounding.check("김운영님과 이개발님 간 대화에서 장애가 보고되었습니다.",
+                        allowed_people={"김운영", "이개발"})
+    assert "김운영" not in g["fake_people"] and "이개발" not in g["fake_people"]
+
+
+def test_dialogue_speaker_extraction_only_accepts_colon_prefixed_lines():
+    from app.agent.workflow.agents.result_integrator import _dialogue_speakers
+    req = ("[10:12] 김운영: 장애가 발생했습니다\n"
+           "[10:13] 이개발: 로그를 확인했습니다\n담당자는 김철수로 해줘")
+    assert _dialogue_speakers(req) == {"김운영", "이개발"}
+
+
+def test_confluence_url_is_safe_inside_markdown_destination():
+    from app.agent.workflow.agents.result_integrator import _markdown_url
+    got = _markdown_url("https://conf/pages/1/[설계]+문서(초안)")
+    assert "[" not in got and "]" not in got and "(" not in got and ")" not in got
+    assert "%5B" in got and "%28" in got
+
+
 def test_markdown_bold_roles_are_still_caught():
     """실측: 답변은 '**PM**: 김철수' 꼴(마크다운 볼드) — 첫 배포의 정규식이 전부 놓쳤다."""
     g = grounding.check("- **PM**: 김철수 — 일정 조율\n- **개발자**: 이영희")
@@ -92,6 +112,12 @@ def test_plain_hangul_words_are_not_mistaken_for_names():
     assert g["fake_people"] == []
 
 
+def test_role_match_does_not_cross_a_newline_into_the_next_label():
+    """`1건 담당\n- **대안**:`에서 '대안'은 사람 이름이 아니다(S1 실측 오탐)."""
+    g = grounding.check("- 유사 업무 1건 담당\n- **대안**:\n  - skcc.x1042")
+    assert "대안" not in g["fake_people"], g
+
+
 def test_violation_note_carries_real_values():
     key, title = _real_key_and_title()
     g = grounding.check(f"{key}: 전사 보안 패치. 담당자: 김철수. 그리고 ZZZZ-1 도 관련.")
@@ -103,19 +129,44 @@ def test_warning_block_is_visible_not_silent():
     g = {"fake_keys": ["ZZZZ-1"], "wrong_titles": {}, "fake_people": ["김철수"]}
     w = grounding.warning_block(g)
     assert "자동 검증 경고" in w and "ZZZZ-1" in w and "김철수" in w
+    assert "승인하지 말고" in w and "무시하고" not in w
 
 
 def test_responder_appends_warning_when_rewrite_cannot_fix(monkeypatch):
     """재작성으로도 못 고치면 경고가 **보이게** 붙는다 — 조용히 넘어가지 않는다."""
     os.environ["LAKE_AGENT_PROVIDER"] = "fake"
-    from app.agent.workflow.agents.responder import Responder
-    r = Responder()
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    r = ResultIntegrator()
     # fake llm 의 재작성도 같은 날조를 담는다고 가정
     monkeypatch.setattr(r, "llm", lambda **k: type("L", (), {
         "invoke": lambda self, msgs: type("M", (), {"content": "여전히 담당자: 김철수 입니다."})()})())
     out = r.apply({"trace": []}, {"text": "담당자: 김철수 가 맡고 있습니다."})
     assert "자동 검증 경고" in out["reply"]
     assert "김철수" in out["reply"]
+
+
+def test_responder_removes_internal_heading_and_renders_reference_tokens():
+    from app.agent.workflow.agents.result_integrator import _render_reply_tokens, _strip_instruction_echo
+    text = _strip_instruction_echo("# 명령서\nDL-9090은 {{ref:DL-9090}}, 담당 {{mention:skcc.x1402}}")
+    text = _render_reply_tokens(text)
+    assert not text.startswith("# 명령서")
+    assert "{{ref:" not in text and "{{mention:" not in text
+    assert "[DL-9090](" in text and "[~skcc.x1402]" in text
+
+
+def test_responder_uses_the_payload_when_reply_claims_creation_is_impossible():
+    from app.agent.workflow.agents.result_integrator import _align_draft_claims
+    state = {"draft": {"items": [{"summary": "[ETL] 재처리 배치 개선", "type": "Task"}]}}
+    text = _align_draft_claims("이 작업은 생성할 수 없습니다.", state)
+    assert "생성할 수 없습니다" not in text
+    assert "재처리 배치 개선" in text and "아직 생성되지 않은" in text
+
+
+def test_responder_does_not_ask_to_approve_a_missing_draft():
+    from app.agent.workflow.agents.result_integrator import _align_draft_claims
+    state = {"draft": {"items": [], "rationale": "부모가 Sub-Task라 생성할 수 없다."}}
+    text = _align_draft_claims("티켓 초안을 확인하고 승인해 주세요.", state)
+    assert "현재 승인할 티켓 초안은 없습니다" in text
 
 
 def test_fabricated_uid_with_real_suffix_is_caught():
@@ -129,7 +180,7 @@ def test_fabricated_uid_with_real_suffix_is_caught():
 # ── 되묻기 턴: 폼에 있는 것을 본문에 또 쓰지 않는다 (사용자 지적) ──────────
 def test_the_reply_does_not_echo_the_question_form():
     """질문은 카드 폼이 묻는다. 같은 질문·보기를 산문에 늘어놓으면 같은 말이 두 벌 뜬다."""
-    from app.agent.workflow.agents.responder import _drop_form_echo
+    from app.agent.workflow.agents.result_integrator import _drop_form_echo
     text = ("요약: 'fdc_flat_summary_ic' 표기로는 기록을 찾지 못했습니다. 유사 식별자 "
             "1건(fdc.fdc_trace_summary_ic)을 확인했습니다.\n\n"
             "확인 부탁\n\n아래 중 어떤 것을 말씀하신 건가요?\n"
@@ -147,7 +198,7 @@ def test_the_reply_does_not_echo_the_question_form():
 
 def test_the_form_echo_filter_keeps_a_normal_answer_intact():
     """질문이 없는 턴이나 폼과 무관한 문장은 건드리지 않는다."""
-    from app.agent.workflow.agents.responder import _drop_form_echo
+    from app.agent.workflow.agents.result_integrator import _drop_form_echo
     text = "DL-9044 에서 적재주기가 30분으로 바뀌었습니다.\n담당은 skcc.x1042 입니다."
     qs = [{"question": "어느 모듈로 볼까요?", "kind": "choice", "options": ["ETL", "Catalog"]}]
     assert _drop_form_echo(text, qs) == text
@@ -157,7 +208,7 @@ def test_the_form_echo_filter_keeps_a_normal_answer_intact():
 def test_a_reference_without_a_key_or_link_is_a_violation():
     """common.md 가 두 곳에서 금지하는데도 샜다 — `[4] [데이터카탈로그] … — 적재 Job 정보`.
     재료에는 그 문서의 URL 이 실려 있었으므로 **쓸 수 있었는데 안 쓴 것**이다.
-    본문 참고 불릿에는 같은 가드가 이미 있었고(refiner), 답변 텍스트 쪽에만 없었다."""
+    본문 참고 불릿에는 같은 가드가 이미 있었고(work_architect), 답변 텍스트 쪽에만 없었다."""
     from app.agent.workflow import grounding
     bad = "**참조**\n[4] [데이터카탈로그] fdc_trace_summary_ic 테이블 특성 분석 — 적재 Job 정보"
     r = grounding.check(bad)
@@ -182,9 +233,9 @@ def test_a_failed_rewrite_still_attaches_the_warning(monkeypatch):
     """재작성은 시스템 프롬프트 전체 + 답 전문을 다시 보내는 **두 번째 LLM 호출**이라
     레이트리밋·길이로 죽을 수 있다. 그건 교정의 실패이지 탐지의 무효가 아니다 —
     예전엔 둘이 한 try 안에 있어 재작성이 죽으면 탐지 결과까지 통째로 버려졌다."""
-    from app.agent.workflow.agents.responder import Responder
-    r = Responder()
-    monkeypatch.setattr(Responder, "llm",
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    r = ResultIntegrator()
+    monkeypatch.setattr(ResultIntegrator, "llm",
                         lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("429")))
     bad = ("DL-9044 에서 30분으로 바뀌었습니다 [1].\n\n**참조**\n"
            "[1] DL-9044 — 적재주기 변경\n"
@@ -196,7 +247,7 @@ def test_a_failed_rewrite_still_attaches_the_warning(monkeypatch):
 def test_a_rewrite_that_guts_the_answer_is_rejected():
     """위반을 없애는 가장 쉬운 방법은 **내용을 지우는 것**이다 — 그 길을 막는다.
     실측(fake 프로브): 지시문을 복창한 껍데기가 검사를 통과해 멀쩡한 답을 대체했다."""
-    from app.agent.workflow.agents.responder import _kept_substance
+    from app.agent.workflow.agents.result_integrator import _kept_substance
     full = ("DL-9041·DL-9042·DL-9043 를 시간순으로 정리하면 다음과 같습니다. "
             "각 티켓의 경위와 현재 상태를 아래 표에 담았습니다.")
     assert _kept_substance(full, full.replace("DL-9043", "DL-9046")) is True
@@ -209,7 +260,7 @@ def test_bracketed_link_titles_survive_the_dangling_bracket_cleanup():
     """우리 Confluence 제목은 전부 `[데이터카탈로그] …` 꼴이라 링크 텍스트에 대괄호가 있다.
     옛 정규식은 60자를 내다보는 lookahead 라 그 링크를 통째로 뭉갰다 — "링크 없는 문서
     제목" 사고를 프롬프트로 몇 라운드나 쫓았는데 모델은 제대로 쓰고 있었다."""
-    from app.agent.workflow.agents.responder import _drop_dangling_bracket as f
+    from app.agent.workflow.agents.result_integrator import _drop_dangling_bracket as f
     keep = "[1] [[데이터카탈로그] qms_defect_code_mst 정의](http://wiki/x) — 주 1회"
     assert f(keep) == keep
     assert f("[2] [설계 노트](http://wiki/z) — 무엇") == "[2] [설계 노트](http://wiki/z) — 무엇"
@@ -221,8 +272,8 @@ def test_bracketed_link_titles_survive_the_dangling_bracket_cleanup():
 def test_post_processing_damage_is_caught_by_a_late_recheck():
     """접지 검사는 후처리 **앞**에 있어서, 후처리가 만든 결함은 검사를 통과한 셈이 됐다.
     마지막에 한 번 더 본다 — 재작성은 이미 끝난 자리라 경고만 붙인다."""
-    from app.agent.workflow.agents.responder import Responder
-    r = Responder()
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    r = ResultIntegrator()
     # 링크가 온전하면 경고가 붙지 않는다
     ok = ("주 1회 동기화된다 [1].\n\n**참조**\n"
           "[1] [[데이터카탈로그] qms 정의](http://wiki/x) — 주 1회\n")
@@ -276,7 +327,7 @@ def test_document_urls_are_attached_by_code_not_asked_for():
     """재료에는 URL 이 있는데 모델이 참조로 옮기지 않는 일이 반복됐다(실측 DATA9: 참조
     세 줄이 전부 제목만). 프롬프트로 두 라운드 고쳤는데도 재발했다 — **아는 URL 을 그
     제목에 붙이는 것은 지어내는 것이 아니라 옮기는 것**이라 코드가 할 일이다."""
-    from app.agent.workflow.agents.responder import _attach_known_doc_urls
+    from app.agent.workflow.agents.result_integrator import _attach_known_doc_urls
     from app.agent.workflow.grounding import _unlinked_refs
     st = {"topic_dossier": "문서 「[데이터카탈로그] qms 정의」 (http://x/pages/239/y) 발췌:\n본문"}
     t = ("**참조**\n1. [데이터카탈로그] qms 정의 — 적재주기\n"
@@ -291,7 +342,7 @@ def test_document_urls_are_attached_by_code_not_asked_for():
 
 def test_unknown_titles_are_not_given_a_borrowed_url():
     """부분 일치로 엉뚱한 문서를 붙이면 그게 곧 위조다 — 제목이 그대로 있을 때만 붙인다."""
-    from app.agent.workflow.agents.responder import _attach_known_doc_urls
+    from app.agent.workflow.agents.result_integrator import _attach_known_doc_urls
     st = {"topic_dossier": "문서 「A 설계 노트」 (http://x/a) 발췌:\n본문"}
     t = "**참조**\n1. B 운영 런북 — 다른 문서다\n"
     assert _attach_known_doc_urls(t, st) == t
@@ -308,7 +359,7 @@ def test_real_names_leaking_through_table_cells_are_caught():
 
 
 def test_a_real_display_name_is_still_a_violation_with_its_id_as_the_fix():
-    """responder.md: "never translate ids into names". 그런데 이 검사는 **날조만** 봐서
+    """result_integrator.md: "never translate ids into names". 그런데 이 검사는 **날조만** 봐서
     실재하는 실명은 그냥 통과했다(실측 EDGE13: "담당자 한예준"). 화면은 사번을 뱃지·프로필로
     렌더하고, 실명은 동명이인·표기 흔들림에 취약해 검증이 안 된다.
     실값을 알고 있으니 **고칠 사번까지** 쥐여 준다 — '지워라'가 아니라 '바꿔라'다."""
@@ -340,3 +391,15 @@ def test_a_shortened_quoted_title_is_not_flagged():
     head = " ".join(title.replace("[", "").replace("]", "").split()[:2])
     g = grounding.check(f'{key} "{head}" 는 진행 중')
     assert key not in g["wrong_titles"], (title, g)
+
+
+def test_two_separately_quoted_ticket_keys_are_not_parsed_as_one_title():
+    key, _ = _real_key_and_title()
+    g = grounding.check(f"현재 '{key}' 티켓이 진행 중이며, '{key}' 티켓도 확인했습니다.")
+    assert key not in g["wrong_titles"], g
+
+
+def test_ticket_table_word_task_is_not_parsed_as_a_person():
+    key, _ = _real_key_and_title()
+    g = grounding.check(f"- {key}: 작업 진행 중")
+    assert "작업" not in g["fake_people"], g

@@ -1,6 +1,6 @@
 # tools/agent_create_suite.py — 티켓 **생성** 시나리오 배터리 (실 LLM, 수동 실행 전용).
 #
-# 실행: python -X utf8 tools/agent_create_suite.py [모델] [케이스ID ...]
+# 실행: python -X utf8 tools/agent_create_suite.py [모델] [케이스ID ...] [--out 결과.json]
 #
 # 생성 요청은 사용자가 말하는 방식이 제각각이다 — 한 줄로 던지기도 하고, 구조를 지정하기도
 # 하고, 남이 쓴 글을 통째로 붙여넣기도 한다. 여기 모은 것은 **그 변주**다.
@@ -16,13 +16,28 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
 os.environ["LAKE_AGENT_PROVIDER"] = "openai"
-_args = [a for a in sys.argv[1:] if not a.startswith("-")]
+# 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
+os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
+_raw_args = list(sys.argv[1:])
+OUT = None
+for i, arg in enumerate(_raw_args):
+    if arg.startswith("--out="):
+        OUT = arg.split("=", 1)[1]
+    elif arg == "--out" and i + 1 < len(_raw_args):
+        OUT = _raw_args[i + 1]
+_args = [a for i, a in enumerate(_raw_args)
+         if not a.startswith("-") and not (i and _raw_args[i - 1] == "--out")]
 MODEL = _args[0] if _args and not _args[0].isupper() else "gpt-4o-mini"
 ONLY = {a for a in _args if a.isupper()}
 os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
 os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
 from app.agent.workflow import session  # noqa: E402
+try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
+    from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
+except ImportError:  # legacy asset에는 version 상수가 없었다.
+    PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
 def items(o):
@@ -56,8 +71,10 @@ def _owners(rows):
 # 났고, DRAFT-COMPARISON 의 갭 3종도 전부 본문 이야기다. 그래서 knowledge/07 의 규율을
 # 결정적 검사로 내려 전 케이스에 건다 — judge(주관) 이전의 최소선이다.
 # ★ 목록을 여기 다시 적지 않는다 — 코드가 지키는 규칙과 배터리가 재는 규칙이 갈리면
-#   더 관대한 쪽이 사고를 낸다(§5-e). refiner 가 원본이고 여기는 그것을 가져다 쓴다.
-from app.agent.workflow.agents.refiner import DOD_VAGUE as _DOD_VAGUE  # noqa: E402
+#   더 관대한 쪽이 사고를 낸다(§5-e). Work Architect가 원본이고 여기는 그것을 가져다 쓴다.
+from app.agent.workflow.agents.work_architect import DOD_VAGUE as _DOD_VAGUE  # noqa: E402
+from app.agent.workflow.agents.work_architect import _bug_grade_body  # noqa: E402
+from app.agent.workflow.agents.work_architect import _has_placeholder_body  # noqa: E402
 
 
 def _body_flaws(o) -> list:
@@ -73,9 +90,18 @@ def _body_flaws(o) -> list:
         if len(b.strip()) < 60:
             flaws.append(f"[{i}] 본문이 사실상 비었다")
             continue
-        for sec in ("배경", "작업 범위", "완료 조건"):
-            if sec not in b:
-                flaws.append(f"[{i}] '{sec}' 섹션 없음")
+        is_bug = str(it.get("type") or "").strip().lower() == "bug"
+        # Bug는 Task의 배경/범위/DoD가 아니라 재현/기대/실제 세 칸이 계약이다. 전 케이스
+        # 공통 Task 게이트를 걸어 PASTE2·BUG2가 올바른 Bug 본문인데도 항상 실패했다.
+        if is_bug:
+            if not _bug_grade_body(b):
+                for sec in ("재현", "기대", "실제"):
+                    if sec not in b:
+                        flaws.append(f"[{i}] Bug '{sec}' 섹션 없음")
+        else:
+            for sec in ("배경", "작업 범위", "완료 조건"):
+                if sec not in b:
+                    flaws.append(f"[{i}] '{sec}' 섹션 없음")
         # 중복·영문 섹션 — 실측 사고(참고/Knowledge/References 3벌)
         if b.count("<h3>참고</h3>") > 1:
             flaws.append(f"[{i}] 참고 섹션이 두 벌")
@@ -83,21 +109,44 @@ def _body_flaws(o) -> list:
             if bad in b:
                 flaws.append(f"[{i}] 영문 중복 섹션 '{bad}'")
         # 범위의 제외 — "하지 않는 것을 적는 게 절반"(knowledge/07)
-        if "작업 범위" in b and not re.search(r"제외|하지\s*않", b):
+        if not is_bug and "작업 범위" in b and not re.search(r"제외|하지\s*않", b):
             flaws.append(f"[{i}] 작업 범위에 제외가 없다")
         # DoD 판정 방법 — "테스트 완료"는 언제 끝인지 모른다
         dods = re.findall(r'data-checked="[^"]*"[^>]*>(.*?)</li>', b, re.S)
         dods = [re.sub(r"<[^>]+>", "", d).strip() for d in dods]
         dods = [d for d in dods if d]
-        if dods:
+        if not is_bug and dods:
             vague = [d for d in dods if any(v in d for v in _DOD_VAGUE) and len(d) < 24]
             if len(vague) * 2 > len(dods):
                 flaws.append(f"[{i}] DoD 절반 이상이 판정 방법 없음: {vague[:2]}")
-        # 링크도 키도 없는 참고 불릿은 날조로 취급된다(코드 가드가 지우지만 재발 감시)
-        for m in re.finditer(r"<li>(?!.*?(?:[A-Z]{2,}-\d+|<a href))(.{6,80}?)</li>", b):
-            if "참고" in b[max(0, m.start() - 400):m.start()]:
+        # 링크도 키도 없는 **참고 섹션 안의** 불릿은 날조로 취급한다. 예전의 앞 400자
+        # 탐색은 뒤의 '환경 및 추가 정보'까지 참고로 오인했다 — HTML 섹션 경계를 직접 본다.
+        for sec in re.finditer(
+                r"<h3>\s*참고(?:\s*(?:사항|자료|문서))?\s*</h3>\s*<ul[^>]*>(.*?)</ul>",
+                b, re.S | re.I):
+            for m in re.finditer(r"<li>(?!.*?(?:[A-Z]{2,}-\d+|<a href))(.{6,80}?)</li>",
+                                 sec.group(1), re.S):
                 flaws.append(f"[{i}] 참고에 출처 없는 불릿: {m.group(1)[:30]}")
                 break
+    return flaws
+
+
+def _output_flaws(o) -> list:
+    """본문 외의 사용자-visible 계약: 질문 수, reply/payload 일치, 렌더링 토큰."""
+    flaws = []
+    reply = str(o.get("reply") or "")
+    rows = items(o)
+    if len(o.get("questions") or []) > 3:
+        flaws.append(f"질문이 {len(o.get('questions') or [])}개(최대 3개)")
+    if any(_has_placeholder_body(i.get("description")) for i in rows):
+        flaws.append("본문에 '적어주세요/설명해주세요/TODO' placeholder가 남았다")
+    if rows and re.search(r"(?:티켓|초안|작업).{0,30}(?:만들|생성|진행).{0,12}(?:수\s*없|불가능)",
+                          reply, re.I | re.S):
+        flaws.append("reply는 생성 불가라지만 payload에는 초안이 있다")
+    if not rows and re.search(r"초안.{0,30}(?:승인|확인해\s*주)", reply, re.I | re.S):
+        flaws.append("payload가 없는데 reply가 초안 승인을 요청한다")
+    if re.search(r"^\s*#{1,3}\s*명령서", reply) or "{{ref:" in reply or "{{mention:" in reply:
+        flaws.append("내부 명령서/미렌더링 reference 토큰이 노출됐다")
     return flaws
 
 
@@ -151,11 +200,10 @@ CASES = [
      lambda o, _: any((i.get("epic") or "") == "DL-101" for i in items(o))),
 
     # ── Sub-Task 만들기 세 갈래 ──────────────────────────────────────
-    ("SUB1", "기존 Task 를 여러 Sub-Task 로 분할 — 부모는 그대로 두고 쪼갠다", [
+    ("SUB1", "이미 Sub-Task인 대상을 다시 부모로 쓰지 않는다", [
         "DL-9095 이거 혼자 하기엔 커. 단계별로 서브태스크로 쪼개줘. 알아서"],
-     lambda o, _: (lambda rows: len(rows) >= 2
-                   and all((r.get("parent") or "") == "DL-9095" for r in rows))
-     (items(o) + kids(o))),
+     lambda o, _: not items(o) and (bool(o.get("questions"))
+                                    or "Sub-Task" in (o.get("reply") or ""))),
 
     ("SUB2", "기존 Task 하나에 Sub-Task 여러 개 추가 — 이미 있는 자식과 겹치지 않게", [
         "DL-9090 에 성능 측정이랑 사용 가이드 작성 서브태스크 추가해줘. 알아서"],
@@ -165,11 +213,10 @@ CASES = [
                    and not any("다운스트림" in (r.get("summary") or "") for r in rows))
      (items(o) + kids(o))),
 
-    ("SUB3", "여러 Task 에 비슷한 Sub-Task 를 각각 추가 — 부모별로 나뉘어야 한다", [
+    ("SUB3", "여러 대상이 모두 Sub-Task면 잘못된 자식 생성을 보류한다", [
         "DL-9093 이랑 DL-9094 두 개 다 회귀 테스트 서브태스크 하나씩 붙여줘. 알아서"],
-     lambda o, _: (lambda rows: len({(r.get("parent") or "") for r in rows}) >= 2
-                   and {"DL-9093", "DL-9094"} <= {(r.get("parent") or "") for r in rows})
-     (items(o) + kids(o))),
+     lambda o, _: not items(o) and (bool(o.get("questions"))
+                                    or "Sub-Task" in (o.get("reply") or ""))),
 
     # ── 남이 쓴 글을 통째로 붙여넣기 ─────────────────────────────────
     ("PASTE1", "VoC 원문 붙여넣기 — 요구를 티켓 언어로 옮긴다", [
@@ -190,7 +237,7 @@ CASES = [
     # ── 정보가 모자란 요청: 물어야 한다 ──────────────────────────────
     ("ASK1", "범위가 없으면 되묻는다(무턱대고 만들지 않는다)", [
         "데이터 품질 개선 작업 하나 만들어줘"],
-     lambda o, _: bool(o.get("questions"))),
+     lambda o, _: bool(o.get("questions")) and not items(o)),
 
     ("ASK2", "되물은 뒤 답을 반영해 초안으로", [
         "데이터 품질 개선 작업 하나 만들어줘",
@@ -200,8 +247,8 @@ CASES = [
     # ── 중복·기존 것 처리 ────────────────────────────────────────────
     ("DUP1", "이미 있는 일이면 새로 만들지 말고 알린다", [
         "프로듀서를 Avro 로 전환하는 작업을 새로 만들자"],
-     lambda o, _: (bool(o.get("questions"))
-                   or "DL-9072" in (o.get("reply") or ""))),
+     lambda o, _: not items(o) and (bool(o.get("questions"))
+                                    or "DL-9072" in (o.get("reply") or ""))),
 
     # ── 속성 지정이 섞인 요청 ────────────────────────────────────────
     ("ATTR1", "우선순위·마감·라벨을 말로 지정", [
@@ -235,7 +282,7 @@ CASES = [
                    and "<h3>Knowledge</h3>" not in _body(its[0]))(items(o))),
 
     # ── 버그 신고 갈래 (report_bug) ──────────────────────────────────
-    # 규율은 refiner 에 적혀 있는데 배터리가 CHIP2 하나뿐이었다. 이 갈래의 실패는 셋이다:
+    # 규율은 Work Architect에 적혀 있는데 배터리가 CHIP2 하나뿐이었다. 이 갈래의 실패는 셋이다:
     #   ① 재현 경로 없이 티켓을 만들어 버린다(아무도 못 잡는 티켓이 생긴다)
     #   ② 기대/실제를 안 나눠 적어 무엇이 잘못인지 안 보인다
     #   ③ 버그를 Sub-Task 로 쪼개 관리 단위를 흩뜨린다
@@ -258,22 +305,24 @@ CASES = [
                    # 버그는 쪼개지 않는다(관리 단위가 흩어진다)
                    and not kids(o))(items(o))),
 
-    ("BUG3", "이미 같은 증상의 Bug 가 있으면 새로 만들지 않는다", [
+    ("BUG3", "재현 정보가 없는 동일 증상 요청은 중복·재현 확인 없이 새로 만들지 않는다", [
         "야간 배치가 커넥션 타임아웃으로 실패한다. 버그로 등록해줘"],
-     lambda o, _: (bool(o.get("questions"))
-                   or "DL-" in (o.get("reply") or ""))),
+     lambda o, _: not items(o) and (bool(o.get("questions"))
+                                    or "DL-" in (o.get("reply") or ""))),
 
     # ── 규칙 위반을 요구 ─────────────────────────────────────────────
     ("RULE1", "Sub-Task 를 최상위로 만들어 달라 — 규칙대로 거절하거나 부모를 묻는다", [
         "서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼"],
-     lambda o, _: bool(o.get("questions"))
-     or all((i.get("type") or "") != "Sub-Task" for i in items(o))),
+     lambda o, _: bool(o.get("questions")) and not items(o)),
 
     ("RULE2", "Story Point 를 넣어 달라 — 생성 시에는 넣지 않는다", [
         "리니지 3홉 확장 Story 만들고 스토리포인트 5로 넣어줘. 알아서"],
      lambda o, _: "storyPoint" not in json.dumps(items(o))
      and "sp" not in {k.lower() for i in items(o) for k in i}),
 ]
+
+
+RESULTS = []
 
 
 def run(cid, desc, turns, check):
@@ -285,23 +334,56 @@ def run(cid, desc, turns, check):
             outs.append(o)
         last = outs[-1]
         ok_struct = bool(check(last, outs))
-        flaws = _body_flaws(last)           # 구조가 맞아도 본문이 규율을 어기면 통과가 아니다
+        flaws = _body_flaws(last) + _output_flaws(last)
+        # 구조가 맞아도 본문·최종 답변 계약을 어기면 통과가 아니다.
         ok = ok_struct and not flaws
     except Exception as e:
         print(f"✗ {cid} {desc}: 예외 {str(e)[:160]}")
+        RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": False,
+                        "초": round(time.time() - t0, 1), "오류": str(e),
+                        "턴": outs})
         return False, 0
+    elapsed = round(time.time() - t0, 1)
     n = len(items(last))
     print(f"{'✓' if ok else '✗'} {cid} {desc}: 초안 {n}건"
           f"{' + 자식 ' + str(len(kids(last))) if kids(last) else ''}"
           f" · 질문 {len(last.get('questions') or [])}"
           f" · 구조 {pend(last, 'structure') or '-'}"
-          f" · 본문 {'ok' if not flaws else f'{len(flaws)}건'} · {time.time() - t0:.0f}s")
+          f" · 본문 {'ok' if not flaws else f'{len(flaws)}건'} · {elapsed:.0f}s")
     if flaws:
         print(f"    본문 결함: {' / '.join(flaws[:4])}")
-    if not ok_struct:
+    if not ok:
         print(f"    reply: {(last.get('reply') or '')[:200]}")
         print(f"    items: {json.dumps(items(last), ensure_ascii=False)[:300]}")
+    RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": ok,
+                    "구조통과": ok_struct, "본문결함": flaws, "초": elapsed,
+                    "턴": outs})
     return ok, (last.get("usage") or {}).get("costUsd", 0) or 0
+
+
+def write_checkpoint(hits, total, cost):
+    """긴 실 LLM 실행을 case마다 보존한다. 프로세스가 끊겨도 완료 case는 잃지 않는다."""
+    if not OUT:
+        return
+    usage = {"calls": 0, "promptTokens": 0, "completionTokens": 0,
+             "totalTokens": 0, "cachedTokens": 0}
+    for record in RESULTS:
+        for turn in record.get("턴") or []:
+            turn_usage = turn.get("usage") or {}
+            for key in usage:
+                usage[key] += turn_usage.get(key) or 0
+    payload = {"model": MODEL, "simpleModel": SIMPLE_MODEL,
+               "promptVersion": PROMPT_VERSION,
+               "실행완료": len(RESULTS) == total,
+               "합계": {"통과": hits, "완료": len(RESULTS), "전체": total,
+                        "비용USD": round(cost, 6),
+                        "초": round(sum(r["초"] for r in RESULTS), 1),
+                        **usage},
+               "케이스": RESULTS}
+    tmp = OUT + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=1, default=str)
+    os.replace(tmp, OUT)
 
 
 if __name__ == "__main__":
@@ -311,4 +393,8 @@ if __name__ == "__main__":
         ok, c = run(cid, desc, turns, check)
         hits += 1 if ok else 0
         cost += c
+        write_checkpoint(hits, len(run_cases), cost)
     print(f"\n{hits}/{len(run_cases)} 통과 · ${round(cost, 3)}")
+    if OUT:
+        write_checkpoint(hits, len(run_cases), cost)
+        print(f"→ {OUT}")

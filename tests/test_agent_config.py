@@ -96,7 +96,7 @@ def test_fake_chat_scripted_responses(clean_env):
 
 
 def test_fake_structured_output_matches_schema(clean_env):
-    """Planner 의 의도 분류가 fake 로도 굴러가야 그래프 분기를 테스트할 수 있다."""
+    """RequestArchitect 의 의도 분류가 fake 로도 굴러가야 그래프 분기를 테스트할 수 있다."""
     clean_env.setenv("LAKE_AGENT_PROVIDER", "fake")
     schema = {"title": "Plan", "type": "object",
               "properties": {"intent": {"type": "string", "enum": ["search", "create", "update"]},
@@ -163,15 +163,15 @@ def test_chat_model_tier_splits_when_simple_set(clean_env):
 
 def test_role_tiers_assigned_to_shallow_judgment_roles(clean_env):
     """의도 분류·결정적 실행만 simple — 조사·초안·검토·작문은 기본 모델을 유지한다."""
-    from app.agent.workflow.agents.assigner import Assigner
-    from app.agent.workflow.agents.historian import Historian
-    from app.agent.workflow.agents.operator import Operator
-    from app.agent.workflow.agents.planner import Planner
-    from app.agent.workflow.agents.refiner import Refiner
-    from app.agent.workflow.agents.responder import Responder
-    from app.agent.workflow.agents.reviewer import Reviewer
-    assert Planner.tier == "simple" and Operator.tier == "simple"
-    for cls in (Historian, Refiner, Assigner, Reviewer, Responder):
+    from app.agent.workflow.agents.people_advisor import PeopleAdvisor
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    from app.agent.workflow.agents.auditor import Auditor
+    assert RequestArchitect.tier == "simple" and ActionExecutor.tier == "simple"
+    for cls in (ResearchAnalyst, WorkArchitect, PeopleAdvisor, Auditor, ResultIntegrator):
         assert cls.tier == "complex", cls.__name__
 
 
@@ -194,17 +194,17 @@ def test_reasoning_models_do_not_receive_temperature(clean_env):
 def test_playbooks_load_and_inject(clean_env):
     """전형적 요청의 사전 정의 플로우 — 파싱과 페르소나 주입을 함께 보증한다."""
     from app.agent.prompts.roles import PLAYBOOKS
-    from app.agent.workflow.agents.planner import SCHEMA
+    from app.agent.workflow.agents.request_architect import SCHEMA
     from app.agent.workflow.prompts import persona
     expect = {"epic_create", "task_create", "bug_report", "subtask_bulk", "find_people",
               "find_tickets", "knowledge", "history", "workload", "assign_fit"}
     assert expect <= set(PLAYBOOKS), set(PLAYBOOKS)
     for k in expect:
         assert "플로우" in PLAYBOOKS[k] and "주의" in PLAYBOOKS[k], k
-    # Planner enum 과 자산이 어긋나면 조용히 주입이 빠진다 — 함께 묶어 검증
+    # RequestArchitect enum 과 자산이 어긋나면 조용히 주입이 빠진다 — 함께 묶어 검증
     assert expect <= set(SCHEMA["properties"]["playbook"]["enum"])
     p = persona({"playbook": "subtask_bulk"})
-    assert "Standard playbook" in p and "재질문 금지" in p
+    assert "적용할 표준 플레이북" in p and "재질문 금지" in p
     assert "Standard playbook" not in persona({})
 
 def test_fake_provider_is_refused_in_prod(monkeypatch):

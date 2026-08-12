@@ -33,7 +33,7 @@ def _run(tool, **kw):
 
 # ── 레지스트리 ─────────────────────────────────────────────────────
 def test_write_tools_are_not_in_read_bundles():
-    """역할 분리는 도구 목록으로 강제한다 — Historian 이 티켓을 만들 수 있으면 안 된다."""
+    """역할 분리는 도구 목록으로 강제한다 — ResearchAnalyst 이 티켓을 만들 수 있으면 안 된다."""
     read_names = {t.name for t in T.READ_TOOLS}
     for w in T.WRITE_TOOLS:
         assert w.name not in read_names
@@ -216,10 +216,12 @@ def test_token_cannot_be_reused_for_a_different_action():
 
 
 def test_update_ticket_round_trip():
-    hit = _run(T.BY_NAME["search_work_history"], query="데이터", limit=3)["jira"]
-    if not hit:
-        pytest.skip("검색 결과 없음")
-    key = hit[0]["key"]
+    hit = _run(T.BY_NAME["search_work_history"], query="데이터", limit=20)["jira"]
+    from app.agent.tools._ctx import client
+    key = next((row["key"] for row in hit
+                if (client().ticket_badge(row["key"]) or {}).get("statusCategory") != "done"), "")
+    if not key:
+        pytest.skip("열린 검색 결과 없음")
     payload = {"key": key, "changes": {"duedate": "2026-12-31"}}
     tok = approval.stage("t1", "update_ticket", payload)
     approval.approve(tok, "t1")
@@ -231,6 +233,43 @@ def test_update_ticket_round_trip():
 def test_update_with_no_fields_is_rejected_before_touching_jira():
     r = _run(T.BY_NAME["update_ticket"], key="DL-1", approval_token="x")
     assert r["ok"] is False and "바꿀 필드" in r["error"]
+
+
+def test_done_ticket_update_is_blocked_before_consuming_approval(monkeypatch):
+    class _Done:
+        def ticket_badge(self, key):
+            return {"key": key, "statusCategory": "done", "type": "Task"}
+
+        def editmeta(self, key):
+            raise AssertionError("Done이면 editmeta/update까지 가면 안 된다")
+
+    monkeypatch.setattr("app.agent.tools.write_tools.client", lambda: _Done())
+    payload = {"key": "DL-9", "changes": {"summary": "바뀐 제목"}}
+    tok = approval.stage("t1", "update_ticket", payload)
+    approval.approve(tok, "t1")
+    r = _run(T.BY_NAME["update_ticket"], key="DL-9", summary="바뀐 제목",
+             approval_token=tok)
+    assert not r["ok"] and "완료된 티켓" in r["error"]
+    assert approval.peek(tok), "상태 검증에서 막힌 승인은 소비하지 않는다"
+
+
+def test_done_ticket_comment_and_reopened_transition_metadata(monkeypatch):
+    class _Done:
+        def add_comment(self, key, body):
+            return {"id": "c1"}
+
+        def transitions(self, key):
+            return [{"id": "4", "name": "Reopen Issue", "to": "Reopened",
+                     "toCategory": "todo"}]
+
+    monkeypatch.setattr("app.agent.tools.write_tools.client", lambda: _Done())
+    tok = approval.stage("t1", "add_ticket_comment", {"key": "DL-9", "body": "완료 후 기록"})
+    approval.approve(tok, "t1")
+    assert _run(T.BY_NAME["add_ticket_comment"], key="DL-9", body="완료 후 기록",
+                approval_token=tok)["ok"]
+    trs = _run(T.BY_NAME["list_transitions"], key="DL-9")
+    assert trs == [{"id": "4", "name": "Reopen Issue", "to": "Reopened",
+                    "toCategory": "todo"}]
 
 
 # ── 외부 지식(웹·GitHub) — 폐쇄망 fail-soft 가 생명이다 ─────────────
@@ -267,8 +306,8 @@ def test_web_tools_docstrings_forbid_internal_terms():
 
 
 def test_historian_gets_web_tools_but_writers_do_not():
-    from app.agent.workflow.agents.historian import Historian
-    names = {t.name for t in Historian().tools}
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    names = {t.name for t in ResearchAnalyst().tools}
     assert {"search_web", "search_github"} <= names
 
 
@@ -302,11 +341,11 @@ def test_historian_injects_seed_map_for_mentioned_keys(monkeypatch):
     import os
     os.environ["LAKE_AGENT_PROVIDER"] = "fake"
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.historian import Historian
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
     from app.agent.tools import _ctx
     key = _ctx.client().search_issues(
         "statusCategory = indeterminate ORDER BY updated DESC", max_results=3)[0]["key"]
-    h = Historian()
+    h = ResearchAnalyst()
     captured = {}
     orig_task = h.task
     def spy_task(state):
@@ -319,13 +358,13 @@ def test_historian_injects_seed_map_for_mentioned_keys(monkeypatch):
 
 
 def test_refiner_normalizes_priority_shorthand():
-    """P3 → P3-Minor 는 판단이 아니라 표기다 — 코드가 정규화해야 Reviewer 왕복이 안 샌다.
+    """P3 → P3-Minor 는 판단이 아니라 표기다 — 코드가 정규화해야 Auditor 왕복이 안 샌다.
 
     실측: 모델이 'P3' 로 내면 검증에서 튕기고, 재작성 한도가 소진되면 그 지적이
     사용자 답변에 그대로 노출됐다("P3는 적절한 우선순위가 아닙니다").
     """
-    from app.agent.workflow.agents.refiner import Refiner
-    r = Refiner()
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+    r = WorkArchitect()
     out = r.apply({"turns": 0, "messages": []},
                   {"mode": "task", "questions": [],
                    "items": [{"summary": "[ETL] 정규화 확인", "type": "Task", "priority": "P3"},
@@ -363,13 +402,46 @@ def test_historian_task_renders_without_error():
     테스트는 fallback 때문에 이걸 못 잡는다 — task() 를 직접 부른다.
     """
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.historian import Historian
-    h = Historian()
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    h = ResearchAnalyst()
     base = {"messages": [HumanMessage(content="CDC 방식 기술 검토")], "trace": []}
     assert "과거 이력" in h.task(base)                       # web_context 없음
     with_web = {**base, "web_context": "- [웹] CDC 비교 글"}
     assert "외부 기술 조사" in h.task(with_web)              # 있으면 자료로 실린다
     assert "CDC 비교 글" in h.task(with_web)
+
+
+def test_prefetched_plan_work_concludes_without_react_tool_loop(monkeypatch):
+    """deterministic 조회가 끝난 생성 요청은 ResearchAnalyst 도구 21개를 다시 순회하지 않는다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.state import Intent
+    called = {"react": 0, "conclude": 0}
+
+    def base_node(_self):
+        def run(_state):
+            called["react"] += 1
+            return {"situation": "react를 타면 실패"}
+        return run
+
+    monkeypatch.setattr(ToolAgent, "node", base_node)
+    h = ResearchAnalyst()
+
+    def conclude(state, scratch):
+        called["conclude"] += 1
+        assert state.get("_research_analyst_prefetched") is True
+        assert scratch == []
+        return {"situation": "사전 조회로 정리", "evidence": []}
+
+    monkeypatch.setattr(h, "_conclude", conclude)
+    out = h.node()({"intent": Intent.PLAN_WORK,
+                    "messages": [HumanMessage(content="카탈로그 품질 규칙 점검 Task 만들어줘")],
+                    "keywords": ["카탈로그", "품질"], "mentioned_keys": [],
+                    "query_results": {"jira": {"items": [], "total": 0}}, "trace": []})
+    assert called == {"react": 0, "conclude": 1}
+    assert out["situation"] == "사전 조회로 정리"
+    assert any("도구 재호출 생략" in x.get("note", "") for x in out["trace"])
 
 
 def test_shape_ships_people_name_map():
@@ -386,7 +458,7 @@ def test_shape_ships_people_name_map():
 def test_friendly_error_translates_provider_failures():
     """429·크레딧 오류는 영어 JSON 덤프가 아니라 사용자가 행동할 수 있는 한국어 안내로."""
     from app.agent.workflow.session import _friendly_error
-    assert "분당 토큰" in _friendly_error("[assigner] Error code: 429 - Rate limit reached ... tokens per min")
+    assert "분당 토큰" in _friendly_error("[people_advisor] Error code: 429 - Rate limit reached ... tokens per min")
     assert "크레딧" in _friendly_error("insufficient_quota: exceeded your current quota")
     assert "컨텍스트" in _friendly_error("maximum context length 128000 exceeded")
     assert _friendly_error("KeyError: boom") == ""       # 모르는 오류는 숨기지 않는다
@@ -413,13 +485,13 @@ def test_historian_presurvey_for_topic_questions(monkeypatch):
     import os
     os.environ["LAKE_AGENT_PROVIDER"] = "fake"
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.historian import Historian, _presurvey
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst, _presurvey
     pre = _presurvey({"keywords": ["UI", "회귀", "픽스처"],
                       "messages": [HumanMessage(content="UI 회귀 픽스처 히스토리 알려줘")]})
     assert "DL-9000" in pre, "실존 티켓이 사전 조사에 없다"
     assert "키워드 검색" in pre and "갱신" in pre
     # task() 에 실리는지 — ReAct 없이 task 직접 확인
-    h = Historian()
+    h = ResearchAnalyst()
     txt = h.task({"keywords": ["UI"], "pre_survey": pre,
                   "messages": [HumanMessage(content="근황?")]})
     assert "사전 조사" in txt and "DL-9000" in txt
@@ -446,7 +518,7 @@ def test_group_activity_preaggregates_whole_roster():
     개인 질문·모듈 불명·비활동 의도에는 발동하지 않아야 한다.
     """
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.pmo import _group_activity
+    from app.agent.workflow.agents.portfolio_analyst import _group_activity
     pre = _group_activity({"intent": "activity", "module": "", "messages": [
         HumanMessage(content="최근 7일간 ETL 모듈 구성원들의 주요 활동 내역")]})
     assert "[로스터]" in pre and "최근 7일" in pre
@@ -463,18 +535,23 @@ def test_group_activity_preaggregates_whole_roster():
     assert "최근 14일" in pre14
 
 
-def test_run_jql_forces_project_scope_and_caps():
-    """JQL 은 모델이 쓰되 안전은 코드가 — 프로젝트 한정 강제, 타 프로젝트 거부, 결과 캡."""
+def test_run_jql_forces_all_search_config_projects_without_primary_fallback():
+    """JQL 바깥 범위는 search config 전체이며 project_key는 관여하지 않는다."""
     r = _run(T.BY_NAME["run_jql"], jql="statusCategory = indeterminate ORDER BY updated DESC", limit=5)
-    assert r.get("count") is not None and r["jql"].startswith("project = DL"), r.get("jql")
+    assert r.get("count") is not None, r
+    assert r["jql"].startswith('project in ("DL", "JIRA820") AND ('), r.get("jql")
+    assert r.get("scopeProjects") == ["DL", "JIRA820"]
     assert len(r["tickets"]) <= 5
+
+    # 사용자가 project 조건을 넣어도 설정 범위와 바깥 AND로 결합되어 탈출할 수 없다.
     bad = _run(T.BY_NAME["run_jql"], jql='project = OTHER AND status = Open')
-    assert "밖은 조회할 수 없습니다" in (bad.get("error") or "")
+    assert bad["jql"].startswith('project in ("DL", "JIRA820") AND (project = OTHER')
+    assert not bad["tickets"]
 
 
 def test_create_epic_needs_token_and_matches_fingerprint():
     """Epic 생성도 HITL — 지문은 epic_payload 와 도구 payload 가 같은 모양이어야 한다."""
-    from app.agent.workflow.agents.refiner import epic_payload
+    from app.agent.workflow.agents.work_architect import epic_payload
     draft = {"mode": "epic", "items": [{"summary": "데이터 거버넌스 강화", "type": "Epic",
                                        "epic_name": "거버넌스", "components": ["Catalog"],
                                        "description": "<h3>배경</h3><p>x</p>"}]}
@@ -501,18 +578,18 @@ def test_create_epic_needs_token_and_matches_fingerprint():
 
 
 def test_epic_mode_flows_through_propose_and_operator(monkeypatch):
-    """mode=epic 초안 → _propose 가 create_epic 지문으로 스테이징 → Operator 결정적 실행."""
+    """mode=epic 초안 → _propose 가 create_epic 지문으로 스테이징 → ActionExecutor 결정적 실행."""
     import os
     os.environ["LAKE_AGENT_PROVIDER"] = "fake"
     from app.agent.workflow import graph as G
-    from app.agent.workflow.agents.operator import Operator
+    from app.agent.workflow.agents.action_executor import ActionExecutor
     draft = {"mode": "epic", "items": [{"summary": "실시간 품질 관제 체계", "type": "Epic",
                                        "epic_name": "품질관제"}]}
     out = G._propose({"thread_id": "t-ep2", "draft": draft})
     tok = out["approval_token"]
     assert approval.peek(tok)["action"] == "create_epic"
     approval.approve(tok, "t-ep2")
-    res = Operator().node()({"draft": draft, "approval_token": tok,
+    res = ActionExecutor().node()({"draft": draft, "approval_token": tok,
                              "change_plan": {}, "trace": []})
     r = res["result"]
     assert r["created"] and r["failed"] == []
@@ -688,7 +765,7 @@ def test_typo_identifier_gets_similar_suggestions():
 def test_dossier_offers_candidates_instead_of_guessing():
     """오탈자 추정은 추정이다 — 전체 히스토리를 추정으로 답하지 않고 **표기 후보**를
     돌려준다(다음 계층이 객관식 확인 질문으로 바꾼다. 사용자 결정)."""
-    from app.agent.workflow.agents.historian import _topic_dossier
+    from app.agent.workflow.agents.research_analyst import _topic_dossier
     d = _topic_dossier("fdc_flat_summary_ic")
     assert d.startswith("[표기 후보]") and "fdc.fdc_trace_summary_ic" in d
     assert "DL-9044" not in d, "추정 대상의 실데이터를 미리 싣지 않는다"

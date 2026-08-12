@@ -1,4 +1,4 @@
-"""agent/tools/search_tools.py — Historian 의 탐색 도구.
+"""agent/tools/search_tools.py — ResearchAnalyst 의 탐색 도구.
 
 "~~한 업무를 해야 한다" 는 막연한 요구에서 **현재 상황**을 복원하는 것이 이 도구들의 일이다.
 한 방에 되지 않는다: 검색으로 실마리를 잡고(①) → 티켓을 열어 읽고(②) → 거기서 링크를 타고
@@ -10,9 +10,12 @@ docstring 은 **LLM 이 읽는 명세**다 — 언제 쓰는지, 무엇이 나�
 
 from __future__ import annotations
 
+import re
+
 from langchain_core.tools import tool
 
-from app.agent.tools._ctx import client, compact, settings, trim
+from app.agent.tools._ctx import (client, compact, jira_key_allowed, jira_scope,
+                                  search_projects, search_spaces, settings, trim)
 
 
 def _issue_brief(raw: dict, sp_field: str = None) -> dict:
@@ -69,43 +72,12 @@ def search_work_history(query: str, limit: int = 8) -> dict:
                 if (r2.get("jira") or {}).get("items"):
                     r = r2
                     break
-    # ── 완화 사다리: 검색은 전 토큰 AND 매칭이라 노이즈 단어 하나가 결과를 0으로 만든다.
-    # 실측: "UI 회귀 검증 픽스처 테스크" — '테스크'가 제목에 없어서 실존 티켓(DL-9000)을
-    # 못 찾고 "이력 없음"으로 답했다. 모델에게 검색어를 다시 쓰라고 시키는 대신 코드가
-    # ① 일반어(테스크·티켓·업무…)를 떼고 재검색 ② 그래도 비면 토큰별로 찾아 매칭 수로
-    # 랭킹한다. 원 질의가 잡히면 사다리는 안 탄다.
-    _STOP = {"테스크", "태스크", "티켓", "업무", "작업", "관련", "정리", "확인", "현황",
-             "무슨", "무엇", "어떤", "하는", "해줘", "주세요", "요청", "진행"}
+    # 원 질의가 비면 **완화 사다리**를 탄다 — 정의는 `_relaxed` 한 곳에만 둔다
+    # (예전엔 이 도구 안에만 있어서 주제 조사 경로가 회복을 못 받았다).
     if not ((r.get("jira") or {}).get("items")):
-        toks = [t.strip("[]()\"'") for t in query.split()]
-        toks = [t for t in toks if len(t) >= 2 and t not in _STOP]
-        if toks and " ".join(toks) != query:
-            r = _hit(" ".join(toks))
-        if not ((r.get("jira") or {}).get("items")) and len(toks) > 1:
-            import re as _re2
-            score, seen, core_hit = {}, {}, {}
-            # 핵심 토큰 = 영문 기술 용어(Iceberg·Puffin·NDV·CDC…)와 **데이터 자산 이름**.
-            # `_` 를 빼먹었던 탓에 `fdc.fdc_trace_summary_ic` 가 core 로 안 잡혔고, 그 결과
-            # 아래 core_hit 가드가 테이블 질문에서만 무력화돼(core 가 비면 통과) 무관한
-            # 티켓이 "관련 이력"으로 나갔다.
-            core = [t for t in toks if _re2.fullmatch(r"[A-Za-z][A-Za-z0-9._-]{1,}", t)]
-            for t in toks:
-                for it in (_hit(t).get("jira") or {}).get("items") or []:
-                    k = it.get("key")
-                    if k:
-                        score[k] = score.get(k, 0) + 1
-                        seen[k] = it
-                        if t in core:
-                            core_hit[k] = True
-            best = sorted(score, key=lambda k: -score[k])[:lim]
-            # 절반 이상(올림) 토큰이 맞아야 하고, 질의에 영문 기술 토큰이 있으면 그중
-            # **최소 1개**는 맞아야 한다 — 'ETL·파이프라인' 같은 일반어만 겹친 티켓을
-            # "관련 이력"으로 내밀던 실측 사고("Iceberg Puffin NDV" 질문에 '경계값 오류
-            # 수정'이 관련이라고 나옴)의 재발 방지.
-            need = max(1, (len(toks) + 1) // 2)
-            r = {"jira": {"items": [seen[k] for k in best
-                                    if score[k] >= need and (not core or core_hit.get(k))]},
-                 "confluence": r.get("confluence") or {}}
+        _items = _relaxed(query, lim)
+        if _items:
+            r = {"jira": {"items": _items}, "confluence": r.get("confluence") or {}}
     return {
         "query": query,
         "jira": [compact({k: it.get(k) for k in
@@ -117,66 +89,38 @@ def search_work_history(query: str, limit: int = 8) -> dict:
     }
 
 
-# 마지막으로 실행된 JQL — PMO 가 답변에 `JQL: ...` 한 줄을 **코드로** 붙이기 위한 기록.
-# (모델에게 "표기하라"고 시켰지만 스키마 정리 단계에서 떨어뜨렸다 — 실측.)
-# ★ thread-local 이 아니다: LangChain ToolNode 가 도구를 워커 스레드에서 돌려 기록이
-#   유실됐다(실측 — 노드에서 읽으면 항상 빈 값). 단일 프로세스 앱이라 모듈 슬롯로 충분하고,
-#   동시 대화 둘이 겹치면 JQL 한 줄이 섞일 수 있는 것은 수용한다(근거 줄 하나의 문제).
-_last_jql = {"q": ""}
+# 마지막 JQL은 대화 실행 context 안에서만 유지한다. 전역 dict는 동시에 실행된 두 대화의
+# 근거 문장을 섞을 수 있다.
+from contextvars import ContextVar
+_last_jql = ContextVar("agent_last_jql", default="")
 
 
 def take_last_jql() -> str:
-    q = _last_jql.get("q", "")
-    _last_jql["q"] = ""
+    q = _last_jql.get()
+    _last_jql.set("")
     return q
 
 
 @tool
 def run_jql(jql: str, limit: int = 20) -> dict:
-    """**JQL 을 직접 실행**한다 — 사용자가 조건을 조합해 티켓을 찾고 싶을 때
-    ("우선순위 P1 이면서 담당자가 없는 진행중 티켓", "이번 달 마감인 Catalog 티켓").
+    """호환용 JQL 도구. 신규 역할은 ``run_jql_v2``를 사용한다.
 
-    사용자의 자연어 조건을 네가 JQL 로 옮겨 넣어라. 참고:
-      상태군 statusCategory in (new, indeterminate, done) / 담당 assignee = "skcc.x1042"
-      / 미배정 assignee is EMPTY (단, 미배정은 find_unassigned_tickets 가 더 정확하다)
-      / 컴포넌트 component = "ETL" / 기한 duedate <= "2026-08-31" / 라벨 labels = "PMO_VIT"
-      / 갱신 updated >= -7d / 정렬 ORDER BY duedate ASC
-
-    프로젝트는 자동으로 우리 프로젝트로 한정된다(다른 프로젝트 조회 불가).
-    돌려주는 것: {"jql": 실행된 최종 JQL, "count", "tickets": [{key,title,status,assignee,duedate}]}
+    입력 JQL의 조건과 ORDER BY를 분리한 뒤 v2 경로로 실행하므로 검색 범위는 오직
+    ``search.jira.projects``이며 50건 총량 제한이 없다. ``limit``는 총량 상한이 아니라
+    한 페이지 크기(최대 100)다. 다음 페이지는 반환된 ``nextCursor``로 이어 조회한다.
     """
-    c, s = client(), settings()
-    q = (jql or "").strip().rstrip(";")
-    if not q:
-        return {"error": "JQL 이 비었습니다."}
-    # 프로젝트 한정은 **코드가** 보장한다 — 모델이 빼먹거나 다른 프로젝트를 적어도 우리
-    # 프로젝트 밖은 조회되지 않는다(JQL 은 조회 전용이라 쓰기 위험은 없다).
-    low = q.lower()
-    if "project" not in low:
-        head, sep, tail = q.partition("ORDER BY") if "ORDER BY" in q else q.partition("order by")
-        cond = head.strip()
-        q = f"project = {s.project_key}" + (f" AND ({cond})" if cond else "") + \
-            ((" " + sep + tail) if sep else "")
-    elif f"project = {s.project_key}".lower() not in low.replace('"', ""):
-        return {"error": f"우리 프로젝트({s.project_key}) 밖은 조회할 수 없습니다."}
-    cap = max(1, min(int(limit or 20), 50))
+    from app.agent.tools.query_tools import _jql_page, _split_order
+    where, order = _split_order(jql)
+    if not where and not order:
+        return {"error": "JQL 이 비었습니다.", "tickets": []}
     try:
-        raws = c.search_issues(q, max_results=cap)
-        raws = _drop_fixtures(raws)
+        result = _jql_page(where, order or "updated DESC", None, limit, "")
+        result["jql"] = result.get("canonicalJql")
+        result["count"] = result.get("returned", 0)
+        _last_jql.set(result.get("canonicalJql") or "")
+        return result
     except Exception as e:
-        return {"error": f"JQL 실행 실패: {str(e)[:200]} — 문법을 고쳐 다시 시도하라.", "jql": q}
-    rows = []
-    for it in (raws or [])[:cap]:        # mock 이 max_results 를 무시해도 캡은 지킨다(실측)
-        f = it.get("fields") or {}
-        rows.append(compact({
-            "key": it.get("key"), "title": f.get("summary"),
-            "status": (f.get("status") or {}).get("name"),
-            "assignee": (f.get("assignee") or {}).get("name"),
-            "priority": (f.get("priority") or {}).get("name"),
-            "duedate": f.get("duedate"),
-        }))
-    _last_jql["q"] = q
-    return {"jql": q, "count": len(rows), "tickets": rows}
+        return {"error": f"JQL 실행 실패: {str(e)[:200]}", "tickets": []}
 
 
 
@@ -206,6 +150,8 @@ def get_ticket(key: str, comment_limit: int = 5) -> dict:
 
     돌려주는 것: 요약·상태·담당자·컴포넌트·라벨·마감·SP·본문(요약본)·최근 코멘트.
     """
+    if not jira_key_allowed(key):
+        return {"error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
     c = client()
     raw = c.get_issue(key) or {}
     if not raw.get("key"):          # 없는 키에 빈 껍데기가 돌아오기도 한다 — key 로 판정한다
@@ -214,7 +160,7 @@ def get_ticket(key: str, comment_limit: int = 5) -> dict:
     out["description"] = trim(((raw.get("fields") or {}).get("description")), 1200)
     # comments 는 **비어 있어도 싣는다** — "코멘트가 없다"와 "안 가져왔다"는 모델에게 다른 정보다.
     # ★ 코멘트 행의 본문은 `html`, 일시는 `date` 다(body/created 아님). 처음에 body 로 읽는 바람에
-    #   모델이 **빈 코멘트**를 받고 있었다 — "코멘트까지 읽는다"던 Historian 이 작성자·날짜만
+    #   모델이 **빈 코멘트**를 받고 있었다 — "코멘트까지 읽는다"던 ResearchAnalyst 이 작성자·날짜만
     #   보고 있던 셈이다. 테스트가 머리글만 확인해서 놓쳤다(약한 단언의 값).
     import re as _re
     try:
@@ -282,6 +228,16 @@ def find_mentions(term: str, limit: int = 8) -> dict:
                 if d.get("title") and all(d["title"] != x["title"] for x in docs):
                     docs.append({"title": _strip(d.get("title")), "url": d.get("url") or "",
                                  "excerpt": trim(_strip(d.get("excerpt") or d.get("snippet")), 200)})
+
+    # ★ **여기에도 완화 사다리를 태운다**(실사용 사고). `search_work_history` 에만 있어서,
+    #   주제 조사 경로(`_topic_dossier` → 이 도구)는 여전히 전 토큰 AND 로만 찾고 있었다 —
+    #   "iceberg 통계데이터 생성" 같은 여러 낱말 주제가 통째로 0건이 되고, 실존 티켓이
+    #   있는데도 "사내 어디에서도 못 찾았다"로 답했다.
+    #   **가드도 사다리도 '만드는 자리와 읽는 자리 양쪽'에 있어야 한다** — 이 저장소가
+    #   반복해서 배운 것이고, 이번엔 회복 경로가 한쪽에만 있었다.
+    if not seen and " " in term:
+        for it in _relaxed(term, lim + 4):
+            seen.setdefault(it.get("key"), it)
 
     keys = [k for k in list(seen)[:lim] if k]
 
@@ -380,9 +336,16 @@ def read_document(url_or_id: str) -> dict:
     cid = _conf_id(raw) or (raw if raw.isdigit() else "")
     if not cid:
         return {"error": "문서 id 를 찾지 못했습니다. Confluence 페이지 URL 이나 페이지 id 를 넣으세요."}
-    data = c.confluence_page(cid)
+    spaces = search_spaces()
+    if not spaces:
+        return {"error": "검색 범위 미설정 — search.confluence.spaces를 지정하세요"}
+    data = c.confluence_page(cid, expand="body.storage,space,version")
     if not data:
         return {"error": f"문서 {cid} 를 읽지 못했습니다."}
+    space = ((data.get("space") or {}).get("key") or "").upper()
+    if space not in {x.upper() for x in spaces}:
+        return {"error": "문서가 search.confluence.spaces 범위 밖입니다.",
+                "space": space, "scopeSpaces": spaces}
     body = ((data.get("body") or {}).get("storage") or {}).get("value") or ""
     return compact({"title": data.get("title") or "", "url": raw if raw.startswith("http") else "",
                     "updated": ((data.get("version") or {}).get("when") or "")[:10],
@@ -399,6 +362,8 @@ def get_ticket_context(key: str) -> dict:
 
     돌려주는 것: {"related": [...], "documents": [{title,url}...], "timeline": [주요 이력]}
     """
+    if not jira_key_allowed(key):
+        return {"error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
     c = client()
     out = {"key": key}
     for name, fn, proj in (
@@ -429,6 +394,8 @@ def get_epic_tree(epic_key: str) -> dict:
     "이미 이 일을 담고 있는 Epic 이 있나"를 확인했으면, 그 안에 뭐가 얼마나 들어 있는지 본다.
     새 티켓을 **어디에 붙일지**, 이미 있는 것과 **겹치지 않는지** 판단하는 데 쓴다.
     """
+    if not jira_key_allowed(epic_key):
+        return {"error": "Epic이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
     try:
         rows = client().epic_tree(epic_key) or []
     except Exception as e:
@@ -454,24 +421,56 @@ def find_parent_epic(query: str = "", limit: int = 10) -> list:
 
     돌려주는 것: [{"key","name","summary","module"}]
     """
-    # ★ 예전에는 `epic_candidates()` 를 썼는데 그 함수는 이름과 달리 **Epic 에 넣을 Task**
-    #   후보를 준다(지금은 parent_task_candidates 로 이름을 바로잡았다). 그래서 이 도구가
-    #   Task 를 Epic 이라며 돌려줬고, 초안의 Epic Link 가 매번 비었다(실측). 진짜 Epic 목록은
-    #   `epic_options()` 다 — 화면의 'Epic 편집' 드롭다운이 쓰는 그것.
+    # 화면용 epic_options()는 write destination project를 전제로 하므로 조회에 쓰지 않는다.
+    # Agent의 후보 탐색은 search config의 **모든** project를 바깥 scope로 강제한다.
+    projects = search_projects()
+    if not projects:
+        return [{"error": "검색 범위 미설정 — search.jira.projects를 지정하세요"}]
+    q = str(query or "").strip()
+    cond = "issuetype = Epic"
+    if q:
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,9}-\d+", q):
+            key = q.upper()
+            if not jira_key_allowed(key):
+                return []
+            cond += f' AND key = "{key}"'
+        else:
+            safe = q.replace("\\", "\\\\").replace('"', '\\"')
+            cond += f' AND summary ~ "{safe}"'
+    jql = jira_scope(cond) + " ORDER BY updated DESC, key ASC"
+    wanted = max(1, min(int(limit or 10), 25))
+    c = client()
+    epic_name_field = getattr(settings(), "epic_name_field_id", "") or ""
+    fields = ["summary", "project", "issuetype", "components", "updated"]
+    if epic_name_field:
+        fields.append(epic_name_field)
     try:
-        rows = client().epic_options(query or "") or []
+        start, rows = 0, []
+        while len(rows) < wanted:
+            page = c.search_issues_page(jql, start_at=start, max_results=100,
+                                        fields=fields, light=True)
+            rows.extend(page.get("issues") or [])
+            if not page.get("hasMore") or page.get("nextStartAt") is None:
+                break
+            start = int(page["nextStartAt"])
     except Exception as e:
         return [{"error": str(e)[:200]}]
     out = []
     for r in rows:
         if not isinstance(r, dict) or not r.get("key"):
             continue
-        mod = _epic_module(r["key"])
+        if not jira_key_allowed(r["key"]):
+            continue
+        f = r.get("fields") or {}
+        comps = [x.get("name") for x in (f.get("components") or []) if x.get("name")]
+        mod = str(comps[0]) if comps else ""
         if mod == "TEST":
             continue          # 화면 검증용 픽스처 Epic — 실 업무를 달 자리가 아니다
-        out.append(compact({"key": r["key"], "name": r.get("name"),
-                            "summary": r.get("summary"), "module": mod}))
-        if len(out) >= max(1, min(int(limit or 10), 25)):
+        summary = f.get("summary") or r.get("summary")
+        name = f.get(epic_name_field) if epic_name_field else None
+        out.append(compact({"key": r["key"], "name": name or summary,
+                            "summary": summary, "module": mod}))
+        if len(out) >= wanted:
             break
     return out
 
@@ -484,3 +483,65 @@ def _epic_module(key: str) -> str:
         return str(comps[0]) if comps else ""
     except Exception:
         return ""
+
+
+# ── 완화 사다리 — 전 토큰 AND 검색이 0건일 때의 회복 경로(**공용**) ──────────
+# 검색은 전 토큰 AND 매칭이라 노이즈 단어 하나가 결과를 0으로 만든다. 실측: "UI 회귀 검증
+# 픽스처 테스크" — '테스크'가 제목에 없어서 실존 티켓(DL-9000)을 못 찾고 "이력 없음"으로
+# 답했다. 모델에게 검색어를 다시 쓰라고 시키는 대신 코드가
+#   ① 일반어(테스크·티켓·업무…)를 떼고 재검색 ② 그래도 비면 토큰별로 찾아 매칭 수로 랭킹.
+#
+# ★ **정의는 한 곳에만 둔다.** 예전엔 `search_work_history` 안에만 있어서, 주제 조사 경로
+#   (`_topic_dossier` → `find_mentions`)는 이 회복을 못 받았다 — 같은 질문이 어느 도구를
+#   타느냐에 따라 찾히고 안 찾히고가 갈렸다. 실사용 사고가 정확히 그 경로에서 났다.
+_STOP = {"테스크", "태스크", "티켓", "업무", "작업", "관련", "정리", "확인", "현황",
+         "무슨", "무엇", "어떤", "하는", "해줘", "주세요", "요청", "진행", "내역", "총정리"}
+
+
+def _relaxed(query: str, lim: int = 8) -> list:
+    """완화 검색 결과(jira items 목록). 회복하지 못하면 빈 목록."""
+    import re as _re2
+
+    from app.domain.search import search_all
+    c, s = client(), settings()
+
+    def _hit(q):
+        return (search_all(c, s, q, scope="all", limit=lim).get("jira") or {}).get("items") or []
+
+    toks = [t.strip("[]()\"'") for t in (query or "").split()]
+    toks = [t for t in toks if len(t) >= 2 and t not in _STOP]
+    if not toks:
+        return []
+    if " ".join(toks) != (query or "").strip():
+        got = _hit(" ".join(toks))
+        if got:
+            return got
+    if len(toks) < 2:
+        return []
+
+    # 핵심 토큰 = 영문 기술 용어(Iceberg·Puffin·NDV·CDC…)와 데이터 자산 이름.
+    core = [t for t in toks if _re2.fullmatch(r"[A-Za-z][A-Za-z0-9._-]{1,}", t)]
+    score, seen, core_hit, token_hit = {}, {}, {}, set()
+    for t in toks:
+        for it in _hit(t):
+            k = it.get("key")
+            if not k:
+                continue
+            token_hit.add(t)
+            score[k] = score.get(k, 0) + 1
+            seen[k] = it
+            if t in core:
+                core_hit[k] = True
+
+    # 절반 이상(올림)이 맞아야 하고, 질의에 영문 기술 토큰이 있으면 그중 **최소 1개**는
+    # 맞아야 한다 — 일반어만 겹친 티켓을 "관련 이력"으로 내밀던 실측 사고의 재발 방지.
+    #
+    # ★ 분모는 **우리 말뭉치에 실제로 있는 토큰**이다(실사용 사고). "iceberg 통계데이터 생성"
+    #   으로 물었을 때 `Iceberg Puffin 통계적용 PoC` 를 못 찾았다 — 'iceberg' 는 맞았는데
+    #   '통계데이터'·'생성' 이 한 건도 안 맞아 문턱에 걸렸다. **아무 티켓에도 없는 낱말은
+    #   사용자가 우리와 다르게 부른 것**이지 관련성의 잣대가 아니다. 그것까지 분모에 넣으면
+    #   자세히 물을수록 결과가 사라진다.
+    useful = [t for t in toks if t in token_hit]
+    need = max(1, (len(useful or toks) + 1) // 2)
+    best = sorted(score, key=lambda k: -score[k])[:lim]
+    return [seen[k] for k in best if score[k] >= need and (not core or core_hit.get(k))]

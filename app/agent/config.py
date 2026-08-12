@@ -134,7 +134,16 @@ def settings_signature() -> str:
 
 
 def _env_supplied() -> bool:
-    """이 provider 의 연결값이 **환경변수에서** 오고 있나 — 그러면 게이트를 면제한다."""
+    """이 provider 의 연결값이 **환경변수에서** 오고 있나 — 그러면 게이트를 면제한다.
+
+    ★ `LAKE_AGENT_SKIP_VERIFY=1` 도 면제다 — **사람이 없는 경로**(배터리·평가 도구·헤드리스
+      실행)를 위해서다. 게이트는 "설정 화면에서 사람이 확인했는가"를 묻는 장치인데, 화면을
+      열 사람이 없는 실행에서는 물어볼 상대가 없다. 실제로 이 게이트를 넣은 직후 compose
+      평가 배터리가 9/9 전부 "설정이 아직 확인되지 않았습니다"로 떨어졌다 —
+      **가드가 자기 검증 수단을 막은 것**이고, 그러면 다음 회귀를 볼 눈이 사라진다.
+    """
+    if str(os.getenv("LAKE_AGENT_SKIP_VERIFY") or "").strip().lower() in ("1", "true", "yes"):
+        return True
     ov = _secrets.env_overrides()
     need = {"aoai": ("aoaiApiKey",), "openai": ("openaiApiKey",),
             "openai_compat": ("compatBaseUrl",)}.get(provider(), ())
@@ -546,6 +555,17 @@ def probe(timeout: float = 30.0) -> dict:
         out["embeddings"] = {"ok": True, "ms": int((time.time() - t1) * 1000), "dim": len(vec)}
     except Exception as e:
         out["embeddings"] = {"ok": False, "ms": int((time.time() - t1) * 1000), "error": _brief(e)}
+
+    # plain chat 성공만으로 structured output/tool calling까지 된다고 간주하지 않는다.
+    # 프로젝트 데이터가 전혀 없는 합성 요청으로 tier별 capability를 분리 진단한다.
+    if out["chat"]["ok"]:
+        try:
+            from app.agent.capabilities import probe_all
+            out["capabilities"] = probe_all()
+            out["degraded"] = any(x.get("degraded") for x in out["capabilities"].values())
+        except Exception as e:
+            out["capabilities"] = {"error": _brief(e)}
+            out["degraded"] = True
 
     out["ok"] = bool(out["chat"]["ok"] and out["embeddings"]["ok"])
     # ★ **둘 다 통과했을 때만** 이 조합을 확인된 것으로 남긴다(사용자 지시: 이중 확인).

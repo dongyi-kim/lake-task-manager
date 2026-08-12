@@ -31,7 +31,7 @@ def _w():
 def test_key_sequence_is_untouched():
     """★ 이 파일에서 가장 중요한 단언 — 픽스처가 rng 를 건드렸으면 world 전체가 뒤바뀐다.
 
-    자동 생성 키는 DL-5001~DL-6026 이고 그 뒤로 늘어나면 안 된다(CLAUDE.md §7.1).
+    자동 생성 키는 DL-5001~DL-6026 이고 그 뒤로 늘어나면 안 된다(AGENTS.md §7.1).
     """
     assert _w()._counter == 6026
 
@@ -161,7 +161,7 @@ def test_field_history_exposes_non_workflow_fields():
 
 
 # ── 사전 취합(dossier) ─────────────────────────────────────────────
-from app.agent.workflow.agents.historian import _topic_dossier   # noqa: E402
+from app.agent.workflow.agents.research_analyst import _topic_dossier   # noqa: E402
 
 
 def test_dossier_gathers_every_fragment_for_a_table():
@@ -240,7 +240,7 @@ def test_dossier_reports_nothing_found_instead_of_guessing():
 
 # ── 라우팅·전달 ────────────────────────────────────────────────────
 from app.agent.workflow import graph as G                  # noqa: E402
-from app.agent.workflow.state import Intent                # noqa: E402
+from app.agent.workflow.state import Intent, Node          # noqa: E402
 
 
 def _msg(text):
@@ -249,47 +249,47 @@ def _msg(text):
 
 
 def test_asset_question_reaches_the_investigator_even_if_misclassified():
-    """progress 로 오분류되면 pmo 노드로 가는데, 거기엔 검색 도구가 아예 없다 — 코드가 막는다."""
+    """progress로 오분류되면 Portfolio Analyst로 가는데 검색 도구가 없다 — 코드가 막는다."""
     st = {**_msg(f"{TABLE} 현재 적재주기는?"), "intent": Intent.PROGRESS}
-    assert G.route_after_planner(st) == "investigate"
-    # 티켓 키를 짚은 진짜 현황 질문은 그대로 pmo 로 간다
+    assert G.route_after_request_architect(st) == "investigate"
+    # 티켓 키를 짚은 진짜 현황 질문은 그대로 Portfolio Analyst로 간다
     st2 = {**_msg("DL-101 어디까지 왔어?"), "intent": Intent.PROGRESS, "mentioned_keys": ["DL-101"]}
-    assert G.route_after_planner(st2) == "pmo"
+    assert G.route_after_request_architect(st2) == Node.PORTFOLIO_ANALYST
 
 
 def test_asset_question_goes_through_the_curator():
     """'적재주기는?' 은 기존 지식 키워드에 하나도 안 걸린다 — 식별자로 판정한다."""
-    assert G.route_after_historian({**_msg(f"{TABLE} 적재주기는?"),
+    assert G.route_after_research_analyst({**_msg(f"{TABLE} 적재주기는?"),
                                     "intent": Intent.ASK}) == "curate"
-    assert G.route_after_historian({**_msg("DL-207 을 x1103 에게 맡겨도 될까?"),
+    assert G.route_after_research_analyst({**_msg("DL-207 을 x1103 에게 맡겨도 될까?"),
                                     "intent": Intent.ASK}) == "respond"
 
 
 def test_gathered_material_actually_reaches_the_next_roles():
-    """State 에 선언이 없으면 LangGraph 가 반환값에서 버린다 — Curator 자료가 늘 비어 있었다."""
-    from app.agent.workflow.agents.curator import Curator
-    from app.agent.workflow.agents.historian import Historian
+    """State 에 선언이 없으면 LangGraph 가 반환값에서 버린다 — KnowledgeCurator 자료가 늘 비어 있었다."""
+    from app.agent.workflow.agents.knowledge_curator import KnowledgeCurator
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
     from app.agent.workflow.state import AgentState
 
     for key in ("pre_survey", "web_context", "seed_map", "topic_dossier"):
         assert key in AgentState.__annotations__, f"{key} 가 State 에 없다"
-    out = Historian().apply({"topic_dossier": "X-MARK", "pre_survey": "P-MARK"},
+    out = ResearchAnalyst().apply({"topic_dossier": "X-MARK", "pre_survey": "P-MARK"},
                             {"situation": "s", "evidence": []})
     assert out["topic_dossier"] == "X-MARK" and out["pre_survey"] == "P-MARK"
-    assert "X-MARK" in Curator().task({"topic_dossier": "X-MARK"})
+    assert "X-MARK" in KnowledgeCurator().task({"topic_dossier": "X-MARK"})
 
 
 def test_historian_injects_the_dossier_into_its_own_prompt():
     assert "X-MARK" in __import__(
-        "app.agent.workflow.agents.historian", fromlist=["Historian"]
-    ).Historian().task({"topic_dossier": "X-MARK", **_msg("q")})
+        "app.agent.workflow.agents.research_analyst", fromlist=["ResearchAnalyst"]
+    ).ResearchAnalyst().task({"topic_dossier": "X-MARK", **_msg("q")})
 
 
 # ── 답변 깊이 ──────────────────────────────────────────────────────
 def test_answer_depth_shapes_the_reply_instruction():
     """값을 물으면 결론형, 경위·개념을 물으면 설명형 — 어느 쪽이든 더 깊은 설명은 다음 턴에."""
-    from app.agent.workflow.agents.responder import Responder
-    r = Responder()
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    r = ResultIntegrator()
     brief = r.task({**_msg("적재주기는?"), "intent": Intent.ASK, "answer_depth": "brief"})
     assert "결론형" in brief and "개념 설명·배경·일반론을 덧붙이지 마라" in brief
     deep = r.task({**_msg("왜 바뀌었어?"), "intent": Intent.ASK, "answer_depth": "explain"})
@@ -299,15 +299,15 @@ def test_answer_depth_shapes_the_reply_instruction():
 
 def test_depth_instruction_is_skipped_while_asking_questions():
     """되묻는 턴은 질문 폼이 주인공이라 깊이 지시가 끼어들면 안 된다."""
-    from app.agent.workflow.agents.responder import Responder
-    t = Responder().task({**_msg("초안 잡아줘"), "questions": ["범위가 어디까지인가요?"],
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    t = ResultIntegrator().task({**_msg("초안 잡아줘"), "questions": ["범위가 어디까지인가요?"],
                           "answer_depth": "brief"})
     assert "답변 깊이" not in t
 
 
 def test_planner_defaults_to_brief_when_unsure():
-    from app.agent.workflow.agents.planner import Planner
-    out = Planner().apply({}, {"intent": Intent.ASK, "keywords": ["x"]})
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    out = RequestArchitect().apply({}, {"intent": Intent.ASK, "keywords": ["x"]})
     assert out["answer_depth"] == "brief", "애매하면 짧게 — 더 필요하면 사용자가 다시 묻는다"
 
 
@@ -351,7 +351,7 @@ def test_a_table_with_no_tickets_is_still_answerable_from_documents():
 # "이 티켓 지금 어디까지 됐어?"의 답은 상태 필드에 없다. 근거가 네 군데로 흩어져 있고,
 # 넷 다 모여야 "무엇이 끝났고 무엇이 막혔는지"가 나온다.
 from app.agent.tools.survey_tools import progress_report          # noqa: E402
-from app.agent.workflow.agents.pmo import _ticket_progress        # noqa: E402
+from app.agent.workflow.agents.portfolio_analyst import _ticket_progress        # noqa: E402
 
 PROG = "DL-9090"
 
@@ -394,8 +394,8 @@ def test_progress_preaggregation_only_fires_for_progress_questions():
 
 
 def test_responder_reports_progress_as_a_story_not_a_status_word():
-    from app.agent.workflow.agents.responder import Responder
-    t = Responder().task({**_msg("DL-9090 진척 어때?"), "intent": Intent.PROGRESS,
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    t = ResultIntegrator().task({**_msg("DL-9090 진척 어때?"), "intent": Intent.PROGRESS,
                           "ticket_progress": _ticket_progress(
                               {**_msg("DL-9090 진척 어때?"), "mentioned_keys": [PROG],
                                "intent": Intent.PROGRESS})})
@@ -406,7 +406,7 @@ def test_responder_reports_progress_as_a_story_not_a_status_word():
 def test_follow_up_keeps_the_ticket_in_context():
     """후속 턴의 지시대명사는 앞 턴 대상을 가리킨다 — 실측: 'DL-9090 진척' 다음 '마감까지
     위험한 건?'에서 대상을 잃고 프로젝트 전체의 마감 초과 티켓을 답했다."""
-    from app.agent.workflow.agents.planner import _carry_keys
+    from app.agent.workflow.agents.request_architect import _carry_keys
     prev = {"mentioned_keys": [PROG], "turns": 1, "situation": "조사됨"}
     assert _carry_keys({**prev, **_msg("마감까지 위험한 건 뭐야?")}, {}) == [PROG]
     assert _carry_keys({**prev, **_msg("그럼 남은 일은?")}, {}) == [PROG]
@@ -427,7 +427,7 @@ def test_how_to_questions_do_not_take_the_dossier_shortcut():
     §5-c 의 "사전취합이 자라면 ReAct 에만 있던 도구가 조용히 도달 불능이 된다"가 한 겹 더
     깊게 재현된 것 — 이번에 도달 불능이 된 것은 도구가 아니라 **_presurvey 에 이미 있던
     search_rules 배선**이었다. 사전취합이 사전취합을 가렸다."""
-    from app.agent.workflow.agents.historian import _HOWTO_WORDS
+    from app.agent.workflow.agents.research_analyst import _HOWTO_WORDS
     for q in ("LTM에서 티켓 담당자는 어떻게 바꿔?", "강제 새로고침은 어디 있어?",
               "이 앱에서 단축키 뭐 있어?"):
         assert any(w in q for w in _HOWTO_WORDS), q
@@ -444,7 +444,7 @@ def test_how_to_material_is_the_guide_only_not_ticket_search():
     늘려도 05-ltm-guide 에서 한 절만 오고 나머지는 티켓 작성 규칙이 유사도에서 이겨,
     '담당자 변경'은 답하고 '강제 새로고침'은 "확인되지 않았다"고 했다. 가이드는 3KB 다."""
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.historian import _presurvey
+    from app.agent.workflow.agents.research_analyst import _presurvey
     st = {"messages": [HumanMessage(content="LTM에서 티켓 담당자는 어떻게 바꿔? "
                                             "그리고 강제 새로고침은 어디 있어?")],
           "keywords": ["티켓 담당자", "강제 새로고침", "LTM"]}
@@ -458,20 +458,20 @@ def test_how_to_material_is_the_guide_only_not_ticket_search():
 def test_asset_questions_still_get_ticket_search():
     """사용법 차단이 자산 질의까지 굶기면 안 된다."""
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.historian import _presurvey
+    from app.agent.workflow.agents.research_analyst import _presurvey
     st = {"messages": [HumanMessage(content="fdc.fdc_trace_summary_ic 적재주기는?")],
           "keywords": ["fdc.fdc_trace_summary_ic", "적재주기"]}
     assert "키워드 검색" in _presurvey(st)
 
 
 def test_candidate_material_reaches_the_responder():
-    """코드가 로스터·부하까지 조회해 실어 줬는데 **Responder 에 오지 않았다** —
-    pre_survey 에서 티켓 현재값과 문서 본문만 잘라 썼기 때문이다. 그래서 후보가 Historian
+    """코드가 로스터·부하까지 조회해 실어 줬는데 **ResultIntegrator 에 오지 않았다** —
+    pre_survey 에서 티켓 현재값과 문서 본문만 잘라 썼기 때문이다. 그래서 후보가 ResearchAnalyst
     의 situation 요약 한 겹을 지나며 사라졌다(실측 EDGE13: "누가 하면 좋을지랑 지금 상황"
     에 상황만 답하고 후보를 통째로 뺐다 — 세 번 연속, 재료에는 사번까지 있었다)."""
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.historian import _presurvey
-    from app.agent.workflow.agents.responder import _candidate_block
+    from app.agent.workflow.agents.research_analyst import _presurvey
+    from app.agent.workflow.agents.result_integrator import _candidate_block
     q = "카탈로그쪽 메타 등록 안된 태이블들 정리하는 일 누가 하면 좋을지랑 지금 상황 알려줘"
     pre = _presurvey({"messages": [HumanMessage(content=q)],
                       "keywords": ["메타 등록", "테이블", "카탈로그"], "module": "Catalog"})
@@ -485,7 +485,7 @@ def test_the_guide_material_does_not_disable_the_direct_path():
     """직결 경로는 dossier 에 '찾지 못했다'가 있으면 꺼진다(미발견 dossier 로 결론 내지
     않으려는 가드). 처음 쓴 가이드 헤더에 그 문구가 들어가 **지시문이 자기가 타야 할
     경로를 막는** 꼴이었다."""
-    from app.agent.workflow.agents.historian import _ltm_guide
+    from app.agent.workflow.agents.research_analyst import _ltm_guide
     g = _ltm_guide()
     assert g and "찾지 못했다" not in g, g[:200]
     for must in ("인라인", "새로고침", "↻"):
@@ -499,7 +499,7 @@ def test_module_only_evidence_is_dropped_but_named_keys_survive():
     UI 회귀 픽스처 DL-9001 을 근거로 붙였다. 노이즈는 신뢰를 깎고, 문서 자신이 "관련 이력
     없음이 정답인 자리를 채우는 것이 더 나쁘다"고 적어 뒀다."""
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.historian import _relevant_only
+    from app.agent.workflow.agents.research_analyst import _relevant_only
     req = "ETL 파이프라인에서 Iceberg Puffin NDV 통계정보를 생성하는 단계를 추가하려고해"
     st = {"messages": [HumanMessage(content=req)], "request_text": req}
     ev = [{"key": "DL-5487", "title": "[ETL] 경계값 오류 수정", "why": "ETL 모듈"},
@@ -525,7 +525,7 @@ def test_the_relevance_filter_does_not_starve_key_centric_or_typo_questions():
       · DATA11 — 오탈자로 물었으니 원문 낱말이 실제 제목과 한 글자도 안 겹쳐 근거가 전멸했다.
     """
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.historian import _relevant_only
+    from app.agent.workflow.agents.research_analyst import _relevant_only
     key_centric = {"messages": [HumanMessage(content="DL-9090 지금 어디까지 진행됐어?")],
                    "request_text": "DL-9090 지금 어디까지 진행됐어?",
                    "mentioned_keys": ["DL-9090"]}

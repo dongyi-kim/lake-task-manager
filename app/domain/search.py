@@ -59,10 +59,12 @@ _NUM_RE = re.compile(r"^(\d+)$")
 def _exact_keys(s, q):
     m = _KEY_RE.match(q)
     if m:
-        return ["%s-%s" % (m.group(1).upper(), m.group(2))]
+        project = m.group(1).upper()
+        allowed = {str(p).strip().upper() for p in (s.search_jira_projects or []) if str(p).strip()}
+        return ["%s-%s" % (project, m.group(2))] if project in allowed else []
     m = _NUM_RE.match(q)
     if m:
-        projects = list(s.search_jira_projects or []) or [s.project_key]
+        projects = list(s.search_jira_projects or [])
         return ["%s-%s" % (p, m.group(1)) for p in projects if p]
     return []
 
@@ -117,6 +119,9 @@ def search_all(client, settings, q, scope="scoped", limit=8, only=None):
 
 
 def _search_jira(client, s, q, scope, limit):
+    projects = [str(p).strip() for p in (s.search_jira_projects or []) if str(p).strip()]
+    if not projects:
+        return {"items": [], "error": "검색 범위 미설정 — search.jira.projects를 지정하세요"}
     # 티켓 키/번호를 그대로 친 경우 그 티켓을 먼저 조회해 맨 앞에 둔다.
     # text~ 검색만으로는 본문에 그 키가 언급된 다른 티켓이 위에 올 수 있다
     # (예: "DL-9001" 이 코멘트에 적힌 DL-9007). 정확히 그 티켓을 찾는 게 의도다.
@@ -132,16 +137,21 @@ def _search_jira(client, s, q, scope, limit):
             exact.append(raw)
 
     jql = 'text ~ "%s"' % _q_escape(q)
-    if scope == "scoped" and s.search_jira_projects:
-        jql = "project in (%s) AND %s" % (", ".join(s.search_jira_projects), jql)
+    # scope 인자와 무관하게 agent/UI 검색은 search config 밖으로 나가지 않는다.
+    # project_key는 쓰기 대상이지 검색 범위 fallback이 아니다.
+    jql = "project in (%s) AND %s" % (", ".join(projects), jql)
     jql += " ORDER BY updated DESC"
     data = client.provider.get_json("/rest/api/2/search", params={
         "jql": jql, "fields": fields, "maxResults": limit})
     base = (s.jira_base or "").rstrip("/")
-    items = [dict(_jira_item(it, base, enf), exact=True) for it in exact]
+    allowed = {p.upper() for p in projects}
+    items = [dict(_jira_item(it, base, enf), exact=True) for it in exact
+             if ((it.get("fields") or {}).get("project") or {}).get("key", "").upper() in allowed]
     seen = {x["key"] for x in items}
     for it in data.get("issues", []):
         row = _jira_item(it, base, enf)
+        if (row.get("project") or "").upper() not in allowed:
+            continue
         if row["key"] in seen:                        # 정확 일치와 중복 제거
             continue
         seen.add(row["key"])
@@ -163,10 +173,13 @@ def _search_confluence(client, s, q, scope, limit):
     base = (s.confluence_base or "").rstrip("/")
     if s.jira_env == "prod" and not base:
         return {"items": [], "error": "confluence_base 미설정"}
+    spaces = [str(x).strip() for x in (s.search_confluence_spaces or []) if str(x).strip()]
+    if not spaces:
+        return {"items": [], "error": "검색 범위 미설정 — search.confluence.spaces를 지정하세요"}
     cql = 'siteSearch ~ "%s"' % _q_escape(q)
-    if scope == "scoped" and s.search_confluence_spaces:
-        joined = ", ".join('"%s"' % x for x in s.search_confluence_spaces)
-        cql = "space in (%s) AND %s" % (joined, cql)
+    # Jira와 동일하게 scope="all"이어도 config 밖으로 넓히지 않는다.
+    joined = ", ".join('"%s"' % x.replace('"', '') for x in spaces)
+    cql = "space in (%s) AND %s" % (joined, cql)
     # 최근 고친 문서가 위로 — Jira 검색(ORDER BY updated DESC)과 같은 기준이라 두 목록이
     # 같은 감각으로 읽힌다. CQL 은 lastModified(=최종 수정) 로 정렬한다.
     cql += " ORDER BY lastModified DESC"

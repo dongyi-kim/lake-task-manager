@@ -17,7 +17,8 @@ from datetime import date, datetime, timedelta
 
 from langchain_core.tools import tool
 
-from app.agent.tools._ctx import client, compact, settings, trim
+from app.agent.tools._ctx import (client, compact, jira_key_allowed, jira_scope,
+                                  search_projects, search_spaces, settings, trim)
 
 
 def _today() -> date:
@@ -67,13 +68,12 @@ def get_my_workload(user_id: str = "", include_done: bool = False) -> dict:
     try:
         ctx = c.my_task_context() if target == me else None
         if ctx is None:
-            pk = settings().project_key
             safe = target.replace('"', " ")
             raws = c.search_issues(
-                f'project = {pk} AND (assignee = "{safe}" OR reporter = "{safe}") '
+                jira_scope(f'(assignee = "{safe}" OR reporter = "{safe}")') + " "
                 "ORDER BY updated DESC", max_results=200)
         else:
-            raws = c.issues_by_keys(ctx.get("taskKeys") or [])
+            raws = c.issues_by_keys([k for k in (ctx.get("taskKeys") or []) if jira_key_allowed(k)])
     except Exception as e:
         return {"error": str(e)[:250]}
 
@@ -113,14 +113,14 @@ def find_stale_tickets(module: str = "", days: int = 14, limit: int = 15) -> dic
 
     module 을 주면 그 모듈만(예: "ETL"). days 는 '며칠째 조용한가'의 기준.
     """
-    c, s = client(), settings()
+    c = client()
     try:
-        jql = f"project = {s.project_key} AND statusCategory = indeterminate"
+        jql = jira_scope("statusCategory = indeterminate")
         if (module or "").strip():
             jql += f' AND component = "{module.strip()}"'
         jql += f" AND updated <= -{max(1, int(days or 14))}d ORDER BY updated ASC"
         from app.agent.tools.search_tools import _last_jql
-        _last_jql["q"] = jql            # "JQL로 보여줘" 요청이면 코드가 이 쿼리를 근거로 첨부한다
+        _last_jql.set(jql)            # "JQL로 보여줘" 요청이면 코드가 이 쿼리를 근거로 첨부한다
         raws = c.search_issues(jql, max_results=100)
     except Exception as e:
         return {"error": str(e)[:250]}
@@ -157,12 +157,22 @@ def get_progress(target: str = "") -> dict:
 
     try:
         plan = load_plan()
+        if not search_projects():
+            return {"error": "검색 범위 미설정 — search.jira.projects를 지정하세요"}
+        # WBS는 화면의 write/destination 설정을 포함할 수 있다. Agent read에서는 허용된
+        # project의 Epic만 남겨, epic_progress_map이 scope 밖 key를 prefetch하지 못하게 한다.
+        plan = dict(plan)
+        plan["wbs"] = [dict(w, epics=[dict(e) for e in (w.get("epics") or [])
+                                      if jira_key_allowed(e.get("key"))])
+                       for w in (plan.get("wbs") or [])]
         prog = c.epic_progress_map(plan)
     except Exception as e:
         return {"error": f"진척률을 계산하지 못했습니다: {str(e)[:200]}"}
 
     # Epic 하나
     if tgt and "-" in tgt:
+        if not jira_key_allowed(tgt):
+            return {"error": f"{tgt} 는 search.jira.projects 범위 밖입니다."}
         p = (prog or {}).get(tgt)
         if not p:
             return {"error": f"{tgt} 는 WBS 에 연결된 Epic 이 아닙니다. "
@@ -229,7 +239,7 @@ def get_user_activity(user_id: str, days: int = 3) -> dict:
     if not _is_manager():
         return {"error": "다른 사람의 활동 내역은 매니저만 볼 수 있습니다.", "denied": True}
 
-    c, s = client(), settings()
+    c = client()
     n = max(1, min(int(days or 3), 30))
     since = _today() - timedelta(days=n)
     out = {"user": uid, "days": n, "since": since.isoformat()}
@@ -238,7 +248,7 @@ def get_user_activity(user_id: str, days: int = 3) -> dict:
     try:
         safe = uid.replace('"', " ")
         raws = c.search_issues(
-            f'project = {s.project_key} AND (assignee = "{safe}" OR reporter = "{safe}") '
+            jira_scope(f'(assignee = "{safe}" OR reporter = "{safe}")') + " "
             f"AND updated >= -{n}d ORDER BY updated DESC", max_results=60)
         out["touched"] = [compact({
             "key": it.get("key"),
@@ -254,10 +264,15 @@ def get_user_activity(user_id: str, days: int = 3) -> dict:
         act = c.activity(uid) or {}
         out["jiraActivity"] = [compact({"key": a.get("key"), "what": trim(a.get("summary"), 90),
                                         "when": (a.get("updated") or "")[:10]})
-                               for a in (act.get("jira") or [])[:15]]
+                               for a in (act.get("jira") or [])
+                               if jira_key_allowed(a.get("key"))][:15]
+        allowed_spaces = {x.upper() for x in search_spaces()}
         out["docActivity"] = [compact({"title": trim(a.get("title"), 90),
-                                       "when": (a.get("updated") or "")[:10]})
-                              for a in (act.get("confluence") or [])[:10]]
+                                       "when": (a.get("updated") or "")[:10],
+                                       "space": a.get("space") or a.get("spaceKey")})
+                              for a in (act.get("confluence") or [])
+                              if str(a.get("space") or a.get("spaceKey") or "").upper()
+                              in allowed_spaces][:10]
     except Exception as e:
         out["activity_error"] = str(e)[:150]
     return out
@@ -270,16 +285,16 @@ def find_unassigned_tickets(module: str = "", limit: int = 15) -> dict:
     module 을 주면 그 모듈만(예: "ETL"). "내 모듈"이라고 했으면 먼저 whoami 로 모듈을
     알아낸 뒤 그 이름을 넣어라. 없으면 없다고 단정해서 답하면 된다 — 이 도구가 곧 근거다.
     """
-    c, s = client(), settings()
+    c = client()
     try:
         # `assignee is EMPTY` 를 JQL 에 넣지 않는다 — mock 이 이 절을 **조용히 무시**해서
         # 담당자 있는 티켓 전부가 "미배정"으로 둔갑했다(실측: 오답의 근원). 판정은 코드가 한다.
-        jql = f"project = {s.project_key} AND statusCategory != done"
+        jql = jira_scope("statusCategory != done")
         if (module or "").strip():
             jql += f' AND component = "{module.strip()}"'
         jql += " ORDER BY updated DESC"
         from app.agent.tools.search_tools import _last_jql
-        _last_jql["q"] = jql + " AND assignee is EMPTY(코드 판정)"
+        _last_jql.set(jql + " AND assignee is EMPTY(코드 판정)")
         raws = c.search_issues(jql, max_results=300)
     except Exception as e:
         return {"error": str(e)[:250]}

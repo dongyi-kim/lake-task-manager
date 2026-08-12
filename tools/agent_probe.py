@@ -11,6 +11,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
 os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+# 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
+os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
 os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT", "gpt-4o-mini")
 os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 

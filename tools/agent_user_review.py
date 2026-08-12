@@ -20,7 +20,7 @@
 #      바로 가리킨다
 #
 # 실행: python -X utf8 tools/agent_user_review.py [모델] [흐름ID …]
-#       결과: docs/agent-user-review.md
+#       결과: research/agent-improvement/reports/agent-user-review.md
 import io
 import json
 import os
@@ -31,6 +31,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
 os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+# 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
+os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
 _args = [a for a in sys.argv[1:] if not a.startswith("--")]
 MODEL = _args[0] if _args and not _args[0].isupper() else "gpt-4o-mini"
 ONLY = {a for a in _args if a.isupper()}
@@ -180,9 +182,14 @@ def _facts(text: str) -> dict:
     try:
         from app.agent.workflow.grounding import check
         r = check(text) or {}
-        out["코드 검증"] = {"날조된 키": r.get("fake_keys") or [],
-                          "제목이 틀린 키": r.get("wrong_titles") or {},
-                          "없는 사람": r.get("fake_people") or []}
+        # ★ **깨끗하면 '이상 없음' 한 줄로 말한다.** 예전엔 빈 배열을 그대로 실었는데,
+        #   평가자가 `"날조된 키": []` 를 보고 "검증이 안 됐다"며 blocker 를 매겼다
+        #   (첫 실행 blocker 6건 중 3건이 이 오탐이었다). 빈 그릇은 사람에게도 모델에게도
+        #   "없음"이 아니라 "모름"으로 읽힌다 — 판정 결과는 **문장으로** 줘야 한다.
+        bad = {k: v for k, v in (("날조된 키", r.get("fake_keys") or []),
+                                 ("제목이 틀린 키", r.get("wrong_titles") or {}),
+                                 ("없는 사람", r.get("fake_people") or [])) if v}
+        out["코드 검증"] = bad or "이상 없음 — 답변의 티켓 키·제목·인명이 실물과 일치한다"
     except Exception as e:
         out["코드 검증"] = {"오류": str(e)[:120]}
     try:
@@ -193,9 +200,10 @@ def _facts(text: str) -> dict:
             f = (c.get_issue(k) or {}).get("fields") or {}
             real[k] = {"실제 제목": f.get("summary"),
                        "상태": (f.get("status") or {}).get("name")} if f else "존재하지 않음"
-        out["언급된 키의 실물"] = real
+        # 대조용 참고 자료지 결함 목록이 아니다 — 이름으로 그것을 분명히 한다.
+        out["[참고] 언급된 키의 실제 제목·상태 (대조용)"] = real or "언급된 티켓 키 없음"
     except Exception as e:
-        out["언급된 키의 실물"] = {"오류": str(e)[:120]}
+        out["[참고] 언급된 키의 실제 제목·상태 (대조용)"] = {"오류": str(e)[:120]}
     return out
 
 
@@ -317,5 +325,6 @@ if __name__ == "__main__":
     tot = sum(len(c) for _f, c in rows)
     blk = sum(1 for _f, cs in rows for c in cs if c.get("severity") == "blocker")
     reg = sum(1 for _f, cs in rows for c in cs if c.get("regression"))
-    print(f"\n불평 {tot}건 · blocker {blk} · 재발 {reg} — docs/agent-user-review.md 를 읽을 것")
-    io.open("docs/agent-user-review.md", "w", encoding="utf-8", newline="\n").write("\n".join(md))
+    output_path = "research/agent-improvement/reports/agent-user-review.md"
+    print(f"\n불평 {tot}건 · blocker {blk} · 재발 {reg} — {output_path} 를 읽을 것")
+    io.open(output_path, "w", encoding="utf-8", newline="\n").write("\n".join(md))

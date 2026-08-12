@@ -3,14 +3,14 @@
 여섯 역할이 하는 일은 제각각이지만 **모양은 두 가지뿐**이다.
 
   · `StructuredAgent` — 한 번 묻고 스키마로 받는다. **재료가 이미 손안에 있는** 역할
-    (Planner·Reviewer·Refiner·Assigner·Curator).
-  · `ToolAgent` — 도구를 부르며 스스로 몇 걸음 걷는다(Historian·PMO·Operator).
+    (RequestArchitect·Auditor·WorkArchitect·PeopleAdvisor·KnowledgeCurator).
+  · `ToolAgent` — 도구를 부르며 스스로 몇 걸음 걷는다(ResearchAnalyst·PMO·ActionExecutor).
     이게 ReAct 다: 생각 → 도구 → 결과를 보고 다시 생각. 몇 걸음 걸을지는 **모델이 정한다**.
 
-**어느 쪽인지는 "무엇을 부를지가 판단인가"로 갈린다.** 부를 대상이 늘 같으면(Refiner 의
-허용값, Assigner 의 모듈 로스터) 코드가 미리 조회해 자료로 주는 것이 옳다 — 도구 호출
-한 번은 LLM 왕복 한 번이고, 모델은 매 턴 그걸 다시 부른다(실측: Refiner 12회·86초·226k).
-반대로 몇 번 검색해야 충분한지를 **미리 모르는** 조사(Historian)는 ToolAgent 로 남긴다.
+**어느 쪽인지는 "무엇을 부를지가 판단인가"로 갈린다.** 부를 대상이 늘 같으면(WorkArchitect 의
+허용값, PeopleAdvisor 의 모듈 로스터) 코드가 미리 조회해 자료로 주는 것이 옳다 — 도구 호출
+한 번은 LLM 왕복 한 번이고, 모델은 매 턴 그걸 다시 부른다(실측: WorkArchitect 12회·86초·226k).
+반대로 몇 번 검색해야 충분한지를 **미리 모르는** 조사(ResearchAnalyst)는 ToolAgent 로 남긴다.
 
 **서브그래프는 도구를 쓰는 쪽만 갖는다.** 한 번 부르고 끝나는 역할에 그래프를 씌우는 건 장식이다.
 반면 도구 루프는 서브그래프여야 값어치가 있다 — 종료 조건이 한곳에 모이고, 역할마다 도구·모델을
@@ -93,6 +93,67 @@ def _loads_loose(text: str):
     return None
 
 
+def _validate_output(value, schema: dict) -> dict:
+    """관대한 추출 뒤에는 반드시 동일한 JSON Schema로 엄격 검증한다."""
+    from jsonschema import validate
+    out = _as_dict(value)
+    validate(instance=out, schema=schema)
+    return out
+
+
+def invoke_schema(schema: dict, messages: list, tier: str = "complex",
+                  temperature: float = 0.0, name: str = "AdhocOutput") -> dict:
+    """Role 밖의 보정 호출도 공통 structured-output fallback을 사용하게 한다."""
+    import json
+    from app.agent import capabilities
+
+    named = _named(schema, name)
+    profile = capabilities.get(tier).get("checked") or {}
+    errors, raw_text = [], ""
+    for capability, method in (("json_schema", "json_schema"),
+                               ("json_object", "json_mode")):
+        if profile.get(capability) is False:
+            continue
+        try:
+            call_messages = list(messages)
+            if method == "json_mode":
+                call_messages.append(HumanMessage(content=(
+                    "JSON 객체 하나만 출력하라. JSON Schema:\n"
+                    + json.dumps(schema, ensure_ascii=False))))
+            out = _cfg.get_llm(temperature=temperature, tier=tier).with_structured_output(
+                named, method=method).invoke(call_messages)
+            out = _validate_output(out, schema)
+            capabilities.record(tier, capability, True)
+            return out
+        except Exception as exc:
+            errors.append(f"{capability}: {str(exc)[:160]}")
+            capabilities.record(tier, capability, False, str(exc))
+    try:
+        raw = _cfg.get_llm(temperature=temperature, tier=tier).invoke(
+            list(messages) + [HumanMessage(content=(
+                "아래 JSON Schema를 만족하는 JSON 객체 하나만 출력하라. 설명과 code fence 금지.\n"
+                + json.dumps(schema, ensure_ascii=False)))])
+        raw_text = str(getattr(raw, "content", raw) or "")
+        parsed = _loads_loose(raw_text)
+        if parsed is None:
+            raise ValueError("JSON 객체를 찾지 못했습니다.")
+        return _validate_output(parsed, schema)
+    except Exception as exc:
+        errors.append(f"prompt_json: {str(exc)[:160]}")
+    try:
+        raw = _cfg.get_llm(temperature=0, tier=tier).invoke([
+            SystemMessage(content="의미를 바꾸지 말고 JSON 형식과 schema 위반만 교정하라."),
+            HumanMessage(content=(json.dumps(schema, ensure_ascii=False)
+                                  + "\n\n교정할 출력:\n" + raw_text[:12000]))])
+        parsed = _loads_loose(str(getattr(raw, "content", raw) or ""))
+        if parsed is None:
+            raise ValueError("repair JSON 객체를 찾지 못했습니다.")
+        return _validate_output(parsed, schema)
+    except Exception as exc:
+        errors.append(f"repair: {str(exc)[:160]}")
+        raise RuntimeError("structured output 실패 — " + " | ".join(errors)) from exc
+
+
 class Agent(ABC):
     """역할 하나. `name` 은 그래프 노드명과 같아야 한다(State.Node 의 상수를 쓴다)."""
 
@@ -128,7 +189,7 @@ class Agent(ABC):
     def llm(self, **kw):
         return _cfg.get_llm(temperature=self.temperature, tier=self.tier, **kw)
 
-    def structured(self, **kw):
+    def structured(self, method: str = "json_schema", **kw):
         """스키마로 받는 모델. **스키마에 이름을 붙여서** 넘긴다.
 
         OpenAI/AOAI 는 구조화 출력을 함수 호출로 구현하므로 스키마가 함수 이름을 가져야 한다.
@@ -136,7 +197,67 @@ class Agent(ABC):
         처음 돌렸을 때 여섯 역할이 전부 여기서 넘어졌다. 역할마다 적어 두면 빠뜨리는 사람이
         생기므로 여기서 한 번에 붙인다.
         """
-        return self.llm(**kw).with_structured_output(_named(self.schema(), self.name))
+        return self.llm(**kw).with_structured_output(
+            _named(self.schema(), self.name), method=method)
+
+    def invoke_structured(self, state: AgentState, messages: list) -> dict:
+        """provider capability에 맞춰 구조화 출력 fallback ladder를 실행한다.
+
+        json_schema → json_object → prompt-only JSON → repair 1회 순서다. 성공한 결과도
+        로컬 JSON Schema 검증을 통과해야 한다. openai_compat 서버가 response_format이나
+        tools를 거부해도 role 전체가 ``Invalid json output``으로 사망하지 않게 한다.
+        """
+        import json
+        from app.agent import capabilities
+
+        profile = capabilities.get(self.tier).get("checked") or {}
+        errors = []
+        for capability, method in (("json_schema", "json_schema"),
+                                   ("json_object", "json_mode")):
+            if profile.get(capability) is False:
+                continue
+            try:
+                call_messages = list(messages)
+                if method == "json_mode":
+                    call_messages.append(HumanMessage(content=(
+                        "JSON 객체 하나만 출력하라. 다음 JSON Schema를 만족해야 한다:\n"
+                        + json.dumps(self.schema(), ensure_ascii=False))))
+                raw = self.structured(method=method).invoke(call_messages)
+                out = _validate_output(raw, self.schema())
+                capabilities.record(self.tier, capability, True)
+                return out
+            except Exception as exc:
+                errors.append(f"{capability}: {str(exc)[:180]}")
+                capabilities.record(self.tier, capability, False, str(exc))
+
+        # response_format을 전혀 지원하지 않는 서버: plain chat에 schema를 명시한다.
+        schema_text = json.dumps(self.schema(), ensure_ascii=False)
+        prompt_messages = list(messages) + [HumanMessage(content=(
+            "출력 형식 지시: 아래 JSON Schema를 만족하는 JSON 객체 하나만 출력하라. "
+            "설명, 머리말, Markdown code fence를 쓰지 마라.\n" + schema_text))]
+        raw_text = ""
+        try:
+            raw = self.llm().invoke(prompt_messages)
+            raw_text = str(getattr(raw, "content", raw) or "")
+            parsed = _loads_loose(raw_text)
+            if parsed is None:
+                raise ValueError("JSON 객체를 찾지 못했습니다.")
+            return _validate_output(parsed, self.schema())
+        except Exception as exc:
+            errors.append(f"prompt_json: {str(exc)[:180]}")
+
+        # repair는 원 업무를 다시 판단시키는 호출이 아니라 형식만 교정하는 1회 호출이다.
+        try:
+            repaired = self.llm().invoke([
+                SystemMessage(content="주어진 출력의 의미를 바꾸지 말고 JSON 형식과 schema 위반만 고쳐라."),
+                HumanMessage(content=f"JSON Schema:\n{schema_text}\n\n교정할 출력:\n{raw_text[:12000]}")])
+            parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
+            if parsed is None:
+                raise ValueError("repair 결과에서 JSON 객체를 찾지 못했습니다.")
+            return _validate_output(parsed, self.schema())
+        except Exception as exc:
+            errors.append(f"repair: {str(exc)[:180]}")
+            raise RuntimeError("structured output 실패 — " + " | ".join(errors)) from exc
 
     @abstractmethod
     def node(self):
@@ -156,23 +277,11 @@ class StructuredAgent(Agent):
 
     def _run(self, state: AgentState) -> dict:
         try:
-            out = self.structured().invoke(
-                [SystemMessage(content=self.system(state)),
-                 HumanMessage(content=self.task(state))])
-            return self.apply(state, _as_dict(out))
+            out = self.invoke_structured(state, [
+                SystemMessage(content=self.system(state)),
+                HumanMessage(content=self.task(state))])
+            return self.apply(state, out)
         except Exception as e:
-            # ★ **구조화 출력이 안 되는 서버가 있다**(실사용: 자체 LLM 에서 "Invalid json
-            #   output" 이 반복). langchain 의 `with_structured_output` 은 기본적으로
-            #   OpenAI 의 **함수 호출**로 스키마를 강제하는데, 사내 게이트웨이나 자체 서빙
-            #   (vLLM·TGI 등)은 그 기능이 없거나 반쪽이라 모델이 **평문·```json 감싼 텍스트**
-            #   를 그대로 뱉는다. 그러면 파서가 죽고, 그 역할은 통째로 실패로 떨어진다.
-            #
-            #   우리가 원하는 건 '함수 호출'이 아니라 **JSON 한 덩이**다. 그러니 한 번 더,
-            #   이번엔 스키마를 **말로 주고** 평문으로 받아 코드가 관대하게 파싱한다.
-            #   판단은 그대로 모델이 하고, 형식을 맞추는 일만 코드가 받아 낸다.
-            alt = self._json_fallback(state)
-            if alt is not None:
-                return self.apply(state, alt)
             return self.fallback(state, e)
 
     def _json_fallback(self, state: AgentState):
@@ -216,7 +325,7 @@ class TextAgent(Agent):
 class _Scratch(TypedDict, total=False):
     """도구 루프의 **작업 메모**. 바깥 대화(messages)와 섞지 않는다.
 
-    Historian 이 도구를 여덟 번 부른 기록이 사용자 대화창에 남으면 안 되고, 다음 턴의
+    ResearchAnalyst 이 도구를 여덟 번 부른 기록이 사용자 대화창에 남으면 안 되고, 다음 턴의
     컨텍스트에 그게 다시 실리면 토큰만 먹는다. 결론만 State 로 올린다.
     """
     messages: Annotated[list, add_messages]
@@ -261,8 +370,52 @@ class ToolAgent(Agent):
         return run
 
     def _think(self, scratch: _Scratch) -> dict:
-        msg = self.llm().bind_tools(self.tools).invoke(scratch["messages"])
+        from app.agent import capabilities
+        profile = capabilities.get(self.tier).get("checked") or {}
+        try:
+            if profile.get("tools") is False:
+                raise RuntimeError("capability probe: tools unsupported")
+            # 병렬 tool call은 probe 결과가 true일 때만 켠다. 모르는 서버에는 보수적으로 false.
+            msg = self.llm().bind_tools(
+                self.tools, parallel_tool_calls=profile.get("parallel_tools") is True
+            ).invoke(scratch["messages"])
+            capabilities.record(self.tier, "tools", True)
+        except Exception as exc:
+            capabilities.record(self.tier, "tools", False, str(exc))
+            msg = self._think_without_native_tools(scratch)
         return {"messages": [msg], "steps": (scratch.get("steps") or 0) + 1}
+
+    def _think_without_native_tools(self, scratch: _Scratch):
+        """tool-calling 미지원 서버용: JSON 계획을 받아 등록된 도구만 코드가 실행한다."""
+        import json
+        import uuid
+        catalog = []
+        owned = {t.name: t for t in self.tools}
+        for tool_obj in self.tools:
+            schema = {}
+            try:
+                schema = tool_obj.args_schema.model_json_schema()
+            except Exception:
+                pass
+            catalog.append({"name": tool_obj.name,
+                            "description": " ".join((tool_obj.description or "").split())[:600],
+                            "input_schema": schema})
+        instruction = HumanMessage(content=(
+            "이 서버는 native tool calling을 지원하지 않는다. 아래 등록 도구 중 필요한 호출을 "
+            "JSON으로 계획하라. 형식은 {\"tool_calls\":[{\"name\":str,\"args\":object}],"
+            "\"answer\":str}다. 조회가 더 필요하면 tool_calls를, 충분하면 빈 배열과 answer를 "
+            "반환하라. 등록되지 않은 이름을 만들지 마라.\n도구:\n"
+            + json.dumps(catalog, ensure_ascii=False)))
+        raw = self.llm().invoke(list(scratch.get("messages") or []) + [instruction])
+        parsed = _loads_loose(str(getattr(raw, "content", raw) or "")) or {}
+        calls = []
+        for item in parsed.get("tool_calls") or []:
+            name = str((item or {}).get("name") or "")
+            args = (item or {}).get("args") or {}
+            if name in owned and isinstance(args, dict):
+                calls.append({"name": name, "args": args, "id": "fallback_" + uuid.uuid4().hex[:12]})
+        return AIMessage(content=str(parsed.get("answer") or "") if not calls else "",
+                         tool_calls=calls)
 
     def _act(self, scratch: _Scratch) -> dict:
         from langgraph.prebuilt import ToolNode
@@ -294,14 +447,14 @@ class ToolAgent(Agent):
     def _conclude(self, state: AgentState, scratch_messages: list) -> dict:
         """걸은 기록을 놓고 **한 번만** 스키마로 정리시킨다."""
         log = _transcript(scratch_messages)
-        out = self.structured().invoke([
+        out = self.invoke_structured(state, [
             SystemMessage(content=self.system(state)),
             HumanMessage(content=f"{self.task(state)}\n\n### 조사한 내용\n{log}\n\n"
                                  "위 조사 결과만을 근거로 정리하라. 먼저 결론을 뒷받침할 핵심 사실 "
                                  "2~3개를 조사 기록에서 **원문 그대로**(제목·키·숫자) 짚은 뒤 정리하라 "
                                  "— 근거를 먼저 찾게 하면 지어낼 자리가 없어진다. "
                                  "조사에 없는 것을 지어내지 마라.")])
-        return _as_dict(out)
+        return out
 
 
 def _transcript(messages: list, limit: int = 28000) -> str:
@@ -357,4 +510,5 @@ def _as_dict(out) -> dict:
 
 
 __all__ = ["Agent", "StructuredAgent", "TextAgent", "ToolAgent", "AIMessage",
+           "invoke_schema",
            "MAX_TOOL_STEPS"]

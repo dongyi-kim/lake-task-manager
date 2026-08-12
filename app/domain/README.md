@@ -16,4 +16,4 @@ PMO 대시보드의 **계산·조립 로직**. 정규화된 이슈를 입력받�
 ## 규칙
 - **progress.py·rollup.py 는 순수 함수** — 입력=정규화 이슈/plan, 출력=dict. 네트워크·인증·`client` 금지.
 - status 이름 하드코딩 금지 → `norm_cat`(= progress) 사용. VoC 판정은 `VOC_COMPONENT` 단일 소스.
-- 완료 판정·SP 기본값 등 도메인 규칙은 CLAUDE.md §6 을 따른다.
+- 완료 판정·SP 기본값 등 도메인 규칙은 AGENTS.md §6 을 따른다.

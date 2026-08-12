@@ -156,7 +156,10 @@ class Settings:
         _sj = _search.get("jira") or {}
         _sc = _search.get("confluence") or {}
         _sb = _search.get("bitbucket") or {}
-        self.search_jira_projects = _slist(_sj, "projects", "project", default=[self.project_key])
+        # 검색 범위와 쓰기 대상은 서로 다른 설정이다. project_key는 생성·수정의 기본
+        # 프로젝트일 뿐 검색 fallback이 아니다. search 설정이 비어 있으면 조회를 넓히지
+        # 않고 '검색 범위 미설정'으로 처리한다.
+        self.search_jira_projects = _slist(_sj, "projects", "project")
         self.search_confluence_spaces = _slist(_sc, "spaces", "space")
         self.search_bitbucket_projects = _slist(_sb, "projects", "project")
         # 매니저(PM/PL) Jira 사용자 ID 화이트리스트. WBS Dashboard·인력 워크로드는 여기 있는

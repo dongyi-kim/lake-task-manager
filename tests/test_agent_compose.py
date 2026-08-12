@@ -15,7 +15,7 @@ os.environ.setdefault("JIRA_ENV", "mock")
 
 pytest.importorskip("langchain_core", reason="requirements-agent.txt 미설치")
 
-from app.agent import compose as C                                # noqa: E402
+from app.agent import editor_author as C                                # noqa: E402
 
 PROG = "DL-9090"
 
@@ -34,6 +34,9 @@ def test_comment_context_leads_with_the_recent_conversation():
     ctx = C._ticket_context(PROG, "comment")
     assert "최근 코멘트" in ctx and "skcc.x1402" in ctx
     assert "하위 2/3 완료" in ctx and "DL-9092" in ctx
+    assert "명시적 미완료(완료로 쓰지 말 것)" in ctx
+    assert "성능 측정" in ctx and "사용 가이드 작성" in ctx
+    assert "DL-9095" in ctx and "미완료: In Progress" in ctx
 
 
 def test_description_context_carries_the_current_body_instead_of_chatter():
@@ -79,6 +82,72 @@ def test_fenced_output_is_unwrapped():
     assert C._unfence("<p>안녕</p>") == "<p>안녕</p>"
 
 
+def test_need_info_signal_survives_inline_code_and_html_wrappers():
+    """실모델이 NEED_INFO를 `...` 또는 <code>...</code>로 감싸도 성공 본문이 아니다."""
+    assert C._need_info("`NEED_INFO: 검토 대상을 알려 주세요`") == "검토 대상을 알려 주세요"
+    assert C._need_info("<p><code>NEED_INFO: 목적을 한 줄 적어 주세요</code></p>") == \
+        "목적을 한 줄 적어 주세요"
+
+
+def test_explicitly_remaining_work_cannot_be_changed_to_completed():
+    ctx = ("[DL-9090] 작업 — In Progress\n"
+           "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 사용 가이드 작성")
+    assert C._status_conflicts("<p>성능 측정이 완료되었습니다.</p>", ctx) == ["성능 측정"]
+    assert C._status_conflicts("<p>성능 측정을 진행할 예정입니다.</p>", ctx) == []
+    assert C._status_conflicts("<p>성능 측정 완료 여부를 검토해 주세요.</p>", ctx) == []
+
+
+def test_future_dod_is_not_mistaken_for_a_current_completion_claim():
+    ctx = "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 사용 가이드 작성"
+    unchecked = ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                 '<li data-checked="false">성능 측정 완료</li></ul>')
+    assert C._status_conflicts(unchecked, ctx) == []
+    # 체크된 조건이나 일반 본문은 현재 완료를 나타내므로 계속 차단한다.
+    checked = ('<ul data-type="taskList">'
+               '<li data-checked="true">성능 측정 완료</li></ul>')
+    assert C._status_conflicts(checked, ctx) == ["성능 측정"]
+
+
+def test_compose_qualifies_a_status_claim_that_conflicts_with_materials(monkeypatch):
+    """상충 상태는 완료로 단정하지 않고 구체적인 확인 과제로 바꾼다."""
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "<p>성능 측정이 완료되었습니다.</p>"
+
+    class _Llm:
+        def invoke(self, _messages):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: (
+        "[DL-9090] 작업 — In Progress\n"
+        "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 문서 정리"))
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    r = C.compose(PROG, "comment", "상태 공유")
+    assert r["ok"] is True
+    assert "성능 측정 항목" in r["html"] and "Jira 상태가 In Progress" in r["html"]
+    assert "확인 필요" in r["html"]
+
+
+def test_compose_recognizes_backticked_need_info_as_feedback(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "`NEED_INFO: 어떤 결과를 검토할지 알려 주세요`"
+
+    class _Llm:
+        def invoke(self, _messages):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "[DL-9090] 작업 — In Progress")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+    r = C.compose(PROG, "comment", "검토 요청")
+    assert r["ok"] is False and r.get("needsInfo") is True
+    assert "어떤 결과" in r["error"]
+
+
 def test_fabricated_keys_come_back_as_a_warning_not_silently():
     """접지 검사는 챗과 같은 것을 쓴다 — 사용자는 이 글을 자기 이름으로 올린다."""
     from app.agent.workflow import grounding
@@ -121,7 +190,7 @@ def test_checklists_survive_the_save_conversion():
 
 
 def test_markdown_would_not_survive_so_the_prompt_forbids_it():
-    """마크다운 링크는 변환되지 않고 글자로 남는다 — composer.md 가 금지하는 이유."""
+    """마크다운 링크는 변환되지 않고 글자로 남는다 — editor_author.md 가 금지하는 이유."""
     from app.agent.tools._ctx import client
     stored = str(client().desc_field_value('<p>[설계 문서](https://x/y)</p>'))
     assert "](https" in stored, "변환되지 않는다는 사실 자체가 규칙의 근거다"
@@ -129,10 +198,63 @@ def test_markdown_would_not_survive_so_the_prompt_forbids_it():
 
 def test_composer_prompt_states_the_rendering_rules():
     """규칙이 문서에만 있고 프롬프트에 없으면 모델은 모른다."""
-    from app.agent.prompts.roles import SYSTEM_COMPOSER
-    assert "NEVER markdown" in SYSTEM_COMPOSER
-    assert "[~사번]" in SYSTEM_COMPOSER
-    assert "taskList" in SYSTEM_COMPOSER
+    from app.agent.prompts.roles import SYSTEM_EDITOR_AUTHOR
+    assert "markdown은 쓰지 않는다" in SYSTEM_EDITOR_AUTHOR
+    assert "[~사번]" in SYSTEM_EDITOR_AUTHOR
+    assert "taskList" in SYSTEM_EDITOR_AUTHOR
+
+
+def test_legacy_reference_placeholders_cannot_wrap_generated_badges():
+    from app.agent.editor_author import _badgeify, _legacy_reference_tokens
+
+    rendered = _badgeify(_legacy_reference_tokens(
+        "<p>상위 {{ref:DL-9090}} 담당 {{mention:skcc.x1402}}</p>"))
+    assert "{{ref:" not in rendered and "{{mention:" not in rendered
+    assert rendered.count('data-key="DL-9090"') == 1
+    assert rendered.count('data-type="mention"') == 1
+    assert "{{" not in rendered and "}}" not in rendered
+
+    nested = _badgeify(_legacy_reference_tokens(
+        "<p>상위 {{{{ref:DL-9090}}}} 또는 {{DL-9090}} 및 [DL-9090]</p>"))
+    assert "{{" not in nested and "}}" not in nested
+    assert nested.count('data-key="DL-9090"') == 3
+    assert "[<a" not in nested
+
+
+def test_non_done_child_is_added_to_the_explicit_remaining_guard():
+    from app.agent.editor_author import _status_conflicts
+
+    context = "명시적 미완료(완료로 쓰지 말 것): 다운스트림 조회 연동"
+    assert _status_conflicts("<p>다운스트림 조회 연동 작업은 완료되었습니다.</p>", context)
+    assert _status_conflicts("<p>다운스트림 조회 연동을 완료하였습니다.</p>", context)
+    assert not _status_conflicts("<p>다운스트림 조회 연동 작업은 진행 중입니다.</p>", context)
+
+
+def test_conflicting_completion_is_qualified_as_a_specific_open_fact():
+    from app.agent.editor_author import _qualify_status_conflicts, _status_conflicts
+
+    context = "명시적 미완료(완료로 쓰지 말 것): 다운스트림 조회 연동"
+    html = "<ul><li>다운스트림 조회 연동 작업은 API 개선 덕분에 완료되었습니다.</li></ul>"
+    fixed = _qualify_status_conflicts(html, _status_conflicts(html, context))
+    assert "Jira 상태가 In Progress" in fixed and "확인 필요" in fixed
+    assert not _status_conflicts(fixed, context)
+
+    tagged = ("<ul><li><strong>다운스트림 조회 연동</strong> 작업은 "
+              "<code>DL-9092</code> 해결 후 완료되었습니다.</li></ul>")
+    fixed_tagged = _qualify_status_conflicts(tagged, _status_conflicts(tagged, context))
+    assert "Jira 상태가 In Progress" in fixed_tagged
+    assert not _status_conflicts(fixed_tagged, context)
+
+
+def test_unsupported_metric_is_replaced_but_seed_metric_is_preserved():
+    from app.agent.editor_author import _ground_acceptance_metrics
+
+    made_up = _ground_acceptance_metrics(
+        "<li>성능이 20% 이상 개선되었음을 보고서로 확인</li>", "성능 개선 작업")
+    assert "20%" not in made_up and "합의한 목표값" in made_up
+    supplied = _ground_acceptance_metrics(
+        "<li>p95가 200ms 이하임을 확인</li>", "완료 기준은 p95 200ms 이하")
+    assert "200ms 이하" in supplied
 
 
 def test_rendering_rules_are_indexed_for_retrieval():

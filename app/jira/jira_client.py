@@ -878,6 +878,56 @@ class JiraClient:
         그대로 재사용되므로 캐시 가치가 크다(담당/상태 변경 시 'mt:' 프리픽스째 무효화한다)."""
         return self._search(jql, cache_key=cache_key, max_results=max_results)
 
+    def search_issues_page(self, jql, start_at=0, max_results=100, fields=None, light=True):
+        """JQL 검색 결과 한 페이지와 Jira pagination metadata를 그대로 돌려준다.
+
+        ``search_issues``는 화면용 편의를 위해 내부에서 모든 페이지를 합쳐 list만 반환한다.
+        에이전트 조회는 그 방식으로는 전체 건수와 다음 페이지를 알 수 없고, 임의의 50건
+        상한을 두게 된다. 이 메서드는 Jira의 ``startAt``/``maxResults``/``total`` 계약을
+        보존한다. 호출자가 페이지를 이어 붙일 때에는 안정적인 ORDER BY와 key 중복 제거를
+        책임진다.
+        """
+        start = max(0, int(start_at or 0))
+        size = max(1, min(int(max_results or 100), 100))
+        requested_fields = fields
+        if isinstance(requested_fields, (list, tuple, set)):
+            requested_fields = ",".join(str(x) for x in requested_fields if str(x).strip())
+        requested_fields = (requested_fields or self._issue_fields(light=light)).strip()
+        data = self.provider.get_json("/rest/api/2/search", params={
+            "jql": jql, "fields": requested_fields,
+            "startAt": start, "maxResults": size})
+        if not isinstance(data, dict) or "issues" not in data:
+            if self._looks_anonymous(data):
+                raise SessionExpired("익명 응답(검색) — 세션 끊김(재인증 필요).")
+            messages = " ".join((data or {}).get("errorMessages") or []) \
+                if isinstance(data, dict) else str(data or "")
+            raise ValueError(messages or "Jira 검색 응답 형식이 올바르지 않습니다.")
+        issues = list(data.get("issues") or [])
+        # 반환된 실제 페이지 크기를 기준으로 다음 위치를 잡는다. Jira는 요청한 maxResults보다
+        # 작은 서버 상한을 적용할 수 있으므로 start+요청크기로 넘기면 결과를 건너뛸 수 있다.
+        returned = len(issues)
+        total = data.get("total")
+        try:
+            total = int(total) if total is not None else None
+        except (TypeError, ValueError):
+            total = None
+        next_start = start + returned
+        has_more = bool(returned) and (total is None or next_start < total)
+        pfx = "issueL" if light else "issue"
+        for it in issues:
+            key = (it or {}).get("key")
+            if key:
+                self.cache.set(f"{pfx}:{self.env}:{key}", it, self.s.cache_ttl_seconds)
+        return {
+            "startAt": start,
+            "maxResults": int(data.get("maxResults") or size),
+            "total": total,
+            "issues": issues,
+            "returned": returned,
+            "hasMore": has_more,
+            "nextStartAt": next_start if has_more else None,
+        }
+
     def issues_by_keys(self, keys):
         """키 목록 → 원본 이슈들. 캐시에 있으면 그대로 쓰고 없는 것만 한 번에 받는다."""
         keys = [k for k in dict.fromkeys(keys) if k]
@@ -1511,6 +1561,75 @@ class JiraClient:
         except Exception:
             return self.issue_types()
 
+    def create_fields(self, issue_type):
+        """이 project·issue type에서 **생성 시 실제로 설정 가능한** field metadata.
+
+        custom field id는 Jira instance마다 다르다. `/field`의 전역 목록에 존재한다는 이유만으로
+        create payload에 넣으면, 해당 project의 create screen에 없는 field는 Jira가
+        ``cannot be set``으로 거절한다. 따라서 `createmeta`의 issue type별 fields만 신뢰한다.
+        """
+        itype = (issue_type or "").strip()
+        if not itype:
+            return {}
+
+        def do():
+            data = self.provider.get_json(
+                "/rest/api/2/issue/createmeta",
+                params={"projectKeys": self.s.project_key, "issuetypeNames": itype,
+                        "expand": "projects.issuetypes.fields"}) or {}
+            projects = data.get("projects") or []
+            project = next((p for p in projects if (p.get("key") or "") == self.s.project_key),
+                           projects[0] if len(projects) == 1 else None)
+            if not project:
+                return {}
+            types = project.get("issuetypes") or []
+            meta = next((t for t in types if (t.get("name") or "").casefold() == itype.casefold()),
+                        types[0] if len(types) == 1 else None)
+            return (meta or {}).get("fields") or {}
+
+        ck = f"createmeta:{self.env}:{self.s.project_key}:{itype.casefold()}"
+        try:
+            return self.cache.get_or_set(ck, self.OPTIONS_TTL, do)[0]
+        except SessionExpired:
+            raise
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _is_epic_name_meta(field):
+        """Jira Software의 Epic Name field인가.
+
+        표시 name은 locale/관리자 설정의 영향을 받을 수 있어 plugin schema id를 우선한다.
+        `issueFunction`처럼 우연히 같은 numeric id를 가진 전혀 다른 field는 통과시키지 않는다.
+        """
+        field = field or {}
+        schema = field.get("schema") or {}
+        custom = (schema.get("custom") or "").casefold()
+        name = " ".join(str(field.get("name") or "").casefold().split())
+        return "gh-epic-label" in custom or name in {"epic name", "epic 이름"}
+
+    def epic_name_create_field(self, epic_type="Epic"):
+        """Epic 생성 payload에 넣을 검증된 Epic Name field id. 없으면 ``None``.
+
+        configured id가 `createmeta`에서 Epic Name으로 확인될 때만 사용하고, 다르면 metadata에서
+        실제 field를 찾는다. prod에서 metadata를 확인하지 못한 경우에는 안전하게 생략한다.
+        """
+        fields = self.create_fields(epic_type)
+        configured = getattr(self.s, "epic_name_field_id", None)
+        if fields:
+            if configured and configured in fields and self._is_epic_name_meta(fields[configured]):
+                return configured
+            found = next((fid for fid, meta in fields.items() if self._is_epic_name_meta(meta)), None)
+            if found and found != configured:
+                self._log_once("epic-name-field",
+                               f"[fields] Epic Name field 보정: {configured or '(없음)'} -> {found}")
+            return found
+        # jira820 mock/local은 createmeta fields를 제공하지 않는 버전이 있다. 개발 환경에서만
+        # 기존 mapping을 유지한다. prod는 검증되지 않은 custom field를 쓰기 payload에 넣지 않는다.
+        if str(self.env).startswith(("mock", "local")):
+            return configured
+        return None
+
     def child_types(self, parent_key):
         """이 티켓 **밑에** 만들 수 있는 타입.
 
@@ -1659,8 +1778,9 @@ class JiraClient:
             fields["assignee"] = {"name": assignee}
         if components:
             fields["components"] = [{"name": c} for c in components if c]
-        # Epic Name(단축어) — 검색·뱃지가 요약이 아니라 이 이름을 쓴다. 없으면 요약으로.
-        enf = getattr(self.s, "epic_name_field_id", None)
+        # Epic Name(단축어) — instance마다 custom field id가 다르므로 createmeta에서 검증한다.
+        # 잘못된 id를 보내면 field가 존재해도 create screen에 없다는 이유로 Epic 전체 생성이 실패한다.
+        enf = self.epic_name_create_field(etype)
         if enf:
             fields[enf] = epic_name or summary
         with write_upstream():
@@ -2419,13 +2539,15 @@ class JiraClient:
         f = raw.get("fields") or {}
         st = f.get("status") or {}
         a = f.get("assignee") or {}
+        issue_type = f.get("issuetype") or {}
         nf = self.s.epic_name_field_id
         return {
             "key": raw.get("key", key),
             "summary": f.get("summary", ""),
             # Epic Name(단축어) 커스텀필드 — 뱃지 라벨은 **Epic Name → Summary → 키** 순으로 쓴다.
             "epicName": (f.get(nf) if nf else None) or None,
-            "type": (f.get("issuetype") or {}).get("name", ""),
+            "type": issue_type.get("name", ""),
+            "isSubtask": bool(issue_type.get("subtask")),
             "status": st.get("name", ""),
             "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
             "assignee": real_name(a.get("displayName") or a.get("name")) or None,
@@ -2713,7 +2835,7 @@ class JiraClient:
         """상태명(소문자) → todo|inprogress|done.
 
         타임라인 상태 뱃지에 색을 주려면 카테고리가 필요한데, **상태명 하드코딩은 금지**다
-        (사내 커스텀 워크플로가 많아 이름을 신뢰할 수 없다 — CLAUDE.md §10).
+        (사내 커스텀 워크플로가 많아 이름을 신뢰할 수 없다 — AGENTS.md §10).
         그래서 인스턴스의 /rest/api/2/status 를 받아 매핑한다. 실패하면 빈 맵 →
         프론트는 색 없는 중립 뱃지로 그린다(기능은 그대로).
         """

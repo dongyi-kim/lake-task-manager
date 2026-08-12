@@ -19,11 +19,13 @@ from app.domain.bulk import (MAX_ITEMS, validate_bulk_comment,  # noqa: E402
 
 class _Lookup:
     """실값 조회기의 최소 구현 — validate_* 가 어떤 메서드를 쓰는지 드러낸다."""
-    def __init__(self, keys=("DL-1", "DL-2"), editable=("DL-1", "DL-2")):
-        self._keys, self._editable = set(keys), set(editable)
+    def __init__(self, keys=("DL-1", "DL-2"), editable=("DL-1", "DL-2"), done=()):
+        self._keys, self._editable, self._done = set(keys), set(editable), set(done)
 
     def badge(self, key):
-        return {"key": key} if key in self._keys else None
+        return ({"key": key, "type": "Task",
+                 "statusCategory": "done" if key in self._done else "todo"}
+                if key in self._keys else None)
 
     def may_edit(self, key):
         return key in self._editable
@@ -66,6 +68,14 @@ def test_update_refuses_unknown_ticket_and_no_permission():
     assert not r["ok"] and "찾을 수 없" in r["errors"][0]["message"]
     r2 = validate_bulk_update([{"key": "DL-2", "changes": {"summary": "x"}}], lk)
     assert not r2["ok"] and "권한" in r2["errors"][0]["message"]
+
+
+def test_update_refuses_done_but_comment_still_accepts_done():
+    lk = _Lookup(done=("DL-1",))
+    changed = validate_bulk_update(
+        [{"key": "DL-1", "changes": {"summary": "바뀐 제목"}}], lk)
+    assert not changed["ok"] and "완료된 티켓" in changed["errors"][0]["message"]
+    assert validate_bulk_comment([{"key": "DL-1", "body": "완료 후 기록"}], lk)["ok"]
 
 
 def test_update_refuses_the_same_ticket_twice():

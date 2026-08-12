@@ -30,9 +30,12 @@ def test_jira_multiproject_scoped():
 
 
 def test_confluence_search_returns_pages():
-    r = search.search_all(_client(), get_settings(), "런북", scope="all", limit=6)
+    # dev corpus의 "런북" 결과는 search.confluence.spaces 밖에도 존재한다. scope="all"도
+    # config 밖으로 넓히지 않는 것이 계약이므로, 허용 space 안에 있는 "가이드"로 검증한다.
+    r = search.search_all(_client(), get_settings(), "가이드", scope="all", limit=6)
     items = r["confluence"]["items"]
-    assert items, "confluence 검색 결과가 있어야(런북)"
+    assert items, "허용 Confluence space의 검색 결과가 있어야(가이드)"
+    assert {it["space"] for it in items} <= set(get_settings().search_confluence_spaces)
     for it in items:
         assert it["type"] == "confluence" and it["title"]
         assert it["url"].startswith("/spaces/") or "/spaces/" in it["url"]
