@@ -15,6 +15,9 @@ Jira 없이 테스트할 수 있고, 조회 결과를 **부모/종류별로 메�
 
 import re
 
+from app.domain.ticket_actions import (EDITABLE_FIELDS, TIER_EPIC, TIER_TASK,
+                                       field_update_error, issue_tier)
+
 __all__ = ["MODES", "ITEM_FIELDS", "validate_bulk", "to_create_kwargs"]
 
 MODES = ("task", "subtask")
@@ -175,10 +178,13 @@ def validate_bulk(mode, items, lookup=None):
                 errors.append(_err(i, fld, f"{parent_key} 티켓을 찾을 수 없습니다."))
             else:
                 ptype = (b.get("type") or "")
-                if sub and ptype == "Epic":
+                ptier = issue_tier(ptype, b.get("isSubtask")
+                                   if "isSubtask" in b else None)
+                if sub and ptier != TIER_TASK:
                     errors.append(_err(i, "parent",
-                                       f"{parent_key} 는 Epic 입니다. Sub-Task 의 상위는 Task 여야 합니다."))
-                elif not sub and ptype != "Epic":
+                                       f"{parent_key} 는 {ptype or ptier} tier입니다. "
+                                       "Sub-Task 의 상위는 Task-tier여야 합니다."))
+                elif not sub and ptier != TIER_EPIC:
                     errors.append(_err(i, "epic",
                                        f"{parent_key} 는 Epic 이 아니라 {ptype} 입니다."))
                 else:
@@ -285,8 +291,7 @@ def to_create_kwargs(mode, item):
 # 그때 더 관대한 쪽이 사고를 낸다. 상한(MAX_ITEMS)·권한(may_edit)·실값 대조가 전부 같다.
 # 생성과 다른 점 하나 — **대상이 이미 존재한다**. 그래서 검사의 축이 "만들 수 있나"가 아니라
 # "그 키가 있고, 내가 고칠 수 있나"다.
-_EDITABLE = ("assignee", "duedate", "priority", "summary", "labels", "components",
-             "description")
+_EDITABLE = tuple(sorted(EDITABLE_FIELDS))
 
 
 def validate_bulk_update(items, lookup=None):
@@ -328,9 +333,16 @@ def validate_bulk_update(items, lookup=None):
             errors.append(_err(i, "changes",
                                f"{key}: 바꿀 수 없는 필드입니다 — {', '.join(sorted(bad))}"))
         if lookup is not None:
-            if hasattr(lookup, "badge") and not lookup.badge(key):
-                errors.append(_err(i, "key", f"{key} 티켓을 찾을 수 없습니다."))
-                continue
+            current = None
+            if hasattr(lookup, "badge"):
+                current = lookup.badge(key)
+                if not current:
+                    errors.append(_err(i, "key", f"{key} 티켓을 찾을 수 없습니다."))
+                    continue
+                state_error = field_update_error(current, changes)
+                if state_error:
+                    errors.append(_err(i, "key", f"{key}: {state_error}"))
+                    continue
             if hasattr(lookup, "may_edit") and not lookup.may_edit(key):
                 errors.append(_err(i, "key", f"{key} 는 편집 권한이 없습니다."))
                 continue

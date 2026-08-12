@@ -281,10 +281,15 @@ model-routing 실험으로 분리한다. 즉 prompt 언어·구조 실험에서�
 
 ### 6.9 현재 한국어 원문형 구조
 
-- asset version: `ko-role-contract-v2`.
+- asset version: `ko-role-contract-v3`.
 - 공통 계약은 `common.md`/`common-lite.md` 두 곳으로 제한.
 - role roster와 I/O·도구·부작용 경계는 `role_manifest.py`로 고정.
 - dynamic task와 tool description의 자연어는 한국어, code contract는 원형 유지.
+- 계층·reference rendering·reply/payload 일치·질문 상한은 prompt 권고가 아니라 deterministic
+  invariant로 보장. 이미 취합된 조회 결과는 Historian ReAct를 다시 돌지 않는다.
+- `app/domain/ticket_actions.py`가 tier별 create/update field, parent-child action, Done 상태
+  유효성을 단일 계약으로 집행한다. 완료 ticket은 comment와 실제 `Reopened` 전이는 가능하지만
+  field update는 차단하며, reopen과 update는 서로 다른 승인 단계다.
 - 변경 전 BASE/기존 KO와 같은 battery 결과를 비교 보고서에 보존.
 
 ## 7. 실행

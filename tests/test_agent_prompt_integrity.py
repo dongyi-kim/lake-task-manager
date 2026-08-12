@@ -153,7 +153,7 @@ def test_machine_contract_identifiers_survive_korean_refactor():
                                          SYSTEM_OPERATOR, SYSTEM_PLANNER,
                                          SYSTEM_REFINER)
 
-    assert PROMPT_VERSION == "ko-role-contract-v2"
+    assert PROMPT_VERSION == "ko-role-contract-v3"
     for token in ("approval_token", "statusCategory", "Epic Link", "Story Point",
                   "Sub-Task", "PMO_VIT"):
         assert token in BASE_PERSONA, f"공통 계약에서 식별자 {token!r}가 번역·유실됐다"
@@ -177,6 +177,20 @@ def test_machine_contract_identifiers_survive_korean_refactor():
 
     for token in ("approval_token", "mode=task", "create_tickets", "created"):
         assert token in SYSTEM_OPERATOR, f"Operator 실행 계약 {token!r}가 번역·유실됐다"
+
+
+def test_prompt_exposes_the_enforced_ticket_action_contract():
+    """사람/model 문서가 domain validator와 다른 field/status 규칙을 말하지 않는다."""
+    from app.agent.prompts.base import BASE_PERSONA
+    from app.domain.ticket_actions import CREATE_FIELDS, EDITABLE_FIELDS
+    for fields in CREATE_FIELDS.values():
+        for field in fields:
+            assert f"`{field}`" in BASE_PERSONA
+    for field in EDITABLE_FIELDS:
+        assert f"`{field}`" in BASE_PERSONA
+    for token in ("Epic", "Task", "Sub-Task", "statusCategory == done", "Reopened",
+                  "댓글은 남길 수"):
+        assert token in BASE_PERSONA
 
 
 def test_evaluation_harnesses_preserve_production_model_routing():

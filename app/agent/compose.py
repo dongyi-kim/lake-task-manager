@@ -112,6 +112,12 @@ def _ticket_context(key: str, kind: str) -> str:
             # (사용자 지적: 댓글과 본문의 차이). 자식이 있으면 본문의 역할이 달라진다.
             ek, et = v.get("epicKey") or "", v.get("epicName") or v.get("epicSummary") or ""
             if ek:
+                if not et:
+                    try:
+                        ev = client().ticket_view(ek) or {}
+                        et = ev.get("summary") or ev.get("title") or ""
+                    except Exception:
+                        pass
                 parts.append(f"상위 Epic: {ek} \"{et}\" — 배경은 이 이니셔티브에 잇되 "
                              "Epic 본문을 복사하지 말고 키 참조로")
     except Exception:
@@ -182,6 +188,10 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
   확인할 대상과 요청을 적는다. 검토 결과가 아직 없다는 이유로 NEED_INFO를 내지 않는다.
 - **사실의 주어와 상태를 바꾸지 마라.** 연결 티켓·관련 문서의 수치가 현재 티켓의 결과라는
   뜻은 아니다. 자료의 `명시적 미완료` 항목과 `남은/예정/진행 중`인 일은 완료로 쓰지 않는다.
+- 자료끼리 상태가 다르면 하나를 골라 단정하지 말고, `구현 완료 보고가 있으나 Jira 상태는
+  In Progress이므로 최종 상태 확인 필요`처럼 **충돌과 확인할 항목을 함께 쓴다**.
+- 사용자 요청·작성 중인 글·티켓 제목·현재 본문에 없는 기능, UI 변경, 성능 목표값을 작업
+  범위나 DoD에 추가하지 않는다. 기준이 없으면 구체적인 `담당팀 확인 필요`로 남긴다.
 - **자식 Sub-Task 가 있거나(자료의 '하위' 목록) 시드·프롬프트에 분할 계획이 보이면**,
   본문은 '무엇을 왜'(전체 범위·전체 DoD)를 맡는다 — 실행 세부는 자식의 몫이니 자식
   제목을 본문에 반복하지 말고, 범위 항목이 자식들과 정합하게 쓴다(knowledge/07 역할표).
@@ -234,16 +244,20 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     # 확인 가능한 key/uid를 legacy 표기로 먼저 내린 뒤 기존 parser가 뱃지화한다.
     html = _legacy_reference_tokens(html)
     html = _badgeify(html)
+    html = _ground_acceptance_metrics(html, "\n".join((prompt, seed, ctx)))
 
     # 의미 후검증 — 자료가 명시적으로 '남은 일'이라고 한 대상을 완료로 뒤집은 문장은
     # 사용자가 자기 이름으로 게시하기 전에 차단한다. 경고만 띄우고 삽입하면 토스트를 놓친
     # 사용자가 그대로 저장할 수 있으므로, 이 충돌은 성공 응답으로 내리지 않는다.
     conflicts = _status_conflicts(html, ctx)
     if conflicts:
-        return {"ok": False, "contentConflict": True,
-                "error": ("AI 생성문이 현재 자료와 충돌해 삽입하지 않았습니다 — 자료상 아직 "
-                          "남은 항목을 완료로 썼습니다: " + ", ".join(conflicts[:4])),
-                "usage": llm_usage}
+        html = _qualify_status_conflicts(html, conflicts)
+        conflicts = _status_conflicts(html, ctx)
+        if conflicts:
+            return {"ok": False, "contentConflict": True,
+                    "error": ("AI 생성문이 현재 자료와 충돌해 삽입하지 않았습니다 — 자료상 아직 "
+                              "남은 항목을 완료로 썼습니다: " + ", ".join(conflicts[:4])),
+                    "usage": llm_usage}
 
     # 접지 — 챗과 **같은 검사**를 태운다. 에디터에 꽂히는 글이라고 날조를 봐줄 이유가 없다.
     note = ""
@@ -312,9 +326,56 @@ def _status_conflicts(rendered: str, context: str) -> list[str]:
         pattern = (re.escape(topic)
                    + r"(?:\s*(?:작업|기능|항목|건|상태))?"
                      r"(?:은|는|이|가|을|를)?\s*(?:이미\s*)?" + done)
-        if re.search(pattern, text):
+        sentence_conflict = any(
+            topic in sentence and re.search(done, sentence)
+            for sentence in re.split(r"[.!?]\s*|\n+", text)
+            if sentence.strip())
+        if re.search(pattern, text) or sentence_conflict:
             bad.append(topic)
     return bad
+
+
+def _ground_acceptance_metrics(rendered: str, source: str) -> str:
+    """자료에 없는 정량 목표를 만들지 않고, 누락된 기준을 구체적인 확인 과제로 남긴다."""
+    out = str(rendered or "")
+    source_plain = _plain_text(source)
+    for metric in set(re.findall(r"\b\d+(?:\.\d+)?\s*%", _plain_text(out))):
+        if metric.replace(" ", "") in source_plain.replace(" ", ""):
+            continue
+        out = re.sub(re.escape(metric) + r"\s*이상\s*개선",
+                     "담당팀과 합의한 목표값을 충족", out)
+        out = re.sub(re.escape(metric) + r"\s*(?:이하|이상)",
+                     "담당팀과 합의한 목표값", out)
+    out = re.sub(
+        r"성능\s*측정\s*결과가\s*(?:요구사항|기준|기대치)을?\s*충족(?:함|됨|한다)?",
+        "성능 측정 지표와 목표값은 담당팀 확인 필요 — 확정 후 측정값과 판정 결과를 기록한다",
+        out)
+    return out
+
+
+def _qualify_status_conflicts(rendered: str, topics: list[str]) -> str:
+    """완료 보고와 Jira 상태가 충돌하면 완료 단정을 상태 확인 문장으로 바꾼다."""
+    out = str(rendered or "")
+    for topic in topics:
+        safe = _html.escape(topic)
+        replaced = False
+        for tag in ("li", "p"):
+            pattern = rf"<{tag}\b[^>]*>.*?</{tag}>"
+
+            def qualify(match):
+                nonlocal replaced
+                plain = _plain_text(match.group(0))
+                if (topic not in plain
+                        or not re.search(r"완료|마쳤|끝났", plain)):
+                    return match.group(0)
+                replaced = True
+                return (f"<{tag}>{safe} 항목은 구현 완료 보고가 있으나 Jira 상태가 "
+                        f"In Progress이므로 최종 완료 여부는 확인 필요합니다.</{tag}>")
+
+            out = re.sub(pattern, qualify, out, flags=re.S | re.I)
+            if replaced:
+                break
+    return out
 
 
 def _badgeify(html: str) -> str:

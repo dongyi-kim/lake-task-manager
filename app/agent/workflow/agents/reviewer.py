@@ -72,9 +72,11 @@ class Reviewer(StructuredAgent):
                 auto = _machine_check(state)
                 # 완료 조건(DoD)이 없으면 작아도 통과시키지 않는다 — 우회하면 apply 의
                 # 재작성 요구가 아예 안 걸린다(실측: 단건 초안이 DoD 없이 카드까지 갔다).
-                dod_missing = any("완료 조건" in str(w.get("message") or "")
-                                  for w in auto["warnings"])
-                if auto["ok"] and not dod_missing:
+                blocking_content = any(
+                    "완료 조건" in str(w.get("message") or "")
+                    or "Bug 필수 섹션" in str(w.get("message") or "")
+                    for w in auto["warnings"])
+                if auto["ok"] and not blocking_content:
                     return {"review": {"ok": True, "checks": {}, "problems": [],
                                        "errors": [], "warnings": auto["warnings"],
                                        "summary": "단건 초안 — 기계 검증 통과(자동)"},
@@ -105,7 +107,13 @@ class Reviewer(StructuredAgent):
 ## 제약조건
 - 자동 검증이 이미 잡은 것은 다시 적지 마라. 너는 **기계가 못 잡는 것**을 본다.
 - 담당자 배정은 별도 절차가 검증한다 — 담당자가 비어 있어도 문제 삼지 마라.
-- 과잉 분해(아직 방식이 안 정해졌는데 실행 단위로 쪼갠 것)도 문제로 잡는다.
+- `problems`는 실행을 막아야 하는 정책·근거·요청 불일치만 쓴다. 더 좋은 문장·제목·DoD를
+  제안하는 편집 의견은 blocking problem이 아니다.
+- 사용자가 직접 지정했거나 이전 턴에 승인한 Task/Sub-Task 구조를 과잉 분해라고 뒤집지 마라.
+- `Bug`는 Task 본문과 다르다. 재현 경로·기대 동작·실제 동작이 있으면 배경/DoD가 없다는
+  이유로 실패시키지 마라.
+- 제목이 동사로 끝나야 한다는 규칙은 없다. Epic 없는 최상위 Task/Story도 유효하다.
+- 동일한 검증된 참고가 여러 payload item에 들어간 것은 실행 차단 사유가 아니다.
 
 ## 사용자의 원래 요청 (초안의 주제는 이 문장이어야 한다 — 다른 주제로 흘렀으면 problems 로)
 {request_text(state)}
@@ -118,31 +126,89 @@ class Reviewer(StructuredAgent):
 
     def apply(self, state, out):
         auto = _machine_check(state)
-        problems = [p for p in (out.get("problems") or []) if isinstance(p, dict) and p.get("message")]
-        checks = {"grounded": bool(out.get("grounded")),
-                  "rule_compliant": bool(out.get("rule_compliant")),
-                  "answers_request": bool(out.get("answers_request"))}
+        raw_problems = [p for p in (out.get("problems") or [])
+                        if isinstance(p, dict) and p.get("message")]
+        problems, advice = _partition_model_problems(state, raw_problems)
+        # boolean과 problems가 서로 어긋나는 모델 출력이 있다. 실행 차단은 구체적인
+        # problem으로 설명 가능해야 하므로, 해당 축의 blocking problem 유무를 기준으로
+        # 정규화한다. 기계 오류는 아래 auto["ok"]가 별도로 이긴다.
+        checks = {
+            "grounded": not any(p.get("check") == "grounded" for p in problems),
+            "rule_compliant": not any(p.get("check") == "rule" for p in problems),
+            "answers_request": not any(p.get("check") == "request" for p in problems),
+        }
         # 완료 조건(DoD) 누락은 **한 번은 되돌려 보낸다** — 언제 끝난 것인지 못 박지 않은
         # 티켓은 나중에 아무도 닫지 못한다(실측: 배경·작업 범위만 쓰고 승인 카드까지 갔다).
         # 재작성 한도는 그래프가 쥐고 있으므로 무한 왕복은 나지 않는다.
         if (state.get("revisions") or 0) < 1:
             for w in auto["warnings"]:
-                if "완료 조건" in str(w.get("message") or ""):
+                if ("완료 조건" in str(w.get("message") or "")
+                        or "Bug 필수 섹션" in str(w.get("message") or "")):
                     problems.append({"index": w.get("index", -1),
                                      "message": w["message"],
-                                     "fix": "본문에 '완료 조건 (DoD)' 섹션을 넣고 "
-                                            "검증 가능한 불릿 2~5개를 적어라"})
+                                     "fix": ("Bug 본문에 재현 경로·기대 동작·실제 동작을 "
+                                             "모두 적어라" if "Bug 필수" in w["message"] else
+                                             "본문에 '완료 조건 (DoD)' 섹션을 넣고 "
+                                             "검증 가능한 불릿 2~5개를 적어라")})
         # 기계 판정이 이긴다 — 모델이 "문제없다"고 해도 validate_bulk 가 막으면 막힌 것이다.
         ok = auto["ok"] and all(checks.values()) and not problems
+        advisory_warnings = [{"index": p.get("index", -1),
+                              "message": "품질 참고(비차단): " + str(p.get("message") or "")}
+                             for p in advice]
+        summary = str(out.get("summary") or "")
+        if ok and advice:
+            summary = (f"정책·근거 검증 통과. 편집 제안 {len(advice)}건은 "
+                       "비차단 참고로 남겼다.")
         review = {"ok": ok, "checks": checks, "problems": problems,
-                  "errors": auto["errors"], "warnings": auto["warnings"],
-                  "summary": out.get("summary") or ""}
+                  "errors": auto["errors"],
+                  "warnings": auto["warnings"] + advisory_warnings,
+                  "summary": summary}
         failed = [k for k, v in checks.items() if not v]
         return {"review": review, "revisions": (state.get("revisions") or 0) + 1,
                 "trace": note(state, self.name,
                               "통과" if ok else
                               f"보류 — 자동 {len(auto['errors'])}건 · 판단 {len(problems)}건"
                               + (f" ({', '.join(failed)})" if failed else ""))}
+
+
+def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, list]:
+    """정책 차단과 편집 조언을 나눈다.
+
+    LLM Auditor가 실제 Jira/LTM 제약이 아닌 문체 취향을 `problems`로 올리면 불필요한
+    Refiner 왕복이 생기고, 한도 뒤에는 정상 초안도 `review.ok=false`로 남는다. 아래는
+    관찰된 취향성 오판만 좁게 비차단으로 내린다. 근거·부모 계층·요청 누락은 건드리지 않는다.
+    """
+    draft = state.get("draft") or {}
+    items = [i for i in (draft.get("items") or []) if isinstance(i, dict)]
+    has_bug = any(str(i.get("type") or "").strip().lower() == "bug" for i in items)
+    req = request_text(state)
+    explicit_shape = (draft.get("structure_source") == "user_specified"
+                      or bool(state.get("structure_ok"))
+                      or "이 구조로 진행" in req
+                      or any(w in req for w in ("단계별 Sub-Task", "사람 나눠서")))
+    blocking, advice = [], []
+    for problem in problems:
+        msg = str(problem.get("message") or "")
+        advisory = False
+        if has_bug and any(w in msg for w in ("배경", "완료 조건", "DoD")):
+            advisory = True
+        elif any(w in msg for w in ("담당자", "사번", "사용자")) and any(
+                w in msg for w in ("존재하지", "확인되지", "실재하지", "찾을 수 없")):
+            # 담당 사용자 실재 여부는 merge_assignments 뒤 코드가 bulk lookup으로 확정한다.
+            advisory = True
+        elif explicit_shape and any(w in msg for w in ("과잉 분해", "불필요하게 나뉘")):
+            advisory = True
+        elif "참고 섹션" in msg and "중복" in msg:
+            advisory = True
+        elif "Sub-Task" in msg and "부모" in msg and "중복" in msg:
+            advisory = True
+        elif any(w in msg for w in (
+                "동사로 끝", "제목이 명확하지", "제목이 구체적이지",
+                "완료 조건이 명확하지", "완료 조건이 구체적이지", "판정 가능하지",
+                "Epic 배치가 명시되지", "Epic 배치가 누락")):
+            advisory = True
+        (advice if advisory else blocking).append(problem)
+    return blocking, advice
 
 
 def _machine_check(state: AgentState) -> dict:
@@ -187,6 +253,13 @@ def _machine_check(state: AgentState) -> dict:
     for i, it in enumerate(items):
         desc = str(it.get("description") or "")
         if not desc.strip():
+            continue
+        if str(it.get("type") or "").strip().lower() == "bug":
+            missing = [name for name in ("재현 경로", "기대 동작", "실제 동작")
+                       if name not in desc]
+            if missing:
+                warnings.append({"index": i, "message":
+                                 "Bug 필수 섹션이 없다: " + ", ".join(missing)})
             continue
         if not _re.search(r"완료\s*조건|DoD|Definition of Done", desc, _re.I):
             warnings.append({"index": i, "message":

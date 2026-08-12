@@ -1346,6 +1346,9 @@ class _FieldsBody(BaseModel):
 @app.get("/api/ticket/{key}/editmeta")
 def api_editmeta(key: str):
     """지금 이 사용자가 **이 이슈에서 고칠 수 있는 필드**. 화면은 이 목록에 있는 것만 연다."""
+    from app.domain.ticket_actions import is_done
+    if is_done(_client.ticket_badge(key)):
+        return JSONResponse({})       # 완료 티켓은 Reopened 전까지 field editor를 열지 않는다
     return JSONResponse(_client.editmeta(key))
 
 
@@ -1509,6 +1512,10 @@ class _BulkCommentBody(BaseModel):
 
 def _fields_for_update(key: str, changes: dict):
     """changes(에이전트·화면이 쓰는 이름) → Jira fields. **editmeta 에 없는 필드는 뺀다**."""
+    from app.domain.ticket_actions import field_update_error, is_done
+    blocked = field_update_error(_client.ticket_badge(key), (changes or {}).keys())
+    if blocked:
+        return {}
     meta = _client.editmeta(key) or {}
     out = {}
 
@@ -1621,6 +1628,19 @@ def api_parent_task_candidates(q: str = "", limit: int = 20, excludeLinked: int 
 def api_update_fields(key: str, body: _FieldsBody):
     """필드 수정. **editmeta 에 없는 필드는 거부한다** — 화면이 실수로 보내도 여기서 막힌다
     (권한 판단을 화면에만 맡기면, 화면 버그가 곧 권한 구멍이 된다)."""
+    from app.domain.ticket_actions import field_update_error
+    requested = [name for name, value in {
+        "priority": body.priority, "assignee": body.assignee, "reporter": body.reporter,
+        "duedate": body.duedate, "labels": body.labels, "components": body.components,
+        "summary": body.summary, "description": body.descriptionHtml, "epic": body.epic,
+    }.items() if value is not None]
+    # reporter/Epic Link는 화면 API가 지원하지만 agent contract 밖이다. 여기서는 Done 상태
+    # 제약만 공통으로 집행하고, 실제 field 허용은 아래 editmeta가 판정한다.
+    current = _client.ticket_badge(key)
+    state_error = field_update_error(current,
+                                     [f for f in requested if f not in ("reporter", "epic")])
+    if is_done(current):
+        return JSONResponse({"ok": False, "error": state_error}, status_code=409)
     meta = _client.editmeta(key)
     fields, denied = {}, []
 

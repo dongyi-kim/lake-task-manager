@@ -9,6 +9,7 @@ from app.agent.tools.query_tools import (execute_jql_all, run_jql_v2,
                                          search_documents, set_thread)
 from app.agent.tools.search_tools import find_parent_epic
 from app.agent.tools.people_tools import scoped_person_workload
+from app.agent.workflow.agents.query_runner import QueryRunner
 
 
 def _issue(index: int, project: str) -> dict:
@@ -125,6 +126,19 @@ def test_all_pagination_exhausts_more_than_fifty_results_without_skips():
     assert result["pages"] == 3
     assert [x["startAt"] for x in fake.calls] == [0, 50, 100]
     assert len({x["key"] for x in result["tickets"]}) == 137
+
+
+def test_runner_preserves_full_page_as_artifact_but_caps_llm_context():
+    fake = _Client(137)
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+    got = QueryRunner()._run({"query_plan": {"queries": [{
+        "id": "all-open", "source": "jira", "where": "status is not EMPTY",
+        "order_by": "updated DESC", "page_size": 50, "completeness": "page"}]}})
+    raw = got["query_artifacts"]["all-open"]
+    compact = got["query_results"][0]["result"]
+    assert len(raw["tickets"]) == 50
+    assert len(compact["tickets"]) == 12
+    assert compact["contextTruncated"] and compact["artifactId"] == "all-open"
 
 
 def test_people_workload_uses_scoped_paginated_jql_not_primary_project_aggregate():

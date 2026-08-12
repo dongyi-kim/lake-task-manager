@@ -74,6 +74,7 @@ def _owners(rows):
 #   더 관대한 쪽이 사고를 낸다(§5-e). refiner 가 원본이고 여기는 그것을 가져다 쓴다.
 from app.agent.workflow.agents.refiner import DOD_VAGUE as _DOD_VAGUE  # noqa: E402
 from app.agent.workflow.agents.refiner import _bug_grade_body  # noqa: E402
+from app.agent.workflow.agents.refiner import _has_placeholder_body  # noqa: E402
 
 
 def _body_flaws(o) -> list:
@@ -130,6 +131,25 @@ def _body_flaws(o) -> list:
     return flaws
 
 
+def _output_flaws(o) -> list:
+    """본문 외의 사용자-visible 계약: 질문 수, reply/payload 일치, 렌더링 토큰."""
+    flaws = []
+    reply = str(o.get("reply") or "")
+    rows = items(o)
+    if len(o.get("questions") or []) > 3:
+        flaws.append(f"질문이 {len(o.get('questions') or [])}개(최대 3개)")
+    if any(_has_placeholder_body(i.get("description")) for i in rows):
+        flaws.append("본문에 '적어주세요/설명해주세요/TODO' placeholder가 남았다")
+    if rows and re.search(r"(?:티켓|초안|작업).{0,30}(?:만들|생성|진행).{0,12}(?:수\s*없|불가능)",
+                          reply, re.I | re.S):
+        flaws.append("reply는 생성 불가라지만 payload에는 초안이 있다")
+    if not rows and re.search(r"초안.{0,30}(?:승인|확인해\s*주)", reply, re.I | re.S):
+        flaws.append("payload가 없는데 reply가 초안 승인을 요청한다")
+    if re.search(r"^\s*#{1,3}\s*명령서", reply) or "{{ref:" in reply or "{{mention:" in reply:
+        flaws.append("내부 명령서/미렌더링 reference 토큰이 노출됐다")
+    return flaws
+
+
 # (ID, 설명, [질의…], 체커(마지막 out, 전체 outs))
 CASES = [
     # ── 한 줄 요청: 되묻지 않고 기본값으로 끝내야 하는 것들 ──────────
@@ -180,11 +200,10 @@ CASES = [
      lambda o, _: any((i.get("epic") or "") == "DL-101" for i in items(o))),
 
     # ── Sub-Task 만들기 세 갈래 ──────────────────────────────────────
-    ("SUB1", "기존 Task 를 여러 Sub-Task 로 분할 — 부모는 그대로 두고 쪼갠다", [
+    ("SUB1", "이미 Sub-Task인 대상을 다시 부모로 쓰지 않는다", [
         "DL-9095 이거 혼자 하기엔 커. 단계별로 서브태스크로 쪼개줘. 알아서"],
-     lambda o, _: (lambda rows: len(rows) >= 2
-                   and all((r.get("parent") or "") == "DL-9095" for r in rows))
-     (items(o) + kids(o))),
+     lambda o, _: not items(o) and (bool(o.get("questions"))
+                                    or "Sub-Task" in (o.get("reply") or ""))),
 
     ("SUB2", "기존 Task 하나에 Sub-Task 여러 개 추가 — 이미 있는 자식과 겹치지 않게", [
         "DL-9090 에 성능 측정이랑 사용 가이드 작성 서브태스크 추가해줘. 알아서"],
@@ -194,11 +213,10 @@ CASES = [
                    and not any("다운스트림" in (r.get("summary") or "") for r in rows))
      (items(o) + kids(o))),
 
-    ("SUB3", "여러 Task 에 비슷한 Sub-Task 를 각각 추가 — 부모별로 나뉘어야 한다", [
+    ("SUB3", "여러 대상이 모두 Sub-Task면 잘못된 자식 생성을 보류한다", [
         "DL-9093 이랑 DL-9094 두 개 다 회귀 테스트 서브태스크 하나씩 붙여줘. 알아서"],
-     lambda o, _: (lambda rows: len({(r.get("parent") or "") for r in rows}) >= 2
-                   and {"DL-9093", "DL-9094"} <= {(r.get("parent") or "") for r in rows})
-     (items(o) + kids(o))),
+     lambda o, _: not items(o) and (bool(o.get("questions"))
+                                    or "Sub-Task" in (o.get("reply") or ""))),
 
     # ── 남이 쓴 글을 통째로 붙여넣기 ─────────────────────────────────
     ("PASTE1", "VoC 원문 붙여넣기 — 요구를 티켓 언어로 옮긴다", [
@@ -287,7 +305,7 @@ CASES = [
                    # 버그는 쪼개지 않는다(관리 단위가 흩어진다)
                    and not kids(o))(items(o))),
 
-    ("BUG3", "이미 같은 증상의 Bug 가 있으면 새로 만들지 않는다", [
+    ("BUG3", "재현 정보가 없는 동일 증상 요청은 중복·재현 확인 없이 새로 만들지 않는다", [
         "야간 배치가 커넥션 타임아웃으로 실패한다. 버그로 등록해줘"],
      lambda o, _: not items(o) and (bool(o.get("questions"))
                                     or "DL-" in (o.get("reply") or ""))),
@@ -316,7 +334,8 @@ def run(cid, desc, turns, check):
             outs.append(o)
         last = outs[-1]
         ok_struct = bool(check(last, outs))
-        flaws = _body_flaws(last)           # 구조가 맞아도 본문이 규율을 어기면 통과가 아니다
+        flaws = _body_flaws(last) + _output_flaws(last)
+        # 구조가 맞아도 본문·최종 답변 계약을 어기면 통과가 아니다.
         ok = ok_struct and not flaws
     except Exception as e:
         print(f"✗ {cid} {desc}: 예외 {str(e)[:160]}")

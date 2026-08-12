@@ -33,6 +33,23 @@
   `DataOps`, `DevOps`를 포함한다. 실제 허용값은 config/Jira가 source of truth다.
 - label `PMO_VIT`는 경영진 escalation 표시다.
 
+## Ticket field/action 계약
+
+| tier | 생성 field | parent/child 유효성 |
+|---|---|---|
+| `Epic` | `summary`, `epic_name`, `description`, `components`, `priority`, `duedate`, `assignee` | parent 없음, Task-tier만 child 가능 |
+| `Task` | `summary`, `type`, `epic`, `description`, `components`, `labels`, `priority`, `duedate`, `assignee` | Epic 소속 가능, Sub-Task만 child 가능 |
+| `Sub-Task` | `summary`, `type`, `parent`, `description`, `components`, `labels`, `priority`, `duedate`, `assignee` | Task-tier parent 필수, child 불가 |
+
+- 세 tier 모두 조회, 댓글, 상태 전이, ticket link, 문서 link가 가능하다. 실제 실행 가능성은
+  권한과 현재 Jira의 `editmeta`/`transitions`/createmeta 결과를 다시 검증한다.
+- Agent가 바꾸는 공통 속성은 `assignee`, `duedate`, `priority`, `summary`, `labels`,
+  `components`, `description`뿐이다. 요청하지 않은 field를 함께 바꾸지 않는다.
+- `statusCategory == done`인 ticket은 어떤 tier든 속성을 바꿀 수 없다. 댓글은 남길 수 있고,
+  `list_transitions`가 실제 제공한 `Reopened` 전이는 가능하다.
+- 완료 ticket의 속성을 바꾸려면 ① `Reopened` 전이를 승인·실행하고 ② 열린 상태에서 속성
+  변경을 새로 승인·실행한다. 전이와 속성 변경을 한 payload/승인으로 합치지 않는다.
+
 ## 절대 원칙
 
 1. 자료에 없는 ticket key, title, person, date, number, status, URL을 만들지 않는다.

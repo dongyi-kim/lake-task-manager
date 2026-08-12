@@ -55,6 +55,26 @@ def test_fabricated_person_in_role_context_is_flagged():
     assert "김철수" in g["fake_people"]
 
 
+def test_user_supplied_dialogue_speaker_is_not_treated_as_an_assignee_claim():
+    g = grounding.check("김운영님과 이개발님 간 대화에서 장애가 보고되었습니다.",
+                        allowed_people={"김운영", "이개발"})
+    assert "김운영" not in g["fake_people"] and "이개발" not in g["fake_people"]
+
+
+def test_dialogue_speaker_extraction_only_accepts_colon_prefixed_lines():
+    from app.agent.workflow.agents.responder import _dialogue_speakers
+    req = ("[10:12] 김운영: 장애가 발생했습니다\n"
+           "[10:13] 이개발: 로그를 확인했습니다\n담당자는 김철수로 해줘")
+    assert _dialogue_speakers(req) == {"김운영", "이개발"}
+
+
+def test_confluence_url_is_safe_inside_markdown_destination():
+    from app.agent.workflow.agents.responder import _markdown_url
+    got = _markdown_url("https://conf/pages/1/[설계]+문서(초안)")
+    assert "[" not in got and "]" not in got and "(" not in got and ")" not in got
+    assert "%5B" in got and "%28" in got
+
+
 def test_markdown_bold_roles_are_still_caught():
     """실측: 답변은 '**PM**: 김철수' 꼴(마크다운 볼드) — 첫 배포의 정규식이 전부 놓쳤다."""
     g = grounding.check("- **PM**: 김철수 — 일정 조율\n- **개발자**: 이영희")
@@ -123,6 +143,30 @@ def test_responder_appends_warning_when_rewrite_cannot_fix(monkeypatch):
     out = r.apply({"trace": []}, {"text": "담당자: 김철수 가 맡고 있습니다."})
     assert "자동 검증 경고" in out["reply"]
     assert "김철수" in out["reply"]
+
+
+def test_responder_removes_internal_heading_and_renders_reference_tokens():
+    from app.agent.workflow.agents.responder import _render_reply_tokens, _strip_instruction_echo
+    text = _strip_instruction_echo("# 명령서\nDL-9090은 {{ref:DL-9090}}, 담당 {{mention:skcc.x1402}}")
+    text = _render_reply_tokens(text)
+    assert not text.startswith("# 명령서")
+    assert "{{ref:" not in text and "{{mention:" not in text
+    assert "[DL-9090](" in text and "[~skcc.x1402]" in text
+
+
+def test_responder_uses_the_payload_when_reply_claims_creation_is_impossible():
+    from app.agent.workflow.agents.responder import _align_draft_claims
+    state = {"draft": {"items": [{"summary": "[ETL] 재처리 배치 개선", "type": "Task"}]}}
+    text = _align_draft_claims("이 작업은 생성할 수 없습니다.", state)
+    assert "생성할 수 없습니다" not in text
+    assert "재처리 배치 개선" in text and "아직 생성되지 않은" in text
+
+
+def test_responder_does_not_ask_to_approve_a_missing_draft():
+    from app.agent.workflow.agents.responder import _align_draft_claims
+    state = {"draft": {"items": [], "rationale": "부모가 Sub-Task라 생성할 수 없다."}}
+    text = _align_draft_claims("티켓 초안을 확인하고 승인해 주세요.", state)
+    assert "현재 승인할 티켓 초안은 없습니다" in text
 
 
 def test_fabricated_uid_with_real_suffix_is_caught():
@@ -347,3 +391,15 @@ def test_a_shortened_quoted_title_is_not_flagged():
     head = " ".join(title.replace("[", "").replace("]", "").split()[:2])
     g = grounding.check(f'{key} "{head}" 는 진행 중')
     assert key not in g["wrong_titles"], (title, g)
+
+
+def test_two_separately_quoted_ticket_keys_are_not_parsed_as_one_title():
+    key, _ = _real_key_and_title()
+    g = grounding.check(f"현재 '{key}' 티켓이 진행 중이며, '{key}' 티켓도 확인했습니다.")
+    assert key not in g["wrong_titles"], g
+
+
+def test_ticket_table_word_task_is_not_parsed_as_a_person():
+    key, _ = _real_key_and_title()
+    g = grounding.check(f"- {key}: 작업 진행 중")
+    assert "작업" not in g["fake_people"], g

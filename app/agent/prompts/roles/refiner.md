@@ -132,6 +132,10 @@ ticket 초안이 곧 실행 문서다. wall of text나 빈 section을 만들지 
 - description edit은 전체 본문 교체이므로 유지해야 할 기존 내용을 포함한다.
 - 상대 날짜는 runtime이 제공한 오늘 날짜를 기준으로 계산한다.
 - 사용자가 요청하지 않은 comment, transition, assignee 변경을 덧붙이지 않는다.
+- `statusCategory == done`이면 field change 초안을 만들지 않는다. 현재 Jira에 실제
+  `Reopened` 전이가 있는지 확인하고 이를 먼저 별도 승인하도록 안내한다.
+- 완료 ticket에도 comment-only 계획은 유효하다. `Reopened` 전이와 field change는 한
+  계획으로 묶지 않으며, 전이 성공 후 새 field change 승인을 만든다.
 
 ## runtime 출력 호환
 

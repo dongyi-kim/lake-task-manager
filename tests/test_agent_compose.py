@@ -108,8 +108,8 @@ def test_future_dod_is_not_mistaken_for_a_current_completion_claim():
     assert C._status_conflicts(checked, ctx) == ["성능 측정"]
 
 
-def test_compose_blocks_a_status_claim_that_conflicts_with_materials(monkeypatch):
-    """경고 토스트 뒤 삽입이 아니라 서버 성공 응답 자체를 막는다."""
+def test_compose_qualifies_a_status_claim_that_conflicts_with_materials(monkeypatch):
+    """상충 상태는 완료로 단정하지 않고 구체적인 확인 과제로 바꾼다."""
     from app.agent import config as CFG
 
     class _Reply:
@@ -125,8 +125,9 @@ def test_compose_blocks_a_status_claim_that_conflicts_with_materials(monkeypatch
         "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 문서 정리"))
     monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
     r = C.compose(PROG, "comment", "상태 공유")
-    assert r["ok"] is False and r.get("contentConflict") is True
-    assert "성능 측정" in r["error"] and "삽입하지 않았" in r["error"]
+    assert r["ok"] is True
+    assert "성능 측정 항목" in r["html"] and "Jira 상태가 In Progress" in r["html"]
+    assert "확인 필요" in r["html"]
 
 
 def test_compose_recognizes_backticked_need_info_as_feedback(monkeypatch):
@@ -227,6 +228,33 @@ def test_non_done_child_is_added_to_the_explicit_remaining_guard():
     assert _status_conflicts("<p>다운스트림 조회 연동 작업은 완료되었습니다.</p>", context)
     assert _status_conflicts("<p>다운스트림 조회 연동을 완료하였습니다.</p>", context)
     assert not _status_conflicts("<p>다운스트림 조회 연동 작업은 진행 중입니다.</p>", context)
+
+
+def test_conflicting_completion_is_qualified_as_a_specific_open_fact():
+    from app.agent.compose import _qualify_status_conflicts, _status_conflicts
+
+    context = "명시적 미완료(완료로 쓰지 말 것): 다운스트림 조회 연동"
+    html = "<ul><li>다운스트림 조회 연동 작업은 API 개선 덕분에 완료되었습니다.</li></ul>"
+    fixed = _qualify_status_conflicts(html, _status_conflicts(html, context))
+    assert "Jira 상태가 In Progress" in fixed and "확인 필요" in fixed
+    assert not _status_conflicts(fixed, context)
+
+    tagged = ("<ul><li><strong>다운스트림 조회 연동</strong> 작업은 "
+              "<code>DL-9092</code> 해결 후 완료되었습니다.</li></ul>")
+    fixed_tagged = _qualify_status_conflicts(tagged, _status_conflicts(tagged, context))
+    assert "Jira 상태가 In Progress" in fixed_tagged
+    assert not _status_conflicts(fixed_tagged, context)
+
+
+def test_unsupported_metric_is_replaced_but_seed_metric_is_preserved():
+    from app.agent.compose import _ground_acceptance_metrics
+
+    made_up = _ground_acceptance_metrics(
+        "<li>성능이 20% 이상 개선되었음을 보고서로 확인</li>", "성능 개선 작업")
+    assert "20%" not in made_up and "합의한 목표값" in made_up
+    supplied = _ground_acceptance_metrics(
+        "<li>p95가 200ms 이하임을 확인</li>", "완료 기준은 p95 200ms 이하")
+    assert "200ms 이하" in supplied
 
 
 def test_rendering_rules_are_indexed_for_retrieval():

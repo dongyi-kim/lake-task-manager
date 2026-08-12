@@ -114,13 +114,14 @@ def _unlinked_refs(text: str) -> list:
     return out
 
 
-def check(reply: str) -> dict:
+def check(reply: str, allowed_people: set[str] | None = None) -> dict:
     """답변을 실물과 대조한다. 반환:
     {"fake_keys": [...], "wrong_titles": {key: 실제제목}, "fake_people": [...], "ok": bool}
     """
     from app.agent.tools._ctx import client, settings
     c = client()
     text = reply or ""
+    allowed_people = {str(x).strip() for x in (allowed_people or set()) if str(x).strip()}
 
     import re as _re0
     fake_keys, real_titles = [], {}
@@ -148,7 +149,8 @@ def check(reply: str) -> dict:
         loose = [mm.group(1).strip().rstrip(")").strip() for mm in
                  re.finditer(rf"{re.escape(key)}\**\s*[:(]\s*([^)\n**]{{4,80}})", text)]
         quoted = [mm.group(1).strip() for mm in
-                  re.finditer(rf"{re.escape(key)}\**\s*[\"“'']([^\"”'\n]{{4,80}})[\"”'']", text)]
+                  re.finditer(rf"{re.escape(key)}\**\s*[\"“''](?=\S)([^\"”'\n]{{4,80}})"
+                              rf"[\"”'']", text)]
         loose = [c for c in loose if c]
         quoted = [c for c in quoted if c]
         claims = loose + quoted
@@ -217,9 +219,10 @@ def check(reply: str) -> dict:
         # 상태·시간 낱말은 사람이 아니다 — "DL-9090: 현재 2/3 완료" 의 '현재'가 인물로
         # 걸렸다(실측 오탐). 이 목록은 오탐이 관측될 때마다 늘린다.
         _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감",
-                      "상태", "예정", "검토", "확인", "미정", "없음", "전체"}
+                      "상태", "예정", "검토", "확인", "미정", "없음", "전체", "작업"}
         for name in names:
-            if not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES:
+            if (not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES
+                    or name in allowed_people):
                 continue
             seen.add(name)
             hits = search_users(c, s, name) or []

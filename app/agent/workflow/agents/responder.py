@@ -247,7 +247,8 @@ class Responder(TextAgent):
             # 턴에 내부 지적("하나의 Task 로 통합하는 것이 좋습니다")을 그대로 옮기면
             # 카드와 모순되는 안내가 된다(실측 Round O, 2회 재발). 반영 여부는 Refiner 가
             # 이미 판단했고 근거는 rationale 에 남는다.
-            data_block("검토 의견", "" if (draft_items and not errors) else problems),
+            data_block("검토 의견", "" if (draft_items and review.get("ok") and not errors)
+                       else problems),
             data_block("되물을 것", "\n".join(f"- {q}" for q in qs)),
             data_block("실제로 만들어진 티켓", made),
             data_block("실패한 항목", bad))
@@ -284,6 +285,12 @@ class Responder(TextAgent):
 
     def apply(self, state, out):
         text = out.get("text") or ""
+        # 모델이 내부 task wrapper를 답변으로 복창하거나 reference placeholder를 그대로
+        # 노출하는 것은 내용 문제가 아니라 렌더링 계약 위반이다. grounding 전에 정규화해
+        # 검사와 사용자 화면이 같은 문자열을 보게 한다.
+        text = _strip_instruction_echo(text)
+        text = _render_reply_tokens(text)
+        text = _align_draft_claims(text, state)
 
         # ── 접지 검사 — 답변의 티켓 키·제목·인명을 실물과 대조한다.
         # 지도·자료를 정확히 줘도 답변 단계에서 날조가 나왔다(없는 키, 바뀐 제목, "PM: 김철수").
@@ -297,7 +304,7 @@ class Responder(TextAgent):
         #   레이트리밋·길이로 죽을 수 있다. 그건 교정의 실패이지 탐지의 무효가 아니다.
         from app.agent.workflow import grounding
         try:
-            g = grounding.check(text)
+            g = grounding.check(text, allowed_people=_dialogue_speakers(request_text(state)))
         except Exception:
             g = None                        # 검증기가 죽으면 답은 그대로 나간다
         if g and not g["ok"]:
@@ -310,7 +317,8 @@ class Responder(TextAgent):
                              f"### 방금 쓴 답\n{text}")])
                 text2 = str(getattr(fixed, "content", "") or "").strip()
                 if text2:
-                    g2 = grounding.check(text2)
+                    g2 = grounding.check(
+                        text2, allowed_people=_dialogue_speakers(request_text(state)))
             except Exception:
                 text2, g2 = "", None        # 교정 실패 — 아래에서 원문 + 경고로 간다
             if g2 and g2["ok"] and _kept_substance(text, text2):
@@ -333,6 +341,7 @@ class Responder(TextAgent):
         text = _dedupe_sentences(text)
         # 상투 맺음말 — 판단이 아니라 버릇이라 프롬프트로 안 잡힌다(위 주석).
         text = _drop_boilerplate_closers(text)
+        text = _fill_empty_approval_heading(text, state)
         # 되묻는 턴 — 폼이 묻는 것을 본문에서 걷어낸다. 프롬프트로 두 번 금지했는데도
         # 질문·보기를 통째로 베껴 화면에 같은 말이 두 벌 뜬다(사용자 지적).
         # 문서를 요약해 놓고 **어느 문서인지 안 밝히면** 확인할 방법이 없다("자세한 내용은
@@ -352,7 +361,7 @@ class Responder(TextAgent):
                 if not _u or _u in text or _u in seen_u:
                     continue
                 seen_u.add(_u)
-                text = text.rstrip() + "\n\n출처: [" + _t + "](" + _u + ")"
+                text = text.rstrip() + "\n\n출처: [" + _t + "](" + _markdown_url(_u) + ")"
         # 쓰다 만 링크 토막("[여기에서 확인할 수 있습니다.") — 여는 대괄호만 남으면
         # 화면에 대괄호가 글자로 보인다(실측). 짝 없는 `[` 는 지운다.
         text = _drop_dangling_bracket(text)
@@ -417,6 +426,534 @@ _CLOSER_RE = _re.compile(
     r"(?:말씀|알려|문의)\s*(?:해\s*)?(?:주세요|주십시오|주시기|주시면|드리겠)[^.!?\n]{0,20}[.!?]?$")
 
 
+def _fill_empty_approval_heading(text: str, state) -> str:
+    """승인 헤딩만 남은 답은 사용자가 무엇을 승인하는지 알 수 없으므로 한 문장을 채운다."""
+    if not ((state.get("draft") or {}).get("items") or []):
+        return text
+    return _re.sub(r"(?mi)^(#{2,4}\s*승인\s*요청)\s*$\s*(?=\Z)",
+                   r"\1\n위 티켓 초안과 담당자 배정을 검토한 뒤 승인해 주세요.",
+                   str(text or "").rstrip())
+
+
+def _strip_instruction_echo(text: str) -> str:
+    """사용자에게 보이면 안 되는 내부 `# 명령서` 머리말을 제거한다."""
+    return _re.sub(r"^\s*#{1,3}\s*명령서\s*\n+", "", str(text or ""), count=1,
+                   flags=_re.I).lstrip()
+
+
+def _render_reply_tokens(text: str) -> str:
+    """Responder placeholder를 깨지지 않는 canonical Markdown link/mention으로 렌더한다."""
+    try:
+        from app.infra.settings import get_settings
+        base = str(get_settings().jira_base or "").rstrip("/")
+    except Exception:
+        base = ""
+
+    def ref(m):
+        rid = m.group(1)
+        if _re.match(r"^[A-Z][A-Z0-9]*-\d+$", rid):
+            url = f"{base}/browse/{rid}" if base else f"/browse/{rid}"
+            return f"[{rid}]({url})"
+        return rid                         # 알 수 없는 typed id를 깨진 토큰으로 노출하지 않는다
+
+    out = _re.sub(r"\{\{+ref:([A-Za-z0-9_.:-]+)\}+\}", ref, str(text or ""))
+    out = _re.sub(r"\{\{+mention:([A-Za-z0-9_.:-]+)\}+\}", r"[~\1]", out)
+    return out
+
+
+def _align_draft_claims(text: str, state) -> str:
+    """최종 문장과 실제 draft payload의 존재 여부가 모순되면 payload를 기준으로 고친다."""
+    items = [i for i in ((state.get("draft") or {}).get("items") or [])
+             if isinstance(i, dict) and i.get("summary")]
+    negative = _re.search(r"(?:티켓|초안|작업).{0,30}(?:만들|생성|진행).{0,12}(?:수\s*없|불가능)",
+                          text, _re.I | _re.S)
+    if items and negative:
+        rows = ["| # | 유형 | 제목 |", "|---:|---|---|"]
+        rows += [f"| {n} | {it.get('type') or 'Task'} | {it.get('summary')} |"
+                 for n, it in enumerate(items)]
+        return (f"아래 {len(items)}건은 아직 생성되지 않은 티켓 초안입니다. 실제 생성 payload와 "
+                "모순되는 안내를 제거했습니다.\n\n" + "\n".join(rows)
+                + "\n\n승인 카드에서 내용과 배치를 확인해 주세요.")
+    # payload가 없는데 초안을 승인하라고 말하면 없는 카드를 찾게 된다. 구조 설명/질문은
+    # 화면의 별도 폼이 담당하므로 이유만 남긴다.
+    claims_draft = _re.search(r"(?:티켓\s*)?초안.{0,30}(?:승인|확인해\s*주)|"
+                              r"(?:승인\s*(?:요청|카드)).{0,20}(?:초안|티켓)", text,
+                              _re.I | _re.S)
+    if not items and claims_draft:
+        reason = str((state.get("draft") or {}).get("rationale")
+                     or state.get("situation") or "요청 조건을 다시 확인해야 합니다.").strip()
+        return reason + "\n\n현재 승인할 티켓 초안은 없습니다."
+    if items:
+        text = _drop_lineage_game_drift(text, state)
+        text = _align_story_point_claims(text, state, items)
+        text = _ensure_dod_claims(text, items)
+        text = _drop_unverified_reply_keys(text, state, items)
+        text = _drop_false_epic_claims(text, items)
+        text = _align_parent_labels(text, items)
+        text = _align_item_owner_claims(text, items)
+        text = _align_child_owner_claims(text, items)
+        text = _align_assigned_owner_cautions(text, items)
+        text = _align_workload_claims(text, state)
+        text = _normalize_alternate_language(text)
+        text = _drop_unsupported_assignment_experience(text, state)
+        text = _drop_resolved_review_feedback(text, items)
+        text = _align_child_presence_claims(text, items)
+        text = _drop_unrequested_deployment_claims(text, state)
+    return text
+
+
+def _drop_resolved_review_feedback(text: str, items: list) -> str:
+    """최종 payload에서 이미 고친 DoD에 대한 이전 Reviewer 의견을 답변에서 걷는다."""
+    from app.agent.workflow.agents.refiner import _dod_rows, _vague_dod
+
+    targets = list(items)
+    targets += [c for i in items for c in (i.get("children") or []) if isinstance(c, dict)]
+    rows = [d for item in targets for d in _dod_rows(item.get("description") or "")]
+    if not rows or _vague_dod(rows):
+        return text
+    kept = []
+    for line in str(text or "").splitlines():
+        if ("DoD" in line or "완료 조건" in line) and (
+                "검증 가능하지" in line or "수정해야" in line or "불명확" in line
+                or "누락" in line or "기술되지" in line):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _align_child_presence_claims(text: str, items: list) -> str:
+    """실제 children이 있는데 없다고 말하는 응답을 payload 기준으로 정정한다."""
+    count = sum(len(i.get("children") or []) for i in items if isinstance(i, dict))
+    if not count:
+        return text
+    out = _re.sub(r"자식\s*작업은\s*별도로\s*설정되지\s*않았습니다?\.?”?",
+                  f"자식 작업 {count}건이 설정되었습니다.", str(text or ""))
+    out = _re.sub(r"하위\s*작업은\s*별도로\s*설정되지\s*않았습니다?\.?”?",
+                  f"하위 작업 {count}건이 설정되었습니다.", out)
+    return out
+
+
+def _drop_unrequested_deployment_claims(text: str, state) -> str:
+    """요청하지 않은 배포 약속이 요약 문장에 되살아나지 않게 한다."""
+    req = request_text(state)
+    if _re.search(r"배포|릴리(?:스|즈)|운영\s*반영|production|prod\b", req, _re.I):
+        return text
+    out = _re.sub(r"(?:가이드|문서)가\s*최종\s*승인되고\s*배포됨",
+                  "가이드 링크와 리뷰 결과가 parent ticket에 기록됨", str(text or ""))
+    return out
+
+
+def _dialogue_speakers(request: str) -> set[str]:
+    """붙여넣은 대화의 화자는 담당자 주장이 아니라 사용자가 제공한 원문 인용이다."""
+    return {
+        m.group(1)
+        for m in _re.finditer(
+            r"(?m)^\s*(?:\[[^\]\n]+\]\s*)?([가-힣]{2,4})\s*:\s*\S", request or "")
+    }
+
+
+def _markdown_url(url: str) -> str:
+    """Confluence 제목의 대괄호·괄호가 Markdown 링크 destination을 깨지 않게 한다."""
+    from urllib.parse import quote
+    return quote(str(url or ""), safe=":/?&=#%+@;,$!-_.~*'")
+
+
+def _drop_lineage_game_drift(text: str, state) -> str:
+    """데이터 리니지 요청의 답에서 게임 서사 문장만 제거한다."""
+    req = request_text(state)
+    game_terms = ("게임", "플레이어", "캐릭터", "클라이맥스", "결말", "몰입감")
+    if "리니지" not in req or any(w in req for w in game_terms):
+        return text
+    lines = []
+    for line in str(text or "").splitlines():
+        parts = _re.split(r"(?<=[.!?])\s+", line)
+        kept = [p for p in parts if not any(w in p for w in game_terms)]
+        if any(p.strip() for p in kept):
+            lines.append(" ".join(p for p in kept if p.strip()))
+    return "\n".join(lines)
+
+
+def _align_story_point_claims(text: str, state, items: list) -> str:
+    """지원하지 않는 Story Point를 생성 payload에 넣었다는 주장을 제거하고 사실을 알린다."""
+    req = request_text(state)
+    m = _re.search(r"(?:스토리\s*포인트|Story\s*Points?|\bSP)\s*(?:를|은|:|=)?\s*(\d+)",
+                   req, _re.I)
+    if not m:
+        return text
+    # 현재 create payload 계약에는 Story Point 필드가 없다.
+    lines = []
+    for line in str(text or "").splitlines():
+        parts = _re.split(r"(?<=[.!?])\s+", line)
+        kept = []
+        for sentence in parts:
+            mentions = _re.search(r"스토리\s*포인트|Story\s*Points?|\bSP\b", sentence, _re.I)
+            # 긍정/부정 어느 쪽이든 먼저 지우고 아래 canonical 안내를 정확히 한 번 둔다.
+            if mentions:
+                continue
+            kept.append(sentence)
+        if any(p.strip() for p in kept):
+            lines.append(" ".join(p for p in kept if p.strip()))
+    note = (f"**Story Point {m.group(1)} 미포함**: 에이전트 생성 payload가 지원하지 않는 "
+            "필드이므로 티켓 생성 후 화면에서 직접 설정해야 합니다.")
+    out = "\n".join(lines).rstrip()
+    approval = _re.search(r"(?m)^(?:#{2,3}\s*|\*\*)승인", out)
+    return (out[:approval.start()].rstrip() + "\n\n" + note + "\n" + out[approval.start():]
+            if approval else out + "\n\n" + note)
+
+
+def _ensure_dod_claims(text: str, items: list) -> str:
+    """채팅 요약의 비거나 날조된 DoD 대신 실제 draft description의 DoD를 보장한다."""
+    records = []
+    for item in items:
+        body = str(item.get("description") or "")
+        section = _re.search(
+            r"<h3>\s*(?:완료\s*조건(?:\s*\(DoD\))?|DoD)[^<]*</h3>\s*(.*?)(?=<h3>|$)",
+            body, _re.S | _re.I)
+        if not section:
+            continue
+        rows = [_re.sub(r"<[^>]+>", "", x).strip() for x in
+                _re.findall(r"<li[^>]*>(.*?)</li>", section.group(1), _re.S | _re.I)]
+        rows = [r for r in rows if r]
+        if rows:
+            records.append((str(item.get("summary") or "티켓"), rows))
+    if not records:
+        return text
+    out = str(text or "")
+    # 내부 보정 메모를 값처럼 쓴 줄과 내용 없는 DoD 줄은 제거한다.
+    out = _re.sub(r"(?m)^\s*-?\s*\*\*완료\s*조건(?:\s*\(DoD\))?\*\*\s*:\s*"
+                  r"(?:\[[^\n]*(?:placeholder|작성\s*지시|본문\s*미완성|작성\s*필요|"
+                  r"기입\s*필요|기술되지\s*않음|최소한의\s*설명)[^\n]*\]|"
+                  r"\([^\n]*(?:데이터\s*누락|누락|미정|확인\s*필요)[^\n]*\)|\s*)$", "", out,
+                  flags=_re.I)
+    if len(records) > 1:
+        table = ["### 실제 완료 조건", "| 티켓 | 완료 조건 |", "|---|---|"]
+        table += [f"| {title} | {'<br>'.join(rows)} |" for title, rows in records]
+        block = "\n".join(table)
+        pattern = r"(?ms)^### 실제 완료 조건\s*$.*?(?=^#{2,3}\s|\Z)"
+        if _re.search(pattern, out):
+            out = _re.sub(pattern, block + "\n", out)
+        else:
+            approval = _re.search(r"(?m)^(?:#{2,4}\s*|\*\*)승인", out)
+            out = (out[:approval.start()].rstrip() + "\n\n" + block + "\n" + out[approval.start():]
+                   if approval else out.rstrip() + "\n\n" + block)
+        return _re.sub(r"\n{3,}", "\n\n", out).strip()
+    normalized = _re.sub(r"\s+", " ", out)
+    missing = [(title, rows) for title, rows in records
+               if not all(_re.sub(r"\s+", " ", row)[:24] in normalized for row in rows)]
+    if not missing:
+        return _re.sub(r"\n{3,}", "\n\n", out).strip()
+    table = ["### 실제 완료 조건", "| 티켓 | 완료 조건 |", "|---|---|"]
+    table += [f"| {title} | {'<br>'.join(rows)} |" for title, rows in missing]
+    block = "\n".join(table)
+    approval = _re.search(r"(?m)^(?:#{2,4}\s*|\*\*)승인", out)
+    out = (out[:approval.start()].rstrip() + "\n\n" + block + "\n" + out[approval.start():]
+           if approval else out.rstrip() + "\n\n" + block)
+    return _re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
+def _drop_unverified_reply_keys(text: str, state, items: list) -> str:
+    """생성 답변의 ticket key를 조사·사용자 지목·실제 payload 관계로 한정한다."""
+    allowed = {str(k).upper() for k in (state.get("mentioned_keys") or []) if str(k)}
+    allowed |= {str(e.get("key") or "").upper() for e in (state.get("evidence") or [])
+                if isinstance(e, dict) and e.get("key")}
+    for item in items:
+        allowed |= {str(item.get(k) or "").upper() for k in ("parent", "epic")
+                    if str(item.get(k) or "")}
+    lines = []
+    for line in str(text or "").splitlines():
+        parts = _re.split(r"(?<=[.!?])\s+", line)
+        kept = []
+        for sentence in parts:
+            keys = {k.upper() for k in
+                    _re.findall(r"(?<![A-Z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Z0-9])",
+                                sentence, _re.I)}
+            if keys and not keys <= allowed:
+                continue
+            kept.append(sentence)
+        joined = " ".join(p for p in kept if p.strip()).strip()
+        if joined:
+            lines.append(joined)
+    return "\n".join(lines)
+
+
+def _drop_false_epic_claims(text: str, items: list) -> str:
+    """draft에 없는 Epic 연결/포함 주장을 문장에서 제거한다."""
+    actual = {str(i.get("epic") or "").upper() for i in items if str(i.get("epic") or "")}
+    actual_epics = [i for i in items if str(i.get("type") or "").lower() == "epic"]
+    # 모델이 카드의 실제 유형보다 한 단계 크게 소개하는 경우가 있다. 단건 카드의 명시적
+    # 유형 줄은 버리지 말고 payload 유형으로 고쳐 제목을 보존한다.
+    if not actual and not actual_epics and len(items) == 1:
+        actual_type = str(items[0].get("type") or "Task")
+        text = _re.sub(r"(?mi)^(\s*-?\s*\*\*)(?:Epic|에픽)(\*\*\s*:\s*)",
+                       rf"\1{actual_type}\2", str(text or ""))
+        text = _re.sub(r"(?:Epic|에픽)(?:\s*의)?\s*(?:총괄\s*)?담당자",
+                       f"{actual_type} 담당자", text, flags=_re.I)
+    lines = []
+    for line in str(text or "").splitlines():
+        parts = _re.split(r"(?<=[.!?])\s+", line)
+        kept = []
+        for sentence in parts:
+            if not actual_epics and _re.search(r"Epic\s*Name|에픽\s*이름", sentence, _re.I):
+                continue
+            epic_keys = {k.upper() for k in
+                         _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", sentence)}
+            positive = bool(_re.search(r"(?:Epic|에픽).{0,100}(?:포함|연결|붙|관리|선택|배치|생성|"
+                                       r"만들|격상|범위)|(?:포함|연결|붙|관리|선택|배치|생성|"
+                                       r"만들|격상|범위).{0,100}(?:Epic|에픽)",
+                                       sentence, _re.I))
+            negative = bool(_re.search(r"없이|없음|아니|않|못|제거|뺐|보류", sentence))
+            false_key = bool(epic_keys and not (epic_keys & actual))
+            false_generic = not actual and positive
+            mentions_epic = bool(_re.search(r"Epic|에픽", sentence, _re.I))
+            false_draft_type = bool(not actual and not actual_epics and mentions_epic
+                                    and _re.search(r"초안|생성되지|만들", sentence))
+            if false_draft_type or (not negative and (
+                    (false_key and mentions_epic) or (positive and false_generic))):
+                continue
+            kept.append(sentence)
+        joined = " ".join(p for p in kept if p.strip()).strip()
+        if joined:
+            lines.append(joined)
+    out = "\n".join(lines)
+    if items and "승인" not in out:
+        out = out.rstrip() + "\n\n이 티켓 초안은 아직 생성되지 않았습니다. 승인 카드에서 확인해 주세요."
+    return out
+
+
+def _align_parent_labels(text: str, items: list) -> str:
+    """Sub-Task의 parent를 Epic으로 표시하는 계층 라벨 오류를 고친다."""
+    is_subtasks = bool(items) and all(
+        str(i.get("type") or "").lower().startswith("sub") for i in items)
+    has_parent = any(i.get("parent") for i in items)
+    if not (is_subtasks and has_parent):
+        return text
+    out = _re.sub(r"(?mi)^\|([^\n]*?)\bEpic\b([^\n]*?)\|$", r"|\1부모\2|", str(text or ""))
+    return _re.sub(r"(?mi)^(\s*-\s*\*\*)Epic(\*\*\s*:)", r"\1부모\2", out)
+
+
+def _align_child_owner_claims(text: str, items: list) -> str:
+    """답변의 Sub-Task 담당을 실제 child payload와 맞춘다."""
+    children = [c for i in items for c in (i.get("children") or [])
+                if isinstance(c, dict) and c.get("summary") and c.get("assignee")]
+    out = str(text or "")
+    if not children:
+        return out
+    out = _re.sub(r"(?mi)^(#{1,4}\s*)하위\s*Task\s*$", r"\1Sub-Task", out)
+    # 기술 주제를 보존하려고 payload 제목은 길게 만들지만, 답변은 흔히 공통 접두를 생략하고
+    # "설계 완료"처럼 쓴다. 전체 제목만 찾으면 바로 그 줄의 잘못된 담당자를 놓친다.
+    import os
+    titles = [str(c["summary"]) for c in children]
+    common = os.path.commonprefix(titles)
+    common = common[:common.rfind(" ") + 1] if " " in common else ""
+    aliases = []
+    for child, title in zip(children, titles):
+        short = title[len(common):].strip() if common and title.startswith(common) else ""
+        aliases.append((child, [a for a in (title, short) if a]))
+
+    seen = set()
+    current_child = None
+    lines = []
+    for line in out.splitlines():
+        matched = [(c, aa) for c, aa in aliases if any(a in line for a in aa)]
+        if len(matched) == 1:
+            current_child = matched[0][0]
+        if current_child is not None and "담당" in line:
+            child = current_child
+            actual = str(child["assignee"])
+            line = _re.sub(
+                r"(?<![A-Za-z0-9.])(?:skcc\.)?[a-z]{1,2}\d{2,6}(?![A-Za-z0-9])",
+                actual, line, flags=_re.I)
+            line = _re.sub(r"\s*[（(]\s*(?:임시|가안|조정\s*가능)\s*[)）]", "", line)
+            seen.add(str(child["summary"]))
+        lines.append(line)
+    out = "\n".join(lines)
+    exact_block = all(str(c["summary"]) in out and str(c["assignee"]) in out
+                      for c in children)
+    if not exact_block:
+        # 축약 제목·순서로 담당이 뒤바뀔 수 있으므로 실제 payload 표를 한 번 보장한다.
+        rows = ["### Sub-Task 담당", "| Sub-Task | 담당 |", "|---|---|"]
+        rows += [f"| {c['summary']} | {c['assignee']} |" for c in children]
+        block = "\n".join(rows) + "\n\n"
+        approval = _re.search(r"(?m)^#{2,3}\s*승인", out)
+        out = (out[:approval.start()] + block + out[approval.start():]
+               if approval else out.rstrip() + "\n\n" + block.rstrip())
+    return out
+
+
+def _normalize_alternate_language(text: str) -> str:
+    """'대안인데 고려하지 않음'이라는 자기모순을 검토 가능한 후보 표현으로 고친다."""
+    return _re.sub(
+        r"부하가\s*높(?:아|아서)\s*(?:대안으로\s*)?(?:고려하지\s*않(?:음|습니다)|"
+        r"적합하지\s*않습니다|제외(?:했|함|합니다)?)",
+        "현재 담당자보다 부하가 높지만 담당 변경이 필요할 때 검토할 수 있음",
+        str(text or ""), flags=_re.I)
+
+
+def _drop_unsupported_assignment_experience(text: str, state) -> str:
+    """부하 수치만 조회했는데 모듈 경험까지 있다고 확장한 문구를 제거한다."""
+    reasons = [str(r) for a in (state.get("assignments") or []) if isinstance(a, dict)
+               for r in (a.get("reasons") or [])]
+    if any(_re.search(r"유사|관련.+(?:경험|담당)|경험.+(?:티켓|작업)", r) for r in reasons):
+        return text
+    return _re.sub(r",\s*[^,.\n]{0,80}(?:경험|이력)(?:이\s*)?(?:있|풍부|보유)[^,.\n]*",
+                   "", str(text or ""), flags=_re.I)
+
+
+def _align_workload_claims(text: str, state) -> str:
+    """사번 옆 진행중 건수와 부하의 정성 표현을 최종 Assigner 근거와 맞춘다."""
+    loads = {}
+    for row in (state.get("assignments") or []):
+        if not isinstance(row, dict):
+            continue
+        candidates = [(row.get("user"), " ".join(str(x) for x in row.get("reasons") or []))]
+        candidates += [(x.get("user"), x.get("why")) for x in (row.get("children") or [])
+                       if isinstance(x, dict)]
+        candidates += [(x.get("user"), x.get("why")) for x in (row.get("alternates") or [])
+                       if isinstance(x, dict)]
+        for user, why in candidates:
+            m = _re.search(r"진행\s*중(?:인)?\s*(?:티켓|작업)?\s*(\d+)\s*건|"
+                           r"진행중\s*(\d+)\s*건", str(why or ""))
+            if user and m:
+                loads[str(user)] = next(x for x in m.groups() if x is not None)
+    lines = []
+    for line in str(text or "").splitlines():
+        users = [u for u in loads if u in line]
+        if len(users) == 1:
+            value = loads[users[0]]
+            line = _re.sub(r"(진행\s*중(?:인)?\s*(?:티켓|작업)?\s*)\d+(\s*건)|"
+                           r"(진행중\s*)\d+(\s*건)",
+                           lambda m: ((m.group(1) or m.group(3)) + value
+                                      + (m.group(2) or m.group(4))), line)
+            values = sorted({int(x) for x in loads.values()})
+            if len(values) >= 2:
+                numeric = int(value)
+                level = ("가장 낮" if numeric == values[0]
+                         else "가장 높" if numeric == values[-1]
+                         else "중간 수준")
+                causal = _re.search(
+                    r"(?:상대적으로\s*)?부하가\s*(?:가장\s*)?(?:적어|낮아|높아)", line)
+                if causal:
+                    phrase = (f"부하가 {level}아서" if level != "중간 수준"
+                              else "부하가 중간 수준이어서")
+                    line = line[:causal.start()] + phrase + line[causal.end():]
+                else:
+                    line = _re.sub(
+                        r"(?:상대적으로\s*)?부하가\s*(?:가장\s*)?(?:적|낮|높)"
+                        r"(?:음|습니다|은\s*편(?:임|입니다)?)?",
+                        f"부하가 {level}음" if level != "중간 수준" else "부하가 중간 수준임",
+                        line)
+        # `A 10건, 대안 B 13건보다 부하가 높음`처럼 두 사람을 한 문장에 비교한 경우는
+        # 전역 순위보다 그 문장 안의 수치를 직접 비교한다.
+        nums = [int(x) for x in _re.findall(r"(\d+)\s*건", line)]
+        if len(nums) >= 2 and "보다" in line and "부하" in line:
+            relation = "더 낮음" if nums[0] < nums[1] else "더 높음" if nums[0] > nums[1] else "같음"
+            line = _re.sub(
+                r"(?:상대적으로\s*)?부하가\s*(?:가장\s*)?(?:적|낮|높)"
+                r"(?:음|습니다|은\s*편(?:임|입니다)?)?",
+                f"부하가 {relation}", line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _align_item_owner_claims(text: str, items: list) -> str:
+    """top-level Task/Sub-Task의 담당 문장을 실제 payload와 맞추고 정규 표를 보장한다."""
+    assigned = [(str(i.get("summary") or ""), str(i.get("assignee") or ""))
+                for i in items if i.get("summary") and i.get("assignee")]
+    if not assigned:
+        return text
+    alias_rows = []
+    bracket_counts = {}
+    for title, _ in assigned:
+        m = _re.match(r"^\s*\[([^]]+)\]", title)
+        if m:
+            bracket_counts[m.group(1).strip()] = bracket_counts.get(m.group(1).strip(), 0) + 1
+    for title, who in assigned:
+        plain = _re.sub(r"^\s*\[[^]]+\]\s*", "", title).strip()
+        aliases = {title, plain}
+        trimmed = _re.sub(r"\s+(?:수행|완료|진행)$", "", plain).strip()
+        if trimmed:
+            aliases.add(trimmed)
+        bracket = _re.match(r"^\s*\[([^]]+)\]", title)
+        if bracket and bracket_counts.get(bracket.group(1).strip()) == 1:
+            aliases.add(bracket.group(1).strip())
+        alias_rows.append((title, who, sorted((a for a in aliases if a), key=len, reverse=True)))
+
+    lines, current = [], None
+    for line in str(text or "").splitlines():
+        matches = []
+        for title, who, aliases in alias_rows:
+            if any(a and a in line for a in aliases):
+                matches.append((title, who))
+        if not matches:
+            line_tokens = [t for t in _re.findall(r"[A-Za-z0-9가-힣]+", line)
+                           if len(t) >= 2 and t not in {"담당자", "담당", "근거", "현재"}]
+            scored = []
+            for title, who, _ in alias_rows:
+                title_tokens = [t for t in _re.findall(r"[A-Za-z0-9가-힣]+", title)
+                                if len(t) >= 2]
+                score = sum(1 for token in line_tokens
+                            if any(token in part or part in token for part in title_tokens))
+                if score >= 2:
+                    scored.append((score, title, who))
+            if scored:
+                best = max(x[0] for x in scored)
+                winners = [(title, who) for score, title, who in scored if score == best]
+                if len(winners) == 1:
+                    matches = winners
+        if len(matches) == 1:
+            current = matches[0]
+        if current and "대안" not in line and (
+                "담당" in line or len(matches) == 1):
+            title, actual = current
+            line = _re.sub(r"(?<![A-Za-z0-9.])(?:skcc\.)?[a-z]{1,2}\d{2,6}(?![A-Za-z0-9])",
+                           actual, line, flags=_re.I)
+        lines.append(line)
+    out = "\n".join(lines)
+    if len(assigned) > 1:
+        rows = ["### 실제 담당자", "| 티켓 | 담당 |", "|---|---|"]
+        rows += [f"| {title} | {who} |" for title, who in assigned]
+        block = "\n".join(rows)
+        approval = _re.search(r"(?m)^(?:#{2,4}\s*|\*\*)승인|^위의?\s+초안", out)
+        out = (out[:approval.start()].rstrip() + "\n\n" + block + "\n" + out[approval.start():]
+               if approval else out.rstrip() + "\n\n" + block)
+    return out
+
+
+def _align_assigned_owner_cautions(text: str, items: list) -> str:
+    """실제 child 담당자를 '제외/부적합'이라고 설명하는 문장을 정정한다."""
+    assigned = {str(i.get("assignee") or "") for i in items if i.get("assignee")}
+    child_assigned = {
+        str(c.get("assignee") or "")
+        for i in items
+        for c in (i.get("children") or [])
+        if isinstance(c, dict) and c.get("assignee")
+    }
+    assigned |= child_assigned
+    lines = []
+    for line in str(text or "").splitlines():
+        owners = [u for u in assigned if u and (u in line or u.split(".")[-1] in line)]
+        who = owners[0] if owners else ""
+        if who and _re.search(r"부하\s*조정\s*필요|재검토\s*필요", line):
+            cleaned = _re.sub(r"\s*[（(]?\s*(?:부하\s*조정\s*필요|재검토\s*필요)\s*[)）]?",
+                              "", line).rstrip()
+            lines.append(cleaned)
+            continue
+        if who and _re.search(r"제외|고려하지|부적합|존재하지|확인되지|실재하지|찾을 수 없|"
+                              r"부하\s*조정\s*필요|재검토\s*필요", line):
+            prefix = "- " if line.lstrip().startswith("-") else ""
+            if len(owners) > 1:
+                lines.append(f"{prefix}사용자 지정 담당({', '.join(sorted(owners))})은 실재 사용자 "
+                             "검증을 거쳐 승인 payload에 반영되었습니다.")
+            else:
+                assignment = ("Sub-Task 담당으로 분량 배분됨" if who in child_assigned
+                              else "승인 payload의 담당자로 반영됨")
+                lines.append(f"{prefix}**{who}**: {assignment}; 현재 부하는 승인 화면에서 "
+                             "함께 검토합니다.")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def _drop_boilerplate_closers(text: str) -> str:
     """답 **끝에 달린 상투 맺음말**을 지운다. 문장 단위로 본다(줄 끝에 붙어 오기도 한다)."""
     lines = (text or "").splitlines()
@@ -426,7 +963,7 @@ def _drop_boilerplate_closers(text: str) -> str:
         s = lines[i].strip()
         if not s:
             continue
-        if s.startswith(("|", "-", "*", ">", "#", "[")) or _re.match(r"^\d+[.)]", s):
+        if s.startswith(("|", "- ", "* ", ">", "#", "[")) or _re.match(r"^\d+[.)]", s):
             continue                       # 표·목록·참조 — 여기서 끝나는 답이 흔하다
         parts = _re.split(r"(?<=[.!?])\s+|(?<=다\.)\s+", s)
         while parts and _CLOSER_RE.match(parts[-1].strip()) and "DL-" not in parts[-1]:
@@ -703,7 +1240,7 @@ def _attach_known_doc_urls(text: str, state) -> str:
             return line
         for t in titles:
             if t in line:
-                return line.replace(t, f"[{t}]({urls[t]})", 1)
+                return line.replace(t, f"[{t}]({_markdown_url(urls[t])})", 1)
         return line
     return REF_LINE_RE.sub(fix, text or "")
 

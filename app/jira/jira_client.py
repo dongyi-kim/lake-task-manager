@@ -2469,13 +2469,15 @@ class JiraClient:
         f = raw.get("fields") or {}
         st = f.get("status") or {}
         a = f.get("assignee") or {}
+        issue_type = f.get("issuetype") or {}
         nf = self.s.epic_name_field_id
         return {
             "key": raw.get("key", key),
             "summary": f.get("summary", ""),
             # Epic Name(단축어) 커스텀필드 — 뱃지 라벨은 **Epic Name → Summary → 키** 순으로 쓴다.
             "epicName": (f.get(nf) if nf else None) or None,
-            "type": (f.get("issuetype") or {}).get("name", ""),
+            "type": issue_type.get("name", ""),
+            "isSubtask": bool(issue_type.get("subtask")),
             "status": st.get("name", ""),
             "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
             "assignee": real_name(a.get("displayName") or a.get("name")) or None,

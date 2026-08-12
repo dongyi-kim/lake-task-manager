@@ -45,6 +45,41 @@ def test_everything_else_investigates_first():
                                   "sufficient": True}) == "investigate"
 
 
+def test_reviewer_keeps_editorial_advice_non_blocking():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.reviewer import _partition_model_problems
+
+    state = {
+        "messages": [HumanMessage(content="단계별 Sub-Task로 나눠줘")],
+        "draft": {"structure": "task_with_subtasks",
+                  "structure_source": "user_specified",
+                  "items": [{"type": "Task", "children": [{"summary": "구현"}]}]},
+    }
+    raw = [
+        {"check": "request", "message": "과잉 분해로 Sub-Task가 불필요하게 나뉘었다"},
+        {"check": "rule", "message": "제목이 동사로 끝나지 않는다"},
+        {"check": "grounded", "message": "본문의 DL-9999는 조사 근거에 없다"},
+        {"check": "rule", "message": "지정 담당자 skcc.x1402가 존재하지 않는다"},
+    ]
+    blocking, advice = _partition_model_problems(state, raw)
+    assert [p["check"] for p in blocking] == ["grounded"]
+    assert len(advice) == 3
+
+
+def test_bug_contract_does_not_require_task_dod():
+    from app.agent.workflow.agents.reviewer import _machine_check
+
+    state = {"draft": {"mode": "task", "items": [{
+        "summary": "[Workbench] 리니지 화면이 빈다", "type": "Bug",
+        "components": ["Workbench"],
+        "description": ("<h3>재현 경로</h3><p>2홉을 펼친다.</p>"
+                        "<h3>기대 동작</h3><p>그래프가 보인다.</p>"
+                        "<h3>실제 동작</h3><p>화면이 빈다.</p>")}]}}
+    review = _machine_check(state)
+    assert review["ok"]
+    assert not any("완료 조건" in w.get("message", "") for w in review["warnings"])
+
+
 def test_a_plain_question_stops_after_investigation():
     assert G.route_after_historian({"intent": Intent.ASK}) == "respond"
     assert G.route_after_historian({"intent": Intent.PLAN_WORK}) == "refine"
@@ -431,6 +466,7 @@ def test_merge_join_drops_ghost_assignees():
     items = out["draft"]["items"]
     assert items[0].get("assignee") == real
     assert not items[1].get("assignee"), "실재하지 않는 사용자 배정은 join 에서 걸러져야 한다"
+    assert not out["assignments"][1].get("user"), "Responder 상태에도 유령 추천을 남기지 않는다"
 
 
 def test_merge_join_resolves_suffix_only_ids():
@@ -441,6 +477,26 @@ def test_merge_join_resolves_suffix_only_ids():
     draft = {"mode": "task", "items": [{"summary": "a", "assignee": suffix}]}
     out = G._merge_assignments({"draft": draft, "assignments": []})
     assert out["draft"]["items"][0].get("assignee") == real
+
+
+def test_merge_join_reapplies_user_named_assignees_after_recommendations():
+    from langchain_core.messages import HumanMessage
+    draft = {"mode": "subtask", "items": [
+        {"summary": "성능을 측정하는 작업", "type": "Sub-Task"},
+        {"summary": "가이드를 작성하는 작업", "type": "Sub-Task"}]}
+    state = {"messages": [HumanMessage(
+        content="성능 측정은 x1402, 가이드 작성은 x1450. 알아서")],
+        "draft": draft,
+        "assignments": [{"index": 0, "user": "skcc.x1042", "reasons": ["부하 낮음"]},
+                        {"index": 1, "user": "skcc.x1045", "reasons": ["부하 낮음"],
+                         "alternates": [{"user": "skcc.x1450", "why": "대안"}]}]}
+    merged = G._merge_assignments(state)
+    out = merged["draft"]["items"]
+    assert [i.get("assignee") for i in out] == ["skcc.x1402", "skcc.x1450"]
+    assert all(i.get("assignee_source") == "user" for i in out)
+    assert [a.get("user") for a in merged["assignments"]] == ["skcc.x1402", "skcc.x1450"]
+    assert all("payload" in a["reasons"][0] for a in merged["assignments"])
+    assert not merged["assignments"][1].get("alternates"), "1순위와 같은 사용자는 대안이 아니다"
 
 
 def _any_real_user():

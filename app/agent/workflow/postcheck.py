@@ -97,6 +97,10 @@ def _check_draft(text: str, state: dict) -> list:
     flat_kids = draft.get("children") or []
     kids = (len(flat_kids) if flat_kids else
             sum(len(i.get("children") or []) for i in items if isinstance(i, dict)))
+    is_subtask_batch = ((draft.get("mode") or "").lower() == "subtask"
+                        or bool(items) and all(
+                            str(i.get("type") or "").lower().startswith("sub")
+                            for i in items if isinstance(i, dict)))
     said = last_user_text(state or {}).lower()
     wants_kids = any(w in said for w in (
         "단계별 sub-task", "단계별 subtask", "단계별 서브태스크", "단계별 서브 태스크",
@@ -106,7 +110,7 @@ def _check_draft(text: str, state: dict) -> list:
         text or "", re.I))
     if items and not (state or {}).get("questions") and kids == 0 and wants_kids:
         bad.append("사용자가 단계별 Sub-Task를 요구했지만 승인 카드의 자식이 0건이다")
-    if items and kids == 0 and claims_kids:
+    if items and kids == 0 and claims_kids and not is_subtask_batch:
         bad.append("답변은 하위 작업이 있다고 하지만 승인 카드의 자식이 0건이다")
     return bad
 

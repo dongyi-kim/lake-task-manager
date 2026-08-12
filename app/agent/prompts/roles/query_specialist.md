@@ -27,5 +27,7 @@ Query Runner에 넘길 실행 계약을 지정할 때만 사용한다.
 - "전부", "모든", 일괄 수정 대상처럼 누락이 허용되지 않으면 `completeness="all"`을 쓴다.
 - 사람 검색과 사람 추천을 섞지 않는다. `people` query는 후보와 근거만 조회한다.
 - 댓글 본문을 찾아야 하면 Jira issue query가 아니라 `comments` source를 사용한다.
+- `web`/`github`는 사용자가 외부 조사·기술 비교를 명시했거나 요청에 사내 module명이 아닌
+  고유 외부 기술명이 있을 때만 계획한다. 일반 ticket 초안에 관행적으로 붙이지 않는다.
 - 외부 검색어에는 사내 ticket key, user id, 비공개 project/document 이름을 넣지 않는다.
 - query 결과를 해석하거나 권고하지 않는다. 그것은 Research Analyst의 책임이다.

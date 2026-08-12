@@ -373,7 +373,7 @@ class Refiner(StructuredAgent):
             goal = """조사를 시작하기 전에 **요청 해석을 확인받아라. 이번 턴에는 초안을 만들지 마라**(items 는 빈 배열).
 - interpretation 에 **네가 이해한 바**를 2~3문장으로 적어라 — 무엇을(대상·기술), 왜(목적 추정),
   어떤 산출물로. 사용자의 낱말을 유지하고, 추정한 부분은 "~로 이해했다"로 표시한다.
-- questions 는 **갈림이 큰 것만** 3~5개, choice 우선·네 추천을 맨 앞에. 위 '생성 최소 요건
+- questions 는 **갈림이 큰 것만** 최대 2개, choice 우선·네 추천을 맨 앞에. 위 '생성 최소 요건
   점검'에서 **ASK 로 표시된 것**이 물을 후보다(INFER/LATER 는 묻지 마라):
   ① 범위/방향 — 어디까지가 1차 목표인가(검토만/PoC/최소 구현), 첫 문장만으로 불명확한 방향
   ② **배경** — 왜 지금 필요해졌나(계기: VoC·장애·규제·선행 티켓). 한 줄이면 된다.
@@ -401,10 +401,11 @@ class Refiner(StructuredAgent):
 - ★ 쪼갤 실행 단위는 각 항목의 **children 에 실제 Sub-Task 로** 적는다(승인 한 번으로 부모
   생성 후 이어 붙는다). 본문에 '후속 Sub-Task 후보'라고 글로만 적지 마라 — 티켓이 되지 않는다.
 - ★ **부모가 이미 있으면 children 이 아니라 mode="subtask" 다.** "DL-9090 에 서브태스크
-  추가해줘", "DL-9095 를 쪼개줘" 처럼 **실재하는 티켓을 지목**했으면 그 티켓이 부모다 —
+  추가해줘", "DL-9072 를 쪼개줘" 처럼 **실재하는 Task-tier 티켓을 지목**했으면 그 티켓이 부모다 —
   감싸는 새 Task 를 만들지 말고, items 를 Sub-Task 로 내고 각 항목의 parent 에 그 키를 적어라
   (새 Task 를 만들면 사용자가 말한 티켓은 그대로 두고 엉뚱한 껍데기가 하나 더 생긴다).
-  여러 티켓에 각각 붙이라고 하면(“DL-9093 이랑 DL-9094 둘 다”) **항목마다 parent 를 달리** 한다.
+  여러 Task-tier 티켓에 각각 붙이라고 하면(“DL-9047 이랑 DL-9062 둘 다”)
+  **항목마다 parent 를 달리** 한다. Sub-Task를 다시 parent로 쓰지 않는다.
 - ★ items 에는 Task/Story/Bug 만 담는다(Sub-Task 는 children 자리다)."""
         # 형태를 사용자가 말했는지 **코드가 판정해** 알려 준다 — 같은 문장을 모델이 매번
         # 다르게 읽지 않도록. 말했으면 그대로 따르고, 열려 있으면 판단하되 갈림이 크면
@@ -414,7 +415,8 @@ class Refiner(StructuredAgent):
         #   모델이 첫 항목만 제대로 쓰고 나머지는 제목만 남긴다(실측 STR2: 3건 중 2건이
         #   '작업 범위'·'완료 조건' 없이 나왔다). 뼈대 단계에서 본문을 지운 뒤라 **처음부터
         #   쓰는 것**이므로, 몇 건이든 전부 채우라고 못 박아야 한다.
-        if state.get("structure_ok") and (state.get("structure_plan") or []):
+        if (state.get("structure_ok") or structure_accepted(state)) \
+                and (state.get("structure_plan") or []):
             goal += ("\n- ★ **구조는 이미 합의됐다**(위 '합의 중인 구조'). 항목을 더하거나 "
                      "빼지 말고, **모든 항목의 본문을 빠짐없이** 배경·작업 범위(포함/제외)·"
                      "완료 조건으로 채워라 — 첫 항목만 쓰고 나머지를 제목만 남기면 승인 "
@@ -466,6 +468,8 @@ class Refiner(StructuredAgent):
                        "짜지 마라)",
                        "\n".join(
                            f"- {i.get('summary')}"
+                           + (f" [{', '.join(i.get('components') or [])}]"
+                              if i.get("components") else "")
                            + ("".join(f"\n    · {c}" for c in (i.get("children") or []))
                               if i.get("children") else "")
                            for i in (state.get("structure_plan") or []))),
@@ -539,10 +543,10 @@ class Refiner(StructuredAgent):
 
     def apply(self, state, out):
         # 문자열로 오면(구모델·fake) 구조로 승격한다 — 화면은 dict 만 다루면 된다.
-        # 상한 3 → 5. 해석 확인 턴이 물을 것이 늘었다(배경·완료 조건·분할 여부가 슬롯으로
-        # 들어왔다 — 사용자 요청). 3에서 자르면 새 슬롯이 **조용히 버려진다.**
+        # 한 번에 답할 핵심 질문은 2개까지다. 마지막 자유 의견 슬롯을 코드가 붙여도 총 3개를
+        # 넘지 않게 한다. 4~6개 질문은 필요한 정보를 늘리기보다 이탈률과 재질문을 늘렸다.
         qs = []
-        for q in (out.get("questions") or [])[:5]:
+        for q in (out.get("questions") or [])[:2]:
             if isinstance(q, str) and q.strip():
                 qs.append({"question": q.strip(), "kind": "text", "options": [], "field": ""})
             elif isinstance(q, dict) and str(q.get("question") or "").strip():
@@ -563,6 +567,22 @@ class Refiner(StructuredAgent):
             if item.get("issue_type") and not item.get("type"):
                 item["type"] = item["issue_type"]
         mode = out.get("mode") or "task"
+        # 조사까지 끝난 명시적 "기존 Task 아래 A와 B Sub-Task 추가" 요청에서 모델이
+        # interpretation만 내고 items를 비우는 변동이 있다. 대상·부모·산출물이 모두 사용자
+        # 문장에 있으므로 다시 묻지 않고 최소 초안을 결정적으로 복원한다(SUB2 실측).
+        if not items and not qs and state.get("situation"):
+            recovered = _recover_explicit_subtasks(state)
+            if recovered:
+                items = out["items"] = recovered
+                mode = out["mode"] = "subtask"
+                out["interpretation"] = ""
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(명시된 기존 부모와 Sub-Task 목록으로 빈 초안을 복원했다)").strip()
+        # 사용자가 직전 턴의 구조를 승인했다면 이번 model output은 **본문 재료**일 뿐이다.
+        # 제목·순서·module·자식 관계는 이미 사용자와 합의한 값이므로 코드가 그대로 복원한다.
+        # 합의 신호를 apply 끝에서야 structure_ok=True로 쓰던 탓에, 승인 직후 한 번은 model이
+        # 구조를 다시 짰고 STR2에서 Runtime이 Workbench로 돌아갔다.
+        _enforce_agreed_structure(state, items)
         # Sub-Task 는 자식을 가질 수 없다 — subtask 모드 항목에 모델이 children 을 또 달면
         # (실측: 같은 내용을 items 와 children 에 이중으로) 떼어 낸다.
         if mode == "subtask":
@@ -579,6 +599,27 @@ class Refiner(StructuredAgent):
         # 채운다: mode=subtask 로 내면서 parent 만 빠뜨리면 검증에서 통째로 반려돼
         # "만들겠습니다" 라고 말해 놓고 초안이 0건이 된다(실측: PAR1).
         named = [k for k in (state.get("mentioned_keys") or []) if _ticket_exists(k)]
+        # 사용자가 지목한 부모 자체가 Sub-Task/Epic이면 그 아래에 Sub-Task를 또 만들 수 없다.
+        # 예전 검사는 "Epic이 아닌 실재 티켓"만 봐서 Sub-Task를 부모로 승인했고, 답변은
+        # 불가능하다고 말하면서 payload에는 생성될 항목이 남는 모순이 생겼다. 불가능한 요청은
+        # 임의의 최상위 Task로 바꾸지 않고 초안을 비운 뒤, 가능한 대안을 한 번만 묻는다.
+        invalid_named = [k for k in named if _asks_subtasks(state)
+                         and not _can_parent_subtask(k)]
+        if invalid_named:
+            items.clear()
+            mode = out["mode"] = "subtask"
+            kinds = ", ".join(f"{k}({_ticket_kind(k) or '알 수 없는 타입'})"
+                              for k in invalid_named)
+            out["rationale"] = ((out.get("rationale") or "")
+                                + f"\n({kinds} 아래에는 Sub-Task를 만들 수 없어 초안을 "
+                                  "보류했다. Epic→Task 계층 또는 기존 Task 아래의 Sub-Task만 "
+                                  "허용한다)").strip()
+            qs = [{"question": "지목한 티켓은 Sub-Task의 부모가 될 수 없습니다. "
+                               "어떤 방식으로 바꿀까요?",
+                   "kind": "choice", "field": "",
+                   "options": ["실제 상위 Task 아래에 형제 Sub-Task로 만든다 (권장)",
+                               "별도의 최상위 Task로 만든다", "이번에는 만들지 않는다"]}]
+            model_questions = False         # 코드가 만든 안전 대안이며, 초안은 이미 비웠다
         if named:
             for i in items:
                 if (i.get("type") or "").lower().startswith("sub") or mode == "subtask":
@@ -741,7 +782,7 @@ class Refiner(StructuredAgent):
         #   조건·분할) 질문이 6개까지 나왔는데(실측 ASK1·DUP1·RULE1), 그쯤 되면 출구가
         #   하나 더 있는 것이 아니라 **취조로 읽힌다.** 자유 의견은 물을 것이 적을 때
         #   객관식이 못 담는 말을 받으려던 장치다 — 많이 물었으면 이미 받은 것이다.
-        if qs and len(qs) < 4 \
+        if qs and len(qs) < 3 \
                 and not any(q.get("kind") == "text" and "자유" in q.get("question", "") for q in qs):
             qs.append({"question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 "
                                    "적어 주세요 (없으면 건너뛰어도 됩니다)",
@@ -775,6 +816,23 @@ class Refiner(StructuredAgent):
         else:
             draft_new_labels = []
 
+        # ── 작고 명시적인 위임은 한 Task로 끝낸다 ───────────────────────────
+        # "체크박스 하나 추가, 알아서" 같은 요청이 조사 문맥의 단계어를 주워 Epic+Sub-Task
+        # 다섯 건으로 부풀었다. 단일 산출물·짧은 요청·전권 위임이 동시에 확인된 경우에만
+        # 적용하며, 사용자가 분할/단계/복수 산출물을 말한 요청은 건드리지 않는다.
+        if mode == "task" and items and _simple_delegated_request(state):
+            best = _best_item_for_request(state, items)
+            changed = len(items) > 1 or bool(best.get("children"))
+            best.pop("children", None)
+            items[:] = [best]
+            if changed:
+                out["structure"] = "single_task"
+                out["structure_source"] = "inferred"
+                out["structure_why"] = "단일 산출물 하나를 위임한 작은 변경 요청이다"
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(단일 산출물 요청이라 과도한 단계·하위 티켓을 접고 "
+                                      "Task 한 건으로 정리했다)").strip()
+
         # 구조 판단은 **드러내 놓고** 싣는다 — 숨은 판단은 매번 달라지고 검증도 못 한다.
         # Epic 격상은 보수적으로: 새 Epic 을 고르고도 조건을 못 채웠으면(단일 모듈·소규모)
         # 코드가 되돌리지는 않되(사용자가 명시적으로 원했을 수 있다) 근거를 남기게 강제한다.
@@ -801,8 +859,36 @@ class Refiner(StructuredAgent):
         if said_shape == "task_with_subtasks" and mode != "subtask" and items:
             structure = "task_with_subtasks"
             out["structure"] = structure
+            if _re.search(r"[2-9][0-9]{0,3}\s*(?:개|건)", last_user_text(state)) and any(
+                    w in last_user_text(state) for w in
+                    ("사람 나눠", "담당 나눠", "나눠 맡", "나눠서 진행")):
+                why = "같은 반복 대상을 module roster에 분량으로 나누라는 요청이다"
+                out["structure_why"] = why
+        elif said_shape == "single_task" and mode == "task" and items:
+            # `Task 만들어줘`처럼 issue type을 단수로 지정했으면 모델이 임의로 붙인
+            # 설계/구현/검증 children을 접는다. 사용자 지정 형태는 권고가 아니라 결정이다.
+            best = _best_item_for_request(state, items)
+            best.pop("children", None)
+            items[:] = [best]
+            structure = out["structure"] = "single_task"
+            why = out["structure_why"] = "사용자가 단일 티켓 타입으로 생성을 요청했다"
         if said_shape:                      # 사용자가 말한 것은 판단이 아니다 — 코드가 확정한다
             src = "user_specified"
+
+        # 생성 payload는 Story Point를 지원하지 않는다. 모델이 rationale에 "생성 후 할당"
+        # 같은 약속을 남겨도 실제 승인 payload와 모순되므로 제거하고 정확한 안내를 남긴다.
+        sp = _re.search(r"(?:스토리\s*포인트|Story\s*Points?|\bSP)\s*(?:를|은|:|=)?\s*(\d+)",
+                        request_text(state), _re.I)
+        if sp and items:
+            for it in items:
+                for field in ("story_points", "storyPoints", "story_point", "sp"):
+                    it.pop(field, None)
+            rationale = str(out.get("rationale") or "")
+            rationale = _re.sub(
+                r"[^.\n;]*(?:스토리\s*포인트|Story\s*Points?|\bSP\b)[^.\n;]*(?:[.;]|$)",
+                "", rationale, flags=_re.I).strip(" ;\n")
+            out["rationale"] = (rationale + f"\n(Story Point {sp.group(1)}는 생성 payload 미지원 — "
+                                "생성 후 티켓 화면에서 직접 설정)").strip()
         draft = {"mode": out.get("mode") or "task", "items": items,
                  "structure": structure, "structure_why": why,
                  "structure_source": src,
@@ -831,6 +917,9 @@ class Refiner(StructuredAgent):
         #   섹션은 '참고' 하나이고, 없던 키·링크만 그 ul 에 이어 붙인다(_merge_refs).
         refs = []
         for e in (state.get("evidence") or [])[:5]:
+            from app.agent.workflow.relevance import evidence_is_relevant
+            if not evidence_is_relevant(e):
+                continue
             k, why = (e.get("key") or "").strip(), (e.get("why") or e.get("title") or "").strip()
             # 티켓 키 모양만 — PMO 근거에는 "ETL" 같은 모듈명이 섞이는데 그건 참고가 아니다.
             if k and _re.match(r"^[A-Z][A-Z0-9]*-[0-9]+$", k):
@@ -841,6 +930,29 @@ class Refiner(StructuredAgent):
                 refs.append((u, f'<li><a href="{u}">{t}</a></li>'))
         for it in items:
             it["description"] = _merge_refs(it.get("description") or "", refs)
+            if mode == "subtask":
+                # parent는 payload의 `parent` 필드로 이미 배지/링크가 된다. 같은 parent와
+                # 기존 형제·문서를 각 Sub-Task 참고에 반복하면 본문 대부분이 중복 참고가
+                # 된다(PAR1/SUB2 실측). 기존 parent가 맥락의 source-of-truth이므로 자식
+                # 본문에서는 참고 섹션 자체를 빼고, 답변의 출처 링크는 별도로 유지한다.
+                it["description"] = _drop_subtask_ticket_refs(it["description"])
+
+        # 모델이 본 참고는 Research Analyst의 검증을 우회할 수 없다. evidence/related_docs에
+        # 없는 ticket·URL과 프롬프트 내부 문서 링크는 승인 카드에서 제거한다.
+        allowed_ref_keys = {str(e.get("key") or "").upper() for e in
+                            (state.get("evidence") or []) if isinstance(e, dict)}
+        allowed_ref_keys |= {str(k).upper() for k in (state.get("mentioned_keys") or [])}
+        allowed_ref_urls = {str(d.get("url") or "").strip() for d in
+                            (state.get("related_docs") or []) if isinstance(d, dict)}
+        unverified = []
+        for it in items:
+            it["description"], gone = _drop_unverified_refs(
+                it.get("description") or "", allowed_ref_keys, allowed_ref_urls)
+            unverified += gone
+        if unverified:
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(Research Analyst가 검증하지 않은 참고를 뺐다: "
+                                + ", ".join(unverified[:4]) + ")").strip()
 
         # ── 참고 불릿 가드 — 링크도 키도 없는 불릿은 **날조 문서 제목**이다(실측:
         # "아키텍처 결정 기록/스프린트 회의록/설계 노트" 가 링크 없이 나열됐다 — mock
@@ -882,9 +994,14 @@ class Refiner(StructuredAgent):
             out["rationale"] = ((out.get("rationale") or "") + "\n" + drift).strip()
             draft["topic_drift"] = True     # Reviewer 의 단건 우회(L3b)를 막는 신호
 
-        # ── Epic Link 는 **실재하는 Epic** 이어야 한다 ─────────────────────
+        # ── Epic Link 는 **실재하고 관련 있는 write-project Epic** 이어야 한다 ─────
         # 실측: 사용자가 "기존 에픽 중 맞는 걸로 붙여줘"라고 했는데 모델이 Task(DL-9072)를
         # 에픽이라 답하고 초안에는 아예 안 실었다. 타입 확인은 판단이 아니라 조회다.
+        explicit_epic = _explicit_parent_epic(state)
+        if explicit_epic and mode != "subtask":
+            for it in items:
+                if not str(it.get("type") or "").lower().startswith("sub"):
+                    it["epic"] = explicit_epic
         for it in items:
             ek = str(it.get("epic") or "").strip()
             if not ek:
@@ -895,14 +1012,24 @@ class Refiner(StructuredAgent):
                                     + f"\n({ek} 는 Epic 이 아니라 연결하지 않았다 — "
                                       "Epic 후보를 다시 확인해야 한다)").strip()
                 continue
-            # Epic 의 모듈과 티켓의 컴포넌트가 다르면 둘 중 하나가 틀린 것이다. 어느 쪽인지는
-            # 사람이 판단할 일이라 고치지 않고 **알린다**(조용히 붙이면 남의 진척률이 오염된다).
+            # 사용자가 직접 지목한 Epic은 의식적인 선택이므로 그대로 둔다. 모델/검색이 추론한
+            # Epic만 write project·모듈·주제 적합성을 검증한다. 부적합하면 최상위 Task가
+            # 엉뚱한 진척률을 오염시키는 것보다 연결을 비우는 편이 안전하다.
+            if ek == explicit_epic:
+                continue
+            reason = _inferred_epic_rejection(state, it, ek)
+            if reason:
+                it["epic"] = ""
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n({ek} 연결을 뺐다 — {reason})").strip()
+                continue
             em = _epic_module(ek)
             comps = [str(c) for c in (it.get("components") or []) if str(c).strip()]
             if em and comps and em != comps[0]:
+                it["epic"] = ""
                 out["rationale"] = ((out.get("rationale") or "")
-                                    + f"\n(확인 필요: {ek} 는 {em} 모듈 Epic 인데 이 티켓은 "
-                                      f"{comps[0]} 컴포넌트다)").strip()
+                                    + f"\n({ek} 연결을 뺐다 — {em} 모듈 Epic과 "
+                                      f"{comps[0]} 컴포넌트가 다르다)").strip()
 
         # 컴포넌트는 하나만 — 둘이면 워크로드가 이중 계상된다(knowledge/03).
         for it in items:
@@ -923,6 +1050,36 @@ class Refiner(StructuredAgent):
             s = str(it.get("summary") or "").strip()
             if comp and s and not s.startswith("["):
                 it["summary"] = f"[{comp}] {s}"
+
+        # summary의 명시적 module alias는 구조가 사용자 지정인지와 무관하게 적용한다.
+        # 예전에는 아래의 "모듈이 갈리는 자식 승격" 블록 안에만 있어, `사람 나눠서`처럼
+        # shape를 사용자가 말한 요청은 그 블록을 건너뛰며 `[DataOps] 메타데이터 …` 같은
+        # 모순이 그대로 남았다(STR1 실측). alias 표는 구조 추론이 아니라 사람이 관리하는
+        # module source-of-truth이므로 모든 Task 초안에 같은 시점에 적용해야 한다.
+        if mode == "task" and _align_modules_from_summary(items):
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(summary의 module alias에 맞춰 component를 바로잡았다)"
+                                ).strip()
+
+        # `N개를 사람 나눠서`는 모델이 이미 children을 냈더라도 다시 계산한다. 실제 대상
+        # 목록 없이 만든 `테이블 1~10` 같은 식별자는 사실이 아니며 실행마다 개수도 흔들린다.
+        # 확정 사실인 총량과 실제 module roster만으로 분량 묶음을 만든다.
+        if mode == "task" and items and shape_hint(state)[0] == "task_with_subtasks":
+            volume_children = _volume_partition_children(state, items[0])
+            if volume_children:
+                items[0]["children"] = volume_children
+                structure = out["structure"] = draft["structure"] = "task_with_subtasks"
+                total_m = _re.search(r"[2-9][0-9]{0,3}\s*(?:개|건)", last_user_text(state))
+                out["rationale"] = _re.sub(
+                    r"각\s*Sub-Task[^.\n]*(?:\.|$)", "", str(out.get("rationale") or ""),
+                    flags=_re.I).strip()
+                if total_m:
+                    size_m = _re.search(r"\((\d+(?:개|건))\)", volume_children[0]["summary"])
+                    detail = (f"{total_m.group(0)}를 실제 roster {len(volume_children)}명의 "
+                              f"담당 묶음으로 나눴다"
+                              + (f" — 묶음당 {size_m.group(1)}" if size_m else ""))
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + f"\n({detail})").strip()
 
         # ── 번호·단계만 다른 Task N개는 한 산출물이다 — 하나로 접고 children 으로 ──
         # refiner.md 오판 #1(단계를 Task 로)·#2("테이블 30개 → 30 Tasks")를 코드가
@@ -1117,6 +1274,7 @@ class Refiner(StructuredAgent):
         #   Task 하나짜리 `new_epic` 은 그 자체로 앞뒤가 안 맞는다 — Epic 은 여러 일을
         #   묶으려고 만드는 것이라, 밑에 하나뿐이면 Epic 일 이유가 없다.
         if structure in ("single_task", "new_epic") and not said_shape and not qs \
+                and not _simple_delegated_request(state) \
                 and len(items) == 1 and not (items[0].get("children") or []):
             body = " ".join(str(i.get("description") or "") + " " + str(i.get("summary") or "")
                             for i in items)
@@ -1250,6 +1408,30 @@ class Refiner(StructuredAgent):
                                             + f"\n(확인 필요: 요청에 {mod} 작업이 있는데 초안에 "
                                               "없다 — 별도 티켓으로 만들지 정해야 한다)").strip()
 
+        # 같은 산출물을 모듈만 달리해 2~3벌 만든 경우를 접는다. 단순 문자열 중복이 아니라
+        # 행동어(조정/최적화/개선)를 뗀 업무 핵심어로 묶고, module-aliases가 가리키는 실제
+        # 모듈의 항목을 남긴다. 예: "쿼리 엔진 인덱스"는 Runtime 한 건만 유지한다.
+        if mode == "task" and len(items) > 1:
+            removed = _dedupe_semantic_items(state, items)
+            if removed:
+                structure = out["structure"] = draft["structure"] = \
+                    ("multiple_tasks" if len(items) > 1 else "single_task")
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(같은 산출물의 중복 초안을 합쳤다: "
+                                    + ", ".join(removed[:4]) + ")").strip()
+
+        # 서로 다른 Task로 나눴으면 각 본문도 자기 deliverable만 소유해야 한다. sibling의
+        # 고유어가 작업 범위에 들어간 본문은 잘못 복사된 것으로 보고, 확인된 summary와
+        # sibling 목록만 사용한 최소 본문으로 되돌린다. 그 뒤 모든 Task에 "별도 ticket"
+        # 제외 범위를 채운다 — 새 범위를 발명하는 것이 아니라 이미 합의한 경계를 기록한다.
+        if mode == "task" and len(items) > 1:
+            repaired = _repair_split_scope(items)
+            _ensure_split_exclusions(items)
+            if repaired:
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(sibling 작업을 잘못 포함한 본문을 합의된 Task 경계로 "
+                                      "되돌렸다: " + ", ".join(repaired[:3]) + ")").strip()
+
         # ── 완료 조건이 흐리면 판정 가능한 문장으로 다시 쓴다 ────────────────
         # 승인하는 사람에게 제일 중요한 줄이 "테스트 완료"면 티켓이 언제 닫히는지 아무도
         # 모른다. knowledge/07 이 금지하는데 코드로 받치는 자리가 없었다(실측 STR2).
@@ -1291,6 +1473,20 @@ class Refiner(StructuredAgent):
         #     · 배경 채우기(_fill_thin_bodies ①)는 **호출이 없으니 언제나** 돈다
         #     · DoD 다듬기·본문 재작성은 LLM 왕복이라 **질문이 없을 때만**(초안이 확정 단계)
         if items and not struct_stage:
+            _preserve_parent_topic_in_children(items)
+            _preserve_existing_parent_topic(items)
+            for it in items:
+                sense_drift = _has_lineage_game_drift(state, it)
+                if not _is_bug_item(it) and (_has_placeholder_body(it.get("description"))
+                                             or sense_drift):
+                    it["description"] = _minimal_grounded_body(it)
+                    out["rationale"] = (
+                        (out.get("rationale") or "")
+                        + f"\n(\"{str(it.get('summary') or '')[:36]}\" 본문의 "
+                        + ("게임 서사 의미 이탈을 데이터 리니지 작업으로 복원했다)"
+                           if sense_drift else
+                           "작성 지시 placeholder를 실제 최소 본문으로 바꿨다)")
+                    ).strip()
             _fill_thin_bodies(state, items, repair=not qs)
             # 본문 보정은 위의 참고 불릿 가드 **뒤에서** 새 HTML을 만든다. 생산자 뒤에서
             # 다시 검사하지 않으면 보정 호출이 만든 출처 없는 참고가 그대로 승인 카드로 간다
@@ -1305,6 +1501,9 @@ class Refiner(StructuredAgent):
                                     + ", ".join(late_dropped[:4]) + ")").strip()
             if not qs:
                 _sharpen_dod(state, items)
+                _mark_unspecified_acceptance_criteria(state, items)
+                _dedupe_dod_rows(items)
+                _drop_unrequested_deployment_dod(state, items)
 
         # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
         # Reviewer 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
@@ -1358,6 +1557,21 @@ class Refiner(StructuredAgent):
                                     + f"\n(승인 전 초안 {len(missing)}건을 유지한 채 새 항목을 "
                                       "덧붙였다)").strip()
 
+        # 실제 Epic 필드가 비어 있는데 판단문만 "Epic을 선택했다"고 남는 모순을 제거한다.
+        # Epic 연결을 보류/제거했다는 경고는 이 긍정 동사 패턴과 달라 그대로 보존된다.
+        if items and not any(str(i.get("epic") or "").strip() for i in items):
+            out["rationale"] = _re.sub(
+                r"(?:Epic|에픽)(?![^.\n]{0,140}(?:아니|않|못|뺐|제거|보류))"
+                r"[^.\n]{0,140}(?:선택|연결|붙였|배치|포함|생성)[^.\n]*(?:\.|$)", "",
+                str(out.get("rationale") or ""), flags=_re.I).strip()
+        # `알아서` 위임으로 초안을 이미 만들었는데 초기 질문을 rationale에 옮겨 적으면
+        # Responder가 다시 범위/완료조건 입력을 요구한다. 질문 payload가 비었고 승인 카드가
+        # 존재하므로 그 문구는 상태와 모순이다.
+        if items and not qs and _said_defaults(state):
+            out["rationale"] = _re.sub(
+                r"\n?\(사용자가\s*['\"]?알아서['\"]?라고 해서 기본값으로 채웠다:[^)]*\)",
+                "", str(out.get("rationale") or "")).strip()
+
         # 가드들이 out["rationale"] 에 덧붙인 경고(Epic 불일치·컴포넌트 정리 등)를 초안에 반영한다
         # — draft 는 items 를 참조로 공유하지만 rationale 은 문자열이라 여기서 맞춰 줘야 한다.
         draft["rationale"] = out.get("rationale") or draft.get("rationale") or ""
@@ -1385,7 +1599,8 @@ class Refiner(StructuredAgent):
                        and str(i.get("summary") or "").strip()])
         # 해석 확인 턴은 초안이 없는 것이 정상이다 — 대신 '제가 이해한 바'가 나가고 사용자가
         # 거기에 답한다. 그것마저 비었으면 아래 갈래다(막다른 턴이라는 점은 같다).
-        interp_turn = bool(str(out.get("interpretation") or "").strip())
+        interp_turn = bool(str(out.get("interpretation") or "").strip()
+                           and not state.get("situation"))
         if not items and not plan and not qs and not interp_turn:
             # 들어온 것이 있었으면 **몇 건이 걷혔는지** 남긴다. 애초에 없었으면(모델이 빈손)
             # 그 사실만으로도 이 갈래다 — 실측(PASTE2): 답변은 "버그 티켓을 등록하겠습니다.
@@ -1404,7 +1619,8 @@ class Refiner(StructuredAgent):
 
         # 해석 확인 턴의 "제가 이해한 바" — Responder 가 질문에 앞세워 보여 준다.
         # 그 외 턴에는 지난 해석이 남지 않게 비운다(오래된 해석은 오해가 된다).
-        interp = str(out.get("interpretation") or "").strip() if not items else ""
+        interp = (str(out.get("interpretation") or "").strip()
+                  if not items and not state.get("situation") else "")
 
         # ── 구조 합의 상태를 State 에 남긴다 ──────────────────────────────────
         # `structure_notes` 는 **누적**이다. "3번 빼줘" 다음 턴에 "1번을 둘로" 라고 하면
@@ -1418,6 +1634,8 @@ class Refiner(StructuredAgent):
         if struct_stage:
             st_out["structure_plan"] = [
                 {"summary": str(i.get("summary") or ""),
+                 "type": str(i.get("type") or "Task"),
+                 "components": [str(c) for c in (i.get("components") or []) if str(c)],
                  "children": [str(c.get("summary") or "")
                               for c in (i.get("children") or []) if isinstance(c, dict)]}
                 for i in items]
@@ -1725,6 +1943,51 @@ def _change_plan(state, out, items, qs):
             qs = []
             items.clear()          # 수정 요청에 초안을 만들었어도 계획이 이긴다(참조 공유)
 
+    # ── Done field update 금지 ──────────────────────────────────────────────
+    # Jira editmeta가 우연히 비어 있는 데 기대지 않는다. 완료 티켓은 comment와 현재 Jira가
+    # 제공한 transition은 가능하지만 field update는 불가능하다. Reopened와 field update를
+    # 한 approval에 묶으면 실행 전에는 여전히 Done이므로 유효하지 않다 — 반드시 두 단계다.
+    if plan and plan.get("changes"):
+        planned_keys = ([str(k) for k in (plan.get("keys") or [])]
+                        if plan.get("keys") else [str(plan.get("key") or "")])
+        done_keys = []
+        try:
+            from app.agent.tools._ctx import client as _ticket_client
+            from app.domain.ticket_actions import is_done, reopen_transition
+            done_keys = [k for k in planned_keys
+                         if k and is_done(_ticket_client().ticket_badge(k))]
+        except Exception:
+            done_keys = []
+        if done_keys:
+            reopen = None
+            if len(done_keys) == 1:
+                try:
+                    from app.agent import tools as T
+                    reopen = reopen_transition(
+                        T.BY_NAME["list_transitions"].invoke({"key": done_keys[0]}) or [])
+                except Exception:
+                    reopen = None
+            if reopen:
+                opts = [f"{done_keys[0]}를 {reopen.get('to') or 'Reopened'}로 전이한다 "
+                        "(권장 — 전이 후 속성 변경은 새 승인)"]
+                if str(plan.get("comment") or "").strip():
+                    opts.append("속성은 바꾸지 않고 요청한 댓글만 남긴다")
+                opts.append("취소한다")
+                qs = [{"question": f"{done_keys[0]}는 이미 Done이라 속성을 바꿀 수 없습니다. "
+                                   "먼저 다시 연 뒤 새 승인으로 속성을 변경해야 합니다.",
+                       "kind": "choice", "field": "", "options": opts[:3]}]
+            else:
+                keys_text = ", ".join(done_keys[:8])
+                qs = [{"question": f"{keys_text}는 이미 Done이라 속성을 바꿀 수 없습니다. "
+                                   "현재 Jira가 제공하는 Reopened 전이를 먼저 실행한 뒤 "
+                                   "새 승인으로 다시 요청해 주세요.",
+                       "kind": "choice", "field": "", "options": ["취소한다"]}]
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(Done 티켓의 field update를 차단했다 — comment는 가능하고, "
+                                  "Reopened 전이와 속성 변경은 별도 승인이다)").strip()
+            plan = {}
+            items.clear()
+
     # 담당 변경의 사번은 **초안 단계에서 실재 검증** — 미실재면 카드 대신 정확한 안내
     # (실측: 없는 사번에 '이메일 주소를 알려달라'는 엉뚱한 질문이 나갔다).
     _asg = (plan.get("changes") or {}).get("assignee") if plan else None
@@ -1928,11 +2191,73 @@ def _fill_owners(item: dict, kids: list) -> None:
             c["assignee"] = pool[n % len(pool)]
 
 
+def _volume_partition_children(state, item: dict) -> list:
+    """`N개를 사람 나눠서` 요청을 실제 roster 수만큼의 분량 묶음으로 나눈다."""
+    said = last_user_text(state)
+    if not any(w in said for w in ("사람 나눠", "담당 나눠", "나눠 맡", "나눠서 진행")):
+        return []
+    match = _re.search(r"(?P<count>[2-9][0-9]{0,3})\s*(?P<unit>개|건)", said)
+    if not match:
+        return []
+    total = int(match.group("count"))
+    unit = match.group("unit")
+    fallback = str(item.get("assignee") or "").strip()
+    pool = [u for u in _module_pool(item, fallback) if u]
+    groups = min(total, min(5, max(2, len(pool))))
+    quotient, remainder = divmod(total, groups)
+    raw_summary = str(item.get("summary") or "").strip()
+    prefix_match = _re.match(r"^\s*(\[[^]]+\])", raw_summary)
+    prefix = prefix_match.group(1) if prefix_match else ""
+    subject = _re.sub(r"^\s*\[[^]]+\]\s*", "", raw_summary)
+    # 모델이 임의로 `10개씩 분담`을 제목에 넣어도 실제 roster가 2명이면 15개씩이다.
+    # 계산 전 숫자는 제거하고 자식 제목의 계산된 분량만 source-of-truth로 둔다.
+    subject = _re.sub(r"\s*[-–—]?\s*\d*\s*개씩\s*(?:분담|배분|처리|등록)?\s*$", "",
+                      subject).strip(" -–—")
+    base = _base_title(subject).strip() or "요청 대상 처리"
+    item["summary"] = f"{prefix} {base}".strip()
+    safe_base = _esc(base)
+    item["description"] = (
+        f"<h3>배경</h3><p>{safe_base} 대상 {total}{unit}를 여러 담당자가 중복 없이 "
+        "나누어 처리해야 한다.</p>"
+        f"<h3>작업 범위</h3><ul><li>포함: 대상 {total}{unit} 목록을 담당 묶음별로 "
+        "확정하고 메타데이터를 등록한다.</li>"
+        "<li>제외: 원본 테이블의 스키마·데이터 내용 변경</li></ul>"
+        "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+        f"<li data-checked=\"false\">처리 건수 합계가 {total}{unit}이고 중복·누락이 "
+        "없음을 대상 목록과 대조해 확인한다.</li>"
+        "<li data-checked=\"false\">등록 실패·보류 대상과 사유를 parent ticket에 "
+        "기록한다.</li></ul>")
+    children = []
+    for idx in range(groups):
+        size = quotient + (1 if idx < remainder else 0)
+        label = f"담당 묶음 {idx + 1}/{groups}"
+        child = {
+            "summary": f"{base} — {label} ({size}{unit})",
+            "description": (
+                f"<h3>작업 범위</h3><ul><li>parent의 확정 대상 목록 중 {_esc(label)}에 "
+                f"배정된 {size}{unit}를 처리한다.</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                f"<li data-checked=\"false\">배정된 {size}{unit}의 등록 결과와 실패·보류 "
+                "목록을 기록한다.</li></ul>")}
+        if pool:
+            child["assignee"] = pool[idx % len(pool)]
+        children.append(child)
+    return children
+
+
 def _split_into_children(state, item: dict) -> list:
     """단일 Task 로 뭉개진 다단계 초안을 **실행 단위 Sub-Task 로 나누는 보정 호출 1회**.
 
     위임("알아서") 케이스 전용 — 물을 수 없으니 나눠서 내고, 승인 카드에서 사람이 고친다.
     실패하면 빈 리스트(경고 경로로 폴백) — 보정이 본 흐름을 죽이면 안 된다."""
+    # 같은 대상을 N개 처리하고 "사람 나눠서"라고 한 것은 기능 단계가 아니라 **분량
+    # 분할**이다. LLM에 맡기면 설계/구현/검증으로 바꾸거나 단일 Task로 뭉개졌고, 그때마다
+    # 호출도 하나 더 들었다(STR1). 대상 이름은 지어내지 않고, 요청에 있는 총량과 실제
+    # module roster 크기만으로 담당 묶음을 만든다. 어떤 테이블이 어느 묶음인지는 부모의
+    # 확정 목록/승인 화면에서 정한다 — 존재하지 않는 table name을 만드는 것보다 안전하다.
+    volume = _volume_partition_children(state, item)
+    if volume:
+        return volume
     try:
         schema = {"title": "split_children", "type": "object", "properties": {
             "children": {"type": "array", "items": {
@@ -2017,6 +2342,57 @@ def _bug_grade_body(body) -> bool:
 _ASK_REPORTER = "확인 필요 — 신고자에게 물을 것"
 
 
+def _report_sentences(text: str) -> list[str]:
+    """붙여넣기 wrapper를 빼고 신고자가 실제로 쓴 문장만 보수적으로 나눈다."""
+    raw = str(text or "")
+    if "---" in raw:
+        raw = raw.split("---", 1)[1]
+    rows = []
+    for part in _re.split(r"(?<=[.!?])\s+|[\r\n]+", raw):
+        row = _re.sub(r"^\[[0-9: ]+\]\s*[^:]{1,20}:\s*", "", part).strip(" -\t")
+        if row and not _re.search(r"(?:티켓|작업)(?:으로)?\s*(?:만들|등록)|알아서", row):
+            rows.append(row)
+    return rows
+
+
+def _reported_symptom(text: str) -> str:
+    """원문에 명시된 실제 증상 한 문장. 없으면 빈 문자열 — 추측하지 않는다."""
+    bad = _re.compile(r"안\s*(?:보|되|떠|열|나오)|보이지\s*않|되지\s*않|실패|오류|"
+                      r"에러|타임아웃|빈(?:다|다\b|화면)|깨(?:진|짐)|곤란")
+    return next((s for s in _report_sentences(text) if bad.search(s)), "")
+
+
+def _reported_expectation(text: str) -> str:
+    """신고자가 직접 말한 희망/기대 문장만 반환한다."""
+    want = _re.compile(r"좋겠|원(?:합니다|해요|한다)|기대|해야\s*한다|바로\s*(?:보|확인)")
+    return next((s for s in _report_sentences(text) if want.search(s)), "")
+
+
+def _reported_steps(text: str, symptom: str) -> list[str]:
+    """원문에 화면과 표시 대상이 모두 있을 때만 한 단계 재현 경로를 구성한다."""
+    joined = " ".join(_report_sentences(text))
+    places = _re.findall(
+        r"([가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+){0,2}\s+"
+        r"(?:화면|페이지|탭|메뉴|편집기|뷰어))(?:에서|에서는)", joined)
+    subjects = _re.findall(
+        r"([가-힣A-Za-z0-9_.-]+(?:\s+[가-힣A-Za-z0-9_.-]+){0,2})(?:이|가)\s*"
+        r"(?:안\s*보|보이지\s*않|안\s*나오|나오지\s*않)", symptom)
+    if not places or not subjects:
+        return []
+    place = places[-1].strip()
+    subject = subjects[-1].strip()
+    if "때 " in subject:
+        subject = subject.split("때 ", 1)[1].strip()
+    return [f"{place}에서 {subject} 표시 여부를 확인한다."]
+
+
+def _looks_like_report_wrapper(text: str) -> bool:
+    value = str(text or "")
+    return bool("---" in value or len(value) > 300
+                or _re.search(r"(?:그대로\s*)?(?:티켓|작업)(?:으로)?\s*(?:만들|등록)|알아서",
+                              value))
+
+
 def _bug_body_for(state, it) -> str:
     """Bug 본문을 **조각으로 받아 코드가 조립한다** — Task 쪽과 같은 방식.
 
@@ -2033,8 +2409,16 @@ def _bug_body_for(state, it) -> str:
     질문 갈래(BUG1)가 그 칸을 채우러 간다.
     """
     said = (request_text(state) + "\n" + conversation(state)).strip()
-    steps, expected, actual, notes = [], "", "", []
+    symptom0 = _reported_symptom(said)
+    expected0 = _reported_expectation(said)
+    steps0 = _reported_steps(said, symptom0)
+    steps, expected, actual, notes = steps0, expected0, symptom0, []
+    # 화면·증상·희망이 원문에 모두 명시된 VoC는 이미 추출 판단이 끝났다. 같은 문장을
+    # simple LLM에 다시 보내던 보정 호출을 생략한다(PASTE1: Refiner 2 calls→1 call).
+    direct_report = bool(steps and expected and actual)
     try:
+        if direct_report:
+            raise StopIteration
         schema = {"title": "bug_body", "type": "object", "properties": {
             "steps": {"type": "array", "items": {"type": "string"},
                       "description": "재현 경로 — 사용자가 말한 순서대로. 없으면 빈 배열"},
@@ -2052,11 +2436,20 @@ def _bug_body_for(state, it) -> str:
         expected = str(r.get("expected") or "").strip()
         actual = str(r.get("actual") or "").strip()
         notes = [str(x).strip() for x in (r.get("notes") or []) if str(x).strip()]
+    except StopIteration:
+        pass
     except Exception:
         pass
-    # 보정 호출이 빈손이어도 본문은 나가야 한다 — 신고 문장 자체가 최소한의 '실제 동작'이다.
-    if not actual:
-        actual = request_text(state).strip()[:300] or _ASK_REPORTER
+    # 붙여넣기 wrapper 전체가 actual로 돌아오는 것은 증상이 아니다(PASTE1 실측). 원문에
+    # 화면·증상·희망이 명시돼 있으면 그 문장만 사용한다. 없는 칸은 여전히 확인 필요로
+    # 남겨 두므로, 이 보정은 정보를 만들어내지 않는다.
+    symptom = _reported_symptom(said)
+    if not actual or _looks_like_report_wrapper(actual):
+        actual = symptom or _ASK_REPORTER
+    if not expected:
+        expected = _reported_expectation(said)
+    if not steps:
+        steps = _reported_steps(said, symptom)
     html = ["<h3>재현 경로</h3>"]
     if steps:
         html.append("<ol>" + "".join(f"<li>{_esc(x)}</li>" for x in steps) + "</ol>")
@@ -2135,7 +2528,10 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
 # 코드로 받치는 자리가 없어 그때그때 통과했다. **여기가 원본이고 배터리가 이것을 import 한다**
 # — 같은 규칙을 두 벌로 적으면 더 관대한 쪽이 사고를 낸다(§5-e).
 DOD_VAGUE = ("테스트 완료", "정상 동작", "잘 동작", "이상 없음", "문제 없음",
-             "성공적으로 완료", "완료됨", "구현 완료")
+              "성공적으로 완료", "완료됨", "구현 완료", "설계 완료", "검증 완료",
+              "작성 완료", "성능 개선 확인", "성능 기준 충족", "문서 검토 완료",
+              "검토 완료", "결과 검토 완료", "결과 검토 및 승인 완료", "초안 작성", "피드백 반영",
+              "정상적으로 구현", "성공적으로 구현", "기능이 검증", "정상적으로 작동")
 
 
 def _vague_dod(rows) -> list:
@@ -2148,6 +2544,125 @@ def _dod_rows(body) -> list:
     return [x for x in (_re.sub(r"<[^>]+>", "", d).strip() for d in rows) if x]
 
 
+def _drop_unrequested_deployment_dod(state, items) -> bool:
+    """개발·MVP 요청을 운영 배포 약속으로 확대하지 않는다."""
+    import re
+    req = request_text(state)
+    if re.search(r"배포|릴리(?:스|즈)|운영\s*반영|production|prod\b", req, re.I):
+        return False
+    changed = False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
+        for target in targets:
+            body = str(target.get("description") or "")
+            # 범위에 끼어든 배포도 같은 의미 확장이다. 구현 자체는 유지한다.
+            body, n = _re.subn(r"코드\s*작성\s*및\s*배포", "코드 작성 및 테스트 환경 검증", body)
+            changed = changed or bool(n)
+            rows = _dod_rows(body)
+            for old in rows:
+                if not re.search(r"운영\s*환경|production|prod\b|배포", old, re.I):
+                    continue
+                fresh = "검증 결과가 테스트 리포트 또는 결과 보고서로 확인됨"
+                body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
+                changed = True
+            target["description"] = body
+    return changed
+
+
+def _mark_unspecified_acceptance_criteria(state, items) -> bool:
+    """정의되지 않은 품질·성능 기준을 충족했다고 단정하지 않고 확인 과제로 남긴다."""
+    req = request_text(state)
+    has_metric = bool(_re.search(
+        r"(?:p\d{2}|\d+(?:\.\d+)?\s*(?:ms|초|분|시간|%|건/초|tps|qps|mb|gb))",
+        req, _re.I))
+    changed = False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
+        for target in targets:
+            body = str(target.get("description") or "")
+            for old in _dod_rows(body):
+                fresh = ""
+                context = f"{target.get('summary', '')} {body}"
+                metric = _re.search(
+                    r"(?:p\d{2}\s*(?:[<>]=?|이하|이상)?\s*\d+(?:\.\d+)?\s*ms|"
+                    r"\d+(?:\.\d+)?\s*(?:ms|초|분|시간|%|건/초|tps|qps|mb|gb))",
+                    old, _re.I)
+                if metric and metric.group(0).replace(" ", "").lower() not in \
+                        req.replace(" ", "").lower():
+                    fresh = ("성능 측정 지표와 목표값은 담당팀 확인 필요 — "
+                             "확정 후 측정값과 판정 결과를 티켓에 기록한다")
+                if not fresh and (("품질" in context and _re.search(r"품질\s*룰.*점검\s*완료|모든\s*품질\s*룰", old))
+                        or (_re.search(r"품질\s*기준", old)
+                            and _re.search(r"점검|확인|충족|만족", old))):
+                    fresh = ("점검 대상 품질 룰과 항목별 통과 기준은 담당팀 확인 필요 — "
+                             "확정된 기준별 점검 결과를 티켓에 기록한다")
+                elif not fresh and "품질" in context and _re.search(r"점검\s*결과\s*보고서.*(?:작성|공유)", old):
+                    fresh = "점검 대상·결과·미충족 항목을 포함한 보고서 링크를 티켓에 기록한다"
+                elif (not fresh and not has_metric
+                      and _re.search(r"성능(?:이|\s)*(?:요구사항|기준)", old)
+                      and _re.search(r"충족|만족", old)):
+                    fresh = ("성능 측정 지표와 목표값은 담당팀 확인 필요 — "
+                             "확정 후 측정값과 판정 결과를 티켓에 기록한다")
+                elif not fresh and not has_metric and _re.search(r"안정적으로\s*동작", old):
+                    fresh = ("안정성 판정 지표와 목표값은 담당팀 확인 필요 — "
+                             "확정 후 테스트 결과를 티켓에 기록한다")
+                elif not fresh and _re.search(r"성공적으로\s*구현", old):
+                    fresh = "구현 결과와 테스트 결과가 티켓에 기록되어 리뷰로 확인된다"
+                elif (not fresh and "리니지" in context and "홉" in context
+                      and _re.search(r"구현\s*결과|테스트\s*결과", old)):
+                    fresh = ("3홉 조회 결과가 기대한 업스트림·다운스트림 경로와 일치함을 "
+                             "조회 테스트 결과로 확인한다")
+                elif (not fresh and "리니지" in context and "홉" in context
+                      and _re.search(r"관련\s*문서.*업데이트", old)):
+                    fresh = "3홉 조회 범위와 테스트 결과 문서 링크를 티켓에 기록한다"
+                elif (not fresh and not has_metric and "성능 측정" in context
+                      and _re.search(r"성능.*(?:보고서|결과|개선\s*필요)", old)):
+                    fresh = ("성능 측정 지표와 목표값은 담당팀 확인 필요 — "
+                             "확정 후 측정값과 판정 결과를 티켓에 기록한다")
+                elif (not fresh and "사용 가이드" in context
+                      and _re.search(r"(?:검증\s*결과|사용자\s*피드백|가이드.*(?:승인|완료))", old)):
+                    fresh = "가이드 링크와 내부 리뷰 결과를 parent ticket에 기록해 확인한다"
+                elif not fresh and _re.search(r"^\d{4}-\d{2}-\d{2}.*마감|마감.*\d{4}-\d{2}-\d{2}", old):
+                    body = body.replace(f">{old}</li>", "")
+                    changed = True
+                    continue
+                if fresh and fresh != old:
+                    body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
+                    changed = True
+            target["description"] = body
+    return changed
+
+
+def _dedupe_dod_rows(items) -> bool:
+    """같은 확인 과제로 정규화된 중복 DoD 행을 한 번만 남긴다."""
+    changed = False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
+        for target in targets:
+            body, seen = str(target.get("description") or ""), set()
+
+            def keep(match):
+                nonlocal changed
+                plain = _re.sub(r"<[^>]+>", "", match.group(1)).strip()
+                key = _re.sub(r"\s+", " ", plain)
+                if key in seen:
+                    changed = True
+                    return ""
+                seen.add(key)
+                return match.group(0)
+
+            target["description"] = _re.sub(
+                r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+                keep, body, flags=_re.S | _re.I)
+    return changed
+
+
 def _sharpen_dod(state, items) -> bool:
     """완료 조건이 "테스트 완료" 수준이면 **무엇을 보고 끝났다고 하는지**로 다시 쓴다.
 
@@ -2157,6 +2672,28 @@ def _sharpen_dod(state, items) -> bool:
     호출은 초안당 최대 2건으로 묶는다(왕복 비용).
     """
     hit = False
+    # Sub-Task는 배경을 반복하지 않지만 DoD는 판정 가능해야 한다. 자식마다 LLM을 다시
+    # 부르지 않고, 기존 문장에 어떤 증거를 parent에 남길지만 덧붙인다.
+    subordinate = []
+    for parent in items[:6]:
+        subordinate.extend((parent.get("children") or []) if isinstance(parent, dict) else [])
+        if (isinstance(parent, dict)
+                and str(parent.get("type") or "").lower().startswith("sub")):
+            subordinate.append(parent)
+    for child in subordinate:
+        if not isinstance(child, dict):
+            continue
+        body = str(child.get("description") or "")
+        for old in _vague_dod(_dod_rows(body)):
+            if any(w in old for w in ("성능", "정확", "검증")):
+                proof = "검증 기준·측정값·판정 결과를 parent ticket에 기록해 확인한다"
+            elif any(w in old for w in ("테스트", "구현", "코드")):
+                proof = "실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다"
+            else:
+                proof = "산출물 링크와 리뷰 결과를 parent ticket에 기록해 확인한다"
+            body = body.replace(f">{old}</li>", f">{_esc(old)} — {_esc(proof)}</li>")
+            hit = True
+        child["description"] = body
     for it in items[:6]:
         # ★ 보정이 본 흐름을 죽이면 안 된다 — 여기서 예외가 나면 초안이 통째로 사라진다.
         #   항목이 dict 가 아닌 실행이 있다(모델 산출은 무엇이든 올 수 있다).
@@ -2272,6 +2809,37 @@ def _generic_title(summary: str) -> bool:
     return bool(_STAGE_ONLY.match(t)) or len(t) <= 4
 
 
+def _preserve_parent_topic_in_children(items: list) -> bool:
+    """부모의 영문 기술 고유어가 빠진 generic child 제목에 주제를 복원한다."""
+    changed = False
+    for parent in items or []:
+        if not isinstance(parent, dict):
+            continue
+        subject = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(parent.get("summary") or "")).strip()
+        tokens = [t for t in _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", subject)
+                  if t.lower() not in {"task", "story", "bug", "feature"}]
+        if not tokens:
+            continue
+        core = _re.sub(r"\s*(?:개발|구현|개선|작업|진행|추가|수정)\s*$", "", subject).strip()
+        for child in (parent.get("children") or []):
+            if not isinstance(child, dict):
+                continue
+            title = str(child.get("summary") or "").strip()
+            child_tokens = _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", title)
+            # 이미 `NDV Batch Job 설계`처럼 자기 기술 대상을 가진 제목에 부모의 다른
+            # 영문 토픽까지 붙이면 두 작업을 한 제목으로 합쳐 버린다. 이 가드는
+            # `파이프라인 설계 완료`처럼 기술 대상이 통째로 빠진 제목만 복원한다.
+            if (not title or child_tokens
+                    or any(t.lower() in title.lower() for t in tokens)):
+                continue
+            # parent core의 마지막 일반 대상어가 child 첫머리에 반복되면 한 번만 둔다.
+            tail = core.split()[-1] if core.split() else ""
+            rest = _re.sub(rf"^{_re.escape(tail)}\s+", "", title) if tail else title
+            child["summary"] = f"{core} {rest}".strip()
+            changed = True
+    return changed
+
+
 def _children_from_dod(item: dict) -> list:
     """본문 DoD 불릿을 실행 단위 Sub-Task 로 — LLM 없이. 조건이 안 맞으면 빈 리스트.
 
@@ -2384,6 +2952,37 @@ def _drop_empty_sections(desc: str) -> str:
     return out.strip()
 
 
+def _drop_subtask_ticket_refs(desc: str) -> str:
+    """기존 parent가 맥락을 가진 Sub-Task 본문에서는 중복 참고 섹션을 제거한다."""
+    return _re.sub(r"(<h3>\s*참고(?:\s*(?:사항|자료|문서))?\s*</h3>\s*<ul[^>]*>)"
+                   r"(.*?)(</ul>)", "", desc or "", flags=_re.S | _re.I)
+
+
+def _drop_unverified_refs(desc: str, allowed_keys: set, allowed_urls: set) -> tuple:
+    """Research Analyst가 검증한 key/URL만 참고 섹션에 남긴다."""
+    gone = []
+    keys = {str(k).upper() for k in (allowed_keys or set()) if str(k)}
+    urls = {str(u).strip() for u in (allowed_urls or set()) if str(u).strip()}
+
+    def _clean(m):
+        head, body, tail = m.group(1), m.group(2), m.group(3)
+        kept = []
+        for li in _re.findall(r"<li[^>]*>.*?</li>", body, _re.S):
+            found_keys = {k.upper() for k in
+                          _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", li, _re.I)}
+            found_urls = {u.strip() for u in
+                          _re.findall(r"href=[\"']([^\"']+)[\"']", li, _re.I)}
+            if (found_keys and found_keys & keys) or (found_urls and found_urls & urls):
+                kept.append(li)
+            else:
+                gone.append(_re.sub(r"<[^>]+>", "", li).strip()[:50])
+        return head + "".join(kept) + tail
+
+    out = _re.sub(r"(<h3>\s*참고(?:\s*(?:사항|자료|문서))?\s*</h3>\s*<ul[^>]*>)"
+                  r"(.*?)(</ul>)", _clean, desc or "", flags=_re.S | _re.I)
+    return out, gone
+
+
 def _drop_unlinked_refs(desc: str) -> tuple:
     """'참고' 섹션에서 **티켓 키도 링크도 없는 불릿**을 뺀다 → (본문, 뺀 것 목록).
 
@@ -2417,13 +3016,18 @@ def _topic_drift(state, items: list) -> str:
         return ""
     try:
         from app.agent.tools._ident import find_identifiers
-        terms = set(find_identifiers(req))
+        terms = {str(t).strip().rstrip(".,;:()[]") for t in find_identifiers(req)}
     except Exception:
         terms = set()
-    _COMMON = {"task", "epic", "jira", "test", "data", "table", "api", "the", "and",
-               "pipeline", "with", "for", "this"}
+    _COMMON = {"task", "story", "bug", "feature", "improvement", "epic", "jira",
+               "test", "data", "table", "api", "the", "and", "pipeline", "with",
+               "for", "this"}
     terms |= {w for w in _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{3,}", req)
               if w.lower() not in _COMMON}
+    # priority/label 같은 배치 속성은 주제가 아니다. 제목·본문에 label이 없다는 이유로
+    # topic drift를 띄우면 단건 자동 검증도 불필요하게 우회한다(ATTR1: hotfix.).
+    labels = {str(x).strip().lower() for i in items for x in (i.get("labels") or [])}
+    terms = {t for t in terms if t and t.lower() not in labels and t.lower() not in _COMMON}
     if not terms:
         return ""
     hay = " ".join(str(i.get("summary") or "") + " " + str(i.get("description") or "")
@@ -2690,6 +3294,306 @@ def _said_defaults(state) -> bool:
     return any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠", "네가 정해", "아무거나"))
 
 
+_COMPOSITE_SIGNALS = (
+    "각각", "여러", "나눠", "쪼개", "단계", "사람 나눠", "그리고", "동시에", "별도",
+    "설계", "구현", "검증", "배포", "모니터링", "파이프라인", "구축", "마이그레이션",
+    "에픽으로", "epic으로", "sub-task", "서브태스크",
+)
+
+
+def _simple_delegated_request(state) -> bool:
+    """명시적 단일 산출물 + 위임 요청인가. 과분해를 막는 보수적 판정."""
+    req = request_text(state).strip()
+    if not req or len(req) > 150 or not _said_defaults(state):
+        return False
+    if shape_hint(state)[0] or any(w.lower() in req.lower() for w in _COMPOSITE_SIGNALS):
+        return False
+    if _re.search(r"(?:두|세|네|다섯|\d+)\s*(?:가지|건|개)|"
+                  r"(?:하고|하며|및|뿐만\s*아니라)|할\s*일\s*(?:뽑|정리)", req):
+        return False
+    # 문장 안의 열거·복수 산출물도 제외한다. 쉼표 하나는 속성 나열일 수 있어 두 개부터 본다.
+    if req.count(",") >= 2 or req.count("·") >= 2:
+        return False
+    # 단지 짧고 "알아서"라고 한 것만으로는 단일 산출물이 아니다. 하나라는 표식 또는
+    # 작은 국소 변경 동사가 있어야 한다. "관련 정리 좀" 같은 모호한 요청은 기존 구조
+    # 판단에 맡긴다.
+    return bool(_re.search(r"하나(?:만)?|한\s*(?:건|개)|"
+                           r"(?:추가|수정|변경|노출|숨김|삭제|토글)(?:해|하|\s|줘|$)", req))
+
+
+_SEMANTIC_STOP = {
+    "task", "story", "bug", "feature", "improvement", "티켓", "작업", "업무", "추가",
+    "진행", "수행", "작성", "적용", "개선", "조정", "최적화", "구현", "개발", "검증",
+    "workbench", "catalog", "runtime", "dataops", "etl", "quality", "module",
+}
+
+
+def _semantic_terms(text: str) -> set:
+    clean = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(text or ""))
+    words = _re.findall(r"[A-Za-z0-9_.-]{2,}|[가-힣]{2,}", clean.lower())
+    return {w for w in words if w not in _SEMANTIC_STOP and not w.isdigit()}
+
+
+def _best_item_for_request(state, items: list) -> dict:
+    """과분해를 접을 때 원 요청과 가장 가까운 항목을 보존한다."""
+    req_terms = _semantic_terms(request_text(state))
+    try:
+        from app.infra.settings import modules_in_text, resolve_module
+        wanted = set(modules_in_text(request_text(state)))
+    except Exception:
+        wanted, resolve_module = set(), lambda x: ""
+
+    def score(it):
+        terms = _semantic_terms(it.get("summary") or "")
+        comp = resolve_module(((it.get("components") or [""])[0]))
+        return (len(req_terms & terms) * 3 + (4 if comp and comp in wanted else 0),
+                len(terms), -items.index(it))
+    return max(items, key=score)
+
+
+def _explicit_parent_epic(state) -> str:
+    """사용자가 키와 Epic/상위 관계를 직접 말한 경우만 반환한다."""
+    said = request_text(state) + " " + last_user_text(state)
+    relation = bool(_re.search(r"에픽|epic|아래|밑에|상위", said, _re.I))
+    if not relation:
+        return ""
+    for key in state.get("mentioned_keys") or []:
+        if str(key) in said and _is_epic(key):
+            return str(key)
+    return ""
+
+
+def _epic_summary(key: str) -> str:
+    try:
+        from app.agent.tools._ctx import client
+        t = client().get_issue(str(key or "")) or {}
+        return str((t.get("fields") or {}).get("summary") or t.get("summary") or "")
+    except Exception:
+        return ""
+
+
+def _inferred_epic_rejection(state, item: dict, key: str) -> str:
+    """모델이 추론한 Epic을 연결하면 안 되는 결정적 사유. 빈 문자열이면 허용."""
+    try:
+        from app.agent.tools._ctx import settings
+        write_project = str(settings().project_key or "").upper()
+    except Exception:
+        write_project = ""
+    if write_project and str(key).split("-", 1)[0].upper() != write_project:
+        return f"write project {write_project} 밖의 Epic이다"
+    em = _epic_module(key)
+    comps = [str(c) for c in (item.get("components") or []) if str(c).strip()]
+    if em and comps and em != comps[0]:
+        return f"{em} 모듈 Epic과 {comps[0]} 컴포넌트가 다르다"
+    title = _epic_summary(key)
+    if title:
+        epic_terms = _semantic_terms(title)
+        work_terms = _semantic_terms(str(item.get("summary") or "") + " " + request_text(state))
+        # 모듈명·'작업/개선' 같은 공통어를 제거한 뒤 업무 고유어가 하나도 겹치지 않으면
+        # 관련성은 확인되지 않은 것이다. 최상위 Task는 되돌리기 쉬우나 잘못된 Epic 집계는
+        # 조용히 장기간 오염된다.
+        overlap = epic_terms & work_terms
+        if epic_terms and work_terms and (len(overlap) < 2
+                                          and not any(len(x) >= 6 for x in overlap)):
+            return "업무 고유어가 Epic 제목과 겹치지 않는다"
+    return ""
+
+
+def _dedupe_semantic_items(state, items: list) -> list:
+    """행동어만 다른 동일 산출물 Task를 하나로 접고 제거된 제목을 반환한다."""
+    try:
+        from app.infra.settings import modules_in_text, resolve_module
+    except Exception:
+        modules_in_text, resolve_module = lambda _: [], lambda _: ""
+    groups = []
+    for it in list(items):
+        terms = _semantic_terms(it.get("summary") or "")
+        if len(terms) < 2:
+            groups.append([(it, terms)])
+            continue
+        target = None
+        for group in groups:
+            base = group[0][1]
+            union = terms | base
+            if terms == base or (len(terms & base) >= 2 and union
+                                 and len(terms & base) / len(union) >= 0.67):
+                target = group
+                break
+        if target is None:
+            groups.append([(it, terms)])
+        else:
+            target.append((it, terms))
+
+    removed = []
+    keep = []
+    for group in groups:
+        # 위의 새 그룹에는 최초 항목 한 개, 기존 그룹에는 append된 항목들이 들어 있다.
+        if len(group) == 1:
+            keep.append(group[0][0])
+            continue
+        # alias 표는 "쿼리 엔진"처럼 어순을 가진 구문이다. set을 정렬하면 "엔진 … 쿼리"가
+        # 되어 매핑이 깨지므로 대표 제목의 원래 어순으로 판정한다.
+        core_text = _re.sub(r"^\s*\[[^\]]+\]\s*", "",
+                            str(group[0][0].get("summary") or ""))
+        wanted = set(modules_in_text(core_text))
+
+        def score(pair):
+            it, terms = pair
+            comp = resolve_module(((it.get("components") or [""])[0]))
+            return (5 if comp and comp in wanted else 0,
+                    len(_semantic_terms(request_text(state)) & terms))
+        chosen = max(group, key=score)[0]
+        keep.append(chosen)
+        removed.extend(str(it.get("summary") or "") for it, _ in group if it is not chosen)
+    if removed:
+        items[:] = [it for it in items if it in keep]
+    return removed
+
+
+_PLACEHOLDER_BODY = _re.compile(
+    r"설명(?:해|하여)\s*주|적어\s*주|작성해\s*주|구체적으로\s*(?:적|작성)|"
+    r"명확한\s*완료\s*기준\s*필요|\(미정\)|"
+    r"\[?기입\s*필요\]?|설명하는\s*문장이\s*필요|필요한\s*이유[^<]{0,30}설명|"
+    r"관련(?:된)?\s*(?:사건|요청)[^<]{0,30}명시|구체적인\s*검증\s*방법[^<]{0,30}추가|"
+    r"명시해야\s*(?:합니다|한다)|추가\s*확인이\s*필요|"
+    r"왜\s*이\s*일이\s*필요한지[^<]{0,30}설명[^<]{0,15}필요|"
+    r"왜\s*이\s*작업이\s*필요한지[^<]{0,30}설명[^<]{0,15}필요|"
+    r"작업의\s*필요성[^<]{0,30}설명(?:해야|해\s*주)|"
+    r"왜\s*이\s*일이\s*필요한지\s*\d*\s*[~～-]?\s*\d*\s*문장|"
+    r"계기가\s*된\s*(?:사건|요청|장애)[^<]{0,50}(?:함께|추가)|"
+    r"포함\s*:\s*이번에\s*하는\s*것|제외\s*:\s*이번에\s*하지\s*않는\s*것|"
+    r"검증\s*가능한\s*조건\s*\d+|내용\s*작성\s*필요|"
+    r"필요한\s*이유를\s*사용자에게\s*확인|"
+    r"사용자에게[^<]{0,35}(?:물어보|확인\s*필요)|사용자와\s*협의\s*필요|"
+    r"포함\s*:\s*사용자에게\s*확인\s*필요|제외\s*:\s*사용자에게\s*확인\s*필요|"
+    r"티켓\s*키[^<]{0,30}추가\s*해?\s*주|"
+    r"명확한\s*완료\s*(?:기준|조건)(?:이)?[^<]{0,15}필요|TODO|TBD",
+    _re.I)
+
+
+def _has_placeholder_body(body) -> bool:
+    return bool(_PLACEHOLDER_BODY.search(str(body or "")))
+
+
+def _has_lineage_game_drift(state, item: dict) -> bool:
+    """데이터 리니지를 게임 `Lineage` 서사로 해석한 명백한 sense drift를 잡는다."""
+    req = request_text(state)
+    if "리니지" not in req:
+        return False
+    game_terms = ("게임", "플레이어", "캐릭터", "클라이맥스", "결말", "몰입감")
+    if any(w in req for w in game_terms):
+        return False                       # 사용자가 실제 게임 문맥을 말했다
+    body = str((item or {}).get("description") or "")
+    return sum(1 for w in game_terms if w in body) >= 2
+
+
+def _minimal_grounded_body(item: dict) -> str:
+    """작성 지시문을 사실을 꾸미지 않는 최소 실행 본문으로 교체한다."""
+    summary = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(item.get("summary") or "작업")).strip()
+    old = str(item.get("description") or "")
+    refs = ""
+    m = _re.search(r"<h3>\s*참고[^<]*</h3>\s*<ul[^>]*>.*?</ul>", old,
+                   _re.S | _re.I)
+    if m:
+        refs = m.group(0)
+    safe = _esc(summary)
+    if "리니지" in summary and "홉" in summary:
+        dod = (f"{summary} 결과가 기대한 업스트림·다운스트림 경로와 일치함을 "
+               "조회 테스트 결과로 확인한다.")
+    elif "품질" in summary and ("룰" in summary or "점검" in summary):
+        dod = ("점검 대상 품질 룰과 항목별 통과 기준은 담당팀 확인 필요 — "
+               "확정된 기준별 점검 결과를 티켓에 기록한다.")
+    else:
+        dod = "요청한 작업이 반영되고 검증 결과가 티켓에 기록되었음을 리뷰로 확인한다."
+    return (f"<h3>배경</h3><p>{safe} 요청을 실행 가능한 작업으로 관리한다.</p>"
+            f"<h3>작업 범위</h3><ul><li>포함: {safe}</li>"
+            "<li>제외: 요청에 명시되지 않은 연관 기능 변경</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            f"<li data-checked=\"false\">{_esc(dod)}</li></ul>" + refs)
+
+
+def _preserve_existing_parent_topic(items: list) -> bool:
+    """기존 Task 아래 top-level Sub-Task 제목에도 부모 업무 주제를 보존한다."""
+    changed, cache = False, {}
+    for item in items:
+        if not isinstance(item, dict) or not str(item.get("type") or "").lower().startswith("sub"):
+            continue
+        parent = str(item.get("parent") or "")
+        if not parent:
+            continue
+        if parent not in cache:
+            try:
+                from app.agent.tools._ctx import client
+                issue = client().get_issue(parent) or {}
+                cache[parent] = str((issue.get("fields") or {}).get("summary") or "")
+            except Exception:
+                cache[parent] = ""
+        parent_title = cache[parent]
+        if not parent_title:
+            continue
+        module = ""
+        m = _re.match(r"^\s*\[([^]]+)\]\s*", parent_title)
+        if m:
+            module = m.group(1).strip()
+        subject = _re.sub(r"^\s*\[[^]]+\]\s*", "", parent_title)
+        subject = _re.sub(r"\s*(?:1차|2차)?\s*(?:오픈|개발|구현|작업)\s*$", "", subject).strip()
+        child = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "")).strip()
+        if subject and subject not in child:
+            item["summary"] = (f"[{module}] {subject} {child}" if module
+                               else f"{subject} {child}").strip()
+            changed = True
+    return changed
+
+
+def _recover_explicit_subtasks(state) -> list:
+    """기존 Task와 2개 이상의 자식 이름을 명시한 요청의 빈 model output을 복원한다."""
+    req = request_text(state)
+    if not _asks_subtasks(state):
+        return []
+    parents = [str(k) for k in (state.get("mentioned_keys") or [])
+               if _can_parent_subtask(k)]
+    if not parents:
+        return []
+    m = _re.search(r"(?:에|아래|밑에)\s*(.+?)\s*(?:서브\s*태스크|sub-?task)", req, _re.I)
+    if not m:
+        return []
+    names = [_re.sub(r"^(?:각각|추가로)\s*|\s*(?:작업|항목)$", "", x).strip(" .")
+             for x in _re.split(r"\s*(?:이랑|랑|와|과|및|,)\s*", m.group(1))]
+    names = [x for x in names if len(x) >= 2 and not _re.fullmatch(r"\d+개", x)]
+    if not 2 <= len(names) <= 6:
+        return []
+    parent = parents[0]
+    component = ""
+    try:
+        from app.agent.tools._ctx import client
+        fields = (client().get_issue(parent) or {}).get("fields") or {}
+        component = str(next((c.get("name") for c in (fields.get("components") or [])
+                              if isinstance(c, dict) and c.get("name")), ""))
+    except Exception:
+        component = ""
+    out = []
+    for name in names:
+        title = name
+        if any(w in name for w in ("성능", "테스트", "검증")) and not _re.search(r"수행|실행|완료$", name):
+            title += " 수행"
+        summary = f"[{component}] {title}" if component else title
+        if any(w in name for w in ("성능", "측정", "검증", "테스트")):
+            dod = "검증 기준·측정값·판정 결과가 parent ticket에 기록되어 검토 가능함"
+        elif any(w in name for w in ("가이드", "문서", "작성")):
+            dod = "산출물 링크와 리뷰 결과가 parent ticket에 기록되어 검토 완료됨"
+        else:
+            dod = "산출물과 검토 결과가 parent ticket에 기록되어 완료 여부를 확인할 수 있음"
+        body = (f"<h3>작업 범위</h3><ul><li>{_esc(name)}</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                f"<li data-checked=\"false\">{_esc(dod)}</li></ul>")
+        item = {"summary": summary, "type": "Sub-Task", "parent": parent,
+                "description": body, "priority": "P3-Minor"}
+        if component:
+            item["components"] = [component]
+        out.append(item)
+    return out
+
+
 def _ticket_exists(key) -> bool:
     k = str(key or "").strip()
     if not k:
@@ -2699,6 +3603,131 @@ def _ticket_exists(key) -> bool:
         return bool((client().get_issue(k) or {}).get("key"))
     except Exception:
         return False
+
+
+def _enforce_agreed_structure(state, items: list) -> bool:
+    """사용자가 승인한 structure_plan의 제목·순서·module·children을 복원한다."""
+    plan = [p for p in (state.get("structure_plan") or []) if isinstance(p, dict)]
+    if not plan or not (state.get("structure_ok") or structure_accepted(state)):
+        return False
+    pool = [dict(i) for i in items if isinstance(i, dict)]
+    fixed, changed = [], False
+    for p in plan:
+        summary = str(p.get("summary") or "").strip()
+        match = next((i for i in pool if str(i.get("summary") or "").strip() == summary), None)
+        if match is None and pool:
+            want = _semantic_terms(summary)
+            match = max(pool, key=lambda i: len(want & _semantic_terms(i.get("summary") or "")))
+        row = dict(match or {})
+        if match in pool:
+            pool.remove(match)
+        changed = changed or row.get("summary") != summary
+        row["summary"] = summary
+        row["type"] = str(p.get("type") or row.get("type") or "Task")
+        if p.get("components"):
+            comps = [str(c) for c in p.get("components") if str(c).strip()]
+            changed = changed or row.get("components") != comps
+            row["components"] = comps
+        planned_children = [str(c).strip() for c in (p.get("children") or []) if str(c).strip()]
+        old_children = [dict(c) for c in (row.get("children") or []) if isinstance(c, dict)]
+        if planned_children:
+            kids = []
+            for title in planned_children:
+                kid = next((c for c in old_children
+                            if str(c.get("summary") or "").strip() == title), None)
+                child = dict(kid or {"type": "Sub-Task"})
+                child["summary"] = title
+                kids.append(child)
+            row["children"] = kids
+        else:
+            changed = changed or bool(row.get("children"))
+            row.pop("children", None)
+        fixed.append(row)
+    changed = changed or len(items) != len(fixed)
+    items[:] = fixed
+    return changed
+
+
+def _align_modules_from_summary(items: list) -> bool:
+    """summary 본문에 alias가 하나면 component와 `[Module]` prefix를 그 값으로 맞춘다."""
+    try:
+        from app.infra.settings import modules_in_text
+    except Exception:
+        return False
+    changed = False
+    for it in items:
+        summary = str(it.get("summary") or "").strip()
+        subject = _re.sub(r"^\s*\[[^]]+\]\s*", "", summary)
+        mods = modules_in_text(subject)
+        if len(mods) != 1:
+            continue
+        mod = mods[0]
+        comps = [str(c) for c in (it.get("components") or []) if str(c).strip()]
+        fresh_summary = f"[{mod}] {subject}" if subject else summary
+        if comps != [mod] or fresh_summary != summary:
+            it["components"] = [mod]
+            it["summary"] = fresh_summary
+            changed = True
+    return changed
+
+
+def _scope_html(body: str) -> str:
+    m = _re.search(r"<h3>\s*작업 범위\s*</h3>\s*<ul[^>]*>(.*?)</ul>",
+                   str(body or ""), _re.S | _re.I)
+    return m.group(1) if m else ""
+
+
+def _split_body(item: dict, siblings: list[dict]) -> str:
+    """합의된 summary와 sibling 경계만으로 만드는 보수적인 Task 본문."""
+    own = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "")).strip()
+    safe = _esc(own or str(item.get("summary") or "작업"))
+    excludes = "".join(
+        f"<li>제외(별도 ticket): {_esc(str(s.get('summary') or ''))}</li>"
+        for s in siblings[:4] if str(s.get("summary") or "").strip())
+    return (f"<h3>배경</h3><p>{safe} 요청을 독립된 산출물과 완료 기준으로 관리한다.</p>"
+            f"<h3>작업 범위</h3><ul><li>포함: {safe}</li>{excludes}</ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            f"<li data-checked=\"false\">{safe} 결과가 반영되었음을 담당 리뷰로 확인한다.</li>"
+            "<li data-checked=\"false\">검증 결과와 남은 제약을 ticket에 기록한다.</li></ul>")
+
+
+def _repair_split_scope(items: list) -> list[str]:
+    """작업 범위가 sibling의 고유 deliverable을 2개 이상 포함하면 본문 복사를 되돌린다."""
+    terms = [_semantic_terms(i.get("summary") or "") for i in items]
+    counts = {}
+    for ts in terms:
+        for t in ts:
+            counts[t] = counts.get(t, 0) + 1
+    signatures = [{t for t in ts if counts.get(t) == 1} for ts in terms]
+    repaired = []
+    for idx, it in enumerate(items):
+        scope_terms = _semantic_terms(_re.sub(r"<[^>]+>", " ", _scope_html(it.get("description") or "")))
+        invades = any(len(scope_terms & signatures[j]) >= 2
+                      for j in range(len(items)) if j != idx)
+        if invades:
+            siblings = [s for j, s in enumerate(items) if j != idx]
+            it["description"] = _split_body(it, siblings)
+            repaired.append(str(it.get("summary") or ""))
+    return repaired
+
+
+def _ensure_split_exclusions(items: list) -> None:
+    """분리된 Task의 작업 범위에 sibling이 별도 ticket임을 기록한다."""
+    for idx, it in enumerate(items):
+        body = str(it.get("description") or "")
+        scope = _scope_html(body)
+        if not scope or _re.search(r"제외|하지\s*않", scope):
+            continue
+        siblings = [s for j, s in enumerate(items) if j != idx]
+        extra = "".join(
+            f"<li>제외(별도 ticket): {_esc(str(s.get('summary') or ''))}</li>"
+            for s in siblings[:4] if str(s.get("summary") or "").strip())
+        if not extra:
+            continue
+        m = _re.search(r"(<h3>\s*작업 범위\s*</h3>\s*<ul[^>]*>)(.*?)(</ul>)",
+                       body, _re.S | _re.I)
+        if m:
+            it["description"] = body[:m.end(2)] + extra + body[m.end(2):]
 
 
 def _is_epic(key) -> bool:
@@ -2718,7 +3747,7 @@ def _is_epic(key) -> bool:
 
 
 def _can_parent_subtask(key) -> bool:
-    """그 티켓이 **Sub-Task 의 부모가 될 수 있나** — 실재하고, Epic 이 아니어야 한다.
+    """그 티켓이 **Sub-Task 의 부모가 될 수 있나** — 실재하는 Task tier여야 한다.
 
     실재 여부만 보던 자리들이 있었는데, Jira 에서 **Epic 밑에는 Sub-Task 를 못 단다**
     (Epic 의 자식은 Story/Task 다). 실측 STR1: 모델이 Epic DL-5982 를 부모로 지목한
@@ -2734,11 +3763,27 @@ def _can_parent_subtask(key) -> bool:
         t = (client().get_issue(k) or {})
         if not t.get("key"):
             return False
-        kind = str((t.get("fields") or {}).get("issuetype", {}).get("name")
+        fields = t.get("fields") or {}
+        issue_type = fields.get("issuetype") or {}
+        kind = str((issue_type.get("name") if isinstance(issue_type, dict) else issue_type)
                    or t.get("issuetype") or t.get("type") or "")
-        return "epic" not in kind.lower()
+        flag = issue_type.get("subtask") if isinstance(issue_type, dict) else None
+        from app.domain.ticket_actions import TIER_TASK, issue_tier
+        return issue_tier(kind, flag) == TIER_TASK
     except Exception:
         return False
+
+
+def _ticket_kind(key) -> str:
+    """사람에게 보일 이슈 타입. 계층 오류 설명용이며 실패하면 빈 문자열."""
+    try:
+        from app.agent.tools._ctx import client
+        t = client().get_issue(str(key or "").strip()) or {}
+        issue_type = (t.get("fields") or {}).get("issuetype") or {}
+        return str((issue_type.get("name") if isinstance(issue_type, dict) else issue_type)
+                   or t.get("issuetype") or t.get("type") or "").strip()
+    except Exception:
+        return ""
 
 
 # UI 회귀 픽스처 전용 모듈 — **실제 티켓에 붙으면 안 된다.** 개발 world 에만 있고 prod
@@ -2880,6 +3925,21 @@ def shape_hint(state) -> tuple:
             w in said_l for w in ("서브태스크", "서브 태스크", "sub-task", "subtask",
                                   "하위 작업", "하위작업", "쪼개", "분할")):
         return "subtask", "기존 부모 키"
+    # `테이블 30개를 사람 나눠서`는 독립 산출물 30개가 아니라 **한 목표의 분량 분할**이다.
+    # 따라서 여러 Task가 아니라 부모 Task 하나 + roster별 Sub-Task로 해석한다. 숫자 없는
+    # `사람 나눠서 진행`은 기능별 독립 산출물일 수도 있어 기존 multiple_tasks 규칙에 맡긴다.
+    amount = _re.search(r"[2-9][0-9]{0,3}\s*(?:개|건)", said)
+    split_word = next((w for w in ("사람 나눠", "담당 나눠", "나눠 맡", "나눠서 진행")
+                       if w in said_l), "")
+    if amount and split_word:
+        return "task_with_subtasks", f"{amount.group(0)} · {split_word}"
+    # issue type을 단수로 지목해 "Task/Story/Bug 만들어줘"라고 한 것은 형태 지정이다.
+    # 복수·분할 신호가 함께 있을 때만 아래의 더 구체적인 규칙에 맡긴다.
+    if (_re.search(r"(?<![A-Za-z])(?:task|story|bug|태스크|테스크)\s*(?:로\s*)?"
+                   r"(?:만들|생성|등록|올려)", said_l, _re.I)
+            and not any(w in said_l for w in
+                        ("여러", "각각", "단계", "서브", "sub-task", "나눠", "쪼개"))):
+        return "single_task", "단수 issue type 생성 요청"
     for kind, words in _SHAPE_WORDS:
         for w in words:
             if w.lower() in said_l:

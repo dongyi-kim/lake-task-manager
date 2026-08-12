@@ -216,10 +216,12 @@ def test_token_cannot_be_reused_for_a_different_action():
 
 
 def test_update_ticket_round_trip():
-    hit = _run(T.BY_NAME["search_work_history"], query="데이터", limit=3)["jira"]
-    if not hit:
-        pytest.skip("검색 결과 없음")
-    key = hit[0]["key"]
+    hit = _run(T.BY_NAME["search_work_history"], query="데이터", limit=20)["jira"]
+    from app.agent.tools._ctx import client
+    key = next((row["key"] for row in hit
+                if (client().ticket_badge(row["key"]) or {}).get("statusCategory") != "done"), "")
+    if not key:
+        pytest.skip("열린 검색 결과 없음")
     payload = {"key": key, "changes": {"duedate": "2026-12-31"}}
     tok = approval.stage("t1", "update_ticket", payload)
     approval.approve(tok, "t1")
@@ -231,6 +233,43 @@ def test_update_ticket_round_trip():
 def test_update_with_no_fields_is_rejected_before_touching_jira():
     r = _run(T.BY_NAME["update_ticket"], key="DL-1", approval_token="x")
     assert r["ok"] is False and "바꿀 필드" in r["error"]
+
+
+def test_done_ticket_update_is_blocked_before_consuming_approval(monkeypatch):
+    class _Done:
+        def ticket_badge(self, key):
+            return {"key": key, "statusCategory": "done", "type": "Task"}
+
+        def editmeta(self, key):
+            raise AssertionError("Done이면 editmeta/update까지 가면 안 된다")
+
+    monkeypatch.setattr("app.agent.tools.write_tools.client", lambda: _Done())
+    payload = {"key": "DL-9", "changes": {"summary": "바뀐 제목"}}
+    tok = approval.stage("t1", "update_ticket", payload)
+    approval.approve(tok, "t1")
+    r = _run(T.BY_NAME["update_ticket"], key="DL-9", summary="바뀐 제목",
+             approval_token=tok)
+    assert not r["ok"] and "완료된 티켓" in r["error"]
+    assert approval.peek(tok), "상태 검증에서 막힌 승인은 소비하지 않는다"
+
+
+def test_done_ticket_comment_and_reopened_transition_metadata(monkeypatch):
+    class _Done:
+        def add_comment(self, key, body):
+            return {"id": "c1"}
+
+        def transitions(self, key):
+            return [{"id": "4", "name": "Reopen Issue", "to": "Reopened",
+                     "toCategory": "todo"}]
+
+    monkeypatch.setattr("app.agent.tools.write_tools.client", lambda: _Done())
+    tok = approval.stage("t1", "add_ticket_comment", {"key": "DL-9", "body": "완료 후 기록"})
+    approval.approve(tok, "t1")
+    assert _run(T.BY_NAME["add_ticket_comment"], key="DL-9", body="완료 후 기록",
+                approval_token=tok)["ok"]
+    trs = _run(T.BY_NAME["list_transitions"], key="DL-9")
+    assert trs == [{"id": "4", "name": "Reopen Issue", "to": "Reopened",
+                    "toCategory": "todo"}]
 
 
 # ── 외부 지식(웹·GitHub) — 폐쇄망 fail-soft 가 생명이다 ─────────────
@@ -370,6 +409,39 @@ def test_historian_task_renders_without_error():
     with_web = {**base, "web_context": "- [웹] CDC 비교 글"}
     assert "외부 기술 조사" in h.task(with_web)              # 있으면 자료로 실린다
     assert "CDC 비교 글" in h.task(with_web)
+
+
+def test_prefetched_plan_work_concludes_without_react_tool_loop(monkeypatch):
+    """deterministic 조회가 끝난 생성 요청은 Historian 도구 21개를 다시 순회하지 않는다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.historian import Historian
+    from app.agent.workflow.state import Intent
+    called = {"react": 0, "conclude": 0}
+
+    def base_node(_self):
+        def run(_state):
+            called["react"] += 1
+            return {"situation": "react를 타면 실패"}
+        return run
+
+    monkeypatch.setattr(ToolAgent, "node", base_node)
+    h = Historian()
+
+    def conclude(state, scratch):
+        called["conclude"] += 1
+        assert state.get("_historian_prefetched") is True
+        assert scratch == []
+        return {"situation": "사전 조회로 정리", "evidence": []}
+
+    monkeypatch.setattr(h, "_conclude", conclude)
+    out = h.node()({"intent": Intent.PLAN_WORK,
+                    "messages": [HumanMessage(content="카탈로그 품질 규칙 점검 Task 만들어줘")],
+                    "keywords": ["카탈로그", "품질"], "mentioned_keys": [],
+                    "query_results": {"jira": {"items": [], "total": 0}}, "trace": []})
+    assert called == {"react": 0, "conclude": 1}
+    assert out["situation"] == "사전 조회로 정리"
+    assert any("도구 재호출 생략" in x.get("note", "") for x in out["trace"])
 
 
 def test_shape_ships_people_name_map():

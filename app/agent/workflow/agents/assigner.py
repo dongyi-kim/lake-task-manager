@@ -84,8 +84,14 @@ def _similar_history(state) -> str:
         return ""
     from app.agent.tools.search_tools import search_work_history
     r = search_work_history.invoke({"query": " ".join(kws), "limit": 12})
+    from app.agent.workflow.relevance import matches_focus
     by_user: dict = {}
     for it in (r or {}).get("jira") or []:
+        # 검색기는 recall을 위해 module 하나만 겹쳐도 결과를 준다. 담당 경험은 현재 요청의
+        # 고유 keyword가 제목/요약에 실제로 겹칠 때만 '유사'라고 부른다.
+        if not matches_focus(" ".join(str(it.get(k) or "")
+                                      for k in ("title", "summary", "snippet")), kws):
+            continue
         u = (it.get("assignee") or "").strip()
         if u:
             by_user.setdefault(u, []).append(it)
@@ -169,8 +175,9 @@ class Assigner(StructuredAgent):
         return persona(state, SYSTEM_ASSIGNER)
 
     def task(self, state):
+        from app.agent.workflow.relevance import evidence_is_relevant
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
-                       for e in (state.get("evidence") or []))
+                       for e in (state.get("evidence") or []) if evidence_is_relevant(e))
         data = wrap_data(
             data_block("현재 상황", state.get("situation")),
             data_block("유사 티켓(여기 등장한 사람들을 확인하라)", ev),
@@ -213,21 +220,153 @@ class Assigner(StructuredAgent):
             idx = int(a.get("index") or 0)
             if not (0 <= idx < n_items):
                 continue
-            reasons = [r for r in (a.get("reasons") or []) if str(r).strip()]
-            kids = [{"index": int(c.get("index") or 0),
-                     "user": str(c.get("user") or "").strip(),
-                     "why": str(c.get("why") or "").strip()}
-                    for c in (a.get("children") or [])
-                    if isinstance(c, dict) and str(c.get("user") or "").strip()]
-            rows.append({"index": idx, "user": (a.get("user") or "").strip(),
-                         "reasons": reasons, "children": kids,
-                         "alternates": [x for x in (a.get("alternates") or [])
-                                        if isinstance(x, dict) and x.get("user")][:2]})
+            from app.agent.workflow.relevance import evidence_is_relevant
+            blocked = {str(e.get("key") or "") for e in (state.get("evidence") or [])
+                       if e.get("key") and not evidence_is_relevant(e)}
+            has_similar = bool(str(state.get("similar_history") or "").strip())
+            reasons = [str(r).strip() for r in (a.get("reasons") or []) if str(r).strip()]
+            reasons = [r for r in reasons if not any(k in r for k in blocked)
+                       and (has_similar or "유사" not in r)]
+            # "유사 티켓 X 담당"은 담당 이력 표에서 **이 추천 사용자 행**에 X가 있을 때만
+            # 사실이다. BUG2 실측에서 x1210을 추천하면서 실제 x1402 담당 DL-9090을
+            # x1210의 경험처럼 썼다. workload 근거는 남기되 거짓 이력 근거는 제거한다.
+            user = str(a.get("user") or "").strip()
+            own_hist = next((line for line in str(state.get("similar_history") or "").splitlines()
+                             if line.lstrip().startswith(f"- {user} ")), "")
+            clean_reasons = []
+            for reason in reasons:
+                if "유사" in reason:
+                    refs = _ticket_keys(reason)
+                    if not own_hist or (refs and not any(k in own_hist for k in refs)):
+                        continue
+                cleaned = _ground_assignment_reason(reason, own_hist)
+                if cleaned:
+                    clean_reasons.append(cleaned)
+            reasons = clean_reasons
+            if not any(any(ch.isdigit() for ch in r) for r in reasons):
+                measured = _workload_reason(state.get("roster_load"), user)
+                if any(ch.isdigit() for ch in measured):
+                    reasons = [measured]
+            kids = []
+            for c in (a.get("children") or []):
+                if not isinstance(c, dict) or not str(c.get("user") or "").strip():
+                    continue
+                child_user = str(c.get("user") or "").strip()
+                child_hist = next((line for line in
+                                   str(state.get("similar_history") or "").splitlines()
+                                   if line.lstrip().startswith(f"- {child_user} ")), "")
+                why = _ground_assignment_reason(str(c.get("why") or "").strip(), child_hist)
+                if not why:
+                    why = _workload_reason(state.get("roster_load"), child_user)
+                    if not any(ch.isdigit() for ch in why):
+                        continue
+                elif not any(ch.isdigit() for ch in why):
+                    measured = _workload_reason(state.get("roster_load"), child_user)
+                    if any(ch.isdigit() for ch in measured):
+                        why = measured
+                kids.append({"index": int(c.get("index") or 0),
+                             "user": child_user, "why": why})
+            alternates = []
+            for x in (a.get("alternates") or []):
+                if not isinstance(x, dict) or not x.get("user"):
+                    continue
+                alt_user = str(x.get("user") or "").strip()
+                alt_hist = next((line for line in
+                                 str(state.get("similar_history") or "").splitlines()
+                                 if line.lstrip().startswith(f"- {alt_user} ")), "")
+                why = _ground_assignment_reason(str(x.get("why") or "").strip(), alt_hist)
+                if not why:
+                    why = _workload_reason(state.get("roster_load"), alt_user)
+                    if not any(ch.isdigit() for ch in why):
+                        continue
+                elif not any(ch.isdigit() for ch in why):
+                    measured = _workload_reason(state.get("roster_load"), alt_user)
+                    if any(ch.isdigit() for ch in measured):
+                        why = measured
+                alternates.append({"user": alt_user, "why": why})
+            row = {"index": idx, "user": user,
+                   "reasons": reasons, "children": kids,
+                   "alternates": alternates[:2]}
+            rows.append(_normalize_workload_choice(row))
         named = sum(1 for r in rows if r["user"])
         return {"assignments": rows,
                 "trace": note(state, self.name,
                               f"{named}/{len(rows)}건 담당자 제안" + (
                                   f" · {out['caution'][:60]}" if out.get("caution") else ""))}
+
+
+def _ticket_keys(text: str) -> list[str]:
+    import re
+    return re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", str(text or ""))
+
+
+def _ground_assignment_reason(reason: str, own_history: str) -> str:
+    """담당 이력 표에 없는 티켓·경험 주장을 지우고 측정된 workload 절은 보존한다."""
+    import re
+    text = str(reason or "").strip()
+    refs = _ticket_keys(text)
+    if refs and (not own_history or any(key not in own_history for key in refs)):
+        return ""
+    if not own_history and re.search(r"경험|유사\s*(?:업무|티켓)|코멘트\s*\d+건|"
+                                     r"(?:티켓|작업)\s*담당|"
+                                     r"업무에\s*적합|적합(?:함|하다|합니다)?", text):
+        # "진행중 8건이며 ETL 경험"처럼 한 문장에 섞였으면 검증 가능한 부하만 살린다.
+        m = re.search(r"진행\s*중(?:인)?\s*(?:티켓|작업)?\s*(\d+)\s*건|진행중\s*(\d+)\s*건",
+                      text)
+        if m:
+            return f"진행중 {next(x for x in m.groups() if x is not None)}건"
+        return ""
+    return text
+
+
+def _workload_reason(roster_load, user: str) -> str:
+    import re
+    for line in str(roster_load or "").splitlines():
+        if line.lstrip().startswith(f"- {user} "):
+            m = re.search(r"진행중\s*(\d+)\s*건", line)
+            if m:
+                return f"진행중 {m.group(1)}건"
+    return "승인 화면에서 현재 부하 확인 필요"
+
+
+def _normalize_workload_choice(row: dict) -> dict:
+    """경력 근거 없이 workload만 비교했으면 실제 최소 진행 건수 후보를 1순위로 둔다."""
+    import re
+
+    def load(parts) -> int | None:
+        text = " ".join(str(x) for x in parts)
+        m = re.search(r"진행\s*중(?:인)?\s*(?:티켓|작업)?\s*(\d+)\s*건|진행중\s*(\d+)\s*건", text)
+        if not m:
+            return None
+        return int(next(x for x in m.groups() if x is not None))
+
+    reasons = list(row.get("reasons") or [])
+    # 유사 이력·직접 경험이 있는 선택은 부하만으로 뒤집지 않되, 대안의 더 낮은 부하를
+    # "높다"고 거꾸로 설명하게 두지는 않는다.
+    has_experience = any(re.search(r"유사|(?:티켓|작업)\s*담당|DL-\d+", str(r))
+                         for r in reasons)
+    primary_load = load(reasons)
+    alts = list(row.get("alternates") or [])
+    ranked = [(load([a.get("why")]), i, a) for i, a in enumerate(alts)]
+    ranked = [x for x in ranked if x[0] is not None]
+    if primary_load is None or not ranked:
+        return row
+    alt_load, idx, alt = min(ranked, key=lambda x: x[0])
+    if alt_load >= primary_load:
+        return row
+    if has_experience:
+        new = dict(row)
+        alts[idx] = dict(alt, why=(f"진행중 {alt_load}건으로 현재 부하는 더 낮지만, "
+                                   "1순위의 관련·완료 경험을 우선함"))
+        new["alternates"] = alts
+        return new
+    old_user = str(row.get("user") or "")
+    new = dict(row)
+    new["user"] = str(alt.get("user") or "")
+    new["reasons"] = [f"진행중 {alt_load}건으로 후보 중 현재 부하가 가장 낮음"]
+    alts[idx] = {"user": old_user, "why": f"진행중 {primary_load}건으로 1순위보다 부하가 높음"}
+    new["alternates"] = alts
+    return new
 
 
 def merge_assignments(draft: dict, assignments: list) -> dict:

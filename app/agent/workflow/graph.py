@@ -209,6 +209,11 @@ def _merge_assignments(state: AgentState) -> dict:
     여기 코드가 보장한다 — validate_bulk 와 같은 lookup 을 쓴다.
     """
     draft = merge_assignments(state.get("draft"), state.get("assignments"))
+    # 사용자 명시 배정은 추천보다 우선이다. fan-out join에서 Assigner 제안을 합친 **뒤**
+    # 원 발화로 다시 확정해, 병렬 상태 병합이 assignee_source 표식을 잃어도 지정값이
+    # 추천값으로 바뀌지 않게 한다(PAR1 실측).
+    from app.agent.workflow.agents.refiner import _apply_named_assignees
+    _apply_named_assignees(state, draft.get("items") or [])
     # ★ 분량 분할은 골고루 — **배정이 바뀐 뒤 한 번 더** 본다. 이 규칙은 Refiner 에서만
     #   돌았는데, 자식 담당의 주인이 Assigner 로 옮겨 가면서(§5-c) 덮어쓰기 뒤편에 남았다:
     #   실측(생성 스위트 STR1) 테이블 29건이 Refiner 에서 고루 나뉜 뒤 제안으로 전부 한
@@ -224,7 +229,41 @@ def _merge_assignments(state: AgentState) -> dict:
                 it["assignee"] = _resolve_user(u, exists)
     except Exception:
         pass                              # lookup 실패가 초안 자체를 버리게 하면 안 된다
-    return {"draft": draft}
+    assignments = _align_assignments_to_draft(state.get("assignments") or [], draft)
+    return {"draft": draft, "assignments": assignments}
+
+
+def _align_assignments_to_draft(assignments: list, draft: dict) -> list:
+    """Responder가 과거 추천값이 아니라 최종 승인 payload의 담당과 근거를 보게 한다."""
+    rows = [dict(a) for a in (assignments or []) if isinstance(a, dict)]
+    by_index = {a.get("index"): a for a in rows if isinstance(a.get("index"), int)}
+    for index, item in enumerate((draft or {}).get("items") or []):
+        row = by_index.get(index)
+        if row is None:
+            continue
+        actual = str(item.get("assignee") or "")
+        if actual != str(row.get("user") or ""):
+            row["user"] = actual
+            row["reasons"] = (["사용자 지정 또는 승인 payload에 확정된 담당자"]
+                              if actual else [])
+        row["alternates"] = [a for a in (row.get("alternates") or [])
+                             if isinstance(a, dict)
+                             and str(a.get("user") or "") != actual]
+        child_rows = {c.get("index"): dict(c) for c in (row.get("children") or [])
+                      if isinstance(c, dict) and isinstance(c.get("index"), int)}
+        for child_index, child in enumerate(item.get("children") or []):
+            if not isinstance(child, dict):
+                continue
+            actual_child = str(child.get("assignee") or "")
+            child_row = child_rows.get(child_index)
+            if child_row is not None and actual_child \
+                    and actual_child != str(child_row.get("user") or ""):
+                child_row["user"] = actual_child
+                child_row["why"] = "사용자 지정 또는 승인 payload에 확정된 담당자"
+                child_rows[child_index] = child_row
+        if child_rows:
+            row["children"] = [child_rows[k] for k in sorted(child_rows)]
+    return rows
 
 
 def _resolve_user(u: str, exists) -> str:

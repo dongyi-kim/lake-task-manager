@@ -53,3 +53,6 @@
 - Bulk 는 `mode` 가 하나뿐 — Sub-Task 는 부모가 이미 있어야 하므로 **두 번 나눠** 부른다
 - 한 번에 100건 상한(`MAX_ITEMS`)
 - 상태명·필드 id 를 하드코딩하지 않는다 → `list_transitions` / `list_ticket_options` 로 확인
+- `Epic → Task-tier → Sub-Task` 계층과 허용 field/action은
+  `app/domain/ticket_actions.py`가 집행한다. `statusCategory=done`에서는 field update를
+  거부하지만 comment와 현재 Jira가 제공한 `Reopened` 전이는 허용한다. 전이 후 변경은 새 승인이다.

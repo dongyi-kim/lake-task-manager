@@ -20,7 +20,7 @@ import re as _re
 from app.agent.workflow.agents.base import ToolAgent, invoke_schema
 from app.agent.prompts.roles import SYSTEM_HISTORIAN
 from app.agent.workflow.prompts import data_block, persona, wrap_data
-from app.agent.workflow.state import (AgentState, Node, last_user_text, note,
+from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
                                       request_text)
 
 SCHEMA = {
@@ -318,11 +318,6 @@ def _relevant_only(state, ev: list) -> list:
     고유어가 아예 없는 질문(일반 대화)에서는 아무것도 빼지 않는다 — 판정 근거가 없으면
     판정하지 않는다.
     """
-    # ★ **티켓 키를 중심으로 묻는 질문에는 이 필터를 걸지 않는다.** 그때의 근거는 자식·
-    #   차단·형제처럼 **구조로** 이어진 티켓이라 제목에 질문 낱말이 없는 것이 정상이다.
-    #   실측(PROG1): "DL-9090 지금 어디까지?" 에서 막고 있던 DL-9092 가 통째로 걸러졌다.
-    if state.get("mentioned_keys"):
-        return ev
     req = f"{request_text(state)} {last_user_text(state)}"
     # ★ 사용자가 **틀린 표기**로 물었으면 원문 낱말은 실제 제목과 한 글자도 안 겹친다
     #   (실측 DATA11: 'fdc_flat_summary_ic' 로 물어 확인 후 정확 표기를 골랐는데, 필터가
@@ -349,7 +344,17 @@ def _relevant_only(state, ev: list) -> list:
         if str(e.get("key") or "").upper() in named:
             keep.append(e)
             continue
-        hay = f"{e.get('key', '')} {e.get('title', '')} {e.get('why', '')}".lower()
+        # key 중심 질문의 자식·차단·형제는 제목에 원문 낱말이 없어도 구조 근거다. 반면
+        # "같은 module의 진행 중 작업"은 구조 관계가 아니므로 이 예외를 주지 않는다.
+        why = str(e.get("why") or "")
+        if state.get("mentioned_keys") and _re.search(
+                r"부모|자식|하위|차단|막(?:고|는)|형제|링크|선행|후속", why):
+            keep.append(e)
+            continue
+        # `why`는 모델이 만든 해석이므로 관련성 판정의 입력으로 쓰지 않는다. 같은-module
+        # generic ticket에 "관련 있을 가능성"이라고 쓴 문장이 스스로 필터를 통과시키는
+        # 순환 논증이 된다(STR1 실측). 사실 필드인 key/title만 교차 확인한다.
+        hay = f"{e.get('key', '')} {e.get('title', '')}".lower()
         if any(t.lower() in hay for t in terms):
             keep.append(e)
     return keep
@@ -1064,7 +1069,15 @@ class Historian(ToolAgent):
             wordy = any(w in asked0 for w in ("기술 검토", "방식", "라이브러리", "오픈소스",
                                               "비교", "어떤 기술"))
             thin_internal = "키워드 검색" not in pre        # presurvey 가 사내 티켓을 못 찾았다
-            techy = bool(_re.search(r"[A-Za-z][A-Za-z0-9_.-]{2,}", asked0))
+            # 제품 내부 module/일반 작업어를 기술명으로 세면 `Workbench ... 추가` 같은
+            # 국소 UI 변경도 웹·GitHub 조사로 샌다. 외부 조사는 고유 기술 토큰이 있을 때만
+            # 보조 trigger로 삼고, module/티켓 어휘는 제외한다.
+            _internal_terms = {"etl", "catalog", "runtime", "workbench", "dataops",
+                               "observability", "devops", "epic", "task", "story",
+                               "bug", "jira", "ltm", "lake", "manager", "voc"}
+            _latin = {x.lower() for x in
+                      _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", asked0)}
+            techy = bool(_latin - _internal_terms)
             if wordy or (thin_internal and techy and not keys0):
                 ctx = _research_outside(self, asked0)
                 if ctx:
@@ -1085,13 +1098,33 @@ class Historian(ToolAgent):
                 # 첨부 질의를 직결에서 뺀 이유: 파일 **내용** 요약은 read_attachment 를
                 # 걸어야 나온다(실측: 직결이 잡아 목록만 답하고 내용은 '없음').
                 try:
-                    out = self.apply(state, self._conclude(state, []))
+                    direct_state = {**state, "_historian_prefetched": True}
+                    out = self.apply(direct_state, self._conclude(direct_state, []))
                     out["trace"] = (out.get("trace") or []) + [
                         {"node": self.name, "label": "과거 이력 조사",
                          "note": "사전 취합 자료로 바로 정리(조사 생략)"}]
                     return out
                 except Exception:
                     pass          # 직결이 죽으면 정상 경로로 — 최적화가 답을 막으면 안 된다
+
+            # ── 생성/계획 직결: Query Specialist와 deterministic runner가 조회를 끝냈으면
+            # Historian이 같은 도구를 다시 순회하지 않는다. 생성 배터리에서 Historian 91회가
+            # 144만 토큰(전체 66%)을 썼고, 대부분은 이미 pre_survey/query_results/seed_map에
+            # 있는 티켓을 재검색·재조회한 비용이었다. 이 갈래의 판단은 "무엇을 더 찾을까"가
+            # 아니라 "확정된 자료를 어떻게 요약할까"이므로 structured conclusion 한 번이면 된다.
+            # 자료가 하나도 없거나 외부 기술 조사가 필요한 경우에는 기존 ReAct를 그대로 쓴다.
+            prefetched = bool(state.get("query_results") or state.get("pre_survey")
+                              or state.get("seed_map") or state.get("topic_dossier"))
+            if (state.get("intent") or "") == Intent.PLAN_WORK and prefetched:
+                try:
+                    direct_state = {**state, "_historian_prefetched": True}
+                    out = self.apply(direct_state, self._conclude(direct_state, []))
+                    out["trace"] = (out.get("trace") or []) + [
+                        {"node": self.name, "label": "과거 이력 조사",
+                         "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"}]
+                    return out
+                except Exception:
+                    pass          # 최적화 실패는 기존 ReAct로 복구한다
 
             out = react(state)
             asked = last_user_text(state)
@@ -1151,7 +1184,11 @@ class Historian(ToolAgent):
                 + [T.BY_NAME["get_progress"]] + ext)
 
     def system(self, state):
-        return persona(state, SYSTEM_HISTORIAN)
+        # 이미 취합된 자료를 한 번 요약하는 직결 경로에는 분류/권한/검색 규칙이 반복된
+        # full common prompt가 필요 없다. 역할 계약과 절대 안전 규칙만 담은 lite persona를
+        # 사용해 정적 입력도 줄인다. 실제 탐색(ReAct) 경로는 기존 full persona를 유지한다.
+        return persona(state, SYSTEM_HISTORIAN,
+                       lite=bool(state.get("_historian_prefetched")))
 
     def task(self, state):
         kws = ", ".join(state.get("keywords") or []) or last_user_text(state)
@@ -1204,11 +1241,19 @@ class Historian(ToolAgent):
         return SCHEMA
 
     def apply(self, state, out):
-        ev = [e for e in (out.get("evidence") or []) if isinstance(e, dict)][:8]
-        ev = _relevant_only(state, ev)
-        exists = bool(out.get("already_exists"))
+        raw_ev = [e for e in (out.get("evidence") or []) if isinstance(e, dict)][:8]
+        from app.agent.workflow.relevance import evidence_is_relevant
+        named = {str(k).upper() for k in (state.get("mentioned_keys") or [])}
+        raw_ev = [e for e in raw_ev if str(e.get("key") or "").upper() in named
+                  or evidence_is_relevant(e)]
+        ev = _relevant_only(state, raw_ev)
+        removed_all = bool(raw_ev) and not ev and not state.get("mentioned_keys")
+        situation = out.get("situation") or ""
+        if removed_all:
+            situation = "현재 요청의 고유 개념과 직접 일치하는 내부 이력은 확인되지 않았다."
+        exists = bool(out.get("already_exists")) and (bool(ev) or not removed_all)
         return {
-            "situation": out.get("situation") or "",
+            "situation": situation,
             "evidence": ev,
             "related_docs": [d for d in (out.get("related_docs") or []) if isinstance(d, dict)][:6],
             "epic_candidate": (out.get("epic_candidate") or "").strip(),

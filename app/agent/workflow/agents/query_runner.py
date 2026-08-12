@@ -83,9 +83,14 @@ class QueryRunner:
             # full target set은 state artifact에 보존하되 LLM에는 각 source 앞부분만 전달한다.
             artifacts[qid] = raw
             compact = dict(raw)
-            for field in ("tickets", "documents", "comments", "people", "results"):
-                if isinstance(compact.get(field), list) and len(compact[field]) > 50:
-                    compact[field] = compact[field][:50]
+            # 전체 집합은 artifact에 보존한다. LLM에는 정렬된 앞부분과 total만 싣는다.
+            # 50건을 그대로 주입하면 생성 한 건에서도 Research Analyst 입력이 14k tokens까지
+            # 불었다(PASTE1 실측). source별로 사람이 한 화면에서 검토할 양만 남긴다.
+            caps = {"tickets": 12, "documents": 10, "comments": 12,
+                    "people": 20, "results": 8}
+            for field, cap in caps.items():
+                if isinstance(compact.get(field), list) and len(compact[field]) > cap:
+                    compact[field] = compact[field][:cap]
                     compact["contextTruncated"] = True
                     compact["artifactId"] = qid
             results.append({"id": qid, "source": source, "result": compact})
