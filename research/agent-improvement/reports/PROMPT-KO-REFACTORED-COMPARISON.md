@@ -65,7 +65,7 @@ KO-R은 기존 영어 prompt를 문장별로 번역하지 않았다.
 - `PROMPT_VERSION="ko-refactored-v1"`과 prompt integrity test를 추가했다.
 - 실제 reply뿐 아니라 card/body/question form, raw usage, checkpoint를 평가 자료로 저장했다.
 
-작성 표준은 [AGENT.md](AGENT.md)에 문서화했다. 근거로 사용한 자료는 OpenAI의
+작성 표준은 [AGENT.md](../../../docs/AGENT.md)에 문서화했다. 근거로 사용한 자료는 OpenAI의
 [Prompting best practices](https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices),
 [How and Where to Translate?](https://arxiv.org/abs/2507.22923),
 [OLA](https://arxiv.org/abs/2601.03589),
@@ -451,10 +451,10 @@ v2는 위 회귀 case를 deterministic/semantic test로 먼저 고정한 뒤, BA
 
 | 후보 | 대화 | Compose | Create |
 |---|---|---|---|
-| BASE | `../../ab-base-mixed.json` | `../../compose-base-mixed.json` | `../../create-base-mixed.json` |
-| KO | `../../ab-ko-mixed.json` | `../../compose-ko-mixed.json` | `../../create-ko-mixed.json` |
-| EN | `../../ab-en-mixed.json` | `../../compose-en-mixed.json` | `../../create-en-mixed.json` |
-| GUIDE | `../../ab-guide-mixed.json` | `../../compose-guide-mixed.json` | `../../create-guide-mixed.json` |
-| KO-R | `../../ab-ko-refactored-mixed.json` | `../../compose-ko-refactored-mixed.json` | `../../create-ko-refactored-mixed-full.json` |
+| BASE | `../results/ab-base-mixed.json` | `../results/compose-base-mixed.json` | `../results/create-base-mixed.json` |
+| KO | `../results/ab-ko-mixed.json` | `../results/compose-ko-mixed.json` | `../results/create-ko-mixed.json` |
+| EN | `../results/ab-en-mixed.json` | `../results/compose-en-mixed.json` | `../results/create-en-mixed.json` |
+| GUIDE | `../results/ab-guide-mixed.json` | `../results/compose-guide-mixed.json` | `../results/create-guide-mixed.json` |
+| KO-R | `../results/ab-ko-refactored-mixed.json` | `../results/compose-ko-refactored-mixed.json` | `../results/create-ko-refactored-mixed-full.json` |
 
 과거 all-mini JSON은 진단 이력일 뿐 본 보고서의 어떤 수치·순위·결론에도 사용하지 않았다.

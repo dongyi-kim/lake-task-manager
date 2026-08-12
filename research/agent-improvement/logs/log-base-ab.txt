@@ -1,0 +1,19 @@
+C:\Users\PC\repo\dongyi-kim\lake-task-manager-deploy\.venv\Lib\site-packages\langgraph\checkpoint\base\__init__.py:18: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+  from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+C:\Users\PC\repo\dongyi-kim\lake-task-manager-deploy\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+  S1-생성 · 32.4s · 56242tok
+  S1-생성 · 26.9s · 41325tok
+✔ S1-생성 완료
+  S2-버그 · 31.8s · 66276tok
+✔ S2-버그 완료
+  S3-이력 · 26.8s · 30562tok
+✔ S3-이력 완료
+  S4-사람 · 24.0s · 48892tok
+✔ S4-사람 완료
+  S5-내일 · 7.4s · 15954tok
+✔ S5-내일 완료
+  S6-진척 · 8.8s · 17136tok
+✔ S6-진척 완료
+{"턴수": 7, "초": 158.1, "총토큰": 276387, "프롬프트토큰": 266639, "완성토큰": 9748, "캐시토큰": 150784, "LLM호출": 37, "근거위반": 0, "후검증위반": 0, "종결어미줄": 8, "맺음상투구": 0}
+→ ../ab-base.json

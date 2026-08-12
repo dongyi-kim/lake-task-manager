@@ -761,7 +761,9 @@ if REPORT:
         lines.append(f"| {r['id']} | {r['desc']} | {'통과' if r.get('passed') else '실패'} "
                      f"| {r.get('score', '-')} | {(r.get('judge') or {}).get('worst', '')[:80]} |")
     p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "docs", "agent-scenarios-report.md")
+                     "research", "agent-improvement", "reports",
+                     "agent-scenarios-report.md")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print("리포트:", p)
@@ -800,7 +802,9 @@ if DUMP:
               f" · answers_original={jj.get('answers_original')}"
               f" · worst: {jj.get('worst', '')}", "", "---", ""]
     p2 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                      "docs", "agent-quality-run.md")
+                      "research", "agent-improvement", "reports",
+                      "agent-quality-run.md")
+    os.makedirs(os.path.dirname(p2), exist_ok=True)
     with open(p2, "w", encoding="utf-8") as f:
         f.write("\n".join(d) + "\n")
     print("전문 덤프:", p2)

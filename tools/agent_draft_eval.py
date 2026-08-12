@@ -193,7 +193,11 @@ if __name__ == "__main__":
     print(f"  fix:   {j.get('fix')}")
     usage = outs[-1].get("usage") or {}
     print(f"\n{time.time()-t0:.0f}s · ${round(sum((o.get('usage') or {}).get('costUsd', 0) or 0 for o in outs), 4)}")
-    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "draft_eval_last.json")
+    out_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "research", "agent-improvement", "results", "draft_eval_last.json",
+    )
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump({"model": MODEL, "turns": TURNS, "items": items, "measure": m, "judge": j,
                    "replies": [o.get("reply") for o in outs]}, fh, ensure_ascii=False, indent=1)

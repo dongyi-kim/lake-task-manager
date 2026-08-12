@@ -1,0 +1,345 @@
+{
+ "model": "gpt-4o",
+ "simpleModel": "gpt-4o-mini",
+ "promptVersion": "ko-role-contract-v3",
+ "실행완료": true,
+ "합계": {
+  "통과": 1,
+  "완료": 1,
+  "전체": 1,
+  "비용USD": 0.087152,
+  "초": 60.5,
+  "calls": 12,
+  "promptTokens": 66684,
+  "completionTokens": 3793,
+  "totalTokens": 70477,
+  "cachedTokens": 40320
+ },
+ "케이스": [
+  {
+   "id": "STARR1",
+   "설명": "주제 유지 — 원 요청 고유어가 제목에 남고, 다단계는 쪼개지고, 본문 규율",
+   "입력": [
+    "starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해",
+    "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, 마감은 2026-09-30. 알아서 진행해"
+   ],
+   "통과": true,
+   "구조통과": true,
+   "본문결함": [],
+   "초": 60.5,
+   "턴": [
+    {
+     "thread_id": "8ce553f9d9084404",
+     "ok": true,
+     "reply": "현재 요청은 starrocks puffin ndv 통계정보를 생성하는 파이프라인 개발에 관한 것입니다. 그러나, 내부 시스템에서 이와 직접적으로 일치하는 이력이나 자료는 확인되지 않았습니다. 아래에서 선택해 주세요.",
+     "trace": [
+      {
+       "node": "planner",
+       "label": "요청 파악",
+       "note": "의도=plan_work · 계획: 파이프라인 개발 요구 수집 → 티켓 생성 → 담당자 지정 → 개발 진행"
+      },
+      {
+       "node": "query_specialist",
+       "label": "조회 설계",
+       "note": "조회 1개 설계"
+      },
+      {
+       "node": "query_runner",
+       "label": "조회 실행",
+       "note": "조회 1개 실행"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "근거 0건"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"
+      },
+      {
+       "node": "refiner",
+       "label": "업무 구체화",
+       "note": "질문 3개 · 초안 0건"
+      },
+      {
+       "node": "responder",
+       "label": "답변 정리",
+       "note": "120자"
+      }
+     ],
+     "intent": "plan_work",
+     "situation": "현재 요청의 고유 개념과 직접 일치하는 내부 이력은 확인되지 않았다.",
+     "evidence": [],
+     "related_docs": [],
+     "questions": [
+      {
+       "question": "이 파이프라인 개발의 1차 목표는 무엇인가요? (검토만/PoC/최소 구현 중 선택)",
+       "kind": "choice",
+       "options": [
+        "최소 구현 (실제 사용 가능)",
+        "PoC (개념 증명)",
+        "검토만 (기획 단계)"
+       ],
+       "field": ""
+      },
+      {
+       "question": "이 작업의 배경은 무엇인가요? 왜 지금 필요한가요?",
+       "kind": "text",
+       "options": [],
+       "field": ""
+      },
+      {
+       "question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 적어 주세요 (없으면 건너뛰어도 됩니다)",
+       "kind": "text",
+       "options": [],
+       "field": ""
+      }
+     ],
+     "assignments": [],
+     "review": {},
+     "result": {},
+     "error": "",
+     "people": {},
+     "usage": {
+      "calls": 7,
+      "promptTokens": 39415,
+      "completionTokens": 1895,
+      "totalTokens": 41310,
+      "model": "gpt-4o-2024-08-06",
+      "costUsd": 0.117487,
+      "cachedTokens": 24192,
+      "byNode": {
+       "planner": {
+        "calls": 1,
+        "tokens": 5586,
+        "seconds": 2.7
+       },
+       "query_specialist": {
+        "calls": 1,
+        "tokens": 1674,
+        "seconds": 1.6
+       },
+       "historian": {
+        "calls": 2,
+        "tokens": 5126,
+        "seconds": 4.1
+       },
+       "refiner": {
+        "calls": 2,
+        "tokens": 26242,
+        "seconds": 12.7
+       },
+       "responder": {
+        "calls": 1,
+        "tokens": 2682,
+        "seconds": 1.2
+       }
+      },
+      "byTool": {
+       "find_mentions": {
+        "calls": 1,
+        "seconds": 0.08
+       },
+       "search_web": {
+        "calls": 1,
+        "seconds": 1.41
+       },
+       "search_github": {
+        "calls": 1,
+        "seconds": 0.37
+       },
+       "list_ticket_options": {
+        "calls": 3,
+        "seconds": 0.0
+       }
+      }
+     }
+    },
+    {
+     "thread_id": "8ce553f9d9084404",
+     "ok": true,
+     "reply": "### 상황\n현재 starrocks puffin ndv 통계정보를 생성하는 파이프라인 개발에 대한 Epic이 존재하지 않으며, 관련된 내부 이력도 확인되지 않았습니다.\n### 티켓 초안\nEpic Name은 10자 이내로 설정해야 합니다.\n- **Task 초안**: [ETL] starrocks puffin ndv 통계정보 파이프라인 개발\n- 모듈: ETL\n- 마감: 2026-09-30\n- 우선순위: P3-Minor\n- 설명: starrocks puffin ndv 통계정보를 생성하는 파이프라인 개발이 필요하며, 이는 데이터 분석의 정확성을 높이기 위한 것입니다. 1차 구현 범위 내에서 최소 기능을 목표로 합니다.\n- **Sub-Tasks**:\n1. 설계 완료 (현재 담당: skcc.i2011)\n2. 구현 및 테스트 (현재 담당: skcc.x1042)\n3. 데이터 정확성 검증 (현재 담당: skcc.x1103)\n### 담당자 근거\n- **Task 담당자 제안**: skcc.x1103\n- 근거: 진행 중인 작업이 8건으로 상대적으로 부하가 적음\n- 대안:\n- skcc.i2011: 진행 중 12건\n- skcc.x1042: 진행 중 17건\n### 실제 완료 조건\n| 티켓 | 완료 조건 |\n|---|---|\n| [ETL] starrocks puffin ndv 통계정보 파이프라인 개발 | starrocks puffin ndv 통계정보 생성 파이프라인 설계 완료<br>파이프라인 구현 및 테스트 완료<br>검증을 통해 데이터 정확성 확인 |\n**승인을 요청합니다.** 변경 경위나 관련 티켓 내용이 더 궁금하면 말씀 주세요.",
+     "trace": [
+      {
+       "node": "planner",
+       "label": "요청 파악",
+       "note": "의도=plan_work 핵심어=starrocks, puffin, ndv, 통계정보, 파이프라인, 개발, Epic, 최소 기능, 1차 구현, 마감, 2026-09-30"
+      },
+      {
+       "node": "refiner",
+       "label": "업무 구체화",
+       "note": "질문 0개 · 초안 1건"
+      },
+      {
+       "node": "assigner",
+       "label": "담당자 검토",
+       "note": "1/1건 담당자 제안 · skcc.x1042는 부하가 높아 추가 업무 배정 시 주의 필요"
+      },
+      {
+       "node": "reviewer",
+       "label": "규칙 검증",
+       "note": "통과"
+      },
+      {
+       "node": "responder",
+       "label": "답변 정리",
+       "note": "798자"
+      }
+     ],
+     "intent": "plan_work",
+     "situation": "현재 요청의 고유 개념과 직접 일치하는 내부 이력은 확인되지 않았다.",
+     "evidence": [],
+     "related_docs": [],
+     "questions": [],
+     "assignments": [
+      {
+       "index": 0,
+       "user": "skcc.x1103",
+       "reasons": [
+        "진행중 8건으로 상대적으로 부하가 적음"
+       ],
+       "children": [
+        {
+         "index": 0,
+         "user": "skcc.i2011",
+         "why": "진행중 12건"
+        },
+        {
+         "index": 1,
+         "user": "skcc.x1042",
+         "why": "진행중 17건"
+        },
+        {
+         "index": 2,
+         "user": "skcc.x1103",
+         "why": "진행중 8건"
+        }
+       ],
+       "alternates": [
+        {
+         "user": "skcc.i2011",
+         "why": "진행중 12건으로 부하가 높음"
+        },
+        {
+         "user": "skcc.x1042",
+         "why": "진행중 17건으로 부하가 가장 높음"
+        }
+       ]
+      }
+     ],
+     "review": {
+      "ok": true,
+      "checks": {
+       "grounded": true,
+       "rule_compliant": true,
+       "answers_request": true
+      },
+      "problems": [],
+      "errors": [],
+      "warnings": [],
+      "summary": "티켓 초안은 사용자의 요청을 충실히 반영하고 있으며, 작성 규칙을 잘 준수하고 있습니다."
+     },
+     "result": {},
+     "error": "",
+     "pending": {
+      "token": "HH49GETq1bH_zOKnsN4Jb-sOh674UQOs",
+      "action": "create_tickets",
+      "mode": "task",
+      "items": [
+       {
+        "summary": "[ETL] starrocks puffin ndv 통계정보 파이프라인 개발",
+        "type": "Task",
+        "epic": null,
+        "description": "<h3>배경</h3><p>starrocks puffin ndv 통계정보를 생성하는 파이프라인 개발이 필요합니다. 이는 데이터 분석의 정확성을 높이기 위한 것으로, 1차 구현 범위 내에서 최소 기능을 목표로 합니다.</p><h3>작업 범위</h3><ul><li>포함: starrocks puffin ndv 통계정보 생성 파이프라인 설계, 구현, 검증</li><li>제외: 고급 기능 및 최적화 작업</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">starrocks puffin ndv 통계정보 생성 파이프라인 설계 완료</li><li data-checked=\"false\">파이프라인 구현 및 테스트 완료</li><li data-checked=\"false\">검증을 통해 데이터 정확성 확인</li></ul>",
+        "priority": "P3-Minor",
+        "duedate": "2026-09-30",
+        "assignee": "skcc.x1103",
+        "components": [
+         "ETL"
+        ],
+        "labels": [
+         "q3-2026"
+        ]
+       }
+      ],
+      "rationale": "신규 파이프라인 개발로 설계, 구현, 검증 단계가 나뉘어 여러 Sub-Task가 필요함. \n(Research Analyst가 검증하지 않은 참고를 뺐다: DL-9040 \"[데이터] 데이터셋 카탈로그 지식 픽스처\" — 관련 데이터셋 정보 참고)\n(DL-9040 연결을 뺐다 — 업무 고유어가 Epic 제목과 겹치지 않는다)\n(나눠 맡도록 자식 담당을 모듈 인력에 배분했다 — 승인 화면에서 바꿀 수 있다)\n(구조: task_with_subtasks — 신규 파이프라인 개발로 설계, 구현, 검증 단계가 나뉘어 여러 Sub-Task가 필요함)",
+      "children": [
+       {
+        "parent_index": 0,
+        "summary": "starrocks puffin ndv 통계정보 파이프라인 설계 완료",
+        "type": "Sub-Task",
+        "description": "<h3>작업 범위</h3><ul><li>starrocks puffin ndv 통계정보 생성 파이프라인 설계</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">설계 문서 작성 및 검토 완료 — 산출물 링크와 리뷰 결과를 parent ticket에 기록해 확인한다</li></ul>",
+        "assignee": "skcc.i2011"
+       },
+       {
+        "parent_index": 0,
+        "summary": "starrocks puffin ndv 통계정보 파이프라인 구현 및 테스트",
+        "type": "Sub-Task",
+        "description": "<h3>작업 범위</h3><ul><li>파이프라인 구현 및 초기 테스트 수행</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">기본 기능 구현 및 테스트 완료 — 실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다</li></ul>",
+        "assignee": "skcc.x1042"
+       },
+       {
+        "parent_index": 0,
+        "summary": "starrocks puffin ndv 통계정보 파이프라인 데이터 정확성 검증",
+        "type": "Sub-Task",
+        "description": "<h3>작업 범위</h3><ul><li>생성된 통계정보의 데이터 정확성 검증</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">데이터 검증 및 결과 보고서 작성</li></ul>",
+        "assignee": "skcc.x1103"
+       }
+      ],
+      "structure": "task_with_subtasks",
+      "structure_why": "신규 파이프라인 개발로 설계, 구현, 검증 단계가 나뉘어 여러 Sub-Task가 필요함"
+     },
+     "people": {
+      "skcc.x1103": "이준서",
+      "skcc.x1042": "최민서",
+      "skcc.i2011": "이다은"
+     },
+     "usage": {
+      "calls": 5,
+      "promptTokens": 27269,
+      "completionTokens": 1898,
+      "totalTokens": 29167,
+      "model": "gpt-4o-2024-08-06",
+      "costUsd": 0.087152,
+      "cachedTokens": 16128,
+      "byNode": {
+       "planner": {
+        "calls": 1,
+        "tokens": 5797,
+        "seconds": 3.1
+       },
+       "refiner": {
+        "calls": 1,
+        "tokens": 11476,
+        "seconds": 7.7
+       },
+       "reviewer": {
+        "calls": 1,
+        "tokens": 4373,
+        "seconds": 1.2
+       },
+       "assigner": {
+        "calls": 1,
+        "tokens": 3832,
+        "seconds": 3.2
+       },
+       "responder": {
+        "calls": 1,
+        "tokens": 3689,
+        "seconds": 4.3
+       }
+      },
+      "byTool": {
+       "list_ticket_options": {
+        "calls": 3,
+        "seconds": 0.0
+       }
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

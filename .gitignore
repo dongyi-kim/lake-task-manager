@@ -35,11 +35,10 @@ Thumbs.db
 app_prefs.json
 
 # 배터리 실행 산출물 — 매 실행마다 바뀐다(리포지토리가 아니라 그때 읽는 것)
-docs/agent-quality-run.md
-docs/agent-scenarios-report.md
-tools/draft_eval_last.json
+research/agent-improvement/reports/agent-quality-run.md
+research/agent-improvement/reports/agent-scenarios-report.md
+research/agent-improvement/results/draft_eval_last.json
 dev-server.log
 dev-server.log.err
-docs/agent-user-review.md
 compose-run.txt
 user-review-run.txt

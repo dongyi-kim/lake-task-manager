@@ -20,7 +20,7 @@
 #      바로 가리킨다
 #
 # 실행: python -X utf8 tools/agent_user_review.py [모델] [흐름ID …]
-#       결과: docs/agent-user-review.md
+#       결과: research/agent-improvement/reports/agent-user-review.md
 import io
 import json
 import os
@@ -325,5 +325,6 @@ if __name__ == "__main__":
     tot = sum(len(c) for _f, c in rows)
     blk = sum(1 for _f, cs in rows for c in cs if c.get("severity") == "blocker")
     reg = sum(1 for _f, cs in rows for c in cs if c.get("regression"))
-    print(f"\n불평 {tot}건 · blocker {blk} · 재발 {reg} — docs/agent-user-review.md 를 읽을 것")
-    io.open("docs/agent-user-review.md", "w", encoding="utf-8", newline="\n").write("\n".join(md))
+    output_path = "research/agent-improvement/reports/agent-user-review.md"
+    print(f"\n불평 {tot}건 · blocker {blk} · 재발 {reg} — {output_path} 를 읽을 것")
+    io.open(output_path, "w", encoding="utf-8", newline="\n").write("\n".join(md))

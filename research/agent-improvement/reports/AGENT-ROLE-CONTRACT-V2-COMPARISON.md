@@ -35,7 +35,7 @@ reply와 payload의 모순, placeholder 본문, 지시문 누출이 반복된다
 
 V2는 영어 prompt를 직역한 버전이 아니다. 공통 계약과 role별 책임을 한국어 원문으로 재작성하되
 code, parameter, JSON schema, enum, tool name, Jira field·issue type, JQL, ticket key, user id는 번역하지
-않았다. 작성 원칙과 구조는 [AGENT.md](AGENT.md)에 정리했다.
+않았다. 작성 원칙과 구조는 [AGENT.md](../../../docs/AGENT.md)에 정리했다.
 
 | Role | 책임 | 입력 계약 | 출력 계약 |
 |---|---|---|---|

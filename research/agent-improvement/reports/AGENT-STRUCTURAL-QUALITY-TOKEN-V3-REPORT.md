@@ -197,7 +197,7 @@ DoD가 두 번 나온 증거가 남아 있다. 최종 코드에서는 동일 행
 - `# 명령서`, raw placeholder, 깨진 Markdown URL, false person/title warning을 제거한다.
 - Composer에서 comment/document와 Jira status가 충돌하면 `최종 완료 여부 확인 필요`로 표시한다.
 
-이 구조는 [AGENT.md](AGENT.md)에 prompt 작성법, role input/output, 우선순위, 실패 처리 방식으로
+이 구조는 [AGENT.md](../../../docs/AGENT.md)에 prompt 작성법, role input/output, 우선순위, 실패 처리 방식으로
 문서화했다. 설계 원칙은 OpenAI의 [Prompting best practices](https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices),
 Anthropic의 [Building effective agents](https://www.anthropic.com/research/building-effective-agents) 및
 [Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents),
@@ -221,16 +221,16 @@ release battery에서 인간 중대 오류 0건과 latency p95를 확인한 뒤 
 ## 10. 검증·원시 증거
 
 - 최종 unit suite: **1364 passed, 1 skipped**
-- Create full: `create-ko-role-contract-v3-mixed-final.json` — 22/23; 유일 실패는 구체적
+- Create full: [`create-ko-role-contract-v3-mixed-final.json`](../results/create-ko-role-contract-v3-mixed-final.json) — 22/23; 유일 실패는 구체적
   `담당팀 확인 필요`를 placeholder로 오탐한 evaluator 문제
-- Create evaluator closure: `create-ko-role-contract-v3-attr2-final.json` — **1/1**
-- Create human closure: `create-ko-role-contract-v3-closure-final.json` — **6/6**
-- Create 추가 regression: `create-ko-role-contract-v3-human-final.json` — **8/8**
-- Conversation full: `ab-ko-role-contract-v3-mixed-final.json` — 7턴, 근거/후검증/구조/card 위반 0
-- Conversation S2 closure: `ab-ko-role-contract-v3-s2-final.json` — **1/1**
-- Compose final full: `compose-ko-role-contract-v3-mixed-final.json` — 7/9; 두 실패는 상태 충돌을
+- Create evaluator closure: [`create-ko-role-contract-v3-attr2-final.json`](../results/create-ko-role-contract-v3-attr2-final.json) — **1/1**
+- Create human closure: [`create-ko-role-contract-v3-closure-final.json`](../results/create-ko-role-contract-v3-closure-final.json) — **6/6**
+- Create 추가 regression: [`create-ko-role-contract-v3-human-final.json`](../results/create-ko-role-contract-v3-human-final.json) — **8/8**
+- Conversation full: [`ab-ko-role-contract-v3-mixed-final.json`](../results/ab-ko-role-contract-v3-mixed-final.json) — 7턴, 근거/후검증/구조/card 위반 0
+- Conversation S2 closure: [`ab-ko-role-contract-v3-s2-final.json`](../results/ab-ko-role-contract-v3-s2-final.json) — **1/1**
+- Compose final full: [`compose-ko-role-contract-v3-mixed-final.json`](../results/compose-ko-role-contract-v3-mixed-final.json) — 7/9; 두 실패는 상태 충돌을
   안전하게 차단했으나 HTML block 정정 범위가 좁았던 것
-- Compose status closure: `compose-ko-role-contract-v3-status-final.json` — **2/2**
+- Compose status closure: [`compose-ko-role-contract-v3-status-final.json`](../results/compose-ko-role-contract-v3-status-final.json) — **2/2**
 - 비교 기준: `create/ab/compose-ko-role-contract-v2-mixed.json`
 
 샌드박스 네트워크 차단 상태에서 실행한 한 시도는 모든 call/token이 0이고 전부 `Connection error`였으므로

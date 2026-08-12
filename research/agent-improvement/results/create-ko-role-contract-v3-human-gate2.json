@@ -1,0 +1,771 @@
+{
+ "model": "gpt-4o",
+ "simpleModel": "gpt-4o-mini",
+ "promptVersion": "ko-role-contract-v3",
+ "실행완료": true,
+ "합계": {
+  "통과": 3,
+  "완료": 3,
+  "전체": 3,
+  "비용USD": 0.339454,
+  "초": 155.1,
+  "calls": 25,
+  "promptTokens": 135831,
+  "completionTokens": 7213,
+  "totalTokens": 143044,
+  "cachedTokens": 79744
+ },
+ "케이스": [
+  {
+   "id": "ONE2",
+   "설명": "작은 수정 요청 — 단일 Task 로 끝난다(과잉 분해 금지)",
+   "입력": [
+    "카탈로그 화면 상단 필터에 '내 모듈만' 체크박스 하나 추가. 알아서"
+   ],
+   "통과": true,
+   "구조통과": true,
+   "본문결함": [],
+   "초": 38.4,
+   "턴": [
+    {
+     "thread_id": "7b1a964968fe4cc0",
+     "ok": true,
+     "reply": "## 상황\n현재 요청과 직접 일치하는 내부 이력은 확인되지 않았습니다.\n## 티켓 초안\n- **Task**: [Catalog] '내 모듈만' 체크박스 추가\n- **모듈**: Catalog\n- **우선순위**: P3-Minor\n- **설명**:\n- **배경**: 사용자가 카탈로그 화면에서 '내 모듈만' 필터링할 수 있는 기능을 요청했습니다. 이 기능은 사용자 경험을 개선하고, 관련 모듈만 빠르게 조회할 수 있도록 돕습니다.\n- **작업 범위**: 카탈로그 화면 상단에 '내 모듈만' 체크박스를 추가합니다.\n## 담당자 제안과 근거\n- **담당자 제안**: skcc.x1210\n- **근거**: 현재 진행 중인 업무가 상대적으로 적음\n- **대안**: skcc.i2044\n- **근거**: 현재 진행 중인 업무가 많아 부하가 높음\n## 검증 결과\n- 요청된 작업은 단일 기능 추가로, 한 명의 담당자가 며칠 내에 완료할 수 있는 규모입니다.\n### 실제 완료 조건\n| 티켓 | 완료 조건 |\n|---|---|\n| [Catalog] '내 모듈만' 체크박스 추가 | 체크박스가 정상적으로 추가되고 작동하는지 확인<br>관련 모듈만 필터링되는지 검증 |\n**승인 요청**: 위 초안과 담당자 제안에 대해 승인해 주시면, 다음 단계로 진행하겠습니다.",
+     "trace": [
+      {
+       "node": "planner",
+       "label": "요청 파악",
+       "note": "의도=plan_work 핵심어=카탈로그, 화면, 상단, 필터, 모듈, 체크박스, 추가"
+      },
+      {
+       "node": "query_specialist",
+       "label": "조회 설계",
+       "note": "조회 1개 설계"
+      },
+      {
+       "node": "query_runner",
+       "label": "조회 실행",
+       "note": "조회 1개 실행"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "근거 0건"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"
+      },
+      {
+       "node": "refiner",
+       "label": "업무 구체화",
+       "note": "질문 0개 · 초안 1건"
+      },
+      {
+       "node": "assigner",
+       "label": "담당자 검토",
+       "note": "1/1건 담당자 제안 · 현재 요청과 직접 일치하는 내부 이력이 없어, 모듈 경험과 부하를 기준으로 판단했습니다."
+      },
+      {
+       "node": "reviewer",
+       "label": "규칙 검증",
+       "note": "통과(기계 검증만 — 단건 초안)"
+      },
+      {
+       "node": "responder",
+       "label": "답변 정리",
+       "note": "639자"
+      }
+     ],
+     "intent": "plan_work",
+     "situation": "현재 요청의 고유 개념과 직접 일치하는 내부 이력은 확인되지 않았다.",
+     "evidence": [],
+     "related_docs": [],
+     "questions": [],
+     "assignments": [
+      {
+       "index": 0,
+       "user": "skcc.x1210",
+       "reasons": [
+        "현재 진행 중인 업무가 상대적으로 적음"
+       ],
+       "children": [],
+       "alternates": [
+        {
+         "user": "skcc.i2044",
+         "why": "현재 진행 중인 업무가 많아 부하가 높음"
+        }
+       ]
+      }
+     ],
+     "review": {
+      "ok": true,
+      "checks": {},
+      "problems": [],
+      "errors": [],
+      "warnings": [],
+      "summary": "단건 초안 — 기계 검증 통과(자동)"
+     },
+     "result": {},
+     "error": "",
+     "pending": {
+      "token": "MbrCu5cMpk2DBxkOOQDXO_wIDy7S990n",
+      "action": "create_tickets",
+      "mode": "task",
+      "items": [
+       {
+        "summary": "[Catalog] '내 모듈만' 체크박스 추가",
+        "type": "Task",
+        "epic": null,
+        "description": "<h3>배경</h3><p>사용자가 카탈로그 화면에서 '내 모듈만' 필터링할 수 있는 기능을 요청했습니다. 이 기능은 사용자 경험을 개선하고, 관련 모듈만 빠르게 조회할 수 있도록 돕습니다.</p><h3>작업 범위</h3><ul><li>포함: 카탈로그 화면 상단에 '내 모듈만' 체크박스 추가</li><li>제외: 체크박스 외 다른 필터링 기능 추가</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">체크박스가 정상적으로 추가되고 작동하는지 확인</li><li data-checked=\"false\">관련 모듈만 필터링되는지 검증</li></ul>",
+        "priority": "P3-Minor",
+        "assignee": "skcc.x1210",
+        "components": [
+         "Catalog"
+        ]
+       }
+      ],
+      "rationale": "(데이터 관리용 라벨은 뺐다: ui-fixture)\n(Research Analyst가 검증하지 않은 참고를 뺐다: DL-5452 \"[Catalog] 쿼리 성능 개선\" — 관련 작업과의 연관성 검토)\n(DL-5452 연결을 뺐다 — 업무 고유어가 Epic 제목과 겹치지 않는다)\n(구조: single_task — 요청된 작업은 단일 기능 추가로, 한 명의 담당자가 며칠 내에 완료할 수 있는 규모입니다.)",
+      "structure": "single_task",
+      "structure_why": "요청된 작업은 단일 기능 추가로, 한 명의 담당자가 며칠 내에 완료할 수 있는 규모입니다."
+     },
+     "people": {
+      "skcc.x1210": "한예준",
+      "skcc.i2044": "송지훈"
+     },
+     "usage": {
+      "calls": 6,
+      "promptTokens": 33409,
+      "completionTokens": 1287,
+      "totalTokens": 34696,
+      "model": "gpt-4o-2024-08-06",
+      "costUsd": 0.096392,
+      "cachedTokens": 21760,
+      "byNode": {
+       "planner": {
+        "calls": 1,
+        "tokens": 5593,
+        "seconds": 3.0
+       },
+       "query_specialist": {
+        "calls": 1,
+        "tokens": 1678,
+        "seconds": 2.4
+       },
+       "historian": {
+        "calls": 1,
+        "tokens": 4613,
+        "seconds": 2.2
+       },
+       "refiner": {
+        "calls": 1,
+        "tokens": 15663,
+        "seconds": 5.9
+       },
+       "assigner": {
+        "calls": 1,
+        "tokens": 3901,
+        "seconds": 5.0
+       },
+       "responder": {
+        "calls": 1,
+        "tokens": 3248,
+        "seconds": 3.4
+       }
+      },
+      "byTool": {
+       "list_ticket_options": {
+        "calls": 3,
+        "seconds": 0.0
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "PAR1",
+   "설명": "기존 Task 밑에 Sub-Task 를 개별 담당으로",
+   "입력": [
+    "DL-9090 밑에 서브태스크 3개 만들어줘: 성능 측정은 x1402, 가이드 작성은 x1450, 회귀 테스트는 x1042. 알아서"
+   ],
+   "통과": true,
+   "구조통과": true,
+   "본문결함": [],
+   "초": 62.6,
+   "턴": [
+    {
+     "thread_id": "3cd8c57f5c3847ae",
+     "ok": true,
+     "reply": "## 상황\n사용자 지정 담당(skcc.x1042, skcc.x1402, skcc.x1450)은 실재 사용자 검증을 거쳐 승인 payload에 반영되었습니다.\n## 티켓 초안\n| #  | 제목                        | 모듈       | 부모 | 마감 |\n|----|-----------------------------|------------|------|------|\n| 0  | [Workbench] 성능 측정 수행 | Workbench  | DL-9090 | -    |\n| 1  | [Workbench] 가이드 작성    | Workbench  | DL-9090 | -    |\n| 2  | [Workbench] 회귀 테스트 수행 | Workbench | DL-9090 | -    |\n### [0] Sub-Task — [Workbench] 성능 측정 수행\n- **부모 티켓**: DL-9090\n- **모듈**: Workbench\n- **우선순위**: P3-Minor\n- **설명**:\n- **작업 범위**: 성능 측정 계획 수립, 측정 결과 분석\n- **완료 조건 (DoD)**: 성능 측정 완료 및 보고서 제출\n## 담당자 제안\n- **성능 측정**: skcc.x1402 (진행중 14건; 열림 16건; 최근 완료 19건)\n- **가이드 작성**: skcc.x1450 (진행중 22건으로 부하가 높음)\n- **회귀 테스트**: skcc.x1042 (사용자 지정 또는 승인 payload에 확정된 담당자)\n## 검증 결과\n- DL-9090 티켓은 존재하며, 새로운 서브태스크 생성이 가능합니다.\n- 사용자 지정 담당(skcc.x1042, skcc.x1402, skcc.x1450)은 실재 사용자 검증을 거쳐 승인 payload에 반영되었습니다.\n- 각 서브태스크의 작업 범위와 완료 조건이 명확히 정의되었습니다.\n### 실제 완료 조건\n| 티켓 | 완료 조건 |\n|---|---|\n| [Workbench] 가이드 작성 | 최종 가이드 문서 제출 |\n| [Workbench] 회귀 테스트 수행 | 회귀 테스트 완료 및 결과 보고 — 실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다 |\n\n### 실제 담당자\n| 티켓 | 담당 |\n|---|---|\n| [Workbench] 성능 측정 수행 | skcc.x1402 |\n| [Workbench] 가이드 작성 | skcc.x1450 |\n| [Workbench] 회귀 테스트 수행 | skcc.x1042 |\n위의 티켓 초안과 담당자 제안에 대해 승인해 주시면, 해당 서브태스크를 생성하겠습니다.\n\n출처: [[설계] 리니지 뷰어 1차](https://confluence.corp.example/spaces/DL/pages/312238185/%5B%EC%84%A4%EA%B3%84%5D+%EB%A6%AC%EB%8B%88%EC%A7%80+%EB%B7%B0%EC%96%B4+1%EC%B0%A8)",
+     "trace": [
+      {
+       "node": "planner",
+       "label": "요청 파악",
+       "note": "의도=plan_work 핵심어=DL-9090, 서브태스크, 성능 측정, 가이드 작성, 회귀 테스트, x1402, x1450, x1042"
+      },
+      {
+       "node": "query_specialist",
+       "label": "조회 설계",
+       "note": "조회 1개 설계"
+      },
+      {
+       "node": "query_runner",
+       "label": "조회 실행",
+       "note": "조회 1개 실행"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "근거 2건"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"
+      },
+      {
+       "node": "refiner",
+       "label": "업무 구체화",
+       "note": "질문 0개 · 초안 3건"
+      },
+      {
+       "node": "assigner",
+       "label": "담당자 검토",
+       "note": "3/3건 담당자 제안"
+      },
+      {
+       "node": "reviewer",
+       "label": "규칙 검증",
+       "note": "통과"
+      },
+      {
+       "node": "responder",
+       "label": "답변 정리",
+       "note": "1440자"
+      }
+     ],
+     "intent": "plan_work",
+     "situation": "현재 DL-9090과 관련된 서브태스크 생성 요청은 이전에 동일한 작업이 수행된 기록이 없습니다. DL-9090은 '데이터 리니지 뷰어 1차 오픈'을 위한 티켓으로, 관련된 자식 티켓들이 존재하지만, 성능 측정, 가이드 작성, 회귀 테스트와 직접적으로 연결된 서브태스크는 없습니다. 또한, x1402, x1450, x1042라는 이름의 서브태스크나 관련 작업은 사내 티켓이나 문서에서 확인되지 않았습니다.",
+     "evidence": [
+      {
+       "key": "DL-9090",
+       "title": "[Workbench] 데이터 리니지 뷰어 1차 오픈",
+       "why": "DL-9090은 데이터 리니지 뷰어 1차 오픈을 위한 티켓으로, 현재 요청된 서브태스크와 직접적인 관련이 없습니다."
+      },
+      {
+       "key": "x1402_x1450_x1042",
+       "title": "사내 티켓·문서 어디에서도 이 이름을 찾지 못했다.",
+       "why": "요청된 서브태스크 이름이 사내 기록에 존재하지 않음을 확인했습니다."
+      }
+     ],
+     "related_docs": [
+      {
+       "title": "[설계] 리니지 뷰어 1차",
+       "url": "https://confluence.corp.example/spaces/DL/pages/312238185/[설계]+리니지+뷰어+1차"
+      }
+     ],
+     "questions": [],
+     "assignments": [
+      {
+       "index": 0,
+       "user": "skcc.x1402",
+       "reasons": [
+        "진행중 14건",
+        "열림 16건",
+        "최근 완료 19건"
+       ],
+       "children": [],
+       "alternates": [
+        {
+         "user": "skcc.x1450",
+         "why": "진행중 22건으로 부하가 높음"
+        }
+       ]
+      },
+      {
+       "index": 1,
+       "user": "skcc.x1450",
+       "reasons": [
+        "사용자 지정 또는 승인 payload에 확정된 담당자"
+       ],
+       "children": [],
+       "alternates": [
+        {
+         "user": "skcc.x1450",
+         "why": "진행중 22건으로 1순위보다 부하가 높음"
+        }
+       ]
+      },
+      {
+       "index": 2,
+       "user": "skcc.x1042",
+       "reasons": [
+        "사용자 지정 또는 승인 payload에 확정된 담당자"
+       ],
+       "children": [],
+       "alternates": [
+        {
+         "user": "skcc.x1450",
+         "why": "진행중 22건으로 부하가 높음"
+        }
+       ]
+      }
+     ],
+     "review": {
+      "ok": true,
+      "checks": {
+       "grounded": true,
+       "rule_compliant": true,
+       "answers_request": true
+      },
+      "problems": [],
+      "errors": [],
+      "warnings": [
+       {
+        "index": -1,
+        "message": "품질 참고(비차단): 담당자로 지정된 x1402, x1450, x1042는 조사 결과에 존재하지 않는다."
+       }
+      ],
+      "summary": "정책·근거 검증 통과. 편집 제안 1건은 비차단 참고로 남겼다."
+     },
+     "result": {},
+     "error": "",
+     "pending": {
+      "token": "oF9_PTLyOeBaRHxIMerUr-wLuV6G4S81",
+      "action": "create_tickets",
+      "mode": "subtask",
+      "items": [
+       {
+        "summary": "[Workbench] 성능 측정 수행",
+        "type": "Sub-Task",
+        "parent": "DL-9090",
+        "description": "<h3>작업 범위</h3><ul><li>성능 측정 계획 수립</li><li>측정 결과 분석</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">성능 측정 완료 및 보고서 제출</li></ul>",
+        "priority": "P3-Minor",
+        "assignee": "skcc.x1402",
+        "components": [
+         "Workbench"
+        ]
+       },
+       {
+        "summary": "[Workbench] 가이드 작성",
+        "type": "Sub-Task",
+        "parent": "DL-9090",
+        "description": "<h3>작업 범위</h3><ul><li>사용자 가이드 초안 작성</li><li>가이드 검토 및 수정</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">최종 가이드 문서 제출</li></ul>",
+        "priority": "P3-Minor",
+        "assignee": "skcc.x1450",
+        "components": [
+         "Workbench"
+        ]
+       },
+       {
+        "summary": "[Workbench] 회귀 테스트 수행",
+        "type": "Sub-Task",
+        "parent": "DL-9090",
+        "description": "<h3>작업 범위</h3><ul><li>테스트 케이스 준비</li><li>회귀 테스트 실행</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">회귀 테스트 완료 및 결과 보고 — 실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다</li></ul>",
+        "priority": "P3-Minor",
+        "assignee": "skcc.x1042",
+        "components": [
+         "Workbench"
+        ],
+        "labels": [
+         "regression"
+        ]
+       }
+      ],
+      "rationale": "사용자가 DL-9090 아래에 성능 측정, 가이드 작성, 회귀 테스트라는 세 개의 Sub-Task를 명시적으로 요청했으므로 각각의 작업을 Sub-Task로 생성하여 할당했습니다.\n(데이터 관리용 라벨은 뺐다: ui-fixture)\n(데이터 관리용 라벨은 뺐다: ui-fixture)\n(확인 필요: \"성능 측정 수행\" 의 작업 범위에 **이번에 하지 않는 것**이 없다 — 제외를 적어야 범위가 닫힌다)\n(확인 필요: 원 요청의 고유어(DL-9090, x1042., x1402, x1450)가 제목·본문에 없다 — 요청과 다른 주제의 티켓일 수 있다. Epic 본문을 따라간 것은 아닌지 검토)\n(구조: task_with_subtasks — 요청된 서브태스크 이름이 사내 기록에 존재하지 않음을 확인했습니다.)",
+      "structure": "task_with_subtasks",
+      "structure_why": "요청된 서브태스크 이름이 사내 기록에 존재하지 않음을 확인했습니다."
+     },
+     "people": {
+      "skcc.x1042": "최민서",
+      "skcc.x1402": "최하은",
+      "skcc.x1450": "안하준"
+     },
+     "usage": {
+      "calls": 8,
+      "promptTokens": 51267,
+      "completionTokens": 2737,
+      "totalTokens": 54004,
+      "model": "gpt-4o-2024-08-06",
+      "costUsd": 0.155537,
+      "cachedTokens": 21888,
+      "byNode": {
+       "planner": {
+        "calls": 1,
+        "tokens": 5633,
+        "seconds": 2.7
+       },
+       "query_specialist": {
+        "calls": 1,
+        "tokens": 1692,
+        "seconds": 1.5
+       },
+       "historian": {
+        "calls": 1,
+        "tokens": 5812,
+        "seconds": 4.8
+       },
+       "refiner": {
+        "calls": 2,
+        "tokens": 27352,
+        "seconds": 16.2
+       },
+       "reviewer": {
+        "calls": 1,
+        "tokens": 5254,
+        "seconds": 2.2
+       },
+       "assigner": {
+        "calls": 1,
+        "tokens": 4003,
+        "seconds": 5.0
+       },
+       "responder": {
+        "calls": 1,
+        "tokens": 4258,
+        "seconds": 6.0
+       }
+      },
+      "byTool": {
+       "find_mentions": {
+        "calls": 1,
+        "seconds": 0.06
+       },
+       "list_ticket_options": {
+        "calls": 3,
+        "seconds": 0.0
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "STARR1",
+   "설명": "주제 유지 — 원 요청 고유어가 제목에 남고, 다단계는 쪼개지고, 본문 규율",
+   "입력": [
+    "starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해",
+    "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, 마감은 2026-09-30. 알아서 진행해"
+   ],
+   "통과": true,
+   "구조통과": true,
+   "본문결함": [],
+   "초": 54.1,
+   "턴": [
+    {
+     "thread_id": "af19b09224414815",
+     "ok": true,
+     "reply": "현재 starrocks puffin ndv 통계정보를 생성하는 파이프라인 개발에 대한 사내 티켓이나 문서를 찾을 수 없었습니다. 신규 구축 파이프라인 개발로, 설계·구현·검증 단계가 나뉘어야 하며, 추가 정보가 필요합니다. 아래에서 선택해 주세요.",
+     "trace": [
+      {
+       "node": "planner",
+       "label": "요청 파악",
+       "note": "의도=plan_work · 계획: 파이프라인 개발 요구 수집 → 티켓 생성 → 담당자 지정 → 개발 진행"
+      },
+      {
+       "node": "query_specialist",
+       "label": "조회 설계",
+       "note": "조회 1개 설계"
+      },
+      {
+       "node": "query_runner",
+       "label": "조회 실행",
+       "note": "조회 1개 실행"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "근거 0건"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"
+      },
+      {
+       "node": "refiner",
+       "label": "업무 구체화",
+       "note": "질문 3개 · 초안 0건"
+      },
+      {
+       "node": "responder",
+       "label": "답변 정리",
+       "note": "138자"
+      }
+     ],
+     "intent": "plan_work",
+     "situation": "관련 이력을 찾지 못했다.",
+     "evidence": [],
+     "related_docs": [],
+     "questions": [
+      {
+       "question": "이 작업의 1차 목표는 무엇인가요? (검토만/PoC/최소 구현 중 선택)",
+       "kind": "choice",
+       "options": [
+        "최소 구현 (완전한 파이프라인 개발)",
+        "PoC (개념 증명 수준)",
+        "검토만 (기본 설계 및 검토)"
+       ],
+       "field": ""
+      },
+      {
+       "question": "왜 지금 이 작업이 필요한가요? 계기를 한 줄로 설명해 주세요.",
+       "kind": "text",
+       "options": [],
+       "field": ""
+      },
+      {
+       "question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 적어 주세요 (없으면 건너뛰어도 됩니다)",
+       "kind": "text",
+       "options": [],
+       "field": ""
+      }
+     ],
+     "assignments": [],
+     "review": {},
+     "result": {},
+     "error": "",
+     "people": {},
+     "usage": {
+      "calls": 6,
+      "promptTokens": 23981,
+      "completionTokens": 1230,
+      "totalTokens": 25211,
+      "model": "gpt-4o-2024-08-06",
+      "costUsd": 0.072252,
+      "cachedTokens": 19968,
+      "byNode": {
+       "planner": {
+        "calls": 1,
+        "tokens": 5586,
+        "seconds": 2.3
+       },
+       "query_specialist": {
+        "calls": 1,
+        "tokens": 1674,
+        "seconds": 1.6
+       },
+       "historian": {
+        "calls": 2,
+        "tokens": 4340,
+        "seconds": 1.9
+       },
+       "refiner": {
+        "calls": 1,
+        "tokens": 10935,
+        "seconds": 8.6
+       },
+       "responder": {
+        "calls": 1,
+        "tokens": 2676,
+        "seconds": 1.3
+       }
+      },
+      "byTool": {
+       "find_mentions": {
+        "calls": 1,
+        "seconds": 0.05
+       },
+       "search_web": {
+        "calls": 1,
+        "seconds": 1.42
+       },
+       "search_github": {
+        "calls": 1,
+        "seconds": 0.37
+       },
+       "list_ticket_options": {
+        "calls": 3,
+        "seconds": 0.0
+       }
+      }
+     }
+    },
+    {
+     "thread_id": "af19b09224414815",
+     "ok": true,
+     "reply": "## 상황\n현재 StarRocks Puffin NDV 통계정보를 생성하는 파이프라인 개발을 위한 Epic이 존재하지 않으며, 관련 이력도 확인되지 않았습니다.\n## 티켓 초안\n- **Story**: StarRocks Puffin NDV 통계정보 파이프라인 개발\n- **모듈**: ETL\n- **마감**: 2026-09-30\n- **우선순위**: P3-Minor\n- **설명**:\n- **배경**: StarRocks Puffin NDV 통계정보를 생성하기 위한 파이프라인이 필요합니다. 이 작업은 데이터 분석의 정확성을 높이기 위한 중요한 단계입니다.\n- **작업 범위**: StarRocks Puffin NDV\n### 하위 작업\n1. **StarRocks Puffin NDV 파이프라인 설계**\n- **현재 담당**: skcc.i2011 (부하가 적음)\n2. **StarRocks Puffin NDV 파이프라인 구현**\n- **현재 담당**: skcc.x1042\n3. **StarRocks Puffin NDV 파이프라인 검증**\n- **현재 담당**: skcc.x1103\n## 담당자 근거\n- **skcc.x1103**: 진행 중인 작업이 8건으로 상대적으로 부하가 적어 Epic의 총괄 담당자로 제안합니다.\n- **대안**:\n- **skcc.i2011**: 진행 중 12건\n- **skcc.x1042**: 진행 중 17건\n## 승인 요청",
+     "trace": [
+      {
+       "node": "planner",
+       "label": "요청 파악",
+       "note": "의도=plan_work 핵심어=starrocks, puffin, ndv, 통계정보, 파이프라인, 개발, Epic, 최소 기능, 1차 구현, 마감, 2026-09-30"
+      },
+      {
+       "node": "refiner",
+       "label": "업무 구체화",
+       "note": "질문 0개 · 초안 1건"
+      },
+      {
+       "node": "assigner",
+       "label": "담당자 검토",
+       "note": "1/1건 담당자 제안"
+      },
+      {
+       "node": "reviewer",
+       "label": "규칙 검증",
+       "note": "통과"
+      },
+      {
+       "node": "responder",
+       "label": "답변 정리",
+       "note": "693자"
+      }
+     ],
+     "intent": "plan_work",
+     "situation": "관련 이력을 찾지 못했다.",
+     "evidence": [],
+     "related_docs": [],
+     "questions": [],
+     "assignments": [
+      {
+       "index": 0,
+       "user": "skcc.x1103",
+       "reasons": [
+        "진행중 8건으로 상대적으로 부하가 적음"
+       ],
+       "children": [
+        {
+         "index": 0,
+         "user": "skcc.i2011",
+         "why": "진행중 12건으로 부하가 높지만, 설계 업무에 적합"
+        },
+        {
+         "index": 1,
+         "user": "skcc.x1042",
+         "why": "진행중 17건"
+        },
+        {
+         "index": 2,
+         "user": "skcc.x1103",
+         "why": "진행중 8건으로 부하가 적고, 검증 업무에 적합"
+        }
+       ],
+       "alternates": [
+        {
+         "user": "skcc.i2011",
+         "why": "진행중 12건으로 부하가 높음"
+        },
+        {
+         "user": "skcc.x1042",
+         "why": "진행중 17건으로 부하가 가장 높음"
+        }
+       ]
+      }
+     ],
+     "review": {
+      "ok": true,
+      "checks": {
+       "grounded": true,
+       "rule_compliant": true,
+       "answers_request": true
+      },
+      "problems": [],
+      "errors": [],
+      "warnings": [],
+      "summary": "티켓 초안은 요청한 파이프라인 개발 작업을 잘 반영하고 있으며, 작성 규칙을 준수하고 있습니다."
+     },
+     "result": {},
+     "error": "",
+     "pending": {
+      "token": "M8q_FKZm_mZZfhCCqx2hA2OhqN-3T8JF",
+      "action": "create_tickets",
+      "mode": "task",
+      "items": [
+       {
+        "summary": "[ETL] StarRocks Puffin NDV 통계정보 파이프라인 개발",
+        "type": "Story",
+        "epic": null,
+        "description": "<h3>배경</h3><p>StarRocks Puffin NDV 통계정보를 생성하기 위한 파이프라인이 필요합니다. 이 작업은 데이터 분석의 정확성을 높이기 위한 중요한 단계입니다.</p><h3>작업 범위</h3><ul><li>포함: StarRocks Puffin NDV 통계정보 생성 파이프라인 설계, 구현, 검증</li><li>제외: 추가 기능 개발 및 최적화</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">StarRocks Puffin NDV 통계정보 생성 파이프라인 설계 완료</li><li data-checked=\"false\">파이프라인 구현 및 테스트 완료</li><li data-checked=\"false\">파이프라인 검증 및 결과 검토 완료</li></ul>",
+        "priority": "P3-Minor",
+        "duedate": "2026-09-30",
+        "assignee": "skcc.x1103",
+        "components": [
+         "ETL"
+        ],
+        "labels": [
+         "q3-2026"
+        ]
+       }
+      ],
+      "rationale": "신규 파이프라인 개발로, 설계, 구현, 검증 단계가 나뉘어야 하며, 각 단계가 여러 사람에 의해 수행될 수 있다. \n(Research Analyst가 검증하지 않은 참고를 뺐다: DL-102 \"[ETL] 쿼리 성능 개선\" — 관련 성능 개선 작업)\n(나눠 맡도록 자식 담당을 모듈 인력에 배분했다 — 승인 화면에서 바꿀 수 있다)\n(구조: task_with_subtasks — 신규 구축 파이프라인 개발로, 설계·구현·검증 단계가 나뉘어야 하며, 각 단계가 여러 사람에 의해 수행될 수 있다.)",
+      "children": [
+       {
+        "parent_index": 0,
+        "summary": "StarRocks Puffin NDV 파이프라인 설계",
+        "type": "Sub-Task",
+        "description": "<h3>작업 범위</h3><ul><li>파이프라인 구조 설계</li><li>데이터 흐름 정의</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">파이프라인 구조 설계 완료 — 산출물 링크와 리뷰 결과를 parent ticket에 기록해 확인한다</li><li data-checked=\"false\">데이터 흐름 정의 완료</li></ul>",
+        "assignee": "skcc.i2011"
+       },
+       {
+        "parent_index": 0,
+        "summary": "StarRocks Puffin NDV 파이프라인 구현",
+        "type": "Sub-Task",
+        "description": "<h3>작업 범위</h3><ul><li>파이프라인 코드 작성</li><li>기본 기능 구현</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">파이프라인 코드 작성 완료 — 실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다</li><li data-checked=\"false\">기본 기능 구현 완료 — 실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다</li></ul>",
+        "assignee": "skcc.x1042"
+       },
+       {
+        "parent_index": 0,
+        "summary": "StarRocks Puffin NDV 파이프라인 검증",
+        "type": "Sub-Task",
+        "description": "<h3>작업 범위</h3><ul><li>파이프라인 테스트 수행</li><li>결과 검증 및 보고</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">파이프라인 테스트 완료 — 실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다</li><li data-checked=\"false\">결과 검증 및 보고 완료</li></ul>",
+        "assignee": "skcc.x1103"
+       }
+      ],
+      "structure": "task_with_subtasks",
+      "structure_why": "신규 구축 파이프라인 개발로, 설계·구현·검증 단계가 나뉘어야 하며, 각 단계가 여러 사람에 의해 수행될 수 있다."
+     },
+     "people": {
+      "skcc.i2011": "이다은",
+      "skcc.x1042": "최민서",
+      "skcc.x1103": "이준서"
+     },
+     "usage": {
+      "calls": 5,
+      "promptTokens": 27174,
+      "completionTokens": 1959,
+      "totalTokens": 29133,
+      "model": "gpt-4o-2024-08-06",
+      "costUsd": 0.087525,
+      "cachedTokens": 16128,
+      "byNode": {
+       "planner": {
+        "calls": 1,
+        "tokens": 5820,
+        "seconds": 3.7
+       },
+       "refiner": {
+        "calls": 1,
+        "tokens": 11550,
+        "seconds": 8.8
+       },
+       "reviewer": {
+        "calls": 1,
+        "tokens": 4326,
+        "seconds": 1.2
+       },
+       "assigner": {
+        "calls": 1,
+        "tokens": 3777,
+        "seconds": 3.0
+       },
+       "responder": {
+        "calls": 1,
+        "tokens": 3660,
+        "seconds": 5.4
+       }
+      },
+      "byTool": {
+       "list_ticket_options": {
+        "calls": 3,
+        "seconds": 0.0
+       }
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

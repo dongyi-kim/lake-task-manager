@@ -1,0 +1,622 @@
+{
+ "model": "gpt-4o",
+ "simpleModel": "gpt-4o-mini",
+ "promptVersion": "ko-role-contract-v3",
+ "실행완료": true,
+ "합계": {
+  "통과": 2,
+  "완료": 3,
+  "전체": 3,
+  "비용USD": 0.327633,
+  "초": 131.4,
+  "calls": 23,
+  "promptTokens": 110905,
+  "completionTokens": 5037,
+  "totalTokens": 115942,
+  "cachedTokens": 79744
+ },
+ "케이스": [
+  {
+   "id": "SUB2",
+   "설명": "기존 Task 하나에 Sub-Task 여러 개 추가 — 이미 있는 자식과 겹치지 않게",
+   "입력": [
+    "DL-9090 에 성능 측정이랑 사용 가이드 작성 서브태스크 추가해줘. 알아서"
+   ],
+   "통과": true,
+   "구조통과": true,
+   "본문결함": [],
+   "초": 69.1,
+   "턴": [
+    {
+     "thread_id": "bcd7619bd824424d",
+     "ok": true,
+     "reply": "### 상황\n현재 DL-9090 티켓은 '데이터 리니지 뷰어 1차 오픈'을 주제로 하고 있으며, 관련된 서브태스크로 성능 측정과 사용 가이드 작성이 요청되었습니다. 기존에 관련된 서브태스크는 없으므로 새로 추가해야 합니다.\n### 티켓 초안\n아래는 DL-9090 티켓에 추가할 Sub-Task의 초안입니다. 아직 만들어지지 않았음을 유의하세요.\n| #  | 제목                                      | 모듈      | Epic | 마감   |\n|----|-------------------------------------------|-----------|------|--------|\n| 0  | [Workbench] 성능을 측정하는 방법 정의     | Workbench | N/A  | N/A    |\n| 1  | [Workbench] 사용 가이드 작성              | Workbench | N/A  | N/A    |\n- **[0] Sub-Task** — [Workbench] 성능을 측정하는 방법 정의\n- **부모**: DL-9090\n- **모듈**: Workbench\n- **우선순위**: P3-Minor\n- **설명**:\n- **작업 범위**:\n- 성능 측정 기준 설정\n- 측정 도구 및 방법론 선정\n- **완료 조건 (DoD)**:\n- 성능 측정 기준이 명확히 설정됨\n- **[1] Sub-Task** — [Workbench] 사용 가이드 작성\n- **부모**: DL-9090\n- **모듈**: Workbench\n- **우선순위**: P3-Minor\n- **설명**:\n- **작업 범위**:\n- 사용자 매뉴얼 초안 작성\n- 검토 및 피드백 반영\n- **완료 조건 (DoD)**:\n- 사용자 매뉴얼 초안이 작성됨\n### 담당자 제안\n- **[0] 성능을 측정하는 방법 정의**: skcc.x1402\n- 근거: 진행중 14건; 열림 16건; 최근 완료 19건\n- **[1] 사용 가이드 작성**: skcc.x1450\n- 근거: 진행중 22건; 열림 16건; 최근 완료 16건\n### 검증 결과\n- DL-9090 티켓은 실재하며, 요청된 작업과 관련된 주제를 가지고 있습니다.\n- 서브태스크 초안은 명확히 분리되어 있으며, 작업 범위와 완료 조건이 정의되어 있습니다.\n- 담당자 제안은 현재 부하를 고려하여 적절히 배정되었습니다.\n**승인 요청**: 위 초안을 검토하시고, 승인을 부탁드립니다.\n\n출처: [[설계] 리니지 뷰어 1차](https://confluence.corp.example/spaces/DL/pages/312238185/[설계]+리니지+뷰어+1차)",
+     "trace": [
+      {
+       "node": "planner",
+       "label": "요청 파악",
+       "note": "의도=plan_work 핵심어=DL-9090, 성능 측정, 사용 가이드, 서브태스크"
+      },
+      {
+       "node": "query_specialist",
+       "label": "조회 설계",
+       "note": "조회 2개 설계"
+      },
+      {
+       "node": "query_runner",
+       "label": "조회 실행",
+       "note": "조회 2개 실행"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "근거 2건"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"
+      },
+      {
+       "node": "refiner",
+       "label": "업무 구체화",
+       "note": "질문 0개 · 초안 2건"
+      },
+      {
+       "node": "assigner",
+       "label": "담당자 검토",
+       "note": "2/2건 담당자 제안"
+      },
+      {
+       "node": "reviewer",
+       "label": "규칙 검증",
+       "note": "통과"
+      },
+      {
+       "node": "responder",
+       "label": "답변 정리",
+       "note": "1296자"
+      }
+     ],
+     "intent": "plan_work",
+     "situation": "현재 DL-9090 티켓은 '데이터 리니지 뷰어 1차 오픈'을 주제로 하고 있으며, 관련된 서브태스크로 성능 측정과 사용 가이드 작성이 요청되었다. 그러나 이와 관련된 기존 서브태스크나 유사한 작업은 확인되지 않았다. DL-9090과 직접적으로 관련된 서브태스크는 존재하지 않으며, 추가적인 작업이 필요하다.",
+     "evidence": [
+      {
+       "key": "DL-9090",
+       "title": "[Workbench] 데이터 리니지 뷰어 1차 오픈",
+       "why": "현재 요청된 작업의 주제와 관련된 티켓이다."
+      },
+      {
+       "key": "DL-9095",
+       "title": "[Workbench] 다운스트림 조회 연동",
+       "why": "DL-9090의 자식 티켓으로, 관련 작업의 일부일 가능성이 있다."
+      }
+     ],
+     "related_docs": [
+      {
+       "title": "[설계] 리니지 뷰어 1차",
+       "url": "https://confluence.corp.example/spaces/DL/pages/312238185/[설계]+리니지+뷰어+1차"
+      }
+     ],
+     "questions": [],
+     "assignments": [
+      {
+       "index": 0,
+       "user": "skcc.x1402",
+       "reasons": [
+        "진행중 14건",
+        "열림 16건",
+        "최근 완료 19건"
+       ],
+       "children": [],
+       "alternates": [
+        {
+         "user": "skcc.x1450",
+         "why": "진행중 22건으로 부하가 높음"
+        }
+       ]
+      },
+      {
+       "index": 1,
+       "user": "skcc.x1450",
+       "reasons": [
+        "진행중 22건",
+        "열림 16건",
+        "최근 완료 16건"
+       ],
+       "children": [],
+       "alternates": [
+        {
+         "user": "skcc.x1402",
+         "why": "진행중 14건으로 부하가 상대적으로 낮음"
+        }
+       ]
+      }
+     ],
+     "review": {
+      "ok": true,
+      "checks": {
+       "grounded": true,
+       "rule_compliant": true,
+       "answers_request": true
+      },
+      "problems": [],
+      "errors": [],
+      "warnings": [
+       {
+        "index": 0,
+        "message": "품질 참고(비차단): Sub-Task의 참고 문서가 부모와 중복되어 규칙 위반입니다."
+       },
+       {
+        "index": 1,
+        "message": "품질 참고(비차단): Sub-Task의 참고 문서가 부모와 중복되어 규칙 위반입니다."
+       }
+      ],
+      "summary": "정책·근거 검증 통과. 편집 제안 2건은 비차단 참고로 남겼다."
+     },
+     "result": {},
+     "error": "",
+     "pending": {
+      "token": "BunMkMUB8tpGC-bqFvBsGSYISE2sgS09",
+      "action": "create_tickets",
+      "mode": "subtask",
+      "items": [
+       {
+        "summary": "[Workbench] 성능을 측정하는 방법 정의",
+        "type": "Sub-Task",
+        "parent": "DL-9090",
+        "description": "<h3>작업 범위</h3><ul><li>성능 측정 기준 설정</li><li>측정 도구 및 방법론 선정</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">성능 측정 기준이 명확히 정의됨</li><li data-checked=\"false\">측정 도구 및 방법론이 선정됨</li></ul><h3>참고</h3><ul><li><a href=\"https://confluence.corp.example/spaces/DL/pages/312238185/[설계]+리니지+뷰어+1차\">[설계] 리니지 뷰어 1차</a></li></ul>",
+        "priority": "P3-Minor",
+        "assignee": "skcc.x1402",
+        "components": [
+         "Workbench"
+        ]
+       },
+       {
+        "summary": "[Workbench] 사용 가이드 작성",
+        "type": "Sub-Task",
+        "parent": "DL-9090",
+        "description": "<h3>작업 범위</h3><ul><li>사용자 매뉴얼 초안 작성</li><li>검토 및 피드백 반영</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">사용자 매뉴얼 초안이 작성됨</li><li data-checked=\"false\">검토 및 피드백이 반영됨</li></ul><h3>참고</h3><ul><li><a href=\"https://confluence.corp.example/spaces/DL/pages/312238185/[설계]+리니지+뷰어+1차\">[설계] 리니지 뷰어 1차</a></li></ul>",
+        "priority": "P3-Minor",
+        "assignee": "skcc.x1450",
+        "components": [
+         "Workbench"
+        ]
+       }
+      ],
+      "rationale": "사용자가 DL-9090에 성능 측정과 사용 가이드 작성 서브태스크를 추가하라고 명시했으므로 각각의 작업을 Sub-Task로 분리했다.\n(데이터 관리용 라벨은 뺐다: ui-fixture)\n(데이터 관리용 라벨은 뺐다: ui-fixture)\n(확인 필요: \"성능을 측정하는 방법 정의\" 의 작업 범위에 **이번에 하지 않는 것**이 없다 — 제외를 적어야 범위가 닫힌다)\n(확인 필요: 원 요청의 고유어(DL-9090)가 제목·본문에 없다 — 요청과 다른 주제의 티켓일 수 있다. Epic 본문을 따라간 것은 아닌지 검토)\n(구조: single_task — DL-9090의 자식 티켓으로, 관련 작업의 일부일 가능성이 있다.)",
+      "structure": "single_task",
+      "structure_why": "DL-9090의 자식 티켓으로, 관련 작업의 일부일 가능성이 있다."
+     },
+     "people": {
+      "skcc.x1402": "최하은",
+      "skcc.x1450": "안하준"
+     },
+     "usage": {
+      "calls": 8,
+      "promptTokens": 52246,
+      "completionTokens": 2556,
+      "totalTokens": 54802,
+      "model": "gpt-4o-2024-08-06",
+      "costUsd": 0.156175,
+      "cachedTokens": 34816,
+      "byNode": {
+       "planner": {
+        "calls": 1,
+        "tokens": 5632,
+        "seconds": 2.5
+       },
+       "query_specialist": {
+        "calls": 1,
+        "tokens": 1764,
+        "seconds": 2.4
+       },
+       "historian": {
+        "calls": 1,
+        "tokens": 7393,
+        "seconds": 3.3
+       },
+       "refiner": {
+        "calls": 2,
+        "tokens": 26852,
+        "seconds": 9.9
+       },
+       "assigner": {
+        "calls": 1,
+        "tokens": 3789,
+        "seconds": 2.5
+       },
+       "reviewer": {
+        "calls": 1,
+        "tokens": 5327,
+        "seconds": 3.0
+       },
+       "responder": {
+        "calls": 1,
+        "tokens": 4045,
+        "seconds": 6.5
+       }
+      },
+      "byTool": {
+       "list_ticket_options": {
+        "calls": 3,
+        "seconds": 0.0
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "ATTR1",
+   "설명": "우선순위·마감·라벨을 말로 지정",
+   "입력": [
+    "적재 지연 알림 임계값 조정 Task 만들어줘. 우선순위 P1, 이번 주 금요일까지, 라벨은 hotfix. 알아서"
+   ],
+   "통과": false,
+   "구조통과": true,
+   "본문결함": [
+    "[0] 본문이 사실상 비었다"
+   ],
+   "초": 32.0,
+   "턴": [
+    {
+     "thread_id": "94459f3dbd4c4079",
+     "ok": true,
+     "reply": "이 구조는 적재 지연 알림 임계값 조정 작업을 단계별로 나누어 효율적으로 진행할 수 있도록 설계되었습니다. 각 단계는 설계, 구현, 테스트 환경 설정, 정상 작동 검증, 그리고 결과 문서화로 구성되어 있어 작업의 흐름을 명확히 하고 책임을 분배할 수 있습니다.\n```\n1. [DataOps] 적재 지연 알림 임계값 조정   [DataOps]\n├─ 1-1. 적재 지연 알림 임계값 조정 설계\n├─ 1-2. 적재 지연 알림 임계값 조정 구현\n├─ 1-3. 적재 지연 알림 임계값 조정 테스트 환경 설정\n├─ 1-4. 적재 지연 알림 정상 작동 검증\n└─ 1-5. 적재 지연 알림 조정 결과 문서화\n```\n고칠 수 있는 것: 각 Sub-Task의 담당자를 부하를 고려하여 조정할 수 있습니다.\n\n이 티켓 초안은 아직 생성되지 않았습니다. 승인 카드에서 확인해 주세요.\n\n### Sub-Task 담당\n| Sub-Task | 담당 |\n|---|---|\n| 적재 지연 알림 임계값 조정 설계 | skcc.i2101 |\n| 적재 지연 알림 임계값 조정 구현 | skcc.i2130 |\n| 적재 지연 알림 임계값 조정 테스트 환경 설정 | skcc.i2101 |\n| 적재 지연 알림 정상 작동 검증 | skcc.i2130 |\n| 적재 지연 알림 조정 결과 문서화 | skcc.i2101 |",
+     "trace": [
+      {
+       "node": "planner",
+       "label": "요청 파악",
+       "note": "의도=plan_work 핵심어=적재 지연 알림 임계값, Task, 우선순위 P1, 이번 주 금요일, 라벨 hotfix"
+      },
+      {
+       "node": "query_specialist",
+       "label": "조회 설계",
+       "note": "조회 1개 설계"
+      },
+      {
+       "node": "query_runner",
+       "label": "조회 실행",
+       "note": "조회 1개 실행"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "근거 0건"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"
+      },
+      {
+       "node": "refiner",
+       "label": "업무 구체화",
+       "note": "질문 1개 · 초안 1건"
+      },
+      {
+       "node": "responder",
+       "label": "답변 정리",
+       "note": "657자"
+      }
+     ],
+     "intent": "plan_work",
+     "situation": "관련 이력을 찾지 못했다.",
+     "evidence": [],
+     "related_docs": [],
+     "questions": [
+      {
+       "question": "이 구조로 진행할까요? (Task 1건 · Sub-Task 5건) — 고칠 것이 있으면 그대로 말씀해 주세요(합치기·나누기·추가·삭제·이름 변경).",
+       "kind": "choice",
+       "field": "",
+       "options": [
+        "이 구조로 진행한다",
+        "고칠 것이 있다 (아래에 적는다)"
+       ]
+      }
+     ],
+     "assignments": [],
+     "review": {},
+     "result": {},
+     "error": "",
+     "draft_items": [
+      {
+       "summary": "[DataOps] 적재 지연 알림 임계값 조정",
+       "tier": "task",
+       "issue_type": "Task",
+       "type": "Task",
+       "epic": "",
+       "components": [
+        "DataOps"
+       ],
+       "labels": [
+        "hotfix"
+       ],
+       "priority": "P1-Critical",
+       "duedate": "2026-08-14",
+       "children": [
+        {
+         "summary": "적재 지연 알림 임계값 조정 설계",
+         "assignee": "skcc.i2101",
+         "tier": "subtask",
+         "issue_type": "Sub-Task"
+        },
+        {
+         "summary": "적재 지연 알림 임계값 조정 구현",
+         "assignee": "skcc.i2130",
+         "tier": "subtask",
+         "issue_type": "Sub-Task"
+        },
+        {
+         "summary": "적재 지연 알림 임계값 조정 테스트 환경 설정",
+         "assignee": "skcc.i2101",
+         "tier": "subtask",
+         "issue_type": "Sub-Task"
+        },
+        {
+         "summary": "적재 지연 알림 정상 작동 검증",
+         "assignee": "skcc.i2130",
+         "tier": "subtask",
+         "issue_type": "Sub-Task"
+        },
+        {
+         "summary": "적재 지연 알림 조정 결과 문서화",
+         "assignee": "skcc.i2101",
+         "tier": "subtask",
+         "issue_type": "Sub-Task"
+        }
+       ]
+      }
+     ],
+     "people": {
+      "skcc.i2130": "최지호",
+      "skcc.i2101": "오지우"
+     },
+     "usage": {
+      "calls": 7,
+      "promptTokens": 26443,
+      "completionTokens": 1077,
+      "totalTokens": 27520,
+      "model": "gpt-4o-2024-08-06",
+      "costUsd": 0.076878,
+      "cachedTokens": 22400,
+      "byNode": {
+       "planner": {
+        "calls": 1,
+        "tokens": 5631,
+        "seconds": 2.4
+       },
+       "query_specialist": {
+        "calls": 1,
+        "tokens": 1717,
+        "seconds": 1.1
+       },
+       "historian": {
+        "calls": 2,
+        "tokens": 4512,
+        "seconds": 2.0
+       },
+       "refiner": {
+        "calls": 2,
+        "tokens": 12033,
+        "seconds": 7.8
+       },
+       "responder": {
+        "calls": 1,
+        "tokens": 3627,
+        "seconds": 2.8
+       }
+      },
+      "byTool": {
+       "search_web": {
+        "calls": 1,
+        "seconds": 1.39
+       },
+       "search_github": {
+        "calls": 1,
+        "seconds": 0.48
+       },
+       "list_ticket_options": {
+        "calls": 3,
+        "seconds": 0.0
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "RULE2",
+   "설명": "Story Point 를 넣어 달라 — 생성 시에는 넣지 않는다",
+   "입력": [
+    "리니지 3홉 확장 Story 만들고 스토리포인트 5로 넣어줘. 알아서"
+   ],
+   "통과": true,
+   "구조통과": true,
+   "본문결함": [],
+   "초": 30.3,
+   "턴": [
+    {
+     "thread_id": "ab49351d1d2b4b28",
+     "ok": true,
+     "reply": "### 상황\n현재 리니지 3홉 확장과 관련된 이력을 찾지 못했으며, 관련된 Epic이나 다른 Story가 존재하지 않습니다.\n### 티켓 초안\n- **Story**: [Catalog] 리니지 3홉 확장 구현\n- **모듈**: Catalog\n- **라벨**: needs-review\n- **우선순위**: P3-Minor\n- **설명**:\n- **배경**: 사용자 요청에 따라 리니지 3홉 확장을 구현합니다. 배경 정보는 추가 확인이 필요합니다.\n- **작업 범위**:\n- 포함: 리니지 3홉 확장 기능 구현\n- 제외: 기타 관련 기능\n### 담당자 제안과 근거\n- **담당자 제안**: skcc.x1210\n- **근거**: 진행 중인 작업이 10건으로 상대적으로 부하가 낮음\n- **대안**: skcc.i2044 (진행 중 13건으로 부하가 높음)\n### 검증 결과\n- 티켓 작성 규칙을 충족하기 위해 배경 정보가 부족합니다. 사용자에게 배경 정보를 추가로 요청하여 보완해야 합니다.\n**승인 요청**: 위의 초안과 담당자 제안에 대해 승인해 주시면, 티켓을 생성하겠습니다. 추가로 배경 정보를 제공해 주시면 감사하겠습니다.\n\n**Story Point 5 미포함**: 에이전트 생성 payload가 지원하지 않는 필드이므로 티켓 생성 후 화면에서 직접 설정해야 합니다.",
+     "trace": [
+      {
+       "node": "planner",
+       "label": "요청 파악",
+       "note": "의도=plan_work 핵심어=리니지 3홉 확장, Story, 스토리포인트 5"
+      },
+      {
+       "node": "query_specialist",
+       "label": "조회 설계",
+       "note": "조회 1개 설계"
+      },
+      {
+       "node": "query_runner",
+       "label": "조회 실행",
+       "note": "조회 1개 실행"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "근거 0건"
+      },
+      {
+       "node": "historian",
+       "label": "과거 이력 조사",
+       "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"
+      },
+      {
+       "node": "refiner",
+       "label": "업무 구체화",
+       "note": "질문 0개 · 초안 1건"
+      },
+      {
+       "node": "assigner",
+       "label": "담당자 검토",
+       "note": "1/1건 담당자 제안"
+      },
+      {
+       "node": "reviewer",
+       "label": "규칙 검증",
+       "note": "보류 — 자동 0건 · 판단 1건 (rule_compliant)"
+      },
+      {
+       "node": "responder",
+       "label": "답변 정리",
+       "note": "653자"
+      }
+     ],
+     "intent": "plan_work",
+     "situation": "관련 이력을 찾지 못했다.",
+     "evidence": [],
+     "related_docs": [],
+     "questions": [],
+     "assignments": [
+      {
+       "index": 0,
+       "user": "skcc.x1210",
+       "reasons": [
+        "진행중 10건으로 상대적으로 부하가 낮음"
+       ],
+       "children": [],
+       "alternates": [
+        {
+         "user": "skcc.i2044",
+         "why": "진행중 13건으로 부하가 높음"
+        }
+       ]
+      }
+     ],
+     "review": {
+      "ok": false,
+      "checks": {
+       "grounded": true,
+       "rule_compliant": false,
+       "answers_request": true
+      },
+      "problems": [
+       {
+        "index": 0,
+        "check": "rule",
+        "message": "배경 정보가 부족하여 티켓 작성 규칙을 충족하지 못함.",
+        "fix": "사용자에게 배경 정보를 추가로 요청하여 보완하라."
+       }
+      ],
+      "errors": [],
+      "warnings": [
+       {
+        "index": 0,
+        "message": "품질 참고(비차단): 완료 조건이 판정 가능하지 않음."
+       }
+      ],
+      "summary": "티켓 초안은 사용자의 요청을 반영하고 있으나, 배경 정보와 완료 조건이 부족하여 작성 규칙을 충족하지 못합니다."
+     },
+     "result": {},
+     "error": "",
+     "pending": {
+      "token": "awnWWGT43By5GJ6IjizrcEAEFxXvD-Wz",
+      "action": "create_tickets",
+      "mode": "task",
+      "items": [
+       {
+        "summary": "[Catalog] 리니지 3홉 확장 구현",
+        "type": "Story",
+        "epic": null,
+        "description": "<h3>배경</h3><p>사용자 요청에 따라 리니지 3홉 확장을 구현합니다. 배경 정보는 추가 확인이 필요합니다.</p><h3>작업 범위</h3><ul><li>포함: 리니지 3홉 확장 기능 구현</li><li>제외: 기타 관련 기능</li></ul><h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\"><li data-checked=\"false\">기능 테스트가 완료되어 모든 기능이 정상적으로 작동함을 확인한 테스트 리포트가 제출됨</li></ul>",
+        "priority": "P3-Minor",
+        "assignee": "skcc.x1210",
+        "components": [
+         "Catalog"
+        ],
+        "labels": [
+         "needs-review"
+        ]
+       }
+      ],
+      "rationale": "사용자가 단일 Story로 요청했으며, Story Point는 생성 후 할당 예정\n(확인 필요: 원 요청의 고유어(Story)가 제목·본문에 없다 — 요청과 다른 주제의 티켓일 수 있다. Epic 본문을 따라간 것은 아닌지 검토)\n(summary의 module alias에 맞춰 component를 바로잡았다)\n(구조: single_task — 사용자가 단일 Story를 요청했고, 별도의 산출물 분할 신호가 없다)",
+      "structure": "single_task",
+      "structure_why": "사용자가 단일 Story를 요청했고, 별도의 산출물 분할 신호가 없다"
+     },
+     "people": {
+      "skcc.x1210": "한예준",
+      "skcc.i2044": "송지훈"
+     },
+     "usage": {
+      "calls": 8,
+      "promptTokens": 32216,
+      "completionTokens": 1404,
+      "totalTokens": 33620,
+      "model": "gpt-4o-2024-08-06",
+      "costUsd": 0.09458,
+      "cachedTokens": 22528,
+      "byNode": {
+       "planner": {
+        "calls": 1,
+        "tokens": 5615,
+        "seconds": 2.2
+       },
+       "query_specialist": {
+        "calls": 1,
+        "tokens": 1698,
+        "seconds": 1.0
+       },
+       "historian": {
+        "calls": 1,
+        "tokens": 3954,
+        "seconds": 1.3
+       },
+       "refiner": {
+        "calls": 2,
+        "tokens": 11277,
+        "seconds": 5.1
+       },
+       "assigner": {
+        "calls": 1,
+        "tokens": 3440,
+        "seconds": 1.6
+       },
+       "reviewer": {
+        "calls": 1,
+        "tokens": 4330,
+        "seconds": 2.8
+       },
+       "responder": {
+        "calls": 1,
+        "tokens": 3306,
+        "seconds": 4.0
+       }
+      },
+      "byTool": {
+       "list_ticket_options": {
+        "calls": 3,
+        "seconds": 0.0
+       }
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

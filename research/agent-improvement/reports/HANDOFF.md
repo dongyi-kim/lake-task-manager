@@ -2,7 +2,7 @@
 
 브랜치 **`feature/ai-agent`** (서브모듈 `lake-task-manager-deploy/lake-task-manager`).
 이 문서 하나로 다음 세션이 코드 이해 → 검증 → 이어서 작업까지 가능해야 한다.
-아키텍처 개요는 [AGENT.md](AGENT.md), 성능은 [PERF-ROUND2.md](PERF-ROUND2.md),
+아키텍처 개요는 [AGENT.md](../../../docs/AGENT.md), 성능은 [PERF-ROUND2.md](PERF-ROUND2.md),
 품질 비교는 [DRAFT-COMPARISON.md](DRAFT-COMPARISON.md) 참조.
 
 ## 0. 30초 요약
@@ -57,7 +57,7 @@ JIRA_ENV=mock python -m uvicorn app.main:app --port 8000     # 서버 (mock 세�
 | 정적 자산·소스 위생 | (pytest 에 포함) `tests/test_static_assets.py` | 제어문자·JS 파싱·템플릿의 모듈 직접 호출·인라인 핸들러 + **파이썬 소스의 뭉개진 줄·제어문자**. **조용히 깨지는 사고**를 커밋 전에 잡는다, $0 |
 | **프롬프트 정합** | (pytest 에 포함) `tests/test_agent_prompt_integrity.py` | md 가 **그 역할에 없는 도구**를 시키면 실패. 도구를 걷어냈는데 md 가 남아 열 군데서 유령 도구를 부르라 시킨 사고를 잡는다, $0 |
 | **정성 판독** | `python -X utf8 tools/agent_quality_read.py [모델] [CREATE\|UNASSIGNED\|MODIFY]` | 실 LLM(mini). 답변 전문·초안 본문·담당 근거·변경 계획을 **통째로** 찍는다. 시간·토큰이 아니라 "실제로 뭐라고 나왔나"를 읽는 자리 |
-| **조회·지식 배터리** | `python -X utf8 tools/agent_scenarios.py gpt-4o-mini [케이스ID…] [--dump]` | 실 LLM. **29케이스** — 케이스마다 `EXPECT`(story·must·must_not) 계약이 붙어 있고 **통과 판정은 그 계약이 한다**. judge 6축 점수는 `⚑읽어볼 것` 표시일 뿐 게이트가 아니다(§5-f). `--dump` 는 답변 전문을 `docs/agent-quality-run.md` 로 — **정성 평가는 그걸 읽어서** 한다. 전체 ~$0.15 |
+| **조회·지식 배터리** | `python -X utf8 tools/agent_scenarios.py gpt-4o-mini [케이스ID…] [--dump]` | 실 LLM. **29케이스** — 케이스마다 `EXPECT`(story·must·must_not) 계약이 붙어 있고 **통과 판정은 그 계약이 한다**. judge 6축 점수는 `⚑읽어볼 것` 표시일 뿐 게이트가 아니다(§5-f). `--dump` 는 답변 전문을 `research/agent-improvement/reports/agent-quality-run.md` 로 — **정성 평가는 그걸 읽어서** 한다. 전체 ~$0.15 |
 | **생성 스위트** | `python -X utf8 tools/agent_create_suite.py gpt-4o-mini [케이스ID…]` | 실 LLM. **20케이스**(ONE/STR/PAR/SUB/PASTE/ASK/DUP/ATTR/RULE/STARR1). 구조 계약 + **본문 결함 게이트**(4섹션·중복/영문 섹션·제외·DoD 판정 방법·출처 없는 참고). 전체 ~$0.25 |
 | 초안 심층 평가 | `python -X utf8 tools/agent_draft_eval.py` | 실 LLM. 정량 축 + judge **6축**(topic/body/roles/refs/placement/scope) |
 | 브라우저 | 서버 띄우고 AI 탭 | 진행 체크리스트·뱃지·카드 ✎수정·승인 E2E |

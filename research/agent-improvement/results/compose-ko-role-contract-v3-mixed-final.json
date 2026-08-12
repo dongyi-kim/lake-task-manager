@@ -1,0 +1,328 @@
+{
+ "model": "gpt-4o",
+ "simpleModel": "gpt-4o-mini",
+ "promptVersion": "ko-role-contract-v3",
+ "합계": {
+  "통과": 7,
+  "전체": 9,
+  "초": 23.6,
+  "calls": 8,
+  "promptTokens": 34388,
+  "completionTokens": 1776,
+  "totalTokens": 36164,
+  "cachedTokens": 13440,
+  "costUsd": 0.10373
+ },
+ "케이스": [
+  {
+   "id": "CMP1",
+   "설명": "코멘트 — 진행 중 티켓의 진행 보고(맥락: DL-9090 최근 코멘트를 이어받아야)",
+   "입력": {
+    "ticket_key": "DL-9090",
+    "kind": "comment",
+    "prompt": "진행 상황 공유 코멘트 써줘"
+   },
+   "통과": false,
+   "초": 5.1,
+   "결과": {
+    "ok": false,
+    "contentConflict": true,
+    "error": "AI 생성문이 현재 자료와 충돌해 삽입하지 않았습니다 — 자료상 아직 남은 항목을 완료로 썼습니다: 다운스트림 조회 연동",
+    "usage": {
+     "calls": 1,
+     "promptTokens": 4391,
+     "completionTokens": 224,
+     "totalTokens": 4615,
+     "model": "gpt-4o-2024-08-06",
+     "costUsd": 0.013218
+    }
+   }
+  },
+  {
+   "id": "CMP2",
+   "설명": "본문 — 기존 티켓의 본문 보강(4섹션 구조 준수)",
+   "입력": {
+    "ticket_key": "DL-9095",
+    "kind": "description",
+    "prompt": "이 티켓 본문을 배경·작업 범위·완료 조건 갖춰 다시 써줘"
+   },
+   "통과": true,
+   "초": 3.0,
+   "결과": {
+    "ok": true,
+    "html": "<h3>배경</h3>\n<p>데이터셋 카탈로그 지식 픽스처 이니셔티브(<a class=\"jira-badge tkt\" data-key=\"DL-9040\" href=\"/browse/DL-9040\">DL-9040</a>)의 일환으로, Workbench에서 다운스트림 조회 기능을 연동해야 합니다. 이는 데이터셋의 효율적인 관리와 활용을 위해 필수적인 작업입니다.</p>\n\n<h3>작업 범위</h3>\n<ul>\n  <li>포함: Workbench 내에서 다운스트림 조회 기능을 구현하고, 사용자 인터페이스와의 통합을 완료합니다.</li>\n  <li>제외: 데이터셋 카탈로그의 다른 기능 개선이나 추가적인 데이터 분석 기능은 이번 작업에 포함되지 않습니다.</li>\n</ul>\n\n<h3>완료 조건 (DoD)</h3>\n<ul data-type=\"taskList\">\n  <li data-checked=\"false\">다운스트림 조회 기능이 Workbench에서 정상적으로 작동하고, 사용자 인터페이스와 통합되어야 합니다.</li>\n  <li data-checked=\"false\">기능 구현 후 테스트를 통해 모든 주요 시나리오가 성공적으로 통과되어야 합니다.</li>\n</ul>\n\n<h3>참고</h3>\n<ul>\n  <li><a class=\"jira-badge tkt\" data-key=\"DL-9040\" href=\"/browse/DL-9040\">DL-9040</a> \"데이터셋 카탈로그 지식 픽스처\" — 이니셔티브의 배경과 목표를 이해하는 데 도움이 됩니다.</li>\n</ul>",
+    "note": "확인되지 않은 항목이 있습니다 — 삽입 전에 확인하세요: DL-9040",
+    "references": [
+     {
+      "id": "ticket:DL-9040",
+      "kind": "ticket",
+      "resolved": true,
+      "key": "DL-9040",
+      "label": "[데이터] 데이터셋 카탈로그 지식 픽스처",
+      "url": "http://127.0.0.1:8080/browse/DL-9040",
+      "metadata": {
+       "issueType": "Epic",
+       "status": "In Progress",
+       "assignee": "최민서"
+      }
+     }
+    ],
+    "usage": {
+     "calls": 1,
+     "promptTokens": 3960,
+     "completionTokens": 307,
+     "totalTokens": 4267,
+     "model": "gpt-4o-2024-08-06",
+     "costUsd": 0.01297,
+     "cachedTokens": 1920
+    }
+   }
+  },
+  {
+   "id": "CMP3",
+   "설명": "시드 이어쓰기 — 쓰던 글의 내용을 버리지 않는다",
+   "입력": {
+    "ticket_key": "DL-9090",
+    "kind": "comment",
+    "prompt": "이어서 완성해줘",
+    "seed_html": "<p>오늘 리니지 뷰어 성능 측정을 돌렸는데, p95 가 생각보다</p>"
+   },
+   "통과": true,
+   "초": 2.6,
+   "결과": {
+    "ok": true,
+    "html": "<p>기대보다 낮았습니다. 현재 p95 성능은 목표치에 미치지 못하고 있으며, 추가적인 최적화가 필요할 것으로 보입니다. 특히, 다운스트림 조회 연동의 성능이 개선된 것으로 보고되었으나, 여전히 전체 성능에 영향을 미치고 있는 것으로 판단됩니다. 다음 주 금요일까지 성능 최적화를 완료하는 것을 목표로 하고 있으며, 관련 작업을 진행 중입니다. 추가적인 업데이트가 필요할 경우, <span data-type=\"mention\" data-id=\"skcc.x1402\">@skcc.x1402</span>에게 문의 부탁드립니다.</p>",
+    "note": "",
+    "references": [
+     {
+      "id": "person:skcc.x1402",
+      "kind": "person",
+      "resolved": true,
+      "userId": "skcc.x1402",
+      "label": "최하은 코어씨앤아이",
+      "mention": "[~skcc.x1402]",
+      "avatarUrl": "/api/avatar/skcc.x1402"
+     }
+    ],
+    "usage": {
+     "calls": 1,
+     "promptTokens": 4436,
+     "completionTokens": 120,
+     "totalTokens": 4556,
+     "model": "gpt-4o-2024-08-06",
+     "costUsd": 0.01229,
+     "cachedTokens": 1920
+    }
+   }
+  },
+  {
+   "id": "CMP4",
+   "설명": "모호 — 새 티켓·빈 시드·내용 없는 지시어는 보완 요청(NEED_INFO)이 정답",
+   "입력": {
+    "ticket_key": "",
+    "kind": "description",
+    "prompt": "잘 좀 써줘"
+   },
+   "통과": true,
+   "초": 0.0,
+   "결과": {
+    "ok": false,
+    "needsInfo": true,
+    "error": "이대로는 정확한 글을 쓸 수 없습니다 — 무엇에 대한 글인지 목적과 대상을 한 줄만 적어 주세요 (예: 'CDC 파이프라인 개선 작업 본문')"
+   }
+  },
+  {
+   "id": "CMP5",
+   "설명": "상태 공유 — 짧은 프롬프트로 쓰되 명시적 미완료를 완료로 뒤집지 않는다",
+   "입력": {
+    "ticket_key": "DL-9090",
+    "kind": "comment",
+    "prompt": "상태 공유"
+   },
+   "통과": false,
+   "초": 3.1,
+   "결과": {
+    "ok": false,
+    "contentConflict": true,
+    "error": "AI 생성문이 현재 자료와 충돌해 삽입하지 않았습니다 — 자료상 아직 남은 항목을 완료로 썼습니다: 다운스트림 조회 연동",
+    "usage": {
+     "calls": 1,
+     "promptTokens": 4384,
+     "completionTokens": 254,
+     "totalTokens": 4638,
+     "model": "gpt-4o-2024-08-06",
+     "costUsd": 0.0135,
+     "cachedTokens": 1920
+    }
+   }
+  },
+  {
+   "id": "CMP6",
+   "설명": "멘션·키 — 담당 멘션은 뱃지 마크업, 키는 앵커(뱃지 렌더)로",
+   "입력": {
+    "ticket_key": "DL-9090",
+    "kind": "comment",
+    "prompt": "담당자를 멘션해서 성능 측정 결과 검토 요청 코멘트 써줘"
+   },
+   "통과": true,
+   "초": 2.2,
+   "결과": {
+    "ok": true,
+    "html": "<p><span data-type=\"mention\" data-id=\"skcc.x1402\">@skcc.x1402</span>님, 성능 측정 결과에 대한 검토를 요청드립니다.</p>\n\n<ul>\n  <li>현재까지의 성능 측정 결과는 <a href=\"https://confluence.corp.example/spaces/DL/pages/312238185/[설계]+리니지+뷰어+1차\">설계 문서</a>에 기록되어 있습니다.</li>\n  <li>특히, 다운스트림 조회의 성능이 개선된 것으로 보고되었으나, Jira 상태는 아직 In Progress로 남아 있습니다.</li>\n</ul>\n\n<p>최종 성능 측정 결과와 관련하여 확인이 필요합니다. 검토 후 업데이트 부탁드립니다.</p>",
+    "note": "",
+    "references": [
+     {
+      "id": "person:skcc.x1402",
+      "kind": "person",
+      "resolved": true,
+      "userId": "skcc.x1402",
+      "label": "최하은 코어씨앤아이",
+      "mention": "[~skcc.x1402]",
+      "avatarUrl": "/api/avatar/skcc.x1402"
+     },
+     {
+      "id": "url:1",
+      "kind": "external",
+      "resolved": true,
+      "label": "confluence.corp.example",
+      "url": "https://confluence.corp.example/spaces/DL/pages/312238185/[설계]+리니지+뷰어+1차"
+     }
+    ],
+    "usage": {
+     "calls": 1,
+     "promptTokens": 4465,
+     "completionTokens": 155,
+     "totalTokens": 4620,
+     "model": "gpt-4o-2024-08-06",
+     "costUsd": 0.012712,
+     "cachedTokens": 1920
+    }
+   }
+  },
+  {
+   "id": "CMP7",
+   "설명": "무관 요청 — 티켓과 무관한 글은 짓지 말고 보완 요청 또는 맥락 확인",
+   "입력": {
+    "ticket_key": "DL-9090",
+    "kind": "comment",
+    "prompt": "김치찌개 레시피 알려줘"
+   },
+   "통과": true,
+   "초": 1.1,
+   "결과": {
+    "ok": false,
+    "needsInfo": true,
+    "error": "이대로는 정확한 글을 쓸 수 없습니다 — 어떤 작업에 대한 코멘트인지 — 목적을 한 줄만 적어 주세요.",
+    "usage": {
+     "calls": 1,
+     "promptTokens": 4390,
+     "completionTokens": 22,
+     "totalTokens": 4412,
+     "model": "gpt-4o-2024-08-06",
+     "costUsd": 0.011195,
+     "cachedTokens": 1920
+    }
+   }
+  },
+  {
+   "id": "CMP8",
+   "설명": "자식 있는 부모 본문 — '무엇을 왜'를 맡고 자식 제목을 반복하지 않는다",
+   "입력": {
+    "ticket_key": "DL-9090",
+    "kind": "description",
+    "prompt": "본문 정리해줘"
+   },
+   "통과": true,
+   "초": 3.6,
+   "결과": {
+    "ok": true,
+    "html": "<h3>배경</h3>\n<p>데이터 리니지 뷰어 1차 오픈은 데이터셋 간의 관계를 시각적으로 탐색할 수 있도록 하기 위한 프로젝트입니다. 이 작업은 데이터셋 카탈로그 지식 픽스처 이니셔티브(<a class=\"jira-badge tkt\" data-key=\"DL-9040\" href=\"/browse/DL-9040\">DL-9040</a>)의 일환으로, 데이터 관리 효율성을 높이기 위해 진행됩니다.</p>\n\n<h3>작업 범위</h3>\n<ul>\n  <li>포함: 테이블 상세에서 업스트림/다운스트림 2홉 조회 기능 구현, 성능 측정(2홉 100 노드 기준), 사용 가이드 작성</li>\n  <li>제외: 3홉 이상 확장 기능(2차에서 다룰 예정)</li>\n</ul>\n\n<h3>완료 조건 (DoD)</h3>\n<ul data-type=\"taskList\">\n  <li data-checked=\"false\">업스트림/다운스트림 2홉 조회 기능이 정상적으로 작동하고, 관련 이슈가 해결됨</li>\n  <li data-checked=\"false\">성능 측정 결과가 목표 기준을 충족함</li>\n  <li data-checked=\"false\">사용 가이드가 작성되어 사용자에게 배포됨</li>\n</ul>\n\n<h3>참고</h3>\n<ul>\n  <li><a class=\"jira-badge tkt\" data-key=\"DL-9092\" href=\"/browse/DL-9092\">DL-9092</a> \"리니지 다운스트림 조회 API 응답 20초\" — 성능 개선 관련</li>\n  <li><a href=\"https://confluence.corp.example/spaces/DL/pages/312238185/[설계]+리니지+뷰어+1차\">설계 리니지 뷰어 1차</a> — 설계와 진행 결과</li>\n</ul>",
+    "note": "확인되지 않은 항목이 있습니다 — 삽입 전에 확인하세요: DL-9092",
+    "references": [
+     {
+      "id": "ticket:DL-9040",
+      "kind": "ticket",
+      "resolved": true,
+      "key": "DL-9040",
+      "label": "[데이터] 데이터셋 카탈로그 지식 픽스처",
+      "url": "http://127.0.0.1:8080/browse/DL-9040",
+      "metadata": {
+       "issueType": "Epic",
+       "status": "In Progress",
+       "assignee": "최민서"
+      }
+     },
+     {
+      "id": "ticket:DL-9092",
+      "kind": "ticket",
+      "resolved": true,
+      "key": "DL-9092",
+      "label": "[Runtime] 리니지 다운스트림 조회 API 응답 20초",
+      "url": "http://127.0.0.1:8080/browse/DL-9092",
+      "metadata": {
+       "issueType": "Bug",
+       "status": "Closed",
+       "assignee": "안시우"
+      }
+     },
+     {
+      "id": "url:2",
+      "kind": "external",
+      "resolved": true,
+      "label": "confluence.corp.example",
+      "url": "https://confluence.corp.example/spaces/DL/pages/312238185/[설계]+리니지+뷰어+1차"
+     }
+    ],
+    "usage": {
+     "calls": 1,
+     "promptTokens": 4421,
+     "completionTokens": 393,
+     "totalTokens": 4814,
+     "model": "gpt-4o-2024-08-06",
+     "costUsd": 0.014982,
+     "cachedTokens": 1920
+    }
+   }
+  },
+  {
+   "id": "CMP9",
+   "설명": "본문은 짧은 프롬프트여도 티켓 맥락으로 쓴다(코멘트보다 관대)",
+   "입력": {
+    "ticket_key": "DL-9095",
+    "kind": "description",
+    "prompt": "본문 써줘"
+   },
+   "통과": true,
+   "초": 2.9,
+   "결과": {
+    "ok": true,
+    "html": "<h3>배경</h3>\n<p>데이터셋 카탈로그의 지식 픽스처 이니셔티브(<a class=\"jira-badge tkt\" data-key=\"DL-9040\" href=\"/browse/DL-9040\">DL-9040</a>)의 일환으로, Workbench에서 다운스트림 조회 기능을 연동하여 사용자 경험을 개선하고자 합니다. 이 기능은 사용자들이 데이터 흐름을 보다 직관적으로 이해하고 분석할 수 있도록 지원합니다.</p>\n\n<h3>작업 범위</h3>\n<ul>\n  <li>포함: Workbench에 다운스트림 조회 기능을 연동하여 데이터 흐름을 시각적으로 표현</li>\n  <li>제외: 데이터셋 카탈로그의 다른 기능 개선 및 추가는 이번 범위에 포함되지 않음</li>\n</ul>\n\n<h3>완료 조건 (DoD)</h3>\n<ul data-type=\"taskList\">\n  <li data-checked=\"false\">다운스트림 조회 기능이 Workbench에 성공적으로 연동되고, 기본적인 데이터 흐름 시각화가 가능함</li>\n  <li data-checked=\"false\">사용자 테스트를 통해 기능의 직관성과 사용성이 검증됨</li>\n</ul>\n\n<h3>참고</h3>\n<ul>\n  <li><a class=\"jira-badge tkt\" data-key=\"DL-9040\" href=\"/browse/DL-9040\">DL-9040</a> \"데이터셋 카탈로그 지식 픽스처\" — 이니셔티브의 배경 및 전체 목표</li>\n</ul>",
+    "note": "확인되지 않은 항목이 있습니다 — 삽입 전에 확인하세요: DL-9040",
+    "references": [
+     {
+      "id": "ticket:DL-9040",
+      "kind": "ticket",
+      "resolved": true,
+      "key": "DL-9040",
+      "label": "[데이터] 데이터셋 카탈로그 지식 픽스처",
+      "url": "http://127.0.0.1:8080/browse/DL-9040",
+      "metadata": {
+       "issueType": "Epic",
+       "status": "In Progress",
+       "assignee": "최민서"
+      }
+     }
+    ],
+    "usage": {
+     "calls": 1,
+     "promptTokens": 3941,
+     "completionTokens": 301,
+     "totalTokens": 4242,
+     "model": "gpt-4o-2024-08-06",
+     "costUsd": 0.012863,
+     "cachedTokens": 1920
+    }
+   }
+  }
+ ]
+}

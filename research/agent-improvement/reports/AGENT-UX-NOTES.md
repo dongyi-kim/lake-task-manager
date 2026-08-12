@@ -46,7 +46,7 @@
 - 시나리오 추가: DATA10(오탈자 → choice 확인이 정답, 추정 데이터 유출 금지),
   DATA11(확인 후속 → 표+참조 형식까지 검증).
 - 평가 규율(전 라운드 확립): 배터리 green ≠ 품질 — 출력 전문 정성 평가·기대 대조·
-  Claude 레퍼런스 비교(docs/DRAFT-COMPARISON.md)가 최종 게이트.
+  Claude 레퍼런스 비교(DRAFT-COMPARISON.md)가 최종 게이트.
 
 ## 4. 백로그 (인사이트 중 미반영)
 
