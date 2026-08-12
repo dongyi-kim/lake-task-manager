@@ -445,16 +445,9 @@ v2는 위 회귀 case를 deterministic/semantic test로 먼저 고정한 뒤, BA
   모순은 사람이 읽어야 한다.
 - mock world에 맞춘 결과이므로 실제 Jira 권한·데이터 변화·network 지연을 대표하지 않는다.
 
-## 11. 원시 증거
+## 11. 보존 범위
 
-모든 파일은 repository 상위 workspace에 있으며 응답 전문과 사용량을 포함한다.
-
-| 후보 | 대화 | Compose | Create |
-|---|---|---|---|
-| BASE | `../results/ab-base-mixed.json` | `../results/compose-base-mixed.json` | `../results/create-base-mixed.json` |
-| KO | `../results/ab-ko-mixed.json` | `../results/compose-ko-mixed.json` | `../results/create-ko-mixed.json` |
-| EN | `../results/ab-en-mixed.json` | `../results/compose-en-mixed.json` | `../results/create-en-mixed.json` |
-| GUIDE | `../results/ab-guide-mixed.json` | `../results/compose-guide-mixed.json` | `../results/create-guide-mixed.json` |
-| KO-R | `../results/ab-ko-refactored-mixed.json` | `../results/compose-ko-refactored-mixed.json` | `../results/create-ko-refactored-mixed-full.json` |
-
-과거 all-mini JSON은 진단 이력일 뿐 본 보고서의 어떤 수치·순위·결론에도 사용하지 않았다.
+BASE, KO, EN, GUIDE, KO-R의 대화·Compose·Create 응답 차이와 사용량은 이 보고서의 표와 사례에
+통합했다. 초기 네 언어 실험군의 더 긴 실제 출력은 [`PROMPT-LANGUAGE-OUTPUTS.md`](./PROMPT-LANGUAGE-OUTPUTS.md)에
+남겼다. 중복 raw JSON과 과거 all-mini 진단 산출물은 저장소에서 정리했으며, all-mini 결과는 본 보고서의
+어떤 수치·순위·결론에도 사용하지 않았다.

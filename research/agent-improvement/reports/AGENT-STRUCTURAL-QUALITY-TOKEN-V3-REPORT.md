@@ -218,20 +218,21 @@ Atlassian의 Jira search API 자료를 참고했다.
 3.2→4.39 개선이 동시에 나타났다. 추천 결정은 **V3를 production candidate로 채택하되, 5회 반복
 release battery에서 인간 중대 오류 0건과 latency p95를 확인한 뒤 기본값으로 전환**하는 것이다.
 
-## 10. 검증·원시 증거
+## 10. 검증 결과
 
 - 최종 unit suite: **1364 passed, 1 skipped**
-- Create full: [`create-ko-role-contract-v3-mixed-final.json`](../results/create-ko-role-contract-v3-mixed-final.json) — 22/23; 유일 실패는 구체적
+- Create full: 22/23; 유일 실패는 구체적
   `담당팀 확인 필요`를 placeholder로 오탐한 evaluator 문제
-- Create evaluator closure: [`create-ko-role-contract-v3-attr2-final.json`](../results/create-ko-role-contract-v3-attr2-final.json) — **1/1**
-- Create human closure: [`create-ko-role-contract-v3-closure-final.json`](../results/create-ko-role-contract-v3-closure-final.json) — **6/6**
-- Create 추가 regression: [`create-ko-role-contract-v3-human-final.json`](../results/create-ko-role-contract-v3-human-final.json) — **8/8**
-- Conversation full: [`ab-ko-role-contract-v3-mixed-final.json`](../results/ab-ko-role-contract-v3-mixed-final.json) — 7턴, 근거/후검증/구조/card 위반 0
-- Conversation S2 closure: [`ab-ko-role-contract-v3-s2-final.json`](../results/ab-ko-role-contract-v3-s2-final.json) — **1/1**
-- Compose final full: [`compose-ko-role-contract-v3-mixed-final.json`](../results/compose-ko-role-contract-v3-mixed-final.json) — 7/9; 두 실패는 상태 충돌을
+- Create evaluator closure: **1/1**
+- Create human closure: **6/6**
+- Create 추가 regression: **8/8**
+- Conversation full: 7턴, 근거/후검증/구조/card 위반 0
+- Conversation S2 closure: **1/1**
+- Compose final full: 7/9; 두 실패는 상태 충돌을
   안전하게 차단했으나 HTML block 정정 범위가 좁았던 것
-- Compose status closure: [`compose-ko-role-contract-v3-status-final.json`](../results/compose-ko-role-contract-v3-status-final.json) — **2/2**
+- Compose status closure: **2/2**
 - 비교 기준: `create/ab/compose-ko-role-contract-v2-mixed.json`
 
 샌드박스 네트워크 차단 상태에서 실행한 한 시도는 모든 call/token이 0이고 전부 `Connection error`였으므로
 품질·시간 통계에서 제외했다. 같은 명령을 승인된 네트워크 접근으로 재실행한 성공 결과만 사용했다.
+실제 출력 차이, 수치, 사람 판정은 이 보고서 본문에 통합했으며 중복 raw JSON은 정리했다.

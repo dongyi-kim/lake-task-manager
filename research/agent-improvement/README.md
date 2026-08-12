@@ -5,8 +5,6 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 ## 디렉터리
 
 - `reports/`: 비교 보고서, 사람 관점 정성평가, 설계·성능 기록
-- `results/`: 실제 OpenAI API 배터리 응답 전문과 정량 측정 JSON
-- `logs/`: 초기 언어 실험군 실행 로그
 - `scripts/`: 당시 실험군을 순차 실행한 보조 스크립트
 
 ## 주요 보고서
@@ -17,4 +15,6 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 - [`PROMPT-LANGUAGE-COMPARISON.md`](reports/PROMPT-LANGUAGE-COMPARISON.md): BASE, EN, KO, GUIDE 언어 구성 비교
 - [`PROMPT-LANGUAGE-OUTPUTS.md`](reports/PROMPT-LANGUAGE-OUTPUTS.md): 언어 비교 실제 출력 전문
 
-`results/`에는 최종 채택 결과뿐 아니라 실패 원인을 좁히기 위한 focused, regression, closure 실행도 함께 남긴다. 최종 결론을 재계산할 때는 각 보고서에 명시된 primary run과 closure 대체 규칙을 사용한다.
+실제 답변의 차이, 정량 측정값, 사람 관점 평가는 위 보고서에 통합해 보존한다. 실행 로그와 raw JSON은
+중복·로그성 산출물이므로 저장소에는 두지 않으며 `logs/`, `results/`는 `.gitignore` 대상이다. 필요하면
+`scripts/`와 현재 배터리 도구로 다시 생성한다.

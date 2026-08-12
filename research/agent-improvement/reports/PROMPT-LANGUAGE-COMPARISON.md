@@ -320,21 +320,14 @@ pending.items[*].children만 확인 → 언제나 자식 0건으로 오판
 - EN만 토큰 우위를 유지하면 영어 playbook과 한국어 도구 설명의 혼합을 후보로 둔다.
 - 차이가 재현되지 않으면 번역 비용과 유지보수 중복을 피하고 BASE를 유지한다.
 
-## 12. 원시 산출물
+## 12. 보존 범위
 
 - 사람이 바로 읽을 수 있는 실제 출력·정성평가 부록: [`PROMPT-LANGUAGE-OUTPUTS.md`](./PROMPT-LANGUAGE-OUTPUTS.md)
+- 재실행 스크립트: `../scripts/run-arms.sh`
 
-- 대화 JSON: `ab-base.json`, `ab-ko.json`, `ab-en.json`, `ab-guide.json`
-- 대화 로그: `log-*-ab.txt`
-- Compose 로그: `log-*-compose.txt`
-- Create 로그: `log-*-create.txt`
-- 전체 순차 실행 기록: `run-arms.log`
-- 재실행 스크립트: `run-arms.sh`
-- 후속 S1 단계별 산출물: `ab-fixed-s1.json` ~ `ab-fixed-s1-v4.json`
-
-위 파일은 배포 저장소 루트에 있으며, 보고서의 수치는 해당 산출물에서 다시 계산할 수 있다.
 부록에는 대화 28턴의 실제 답변 전문, Compose 36건의 보존된 발췌, Create 92건의 실행 결과와
-보존된 실패 출력, 그리고 이를 직접 읽고 내린 인간 판정이 들어 있다.
+보존된 실패 출력, 그리고 이를 직접 읽고 내린 인간 판정이 들어 있다. 정량 결과는 이 보고서 본문에
+통합했으며, 중복 대화 JSON·실행 로그·단계별 raw 산출물은 저장소에서 정리했다.
 
 ## 13. 후속 구현 및 검증 결과
 

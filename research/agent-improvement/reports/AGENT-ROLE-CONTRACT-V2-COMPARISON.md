@@ -534,20 +534,13 @@ Reviewer가 hierarchy metadata와 실제 payload를 일관되게 보지 못하�
 - automatic checker가 아니라 human false-positive case 0건
 - BASE 대비 p50/p95 latency와 token/cost 증가가 허용 범위 이내
 
-## 10. 검증과 원시 증거
+## 10. 검증과 보존 범위
 
 첫 전체 회귀 테스트의 유일한 실패는 Composer prompt의 기계 계약 문자열 `typed reference` 누락이었다.
 이를 보완한 focused test는 `20 passed`였고, 최종 전체 suite는 **`1243 passed, 1 skipped`**로
 통과했다. skip 1건과 dependency deprecation warning 5건은 이번 변경의 실패가 아니다.
 
-원시 JSON은 repository 상위 workspace에 보존했다. 각 파일에는 실제 응답 전문, 질문 form, 승인 card,
-`pending`/`draft_items`, trace, usage가 들어 있다.
-
-| 후보 | 대화 | Compose | Create |
-|---|---|---|---|
-| BASE | `ab-base-mixed.json` | `compose-base-mixed.json` | `create-base-mixed.json` |
-| KO-R | `ab-ko-refactored-mixed.json` | `compose-ko-refactored-mixed.json` | `create-ko-refactored-mixed-full.json` |
-| V2 | `ab-ko-role-contract-v2-mixed.json` | `compose-ko-role-contract-v2-mixed.json` | `create-ko-role-contract-v2-mixed.json` |
-
-이 보고서의 인용은 위 실제 출력에서 차이가 있는 부분만 중략한 것이며, 자동 checker의 pass/fail을
+BASE, KO-R, V2의 대화·Compose·Create 실제 출력 중 차이가 있는 부분과 질문 form, 승인 card,
+`pending`/`draft_items`, trace, usage의 판정 결과를 이 보고서에 통합했다. 중복 raw JSON은 저장소에서
+정리했다. 이 보고서의 인용은 실제 출력에서 차이가 있는 부분만 중략한 것이며, 자동 checker의 pass/fail을
 사람 품질 점수로 대체하지 않았다.
