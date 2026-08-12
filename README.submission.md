@@ -56,7 +56,7 @@ docker compose run --rm ltm-agent python -m pytest -q     # 462개, 전부 통�
 | 선택 A | 전 역할 Structured Output(JSON Schema 강제, 파싱 0) + Function Calling |
 | 선택 B | **MCP 양방향** — 서버(`python -m app.agent.mcp_server`) + 클라이언트(config/agent-mcp.json) |
 
-상세 설계·평가 대조는 `docs/AGENT.md`, 기획서는 제출 문서를 참조하세요.
+Agent 개발 지침은 `app/agent/AGENT.md`, 실험·평가 자료는 `research/agent-improvement/`, 기획서는 제출 문서를 참조하세요.
 
 ## 4. 구조 (요약)
 

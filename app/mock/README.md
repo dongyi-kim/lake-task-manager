@@ -6,7 +6,7 @@
 
 ## 파일
 - **world.py** — ★ 단일 결정적 데이터 세계. 이슈·설명·코멘트·활동·confluence + **UI 회귀 픽스처**(DL-9000 계열).
-  랜덤이지만 seed 고정이라 재현 가능. 픽스처 규칙은 CLAUDE.md §7 을 반드시 지킬 것.
+  랜덤이지만 seed 고정이라 재현 가능. 픽스처 규칙은 AGENTS.md §7 을 반드시 지킬 것.
 - **worldcontent.py** — description/comment/activity/confluence 다양성 **콘텐츠 풀**(world 가 소비).
 - **fakebridge.py** — world 를 jira820 서버에 주입(`build_store`/`build_injected_app`).
   mock=in-process(ASGI), local=:8080 실 HTTP — 둘 다 이 브리지를 탄다.

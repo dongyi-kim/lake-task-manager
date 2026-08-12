@@ -9,8 +9,8 @@ Jira 를 source of truth 로 두고, 그 위에 **Module → WBS Task → Epic �
 > (`app/fakebridge.py` 의 `confluence_version="9.2.4"`).
 
 > 최종 사용자용 사용 안내는 배포 repo 루트 README(사용자 가이드)에 있다.
-> 설계·도메인 규칙 상세는 [`CLAUDE.md`](CLAUDE.md), 진행/백로그는 [`PROGRESS.md`](PROGRESS.md).
-> **AI 에이전트(업무 착수 어시스턴트)** — 멀티 에이전트 구조·RAG·HITL·MCP 는 [`docs/AGENT.md`](docs/AGENT.md).
+> 설계·도메인 규칙 상세는 [`AGENTS.md`](AGENTS.md), 진행/백로그는 [`PROGRESS.md`](PROGRESS.md).
+> **AI 에이전트(업무 착수 어시스턴트)** — 개발 계약·역할·프롬프트·도구 지침은 [`app/agent/AGENT.md`](app/agent/AGENT.md).
 > 명령은 모두 **repo 루트** 기준. Windows 는 **PowerShell**, 그 외는 bash 를 병기한다.
 
 ---
@@ -152,7 +152,7 @@ lake-task-manager/
 dev fake Jira = 외부 오픈소스 [`jira820`](https://pypi.org/project/jira820) (requirements).
 ```
 
-### 아키텍처 규칙 (요약 — 상세는 `CLAUDE.md`)
+### 아키텍처 규칙 (요약 — 상세는 `AGENTS.md`)
 - `progress.py`/`rollup.py` 는 **순수 함수**. 네트워크·인증 의존 금지.
 - 인증은 `AuthProvider`(`app/auth`) 뒤로 추상화 → 구현체 교체로 환경 전환. `JiraClient` 는 어떤 인증인지 몰라야 한다.
 - 환경 선택은 `config/jira.yml`(`env`, 환경변수 `JIRA_ENV` override) 로만. **커스텀 필드 ID·매핑 하드코딩 금지** (전부 config).

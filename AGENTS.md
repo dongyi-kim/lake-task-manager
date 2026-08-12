@@ -1,5 +1,11 @@
 # Lake Task Manager
 
+## Agent 기능개발 지침
+
+`app/agent/**`, Agent가 사용하는 `app/domain/**`, Agent UI, prompt, role, tool, workflow 또는 실 LLM 배터리를 변경할 때는 작업 전에 [`app/agent/AGENT.md`](app/agent/AGENT.md)를 전부 읽고 따른다. 해당 문서는 Agent 영역의 상세 source of truth다. 반복적인 Agent 개선·평가 작업에는 repository skill [`$ltm-agent-development`](.agents/skills/ltm-agent-development/SKILL.md)를 사용한다.
+
+실험 결과와 보고서는 `research/agent-improvement/`에만 보관한다. 프로덕션 개발 지침과 과거 실험 결론을 섞지 않는다.
+
 구버전 Jira DC 환경에서 SI 프로젝트를 수행할 때 쓰는 **PMO 레벨 Task 관리** 유틸리티.
 현업이 쓰는 **Jira DC 8.20.8**(구버전, SSO 잠금 사내 인스턴스)을 SP/티켓의 source of truth로 두고,
 그 위에 **Module → WBS Task → Epic 진척률 롤업**을 얇게 얹어 PMO가 프로젝트 전체를 조망한다.
@@ -333,7 +339,7 @@ world 는 랜덤 생성이라 "설명 없는 Sub-Task", "링크 있는 티켓" �
 
 ```
 lake-task-manager/               # repo 루트
-├── CLAUDE.md                    # 프로젝트 지침 (루트 관례 유지)
+├── AGENTS.md                    # Codex·Claude 공용 프로젝트 지침
 ├── PROGRESS.md                  # TODO / 진행 History
 ├── run.py / run_fake.py         # 앱 런처(앱 창·단일 인스턴스) / Fake Jira 서버 런처
 ├── requirements.txt / requirements-sso.txt   # 앱 deps / +playwright(prod SSO)

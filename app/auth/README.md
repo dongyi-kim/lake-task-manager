@@ -12,5 +12,5 @@
 - **sso_store.py** — 서비스별 세션 파일 저장 + legacy `jira_state.json` 마이그레이션.
 
 ## 규칙
-- SSO 세션 파일(`jira_state.json`)·크리덴셜 **커밋 금지**. 사내 prod 에 자동 테스트 금지(CLAUDE.md §10).
+- SSO 세션 파일(`jira_state.json`)·크리덴셜 **커밋 금지**. 사내 prod 에 자동 테스트 금지(AGENTS.md §10).
 - provider 는 큐 단일화(prod)라 실패 판정에 수십 초 걸릴 수 있다 — 회로차단기/warm 은 client·run.py 가 관리.

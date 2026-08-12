@@ -65,7 +65,7 @@ KO-R은 기존 영어 prompt를 문장별로 번역하지 않았다.
 - `PROMPT_VERSION="ko-refactored-v1"`과 prompt integrity test를 추가했다.
 - 실제 reply뿐 아니라 card/body/question form, raw usage, checkpoint를 평가 자료로 저장했다.
 
-작성 표준은 [AGENT.md](../../../docs/AGENT.md)에 문서화했다. 근거로 사용한 자료는 OpenAI의
+작성 표준은 [AGENT.md](../../../app/agent/AGENT.md)에 문서화했다. 근거로 사용한 자료는 OpenAI의
 [Prompting best practices](https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices),
 [How and Where to Translate?](https://arxiv.org/abs/2507.22923),
 [OLA](https://arxiv.org/abs/2601.03589),

@@ -2,7 +2,7 @@
 
 브랜치 **`feature/ai-agent`** (서브모듈 `lake-task-manager-deploy/lake-task-manager`).
 이 문서 하나로 다음 세션이 코드 이해 → 검증 → 이어서 작업까지 가능해야 한다.
-아키텍처 개요는 [AGENT.md](../../../docs/AGENT.md), 성능은 [PERF-ROUND2.md](PERF-ROUND2.md),
+아키텍처 개요는 [AGENT.md](../../../app/agent/AGENT.md), 성능은 [PERF-ROUND2.md](PERF-ROUND2.md),
 품질 비교는 [DRAFT-COMPARISON.md](DRAFT-COMPARISON.md) 참조.
 
 ## 0. 30초 요약

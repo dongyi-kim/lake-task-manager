@@ -17,9 +17,9 @@ Epic/Story/Sub-Task 트리를 만든다. 모든 쓰기는 **사용자 승인 후
 - **fake.py** — 결정적 Fake LLM/임베딩. `with_structured_output` 도 지원해 Planner 분기까지 굴러간다.
 - **approval.py** — 쓰기 전 사용자 승인(HITL)을 **도구 경계에서** 강제. 토큰은 초안 내용의
   해시에 묶여 있어 A 를 승인받고 B 를 만들 수 없다. 1회용 · 30분 만료.
-- **tools/** — 에이전트가 LTM 을 만지는 손(13개). 역할별 묶음 → [tools/README.md](tools/README.md)
+- **tools/** — 에이전트가 LTM 을 만지는 역할별 tool registry → [tools/README.md](tools/README.md)
 - **retrieval/** — RAG 2계층(정적 규칙 + 동적 증분) → [retrieval/README.md](retrieval/README.md)
-- **workflow/** — LangGraph 멀티 에이전트 6역할 + HITL 중단/재개
+- **workflow/** — `role_manifest.py` 기반 LangGraph 멀티 에이전트 + HITL 중단/재개
   → [workflow/README.md](workflow/README.md). 바깥에서 부르는 것은 `workflow/session.py` 하나다.
 
 ## 규칙

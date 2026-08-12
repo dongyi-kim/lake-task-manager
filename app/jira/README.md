@@ -8,7 +8,7 @@ REST 를 호출하고, **모든 호출은 캐시(app/infra)를 경유**한다. m
 - **jira_client.py** — `JiraClient`. 이슈 조회·검색·Epic 트리·워크로드 카운트·티켓 뷰 조립·쓰기(편집/전이/코멘트/첨부/링크)·
   아바타·미디어 프록시·Confluence·Bitbucket·변경이력·계보(조상/형제/자식). 캐시 키 네임스페이스·TTL·무효화 규칙의 소유자.
 
-## 규칙 (CLAUDE.md §8 아키텍처 규칙)
+## 규칙 (AGENTS.md §8 아키텍처 규칙)
 - **어떤 인증인지 몰라야 한다** — 환경 분기 없음, provider 만 다르다.
 - 커스텀 필드 ID·상태명 하드코딩 금지 → config/`statusCategory`.
 - **쓰기 후 무효화**: 편집이 바꾸는 화면은 반드시 재조회되게 무효화한다. 무거운 티켓 무효화(`_invalidate_ticket`)와

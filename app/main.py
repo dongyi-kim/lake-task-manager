@@ -486,7 +486,7 @@ def _probe_service(svc):
 if _devtools.enabled(_settings, "pat_probe"):
     # ── 개인 액세스 토큰(PAT) 확인 ────────────────────────────────────────────
     # 지금 운영 인증은 **SSO 세션 재사용**이라 만료가 짧고(수 시간~하루) 무인 자동화가 안 된다.
-    # PAT 가 열려 있으면 `PatAuthProvider` 하나만 더해 무인으로 승격할 수 있는데(CLAUDE.md §11),
+    # PAT 가 열려 있으면 `PatAuthProvider` 하나만 더해 무인으로 승격할 수 있는데(AGENTS.md §11),
     # 사내 인스턴스에서 그 메뉴가 열려 있는지 **확인이 안 된 상태**다. 여기서 직접 찔러 본다.
     #
     # Jira/Confluence DC 8.14+ 는 같은 경로를 쓴다(경로 후보는 아래 _PAT_PROBES).

@@ -197,7 +197,7 @@ DoD가 두 번 나온 증거가 남아 있다. 최종 코드에서는 동일 행
 - `# 명령서`, raw placeholder, 깨진 Markdown URL, false person/title warning을 제거한다.
 - Composer에서 comment/document와 Jira status가 충돌하면 `최종 완료 여부 확인 필요`로 표시한다.
 
-이 구조는 [AGENT.md](../../../docs/AGENT.md)에 prompt 작성법, role input/output, 우선순위, 실패 처리 방식으로
+이 구조는 [AGENT.md](../../../app/agent/AGENT.md)에 prompt 작성법, role input/output, 우선순위, 실패 처리 방식으로
 문서화했다. 설계 원칙은 OpenAI의 [Prompting best practices](https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices),
 Anthropic의 [Building effective agents](https://www.anthropic.com/research/building-effective-agents) 및
 [Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents),

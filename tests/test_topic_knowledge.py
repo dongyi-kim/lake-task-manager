@@ -31,7 +31,7 @@ def _w():
 def test_key_sequence_is_untouched():
     """★ 이 파일에서 가장 중요한 단언 — 픽스처가 rng 를 건드렸으면 world 전체가 뒤바뀐다.
 
-    자동 생성 키는 DL-5001~DL-6026 이고 그 뒤로 늘어나면 안 된다(CLAUDE.md §7.1).
+    자동 생성 키는 DL-5001~DL-6026 이고 그 뒤로 늘어나면 안 된다(AGENTS.md §7.1).
     """
     assert _w()._counter == 6026
 

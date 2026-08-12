@@ -1,0 +1,4 @@
+interface:
+  display_name: "LTM Agent Development"
+  short_description: "LTM Agent 계약과 품질을 안전하게 개선"
+  default_prompt: "Use $ltm-agent-development to improve and validate the LakeTaskManager Agent."

@@ -13,4 +13,4 @@
 ## 규칙
 - `settings.py` 경로 상수(STATIC_DIR/APP_ROOT/BASE_DIR)는 `__file__` 기준이다 — 이 파일을 옮기면 반드시 재검증.
 - 캐시 키 네임스페이스·TTL 은 `app/jira/jira_client.py` 가 소유(여기 cache 는 저장소일 뿐).
-- dev 진단은 **기본 꺼짐**. prod 배포는 `dev_tools: []`(CLAUDE.md §12).
+- dev 진단은 **기본 꺼짐**. prod 배포는 `dev_tools: []`(AGENTS.md §12).

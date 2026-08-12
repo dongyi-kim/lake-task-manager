@@ -1,6 +1,6 @@
 # Agent improvement research archive
 
-LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 성능 및 토큰 사용량을 비교한 실험 자료를 보관한다. 프로덕션 동작 규칙과 작성 표준은 [`docs/AGENT.md`](../../docs/AGENT.md)를 기준으로 하며, 이 디렉터리의 자료는 재현과 의사결정을 위한 연구 기록이다.
+LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 성능 및 토큰 사용량을 비교한 실험 자료를 보관한다. 프로덕션 동작 규칙과 작성 표준은 [`app/agent/AGENT.md`](../../app/agent/AGENT.md)를 기준으로 하며, 이 디렉터리의 자료는 재현과 의사결정을 위한 연구 기록이다.
 
 ## 디렉터리
 
