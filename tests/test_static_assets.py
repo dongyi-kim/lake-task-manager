@@ -149,6 +149,19 @@ def test_agent_ticket_badges_have_compact_and_detail_modes():
     assert '.agent-md a.tkt[data-key]:not([data-filled])' in view
 
 
+def test_agent_ticket_badges_never_nest_inside_inline_code():
+    """`DL-123`은 badge 하나, `key = DL-123`은 code 하나로 렌더해야 한다."""
+    md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
+    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    code_stash = md.index('.replace(/`([^`]+)`/g')
+    key_badge = md.index('.replace(TICKET_TOKEN_RE')
+    assert code_stash < key_badge
+    assert "const token =" in md and "const key =" in md
+    assert "return keep(`<code>${code}</code>`)" in md
+    assert '.agent-md code > a.jira-badge:only-child' in view
+    assert "code.replaceWith(badge)" in view
+
+
 def test_reference_hover_is_shared_by_all_ticket_links_and_person_mentions():
     """에이전트 전용 pseudo tooltip이 아니라 앱 전체의 한 컨트롤러를 사용한다."""
     root = (STATIC / "components" / "app-root.js").read_text(encoding="utf-8")
