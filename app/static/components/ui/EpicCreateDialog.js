@@ -89,20 +89,28 @@ export default {
       this.busy = true; this.err = "";
       try {
         const wantDesc = this.descOpen && this.$refs.ded && !this.$refs.ded.isBlank();
-        const r = await api.createEpic({
-          summary: this.ep.summary.trim(), epicName: this.ep.epicName.trim() || null,
-          priority: this.ep.priority || null, components: this.ep.components.slice(),
-          duedate: this.ep.duedate || null, assignee: this.ep.assigneeId || null,
-          taskKeys: this.selectedKeys,
-        });
-        if (!r || r.ok === false) { this.err = (r && r.error) || "만들지 못했습니다."; return; }
-        const key = r.key;
+        const createDesc = wantDesc && !this.$refs.ded.hasPendingUploads()
+          ? this.$refs.ded.htmlValue() : null;
+        let key = this.createdKey;
+        let r = null;
+        if (!key) {
+          r = await api.createEpic({
+            summary: this.ep.summary.trim(), epicName: this.ep.epicName.trim() || null,
+            priority: this.ep.priority || null, components: this.ep.components.slice(),
+            duedate: this.ep.duedate || null, assignee: this.ep.assigneeId || null,
+            descriptionHtml: createDesc, taskKeys: this.selectedKeys,
+          });
+          if (!r || r.ok === false) { this.err = (r && r.error) || "만들지 못했습니다."; return; }
+          key = r.key;
+          this.createdKey = key;
+        }
         if (wantDesc && key) {
-          this.createdKey = key; await this.$nextTick();
-          try { await this.$refs.ded.submit(); } catch (e) { /* 설명 실패해도 Epic 은 생성됨 */ }
+          await this.$nextTick();
+          await this.$refs.ded.submit();
+          if (this.$refs.ded.err) throw new Error(this.$refs.ded.err);
         }
         // 일부 Task 연결 실패는 알리되 Epic 생성은 성공으로 넘긴다.
-        if (r.link && r.link.failed && r.link.failed.length) {
+        if (r && r.link && r.link.failed && r.link.failed.length) {
           this.err = "일부 Task 연결 실패: " + r.link.failed.map((f) => f.key).join(", ");
         }
         this.$emit("created", key);

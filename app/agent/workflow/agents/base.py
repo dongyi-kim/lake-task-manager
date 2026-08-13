@@ -373,6 +373,8 @@ class ToolAgent(Agent):
         from app.agent import capabilities
         profile = capabilities.get(self.tier).get("checked") or {}
         try:
+            if not capabilities.native_tools_allowed():
+                raise RuntimeError("provider policy: native tools disabled")
             if profile.get("tools") is False:
                 raise RuntimeError("capability probe: tools unsupported")
             # 병렬 tool call은 probe 결과가 true일 때만 켠다. 모르는 서버에는 보수적으로 false.

@@ -18,12 +18,40 @@ import CommentEditor from "../ui/CommentEditor.js";
 import FieldEdit from "../ui/FieldEdit.js";
 import { agentApi } from "../../lib/agentApi.js";
 import { renderMarkdown } from "../../lib/agentMd.js";
-import { TYPE_BG, typeLabel } from "../../lib/colors.js";
+import { TYPE_BG, typeIconSvg, initialOf } from "../../lib/colors.js";
 import { api } from "../../lib/api.js";
 import { pushToast } from "../../lib/toast.js";
 
 // 프사가 없는 사용자 — 세션 동안 기억한다(렌더마다 404 를 다시 쏘지 않게).
 const AVATAR_MISSING = new Set();
+
+function regexEscape(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** 뱃지가 이미 보여 주는 필드를 바로 뒤 문장이 되풀이하지 않게 한다.
+ * API 응답은 badge의 data에 보존한다. 제거 범위는 같은 parent의 **인접 text node 앞부분**뿐이라
+ * 뒤 문장의 별도 주장이나 집계 수치까지 건드리지 않는다. */
+function dedupeTicketTail(badge, ticket) {
+  const next = badge.nextSibling;
+  if (!next || next.nodeType !== Node.TEXT_NODE) return;
+  let value = next.nodeValue || "";
+  const known = [ticket.key, ticket.summary, ticket.status, ticket.assignee,
+                 ticket.assignee ? "담당 " + ticket.assignee : "",
+                 ticket.assignee ? "담당자 " + ticket.assignee : ""]
+    .filter(Boolean).sort((a, b) => b.length - a.length);
+  for (let i = 0; i < 5; i++) {
+    const before = value;
+    for (const field of known) {
+      value = value.replace(new RegExp("^\\s*(?:[·|,—-]|담당(?:자)?\\s*[:：])?\\s*" +
+        regexEscape(field) + "(?=\\s|[·|,—-]|$)", "i"), "");
+    }
+    if (value === before) break;
+  }
+  value = value.replace(/^\s*[·|,—-]\s*/, " — ");
+  if (/^\s*[·|,—-]?\s*$/.test(value)) value = "";
+  next.nodeValue = value;
+}
 
 // 빈 화면에 예시를 둔다 — 무엇을 할 수 있는 도구인지 설명하는 가장 빠른 방법이고,
 // 사용자가 첫 문장을 어떻게 쓸지 몰라 멈추는 것을 막는다.
@@ -262,6 +290,15 @@ export default {
         el.dataset.filled = "1";
         const uid = el.getAttribute("data-uid");
         const wrap = el.querySelector(".md-avt-wrap");
+        const name = el.querySelector(".md-person-nm");
+        if (uid && name) api.userBadge(uid).then((u) => {
+          if (!u || !el.isConnected) return;
+          const label = u.name || u.displayName || uid;
+          name.textContent = label;
+          if (wrap && wrap.firstChild && wrap.firstChild.nodeType === Node.TEXT_NODE) {
+            wrap.firstChild.nodeValue = initialOf(label, uid);
+          }
+        }).catch(() => { /* username만 남겨도 식별 가능 */ });
         if (!uid || !wrap || AVATAR_MISSING.has(uid)) return;
         const img = new Image();
         img.onload = () => {
@@ -273,20 +310,30 @@ export default {
         img.onerror = () => AVATAR_MISSING.add(uid);
         img.src = "/api/avatar/" + encodeURIComponent(uid);
       });
-      root.querySelectorAll(".agent-md a.jira-badge[data-key]:not([data-filled])").forEach((a) => {
+      root.querySelectorAll(".agent-md a.tkt[data-key]:not([data-filled])").forEach((a) => {
         a.dataset.filled = "1";
         const key = a.getAttribute("data-key");
         api.ticketBadge(key).then((b) => {
           if (!b || !a.isConnected) return;
-          const tb = a.querySelector(".jb-type"), nm = a.querySelector(".jb-name"),
-                mt = a.querySelector(".jb-meta");
-          if (!tb || !nm || !mt) return;
-          tb.textContent = typeLabel(b.type || "");
+          a.removeAttribute("title");
+          const tb = a.querySelector(".jb-type-icon"), nm = a.querySelector(".jb-name"),
+                owner = a.querySelector(".jb-owner"), mt = a.querySelector(".jb-meta");
+          if (!tb || !nm || !owner || !mt) return;
+          tb.innerHTML = typeIconSvg(b.type || "Task");
           tb.style.setProperty("--tc", TYPE_BG[b.type] || "var(--ty-task)");
           nm.textContent = b.summary || "";
+          owner.textContent = b.assignee || "미지정";
           mt.textContent = b.status || "";
-          mt.className = "jb-meta st-" + (b.statusCategory || "todo");
-          a.title = key + " " + (b.summary || "");
+          const category = b.statusCategory === "done" ? "done" :
+            (b.statusCategory === "inprogress" ? "inprogress" : "todo");
+          const statusClass = "st-" + category;
+          mt.className = "jb-meta " + statusClass;
+          a.classList.add(statusClass);
+          a.dataset.ticketKey = key || "";
+          a.dataset.ticketTitle = b.summary || "";
+          a.dataset.ticketAssignee = b.assignee || "";
+          a.dataset.ticketStatus = b.status || "";
+          dedupeTicketTail(a, Object.assign({ key }, b));
         }).catch(() => { /* 조회 실패 — 키만 보여도 클릭은 된다 */ });
       });
       // 참조의 티켓 — 키만으로는 무엇인지 모른다. 제목(+상태)을 채운다.
@@ -298,7 +345,7 @@ export default {
         api.ticketBadge(key).then((b) => {
           if (!b || !ttl.isConnected) return;
           ttl.textContent = b.summary || "";
-          a.title = key + " " + (b.summary || "") + (b.status ? " · " + b.status : "");
+          a.removeAttribute("title");
         }).catch(() => { /* 조회 실패 — 키만 보여도 클릭은 된다 */ });
       });
       root.querySelectorAll(".agent-md a.conf-link[data-conf]:not([data-filled])").forEach((a) => {

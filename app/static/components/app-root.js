@@ -22,6 +22,7 @@ import GuideSpot from "./ui/GuideSpot.js";
 import { api, watchAuth } from "../lib/api.js";
 import { confirmBox } from "../lib/confirm.js";
 import { pushToast } from "../lib/toast.js";
+import { installReferenceHover } from "../lib/referenceHover.js";
 
 // 메인 페이지는 **정보성 랜딩**(서비스 안내·릴리스 노트)이다 — 사용자 결정으로 복원.
 // 에이전트는 #/ai 탭. 다만 홈에 심플한 입력창을 두어, 입력하면 AI 탭으로 넘어가
@@ -95,6 +96,8 @@ export default {
     manager() { this.guard(); },
   },
   mounted() {
+    // 티켓 링크·뱃지와 사람 멘션은 화면별 구현 대신 앱 전체가 같은 상세 호버를 사용한다.
+    installReferenceHover();
     // 로그인 왕복(앱 창이 Jira 로 갔다 돌아옴) 뒤 **보던 자리로** 되돌린다.
     // 없으면 늘 홈에서 다시 시작하게 되는데, 그건 로그인이 아니라 사고처럼 느껴진다.
     try {

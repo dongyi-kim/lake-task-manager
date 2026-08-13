@@ -161,22 +161,29 @@ export default {
       this.busy = true; this.err = "";
       try {
         const wantDesc = this.descOpen && this.$refs.ded && !this.$refs.ded.isBlank();
+        const createDesc = wantDesc && !this.$refs.ded.hasPendingUploads()
+          ? this.$refs.ded.htmlValue() : null;
         const comps = this.nc.components.filter((c) => c !== "사용자 VoC");
         if (this.voc && this.isTask) comps.push("사용자 VoC");
         const payload = {
           type: this.nc.type, summary: this.nc.summary.trim(), priority: this.nc.priority,
           duedate: this.nc.duedate || null, assignee: this.nc.assigneeId || null,
-          components: comps,
+          components: comps, descriptionHtml: createDesc,
         };
         // standalone 은 부모가 없어 /api/task 로, 그 외엔 부모 밑으로(/api/ticket/{parent}/child).
-        const r = this.d.standalone ? await api.createTask(payload)
-                                    : await api.createChild(this.d.parent, payload);
-        if (!r || r.ok === false) { this.err = (r && r.error) || "만들지 못했습니다."; return; }
-        const key = r.key;
-        if (wantDesc && key) {
+        // 생성 뒤 설명 저장이 실패해도 재시도할 때 티켓을 중복 생성하지 않는다.
+        let key = this.createdKey;
+        if (!key) {
+          const r = this.d.standalone ? await api.createTask(payload)
+                                      : await api.createChild(this.d.parent, payload);
+          if (!r || r.ok === false) { this.err = (r && r.error) || "만들지 못했습니다."; return; }
+          key = r.key;
           this.createdKey = key;
+        }
+        if (wantDesc && key) {
           await this.$nextTick();
-          try { await this.$refs.ded.submit(); } catch (e) { /* noop */ }
+          await this.$refs.ded.submit();
+          if (this.$refs.ded.err) throw new Error(this.$refs.ded.err);
         }
         this.$emit("created", key);
       } catch (e) {

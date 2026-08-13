@@ -1577,6 +1577,10 @@ export default {
       const text = (this._ed.getText() || "").trim();
       return !text && !/<img\b|<a\b|<input\b/i.test(this._ed.getHTML());
     },
+    // Creation dialogs use this snapshot in the initial create request. Keep the editor
+    // implementation private and expose only the serializable value and pending state.
+    htmlValue() { return this._ed ? this._ed.getHTML() : ""; },
+    hasPendingUploads() { return !!(this._pending && this._pending.size); },
     async submit() {
       if (this.busy || !this._ed) return;
       let html = this._ed.getHTML();

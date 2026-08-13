@@ -290,6 +290,18 @@ def test_epic_lineage_unaffected_by_voc_rule():
     assert anc and all(not n.get("virtual") for n in anc)
 
 
+def test_unlinked_task_gets_virtual_epic_none_lineage_node():
+    """Epic 미연결 Task도 계보 영역을 숨기지 않고 누락 상태를 명시한다."""
+    w = get_world()
+    key = next(k for k, i in w.issues.items()
+               if i.get("type") != "Epic" and not i.get("parentKey")
+               and not i.get("epicKey") and i.get("component") != "사용자 VoC")
+    anc = _client().ticket_ancestors(key)
+    assert anc[0]["summary"] == "Epic 없음"
+    assert anc[0]["type"] == "Epic"
+    assert anc[0]["virtual"] is True and anc[0]["key"] is None
+
+
 def test_relative_confluence_url_is_absolutized():
     """사내 본문에는 Confluence 링크가 '/display/DL/문서' 처럼 상대경로로 들어오기도 한다.
 

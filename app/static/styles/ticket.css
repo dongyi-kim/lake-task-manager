@@ -434,10 +434,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
 .zoomable:hover .zoom-btn, .zoom-btn:hover { opacity: 1; }
 .zoom-btn svg { width: 13px; height: 13px; }
 .tkt-desc hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
-/* 맨션 — 실 Jira DC 프로필 링크(a.user-hover). 뱃지 아님, 볼드+컬러로만 구분(y축 자동 정렬) */
+/* 실 Jira DC 프로필 링크(a.user-hover)도 앱의 사람 멘션과 같은 pill 뱃지로 표시. */
 /* 사람 멘션 — 티켓 본문·댓글·에이전트 답변이 **같은 모양**이다(사용자 지시).
    프사가 없는 사용자가 더 많아 이니셜 원이 바탕이고, 사진이 로드되면 그 위를 덮는다. */
-.tkt-desc .mention, .agent-md .md-person {
+.tkt-desc .mention, .tkt-desc a.user-hover, .agent-md .md-person {
   display: inline-flex; align-items: center; gap: 4px; vertical-align: -2px;
   padding: 0 6px 0 3px; border-radius: 11px; font-weight: 600; color: var(--text);
   background: color-mix(in srgb, var(--accent) 12%, transparent); }
@@ -448,8 +448,20 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
   opacity: 0; transition: opacity .12s; }
 .md-avt.on { opacity: 1; }
 
-.tkt-desc a.user-hover { font-weight: 700; color: var(--accent); text-decoration: none; }
-.tkt-desc a.user-hover:hover { text-decoration: underline; }
+/* 앱 전역 참조 호버 — body 직속 fixed layer라 표·다이얼로그 overflow에 잘리지 않는다. */
+.reference-hover { position:fixed; z-index:1200; width:max-content; min-width:220px;
+  max-width:min(430px, calc(100vw - 16px)); padding:8px 10px; border:1px solid var(--border-hi);
+  border-radius:8px; background:var(--panel); color:var(--text); box-shadow:var(--shadow);
+  font-size:11.5px; line-height:1.45; pointer-events:none; }
+.reference-hover[hidden] { display:none; }
+.reference-hover-row { display:grid; grid-template-columns:96px minmax(0, 1fr); gap:9px;
+  padding:2px 0; }
+.reference-hover-label { color:var(--muted-2); font-weight:600; }
+.reference-hover-value { min-width:0; overflow-wrap:anywhere; font-weight:500; }
+
+.tkt-desc a.user-hover { color:var(--text); text-decoration:none; }
+.tkt-desc a.user-hover:hover { color:var(--text); text-decoration:none;
+  background:color-mix(in srgb, var(--accent) 18%, transparent); }
 /* Confluence 링크 뱃지 — 아이콘+글자 세로 중앙, 텍스트 높이에 맞춤 */
 .tkt-desc .conf-link, .agent-md .conf-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600;
   line-height: 1.4; color: var(--st-prog); border: 1px solid var(--border); background: var(--panel-2);
@@ -1285,10 +1297,10 @@ div.zoomable > .zoom-btn { top: -3px; right: 2px; transform: translateY(-100%); 
    조작이 갈리면, 같은 값을 두 가지 방법으로 다루게 된다. */
 .nk-ov { position: fixed; inset: 0; z-index: 9600; display: flex; align-items: center;
   justify-content: center; background: rgba(0,0,0,.42); }
-.nk { width: min(520px, 92vw); padding: 14px 16px 12px; border-radius: 12px;
+.nk { width: min(720px, 94vw); padding: 14px 16px 12px; border-radius: 12px;
   background: var(--panel); border: 1px solid var(--border);
   box-shadow: 0 24px 60px rgba(0,0,0,.3); max-height: 90vh; overflow: auto; }
-.nk-epic { width: min(600px, 94vw); }
+.nk-epic { width: min(780px, 96vw); }
 .nk-pick { width: min(540px, 92vw); }
 /* 미니 입력(Epic 이름·검색) */
 .nk-mini { font: inherit; font-size: 12.5px; color: var(--text); background: var(--panel-2);

@@ -105,6 +105,24 @@ def test_create_dialog_descriptions_do_not_share_comment_drafts():
         assert editors and all('kind="description"' in tag for tag in editors), name
 
 
+def test_create_dialogs_send_description_with_create_and_surface_save_failures():
+    """본문은 최초 생성 payload에도 포함하고 후속 저장 오류를 삼키지 않는다."""
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    assert "htmlValue()" in editor and "hasPendingUploads()" in editor
+    for name in ("EpicCreateDialog.js", "NewChildDialog.js"):
+        src = (STATIC / "components" / "ui" / name).read_text(encoding="utf-8")
+        assert "descriptionHtml: createDesc" in src, name
+        assert "if (!key)" in src, name
+        assert "this.$refs.ded.err" in src, name
+        assert "await this.$refs.ded.submit(); } catch" not in src, name
+
+
+def test_ticket_create_dialogs_use_wider_responsive_defaults():
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+    assert ".nk { width: min(720px, 94vw)" in css
+    assert ".nk-epic { width: min(780px, 96vw)" in css
+
+
 def test_comment_submit_waits_for_pending_draft_before_final_delete():
     """제출 성공 뒤 예약된 saveDraft가 완료 글을 되살리는 경쟁 상태를 막는다."""
     src = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
@@ -113,6 +131,49 @@ def test_comment_submit_waits_for_pending_draft_before_final_delete():
     wait = src.index("await this._draftWrite", cancel)
     delete = src.index("await clearDraft(dk)", wait)
     assert success < cancel < wait < delete
+
+
+def test_agent_ticket_badges_have_compact_and_detail_modes():
+    """답변 티켓은 목록·소수 인라인·bullet 상세 세 형식을 사용한다."""
+    md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
+    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
+    for variant in ("jira-badge-list", "jira-badge-inline", "jira-badge-detail"):
+        assert variant in md or variant in css
+    assert "agent-ticket-details" in md
+    assert "a.tkt::before" not in css
+    assert "typeIconSvg" in view
+    assert "TICKET_TOKEN_RE" in md
+    assert "dedupeTicketTail" in view and "ticketAssignee" in view
+    assert ".jira-badge-detail .jb-owner" in css
+    assert '.agent-md a.tkt[data-key]:not([data-filled])' in view
+
+
+def test_reference_hover_is_shared_by_all_ticket_links_and_person_mentions():
+    """에이전트 전용 pseudo tooltip이 아니라 앱 전체의 한 컨트롤러를 사용한다."""
+    root = (STATIC / "components" / "app-root.js").read_text(encoding="utf-8")
+    hover = (STATIC / "lib" / "referenceHover.js").read_text(encoding="utf-8")
+    api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "ticket.css").read_text(encoding="utf-8")
+    assert 'import { installReferenceHover } from "../lib/referenceHover.js"' in root
+    assert "installReferenceHover()" in root
+    assert '.tkt[data-key]' in hover
+    assert "data-type='mention'" in hover and ".md-person[data-uid]" in hover
+    assert "a.user-hover" in hover and "ViewProfile.jspa" in hover
+    for label in ("티켓 번호", "티켓 타입", "제목", "담당자", "진행상황",
+                  "Full Display Name", "username"):
+        assert label in hover
+    assert "ticketBadge" in hover and "userBadge" in hover
+    assert "userBadge:" in api and "/api/mention/user/" in api
+    assert ".reference-hover" in css
+    assert ".tkt-desc a.user-hover" in css
+
+
+def test_agent_wiki_mentions_render_as_person_badges_even_before_name_hydration():
+    md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
+    assert "MENTION_RE" in md
+    assert "personBadge" in md
+    assert "[~" in md
 
 
 # ── 파이썬 소스 위생 ────────────────────────────────────────────────────────

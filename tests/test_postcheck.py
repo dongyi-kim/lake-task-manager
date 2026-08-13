@@ -83,5 +83,37 @@ def test_the_note_is_visible_and_bounded():
     """붙이는 경고는 **보이되 답을 덮지 않는다** — 최대 4줄."""
     note = P.note(["a", "b", "c", "d", "e", "f"])
     assert note.startswith("\n\n> ⚠")
+    assert "결과 검증에서 누락 가능성" in note
+    assert "우리 형식 기준" not in note
     assert note.count("\n> - ") <= 4
     assert P.note([]) == ""
+
+
+def test_assignment_completion_accepts_complete_people_list_without_table():
+    state = {"playbook": "find_tickets", "assignment_completion": {
+        "kind": "incomplete_assignees",
+        "people": [{"tickets": [{"key": "DL-1"}]}, {"tickets": [{"key": "DL-2"}]}],
+        "unassigned": [],
+    }}
+    assert P.check(state, "- 김동이 — DL-1\n- 박지영 — DL-2") == []
+    assert "DL-2" in P.check(state, "- 김동이 — DL-1")[0]
+
+
+def test_assignment_completion_reply_uses_machine_badges_without_excluded_noise():
+    from app.agent.workflow.agents.result_integrator import _assignment_completion_reply
+    data = {
+        "kind": "incomplete_assignees", "topic": "보안 필수교육 수강",
+        "totalSubtasks": 14, "doneSubtasks": 10, "incompleteSubtasks": 4,
+        "parents": [{"key": "DL-9100", "total": 14, "done": 10,
+                     "incomplete": [{"key": f"DL-{n}"} for n in range(9101, 9105)]}],
+        "people": [
+            {"id": f"skcc.x{n}", "name": f"작업자{n}",
+             "tickets": [{"key": f"DL-{9100 + n}"}]}
+            for n in range(1, 5)
+        ],
+        "unassigned": [],
+    }
+    reply = _assignment_completion_reply(data)
+    assert reply.count("{{ticket-list:") == 4
+    assert "{{ticket-detail:DL-9100}}" in reply
+    assert "레지스트리" not in reply and "권장" not in reply

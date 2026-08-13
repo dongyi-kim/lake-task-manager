@@ -51,8 +51,17 @@
 ### 링크와 식별자
 
 - ticket, document, person, comment reference는 canonical resolver를 거쳐 badge·mention·link로 렌더링한다.
+- 사용자에게 보이는 사람 언급은 전부 식별자가 확인된 mention badge로 렌더링한다. 평문 실명이나
+  추측한 username을 출력하지 않으며 동명이인·식별자 미확정 상태는 확인 질문으로 남긴다.
+- Agent 답변의 ticket은 `{{ticket-list:KEY}}`(다수 인라인), `{{ticket-inline:KEY}}`(소수 문장),
+  `{{ticket-detail:KEY}}`(`다음의`/`아래의` 뒤 bullet) typed token으로 기계화한다. HTML을 prompt가
+  직접 만들지 않는다. detail은 key/title/assignee/status를 포함하며, badge가 포함한 field를
+  token 뒤 텍스트에 중복하지 않는다.
 - function/tool name, parameter, JSON key/schema/enum, Jira field/type, code, SQL/JQL, HTML tag, ticket key, user ID, URL은 번역하지 않는다.
 - 자연어 지시와 사용자 대면 출력은 한국어로 작성한다.
+- 최종 reply는 직접 인용·질문·구술형 안내를 제외하고 짧은 명사형·서술형으로 종결한다.
+  서로 다른 내용 section은 heading으로 나누고, 비교 3건 이상은 표, 절차·조건·근거는 bullet을
+  우선 사용한다. Result Integrator의 deterministic style normalizer와 test를 함께 유지한다.
 
 ## 3. 역할 경계
 
@@ -107,6 +116,9 @@
 - 실제 등록된 tool만 기술한다. model에 없는 tool 이름을 제시하지 않는다.
 - 목적, 사용 조건, typed parameter, 반환 shape, scope, pagination, truncation, actionable error를 명확히 쓴다.
 - server가 native tool calling 또는 strict structured output을 지원하지 않아도 `json_schema → json_object → prompt JSON → repair 1회` fallback을 유지한다.
+- production(`jira_env=prod`)과 `openai_compat` provider는 native tool calling 지원이 0인 것으로
+  간주해 `tools`/`parallel_tools` payload를 보내지 않는다. read 작업은 deterministic runner와
+  prompt JSON fallback으로 수행한다.
 - fallback이 실패하면 invalid JSON을 다음 역할에 넘기지 말고 구조화된 error로 종료한다.
 
 ## 5. 변경 절차

@@ -38,6 +38,18 @@ class QueryRunner:
         from app.agent.tools.query_tools import execute_jql_all
 
         results, artifacts = [], {}
+        # 이 유형은 LLM이 만든 단일 JQL만으로 끝낼 수 없다. 제목 검색 결과에서 parent를
+        # 고른 뒤 그 parent의 직계 Sub-Task를 전수 조회해야 하므로 deterministic join을 먼저 돈다.
+        from app.agent.workflow.assignment_completion import (
+            asks_incomplete_assignees, lookup_incomplete_assignees,
+        )
+        from app.agent.workflow.state import last_user_text
+        if asks_incomplete_assignees(last_user_text(state)):
+            completion = lookup_incomplete_assignees(
+                last_user_text(state), state.get("keywords") or [])
+            artifacts["incomplete-assignees"] = completion
+            results.append({"id": "incomplete-assignees", "source": "jira",
+                            "result": completion})
         for spec in (state.get("query_plan") or {}).get("queries") or []:
             qid, source = str(spec.get("id") or ""), str(spec.get("source") or "")
             complete = spec.get("completeness") or "page"
@@ -95,6 +107,7 @@ class QueryRunner:
                     compact["artifactId"] = qid
             results.append({"id": qid, "source": source, "result": compact})
         return {"query_results": results, "query_artifacts": artifacts,
+                "assignment_completion": artifacts.get("incomplete-assignees") or {},
                 "trace": note(state, self.name, f"조회 {len(results)}개 실행")}
 
 

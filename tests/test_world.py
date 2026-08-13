@@ -37,3 +37,16 @@ def test_pmo_vit_dedup_case_exists():
     # 최소 1건: 상위(조상)가 이미 PMO_VIT 인 자손 현안 (dedup 대상)
     found = any((w.issues[k]["epicKey"] in vit) or (w.issues[k]["parentKey"] in vit) for k in vit)
     assert found
+
+
+def test_security_training_fixture_has_all_fourteen_direct_subtasks():
+    """미완료자 질의 battery가 한 검색 결과가 아닌 14명 전수를 검증할 수 있어야 한다."""
+    world = get_world()
+    parent = world.issues["DL-9100"]
+    children = [world.issues[key] for key in parent["subtasks"]]
+    assert len(children) == 14
+    assert all(row["parentKey"] == "DL-9100" and row["type"] == SUBTASK_TYPE
+               for row in children)
+    assert sum(row["statusCategory"] == "done" for row in children) == 10
+    assert sum(row["statusCategory"] != "done" for row in children) == 4
+    assert len({row["assignee"] for row in children}) == 14

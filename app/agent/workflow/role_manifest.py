@@ -48,7 +48,8 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "query_runner": RoleSpec(
         "query_runner", "Query Runner", "deterministic",
         "QueryPlan을 scope·pagination 계약에 따라 실행하고 전체 결과를 artifact로 보존한다.",
-        ("query_plan", "thread_id"), ("query_results", "query_artifacts"),
+        ("query_plan", "thread_id"),
+        ("query_results", "query_artifacts", "assignment_completion"),
         ("query", "web"), has_prompt=False,
     ),
     "research_analyst": RoleSpec(

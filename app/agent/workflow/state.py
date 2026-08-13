@@ -136,6 +136,7 @@ class AgentState(TypedDict, total=False):
     query_plan: dict
     query_results: list             # LLM에 전달할 compact 결과
     query_artifacts: dict           # 전체 target key snapshot 등 모델 밖 실행 자료
+    assignment_completion: dict     # 분담형 Task의 미완료 Sub-Task·담당자 deterministic 집계
 
     # ── ResearchAnalyst 사전 취합(코드가 만든 자료) ──
     # 선언이 없으면 LangGraph 가 반환값에서 이 키들을 버린다 — 실제로 그래서 KnowledgeCurator 의

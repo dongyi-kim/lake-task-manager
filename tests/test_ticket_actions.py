@@ -39,3 +39,29 @@ def test_reopened_must_come_from_actual_transition_list():
             {"id": "4", "name": "Reopen Issue", "to": "Reopened", "toCategory": "todo"}]
     assert reopen_transition(rows)["id"] == "4"
     assert reopen_transition(rows[:1]) is None
+
+
+def test_field_update_route_imports_done_guard_and_updates_description(monkeypatch):
+    """Done 보호 로직의 import 누락으로 /fields 전체가 500이 된 회귀 방지."""
+    import json
+    import app.main as main
+
+    class Client:
+        def ticket_badge(self, key):
+            return {"key": key, "statusCategory": "inprogress"}
+
+        def editmeta(self, key):
+            return {"description": {}}
+
+        def desc_field_value(self, html):
+            return "converted:" + html
+
+        def update_fields(self, key, fields):
+            return {"ok": True, "key": key, "fields": fields}
+
+    monkeypatch.setattr(main, "_client", Client())
+    response = main.api_update_fields(
+        "DL-1", main._FieldsBody(descriptionHtml="<p>본문</p>"))
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["fields"]["description"] == "converted:<p>본문</p>"

@@ -317,9 +317,36 @@
   color:var(--text); border:1px solid var(--border); background:var(--panel-2);
   border-radius:6px; padding:0 7px; line-height:1.55; text-decoration:none;
   vertical-align:middle; cursor:pointer; }
-.agent-md a.tkt::before, .agent-bubble a.tkt::before {
-  content:""; width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; }
 .agent-md a.tkt:hover, .agent-bubble a.tkt:hover { border-color:var(--accent); }
+/* 답변 티켓 뱃지 3형식: 목록(아이콘+키), 소수 인라인(+제목), bullet 상세(+상태). */
+.agent-md .jb-type-icon { --tc:var(--ty-task); flex:none; width:14px; height:14px;
+  display:inline-flex; align-items:center; justify-content:center; color:var(--tc); }
+.agent-md .jb-type-icon svg { display:block; width:13px; height:13px; }
+.agent-md .jira-badge-list .jb-name,
+.agent-md .jira-badge-list .jb-owner,
+.agent-md .jira-badge-list .jb-meta,
+.agent-md .jira-badge-inline .jb-owner,
+.agent-md .jira-badge-inline .jb-meta { display:none; }
+.agent-md .jira-badge-list { padding:0 5px; gap:3px; }
+.agent-md .jira-badge-detail .jb-owner { flex:none; color:var(--muted); font-size:10.5px;
+  white-space:nowrap; }
+.agent-md .jira-badge-detail .jb-owner:not(:empty)::before { content:"담당 "; }
+.agent-md .jira-badge-list.st-todo .jb-key,
+.agent-md .jira-badge-inline.st-todo .jb-key,
+.agent-md .jira-badge-inline.st-todo .jb-name { color:var(--st-todo); }
+.agent-md .jira-badge-list.st-inprogress .jb-key,
+.agent-md .jira-badge-inline.st-inprogress .jb-key,
+.agent-md .jira-badge-inline.st-inprogress .jb-name { color:var(--st-prog); }
+.agent-md .jira-badge-list.st-done .jb-key,
+.agent-md .jira-badge-inline.st-done .jb-key,
+.agent-md .jira-badge-inline.st-done .jb-name { color:var(--st-done); }
+/* "다음의/아래의" 뒤 상세 티켓 목록은 긴 뱃지를 문장 안에 끼우지 않고 접어 둔다. */
+.agent-md details.agent-ticket-details { margin:5px 0 8px; }
+.agent-md details.agent-ticket-details > summary { cursor:pointer; color:var(--muted);
+  font-size:11.5px; font-weight:600; list-style:none; }
+.agent-md details.agent-ticket-details > summary::before { content:"▸ "; }
+.agent-md details.agent-ticket-details[open] > summary::before { content:"▾ "; }
+.agent-md details.agent-ticket-details > ul { margin-top:5px; }
 
 /* 답변 본문 속 사람 칩 — 프사+본명 (사번은 title 로) */
 /* 사람 칩·멘션 스타일은 ticket.css 로 옮겼다 — 티켓 본문과 하나의 규칙. */

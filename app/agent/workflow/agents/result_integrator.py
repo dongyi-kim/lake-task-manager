@@ -30,6 +30,17 @@ class ResultIntegrator(TextAgent):
     def system(self, state):
         return persona(state, SYSTEM_RESULT_INTEGRATOR)
 
+    def _run(self, state):
+        """완전한 deterministic 집계는 다시 LLM에 요약시키지 않는다.
+
+        사람·티켓 목록을 이미 코드가 확정했는데 마지막 모델이 일부를 생략하거나 무관 티켓을
+        덧붙이는 것이 이번 실패의 직접 원인이었다. 이 갈래는 아래 renderer가 곧 최종 답이다.
+        """
+        completion = state.get("assignment_completion") or {}
+        if completion.get("kind") == "incomplete_assignees":
+            return self.apply(state, {"text": _assignment_completion_reply(completion)})
+        return super()._run(state)
+
     def task(self, state):
         intent = state.get("intent") or Intent.PLAN_WORK
         result, review = state.get("result") or {}, state.get("review") or {}
@@ -289,6 +300,7 @@ class ResultIntegrator(TextAgent):
         # 노출하는 것은 내용 문제가 아니라 렌더링 계약 위반이다. grounding 전에 정규화해
         # 검사와 사용자 화면이 같은 문자열을 보게 한다.
         text = _strip_instruction_echo(text)
+        text = _canonicalize_person_mentions(text, state)
         text = _render_reply_tokens(text)
         text = _align_draft_claims(text, state)
 
@@ -392,6 +404,11 @@ class ResultIntegrator(TextAgent):
             text = _re.sub(r"\b\d{4}-\d{2}-\d{2}\b",
                            lambda m: due if m.group(0) != due else m.group(0), text)
 
+        # 최종 사용자 말투는 prompt 권고로 끝내지 않는다. 모델·fallback·후처리 어느 경로에서
+        # 왔든 같은 간결한 업무 브리프 문법으로 정규화한다. 질문·인용·code는 예외.
+        text = _canonicalize_person_mentions(text, state)
+        text = _enforce_reply_style(text)
+
         # ── 후검증 — **플레이북별 최소선**(사용자 지시: 주요 태스크는 결과도 검증)
         # 프롬프트에 적어 두면 '대체로' 지켜진다. 문제는 그 '대체로'다 — 같은 요청이
         # 어떤 날은 연표만 나오고 어떤 날은 현재 상태까지 나온다. 흔들림은 지시로 못 잡으니
@@ -459,6 +476,152 @@ def _render_reply_tokens(text: str) -> str:
     out = _re.sub(r"\{\{+ref:([A-Za-z0-9_.:-]+)\}+\}", ref, str(text or ""))
     out = _re.sub(r"\{\{+mention:([A-Za-z0-9_.:-]+)\}+\}", r"[~\1]", out)
     return out
+
+
+def _canonicalize_person_mentions(text: str, state) -> str:
+    """state에서 ID가 확인된 사람의 평문 이름을 canonical mention으로 바꾼다.
+
+    동명이인과 식별자 없는 이름은 추측하지 않는다. 확정된 mapping만 기계적으로 치환한다.
+    """
+    by_name = {}
+
+    def add(uid, name):
+        uid, name = str(uid or "").strip(), str(name or "").strip()
+        if uid and name and uid != name and len(name) >= 2:
+            by_name.setdefault(name, set()).add(uid)
+
+    def walk(value):
+        if isinstance(value, dict):
+            for id_key, name_key in (("assigneeId", "assignee"), ("reporterId", "reporter"),
+                                     ("authorId", "author"), ("user_id", "name"),
+                                     ("uid", "name")):
+                add(value.get(id_key), value.get(name_key))
+            uid = value.get("id")
+            if isinstance(uid, str) and "." in uid:
+                add(uid, value.get("name") or value.get("displayName"))
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                walk(child)
+
+    walk(state)
+    out = str(text or "")
+    for name in sorted(by_name, key=len, reverse=True):
+        ids = by_name[name]
+        if len(ids) == 1:
+            out = out.replace(name, f"[~{next(iter(ids))}]")
+    return out
+
+
+def _assignment_completion_reply(data: dict) -> str:
+    """미완료 담당자 집계를 질문 축 그대로 짧게 렌더한다."""
+    topic = str(data.get("topic") or "해당 업무")
+    if data.get("error"):
+        return (f"**{topic} 미완료 담당자를 확정하지 못했습니다.**\n\n"
+                f"조회 사유: {data['error']}")
+    parents = [p for p in (data.get("parents") or []) if isinstance(p, dict)]
+    if not parents:
+        return (f"**검색 범위에서 ‘{topic}’에 해당하는 상위 Task와 직계 Sub-Task를 "
+                "찾지 못했습니다.**\n\n정확한 상위 Task 키나 제목을 알려주면 그 하위만 다시 확인할 수 있습니다.")
+
+    people = [p for p in (data.get("people") or []) if isinstance(p, dict)]
+    unassigned = [x for x in (data.get("unassigned") or []) if isinstance(x, dict)]
+    incomplete = int(data.get("incompleteSubtasks") or 0)
+    total = int(data.get("totalSubtasks") or 0)
+    done = int(data.get("doneSubtasks") or 0)
+    if incomplete:
+        missing_note = f" 담당 미지정 {len(unassigned)}건이 포함됩니다." if unassigned else ""
+        lines = [f"**{topic} 미완료는 {len(people)}명·{incomplete}건입니다.** "
+                 f"전체 Sub-Task {total}건 중 {done}건이 완료됐습니다.{missing_note}",
+                 "", "### 미완료자"]
+        for person in people:
+            name, uid = str(person.get("name") or "").strip(), str(person.get("id") or "").strip()
+            who = f"{{{{mention:{uid}}}}}" if uid else (name or "담당자 미상")
+            keys = " ".join(f"{{{{ticket-list:{t.get('key')}}}}}"
+                            for t in person.get("tickets") or [] if t.get("key"))
+            lines.append(f"- {who} — {keys}")
+        if unassigned:
+            keys = " ".join(f"{{{{ticket-list:{t.get('key')}}}}}"
+                            for t in unassigned if t.get("key"))
+            lines.append(f"- 담당자 미지정 — {keys}")
+    else:
+        lines = [f"**{topic}의 미완료자는 없습니다.** 전체 Sub-Task {total}건이 완료됐습니다."]
+
+    lines += ["", "기준은 다음의 상위 Task입니다."]
+    for parent in parents:
+        lines.append(f"- {{{{ticket-detail:{parent.get('key')}}}}} — "
+                     f"직계 Sub-Task {parent.get('total')}건 중 "
+                     f"완료 {parent.get('done')}건, 미완료 {len(parent.get('incomplete') or [])}건")
+    lines += ["", "판정 기준: 직계 Sub-Task의 `statusCategory != done`"]
+    return "\n".join(lines)
+
+
+def _enforce_reply_style(text: str) -> str:
+    """최종 reply를 짧은 업무 브리프 문체로 정규화한다.
+
+    사실의 구조나 markdown token은 바꾸지 않는다. 확실히 기계화 가능한 존댓말 종결만
+    명사형으로 바꾸고, 여러 내용 block인데 heading이 전혀 없을 때만 요약/상세 section을
+    보완한다. 직접 인용·blockquote·질문·code fence는 구술 문맥이라 그대로 둔다.
+    """
+    value = str(text or "").strip()
+    if not value:
+        return value
+
+    def compact_line(line: str) -> str:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(">") or stripped.startswith("#"):
+            return line
+        if stripped.endswith("?") or stripped.endswith("？"):
+            return line
+        # 따옴표가 있는 줄은 발언·원문 인용일 수 있으므로 전체를 보존한다.
+        if _re.search(r'["“”‘’][^"“”‘’]+["“”‘’]', line):
+            return line
+        out = line
+        replacements = (
+            (r"([가-힣]+)하였습니다", r"\1함"),
+            (r"([가-힣]+)했습니다", r"\1함"),
+            (r"([가-힣]+)되었습니다", r"\1됨"),
+            (r"([가-힣]+)됐습니다", r"\1됨"),
+            (r"([가-힣]+)됩니다", r"\1됨"),
+            (r"있습니다", "있음"),
+            (r"없습니다", "없음"),
+            (r"필요했습니다", "필요했음"),
+            (r"필요합니다", "필요"),
+            (r"가능했습니다", "가능했음"),
+            (r"가능합니다", "가능"),
+            (r"([가-힣]+)합니다", r"\1"),
+            (r"어렵습니다", "어려움"),
+            (r"쉽습니다", "쉬움"),
+            (r"높습니다", "높음"),
+            (r"낮습니다", "낮음"),
+            (r"같습니다", "같음"),
+            (r"입니다", ""),
+        )
+        for pattern, replacement in replacements:
+            out = _re.sub(pattern, replacement, out)
+        out = _re.sub(r"([가-힣]+)[이가] 필요(?=\s|[,.!?]|$)", r"\1 필요", out)
+        return _re.sub(r"\.(?=\s*$)", "", out)
+
+    rendered, in_code = [], False
+    for line in value.splitlines():
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            rendered.append(line)
+        else:
+            rendered.append(line if in_code else compact_line(line))
+    value = "\n".join(rendered).strip()
+
+    # 한 줄 답에 장식 heading 금지. 둘 이상의 내용 block인데 heading이 하나도 없을 때만
+    # 첫 block=요약, 나머지=상세로 최소 구조를 보완한다.
+    if not _re.search(r"^#{2,4}\s+\S", value, _re.M):
+        blocks = [b.strip() for b in _re.split(r"\n\s*\n", value) if b.strip()]
+        substantive = [b for b in blocks if not b.startswith(">")]
+        if len(substantive) >= 2:
+            value = "### 요약\n\n" + blocks[0]
+            if len(blocks) > 1:
+                value += "\n\n### 상세\n\n" + "\n\n".join(blocks[1:])
+    return value
 
 
 def _align_draft_claims(text: str, state) -> str:
