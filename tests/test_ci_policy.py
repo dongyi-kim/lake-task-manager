@@ -15,6 +15,8 @@ def test_code_test_workflow_runs_full_offline_suite_on_pr_and_main():
     assert "JIRA_ENV: mock" in text
     assert "python -m pytest -q --basetemp=.pytest-tmp" in text
     assert "requirements-test.txt" in text
+    assert "actions/checkout@v5" in text
+    assert "actions/setup-python@v6" in text
 
 
 def test_code_test_workflow_never_runs_real_api_batteries_or_secrets():
