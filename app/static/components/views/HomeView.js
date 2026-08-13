@@ -24,7 +24,7 @@ const PAGES = [
 export default {
   name: "HomeView",
   // manager 는 스스로 확인한다(api.me 는 memo 라 앱루트와 중복 요청이 아니다). null=아직 모름.
-  data() { return { auth: null, env: "", manager: null, releases: RELEASES.slice(0, 4),
+  data() { return { auth: null, env: "", manager: null, releases: RELEASES.slice(0, 5),
                     ask: "", askBusy: false, askNote: "" }; },
   computed: {
     // 허락된 페이지만 — 매니저 전용은 manager 가 확정(true)일 때만 노출(먼저 판정, 그 뒤 표시).
@@ -122,8 +122,9 @@ export default {
     <!-- 최근 업데이트(릴리즈 노트) — 유저가 느낄 변화만 짧게. 내용은 lib/releaseNotes.js -->
     <section v-if="releases.length" class="home-notes">
       <h2 class="hn-h">최근 업데이트</h2>
-      <div v-for="r in releases" :key="r.date" class="hn-rel">
-        <div class="hn-head"><span class="hn-date">{{ r.date }}</span><b class="hn-title">{{ r.title }}</b></div>
+      <div v-for="r in releases" :key="r.version" class="hn-rel">
+        <div class="hn-head"><span class="hn-version">{{ r.version }}</span>
+          <span class="hn-date">{{ r.date }}</span><b class="hn-title">{{ r.title }}</b></div>
         <!-- 유형별 소제목 — 한 배포에 열몇 줄이 평평하게 늘어서면 무엇이 어디 얘기인지 안 읽힌다. -->
         <div v-for="(g, gi) in r.groups" :key="gi" class="hn-grp">
           <div class="hn-gh">{{ g.h }}</div>
