@@ -35,6 +35,25 @@ def _brief(exc: Exception) -> str:
     return " ".join(str(exc or "").split())[:240]
 
 
+def native_tools_allowed() -> bool:
+    """현재 provider에 native tool payload를 보내도 되는가.
+
+    운영 LLM gateway는 provider 표기와 무관하게 chat text만 지원한다고 본다. 기능 탐지
+    명목으로 ``tools``를 한 번 보내 보는 것 자체가 prod 오류 로그를 만들므로 아예 요청하지
+    않는다. local tool은 prompt JSON 계획과 deterministic runner를 통해 계속 실행할 수 있다.
+    """
+    from app.agent import config as cfg
+    # 운영은 provider 이름과 무관하게 native tool 지원이 0이라고 가정한다. 사내 gateway를
+    # AOAI 이름으로 등록해도 tools payload가 새어 나가면 안 된다.
+    try:
+        from app.infra.settings import get_settings
+        if str(get_settings().jira_env or "").casefold() == "prod":
+            return False
+    except Exception:
+        pass
+    return cfg.provider() != "openai_compat"
+
+
 def probe_tier(tier: str = "complex") -> dict:
     """프로젝트 정보 없이 JSON mode와 tool-calling 지원 여부만 검사한다."""
     from langchain_core.tools import tool
@@ -83,7 +102,13 @@ def probe_tier(tier: str = "complex") -> dict:
         calls = getattr(msg, "tool_calls", None) or []
         if not calls or calls[0].get("name") != "capability_echo":
             raise ValueError("서버가 요청한 tool call을 반환하지 않았습니다.")
-    attempt("tools", one_tool)
+    if native_tools_allowed():
+        attempt("tools", one_tool)
+    else:
+        message = "운영/provider 정책: native tools 요청을 보내지 않음"
+        result["checked"]["tools"] = False
+        result["errors"]["tools"] = message
+        record(tier, "tools", False, message)
 
     def parallel_tools():
         msg = cfg.get_llm(temperature=0, tier=tier, max_tokens=96).bind_tools(
@@ -92,7 +117,13 @@ def probe_tier(tier: str = "complex") -> dict:
         calls = getattr(msg, "tool_calls", None) or []
         if len(calls) < 2:
             raise ValueError("parallel tool calls를 반환하지 않았습니다.")
-    attempt("parallel_tools", parallel_tools)
+    if native_tools_allowed():
+        attempt("parallel_tools", parallel_tools)
+    else:
+        message = "native tools가 비활성화되어 parallel tools도 사용하지 않음"
+        result["checked"]["parallel_tools"] = False
+        result["errors"]["parallel_tools"] = message
+        record(tier, "parallel_tools", False, message)
     result["degraded"] = not all(result["checked"].values())
     return result
 
@@ -114,4 +145,4 @@ def probe_all() -> dict:
     return rows
 
 
-__all__ = ["get", "record", "reset", "probe_tier", "probe_all"]
+__all__ = ["get", "record", "reset", "native_tools_allowed", "probe_tier", "probe_all"]

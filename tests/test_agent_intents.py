@@ -34,6 +34,23 @@ def test_direct_answer_intents_skip_the_historian():
         assert G.route_after_request_architect({"intent": i}) == Node.PORTFOLIO_ANALYST
 
 
+def test_incomplete_assignee_question_uses_deterministic_query_runner():
+    from langchain_core.messages import HumanMessage
+    state = {"intent": Intent.ACTIVITY, "messages": [HumanMessage(
+        content="보안 팔수 교육 수강 Task들 누가누가 미완료했나 궁금해")]}
+    assert G.route_after_request_architect(state) == Node.QUERY_RUNNER
+
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    classified = RequestArchitect().apply(state, {
+        "intent": Intent.ACTIVITY, "keywords": ["보안 필수교육 수강"],
+        "mentioned_keys": [], "sufficient": True, "answer_depth": "brief",
+        "playbook": "workload",
+    })
+    assert classified["intent"] == Intent.ASK
+    assert classified["playbook"] == "find_tickets"
+    assert classified["request_plan"]["tasks"][0]["id"] == "incomplete-assignees"
+
+
 def test_bug_reports_still_go_through_investigation():
     """버그도 조사를 지난다 — 같은 증상의 Bug 가 이미 열려 있으면 새로 만들면 안 된다.
 

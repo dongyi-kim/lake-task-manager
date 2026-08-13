@@ -40,6 +40,25 @@ export const TYPE_BG = {
 };
 export function typeLabel(t) { return TYPE_LABEL[t] || t; }
 
+// 이슈 타입의 작은 Jira식 아이콘. 에이전트 답변·티켓 입력기처럼 공간이 좁은 곳에서
+// 타입명을 글자로 반복하지 않고도 Epic/Task/Sub-Task 등을 구별하게 한다.
+// 반환값은 고정 SVG 조각만 사용하므로 서버 응답 문자열이 HTML로 들어가지 않는다.
+const TYPE_ICON_PATH = {
+  Epic: '<path fill="currentColor" d="M9.2 1.5 4 8.9h2.7l-1 5.6 5.1-7.4H9.9l1.1-5.6z"/>',
+  Task: '<path d="M4 8.3l2.6 2.6L12 4.8"/>',
+  "Sub-Task": '<path d="M6.2 7.6l2 2 3.6-3.9M3.6 3.2v3.1h3"/>',
+  Bug: '<path d="M5.2 5.1h5.6v5.8a2.8 2.8 0 0 1-5.6 0zM6.3 5.1a1.7 1.7 0 0 1 3.4 0M3 7h2.2m5.6 0H13M3 10h2.2m5.6 0H13M4 13l1.6-1.1m6.4 1.1-1.6-1.1"/>',
+  Story: '<path d="M4 2.8h8v10.4l-4-2.1-4 2.1z"/>',
+  Improvement: '<path d="M3.5 11.8 7 8.3l2.1 2.1 3.4-4.1M9.7 6.3h2.8v2.8"/>',
+  "New Feature": '<path d="M8 2.5v11M2.5 8h11M4.1 4.1l7.8 7.8m0-7.8-7.8 7.8"/>',
+};
+export function typeIconSvg(type) {
+  const path = TYPE_ICON_PATH[type] || TYPE_ICON_PATH.Task;
+  const filled = type === "Epic" || type === "Story";
+  return `<svg viewBox="0 0 16 16" aria-hidden="true"${filled ? "" :
+    ' fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"'}>${path}</svg>`;
+}
+
 // 사용자 시그니처 컬러 — id 해시 → 고정 hue. 같은 사람은 어디서나 같은 색.
 // 쓰는 곳: 댓글 좌측 구분 바(글쓴이 식별) · 프로필 사진 없는 사람의 기본 아바타 배경 · 멘션 팝업.
 export function sigColor(id) {

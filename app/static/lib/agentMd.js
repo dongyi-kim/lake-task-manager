@@ -19,6 +19,8 @@
 import { sigColor, initialOf } from "./colors.js";
 
 const KEY_RE = /(?<![0-9A-Za-z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Za-z-])/g;
+const TICKET_TOKEN_RE = /\{\{ticket-(list|inline|detail):([A-Z][A-Z0-9]*-\d+)\}\}/g;
+const MENTION_RE = /\[~([A-Za-z0-9_.:-]+)\]/g;
 // 키 뒤에 모델이 붙인 따옴표 제목(`DL-118 "CDC 도입"`)은 뱃지가 실제 제목을 보여 주므로
 // 중복이다 — 뱃지 렌더에서만 접는다(표 셀의 슬림 링크에서는 제목이 정보라 남긴다).
 // 입력은 이미 esc() 를 거쳤으므로 곧은따옴표는 &quot; 로 온다.
@@ -76,21 +78,31 @@ function slugTitle(url) {
 
 /** 티켓 키 → 본문·코멘트와 **같은 구조**의 jira-badge 스켈레톤. 타입·제목·상태는
  *  AgentView.augmentBadges() 가 api.ticketBadge 로 비동기 채움(렌더는 동기라서). */
-function keyBadge(key) {
-  return `<a href="#" class="jira-badge tkt" data-key="${key}">` +
-         `<span class="tbadge v-solid jb-type"></span><b class="jb-key">${key}</b>` +
-         `<span class="jb-name"></span><span class="jb-meta"></span></a>`;
+function keyBadge(key, mode) {
+  const variant = ["list", "inline", "detail"].includes(mode) ? mode : "inline";
+  return `<a href="#" class="jira-badge jira-badge-${variant} tkt" data-key="${key}">` +
+         `<span class="jb-type-icon" aria-hidden="true"></span><b class="jb-key">${key}</b>` +
+         `<span class="jb-name"></span><span class="jb-owner"></span>` +
+         `<span class="jb-meta"></span></a>`;
+}
+
+function personBadge(uid, name) {
+  const label = (name || uid || "").trim();
+  return `<span class="md-person mention" data-type="mention" data-id="${esc(uid)}" ` +
+         `data-uid="${esc(uid)}"><span class="md-avt-wrap" style="background:${sigColor(uid)}">` +
+         `${esc(initialOf(label, uid))}</span><span class="md-person-nm">${esc(label)}</span></span>`;
 }
 
 /** 인라인 문법. 이미 escape 된 문자열을 받는다.
- *  slim=true(표 셀): 제목·키를 나열하는 자리라 무거운 뱃지 대신 가벼운 키 링크만 —
- *  "plain text 금지"의 **유일한 예외**(사용자 지시: 표에서 의도적 나열만 예외). */
-function inline(s, slim) {
+ *  slim=true(표 셀)는 사람·문서 표기를 가볍게 하되 ticket은 목록형 badge로 유지한다. */
+function inline(s, slim, ticketMode) {
   // ① 링크·URL 을 먼저 뱃지로 만들어 **스태시**한다 — 제목 속 티켓 키·사번이
   //    아래 치환에 오염되면 뱃지 안에 뱃지가 생긴다.
   const stash = [];
   const keep = (html) => { stash.push(html); return `\x00${stash.length - 1}\x00`; };
   s = s
+    .replace(TICKET_TOKEN_RE, (_, mode, key) => keep(keyBadge(key, mode)))
+    .replace(MENTION_RE, (_, uid) => keep(personBadge(uid, PEOPLE[uid])))
     .replace(MDLINK_RE, (_, t, u) => keep(linkBadge(t, u, slim)))
     .replace(URL_RE, (_, pre, u) => pre + keep(linkBadge("", u, slim)));
   s = s
@@ -116,8 +128,7 @@ function inline(s, slim) {
     // 표 밖에서는 본문 뱃지와 같은 모양(jira-badge)으로 — plain text 금지(사용자 지시).
     // 뱃지가 실제 제목을 보여 주므로 모델이 병기한 따옴표 제목은 접는다(중복).
     .replace(slim ? KEY_RE : KEY_TITLED_RE,
-             slim ? '<a href="#" class="tkt" data-key="$1">$1</a>'
-                  : (m, k) => keep(keyBadge(k)))
+             (m, k) => keep(keyBadge(k, ticketMode || (slim ? "list" : "inline"))))
     // 사번은 프사+본명 칩으로 — "skcc.x1042 만 달랑"은 읽는 사람에게 아무 정보가 없다
     // (사용자 지적). 본명을 모르는 사번(지도에 없음)은 건드리지 않는다.
     .replace(UID_RE, (m, n1, u1, u2, n2) => {
@@ -126,18 +137,7 @@ function inline(s, slim) {
       const side = (n1 || n2 || "").trim();
       // 병기된 이름이 **다른 사람**이면 손대지 않는다(잘못 삼키면 사실이 바뀐다).
       if (!name || (side && side !== name)) return m;
-      // 참조·표처럼 나열하는 자리에서는 칩이 과하다 — 이름만 쓴다(사번은 title 로).
-      if (slim) return `<span class="md-person-plain" title="${esc(uid)}">${esc(name)}</span>`;
-      // 프사가 없는 사용자가 많다(mock 은 전원 404) — 다른 화면과 같은 **이니셜 폴백**을
-      // 먼저 그리고, 사진이 실제로 로드되면 그 위를 덮는다. 인라인 onerror 는 쓰지 않는다
-      // (CSP 에서 막히면 깨진 이미지가 그대로 남는다 — 실측).
-      // 이니셜 원만 그린다 — 프사는 **있는 사람만** AgentView.augmentBadges() 가 뒤에
-      // 얹는다. 처음부터 <img> 를 넣으면 프사 없는 사용자(mock 은 전원 404)에게
-      // 깨진 이미지가 잠깐이라도 보인다(실측).
-      return `<span class="md-person mention" data-uid="${esc(uid)}" title="${esc(uid)}">` +
-             `<span class="md-avt-wrap" style="background:${sigColor(uid)}">` +
-             `${esc(initialOf(name, uid))}</span>` +
-             `<span class="md-person-nm">${esc(name)}</span></span>`;
+      return personBadge(uid, name);
     });
   // ② 스태시 복원
   return s.replace(/\x00(\d+)\x00/g, (_, i) => stash[+i]);
@@ -222,8 +222,17 @@ function _render(text) {
   const lines = esc(text || "").split("\n");
   const out = [];
   let list = null;          // "ul" | "ol" | null
+  let detailList = false;
+  let detailLead = false;
+  const ticketTotal = (String(text || "").match(KEY_RE) || []).length;
 
-  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  const closeList = () => {
+    if (!list) return;
+    out.push(`</${list}>`);
+    if (detailList) out.push("</details>");
+    list = null;
+    detailList = false;
+  };
 
   // 표 상태 — 연속된 | … | 줄을 모아 하나의 <table> 로
   let tbl = null;           // {header: [...], rows: [[...]]}
@@ -242,6 +251,7 @@ function _render(text) {
     const line = raw.replace(/\s+$/, "");
     if (isRow(line)) {
       closeList();
+      detailLead = false;
       if (isSep(line)) continue;                       // |---|---| 구분줄은 버린다
       if (!tbl) tbl = { header: cells(line), rows: [] };
       else tbl.rows.push(cells(line));
@@ -253,18 +263,22 @@ function _render(text) {
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
     if (h) {
       closeList();
+      detailLead = false;
       // 답변의 `#`~`####` → h2~h4. 티켓 본문 CSS 가 h1~h4 만 꾸미므로 그 범위를 넘지
       // 않는다(넘기면 답변에서만 헤딩이 밋밋해진다 — 렌더 체계를 하나로).
       const lv = Math.min(h[1].length + 1, 4);
-      out.push(`<h${lv}>${inline(h[2])}</h${lv}>`);
+      out.push(`<h${lv}>${inline(h[2], false, "inline")}</h${lv}>`);
       continue;
     }
 
-    if (/^(-{3,}|\*{3,})$/.test(line.trim())) { closeList(); out.push("<hr>"); continue; }
+    if (/^(-{3,}|\*{3,})$/.test(line.trim())) {
+      closeList(); detailLead = false; out.push("<hr>"); continue;
+    }
 
     const q = /^&gt;\s?(.*)$/.exec(line);
     if (q) {
       closeList();
+      detailLead = false;
       // GitHub 식 알림 인용(`> [!NOTE]`)은 티켓 본문의 **콜아웃**과 같은 마크업으로 —
       // 에디터·티켓 화면이 이미 그 CSS 를 갖고 있다(사용자 지시: 렌더 체계는 하나).
       const co = /^\[!(NOTE|INFO|TIP|SUCCESS|WARNING|CAUTION|ERROR|DANGER)\]\s*(.*)$/i
@@ -272,28 +286,39 @@ function _render(text) {
       if (co) {
         const kind = { caution: "warning", danger: "error" }[co[1].toLowerCase()]
           || co[1].toLowerCase();
-        out.push(`<div class="callout callout-${kind}">${inline(co[2])}</div>`);
+        out.push(`<div class="callout callout-${kind}">${inline(co[2], false, "inline")}</div>`);
       } else {
-        out.push(`<blockquote>${inline(q[1])}</blockquote>`);
+        out.push(`<blockquote>${inline(q[1], false, "inline")}</blockquote>`);
       }
       continue;
     }
 
     const ul = /^\s*[-*]\s+(.*)$/.exec(line);
     if (ul) {
-      if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; }
-      out.push(`<li>${inline(ul[1])}</li>`);
+      if (list !== "ul") {
+        closeList();
+        detailList = detailLead && /[A-Z][A-Z0-9]*-\d+/.test(ul[1]);
+        if (detailList) out.push('<details class="agent-ticket-details"><summary>티켓 상세</summary>');
+        out.push("<ul>");
+        list = "ul";
+      }
+      const mode = detailList ? "detail" : (ticketTotal > 2 ? "list" : "detail");
+      out.push(`<li>${inline(ul[1], false, mode)}</li>`);
+      detailLead = false;
       continue;
     }
     const ol = /^\s*\d+\.\s+(.*)$/.exec(line);
     if (ol) {
       if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; }
-      out.push(`<li>${inline(ol[1])}</li>`);
+      out.push(`<li>${inline(ol[1], false, ticketTotal > 2 ? "list" : "detail")}</li>`);
+      detailLead = false;
       continue;
     }
 
     closeList();
-    out.push(`<p>${inline(line)}</p>`);
+    const lineTickets = (line.match(KEY_RE) || []).length;
+    out.push(`<p>${inline(line, false, lineTickets > 1 ? "list" : "inline")}</p>`);
+    detailLead = /(?:다음의|아래의)\s*(?:상위\s*)?(?:Task|태스크|테스크|티켓)/.test(line);
   }
   closeList();
   flushTable();

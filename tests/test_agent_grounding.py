@@ -154,6 +154,51 @@ def test_responder_removes_internal_heading_and_renders_reference_tokens():
     assert "[DL-9090](" in text and "[~skcc.x1402]" in text
 
 
+def test_responder_forces_known_people_into_canonical_mention_badges():
+    from app.agent.workflow.agents.result_integrator import _canonicalize_person_mentions
+
+    state = {"assignment_completion": {"people": [
+        {"id": "skcc.x1402", "name": "김동이", "tickets": []},
+    ]}}
+    got = _canonicalize_person_mentions("미완료자는 김동이이며 김동이에게 확인 필요", state)
+    assert got == "미완료자는 [~skcc.x1402]이며 [~skcc.x1402]에게 확인 필요"
+    assert "김동이" not in got
+
+
+def test_responder_never_guesses_an_ambiguous_person_badge():
+    from app.agent.workflow.agents.result_integrator import _canonicalize_person_mentions
+
+    state = {"query_results": [
+        {"assigneeId": "skcc.a1", "assignee": "김철수"},
+        {"assigneeId": "skcc.b2", "assignee": "김철수"},
+    ]}
+    assert _canonicalize_person_mentions("김철수 확인 필요", state) == "김철수 확인 필요"
+
+
+def test_responder_enforces_compact_heading_style_but_preserves_quotes_and_questions():
+    from app.agent.workflow.agents.result_integrator import _enforce_reply_style
+
+    source = ("확인했습니다.\n\n대상은 세 건입니다. 추가 조치가 필요합니다.\n\n"
+              "> 담당자가 \"오늘 완료하겠습니다.\"라고 답했습니다.\n\n"
+              "어느 범위로 진행할까요?")
+    got = _enforce_reply_style(source)
+    assert got.startswith("### 요약\n\n확인함")
+    assert "### 상세" in got
+    assert "대상은 세 건. 추가 조치 필요" in got
+    assert '> 담당자가 "오늘 완료하겠습니다."라고 답했습니다.' in got
+    assert "어느 범위로 진행할까요?" in got
+
+
+def test_responder_style_keeps_existing_headings_and_uses_lists_without_polite_endings():
+    from app.agent.workflow.agents.result_integrator import _enforce_reply_style
+
+    source = "### 결과\n\n- 첫 작업을 완료했습니다.\n- 두 번째 작업을 진행합니다."
+    got = _enforce_reply_style(source)
+    assert got.count("### 결과") == 1 and "### 요약" not in got
+    assert "- 첫 작업을 완료함" in got
+    assert "- 두 번째 작업을 진행" in got
+
+
 def test_responder_uses_the_payload_when_reply_claims_creation_is_impossible():
     from app.agent.workflow.agents.result_integrator import _align_draft_claims
     state = {"draft": {"items": [{"summary": "[ETL] 재처리 배치 개선", "type": "Task"}]}}

@@ -75,6 +75,12 @@ def route_after_request_architect(state: AgentState) -> str:
     intent = state.get("intent") or ""
     if intent == Intent.CHITCHAT:
         return "respond"
+    # 분담형 Task의 미완료자 조회는 Query Specialist의 자유 JQL이나 Portfolio ReAct가
+    # 아니라 parent 탐색→직계 Sub-Task 전수 집계라는 고정 join이다.
+    from app.agent.workflow.assignment_completion import asks_incomplete_assignees
+    from app.agent.workflow.state import last_user_text
+    if asks_incomplete_assignees(last_user_text(state)):
+        return Node.QUERY_RUNNER
     # ── 빠른 경로 2종 (턴 시간의 최대 낭비 제거) ──────────────────
     # ① 후속 턴: 같은 대화에서 조사 결과(situation)가 이미 있으면 재조사하지 않는다 —
     #    인터뷰 답변 턴마다 ResearchAnalyst 이 통째로 다시 돌던 것이 실측 낭비의 최대 항목
@@ -116,6 +122,12 @@ def route_after_request_architect(state: AgentState) -> str:
             return "investigate"
         return Node.PORTFOLIO_ANALYST
     return "investigate"
+
+
+def route_after_query_runner(state: AgentState) -> str:
+    """결정적 집계만으로 답이 완성된 요청은 일반 Research ReAct를 건너뛴다."""
+    completion = state.get("assignment_completion") or {}
+    return "respond" if completion.get("kind") == "incomplete_assignees" else "investigate"
 
 
 def route_after_research_analyst(state: AgentState) -> str:
@@ -388,10 +400,13 @@ def build(checkpointer=None):
     g.add_edge(START, Node.REQUEST_ARCHITECT)
     g.add_conditional_edges(Node.REQUEST_ARCHITECT, route_after_request_architect,
                             {"investigate": Node.QUERY_SPECIALIST,
+                             Node.QUERY_RUNNER: Node.QUERY_RUNNER,
                              Node.PORTFOLIO_ANALYST: Node.PORTFOLIO_ANALYST,
                              "refine": Node.WORK_ARCHITECT, "respond": Node.RESULT_INTEGRATOR})
     g.add_edge(Node.QUERY_SPECIALIST, Node.QUERY_RUNNER)
-    g.add_edge(Node.QUERY_RUNNER, Node.RESEARCH_ANALYST)
+    g.add_conditional_edges(Node.QUERY_RUNNER, route_after_query_runner,
+                            {"investigate": Node.RESEARCH_ANALYST,
+                             "respond": Node.RESULT_INTEGRATOR})
     g.add_edge(Node.PORTFOLIO_ANALYST, Node.RESULT_INTEGRATOR)
     g.add_conditional_edges(Node.RESEARCH_ANALYST, route_after_research_analyst,
                             {"refine": Node.WORK_ARCHITECT, "respond": Node.RESULT_INTEGRATOR,

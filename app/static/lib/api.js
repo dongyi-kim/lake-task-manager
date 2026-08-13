@@ -142,6 +142,7 @@ export const api = {
     return fresh ? req(u + "?fresh=1") : get(u);
   },
   ticketBadge: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/badge"),
+  userBadge: (userId) => get("/api/mention/user/" + encodeURIComponent(userId)),
   ticketAncestors: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/ancestors"),
   ticketSiblings: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/siblings"),
   ticketTimeline: (key) => get("/api/ticket/" + encodeURIComponent(key) + "/timeline"),

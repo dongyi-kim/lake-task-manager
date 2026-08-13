@@ -2651,6 +2651,13 @@ class JiraClient:
             elif epic_key:
                 chain.append((epic_key, self._epic_pct(epic_key)))
             nodes = [n for n in (self._lineage_node(k, p) for k, p in chain) if n]
+            issue_type = ((f.get("issuetype") or {}).get("name") or "").lower()
+            if not epic_key and issue_type != "epic" and _comp_of(f) != VOC_COMPONENT:
+                # Keep lineage visible for unlinked work instead of making an empty result
+                # indistinguishable from a loading failure. A virtual node cannot be opened.
+                nodes.insert(0, {"key": None, "summary": "Epic 없음", "type": "Epic",
+                                 "status": None, "statusCategory": None, "assignee": None,
+                                 "pct": None, "virtual": True})
             if not nodes and _comp_of(f) == VOC_COMPONENT:
                 # VoC 는 Epic/부모에 안 붙는 경우가 많아 계보가 통째로 비어 버린다.
                 # 실제 티켓은 아니지만 '어디 소속인지' 는 보여주는 게 낫다 → 가상 상위 노드.
@@ -3387,6 +3394,28 @@ class JiraClient:
             self.cache.set(ck, dn, self.USER_TTL)
             return dn
         return pid
+
+    def user_badge(self, user_id):
+        """사람 멘션 호버용 정확 조회. 이름 검색이 아니라 username으로 한 명만 조회한다."""
+        uid = str(user_id or "").strip()
+        if not uid:
+            return None
+        ck = f"userbadge:{self.env}:{uid.lower()}"
+        hit = self.cache.get(ck)
+        if hit is not None:
+            return hit
+        try:
+            raw = self.provider.get_json("/rest/api/2/user", params={"username": uid}) or {}
+        except Exception:
+            return None
+        actual = raw.get("name") or raw.get("key")
+        if not actual or str(actual).lower() != uid.lower():
+            return None
+        display = raw.get("displayName") or actual
+        result = {"id": actual, "username": actual, "name": real_name(display) or actual,
+                  "displayName": display, "avatar": "/api/avatar/" + actual}
+        self.cache.set(ck, result, self.USER_TTL)
+        return result
 
     def epic_progress_one(self, key):
         """단일 Epic 진척률 {doneSp,totalSp,mockSp,progressPct,name}."""

@@ -265,6 +265,27 @@ class RequestArchitect(StructuredAgent):
         # 분류되어 Epic 배치 인터뷰까지 갔다(실측). '만들어줘'의 대상이 글이면 ask.
         from app.agent.workflow.state import last_user_text as _lut
         _req = _lut(state)
+        # "보안교육 Task 누가 미완료했나"는 사람의 최근 활동(workload)이 아니라
+        # 주제와 일치하는 parent Task → 직계 Sub-Task 전수 집계다. 분류가 activity/progress로
+        # 흔들리면 Query Runner 자체를 못 지나므로, 낱말로 확정 가능한 이 유형은 코드가 고정한다.
+        from app.agent.workflow.assignment_completion import asks_incomplete_assignees
+        if asks_incomplete_assignees(_req):
+            intent = patch["intent"] = Intent.ASK
+            patch["playbook"] = "find_tickets"
+            patch["answer_depth"] = "brief"
+            patch["request_plan"] = {
+                "goal": "주제와 일치하는 Task의 미완료 Sub-Task 담당자를 빠짐없이 확인한다",
+                "tasks": [{
+                    "id": "incomplete-assignees", "kind": "query",
+                    "instruction": _req, "depends_on": [], "write_intent": False,
+                    "completion_criteria": [
+                        "상위 Task를 확정한다",
+                        "직계 Sub-Task 전체를 statusCategory로 판정한다",
+                        "미완료 Sub-Task를 담당자별로 빠짐없이 제시한다",
+                    ],
+                }],
+                "blocking_questions": [], "assumptions": [],
+            }
         if intent == Intent.PLAN_WORK \
                 and any(w in _req for w in ("요약", "브리핑", "정리해", "보고서")) \
                 and not any(w in _req for w in ("티켓", "태스크", "테스크", "Task", "task",

@@ -10,6 +10,9 @@ from app.agent.tools.query_tools import (execute_jql_all, run_jql_v2,
 from app.agent.tools.search_tools import find_parent_epic
 from app.agent.tools.people_tools import scoped_person_workload
 from app.agent.workflow.agents.query_runner import QueryRunner
+from app.agent.workflow.assignment_completion import (
+    asks_incomplete_assignees, completion_topic,
+)
 
 
 def _issue(index: int, project: str) -> dict:
@@ -184,3 +187,47 @@ def test_empty_confluence_search_config_does_not_fallback():
     result = search_documents.invoke({"query": "anything"})
     assert "search.confluence.spaces" in result["error"]
     assert result["documents"] == []
+
+
+def test_incomplete_assignee_query_joins_parent_children_and_hides_irrelevant(monkeypatch):
+    """검색 한 건을 답으로 쓰지 않고 parent의 직계 Sub-Task 전체를 담당자별로 묶는다."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.tools import search_tools
+
+    class CompletionClient:
+        def ticket_children(self, key):
+            assert key == "AAA-100"
+            rows = []
+            for i in range(14):
+                done = i < 10
+                rows.append({
+                    "key": f"AAA-{101 + i}", "summary": f"보안교육수강 - 인원 {i + 1}",
+                    "status": "Closed" if done else "In Progress",
+                    "statusCategory": "done" if done else "inprogress",
+                    "assigneeId": f"skcc.x{1000 + i}", "assignee": f"작업자{i + 1}",
+                })
+            return rows
+
+        def ticket_badge(self, key):
+            return {"key": key, "summary": "보안 필수교육 수강 - IT서비스 자율보안체계 보안 교육"}
+
+    fake_search = SimpleNamespace(invoke=lambda _args: {
+        "jira": [
+            {"key": "AAA-100", "title": "보안 필수교육 수강 - IT서비스 자율보안체계 보안 교육",
+             "issuetype": "Task"},
+            {"key": "AAA-999", "title": "레지스트리 보안 고도화", "issuetype": "Task"},
+        ]})
+    monkeypatch.setattr(search_tools, "search_work_history", fake_search)
+    _ctx.bind(CompletionClient(), _settings(["AAA"]))
+
+    asked = "보안 팔수 교육 수강 Task들 누가누가 미완료했나 궁금해"
+    assert asks_incomplete_assignees(asked)
+    assert "보안" in completion_topic(asked, ["보안 필수교육 수강"])
+    got = QueryRunner()._run({
+        "messages": [HumanMessage(content=asked)],
+        "keywords": ["보안 필수교육 수강"], "query_plan": {"queries": []},
+    })["assignment_completion"]
+    assert [p["key"] for p in got["parents"]] == ["AAA-100"]
+    assert got["totalSubtasks"] == 14 and got["doneSubtasks"] == 10
+    assert got["incompleteSubtasks"] == 4 and len(got["people"]) == 4
+    assert "AAA-999" not in repr(got)

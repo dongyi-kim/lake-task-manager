@@ -109,3 +109,34 @@ def test_tool_fallback_can_only_schedule_registered_tools(monkeypatch):
         "messages": [HumanMessage(content="echo")], "steps": 0})["messages"][0]
     assert [call["name"] for call in message.tool_calls] == ["_probe_echo"]
     assert message.tool_calls[0]["args"] == {"value": "pong"}
+
+
+def test_openai_compat_never_sends_native_tool_payload(monkeypatch):
+    from app.agent import capabilities, config
+
+    class TrapLLM(_ToolPlanLLM):
+        binds = 0
+
+        def bind_tools(self, *_args, **_kwargs):
+            self.binds += 1
+            return self
+
+    trap = TrapLLM()
+    monkeypatch.setattr(config, "provider", lambda: "openai_compat")
+    monkeypatch.setattr(capabilities, "get", lambda _tier="complex": {"checked": {}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(_FallbackToolAgent, "llm", lambda self, **_kwargs: trap)
+    message = _FallbackToolAgent()._think({
+        "messages": [HumanMessage(content="echo")], "steps": 0})["messages"][0]
+    assert trap.binds == 0
+    assert [call["name"] for call in message.tool_calls] == ["_probe_echo"]
+
+
+def test_prod_never_sends_native_tools_even_when_provider_is_named_aoai(monkeypatch):
+    from types import SimpleNamespace
+    from app.agent import capabilities, config
+    from app.infra import settings
+
+    monkeypatch.setattr(config, "provider", lambda: "aoai")
+    monkeypatch.setattr(settings, "get_settings", lambda: SimpleNamespace(jira_env="prod"))
+    assert capabilities.native_tools_allowed() is False

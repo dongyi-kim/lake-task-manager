@@ -1275,6 +1275,37 @@ class World:
                                        "작업 진행 가능합니다.", 3, "16:45"),
            ])
 
+        # ── ⑧ 분담형 필수교육 — parent 한 건 + 작업자별 Sub-Task 14건 ──────────
+        # "보안 팔수 교육 Task들 누가 미완료했나"처럼 오탈자가 섞인 질문에서도 parent를
+        # 찾고, 검색 결과 한 건이 아니라 직계 Sub-Task 전부를 담당자별로 집계해야 한다.
+        training = "security_training"
+        training_users = [
+            "skcc.x1042", "skcc.x1103", "skcc.i2011", "skcc.x1210", "skcc.i2044",
+            "skcc.x1315", "skcc.x1327", "skcc.i2088", "skcc.x1402", "skcc.x1450",
+            "skcc.i2101", "skcc.i2130", "skcc.x1501", "skcc.i2155",
+        ]
+        training_keys = [f"DL-{9101 + i}" for i in range(len(training_users))]
+        fx("DL-9100", "Task", "보안 필수교육 수강 - IT서비스 자율보안체계 보안 교육",
+           training, module="DevOps", component="DevOps", assignee="skcc.x1501",
+           reporter="lead", statusCategory="inprogress", statusName="In Progress",
+           created=d - timedelta(days=14), updated=d, due=d, subtasks=training_keys,
+           description="작업자별 보안 필수교육 수강 여부를 Sub-Task로 관리한다.")
+        for i, (key, uid) in enumerate(zip(training_keys, training_users), 1):
+            completed = i <= 10
+            fx(key, "Sub-Task", f"보안교육수강 - 인원 {i}", training,
+               module="DevOps", component="DevOps", parentKey="DL-9100", epicKey=None,
+               assignee=uid, reporter="lead", created=d - timedelta(days=14), due=d,
+               **({"statusCategory": "done", "statusName": "Closed",
+                   "resolved": d - timedelta(days=1), "updated": d - timedelta(days=1)}
+                  if completed else
+                  {"statusCategory": "inprogress", "statusName": "In Progress",
+                   "updated": d}))
+        # 검색에 '보안'만 겹치는 무관 티켓. 관련성 필터의 내부 제외 과정을 답에 노출하면 안 된다.
+        fx("DL-9115", "Task", "[DevOps] 레지스트리 보안 고도화", "registry_security",
+           module="DevOps", component="DevOps", assignee="skcc.x1501", reporter="lead",
+           statusCategory="inprogress", statusName="In Progress", created=d - timedelta(days=20),
+           updated=d - timedelta(days=2), description="컨테이너 레지스트리 접근 제어를 개선한다.")
+
         # ── ⑥ qms.qms_defect_code_mst — **티켓이 하나도 없는 대상**(문서만) ──
         # 함정: 티켓 검색은 0건이다. 여기서 "기록 없음"으로 끝내면 오답 — 문서에 다 있다.
         #       티켓 0건인 대상도 문서를 읽어 답해야 한다.

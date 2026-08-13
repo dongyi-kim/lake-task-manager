@@ -75,6 +75,35 @@ def test_endpoint_ok():
     assert "jira" in j and "confluence" in j and "bitbucket" in j
 
 
+def test_user_badge_endpoint_returns_full_display_name_and_username():
+    """공통 사람 호버는 Jira 전체 표시명과 username을 받으며 메일은 노출하지 않는다."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    c = TestClient(app)
+    users = c.get("/api/mention/users", params={"q": "skcc."}).json()
+    assert users
+    uid = users[0]["id"]
+    r = c.get("/api/mention/user/" + uid)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == uid
+    assert body["displayName"]
+    assert body["username"] == uid
+    assert "mail" not in body
+
+
+def test_user_badge_endpoint_does_not_guess_unknown_people(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import app.main as main
+    monkeypatch.setattr(main, "_client", type("MissingUserClient", (), {
+        "user_badge": lambda self, uid: None,
+    })())
+    r = TestClient(main.app).get("/api/mention/user/not.a.real.user")
+    assert r.status_code == 404
+
+
 def test_browse_route_serves_spa():
     """/browse/{key} — Jira 와 같은 URL 로 티켓 단독 페이지를 연다.
 

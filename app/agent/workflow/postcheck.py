@@ -63,6 +63,15 @@ def _check_history(text: str, state: dict) -> list:
 
 def _check_find_tickets(text: str, state: dict) -> list:
     """조건 조회 — 표로 내거나, 0건임을 **기준과 함께** 밝히거나."""
+    completion = (state or {}).get("assignment_completion") or {}
+    if completion.get("kind") == "incomplete_assignees":
+        expected = [str(t.get("key") or "")
+                    for p in completion.get("people") or []
+                    for t in (p.get("tickets") or [])]
+        expected += [str(t.get("key") or "") for t in completion.get("unassigned") or []]
+        missing = [key for key in expected if key and key not in (text or "")]
+        return (["미완료 Sub-Task 목록에서 빠진 티켓: " + ", ".join(missing[:5])]
+                if missing else [])
     if _has_table(text):
         return []
     if re.search(r"0\s*건|없습니다|해당(하는)?\s*티켓이\s*없", text or ""):
@@ -155,5 +164,5 @@ def note(bad: list) -> str:
     if not bad:
         return ""
     rows = "\n".join(f"- {b}" for b in bad[:4])
-    return ("\n\n> ⚠ **이 답변이 우리 형식 기준을 다 채우지 못했습니다**\n"
+    return ("\n\n> ⚠ **결과 검증에서 누락 가능성을 감지했습니다**\n"
             + "\n".join(f"> {r}" for r in rows.splitlines()))

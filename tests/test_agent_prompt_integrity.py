@@ -154,7 +154,7 @@ def test_machine_contract_identifiers_survive_korean_refactor():
                                          SYSTEM_ACTION_EXECUTOR, SYSTEM_REQUEST_ARCHITECT,
                                          SYSTEM_WORK_ARCHITECT)
 
-    assert PROMPT_VERSION == "ko-role-contract-v3"
+    assert PROMPT_VERSION == "ko-role-contract-v5"
     for token in ("approval_token", "statusCategory", "Epic Link", "Story Point",
                   "Sub-Task", "PMO_VIT"):
         assert token in BASE_PERSONA, f"공통 계약에서 식별자 {token!r}가 번역·유실됐다"
@@ -180,6 +180,14 @@ def test_machine_contract_identifiers_survive_korean_refactor():
         assert token in SYSTEM_ACTION_EXECUTOR, f"ActionExecutor 실행 계약 {token!r}가 번역·유실됐다"
 
 
+def test_common_prompt_forbids_plain_person_names_in_agent_replies():
+    from app.agent.prompts.base import BASE_PERSONA
+    assert "사람을 언급" in BASE_PERSONA
+    assert "{{mention:id}}" in BASE_PERSONA
+    assert "평문 이름" in BASE_PERSONA
+    assert "식별자" in BASE_PERSONA and "확인" in BASE_PERSONA
+
+
 def test_prompt_exposes_the_enforced_ticket_action_contract():
     """사람/model 문서가 domain validator와 다른 field/status 규칙을 말하지 않는다."""
     from app.agent.prompts.base import BASE_PERSONA
@@ -191,6 +199,23 @@ def test_prompt_exposes_the_enforced_ticket_action_contract():
         assert f"`{field}`" in BASE_PERSONA
     for token in ("Epic", "Task", "Sub-Task", "statusCategory == done", "Reopened",
                   "댓글은 남길 수"):
+        assert token in BASE_PERSONA
+
+
+def test_result_integrator_uses_machine_ticket_badge_contract():
+    """모델이 HTML이나 문맥 추측 대신 세 typed ticket token을 선택한다."""
+    from app.agent.prompts.base import BASE_PERSONA
+    from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
+    for token in ("{{ticket-list:KEY}}", "{{ticket-inline:KEY}}",
+                  "{{ticket-detail:KEY}}"):
+        assert token in BASE_PERSONA
+        assert token in SYSTEM_RESULT_INTEGRATOR
+
+
+def test_common_prompt_enforces_compact_structured_reply_style():
+    from app.agent.prompts.base import BASE_PERSONA, PROMPT_VERSION
+    assert PROMPT_VERSION == "ko-role-contract-v5"
+    for token in ("종결어미", "명사형", "heading", "표", "bullet", "직접 인용", "질문"):
         assert token in BASE_PERSONA
 
 

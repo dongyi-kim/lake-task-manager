@@ -1036,6 +1036,16 @@ def api_mention_users(q: str = "", key: str = "", limit: int = 8):
     return JSONResponse(search.mention_suggestions(_client, _settings, q, key, limit))
 
 
+@app.get("/api/mention/user/{user_id}")
+def api_mention_user(user_id: str):
+    """사람 멘션 공통 호버용 정확 조회. 동명이인을 추측하지 않고 user id만 받는다."""
+    uid = (user_id or "").strip()
+    row = _client.user_badge(uid)
+    if not row:
+        return JSONResponse({"error": "User Does Not Exist", "id": uid}, status_code=404)
+    return JSONResponse(row)
+
+
 @app.get("/api/img")
 def api_img(u: str):
     """이미지 프록시 — 인증(SSO) 세션으로 사내 Jira/CDN 이미지를 받아 same-origin 으로 반환.
@@ -1628,7 +1638,7 @@ def api_parent_task_candidates(q: str = "", limit: int = 20, excludeLinked: int 
 def api_update_fields(key: str, body: _FieldsBody):
     """필드 수정. **editmeta 에 없는 필드는 거부한다** — 화면이 실수로 보내도 여기서 막힌다
     (권한 판단을 화면에만 맡기면, 화면 버그가 곧 권한 구멍이 된다)."""
-    from app.domain.ticket_actions import field_update_error
+    from app.domain.ticket_actions import field_update_error, is_done
     requested = [name for name, value in {
         "priority": body.priority, "assignee": body.assignee, "reporter": body.reporter,
         "duedate": body.duedate, "labels": body.labels, "components": body.components,
