@@ -89,12 +89,14 @@ curl http://localhost:8000/api/refresh      # 캐시 + 프론트 memo 무효화
 ## 4. 테스트
 
 ```bash
-python -m pytest -q                    # 유닛테스트 (계산 로직·config·jql·world·names 등). 현재 28 passed
-python -m pytest tests/test_rollup.py -q   # 한 파일만
+python -m pytest tests/test_rollup.py -q   # 로컬: 변경 관련 test만
 ```
 
-- `progress.py`/`rollup.py` 는 순수 함수 → fixture 로 검증. 커버: `test_world`·`test_jql`/`test_atom`(fake 파서)·`test_progress`(SP 롤업)·`test_rollup`(가중조합)·`test_config`(로더/검증)·`test_names`.
-- 통합은 **로컬 Fake Jira 상대로만**. 사내 **prod(SSO) Jira 에 자동 테스트 절대 금지**.
+- PR과 `main` push는 GitHub Actions가 외부 API 없는 전체 `pytest` suite를 자동 실행.
+- 로컬에서는 변경 범위에 필요한 test만 실행하고 전체 판정은 CI 결과를 사용.
+- 실 LLM/API 배터리는 비용·secret·사람 판독이 필요하므로 승인된 로컬 환경에서만 수동 실행.
+- 상세 명령과 범위: [`docs/TESTING.md`](docs/TESTING.md)
+- 사내 **prod(SSO) Jira/Confluence 및 실 LLM API에 자동 테스트 절대 금지**.
 
 ---
 

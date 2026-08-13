@@ -57,6 +57,8 @@
   `{{ticket-detail:KEY}}`(`다음의`/`아래의` 뒤 bullet) typed token으로 기계화한다. HTML을 prompt가
   직접 만들지 않는다. detail은 key/title/assignee/status를 포함하며, badge가 포함한 field를
   token 뒤 텍스트에 중복하지 않는다.
+- `참조` 섹션의 ticket 출처는 항상 `ticket-detail`로 렌더링한다. raw key, 다른 typed token,
+  Jira markdown link가 들어와도 renderer가 key를 식별해 detail badge로 정규화한다.
 - function/tool name, parameter, JSON key/schema/enum, Jira field/type, code, SQL/JQL, HTML tag, ticket key, user ID, URL은 번역하지 않는다.
 - 자연어 지시와 사용자 대면 출력은 한국어로 작성한다.
 - 최종 reply는 직접 인용·질문·구술형 안내를 제외하고 짧은 명사형·서술형으로 종결한다.
@@ -128,7 +130,9 @@
 3. code로 판정 가능한 회귀 test를 먼저 추가한다. 의미 품질은 battery case와 human rubric으로 남긴다.
 4. owner 계층 한 곳만 수정하고 중복 prompt를 제거한다.
 5. role output과 payload를 바꿨다면 Result Integrator, Editor Author, approval fingerprint, rendering까지 추적한다.
-6. 관련 unit test를 실행한 뒤 전체 suite를 실행한다.
+6. 관련 unit test만 로컬에서 실행한다. 외부 API 없는 전체 suite의 최종 판정은 PR/`main` push의
+   GitHub Actions 결과를 사용한다. CI 자체·dependency·test infrastructure 변경 때만 전체 suite를
+   로컬에서 재현한다.
 7. 실 LLM 호출이 필요하면 기존 project secret을 재사용하고, 사용자 승인 없이 새 key를 만들거나 secret 원문을 출력하지 않는다.
 8. prompt 후보 비교에서는 model topology, mock world, case, run order, evaluator를 동일하게 유지한다.
 
@@ -136,7 +140,7 @@
 
 ### 정적·단위 검증
 
-최소 관련 test:
+변경한 영역에 필요한 test만 선택해 실행한다. 전체 매핑은 [`docs/TESTING.md`](../../docs/TESTING.md):
 
 ```powershell
 ..\.venv\Scripts\python.exe -m pytest -q --basetemp .test-tmp-agent `
@@ -150,9 +154,12 @@
   tests/test_ticket_actions.py
 ```
 
-Windows 공용 pytest temp에 권한 문제가 있으면 repository 내부 `--basetemp`를 사용하고 성공 후 해당 임시 디렉터리만 삭제한다. 최종 제출 전에는 `python -m pytest` 전체를 실행한다.
+Windows 공용 pytest temp에 권한 문제가 있으면 repository 내부 `--basetemp`를 사용하고 성공 후
+해당 임시 디렉터리만 삭제한다. 전체 suite는 GitHub Actions의 `Code tests`가 실행한다.
 
 ### 실 LLM 배터리
+
+실 API 배터리는 GitHub Actions에 넣지 않는다. 승인된 로컬 환경에서 필요한 suite만 수동 실행한다.
 
 - Conversation: `tools/agent_lang_ab.py`
 - Compose: `tools/agent_compose_eval.py`

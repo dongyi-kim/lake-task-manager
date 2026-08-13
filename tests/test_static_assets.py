@@ -149,6 +149,20 @@ def test_agent_ticket_badges_have_compact_and_detail_modes():
     assert '.agent-md a.tkt[data-key]:not([data-filled])' in view
 
 
+def test_agent_ticket_references_always_use_detail_badges():
+    """참조의 ticket은 raw key·token·Jira link 입력 모두 detail badge로 정규화한다."""
+    md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
+    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
+    ref_row = md[md.index("function refRow"):md.index("function _render")]
+    assert "src.match(KEY_RE)" in ref_row
+    assert 'keyBadge(ticketKey, "detail")' in ref_row
+    assert "ref-tkt" not in ref_row
+    assert "dedupeTicketReference" in view
+    assert ".agent-ref-item .jira-badge .jb-meta { display:none; }" not in css
+    assert ".agent-ref-item .jira-badge-detail" in css
+
+
 def test_agent_ticket_badges_never_nest_inside_inline_code():
     """`DL-123`은 badge 하나, `key = DL-123`은 code 하나로 렌더해야 한다."""
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")

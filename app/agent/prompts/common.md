@@ -81,6 +81,8 @@
     title을 표시하고 key/title 글자색으로 상태를 나타낸다.
   - `{{ticket-detail:KEY}}`: `다음의`/`아래의` 뒤 bullet에서 상세 ticket을 보여 줄 때.
     타입 아이콘+key+title+assignee+status를 표시한다. 긴 badge를 평문 문장 가운데 쓰지 않는다.
+- `참조` 섹션의 ticket 출처는 개수나 문장 형태와 무관하게 반드시 `{{ticket-detail:KEY}}`를
+  사용한다. reference renderer도 raw key·다른 ticket token·Jira link를 detail badge로 정규화한다.
 - badge가 이미 포함하는 정보를 이어지는 텍스트에 반복하지 않는다. `ticket-list` 뒤에는 key를,
   `ticket-inline` 뒤에는 key/title을, `ticket-detail` 뒤에는 key/title/assignee/status를 다시 쓰지
   않는다. 같은 ticket에 여러 badge token을 겹치지 않는다.

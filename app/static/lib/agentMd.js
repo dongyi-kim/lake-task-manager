@@ -212,13 +212,16 @@ function refRow(r) {
   // 문서 "제목 (URL)" → 제목이 걸린 링크 하나. URL 만 있으면 슬러그를 제목으로 편다.
   src = src.replace(/^(.*?)\s*\((https?:\/\/[^\s)]+)\)$/, (mm, t, u) => `[${t.trim() || u}](${u})`);
   const key = /^([A-Z][A-Z0-9]*-\d+)\b(.*)$/.exec(src);
+  // 참조 항목의 ticket은 입력 형식과 관계없이 detail badge로 통일한다. 모델이 raw key,
+  // typed token, Jira markdown link 중 무엇을 출력해도 key를 찾아 같은 기계화 경로로 보낸다.
+  // 링크의 label과 URL에 key가 함께 들어갈 수 있으므로 Set으로 중복을 제거한다.
+  const ticketKeys = [...new Set(src.match(KEY_RE) || [])];
   // 키 뒤에 붙은 글("DL-9062 코멘트 (…)")은 **제목이 아니다** — 설명 쪽으로 옮긴다.
   // 제목은 항상 조회로 채운다(사용자 지시: 티켓 표기에 이름을 포함하라).
   const tail = key ? key[2].trim().replace(/^[—–\-:,]\s*/, "") : "";
   const why2 = [tail, why].filter(Boolean).join(" · ");
-  const srcHtml = key
-    ? `<a href="#" class="ref-link ref-tkt tkt" data-key="${key[1]}">` +
-      `<b>${key[1]}</b><span class="ref-ttl"></span></a>`
+  const srcHtml = ticketKeys.length
+    ? ticketKeys.map((ticketKey) => keyBadge(ticketKey, "detail")).join(" ")
     : inline(esc(src), true);
   return `<div class="agent-ref-item" data-ref="${r.n}">` +
          `<span class="ref-no">[${r.n}]</span>` +

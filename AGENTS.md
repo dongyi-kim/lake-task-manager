@@ -4,6 +4,10 @@
 
 `app/agent/**`, Agent가 사용하는 `app/domain/**`, Agent UI, prompt, role, tool, workflow 또는 실 LLM 배터리를 변경할 때는 작업 전에 [`app/agent/AGENT.md`](app/agent/AGENT.md)를 전부 읽고 따른다. 해당 문서는 Agent 영역의 상세 source of truth다. 반복적인 Agent 개선·평가 작업에는 repository skill [`$ltm-agent-development`](.agents/skills/ltm-agent-development/SKILL.md)를 사용한다.
 
+테스트는 [`docs/TESTING.md`](docs/TESTING.md)의 운영 정책을 따른다. 개발 중에는 변경 범위의
+관련 test만 로컬에서 실행하며, 외부 API 없는 전체 suite는 PR/`main` push의 GitHub Actions가
+담당한다. 실 LLM/API 배터리는 자동화하지 않고 명시적 승인 후 로컬에서 수동 실행한다.
+
 실험 결과와 보고서는 `research/agent-improvement/`에만 보관한다. 프로덕션 개발 지침과 과거 실험 결론을 섞지 않는다.
 
 구버전 Jira DC 환경에서 SI 프로젝트를 수행할 때 쓰는 **PMO 레벨 Task 관리** 유틸리티.

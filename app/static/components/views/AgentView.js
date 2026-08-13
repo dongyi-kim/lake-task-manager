@@ -53,6 +53,29 @@ function dedupeTicketTail(badge, ticket) {
   next.nodeValue = value;
 }
 
+/** 참조 detail badge가 가진 title/assignee/status를 설명 줄에서 다시 보여 주지 않는다. */
+function dedupeTicketReference(badge, ticket) {
+  const item = badge.closest(".agent-ref-item");
+  const why = item && item.querySelector(".ref-why");
+  if (!why) return;
+  let value = why.textContent || "";
+  const known = [ticket.key, ticket.summary, ticket.status, ticket.assignee,
+                 ticket.assignee ? "담당 " + ticket.assignee : "",
+                 ticket.assignee ? "담당자 " + ticket.assignee : ""]
+    .filter(Boolean).sort((a, b) => b.length - a.length);
+  for (let i = 0; i < 5; i++) {
+    const before = value;
+    for (const field of known) {
+      value = value.replace(new RegExp("^\\s*(?:[·|,—-]|담당(?:자)?\\s*[:：])?\\s*" +
+        regexEscape(field) + "(?=\\s|[·|,—-]|$)", "i"), "");
+    }
+    if (value === before) break;
+  }
+  value = value.replace(/^\s*[·|,—-]\s*/, "").trim();
+  if (value) why.textContent = value;
+  else why.remove();
+}
+
 // 빈 화면에 예시를 둔다 — 무엇을 할 수 있는 도구인지 설명하는 가장 빠른 방법이고,
 // 사용자가 첫 문장을 어떻게 쓸지 몰라 멈추는 것을 막는다.
 // ★ 다섯 개는 **다섯 갈래**를 하나씩 연다(사용자 지정): 생성 · 버그 · 내 일 · 조사 · 팀 현황.
@@ -340,18 +363,7 @@ export default {
           a.dataset.ticketAssignee = b.assignee || "";
           a.dataset.ticketStatus = b.status || "";
           dedupeTicketTail(a, Object.assign({ key }, b));
-        }).catch(() => { /* 조회 실패 — 키만 보여도 클릭은 된다 */ });
-      });
-      // 참조의 티켓 — 키만으로는 무엇인지 모른다. 제목(+상태)을 채운다.
-      root.querySelectorAll(".agent-md a.ref-tkt[data-key]:not([data-filled])").forEach((a) => {
-        a.dataset.filled = "1";
-        const key = a.getAttribute("data-key");
-        const ttl = a.querySelector(".ref-ttl");
-        if (!ttl || ttl.textContent.trim()) return;      // 이미 제목이 적혀 있으면 그대로
-        api.ticketBadge(key).then((b) => {
-          if (!b || !ttl.isConnected) return;
-          ttl.textContent = b.summary || "";
-          a.removeAttribute("title");
+          dedupeTicketReference(a, Object.assign({ key }, b));
         }).catch(() => { /* 조회 실패 — 키만 보여도 클릭은 된다 */ });
       });
       root.querySelectorAll(".agent-md a.conf-link[data-conf]:not([data-filled])").forEach((a) => {
