@@ -32,7 +32,7 @@ def test_home_shows_only_five_versioned_release_notes():
     assert ':key="r.version"' in home and "{{ r.version }}" in home
     versions = re.findall(r'version:\s*"(v\d{4}\.\d{2}\.\d{2}(?:\.\d+)?)"', notes)
     assert versions[:5] == [
-        "v2026.08.13.1", "v2026.08.13", "v2026.08.12", "v2026.08.10.11", "v2026.08.10.10",
+        "v2026.08.13.2", "v2026.08.13.1", "v2026.08.13", "v2026.08.12", "v2026.08.10.11",
     ]
     assert "새 태그를 만들기 전에" in guide
     assert "최신 5개 버전만 표시" in guide
