@@ -46,8 +46,9 @@ export default {
           if (skip.has(key) || seen.has(key)) continue;
           seen.add(key);
           // 저장된 제목은 "KEY 요약" 형태 — 앞의 키를 떼어 목록의 다른 행과 모양을 맞춘다
-          const title = String(r.title || "").replace(new RegExp("^" + key + "\s*"), "");
-          out.push({ key, title: title || r.title || key, status: r.meta || "",
+          const title = String(r.title || "").replace(new RegExp("^" + key + "\\s*"), "");
+          out.push({ key, url: r.url || ("/browse/" + key),
+                     title: title || r.title || key, status: r.meta || "",
                      issuetype: r.type || "", _recent: true });
         } else {
           if (!r.url || r.kind === "jira") continue;      // 문서/웹 링크만
@@ -94,7 +95,9 @@ export default {
       if (e.key === "Escape") { e.stopPropagation(); this.$emit("close"); }
     }, true);
     // 최근 조회 목록(서버 저장 — 브라우저가 달라도 같다). 검색어가 없을 때의 후보로 쓴다.
-    api.recent(20).then((r) => {
+    // 종류별로 서버에서 잘라 온다. 전체 최근 20건을 받은 뒤 프론트에서 거르면
+    // 문서만 연 직후 티켓 선택기가 비는 식으로 서로의 목록을 밀어낼 수 있다.
+    api.recent(20, this.isJira ? "jira" : "confluence").then((r) => {
       this.recent = r || [];
       if (!this.q.trim() && this.recentItems.length) this.active = 0;
     }).catch(() => { /* 없으면 그냥 안내문만 */ });

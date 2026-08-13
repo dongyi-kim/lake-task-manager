@@ -5,8 +5,6 @@ import { api } from "./api.js";
 let installed = false;
 let tip = null;
 let active = null;
-const ticketCache = new Map();
-const personCache = new Map();
 
 function element(tag, className, text) {
   const el = document.createElement(tag);
@@ -47,7 +45,31 @@ function position(target) {
 }
 
 function ticketTarget(node) {
-  return node && node.closest ? node.closest(".tkt[data-key]") : null;
+  // `.tkt[data-key]`가 앱의 표준이지만, v-html 본문/댓글은 Jira 링크가 뱃지로 보강되기 전에도
+  // 마우스가 올라올 수 있고 일부 목록은 의미 있는 행 class만 가진다. 표준 누락 하나 때문에
+  // 호버가 사라지지 않도록 티켓임을 기계적으로 확인할 수 있는 형태를 모두 받는다.
+  return node && node.closest ? node.closest(
+    ".tkt[data-key], .jira-badge[data-key], .kidrow[data-key], .spn-sibrow[data-key], " +
+    "a[href*='/browse/']") : null;
+}
+
+function ticketKey(target) {
+  const direct = target.getAttribute("data-key");
+  if (direct) return direct.toUpperCase();
+  const m = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)/.exec(target.getAttribute("href") || "");
+  return m ? m[1].toUpperCase() : "";
+}
+
+function dateOnly(value) {
+  return value ? String(value).slice(0, 10) : "—";
+}
+
+function dateTime(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit",
+                                     hour: "2-digit", minute: "2-digit" });
 }
 
 function personTarget(node) {
@@ -63,11 +85,6 @@ function personId(target) {
   catch (e) { return ""; }
 }
 
-function cached(map, key, load) {
-  if (!map.has(key)) map.set(key, load().catch((e) => { map.delete(key); throw e; }));
-  return map.get(key);
-}
-
 function show(target) {
   if (!target || target === active) return;
   active = target;
@@ -75,12 +92,16 @@ function show(target) {
   rows([["불러오는 중", "…"]]);
   position(target);
 
-  const key = target.getAttribute("data-key");
+  const key = ticketKey(target);
   if (key) {
-    cached(ticketCache, key, () => api.ticketBadge(key)).then((b) => {
+    // api.ticketBadge는 api.js의 URL 기반 LRU memo를 사용한다. 여기서 별도 영구 Map을 두면
+    // 쓰기 후 api.evict가 되어도 옛 Promise가 남고, 열람 티켓 수만큼 메모리가 증가한다.
+    api.ticketBadge(key).then((b) => {
       if (active !== target || !b) return;
       rows([["티켓 번호", b.key || key], ["티켓 타입", b.type], ["제목", b.summary],
-            ["담당자", b.assignee || "미지정"], ["진행상황", b.status]]);
+            ["담당자", b.assignee || "미지정"], ["진행상황", b.status],
+            ["상위 Epic", b.epicKey ? b.epicKey + (b.epicSummary ? " · " + b.epicSummary : "") : "없음"],
+            ["기한", dateOnly(b.due)], ["최근 업데이트", dateTime(b.updated)]]);
       position(target);
     }).catch(() => { if (active === target) rows([["티켓 번호", key], ["상세", "조회 실패"]]); });
     return;
@@ -88,7 +109,7 @@ function show(target) {
 
   const uid = personId(target);
   if (!uid) return;
-  cached(personCache, uid, () => api.userBadge(uid)).then((u) => {
+  api.userBadge(uid).then((u) => {
     if (active !== target || !u) return;
     rows([["Full Display Name", u.displayName || u.name || uid], ["username", u.username || uid]]);
     position(target);

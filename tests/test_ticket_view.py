@@ -171,7 +171,23 @@ def test_ticket_badge_light():
     assert b and b["key"] and b["summary"] and b["type"]
     assert b["statusCategory"] in ("todo", "inprogress", "done")
     assert "assignee" in b
+    assert "epicKey" in b and "epicSummary" in b
+    assert "due" in b and "updated" in b
     assert c.ticket_badge("DL-999999") is None
+
+
+def test_subtask_badge_resolves_epic_through_cached_parent():
+    c = _client()
+    sub = next(it for it in c.search_issues("ORDER BY updated DESC", max_results=300)
+               if ((it.get("fields") or {}).get("issuetype") or {}).get("subtask"))
+    sf = sub.get("fields") or {}
+    parent_key = (sf.get("parent") or {}).get("key")
+    parent = c.get_issue_light(parent_key)
+    epic_key = ((parent.get("fields") or {}).get(c.s.epic_link_field_id))
+    badge = c.ticket_badge(sub["key"])
+    assert badge["epicKey"] == epic_key
+    if epic_key:
+        assert badge["epicSummary"]
 
 
 def test_ticket_view_none_for_missing():

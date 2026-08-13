@@ -416,15 +416,20 @@ export default {
       if (ed && ed._ed) ed._ed.commands.clearContent(true);
       this.dispatch(text, html);
     },
-    /** 에디터 HTML → 모델에 보낼 텍스트. 멘션은 이름(사번), 뱃지는 제목 텍스트로 푼다 —
-     *  모델은 HTML 이 아니라 글을 읽는다. 사번이 남아야 activity·담당 지정이 정확하다. */
+    /** 에디터 HTML → 모델에 보낼 텍스트. 멘션은 이름(사번), 링크 뱃지는 [제목](주소)로 푼다.
+     *  모델은 HTML 이 아니라 글을 읽는다. 식별자와 참조 주소가 둘 다 남아야 선택한 자료를
+     *  실제 근거로 사용할 수 있다. */
     richToText(html) {
       const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
       doc.querySelectorAll("[data-type='mention'],[data-id]").forEach((el) => {
         const id = el.getAttribute("data-id");
         if (id) el.replaceWith((el.textContent || "").replace(/^@?/, "@") + "(" + id + ")");
       });
-      doc.querySelectorAll("a").forEach((a) => a.replaceWith(a.getAttribute("title") || a.textContent || ""));
+      doc.querySelectorAll("a").forEach((a) => {
+        const href = (a.getAttribute("href") || "").trim();
+        const label = (a.getAttribute("title") || a.textContent || href).trim();
+        a.replaceWith(href ? `[${label || href}](${href})` : label);
+      });
       doc.querySelectorAll("p,li,h1,h2,h3,blockquote").forEach((el) => el.append("\n"));
       doc.querySelectorAll("br").forEach((el) => el.replaceWith("\n"));
       return (doc.body.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
@@ -1480,12 +1485,16 @@ export default {
       <div v-else class="agent-input agent-input-rich" @keydown.capture="onRichKey">
         <div class="agent-chatbox">
           <CommentEditor ref="richEd" ticketKey="" kind="agentchat" :hideFooter="true"
-                         placeholder="하려는 업무를 적어 주세요 — @ 멘션 · '/' 로 티켓·문서"
+                         placeholder="하려는 업무를 적어 주세요 — @ 멘션 · 티켓·문서 넣기"
                          :submitFn="sendRich" />
           <div class="agent-chatbox-bar">
             <button @click="edMention" title="사람 멘션 (@)">@</button>
-            <button @click="edPick('jira')" title="티켓 링크 (/jira)">🎫</button>
-            <button @click="edPick('confluence')" title="문서 링크 (/confluence)">📄</button>
+            <button class="agent-ref-add" @click="edPick('jira')" title="티켓 넣기 (/jira)">
+              <span aria-hidden="true">🎫</span> 티켓 넣기
+            </button>
+            <button class="agent-ref-add" @click="edPick('confluence')" title="문서 넣기 (/confluence)">
+              <span aria-hidden="true">📄</span> 문서 넣기
+            </button>
             <span class="agent-chatbox-space"></span>
             <!-- 응답 중에는 같은 자리가 ■ 중단이다 — 멈출 방법이 없으면 기다리는 수밖에 없다 -->
             <button v-if="busy" class="agent-send-round is-stop" @click="stopStream"

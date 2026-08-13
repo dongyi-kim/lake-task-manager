@@ -1107,7 +1107,7 @@ def api_ticket(key: str, fresh: int = 0):
 
 @app.get("/api/ticket/{key}/badge")
 def api_ticket_badge(key: str):
-    """티켓 인라인 뱃지 — 요약/타입/상태/담당자 (description/comment 내 Jira 링크 뱃지용, 경량)."""
+    """전역 티켓 뱃지·호버 상세 — 요약/타입/상태/담당자/Epic/기한/최근 수정(경량 캐시)."""
     b = _client.ticket_badge(key)
     if b is None:
         return JSONResponse({"error": "Issue Does Not Exist", "key": key}, status_code=404)
