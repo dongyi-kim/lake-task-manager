@@ -1277,9 +1277,17 @@ export default {
     openPick(kind) { this.pick = kind; },
     /** 고른 티켓/문서를 **링크 뱃지**로 넣는다 — 붙여넣은 URL 과 같은 모양이어야
      *  읽는 쪽에서 무엇이 뭔지 갈리지 않는다(저장도 같은 [제목|주소]). */
-    onPick(it) {
+    async onPick(it) {
       this.pick = "";
-      const href = (it && it.url) || "";
+      let href = (it && it.url) || "";
+      // 최근 티켓은 URL host가 달라져도 한 항목으로 유지하려고 /browse/KEY로 저장한다.
+      // 에디터에 넣을 때는 공유 가능한 실 Jira 주소로 복원한다. 검색 결과가 URL을 누락한
+      // 경우에도 key가 있으면 같은 경로로 복구해, 선택 성공 뒤 '주소 없음'이 되지 않게 한다.
+      const key = (it && it.key) || "";
+      if (key && (!href || /^\/browse\//i.test(href))) {
+        const base = (await jiraBase()) || location.origin;
+        href = base.replace(/\/+$/, "") + "/browse/" + key.toUpperCase();
+      }
       if (!href) {
         // 예전엔 조용히 return 했다 — 사용자에겐 "골랐는데 아무 일도 안 일어남" 으로만 보이고,
         // 우리도 무엇이 없었는지 알 수 없었다. 주소가 없으면 그 사실을 말한다.
@@ -1287,7 +1295,7 @@ export default {
                     message: "고른 항목에 주소가 없습니다. 다시 검색해 주세요.", timeout: 7000 });
         return;
       }
-      const title = it.key ? (it.key + " " + (it.title || "")).trim() : (it.title || href);
+      const title = key ? (key + " " + (it.title || "")).trim() : (it.title || href);
       this._ed.chain().focus()
         .insertContent([{ type: "linkBadge", attrs: { href, title } }, { type: "text", text: " " }])
         .run();

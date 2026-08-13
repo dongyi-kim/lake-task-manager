@@ -166,7 +166,12 @@ export const api = {
       .then((r) => { evict(encodeURIComponent(key)); return r; }),
 
   // ── 최근 열어본 항목(서버 저장 — 브라우저가 달라도 같은 목록) ──
-  recent: (limit) => req("/api/recent" + (limit ? "?limit=" + limit : "")),   // memo 제외(자주 바뀜)
+  recent: (limit, kind) => {                                             // memo 제외(자주 바뀜)
+    const p = new URLSearchParams();
+    if (limit) p.set("limit", limit);
+    if (kind) p.set("kind", kind);
+    return req("/api/recent" + (p.size ? "?" + p.toString() : ""));
+  },
   recentAdd: (item) => jsonReq("/api/recent", "POST", item),
   recentClear: (url) => req("/api/recent" + (url ? "?url=" + encodeURIComponent(url) : ""),
                             { method: "DELETE" }),

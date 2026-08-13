@@ -176,6 +176,28 @@ def test_agent_ticket_badges_never_nest_inside_inline_code():
     assert "code.replaceWith(badge)" in view
 
 
+def test_agent_reference_picker_keeps_recent_urls_and_sends_them_to_model():
+    """빈 검색의 최근 항목과 검색 결과 모두 실제 주소가 포함된 Agent 입력이 되어야 한다."""
+    picker = (STATIC / "components" / "ui" / "LinkPicker.js").read_text(encoding="utf-8")
+    editor = (STATIC / "components" / "ui" / "CommentEditor.js").read_text(encoding="utf-8")
+    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
+
+    assert 'api.recent(20, this.isJira ? "jira" : "confluence")' in picker
+    assert 'url: r.url || ("/browse/" + key)' in picker
+    assert 'const base = (await jiraBase()) || location.origin' in editor
+    assert 'href ? `[${label || href}](${href})` : label' in view
+    assert 'p.set("kind", kind)' in api
+
+
+def test_agent_reference_actions_have_visible_ticket_and_document_labels():
+    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
+    assert '> 티켓 넣기' in view
+    assert '> 문서 넣기' in view
+    assert ".agent-chatbox-bar > .agent-ref-add" in css
+
+
 def test_reference_hover_is_shared_by_all_ticket_links_and_person_mentions():
     """에이전트 전용 pseudo tooltip이 아니라 앱 전체의 한 컨트롤러를 사용한다."""
     root = (STATIC / "components" / "app-root.js").read_text(encoding="utf-8")
