@@ -971,6 +971,8 @@ export default {
         const key = m[1];
         a.classList.add("jira-badge", "tkt");
         a.setAttribute("data-key", key);
+        a.setAttribute("role", "button");
+        a.setAttribute("tabindex", "0");
         a.removeAttribute("href");
         // [타입][번호][제목] - [상태]. 예전엔 맨 앞이 상태색 점이었는데, 상태는 오른쪽에 글자로도
         // 나오므로 중복인 데다 무슨 뜻인지 읽히지 않았다 → 그 자리를 **타입 뱃지**로 바꾼다.

@@ -2529,7 +2529,12 @@ class JiraClient:
             return False
 
     def ticket_badge(self, key):
-        """티켓 인라인 뱃지용 경량 요약(요약/타입/상태/담당자). 없으면 None. (renderedFields 미포함=가벼움)"""
+        """티켓 인라인 뱃지·호버용 경량 상세. 없으면 None.
+
+        전부 ``get_issue_light``의 ``issueL`` 캐시를 사용한다. Sub-Task의 Epic을 찾을 때 부모와
+        Epic을 추가로 읽어도 이미 티켓 다이얼로그/목록이 데운 캐시를 재사용하며 renderedFields나
+        description을 요청하지 않는다.
+        """
         try:
             raw = self.get_issue_light(key)      # 뱃지는 경량 필드만 → 전체 캐시 있으면 재사용, 없으면 경량
         except Exception:
@@ -2541,6 +2546,23 @@ class JiraClient:
         a = f.get("assignee") or {}
         issue_type = f.get("issuetype") or {}
         nf = self.s.epic_name_field_id
+        enf = self.s.epic_link_field_id
+        epic_key = (f.get(enf) if enf else None) or None
+        parent_key = (f.get("parent") or {}).get("key")
+        # Sub-Task에는 Epic Link가 직접 없고 부모 Task에 있다.
+        if not epic_key and parent_key:
+            try:
+                pf = (self.get_issue_light(parent_key) or {}).get("fields") or {}
+                epic_key = (pf.get(enf) if enf else None) or None
+            except Exception:
+                epic_key = None
+        epic_summary = None
+        if epic_key:
+            try:
+                ef = (self.get_issue_light(epic_key) or {}).get("fields") or {}
+                epic_summary = ef.get("summary") or None
+            except Exception:
+                pass
         return {
             "key": raw.get("key", key),
             "summary": f.get("summary", ""),
@@ -2551,9 +2573,12 @@ class JiraClient:
             "status": st.get("name", ""),
             "statusCategory": _norm_cat((st.get("statusCategory") or {}).get("key")),
             "assignee": real_name(a.get("displayName") or a.get("name")) or None,
+            "epicKey": epic_key,
+            "epicSummary": epic_summary,
             # 마감·완료일 — 하위 Task 목록이 '언제까지'를 같이 보여 준다. 이미 받아 온 필드라
             # 왕복이 늘지 않는다(뱃지 하나 때문에 다시 묻지 않는다).
             "due": f.get("duedate") or None,
+            "updated": f.get("updated") or None,
             "resolved": f.get("resolutiondate") or None,
             # 우선순위 — 하위 목록의 첫 칸. 이름과 등급을 함께 준다(그림은 등급, 툴팁은 이름).
             "priority": (f.get("priority") or {}).get("name") or None,
