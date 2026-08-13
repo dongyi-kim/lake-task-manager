@@ -4,7 +4,23 @@
 
 `app/agent/**`, Agent가 사용하는 `app/domain/**`, Agent UI, prompt, role, tool, workflow 또는 실 LLM 배터리를 변경할 때는 작업 전에 [`app/agent/AGENT.md`](app/agent/AGENT.md)를 전부 읽고 따른다. 해당 문서는 Agent 영역의 상세 source of truth다. 반복적인 Agent 개선·평가 작업에는 repository skill [`$ltm-agent-development`](.agents/skills/ltm-agent-development/SKILL.md)를 사용한다.
 
+테스트는 [`docs/TESTING.md`](docs/TESTING.md)의 운영 정책을 따른다. 개발 중에는 변경 범위의
+관련 test만 로컬에서 실행하며, 외부 API 없는 전체 suite는 PR/`main` push의 GitHub Actions가
+담당한다. 실 LLM/API 배터리는 자동화하지 않고 명시적 승인 후 로컬에서 수동 실행한다.
+
 실험 결과와 보고서는 `research/agent-improvement/`에만 보관한다. 프로덕션 개발 지침과 과거 실험 결론을 섞지 않는다.
+
+## PR 구성 원칙
+
+- 하나의 PR은 하나의 주된 변경 컨텍스트만 가진다. PR 제목을 한 문장으로 설명할 때 독립적인
+  목적 두 개를 `및`·`and`로 이어야 한다면 branch와 PR을 분리한다.
+- 같은 사용자 흐름, 같은 root cause, 같은 기능 결과를 완성하는 소규모 bug fix·test·문서 변경은
+  함께 포함할 수 있다. 별도 제품 기능, 독립적인 infrastructure/CI 개선, 별도 refactor는 분리한다.
+- 동시에 요청받았더라도 큰 컨텍스트가 둘 이상이면 처음부터 각각 다른 branch에서 작업한다.
+  이미 한 worktree에 섞였다면 file 목록과 diff를 컨텍스트별로 나눠 별도 commit/branch/PR로 옮긴다.
+- branch 생성·stage 전에 `git status`와 diff를 보고 각 변경을 하나의 PR 목적에 매핑한다. 매핑되지
+  않는 변경을 편의상 함께 stage하지 않는다.
+- 사용자가 이번 한 번의 혼합을 명시적으로 허용해도 예외는 해당 PR에만 적용하며 선례로 삼지 않는다.
 
 구버전 Jira DC 환경에서 SI 프로젝트를 수행할 때 쓰는 **PMO 레벨 Task 관리** 유틸리티.
 현업이 쓰는 **Jira DC 8.20.8**(구버전, SSO 잠금 사내 인스턴스)을 SP/티켓의 source of truth로 두고,

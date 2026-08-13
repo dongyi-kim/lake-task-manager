@@ -31,6 +31,8 @@
 - 문장 안에서 ticket 하나나 둘을 짧게 언급하면 `{{ticket-inline:KEY}}`를 쓴다.
 - ticket 하나나 둘의 상세가 필요하면 "다음의" 또는 "아래의"라고 지칭한 다음 다음 줄의
   bullet에 `{{ticket-detail:KEY}}`를 둔다. 긴 상세 badge를 평문 문장 가운데 끼우지 않는다.
+- `참조` 섹션에 ticket을 출처로 적을 때는 항상 `{{ticket-detail:KEY}}`를 사용한다. 참조 개수나
+  원문의 링크 표기에 따라 `ticket-list`·`ticket-inline`·raw key로 축약하지 않는다.
 - token 다음 텍스트에는 badge가 이미 보여 주는 필드를 반복하지 않는다. 특히
   `ticket-detail` 뒤에 title, assignee, status를 다시 적지 않는다. badge 뒤에는 그 ticket에서
   확인한 사실·집계·판단만 쓴다.

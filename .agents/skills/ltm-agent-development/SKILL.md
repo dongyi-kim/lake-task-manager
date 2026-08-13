@@ -11,6 +11,17 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 2. 요청과 관련된 source of truth를 코드에서 확인한다. 과거 보고서의 설명을 현재 구현으로 가정하지 않는다.
 3. 변경 전 `git status`, 관련 test, prompt version, model routing을 기록한다.
 
+## PR 경계
+
+1. 작업을 시작할 때 요청을 독립적인 목적·root cause·사용자 결과로 분류한다.
+2. 하나의 branch와 PR에는 하나의 주된 컨텍스트만 둔다. 제목에 독립 목적 두 개를 `및`·`and`로
+   이어야 한다면 별도 branch와 PR로 분리한다.
+3. 같은 사용자 흐름을 완성하는 작은 bug fix·test·문서는 포함할 수 있다. 독립적인 Agent 동작 변경과
+   infrastructure/CI·광범위 refactor는 서로 필수 관계가 아니면 합치지 않는다.
+4. stage 전에 각 changed file을 PR 목적에 매핑한다. 다른 목적의 변경은 별도 commit만 만드는 데서
+   끝내지 말고 별도 branch/PR로 옮긴다.
+5. 사용자의 일회성 혼합 승인은 해당 PR에만 적용한다.
+
 ## 원인 분류
 
 실패 사례를 입력·기대 state/action/output 계약으로 바꾸고 다음 owner 중 하나를 고른다.
@@ -47,4 +58,5 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 
 ## 완료 보고
 
-변경한 계약, 검증 결과, 실 LLM 사용 여부, 남은 모호성·위험, 연구 산출물 경로를 짧게 보고한다. 통계적으로 반복하지 않은 단일 run은 탐색적 결과라고 명시한다.
+변경한 계약, PR의 단일 컨텍스트, 검증 결과, 실 LLM 사용 여부, 남은 모호성·위험, 연구 산출물
+경로를 짧게 보고한다. 통계적으로 반복하지 않은 단일 run은 탐색적 결과라고 명시한다.
