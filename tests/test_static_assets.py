@@ -23,6 +23,21 @@ def _rel(p: Path) -> str:
     return str(p.relative_to(STATIC.parent.parent))
 
 
+def test_home_shows_only_five_versioned_release_notes():
+    home = (STATIC / "components" / "views" / "HomeView.js").read_text(encoding="utf-8")
+    notes = (STATIC / "lib" / "releaseNotes.js").read_text(encoding="utf-8")
+    guide = (STATIC.parents[1] / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "RELEASES.slice(0, 5)" in home
+    assert ':key="r.version"' in home and "{{ r.version }}" in home
+    versions = re.findall(r'version:\s*"(v\d{4}\.\d{2}\.\d{2}(?:\.\d+)?)"', notes)
+    assert versions[:5] == [
+        "v2026.08.13.1", "v2026.08.13", "v2026.08.12", "v2026.08.10.11", "v2026.08.10.10",
+    ]
+    assert "새 태그를 만들기 전에" in guide
+    assert "최신 5개 버전만 표시" in guide
+
+
 def test_static_assets_exist():
     assert len(ASSETS) > 20, "정적 자산을 못 찾았다 — 경로 규약이 바뀌었나"
 
