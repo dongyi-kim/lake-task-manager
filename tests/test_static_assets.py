@@ -207,15 +207,22 @@ def test_reference_hover_is_shared_by_all_ticket_links_and_person_mentions():
     assert 'import { installReferenceHover } from "../lib/referenceHover.js"' in root
     assert "installReferenceHover()" in root
     assert '.tkt[data-key]' in hover
+    assert '.jira-badge[data-key]' in hover and "a[href*='/browse/']" in hover
     assert "data-type='mention'" in hover and ".md-person[data-uid]" in hover
     assert "a.user-hover" in hover and "ViewProfile.jspa" in hover
     for label in ("티켓 번호", "티켓 타입", "제목", "담당자", "진행상황",
+                  "상위 Epic", "기한", "최근 업데이트",
                   "Full Display Name", "username"):
         assert label in hover
     assert "ticketBadge" in hover and "userBadge" in hover
+    assert "const ticketCache" not in hover
+    assert 'ticketBadge: (key) => get("/api/ticket/"' in api
     assert "userBadge:" in api and "/api/mention/user/" in api
     assert ".reference-hover" in css
     assert ".tkt-desc a.user-hover" in css
+    dialog = (STATIC / "components" / "ui" / "TicketDialog.js").read_text(encoding="utf-8")
+    assert 'a.setAttribute("role", "button")' in dialog
+    assert 'a.setAttribute("tabindex", "0")' in dialog
 
 
 def test_agent_wiki_mentions_render_as_person_badges_even_before_name_hydration():
