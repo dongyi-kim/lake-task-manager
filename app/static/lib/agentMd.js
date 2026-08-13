@@ -101,12 +101,21 @@ function inline(s, slim, ticketMode) {
   const stash = [];
   const keep = (html) => { stash.push(html); return `\x00${stash.length - 1}\x00`; };
   s = s
+    // 모델이 식별자를 강조하려고 티켓 키를 백틱으로 감싸는 일이 잦다. 먼저 격리하지 않으면
+    // 아래 KEY_RE가 <code> 안의 키를 다시 뱃지로 바꿔 code+badge UI가 겹친다.
+    // 티켓 하나만 든 백틱은 뱃지로 정규화하고, JQL/명령처럼 더 긴 코드는 그대로 보존한다.
+    .replace(/`([^`]+)`/g, (_, code) => {
+      const token = /^\s*\{\{ticket-(list|inline|detail):([A-Z][A-Z0-9]*-\d+)\}\}\s*$/.exec(code);
+      if (token) return keep(keyBadge(token[2], token[1]));
+      const key = /^\s*([A-Z][A-Z0-9]*-\d+)\s*$/.exec(code);
+      if (key) return keep(keyBadge(key[1], ticketMode || (slim ? "list" : "inline")));
+      return keep(`<code>${code}</code>`);
+    })
     .replace(TICKET_TOKEN_RE, (_, mode, key) => keep(keyBadge(key, mode)))
     .replace(MENTION_RE, (_, uid) => keep(personBadge(uid, PEOPLE[uid])))
     .replace(MDLINK_RE, (_, t, u) => keep(linkBadge(t, u, slim)))
     .replace(URL_RE, (_, pre, u) => pre + keep(linkBadge("", u, slim)));
   s = s
-    .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, "$1<i>$2</i>")
     // [n] 참조 마커 — 클릭하면 참조 칸으로 점프+하이라이트, 호버(title)로 문헌 미리보기.

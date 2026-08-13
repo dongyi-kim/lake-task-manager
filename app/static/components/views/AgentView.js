@@ -283,6 +283,12 @@ export default {
     augmentBadges() {
       const root = this.$el;
       if (!root || !root.querySelectorAll) return;
+      // 이전 렌더 결과나 예외 입력이 <code><a class="jira-badge">...</a></code>를 만들었어도
+      // 두 컴포넌트의 배경·테두리가 겹치지 않게 뱃지만 남긴다.
+      root.querySelectorAll(".agent-md code > a.jira-badge:only-child").forEach((badge) => {
+        const code = badge.parentElement;
+        if (code && code.childNodes.length === 1) code.replaceWith(badge);
+      });
       // 사람 칩의 프사 — **로드에 성공한 경우에만** 이니셜 원 위에 얹는다. 없는 사용자가
       // 더 많아서(mock 은 전원 404) 미리 <img> 를 심으면 깨진 아이콘이 보인다.
       // 없는 사용자는 세션 동안 기억해 매 렌더마다 재요청하지 않는다(Avatar.js 와 같은 관례).
