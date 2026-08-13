@@ -35,3 +35,14 @@ def test_code_test_workflow_never_runs_real_api_batteries_or_secrets():
         "workflow_dispatch",
     )
     assert not [token for token in forbidden if token in text]
+
+
+def test_repository_guidance_enforces_one_primary_context_per_pr():
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    skill = (ROOT / ".agents" / "skills" / "ltm-agent-development" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (agents, skill):
+        assert "하나의 주된 변경 컨텍스트" in text or "하나의 주된 컨텍스트" in text
+        assert "branch" in text and "PR" in text
+        assert "일회성" in text
