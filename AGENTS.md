@@ -22,6 +22,27 @@
   않는 변경을 편의상 함께 stage하지 않는다.
 - 사용자가 이번 한 번의 혼합을 명시적으로 허용해도 예외는 해당 PR에만 적용하며 선례로 삼지 않는다.
 
+### PR 제목 규칙
+
+- PR 제목은 Conventional Commits 계열의 `<type>(<optional-scope>): <summary>` 형식을 사용한다.
+  `scope`는 변경 영역을 구분할 가치가 있을 때만 쓰며, `summary`는 PR의 단일 목적을 짧게 표현한다.
+- 허용하는 `type`과 용도:
+  - `feat`: 사용자 또는 시스템에 새 기능·동작 추가
+  - `fix`: 잘못된 동작이나 회귀 수정
+  - `refactor`: 외부 동작 변경 없는 코드·구조 개선
+  - `perf`: 성능 개선
+  - `docs`: 문서만 변경
+  - `test`: 테스트만 추가·수정
+  - `ci`: GitHub Actions 등 CI 설정 변경
+  - `build`: 의존성·패키징·빌드·배포 구성 변경
+  - `chore`: 위 유형에 속하지 않는 유지보수
+  - `revert`: 이전 변경 되돌림
+- `feature`, `bugfix`처럼 같은 의미의 별도 표기를 만들지 않고 각각 `feat`, `fix`로 통일한다.
+- 제목 예시: `feat(agent): add named provider configurations`,
+  `fix(ticket): preserve description on create`, `refactor(prompt): normalize role contracts`.
+- 여러 `type`이 필요해 보이면 가장 중요한 결과 하나를 제목으로 고르는 것이 아니라, 먼저 PR을
+  분리해야 하는지 검토한다. 한 컨텍스트에 딸린 test·docs는 주된 변경의 `type`을 따른다.
+
 ## 릴리즈 노트 및 버전 규칙
 
 - 정식 릴리즈 태그는 `vYYYY.MM.DD` 형식. 같은 날짜에 `main` 병합이 추가로 릴리즈되면
