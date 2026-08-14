@@ -5,7 +5,8 @@
 - 로컬 dev 기본 주소는 `http://127.0.0.1:4457`이며 `python run.py`를 표준 진입점으로 사용한다.
 - 실행 전 포트 전체 listener를 확인한다. 기존 listener가 LTM인지 `/api/health`로 검증하고, 정상 종료 API 또는 검증된 LTM 프로세스 종료로 포트를 비운 뒤 현재 worktree를 같은 포트에 기동한다.
 - 사용자가 명시적으로 요청하지 않은 한 충돌을 피하려고 다른 포트를 임의로 선택하지 않는다.
-- 기동 후 `/api/health`의 revision과 현재 worktree revision을 대조한다.
+- 로컬 dev가 실행 중인 동안 runtime 코드·설정·정적 자산을 수정하면 기존 인스턴스를 즉시 stale로 간주한다. 사용자에게 테스트를 요청하거나 작업 완료를 보고하기 전에 기존 `4457` LTM 프로세스를 종료하고, 수정한 worktree에서 `python run.py`로 같은 포트에 반드시 다시 기동한다. `uvicorn --reload` 동작이나 기존 프로세스가 변경을 반영했을 것이라고 가정하지 않는다.
+- 재기동 후 `/api/health`의 revision과 현재 worktree revision을 대조하고, listener PID·프로세스 시작 시각이 새 인스턴스인지 확인한다. 커밋 전 변경은 revision만으로 구분되지 않으므로 수정된 기능의 smoke test까지 수행한다.
 - Windows 앱 서버는 개발에서 `LakeTaskManagerDev.exe`, prod pystray에서 `LakeTaskManager.exe` named launcher를 사용한다. 직접 `uvicorn`을 실행하면 프로세스명이 다시 `python.exe`가 되므로 앱 동작 확인에는 `run.py`를 사용한다.
 
 ## Agent 기능개발 지침
