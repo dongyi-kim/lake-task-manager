@@ -23,19 +23,24 @@ def _rel(p: Path) -> str:
     return str(p.relative_to(STATIC.parent.parent))
 
 
-def test_home_shows_only_five_versioned_release_notes():
+def test_home_shows_only_five_daily_release_notes():
     home = (STATIC / "components" / "views" / "HomeView.js").read_text(encoding="utf-8")
     notes = (STATIC / "lib" / "releaseNotes.js").read_text(encoding="utf-8")
     guide = (STATIC.parents[1] / "AGENTS.md").read_text(encoding="utf-8")
 
     assert "RELEASES.slice(0, 5)" in home
     assert ':key="r.version"' in home and "{{ r.version }}" in home
-    versions = re.findall(r'version:\s*"(v\d{4}\.\d{2}\.\d{2}(?:\.\d+)?)"', notes)
+    assert "r.date" not in home and "hn-date" not in home
+    versions = re.findall(r'version:\s*"(v\d{4}\.\d{2}\.\d{2})"', notes)
     assert versions[:5] == [
-        "v2026.08.13.2", "v2026.08.13.1", "v2026.08.13", "v2026.08.12", "v2026.08.10.11",
+        "v2026.08.13", "v2026.08.12", "v2026.08.10", "v2026.08.07", "v2026.08.06",
     ]
-    assert "새 태그를 만들기 전에" in guide
-    assert "최신 5개 버전만 표시" in guide
+    assert len(versions) == len(set(versions))
+    assert not re.search(r'version:\s*"v\d{4}\.\d{2}\.\d{2}\.\d+"', notes)
+    assert not re.search(r'\bdate\s*:', notes)
+    assert "같은 날짜의 기존 항목에 변경 내용을 통합" in guide
+    assert "별도 `date` 필드" in guide
+    assert "최신 5개 날짜만 표시" in guide
 
 
 def test_static_assets_exist():
