@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,26 @@ def test_environment_specific_defaults():
     assert default_app_port("prod") == 8000
     assert P.process_name("mock") == "LakeTaskManagerDev.exe"
     assert P.process_name("prod") == "LakeTaskManager.exe"
+    assert P.process_version_info("mock")["FileDescription"] == "Lake Task Manager Dev"
+    assert P.process_version_info("prod")["FileDescription"] == "Lake Task Manager"
+    assert P.process_version_info("prod")["OriginalFilename"] == "LakeTaskManager.exe"
+
+
+def test_version_resource_contains_ltm_metadata():
+    fixed_info = struct.pack("<13I", 0xFEEF04BD, *([0] * 12))
+    resource = P._build_version_resource(
+        fixed_info,
+        {
+            "FileDescription": "Lake Task Manager Dev",
+            "OriginalFilename": "LakeTaskManagerDev.exe",
+        },
+        language=0x0409,
+    )
+
+    assert struct.unpack_from("<H", resource)[0] == len(resource)
+    assert "VS_VERSION_INFO".encode("utf-16le") in resource
+    assert "Lake Task Manager Dev".encode("utf-16le") in resource
+    assert "LakeTaskManagerDev.exe".encode("utf-16le") in resource
 
 
 def test_named_launcher_reexec_contract(tmp_path):

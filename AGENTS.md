@@ -7,7 +7,7 @@
 - 사용자가 명시적으로 요청하지 않은 한 충돌을 피하려고 다른 포트를 임의로 선택하지 않는다.
 - `--reload`는 Python 코드뿐 아니라 `app/`의 JS·CSS·HTML과 `config/`의 YAML 변경도 감시해야 한다. 변경 후에는 hot reload가 새 worker를 띄웠는지 확인하고 수정된 기능의 smoke test를 수행한다.
 - 최초 기동과 worktree 전환 후에는 `/api/health`의 revision을 현재 worktree revision과 대조하고 listener 프로세스가 새 인스턴스인지 확인한다. hot reload가 켜져 있지 않은 기존 서버는 종료하고 위 표준 명령으로 교체한다.
-- Windows 앱 서버는 개발에서 `LakeTaskManagerDev.exe`, prod pystray에서 `LakeTaskManager.exe` named launcher를 사용한다. 직접 `uvicorn`을 실행하면 프로세스명이 다시 `python.exe`가 되므로 앱 동작 확인에는 `run.py`를 사용한다.
+- Windows 앱 서버는 개발에서 `LakeTaskManagerDev.exe`, prod pystray에서 `LakeTaskManager.exe` named launcher를 사용한다. 실행 파일의 `FileDescription`도 각각 `Lake Task Manager Dev`, `Lake Task Manager`여야 한다. 직접 `uvicorn`을 실행하면 프로세스명과 표시명이 다시 Python이 되므로 앱 동작 확인에는 `run.py`를 사용한다.
 
 ## Agent 기능개발 지침
 
