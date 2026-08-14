@@ -1,5 +1,16 @@
 # Lake Task Manager
 
+## 로컬 개발 서버 실행 규칙
+
+- 로컬 dev 기본 주소는 `http://127.0.0.1:4457`이며 항상 hot reload가 켜진 `python run.py --reload`를 표준 진입점으로 사용한다.
+- 실행 전 포트 전체 listener를 확인한다. 기존 listener가 LTM인지 `/api/health`로 검증하고, 정상 종료 API 또는 검증된 LTM 프로세스 종료로 포트를 비운 뒤 현재 worktree를 같은 포트에 기동한다.
+- 사용자가 명시적으로 요청하지 않은 한 충돌을 피하려고 다른 포트를 임의로 선택하지 않는다.
+- 앱 포트는 `APP_PORT` 명시 override, `config/jira.yml`의 `server.port`, 공통 기본값 `4457` 순으로 결정한다. 확정된 포트가 충돌해도 다른 포트로 재기동하지 말고 점유 원인을 해결한다.
+- 중복 실행은 확정된 포트의 `/api/health`로 기존 LTM을 확인하고 기존 창을 열거나 포커스한 뒤 종료한다. 동시 기동 race의 최종 차단은 같은 포트에 대한 OS bind가 담당하며, 패배한 런처는 잔류하지 않아야 한다.
+- `--reload`는 Python 코드뿐 아니라 `app/`의 JS·CSS·HTML과 `config/`의 YAML 변경도 감시해야 한다. 개발의 watcher+worker는 하나의 앱 인스턴스이며 backend listener는 확정된 포트 하나만 소유해야 한다. 변경 후 새 worker의 revision과 listener를 확인하고 수정된 기능의 smoke test를 수행한다.
+- 최초 기동과 worktree 전환 후에는 `/api/health`의 revision을 현재 worktree revision과 대조하고 listener 프로세스가 새 인스턴스인지 확인한다. hot reload가 켜져 있지 않은 기존 서버는 종료하고 위 표준 명령으로 교체한다.
+- Windows 앱 서버는 개발에서 `LakeTaskManagerDev.exe`, prod pystray에서 `LakeTaskManager.exe` named launcher를 사용한다. 실행 파일의 `FileDescription`도 각각 `Lake Task Manager Dev`, `Lake Task Manager`여야 한다. 직접 `uvicorn`을 실행하면 프로세스명과 표시명이 다시 Python이 되므로 앱 동작 확인에는 `run.py`를 사용한다.
+
 ## Agent 기능개발 지침
 
 `app/agent/**`, Agent가 사용하는 `app/domain/**`, Agent UI, prompt, role, tool, workflow 또는 실 LLM 배터리를 변경할 때는 작업 전에 [`app/agent/AGENT.md`](app/agent/AGENT.md)를 전부 읽고 따른다. 해당 문서는 Agent 영역의 상세 source of truth다. 반복적인 Agent 개선·평가 작업에는 repository skill [`$ltm-agent-development`](.agents/skills/ltm-agent-development/SKILL.md)를 사용한다.

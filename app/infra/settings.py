@@ -11,6 +11,15 @@ from pathlib import Path
 
 import yaml
 
+
+DEFAULT_APP_PORT = 4457
+
+
+def default_app_port(jira_env: str) -> int:
+    """config에 port가 없을 때의 공통 기본값. 환경별로 갈라지지 않는다."""
+    return DEFAULT_APP_PORT
+
+
 # 디렉터리 구조:
 #   <repo>/                 ← 최종 사용자 파일: config/  (배포 시 exe 도 여기)
 #     ├── config/{jira.yml,wbs_config.yaml,people.yaml}
@@ -216,7 +225,8 @@ class Settings:
         self.cache_dead_ttl_seconds = int(pick("CACHE_DEAD_TTL_SECONDS",
                                                cache.get("dead_ttl_seconds"), 24 * 3600))
         self.app_host = str(pick("APP_HOST", server.get("host"), "0.0.0.0"))
-        self.app_port = int(pick("APP_PORT", server.get("port"), 8000))
+        # config에서 확정한 한 포트만 사용한다. 충돌 시 다른 포트로 자동 fallback하지 않는다.
+        self.app_port = int(pick("APP_PORT", server.get("port"), default_app_port(self.jira_env)))
 
     def _recompute_targets(self):
         """Bitbucket 토글이 바뀌면 인증 순회 대상을 다시 계산한다(재시작 불필요)."""

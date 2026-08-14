@@ -6,6 +6,9 @@ PyYAML>=6.0
 # 댓글 이미지 첨부(멀티파트 form) — FastAPI UploadFile/File 이 요구. 없으면 앱이 시작조차 안 됨.
 python-multipart>=0.0.9
 
+# Windows named launcher의 VERSIONINFO를 안전하게 갱신해 작업 관리자 표시명을 LTM으로 고정.
+pywin32==312; sys_platform == "win32"
+
 # local(fake) 서버 = 외부 오픈소스 mock (이 프로젝트 world 주입). https://pypi.org/project/jira820
 # 0.5.0+: 멀티프로젝트(이슈별 project) + 통합검색(JQL text~ / Confluence CQL) 필요.
 # 0.12.0+: Confluence **본문** 읽기(content/{id} + ?expand=body.storage). 이게 없으면
