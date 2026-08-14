@@ -1537,7 +1537,10 @@ def _ensure_deps() -> None:
     붙들고 있으면 그게 더 나쁘다. `run.bat setup` 이나 새 버전이 그 표식을 지운다.
     """
     import importlib.util
-    if all(importlib.util.find_spec(m) for m in ("langgraph", "langchain_core", "faiss")):
+    required = ["langgraph", "langchain_core", "faiss"]
+    if sys.platform.startswith("win"):
+        required.append("win32api")
+    if all(importlib.util.find_spec(m) for m in required):
         return                                  # 이미 있다 — 평소 기동에 비용 0
     try:
         from app.infra.settings import APP_ROOT, CACHE_DIR

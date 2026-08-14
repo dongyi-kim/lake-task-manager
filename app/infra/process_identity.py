@@ -60,12 +60,11 @@ def _version_block(
     block = _pad_dword(struct.pack("<HHH", 0, value_length, value_type) + _utf16z(key))
     block += value
     if children:
-        block = _pad_dword(block)
         for child in children:
-            block += child
+            # 다음 자식의 정렬 padding은 부모 길이에는 포함되지만 이전 자식의
+            # wLength에는 포함되면 안 된다.
             block = _pad_dword(block)
-    else:
-        block = _pad_dword(block)
+            block += child
     if len(block) > 0xFFFF:
         raise ValueError(f"VERSIONINFO block is too large: {key}")
     return struct.pack("<H", len(block)) + block[2:]
@@ -115,81 +114,27 @@ def _build_version_resource(
 
 def _version_template(path: Path) -> tuple[bytes, int]:
     """기존 Python 이미지에서 고정 버전 정보와 리소스 언어를 읽는다."""
-    import ctypes
-    from ctypes import wintypes
+    import win32api
+    import win32con
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.LoadLibraryExW.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
-    kernel32.LoadLibraryExW.restype = wintypes.HMODULE
-    kernel32.EnumResourceLanguagesW.argtypes = [
-        wintypes.HMODULE,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_ssize_t,
-    ]
-    kernel32.EnumResourceLanguagesW.restype = wintypes.BOOL
-    kernel32.FindResourceExW.argtypes = [
-        wintypes.HMODULE,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        wintypes.WORD,
-    ]
-    kernel32.FindResourceExW.restype = wintypes.HANDLE
-    kernel32.SizeofResource.argtypes = [wintypes.HMODULE, wintypes.HANDLE]
-    kernel32.SizeofResource.restype = wintypes.DWORD
-    kernel32.LoadResource.argtypes = [wintypes.HMODULE, wintypes.HANDLE]
-    kernel32.LoadResource.restype = wintypes.HANDLE
-    kernel32.LockResource.argtypes = [wintypes.HANDLE]
-    kernel32.LockResource.restype = ctypes.c_void_p
-    kernel32.FreeLibrary.argtypes = [wintypes.HMODULE]
-    kernel32.FreeLibrary.restype = wintypes.BOOL
-
-    module = kernel32.LoadLibraryExW(str(path), None, 0x00000002 | 0x00000020)
-    if not module:
-        raise ctypes.WinError(ctypes.get_last_error())
+    module = win32api.LoadLibraryEx(str(path), 0, win32con.LOAD_LIBRARY_AS_DATAFILE)
     try:
-        languages: list[int] = []
-        callback_type = ctypes.WINFUNCTYPE(
-            wintypes.BOOL,
-            wintypes.HMODULE,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            wintypes.WORD,
-            ctypes.c_ssize_t,
-        )
-
-        @callback_type
-        def collect_language(_module, _type, _name, language, _context):
-            languages.append(int(language))
-            return True
-
-        ok = kernel32.EnumResourceLanguagesW(
+        languages = win32api.EnumResourceLanguages(
             module,
-            ctypes.c_void_p(_RT_VERSION),
-            ctypes.c_void_p(_VERSION_RESOURCE_ID),
-            collect_language,
-            0,
+            _RT_VERSION,
+            _VERSION_RESOURCE_ID,
         )
-        if not ok or not languages:
-            raise ctypes.WinError(ctypes.get_last_error())
+        if not languages:
+            raise ValueError("VERSIONINFO language is missing")
         language = languages[0]
-        resource = kernel32.FindResourceExW(
+        raw = win32api.LoadResource(
             module,
-            ctypes.c_void_p(_RT_VERSION),
-            ctypes.c_void_p(_VERSION_RESOURCE_ID),
+            _RT_VERSION,
+            _VERSION_RESOURCE_ID,
             language,
         )
-        if not resource:
-            raise ctypes.WinError(ctypes.get_last_error())
-        size = kernel32.SizeofResource(module, resource)
-        loaded = kernel32.LoadResource(module, resource)
-        address = kernel32.LockResource(loaded)
-        if not size or not loaded or not address:
-            raise ctypes.WinError(ctypes.get_last_error())
-        raw = ctypes.string_at(address, size)
     finally:
-        kernel32.FreeLibrary(module)
+        win32api.FreeLibrary(module)
 
     key_end = raw.find(b"\0\0", 6)
     while key_end >= 0 and key_end % 2:
@@ -213,60 +158,76 @@ def _stamp_version_info(path: Path, jira_env: str) -> bool:
     if not sys.platform.startswith("win"):
         return False
 
-    import ctypes
-    from ctypes import wintypes
-
     try:
+        import win32api
+
         fixed_info, language = _version_template(path)
         resource = _build_version_resource(
             fixed_info,
             process_version_info(jira_env),
             language=language,
         )
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.BeginUpdateResourceW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL]
-        kernel32.BeginUpdateResourceW.restype = wintypes.HANDLE
-        kernel32.UpdateResourceW.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            wintypes.WORD,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-        ]
-        kernel32.UpdateResourceW.restype = wintypes.BOOL
-        kernel32.EndUpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.BOOL]
-        kernel32.EndUpdateResourceW.restype = wintypes.BOOL
-
-        update = kernel32.BeginUpdateResourceW(str(path), False)
-        if not update:
-            raise ctypes.WinError(ctypes.get_last_error())
+        update = win32api.BeginUpdateResource(str(path), False)
         committed = False
         try:
-            buffer = ctypes.create_string_buffer(resource)
-            if not kernel32.UpdateResourceW(
+            win32api.UpdateResource(
                 update,
-                ctypes.c_void_p(_RT_VERSION),
-                ctypes.c_void_p(_VERSION_RESOURCE_ID),
+                _RT_VERSION,
+                _VERSION_RESOURCE_ID,
+                resource,
                 language,
-                ctypes.cast(buffer, ctypes.c_void_p),
-                len(resource),
-            ):
-                raise ctypes.WinError(ctypes.get_last_error())
-            if not kernel32.EndUpdateResourceW(update, False):
-                raise ctypes.WinError(ctypes.get_last_error())
+            )
+            win32api.EndUpdateResource(update, False)
             committed = True
         finally:
             if not committed:
-                kernel32.EndUpdateResourceW(update, True)
+                win32api.EndUpdateResource(update, True)
         return True
-    except (OSError, ValueError) as exc:
+    except (ImportError, OSError, ValueError) as exc:
         print(
             f"[runtime] {path.name} 표시 정보 갱신 실패; 파일명만 적용합니다: {exc}",
             file=sys.stderr,
             flush=True,
         )
         return False
+
+
+def _stamp_version_info_safely(path: Path, jira_env: str) -> bool:
+    """리소스 갱신을 helper에 격리해 현재 프로세스의 Windows exec를 보호한다."""
+    if not sys.platform.startswith("win"):
+        return False
+
+    import subprocess
+
+    project_root = Path(__file__).resolve().parents[2]
+    script = (
+        "import sys; from pathlib import Path; "
+        "from app.infra.process_identity import _stamp_version_info; "
+        "raise SystemExit(0 if _stamp_version_info(Path(sys.argv[1]), sys.argv[2]) else 1)"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-X", "utf8", "-c", script, str(path), jira_env],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = str(exc)
+    else:
+        if result.returncode == 0:
+            return True
+        detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+    print(
+        f"[runtime] {path.name} 표시 정보 helper 실패; 파일명만 적용합니다: {detail}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return False
 
 
 def process_name(jira_env: str) -> str:
@@ -333,7 +294,7 @@ def _sync_launcher(base_executable: Path, target: Path, jira_env: str) -> None:
     candidate = target.with_name(target.name + ".new")
     try:
         shutil.copy2(base_executable, candidate)
-        _stamp_version_info(candidate, jira_env)
+        _stamp_version_info_safely(candidate, jira_env)
         try:
             os.replace(candidate, target)
         except PermissionError:

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 import struct
 from pathlib import Path
 from types import SimpleNamespace
 
 import watchfiles
+import pytest
 
 import run as launcher
 from app.infra import process_identity as P
@@ -38,6 +40,36 @@ def test_version_resource_contains_ltm_metadata():
     assert "VS_VERSION_INFO".encode("utf-16le") in resource
     assert "Lake Task Manager Dev".encode("utf-16le") in resource
     assert "LakeTaskManagerDev.exe".encode("utf-16le") in resource
+
+
+def test_version_block_length_excludes_next_block_alignment_padding():
+    block = P._version_block(
+        "Key",
+        value=P._utf16z("AB"),
+        value_length=3,
+        value_type=1,
+    )
+
+    assert struct.unpack_from("<H", block)[0] == len(block)
+    assert len(block) % 4 == 2
+
+
+@pytest.mark.skipif(not os.sys.platform.startswith("win"), reason="Windows PE resource test")
+def test_windows_launcher_version_info_is_stamped(tmp_path):
+    import win32api
+
+    target = tmp_path / P.DEV_PROCESS_NAME
+    shutil.copy2(os.sys._base_executable, target)
+
+    assert P._stamp_version_info(target, "mock") is True
+    translations = win32api.GetFileVersionInfo(str(target), "\\VarFileInfo\\Translation")
+    language, codepage = translations[0]
+    table = f"{language:04X}{codepage:04X}"
+    description = win32api.GetFileVersionInfo(
+        str(target),
+        f"\\StringFileInfo\\{table}\\FileDescription",
+    )
+    assert description == "Lake Task Manager Dev"
 
 
 def test_named_launcher_reexec_contract(tmp_path):
