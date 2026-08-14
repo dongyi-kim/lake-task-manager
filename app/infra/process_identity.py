@@ -3,7 +3,7 @@
 Python 코드에서 Task Manager의 프로세스 이미지 이름을 바꿀 수는 없다. 대신 base
 Python 실행 이미지와 런타임 DLL을 가상환경에 LTM 이름으로 준비하고, 작업 관리자의
 "프로세스" 탭도 Python이 아닌 LTM으로 표시되도록 실행 파일의 VERSIONINFO를 갱신한 뒤
-앱 서버를 띄우기 전에 그 실행기로 현재 프로세스를 교체한다.
+앱 서버를 띄우기 전에 그 실행기로 전환한다.
 """
 
 from __future__ import annotations
@@ -328,12 +328,16 @@ def reexec_with_process_name(
     environ: dict[str, str] | None = None,
     platform: str | None = None,
     execve=None,
+    popen=None,
+    exit_fn=None,
 ) -> bool:
     """Windows Python 프로세스를 LTM 이름의 실행기로 교체한다.
 
-    성공한 실제 ``os.execve``는 반환하지 않는다. 테스트용 execve가 반환한 경우에만
-    ``True``를 반환한다. Windows가 아니거나 이미 named launcher이면 아무 작업도 하지
-    않고 ``False``를 반환한다. launcher 준비 실패가 앱 기동 자체를 막지는 않는다.
+    실제 전환에 성공하면 반환하지 않는다. Windows 기본 경로에서는 named launcher를
+    시작하고 기존 Python 프로세스를 종료하며, 주입된 execve와 비 Windows 경로에서는
+    execve로 교체한다. 테스트용 함수가 반환한 경우에만 ``True``를 반환한다. Windows가
+    아니거나 이미 named launcher이면 아무 작업도 하지 않고 ``False``를 반환한다.
+    launcher 준비 실패가 앱 기동 자체를 막지는 않는다.
     """
     platform = sys.platform if platform is None else platform
     if not str(platform).lower().startswith("win"):
@@ -355,10 +359,26 @@ def reexec_with_process_name(
 
     args = list(sys.argv if argv is None else argv)
     env = dict(os.environ if environ is None else environ)
-    exec_fn = os.execve if execve is None else execve
     try:
         _sync_launcher(base, target, jira_env)
-        exec_fn(str(target), [str(target), *args], env)
+        if platform.startswith("win") and execve is None:
+            # Windows의 os.execve는 venv redirector→복제한 base image 전환에서 간헐적으로
+            # 기존 프로세스만 끝내고 새 image를 남기지 못했다. 준비된 named launcher를
+            # 자식으로 시작한 뒤 이름 없는 기존 Python을 즉시 끝내는 편이 안정적이다.
+            import subprocess
+
+            spawn = subprocess.Popen if popen is None else popen
+            spawn(
+                [str(target), *args],
+                cwd=os.getcwd(),
+                env=env,
+                close_fds=True,
+            )
+            stop = os._exit if exit_fn is None else exit_fn
+            stop(0)
+        else:
+            exec_fn = os.execve if execve is None else execve
+            exec_fn(str(target), [str(target), *args], env)
         return True
     except OSError as exc:
         print(

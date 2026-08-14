@@ -23,8 +23,8 @@ from pathlib import Path
 
 import uvicorn
 
-from app.infra.settings import APP_ROOT, get_settings
 from app.infra.process_identity import reexec_with_process_name
+from app.infra.settings import APP_ROOT, get_settings
 
 
 # 창을 열자마자(서버 준비 전에도) 즉시 보여줄 부팅 로더 — 외부 자원 없는 self-contained data URL.
@@ -90,6 +90,34 @@ def _wait_port_free(port, timeout=12):
     return False
 
 
+def _port_is_listening(port):
+    """고정 포트에 TCP listener가 있는지 확인."""
+    import socket
+
+    with socket.socket() as sk:
+        sk.settimeout(0.4)
+        try:
+            return sk.connect_ex(("127.0.0.1", int(port))) == 0
+        except Exception:
+            return False
+
+
+def _ltm_health(base):
+    """base가 임의 HTTP 서버가 아니라 LTM인지 health 계약으로 식별."""
+    import json
+    import urllib.request
+
+    try:
+        body = json.loads(urllib.request.urlopen(base + "/api/health", timeout=1.5).read() or b"{}")
+    except Exception:
+        return None
+    if body.get("status") != "ok" or body.get("env") not in {"mock", "local", "prod"}:
+        return None
+    if "projectKey" not in body or "rev" not in body:
+        return None
+    return body
+
+
 def _disk_rev():
     """디스크의 현재 앱 코드 버전(릴리즈 태그 우선) — run.bat 이 방금 맞춰 둔 값.
     못 읽으면 "" (그럼 강제 재시작 판정을 안 한다 = 안전측).
@@ -138,16 +166,17 @@ def _signal_existing_instance(s):
     """
     import json
     import urllib.request
-    base = f"http://127.0.0.1:{s.app_port}"
-    try:
-        urllib.request.urlopen(base + "/api/health", timeout=1.5).read()
-    except Exception:
-        return False                                  # 아무도 없다 → 내가 뜬다
+
+    port = s.app_port
+    base = f"http://127.0.0.1:{port}"
+    if not _ltm_health(base):
+        return False
+
     # 떠 있는 게 옛 버전이면(run.bat 이 방금 최신으로 당겼는데 실행 중인 건 옛 코드) 자동 재시작.
     disk, running = _disk_rev(), _running_rev(base)
     if disk and running and disk != running:
         print(f"실행 중인 앱이 옛 버전입니다(실행 {running} ≠ 최신 {disk}) — 종료 후 최신으로 다시 시작합니다.")
-        if _quit_existing(base, s.app_port):
+        if _quit_existing(base, port):
             return False                              # 옛 인스턴스 종료됨 → 내가 최신으로 기동(수동 확인 불필요)
         print("(옛 인스턴스를 자동 종료할 수 없어 기존 창을 사용합니다.)")   # 폴백
     # 최신(또는 rev 미확정/폴백) — 기존 동작: 창 포커스/열기
@@ -1594,16 +1623,21 @@ def main():
         raise SystemExit("[runtime] --reload는 mock/local 개발 환경에서만 사용할 수 있습니다.")
 
     if os.getenv("LAKE_RESTART"):
-        # 업데이트 후 재기동: 직전 인스턴스가 방금 종료 중이다. 단일 인스턴스 억제를 건너뛰고
-        # (내가 새 인스턴스가 돼야 함) 포트가 풀릴 때까지 기다린 뒤 정상 기동한다.
-        _wait_port_free(s.app_port)
+        # 업데이트 후 재기동: 직전 인스턴스가 포트를 놓을 때까지 기다린 뒤 같은 설정 포트로 기동.
+        if not _wait_port_free(s.app_port):
+            raise SystemExit(f"[runtime] 고정 포트 {s.app_port}의 기존 인스턴스가 종료되지 않았습니다.")
     elif _signal_existing_instance(s):
         # 단일 인스턴스: 이미 떠 있으면 그 인스턴스에 창을 띄우/포커스 시키고 끝낸다(새 백엔드 안 띄움).
         # (시작프로그램/바로가기 재실행 시 백엔드가 두 개 뜨거나 창이 여러 개 나는 것을 막는다.)
         return
 
+    if _port_is_listening(s.app_port):
+        # 고정 포트를 다른 프로그램이 쓰면 임의 포트로 우회하지 않는다. 어느 주소가 진짜 LTM인지
+        # 모호해지는 것보다 원인을 명시하고 중단하는 편이 안전하다.
+        raise SystemExit(f"[runtime] LTM 고정 포트 {s.app_port}를 다른 프로세스가 사용 중입니다.")
+
     # Task Manager의 이미지 이름은 Python 코드의 title이 아니라 실행 파일명에서 온다.
-    # 서버/pystray를 시작하기 전에 venv의 named launcher로 프로세스를 교체한다.
+    # 기존 인스턴스/포트 확인을 마친 뒤 named launcher로 실행 주체를 전환한다.
     reexec_with_process_name(s.jira_env)
 
     if dev_reload:

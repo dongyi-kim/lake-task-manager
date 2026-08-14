@@ -11,18 +11,26 @@ import pytest
 
 import run as launcher
 from app.infra import process_identity as P
-from app.infra.settings import default_app_port
+from app.infra.settings import Settings, default_app_port
 
 
 def test_environment_specific_defaults():
     assert default_app_port("mock") == 4457
     assert default_app_port("local") == 4457
-    assert default_app_port("prod") == 8000
+    assert default_app_port("prod") == 4457
     assert P.process_name("mock") == "LakeTaskManagerDev.exe"
     assert P.process_name("prod") == "LakeTaskManager.exe"
     assert P.process_version_info("mock")["FileDescription"] == "Lake Task Manager Dev"
     assert P.process_version_info("prod")["FileDescription"] == "Lake Task Manager"
     assert P.process_version_info("prod")["OriginalFilename"] == "LakeTaskManager.exe"
+
+
+def test_app_port_uses_config_then_explicit_environment_override(monkeypatch):
+    monkeypatch.delenv("APP_PORT", raising=False)
+    assert Settings().app_port == 4457
+
+    monkeypatch.setenv("APP_PORT", "59999")
+    assert Settings().app_port == 59999
 
 
 def test_version_resource_contains_ltm_metadata():
@@ -110,6 +118,40 @@ def test_named_launcher_reexec_contract(tmp_path):
     assert calls == [
         (str(target.resolve()), [str(target.resolve()), "run.py", "demo"], {"JIRA_ENV": "mock"})
     ]
+
+
+def test_windows_default_named_transition_spawns_then_exits(tmp_path):
+    scripts = tmp_path / "venv" / "Scripts"
+    base_dir = tmp_path / "python-home"
+    scripts.mkdir(parents=True)
+    base_dir.mkdir()
+    source = scripts / "python.exe"
+    base = base_dir / "python.exe"
+    source.write_bytes(b"venv-python-redirector")
+    base.write_bytes(b"base-python-image")
+    calls = {}
+
+    def fake_popen(command, **kwargs):
+        calls["popen"] = (command, kwargs)
+
+    changed = P.reexec_with_process_name(
+        "mock",
+        executable=source,
+        base_executable=base,
+        argv=["run.py", "--reload"],
+        environ={"JIRA_ENV": "mock"},
+        platform="win32",
+        popen=fake_popen,
+        exit_fn=lambda code: calls.update({"exit": code}),
+    )
+
+    target = scripts / P.DEV_PROCESS_NAME
+    command, kwargs = calls["popen"]
+    assert changed is True
+    assert command == [str(target.resolve()), "run.py", "--reload"]
+    assert kwargs["env"] == {"JIRA_ENV": "mock"}
+    assert kwargs["close_fds"] is True
+    assert calls["exit"] == 0
 
 
 def test_non_windows_and_already_named_are_noops(tmp_path, monkeypatch):
