@@ -413,7 +413,7 @@ def test_curator_produces_brief_from_materials():
     txt = c.task({"messages": [HumanMessage(content="CDC가 뭐야?")],
                   "situation": "DL-118 에서 검토", "evidence": [],
                   "web_context": "- CDC 는 변경 데이터 캡처"})
-    assert "외부 기술 조사" in txt and "DL-118" in txt
+    assert "External Technology Research" in txt and "DL-118" in txt
     out = c.apply({}, {"concepts": [{"term": "CDC", "explanation": "x"}],
                        "our_context": "사내 이력 없음", "references": [], "gaps": ["도입 여부"]})
     kb = out["knowledge_brief"]

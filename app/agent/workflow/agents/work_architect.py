@@ -34,63 +34,45 @@ BUILD_WORDS = ("파이프라인", "구축", "시스템", "개발해야")
 ITEM = {
     "type": "object",
     "properties": {
-        "summary": {"type": "string", "description": "동사로 끝나는 제목. 제목만으로 구분되어야 한다"},
+        "summary": {"type": "string", "description": "Distinct Korean summary for one deliverable."},
         "tier": {"type": "string", "enum": ["epic", "task", "subtask"],
-                 "description": "계층 단계. Bug/Story/Improvement/Feature는 모두 task"},
+                 "description": "Hierarchy tier. Bug, Story, Improvement, and Feature are all task tier."},
         "issue_type": {"type": "string",
-                       "description": "project createmeta가 허용하는 실제 issue type 이름"},
-        "type": {"type": "string", "description": "Task/Story/Bug/Improvement/Sub-Task 중 실제 허용된 값"},
-        "epic": {"type": "string", "description": "task 모드에서 상위 Epic 키. 최상위로 둘 거면 빈 문자열"},
+                       "description": "Exact issue type name allowed by project createmeta."},
+        "type": {"type": "string", "description": "Exact allowed Jira type such as Task, Story, Bug, Improvement, or Sub-Task."},
+        "epic": {"type": "string", "description": "Verified parent Epic key in task mode; empty for an intentional top-level Task."},
         "epic_name": {"type": "string",
-                      "description": "epic 모드 전용 — WBS·뱃지에 보일 짧은 단축어(예: 'CDC도입'). "
-                                     "비우면 summary 를 쓴다"},
-        "parent": {"type": "string", "description": "subtask 모드에서 부모 티켓 키"},
+                      "description": "Short Korean Epic label for WBS and badges, at most ten characters; empty uses summary."},
+        "parent": {"type": "string", "description": "Verified Task-tier parent key in subtask mode."},
         "description": {
             "type": "string",
             "description": (
-                "티켓 본문 — **HTML 로 작성한다**(에디터가 받는 형식. mock 은 위키로 자동 변환, "
-                "prod 는 그대로 저장된다). 네 섹션을 이 순서로 반드시 채운다"
-                "(knowledge/07-ticket-body-guide.md):\n"
-                "<h3>배경</h3><p>왜 하는지 2~3문장 — 계기가 된 사건·요청을 티켓 키와 함께. "
-                "감상이 아니라 사실로</p>\n"
-                "<h3>작업 범위</h3><ul><li>이번에 하는 것</li>"
-                "<li>이번에 하지 않는 것</li></ul> ← **제외 항목을 적는 게 절반**이다\n"
-                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
-                "<li data-checked=\"false\">검증 가능한 조건</li></ul> (2~4개)\n"
-                "<h3>참고</h3><ul><li>DL-123 \"제목\" — **이 일과 무슨 관계인지 한 마디**</li>"
-                "<li><a href=\"URL\">문서 제목</a> — 무엇을 볼 수 있는지</li></ul>\n"
-                "★ 참고는 **항목마다 다르다** — 같은 목록을 여러 티켓에 복사하지 마라. "
-                "관계를 못 적겠으면 관련이 없는 것이니 빼라. 모듈이 같다는 이유로 붙이지 마라.\n"
-                "★ 쪼갤 일은 본문에 '후속 Sub-Task 후보'라고 **글로만 적지 말고** children 에 "
-                "실제 Sub-Task 로 적어라 — 글은 티켓이 되지 않는다.\n"
-                "★ 섹션은 위 **네 개가 전부**다 — Knowledge·References 같은 섹션을 더 만들지 "
-                "마라(참고 하나로 합친다. 조사에서 알아낸 결정·경위도 참고 불릿에 키와 함께). "
-                "★ 참고 불릿은 **실제 티켓 키 또는 <a href> 링크가 반드시 있어야** 한다 — "
-                "링크 없는 문서 제목 나열은 날조로 취급되어 삭제된다. 비교는 <table> 로."),
+                "Korean HTML ticket body. A general Task uses <h3>배경</h3>, <h3>작업 범위</h3>, "
+                "and <h3>완료 조건 (DoD)</h3> in that order, with optional <h3>참고</h3>. Background "
+                "states only a verified trigger or that the user's concrete change was requested. When no "
+                "reason is verified, write the literal action followed by `요청됨`; never add generic claims "
+                "about user experience, efficiency, accuracy, performance, stability, or operational benefit, "
+                "and never specialize a vague verb such as `개선` into an unmentioned quality dimension. Scope "
+                "includes inclusions and exclusions; DoD contains two to four independently testable "
+                "<li data-checked=\"false\"> items. A Bug instead separates "
+                "재현 경로, 기대 동작, and 실제 동작. Every reference must contain a real ticket key or "
+                "verified URL and explain relevance. Never copy one reference list across unrelated items. "
+                "Represent real child work in children, not as a prose candidate list."),
         },
         "children": {
             "type": "array",
             "description": (
-                "이 티켓 **아래에 함께 만들 Sub-Task**. 일이 커서 여러 사람이 나눠 해야 하면 "
-                "여기 적는다 — 본문에 '후속 Sub-Task 후보'라고 글로만 쓰지 마라(그건 티켓이 "
-                "되지 않는다). 승인 후 부모를 먼저 만들고 그 키로 Sub-Task 를 이어 붙인다.\n"
-                "· 기능이 다른 일(검증 스크립트 / 모니터링 / 전환)은 **각각 다른 Sub-Task**로, "
-                "그 일에 맞는 모듈 사람에게.\n"
-                "· 같은 일을 분량으로 나눈 것(토픽 A/B/C 전환)은 **골고루 다른 사람에게** "
-                "배분한다 — 한 사람에게 몰면 나눈 의미가 없다.\n"
-                "· 과잉 분해 금지: 아직 방식이 안 정해진 일은 쪼개지 않는다."),
+                "Actual Sub-Tasks created under this new parent. Use separate children for distinct execution "
+                "units and distribute repeated target batches when evidence supports it. Do not decompose work "
+                "whose approach is still undecided."),
             "items": {
                 "type": "object",
                 "properties": {
-                    "summary": {"type": "string", "description": "동사로 끝나는 제목. 부모 제목을 "
-                                                                 "그대로 베끼지 마라"},
+                    "summary": {"type": "string", "description": "Distinct Korean child summary; do not copy the parent title."},
                     "description": {"type": "string",
-                                    "description": "본문(HTML). 부모 본문을 복사하지 마라 — 배경은 "
-                                                   "부모에 있다. 이 조각이 **무엇을 어떻게 "
-                                                   "끝내는지**만: <h3>작업 범위</h3> + "
-                                                   "<h3>완료 조건 (DoD)</h3>"},
-                    "assignee": {"type": "string", "description": "담당 사번. 모르면 빈 문자열"},
-                    "duedate": {"type": "string", "description": "YYYY-MM-DD. 모르면 빈 문자열"},
+                                    "description": "Korean HTML with only this child's 작업 범위 and 완료 조건 (DoD); do not copy parent background."},
+                    "assignee": {"type": "string", "description": "Verified user ID, or empty."},
+                    "duedate": {"type": "string", "description": "YYYY-MM-DD, or empty when unknown."},
                 },
                 "required": ["summary"],
             },
@@ -98,7 +80,7 @@ ITEM = {
         "components": {"type": "array", "items": {"type": "string"}},
         "labels": {"type": "array", "items": {"type": "string"}},
         "priority": {"type": "string"},
-        "duedate": {"type": "string", "description": "YYYY-MM-DD. 모르면 빈 문자열 — 지어내지 마라"},
+        "duedate": {"type": "string", "description": "YYYY-MM-DD, or empty when unknown; never invent."},
     },
     "required": ["summary", "type"],
 }
@@ -109,22 +91,16 @@ ITEM = {
 QUESTION = {
     "type": "object",
     "properties": {
-        "question": {"type": "string", "description": "물어볼 것 한 문장"},
+        "question": {"type": "string", "description": "One concise Korean question."},
         "kind": {"type": "string", "enum": ["text", "choice", "multi", "date"],
-                 "description": "choice=하나 선택 / multi=**여러 개** 선택 가능(대상 파이프라인·"
-                                "라벨처럼 복수가 자연스러운 질문) / date=날짜 / text=자유 서술. "
-                                "**choice 를 우선하라** — 네가 답을 추천할 수 있는 질문"
-                                "(우선순위·범위·방식·대상)은 전부 choice 다. text 는 정말 "
-                                "자유 서술만 가능한 것(재현 경로, 배경 설명)에만 쓴다. "
-                                "화면이 '직접 입력' 선택지를 자동으로 붙이므로 보기가 빠짐없이 "
-                                "완전할 필요는 없다"},
+                 "description": "choice=one option, multi=multiple options, date=calendar value, text=free prose. "
+                                "Prefer choice whenever a recommendation is possible; reserve text for facts "
+                                "such as reproduction steps or background. The UI adds a custom-input option."},
         "options": {"type": "array", "items": {"type": "string"},
-                    "description": "kind=choice 일 때 보기 2~5개. **네가 추천하는 것을 맨 앞에** 두고, "
-                                   "보기 뒤에 짧은 사유를 괄호로 붙여도 된다 — 예: "
-                                   "\"P2-Major (운영 영향 있음)\", \"skcc.x1210 (유사 작업 2건)\""},
+                    "description": "Two to five Korean options for choice, with the recommended option first and an optional short reason."},
         "field": {"type": "string",
                   "enum": ["", "assignee", "epic", "priority", "duedate", "component"],
-                  "description": "티켓 속성을 묻는 질문이면 그 필드명 — 화면이 전용 자동완성을 붙인다"},
+                  "description": "Ticket field being asked; the UI supplies field-specific autocomplete."},
     },
     "required": ["question", "kind"],
 }
@@ -134,91 +110,72 @@ SCHEMA = {
     "properties": {
         "interpretation": {
             "type": "string",
-            "description": ("조사 전 **해석 확인 턴에만** — 요청을 어떻게 이해했는지 2~3문장"
-                            "(무엇을·왜·어떤 산출물로). 사용자가 이 해석을 보고 바로잡는다. "
-                            "그 외 턴에는 빈 문자열"),
+            "description": ("Only in a pre-research interpretation turn: two or three Korean sentences "
+                            "covering target, purpose, and intended artifact. Empty in other turns."),
         },
         "questions": {
             "type": "array", "items": QUESTION,
-            "description": ("사용자에게 되물을 것. **사용자만 아는 것**만(범위·완료조건·기한·의도). "
-                            "찾아보면 아는 것은 넣지 마라. 물을 게 없으면 빈 배열. 최대 3개"),
+            "description": ("At most three questions about user-owned scope, DoD, deadline, or intent. "
+                            "Never ask for a fact available through internal retrieval."),
         },
         "mode": {"type": "string", "enum": ["task", "subtask", "epic"],
-                 "description": "이번에 만들 것의 종류. Sub-Task 는 부모가 있어야 하므로 대개 먼저 task. "
-                                "epic = 사용자가 새 Epic(이니셔티브)을 만들자고 할 때 — items 는 "
-                                "Epic 1개(type='Epic', epic_name 에 짧은 단축어)"},
+                 "description": "Creation mode. subtask requires a verified existing Task-tier parent. epic contains exactly one Epic item."},
         "structure": {
             "type": "string",
             "enum": ["single_task", "task_with_subtasks", "multiple_tasks", "new_epic"],
             "description": (
-                "이번 초안의 **구조 판단**(knowledge/04 '어떤 구조로 만들 것인가'). "
-                "기본값은 single_task 이고, 올라가려면 근거가 있어야 한다.\n"
-                "· single_task = 산출물 하나, 한 사람이 며칠 안에 끝냄\n"
-                "· task_with_subtasks = 산출물은 하나인데 작업이 여러 사람·여러 대상으로 나뉨\n"
-                "· multiple_tasks = 산출물이 여럿이고 완료 시점·검증 주체가 다름(모듈이 다름)\n"
-                "· new_epic = **네 조건을 전부** 만족할 때만 — ①2 스프린트 이상 ②서로 다른 "
-                "모듈의 Task 3개 이상 ③담을 기존 Epic 을 찾아봤고 없다 ④사용자가 별도 진척 "
-                "보고 단위로 관리하려 한다. 하나라도 불확실하면 격상하지 말고 기존 Epic 아래 "
-                "Task 로 두어라(느낌은 근거가 아니다)"),
+                "Structure decision. Default to single_task. task_with_subtasks is one deliverable split by "
+                "stage, target, or owner; multiple_tasks is independent deliverables; new_epic requires at "
+                "least two sprints, at least three cross-module or cross-owner Tasks, no suitable verified "
+                "existing Epic, and an explicit independent reporting intent."),
         },
         "structure_source": {
             "type": "string", "enum": ["user_specified", "inferred"],
             "description": (
-                "그 구조를 **누가 정했나**. user_specified = 사용자가 형태를 말했다"
-                "('에픽으로 만들자', '서브태스크로 쪼개줘', '테스크 하나만'). "
-                "inferred = 사용자는 할 일만 말했고 형태는 네가 판단했다. "
-                "판단한 것이면 사용자가 다르게 생각할 수 있다 — 갈림이 크면 확인을 받는다"),
+                "Who selected the structure. user_specified means the user explicitly named it; inferred "
+                "means the agent selected it from the work shape."),
         },
         "structure_why": {
             "type": "string",
-            "description": "그 구조를 고른 이유 한 줄 — 판정 신호를 사실로 적는다. 예: "
-                           "'토픽 3개 전환은 같은 산출물의 분량 분할이라 Sub-Task', "
-                           "'2주 규모·단일 모듈이라 Epic 격상 보류, DL-101 아래 Task'",
+            "description": "One Korean sentence citing the factual signal behind the structure decision.",
         },
         "items": {"type": "array", "items": ITEM,
-                  "description": "티켓 초안. questions 가 있으면 빈 배열로 두어도 된다"},
+                  "description": "Ticket drafts. May be empty while a blocking question remains."},
         "change": {
             "type": "object",
-            "description": "**modify 의도일 때만** — 기존 티켓의 변경 계획. 이때 items 는 빈 배열",
+            "description": "Existing-ticket change plan for modify intent only; items stays empty.",
             "properties": {
-                "key": {"type": "string", "description": "바꿀 티켓 키. 조사에서 실재 확인된 것만"},
+                "key": {"type": "string", "description": "One verified existing ticket key to change."},
                 "keys": {"type": "array", "items": {"type": "string"},
-                         "description": "**여러 티켓에 같은 변경**을 할 때 — 조사(JQL 등)에서 "
-                                        "확인된 키 전부. 이때 key 는 비워 둔다. "
-                                        "예: '마감 지난 것 전부 P1' → keys 에 대상 전부"},
-                "assignee": {"type": "string", "description": "새 담당자 id. 떼려면 \"\" (빈 문자열), 안 바꾸면 생략"},
-                "duedate": {"type": "string", "description": "새 마감 YYYY-MM-DD. 안 바꾸면 생략"},
-                "priority": {"type": "string", "description": "새 우선순위. 안 바꾸면 생략"},
-                "summary": {"type": "string", "description": "새 제목. 안 바꾸면 생략"},
+                         "description": "Complete verified key snapshot for the same bulk change; leave key empty."},
+                "assignee": {"type": "string", "description": "New user ID; empty unassigns; omit when unchanged."},
+                "duedate": {"type": "string", "description": "New YYYY-MM-DD due date; omit when unchanged."},
+                "priority": {"type": "string", "description": "New exact priority; omit when unchanged."},
+                "summary": {"type": "string", "description": "New Korean summary; omit when unchanged."},
                 "description": {"type": "string",
-                                "description": "새 본문(HTML — 생성 때와 같은 구조). 본문을 "
-                                               "고치라는 요청일 때만. 안 바꾸면 생략"},
+                                "description": "Complete replacement HTML body, only when requested."},
                 "labels": {"type": "array", "items": {"type": "string"},
-                           "description": "라벨 전체 교체값. 안 바꾸면 생략"},
+                           "description": "Complete replacement labels; omit when unchanged."},
                 # ★ 이 필드가 **스키마에 없어서** 모델이 컴포넌트 변경을 표현할 방법이
                 #   없었다(실측 MOD8: "컴포넌트를 Catalog 로 바꿔줘" 가 조용히 사라졌고,
                 #   라벨 변경만 남아 체커가 '변경 계획 있음'으로 통과시켰다).
                 #   쓰기 도구(update_ticket)는 처음부터 components 를 받고 있었다 —
                 #   계획을 세우는 쪽에만 구멍이 있었다.
                 "components": {"type": "array", "items": {"type": "string"},
-                               "description": "컴포넌트(모듈) 교체값 — **하나만** 담는다. "
-                                              "둘이면 워크로드가 이중 계상된다. 안 바꾸면 생략"},
+                               "description": "Complete replacement component list with exactly one value; omit when unchanged."},
                 "status": {"type": "string",
-                           "description": "옮길 **상태 이름**(예: '리뷰 대기', 'In Progress'). "
-                                          "상태 전이 요청일 때만 — 전이 id 해석은 코드가 한다"},
+                           "description": "Exact target status name for a requested transition; code resolves its ID."},
                 "link": {"type": "object",
-                         "description": "티켓 링크 요청('A가 B를 막는다')일 때만",
+                         "description": "Only for an explicit ticket-link request.",
                          "properties": {
-                             "other": {"type": "string", "description": "상대 티켓 키"},
+                             "other": {"type": "string", "description": "Verified other ticket key."},
                              "relation": {"type": "string",
-                                          "description": "링크 타입 이름(Blocks/Relates 등 — "
-                                                         "실재하는 타입만)"}}},
+                                          "description": "Verified Jira link type such as Blocks or Relates."}}},
                 "comment": {"type": "string",
-                            "description": "변경과 함께 남길 코멘트(왜 바꾸는지). 없으면 생략"},
+                            "description": "Korean comment explicitly requested with the change; otherwise omit."},
             },
-            "required": ["key"],
         },
-        "rationale": {"type": "string", "description": "왜 이렇게 쪼갰는지/바꾸는지 2~3문장. 사용자에게 보인다"},
+        "rationale": {"type": "string", "description": "Two or three Korean user-visible sentences explaining the structure or change."},
     },
     "required": ["questions", "mode", "items"],
 }
@@ -285,13 +242,14 @@ class WorkArchitect(StructuredAgent):
 
     def system(self, state):
         forced = (state.get("turns") or 0) >= MAX_REFINE_TURNS
-        extra = ("\n\n★ 되묻기 횟수를 다 썼다. **더 묻지 말고** 아는 것만으로 초안을 만들어라. "
-                 "모르는 필드는 비워 두고 rationale 에 '확인 필요'로 남긴다." if forced else "")
+        extra = ("\n\n## Refinement Limit Reached\n\nDo not ask another question. Complete the safest draft "
+                 "from verified information, leave unknown fields empty, and record the Korean phrase "
+                 "`확인 필요` in `rationale`." if forced else "")
         if WorkArchitect._force_draft:
-            extra += ("\n\n★★ 직전 시도는 요구된 산출물을 내지 않았다. 이번에는 **questions 를 "
-                      "반드시 빈 배열**로 하고 items 를 완성하라. 초안 수정 요청이면 "
-                      "'지금 고치고 있는 초안'의 items 에 요청 사항을 반영한 **수정본 전체**를 "
-                      "다시 내라(설명이 아니라 items 로). 미확정 사항은 rationale 에 적는다.")
+            extra += ("\n\n## Required Draft Recovery\n\nThe previous attempt omitted the requested artifact. "
+                      "Return `questions=[]` and complete `items`. For a draft-revision request, return the "
+                      "entire revised item set from Current Draft Data, not an explanation. Record unresolved "
+                      "points in Korean in `rationale`.")
         # 정적 지시는 prompts/roles/work_architect.md — 동적 경고(횟수 소진)만 코드가 덧붙인다.
         # ★ 경로에 안 쓰이는 절은 싣지 않는다. 기존 티켓의 필드를 바꾸는 턴에 '어떻게
         #   쪼갤 것인가'·'본문 4섹션'·'Epic 생성' 지시는 판단에 쓰이지 않으면서 매 호출
@@ -303,19 +261,16 @@ class WorkArchitect(StructuredAgent):
         # 또 물었다(실측 2회). 명령서의 ★ 지시는 따르는 것을 버그 갈래에서 확인했다.
         said = conversation(state)
         defaults = any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠"))
-        force_rule = ("\n- ★ 사용자가 **알아서 진행하라고 했다. questions 는 반드시 빈 배열**로 내고 "
-                      "지금 아는 것 + 기본값으로 items 를 완성하라. **Epic 선택도 묻지 마라** — "
-                      "아래 '배치 재료'의 후보 중 이 일의 주제에 가장 맞는 것을 네가 고르고 "
-                      "rationale 에 한 줄로 이유를 적는다(후보가 여럿이어도 위임받았으면 고르는 "
-                      "것이 네 일이다. 정 마땅치 않으면 비워서 최상위로). "
-                      "★ **사용자가 누구에게 맡길지 말한 항목은 그 사번을 assignee 에 그대로 "
-                      "적는다**('성능 측정은 x1402' 처럼 지정한 것을 비우면 지시를 버리는 셈이다) "
-                      "— 지정하지 않은 항목만 비워 둔다(다음 단계가 정한다). "
-                      "기한은 사용자가 말한 것을 쓰고, 없으면 비워 둔다.\n"
-                      "- ★ **items 가 빈 배열인 채로 끝내지 마라.** 조사에서 비슷한 티켓이 "
-                      "나왔든 정보가 조금 모자라든, 지금 아는 것으로 초안을 만들고 미확정은 "
-                      "rationale 에 적는다. 질문만 내고 초안이 0건이면 사용자는 아무것도 "
-                      "승인할 수 없다 — 위임받고 아무것도 안 한 셈이다."
+        force_rule = ("\n- The user delegated unspecified choices. A valid output has `questions=[]` and "
+                      "at least one complete item. Do not ask for background, scope, DoD, priority, label, "
+                      "assignee, deadline, or Epic placement. Treat the literal requested change as the "
+                      "included scope, exclude adjacent unrequested work, and use observable implementation "
+                      "plus regression evidence as a conservative DoD. Select the best supported Epic "
+                      "candidate without asking; use an intentional top-level Task if none fits, and explain "
+                      "the choice in Korean `rationale`. Preserve every user-specified assignee ID on its own "
+                      "item; leave only unspecified assignees empty. Preserve a supplied deadline and leave an "
+                      "unsupplied deadline empty. Never return an empty `items` array merely because evidence is "
+                      "incomplete; put non-blocking uncertainty in `rationale`."
                       if defaults else "")
         # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
         # ★ **버그 초안은 의도가 아니라 요청의 낱말로 고른다**(사용자 지적 — "결국 버그
@@ -327,86 +282,53 @@ class WorkArchitect(StructuredAgent):
         _said = request_text(state) + " " + conversation(state)
         _is_bug = reads_as_bug(_said)      # 판정은 state.reads_as_bug 한 곳에만 있다
         if _is_bug and (state.get("intent") or "") in Intent.DRAFTS_TICKETS:
-            goal = """버그 신고를 **Bug 티켓 초안**으로 만들어라.
-- type 은 Bug. 제목은 증상을 담는다("[모듈] ~~가 ~~할 때 ~~된다").
-- description 에 **재현 경로 / 기대 동작 / 실제 동작**을 나눠 적는다. 사용자가 안 준 것은
-  빈 칸으로 두고 questions 로 물어라 — 재현 경로 없는 버그 티켓은 아무도 못 잡는다.
-- 원인으로 의심되는 기존 티켓이 조사에서 나왔으면 description 에 키를 적어라.
-- 이미 같은 증상의 Bug 가 열려 있으면 **새로 만들지 말고** questions 로 사용자 판단을 구하라.
-- 버그는 대개 쪼갤 필요가 없다 — Bug 하나면 된다. Sub-Task 로 나누지 마라."""
+            goal = """Draft one Task-tier `Bug`.
+
+- Use `type="Bug"` and a Korean summary that names the observed symptom.
+- Separate the Korean body sections `재현 경로`, `기대 동작`, and `실제 동작`. Ask only for a missing material reproduction fact; never fabricate it.
+- Add a verified suspected-cause ticket key only when research directly supports that relationship.
+- If an open Bug already has the same symptom, do not draft a duplicate; ask the user to choose how to proceed.
+- Default to one Bug without Sub-Tasks unless the user explicitly requests a valid split."""
         elif ((state.get("intent") or "") == Intent.MODIFY
                 and not state.get("mentioned_keys")
                 and (state.get("draft") or {}).get("items")):
-            goal = """승인 대기 중인 **초안을 고치는 요청**이다 — 기존 티켓의 변경 계획(change)이
-아니다. '지금 고치고 있는 초안' 자료의 items 를 요청대로 수정해 **items 전체를 다시** 내라
-(문제 삼지 않은 부분은 유지). change 는 만들지 마라. questions 도 내지 마라 —
-수정본이 곧 새 승인 카드가 된다."""
+            goal = """Revise the pending draft; this is not a change to an existing Jira ticket.
+
+Return the complete revised `items` set from Current Draft Data, preserving every unaffected field. Do not create `change` or ask a question; the revision becomes a new approval card."""
         elif (state.get("intent") or "") == Intent.MODIFY:
-            goal = """기존 티켓의 **변경 계획**(change)을 만들어라. items 는 빈 배열로 둔다.
-- key 는 조사에서 **실재가 확인된** 티켓만. 사용자가 댄 키가 조사에 없으면 questions 로 확인하라.
-- 사용자가 바꾸라고 한 필드만 change 에 넣는다 — 시키지 않은 필드를 얹지 마라.
-- **조건 일괄 수정**("마감 지난 것 전부", "정체 티켓 모두")이면 조사 자료의 대상 키
-  **전부를 change.keys 에** 담아라(key 는 비움). 일부만 담으면 나머지는 조용히 누락된다.
-  조사에 대상 목록이 없으면 questions 로 확인하지 말고 rationale 에 "대상 조회 실패"를 적어라.
-- "다음 주 금요일" 같은 상대 날짜는 오늘 날짜 기준으로 계산해 YYYY-MM-DD 로 적는다.
-- 담당자 변경이면 새 담당자 id(skcc.x1042 형식)를 확인하라 — 이름만 있으면 조사 자료의
-  참여자·로스터에서 id 를 찾고, 못 찾으면 questions 로 묻는다(assignee 필드 자동완성이 붙는다).
-- 사용자가 코멘트도 남기라고 했으면 comment 에 그 내용을 담는다.
-- **상태를 옮겨 달라**는 요청은 change.status 에 목표 상태 이름을 적어라(전이 id 해석은
-  코드가 한다). **링크 요청**("A가 B를 막는다")은 change.link {other, relation} 으로 —
-  코멘트로 대신하지 마라(코멘트는 링크가 아니다).
-- ★ **댓글만 남기라는 요청이면 그것만 해라.** change 에 key 와 comment 만 채우면 끝이다 —
-  필드 변경·전이를 얹지 마라(실측: 물어보지 않은 변경이 승인 카드에 같이 올라갔다).
-- ★ "진행해도 괜찮으신가요?" 류의 **허락 질문 금지.** 승인 카드가 곧 그 확인이다 —
-  계획을 완성해서 내면 사용자가 카드에서 승인/취소한다.
-- ★ 아래 제약조건의 Epic·컴포넌트·라벨 **배치 규칙은 생성용이다** — 변경 계획에서는 Epic
-  선택을 묻지 마라(수정과 무관하다). '일괄 수정 대상' 자료가 있으면 물을 것이 없다 —
-  keys 에 전부 담고 바꿀 필드만 채워 계획을 완성하라.
-- ★ **삭제 요청("티켓 삭제해줘")은 지원되지 않는다** — Jira 삭제는 복구 불가라 이 도구에
-  없다. change 도 items 도 만들지 말고, rationale 에 "삭제는 지원되지 않음"을 적어라 —
-  대안(상태를 닫음/보관으로 전이, 라벨로 보관 표시)을 한 줄 제안하라. 삭제 작업을 하는
-  **새 Task 를 만드는 것은 오답**이다(실측)."""
+            goal = """Build an existing-ticket `change` plan and leave `items=[]`.
+
+- Use only verified ticket keys. If a user-supplied key cannot be verified, ask one target-resolution question.
+- Include only fields explicitly requested.
+- For a condition-based bulk change, put the complete verified target snapshot in `change.keys` and leave `key` empty. If retrieval failed, record the Korean phrase `대상 조회 실패` in `rationale` rather than inventing targets.
+- Resolve relative dates from today's runtime date and store `YYYY-MM-DD`.
+- Resolve an assignee to an exact user ID. Ask only when a supplied name cannot be mapped from evidence.
+- Include `comment` only when explicitly requested.
+- Put a requested transition's exact target name in `change.status`; code resolves the transition ID. Put a requested ticket relation in `change.link {other, relation}` rather than a comment.
+- A comment-only request creates only `key` or `keys` plus `comment`; add no field change or transition.
+- Do not ask for execution permission; the deterministic approval card owns approval.
+- Creation placement rules do not apply to a change plan.
+- Ticket deletion is unsupported. For a deletion request, return no `change` and no `items`; explain `삭제는 지원되지 않음` in Korean `rationale` and offer one non-destructive transition or archive-label alternative. Never create a new Task to perform deletion."""
         elif (state.get("intent") or "") == Intent.PLAN_WORK \
                 and not (state.get("situation") or "").strip():
             # ── 해석 확인 턴(조사 전) — 혼자 오래 조사하고 한 번에 결론 내는 호흡이
             # 방향 착오를 낳았다(실측 STARR NDV). 조사 **전에** 해석과 갈림길을 확인받는다.
-            goal = """조사를 시작하기 전에 **요청 해석을 확인받아라. 이번 턴에는 초안을 만들지 마라**(items 는 빈 배열).
-- interpretation 에 **네가 이해한 바**를 2~3문장으로 적어라 — 무엇을(대상·기술), 왜(목적 추정),
-  어떤 산출물로. 사용자의 낱말을 유지하고, 추정한 부분은 "~로 이해했다"로 표시한다.
-- questions 는 **갈림이 큰 것만** 최대 2개, choice 우선·네 추천을 맨 앞에. 위 '생성 최소 요건
-  점검'에서 **ASK 로 표시된 것**이 물을 후보다(INFER/LATER 는 묻지 마라):
-  ① 범위/방향 — 어디까지가 1차 목표인가(검토만/PoC/최소 구현), 첫 문장만으로 불명확한 방향
-  ② **배경** — 왜 지금 필요해졌나(계기: VoC·장애·규제·선행 티켓). 한 줄이면 된다.
-    이걸 안 물으면 본문의 배경이 **원 요청을 옮겨 적은 것**이 되고, 승인하는 사람은
-    "그래서 왜?"를 판단할 재료가 없다. 계기가 대화에 이미 있으면 묻지 말고 해석에 적어라.
-  ③ **완료 조건** — 무엇을 **보고** 끝났다고 할지(리포트·지표·화면·리뷰 승인 중 무엇).
-    이걸 안 물으면 "테스트 완료" 같은 판정 불가 문장이 남아 티켓이 언제 닫히는지 아무도
-    모른다. choice 로 후보를 주고 "직접 입력"을 함께 둔다.
-  ④ **분할 여부** — 한 사람이 며칠에 끝날 일인가. kind=choice 로
-    "한 티켓으로" / "단계별 Sub-Task 로 나눠서" / "담당을 나눠 여러 건으로" 를 보기로.
-    사용자가 형태를 이미 말했으면(코드가 알려 준다) 묻지 마라.
-  ⑤ **모듈** — 어느 모듈(컴포넌트) 소관으로 볼지 갈리면 '배치 재료'의 실값으로 choice
-  ⑥ **Epic 배치** — kind=choice, field=epic 으로 '배치 재료'의 후보 + "없음(최상위)" +
-    "새 Epic 이 필요할 것 같다" 를 보기로. 후보가 하나로 명백하면 묻지 말고 해석에 적어라.
-  찾아보면 아는 것(관련 티켓 존재 여부·허용값 자체)은 묻지 마라 — 그건 다음 턴 조사가 한다.
-  ★ **이미 답이 나온 것은 묻지 않는다.** 대화에 있는 것을 다시 물으면 취조가 된다 —
-  위 점검표에서 '채워짐'인 항목은 건너뛴다.
-- 마지막 질문 뒤에 사용자가 "알아서"라고 답하면 다음 턴에 조사→초안으로 바로 간다."""
+            goal = """Confirm interpretation before research and return `items=[]` in this turn.
+
+- Write `interpretation` in two or three Korean sentences: target or technology, understood purpose, and intended artifact. Preserve the user's unique terms and label inference as `~로 이해함`.
+- Ask at most two high-impact questions, preferring `choice` with the recommended option first. Ask only slots marked `ASK` in Minimum Creation-Input Audit; never ask `INFER` or `LATER` slots.
+- Candidate material questions are: initial scope such as review, PoC, or minimum implementation; the verified trigger or business background; an observable DoD artifact or metric; decomposition only when the user did not specify structure; ambiguous module from real placement values; and ambiguous Epic placement from verified candidates plus `없음(최상위)` and `새 Epic 검토`.
+- Do not ask for values already present in conversation or discoverable through the next research step.
+- When the user delegates the answer with `알아서`, proceed directly to research and drafting on the next turn."""
         else:
-            goal = """아래 요청을 실행 가능한 티켓 초안으로 만들어라. 정보가 모자라면 **초안 대신 질문**을 내라.
-- ★ 먼저 **구조를 정한다**(structure + structure_why): 단일 Task / Task+Sub-Task /
-  여러 Task / 새 Epic. 기본은 단일 Task 이고, 올라가려면 한 줄로 댈 근거가 있어야 한다.
-  Epic 격상은 네 조건(2 스프린트↑·다른 모듈 Task 3개↑·담을 기존 Epic 없음·별도 보고 단위)을
-  **전부** 만족할 때만 — 하나라도 불확실하면 기존 Epic 아래 Task 로 두고 보류 사유를 남긴다.
-- ★ 쪼갤 실행 단위는 각 항목의 **children 에 실제 Sub-Task 로** 적는다(승인 한 번으로 부모
-  생성 후 이어 붙는다). 본문에 '후속 Sub-Task 후보'라고 글로만 적지 마라 — 티켓이 되지 않는다.
-- ★ **부모가 이미 있으면 children 이 아니라 mode="subtask" 다.** "DL-9090 에 서브태스크
-  추가해줘", "DL-9072 를 쪼개줘" 처럼 **실재하는 Task-tier 티켓을 지목**했으면 그 티켓이 부모다 —
-  감싸는 새 Task 를 만들지 말고, items 를 Sub-Task 로 내고 각 항목의 parent 에 그 키를 적어라
-  (새 Task 를 만들면 사용자가 말한 티켓은 그대로 두고 엉뚱한 껍데기가 하나 더 생긴다).
-  여러 Task-tier 티켓에 각각 붙이라고 하면(“DL-9047 이랑 DL-9062 둘 다”)
-  **항목마다 parent 를 달리** 한다. Sub-Task를 다시 parent로 쓰지 않는다.
-- ★ items 에는 Task/Story/Bug 만 담는다(Sub-Task 는 children 자리다)."""
+            goal = """Build an executable ticket draft. Ask a blocking question instead only when material user-owned information prevents a safe draft.
+
+- Decide `structure` and `structure_why` first. Default to `single_task`; require factual evidence to choose Task with Sub-Tasks, multiple Tasks, or a new Epic. Use `new_epic` only when all four Epic criteria in the role contract hold.
+- Map every independent deliverable clause in Original Request Data to exactly one item before deriving any internal stage. Do not invent a separate analysis, design, report, or optimization deliverable unless the user requested it or verified evidence makes it mandatory.
+- With `structure="multiple_tasks"`, cross-module or independently accepted deliverables are sibling Tasks. A requested deliverable must not remain as a child of another sibling or appear at both tiers.
+- Put decomposed execution units in actual `children`, never as prose-only future candidates.
+- When the user names a verified existing Task-tier parent, use `mode="subtask"` and set each item's `parent` to that key. Do not wrap the requested children in a new Task. For multiple named Task-tier parents, assign each child to its intended parent. Never use a Sub-Task as parent.
+- For a new parent draft, top-level `items` contain Task-tier issue types; Sub-Tasks belong in `children`."""
         # 형태를 사용자가 말했는지 **코드가 판정해** 알려 준다 — 같은 문장을 모델이 매번
         # 다르게 읽지 않도록. 말했으면 그대로 따르고, 열려 있으면 판단하되 갈림이 크면
         # 시스템이 확인 질문을 붙인다(모델이 임의로 되묻지 않게).
@@ -417,30 +339,31 @@ class WorkArchitect(StructuredAgent):
         #   쓰는 것**이므로, 몇 건이든 전부 채우라고 못 박아야 한다.
         if (state.get("structure_ok") or structure_accepted(state)) \
                 and (state.get("structure_plan") or []):
-            goal += ("\n- ★ **구조는 이미 합의됐다**(위 '합의 중인 구조'). 항목을 더하거나 "
-                     "빼지 말고, **모든 항목의 본문을 빠짐없이** 배경·작업 범위(포함/제외)·"
-                     "완료 조건으로 채워라 — 첫 항목만 쓰고 나머지를 제목만 남기면 승인 "
-                     "화면에서 판단할 재료가 없다.")
+            goal += ("\n- The structure in Agreed Structure Data is already approved. Add no new deliverable "
+                     "and omit none. Complete the Korean background, explicit `포함:` and `제외:` scope, and "
+                     "testable DoD for every item; never leave later items as title-only placeholders. "
+                     "Preserve each requested deliverable exactly once. Promote a child whose module or "
+                     "independent deliverable differs from its parent into a sibling Task and remove the "
+                     "duplicate child.")
         if shape:
-            goal += (f"\n- ★ 사용자가 만들 **형태를 말했다**('{word}' → {shape}). 그대로 따르고 "
-                     "structure_source 를 \"user_specified\" 로 적어라. 다른 형태를 권하지 마라.")
+            goal += (f"\n- The user explicitly selected the shape `{word}` -> `{shape}`. Preserve it, set "
+                     "`structure_source=\"user_specified\"`, and do not recommend a competing shape.")
         elif any(w in request_text(state) for w in BUILD_WORDS):
             # 신규 구축 규모는 하향(단일 Task 뭉개기)이 실측된 실패 모드다 — 넛지를 준다.
-            goal += ("\n- ★ 신규 구축/파이프라인 개발 규모의 요청이다. 설계·구현·검증·연동처럼 "
-                     "**단계가 사람·기간으로 나뉘면 task_with_subtasks** 로 하고 단계를 children "
-                     "에 실어라 — DoD 불릿에 단계를 나열하는 것은 구조 판단을 회피한 것이다.")
+            goal += ("\n- This is a new build or pipeline request. When design, implementation, validation, "
+                     "and integration have distinct owners or time boundaries, use `task_with_subtasks` and "
+                     "real `children`; listing stages as DoD bullets is not decomposition.")
         elif not defaults:
-            goal += ("\n- ★ 사용자는 **할 일만 말했고 형태는 열려 있다**. 네가 판단하되 "
-                     "structure_source 를 \"inferred\" 로 적어라 — 확인이 필요하면 시스템이 "
-                     "형태 확인 질문을 자동으로 붙인다(네가 따로 묻지 마라).")
+            goal += ("\n- The user specified work but not shape. Select it, set "
+                     "`structure_source=\"inferred\"`, and do not add a separate structure-confirmation "
+                     "question because the runtime adds one when required.")
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []))
         # ★ 후속 턴에는 **지금 고치는 초안 전문**을 준다 — 이게 없으면 모델은 매번 처음부터
         #   다시 쓰고, 그 사이 제목·주제가 흘러간다(실측: 원 요청이 Epic 주제로 둔갑).
         prev = draft_full_text(state.get("draft")) if (state.get("turns") or 0) > 0 else ""
         data = wrap_data(
-            data_block("생성 최소 요건 점검 (코드 판정 — ASK 만 물을 후보다. INFER/LATER 는 "
-                       "묻지 말고 방침대로 채운다)",
+            data_block("Minimum Creation-Input Audit: Ask Only ASK Slots; Infer or Defer Others",
                        # ★ **새 티켓을 만드는 갈래에만** 건다. `DRAFTS_TICKETS` 에는 MODIFY 도
                        #   들어 있어서, "티켓 전부에 코멘트 남겨줘" 같은 요청에 배경·완료
                        #   조건·분할 여부를 물었다 — 코멘트 남기는 일에 "완료 조건이
@@ -450,22 +373,16 @@ class WorkArchitect(StructuredAgent):
                        _slot_audit(state)
                        if (state.get("intent") or "") == Intent.PLAN_WORK
                        else ""),
-            data_block("지금 고치고 있는 초안 (전문 — 처음부터 다시 쓰지 말고 이걸 고쳐라. "
-                       "사용자가 문제 삼지 않은 부분은 유지한다. ★ '하나 더/추가' 요청이면 "
-                       "**기존 items 를 전부 그대로 유지한 채** 새 항목을 뒤에 추가하라 — "
-                       "기존 항목·children 을 빼먹으면 아직 승인 전이라 통째로 사라진다. "
-                       "기존 children 을 새 항목에 복사하지도 마라)", prev),
-            data_block("일괄 수정 대상 (코드가 JQL 로 확정 — change.keys 에 이 키 전부를 담아라)",
+            data_block("Current Draft Data: Preserve Unaffected Items and Children; Append Only New Requested Items", prev),
+            data_block("Verified Bulk-Change Target Snapshot: Put Every Key in change.keys",
                        ", ".join(state.get("bulk_targets") or [])),
             # ★ 구조 피드백은 **누적해서** 준다. 마지막 한 마디만 주면 앞의 수정이 되돌아간다
             #   ("3번 빼줘" → 반영 → "1번을 둘로" → 3번이 되살아남). 사용자가 같은 말을
             #   두 번 하게 만드는 순간 이 피드백 루프는 쓸모가 없어진다.
-            data_block("지금까지 사용자가 **구조에 대해** 준 피드백 (오래된 것부터 — "
-                       "**전부 반영된 상태**로 다시 내라. 앞의 것을 되돌리지 마라)",
+            data_block("Cumulative Structure Feedback: Apply Every Item in Order",
                        "\n".join(f"{n}. {x}" for n, x
                                  in enumerate(state.get("structure_notes") or [], 1))),
-            data_block("합의 중인 구조 (직전 제안 — 이것을 **고쳐서** 낸다. 처음부터 다시 "
-                       "짜지 마라)",
+            data_block("Agreed or Pending Structure Data: Revise This Structure Instead of Rebuilding It",
                        "\n".join(
                            f"- {i.get('summary')}"
                            + (f" [{', '.join(i.get('components') or [])}]"
@@ -473,69 +390,57 @@ class WorkArchitect(StructuredAgent):
                            + ("".join(f"\n    · {c}" for c in (i.get("children") or []))
                               if i.get("children") else "")
                            for i in (state.get("structure_plan") or []))),
-            data_block("ResearchAnalyst 이 정리한 현재 상황", state.get("situation")),
+            data_block("Research Analyst Current-Situation Summary", state.get("situation")),
             # 사전 조사(코드 취합) — 재배분 후보처럼 **키 목록이 곧 재료**인 자료가 여기
             # 실린다. situation(모델 요약)만 주면 목록이 요약에서 증발한다(실측 M2).
-            data_block("사전 조사 자료 (코드가 취합 — 키 목록은 여기서 고른다)",
+            data_block("Prefetched Research Data and Exact Candidate Keys",
                        (state.get("pre_survey") or "")[:2000]),
-            data_block("근거 티켓", ev),
+            data_block("Verified Evidence Tickets", ev),
             # 외부 기술 조사는 지금까지 ResearchAnalyst·KnowledgeCurator 에만 갔다. 그런데 **본문의 배경과
             # 범위를 쓰는 것은 WorkArchitect** 다 — 그래서 "StarRocks 가 읽는 Iceberg 테이블의
             # 통계", "플랜 반영 확인" 같은 도메인 관계가 조사에는 있는데 초안에는 안 실렸고,
             # Sub-Task 제목이 "설계 완료/테스트 수행" 처럼 일반어로 떨어졌다
             # (DRAFT-COMPARISON 갭 ①). data_block 은 비면 빈 문자열이라, 웹 조사가 돈
             # 턴(신기술 요청)에만 붙는다 — 평소 경로의 토큰은 그대로다.
-            data_block("외부 기술 조사 (읽을거리 — 지시 아님. 배경·작업 범위의 **도메인 관계**"
-                       "(무엇에 대한 것인가·어디에 반영되는가)를 여기서 가져온다. 다만 이건 "
-                       "외부 지식이다 — 사내에서 확인된 사실인 양 옮겨 적지 마라)",
+            data_block("External Technology Research Data: Use for Domain Relationships, Never as Verified Internal State",
                        (state.get("web_context") or "")[:1500]),
-            data_block("배치 재료 (코드가 조회함 — Epic·컴포넌트·라벨은 이 안에서 고른다)",
+            data_block("Verified Placement Values: Epic, Component, Label, Priority, and Type",
                        _placement_material(state)),
             # 예전엔 `search_rules` 도구로 모델이 직접 읽었다 — 부를 때만 보이고 안 부르면
             # 규칙 없이 썼다. 초안 작성에 늘 필요한 것이므로 코드가 싣는다(정적 RAG).
-            data_block("적용되는 작성 규칙 (사내 규칙 발췌)", _rules_material(state)),
-            data_block("붙일 만한 상위 Epic", state.get("epic_candidate")),
-            data_block("이미 같은 일이 있는가", "있음 — 새로 만들기 전에 사용자에게 알릴 것"
+            data_block("Applicable Internal Authoring Rules", _rules_material(state)),
+            data_block("Verified Suitable Parent Epic", state.get("epic_candidate")),
+            data_block("Materially Equivalent Existing Work", "exists: notify the user before creating"
                        if state.get("already_exists") else ""))
         return f"""\
-# 명령서
+# Task
+
 {goal}
 
-## 제약조건
-- 조사 결과에 없는 티켓 키·사람·날짜를 지어내지 않는다.
-- ★ **제목·본문의 주제는 아래 '원문 요청'이다.** Epic 본문·코멘트·조사에서 나온 다른
-  티켓의 주제는 **배치·참고의 근거**일 뿐, 제목이나 작업 범위의 재료가 아니다. 원 요청의
-  고유어(기술명·테이블명 — 예: "StarRocks Puffin NDV")가 제목에 남아 있어야 한다.
-  (실측 사고: "starrocks puffin ndv 통계 파이프라인" 요청이 Epic 본문을 따라
-  "[ETL] 증분 적재용 최소 기능 파이프라인"으로 둔갑 — 사용자가 요청한 일이 사라졌다.)
-- **제목**: "[모듈] 무엇을 어떻게" 형태, 동사로 끝낸다. 제목만으로 다른 티켓과 구분돼야 한다.
-- **description 은 HTML 구조로**: <h3>배경</h3>(계기 + 관련 티켓 키) →
-  <h3>완료 조건 (DoD)</h3>(taskList 체크박스 — 각 항목이 **검증 가능**해야 한다) →
-  필요 시 비교 표(<table>)·관련 문서 링크(<a>). 통짜 문단 하나로 쓰지 마라.
-- **Epic 은 항목마다 고른다** — 그 산출물이 기여하는 이니셔티브로. 모듈이 다르면 Epic 도
-  다른 게 정상이다. 아래 '배치 재료'의 후보 중에서만 고르고, 마땅한 게 없거나 여럿이면
-  questions(kind=choice, field=epic, 보기에 "없음(최상위)" 포함)로 물어라.
-- **컴포넌트는 하나만**(배치 재료의 실값). 두 모듈에 걸치면 티켓을 나눈다 —
-  컴포넌트가 둘이면 워크로드가 이중 계상된다.
-- **라벨은 기존 것 우선**(배치 재료 목록) — 새 라벨을 붙일 수는 있지만 목록에 없으면
-  승인 카드에 '신규 라벨'로 표시돼 사용자가 판단한다. 오탈자·동의어를 새로 만들지 마라.
-- **분업이 필요한 큰 일**: 산출물이 여럿이면 Task 를 나누고(각각 담당 한 명),
-  산출물 하나를 여럿이 나눠 하는 것이면 그 Task 의 **children 에 Sub-Task 로** 적는다.
-- 이미 같은 일이 진행 중이면 새로 만들지 말고 questions 로 사용자 판단을 구한다 — 단,
-  **사용자가 '알아서'라고 했다면 묻지 말고 초안을 내고** rationale 에 "기존 DL-x 와 겹칠 수
-  있음"을 적는다(위임했는데 질문으로 되돌리면 아무것도 안 만들어진다).
-- ★ **새 일을 만들라는 요청에 기존 티켓 변경 계획(change)을 내지 마라.** 조사에서 비슷한
-  티켓이 나왔다고 그 티켓의 제목·본문을 고치는 것은 사용자가 부탁한 일이 아니다 —
-  관련 티켓은 초안의 '참고'에 적고, 새 티켓은 새로 만든다(실측: 새 작업 3건을 요청했는데
-  기존 티켓 하나를 수정하겠다고 답해 초안이 0건이 됐다).{force_rule}
+## Constraints
 
-## 대화
+- Never invent a ticket key, person, date, field value, or source absent from verified research.
+- The subject of every summary and body is Original Request Data. Epic bodies, comments, and related tickets provide placement or evidence only. Preserve unique request terms such as product, technology, table, asset, and symptom.
+- Write each Korean summary as `[Module]` plus a distinct action phrase for one deliverable.
+- In `배경`, state only the verified trigger or the fact that the concrete change was requested. Never invent generic benefits or current problems such as improved user experience, efficiency, accuracy, performance, stability, or reduced exposure.
+- Write a structured HTML body with the correct Korean sections. Use independently testable task-list DoD items. Use a comparison table or verified link only when needed; never return one wall-of-text paragraph.
+- Select an Epic independently for each Task from Verified Placement Values. If no candidate fits, choose an intentional top-level Task. Ask an Epic choice only when materially different verified candidates remain and the user did not delegate the choice.
+- Use exactly one verified component per item. Split independent cross-module deliverables to avoid double-counted workload.
+- Prefer existing verified labels. Do not create a typo or synonym; a truly new label must remain visible as new on the approval card.
+- Split independent deliverables into Tasks. Split one deliverable shared across stages, targets, or owners into real Sub-Task `children`.
+- If equivalent work already exists, ask how to proceed unless the user delegated with `알아서`; under delegation, draft safely and record the overlap in Korean `rationale`.
+- A request to create new work must not become a `change` to a similar existing ticket. Use that ticket only as relevant evidence.{force_rule}
+
+## Conversation Data
+
 {conversation(state)}
 
-## 원문 요청 (제목·본문의 주제는 이 문장이다)
+## Original Request Data
+
 {request_text(state)}
 
-## 이번 턴 사용자의 말
+## Current User Message Data
+
 {last_user_text(state)}{data}"""
 
     def schema(self):
@@ -620,6 +525,20 @@ class WorkArchitect(StructuredAgent):
                    "options": ["실제 상위 Task 아래에 형제 Sub-Task로 만든다 (권장)",
                                "별도의 최상위 Task로 만든다", "이번에는 만들지 않는다"]}]
             model_questions = False         # 코드가 만든 안전 대안이며, 초안은 이미 비웠다
+        # 사용자가 부모 부재를 명시한 Sub-Task 요청은 배경·DoD를 인터뷰할 단계가 아니다.
+        # 먼저 Jira에서 가능한 계층으로 바꿀지를 결정해야 한다. 실측 RULE1에서는 모델의
+        # 일반 질문만 남아 사용자가 답해도 생성할 수 없는 구조가 계속 유지됐다.
+        if _explicit_parentless_subtask(state) and not named:
+            items.clear()
+            mode = out["mode"] = "subtask"
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(Sub-Task는 Task-tier 부모가 필수이므로 부모 없는 "
+                                  "Sub-Task 초안을 제외하고 생성 요청을 보류했다)").strip()
+            qs = [{"question": "Sub-Task는 부모 없이 만들 수 없습니다. 어떤 방식으로 바꿀까요?",
+                   "kind": "choice", "field": "parent",
+                   "options": ["별도의 최상위 Task로 만든다 (권장)",
+                               "부모 Task를 지정한다", "이번에는 만들지 않는다"]}]
+            model_questions = False
         if named:
             for i in items:
                 if (i.get("type") or "").lower().startswith("sub") or mode == "subtask":
@@ -889,6 +808,11 @@ class WorkArchitect(StructuredAgent):
                 "", rationale, flags=_re.I).strip(" ;\n")
             out["rationale"] = (rationale + f"\n(Story Point {sp.group(1)}는 생성 payload 미지원 — "
                                 "생성 후 티켓 화면에서 직접 설정)").strip()
+        # 상대 날짜 산술은 모델의 언어 능력이 아니라 런타임 계산으로 확정한다. 생성 배터리
+        # ATTR1에서 같은 날의 "이번 주 금요일"을 다음 주 화요일로 내면서도 형식 검사는
+        # 통과했다. 여러 티켓에 서로 다른 기한이 섞인 경우까지 추측하지 않도록, 현재 사용자
+        # 메시지가 상대 기한을 명시한 단일 초안에만 적용한다.
+        _apply_relative_due_to_single_draft(state, items)
         draft = {"mode": out.get("mode") or "task", "items": items,
                  "structure": structure, "structure_why": why,
                  "structure_source": src,
@@ -1488,6 +1412,10 @@ class WorkArchitect(StructuredAgent):
                            "작성 지시 placeholder를 실제 최소 본문으로 바꿨다)")
                     ).strip()
             _fill_thin_bodies(state, items, repair=not qs)
+            # 모델은 구체적 변경만 받은 경우에도 "사용자 편의성", "운영 효율성", "성능·안정성"
+            # 같은 그럴듯한 효과를 배경·범위·DoD에 보탠다. 문장은 자연스럽지만 검증된 사실은
+            # 아니다. 원 요청에 없는 품질 차원을 안전한 요청/검증 문장으로 되돌린다.
+            _remove_unrequested_quality_claims(state, items)
             # 본문 보정은 위의 참고 불릿 가드 **뒤에서** 새 HTML을 만든다. 생산자 뒤에서
             # 다시 검사하지 않으면 보정 호출이 만든 출처 없는 참고가 그대로 승인 카드로 간다
             # (PASTE1/PASTE2 실측). 같은 함수로 한 번 더 보며 규칙은 복제하지 않는다.
@@ -2263,25 +2191,19 @@ def _split_into_children(state, item: dict) -> list:
             "children": {"type": "array", "items": {
                 "type": "object", "properties": {
                     "summary": {"type": "string",
-                                "description": "실행 단위 제목 — 부모 제목을 베끼지 말고 "
-                                               "이 조각이 무엇을 어떻게 끝내는지"}},
+                                "description": "Korean execution-unit summary naming the specific target and outcome; do not copy the parent."}},
                 "required": ["summary"]}}},
             "required": ["children"]}
         r = invoke_schema(schema, [
-            ("system", "너는 PMO 티켓 설계자다. 다단계 작업을 한 사람이 며칠 안에 끝낼 "
-                       "실행 단위 Sub-Task 로 나눈다. JSON 만 출력한다."),
-            ("user", f"원 요청: {request_text(state)}\n\n"
-                     f"Task 제목: {item.get('summary')}\n"
-                     f"본문: {str(item.get('description') or '')[:1200]}\n\n"
-                     "이 Task 를 Sub-Task 2~5개로 나눠라. "
-                     "★ 제목은 **무슨 작업인지가 제목만으로 보여야** 한다. '설계 단계'·"
-                     "'구현 단계'·'검증 단계' 처럼 **단계 이름만** 쓰면 안 된다 — 어느 일에나 "
-                     "붙는 말이라 담당자가 티켓을 열기 전에는 시작할 수 없고, 목록에서는 "
-                     "세 줄이 똑같아 보인다. "
-                     "나쁨: '설계 단계 / 구현 단계 / 검증 단계'. "
-                     "좋음: 'Puffin NDV 통계 스키마 설계 / 통계 생성 배치 Job 구현 / "
-                     "StarRocks 플랜 반영 검증'. "
-                     "즉 **대상(무엇을)** 을 반드시 넣어라 — 단계는 그다음이다.")],
+            ("system", "You are a PMO ticket architect. Split multi-stage work into Korean Sub-Task "
+                       "execution units that one owner can finish within several days. Return JSON only."),
+            ("user", f"Original request: {request_text(state)}\n\n"
+                     f"Task summary: {item.get('summary')}\n"
+                     f"Body data: {str(item.get('description') or '')[:1200]}\n\n"
+                     "Split this Task into two to five Sub-Tasks. Every Korean summary must identify the "
+                     "specific work target and outcome. A stage name alone, such as `설계 단계`, `구현 단계`, "
+                     "or `검증 단계`, is invalid. Good examples preserve the target: `Puffin NDV 통계 스키마 "
+                     "설계`, `통계 생성 배치 Job 구현`, `StarRocks 플랜 반영 검증`.")],
             tier="simple", temperature=0.1, name="split_children")
         kids = [{"summary": str(c.get("summary") or "").strip()}
                 for c in (r or {}).get("children") or []
@@ -2421,16 +2343,16 @@ def _bug_body_for(state, it) -> str:
             raise StopIteration
         schema = {"title": "bug_body", "type": "object", "properties": {
             "steps": {"type": "array", "items": {"type": "string"},
-                      "description": "재현 경로 — 사용자가 말한 순서대로. 없으면 빈 배열"},
-            "expected": {"type": "string", "description": "기대 동작. 없으면 빈 문자열"},
-            "actual": {"type": "string", "description": "실제 동작(증상). 없으면 빈 문자열"},
+                      "description": "Korean reproduction steps in the user's stated order; empty if absent."},
+            "expected": {"type": "string", "description": "Korean expected behavior; empty if absent."},
+            "actual": {"type": "string", "description": "Korean observed behavior; empty if absent."},
             "notes": {"type": "array", "items": {"type": "string"},
-                      "description": "관련 티켓 키·환경 등 참고. 없으면 빈 배열"}},
+                      "description": "Verified ticket keys, environment, or other supplied context; empty if absent."}},
             "required": ["steps", "expected", "actual", "notes"]}
         r = invoke_schema(schema, [
-            ("system", "너는 QA 다. 신고 내용에서 재현 경로·기대·실제를 **있는 그대로** "
-                       "뽑는다. 없는 것을 지어내지 마라 — 없으면 비워 둔다. JSON 만 출력."),
-            ("user", f"버그 제목: {it.get('summary')}\n\n신고 내용:\n{said[:1500]}")],
+            ("system", "You are a QA analyst. Extract reproduction steps, expected behavior, and observed "
+                       "behavior exactly from the report. Never invent a missing fact; leave it empty. Return JSON only."),
+            ("user", f"Bug summary: {it.get('summary')}\n\nReport data:\n{said[:1500]}")],
             tier="simple", temperature=0.1, name="bug_body") or {}
         steps = [str(x).strip() for x in (r.get("steps") or []) if str(x).strip()]
         expected = str(r.get("expected") or "").strip()
@@ -2481,25 +2403,25 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
         #   본문 게이트에 걸려 매번 빈손이 됐다(실측). 섹션 순서·이름·체크박스 형식은
         #   knowledge/07 이 정해 둔 **형식**이지 판단이 아니다 — 코드가 하면 항상 맞는다.
         schema = {"title": "module_task", "type": "object", "properties": {
-            "summary": {"type": "string", "description": f"[{mod}] 로 시작하는 한 줄 제목"},
-            "background": {"type": "string", "description": "왜 이 일이 필요한가 — 2~3문장"},
+            "summary": {"type": "string", "description": f"One Korean summary beginning with [{mod}]."},
+            "background": {"type": "string", "description": "Two or three Korean sentences explaining the verified need."},
             "includes": {"type": "array", "items": {"type": "string"},
-                         "description": "이 티켓이 하는 일"},
+                         "description": "Korean work included in this ticket."},
             "excludes": {"type": "array", "items": {"type": "string"},
-                         "description": "**하지 않는 일** — 옆 티켓이 맡는 것을 여기 적는다"},
+                         "description": "Korean exclusions, especially work owned by sibling tickets."},
             "dod": {"type": "array", "items": {"type": "string"},
-                    "description": "완료 판정 — '무엇을 보고' 끝났다고 하는지까지"}},
+                    "description": "Korean completion checks naming observable evidence."}},
             "required": ["summary", "background", "includes", "excludes", "dod"]}
         r = invoke_schema(schema, [
-            ("system", "너는 PMO 티켓 설계자다. 요청에 있으나 초안에서 빠진 작업 하나를 "
-                       "티켓으로 만든다. 요청에 없는 일을 지어내지 않는다. JSON 만 출력한다."),
-            ("user", f"원 요청: {request_text(state)}\n\n"
-                     f"이미 만든 티켓: {ref.get('summary')}\n"
-                     f"이 티켓이 맡을 모듈: {mod}\n"
-                     + (f"이 티켓의 제목(이미 정해졌다): {want}\n" if want else "")
-                     + f"\n원 요청 중 **{mod} 모듈이 맡을 부분만** 티켓 하나로 써라. 이미 만든 "
-                     "티켓과 범위가 겹치면 안 된다 — 그쪽이 하는 일은 excludes 에 적는다. "
-                     "dod 는 '테스트 완료' 같은 말 대신 무엇을 보고 끝났다고 하는지 적는다.")],
+            ("system", "You are a PMO ticket architect. Draft one missing deliverable present in the original "
+                       "request. Never add unrequested work. Return JSON only."),
+            ("user", f"Original request: {request_text(state)}\n\n"
+                     f"Existing sibling draft: {ref.get('summary')}\n"
+                     f"Module for this ticket: {mod}\n"
+                     + (f"Fixed summary: {want}\n" if want else "")
+                     + f"\nDraft only the part owned by module {mod}. Do not overlap the sibling; put sibling-owned "
+                     "work in `excludes`. Every DoD item must name observable completion evidence rather than "
+                     "a generic phrase such as `테스트 완료`.")],
             tier="simple", temperature=0.1, name="module_task")
         r = r or {}
         s = (want or str(r.get("summary") or "")).strip()
@@ -2695,37 +2617,31 @@ def _sharpen_dod(state, items) -> bool:
             hit = True
         child["description"] = body
     for it in items[:6]:
-        # ★ 보정이 본 흐름을 죽이면 안 된다 — 여기서 예외가 나면 초안이 통째로 사라진다.
-        #   항목이 dict 가 아닌 실행이 있다(모델 산출은 무엇이든 올 수 있다).
+        # 최상위 Task도 모호한 행을 하나라도 남기지 않는다. 예전에는 절반을 넘을 때만 별도
+        # LLM 호출로 고쳐, `알림 테스트 완료` 한 줄 + 구체 행 한 줄이면 사람 품질은 나쁜데
+        # 자동 게이트는 통과했다. 관찰 증거의 형식은 판단이 아니므로 코드로 붙인다. 이로써
+        # draft마다 발생하던 추가 simple-model 왕복도 제거된다.
         if not isinstance(it, dict) or str(it.get("type") or "").lower().startswith("sub"):
-            continue                      # Sub-Task 본문은 규율이 다르다(knowledge/07)
+            continue
         body = str(it.get("description") or "")
-        rows = _dod_rows(body)
-        bad = _vague_dod(rows)
-        if not rows or len(bad) * 2 <= len(rows):
-            continue
-        try:
-            schema = {"title": "dod", "type": "object", "properties": {
-                "rows": {"type": "array", "items": {"type": "string"},
-                         "description": "다시 쓴 완료 조건 — 입력과 **같은 개수·같은 순서**"}},
-                "required": ["rows"]}
-            r = invoke_schema(schema, [
-                ("system", "너는 PMO 티켓 설계자다. 완료 조건을 **판정 가능한 문장**으로 "
-                           "다시 쓴다. 없는 사실을 지어내지 않는다. JSON 만 출력한다."),
-                ("user", f"티켓: {it.get('summary')}\n원 요청: {request_text(state)}\n\n"
-                         "아래 완료 조건들을 각각 '무엇을 보고 끝났다고 하는지'까지 적어라 "
-                         "(예: '테스트 완료' → 'p95 응답시간이 200ms 이하임을 부하 테스트 "
-                         "리포트로 확인'). 개수와 순서는 그대로 두고 문장만 고친다.\n"
-                         + "\n".join(f"- {x}" for x in rows))],
-                tier="simple", temperature=0.1, name="dod")
-            new = [str(x).strip() for x in ((r or {}).get("rows") or []) if str(x).strip()]
-            if len(new) != len(rows) or _vague_dod(new):
-                continue                  # 다시 써 온 것이 그대로면 건드리지 않는다
-            for old, fresh in zip(rows, new):
-                body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
-            it["description"], hit = body, True
-        except Exception:
-            continue
+        bad = _vague_dod(_dod_rows(body))
+        for old in bad:
+            stem = _re.sub(
+                r"(?:테스트\s*완료|검토\s*완료|검증\s*완료|구현\s*완료|작성\s*완료|"
+                r"설계\s*완료|완료됨?|성능\s*개선\s*확인|성능\s*기준\s*충족|"
+                r"정상(?:적으로)?\s*(?:동작|작동|구현)|이상\s*없음|문제\s*없음)",
+                "", old, flags=_re.I).strip(" -·:;")
+            subject = stem or _re.sub(
+                r"^\s*\[[^\]]+\]\s*", "", str(it.get("summary") or "작업")).strip()
+            if any(w in old for w in ("성능", "정확", "검증", "기준")):
+                fresh = f"{subject} 검증 기준·측정값·판정 결과를 티켓에 기록해 확인한다"
+            elif any(w in old for w in ("테스트", "구현", "코드", "동작", "작동")):
+                fresh = f"{subject} 실행 로그와 테스트 결과를 티켓에 기록해 확인한다"
+            else:
+                fresh = f"{subject} 산출물 링크와 리뷰 결과를 티켓에 기록해 확인한다"
+            body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
+            hit = True
+        it["description"] = body
     return hit
 
 
@@ -2870,6 +2786,15 @@ def _relative_due(text: str) -> str:
         return (today + timedelta(days=1)).isoformat()
     if "모레" in t:
         return (today + timedelta(days=2)).isoformat()
+    # 업무 문맥의 "이번 주까지"는 해당 주의 마지막 근무일(금요일)로 고정한다.
+    # 모델에게 맡기면 화요일·토요일처럼 실행마다 다른 날짜가 나왔다(실측 ASK2).
+    # 이미 금요일이 지난 주말에 들어온 요청은 과거 날짜를 만들지 않고 다음 금요일로 보낸다.
+    if "이번주까지" in t or "금주까지" in t:
+        monday = today - timedelta(days=today.weekday())
+        d = monday + timedelta(days=4)
+        if d < today:
+            d += timedelta(days=7)
+        return d.isoformat()
     m = _re.search(r"(다음\s*주|이번\s*주|담주|차주)([월화수목금토일])요일", text or "") \
         or _re.search(r"(다음주|이번주|담주|차주)([월화수목금토일])", t)
     if not m:
@@ -2882,6 +2807,94 @@ def _relative_due(text: str) -> str:
     if d < today:               # 일요일에 "이번주 금요일" = 이미 지난 날 — 다가오는 그 요일로
         d += timedelta(days=7)
     return d.isoformat()
+
+
+def _apply_relative_due_to_single_draft(state: dict, items: list) -> str:
+    """현재 메시지의 상대 기한을 단일 생성 초안에 적용하고 확정값을 반환한다.
+
+    원 요청 전체가 아니라 마지막 사용자 메시지를 우선하는 이유는, 후속 편집에서 이미 바꾼
+    기한을 첫 턴의 상대 표현이 다시 덮지 않게 하기 위해서다. 메시지가 없는 단위 테스트·내부
+    호출만 원 요청을 fallback으로 사용한다.
+    """
+    if len(items or []) != 1 or not isinstance(items[0], dict):
+        return ""
+    source = last_user_text(state) or request_text(state)
+    due = _relative_due(source)
+    if due:
+        items[0]["duedate"] = due
+    return due
+
+
+_QUALITY_DIMENSIONS = (
+    r"사용자\s*(?:편의성|경험)|편의성|사용성|\bUX\b|usability|user\s+experience",
+    r"운영\s*효율성|업무\s*효율성|효율성|생산성|efficien(?:cy|t)|productivity",
+    r"성능|처리량|응답\s*속도|performance|throughput|latency",
+    r"안정성|신뢰(?:성|할)|가용성|stable|stability|reliability|availability",
+    r"정확(?:성|한|도)?|정합성|품질\s*(?:향상|개선)|accuracy|correctness",
+    r"보안성|보안\s*(?:강화|향상|개선)|개인정보|노출\s*(?:감소|방지)|security|privacy",
+    r"유지보수성|확장성|scalability|maintainability",
+    r"비용\s*(?:절감|감소|최적화)|cost\s*(?:saving|reduction|optimization)",
+    r"적시성|timeliness",
+)
+
+
+def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
+    """원 요청에 없는 품질 효과를 ticket body의 배경·범위·DoD에서 제거한다.
+
+    `개선`처럼 차원이 열려 있는 동사를 모델이 임의로 `성능 개선`, `안정성 향상`으로
+    좁히면 형식 검사는 통과해도 다른 작업이 된다. 여기서는 사용자 원문에 실제로 등장한
+    차원만 허용한다. Bug는 재현/기대/실제 계약이 별도이므로 대상에서 제외한다.
+    """
+    request = (request_text(state) + " " + last_user_text(state)).strip()
+    forbidden = [p for p in _QUALITY_DIMENSIONS if not _re.search(p, request, _re.I)]
+    if not forbidden:
+        return False
+
+    changed = False
+    for item in items or []:
+        if not isinstance(item, dict) or _is_bug_item(item):
+            continue
+        body = str(item.get("description") or "")
+        if not body:
+            continue
+        summary = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(item.get("summary") or "작업")).strip()
+        safe = _esc(summary or "요청한 작업")
+
+        def has_forbidden(value: str) -> bool:
+            return any(_re.search(p, value or "", _re.I) for p in forbidden)
+
+        # 배경은 효과를 추측하지 않고 요청 사실만 남긴다.
+        bg_pattern = r"(<h3>\s*배경\s*</h3>\s*)(.*?)(?=<h3>|$)"
+        bg = _re.search(bg_pattern, body, _re.S | _re.I)
+        if bg and has_forbidden(bg.group(2)):
+            body = body[:bg.start(2)] + f"<p>{safe} 요청됨.</p>" + body[bg.end(2):]
+            changed = True
+
+        # 범위에서 새 품질 차원이 생겼다면 합의된 summary 경계로 복원한다.
+        scope_pattern = r"(<h3>\s*작업 범위\s*</h3>\s*)(.*?)(?=<h3>|$)"
+        scope = _re.search(scope_pattern, body, _re.S | _re.I)
+        if scope and has_forbidden(scope.group(2)):
+            fresh = (f"<ul><li>포함: {safe}</li>"
+                     "<li>제외: 요청에 명시되지 않은 연관 기능 변경</li></ul>")
+            body = body[:scope.start(2)] + fresh + body[scope.end(2):]
+            changed = True
+
+        # 완료 조건은 해당 행만 보수적인 증거 확인 문장으로 바꾼다. 이후 dedupe가 같은 행을
+        # 한 번으로 접는다.
+        def clean_dod(match):
+            nonlocal changed
+            inner = match.group(1)
+            if not has_forbidden(_re.sub(r"<[^>]+>", " ", inner)):
+                return match.group(0)
+            changed = True
+            return (match.group(0)[:match.group(0).find(">") + 1]
+                    + f"{safe} 결과와 검증 기록이 티켓에 남고 담당 리뷰로 확인됨</li>")
+
+        body = _re.sub(
+            r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+            clean_dod, body, flags=_re.S | _re.I)
+        item["description"] = body
+    return changed
 
 
 def _base_title(s: str) -> str:
@@ -3179,9 +3192,10 @@ def _module_pool(item: dict, fallback: str) -> list:
 
 # 경로별로 **안 쓰이는** 역할 지시 절. 제목은 work_architect.md 의 `## …` 과 정확히 같아야 한다
 # (오타는 조용히 아무것도 안 빼므로, 아래 테스트가 제목 존재를 지킨다).
-_CREATE_ONLY = ["구조 선택", "분할 규칙", "본문 품질 계약", "Epic 생성",
-                "Sub-Task 일괄 생성", "붙여넣은 회의록과 목록", "제목과 주제 보존"]
-_MODIFY_ONLY = ["코멘트 본문", "기존 ticket 변경"]
+_CREATE_ONLY = ["Structure Selection", "Decomposition Rules", "Ticket Body Contract",
+                "Epic Creation", "Bulk Sub-Task Creation", "Pasted Notes and Lists",
+                "Title and Topic Preservation"]
+_MODIFY_ONLY = ["Comment Drafting", "Existing Ticket Changes"]
 
 
 def _role_md(state) -> str:
@@ -3890,6 +3904,13 @@ def _asks_subtasks(state) -> bool:
     said = last_user_text(state)
     return any(w in said for w in ("서브태스크", "서브 태스크", "subtask", "sub-task",
                                    "하위 작업", "하위작업", "쪼개", "나눠서 붙"))
+
+
+def _explicit_parentless_subtask(state) -> bool:
+    """Sub-Task 요청과 부모 부재가 모두 사용자 문장에 명시됐는지 판별한다."""
+    said = (request_text(state) + " " + last_user_text(state)).replace(" ", "")
+    return _asks_subtasks(state) and bool(_re.search(
+        r"(?:부모(?:는|가|티켓은|티켓이)?(?:없|없이|필요없)|최상위(?:로|에))", said))
 
 
 # ── 사용자가 형태를 말했나, 열려 있나 ───────────────────────────────

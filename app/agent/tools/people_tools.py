@@ -158,17 +158,12 @@ def scoped_person_workload(user_id: str, done_days: int = 28) -> dict:
 
 @tool
 def get_team_workload(module: str = "") -> dict:
-    """지금 **누가 얼마나 물려 있는지** — 인력별 열림/진행중/최근완료 건수.
+    """Return current open, in-progress, and recently completed counts for people in a module or the full roster.
 
-    module 을 주면 그 모듈만(예: "ETL"), 비우면 전원. 담당자를 제안하기 전에 반드시 한 번 본다.
-    다만 **건수만으로 정하지 않는다** — 일이 적은 사람이 그 일을 할 줄 안다는 뜻은 아니다.
-    ②③④ 신호와 함께 읽는다.
-
-    준 module 이 인력 명단(people.yaml)에 없으면 **전원**으로 넓혀서 돌려주되, "module" 에
-    그 사실을 적어 돌려준다 — 그 목록은 물어본 모듈의 로스터가 아니다.
-
-    돌려주는 것: {"module": …, "resolved": true|false|null,
-                 "people": [{id,name,module,open,inProgress,done28d}...]}
+    Use before recommending an assignee, but never treat ticket counts alone as skill or suitability. When a
+    supplied module cannot be resolved, the result may widen to the full roster and sets `resolved=false`; do
+    not describe that widened list as the requested module. Returns `module`, `resolved`, `doneWindowDays`, and
+    `people` with `id`, `name`, `module`, `open`, `inProgress`, and `done28d`.
     """
     from app.infra.settings import load_people, resolve_module
     c = client()
@@ -207,11 +202,11 @@ def get_team_workload(module: str = "") -> dict:
 
 @tool
 def get_ticket_participants(key: str) -> dict:
-    """그 티켓에 **실제로 관여한 사람들** — 리포터·담당자·코멘트 작성자·멘션된 사람.
+    """Return verified participants in one in-scope ticket: reporter, assignee, comment authors, and mentions.
 
-    "예전에 이 문제를 다뤄 본 사람"을 찾는 가장 강한 신호다. 담당자 필드만 보면 놓친다 —
-    정작 그 논의를 끌고 간 사람은 코멘트에만 있는 경우가 많다.
-    ResearchAnalyst 이 찾은 유사 티켓 2~3건에 대해 부른다.
+    Use on a small set of materially similar tickets to find experience evidence that the assignee field alone
+    misses. The returned order mixes participant roles and removes duplicates; do not infer a person's role from
+    position in the list.
     """
     if not jira_key_allowed(key):
         return {"key": key, "people": [],
@@ -227,10 +222,10 @@ def get_ticket_participants(key: str) -> dict:
 
 @tool
 def get_person_profile(user_id: str) -> dict:
-    """한 사람을 깊게 본다 — 소속 모듈, 현재 워크로드, **최근 활동**(무슨 티켓·문서를 만졌나).
+    """Return one verified person's module, workload, and recent in-scope Jira and Confluence activity.
 
-    후보를 2~3명으로 좁힌 뒤 부른다. 최근 활동은 "지금 무슨 맥락에 들어가 있는지"를 알려 주므로,
-    비슷한 일이 이미 손에 있으면 그것 자체가 추천 근거가 된다(문맥 전환 비용이 없다).
+    Use after narrowing to two or three user-ID candidates. Recent activity is context evidence, not a performance
+    score. Do not claim activity outside configured Jira projects or Confluence spaces.
     """
     from app.infra.settings import load_people
     c = client()
@@ -265,10 +260,10 @@ def get_person_profile(user_id: str) -> dict:
 
 @tool
 def get_module_people(key_or_component: str) -> dict:
-    """어떤 티켓/컴포넌트가 속한 **모듈의 사람들**. 후보 풀을 만들 때 첫 단계로 쓴다.
+    """Resolve the module roster for an in-scope ticket key, module name, or component name.
 
-    티켓 키(DL-123)를 주면 그 티켓의 컴포넌트·WBS 로 모듈을 역추적하고, 모듈명이나 컴포넌트명을
-    바로 줘도 된다. 모듈을 못 찾으면 빈 목록 — 그때는 get_team_workload 로 전원을 본다.
+    Use as the first candidate-pool step. A ticket key is resolved through its component or WBS context. An
+    unresolved module returns an empty list; use `get_team_workload` separately only when a broader pool is valid.
     """
     from app.infra.settings import load_people
     from app.domain.search import _module_people
@@ -289,22 +284,12 @@ def get_module_people(key_or_component: str) -> dict:
 
 @tool
 def find_person(name: str) -> dict:
-    """**이름으로 사람을 찾는다** — 모듈 로스터가 아니라 Jira 사용자 전체에서.
+    """Resolve a person by display name or exact user ID through the Jira user directory, not a module roster.
 
-    왜 이 도구가 따로 있나(실사용 사고): "지금 이다은이 담당한 테스크들"에 에이전트가
-    ①최근 3일 활동만 보고 "기록 없음" ②"'TEST' 모듈 로스터에 없다"로 답했다. 둘 다 틀렸다 —
-    이다은은 ETL 모듈 사람이고 **진행 중 티켓이 8건** 있었다. 원인은 사람을 **이름으로**
-    찾을 방법이 도구에 없어서, 모델이 모듈 로스터와 활동 창으로 밀려난 것이다.
-
-    규칙(사용자 지시):
-      · 대화에서 모듈을 **한정하지 않았으면 모듈로 좁히지 않는다** — 다른 모듈 사람도 조사한다.
-      · Jira 사용자 디렉토리에 없으면 **존재하지 않는 사람**으로 본다(추측하지 않는다).
-      · **동명이인**이면 고르지 말고 `candidates` 를 그대로 사용자에게 보여 확인받는다 —
-        표시 이름(소속 포함)과 이메일을 함께 내야 사용자가 고를 수 있다.
-
-    반환: {query, candidates:[{id, display, name, email, module}], resolved, ambiguous, assigned}
-      resolved 가 있으면 그 사람이 **지금 들고 있는 일**(assigned)까지 함께 담는다 —
-      한 번 찾았으면 다시 순회할 이유가 없다(이 저장소의 사전취합 규율).
+    Do not restrict by module unless the request explicitly does. Never substitute a similar name when the
+    directory has no match. If multiple candidates remain at the same evidence tier, return them unchanged and
+    ask the user to choose by full display label, username, and module; never guess. A resolved result also includes
+    the person's current assigned work. Returns `query`, `candidates`, `resolved`, `ambiguous`, and `assigned`.
     """
     from app.infra.settings import load_people
     q = strip_title(name)
@@ -386,10 +371,10 @@ def find_person(name: str) -> dict:
 
 @tool
 def confirm_person(name: str, user_id: str) -> dict:
-    """사용자가 고른 사람을 **이 대화에서 굳힌다** — 같은 이름을 두 번 묻지 않기 위해.
+    """Bind a user-confirmed display name to one exact user ID for the current conversation.
 
-    동명이인 확인을 받은 **직후에 부른다.** 이후 이 대화에서 그 이름은 이 사람이다.
-    (대화가 바뀌면 잊는다 — 남의 대화에서 확인한 사람을 끌어오면 그게 새 오답이다.)
+    Call only immediately after the user resolves an ambiguous `find_person` result. The binding prevents repeated
+    questions in this conversation and must not be reused across conversations.
     """
     n = strip_title(name)
     if not (n and user_id):

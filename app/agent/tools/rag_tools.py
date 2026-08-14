@@ -17,14 +17,15 @@ from app.agent.tools._ctx import client, compact, settings, trim
 
 @tool
 def search_rules(question: str, k: int = 4) -> list:
-    """**티켓 작성 규칙·진척률 산식·담당자 추천 정책**을 찾아본다(사내 규칙 문서).
+    """Search internal policy for ticket authoring, progress calculation, and assignee selection.
 
-    티켓을 만들거나 담당자를 제안하기 전에 반드시 확인한다. 규칙을 기억에 의존해 답하지 마라 —
-    Story Point 를 어디에 매길 수 있는지, Epic Link 를 빠뜨리면 무슨 일이 생기는지처럼
-    **틀리면 사용자가 손해 보는** 것들이 여기 있다.
+    Call this before creating tickets or recommending an assignee. Do not rely on memory for
+    rules whose violation can harm the user, such as where Story Point is valid or what happens
+    when Epic Link is missing.
 
-    질문 형태로 넣는다: "Story Point 는 어디에 매기나" / "진척률에서 빠지는 티켓" /
-    "담당자를 어떻게 고르나" / "Sub-Task 를 언제 쪼개나"
+    Pass a focused policy question, for example: "Where is Story Point valid?", "Which tickets
+    are excluded from progress?", "How is an assignee selected?", or "When should a Task be
+    decomposed into Sub-Tasks?"
     """
     from app.agent.retrieval import static_index
     try:
@@ -36,16 +37,14 @@ def search_rules(question: str, k: int = 4) -> list:
 
 @tool
 def deep_search(topic: str, limit: int = 8) -> dict:
-    """주제 하나를 **깊게** 판다 — 키워드 검색 + 링크 한 홉 + **의미 기반 검색**.
+    """Research one topic deeply with keyword search, one-hop expansion, and semantic search.
 
-    `search_work_history` 로 실마리가 안 잡히거나, 잡혔는데 맥락이 부족할 때 쓴다. 하는 일:
-      ① 실시간 검색(방금 만든 티켓도 잡힌다)
-      ② 상위 결과의 **연관 티켓·관련 Confluence 문서 본문**까지 수확
-      ③ 그것들을 색인해 두고 **의미가 비슷한 과거 기록**을 찾아 준다
-         — 키워드가 하나도 안 겹쳐도 같은 이야기면 잡힌다("CDC" ↔ "변경분 실시간 반영")
+    Use this when `search_work_history` finds no lead or returns leads without enough context.
+    It searches live data, collects linked tickets and relevant Confluence bodies, indexes those
+    records, and retrieves semantically similar history even when the wording differs.
 
-    비싸다. 한 주제에 **한 번**만 부른다(두 번째부터는 캐시가 있어 빠르다).
-    돌려주는 것: {"keyword": [...], "documents": [...], "similar": [...], "indexed": {...}}
+    This is expensive. Call it at most once per topic; subsequent calls may be cached. Returns
+    `{"keyword": [...], "documents": [...], "similar": [...], "indexed": {...}}`.
     """
     from app.agent.retrieval.harvest import harvest
     try:

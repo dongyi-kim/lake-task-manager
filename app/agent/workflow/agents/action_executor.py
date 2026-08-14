@@ -28,23 +28,22 @@ SCHEMA = {
             "type": "array",
             "items": {"type": "object", "properties": {
                 "key": {"type": "string"}, "summary": {"type": "string"}}},
-            "description": "실제로 만들어진 티켓. 도구 결과에 나온 것만",
+            "description": "Tickets actually created and returned by the write tool.",
         },
         "failed": {
             "type": "array",
             "items": {"type": "object", "properties": {
                 "summary": {"type": "string"}, "error": {"type": "string"}}},
-            "description": "실패한 항목. **반드시 그대로 옮긴다** — 조용히 넘어가면 "
-                           "사용자는 다 만들어진 줄 안다",
+            "description": "Failed items copied exactly from tool output; never suppress a failure.",
         },
         "updated": {
             "type": "array",
             "items": {"type": "object", "properties": {
                 "key": {"type": "string"},
                 "fields": {"type": "array", "items": {"type": "string"}}}},
-            "description": "변경된 티켓(modify 갈래). 도구 결과에 나온 것만",
+            "description": "Tickets actually updated and returned by the write tool.",
         },
-        "note": {"type": "string", "description": "사용자에게 알릴 것(후속 조치 등). 없으면 빈 문자열"},
+        "note": {"type": "string", "description": "Exact Korean user-facing tool note, or empty."},
     },
     "required": ["created", "failed"],
 }
@@ -221,17 +220,25 @@ class ActionExecutor(ToolAgent):
     def task(self, state):
         draft = state.get("draft") or {}
         return f"""\
-# 명령서
-아래 승인된 티켓 초안을 실제로 만들어라.
+# Task
 
-## 실행 인자
+Execute exactly the approved ticket draft. Do not infer, add, remove, normalize, or retry any argument.
+
+## Approved Execution Arguments
+
 mode: {draft.get('mode') or 'task'}
-approval_token: {state.get('approval_token') or '(없음 — 실행하지 마라)'}
+approval_token: {state.get('approval_token') or '(missing: do not execute)'}
 
-## items (이 JSON 을 **그대로** 넘긴다)
+## Exact Items JSON
+
+Pass this JSON unchanged.
+
 {draft_json(draft)}
 
-## 사람이 읽는 형태 (참고용 — 넘기는 것은 위 JSON 이다)
+## Human-Readable Preview Data
+
+This section is context only; the JSON above is authoritative.
+
 {draft_text(draft)}"""
 
     def schema(self):

@@ -177,41 +177,37 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
 
     ctx = _ticket_context(ticket_key, kind)
     rules = _house_rules(kind, prompt)
-    what = {"description": "티켓 **본문**", "comment": "**코멘트**",
-            "transition": "상태 전이와 함께 남길 **말**"}.get(kind, "**코멘트**")
+    what = {"description": "ticket description", "comment": "comment",
+            "transition": "comment accompanying a status transition"}.get(kind, "comment")
 
     task = f"""\
-# 명령서
-{what}을 작성하라. 결과는 사용자의 에디터에 그대로 삽입된다 — HTML 본문만 내고,
-인사말·설명·따옴표·코드펜스를 붙이지 마라.
+# Task
 
-★ **쓸 수 없으면 쓰지 마라 — 단, 쓸 수 있으면 반드시 써라.** 판정은 글의 종류에 따라 다르다:
-- **코멘트는 대화다** — 티켓 맥락(최근 코멘트·상태)이나 시드가 없으면 이어 말할 문맥이
-  없어 쓸 수 없다. 그때와, 요청이 이 티켓과 무관한 주제일 때만 **첫 줄에 `NEED_INFO:`**
-  와 무엇을 알려 주면 되는지 1~2문장(예: `NEED_INFO: 어떤 작업에 대한 코멘트인지 — 목적을
-  한 줄만 적어 주세요`).
-- **본문은 문서다** — 제목·상위 Epic·자식 Sub-Task·관련 티켓만으로도 무엇을/어떻게 쓸지
-  대부분 정해진다. 티켓 맥락이 있으면 프롬프트가 짧아도 NEED_INFO 없이 쓴다.
-- 티켓 맥락이 있으면 세부 수치·결과가 없어도 쓴다 — 검토 요청·확인 요청·진행 질문
-  코멘트는 결과를 몰라도 쓸 수 있는 글이다. 모르는 세부는 비워 두거나 일반적 표현으로.
-- 사용자가 담당자를 멘션해 검토를 요청하면, 자료 첫 줄의 `담당 사번`을 `[~사번]`으로 쓰고
-  확인할 대상과 요청을 적는다. 검토 결과가 아직 없다는 이유로 NEED_INFO를 내지 않는다.
-- **사실의 주어와 상태를 바꾸지 마라.** 연결 티켓·관련 문서의 수치가 현재 티켓의 결과라는
-  뜻은 아니다. 자료의 `명시적 미완료` 항목과 `남은/예정/진행 중`인 일은 완료로 쓰지 않는다.
-- 자료끼리 상태가 다르면 하나를 골라 단정하지 말고, `구현 완료 보고가 있으나 Jira 상태는
-  In Progress이므로 최종 상태 확인 필요`처럼 **충돌과 확인할 항목을 함께 쓴다**.
-- 사용자 요청·작성 중인 글·티켓 제목·현재 본문에 없는 기능, UI 변경, 성능 목표값을 작업
-  범위나 DoD에 추가하지 않는다. 기준이 없으면 구체적인 `담당팀 확인 필요`로 남긴다.
-- **자식 Sub-Task 가 있거나(자료의 '하위' 목록) 시드·프롬프트에 분할 계획이 보이면**,
-  본문은 '무엇을 왜'(전체 범위·전체 DoD)를 맡는다 — 실행 세부는 자식의 몫이니 자식
-  제목을 본문에 반복하지 말고, 범위 항목이 자식들과 정합하게 쓴다(knowledge/07 역할표).
+Write a Korean {what}. The result is inserted directly into the user's editor. Return only the HTML body—no greeting, explanation, quotation wrapper, or code fence.
 
-## 사용자의 요청
-{prompt or "(따로 말한 것 없음 — 아래 작성 중인 글을 완성하라)"}
+## Sufficiency Boundary
+
+- If a safe draft is possible, write it. If a material fact prevents one, return `NEED_INFO:` on the first line followed by one concise Korean question.
+- A comment is conversational. Use `NEED_INFO:` only when there is no recent comment, ticket state, seed text, or relevant subject to continue from, or when the request concerns a different subject.
+- A description is a document. When ticket title, Epic lineage, children, or related tickets establish the work, draft it even if the user prompt is short.
+- With ticket context, a review request, confirmation request, or status question can be drafted without knowing the eventual result. Do not invent the result.
+
+## Grounding Rules
+
+- When the user requests an assignee mention, use the verified assignee username from ticket context as `[~username]` and state the review target or request. A missing review result is not a reason for `NEED_INFO:`.
+- Preserve the subject and state of every fact. A metric from a linked ticket or document is not automatically the current ticket's result.
+- Never convert a context item marked `명시적 미완료`, `남은`, `예정`, or `진행 중` into completed work.
+- When sources conflict, state the conflict and what needs confirmation in Korean instead of selecting one state. For example: `구현 완료 보고가 있으나 Jira 상태는 In Progress — 최종 상태 확인 필요`.
+- Do not add a feature, UI change, performance target, scope item, or DoD absent from the user request, seed, ticket title, or current body. When a criterion is unspecified, write the precise Korean marker `담당팀 확인 필요`.
+- When child Sub-Tasks or a split plan exist, the parent description owns the overall why, scope, and DoD. Do not repeat every child summary as parent execution detail; keep the parent scope consistent with its children.
+
+## User Request Data
+
+{prompt or "(no separate instruction: complete the existing draft data below)"}
 {wrap_data(
-    data_block("작성 중인 글 (사용자의 초안 — 말투와 의도를 살려 이어 쓴다)", seed),
-    data_block("이 에디터가 붙어 있는 티켓의 맥락 (여기 없는 사실은 쓰지 마라)", ctx),
-    data_block("사내 작성 규율", rules))}"""
+    data_block("Existing Editor Draft: Preserve Its Intent and Useful Content", seed),
+    data_block("Verified Ticket Context: Do Not Add Facts Absent Here", ctx),
+    data_block("Applicable Internal Authoring Rules", rules))}"""
 
     llm_usage = {}
     try:
@@ -241,6 +237,8 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     #    UI 는 팝업을 유지한 채 이 문구를 보여 주고 프롬프트·시드 보완을 유도한다.
     ask = _need_info(html)
     if ask:
+        if ctx and re.search(r"(?:티켓.{0,30}관련|관련.{0,30}티켓)", ask):
+            ask = "현재 티켓에 작성할 코멘트 또는 본문의 목적을 한 줄로 적어 주세요"
         return {"ok": False, "needsInfo": True,
                 "error": "이대로는 정확한 글을 쓸 수 없습니다 — " + ask,
                 "usage": llm_usage}
@@ -255,6 +253,12 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
     html = _legacy_reference_tokens(html)
     html = _badgeify(html)
     html = _ground_acceptance_metrics(html, "\n".join((prompt, seed, ctx)))
+    if kind == "description":
+        html = _drop_unrequested_description_quality_claims(
+            html, "\n".join((prompt, seed, ctx)))
+    html = _drop_generic_editor_closer(html)
+    html = _drop_unverified_editor_dates(html, "\n".join((prompt, seed, ctx)))
+    html = _repair_dangling_editor_ending(html)
 
     # 의미 후검증 — 자료가 명시적으로 '남은 일'이라고 한 대상을 완료로 뒤집은 문장은
     # 사용자가 자기 이름으로 게시하기 전에 차단한다. 경고만 띄우고 삽입하면 토스트를 놓친
@@ -311,6 +315,98 @@ def _need_info(value: str) -> str:
     return match.group(1).strip().strip("`'\"“”‘’ ")[:300] if match else ""
 
 
+def _drop_generic_editor_closer(rendered: str) -> str:
+    """내용 없는 마지막 인사·업데이트 약속을 제거한다.
+
+    에디터 결과는 사용자가 그대로 게시하므로 `추가 상황이 있으면 업데이트하겠습니다` 같은
+    문장은 확인된 다음 행동도 아니고 담당/기한도 없는 상투구다. 마지막 paragraph가 이 패턴일
+    때만 제거해 본문 중간의 구체 후속 조치는 보존한다.
+    """
+    out = str(rendered or "")
+    # 마지막 paragraph의 앞부분에 유용한 출처가 있고 끝 문장만 상투구인 경우도 제거한다.
+    sentence = (r"\s*(?:추가(?:적인)?|그 밖의)[^<.!?]{0,90}"
+                r"(?:업데이트하겠습니다|공유하겠습니다|말씀해\s*주세요|알려\s*주세요)"
+                r"[.!?]?\s*(?=</p>\s*$)")
+    out = re.sub(sentence, "", out, flags=re.I | re.S)
+    out = re.sub(r"\s*<p\b[^>]*>\s*</p>\s*$", "", out, flags=re.I | re.S)
+    pattern = (r"\s*<p\b[^>]*>\s*(?:추가(?:적인)?|그 밖의)[^<]{0,90}"
+               r"(?:업데이트하겠습니다|공유하겠습니다|말씀해\s*주세요|알려\s*주세요)"
+               r"[^<]{0,20}</p>\s*$")
+    return re.sub(pattern, "", out, flags=re.I | re.S).rstrip()
+
+
+def _drop_unrequested_description_quality_claims(rendered: str, source: str) -> str:
+    """본문 source에 없는 일반적 품질 효익을 배경·DoD에서 제거한다.
+
+    `정확하고 신뢰할 수 있는 데이터`, `사용자 경험 향상`은 자연스럽지만 title·Epic·현재
+    본문 어디에도 없으면 검증된 배경이 아니다. 사용자/티켓 source가 실제로 말한 차원은
+    보존하고, 새로 생긴 차원만 제거한다.
+    """
+    from app.agent.workflow.agents.work_architect import _QUALITY_DIMENSIONS
+
+    forbidden = [p for p in _QUALITY_DIMENSIONS if not re.search(p, source or "", re.I)]
+    if not forbidden:
+        return str(rendered or "")
+
+    def unsupported(value: str) -> bool:
+        plain = _plain_text(value)
+        return any(re.search(p, plain, re.I) for p in forbidden)
+
+    out = str(rendered or "")
+    title_match = re.search(r'\[[A-Z][A-Z0-9]*-\d+\]\s*"([^"]+)"', source or "")
+    title = re.sub(r"^\s*\[[^\]]+\]\s*", "", title_match.group(1)).strip() \
+        if title_match else "요청한 작업"
+
+    bg_match = re.search(r"(<h3>\s*배경\s*</h3>\s*)(.*?)(?=<h3>|$)", out,
+                         re.S | re.I)
+    if bg_match and unsupported(bg_match.group(2)):
+        section = bg_match.group(2)
+
+        def clean_paragraph(match):
+            inner = match.group(1)
+            pieces = re.split(r"(?<=[.!?])\s+", inner)
+            kept = [p for p in pieces if p.strip() and not unsupported(p)]
+            return "<p>" + " ".join(kept) + "</p>" if kept else ""
+
+        cleaned = re.sub(r"<p\b[^>]*>(.*?)</p>", clean_paragraph, section,
+                         flags=re.S | re.I)
+        if not _plain_text(cleaned).strip():
+            cleaned = f"<p>{_html.escape(title)} 작업 요청.</p>"
+        out = out[:bg_match.start(2)] + cleaned + out[bg_match.end(2):]
+
+    def clean_dod(match):
+        if not unsupported(match.group(1)):
+            return match.group(0)
+        opening = match.group(0)[:match.group(0).find(">") + 1]
+        safe = _html.escape(title)
+        return opening + f"{safe} 결과와 테스트 기록을 티켓에서 확인</li>"
+
+    return re.sub(r"<li\b[^>]*data-checked=[\"']?false[\"']?[^>]*>(.*?)</li>",
+                  clean_dod, out, flags=re.S | re.I)
+
+
+def _repair_dangling_editor_ending(rendered: str) -> str:
+    """마지막 connective(`검토해 주시고,`)로 잘린 editor 결과를 완결한다."""
+    out = str(rendered or "").rstrip()
+    out = re.sub(r"(검토|확인|공유)해\s*주시고\s*,?\s*</p>\s*$",
+                 r"\1 부탁드립니다.</p>", out)
+    return re.sub(r",\s*</p>\s*$", ".</p>", out)
+
+
+def _drop_unverified_editor_dates(rendered: str, source: str) -> str:
+    """source에 없는 상대·절대 기한을 editor 초안에서 제거한다."""
+    out = str(rendered or "")
+    trusted = str(source or "")
+    for match in list(re.finditer(
+            r"(?:오늘|내일|모레|이번\s*주|다음\s*주|금주|차주)(?:\s*[월화수목금토일]요일)?\s*까지|"
+            r"\b\d{4}-\d{2}-\d{2}\b", out, re.I)):
+        phrase = match.group(0)
+        if re.sub(r"\s+", "", phrase).lower() in re.sub(r"\s+", "", trusted).lower():
+            continue
+        out = out.replace(phrase, "")
+    return re.sub(r"\s{2,}", " ", out).replace(" ,", ",").strip()
+
+
 def _status_conflicts(rendered: str, context: str) -> list[str]:
     """명시적 미완료 항목을 완료로 단정한 생성문을 찾는다."""
     marker = re.search(r"명시적 미완료\(완료로 쓰지 말 것\):\s*([^\n]+)", context or "")
@@ -325,8 +421,11 @@ def _status_conflicts(rendered: str, context: str) -> list[str]:
         r"<h([1-6])\b[^>]*>\s*(?:완료\s*조건|DoD).*?</h\1>.*?(?=<h[1-6]\b|$)",
         " ", claims, flags=re.S | re.I)
     text = re.sub(r"\s+", " ", _plain_text(claims)).strip()
+    blocks = [re.sub(r"\s+", " ", _plain_text(x)).strip()
+              for x in re.split(r"</(?:li|p|h[1-6])\s*>", claims, flags=re.I)]
+    blocks = [x for x in blocks if x]
     done = (r"(?:완료(?:되었|됐|했|함|됨|된|하였|되었습니다|됐습니다|했습니다|하였습니다)|"
-            r"완료(?=\s*(?:[.!?]|$))|"
+            r"완료(?=\s*(?:[.!?]|$|[-—–:·(]))|"
             r"끝났(?:습니다)?|마쳤(?:습니다)?)")
     bad = []
     for raw in marker.group(1).split("|"):
@@ -337,12 +436,23 @@ def _status_conflicts(rendered: str, context: str) -> list[str]:
                    + r"(?:\s*(?:작업|기능|항목|건|상태))?"
                      r"(?:은|는|이|가|을|를)?\s*(?:이미\s*)?" + done)
         sentence_conflict = any(
-            topic in sentence and re.search(done, sentence)
-            for sentence in re.split(r"[.!?]\s*|\n+", text)
+            _topic_matches(topic, sentence) and re.search(done, sentence)
+            for block in blocks
+            for sentence in re.split(r"[.!?]\s*|\n+", block)
             if sentence.strip())
         if re.search(pattern, text) or sentence_conflict:
             bad.append(topic)
     return bad
+
+
+def _topic_matches(topic: str, sentence: str) -> bool:
+    """`다운스트림 조회 연동`과 `다운스트림 2홉 조회` 같은 안전한 축약을 맞춘다."""
+    topic_plain = re.sub(r"^\s*\[[^\]]+\]\s*", "", str(topic or ""))
+    topic_plain = re.sub(r"\bh[1-6]\b", " ", topic_plain, flags=re.I)
+    tokens = [x.lower() for x in re.findall(r"[A-Za-z0-9가-힣_.-]{2,}", topic_plain)
+              if x.lower() not in {"작업", "기능", "항목", "상태", "연동", "구현", "작성"}]
+    target = str(sentence or "").lower()
+    return bool(tokens) and all(token in target for token in tokens)
 
 
 def _ground_acceptance_metrics(rendered: str, source: str) -> str:
@@ -375,7 +485,7 @@ def _qualify_status_conflicts(rendered: str, topics: list[str]) -> str:
             def qualify(match):
                 nonlocal replaced
                 plain = _plain_text(match.group(0))
-                if (topic not in plain
+                if (not _topic_matches(topic, plain)
                         or not re.search(r"완료|마쳤|끝났", plain)):
                     return match.group(0)
                 replaced = True
@@ -383,8 +493,9 @@ def _qualify_status_conflicts(rendered: str, topics: list[str]) -> str:
                         f"In Progress이므로 최종 완료 여부는 확인 필요합니다.</{tag}>")
 
             out = re.sub(pattern, qualify, out, flags=re.S | re.I)
-            if replaced:
-                break
+            # 같은 완료 오판이 목록과 이어지는 설명 paragraph에 동시에 나올 수 있다.
+            # 첫 tag 종류에서 멈추면 하나를 고치고 다른 하나가 남아 compose 전체가 실패한다.
+            # 두 종류를 모두 훑되, 무관한 tag는 qualify()가 그대로 보존한다.
     return out
 
 

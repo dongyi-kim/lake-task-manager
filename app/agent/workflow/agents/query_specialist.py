@@ -47,12 +47,12 @@ class QuerySpecialist(StructuredAgent):
 
     def task(self, state):
         return (
-            "# 명령서\nRequest Architect의 계획을 조회 가능한 QueryPlan으로 변환하라. "
-            "답변이나 추천은 쓰지 마라.\n\n"
-            "## request_plan\n" + json.dumps(state.get("request_plan") or {}, ensure_ascii=False)
-            + "\n\n## keywords\n" + json.dumps(state.get("keywords") or [], ensure_ascii=False)
-            + "\n\n## mentioned_keys\n" + json.dumps(state.get("mentioned_keys") or [], ensure_ascii=False)
-            + "\n\n## 최근 대화\n" + conversation(state)
+            "# Task\n\nConvert Request Architect's plan into an executable QueryPlan. "
+            "Do not answer the user or recommend an action.\n\n"
+            "## Request Plan Data\n\n" + json.dumps(state.get("request_plan") or {}, ensure_ascii=False)
+            + "\n\n## Retrieval Keywords\n\n" + json.dumps(state.get("keywords") or [], ensure_ascii=False)
+            + "\n\n## Explicit Ticket Keys\n\n" + json.dumps(state.get("mentioned_keys") or [], ensure_ascii=False)
+            + "\n\n## Recent Conversation Data\n\n" + conversation(state)
         )
 
     def schema(self):

@@ -728,6 +728,22 @@ def test_subtask_vague_performance_and_document_review_dod_get_artifacts():
     assert "산출물 링크와 리뷰 결과" in items[1]["description"]
 
 
+def test_one_vague_top_level_dod_is_sharpened_without_an_llm_call(monkeypatch):
+    """구체 행과 섞인 모호한 한 줄도 놓치지 않으며, 보정에 model token을 쓰지 않는다."""
+    import app.agent.workflow.agents.work_architect as module
+    monkeypatch.setattr(module, "invoke_schema",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            AssertionError("DoD sharpening must be deterministic")))
+    item = {"summary": "[ETL] 적재 지연 알림 임계값 조정", "type": "Task",
+            "description": ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                            '<li data-checked="false">알림 테스트 완료</li>'
+                            '<li data-checked="false">변경값과 리뷰 결과를 티켓에 기록한다</li>'
+                            '</ul>')}
+    assert module._sharpen_dod(_msg("알림 임계값 조정"), [item])
+    assert "알림 테스트 완료" not in item["description"]
+    assert "실행 로그와 테스트 결과" in item["description"]
+
+
 def test_explicit_existing_parent_subtasks_recover_from_interpretation_only_output():
     from app.agent.workflow.agents.work_architect import WorkArchitect
     state = _msg("DL-9090 에 성능 측정이랑 사용 가이드 작성 서브태스크 추가해줘. 알아서")
@@ -1897,6 +1913,101 @@ def test_relative_due_is_computed_by_code_not_the_model():
     assert _relative_due("내일까지") == (date.today() + timedelta(days=1)).isoformat()
 
 
+def test_this_week_due_is_the_current_or_next_workweek_friday():
+    from datetime import date, timedelta
+    from app.agent.workflow.agents.work_architect import _relative_due
+
+    today = date.today()
+    friday = today - timedelta(days=today.weekday()) + timedelta(days=4)
+    if friday < today:
+        friday += timedelta(days=7)
+    assert _relative_due("이번 주까지. 알아서") == friday.isoformat()
+    assert _relative_due("금주까지 처리") == friday.isoformat()
+
+
+def test_question_turn_never_claims_a_parentless_subtask_can_be_created():
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    state = _msg("서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼")
+    state["questions"] = [{"question": "어떤 방식으로 바꿀까요?", "kind": "choice",
+                           "options": ["Task로 만든다", "부모를 지정한다"]}]
+    got = ResultIntegrator().apply(
+        state,
+        {"text": "사용자가 원했으므로 별도의 부모 없이 서브태스크를 생성합니다. 아래에서 선택해 주세요"},
+    )["reply"]
+
+    assert "부모가 필수" in got
+    assert "부모 없이 생성할 수 없음" in got
+    assert "부모 없이 서브태스크를 생성" not in got
+
+
+def test_parentless_subtask_asks_for_a_valid_hierarchy_before_content():
+    out = {"questions": [
+        {"question": "배경은 무엇인가요?", "kind": "text", "options": []},
+        {"question": "완료 조건은 무엇인가요?", "kind": "text", "options": []},
+    ], "mode": "subtask", "rationale": "", "items": []}
+
+    got = WorkArchitect().apply(
+        _msg("서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼"), out)
+
+    assert not got["draft"]["items"]
+    assert len(got["questions"]) == 2  # 계층 선택 + 코드가 붙이는 자유 의견
+    first = got["questions"][0]
+    assert first["field"] == "parent"
+    assert "부모 없이 만들 수 없습니다" in first["question"]
+    assert "최상위 Task" in str(first["options"])
+
+
+def test_relative_due_overrides_model_date_on_a_single_creation_draft():
+    """생성 경로도 상대 기한을 코드로 고정한다 — 형식상 유효한 오답은 schema가 못 잡는다."""
+    from app.agent.workflow.agents.work_architect import _relative_due
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "user_specified",
+           "items": [{"summary": "[Catalog] hotfix 배포", "type": "Task",
+                      "description": "", "duedate": "2099-01-01"}]}
+    r = WorkArchitect().apply(_msg("이번 주 금요일까지 hotfix 배포 Task 만들어줘. 알아서"), out)
+    assert r["draft"]["items"][0]["duedate"] == _relative_due("이번 주 금요일까지")
+
+
+def test_relative_due_does_not_guess_across_multiple_creation_items():
+    """복수 항목의 기한 배분은 사용자 의미 판단 — 하나의 상대 표현을 전부 덮어쓰지 않는다."""
+    from app.agent.workflow.agents.work_architect import _apply_relative_due_to_single_draft
+    items = [{"summary": "[Catalog] A", "type": "Task", "duedate": "2099-01-01"},
+             {"summary": "[Runtime] B", "type": "Task", "duedate": "2099-01-02"}]
+    applied = _apply_relative_due_to_single_draft(
+        _msg("이번 주 금요일까지 A와 B를 각각 만들어줘"), items)
+    assert applied == ""
+    assert [i["duedate"] for i in items] == ["2099-01-01", "2099-01-02"]
+
+
+def test_unrequested_quality_claims_are_removed_from_ticket_body():
+    """그럴듯한 효익도 사용자가 말하지 않았으면 배경·범위·DoD의 날조다."""
+    from app.agent.workflow.agents.work_architect import _remove_unrequested_quality_claims
+    items = [{"summary": "[ETL] CDC 재처리 배치 개선", "type": "Task",
+              "description": (
+                  "<h3>배경</h3><p>성능과 운영 효율성을 높이기 위한 요청</p>"
+                  "<h3>작업 범위</h3><ul><li>포함: 성능 개선</li><li>제외: 다른 배치</li></ul>"
+                  '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                  '<li data-checked="false">시스템 안정성 테스트 완료</li></ul>')}]
+    assert _remove_unrequested_quality_claims(_msg("CDC 재처리 배치 개선 Task 만들어줘"), items)
+    body = items[0]["description"]
+    assert all(word not in body for word in ("성능", "운영 효율성", "안정성"))
+    assert "CDC 재처리 배치 개선 요청됨" in body
+    assert "결과와 검증 기록" in body
+
+
+def test_user_requested_quality_dimension_is_preserved():
+    """사용자가 직접 말한 품질 차원은 제거 대상이 아니다."""
+    from app.agent.workflow.agents.work_architect import _remove_unrequested_quality_claims
+    body = ("<h3>배경</h3><p>쿼리 성능 개선 요청</p>"
+            "<h3>작업 범위</h3><ul><li>포함: 쿼리 성능 개선</li></ul>"
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">성능 측정 결과를 기록</li></ul>')
+    items = [{"summary": "[Runtime] 쿼리 성능 개선", "type": "Task", "description": body}]
+    assert not _remove_unrequested_quality_claims(_msg("쿼리 성능 개선 Task 만들어줘"), items)
+    assert items[0]["description"] == body
+
+
 def test_epic_typed_items_promote_the_mode_to_epic():
     """"새 Epic 만들어줘"에 모델이 type=Epic 항목을 내면서 mode 를 task 로 두면 —
     epic 경로를 못 타 validate_bulk 가 거부하고 승인 카드 없이 죽었다(실측 Round K)."""
@@ -1998,17 +2109,18 @@ def test_modify_turns_drop_the_creation_only_sections():
     from app.agent.workflow.agents.work_architect import _role_md
     md = _role_md({"intent": Intent.MODIFY})
     assert "분할 규칙" not in md and "구조 선택" not in md
-    assert "기존 ticket 변경" in md, "변경 경로 지시는 남아야 한다"
+    assert "Existing Ticket Changes" in md, "변경 경로 지시는 남아야 한다"
     # 초안을 고치는 modify 턴은 생성 지시가 필요하다 — 빼면 안 된다.
     md2 = _role_md({"intent": Intent.MODIFY, "draft": {"items": [{"summary": "s"}]}})
-    assert "분할 규칙" in md2
+    assert "Decomposition Rules" in md2
 
 
 def test_creation_turns_keep_every_creation_section():
     """초안을 만드는 턴에서는 품질이 먼저다 — 생성 지시를 빼지 않는다."""
     from app.agent.workflow.agents.work_architect import _role_md
     md = _role_md({"intent": Intent.PLAN_WORK})
-    for t in ("구조 선택", "분할 규칙", "본문 품질 계약", "Epic 생성", "제목과 주제 보존"):
+    for t in ("Structure Selection", "Decomposition Rules", "Ticket Body Contract",
+              "Epic Creation", "Title and Topic Preservation"):
         assert t in md
 
 

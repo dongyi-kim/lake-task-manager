@@ -1,90 +1,265 @@
-# 표준 플레이북 — 전형적 요청의 사전 정의 플로우
+# Standard Request Playbooks
 
-Request Architect 가 요청을 플레이북에 매핑하면 그 절이 **모든 역할의 프롬프트에 주입**된다.
-목적: 전형적 요청에서 쓸데없는 가변성·실수 제거. 각 절 = 트리거 / 플로우 / 주의 / **체크**.
-
-**체크**는 답을 내보내기 전에 스스로 확인할 목록이다. 이 중 잴 수 있는 것은 코드도 잰다
-(`workflow/postcheck.py`) — 못 지키면 답 아래에 그 사실이 붙는다. 숨기지 않는 편이
-사용자에게도 우리에게도 낫다.
+When Request Architect assigns a playbook, inject that playbook into every downstream role that needs it. Each playbook defines a trigger, flow, guardrails, and preflight check. The preflight check is a silent self-check before returning output; deterministic postcheck remains authoritative.
 
 ## epic_create
-트리거: 새 Epic·이니셔티브를 만들자.
-플로우: ① 유사 Epic 검색(중복 확인) ② 목표·유관 WBS/모듈 인터뷰(객관식) ③ mode=epic
-초안 1건(epic_name 단축어, 배경/목표/완료 기준) ④ 총괄 담당 후보 ⑤ 승인 → 생성 →
-"Task 이어서?" 제안.
-주의: 자식 Task 를 같은 배치에 섞지 마라(Epic 이 먼저 실재해야 한다). Epic Name ≤10자.
-체크: □ 중복 Epic 을 실제로 찾아봤다 □ Epic Name ≤10자 □ 초안 1건(자식 없음) □ 승인 카드에 항목이 있다
+
+### Trigger
+
+Create an Epic or initiative.
+
+### Flow
+
+1. Search for duplicate and candidate Epics.
+2. Interview only for missing goal, scope, reporting intent, or WBS/module boundaries.
+3. Draft exactly one `mode=epic` item with `epic_name`, background, goal, and completion criteria.
+4. Resolve an assignee candidate, present the approval payload, execute only after approval, then propose child Tasks separately.
+
+### Guardrails
+
+- Never place child Tasks in the same creation batch as a new Epic.
+- Keep `epic_name` at ten Korean characters or fewer.
+
+### Preflight Check
+
+- A real duplicate search was completed.
+- The draft contains exactly one Epic and no child payload.
+- The approval card includes every field that will be written.
 
 ## task_create
-트리거: 새 업무·기능·개선을 시작하자.
-플로우: ① 사내 이력 검색(+신기술이면 웹) ② 중복이면 그 사실 먼저 ③ 부족 정보만
-객관식 인터뷰(Epic 후보 choice+없음) ④ 초안(배경/작업 내용/DoD) ⑤ 담당 후보(유사
-이력+워크로드) ⑥ 검증 → 승인.
-주의: 접근 방식 미정이면 조사 Task 1건으로 시작. 마감·범위는 사용자만 안다 — 지어내지 마라.
-체크: □ 유사 이력을 찾아 결과를 밝혔다(없으면 '없음'도 밝힌다) □ 본문에 배경·작업 범위(제외 포함)·완료 조건 □ 완료 조건이 **판정 가능**하다('테스트 완료'는 아니다) □ 승인 카드에 항목이 있다
+
+### Trigger
+
+Start a new unit of work, feature, or improvement.
+
+### Flow
+
+1. Search recent similar work and detect duplicates.
+2. Resolve the Epic placement from verified candidates, including an intentional top-level option.
+3. Ask only for material missing intent; otherwise use explicit, safe assumptions.
+4. Draft background, scope with exclusions, and independently testable DoD.
+5. Resolve assignee candidates from verified history and workload.
+6. Validate the exact payload and request approval.
+
+### Guardrails
+
+- If the approach is undecided, create one investigation Task rather than speculative implementation Tasks.
+- Never invent a deadline or scope.
+
+### Preflight Check
+
+- Duplicate search evidence or an explicit no-match result is present.
+- Placement is verified or explicitly top-level.
+- Each DoD item has an observable pass/fail condition.
+- The approval card includes every write field.
 
 ## bug_report
-트리거: 깨졌다·실패한다·에러가 난다.
-플로우: ① 같은 증상 Bug 검색 ② 재현경로/기대/실제 확보(없으면 질문) ③ Bug 초안
-④ 원인 의심 티켓·문서 링크 ⑤ 담당 후보 ⑥ 승인.
-주의: 재현 경로 없는 Bug 는 아무도 못 잡는다 — 반드시 확보.
-체크: □ 재현 경로·기대 동작·실제 동작이 본문에 **나뉘어** 있다(없으면 그 칸을 비우고 물었다) □ 같은 증상 Bug 를 찾아봤다 □ Sub-Task 로 쪼개지 않았다
+
+### Trigger
+
+The user reports a defect, failure, or incorrect behavior.
+
+### Flow
+
+1. Search for the same symptom.
+2. Capture reproduction path, expected behavior, and actual behavior; ask only for missing material facts.
+3. Draft one Task-tier `Bug` unless the user explicitly requests another valid structure.
+4. Resolve related tickets and documents, validate the payload, and request approval.
+
+### Guardrails
+
+- Do not fabricate reproduction steps.
+- Do not split one symptom into Sub-Tasks before the work structure requires it.
+
+### Preflight Check
+
+- The body separately contains the Korean sections `재현 경로`, `기대 동작`, and `실제 동작`.
+- Missing facts are questions or `확인 필요`, not invented content.
+- Duplicate search was completed.
 
 ## subtask_bulk
-트리거: 특정 Task 아래 Sub-Task 여러 개.
-플로우: ① 부모 키 실재 확인 ② 분할 축 결정(내용별 or #배치 볼륨별) ③ 항목별 속성
-(담당/라벨/우선순위 — 다를 수 있음) 확인 ④ mode=subtask 일괄 초안 ⑤ 승인.
-주의: 사용자가 분담을 이미 불렀으면("설계 A·구현 B") 그대로가 계획이다 — 재질문 금지.
-체크: □ 부모 키가 실재한다 □ 자식 제목이 **무슨 일인지** 말한다('설계 단계'는 아니다) □ 사용자가 부른 분담을 그대로 반영했다
+
+### Trigger
+
+Create multiple Sub-Tasks beneath a specified Task-tier parent.
+
+### Flow
+
+1. Verify that the parent exists and is Task tier.
+2. Decide the split axis: work item, target, or numbered allocation.
+3. Preserve user-provided item names and assignments.
+4. Build real `mode=subtask` items and request approval for the complete batch.
+
+### Guardrails
+
+- Never attach a Sub-Task directly to an Epic.
+- Do not reinterpret a user-provided split merely to make it more conventional.
+
+### Preflight Check
+
+- The parent key and tier are verified.
+- Every child names its unique target or work item.
+- The user's allocation is preserved.
 
 ## find_people
-트리거: 조건에 맞는 사람 찾기(여유 있는 사람, 특정 경험자, 특정 티켓 유관자).
-플로우: ① 조건 해석(모듈/경험/워크로드) ② 로스터·워크로드·유사 이력 조회 ③ 후보
-2~3명 + 근거(숫자·키) ④ 필요하면 후속 좁히기 제안.
-주의: 로스터 밖 사번 금지. 이력 없음도 명시하고 워크로드로 보완.
-체크: □ 후보마다 근거(숫자·티켓 키)가 붙었다 □ 로스터 밖 사번을 쓰지 않았다 □ 이름만 언급됐다면 어느 근거로 그 사람인지 밝혔다
+
+### Trigger
+
+Find people matching experience, module, availability, or assignment constraints.
+
+### Flow
+
+1. Translate the request into explicit module, experience, and workload criteria.
+2. Query roster, participation history, and workload.
+3. Return two or three candidates with separate evidence and uncertainty.
+4. Offer a follow-up narrowing step only when necessary.
+
+### Guardrails
+
+- Never guess roster membership or user identity.
+- Missing history is not negative performance evidence.
+
+### Preflight Check
+
+- Every candidate has traceable evidence.
+- No recommendation rests on name alone or on low workload alone.
 
 ## find_tickets
-트리거: 조건에 맞는 티켓 찾기(우선순위·상태·기간·미배정·정체 조합).
-플로우: ① 조건 → 도구 선택(미배정=find_unassigned, 정체=find_stale, 그 외=run_jql)
-② 결과 표(키+제목+핵심 속성) ③ 'JQL' 언급 시 실행 쿼리 병기 ④ 0건이면 "없습니다"+기준 명시.
-주의: 물은 기준을 다른 기준으로 바꿔치기하지 마라.
-체크: □ 결과를 표로 냈다(키+제목+속성) □ 0건이면 **기준과 함께** 밝혔다 □ 물은 기준을 바꿔치지 않았다
+
+### Trigger
+
+Find tickets matching status, priority, date, assignment, policy, or combined conditions.
+
+### Flow
+
+1. Preserve the user's conditions exactly.
+2. Select a specialized query when available; otherwise produce valid JQL through `run_jql_v2`.
+3. Collect every page required by completeness.
+4. Return total, scope, truncation state, and requested fields.
+
+### Guardrails
+
+- Never silently replace the user's criterion with a proxy.
+
+### Preflight Check
+
+- Results include the requested fields and correct scope.
+- A zero-result answer repeats the actual criteria.
+- Completeness and pagination are explicit.
 
 ## knowledge
-트리거: X 가 뭐야 / X 에 대해 우리가 아는 것 정리.
-플로우: ① 사내 키워드+의미 검색 ② 외부(웹/GitHub) 보강 ③ Knowledge Curator 정리(개념/우리
-상황/참고/공백) ④ 근거 병기.
-주의: 사내 이력 없음도 답이다. 무관 티켓으로 채우지 마라.
-체크: □ 개념/우리 상황/공백이 구분된다 □ 근거에 티켓 키·문서 링크가 붙었다 □ 사내 이력이 없으면 '없음'이라고 말했다(무관 티켓으로 채우지 않았다)
+
+### Trigger
+
+Explain a topic or consolidate what the organization knows about it.
+
+### Flow
+
+1. Search internal tickets, comments, and documents.
+2. Add external research only when requested or needed for the topic.
+3. Separate definitions, verified internal context, external findings, inferences, and gaps.
+4. Attach provenance to every material claim.
+
+### Guardrails
+
+- Never fill missing internal history with generic industry practice.
+
+### Preflight Check
+
+- Concepts, internal context, and gaps are visibly distinct.
+- Every internal claim has a verified source.
+- Missing internal evidence is reported as missing.
 
 ## history
-트리거: 특정 업무·키워드의 히스토리/근황/경위.
-플로우: ① 검색(키 있으면 계보 지도) ② 중심 티켓 2~4건 열람(코멘트=결정·멈춤 사유)
-③ 시간순 서술(시작→경과→현재→최근 업데이트 날짜).
-주의: 갱신일 순서가 근황의 뼈대. 제목은 원문 그대로.
-체크: □ **현재 상태**와 **연표**가 둘 다 있다 □ 현재 상태를 표로 냈다(| 항목 | 값 | 근거 |) □ 연표의 '사건'이 티켓 제목 복붙이 아니라 **무슨 변동이었는지** 말한다 □ 참조 목록이 있고 본문의 [N] 과 이어진다 □ 못 찾았으면 **다른 표기로 한 번 더** 찾아봤다(약어·영문·표기 흔들림)
+
+### Trigger
+
+Explain the history, current state, or decision path of a work item or keyword.
+
+### Flow
+
+1. Keep the exact keyword and time window.
+2. Summarize two to four central tickets with comments, decisions, and delay reasons.
+3. Build a chronological progression from start through current status and latest update.
+4. Cite sources with typed references.
+
+### Guardrails
+
+- The most recent document is not automatically the current state.
+- Preserve source titles exactly.
+
+### Preflight Check
+
+- Current state appears as a table with claim, value, and evidence.
+- The response explains what changed, not only a list of events.
+- If no result appears, one documented query variation may be attempted without changing the subject.
 
 ## workload
-트리거: 사람/모듈/유관자들의 활동·워크로드 분석.
-플로우: ① 대상 로스터 확정(모듈 or 티켓 유관자) ② 전원 활동·워크로드 취합(코드 병렬)
-③ 3층 보고: 로스터 → 그룹 전체 서술 → 개인별 블록(티켓·코멘트·문서 활동).
-주의: 한 명만 보고 끝내지 마라. 활동 적음 ≠ 태만(판단은 사람 몫).
-체크: □ 로스터 전원을 봤다(한 명으로 끝내지 않았다) □ 3층(로스터→그룹→개인)이 보인다 □ '활동 적음'을 태만으로 단정하지 않았다
+
+### Trigger
+
+Analyze activity or workload for a person, module, or team.
+
+### Flow
+
+1. Resolve the roster or target population.
+2. Collect activity and workload using the same time and status rules.
+3. Report roster coverage, group summary, and person-level blockers or concentration.
+
+### Guardrails
+
+- Do not turn activity counts into performance judgments.
+- Never report only people with high activity.
+
+### Preflight Check
+
+- Every roster member is represented or explicitly outside accessible scope.
+- The three layers—coverage, group summary, person detail—are present.
+- Low activity is described as an observation, not a verdict.
 
 ## assign_fit
-트리거: 이 티켓/업무를 누구에게 맡길까, A 에게 맡겨도 될까.
-플로우: ① 티켓 내용 파악(필요 역량) ② 후보 프로필·유사 이력·워크로드 ③ 근거 있는
-판단 문장(적합/부담 — 왜) + 대안 1명.
-주의: 근거는 사람 문장(도구 호출 표기 금지). 최종 결정은 사용자.
-체크: □ 판단 근거가 4신호(유사 이력·워크로드·참여·모듈) 중 무엇인지 밝혔다 □ 부적합도 이유와 함께 말했다
+
+### Trigger
+
+Assess who is suited to a ticket or whether a specified person is a fit.
+
+### Flow
+
+1. Identify required skills and work context.
+2. Compare verified similar-work history, module context, participation, and current workload.
+3. State fit, uncertainty, and alternatives with evidence.
+
+### Guardrails
+
+- Final assignment authority remains with the user.
+- Do not expose private personnel data.
+
+### Preflight Check
+
+- Every fit judgment identifies which evidence category supports it.
+- Partial fit includes the missing requirement.
 
 ## asset_lookup
-트리거: 특정 대상 하나의 **현재 사실**을 묻는다 — 테이블의 적재주기·스키마·적재 job·담당,
-특정 기술의 사내 도입 현황·정책, 특정 업무의 현재 상태.
-플로우: ① 이름 원형 그대로 언급 추적(find_mentions — **코멘트 원문까지**) ② 필드 변경
-이력 확인(현재 값 = 가장 최근 변경) ③ 관련 문서 본문 읽기(read_document) ④ 값마다
-출처(티켓 키·코멘트 작성자·문서 제목) 병기.
-주의: **없는 것은 없다고 답한다.** 이름이 안 나오면 비슷한 다른 대상의 사실을 끌어다
-붙이지 마라 — 이 유형의 가장 흔한 실패다. 변경 전 값을 현재 값으로 적지 마라.
-체크: □ 물은 값을 **첫 줄에** 냈다 □ 그 값의 근거(티켓·문서)를 붙였다 □ 최신 값인지(나중에 바뀐 기록이 없는지) 확인했다
+
+### Trigger
+
+Find a current fact about a named asset, such as table lifecycle, schema purpose, job owner, technology adoption, or a work item's current state.
+
+### Flow
+
+1. Search the exact name across tickets, comments, and documents.
+2. Follow change history to distinguish past values from the current value.
+3. Read the relevant document body where needed.
+4. Lead with the current fact and attach its latest valid evidence.
+
+### Guardrails
+
+- A missing result means not found within scope, not nonexistence.
+- Do not attach facts from a similarly named but different asset.
+- A failed change attempt is not the current value.
+
+### Preflight Check
+
+- The current value appears in the first line.
+- Evidence supports that exact value and asset.
+- Later changes or reversals were checked.

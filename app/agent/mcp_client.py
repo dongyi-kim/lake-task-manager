@@ -117,7 +117,7 @@ def _pyd_model(server: str, tool_name: str, schema: dict):
         default = ... if pname in required else (spec_ or {}).get("default")
         fields[pname] = (t, Field(default, description=desc))
     if not fields:
-        fields["query"] = (str, Field(..., description="요청 내용"))
+        fields["query"] = (str, Field(..., description="Request content"))
     return create_model(f"mcp_{server}_{tool_name}_args", **fields)
 
 
@@ -131,10 +131,11 @@ def _wrap(spec: dict, t) -> object:
         try:
             return _call_tool(spec, name, kwargs)
         except Exception as e:
-            return f"외부 MCP 도구({server}/{name}) 호출 실패: {str(e)[:200]} — 내부 조사만으로 진행하라."
+            return (f"External MCP tool ({server}/{name}) failed: {str(e)[:200]}. "
+                    "Continue with internal research only.")
 
-    desc = (t.description or f"{server} 서버의 {name} 도구") + \
-        " (외부 MCP 도구 — 사내 티켓 키·인명·프로젝트명을 인자에 넣지 마라)"
+    desc = (t.description or f"Tool {name} from the {server} server") + \
+        " (External MCP tool: never pass internal ticket keys, employee names, or project names.)"
     return StructuredTool.from_function(
         func=call, name=f"mcp_{server}_{name}"[:60], description=desc[:900],
         args_schema=_pyd_model(server, name, getattr(t, "inputSchema", None) or {}))

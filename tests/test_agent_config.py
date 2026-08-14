@@ -268,12 +268,13 @@ def test_playbooks_load_and_inject(clean_env):
               "find_tickets", "knowledge", "history", "workload", "assign_fit"}
     assert expect <= set(PLAYBOOKS), set(PLAYBOOKS)
     for k in expect:
-        assert "플로우" in PLAYBOOKS[k] and "주의" in PLAYBOOKS[k], k
+        assert "### Flow" in PLAYBOOKS[k] and "### Guardrails" in PLAYBOOKS[k], k
     # RequestArchitect enum 과 자산이 어긋나면 조용히 주입이 빠진다 — 함께 묶어 검증
     assert expect <= set(SCHEMA["properties"]["playbook"]["enum"])
     p = persona({"playbook": "subtask_bulk"})
-    assert "적용할 표준 플레이북" in p and "재질문 금지" in p
-    assert "Standard playbook" not in persona({})
+    assert "## Active Standard Playbook: `subtask_bulk`" in p
+    assert "Preserve user-provided item names and assignments" in p
+    assert "Active Standard Playbook" not in persona({})
 
 def test_fake_provider_is_refused_in_prod(monkeypatch):
     """prod 에서 '테스트(가짜)' 는 없는 것으로 친다(사용자 지적).

@@ -73,7 +73,7 @@ def test_the_prompt_tells_the_model_which_kind_of_editor_it_is():
     """본문과 코멘트는 규율이 다르다 — 같은 지시를 주면 코멘트에 <h3>배경</h3>이 붙는다."""
     body = C.compose(PROG, "description", "본문 초안")["html"]
     cmt = C.compose(PROG, "comment", "진행 공유")["html"]
-    assert "본문" in body and "코멘트" in cmt
+    assert "ticket description" in body and "comment" in cmt
 
 
 def test_fenced_output_is_unwrapped():
@@ -199,9 +199,76 @@ def test_markdown_would_not_survive_so_the_prompt_forbids_it():
 def test_composer_prompt_states_the_rendering_rules():
     """규칙이 문서에만 있고 프롬프트에 없으면 모델은 모른다."""
     from app.agent.prompts.roles import SYSTEM_EDITOR_AUTHOR
-    assert "markdown은 쓰지 않는다" in SYSTEM_EDITOR_AUTHOR
-    assert "[~사번]" in SYSTEM_EDITOR_AUTHOR
+    assert "Do not add explanation, Markdown" in SYSTEM_EDITOR_AUTHOR
+    assert "[~username]" in SYSTEM_EDITOR_AUTHOR
     assert "taskList" in SYSTEM_EDITOR_AUTHOR
+
+
+def test_generic_editor_closer_is_removed_only_at_the_end():
+    from app.agent.editor_author import _drop_generic_editor_closer
+
+    body = ("<p>성능 측정은 예정</p>"
+            "<p>추가적인 진행 상황이나 변경 사항이 있으면 업데이트하겠습니다.</p>")
+    assert _drop_generic_editor_closer(body) == "<p>성능 측정은 예정</p>"
+    concrete = "<p>측정 완료 후 DL-9090에 결과를 기록하겠습니다.</p>"
+    assert _drop_generic_editor_closer(concrete) == concrete
+
+    mixed = ("<p>설계 문서에서 결과 확인 가능. "
+             "추가적인 업데이트가 필요하면 말씀해 주세요.</p>")
+    assert _drop_generic_editor_closer(mixed) == "<p>설계 문서에서 결과 확인 가능.</p>"
+
+
+def test_unrequested_editor_quality_claim_is_removed_but_verified_one_stays():
+    from app.agent.editor_author import _drop_unrequested_description_quality_claims
+
+    html = ("<h3>배경</h3><p>다운스트림 조회 연동 요청. "
+            "정확하고 신뢰할 수 있는 데이터를 제공하기 위함.</p>"
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">정확한 데이터 제공 확인</li></ul>')
+    source = '[DL-9095] "[Workbench] 다운스트림 조회 연동" — In Progress'
+    got = _drop_unrequested_description_quality_claims(html, source)
+    assert "정확" not in got and "신뢰" not in got
+    assert "다운스트림 조회 연동 요청" in got and "테스트 기록" in got
+
+    verified = _drop_unrequested_description_quality_claims(
+        html, source + "\n사용자 요청: 정확성 개선")
+    assert "정확" in verified
+
+
+def test_dangling_editor_connective_is_completed():
+    from app.agent.editor_author import _repair_dangling_editor_ending
+
+    html = "<p>성능 측정 결과를 검토해 주시고,</p>"
+    assert _repair_dangling_editor_ending(html) == "<p>성능 측정 결과를 검토 부탁드립니다.</p>"
+
+
+def test_unverified_relative_editor_deadline_is_removed():
+    from app.agent.editor_author import _drop_unverified_editor_dates
+
+    html = "<p>다음 주까지 문서 정리 부탁드립니다.</p>"
+    assert "다음 주" not in _drop_unverified_editor_dates(html, "문서 정리 요청")
+    assert "다음 주" in _drop_unverified_editor_dates(html, "다음 주까지 문서 정리 요청")
+
+
+def test_compose_eval_completion_check_distinguishes_explicit_negation(monkeypatch):
+    # 수동 배터리 모듈은 실행 시 provider/model 환경변수를 설정한다. 테스트 import가
+    # 뒤 테스트의 설정 해석을 오염하지 않도록 원래 process environment를 복원한다.
+    with monkeypatch.context() as env:
+        for key in (
+            "LAKE_AGENT_PROVIDER",
+            "LAKE_AGENT_SKIP_VERIFY",
+            "LAKE_AGENT_OPENAI_CHAT",
+            "LAKE_AGENT_OPENAI_CHAT_SIMPLE",
+        ):
+            # setenv로 변경 기록을 남겨야 import가 새로 만든 key도 context 종료 시 삭제된다.
+            # delenv(raising=False)는 원래 없던 key를 undo 대상으로 기록하지 않는다.
+            env.setenv(key, "")
+        from tools.agent_compose_eval import _claims_completed
+
+    remaining = ("<ul><li>그래프 렌더: 완료</li><li>성능 측정: 예정</li></ul>"
+                 "<p>성능 측정은 아직 완료되지 않았습니다.</p>")
+    assert not _claims_completed(remaining, "성능 측정")
+    assert _claims_completed("<p>성능 측정은 완료되었습니다.</p>", "성능 측정")
 
 
 def test_legacy_reference_placeholders_cannot_wrap_generated_badges():
@@ -228,6 +295,13 @@ def test_non_done_child_is_added_to_the_explicit_remaining_guard():
     assert _status_conflicts("<p>다운스트림 조회 연동 작업은 완료되었습니다.</p>", context)
     assert _status_conflicts("<p>다운스트림 조회 연동을 완료하였습니다.</p>", context)
     assert not _status_conflicts("<p>다운스트림 조회 연동 작업은 진행 중입니다.</p>", context)
+    assert _status_conflicts(
+        "<ul><li>그래프 렌더: 완료</li><li>다운스트림 조회 연동: 완료</li>"
+        "<li>성능 측정: 진행 중</li></ul>", context)
+    assert _status_conflicts(
+        "<ul><li>다운스트림 2홉 조회: 완료</li></ul>", context)
+    assert _status_conflicts(
+        "<ul><li>다운스트림 2홉 조회: 완료 — DL-9092 해결</li></ul>", context)
 
 
 def test_conflicting_completion_is_qualified_as_a_specific_open_fact():
@@ -243,6 +317,13 @@ def test_conflicting_completion_is_qualified_as_a_specific_open_fact():
               "<code>DL-9092</code> 해결 후 완료되었습니다.</li></ul>")
     fixed_tagged = _qualify_status_conflicts(tagged, _status_conflicts(tagged, context))
     assert "Jira 상태가 In Progress" in fixed_tagged
+
+    repeated = ("<ul><li>다운스트림 조회 연동: 완료</li></ul>"
+                "<p>다운스트림 조회 연동 작업도 완료되었습니다.</p>")
+    fixed_repeated = _qualify_status_conflicts(
+        repeated, _status_conflicts(repeated, context))
+    assert fixed_repeated.count("Jira 상태가 In Progress") == 2
+    assert not _status_conflicts(fixed_repeated, context)
     assert not _status_conflicts(fixed_tagged, context)
 
 

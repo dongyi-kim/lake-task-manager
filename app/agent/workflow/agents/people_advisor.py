@@ -30,34 +30,33 @@ SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "index": {"type": "integer", "description": "초안 항목 번호(0부터)"},
-                    "user": {"type": "string", "description": "Jira user id(skcc.x1042 형식). "
-                                                              "확신이 없으면 빈 문자열"},
+                    "index": {"type": "integer", "description": "Zero-based draft item index."},
+                    "user": {"type": "string", "description": "Jira user ID in skcc.x1042 form; empty if unresolved."},
                     "reasons": {
                         "type": "array", "items": {"type": "string"},
-                        "description": ("추천 근거. **각 근거에 숫자나 티켓 키를 넣어라.** "
-                                        "예: '유사 티켓 DL-118·DL-127 담당(2건)', "
-                                        "'DL-118 에서 CDC 관련 코멘트 4건', '진행중 3건'. "
-                                        "'적합해 보임' 같은 근거는 쓰지 마라"),
+                        "description": ("Korean recommendation reasons grounded in the supplied evidence. "
+                                        "Each reason includes a metric or ticket key, for example similar "
+                                        "tickets, relevant comments, or current in-progress count. Never use "
+                                        "a generic claim such as 적합해 보임."),
                     },
                     "alternates": {
                         "type": "array",
                         "items": {"type": "object", "properties": {
                             "user": {"type": "string"},
-                            "why": {"type": "string", "description": "대안인 이유와 한계를 함께"}}},
-                        "description": "대안 1~2명. 왜 1순위가 아닌지도 적는다",
+                            "why": {"type": "string", "description": "Korean explanation of both evidence and limitation."}}},
+                        "description": "One or two alternatives, including why each is not first choice.",
                     },
                     # 자식 담당도 **여기서** 정한다 — 사람을 고르는 일은 한 역할의 것이다.
                     "children": {
                         "type": "array",
                         "items": {"type": "object", "properties": {
-                            "index": {"type": "integer", "description": "이 항목의 하위 번호(0부터)"},
+                            "index": {"type": "integer", "description": "Zero-based child index within this item."},
                             "user": {"type": "string", "description": "Jira user id"},
                             "why": {"type": "string",
-                                    "description": "왜 이 사람인가 — 숫자나 티켓 키를 넣어라"}}},
-                        "description": ("하위(Sub-Task)가 있으면 **하위별 담당**도 정한다. "
-                                        "부하가 높다고 스스로 판단해 뺀 사람을 하위에 넣지 "
-                                        "마라 — 앞뒤가 맞지 않는다. 하위가 없으면 빈 배열"),
+                                    "description": "Korean assignment reason containing a metric or ticket key."}}},
+                        "description": ("Assignments for each child Sub-Task. Do not assign a person whom "
+                                        "your own analysis rejected for excessive workload. Empty when there "
+                                        "are no children."),
                     },
                 },
                 "required": ["index", "user", "reasons"],
@@ -65,7 +64,7 @@ SCHEMA = {
         },
         "caution": {
             "type": "string",
-            "description": "배정상 주의할 점(과부하·운영 인력에 개발 업무 등). 없으면 빈 문자열",
+            "description": "Korean assignment caution such as overload or role mismatch; empty when none.",
         },
     },
     "required": ["assignments"],
@@ -179,32 +178,34 @@ class PeopleAdvisor(StructuredAgent):
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []) if evidence_is_relevant(e))
         data = wrap_data(
-            data_block("현재 상황", state.get("situation")),
-            data_block("유사 티켓(여기 등장한 사람들을 확인하라)", ev),
-            data_block("유사 업무 담당 이력 (코드가 검색·집계함 — 근거로 활용하라)",
+            data_block("Current Situation", state.get("situation")),
+            data_block("Relevant Tickets and Participants", ev),
+            data_block("Verified Similar-Work Assignment History",
                        state.get("similar_history")),
-            data_block("후보 로스터와 현재 부하 (코드가 조회함 — 이 안에서 고른다)",
+            data_block("Verified Candidate Roster and Current Workload",
                        state.get("roster_load")))
         return f"""\
-# 명령서
-아래 티켓 초안의 **각 항목마다** 담당자를 근거와 함께 제안하라.
+# Task
 
-## 제약조건
-- 초안 항목 번호(index)를 그대로 쓴다.
-- 사용자 id 는 `skcc.x1042` 형식이어야 한다. 이름을 적지 마라.
-- 근거는 **위 자료에 있는 것만**. 자료에 없는 것을 근거처럼 적지 마라.
-- 근거에는 워크로드 숫자만이 아니라 **유사 업무 이력(티켓 키·건수)** 을 반드시 확인해
-  반영하라 — 위 자료의 담당 이력 표가 출발점이다. 이력이 없으면 없다고 적는다.
-- **후보는 한 명이 아니다** — alternates 에 대안 후보를 1명 이상, 왜 1순위가 아닌지와
-  함께 적는다. 사용자가 화면에서 후보 중 고른다.
-- 같은 사람을 모든 항목에 몰지 마라 — 그건 배분이 아니다.
-- **하위(Sub-Task)가 있으면 하위 담당도 네가 정한다**(children). 아래 초안에 붙은 현재
-  하위 담당은 코드가 모듈 명단을 순번으로 돌린 임시값이니 부하를 보고 고쳐라.
-  대안에서 "부하가 높아 부적합"이라 적은 사람을 하위에 넣지 마라 — 앞뒤가 안 맞는다.
+Recommend an evidence-backed assignee for every item in the ticket draft.
 
-## 티켓 초안
-{draft_text(state.get('draft')) or '(초안 없음)'}
-짐작 모듈: {state.get('module') or '미상'}{data}"""
+## Constraints
+
+- Preserve each zero-based draft `index`.
+- Use only a verified Jira user ID in `skcc.x1042` form; never print or guess a name.
+- Every reason must come from the supplied data. Inspect similar-work history and ticket counts as well as workload. State in Korean when no similar history exists.
+- Include at least one `alternates` candidate with the reason and limitation; the user chooses in the UI.
+- Distribute work deliberately instead of assigning every item to the same person without evidence.
+- Assign each child Sub-Task in `children`. Existing child assignees in the draft may be temporary round-robin values, so use workload and history to correct them.
+- When the request or draft says work must be distributed and at least two verified roster candidates exist, assign sibling children to distinct users. Returning the same user for every child is invalid unless only one eligible candidate exists in the supplied roster.
+- Never assign a person whom the same analysis rejects as overloaded or unsuitable.
+- Write `reasons`, alternate `why`, child `why`, and `caution` in Korean.
+
+## Ticket Draft Data
+
+{draft_text(state.get('draft')) or '(no draft)'}
+
+Inferred module: {state.get('module') or 'unknown'}{data}"""
 
     def schema(self):
         return SCHEMA

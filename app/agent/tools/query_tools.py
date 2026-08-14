@@ -181,14 +181,12 @@ def _jql_page(where: str, order_by: str, fields: list | None, page_size: int,
 @tool
 def run_jql_v2(where: str = "", order_by: str = "updated DESC", fields: list = None,
                page_size: int = 100, cursor: str = "") -> dict:
-    """범위가 강제된 JQL을 한 페이지 실행한다.
+    """Run one read-only page of JQL with configured Jira scope enforced by code.
 
-    ``where``에는 project 범위를 넣지 않아도 된다. 코드가 항상
-    ``project in (<search.jira.projects 전체>) AND (<where>)``를 바깥에서 적용한다.
-    설정이 비어 있으면 primary project나 전체 Jira로 fallback하지 않는다.
-    50건 총량 제한은 없으며 ``nextCursor``로 끝까지 순회한다. ``ORDER BY``는
-    ``order_by``에만 적고, 안정적인 pagination을 위해 ``key ASC``가 자동 추가된다.
-    이 도구는 read-only다.
+    Put only the additional condition in `where`; code wraps it with every project in `search.jira.projects`.
+    Empty configuration fails and never falls back to `project_key` or all Jira. Put sorting only in `order_by`;
+    code appends `key ASC` for stable pagination. There is no 50-result total cap. Follow `nextCursor` until
+    `hasMore=false` whenever completeness is `all`, and preserve `canonicalJql`, scope, total, and returned count.
     """
     try:
         return _jql_page(where, order_by, fields, page_size, cursor)
@@ -231,10 +229,11 @@ def _cql_escape(value: str) -> str:
 def search_documents(query: str = "", where: str = "", content_type: str = "page",
                      modified_after: str = "", page_size: int = 50,
                      cursor: str = "") -> dict:
-    """Confluence 문서를 ``search.confluence.spaces`` 안에서만 CQL로 검색한다.
+    """Search one read-only CQL page only within every space in `search.confluence.spaces`.
 
-    config가 비어 있으면 전체 space로 fallback하지 않는다. ``where``는 추가 CQL 조건이며
-    ``ORDER BY``를 포함할 수 없다. read-only이고 결과에는 문서 provenance가 포함된다.
+    Empty configuration fails and never widens to all spaces. `where` is an additional CQL condition and cannot
+    contain `ORDER BY`. Follow `nextCursor` when complete coverage is required. Results preserve `canonicalCql`,
+    scope, pagination metadata, document ID, title, URL, excerpt, and modification provenance.
     """
     spaces = search_spaces()
     if not spaces:
@@ -300,10 +299,11 @@ def search_documents(query: str = "", where: str = "", content_type: str = "page
 def search_comments(query: str = "", jql_where: str = "", author: str = "",
                     date_from: str = "", date_to: str = "", page_size: int = 20,
                     cursor: str = "") -> dict:
-    """허용된 Jira 프로젝트의 댓글을 내용·작성자·기간 조건으로 검색한다.
+    """Search comments by text, author, date range, and additional JQL within configured Jira projects.
 
-    JQL로 후보 티켓을 paginated 조회한 뒤 댓글 원문을 검사한다. 결과마다 ticket key,
-    author, date, snippet을 provenance로 반환한다. read-only다.
+    The read-only tool paginates candidate tickets and inspects comment bodies. Each hit preserves ticket key and
+    summary, author, date, and snippet as provenance. Follow `nextCursor` for complete coverage and never replace a
+    comment-content request with an issue-summary search.
     """
     for value, name in ((date_from, "date_from"), (date_to, "date_to")):
         if value and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
@@ -348,10 +348,11 @@ def search_comments(query: str = "", jql_where: str = "", author: str = "",
 def query_people(name: str = "", user_id: str = "", module: str = "",
                  participated_ticket: str = "", max_in_progress: int = -1,
                  page_size: int = 50, cursor: str = "") -> dict:
-    """이름/사번/모듈/티켓 참여/업무량 조건으로 사람 후보와 근거를 조회한다.
+    """Query people by display name, user ID, module, ticket participation, and workload ceiling.
 
-    이 도구는 추천 순위를 만들지 않는다. People Advisor가 사용할 사실과 provenance만
-    반환한다. Jira participation 조회는 ``search.jira.projects`` 밖의 티켓을 허용하지 않는다.
+    This read-only tool returns candidate facts and provenance for People Advisor; it does not rank or recommend.
+    Ticket participation is allowed only for keys in `search.jira.projects`. Follow `nextCursor` for complete
+    coverage and preserve evidence and workload fields without inferring skill or performance.
     """
     from app.infra.settings import load_people
     from app.agent.tools.people_tools import scoped_person_workload
@@ -427,11 +428,11 @@ def query_people(name: str = "", user_id: str = "", module: str = "",
 
 @tool
 def resolve_references(refs: list) -> dict:
-    """ticket/person/document/external 참조를 일괄 검증하고 canonical 링크·배지 정보를 얻는다.
+    """Validate ticket, person, document, and external references and return canonical link or badge metadata.
 
-    입력 항목은 ``{id, kind, key|user_id|page_id|url, label?}`` 형태다. 모델이 raw HTML
-    anchor를 만들기 전에 호출한다. 해결되지 않은 참조는 깨진 링크로 만들지 말고 writer/auditor에
-    warning 또는 blocking issue로 전달한다. read-only다.
+    Input items use `{id, kind, key|user_id|page_id|url, label?}`. Call before rendering references and never emit
+    raw anchor or badge HTML. Do not turn an unresolved reference into a broken link; propagate it as a warning or
+    a blocking write issue. This tool is read-only.
     """
     from app.agent.references import resolve_references as _resolve
     return _resolve(refs)

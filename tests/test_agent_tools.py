@@ -302,7 +302,8 @@ def test_web_tools_docstrings_forbid_internal_terms():
     """검색어로 사내 정보가 새는 것을 막는 경계가 명세(docstring)에 있어야 한다 —
     이 규칙은 코드로 강제할 수 없어서(무엇이 '사내 정보'인지 판정 불가) 명세가 최후의 선이다."""
     for name in ("search_web", "search_github"):
-        assert "사내" in T.BY_NAME[name].description
+        desc = T.BY_NAME[name].description.lower()
+        assert "internal" in desc and "ticket" in desc
 
 
 def test_historian_gets_web_tools_but_writers_do_not():
@@ -405,9 +406,9 @@ def test_historian_task_renders_without_error():
     from app.agent.workflow.agents.research_analyst import ResearchAnalyst
     h = ResearchAnalyst()
     base = {"messages": [HumanMessage(content="CDC 방식 기술 검토")], "trace": []}
-    assert "과거 이력" in h.task(base)                       # web_context 없음
+    assert "history related to the work request" in h.task(base)  # web_context 없음
     with_web = {**base, "web_context": "- [웹] CDC 비교 글"}
-    assert "외부 기술 조사" in h.task(with_web)              # 있으면 자료로 실린다
+    assert "External Technology Research" in h.task(with_web)  # 있으면 자료로 실린다
     assert "CDC 비교 글" in h.task(with_web)
 
 
@@ -494,7 +495,7 @@ def test_historian_presurvey_for_topic_questions(monkeypatch):
     h = ResearchAnalyst()
     txt = h.task({"keywords": ["UI"], "pre_survey": pre,
                   "messages": [HumanMessage(content="근황?")]})
-    assert "사전 조사" in txt and "DL-9000" in txt
+    assert "Prefetched Lexical and Semantic Search" in txt and "DL-9000" in txt
 
 
 def test_unassigned_tool_does_not_lie_about_assigned_tickets():

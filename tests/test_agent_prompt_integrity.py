@@ -61,7 +61,8 @@ def test_role_md_does_not_order_tools_the_role_lacks(name):
     # 따라서 downstream tool 이름을 명세할 수 있지만 직접 호출 금지는 별도로 강제한다.
     if name == "query_specialist":
         text = p.read_text(encoding="utf-8")
-        assert "도구가 없" in text and "직접 호출하지 않는다" in text
+        assert "Do not" in text and "call a tool" in text
+        assert "execution contracts for deterministic Query Runner" in text
         return
     ghosts = {}
     for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
@@ -131,20 +132,40 @@ def test_every_role_md_is_loaded_by_the_loader():
         assert body in loaded, f"{p.name} 이 어떤 SYSTEM_* 상수로도 로드되지 않는다"
 
 
-# ── 한국어 원문형 prompt + 기계 식별자 보존 ──────────────────────────────
-def test_role_prompts_are_korean_originals_not_legacy_english_blocks():
-    """자연어 지시를 한국어 원문형으로 관리한다.
-
-    code/tool/schema 식별자의 영어는 정상이다. 여기서는 과거 prompt의 영문 지시문 머리말과
-    강제어가 통째로 되살아나는 회귀만 잡는다.
-    """
-    banned = ("You are ", "Your job", "## Hard rules", "## Output format",
-              "## Grounding", "## Steps", "NEVER ", "Do NOT ")
+def test_role_prompts_use_english_contracts_and_valid_markdown_headings():
+    """Role instructions stay English-first and use one predictable Markdown outline."""
+    banned_headings = ("# 역할", "## 목적", "## 입력", "## 출력", "## 규칙", "# 명령서")
+    required = ("## Purpose", "## Preflight Check")
     for p in sorted(MD_DIR.glob("*.md")):
         text = p.read_text(encoding="utf-8")
-        assert re.search(r"[가-힣]", text), f"{p.name} 에 한국어 자연어 지시가 없다"
-        found = [token for token in banned if token in text]
-        assert not found, f"{p.name} 에 기존 영문 지시 block이 남았다: {found}"
+        lines = text.splitlines()
+        assert sum(line.startswith("# ") for line in lines) == 1, (
+            f"{p.name} must contain exactly one H1")
+        for heading in required:
+            assert heading in lines, f"{p.name} is missing {heading}"
+        assert re.search(r"^## (?:.* )?(?:Output|Execution) Contract$", text, re.M), (
+            f"{p.name} is missing an output or execution contract heading")
+        for token in banned_headings:
+            assert token not in text, f"{p.name} contains a legacy Korean heading: {token}"
+        for i, line in enumerate(lines):
+            if re.match(r"^#{1,6}\s+\S", line) and i + 1 < len(lines):
+                assert lines[i + 1] == "", f"{p.name}:{i + 2} needs a blank line after its heading"
+        assert not re.search(r"[①②③④⑤⑥⑦⑧⑨⑩⓪]", text), (
+            f"{p.name} contains non-Markdown circled numbering")
+
+
+def test_common_and_playbook_prompts_use_valid_markdown_structure():
+    root = pathlib.Path(__file__).resolve().parents[1] / "app/agent/prompts"
+    for rel in ("common.md", "common-lite.md", "playbooks.md"):
+        text = (root / rel).read_text(encoding="utf-8")
+        lines = text.splitlines()
+        assert sum(line.startswith("# ") for line in lines) == 1
+        assert not re.search(r"[①②③④⑤⑥⑦⑧⑨⑩⓪]", text)
+        if rel != "playbooks.md":
+            assert "Read and answer the user in Korean" in text
+        for i, line in enumerate(lines):
+            if re.match(r"^#{1,6}\s+\S", line) and i + 1 < len(lines):
+                assert lines[i + 1] == "", f"{rel}:{i + 2} needs a blank line after its heading"
 
 
 def test_machine_contract_identifiers_survive_korean_refactor():
@@ -154,7 +175,7 @@ def test_machine_contract_identifiers_survive_korean_refactor():
                                          SYSTEM_ACTION_EXECUTOR, SYSTEM_REQUEST_ARCHITECT,
                                          SYSTEM_WORK_ARCHITECT)
 
-    assert PROMPT_VERSION == "ko-role-contract-v6"
+    assert PROMPT_VERSION == "en-role-contract-v3"
     for token in ("approval_token", "statusCategory", "Epic Link", "Story Point",
                   "Sub-Task", "PMO_VIT"):
         assert token in BASE_PERSONA, f"공통 계약에서 식별자 {token!r}가 번역·유실됐다"
@@ -173,7 +194,7 @@ def test_machine_contract_identifiers_survive_korean_refactor():
         assert token in SYSTEM_RESEARCH_ANALYST, f"ResearchAnalyst tool {token!r}가 번역·유실됐다"
 
     for token in ("<h3>", 'data-type="taskList"', 'data-checked="false"',
-                  "typed reference", "{{ref:id}}", "{{mention:id}}", "[~사번]"):
+                  "canonical `references[]`", "{{ref:id}}", "{{mention:id}}", "[~username]"):
         assert token in SYSTEM_EDITOR_AUTHOR, f"Composer markup {token!r}가 번역·유실됐다"
 
     for token in ("approval_token", "mode=task", "create_tickets", "created"):
@@ -182,10 +203,10 @@ def test_machine_contract_identifiers_survive_korean_refactor():
 
 def test_common_prompt_forbids_plain_person_names_in_agent_replies():
     from app.agent.prompts.base import BASE_PERSONA
-    assert "사람을 언급" in BASE_PERSONA
+    assert "Every person mentioned" in BASE_PERSONA
     assert "{{mention:id}}" in BASE_PERSONA
-    assert "평문 이름" in BASE_PERSONA
-    assert "식별자" in BASE_PERSONA and "확인" in BASE_PERSONA
+    assert "plain display name" in BASE_PERSONA
+    assert "identity is unresolved" in BASE_PERSONA
 
 
 def test_prompt_exposes_the_enforced_ticket_action_contract():
@@ -198,7 +219,7 @@ def test_prompt_exposes_the_enforced_ticket_action_contract():
     for field in EDITABLE_FIELDS:
         assert f"`{field}`" in BASE_PERSONA
     for token in ("Epic", "Task", "Sub-Task", "statusCategory == done", "Reopened",
-                  "댓글은 남길 수"):
+                  "Comments remain valid"):
         assert token in BASE_PERSONA
 
 
@@ -210,15 +231,48 @@ def test_result_integrator_uses_machine_ticket_badge_contract():
                   "{{ticket-detail:KEY}}"):
         assert token in BASE_PERSONA
         assert token in SYSTEM_RESULT_INTEGRATOR
-    assert "참조" in BASE_PERSONA and "반드시" in BASE_PERSONA
-    assert "참조" in SYSTEM_RESULT_INTEGRATOR and "항상" in SYSTEM_RESULT_INTEGRATOR
+    assert "Korean `참조` section" in BASE_PERSONA and "must use" in BASE_PERSONA
+    assert "Korean `참조` section" in SYSTEM_RESULT_INTEGRATOR and "must use" in SYSTEM_RESULT_INTEGRATOR
 
 
 def test_common_prompt_enforces_compact_structured_reply_style():
     from app.agent.prompts.base import BASE_PERSONA, PROMPT_VERSION
-    assert PROMPT_VERSION == "ko-role-contract-v6"
-    for token in ("종결어미", "명사형", "heading", "표", "bullet", "직접 인용", "질문"):
+    assert PROMPT_VERSION == "en-role-contract-v3"
+    for token in ("compact Korean", "short noun phrases", "headings", "table", "bullet",
+                  "direct quotations", "questions"):
         assert token in BASE_PERSONA
+
+
+def test_builtin_tool_descriptions_are_english():
+    """Tool schemas are part of the prompt; Korean implementation comments and results are not."""
+    from app.agent import tools as T
+    mixed = {name: tool.description for name, tool in T.BY_NAME.items()
+             if re.search(r"[가-힣]", tool.description or "")}
+    assert not mixed, "Built-in tool descriptions contain Korean: " + ", ".join(sorted(mixed))
+
+
+def test_role_manifest_purposes_are_english():
+    from app.agent.workflow.role_manifest import ROLE_SPECS
+    mixed = {name: entry.purpose for name, entry in ROLE_SPECS.items()
+             if re.search(r"[가-힣]", entry.purpose or "")}
+    assert not mixed, "Role manifest purposes contain Korean: " + ", ".join(sorted(mixed))
+
+
+def test_work_architect_create_contract_tolerates_an_unused_empty_change_object():
+    """Some OpenAI-compatible servers emit optional objects as `{}`; create output must stay valid."""
+    from app.agent.workflow.agents.work_architect import SCHEMA
+    change = SCHEMA["properties"]["change"]
+    assert "key" not in change.get("required", []), (
+        "An unused create-path change object must not force a modify-only key")
+
+
+def test_delegated_draft_and_distributed_assignment_rules_are_explicit():
+    from app.agent.prompts.roles import SYSTEM_PEOPLE_ADVISOR, SYSTEM_WORK_ARCHITECT
+    assert "return `questions=[]` with a complete draft" in SYSTEM_WORK_ARCHITECT
+    assert "Represent each requested deliverable exactly once" in SYSTEM_WORK_ARCHITECT
+    assert "map every independent deliverable clause" in SYSTEM_WORK_ARCHITECT
+    assert "Do not invent generic benefits or problems" in SYSTEM_WORK_ARCHITECT
+    assert "assign sibling children to different users" in SYSTEM_PEOPLE_ADVISOR
 
 
 def test_evaluation_harnesses_preserve_production_model_routing():
