@@ -2,8 +2,9 @@
 Lake Task Manager — 로컬 실행 런처.
 
 용도:
-  1) 개발/일반:   python run.py               (uvicorn + 앱 창 자동 오픈, 창 닫으면 종료)
-  2) prod SSO:    python run.py login         (사내 SSO 1회 로그인 후 세션 저장)
+  1) 로컬 개발:   python run.py --reload      (코드·설정·정적 자산 hot reload)
+  2) 일반/운영:   python run.py               (uvicorn + 앱 창 자동 오픈, 창 닫으면 종료)
+  3) prod SSO:    python run.py login         (사내 SSO 1회 로그인 후 세션 저장)
 
 앱 창 모드(기본): uvicorn 을 백그라운드 스레드로 띄우고, Playwright Chromium 을 '앱 창'으로
 열어 http://localhost:PORT 를 보여준다. **그 창을 닫으면 서버·프로세스·런처(run.bat)가 함께 종료**
@@ -1489,6 +1490,33 @@ def _run_plain(s):
     uvicorn.run("app.main:app", host=s.app_host, port=s.app_port, log_level="info")
 
 
+def _run_hot_reload(s):
+    """개발 서버: Python·설정·프론트 자산 변경을 감시해 worker를 교체한다."""
+    import webbrowser
+    from watchfiles import run_process
+
+    source_root = Path(__file__).resolve().parent
+    watch_dirs = [source_root / "app", source_root / "config"]
+    url = f"http://localhost:{s.app_port}/"
+    print(f"Lake Task Manager dev - {url}  (env={s.jira_env}, hot reload)  [종료: Ctrl+C]")
+    threading.Thread(target=lambda: (time.sleep(1.5), webbrowser.open(url)), daemon=True).start()
+    # Codex sandbox·네트워크 드라이브처럼 native filesystem event가 전달되지 않는 환경도
+    # 같은 동작을 보장한다. 300ms polling은 개발 모드에만 적용된다.
+    os.environ["WATCHFILES_FORCE_POLLING"] = "true"
+    run_process(
+        *watch_dirs,
+        target=_serve_hot_reload_worker,
+        args=(s.app_host, s.app_port),
+        target_type="function",
+        ignore_permission_denied=True,
+    )
+
+
+def _serve_hot_reload_worker(host, port):
+    """watchfiles가 변경 때마다 새로 띄우는 Uvicorn worker."""
+    uvicorn.run("app.main:app", host=host, port=port, log_level="info")
+
+
 def _ensure_deps() -> None:
     """빠진 의존을 **앱이 스스로** 채운다. 실패해도 앱은 그대로 뜬다(최선 노력).
 
@@ -1558,6 +1586,10 @@ def main():
         _sso_login(s)
         return
 
+    dev_reload = "--reload" in sys.argv[1:]
+    if dev_reload and s.jira_env == "prod":
+        raise SystemExit("[runtime] --reload는 mock/local 개발 환경에서만 사용할 수 있습니다.")
+
     if os.getenv("LAKE_RESTART"):
         # 업데이트 후 재기동: 직전 인스턴스가 방금 종료 중이다. 단일 인스턴스 억제를 건너뛰고
         # (내가 새 인스턴스가 돼야 함) 포트가 풀릴 때까지 기다린 뒤 정상 기동한다.
@@ -1570,6 +1602,10 @@ def main():
     # Task Manager의 이미지 이름은 Python 코드의 title이 아니라 실행 파일명에서 온다.
     # 서버/pystray를 시작하기 전에 venv의 named launcher로 프로세스를 교체한다.
     reexec_with_process_name(s.jira_env)
+
+    if dev_reload:
+        _run_hot_reload(s)
+        return
 
     if s.jira_env == "prod":
         state = APP_ROOT / s.jira_state_path

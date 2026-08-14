@@ -18,7 +18,7 @@
 pip install -r src/requirements.txt
 
 # (A) mock — Jira 없이 바로
-python src/run.py                                  # http://localhost:4457
+python src/run.py --reload                         # http://localhost:4457
 
 # (B) local — Fake Jira 로 실제 HTTP 경로 검증
 cd src && python run_fake.py                       # 터미널1: Fake Jira :8080

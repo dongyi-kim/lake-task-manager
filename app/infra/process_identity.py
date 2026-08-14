@@ -84,6 +84,16 @@ def _sync_launcher(base_executable: Path, target: Path) -> None:
         _sync_file(runtime, target.parent / runtime.name)
 
 
+def _repair_base_executable(current: Path) -> None:
+    """named base 이미지의 multiprocessing worker가 같은 실행기를 사용하게 한다.
+
+    CPython은 venv 안에서 이름이 바뀐 실행기를 시작하면 ``sys._base_executable``도 base
+    디렉터리의 같은 이름으로 추론한다. 그 파일은 존재하지 않아 Windows spawn이 실패하므로,
+    실제 인터프리터 이미지인 현재 named launcher를 base 실행기로 지정한다.
+    """
+    sys._base_executable = str(current)
+
+
 def reexec_with_process_name(
     jira_env: str,
     *,
@@ -107,6 +117,7 @@ def reexec_with_process_name(
     current = Path(sys.executable if executable is None else executable).resolve()
     target = named_launcher_path(current, jira_env)
     if current.name.casefold() == target.name.casefold():
+        _repair_base_executable(current)
         return False
     if current.name.casefold() not in _PYTHON_LAUNCHERS:
         return False

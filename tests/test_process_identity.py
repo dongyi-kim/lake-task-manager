@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
+import watchfiles
+
+import run as launcher
 from app.infra import process_identity as P
 from app.infra.settings import default_app_port
 
@@ -55,14 +59,16 @@ def test_named_launcher_reexec_contract(tmp_path):
     ]
 
 
-def test_non_windows_and_already_named_are_noops(tmp_path):
+def test_non_windows_and_already_named_are_noops(tmp_path, monkeypatch):
     python = tmp_path / "python.exe"
     python.write_bytes(b"python")
     assert P.reexec_with_process_name("mock", executable=python, platform="linux") is False
 
     named = tmp_path / P.PROD_PROCESS_NAME
     named.write_bytes(b"python")
+    monkeypatch.setattr(P.sys, "_base_executable", str(tmp_path / "missing.exe"))
     assert P.reexec_with_process_name("prod", executable=named, platform="win32") is False
+    assert P.sys._base_executable == str(named.resolve())
 
 
 def test_existing_launcher_is_refreshed(tmp_path):
@@ -87,3 +93,45 @@ def test_existing_launcher_is_refreshed(tmp_path):
         execve=lambda *_: None,
     )
     assert target.read_bytes() == b"new-python-image"
+
+
+def test_hot_reload_watches_backend_config_and_static_assets(monkeypatch):
+    calls = {}
+
+    class FakeThread:
+        def __init__(self, *, target, daemon):
+            calls["thread"] = {"target": target, "daemon": daemon}
+
+        def start(self):
+            calls["thread_started"] = True
+
+    monkeypatch.setattr(launcher.threading, "Thread", FakeThread)
+    monkeypatch.setattr(watchfiles, "run_process", lambda *paths, **kwargs: calls.update(
+        {"paths": paths, "kwargs": kwargs}
+    ))
+
+    launcher._run_hot_reload(
+        SimpleNamespace(app_host="127.0.0.1", app_port=4457, jira_env="mock")
+    )
+
+    assert calls["thread_started"] is True
+    source_root = Path(launcher.__file__).resolve().parent
+    assert {Path(path) for path in calls["paths"]} == {
+        source_root / "app", source_root / "config",
+    }
+    assert calls["kwargs"]["target"] is launcher._serve_hot_reload_worker
+    assert calls["kwargs"]["args"] == ("127.0.0.1", 4457)
+    assert calls["kwargs"]["target_type"] == "function"
+    assert calls["kwargs"]["ignore_permission_denied"] is True
+    assert launcher.os.environ["WATCHFILES_FORCE_POLLING"] == "true"
+
+
+def test_hot_reload_worker_runs_uvicorn_without_nested_reloader(monkeypatch):
+    calls = []
+    monkeypatch.setattr(launcher.uvicorn, "run", lambda app, **kwargs: calls.append((app, kwargs)))
+
+    launcher._serve_hot_reload_worker("127.0.0.1", 4457)
+
+    assert calls == [("app.main:app", {
+        "host": "127.0.0.1", "port": 4457, "log_level": "info",
+    })]
