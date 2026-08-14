@@ -23,6 +23,7 @@ from pathlib import Path
 import uvicorn
 
 from app.infra.settings import APP_ROOT, get_settings
+from app.infra.process_identity import reexec_with_process_name
 
 
 # 창을 열자마자(서버 준비 전에도) 즉시 보여줄 부팅 로더 — 외부 자원 없는 self-contained data URL.
@@ -1565,6 +1566,10 @@ def main():
         # 단일 인스턴스: 이미 떠 있으면 그 인스턴스에 창을 띄우/포커스 시키고 끝낸다(새 백엔드 안 띄움).
         # (시작프로그램/바로가기 재실행 시 백엔드가 두 개 뜨거나 창이 여러 개 나는 것을 막는다.)
         return
+
+    # Task Manager의 이미지 이름은 Python 코드의 title이 아니라 실행 파일명에서 온다.
+    # 서버/pystray를 시작하기 전에 venv의 named launcher로 프로세스를 교체한다.
+    reexec_with_process_name(s.jira_env)
 
     if s.jira_env == "prod":
         state = APP_ROOT / s.jira_state_path

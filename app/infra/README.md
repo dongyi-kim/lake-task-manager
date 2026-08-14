@@ -3,6 +3,7 @@
 앱 전반이 기대는 하부 서비스. 특정 기능에 속하지 않는다.
 
 ## 파일
+- **process_identity.py** — Windows base Python 이미지·런타임 DLL을 `LakeTaskManager.exe`/`LakeTaskManagerDev.exe`로 준비하고 앱 시작 전에 해당 프로세스로 교체.
 - **cache.py** — SQLite TTL 캐시. **2단계 TTL**(outdated/dead)로 오프라인·SSO 만료에도 화면을 지키고,
   `get_or_set`(폴백) · `get_or_set_swr`(stale-while-revalidate) · 주기 purge · snapshot(시계열) · recent(최근 열람) 제공.
 - **settings.py** — config 로딩(jira.yml·wbs_config·people) + 경로 탐색(dev/frozen/컨테이너) + `Settings` + `is_manager`.

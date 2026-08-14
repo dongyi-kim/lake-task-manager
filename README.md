@@ -53,7 +53,7 @@ pip install -r requirements.txt        # dev 전부 커버 (requirements-sso 는
 ## 3. 실행
 
 ```powershell
-# mock (기본) — 바로 UI 확인. http://localhost:8000 자동 오픈
+# mock (기본) — 바로 UI 확인. http://localhost:4457 자동 오픈
 python run.py
 
 # local 원클릭 — fake(:8080)를 백그라운드로 띄우고 앱(local)을 한 방에. 창 닫으면 fake 까지 함께 종료
@@ -63,23 +63,24 @@ python run_local.py
 python run_fake.py                     # 터미널1 — Fake Jira :8080
 $env:JIRA_ENV="local"; python run.py   # 터미널2 — 앱(local → fake)
 
-# 핫리로드 (개발 중)
-uvicorn app.main:app --reload
+# 핫리로드 (개발 중, 프로세스명은 python.exe로 표시)
+uvicorn app.main:app --reload --port 4457
 ```
 
 bash: `JIRA_ENV=local python run.py` / 지연 주입: `FAKE_LATENCY_MS=800 python run_local.py` (또는 `run_fake.py`)
 
 - `config/jira.yml` 의 dev 기본이 `env: mock` 이라 `python run.py` 는 mock. fake 검증만 `JIRA_ENV=local` 로 켠다.
-- 콘솔에 `Lake Task Manager - http://localhost:8000/  (env=mock)`. 종료 `Ctrl+C`.
+- 콘솔에 `Lake Task Manager - http://localhost:4457/  (env=mock)`. 종료 `Ctrl+C`.
+- Windows에서는 개발 서버가 `LakeTaskManagerDev.exe`, prod pystray가 `LakeTaskManager.exe`로 표시된다. 프로세스 정체성까지 확인할 때는 직접 `uvicorn` 대신 `python run.py`를 사용한다.
 - **검증 포인트**: mock 화면과 local 화면의 숫자(PMO 진척률 등)가 **완전히 같아야** 한다. 다르면 회귀.
 
 ### API 스모크 (앱이 뜬 상태에서)
 ```bash
-curl http://localhost:8000/api/health
-curl http://localhost:8000/api/wbs
-curl http://localhost:8000/api/vit
-curl http://localhost:8000/api/workload
-curl http://localhost:8000/api/refresh      # 캐시 + 프론트 memo 무효화
+curl http://localhost:4457/api/health
+curl http://localhost:4457/api/wbs
+curl http://localhost:4457/api/vit
+curl http://localhost:4457/api/workload
+curl http://localhost:4457/api/refresh      # 캐시 + 프론트 memo 무효화
 ```
 - 리소스 단위 `/api/epic/{key}/tree`·`/api/vit/{key}`·`/api/activity/{user}` 는 화면에서 펼칠 때 lazy 호출.
 - **캐시 확인**: 같은 엔드포인트 2번째 호출이 급격히 빨라지면 warm hit. `/api/refresh` 후 다시 느려지면 정상.
@@ -168,7 +169,7 @@ dev fake Jira = 외부 오픈소스 [`jira820`](https://pypi.org/project/jira820
 |---|---|
 | `:8080` 안 붙음 | fake 서버(터미널1)부터 띄웠는지, 앱 터미널에 `JIRA_ENV=local` 줬는지 확인 |
 | mock/local 숫자 다름 | 회귀 — `world.py` 한 소스인데 갈라짐. `python -m pytest -q` 부터 |
-| 포트 점유 | PowerShell: `Get-NetTCPConnection -LocalPort 8000,8080 \| Select -Expand OwningProcess -Unique \| % { Stop-Process -Id $_ -Force }` / mac·linux: `lsof -ti:8000 -ti:8080 \| xargs kill -9` |
+| 포트 점유 | PowerShell: `Get-NetTCPConnection -LocalPort 4457,8080 \| Select -Expand OwningProcess -Unique \| % { Stop-Process -Id $_ -Force }` / mac·linux: `lsof -ti:4457 -ti:8080 \| xargs kill -9` |
 | 콘솔 한글 깨짐 | `run.py` 가 utf-8 강제하지만, 그래도면 `PYTHONIOENCODING=utf-8` |
 | prod 세션 만료 | 화면의 "SSO 로그인" 버튼 또는 `<exe> login` 재실행 (SSO 는 반자동이 한계) |
 | exe 가 옛 화면 | 프론트 번들 캐시 — 브라우저 `Ctrl+Shift+R`, exe/서버 재시작 |

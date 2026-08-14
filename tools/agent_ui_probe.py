@@ -15,11 +15,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
-BASE = "http://127.0.0.1:8000"
+BASE = os.getenv("LTM_BASE_URL", "http://127.0.0.1:4457").rstrip("/")
 
 
 # ── 렌더 규칙 — 어긴 것만 보고한다 ────────────────────────────────────────

@@ -1,5 +1,13 @@
 # Lake Task Manager
 
+## 로컬 개발 서버 실행 규칙
+
+- 로컬 dev 기본 주소는 `http://127.0.0.1:4457`이며 `python run.py`를 표준 진입점으로 사용한다.
+- 실행 전 포트 전체 listener를 확인한다. 기존 listener가 LTM인지 `/api/health`로 검증하고, 정상 종료 API 또는 검증된 LTM 프로세스 종료로 포트를 비운 뒤 현재 worktree를 같은 포트에 기동한다.
+- 사용자가 명시적으로 요청하지 않은 한 충돌을 피하려고 다른 포트를 임의로 선택하지 않는다.
+- 기동 후 `/api/health`의 revision과 현재 worktree revision을 대조한다.
+- Windows 앱 서버는 개발에서 `LakeTaskManagerDev.exe`, prod pystray에서 `LakeTaskManager.exe` named launcher를 사용한다. 직접 `uvicorn`을 실행하면 프로세스명이 다시 `python.exe`가 되므로 앱 동작 확인에는 `run.py`를 사용한다.
+
 ## Agent 기능개발 지침
 
 `app/agent/**`, Agent가 사용하는 `app/domain/**`, Agent UI, prompt, role, tool, workflow 또는 실 LLM 배터리를 변경할 때는 작업 전에 [`app/agent/AGENT.md`](app/agent/AGENT.md)를 전부 읽고 따른다. 해당 문서는 Agent 영역의 상세 source of truth다. 반복적인 Agent 개선·평가 작업에는 repository skill [`$ltm-agent-development`](.agents/skills/ltm-agent-development/SKILL.md)를 사용한다.
