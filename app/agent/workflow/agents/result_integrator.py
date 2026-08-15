@@ -818,9 +818,11 @@ def _render_assignment_section(text: str, items: list, assignments: list) -> str
     block = "\n".join(table)
     source = str(text or "")
     pattern = (r"(?ms)^###\s*(?:할당(?:\s+증거)?|담당(?:자)?\s*(?:제안|추천)|"
-               r"할당\s+증거\s+및\s+추천)[^\n]*\n.*?(?=^###\s|\Z)")
-    if _re.search(pattern, source):
-        return _re.sub(pattern, block + "\n", source, count=1)
+               r"담당자?\s*및\s*배정\s*근거|할당\s+증거\s+및\s+추천)"
+               r"[^\n]*\n.*?(?=^###\s|\Z)")
+    # Remove every model-authored assignment section.  A response may contain both a stale
+    # prose list and a later table; replacing only the first leaves contradictory owners.
+    source = _re.sub(pattern, "", source).strip()
     anchor = _re.search(r"(?m)^###\s*(?:검증|승인)", source)
     if anchor:
         return source[:anchor.start()].rstrip() + "\n\n" + block + "\n\n" + source[anchor.start():]

@@ -15,6 +15,7 @@ from app.agent.workflow.agents.request_architect import RequestArchitect  # noqa
 from app.agent.workflow.agents.result_integrator import (  # noqa: E402
     ResultIntegrator,
     _canonicalize_meeting_reply,
+    _render_assignment_section,
 )
 from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _apply_named_assignees,
@@ -155,6 +156,22 @@ def test_all_user_fixed_assignees_skip_recommendation_without_losing_alignment()
     assert all(row["reasons"] == ["사용자 지정 담당자"] for row in rows)
     draft["items"][1].pop("assignee_source")
     assert not _all_assignees_user_specified(draft)
+
+
+def test_assignment_renderer_removes_every_stale_owner_section():
+    items = [{"summary": "writer", "assignee": "skcc.i2011"},
+             {"summary": "reader", "assignee": "skcc.x1402"}]
+    assignments = [
+        {"index": 0, "user": "skcc.i2011", "reasons": ["사용자 지정 담당자"]},
+        {"index": 1, "user": "skcc.x1402", "reasons": ["사용자 지정 담당자"]},
+    ]
+    raw = ("### 담당자 및 배정 근거\n- Task 1: [~skcc.x1103]\n- Task 2: [~skcc.x1103]\n\n"
+           "### 담당 제안\n| 티켓 | 추천 |\n|---|---|\n| old | [~skcc.x1103] |\n\n"
+           "### 검증 결과\n정상")
+    got = _render_assignment_section(raw, items, assignments)
+    assert got.count("### 담당 제안") == 1
+    assert "[~skcc.x1103]" not in got
+    assert "[~skcc.i2011]" in got and "[~skcc.x1402]" in got
 
 
 def test_meeting_comment_mentions_are_repaired_to_confirmed_identities():
