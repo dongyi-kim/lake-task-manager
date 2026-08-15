@@ -1,7 +1,7 @@
 # LTM Agent 평가 표준
 
 > Source of truth: [`evaluation_protocol.json`](evaluation_protocol.json)  
-> 현재 protocol: `1.0.0` / human rubric: `1.2.0`
+> 현재 protocol: `1.1.0` / human rubric: `1.2.1`
 
 이 문서는 prompt, Role, Tool, workflow 후보의 품질·시간·token을 같은 자로 비교하기 위한 실행 규약. 과거 보고서의 점수는 해당 보고서가 선언한 규약으로만 해석하며, 버전이 없거나 `comparabilityKey`가 다른 점수를 한 시계열처럼 비교하지 않음
 
@@ -76,7 +76,7 @@ OpenAI의 [Evaluation best practices](https://developers.openai.com/api/docs/gui
 권고하는 task-specific test, 전체 logging, 자동 지표와 human judgment의 결합, 지속적 dataset 확장을
 따르되, 이 프로젝트의 정성 판정자는 위 규칙에 따라 Codex/Claude로 더 좁게 제한
 
-## 5. 사람 관점 품질 rubric `1.2.0`
+## 5. 사람 관점 품질 rubric `1.2.1`
 
 각 실제 reply, 질문 form, card/payload, description/comment 전문을 읽고 다섯 축을 각각 `1.0–5.0`,
 `0.5` 간격으로 평가. 자동 checker 점수를 사람 점수로 대체하지 않음
@@ -89,6 +89,10 @@ OpenAI의 [Evaluation best practices](https://developers.openai.com/api/docs/gui
 4. checklist 결함 수로 해당 축의 최고점 계산
 5. 최고점 이하에서 축별 anchor와 결함의 영향도를 대조해 `0.5` 단위 점수 선택
 6. 축별 rationale, case 대표 출력 발췌, 치명 결함 cap code 기록
+
+`pass` 근거도 실제로 관찰한 reply·질문·payload·source 행동을 지목해야 함. “문제 없음”, “반대 결함 없음”처럼
+output과 연결되지 않는 상투 문장은 증거가 아니며 validator 통과 여부와 별개로 review 미완료. `na`는 단순히
+결함이 없다는 뜻이 아니라 그 checklist를 해당 case에 적용할 수 없는 이유를 구체적으로 기록
 
 ### Checklist 판정과 점수화
 
@@ -235,6 +239,9 @@ case 점수는 다섯 축 가중평균. 다음 치명 결함은 평균 후 cap �
 - quality는 평균과 함께 치명 결함률·자동 계약 실패율을 보고
 - latency는 모든 case-attempt에 대한 nearest-rank 방식 `p50/p95`, token·call·cost는 총량과
   case-attempt당 값을 함께 보고
+- 모든 primary raw JSON은 동일한 `metrics` object에 `attempts`, `durationSeconds`, `calls`,
+  `promptTokens`, `completionTokens`, `totalTokens`, `cachedTokens`, `costUsd`를 기록. suite별 legacy
+  `합계` 필드는 표시용으로만 유지하며 집계 source로 사용하지 않음
 - 반복 실행에서는 최선/최악 run을 대표값으로 선택하지 않고 모든 attempt를 집계
 
 ## 7. Battery 변경과 역사 비교
@@ -258,7 +265,9 @@ case 점수는 다섯 축 가중평균. 다음 치명 결함은 평균 후 cap �
 6. `사람 품질 평가 기준`: Codex/Claude evaluator 식별자와 금지된 LTM LLM judge 미사용 선언,
    rubric version, 축·가중치·cap, reviewer 수와 blinding 여부
 7. `배터리별 실제 출력과 평가`: 차이 나는 전문 또는 충분한 발췌, 축별 점수와 의견
-8. `실패·재시도·제한사항`: 자동 실패, 치명 결함, 누락, 단일 run 여부
+8. `자동 checker와 사람 판정 불일치`: 자동 green인데 사람 major인 false positive, 자동 red인데 사람 품질상
+   허용 가능한 false negative, checker 수정과 새 battery version. 불일치를 숨기거나 과거 raw를 재채점하지 않음
+9. `실패·재시도·제한사항`: 자동 실패, 치명 결함, 누락, 단일 run 여부
 
 `tools/agent_eval_protocol.py`가 raw JSON에 식별 metadata를 넣고 표준 Markdown block을 생성·검증. 버전 없는 과거 결과를 v1 결과로 소급 표기하지 않음
 

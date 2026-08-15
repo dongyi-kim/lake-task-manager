@@ -1,7 +1,7 @@
 {
   "protocolName": "LTM Agent Evaluation Protocol",
-  "protocolVersion": "1.0.0",
-  "rubricVersion": "1.2.0",
+  "protocolVersion": "1.1.0",
+  "rubricVersion": "1.2.1",
   "primaryEvidencePolicy": "complete-run-no-substitution",
   "attemptPolicy": "retain-every-attempt",
   "qualitativeEvaluation": {
@@ -10,7 +10,9 @@
     "prohibitedEvaluators": ["ltm-runtime-llm", "candidate-model", "llm-as-judge"],
     "requiresDirectRawOutputReview": true,
     "requiresSameEvaluatorPanelAcrossCandidates": true,
-    "automationBoundary": "deterministic-contract-checks-and-arithmetic-only"
+    "automationBoundary": "deterministic-contract-checks-and-arithmetic-only",
+    "checklistEvidencePolicy": "pass-must-name-observed-output-behavior; na-must-explain-non-applicability; generic-no-defect-claims-are-invalid",
+    "checkerDisagreementPolicy": "report-every-automatic-vs-direct-review-disagreement-and-version-the-fixed-battery"
   },
   "qualification": {
     "minimumRepetitions": 5,
@@ -27,6 +29,7 @@
     "latency": ["p50", "p95"],
     "percentileMethod": "nearest-rank-over-all-case-attempts",
     "usage": ["calls", "promptTokens", "completionTokens", "totalTokens", "cachedTokens", "costUsd"],
+    "canonicalMetricsField": "metrics",
     "rounding": 2,
     "missingCasePolicy": "qualification-invalid-not-zero-filled",
     "technicalRetryPolicy": "record-all-attempts-and-report-retry-rate"
@@ -218,6 +221,7 @@
     "정량 결과",
     "사람 품질 평가 기준",
     "배터리별 실제 출력과 평가",
+    "자동 checker와 사람 판정 불일치",
     "실패·재시도·제한사항"
   ],
   "requiredReportFields": [

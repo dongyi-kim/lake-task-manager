@@ -41,14 +41,14 @@ os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
 from app.agent.workflow import session          # noqa: E402
-from tools.agent_eval_protocol import (build_run_metadata, raw_result_path,
-                                       write_raw_result)  # noqa: E402
+from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
+                                       raw_result_path, write_raw_result)  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "1.0.0"
+BATTERY_VERSION = "1.1.0"
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
 #    (인터뷰 → 초안이 이 도구의 핵심 갈래다).
@@ -135,6 +135,7 @@ def run():
                 "LLM호출": u.get("calls"), "프롬프트토큰": u.get("promptTokens"),
                 "완성토큰": u.get("completionTokens"), "총토큰": u.get("totalTokens"),
                 "캐시토큰": u.get("cachedTokens", 0),
+                "비용USD": u.get("costUsd"),
                 "역할별": u.get("byNode") or {},
                 "검사": _checks(out, q),
                 "답변": out.get("reply") or "",
@@ -156,7 +157,7 @@ def run():
     tot = {"턴수": 0, "초": 0.0, "총토큰": 0, "프롬프트토큰": 0, "완성토큰": 0,
            "캐시토큰": 0, "LLM호출": 0, "근거위반": 0, "후검증위반": 0,
            "종결어미줄": 0, "맺음상투구": 0, "요구구조불일치": 0,
-           "응답카드불일치": 0}
+           "응답카드불일치": 0, "비용USD": 0.0}
     for r in rows:
         for t in r["턴"]:
             if "오류" in t:
@@ -164,6 +165,7 @@ def run():
             tot["턴수"] += 1
             for k in ("초", "총토큰", "프롬프트토큰", "완성토큰", "캐시토큰", "LLM호출"):
                 tot[k] += (t.get(k) or 0)
+            tot["비용USD"] += (t.get("비용USD") or 0)
             ck = t.get("검사") or {}
             tot["근거위반"] += (ck.get("근거위반") or 0)
             tot["후검증위반"] += len(ck.get("후검증위반") or [])
@@ -172,6 +174,7 @@ def run():
             tot["요구구조불일치"] += 1 if ck.get("요구구조불일치") else 0
             tot["응답카드불일치"] += 1 if ck.get("응답카드불일치") else 0
     tot["초"] = round(tot["초"], 1)
+    tot["비용USD"] = round(tot["비용USD"], 6)
     evaluation = build_run_metadata(
         suite="conversation",
         battery_version=BATTERY_VERSION,
@@ -182,9 +185,15 @@ def run():
         prompt_version=PROMPT_VERSION,
     )
     out_path = raw_result_path("conversation", evaluation, requested=REQUESTED_OUT)
+    metrics = quantitative_metrics(
+        attempts=tot["턴수"], duration_seconds=tot["초"], calls=tot["LLM호출"],
+        prompt_tokens=tot["프롬프트토큰"], completion_tokens=tot["완성토큰"],
+        total_tokens=tot["총토큰"], cached_tokens=tot["캐시토큰"],
+        cost_usd=tot["비용USD"],
+    )
     write_raw_result(out_path, {"model": MODEL, "simpleModel": SIMPLE_MODEL,
                                 "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
-                                "합계": tot, "시나리오": rows})
+                                "metrics": metrics, "합계": tot, "시나리오": rows})
     print(json.dumps(tot, ensure_ascii=False), flush=True)
     print(f"→ {out_path}", flush=True)
 

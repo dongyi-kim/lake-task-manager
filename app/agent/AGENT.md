@@ -202,6 +202,10 @@ Codex/Claude가 raw output을 직접 채점한 뒤에는 git에 보존할 경량
 근거, raw cache 상대 경로를 기록한다. focused battery 재실행은 과거 full-run을 덮어쓰지 않고 비교
 대상 보고서와 공통 case를 명시한다. 배터리를 실행하고 이 보고서를 남기지 않은 상태는 완료가 아니다.
 
+자동 checker 통과를 사람 품질 통과로 간주하지 않는다. 직접 판독과 checker가 어긋난 case는 보고서의
+`자동 checker와 사람 판정 불일치`에 전부 기록하고, checker를 고쳤다면 battery version을 올린다. primary
+raw 결과의 정량 집계는 suite별 표시 이름이 아니라 공통 `metrics` object만 사용한다.
+
 ## 7. 완료 조건
 
 - 변경한 역할의 input/output/tool/effect가 `role_manifest.py`와 일치한다.

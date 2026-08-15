@@ -261,6 +261,24 @@ def write_raw_result(path: str | os.PathLike[str], payload: Mapping[str, Any]) -
     return target
 
 
+def quantitative_metrics(
+    *, attempts: int, duration_seconds: float, calls: int, prompt_tokens: int,
+    completion_tokens: int, total_tokens: int, cached_tokens: int,
+    cost_usd: float | None,
+) -> dict[str, Any]:
+    """Canonical quantitative block shared by every primary battery raw result."""
+    return {
+        "attempts": int(attempts),
+        "durationSeconds": round(float(duration_seconds), 1),
+        "calls": int(calls),
+        "promptTokens": int(prompt_tokens),
+        "completionTokens": int(completion_tokens),
+        "totalTokens": int(total_tokens),
+        "cachedTokens": int(cached_tokens),
+        "costUsd": None if cost_usd is None else round(float(cost_usd), 6),
+    }
+
+
 def validate_checklist_results(
     checklist_results: Mapping[str, Mapping[str, Mapping[str, Any]]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -654,7 +672,8 @@ def render_report_standard_block(metadata: Sequence[Mapping[str, Any]]) -> str:
     lines.extend([
         "",
         "나머지 필수 section: `실행 조건`, `배터리 범위`, `정량 결과`, "
-        "`배터리별 실제 출력과 평가`, `실패·재시도·제한사항`.",
+        "`배터리별 실제 출력과 평가`, `자동 checker와 사람 판정 불일치`, "
+        "`실패·재시도·제한사항`.",
     ])
     return "\n".join(lines)
 

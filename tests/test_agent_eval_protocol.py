@@ -66,9 +66,13 @@ def test_protocol_versions_and_weights_are_explicit():
     assert protocol["qualification"]["minimumRepetitions"] == 5
     assert sum(item["weight"] for item in protocol["humanRubric"]["dimensions"]) == pytest.approx(1)
     assert len(protocol["humanRubric"]["dimensions"]) == 5
-    assert protocol["rubricVersion"] == "1.2.0"
+    assert protocol["protocolVersion"] == "1.1.0"
+    assert protocol["rubricVersion"] == "1.2.1"
     assert set(protocol["humanRubric"]["scoreAnchors"]) == {"1", "2", "3", "4", "5"}
     assert protocol["qualitativeEvaluation"]["allowedAgentFamilies"] == ["codex", "claude"]
+    assert "generic-no-defect-claims-are-invalid" in \
+        protocol["qualitativeEvaluation"]["checklistEvidencePolicy"]
+    assert "자동 checker와 사람 판정 불일치" in protocol["requiredReportSections"]
     for dimension in protocol["humanRubric"]["dimensions"]:
         assert len(dimension["checklist"]) >= 6
         assert len({item["id"] for item in dimension["checklist"]}) == len(dimension["checklist"])
@@ -194,7 +198,7 @@ def test_run_metadata_marks_partial_single_run_as_exploratory(monkeypatch):
         simple_model="gpt-4o-mini",
         prompt_version="candidate-v1",
     )
-    assert metadata["protocolVersion"] == "1.0.0"
+    assert metadata["protocolVersion"] == "1.1.0"
     assert metadata["battery"]["batteryVersion"] == "1.0.0"
     assert len(metadata["battery"]["batteryManifestSha256"]) == 64
     assert len(metadata["run"]["dataManifestSha256"]) == 64
@@ -245,9 +249,9 @@ def test_report_block_contains_versioned_criteria_and_validates(monkeypatch):
 
 def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
-        "tools/agent_lang_ab.py": ('suite="conversation"', "1.0.0"),
-        "tools/agent_compose_eval.py": ('suite="editor"', "1.0.0"),
-        "tools/agent_create_suite.py": ('suite="create"', "2.0.0"),
+        "tools/agent_lang_ab.py": ('suite="conversation"', "1.1.0"),
+        "tools/agent_compose_eval.py": ('suite="editor"', "1.1.0"),
+        "tools/agent_create_suite.py": ('suite="create"', "2.1.0"),
     }
     for relative, (suite_marker, battery_version) in expected.items():
         text = (ROOT / relative).read_text(encoding="utf-8")
@@ -258,7 +262,7 @@ def test_all_primary_batteries_emit_versioned_metadata():
 
 def test_rubric_scores_question_judgment_not_the_presence_of_questions():
     protocol = E.load_protocol()
-    assert protocol["rubricVersion"] == "1.2.0"
+    assert protocol["rubricVersion"] == "1.2.1"
     safety = next(d for d in protocol["humanRubric"]["dimensions"]
                   if d["id"] == "safety_uncertainty")
     checklist = {item["id"]: item for item in safety["checklist"]}
@@ -270,11 +274,40 @@ def test_rubric_scores_question_judgment_not_the_presence_of_questions():
 
 def test_create_battery_covers_required_and_delegated_question_boundaries():
     text = (ROOT / "tools/agent_create_suite.py").read_text(encoding="utf-8")
-    for case_id in ("ASKD1", "ASKD2", "ASKD3", "AMB1"):
+    for case_id in ("ASKD1", "ASKD2", "ASKD3", "ASKD4", "AMB1"):
         assert f'("{case_id}"' in text
     assert "필수정보 충족 시 바로 초안" in text
     assert '"이 구조로 진행한다"' not in text, (
         "`알아서`로 위임한 STR2가 불필요한 구조 재확인을 정답으로 강제하면 안 된다")
+    for token in ("Lake 배치 적재 테이블 중 신규 등록 30개", "배치 이름", "상위 Task",
+                  "30분에서 45분", "bool(its[0].get(\"epic\") or its[0].get(\"parent\"))"):
+        assert token in text
+
+
+def test_editor_battery_rejects_seed_loss_and_reference_renderer_contradictions():
+    text = (ROOT / "tools/agent_compose_eval.py").read_text(encoding="utf-8")
+    assert "_seed_preserved" in text
+    assert "seed in _txt" in text
+    assert "_editor_contract_flaws" in text
+    assert "ticket marker 안에 이미 렌더된 anchor를 이중 삽입" in text
+    assert "resolved ticket을 미확인으로 경고" in text
+
+
+def test_primary_battery_metrics_have_one_canonical_schema():
+    metrics = E.quantitative_metrics(
+        attempts=2, duration_seconds=3.26, calls=4, prompt_tokens=5,
+        completion_tokens=6, total_tokens=11, cached_tokens=2, cost_usd=0.1234567,
+    )
+    assert metrics == {
+        "attempts": 2, "durationSeconds": 3.3, "calls": 4,
+        "promptTokens": 5, "completionTokens": 6, "totalTokens": 11,
+        "cachedTokens": 2, "costUsd": 0.123457,
+    }
+    for relative in ("tools/agent_lang_ab.py", "tools/agent_compose_eval.py",
+                     "tools/agent_create_suite.py"):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert "quantitative_metrics(" in text, relative
+        assert '"metrics"' in text, relative
 
 
 def test_protocol_json_and_human_document_stay_in_sync():
