@@ -450,6 +450,23 @@ def test_person_name_with_spaced_title_resolves_the_name_not_the_title(monkeypat
     assert snapshot["user_id"] == "skcc.i2011"
 
 
+def test_runtime_identity_is_minimal_verified_context_without_display_name(monkeypatch):
+    from types import SimpleNamespace
+    from app.agent.workflow import session
+    from app.agent.tools import _ctx
+    import app.infra.settings as settings
+
+    session._IDENTITY_CACHE.update(at=0.0, val=None)
+    monkeypatch.setattr(_ctx, "client", lambda: SimpleNamespace(
+        current_user=lambda: {"name": "skcc.i2011", "displayName": "이다은 책임"}))
+    monkeypatch.setattr(settings, "load_people", lambda: {"ETL": ["skcc.i2011"]})
+    got = session._identity()
+    assert "user_id: `skcc.i2011`" in got and "modules: ETL" in got
+    assert "{{mention:skcc.i2011}}" in got
+    assert "이다은" not in got
+    session._IDENTITY_CACHE.update(at=0.0, val=None)
+
+
 def test_daily_priority_snapshot_and_reply_keep_exactly_one_primary_ticket():
     from app.agent.workflow.agents.portfolio_analyst import _daily_priority_snapshot
     from app.agent.workflow.agents.result_integrator import ResultIntegrator

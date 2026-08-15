@@ -64,7 +64,7 @@ _IDENTITY_TTL = 300        # 사용자·모듈 소속은 대화 중에 안 바�
 
 
 def _identity() -> str:
-    """'내가 누구인가' — 현재 사용자 정체 한 줄. 모든 역할의 시스템 프롬프트에 실린다.
+    """'내가 누구인가' — 검증된 최소 정체성만 모든 역할의 시스템 프롬프트에 실린다.
 
     "내 모듈", "나한테 맞는 일" 같은 말은 정체를 알아야 해석된다. 매 역할이 whoami 를
     부르게 하는 대신 세션 시작에 코드가 한 번 해석해 State 로 준다(사용자 요청).
@@ -76,23 +76,18 @@ def _identity() -> str:
     if _IDENTITY_CACHE["val"] is not None and _t.time() - _IDENTITY_CACHE["at"] < _IDENTITY_TTL:
         return _IDENTITY_CACHE["val"]
     try:
-        from app.agent.tools._ctx import client, settings
-        from app.domain.search import search_users
-        from app.infra.settings import is_manager, load_people
+        from app.agent.tools._ctx import client
+        from app.infra.settings import load_people
         me = (client().current_user() or {})
         uid = me.get("name") or me.get("key") or ""
         if not uid:
             return ""
-        name = ""
-        for u in (search_users(client(), settings(), uid, 5) or []):
-            if str(u.get("id") or "") == uid:
-                name = u.get("name") or ""
-                break
         mods = [m for m, ids in (load_people() or {}).items() if uid in (ids or [])]
-        mgr = bool(is_manager(settings(), me))
-        val = (f"The current user is {name or uid} ({uid})"
-               + (f", member of module(s): {', '.join(mods)}" if mods else "")
-               + (", and IS a manager." if mgr else ", not a manager."))
+        val = ("## Verified Current User Context\n"
+               f"- user_id: `{uid}`\n"
+               f"- modules: {', '.join(mods) if mods else 'not configured'}\n"
+               "Use this only for self-references. Render any user-facing person occurrence as "
+               f"`{{{{mention:{uid}}}}}`; do not echo a display name plus ID.")
         import time as _t2
         _IDENTITY_CACHE.update(at=_t2.time(), val=val)
         return val

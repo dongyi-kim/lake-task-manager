@@ -204,6 +204,13 @@ def test_responder_style_keeps_existing_headings_and_uses_lists_without_polite_e
     assert "- 두 번째 작업을 진행" in got
 
 
+def test_responder_style_normalizes_negative_polite_ending():
+    from app.agent.workflow.agents.result_integrator import _enforce_reply_style
+
+    got = _enforce_reply_style("### 결과\n\n이 문제는 더 이상 블로커가 아닙니다")
+    assert got.endswith("블로커가 아님")
+
+
 def test_responder_uses_the_payload_when_reply_claims_creation_is_impossible():
     from app.agent.workflow.agents.result_integrator import _align_draft_claims
     state = {"draft": {"items": [{"summary": "[ETL] 재처리 배치 개선", "type": "Task"}]}}
@@ -295,6 +302,25 @@ def test_external_research_flags_a_conflict_visible_only_in_the_final_answer():
     got = _ensure_external_research_coverage(
         "PoC 수행 완료 기록\n\n현재 실제 PoC는 아직 수행하지 않음", state)
     assert "내부 기록 상충" in got and "확정 불가" in got
+
+
+def test_external_research_section_excludes_internal_urls_and_relabels_pending_rows():
+    from app.agent.workflow.agents.result_integrator import _ensure_external_research_coverage
+    from langchain_core.messages import HumanMessage
+
+    state = {
+        "messages": [HumanMessage(content="내부 외부 공식 자료를 조사해줘")],
+        "evidence": [
+            {"title": "내부 회의록", "url": "http://127.0.0.1:8080/spaces/DL/1", "why": "내부"},
+            {"title": "Apache Iceberg", "url": "https://iceberg.apache.org/puffin-spec/",
+             "why": "공식 사양"},
+        ],
+    }
+    got = _ensure_external_research_coverage(
+        "| 구분 | 확인 결과 |\n|---|---|\n| 외부 확인 필요 | Puffin 구조 |", state)
+    assert "127.0.0.1" not in got
+    assert "https://iceberg.apache.org/puffin-spec/" in got
+    assert "외부 조사 범위" in got and "외부 확인 필요" not in got
 
 
 def test_progress_reply_gets_a_compact_complete_child_snapshot_when_model_omits_it():

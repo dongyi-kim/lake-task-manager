@@ -859,6 +859,7 @@ def _enforce_reply_style(text: str) -> str:
             (r"높습니다", "높음"),
             (r"낮습니다", "낮음"),
             (r"같습니다", "같음"),
+            (r"아닙니다", "아님"),
             (r"입니다", ""),
         )
         for pattern, replacement in replacements:
@@ -1684,7 +1685,7 @@ def _ensure_external_research_coverage(text: str, state) -> str:
         if not isinstance(evidence, dict):
             continue
         url = str(evidence.get("url") or "").strip()
-        if url.startswith(("http://", "https://")):
+        if _is_external_source_url(url):
             sources.append((str(evidence.get("title") or "공식 자료").strip(), url,
                             str(evidence.get("why") or "").strip()))
     if not sources:
@@ -1694,6 +1695,10 @@ def _ensure_external_research_coverage(text: str, state) -> str:
             sources.append((title.strip(), url, "공식 자료"))
 
     value = str(text or "").rstrip()
+    if sources:
+        # 조사 전 상태 스냅샷의 '확인 필요'를 최종 답에 그대로 두면 실제 외부조사를 하지
+        # 않은 것처럼 읽힌다. 확인됐다고 과장하지 않고, 조사한 쟁점이라는 중립 라벨로 전환.
+        value = value.replace("| 외부 확인 필요 |", "| 외부 조사 범위 |")
     missing = [(title, url, why) for title, url, why in sources if url not in value]
     if missing:
         lines = ["### 외부 공식 근거", ""]
@@ -1710,6 +1715,40 @@ def _ensure_external_research_coverage(text: str, state) -> str:
         value += ("\n\n### 확인 필요\n\n- 내부 기록 상충: 한 기록은 PoC 완료, 다른 기록은 미수행으로 기술. "
                   "대상 범위와 갱신 시점 확인 전 현재 완료 여부 확정 불가")
     return value
+
+
+def _is_external_source_url(url: str) -> bool:
+    """Jira/Confluence/localhost 등 내부 링크가 외부 공식 근거로 승격되지 않게 분류한다."""
+    from urllib.parse import urlparse
+    import ipaddress
+
+    try:
+        parsed = urlparse(str(url or ""))
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme not in ("http", "https") or not host or host == "localhost" \
+                or host.endswith((".local", ".internal")):
+            return False
+        try:
+            if ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback:
+                return False
+        except ValueError:
+            pass
+        try:
+            from app.infra.settings import get_settings
+            settings = get_settings()
+            internal_hosts = {
+                (urlparse(str(base or "")).hostname or "").lower().rstrip(".")
+                for base in (getattr(settings, "jira_base", ""),
+                             getattr(settings, "confluence_base", ""))
+                if base
+            }
+            if host in internal_hosts:
+                return False
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
 
 
 def _dedupe_refs(text: str) -> str:
