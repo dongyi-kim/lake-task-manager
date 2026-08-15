@@ -187,14 +187,23 @@ def _term_is_defined(term: str, state) -> bool:
         match = re.search(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])\s*"
                           rf"(?:은|는|:|=)\s*(.{{3,180}})", latest,
                           re.I | re.S)
-        if match and not re.search(r"확인\s*필요|모르|미정|없", match.group(1)[:80]):
+        if match and not _definition_is_uncertain(match.group(1)[:100]):
             return True
     evidence = "\n".join(str(state.get(key) or "") for key in
                          ("pre_survey", "topic_dossier", "situation", "web_context"))
     match = re.search(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])\s*"
                       rf"(?:은|는|:|=)\s*(.{{3,160}})", evidence,
                       re.I | re.S)
-    return bool(match and not re.search(r"확인\s*필요|정의가?\s*필요|미정|없", match.group(1)[:80]))
+    return bool(match and not _definition_is_uncertain(match.group(1)[:100]))
+
+
+def _definition_is_uncertain(text: str) -> bool:
+    """Distinguish an unknown definition from a rule containing a negative condition."""
+    return bool(re.search(
+        r"확인\s*(?:이\s*)?필요|정의가?\s*필요|(?:뜻|정의)(?:을|를|이|가)?\s*모르|"
+        r"알\s*수\s*없|확정되지\s*않|미정|기록(?:이|은|에는)?\s*없",
+        str(text or ""), re.I,
+    ))
 
 
 def prune_resolved_gaps(state, gaps: list[str]) -> list[str]:

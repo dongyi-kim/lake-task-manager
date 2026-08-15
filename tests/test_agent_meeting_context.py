@@ -70,6 +70,15 @@ def test_meeting_interview_answer_binds_person_and_term_without_reasking():
     assert unresolved_questions(state) == []
 
 
+def test_negative_gate_condition_is_a_definition_not_an_unknown_term():
+    set_person_context("meeting-negative-definition", ["DL-9200"])
+    request = "회의 후속 Task. 준서TL이 RGP 기준을 담당. 모호한 용어는 조사 후 물어봐."
+    answer = ("준서TL은 skcc.x1103 이준서. RGP는 Reader Gate Policy로, StarRocks가 "
+              "Puffin NDV를 실제 소비한 증거가 없으면 운영 반영을 금지한다는 뜻이야.")
+    state = {**_state(request, answer, request=request), "situation": "조사 완료"}
+    assert unresolved_questions(state) == []
+
+
 def test_meeting_ambiguity_contract_interviews_unfamiliar_local_acronym():
     set_person_context("meeting-local-acronym", ["DL-9200"])
     request = ("회의 결정에서 모호한 사람·용어는 자료를 찾아도 확정되지 않으면 먼저 물어봐. "
