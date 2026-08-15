@@ -35,6 +35,16 @@ async function put(path, body) {
   return r.json();
 }
 
+async function del(path) {
+  const r = await fetch(path, { method: "DELETE" });
+  if (!r.ok) {
+    let msg = "";
+    try { const b = await r.clone().json(); msg = (b && (b.error || b.detail)) || ""; } catch (e) {}
+    throw new Error(msg || "HTTP " + r.status);
+  }
+  return r.json();
+}
+
 const getJson = (p) => fetch(p).then((r) => {
   if (!r.ok) throw new Error("HTTP " + r.status);
   return r.json();
@@ -43,6 +53,16 @@ const getJson = (p) => fetch(p).then((r) => {
 export const agentApi = {
   status: () => getJson("/api/agent/status"),
   saveSettings: (body) => put("/api/agent/settings", body),
+  createConfig: (name, provider) => post("/api/agent/configs", { name, provider }),
+  updateConfig: (id, body) => put("/api/agent/configs/" + encodeURIComponent(id), body),
+  deleteConfig: (id) => del("/api/agent/configs/" + encodeURIComponent(id)),
+  importLegacyConfig: (name, provider) => post("/api/agent/configs/import-legacy", { name, provider }),
+  configModels: (id) => getJson("/api/agent/configs/" + encodeURIComponent(id) + "/models"),
+  probeConfigAuth: (id) => post("/api/agent/configs/" + encodeURIComponent(id) + "/probe/auth", {}),
+  probeConfig: (id) => post("/api/agent/configs/" + encodeURIComponent(id) + "/probe", {}),
+  verifyConfigModels: (id, models) => post(
+    "/api/agent/configs/" + encodeURIComponent(id) + "/models/verify", { models }),
+  activateConfig: (id) => post("/api/agent/configs/" + encodeURIComponent(id) + "/activate", {}),
   // 확인은 **둘로 나뉜다**(사용자 지시): 인증(모델 무관) / 모델 연결.
   probeAuth: () => post("/api/agent/probe/auth", {}),
   probe: () => post("/api/agent/probe", {}),

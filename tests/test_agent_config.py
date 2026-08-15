@@ -145,6 +145,42 @@ def test_probe_ok_on_fake(clean_env):
     assert r["embeddings"]["dim"] == 256
 
 
+def test_named_profile_activation_controls_runtime_without_provider_env(monkeypatch, tmp_path):
+    """후보 저장은 무효과, 검증 후 명시적 적용만 런타임 provider를 바꾼다."""
+    for key in list(os.environ):
+        if key.startswith(("LAKE_AGENT_", "AOAI_", "OPENAI_")):
+            monkeypatch.delenv(key, raising=False)
+    import app.infra.settings as Settings
+    from app.agent import profiles
+    monkeypatch.setattr(Settings, "CACHE_DIR", tmp_path)
+
+    active = profiles.create("로컬 테스트", "fake")
+    candidate = profiles.create("다른 후보", "fake")
+    assert C.provider() == C.DEFAULT_PROVIDER
+    assert C.probe_auth(config_id=active["id"])["ok"]
+    assert C.probe(config_id=active["id"])["ok"]
+    assert C.activate(active["id"])["ok"]
+    assert C.provider() == "fake" and C.chat_model() == "fake-chat"
+
+    profiles.update(candidate["id"], {"name": "편집한 후보"})
+    assert C.provider() == "fake"
+    assert profiles.active()["id"] == active["id"]
+
+
+def test_legacy_flat_preferences_are_not_silently_activated(monkeypatch, tmp_path):
+    for key in list(os.environ):
+        if key.startswith(("LAKE_AGENT_", "AOAI_", "OPENAI_")):
+            monkeypatch.delenv(key, raising=False)
+    import app.infra.settings as Settings
+    from app.infra import prefs
+    monkeypatch.setattr(Settings, "CACHE_DIR", tmp_path)
+    prefs.save({"agentProvider": "openai_compat", "agentCompatChat": "qwen2.5-32b",
+                "agentCompatEmbed": "bge-m3"})
+    assert C.provider() == C.DEFAULT_PROVIDER
+    assert C.llm_ready()[0] is False
+    assert C.status()["legacyCandidate"]["chatModel"] == "qwen2.5-32b"
+
+
 def test_chat_model_tier_falls_back_to_main_when_simple_unset(clean_env):
     """simple 모델 미설정이면 기본 모델 하나로 돈다 — 모델 하나 쓰는 사람에게 무변화."""
     clean_env.setenv("LAKE_AGENT_PROVIDER", "openai")

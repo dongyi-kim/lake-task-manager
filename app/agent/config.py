@@ -22,6 +22,7 @@ import os
 import time
 
 from app.agent import secrets as _secrets
+from app.agent import profiles as _profiles
 
 PROVIDERS = ("aoai", "openai", "openai_compat", "fake")
 DEFAULT_PROVIDER = "aoai"
@@ -73,17 +74,37 @@ _MODEL_KEY = "agentModelOkSig"     # ② 모델까지 (인증 + 모델 3종)
 _ACTIVE_KEY = "agentActiveSig"     # ③ 사용자가 '이 설정 사용'을 누른 조합
 
 
-def _auth_signature() -> str:
+def _active_config_id() -> str:
+    """환경변수가 provider를 고정하면 named config 선택을 사용하지 않는다."""
+    if os.getenv("LAKE_AGENT_PROVIDER"):
+        return ""
+    row = _profiles.active()
+    return str((row or {}).get("id") or "")
+
+
+def _profile(config_id: str = "") -> dict | None:
+    if config_id:
+        return _profiles.get(config_id)
+    return _profiles.active() if not os.getenv("LAKE_AGENT_PROVIDER") else None
+
+
+def _secret(field: str, config_id: str = "") -> str:
+    row = _profile(config_id)
+    return _secrets.get_for(row["id"], field) if row else _secrets.get(field)
+
+
+def _auth_signature(config_id: str = "") -> str:
     """**인증에만** 관계된 값들의 지문 — 모델 이름은 안 들어간다(별개의 확인이므로)."""
     import hashlib
-    p = provider()
-    key = (_secrets.get("aoaiApiKey") if p == "aoai" else
-           _secrets.get("openaiApiKey") if p == "openai" else
-           _secrets.get("compatApiKey"))
-    base = (_secrets.get("aoaiEndpoint") if p == "aoai" else
-            compat_base() if p == "openai_compat" else "")
-    parts = [p, base, (key or "")[-4:], _secrets.get("compatHeaders") or "",
-             api_version() if p == "aoai" else ""]
+    p = provider(config_id)
+    key = (_secret("aoaiApiKey", config_id) if p == "aoai" else
+           _secret("openaiApiKey", config_id) if p == "openai" else
+           _secret("compatApiKey", config_id))
+    base = (_secret("aoaiEndpoint", config_id) if p == "aoai" else
+            compat_base(config_id) if p == "openai_compat" else "")
+    parts = [config_id or _active_config_id(), p, base, key or "",
+             _secret("compatHeaders", config_id) or "",
+             api_version(config_id) if p == "aoai" else ""]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
 
 
@@ -96,40 +117,53 @@ def _mark(key: str, sig: str) -> str:
     return sig
 
 
-def auth_ok() -> bool:
+def auth_ok(config_id: str = "") -> bool:
     """① 인증 확인을 통과한 조합인가(모델과 무관)."""
-    return _env_supplied() or _pref(_AUTH_KEY) == _auth_signature()
+    if not (config_id or _active_config_id()):
+        return _env_supplied() or _pref(_AUTH_KEY) == _auth_signature()
+    cid = config_id or _active_config_id()
+    return (_pref("agentAuthOkByConfig", {}) or {}).get(cid) == _auth_signature(cid)
 
 
-def models_ok() -> bool:
+def models_ok(config_id: str = "") -> bool:
     """② 지금 고른 모델로 실제 호출이 통과한 조합인가."""
-    return _env_supplied() or _pref(_MODEL_KEY) == settings_signature()
+    if not (config_id or _active_config_id()):
+        return _env_supplied() or _pref(_MODEL_KEY) == settings_signature()
+    cid = config_id or _active_config_id()
+    return (_pref("agentModelOkByConfig", {}) or {}).get(cid) == settings_signature(cid)
 
 
-def activate() -> dict:
+def activate(config_id: str = "") -> dict:
     """③ '이 설정 사용' — **①②가 다 끝났을 때만** 켠다.
 
     확인이 통과했다고 자동으로 켜지 않는 이유: 확인은 '되는지 보는 일'이고 활성화는
     '이걸 쓰겠다는 결정'이다. 둘을 붙이면 시험 삼아 눌러 본 조합이 그대로 운영 설정이 된다.
     """
-    if not auth_ok():
+    cid = config_id or _active_config_id()
+    if cid and not _profiles.get(cid):
+        return {"ok": False, "error": "설정을 찾을 수 없습니다."}
+    if not auth_ok(cid):
         return {"ok": False, "error": "① 인증 확인이 아직입니다 — 인증 정보를 저장하고 연결을 확인하세요."}
-    if not models_ok():
+    if not models_ok(cid):
         return {"ok": False, "error": "② 모델 확인이 아직입니다 — 모델을 고르고 저장하고 모델 확인을 누르세요."}
-    return {"ok": True, "sig": _mark(_ACTIVE_KEY, settings_signature())}
+    if cid:
+        _profiles.set_active(cid)
+    return {"ok": True, "configId": cid,
+            "sig": _mark(_ACTIVE_KEY, settings_signature(cid))}
 
 
-def settings_signature() -> str:
-    """지금 '연결에 쓰이는 값들'의 지문. 비밀 원문은 안 들어간다(끝 4자만)."""
+def settings_signature(config_id: str = "") -> str:
+    """지금 '연결에 쓰이는 값들'의 지문. 비밀 원문은 SHA-256 결과 밖으로 나오지 않는다."""
     import hashlib
-    p = provider()
-    key = (_secrets.get("aoaiApiKey") if p == "aoai" else
-           _secrets.get("openaiApiKey") if p == "openai" else
-           _secrets.get("compatApiKey"))
-    base = (_secrets.get("aoaiEndpoint") if p == "aoai" else
-            compat_base() if p == "openai_compat" else "")
-    parts = [p, base, (key or "")[-4:], api_version() if p == "aoai" else "",
-             chat_model("complex"), chat_model("simple"), embed_model()]
+    p = provider(config_id)
+    key = (_secret("aoaiApiKey", config_id) if p == "aoai" else
+           _secret("openaiApiKey", config_id) if p == "openai" else
+           _secret("compatApiKey", config_id))
+    base = (_secret("aoaiEndpoint", config_id) if p == "aoai" else
+            compat_base(config_id) if p == "openai_compat" else "")
+    parts = [config_id or _active_config_id(), p, base, key or "",
+             api_version(config_id) if p == "aoai" else "",
+             chat_model("complex", config_id), chat_model("simple", config_id), embed_model(config_id)]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
 
 
@@ -144,18 +178,31 @@ def _env_supplied() -> bool:
     """
     if str(os.getenv("LAKE_AGENT_SKIP_VERIFY") or "").strip().lower() in ("1", "true", "yes"):
         return True
+    # named config는 자기 비밀 저장소만 쓴다. 같은 프로세스에 우연히 있는 OPENAI_API_KEY가
+    # 후보 검증을 면제하거나 활성 상태로 보이게 해서는 안 된다.
+    if _active_config_id():
+        return False
     ov = _secrets.env_overrides()
     need = {"aoai": ("aoaiApiKey",), "openai": ("openaiApiKey",),
             "openai_compat": ("compatBaseUrl",)}.get(provider(), ())
     return any(k in ov for k in need)
 
 
-def mark_verified() -> str:
+def mark_verified(config_id: str = "") -> str:
     """② 모델 확인 통과를 기록한다. probe() 가 **완전히** 성공했을 때만 불린다.
 
     인증 지문도 함께 찍는다 — 모델 호출이 됐다면 인증은 당연히 통과한 것이다.
     ★ 여기서 **활성화하지는 않는다.** 그건 사용자가 [이 설정 사용]으로 결정한다.
     """
+    cid = config_id or _active_config_id()
+    if cid:
+        from app.infra import prefs
+        auth = dict(prefs.load().get("agentAuthOkByConfig") or {})
+        models = dict(prefs.load().get("agentModelOkByConfig") or {})
+        auth[cid] = _auth_signature(cid)
+        models[cid] = settings_signature(cid)
+        prefs.save({"agentAuthOkByConfig": auth, "agentModelOkByConfig": models})
+        return models[cid]
     _mark(_AUTH_KEY, _auth_signature())
     return _mark(_MODEL_KEY, settings_signature())
 
@@ -164,7 +211,12 @@ def verified() -> bool:
     """지금 이 조합이 **활성**인가 — 사용자가 '이 설정 사용'을 누른 그 조합인가."""
     if _env_supplied():
         return True
-    return _pref(_ACTIVE_KEY) == settings_signature()
+    cid = _active_config_id()
+    if not cid and not os.getenv("LAKE_AGENT_PROVIDER"):
+        return False
+    if cid and _pref("agentActiveConfigId") != cid:
+        return False
+    return _pref(_ACTIVE_KEY) == settings_signature(cid)
 
 
 def llm_ready() -> tuple[bool, str]:
@@ -173,20 +225,23 @@ def llm_ready() -> tuple[bool, str]:
     실제 호출까지 해 보는 것은 probe() 의 몫이다. 여기서는 "키를 안 넣었다"를 빠르게
     가른다 — 그 상태로 버튼을 살려 두면 사용자는 눌러 보고 나서야 에러로 알게 된다.
     """
+    if (not _profiles.active() and not os.getenv("LAKE_AGENT_PROVIDER")
+            and not _env_supplied()):
+        return False, "사용할 연결 설정을 추가하고 적용하세요."
     p = provider()
     if p == "fake":
         return True, ""                     # 테스트 provider — 키가 필요 없다
     if p == "openai":
-        if _secrets.get("openaiApiKey"):
+        if _secret("openaiApiKey"):
             return _gate()
         return False, "OpenAI API 키가 설정되지 않았습니다."
     if p == "aoai":
-        if (_secrets.get("aoaiEndpoint")
-                and _secrets.get("aoaiApiKey")):
+        if (_secret("aoaiEndpoint")
+                and _secret("aoaiApiKey")):
             return _gate()
         return False, "Azure OpenAI 엔드포인트/키가 설정되지 않았습니다."
     if p == "openai_compat":
-        if _secrets.get("compatBaseUrl"):
+        if _secret("compatBaseUrl"):
             return _gate()
         return False, "호환 API 주소가 설정되지 않았습니다."
     return False, f"알 수 없는 provider: {p}"
@@ -210,8 +265,9 @@ def _pref(key, default=None):
         return default
 
 
-def provider() -> str:
-    p = (os.getenv("LAKE_AGENT_PROVIDER") or _pref("agentProvider") or DEFAULT_PROVIDER).strip().lower()
+def provider(config_id: str = "") -> str:
+    row = _profile(config_id)
+    p = ((row or {}).get("provider") or os.getenv("LAKE_AGENT_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
     if p not in PROVIDERS:
         return DEFAULT_PROVIDER
     # ★ **prod 에서 'fake' 는 없는 것으로 친다**(사용자 지적). 실 Jira 를 보는 화면에서 가짜
@@ -229,15 +285,20 @@ def provider() -> str:
     return p
 
 
-def chat_model(tier: str = "complex") -> str:
+def chat_model(tier: str = "complex", config_id: str = "") -> str:
     """provider 별 '모델/배포' 이름. AOAI 는 **모델명이 아니라 배포명**이다(흔한 실수).
 
     `tier="simple"` 은 **간단한 역할 전용 모델** — 의도 분류·결정적 실행처럼 판단이 얕은
     역할이 쓴다(역할→tier 매핑은 각 Agent 클래스의 `tier` 속성). 설정이 비어 있으면
     기본 모델로 폴백한다 — 모델 하나로 쓰는 사람에게는 아무 변화가 없다.
     """
-    p = provider()
+    row = _profile(config_id)
+    p = provider(config_id)
     simple = tier == "simple"
+    if row:
+        if simple and str(row.get("chatModelSimple") or "").strip():
+            return str(row["chatModelSimple"]).strip()
+        return str(row.get("chatModel") or "").strip()
     if p == "aoai":
         if simple:
             m = os.getenv("LAKE_AGENT_AOAI_CHAT_SIMPLE") or _pref("agentAoaiChatSimple")
@@ -260,8 +321,11 @@ def chat_model(tier: str = "complex") -> str:
     return "fake-chat"
 
 
-def embed_model() -> str:
-    p = provider()
+def embed_model(config_id: str = "") -> str:
+    row = _profile(config_id)
+    p = provider(config_id)
+    if row:
+        return str(row.get("embedModel") or "").strip()
     if p == "aoai":
         return (os.getenv("LAKE_AGENT_AOAI_EMBED") or _pref("agentAoaiEmbed")
                 or os.getenv("AOAI_DEPLOY_EMBED_3_SMALL") or os.getenv("AOAI_DEPLOY_EMBED_3_LARGE") or "")
@@ -272,11 +336,13 @@ def embed_model() -> str:
     return "fake-embed"
 
 
-def api_version() -> str:
-    return os.getenv("AOAI_API_VERSION") or _pref("agentApiVersion") or DEFAULT_API_VERSION
+def api_version(config_id: str = "") -> str:
+    row = _profile(config_id)
+    return (os.getenv("AOAI_API_VERSION") or (row or {}).get("apiVersion")
+            or _pref("agentApiVersion") or DEFAULT_API_VERSION)
 
 
-def compat_base() -> str:
+def compat_base(config_id: str = "") -> str:
     """OpenAI 호환 엔드포인트의 base URL — **경로가 없으면 `/v1` 을 붙인다.**
 
     OpenAI SDK 는 base_url 뒤에 `/models`·`/chat/completions` 를 상대로 붙인다. 그래서
@@ -290,7 +356,7 @@ def compat_base() -> str:
     ★ 이 함수를 **채팅·임베딩·모델목록 세 곳이 다 쓴다.** 한 곳만 고치면 "대화는 되는데
       모델 목록만 빈다"(또는 그 반대)가 되고, 그건 원인을 찾기 가장 어려운 종류의 어긋남이다.
     """
-    raw = (_secrets.get("compatBaseUrl") or "").strip().rstrip("/")
+    raw = (_secret("compatBaseUrl", config_id) or "").strip().rstrip("/")
     if not raw:
         return raw
     try:
@@ -302,9 +368,9 @@ def compat_base() -> str:
     return raw
 
 
-def _compat_headers() -> dict:
+def _compat_headers(config_id: str = "") -> dict:
     """자체 LLM 이 요구하는 추가 헤더(JSON 문자열로 보관). 인증 방식이 표준과 다를 때 쓴다."""
-    raw = _secrets.get("compatHeaders")
+    raw = _secret("compatHeaders", config_id)
     if not raw:
         return {}
     try:
@@ -328,13 +394,14 @@ def sampling_unsupported(model: str) -> bool:
 
 
 # ── 팩토리 ─────────────────────────────────────────────────────────
-def get_llm(temperature: float = 0.2, tier: str = "complex", model_override: str = "", **kwargs):
+def get_llm(temperature: float = 0.2, tier: str = "complex", model_override: str = "",
+            config_id: str = "", **kwargs):
     """provider 에 맞는 chat 모델. 나머지 코드는 이 함수만 부른다.
 
     `tier` 로 역할별 모델을 가른다 — simple(의도 분류·결정적 실행)은 저렴한 모델,
     complex(조사·초안·검토·작문)는 기본 모델. simple 모델 미설정이면 기본 모델 하나로 돈다.
     """
-    p = provider()
+    p = provider(config_id)
     if p == "fake":
         from app.agent.fake import FakeChat
         return FakeChat(**{k: v for k, v in kwargs.items() if k == "responses"})
@@ -351,7 +418,7 @@ def get_llm(temperature: float = 0.2, tier: str = "complex", model_override: str
     kwargs.setdefault("stream_usage", True)
 
     # model_override 는 '권한 확인'처럼 **특정 모델 하나를 시험**할 때만 쓴다(설정 화면).
-    model = (model_override or "").strip() or chat_model(tier)
+    model = (model_override or "").strip() or chat_model(tier, config_id)
     # ★ **모델 이름이 비었으면 여기서 멈춘다.** 빈 이름으로 부르면 서버는 대개
     #   `404 /v1/chat/completions` 로 답하고(모델을 못 찾았다는 뜻인데 경로가 없다는 말로
     #   읽힌다), 사용자는 주소·키를 의심하며 시간을 버린다(실사용 지적).
@@ -369,21 +436,21 @@ def get_llm(temperature: float = 0.2, tier: str = "complex", model_override: str
     if p == "aoai":
         from langchain_openai import AzureChatOpenAI
         return AzureChatOpenAI(
-            azure_endpoint=_secrets.get("aoaiEndpoint"),
-            api_key=_secrets.get("aoaiApiKey"),
+            azure_endpoint=_secret("aoaiEndpoint", config_id),
+            api_key=_secret("aoaiApiKey", config_id),
             azure_deployment=model,                  # ★ 모델명이 아니라 배포명
-            api_version=api_version(),
+            api_version=api_version(config_id),
             **temp_kw, **kwargs)
 
     from langchain_openai import ChatOpenAI
     if p == "openai":
-        return ChatOpenAI(api_key=_secrets.get("openaiApiKey"),
+        return ChatOpenAI(api_key=_secret("openaiApiKey", config_id),
                           model=model, **temp_kw, **kwargs)
     # openai_compat — base_url + 커스텀 헤더. 인증이 표준과 달라도 여기서 흡수한다.
-    return ChatOpenAI(api_key=_secrets.get("compatApiKey") or "unused",
-                      base_url=compat_base(),
+    return ChatOpenAI(api_key=_secret("compatApiKey", config_id) or "unused",
+                      base_url=compat_base(config_id),
                       model=model, **temp_kw,
-                      default_headers=_compat_headers() or None, **kwargs)
+                      default_headers=_compat_headers(config_id) or None, **kwargs)
 
 
 def _no_model_msg(p: str, tier: str = "complex", embed: bool = False) -> str:
@@ -393,7 +460,7 @@ def _no_model_msg(p: str, tier: str = "complex", embed: bool = False) -> str:
             f"고르거나 직접 입력하세요. (빈 이름으로 부르면 서버가 404 로 답합니다)")
 
 
-def get_embeddings(**kwargs):
+def get_embeddings(config_id: str = "", **kwargs):
     """임베딩 클라이언트.
 
     ★ **`check_embedding_ctx_length=False` 를 기본으로 준다**(실사용 사고: "임베딩 모델만
@@ -413,7 +480,7 @@ def get_embeddings(**kwargs):
       호출부가 명시적으로 넘기면 그 값을 존중한다(kwargs 우선).
     """
     kwargs.setdefault("check_embedding_ctx_length", False)
-    p = provider()
+    p = provider(config_id)
     if p == "fake":
         from app.agent.fake import FakeEmbeddings
         return FakeEmbeddings()
@@ -422,28 +489,28 @@ def get_embeddings(**kwargs):
     if not ok:
         raise RuntimeError(why)
 
-    if not str(embed_model() or "").strip():
+    if not str(embed_model(config_id) or "").strip():
         raise RuntimeError(_no_model_msg(p, embed=True))
 
     if p == "aoai":
         from langchain_openai import AzureOpenAIEmbeddings
         return AzureOpenAIEmbeddings(
-            azure_endpoint=_secrets.get("aoaiEndpoint"),
-            api_key=_secrets.get("aoaiApiKey"),
-            model=embed_model(), openai_api_version=api_version(), **kwargs)
+            azure_endpoint=_secret("aoaiEndpoint", config_id),
+            api_key=_secret("aoaiApiKey", config_id),
+            model=embed_model(config_id), openai_api_version=api_version(config_id), **kwargs)
 
     from langchain_openai import OpenAIEmbeddings
     if p == "openai":
-        return OpenAIEmbeddings(api_key=_secrets.get("openaiApiKey"),
-                                model=embed_model(), **kwargs)
+        return OpenAIEmbeddings(api_key=_secret("openaiApiKey", config_id),
+                                model=embed_model(config_id), **kwargs)
     # ★ **추가 헤더를 여기도 보낸다.** 채팅·모델목록에는 실리는데 임베딩에만 안 실려 있었다
     #   (실측: 스텁 서버가 받은 헤더를 찍어 보고 발견). 게이트웨이가 X-Auth 같은 헤더로
     #   팀을 가르는 환경이면 **채팅은 되는데 임베딩만 401/403** 이 나고, 그 증상은 모델
     #   권한 문제로 읽힌다. 같은 인증은 같은 provider 의 모든 호출에 똑같이 걸려야 한다.
-    return OpenAIEmbeddings(api_key=_secrets.get("compatApiKey") or "unused",
-                            base_url=compat_base(),
-                            default_headers=_compat_headers() or None,
-                            model=embed_model(), **kwargs)
+    return OpenAIEmbeddings(api_key=_secret("compatApiKey", config_id) or "unused",
+                            base_url=compat_base(config_id),
+                            default_headers=_compat_headers(config_id) or None,
+                            model=embed_model(config_id), **kwargs)
 
 
 def get_langfuse_handler(session_id: str = None):
@@ -473,19 +540,32 @@ def status() -> dict:
     from app.infra import prefs as _prefs
     from app.agent.prompts.base import _project_prompt
     ready, ready_why = llm_ready()
+    configs = []
+    for row in _profiles.list_all():
+        cid = row["id"]
+        configs.append({**row, "authOk": auth_ok(cid), "modelsOk": models_ok(cid),
+                        "verified": bool(row.get("active") and verified())})
+    active = _profiles.active()
     return {"available": ok, "reason": why, "provider": provider(),
+            "configs": configs,
+            "activeConfigId": str((active or {}).get("id") or ""),
+            "activeConfig": ({**active, "secrets": _secrets.masked_for(active["id"])}
+                             if active else None),
+            "legacyCandidate": _profiles.legacy_candidate(),
+            "legacyCandidates": _profiles.legacy_candidates(),
             # 하나 이상의 LLM 연결값이 있는가 — 챗·에디터 AI 버튼의 활성/비활성 근거.
             "llmReady": ready, "llmReason": ready_why,
             "chatModel": chat_model(), "embedModel": embed_model(),
             # 간단한 역할(의도 분류·결정적 실행) 전용 모델 — **설정된 값만**(폴백 없이) 보여
             # 준다. 폴백값을 보여 주면 화면에서 "따로 설정돼 있다"로 오해된다.
-            "chatModelSimple": (_pref("agentAoaiChatSimple") if provider() == "aoai"
-                                else _pref("agentOpenaiChatSimple") if provider() == "openai"
-                                else _pref("agentCompatChatSimple") if provider() == "openai_compat"
-                                else ""),
+            "chatModelSimple": (str((active or {}).get("chatModelSimple") or "") if active else
+                                (_pref("agentAoaiChatSimple") if provider() == "aoai"
+                                 else _pref("agentOpenaiChatSimple") if provider() == "openai"
+                                 else _pref("agentCompatChatSimple") if provider() == "openai_compat"
+                                 else "")),
             "apiVersion": api_version() if provider() == "aoai" else None,
             "langfuse": bool(get_langfuse_handler()),
-            "secrets": _secrets.masked(),
+            "secrets": (_secrets.masked_for(active["id"]) if active else _secrets.masked()),
             # ★ **환경변수가 이기고 있는 필드**. 저장은 됐는데 가려져 있는 상태를 화면이
             #   말해 주지 않으면 사용자는 "저장이 안 되나?"로 읽는다(실사용 지적).
             #   우선순위 자체는 안 바꾼다 — 채점/사내 환경의 주입이 이기는 것이 정상 경로다.
@@ -499,7 +579,7 @@ def status() -> dict:
             "projectPrompt": _project_prompt()}
 
 
-def probe_auth(timeout: float = 20.0) -> dict:
+def probe_auth(timeout: float = 20.0, config_id: str = "") -> dict:
     """**인증만** 확인한다 — 모델 이름을 쓰지 않는 호출로.
 
     ★ 사용자 지적: "인증정보 변경하는데 왜 모델 403 이 나냐. 인증 확인이랑 모델 설정은
@@ -513,29 +593,36 @@ def probe_auth(timeout: float = 20.0) -> dict:
       · AOAI          : `GET {endpoint}/openai/deployments` (api-key 로 열린다)
     이 호출이 되면 "주소·키는 옳다"가 증명된다. 모델이 되는지는 **그다음 질문**이다.
     """
-    out = {"provider": provider(), "ok": False}
+    out = {"provider": provider(config_id), "configId": config_id, "ok": False}
     ok, why = available()
     if not ok:
         return {**out, "error": why}
     t0 = time.time()
-    r = list_models(timeout=timeout)
+    r = list_models(timeout=timeout, config_id=config_id)
     out["ms"] = int((time.time() - t0) * 1000)
     if r.get("error"):
         return {**out, "error": r["error"]}
     out["ok"] = True
     out["models"] = {"chat": len(r.get("chat") or []), "embed": len(r.get("embed") or []),
                      "total": r.get("total")}
-    _mark(_AUTH_KEY, _auth_signature())
+    if config_id:
+        from app.infra import prefs
+        auth = dict(prefs.load().get("agentAuthOkByConfig") or {})
+        auth[config_id] = _auth_signature(config_id)
+        prefs.save({"agentAuthOkByConfig": auth})
+    else:
+        _mark(_AUTH_KEY, _auth_signature())
     return out
 
 
-def probe(timeout: float = 30.0) -> dict:
+def probe(timeout: float = 30.0, config_id: str = "") -> dict:
     """실제로 한 번씩 호출해 본다. 설정 화면이 '되는지'를 눈으로 확인하는 용도.
 
     실패를 삼키지 않는다 — 어디서 막혔는지(설정 누락 / 네트워크 / 인증)가 화면에 보여야
     사용자가 고칠 수 있다. 사내 AOAI 는 개발 PC 에서 403 이 정상이므로 그 문구를 그대로 보인다.
     """
-    out = {"provider": provider(), "chat": None, "embeddings": None, "ok": False}
+    out = {"provider": provider(config_id), "configId": config_id,
+           "chat": None, "embeddings": None, "ok": False}
     ok, why = available()
     if not ok:
         out["error"] = why
@@ -543,7 +630,8 @@ def probe(timeout: float = 30.0) -> dict:
 
     t0 = time.time()
     try:
-        msg = get_llm(temperature=0, max_tokens=5).invoke("reply with the single word: pong")
+        msg = get_llm(temperature=0, max_tokens=5, config_id=config_id).invoke(
+            "reply with the single word: pong")
         out["chat"] = {"ok": True, "ms": int((time.time() - t0) * 1000),
                        "sample": str(getattr(msg, "content", msg))[:60]}
     except Exception as e:
@@ -551,7 +639,7 @@ def probe(timeout: float = 30.0) -> dict:
 
     t1 = time.time()
     try:
-        vec = get_embeddings().embed_query("연결 테스트")
+        vec = get_embeddings(config_id=config_id).embed_query("연결 테스트")
         out["embeddings"] = {"ok": True, "ms": int((time.time() - t1) * 1000), "dim": len(vec)}
     except Exception as e:
         out["embeddings"] = {"ok": False, "ms": int((time.time() - t1) * 1000), "error": _brief(e)}
@@ -571,11 +659,11 @@ def probe(timeout: float = 30.0) -> dict:
     # ★ **둘 다 통과했을 때만** 이 조합을 확인된 것으로 남긴다(사용자 지시: 이중 확인).
     #   채팅만 되고 임베딩이 막힌 상태를 '됐다'로 치면, 색인이 필요한 순간에 다시 터진다.
     if out["ok"]:
-        out["verifiedSig"] = mark_verified()
+        out["verifiedSig"] = mark_verified(config_id)
     return out
 
 
-def list_models(timeout: float = 10.0) -> dict:
+def list_models(timeout: float = 10.0, config_id: str = "") -> dict:
     """지금 설정된 provider 에서 **실제로 쓸 수 있는** 모델/배포 목록.
 
     설정 화면의 콤보박스 재료다. 목록 조회가 막히는 환경이 있으므로(권한 없는 키, 프록시,
@@ -584,7 +672,7 @@ def list_models(timeout: float = 10.0) -> dict:
 
     반환: {"chat": [...], "embed": [...], "error": ""}
     """
-    p = provider()
+    p = provider(config_id)
     if p == "fake":
         return {"chat": ["fake-chat"], "embed": ["fake-embed"], "total": 2, "error": ""}
     ok, why = available()
@@ -596,8 +684,8 @@ def list_models(timeout: float = 10.0) -> dict:
             # AOAI 는 모델이 아니라 **배포**를 골라야 한다. 데이터플레인 deployments 목록은
             # api-key 로 열린다(관리플레인 자격 증명 불필요).
             import httpx
-            base = (_secrets.get("aoaiEndpoint") or "").rstrip("/")
-            key = _secrets.get("aoaiApiKey")
+            base = (_secret("aoaiEndpoint", config_id) or "").rstrip("/")
+            key = _secret("aoaiApiKey", config_id)
             if not (base and key):
                 return {"chat": [], "embed": [], "total": 0,
                         "error": "엔드포인트/키가 설정되지 않았습니다."}
@@ -613,11 +701,11 @@ def list_models(timeout: float = 10.0) -> dict:
 
         from openai import OpenAI
         if p == "openai":
-            cli = OpenAI(api_key=_secrets.get("openaiApiKey"), timeout=timeout)
+            cli = OpenAI(api_key=_secret("openaiApiKey", config_id), timeout=timeout)
         else:
-            cli = OpenAI(api_key=_secrets.get("compatApiKey") or "unused",
-                         base_url=compat_base(),
-                         default_headers=_compat_headers() or None, timeout=timeout)
+            cli = OpenAI(api_key=_secret("compatApiKey", config_id) or "unused",
+                         base_url=compat_base(config_id),
+                         default_headers=_compat_headers(config_id) or None, timeout=timeout)
         rows = [(m.model_dump() if hasattr(m, "model_dump") else {"id": getattr(m, "id", "")})
                 for m in cli.models.list()]           # GET {base_url}/models
         ids = [str(d.get("id") or "") for d in rows if d.get("id")]
@@ -682,7 +770,7 @@ def _model_denied(d: dict) -> bool:
     return False
 
 
-def verify_models(names: list, timeout: float = 15.0) -> dict:
+def verify_models(names: list, timeout: float = 15.0, config_id: str = "") -> dict:
     """후보 모델을 **하나씩 실제로 불러 본다** — 권한 신호가 없는 게이트웨이용.
 
     ★ 자동으로 돌지 않는다(사용자가 버튼을 눌러야 한다). 모델 수만큼 호출이 나가고, 그건
@@ -697,7 +785,7 @@ def verify_models(names: list, timeout: float = 15.0) -> dict:
     for name in [str(n).strip() for n in (names or []) if str(n).strip()][:40]:
         try:
             get_llm(temperature=0, max_tokens=1, tier="complex",
-                    model_override=name).invoke("hi")
+                    model_override=name, config_id=config_id).invoke("hi")
             good.append(name)
         except Exception as e:
             bad[name] = _brief(e)[:160]

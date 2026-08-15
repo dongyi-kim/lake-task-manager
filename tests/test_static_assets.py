@@ -210,6 +210,28 @@ def test_agent_reference_picker_keeps_recent_urls_and_sends_them_to_model():
     assert 'p.set("kind", kind)' in api
 
 
+def test_agent_settings_use_named_configs_instead_of_fixed_provider_tabs():
+    dialog = (STATIC / "components" / "ui" / "AgentSettingsDialog.js").read_text(encoding="utf-8")
+    api_src = (STATIC / "lib" / "agentApi.js").read_text(encoding="utf-8")
+    assert "내 설정" in dialog and "+ 추가" in dialog and "설정 이름" in dialog
+    assert "같은 연결 방식도" in dialog
+    assert 'class="ag-tabs"' not in dialog
+    for call in ("createConfig", "updateConfig", "configModels", "probeConfigAuth",
+                 "probeConfig", "activateConfig"):
+        assert call in dialog and call in api_src
+    assert 'configModels: (id)' in api_src
+    assert '/api/agent/configs/' in api_src
+
+
+def test_local_agent_chat_copy_includes_progress_diagnostics_but_prod_is_gated():
+    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    assert 'this.appMeta.env !== "prod"' in view
+    assert '"## Local debug"' in view
+    assert "turn.debug.events.push" in view and "turn.debug.plan" in view
+    assert "tokenChars" in view
+    assert '["node", "label", "parent", "note", "message", "error", "thread_id"]' in view
+
+
 def test_agent_reference_actions_have_visible_ticket_and_document_labels():
     view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
     css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")

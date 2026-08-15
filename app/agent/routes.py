@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.agent import config as _cfg
+from app.agent import profiles as _profiles
 from app.agent import secrets as _secrets
 
 log = logging.getLogger("agent.api")
@@ -54,6 +55,29 @@ class _SettingsBody(BaseModel):
     apiVersion: str = None
     userPrompt: str = None         # 사용자별 시스템 프롬프트 추가분(로컬 prefs 저장)
     secrets: dict = None           # {"aoaiApiKey": "...", ...} — 저장만, 조회는 마스킹
+
+
+class _ConfigCreateBody(BaseModel):
+    name: str
+    provider: str
+
+
+class _ConfigUpdateBody(BaseModel):
+    name: str = None
+    chatModel: str = None
+    chatModelSimple: str = None
+    embedModel: str = None
+    apiVersion: str = None
+    secrets: dict = None
+
+
+class _LegacyImportBody(BaseModel):
+    name: str = "이전 설정"
+    provider: str = ""
+
+
+class _VerifyBody(BaseModel):
+    models: list = []
 
 
 # ── 상태 · 설정 ────────────────────────────────────────────────────
@@ -107,6 +131,106 @@ def api_settings(body: _SettingsBody):
     return JSONResponse({"ok": True, **_cfg.status()})
 
 
+def _config_result(config_id: str) -> dict:
+    row = next((x for x in _cfg.status().get("configs", []) if x["id"] == config_id), None)
+    if not row:
+        raise KeyError("설정을 찾을 수 없습니다.")
+    return row
+
+
+@router.get("/configs")
+def api_configs():
+    return JSONResponse({"configs": _cfg.status().get("configs", []),
+                         "activeConfigId": _cfg.status().get("activeConfigId", "")})
+
+
+@router.post("/configs")
+def api_config_create(body: _ConfigCreateBody):
+    try:
+        if body.provider == "fake":
+            from app.infra.settings import get_settings
+            if (get_settings().jira_env or "").lower() == "prod":
+                raise ValueError("운영 환경에서는 테스트(가짜) 연결을 추가할 수 없습니다.")
+        row = _profiles.create(body.name, body.provider)
+        return JSONResponse({"ok": True, "config": _config_result(row["id"])})
+    except (ValueError, KeyError) as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@router.put("/configs/{config_id}")
+def api_config_update(config_id: str, body: _ConfigUpdateBody):
+    try:
+        patch = {k: getattr(body, k) for k in
+                 ("name", "chatModel", "chatModelSimple", "embedModel", "apiVersion")
+                 if getattr(body, k) is not None}
+        _profiles.update(config_id, patch)
+        if body.secrets:
+            _secrets.save_for(config_id, body.secrets)
+        return JSONResponse({"ok": True, "config": _config_result(config_id)})
+    except (ValueError, KeyError) as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@router.delete("/configs/{config_id}")
+def api_config_delete(config_id: str):
+    try:
+        _profiles.remove(config_id)
+        return JSONResponse({"ok": True})
+    except (ValueError, KeyError) as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@router.post("/configs/import-legacy")
+def api_config_import_legacy(body: _LegacyImportBody):
+    try:
+        if body.provider == "fake":
+            from app.infra.settings import get_settings
+            if (get_settings().jira_env or "").lower() == "prod":
+                raise ValueError("운영 환경에서는 테스트(가짜) 연결을 가져올 수 없습니다.")
+        row = _profiles.import_legacy(body.name, body.provider)
+        return JSONResponse({"ok": True, "config": _config_result(row["id"])})
+    except (ValueError, KeyError) as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@router.get("/configs/{config_id}/models")
+def api_config_models(config_id: str):
+    if not _profiles.get(config_id):
+        return JSONResponse({"chat": [], "embed": [], "error": "설정을 찾을 수 없습니다."},
+                            status_code=404)
+    return JSONResponse(_cfg.list_models(config_id=config_id))
+
+
+@router.post("/configs/{config_id}/probe/auth")
+def api_config_probe_auth(config_id: str):
+    if not _profiles.get(config_id):
+        return JSONResponse({"ok": False, "error": "설정을 찾을 수 없습니다."}, status_code=404)
+    return JSONResponse(_cfg.probe_auth(config_id=config_id))
+
+
+@router.post("/configs/{config_id}/probe")
+def api_config_probe(config_id: str):
+    if not _profiles.get(config_id):
+        return JSONResponse({"ok": False, "error": "설정을 찾을 수 없습니다."}, status_code=404)
+    return JSONResponse(_cfg.probe(config_id=config_id))
+
+
+@router.post("/configs/{config_id}/models/verify")
+def api_config_models_verify(config_id: str, body: _VerifyBody):
+    if not _profiles.get(config_id):
+        return JSONResponse({"ok": [], "denied": {}, "error": "설정을 찾을 수 없습니다."},
+                            status_code=404)
+    return JSONResponse(_cfg.verify_models(body.models, config_id=config_id))
+
+
+@router.post("/configs/{config_id}/activate")
+def api_config_activate(config_id: str):
+    r = _cfg.activate(config_id)
+    if r.get("ok"):
+        _reset_runtime()
+    return JSONResponse({**r, **_cfg.status()})
+
+
 @router.post("/probe")
 def api_probe():
     """연결 테스트. chat·embeddings 를 실제로 한 번씩 부른다.
@@ -126,10 +250,6 @@ def api_models():
     화면은 자유 입력으로 계속 쓸 수 있어야 한다.
     """
     return JSONResponse(_cfg.list_models())
-
-
-class _VerifyBody(BaseModel):
-    models: list = []
 
 
 @router.post("/models/verify")
