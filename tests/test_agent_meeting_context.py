@@ -70,6 +70,15 @@ def test_meeting_interview_answer_binds_person_and_term_without_reasking():
     assert unresolved_questions(state) == []
 
 
+def test_meeting_ambiguity_contract_interviews_unfamiliar_local_acronym():
+    set_person_context("meeting-local-acronym", ["DL-9200"])
+    request = ("회의 결정에서 모호한 사람·용어는 자료를 찾아도 확정되지 않으면 먼저 물어봐. "
+               "준서TL이 RGP 검증 기준을 작성한다.")
+    state = {**_state(request), "situation": "내부 기록과 외부 공식 자료 조사 완료",
+             "topic_dossier": "RGP의 회의 내 정의는 확인되지 않음"}
+    assert "RGP" in str(unresolved_questions(state))
+
+
 def test_new_request_clears_stale_research_and_draft_but_interview_answer_keeps_research():
     prior = {
         "request_text": "fdc 데이터 히스토리", "topic_dossier": "old dossier",

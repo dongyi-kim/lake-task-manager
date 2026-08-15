@@ -161,6 +161,11 @@ def resolved_people(state) -> dict[str, str]:
 
 def _uncertain_terms(text: str) -> list[str]:
     terms: list[str] = []
+    asks_ambiguity_interview = bool(re.search(
+        r"모호한[^\n.]{0,40}용어|용어[^\n.]{0,60}(?:확정|물어|질문)|"
+        r"(?:뜻|정의)[^\n.]{0,60}(?:조사|자료|확정|물어|질문)",
+        text, re.I,
+    ))
     for term in re.findall(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9-]{1,9})(?![A-Za-z0-9])", text):
         if (term.upper() in _KNOWN_TECH or term.isdigit() or term in terms
                 or re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", term)):
@@ -170,7 +175,7 @@ def _uncertain_terms(text: str) -> list[str]:
             rf"{re.escape(term)}.{{0,100}}(?:자료|조사).{{0,60}}(?:확정되지|모르|확인)",
             text, re.I | re.S,
         )
-        if nearby:
+        if nearby or asks_ambiguity_interview:
             terms.append(term)
     return terms
 

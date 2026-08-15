@@ -6,7 +6,7 @@ import pytest
 
 from app.agent.tools import _ctx
 from app.agent.tools.query_tools import (execute_jql_all, run_jql_v2,
-                                         search_documents, set_thread)
+                                         query_people, search_documents, set_thread)
 from app.agent.tools.search_tools import find_parent_epic
 from app.agent.tools.people_tools import scoped_person_workload
 from app.agent.workflow.agents.query_runner import QueryRunner
@@ -214,6 +214,37 @@ def test_people_workload_uses_scoped_paginated_jql_not_primary_project_aggregate
     assert all(call["jql"].startswith('project in ("AAA", "BBB") AND (assignee = ')
                for call in fake.calls)
     assert all("PRIMARY" not in call["jql"] for call in fake.calls)
+
+
+def test_people_name_query_filters_before_paginated_workload_enrichment(monkeypatch):
+    """A two-person ambiguity must not enrich the whole roster again on every page."""
+    import app.infra.settings as settings_module
+
+    class PeopleProvider:
+        def get_json(self, path, params=None):
+            if path.endswith("/user/search"):
+                assert params["username"] == "준서"
+                return [
+                    {"name": "skcc.x1103", "displayName": "이준서 SKCC"},
+                    {"name": "skcc.x1327", "displayName": "임준서 SKCC"},
+                ]
+            return {"name": (params or {}).get("username", "")}
+
+    fake = _Client(0)
+    fake.provider = PeopleProvider()
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+    monkeypatch.setattr(settings_module, "load_people", lambda: {
+        "ETL": ["skcc.x1103"], "Runtime": ["skcc.x1327"],
+        "Catalog": [f"skcc.x{n}" for n in range(2000, 2020)],
+    })
+
+    first = query_people.invoke({"name": "준서TL", "page_size": 1})
+    assert first["total"] == 2 and first["returned"] == 1 and first["hasMore"]
+    assert len(fake.calls) == 3  # one candidate × open/in-progress/done, one page each
+    second = query_people.invoke({
+        "name": "@준서", "page_size": 1, "cursor": first["nextCursor"]})
+    assert second["total"] == 2 and second["returned"] == 1 and not second["hasMore"]
+    assert len(fake.calls) == 6  # second candidate only; first one was not enriched again
 
 
 def test_cursor_is_bound_to_query_and_thread():
