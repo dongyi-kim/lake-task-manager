@@ -28,7 +28,7 @@ def _state(*messages, request=""):
 def test_every_meeting_case_interviews_ambiguous_person_and_local_term_after_research():
     set_person_context("meeting-interview", ["DL-9200"])
     request = (
-        "회의록을 조사해 정리해줘. 참석: @이다은, 하은님, 준서TL. "
+        "회의록을 조사해 정리해줘. 참석: @이다은, 하은님, 준서TL. 담당은 @이다은은 writer. "
         "준서TL이 PSR 기준을 맡음. PSR 뜻은 기록에 없고 준서TL도 확정되지 않으면 물어봐."
     )
     state = {**_state(request), "situation": "내부 티켓과 외부 공식 문서를 조사했으나 정의 미확정",

@@ -88,6 +88,21 @@ def resolved_people(state) -> dict[str, str]:
         except Exception:
             continue
         uid = str(result.get("resolved") or "").strip()
+        # Korean particles are sometimes attached directly to an @mention (``@이다은은``).
+        # Preserve legitimate names ending in the same syllable; trim only after the full token has no
+        # directory candidate and the trimmed token resolves.
+        if not uid and not (result.get("candidates") or []) \
+                and len(name) >= 3 and name[-1:] in ("은", "는", "이", "가", "을", "를"):
+            trimmed = name[:-1]
+            try:
+                retry = find_person.invoke({"name": trimmed}) or {}
+            except Exception:
+                retry = {}
+            retry_uid = str(retry.get("resolved") or "").strip()
+            if retry_uid and not retry.get("ambiguous"):
+                bindings[name] = retry_uid
+                bindings[trimmed] = retry_uid
+                continue
         if uid and not result.get("ambiguous"):
             bindings[name] = uid
     return bindings

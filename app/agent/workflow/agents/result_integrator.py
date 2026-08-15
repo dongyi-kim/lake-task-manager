@@ -183,6 +183,22 @@ class ResultIntegrator(TextAgent):
                     "When a value changed, identify current and prior values with the date and cite the change "
                     "ticket as the primary source. Use the explicit `[담당]` line for ownership; never infer "
                     "owner from a comment author.")
+        # 회의 정리는 일반 자산 이력 템플릿보다 사용자가 준 결정·담당·기한이 주인공이다.
+        # dossier의 과거 상태가 회의 당일 결정을 덮거나 담당 표가 빠진 MTG1 실측을 막는다.
+        if not qs:
+            from app.agent.workflow.meeting_context import is_meeting_request
+            if is_meeting_request(state) and (state.get("intent") or "") == Intent.ASK:
+                goal = (
+                    "Write a compact Korean meeting brief from the Original Request, Current User Message, and "
+                    "verified research. Start with `### 결정사항`. Then use `### 담당·기한` and a "
+                    "`| 작업 | 담당 | 기한 |` table containing every explicitly named owner and deadline. "
+                    "Use a verified mention token for every person. Follow with `### 조사로 보강한 맥락` for "
+                    "only directly relevant internal history and external official findings, and `### 미결·검증` "
+                    "for remaining uncertainty. Preserve explicit sample counts, pass/fail thresholds, hold or "
+                    "exclusion decisions, and supplied local-term definitions. Do not list unrelated current "
+                    "tickets, and do not replace a meeting decision with an older ticket status. Finish with the "
+                    "single `### 근거` index; ticket sources use detail tokens and documents use verified links."
+                )
         data = wrap_data(
             data_block("Interpretation Data: Show Unchanged Under the Korean Heading 제가 이해한 바",
                        state.get("interpretation")),

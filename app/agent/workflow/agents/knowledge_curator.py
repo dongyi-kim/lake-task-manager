@@ -13,7 +13,7 @@ from __future__ import annotations
 from app.agent.prompts.roles import SYSTEM_KNOWLEDGE_CURATOR
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.prompts import data_block, persona, wrap_data
-from app.agent.workflow.state import AgentState, Node, last_user_text, note
+from app.agent.workflow.state import AgentState, Node, last_user_text, note, request_text
 
 SCHEMA = {
     "type": "object",
@@ -56,6 +56,8 @@ class KnowledgeCurator(StructuredAgent):
     def task(self, state):
         data = wrap_data(
             data_block("Verified Internal Findings", state.get("situation")),
+            data_block("Original User Request and Meeting Decisions", request_text(state)),
+            data_block("Current Interview Answer", last_user_text(state)),
             data_block("Evidence Tickets", "\n".join(
                 f"- {e.get('key', '')} {e.get('title', '')} — {e.get('why', '')}"
                 for e in (state.get("evidence") or []))),
@@ -75,6 +77,9 @@ Organize the supplied evidence into a Korean knowledge brief with concepts, inte
 - Determine a current value from the latest verified change record. Never report an earlier value as current.
 - For a single-asset fact lookup such as interval, schema, owner, or policy, limit `concepts` to one or two items and put every supplied operational value in `our_context`, including full column lists, Job names, user IDs, policy values, and change dates.
 - Write all natural-language field values in Korean while preserving identifiers exactly.
+- For meeting notes, user-written decisions, named owners, deadlines, exclusions, and a definition supplied in
+  the interview are primary evidence. Preserve every one in `our_context`; internal tickets and external sources
+  supplement them and must not replace them with an older status.
 
 ## User Question
 
