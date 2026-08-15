@@ -18,3 +18,7 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 실제 답변의 차이, 정량 측정값, 사람 관점 평가는 위 보고서에 통합해 보존한다. 실행 로그와 raw JSON은
 중복·로그성 산출물이므로 저장소에는 두지 않으며 `logs/`, `results/`는 `.gitignore` 대상이다. 필요하면
 `scripts/`와 현재 배터리 도구로 다시 생성한다.
+
+새 비교 실험은 [`app/agent/EVALUATION.md`](../../app/agent/EVALUATION.md)의 versioned 표준을 사용한다.
+보고서와 PR Description에 protocol/rubric/battery version 및 측정 기준을 포함하고, version이 없는
+과거 점수나 closure 결과를 섞은 점수는 현재 qualification 결과와 직접 증감 비교하지 않는다.

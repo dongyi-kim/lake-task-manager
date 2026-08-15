@@ -160,6 +160,8 @@ Windows 공용 pytest temp에 권한 문제가 있으면 repository 내부 `--ba
 ### 실 LLM 배터리
 
 실 API 배터리는 GitHub Actions에 넣지 않는다. 승인된 로컬 환경에서 필요한 suite만 수동 실행한다.
+측정·사람 평가·보고서는 [`EVALUATION.md`](EVALUATION.md)와
+[`evaluation_protocol.json`](evaluation_protocol.json)의 versioned 계약을 따른다.
 
 - Conversation: `tools/agent_lang_ab.py`
 - Compose: `tools/agent_compose_eval.py`
@@ -167,9 +169,24 @@ Windows 공용 pytest temp에 권한 문제가 있으면 repository 내부 `--ba
 - 사람 관점 판독: `tools/agent_user_review.py`, `tools/agent_quality_read.py`
 - 정량 병목: `tools/agent_perf.py`
 
-production routing 비교의 기본은 main/complex=`gpt-4o`, simple=`gpt-4o-mini`다. 모든 후보에서 `(model, simpleModel)`을 동일하게 유지하고 결과 JSON에 `model`, `simpleModel`, `promptVersion`을 기록한다. 한 번의 run은 탐색적 증거다. production 기본값 전환 전에는 순서를 섞어 최소 5회 반복하고 p50/p95와 실패율을 비교한다.
+production routing 비교의 기본은 main/complex=`gpt-4o`, simple=`gpt-4o-mini`다. 모든 후보에서
+`(model, simpleModel)`을 동일하게 유지한다. raw JSON에는 `protocolVersion`, `rubricVersion`,
+suite별 `batteryVersion`·`batteryManifestSha256`, `candidateCommit`, `promptVersion`, model routing,
+`dataManifestSha256`, run group·repeat index·선택 정책을 기록한다. 한 번의 run은 탐색적 증거다.
+production 기본값 전환 전에는 후보 순서를 균형 있게 섞어 동일한 full battery를 최소 5회 반복하고
+p50/p95, token/call/cost, 자동 실패율, 사람 점수와 치명 결함률을 비교한다.
 
-평가에는 pass/fail뿐 아니라 실제 reply, 질문 form, card/payload, description/comment 전문, role별 call·token·latency·cost를 포함한다. 자동 점수가 높아도 사람이 읽어 사실성·완결성·안전성·가독성이 나쁘면 실패다.
+평가에는 pass/fail뿐 아니라 실제 reply, 질문 form, card/payload, description/comment 전문, role별
+call·token·latency·cost를 포함한다. 정성평가는 LTM LLM이 아닌 Codex 또는 Claude 작업 에이전트가
+raw output을 직접 읽고 인간 관점에서 수행한다. LTM runtime LLM·내부 Role·동일 production endpoint를
+evaluator나 LLM-as-judge로 사용하지 않는다. 자동 도구는 contract 검사와 산술 집계만 담당한다.
+자동 점수가 높아도 Codex/Claude 검수에서 사실성·완결성·안전성·가독성이 나쁘면 실패다. 실패 case의
+focused/closure 재실행은 보조 증거이며 full-run primary 점수를 교체하지 않는다. 수정 후 비교 점수가
+필요하면 새 commit·run group으로 모든 후보의 full battery를 다시 실행한다.
+
+보고서와 PR Description에는 protocol/rubric/battery version, 정확한 집계식, 반복·순서·retry/cache
+조건, 비교 가능 여부, 실제 출력과 축별 사람 점수, 실패·누락·제한사항을 반드시 포함한다. battery가
+늘어나면 `batteryVersion`을 올리고, 다른 battery끼리는 공통 case subset과 전체 결과를 분리한다.
 
 실험 결과, 로그, 보고서는 `research/agent-improvement/{results,logs,reports}`에 저장한다. `docs/`, repository root, `tools/`에 일회성 결과를 남기지 않는다.
 
@@ -183,3 +200,4 @@ production routing 비교의 기본은 main/complex=`gpt-4o`, simple=`gpt-4o-min
 - Done, hierarchy, search scope, pagination, approval 불변조건을 우회하지 않는다.
 - 관련 test와 전체 test 결과를 보고한다.
 - 실험을 수행했다면 실제 output과 사람 관점 의견을 함께 보존한다.
+- 평가 결과의 protocol/rubric/battery version과 manifest가 기록되고, 보고서가 측정 기준을 명시한다.

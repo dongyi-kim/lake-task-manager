@@ -34,10 +34,13 @@ os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
 from app.agent.workflow import session  # noqa: E402
+from tools.agent_eval_protocol import build_run_metadata  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
+
+BATTERY_VERSION = "1.0.0"
 
 
 def items(o):
@@ -323,6 +326,7 @@ CASES = [
 
 
 RESULTS = []
+EVALUATION_METADATA = None
 
 
 def run(cid, desc, turns, check):
@@ -373,7 +377,7 @@ def write_checkpoint(hits, total, cost):
             for key in usage:
                 usage[key] += turn_usage.get(key) or 0
     payload = {"model": MODEL, "simpleModel": SIMPLE_MODEL,
-               "promptVersion": PROMPT_VERSION,
+               "promptVersion": PROMPT_VERSION, "evaluation": EVALUATION_METADATA,
                "실행완료": len(RESULTS) == total,
                "합계": {"통과": hits, "완료": len(RESULTS), "전체": total,
                         "비용USD": round(cost, 6),
@@ -389,6 +393,15 @@ def write_checkpoint(hits, total, cost):
 if __name__ == "__main__":
     hits, cost = 0, 0.0
     run_cases = [c for c in CASES if not ONLY or c[0] in ONLY]
+    EVALUATION_METADATA = build_run_metadata(
+        suite="create",
+        battery_version=BATTERY_VERSION,
+        cases=CASES,
+        selected_case_ids=[case[0] for case in run_cases],
+        model=MODEL,
+        simple_model=SIMPLE_MODEL,
+        prompt_version=PROMPT_VERSION,
+    )
     for cid, desc, turns, check in run_cases:
         ok, c = run(cid, desc, turns, check)
         hits += 1 if ok else 0

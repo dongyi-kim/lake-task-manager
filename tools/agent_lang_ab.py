@@ -31,10 +31,13 @@ os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
 from app.agent.workflow import session          # noqa: E402
+from tools.agent_eval_protocol import build_run_metadata  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
+
+BATTERY_VERSION = "1.0.0"
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
 #    (인터뷰 → 초안이 이 도구의 핵심 갈래다).
@@ -158,9 +161,18 @@ def run():
             tot["요구구조불일치"] += 1 if ck.get("요구구조불일치") else 0
             tot["응답카드불일치"] += 1 if ck.get("응답카드불일치") else 0
     tot["초"] = round(tot["초"], 1)
+    evaluation = build_run_metadata(
+        suite="conversation",
+        battery_version=BATTERY_VERSION,
+        cases=SCENARIOS,
+        selected_case_ids=[row["시나리오"] for row in rows],
+        model=MODEL,
+        simple_model=SIMPLE_MODEL,
+        prompt_version=PROMPT_VERSION,
+    )
     io.open(OUT, "w", encoding="utf-8", newline="\n").write(
         json.dumps({"model": MODEL, "simpleModel": SIMPLE_MODEL,
-                    "promptVersion": PROMPT_VERSION,
+                    "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
                     "합계": tot, "시나리오": rows},
                    ensure_ascii=False, indent=1))
     print(json.dumps(tot, ensure_ascii=False), flush=True)

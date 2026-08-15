@@ -1,0 +1,153 @@
+{
+  "protocolName": "LTM Agent Evaluation Protocol",
+  "protocolVersion": "1.0.0",
+  "rubricVersion": "1.0.0",
+  "primaryEvidencePolicy": "complete-run-no-substitution",
+  "attemptPolicy": "retain-every-attempt",
+  "qualitativeEvaluation": {
+    "policy": "codex-or-claude-direct-raw-output-review",
+    "allowedAgentFamilies": ["codex", "claude"],
+    "prohibitedEvaluators": ["ltm-runtime-llm", "candidate-model", "llm-as-judge"],
+    "requiresDirectRawOutputReview": true,
+    "requiresSameEvaluatorPanelAcrossCandidates": true,
+    "automationBoundary": "deterministic-contract-checks-and-arithmetic-only"
+  },
+  "qualification": {
+    "minimumRepetitions": 5,
+    "candidateOrder": "counterbalanced-randomized",
+    "requiresFullBattery": true,
+    "requiresCleanCommit": true,
+    "requiresSameComparabilityKey": true
+  },
+  "aggregation": {
+    "caseScore": "weighted-mean-of-dimensions-after-caps",
+    "suiteScore": "arithmetic-mean-of-all-case-attempt-scores-in-suite",
+    "overallScore": "arithmetic-mean-of-all-case-attempt-scores-across-suites",
+    "latency": ["p50", "p95"],
+    "percentileMethod": "nearest-rank-over-all-case-attempts",
+    "usage": ["calls", "promptTokens", "completionTokens", "totalTokens", "cachedTokens", "costUsd"],
+    "rounding": 2,
+    "missingCasePolicy": "qualification-invalid-not-zero-filled",
+    "technicalRetryPolicy": "record-all-attempts-and-report-retry-rate"
+  },
+  "humanRubric": {
+    "minimum": 1.0,
+    "maximum": 5.0,
+    "step": 0.5,
+    "scoreAnchors": {
+      "5": "요청을 완결적으로 충족하며 사실·계약·안전·표현에 의미 있는 결함이 없음",
+      "4": "바로 사용할 수 있고 사소한 누락·중복·표현 수정만 필요",
+      "3": "핵심은 유용하지만 중요한 누락·추정·불일치가 있어 사용 전 수정 필요",
+      "2": "일부 단서는 유용하지만 주요 요청을 충족하지 못하거나 신뢰하기 어려움",
+      "1": "사용 불가하거나 요청과 무관하고 중대한 사실·안전·계약 실패가 있음"
+    },
+    "dimensions": [
+      {
+        "id": "request_fulfillment",
+        "label": "요청 충족·완결성",
+        "weight": 0.2,
+        "question": "요청한 대상·범위·형식·후속 행동을 빠짐없이 충족했는가"
+      },
+      {
+        "id": "factual_grounding",
+        "label": "사실성·근거성",
+        "weight": 0.2,
+        "question": "상태·날짜·사람·티켓·문서·수치가 검증된 근거와 일치하는가"
+      },
+      {
+        "id": "contract_actionability",
+        "label": "계약 일관성·실행 가능성",
+        "weight": 0.2,
+        "question": "reply·질문·card/payload가 일치하고 실제 검토·승인·실행 가능한가"
+      },
+      {
+        "id": "safety_uncertainty",
+        "label": "안전성·불확실성 처리",
+        "weight": 0.2,
+        "question": "모호함을 발명하지 않고 질문 또는 구체적인 확인 필요로 남겼는가"
+      },
+      {
+        "id": "communication_rendering",
+        "label": "가독성·간결성·렌더링",
+        "weight": 0.2,
+        "question": "한국어 답변이 간결하고 구조적이며 badge·mention·link가 중복이나 파손 없이 표시되는가"
+      }
+    ],
+    "caps": [
+      {
+        "code": "fabricated_fact_or_entity",
+        "maximumCaseScore": 2.0,
+        "description": "존재하지 않거나 검증되지 않은 사람·티켓·문서·상태·날짜·수치를 사실로 제시"
+      },
+      {
+        "code": "unsafe_or_unapproved_write",
+        "maximumCaseScore": 2.0,
+        "description": "승인되지 않은 write 또는 금지된 계층·Done 변경을 실행·승인 대상으로 제시"
+      },
+      {
+        "code": "reply_payload_contradiction",
+        "maximumCaseScore": 3.0,
+        "description": "사용자 응답과 질문 form·card·payload가 서로 다른 행동이나 대상을 표시"
+      },
+      {
+        "code": "material_omission",
+        "maximumCaseScore": 3.0,
+        "description": "사용자가 요구한 사람·티켓·문서·하위 항목의 중요한 일부를 설명 없이 누락"
+      }
+    ]
+  },
+  "versioning": {
+    "protocol": {
+      "major": "점수 산식·실패 처리·evidence 선택·비교 가능성 규칙 변경",
+      "minor": "필수 metadata 또는 비점수 절차 추가",
+      "patch": "의미를 바꾸지 않는 설명·오탈자 수정"
+    },
+    "rubric": {
+      "major": "평가 축·가중치·cap 의미 변경",
+      "minor": "기존 축 안의 판정 예시·가이드 추가",
+      "patch": "표현 교정"
+    },
+    "battery": {
+      "major": "기존 case의 입력·기대 계약·checker 의미 변경 또는 case 제거",
+      "minor": "새 case 추가",
+      "patch": "점수 의미에 영향 없는 설명·fixture 오탈자 수정"
+    }
+  },
+  "requiredReportSections": [
+    "측정 식별자",
+    "비교 가능성 및 evidence 선택",
+    "실행 조건",
+    "배터리 범위",
+    "정량 결과",
+    "사람 품질 평가 기준",
+    "배터리별 실제 출력과 평가",
+    "실패·재시도·제한사항"
+  ],
+  "requiredReportFields": [
+    "protocolVersion",
+    "rubricVersion",
+    "batteryVersion",
+    "batteryManifestSha256",
+    "runKind",
+    "runGroupId",
+    "repetitions",
+    "candidateCommit",
+    "promptVersion",
+    "model",
+    "simpleModel",
+    "dataManifestSha256",
+    "selectionPolicy",
+    "aggregation",
+    "percentileMethod",
+    "candidateOrderIndex",
+    "retryPolicy",
+    "cachePolicy",
+    "qualitativeEvaluatorPolicy",
+    "evaluatorAgentFamily",
+    "evaluatorAgentModel",
+    "directRawOutputReview",
+    "ltmLlmUsedAsJudge",
+    "reviewerCount",
+    "blindedReview"
+  ]
+}
