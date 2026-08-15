@@ -96,6 +96,22 @@ def test_suite_raw_paths_do_not_overwrite_each_other(monkeypatch):
     assert all(path.parent.name == "isolation-group" for path in (conversation, editor, create))
 
 
+def test_raw_attempt_path_is_reserved_and_cannot_be_reused(tmp_path, monkeypatch):
+    monkeypatch.setattr(E, "RAW_RESULT_ROOT", tmp_path)
+    metadata = {
+        "run": {"runGroupId": "same-attempt", "repeatIndex": 1},
+        "battery": {"batteryVersion": "2.0.0"},
+    }
+    path = E.raw_result_path("conversation", metadata)
+    assert E.reserve_raw_result_path(path) == path
+    assert path.with_suffix(path.suffix + ".claim").read_text(encoding="utf-8").startswith("pid=")
+    with pytest.raises(FileExistsError, match="already reserved"):
+        E.reserve_raw_result_path(path)
+    E.write_raw_result(path, {"attempt": 1})
+    with pytest.raises(FileExistsError, match="already exists"):
+        E.reserve_raw_result_path(path)
+
+
 def test_all_harnesses_declare_case_reset_and_world_verification():
     for relative in (
         "tools/agent_lang_ab.py", "tools/agent_compose_eval.py", "tools/agent_create_suite.py",

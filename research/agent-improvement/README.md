@@ -25,7 +25,8 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 과거 점수나 closure 결과를 섞은 점수는 현재 qualification 결과와 직접 증감 비교하지 않는다.
 
 실행별 raw response·trace·usage·debug JSON은 `.cache/agent-evaluation/<runGroupId>/`에만 저장하고 git에
-담지 않는다. Codex/Claude 직접 채점이 끝나면 `research/agent-improvement/evaluations/`에 경량 Markdown을
+담지 않는다. 같은 run group·suite·repeat의 raw/`.claim`은 덮어쓰지 않고 재실행에 새 식별자를 쓴다.
+Codex/Claude 직접 채점이 끝나면 `research/agent-improvement/evaluations/`에 경량 Markdown을
 반드시 남긴다. 그래야 이후 같은 battery/case만 focused로 재실행해 candidate commit과 version이 일치하는
 과거 결과를 찾을 수 있다.
 

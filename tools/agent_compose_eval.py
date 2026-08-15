@@ -30,7 +30,8 @@ ONLY = {a for a in _args if a.isupper()}
 SIMPLE_MODEL = os.environ.get("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
-                                       raw_result_path, write_raw_result)  # noqa: E402
+                                       raw_result_path, reserve_raw_result_path,
+                                       write_raw_result)  # noqa: E402
 from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
                                          finish_case)  # noqa: E402
 from tools.agent_eval_review_specs import review_specs  # noqa: E402
@@ -156,7 +157,9 @@ if __name__ == "__main__":
         suite_review_elements=SUITE_REVIEW_ELEMENTS,
         case_review_specs=CASE_REVIEW_SPECS,
     )
-    OUT = str(raw_result_path("editor", evaluation, requested=OUT))
+    OUT = str(reserve_raw_result_path(
+        raw_result_path("editor", evaluation, requested=OUT),
+    ))
     for cid, desc, kw, check in run:
         isolation_start = begin_case(cid)
         t0 = time.time()

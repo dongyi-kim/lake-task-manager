@@ -355,6 +355,42 @@ def raw_result_path(
     return target
 
 
+def reserve_raw_result_path(path: str | os.PathLike[str]) -> Path:
+    """Claim one raw path before paid work and refuse attempt-id reuse.
+
+    Checkpoint writers intentionally replace their *own* target repeatedly.  A
+    later process must not silently replace that attempt, though, because the
+    protocol promises to retain every attempt.  The sidecar is acquired with
+    O_EXCL so concurrent invocations cannot both believe they own the path.
+    A stale sidecar after a crash is also evidence of an attempted run; callers
+    must use a new runGroupId/repeatIndex instead of erasing it.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    claim = target.with_suffix(target.suffix + ".claim")
+    if target.exists():
+        raise FileExistsError(
+            f"raw evaluation result already exists: {target}; "
+            "use a new runGroupId or repeatIndex",
+        )
+    try:
+        descriptor = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"raw evaluation attempt is already reserved: {target}; "
+            "use a new runGroupId or repeatIndex",
+        ) from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(f"pid={os.getpid()}\n")
+    if target.exists():
+        claim.unlink(missing_ok=True)
+        raise FileExistsError(
+            f"raw evaluation result appeared while reserving: {target}; "
+            "use a new runGroupId or repeatIndex",
+        )
+    return target
+
+
 def write_raw_result(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> Path:
     """Atomically persist a complete raw result without making it a tracked artifact."""
     target = Path(path)

@@ -45,7 +45,8 @@ from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
 configure_process_isolation("conversation")
 from app.agent.workflow import session          # noqa: E402
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
-                                       raw_result_path, write_raw_result)  # noqa: E402
+                                       raw_result_path, reserve_raw_result_path,
+                                       write_raw_result)  # noqa: E402
 from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
@@ -122,6 +123,24 @@ def _checks(out: dict, user_text: str = "") -> dict:
 
 
 def run():
+    selected_ids = [
+        sid for sid, _ in SCENARIOS
+        if not ONLY or sid.split("-", 1)[0].upper() in ONLY or sid.upper() in ONLY
+    ]
+    evaluation = build_run_metadata(
+        suite="conversation",
+        battery_version=BATTERY_VERSION,
+        cases=SCENARIOS,
+        selected_case_ids=selected_ids,
+        model=MODEL,
+        simple_model=SIMPLE_MODEL,
+        prompt_version=PROMPT_VERSION,
+        suite_review_elements=SUITE_REVIEW_ELEMENTS,
+        case_review_specs=CASE_REVIEW_SPECS,
+    )
+    out_path = reserve_raw_result_path(
+        raw_result_path("conversation", evaluation, requested=REQUESTED_OUT),
+    )
     rows = []
     for sid, turns in SCENARIOS:
         if ONLY and sid.split("-", 1)[0].upper() not in ONLY and sid.upper() not in ONLY:
@@ -186,18 +205,6 @@ def run():
             tot["응답카드불일치"] += 1 if ck.get("응답카드불일치") else 0
     tot["초"] = round(tot["초"], 1)
     tot["비용USD"] = round(tot["비용USD"], 6)
-    evaluation = build_run_metadata(
-        suite="conversation",
-        battery_version=BATTERY_VERSION,
-        cases=SCENARIOS,
-        selected_case_ids=[row["시나리오"] for row in rows],
-        model=MODEL,
-        simple_model=SIMPLE_MODEL,
-        prompt_version=PROMPT_VERSION,
-        suite_review_elements=SUITE_REVIEW_ELEMENTS,
-        case_review_specs=CASE_REVIEW_SPECS,
-    )
-    out_path = raw_result_path("conversation", evaluation, requested=REQUESTED_OUT)
     metrics = quantitative_metrics(
         attempts=tot["턴수"], duration_seconds=tot["초"], calls=tot["LLM호출"],
         prompt_tokens=tot["프롬프트토큰"], completion_tokens=tot["완성토큰"],

@@ -217,7 +217,9 @@ focused/closure 재실행은 보조 증거이며 full-run primary 점수를 교�
 
 실 LLM 배터리의 raw response, trace, usage, debug payload는
 `.cache/agent-evaluation/<runGroupId>/`에만 저장한다. 이 경로는 gitignore 대상이며 `docs/`, repository
-root, `tools/`, `research/`에 raw JSON이나 실행 로그를 남기지 않는다.
+root, `tools/`, `research/`에 raw JSON이나 실행 로그를 남기지 않는다. 같은
+`runGroupId + suite + repeatIndex`를 다시 쓰거나 `.claim`을 지워 기존 attempt를 덮어쓰지 않는다.
+재실행에는 새 run group 또는 repeat index를 부여한다.
 
 Codex/Claude가 raw output을 직접 채점한 뒤에는 git에 보존할 경량 Markdown 보고서를
 `research/agent-improvement/evaluations/`에 반드시 작성한다. 보고서에는 candidate commit,

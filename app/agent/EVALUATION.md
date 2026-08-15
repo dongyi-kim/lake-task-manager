@@ -71,7 +71,9 @@
   어느 쪽이든 바꾸면 해당 case 실패
 - case 실행 시간은 격리 초기화와 종료 fingerprint 시간을 제외하고 측정
 - raw 결과는 suite 이름이 포함된 별도 파일에 기록하며 create의 case별 checkpoint 덮어쓰기는 같은 suite
-  누적 파일을 원자적으로 갱신하는 용도로만 허용
+  누적 파일을 원자적으로 갱신하는 용도로만 허용. 하네스는 유료 호출 전에 `.claim`을 배타적으로 예약하고,
+  동일 `runGroupId + suite + repeatIndex`의 다른 process가 기존 raw나 진행 중 attempt를 덮어쓰는 것을 거부.
+  재실행은 새 run group 또는 repeat index 사용
 - provider-side prompt cache는 client가 강제로 비울 수 없으므로 `cachedTokens`를 별도 기록하고 후보 순서를
   counterbalance. provider cache 조건이 크게 다르면 latency·token 비교 제한사항에 명시
 
