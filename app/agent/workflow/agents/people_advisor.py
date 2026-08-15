@@ -288,7 +288,24 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
             row = {"index": idx, "user": user,
                    "reasons": reasons, "children": kids,
                    "alternates": alternates[:2]}
-            rows.append(_normalize_workload_choice(row))
+            item = ((state.get("draft") or {}).get("items") or [])[idx]
+            rows.append(_enforce_item_roster(
+                _normalize_workload_choice(row), item, state.get("roster_load")))
+
+        # Structured output이 유효해도 모델이 초안 항목 하나를 통째로 빠뜨릴 수 있다.
+        # 컴포넌트 로스터가 검증된 경우에는 다시 LLM을 호출하지 않고 최소 부하 후보로
+        # 안전하게 복원한다. 이 경로는 추천 누락 때문에 전체 생성 턴을 재시도하던 비용도 없앤다.
+        present = {r.get("index") for r in rows}
+        for idx, item in enumerate((state.get("draft") or {}).get("items") or []):
+            if idx in present:
+                continue
+            fallback = _enforce_item_roster(
+                {"index": idx, "user": "", "reasons": [],
+                 "children": [], "alternates": []},
+                item, state.get("roster_load"))
+            if fallback.get("user"):
+                rows.append(fallback)
+        rows.sort(key=lambda row: int(row.get("index") or 0))
         named = sum(1 for r in rows if r["user"])
         return {"assignments": rows,
                 "trace": note(state, self.name,
@@ -328,6 +345,88 @@ def _workload_reason(roster_load, user: str) -> str:
             if m:
                 return f"진행중 {m.group(1)}건"
     return "승인 화면에서 현재 부하 확인 필요"
+
+
+def _module_roster(roster_load, module: str) -> list[dict]:
+    """`_roster_load`의 사람 친화 텍스트에서 한 모듈의 검증 후보만 복원한다.
+
+    조회가 실패해 전사 로스터로 넓어진 섹션은 요청 모듈과 이름이 다르므로 선택하지 않는다.
+    즉, 알 수 없는 컴포넌트에 전사 최소부하자를 그 모듈 담당자로 가장하지 않는다.
+    """
+    import re
+
+    wanted = str(module or "").strip().casefold()
+    if not wanted:
+        return []
+    active = False
+    people = []
+    for raw in str(roster_load or "").splitlines():
+        line = raw.strip()
+        header = re.fullmatch(r"\[(.+?)\s+로스터·부하\]", line)
+        if header:
+            active = header.group(1).strip().casefold() == wanted
+            continue
+        if not active:
+            continue
+        match = re.match(
+            r"-\s+(\S+)\s+.*?—\s+진행중\s+(\d+)건\s+·\s+열림\s+(\d+)건",
+            line)
+        if match:
+            people.append({"user": match.group(1),
+                           "in_progress": int(match.group(2)),
+                           "open": int(match.group(3))})
+    return sorted(people, key=lambda p: (p["in_progress"], p["open"], p["user"]))
+
+
+def _enforce_item_roster(row: dict, item: dict, roster_load) -> dict:
+    """초안 컴포넌트와 다른 모듈의 추천을 검증된 후보로 교정한다.
+
+    모델은 전체 조사 문맥에서 눈에 띈 다른 모듈 사람을 고를 수 있다. 반면 후보 집합은
+    초안 컴포넌트와 people.yaml이 결정하는 기계적 제약이다. 후보가 맞는 선택은 모델의
+    유사 이력 판단을 보존하고, 후보 밖 선택이나 누락만 최소 부하 순으로 교정한다.
+    """
+    module = next((str(c).strip() for c in (item.get("components") or [])
+                   if str(c).strip()), "")
+    candidates = _module_roster(roster_load, module)
+    if not candidates:
+        return row
+    by_user = {p["user"]: p for p in candidates}
+    chosen = str(row.get("user") or "").strip()
+    if chosen not in by_user:
+        chosen = candidates[0]["user"]
+        picked = by_user[chosen]
+        row = dict(row, user=chosen,
+                   reasons=[f"{module} 로스터 · 진행중 {picked['in_progress']}건 · "
+                            f"열림 {picked['open']}건"])
+        row["alternates"] = [
+            {"user": p["user"],
+             "why": f"{module} 로스터 · 진행중 {p['in_progress']}건 · 열림 {p['open']}건"}
+            for p in candidates if p["user"] != chosen
+        ][:2]
+
+    # 모델이 자식만 다른 모듈 사람에게 줬다면 같은 후보 집합 안에서 분산한다.
+    children = []
+    supplied = {int(c.get("index") or 0): dict(c)
+                for c in (row.get("children") or []) if isinstance(c, dict)}
+    for child_index, child in enumerate(item.get("children") or []):
+        existing = supplied.get(child_index, {})
+        user = str(existing.get("user") or "").strip()
+        if child.get("assignee_source") == "user":
+            user = str(child.get("assignee") or user).strip()
+        elif user not in by_user:
+            user = candidates[child_index % len(candidates)]["user"]
+        if not user:
+            continue
+        if user in by_user:
+            p = by_user[user]
+            why = (f"{module} 로스터 · 진행중 {p['in_progress']}건 · "
+                   f"열림 {p['open']}건")
+        else:
+            why = "사용자 지정 담당자"
+        children.append({"index": child_index, "user": user, "why": why})
+    if children:
+        row["children"] = children
+    return row
 
 
 def _normalize_workload_choice(row: dict) -> dict:

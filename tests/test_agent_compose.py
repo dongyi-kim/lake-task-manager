@@ -235,6 +235,44 @@ def test_unrequested_editor_quality_claim_is_removed_but_verified_one_stays():
     assert "정확" in verified
 
 
+def test_sparse_description_uses_only_the_verified_ticket_boundary():
+    from app.agent.editor_author import _drop_unrequested_description_quality_claims
+
+    html = ("<h3>배경</h3><p>데이터 접근성을 향상하기 위한 작업.</p>"
+            "<h3>작업 범위</h3><ul><li>포함: 카탈로그 연동 강화</li>"
+            "<li>제외: UI와 성능 개선</li></ul>"
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">사용자 문서와 성능 테스트 완료</li></ul>')
+    source = ('[DL-9095] "[Workbench] 다운스트림 조회 연동" — In Progress\n'
+              '상위 Epic: DL-9040 "[데이터] 데이터셋 카탈로그 지식 픽스처"')
+    got = _drop_unrequested_description_quality_claims(html, source)
+    assert "접근성" not in got and "UI" not in got and "성능" not in got
+    assert "포함: 다운스트림 조회 연동" in got
+    assert "결과와 테스트 기록을 티켓에서 확인" in got
+
+
+def test_editor_drops_real_but_unverified_ticket_claims():
+    from app.agent.editor_author import _drop_unverified_editor_ticket_claims
+
+    html = ('<h3>배경</h3><p>관련 장애 <a data-key="DL-9071">DL-9071</a> 때문에 요청.</p>'
+            '<p>현재 티켓 <a data-key="DL-9095">DL-9095</a> 작업.</p>')
+    got = _drop_unverified_editor_ticket_claims(html, "verified DL-9095")
+    assert "DL-9071" not in got and "DL-9095" in got
+
+
+def test_resolved_ticket_title_is_normalized_and_list_items_are_deduplicated():
+    from app.agent.editor_author import _dedupe_editor_list_items, _normalize_editor_ticket_titles
+
+    html = ('<ul><li><a data-key="DL-9040">DL-9040</a> "짧은 가짜 제목"</li>'
+            '<li>같은 항목</li><li> 같은   항목 </li></ul>')
+    refs = [{"kind": "ticket", "resolved": True, "key": "DL-9040",
+             "label": "[데이터] 데이터셋 카탈로그 지식 픽스처"}]
+    got = _dedupe_editor_list_items(_normalize_editor_ticket_titles(html, refs))
+    assert "짧은 가짜 제목" not in got
+    assert "[데이터] 데이터셋 카탈로그 지식 픽스처" in got
+    assert got.count("같은 항목") == 1
+
+
 def test_dangling_editor_connective_is_completed():
     from app.agent.editor_author import _repair_dangling_editor_ending
 
@@ -315,6 +353,25 @@ def test_unsupported_metric_is_replaced_but_seed_metric_is_preserved():
     supplied = _ground_acceptance_metrics(
         "<li>p95가 200ms 이하임을 확인</li>", "완료 기준은 p95 200ms 이하")
     assert "200ms 이하" in supplied
+
+
+def test_parent_description_does_not_repeat_child_execution_details():
+    from app.agent.editor_author import _drop_parent_child_execution_repetition
+
+    context = ('하위 1 완료: DL-9093 "[Workbench] 리니지 그래프 렌더 컴포넌트"(완료), '
+               'DL-9094 "[Workbench] 업스트림 2홉 조회 연동"(완료), '
+               'DL-9095 "[Workbench] 다운스트림 조회 연동"(미완료: In Progress)')
+    html = ('<h3>배경</h3><p>리니지 뷰어 1차 오픈 작업.</p>'
+            '<h3>작업 범위</h3><ul><li>그래프 렌더 컴포넌트 구현</li>'
+            '<li>업스트림 2홉 조회 연동</li><li>3홉 조회 제외</li></ul>'
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">다운스트림 조회 연동 완료</li></ul>')
+    got = _drop_parent_child_execution_repetition(html, context)
+    assert "그래프 렌더 컴포넌트 구현" not in got
+    assert "업스트림 2홉 조회 연동" not in got
+    assert "다운스트림 조회 연동 완료" not in got
+    assert "3홉 조회 제외" not in got, "source에 없는 제외 범위도 함께 제거"
+    assert "하위 작업" in got and "결과 근거" in got
 
 
 def test_rendering_rules_are_indexed_for_retrieval():

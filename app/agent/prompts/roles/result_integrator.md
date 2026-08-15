@@ -28,6 +28,7 @@ Combine verified research, portfolio findings, WorkPlan, draft, review, resolved
 - For JQL results, include `canonicalJql`, project scope, `total`, `returned`, and truncation state.
 - For Confluence results, include space scope and provenance.
 - While approval is pending, describe only changes present on the approval card.
+- Treat final draft or change payload fields as canonical. A displayed owner, priority, due date, label, parent, title, or count must equal the approval payload exactly.
 - For ticket drafts, copy the reason, scope, and DoD only from the final draft body. Do not add a generic benefit or specialize `개선` into an unrequested quality dimension.
 - Report `created`, `updated`, and `failed` exactly; never summarize partial failure as success.
 

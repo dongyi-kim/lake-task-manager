@@ -252,12 +252,17 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     # 확인 가능한 key/uid를 legacy 표기로 먼저 내린 뒤 기존 parser가 뱃지화한다.
     html = _legacy_reference_tokens(html)
     html = _badgeify(html)
-    html = _ground_acceptance_metrics(html, "\n".join((prompt, seed, ctx)))
+    source = "\n".join((prompt, seed, ctx))
+    # The editor may mention only entities supplied by the user or the verified ticket context.
+    # Existence alone is insufficient: a real but unrelated ticket is still unsupported evidence.
+    html = _drop_unverified_editor_ticket_claims(html, source)
+    html = _ground_acceptance_metrics(html, source)
     if kind == "description":
-        html = _drop_unrequested_description_quality_claims(
-            html, "\n".join((prompt, seed, ctx)))
+        html = _drop_unrequested_description_quality_claims(html, source)
+        html = _drop_parent_child_execution_repetition(html, ctx)
+        html = _dedupe_editor_list_items(html)
     html = _drop_generic_editor_closer(html)
-    html = _drop_unverified_editor_dates(html, "\n".join((prompt, seed, ctx)))
+    html = _drop_unverified_editor_dates(html, source)
     html = _repair_dangling_editor_ending(html)
 
     # 의미 후검증 — 자료가 명시적으로 '남은 일'이라고 한 대상을 완료로 뒤집은 문장은
@@ -273,31 +278,42 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
                               "남은 항목을 완료로 썼습니다: " + ", ".join(conflicts[:4])),
                     "usage": llm_usage}
 
-    # 접지 — 챗과 **같은 검사**를 태운다. 에디터에 꽂히는 글이라고 날조를 봐줄 이유가 없다.
-    note = ""
-    try:
-        from app.agent.workflow import grounding
-        bad = grounding.check(html)
-        if not bad.get("ok"):
-            items = ((bad.get("fake_keys") or []) + list((bad.get("wrong_titles") or {}))
-                     + (bad.get("fake_people") or []))
-            if items:
-                note = ("확인되지 않은 항목이 있습니다 — 삽입 전에 확인하세요: "
-                        + ", ".join(str(x) for x in items[:5]))
-    except Exception:
-        pass
-    # UI가 ticket/person/document를 다시 regex 추측하지 않도록 canonical reference bundle을
-    # 함께 보낸다. 해결 실패는 malformed anchor를 만들지 않고 note로 노출한다.
+    # Resolve first, then replace generated shorthand titles with the canonical labels. A reference can
+    # exist while the prose gives it the wrong title; normalizing before grounding avoids a contradictory
+    # "resolved but unverified" UI state without hiding an actual unresolved entity.
     references = []
+    unresolved = []
     try:
         from app.agent.references import resolve_references
         resolved = resolve_references(_reference_candidates(html))
         references = resolved.get("references") or []
-        if resolved.get("unresolved"):
-            message = ", ".join(str(x.get("id") or "") for x in resolved["unresolved"][:5])
-            note = (note + " " if note else "") + f"확인되지 않은 참조: {message}"
+        unresolved = resolved.get("unresolved") or []
+        html = _normalize_editor_ticket_titles(html, references)
     except Exception:
         pass
+
+    # 접지 — 챗과 **같은 검사**를 태운다. 에디터에 꽂히는 글이라고 날조를 봐줄 이유가 없다.
+    note_parts = []
+    try:
+        from app.agent.workflow import grounding
+        # Ground visible prose, not HTML attributes such as data-key/href. Attribute copies of a key
+        # otherwise look like a quoted title claim and create a false warning after successful resolve.
+        bad = grounding.check(_plain_text(html))
+        unknown = ((bad.get("fake_keys") or []) + (bad.get("fake_people") or []))
+        if unknown:
+            note_parts.append("확인되지 않은 항목: " + ", ".join(str(x) for x in unknown[:5]))
+        wrong_titles = list((bad.get("wrong_titles") or {}))
+        if wrong_titles:
+            note_parts.append("실제 제목과 다른 티켓 표기: "
+                              + ", ".join(str(x) for x in wrong_titles[:5]))
+    except Exception:
+        pass
+    # UI가 ticket/person/document를 다시 regex 추측하지 않도록 canonical reference bundle을
+    # 함께 보낸다. 해결 실패는 malformed anchor를 만들지 않고 note로 노출한다.
+    if unresolved:
+        message = ", ".join(str(x.get("id") or "") for x in unresolved[:5])
+        note_parts.append(f"확인되지 않은 참조: {message}")
+    note = " ".join(note_parts)
     return {"ok": True, "html": html, "note": note, "references": references,
             "usage": llm_usage}
 
@@ -357,9 +373,13 @@ def _drop_unrequested_description_quality_claims(rendered: str, source: str) -> 
     title = re.sub(r"^\s*\[[^\]]+\]\s*", "", title_match.group(1)).strip() \
         if title_match else "요청한 작업"
 
+    has_explicit_quality = any(re.search(p, source or "", re.I) for p in _QUALITY_DIMENSIONS)
+    sparse = (not re.search(r"현재 본문|명시적 미완료|하위\s+\d", source or "")
+              and not has_explicit_quality)
     bg_match = re.search(r"(<h3>\s*배경\s*</h3>\s*)(.*?)(?=<h3>|$)", out,
                          re.S | re.I)
-    if bg_match and unsupported(bg_match.group(2)):
+    if bg_match and (sparse or unsupported(bg_match.group(2))
+                     or not _plain_text(bg_match.group(2)).strip()):
         section = bg_match.group(2)
 
         def clean_paragraph(match):
@@ -368,11 +388,27 @@ def _drop_unrequested_description_quality_claims(rendered: str, source: str) -> 
             kept = [p for p in pieces if p.strip() and not unsupported(p)]
             return "<p>" + " ".join(kept) + "</p>" if kept else ""
 
-        cleaned = re.sub(r"<p\b[^>]*>(.*?)</p>", clean_paragraph, section,
-                         flags=re.S | re.I)
+        cleaned = ("" if sparse else
+                   re.sub(r"<p\b[^>]*>(.*?)</p>", clean_paragraph, section,
+                          flags=re.S | re.I))
         if not _plain_text(cleaned).strip():
-            cleaned = f"<p>{_html.escape(title)} 작업 요청.</p>"
+            cleaned = f"<p>{_html.escape(title)} 요청.</p>"
         out = out[:bg_match.start(2)] + cleaned + out[bg_match.end(2):]
+
+    # A title-only ticket context does not justify inferred integrations, exclusions, documentation,
+    # or benefit claims. Keep a usable but conservative scope/DoD until the ticket has material detail.
+    if sparse:
+        safe = _html.escape(title)
+        out = re.sub(
+            r"(<h3>\s*작업\s*범위\s*</h3>\s*)(.*?)(?=<h3>|$)",
+            lambda m: m.group(1) + f"<ul><li>포함: {safe}</li></ul>",
+            out, flags=re.S | re.I)
+        out = re.sub(
+            r"(<h3>\s*(?:완료\s*조건(?:\s*\(DoD\))?|DoD)\s*</h3>\s*)(.*?)(?=<h3>|$)",
+            lambda m: (m.group(1) + '<ul data-type="taskList">'
+                       f'<li data-checked="false">{safe} 결과와 테스트 기록을 티켓에서 확인</li>'
+                       '</ul>'),
+            out, flags=re.S | re.I)
 
     def clean_dod(match):
         if not unsupported(match.group(1)):
@@ -383,6 +419,124 @@ def _drop_unrequested_description_quality_claims(rendered: str, source: str) -> 
 
     return re.sub(r"<li\b[^>]*data-checked=[\"']?false[\"']?[^>]*>(.*?)</li>",
                   clean_dod, out, flags=re.S | re.I)
+
+
+def _drop_unverified_editor_ticket_claims(rendered: str, source: str) -> str:
+    """Remove blocks that cite a ticket absent from verified editor inputs.
+
+    A ticket may exist in Jira and still be unrelated to this editor request. Keeping only keys present
+    in prompt, seed, or deterministic ticket context prevents the model from using a real incident as
+    invented motivation for another task.
+    """
+    allowed = {x.upper() for x in re.findall(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", source or "")}
+    out = str(rendered or "")
+
+    def clean_block(match):
+        keys = {x.upper() for x in re.findall(
+            r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", _plain_text(match.group(0)))}
+        return "" if keys - allowed else match.group(0)
+
+    out = re.sub(r"<(?:p|li)\b[^>]*>.*?</(?:p|li)>", clean_block, out,
+                 flags=re.S | re.I)
+    out = re.sub(r"<(?:ul|ol)\b[^>]*>\s*</(?:ul|ol)>", "", out, flags=re.S | re.I)
+    return out
+
+
+def _normalize_editor_ticket_titles(rendered: str, references: list[dict]) -> str:
+    """Replace quoted shorthand after a ticket badge with the resolver's canonical title."""
+    out = str(rendered or "")
+    for ref in references or []:
+        if ref.get("kind") != "ticket" or not ref.get("resolved"):
+            continue
+        key = str(ref.get("key") or "").upper()
+        label = str(ref.get("label") or "").strip()
+        if not key or not label:
+            continue
+        pattern = (rf'(<a\b[^>]*data-key=["\']{re.escape(key)}["\'][^>]*>.*?</a>)'
+                   r'\s*["“][^"”\n]{1,160}["”]')
+        out = re.sub(pattern, lambda m: m.group(1) + " \"" + _html.escape(label) + "\"",
+                     out, flags=re.S | re.I)
+    return out
+
+
+def _dedupe_editor_list_items(rendered: str) -> str:
+    """Drop duplicate list items introduced when several unsupported claims share one safe fallback."""
+    seen = set()
+
+    def item(match):
+        plain = re.sub(r"\s+", " ", _plain_text(match.group(0))).strip().lower()
+        if plain and plain in seen:
+            return ""
+        if plain:
+            seen.add(plain)
+        return match.group(0)
+
+    return re.sub(r"<li\b[^>]*>.*?</li>", item, str(rendered or ""), flags=re.S | re.I)
+
+
+def _drop_parent_child_execution_repetition(rendered: str, context: str) -> str:
+    """Keep a parent description at integration scope instead of copying child execution cards.
+
+    Child titles are deterministic ticket context. When generated scope or DoD repeats those titles, replace
+    them with one parent-level tracking contract. This also removes a newly invented hop exclusion when the
+    verified context never states that boundary.
+    """
+    child_line = next((line for line in str(context or "").splitlines()
+                       if line.strip().startswith("하위 ")), "")
+    titles = re.findall(r'\b[A-Z][A-Z0-9]*-\d+\s+"([^"]+)"', child_line)
+    if not titles:
+        return str(rendered or "")
+
+    stop = {"작업", "기능", "항목", "구현", "완료", "연동", "진행", "확인"}
+    child_tokens = []
+    for title in titles:
+        plain = re.sub(r"^\s*\[[^]]+\]\s*", "", title)
+        child_tokens.append({token.lower() for token in
+                             re.findall(r"[A-Za-z0-9가-힣_.-]{2,}", plain)
+                             if token.lower() not in stop})
+    verified = _plain_text(context).lower()
+
+    def child_detail(value: str) -> bool:
+        plain = _plain_text(value).lower()
+        tokens = {token.lower() for token in re.findall(r"[A-Za-z0-9가-힣_.-]{2,}", plain)
+                  if token.lower() not in stop}
+        return any(len(expected & tokens) >= min(2, len(expected))
+                   for expected in child_tokens if expected)
+
+    out = str(rendered or "")
+
+    def clean_section(match, canonical: str) -> str:
+        head, body = match.group(1), match.group(2)
+        removed = False
+
+        def clean_item(item):
+            nonlocal removed
+            plain = _plain_text(item.group(0)).lower()
+            invented_boundary = ("제외" in plain and re.search(r"\d+\s*홉", plain)
+                                 and re.sub(r"\s+", "", plain) not in
+                                 re.sub(r"\s+", "", verified))
+            if child_detail(item.group(0)) or invented_boundary:
+                removed = True
+                return ""
+            return item.group(0)
+
+        body = re.sub(r"<li\b[^>]*>.*?</li>", clean_item, body, flags=re.S | re.I)
+        if removed and canonical not in _plain_text(body):
+            closing = re.search(r"</(?:ul|ol)>\s*$", body, re.I)
+            item = (f'<li data-checked="false">{canonical}</li>'
+                    if "결과 근거" in canonical and "완료" in _plain_text(head) else
+                    f"<li>{canonical}</li>")
+            body = (body[:closing.start()] + item + body[closing.start():]
+                    if closing else body + "<ul>" + item + "</ul>")
+        return head + body
+
+    out = re.sub(r"(<h3>\s*작업\s*범위\s*</h3>)(.*?)(?=<h3>|$)",
+                 lambda m: clean_section(m, "포함: 하위 작업 통합 진행 및 결과 근거 확인"),
+                 out, flags=re.S | re.I)
+    out = re.sub(r"(<h3>\s*(?:완료\s*조건(?:\s*\(DoD\))?|DoD)\s*</h3>)(.*?)(?=<h3>|$)",
+                 lambda m: clean_section(m, "하위 작업 상태와 결과 근거를 이 티켓에서 확인"),
+                 out, flags=re.S | re.I)
+    return out
 
 
 def _repair_dangling_editor_ending(rendered: str) -> str:

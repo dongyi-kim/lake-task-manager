@@ -2,7 +2,69 @@
 
 from __future__ import annotations
 
+import re
+
 from app.agent.workflow.state import Node, note
+
+
+def _jira_where(where: str, query: str) -> str:
+    """Combine typed Jira lexical query with structural filters using safe JQL text clauses."""
+    base = str(where or "").strip()
+    query = str(query or "").strip()
+    if not query:
+        return base
+    # Some models put a complete JQL expression in `query` despite the typed contract. Recover its intent
+    # instead of tokenizing `project`, `AND`, and field names as text search terms. Configured search projects
+    # remain the outer scope; model placeholders and project clauses are never honored.
+    looks_jql = bool(re.search(
+        r"(?:^|\s)(?:project|summary|description|text|status|statusCategory|issueType|issuetype|"
+        r"parent|assignee|labels?|component)\s*(?:=|!=|~|\bin\b|\bis\b)", query, re.I))
+    if looks_jql:
+        structural = re.sub(r"\bORDER\s+BY\b.*$", "", query, flags=re.I).strip()
+        structural = re.sub(
+            r"^\s*project\s*(?:=\s*[^\s)]+|in\s*\([^)]*\))\s+AND\s+", "", structural,
+            flags=re.I)
+        structural = re.sub(r"\s+AND\s+project\s*(?:=\s*[^\s)]+|in\s*\([^)]*\))", "",
+                            structural, flags=re.I)
+        structural = structural.replace("'", '"')
+        structural = re.sub(r"issueType\s*=\s*SubTask", "issuetype = Sub-Task", structural,
+                            flags=re.I)
+        structural = re.sub(r'"Epic Link"\s*=\s*([A-Z][A-Z0-9]*-\d+)', r"parent = \1",
+                            structural, flags=re.I)
+        # Query planners often quote a bag of keywords as one Jira text phrase. That silently loses
+        # relevant tickets whose words occur in separate fields/sentences. Expand only full-text phrases;
+        # structural and summary phrases keep native JQL semantics. Korean `...정보` also gets a
+        # conservative stem alternative for compound wording.
+        def expand_text(match):
+            phrase = match.group(1).strip()
+            tokens = []
+            for token in re.findall(r"[A-Za-z0-9가-힣_.-]{2,}", phrase):
+                if token.lower() not in {x.lower() for x in tokens}:
+                    tokens.append(token)
+            clauses = []
+            for token in tokens[:5]:
+                if token.endswith("정보") and len(token) > 3:
+                    clauses.append(f'(text ~ "{token}" OR text ~ "{token[:-2]}")')
+                else:
+                    clauses.append(f'text ~ "{token}"')
+            return "(" + " AND ".join(clauses) + ")" if len(clauses) > 1 else \
+                (clauses[0] if clauses else match.group(0))
+
+        structural = re.sub(r'text\s*~\s*"([^"\n]+)"', expand_text, structural,
+                            flags=re.I)
+        return f"({base}) AND ({structural})" if base and structural else (structural or base)
+    if re.search(r"\b(?:text|summary|description)\s*~", base, re.I):
+        return base
+    ignored = {"task", "ticket", "jira", "작업", "티켓", "이력", "조회", "검색"}
+    terms = []
+    for token in re.findall(r"[A-Za-z0-9가-힣_.-]{2,}", str(query or "")):
+        if token.lower() in ignored or token in terms:
+            continue
+        terms.append(token)
+    lexical = " AND ".join(f'text ~ "{term}"' for term in terms[:4])
+    if not lexical:
+        return base
+    return f"({base}) AND ({lexical})" if base else lexical
 
 
 class QueryRunner:
@@ -55,7 +117,8 @@ class QueryRunner:
             complete = spec.get("completeness") or "page"
             try:
                 if source == "jira":
-                    args = {"where": spec.get("where") or "", "order_by": spec.get("order_by") or "updated DESC",
+                    args = {"where": _jira_where(spec.get("where") or "", spec.get("query") or ""),
+                            "order_by": spec.get("order_by") or "updated DESC",
                             "fields": spec.get("fields") or [], "page_size": spec.get("page_size") or 50}
                     if complete == "all":
                         raw = execute_jql_all(**args)
@@ -111,4 +174,4 @@ class QueryRunner:
                 "trace": note(state, self.name, f"조회 {len(results)}개 실행")}
 
 
-__all__ = ["QueryRunner"]
+__all__ = ["QueryRunner", "_jira_where"]

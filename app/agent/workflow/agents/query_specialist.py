@@ -18,7 +18,33 @@ _INTERNAL_LATIN = {"etl", "catalog", "runtime", "workbench", "dataops", "observa
                    "devops", "epic", "task", "story", "bug", "jira", "ltm", "lake",
                    "manager", "api", "ui", "sub-task", "subtask", "feature", "improvement",
                    "point", "batch", "job", "sql", "jql", "cql", "json", "html", "pmo",
-                   "voc"}
+                   "voc", "our", "project", "internal", "external", "official", "documentation",
+                   "hotfix", "poc", "p0", "p1", "p2", "p3", "p4", "critical", "major", "minor"}
+
+
+def _public_external_query(text: str) -> str:
+    """Build a non-identifying public technology query without another LLM call.
+
+    External retrieval is deterministic once the request has already named public technology. Keeping this
+    in code both prevents internal identifiers from leaving LTM and removes the former query-generation model
+    round trip. Korean-only internal subjects intentionally return empty instead of being leaked or guessed.
+    """
+    scrubbed = re.sub(
+        r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
+        r"(?<![A-Za-z0-9])skcc\.[a-z]\d+(?![A-Za-z0-9])|https?://\S+",
+        " ", str(text or ""), flags=re.I,
+    )
+    tokens, seen = [], set()
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{2,}", scrubbed):
+        low = token.lower().strip("._+-")
+        if low in _INTERNAL_LATIN or low.startswith("customfield_"):
+            continue
+        if low not in seen:
+            seen.add(low)
+            tokens.append(token)
+    if not tokens:
+        return ""
+    return " ".join(tokens[:8]) + " official documentation"
 
 
 def _external_research_allowed(state) -> bool:
@@ -31,7 +57,8 @@ def _external_research_allowed(state) -> bool:
     low = text.lower()
     if any(w in low for w in _EXTERNAL_WORDS):
         return True
-    scrubbed = re.sub(r"\b[A-Z][A-Z0-9]*-\d+\b|\bskcc\.[a-z]\d+\b|https?://\S+", " ", text,
+    scrubbed = re.sub(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
+                      r"(?<![A-Za-z0-9])skcc\.[a-z]\d+(?![A-Za-z0-9])|https?://\S+", " ", text,
                       flags=re.I)
     latin = {x.lower() for x in re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", scrubbed)}
     return bool(latin - _INTERNAL_LATIN)
@@ -60,11 +87,34 @@ class QuerySpecialist(StructuredAgent):
 
     def apply(self, state, out):
         plan = QueryPlan.model_validate(out).model_dump()
-        if not _external_research_allowed(state):
+        external = _external_research_allowed(state)
+        if not external:
             plan["queries"] = [q for q in plan["queries"]
                                if q.get("source") not in ("web", "github")]
+        else:
+            public_query = _public_external_query(
+                (request_text(state) + " " + conversation(state)).strip())
+            if public_query:
+                web = [q for q in plan["queries"] if q.get("source") == "web"]
+                if web:
+                    # The model chooses whether web is useful; code owns the privacy-safe query literal.
+                    for query in web:
+                        query["query"] = public_query
+                        query["where"] = ""
+                else:
+                    plan["queries"].append({
+                        "id": "external-official",
+                        "source": "web",
+                        "query": public_query,
+                        "where": "",
+                        "order_by": "updated DESC",
+                        "fields": [],
+                        "completeness": "page",
+                        "page_size": 5,
+                        "depends_on": [],
+                    })
         return {"query_plan": plan,
                 "trace": note(state, self.name, f"조회 {len(plan['queries'])}개 설계")}
 
 
-__all__ = ["QuerySpecialist"]
+__all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_query"]

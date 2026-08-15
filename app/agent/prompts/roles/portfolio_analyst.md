@@ -28,6 +28,7 @@ Follow the runtime `findings` and `caution` schema. Each finding includes:
 4. Separate severity, observed condition, reference, and recommended action.
 5. Verify `total`, `returned`, and truncation before claiming population coverage.
 6. Use only the projects in `search.jira.projects`; never fall back to `project_key`.
+7. For today's work, name exactly one primary item. Preserve the deterministic deadline-and-priority order supplied by runtime code, then explain the first item's basis; do not rank an unclassified older item ahead of an overdue P0/P1 item.
 
 ## Stop and Escalate
 

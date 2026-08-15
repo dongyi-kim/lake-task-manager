@@ -445,6 +445,33 @@ def test_prefetched_plan_work_concludes_without_react_tool_loop(monkeypatch):
     assert any("도구 재호출 생략" in x.get("note", "") for x in out["trace"])
 
 
+def test_empty_plan_work_query_skips_presurvey_and_llm_synthesis(monkeypatch):
+    """A scoped zero-result QueryPlan is already a complete duplicate check."""
+    from langchain_core.messages import HumanMessage
+    import app.agent.workflow.agents.research_analyst as mod
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(mod, "_presurvey", lambda _state: (_ for _ in ()).throw(
+        AssertionError("PLAN_WORK must not repeat QueryPlan through presurvey")))
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("zero-result creation must not enter ReAct")))
+    h = ResearchAnalyst()
+    monkeypatch.setattr(h, "_conclude", lambda *_a: (_ for _ in ()).throw(
+        AssertionError("zero-result creation must not call the conclusion LLM")))
+    out = h.node()({
+        "intent": Intent.PLAN_WORK,
+        "messages": [HumanMessage(content="카탈로그 체크박스 추가 Task 만들어줘")],
+        "keywords": ["카탈로그", "체크박스"], "mentioned_keys": [],
+        "query_results": [{"id": "jira", "source": "jira",
+                           "result": {"total": 0, "tickets": []}}],
+        "trace": [],
+    })
+    assert "직접 중복" in out["situation"] and not out["evidence"]
+    assert any("LLM 요약 생략" in x.get("note", "") for x in out["trace"])
+
+
 def test_shape_ships_people_name_map():
     """사람은 사번만 보내지 않는다 — 화면이 아바타+본명으로 그리도록 id→이름 지도가 실린다."""
     from app.agent.workflow.session import _people_names

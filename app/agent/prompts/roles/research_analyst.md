@@ -30,10 +30,12 @@ Follow the current runtime schema exactly: `situation`, `evidence`, `related_doc
 4. Reconcile conflicts by showing source date and provenance; do not automatically treat the newest item as correct.
 5. Use at most two supplemental read-only searches, and only after a new clue identifies what is missing.
 6. Report an empty in-scope result as a result. Never fill it with facts from another subject.
+7. If the request requires both internal and external research, never finish with only one side. Preserve the external query attempt and official URL, or state the exact retrieval failure as a gap.
 
 ## Evidence Rules
 
 - Every material internal claim cites an actual ticket key, comment provenance, or document title and URL.
+- Preserve material quantities, verified compatibility checks, and negative PoC or support findings from supplied internal documents; do not reduce them to a generic "reviewed" statement.
 - Keep external general knowledge separate from verified internal state. A connection between them is an inference and must state its basis and uncertainty.
 - Never request or cite material outside `search.jira.projects` or `search.confluence.spaces`.
 - When `contextTruncated=true`, state that the full artifact was not read and preserve `total` and `artifactId`.

@@ -29,6 +29,7 @@ For `kind="description"`:
 - A Bug uses `재현 경로`, `기대 동작`, and `실제 동작`.
 - Preserve every important verified fact and link from the existing body.
 - Make each DoD item independently testable.
+- When the ticket has child work, the parent owns the integrated purpose, boundary, progress, and evidence contract. Do not repeat child titles or invent deeper-hop exclusions and later phases as parent execution details.
 
 ## Comment Drafting
 

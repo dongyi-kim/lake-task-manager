@@ -31,6 +31,7 @@ Return the exact `QueryPlan` JSON Schema. Every query has a unique `id`, valid `
 - Use `comments` when the requested evidence lives in comment bodies; do not substitute an issue-only Jira query.
 - Plan `web` or `github` only when the user requests external research or the subject is a specific external technology. Never add external search routinely to a ticket draft.
 - Remove internal ticket keys, user IDs, and private project or document names from every external query.
+- When external official research is explicitly required, include at least one `web` query. Runtime code may add or replace that query with a privacy-safe public-technology query; preserve the source and completion criterion.
 - Preserve pagination and completeness requirements for deterministic Query Runner.
 
 ## Stop and Escalate

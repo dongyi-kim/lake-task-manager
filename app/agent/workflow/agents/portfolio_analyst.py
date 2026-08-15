@@ -171,6 +171,21 @@ def _needs_module(state) -> bool:
         return True
 
 
+def _my_day_rank(ticket: dict, today: str) -> tuple:
+    """Stable daily priority: deadline bucket first, then priority within overdue work."""
+    due = str(ticket.get("duedate") or "")
+    raw_priority = str(ticket.get("priority") or "").lower()
+    match = _re0.search(r"\bp\s*([0-4])\b", raw_priority)
+    priority = int(match.group(1)) if match else 5
+    if due and today and due < today:
+        return 0, priority, due, str(ticket.get("key") or "")
+    if due and today and due == today:
+        return 1, priority, due, str(ticket.get("key") or "")
+    if due:
+        return 2, due, priority, str(ticket.get("key") or "")
+    return 3, priority, "", str(ticket.get("key") or "")
+
+
 def _my_day(state) -> str:
     """"나 오늘 뭐 해야 할까" — 재료를 **코드가 병렬로** 조회한다.
 
@@ -200,13 +215,15 @@ def _my_day(state) -> str:
         wl = f_load.result()
         tickets = [t for t in (wl.get("tickets") or []) if not t.get("done")]
         today = str(wl.get("today") or "")
-        # 마감 지난 것 → 임박 → 나머지. 판단(무엇부터)은 모델이 하되 **순서의 근거**는
-        # 코드가 붙여 준다("마감 3일 지남"이 있어야 우선순위를 말로 설명할 수 있다).
-        def _key(t):
-            d = str(t.get("duedate") or "")
-            return (0, d) if d and today and d < today else ((1, d) if d else (2, ""))
+        # Ranking is deterministic because a prose model must not contradict the same priority and due fields.
+        # Overdue P1 comes before older unclassified debt; today then future due dates follow.
+        ranked = sorted(tickets, key=lambda ticket: _my_day_rank(ticket, today))
         rows.append(f"[내 일감] 열린 것 {len(tickets)}건 (전체 {wl.get('count')}건)")
-        for t in sorted(tickets, key=_key)[:12]:
+        if ranked:
+            first = ranked[0]
+            rows.append(f"[권장 1순위] {first.get('key')} — 마감 구간과 Jira 우선순위를 "
+                        "함께 적용한 첫 항목. 최종 답에서도 1순위는 하나만 제시할 것")
+        for t in ranked[:12]:
             d = str(t.get("duedate") or "")
             late = " · 마감 지남" if d and today and d < today else ""
             rows.append(f"- {t.get('key')} \"{t.get('summary', '')}\" ({t.get('status', '')}"
@@ -566,6 +583,8 @@ class PortfolioAnalyst(ToolAgent):
         goal = {
             Intent.MY_DAY: "Select what this user should focus on today. Support overdue, due-soon, and "
                            "stale priorities with metrics. For a manager, include relevant stalled team work. "
+                           "Name exactly one primary item and preserve the deterministic order in supplied "
+                           "daily-material data; do not replace it with an older unclassified item. "
                            "If the user wants to take an unassigned item, call `whoami` to resolve the user's "
                            "module and then `find_unassigned_tickets(module=...)`. Never substitute another "
                            "criterion such as missing Epic placement.",
@@ -664,3 +683,6 @@ Explicit ticket keys: {', '.join(state.get('mentioned_keys') or []) or 'none'}{g
                 "pmo_findings": finds,
                 "pmo_caution": out.get("caution") or "",
                 "trace": note(state, self.name, f"발견 {len(finds)}건")}
+
+
+__all__ = ["PortfolioAnalyst", "_my_day", "_my_day_rank"]

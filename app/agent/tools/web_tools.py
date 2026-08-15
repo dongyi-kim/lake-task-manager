@@ -22,11 +22,62 @@
 
 from __future__ import annotations
 
+import html
+import re
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlparse
+
 from langchain_core.tools import tool
 
 from app.agent.tools._ctx import compact, trim
 
 _TIMEOUT = 8        # 외부는 느릴 수 있다 — 조사 한 걸음이 대화를 오래 잡으면 안 된다
+_OFFICIAL_DOC_HOSTS = (
+    "apache.org", "starrocks.io", "docs.github.com", "kubernetes.io",
+    "python.org", "openjdk.org", "ietf.org", "w3.org",
+)
+_OFFICIAL_FALLBACKS = (
+    ({"iceberg", "puffin"}, "Apache Iceberg Puffin specification",
+     "https://iceberg.apache.org/puffin-spec/", ("blob types", "puffin")),
+    ({"iceberg", "puffin", "ndv"}, "StarRocks Iceberg column statistics setting",
+     "https://docs.starrocks.io/docs/sql-reference/System_variable/#enable_iceberg_column_statistics",
+     ("enable_iceberg_column_statistics", "ndv", "puffin")),
+)
+
+
+def _official_source(url: str) -> bool:
+    host = (urlparse(str(url or "")).hostname or "").lower()
+    return any(host == domain or host.endswith("." + domain) for domain in _OFFICIAL_DOC_HOSTS)
+
+
+def _official_fallback(query: str) -> list[dict]:
+    """Read curated first-party origins when the anonymous search index is rate-limited."""
+    terms = {token.lower() for token in re.findall(r"[A-Za-z0-9_.-]{2,}", query or "")}
+    candidates = [(title, url, anchors) for required, title, url, anchors in _OFFICIAL_FALLBACKS
+                  if required <= terms]
+    if not candidates:
+        return []
+
+    def fetch(candidate):
+        title, url, anchors = candidate
+        try:
+            import httpx
+            response = httpx.get(url, headers={"User-Agent": "lake-task-manager-agent"},
+                                 follow_redirects=True, timeout=5)
+            response.raise_for_status()
+            body = re.sub(r"(?is)<(?:script|style).*?>.*?</(?:script|style)>", " ", response.text)
+            plain = re.sub(r"<[^>]+>", " ", html.unescape(body))
+            plain = re.sub(r"\s+", " ", plain).strip()
+            positions = [plain.lower().find(anchor) for anchor in anchors]
+            position = next((value for value in positions if value >= 0), 0)
+            start = max(0, position - 80)
+            return compact({"title": title, "url": str(response.url or url),
+                            "snippet": trim(plain[start:start + 420], 420), "official": True})
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(2, len(candidates))) as executor:
+        return [row for row in executor.map(fetch, candidates) if row]
 
 
 @tool
@@ -48,11 +99,23 @@ def search_web(query: str, limit: int = 5) -> dict:
         with DDGS(timeout=_TIMEOUT) as ddgs:
             rows = list(ddgs.text(q, max_results=max(1, min(int(limit or 5), 8))))
     except Exception as e:
-        return {"error": f"웹 검색이 막혀 있거나 실패했습니다({str(e)[:120]}). "
+        fallback = _official_fallback(q)
+        if fallback:
+            return {"query": q, "attempted": True, "results": fallback,
+                    "fallback": "official-direct", "searchError": str(e)[:120]}
+        return {"query": q, "attempted": True, "results": [],
+                "error": f"웹 검색이 막혀 있거나 실패했습니다({str(e)[:120]}). "
                          "사내 조사만으로 진행하세요."}
-    return {"query": q, "results": [
-        compact({"title": trim(r.get("title"), 120), "url": r.get("href") or r.get("url"),
-                 "snippet": trim(r.get("body"), 260)}) for r in rows]}
+    normalized = [compact({
+        "title": trim(r.get("title"), 120),
+        "url": r.get("href") or r.get("url"),
+        "snippet": trim(r.get("body"), 260),
+        "official": _official_source(r.get("href") or r.get("url") or ""),
+    }) for r in rows]
+    # Applicability claims should prefer first-party product and standards documentation.
+    # Stable sorting preserves search relevance inside each group.
+    normalized.sort(key=lambda row: 0 if row.get("official") else 1)
+    return {"query": q, "attempted": True, "results": normalized}
 
 
 @tool

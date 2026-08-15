@@ -281,6 +281,15 @@ Classify what the user wants from the conversation, construct an atomic task pla
             intent = Intent.PROGRESS if any(m.lower() in _req.lower() for m in mods) \
                 else Intent.ASK
             patch["intent"] = intent
+        # 조사 결과 자체가 산출물인 요청은 ticket creation이 아니다. `적용 가능성` 같은 표현이
+        # 있어도 "조사해줘"로 끝나면 read-only research이며, 명시적 티켓 생성까지 있을 때만
+        # plan_work를 유지한다. 이 가드가 없으면 WorkArchitect 한 호출(약 10k tokens)과 불필요한
+        # 승인 질문이 붙었다(S7 focused run).
+        if intent == Intent.PLAN_WORK and any(w in _req for w in ("조사해", "조사해줘", "리서치해")) \
+                and not any(w in _req for w in ("티켓", "태스크", "테스크", "Task", "task",
+                                                "이슈 등록", "만들어", "생성해")):
+            intent = patch["intent"] = Intent.ASK
+            patch["playbook"] = patch.get("playbook") or "topic_research"
         # ── "내가 할 만한 일" 은 **내 일감**이지 진척 집계가 아니다 ────────────
         # 실측(REC9): "지금 내가 할 만한 일 추천해줘" 가 실행마다 my_day / progress 로
         # 갈렸다. 두 갈래는 지나는 노드와 재료가 통째로 달라서(내 일감 사전취합 vs 진척률),
@@ -333,4 +342,26 @@ Classify what the user wants from the conversation, construct an atomic task pla
             #   비어 있을 때만 채운다 — 대화 도중 주제가 바뀌어도 대상은 식별자·핵심어가
             #   따라가고, 여기서 남는 것은 "무엇을 묻는 대화인가"뿐이다.
             patch["request_text"] = last_user_text(state)
+
+        # A multi-stage new build whose ticket shape is still open should not trigger Jira/web research
+        # merely to ask the same structure preference afterward. Ask that cheap, reversible choice first;
+        # the next turn keeps the original request and performs research for the selected shape. Delegated
+        # defaults and an explicitly named shape continue without an interview.
+        if intent == Intent.PLAN_WORK and not (state.get("turns") or 0) \
+                and not (state.get("situation") or "").strip() \
+                and not ((state.get("draft") or {}).get("items")):
+            from app.agent.workflow.agents.work_architect import (BUILD_WORDS, _said_defaults,
+                                                                  shape_hint)
+            original = str(patch.get("request_text") or _req)
+            if (any(word in original for word in BUILD_WORDS)
+                    and not shape_hint(state)[0] and not _said_defaults(state)):
+                patch["interpretation"] = (
+                    "신규 구축 요청의 티켓 구조를 먼저 확정한 뒤 관련 이력과 기술 근거를 조사하는 "
+                    "것으로 이해함")
+                patch["questions"] = [{
+                    "question": "여러 단계로 나뉠 수 있는 작업입니다. 어떤 티켓 구조로 진행할까요?",
+                    "kind": "choice", "field": "structure", "required_input": False,
+                    "why_required": "",
+                    "options": ["Task 하나 + 단계별 Sub-Task (권장)", "단일 Task로 구성"],
+                }]
         return patch

@@ -509,6 +509,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                    "required_input": True,
                    "why_required": "품질 규칙을 적용할 데이터 대상을 식별할 수 없음"}]
             model_questions = True
+        if _missing_subtask_deliverable(state):
+            qs = [{"question": "이 Sub-Task에서 수행할 구체적인 작업 내용이나 목적을 알려 주세요.",
+                   "kind": "text", "options": [], "field": "scope",
+                   "required_input": True,
+                   "why_required": "부모와 개수만 있고 생성할 Sub-Task의 실행 내용이 없음"}]
+            model_questions = True
         human_request = (request_text(state) + " " + _human_request_text(state)).strip()
         if _missing_exact_mutation(human_request):
             qs = [{"question": "임계값을 어떤 값으로 변경할지 알려 주세요.",
@@ -2919,6 +2925,8 @@ def _apply_relative_due_to_single_draft(state: dict, items: list) -> str:
 
 _QUALITY_DIMENSIONS = (
     r"사용자\s*(?:편의성|경험)|편의성|사용성|\bUX\b|usability|user\s+experience",
+    r"사용자\s*(?:테스트|검증)|user\s*(?:test|validation)",
+    r"접근성|accessibility",
     r"운영\s*효율성|업무\s*효율성|효율성|생산성|efficien(?:cy|t)|productivity",
     r"성능|처리량|응답\s*속도|performance|throughput|latency",
     r"안정성|신뢰(?:성|할)|가용성|stable|stability|reliability|availability",
@@ -3520,6 +3528,29 @@ def _human_request_text(state) -> str:
             for message in (state.get("messages") or [])
             if getattr(message, "type", "") == "human"]
     return " ".join(row for row in rows if row)
+
+
+def _missing_subtask_deliverable(state) -> bool:
+    """A named parent and delegated wording do not define the child deliverable.
+
+    This intentionally targets explicit placeholders such as ``내용은 알아서``. A later human answer takes
+    precedence, so the interview converges instead of preserving a generic first-turn draft.
+    """
+    rows = [str(getattr(message, "content", "") or "").strip()
+            for message in (state.get("messages") or [])
+            if getattr(message, "type", "") == "human" and
+            str(getattr(message, "content", "") or "").strip()]
+    original = str(state.get("request_text") or (rows[0] if rows else request_text(state))).strip()
+    latest = rows[-1] if rows else last_user_text(state).strip()
+    if not _re.search(r"Sub-?Task|서브\s*태스크", original, _re.I):
+        return False
+    if not _re.search(r"내용(?:은|도)?\s*(?:알아서|아무거나|적당히)|"
+                      r"(?:작업|목적)(?:은|도)?\s*(?:알아서|아무거나|적당히)", original):
+        return False
+    if latest and latest != original and not _re.fullmatch(
+            r"(?:알아서|아무거나|적당히|없음|없어)", latest):
+        return False
+    return True
 
 
 def _missing_data_quality_target(state) -> bool:

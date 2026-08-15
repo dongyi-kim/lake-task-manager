@@ -279,6 +279,7 @@ class ResultIntegrator(TextAgent):
         text = _canonicalize_person_mentions(text, state)
         text = _render_reply_tokens(text)
         text = _align_draft_claims(text, state)
+        text = _ensure_research_status(text, state)
 
         # ── 접지 검사 — 답변의 티켓 키·제목·인명을 실물과 대조한다.
         # 지도·자료를 정확히 줘도 답변 단계에서 날조가 나왔다(없는 키, 바뀐 제목, "PM: 김철수").
@@ -651,12 +652,67 @@ def _align_draft_claims(text: str, state) -> str:
         text = _align_child_owner_claims(text, items)
         text = _align_assigned_owner_cautions(text, items)
         text = _align_workload_claims(text, state)
+        text = _align_due_claims(text, items)
         text = _normalize_alternate_language(text)
         text = _drop_unsupported_assignment_experience(text, state)
         text = _drop_resolved_review_feedback(text, items)
         text = _align_child_presence_claims(text, items)
         text = _drop_unrequested_deployment_claims(text, state)
     return text
+
+
+def _align_due_claims(text: str, items: list) -> str:
+    """Align a single draft's displayed deadline with the exact approval payload.
+
+    Historical or evidence dates on unrelated lines remain untouched. Multi-item drafts can legitimately carry
+    different dates, so they are left to the item table rather than guessed by position.
+    """
+    due_dates = {str(item.get("duedate") or "").strip()
+                 for item in (items or []) if str(item.get("duedate") or "").strip()}
+    if len(due_dates) != 1:
+        return str(text or "")
+    actual = next(iter(due_dates))
+    lines = []
+    for line in str(text or "").splitlines():
+        if _re.search(r"마감|기한|due\s*date|duedate", line, _re.I):
+            line = _re.sub(r"\b\d{4}-\d{2}-\d{2}\b", actual, line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _ensure_research_status(text: str, state) -> str:
+    """Preserve material internal checks and explicit external gaps from the topic dossier."""
+    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    dossier = str(state.get("topic_dossier") or "")
+    if not dossier or not ("조사" in asked and ("외부" in asked or "내부" in asked)):
+        return str(text or "")
+    internal = _re.search(r"(?:h2\.\s*)?내부\s*확인\s*(.*?)(?=(?:h2\.\s*)?외부\s*확인|$)",
+                          dossier, _re.I | _re.S)
+    external = _re.search(r"(?:h2\.\s*)?외부\s*확인\s*필요\s*(.*?)(?=\n\n|$)",
+                          dossier, _re.I | _re.S)
+
+    def facts(match):
+        if not match:
+            return []
+        clean = _re.split(r"\s+이\s*문서의\s+", match.group(1), 1)[0]
+        return [piece.strip(" -*.;") for piece in _re.split(r"\s+\*\s+", clean)
+                if 4 <= len(piece.strip(" -*.;")) <= 220]
+
+    rows = [("내부 확인", fact) for fact in facts(internal)]
+    rows += [("외부 확인 필요", fact) for fact in facts(external)]
+    normalized_text = _re.sub(r"\s+", "", str(text or ""))
+    rows = [(kind, fact) for kind, fact in rows
+            if _re.sub(r"\s+", "", fact) not in normalized_text]
+    if not rows:
+        return str(text or "")
+    block = ["### 현재 상태", "", "| 구분 | 확인 결과 |", "|---|---|"]
+    block += [f"| {kind} | {fact.replace('|', '·')} |" for kind, fact in rows[:8]]
+    block_text = "\n".join(block)
+    reference = _re.search(r"(?m)^###\s*참조\s*$", str(text or ""))
+    if reference:
+        return (str(text or "")[:reference.start()].rstrip() + "\n\n" + block_text
+                + "\n\n" + str(text or "")[reference.start():])
+    return str(text or "").rstrip() + "\n\n" + block_text
 
 
 def _drop_resolved_review_feedback(text: str, items: list) -> str:

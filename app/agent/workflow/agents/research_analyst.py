@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re as _re
 
-from app.agent.workflow.agents.base import ToolAgent, invoke_schema
+from app.agent.workflow.agents.base import ToolAgent
 from app.agent.prompts.roles import SYSTEM_RESEARCH_ANALYST
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
@@ -59,47 +59,74 @@ SCHEMA = {
 }
 
 
-def _research_outside(agent, asked: str) -> str:
-    """기술 검토용 외부 조사 — 검색어는 모델이, 실행은 코드가.
+def _prefetched_external_context(query_results: list) -> str:
+    """Convert deterministic web/GitHub Query Runner artifacts into reusable research evidence."""
+    rows = []
+    for item in query_results or []:
+        if not isinstance(item, dict) or item.get("source") not in ("web", "github"):
+            continue
+        result = item.get("result") or {}
+        query = str(result.get("query") or "").strip()
+        prefix = f"[{item.get('source')} 검색] {query}".strip()
+        found = result.get("results") or []
+        if found:
+            rows.append(prefix)
+            for source in found[:8]:
+                official = " · 공식" if source.get("official") else ""
+                title = source.get("title") or source.get("name") or "source"
+                detail = source.get("snippet") or source.get("description") or ""
+                rows.append(f"- {title}{official} — {detail} ({source.get('url') or ''})")
+        elif result.get("error"):
+            rows.append(prefix + " — 검색 실패: " + str(result.get("error"))[:240])
+    return "\n".join(rows)
 
-    검색어 생성은 사내 정보가 새지 않게 **일반 기술 용어만** 뽑으라고 스키마에 못 박는다.
-    외부가 막혀 있으면(폐쇄망) 빈 문자열 — 조사는 사내만으로 진행된다.
+
+def _query_results_have_material(query_results) -> bool:
+    """Whether deterministic QueryPlan execution returned evidence worth an LLM synthesis call."""
+    if not isinstance(query_results, list):
+        return False
+    for item in query_results:
+        result = (item or {}).get("result") or {} if isinstance(item, dict) else {}
+        if any(result.get(field) for field in
+               ("tickets", "documents", "comments", "people", "results")):
+            return True
+    return False
+
+
+def _research_outside(agent, asked: str) -> str:
+    """기술 검토용 외부 조사 fallback — 검색어와 실행 모두 deterministic.
+
+    Query Specialist normally plans this retrieval. This fallback covers routes that arrive without a web
+    QuerySpec. Reusing the privacy-safe query builder removes one simple-model call per external investigation.
     """
-    try:
-        schema = {
-            "title": "web_queries", "type": "object",
-            "properties": {
-                "web_query": {"type": "string",
-                              "description": "Public web query using only general technical terms; no internal "
-                                             "ticket key, person, project, or document name."},
-                "github_query": {"type": "string",
-                                 "description": "GitHub repository query using only public technical terms."},
-            }, "required": ["web_query", "github_query"],
-        }
-        qs = invoke_schema(schema, [
-            ("user", "Create one public web query and one GitHub query for the following technology request. "
-             "Use only general technical terms and never include an internal identifier.\n\n" + asked)],
-            tier=agent.tier, temperature=0, name="web_queries")
-    except Exception:
+    from app.agent.workflow.agents.query_specialist import _public_external_query
+    query = _public_external_query(asked)
+    if not query:
         return ""
 
     from app.agent import tools as T
     parts = []
     try:
-        w = T.BY_NAME["search_web"].invoke({"query": qs.get("web_query") or "", "limit": 4})
+        w = T.BY_NAME["search_web"].invoke({"query": query, "limit": 4})
         if w.get("results"):
-            parts.append("웹 (" + (qs.get("web_query") or "") + "):\n" + "\n".join(
+            parts.append("웹 (" + query + "):\n" + "\n".join(
                 f"- {r.get('title')} — {r.get('snippet')} ({r.get('url')})" for r in w["results"]))
+        elif w.get("error"):
+            parts.append("웹 검색 시도 실패: " + str(w.get("error"))[:240])
     except Exception:
-        pass
-    try:
-        g = T.BY_NAME["search_github"].invoke({"query": qs.get("github_query") or "", "limit": 4})
-        if g.get("results"):
-            parts.append("GitHub (" + (qs.get("github_query") or "") + "):\n" + "\n".join(
-                f"- {r.get('name')} ★{r.get('stars')} (갱신 {r.get('updated')}) — {r.get('description')}"
-                for r in g["results"]))
-    except Exception:
-        pass
+        parts.append("웹 검색 시도 실패: 호출 오류")
+    if _re.search(r"github|오픈소스|라이브러리|repository|repo\b", asked, _re.I):
+        try:
+            github_query = query.removesuffix(" official documentation")
+            g = T.BY_NAME["search_github"].invoke({"query": github_query, "limit": 4})
+            if g.get("results"):
+                parts.append("GitHub (" + github_query + "):\n" + "\n".join(
+                    f"- {r.get('name')} ★{r.get('stars')} (갱신 {r.get('updated')}) — {r.get('description')}"
+                    for r in g["results"]))
+            elif g.get("error"):
+                parts.append("GitHub 검색 시도 실패: " + str(g.get("error"))[:240])
+        except Exception:
+            parts.append("GitHub 검색 시도 실패: 호출 오류")
     return "\n\n".join(parts)
 
 
@@ -828,7 +855,13 @@ class ResearchAnalyst(ToolAgent):
                     state = {**state, "topic_dossier": dossier}
 
             pre = ""
-            if not keys0 and state.get("keywords"):
+            # PLAN_WORK already passed a scoped, paginated QueryPlan. Repeating the same keywords through
+            # search_work_history + semantic search caused dozens of local comment scans and then injected
+            # duplicate context. Keep that broader fallback for open-ended ASK/history routes only.
+            planned_create_query = ((state.get("intent") or "") == Intent.PLAN_WORK
+                                    and isinstance(state.get("query_results"), list)
+                                    and bool(state.get("query_results")))
+            if not keys0 and state.get("keywords") and not planned_create_query:
                 try:
                     pre = _presurvey(state)
                 except Exception:
@@ -1076,10 +1109,34 @@ class ResearchAnalyst(ToolAgent):
             _latin = {x.lower() for x in
                       _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", asked0)}
             techy = bool(_latin - _internal_terms)
-            if wordy or (thin_internal and techy and not keys0):
+            external_prefetched = any(
+                row.get("source") in ("web", "github")
+                for row in (state.get("query_results") or []) if isinstance(row, dict))
+            if external_prefetched and not state.get("web_context"):
+                state = {**state, "web_context": _prefetched_external_context(
+                    state.get("query_results") or [])}
+            if not external_prefetched and (wordy or (thin_internal and techy and not keys0)):
                 ctx = _research_outside(self, asked0)
                 if ctx:
                     state = {**state, "web_context": ctx}
+
+            # A completed creation QueryPlan with zero hits has a deterministic conclusion. An LLM cannot
+            # improve "no in-scope result" and previously spent 7–8k tokens restating it. Preserve failed
+            # external-attempt context as a gap, but skip synthesis unless an actual artifact was returned.
+            if planned_create_query and not _query_results_have_material(state.get("query_results")) \
+                    and not state.get("seed_map") \
+                    and (not state.get("topic_dossier")
+                         or "찾지 못했다" in state.get("topic_dossier", "")):
+                out = self.apply(state, {
+                    "situation": ("현재 검색 범위에서 요청과 직접 중복되는 사내 티켓·문서를 "
+                                  "확인하지 못했다. 신규 초안으로 진행한다."),
+                    "evidence": [], "related_docs": [], "already_exists": False,
+                })
+                out["trace"] = (out.get("trace") or []) + [{
+                    "node": self.name, "label": "과거 이력 조사",
+                    "note": "QueryPlan 0건 — LLM 요약 생략",
+                }]
+                return out
 
             # ── L3a 직결: 주제 자료(dossier)를 **코드가 이미 다 모았으면** 걷지 않는다.
             # ReAct 는 "무엇을 열지 모를 때"의 도구다 — 대상 하나의 조각을 코드가 전부
@@ -1089,7 +1146,7 @@ class ResearchAnalyst(ToolAgent):
             # ★ 단, dossier 가 **미발견**("찾지 못했다")이면 직결하지 않는다 — 그 문구로
             # 결론 내리면 다른 도구(허용값 조회 등)로 답할 수 있는 질문까지 '확인 불가'로
             # 끝난다(실측: 라벨 목록 질의가 list_ticket_options 를 못 써 보고 죽었다).
-            if state.get("topic_dossier") and not state.get("web_context") \
+            if state.get("topic_dossier") \
                     and "찾지 못했다" not in state.get("topic_dossier", "") \
                     and "첨부" not in asked_s \
                     and (state.get("intent") or "") == "ask":
@@ -1275,3 +1332,7 @@ Original request: {last_user_text(state)}
             "trace": note(state, self.name,
                           f"근거 {len(ev)}건" + (" · 중복 의심 티켓 있음" if exists else "")),
         }
+
+
+__all__ = ["ResearchAnalyst", "_prefetched_external_context", "_query_results_have_material",
+           "_relevant_only"]

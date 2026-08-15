@@ -362,6 +362,33 @@ def test_delegation_preserves_required_input_questions_and_withholds_the_draft()
     assert not r["draft"]["items"], "필수 입력 전의 임의 payload는 승인 카드에 오르면 안 된다"
 
 
+def test_delegated_subtask_without_a_deliverable_asks_then_converges_to_one_child():
+    """ASKD2: 부모와 개수만으로는 실행할 일이 없다. `알아서`도 내용을 발명할 권한이 아니다."""
+    from langchain_core.messages import HumanMessage
+
+    first = _msg("DL-9090 아래에 Sub-Task 하나 만들어줘. 내용은 알아서",
+                 intent=Intent.PLAN_WORK, mentioned_keys=["DL-9090"], situation="조사 완료")
+    generic = {"questions": [], "mode": "subtask", "rationale": "", "items": [{
+        "summary": "[Workbench] 데이터 리니지 뷰어 하위 작업", "type": "Sub-Task",
+        "parent": "DL-9090", "description": "<h3>작업 범위</h3><p>기능 개선</p>"}]}
+    turn1 = WorkArchitect().apply(first, generic)
+    assert turn1["questions"] and not turn1["draft"]["items"]
+    assert any(w in turn1["questions"][0]["question"] for w in ("내용", "작업", "목적"))
+
+    second = dict(first)
+    second["messages"] = [
+        HumanMessage(content="DL-9090 아래에 Sub-Task 하나 만들어줘. 내용은 알아서"),
+        HumanMessage(content="리니지 뷰어 성능 회귀 테스트를 추가해줘"),
+    ]
+    second["draft"] = turn1["draft"]
+    concrete = {"questions": [], "mode": "subtask", "rationale": "", "items": [{
+        "summary": "[Workbench] 리니지 뷰어 성능 회귀 테스트 추가", "type": "Sub-Task",
+        "parent": "DL-9090", "description": "<h3>작업 범위</h3><p>회귀 테스트 추가</p>"}]}
+    turn2 = WorkArchitect().apply(second, concrete)
+    assert not turn2["questions"] and len(turn2["draft"]["items"]) == 1
+    assert "회귀" in turn2["draft"]["items"][0]["summary"]
+
+
 def test_required_input_question_survives_the_refinement_limit():
     """인터뷰 상한은 취향 질문을 멈추는 장치이지 필수값을 추측하는 허가가 아니다."""
     out = {"questions": [{"question": "댓글을 남길 티켓은 무엇인가요?", "kind": "text",
@@ -1608,6 +1635,44 @@ def test_assigner_removes_experience_not_backed_by_the_history_table():
     assert got["alternates"][0]["why"] == "진행중 12건"
 
 
+def test_assigner_replaces_a_cross_module_candidate_with_verified_roster():
+    from app.agent.workflow.agents.people_advisor import PeopleAdvisor
+    state = {"trace": [], "draft": {"items": [{
+        "summary": "[Catalog] 테이블 정리", "components": ["Catalog"],
+        "children": [{"summary": "1차"}, {"summary": "2차"}]}]},
+        "similar_history": "",
+        "roster_load": (
+            "[Catalog 로스터·부하]\n"
+            "- skcc.x1210 A — 진행중 10건 · 열림 2건 · 최근 완료 4건\n"
+            "- skcc.i2044 B — 진행중 13건 · 열림 1건 · 최근 완료 3건\n"
+            "[ETL 로스터·부하]\n"
+            "- skcc.x1042 C — 진행중 8건 · 열림 3건 · 최근 완료 5건")}
+    out = {"assignments": [{"index": 0, "user": "skcc.x1042",
+            "reasons": ["ETL 모듈 진행중 8건"],
+            "children": [{"index": 0, "user": "skcc.x1042", "why": "진행중 8건"}],
+            "alternates": []}]}
+
+    got = PeopleAdvisor().apply(state, out)["assignments"][0]
+
+    assert got["user"] == "skcc.x1210"
+    assert got["reasons"] == ["Catalog 로스터 · 진행중 10건 · 열림 2건"]
+    assert [c["user"] for c in got["children"]] == ["skcc.x1210", "skcc.i2044"]
+    assert got["alternates"][0]["user"] == "skcc.i2044"
+
+
+def test_assigner_restores_an_omitted_item_without_another_model_call():
+    from app.agent.workflow.agents.people_advisor import PeopleAdvisor
+    state = {"trace": [], "draft": {"items": [{
+        "summary": "[Catalog] 정리", "components": ["Catalog"]}]},
+        "roster_load": ("[Catalog 로스터·부하]\n"
+                        "- skcc.x1210 A — 진행중 2건 · 열림 3건 · 최근 완료 4건")}
+
+    got = PeopleAdvisor().apply(state, {"assignments": []})["assignments"]
+
+    assert len(got) == 1 and got[0]["user"] == "skcc.x1210"
+    assert got[0]["reasons"] == ["Catalog 로스터 · 진행중 2건 · 열림 3건"]
+
+
 def test_explicit_singular_task_drops_model_generated_stage_children():
     out = {"questions": [], "mode": "task", "rationale": "", "items": [{
         "summary": "[DataOps] 적재 지연 알림 임계값 조정", "type": "Task",
@@ -2157,6 +2222,20 @@ def test_user_requested_quality_dimension_is_preserved():
     items = [{"summary": "[Runtime] 쿼리 성능 개선", "type": "Task", "description": body}]
     assert not _remove_unrequested_quality_claims(_msg("쿼리 성능 개선 Task 만들어줘"), items)
     assert items[0]["description"] == body
+
+
+def test_unrequested_user_testing_is_removed_but_explicit_request_is_preserved():
+    from app.agent.workflow.agents.work_architect import _remove_unrequested_quality_claims
+    body = ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">사용자 테스트를 통해 결과를 검증한다.</li></ul>')
+    items = [{"summary": "[Catalog] 정리", "type": "Task", "description": body}]
+    assert _remove_unrequested_quality_claims(_msg("Catalog 정리 Task 만들어줘"), items)
+    assert "사용자 테스트" not in items[0]["description"]
+
+    explicit = [{"summary": "[Catalog] 정리", "type": "Task", "description": body}]
+    assert not _remove_unrequested_quality_claims(
+        _msg("Catalog 정리 후 사용자 테스트를 수행하는 Task 만들어줘"), explicit)
+    assert explicit[0]["description"] == body
 
 
 def test_epic_typed_items_promote_the_mode_to_epic():

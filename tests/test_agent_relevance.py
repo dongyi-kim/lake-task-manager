@@ -3,8 +3,11 @@
 
 from app.agent.workflow.agents.people_advisor import PeopleAdvisor
 from app.agent.workflow.agents.query_specialist import (QuerySpecialist,
-                                                        _external_research_allowed)
-from app.agent.workflow.agents.research_analyst import ResearchAnalyst, _relevant_only
+                                                        _external_research_allowed,
+                                                        _public_external_query)
+from app.agent.workflow.agents.research_analyst import (ResearchAnalyst,
+                                                        _prefetched_external_context,
+                                                        _relevant_only)
 from app.agent.workflow.relevance import (discriminating_keywords, evidence_is_relevant,
                                           matches_focus, negative_relation)
 
@@ -81,6 +84,7 @@ def test_external_query_requires_explicit_research_or_external_technology():
     assert not _external_research_allowed({"request_text": "붙여넣은 VoC를 Bug 티켓으로 작성"})
     assert _external_research_allowed({"request_text": "StarRocks Puffin NDV 적용 사례 조사"})
     assert _external_research_allowed({"request_text": "쿼리 엔진 인덱스 외부 자료도 찾아줘"})
+    assert not _external_research_allowed({"request_text": "hotfix 라벨로 Task 만들어줘"})
 
     raw = {"queries": [
         {"id": "i", "source": "jira", "where": "text ~ lineage"},
@@ -92,3 +96,36 @@ def test_external_query_requires_explicit_research_or_external_technology():
     external = QuerySpecialist().apply(
         {"request_text": "StarRocks Puffin NDV 외부 사례 조사", "messages": []}, raw)
     assert [q["source"] for q in external["query_plan"]["queries"]] == ["jira", "web"]
+
+
+def test_explicit_external_research_gets_a_sanitized_web_query_even_when_model_omits_it():
+    state = {"request_text": (
+        "우리 프로젝트의 Iceberg Puffin NDV 적용 가능성을 내부 작업 이력과 "
+        "외부 공식 자료를 함께 조사해줘. DL-7001과 skcc.x1402도 참고"),
+        "messages": []}
+    got = QuerySpecialist().apply(state, {"queries": [
+        {"id": "internal", "source": "jira", "query": "Iceberg Puffin NDV"},
+    ]})["query_plan"]["queries"]
+    web = [q for q in got if q["source"] == "web"]
+    assert len(web) == 1
+    assert all(term in web[0]["query"] for term in ("Iceberg", "Puffin", "NDV"))
+    assert "official documentation" in web[0]["query"]
+    assert "DL-7001" not in web[0]["query"] and "skcc.x1402" not in web[0]["query"]
+    assert "프로젝트" not in web[0]["query"]
+    assert _public_external_query("DL-1 skcc.x1 내부 자료만") == ""
+    assert _public_external_query("Iceberg Puffin NDV PoC Iceberg") == \
+        "Iceberg Puffin NDV official documentation"
+
+
+def test_prefetched_web_result_preserves_official_url_and_failed_attempt():
+    ctx = _prefetched_external_context([{
+        "id": "external-official", "source": "web", "result": {
+            "query": "Iceberg Puffin NDV official documentation",
+            "results": [{"title": "Puffin spec", "url": "https://iceberg.apache.org/puffin-spec/",
+                         "snippet": "Statistics files", "official": True}],
+        }}, {
+        "id": "external-2", "source": "web", "result": {
+            "query": "StarRocks Puffin", "results": [], "error": "network blocked",
+        }}])
+    assert "https://iceberg.apache.org/puffin-spec/" in ctx and "공식" in ctx
+    assert "network blocked" in ctx and "검색 실패" in ctx
