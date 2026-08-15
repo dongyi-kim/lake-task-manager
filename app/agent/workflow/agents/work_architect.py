@@ -281,8 +281,9 @@ class WorkArchitect(StructuredAgent):
         force_rule = ("\n- The user delegated optional choices; this does not supply required input. Return "
                       "`questions=[]` and at least one complete item when the literal request and verified "
                       "evidence support a valid conservative draft. If user-owned information is indispensable "
-                      "to identify the target, action, valid hierarchy, exact mutation, or truthful minimum "
-                      "scope/acceptance boundary, return up to three questions with `required_input=true`, a "
+                      "to identify the target, exact action or mutation, valid hierarchy, person identity, "
+                      "comment content, or material Bug reproduction fact, return up to three questions with "
+                      "`required_input=true`, a "
                       "specific Korean `why_required`, and no competing payload. Mark optional preference "
                       "questions `required_input=false`; the runtime suppresses them under delegation. Select "
                       "the best supported Epic candidate without asking; use an intentional top-level Task if "
@@ -334,7 +335,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 
 - Write `interpretation` in two or three Korean sentences: target or technology, understood purpose, and intended artifact. Preserve the user's unique terms and label inference as `~로 이해함`.
 - Ask at most two high-impact questions, preferring `choice` with the recommended option first. Ask only slots marked `ASK` in Minimum Creation-Input Audit; never ask `INFER` or `LATER` slots.
-- Candidate material questions are: initial scope such as review, PoC, or minimum implementation; the verified trigger or business background; an observable DoD artifact or metric; decomposition only when the user did not specify structure; ambiguous module from real placement values; and ambiguous Epic placement from verified candidates plus `없음(최상위)` and `새 Epic 검토`.
+- A blocking question is limited to information without which no truthful executable payload exists: the work target or action, an exact mutation value, a legal parent, an unresolved person identity, missing comment content or purpose, or a material Bug reproduction fact. Background, DoD wording, deadline, decomposition, module, and Epic placement are not blocking when the literal request, verified evidence, a conservative default, or omission is sufficient.
 - Do not ask for values already present in conversation or discoverable through the next research step.
 - When the user delegates optional choices with `알아서`, skip preference questions. Keep any question whose answer is required to identify a valid action or truthful payload and mark it `required_input=true`."""
         else:
@@ -490,14 +491,31 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                            "field": q.get("field") or "",
                            "required_input": required_input,
                            "why_required": why_required})
-        # 위임은 선택 질문만 제거한다. 필수 질문은 남겨 임의 payload보다 먼저 답받는다.
+        # 위임은 선택 질문만 제거한다. 모델의 required_input 표시는 그대로 신뢰하지 않는다.
+        # 배경·DoD·Epic 같은 선택을 '필수'라고 표시해 단순 요청을 취조로 만든 실측 회귀가
+        # 있었으므로, 코드가 실제 blocker(대상·정확한 변경값·계층·사람·댓글·재현)를 확인한다.
         if delegated:
-            qs = [q for q in qs if _question_requires_input(q)]
+            qs = [q for q in qs if _delegated_question_is_blocking(state, q)]
         # 모델이 낸 질문은 **초안을 만들기 전에 답이 필요한 질문**이다. 뒤에서 코드가
         # 붙이는 구조 확인 질문과 구분해 둔다 — 전자는 초안과 함께 내면 사용자가 무엇을
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
         model_questions = bool(qs)
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        # 규칙/측정 방법만 있고 적용할 데이터 대상이 없으면 실행 가능한 초안이 아니다.
+        # `널 비율 체크`만 받은 두 번째 턴에서 조기 초안을 낸 ASK2 회귀를 결정적으로 막는다.
+        if _missing_data_quality_target(state):
+            qs = [{"question": "어느 데이터셋·테이블·컬럼을 대상으로 적용할지 알려 주세요.",
+                   "kind": "text", "options": [], "field": "",
+                   "required_input": True,
+                   "why_required": "품질 규칙을 적용할 데이터 대상을 식별할 수 없음"}]
+            model_questions = True
+        human_request = (request_text(state) + " " + _human_request_text(state)).strip()
+        if _missing_exact_mutation(human_request):
+            qs = [{"question": "임계값을 어떤 값으로 변경할지 알려 주세요.",
+                   "kind": "text", "options": [], "field": "",
+                   "required_input": True,
+                   "why_required": "변경 payload에 넣을 정확한 새 임계값이 없음"}]
+            model_questions = True
         for item in items:
             if item.get("issue_type") and not item.get("type"):
                 item["type"] = item["issue_type"]
@@ -1463,7 +1481,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         for it in items:
             p = str(it.get("priority") or "").strip()
             if p:
-                it["priority"] = _PRI.get(p.upper(), p)
+                it["priority"] = _normalize_priority(p)
 
         # PMO_VIT 는 경영진 보고 현안 전용이고 트리 최상위 하나에만 붙는다 — 그런데 모델이
         # 기존 라벨 목록에서 보고는 신규 티켓 셋에 전부 붙였다(실측). 사용자가 입으로 말했을
@@ -1625,6 +1643,13 @@ _PRI = {"P0": "P0-Blocker", "P1": "P1-Critical", "P2": "P2-Major",
         "MINOR": "P3-Minor", "TRIVIAL": "P4-Trivial"}
 
 
+def _normalize_priority(value) -> str:
+    """Jira의 canonical P0..P4 이름으로 정규화. 모델의 `P3-Medium`도 P3이다."""
+    raw = str(value or "").strip()
+    match = _re.match(r"^P([0-4])(?:\b|-)", raw, _re.I)
+    return _PRI.get("P" + match.group(1), raw) if match else _PRI.get(raw.upper(), raw)
+
+
 def _change_plan(state, out, items, qs):
     """modify 갈래 — **기존 티켓 변경 계획**을 확정한다. `(plan, qs)` 를 돌려준다.
 
@@ -1674,8 +1699,7 @@ def _change_plan(state, out, items, qs):
                                 + f"\n(요청에 없던 {', '.join(_extra)} 변경은 뺐다 — "
                                   "말한 것만 바꾼다)").strip()
         if str(fields.get("priority") or "").strip():
-            p = str(fields["priority"]).strip()
-            fields["priority"] = _PRI.get(p.upper(), p)
+            fields["priority"] = _normalize_priority(fields["priority"])
         # 상대 날짜("다음주 수요일")는 **코드가 계산**한다 — 모델 산술이 흔들렸다
         # (실측: 같은 질문에 8-12(수·정답)와 8-16(일·오답)을 번갈아 냈다).
         rel = _relative_due(request_text(state) + " " + last_user_text(state))
@@ -1784,8 +1808,7 @@ def _change_plan(state, out, items, qs):
                                          "components")
                   if k in change and change[k] is not None}
         if str(fields.get("priority") or "").strip():
-            p = str(fields["priority"]).strip()
-            fields["priority"] = _PRI.get(p.upper(), p)
+            fields["priority"] = _normalize_priority(fields["priority"])
         # 빈 문자열 값은 변경이 아니다 — 모델이 안 바꿀 필드를 "" 로 채워 빈 changes
         # 일괄 카드가 떴다(실측). 해제(비우기)는 단건 change 로만 받는다.
         fields = {k: v for k, v in fields.items()
@@ -1893,6 +1916,52 @@ def _change_plan(state, out, items, qs):
                               "코드가 확정했다)").strip()}
             qs = []
             items.clear()          # 수정 요청에 초안을 만들었어도 계획이 이긴다(참조 공유)
+
+    # 댓글은 사용자가 외부에 남기는 실제 메시지다. 대상만 있고 본문·목적이 없으면 `알아서`를
+    # 내용 생성 권한으로 해석하지 않는다(ASKD3). 모델이 questions=[]로 빠져도 코드가 묻는다.
+    _full_request = request_text(state) + " " + last_user_text(state)
+    if (state.get("intent") or "") == Intent.MODIFY \
+            and _re.search(r"댓글|코멘트", _full_request) \
+            and _comment_input_missing(state, plan):
+        plan = {}
+        items.clear()
+        qs = [{"question": "남길 댓글의 내용이나 전달 목적을 알려 주세요.",
+               "kind": "text", "options": [], "field": "comment",
+               "required_input": True,
+               "why_required": "외부에 게시할 댓글 내용은 사용자 의도 없이 발명할 수 없음"}]
+
+    # 담당자 변경은 표시 이름이 아니라 exact username으로 실행한다. 모델이 이름을 assignee에
+    # 그대로 넣으면 뒤의 '없는 사번' 가드가 동명이인 후보도 지워 버린다. 디렉토리 조회 결과가
+    # 하나면 exact ID로 고치고, 여러 명이면 full display/name/module을 보기로 제시한다(AMB1).
+    _person_name = _requested_assignee_name(_full_request)
+    if (state.get("intent") or "") == Intent.MODIFY and _person_name:
+        try:
+            from app.agent import tools as T
+            person = T.BY_NAME["find_person"].invoke({"name": _person_name}) or {}
+            candidates = person.get("candidates") or []
+            if person.get("ambiguous") and candidates:
+                plan = {}
+                items.clear()
+                qs = [{"question": f"'{_person_name}' 이름의 사용자가 여러 명입니다. 담당자를 골라 주세요.",
+                       "kind": "choice", "field": "assignee",
+                       "options": [" · ".join(x for x in (
+                           str(c.get("display") or _person_name),
+                           str(c.get("id") or ""), str(c.get("module") or "")) if x)[:120]
+                                   for c in candidates[:5]],
+                       "required_input": True,
+                       "why_required": "담당자 변경에는 하나의 exact username이 필요함"}]
+            elif person.get("resolved"):
+                uid = str(person["resolved"])
+                if plan:
+                    plan.setdefault("changes", {})["assignee"] = uid
+                elif state.get("mentioned_keys"):
+                    plan = {"key": str(state["mentioned_keys"][0]),
+                            "changes": {"assignee": uid}, "comment": "",
+                            "why": "사용자 디렉토리에서 담당자 username 확인"}
+                    qs = []
+                    items.clear()
+        except Exception:
+            pass
 
     # ── Done field update 금지 ──────────────────────────────────────────────
     # Jira editmeta가 우연히 비어 있는 데 기대지 않는다. 완료 티켓은 comment와 현재 Jira가
@@ -2053,26 +2122,25 @@ def _slot_audit(state) -> str:
     def row(name, filled, how, empty_act):
         rows.append(f"- {name}: " + (f"채워짐({how})" if filled else f"비어 있음 → {empty_act}"))
 
-    row("주제·산출물", bool(req.strip()), "원문 요청", "ASK — 무엇을 만들지부터")
+    concrete = _has_concrete_work_target(text)
+    row("주제·산출물", concrete, "원문 요청의 구체 대상·행동", "ASK — 대상 또는 실제 행동부터")
     row("범위(1차 목표)", any(w in text for w in ("까지만", "범위", "1차", "PoC", "포함", "제외",
                                              "검토만", "최소 기능", "전체")),
-        "사용자 언급", "ASK — 검토만/PoC/최소 구현 중 choice")
+        "사용자 언급", "INFER — 요청한 행동을 최소 범위로 삼고 선택 확장은 제외")
     row("모듈(컴포넌트)", bool(module), f"'{module}'", "INFER — 조사·제목 접두로 추론, 갈리면 ASK")
     row("Epic 배치", bool(_re.search(r"\b[A-Z][A-Z0-9]*-\d+\b", text)) or "에픽" in text
         or "최상위" in text, "사용자 언급",
-        "ASK(choice, field=epic) — 후보 + 없음(최상위) + 새 Epic 필요")
+        "INFER — 명확한 후보를 선택하고 없으면 최상위; 새 Epic은 별도 기준 충족 시만")
     row("형태(구조)", bool(shape), f"'{shape}'", "INFER — 규모 신호로 판단, 갈림 크면 확인 질문")
     row("마감", bool(_re.search(r"\d{4}-\d{2}-\d{2}|다음\s*주|이번\s*주|말까지|주까지|일까지", text)),
-        "사용자 언급", "ASK(date) — 단 위임이면 비워 둔다")
+        "사용자 언급", "LATER — 선택 필드이므로 비워 두며 묻지 않는다")
     row("우선순위", bool(_re.search(r"P[0-4]|긴급|우선순위", text)), "사용자 언급",
         "INFER — 기본 P3-Minor, 묻지 않는다")
     row("담당자", False, "", "LATER — 다음 단계(PeopleAdvisor)가 근거와 함께 정한다, 묻지 않는다")
 
-    # ── ★ 여기부터는 **티켓의 질**을 정하는 슬롯이다(사용자 요청으로 신설) ──────────
-    # 위 슬롯들은 티켓을 **어디에 놓을지**(모듈·Epic·마감)를 정한다. 그런데 승인하는 사람이
-    # 읽는 것은 배치가 아니라 **배경·완료 조건**이고, 나중에 "이거 왜 만들었지"·"이거 끝난
-    # 거 맞나"가 갈리는 자리도 거기다. 이 셋이 비면 코드가 채울 수 있는 것은 형식뿐이라
-    # (배경은 원 요청을 옮기고, DoD 는 모델이 지어낸다) 결국 **물어야 좋아진다**.
+    # 배경·DoD는 티켓 품질에 중요하지만, 구체적 요청의 생성을 막는 필수 입력은 아니다.
+    # 확인된 요청을 배경으로 쓰고 요청 결과를 관찰 가능한 최소 DoD로 바꾼다. 정확한 성능
+    # 목표처럼 사실을 발명해야 하는 항목만 `추후 확인 필요`로 남긴다.
     # ★ **이미 물었고 사용자가 답했으면 채워진 것이다.** 판정 낱말만 보면 답을 놓친다 —
     #   실측(사용자 관점 리뷰 F1): "배경은 StarRocks QueryQueueV2 Estimation 성능 개선"
     #   이라고 답했는데 그 문장에 판정 낱말("때문"·"위해"…)이 하나도 없어 **또 물었다**.
@@ -2086,18 +2154,18 @@ def _slot_audit(state) -> str:
                                 "느려", "실패", "필요해서", "라서", "니까", "목표",
                                 "개선", "성능", "부하", "요구")),
         "사용자 언급",
-        "ASK — 계기를 한 줄로. 없으면 배경이 원 요청 복사가 된다(승인자가 판단할 수 없다)")
+        "INFER — 확인된 요청 사실만 쓰고 미확인 효익은 발명하지 않는다")
     row("완료 조건(무엇을 보고 끝났다고 하나)",
         _answered("완료 조건", "DoD") or
         any(w in text for w in ("완료 조건", "DoD", "끝났다고", "판정", "기준은", "확인되면",
                                 "까지 되면", "성공하면", "리포트", "지표", "구현", "적용")),
         "사용자 언급",
-        "ASK — '무엇을 보고' 끝인지. 없으면 '테스트 완료' 같은 판정 불가 문장이 남는다")
+        "INFER — 요청 결과와 회귀 확인을 관찰 가능한 최소 DoD로 작성; 정확한 수치는 추후 확인")
     row("분할 여부(한 사람이 며칠에 끝나나)",
         bool(shape) or any(w in text for w in ("나눠", "쪼개", "단계", "며칠", "주 정도",
                                                "혼자", "같이", "분담")),
         "사용자 언급 또는 형태 지정",
-        "ASK(choice) — 한 티켓 / 단계별 Sub-Task / 담당 나눠 여러 건")
+        "INFER — 기본 single_task; 명시된 복수 산출물·대상·담당 신호가 있을 때만 분할")
     return "\n".join(rows)
 
 
@@ -3338,6 +3406,146 @@ def _question_requires_input(question) -> bool:
             and bool(str(question.get("why_required") or "").strip()))
 
 
+def _has_concrete_work_target(text: str) -> bool:
+    """생성 가능한 최소 대상·행동이 있는가.
+
+    `데이터 품질 작업`처럼 영역명만 있는 요청은 대상이 아니다. 반면 화면 요소, pipeline,
+    표/테이블 집합, 기술 자산, 증상, 또는 구체 동작이 있으면 본문 세부는 보수적으로 만들 수 있다.
+    """
+    said = str(text or "").strip()
+    if not said:
+        return False
+    # 부모와 티켓 종류만 있고 실제 할 일이 없는 요청.
+    if _re.search(r"(?:아래|밑|에)\s*(?:Sub-?Task|서브\s*태스크)\s*(?:하나|한\s*개)?\s*"
+                  r"(?:만들|추가).{0,20}(?:내용|뭘\s*할지).{0,10}(?:알아서|아무거나)",
+                  said, _re.I):
+        return False
+    vague = _re.sub(r"(?:나머지는\s*)?(?:알아서|기본값으로|맡길게|네가\s*정해)", "", said)
+    vague = _re.sub(r"(?:작업|개선|정리|티켓|Task|과제)\s*(?:하나|한\s*건)?\s*"
+                    r"(?:만들어?\s*줘|잡아\s*줘|해\s*줘)?", "", vague, flags=_re.I)
+    # 도메인 이름만 남은 대표적 모호 요청은 구체 대상/규칙을 물어야 한다.
+    if _re.fullmatch(r"[\s·]*(?:데이터\s*)?품질[\s·]*", vague):
+        return False
+    concrete_signals = (
+        "화면", "팝업", "체크박스", "필터", "버튼", "API", "배치", "파이프라인",
+        "테이블", "컬럼", "쿼리", "인덱스", "뷰어", "가이드", "리포트", "대시보드",
+        "임계값", "알림", "등록", "전환", "마이그레이션", "회귀 테스트", "재현",
+    )
+    return any(w.lower() in said.lower() for w in concrete_signals) or bool(
+        _re.search(r"\b[A-Za-z_][A-Za-z0-9_.-]{2,}\b", said)
+    )
+
+
+def _delegated_question_is_blocking(state, question) -> bool:
+    """위임 요청에서 모델이 `required_input`으로 표시한 질문을 실제 blocker로 검증."""
+    if not _question_requires_input(question):
+        return False
+    said = (request_text(state) + " " + conversation(state)).strip()
+    qtext = (str(question.get("question") or "") + " "
+             + str(question.get("why_required") or "") + " "
+             + str(question.get("field") or "")).lower()
+
+    # 안전한 초안이 없는 결정적 갈래.
+    if not _has_concrete_work_target(said):
+        return any(w in qtext for w in ("대상", "무엇", "어느", "범위", "내용", "목적", "작업"))
+    if _re.search(r"댓글|코멘트", said) and not _explicit_comment_body(said):
+        return any(w in qtext for w in ("댓글", "코멘트", "내용", "목적", "전달"))
+    if _re.search(r"담당자?.{0,20}(?:바꿔|변경|지정|할당)", said):
+        return any(w in qtext for w in ("담당", "사람", "동명이", "사번", "사용자"))
+    if _missing_exact_mutation(said):
+        return any(w in qtext for w in ("임계", "값", "몇", "현재", "목표"))
+    if reads_as_bug(said) and _missing_bug_reproduction(said):
+        return any(w in qtext for w in ("재현", "언제", "경로", "환경", "조건", "빈도", "기대"))
+    if _re.search(r"Sub-?Task|서브\s*태스크", said, _re.I) and not _legal_parent_is_known(state, said):
+        return any(w in qtext for w in ("부모", "상위", "task", "티켓"))
+    if _re.search(r"중복|같은\s*(?:작업|증상)|이미", qtext):
+        return True
+    # 배경, DoD, 범위 확장, 마감, Epic, 모듈, 분할은 요청의 최소 행동으로 초안을 만들고
+    # 안전하게 생략·추론할 수 있는 선택이다.
+    return False
+
+
+def _missing_exact_mutation(text: str) -> bool:
+    if not _re.search(r"임계값|threshold", text, _re.I):
+        return False
+    # `P1`의 1이나 ISO date 일부는 mutation 값이 아니다. 숫자 앞의 영문·숫자·날짜
+    # 구분자를 제외해 실제 threshold 후보만 센다.
+    values = _re.findall(
+        r"(?<![A-Za-z0-9-])\d+(?:\.\d+)?\s*(?:분|초|시간|%|퍼센트|건|개)?",
+        text,
+    )
+    return len(values) < 1
+
+
+def _missing_bug_reproduction(text: str) -> bool:
+    has_condition = any(w in text for w in ("에서", "하면", "때", "이상", "마다", "크롬",
+                                                 "사파리", "prod", "운영", "재현"))
+    has_observed = any(w in text for w in ("안 ", "않", "빈", "실패", "오류", "에러", "느려",
+                                                "멈", "깨", "타임아웃"))
+    return not (has_condition and has_observed)
+
+
+def _legal_parent_is_known(state, text: str) -> bool:
+    keys = state.get("mentioned_keys") or _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", text)
+    return any(_can_parent_subtask(k) for k in keys)
+
+
+def _explicit_comment_body(text: str) -> bool:
+    # `내용은 알아서`는 내용이 아니다. 따옴표, 콜론 뒤 문장, 또는 요청 동사 앞의 구체 문구만 인정.
+    if _re.search(r"내용(?:은|도)?\s*(?:알아서|아무거나|적당히)", text):
+        return False
+    return bool(_re.search(r"댓글(?:로|에)?\s*['\"“‘].+?['\"”’]", text)
+                or _re.search(r"댓글(?:로|에)?\s*[:：]\s*\S+", text))
+
+
+def _comment_input_missing(state, plan: dict) -> bool:
+    original = request_text(state)
+    latest = last_user_text(state).strip()
+    delegated_placeholder = bool(_re.search(
+        r"(?:내용|목적)(?:은|도)?\s*(?:알아서|아무거나|적당히)", original,
+    ))
+    # 확인 질문의 다음 턴에 실제 문장을 주면 원 요청의 placeholder보다 그 답이 우선한다.
+    followup_body = (latest and latest != original and len(latest) >= 4
+                     and not _re.fullmatch(r"(?:알아서|아무거나|적당히|없음|없어)", latest))
+    if followup_body or _explicit_comment_body(original + " " + latest):
+        return False
+    if delegated_placeholder:
+        return True
+    return not str((plan or {}).get("comment") or "").strip()
+
+
+def _human_request_text(state) -> str:
+    rows = [str(getattr(message, "content", "") or "").strip()
+            for message in (state.get("messages") or [])
+            if getattr(message, "type", "") == "human"]
+    return " ".join(row for row in rows if row)
+
+
+def _missing_data_quality_target(state) -> bool:
+    said = (request_text(state) + " " + _human_request_text(state)).strip()
+    if not _re.search(r"데이터\s*품질|널\s*비율|null\s*(?:rate|ratio)", said, _re.I):
+        return False
+    # 독립 보고 단위 자체를 만드는 명시적 Epic 요청은 broad scope가 산출물이다.
+    if _re.search(r"\bEpic\b|에픽", said, _re.I):
+        return False
+    target = _re.search(
+        r"(?:테이블|데이터셋|dataset|컬럼|column|스키마|schema|파일|file|토픽|topic|"
+        r"DAG|[A-Za-z][A-Za-z0-9_-]*\.[A-Za-z][A-Za-z0-9_.-]*)",
+        said, _re.I,
+    )
+    return target is None
+
+
+def _requested_assignee_name(text: str) -> str:
+    said = str(text or "")
+    match = _re.search(r"담당자?(?:를|는)?\s*([가-힣A-Za-z0-9_.-]{2,30}?)\s*"
+                       r"(?:으로|로)\s*(?:바꿔|변경|지정|할당)", said)
+    if not match:
+        match = _re.search(r"담당자?(?:를|는)?\s*([가-힣A-Za-z0-9_.-]{2,30})\s*"
+                           r"(?:지정|할당|변경)", said)
+    return match.group(1).strip() if match else ""
+
+
 _COMPOSITE_SIGNALS = (
     "각각", "여러", "나눠", "쪼개", "단계", "사람 나눠", "그리고", "동시에", "별도",
     "설계", "구현", "검증", "배포", "모니터링", "파이프라인", "구축", "마이그레이션",
@@ -3430,7 +3638,10 @@ def _inferred_epic_rejection(state, item: dict, key: str) -> str:
     if em and comps and em != comps[0]:
         return f"{em} 모듈 Epic과 {comps[0]} 컴포넌트가 다르다"
     title = _epic_summary(key)
-    if title:
+    delegated_choice = bool(_re.search(
+        r"(?:에픽|epic).{0,16}(?:골라|정해|선택)", conversation(state), _re.I,
+    ))
+    if title and not delegated_choice:
         epic_terms = _semantic_terms(title)
         work_terms = _semantic_terms(str(item.get("summary") or "") + " " + request_text(state))
         # 모듈명·'작업/개선' 같은 공통어를 제거한 뒤 업무 고유어가 하나도 겹치지 않으면

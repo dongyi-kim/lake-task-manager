@@ -137,6 +137,21 @@ def test_inferred_epic_module_mismatch_is_removed():
     assert "연결을 뺐다" in r["draft"]["rationale"]
 
 
+def test_verified_same_module_epic_choice_survives_when_user_delegates_the_choice():
+    """`Epic은 네가 골라줘`는 verified 후보 중 선택 권한을 준 것 — 고유어 불일치만으로 제거 금지."""
+    from langchain_core.messages import HumanMessage
+    item = {**dict(_draft()["items"][0]),
+            "summary": "[ETL] starrocks puffin ndv 통계정보 파이프라인 개발",
+            "epic": "DL-102", "components": ["ETL"]}
+    out = {"questions": [], "mode": "task", "rationale": "", "items": [item],
+           "structure": "single_task", "structure_source": "inferred"}
+    state = {"messages": [HumanMessage(
+        content="starrocks puffin ndv 통계정보 파이프라인 개발. Epic은 네가 골라줘. 알아서")],
+        "situation": "verified candidates supplied"}
+    got = WorkArchitect().apply(state, out)
+    assert got["draft"]["items"][0]["epic"] == "DL-102"
+
+
 def test_an_explicit_epic_wins_even_when_module_metadata_differs():
     from langchain_core.messages import HumanMessage
     out = {"questions": [], "mode": "task", "rationale": "", "items": [
@@ -327,7 +342,7 @@ def test_delegation_keeps_the_draft_and_suppresses_optional_questions():
            "mode": "task", "rationale": "",
            "structure": "single_task", "structure_source": "inferred",
            "items": [dict(_draft()["items"][0])]}
-    r = WorkArchitect().apply(_msg("데이터 품질 개선 작업 만들어줘. 알아서"), out)
+    r = WorkArchitect().apply(_msg("신규 등록 테이블의 널 비율 품질 점검 작업 만들어줘. 알아서"), out)
     assert not r["questions"]
     assert r["draft"]["items"]
 
@@ -623,6 +638,109 @@ def test_delegated_draft_does_not_repeat_suppressed_questions_in_rationale():
                "<li data-checked=\"false\">결과를 확인한다.</li></ul>"}]}
     got = WorkArchitect().apply(_msg("메타데이터 등록 작업 하나 만들어줘. 알아서"), out)
     assert "무엇인가요" not in got["draft"]["rationale"]
+
+
+def test_delegated_concrete_request_does_not_block_on_background_dod_or_epic():
+    """`required_input=true`도 모델 주장이다. 선택 정보가 blocker로 승격되면 안 된다."""
+    body = ("<h3>배경</h3><p>팝업 추가 요청</p><h3>작업 범위</h3>"
+            "<ul><li>포함: 팝업 추가</li><li>제외: 단축키 변경</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            "<li data-checked=\"false\">편집기에서 팝업 노출을 확인한다.</li></ul>")
+    questions = [
+        {"question": "사업 배경은 무엇인가요?", "kind": "text", "field": "",
+         "required_input": True, "why_required": "배경 필요"},
+        {"question": "완료 조건은 무엇인가요?", "kind": "text", "field": "",
+         "required_input": True, "why_required": "DoD 필요"},
+        {"question": "어느 Epic에 둘까요?", "kind": "choice", "field": "epic",
+         "required_input": True, "why_required": "Epic 필요"},
+    ]
+    out = {"questions": questions, "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred", "items": [{
+               "summary": "[Workbench] 쿼리 편집기 단축키 도움말 팝업 추가",
+               "type": "Task", "components": ["Workbench"], "description": body}]}
+    got = WorkArchitect().apply(
+        _msg("Workbench 쿼리 편집기에 단축키 도움말 팝업 추가해줘. 알아서"), out)
+    assert not got["questions"]
+    assert len(got["draft"]["items"]) == 1
+
+
+def test_delegated_request_still_asks_for_missing_target_and_exact_mutation():
+    target_q = {"question": "어느 데이터셋을 대상으로 할까요?", "kind": "text",
+                "field": "", "required_input": True,
+                "why_required": "작업 대상을 식별할 수 없음"}
+    got = WorkArchitect().apply(
+        _msg("데이터 품질 작업 하나 만들어줘. 나머지는 알아서"),
+        {"questions": [target_q], "mode": "task", "rationale": "", "items": []})
+    assert got["questions"] and not got["draft"]["items"]
+
+    got = WorkArchitect().apply(
+        _msg("적재 지연 알림 임계값 조정 Task 만들어줘. 나머지는 알아서"),
+        {"questions": [], "mode": "task", "rationale": "", "items": [dict(_draft()["items"][0])]})
+    assert got["questions"] and "임계값" in got["questions"][0]["question"]
+
+
+def test_slot_audit_infers_optional_ticket_quality_fields_but_asks_for_generic_target():
+    from app.agent.workflow.agents.work_architect import _slot_audit
+    concrete = _slot_audit(_msg("쿼리 편집기에 도움말 팝업 추가해줘. 알아서"))
+    assert "범위(1차 목표): 비어 있음 → INFER" in concrete
+    assert "Epic 배치: 비어 있음 → INFER" in concrete
+    assert "완료 조건" in concrete and "→ INFER" in concrete
+    vague = _slot_audit(_msg("데이터 품질 작업 하나 만들어줘. 알아서"))
+    assert "주제·산출물: 비어 있음 → ASK" in vague
+
+
+def test_comment_without_content_gets_a_deterministic_required_question():
+    state = _msg("DL-9090에 댓글 남겨줘. 내용은 알아서",
+                 intent=Intent.MODIFY, mentioned_keys=["DL-9090"])
+    plan, questions = _change_plan(
+        state,
+        {"change": {"key": "DL-9090", "comment": "요청하신 대로 처리하겠습니다."},
+         "rationale": ""}, [], [],
+    )
+    assert not plan
+    assert questions and questions[0]["field"] == "comment"
+    assert questions[0]["required_input"] is True
+
+
+def test_data_quality_interview_waits_for_target_then_allows_the_draft():
+    from langchain_core.messages import HumanMessage
+    body = ("<h3>배경</h3><p>널 비율 확인 요청</p><h3>작업 범위</h3>"
+            "<ul><li>포함: 널 비율 확인</li><li>제외: 다른 규칙</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            "<li data-checked=\"false\">결과표로 비율을 확인한다.</li></ul>")
+    draft = {"questions": [], "mode": "task", "rationale": "",
+             "structure": "single_task", "structure_source": "inferred",
+             "items": [{"summary": "[DataOps] 널 비율 확인", "type": "Task",
+                        "components": ["DataOps"], "description": body}]}
+    first = "데이터 품질 개선 작업 하나 만들어줘"
+    state = {"messages": [HumanMessage(content=first),
+                          HumanMessage(content="널 비율 체크만 이번 주까지. 알아서")],
+             "request_text": first, "situation": "조사 완료"}
+    got = WorkArchitect().apply(state, draft)
+    assert got["questions"] and not got["draft"]["items"]
+
+    state["messages"].append(HumanMessage(content="Lake 배치 적재 테이블 30개 대상"))
+    got = WorkArchitect().apply(state, draft)
+    assert not got["questions"] and got["draft"]["items"]
+
+
+def test_priority_aliases_normalize_to_the_jira_canonical_value():
+    from app.agent.workflow.agents.work_architect import _missing_exact_mutation, _normalize_priority
+    assert _normalize_priority("P3-Medium") == "P3-Minor"
+    assert _normalize_priority("P1-High") == "P1-Critical"
+    assert _missing_exact_mutation("임계값 조정. 우선순위 P1, 이번 주 금요일까지")
+    assert not _missing_exact_mutation("임계값을 45분으로 조정. 우선순위 P1")
+
+
+def test_ambiguous_assignee_name_lists_exact_usernames_instead_of_invalid_id_error():
+    state = _msg("DL-9090 담당자를 동명이로 바꿔줘. 알아서",
+                 intent=Intent.MODIFY, mentioned_keys=["DL-9090"])
+    out = {"change": {"key": "DL-9090", "assignee": "동명이"}, "rationale": ""}
+    plan, questions = _change_plan(state, out, [], [])
+    options = " ".join(questions[0]["options"] if questions else [])
+    assert not plan
+    assert "test.same01" in options and "test.same02" in options
+    assert "존재하지 않는 사번" not in questions[0]["question"]
 
 
 def test_unverified_ticket_and_prompt_doc_references_are_removed():
@@ -1496,7 +1614,8 @@ def test_explicit_singular_task_drops_model_generated_stage_children():
         "components": ["DataOps"], "description": "",
         "children": [{"summary": "설계"}, {"summary": "구현"}, {"summary": "검증"}]}]}
     got = WorkArchitect().apply(
-        _msg("적재 지연 알림 임계값 조정 Task 만들어줘. P1, 금요일까지, 알아서"), out)
+        _msg("적재 지연 알림 임계값을 45분으로 조정하는 Task 만들어줘. "
+             "P1, 금요일까지, 알아서"), out)
     item = got["draft"]["items"][0]
     assert got["draft"]["structure"] == "single_task"
     assert got["draft"]["structure_source"] == "user_specified"
