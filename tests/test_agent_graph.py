@@ -362,6 +362,30 @@ def test_snapshot_restores_a_conversation():
     assert session.snapshot(tid)["thread_id"] == tid
 
 
+def test_evaluation_snapshot_exposes_retrieval_evidence_without_secrets():
+    from app.agent.workflow import session
+    tid = session.ask("데이터 카탈로그 관련 이력 알려줘")["thread_id"]
+    evidence = session.evaluation_snapshot(tid)
+    assert evidence
+    assert set(evidence).issubset({
+        "requestPlan", "queryPlan", "queryResults", "queryArtifacts", "preSurvey",
+        "seedMap", "webContext", "topicDossier", "evidence", "relatedDocs",
+        "knowledgeBrief", "trace",
+    })
+    assert not ({"messages", "token", "apiKey", "providerConfig"} & set(evidence))
+
+
+def test_evaluation_case_reset_drops_the_previous_graph_thread():
+    from app.agent.workflow import session
+    from tools.agent_eval_isolation import begin_case, finish_case
+
+    tid = session.ask("DL-9090 진행 상황 알려줘")["thread_id"]
+    assert session.snapshot(tid)
+    isolated = begin_case("next-case")
+    assert session.evaluation_snapshot(tid) == {}
+    assert finish_case(isolated)["worldUnchanged"] is True
+
+
 def test_knowledge_question_routes_through_curator():
     """지식형 ask("X가 뭐야/정리해줘")는 ResearchAnalyst → KnowledgeCurator → ResultIntegrator 로 흐른다.
 

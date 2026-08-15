@@ -11,6 +11,7 @@ import inspect
 import json
 import math
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -57,9 +58,14 @@ def _json_hash(value: Any) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def battery_manifest_sha256(cases: Sequence[Any]) -> str:
-    """Hash case ids, inputs, descriptions, and checker source without executing them."""
-    return _json_hash(cases)
+def battery_manifest_sha256(
+    cases: Sequence[Any], specialized_review: Mapping[str, Any] | None = None,
+) -> str:
+    """Hash case inputs/checkers and their qualitative review contract."""
+    payload: Any = cases
+    if specialized_review is not None:
+        payload = {"cases": cases, "specializedReview": specialized_review}
+    return _json_hash(payload)
 
 
 @lru_cache(maxsize=1)
@@ -88,7 +94,8 @@ def data_manifest_sha256() -> str:
 def _git(*args: str) -> str:
     try:
         result = subprocess.run(
-            ["git", *args], cwd=ROOT, capture_output=True, check=False,
+            ["git", "-c", f"safe.directory={ROOT.as_posix()}", *args],
+            cwd=ROOT, capture_output=True, check=False,
             text=True, encoding="utf-8", errors="replace", timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
@@ -116,6 +123,84 @@ def _case_ids(cases: Sequence[Any]) -> list[str]:
     return ids
 
 
+def normalize_specialized_review_specs(
+    cases: Sequence[Any],
+    suite_elements: Sequence[Mapping[str, Any]],
+    case_review_specs: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Validate declarative suite/case review elements without executing a battery."""
+    protocol = load_protocol()
+    dimensions = {item["id"] for item in protocol["humanRubric"]["dimensions"]}
+    full_ids = _case_ids(cases)
+    missing = sorted(set(full_ids) - set(case_review_specs))
+    extra = sorted(set(case_review_specs) - set(full_ids))
+    if missing or extra:
+        raise ValueError(f"specialized review case mismatch: missing={missing}, extra={extra}")
+
+    def normalize_element(raw: Mapping[str, Any], *, owner: str) -> dict[str, Any]:
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"{owner} specialized review element must be an object")
+        element_id = str(raw.get("id") or "").strip()
+        dimension = str(raw.get("dimension") or "").strip()
+        question = str(raw.get("question") or "").strip()
+        major_when = str(raw.get("majorWhen") or "").strip()
+        evidence_sources = [str(value).strip() for value in (raw.get("evidenceSources") or [])]
+        expected = raw.get("expected")
+        if not element_id or not question or not major_when:
+            raise ValueError(f"{owner} specialized review element needs id/question/majorWhen")
+        if dimension not in dimensions:
+            raise ValueError(f"{owner}.{element_id} has unknown dimension {dimension!r}")
+        if not evidence_sources or not all(evidence_sources):
+            raise ValueError(f"{owner}.{element_id} needs evidenceSources")
+        if not isinstance(expected, Mapping) or not expected:
+            raise ValueError(f"{owner}.{element_id} needs a concrete expected object")
+        return {
+            "id": element_id,
+            "dimension": dimension,
+            "question": question,
+            "majorWhen": major_when,
+            "evidenceSources": evidence_sources,
+            "expected": _canonical(expected),
+        }
+
+    normalized_suite = [
+        normalize_element(item, owner="suite") for item in suite_elements
+    ]
+    if not normalized_suite:
+        raise ValueError("specialized review needs at least one suite element")
+    suite_ids = [item["id"] for item in normalized_suite]
+    if len(suite_ids) != len(set(suite_ids)):
+        raise ValueError("suite specialized review element ids must be unique")
+
+    normalized_cases: dict[str, Any] = {}
+    for case_id in full_ids:
+        raw = case_review_specs[case_id]
+        goal = str(raw.get("goal") or "").strip()
+        elements = [
+            normalize_element(item, owner=case_id) for item in (raw.get("elements") or [])
+        ]
+        if not goal or not elements:
+            raise ValueError(f"{case_id} needs a goal and at least one specialized element")
+        ids = suite_ids + [item["id"] for item in elements]
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"{case_id} specialized review element ids must be unique")
+        normalized_cases[case_id] = {"goal": goal, "elements": elements}
+    return {"suiteElements": normalized_suite, "cases": normalized_cases}
+
+
+def specialized_review_spec_for_case(
+    registry: Mapping[str, Any], case_id: str,
+) -> dict[str, Any]:
+    """Flatten suite defaults plus one case contract for a reviewer observation."""
+    case = (registry.get("cases") or {}).get(case_id)
+    if not isinstance(case, Mapping):
+        raise ValueError(f"specialized review spec missing for case {case_id}")
+    return {
+        "goal": case["goal"],
+        "elements": list(registry.get("suiteElements") or []) + list(case.get("elements") or []),
+    }
+
+
 def build_run_metadata(
     *,
     suite: str,
@@ -125,12 +210,18 @@ def build_run_metadata(
     model: str,
     simple_model: str,
     prompt_version: str,
+    suite_review_elements: Sequence[Mapping[str, Any]] = (),
+    case_review_specs: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create the immutable identity and comparability record for one harness invocation."""
     protocol = load_protocol()
     full_ids = _case_ids(cases)
     selected = [str(case_id) for case_id in selected_case_ids]
-    manifest = battery_manifest_sha256(cases)
+    review_registry = normalize_specialized_review_specs(
+        cases, suite_review_elements, case_review_specs or {},
+    )
+    review_spec_hash = _json_hash(review_registry)
+    manifest = battery_manifest_sha256(cases, review_registry)
     data_hash = data_manifest_sha256()
     git = git_snapshot()
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -144,6 +235,7 @@ def build_run_metadata(
     data_profile = str(os.getenv("LTM_EVAL_DATA_PROFILE") or "jira820-mock-v1")
     retry_policy = os.getenv("LTM_EVAL_RETRY_POLICY") or "no-silent-retry"
     cache_policy = os.getenv("LTM_EVAL_CACHE_POLICY") or "harness-default"
+    process_isolation = os.getenv("LTM_EVAL_PROCESS_ISOLATION") or "unrecorded"
     runtime_profile = os.getenv("LTM_EVAL_RUNTIME_PROFILE") or "production-mixed-v1"
     pricing_snapshot = os.getenv("LTM_EVAL_PRICING_SNAPSHOT") or "unrecorded"
 
@@ -153,6 +245,7 @@ def build_run_metadata(
         "suite": suite,
         "batteryVersion": battery_version,
         "batteryManifestSha256": manifest,
+        "specializedReviewSpecSha256": review_spec_hash,
         "selectedCaseIds": selected,
         "model": model,
         "simpleModel": simple_model,
@@ -164,6 +257,7 @@ def build_run_metadata(
         "repetitions": planned_repetitions,
         "retryPolicy": retry_policy,
         "cachePolicy": cache_policy,
+        "processIsolation": process_isolation,
         "runtimeProfile": runtime_profile,
     }
     comparability_key = _json_hash(comparable)
@@ -184,6 +278,8 @@ def build_run_metadata(
         reasons.append("LTM_EVAL_RUN_GROUP_ID is not explicit")
     if candidate_order == "unrecorded":
         reasons.append("LTM_EVAL_CANDIDATE_ORDER_INDEX is not recorded")
+    if process_isolation == "unrecorded":
+        reasons.append("evaluation process isolation is not recorded")
     if repeat_index < 1 or repeat_index > planned_repetitions:
         reasons.append("repeatIndex is outside planned repetitions")
 
@@ -194,9 +290,17 @@ def build_run_metadata(
             "name": suite,
             "batteryVersion": battery_version,
             "batteryManifestSha256": manifest,
+            "specializedReviewSpecSha256": review_spec_hash,
             "fullCaseCount": len(full_ids),
             "selectedCaseIds": selected,
             "selectedCaseCount": len(selected),
+            "specializedReview": {
+                "suiteElements": review_registry["suiteElements"],
+                "cases": {
+                    case_id: review_registry["cases"][case_id]
+                    for case_id in selected
+                },
+            },
         },
         "run": {
             "runKind": run_kind,
@@ -217,6 +321,7 @@ def build_run_metadata(
             "candidateOrderIndex": candidate_order,
             "retryPolicy": retry_policy,
             "cachePolicy": cache_policy,
+            "processIsolation": process_isolation,
             "runtimeProfile": runtime_profile,
             "pricingSnapshot": pricing_snapshot,
         },
@@ -279,6 +384,19 @@ def quantitative_metrics(
     }
 
 
+def _score_ceiling(counts: Mapping[str, int]) -> float:
+    ceilings = load_protocol()["humanRubric"]["checklistScoreCeilings"]
+    if counts.get("major", 0) >= 2:
+        return float(ceilings["multipleMajor"])
+    if counts.get("major", 0) == 1:
+        return float(ceilings["oneMajor"])
+    if counts.get("minor", 0) >= 2:
+        return float(ceilings["multipleMinorNoMajor"])
+    if counts.get("minor", 0) == 1:
+        return float(ceilings["oneMinorNoMajor"])
+    return float(ceilings["allApplicablePass"])
+
+
 def validate_checklist_results(
     checklist_results: Mapping[str, Mapping[str, Mapping[str, Any]]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -295,7 +413,6 @@ def validate_checklist_results(
         )
 
     allowed_statuses = set(rubric["checklistResultEnum"])
-    ceilings = rubric["checklistScoreCeilings"]
     normalized: dict[str, Any] = {}
     summaries: dict[str, Any] = {}
     for dimension in dimensions:
@@ -333,16 +450,7 @@ def validate_checklist_results(
         applicable = len(expected_items) - counts["na"]
         if applicable < 1:
             raise ValueError(f"{dimension_id} needs at least one applicable checklist item")
-        if counts["major"] >= 2:
-            ceiling = float(ceilings["multipleMajor"])
-        elif counts["major"] == 1:
-            ceiling = float(ceilings["oneMajor"])
-        elif counts["minor"] >= 2:
-            ceiling = float(ceilings["multipleMinorNoMajor"])
-        elif counts["minor"] == 1:
-            ceiling = float(ceilings["oneMinorNoMajor"])
-        else:
-            ceiling = float(ceilings["allApplicablePass"])
+        ceiling = _score_ceiling(counts)
         normalized[dimension_id] = normalized_items
         summaries[dimension_id] = {
             "counts": {key: counts[key] for key in sorted(counts)},
@@ -352,9 +460,81 @@ def validate_checklist_results(
     return normalized, summaries
 
 
+def validate_specialized_review_results(
+    specialized_review_spec: Mapping[str, Any],
+    specialized_review_results: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate every suite/case element and summarize findings by mapped dimension."""
+    if not isinstance(specialized_review_spec, Mapping):
+        raise ValueError("specializedReviewSpec must be an object")
+    goal = str(specialized_review_spec.get("goal") or "").strip()
+    elements = list(specialized_review_spec.get("elements") or [])
+    if not goal or not elements:
+        raise ValueError("specializedReviewSpec needs goal and elements")
+    allowed = set(load_protocol()["humanRubric"]["checklistResultEnum"])
+    dimensions = {item["id"] for item in load_protocol()["humanRubric"]["dimensions"]}
+    element_ids = [str(item.get("id") or "") for item in elements]
+    if not all(element_ids) or len(element_ids) != len(set(element_ids)):
+        raise ValueError("specialized review element ids must be non-empty and unique")
+    missing = sorted(set(element_ids) - set(specialized_review_results))
+    extra = sorted(set(specialized_review_results) - set(element_ids))
+    if missing or extra:
+        raise ValueError(
+            f"specialized review result mismatch: missing={missing}, extra={extra}"
+        )
+
+    normalized: dict[str, Any] = {}
+    by_dimension: dict[str, Any] = {}
+    for element in elements:
+        element_id = str(element["id"])
+        dimension = str(element.get("dimension") or "")
+        question = str(element.get("question") or "").strip()
+        major_when = str(element.get("majorWhen") or "").strip()
+        evidence_sources = element.get("evidenceSources") or []
+        expected_contract = element.get("expected")
+        if dimension not in dimensions:
+            raise ValueError(f"{element_id} has unknown dimension {dimension!r}")
+        if not question or not major_when:
+            raise ValueError(f"specialized review {element_id} needs question and majorWhen")
+        if not isinstance(evidence_sources, list) or not evidence_sources:
+            raise ValueError(f"specialized review {element_id} needs evidenceSources")
+        if not isinstance(expected_contract, Mapping) or not expected_contract:
+            raise ValueError(f"specialized review {element_id} needs a concrete expected object")
+        result = specialized_review_results[element_id]
+        if not isinstance(result, Mapping):
+            raise ValueError(f"specialized review {element_id} result must be an object")
+        status = str(result.get("status") or "").strip().lower()
+        evidence = str(result.get("evidence") or "").strip()
+        if status not in allowed:
+            raise ValueError(f"specialized review {element_id} status must be one of {sorted(allowed)}")
+        if not evidence:
+            raise ValueError(f"specialized review {element_id} evidence is required")
+        normalized[element_id] = {
+            "dimension": dimension,
+            "status": status,
+            "evidence": evidence,
+        }
+        summary = by_dimension.setdefault(
+            dimension,
+            {"counts": {value: 0 for value in allowed}, "applicableItems": 0},
+        )
+        summary["counts"][status] += 1
+        if status != "na":
+            summary["applicableItems"] += 1
+
+    for dimension, summary in by_dimension.items():
+        if summary["applicableItems"] < 1:
+            raise ValueError(f"{dimension} needs an applicable specialized review element")
+        summary["counts"] = {key: summary["counts"][key] for key in sorted(allowed)}
+        summary["scoreCeiling"] = _score_ceiling(summary["counts"])
+    return normalized, by_dimension
+
+
 def score_human_case(
     scores: Mapping[str, float], failure_codes: Iterable[str] = (), *,
     checklist_results: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    specialized_review_spec: Mapping[str, Any],
+    specialized_review_results: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Apply rubric weights and deterministic severity caps to one human review."""
     protocol = load_protocol()
@@ -367,20 +547,34 @@ def score_human_case(
         raise ValueError(f"human score dimensions mismatch: missing={missing}, extra={extra}")
 
     normalized_checklist, checklist_summary = validate_checklist_results(checklist_results)
+    normalized_specialized, specialized_summary = validate_specialized_review_results(
+        specialized_review_spec, specialized_review_results,
+    )
     minimum = float(rubric["minimum"])
     maximum = float(rubric["maximum"])
     step = float(rubric["step"])
     normalized: dict[str, float] = {}
+    combined_summary: dict[str, Any] = {}
     for item in dimensions:
         key = item["id"]
         value = float(scores[key])
         steps = round((value - minimum) / step)
         if value < minimum or value > maximum or abs(minimum + steps * step - value) > 1e-9:
             raise ValueError(f"{key} must be {minimum}..{maximum} in {step} increments")
-        ceiling = float(checklist_summary[key]["scoreCeiling"])
+        common_counts = checklist_summary[key]["counts"]
+        specialized_counts = (specialized_summary.get(key) or {}).get("counts", {})
+        combined_counts = {
+            status: int(common_counts.get(status, 0)) + int(specialized_counts.get(status, 0))
+            for status in rubric["checklistResultEnum"]
+        }
+        ceiling = _score_ceiling(combined_counts)
+        combined_summary[key] = {
+            "counts": combined_counts,
+            "scoreCeiling": ceiling,
+        }
         if value > ceiling:
             raise ValueError(
-                f"{key} score {value} exceeds checklist ceiling {ceiling}"
+                f"{key} score {value} exceeds combined checklist ceiling {ceiling}"
             )
         normalized[key] = value
 
@@ -397,6 +591,10 @@ def score_human_case(
         "dimensionScores": normalized,
         "checklistResults": normalized_checklist,
         "checklistSummary": checklist_summary,
+        "specializedReviewSpecSha256": _json_hash(specialized_review_spec),
+        "specializedReviewResults": normalized_specialized,
+        "specializedReviewSummary": specialized_summary,
+        "combinedReviewSummary": combined_summary,
         "rawScore": round(raw, digits),
         "failureCodes": codes,
         "appliedCap": cap if codes else None,
@@ -447,6 +645,7 @@ def aggregate_human_reviews(
         item["id"]: {status: 0 for status in protocol["humanRubric"]["checklistResultEnum"]}
         for item in protocol["humanRubric"]["dimensions"]
     }
+    specialized_counts: dict[str, dict[str, dict[str, int]]] = {}
     severe = 0
     for review in reviews:
         suite = str(review.get("suite") or "").strip()
@@ -473,6 +672,8 @@ def aggregate_human_reviews(
         score = score_human_case(
             review.get("dimensionScores") or {}, review.get("failureCodes") or (),
             checklist_results=review.get("checklistResults") or {},
+            specialized_review_spec=review.get("specializedReviewSpec") or {},
+            specialized_review_results=review.get("specializedReviewResults") or {},
         )
         observations.append({
             "suite": suite, "caseId": case_id, "repeatIndex": repeat_index,
@@ -487,6 +688,13 @@ def aggregate_human_reviews(
             suite_dimensions[dimension_id].append(dimension_score)
             for status, count in score["checklistSummary"][dimension_id]["counts"].items():
                 checklist_counts[dimension_id][status] += count
+        suite_specialized = specialized_counts.setdefault(suite, {})
+        for element_id, result in score["specializedReviewResults"].items():
+            counts = suite_specialized.setdefault(
+                element_id,
+                {status: 0 for status in protocol["humanRubric"]["checklistResultEnum"]},
+            )
+            counts[result["status"]] += 1
         severe += 1 if score["failureCodes"] else 0
     suite_scores = {
         suite: round(sum(values) / len(values), digits)
@@ -514,6 +722,7 @@ def aggregate_human_reviews(
         "suiteDimensionScores": suite_dimension_scores,
         "overallDimensionScores": overall_dimension_scores,
         "checklistResultCounts": checklist_counts,
+        "specializedReviewResultCounts": specialized_counts,
         "cappedFailureCount": severe,
         "cappedFailureRate": round(severe / len(observations), digits),
         "observations": observations,
@@ -550,7 +759,8 @@ def render_report_standard_block(metadata: Sequence[Mapping[str, Any]]) -> str:
     run = first["run"]
     rows = [
         (item["battery"]["name"], item["battery"]["batteryVersion"],
-         item["battery"]["batteryManifestSha256"], item["comparabilityKey"])
+         item["battery"]["batteryManifestSha256"],
+         item["battery"]["specializedReviewSpecSha256"], item["comparabilityKey"])
         for item in metadata
     ]
     lines = [
@@ -574,6 +784,7 @@ def render_report_standard_block(metadata: Sequence[Mapping[str, Any]]) -> str:
         f"| candidateOrderIndex | `{run['candidateOrderIndex']}` |",
         f"| retryPolicy | `{run['retryPolicy']}` |",
         f"| cachePolicy | `{run['cachePolicy']}` |",
+        f"| processIsolation | `{run['processIsolation']}` |",
         f"| qualitativeEvaluatorPolicy | `{protocol['qualitativeEvaluation']['policy']}` |",
         "| evaluatorAgentFamily | `codex 또는 claude — 보고서 작성 시 입력` |",
         "| evaluatorAgentModel | `보고서 작성 시 입력` |",
@@ -584,16 +795,25 @@ def render_report_standard_block(metadata: Sequence[Mapping[str, Any]]) -> str:
         "",
         "### Battery identity",
         "",
-        "| Suite | batteryVersion | batteryManifestSha256 | comparabilityKey |",
-        "|---|---|---|---|",
+        "| Suite | batteryVersion | batteryManifestSha256 | specializedReviewSpecSha256 | comparabilityKey |",
+        "|---|---|---|---|---|",
     ]
-    lines.extend(f"| {suite} | `{version}` | `{manifest}` | `{key}` |" for suite, version, manifest, key in rows)
+    lines.extend(
+        f"| {suite} | `{version}` | `{manifest}` | `{specialized}` | `{key}` |"
+        for suite, version, manifest, specialized, key in rows
+    )
     lines.extend([
         "",
         "## 비교 가능성 및 evidence 선택",
         "",
         f"Primary evidence는 `{protocol['primaryEvidencePolicy']}`. focused/closure 결과로 full-run "
         "점수를 교체하지 않음. `comparabilityKey`가 다른 후보의 절대점수 증감은 계산하지 않음.",
+        "",
+        "## 실행 격리",
+        "",
+        f"Suite process는 `{protocol['isolation']['suiteProcessPolicy']}`, cache는 "
+        f"`{protocol['isolation']['cachePolicy']}`. 각 case의 world/provider Store SHA-256가 바뀌면 "
+        "읽기 전용 배터리 실패. provider-side prompt cache는 `cachedTokens`로 별도 보고.",
         "",
         "## 사람 품질 평가 기준",
         "",
@@ -671,6 +891,38 @@ def render_report_standard_block(metadata: Sequence[Mapping[str, Any]]) -> str:
         )
     lines.extend([
         "",
+        "## 배터리·case 특수 검토요소",
+        "",
+        "공통 5축 외에 각 suite와 case가 선언한 entity·검색 경로·필수 출처·보존값을 모두 "
+        "`pass/minor/major/na`와 실제 실행 근거로 판정. 결과는 매핑된 기존 축의 점수 상한에 합산.",
+    ])
+    for item in metadata:
+        battery = item["battery"]
+        review = battery.get("specializedReview") or {}
+        lines.extend(["", f"### {battery['name']}", ""])
+
+        def append_review_element(prefix: str, element: Mapping[str, Any]) -> None:
+            expected = json.dumps(
+                element.get("expected") or {}, ensure_ascii=False,
+                sort_keys=True, separators=(",", ":"),
+            )
+            sources = ", ".join(f"`{source}`" for source in element["evidenceSources"])
+            detail_indent = "    " if prefix.startswith("  ") else "  "
+            lines.extend([
+                f"{prefix} `{element['id']}` → `{element['dimension']}`: {element['question']}",
+                f"{detail_indent}- expected: `{expected}`",
+                f"{detail_indent}- evidenceSources: {sources}",
+                f"{detail_indent}- majorWhen: {element['majorWhen']}",
+            ])
+
+        for element in review.get("suiteElements") or []:
+            append_review_element("- suite", element)
+        for case_id, case in (review.get("cases") or {}).items():
+            lines.append(f"- case `{case_id}` — {case['goal']}")
+            for element in case.get("elements") or []:
+                append_review_element("  -", element)
+    lines.extend([
+        "",
         "나머지 필수 section: `실행 조건`, `배터리 범위`, `정량 결과`, "
         "`배터리별 실제 출력과 평가`, `자동 checker와 사람 판정 불일치`, "
         "`실패·재시도·제한사항`.",
@@ -680,14 +932,27 @@ def render_report_standard_block(metadata: Sequence[Mapping[str, Any]]) -> str:
 
 def validate_report(text: str) -> list[str]:
     protocol = load_protocol()
+    declared = ""
+    version_match = re.search(
+        r"protocolVersion[^\n]*?`?(\d+\.\d+\.\d+)`?", text,
+    )
+    if version_match:
+        declared = version_match.group(1)
+    historical = (protocol.get("historicalReportContracts") or {}).get(declared)
+    required_sections = (
+        historical.get("requiredSections") if historical else protocol["requiredReportSections"]
+    )
+    required_fields = (
+        historical.get("requiredFields") if historical else protocol["requiredReportFields"]
+    )
     missing = [
         f"missing report section: {section}"
-        for section in protocol["requiredReportSections"]
+        for section in required_sections
         if section not in text
     ]
     missing.extend(
         f"missing report field: {field}"
-        for field in protocol["requiredReportFields"]
+        for field in required_fields
         if field not in text
     )
     return missing

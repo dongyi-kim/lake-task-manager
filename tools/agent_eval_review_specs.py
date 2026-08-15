@@ -1,0 +1,310 @@
+"""Suite- and case-specific qualitative review contracts for LTM Agent batteries.
+
+The common five-axis rubric answers *how good* an output is.  These declarations
+answer *what this exact battery case must inspect*: entities, retrieval paths,
+source classes, preserved values, and forbidden inventions.
+
+This module is data-only.  Importing it must never configure or invoke the Agent.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def _element(
+    element_id: str,
+    dimension: str,
+    question: str,
+    major_when: str,
+    evidence_sources: list[str],
+    expected: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "id": element_id,
+        "dimension": dimension,
+        "question": question,
+        "majorWhen": major_when,
+        "evidenceSources": evidence_sources,
+        "expected": expected,
+    }
+
+
+def _case(goal: str, *elements: dict[str, Any]) -> dict[str, Any]:
+    return {"goal": goal, "elements": list(elements)}
+
+
+_REPLY = ["output.reply", "output.pending", "output.questions"]
+_RETRIEVAL = [
+    "evaluationEvidence.queryPlan",
+    "evaluationEvidence.queryResults",
+    "evaluationEvidence.queryArtifacts",
+    "evaluationEvidence.evidence",
+    "evaluationEvidence.relatedDocs",
+    "evaluationEvidence.webContext",
+]
+_EDITOR = ["input", "output.html", "output.note", "output.references"]
+
+
+SUITE_REVIEW_ELEMENTS = {
+    "conversation": [
+        _element(
+            "conversation_retrieval_path",
+            "contract_actionability",
+            "질문의 성격에 맞는 Jira·Confluence·comment·people·web source를 계획하고 실제 조회했는가",
+            "필요한 source class를 조회하지 않거나 무관한 source를 사용해 결론이 달라짐",
+            _RETRIEVAL,
+            {"rule": "요청별 필요 source와 실제 queryPlan/queryResults를 대조"},
+        ),
+        _element(
+            "conversation_evidence_chain",
+            "factual_grounding",
+            "최종 답변의 핵심 주장·entity·수치가 실행 근거의 식별 가능한 항목과 연결되는가",
+            "핵심 결론을 뒷받침하는 source가 실행 근거에 없거나 다른 entity를 근거로 사용",
+            _REPLY + _RETRIEVAL,
+            {"rule": "material claim마다 ticket/document/comment/external provenance 확인"},
+        ),
+    ],
+    "editor": [
+        _element(
+            "editor_context_preservation",
+            "request_fulfillment",
+            "사용자 prompt·seed·ticket context의 핵심 의미와 수치를 결과 본문에 보존했는가",
+            "사용자가 준 핵심 문장·수치·목적을 삭제하거나 다른 내용으로 대체",
+            _EDITOR,
+            {"rule": "입력 visible text와 결과 visible text를 대조"},
+        ),
+        _element(
+            "editor_reference_fidelity",
+            "communication_rendering",
+            "ticket·person·document 참조가 해석 결과와 일치하고 올바른 marker/link로 렌더되는가",
+            "resolved reference를 미확인으로 표시하거나 marker/HTML 중첩으로 식별 불가",
+            _EDITOR,
+            {"rule": "references와 html/note의 entity·resolved 상태를 대조"},
+        ),
+    ],
+    "create": [
+        _element(
+            "create_request_to_payload",
+            "contract_actionability",
+            "원 요청과 후속 답변의 확정 조건이 최종 reply·pending payload에 같은 값으로 반영됐는가",
+            "사용자가 확정한 대상·type·parent·변경값과 다른 payload 생성",
+            _REPLY + ["evaluationEvidence.requestPlan", "evaluationEvidence.queryPlan"],
+            {"rule": "turn별 확정값을 final payload field와 대조"},
+        ),
+        _element(
+            "create_interview_boundary",
+            "safety_uncertainty",
+            "필수 입력만 질문하고 답변 전에는 해당 값을 발명한 draft·write payload를 만들지 않았는가",
+            "필수값을 추정하거나 내부 조회·위임으로 해결 가능한 값을 되물어 진행 차단",
+            _REPLY,
+            {"rule": "각 turn의 questions, pending, 다음 turn 반영을 순서대로 검토"},
+        ),
+        _element(
+            "create_domain_shape",
+            "contract_actionability",
+            "issue type·parent·Done 상태·field 조합이 LTM/Jira 생성·수정 규칙상 유효한가",
+            "금지된 hierarchy, Done field 변경, reply와 payload type 불일치",
+            _REPLY,
+            {"rule": "Epic → Task-tier → Sub-Task 및 action별 허용 field 대조"},
+        ),
+    ],
+}
+
+
+CASE_REVIEW_SPECS = {
+    "conversation": {
+        "S1-생성": _case(
+            "Iceberg Puffin NDV PoC를 사용자가 정한 Batch Job과 단계별 Sub-Task로 구체화",
+            _element(
+                "s1_external_technology_research",
+                "factual_grounding",
+                "Iceberg Puffin NDV라는 외부 기술 주장의 근거가 필요할 때 어떤 일반 기술어로 외부 검색했고 무엇을 확인했는가",
+                "호환성·효과·표준 동작을 주장하면서 외부 검색 시도·URL·실패 한계가 모두 없음",
+                _RETRIEVAL,
+                {
+                    "requiredSourceClasses": ["internal", "web-or-github-attempt"],
+                    "externalQueryTermsAny": ["Iceberg", "Puffin", "NDV", "statistics"],
+                    "forbiddenExternalTokens": ["DL-", "username", "private project name"],
+                },
+            ),
+            _element(
+                "s1_poc_scope",
+                "request_fulfillment",
+                "PoC, Lake 내 Iceberg 배치적재 테이블, 통계 생성 Batch Job, 단계별 Sub-Task가 모두 유지됐는가",
+                "핵심 산출물 또는 단계 분할을 누락하거나 다른 목표로 대체",
+                _REPLY,
+                {"requiredConcepts": ["PoC", "Iceberg", "Batch Job", "Sub-Task stages"]},
+            ),
+        ),
+        "S2-버그": _case(
+            "리니지 뷰어 2홉 빈 화면을 재현 가능한 Bug 초안으로 변환",
+            _element(
+                "s2_reproduction_fidelity",
+                "request_fulfillment",
+                "Chrome, 2홉 이상 확장, 빈 화면, 기대 그래프 렌더가 재현·기대·실제로 분리됐는가",
+                "재현 단계나 기대/실제 중 하나를 누락해 Bug를 재현할 수 없음",
+                _REPLY,
+                {"requiredConcepts": ["Chrome", "2 hops", "blank screen", "graph rendered"]},
+            ),
+        ),
+        "S3-이력": _case(
+            "fdc.fdc_trace_summary_ic의 최초 요청부터 현재 진행까지 완전한 시간순 이력 재구성",
+            _element(
+                "s3_history_ticket_coverage",
+                "factual_grounding",
+                "이력에 필요한 티켓 DL-9041~DL-9047과 DL-9062가 각각 어떤 사건으로 언급됐는가",
+                "중요 변화 티켓을 누락하거나 무관 티켓을 이력에 포함해 흐름을 왜곡",
+                _REPLY + _RETRIEVAL,
+                {
+                    "requiredTicketKeys": [
+                        "DL-9041", "DL-9042", "DL-9043", "DL-9044",
+                        "DL-9045", "DL-9046", "DL-9047", "DL-9062",
+                    ],
+                    "forbiddenUnrelatedTickets": True,
+                },
+            ),
+            _element(
+                "s3_history_event_sequence",
+                "factual_grounding",
+                "신규 요청·Job 개발·지연·주기 변경·schema 변경·catalog 등록·모니터링·정합성 비교를 날짜순으로 구분했는가",
+                "사건 순서나 현재/과거 상태를 뒤바꿔 사용자가 잘못된 현재 상태를 이해",
+                _REPLY,
+                {
+                    "requiredMilestones": [
+                        "request", "job implementation", "delay incident", "2h-to-30m change",
+                        "CHAMBER_ID", "catalog", "monitoring", "metric reconciliation",
+                    ]
+                },
+            ),
+        ),
+        "S4-사람": _case(
+            "이다은의 현재 업무를 전체 범위와 상태를 보존해 설명",
+            _element(
+                "s4_person_work_completeness",
+                "factual_grounding",
+                "동명이인 해소 후 현재 할당된 전체 건수와 표시 subset의 선정 기준·생략 수를 설명했는가",
+                "일부 티켓만 보여 주고 전체라고 단정하거나 다른 사람의 업무를 포함",
+                _REPLY + _RETRIEVAL,
+                {"requires": ["resolved person", "total count", "subset rule", "omitted count"]},
+            ),
+        ),
+        "S5-내일": _case(
+            "현재 사용자가 시작할 한 가지 최우선 업무를 근거와 함께 결정",
+            _element(
+                "s5_priority_decision",
+                "request_fulfillment",
+                "priority·overdue·status를 함께 비교해 하나의 최우선 티켓과 선택 이유를 제시했는가",
+                "후보만 나열하고 결정을 하지 않거나 낮은 우선순위를 근거 없이 먼저 추천",
+                _REPLY + _RETRIEVAL,
+                {"requires": ["one primary recommendation", "priority", "due/overdue", "status"]},
+            ),
+        ),
+        "S6-진척": _case(
+            "DL-9090의 자식 진행률과 남은 작업을 source conflict까지 반영해 설명",
+            _element(
+                "s6_progress_evidence",
+                "factual_grounding",
+                "하위 티켓 완료/진행 수, 남은 티켓, Jira 상태와 댓글·문서 완료 보고의 충돌을 구분했는가",
+                "댓글 보고만으로 In Progress 티켓을 완료 처리하거나 child 집계를 잘못 계산",
+                _REPLY + _RETRIEVAL,
+                {"requires": ["child count", "remaining ticket", "Jira state", "source conflict"]},
+            ),
+        ),
+        "S7-내외부조사": _case(
+            "Iceberg Puffin NDV 적용 가능성을 내부 이력과 외부 공식 자료를 분리·연결해 조사",
+            _element(
+                "s7_internal_research_coverage",
+                "factual_grounding",
+                "내부 Jira·Confluence·comment에서 기존 PoC·설계·운영 제약을 어떤 검색어와 source로 조사했는가",
+                "내부 적용 가능성을 말하면서 내부 source 검색·근거가 없음",
+                _RETRIEVAL,
+                {
+                    "requiredSourceClasses": ["jira", "confluence-or-comment"],
+                    "internalQueryTermsAny": ["Iceberg", "Puffin", "NDV", "통계"],
+                    "requiredTicketKeys": ["DL-7001"],
+                    "requiredDocumentTitles": ["[Lake] Iceberg Puffin NDV 적용 검토 노트"],
+                    "requiredInternalFacts": [
+                        "candidate tables 20", "writer version checked",
+                        "PoC not run", "StarRocks consumption unconfirmed",
+                    ],
+                },
+            ),
+            _element(
+                "s7_external_research_coverage",
+                "factual_grounding",
+                "외부 공식 문서나 신뢰 가능한 기술 자료를 일반화된 검색어로 조회하고 URL·핵심 주장을 남겼는가",
+                "외부 지식이 핵심인데 web/GitHub 검색 시도도, 차단 사실도, 외부 URL도 없음",
+                _RETRIEVAL,
+                {
+                    "requiredSourceClasses": ["web-or-github-attempt"],
+                    "externalQueryTermsAny": ["Apache Iceberg", "Puffin", "NDV statistics"],
+                    "forbiddenExternalTokens": ["DL-", "username", "private project name"],
+                },
+            ),
+            _element(
+                "s7_internal_external_separation",
+                "communication_rendering",
+                "내부 확인 사실·외부 일반 지식·LTM 적용 inference·추후 확인 gap을 구분해 산출했는가",
+                "외부 일반론을 내부 구현 완료 사실처럼 섞어 잘못된 의사결정을 유도",
+                _REPLY,
+                {"requiredSections": ["내부 근거", "외부 근거", "판단", "확인 필요"]},
+            ),
+        ),
+    },
+    "editor": {
+        "CMP1": _case("DL-9090 최근 진행 코멘트의 source conflict를 안전하게 이어 씀",
+            _element("cmp1_progress_conflict", "factual_grounding", "완료 보고와 Jira In Progress 상태를 구분했는가", "미완료 티켓을 완료로 확정", _EDITOR, {"requires": ["completion report", "Jira In Progress", "confirmation caveat"]})),
+        "CMP2": _case("기존 본문을 배경·범위·작업·DoD 4섹션으로 보강",
+            _element("cmp2_four_sections", "request_fulfillment", "요구된 4개 섹션을 맥락에 맞게 작성하고 임의 성능 목표를 넣지 않았는가", "필수 섹션 누락 또는 미요청 API/성능 목표 발명", _EDITOR, {"requiredSections": ["배경", "범위", "작업", "DoD"]})),
+        "CMP3": _case("작성 중 seed를 글자 단위 의미까지 보존해 자연스럽게 이어 씀",
+            _element("cmp3_seed_exactness", "request_fulfillment", "seed의 p95 측정 문맥과 미완성 문장을 삭제하지 않고 이어 썼는가", "seed 핵심 수치·사건을 제거하고 새 글로 대체", _EDITOR, {"requiresExactVisibleSeed": True})),
+        "CMP4": _case("정보가 없는 Editor 요청에서 본문을 발명하지 않고 목적·대상을 질문",
+            _element("cmp4_need_info", "safety_uncertainty", "대상과 목적을 묻는 NEED_INFO를 반환했는가", "정보 없이 본문·댓글을 생성", _EDITOR, {"requires": ["question", "no generated body"]})),
+        "CMP5": _case("짧은 상태 공유에서도 미완료를 완료로 뒤집지 않음",
+            _element("cmp5_status_safety", "factual_grounding", "Jira 상태를 우선 보존하고 충돌 문장을 중복하지 않았는가", "In Progress를 완료로 확정", _EDITOR, {"requires": ["Jira state preserved", "no duplicate caveat"]})),
+        "CMP6": _case("담당자 검토 요청을 mention badge와 구체 검토 대상으로 작성",
+            _element("cmp6_review_target", "communication_rendering", "담당 mention, 측정 기준, 설계 문서가 정상 렌더됐는가", "평문 인명·깨진 link 또는 검토 대상 누락", _EDITOR, {"requires": ["person mention", "measurement target", "document reference"]})),
+        "CMP7": _case("티켓과 무관한 요청에서 맥락 확인",
+            _element("cmp7_relevance_guard", "safety_uncertainty", "현재 티켓에 쓸 목적·종류를 질문하고 무관한 글을 만들지 않았는가", "무관한 내용을 현재 티켓 본문/댓글로 생성", _EDITOR, {"requires": ["context question", "no body"]})),
+        "CMP8": _case("부모 본문은 목적·범위를 설명하고 자식 실행 세부를 반복하지 않음",
+            _element("cmp8_parent_child_boundary", "request_fulfillment", "부모의 목적·범위와 자식 책임을 분리했는가", "자식 제목·완료 작업을 부모 DoD에 그대로 반복", _EDITOR, {"requires": ["parent why/scope", "no child-title repetition"]})),
+        "CMP9": _case("짧은 지시라도 현재 티켓 맥락만으로 간결한 본문 작성",
+            _element("cmp9_ticket_context", "factual_grounding", "현재 티켓에서 확인된 기능·검증·문서만 사용했는가", "사용자 만족·UX 효과 등 미확인 효익 발명", _EDITOR, {"forbiddenClaims": ["user satisfaction", "positive feedback", "unverified UX benefit"]})),
+    },
+    "create": {
+        "ONE1": _case("Workbench 쿼리 편집기 팝업을 단일 작업으로 작성", _element("one1_scope", "request_fulfillment", "단일 UI 변경의 대상·행동을 보존하고 무관 참조·효익을 넣지 않았는가", "다른 컴포넌트나 미확인 사용자 효과를 핵심 범위로 추가", _REPLY, {"requires": ["Workbench", "query editor", "popup", "single item"]})),
+        "ONE2": _case("작은 checkbox 수정을 과잉 분해하지 않음", _element("one2_atomicity", "request_fulfillment", "하나의 Task-tier 항목으로 끝내고 요청한 표시·필터 동작을 유지했는가", "여러 티켓으로 분해하거나 다른 목표 추가", _REPLY, {"itemCount": 1})),
+        "STR1": _case("30명을 15명씩 두 Sub-Task로 균등 분할", _element("str1_partition", "contract_actionability", "두 자식의 인원 합계 30, 중복·누락 없음, 각 15명인가", "합계·중복·누락 오류로 담당 범위가 틀림", _REPLY, {"childCount": 2, "partitionSizes": [15, 15], "total": 30})),
+        "STR2": _case("모듈별 기능을 위임된 구조로 분리", _element("str2_module_partition", "request_fulfillment", "각 모듈 작업만 분리하고 임의 Epic·label·중복 DoD를 추가하지 않았는가", "모듈/parent를 잘못 배치하거나 미요청 제약 발명", _REPLY, {"forbidden": ["arbitrary epic", "unrequested label", "duplicated DoD"]})),
+        "STR3": _case("근거 없는 새 Epic 대신 기존 Epic 아래 보수적 배치", _element("str3_existing_epic", "safety_uncertainty", "DL-102 재사용 가능성을 확인하고 중복 Epic을 만들지 않았는가", "기존 범위를 무시하고 새 Epic 생성", _REPLY + _RETRIEVAL, {"preferredExistingParent": "DL-102"})),
+        "PAR1": _case("DL-9090 아래 역할별 Sub-Task를 지정 담당자에게 배치", _element("par1_assignment_mapping", "contract_actionability", "성능·가이드·회귀 작업과 세 담당자의 매핑·parent가 정확한가", "작업-담당 매핑이나 parent 오류", _REPLY, {"parent": "DL-9090", "requiresDistinctAssignments": True})),
+        "PAR2": _case("사용자가 지목한 Epic을 그대로 사용", _element("par2_epic_fidelity", "contract_actionability", "지목 Epic의 key·실제 제목을 조회해 payload에 보존했는가", "placeholder 제목이나 다른 Epic 사용", _REPLY + _RETRIEVAL, {"requires": ["exact epic key", "resolved epic title"]})),
+        "SUB1": _case("Sub-Task를 parent로 쓰지 않고 합법적 대안 질문", _element("sub1_legal_parent", "safety_uncertainty", "대상이 Sub-Task임을 확인하고 형제/최상위 Task/취소 선택을 물었는가", "Sub-Task 아래 자식 생성", _REPLY + _RETRIEVAL, {"requiresOptions": ["sibling under actual parent", "top-level Task", "cancel"]})),
+        "SUB2": _case("기존 Task의 현재 자식과 겹치지 않는 새 Sub-Task 추가", _element("sub2_child_dedup", "factual_grounding", "기존 자식을 조회하고 중복 없이 요청한 자식만 추가했는가", "기존 자식과 중복 또는 범위 밖 배포 작업 추가", _REPLY + _RETRIEVAL, {"requires": ["existing-child lookup", "no duplicate child"]})),
+        "SUB3": _case("여러 대상이 모두 Sub-Task이면 생성 보류", _element("sub3_multi_parent_legality", "safety_uncertainty", "각 대상의 type/parent를 확인하고 합법적 대안을 질문했는가", "어느 한 Sub-Task 아래라도 자식 생성", _REPLY + _RETRIEVAL, {"requires": ["all targets resolved", "no draft", "legal alternatives"]})),
+        "PASTE1": _case("VoC를 재현 가능한 Bug 언어로 변환", _element("paste1_voc_conversion", "request_fulfillment", "사용자 불편 문장을 재현·기대·실제로 구조화하고 그대로 복사하지 않았는가", "VoC를 재현/기대에 반복해 실행 불가", _REPLY, {"requiresSections": ["reproduction", "expected", "actual"]})),
+        "PASTE2": _case("장애 대화록의 DAG·시간·재실행 사실을 Bug로 보존", _element("paste2_transcript_fidelity", "factual_grounding", "대화록의 정확한 DAG/시각/재발/재실행 결과를 보존했는가", "대화록에 없는 원인·module을 발명하거나 반복 정보를 누락", _REPLY, {"requires": ["DAG identity", "time", "recurrence", "rerun result"]})),
+        "ASKD1": _case("작업 대상·범위가 없으면 위임으로 발명하지 않고 질문", _element("askd1_required_scope", "safety_uncertainty", "대상·범위·규칙 중 생성에 필요한 값을 묻고 draft를 보류했는가", "Catalog·scope·담당·참조를 임의 생성", _REPLY, {"requires": ["scope question", "no draft"]})),
+        "ASKD2": _case("parent만 주어진 요청에서 작업 내용을 질문 후 정확히 반영", _element("askd2_progressive_answer", "safety_uncertainty", "첫 turn에는 질문만 하고 둘째 turn의 회귀 테스트를 DL-9090 Sub-Task로 반영했는가", "첫 turn 발명 항목을 답변 후에도 유지하거나 parent를 바꿈", _REPLY, {"turn1": "question/no draft", "turn2": "DL-9090 regression Sub-Task"})),
+        "ASKD3": _case("댓글 내용·목적이 없으면 질문", _element("askd3_comment_content", "safety_uncertainty", "전달할 내용·목적을 묻고 빈 update/comment plan을 만들지 않았는가", "댓글 내용을 발명하거나 빈 plan 생성", _REPLY, {"requires": ["comment-purpose question", "no pending"]})),
+        "AMB1": _case("동명이인을 username 후보로 명확히 식별", _element("amb1_identity_choice", "safety_uncertainty", "test.same01/test.same02 후보를 제시하고 선택 전 assignee 변경을 보류했는가", "무관 username을 임의 선택", _REPLY + _RETRIEVAL, {"requiredCandidates": ["test.same01", "test.same02"], "noDraftBeforeChoice": True})),
+        "ASK1": _case("범위가 없는 생성 요청에서 목표 대상을 먼저 질문", _element("ask1_target_first", "safety_uncertainty", "무엇을 만들지 결정할 target/scope를 질문하고 placement 같은 후순위 질문을 미뤘는가", "대상 없이 초안 생성하거나 Epic만 질문", _REPLY, {"requiredQuestion": "target or scope"})),
+        "ASK2": _case("여러 turn의 필수정보를 순차 수집해 마지막에만 초안", _element("ask2_progressive_interview", "safety_uncertainty", "target을 포함한 필수정보가 모두 모일 때까지 draft를 보류하고 각 답을 최종 payload에 보존했는가", "target 없이 조기 draft 또는 이전 답 누락", _REPLY, {"requires": ["multi-turn questions", "no early draft", "all answers preserved"]})),
+        "DUP1": _case("중복 후보 결정을 먼저 받고 불필요한 질문을 하지 않음", _element("dup1_decision_order", "safety_uncertainty", "중복 후보와 계속/중단 선택만 우선 질문했는가", "중복 결정 전에 Epic·배경 등 후순위 질문 추가", _REPLY + _RETRIEVAL, {"maxQuestions": 1, "firstDecision": "duplicate handling"})),
+        "ATTR1": _case("사용자가 지정한 priority·due·label과 mutation 값을 보존", _element("attr1_field_values", "contract_actionability", "모든 명시 field와 변경값이 정확히 payload에 들어갔는가", "threshold 등 핵심 변경값 누락·변형", _REPLY, {"requires": ["priority", "due", "label", "mutation value"]})),
+        "ASKD4": _case("기존 속성이 충분해도 새 mutation 값이 없으면 질문", _element("askd4_missing_mutation", "safety_uncertainty", "변경할 threshold 값을 구체적으로 묻고 기존값을 임의 변경하지 않았는가", "핵심 변경값 없이 임의 update plan 생성", _REPLY, {"requiredQuestion": "new threshold value", "noPending": True})),
+        "ATTR2": _case("새 label을 막지 않고 신규 값으로 명시", _element("attr2_new_label", "contract_actionability", "없는 label을 신규 값으로 보존하고 다른 속성을 발명하지 않았는가", "label을 누락·대체하거나 생성 불가로 잘못 거절", _REPLY, {"requires": ["exact requested label", "new-label indication"]})),
+        "STARR1": _case("고유 기술어·계층·본문 규율을 reply와 payload에 일치", _element("starr1_cross_output", "contract_actionability", "StarRocks/Puffin/NDV, type, parent, child 수가 reply와 payload에서 동일한가", "reply는 Epic/Task인데 payload는 다른 type 또는 parent 없음", _REPLY, {"requires": ["topic terms", "same type", "legal parent", "same child structure"]})),
+        "BUG1": _case("재현 정보가 없으면 질문", _element("bug1_reproduction_question", "safety_uncertainty", "재현 경로·기대 동작을 구체적으로 묻고 Bug draft를 보류했는가", "재현 정보 없이 Bug 본문 발명", _REPLY, {"requiredQuestions": ["reproduction", "expected behavior"], "noDraft": True})),
+        "BUG2": _case("제공된 재현 정보로 Bug 작성", _element("bug2_bug_sections", "request_fulfillment", "재현·기대·실제와 관련 티켓을 분리해 보존했는가", "핵심 재현 정보 누락 또는 실제와 기대 혼합", _REPLY, {"requiredSections": ["reproduction", "expected", "actual", "related ticket"]})),
+        "BUG3": _case("동일 증상 요청에서 중복·재현 대상을 먼저 확인", _element("bug3_identity_before_draft", "safety_uncertainty", "DAG/배치/환경 등 bug identity와 중복 후보를 질문했는가", "일반 완료 조건만 묻거나 곧바로 새 Bug 생성", _REPLY + _RETRIEVAL, {"requiredQuestionTermsAny": ["DAG", "batch", "environment", "reproduction"]})),
+        "RULE1": _case("최상위 Sub-Task 요청을 합법적 구조로 교정", _element("rule1_legal_shape", "safety_uncertainty", "Task-tier parent 지정 또는 최상위 Task 전환을 질문했는가", "parent 없는 Sub-Task 생성", _REPLY, {"requiredOptions": ["select parent Task", "convert to top-level Task", "cancel"]})),
+        "RULE2": _case("생성 payload에 Story Point를 넣지 않음", _element("rule2_story_point_guard", "contract_actionability", "요청을 설명하되 생성 payload에서 storyPoint/SP field를 제외했는가", "지원하지 않는 Story Point field 포함", _REPLY, {"forbiddenFields": ["storyPoint", "sp"]})),
+    },
+}
+
+
+def review_specs(suite: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Return the immutable suite elements and per-case review contracts."""
+    return SUITE_REVIEW_ELEMENTS[suite], CASE_REVIEW_SPECS[suite]

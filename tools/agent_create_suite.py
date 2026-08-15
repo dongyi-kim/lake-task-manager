@@ -30,18 +30,23 @@ SIMPLE_MODEL = os.environ.get("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, write_raw_result)  # noqa: E402
+from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
+                                         finish_case)  # noqa: E402
+from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "2.1.0"
+BATTERY_VERSION = "3.0.0"
+SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
 
 def _prepare_runtime():
     """Configure the live battery only when executed, never when imported by tests."""
     global session
+    configure_process_isolation("create")
     os.environ.setdefault("JIRA_ENV", "mock")
     os.environ["LAKE_AGENT_PROVIDER"] = "openai"
     os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
@@ -406,24 +411,33 @@ EVALUATION_METADATA = None
 
 
 def run(cid, desc, turns, check):
-    t0, tid, outs = time.time(), "", []
+    tid, outs = "", []
+    isolation_start = begin_case(cid)
+    t0 = time.time()
+    isolation = {}
     try:
         for q in turns:
             o = session.ask(q, thread_id=tid)
             tid = o["thread_id"]
+            o["evaluationEvidence"] = session.evaluation_snapshot(tid)
             outs.append(o)
         last = outs[-1]
         ok_struct = bool(check(last, outs))
         flaws = _body_flaws(last) + _output_flaws(last)
         # 구조가 맞아도 본문·최종 답변 계약을 어기면 통과가 아니다.
         ok = ok_struct and not flaws
+        elapsed = round(time.time() - t0, 1)
+        isolation = finish_case(isolation_start)
     except Exception as e:
+        try:
+            isolation = finish_case(isolation_start)
+        except Exception as isolation_error:
+            e = RuntimeError(f"{e}; isolation failure: {isolation_error}")
         print(f"✗ {cid} {desc}: 예외 {str(e)[:160]}")
         RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": False,
                         "초": round(time.time() - t0, 1), "오류": str(e),
-                        "턴": outs})
+                        "턴": outs, "격리": isolation})
         return False, 0
-    elapsed = round(time.time() - t0, 1)
     n = len(items(last))
     print(f"{'✓' if ok else '✗'} {cid} {desc}: 초안 {n}건"
           f"{' + 자식 ' + str(len(kids(last))) if kids(last) else ''}"
@@ -437,7 +451,7 @@ def run(cid, desc, turns, check):
         print(f"    items: {json.dumps(items(last), ensure_ascii=False)[:300]}")
     RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": ok,
                     "구조통과": ok_struct, "본문결함": flaws, "초": elapsed,
-                    "턴": outs})
+                    "턴": outs, "격리": isolation})
     return ok, sum(((turn.get("usage") or {}).get("costUsd") or 0) for turn in outs)
 
 
@@ -486,6 +500,8 @@ if __name__ == "__main__":
         model=MODEL,
         simple_model=SIMPLE_MODEL,
         prompt_version=PROMPT_VERSION,
+        suite_review_elements=SUITE_REVIEW_ELEMENTS,
+        case_review_specs=CASE_REVIEW_SPECS,
     )
     OUT = str(raw_result_path("create", EVALUATION_METADATA, requested=OUT))
     for cid, desc, turns, check in run_cases:

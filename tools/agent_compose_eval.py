@@ -31,18 +31,23 @@ SIMPLE_MODEL = os.environ.get("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, write_raw_result)  # noqa: E402
+from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
+                                         finish_case)  # noqa: E402
+from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "1.1.0"
+BATTERY_VERSION = "2.0.0"
+SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("editor")
 CP = None
 
 
 def _prepare_runtime():
     """Configure the live battery only when executed, never when imported by tests."""
     global CP
+    configure_process_isolation("editor")
     os.environ.setdefault("JIRA_ENV", "mock")
     os.environ["LAKE_AGENT_PROVIDER"] = "openai"
     os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
@@ -148,27 +153,37 @@ if __name__ == "__main__":
         model=MODEL,
         simple_model=SIMPLE_MODEL,
         prompt_version=PROMPT_VERSION,
+        suite_review_elements=SUITE_REVIEW_ELEMENTS,
+        case_review_specs=CASE_REVIEW_SPECS,
     )
     OUT = str(raw_result_path("editor", evaluation, requested=OUT))
     for cid, desc, kw, check in run:
+        isolation_start = begin_case(cid)
         t0 = time.time()
+        isolation = {}
         try:
             r = CP.compose(**{("ticket_key" if k == "ticket_key" else k): v for k, v in kw.items()})
             flaws = _editor_contract_flaws(r)
             ok = bool(check(r) and not flaws)
+            elapsed = round(time.time() - t0, 1)
+            isolation = finish_case(isolation_start)
         except Exception as e:
+            try:
+                isolation = finish_case(isolation_start)
+            except Exception as isolation_error:
+                e = RuntimeError(f"{e}; isolation failure: {isolation_error}")
             print(f"✗ {cid} {desc}: 예외 {str(e)[:140]}")
             records.append({"id": cid, "설명": desc, "입력": kw, "통과": False,
-                            "초": round(time.time() - t0, 1), "오류": str(e)})
+                            "초": round(time.time() - t0, 1), "오류": str(e),
+                            "격리": isolation})
             continue
-        elapsed = round(time.time() - t0, 1)
         print(f"{'✓' if ok else '✗'} {cid} {desc}: {elapsed:.0f}s")
         body = (r.get("html") or r.get("error") or "")
         print(f"    {'html' if r.get('ok') else 'resp'}: {body[:260]}")
         if flaws:
             print(f"    계약 결함: {' / '.join(flaws)}")
         records.append({"id": cid, "설명": desc, "입력": kw, "통과": ok,
-                        "계약결함": flaws, "초": elapsed, "결과": r})
+                        "계약결함": flaws, "초": elapsed, "결과": r, "격리": isolation})
         hits += 1 if ok else 0
     print(f"\n{hits}/{len(run)} 통과")
     usage = {"calls": 0, "promptTokens": 0, "completionTokens": 0,

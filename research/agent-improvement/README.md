@@ -28,3 +28,11 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 담지 않는다. Codex/Claude 직접 채점이 끝나면 `research/agent-improvement/evaluations/`에 경량 Markdown을
 반드시 남긴다. 그래야 이후 같은 battery/case만 focused로 재실행해 candidate commit과 version이 일치하는
 과거 결과를 찾을 수 있다.
+
+경량 보고서는 공통 5축 점수만 남기지 않는다. suite·case별 특수 검토요소의 `pass/minor/major/na`,
+실제 근거, `specializedReviewSpecSha256`도 포함한다. 히스토리 case라면 기대 ticket과 사건 순서, 조사
+case라면 내부 source·외부 검색어·URL·검색 실패 한계까지 기록한다. 이 계약이 바뀐 결과를 과거 점수와
+동일 기준으로 직접 비교하지 않는다.
+
+배터리 raw의 `격리` 기록에서 case별 private cache, `worldSha256`, `providerStoreSha256` 보존 여부도
+확인한다. 이전 case의 cache·대화 state·mock write가 다음 case에 남은 실행은 점수화하지 않는다.

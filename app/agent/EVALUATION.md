@@ -1,7 +1,7 @@
 # LTM Agent 평가 표준
 
 > Source of truth: [`evaluation_protocol.json`](evaluation_protocol.json)  
-> 현재 protocol: `1.1.0` / human rubric: `1.2.1`
+> 현재 protocol: `2.0.0` / human rubric: `2.0.0`
 
 이 문서는 prompt, Role, Tool, workflow 후보의 품질·시간·token을 같은 자로 비교하기 위한 실행 규약. 과거 보고서의 점수는 해당 보고서가 선언한 규약으로만 해석하며, 버전이 없거나 `comparabilityKey`가 다른 점수를 한 시계열처럼 비교하지 않음
 
@@ -13,9 +13,11 @@
 |---|---|---|
 | `protocolVersion` | 실행 선택, 실패·재시도 처리, 집계식, 비교 가능성 | 산식·선택 정책 변경은 major |
 | `rubricVersion` | 사람 평가 축, 가중치, 치명 결함 cap | 축·가중치·cap 변경은 major |
-| `batteryVersion` | suite별 case 입력·기대 계약·checker | case 의미 변경/삭제는 major, 추가는 minor |
+| `batteryVersion` | suite별 case 입력·기대 계약·checker·특수 검토요소 | case 의미 변경/삭제는 major, 추가는 minor |
 
-각 battery 결과에는 case와 checker에서 계산한 `batteryManifestSha256`, mock/config에서 계산한 `dataManifestSha256`도 기록. 버전을 올리지 않고 내용을 바꾸면 hash가 달라져 비교 불가로 탐지
+각 battery 결과에는 case·checker·특수 검토요소에서 계산한 `batteryManifestSha256`, 특수 검토 계약만의
+`specializedReviewSpecSha256`, mock/config에서 계산한 `dataManifestSha256`도 기록. 버전을 올리지 않고 내용을
+바꾸면 hash가 달라져 비교 불가로 탐지
 
 ## 2. 실행 종류와 결과 선택
 
@@ -51,9 +53,27 @@
 - mock Jira·Confluence·comment·people data와 search config
 - battery case·checker와 실행할 case 집합
 - retry policy, concurrency, cache 초기화 정책
+- suite별 별도 process, case별 world·cache·session 초기화와 world mutation 검사 정책
 - protocol/rubric 및 사람 평가 양식
 
 현재 production 비교 profile의 기본 routing은 main/complex=`gpt-4o`, simple=`gpt-4o-mini`. 다른 모델로 실행할 수 있으나 동일 run group의 모든 후보에 똑같이 적용하고 별도 profile로 기록
+
+### 실행 격리
+
+- 각 suite는 별도 Python process로 실행
+- process마다 `.cache/agent-evaluation/runtime-cache/` 아래 전용 SQLite cache 사용. 앱의 dev/prod cache와 공유 금지
+- 각 case 전에 mock world, Jira client cache, LangGraph checkpointer, approval store, identity cache 초기화
+- stale-while-revalidate background refresh는 평가 process에서 비활성화. 이전 case thread가 다음 case cache를
+  뒤늦게 채우는 race 차단
+- 다중 turn case 안에서는 같은 thread와 state 유지. 다음 case로는 전달 금지
+- case마다 jira820 provider Store를 새로 만들고, 시작·종료의 mock
+  Jira·comment·Confluence·attachment `worldSha256`와 `providerStoreSha256`를 모두 비교. 읽기 전용 배터리가
+  어느 쪽이든 바꾸면 해당 case 실패
+- case 실행 시간은 격리 초기화와 종료 fingerprint 시간을 제외하고 측정
+- raw 결과는 suite 이름이 포함된 별도 파일에 기록하며 create의 case별 checkpoint 덮어쓰기는 같은 suite
+  누적 파일을 원자적으로 갱신하는 용도로만 허용
+- provider-side prompt cache는 client가 강제로 비울 수 없으므로 `cachedTokens`를 별도 기록하고 후보 순서를
+  counterbalance. provider cache 조건이 크게 다르면 latency·token 비교 제한사항에 명시
 
 ## 4. 정성평가 주체와 자동화 경계
 
@@ -76,7 +96,7 @@ OpenAI의 [Evaluation best practices](https://developers.openai.com/api/docs/gui
 권고하는 task-specific test, 전체 logging, 자동 지표와 human judgment의 결합, 지속적 dataset 확장을
 따르되, 이 프로젝트의 정성 판정자는 위 규칙에 따라 Codex/Claude로 더 좁게 제한
 
-## 5. 사람 관점 품질 rubric `1.2.1`
+## 5. 사람 관점 품질 rubric `2.0.0`
 
 각 실제 reply, 질문 form, card/payload, description/comment 전문을 읽고 다섯 축을 각각 `1.0–5.0`,
 `0.5` 간격으로 평가. 자동 checker 점수를 사람 점수로 대체하지 않음
@@ -228,7 +248,51 @@ case 점수는 다섯 축 가중평균. 다음 치명 결함은 평균 후 cap �
 모든 case에는 전체 checklist 결과·item별 근거, 축별 점수·rationale, cap 코드, 실제 출력 발췌를 남김.
 가능하면 후보명을 가리고 순서를 섞어 평가. 단일 reviewer 또는 비blind 평가는 보고서 제한사항에 명시
 
-## 6. 집계
+## 6. 배터리·case 특수 검토요소
+
+공통 5축은 모든 답변에 동일한 품질 질문을 적용. 여기에 각 suite의 공통 계약과 각 case의 고유 계약을
+추가 적용. 특수 검토는 별도 여섯 번째 점수가 아니라 기존 5축 중 하나에 매핑. 같은 축의 공통 checklist와
+특수 검토 `minor`·`major` 건수를 합산한 뒤 하나의 점수 상한을 적용
+
+각 특수 검토요소는 다음 필드를 반드시 가짐
+
+| 필드 | 의미 |
+|---|---|
+| `id` | suite 안에서 중복되지 않는 안정적 식별자 |
+| `dimension` | 영향을 주는 기존 5축 ID |
+| `question` | 평가자가 실제 출력과 실행 근거를 놓고 답할 구체적 질문 |
+| `majorWhen` | 결론·대상·행동을 바꿀 정도의 실패 조건 |
+| `evidenceSources` | 답변, payload, `queryPlan`, 조회 결과, 외부 URL 등 반드시 읽을 raw 경로 |
+| `expected` | 필수 ticket key, milestone, 검색어, source class, 금지값, 보존값 등 기계 판독 가능한 기대 계약 |
+
+모든 case에는 최소 한 개의 case 고유 요소가 있어야 하며 suite 요소와 ID가 겹치면 안 됨. 평가자는 각
+요소를 `pass/minor/major/na`로 판정하고 실제 근거를 기록. 요소를 누락하거나 근거를 비워 두면 채점 자체를
+invalid 처리. `major`·`minor`의 축별 상한은 공통 checklist와 동일
+
+### 작성 원칙
+
+- “관련 티켓을 잘 찾았는가”처럼 추상적으로 쓰지 않고 기대 ticket key·사건·순서와 무관 티켓 금지를 명시
+- 외부 지식이 필요한 case는 내부 source class, 외부 검색어, 검색 시도·URL·실패 한계, 외부로 보내면 안 되는
+  내부 식별자를 명시
+- 생성·수정 case는 turn별 필수 질문, 보류되어야 할 payload, 최종 type·parent·field·담당자 값을 명시
+- Editor case는 그대로 보존할 seed·수치, 필요한 section, 허용 marker/link, 금지할 중복·발명을 명시
+- 새로운 정답을 사후에 끼워 맞추지 않음. 기대 계약을 바꾸려면 battery version과 manifest를 먼저 변경
+
+### 예시
+
+`S3-이력`은 DL-9041~DL-9047과 DL-9062 각각의 사건 언급, 요청→Job 개발→지연→2시간에서 30분으로
+주기 변경→`CHAMBER_ID` schema 변경→catalog→monitoring→정합성 비교 순서를 검사. 실제 답변과
+`queryPlan/queryResults`를 함께 읽고 누락·무관 티켓·현재/과거 역전을 판정
+
+`S7-내외부조사`는 Jira와 Confluence/comment 내부 검색, `Apache Iceberg`, `Puffin`, `NDV statistics`
+외부 검색 시도, URL과 핵심 주장, 내부 식별자 외부 전송 금지, 최종 답변의 내부 근거·외부 근거·적용 판단·확인
+필요 분리를 검사. 네트워크 차단도 검색 시도와 한계를 남기면 증거로 인정하지만 외부 확인 완료로 채점하지 않음
+
+수동 하네스는 사용자용 응답 외에 `evaluationEvidence`에 `requestPlan`, `queryPlan`, `queryResults`,
+`queryArtifacts`, `webContext`, `evidence`, `relatedDocs`, `trace`를 가능한 범위에서 저장. 메시지 전문,
+승인 token, credential, provider 설정은 포함하지 않음
+
+## 7. 집계
 
 - `case score`: 축별 가중평균 후 cap, 소수 둘째 자리
 - `suite score`: 해당 suite의 모든 case-attempt 점수 산술평균
@@ -244,7 +308,7 @@ case 점수는 다섯 축 가중평균. 다음 치명 결함은 평균 후 cap �
   `합계` 필드는 표시용으로만 유지하며 집계 source로 사용하지 않음
 - 반복 실행에서는 최선/최악 run을 대표값으로 선택하지 않고 모든 attempt를 집계
 
-## 7. Battery 변경과 역사 비교
+## 8. Battery 변경과 역사 비교
 
 - case 추가: battery minor 증가
 - 기존 case 입력·기대 계약·checker 의미 변경 또는 삭제: battery major 증가
@@ -253,7 +317,7 @@ case 점수는 다섯 축 가중평균. 다음 치명 결함은 평균 후 cap �
 - production 전환 판단은 모든 후보를 같은 최신 battery로 다시 실행
 - 과거 unversioned 또는 closure-substituted 점수는 참고값으로만 표시하고 현재 점수와 증감 계산 금지
 
-## 8. 보고서 필수 내용
+## 9. 보고서 필수 내용
 
 보고서 또는 PR Description에 다음 section을 모두 포함
 
@@ -264,14 +328,15 @@ case 점수는 다섯 축 가중평균. 다음 치명 결함은 평균 후 cap �
 5. `정량 결과`: 시간 p50/p95, token, calls, cost, 기술 실패·retry
 6. `사람 품질 평가 기준`: Codex/Claude evaluator 식별자와 금지된 LTM LLM judge 미사용 선언,
    rubric version, 축·가중치·cap, reviewer 수와 blinding 여부
-7. `배터리별 실제 출력과 평가`: 차이 나는 전문 또는 충분한 발췌, 축별 점수와 의견
-8. `자동 checker와 사람 판정 불일치`: 자동 green인데 사람 major인 false positive, 자동 red인데 사람 품질상
+7. `배터리·case 특수 검토요소`: case별 목표, 필수 entity·검색·출처·보존값, 판정과 실제 실행 근거
+8. `배터리별 실제 출력과 평가`: 차이 나는 전문 또는 충분한 발췌, 축별 점수와 의견
+9. `자동 checker와 사람 판정 불일치`: 자동 green인데 사람 major인 false positive, 자동 red인데 사람 품질상
    허용 가능한 false negative, checker 수정과 새 battery version. 불일치를 숨기거나 과거 raw를 재채점하지 않음
-9. `실패·재시도·제한사항`: 자동 실패, 치명 결함, 누락, 단일 run 여부
+10. `실패·재시도·제한사항`: 자동 실패, 치명 결함, 누락, 단일 run 여부
 
 `tools/agent_eval_protocol.py`가 raw JSON에 식별 metadata를 넣고 표준 Markdown block을 생성·검증. 버전 없는 과거 결과를 v1 결과로 소급 표기하지 않음
 
-## 9. Raw 결과와 장기 보존 보고서
+## 10. Raw 결과와 장기 보존 보고서
 
 Primary battery harness는 매 실행의 raw response, 질문 form, card/payload, trace, usage와 debug 정보를
 `.cache/agent-evaluation/<runGroupId>/` 아래 JSON으로 항상 저장. 사용자가 `--out`을 지정해도 이 경로
@@ -281,9 +346,10 @@ Codex/Claude 직접 평가가 끝나면 `research/agent-improvement/evaluations/
 항상 저장. 하나의 보고서는 한 candidate commit과 한 비교 가능한 run group을 기본 단위로 하며 다음을 포함
 
 - candidate commit, `promptVersion`, `protocolVersion`, `rubricVersion`
-- suite별 `batteryVersion`, `batteryManifestSha256`, `dataManifestSha256`, `comparabilityKey`
+- suite별 `batteryVersion`, `batteryManifestSha256`, `specializedReviewSpecSha256`,
+  `dataManifestSha256`, `comparabilityKey`
 - model/simpleModel/provider/runtime profile, run kind, repeat index와 실행 case
-- battery·case·축별 점수, checklist 결함, 실제 출력의 짧은 발췌와 Codex/Claude의 간략 평가
+- battery·case·축별 점수, 공통 checklist와 특수 검토 판정, 실제 출력의 짧은 발췌와 Codex/Claude의 간략 평가
 - raw cache 상대 경로, 기술 실패·retry, reviewer identity와 blinding 제한
 - 과거 비교 보고서 경로와 공통 case. focused 재실행이면 `qualification`이나 full-run을 대체하지 않는다는 표시
 

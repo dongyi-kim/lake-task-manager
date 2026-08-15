@@ -1,9 +1,16 @@
 {
   "protocolName": "LTM Agent Evaluation Protocol",
-  "protocolVersion": "1.1.0",
-  "rubricVersion": "1.2.1",
+  "protocolVersion": "2.0.0",
+  "rubricVersion": "2.0.0",
   "primaryEvidencePolicy": "complete-run-no-substitution",
   "attemptPolicy": "retain-every-attempt",
+  "isolation": {
+    "suiteProcessPolicy": "one-suite-per-process",
+    "cachePolicy": "process-private-sqlite-and-cold-cache-each-case",
+    "caseResetTargets": ["mock-world", "jira-client-cache", "langgraph-checkpointer", "approval-store", "identity-cache"],
+    "worldMutationPolicy": "read-only-battery-must-preserve-world-and-provider-store-sha256-or-fail",
+    "rawResultPolicy": "suite-and-run-group-specific-path-under-ignored-cache"
+  },
   "qualitativeEvaluation": {
     "policy": "codex-or-claude-direct-raw-output-review",
     "allowedAgentFamilies": ["codex", "claude"],
@@ -25,7 +32,7 @@
     "caseScore": "weighted-mean-of-dimensions-after-caps",
     "suiteScore": "arithmetic-mean-of-all-case-attempt-scores-in-suite",
     "overallScore": "arithmetic-mean-of-all-case-attempt-scores-across-suites",
-    "qualityBreakdown": ["suiteDimensionScores", "overallDimensionScores", "checklistResultCounts"],
+    "qualityBreakdown": ["suiteDimensionScores", "overallDimensionScores", "checklistResultCounts", "specializedReviewResultCounts"],
     "latency": ["p50", "p95"],
     "percentileMethod": "nearest-rank-over-all-case-attempts",
     "usage": ["calls", "promptTokens", "completionTokens", "totalTokens", "cachedTokens", "costUsd"],
@@ -33,6 +40,24 @@
     "rounding": 2,
     "missingCasePolicy": "qualification-invalid-not-zero-filled",
     "technicalRetryPolicy": "record-all-attempts-and-report-retry-rate"
+  },
+  "specializedReview": {
+    "policy": "suite-and-case-specific-evidence-review",
+    "requiredForEveryBattery": true,
+    "requiresSuiteElements": true,
+    "requiresCaseElements": true,
+    "requiresEvidencePerElement": true,
+    "resultEnum": ["pass", "minor", "major", "na"],
+    "scoreEffect": "combine common and specialized findings per mapped dimension, then apply the same checklist score ceilings",
+    "manifestPolicy": "suite and case review declarations are part of batteryManifestSha256 and have a separate specializedReviewSpecSha256",
+    "requiredExecutionEvidence": [
+      "final output",
+      "question and approval payloads",
+      "queryPlan and queryResults",
+      "internal evidence and related documents",
+      "external search attempt, query terms, URLs, or explicit blocked result"
+    ],
+    "privacyBoundary": "external query evidence must prove that internal ticket keys, usernames, and private project/document names were not sent outside"
   },
   "humanRubric": {
     "minimum": 1.0,
@@ -54,6 +79,7 @@
     "reviewRecord": {
       "requiresEveryChecklistItem": true,
       "requiresEvidencePerItem": true,
+      "requiresEverySpecializedReviewElement": true,
       "requiresDimensionRationale": true,
       "requiresOutputExcerpt": true
     },
@@ -220,6 +246,7 @@
     "배터리 범위",
     "정량 결과",
     "사람 품질 평가 기준",
+    "배터리·case 특수 검토요소",
     "배터리별 실제 출력과 평가",
     "자동 checker와 사람 판정 불일치",
     "실패·재시도·제한사항"
@@ -229,6 +256,7 @@
     "rubricVersion",
     "batteryVersion",
     "batteryManifestSha256",
+    "specializedReviewSpecSha256",
     "runKind",
     "runGroupId",
     "repetitions",
@@ -243,6 +271,7 @@
     "candidateOrderIndex",
     "retryPolicy",
     "cachePolicy",
+    "processIsolation",
     "qualitativeEvaluatorPolicy",
     "evaluatorAgentFamily",
     "evaluatorAgentModel",
@@ -250,5 +279,49 @@
     "ltmLlmUsedAsJudge",
     "reviewerCount",
     "blindedReview"
-  ]
+  ],
+  "historicalReportContracts": {
+    "1.0.0": {
+      "requiredSections": [
+        "측정 식별자",
+        "비교 가능성 및 evidence 선택",
+        "실행 조건",
+        "배터리 범위",
+        "정량 결과",
+        "사람 품질 평가 기준",
+        "배터리별 실제 출력과 평가",
+        "자동 checker와 사람 판정 불일치",
+        "실패·재시도·제한사항"
+      ],
+      "requiredFields": [
+        "protocolVersion", "rubricVersion", "batteryVersion", "batteryManifestSha256",
+        "runKind", "runGroupId", "repetitions", "candidateCommit", "promptVersion",
+        "model", "simpleModel", "dataManifestSha256", "selectionPolicy", "aggregation",
+        "percentileMethod", "candidateOrderIndex", "retryPolicy", "cachePolicy",
+        "qualitativeEvaluatorPolicy", "evaluatorAgentFamily", "evaluatorAgentModel",
+        "directRawOutputReview", "ltmLlmUsedAsJudge", "reviewerCount", "blindedReview"
+      ]
+    },
+    "1.1.0": {
+      "requiredSections": [
+        "측정 식별자",
+        "비교 가능성 및 evidence 선택",
+        "실행 조건",
+        "배터리 범위",
+        "정량 결과",
+        "사람 품질 평가 기준",
+        "배터리별 실제 출력과 평가",
+        "자동 checker와 사람 판정 불일치",
+        "실패·재시도·제한사항"
+      ],
+      "requiredFields": [
+        "protocolVersion", "rubricVersion", "batteryVersion", "batteryManifestSha256",
+        "runKind", "runGroupId", "repetitions", "candidateCommit", "promptVersion",
+        "model", "simpleModel", "dataManifestSha256", "selectionPolicy", "aggregation",
+        "percentileMethod", "candidateOrderIndex", "retryPolicy", "cachePolicy",
+        "qualitativeEvaluatorPolicy", "evaluatorAgentFamily", "evaluatorAgentModel",
+        "directRawOutputReview", "ltmLlmUsedAsJudge", "reviewerCount", "blindedReview"
+      ]
+    }
+  }
 }

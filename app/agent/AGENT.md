@@ -172,9 +172,17 @@ Windows 공용 pytest temp에 권한 문제가 있으면 repository 내부 `--ba
 production routing 비교의 기본은 main/complex=`gpt-4o`, simple=`gpt-4o-mini`다. 모든 후보에서
 `(model, simpleModel)`을 동일하게 유지한다. raw JSON에는 `protocolVersion`, `rubricVersion`,
 suite별 `batteryVersion`·`batteryManifestSha256`, `candidateCommit`, `promptVersion`, model routing,
-`dataManifestSha256`, run group·repeat index·선택 정책을 기록한다. 한 번의 run은 탐색적 증거다.
+`specializedReviewSpecSha256`, `dataManifestSha256`, run group·repeat index·선택 정책을 기록한다.
+한 번의 run은 탐색적 증거다.
 production 기본값 전환 전에는 후보 순서를 균형 있게 섞어 동일한 full battery를 최소 5회 반복하고
 p50/p95, token/call/cost, 자동 실패율, 사람 점수와 치명 결함률을 비교한다.
+
+수동 battery는 suite별 별도 process와 process-private SQLite cache를 사용한다. 각 case 전에는
+`tools/agent_eval_isolation.py`로 mock world, Jira cache, LangGraph state, approval, identity cache를
+초기화하고 mock jira820 provider Store도 재생성한다. 다중 turn 안의 state만 유지하고 다음 case로 넘기지
+않는다. 시작·종료 `worldSha256` 또는 `providerStoreSha256`가 다르면 읽기 전용 평가가 fixture를 덮어쓴
+것이므로 case를 실패 처리한다. 초기화·fingerprint 시간은 Agent latency에
+포함하지 않는다. 이 격리를 제거하거나 cache policy를 바꾸면 같은 `comparabilityKey`로 비교하지 않는다.
 
 평가에는 pass/fail뿐 아니라 실제 reply, 질문 form, card/payload, description/comment 전문, role별
 call·token·latency·cost를 포함한다. 정성평가는 LTM LLM이 아닌 Codex 또는 Claude 작업 에이전트가
@@ -191,6 +199,22 @@ focused/closure 재실행은 보조 증거이며 full-run primary 점수를 교�
 축별 rationale과 대표 output excerpt를 기록한다. checklist가 계산한 축별 score ceiling을 넘겨 점수를
 부여하지 않는다.
 
+모든 suite는 suite 공통 특수 검토요소와 모든 case의 고유 검토요소를
+`tools/agent_eval_review_specs.py`에 선언한다. “잘 조회했는가” 같은 추상 문구만 두지 않고 다음을 case의
+`expected`에 가능한 한 구체적으로 고정한다.
+
+- 히스토리·현황: 언급해야 할 ticket key·사건·시간 순서·제외할 무관 entity
+- 내부 조사: 필요한 Jira·Confluence·comment·people source class와 검색 개념
+- 외부 조사: 일반화된 외부 검색어, 필요한 source 종류, URL·검색 실패 기록, 외부 전송 금지 내부 식별자
+- 생성·수정: turn별 필수 질문, payload 보류 경계, 최종 type·parent·field·담당자
+- Editor: 보존할 seed·수치, 필수 section, 올바른 marker/link, 금지할 발명·중복
+
+하네스는 답변뿐 아니라 `evaluationEvidence`의 `requestPlan`, `queryPlan`, `queryResults`,
+`queryArtifacts`, `webContext`, `evidence`, `relatedDocs`, `trace`를 ignored raw JSON에 저장한다. 특수 요소는
+기존 5축 중 하나에 매핑하고 공통 checklist와 같은 `pass/minor/major/na` 상한을 적용한다. 평가자가 모든
+특수 요소와 실제 근거를 기록하지 않으면 채점을 invalid 처리한다. case 기대 계약을 바꾸면 사후 채점 기준만
+고치지 말고 `batteryVersion`, `batteryManifestSha256`, `specializedReviewSpecSha256`를 함께 갱신한다.
+
 실 LLM 배터리의 raw response, trace, usage, debug payload는
 `.cache/agent-evaluation/<runGroupId>/`에만 저장한다. 이 경로는 gitignore 대상이며 `docs/`, repository
 root, `tools/`, `research/`에 raw JSON이나 실행 로그를 남기지 않는다.
@@ -198,7 +222,8 @@ root, `tools/`, `research/`에 raw JSON이나 실행 로그를 남기지 않는�
 Codex/Claude가 raw output을 직접 채점한 뒤에는 git에 보존할 경량 Markdown 보고서를
 `research/agent-improvement/evaluations/`에 반드시 작성한다. 보고서에는 candidate commit,
 `promptVersion`, `protocolVersion`, `rubricVersion`, suite별 `batteryVersion`,
-`batteryManifestSha256`, `dataManifestSha256`, model routing, 실행 case·repeat, 항목별 점수와 짧은
+`batteryManifestSha256`, `specializedReviewSpecSha256`, `dataManifestSha256`, model routing, 실행
+case·repeat, 공통 checklist와 특수 검토 항목별 점수와 짧은
 근거, raw cache 상대 경로를 기록한다. focused battery 재실행은 과거 full-run을 덮어쓰지 않고 비교
 대상 보고서와 공통 case를 명시한다. 배터리를 실행하고 이 보고서를 남기지 않은 상태는 완료가 아니다.
 

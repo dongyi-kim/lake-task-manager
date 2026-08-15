@@ -40,15 +40,20 @@ os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
 os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
+from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
+                                         finish_case)  # noqa: E402
+configure_process_isolation("conversation")
 from app.agent.workflow import session          # noqa: E402
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, write_raw_result)  # noqa: E402
+from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "1.1.0"
+BATTERY_VERSION = "2.0.0"
+SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("conversation")
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
 #    (인터뷰 → 초안이 이 도구의 핵심 갈래다).
@@ -63,6 +68,8 @@ SCENARIOS = [
     ("S4-사람", ["이다은 책임이 지금 맡고 있는 일 알려줘"]),
     ("S5-내일", ["지금 무슨 업무를 시작해야 할까"]),
     ("S6-진척", ["DL-9090 지금 어디까지 진행됐어?"]),
+    ("S7-내외부조사", ["우리 프로젝트의 Iceberg Puffin NDV 적용 가능성을 내부 작업 이력과 "
+                       "외부 공식 자료를 함께 조사해줘"]),
 ]
 
 _KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
@@ -119,6 +126,7 @@ def run():
     for sid, turns in SCENARIOS:
         if ONLY and sid.split("-", 1)[0].upper() not in ONLY and sid.upper() not in ONLY:
             continue
+        isolation_start = begin_case(sid)
         tid, per = "", []
         for q in turns:
             t0 = time.time()
@@ -128,6 +136,7 @@ def run():
                 per.append({"질문": q, "오류": str(e)[:200]})
                 continue
             tid = out.get("thread_id") or tid
+            evaluation_evidence = session.evaluation_snapshot(tid)
             u = out.get("usage") or {}
             per.append({
                 "질문": q,
@@ -149,9 +158,11 @@ def run():
                              ((out.get("pending") or {}).get("items")
                               or (out.get("draft") or {}).get("items") or [])[:4])],
                 "질문폼": [q2.get("question") for q2 in (out.get("questions") or [])],
+                "평가근거": evaluation_evidence,
             })
             print(f"  {sid} · {per[-1].get('초')}s · {per[-1].get('총토큰')}tok", flush=True)
-        rows.append({"시나리오": sid, "턴": per})
+        rows.append({"시나리오": sid, "턴": per,
+                     "격리": finish_case(isolation_start)})
         print(f"✔ {sid} 완료", flush=True)
 
     tot = {"턴수": 0, "초": 0.0, "총토큰": 0, "프롬프트토큰": 0, "완성토큰": 0,
@@ -183,6 +194,8 @@ def run():
         model=MODEL,
         simple_model=SIMPLE_MODEL,
         prompt_version=PROMPT_VERSION,
+        suite_review_elements=SUITE_REVIEW_ELEMENTS,
+        case_review_specs=CASE_REVIEW_SPECS,
     )
     out_path = raw_result_path("conversation", evaluation, requested=REQUESTED_OUT)
     metrics = quantitative_metrics(
