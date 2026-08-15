@@ -59,6 +59,8 @@
 - Store fingerprint를 실행 전후 비교해 world 변경 없음 확인. 모든 write는 승인 대기 payload까지만 생성
 - 기술 오류를 감추는 silent retry 없음. 이번 primary run은 누락·재시도·API 기술 실패 없이 53/53 실행 완료
 - 비교 후보 순서는 단일 후보 1번. 가격은 `openai-2026-08-unpriced` snapshot의 harness 계산값
+- 변경 범위 관련 오프라인 pytest `405 passed`, 경고 2건. 전체 오프라인 회귀는 PR GitHub Actions에서도 수행
+- 본 문서는 `tools/agent_eval_protocol.py validate-report`의 protocol 2.0.0 필수 section·field 검증 통과
 
 ## 배터리 범위
 
