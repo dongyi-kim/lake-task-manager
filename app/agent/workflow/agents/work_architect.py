@@ -99,10 +99,21 @@ QUESTION = {
         "options": {"type": "array", "items": {"type": "string"},
                     "description": "Two to five Korean options for choice, with the recommended option first and an optional short reason."},
         "field": {"type": "string",
-                  "enum": ["", "assignee", "epic", "priority", "duedate", "component"],
+                  "enum": ["", "assignee", "epic", "priority", "duedate", "component",
+                           "target", "parent", "scope", "acceptance", "reproduction"],
                   "description": "Ticket field being asked; the UI supplies field-specific autocomplete."},
+        "required_input": {
+            "type": "boolean",
+            "description": ("True only when no valid and truthful draft can be produced without user-owned "
+                            "information. False for a preference with a safe default or omission."),
+        },
+        "why_required": {
+            "type": "string",
+            "description": ("One concise Korean reason naming the unresolved decision or payload field when "
+                            "required_input is true; otherwise an empty string."),
+        },
     },
-    "required": ["question", "kind"],
+    "required": ["question", "kind", "required_input", "why_required"],
 }
 
 SCHEMA = {
@@ -212,6 +223,8 @@ class WorkArchitect(StructuredAgent):
                           and not ((out.get("draft") or {}).get("items"))
                           and not ((out.get("change_plan") or {}).get("key"))
                           and (_said_defaults(state) or state.get("bulk_targets"))
+                          and not any(_question_requires_input(q)
+                                      for q in (out.get("questions") or []))
                           and (state.get("situation") or "").strip())
                 # 초안 수정 요청인데 수정본(items)도 유효한 변경 계획도 없다 — 말로만
                 # 설명하고 끝(실측 2회). mentioned_keys 는 오염될 수 있어 조건에 안 쓴다.
@@ -242,9 +255,12 @@ class WorkArchitect(StructuredAgent):
 
     def system(self, state):
         forced = (state.get("turns") or 0) >= MAX_REFINE_TURNS
-        extra = ("\n\n## Refinement Limit Reached\n\nDo not ask another question. Complete the safest draft "
-                 "from verified information, leave unknown fields empty, and record the Korean phrase "
-                 "`확인 필요` in `rationale`." if forced else "")
+        extra = ("\n\n## Refinement Limit Reached\n\nStop asking optional preference questions. If required "
+                 "user-owned input is still missing, return only those questions with "
+                 "`required_input=true` and no competing payload; the turn limit never permits guessing a "
+                 "required value. Otherwise complete the safest draft from verified information, leave "
+                 "optional fields empty, and record a material Korean `확인 필요` in `rationale`."
+                 if forced else "")
         if WorkArchitect._force_draft:
             extra += ("\n\n## Required Draft Recovery\n\nThe previous attempt omitted the requested artifact. "
                       "Return `questions=[]` and complete `items`. For a draft-revision request, return the "
@@ -257,20 +273,21 @@ class WorkArchitect(StructuredAgent):
         return persona(state, _role_md(state) + extra)
 
     def task(self, state):
-        # "알아서/기본값" 은 명령서 수준에서 강제한다 — 되묻기 기준(시스템)만으로는 담당자·기한을
-        # 또 물었다(실측 2회). 명령서의 ★ 지시는 따르는 것을 버그 갈래에서 확인했다.
+        # "알아서/기본값" 은 선택 재량만 위임한다. 이전 계약은 질문을 전부 금지해 target·parent·
+        # 재현 조건처럼 payload 성립에 필요한 값까지 추측하게 만들었다. 필수 입력에는 명시적
+        # 표식을 요구하고, 그 외 선호 질문만 억제한다.
         said = conversation(state)
         defaults = any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠"))
-        force_rule = ("\n- The user delegated unspecified choices. A valid output has `questions=[]` and "
-                      "at least one complete item. Do not ask for background, scope, DoD, priority, label, "
-                      "assignee, deadline, or Epic placement. Treat the literal requested change as the "
-                      "included scope, exclude adjacent unrequested work, and use observable implementation "
-                      "plus regression evidence as a conservative DoD. Select the best supported Epic "
-                      "candidate without asking; use an intentional top-level Task if none fits, and explain "
-                      "the choice in Korean `rationale`. Preserve every user-specified assignee ID on its own "
-                      "item; leave only unspecified assignees empty. Preserve a supplied deadline and leave an "
-                      "unsupplied deadline empty. Never return an empty `items` array merely because evidence is "
-                      "incomplete; put non-blocking uncertainty in `rationale`."
+        force_rule = ("\n- The user delegated optional choices; this does not supply required input. Return "
+                      "`questions=[]` and at least one complete item when the literal request and verified "
+                      "evidence support a valid conservative draft. If user-owned information is indispensable "
+                      "to identify the target, action, valid hierarchy, exact mutation, or truthful minimum "
+                      "scope/acceptance boundary, return up to three questions with `required_input=true`, a "
+                      "specific Korean `why_required`, and no competing payload. Mark optional preference "
+                      "questions `required_input=false`; the runtime suppresses them under delegation. Select "
+                      "the best supported Epic candidate without asking; use an intentional top-level Task if "
+                      "none fits. Preserve supplied assignee IDs and deadlines; leave optional unspecified "
+                      "fields empty. Record only material defaults or open facts in Korean `rationale`."
                       if defaults else "")
         # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
         # ★ **버그 초안은 의도가 아니라 요청의 낱말로 고른다**(사용자 지적 — "결국 버그
@@ -319,7 +336,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 - Ask at most two high-impact questions, preferring `choice` with the recommended option first. Ask only slots marked `ASK` in Minimum Creation-Input Audit; never ask `INFER` or `LATER` slots.
 - Candidate material questions are: initial scope such as review, PoC, or minimum implementation; the verified trigger or business background; an observable DoD artifact or metric; decomposition only when the user did not specify structure; ambiguous module from real placement values; and ambiguous Epic placement from verified candidates plus `없음(최상위)` and `새 Epic 검토`.
 - Do not ask for values already present in conversation or discoverable through the next research step.
-- When the user delegates the answer with `알아서`, proceed directly to research and drafting on the next turn."""
+- When the user delegates optional choices with `알아서`, skip preference questions. Keep any question whose answer is required to identify a valid action or truthful payload and mark it `required_input=true`."""
         else:
             goal = """Build an executable ticket draft. Ask a blocking question instead only when material user-owned information prevents a safe draft.
 
@@ -448,13 +465,21 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 
     def apply(self, state, out):
         # 문자열로 오면(구모델·fake) 구조로 승격한다 — 화면은 dict 만 다루면 된다.
-        # 한 번에 답할 핵심 질문은 2개까지다. 마지막 자유 의견 슬롯을 코드가 붙여도 총 3개를
-        # 넘지 않게 한다. 4~6개 질문은 필요한 정보를 늘리기보다 이탈률과 재질문을 늘렸다.
+        # 한 번에 필요한 질문은 3개까지 묶는다. 이후 턴에도 필수 입력이 남으면 계속 묻되,
+        # 질문 수 상한을 필수값 추측 허가로 바꾸지 않는다.
         qs = []
-        for q in (out.get("questions") or [])[:2]:
+        delegated = _said_defaults(state)
+        for q in (out.get("questions") or [])[:3]:
             if isinstance(q, str) and q.strip():
-                qs.append({"question": q.strip(), "kind": "text", "options": [], "field": ""})
+                qs.append({"question": q.strip(), "kind": "text", "options": [], "field": "",
+                           "required_input": not delegated,
+                           "why_required": ("유효한 초안을 위해 사용자 확인 필요"
+                                            if not delegated else "")})
             elif isinstance(q, dict) and str(q.get("question") or "").strip():
+                required_input = q.get("required_input") is True
+                why_required = str(q.get("why_required") or "").strip()
+                if required_input and not why_required:
+                    why_required = "유효한 초안에 필요한 사용자 소유 정보가 미확정"
                 qs.append({"question": str(q["question"]).strip(),
                            "kind": q.get("kind") or "text",
                            "options": [(o.get("label") or o.get("value") or "").strip()
@@ -462,7 +487,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                        for o in (q.get("options") or [])
                                        if (isinstance(o, dict) and (o.get("label") or o.get("value")))
                                        or (not isinstance(o, dict) and str(o).strip())][:5],
-                           "field": q.get("field") or ""})
+                           "field": q.get("field") or "",
+                           "required_input": required_input,
+                           "why_required": why_required})
+        # 위임은 선택 질문만 제거한다. 필수 질문은 남겨 임의 payload보다 먼저 답받는다.
+        if delegated:
+            qs = [q for q in qs if _question_requires_input(q)]
         # 모델이 낸 질문은 **초안을 만들기 전에 답이 필요한 질문**이다. 뒤에서 코드가
         # 붙이는 구조 확인 질문과 구분해 둔다 — 전자는 초안과 함께 내면 사용자가 무엇을
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
@@ -674,22 +704,14 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 i.pop("children", None)
         _apply_named_assignees(state, items)
         turns = (state.get("turns") or 0) + 1
-        # 되묻기 상한을 넘겼는데도 질문만 냈다면 질문을 버린다 — 영원히 안 끝나는 대화를 막는다.
+        # 되묻기 상한 뒤에는 선택 질문만 버린다. 필수 질문은 답이 없으면 계속 미확정이다.
         if qs and turns > MAX_REFINE_TURNS:
-            qs = []
-        # ★ 사용자가 "알아서" 라고 했으면 **묻지 않는다.** 명령서에 그렇게 적어 두었는데도
-        #   모델이 되물어 초안이 0건으로 끝나는 일이 반복됐다(실측: 지목한 Epic 이 있는데도
-        #   2개를 되물었다). 지시를 코드로 보장한다 — 초안이 있으면 질문을 버린다.
-        if qs and items and _said_defaults(state):
-            asked = "; ".join(str(q.get("question", ""))[:40] for q in qs[:3])
-            out["rationale"] = ((out.get("rationale") or "")
-                                + f"\n(사용자가 '알아서'라고 해서 기본값으로 채웠다: {asked})").strip()
-            qs = []
+            qs = [q for q in qs if _question_requires_input(q)]
         # ★ **질문 또는 초안**이지, 질문과 초안이 동시에 아니다. "재현 경로가 무엇인가요"를
         # 물으면서 근거 없는 Bug 초안을 함께 승인 카드에 올리거나, 범위를 물으면서 임의의
         # Task 를 만드는 실측 실패가 반복됐다(ASK1/BUG1). 사용자가 '알아서'라고 위임한
-        # 경우는 바로 위에서 질문을 버리고 초안을 유지한다. 여기서 비우는 것은 모델이 낸
-        # blocking 질문이 남은 경우뿐이라, 뒤에서 코드가 붙이는 구조 확인 질문에는 영향 없다.
+        # 경우도 필수 입력 질문이 남으면 임의 초안을 버린다. 선택 질문은 위에서 제거됐고,
+        # 뒤에서 코드가 붙이는 구조 확인 질문에는 영향 없다.
         if model_questions and qs and items:
             items.clear()
             out["rationale"] = ((out.get("rationale") or "")
@@ -702,6 +724,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         #   하나 더 있는 것이 아니라 **취조로 읽힌다.** 자유 의견은 물을 것이 적을 때
         #   객관식이 못 담는 말을 받으려던 장치다 — 많이 물었으면 이미 받은 것이다.
         if qs and len(qs) < 3 \
+                and not any(_question_requires_input(q) for q in qs) \
                 and not any(q.get("kind") == "text" and "자유" in q.get("question", "") for q in qs):
             qs.append({"question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 "
                                    "적어 주세요 (없으면 건너뛰어도 됩니다)",
@@ -3303,9 +3326,16 @@ def _epic_options(state) -> list:
     return rows
 
 def _said_defaults(state) -> bool:
-    """사용자가 "알아서/기본값/맡길게" 라고 했나 — 되묻기를 끄는 신호."""
+    """사용자가 선택 재량을 위임했나. 필수 입력 질문까지 끄는 신호는 아니다."""
     said = conversation(state)
     return any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠", "네가 정해", "아무거나"))
+
+
+def _question_requires_input(question) -> bool:
+    """질문이 없으면 유효하고 사실적인 action/payload를 만들 수 없는가."""
+    return (isinstance(question, dict)
+            and question.get("required_input") is True
+            and bool(str(question.get("why_required") or "").strip()))
 
 
 _COMPOSITE_SIGNALS = (

@@ -33,6 +33,7 @@ Convert a single or compound user request into an executable directed acyclic gr
 
 - Ask only about user-owned intent that cannot be recovered from Jira, Confluence, comments, people data, prior messages, or other available internal evidence.
 - Ask when ambiguity would change structure, target, scope, deadline, completion criteria, or write payload.
+- `알아서` delegates optional choices; it does not answer a blocking question about information required to identify the action or produce a valid payload.
 - If ambiguity is non-blocking, make the smallest stated assumption or mark it as `추후 확인 필요` in the eventual Korean output.
 - Do not ask again for information already supplied, inferable with high confidence, or safely represented as an assumption.
 - Never use an approval question such as "proceed?" in place of the deterministic approval card.

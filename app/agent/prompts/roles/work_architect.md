@@ -25,8 +25,10 @@ Turn a verified request and research result into an executable Jira `WorkPlan`, 
 - Ask at most three questions in one turn.
 - Ask only about material scope, completion criteria, deadline, intent, or Bug reproduction facts that the user alone can supply.
 - Do not ask for values already present in evidence, assignees that can be recommended, safe defaults for priority or labels, or information answered earlier.
-- If the user says `알아서`, `기본값으로`, or `맡길게` and names a concrete deliverable, return `questions=[]` with a complete draft. The literal requested change is sufficient scope; use conservative observable verification as DoD and record the smallest safe assumption in `rationale`.
-- Under delegated choices, never ask for background, scope, DoD, priority, label, assignee, deadline, or Epic placement that can be safely omitted, inferred from the literal request, or recommended from verified data.
+- `알아서`, `기본값으로`, or `맡길게` delegates optional choices; it does not supply required input. A concrete literal request may establish minimum scope and observable DoD, but never pretend that it identifies a missing target, action, valid parent, identity, or other fact required for a truthful payload.
+- Set `required_input=true` only when no valid safe draft can be produced without user-owned information. Set `why_required` to the concrete decision or payload field that cannot be resolved. Ask even under delegation, withhold the competing payload, and continue the interview in a later turn if more required information remains.
+- Set `required_input=false` for a preference with a safe reversible default or omission. Under delegation, choose or omit it instead of asking; record only a material default in `rationale`.
+- Never ask for background, scope, DoD, priority, label, assignee, deadline, or Epic placement when it can be safely omitted, inferred from the literal request, or recommended from verified data.
 - Never duplicate the deterministic approval card with a question such as "proceed?".
 - Use `kind="choice"` when choices can be recommended, and place the recommended option first.
 - If uncertainty does not change the safe draft, record `추후 확인 필요` instead of blocking.
@@ -138,6 +140,7 @@ When no Epic was named and several verified candidates fit equally, ask one `kin
 ## Runtime Output Contract
 
 - Structure decision: `questions`, `structure`, `structure_why`, and `structure_plan`
+- Every model-authored question includes `required_input` and `why_required`. `why_required` is non-empty when `required_input=true` and empty otherwise.
 - Create draft: one of `mode="task"`, `mode="subtask"`, or `mode="epic"`, plus `items[]`
 - Existing-ticket edit: `change_plan`
 - Preserve runtime item keys exactly: `temp_id`, `tier`, `type`/`issue_type`, `parent_ref`, `summary`, `epic`/`parent`, `description`/`content_template`, `references`, `priority`, `duedate`, `assignee`, `components`, `labels`, `depends_on`, `rationale`, and `children`.
@@ -158,4 +161,4 @@ When no Epic was named and several verified candidates fit equally, ask one `kin
 - Every general Task body has explicit `포함:` and `제외:` scope boundaries.
 - Body sections and DoD match the ticket type and are independently testable.
 - Every field and reference is supported by input or clearly marked as an assumption.
-- Questions are minimal; no approval question duplicates the approval card.
+- Questions are necessary, grouped, and minimal; no approval question duplicates the approval card.

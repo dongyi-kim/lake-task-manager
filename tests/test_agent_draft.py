@@ -28,7 +28,7 @@ from app.agent.workflow.agents.work_architect import (WorkArchitect, as_bulk_ite
                                                _enforce_agreed_structure,
                                                _ensure_split_exclusions,
                                                _repair_split_scope)
-from app.agent.workflow.state import Intent                          # noqa: E402
+from app.agent.workflow.state import Intent, MAX_REFINE_TURNS        # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -319,16 +319,45 @@ def test_blocking_questions_suppress_the_competing_draft():
     assert not r["draft"]["items"], "질문에 답하기 전 임의 초안은 승인 카드에 오르면 안 된다"
 
 
-def test_delegation_keeps_the_draft_and_suppresses_model_questions():
-    """사용자가 판단을 위임했으면 기존 계약대로 질문이 아니라 완성된 초안을 낸다."""
+def test_delegation_keeps_the_draft_and_suppresses_optional_questions():
+    """`알아서`는 안전한 선택 재량을 위임하므로 preference 질문은 되묻지 않는다."""
     out = {"questions": [{"question": "범위를 고를까요?", "kind": "choice",
-                          "options": ["최소", "전체"], "field": "scope"}],
+                          "options": ["최소", "전체"], "field": "scope",
+                          "required_input": False, "why_required": ""}],
            "mode": "task", "rationale": "",
            "structure": "single_task", "structure_source": "inferred",
            "items": [dict(_draft()["items"][0])]}
     r = WorkArchitect().apply(_msg("데이터 품질 개선 작업 만들어줘. 알아서"), out)
     assert not r["questions"]
     assert r["draft"]["items"]
+
+
+def test_delegation_preserves_required_input_questions_and_withholds_the_draft():
+    """`알아서`도 정확한 대상처럼 행위 성립에 필요한 사용자 입력을 대신하지 않는다."""
+    out = {"questions": [{"question": "어느 데이터 품질 규칙을 바꿀까요?", "kind": "text",
+                          "options": [], "field": "target", "required_input": True,
+                          "why_required": "대상을 모르면 변경 범위와 완료 조건을 확정할 수 없음"}],
+           "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [dict(_draft()["items"][0])]}
+    r = WorkArchitect().apply(_msg("데이터 품질 규칙 바꿔줘. 알아서"), out)
+    assert len(r["questions"]) == 1
+    assert r["questions"][0]["required_input"] is True
+    assert r["questions"][0]["why_required"]
+    assert not r["draft"]["items"], "필수 입력 전의 임의 payload는 승인 카드에 오르면 안 된다"
+
+
+def test_required_input_question_survives_the_refinement_limit():
+    """인터뷰 상한은 취향 질문을 멈추는 장치이지 필수값을 추측하는 허가가 아니다."""
+    out = {"questions": [{"question": "댓글을 남길 티켓은 무엇인가요?", "kind": "text",
+                          "options": [], "field": "target", "required_input": True,
+                          "why_required": "댓글 write target이 없음"}],
+           "mode": "task", "rationale": "", "items": []}
+    state = _msg("그 티켓에 댓글 남겨줘. 알아서")
+    state["turns"] = MAX_REFINE_TURNS
+    r = WorkArchitect().apply(state, out)
+    assert r["questions"] and r["questions"][0]["required_input"] is True
+    assert not r["draft"]["items"]
 
 
 def test_postcheck_catches_a_subtask_reply_with_an_empty_card():
