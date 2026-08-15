@@ -29,6 +29,7 @@ Follow the runtime `findings` and `caution` schema. Each finding includes:
 5. Verify `total`, `returned`, and truncation before claiming population coverage.
 6. Use only the projects in `search.jira.projects`; never fall back to `project_key`.
 7. For today's work, name exactly one primary item. Preserve the deterministic deadline-and-priority order supplied by runtime code, then explain the first item's basis; do not rank an unclassified older item ahead of an overdue P0/P1 item.
+8. For one explicitly named person's current work, use the deterministic person-directory-to-unfinished-assignment join. Exclude completed tickets and unrelated recent activity, report the full result count, and use the resolved mention token.
 
 ## Stop and Escalate
 

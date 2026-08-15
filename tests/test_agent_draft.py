@@ -2424,6 +2424,32 @@ def test_empty_body_sections_are_removed():
     assert "배경" in out and "완료 조건" in out and "검증" in out
 
 
+def test_duplicate_question_names_the_real_candidate_and_asks_only_the_decision():
+    from app.agent.workflow.agents.work_architect import _normalize_duplicate_and_bug_questions
+    state = _msg("프로듀서를 Avro 로 전환하는 작업을 새로 만들자",
+                 already_exists=True,
+                 evidence=[{"key": "DL-9072", "title": "[ETL] 프로듀서 Avro 직렬화 전환",
+                            "why": "같은 전환 범위를 진행 중"}])
+    questions = _normalize_duplicate_and_bug_questions(state, [{"question": "어떻게 할까요?"}])
+    assert len(questions) == 1
+    assert "DL-9072" in questions[0]["question"]
+    assert "프로듀서 Avro 직렬화 전환" in questions[0]["question"]
+
+
+def test_bug_interview_groups_only_missing_diagnostic_facts():
+    from app.agent.workflow.agents.work_architect import _normalize_duplicate_and_bug_questions
+    bug1 = _normalize_duplicate_and_bug_questions(
+        _msg("리니지 뷰어가 가끔 안 뜬다. 버그로 올려줘"),
+        [{"question": "실제 동작은?"}, {"question": "기대 동작은?"}])
+    assert len(bug1) == 1 and "환경" in bug1[0]["question"]
+    assert "가끔 표시되지 않음" in bug1[0]["question"]
+    bug3 = _normalize_duplicate_and_bug_questions(
+        _msg("야간 배치가 커넥션 타임아웃으로 실패한다. 버그로 등록해줘"),
+        [{"question": "재현은?"}])
+    assert len(bug3) == 1
+    assert all(word in bug3[0]["question"] for word in ("DAG/Job", "실행 환경", "오류 로그"))
+
+
 def test_data_fixture_labels_are_dropped():
     """배치 재료로 기존 라벨 목록을 주니 모델이 데이터 관리용 표식을 집었다(실측:
     카탈로그 검색 티켓에 `ui-fixture`). 그 필터로 조회하는 화면이 오염된다.

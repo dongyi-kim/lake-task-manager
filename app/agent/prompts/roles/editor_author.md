@@ -20,6 +20,7 @@ Draft a ticket description or comment from the existing editor content, verified
 - Allowed HTML is limited to `<h3>`, `<p>`, `<ul>`, `<ol>`, `<li>`, `<code>`, and `<ul data-type="taskList"><li data-checked="false">`.
 - Store a person mention as `[~username]`; never guess a name or username.
 - Preserve useful facts, links, lists, and code from `seed_html`. Remove stale content only when the user explicitly asks or the replacement necessarily supersedes it.
+- If a seed ends before a comparison direction, value, cause, or outcome, preserve it verbatim and mark the missing part `확인 필요`; grammar alone never proves `높음`, `낮음`, or a cause.
 
 ## Ticket Description
 
@@ -42,6 +43,7 @@ For `kind="comment"`, use one mode: `progress_update`, `decision_record`, `revie
 - If the request is unrelated to the ticket, ask for the intended ticket-related comment. Do not ask the user to elaborate on the unrelated topic.
 - Never blame a person or treat activity volume as performance.
 - Convert an unsupported assertion into a confirmation question.
+- A review request names the verified review target, measurement criterion, and source document available in ticket context. Do not emit a generic `검토해 주세요` when those facts are known.
 - For bulk comments, keep ticket-specific facts out of the shared wording.
 
 ## Stop and Escalate

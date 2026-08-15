@@ -53,7 +53,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "2.0.0"
+BATTERY_VERSION = "3.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("conversation")
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
@@ -107,6 +107,17 @@ def _checks(out: dict, user_text: str = "") -> dict:
     c["요구구조불일치"] = bool(wants_kids and items and not out.get("questions")
                              and c["자식합계"] < 2)
     c["응답카드불일치"] = bool(claims_kids and items and c["자식합계"] == 0)
+    if "외부 공식" in (user_text or ""):
+        c["내외부조사완결"] = bool(
+            re.search(r"https?://", text)
+            and re.search(r"내부|Jira|Confluence|티켓|문서", text, re.I)
+            and re.search(r"외부|공식", text)
+        )
+    if re.search(r"지금\s*맡|현재\s*맡", user_text or ""):
+        c["현재업무범위"] = bool(
+            re.search(r"mention:|\[~|data-(?:uid|id)", text)
+            and not re.search(r"(?<!미)완료(?:된|한|\s*작업|\s*티켓)", text)
+        )
     try:
         from app.agent.workflow import grounding
         g = grounding.check(text) or {}

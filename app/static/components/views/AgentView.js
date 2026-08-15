@@ -1318,11 +1318,12 @@ export default {
                  create(티켓 생성)와 update(기존 티켓 변경) 두 모양이 있다. -->
             <div v-if="t.pending && ti === turns.length - 1" class="agent-card">
               <!-- 변경 카드 -->
-              <template v-if="t.pending.action === 'update_ticket' || t.pending.action === 'update_tickets'">
+              <template v-if="['update_ticket', 'update_tickets', 'add_ticket_comment', 'add_ticket_comments'].includes(t.pending.action)">
                 <div class="agent-card-h">
-                  <b v-if="t.pending.keys">일괄 변경 {{ t.pending.keys.length }}건</b>
-                  <b v-else><a href="#" class="tkt" :data-key="t.pending.key">{{ t.pending.key }}</a> 변경</b>
-                  <em>아직 바뀌지 않았습니다 — 확인 후 승인하세요</em>
+                  <b v-if="t.pending.keys">{{ t.pending.action === 'add_ticket_comments' ? '댓글 게시' : '일괄 변경' }} {{ t.pending.keys.length }}건</b>
+                  <b v-else><a href="#" class="tkt" :data-key="t.pending.key">{{ t.pending.key }}</a>
+                    {{ t.pending.action === 'add_ticket_comment' ? '댓글 게시' : '변경' }}</b>
+                  <em>{{ t.pending.action.startsWith('add_ticket_comment') ? '아직 게시되지 않았습니다' : '아직 바뀌지 않았습니다' }} — 확인 후 승인하세요</em>
                 </div>
                 <!-- 일괄 대상 — 전부 보여야 승인이 의미 있다(각 키 클릭 검증 가능) -->
                 <div v-if="t.pending.keys" class="agent-chg-keys">
@@ -1357,7 +1358,8 @@ export default {
                 </details>
                 <div class="agent-card-act">
                   <button class="ag-ok" :disabled="approving" @click="approve">
-                    {{ approving ? '변경 중…' : '이대로 변경' }}</button>
+                    {{ approving ? (t.pending.action.startsWith('add_ticket_comment') ? '게시 중…' : '변경 중…')
+                                  : (t.pending.action.startsWith('add_ticket_comment') ? '댓글 게시' : '이대로 변경') }}</button>
                   <button class="ag-cancel" :disabled="approving" @click="cancelPending">취소</button>
                 </div>
               </template>

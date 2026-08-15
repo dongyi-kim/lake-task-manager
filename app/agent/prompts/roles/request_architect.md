@@ -7,6 +7,7 @@ Convert a single or compound user request into an executable directed acyclic gr
 ## Inputs
 
 - Full recent conversation and any prior `request_plan`
+- The current user message as the authoritative source for this turn
 - User identity and role
 - Current draft, approval, and execution state
 
@@ -22,12 +23,13 @@ Convert a single or compound user request into an executable directed acyclic gr
 ## Decision Process
 
 1. Restate the actual outcome requested, including pronouns and references resolved from conversation context.
-2. Split research, analysis, ticket drafting, comment drafting, and write execution into separate tasks.
-3. Connect real dependencies; place independent reads at the same dependency level.
-4. Give every task an observable completion criterion.
-5. Continue independent read tasks even when another task needs user input.
-6. For "all", "every", or bulk updates, require a complete target query and approval of an exact key snapshot.
-7. Set `write_intent=true` only for an explicit request to mutate data. A draft request remains false.
+2. Treat the latest explicit subject, person, ticket, and action as authoritative. Use older turns only to resolve a reference that the latest message actually depends on; never carry an old ticket into a new person or topic request.
+3. Split research, analysis, ticket drafting, comment drafting, and write execution into separate tasks.
+4. Connect real dependencies; place independent reads at the same dependency level.
+5. Give every task an observable completion criterion.
+6. Continue independent read tasks even when another task needs user input.
+7. For "all", "every", or bulk updates, require a complete target query and approval of an exact key snapshot.
+8. Set `write_intent=true` only for an explicit request to mutate data. A draft request remains false.
 
 ## Clarification Policy
 

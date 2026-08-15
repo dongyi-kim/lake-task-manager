@@ -39,7 +39,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "3.0.0"
+BATTERY_VERSION = "4.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
@@ -94,7 +94,10 @@ def _asks_for_bug_identity(o) -> bool:
 
 
 def _bug3_ok(o, _outs) -> bool:
-    return not items(o) and ("DL-" in (o.get("reply") or "") or _asks_for_bug_identity(o))
+    q = _question_text(o)
+    return (not items(o) and len(o.get("questions") or []) == 1
+            and any(word in q for word in ("DAG", "Job", "배치 이름"))
+            and "환경" in q and any(word in q for word in ("로그", "발생 시각", "재현")))
 
 
 def _rule1_ok(o, _outs) -> bool:
@@ -159,6 +162,11 @@ def _body_flaws(o) -> list:
             vague = [d for d in dods if any(v in d for v in _DOD_VAGUE) and len(d) < 24]
             if len(vague) * 2 > len(dods):
                 flaws.append(f"[{i}] DoD 절반 이상이 판정 방법 없음: {vague[:2]}")
+            malformed = [d for d in dods if re.search(
+                r"(?:이|가)\s+(?:을|를)\s*확인|(?:이|가)\s+하여|기능이\s+을|"
+                r"사용자가.{0,20}(?:쉽게|편리하게)\s*확인\s*가능", d)]
+            if malformed:
+                flaws.append(f"[{i}] 문법이 깨진 DoD: {malformed[:2]}")
         # 링크도 키도 없는 **참고 섹션 안의** 불릿은 날조로 취급한다. 예전의 앞 400자
         # 탐색은 뒤의 '환경 및 추가 정보'까지 참고로 오인했다 — HTML 섹션 경계를 직접 본다.
         for sec in re.finditer(
@@ -374,7 +382,7 @@ CASES = [
     #   ③ 버그를 Sub-Task 로 쪼개 관리 단위를 흩뜨린다
     ("BUG1", "재현 경로가 없으면 만들지 말고 묻는다", [
         "리니지 뷰어가 가끔 안 뜬다. 버그로 올려줘"],
-     lambda o, _: (bool(o.get("questions"))
+     lambda o, _: (len(o.get("questions") or []) == 1
                    # 재현·조건을 묻는다(그냥 "더 알려주세요"가 아니라)
                    and any(w in json.dumps(o.get("questions") or [], ensure_ascii=False)
                            for w in ("재현", "언제", "어떤 경우", "조건", "빈도"))

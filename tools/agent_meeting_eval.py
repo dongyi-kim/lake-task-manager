@@ -17,7 +17,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "1.0.0"
+BATTERY_VERSION = "2.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("meeting")
 
 
@@ -91,6 +91,8 @@ def _meeting_create_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) ->
             return False
         if not all(section in body for section in ("배경", "작업 범위", "완료 조건")):
             return False
+        if row.get("components"):
+            return False
     return True
 
 
@@ -101,7 +103,7 @@ def _meeting_comment_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -
     bodies = "\n".join(str(row.get("body") or "") for row in previews)
     return (
         _interview_then_resume(outputs)
-        and pending.get("action") == "update_tickets"
+        and pending.get("action") == "add_ticket_comments"
         and set(keys) == {"DL-9201", "DL-9202"}
         and not (pending.get("changes") or {})
         and len(previews) == 2

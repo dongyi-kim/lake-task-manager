@@ -40,7 +40,7 @@ ROLE_HINT = {
 }
 
 # 프롬프트 변경을 실험 결과와 운영 로그에서 식별하기 위한 자산 버전.
-PROMPT_VERSION = "en-role-contract-v8"
+PROMPT_VERSION = "en-role-contract-v9"
 
 
 def _project_prompt() -> str:

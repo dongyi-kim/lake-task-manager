@@ -17,7 +17,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "1.0.1"
+BATTERY_VERSION = "2.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("ctx-chg")
 
 
@@ -68,24 +68,27 @@ def _ctx_flip_flop_ok(output: dict[str, Any], _outputs: list[dict[str, Any]]) ->
     )
 
 
-def _ctx_return_ok(output: dict[str, Any], _outputs: list[dict[str, Any]]) -> bool:
+def _ctx_return_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> bool:
     pending = _pending(output)
     action = pending.get("action")
-    if action == "update_ticket":
+    if action == "add_ticket_comment":
         keys = [str(pending.get("key") or "")]
         comments = [pending.get("comment")] if pending.get("comment") else []
     else:
         keys = [str(key) for key in pending.get("keys") or []]
         comments = pending.get("comments") or []
     final = _text({"reply": output.get("reply"), "pending": pending})
+    middle = _text(outputs[1]) if len(outputs) > 1 else ""
     return (
-        action in {"update_ticket", "update_tickets"}
+        action in {"add_ticket_comment", "add_ticket_comments"}
         and keys == ["DL-9095"]
         and not (pending.get("changes") or {})
         and len(comments) == 1
         and "성능 측정" in _text(comments)
         and "이다은" not in final
         and "skcc.i2011" not in final
+        and "skcc.i2011" in middle
+        and "DL-9090" not in middle and "DL-9095" not in middle
     )
 
 

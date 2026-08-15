@@ -182,9 +182,9 @@ def test_meeting_comment_mentions_are_repaired_to_confirmed_identities():
     plan = {"comment": ("writer 결과는 {{mention:skcc.i2101}}이 공유, "
                          "reader 결과는 하은님이 공유, 검토는 준서TL"), "comments": []}
     _canonicalize_meeting_mentions(state, plan)
-    assert "{{mention:skcc.i2011}}" in plan["comment"]
-    assert "{{mention:skcc.x1402}}" in plan["comment"]
-    assert "{{mention:skcc.x1327}}" in plan["comment"]
+    assert "[~skcc.i2011]" in plan["comment"]
+    assert "[~skcc.x1402]" in plan["comment"]
+    assert "[~skcc.x1327]" in plan["comment"]
     assert "skcc.i2101" not in plan["comment"]
 
 
@@ -216,7 +216,7 @@ def test_meeting_create_drops_only_optional_fields_absent_from_minutes():
               "components": ["Catalog"], "duedate": "2026-08-30"}]
     _drop_unrequested_meeting_create_fields(state, items)
     assert "priority" not in items[0] and "labels" not in items[0]
-    assert items[0]["components"] == ["Catalog"] and items[0]["duedate"] == "2026-08-30"
+    assert "components" not in items[0] and items[0]["duedate"] == "2026-08-30"
 
 
 def test_explicit_no_comment_never_asks_for_comment_body():
@@ -324,3 +324,40 @@ def test_comment_only_result_contract_never_describes_status_as_a_change():
                              "comment": "회의 결정", "comments": []}}
     prompt = ResultIntegrator().task(state)
     assert "comment-only" in prompt and "no ticket field or status will change" in prompt
+
+
+def test_comment_only_approval_reply_is_derived_from_the_exact_payload():
+    state = {**_state("회의 결정을 DL-9201, DL-9202 댓글로 알려줘"), "intent": "modify",
+             "approval_token": "pending",
+             "change_plan": {
+                 "keys": ["DL-9201", "DL-9202"], "changes": {},
+                 "comments": [
+                     {"key": "DL-9201", "body": "[~skcc.i2011] 5개 표본 결과를 공유해 주세요."},
+                     {"key": "DL-9202", "body": "[~skcc.x1402] reader 결과를 공유해 주세요."},
+                 ],
+             }}
+    reply = ResultIntegrator()._run(state)["reply"]
+    assert "댓글 승인 초안" in reply
+    assert "아직 게시되지 않음" in reply
+    assert "필드·상태 변경 없음" in reply
+    assert "삭제" not in reply
+    assert "현재 승인할 티켓 초안 없음" not in reply
+    assert all(key in reply for key in ("DL-9201", "DL-9202"))
+
+
+def test_meeting_comment_storage_uses_jira_mentions_and_drops_scope_meta():
+    from app.agent.workflow.agents.work_architect import _canonicalize_meeting_mentions
+
+    state = _state(
+        "회의 결정: writer 결과는 @이다은이 공유. 배경은 DL-7001이지만 그 티켓에는 댓글을 달지 않음")
+    state["meeting_people"] = {"이다은": "skcc.i2011"}
+    plan = {"keys": ["DL-9201"], "comments": [{
+        "key": "DL-9201",
+        "body": "{{mention:skcc.i2011}} writer 결과를 공유. "
+                "배경은 DL-7001이지만 그 티켓에는 댓글을 달지 않음.",
+    }]}
+    _canonicalize_meeting_mentions(state, plan)
+    body = plan["comments"][0]["body"]
+    assert "[~skcc.i2011]" in body
+    assert "{{mention:" not in body
+    assert "댓글을 달지" not in body

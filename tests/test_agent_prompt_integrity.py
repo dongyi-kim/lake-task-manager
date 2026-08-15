@@ -175,7 +175,7 @@ def test_machine_contract_identifiers_survive_korean_refactor():
                                          SYSTEM_ACTION_EXECUTOR, SYSTEM_REQUEST_ARCHITECT,
                                          SYSTEM_WORK_ARCHITECT)
 
-    assert PROMPT_VERSION == "en-role-contract-v8"
+    assert PROMPT_VERSION == "en-role-contract-v9"
     for token in ("approval_token", "statusCategory", "Epic Link", "Story Point",
                   "Sub-Task", "PMO_VIT"):
         assert token in BASE_PERSONA, f"공통 계약에서 식별자 {token!r}가 번역·유실됐다"
@@ -237,7 +237,7 @@ def test_result_integrator_uses_machine_ticket_badge_contract():
 
 def test_common_prompt_enforces_compact_structured_reply_style():
     from app.agent.prompts.base import BASE_PERSONA, PROMPT_VERSION
-    assert PROMPT_VERSION == "en-role-contract-v8"
+    assert PROMPT_VERSION == "en-role-contract-v9"
     for token in ("compact Korean", "short noun phrases", "headings", "table", "bullet",
                   "direct quotations", "questions"):
         assert token in BASE_PERSONA

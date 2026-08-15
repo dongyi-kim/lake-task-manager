@@ -199,6 +199,8 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
 - Never convert a context item marked `명시적 미완료`, `남은`, `예정`, or `진행 중` into completed work.
 - When sources conflict, state the conflict and what needs confirmation in Korean instead of selecting one state. For example: `구현 완료 보고가 있으나 Jira 상태는 In Progress — 최종 상태 확인 필요`.
 - Do not add a feature, UI change, performance target, scope item, or DoD absent from the user request, seed, ticket title, or current body. When a criterion is unspecified, write the precise Korean marker `담당팀 확인 필요`.
+- An unfinished seed can be ambiguous. Preserve it verbatim and mark the missing direction or value as `확인 필요`; never complete `높다/낮다`, a cause, or a result from grammar alone.
+- A review request must name the review target and any verified criterion and source document present in ticket context. Do not say only "검토해 주세요" when those facts are available.
 - When child Sub-Tasks or a split plan exist, the parent description owns the overall why, scope, and DoD. Do not repeat every child summary as parent execution detail; keep the parent scope consistent with its children.
 
 ## User Request Data
@@ -233,6 +235,7 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
         return {"ok": False, "error": _friendly_error(str(e))}
 
     html = _unfence(html)
+    html = _preserve_ambiguous_seed(html, seed, prompt)
     # ── 피드백 루프: 모호해서 못 쓴다는 신호 — 일반론을 지어내는 것보다 낫다(사용자 요청).
     #    UI 는 팝업을 유지한 채 이 문구를 보여 주고 프롬프트·시드 보완을 유도한다.
     ask = _need_info(html)
@@ -250,6 +253,7 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     # ``{{ref:id}}``/``{{mention:id}}``를 모델이 흉내 내더라도 그대로 badgeify하면
     # ``{{ref:<a ...>DL-1</a>}}``처럼 placeholder 안에 anchor가 생긴다. 이 경로에서는
     # 확인 가능한 key/uid를 legacy 표기로 먼저 내린 뒤 기존 parser가 뱃지화한다.
+    html = _ensure_review_context(html, prompt, ctx)
     html = _legacy_reference_tokens(html)
     html = _badgeify(html)
     source = "\n".join((prompt, seed, ctx))
@@ -329,6 +333,38 @@ def _need_info(value: str) -> str:
     plain = _plain_text(_unfence(value)).strip().strip("`'\"“”‘’ ")
     match = re.match(r"NEED_INFO:\s*(.+)", plain, re.S | re.I)
     return match.group(1).strip().strip("`'\"“”‘’ ")[:300] if match else ""
+
+
+def _preserve_ambiguous_seed(rendered: str, seed: str, prompt: str) -> str:
+    """Keep an unfinished user observation without guessing its missing direction."""
+    plain = _plain_text(seed).strip()
+    if not plain or not re.search(r"(?:생각보다|예상보다|기대보다|그런데|하지만|인데)\s*$", plain):
+        return rendered
+    if not re.search(r"이어|완성|계속", prompt or ""):
+        return rendered
+    safe = _html.escape(plain)
+    return (f"<p>{safe}… <strong>확인 필요</strong>: 비교 기준과 결과 방향"
+            "(높음/낮음)을 확인한 뒤 문장을 확정합니다.</p>")
+
+
+def _ensure_review_context(rendered: str, prompt: str, context: str) -> str:
+    """Attach verified review criteria and a real document link when context supplies them."""
+    asked = str(prompt or "")
+    if not ("검토" in asked and re.search(r"성능\s*측정|측정\s*결과", asked)):
+        return rendered
+    out = str(rendered or "")
+    metric = re.search(r"성능\s*측정\s*\(([^)<>]{2,80})\)", context or "")
+    doc = re.search(r"관련\s*문서\s*「([^」]+)」\s*(https?://\S+)", context or "")
+    pieces = []
+    if metric and metric.group(1) not in _plain_text(out):
+        pieces.append("검토 기준: " + _html.escape(metric.group(1).strip()) + "의 측정 결과")
+    if doc and doc.group(2) not in out:
+        title, url = doc.group(1).strip(), doc.group(2).rstrip(".,)")
+        pieces.append(f'근거 문서: <a href="{_html.escape(url, quote=True)}">'
+                      f'{_html.escape(title)}</a>')
+    if pieces:
+        out = out.rstrip() + "<p>" + " · ".join(pieces) + "</p>"
+    return out
 
 
 def _drop_generic_editor_closer(rendered: str) -> str:

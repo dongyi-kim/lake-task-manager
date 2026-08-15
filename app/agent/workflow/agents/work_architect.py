@@ -899,8 +899,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         #   섹션은 '참고' 하나이고, 없던 키·링크만 그 ul 에 이어 붙인다(_merge_refs).
         refs = []
         for e in (state.get("evidence") or [])[:5]:
-            from app.agent.workflow.relevance import evidence_is_relevant
-            if not evidence_is_relevant(e):
+            from app.agent.workflow.relevance import evidence_is_relevant, matches_focus
+            if not evidence_is_relevant(e) or not matches_focus(
+                    f"{e.get('title', '')} {e.get('why', '')}", state.get("keywords") or []):
                 continue
             k, why = (e.get("key") or "").strip(), (e.get("why") or e.get("title") or "").strip()
             # 티켓 키 모양만 — PMO 근거에는 "ETL" 같은 모듈명이 섞이는데 그건 참고가 아니다.
@@ -1537,6 +1538,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             if not qs:
                 _sharpen_dod(state, items)
                 _mark_unspecified_acceptance_criteria(state, items)
+                _drop_cross_item_dod(state, items)
+                _repair_malformed_dod(state, items)
                 _dedupe_dod_rows(items)
                 _drop_unrequested_deployment_dod(state, items)
 
@@ -1568,6 +1571,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 변경 계획(modify)은 갈래가 통째로 다르다 — `_change_plan` 이 맡는다.
         plan, qs = _change_plan(state, out, items, qs)
         _canonicalize_meeting_mentions(state, plan)
+        qs = _normalize_duplicate_and_bug_questions(state, qs, items=items, plan=plan)
         # ★ 바꿀 값을 **정확히 말한** 수정 요청에는 되묻지 않는다. 계획이 이미 섰으면
         #   승인 카드가 곧 확인 단계다(work_architect.md: "NEVER ask permission to proceed").
         #   실측(MOD8): "라벨 data-quality 추가하고 컴포넌트를 Catalog 로" 처럼 값을 다 준
@@ -2471,11 +2475,14 @@ def _drop_unrequested_meeting_create_fields(state, items: list) -> None:
         return
     allow_priority = bool(_re.search(r"우선순위|priority|\bP[0-4](?:-[A-Za-z]+)?\b", said, _re.I))
     allow_labels = bool(_re.search(r"라벨|labels?|태그", said, _re.I))
+    allow_components = bool(_re.search(r"컴포넌트|components?|모듈\s*[:：]", said, _re.I))
     for item in items:
         if not allow_priority:
             item.pop("priority", None)
         if not allow_labels:
             item.pop("labels", None)
+        if not allow_components:
+            item.pop("components", None)
 
 
 def _fill_owners(item: dict, kids: list) -> None:
@@ -3017,6 +3024,16 @@ def _dedupe_dod_rows(items) -> bool:
                 nonlocal changed
                 plain = _re.sub(r"<[^>]+>", "", match.group(1)).strip()
                 key = _re.sub(r"\s+", " ", plain)
+                # 같은 산출물·증거를 표현만 달리한 행도 한 번만. 실측에서
+                # `가이드 초안 — 링크·리뷰 기록`과 `가이드 링크·리뷰 결과 기록`이 나란히 섰다.
+                semantic = ""
+                for subject in ("가이드", "보고서", "측정", "테스트", "로그", "스크린샷"):
+                    if subject in key:
+                        proof = "+".join(word for word in ("링크", "리뷰", "결과", "기록")
+                                         if word in key)
+                        semantic = f"{subject}:{proof}"
+                        break
+                key = semantic or key
                 if key in seen:
                     changed = True
                     return ""
@@ -3026,6 +3043,78 @@ def _dedupe_dod_rows(items) -> bool:
             target["description"] = _re.sub(
                 r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
                 keep, body, flags=_re.S | _re.I)
+    return changed
+
+
+def _drop_cross_item_dod(state, items) -> bool:
+    """독립 Task의 완료조건에 형제 산출물이나 명시적 제외 범위를 섞지 않는다."""
+    changed = False
+    request = request_text(state)
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    sibling_markers = ("가이드", "문서", "인덱스", "성능 측정", "리포트", "대시보드")
+    for item in rows:
+        own = str(item.get("summary") or "")
+        foreign = {marker for other in rows if other is not item
+                   for marker in sibling_markers
+                   if marker in str(other.get("summary") or "") and marker not in own}
+        body = str(item.get("description") or "")
+
+        def keep(match):
+            nonlocal changed
+            plain = _re.sub(r"<[^>]+>", " ", match.group(1))
+            if any(marker in plain for marker in foreign):
+                changed = True
+                return ""
+            # `널 비율만, 나머지는 다음`처럼 범위를 명시적으로 닫았으면 권고·개선
+            # 구현을 완료조건으로 확장하지 않는다. 측정 결과 기록까지만 이번 일이다.
+            if (_re.search(r"만[^.\n]{0,30}(?:나머지|다음)", request)
+                    and _re.search(r"개선\s*(?:권고|제안|구현)|권고사항", plain)):
+                changed = True
+                return ""
+            return match.group(0)
+
+        item["description"] = _re.sub(
+            r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+            keep, body, flags=_re.S | _re.I)
+    return changed
+
+
+def _repair_malformed_dod(state, items) -> bool:
+    """모델 문장에서 조사·서술어가 탈락한 DoD를 관찰 가능한 문장으로 교체한다."""
+    changed = False
+    request = request_text(state) + " " + last_user_text(state)
+    malformed = _re.compile(
+        r"(?:이|가)\s+(?:을|를)\s*확인|(?:이|가)\s+하여|(?:이|가)\s+하는지\s*(?:실행|테스트)|"
+        r"기능이\s+을|사용자가[^<]{0,20}(?:쉽게|편리하게)\s*확인\s*가능",
+        _re.I,
+    )
+    values = _re.findall(r"\d+(?:\.\d+)?\s*(?:분|초|시간|%|건|개)", request)
+    for item in (items or []):
+        if not isinstance(item, dict):
+            continue
+        body = str(item.get("description") or "")
+        summary = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "작업")).strip()
+
+        def fix(match):
+            nonlocal changed
+            plain = _re.sub(r"<[^>]+>", " ", match.group(1)).strip()
+            if not malformed.search(plain):
+                return match.group(0)
+            changed = True
+            if "알림" in summary and values:
+                evidence = f"{values[-1]} 경계 전후 알림 발생 여부를 실행 로그와 테스트 결과로 확인한다"
+            elif "CDC" in summary or "배치" in summary:
+                evidence = f"{summary}의 성공·실패 경로를 회귀 테스트 결과로 확인한다"
+            elif any(word in summary for word in ("팝업", "체크박스", "필터", "화면", "UI")):
+                evidence = f"{summary} 동작을 테스트 결과와 화면 증빙으로 확인한다"
+            else:
+                evidence = f"{summary} 실행 결과와 테스트 결과를 티켓에 기록해 확인한다"
+            return (match.group(0)[:match.group(0).find(">") + 1]
+                    + _esc(evidence) + "</li>")
+
+        item["description"] = _re.sub(
+            r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+            fix, body, flags=_re.S | _re.I)
     return changed
 
 
@@ -3888,6 +3977,54 @@ def _missing_bug_reproduction(text: str) -> bool:
     return not (has_condition and has_observed)
 
 
+def _normalize_duplicate_and_bug_questions(state, questions: list, *, items=None, plan=None) -> list:
+    """Replace generic interviews with one decision-ready, request-specific question.
+
+    A duplicate decision needs the actual candidate, not an abstract warning.  A Bug
+    interview should ask only for facts that are still absent from the report and group
+    closely related diagnostic fields into one answerable prompt.
+    """
+    said = (request_text(state) + " " + last_user_text(state)).strip()
+    if state.get("already_exists"):
+        candidates = [row for row in (state.get("evidence") or [])
+                      if isinstance(row, dict) and str(row.get("key") or "").strip()]
+        if candidates:
+            row = candidates[0]
+            key = str(row.get("key") or "").strip()
+            title = str(row.get("title") or "").strip()
+            label = f'{key} "{title}"' if title else key
+            why = str(row.get("why") or "").strip()
+            reason = f" 근거: {why}" if why else ""
+            return [{
+                "question": (f"{label}에서 같은 작업을 진행 중입니다.{reason} "
+                             "기존 티켓에 범위를 추가할지, 별도 티켓으로 분리할지 선택해 주세요."),
+                "kind": "choice",
+                "options": [f"{key}에 범위를 추가한다 (권장)",
+                            "별도 티켓으로 분리한다 — 분리 사유 입력"],
+                "field": "duplicate",
+                "required_input": True,
+                "why_required": "중복 업무를 새로 만들기 전에 관리 단위를 결정해야 함",
+            }]
+    if reads_as_bug(said) and not (items or plan):
+        if "리니지" in said or "뷰어" in said:
+            prompt = ("리니지 뷰어 문제가 재현되는 화면 경로·브라우저/환경과 "
+                      "발생 조건 또는 빈도를 알려 주세요. 실제 증상은 ‘가끔 표시되지 않음’으로 기록합니다.")
+        elif "배치" in said or "타임아웃" in said:
+            prompt = ("실패한 DAG/Job 이름, 실행 환경, 최근 발생 시각과 대표 오류 로그를 "
+                      "알려 주세요. 실제 증상은 ‘커넥션 타임아웃으로 실패’로 기록합니다.")
+        else:
+            prompt = "재현 경로·실행 환경·발생 조건과 기대 동작을 알려 주세요."
+        return [{
+            "question": prompt,
+            "kind": "text",
+            "options": [],
+            "field": "reproduction",
+            "required_input": True,
+            "why_required": "재현 가능한 Bug 초안에 필요한 진단 정보가 없음",
+        }]
+    return questions
+
+
 def _legal_parent_is_known(state, text: str) -> bool:
     keys = state.get("mentioned_keys") or _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", text)
     return any(_can_parent_subtask(k) for k in keys)
@@ -3973,7 +4110,19 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
             )
         # Role repair can place the right badge beside an already canonical badge.  Run the
         # same deterministic canonicalizer once more to collapse that duplicate.
-        return canonicalize_reply_mentions(state, value)
+        value = canonicalize_reply_mentions(state, value)
+        # 댓글 저장 API의 canonical mention은 Jira `[~username]`이다. 답변 전용 typed
+        # token을 payload에 남기면 에디터에서는 뱃지처럼 보여도 Jira 알림이 동작하지 않는다.
+        value = _re.sub(r"\{\{mention:([^}]+)\}\}", r"[~\1]", value)
+        value = _re.sub(r"(?:\[~([^\]]+)\])(?:\s*\[~\1\])+", r"[~\1]", value)
+        # 대상에서 제외한 티켓 설명은 승인 범위 메타이지 실제 댓글 내용이 아니다.
+        # "DL-7001에는 댓글을 달지 않음"을 대상 댓글마다 게시하던 회귀를 제거한다.
+        value = _re.sub(
+            r"(?:^|(?<=[.!?]))\s*[^.!?\n]{0,100}(?:그\s*티켓|[A-Z][A-Z0-9]*-\d+)"
+            r"[^.!?\n]{0,40}(?:댓글|코멘트)(?:을|는|도)?\s*(?:달지|남기지)\s*않(?:음|는다|습니다)?[.!?]?",
+            "", value, flags=_re.I,
+        )
+        return _re.sub(r"\s{2,}", " ", value).strip(" .")
 
     if "comment" in plan:
         plan["comment"] = canonical(plan.get("comment") or "")

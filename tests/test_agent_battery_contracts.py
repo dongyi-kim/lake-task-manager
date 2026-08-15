@@ -89,8 +89,13 @@ def test_context_return_checker_accepts_the_canonical_single_ticket_action():
     output = {
         "reply": "DL-9095 댓글 승인 초안",
         "pending": {
-            "action": "update_ticket", "key": "DL-9095", "changes": {},
+            "action": "add_ticket_comment", "key": "DL-9095", "changes": {},
             "comment": "2홉 100노드 성능 측정 결과와 원본 로그를 첨부해 주세요",
         },
     }
-    assert context_eval._ctx_return_ok(output, [])
+    turns = [{"reply": "DL-9090 진행"},
+             {"reply": "{{mention:skcc.i2011}} 현재 미완료 할당 2건"}, output]
+    assert context_eval._ctx_return_ok(output, turns)
+    contaminated = list(turns)
+    contaminated[1] = {"reply": "{{mention:skcc.i2011}} DL-9090 DL-9095"}
+    assert not context_eval._ctx_return_ok(output, contaminated)

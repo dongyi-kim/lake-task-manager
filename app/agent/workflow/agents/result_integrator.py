@@ -39,6 +39,20 @@ class ResultIntegrator(TextAgent):
         completion = state.get("assignment_completion") or {}
         if completion.get("kind") == "incomplete_assignees":
             return self.apply(state, {"text": _assignment_completion_reply(completion)})
+        # 승인 대기 응답은 최종 payload를 사람이 검토하기 위한 설명이다. 이미 코드가
+        # 확정한 카드 값을 LLM에 다시 요약시키면 필드·담당·수치가 달라지거나, 요청하지
+        # 않은 삭제/후속 작업을 덧붙였다. 승인 문장은 payload의 결정적 projection으로 만든다.
+        if state.get("approval_token") and _has_executable_payload(state):
+            return self.apply({**state, "_deterministic_reply": True},
+                              {"text": _approval_reply(state)})
+        person_work = state.get("person_work_snapshot") or {}
+        if person_work:
+            return self.apply({**state, "_deterministic_reply": True},
+                              {"text": _person_work_reply(person_work)})
+        daily = state.get("daily_priority_snapshot") or {}
+        if daily:
+            return self.apply({**state, "_deterministic_reply": True},
+                              {"text": _daily_priority_reply(daily)})
         if is_memory_only_request(state):
             return self.apply(state, {"text": "확인. 이 대화의 후속 요청에 필요한 경우에만 참고"})
         return super()._run(state)
@@ -317,7 +331,8 @@ class ResultIntegrator(TextAgent):
         text = _canonicalize_person_mentions(text, state)
         text = _ensure_progress_child_coverage(text, state)
         text = _render_reply_tokens(text)
-        text = _align_draft_claims(text, state)
+        if not state.get("_deterministic_reply"):
+            text = _align_draft_claims(text, state)
         text = _ensure_research_status(text, state)
 
         # ── 접지 검사 — 답변의 티켓 키·제목·인명을 실물과 대조한다.
@@ -332,7 +347,8 @@ class ResultIntegrator(TextAgent):
         #   레이트리밋·길이로 죽을 수 있다. 그건 교정의 실패이지 탐지의 무효가 아니다.
         from app.agent.workflow import grounding
         try:
-            g = grounding.check(text, allowed_people=_dialogue_speakers(request_text(state)))
+            g = ({"ok": True} if state.get("_deterministic_reply") else
+                 grounding.check(text, allowed_people=_dialogue_speakers(request_text(state))))
         except Exception:
             g = None                        # 검증기가 죽으면 답은 그대로 나간다
         if g and not g["ok"]:
@@ -361,6 +377,7 @@ class ResultIntegrator(TextAgent):
         # 전용 진행 Task bullet은 detail badge 하나로 기계화한다. 모델이 raw key+제목을
         # 출력해도 최종 문자열은 badge가 가진 정보를 중복하지 않는다.
         text = _normalize_ticket_detail_sections(text)
+        text = _normalize_badge_repetitions(text)
         # 근거 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
         # 코드가 접는다. 규칙("같은 근거 같은 번호")은 프롬프트에 있지만 보장은 여기서.
         text = _dedupe_refs(text)
@@ -402,6 +419,7 @@ class ResultIntegrator(TextAgent):
         #   두 라운드 고쳤는데도 실측 DATA9 는 세 줄 다 제목만 남겼다. 우리가 아는 URL 을
         #   그 제목에 붙이는 것은 **지어내는 것이 아니라 옮기는 것**이라 코드가 할 수 있다.
         text = _attach_known_doc_urls(text, state)
+        text = _ensure_external_research_coverage(text, state)
         # ★ 여기서 **한 번 더** 본다. 위의 후처리들은 접지 검사 **뒤에** 돌기 때문에,
         #   후처리가 만든 결함은 검사를 통과한 셈이 된다. 실측: 대괄호 정리가 문서 링크를
         #   먹어 참조가 URL 없는 제목만 남았는데 아무도 못 잡았다. 마지막에 다시 보고,
@@ -511,6 +529,120 @@ def _has_executable_payload(state) -> bool:
     result = state.get("result") or {}
     return bool(draft.get("items") or draft.get("structure_tree")
                 or plan.get("key") or plan.get("keys") or result)
+
+
+_FIELD_LABELS = {
+    "summary": "제목", "description": "본문", "assignee": "담당자",
+    "duedate": "기한", "priority": "우선순위", "labels": "라벨",
+    "components": "컴포넌트", "status": "상태", "link": "관계",
+}
+
+
+def _cell(value) -> str:
+    if value in (None, "", []):
+        return "—"
+    if isinstance(value, list):
+        value = ", ".join(map(str, value))
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _approval_reply(state) -> str:
+    """승인 카드와 동일한 state에서만 만드는 사용자 설명.
+
+    이 함수는 판단하거나 보강하지 않는다. 확정 payload를 읽기 쉬운 표로 투영할 뿐이라
+    카드와 답변의 건수·필드·담당·기한이 구조적으로 어긋날 수 없다.
+    """
+    plan = state.get("change_plan") or {}
+    if plan.get("key") or plan.get("keys"):
+        keys = [str(k) for k in (plan.get("keys") or [plan.get("key")]) if k]
+        changes = plan.get("changes") or {}
+        comments = [c for c in (plan.get("comments") or []) if isinstance(c, dict)]
+        comment = str(plan.get("comment") or "").strip()
+
+        if not changes and (comments or comment):
+            rows = ["### 댓글 승인 초안", "",
+                    f"**대상 {len(keys)}건 · 필드·상태 변경 없음 · 아직 게시되지 않음**", ""]
+            by_key = {str(c.get("key") or ""): str(c.get("body") or "").strip()
+                      for c in comments}
+            for key in keys:
+                body = by_key.get(key) or comment
+                rows += [f"- {{{{ticket-detail:{key}}}}}", f"  > {body}", ""]
+            rows += ["### 승인", "", "아래 카드에서 대상과 댓글 전문 확인 후 게시 승인"]
+            return "\n".join(rows).strip()
+
+        rows = ["### 변경 승인 초안", ""]
+        if len(keys) == 1:
+            rows += [f"{{{{ticket-detail:{keys[0]}}}}}", ""]
+        else:
+            rows += [" ".join(f"{{{{ticket-list:{key}}}}}" for key in keys), ""]
+        rows += ["| 필드 | 현재 | 변경 |", "|---|---|---|"]
+        before = plan.get("before") or {}
+        if (plan.get("transition") or {}).get("name"):
+            changes = {"status": plan["transition"]["name"]}
+        elif (plan.get("link") or {}).get("other"):
+            link = plan["link"]
+            changes = {"link": f"{link.get('relation') or 'Relates'} · {link['other']}"}
+        for field, value in changes.items():
+            rows.append(f"| {_FIELD_LABELS.get(field, field)} | {_cell(before.get(field))} | {_cell(value)} |")
+        if comment:
+            rows += ["", "### 함께 게시할 댓글", "", f"> {comment}"]
+        rows += ["", "### 승인", "", "아직 변경되지 않음 · 아래 카드에서 값 확인 후 승인"]
+        return "\n".join(rows).strip()
+
+    from app.agent.workflow.agents.work_architect import as_bulk_items, child_items
+    items = as_bulk_items(state.get("draft") or {})
+    children = child_items(state.get("draft") or {})
+    rows = ["### 티켓 승인 초안", "",
+            f"**총 {len(items) + len(children)}건 · 아직 생성되지 않음**", "",
+            "| # | 유형 | 제목 | 상위 | 담당 | 기한 |", "|---:|---|---|---|---|---|"]
+    for index, item in enumerate(items, 1):
+        parent = item.get("parent") or item.get("epic") or "최상위"
+        owner = f"{{{{mention:{item['assignee']}}}}}" if item.get("assignee") else "미정"
+        rows.append(f"| {index} | {_cell(item.get('type') or 'Task')} | {_cell(item.get('summary'))} | "
+                    f"{_cell(parent)} | {owner} | {_cell(item.get('duedate'))} |")
+    for offset, child in enumerate(children, len(items) + 1):
+        parent_index = int(child.get("parent_index") or 0)
+        parent = items[parent_index].get("summary") if parent_index < len(items) else "부모 Task"
+        owner = f"{{{{mention:{child['assignee']}}}}}" if child.get("assignee") else "미정"
+        rows.append(f"| {offset} | Sub-Task | {_cell(child.get('summary'))} | "
+                    f"{_cell(parent)} | {owner} | {_cell(child.get('duedate'))} |")
+
+    assignments = [a for a in (state.get("assignments") or []) if isinstance(a, dict)]
+    reasons = []
+    for index, item in enumerate(items):
+        matched = next((a for a in assignments if a.get("index") == index), {})
+        if item.get("assignee") and matched.get("reasons"):
+            reasons.append(f"- {{{{mention:{item['assignee']}}}}}: "
+                           + "; ".join(map(str, matched["reasons"])))
+    if reasons:
+        rows += ["", "### 배정 근거", ""] + reasons
+    rows += ["", "### 승인", "", "아래 카드에서 본문·배치·완료 조건 확인 후 생성 승인"]
+    return "\n".join(rows).strip()
+
+
+def _person_work_reply(data: dict) -> str:
+    uid = str(data.get("user_id") or "").strip()
+    tickets = [t for t in (data.get("tickets") or []) if isinstance(t, dict) and t.get("key")]
+    who = f"{{{{mention:{uid}}}}}" if uid else "해당 사용자"
+    if not tickets:
+        return f"### 현재 담당 업무\n\n**{who}의 미완료 할당 티켓 없음**"
+    badges = " ".join(f"{{{{ticket-list:{t['key']}}}}}" for t in tickets)
+    return (f"### 현재 담당 업무\n\n**{who} · 미완료 {len(tickets)}건**\n\n{badges}\n\n"
+            "최근 활동 로그가 아니라 현재 담당자로 지정된 미완료 티켓 기준")
+
+
+def _daily_priority_reply(data: dict) -> str:
+    key = str(data.get("key") or "").strip()
+    if not key:
+        return "### 지금 시작할 업무\n\n확인된 열린 업무 없음"
+    facts = [str(data.get("priority") or "").strip()]
+    due = str(data.get("due") or "").strip()
+    if due:
+        facts.append(f"마감 {due}" + (" · 초과" if data.get("overdue") else ""))
+    basis = " · ".join(value for value in facts if value)
+    return (f"### 지금 시작할 업무\n\n{{{{ticket-detail:{key}}}}}\n\n"
+            f"**1순위** — {basis}\n\n"
+            "열린 업무 중 마감 구간을 먼저, 같은 구간에서는 Jira 우선순위를 적용")
 
 
 def _question_only_reply(state, questions: list[dict]) -> str:
@@ -1487,6 +1619,65 @@ def _normalize_ticket_detail_sections(text: str) -> str:
                 continue
         out.append(line)
     return "\n".join(out)
+
+
+def _normalize_badge_repetitions(text: str) -> str:
+    """typed ticket badge가 이미 가진 key/title/assignee/status의 평문 반복을 제거한다."""
+    out = []
+    inline_title = _re.compile(
+        r"(\{\{ticket-inline:[A-Z][A-Z0-9]*-\d+\}\})"
+        r"\s*(?:[\"“][^\"”\n]+[\"”]|\[[^\]\n]+\]\s*[^\n|·—]{2,80})",
+        _re.I,
+    )
+    detail = _re.compile(r"^(\s*(?:\[\d+\]\s*)?(?:[-*+]\s*)?"
+                         r"\{\{ticket-detail:[A-Z][A-Z0-9]*-\d+\}\})"
+                         r"\s*(?:[—·|-]\s*)?(.+)$", _re.I)
+    duplicate_prefix = _re.compile(
+        r"^\s*(?:담당|assignee|상태|status|진행\s*중\s*$|완료\s*$|할당\s*$|"
+        r"reopen(?:ed)?\s*$|우선순위|마감|기한|\[[A-Za-z]+\]|[\"“])", _re.I)
+    for line in str(text or "").splitlines():
+        line = inline_title.sub(r"\1", line)
+        matched = detail.match(line)
+        if matched and duplicate_prefix.search(matched.group(2)):
+            line = matched.group(1)
+        out.append(line.rstrip())
+    return "\n".join(out)
+
+
+def _ensure_external_research_coverage(text: str, state) -> str:
+    """내부+외부 공식 조사를 요청했으면 검증된 외부 URL과 충돌 상태를 답에 보존한다."""
+    asked = request_text(state) + " " + last_user_text(state)
+    if not ("외부" in asked and any(w in asked for w in ("조사", "자료", "공식", "근거"))):
+        return text
+    sources = []
+    for evidence in (state.get("evidence") or []):
+        if not isinstance(evidence, dict):
+            continue
+        url = str(evidence.get("url") or "").strip()
+        if url.startswith(("http://", "https://")):
+            sources.append((str(evidence.get("title") or "공식 자료").strip(), url,
+                            str(evidence.get("why") or "").strip()))
+    if not sources:
+        for title, url in _re.findall(
+                r"^-\s*(.+?)\s*·\s*공식\s*—[^\n]*\((https?://[^)\s]+)\)\s*$",
+                str(state.get("web_context") or ""), _re.M):
+            sources.append((title.strip(), url, "공식 자료"))
+
+    value = str(text or "").rstrip()
+    missing = [(title, url, why) for title, url, why in sources if url not in value]
+    if missing:
+        lines = ["### 외부 공식 근거", ""]
+        for title, url, why in missing[:5]:
+            lines.append(f"- [{title}]({_markdown_url(url)})" + (f" — {why}" if why else ""))
+        value += "\n\n" + "\n".join(lines)
+
+    material = " ".join(str(state.get(k) or "") for k in ("topic_dossier", "pre_survey"))
+    if ("PoC" in material and _re.search(r"PoC[^\n]{0,50}(?:완료|수행 완료)", material)
+            and _re.search(r"PoC[^\n]{0,50}(?:아직\s*수행하지\s*않|미수행)", material)
+            and "내부 기록 상충" not in value):
+        value += ("\n\n### 확인 필요\n\n- 내부 기록 상충: 한 기록은 PoC 완료, 다른 기록은 미수행으로 기술. "
+                  "대상 범위와 갱신 시점 확인 전 현재 완료 여부 확정 불가")
+    return value
 
 
 def _dedupe_refs(text: str) -> str:

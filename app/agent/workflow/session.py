@@ -152,7 +152,8 @@ _TURN_DERIVED_EMPTY = {
     "pre_survey": "", "seed_map": "", "web_context": "", "topic_dossier": "",
     "situation": "", "evidence": [], "related_docs": [], "epic_candidate": "",
     "already_exists": False, "pmo_findings": [], "group_activity": "",
-    "ticket_progress": "", "knowledge_brief": {}, "pmo_caution": "",
+    "ticket_progress": "", "person_work_snapshot": {}, "daily_priority_snapshot": {},
+    "knowledge_brief": {}, "pmo_caution": "",
     "interpretation": "", "structure_plan": [], "structure_ok": False,
     "structure_notes": [], "draft": {}, "assignments": [], "review": {},
     "reply": "", "error": "", "turns": 0,
@@ -454,13 +455,19 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
             # ★ 코멘트도 함께 싣는다 — **코멘트만 남기는 일괄**이 있고(사용자 요청),
             #   그때 카드에 아무것도 안 보이면 무엇을 승인하는지 알 수 없다.
             #   `comments` 는 티켓별 미리보기(멘션이 티켓마다 다르다).
-            out["pending"] = {"token": data["approval_token"], "action": "update_tickets",
+            comment_only = not (plan.get("changes") or {}) and bool(
+                plan.get("comments") or str(plan.get("comment") or "").strip())
+            out["pending"] = {"token": data["approval_token"],
+                              "action": "add_ticket_comments" if comment_only else "update_tickets",
                               "keys": plan["keys"], "changes": plan.get("changes") or {},
                               "comment": plan.get("comment") or "",
                               "comments": plan.get("comments") or [],
                               "rationale": plan.get("why") or ""}
         elif plan.get("key"):
-            out["pending"] = {"token": data["approval_token"], "action": "update_ticket",
+            comment_only = not (plan.get("changes") or {}) and bool(
+                str(plan.get("comment") or "").strip())
+            out["pending"] = {"token": data["approval_token"],
+                              "action": "add_ticket_comment" if comment_only else "update_ticket",
                               "key": plan["key"], "changes": plan.get("changes") or {},
                               "comment": plan.get("comment") or "",
                               "rationale": plan.get("why") or ""}

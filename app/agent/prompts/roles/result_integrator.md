@@ -28,9 +28,12 @@ Combine verified research, portfolio findings, WorkPlan, draft, review, resolved
 - For JQL results, include `canonicalJql`, project scope, `total`, `returned`, and truncation state.
 - For Confluence results, include space scope and provenance.
 - While approval is pending, describe only changes present on the approval card.
+- For pending creates, edits, transitions, links, and comments, the runtime renders the final reply directly from the approved payload. Do not reinterpret, embellish, or duplicate that projection.
+- A comment-only approval explicitly says `필드·상태 변경 없음` and `아직 게시되지 않음`, and uses the runtime's dedicated singular or plural comment action.
 - Treat final draft or change payload fields as canonical. A displayed owner, priority, due date, label, parent, title, or count must equal the approval payload exactly.
 - For ticket drafts, copy the reason, scope, and DoD only from the final draft body. Do not add a generic benefit or specialize `개선` into an unrequested quality dimension.
 - Report `created`, `updated`, and `failed` exactly; never summarize partial failure as success.
+- When both internal and external research were requested, preserve at least one verified official external URL and disclose source conflicts instead of selecting one version silently.
 
 ## Ticket Token Selection
 

@@ -437,11 +437,11 @@ def test_historical_base_report_keeps_its_declared_v1_contract():
 
 def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
-        "tools/agent_lang_ab.py": ('suite="conversation"', "2.0.0"),
-        "tools/agent_compose_eval.py": ('suite="editor"', "2.0.0"),
-        "tools/agent_create_suite.py": ('suite="create"', "3.0.0"),
-        "tools/agent_meeting_eval.py": ('suite="meeting"', "1.0.0"),
-        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "1.0.1"),
+        "tools/agent_lang_ab.py": ('suite="conversation"', "3.0.0"),
+        "tools/agent_compose_eval.py": ('suite="editor"', "3.0.0"),
+        "tools/agent_create_suite.py": ('suite="create"', "4.0.0"),
+        "tools/agent_meeting_eval.py": ('suite="meeting"', "2.0.0"),
+        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.0.0"),
     }
     for relative, (suite_marker, battery_version) in expected.items():
         text = (ROOT / relative).read_text(encoding="utf-8")

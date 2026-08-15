@@ -70,7 +70,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         "portfolio_analyst", "Portfolio Analyst", "complex",
         "Interprets progress, workload, staleness, and activity as PMO risks and priorities.",
         ("intent", "mentioned_keys", "module", "group_activity", "ticket_progress"),
-        ("pmo_findings", "pmo_caution"),
+        ("pmo_findings", "pmo_caution", "person_work_snapshot", "daily_priority_snapshot"),
         ("pmo", "people"),
     ),
     "work_architect": RoleSpec(
@@ -101,8 +101,9 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "result_integrator": RoleSpec(
         "result_integrator", "Result Integrator", "complex",
         "Integrates verified results and unresolved items into one Korean user response.",
-        ("request_plan", "situation", "knowledge_brief", "pmo_findings", "draft", "review",
-         "approval_token", "result", "error"),
+        ("request_plan", "situation", "knowledge_brief", "pmo_findings", "person_work_snapshot",
+         "daily_priority_snapshot",
+         "draft", "review", "approval_token", "result", "error"),
         ("reply",), effect="respond",
     ),
     "editor_author": RoleSpec(

@@ -260,6 +260,20 @@ def test_running_task_bullets_are_normalized_to_detail_badges_without_duplicate_
     assert "### 연표" in got
 
 
+def test_inline_badge_drops_immediately_repeated_title_and_detail_suffix():
+    from app.agent.workflow.agents.result_integrator import _normalize_badge_repetitions
+
+    source = (
+        '현재 {{ticket-inline:DL-9095}} "[Runtime] 2홉 성능 측정" 진행 중\n\n'
+        '### 근거\n\n[1] {{ticket-detail:DL-9095}} — [Runtime] 2홉 성능 측정 · 담당 이다은 · 진행 중'
+    )
+    got = _normalize_badge_repetitions(source)
+    assert '"[Runtime] 2홉 성능 측정"' not in got
+    assert "담당 이다은" not in got
+    assert "{{ticket-inline:DL-9095}} 진행 중" in got
+    assert "[1] {{ticket-detail:DL-9095}}" in got
+
+
 def test_progress_reply_gets_a_compact_complete_child_snapshot_when_model_omits_it():
     from app.agent.workflow.agents.result_integrator import _ensure_progress_child_coverage
 

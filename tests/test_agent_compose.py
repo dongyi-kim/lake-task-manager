@@ -53,6 +53,25 @@ def test_a_brand_new_ticket_has_no_context_instead_of_an_error():
     assert C._ticket_context("DL-99999", "comment") == ""
 
 
+def test_unfinished_comparison_seed_is_preserved_without_inventing_direction():
+    seed = "<p>오늘 성능 측정을 돌렸는데, p95 가 생각보다</p>"
+    got = C._preserve_ambiguous_seed(
+        "<p>p95가 생각보다 높았습니다.</p>", seed, "이어서 완성해줘")
+    assert "p95 가 생각보다" in got
+    assert "확인 필요" in got and "높았습니다" not in got
+
+
+def test_review_request_uses_verified_metric_and_document_link():
+    context = ("명시적 미완료: 성능 측정(2홉 100 노드 기준)\n"
+               "관련 문서 「[설계] 리니지 뷰어 1차」 "
+               "https://confluence.example/spaces/DL/pages/1")
+    got = C._ensure_review_context(
+        "<p>[~skcc.x1402] 검토해 주세요.</p>",
+        "담당자를 멘션해서 성능 측정 결과 검토 요청 코멘트 써줘", context)
+    assert "2홉 100 노드 기준" in got
+    assert "https://confluence.example/spaces/DL/pages/1" in got
+
+
 def test_context_is_capped_so_the_cursor_does_not_freeze():
     assert len(C._ticket_context(PROG, "comment")) <= C.MAX_CONTEXT
 
