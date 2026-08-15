@@ -479,6 +479,36 @@ def test_delegated_duplicate_epic_uses_the_existing_epic_without_reasking():
     assert "epic_name" not in r["draft"]["items"][0]
 
 
+def test_followup_delegation_keeps_the_original_pipeline_multistage_signal():
+    """STARR1: 둘째 턴의 `알아서`가 첫 요청의 pipeline 구조 신호를 지우지 않는다."""
+    from langchain_core.messages import AIMessage, HumanMessage
+    body = ('<h3>배경</h3><p>Puffin NDV pipeline 신규 개발</p>'
+            '<h3>작업 범위</h3><ul><li>포함: 1차 구현</li><li>제외: 최적화</li></ul>'
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">pipeline 동작 확인</li></ul>')
+    state = {
+        "request_text": "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지. 알아서 진행해",
+        "messages": [
+            HumanMessage(content="starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해"),
+            AIMessage(content="여러 단계로 나뉠 수 있습니다. 구조를 선택해 주세요."),
+            HumanMessage(content="Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지. 알아서 진행해"),
+        ],
+        "turns": 1,
+    }
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [{"summary": "[ETL] StarRocks Puffin NDV 통계정보 파이프라인 개발",
+                      "type": "Task", "epic": "DL-102", "components": ["ETL"],
+                      "description": body}]}
+
+    got = WorkArchitect().apply(state, out)
+    item = got["draft"]["items"][0]
+
+    assert got["draft"]["structure"] == "task_with_subtasks"
+    assert [c["summary"].rsplit(" — ", 1)[-1] for c in item["children"]] == [
+        "설계", "구현", "검증"]
+
+
 def test_a_genuinely_new_epic_is_not_blocked():
     out = {"questions": [], "mode": "epic", "rationale": "",
            "items": [{"summary": "[ETL] 사내 표준 스키마 레지스트리 이관", "type": "Epic",

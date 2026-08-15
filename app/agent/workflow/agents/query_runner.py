@@ -7,6 +7,39 @@ import re
 from app.agent.workflow.state import Node, note
 
 
+_LEXICAL_IGNORED = {
+    "task", "ticket", "jira", "작업", "티켓", "이력", "조회", "검색",
+    "위한", "위해", "관련", "새로", "만들자", "만들기", "생성", "생성한다",
+}
+
+
+def _search_token(token: str) -> str:
+    """Jira text 검색용 최소 어간. 형태소 추측 대신 흔한 조사·서술 접미만 제거한다."""
+    value = str(token or "").strip()
+    # 긴 접미부터 제거. 영문 기술어 뒤의 한국어 조사(`Avro로`)도 같은 규칙을 쓴다.
+    for suffix in ("으로부터", "에서는", "전환하는", "생성하는", "위해서", "으로", "에서",
+                   "에게", "하는", "한다", "했다", "하며", "하고", "처럼", "까지",
+                   "부터", "로", "을", "를", "은", "는", "이", "가", "의", "에"):
+        if value.endswith(suffix) and len(value) - len(suffix) >= 2:
+            value = value[:-len(suffix)]
+            break
+    return value
+
+
+def _lexical_terms(text: str, limit: int = 4) -> list[str]:
+    terms, seen = [], set()
+    for raw in re.findall(r"[A-Za-z0-9가-힣_.-]{2,}", str(text or "")):
+        token = _search_token(raw)
+        folded = token.casefold()
+        if not token or folded in {x.casefold() for x in _LEXICAL_IGNORED} or folded in seen:
+            continue
+        seen.add(folded)
+        terms.append(token)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
 def _jira_where(where: str, query: str) -> str:
     """Combine typed Jira lexical query with structural filters using safe JQL text clauses."""
     base = str(where or "").strip()
@@ -37,10 +70,7 @@ def _jira_where(where: str, query: str) -> str:
         # conservative stem alternative for compound wording.
         def expand_text(match):
             phrase = match.group(1).strip()
-            tokens = []
-            for token in re.findall(r"[A-Za-z0-9가-힣_.-]{2,}", phrase):
-                if token.lower() not in {x.lower() for x in tokens}:
-                    tokens.append(token)
+            tokens = _lexical_terms(phrase, limit=5)
             clauses = []
             for token in tokens[:5]:
                 if token.endswith("정보") and len(token) > 3:
@@ -55,12 +85,7 @@ def _jira_where(where: str, query: str) -> str:
         return f"({base}) AND ({structural})" if base and structural else (structural or base)
     if re.search(r"\b(?:text|summary|description)\s*~", base, re.I):
         return base
-    ignored = {"task", "ticket", "jira", "작업", "티켓", "이력", "조회", "검색"}
-    terms = []
-    for token in re.findall(r"[A-Za-z0-9가-힣_.-]{2,}", str(query or "")):
-        if token.lower() in ignored or token in terms:
-            continue
-        terms.append(token)
+    terms = _lexical_terms(query)
     lexical = " AND ".join(f'text ~ "{term}"' for term in terms[:4])
     if not lexical:
         return base

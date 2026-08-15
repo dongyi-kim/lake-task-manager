@@ -1266,7 +1266,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             dod = body.count("data-checked")
             stages = sum(1 for w in ("설계", "구현", "검증", "연동", "모니터링", "전환",
                                      "PoC", "테스트", "배포") if w in body)
-            building = any(w in request_text(state) for w in BUILD_WORDS)
+            # request_text가 후속 답변으로 덮이는 회귀가 있더라도 전체 사용자 발화에서
+            # 최초 구축 신호를 복원한다(STARR1: 첫 턴 `파이프라인`이 둘째 턴에서 사라짐).
+            building_request = (request_text(state) + " " + _human_request_text(state)).strip()
+            building = any(w in building_request for w in BUILD_WORDS)
             if dod >= 5 or stages >= 3 or building:
                 if _said_defaults(state):
                     # 위임받았으면 묻지 않고 **나눠서** 낸다 — 보정 호출 1회로 단계를
@@ -2298,6 +2301,13 @@ def _split_into_children(state, item: dict) -> list:
     volume = _volume_partition_children(state, item)
     if volume:
         return volume
+    # 이 함수에 도달했다는 것 자체가 이미 "다단계로 나눈다"는 구조 판정이다. 신규 구축을
+    # 다시 LLM에 물어 단계명 변동과 한 번의 왕복을 추가하지 말고, 구체적인 parent 대상을
+    # 보존한 최소 실행 단위로 결정적으로 분해한다. 국소 수정은 호출 전 가드에서 제외된다.
+    all_human = (request_text(state) + " " + _human_request_text(state)).strip()
+    base = _base_title(str(item.get("summary") or "")).strip()
+    if base and any(word in all_human for word in BUILD_WORDS):
+        return [{"summary": f"{base} — {stage}"} for stage in ("설계", "구현", "검증")]
     try:
         schema = {"title": "split_children", "type": "object", "properties": {
             "children": {"type": "array", "items": {
