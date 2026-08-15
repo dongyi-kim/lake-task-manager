@@ -2776,11 +2776,11 @@ def test_long_subject_does_not_hide_a_vague_completion_condition():
     item = {"summary": "[ETL] StarRocks Puffin NDV 통계정보 생성 파이프라인 개발",
             "type": "Task", "description": (
                 "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
-                "<li data-checked=\"false\">NDV 통계정보 생성 파이프라인이 정상적으로 작동함</li>"
+                "<li data-checked=\"false\">NDV 통계정보 생성 파이프라인이 정상적으로 작동해야 할 것</li>"
                 "<li data-checked=\"false\">관련 문서화 완료</li></ul>")}
     assert _sharpen_dod(_msg("NDV 파이프라인 개발"), [item])
-    assert "작동함" not in item["description"] and "문서화 완료" not in item["description"]
-    assert "함 실행" not in item["description"]
+    assert "작동해야" not in item["description"] and "문서화 완료" not in item["description"]
+    assert "함 실행" not in item["description"] and "할 것 실행" not in item["description"]
 
 
 def test_a_plain_task_still_gets_the_task_template(monkeypatch):

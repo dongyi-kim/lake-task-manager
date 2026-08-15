@@ -2864,6 +2864,9 @@ def _sharpen_dod(state, items) -> bool:
                 r"정상(?:적으로)?\s*(?:동작|작동|구현)(?:함|됨)?|"
                 r"문서화\s*완료|이상\s*없음|문제\s*없음)",
                 "", old, flags=_re.I).strip(" -·:;")
+            # `정상적으로 작동해야 할 것`에서 vague phrase를 떼면 `해야 할 것` 또는
+            # `할 것`이 조사처럼 남을 수 있다. Evidence 문장에 그 찌꺼기를 이어 붙이지 않는다.
+            stem = _re.sub(r"(?:이|가)?\s*(?:해야\s*)?(?:함|됨|할\s*것|한다)?\s*$", "", stem)
             subject = stem or _re.sub(
                 r"^\s*\[[^\]]+\]\s*", "", str(it.get("summary") or "작업")).strip()
             if any(w in old for w in ("성능", "정확", "검증", "기준")):

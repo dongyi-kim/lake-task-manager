@@ -1024,6 +1024,8 @@ def _drop_false_epic_claims(text: str, items: list) -> str:
         actual_type = str(items[0].get("type") or "Task")
         text = _re.sub(r"(?mi)^(\s*-?\s*\*\*)(?:Epic|에픽)(\*\*\s*:\s*)",
                        rf"\1{actual_type}\2", str(text or ""))
+        text = _re.sub(r"(?mi)^(\s*-?\s*\*\*)(?:Epic|에픽)\s*이름(\*\*\s*:\s*)",
+                       rf"\1{actual_type} 제목\2", text)
         text = _re.sub(r"(?:Epic|에픽)(?:\s*의)?\s*(?:총괄\s*)?담당자",
                        f"{actual_type} 담당자", text, flags=_re.I)
     lines = []

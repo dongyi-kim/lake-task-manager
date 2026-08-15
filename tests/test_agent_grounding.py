@@ -234,12 +234,12 @@ def test_task_linked_to_epic_is_not_described_as_a_new_epic_draft():
     state = {"draft": {"items": [{"summary": "[ETL] Puffin NDV 파이프라인 1차 구현",
                                       "type": "Story", "epic": "DL-102"}]}}
     got = _align_draft_claims(
-        "### Epic 초안\n\n- **Epic**: [ETL] Puffin NDV 파이프라인 1차 구현\n\n"
+        "### Epic 초안\n\n- **Epic 이름**: [ETL] Puffin NDV 파이프라인 1차 구현\n\n"
         "새로운 Epic을 생성하고 Epic Name을 설정합니다.\n\n"
         "상위 Epic DL-102 아래에 배치합니다.\n\n### 승인 요청\n승인해 주세요.", state)
     assert "새로운 Epic" not in got and "Epic Name" not in got
     assert "**실제 티켓 초안**: Story" in got and "DL-102" in got
-    assert "- **Story**:" in got and "- **Epic**:" not in got
+    assert "- **Story 제목**:" in got and "Epic 이름" not in got
     assert "상위 Epic" in got
 
 
