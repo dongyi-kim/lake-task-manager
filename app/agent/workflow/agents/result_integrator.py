@@ -69,6 +69,15 @@ class ResultIntegrator(TextAgent):
             goal = ("Summarize the established situation in two or three Korean sentences. The structured "
                     "form renders every question and option; do not repeat or number them in prose and do not "
                     "ask anything outside the form. End with the concise Korean line `아래에서 선택해 주세요`.")
+        elif (state.get("change_plan") or {}).get("keys") \
+                and not ((state.get("change_plan") or {}).get("changes") or {}) \
+                and ((state.get("change_plan") or {}).get("comment")
+                     or (state.get("change_plan") or {}).get("comments")):
+            n = len((state.get("change_plan") or {}).get("keys") or [])
+            goal = (f"Present the Korean comment-only approval draft for exactly {n} tickets. State that no "
+                    "ticket field or status will change. Use a `| 티켓 | 제목 | 작업 |` table with one row "
+                    "per target and write `댓글 추가` in the action column. Never describe current status as "
+                    "a planned status change. Request approval and make clear nothing has been posted yet.")
         elif (state.get("change_plan") or {}).get("keys"):
             n = len(state.get("change_plan", {}).get("keys") or [])
             # ★ 자르기 안내는 **정말 자를 때만** 싣는다(사용자 관점 리뷰 F4).

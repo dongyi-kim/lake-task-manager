@@ -130,7 +130,8 @@ def resolved_people(state) -> dict[str, str]:
 def _uncertain_terms(text: str) -> list[str]:
     terms: list[str] = []
     for term in re.findall(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9-]{1,9})(?![A-Za-z0-9])", text):
-        if term.upper() in _KNOWN_TECH or term.isdigit() or term in terms:
+        if (term.upper() in _KNOWN_TECH or term.isdigit() or term in terms
+                or re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", term)):
             continue
         nearby = re.search(
             rf"{re.escape(term)}.{{0,80}}(?:뜻|정의|기준).{{0,60}}(?:없|미정|확정되지|모르|확인)|"

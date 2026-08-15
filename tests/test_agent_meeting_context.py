@@ -11,11 +11,15 @@ from app.agent.tools.people_tools import set_person_context  # noqa: E402
 from app.agent.workflow.agents.knowledge_curator import KnowledgeCurator  # noqa: E402
 from app.agent.workflow.agents.query_runner import QueryRunner  # noqa: E402
 from app.agent.workflow.agents.query_specialist import QuerySpecialist  # noqa: E402
-from app.agent.workflow.agents.result_integrator import _canonicalize_meeting_reply  # noqa: E402
+from app.agent.workflow.agents.result_integrator import (  # noqa: E402
+    ResultIntegrator,
+    _canonicalize_meeting_reply,
+)
 from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _apply_named_assignees,
     _canonicalize_meeting_mentions,
     _comment_input_missing,
+    _explicit_meeting_update_fields,
     shape_hint,
 )
 from app.agent.workflow.meeting_context import meeting_subject, unresolved_questions  # noqa: E402
@@ -75,6 +79,12 @@ def test_new_request_clears_stale_research_and_draft_but_interview_answer_keeps_
 def test_exact_meeting_task_count_and_singular_task_are_user_selected_shapes():
     assert shape_hint(_state("Epic 아래 정확히 Task 3건의 초안을 만들어줘"))[0] == "multiple_tasks"
     assert shape_hint(_state("회의 후속 Task를 만들어줘"))[0] == "single_task"
+    resumed = _state(
+        "Epic 아래 정확히 Task 3건의 초안을 만들어줘",
+        "준서TL은 skcc.x1103 이준서야.",
+        request="Epic 아래 정확히 Task 3건의 초안을 만들어줘",
+    )
+    assert shape_hint(resumed)[0] == "multiple_tasks"
 
 
 def test_meeting_owner_lines_override_recommendations_but_reviewer_does_not():
@@ -101,13 +111,13 @@ def test_meeting_comment_mentions_are_repaired_to_confirmed_identities():
     request = "회의 결정 댓글: writer 결과는 @이다은, reader는 하은님, 준서TL이 검토"
     answer = "준서TL은 skcc.x1327 임준서야."
     state = _state(request, answer, request=request)
-    plan = {"comment": ("writer는 {{mention:skcc.x1327}} 이다은님, reader는 하은님, "
-                         "검토는 준서TL"), "comments": []}
+    plan = {"comment": ("writer 결과는 {{mention:skcc.i2101}}이 공유, "
+                         "reader 결과는 하은님이 공유, 검토는 준서TL"), "comments": []}
     _canonicalize_meeting_mentions(state, plan)
     assert "{{mention:skcc.i2011}}" in plan["comment"]
     assert "{{mention:skcc.x1402}}" in plan["comment"]
     assert "{{mention:skcc.x1327}}" in plan["comment"]
-    assert "{{mention:skcc.x1327}} 이다은" not in plan["comment"]
+    assert "skcc.i2101" not in plan["comment"]
 
 
 def test_explicit_no_comment_never_asks_for_comment_body():
@@ -160,3 +170,44 @@ def test_curator_drops_only_meeting_terms_defined_by_interview():
 def test_titled_meeting_uses_full_technical_subject_instead_of_one_action_keyword():
     state = _state("## 2026-08-15 Iceberg Puffin NDV 도입 실무회의\n- StarRocks reader 검증")
     assert meeting_subject(state) == "Iceberg Puffin NDV"
+
+
+def test_jira_key_is_not_interviewed_as_a_local_meeting_acronym():
+    set_person_context("meeting-key-not-term", ["DL-9200"])
+    request = ("회의 후속 Task. 준서TL이 PSR 증빙 담당. Epic DL-9200 아래에 만들어줘. "
+               "사람과 PSR 뜻은 조사 후에도 확정되지 않으면 물어봐.")
+    state = {**_state(request), "situation": "내부·외부 조사 완료"}
+    questions = unresolved_questions(state)
+    assert "DL-9200" not in str(questions)
+    assert "PSR" in str(questions)
+
+
+def test_exact_meeting_update_fields_survive_identity_interview_resume():
+    set_person_context("meeting-update-fields", ["DL-9203"])
+    request = """회의 결정대로 DL-9203을 수정해줘.
+- 제목: [Catalog] Puffin NDV 검증 기준 및 결과 템플릿
+- priority: P1-Critical
+- due: 2026-08-29
+- component: Catalog
+- labels 전체값: meeting-fixture, puffin-ndv, decision-20260815
+- 본문 전체 교체: `결정 배경`, `작업 범위`, `검증 기준` 세 section. 5개 테이블 PoC 결과를 기록하되 StarRocks 소비 지원은 검증 전 확정하지 않음
+- 준서TL이 RGP 기준의 소유자"""
+    answer = ("준서TL은 skcc.x1103 이준서. RGP는 Reader Gate Policy이고 "
+              "StarRocks 실제 소비 증거 전에는 운영 반영을 막는 기준이야.")
+    state = {**_state(request, answer, request=request), "intent": "modify"}
+    fields = _explicit_meeting_update_fields(state)
+    assert set(fields) == {"summary", "priority", "duedate", "components", "labels", "description"}
+    assert fields["summary"] == "[Catalog] Puffin NDV 검증 기준 및 결과 템플릿"
+    assert fields["priority"] == "P1-Critical" and fields["duedate"] == "2026-08-29"
+    assert fields["components"] == ["Catalog"]
+    assert fields["labels"] == ["meeting-fixture", "puffin-ndv", "decision-20260815"]
+    assert all(section in fields["description"] for section in ("결정 배경", "작업 범위", "검증 기준"))
+    assert "skcc.x1103" in fields["description"]
+
+
+def test_comment_only_result_contract_never_describes_status_as_a_change():
+    state = {**_state("회의 결정을 DL-9201, DL-9202 댓글로 알려줘"), "intent": "modify",
+             "change_plan": {"keys": ["DL-9201", "DL-9202"], "changes": {},
+                             "comment": "회의 결정", "comments": []}}
+    prompt = ResultIntegrator().task(state)
+    assert "comment-only" in prompt and "no ticket field or status will change" in prompt

@@ -1724,6 +1724,71 @@ def _normalize_priority(value) -> str:
     return _PRI.get("P" + match.group(1), raw) if match else _PRI.get(raw.upper(), raw)
 
 
+def _explicit_meeting_update_fields(state) -> dict:
+    """Recover exact meeting field values from the authoritative original request."""
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, resolved_people
+        if not is_meeting_request(state) or (state.get("intent") or "") != Intent.MODIFY:
+            return {}
+    except Exception:
+        return {}
+    request, latest = request_text(state), last_user_text(state)
+    fields = {}
+
+    def line(label: str) -> str:
+        match = _re.search(rf"(?mi)^\s*-\s*{label}\s*[:：]\s*(.+?)\s*$", request)
+        return match.group(1).strip() if match else ""
+
+    summary = line(r"(?:제목|summary)")
+    if summary:
+        fields["summary"] = summary.strip("` ")
+    priority = line(r"(?:priority|우선순위)")
+    if priority:
+        fields["priority"] = _normalize_priority(priority)
+    due = line(r"(?:due|duedate|마감|기한)")
+    date = _re.search(r"\b\d{4}-\d{2}-\d{2}\b", due)
+    if date:
+        fields["duedate"] = date.group(0)
+    component = line(r"(?:component|컴포넌트|모듈)")
+    if component:
+        fields["components"] = [component.strip("` ")]
+    labels = line(r"(?:labels?(?:\s*전체값)?|라벨(?:\s*전체값)?)")
+    if labels:
+        fields["labels"] = [value.strip("` ") for value in labels.split(",")
+                            if value.strip("` ")]
+
+    body = line(r"본문\s*전체\s*교체")
+    sections = _re.findall(r"`([^`]{2,30})`", body)
+    if body and sections:
+        body_facts = _re.sub(r"`[^`]+`(?:\s*,\s*|\s*(?:세|두)\s*section\.?)?", " ", body)
+        body_facts = _re.sub(r"\s+", " ", body_facts).strip(" .")
+        term = next((name for name in ("RGP", "PSR")
+                     if name in request and name in latest), "")
+        definition = ""
+        if term:
+            found = _re.search(rf"{term}\s*(?:은|는|:|=)\s*(.+?)(?:[.!?]|$)", latest)
+            if found:
+                definition = f"{term}: {found.group(1).strip()}"
+        people = resolved_people(state)
+        owner = next((uid for name, uid in people.items()
+                      if name in request and _re.search(
+                          rf"{_re.escape(name)}(?:TL|님|차장|책임)?.{{0,30}}(?:소유자|기준)",
+                          request)), "")
+        values = [
+            "회의에서 확정된 변경 사항 반영",
+            body_facts or "회의에서 지정한 범위만 반영",
+            "\n".join(value for value in (
+                definition,
+                f"기준 소유자: {{{{mention:{owner}}}}}" if owner else "",
+            ) if value) or "회의에서 지정한 검증 기준 적용",
+        ]
+        fields["description"] = "\n\n".join(
+            f"## {heading}\n{values[index] if index < len(values) else body_facts}"
+            for index, heading in enumerate(sections)
+        )
+    return fields
+
+
 def _change_plan(state, out, items, qs):
     """modify 갈래 — **기존 티켓 변경 계획**을 확정한다. `(plan, qs)` 를 돌려준다.
 
@@ -1747,6 +1812,10 @@ def _change_plan(state, out, items, qs):
         fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary",
                                          "labels", "components", "description")
                   if k in change and change[k] is not None}
+        # A meeting update often reaches this node after an identity/term interview.  The
+        # original request is authoritative and may enumerate exact fields even when the
+        # model returns only one of them on the resumed turn.
+        fields.update(_explicit_meeting_update_fields(state))
         # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
         # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
         # 떴다. 담당 해제("assignee": "")만 예외로 인정한다(사용자가 뗄 때 쓴다).
@@ -3776,7 +3845,9 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
     if not plan:
         return
     try:
-        from app.agent.workflow.meeting_context import is_meeting_request, resolved_people
+        from app.agent.workflow.meeting_context import (
+            canonicalize_reply_mentions, is_meeting_request, resolved_people,
+        )
         if not is_meeting_request(state):
             return
         people = resolved_people(state)
@@ -3784,7 +3855,7 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
         return
 
     def canonical(body: str) -> str:
-        value = str(body or "")
+        value = canonicalize_reply_mentions(state, str(body or ""))
         for name, uid in sorted(people.items(), key=lambda row: -len(row[0])):
             badge = f"{{{{mention:{uid}}}}}"
             # Repair a badge already paired with the wrong human-readable name.
@@ -3795,6 +3866,22 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
             value = _re.sub(
                 rf"(?<![가-힣A-Za-z0-9_.}}])@?{_re.escape(name)}(?:TL|님|차장|책임|매니저)?",
                 badge, value,
+            )
+        # If a model substitutes another valid user ID without retaining the display name,
+        # repair role clauses from the explicit meeting note (writer/reader result owner).
+        original = request_text(state)
+        for role in ("writer", "reader"):
+            owner = _re.search(
+                rf"{role}\s*결과(?:는|를|은)?\s*(?:@|\{{\{{)?([가-힣]{{1,5}})",
+                original, _re.I,
+            )
+            uid = people.get(owner.group(1)) if owner else ""
+            if not uid:
+                continue
+            value = _re.sub(
+                rf"({role}\s*결과(?:는|를|은)?\s*)"
+                r"(?:\{\{mention:[^}]+\}\}|\[~[^\]]+\]|@[가-힣]+|[가-힣]{1,5}(?:님|TL)?)",
+                rf"\1{{{{mention:{uid}}}}}", value, flags=_re.I,
             )
         return value
 
@@ -4500,8 +4587,17 @@ _SHAPE_WORDS = (
 
 
 def shape_hint(state) -> tuple:
-    """(사용자가 말한 형태 | "", 근거 낱말). 말하지 않았으면 열려 있는 것이다."""
-    said = last_user_text(state)
+    """Return the latest explicit shape, falling back to the pre-interview request."""
+    latest, original = last_user_text(state), request_text(state)
+    for said in (latest, original):
+        hint = _shape_hint_text(said)
+        if hint[0]:
+            return hint
+    return "", ""
+
+
+def _shape_hint_text(said: str) -> tuple:
+    """Parse one human message for an explicit ticket shape."""
     said_l = said.lower()
     exact_tasks = _re.search(
         r"(?:정확히\s*)?(?:task|태스크|테스크)\s*([2-9][0-9]{0,2})\s*건", said_l, _re.I)
