@@ -55,8 +55,8 @@ STATIC_DIR = RESOURCE_DIR / "app" / "static"   # 번들 리소스
 #   gitignore 는 `.cache/` 한 줄이면 된다.
 # 규칙: config 의 상대경로(state_path·db_path)는 **CACHE_DIR 기준**으로 해석한다
 #       (절대경로는 그대로 존중 — 다른 위치를 원하는 사람의 선택을 막지 않는다).
-CACHE_DIR = BASE_DIR / ".cache"
-CACHE_DIR.mkdir(exist_ok=True)
+CACHE_DIR = Path(os.getenv("LAKE_CACHE_DIR") or (BASE_DIR / ".cache"))
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _cache_path(p):

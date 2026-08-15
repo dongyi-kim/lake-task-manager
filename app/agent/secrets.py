@@ -33,7 +33,8 @@ FIELDS = (
 )
 
 # 화면에 돌려줄 때 **절대 원문을 실어 보내지 않는** 필드
-SECRET_FIELDS = ("aoaiApiKey", "openaiApiKey", "compatApiKey", "langfuseSecretKey")
+SECRET_FIELDS = ("aoaiApiKey", "openaiApiKey", "compatApiKey", "compatHeaders",
+                 "langfuseSecretKey")
 
 
 def _path() -> Path:
@@ -41,14 +42,19 @@ def _path() -> Path:
     return Path(CACHE_DIR) / "agent_secrets.json"
 
 
-def load() -> dict:
-    """저장된 값. 파일이 없거나 깨졌으면 빈 dict(앱이 죽지 않게)."""
+def _load_raw() -> dict:
+    """레거시 전역 비밀과 config별 비밀을 함께 읽는 내부 함수."""
     try:
         with _path().open(encoding="utf-8") as f:
             data = json.load(f)
-        return {k: v for k, v in data.items() if k in FIELDS} if isinstance(data, dict) else {}
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def load() -> dict:
+    """레거시 전역 비밀. 환경변수 기반 배포와 이전 설정 호환용."""
+    return {k: v for k, v in _load_raw().items() if k in FIELDS}
 
 
 def save(patch: dict) -> dict:
@@ -57,7 +63,8 @@ def save(patch: dict) -> dict:
     값이 빈 문자열이면 그 키를 지운다 — 화면에서 지우는 동작이 곧 삭제여야 한다.
     """
     with _LOCK:
-        cur = load()
+        raw = _load_raw()
+        cur = {k: v for k, v in raw.items() if k in FIELDS}
         for k, v in (patch or {}).items():
             if k not in FIELDS:
                 continue
@@ -69,11 +76,67 @@ def save(patch: dict) -> dict:
         tmp = p.with_suffix(".json.tmp")
         try:
             with tmp.open("w", encoding="utf-8") as f:
-                json.dump(cur, f, ensure_ascii=False, indent=2)
+                json.dump({**cur, "_configs": raw.get("_configs", {})}, f,
+                          ensure_ascii=False, indent=2)
             tmp.replace(p)                      # 원자적 교체 — 쓰다 죽어도 잘린 파일이 안 남는다
         except Exception:
             pass
         return masked(cur)
+
+
+def load_for(config_id: str) -> dict:
+    """named config 하나의 저장값. 환경변수는 섞지 않는다."""
+    rows = _load_raw().get("_configs") or {}
+    row = rows.get(str(config_id)) if isinstance(rows, dict) else {}
+    return {k: v for k, v in (row or {}).items() if k in FIELDS}
+
+
+def get_for(config_id: str, field: str) -> str:
+    return str(load_for(config_id).get(field) or "").strip()
+
+
+def save_for(config_id: str, patch: dict) -> dict:
+    """config별 비밀을 원자적으로 저장하고 마스킹된 값만 반환."""
+    cid = str(config_id or "").strip()
+    if not cid:
+        raise ValueError("config id가 필요합니다.")
+    with _LOCK:
+        raw = _load_raw()
+        rows = raw.get("_configs") if isinstance(raw.get("_configs"), dict) else {}
+        cur = {k: v for k, v in (rows.get(cid) or {}).items() if k in FIELDS}
+        for k, v in (patch or {}).items():
+            if k not in FIELDS:
+                continue
+            if v is None or str(v).strip() == "":
+                cur.pop(k, None)
+            else:
+                cur[k] = str(v).strip()
+        rows[cid] = cur
+        legacy = {k: v for k, v in raw.items() if k in FIELDS}
+        payload = {**legacy, "_configs": rows}
+        p = _path()
+        tmp = p.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        tmp.replace(p)
+        return masked(cur)
+
+
+def delete_for(config_id: str) -> None:
+    with _LOCK:
+        raw = _load_raw()
+        rows = raw.get("_configs") if isinstance(raw.get("_configs"), dict) else {}
+        rows.pop(str(config_id), None)
+        legacy = {k: v for k, v in raw.items() if k in FIELDS}
+        p = _path()
+        tmp = p.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump({**legacy, "_configs": rows}, f, ensure_ascii=False, indent=2)
+        tmp.replace(p)
+
+
+def masked_for(config_id: str) -> dict:
+    return masked(load_for(config_id))
 
 
 # 필드 -> 이 값을 덮어쓸 수 있는 환경변수. **여기가 유일한 정의다.**

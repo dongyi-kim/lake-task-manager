@@ -50,7 +50,7 @@ def test_status_never_returns_a_raw_key(client, monkeypatch):
     assert "9876" not in body or "XYZ" not in body      # 끝 4자 힌트 외에는 남지 않는다
 
 
-def test_settings_put_stores_the_model_in_the_right_slot(client, monkeypatch):
+def test_legacy_settings_put_does_not_silently_change_the_active_config(client, monkeypatch):
     """★ prefs 를 **스텁하지 않는다.**
 
     처음엔 `prefs.save` 를 가로채 인자만 확인했는데, 정작 `prefs` 는 `_DEFAULTS` 에 없는 키를
@@ -66,9 +66,76 @@ def test_settings_put_stores_the_model_in_the_right_slot(client, monkeypatch):
     assert saved["agentProvider"] == "openai"
     assert saved["agentOpenaiChat"] == "gpt-4o"          # aoai 자리에 들어가면 안 된다
     assert not saved.get("agentAoaiChat")
-    # 저장한 값이 실제로 **해석에 쓰여야** 한다 — 파일에만 남고 안 읽히면 저장한 게 아니다.
+    # 레거시 고정 탭 저장은 가져오기 후보로만 남는다. 저장·편집이 활성 연결을 바꾸면 안 된다.
     from app.agent import config
-    assert config.provider() == "openai" and config.chat_model() == "gpt-4o"
+    assert config.provider() != "openai"
+    assert client.get("/api/agent/status").json()["legacyCandidate"]["chatModel"] == "gpt-4o"
+
+
+def test_named_configs_allow_multiple_profiles_of_the_same_provider(client):
+    a = client.post("/api/agent/configs", json={"name": "개인 OpenAI", "provider": "openai"})
+    b = client.post("/api/agent/configs", json={"name": "팀 OpenAI", "provider": "openai"})
+    assert a.status_code == 200 and b.status_code == 200
+    rows = client.get("/api/agent/status").json()["configs"]
+    assert [(x["name"], x["provider"]) for x in rows] == [
+        ("개인 OpenAI", "openai"), ("팀 OpenAI", "openai")]
+
+
+def test_editing_candidate_does_not_change_active_profile(client):
+    first = client.post("/api/agent/configs", json={"name": "현재", "provider": "fake"}).json()["config"]
+    client.post(f"/api/agent/configs/{first['id']}/probe/auth")
+    client.post(f"/api/agent/configs/{first['id']}/probe")
+    assert client.post(f"/api/agent/configs/{first['id']}/activate").json()["ok"]
+
+    second = client.post("/api/agent/configs", json={"name": "후보", "provider": "fake"}).json()["config"]
+    client.put(f"/api/agent/configs/{second['id']}", json={"chatModel": "fake-chat"})
+    status = client.get("/api/agent/status").json()
+    assert status["activeConfigId"] == first["id"]
+    assert next(x for x in status["configs"] if x["id"] == second["id"])["active"] is False
+
+
+def test_profile_model_listing_uses_requested_config(client, monkeypatch):
+    row = client.post("/api/agent/configs", json={"name": "선택한 후보", "provider": "openai"}).json()["config"]
+    from app.agent import config as C
+    seen = {}
+    def scoped(*, config_id="", **_):
+        seen["id"] = config_id
+        return {"chat": ["right-model"], "embed": [], "error": ""}
+    monkeypatch.setattr(C, "list_models", scoped)
+    result = client.get(f"/api/agent/configs/{row['id']}/models").json()
+    assert seen["id"] == row["id"] and result["chat"] == ["right-model"]
+
+
+def test_named_profile_secrets_are_isolated_and_never_returned_raw(client):
+    a = client.post("/api/agent/configs", json={"name": "A", "provider": "openai"}).json()["config"]
+    b = client.post("/api/agent/configs", json={"name": "B", "provider": "openai"}).json()["config"]
+    client.put(f"/api/agent/configs/{a['id']}", json={"secrets": {"openaiApiKey": "sk-a-secret-1111"}})
+    client.put(f"/api/agent/configs/{b['id']}", json={"secrets": {"openaiApiKey": "sk-b-secret-2222"}})
+    body = client.get("/api/agent/status").text
+    assert "sk-a-secret" not in body and "sk-b-secret" not in body
+    rows = {x["name"]: x for x in client.get("/api/agent/status").json()["configs"]}
+    assert "1111" in rows["A"]["secrets"]["openaiApiKey"]
+    assert "2222" in rows["B"]["secrets"]["openaiApiKey"]
+
+
+def test_each_legacy_provider_can_be_imported_without_becoming_active(client, monkeypatch):
+    from app.infra import prefs
+    from app.agent import secrets
+    monkeypatch.delenv("LAKE_AGENT_PROVIDER", raising=False)
+    prefs.save({"agentProvider": "openai_compat", "agentOpenaiChat": "gpt-4o",
+                "agentOpenaiEmbed": "text-embedding-3-small",
+                "agentCompatChat": "qwen-old", "agentCompatEmbed": "bge-old"})
+    secrets.save({"openaiApiKey": "sk-openai-1111", "compatBaseUrl": "http://old/v1",
+                  "compatApiKey": "compat-2222"})
+    before = client.get("/api/agent/status").json()
+    assert {x["provider"] for x in before["legacyCandidates"]} == {"openai", "openai_compat"}
+
+    imported = client.post("/api/agent/configs/import-legacy",
+                           json={"name": "기존 OpenAI", "provider": "openai"}).json()["config"]
+    after = client.get("/api/agent/status").json()
+    assert imported["provider"] == "openai" and imported["chatModel"] == "gpt-4o"
+    assert after["activeConfigId"] == ""
+    assert {x["provider"] for x in after["legacyCandidates"]} == {"openai_compat"}
 
 
 def test_every_agent_pref_key_survives_a_round_trip(monkeypatch, tmp_path):

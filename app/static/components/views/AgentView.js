@@ -129,6 +129,7 @@ export default {
       ready: null,            // null=확인 전 · true=쓸 수 있음 · false=설치/설정 안 됨
       reason: "",             // 못 쓰는 이유(설치 누락 등)
       status: null,           // provider·모델 — 지금 무엇으로 도는지 화면에 보인다
+      appMeta: null,          // local dev 복사 진단용 {env,rev}. prod에서는 진단을 내보내지 않는다
       text: "",
       threadId: "",
       turns: [],              // [{who:"user"|"agent", text, trace, evidence, docs, questions,
@@ -196,6 +197,7 @@ export default {
       if (seed) this.$nextTick(() => { this.reset(); this.text = seed; this.send(); });
     } catch (e) { /* noop */ }
     this.loadPriorities().then((p) => { this.priorities = p; });
+    api.health().then((h) => { this.appMeta = h || null; }).catch(() => {});
     api.prefs()
       .then((p) => {
         this.ready = !!p.agentEnabled;
@@ -463,7 +465,9 @@ export default {
       this.turns.push({ who: "user", text, html: html || "" });
       const turn = { who: "agent", text: "", trace: [], evidence: [], docs: [],
                      questions: [], assignments: [], review: {}, pending: null, result: null,
-                     usage: null };
+                     usage: null,
+                     debug: { startedAt: new Date().toISOString(), finishedAt: "",
+                              tokenChars: 0, events: [], plan: [], error: "" } };
       this.turns.push(turn);
       // ── 스트리밍 중에도 다른 대화를 볼 수 있다(사용자 요청 — 막을 이유가 없다).
       // 이 턴의 결과는 **이 배열**(myTurns)에 쌓이고, 화면이 다른 대화로 가 있으면
@@ -482,6 +486,8 @@ export default {
       // ★ 반응형 프록시를 잡아서 쓴다 — 원본 배열을 직접 고치면 화면이 안 바뀐다(Vue 3).
       const myPlan = this.plans[myKey];
       const settle = () => {                // 이 스트림의 끝 — 진행 표시·라이브 표식을 거둔다
+        turn.debug.finishedAt = new Date().toISOString();
+        turn.debug.plan = JSON.parse(JSON.stringify(myPlan || []));
         delete this.live[myKey];
         delete this.plans[myKey];
         delete this.aborts[myKey];
@@ -492,6 +498,18 @@ export default {
       this.aborts[myKey] = agentApi.stream(
         { text, threadId: this.threadId },
         (ev) => {
+          // local dev에서 복사할 진단 기록. token 원문·비밀값은 보관하지 않고 글자 수만 센다.
+          if (ev.type === "token") turn.debug.tokenChars += String(ev.text || "").length;
+          else {
+            const item = { type: ev.type || "unknown", at: new Date().toISOString() };
+            ["node", "label", "parent", "note", "message", "error", "thread_id"].forEach((k) => {
+              if (ev[k] !== undefined && ev[k] !== null && ev[k] !== "") item[k] = String(ev[k]).slice(0, 1000);
+            });
+            if (ev.done !== undefined) item.done = !!ev.done;
+            turn.debug.events.push(item);
+            if (turn.debug.events.length > 200) turn.debug.events.shift();
+            if (ev.type === "error" || ev.error) turn.debug.error = String(ev.message || ev.error || "").slice(0, 2000);
+          }
           if (ev.type === "start") {
             myTid = ev.thread_id || myTid;
             // 임시 자리("_new")에 쌓아 둔 것을 진짜 thread_id 로 옮긴다.
@@ -725,6 +743,10 @@ export default {
         last.stopped = true;
       }
       if (ab) { try { ab(); } catch (e) { /* noop */ } }
+      if (last && last.debug) {
+        last.debug.finishedAt = new Date().toISOString();
+        last.debug.plan = JSON.parse(JSON.stringify(this.plans[key] || []));
+      }
       delete this.live[key]; delete this.plans[key]; delete this.aborts[key];
       if (this._live) delete this._live[key];
       if (key !== "_new") this.saveConvo(key, this.turns);
@@ -841,6 +863,32 @@ export default {
         if (t.usage) L.push(`  [사용량] ${t.usage.calls || "?"}회 · ${t.usage.totalTokens || 0}tok · $${t.usage.costUsd || 0}`);
         L.push("");
       });
+      // 운영 대화 복사는 사용자 입출력만. local/mock에서는 재현에 필요한 진행·연결 정보를
+      // 함께 싣는다. SSE token 원문과 API 키는 애초에 debug에 저장하지 않는다.
+      if (this.appMeta && this.appMeta.env !== "prod") {
+        const active = this.status && this.status.activeConfig;
+        L.push("## Local debug", "",
+          `- env: ${this.appMeta.env || "unknown"}`,
+          `- rev: ${this.appMeta.rev || "unknown"}`,
+          `- threadId: ${this.threadId || "(not assigned)"}`,
+          `- config: ${active ? active.name + " / " + active.provider : "(none)"}`,
+          `- model: ${(this.status && this.status.chatModel) || "(none)"}`, "");
+        this.turns.filter((t) => t.who === "agent" && t.debug).forEach((t, i) => {
+          const d = t.debug;
+          L.push(`### Turn ${i + 1}`, "", `- startedAt: ${d.startedAt || ""}`,
+            `- finishedAt: ${d.finishedAt || ""}`, `- tokenChars: ${d.tokenChars || 0}`);
+          (d.plan || []).forEach((p) => {
+            L.push(`- [${p.status || "?"}] ${p.label || p.id}` + (p.note ? ` — ${p.note}` : ""));
+            (p.details || []).forEach((x) => L.push(`  - ${x.done ? "완료" : "진행"}: ${x.text}`));
+          });
+          (d.events || []).forEach((x) => {
+            const detail = [x.label, x.note, x.message, x.error].filter(Boolean).join(" — ");
+            L.push(`- event:${x.type}` + (detail ? ` — ${detail}` : ""));
+          });
+          if (d.error) L.push(`- error: ${d.error}`);
+          L.push("");
+        });
+      }
       const text = `# LTM Agent 대화 (${new Date().toLocaleString()})\n\n` + L.join("\n");
       try {
         await navigator.clipboard.writeText(text);
@@ -1070,8 +1118,16 @@ export default {
              @mousedown.prevent="startNavDrag" @dblclick="resetNavW"></div>
         <!-- 모델·설정은 좌상단 — 지금 무엇으로 도는지가 먼저 보인다(사용자 요청) -->
         <div class="an-top">
-          <span v-if="status" class="agent-prov" :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
-            {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
+          <span v-if="status && status.runtimeConfigSource === 'named'" class="agent-prov"
+                :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
+            {{ status.activeConfig.name }} · {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
+          </span>
+          <span v-else-if="status && status.runtimeConfigSource === 'environment'" class="agent-prov"
+                :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
+            환경 설정 · {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
+          </span>
+          <span v-else class="agent-prov is-empty">
+            연결 설정 없음
           </span>
           <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
         </div>

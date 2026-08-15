@@ -41,6 +41,13 @@ _DEFAULTS = {"bitbucketEnabled": False,
              "agentModelOkSig": "",     # ② 모델까지 확인된 조합
              "agentActiveSig": "",      # ③ 사용자가 [이 설정 사용]을 누른 조합
              "agentVerifiedSig": "",    # (구버전 호환 — 지금은 안 읽는다)
+             # 사용자 정의 LLM 연결. 같은 provider 종류도 여러 개 둘 수 있다.
+             # 비밀값은 agent_secrets.json의 config id별 영역에 별도 보관한다.
+             "agentConfigs": [],
+             "agentActiveConfigId": "",
+             "agentAuthOkByConfig": {},
+             "agentModelOkByConfig": {},
+             "agentImportedLegacyProviders": [],
              # 사용자별 시스템 프롬프트 추가분 — 모든 역할의 페르소나 뒤에 붙는다.
              # 프로젝트 공용 추가분은 여기가 아니라 config/agent-prompt.md (repo 커밋 대상).
              "agentUserPrompt": ""}
