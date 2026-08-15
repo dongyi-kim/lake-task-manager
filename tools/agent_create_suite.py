@@ -14,10 +14,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("JIRA_ENV", "mock")
-os.environ["LAKE_AGENT_PROVIDER"] = "openai"
 # 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
-os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
 _raw_args = list(sys.argv[1:])
 OUT = None
 for i, arg in enumerate(_raw_args):
@@ -29,11 +26,8 @@ _args = [a for i, a in enumerate(_raw_args)
          if not a.startswith("-") and not (i and _raw_args[i - 1] == "--out")]
 MODEL = _args[0] if _args and not _args[0].isupper() else "gpt-4o-mini"
 ONLY = {a for a in _args if a.isupper()}
-os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
-os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
-SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
+SIMPLE_MODEL = os.environ.get("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 
-from app.agent.workflow import session  # noqa: E402
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, write_raw_result)  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
@@ -42,6 +36,19 @@ except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 BATTERY_VERSION = "2.1.0"
+session = None
+
+
+def _prepare_runtime():
+    """Configure the live battery only when executed, never when imported by tests."""
+    global session
+    os.environ.setdefault("JIRA_ENV", "mock")
+    os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+    os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
+    os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
+    os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+    from app.agent.workflow import session as runtime_session
+    session = runtime_session
 
 
 def items(o):
@@ -468,6 +475,7 @@ def write_checkpoint(hits, total, cost):
 
 
 if __name__ == "__main__":
+    _prepare_runtime()
     hits, cost = 0, 0.0
     run_cases = [c for c in CASES if not ONLY or c[0] in ONLY]
     EVALUATION_METADATA = build_run_metadata(
