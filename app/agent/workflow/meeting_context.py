@@ -101,6 +101,21 @@ def _explicit_user_bindings(latest: str, names: list[str]) -> dict[str, str]:
     # An answer to one unresolved-person question may give only ``skcc.xNNNN FullName``.
     if len(names) == 1 and len(ids) == 1:
         bound.setdefault(names[0], ids[0])
+    # Keep the full display spelling from an interview answer as an alias too.  The meeting
+    # note may say only ``준서TL`` while the answer says ``skcc.x1103 이준서``.  Without this
+    # alias the final prose can leak ``이준서(skcc.x1103)`` instead of one mention badge.
+    for uid in ids:
+        after = re.search(
+            rf"{re.escape(uid)}\s*[,(/]?\s*([가-힣]{{2,5}}?)(?:이고|이며|님)?(?=\s|[),.]|$)",
+            latest, re.I,
+        )
+        before = re.search(
+            rf"(?<![가-힣])([가-힣]{{2,5}})\s*[(/]?\s*{re.escape(uid)}(?=[)\s,.]|$)",
+            latest, re.I,
+        )
+        full_name = (after or before)
+        if full_name:
+            bound.setdefault(full_name.group(1), uid)
     return bound
 
 
@@ -210,13 +225,21 @@ def canonicalize_reply_mentions(state, text: str) -> str:
         )
         person = rf"@?{re.escape(alias)}(?:\s*{_TITLE})?"
         boundary = (r"(?=(?:에게|께서|으로|은|는|이|가|을|를|의|과|와|도|만|로)?"
-                    r"(?:\s|[,.):;]|$))")
+                    r"(?:\s|[(,.):;]|$))")
         out = re.sub(rf"(?<![가-힣A-Za-z0-9_.]){person}{boundary}", token, out)
 
     for uid in dict.fromkeys(str(v) for v in people.values() if str(v).strip()):
         token = re.escape(f"{{{{mention:{uid}}}}}")
         rendered = re.escape(f"[~{uid}]")
+        # A confirmed raw username is just another spelling of the same person.  Do not
+        # rewrite inside an existing mention token (``:uid``) or Jira mention (``~uid``).
+        out = re.sub(
+            rf"(?<![A-Za-z0-9_.:~]){re.escape(uid)}(?![A-Za-z0-9_.])",
+            f"{{{{mention:{uid}}}}}", out, flags=re.I,
+        )
         out = re.sub(rf"(?:{token}|{rendered})(?:[ \t]*(?:{token}|{rendered}))+",
+                     f"{{{{mention:{uid}}}}}", out)
+        out = re.sub(rf"(?:{token}|{rendered})\s*\(\s*(?:{token}|{rendered})\s*\)",
                      f"{{{{mention:{uid}}}}}", out)
     return out
 

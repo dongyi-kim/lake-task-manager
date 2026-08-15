@@ -134,6 +134,45 @@ def _roster_load(state) -> str:
     return "\n".join(rows)
 
 
+def _all_assignees_user_specified(draft: dict) -> bool:
+    """Whether every item and child already carries an explicit user assignment."""
+    items = [item for item in (draft.get("items") or []) if isinstance(item, dict)]
+    if not items:
+        return False
+    for item in items:
+        if item.get("assignee_source") != "user" or not str(item.get("assignee") or "").strip():
+            return False
+        for child in (item.get("children") or []):
+            if not isinstance(child, dict):
+                continue
+            if child.get("assignee_source") != "user" \
+                    or not str(child.get("assignee") or "").strip():
+                return False
+    return True
+
+
+def _user_fixed_assignments(draft: dict) -> list[dict]:
+    """Build advisor-shaped rows without re-evaluating user decisions."""
+    rows = []
+    for index, item in enumerate(draft.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        children = [
+            {"index": child_index, "user": str(child.get("assignee") or "").strip(),
+             "why": "사용자 지정 담당자"}
+            for child_index, child in enumerate(item.get("children") or [])
+            if isinstance(child, dict) and str(child.get("assignee") or "").strip()
+        ]
+        rows.append({
+            "index": index,
+            "user": str(item.get("assignee") or "").strip(),
+            "reasons": ["사용자 지정 담당자"],
+            "children": children,
+            "alternates": [],
+        })
+    return rows
+
+
 class PeopleAdvisor(StructuredAgent):
     """★ 도구를 쓰지 않는다 — 후보 재료(유사 이력·로스터·부하)를 코드가 미리 조회한다.
 
@@ -149,6 +188,16 @@ class PeopleAdvisor(StructuredAgent):
         base = super().node()
 
         def run(state):
+            # Every assignee is already a user decision.  Re-running roster history and
+            # workload search cannot improve that decision and used ~99 seconds in MTG2.
+            # Keep the fan-out/join shape, but return deterministic aligned rows without an
+            # LLM or tool call so the approval prose still reflects the exact payload.
+            if _all_assignees_user_specified(state.get("draft") or {}):
+                rows = _user_fixed_assignments(state.get("draft") or {})
+                return {
+                    "assignments": rows,
+                    "trace": note(state, self.name, f"{len(rows)}건 사용자 지정 담당 유지"),
+                }
             # 두 조회는 독립 — 병렬로. prod 는 호출당 수백 ms~수 초다.
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=2) as ex:

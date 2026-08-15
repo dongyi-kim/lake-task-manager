@@ -1540,6 +1540,13 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 _dedupe_dod_rows(items)
                 _drop_unrequested_deployment_dod(state, items)
 
+        # A meeting record is an authoritative decision record.  Preserve reviewers in the
+        # ticket body and remove optional create fields that the minutes never decided.
+        _ensure_meeting_reviewers(state, items)
+        _drop_unrequested_meeting_create_fields(state, items)
+        if not any(item.get("labels") for item in items):
+            draft.pop("new_labels", None)
+
         # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
         # Auditor 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
         # 사용자에게 떠넘겨진다(실측: "P3는 적절한 우선순위가 아닙니다"가 답변에 노출).
@@ -2390,6 +2397,85 @@ def _apply_named_assignees(state, items: list) -> None:
         if ranked and (ranked[0][0] > 0 or len(rows) == 1):
             ranked[0][2]["assignee"] = uid
             ranked[0][2]["assignee_source"] = "user"
+
+
+def _ensure_meeting_reviewers(state, items: list) -> None:
+    """Preserve explicit meeting reviewers in the closest ticket description.
+
+    A reviewer is deliberately not an assignee.  The model therefore cannot encode the
+    decision in the assignee field, but dropping it altogether also changes the meeting
+    decision.  This adds one compact review section with a confirmed mention identity.
+    """
+    if not items:
+        return
+    try:
+        from app.agent.workflow.meeting_context import (
+            canonicalize_reply_mentions, is_meeting_request, meeting_request_text,
+            resolved_people,
+        )
+        if not is_meeting_request(state):
+            return
+        original = meeting_request_text(state)
+        people = resolved_people(state)
+    except Exception:
+        return
+
+    title_re = (r"(?:TL|PL|PM|PO|EM|M|파트장|그룹장|본부장|팀장|실장|부장|차장|과장|대리|"
+                r"선임|책임|수석|매니저|리더|님|씨)")
+    records: list[tuple[int, str, str]] = []
+    for position, line in enumerate(original.splitlines()):
+        clean = _re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+        match = _re.search(
+            rf"(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{title_re}?\s*"
+            r"(?:은|는|이|가)?\s*(.+?\s*)?(?:리뷰|검토)(?:\s|$)",
+            clean, _re.I,
+        )
+        if match:
+            records.append((position, match.group(1), (match.group(2) or "결과물").strip()))
+    if not records:
+        return
+
+    for _position, name, subject in records:
+        uid = str(people.get(name) or "").strip()
+        if not uid:
+            continue
+        token = f"{{{{mention:{uid}}}}}"
+        # Review lines nested under an enumerated ticket normally have no useful subject
+        # words (``최민서가 리뷰``); in that case the nearest preceding item is the last one.
+        terms = {value.casefold() for value in _re.findall(
+            r"[가-힣A-Za-z0-9_.-]{2,}", subject) if value not in ("결과물", "담당")}
+        ranked = sorted(
+            ((len(terms & {value.casefold() for value in _re.findall(
+                r"[가-힣A-Za-z0-9_.-]{2,}", str(item.get("summary") or ""))}), index, item)
+             for index, item in enumerate(items)),
+            key=lambda value: (-value[0], -value[1]),
+        )
+        target = ranked[0][2]
+        body = str(target.get("description") or "")
+        if uid in body:
+            continue
+        review_text = canonicalize_reply_mentions(
+            state, f"{token} — {subject} 리뷰")
+        section = f"<h3>리뷰</h3><p>{review_text}</p>"
+        target["description"] = (body.rstrip() + "\n\n" + section).strip()
+
+
+def _drop_unrequested_meeting_create_fields(state, items: list) -> None:
+    """Do not convert model defaults into decisions absent from meeting minutes."""
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
+        if not is_meeting_request(state):
+            return
+        said = meeting_request_text(state)
+    except Exception:
+        return
+    allow_priority = bool(_re.search(r"우선순위|priority|\bP[0-4](?:-[A-Za-z]+)?\b", said, _re.I))
+    allow_labels = bool(_re.search(r"라벨|labels?|태그", said, _re.I))
+    for item in items:
+        if not allow_priority:
+            item.pop("priority", None)
+        if not allow_labels:
+            item.pop("labels", None)
 
 
 def _fill_owners(item: dict, kids: list) -> None:
@@ -3885,7 +3971,9 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
                 r"(?:\{\{mention:[^}]+\}\}|\[~[^\]]+\]|@[가-힣]+|[가-힣]{1,5}(?:님|TL)?)",
                 rf"\1{{{{mention:{uid}}}}}", value, flags=_re.I,
             )
-        return value
+        # Role repair can place the right badge beside an already canonical badge.  Run the
+        # same deterministic canonicalizer once more to collapse that duplicate.
+        return canonicalize_reply_mentions(state, value)
 
     if "comment" in plan:
         plan["comment"] = canonical(plan.get("comment") or "")
@@ -4008,13 +4096,20 @@ def _best_item_for_request(state, items: list) -> dict:
 
 def _explicit_parent_epic(state) -> str:
     """사용자가 키와 Epic/상위 관계를 직접 말한 경우만 반환한다."""
-    said = request_text(state) + " " + last_user_text(state)
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        original = meeting_request_text(state)
+    except Exception:
+        original = request_text(state)
+    said = original + " " + last_user_text(state)
     relation = bool(_re.search(r"에픽|epic|아래|밑에|상위", said, _re.I))
     if not relation:
         return ""
-    for key in state.get("mentioned_keys") or []:
-        if str(key) in said and _is_epic(key):
-            return str(key)
+    keys = _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", said, _re.I)
+    keys += [str(key) for key in (state.get("mentioned_keys") or []) if str(key) in said]
+    for key in dict.fromkeys(value.upper() for value in keys):
+        if _is_epic(key):
+            return key
     return ""
 
 

@@ -20,12 +20,21 @@ from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _apply_named_assignees,
     _canonicalize_meeting_mentions,
     _comment_input_missing,
+    _drop_unrequested_meeting_create_fields,
+    _ensure_meeting_reviewers,
+    _explicit_parent_epic,
     _explicit_meeting_update_fields,
     shape_hint,
 )
+from app.agent.workflow.agents.people_advisor import (  # noqa: E402
+    _all_assignees_user_specified,
+    _user_fixed_assignments,
+)
 from app.agent.workflow.meeting_context import (  # noqa: E402
+    canonicalize_reply_mentions,
     meeting_request_text,
     meeting_subject,
+    resolved_people,
     unresolved_questions,
 )
 from app.agent.workflow.session import _turn_start_patch  # noqa: E402
@@ -112,6 +121,22 @@ def test_meeting_owner_lines_override_recommendations_but_reviewer_does_not():
     _apply_named_assignees(state, items)
     assert [row["assignee"] for row in items] == ["skcc.i2011", "skcc.x1402", "skcc.x1103"]
     assert all(row["assignee_source"] == "user" for row in items)
+    _ensure_meeting_reviewers(state, items)
+    assert "skcc.x1042" not in (items[0].get("description") or "")
+    assert "skcc.x1042" in items[-1]["description"]
+
+
+def test_all_user_fixed_assignees_skip_recommendation_without_losing_alignment():
+    draft = {"items": [
+        {"summary": "writer", "assignee": "skcc.i2011", "assignee_source": "user"},
+        {"summary": "reader", "assignee": "skcc.x1402", "assignee_source": "user"},
+    ]}
+    assert _all_assignees_user_specified(draft)
+    rows = _user_fixed_assignments(draft)
+    assert [row["user"] for row in rows] == ["skcc.i2011", "skcc.x1402"]
+    assert all(row["reasons"] == ["사용자 지정 담당자"] for row in rows)
+    draft["items"][1].pop("assignee_source")
+    assert not _all_assignees_user_specified(draft)
 
 
 def test_meeting_comment_mentions_are_repaired_to_confirmed_identities():
@@ -126,6 +151,37 @@ def test_meeting_comment_mentions_are_repaired_to_confirmed_identities():
     assert "{{mention:skcc.x1402}}" in plan["comment"]
     assert "{{mention:skcc.x1327}}" in plan["comment"]
     assert "skcc.i2101" not in plan["comment"]
+
+
+def test_meeting_mentions_collapse_duplicate_badges_and_full_name_username_pair():
+    set_person_context("meeting-full-name", ["DL-9200"])
+    request = "회의 후속 Task. 준서TL이 PSR 증빙 담당."
+    answer = "준서TL은 skcc.x1103 이준서이고 PSR은 PoC Success Review야."
+    state = _state(request, answer, request=request)
+    assert resolved_people(state)["이준서"] == "skcc.x1103"
+    got = canonicalize_reply_mentions(
+        state,
+        "이준서(skcc.x1103) 담당. {{mention:skcc.x1103}} {{mention:skcc.x1103}}이 공유",
+    )
+    assert got.count("{{mention:skcc.x1103}}") == 2
+    assert "이준서" not in got and "(skcc.x1103)" not in got
+
+
+def test_explicit_meeting_epic_survives_interview_and_overrides_component_inference():
+    request = "회의 결정에 따라 Epic DL-9200 아래 정확히 Task 3건을 만들어줘."
+    answer = "준서TL은 skcc.x1103 이준서야. 초안을 계속해줘."
+    state = {**_state(request, answer, request=answer), "turn_continuation": True,
+             "mentioned_keys": []}
+    assert _explicit_parent_epic(state) == "DL-9200"
+
+
+def test_meeting_create_drops_only_optional_fields_absent_from_minutes():
+    state = _state("회의 후속 Task를 만들어줘. 기한과 담당은 확정. 회의록에 없는 값은 발명하지 마.")
+    items = [{"summary": "검증", "priority": "P3-Minor", "labels": ["invented"],
+              "components": ["Catalog"], "duedate": "2026-08-30"}]
+    _drop_unrequested_meeting_create_fields(state, items)
+    assert "priority" not in items[0] and "labels" not in items[0]
+    assert items[0]["components"] == ["Catalog"] and items[0]["duedate"] == "2026-08-30"
 
 
 def test_explicit_no_comment_never_asks_for_comment_body():
