@@ -250,27 +250,6 @@ def test_unverified_relative_editor_deadline_is_removed():
     assert "다음 주" in _drop_unverified_editor_dates(html, "다음 주까지 문서 정리 요청")
 
 
-def test_compose_eval_completion_check_distinguishes_explicit_negation(monkeypatch):
-    # 수동 배터리 모듈은 실행 시 provider/model 환경변수를 설정한다. 테스트 import가
-    # 뒤 테스트의 설정 해석을 오염하지 않도록 원래 process environment를 복원한다.
-    with monkeypatch.context() as env:
-        for key in (
-            "LAKE_AGENT_PROVIDER",
-            "LAKE_AGENT_SKIP_VERIFY",
-            "LAKE_AGENT_OPENAI_CHAT",
-            "LAKE_AGENT_OPENAI_CHAT_SIMPLE",
-        ):
-            # setenv로 변경 기록을 남겨야 import가 새로 만든 key도 context 종료 시 삭제된다.
-            # delenv(raising=False)는 원래 없던 key를 undo 대상으로 기록하지 않는다.
-            env.setenv(key, "")
-        from tools.agent_compose_eval import _claims_completed
-
-    remaining = ("<ul><li>그래프 렌더: 완료</li><li>성능 측정: 예정</li></ul>"
-                 "<p>성능 측정은 아직 완료되지 않았습니다.</p>")
-    assert not _claims_completed(remaining, "성능 측정")
-    assert _claims_completed("<p>성능 측정은 완료되었습니다.</p>", "성능 측정")
-
-
 def test_legacy_reference_placeholders_cannot_wrap_generated_badges():
     from app.agent.editor_author import _badgeify, _legacy_reference_tokens
 

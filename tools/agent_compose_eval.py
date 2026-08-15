@@ -88,25 +88,6 @@ def _editor_contract_flaws(result):
     return flaws
 
 
-def _claims_completed(html, subject):
-    """`subject`를 완료로 단정한 긍정 문장이 있는지 판정한다.
-
-    단순 `subject ... 완료` 정규식은 `아직 완료되지 않았습니다`까지 완료 주장으로 오인했다.
-    배터리는 제품의 의미 후검증과 같은 방향으로 명시적 부정을 먼저 제외한다.
-    """
-    blocks = re.split(r"</(?:li|p|h[1-6])\s*>|[.!?]\s*", str(html or ""), flags=re.I)
-    for block in blocks:
-        sentence = re.sub(r"\s+", " ", _txt(block)).strip()
-        if subject not in sentence:
-            continue
-        if re.search(r"미완료|완료\s*(?:전|예정)|완료되지|완료하지\s*않|아직.{0,20}완료|"
-                     r"완료\s*보고.{0,80}(?:In Progress|확인\s*필요)", sentence):
-            continue
-        if re.search(r"완료(?:되었|됐|했|함|됨|된|하였|되었습니다|했습니다)?(?:\s|$)", sentence):
-            return True
-    return False
-
-
 # (ID, 설명, kwargs, 체커(result))
 CASES = [
     ("CMP1", "코멘트 — 진행 중 티켓의 진행 보고(맥락: DL-9090 최근 코멘트를 이어받아야)", dict(
@@ -134,7 +115,8 @@ CASES = [
 
     ("CMP5", "상태 공유 — 짧은 프롬프트로 쓰되 명시적 미완료를 완료로 뒤집지 않는다", dict(
         ticket_key="DL-9090", kind="comment", prompt="상태 공유"),
-     lambda r: r.get("ok") and not _claims_completed(r["html"], "성능 측정")),
+     lambda r: r.get("ok")
+     and not re.search(r"성능\s*측정.{0,12}완료(?:되|됐|했|함|됨)", _txt(r["html"]))),
 
     ("CMP6", "멘션·키 — 담당 멘션은 뱃지 마크업, 키는 앵커(뱃지 렌더)로", dict(
         ticket_key="DL-9090", kind="comment",
