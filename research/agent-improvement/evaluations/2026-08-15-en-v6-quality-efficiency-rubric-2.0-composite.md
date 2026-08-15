@@ -1,10 +1,12 @@
 # English Agent v6 품질·효율 개선 평가 — rubric 2.0.0
 
-> 결론: 사람이 실제 출력과 실행 근거를 직접 판독한 품질은 **4.48/5**. 이전 English v5의
-> 4.18 대비 +0.30. 정량 지표는 708.0초, 217 calls, 1,024,445 tokens, $2.935185로 이전
-> 1,234.1초, 232 calls, 1,172,811 tokens, $3.354816보다 각각 42.63%, 6.47%, 12.65%,
-> 12.51% 감소. 다만 사용자의 "성공분은 재실행하지 말고 실패분만 이어서 실행" 지시에 따른
-> **exploratory closure composite**이므로 qualification 결과나 단일 commit full-run으로 해석하면 안 됨
+> 결론: 사람이 실제 출력과 실행 근거를 직접 판독한 최신 English v6 품질은 **4.48/5**.
+> KO Base 3.75 대비 +0.73점, 이전 English v5 4.18 대비 +0.30점. 최신 EN의 정량 지표는
+> 708.0초, 217 calls, 1,024,445 tokens, $2.935185로 KO Base보다 각각 19.27%, 9.58%,
+> 21.73%, 21.05% 감소했고 이전 EN보다 각각 42.63%, 6.47%, 12.65%, 12.51% 감소.
+> 다만 KO Base와 이전 EN은 full run, 최신 EN은 사용자의 "성공분은 재실행하지 말고 실패분만
+> 이어서 실행" 지시에 따른 **exploratory closure composite**. 동일 조건 qualification 또는
+> 단일 commit full-run 우열로 해석하면 안 됨
 
 ## 측정 식별자
 
@@ -14,7 +16,8 @@
 | runKind | `exploratory-closure-composite` |
 | final candidateCommit | `85bdf4e0d77dee078130aee84499ba281bc56d67` |
 | promptVersion | `en-role-contract-v6` |
-| baseline | `en-role-contract-v5`, commit `4791f52d74bd922009d97e167d398f1c17aad6df` |
+| KO baseline | `ko-role-contract-v6`, commit `8b18b23e6179488373e53ef234d79bc2bccff596` |
+| previous EN baseline | `en-role-contract-v5`, commit `4791f52d74bd922009d97e167d398f1c17aad6df` |
 | model routing | main `gpt-4o`, simple `gpt-4o-mini` |
 | provider / data | actual OpenAI API / `jira820-mock-v1` |
 | dataManifestSha256 | `3084e7a7994fa1726515ddfd124fec70b114b3b8d21caa0df639b6d34946f93b` |
@@ -24,13 +27,22 @@
 | reviewer / blind | 1명 / non-blind |
 | qualificationEligible | `false` — selective closure, 1 repetition, mixed candidate commits |
 
-Battery identity는 baseline과 동일
+### 세 후보와 배터리 동일성
 
-| Suite | batteryVersion | batteryManifestSha256 | specializedReviewSpecSha256 |
+| 후보 | 실행 종류 | promptVersion | commit |
 |---|---|---|---|
-| conversation | `2.0.0` | `799d045350bd36e93be4fed1564bf722a2ab435de148a4357e885576b7ed7203` | `0d9b63458fbae238c4813865baaa8d9093f3fb1c670d55833d2604e6ac0e87ce` |
-| editor | `2.0.0` | `70567cbf773208f30b91d17d33477fd5da490877ad8bc7f1cc67a9748d0d7eea` | `b6f81a25c0c9697c2e57f06706c385a196542ddf78c87731cd51e7eac2475c1b` |
-| create | `3.0.0` | `e7bfd58d9a5ee3d6eb9d32dcc16e094770d35cf9166d6423711320dfcc70490e` | `83ec3e40f31167216cf9033b1e55d5f63d076f982a562366c78bc29931d3b363` |
+| KO Base | full exploratory, 1회 | `ko-role-contract-v6` | `8b18b23e6179488373e53ef234d79bc2bccff596` |
+| 이전 EN | full exploratory, 1회 | `en-role-contract-v5` | `4791f52d74bd922009d97e167d398f1c17aad6df` |
+| 최신 EN | selective closure composite, 1회분 조합 | `en-role-contract-v6` 이후 개선분 | 최종 `85bdf4e0d77dee078130aee84499ba281bc56d67` 포함 복수 commit |
+
+| Suite | version | KO Base manifest | 이전 EN v5 manifest | 최신 EN v6 manifest | 직접 비교 |
+|---|---|---|---|---|---|
+| conversation | `2.0.0` | `799d045…7203` | `799d045…7203` | `799d045…7203` | 동일 battery |
+| editor | `2.0.0` | `70567cb…d7eea` | `b530104…f7a` | `70567cb…d7eea` | KO↔최신 EN 동일, 이전 EN은 방향성만 |
+| create | `3.0.0` | `e7bfd58…90e` | `e7bfd58…90e` | `e7bfd58…90e` | 동일 battery |
+
+`dataManifestSha256`, model routing, provider, mock profile은 세 후보 모두 동일. 이전 EN의 Editor manifest가
+다른데도 기존 문구가 “baseline과 동일”이라고 서술한 것은 오류였으며 이 표에서 정정
 
 ## 평가 방법
 
@@ -52,6 +64,7 @@ suite와 전체는 case를 같은 가중치로 산술평균
 
 ## evidence 선택과 비교 가능성
 
+- KO Base와 이전 EN은 각 후보의 44 case full exploratory run. 최신 EN은 아래 선택 규칙으로 만든 closure composite
 - 최초 v6 실행에서 통과한 결과는 그대로 유지하고, 자동 또는 사람 판독에서 실패한 case만 수정 후 재실행
 - 최종 선택은 best-of가 아니라 **해당 case의 수정 이후 최초 human-pass closure**. 실패 attempt도 raw cache에 보존
 - conversation은 최초 full 결과 중 S1–S6을 유지하고, 외부 근거가 부족했던 S7만 최종 기술검색 결과로 교체
@@ -73,17 +86,17 @@ suite와 전체는 case를 같은 가중치로 산술평균
 45 turn observation 기준 평균 15.73초, 22,765 token, $0.06523. Create가 total token의 79.57%,
 비용의 79.35%로 여전히 가장 큰 비용원
 
-### English v5 대비
+### KO Base / 이전 English v5 / 최신 English v6 3자 비교
 
-| 지표 | v5 baseline | v6 closure | 변화 |
-|---|---:|---:|---:|
-| 시간 | 1,234.1s | 708.0s | **-42.63%** |
-| LLM calls | 232 | 217 | **-6.47%** |
-| prompt token | 1,116,439 | 974,569 | **-12.71%** |
-| completion token | 56,372 | 49,876 | **-11.52%** |
-| total token | 1,172,811 | 1,024,445 | **-12.65%** |
-| cached token | 649,216 | 649,984 | +0.12% |
-| costUsd | 3.354816 | 2.935185 | **-12.51%** |
+| 지표 | KO Base full | 이전 EN v5 full | 최신 EN v6 closure | 최신 EN ↔ KO | 최신 EN ↔ 이전 EN |
+|---|---:|---:|---:|---:|---:|
+| 시간 | 877.0s | 1,234.1s | 708.0s | **-19.27%** | **-42.63%** |
+| LLM calls | 240 | 232 | 217 | **-9.58%** | **-6.47%** |
+| prompt token | 1,249,432 | 1,116,439 | 974,569 | **-22.00%** | **-12.71%** |
+| completion token | 59,413 | 56,372 | 49,876 | **-16.05%** | **-11.52%** |
+| total token | 1,308,845 | 1,172,811 | 1,024,445 | **-21.73%** | **-12.65%** |
+| cached token | 633,856 | 649,216 | 649,984 | +2.54% | +0.12% |
+| costUsd | $3.717710 | $3.354816 | $2.935185 | **-21.05%** | **-12.51%** |
 
 효율 개선의 주원인: 불필요한 role 반복 호출 제거, 질문-only 경로 조기 종료, deterministic query·reply repair,
 긴 raw search 결과 대신 artifact 보존+compact context 사용. cached token이 거의 같으므로 절감은 cache hit 증가가
@@ -91,12 +104,28 @@ suite와 전체는 case를 같은 가중치로 산술평균
 
 ## 사람 품질 결과
 
-| Suite | F | G | C | S | R | 종합 | 이전 v5 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| conversation | 4.43 | 4.07 | 4.29 | 4.50 | 3.86 | **4.23** | 3.80 |
-| editor | 4.61 | 4.56 | 4.44 | 4.78 | 4.44 | **4.57** | 4.17 |
-| create | 4.70 | 4.46 | 4.48 | 4.61 | 4.36 | **4.52** | 4.28 |
-| **전체 44 case** | **4.64** | **4.42** | **4.44** | **4.62** | **4.30** | **4.48** | **4.18** |
+### 세 후보 종합
+
+| Suite | KO Base | 이전 EN v5 | 최신 EN v6 | 최신 EN - KO | 최신 EN - 이전 EN |
+|---|---:|---:|---:|---:|---:|
+| conversation | 3.97 | 3.80 | **4.23** | +0.26 | +0.43 |
+| editor | 3.96 | 4.17 | **4.57** | +0.61 | +0.40 |
+| create | 3.63 | 4.28 | **4.52** | +0.89 | +0.24 |
+| **전체 44 case** | **3.75** | **4.18** | **4.48** | **+0.73** | **+0.30** |
+
+KO Base의 강점은 완전 이력 S3와 일부 보수적 생성 판단. 주요 약점은 S7 외부 조사 부재, 필수정보 인터뷰 실패,
+reply↔payload 불일치. 이전 EN은 생성 완결성과 효율을 개선했지만 모호성 질문과 일부 사실·계약 오류가 남았고,
+최신 EN은 이 두 계열을 집중적으로 보완. 다만 최신 EN은 selective closure이고 이전 EN Editor battery가 달라
+점수 차이를 통계적 우열로 해석하지 않음
+
+### 최신 EN 세부 축
+
+| Suite | F | G | C | S | R | 종합 |
+|---|---:|---:|---:|---:|---:|---:|
+| conversation | 4.43 | 4.07 | 4.29 | 4.50 | 3.86 | **4.23** |
+| editor | 4.61 | 4.56 | 4.44 | 4.78 | 4.44 | **4.57** |
+| create | 4.70 | 4.46 | 4.48 | 4.61 | 4.36 | **4.52** |
+| **전체 44 case** | **4.64** | **4.42** | **4.44** | **4.62** | **4.30** | **4.48** |
 
 가장 크게 개선된 항목은 필수 인터뷰·모호성 통제, hierarchy, reply↔payload 일치, Editor marker. 가장 낮은 축은
 표현·렌더링 4.30으로, 일부 오래된 통과 결과에 plain username과 장황한 승인 문구가 남아 있음
@@ -210,6 +239,7 @@ Apache Iceberg와 StarRocks 공식 문서를 가져와 최종 답변까지 유�
 
 선택 raw는 Git에서 제외된 `.cache/agent-evaluation/` 아래 보존
 
+- KO Base 평가표: `2026-08-15-base-rubric-2.0-full.md` (`2026-08-15-base-rubric-2.0-full-r01` 기록)
 - baseline: `2026-08-15-en-v5-rubric-2.0-full-r02/`
 - v6 최초 full: `2026-08-15-en-v6-quality-rubric-2.0-full-r01/`
 - create resume: `2026-08-15-en-v6-quality-rubric-2.0-resume-paste1-r05/`
@@ -227,7 +257,8 @@ network 실행에서 19.7초로 성공. 실패를 품질·비용 합계에 섞�
 ## 최종 판정
 
 - 기능 closure: 선택된 conversation/editor/create case 자동 계약 전부 통과
-- 사람 품질: 4.48/5, 이전 English v5보다 방향성 개선
-- 효율: time·calls·token·cost 모두 개선, 특히 time -42.63%
+- 사람 품질: 4.48/5, KO Base 3.75와 이전 English v5 4.18보다 방향성 개선
+- 효율: KO Base 대비 time -19.27%, token -21.73%, cost -21.05%; 이전 EN 대비 time -42.63%,
+  token -12.65%, cost -12.51%
 - 배포 판단: **개선 방향은 승인 가능**, 단 이 문서는 qualification이 아님. 정식 승격 판단에는 final commit에서
   full battery 5회 이상, 후보 순서 counterbalance, 동일 네트워크 조건의 별도 qualification 실행 필요
