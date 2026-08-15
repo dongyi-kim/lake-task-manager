@@ -183,6 +183,16 @@ def test_agent_ticket_references_always_use_detail_badges():
     assert ".agent-ref-item .jira-badge-detail" in css
 
 
+def test_agent_evidence_renderer_accepts_canonical_and_legacy_headings():
+    """`### 근거`를 clickable source index로 렌더하고 기존 참조 출력도 읽는다."""
+    md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
+    render = md[md.index("export function renderMarkdown"):md.index("function refRow")]
+    assert "근거|참조" in render
+    assert "#{1,4}" in render
+    assert "<summary>근거 " in render
+    assert 'keyBadge(ticketKey, "detail")' in md
+
+
 def test_agent_ticket_badges_never_nest_inside_inline_code():
     """`DL-123`은 badge 하나, `key = DL-123`은 code 하나로 렌더해야 한다."""
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")

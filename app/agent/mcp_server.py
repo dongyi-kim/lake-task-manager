@@ -45,9 +45,10 @@ def _mcp():
     return FastMCP(
         "lake-task-manager",
         instructions=(
-            "사내 데이터 플랫폼(Lake) PMO 도구. Jira 티켓·Confluence 문서 검색, 진척률(WBS 롤업), "
-            "인력 워크로드, 티켓 작성 규칙을 제공한다. 읽기 전용 — 티켓 생성/변경은 LTM 화면의 "
-            "승인 절차를 거쳐야 하므로 여기서는 열리지 않는다."))
+            "Read-only PMO tools for the internal Lake data platform. Search Jira tickets and "
+            "Confluence documents, calculate WBS progress, inspect team workload, and retrieve "
+            "ticket-authoring policy. Ticket creation and mutation are unavailable because they "
+            "require the approval flow in the LTM UI."))
 
 
 # 낼 도구 — 읽기 전용만. 이름은 에이전트 도구와 같다(문서·대화에서 같은 이름으로 통하게).
@@ -97,50 +98,53 @@ def build_server():
     # ── Resources: knowledge/ 규칙 문서 — 질의가 아니라 열람이므로 Tools 가 아니라 여기다. ──
     from app.agent.retrieval.static_index import _sources
 
-    @server.resource("lake://knowledge/{name}", title="LTM 규칙 문서",
-                     description="티켓 작성 규칙·진척률 산식·담당자 추천 정책·업무 분해 절차")
+    @server.resource("lake://knowledge/{name}", title="LTM policy document",
+                     description=("Ticket-authoring policy, progress calculation, assignee "
+                                  "selection, and work decomposition guidance"))
     def knowledge_doc(name: str) -> str:
         for p in _sources():
             if p.name == name or p.stem == name:
                 return p.read_text(encoding="utf-8")
         names = ", ".join(p.name for p in _sources())
-        return f"'{name}' 문서가 없습니다. 있는 문서: {names}"
+        return f"Document '{name}' was not found. Available documents: {names}"
 
-    @server.resource("lake://knowledge", title="규칙 문서 목록")
+    @server.resource("lake://knowledge", title="Policy document index")
     def knowledge_list() -> str:
         return "\n".join(p.name for p in _sources())
 
     # ── Prompts: 시나리오 시작 템플릿 — 클라이언트에서 골라 쓰는 용도. ──
-    @server.prompt(title="업무 착수")
+    @server.prompt(title="Plan new work")
     def plan_work(work: str) -> str:
-        """새 업무를 시작하기 전에 과거 이력을 조사하고 티켓 계획을 세운다."""
-        return (f"다음 업무를 시작하려 한다: {work}\n\n"
-                "search_work_history 로 관련 과거 이력(티켓·문서)을 먼저 찾고, 이미 진행 중이거나 "
-                "멈춘 유사 작업이 있는지 확인하라. 그 다음 search_rules 로 티켓 작성 규칙을 확인해 "
-                "티켓 트리(무엇을 몇 개, 어느 Epic 아래)를 제안하라. 티켓은 만들지 말고 계획만.")
+        """Research history and propose a ticket plan before starting new work."""
+        return (f"The user wants to start this work: {work}\n\n"
+                "First call search_work_history for related tickets and documents. Check whether "
+                "similar work is active or stalled. Then call search_rules and propose a ticket "
+                "tree: which tickets, how many, and under which Epic. Do not create tickets; return "
+                "a plan in Korean.")
 
-    @server.prompt(title="버그 정리")
+    @server.prompt(title="Prepare a Bug report")
     def report_bug(symptom: str) -> str:
-        """버그 증상을 조사해 Bug 티켓에 넣을 내용을 정리한다."""
-        return (f"다음 버그가 보고됐다: {symptom}\n\n"
-                "search_work_history 로 같은 증상의 기존 티켓이 있는지 먼저 확인하라(중복이면 그 키를 "
-                "알려라). 없으면 Bug 티켓에 넣을 내용을 정리하라 — 제목([모듈] 증상), 재현 경로에서 "
-                "빠진 정보, 관련 티켓 키. get_team_workload 로 담당 후보도 골라라.")
+        """Research a symptom and prepare the content for a Bug ticket."""
+        return (f"The user reported this symptom: {symptom}\n\n"
+                "Call search_work_history to check for an existing ticket with the same symptom. "
+                "If it is a duplicate, identify that key. Otherwise prepare the Bug content: title "
+                "in `[module] symptom` form, missing reproduction details, and related ticket keys. "
+                "Use get_team_workload for evidence-backed assignee candidates. Respond in Korean.")
 
-    @server.prompt(title="오늘 할 일")
+    @server.prompt(title="Prioritize today's work")
     def my_day(user_id: str = "") -> str:
-        """지연·마감임박·정체를 기준으로 오늘 집중할 일을 고른다."""
-        who = f'user_id="{user_id}" 로' if user_id else "user_id 없이(세션 사용자로)"
-        return (f"get_my_workload 를 {who} 불러 일감을 받아라. overdue(지연) → 오늘/내일 마감 "
-                "→ staleDays 큰 것(정체) → 우선순위(P1>P2) 순으로 오늘 집중할 3~5건을 골라 "
-                "이유와 함께 제시하라.")
+        """Choose today's focus using overdue, imminent, and stale work."""
+        who = f'with user_id="{user_id}"' if user_id else "without user_id, using the session user"
+        return (f"Call get_my_workload {who}. Select three to five items in this order: overdue, "
+                "due today or tomorrow, largest staleDays, then priority P1 before P2. Give a short "
+                "reason for each and respond in Korean.")
 
-    @server.prompt(title="진척 점검")
+    @server.prompt(title="Inspect progress")
     def check_progress(target: str = "") -> str:
-        """Epic·모듈·전체의 진척률과 그 원인을 본다."""
-        return (f"get_progress 를 target=\"{target}\" 로 불러 진척률을 확인하라. 숫자가 낮은 곳은 "
-                "get_epic_tree 로 안을 들여다보고, 분모 규칙(Bug·VoC·Epic Link 없음 제외)을 감안해 "
-                "'왜 이 숫자인가'까지 설명하라.")
+        """Inspect Epic-, module-, or portfolio-level progress and its causes."""
+        return (f"Call get_progress with target=\"{target}\". For low-progress areas, inspect the "
+                "contents with get_epic_tree. Apply denominator exclusions for Bug, VoC, and work "
+                "without Epic Link, then explain why the percentage has that value. Respond in Korean.")
 
     return server
 

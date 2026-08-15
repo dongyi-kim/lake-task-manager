@@ -75,6 +75,10 @@ def route_after_request_architect(state: AgentState) -> str:
     intent = state.get("intent") or ""
     if intent == Intent.CHITCHAT:
         return "respond"
+    # RequestArchitect can settle a cheap structure choice before any Jira/web lookup. Questions are a
+    # terminal result for this turn; sending them through research wastes calls and cannot improve them.
+    if state.get("questions"):
+        return "respond"
     # 분담형 Task의 미완료자 조회는 Query Specialist의 자유 JQL이나 Portfolio ReAct가
     # 아니라 parent 탐색→직계 Sub-Task 전수 집계라는 고정 join이다.
     from app.agent.workflow.assignment_completion import asks_incomplete_assignees

@@ -219,6 +219,8 @@ def test_history_instruction_only_rides_when_history_was_asked():
     # 작업이 자기 제목을 갖게 됐다 — 표 아래에 줄로 흘리면 표의 꼬리처럼 읽힌다).
     assert "**현재 상태**" in hist and "현재 진행 중인 Task" in hist
     assert "세 덩어리" in hist
+    assert "- {{ticket-detail:DL-9047}}" in hist
+    assert '- DL-9047 "' not in hist
     plain = _topic_dossier(TABLE, history=False)
     assert "이 대상의 **연표**" not in plain
     assert "물어본 것만 답한다" in plain
@@ -305,10 +307,12 @@ def test_answer_depth_shapes_the_reply_instruction():
     from app.agent.workflow.agents.result_integrator import ResultIntegrator
     r = ResultIntegrator()
     brief = r.task({**_msg("적재주기는?"), "intent": Intent.ASK, "answer_depth": "brief"})
-    assert "결론형" in brief and "개념 설명·배경·일반론을 덧붙이지 마라" in brief
+    assert "Answer only what was asked" in brief and "omit generic background" in brief
     deep = r.task({**_msg("왜 바뀌었어?"), "intent": Intent.ASK, "answer_depth": "explain"})
-    assert "설명형" in deep
-    assert "말씀 주세요" in brief and "말씀 주세요" in deep, "다음 턴 제안이 양쪽 다 있어야 한다"
+    assert "Explain relevant background, concept, and history" in deep
+    assert "Write the final answer in Korean" in brief and "Write the final answer in Korean" in deep
+    assert "Do not append a generic offer for more help" in brief
+    assert "Do not append a generic offer for more help" in deep
 
 
 def test_depth_instruction_is_skipped_while_asking_questions():
@@ -316,7 +320,7 @@ def test_depth_instruction_is_skipped_while_asking_questions():
     from app.agent.workflow.agents.result_integrator import ResultIntegrator
     t = ResultIntegrator().task({**_msg("초안 잡아줘"), "questions": ["범위가 어디까지인가요?"],
                           "answer_depth": "brief"})
-    assert "답변 깊이" not in t
+    assert "## Answer Depth" not in t
 
 
 def test_planner_defaults_to_brief_when_unsure():
@@ -413,7 +417,8 @@ def test_responder_reports_progress_as_a_story_not_a_status_word():
                           "ticket_progress": _ticket_progress(
                               {**_msg("DL-9090 진척 어때?"), "mentioned_keys": [PROG],
                                "intent": Intent.PROGRESS})})
-    assert "남은 일과 리스크" in t and "결과 문서" in t
+    assert "remaining work plus deadline risk" in t
+    assert "updated result documents" in t
     assert "하위 Sub-Task 2/3" in t, "취합 자료가 프롬프트에 실려야 한다"
 
 

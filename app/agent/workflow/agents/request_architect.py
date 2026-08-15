@@ -24,58 +24,50 @@ SCHEMA = {
             "enum": [Intent.ASK, Intent.PLAN_WORK, Intent.MY_DAY,
                      Intent.PROGRESS, Intent.ACTIVITY, Intent.MODIFY, Intent.CHITCHAT],
             "description": (
-                "ask=이미 있는 것에 대해 물음(이력·경위) / "
-                "plan_work=새 업무를 시작하려 함(티켓 트리까지). "
-                "**버그·장애 신고도 여기다** — 만드는 것이 Task 이고 type 만 Bug 다 / "
-                "my_day=자기가 오늘/이번주 뭘 해야 하는지 물음 / "
-                "progress=Epic·모듈·WBS 의 진척도/현황, 또는 **팀 상태 점검**"
-                "(정체·오래 업데이트 없는·마감 지난·미배정 티켓이 있는지) / "
-                "activity=특정 **사람**이 최근 무엇을 했는지 물음 / "
-                "modify=기존 티켓의 담당자·마감 등을 바꾸려 함 / chitchat=업무 요청 아님"),
+                "ask=question about existing facts, history, rationale, or knowledge; "
+                "plan_work=start new work and potentially draft a ticket tree, including a defect report "
+                "whose Task-tier issue_type is Bug; my_day=the user's priorities today or this week; "
+                "progress=current Epic/module/WBS progress or team-state audit such as stale, overdue, or "
+                "unassigned tickets; activity=what a specific person or roster recently did; "
+                "modify=change an existing ticket; chitchat=no work request"),
         },
         "keywords": {
             "type": "array", "items": {"type": "string"},
-            "description": "검색에 쓸 핵심어 2~5개. 원문을 그대로 넣지 말고 명사구로 뽑아라. "
-                           "약어와 풀어쓴 말을 함께 넣으면 좋다(예: CDC, 변경데이터캡처, 실시간 수집). "
-                           "★ 테이블·Job·제품 이름 같은 **식별자는 원형 그대로** 한 덩어리로 넣어라 "
-                           "— 'fdc.fdc_trace_summary_ic' 를 fdc/trace/summary 로 쪼개면 검색이 깨진다",
+            "description": "Two to five noun phrases for retrieval, not a copy of the full request. Include "
+                           "an acronym and its Korean expansion when useful. Preserve identifiers such as a "
+                           "table, Job, or product name as one exact token; never split "
+                           "fdc.fdc_trace_summary_ic into fragments.",
         },
         "module": {
             "type": "string",
-            "enum": ["", "ETL", "Catalog", "Runtime", "Workbench", "DataOps", "DevOps"],
-            "description": "짐작되는 모듈. 근거가 약하면 빈 문자열 — 틀린 모듈은 없느니만 못하다",
+            "enum": ["", "ETL", "Catalog", "Runtime", "Workbench", "Observability",
+                     "DataOps", "DevOps"],
+            "description": "Most likely module. Return an empty string when evidence is weak.",
         },
         "mentioned_keys": {
             "type": "array", "items": {"type": "string"},
-            "description": "사용자가 직접 언급한 티켓 키(DL-123 형식)만. 추측한 키는 넣지 마라",
+            "description": "Only ticket keys explicitly mentioned by the user, in DL-123 form. Never guess.",
         },
         "sufficient": {
             "type": "boolean",
-            "description": ("되묻지 않고 바로 조사에 들어가도 될 만큼 요청이 구체적인가. "
-                            "false 면 조사 **전에** 해석 확인·범위 질문이 먼저 나간다 — "
-                            "처음 보는 기술 조합, 목적·범위가 막연한 신규 개발 요청"
-                            "('~~하는 파이프라인을 개발해야 해' 한 줄)은 false 다. "
-                            "티켓 키가 지목됐거나 범위·대상이 문장에 이미 있으면 true"),
+            "description": ("Whether the request is specific enough to begin safe research without a prior "
+                            "clarification. Use false for materially ambiguous new development with no goal "
+                            "or scope. Use true when a ticket key or concrete target and scope are present."),
         },
         "playbook": {
             "type": "string",
             "enum": ["", "epic_create", "task_create", "bug_report", "subtask_bulk",
                      "find_people", "find_tickets", "knowledge", "history", "workload",
                      "assign_fit", "asset_lookup"],
-            "description": "요청이 전형적 패턴이면 해당 플레이북 — 사전 정의 플로우가 전 역할에 "
-                           "주입돼 실수를 막는다. 애매하면 빈 문자열(자유 진행)",
+            "description": "The matching standard playbook for a recognizable pattern; otherwise empty.",
         },
         "answer_depth": {
             "type": "string", "enum": ["brief", "explain"],
             "description": (
-                "사용자가 원하는 답의 깊이. "
-                "brief=값·결론만 원한다(무엇/언제/누구/얼마/어디 — '적재주기는?', '누가 담당?', "
-                "'몇 건이야?', 목록 요청). "
-                "explain=개념·배경·이유까지 원한다('왜', '어떻게 동작', '설명해줘', '정리해줘', "
-                "'무슨 일이었는지', 처음 듣는 기술·용어를 물을 때). "
-                "애매하면 brief — 사용자는 더 필요하면 다시 묻는다"),
+                "Requested answer depth. brief=the value, conclusion, count, owner, date, location, or list; "
+                "explain=concept, background, mechanism, rationale, or history. Default to brief."),
         },
-        "goal": {"type": "string", "description": "복합 요청 전체가 달성하려는 결과 한 문장"},
+        "goal": {"type": "string", "description": "One sentence covering the compound request's end result."},
         "tasks": {
             "type": "array", "items": {"type": "object", "properties": {
                 "id": {"type": "string"},
@@ -87,16 +79,14 @@ SCHEMA = {
                 "completion_criteria": {"type": "array", "items": {"type": "string"}},
             }, "required": ["id", "kind", "instruction", "depends_on", "write_intent",
                             "completion_criteria"], "additionalProperties": False},
-            "description": "요청을 독립 실행 가능한 작업 DAG로 분해한 것. 단순 요청도 한 항목",
+            "description": "An executable atomic-task DAG. A simple request still has one task.",
         },
         "blocking_questions": {"type": "array", "items": {"type": "string"},
-                               "description": "답 없이는 결과가 달라지는 질문만"},
+                               "description": "Only questions whose answers materially change the result."},
         "assumptions": {"type": "array", "items": {"type": "string"}},
         "plan": {
             "type": "string",
-            "description": "이 요청을 처리할 실행 계획 한 줄(2~4단계 화살표). "
-                           "예: '사내 이력 검색 → 웹 기술 조사 → 초안 → 담당 추천'. "
-                           "진행 표시로 사용자에게 보인다",
+            "description": "One concise Korean progress line with two to four steps joined by arrows.",
         },
     },
     "required": ["intent", "keywords", "sufficient"],
@@ -167,68 +157,64 @@ class RequestArchitect(StructuredAgent):
         # Few-shot — 경계가 애매한 갈래(ask↔progress↔activity, ask↔modify)를
         # 예시로 가른다. 규칙 문장보다 예시가 분류를 훨씬 안정시킨다(In-Context Learning).
         return f"""\
-# 명령서
-아래 대화에서 사용자가 원하는 것을 분류하고, 검색에 쓸 핵심어를 뽑아라.
+# Task
 
-## 제약조건
-- 핵심어는 **검색용**이다. "해야 한다", "관련해서" 같은 말은 빼고 명사구만 남긴다.
-- 티켓 키는 사용자가 실제로 적은 것만 옮긴다.
-- 모듈은 확신이 있을 때만 고른다.
+Classify what the user wants from the conversation, construct an atomic task plan, and extract retrieval keywords.
 
-## 분류 예시
-- "실시간 수집에 CDC를 도입해야 한다" → plan_work (새 일을 벌인다)
-- "데이터 거버넌스 에픽 하나 새로 만들자" → plan_work (Epic 생성도 새 일 벌이기다)
-- "DL-1234 밑에 서브태스크 여러 개 만들어줘" → plan_work (벌크 Sub-Task 생성)
-- "적재 배치가 어젯밤부터 계속 실패한다" → plan_work (★ **버그 신고도 티켓 생성이다** —
-  갈래를 따로 두지 않는다. type 이 Bug 인 것은 초안 단계가 요청의 낱말로 판단한다.
-  playbook 에 bug_report 를 담아 흐름만 알려 준다)
-- "DL-101 어떻게 진행되고 있어?" → progress (티켓·Epic 의 진척 상태)
-- "ETL 모듈 진척률 알려줘" → progress
-- "ETL 마이그레이션 업무의 히스토리와 진척도, 최근 업데이트 알려줘" → ask (★ **복합 질의는
-  조사가 주도** — 히스토리·경위가 섞이면 ask 다. 진척 숫자는 조사 단계가 도구로 함께 확인한다)
-- "진행중인 티켓 중 2일 이상 업데이트 없는 것들 있니?" → progress (★ 팀 상태 점검 —
-  현재 상태를 **집계**하는 질문은 이력 조사가 아니라 progress 다. 기준일 숫자는 핵심어에 남긴다)
-- "나 오늘 뭐 해야 하지?" → my_day (자기 할 일)
-- "내 모듈에 담당자 없는 업무 있으면 하나 하고 싶네" → my_day (★ 자기가 집을 일을 찾는
-  것 — '내/우리' 가 주어면 팀 집계(progress)가 아니라 my_day 다)
-- "skcc.x1042 최근 3일간 뭐 했어?" → activity (**사람**의 활동)
-- "DL-101 관련자들이 요즘 어떤 일들을 해?" → activity (★ 티켓이 언급돼도 묻는 것이
-  **사람들의 활동**이면 activity — 티켓 키는 mentioned_keys 에 담는다)
-- "CDC 검토가 왜 멈췄었지?" → ask (과거 경위를 묻는다 — 상태 숫자가 아니라 이야기)
-- "지난 분기에 성능 관련해서 어떤 논의가 있었어?" → ask (★ progress 아님 — 진척률 숫자가
-  아니라 **지나간 논의·기록**을 찾는 질문이다. "어디까지 왔어"만 progress 다)
-- "DL-207을 x1103에게 맡기는 게 적절할까?" → ask (★ **판단을 묻는 것** — 바꿔 달라는
-  게 아니다. '바꿔줘/지정해줘'가 있어야 modify 다)
-- "DL-207 담당자를 x1103 으로 바꿔줘" → modify
-- "DL-207 마감을 다음 주로 미루고 사유도 코멘트로 남겨줘" → modify (★ 코멘트 요청이 섞여도
-  기존 티켓의 속성을 바꾸는 것이 본론이면 modify — plan_work 가 아니다)
-- "fdc.fdc_trace_summary_ic 데이터의 현재 적재주기는?" → ask (★ **자산의 속성 조회는
-  progress 가 아니다** — 진척률이 아니라 기록에 적힌 사실을 찾는 일이다)
-- "yms.yms_lot_yield_daily 스키마랑 변경 히스토리 알려줘" → ask
-- "fdc.fdc_trace_summary_ic 적재하는 job 이름이랑 작업자 누구야?" → ask (★ '누구'가 나와도
-  activity 가 아니다 — 사람의 활동이 아니라 **기록에 적힌 담당**을 찾는다)
-- "Schema Registry 우리 어떻게 쓰고 있고 호환성 정책은 뭐야?" → ask (특정 기술의 사내 현황)
+## Constraints
 
-## 답변 깊이(answer_depth) 예시
-- "fdc.fdc_trace_summary_ic 적재주기는?" → brief (값 하나면 끝)
-- "DL-101 담당자 누구야?" → brief
-- "이번 주 마감 지난 티켓 뭐 있어?" → brief (목록이 답이다)
-- "CDC가 뭐고 우리는 어떻게 쓰고 있어?" → explain (개념+맥락을 물었다)
-- "적재 지연이 왜 났고 어떻게 해결했어?" → explain (경위를 물었다)
-- "Schema Registry 우리 어떻게 쓰고 있어?" → explain ('어떻게'는 설명 요구다)
+- Keywords are retrieval noun phrases. Remove filler such as `해야 한다` and `관련해서`.
+- Copy only ticket keys explicitly written by the user.
+- Select a module only with strong evidence.
+- Write `goal`, `instruction`, `completion_criteria`, `blocking_questions`, `assumptions`, and `plan` in Korean because they are user-visible or preserve the Korean request.
 
-## 계획(plan) 예시 — 의도별 표준 플랜(상황 맞게 다듬어 써라)
-- plan_work: "사내 이력 검색 → (신기술이면 웹 조사) → 되묻기/초안 → 담당 후보 → 검증 → 승인"
-- plan_work(버그): "같은 증상 Bug 검색 → 재현경로 확인 → Bug 초안 → 담당 후보 → 승인"
-- ask(지식): "사내 이력+의미 검색 → 웹 보강 → 개념/우리 상황/공백 정리"
-- ask(적합성): "티켓 열람 → 후보 이력·워크로드 확인 → 근거 판단"
-- ask(자산·주제 조사): "이름으로 언급 추적(코멘트 포함) → 변경 이력 확인 → 문서 본문 → 현재 값 확정"
-- my_day: "내 일감 조회 → 지연·마감·정체 순위 → 오늘 우선순위 제안"
-- progress: "대상 확정 → 진척률/조건 조회(JQL) → 분모 규칙과 함께 보고"
-- activity: "로스터 확정 → 전원 활동 취합 → 로스터/모듈/개인 3층 정리"
-- modify: "대상 티켓 확인 → 변경 계획 → 승인"
+## Intent Examples
 
-## 대화
+- `실시간 수집에 CDC를 도입해야 한다` -> `plan_work`: start new work.
+- `데이터 거버넌스 에픽 하나 새로 만들자` -> `plan_work`: Epic creation is new work.
+- `DL-1234 밑에 서브태스크 여러 개 만들어줘` -> `plan_work`: bulk Sub-Task creation.
+- `적재 배치가 어젯밤부터 계속 실패한다` -> `plan_work` with `playbook="bug_report"`: a defect report creates a Task-tier Bug.
+- `DL-101 어떻게 진행되고 있어?` -> `progress`: current ticket or Epic progress.
+- `ETL 모듈 진척률 알려줘` -> `progress`.
+- `ETL 마이그레이션 업무의 히스토리와 진척도, 최근 업데이트 알려줘` -> `ask`: history makes research the leading path; research may also collect progress.
+- `진행중인 티켓 중 2일 이상 업데이트 없는 것들 있니?` -> `progress`: current-state aggregation; keep the two-day criterion.
+- `나 오늘 뭐 해야 하지?` -> `my_day`.
+- `내 모듈에 담당자 없는 업무 있으면 하나 하고 싶네` -> `my_day`: the user wants work they can take, not a team-wide progress report.
+- `skcc.x1042 최근 3일간 뭐 했어?` -> `activity`: a person's activity.
+- `DL-101 관련자들이 요즘 어떤 일들을 해?` -> `activity`: the subject is people's activity; retain the ticket key.
+- `CDC 검토가 왜 멈췄었지?` -> `ask`: historical rationale, not a progress metric.
+- `지난 분기에 성능 관련해서 어떤 논의가 있었어?` -> `ask`: past discussion and records.
+- `DL-207을 x1103에게 맡기는 게 적절할까?` -> `ask`: evaluate assignment; no mutation was requested.
+- `DL-207 담당자를 x1103 으로 바꿔줘` -> `modify`.
+- `DL-207 마감을 다음 주로 미루고 사유도 코멘트로 남겨줘` -> `modify`: an existing-ticket field change is the primary effect.
+- `fdc.fdc_trace_summary_ic 데이터의 현재 적재주기는?` -> `ask`: asset-property lookup, not progress.
+- `yms.yms_lot_yield_daily 스키마랑 변경 히스토리 알려줘` -> `ask`.
+- `fdc.fdc_trace_summary_ic 적재하는 job 이름이랑 작업자 누구야?` -> `ask`: look up recorded ownership, not that person's activity.
+- `Schema Registry 우리 어떻게 쓰고 있고 호환성 정책은 뭐야?` -> `ask`: internal state of a named technology.
+
+## Answer Depth Examples
+
+- `fdc.fdc_trace_summary_ic 적재주기는?` -> `brief`.
+- `DL-101 담당자 누구야?` -> `brief`.
+- `이번 주 마감 지난 티켓 뭐 있어?` -> `brief` because the list is the answer.
+- `CDC가 뭐고 우리는 어떻게 쓰고 있어?` -> `explain`.
+- `적재 지연이 왜 났고 어떻게 해결했어?` -> `explain`.
+- `Schema Registry 우리 어떻게 쓰고 있어?` -> `explain`.
+
+## Korean Progress-Plan Patterns
+
+- `plan_work`: internal history -> optional external research for a named technology -> clarification or draft -> assignee candidates -> validation -> approval
+- `plan_work` Bug: duplicate symptom search -> reproduction confirmation -> Bug draft -> assignee candidates -> approval
+- knowledge `ask`: internal lexical and semantic search -> external supplement -> concepts, internal context, and gaps
+- assignment-fit `ask`: read ticket -> inspect candidate history and workload -> evidence-backed judgment
+- asset or topic `ask`: trace exact-name mentions including comments -> inspect change history -> read document body -> establish current value
+- `my_day`: retrieve own workload -> rank overdue, due-soon, and stale items -> recommend today's priorities
+- `progress`: resolve target -> retrieve progress or condition through JQL -> report denominator rules
+- `activity`: resolve roster -> collect every member's activity -> organize roster, module, and person layers
+- `modify`: verify target ticket -> build change plan -> approval
+
+## Conversation Data
+
 {conversation(state)}"""
 
     def schema(self):
@@ -295,6 +281,15 @@ class RequestArchitect(StructuredAgent):
             intent = Intent.PROGRESS if any(m.lower() in _req.lower() for m in mods) \
                 else Intent.ASK
             patch["intent"] = intent
+        # 조사 결과 자체가 산출물인 요청은 ticket creation이 아니다. `적용 가능성` 같은 표현이
+        # 있어도 "조사해줘"로 끝나면 read-only research이며, 명시적 티켓 생성까지 있을 때만
+        # plan_work를 유지한다. 이 가드가 없으면 WorkArchitect 한 호출(약 10k tokens)과 불필요한
+        # 승인 질문이 붙었다(S7 focused run).
+        if intent == Intent.PLAN_WORK and any(w in _req for w in ("조사해", "조사해줘", "리서치해")) \
+                and not any(w in _req for w in ("티켓", "태스크", "테스크", "Task", "task",
+                                                "이슈 등록", "만들어", "생성해")):
+            intent = patch["intent"] = Intent.ASK
+            patch["playbook"] = patch.get("playbook") or "topic_research"
         # ── "내가 할 만한 일" 은 **내 일감**이지 진척 집계가 아니다 ────────────
         # 실측(REC9): "지금 내가 할 만한 일 추천해줘" 가 실행마다 my_day / progress 로
         # 갈렸다. 두 갈래는 지나는 노드와 재료가 통째로 달라서(내 일감 사전취합 vs 진척률),
@@ -347,4 +342,26 @@ class RequestArchitect(StructuredAgent):
             #   비어 있을 때만 채운다 — 대화 도중 주제가 바뀌어도 대상은 식별자·핵심어가
             #   따라가고, 여기서 남는 것은 "무엇을 묻는 대화인가"뿐이다.
             patch["request_text"] = last_user_text(state)
+
+        # A multi-stage new build whose ticket shape is still open should not trigger Jira/web research
+        # merely to ask the same structure preference afterward. Ask that cheap, reversible choice first;
+        # the next turn keeps the original request and performs research for the selected shape. Delegated
+        # defaults and an explicitly named shape continue without an interview.
+        if intent == Intent.PLAN_WORK and not (state.get("turns") or 0) \
+                and not (state.get("situation") or "").strip() \
+                and not ((state.get("draft") or {}).get("items")):
+            from app.agent.workflow.agents.work_architect import (BUILD_WORDS, _said_defaults,
+                                                                  shape_hint)
+            original = str(patch.get("request_text") or _req)
+            if (any(word in original for word in BUILD_WORDS)
+                    and not shape_hint(state)[0] and not _said_defaults(state)):
+                patch["interpretation"] = (
+                    "신규 구축 요청의 티켓 구조를 먼저 확정한 뒤 관련 이력과 기술 근거를 조사하는 "
+                    "것으로 이해함")
+                patch["questions"] = [{
+                    "question": "여러 단계로 나뉠 수 있는 작업입니다. 어떤 티켓 구조로 진행할까요?",
+                    "kind": "choice", "field": "structure", "required_input": False,
+                    "why_required": "",
+                    "options": ["Task 하나 + 단계별 Sub-Task (권장)", "단일 Task로 구성"],
+                }]
         return patch

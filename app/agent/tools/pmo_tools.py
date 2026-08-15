@@ -51,13 +51,11 @@ def _is_manager() -> bool:
 # ── 내 일 ──────────────────────────────────────────────────────────
 @tool
 def get_my_workload(user_id: str = "", include_done: bool = False) -> dict:
-    """**내가 맡았거나 보고한 티켓 전부** — 상태·마감·우선순위·소속 Epic 과 함께.
+    """Return tickets assigned to or reported by the session user, with status, due date, priority, and timing signals.
 
-    "나 오늘 뭐 해야 할까" 같은 질문의 출발점이다. 여기서 받은 목록을 마감·우선순위·정체
-    여부로 판단해 오늘 집중할 것을 골라 준다. **골라 주는 건 네 일이고, 이 도구는 재료만 준다.**
-
-    user_id 를 비우면 세션 사용자. 다른 사람 것을 보려면 매니저여야 한다.
-    include_done=false 면 완료된 것은 뺀다(오늘 할 일에는 필요 없다).
+    Use as the evidence source for today's priorities; the tool does not rank or recommend. Empty `user_id` means
+    the session user. Reading another person requires manager authorization. Set `include_done=true` only when
+    completed work is relevant. Results include `dueInDays`, `overdue`, and `staleDays` for deterministic judgment.
     """
     c = client()
     me = _me()
@@ -106,12 +104,10 @@ def get_my_workload(user_id: str = "", include_done: bool = False) -> dict:
 
 @tool
 def find_stale_tickets(module: str = "", days: int = 14, limit: int = 15) -> dict:
-    """**오래 아무도 손대지 않은 진행중 티켓** — 매니저가 챙겨야 할 것들.
+    """Return in-progress tickets not updated for at least `days`, optionally restricted to one module.
 
-    진행중인데 2주 넘게 업데이트가 없으면 대개 셋 중 하나다: 막혀 있거나, 잊혔거나, 이미
-    끝났는데 상태를 안 옮겼거나. 어느 쪽이든 **누군가 물어봐야** 한다.
-
-    module 을 주면 그 모듈만(예: "ETL"). days 는 '며칠째 조용한가'의 기준.
+    Preserve the user's exact threshold and report `thresholdDays`. Staleness is an observation, not proof of a
+    blocker, neglect, or completion. `limit` caps returned detail and does not change `count`.
     """
     c = client()
     try:
@@ -143,13 +139,11 @@ def find_stale_tickets(module: str = "", days: int = 14, limit: int = 15) -> dic
 # ── 진척도 ─────────────────────────────────────────────────────────
 @tool
 def get_progress(target: str = "") -> dict:
-    """**진척률** — Epic 키를 주면 그 Epic, 모듈명을 주면 그 모듈, 비우면 전체(WBS 롤업).
+    """Return WBS progress for one in-scope Epic key, one module, or the full configured rollup.
 
-    숫자만 주지 않는다. **분모에서 빠진 것**(Bug·Ops·VoC·Epic Link 없는 티켓)과 SP 누락
-    건수를 함께 준다 — "진척률이 왜 이런가"는 대개 그쪽에 답이 있다.
-
-    돌려주는 것(Epic): {key, name, donePct, doneSp, totalSp, children:{total,done}}
-    돌려주는 것(전체/모듈): 모듈별 진척률 + WBS Task 별 진척률
+    The result includes numerator, denominator, child counts, and relevant denominator rules rather than a bare
+    percentage. Missing `Story Point`, Bug, Ops, VoC, and tickets without `Epic Link` may affect or be excluded
+    from the calculation. An empty target means the full configured rollup, not all Jira projects.
     """
     from app.infra.settings import load_plan
     c = client()
@@ -226,12 +220,10 @@ def get_progress(target: str = "") -> dict:
 # ── 타인 활동 (매니저 전용) ─────────────────────────────────────────
 @tool
 def get_user_activity(user_id: str, days: int = 3) -> dict:
-    """**그 사람이 최근 며칠간 무엇을 했나** — 담당 티켓 변경·코멘트·문서 활동.
+    """Return a verified person's recent in-scope Jira changes, comments, and Confluence activity for `days`.
 
-    ★ **매니저만 쓸 수 있다.** 매니저가 아니면 거부된다(프롬프트가 아니라 이 도구가 막는다).
-
-    "A 작업자가 최근 3일간 뭐 했어?" 같은 질문에 쓴다. 활동이 적다고 곧바로 '일을 안 했다'로
-    읽지 마라 — 긴 티켓 하나를 붙들고 있으면 기록이 적다. 무엇을 만졌는지를 보고 말하라.
+    Manager authorization is enforced by code. Use the evidence to describe what was touched, never to infer
+    performance or inactivity from a low event count. `days` is bounded to 1 through 30.
     """
     uid = (user_id or "").strip()
     if not uid:
@@ -280,10 +272,11 @@ def get_user_activity(user_id: str, days: int = 3) -> dict:
 
 @tool
 def find_unassigned_tickets(module: str = "", limit: int = 15) -> dict:
-    """**담당자가 비어 있는 미완료 티켓** — "담당자 없는 업무 있어?", "하나 집어 갈 일 없나".
+    """Return incomplete tickets with no assignee, optionally restricted to one verified module.
 
-    module 을 주면 그 모듈만(예: "ETL"). "내 모듈"이라고 했으면 먼저 whoami 로 모듈을
-    알아낸 뒤 그 이름을 넣어라. 없으면 없다고 단정해서 답하면 된다 — 이 도구가 곧 근거다.
+    For first-person scope such as “my module,” resolve the module through `whoami` first. A zero
+    `count` is authoritative within configured Jira scope. `limit` caps returned details and does
+    not change total `count`.
     """
     c = client()
     try:
@@ -317,9 +310,10 @@ def find_unassigned_tickets(module: str = "", limit: int = 15) -> dict:
 
 @tool
 def whoami() -> dict:
-    """지금 이 대화의 사용자가 **누구이고 매니저인지**. 권한이 걸린 요청 전에 확인한다.
+    """Return the current conversation user's exact ID, manager flag, modules, and current date.
 
-    "내 업무", "우리 모듈" 같은 말을 해석하려면 먼저 이걸 알아야 한다.
+    Use before interpreting first-person scope such as “my work” or “our module,” or before an
+    authorization-bound request. Never infer identity from the user's natural-language name.
     """
     from app.infra.settings import load_people
     me = _me()

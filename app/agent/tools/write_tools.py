@@ -30,24 +30,20 @@ def set_thread(thread_id: str):
 # ── 검증 (부작용 없음) ─────────────────────────────────────────────
 @tool
 def validate_ticket_plan(mode: str, items: list) -> dict:
-    """만들려는 티켓 목록이 **Jira 규칙에 맞는지** 미리 검사한다. 부작용 없음 — 자주 불러라.
+    """Validate a proposed ticket batch against Jira rules without side effects.
 
-    사용자에게 초안을 보여 주기 **전에** 반드시 통과시킨다. 여기서 걸리는 걸 그대로 보여 주면
-    사용자가 대신 디버깅하게 된다.
+    This must pass before presenting a draft to the user. `mode` is either `task` for top-level or
+    Epic children, or `subtask` for children of an existing ticket; do not mix modes in one call.
 
-    mode: "task"(최상위/Epic 밑) 또는 "subtask"(기존 티켓의 Sub-Task). **한 번에 하나만** —
-          Sub-Task 는 부모가 이미 있어야 하므로 Task 를 먼저 만들고 두 번째 호출로 붙인다.
-    items: [{summary, type, epic|parent, priority, duedate, assignee, components, labels, description}]
-           - summary·type 은 필수.
-           - task 모드: **epic 을 반드시 적는다.** 상위 Epic 밑에 넣으면 그 키를, Epic 없이
-             최상위로 만들 거면 `"epic": null` 을 **명시**한다. 생략하면 거부된다 — 빠뜨려서
-             고아 티켓이 생기는 것과 일부러 최상위로 두는 것을 구분하기 위해서다.
-           - subtask 모드: parent 가 **이미 존재하는** 티켓 키여야 한다.
-           - Story Point 는 여기서 못 넣는다. **Story 타입에만** 설정 가능해서 생성 후 따로 건다.
-           - 최대 100건.
+    `items` has the shape
+    `[{summary, type, epic|parent, priority, duedate, assignee, components, labels, description}]`.
+    `summary` and `type` are required. In `task` mode, always provide `epic`: use the parent key or
+    explicitly set `null` for intentional top-level work. In `subtask` mode, `parent` must be an
+    existing ticket key. Story Point is not accepted here and is valid only for Story. Maximum 100
+    items.
 
-    돌려주는 것: {"ok": bool, "errors": [{index,field,message}], "warnings": [...]}
-    errors 가 비어야 create_tickets 로 넘어갈 수 있다.
+    Returns `{"ok": bool, "errors": [{index,field,message}], "warnings": [...]}`. Call
+    `create_tickets` only when `errors` is empty.
     """
     from app.domain.bulk import validate_bulk
     try:
@@ -60,10 +56,10 @@ def validate_ticket_plan(mode: str, items: list) -> dict:
 
 @tool
 def list_ticket_options(kind: str = "") -> dict:
-    """티켓 필드에 **넣을 수 있는 값들** — components / priorities / labels / taskTypes.
+    """List valid values for `components`, `priorities`, `labels`, and `taskTypes`.
 
-    초안을 짜기 전에 본다. 없는 컴포넌트나 우선순위를 지어내면 validate_ticket_plan 에서 막힌다.
-    kind 를 비우면 전부, 주면 그것만("components" | "priorities" | "labels" | "taskTypes").
+    Call this before drafting instead of inventing field values. Leave `kind` empty for every
+    category, or pass one of `components`, `priorities`, `labels`, or `taskTypes`.
     """
     c, out = client(), {}
     want = (kind or "").strip()
@@ -83,7 +79,7 @@ def list_ticket_options(kind: str = "") -> dict:
 
 @tool
 def list_child_types(parent_key: str) -> list:
-    """그 부모 **밑에 만들 수 있는 티켓 타입**. Epic 밑과 Story 밑이 다르다 — 지어내지 말고 확인한다."""
+    """List the ticket types valid under a specific parent; never infer them from another tier."""
     try:
         return list(client().child_types(parent_key) or [])
     except Exception as e:
@@ -97,20 +93,17 @@ def _denied(why: str) -> dict:
 
 @tool
 def create_tickets(mode: str, items: list, approval_token: str, children: list = None) -> dict:
-    """검증을 통과한 티켓들을 **실제로 만든다**. 사용자 승인 토큰이 반드시 필요하다.
+    """Create a validated ticket batch after explicit user approval.
 
-    토큰은 승인 카드가 발급한다 — **지어낼 수 없고**, 승인 화면에 보인 items 와 한 글자라도
-    다르면 거부된다. 토큰이 없으면 만들지 말고 사용자에게 초안을 보여 주고 승인을 요청하라.
+    `approval_token` is issued by the approval card and must exactly match the displayed payload;
+    it cannot be invented. Without a token, present the draft and request approval. Jira has no
+    batch rollback, so report every item in `failed` instead of implying complete success.
 
-    Jira 에는 롤백이 없다 — 하나가 실패해도 나머지는 계속 만들어진다. 결과의 failed 를
-    사용자에게 그대로 알려라(조용히 넘어가면 사용자는 다 만들어진 줄 안다).
+    `children` contains Sub-Tasks created with their parents. Each child uses `parent_index` to
+    identify its parent item. The tool creates parents first, then uses their real keys. One token
+    covers the exact tree shown in the approval UI.
 
-    `children` 은 **부모와 함께 만들 Sub-Task** 다(각 항목에 `parent_index` 로 몇 번째 부모의
-    자식인지 적는다). Sub-Task 는 부모 키가 있어야 만들어지므로, 부모를 먼저 만들고 그 키로
-    이어 붙인다 — 승인 토큰 하나가 트리 전체를 보증한다(화면에 보인 것과 만들어지는 것이
-    같아야 HITL 이 의미를 갖는다).
-
-    돌려주는 것: {"ok", "created": [{index,key,summary}], "failed": [{index,summary,error}]}
+    Returns `{"ok", "created": [{index,key,summary}], "failed": [{index,summary,error}]}`.
     """
     from app.domain.bulk import validate_bulk
     c = client()
@@ -172,14 +165,15 @@ def create_tickets(mode: str, items: list, approval_token: str, children: list =
 def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: str = None,
                   priority: str = None, summary: str = None, labels: list = None,
                   components: list = None, description: str = None) -> dict:
-    """기존 티켓의 **속성을 바꾼다**(담당자·마감일·우선순위·제목·라벨·컴포넌트). 승인 토큰 필요.
+    """Update editable fields on one existing ticket after explicit user approval.
 
-    준 것만 바뀐다. 비우려면 빈 문자열/빈 배열을 명시적으로 준다.
-    담당자를 뗄 때는 assignee="" 다. duedate 는 YYYY-MM-DD.
+    Only provided fields change. Use an empty string or array to clear a field; `assignee=""`
+    unassigns, and `duedate` uses `YYYY-MM-DD`.
 
-    `statusCategory=done`이면 속성을 바꿀 수 없다. `list_transitions`에 실제 Reopened 전이가
-    있으면 먼저 그 전이를 별도 승인·실행하고, 열린 상태에서 새 변경 승인을 받아야 한다.
-    완료 티켓에도 코멘트는 남길 수 있다. 그 밖에도 화면에서 **편집할 수 없는 필드는 거부**된다.
+    Fields cannot be changed while `statusCategory=done`. If `list_transitions` exposes a real
+    Reopened transition, reopen it under a separate approval and then obtain new approval for the
+    field change. Comments are still allowed on completed tickets. Fields not editable in the Jira
+    screen are rejected.
     """
     changes = compact({"assignee": assignee, "duedate": duedate, "priority": priority,
                        "summary": summary, "labels": labels, "components": components,
@@ -251,12 +245,12 @@ def update_ticket(key: str, approval_token: str, assignee: str = None, duedate: 
 def create_epic(summary: str, approval_token: str, epic_name: str = "",
                 description: str = "", components: list = None, priority: str = "",
                 duedate: str = "", assignee: str = "") -> dict:
-    """**최상위 Epic 을 만든다**. 사용자 승인 토큰이 반드시 필요하다.
+    """Create one top-level Epic after explicit user approval.
 
-    summary 는 Epic 의 요약(제목), epic_name 은 짧은 단축어(WBS·뱃지에 표시 — 비우면
-    summary 로). description 은 HTML(배경/목표/완료 기준 구조 — 참고는 자동 병합).
-    Task/Sub-Task 는 이 도구가 아니라 create_tickets 로 — Epic 이 먼저 실재해야
-    그 밑에 달 수 있다(생성 후 두 번째 승인으로 이어진다).
+    `summary` is the Epic title. `epic_name` is the short WBS/badge label and defaults to `summary`.
+    `description` is HTML with background, objective, and completion criteria; references are
+    merged automatically. Create Task and Sub-Task items with `create_tickets`. The Epic must exist
+    before children can be attached, so child creation requires a subsequent approval.
     """
     from app.agent import approval
     payload = compact({"summary": summary, "epic_name": epic_name,
@@ -282,11 +276,11 @@ def create_epic(summary: str, approval_token: str, epic_name: str = "",
 
 @tool
 def add_ticket_comment(key: str, body: str, approval_token: str) -> dict:
-    """티켓에 **코멘트를 남긴다**. 승인 토큰 필요.
+    """Add a comment to one ticket after explicit user approval.
 
-    티켓을 만든 뒤 "왜 이렇게 쪼갰는지 / 왜 이 담당자인지"를 남겨 두면, 나중에 이 대화를 못 본
-    사람도 맥락을 안다. `statusCategory=done`인 완료 티켓에도 코멘트는 남길 수 있다.
-    다만 사용자가 요청하지 않은 코멘트를 임의로 달지는 않는다.
+    Comments may preserve decisions such as decomposition or assignee rationale for readers who did
+    not see this conversation. Comments are allowed when `statusCategory=done`. Never add one unless
+    the user requested it.
     """
     ok, why = approval.consume(approval_token, "add_ticket_comment", {"key": key, "body": body})
     if not ok:
@@ -300,12 +294,11 @@ def add_ticket_comment(key: str, body: str, approval_token: str) -> dict:
 
 @tool
 def link_tickets(key: str, other_key: str, relation: str, approval_token: str) -> dict:
-    """두 티켓을 **잇는다**(Relates/Blocks/Duplicate/Cloners 등). 승인 토큰 필요.
+    """Link two tickets after explicit user approval.
 
-    버그를 만들면 원인 Task·중복 티켓과 이어 둬야 다음 사람이 맥락을 좇을 수 있다.
-    relation 은 이 Jira 에 실재하는 링크 타입 이름이어야 한다 — 지어내지 말고,
-    Relates 가 아니면 list_ticket_options 대신 서버가 아는 타입(link_types)에 맞춰라.
-    방향은 outward(key → other_key). "DL-1 이 DL-2 를 막는다"면 key=DL-1, relation=Blocks.
+    `relation` must be an existing Jira link type such as `Relates`, `Blocks`, `Duplicate`, or
+    `Cloners`; do not invent a type. Direction is outward from `key` to `other_key`. For “DL-1
+    blocks DL-2,” pass `key="DL-1"` and `relation="Blocks"`.
     """
     ok, why = approval.consume(approval_token, "link_tickets",
                                {"key": key, "other": other_key, "relation": relation})
@@ -320,10 +313,10 @@ def link_tickets(key: str, other_key: str, relation: str, approval_token: str) -
 
 @tool
 def attach_document(key: str, url: str, title: str, approval_token: str) -> dict:
-    """티켓에 **관련 문서 링크**(Confluence·웹)를 단다. 승인 토큰 필요.
+    """Attach a related Confluence or web document to a ticket after explicit user approval.
 
-    조사에서 찾은 설계 문서·요구사항 문서를 티켓에 걸어 두면, 티켓만 연 사람도 근거를
-    바로 좇을 수 있다. 같은 URL 을 다시 걸면 한 줄로 갱신된다(중복이 쌓이지 않는다).
+    Use this to preserve design or requirement evidence with the ticket. Reattaching the same URL
+    updates the existing link instead of creating duplicates.
     """
     ok, why = approval.consume(approval_token, "attach_document",
                                {"key": key, "url": url, "title": title})
@@ -338,9 +331,10 @@ def attach_document(key: str, url: str, title: str, approval_token: str) -> dict
 
 @tool
 def list_transitions(key: str) -> list:
-    """그 티켓에서 **지금 가능한 상태 전이** 목록. 부작용 없음.
+    """List transitions currently available for one ticket without side effects.
 
-    상태 이름은 프로젝트마다 다르다 — 지어내지 말고 여기서 얻은 id 를 transition_ticket 에 넘긴다.
+    Workflow names vary by project. Never invent a transition; pass an id returned here to
+    `transition_ticket`.
     """
     try:
         # client.transitions 는 이미 정규화된 모양({"id","name","to"(문자열)})을 준다 —
@@ -356,12 +350,11 @@ def list_transitions(key: str) -> list:
 @tool
 def transition_ticket(key: str, transition_id: str, approval_token: str,
                       comment: str = None, assignee: str = None) -> dict:
-    """티켓 **상태를 옮긴다**(예: 진행중 → 완료). 승인 토큰 필요.
+    """Move a ticket through one workflow transition after explicit user approval.
 
-    완료 티켓을 다시 열 때도 이름을 지어내지 말고 `list_transitions`가 돌려준 Reopened
-    전이 id를 쓴다. 전이와 속성 변경은 서로 다른 승인/실행이다. transition_id 는
-    list_transitions 에서 얻은 값이어야 한다. 그 전이 화면에 없는 필드
-    (comment·assignee 등)를 주면 Jira 가 거부하므로, 전이 목록에서 확인한 것만 넘긴다.
+    `transition_id` must come from `list_transitions`, including when reopening a completed ticket.
+    A transition and a field update are separate approval/execution operations. Pass `comment` or
+    `assignee` only if that transition screen supports the field; otherwise Jira rejects it.
     """
     payload = compact({"key": key, "transition": transition_id,
                        "comment": comment, "assignee": assignee})
@@ -377,17 +370,17 @@ def transition_ticket(key: str, transition_id: str, approval_token: str,
 
 @tool
 def update_tickets(items: list, approval_token: str) -> dict:
-    """여러 티켓의 속성을 **한 번에 바꾼다**(담당자·마감·우선순위·제목·라벨·컴포넌트). 승인 토큰 필요.
+    """Update editable fields on multiple tickets after one explicit user approval.
 
-    "이 다섯 건 마감을 다음 주로", "정체된 티켓들 담당을 나눠서" 처럼 대상이 여러 개일 때
-    update_ticket 을 반복해 부르지 말고 이것을 쓴다 — 승인이 한 번이면 사용자도 한 번만 본다.
+    Use this instead of repeated `update_ticket` calls when the request targets several tickets.
+    `items` has the shape
+    `[{"key": "DL-123", "changes": {"duedate": "2026-09-01", "priority": "P2-Major"}}]`.
+    Each ticket may receive different values. Only provided fields change; use an empty string or
+    array to clear a field.
 
-    items: [{"key": "DL-123", "changes": {"duedate": "2026-09-01", "priority": "P2-Major"}}]
-    티켓마다 **다른 값**을 줄 수 있다. 준 필드만 바뀌고, 비우려면 빈 문자열/빈 배열을 준다.
-    `statusCategory=done`인 티켓이 하나라도 있으면 전체 batch를 시작하지 않는다. 먼저
-    Reopened 전이를 별도 실행해야 한다. 편집 권한이 없는 필드·티켓도 거부된다.
-
-    돌려주는 것: {"ok", "updated": [{index,key,fields}], "failed": [{index,summary,error}]}
+    If any item has `statusCategory=done`, the entire batch is rejected before starting. Reopen such
+    tickets in a separate approved operation. Non-editable fields or tickets are also rejected.
+    Returns `{"ok", "updated": [{index,key,fields}], "failed": [{index,summary,error}]}`.
     """
     from app.domain.bulk import validate_bulk_update
     c = client()
@@ -426,16 +419,16 @@ def update_tickets(items: list, approval_token: str) -> dict:
 
 @tool
 def add_ticket_comments(items: list, approval_token: str) -> dict:
-    """여러 티켓에 코멘트를 **한 번에 남긴다**. 승인 토큰 필요.
+    """Add comments to multiple tickets after one explicit user approval.
 
-    회의 결과 공유, 일괄 공지, 여러 티켓에 같은 결정 사항을 남길 때 쓴다.
-    items: [{"key": "DL-123", "body": "..."}] — 티켓마다 **다른 본문**을 줄 수 있다.
-    사람 언급은 [~사번](예: [~skcc.x1042]), 티켓 키는 평문(DL-123)으로 적으면 링크가 된다.
+    Use this for meeting outcomes, batch notices, or one decision recorded across several tickets.
+    `items` has the shape `[{"key": "DL-123", "body": "..."}]`, and each body may differ. Mention
+    a person as `[~user_id]`, for example `[~skcc.x1042]`; a plain ticket key such as `DL-123`
+    becomes a link.
 
-    완료 티켓에도 코멘트는 허용된다. 사용자가 요청하지 않은 코멘트를 임의로 달지 마라 —
-    여러 사람에게 알림이 간다.
-
-    돌려주는 것: {"ok", "created": [{index,key}], "failed": [{index,summary,error}]}
+    Comments are allowed on completed tickets. Never add comments unless the user requested them,
+    because they may notify multiple people. Returns
+    `{"ok", "created": [{index,key}], "failed": [{index,summary,error}]}`.
     """
     from app.domain.bulk import validate_bulk_comment
     c = client()

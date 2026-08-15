@@ -30,34 +30,33 @@ SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "index": {"type": "integer", "description": "초안 항목 번호(0부터)"},
-                    "user": {"type": "string", "description": "Jira user id(skcc.x1042 형식). "
-                                                              "확신이 없으면 빈 문자열"},
+                    "index": {"type": "integer", "description": "Zero-based draft item index."},
+                    "user": {"type": "string", "description": "Jira user ID in skcc.x1042 form; empty if unresolved."},
                     "reasons": {
                         "type": "array", "items": {"type": "string"},
-                        "description": ("추천 근거. **각 근거에 숫자나 티켓 키를 넣어라.** "
-                                        "예: '유사 티켓 DL-118·DL-127 담당(2건)', "
-                                        "'DL-118 에서 CDC 관련 코멘트 4건', '진행중 3건'. "
-                                        "'적합해 보임' 같은 근거는 쓰지 마라"),
+                        "description": ("Korean recommendation reasons grounded in the supplied evidence. "
+                                        "Each reason includes a metric or ticket key, for example similar "
+                                        "tickets, relevant comments, or current in-progress count. Never use "
+                                        "a generic claim such as 적합해 보임."),
                     },
                     "alternates": {
                         "type": "array",
                         "items": {"type": "object", "properties": {
                             "user": {"type": "string"},
-                            "why": {"type": "string", "description": "대안인 이유와 한계를 함께"}}},
-                        "description": "대안 1~2명. 왜 1순위가 아닌지도 적는다",
+                            "why": {"type": "string", "description": "Korean explanation of both evidence and limitation."}}},
+                        "description": "One or two alternatives, including why each is not first choice.",
                     },
                     # 자식 담당도 **여기서** 정한다 — 사람을 고르는 일은 한 역할의 것이다.
                     "children": {
                         "type": "array",
                         "items": {"type": "object", "properties": {
-                            "index": {"type": "integer", "description": "이 항목의 하위 번호(0부터)"},
+                            "index": {"type": "integer", "description": "Zero-based child index within this item."},
                             "user": {"type": "string", "description": "Jira user id"},
                             "why": {"type": "string",
-                                    "description": "왜 이 사람인가 — 숫자나 티켓 키를 넣어라"}}},
-                        "description": ("하위(Sub-Task)가 있으면 **하위별 담당**도 정한다. "
-                                        "부하가 높다고 스스로 판단해 뺀 사람을 하위에 넣지 "
-                                        "마라 — 앞뒤가 맞지 않는다. 하위가 없으면 빈 배열"),
+                                    "description": "Korean assignment reason containing a metric or ticket key."}}},
+                        "description": ("Assignments for each child Sub-Task. Do not assign a person whom "
+                                        "your own analysis rejected for excessive workload. Empty when there "
+                                        "are no children."),
                     },
                 },
                 "required": ["index", "user", "reasons"],
@@ -65,7 +64,7 @@ SCHEMA = {
         },
         "caution": {
             "type": "string",
-            "description": "배정상 주의할 점(과부하·운영 인력에 개발 업무 등). 없으면 빈 문자열",
+            "description": "Korean assignment caution such as overload or role mismatch; empty when none.",
         },
     },
     "required": ["assignments"],
@@ -179,32 +178,34 @@ class PeopleAdvisor(StructuredAgent):
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []) if evidence_is_relevant(e))
         data = wrap_data(
-            data_block("현재 상황", state.get("situation")),
-            data_block("유사 티켓(여기 등장한 사람들을 확인하라)", ev),
-            data_block("유사 업무 담당 이력 (코드가 검색·집계함 — 근거로 활용하라)",
+            data_block("Current Situation", state.get("situation")),
+            data_block("Relevant Tickets and Participants", ev),
+            data_block("Verified Similar-Work Assignment History",
                        state.get("similar_history")),
-            data_block("후보 로스터와 현재 부하 (코드가 조회함 — 이 안에서 고른다)",
+            data_block("Verified Candidate Roster and Current Workload",
                        state.get("roster_load")))
         return f"""\
-# 명령서
-아래 티켓 초안의 **각 항목마다** 담당자를 근거와 함께 제안하라.
+# Task
 
-## 제약조건
-- 초안 항목 번호(index)를 그대로 쓴다.
-- 사용자 id 는 `skcc.x1042` 형식이어야 한다. 이름을 적지 마라.
-- 근거는 **위 자료에 있는 것만**. 자료에 없는 것을 근거처럼 적지 마라.
-- 근거에는 워크로드 숫자만이 아니라 **유사 업무 이력(티켓 키·건수)** 을 반드시 확인해
-  반영하라 — 위 자료의 담당 이력 표가 출발점이다. 이력이 없으면 없다고 적는다.
-- **후보는 한 명이 아니다** — alternates 에 대안 후보를 1명 이상, 왜 1순위가 아닌지와
-  함께 적는다. 사용자가 화면에서 후보 중 고른다.
-- 같은 사람을 모든 항목에 몰지 마라 — 그건 배분이 아니다.
-- **하위(Sub-Task)가 있으면 하위 담당도 네가 정한다**(children). 아래 초안에 붙은 현재
-  하위 담당은 코드가 모듈 명단을 순번으로 돌린 임시값이니 부하를 보고 고쳐라.
-  대안에서 "부하가 높아 부적합"이라 적은 사람을 하위에 넣지 마라 — 앞뒤가 안 맞는다.
+Recommend an evidence-backed assignee for every item in the ticket draft.
 
-## 티켓 초안
-{draft_text(state.get('draft')) or '(초안 없음)'}
-짐작 모듈: {state.get('module') or '미상'}{data}"""
+## Constraints
+
+- Preserve each zero-based draft `index`.
+- Use only a verified Jira user ID in `skcc.x1042` form; never print or guess a name.
+- Every reason must come from the supplied data. Inspect similar-work history and ticket counts as well as workload. State in Korean when no similar history exists.
+- Include at least one `alternates` candidate with the reason and limitation; the user chooses in the UI.
+- Distribute work deliberately instead of assigning every item to the same person without evidence.
+- Assign each child Sub-Task in `children`. Existing child assignees in the draft may be temporary round-robin values, so use workload and history to correct them.
+- When the request or draft says work must be distributed and at least two verified roster candidates exist, assign sibling children to distinct users. Returning the same user for every child is invalid unless only one eligible candidate exists in the supplied roster.
+- Never assign a person whom the same analysis rejects as overloaded or unsuitable.
+- Write `reasons`, alternate `why`, child `why`, and `caution` in Korean.
+
+## Ticket Draft Data
+
+{draft_text(state.get('draft')) or '(no draft)'}
+
+Inferred module: {state.get('module') or 'unknown'}{data}"""
 
     def schema(self):
         return SCHEMA
@@ -287,7 +288,24 @@ class PeopleAdvisor(StructuredAgent):
             row = {"index": idx, "user": user,
                    "reasons": reasons, "children": kids,
                    "alternates": alternates[:2]}
-            rows.append(_normalize_workload_choice(row))
+            item = ((state.get("draft") or {}).get("items") or [])[idx]
+            rows.append(_enforce_item_roster(
+                _normalize_workload_choice(row), item, state.get("roster_load")))
+
+        # Structured output이 유효해도 모델이 초안 항목 하나를 통째로 빠뜨릴 수 있다.
+        # 컴포넌트 로스터가 검증된 경우에는 다시 LLM을 호출하지 않고 최소 부하 후보로
+        # 안전하게 복원한다. 이 경로는 추천 누락 때문에 전체 생성 턴을 재시도하던 비용도 없앤다.
+        present = {r.get("index") for r in rows}
+        for idx, item in enumerate((state.get("draft") or {}).get("items") or []):
+            if idx in present:
+                continue
+            fallback = _enforce_item_roster(
+                {"index": idx, "user": "", "reasons": [],
+                 "children": [], "alternates": []},
+                item, state.get("roster_load"))
+            if fallback.get("user"):
+                rows.append(fallback)
+        rows.sort(key=lambda row: int(row.get("index") or 0))
         named = sum(1 for r in rows if r["user"])
         return {"assignments": rows,
                 "trace": note(state, self.name,
@@ -327,6 +345,117 @@ def _workload_reason(roster_load, user: str) -> str:
             if m:
                 return f"진행중 {m.group(1)}건"
     return "승인 화면에서 현재 부하 확인 필요"
+
+
+def _module_roster(roster_load, module: str) -> list[dict]:
+    """`_roster_load`의 사람 친화 텍스트에서 한 모듈의 검증 후보만 복원한다.
+
+    조회가 실패해 전사 로스터로 넓어진 섹션은 요청 모듈과 이름이 다르므로 선택하지 않는다.
+    즉, 알 수 없는 컴포넌트에 전사 최소부하자를 그 모듈 담당자로 가장하지 않는다.
+    """
+    import re
+
+    wanted = str(module or "").strip().casefold()
+    if not wanted:
+        return []
+    active = False
+    people = []
+    for raw in str(roster_load or "").splitlines():
+        line = raw.strip()
+        header = re.fullmatch(r"\[(.+?)\s+로스터·부하\]", line)
+        if header:
+            active = header.group(1).strip().casefold() == wanted
+            continue
+        if not active:
+            continue
+        match = re.match(
+            r"-\s+(\S+)\s+.*?—\s+진행중\s+(\d+)건\s+·\s+열림\s+(\d+)건",
+            line)
+        if match:
+            people.append({"user": match.group(1),
+                           "in_progress": int(match.group(2)),
+                           "open": int(match.group(3))})
+    return sorted(people, key=lambda p: (p["in_progress"], p["open"], p["user"]))
+
+
+def _enforce_item_roster(row: dict, item: dict, roster_load) -> dict:
+    """초안 컴포넌트와 다른 모듈의 추천을 검증된 후보로 교정한다.
+
+    모델은 전체 조사 문맥에서 눈에 띈 다른 모듈 사람을 고를 수 있다. 반면 후보 집합은
+    초안 컴포넌트와 people.yaml이 결정하는 기계적 제약이다. 후보가 맞는 선택은 모델의
+    유사 이력 판단을 보존하고, 후보 밖 선택이나 누락만 최소 부하 순으로 교정한다.
+    """
+    module = next((str(c).strip() for c in (item.get("components") or [])
+                   if str(c).strip()), "")
+    candidates = _module_roster(roster_load, module)
+    if not candidates:
+        return row
+    by_user = {p["user"]: p for p in candidates}
+    chosen = str(row.get("user") or "").strip()
+    if chosen not in by_user:
+        chosen = candidates[0]["user"]
+        picked = by_user[chosen]
+        row = dict(row, user=chosen,
+                   reasons=[f"{module} 로스터 · 진행중 {picked['in_progress']}건 · "
+                            f"열림 {picked['open']}건"])
+        row["alternates"] = [
+            {"user": p["user"],
+             "why": f"{module} 로스터 · 진행중 {p['in_progress']}건 · 열림 {p['open']}건"}
+            for p in candidates if p["user"] != chosen
+        ][:2]
+
+    # Even a valid roster member can arrive with a stale workload number or be repeated as
+    # their own alternate.  Both defects made the prose compare one person with themselves.
+    if chosen in by_user:
+        import re
+
+        def with_load(reason: str, person: dict) -> str:
+            value = str(reason or "").strip()
+            if re.search(r"진행\s*중|진행중", value):
+                value = re.sub(r"(진행\s*중(?:인)?\s*(?:티켓|작업)?\s*)\d+(\s*건)|"
+                               r"(진행중\s*)\d+(\s*건)",
+                               lambda m: ((m.group(1) or m.group(3))
+                                          + str(person["in_progress"])
+                                          + (m.group(2) or m.group(4))), value)
+            return value
+
+        row["reasons"] = [with_load(reason, by_user[chosen])
+                          for reason in (row.get("reasons") or []) if str(reason).strip()]
+        alternates, seen = [], {chosen}
+        for alternate in (row.get("alternates") or []):
+            if not isinstance(alternate, dict):
+                continue
+            user = str(alternate.get("user") or "").strip()
+            if not user or user in seen or user not in by_user:
+                continue
+            seen.add(user)
+            alternates.append({"user": user,
+                               "why": with_load(alternate.get("why"), by_user[user])})
+        row["alternates"] = alternates[:2]
+
+    # 모델이 자식만 다른 모듈 사람에게 줬다면 같은 후보 집합 안에서 분산한다.
+    children = []
+    supplied = {int(c.get("index") or 0): dict(c)
+                for c in (row.get("children") or []) if isinstance(c, dict)}
+    for child_index, child in enumerate(item.get("children") or []):
+        existing = supplied.get(child_index, {})
+        user = str(existing.get("user") or "").strip()
+        if child.get("assignee_source") == "user":
+            user = str(child.get("assignee") or user).strip()
+        elif user not in by_user:
+            user = candidates[child_index % len(candidates)]["user"]
+        if not user:
+            continue
+        if user in by_user:
+            p = by_user[user]
+            why = (f"{module} 로스터 · 진행중 {p['in_progress']}건 · "
+                   f"열림 {p['open']}건")
+        else:
+            why = "사용자 지정 담당자"
+        children.append({"index": child_index, "user": user, "why": why})
+    if children:
+        row["children"] = children
+    return row
 
 
 def _normalize_workload_choice(row: dict) -> dict:

@@ -23,23 +23,23 @@ SCHEMA = {
             "items": {"type": "object", "properties": {
                 "term": {"type": "string"},
                 "explanation": {"type": "string",
-                                "description": "바쁜 동료에게 하듯 한 문장 — 무엇이고 왜 여기서 중요한가"}}},
-            "description": "이해에 필요한 용어 2~5개",
+                                "description": "One concise Korean sentence: what it is and why it matters here."}}},
+            "description": "Two to five concepts required to understand the subject.",
         },
         "our_context": {
             "type": "string",
-            "description": "이 프로젝트가 이 주제로 한 일·결정·시도 — 주장마다 티켓 키/문서 제목. "
-                           "사내 이력이 없으면 '사내 이력 없음'이라고 그대로 적는다",
+            "description": "Verified internal work, decisions, and attempts. Cite a ticket key or document "
+                           "title for each claim. If absent, write the Korean phrase 사내 이력 없음.",
         },
         "references": {
             "type": "array",
             "items": {"type": "object", "properties": {
-                "ref": {"type": "string", "description": "티켓 키·문서 제목·URL(자료에 있는 것만)"},
-                "why": {"type": "string", "description": "열어볼 가치가 뭔가"}}},
+                "ref": {"type": "string", "description": "Only a ticket key, document title, or URL in the input."},
+                "why": {"type": "string", "description": "Why this source is worth opening."}}},
         },
         "gaps": {
             "type": "array", "items": {"type": "string"},
-            "description": "여전히 모르는 것·미결정 사항 — 후속 조사나 티켓이 답할 질문들",
+            "description": "Unknown or undecided points and the follow-up verification needed.",
         },
     },
     "required": ["concepts", "our_context", "gaps"],
@@ -55,28 +55,29 @@ class KnowledgeCurator(StructuredAgent):
 
     def task(self, state):
         data = wrap_data(
-            data_block("조사 결과(사내)", state.get("situation")),
-            data_block("근거 티켓", "\n".join(
+            data_block("Verified Internal Findings", state.get("situation")),
+            data_block("Evidence Tickets", "\n".join(
                 f"- {e.get('key', '')} {e.get('title', '')} — {e.get('why', '')}"
                 for e in (state.get("evidence") or []))),
-            data_block("사전 조사(키워드·의미 검색)", state.get("pre_survey")),
-            data_block("주제 조사 자료(티켓·코멘트 인용·필드 변경 이력·문서 본문)",
+            data_block("Prefetched Lexical and Semantic Search", state.get("pre_survey")),
+            data_block("Topic Dossier: Tickets, Comments, Field History, and Documents",
                        state.get("topic_dossier")),
-            data_block("외부 기술 조사(웹·GitHub)", state.get("web_context")))
+            data_block("External Technology Research: Web and GitHub", state.get("web_context")))
         return f"""\
-# 명령서
-아래 자료를 지식 브리프(개념/우리 상황/참고/공백)로 정리하라. 새 조사는 하지 마라.
+# Task
 
-## 제약조건
-- 자료에 없는 값(적재주기·컬럼·Job 이름·담당자)을 지어내지 마라. 확인 못 한 것은 **gaps**
-  에 그대로 적는다 — 무엇을 모르는지 밝히는 것이 이 브리프의 값어치다.
-- 사실마다 **티켓 키·문서 제목**을 our_context 문장 안에 함께 적는다.
-- 속성의 **현재 값은 가장 최근 변경 기록**이다. 변경 전 값을 현재 값으로 적지 마라.
-- 대상 하나의 사실을 묻는 질문(주기·스키마·담당·정책)이면 **concepts 는 1~2개로 줄이고**,
-  our_context 에 **값을 전부** 담아라(컬럼 목록·Job 이름·담당 사번·정책값·변경 일자).
-  개념 설명이 길고 값이 없는 브리프는 이 질문에 아무 쓸모가 없다.
+Organize the supplied evidence into a Korean knowledge brief with concepts, internal context, references, and gaps. Do not perform new research.
 
-## 질문
+## Constraints
+
+- Never invent an interval, column, Job name, owner, setting, or other value absent from the data. Put unresolved facts in `gaps`; identifying what is unknown is part of the result.
+- Cite a ticket key or document title inside every factual `our_context` statement.
+- Determine a current value from the latest verified change record. Never report an earlier value as current.
+- For a single-asset fact lookup such as interval, schema, owner, or policy, limit `concepts` to one or two items and put every supplied operational value in `our_context`, including full column lists, Job names, user IDs, policy values, and change dates.
+- Write all natural-language field values in Korean while preserving identifiers exactly.
+
+## User Question
+
 {last_user_text(state)}{data}"""
 
     def schema(self):

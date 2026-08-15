@@ -87,7 +87,8 @@ def test_scenario_prompts_are_listed_and_render(server):
             return names, got.messages[0].content.text
     names, text = _run(go)
     assert {"plan_work", "report_bug", "my_day", "check_progress"} <= names
-    assert "적재 배치 실패" in text and "중복" in text
+    assert "적재 배치 실패" in text and "duplicate" in text.lower()
+    assert "Respond in Korean" in text
 
 
 # ── MCP 클라이언트(외부 서버 소비) — 자체 서버를 외부인 척 띄워 실왕복한다 ──────────

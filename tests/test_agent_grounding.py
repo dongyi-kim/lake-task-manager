@@ -214,6 +214,106 @@ def test_responder_does_not_ask_to_approve_a_missing_draft():
     assert "현재 승인할 티켓 초안은 없습니다" in text
 
 
+def test_question_only_reply_uses_required_reason_not_speculative_ticket_context():
+    """ASKD4/BUG1: no draft means the prose must not invent an Epic, module, or ticket."""
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    state = {"messages": [], "intent": "plan_work", "draft": {"items": []},
+             "questions": [{"question": "임계값을 어떤 값으로 바꿀까요?", "kind": "text",
+                            "required_input": True,
+                            "why_required": "변경 payload에 넣을 정확한 새 임계값이 없음"}]}
+    got = ResultIntegrator().apply(
+        state, {"text": "Runtime Epic JIRA820-1 아래 새 Bug를 만들겠습니다."})["reply"]
+    assert "정확한 새 임계값" in got
+    assert "JIRA820-1" not in got and "Runtime" not in got and "새 Bug" not in got
+    assert "아래 입력란" in got
+
+
+def test_postcheck_findings_stay_in_trace_instead_of_leaking_into_reply():
+    """후검증은 운영 진단 정보다. 감지 결과를 사용자 본문에 붙이지 않는다."""
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    out = ResultIntegrator().apply(
+        {"messages": [], "intent": "ask", "playbook": "history"},
+        {"text": "이력 자료를 충분히 정리하지 못했습니다."},
+    )
+    assert "결과 검증에서 누락 가능성" not in out["reply"]
+    assert "내부 후검증" in out["trace"][0]["note"]
+
+
+def test_running_task_bullets_are_normalized_to_detail_badges_without_duplicate_fields():
+    """전용 진행 Task 목록은 제목을 평문으로 반복하지 않고 detail token만 남긴다."""
+    from app.agent.workflow.agents.result_integrator import _normalize_ticket_detail_sections
+
+    source = ("### 현재 진행 중인 Task\n\n"
+              "- DL-9047 \"[ETL] 안정화 모니터링\"\n"
+              "- {{ticket-inline:DL-9062}} [Catalog] 정합성 비교\n\n"
+              "### 연표\n\n| 날짜 | 사건 | 근거 |")
+    got = _normalize_ticket_detail_sections(source)
+    assert "- {{ticket-detail:DL-9047}}" in got
+    assert "- {{ticket-detail:DL-9062}}" in got
+    assert "안정화 모니터링" not in got and "정합성 비교" not in got
+    assert "### 연표" in got
+
+
+def test_task_linked_to_epic_is_not_described_as_a_new_epic_draft():
+    """STARR1: a valid parent Epic must not disable draft-type contradiction checks."""
+    from app.agent.workflow.agents.result_integrator import _align_draft_claims
+    state = {"draft": {"items": [{"summary": "[ETL] Puffin NDV 파이프라인 1차 구현",
+                                      "type": "Story", "epic": "DL-102"}]}}
+    got = _align_draft_claims(
+        "### Epic 초안\n\n- **Epic 이름**: [ETL] Puffin NDV 파이프라인 1차 구현\n\n"
+        "새로운 Epic을 생성하고 Epic Name을 설정합니다.\n\n"
+        "상위 Epic DL-102 아래에 배치합니다.\n\n### 승인 요청\n승인해 주세요.", state)
+    assert "새로운 Epic" not in got and "Epic Name" not in got
+    assert "**실제 티켓 초안**: Story" in got and "DL-102" in got
+    assert "- **Story 제목**:" in got and "Epic 이름" not in got
+    assert "상위 Epic" in got
+
+
+def test_existing_children_are_not_promised_for_a_later_turn():
+    from app.agent.workflow.agents.result_integrator import _align_child_presence_claims
+    items = [{"children": [{"summary": "설계"}, {"summary": "구현"}, {"summary": "검증"}]}]
+    got = _align_child_presence_claims(
+        "하위 Task는 별도로 제안할 예정\n승인 후 하위 Task를 제안하겠습니다", items)
+    assert "Sub-Task 3건이 초안에 포함됨" in got
+    assert "승인 후" not in got and "제안할 예정" not in got
+
+
+def test_reply_owner_uses_the_assignment_row_that_drives_the_final_payload():
+    from app.agent.workflow.agents.result_integrator import _align_draft_claims
+    item = {"summary": "[ETL] Puffin NDV 파이프라인 개발", "type": "Task",
+            "assignee": "skcc.i2011"}
+    state = {"draft": {"items": [item]},
+             "assignments": [{"index": 0, "user": "skcc.x1103",
+                              "reasons": ["진행중 8건"],
+                              "alternates": [{"user": "skcc.i2011", "why": "진행중 12건"}]}]}
+    got = _align_draft_claims(
+        "### 티켓 초안\n- **제목**: [ETL] Puffin NDV 파이프라인 개발\n"
+        "### 할당 근거\n- **현재 담당자**: skcc.i2011 (진행중 12건)\n"
+        "- **대안**: skcc.i2011 (진행중 12건)", state)
+    assert "| [ETL] Puffin NDV 파이프라인 개발 | [~skcc.x1103] | 진행중 8건 |" in got
+    assert "[~skcc.i2011] — 진행중 12건" in got
+
+
+def test_primary_owner_alignment_does_not_overwrite_a_different_candidate():
+    from app.agent.workflow.agents.result_integrator import _align_draft_claims
+    state = {"draft": {"items": [{"summary": "[Workbench] 화면 빈 현상", "type": "Bug",
+                                      "assignee": "skcc.x1402"}]},
+             "assignments": [{"index": 0, "user": "skcc.x1402",
+                              "reasons": ["진행중 14건"],
+                              "alternates": [{"user": "skcc.x1450", "why": "진행중 22건"}]}]}
+    got = _align_draft_claims(
+        "### 티켓 초안\n- 제목: [Workbench] 화면 빈 현상\n"
+        "### 담당자\n담당자로 skcc.x1402를 추천. 다른 후보인 skcc.x1450은 진행중 22건", state)
+    assert "[~skcc.x1402]" in got and "[~skcc.x1450]" in got
+
+
+def test_exclusion_is_never_labeled_as_a_completion_condition():
+    from app.agent.workflow.agents.result_integrator import _align_scope_labels
+    assert _align_scope_labels("- **완료 조건**: 성능 최적화 작업은 제외") == \
+        "- **제외 범위**: 성능 최적화 작업은 제외"
+
+
 def test_fabricated_uid_with_real_suffix_is_caught():
     """etl.x1001 — 접두만 바꾼 날조 사번. 접미(x1001)가 실존 사번(skcc.x1001)과 겹쳐도
     전체 id 가 실재하지 않으면 위반이다(실측: 접미 검색만 해서 통과했다)."""
@@ -271,6 +371,18 @@ def test_verifiable_references_are_not_flagged():
           "[3] DL-9062 코멘트 (skcc.x1103, 2026-08-06) — 운영 담당자\n"
           "[4] 설계 노트 http://wiki/y")
     assert _unlinked_refs(ok) == []
+
+
+def test_reference_section_is_canonicalized_as_one_evidence_section():
+    """본문 marker와 source index를 별도 '참조' 개념으로 노출하지 않는다."""
+    from app.agent.workflow.agents.result_integrator import _dedupe_refs
+
+    source = ("현재 주기는 30분 [1].\n\n### 참조\n"
+              "[1] {{ticket-detail:DL-9044}} — 적재주기 변경")
+    got = _dedupe_refs(source)
+    assert "### 근거\n" in got
+    assert "### 참조" not in got
+    assert "{{ticket-detail:DL-9044}}" in got
 
 
 # ── 탐지와 교정을 분리한다 (실측: 위반이 잡혔는데 경고도 재작성도 없이 나갔다) ──────

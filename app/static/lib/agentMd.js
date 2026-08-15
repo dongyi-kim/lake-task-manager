@@ -152,15 +152,15 @@ function inline(s, slim, ticketMode) {
   return s.replace(/\x00(\d+)\x00/g, (_, i) => stash[+i]);
 }
 
-// [n] 마커가 가리키는 참조 지도(n → 참조 한 줄의 평문). 렌더 한 번 동안만 유효.
+// [n] 마커가 가리키는 근거 지도(n → 근거 한 줄의 평문). 렌더 한 번 동안만 유효.
 let REFS = {};
 
 export function renderMarkdown(text, people) {
   PEOPLE = people || {};
   REFS = {};
-  // ── 참조 섹션 분리 — 본문과 별개의 **접이식 영역**으로 그린다(사용자 요청).
-  //    [n] 마커는 여기로 점프+하이라이트하고, 호버 툴팁(title)으로 문헌을 보여 준다.
-  const m = /\n\*\*참조\*\*\s*\n([\s\S]+)$/.exec(text || "");
+  // ── 근거 섹션 분리 — 본문 marker와 하나의 **접이식 영역**으로 연결한다.
+  //    canonical `### 근거`와 과거 출력의 `참조` heading을 모두 읽는다.
+  const m = /(?:^|\n)(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*\n([\s\S]+)$/.exec(text || "");
   let body = text || "", refItems = [];
   if (m) {
     const lines = m[1].split("\n").map((l) => l.trim()).filter(Boolean);
@@ -190,7 +190,7 @@ export function renderMarkdown(text, people) {
   }
   let html = _render(body);
   if (refItems.length) {
-    html += `<details class="agent-refs"><summary>참조 ${refItems.length}건</summary>` +
+    html += `<details class="agent-refs"><summary>근거 ${refItems.length}건</summary>` +
             `<div class="agent-refs-list">${refItems.map(refRow).join("")}</div></details>`;
   }
   return html;

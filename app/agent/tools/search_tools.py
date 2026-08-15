@@ -40,16 +40,16 @@ def _issue_brief(raw: dict, sp_field: str = None) -> dict:
 
 @tool
 def search_work_history(query: str, limit: int = 8) -> dict:
-    """업무 키워드로 **과거 이력**을 찾는다 — Jira 티켓과 Confluence 문서를 함께 뒤진다.
+    """Search Jira tickets and Confluence documents for prior work on a focused topic.
 
-    업무 착수 요청을 받으면 **가장 먼저** 이걸 부른다. "이 일이 처음인가, 이미 하던 일인가"를
-    여기서 가른다. 키워드는 2~5개 단어로 좁혀서 넣는다("CDC 실시간 수집" 처럼).
-    안 나오면 동의어로 바꿔 **한 번만** 다시 불러라 — 두 번 비면 사내에 없는 것이다.
-    그때는 이 도구를 더 부르지 말고 다른 도구(get_ticket·search_web 등)로 넘어가라.
+    Call this first when the user starts or investigates work, to determine whether it is new or
+    already underway. Use a focused query of two to five terms. If it returns nothing, retry once
+    with synonyms, then stop and move to a different evidence source such as `get_ticket` or
+    `search_web`.
 
-    돌려주는 것: {"jira": [{key,title,status,assignee,issuetype,updated}...],
-                 "confluence": [{title,url,excerpt}...]}
-    돌려주지 않는 것: 티켓 본문·코멘트. 그건 get_ticket 으로 따로 연다(비용이 다르다).
+    Returns `{"jira": [{key,title,status,assignee,issuetype,updated}...],
+    "confluence": [{title,url,excerpt}...]}`. It does not return ticket bodies or comments; open
+    only selected tickets with `get_ticket`.
     """
     from app.domain.search import search_all
     c, s = client(), settings()
@@ -103,11 +103,11 @@ def take_last_jql() -> str:
 
 @tool
 def run_jql(jql: str, limit: int = 20) -> dict:
-    """호환용 JQL 도구. 신규 역할은 ``run_jql_v2``를 사용한다.
+    """Compatibility JQL tool. New roles should use `run_jql_v2`.
 
-    입력 JQL의 조건과 ORDER BY를 분리한 뒤 v2 경로로 실행하므로 검색 범위는 오직
-    ``search.jira.projects``이며 50건 총량 제한이 없다. ``limit``는 총량 상한이 아니라
-    한 페이지 크기(최대 100)다. 다음 페이지는 반환된 ``nextCursor``로 이어 조회한다.
+    The tool separates the input conditions from `ORDER BY` and executes them through the v2
+    path. Scope is always the complete `search.jira.projects` set. There is no 50-item total cap:
+    `limit` is the page size, capped at 100, and `nextCursor` retrieves the next page.
     """
     from app.agent.tools.query_tools import _jql_page, _split_order
     where, order = _split_order(jql)
@@ -142,13 +142,14 @@ def _drop_fixtures(raws):
 
 @tool
 def get_ticket(key: str, comment_limit: int = 5) -> dict:
-    """티켓 하나를 **본문·코멘트까지** 연다. search_work_history 로 찾은 키를 넣는다.
+    """Open one ticket with its body and recent comments.
 
-    "그래서 그때 무슨 결정이 났나"는 요약이 아니라 **코멘트**에 있다. 담당자 추천 근거를 모을
-    때도 코멘트 작성자가 중요한 신호다. 다만 티켓마다 왕복이 생기니 **정말 볼 것만** 연다
-    (검색 결과 상위 2~4건 정도).
+    Use a key selected from search results. Decisions and progress evidence often live in comments,
+    and comment authors can support assignee analysis. Each call is a separate round trip, so open
+    only the most relevant tickets, usually two to four.
 
-    돌려주는 것: 요약·상태·담당자·컴포넌트·라벨·마감·SP·본문(요약본)·최근 코멘트.
+    Returns summary, status, assignee, components, labels, due date, SP, a shortened description,
+    and recent comments.
     """
     if not jira_key_allowed(key):
         return {"error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
@@ -193,19 +194,16 @@ def _snippet(hay: str, term: str, width: int = 120) -> str:
 
 @tool
 def find_mentions(term: str, limit: int = 8) -> dict:
-    """어떤 **말이 실제로 어디에 적혀 있는지** 찾는다 — 티켓 본문과 **코멘트 원문까지**.
+    """Find exactly where a term appears, including ticket bodies and original comments.
 
-    테이블명·Job 이름·기술 용어처럼 **정확한 낱말**을 추적할 때 쓴다
-    ("fdc.fdc_trace_summary_ic", "etl_yms_lot_yield_daily", "적재주기").
-    search_work_history 는 제목만 돌려주므로 "왜 이 티켓이 걸렸는지"를 알 수 없다.
-    이 도구는 **그 말이 나온 문장을 작성자·날짜와 함께** 돌려주므로, 코멘트에만 적힌 사실
-    (주기 변경·담당 인수인계·다른 테이블과의 비교)을 근거로 인용할 수 있다.
+    Use this for precise identifiers such as table names, Job names, or technical terms. Unlike
+    title-only history search, it returns the sentence containing the term with author and date,
+    which supports claims recorded only in comments.
 
-    한 낱말당 **한 번만** 부른다(티켓 본문·코멘트를 여러 건 여는 비싼 조회다).
-    돌려주는 것: {"hits": [{key,title,where(summary|description|comment),author,date,snippet}],
-                 "documents": [{title,url,excerpt}]}
-    아무 데도 안 나오면 hits 가 빈 배열이다 — 그때는 **기록이 없는 것**이고, 비슷한 다른
-    테이블의 사실을 가져다 붙이면 안 된다.
+    Call it once per term because it opens multiple ticket bodies and comments. Returns
+    `{"hits": [{key,title,where(summary|description|comment),author,date,snippet}],
+    "documents": [{title,url,excerpt}]}`. An empty `hits` array means no internal record was found;
+    do not substitute facts from a merely similar identifier.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -323,12 +321,13 @@ def _similar_identifiers(term: str, c, s) -> list:
 
 @tool
 def read_document(url_or_id: str) -> dict:
-    """Confluence 문서 **본문을 읽는다**. 검색 결과의 발췌(200자)로는 결정 내용을 알 수 없다.
+    """Read the body of one Confluence document.
 
-    search_work_history·find_mentions·get_ticket_context 가 준 문서 URL 을 그대로 넣는다
-    (페이지 id 숫자만 넣어도 된다). 분석·설계·정책 문서는 본문에 답이 있고 제목엔 없다.
+    Pass a document URL returned by `search_work_history`, `find_mentions`, or
+    `get_ticket_context`; a numeric page id is also accepted. Search excerpts are too short for
+    decisions usually recorded inside analysis, design, or policy documents.
 
-    돌려주는 것: {"title","url","updated","text"} — 본문은 앞부분 3000자.
+    Returns `{"title","url","updated","text"}` with up to the first 3,000 body characters.
     """
     from app.agent.retrieval.harvest import _conf_id
     c = client()
@@ -354,13 +353,13 @@ def read_document(url_or_id: str) -> dict:
 
 @tool
 def get_ticket_context(key: str) -> dict:
-    """티켓 하나에서 **바깥으로 한 홉** 나간다 — 연관 티켓·관련 문서·주요 이력.
+    """Expand one hop from a ticket to related tickets, documents, and material history.
 
-    업무는 티켓 하나로 끝나지 않는다. 선행 작업, 갈라져 나온 후속 티켓, 설계를 적어 둔 Confluence
-    문서가 링크로 이어져 있다. 검색 키워드만으로는 이 이웃들이 안 잡히므로, **핵심 티켓을 하나
-    고른 뒤** 이 도구로 주변을 훑는다. 여기서 나온 문서 URL 은 read_document 로 본문을 읽는다.
+    Use this after selecting one central ticket. Keyword search can miss predecessors, follow-up
+    work, and linked Confluence design documents. Open returned document URLs with
+    `read_document` when their bodies are needed.
 
-    돌려주는 것: {"related": [...], "documents": [{title,url}...], "timeline": [주요 이력]}
+    Returns `{"related": [...], "documents": [{title,url}...], "timeline": [...]}`.
     """
     if not jira_key_allowed(key):
         return {"error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
@@ -389,10 +388,10 @@ def get_ticket_context(key: str) -> dict:
 
 @tool
 def get_epic_tree(epic_key: str) -> dict:
-    """Epic 하나의 **자식 트리 전체**(Story/Task/Bug + 각자의 Sub-Task).
+    """Return an Epic's full child tree: Story, Task, Bug, and their Sub-Tasks.
 
-    "이미 이 일을 담고 있는 Epic 이 있나"를 확인했으면, 그 안에 뭐가 얼마나 들어 있는지 본다.
-    새 티켓을 **어디에 붙일지**, 이미 있는 것과 **겹치지 않는지** 판단하는 데 쓴다.
+    Use this after identifying a possible parent Epic to decide where new work belongs and whether
+    the proposed work duplicates an existing child.
     """
     if not jira_key_allowed(epic_key):
         return {"error": "Epic이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
@@ -413,13 +412,13 @@ def get_epic_tree(epic_key: str) -> dict:
 
 @tool
 def find_parent_epic(query: str = "", limit: int = 10) -> list:
-    """새 티켓을 매달 **상위 Epic 후보**를 찾는다. 티켓 트리를 제안하기 직전에 부른다.
+    """Find candidate parent Epics immediately before proposing a ticket tree.
 
-    빈 문자열로 부르면 Epic 전체를 최근순으로 준다. 키·요약·Epic Name 어느 쪽으로 쳐도 찾는다.
-    마땅한 후보가 없으면 사용자에게 물어라 — 관련 없는 Epic 에 매달면 남의 진척률이 오염된다
-    (새 Epic 을 만드는 것은 knowledge/04 의 네 조건을 다 만족할 때만이다).
+    An empty query returns all Epics in recent order. A key, summary, or Epic Name can be searched.
+    If no candidate fits, ask the user; attaching work to an unrelated Epic corrupts its progress.
+    Create a new Epic only when all four criteria in `knowledge/04` are satisfied.
 
-    돌려주는 것: [{"key","name","summary","module"}]
+    Returns `[{"key","name","summary","module"}]`.
     """
     # 화면용 epic_options()는 write destination project를 전제로 하므로 조회에 쓰지 않는다.
     # Agent의 후보 탐색은 search config의 **모든** project를 바깥 scope로 강제한다.

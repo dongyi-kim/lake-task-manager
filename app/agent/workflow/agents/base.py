@@ -118,7 +118,7 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
             call_messages = list(messages)
             if method == "json_mode":
                 call_messages.append(HumanMessage(content=(
-                    "JSON 객체 하나만 출력하라. JSON Schema:\n"
+                    "Return exactly one JSON object that satisfies this JSON Schema:\n"
                     + json.dumps(schema, ensure_ascii=False))))
             out = _cfg.get_llm(temperature=temperature, tier=tier).with_structured_output(
                 named, method=method).invoke(call_messages)
@@ -131,7 +131,7 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
     try:
         raw = _cfg.get_llm(temperature=temperature, tier=tier).invoke(
             list(messages) + [HumanMessage(content=(
-                "아래 JSON Schema를 만족하는 JSON 객체 하나만 출력하라. 설명과 code fence 금지.\n"
+                "Return exactly one JSON object satisfying the JSON Schema below. Do not include prose or a code fence.\n"
                 + json.dumps(schema, ensure_ascii=False)))])
         raw_text = str(getattr(raw, "content", raw) or "")
         parsed = _loads_loose(raw_text)
@@ -142,9 +142,9 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
         errors.append(f"prompt_json: {str(exc)[:160]}")
     try:
         raw = _cfg.get_llm(temperature=0, tier=tier).invoke([
-            SystemMessage(content="의미를 바꾸지 말고 JSON 형식과 schema 위반만 교정하라."),
+            SystemMessage(content="Preserve meaning exactly. Repair only JSON syntax and schema violations."),
             HumanMessage(content=(json.dumps(schema, ensure_ascii=False)
-                                  + "\n\n교정할 출력:\n" + raw_text[:12000]))])
+                                  + "\n\nOutput to repair:\n" + raw_text[:12000]))])
         parsed = _loads_loose(str(getattr(raw, "content", raw) or ""))
         if parsed is None:
             raise ValueError("repair JSON 객체를 찾지 못했습니다.")
@@ -220,7 +220,7 @@ class Agent(ABC):
                 call_messages = list(messages)
                 if method == "json_mode":
                     call_messages.append(HumanMessage(content=(
-                        "JSON 객체 하나만 출력하라. 다음 JSON Schema를 만족해야 한다:\n"
+                        "Return exactly one JSON object satisfying this JSON Schema:\n"
                         + json.dumps(self.schema(), ensure_ascii=False))))
                 raw = self.structured(method=method).invoke(call_messages)
                 out = _validate_output(raw, self.schema())
@@ -233,8 +233,8 @@ class Agent(ABC):
         # response_format을 전혀 지원하지 않는 서버: plain chat에 schema를 명시한다.
         schema_text = json.dumps(self.schema(), ensure_ascii=False)
         prompt_messages = list(messages) + [HumanMessage(content=(
-            "출력 형식 지시: 아래 JSON Schema를 만족하는 JSON 객체 하나만 출력하라. "
-            "설명, 머리말, Markdown code fence를 쓰지 마라.\n" + schema_text))]
+            "Output format: return exactly one JSON object satisfying the JSON Schema below. "
+            "Do not include prose, a preface, or a Markdown code fence.\n" + schema_text))]
         raw_text = ""
         try:
             raw = self.llm().invoke(prompt_messages)
@@ -249,8 +249,8 @@ class Agent(ABC):
         # repair는 원 업무를 다시 판단시키는 호출이 아니라 형식만 교정하는 1회 호출이다.
         try:
             repaired = self.llm().invoke([
-                SystemMessage(content="주어진 출력의 의미를 바꾸지 말고 JSON 형식과 schema 위반만 고쳐라."),
-                HumanMessage(content=f"JSON Schema:\n{schema_text}\n\n교정할 출력:\n{raw_text[:12000]}")])
+                SystemMessage(content="Preserve the output's meaning. Repair only JSON syntax and schema violations."),
+                HumanMessage(content=f"JSON Schema:\n{schema_text}\n\nOutput to repair:\n{raw_text[:12000]}")])
             parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
             if parsed is None:
                 raise ValueError("repair 결과에서 JSON 객체를 찾지 못했습니다.")
@@ -292,9 +292,8 @@ class StructuredAgent(Agent):
                 SystemMessage(content=self.system(state)),
                 HumanMessage(content=(
                     self.task(state)
-                    + "\n\n---\n**출력 형식(엄수)**: 아래 JSON Schema 를 만족하는 JSON "
-                      "객체 **하나만** 출력하라. 설명·머리말·코드펜스 없이 중괄호로 "
-                      "시작해서 중괄호로 끝나야 한다.\n"
+                    + "\n\n---\n**Required output format:** Return exactly one JSON object satisfying "
+                      "the JSON Schema below. Include no prose, preface, or code fence; begin and end with braces.\n"
                     + json.dumps(self.schema(), ensure_ascii=False)))])
             return _loads_loose(str(getattr(msg, "content", msg) or ""))
         except Exception:
@@ -403,10 +402,10 @@ class ToolAgent(Agent):
                             "description": " ".join((tool_obj.description or "").split())[:600],
                             "input_schema": schema})
         instruction = HumanMessage(content=(
-            "이 서버는 native tool calling을 지원하지 않는다. 아래 등록 도구 중 필요한 호출을 "
-            "JSON으로 계획하라. 형식은 {\"tool_calls\":[{\"name\":str,\"args\":object}],"
-            "\"answer\":str}다. 조회가 더 필요하면 tool_calls를, 충분하면 빈 배열과 answer를 "
-            "반환하라. 등록되지 않은 이름을 만들지 마라.\n도구:\n"
+            "This server has no native tool-calling support. Plan calls only from the registered catalog "
+            "using JSON shaped as {\"tool_calls\":[{\"name\":str,\"args\":object}],\"answer\":str}. "
+            "When more retrieval is needed, return tool_calls. When evidence is sufficient, return an empty "
+            "array and answer. Never invent an unregistered name.\n\nRegistered tools:\n"
             + json.dumps(catalog, ensure_ascii=False)))
         raw = self.llm().invoke(list(scratch.get("messages") or []) + [instruction])
         parsed = _loads_loose(str(getattr(raw, "content", raw) or "")) or {}
@@ -451,11 +450,10 @@ class ToolAgent(Agent):
         log = _transcript(scratch_messages)
         out = self.invoke_structured(state, [
             SystemMessage(content=self.system(state)),
-            HumanMessage(content=f"{self.task(state)}\n\n### 조사한 내용\n{log}\n\n"
-                                 "위 조사 결과만을 근거로 정리하라. 먼저 결론을 뒷받침할 핵심 사실 "
-                                 "2~3개를 조사 기록에서 **원문 그대로**(제목·키·숫자) 짚은 뒤 정리하라 "
-                                 "— 근거를 먼저 찾게 하면 지어낼 자리가 없어진다. "
-                                 "조사에 없는 것을 지어내지 마라.")])
+            HumanMessage(content=f"{self.task(state)}\n\n### Tool Transcript Data\n\n{log}\n\n"
+                                 "Use only this transcript. Before synthesizing, identify two or three core "
+                                 "facts supporting the conclusion and preserve their exact title, key, and "
+                                 "number. Never add a fact absent from the transcript.")])
         return out
 
 
@@ -472,11 +470,11 @@ def _transcript(messages: list, limit: int = 28000) -> str:
         t = getattr(m, "type", "")
         if t == "ai":
             for tc in (getattr(m, "tool_calls", None) or []):
-                rows.append(f"[도구 호출] {tc.get('name')}({_short(tc.get('args'))})")
+                rows.append(f"[Tool Call] {tc.get('name')}({_short(tc.get('args'))})")
             if getattr(m, "content", ""):
-                rows.append(f"[생각] {m.content}")
+                rows.append(f"[Model Note] {m.content}")
         elif t == "tool":
-            rows.append(f"[도구 결과] {getattr(m, 'name', '')}: {_short(m.content, 1500)}")
+            rows.append(f"[Tool Result] {getattr(m, 'name', '')}: {_short(m.content, 1500)}")
     return "\n".join(rows)[-limit:]
 
 

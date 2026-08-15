@@ -51,6 +51,51 @@ def test_incomplete_assignee_question_uses_deterministic_query_runner():
     assert classified["request_plan"]["tasks"][0]["id"] == "incomplete-assignees"
 
 
+def test_research_report_request_cannot_drift_into_ticket_creation():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    state = {"messages": [HumanMessage(content=(
+        "우리 프로젝트의 Iceberg Puffin NDV 적용 가능성을 내부 작업 이력과 "
+        "외부 공식 자료를 함께 조사해줘"))]}
+    got = RequestArchitect().apply(state, {
+        "intent": Intent.PLAN_WORK, "keywords": ["Iceberg", "Puffin", "NDV"],
+        "tasks": [{"id": "1", "kind": "research", "instruction": "내외부 조사",
+                   "depends_on": [], "write_intent": False, "completion_criteria": ["조사 완료"]}],
+    })
+    assert got["intent"] == Intent.ASK
+    assert G.route_after_request_architect(got) == "investigate"
+
+
+def test_new_build_shape_is_asked_before_expensive_research():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    state = {"messages": [HumanMessage(content=(
+        "기존 ETL 파이프라인에 Iceberg Puffin NDV 생성 기능을 추가 구현하고 싶어"))]}
+    got = RequestArchitect().apply(state, {
+        "intent": Intent.PLAN_WORK, "keywords": ["Iceberg", "Puffin", "NDV"],
+        "sufficient": True,
+    })
+    assert got["questions"][0]["field"] == "structure"
+    assert G.route_after_request_architect(got) == "respond"
+
+
+def test_delegated_or_explicit_build_shape_does_not_add_a_preference_question():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    for text in (
+        "기존 ETL 파이프라인을 단계별 Sub-Task로 구현해줘",
+        "기존 ETL 파이프라인에 새 단계를 구현해줘. 알아서",
+    ):
+        got = RequestArchitect().apply({"messages": [HumanMessage(content=text)]}, {
+            "intent": Intent.PLAN_WORK, "keywords": ["ETL"], "sufficient": True,
+        })
+        assert not got.get("questions"), got
+        assert G.route_after_request_architect(got) == "investigate"
+
+
 def test_bug_reports_still_go_through_investigation():
     """버그도 조사를 지난다 — 같은 증상의 Bug 가 이미 열려 있으면 새로 만들면 안 된다.
 

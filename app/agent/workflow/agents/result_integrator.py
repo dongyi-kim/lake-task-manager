@@ -47,33 +47,28 @@ class ResultIntegrator(TextAgent):
         qs = state.get("questions") or []
 
         if result:
-            goal = ("실행 결과를 **짧게** 보고하라: 만든 것 한 줄씩(키+제목), 실제 실패가 "
-                    "있으면 그것만 사유와 함께. 실패·후속 조치·주의 항목을 **지어내지 마라** — "
-                    "자료의 created/failed 에 없는 말은 전부 날조다. 사용자가 이미 내린 결정"
-                    "(예: Epic 없이 최상위로)을 다시 경고하지 마라. 3~5문장이면 충분하다.")
+            goal = ("Report execution in three to five concise Korean sentences. List each created item on "
+                    "one line with its verified key and title, and report only actual failures with their exact "
+                    "reason. Never invent a failure, follow-up, or warning absent from `created` or `failed`. "
+                    "Do not warn again about a deliberate user decision such as top-level placement.")
         elif (state.get("draft") or {}).get("structure_tree"):
             # ── 뼈대 합의 턴 — **아직 초안이 아니다.** 본문이 없으니 본문 이야기를 하면
             #    사용자는 없는 것을 읽으려 한다. 보여 줄 것은 나무 하나와 고칠 방법뿐이다.
-            goal = ("**아직 티켓 내용을 쓰지 않았다 — 지금은 구조를 맞추는 단계다.**\n"
-                    "① 왜 이렇게 나눴는지 두 문장 ② 아래 구조도를 **코드블록 그대로** "
-                    "옮긴다(들여쓰기가 관계를 보여 준다 — 표로 바꾸지 마라) ③ 고칠 수 있는 "
-                    "것을 한 줄로 안내한다(합치기·나누기·추가·삭제·이름 변경).\n"
-                    "배경·작업 범위·완료 조건은 **쓰지 마라** — 구조가 확정되면 그때 채운다.\n\n"
+            goal = ("This is a structure-alignment turn, not a completed ticket draft. In Korean: explain the "
+                    "split in two sentences; copy the following tree as an unchanged code block because "
+                    "indentation carries hierarchy; then state in one line that items may be merged, split, "
+                    "added, removed, or renamed. Do not write background, scope, or DoD before the structure "
+                    "is accepted.\n\n"
                     "```\n" + str((state.get("draft") or {}).get("structure_tree")) + "\n```")
         elif qs and (state.get("interpretation") or "").strip():
-            goal = ("조사 전 **해석 확인** 턴이다. ① 자료의 '요청 해석'을 \"제가 이해한 바\"로 "
-                    "먼저 보여라(사용자가 바로잡을 수 있게 — 고치지 말고 그대로) ② 이어서 "
-                    "질문에 답해 달라고 짧게 청하라. 답을 받은 뒤에 다음 단계로 간다고 "
-                    "말하되, **그 단계를 정확히** 말하라 — 조사가 필요한 요청이면 '조사', "
-                    "변경 요청이면 '변경 카드를 만들겠다'다(실측: 상태 전이 요청에 "
-                    "'조사를 시작하겠습니다'라고 답했다). "
-                    "전체 5문장 이내 — 이 턴의 값어치는 빠른 왕복이다.")
+            goal = ("This is a pre-research interpretation turn. In at most five Korean sentences, first show "
+                    "Interpretation Data under `### 제가 이해한 바` without rewriting it, then ask the user to "
+                    "answer the structured form. Name the actual next stage: `조사` for research or "
+                    "`변경 카드 작성` for a mutation request.")
         elif qs:
-            goal = ("지금까지 파악한 상황을 **2~3문장으로** 정리하고 끝내라. "
-                    "★ 질문은 **아래 폼이 묻는다** — 질문 문장·보기·번호 목록을 산문으로 "
-                    "다시 쓰지 마라(실측: 폼에 있는 것을 통째로 베껴 화면에 같은 말이 두 벌 "
-                    "떴다). 폼에 없는 것을 추가로 요구하지도 마라. "
-                    "마지막 줄은 '아래에서 선택해 주세요' 정도면 충분하다.")
+            goal = ("Summarize the established situation in two or three Korean sentences. The structured "
+                    "form renders every question and option; do not repeat or number them in prose and do not "
+                    "ask anything outside the form. End with the concise Korean line `아래에서 선택해 주세요`.")
         elif (state.get("change_plan") or {}).get("keys"):
             n = len(state.get("change_plan", {}).get("keys") or [])
             # ★ 자르기 안내는 **정말 자를 때만** 싣는다(사용자 관점 리뷰 F4).
@@ -81,57 +76,50 @@ class ResultIntegrator(TextAgent):
             #   "나머지 0건은 승인 카드에서 확인 가능합니다"라고 썼다 — 0건이라는 말은
             #   읽는 사람을 멈춰 세울 뿐 아무것도 알려 주지 않는다.
             #   **빈 수치를 문장으로 만들지 않는다**: 조건이 안 서면 그 문장 자체가 없어야 한다.
-            cut = (f" 표가 길다 — 앞의 10건만 쓰고 '나머지 {n - 10}건은 승인 카드에서 확인'"
-                   "이라고 밝혀라." if n > 10 else "")
-            goal = (f"**{n}건 일괄 변경** 계획이다 — {n}건을 **빠짐없이** 표"
-                    "(| 티켓 | 제목 | 변경 |)로 보여 주고 승인을 요청하라. 건수가 적어도 "
-                    "표를 생략하지 마라 — '다음 두 건에 대해'만 쓰면 **무엇을 승인하는지 "
-                    "모른 채 승인하게 된다**(실측 지적). **제목을 반드시 넣어라** — 키만 "
-                    "늘어놓아도 같은 문제다." + cut
-                    + " 아직 아무것도 바뀌지 않았음을 분명히 하라.")
+            cut = (f" The table is long: show the first ten rows and state in Korean that the remaining "
+                   f"{n - 10} rows are visible on the approval card." if n > 10 else "")
+            goal = (f"Present the {n}-ticket bulk change in Korean and request approval. Show the exact target "
+                    "snapshot in a `| 티켓 | 제목 | 변경 |` table so the user knows what is being approved. "
+                    "Include every row when there are at most ten and include the verified title, not only the "
+                    "key." + cut + " Make clear that nothing has changed yet.")
         elif (state.get("change_plan") or {}).get("key"):
-            goal = ("어떤 티켓의 무엇을 어떻게 바꾸려는지 요약하고 **승인을 요청**하라. "
-                    "아직 아무것도 바뀌지 않았음을 분명히 하라.")
+            goal = ("In Korean, summarize which verified ticket and fields the plan would change, request "
+                    "approval, and make clear that nothing has changed yet.")
         elif state.get("draft", {}).get("items"):
             n_items = len(state.get("draft", {}).get("items") or [])
-            goal = ("상황 → 티켓 초안 → 담당자 근거 → 검증 결과 순으로 정리하고, "
-                    "**마지막에 승인을 요청**하라. 아직 만들어지지 않았음을 분명히 하라 — "
-                    "\"만들었습니다\"라고 쓰면 사용자가 오해한다."
-                    + ("\n★ 초안이 여러 건이다 — **전 항목을 표**(| # | 제목 | 모듈 | Epic | "
-                       "마감 |)로 보여라. 첫 항목만 풀어 쓰고 나머지를 생략하면 사용자는 "
-                       "카드를 열기 전까지 무엇을 승인하는지 모른다(실측 지적)."
+            goal = ("Organize the Korean response as situation, ticket draft, assignment evidence, and "
+                    "validation result; request approval at the end. Make clear that no ticket has been created "
+                    "and never write `만들었습니다`."
+                    + ("\nFor multiple draft items, show every item in a `| # | 제목 | 모듈 | Epic | 마감 |` "
+                       "table; never describe only the first item."
                        if n_items > 1 else ""))
         elif state.get("ticket_progress"):
             # 진척 질문에 "In Progress 입니다"는 답이 아니다 — 무엇이 끝났고 무엇이 남았는지를
             # 근거(코멘트·변동·하위 티켓·결과 문서)와 함께 시간순으로 서술한다.
-            goal = ("티켓 진척을 보고하라 — ① 지금 어디까지 왔나(하위 완료 개수와 끝난 항목) "
-                    "② 그렇게 판단한 근거(진행 보고 코멘트·티켓 변동·막던 티켓 해소·결과 문서의 "
-                    "최근 수정) ③ 남은 일과 리스크(마감 대비). 상태 이름만 옮기지 말고, "
-                    "근거마다 티켓 키+제목 또는 문서 제목·수정일을 붙여라. 자료에 적힌 '남은 일'은 "
-                    "그대로 옮긴다.")
+            goal = ("Report ticket progress in Korean: current completion including child counts and completed "
+                    "items; supporting events from progress comments, ticket changes, cleared blockers, or "
+                    "updated result documents; and remaining work plus deadline risk. Do not return only a "
+                    "status name. Preserve stated remaining work and attach exact ticket or document evidence.")
         elif intent in Intent.DIRECT_ANSWER and state.get("group_activity"):
-            goal = ("그룹 활동 보고 — **3층 구조로, 표 없이 서술**하라(사용자가 명시한 형식): "
-                    "① 로스터: 이 모듈에 누가 있는지 한 문단. "
-                    "② 모듈 전체: 이 기간 팀이 한 기여를 2~3문장으로 묶어 서술. "
-                    "③ 사람별: 각자 소제목(### 이름)으로 주로 한 일을 서술 — 근거 티켓 키+제목, "
-                    "코멘트·문서 활동 포함. '확인해 볼 만하다' 같은 기계적 문구 반복 금지.")
+            goal = ("Write a Korean three-layer group-activity narrative without a table: one paragraph "
+                    "covering the full roster; two or three sentences on the module's combined contribution; "
+                    "and one `###` section per person with verified ticket, comment, and document evidence. "
+                    "Represent every person through a mention token and avoid repetitive filler.")
         elif intent in Intent.DIRECT_ANSWER:
-            goal = ("현황 조회 결과를 보고하라. 숫자와 티켓 키를 그대로 쓰고, "
-                    "권하는 행동(action)이 있으면 항목마다 붙여라. 조회가 거부됐다면(권한) "
-                    "그 사실을 그대로 전하라.")
+            goal = ("Report the current-state result in Korean, preserving verified metrics and ticket "
+                    "references. Attach a supplied action to its finding. Report an authorization denial exactly.")
         elif intent in (Intent.ASK, Intent.CHITCHAT):
-            goal = "조사 결과로 질문에 답하라. 못 찾았으면 못 찾았다고 하라."
+            goal = "Answer the question in Korean from verified research. State directly when nothing was found in scope."
             # 상담형("어떻게 하는 게 좋을까") — 상황 요약만 하고 끝나면 조언이 아니다(실측:
             # '신속히 완료하세요' 수준). 선택지를 준다.
             if any(w in last_user_text(state) for w in ("어떻게 하는 게", "어떻게 해야",
                                                         "어쩌", "좋을까", "방안", "대안")):
-                goal = ("상담 요청이다 — ① 상황 1~2문장(근거 키 포함) ② **선택지 2~3개를 표**"
-                        "(| 옵션 | 영향 | 바로 할 일 |)로: 예컨대 마감 연기/범위 축소/"
-                        "재배분·헬프 요청 중 자료에 비추어 실제로 가능한 것만 ③ 네가 추천하는 "
-                        "옵션 하나와 이유 한 줄 ④ '원하시면 바로 진행하겠습니다'로 실행 제안"
-                        "(마감 변경·재배분은 승인 카드로 이어질 수 있는 일이다).")
+                goal = ("This is an advice request. In Korean, give a one- or two-sentence evidenced situation; "
+                        "a `| 옵션 | 영향 | 바로 할 일 |` table with two or three options actually supported "
+                        "by the data; one recommended option with a reason; and one concrete next action that "
+                        "can lead to a deterministic approval card when mutation is needed.")
         else:
-            goal = "지금까지 파악한 것을 정리하고 다음에 무엇이 필요한지 말하라."
+            goal = "Summarize verified information in Korean and state the one next input or action required."
 
         asg = "\n".join(
             f"- [{a.get('index')}] {a.get('user') or '(미정)'} — {'; '.join(a.get('reasons') or [])}"
@@ -163,8 +151,9 @@ class ResultIntegrator(TextAgent):
                 + ["[우리 상황]", kb.get("our_context") or ""]
                 + ["[참고]"] + [f"- {r.get('ref')} — {r.get('why')}" for r in kb.get("references") or []]
                 + ["[남은 공백]"] + [f"- {g}" for g in kb.get("gaps") or []])
-            goal = ("지식 브리프를 뼈대로 답하라: 개념 설명 → 우리 프로젝트의 상황(근거 병기) → "
-                    "참고할 것 → 아직 모르는 것 순. 브리프에 없는 내용을 보태지 마라.")
+            goal = ("Use Knowledge Brief Data as the sole content basis. Write Korean sections for concepts, "
+                    "verified internal context with evidence, useful references, and unresolved gaps in that "
+                    "order. Add nothing absent from the brief.")
         # ★ 자산·주제 조회는 브리프 순서(개념 먼저)가 오히려 방해다 — 실측에서 judge 가
         # "개념 설명이 길어 정작 물어본 값이 안 보인다"고 반복 지적했고, 컬럼 목록처럼
         # 자료에 그대로 있는 값이 답변에서 통째로 빠졌다. 이 유형은 **값이 먼저**다.
@@ -175,51 +164,44 @@ class ResultIntegrator(TextAgent):
                 and (state.get("intent") or "") == Intent.ASK \
                 and not state.get("draft", {}).get("items") \
                 and not (state.get("change_plan") or {}).get("key"):
-            goal = ("**질문이 요구한 값부터, 읽히는 구조로 답하라.** 형식(가시성 실측 지적 반영):\n"
-                    "① 결론 1~2문장 — 물어본 값의 핵심만.\n"
-                    "⓪ 후속 질문(대화에 직전 답이 있음)이면 **직전 답에 이미 보인 표를 "
-                    "반복하지 마라** — 새로 물은 것(배경·이유·세부)만 서술로 답한다(실측: "
-                    "같은 현재 값 표가 두 턴 연속 출력됐다).\n"
-                    "② **현재 값 표** — | 항목 | 값 | 근거 | 3열. 주기·Job·담당·스키마처럼 "
-                    "자료에 있는 운영 값을 행으로. 근거 열은 [1] 같은 참조 번호만.\n"
-                    "③ 히스토리는 **표**로 — | 날짜 | 사건 | 근거 | 3열, 한 사건 한 행.\n"
-                    "④ 자료에 목록이 있으면(컬럼 8개 등) 생략·요약하지 말고 그대로 옮겨라.\n"
-                    "⑤ 없는 값: 사용자가 **실제로 물은 것**에 한해 '확인된 기록 없음'을 밝히되 "
-                    "한두 문장으로 묶는다 — 안 물은 항목까지 '없음'으로 나열하는 것 금지"
-                    "(실측: 없음 불릿 6줄이 답을 덮었다). 비슷한 다른 대상의 값 전이 금지.\n"
-                    "⑥ ★ **참조 인덱스** — 본문 문장마다 티켓 제목·작성자·날짜를 끼워 넣지 "
-                    "마라(가독성을 죽인다). 본문에는 `[1]` `[2]` 번호만 달고, 답 **맨 끝**에 "
-                    "`**참조**` 섹션으로 모은다(그 뒤에 다른 내용 금지 — 화면이 접이식 영역으로 "
-                    "그린다). 형식 — **불릿(-) 없이** 번호로 시작하는 한 줄씩:\n"
-                    "   `[1] DL-9044 — 적재주기 변경(2시간→30분)의 1차 근거`\n"
-                    "   `[2] <실제 문서 URL> — 스키마·Job 정리` (형식 예시다 — 이 줄을 복사하지 마라) "
-                    "(문서는 **URL 만** — 제목을 다시 쓰지 마라, 뱃지가 제목을 보여 준다)\n"
-                    "   `[3] DL-9062 코멘트 (skcc.x1103, 2026-08-05) — 담당·시간축 불일치`\n"
-                    "   같은 근거는 같은 번호 재사용.\n"
-                    "⑦ 서식을 사람 눈을 위해 써라 — 식별자·값·Job 이름은 `인라인 코드`, 섹션은 "
-                    "### 헤딩, 핵심 값은 **볼드**, 원문 인용은 > 인용, 필요하면 구분선(---).\n"
-                    "값이 바뀐 적 있으면 '현재 X (이전 Y, 언제 변경 [N])' — 그 값을 **바꾼** "
-                    "티켓이 1차 출처다(인용만 한 티켓으로 대체 금지). 담당은 자료의 `[담당]` "
-                    "줄이 곧 답이다 — 코멘트 작성자를 담당자로 지어내지 마라.")
+            goal = ("Lead with the exact value requested and use this Korean structure:\n\n"
+                    "1. One or two conclusion sentences containing the requested value. For a follow-up, do "
+                    "not repeat a table already shown; answer only the newly requested background or detail.\n"
+                    "2. When multiple operational values exist, use `| 항목 | 값 | 근거 |`; the evidence "
+                    "column contains only indices such as `[1]`.\n"
+                    "3. When history is requested, use `| 날짜 | 사건 | 근거 |`, one event per row.\n"
+                    "4. Preserve a supplied list such as all schema columns without omission.\n"
+                    "5. For a value actually asked but absent, use `확인된 기록 없음` in one or two sentences. "
+                    "Do not list unrelated absent fields or transfer a value from a similar asset.\n"
+                    "6. Use `[1]`, `[2]` in the body and put `### 근거` last, with one non-bulleted indexed "
+                    "line per source. A ticket source uses `{{ticket-detail:KEY}}`; a document uses its verified "
+                    "URL. Reuse an index for the same source.\n"
+                    "7. Under `### 현재 진행 중인 Task`, use one `{{ticket-detail:KEY}}` bullet per ticket and "
+                    "do not repeat key, title, assignee, status, or start date beside the badge.\n"
+                    "8. Use inline code for identifiers, values, and Job names; Korean `###` headings for real "
+                    "sections; bold for core values; and blockquotes for direct quotations.\n"
+                    "When a value changed, identify current and prior values with the date and cite the change "
+                    "ticket as the primary source. Use the explicit `[담당]` line for ownership; never infer "
+                    "owner from a comment author.")
         data = wrap_data(
-            data_block("요청 해석 (조사 전 확인용 — \"제가 이해한 바\"로 그대로 보여라)",
+            data_block("Interpretation Data: Show Unchanged Under the Korean Heading 제가 이해한 바",
                        state.get("interpretation")),
-            data_block("지식 브리프(KnowledgeCurator 정리)", brief),
-            data_block("그룹 활동 자료(로스터 전원 — 이것으로 3층을 쓴다)",
+            data_block("Knowledge Brief Data", brief),
+            data_block("Complete Roster Activity Data",
                        state.get("group_activity")),
-            data_block("티켓 진척 자료 (코드가 변동·코멘트·하위·문서를 취합함)",
+            data_block("Prefetched Ticket Progress: Changes, Comments, Children, and Documents",
                        state.get("ticket_progress")),
             # 주제 조사 원본 — 결론 문장(situation)만 실으면 조각의 출처(코멘트 작성자·
             # 변경 일자)가 사라져 "근거를 대라"는 요구를 만족시킬 수 없다.
-            data_block("주제 조사 자료 (여기 없는 값은 '확인된 기록 없음'이라고 답한다)",
+            data_block("Topic Dossier: Missing Requested Values Must Be Reported as 확인된 기록 없음",
                        state.get("topic_dossier")),
-            data_block("현재 상황(조사 결과)", state.get("situation")),
-            data_block("현황 조회 결과", pmo),
-            data_block("읽을 때 주의", state.get("pmo_caution")),
-            data_block("근거 티켓", ev),
-            data_block("관련 문서", docs),
-            data_block("티켓 초안 (아직 만들어지지 않음)", draft_text(state.get("draft"))),
-            data_block("변경 계획 (아직 바뀌지 않음)",
+            data_block("Verified Current Situation", state.get("situation")),
+            data_block("PMO Findings", pmo),
+            data_block("Interpretation Caution", state.get("pmo_caution")),
+            data_block("Evidence Tickets", ev),
+            data_block("Related Documents", docs),
+            data_block("Ticket Draft: Not Yet Created", draft_text(state.get("draft"))),
+            data_block("Change Plan: Not Yet Executed",
                        (lambda cp: f"{cp.get('key')}: " + ", ".join(
                            f"{k}: {(cp.get('before') or {}).get(k) or '없음'}→{v}"
                            for k, v in (cp.get('changes') or {}).items())
@@ -228,41 +210,38 @@ class ResultIntegrator(TextAgent):
                          + ", ".join(f"{k}→{v}" for k, v in (cp.get('changes') or {}).items())
                          + "\n대상(키 · 제목):\n" + _key_titles(cp.get("keys"))
                          if cp.get("keys") else ""))(state.get("change_plan") or {})),
-            data_block("변경 결과", "\n".join(
+            data_block("Actual Change Results", "\n".join(
                 f"- {u.get('key')} ({', '.join(u.get('fields') or [])})"
                 for u in (result.get("updated") or []))),
             # 코드가 조회로 확정한 티켓 현재 값 — ResearchAnalyst 요약이 담당·마감을 떨구는 일이
             # 잦다(실측 Round P: 담당 skcc.x1402 를 "확인되지 않음"으로). 요약과 다르면
             # 이쪽이 사실이다.
-            data_block("지목 티켓의 현재 값 (코드가 조회로 확정 — 요약과 다르면 이쪽이 맞다)",
+            data_block("Deterministically Verified Current Ticket Values: Authoritative over Summaries",
                        "\n".join(l for l in str(state.get("pre_survey") or "").splitlines()
                                  if _re.match(r"\[[A-Z]+-\d+ (현재|변동|코멘트|하위|링크)\]", l))),
             # 문서 요약 요청의 재료는 **문서 본문**이다. ResearchAnalyst 요약은 "절차가 정리되어
             # 있습니다" 같은 메타 서술로 뭉개진다(실측 T3) — 원문을 그대로 준다.
-            data_block("문서 본문 (요약은 이걸로 — 문서가 정한 규칙·명명 규약·기준을 "
-                       "빠뜨리지 말고, 출처 링크를 함께 남겨라)",
+            data_block("Document Bodies: Preserve Rules, Naming Conventions, Criteria, and Source URL",
                        _doc_body(state.get("pre_survey"))),
             # ★ 담당 후보 재료 — 여태 ResultIntegrator 에 **안 왔다**. pre_survey 에서 티켓 현재값과
             #   문서 본문만 잘라 썼기 때문에, 코드가 로스터·부하까지 조회해 실어 준 후보가
             #   ResearchAnalyst 의 situation 요약 한 겹을 지나며 사라졌다(실측 EDGE13: "누가 하면
             #   좋을지랑 지금 상황" 에 상황만 답하고 후보를 통째로 뺐다 — 세 번 연속).
             #   사람 이름은 사번 그대로 옮겨야 하므로 원문을 준다.
-            data_block("담당 후보 재료 (코드가 로스터·부하를 조회함 — 사용자가 '누가'를 "
-                       "물었으면 여기서 2~3명을 **사번으로** 대고 근거를 붙여라. "
-                       "'추천할 정보가 부족하다'로 끝내지 마라)",
+            data_block("Verified Assignment Candidates: When Asked Who, Return Two or Three Mention Tokens with Evidence",
                        _candidate_block(state.get("pre_survey"))),
-            data_block("쪼갠 이유", (state.get("draft") or {}).get("rationale")),
-            data_block("담당자 제안과 근거", asg),
-            data_block("검증에서 걸린 것", errors),
+            data_block("Structure Rationale", (state.get("draft") or {}).get("rationale")),
+            data_block("Assignment Recommendations and Evidence", asg),
+            data_block("Deterministic Validation Errors", errors),
             # 검토 의견은 **미해결일 때만** 사용자 몫이다. 검증을 통과해 승인 카드가 뜨는
             # 턴에 내부 지적("하나의 Task 로 통합하는 것이 좋습니다")을 그대로 옮기면
             # 카드와 모순되는 안내가 된다(실측 Round O, 2회 재발). 반영 여부는 WorkArchitect 가
             # 이미 판단했고 근거는 rationale 에 남는다.
-            data_block("검토 의견", "" if (draft_items and review.get("ok") and not errors)
+            data_block("Unresolved Audit Feedback", "" if (draft_items and review.get("ok") and not errors)
                        else problems),
-            data_block("되물을 것", "\n".join(f"- {q}" for q in qs)),
-            data_block("실제로 만들어진 티켓", made),
-            data_block("실패한 항목", bad))
+            data_block("Structured Questions Rendered Separately", "\n".join(f"- {q}" for q in qs)),
+            data_block("Tickets Actually Created", made),
+            data_block("Actual Failed Items", bad))
 
         # ── 답변 깊이 — 물어본 만큼만 답한다(사용자 요청).
         # 값 하나를 물었는데 개념 강의가 앞에 붙으면 정작 답이 묻힌다(judge 가 반복 지적).
@@ -271,16 +250,15 @@ class ResultIntegrator(TextAgent):
         depth = state.get("answer_depth") or "brief"
         if not qs:                       # 되묻는 턴은 질문 폼이 주인공이라 건드리지 않는다
             if depth == "explain":
-                goal += ("\n\n[답변 깊이: 설명형] 배경·개념·경위를 함께 설명하되 **간결한 요약체**를 "
-                         "유지하라. 문단은 3~4줄 이내, 소제목은 꼭 필요할 때만. 결론을 먼저 두고 "
-                         "설명을 뒤에 붙인다.")
+                goal += ("\n\n## Answer Depth\n\nExplain relevant background, concept, and history after the "
+                         "conclusion. Keep Korean prose compact, paragraphs at three or four lines, and use "
+                         "headings only for materially different sections.")
             else:
-                goal += ("\n\n[답변 깊이: 결론형] **물어본 것만** 답하라. 개념 설명·배경·일반론을 "
-                         "덧붙이지 마라. 결론 한두 문장 + 근거 몇 줄이면 끝이다. 자료에 목록이 "
-                         "있고 사용자가 그 목록을 물었으면 목록은 그대로 싣는다(그게 답이다).")
-            goal += ("\n마지막 줄에 더 알아볼 만한 것을 **한 줄만** 짧게 제안하라 — 예: "
-                     "'변경 경위나 관련 티켓 내용이 더 궁금하면 말씀 주세요.' 여러 줄로 늘어놓거나 "
-                     "승인·생성을 다시 묻지는 마라.")
+                goal += ("\n\n## Answer Depth\n\nAnswer only what was asked. Use one or two Korean conclusion "
+                         "sentences and a few evidence lines; omit generic background. When the requested answer "
+                         "is a supplied list, preserve the complete list.")
+            goal += ("\nDo not append a generic offer for more help. Add at most one concrete follow-up line "
+                     "only when verified evidence identifies a specific next query or action.")
 
         # ── 원 요청을 함께 싣는다 — **답의 성격은 마지막 발화가 아니라 원 요청이 정한다.**
         # 실측: "fdc flat trace ic 데이터 히스토리 정리" → 표기 확인 질문 → 사용자가 보기
@@ -289,10 +267,10 @@ class ResultIntegrator(TextAgent):
         # 대화는 마지막 발화가 짧은 선택지라, 그것만 보면 무엇을 묻는 대화인지 알 수 없다.
         # request_text 는 원 요청을 고정해 두려고 만든 장치인데 여기에만 연결이 없었다.
         req, last = (request_text(state) or "").strip(), (last_user_text(state) or "").strip()
-        asked = (f"## 원래 요청 (이 대화가 시작된 질문 — **답의 성격은 이것이 정한다**)\n{req}\n\n"
-                 f"## 이번 턴 사용자의 말\n{last}") if req and req != last else \
-                f"## 사용자의 요청\n{last}"
-        return f"# 명령서\n{goal}\n\n{asked}{data}"
+        asked = (f"## Original Request Data: Determines Answer Scope\n\n{req}\n\n"
+                 f"## Current User Message Data\n\n{last}") if req and req != last else \
+                f"## User Request Data\n\n{last}"
+        return f"# Task\n\n{goal}\n\nWrite the final answer in Korean.\n\n{asked}{data}"
 
     def apply(self, state, out):
         text = out.get("text") or ""
@@ -300,9 +278,17 @@ class ResultIntegrator(TextAgent):
         # 노출하는 것은 내용 문제가 아니라 렌더링 계약 위반이다. grounding 전에 정규화해
         # 검사와 사용자 화면이 같은 문자열을 보게 한다.
         text = _strip_instruction_echo(text)
+        _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
+        # A question-only turn has no executable payload for the prose model to summarize.
+        # Letting it narrate the surrounding research produced invented Epic/module claims in
+        # ASKD4 and BUG1.  The structured form owns the question; prose only states why input
+        # is required.
+        if _qs and not _has_executable_payload(state):
+            text = _question_only_reply(state, _qs)
         text = _canonicalize_person_mentions(text, state)
         text = _render_reply_tokens(text)
         text = _align_draft_claims(text, state)
+        text = _ensure_research_status(text, state)
 
         # ── 접지 검사 — 답변의 티켓 키·제목·인명을 실물과 대조한다.
         # 지도·자료를 정확히 줘도 답변 단계에서 날조가 나왔다(없는 키, 바뀐 제목, "PM: 김철수").
@@ -324,9 +310,10 @@ class ResultIntegrator(TextAgent):
             try:
                 fixed = self.llm().invoke([
                     ("system", self.system(state)),
-                    ("user", f"방금 쓴 답에 사실 오류가 있다. 아래만 고쳐 전체를 다시 써라. "
-                             f"다른 내용은 유지하라.\n{grounding.violation_note(g)}\n\n"
-                             f"### 방금 쓴 답\n{text}")])
+                    ("user", f"The previous Korean answer contains grounding violations. Rewrite the entire "
+                             f"answer, correcting only the violations below and preserving all valid content.\n\n"
+                             f"### Violations\n\n{grounding.violation_note(g)}\n\n"
+                             f"### Previous Answer\n\n{text}")])
                 text2 = str(getattr(fixed, "content", "") or "").strip()
                 if text2:
                     g2 = grounding.check(
@@ -341,7 +328,10 @@ class ResultIntegrator(TextAgent):
                 better, gb = (text2, g2) if use2 else (text, g)
                 text = better + grounding.warning_block(gb)
 
-        # 참조 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
+        # 전용 진행 Task bullet은 detail badge 하나로 기계화한다. 모델이 raw key+제목을
+        # 출력해도 최종 문자열은 badge가 가진 정보를 중복하지 않는다.
+        text = _normalize_ticket_detail_sections(text)
+        # 근거 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
         # 코드가 접는다. 규칙("같은 근거 같은 번호")은 프롬프트에 있지만 보장은 여기서.
         text = _dedupe_refs(text)
         # '확인된 기록 없음'만 채운 표 행·참조 줄은 정보가 아니라 소음이다 — md 로 두 번
@@ -393,9 +383,16 @@ class ResultIntegrator(TextAgent):
         except Exception:
             pass
 
-        _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         if _qs:
             text = _drop_form_echo(text, _qs)
+        # Jira 계층 규칙은 문장 생성의 재량이 아니다. 실측 RULE1에서 WorkArchitect가
+        # 질문으로 멈췄는데도 요약문만 "부모 없이 Sub-Task를 생성"한다고 뒤집었다.
+        # 사용자가 명시적으로 부모 없는 Sub-Task를 요구한 질문 턴은 가능한 선택지를
+        # 카드가 렌더하므로, 본문에는 불가능한 이유만 결정적으로 남긴다.
+        if _qs and _requests_parentless_subtask(state):
+            text = ("### 요약\n\n"
+                    "Sub-Task는 Task-tier 부모가 필수이므로 부모 없이 생성할 수 없음\n\n"
+                    "### 상세\n\n아래에서 선택해 주세요")
         # 카드의 값과 문장의 값이 다르면 **카드가 사실**이다. 상대 날짜는 코드가 계산해
         # 계획에 넣는데(모델 산술이 흔들린다), 답변 문장에는 모델이 제 값을 그대로 써서
         # "2026-08-18로 연장" ↔ 카드 2026-08-14 로 어긋났다(실측 Round P).
@@ -412,18 +409,57 @@ class ResultIntegrator(TextAgent):
         # ── 후검증 — **플레이북별 최소선**(사용자 지시: 주요 태스크는 결과도 검증)
         # 프롬프트에 적어 두면 '대체로' 지켜진다. 문제는 그 '대체로'다 — 같은 요청이
         # 어떤 날은 연표만 나오고 어떤 날은 현재 상태까지 나온다. 흔들림은 지시로 못 잡으니
-        # **잴 수 있는 것은 코드가 재고**, 못 지켰으면 숨기지 않고 드러낸다.
+        # **잴 수 있는 것은 코드가 재고**, 사용자 reply가 아니라 local debug trace에 남긴다.
+        _bad = []
         try:
             from app.agent.workflow import postcheck
             _bad = postcheck.check(state, text)
-            if _bad:
-                text += postcheck.note(_bad)
         except Exception:
             pass
 
         from langchain_core.messages import AIMessage
+        trace_note = f"{len(text)}자"
+        if _bad:
+            trace_note += f" · 내부 후검증: {postcheck.summary(_bad)}"
         return {"reply": text, "messages": [AIMessage(content=text)],
-                "trace": note(state, self.name, f"{len(text)}자")}
+                "trace": note(state, self.name, trace_note)}
+
+
+def _requests_parentless_subtask(state) -> bool:
+    """사용자가 Sub-Task를 원하면서 부모 부재를 명시했는지 판별한다."""
+    said = (request_text(state) + " " + last_user_text(state)).replace(" ", "")
+    wants_subtask = bool(_re.search(r"(?:서브태스크|하위태스크|Sub-?Task)", said, _re.I))
+    says_no_parent = bool(_re.search(
+        r"(?:부모(?:는|가|티켓은|티켓이)?(?:없|없이|필요없)|최상위(?:로|에))", said))
+    return wants_subtask and says_no_parent
+
+
+def _has_executable_payload(state) -> bool:
+    draft = state.get("draft") or {}
+    plan = state.get("change_plan") or {}
+    result = state.get("result") or {}
+    return bool(draft.get("items") or draft.get("structure_tree")
+                or plan.get("key") or plan.get("keys") or result)
+
+
+def _question_only_reply(state, questions: list[dict]) -> str:
+    """Render only verified reasons for a form-only turn; never summarize speculative context."""
+    interpretation = str(state.get("interpretation") or "").strip()
+    reasons = []
+    for question in questions:
+        reason = str(question.get("why_required") or "").strip().rstrip(".。")
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    if not reasons:
+        reasons = ["요청을 확정하려면 사용자 입력 필요"]
+    prompt = ("아래 입력란에 필요한 내용을 적어 주세요"
+              if all(str(q.get("kind") or "text") == "text" for q in questions)
+              else "아래에서 선택해 주세요")
+    blocks = []
+    if interpretation:
+        blocks += ["### 제가 이해한 바", "", interpretation, ""]
+    blocks += ["### 확인 필요", "", "\n".join(f"- {reason}" for reason in reasons), "", prompt]
+    return "\n".join(blocks).strip()
 
 
 # 맺음말·상투구 — **끝에 붙는 빈 문장**. common.md 가 이미 금지하는데 실사용 리뷰에서
@@ -647,22 +683,150 @@ def _align_draft_claims(text: str, state) -> str:
                      or state.get("situation") or "요청 조건을 다시 확인해야 합니다.").strip()
         return reason + "\n\n현재 승인할 티켓 초안은 없습니다."
     if items:
+        owner_items = _assignment_aligned_items(items, state.get("assignments") or [])
         text = _drop_lineage_game_drift(text, state)
         text = _align_story_point_claims(text, state, items)
         text = _ensure_dod_claims(text, items)
+        text = _align_scope_labels(text)
         text = _drop_unverified_reply_keys(text, state, items)
         text = _drop_false_epic_claims(text, items)
         text = _align_parent_labels(text, items)
-        text = _align_item_owner_claims(text, items)
-        text = _align_child_owner_claims(text, items)
-        text = _align_assigned_owner_cautions(text, items)
+        text = _align_item_owner_claims(text, owner_items)
+        text = _align_child_owner_claims(text, owner_items)
+        text = _align_assigned_owner_cautions(text, owner_items)
         text = _align_workload_claims(text, state)
+        text = _render_assignment_section(text, owner_items, state.get("assignments") or [])
+        text = _align_due_claims(text, items)
         text = _normalize_alternate_language(text)
         text = _drop_unsupported_assignment_experience(text, state)
         text = _drop_resolved_review_feedback(text, items)
         text = _align_child_presence_claims(text, items)
         text = _drop_unrequested_deployment_claims(text, state)
     return text
+
+
+def _assignment_aligned_items(items: list, assignments: list) -> list:
+    """Project final advisor rows onto a copy used only to validate the prose.
+
+    In the fan-out graph the model-authored sentence can still reflect the pre-merge
+    assignee while the approval payload already contains the merged advisor result.
+    `assignments` is aligned to that payload by the join node, so it is authoritative for
+    owner wording while the original draft remains untouched.
+    """
+    out = [dict(item) for item in (items or [])]
+    rows = {row.get("index"): row for row in (assignments or [])
+            if isinstance(row, dict) and isinstance(row.get("index"), int)}
+    for index, item in enumerate(out):
+        row = rows.get(index)
+        if not row:
+            continue
+        if row.get("user"):
+            item["assignee"] = str(row["user"])
+        children = [dict(child) for child in (item.get("children") or [])
+                    if isinstance(child, dict)]
+        child_rows = {child.get("index"): child for child in (row.get("children") or [])
+                      if isinstance(child, dict) and isinstance(child.get("index"), int)}
+        for child_index, child in enumerate(children):
+            child_row = child_rows.get(child_index)
+            if child_row and child_row.get("user"):
+                child["assignee"] = str(child_row["user"])
+        if children:
+            item["children"] = children
+    return out
+
+
+def _align_scope_labels(text: str) -> str:
+    """An exclusion copied under a DoD label is still scope, not a completion check."""
+    lines = []
+    for line in str(text or "").splitlines():
+        if "제외" in line and _re.search(r"완료\s*조건|DoD", line, _re.I):
+            line = _re.sub(r"완료\s*조건(?:\s*\(DoD\))?|DoD", "제외 범위", line,
+                           flags=_re.I)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _render_assignment_section(text: str, items: list, assignments: list) -> str:
+    """Render the recommendation table from the exact rows merged into the approval payload."""
+    rows = [row for row in (assignments or []) if isinstance(row, dict)
+            and isinstance(row.get("index"), int) and row.get("user")]
+    if not rows:
+        return str(text or "")
+    table = ["### 담당 제안", "", "| 티켓 | 추천 | 근거 | 대안 |", "|---|---|---|---|"]
+    for row in rows:
+        index = int(row["index"])
+        title = (str(items[index].get("summary") or f"#{index + 1}")
+                 if 0 <= index < len(items) else f"#{index + 1}")
+        reasons = "<br>".join(str(x) for x in (row.get("reasons") or []) if str(x).strip()) or "-"
+        alternates = "<br>".join(
+            f"[~{alt.get('user')}] — {alt.get('why')}"
+            for alt in (row.get("alternates") or [])
+            if isinstance(alt, dict) and alt.get("user") and alt.get("user") != row.get("user")) or "-"
+        table.append(f"| {title} | [~{row['user']}] | {reasons} | {alternates} |")
+    block = "\n".join(table)
+    source = str(text or "")
+    pattern = (r"(?ms)^###\s*(?:할당(?:\s+증거)?|담당(?:자)?\s*(?:제안|추천)|"
+               r"할당\s+증거\s+및\s+추천)[^\n]*\n.*?(?=^###\s|\Z)")
+    if _re.search(pattern, source):
+        return _re.sub(pattern, block + "\n", source, count=1)
+    anchor = _re.search(r"(?m)^###\s*(?:검증|승인)", source)
+    if anchor:
+        return source[:anchor.start()].rstrip() + "\n\n" + block + "\n\n" + source[anchor.start():]
+    return source.rstrip() + "\n\n" + block
+
+
+def _align_due_claims(text: str, items: list) -> str:
+    """Align a single draft's displayed deadline with the exact approval payload.
+
+    Historical or evidence dates on unrelated lines remain untouched. Multi-item drafts can legitimately carry
+    different dates, so they are left to the item table rather than guessed by position.
+    """
+    due_dates = {str(item.get("duedate") or "").strip()
+                 for item in (items or []) if str(item.get("duedate") or "").strip()}
+    if len(due_dates) != 1:
+        return str(text or "")
+    actual = next(iter(due_dates))
+    lines = []
+    for line in str(text or "").splitlines():
+        if _re.search(r"마감|기한|due\s*date|duedate", line, _re.I):
+            line = _re.sub(r"\b\d{4}-\d{2}-\d{2}\b", actual, line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _ensure_research_status(text: str, state) -> str:
+    """Preserve material internal checks and explicit external gaps from the topic dossier."""
+    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    dossier = str(state.get("topic_dossier") or "")
+    if not dossier or not ("조사" in asked and ("외부" in asked or "내부" in asked)):
+        return str(text or "")
+    internal = _re.search(r"(?:h2\.\s*)?내부\s*확인\s*(.*?)(?=(?:h2\.\s*)?외부\s*확인|$)",
+                          dossier, _re.I | _re.S)
+    external = _re.search(r"(?:h2\.\s*)?외부\s*확인\s*필요\s*(.*?)(?=\n\n|$)",
+                          dossier, _re.I | _re.S)
+
+    def facts(match):
+        if not match:
+            return []
+        clean = _re.split(r"\s+이\s*문서의\s+", match.group(1), 1)[0]
+        return [piece.strip(" -*.;") for piece in _re.split(r"\s+\*\s+", clean)
+                if 4 <= len(piece.strip(" -*.;")) <= 220]
+
+    rows = [("내부 확인", fact) for fact in facts(internal)]
+    rows += [("외부 확인 필요", fact) for fact in facts(external)]
+    normalized_text = _re.sub(r"\s+", "", str(text or ""))
+    rows = [(kind, fact) for kind, fact in rows
+            if _re.sub(r"\s+", "", fact) not in normalized_text]
+    if not rows:
+        return str(text or "")
+    block = ["### 현재 상태", "", "| 구분 | 확인 결과 |", "|---|---|"]
+    block += [f"| {kind} | {fact.replace('|', '·')} |" for kind, fact in rows[:8]]
+    block_text = "\n".join(block)
+    reference = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", str(text or ""))
+    if reference:
+        return (str(text or "")[:reference.start()].rstrip() + "\n\n" + block_text
+                + "\n\n" + str(text or "")[reference.start():])
+    return str(text or "").rstrip() + "\n\n" + block_text
 
 
 def _drop_resolved_review_feedback(text: str, items: list) -> str:
@@ -693,6 +857,11 @@ def _align_child_presence_claims(text: str, items: list) -> str:
                   f"자식 작업 {count}건이 설정되었습니다.", str(text or ""))
     out = _re.sub(r"하위\s*작업은\s*별도로\s*설정되지\s*않았습니다?\.?”?",
                   f"하위 작업 {count}건이 설정되었습니다.", out)
+    out = _re.sub(r"(?m)^.*(?:하위\s*(?:Task|작업)|Sub-?Task)[^\n]{0,30}"
+                  r"(?:별도로\s*)?제안할\s*예정[^\n]*$",
+                  f"Sub-Task {count}건이 초안에 포함됨", out, flags=_re.I)
+    out = _re.sub(r"(?m)^.*승인\s*후[^\n]{0,25}(?:하위\s*(?:Task|작업)|Sub-?Task)"
+                  r"[^\n]{0,20}제안[^\n]*$", "", out, flags=_re.I)
     return out
 
 
@@ -788,6 +957,13 @@ def _ensure_dod_claims(text: str, items: list) -> str:
                   r"기입\s*필요|기술되지\s*않음|최소한의\s*설명)[^\n]*\]|"
                   r"\([^\n]*(?:데이터\s*누락|누락|미정|확인\s*필요)[^\n]*\)|\s*)$", "", out,
                   flags=_re.I)
+    actual_rows = [row for _title, rows in records for row in rows]
+    out = "\n".join(
+        line for line in out.splitlines()
+        if not (_re.search(r"\*\*(?:완료\s*조건(?:\s*\(DoD\))?|DoD)\*\*\s*:", line,
+                           _re.I)
+                and not any(_re.sub(r"\s+", " ", row)[:24]
+                            in _re.sub(r"\s+", " ", line) for row in actual_rows)))
     if len(records) > 1:
         table = ["### 실제 완료 조건", "| 티켓 | 완료 조건 |", "|---|---|"]
         table += [f"| {title} | {'<br>'.join(rows)} |" for title, rows in records]
@@ -843,12 +1019,20 @@ def _drop_false_epic_claims(text: str, items: list) -> str:
     """draft에 없는 Epic 연결/포함 주장을 문장에서 제거한다."""
     actual = {str(i.get("epic") or "").upper() for i in items if str(i.get("epic") or "")}
     actual_epics = [i for i in items if str(i.get("type") or "").lower() == "epic"]
+    had_false_type = bool(not actual_epics and _re.search(
+        r"(?:새(?:로운)?\s*)?(?:Epic|에픽)(?:\s*(?:티켓|초안))?[^.\n]{0,40}"
+        r"(?:생성|만들)|(?:Epic|에픽)\s*초안", str(text or ""), _re.I))
+    if not actual_epics:
+        text = _re.sub(r"(?mi)^(#{1,4}\s*)(?:Epic|에픽)\s*초안\s*$", r"\1티켓 초안",
+                       str(text or ""))
     # 모델이 카드의 실제 유형보다 한 단계 크게 소개하는 경우가 있다. 단건 카드의 명시적
     # 유형 줄은 버리지 말고 payload 유형으로 고쳐 제목을 보존한다.
-    if not actual and not actual_epics and len(items) == 1:
+    if not actual_epics and len(items) == 1:
         actual_type = str(items[0].get("type") or "Task")
         text = _re.sub(r"(?mi)^(\s*-?\s*\*\*)(?:Epic|에픽)(\*\*\s*:\s*)",
                        rf"\1{actual_type}\2", str(text or ""))
+        text = _re.sub(r"(?mi)^(\s*-?\s*\*\*)(?:Epic|에픽)\s*이름(\*\*\s*:\s*)",
+                       rf"\1{actual_type} 제목\2", text)
         text = _re.sub(r"(?:Epic|에픽)(?:\s*의)?\s*(?:총괄\s*)?담당자",
                        f"{actual_type} 담당자", text, flags=_re.I)
     lines = []
@@ -868,8 +1052,14 @@ def _drop_false_epic_claims(text: str, items: list) -> str:
             false_key = bool(epic_keys and not (epic_keys & actual))
             false_generic = not actual and positive
             mentions_epic = bool(_re.search(r"Epic|에픽", sentence, _re.I))
-            false_draft_type = bool(not actual and not actual_epics and mentions_epic
-                                    and _re.search(r"초안|생성되지|만들", sentence))
+            # A Task/Story linked to an existing Epic may truthfully mention its *parent* Epic,
+            # but it must never be introduced as a newly created Epic.  The old condition used
+            # `not actual`, so merely having a valid Epic link disabled this protection (STARR1).
+            false_draft_type = bool(not actual_epics and mentions_epic
+                                    and _re.search(r"(?:새(?:로운)?\s*)?(?:Epic|에픽)"
+                                                   r"(?:\s*(?:티켓|초안))?[^.\n]{0,36}"
+                                                   r"(?:생성|만들)|(?:Epic|에픽)\s*초안",
+                                                   sentence, _re.I))
             if false_draft_type or (not negative and (
                     (false_key and mentions_epic) or (positive and false_generic))):
                 continue
@@ -878,6 +1068,13 @@ def _drop_false_epic_claims(text: str, items: list) -> str:
         if joined:
             lines.append(joined)
     out = "\n".join(lines)
+    if had_false_type and len(items) == 1:
+        item = items[0]
+        issue_type = str(item.get("type") or "Task")
+        identity = f"**실제 티켓 초안**: {issue_type} · {item.get('summary')}"
+        if item.get("epic"):
+            identity += f" · 상위 Epic {item['epic']}"
+        out = identity + ("\n\n" + out.strip() if out.strip() else "")
     if items and "승인" not in out:
         out = out.rstrip() + "\n\n이 티켓 초안은 아직 생성되지 않았습니다. 승인 카드에서 확인해 주세요."
     return out
@@ -935,7 +1132,7 @@ def _align_child_owner_claims(text: str, items: list) -> str:
     if not exact_block:
         # 축약 제목·순서로 담당이 뒤바뀔 수 있으므로 실제 payload 표를 한 번 보장한다.
         rows = ["### Sub-Task 담당", "| Sub-Task | 담당 |", "|---|---|"]
-        rows += [f"| {c['summary']} | {c['assignee']} |" for c in children]
+        rows += [f"| {c['summary']} | [~{c['assignee']}] |" for c in children]
         block = "\n".join(rows) + "\n\n"
         approval = _re.search(r"(?m)^#{2,3}\s*승인", out)
         out = (out[:approval.start()] + block + out[approval.start():]
@@ -1065,7 +1262,7 @@ def _align_item_owner_claims(text: str, items: list) -> str:
                     matches = winners
         if len(matches) == 1:
             current = matches[0]
-        if current and "대안" not in line and (
+        if current and "대안" not in line and "후보" not in line and (
                 "담당" in line or len(matches) == 1):
             title, actual = current
             line = _re.sub(r"(?<![A-Za-z0-9.])(?:skcc\.)?[a-z]{1,2}\d{2,6}(?![A-Za-z0-9])",
@@ -1169,17 +1366,47 @@ def _dedupe_sentences(text: str) -> str:
     return _re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
 
 
+def _normalize_ticket_detail_sections(text: str) -> str:
+    """전용 진행 Task bullet을 one-ticket `ticket-detail` token으로 정규화한다.
+
+    모델이 raw key, 다른 typed token, 제목을 병기해도 key만 보존한다. 상세 badge가 이미
+    key/title/assignee/status를 채우므로 뒤 텍스트는 중복이며, 다음 heading부터는 건드리지 않는다.
+    """
+    heading = _re.compile(r"^#{2,4}\s*현재\s*진행\s*중인\s*(?:Task|태스크)\s*$", _re.I)
+    key = _re.compile(r"\b([A-Z][A-Z0-9]*-\d+)\b")
+    out, active = [], False
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if heading.match(stripped):
+            active = True
+            out.append(line)
+            continue
+        if active and stripped.startswith("#"):
+            active = False
+        if active and _re.match(r"^[-*+]\s+", stripped):
+            found = key.search(stripped)
+            if found:
+                indent = line[:len(line) - len(line.lstrip())]
+                out.append(f"{indent}- {{{{ticket-detail:{found.group(1)}}}}}")
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _dedupe_refs(text: str) -> str:
-    """`**참조**` 섹션의 중복 출처를 병합하고 번호를 다시 매긴다.
+    """canonical `### 근거` 섹션의 중복 출처를 병합하고 번호를 다시 매긴다.
 
     출처 정체성: 코멘트(키+괄호 출처) > 문서(URL) > 티켓(키 집합) > 문구.
     같은 티켓의 '티켓 참조'와 '코멘트 참조'는 다른 출처다(내용이 다르다).
-    본문에서 안 쓰인 참조는 떨군다 — 규칙상 만들면 안 되는 것이라서다."""
+    본문에서 안 쓰인 근거는 떨군다. legacy `참조` heading은 canonical `근거`로 바꾼다."""
     import re as _re
-    m = _re.search(r"\*\*참조\*\*\s*\n((?:\s*-?\s*\[\d+\][^\n]*\n?)+)", text)
+    canonical = _re.sub(
+        r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$",
+        "### 근거", str(text or ""))
+    m = _re.search(r"(?m)^### 근거\s*\n((?:\s*-?\s*\[\d+\][^\n]*\n?)+)", canonical)
     if not m:
-        return text
-    head, block, tail = text[:m.start(1)], m.group(1), text[m.end(1):]
+        return canonical
+    head, block, tail = canonical[:m.start(1)], m.group(1), canonical[m.end(1):]
     body = head + tail
 
     def _sig(desc: str):
@@ -1216,11 +1443,11 @@ def _dedupe_refs(text: str) -> str:
             used.add(rep)
             order.append(rep)
     if not order:
-        return text
+        return canonical
     newno = {rep: str(i + 1) for i, rep in enumerate(order)}
     mapping = {old: newno[rep] for old, rep in alias.items() if rep in newno}
     if not mapping:
-        return text
+        return canonical
     # 병합할 게 없어도 계속 간다 — 불릿 제거·문서 중복 표기 정리는 항상 적용된다.
     out_body = _re.sub(r"\[(\d+)\](?!\()",
                        lambda mm: f"[{mapping.get(mm.group(1), mm.group(1))}]", body)
@@ -1230,7 +1457,7 @@ def _dedupe_refs(text: str) -> str:
         return _re.sub(r"^([^—\n]*?)\s*\((https?://[^\s)]+)\)", r"\2", d.strip())
     lines = [f"[{newno[old]}] {_clean_desc(desc)}" for old, desc in survivors if old in newno]
     lines.sort(key=lambda ln: int(_re.match(r"\[(\d+)\]", ln).group(1)))
-    # 참조 섹션을 원래 자리(head 끝)에 다시 꽂는다.
+    # 근거 섹션을 원래 자리(head 끝)에 다시 꽂는다.
     ref_block = "\n".join(lines) + "\n"
     cut = len(head)
     return out_body[:cut] + ref_block + out_body[cut:]
@@ -1258,12 +1485,12 @@ def _prune_empty_rows(text: str) -> str:
     if rows_removed:
         # 헤더+구분선만 남은 표(내용 행 0)는 표째 제거
         text = _re.sub(r"(?:^|\n)\|[^\n]*\|\n\|[\s:|-]+\|(?=\n(?!\|)|$)", "", text)
-    # 내용 없는 섹션 헤딩("### 히스토리" 뒤가 바로 다음 헤딩/참조/끝) — 헤딩만 남기지 않는다
+    # 내용 없는 섹션 헤딩("### 히스토리" 뒤가 바로 다음 헤딩/근거/끝) — 헤딩만 남기지 않는다
     # (실측: 표를 걷어낸 뒤, 또는 모델이 애초에 빈 헤딩을 냈다).
     # 맺음말("…더 궁금하면 말씀 주세요")도 섹션 내용이 아니다 — 그 앞의 빈 헤딩을 살려
     # 두면 "### 히스토리" 밑에 안내문만 붙는 꼴이 된다(실측 Round P).
     text = _re.sub(r"(?:^|\n)(#{2,4}\s+[^\n]+|\*\*[^\n*]+\*\*)\n+"
-                   r"(?=(#{2,4}\s|\*\*참조\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)|$))",
+                   r"(?=(#{2,4}\s|\*\*(?:근거|참조)\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)|$))",
                    "\n", text)
     return text
 

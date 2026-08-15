@@ -120,13 +120,11 @@ def _readable(name: str, size: int) -> bool:
 
 @tool
 def list_attachments(ticket_key: str) -> dict:
-    """티켓에 **어떤 파일이 붙어 있는지** 본다. 이름·종류·크기·올린 사람·읽을 수 있는지.
+    """List files attached to one verified ticket, including name, kind, size, author, creation date, and readability.
 
-    첨부 목록 자체가 맥락이다 — "로그 첨부했습니다" 라는 코멘트 옆에 실제로 `error.log`
-    가 있는지, 크기가 12KB 인지 300MB 인지에 따라 다음 행동이 달라진다.
-    티켓을 조사할 때 함께 보고, 필요하면 `read_attachment` 로 내용을 연다.
-
-    돌려주는 것: {"key", "files": [{id, name, kind, size, author, created, readable}]}
+    Use this before claiming that a referenced file exists or before calling `read_attachment`. Returns
+    `{"key", "files": [{"id", "name", "kind", "size", "author", "created", "readable"}]}`.
+    A file listing is evidence of presence only, never evidence of its content.
     """
     key = (ticket_key or "").strip().upper()
     try:
@@ -152,19 +150,12 @@ def list_attachments(ticket_key: str) -> dict:
 
 @tool
 def read_attachment(ticket_key: str, filename: str, find: str = "") -> dict:
-    """첨부파일의 **내용을 읽는다**. 파일 종류에 맞는 방식으로 뽑아 준다.
+    """Read a supported attachment from one verified ticket.
 
-    `find` 에 찾는 대상(테이블명·에러 코드·ID 등)을 주면 **그것과 관련된 부분만** 돌려준다 —
-    표는 관련 행, 구조화 데이터는 관련 요소, 글은 그 말이 나온 줄 주변. 3만 행짜리 파일을
-    통째로 싣지 않기 위해서다.
-
-    · 표(csv/tsv/xlsx/parquet): {"columns", "rows_total", "matched" | "sample"}
-    · 트리(json/yaml/ndjson):   {"keys", "matched" | "sample"}
-    · 글·소스코드(log/txt/md/sql/py/js/java/sh…): {"text"} (find 가 있으면 그 줄 주변)
-    · 문서(pdf/docx): {"text", "pages_read"} — 본문 텍스트를 뽑는다
-    · 이미지·동영상·압축·구버전 오피스: 거부한다. 내용이 필요하면 사람에게 요청하라.
-
-    `list_attachments` 가 readable=true 로 표시한 것만 열린다.
+    Pass `find` for a table, error code, ID, or other target to return only matching rows, structured elements,
+    or nearby text. Tables return columns and matched rows or a sample; JSON/YAML/NDJSON return keys and matched
+    elements or a sample; text and source files return text; PDF and DOCX return extracted text. Only files marked
+    `readable=true` by `list_attachments` can be opened. Never infer content from an unreadable file.
     """
     key, want = (ticket_key or "").strip().upper(), (filename or "").strip()
     try:

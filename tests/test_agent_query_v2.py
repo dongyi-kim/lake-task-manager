@@ -144,6 +144,67 @@ def test_runner_preserves_full_page_as_artifact_but_caps_llm_context():
     assert compact["contextTruncated"] and compact["artifactId"] == "all-open"
 
 
+def test_runner_combines_jira_query_terms_with_where_instead_of_silently_dropping_them():
+    fake = _Client(3)
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+    QueryRunner()._run({"query_plan": {"queries": [{
+        "id": "topic", "source": "jira", "query": "Iceberg Puffin NDV",
+        "where": 'statusCategory != Done', "page_size": 20,
+    }]}})
+    jql = fake.calls[0]["jql"]
+    assert 'statusCategory != Done' in jql
+    assert 'text ~ "Iceberg"' in jql and 'text ~ "Puffin"' in jql and 'text ~ "NDV"' in jql
+    assert jql.startswith('project in ("AAA", "BBB") AND (')
+
+
+def test_runner_recovers_jql_misplaced_in_query_and_removes_model_project_placeholder():
+    fake = _Client(3)
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+    QueryRunner()._run({"query_plan": {"queries": [{
+        "id": "misplaced", "source": "jira",
+        "query": "project = YOUR_PROJECT_KEY AND summary ~ '적재 지연' AND status != 'Done'",
+        "where": "", "page_size": 20,
+    }]}})
+    jql = fake.calls[0]["jql"]
+    assert "YOUR_PROJECT_KEY" not in jql and "text ~" not in jql
+    assert 'summary ~ "적재 지연"' in jql and 'status != "Done"' in jql
+    assert jql.startswith('project in ("AAA", "BBB") AND (')
+
+
+def test_runner_expands_misplaced_full_text_phrase_for_recall():
+    fake = _Client(3)
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+    QueryRunner()._run({"query_plan": {"queries": [{
+        "id": "topic", "source": "jira",
+        "query": "project = ETL AND text ~ 'iceberg puffin ndv' AND text ~ '통계정보'",
+        "where": "",
+    }]}})
+    jql = fake.calls[0]["jql"]
+    assert all(f'text ~ "{term}"' in jql for term in ("iceberg", "puffin", "ndv"))
+    assert '(text ~ "통계정보" OR text ~ "통계")' in jql
+
+
+def test_runner_strips_korean_particles_and_planner_filler_for_duplicate_recall():
+    from app.agent.workflow.agents.query_runner import _jira_where
+
+    jql = _jira_where("", "프로듀서를 Avro로 전환하는 작업을 위한 티켓을 생성한다.")
+
+    assert jql == ('text ~ "프로듀서" AND text ~ "Avro" AND text ~ "전환"')
+    assert "project = ETL" not in jql
+
+
+def test_runner_repairs_subtask_parent_jql_misplaced_in_query():
+    fake = _Client(3)
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+    QueryRunner()._run({"query_plan": {"queries": [{
+        "id": "children", "source": "jira",
+        "query": 'issueType=SubTask AND "Epic Link"=DL-9090', "where": "",
+    }]}})
+    jql = fake.calls[0]["jql"]
+    assert "text ~" not in jql and 'parent = DL-9090' in jql
+    assert 'issuetype = Sub-Task' in jql
+
+
 def test_people_workload_uses_scoped_paginated_jql_not_primary_project_aggregate():
     fake = _Client(137)
     _ctx.bind(fake, _settings(["AAA", "BBB"]))

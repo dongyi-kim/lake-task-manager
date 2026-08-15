@@ -59,7 +59,7 @@ FAKE_LINK_RE = re.compile(r"\]\(\s*(?!https?://)[^)]*\)")
 BROWSE_RE = re.compile(r"/browse/([A-Z][A-Z0-9]+-\d+)")
 
 
-REF_HEAD_RE = re.compile(r"^\s*[*_#\s]*참조[*_\s]*$|^\s*[*_#\s]*references[*_\s]*$",
+REF_HEAD_RE = re.compile(r"^\s*[*_#\s]*(?:근거|참조)[*_\s]*$|^\s*[*_#\s]*references[*_\s]*$",
                          re.M | re.I)
 
 

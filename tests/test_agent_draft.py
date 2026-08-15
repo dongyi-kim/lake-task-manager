@@ -28,7 +28,7 @@ from app.agent.workflow.agents.work_architect import (WorkArchitect, as_bulk_ite
                                                _enforce_agreed_structure,
                                                _ensure_split_exclusions,
                                                _repair_split_scope)
-from app.agent.workflow.state import Intent                          # noqa: E402
+from app.agent.workflow.state import Intent, MAX_REFINE_TURNS        # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -135,6 +135,21 @@ def test_inferred_epic_module_mismatch_is_removed():
     r = _applied(item={"epic": "DL-101", "components": ["Workbench"]})   # DL-101 은 ETL Epic
     assert r["draft"]["items"][0]["epic"] == ""
     assert "연결을 뺐다" in r["draft"]["rationale"]
+
+
+def test_verified_same_module_epic_choice_survives_when_user_delegates_the_choice():
+    """`Epic은 네가 골라줘`는 verified 후보 중 선택 권한을 준 것 — 고유어 불일치만으로 제거 금지."""
+    from langchain_core.messages import HumanMessage
+    item = {**dict(_draft()["items"][0]),
+            "summary": "[ETL] starrocks puffin ndv 통계정보 파이프라인 개발",
+            "epic": "DL-102", "components": ["ETL"]}
+    out = {"questions": [], "mode": "task", "rationale": "", "items": [item],
+           "structure": "single_task", "structure_source": "inferred"}
+    state = {"messages": [HumanMessage(
+        content="starrocks puffin ndv 통계정보 파이프라인 개발. Epic은 네가 골라줘. 알아서")],
+        "situation": "verified candidates supplied"}
+    got = WorkArchitect().apply(state, out)
+    assert got["draft"]["items"][0]["epic"] == "DL-102"
 
 
 def test_an_explicit_epic_wins_even_when_module_metadata_differs():
@@ -319,16 +334,72 @@ def test_blocking_questions_suppress_the_competing_draft():
     assert not r["draft"]["items"], "질문에 답하기 전 임의 초안은 승인 카드에 오르면 안 된다"
 
 
-def test_delegation_keeps_the_draft_and_suppresses_model_questions():
-    """사용자가 판단을 위임했으면 기존 계약대로 질문이 아니라 완성된 초안을 낸다."""
+def test_delegation_keeps_the_draft_and_suppresses_optional_questions():
+    """`알아서`는 안전한 선택 재량을 위임하므로 preference 질문은 되묻지 않는다."""
     out = {"questions": [{"question": "범위를 고를까요?", "kind": "choice",
-                          "options": ["최소", "전체"], "field": "scope"}],
+                          "options": ["최소", "전체"], "field": "scope",
+                          "required_input": False, "why_required": ""}],
            "mode": "task", "rationale": "",
            "structure": "single_task", "structure_source": "inferred",
            "items": [dict(_draft()["items"][0])]}
-    r = WorkArchitect().apply(_msg("데이터 품질 개선 작업 만들어줘. 알아서"), out)
+    r = WorkArchitect().apply(_msg("신규 등록 테이블의 널 비율 품질 점검 작업 만들어줘. 알아서"), out)
     assert not r["questions"]
     assert r["draft"]["items"]
+
+
+def test_delegation_preserves_required_input_questions_and_withholds_the_draft():
+    """`알아서`도 정확한 대상처럼 행위 성립에 필요한 사용자 입력을 대신하지 않는다."""
+    out = {"questions": [{"question": "어느 데이터 품질 규칙을 바꿀까요?", "kind": "text",
+                          "options": [], "field": "target", "required_input": True,
+                          "why_required": "대상을 모르면 변경 범위와 완료 조건을 확정할 수 없음"}],
+           "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [dict(_draft()["items"][0])]}
+    r = WorkArchitect().apply(_msg("데이터 품질 규칙 바꿔줘. 알아서"), out)
+    assert len(r["questions"]) == 1
+    assert r["questions"][0]["required_input"] is True
+    assert r["questions"][0]["why_required"]
+    assert not r["draft"]["items"], "필수 입력 전의 임의 payload는 승인 카드에 오르면 안 된다"
+
+
+def test_delegated_subtask_without_a_deliverable_asks_then_converges_to_one_child():
+    """ASKD2: 부모와 개수만으로는 실행할 일이 없다. `알아서`도 내용을 발명할 권한이 아니다."""
+    from langchain_core.messages import HumanMessage
+
+    first = _msg("DL-9090 아래에 Sub-Task 하나 만들어줘. 내용은 알아서",
+                 intent=Intent.PLAN_WORK, mentioned_keys=["DL-9090"], situation="조사 완료")
+    generic = {"questions": [], "mode": "subtask", "rationale": "", "items": [{
+        "summary": "[Workbench] 데이터 리니지 뷰어 하위 작업", "type": "Sub-Task",
+        "parent": "DL-9090", "description": "<h3>작업 범위</h3><p>기능 개선</p>"}]}
+    turn1 = WorkArchitect().apply(first, generic)
+    assert turn1["questions"] and not turn1["draft"]["items"]
+    assert any(w in turn1["questions"][0]["question"] for w in ("내용", "작업", "목적"))
+
+    second = dict(first)
+    second["messages"] = [
+        HumanMessage(content="DL-9090 아래에 Sub-Task 하나 만들어줘. 내용은 알아서"),
+        HumanMessage(content="리니지 뷰어 성능 회귀 테스트를 추가해줘"),
+    ]
+    second["draft"] = turn1["draft"]
+    concrete = {"questions": [], "mode": "subtask", "rationale": "", "items": [{
+        "summary": "[Workbench] 리니지 뷰어 성능 회귀 테스트 추가", "type": "Sub-Task",
+        "parent": "DL-9090", "description": "<h3>작업 범위</h3><p>회귀 테스트 추가</p>"}]}
+    turn2 = WorkArchitect().apply(second, concrete)
+    assert not turn2["questions"] and len(turn2["draft"]["items"]) == 1
+    assert "회귀" in turn2["draft"]["items"][0]["summary"]
+
+
+def test_required_input_question_survives_the_refinement_limit():
+    """인터뷰 상한은 취향 질문을 멈추는 장치이지 필수값을 추측하는 허가가 아니다."""
+    out = {"questions": [{"question": "댓글을 남길 티켓은 무엇인가요?", "kind": "text",
+                          "options": [], "field": "target", "required_input": True,
+                          "why_required": "댓글 write target이 없음"}],
+           "mode": "task", "rationale": "", "items": []}
+    state = _msg("그 티켓에 댓글 남겨줘. 알아서")
+    state["turns"] = MAX_REFINE_TURNS
+    r = WorkArchitect().apply(state, out)
+    assert r["questions"] and r["questions"][0]["required_input"] is True
+    assert not r["draft"]["items"]
 
 
 def test_postcheck_catches_a_subtask_reply_with_an_empty_card():
@@ -386,6 +457,77 @@ def test_promoting_to_an_epic_stops_when_one_of_that_name_already_exists():
     q = r["questions"][0]
     assert q["kind"] == "choice" and q["field"] == "epic"
     assert "Epic 격상 보류" in r["draft"]["rationale"]
+
+
+def test_delegated_duplicate_epic_uses_the_existing_epic_without_reasking():
+    """STR3: 안전 기본값이 하나인데 `알아서`를 받고도 선택 질문을 되풀이하지 않는다."""
+    out = {"questions": [], "mode": "epic", "rationale": "",
+           "structure": "new_epic", "structure_source": "user_specified",
+           "items": [{"summary": "[ETL] 쿼리 성능 개선", "type": "Epic",
+                      "epic_name": "쿼리개선", "components": ["ETL"],
+                      "description": "<h3>배경</h3><p>쿼리 성능 개선</p>"}]}
+
+    r = WorkArchitect().apply(
+        _msg("쿼리 성능 개선을 대대적으로 해보자. 에픽으로 크게 잡아줘. "
+             "기간은 2주 정도고 ETL 쪽만 손볼 거야. 알아서 진행해"), out)
+
+    assert not r["questions"]
+    assert r["draft"]["mode"] == "task"
+    assert r["draft"]["structure"] == "single_task"
+    assert r["draft"]["items"][0]["type"] == "Task"
+    assert r["draft"]["items"][0]["epic"] == "DL-102"
+    assert "epic_name" not in r["draft"]["items"][0]
+
+
+def test_delegated_epic_with_stale_issue_type_cannot_become_epic_under_epic():
+    """STR3 actual: a repaired Task was reverted by stale `issue_type=Epic` at finalization."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "new_epic", "structure_source": "user_specified",
+           "items": [{"summary": "[ETL] 쿼리 성능 개선", "type": "Epic",
+                      "issue_type": "Epic", "tier": "epic", "epic": "DL-102",
+                      "epic_name": "쿼리개선", "components": ["ETL"],
+                      "description": ("<h3>배경</h3><p>ETL 쿼리 성능 개선</p>"
+                                      "<h3>작업 범위</h3><ul><li>포함: ETL 쿼리 개선</li>"
+                                      "<li>제외: ETL 외 모듈</li></ul>"
+                                      "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                                      "<li data-checked=\"false\">측정 결과를 기록한다</li></ul>")}]}
+    r = WorkArchitect().apply(
+        _msg("쿼리 성능 개선을 에픽으로 크게 잡아줘. 기간은 2주고 ETL만. 알아서"), out)
+    item = r["draft"]["items"][0]
+    assert r["draft"]["mode"] == "task"
+    assert item["type"] == item["issue_type"] == "Task"
+    assert item["tier"] == "task" and item["epic"] == "DL-102"
+    assert "epic_name" not in item
+
+
+def test_followup_delegation_keeps_the_original_pipeline_multistage_signal():
+    """STARR1: 둘째 턴의 `알아서`가 첫 요청의 pipeline 구조 신호를 지우지 않는다."""
+    from langchain_core.messages import AIMessage, HumanMessage
+    body = ('<h3>배경</h3><p>Puffin NDV pipeline 신규 개발</p>'
+            '<h3>작업 범위</h3><ul><li>포함: 1차 구현</li><li>제외: 최적화</li></ul>'
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">pipeline 동작 확인</li></ul>')
+    state = {
+        "request_text": "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지. 알아서 진행해",
+        "messages": [
+            HumanMessage(content="starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해"),
+            AIMessage(content="여러 단계로 나뉠 수 있습니다. 구조를 선택해 주세요."),
+            HumanMessage(content="Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지. 알아서 진행해"),
+        ],
+        "turns": 1,
+    }
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [{"summary": "[ETL] StarRocks Puffin NDV 통계정보 파이프라인 개발",
+                      "type": "Task", "epic": "DL-102", "components": ["ETL"],
+                      "description": body}]}
+
+    got = WorkArchitect().apply(state, out)
+    item = got["draft"]["items"][0]
+
+    assert got["draft"]["structure"] == "task_with_subtasks"
+    assert [c["summary"].rsplit(" — ", 1)[-1] for c in item["children"]] == [
+        "설계", "구현", "검증"]
 
 
 def test_a_genuinely_new_epic_is_not_blocked():
@@ -596,6 +738,109 @@ def test_delegated_draft_does_not_repeat_suppressed_questions_in_rationale():
     assert "무엇인가요" not in got["draft"]["rationale"]
 
 
+def test_delegated_concrete_request_does_not_block_on_background_dod_or_epic():
+    """`required_input=true`도 모델 주장이다. 선택 정보가 blocker로 승격되면 안 된다."""
+    body = ("<h3>배경</h3><p>팝업 추가 요청</p><h3>작업 범위</h3>"
+            "<ul><li>포함: 팝업 추가</li><li>제외: 단축키 변경</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            "<li data-checked=\"false\">편집기에서 팝업 노출을 확인한다.</li></ul>")
+    questions = [
+        {"question": "사업 배경은 무엇인가요?", "kind": "text", "field": "",
+         "required_input": True, "why_required": "배경 필요"},
+        {"question": "완료 조건은 무엇인가요?", "kind": "text", "field": "",
+         "required_input": True, "why_required": "DoD 필요"},
+        {"question": "어느 Epic에 둘까요?", "kind": "choice", "field": "epic",
+         "required_input": True, "why_required": "Epic 필요"},
+    ]
+    out = {"questions": questions, "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred", "items": [{
+               "summary": "[Workbench] 쿼리 편집기 단축키 도움말 팝업 추가",
+               "type": "Task", "components": ["Workbench"], "description": body}]}
+    got = WorkArchitect().apply(
+        _msg("Workbench 쿼리 편집기에 단축키 도움말 팝업 추가해줘. 알아서"), out)
+    assert not got["questions"]
+    assert len(got["draft"]["items"]) == 1
+
+
+def test_delegated_request_still_asks_for_missing_target_and_exact_mutation():
+    target_q = {"question": "어느 데이터셋을 대상으로 할까요?", "kind": "text",
+                "field": "", "required_input": True,
+                "why_required": "작업 대상을 식별할 수 없음"}
+    got = WorkArchitect().apply(
+        _msg("데이터 품질 작업 하나 만들어줘. 나머지는 알아서"),
+        {"questions": [target_q], "mode": "task", "rationale": "", "items": []})
+    assert got["questions"] and not got["draft"]["items"]
+
+    got = WorkArchitect().apply(
+        _msg("적재 지연 알림 임계값 조정 Task 만들어줘. 나머지는 알아서"),
+        {"questions": [], "mode": "task", "rationale": "", "items": [dict(_draft()["items"][0])]})
+    assert got["questions"] and "임계값" in got["questions"][0]["question"]
+
+
+def test_slot_audit_infers_optional_ticket_quality_fields_but_asks_for_generic_target():
+    from app.agent.workflow.agents.work_architect import _slot_audit
+    concrete = _slot_audit(_msg("쿼리 편집기에 도움말 팝업 추가해줘. 알아서"))
+    assert "범위(1차 목표): 비어 있음 → INFER" in concrete
+    assert "Epic 배치: 비어 있음 → INFER" in concrete
+    assert "완료 조건" in concrete and "→ INFER" in concrete
+    vague = _slot_audit(_msg("데이터 품질 작업 하나 만들어줘. 알아서"))
+    assert "주제·산출물: 비어 있음 → ASK" in vague
+
+
+def test_comment_without_content_gets_a_deterministic_required_question():
+    state = _msg("DL-9090에 댓글 남겨줘. 내용은 알아서",
+                 intent=Intent.MODIFY, mentioned_keys=["DL-9090"])
+    plan, questions = _change_plan(
+        state,
+        {"change": {"key": "DL-9090", "comment": "요청하신 대로 처리하겠습니다."},
+         "rationale": ""}, [], [],
+    )
+    assert not plan
+    assert questions and questions[0]["field"] == "comment"
+    assert questions[0]["required_input"] is True
+
+
+def test_data_quality_interview_waits_for_target_then_allows_the_draft():
+    from langchain_core.messages import HumanMessage
+    body = ("<h3>배경</h3><p>널 비율 확인 요청</p><h3>작업 범위</h3>"
+            "<ul><li>포함: 널 비율 확인</li><li>제외: 다른 규칙</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            "<li data-checked=\"false\">결과표로 비율을 확인한다.</li></ul>")
+    draft = {"questions": [], "mode": "task", "rationale": "",
+             "structure": "single_task", "structure_source": "inferred",
+             "items": [{"summary": "[DataOps] 널 비율 확인", "type": "Task",
+                        "components": ["DataOps"], "description": body}]}
+    first = "데이터 품질 개선 작업 하나 만들어줘"
+    state = {"messages": [HumanMessage(content=first),
+                          HumanMessage(content="널 비율 체크만 이번 주까지. 알아서")],
+             "request_text": first, "situation": "조사 완료"}
+    got = WorkArchitect().apply(state, draft)
+    assert got["questions"] and not got["draft"]["items"]
+
+    state["messages"].append(HumanMessage(content="Lake 배치 적재 테이블 30개 대상"))
+    got = WorkArchitect().apply(state, draft)
+    assert not got["questions"] and got["draft"]["items"]
+
+
+def test_priority_aliases_normalize_to_the_jira_canonical_value():
+    from app.agent.workflow.agents.work_architect import _missing_exact_mutation, _normalize_priority
+    assert _normalize_priority("P3-Medium") == "P3-Minor"
+    assert _normalize_priority("P1-High") == "P1-Critical"
+    assert _missing_exact_mutation("임계값 조정. 우선순위 P1, 이번 주 금요일까지")
+    assert not _missing_exact_mutation("임계값을 45분으로 조정. 우선순위 P1")
+
+
+def test_ambiguous_assignee_name_lists_exact_usernames_instead_of_invalid_id_error():
+    state = _msg("DL-9090 담당자를 동명이로 바꿔줘. 알아서",
+                 intent=Intent.MODIFY, mentioned_keys=["DL-9090"])
+    out = {"change": {"key": "DL-9090", "assignee": "동명이"}, "rationale": ""}
+    plan, questions = _change_plan(state, out, [], [])
+    options = " ".join(questions[0]["options"] if questions else [])
+    assert not plan
+    assert "test.same01" in options and "test.same02" in options
+    assert "존재하지 않는 사번" not in questions[0]["question"]
+
+
 def test_unverified_ticket_and_prompt_doc_references_are_removed():
     body = ("<h3>배경</h3><p>등록</p><h3>작업 범위</h3>"
             "<ul><li>포함: 등록</li><li>제외: 변경</li></ul>"
@@ -651,7 +896,7 @@ def test_result_integrator_adds_a_canonical_child_owner_table_when_reply_omits_i
     got = _align_draft_claims("등록 묶음 1\n등록 묶음 2\n### 승인 요청\n승인해 주세요.",
                               {"draft": {"items": items}})
     assert "### Sub-Task 담당" in got
-    assert "| 등록 묶음 1 | skcc.i2044 |" in got
+    assert "| 등록 묶음 1 | [~skcc.i2044] |" in got
     assert got.index("### Sub-Task 담당") < got.index("### 승인 요청")
 
 
@@ -691,6 +936,19 @@ def test_alternate_is_not_described_as_both_an_alternate_and_not_considered():
     assert "대안으로 고려하지" not in got and "검토할 수 있음" in got
 
 
+def test_people_roster_removes_primary_from_alternates_and_repairs_loads():
+    from app.agent.workflow.agents.people_advisor import _enforce_item_roster
+    roster = ("[Workbench 로스터·부하]\n"
+              "- skcc.x1402 김A — 진행중 14건 · 열림 10건\n"
+              "- skcc.x1450 김B — 진행중 22건 · 열림 18건")
+    row = {"index": 0, "user": "skcc.x1402", "reasons": ["진행중 99건"],
+           "alternates": [{"user": "skcc.x1402", "why": "진행중 22건"},
+                          {"user": "skcc.x1450", "why": "진행중 1건"}]}
+    got = _enforce_item_roster(row, {"components": ["Workbench"]}, roster)
+    assert got["reasons"] == ["진행중 14건"]
+    assert got["alternates"] == [{"user": "skcc.x1450", "why": "진행중 22건"}]
+
+
 def test_child_vague_dod_gets_a_verification_artifact_without_more_llm_calls():
     from app.agent.workflow.agents.work_architect import _sharpen_dod
     item = {"summary": "[ETL] 파이프라인", "type": "Task",
@@ -726,6 +984,22 @@ def test_subtask_vague_performance_and_document_review_dod_get_artifacts():
     assert _sharpen_dod(_msg("성능 측정과 사용 가이드 서브태스크"), items)
     assert "검증 기준·측정값·판정 결과" in items[0]["description"]
     assert "산출물 링크와 리뷰 결과" in items[1]["description"]
+
+
+def test_one_vague_top_level_dod_is_sharpened_without_an_llm_call(monkeypatch):
+    """구체 행과 섞인 모호한 한 줄도 놓치지 않으며, 보정에 model token을 쓰지 않는다."""
+    import app.agent.workflow.agents.work_architect as module
+    monkeypatch.setattr(module, "invoke_schema",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            AssertionError("DoD sharpening must be deterministic")))
+    item = {"summary": "[ETL] 적재 지연 알림 임계값 조정", "type": "Task",
+            "description": ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                            '<li data-checked="false">알림 테스트 완료</li>'
+                            '<li data-checked="false">변경값과 리뷰 결과를 티켓에 기록한다</li>'
+                            '</ul>')}
+    assert module._sharpen_dod(_msg("알림 임계값 조정"), [item])
+    assert "알림 테스트 완료" not in item["description"]
+    assert "실행 로그와 테스트 결과" in item["description"]
 
 
 def test_explicit_existing_parent_subtasks_recover_from_interpretation_only_output():
@@ -1338,8 +1612,8 @@ def test_child_assignment_table_uses_payload_order_even_if_reply_swaps_people():
         {"summary": "등록 묶음 2/2", "assignee": "skcc.a200"}]}]
     got = _align_child_owner_claims(
         "- Sub-Task 1: skcc.a200\n- Sub-Task 2: skcc.a100", items)
-    assert "| 등록 묶음 1/2 | skcc.a100 |" in got
-    assert "| 등록 묶음 2/2 | skcc.a200 |" in got
+    assert "| 등록 묶음 1/2 | [~skcc.a100] |" in got
+    assert "| 등록 묶음 2/2 | [~skcc.a200] |" in got
 
 
 def test_workload_causal_rewrite_does_not_make_najeumasa():
@@ -1445,13 +1719,52 @@ def test_assigner_removes_experience_not_backed_by_the_history_table():
     assert got["alternates"][0]["why"] == "진행중 12건"
 
 
+def test_assigner_replaces_a_cross_module_candidate_with_verified_roster():
+    from app.agent.workflow.agents.people_advisor import PeopleAdvisor
+    state = {"trace": [], "draft": {"items": [{
+        "summary": "[Catalog] 테이블 정리", "components": ["Catalog"],
+        "children": [{"summary": "1차"}, {"summary": "2차"}]}]},
+        "similar_history": "",
+        "roster_load": (
+            "[Catalog 로스터·부하]\n"
+            "- skcc.x1210 A — 진행중 10건 · 열림 2건 · 최근 완료 4건\n"
+            "- skcc.i2044 B — 진행중 13건 · 열림 1건 · 최근 완료 3건\n"
+            "[ETL 로스터·부하]\n"
+            "- skcc.x1042 C — 진행중 8건 · 열림 3건 · 최근 완료 5건")}
+    out = {"assignments": [{"index": 0, "user": "skcc.x1042",
+            "reasons": ["ETL 모듈 진행중 8건"],
+            "children": [{"index": 0, "user": "skcc.x1042", "why": "진행중 8건"}],
+            "alternates": []}]}
+
+    got = PeopleAdvisor().apply(state, out)["assignments"][0]
+
+    assert got["user"] == "skcc.x1210"
+    assert got["reasons"] == ["Catalog 로스터 · 진행중 10건 · 열림 2건"]
+    assert [c["user"] for c in got["children"]] == ["skcc.x1210", "skcc.i2044"]
+    assert got["alternates"][0]["user"] == "skcc.i2044"
+
+
+def test_assigner_restores_an_omitted_item_without_another_model_call():
+    from app.agent.workflow.agents.people_advisor import PeopleAdvisor
+    state = {"trace": [], "draft": {"items": [{
+        "summary": "[Catalog] 정리", "components": ["Catalog"]}]},
+        "roster_load": ("[Catalog 로스터·부하]\n"
+                        "- skcc.x1210 A — 진행중 2건 · 열림 3건 · 최근 완료 4건")}
+
+    got = PeopleAdvisor().apply(state, {"assignments": []})["assignments"]
+
+    assert len(got) == 1 and got[0]["user"] == "skcc.x1210"
+    assert got[0]["reasons"] == ["Catalog 로스터 · 진행중 2건 · 열림 3건"]
+
+
 def test_explicit_singular_task_drops_model_generated_stage_children():
     out = {"questions": [], "mode": "task", "rationale": "", "items": [{
         "summary": "[DataOps] 적재 지연 알림 임계값 조정", "type": "Task",
         "components": ["DataOps"], "description": "",
         "children": [{"summary": "설계"}, {"summary": "구현"}, {"summary": "검증"}]}]}
     got = WorkArchitect().apply(
-        _msg("적재 지연 알림 임계값 조정 Task 만들어줘. P1, 금요일까지, 알아서"), out)
+        _msg("적재 지연 알림 임계값을 45분으로 조정하는 Task 만들어줘. "
+             "P1, 금요일까지, 알아서"), out)
     item = got["draft"]["items"][0]
     assert got["draft"]["structure"] == "single_task"
     assert got["draft"]["structure_source"] == "user_specified"
@@ -1611,6 +1924,14 @@ def test_choose_an_epic_does_not_mean_create_one():
     assert d["mode"] == "task", "새 Epic 을 만들지 않는다"
     assert d["items"][0].get("epic"), "고른 Epic 아래에 둔다"
     assert d["items"][0]["type"] != "Epic"
+
+
+def test_delegated_ndv_pipeline_prefers_the_same_module_query_performance_epic():
+    from app.agent.workflow.agents.work_architect import _pick_parent_epic
+
+    got = _pick_parent_epic("[ETL] StarRocks Puffin NDV 통계 파이프라인 개발", "ETL")
+
+    assert got and got["key"] == "DL-102"
 
 
 def test_stripping_orphan_subtasks_never_empties_the_draft():
@@ -1880,8 +2201,11 @@ def test_functionally_different_tasks_are_not_collapsed():
            "items": [{"summary": "[Workbench] 성능 측정 리포트 작성", "type": "Task", "description": ""},
                      {"summary": "[Runtime] 쿼리 인덱스 조정", "type": "Task", "description": ""},
                      {"summary": "[Catalog] 사용 가이드 작성", "type": "Task", "description": ""}]}
-    r = WorkArchitect().apply(_msg("성능 측정하고 인덱스도 손보고 가이드도. 알아서"), out)
+    r = WorkArchitect().apply(
+        _msg("성능 측정하고 인덱스도 손보고 가이드도. 알아서", situation="조사 완료"), out)
     assert len(r["draft"]["items"]) == 3
+    assert not r["questions"]
+    assert all(i.get("description") for i in r["draft"]["items"])
 
 
 def test_relative_due_is_computed_by_code_not_the_model():
@@ -1895,6 +2219,121 @@ def test_relative_due_is_computed_by_code_not_the_model():
     assert f.weekday() == 4 and f >= date.today()
     assert _relative_due("그냥 미뤄줘") == ""
     assert _relative_due("내일까지") == (date.today() + timedelta(days=1)).isoformat()
+
+
+def test_this_week_due_is_the_current_or_next_workweek_friday():
+    from datetime import date, timedelta
+    from app.agent.workflow.agents.work_architect import _relative_due
+
+    today = date.today()
+    friday = today - timedelta(days=today.weekday()) + timedelta(days=4)
+    if friday < today:
+        friday += timedelta(days=7)
+    assert _relative_due("이번 주까지. 알아서") == friday.isoformat()
+    assert _relative_due("금주까지 처리") == friday.isoformat()
+
+
+def test_question_turn_never_claims_a_parentless_subtask_can_be_created():
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    state = _msg("서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼")
+    state["questions"] = [{"question": "어떤 방식으로 바꿀까요?", "kind": "choice",
+                           "options": ["Task로 만든다", "부모를 지정한다"]}]
+    got = ResultIntegrator().apply(
+        state,
+        {"text": "사용자가 원했으므로 별도의 부모 없이 서브태스크를 생성합니다. 아래에서 선택해 주세요"},
+    )["reply"]
+
+    assert "부모가 필수" in got
+    assert "부모 없이 생성할 수 없음" in got
+    assert "부모 없이 서브태스크를 생성" not in got
+
+
+def test_parentless_subtask_asks_for_a_valid_hierarchy_before_content():
+    out = {"questions": [
+        {"question": "배경은 무엇인가요?", "kind": "text", "options": []},
+        {"question": "완료 조건은 무엇인가요?", "kind": "text", "options": []},
+    ], "mode": "subtask", "rationale": "", "items": []}
+
+    got = WorkArchitect().apply(
+        _msg("서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼"), out)
+
+    assert not got["draft"]["items"]
+    assert len(got["questions"]) == 1  # 유효한 계층 선택만 — 선택형 자유 의견은 중복 질문
+    first = got["questions"][0]
+    assert first["field"] == "parent"
+    assert "부모 없이 만들 수 없습니다" in first["question"]
+    assert "최상위 Task" in str(first["options"])
+
+
+def test_relative_due_overrides_model_date_on_a_single_creation_draft():
+    """생성 경로도 상대 기한을 코드로 고정한다 — 형식상 유효한 오답은 schema가 못 잡는다."""
+    from app.agent.workflow.agents.work_architect import _relative_due
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "user_specified",
+           "items": [{"summary": "[Catalog] hotfix 배포", "type": "Task",
+                      "description": "", "duedate": "2099-01-01"}]}
+    r = WorkArchitect().apply(_msg("이번 주 금요일까지 hotfix 배포 Task 만들어줘. 알아서"), out)
+    assert r["draft"]["items"][0]["duedate"] == _relative_due("이번 주 금요일까지")
+
+
+def test_duration_timebox_becomes_a_deterministic_due_date():
+    from datetime import date, timedelta
+    from app.agent.workflow.agents.work_architect import _relative_due
+    assert _relative_due("기간은 2주 정도") == (date.today() + timedelta(days=14)).isoformat()
+
+
+def test_relative_due_does_not_guess_across_multiple_creation_items():
+    """복수 항목의 기한 배분은 사용자 의미 판단 — 하나의 상대 표현을 전부 덮어쓰지 않는다."""
+    from app.agent.workflow.agents.work_architect import _apply_relative_due_to_single_draft
+    items = [{"summary": "[Catalog] A", "type": "Task", "duedate": "2099-01-01"},
+             {"summary": "[Runtime] B", "type": "Task", "duedate": "2099-01-02"}]
+    applied = _apply_relative_due_to_single_draft(
+        _msg("이번 주 금요일까지 A와 B를 각각 만들어줘"), items)
+    assert applied == ""
+    assert [i["duedate"] for i in items] == ["2099-01-01", "2099-01-02"]
+
+
+def test_unrequested_quality_claims_are_removed_from_ticket_body():
+    """그럴듯한 효익도 사용자가 말하지 않았으면 배경·범위·DoD의 날조다."""
+    from app.agent.workflow.agents.work_architect import _remove_unrequested_quality_claims
+    items = [{"summary": "[ETL] CDC 재처리 배치 개선", "type": "Task",
+              "description": (
+                  "<h3>배경</h3><p>성능과 운영 효율성을 높이기 위한 요청</p>"
+                  "<h3>작업 범위</h3><ul><li>포함: 성능 개선</li><li>제외: 다른 배치</li></ul>"
+                  '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                  '<li data-checked="false">시스템 안정성 테스트 완료</li></ul>')}]
+    assert _remove_unrequested_quality_claims(_msg("CDC 재처리 배치 개선 Task 만들어줘"), items)
+    body = items[0]["description"]
+    assert all(word not in body for word in ("성능", "운영 효율성", "안정성"))
+    assert "CDC 재처리 배치 개선 요청됨" in body
+    assert "결과와 검증 기록" in body
+
+
+def test_user_requested_quality_dimension_is_preserved():
+    """사용자가 직접 말한 품질 차원은 제거 대상이 아니다."""
+    from app.agent.workflow.agents.work_architect import _remove_unrequested_quality_claims
+    body = ("<h3>배경</h3><p>쿼리 성능 개선 요청</p>"
+            "<h3>작업 범위</h3><ul><li>포함: 쿼리 성능 개선</li></ul>"
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">성능 측정 결과를 기록</li></ul>')
+    items = [{"summary": "[Runtime] 쿼리 성능 개선", "type": "Task", "description": body}]
+    assert not _remove_unrequested_quality_claims(_msg("쿼리 성능 개선 Task 만들어줘"), items)
+    assert items[0]["description"] == body
+
+
+def test_unrequested_user_testing_is_removed_but_explicit_request_is_preserved():
+    from app.agent.workflow.agents.work_architect import _remove_unrequested_quality_claims
+    body = ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">사용자 테스트를 통해 결과를 검증한다.</li></ul>')
+    items = [{"summary": "[Catalog] 정리", "type": "Task", "description": body}]
+    assert _remove_unrequested_quality_claims(_msg("Catalog 정리 Task 만들어줘"), items)
+    assert "사용자 테스트" not in items[0]["description"]
+
+    explicit = [{"summary": "[Catalog] 정리", "type": "Task", "description": body}]
+    assert not _remove_unrequested_quality_claims(
+        _msg("Catalog 정리 후 사용자 테스트를 수행하는 Task 만들어줘"), explicit)
+    assert explicit[0]["description"] == body
 
 
 def test_epic_typed_items_promote_the_mode_to_epic():
@@ -1998,17 +2437,18 @@ def test_modify_turns_drop_the_creation_only_sections():
     from app.agent.workflow.agents.work_architect import _role_md
     md = _role_md({"intent": Intent.MODIFY})
     assert "분할 규칙" not in md and "구조 선택" not in md
-    assert "기존 ticket 변경" in md, "변경 경로 지시는 남아야 한다"
+    assert "Existing Ticket Changes" in md, "변경 경로 지시는 남아야 한다"
     # 초안을 고치는 modify 턴은 생성 지시가 필요하다 — 빼면 안 된다.
     md2 = _role_md({"intent": Intent.MODIFY, "draft": {"items": [{"summary": "s"}]}})
-    assert "분할 규칙" in md2
+    assert "Decomposition Rules" in md2
 
 
 def test_creation_turns_keep_every_creation_section():
     """초안을 만드는 턴에서는 품질이 먼저다 — 생성 지시를 빼지 않는다."""
     from app.agent.workflow.agents.work_architect import _role_md
     md = _role_md({"intent": Intent.PLAN_WORK})
-    for t in ("구조 선택", "분할 규칙", "본문 품질 계약", "Epic 생성", "제목과 주제 보존"):
+    for t in ("Structure Selection", "Decomposition Rules", "Ticket Body Contract",
+              "Epic Creation", "Title and Topic Preservation"):
         assert t in md
 
 
@@ -2284,6 +2724,63 @@ def test_pasted_voc_uses_reported_screen_symptom_instead_of_wrapper_or_placehold
     assert R._ASK_REPORTER not in body, body
     assert "조회 화면" in body and "컬럼 설명" in body
     assert "티켓으로 만들어줘" not in body and "---" not in body
+
+
+def test_existing_bug_sections_replace_placeholder_actual_with_reported_symptom(monkeypatch):
+    """PASTE2/BUG2: headings alone are not a pass when the user already supplied the actual result."""
+    from app.agent.workflow.agents import work_architect as R
+    monkeypatch.setattr("app.agent.config.get_llm",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no llm")))
+    state = _msg("운영에서 배치를 실행하면 connection timeout으로 실패한다. 버그로 등록해줘")
+    items = [{"summary": "[ETL] 배치 connection timeout", "type": "Bug",
+              "description": ("<h3>재현 경로</h3><p>운영 배치 실행</p>"
+                              "<h3>기대 동작</h3><p>배치 완료</p>"
+                              "<h3>실제 동작</h3><p>확인 필요</p>")}]
+    R._fill_thin_bodies(state, items, repair=True)
+    R._repair_bug_facts_from_report(state, items)
+    body = items[0]["description"]
+    assert "connection timeout으로 실패" in body
+    assert "<h3>실제 동작</h3><p>확인 필요" not in body
+
+
+def test_adjacent_repeated_title_phrase_is_collapsed_only_once():
+    from app.agent.workflow.agents.work_architect import _collapse_repeated_summary
+    assert _collapse_repeated_summary(
+        "[Workbench] 데이터 리니지 뷰어 리니지 뷰어 성능 회귀 테스트") == \
+        "[Workbench] 데이터 리니지 뷰어 성능 회귀 테스트"
+    assert _collapse_repeated_summary("[ETL] 설계 구현 검증") == "[ETL] 설계 구현 검증"
+
+
+def test_self_exclusion_and_unverified_performance_cause_are_removed():
+    from app.agent.workflow.agents import work_architect as R
+    item = {"summary": "[ETL] 쿼리 성능 대대적 개선", "type": "Task",
+            "components": ["ETL"],
+            "description": ("<h3>배경</h3><p>쿼리 성능 저하로 데이터 처리 속도가 느립니다.</p>"
+                            "<h3>작업 범위</h3><ul><li>포함: 인덱스 최적화</li>"
+                            "<li>제외: [ETL] 쿼리 성능 대대적 개선</li></ul>"
+                            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                            "<li data-checked=\"false\">인덱스 적용 후 측정 결과 기록</li></ul>")}
+    state = _msg("쿼리 성능 개선을 대대적으로 해보자. 기간은 2주고 ETL 쪽만 손볼 거야")
+    assert R._remove_unrequested_quality_claims(state, [item])
+    R._drop_self_exclusions([item])
+    body = item["description"]
+    assert "속도가 느" not in body and "인덱스" not in body
+    assert "제외: [ETL] 쿼리 성능 대대적 개선" not in body
+    assert "제외: ETL 외 모듈 변경" in body
+
+
+def test_long_subject_does_not_hide_a_vague_completion_condition():
+    from app.agent.workflow.agents.work_architect import _sharpen_dod, _vague_dod
+    assert _vague_dod(["StarRocks Puffin NDV 통계정보 생성 파이프라인이 정상적으로 작동함"])
+    assert not _vague_dod(["NDV 생성 결과와 테스트 로그를 티켓에 기록함"])
+    item = {"summary": "[ETL] StarRocks Puffin NDV 통계정보 생성 파이프라인 개발",
+            "type": "Task", "description": (
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                "<li data-checked=\"false\">NDV 통계정보 생성 파이프라인이 정상적으로 작동해야 할 것</li>"
+                "<li data-checked=\"false\">관련 문서화 완료</li></ul>")}
+    assert _sharpen_dod(_msg("NDV 파이프라인 개발"), [item])
+    assert "작동해야" not in item["description"] and "문서화 완료" not in item["description"]
+    assert "함 실행" not in item["description"] and "할 것 실행" not in item["description"]
 
 
 def test_a_plain_task_still_gets_the_task_template(monkeypatch):

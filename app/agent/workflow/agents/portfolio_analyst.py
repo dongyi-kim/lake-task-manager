@@ -26,21 +26,19 @@ SCHEMA = {
     "type": "object",
     "properties": {
         "headline": {"type": "string",
-                     "description": "한 줄 결론. '오늘은 DL-123 마감이 가장 급합니다' 처럼 구체적으로"},
+                     "description": "A specific one-line Korean conclusion, not a generic status label."},
         "findings": {
             "type": "array",
             "items": {"type": "object", "properties": {
-                "key": {"type": "string", "description": "관련 티켓 키. 없으면 빈 문자열"},
+                "key": {"type": "string", "description": "Verified related ticket key, or empty when none."},
                 "point": {"type": "string",
-                          "description": "발견한 사실 한 문장 — **티켓 제목을 도구 결과 표기 그대로** "
-                                         "포함하고 숫자·날짜를 넣는다. 키만 달랑 쓰면 읽는 사람이 "
-                                         "무슨 티켓인지 모른다. 예: '\"[ETL] 적재 재시도\" — 12일째 "
-                                         "업데이트 없음, 마감 7/24'"},
-                "action": {"type": "string", "description": "권하는 행동. 없으면 빈 문자열"}}},
-            "description": "조회에서 실제로 확인한 것만. 최대 10건",
+                          "description": "One Korean factual sentence. Preserve the exact tool-returned title "
+                                         "and include relevant metrics or dates; never return a bare key."},
+                "action": {"type": "string", "description": "Recommended Korean action, or empty."}}},
+            "description": "At most ten findings directly verified by tool output.",
         },
         "caution": {"type": "string",
-                    "description": "주의할 점(예: 활동이 적다고 일을 안 한 게 아니다). 없으면 빈 문자열"},
+                    "description": "Korean interpretation caution, or empty; sparse activity is not proof of inactivity."},
     },
     "required": ["headline", "findings"],
 }
@@ -173,6 +171,21 @@ def _needs_module(state) -> bool:
         return True
 
 
+def _my_day_rank(ticket: dict, today: str) -> tuple:
+    """Stable daily priority: deadline bucket first, then priority within overdue work."""
+    due = str(ticket.get("duedate") or "")
+    raw_priority = str(ticket.get("priority") or "").lower()
+    match = _re0.search(r"\bp\s*([0-4])\b", raw_priority)
+    priority = int(match.group(1)) if match else 5
+    if due and today and due < today:
+        return 0, priority, due, str(ticket.get("key") or "")
+    if due and today and due == today:
+        return 1, priority, due, str(ticket.get("key") or "")
+    if due:
+        return 2, due, priority, str(ticket.get("key") or "")
+    return 3, priority, "", str(ticket.get("key") or "")
+
+
 def _my_day(state) -> str:
     """"나 오늘 뭐 해야 할까" — 재료를 **코드가 병렬로** 조회한다.
 
@@ -202,13 +215,15 @@ def _my_day(state) -> str:
         wl = f_load.result()
         tickets = [t for t in (wl.get("tickets") or []) if not t.get("done")]
         today = str(wl.get("today") or "")
-        # 마감 지난 것 → 임박 → 나머지. 판단(무엇부터)은 모델이 하되 **순서의 근거**는
-        # 코드가 붙여 준다("마감 3일 지남"이 있어야 우선순위를 말로 설명할 수 있다).
-        def _key(t):
-            d = str(t.get("duedate") or "")
-            return (0, d) if d and today and d < today else ((1, d) if d else (2, ""))
+        # Ranking is deterministic because a prose model must not contradict the same priority and due fields.
+        # Overdue P1 comes before older unclassified debt; today then future due dates follow.
+        ranked = sorted(tickets, key=lambda ticket: _my_day_rank(ticket, today))
         rows.append(f"[내 일감] 열린 것 {len(tickets)}건 (전체 {wl.get('count')}건)")
-        for t in sorted(tickets, key=_key)[:12]:
+        if ranked:
+            first = ranked[0]
+            rows.append(f"[권장 1순위] {first.get('key')} — 마감 구간과 Jira 우선순위를 "
+                        "함께 적용한 첫 항목. 최종 답에서도 1순위는 하나만 제시할 것")
+        for t in ranked[:12]:
             d = str(t.get("duedate") or "")
             late = " · 마감 지남" if d and today and d < today else ""
             rows.append(f"- {t.get('key')} \"{t.get('summary', '')}\" ({t.get('status', '')}"
@@ -566,53 +581,59 @@ class PortfolioAnalyst(ToolAgent):
     def task(self, state):
         intent = state.get("intent") or ""
         goal = {
-            Intent.MY_DAY: "이 사용자가 **오늘 무엇에 집중해야 하는지** 골라라. "
-                           "지연/마감임박/정체를 근거 숫자와 함께 제시하고, 매니저라면 팀 정체 티켓도 언급하라. "
-                           "'담당자 없는 업무를 집고 싶다'면 whoami 로 **내 모듈**을 알아낸 뒤 "
-                           "find_unassigned_tickets(module=그 모듈) 로 조회하라 — 물은 것과 다른 "
-                           "기준(Epic 미연결 등)으로 바꿔치기해 답하지 마라.",
-            Intent.PROGRESS: "요청된 대상의 **진척률과 그 이유**를 설명하라. "
-                             "숫자가 이상해 보이면 분모에서 빠진 것(Bug·VoC·Epic Link 없음)을 짚어라. "
-                             "정체·조용한 티켓을 물었으면 find_stale_tickets 를 **사용자가 말한 "
-                             "기준일수(days)** 로 불러라('2일 이상' → days=2). 존재 질문('~있니')은 "
-                             "**단정적으로** 답한다 — 있으면 전부 findings 에 싣고, 없으면 headline 에 "
-                             "'없습니다'라고 말한다. '기록을 찾지 못했다' 같은 얼버무림 금지.",
-            Intent.ACTIVITY: "요청된 사람의 **최근 활동**을 조회해 정리하라. "
-                             "무엇을 만졌고 어떤 티켓이 움직였는지를 사실 위주로. "
-                             "**그룹**('ETL 인력들', '우리 모듈 사람들')을 물었으면 한 명을 고르지 말고 "
-                             "get_module_people 로 로스터를 얻은 뒤 get_team_workload(module) 로 "
-                             "**전원**의 진행중 업무를 모아 사람별 한 줄(이름 — 주로 하는 일)로 정리하라. "
-                             "로스터에 없는 사번을 지어내지 마라.",
-        }.get(intent, "요청에 맞는 현황을 조회해 정리하라.")
+            Intent.MY_DAY: "Select what this user should focus on today. Support overdue, due-soon, and "
+                           "stale priorities with metrics. For a manager, include relevant stalled team work. "
+                           "Name exactly one primary item and preserve the deterministic order in supplied "
+                           "daily-material data; do not replace it with an older unclassified item. "
+                           "If the user wants to take an unassigned item, call `whoami` to resolve the user's "
+                           "module and then `find_unassigned_tickets(module=...)`. Never substitute another "
+                           "criterion such as missing Epic placement.",
+            Intent.PROGRESS: "Explain the requested target's progress and why. If the number looks unusual, "
+                             "identify denominator exclusions such as Bug, VoC, or missing Epic Link. For stale "
+                             "items, call `find_stale_tickets` with the user's exact day threshold; for example, "
+                             "`2일 이상` means `days=2`. Answer existence questions definitively: include every "
+                             "verified result, or use the Korean word `없음` in `headline` when zero.",
+            Intent.ACTIVITY: "Retrieve and summarize the requested person's recent verified activity. For a "
+                             "group such as `ETL 인력들` or `우리 모듈 사람들`, do not select one person: use "
+                             "`get_module_people` and `get_team_workload` to cover the full roster. Never invent "
+                             "a user ID outside the returned roster.",
+        }.get(intent, "Retrieve and summarize the current state that directly answers the request.")
         # 'JQL' 을 입에 올린 요청은 run_jql 이 **의무**다 — 결과만이 아니라 쿼리 자체를 원한다.
         if "JQL" in last_user_text(state).upper():
-            goal = ("사용자가 JQL 을 요구했다. **반드시 run_jql 로** 조건을 JQL 로 옮겨 실행하고 "
-                    "결과를 보고하라. 다른 조회 도구로 대신하지 마라. "
-                    "(실행된 JQL 한 줄은 시스템이 근거로 자동 첨부한다.)")
+            goal = ("The user explicitly requested JQL. Translate every condition into JQL, execute it through "
+                    "`run_jql`, and report the results. Do not substitute another retrieval tool. The runtime "
+                    "automatically attaches the executed JQL as evidence.")
         ga = state.get("group_activity") or ""
         ga_block = ""
         if ga:
-            ga_block = ("\n\n### 그룹 활동 자료 (코드가 로스터 전원을 조회함 — 이것이 사실의 전부)\n"
-                        "★ 추가 조회 없이 이 자료만으로 3층으로 정리하라: ① 누가 있는지(로스터) "
-                        "② 모듈 전체가 이 기간에 한 기여(2~3문장 서술) ③ 사람별 한 블록"
-                        "(주로 한 일 — 근거 티켓 키, 코멘트·문서 활동 포함). 전원을 다뤄라.\n" + ga)
+            ga_block = ("\n\n### Complete Roster Activity Data\n\n"
+                        "No additional retrieval is needed. Organize this data into three Korean layers: "
+                        "roster coverage; two or three sentences about the module's combined contribution; "
+                        "and one block per person describing verified work with ticket, comment, and document "
+                        "evidence. Cover every roster member.\n" + ga)
         tp = state.get("ticket_progress") or ""
         if tp:
             ga_block += (
-                "\n\n### 티켓 진척 자료 (코드가 네 갈래를 이미 취합함 — 추가 조회 불필요)\n"
-                "★ 이 자료만으로 답하라. **진척은 상태 한 단어가 아니다** — 순서대로 쓴다: "
-                "① 지금 어디까지 왔나(하위 완료 개수·무엇이 끝났나) ② 그 근거가 된 사건"
-                "(코멘트 보고·티켓 변동·막던 티켓 해소·결과 문서의 최근 수정) ③ 남은 일과 "
-                "리스크(마감 대비). 문서의 '남은 일'은 그대로 옮긴다. 근거마다 티켓 키+제목 "
-                "또는 문서 제목·수정일을 붙여라.\n" + tp)
+                "\n\n### Prefetched Ticket Progress Data\n\n"
+                "Answer from this data without another query. Progress is not a status word. In Korean, cover "
+                "in order: current completion including completed children; the events supporting that judgment "
+                "such as comments, ticket changes, resolved blockers, or recently updated result documents; "
+                "and remaining work and deadline risk. Preserve a document's stated remaining work. Attach an "
+                "exact ticket key and title or document title and update date to every material fact.\n" + tp)
         return f"""\
-# 명령서
+# Task
+
 {goal}
 
-## 입력
-사용자 요청: {last_user_text(state)}
-짐작 모듈: {state.get('module') or '미상'}
-언급된 티켓: {', '.join(state.get('mentioned_keys') or []) or '없음'}{ga_block}"""
+Write `headline`, `point`, `action`, and `caution` in Korean while preserving identifiers exactly.
+
+## Input Data
+
+User request: {last_user_text(state)}
+
+Inferred module: {state.get('module') or 'unknown'}
+
+Explicit ticket keys: {', '.join(state.get('mentioned_keys') or []) or 'none'}{ga_block}"""
 
     def schema(self):
         return SCHEMA
@@ -662,3 +683,6 @@ class PortfolioAnalyst(ToolAgent):
                 "pmo_findings": finds,
                 "pmo_caution": out.get("caution") or "",
                 "trace": note(state, self.name, f"발견 {len(finds)}건")}
+
+
+__all__ = ["PortfolioAnalyst", "_my_day", "_my_day_rank"]

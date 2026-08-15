@@ -30,19 +30,19 @@ SCHEMA = {
     "type": "object",
     "properties": {
         "grounded": {"type": "boolean",
-                     "description": "①초안의 티켓 키·사람·날짜가 조사 결과에 실제로 있는가"},
-        "rule_compliant": {"type": "boolean", "description": "②티켓 작성 규칙을 지켰는가"},
-        "answers_request": {"type": "boolean", "description": "③사용자가 부탁한 일을 담고 있는가"},
+                     "description": "Whether every ticket key, person, date, and claim is grounded in evidence."},
+        "rule_compliant": {"type": "boolean", "description": "Whether the draft follows ticket rules."},
+        "answers_request": {"type": "boolean", "description": "Whether the draft covers the user's request."},
         "problems": {
             "type": "array",
             "items": {"type": "object", "properties": {
-                "index": {"type": "integer", "description": "문제가 있는 항목 번호. 전체면 -1"},
+                "index": {"type": "integer", "description": "Zero-based item index, or -1 for the whole draft."},
                 "check": {"type": "string", "enum": ["grounded", "rule", "request"]},
-                "message": {"type": "string", "description": "무엇이 왜 문제인지 한 문장"},
-                "fix": {"type": "string", "description": "어떻게 고치면 되는지"}}},
-            "description": "찾은 문제. 없으면 빈 배열. 없는 문제를 만들어 내지 마라",
+                "message": {"type": "string", "description": "One Korean sentence describing what is wrong and why."},
+                "fix": {"type": "string", "description": "A precise Korean repair instruction."}}},
+            "description": "Blocking semantic problems only; empty when none. Never invent a defect.",
         },
-        "summary": {"type": "string", "description": "검토 결과 1~2문장. 사용자에게 보인다"},
+        "summary": {"type": "string", "description": "One or two Korean sentences visible to the user."},
     },
     "required": ["grounded", "rule_compliant", "answers_request", "problems"],
 }
@@ -97,29 +97,34 @@ class Auditor(StructuredAgent):
         # 담당자 제안은 여기 없다 — PeopleAdvisor 와 병렬로 돌기 때문. 근거 없는 배정은
         # merge_assignments 의 코드 가드가 걸러내므로 검열 대상에서 뺀다.
         data = wrap_data(
-            data_block("자동 검증 결과 (기계 판정 — 이건 이미 확정이다)", auto["text"]),
-            data_block("적용되는 작성 규칙", rules),
-            data_block("조사에서 실제로 나온 티켓", ev))
+            data_block("Deterministic Validation Results (Authoritative)", auto["text"]),
+            data_block("Applicable Authoring Rules", rules),
+            data_block("Tickets Present in Verified Research", ev))
         return f"""\
-# 명령서
-아래 티켓 초안을 사용자에게 보이기 전에 검열하라.
+# Task
 
-## 제약조건
-- 자동 검증이 이미 잡은 것은 다시 적지 마라. 너는 **기계가 못 잡는 것**을 본다.
-- 담당자 배정은 별도 절차가 검증한다 — 담당자가 비어 있어도 문제 삼지 마라.
-- `problems`는 실행을 막아야 하는 정책·근거·요청 불일치만 쓴다. 더 좋은 문장·제목·DoD를
-  제안하는 편집 의견은 blocking problem이 아니다.
-- 사용자가 직접 지정했거나 이전 턴에 승인한 Task/Sub-Task 구조를 과잉 분해라고 뒤집지 마라.
-- `Bug`는 Task 본문과 다르다. 재현 경로·기대 동작·실제 동작이 있으면 배경/DoD가 없다는
-  이유로 실패시키지 마라.
-- 제목이 동사로 끝나야 한다는 규칙은 없다. Epic 없는 최상위 Task/Story도 유효하다.
-- 동일한 검증된 참고가 여러 payload item에 들어간 것은 실행 차단 사유가 아니다.
+Audit the complete ticket draft before it is shown to the user.
 
-## 사용자의 원래 요청 (초안의 주제는 이 문장이어야 한다 — 다른 주제로 흘렀으면 problems 로)
+## Constraints
+
+- Do not repeat defects already found by deterministic validation. Inspect only semantic problems code cannot decide.
+- Assignment is validated separately; an empty assignee is not an audit defect.
+- Put only execution-blocking policy, grounding, or request-coverage failures in `problems`. Editorial suggestions for a better sentence, title, or DoD are not blocking.
+- Preserve a Task/Sub-Task structure explicitly supplied or previously approved by the user.
+- A Task-tier `Bug` is valid with the Korean sections `재현 경로`, `기대 동작`, and `실제 동작`; do not require generic Task background or DoD as well.
+- A title need not end in a verb. An intentional top-level Task or Story without an Epic is valid.
+- Reuse of one verified reference across multiple payload items is not blocking when it supports each item.
+- Write `message`, `fix`, and `summary` in Korean.
+
+## Original User Request
+
+The draft must preserve this subject; subject drift is a blocking request-coverage problem.
+
 {request_text(state)}
 
-## 검열 대상 초안 (전문)
-{draft_full_text(state.get('draft')) or '(초안 없음)'}{data}"""
+## Complete Draft Under Audit
+
+{draft_full_text(state.get('draft')) or '(no draft)'}{data}"""
 
     def schema(self):
         return SCHEMA

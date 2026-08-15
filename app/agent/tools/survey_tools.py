@@ -126,16 +126,16 @@ def neighborhood(seed_key: str) -> dict:
 
 @tool
 def map_ticket_neighborhood(key: str) -> dict:
-    """티켓 하나의 **주변 지도** — 본문을 읽기 전에 후보를 한눈에 모은다.
+    """Map the neighborhood around one ticket before opening candidate bodies.
 
-    계보(형제·조상·자식) · 이슈링크·본문/코멘트 언급 · 관련 문서 · 같은 라벨 · 같은 컴포넌트
-    최근 · 참여자를 **한 번에** 긁어 겹침(via 수)으로 정렬해 준다. 검색을 여러 번 반복하는
-    대신 이걸 먼저 불러라 — 훨씬 싸고 빠짐이 없다.
+    In one call, collect hierarchy, issue links, body/comment mentions, relevant documents,
+    matching labels, recent tickets in the same component, and participants. Candidates are ranked
+    by the number of independent `via` signals. Call this before repeating several searches, then
+    open only the necessary candidates with `get_ticket`.
 
-    돌려주는 것: {"candidates": [{key,title,via:[신호…],done}...], "documents": [...],
-                 "participants": [uid...]}
-    via 가 여러 개(예: 형제+링크)인 후보가 강한 후보다. 그 다음에 get_ticket 으로
-    **필요한 것만** 열어 읽는다.
+    Returns `{"candidates": [{key,title,via:[...],done}...], "documents": [...],
+    "participants": [uid...]}`. Multiple `via` values, such as both a sibling and a link, indicate
+    stronger relevance.
     """
     return neighborhood(key)
 
@@ -260,16 +260,13 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
 
 @tool
 def get_ticket_progress(ticket_key: str) -> dict:
-    """티켓 **하나의 진척 상황**을 조사한다 — "DL-123 지금 어디까지 됐어?"에 쓴다.
+    """Investigate the evidence-backed progress of one ticket.
 
-    상태 필드만 보면 'In Progress' 한 단어뿐이라 답이 안 된다. 이 도구는 진척의 근거
-    네 갈래를 한 번에 모아 준다:
-      · changes  — 상태 전이·마감 연기·우선순위 변경 등 티켓 자체의 변동 이력
-      · comments — 착수·중간 보고·블로커 같은 진행 보고 원문(작성자·날짜 포함)
-      · children — 하위 Sub-Task 목록과 완료 개수(예: "2/3")
-      · links    — 연결된 티켓(특히 이 일을 막던 Bug 가 풀렸는지)
-      · documents— 결과를 기록하는 Confluence 문서의 **최종 수정일과 본문 발췌**
+    A status such as `In Progress` is not enough. This tool gathers changes to ticket fields,
+    original progress comments with author and date, child Sub-Task completion, linked tickets,
+    and the last update plus excerpt of relevant Confluence documents.
 
-    Epic·모듈 전체의 진척률(%)은 get_progress 를 쓴다. 이 도구는 티켓 한 건 전용이다.
+    Use `get_progress` for an Epic-, module-, or portfolio-level percentage. This tool is only for
+    the progress narrative of one ticket.
     """
     return progress_report(ticket_key)
