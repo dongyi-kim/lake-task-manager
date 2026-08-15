@@ -34,13 +34,14 @@ os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
 from app.agent.workflow import session  # noqa: E402
-from tools.agent_eval_protocol import build_run_metadata  # noqa: E402
+from tools.agent_eval_protocol import (build_run_metadata, raw_result_path,
+                                       write_raw_result)  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "1.0.0"
+BATTERY_VERSION = "2.0.0"
 
 
 def items(o):
@@ -155,8 +156,8 @@ def _output_flaws(o) -> list:
 
 # (ID, 설명, [질의…], 체커(마지막 out, 전체 outs))
 CASES = [
-    # ── 한 줄 요청: 되묻지 않고 기본값으로 끝내야 하는 것들 ──────────
-    ("ONE1", "한 줄 + 알아서 — 되묻지 말고 초안까지", [
+    # ── 한 줄 요청: 필수정보가 있으면 위임된 선택을 되묻지 않는다 ─────
+    ("ONE1", "단순 단건 + 알아서 — 필수정보 충족 시 바로 초안", [
         "Workbench 쿼리 편집기에 단축키 도움말 팝업 추가해줘. 알아서 초안 잡아줘"],
      lambda o, _: len(items(o)) == 1 and not o.get("questions")
      and has_sections(items(o)[0], "배경", "완료 조건")),
@@ -171,25 +172,20 @@ CASES = [
         "메타데이터 미등록 테이블 30개를 등록해야 해. 사람 나눠서 진행하게 만들어줘. 알아서"],
      lambda o, _: len(kids(o)) >= 2 and len({x for x in _owners(kids(o)) if x}) >= 2),
 
-    # ★ 이 케이스는 이제 **두 턴**이다 — 최상위가 갈리는 복합 산출물은 본문 대신 구조도를
-    #   먼저 내고 합의를 받는다(사용자 요청, §5-g). 예전 계약은 "한 턴에 본문까지"를
-    #   기대했는데 그건 **옛 동작**이다. 케이스가 제품을 따라가야 한다.
-    ("STR2", "기능 분화 — 구조 합의 후 모듈이 다르면 Task 를 나눈다", [
+    # 사용자가 `알아서`라고 구조 선택을 위임했고 산출물도 셋을 명시했다. 구조를 다시 묻는 것은
+    # 필수 인터뷰가 아니라 위임된 선택의 재질문이므로 한 턴에 적절한 구조와 초안을 내야 한다.
+    ("STR2", "기능 분화 — 위임된 구조를 재질문하지 않고 모듈별 Task로 분리", [
         "리니지 뷰어 성능 측정하고, 결과에 따라 쿼리 엔진 쪽 인덱스도 손봐야 해. "
-        "그리고 사용 가이드도 써야 하고. 초안 잡아줘. 알아서",
-        "이 구조로 진행한다"],
-     lambda o, outs: (
-         # ① 첫 턴은 **구조 확인**이었다(본문을 미리 쓰지 않았다)
-         bool(outs[0].get("questions"))
-         # ② 합의 뒤에는 본문까지 갖춘 초안이 나온다
-         and len(items(o)) >= 2
-         and len({(i.get("components") or [""])[0] for i in items(o)}) >= 2)),
+        "그리고 사용 가이드도 써야 하고. 초안 잡아줘. 알아서"],
+     lambda o, _: (not o.get("questions") and len(items(o)) >= 2
+                   and len({(i.get("components") or [""])[0] for i in items(o)}) >= 2)),
 
     ("STR3", "Epic 격상 요구를 보수적으로 — 근거 없으면 기존 Epic 아래로", [
         "쿼리 성능 개선을 대대적으로 해보자. 에픽으로 크게 잡아줘",
         "기간은 2주 정도고 ETL 쪽만 손볼 거야. 알아서 진행해"],
-     lambda o, _: pend(o, "structure") != "new_epic"
-     or "보류" in str(pend(o, "rationale") or "")),
+     lambda o, _: (pend(o, "structure") != "new_epic"
+                   or "보류" in str(pend(o, "rationale") or ""))
+     and not o.get("questions")),
 
     # ── 대상·부모를 명시 ─────────────────────────────────────────────
     ("PAR1", "기존 Task 밑에 Sub-Task 를 개별 담당으로", [
@@ -237,7 +233,34 @@ CASES = [
         "[10:15] 김운영: 재실행하면 되긴 하는데 매일 이러면 곤란해요"],
      lambda o, _: any((i.get("type") or "") == "Bug" for i in items(o))),
 
-    # ── 정보가 모자란 요청: 물어야 한다 ──────────────────────────────
+    # ── 정보가 모자란 요청: `알아서`여도 필수정보는 물어야 한다 ───────
+    ("ASKD1", "위임은 작업 대상을 대신하지 않음 — 필요한 범위를 질문", [
+        "데이터 품질 작업 하나 만들어줘. 나머지는 알아서"],
+     lambda o, _: (bool(o.get("questions")) and not items(o)
+                   and any(w in json.dumps(o.get("questions") or [], ensure_ascii=False)
+                           for w in ("무엇", "대상", "범위", "규칙")))),
+
+    ("ASKD2", "부모만 있고 할 일이 없음 — 질문 후 답을 정확한 Sub-Task로", [
+        "DL-9090 아래에 Sub-Task 하나 만들어줘. 내용은 알아서",
+        "리니지 뷰어 성능 회귀 테스트를 추가해줘"],
+     lambda o, outs: (bool(outs[0].get("questions")) and not items(outs[0])
+                      and any((i.get("parent") or "") == "DL-9090"
+                              and "회귀" in (i.get("summary") or "")
+                              for i in items(o) + kids(o)))),
+
+    ("ASKD3", "댓글 목적·본문 없음 — 위임으로 내용을 발명하지 않고 질문", [
+        "DL-9090에 댓글 남겨줘. 내용은 알아서"],
+     lambda o, _: (bool(o.get("questions")) and not o.get("pending")
+                   and any(w in json.dumps(o.get("questions") or [], ensure_ascii=False)
+                           for w in ("댓글", "내용", "목적", "전달")))),
+
+    ("AMB1", "동명이인 assignee — 알아서 고르지 않고 식별 질문", [
+        "DL-9090 담당자를 동명이로 바꿔줘. 알아서"],
+     lambda o, _: (bool(o.get("questions")) and not o.get("pending")
+                   and "동명이" in json.dumps(o.get("questions") or [], ensure_ascii=False)
+                   and any(uid in json.dumps(o.get("questions") or [], ensure_ascii=False)
+                           for uid in ("test.same01", "test.same02")))),
+
     ("ASK1", "범위가 없으면 되묻는다(무턱대고 만들지 않는다)", [
         "데이터 품질 개선 작업 하나 만들어줘"],
      lambda o, _: bool(o.get("questions")) and not items(o)),
@@ -278,7 +301,8 @@ CASES = [
                    and sum(1 for w in ("starrocks", "puffin", "ndv", "통계")
                            if w in (its[0].get("summary") or "").lower()) >= 2
                    # ② 구조: 다단계 규모 — Sub-Task 로 나뉘었거나 최소한 구조 확인 질문
-                   and (len(kids(o)) >= 2 or bool(o.get("questions")))
+                    and len(kids(o)) >= 2
+                    and not o.get("questions")
                    # ③ 본문 규율: 참고 1벌, 영문 중복 섹션 없음
                    and _body(its[0]).count("<h3>참고</h3>") <= 1
                    and "References" not in _body(its[0])
@@ -384,10 +408,7 @@ def write_checkpoint(hits, total, cost):
                         "초": round(sum(r["초"] for r in RESULTS), 1),
                         **usage},
                "케이스": RESULTS}
-    tmp = OUT + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=1, default=str)
-    os.replace(tmp, OUT)
+    write_raw_result(OUT, payload)
 
 
 if __name__ == "__main__":
@@ -402,6 +423,7 @@ if __name__ == "__main__":
         simple_model=SIMPLE_MODEL,
         prompt_version=PROMPT_VERSION,
     )
+    OUT = str(raw_result_path("create", EVALUATION_METADATA, requested=OUT))
     for cid, desc, turns, check in run_cases:
         ok, c = run(cid, desc, turns, check)
         hits += 1 if ok else 0

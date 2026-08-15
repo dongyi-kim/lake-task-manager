@@ -37,6 +37,7 @@ SUBTASK_TYPE = "Sub-Task"
 FIX_MODULE = "TEST"
 # TEST 모듈 인력(= config/people.yaml 의 TEST). 실 인력과 섞이지 않게 별도 id.
 FIX_USERS = ["test.ui01", "test.ui02"]
+AMBIGUOUS_USERS = ["test.same01", "test.same02"]
 _STORYLIKE = {"Story", "Task", "Improvement", "New Feature"}   # SP 보유 + subtask 가능
 _CHILD_TYPES = ["Story", "Task", "Bug", "Improvement", "New Feature"]
 _VIT_ROOT_TYPES = ["Epic", "Task", "Story", "Improvement"]
@@ -136,8 +137,13 @@ class World:
         for i, uid in enumerate(FIX_USERS):
             users[uid] = {"name": uid, "realName": f"UI픽스처{i + 1:02d}", "company": "TEST",
                           "displayName": f"UI픽스처{i + 1:02d} TEST"}
+        # Agent 인터뷰 회귀용 동명이인. `알아서`는 두 식별자 중 임의 선택 권한이 아니다.
+        for uid in AMBIGUOUS_USERS:
+            users[uid] = {"name": uid, "realName": "동명이", "company": "TEST",
+                          "displayName": "동명이 TEST"}
         taken = {"정한울"}                       # 본명 중복 방지(데모 가독성) — id 정렬로 결정적
-        for uid in sorted({u for ids in self.people.values() for u in ids} - set(FIX_USERS)):
+        fixed = set(FIX_USERS) | set(AMBIGUOUS_USERS)
+        for uid in sorted({u for ids in self.people.values() for u in ids} - fixed):
             h = _shash(uid)
             g = h // 7
             nm = _SURNAMES[h % len(_SURNAMES)] + _GIVEN[g % len(_GIVEN)]

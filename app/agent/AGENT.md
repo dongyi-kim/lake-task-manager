@@ -191,7 +191,16 @@ focused/closure 재실행은 보조 증거이며 full-run primary 점수를 교�
 축별 rationale과 대표 output excerpt를 기록한다. checklist가 계산한 축별 score ceiling을 넘겨 점수를
 부여하지 않는다.
 
-실험 결과, 로그, 보고서는 `research/agent-improvement/{results,logs,reports}`에 저장한다. `docs/`, repository root, `tools/`에 일회성 결과를 남기지 않는다.
+실 LLM 배터리의 raw response, trace, usage, debug payload는
+`.cache/agent-evaluation/<runGroupId>/`에만 저장한다. 이 경로는 gitignore 대상이며 `docs/`, repository
+root, `tools/`, `research/`에 raw JSON이나 실행 로그를 남기지 않는다.
+
+Codex/Claude가 raw output을 직접 채점한 뒤에는 git에 보존할 경량 Markdown 보고서를
+`research/agent-improvement/evaluations/`에 반드시 작성한다. 보고서에는 candidate commit,
+`promptVersion`, `protocolVersion`, `rubricVersion`, suite별 `batteryVersion`,
+`batteryManifestSha256`, `dataManifestSha256`, model routing, 실행 case·repeat, 항목별 점수와 짧은
+근거, raw cache 상대 경로를 기록한다. focused battery 재실행은 과거 full-run을 덮어쓰지 않고 비교
+대상 보고서와 공통 case를 명시한다. 배터리를 실행하고 이 보고서를 남기지 않은 상태는 완료가 아니다.
 
 ## 7. 완료 조건
 
@@ -203,4 +212,6 @@ focused/closure 재실행은 보조 증거이며 full-run primary 점수를 교�
 - Done, hierarchy, search scope, pagination, approval 불변조건을 우회하지 않는다.
 - 관련 test와 전체 test 결과를 보고한다.
 - 실험을 수행했다면 실제 output과 사람 관점 의견을 함께 보존한다.
+- 실 LLM 평가를 수행했다면 raw 결과는 `.cache/agent-evaluation/`, 경량 채점 보고서는
+  `research/agent-improvement/evaluations/`에 있고 commit·평가 version·manifest가 서로 일치한다.
 - 평가 결과의 protocol/rubric/battery version과 manifest가 기록되고, 보고서가 측정 기준을 명시한다.

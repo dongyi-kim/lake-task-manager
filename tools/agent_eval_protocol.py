@@ -27,6 +27,8 @@ DATA_INPUTS = (
     ROOT / "config" / "people.yaml",
     ROOT / "config" / "wbs_config.yaml",
 )
+RAW_RESULT_ROOT = ROOT / ".cache" / "agent-evaluation"
+TRACKED_REPORT_ROOT = ROOT / "research" / "agent-improvement" / "evaluations"
 
 
 @lru_cache(maxsize=1)
@@ -222,6 +224,41 @@ def build_run_metadata(
         "qualificationEligible": not reasons,
         "qualificationIneligibilityReasons": reasons,
     }
+
+
+def _path_token(value: Any) -> str:
+    """Convert metadata into a Windows-safe deterministic path segment."""
+    token = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in str(value or ""))
+    token = "-".join(part for part in token.split("-") if part)
+    return token[:120] or "unknown"
+
+
+def raw_result_path(
+    suite: str, metadata: Mapping[str, Any], requested: str | os.PathLike[str] | None = None,
+) -> Path:
+    """Resolve a raw-output file strictly inside the git-ignored evaluation cache."""
+    root = RAW_RESULT_ROOT.resolve()
+    run = metadata.get("run") or {}
+    battery = metadata.get("battery") or {}
+    group = _path_token(run.get("runGroupId") or "unassigned")
+    repeat_index = max(1, int(run.get("repeatIndex") or 1))
+    version = _path_token(battery.get("batteryVersion") or "unknown")
+    default = root / group / f"{_path_token(suite)}-b{version}-r{repeat_index:02d}.json"
+    target = Path(requested).expanduser().resolve() if requested else default
+    if not target.is_relative_to(root):
+        raise ValueError("raw evaluation results must stay under .cache/agent-evaluation/")
+    return target
+
+
+def write_raw_result(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> Path:
+    """Atomically persist a complete raw result without making it a tracked artifact."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1, default=str),
+                   encoding="utf-8", newline="\n")
+    os.replace(tmp, target)
+    return target
 
 
 def validate_checklist_results(

@@ -243,3 +243,12 @@ def test_a_mention_or_user_id_is_never_ambiguous(monkeypatch):
         r = P.find_person.invoke({"name": typed})
         assert r["resolved"] == "skcc.b" and not r["ambiguous"], (typed, r)
         assert "지목" in r["why"], r
+
+
+def test_mock_world_has_a_stable_same_name_pair_for_required_identity_interviews():
+    from app.agent.tools.people_tools import find_person
+
+    result = find_person.invoke({"name": "동명이"})
+    assert result["ambiguous"] is True
+    candidates = {row.get("id") or row.get("name") for row in result.get("candidates") or []}
+    assert {"test.same01", "test.same02"}.issubset(candidates)

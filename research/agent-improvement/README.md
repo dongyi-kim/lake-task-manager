@@ -5,6 +5,7 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 ## 디렉터리
 
 - `reports/`: 비교 보고서, 사람 관점 정성평가, 설계·성능 기록
+- `evaluations/`: versioned battery의 경량 채점 보고서. commit·평가 version·manifest와 case별 점수 보존
 - `scripts/`: 당시 실험군을 순차 실행한 보조 스크립트
 
 ## 주요 보고서
@@ -22,3 +23,8 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 새 비교 실험은 [`app/agent/EVALUATION.md`](../../app/agent/EVALUATION.md)의 versioned 표준을 사용한다.
 보고서와 PR Description에 protocol/rubric/battery version 및 측정 기준을 포함하고, version이 없는
 과거 점수나 closure 결과를 섞은 점수는 현재 qualification 결과와 직접 증감 비교하지 않는다.
+
+실행별 raw response·trace·usage·debug JSON은 `.cache/agent-evaluation/<runGroupId>/`에만 저장하고 git에
+담지 않는다. Codex/Claude 직접 채점이 끝나면 `research/agent-improvement/evaluations/`에 경량 Markdown을
+반드시 남긴다. 그래야 이후 같은 battery/case만 focused로 재실행해 candidate commit과 version이 일치하는
+과거 결과를 찾을 수 있다.

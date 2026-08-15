@@ -35,7 +35,8 @@ os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
 from app.agent import editor_author as CP  # noqa: E402
-from tools.agent_eval_protocol import build_run_metadata  # noqa: E402
+from tools.agent_eval_protocol import (build_run_metadata, raw_result_path,
+                                       write_raw_result)  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
@@ -113,6 +114,7 @@ if __name__ == "__main__":
         simple_model=SIMPLE_MODEL,
         prompt_version=PROMPT_VERSION,
     )
+    OUT = str(raw_result_path("editor", evaluation, requested=OUT))
     for cid, desc, kw, check in run:
         t0 = time.time()
         try:
@@ -131,20 +133,18 @@ if __name__ == "__main__":
                         "초": elapsed, "결과": r})
         hits += 1 if ok else 0
     print(f"\n{hits}/{len(run)} 통과")
-    if OUT:
-        usage = {"calls": 0, "promptTokens": 0, "completionTokens": 0,
-                 "totalTokens": 0, "cachedTokens": 0, "costUsd": 0.0}
-        for record in records:
-            current = ((record.get("결과") or {}).get("usage") or {})
-            for key in ("calls", "promptTokens", "completionTokens", "totalTokens",
-                        "cachedTokens"):
-                usage[key] += current.get(key) or 0
-            usage["costUsd"] += current.get("costUsd") or 0
-        usage["costUsd"] = round(usage["costUsd"], 6)
-        with open(OUT, "w", encoding="utf-8", newline="\n") as f:
-            json.dump({"model": MODEL, "simpleModel": SIMPLE_MODEL,
-                       "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
-                       "합계": {"통과": hits, "전체": len(run),
-                                "초": round(sum(r["초"] for r in records), 1), **usage},
-                       "케이스": records}, f, ensure_ascii=False, indent=1, default=str)
-        print(f"→ {OUT}")
+    usage = {"calls": 0, "promptTokens": 0, "completionTokens": 0,
+             "totalTokens": 0, "cachedTokens": 0, "costUsd": 0.0}
+    for record in records:
+        current = ((record.get("결과") or {}).get("usage") or {})
+        for key in ("calls", "promptTokens", "completionTokens", "totalTokens",
+                    "cachedTokens"):
+            usage[key] += current.get(key) or 0
+        usage["costUsd"] += current.get("costUsd") or 0
+    usage["costUsd"] = round(usage["costUsd"], 6)
+    write_raw_result(OUT, {"model": MODEL, "simpleModel": SIMPLE_MODEL,
+                           "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
+                           "합계": {"통과": hits, "전체": len(run),
+                                    "초": round(sum(r["초"] for r in records), 1), **usage},
+                           "케이스": records})
+    print(f"→ {OUT}")

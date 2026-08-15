@@ -66,7 +66,7 @@ def test_protocol_versions_and_weights_are_explicit():
     assert protocol["qualification"]["minimumRepetitions"] == 5
     assert sum(item["weight"] for item in protocol["humanRubric"]["dimensions"]) == pytest.approx(1)
     assert len(protocol["humanRubric"]["dimensions"]) == 5
-    assert protocol["rubricVersion"] == "1.1.0"
+    assert protocol["rubricVersion"] == "1.2.0"
     assert set(protocol["humanRubric"]["scoreAnchors"]) == {"1", "2", "3", "4", "5"}
     assert protocol["qualitativeEvaluation"]["allowedAgentFamilies"] == ["codex", "claude"]
     for dimension in protocol["humanRubric"]["dimensions"]:
@@ -245,15 +245,36 @@ def test_report_block_contains_versioned_criteria_and_validates(monkeypatch):
 
 def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
-        "tools/agent_lang_ab.py": 'suite="conversation"',
-        "tools/agent_compose_eval.py": 'suite="editor"',
-        "tools/agent_create_suite.py": 'suite="create"',
+        "tools/agent_lang_ab.py": ('suite="conversation"', "1.0.0"),
+        "tools/agent_compose_eval.py": ('suite="editor"', "1.0.0"),
+        "tools/agent_create_suite.py": ('suite="create"', "2.0.0"),
     }
-    for relative, suite_marker in expected.items():
+    for relative, (suite_marker, battery_version) in expected.items():
         text = (ROOT / relative).read_text(encoding="utf-8")
-        assert 'BATTERY_VERSION = "1.0.0"' in text, relative
+        assert f'BATTERY_VERSION = "{battery_version}"' in text, relative
         assert "build_run_metadata(" in text and suite_marker in text, relative
         assert '"evaluation"' in text, relative
+
+
+def test_rubric_scores_question_judgment_not_the_presence_of_questions():
+    protocol = E.load_protocol()
+    assert protocol["rubricVersion"] == "1.2.0"
+    safety = next(d for d in protocol["humanRubric"]["dimensions"]
+                  if d["id"] == "safety_uncertainty")
+    checklist = {item["id"]: item for item in safety["checklist"]}
+    assert "required_input_interview" in checklist
+    assert "question_economy" in checklist
+    assert "알아서" in checklist["required_input_interview"]["question"]
+    assert "내부 조회" in checklist["question_economy"]["question"]
+
+
+def test_create_battery_covers_required_and_delegated_question_boundaries():
+    text = (ROOT / "tools/agent_create_suite.py").read_text(encoding="utf-8")
+    for case_id in ("ASKD1", "ASKD2", "ASKD3", "AMB1"):
+        assert f'("{case_id}"' in text
+    assert "필수정보 충족 시 바로 초안" in text
+    assert '"이 구조로 진행한다"' not in text, (
+        "`알아서`로 위임한 STR2가 불필요한 구조 재확인을 정답으로 강제하면 안 된다")
 
 
 def test_protocol_json_and_human_document_stay_in_sync():
@@ -273,3 +294,36 @@ def test_protocol_json_and_human_document_stay_in_sync():
         assert dimension["label"] in guide
         for item in dimension["checklist"]:
             assert f"`{item['id']}`" in guide
+
+
+def test_raw_result_path_is_always_under_the_ignored_evaluation_cache(tmp_path):
+    metadata = {
+        "run": {"runGroupId": "focused:2026-08-15", "repeatIndex": 2},
+        "battery": {"batteryVersion": "2.0.0"},
+    }
+    path = E.raw_result_path("create", metadata)
+    cache_root = (ROOT / ".cache" / "agent-evaluation").resolve()
+    assert path.resolve().is_relative_to(cache_root)
+    assert path.name == "create-b2.0.0-r02.json"
+    with pytest.raises(ValueError, match=r"\.cache/agent-evaluation"):
+        E.raw_result_path("create", metadata, requested=tmp_path / "raw.json")
+
+
+def test_primary_batteries_always_write_raw_results_through_the_cache_helper():
+    for relative in ("tools/agent_lang_ab.py", "tools/agent_compose_eval.py",
+                     "tools/agent_create_suite.py"):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert "raw_result_path(" in text, relative
+        assert "write_raw_result(" in text, relative
+
+
+def test_evaluation_rules_require_a_tracked_compact_markdown_report():
+    guide = (ROOT / "app/agent/EVALUATION.md").read_text(encoding="utf-8")
+    agent_guide = (ROOT / "app/agent/AGENT.md").read_text(encoding="utf-8")
+    archive = (ROOT / "research/agent-improvement/README.md").read_text(encoding="utf-8")
+    for text in (guide, agent_guide, archive):
+        assert ".cache/agent-evaluation/" in text
+        assert "research/agent-improvement/evaluations/" in text
+    for token in ("candidate commit", "protocolVersion", "rubricVersion",
+                  "batteryVersion", "batteryManifestSha256"):
+        assert token in guide

@@ -8,9 +8,8 @@
 #   ② 계약 — 코드가 잴 수 있는 최소선(초안 항목·표·참조·근거 위반·후검증)
 #   ③ 정성 — **답변 전문**과 승인 카드. 보고서에 그대로 실어 사람이 비교한다.
 #
-# 실행: python -X utf8 -u tools/agent_lang_ab.py <출력.json> [모델] [시나리오 ID...]
-#       (브랜치별 워크트리에서 각각 돌리고 두 json 을 비교한다)
-import io
+# 실행: python -X utf8 -u tools/agent_lang_ab.py [모델] [시나리오 ID...] [--out .cache/...json]
+#       raw 결과는 기본적으로 .cache/agent-evaluation/<runGroupId>/ 아래에 저장한다.
 import json
 import os
 import re
@@ -21,9 +20,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
 os.environ["LAKE_AGENT_PROVIDER"] = "openai"
 os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"      # 사람이 없는 실행 — 설정 확인 게이트 면제
-OUT = sys.argv[1] if len(sys.argv) > 1 else "lang-ab.json"
-MODEL = sys.argv[2] if len(sys.argv) > 2 else "gpt-4o-mini"
-ONLY = {x.upper() for x in sys.argv[3:]}
+_raw_args = list(sys.argv[1:])
+REQUESTED_OUT = None
+for i, arg in enumerate(_raw_args):
+    if arg.startswith("--out="):
+        REQUESTED_OUT = arg.split("=", 1)[1]
+    elif arg == "--out" and i + 1 < len(_raw_args):
+        REQUESTED_OUT = _raw_args[i + 1]
+_args = [a for i, a in enumerate(_raw_args)
+         if not a.startswith("-") and not (i and _raw_args[i - 1] == "--out")]
+if _args and not _args[0].upper().startswith("S"):
+    MODEL, _scenario_args = _args[0], _args[1:]
+else:
+    MODEL, _scenario_args = "gpt-4o-mini", _args
+ONLY = {x.upper() for x in _scenario_args if x.upper().startswith("S")}
 os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
 # 언어/프롬프트 비교에서도 production routing을 유지한다. 모델을 하나로
 # 평준화하면 프롬프트뿐 아니라 실행 환경까지 바뀌어 주 비교 결과가 무효가 된다.
@@ -31,7 +41,8 @@ os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
 from app.agent.workflow import session          # noqa: E402
-from tools.agent_eval_protocol import build_run_metadata  # noqa: E402
+from tools.agent_eval_protocol import (build_run_metadata, raw_result_path,
+                                       write_raw_result)  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
@@ -170,13 +181,12 @@ def run():
         simple_model=SIMPLE_MODEL,
         prompt_version=PROMPT_VERSION,
     )
-    io.open(OUT, "w", encoding="utf-8", newline="\n").write(
-        json.dumps({"model": MODEL, "simpleModel": SIMPLE_MODEL,
-                    "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
-                    "합계": tot, "시나리오": rows},
-                   ensure_ascii=False, indent=1))
+    out_path = raw_result_path("conversation", evaluation, requested=REQUESTED_OUT)
+    write_raw_result(out_path, {"model": MODEL, "simpleModel": SIMPLE_MODEL,
+                                "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
+                                "합계": tot, "시나리오": rows})
     print(json.dumps(tot, ensure_ascii=False), flush=True)
-    print(f"→ {OUT}", flush=True)
+    print(f"→ {out_path}", flush=True)
 
 
 if __name__ == "__main__":
