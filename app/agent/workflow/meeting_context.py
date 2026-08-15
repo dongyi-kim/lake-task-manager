@@ -25,6 +25,22 @@ def is_meeting_request(state) -> bool:
     return any(word in text for word in ("회의록", "회의 결정", "회의 후속", "실무회의"))
 
 
+def meeting_subject(state) -> str:
+    """Extract the stable technical subject from a titled meeting note when present."""
+    original = request_text(state)
+    for line in original.splitlines():
+        value = re.sub(r"^\s*#{1,6}\s*", "", line).strip()
+        value = re.sub(r"^\d{4}[-./]\d{1,2}[-./]\d{1,2}\s+", "", value)
+        match = re.match(
+            r"([A-Za-z][A-Za-z0-9.+-]*(?:\s+[A-Za-z][A-Za-z0-9.+-]*){1,5})"
+            r"\s+(?:도입\s*)?(?:실무)?회의(?:록)?(?:\s|$)",
+            value,
+        )
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
 def _person_tokens(text: str) -> list[str]:
     found: list[str] = []
     located: list[tuple[int, str]] = []
@@ -260,5 +276,5 @@ def needs_research_interview(state) -> bool:
 
 
 __all__ = ["attendee_mentions", "canonicalize_reply_mentions", "is_meeting_request",
-           "needs_research_interview", "prune_resolved_gaps", "resolved_people",
-           "unresolved_questions"]
+           "meeting_subject", "needs_research_interview", "prune_resolved_gaps",
+           "resolved_people", "unresolved_questions"]

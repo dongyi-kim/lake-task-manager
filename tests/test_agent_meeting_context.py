@@ -18,7 +18,7 @@ from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _comment_input_missing,
     shape_hint,
 )
-from app.agent.workflow.meeting_context import unresolved_questions  # noqa: E402
+from app.agent.workflow.meeting_context import meeting_subject, unresolved_questions  # noqa: E402
 from app.agent.workflow.session import _turn_start_patch  # noqa: E402
 
 
@@ -155,3 +155,8 @@ def test_curator_drops_only_meeting_terms_defined_by_interview():
         "gaps": ["PSR의 정확한 정의와 적용 방법 확인 필요", "reader 진행 상황 확인 필요"],
     })
     assert out["knowledge_brief"]["gaps"] == ["reader 진행 상황 확인 필요"]
+
+
+def test_titled_meeting_uses_full_technical_subject_instead_of_one_action_keyword():
+    state = _state("## 2026-08-15 Iceberg Puffin NDV 도입 실무회의\n- StarRocks reader 검증")
+    assert meeting_subject(state) == "Iceberg Puffin NDV"

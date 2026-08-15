@@ -780,6 +780,11 @@ class ResearchAnalyst(ToolAgent):
             from app.agent.tools._ident import find_identifiers, subject_term
             asked_s = last_user_text(state)
             subject = subject_term(asked_s, state.get("keywords"))
+            # A meeting title is the stable topic boundary. Model-selected keywords often
+            # narrow it to one action (for example ``StarRocks reader verification``), which
+            # drops the earlier design ticket and document needed to understand the decision.
+            from app.agent.workflow.meeting_context import meeting_subject
+            subject = meeting_subject(state) or subject
             digs = any(w in asked_s for w in ("히스토리", "이력", "근황", "최근", "경위", "정리",
                                               "알려줘", "설명", "무슨", "어떤", "왜", "언제",
                                               "누가", "어디", "뭐", "지식", "현재"))
