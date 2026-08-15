@@ -219,6 +219,8 @@ def test_history_instruction_only_rides_when_history_was_asked():
     # 작업이 자기 제목을 갖게 됐다 — 표 아래에 줄로 흘리면 표의 꼬리처럼 읽힌다).
     assert "**현재 상태**" in hist and "현재 진행 중인 Task" in hist
     assert "세 덩어리" in hist
+    assert "- {{ticket-detail:DL-9047}}" in hist
+    assert '- DL-9047 "' not in hist
     plain = _topic_dossier(TABLE, history=False)
     assert "이 대상의 **연표**" not in plain
     assert "물어본 것만 답한다" in plain

@@ -228,6 +228,33 @@ def test_question_only_reply_uses_required_reason_not_speculative_ticket_context
     assert "아래 입력란" in got
 
 
+def test_postcheck_findings_stay_in_trace_instead_of_leaking_into_reply():
+    """후검증은 운영 진단 정보다. 감지 결과를 사용자 본문에 붙이지 않는다."""
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    out = ResultIntegrator().apply(
+        {"messages": [], "intent": "ask", "playbook": "history"},
+        {"text": "이력 자료를 충분히 정리하지 못했습니다."},
+    )
+    assert "결과 검증에서 누락 가능성" not in out["reply"]
+    assert "내부 후검증" in out["trace"][0]["note"]
+
+
+def test_running_task_bullets_are_normalized_to_detail_badges_without_duplicate_fields():
+    """전용 진행 Task 목록은 제목을 평문으로 반복하지 않고 detail token만 남긴다."""
+    from app.agent.workflow.agents.result_integrator import _normalize_ticket_detail_sections
+
+    source = ("### 현재 진행 중인 Task\n\n"
+              "- DL-9047 \"[ETL] 안정화 모니터링\"\n"
+              "- {{ticket-inline:DL-9062}} [Catalog] 정합성 비교\n\n"
+              "### 연표\n\n| 날짜 | 사건 | 근거 |")
+    got = _normalize_ticket_detail_sections(source)
+    assert "- {{ticket-detail:DL-9047}}" in got
+    assert "- {{ticket-detail:DL-9062}}" in got
+    assert "안정화 모니터링" not in got and "정합성 비교" not in got
+    assert "### 연표" in got
+
+
 def test_task_linked_to_epic_is_not_described_as_a_new_epic_draft():
     """STARR1: a valid parent Epic must not disable draft-type contradiction checks."""
     from app.agent.workflow.agents.result_integrator import _align_draft_claims
@@ -344,6 +371,18 @@ def test_verifiable_references_are_not_flagged():
           "[3] DL-9062 코멘트 (skcc.x1103, 2026-08-06) — 운영 담당자\n"
           "[4] 설계 노트 http://wiki/y")
     assert _unlinked_refs(ok) == []
+
+
+def test_reference_section_is_canonicalized_as_one_evidence_section():
+    """본문 marker와 source index를 별도 '참조' 개념으로 노출하지 않는다."""
+    from app.agent.workflow.agents.result_integrator import _dedupe_refs
+
+    source = ("현재 주기는 30분 [1].\n\n### 참조\n"
+              "[1] {{ticket-detail:DL-9044}} — 적재주기 변경")
+    got = _dedupe_refs(source)
+    assert "### 근거\n" in got
+    assert "### 참조" not in got
+    assert "{{ticket-detail:DL-9044}}" in got
 
 
 # ── 탐지와 교정을 분리한다 (실측: 위반이 잡혔는데 경고도 재작성도 없이 나갔다) ──────

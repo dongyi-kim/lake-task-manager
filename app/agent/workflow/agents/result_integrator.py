@@ -173,10 +173,12 @@ class ResultIntegrator(TextAgent):
                     "4. Preserve a supplied list such as all schema columns without omission.\n"
                     "5. For a value actually asked but absent, use `확인된 기록 없음` in one or two sentences. "
                     "Do not list unrelated absent fields or transfer a value from a similar asset.\n"
-                    "6. Use `[1]`, `[2]` in the body and put `### 참조` last, with one non-bulleted indexed "
+                    "6. Use `[1]`, `[2]` in the body and put `### 근거` last, with one non-bulleted indexed "
                     "line per source. A ticket source uses `{{ticket-detail:KEY}}`; a document uses its verified "
                     "URL. Reuse an index for the same source.\n"
-                    "7. Use inline code for identifiers, values, and Job names; Korean `###` headings for real "
+                    "7. Under `### 현재 진행 중인 Task`, use one `{{ticket-detail:KEY}}` bullet per ticket and "
+                    "do not repeat key, title, assignee, status, or start date beside the badge.\n"
+                    "8. Use inline code for identifiers, values, and Job names; Korean `###` headings for real "
                     "sections; bold for core values; and blockquotes for direct quotations.\n"
                     "When a value changed, identify current and prior values with the date and cite the change "
                     "ticket as the primary source. Use the explicit `[담당]` line for ownership; never infer "
@@ -326,7 +328,10 @@ class ResultIntegrator(TextAgent):
                 better, gb = (text2, g2) if use2 else (text, g)
                 text = better + grounding.warning_block(gb)
 
-        # 참조 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
+        # 전용 진행 Task bullet은 detail badge 하나로 기계화한다. 모델이 raw key+제목을
+        # 출력해도 최종 문자열은 badge가 가진 정보를 중복하지 않는다.
+        text = _normalize_ticket_detail_sections(text)
+        # 근거 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
         # 코드가 접는다. 규칙("같은 근거 같은 번호")은 프롬프트에 있지만 보장은 여기서.
         text = _dedupe_refs(text)
         # '확인된 기록 없음'만 채운 표 행·참조 줄은 정보가 아니라 소음이다 — md 로 두 번
@@ -404,18 +409,20 @@ class ResultIntegrator(TextAgent):
         # ── 후검증 — **플레이북별 최소선**(사용자 지시: 주요 태스크는 결과도 검증)
         # 프롬프트에 적어 두면 '대체로' 지켜진다. 문제는 그 '대체로'다 — 같은 요청이
         # 어떤 날은 연표만 나오고 어떤 날은 현재 상태까지 나온다. 흔들림은 지시로 못 잡으니
-        # **잴 수 있는 것은 코드가 재고**, 못 지켰으면 숨기지 않고 드러낸다.
+        # **잴 수 있는 것은 코드가 재고**, 사용자 reply가 아니라 local debug trace에 남긴다.
+        _bad = []
         try:
             from app.agent.workflow import postcheck
             _bad = postcheck.check(state, text)
-            if _bad:
-                text += postcheck.note(_bad)
         except Exception:
             pass
 
         from langchain_core.messages import AIMessage
+        trace_note = f"{len(text)}자"
+        if _bad:
+            trace_note += f" · 내부 후검증: {postcheck.summary(_bad)}"
         return {"reply": text, "messages": [AIMessage(content=text)],
-                "trace": note(state, self.name, f"{len(text)}자")}
+                "trace": note(state, self.name, trace_note)}
 
 
 def _requests_parentless_subtask(state) -> bool:
@@ -815,7 +822,7 @@ def _ensure_research_status(text: str, state) -> str:
     block = ["### 현재 상태", "", "| 구분 | 확인 결과 |", "|---|---|"]
     block += [f"| {kind} | {fact.replace('|', '·')} |" for kind, fact in rows[:8]]
     block_text = "\n".join(block)
-    reference = _re.search(r"(?m)^###\s*참조\s*$", str(text or ""))
+    reference = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", str(text or ""))
     if reference:
         return (str(text or "")[:reference.start()].rstrip() + "\n\n" + block_text
                 + "\n\n" + str(text or "")[reference.start():])
@@ -1359,17 +1366,47 @@ def _dedupe_sentences(text: str) -> str:
     return _re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
 
 
+def _normalize_ticket_detail_sections(text: str) -> str:
+    """전용 진행 Task bullet을 one-ticket `ticket-detail` token으로 정규화한다.
+
+    모델이 raw key, 다른 typed token, 제목을 병기해도 key만 보존한다. 상세 badge가 이미
+    key/title/assignee/status를 채우므로 뒤 텍스트는 중복이며, 다음 heading부터는 건드리지 않는다.
+    """
+    heading = _re.compile(r"^#{2,4}\s*현재\s*진행\s*중인\s*(?:Task|태스크)\s*$", _re.I)
+    key = _re.compile(r"\b([A-Z][A-Z0-9]*-\d+)\b")
+    out, active = [], False
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if heading.match(stripped):
+            active = True
+            out.append(line)
+            continue
+        if active and stripped.startswith("#"):
+            active = False
+        if active and _re.match(r"^[-*+]\s+", stripped):
+            found = key.search(stripped)
+            if found:
+                indent = line[:len(line) - len(line.lstrip())]
+                out.append(f"{indent}- {{{{ticket-detail:{found.group(1)}}}}}")
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _dedupe_refs(text: str) -> str:
-    """`**참조**` 섹션의 중복 출처를 병합하고 번호를 다시 매긴다.
+    """canonical `### 근거` 섹션의 중복 출처를 병합하고 번호를 다시 매긴다.
 
     출처 정체성: 코멘트(키+괄호 출처) > 문서(URL) > 티켓(키 집합) > 문구.
     같은 티켓의 '티켓 참조'와 '코멘트 참조'는 다른 출처다(내용이 다르다).
-    본문에서 안 쓰인 참조는 떨군다 — 규칙상 만들면 안 되는 것이라서다."""
+    본문에서 안 쓰인 근거는 떨군다. legacy `참조` heading은 canonical `근거`로 바꾼다."""
     import re as _re
-    m = _re.search(r"\*\*참조\*\*\s*\n((?:\s*-?\s*\[\d+\][^\n]*\n?)+)", text)
+    canonical = _re.sub(
+        r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$",
+        "### 근거", str(text or ""))
+    m = _re.search(r"(?m)^### 근거\s*\n((?:\s*-?\s*\[\d+\][^\n]*\n?)+)", canonical)
     if not m:
-        return text
-    head, block, tail = text[:m.start(1)], m.group(1), text[m.end(1):]
+        return canonical
+    head, block, tail = canonical[:m.start(1)], m.group(1), canonical[m.end(1):]
     body = head + tail
 
     def _sig(desc: str):
@@ -1406,11 +1443,11 @@ def _dedupe_refs(text: str) -> str:
             used.add(rep)
             order.append(rep)
     if not order:
-        return text
+        return canonical
     newno = {rep: str(i + 1) for i, rep in enumerate(order)}
     mapping = {old: newno[rep] for old, rep in alias.items() if rep in newno}
     if not mapping:
-        return text
+        return canonical
     # 병합할 게 없어도 계속 간다 — 불릿 제거·문서 중복 표기 정리는 항상 적용된다.
     out_body = _re.sub(r"\[(\d+)\](?!\()",
                        lambda mm: f"[{mapping.get(mm.group(1), mm.group(1))}]", body)
@@ -1420,7 +1457,7 @@ def _dedupe_refs(text: str) -> str:
         return _re.sub(r"^([^—\n]*?)\s*\((https?://[^\s)]+)\)", r"\2", d.strip())
     lines = [f"[{newno[old]}] {_clean_desc(desc)}" for old, desc in survivors if old in newno]
     lines.sort(key=lambda ln: int(_re.match(r"\[(\d+)\]", ln).group(1)))
-    # 참조 섹션을 원래 자리(head 끝)에 다시 꽂는다.
+    # 근거 섹션을 원래 자리(head 끝)에 다시 꽂는다.
     ref_block = "\n".join(lines) + "\n"
     cut = len(head)
     return out_body[:cut] + ref_block + out_body[cut:]
@@ -1448,12 +1485,12 @@ def _prune_empty_rows(text: str) -> str:
     if rows_removed:
         # 헤더+구분선만 남은 표(내용 행 0)는 표째 제거
         text = _re.sub(r"(?:^|\n)\|[^\n]*\|\n\|[\s:|-]+\|(?=\n(?!\|)|$)", "", text)
-    # 내용 없는 섹션 헤딩("### 히스토리" 뒤가 바로 다음 헤딩/참조/끝) — 헤딩만 남기지 않는다
+    # 내용 없는 섹션 헤딩("### 히스토리" 뒤가 바로 다음 헤딩/근거/끝) — 헤딩만 남기지 않는다
     # (실측: 표를 걷어낸 뒤, 또는 모델이 애초에 빈 헤딩을 냈다).
     # 맺음말("…더 궁금하면 말씀 주세요")도 섹션 내용이 아니다 — 그 앞의 빈 헤딩을 살려
     # 두면 "### 히스토리" 밑에 안내문만 붙는 꼴이 된다(실측 Round P).
     text = _re.sub(r"(?:^|\n)(#{2,4}\s+[^\n]+|\*\*[^\n*]+\*\*)\n+"
-                   r"(?=(#{2,4}\s|\*\*참조\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)|$))",
+                   r"(?=(#{2,4}\s|\*\*(?:근거|참조)\*\*|[^\n]*(?:궁금하면 말씀|말씀 주세요)|$))",
                    "\n", text)
     return text
 

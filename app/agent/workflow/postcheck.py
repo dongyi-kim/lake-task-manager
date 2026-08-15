@@ -8,8 +8,8 @@
   결함의 상당수가 **모델의 실력이 아니라 흔들림**이었다(이력 답변에 '지금'이 빠짐,
   진척 답변에 진행 중 자식 누락, 일괄 계획에 대상 표 누락…).
 
-  흔들림은 지시로 못 잡는다. **잴 수 있는 것은 코드가 재고**, 못 지켰으면 그 사실을
-  드러낸다. 이 저장소의 다른 가드들(grounding·본문 게이트)과 같은 자리다.
+  흔들림은 지시로 못 잡는다. **잴 수 있는 것은 코드가 재고**, 못 지켰으면 trace에
+  기록한다. 이 저장소의 다른 가드들(grounding·본문 게이트)과 같은 자리다.
 
 세 가지를 지킨다:
   ① **판정만 한다** — 답을 고쳐 쓰지 않는다. 고치는 것은 ResultIntegrator 의 재작성 경로 몫이고,
@@ -36,9 +36,9 @@ def _has_table(text: str) -> bool:
 
 
 def _has_refs(text: str) -> bool:
-    """참조 섹션이 있나 — `**참조**` 아래 목록, 또는 번호 붙은 출처 줄."""
+    """근거 섹션이 있나 — canonical `근거`, legacy `참조`, 또는 번호 붙은 출처 줄."""
     t = text or ""
-    if "참조" in t and _KEY.search(t):
+    if ("근거" in t or "참조" in t) and _KEY.search(t):
         return True
     return bool(re.search(r"^\s*(?:\[\d{1,2}\]|\d{1,2}[.)])\s+\S", t, re.M))
 
@@ -143,6 +143,10 @@ def check(state: dict, text: str) -> list:
     플레이북은 RequestArchitect 가 고른다. 못 고른 턴(빈 문자열)에는 아무것도 걸지 않는다 —
     무엇을 하려는 요청인지 모르는 상태에서 형식을 강요하면 그게 더 나쁘다.
     """
+    # 구조화 질문으로 사용자 입력을 기다리는 턴은 **최종 산출물 턴이 아니다**. 표기 확인
+    # 질문에 history의 현재 상태·연표 표를 요구하면 내부 검사 문구가 사용자 답에 새어 나온다.
+    if (state or {}).get("questions"):
+        return []
     pb = str((state or {}).get("playbook") or "").strip()
     # 세션의 사용자 반환 shape에는 playbook이 빠지지만 pending 카드는 남는다. 산출물이
     # 명백한데 메타 필드 하나가 없다는 이유로 후검증을 끄면 바로 S1 불일치를 놓친다.
@@ -159,10 +163,6 @@ def check(state: dict, text: str) -> list:
     return out
 
 
-def note(bad: list) -> str:
-    """위반을 **답 아래에 붙일 한 덩이**로. 숨기지 않는 것이 이 저장소의 규율이다."""
-    if not bad:
-        return ""
-    rows = "\n".join(f"- {b}" for b in bad[:4])
-    return ("\n\n> ⚠ **결과 검증에서 누락 가능성을 감지했습니다**\n"
-            + "\n".join(f"> {r}" for r in rows.splitlines()))
+def summary(bad: list) -> str:
+    """후검증 위반을 debug trace에 기록할 짧은 평문으로 변환한다."""
+    return " / ".join(str(item) for item in (bad or [])[:4])

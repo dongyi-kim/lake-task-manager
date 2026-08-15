@@ -79,14 +79,18 @@ def test_pending_flat_children_are_counted_separately_from_parent_items():
     assert not P.check(state, "### 하위 작업\n1. 설계\n2. 구현")
 
 
-def test_the_note_is_visible_and_bounded():
-    """붙이는 경고는 **보이되 답을 덮지 않는다** — 최대 4줄."""
-    note = P.note(["a", "b", "c", "d", "e", "f"])
-    assert note.startswith("\n\n> ⚠")
-    assert "결과 검증에서 누락 가능성" in note
-    assert "우리 형식 기준" not in note
-    assert note.count("\n> - ") <= 4
-    assert P.note([]) == ""
+def test_clarification_turn_is_not_judged_as_a_final_history_answer():
+    """표기 확인처럼 구조화 질문으로 멈춘 턴에 최종 이력 답변 형식을 요구하지 않는다."""
+    state = {"playbook": "history", "questions": [{"question": "어느 테이블인가요?"}]}
+    assert P.check(state, "### 확인 필요\n\n- 정확한 대상 선택 필요") == []
+
+
+def test_postcheck_summary_is_internal_and_bounded():
+    """후검증 결과는 trace용 평문이며 사용자 경고 블록 형식을 만들지 않는다."""
+    summary = P.summary(["a", "b", "c", "d", "e", "f"])
+    assert summary == "a / b / c / d"
+    assert "⚠" not in summary and "결과 검증" not in summary
+    assert P.summary([]) == ""
 
 
 def test_assignment_completion_accepts_complete_people_list_without_table():

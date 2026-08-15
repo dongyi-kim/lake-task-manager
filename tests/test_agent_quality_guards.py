@@ -36,9 +36,9 @@ def test_material_internal_research_facts_survive_the_final_summary():
                "* StarRocks reader·optimizer의 실제 소비 지원 여부")
     state = {"request_text": "내부 작업 이력과 외부 공식 자료를 함께 조사해줘",
              "topic_dossier": dossier}
-    got = _ensure_research_status("### 결론\n\n외부 검색 확인 필요\n\n### 참조\n- 문서", state)
+    got = _ensure_research_status("### 결론\n\n외부 검색 확인 필요\n\n### 근거\n- 문서", state)
     assert "현재 상태" in got
     for value in ("20개", "writer 버전 확인 완료", "PoC는 아직 수행하지 않음",
                   "StarRocks reader·optimizer"):
         assert value in got
-    assert got.index("### 현재 상태") < got.index("### 참조")
+    assert got.index("### 현재 상태") < got.index("### 근거")

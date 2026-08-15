@@ -54,10 +54,11 @@
 - 사용자에게 보이는 사람 언급은 전부 식별자가 확인된 mention badge로 렌더링한다. 평문 실명이나
   추측한 username을 출력하지 않으며 동명이인·식별자 미확정 상태는 확인 질문으로 남긴다.
 - Agent 답변의 ticket은 `{{ticket-list:KEY}}`(다수 인라인), `{{ticket-inline:KEY}}`(소수 문장),
-  `{{ticket-detail:KEY}}`(`다음의`/`아래의` 뒤 bullet) typed token으로 기계화한다. HTML을 prompt가
+  `{{ticket-detail:KEY}}`(`다음의`/`아래의` 뒤 또는 전용 ticket 목록 heading 아래 bullet) typed token으로 기계화한다. HTML을 prompt가
   직접 만들지 않는다. detail은 key/title/assignee/status를 포함하며, badge가 포함한 field를
   token 뒤 텍스트에 중복하지 않는다.
-- `참조` 섹션의 ticket 출처는 항상 `ticket-detail`로 렌더링한다. raw key, 다른 typed token,
+- source index는 `### 근거` 하나로 통일하고 본문·표의 `[n]` marker와 연결한다. 별도 `참조` 섹션을 만들지 않는다.
+  `근거` 섹션의 ticket 출처는 항상 `ticket-detail`로 렌더링한다. raw key, 다른 typed token,
   Jira markdown link가 들어와도 renderer가 key를 식별해 detail badge로 정규화한다.
 - function/tool name, parameter, JSON key/schema/enum, Jira field/type, code, SQL/JQL, HTML tag, ticket key, user ID, URL은 번역하지 않는다.
 - 자연어 지시와 사용자 대면 출력은 한국어로 작성한다.

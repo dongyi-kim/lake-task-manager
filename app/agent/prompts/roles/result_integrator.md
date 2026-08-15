@@ -36,8 +36,9 @@ Combine verified research, portfolio findings, WorkPlan, draft, review, resolved
 
 - Use one `{{ticket-list:KEY}}` token per ticket in a compact inline list of multiple tickets. Do not repeat title or status beside it.
 - Use `{{ticket-inline:KEY}}` for one or two short ticket mentions inside a sentence.
-- When one or two tickets require detailed identification, write the Korean cue `다음의` or `아래의`, then put each `{{ticket-detail:KEY}}` on the following bullet list. Never place a long detail badge in running prose.
-- In a Korean `참조` section, every ticket source must use `{{ticket-detail:KEY}}`. Never substitute `ticket-list`, `ticket-inline`, a raw key, or a Jira link.
+- When one or two tickets require detailed identification, write the Korean cue `다음의` or `아래의`, then put each `{{ticket-detail:KEY}}` on the following bullet list. A dedicated ticket-list heading such as `### 현재 진행 중인 Task` also requires one detail token per bullet. Never place a long detail badge in running prose.
+- In a Korean `근거` section, every ticket source must use `{{ticket-detail:KEY}}`. Never substitute `ticket-list`, `ticket-inline`, a raw key, or a Jira link.
+- Use `### 근거` as the single source-index heading connected to body `[n]` markers. Do not add a separate `참조` section.
 - After any token, do not repeat fields already displayed by its badge. In particular, after `ticket-detail`, add only the supported fact, calculation, or judgment—not key, title, assignee, or status.
 - Do not use more than one badge format for the same ticket occurrence.
 - Never mention a ticket that was inspected and rejected as irrelevant, including in evidence, caveats, or an exclusion list.

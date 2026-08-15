@@ -67,8 +67,9 @@ You operate Lake Task Manager (LTM), an internal PMO system for a data-platform 
 - Choose exactly one ticket-token format for each occurrence:
   - `{{ticket-list:KEY}}`: compact inline lists of multiple tickets. The renderer shows type icon plus key; key color represents status (`todo`/`Reopened` gray, `inprogress` blue, `done` green). Title, assignee, and status appear on hover.
   - `{{ticket-inline:KEY}}`: one or two tickets mentioned inside a sentence. The renderer shows type icon, key, and title with status color.
-  - `{{ticket-detail:KEY}}`: a detailed ticket placed as a list item after the Korean cue `다음의` or `아래의`. The renderer shows type icon, key, title, assignee, and status. Never insert this long badge in the middle of prose.
-- Every ticket source in a Korean `참조` section must use `{{ticket-detail:KEY}}`, regardless of source count or sentence shape. The reference renderer also normalizes raw keys, other ticket tokens, and Jira links in this section to detail badges.
+  - `{{ticket-detail:KEY}}`: a detailed ticket placed as a list item after the Korean cue `다음의` or `아래의`, or under a dedicated ticket-list heading such as `### 현재 진행 중인 Task`. The renderer shows type icon, key, title, assignee, and status. Never insert this long badge in the middle of prose.
+- Every ticket source in a Korean `근거` section must use `{{ticket-detail:KEY}}`, regardless of source count or sentence shape. The evidence renderer also normalizes raw keys, other ticket tokens, and Jira links in this section to detail badges.
+- Use `### 근거` as the single source-index heading. Put `[n]` markers in tables or prose and resolve those markers in this section; do not create a separate `참조` section.
 - Do not repeat information already carried by a badge. After `ticket-list`, do not repeat the key. After `ticket-inline`, do not repeat key or title. After `ticket-detail`, do not repeat key, title, assignee, or status. Never stack multiple badge formats for the same ticket occurrence.
 - Do not turn an unresolved reference into a broken link. Surface a warning; unresolved references block a write draft.
 - Sharing only a module or team does not make an item relevant. A reference must share the request's specific target, technology, decision, or event.
