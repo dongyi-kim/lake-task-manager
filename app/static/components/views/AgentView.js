@@ -1118,8 +1118,16 @@ export default {
              @mousedown.prevent="startNavDrag" @dblclick="resetNavW"></div>
         <!-- 모델·설정은 좌상단 — 지금 무엇으로 도는지가 먼저 보인다(사용자 요청) -->
         <div class="an-top">
-          <span v-if="status" class="agent-prov" :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
-            {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
+          <span v-if="status && status.runtimeConfigSource === 'named'" class="agent-prov"
+                :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
+            {{ status.activeConfig.name }} · {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
+          </span>
+          <span v-else-if="status && status.runtimeConfigSource === 'environment'" class="agent-prov"
+                :title="'chat=' + status.chatModel + ' / embed=' + status.embedModel">
+            환경 설정 · {{ status.provider }}<template v-if="status.chatModel"> · {{ status.chatModel }}</template>
+          </span>
+          <span v-else class="agent-prov is-empty">
+            연결 설정 없음
           </span>
           <button class="agent-reset" @click="settingsOpen = true" title="AI 에이전트 설정">⚙ 설정</button>
         </div>

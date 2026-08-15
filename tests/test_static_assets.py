@@ -223,6 +223,15 @@ def test_agent_settings_use_named_configs_instead_of_fixed_provider_tabs():
     assert '/api/agent/configs/' in api_src
 
 
+def test_agent_sidebar_identifies_named_environment_and_missing_configs():
+    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    assert "status.runtimeConfigSource === 'named'" in view
+    assert "status.activeConfig.name" in view
+    assert "status.runtimeConfigSource === 'environment'" in view
+    assert "환경 설정 · {{ status.provider }}" in view
+    assert "연결 설정 없음" in view
+
+
 def test_local_agent_chat_copy_includes_progress_diagnostics_but_prod_is_gated():
     view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
     assert 'this.appMeta.env !== "prod"' in view

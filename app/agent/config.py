@@ -533,6 +533,25 @@ def callbacks(session_id: str = None) -> list:
     return [h] if h else []
 
 
+def _runtime_config_source() -> str:
+    """화면에 표시할 실제 연결 설정의 출처.
+
+    ``provider()`` 의 AOAI 기본값은 내부 해석을 안전하게 유지하기 위한 폴백이지,
+    사용자가 AOAI 연결을 선택했다는 뜻이 아니다. named config도 환경 주입도 없을 때
+    그 기본값을 상태 UI에 내보내면 설정하지 않은 연결이 활성화된 것처럼 보인다.
+    """
+    if os.getenv("LAKE_AGENT_PROVIDER"):
+        return "environment"
+    if _profiles.active():
+        return "named"
+
+    overrides = _secrets.env_overrides()
+    required = {"aoai": ("aoaiEndpoint", "aoaiApiKey"),
+                "openai": ("openaiApiKey",),
+                "openai_compat": ("compatBaseUrl",)}.get(provider(), ())
+    return "environment" if any(field in overrides for field in required) else "none"
+
+
 # ── 진단 (설정 패널의 '연결 테스트') ────────────────────────────────
 def status() -> dict:
     """화면용 현재 설정 — **비밀값 원문은 절대 싣지 않는다**."""
@@ -546,7 +565,12 @@ def status() -> dict:
         configs.append({**row, "authOk": auth_ok(cid), "modelsOk": models_ok(cid),
                         "verified": bool(row.get("active") and verified())})
     active = _profiles.active()
-    return {"available": ok, "reason": why, "provider": provider(),
+    source = _runtime_config_source()
+    show_runtime = source != "none"
+    runtime_provider = provider() if show_runtime else ""
+    return {"available": ok, "reason": why,
+            "runtimeConfigSource": source,
+            "provider": runtime_provider,
             "configs": configs,
             "activeConfigId": str((active or {}).get("id") or ""),
             "activeConfig": ({**active, "secrets": _secrets.masked_for(active["id"])}
@@ -555,15 +579,16 @@ def status() -> dict:
             "legacyCandidates": _profiles.legacy_candidates(),
             # 하나 이상의 LLM 연결값이 있는가 — 챗·에디터 AI 버튼의 활성/비활성 근거.
             "llmReady": ready, "llmReason": ready_why,
-            "chatModel": chat_model(), "embedModel": embed_model(),
+            "chatModel": chat_model() if show_runtime else "",
+            "embedModel": embed_model() if show_runtime else "",
             # 간단한 역할(의도 분류·결정적 실행) 전용 모델 — **설정된 값만**(폴백 없이) 보여
             # 준다. 폴백값을 보여 주면 화면에서 "따로 설정돼 있다"로 오해된다.
             "chatModelSimple": (str((active or {}).get("chatModelSimple") or "") if active else
-                                (_pref("agentAoaiChatSimple") if provider() == "aoai"
-                                 else _pref("agentOpenaiChatSimple") if provider() == "openai"
-                                 else _pref("agentCompatChatSimple") if provider() == "openai_compat"
+                                (_pref("agentAoaiChatSimple") if runtime_provider == "aoai"
+                                 else _pref("agentOpenaiChatSimple") if runtime_provider == "openai"
+                                 else _pref("agentCompatChatSimple") if runtime_provider == "openai_compat"
                                  else "")),
-            "apiVersion": api_version() if provider() == "aoai" else None,
+            "apiVersion": api_version() if runtime_provider == "aoai" else None,
             "langfuse": bool(get_langfuse_handler()),
             "secrets": (_secrets.masked_for(active["id"]) if active else _secrets.masked()),
             # ★ **환경변수가 이기고 있는 필드**. 저장은 됐는데 가려져 있는 상태를 화면이

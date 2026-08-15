@@ -77,6 +77,35 @@ def test_status_never_leaks_secrets(clean_env, monkeypatch):
     assert st["secrets"]["aoaiEndpoint"] == "https://x.example"   # 비밀 아님 → 그대로
 
 
+def test_status_does_not_advertise_internal_provider_default_as_active(clean_env, monkeypatch):
+    """named config와 환경 주입이 없으면 AOAI 폴백을 사용자 선택처럼 표시하지 않는다."""
+    monkeypatch.setattr(C._profiles, "list_all", lambda: [])
+    monkeypatch.setattr(C._profiles, "active", lambda: None)
+    monkeypatch.setattr(C._profiles, "legacy_candidate", lambda: None)
+    monkeypatch.setattr(C._profiles, "legacy_candidates", lambda: [])
+
+    st = C.status()
+    assert st["runtimeConfigSource"] == "none"
+    assert st["provider"] == ""
+    assert st["chatModel"] == ""
+    assert st["embedModel"] == ""
+
+
+def test_status_reports_environment_injected_runtime(clean_env, monkeypatch):
+    monkeypatch.setattr(C._profiles, "list_all", lambda: [])
+    monkeypatch.setattr(C._profiles, "active", lambda: None)
+    monkeypatch.setattr(C._profiles, "legacy_candidate", lambda: None)
+    monkeypatch.setattr(C._profiles, "legacy_candidates", lambda: [])
+    clean_env.setenv("LAKE_AGENT_PROVIDER", "openai")
+    clean_env.setenv("OPENAI_API_KEY", "test-only-key")
+    clean_env.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-test")
+
+    st = C.status()
+    assert st["runtimeConfigSource"] == "environment"
+    assert st["provider"] == "openai"
+    assert st["chatModel"] == "gpt-test"
+
+
 # ── fake 경로: 키 없이 그래프를 굴릴 수 있어야 한다 ──────────────────
 
 def test_fake_chat_is_deterministic(clean_env):
@@ -161,6 +190,9 @@ def test_named_profile_activation_controls_runtime_without_provider_env(monkeypa
     assert C.probe(config_id=active["id"])["ok"]
     assert C.activate(active["id"])["ok"]
     assert C.provider() == "fake" and C.chat_model() == "fake-chat"
+    status = C.status()
+    assert status["runtimeConfigSource"] == "named"
+    assert status["activeConfig"]["name"] == "로컬 테스트"
 
     profiles.update(candidate["id"], {"name": "편집한 후보"})
     assert C.provider() == "fake"
