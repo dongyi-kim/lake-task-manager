@@ -131,6 +131,8 @@ class AgentState(TypedDict, total=False):
     sufficient: bool                # 되묻지 않고 진행해도 되나
     answer_depth: str               # "brief"(값·결론만) | "explain"(개념·배경까지)
     request_plan: dict              # Request Architect의 원자 작업 DAG
+    turn_continuation: bool         # 직전 확인 질문에 대한 답변인가(새 요청의 stale state와 구분)
+    turn_reset_reason: str          # local debug/evaluation용 턴 경계 판정 근거
 
     # ── Query Specialist / deterministic Query Runner ──
     query_plan: dict

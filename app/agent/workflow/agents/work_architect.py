@@ -448,6 +448,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 - Split independent deliverables into Tasks. Split one deliverable shared across stages, targets, or owners into real Sub-Task `children`.
 - If equivalent work already exists, ask how to proceed unless the user delegated with `알아서`; under delegation, draft safely and record the overlap in Korean `rationale`.
 - A request to create new work must not become a `change` to a similar existing ticket. Use that ticket only as relevant evidence.{force_rule}
+- For meeting notes, preserve the exact requested item count and distinguish an owner from a reviewer. A named
+  owner is an instruction, not an assignee recommendation; never replace it with a lower-workload candidate.
 
 ## Conversation Data
 
@@ -1558,6 +1560,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 
         # 변경 계획(modify)은 갈래가 통째로 다르다 — `_change_plan` 이 맡는다.
         plan, qs = _change_plan(state, out, items, qs)
+        _canonicalize_meeting_mentions(state, plan)
         # ★ 바꿀 값을 **정확히 말한** 수정 요청에는 되묻지 않는다. 계획이 이미 섰으면
         #   승인 카드가 곧 확인 단계다(work_architect.md: "NEVER ask permission to proceed").
         #   실측(MOD8): "라벨 data-quality 추가하고 컴포넌트를 Catalog 로" 처럼 값을 다 준
@@ -1781,6 +1784,8 @@ def _change_plan(state, out, items, qs):
                                       "코드가 계산한다)").strip()
             fields["duedate"] = rel
         cmt = (change.get("comment") or "").strip()
+        if _comment_forbidden(_said):
+            cmt = ""
         # 댓글만 남기는 것도 유효한 계획이다 — "이 내용 DL-x 에 댓글로 남겨줘"가 실사용에 있다.
         if fields or cmt:
             plan = {"key": str(change["key"]).strip(), "changes": fields,
@@ -2264,6 +2269,56 @@ def _apply_named_assignees(state, items: list) -> None:
                 # 표식을 남겨 PeopleAdvisor 의 merge 가 다시 덮지 못하게 한다(2차 뭉갬 실측).
                 r["assignee"] = uid
                 r["assignee_source"] = "user"
+
+    # 회의록은 ``@이름 — 작업``, ``이름TL이 작업 담당``처럼 자연어로 담당을 쓴다.
+    # 조사/인터뷰에서 확정한 identity만 사용하고, 제목과 가장 많이 겹치는 한 항목에 강제한다.
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, resolved_people
+        if not is_meeting_request(state):
+            return
+        people = resolved_people(state)
+    except Exception:
+        return
+    title_re = (r"(?:TL|PL|PM|PO|EM|M|파트장|그룹장|본부장|팀장|실장|부장|차장|과장|대리|"
+                r"선임|책임|수석|매니저|리더|님|씨)")
+    records = []
+    for line in text.splitlines():
+        clean = _re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+        # Numbered/bulleted ``person — deliverable`` records are explicit ownership.
+        dash = _re.match(
+            rf"(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{title_re}?\s*[—–-]\s*(.+)",
+            clean, _re.I,
+        )
+        if dash:
+            records.append((dash.group(1), dash.group(2)))
+            continue
+        # Without a dash, require the explicit word 담당 so a reviewer is not made assignee.
+        owner = _re.match(
+            rf"(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{title_re}?\s*(?:은|는|이|가)\s*"
+            r"(.+?)\s*담당(?:\s|$)", clean, _re.I,
+        )
+        if owner:
+            records.append((owner.group(1), owner.group(2)))
+    for name, phrase in records:
+        try:
+            from app.agent.tools.people_tools import strip_title
+            name = strip_title(name)
+        except Exception:
+            pass
+        uid = people.get(name)
+        if not uid:
+            continue
+        pterms = {w.casefold() for w in _re.findall(r"[가-힣A-Za-z0-9_.-]{2,}", phrase)
+                  if w not in ("기한", "까지", "담당")}
+        ranked = sorted(
+            ((len(pterms & {w.casefold() for w in _re.findall(
+                r"[가-힣A-Za-z0-9_.-]{2,}", str(row.get("summary") or ""))}), index, row)
+             for index, row in enumerate(rows)),
+            key=lambda value: (-value[0], value[1]),
+        )
+        if ranked and (ranked[0][0] > 0 or len(rows) == 1):
+            ranked[0][2]["assignee"] = uid
+            ranked[0][2]["assignee_source"] = "user"
 
 
 def _fill_owners(item: dict, kids: list) -> None:
@@ -3692,6 +3747,8 @@ def _explicit_comment_body(text: str) -> bool:
 def _comment_input_missing(state, plan: dict) -> bool:
     original = request_text(state)
     latest = last_user_text(state).strip()
+    if _comment_forbidden(original + " " + latest):
+        return False
     delegated_placeholder = bool(_re.search(
         r"(?:내용|목적)(?:은|도)?\s*(?:알아서|아무거나|적당히)", original,
     ))
@@ -3703,6 +3760,49 @@ def _comment_input_missing(state, plan: dict) -> bool:
     if delegated_placeholder:
         return True
     return not str((plan or {}).get("comment") or "").strip()
+
+
+def _comment_forbidden(text: str) -> bool:
+    """True when the latest instruction explicitly excludes a comment."""
+    return bool(_re.search(
+        r"댓글(?:은|을|도)?\s*(?:남기지\s*마|달지\s*마|제외|없이)|"
+        r"코멘트(?:는|를|도)?\s*(?:남기지\s*마|달지\s*마|제외|없이)",
+        str(text or ""), _re.I,
+    ))
+
+
+def _canonicalize_meeting_mentions(state, plan: dict) -> None:
+    """Bind human names in meeting comments to the identities confirmed in this thread."""
+    if not plan:
+        return
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, resolved_people
+        if not is_meeting_request(state):
+            return
+        people = resolved_people(state)
+    except Exception:
+        return
+
+    def canonical(body: str) -> str:
+        value = str(body or "")
+        for name, uid in sorted(people.items(), key=lambda row: -len(row[0])):
+            badge = f"{{{{mention:{uid}}}}}"
+            # Repair a badge already paired with the wrong human-readable name.
+            value = _re.sub(
+                rf"\{{\{{mention:[^}}]+\}}\}}\s*{_re.escape(name)}(?:TL|님|차장|책임|매니저)?",
+                badge, value, flags=_re.I,
+            )
+            value = _re.sub(
+                rf"(?<![가-힣A-Za-z0-9_.}}])@?{_re.escape(name)}(?:TL|님|차장|책임|매니저)?",
+                badge, value,
+            )
+        return value
+
+    if "comment" in plan:
+        plan["comment"] = canonical(plan.get("comment") or "")
+    for row in plan.get("comments") or []:
+        if isinstance(row, dict):
+            row["body"] = canonical(row.get("body") or "")
 
 
 def _human_request_text(state) -> str:
@@ -4403,6 +4503,10 @@ def shape_hint(state) -> tuple:
     """(사용자가 말한 형태 | "", 근거 낱말). 말하지 않았으면 열려 있는 것이다."""
     said = last_user_text(state)
     said_l = said.lower()
+    exact_tasks = _re.search(
+        r"(?:정확히\s*)?(?:task|태스크|테스크)\s*([2-9][0-9]{0,2})\s*건", said_l, _re.I)
+    if exact_tasks:
+        return "multiple_tasks", f"Task {exact_tasks.group(1)}건 명시"
     # 실재/지목 부모 아래에 붙이는 요청은 새 Task+children 구조가 아니라 Sub-Task 배치다.
     # "DL-9090을 단계별로 쪼개줘"도 이쪽이므로 구체적인 새-일 패턴보다 먼저 판정한다.
     if _re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", said, _re.I) and any(
@@ -4419,7 +4523,7 @@ def shape_hint(state) -> tuple:
         return "task_with_subtasks", f"{amount.group(0)} · {split_word}"
     # issue type을 단수로 지목해 "Task/Story/Bug 만들어줘"라고 한 것은 형태 지정이다.
     # 복수·분할 신호가 함께 있을 때만 아래의 더 구체적인 규칙에 맡긴다.
-    if (_re.search(r"(?<![A-Za-z])(?:task|story|bug|태스크|테스크)\s*(?:로\s*)?"
+    if (_re.search(r"(?<![A-Za-z])(?:task|story|bug|태스크|테스크)\s*(?:를|을|로)?\s*"
                    r"(?:만들|생성|등록|올려)", said_l, _re.I)
             and not any(w in said_l for w in
                         ("여러", "각각", "단계", "서브", "sub-task", "나눠", "쪼개"))):

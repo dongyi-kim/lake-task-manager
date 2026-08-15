@@ -1318,7 +1318,7 @@ Original request: {last_user_text(state)}
         if removed_all:
             situation = "현재 요청의 고유 개념과 직접 일치하는 내부 이력은 확인되지 않았다."
         exists = bool(out.get("already_exists")) and (bool(ev) or not removed_all)
-        return {
+        result = {
             "situation": situation,
             "evidence": ev,
             "related_docs": [d for d in (out.get("related_docs") or []) if isinstance(d, dict)][:6],
@@ -1334,6 +1334,16 @@ Original request: {last_user_text(state)}
             "trace": note(state, self.name,
                           f"근거 {len(ev)}건" + (" · 중복 의심 티켓 있음" if exists else "")),
         }
+        # 회의록의 모호한 사람·내부 약어는 일반적인 조사 공백과 다르다. 내부/외부 조사가
+        # 끝난 이 시점에도 확정되지 않은 값만 한 번에 인터뷰하고, 답을 받기 전에는 요약·
+        # 댓글·티켓 초안을 만들지 않는다.
+        from app.agent.workflow.meeting_context import unresolved_questions
+        meeting_questions = unresolved_questions({**state, **result})
+        if meeting_questions:
+            result["questions"] = meeting_questions
+            result["trace"] = (result.get("trace") or []) + note(
+                state, self.name, f"회의록 미확정 값 {len(meeting_questions)}건 인터뷰")
+        return result
 
 
 __all__ = ["ResearchAnalyst", "_prefetched_external_context", "_query_results_have_material",

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import re as _re
+import copy as _copy
 
 import logging
 import uuid
@@ -137,6 +138,63 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             "trace": [TRACE_RESET], "change_plan": {}, "questions": []}
 
 
+_CONTEXT_SWITCH = _re.compile(
+    r"(?:이건|이거|그건|그거).{0,8}(?:그만|취소)|완전히\s*다른|"
+    r"잠깐\s*다른|최종\s*요청|(?:댓글|변경|요청).{0,8}(?:도\s*)?취소|"
+    r"(?:대신|다시\s+.+?돌아갈)", _re.I,
+)
+
+_TURN_DERIVED_EMPTY = {
+    "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
+    "sufficient": False, "answer_depth": "", "request_plan": {},
+    "query_plan": {}, "query_results": [], "query_artifacts": {},
+    "assignment_completion": {}, "bulk_targets": [],
+    "pre_survey": "", "seed_map": "", "web_context": "", "topic_dossier": "",
+    "situation": "", "evidence": [], "related_docs": [], "epic_candidate": "",
+    "already_exists": False, "pmo_findings": [], "group_activity": "",
+    "ticket_progress": "", "knowledge_brief": {}, "pmo_caution": "",
+    "interpretation": "", "structure_plan": [], "structure_ok": False,
+    "structure_notes": [], "draft": {}, "assignments": [], "review": {},
+    "reply": "", "error": "", "turns": 0,
+}
+
+
+def _is_interview_continuation(text: str, prior: dict) -> bool:
+    """Keep expensive research only for an actual answer to our unresolved question."""
+    asked = [q for q in (prior.get("questions") or []) if isinstance(q, dict)]
+    if not asked or _CONTEXT_SWITCH.search(str(text or "")):
+        return False
+    # A full new request with a new explicit ticket is not an answer merely because the last turn asked.
+    old_keys = set(prior.get("mentioned_keys") or [])
+    new_keys = set(_recent_keys(text))
+    if new_keys and old_keys and not new_keys.issubset(old_keys):
+        return False
+    return True
+
+
+def _turn_start_patch(text: str, prior: dict) -> dict:
+    """Separate per-turn working memory from durable conversation messages.
+
+    LangGraph merges new input into the checkpoint.  Without explicit empty values, a new request inherits the
+    previous topic dossier, draft, approval review, and PMO result.  Preserve research only while answering a
+    blocking interview; every other turn receives a clean working set and a new request root.
+    """
+    continuation = _is_interview_continuation(text, prior)
+    patch = _copy.deepcopy(_TURN_DERIVED_EMPTY)
+    patch.update(turn_continuation=continuation,
+                 turn_reset_reason="interview-answer" if continuation else "new-or-revised-request")
+    if continuation:
+        for key in ("request_text", "pre_survey", "seed_map", "web_context", "topic_dossier",
+                    "situation", "evidence", "related_docs", "epic_candidate", "already_exists",
+                    "bulk_targets", "structure_plan", "structure_ok", "structure_notes", "draft",
+                    "turns"):
+            if key in prior:
+                patch[key] = prior[key]
+    else:
+        patch["request_text"] = str(text or "").strip()
+    return patch
+
+
 def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") -> dict:
     """한 턴 굴린다. 승인이 필요한 지점에서 멈추면 `pending` 이 채워져 돌아온다."""
     tid = thread_id or new_thread()
@@ -145,7 +203,14 @@ def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") 
         return {"thread_id": tid, "ok": False, "reply": too_long, "error": too_long, "trace": []}
     log.info("[%s] Q: %s", tid, (text or "")[:500])
     meter = _usage.Meter()
-    state = get_graph().invoke(_initial(tid, text, user_role, user_id), _config(tid, meter))
+    graph = get_graph()
+    try:
+        prior = dict((graph.get_state(_config(tid)).values or {}))
+    except Exception:
+        prior = {}
+    initial = _initial(tid, text, user_role, user_id)
+    initial.update(_turn_start_patch(text, prior))
+    state = graph.invoke(initial, _config(tid, meter))
     out = _shape(tid, state)
     out["usage"] = meter.snapshot()
     log.info("[%s] A: %s", tid, (out.get("reply") or "")[:1000])

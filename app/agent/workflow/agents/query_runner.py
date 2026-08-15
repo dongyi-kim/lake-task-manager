@@ -158,6 +158,13 @@ class QueryRunner:
                     else:
                         raw = T.BY_NAME["search_documents"].invoke(args)
                 elif source == "comments":
+                    if not str(spec.get("query") or "").strip() \
+                            and not str(spec.get("where") or "").strip():
+                        raw = {"error": "빈 댓글 전수조회는 허용되지 않습니다.",
+                               "comments": [], "returned": 0}
+                        artifacts[qid] = raw
+                        results.append({"id": qid, "source": source, "result": raw})
+                        continue
                     args = {"query": spec.get("query") or "", "jql_where": spec.get("where") or "",
                             "page_size": min(spec.get("page_size") or 20, 25)}
                     if complete == "all":

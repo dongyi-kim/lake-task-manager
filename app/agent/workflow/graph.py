@@ -79,6 +79,16 @@ def route_after_request_architect(state: AgentState) -> str:
     # terminal result for this turn; sending them through research wastes calls and cannot improve them.
     if state.get("questions"):
         return "respond"
+    # 회의록의 사람·로컬 약어는 먼저 관련 자료를 찾고, 그래도 확정되지 않을 때 인터뷰한다.
+    # 정확한 티켓 변경 요청이라도 이 검증 전에는 WorkArchitect로 단축하지 않는다.
+    from app.agent.workflow.meeting_context import needs_research_interview
+    if needs_research_interview(state):
+        return "investigate"
+    # 직전 조사 후의 인터뷰 답변은 같은 자료를 다시 검색하지 않는다. 조회/웹 결과를 보존한
+    # 채 지식 정리 또는 초안 작성으로 이어서 호출 수와 stale 검색 위험을 함께 줄인다.
+    if state.get("turn_continuation") and (state.get("situation") or "").strip():
+        if intent == Intent.ASK:
+            return "curate"
     # 분담형 Task의 미완료자 조회는 Query Specialist의 자유 JQL이나 Portfolio ReAct가
     # 아니라 parent 탐색→직계 Sub-Task 전수 집계라는 고정 join이다.
     from app.agent.workflow.assignment_completion import asks_incomplete_assignees
@@ -406,6 +416,7 @@ def build(checkpointer=None):
                             {"investigate": Node.QUERY_SPECIALIST,
                              Node.QUERY_RUNNER: Node.QUERY_RUNNER,
                              Node.PORTFOLIO_ANALYST: Node.PORTFOLIO_ANALYST,
+                             "curate": Node.KNOWLEDGE_CURATOR,
                              "refine": Node.WORK_ARCHITECT, "respond": Node.RESULT_INTEGRATOR})
     g.add_edge(Node.QUERY_SPECIALIST, Node.QUERY_RUNNER)
     g.add_conditional_edges(Node.QUERY_RUNNER, route_after_query_runner,

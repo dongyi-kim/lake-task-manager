@@ -187,6 +187,12 @@ p50/p95, token/call/cost, 자동 실패율, 사람 점수와 치명 결함률을
 것이므로 case를 실패 처리한다. 초기화·fingerprint 시간은 Agent latency에
 포함하지 않는다. 이 격리를 제거하거나 cache policy를 바꾸면 같은 `comparabilityKey`로 비교하지 않는다.
 
+대화 checkpoint에서 영속되는 것은 message history와 사용자가 답하는 중인 인터뷰의 원 요청·조사 근거다.
+새 요청, 취소, 대체, 주제 전환 턴에는 `topic_dossier`, query result, PMO finding, draft/change plan,
+assignment/review를 명시적으로 비운다. 직전 blocking question에 대한 답변으로 판정된 턴만 원 요청과 조사
+artifact를 보존한다. 새 요청을 과거 `request_text`에 이어 붙여 stale 근거로 답하거나 수정 payload를
+합성하지 않는다.
+
 회의록 battery의 사람 표기는 `@이름`, `{{이름:식별자}}`, 이름 일부+호칭을 모두 다룬다. 내부 roster와
 관련 자료를 조회해도 한 명으로 확정되지 않는 호칭은 후보 인터뷰 후 진행한다. 기술어·내부 약어·히스토리도
 Jira·Confluence·comment와 안전한 외부 검색을 먼저 수행하고, 행동에 필요한 뜻·범위·소유자·기한이 여전히

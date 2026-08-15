@@ -116,6 +116,22 @@ class QuerySpecialist(StructuredAgent):
 
     def apply(self, state, out):
         plan = QueryPlan.model_validate(out).model_dump()
+        # 빈 comment query + 빈 JQL은 "모든 댓글"이라는 위험한 의미가 된다. 회의록 한 건에서
+        # 2천여 댓글을 읽은 실측이 있었고, 관련성도 비용도 망가졌다. 대상/검색어가 하나도
+        # 없으면 실행하지 않고 계획의 불확실성으로 남긴다.
+        kept = []
+        dropped_blank_comments = False
+        for query in plan["queries"]:
+            if query.get("source") == "comments" \
+                    and not str(query.get("query") or "").strip() \
+                    and not str(query.get("where") or "").strip():
+                dropped_blank_comments = True
+                continue
+            kept.append(query)
+        plan["queries"] = kept
+        if dropped_blank_comments:
+            plan.setdefault("uncertainty", []).append(
+                "검색어와 티켓 조건이 모두 빈 댓글 전수조회는 실행하지 않음")
         external = _external_research_allowed(state)
         if not external:
             plan["queries"] = [q for q in plan["queries"]
