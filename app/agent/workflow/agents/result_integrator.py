@@ -850,6 +850,11 @@ def _align_child_presence_claims(text: str, items: list) -> str:
                   f"자식 작업 {count}건이 설정되었습니다.", str(text or ""))
     out = _re.sub(r"하위\s*작업은\s*별도로\s*설정되지\s*않았습니다?\.?”?",
                   f"하위 작업 {count}건이 설정되었습니다.", out)
+    out = _re.sub(r"(?m)^.*(?:하위\s*(?:Task|작업)|Sub-?Task)[^\n]{0,30}"
+                  r"(?:별도로\s*)?제안할\s*예정[^\n]*$",
+                  f"Sub-Task {count}건이 초안에 포함됨", out, flags=_re.I)
+    out = _re.sub(r"(?m)^.*승인\s*후[^\n]{0,25}(?:하위\s*(?:Task|작업)|Sub-?Task)"
+                  r"[^\n]{0,20}제안[^\n]*$", "", out, flags=_re.I)
     return out
 
 
@@ -945,6 +950,13 @@ def _ensure_dod_claims(text: str, items: list) -> str:
                   r"기입\s*필요|기술되지\s*않음|최소한의\s*설명)[^\n]*\]|"
                   r"\([^\n]*(?:데이터\s*누락|누락|미정|확인\s*필요)[^\n]*\)|\s*)$", "", out,
                   flags=_re.I)
+    actual_rows = [row for _title, rows in records for row in rows]
+    out = "\n".join(
+        line for line in out.splitlines()
+        if not (_re.search(r"\*\*(?:완료\s*조건(?:\s*\(DoD\))?|DoD)\*\*\s*:", line,
+                           _re.I)
+                and not any(_re.sub(r"\s+", " ", row)[:24]
+                            in _re.sub(r"\s+", " ", line) for row in actual_rows)))
     if len(records) > 1:
         table = ["### 실제 완료 조건", "| 티켓 | 완료 조건 |", "|---|---|"]
         table += [f"| {title} | {'<br>'.join(rows)} |" for title, rows in records]
@@ -1008,7 +1020,7 @@ def _drop_false_epic_claims(text: str, items: list) -> str:
                        str(text or ""))
     # 모델이 카드의 실제 유형보다 한 단계 크게 소개하는 경우가 있다. 단건 카드의 명시적
     # 유형 줄은 버리지 말고 payload 유형으로 고쳐 제목을 보존한다.
-    if not actual and not actual_epics and len(items) == 1:
+    if not actual_epics and len(items) == 1:
         actual_type = str(items[0].get("type") or "Task")
         text = _re.sub(r"(?mi)^(\s*-?\s*\*\*)(?:Epic|에픽)(\*\*\s*:\s*)",
                        rf"\1{actual_type}\2", str(text or ""))
@@ -1111,7 +1123,7 @@ def _align_child_owner_claims(text: str, items: list) -> str:
     if not exact_block:
         # 축약 제목·순서로 담당이 뒤바뀔 수 있으므로 실제 payload 표를 한 번 보장한다.
         rows = ["### Sub-Task 담당", "| Sub-Task | 담당 |", "|---|---|"]
-        rows += [f"| {c['summary']} | {c['assignee']} |" for c in children]
+        rows += [f"| {c['summary']} | [~{c['assignee']}] |" for c in children]
         block = "\n".join(rows) + "\n\n"
         approval = _re.search(r"(?m)^#{2,3}\s*승인", out)
         out = (out[:approval.start()] + block + out[approval.start():]

@@ -234,11 +234,22 @@ def test_task_linked_to_epic_is_not_described_as_a_new_epic_draft():
     state = {"draft": {"items": [{"summary": "[ETL] Puffin NDV 파이프라인 1차 구현",
                                       "type": "Story", "epic": "DL-102"}]}}
     got = _align_draft_claims(
-        "### Epic 초안\n\n새로운 Epic을 생성하고 Epic Name을 설정합니다.\n\n"
+        "### Epic 초안\n\n- **Epic**: [ETL] Puffin NDV 파이프라인 1차 구현\n\n"
+        "새로운 Epic을 생성하고 Epic Name을 설정합니다.\n\n"
         "상위 Epic DL-102 아래에 배치합니다.\n\n### 승인 요청\n승인해 주세요.", state)
     assert "새로운 Epic" not in got and "Epic Name" not in got
     assert "**실제 티켓 초안**: Story" in got and "DL-102" in got
+    assert "- **Story**:" in got and "- **Epic**:" not in got
     assert "상위 Epic" in got
+
+
+def test_existing_children_are_not_promised_for_a_later_turn():
+    from app.agent.workflow.agents.result_integrator import _align_child_presence_claims
+    items = [{"children": [{"summary": "설계"}, {"summary": "구현"}, {"summary": "검증"}]}]
+    got = _align_child_presence_claims(
+        "하위 Task는 별도로 제안할 예정\n승인 후 하위 Task를 제안하겠습니다", items)
+    assert "Sub-Task 3건이 초안에 포함됨" in got
+    assert "승인 후" not in got and "제안할 예정" not in got
 
 
 def test_reply_owner_uses_the_assignment_row_that_drives_the_final_payload():

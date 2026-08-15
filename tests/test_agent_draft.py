@@ -896,7 +896,7 @@ def test_result_integrator_adds_a_canonical_child_owner_table_when_reply_omits_i
     got = _align_draft_claims("등록 묶음 1\n등록 묶음 2\n### 승인 요청\n승인해 주세요.",
                               {"draft": {"items": items}})
     assert "### Sub-Task 담당" in got
-    assert "| 등록 묶음 1 | skcc.i2044 |" in got
+    assert "| 등록 묶음 1 | [~skcc.i2044] |" in got
     assert got.index("### Sub-Task 담당") < got.index("### 승인 요청")
 
 
@@ -1612,8 +1612,8 @@ def test_child_assignment_table_uses_payload_order_even_if_reply_swaps_people():
         {"summary": "등록 묶음 2/2", "assignee": "skcc.a200"}]}]
     got = _align_child_owner_claims(
         "- Sub-Task 1: skcc.a200\n- Sub-Task 2: skcc.a100", items)
-    assert "| 등록 묶음 1/2 | skcc.a100 |" in got
-    assert "| 등록 묶음 2/2 | skcc.a200 |" in got
+    assert "| 등록 묶음 1/2 | [~skcc.a100] |" in got
+    assert "| 등록 묶음 2/2 | [~skcc.a200] |" in got
 
 
 def test_workload_causal_rewrite_does_not_make_najeumasa():
@@ -2770,9 +2770,17 @@ def test_self_exclusion_and_unverified_performance_cause_are_removed():
 
 
 def test_long_subject_does_not_hide_a_vague_completion_condition():
-    from app.agent.workflow.agents.work_architect import _vague_dod
+    from app.agent.workflow.agents.work_architect import _sharpen_dod, _vague_dod
     assert _vague_dod(["StarRocks Puffin NDV 통계정보 생성 파이프라인이 정상적으로 작동함"])
     assert not _vague_dod(["NDV 생성 결과와 테스트 로그를 티켓에 기록함"])
+    item = {"summary": "[ETL] StarRocks Puffin NDV 통계정보 생성 파이프라인 개발",
+            "type": "Task", "description": (
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                "<li data-checked=\"false\">NDV 통계정보 생성 파이프라인이 정상적으로 작동함</li>"
+                "<li data-checked=\"false\">관련 문서화 완료</li></ul>")}
+    assert _sharpen_dod(_msg("NDV 파이프라인 개발"), [item])
+    assert "작동함" not in item["description"] and "문서화 완료" not in item["description"]
+    assert "함 실행" not in item["description"]
 
 
 def test_a_plain_task_still_gets_the_task_template(monkeypatch):
