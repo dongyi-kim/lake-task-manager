@@ -2759,7 +2759,7 @@ def test_self_exclusion_and_unverified_performance_cause_are_removed():
                             "<h3>작업 범위</h3><ul><li>포함: 인덱스 최적화</li>"
                             "<li>제외: [ETL] 쿼리 성능 대대적 개선</li></ul>"
                             "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
-                            "<li data-checked=\"false\">측정 결과 기록</li></ul>")}
+                            "<li data-checked=\"false\">인덱스 적용 후 측정 결과 기록</li></ul>")}
     state = _msg("쿼리 성능 개선을 대대적으로 해보자. 기간은 2주고 ETL 쪽만 손볼 거야")
     assert R._remove_unrequested_quality_claims(state, [item])
     R._drop_self_exclusions([item])
@@ -2767,6 +2767,12 @@ def test_self_exclusion_and_unverified_performance_cause_are_removed():
     assert "속도가 느" not in body and "인덱스" not in body
     assert "제외: [ETL] 쿼리 성능 대대적 개선" not in body
     assert "제외: ETL 외 모듈 변경" in body
+
+
+def test_long_subject_does_not_hide_a_vague_completion_condition():
+    from app.agent.workflow.agents.work_architect import _vague_dod
+    assert _vague_dod(["StarRocks Puffin NDV 통계정보 생성 파이프라인이 정상적으로 작동함"])
+    assert not _vague_dod(["NDV 생성 결과와 테스트 로그를 티켓에 기록함"])
 
 
 def test_a_plain_task_still_gets_the_task_template(monkeypatch):

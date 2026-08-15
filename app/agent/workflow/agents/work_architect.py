@@ -2688,7 +2688,9 @@ DOD_VAGUE = ("테스트 완료", "정상 동작", "잘 동작", "이상 없음",
 
 def _vague_dod(rows) -> list:
     """판정 방법이 없는 완료 조건 줄들. 짧고 뭉뚱그린 것만 — 길게 쓴 것은 방법이 들어 있다."""
-    return [d for d in rows if any(v in d for v in DOD_VAGUE) and len(d) < 24]
+    evidence = _re.compile(r"로그|결과|기록|링크|측정값|리포트|보고서|스크린샷|"
+                           r"실행\s*계획|테스트\s*케이스|리뷰")
+    return [d for d in rows if any(v in d for v in DOD_VAGUE) and not evidence.search(d)]
 
 
 def _dod_rows(body) -> list:
@@ -3094,6 +3096,11 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
             continue
         summary = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(item.get("summary") or "작업")).strip()
         safe = _esc(summary or "요청한 작업")
+        method_terms = (r"인덱스", r"캐시", r"파티션", r"쿼리\s*재작성")
+
+        def has_unrequested_method(value: str) -> bool:
+            return any(_re.search(term, value or "", _re.I)
+                       and not _re.search(term, request, _re.I) for term in method_terms)
 
         def has_forbidden(value: str) -> bool:
             return any(_re.search(p, value or "", _re.I) for p in forbidden)
@@ -3104,16 +3111,15 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
         unsupported_problem = bool(bg and not _re.search(
             r"저하|느리|지연|병목|오래\s*걸", request, _re.I)
             and _re.search(r"저하|속도가\s*느|지연|병목", bg.group(2), _re.I))
-        if bg and (has_forbidden(bg.group(2)) or unsupported_problem):
+        if bg and (has_forbidden(bg.group(2)) or unsupported_problem
+                   or has_unrequested_method(bg.group(2))):
             body = body[:bg.start(2)] + f"<p>{safe} 요청됨.</p>" + body[bg.end(2):]
             changed = True
 
         # 범위에서 새 품질 차원이 생겼다면 합의된 summary 경계로 복원한다.
         scope_pattern = r"(<h3>\s*작업 범위\s*</h3>\s*)(.*?)(?=<h3>|$)"
         scope = _re.search(scope_pattern, body, _re.S | _re.I)
-        invented_method = bool(scope and any(
-            _re.search(term, scope.group(2), _re.I) and not _re.search(term, request, _re.I)
-            for term in (r"인덱스", r"캐시", r"파티션", r"쿼리\s*재작성")))
+        invented_method = bool(scope and has_unrequested_method(scope.group(2)))
         if scope and (has_forbidden(scope.group(2)) or invented_method):
             module = next((str(x).strip() for x in (item.get("components") or []) if str(x).strip()), "")
             exclusion = (f"{module} 외 모듈 변경" if module and _re.search(
@@ -3129,7 +3135,8 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
         def clean_dod(match):
             nonlocal changed
             inner = match.group(1)
-            if not has_forbidden(_re.sub(r"<[^>]+>", " ", inner)):
+            plain = _re.sub(r"<[^>]+>", " ", inner)
+            if not has_forbidden(plain) and not has_unrequested_method(plain):
                 return match.group(0)
             changed = True
             return (match.group(0)[:match.group(0).find(">") + 1]

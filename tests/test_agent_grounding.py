@@ -253,8 +253,8 @@ def test_reply_owner_uses_the_assignment_row_that_drives_the_final_payload():
         "### 티켓 초안\n- **제목**: [ETL] Puffin NDV 파이프라인 개발\n"
         "### 할당 근거\n- **현재 담당자**: skcc.i2011 (진행중 12건)\n"
         "- **대안**: skcc.i2011 (진행중 12건)", state)
-    assert "현재 담당자**: skcc.x1103 (진행중 8건)" in got
-    assert "대안**: skcc.i2011 (진행중 12건)" in got
+    assert "| [ETL] Puffin NDV 파이프라인 개발 | [~skcc.x1103] | 진행중 8건 |" in got
+    assert "[~skcc.i2011] — 진행중 12건" in got
 
 
 def test_primary_owner_alignment_does_not_overwrite_a_different_candidate():
@@ -267,7 +267,7 @@ def test_primary_owner_alignment_does_not_overwrite_a_different_candidate():
     got = _align_draft_claims(
         "### 티켓 초안\n- 제목: [Workbench] 화면 빈 현상\n"
         "### 담당자\n담당자로 skcc.x1402를 추천. 다른 후보인 skcc.x1450은 진행중 22건", state)
-    assert "skcc.x1402" in got and "skcc.x1450" in got
+    assert "[~skcc.x1402]" in got and "[~skcc.x1450]" in got
 
 
 def test_exclusion_is_never_labeled_as_a_completion_condition():

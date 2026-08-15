@@ -688,6 +688,7 @@ def _align_draft_claims(text: str, state) -> str:
         text = _align_child_owner_claims(text, owner_items)
         text = _align_assigned_owner_cautions(text, owner_items)
         text = _align_workload_claims(text, state)
+        text = _render_assignment_section(text, owner_items, state.get("assignments") or [])
         text = _align_due_claims(text, items)
         text = _normalize_alternate_language(text)
         text = _drop_unsupported_assignment_experience(text, state)
@@ -736,6 +737,35 @@ def _align_scope_labels(text: str) -> str:
                            flags=_re.I)
         lines.append(line)
     return "\n".join(lines)
+
+
+def _render_assignment_section(text: str, items: list, assignments: list) -> str:
+    """Render the recommendation table from the exact rows merged into the approval payload."""
+    rows = [row for row in (assignments or []) if isinstance(row, dict)
+            and isinstance(row.get("index"), int) and row.get("user")]
+    if not rows:
+        return str(text or "")
+    table = ["### 담당 제안", "", "| 티켓 | 추천 | 근거 | 대안 |", "|---|---|---|---|"]
+    for row in rows:
+        index = int(row["index"])
+        title = (str(items[index].get("summary") or f"#{index + 1}")
+                 if 0 <= index < len(items) else f"#{index + 1}")
+        reasons = "<br>".join(str(x) for x in (row.get("reasons") or []) if str(x).strip()) or "-"
+        alternates = "<br>".join(
+            f"[~{alt.get('user')}] — {alt.get('why')}"
+            for alt in (row.get("alternates") or [])
+            if isinstance(alt, dict) and alt.get("user") and alt.get("user") != row.get("user")) or "-"
+        table.append(f"| {title} | [~{row['user']}] | {reasons} | {alternates} |")
+    block = "\n".join(table)
+    source = str(text or "")
+    pattern = (r"(?ms)^###\s*(?:할당(?:\s+증거)?|담당(?:자)?\s*(?:제안|추천)|"
+               r"할당\s+증거\s+및\s+추천)[^\n]*\n.*?(?=^###\s|\Z)")
+    if _re.search(pattern, source):
+        return _re.sub(pattern, block + "\n", source, count=1)
+    anchor = _re.search(r"(?m)^###\s*(?:검증|승인)", source)
+    if anchor:
+        return source[:anchor.start()].rstrip() + "\n\n" + block + "\n\n" + source[anchor.start():]
+    return source.rstrip() + "\n\n" + block
 
 
 def _align_due_claims(text: str, items: list) -> str:
