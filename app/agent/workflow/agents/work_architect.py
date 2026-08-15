@@ -1133,18 +1133,32 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         if (out.get("mode") or "") == "epic" and items:
             twin = _existing_epic_like(items[0].get("summary") or "")
             if twin:
-                qs = (qs or []) + [{
-                    "question": f"{twin['key']} \"{twin.get('summary', '')}\" 가 이미 있습니다. "
-                                "여기에 Task 로 붙일까요, 그래도 새 Epic 을 만들까요?",
-                    "kind": "choice", "field": "epic",
-                    "options": [f"{twin['key']} 아래 Task 로 (권장 — 중복 Epic 은 진척 집계를 흐린다)",
-                                "새 Epic 을 만든다"]}]
-                # draft 는 이 위에서 이미 조립됐고 items 를 **참조로** 공유한다 —
-                # 이름을 다시 묶으면(items = []) 초안에는 반영되지 않는다. 비운다.
-                items.clear()
-                out["rationale"] = ((out.get("rationale") or "")
-                                    + f"\n(Epic 격상 보류 — {twin['key']} 와 이름이 겹친다)").strip()
-                structure = "single_task"
+                if _said_defaults(state):
+                    # `알아서`는 새 보고 단위를 만들라는 승인이 아니라 안전한 기본값을
+                    # 선택하라는 위임이다. 검증된 동일 Epic이 하나면 중복 생성 여부를 다시
+                    # 물을 필수정보가 없다. 기존 Epic 아래 Task가 되돌리기 쉬운 기본값이다.
+                    item = items[0]
+                    item["type"] = "Task"
+                    item["epic"] = twin["key"]
+                    item.pop("epic_name", None)
+                    mode = out["mode"] = draft["mode"] = "task"
+                    structure = out["structure"] = draft["structure"] = "single_task"
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + f"\n(Epic 격상 보류 — {twin['key']} 와 이름이 겹쳐 "
+                                          "기존 Epic 아래 Task로 정리했다)").strip()
+                else:
+                    qs = (qs or []) + [{
+                        "question": f"{twin['key']} \"{twin.get('summary', '')}\" 가 이미 있습니다. "
+                                    "여기에 Task 로 붙일까요, 그래도 새 Epic 을 만들까요?",
+                        "kind": "choice", "field": "epic",
+                        "options": [f"{twin['key']} 아래 Task 로 (권장 — 중복 Epic 은 진척 집계를 흐린다)",
+                                    "새 Epic 을 만든다"]}]
+                    # draft 는 이 위에서 이미 조립됐고 items 를 **참조로** 공유한다 —
+                    # 이름을 다시 묶으면(items = []) 초안에는 반영되지 않는다. 비운다.
+                    items.clear()
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + f"\n(Epic 격상 보류 — {twin['key']} 와 이름이 겹친다)").strip()
+                    structure = "single_task"
 
         # ── "Epic 은 네가 골라줘" 는 **고르라는 말이지 만들라는 말이 아니다** ──────
         # 실측 STARR1: "Epic 은 네가 골라줘. … 알아서 진행해" 에 모델이 **새 Epic** 을

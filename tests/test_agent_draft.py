@@ -459,6 +459,26 @@ def test_promoting_to_an_epic_stops_when_one_of_that_name_already_exists():
     assert "Epic 격상 보류" in r["draft"]["rationale"]
 
 
+def test_delegated_duplicate_epic_uses_the_existing_epic_without_reasking():
+    """STR3: 안전 기본값이 하나인데 `알아서`를 받고도 선택 질문을 되풀이하지 않는다."""
+    out = {"questions": [], "mode": "epic", "rationale": "",
+           "structure": "new_epic", "structure_source": "user_specified",
+           "items": [{"summary": "[ETL] 쿼리 성능 개선", "type": "Epic",
+                      "epic_name": "쿼리개선", "components": ["ETL"],
+                      "description": "<h3>배경</h3><p>쿼리 성능 개선</p>"}]}
+
+    r = WorkArchitect().apply(
+        _msg("쿼리 성능 개선을 대대적으로 해보자. 에픽으로 크게 잡아줘. "
+             "기간은 2주 정도고 ETL 쪽만 손볼 거야. 알아서 진행해"), out)
+
+    assert not r["questions"]
+    assert r["draft"]["mode"] == "task"
+    assert r["draft"]["structure"] == "single_task"
+    assert r["draft"]["items"][0]["type"] == "Task"
+    assert r["draft"]["items"][0]["epic"] == "DL-102"
+    assert "epic_name" not in r["draft"]["items"][0]
+
+
 def test_a_genuinely_new_epic_is_not_blocked():
     out = {"questions": [], "mode": "epic", "rationale": "",
            "items": [{"summary": "[ETL] 사내 표준 스키마 레지스트리 이관", "type": "Epic",
