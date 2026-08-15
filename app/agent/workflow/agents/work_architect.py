@@ -1152,6 +1152,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 item.pop("epic_name", None)
                 mode = out["mode"] = draft["mode"] = "task"
                 structure = out["structure"] = draft["structure"] = "single_task"
+                why = out["structure_why"] = draft["structure_why"] = \
+                    f"기존 Epic {parent_epic} 아래의 단일 Task로 중복 보고 단위를 피했다"
                 out["rationale"] = ((out.get("rationale") or "")
                                     + f"\n(Epic 아래 Epic은 허용되지 않아 {parent_epic} 아래 "
                                       "Task로 정리했다)").strip()
@@ -1174,6 +1176,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                     item.pop("epic_name", None)
                     mode = out["mode"] = draft["mode"] = "task"
                     structure = out["structure"] = draft["structure"] = "single_task"
+                    why = out["structure_why"] = draft["structure_why"] = \
+                        f"기존 Epic {twin['key']} 아래의 단일 Task로 중복 Epic을 피했다"
                     out["rationale"] = ((out.get("rationale") or "")
                                         + f"\n(Epic 격상 보류 — {twin['key']} 와 이름이 겹쳐 "
                                           "기존 Epic 아래 Task로 정리했다)").strip()
@@ -1516,6 +1520,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             # 같은 그럴듯한 효과를 배경·범위·DoD에 보탠다. 문장은 자연스럽지만 검증된 사실은
             # 아니다. 원 요청에 없는 품질 차원을 안전한 요청/검증 문장으로 되돌린다.
             _remove_unrequested_quality_claims(state, items)
+            _drop_self_exclusions(items)
             # 본문 보정은 위의 참고 불릿 가드 **뒤에서** 새 HTML을 만든다. 생산자 뒤에서
             # 다시 검사하지 않으면 보정 호출이 만든 출처 없는 참고가 그대로 승인 카드로 간다
             # (PASTE1/PASTE2 실측). 같은 함수로 한 번 더 보며 규칙은 복제하지 않는다.
@@ -1592,6 +1597,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 r"(?:Epic|에픽)(?![^.\n]{0,140}(?:아니|않|못|뺐|제거|보류))"
                 r"[^.\n]{0,140}(?:선택|연결|붙였|배치|포함|생성)[^.\n]*(?:\.|$)", "",
                 str(out.get("rationale") or ""), flags=_re.I).strip()
+        if items and not any(str(i.get("type") or "").lower() == "epic" for i in items):
+            out["rationale"] = _re.sub(
+                r"[^.\n]*(?:새(?:로운)?\s*)?(?:Epic|에픽)[^.\n]{0,80}(?:생성|만들)[^.\n]*(?:\.|$)",
+                "", str(out.get("rationale") or ""), flags=_re.I).strip()
         # `알아서` 위임으로 초안을 이미 만들었는데 초기 질문을 rationale에 옮겨 적으면
         # ResultIntegrator가 다시 범위/완료조건 입력을 요구한다. 질문 payload가 비었고 승인 카드가
         # 존재하므로 그 문구는 상태와 모순이다.
@@ -3003,6 +3012,9 @@ def _relative_due(text: str) -> str:
     from datetime import date, timedelta
     t = (text or "").replace(" ", "")
     today = date.today()
+    duration = _re.search(r"(?<!\d)(\d{1,2})\s*주(?:\s*(?:정도|동안|이내|내))?", text or "")
+    if duration and not _re.search(rf"{_re.escape(duration.group(0))}\s*전", text or ""):
+        return (today + timedelta(days=7 * int(duration.group(1)))).isoformat()
     if "내일" in t:
         return (today + timedelta(days=1)).isoformat()
     if "모레" in t:
@@ -3089,16 +3101,26 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
         # 배경은 효과를 추측하지 않고 요청 사실만 남긴다.
         bg_pattern = r"(<h3>\s*배경\s*</h3>\s*)(.*?)(?=<h3>|$)"
         bg = _re.search(bg_pattern, body, _re.S | _re.I)
-        if bg and has_forbidden(bg.group(2)):
+        unsupported_problem = bool(bg and not _re.search(
+            r"저하|느리|지연|병목|오래\s*걸", request, _re.I)
+            and _re.search(r"저하|속도가\s*느|지연|병목", bg.group(2), _re.I))
+        if bg and (has_forbidden(bg.group(2)) or unsupported_problem):
             body = body[:bg.start(2)] + f"<p>{safe} 요청됨.</p>" + body[bg.end(2):]
             changed = True
 
         # 범위에서 새 품질 차원이 생겼다면 합의된 summary 경계로 복원한다.
         scope_pattern = r"(<h3>\s*작업 범위\s*</h3>\s*)(.*?)(?=<h3>|$)"
         scope = _re.search(scope_pattern, body, _re.S | _re.I)
-        if scope and has_forbidden(scope.group(2)):
+        invented_method = bool(scope and any(
+            _re.search(term, scope.group(2), _re.I) and not _re.search(term, request, _re.I)
+            for term in (r"인덱스", r"캐시", r"파티션", r"쿼리\s*재작성")))
+        if scope and (has_forbidden(scope.group(2)) or invented_method):
+            module = next((str(x).strip() for x in (item.get("components") or []) if str(x).strip()), "")
+            exclusion = (f"{module} 외 모듈 변경" if module and _re.search(
+                rf"{_re.escape(module)}[^.\n]{{0,12}}(?:쪽)?만|(?:쪽)?만[^.\n]{{0,12}}{_re.escape(module)}",
+                request, _re.I) else "요청에 명시되지 않은 연관 기능 변경")
             fresh = (f"<ul><li>포함: {safe}</li>"
-                     "<li>제외: 요청에 명시되지 않은 연관 기능 변경</li></ul>")
+                     f"<li>제외: {_esc(exclusion)}</li></ul>")
             body = body[:scope.start(2)] + fresh + body[scope.end(2):]
             changed = True
 
@@ -3117,6 +3139,32 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
             r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
             clean_dod, body, flags=_re.S | _re.I)
         item["description"] = body
+    return changed
+
+
+def _drop_self_exclusions(items: list) -> bool:
+    """Remove an exclusion bullet that merely repeats the ticket's own title."""
+    changed = False
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        title = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "")).strip()
+        title_key = _re.sub(r"[^0-9A-Za-z가-힣]+", "", title).casefold()
+        body = str(item.get("description") or "")
+
+        def keep(match):
+            nonlocal changed
+            plain = _re.sub(r"<[^>]+>", "", match.group(1)).strip()
+            excluded = _re.sub(r"^\s*제외(?:\s*\([^)]*\))?\s*:\s*", "", plain)
+            excluded = _re.sub(r"^\s*\[[^]]+\]\s*", "", excluded).strip()
+            key = _re.sub(r"[^0-9A-Za-z가-힣]+", "", excluded).casefold()
+            if len(title_key) >= 6 and (key == title_key or key in title_key):
+                changed = True
+                return ""
+            return match.group(0)
+
+        item["description"] = _re.sub(r"<li\b[^>]*>(.*?제외.*?)</li>", keep, body,
+                                      flags=_re.I | _re.S)
     return changed
 
 

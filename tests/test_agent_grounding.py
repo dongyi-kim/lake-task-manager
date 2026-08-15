@@ -241,6 +241,41 @@ def test_task_linked_to_epic_is_not_described_as_a_new_epic_draft():
     assert "상위 Epic" in got
 
 
+def test_reply_owner_uses_the_assignment_row_that_drives_the_final_payload():
+    from app.agent.workflow.agents.result_integrator import _align_draft_claims
+    item = {"summary": "[ETL] Puffin NDV 파이프라인 개발", "type": "Task",
+            "assignee": "skcc.i2011"}
+    state = {"draft": {"items": [item]},
+             "assignments": [{"index": 0, "user": "skcc.x1103",
+                              "reasons": ["진행중 8건"],
+                              "alternates": [{"user": "skcc.i2011", "why": "진행중 12건"}]}]}
+    got = _align_draft_claims(
+        "### 티켓 초안\n- **제목**: [ETL] Puffin NDV 파이프라인 개발\n"
+        "### 할당 근거\n- **현재 담당자**: skcc.i2011 (진행중 12건)\n"
+        "- **대안**: skcc.i2011 (진행중 12건)", state)
+    assert "현재 담당자**: skcc.x1103 (진행중 8건)" in got
+    assert "대안**: skcc.i2011 (진행중 12건)" in got
+
+
+def test_primary_owner_alignment_does_not_overwrite_a_different_candidate():
+    from app.agent.workflow.agents.result_integrator import _align_draft_claims
+    state = {"draft": {"items": [{"summary": "[Workbench] 화면 빈 현상", "type": "Bug",
+                                      "assignee": "skcc.x1402"}]},
+             "assignments": [{"index": 0, "user": "skcc.x1402",
+                              "reasons": ["진행중 14건"],
+                              "alternates": [{"user": "skcc.x1450", "why": "진행중 22건"}]}]}
+    got = _align_draft_claims(
+        "### 티켓 초안\n- 제목: [Workbench] 화면 빈 현상\n"
+        "### 담당자\n담당자로 skcc.x1402를 추천. 다른 후보인 skcc.x1450은 진행중 22건", state)
+    assert "skcc.x1402" in got and "skcc.x1450" in got
+
+
+def test_exclusion_is_never_labeled_as_a_completion_condition():
+    from app.agent.workflow.agents.result_integrator import _align_scope_labels
+    assert _align_scope_labels("- **완료 조건**: 성능 최적화 작업은 제외") == \
+        "- **제외 범위**: 성능 최적화 작업은 제외"
+
+
 def test_fabricated_uid_with_real_suffix_is_caught():
     """etl.x1001 — 접두만 바꾼 날조 사번. 접미(x1001)가 실존 사번(skcc.x1001)과 겹쳐도
     전체 id 가 실재하지 않으면 위반이다(실측: 접미 검색만 해서 통과했다)."""

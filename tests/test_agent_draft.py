@@ -936,6 +936,19 @@ def test_alternate_is_not_described_as_both_an_alternate_and_not_considered():
     assert "대안으로 고려하지" not in got and "검토할 수 있음" in got
 
 
+def test_people_roster_removes_primary_from_alternates_and_repairs_loads():
+    from app.agent.workflow.agents.people_advisor import _enforce_item_roster
+    roster = ("[Workbench 로스터·부하]\n"
+              "- skcc.x1402 김A — 진행중 14건 · 열림 10건\n"
+              "- skcc.x1450 김B — 진행중 22건 · 열림 18건")
+    row = {"index": 0, "user": "skcc.x1402", "reasons": ["진행중 99건"],
+           "alternates": [{"user": "skcc.x1402", "why": "진행중 22건"},
+                          {"user": "skcc.x1450", "why": "진행중 1건"}]}
+    got = _enforce_item_roster(row, {"components": ["Workbench"]}, roster)
+    assert got["reasons"] == ["진행중 14건"]
+    assert got["alternates"] == [{"user": "skcc.x1450", "why": "진행중 22건"}]
+
+
 def test_child_vague_dod_gets_a_verification_artifact_without_more_llm_calls():
     from app.agent.workflow.agents.work_architect import _sharpen_dod
     item = {"summary": "[ETL] 파이프라인", "type": "Task",
@@ -2264,6 +2277,12 @@ def test_relative_due_overrides_model_date_on_a_single_creation_draft():
     assert r["draft"]["items"][0]["duedate"] == _relative_due("이번 주 금요일까지")
 
 
+def test_duration_timebox_becomes_a_deterministic_due_date():
+    from datetime import date, timedelta
+    from app.agent.workflow.agents.work_architect import _relative_due
+    assert _relative_due("기간은 2주 정도") == (date.today() + timedelta(days=14)).isoformat()
+
+
 def test_relative_due_does_not_guess_across_multiple_creation_items():
     """복수 항목의 기한 배분은 사용자 의미 판단 — 하나의 상대 표현을 전부 덮어쓰지 않는다."""
     from app.agent.workflow.agents.work_architect import _apply_relative_due_to_single_draft
@@ -2730,6 +2749,24 @@ def test_adjacent_repeated_title_phrase_is_collapsed_only_once():
         "[Workbench] 데이터 리니지 뷰어 리니지 뷰어 성능 회귀 테스트") == \
         "[Workbench] 데이터 리니지 뷰어 성능 회귀 테스트"
     assert _collapse_repeated_summary("[ETL] 설계 구현 검증") == "[ETL] 설계 구현 검증"
+
+
+def test_self_exclusion_and_unverified_performance_cause_are_removed():
+    from app.agent.workflow.agents import work_architect as R
+    item = {"summary": "[ETL] 쿼리 성능 대대적 개선", "type": "Task",
+            "components": ["ETL"],
+            "description": ("<h3>배경</h3><p>쿼리 성능 저하로 데이터 처리 속도가 느립니다.</p>"
+                            "<h3>작업 범위</h3><ul><li>포함: 인덱스 최적화</li>"
+                            "<li>제외: [ETL] 쿼리 성능 대대적 개선</li></ul>"
+                            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                            "<li data-checked=\"false\">측정 결과 기록</li></ul>")}
+    state = _msg("쿼리 성능 개선을 대대적으로 해보자. 기간은 2주고 ETL 쪽만 손볼 거야")
+    assert R._remove_unrequested_quality_claims(state, [item])
+    R._drop_self_exclusions([item])
+    body = item["description"]
+    assert "속도가 느" not in body and "인덱스" not in body
+    assert "제외: [ETL] 쿼리 성능 대대적 개선" not in body
+    assert "제외: ETL 외 모듈 변경" in body
 
 
 def test_a_plain_task_still_gets_the_task_template(monkeypatch):

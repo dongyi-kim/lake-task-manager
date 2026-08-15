@@ -676,15 +676,17 @@ def _align_draft_claims(text: str, state) -> str:
                      or state.get("situation") or "요청 조건을 다시 확인해야 합니다.").strip()
         return reason + "\n\n현재 승인할 티켓 초안은 없습니다."
     if items:
+        owner_items = _assignment_aligned_items(items, state.get("assignments") or [])
         text = _drop_lineage_game_drift(text, state)
         text = _align_story_point_claims(text, state, items)
         text = _ensure_dod_claims(text, items)
+        text = _align_scope_labels(text)
         text = _drop_unverified_reply_keys(text, state, items)
         text = _drop_false_epic_claims(text, items)
         text = _align_parent_labels(text, items)
-        text = _align_item_owner_claims(text, items)
-        text = _align_child_owner_claims(text, items)
-        text = _align_assigned_owner_cautions(text, items)
+        text = _align_item_owner_claims(text, owner_items)
+        text = _align_child_owner_claims(text, owner_items)
+        text = _align_assigned_owner_cautions(text, owner_items)
         text = _align_workload_claims(text, state)
         text = _align_due_claims(text, items)
         text = _normalize_alternate_language(text)
@@ -693,6 +695,47 @@ def _align_draft_claims(text: str, state) -> str:
         text = _align_child_presence_claims(text, items)
         text = _drop_unrequested_deployment_claims(text, state)
     return text
+
+
+def _assignment_aligned_items(items: list, assignments: list) -> list:
+    """Project final advisor rows onto a copy used only to validate the prose.
+
+    In the fan-out graph the model-authored sentence can still reflect the pre-merge
+    assignee while the approval payload already contains the merged advisor result.
+    `assignments` is aligned to that payload by the join node, so it is authoritative for
+    owner wording while the original draft remains untouched.
+    """
+    out = [dict(item) for item in (items or [])]
+    rows = {row.get("index"): row for row in (assignments or [])
+            if isinstance(row, dict) and isinstance(row.get("index"), int)}
+    for index, item in enumerate(out):
+        row = rows.get(index)
+        if not row:
+            continue
+        if row.get("user"):
+            item["assignee"] = str(row["user"])
+        children = [dict(child) for child in (item.get("children") or [])
+                    if isinstance(child, dict)]
+        child_rows = {child.get("index"): child for child in (row.get("children") or [])
+                      if isinstance(child, dict) and isinstance(child.get("index"), int)}
+        for child_index, child in enumerate(children):
+            child_row = child_rows.get(child_index)
+            if child_row and child_row.get("user"):
+                child["assignee"] = str(child_row["user"])
+        if children:
+            item["children"] = children
+    return out
+
+
+def _align_scope_labels(text: str) -> str:
+    """An exclusion copied under a DoD label is still scope, not a completion check."""
+    lines = []
+    for line in str(text or "").splitlines():
+        if "제외" in line and _re.search(r"완료\s*조건|DoD", line, _re.I):
+            line = _re.sub(r"완료\s*조건(?:\s*\(DoD\))?|DoD", "제외 범위", line,
+                           flags=_re.I)
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _align_due_claims(text: str, items: list) -> str:
@@ -1168,7 +1211,7 @@ def _align_item_owner_claims(text: str, items: list) -> str:
                     matches = winners
         if len(matches) == 1:
             current = matches[0]
-        if current and "대안" not in line and (
+        if current and "대안" not in line and "후보" not in line and (
                 "담당" in line or len(matches) == 1):
             title, actual = current
             line = _re.sub(r"(?<![A-Za-z0-9.])(?:skcc\.)?[a-z]{1,2}\d{2,6}(?![A-Za-z0-9])",

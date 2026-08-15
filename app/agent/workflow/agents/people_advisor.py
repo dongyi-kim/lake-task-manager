@@ -404,6 +404,35 @@ def _enforce_item_roster(row: dict, item: dict, roster_load) -> dict:
             for p in candidates if p["user"] != chosen
         ][:2]
 
+    # Even a valid roster member can arrive with a stale workload number or be repeated as
+    # their own alternate.  Both defects made the prose compare one person with themselves.
+    if chosen in by_user:
+        import re
+
+        def with_load(reason: str, person: dict) -> str:
+            value = str(reason or "").strip()
+            if re.search(r"진행\s*중|진행중", value):
+                value = re.sub(r"(진행\s*중(?:인)?\s*(?:티켓|작업)?\s*)\d+(\s*건)|"
+                               r"(진행중\s*)\d+(\s*건)",
+                               lambda m: ((m.group(1) or m.group(3))
+                                          + str(person["in_progress"])
+                                          + (m.group(2) or m.group(4))), value)
+            return value
+
+        row["reasons"] = [with_load(reason, by_user[chosen])
+                          for reason in (row.get("reasons") or []) if str(reason).strip()]
+        alternates, seen = [], {chosen}
+        for alternate in (row.get("alternates") or []):
+            if not isinstance(alternate, dict):
+                continue
+            user = str(alternate.get("user") or "").strip()
+            if not user or user in seen or user not in by_user:
+                continue
+            seen.add(user)
+            alternates.append({"user": user,
+                               "why": with_load(alternate.get("why"), by_user[user])})
+        row["alternates"] = alternates[:2]
+
     # 모델이 자식만 다른 모듈 사람에게 줬다면 같은 후보 집합 안에서 분산한다.
     children = []
     supplied = {int(c.get("index") or 0): dict(c)
