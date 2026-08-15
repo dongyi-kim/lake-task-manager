@@ -206,6 +206,7 @@ focused/closure 재실행은 보조 증거이며 full-run primary 점수를 교�
 - 히스토리·현황: 언급해야 할 ticket key·사건·시간 순서·제외할 무관 entity
 - 내부 조사: 필요한 Jira·Confluence·comment·people source class와 검색 개념
 - 외부 조사: 일반화된 외부 검색어, 필요한 source 종류, URL·검색 실패 기록, 외부 전송 금지 내부 식별자
+- 고유명사·기술명 외부 조사: 요청의 원어 표기와 검증된 canonical English name을 병행 검색한다. code/table/column/API/parameter/ticket key/user ID/private name은 번역하거나 외부 검색어로 보내지 않는다. canonical name이 불확실하면 추측하지 않고 확인 필요로 남긴다.
 - 생성·수정: turn별 필수 질문, payload 보류 경계, 최종 type·parent·field·담당자
 - Editor: 보존할 seed·수치, 필수 section, 올바른 marker/link, 금지할 발명·중복
 

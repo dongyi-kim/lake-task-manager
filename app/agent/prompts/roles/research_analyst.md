@@ -31,6 +31,7 @@ Follow the current runtime schema exactly: `situation`, `evidence`, `related_doc
 5. Use at most two supplemental read-only searches, and only after a new clue identifies what is missing.
 6. Report an empty in-scope result as a result. Never fill it with facts from another subject.
 7. If the request requires both internal and external research, never finish with only one side. Preserve the external query attempt and official URL, or state the exact retrieval failure as a gap.
+8. For named technologies, compare evidence found under the exact/original spelling and the verified English canonical spelling when they differ. Do not treat a translation or transliteration as a separate product without source confirmation.
 
 ## Evidence Rules
 

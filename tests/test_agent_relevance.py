@@ -4,7 +4,8 @@
 from app.agent.workflow.agents.people_advisor import PeopleAdvisor
 from app.agent.workflow.agents.query_specialist import (QuerySpecialist,
                                                         _external_research_allowed,
-                                                        _public_external_query)
+                                                        _public_external_query,
+                                                        _safe_model_external_query)
 from app.agent.workflow.agents.research_analyst import (ResearchAnalyst,
                                                         _prefetched_external_context,
                                                         _relevant_only)
@@ -115,6 +116,46 @@ def test_explicit_external_research_gets_a_sanitized_web_query_even_when_model_o
     assert _public_external_query("DL-1 skcc.x1 내부 자료만") == ""
     assert _public_external_query("Iceberg Puffin NDV PoC Iceberg") == \
         "Iceberg Puffin NDV official documentation"
+
+
+def test_korean_technology_name_uses_canonical_english_query_from_specialist():
+    state = {"request_text": "아파치 아이스버그 퍼핀 통계 형식을 외부 공식 문서로 조사해줘",
+             "messages": []}
+    got = QuerySpecialist().apply(state, {"queries": [{
+        "id": "translated-official", "source": "web",
+        "query": "Apache Iceberg Puffin statistics official documentation",
+    }]})["query_plan"]
+    assert [q["query"] for q in got["queries"]] == [
+        "Apache Iceberg Puffin statistics official documentation"]
+    assert got["uncertainty"] == []
+
+
+def test_original_and_canonical_technology_queries_are_deduplicated_and_bounded():
+    state = {"request_text": "Apache Iceberg의 퍼핀 통계를 외부 조사해줘", "messages": []}
+    got = QuerySpecialist().apply(state, {"queries": [{
+        "id": "canonical", "source": "web",
+        "query": "Apache Iceberg Puffin statistics official documentation",
+    }, {
+        "id": "duplicate", "source": "web",
+        "query": "Apache Iceberg Puffin statistics official documentation",
+    }]})["query_plan"]["queries"]
+    assert [q["query"] for q in got] == [
+        "Apache Iceberg official documentation",
+        "Apache Iceberg Puffin statistics official documentation",
+    ]
+    assert len({q["id"] for q in got}) == 2
+
+
+def test_internal_code_identifier_is_neither_translated_nor_sent_to_public_search():
+    identifier = "fdc_summary_trace_ic"
+    assert _public_external_query(f"{identifier} 데이터 히스토리 외부 검색") == ""
+    assert _safe_model_external_query(f"{identifier} data history") == ""
+    state = {"request_text": f"{identifier} 데이터 히스토리를 외부 검색해줘", "messages": []}
+    got = QuerySpecialist().apply(state, {"queries": [{
+        "id": "unsafe", "source": "web", "query": f"{identifier} data history",
+    }]})["query_plan"]
+    assert got["queries"] == []
+    assert "privacy-safe canonical technology name" in got["uncertainty"][0]
 
 
 def test_prefetched_web_result_preserves_official_url_and_failed_attempt():

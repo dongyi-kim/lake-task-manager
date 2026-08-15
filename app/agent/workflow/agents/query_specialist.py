@@ -21,6 +21,39 @@ _INTERNAL_LATIN = {"etl", "catalog", "runtime", "workbench", "dataops", "observa
                    "voc", "our", "project", "internal", "external", "official", "documentation",
                    "hotfix", "poc", "p0", "p1", "p2", "p3", "p4", "critical", "major", "minor"}
 
+_PRIVATE_EXTERNAL_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
+    r"(?<![A-Za-z0-9])skcc\.[a-z]\d+(?![A-Za-z0-9])|https?://\S+|"
+    r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+(?![A-Za-z0-9])",
+    re.I,
+)
+
+
+def _safe_model_external_query(query: str) -> str:
+    """Accept an LLM-produced canonical English query only when it is safe to send publicly.
+
+    Query Specialist is already the language-understanding step, so it can map a Korean rendering such as
+    ``아파치 아이스버그`` to its canonical spelling. Runtime still owns the privacy boundary: internal ticket
+    keys, user IDs, URLs, code/table/parameter identifiers, and untranslated Korean text never leave LTM.
+    """
+    raw = " ".join(str(query or "").split())
+    if (not raw or _PRIVATE_EXTERNAL_PATTERN.search(raw)
+            or re.search(r"[가-힣]", raw)):
+        return ""
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9.+-]{1,}", raw)
+    meaningful = [token for token in tokens
+                  if token.lower().strip(".+-") not in _INTERNAL_LATIN]
+    if not meaningful:
+        return ""
+    safe = " ".join(tokens[:12])
+    if "official" not in safe.lower():
+        safe += " official documentation"
+    return safe
+
+
+def _query_identity(query: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9.+-]+", str(query or "").lower()))
+
 
 def _public_external_query(text: str) -> str:
     """Build a non-identifying public technology query without another LLM call.
@@ -29,11 +62,7 @@ def _public_external_query(text: str) -> str:
     in code both prevents internal identifiers from leaving LTM and removes the former query-generation model
     round trip. Korean-only internal subjects intentionally return empty instead of being leaked or guessed.
     """
-    scrubbed = re.sub(
-        r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
-        r"(?<![A-Za-z0-9])skcc\.[a-z]\d+(?![A-Za-z0-9])|https?://\S+",
-        " ", str(text or ""), flags=re.I,
-    )
+    scrubbed = _PRIVATE_EXTERNAL_PATTERN.sub(" ", str(text or ""))
     tokens, seen = [], set()
     for token in re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{2,}", scrubbed):
         low = token.lower().strip("._+-")
@@ -94,27 +123,48 @@ class QuerySpecialist(StructuredAgent):
         else:
             public_query = _public_external_query(
                 (request_text(state) + " " + conversation(state)).strip())
-            if public_query:
-                web = [q for q in plan["queries"] if q.get("source") == "web"]
-                if web:
-                    # The model chooses whether web is useful; code owns the privacy-safe query literal.
-                    for query in web:
-                        query["query"] = public_query
-                        query["where"] = ""
-                else:
-                    plan["queries"].append({
-                        "id": "external-official",
-                        "source": "web",
-                        "query": public_query,
-                        "where": "",
-                        "order_by": "updated DESC",
-                        "fields": [],
-                        "completeness": "page",
-                        "page_size": 5,
-                        "depends_on": [],
-                    })
+            web = [q for q in plan["queries"] if q.get("source") == "web"]
+            candidates = [public_query]
+            original_terms = set(_query_identity(public_query).split()) - {
+                "official", "documentation"}
+            for query in web:
+                translated = _safe_model_external_query(query.get("query") or "")
+                translated_terms = set(_query_identity(translated).split()) - {
+                    "official", "documentation"}
+                # If an original public spelling is available, the canonical/translated query must remain
+                # anchored to it. This rejects an unrelated model-generated web query.
+                if translated and (not original_terms or original_terms & translated_terms):
+                    candidates.append(translated)
+            variants = []
+            for candidate in candidates:
+                if candidate and _query_identity(candidate) not in {
+                        _query_identity(existing) for existing in variants}:
+                    variants.append(candidate)
+            # One exact/original-spelling query plus one canonical-English alias is enough. More variants add
+            # latency and duplicate evidence without materially improving recall.
+            variants = variants[:2]
+            plan["queries"] = [q for q in plan["queries"] if q.get("source") != "web"]
+            template = web[0] if web else {
+                "id": "external-official", "source": "web", "where": "",
+                "order_by": "updated DESC", "fields": [], "completeness": "page",
+                "page_size": 5, "depends_on": [],
+            }
+            used_ids = {q.get("id") for q in plan["queries"]}
+            for index, candidate in enumerate(variants):
+                query = dict(template)
+                wanted = str(template.get("id") or "external-official") if index == 0 \
+                    else "external-official-alias"
+                while wanted in used_ids:
+                    wanted += "-2"
+                used_ids.add(wanted)
+                query.update({"id": wanted, "source": "web", "query": candidate, "where": ""})
+                plan["queries"].append(query)
+            if not variants:
+                plan.setdefault("uncertainty", []).append(
+                    "External research was requested, but no privacy-safe canonical technology name was available.")
         return {"query_plan": plan,
                 "trace": note(state, self.name, f"조회 {len(plan['queries'])}개 설계")}
 
 
-__all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_query"]
+__all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_query",
+           "_safe_model_external_query"]
