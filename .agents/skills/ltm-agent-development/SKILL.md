@@ -66,6 +66,8 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
     제한사항을 포함한다. 다른 version·manifest의 절대점수 증감을 계산하지 않는다.
 13. 정성평가자의 agent family/model, direct raw review 여부, LTM LLM judge 미사용, reviewer 수와 blind
     여부를 기록한다. 자동 도구는 deterministic contract 검사와 산술 집계까지만 수행한다.
+14. 각 rubric 축의 모든 checklist item을 `pass/minor/major/na`로 판정하고 실제 output 근거를 붙인다.
+    축별 rationale과 대표 excerpt를 기록하며 checklist 결과의 score ceiling을 넘기지 않는다.
 
 ## 완료 보고
 

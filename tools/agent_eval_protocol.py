@@ -224,8 +224,82 @@ def build_run_metadata(
     }
 
 
+def validate_checklist_results(
+    checklist_results: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate complete evidence-backed checklist results and calculate score ceilings."""
+    rubric = load_protocol()["humanRubric"]
+    dimensions = rubric["dimensions"]
+    expected_dimensions = {item["id"] for item in dimensions}
+    missing_dimensions = sorted(expected_dimensions - set(checklist_results))
+    extra_dimensions = sorted(set(checklist_results) - expected_dimensions)
+    if missing_dimensions or extra_dimensions:
+        raise ValueError(
+            "checklist dimensions mismatch: "
+            f"missing={missing_dimensions}, extra={extra_dimensions}"
+        )
+
+    allowed_statuses = set(rubric["checklistResultEnum"])
+    ceilings = rubric["checklistScoreCeilings"]
+    normalized: dict[str, Any] = {}
+    summaries: dict[str, Any] = {}
+    for dimension in dimensions:
+        dimension_id = dimension["id"]
+        provided = checklist_results[dimension_id]
+        if not isinstance(provided, Mapping):
+            raise ValueError(f"{dimension_id} checklist must be an object")
+        expected_items = {item["id"] for item in dimension["checklist"]}
+        missing_items = sorted(expected_items - set(provided))
+        extra_items = sorted(set(provided) - expected_items)
+        if missing_items or extra_items:
+            raise ValueError(
+                f"{dimension_id} checklist mismatch: "
+                f"missing={missing_items}, extra={extra_items}"
+            )
+
+        counts = {status: 0 for status in allowed_statuses}
+        normalized_items: dict[str, Any] = {}
+        for item in dimension["checklist"]:
+            item_id = item["id"]
+            result = provided[item_id]
+            if not isinstance(result, Mapping):
+                raise ValueError(f"{dimension_id}.{item_id} result must be an object")
+            status = str(result.get("status") or "").strip().lower()
+            evidence = str(result.get("evidence") or "").strip()
+            if status not in allowed_statuses:
+                raise ValueError(
+                    f"{dimension_id}.{item_id} status must be one of {sorted(allowed_statuses)}"
+                )
+            if not evidence:
+                raise ValueError(f"{dimension_id}.{item_id} evidence is required")
+            counts[status] += 1
+            normalized_items[item_id] = {"status": status, "evidence": evidence}
+
+        applicable = len(expected_items) - counts["na"]
+        if applicable < 1:
+            raise ValueError(f"{dimension_id} needs at least one applicable checklist item")
+        if counts["major"] >= 2:
+            ceiling = float(ceilings["multipleMajor"])
+        elif counts["major"] == 1:
+            ceiling = float(ceilings["oneMajor"])
+        elif counts["minor"] >= 2:
+            ceiling = float(ceilings["multipleMinorNoMajor"])
+        elif counts["minor"] == 1:
+            ceiling = float(ceilings["oneMinorNoMajor"])
+        else:
+            ceiling = float(ceilings["allApplicablePass"])
+        normalized[dimension_id] = normalized_items
+        summaries[dimension_id] = {
+            "counts": {key: counts[key] for key in sorted(counts)},
+            "applicableItems": applicable,
+            "scoreCeiling": ceiling,
+        }
+    return normalized, summaries
+
+
 def score_human_case(
-    scores: Mapping[str, float], failure_codes: Iterable[str] = (),
+    scores: Mapping[str, float], failure_codes: Iterable[str] = (), *,
+    checklist_results: Mapping[str, Mapping[str, Mapping[str, Any]]],
 ) -> dict[str, Any]:
     """Apply rubric weights and deterministic severity caps to one human review."""
     protocol = load_protocol()
@@ -237,6 +311,7 @@ def score_human_case(
     if missing or extra:
         raise ValueError(f"human score dimensions mismatch: missing={missing}, extra={extra}")
 
+    normalized_checklist, checklist_summary = validate_checklist_results(checklist_results)
     minimum = float(rubric["minimum"])
     maximum = float(rubric["maximum"])
     step = float(rubric["step"])
@@ -247,6 +322,11 @@ def score_human_case(
         steps = round((value - minimum) / step)
         if value < minimum or value > maximum or abs(minimum + steps * step - value) > 1e-9:
             raise ValueError(f"{key} must be {minimum}..{maximum} in {step} increments")
+        ceiling = float(checklist_summary[key]["scoreCeiling"])
+        if value > ceiling:
+            raise ValueError(
+                f"{key} score {value} exceeds checklist ceiling {ceiling}"
+            )
         normalized[key] = value
 
     raw = sum(normalized[item["id"]] * float(item["weight"]) for item in dimensions)
@@ -260,6 +340,8 @@ def score_human_case(
     return {
         "rubricVersion": protocol["rubricVersion"],
         "dimensionScores": normalized,
+        "checklistResults": normalized_checklist,
+        "checklistSummary": checklist_summary,
         "rawScore": round(raw, digits),
         "failureCodes": codes,
         "appliedCap": cap if codes else None,
@@ -302,6 +384,14 @@ def aggregate_human_reviews(
     seen: set[tuple[str, str, int]] = set()
     observations: list[dict[str, Any]] = []
     by_suite: dict[str, list[float]] = {}
+    by_suite_dimensions: dict[str, dict[str, list[float]]] = {}
+    all_dimensions: dict[str, list[float]] = {
+        item["id"]: [] for item in protocol["humanRubric"]["dimensions"]
+    }
+    checklist_counts = {
+        item["id"]: {status: 0 for status in protocol["humanRubric"]["checklistResultEnum"]}
+        for item in protocol["humanRubric"]["dimensions"]
+    }
     severe = 0
     for review in reviews:
         suite = str(review.get("suite") or "").strip()
@@ -313,19 +403,52 @@ def aggregate_human_reviews(
         if identity in seen:
             raise ValueError(f"duplicate human review observation: {identity}")
         seen.add(identity)
+        excerpt = str(review.get("outputExcerpt") or "").strip()
+        if not excerpt:
+            raise ValueError("each review needs a non-empty outputExcerpt")
+        rationales = review.get("dimensionRationales") or {}
+        dimension_ids = {item["id"] for item in protocol["humanRubric"]["dimensions"]}
+        if set(rationales) != dimension_ids:
+            raise ValueError("each review needs one rationale for every rubric dimension")
+        normalized_rationales = {
+            key: str(rationales[key] or "").strip() for key in sorted(rationales)
+        }
+        if not all(normalized_rationales.values()):
+            raise ValueError("dimension rationales must be non-empty")
         score = score_human_case(
             review.get("dimensionScores") or {}, review.get("failureCodes") or (),
+            checklist_results=review.get("checklistResults") or {},
         )
         observations.append({
-            "suite": suite, "caseId": case_id, "repeatIndex": repeat_index, **score,
+            "suite": suite, "caseId": case_id, "repeatIndex": repeat_index,
+            "outputExcerpt": excerpt, "dimensionRationales": normalized_rationales, **score,
         })
         by_suite.setdefault(suite, []).append(score["caseScore"])
+        suite_dimensions = by_suite_dimensions.setdefault(
+            suite, {dimension_id: [] for dimension_id in all_dimensions},
+        )
+        for dimension_id, dimension_score in score["dimensionScores"].items():
+            all_dimensions[dimension_id].append(dimension_score)
+            suite_dimensions[dimension_id].append(dimension_score)
+            for status, count in score["checklistSummary"][dimension_id]["counts"].items():
+                checklist_counts[dimension_id][status] += count
         severe += 1 if score["failureCodes"] else 0
     suite_scores = {
         suite: round(sum(values) / len(values), digits)
         for suite, values in sorted(by_suite.items())
     }
     all_scores = [item["caseScore"] for item in observations]
+    suite_dimension_scores = {
+        suite: {
+            dimension_id: round(sum(values) / len(values), digits)
+            for dimension_id, values in dimensions.items()
+        }
+        for suite, dimensions in sorted(by_suite_dimensions.items())
+    }
+    overall_dimension_scores = {
+        dimension_id: round(sum(values) / len(values), digits)
+        for dimension_id, values in all_dimensions.items()
+    }
     return {
         "protocolVersion": protocol["protocolVersion"],
         "rubricVersion": protocol["rubricVersion"],
@@ -333,6 +456,9 @@ def aggregate_human_reviews(
         "observationCount": len(observations),
         "suiteScores": suite_scores,
         "overallScore": round(sum(all_scores) / len(all_scores), digits),
+        "suiteDimensionScores": suite_dimension_scores,
+        "overallDimensionScores": overall_dimension_scores,
+        "checklistResultCounts": checklist_counts,
         "cappedFailureCount": severe,
         "cappedFailureRate": round(severe / len(observations), digits),
         "observations": observations,
@@ -440,6 +566,54 @@ def render_report_standard_block(metadata: Sequence[Mapping[str, Any]]) -> str:
             protocol["humanRubric"]["scoreAnchors"].items(), reverse=True,
         )
     )
+    checklist_enum = protocol["humanRubric"]["checklistResultEnum"]
+    ceiling = protocol["humanRubric"]["checklistScoreCeilings"]
+    lines.extend([
+        "",
+        "### Checklist 판정과 점수 상한",
+        "",
+        "모든 checklist item에 `pass`, `minor`, `major`, `na`와 실제 출력 근거를 기록. "
+        "`na`도 적용할 수 없는 이유를 근거란에 작성.",
+        "",
+        "| 판정 | 정의 |",
+        "|---|---|",
+    ])
+    lines.extend(f"| `{status}` | {description} |" for status, description in checklist_enum.items())
+    lines.extend([
+        "",
+        "| Checklist 결과 | 해당 축 최고점 |",
+        "|---|---:|",
+        f"| 적용 항목 전부 pass | {ceiling['allApplicablePass']:.1f} |",
+        f"| minor 1건, major 0건 | {ceiling['oneMinorNoMajor']:.1f} |",
+        f"| minor 2건 이상, major 0건 | {ceiling['multipleMinorNoMajor']:.1f} |",
+        f"| major 1건 | {ceiling['oneMajor']:.1f} |",
+        f"| major 2건 이상 | {ceiling['multipleMajor']:.1f} |",
+        "",
+        "### 축별 checklist와 점수 anchor",
+    ])
+    for dimension in protocol["humanRubric"]["dimensions"]:
+        lines.extend([
+            "",
+            f"#### {dimension['label']} (`{dimension['id']}`)",
+            "",
+            dimension["question"],
+            "",
+            "| ID | 판단 질문 | majorWhen |",
+            "|---|---|---|",
+        ])
+        lines.extend(
+            f"| `{item['id']}` | {item['question']} | {item['majorWhen']} |"
+            for item in dimension["checklist"]
+        )
+        lines.extend([
+            "",
+            "| 점수 | 축별 anchor |",
+            "|---:|---|",
+        ])
+        lines.extend(
+            f"| {score} | {description} |"
+            for score, description in sorted(dimension["anchors"].items(), reverse=True)
+        )
     lines.extend([
         "",
         "나머지 필수 section: `실행 조건`, `배터리 범위`, `정량 결과`, "

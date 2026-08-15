@@ -187,6 +187,9 @@ focused/closure 재실행은 보조 증거이며 full-run primary 점수를 교�
 보고서와 PR Description에는 protocol/rubric/battery version, 정확한 집계식, 반복·순서·retry/cache
 조건, 비교 가능 여부, 실제 출력과 축별 사람 점수, 실패·누락·제한사항을 반드시 포함한다. battery가
 늘어나면 `batteryVersion`을 올리고, 다른 battery끼리는 공통 case subset과 전체 결과를 분리한다.
+정성평가 시 rubric의 모든 checklist item을 `pass/minor/major/na`로 판정하고 item별 실제 출력 근거,
+축별 rationale과 대표 output excerpt를 기록한다. checklist가 계산한 축별 score ceiling을 넘겨 점수를
+부여하지 않는다.
 
 실험 결과, 로그, 보고서는 `research/agent-improvement/{results,logs,reports}`에 저장한다. `docs/`, repository root, `tools/`에 일회성 결과를 남기지 않는다.
 
