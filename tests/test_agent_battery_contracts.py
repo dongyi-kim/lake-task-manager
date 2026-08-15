@@ -7,6 +7,8 @@ pytest.importorskip("langchain_core", reason="requirements-agent.txt 미설치")
 
 from tools import agent_compose_eval as editor_eval  # noqa: E402
 from tools import agent_create_suite as create_eval  # noqa: E402
+from tools import agent_context_change_eval as context_eval  # noqa: E402
+from tools import agent_meeting_eval as meeting_eval  # noqa: E402
 
 
 def test_editor_seed_checker_requires_the_original_visible_text():
@@ -51,3 +53,33 @@ def test_create_question_checkers_require_bug_identity_and_legal_parent_choice()
     exact_parent = {"questions": [{"question": "상위 Task를 고를까요, 최상위 Task로 바꿀까요?"}]}
     assert not create_eval._rule1_ok(vague_parent, [])
     assert create_eval._rule1_ok(exact_parent, [])
+
+
+def test_meeting_interview_checker_rejects_draft_before_ambiguous_identity_is_resolved():
+    question = {
+        "questions": [{"question": "준서TL과 PSR을 확인해 주세요", "options": [
+            "skcc.x1103", "skcc.x1327",
+        ]}],
+    }
+    assert meeting_eval._interview_then_resume([question, {}], "PSR")
+    assert not meeting_eval._interview_then_resume([
+        {**question, "pending": {"action": "create_ticket"}}, {},
+    ], "PSR")
+
+
+def test_context_switch_checker_requires_only_the_latest_exact_change():
+    exact = {
+        "reply": "DL-9203 priority 변경 초안",
+        "pending": {
+            "action": "update_ticket", "key": "DL-9203",
+            "changes": {"priority": "P2-Major"},
+        },
+    }
+    contaminated = {
+        **exact,
+        "pending": {**exact["pending"], "changes": {
+            "priority": "P2-Major", "duedate": "2026-08-31",
+        }},
+    }
+    assert context_eval._ctx_unrelated_ok(exact, [])
+    assert not context_eval._ctx_unrelated_ok(contaminated, [])

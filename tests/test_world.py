@@ -50,3 +50,22 @@ def test_security_training_fixture_has_all_fourteen_direct_subtasks():
     assert sum(row["statusCategory"] == "done" for row in children) == 10
     assert sum(row["statusCategory"] != "done" for row in children) == 4
     assert len({row["assignee"] for row in children}) == 14
+
+
+def test_meeting_battery_fixtures_are_deterministic_and_keep_known_gaps():
+    world = get_world()
+    epic = world.issues["DL-9200"]
+    children = [world.issues[key] for key in ("DL-9201", "DL-9202", "DL-9203")]
+    assert epic["type"] == "Epic"
+    assert all(row["epicKey"] == "DL-9200" and row["type"] == "Task" for row in children)
+    assert [row["assignee"] for row in children] == [
+        "skcc.i2011", "skcc.x1402", "skcc.x1042",
+    ]
+    assert children[0]["statusCategory"] == "done"
+    assert children[1]["statusCategory"] == "inprogress"
+    assert "PSR" in children[2]["description"] and "RGP" in children[2]["description"]
+    titles = {
+        page["title"] for pages in world.confluence.values() for page in pages
+    }
+    assert "[회의록] Iceberg Puffin NDV 도입 실무회의" in titles
+    assert "[설계] Puffin NDV 내부 검토 메모" in titles

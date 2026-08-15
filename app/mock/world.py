@@ -120,12 +120,14 @@ class World:
         self._build_ui_fixtures()     # UI 회귀 검증용 Epic + 하위 티켓
         self._build_mytask_fixtures() # '내 Task' 화면 픽스처(담당 조합·Epic 없음·마감 초과)
         self._build_dataset_fixtures()  # 데이터셋 지식 픽스처(테이블 하나의 이력을 여러 티켓에 분산)
+        self._build_meeting_fixtures()  # 회의록 배터리 전용 Epic·Task·댓글(rng 미사용)
         self._priorities()            # 우선순위 — 픽스처가 지정한 것은 그대로 두고 나머지만 채운다
         self._sprints()               # 스프린트 — '스프린트 내 티켓만' 필터 검증용
         self._index()
         self._build_activity()
         self._build_confluence()
         self._build_dataset_docs()    # ★ _build_confluence 뒤 — 그쪽이 self.confluence 에 대입한다
+        self._build_meeting_docs()    # ★ 회의록 배터리 내부 문서도 같은 이유로 마지막에 추가한다
 
     # ── 사용자 ──
     def _make_users(self):
@@ -1343,6 +1345,171 @@ class World:
                                     "Schema Registry 호환성 정책이 FULL 이라 읽기는 되지만, "
                                     "구버전 스키마 정리는 별도로 봐야 합니다.", 4, "11:10"),
         ]
+
+    MEETING_EPIC = "DL-9200"
+
+    def _build_meeting_fixtures(self):
+        """회의록 이해·인터뷰·action 배터리용 결정적 Jira 데이터."""
+        d = self.today
+        epic = self.MEETING_EPIC
+        self._fx(
+            epic,
+            "Epic",
+            "[회의] Iceberg Puffin NDV 도입",
+            module="Catalog",
+            component="Catalog",
+            assignee="skcc.x1042",
+            reporter="lead",
+            labels=["meeting-fixture", "puffin-ndv"],
+            epicKey=None,
+            description=(
+                "Iceberg Puffin NDV의 writer 생성과 StarRocks reader 소비 가능성을 단계적으로 검증한다. "
+                "검증 전 운영 반영은 금지한다."
+            ),
+            created=d - timedelta(days=45),
+            updated=d - timedelta(days=1),
+        )
+
+        self._fx(
+            "DL-9201",
+            "Task",
+            "[ETL] Iceberg Puffin NDV writer PoC",
+            module="ETL",
+            component="ETL",
+            assignee="skcc.i2011",
+            reporter="skcc.x1042",
+            labels=["meeting-fixture", "puffin-ndv", "writer-poc"],
+            epicKey=epic,
+            priority="P1-Critical",
+            due=date(2026, 8, 22),
+            statusCategory="done",
+            statusName="Resolved",
+            created=d - timedelta(days=35),
+            updated=d - timedelta(days=3),
+            resolved=d - timedelta(days=3),
+            tresolved="16:10",
+            description=(
+                "h2. 배경\nDL-7001에서 정리한 20개 후보 중 5개 표본으로 writer PoC를 수행한다.\n\n"
+                "h2. 작업 범위\nPuffin statistics 파일 생성 여부와 테이블별 NDV 오차를 기록한다.\n\n"
+                "h2. 완료 조건\n5개 표본의 실행 로그와 결과표를 첨부한다."
+            ),
+            comments=[
+                self._cmt("skcc.i2011", "5개 표본의 Puffin 파일 생성 결과를 확보했습니다. StarRocks 소비 여부는 별도 reader 검증이 필요합니다.", 3),
+            ],
+            links=[{"type": "Relates", "dir": "outward", "key": "DL-7001"}],
+        )
+        self._fx(
+            "DL-9202",
+            "Task",
+            "[Workbench] StarRocks Puffin NDV reader 검증",
+            module="Workbench",
+            component="Workbench",
+            assignee="skcc.x1402",
+            reporter="skcc.x1042",
+            labels=["meeting-fixture", "puffin-ndv", "reader-check"],
+            epicKey=epic,
+            priority="P1-Critical",
+            due=date(2026, 8, 25),
+            statusCategory="inprogress",
+            statusName="In Progress",
+            created=d - timedelta(days=20),
+            updated=d - timedelta(days=1),
+            description=(
+                "h2. 배경\nwriter가 생성한 Puffin NDV를 StarRocks reader와 optimizer가 실제로 소비하는지 확인한다.\n\n"
+                "h2. 제한\n실제 소비 증거를 확보하기 전에는 운영 반영을 승인하지 않는다."
+            ),
+            comments=[
+                self._cmt("skcc.x1402", "reader 경로와 optimizer 실행계획을 함께 확인 중입니다. 지원 여부는 아직 확정하지 않았습니다.", 1),
+            ],
+            links=[{"type": "Relates", "dir": "outward", "key": "DL-9201"}],
+        )
+        self._fx(
+            "DL-9203",
+            "Task",
+            "[Catalog] Puffin NDV 검증 기준 초안",
+            module="Catalog",
+            component="Catalog",
+            assignee="skcc.x1042",
+            reporter="lead",
+            labels=["meeting-fixture", "puffin-ndv"],
+            epicKey=epic,
+            priority="P2-Major",
+            due=date(2026, 8, 28),
+            statusCategory="todo",
+            statusName="Open",
+            created=d - timedelta(days=12),
+            updated=d - timedelta(days=2),
+            description=(
+                "내부 PoC 결과와 외부 공식 근거를 분리해 기록할 검증 기준 초안이다. "
+                "회의에서 언급된 PSR·RGP 약어의 정의와 소유자는 아직 기록되지 않았다."
+            ),
+            comments=[
+                self._cmt("skcc.x1042", "절차·성능·호환성 항목의 템플릿만 작성했습니다. PSR과 RGP의 정확한 정의는 회의 참석자 확인이 필요합니다.", 2),
+            ],
+            links=[
+                {"type": "Relates", "dir": "outward", "key": "DL-9201"},
+                {"type": "Relates", "dir": "outward", "key": "DL-9202"},
+            ],
+        )
+
+    def _build_meeting_docs(self):
+        """회의 관련 내부 문서. 약어·모호한 호칭은 의도적으로 확정하지 않는다."""
+        d = self.today
+        pages = [
+            (
+                "skcc.x1042",
+                "[회의록] Iceberg Puffin NDV 도입 실무회의",
+                "DL",
+                ["엔지니어링", "회의록"],
+                1,
+                "\n".join([
+                    "2026-08-15 Iceberg Puffin NDV 도입 실무회의 기록.",
+                    "",
+                    "h2. 결정",
+                    "* 1차 writer PoC 대상은 20개 후보 중 5개 표본",
+                    "* StarRocks reader 소비 검증 전 운영 반영 보류",
+                    "* 내부 시험 결과와 외부 공식 근거를 구분해 보고",
+                    "",
+                    "h2. 담당과 기한",
+                    "* @이다은: writer PoC, 2026-08-22",
+                    "* 하은님: StarRocks reader 검증, 2026-08-25",
+                    "* {{최민서:1042}}: 검증 기준 초안, 2026-08-28",
+                    "* 준서TL: 최종 기준 검토. 동명이인 중 누구인지는 기록되지 않음",
+                    "",
+                    "PSR과 RGP라는 약어가 언급됐지만 회의록과 관련 문서에는 정의가 없음.",
+                ]),
+            ),
+            (
+                "skcc.i2011",
+                "[설계] Puffin NDV 내부 검토 메모",
+                "DL",
+                ["엔지니어링", "파이프라인"],
+                5,
+                "\n".join([
+                    "DL-7001과 DL-9201의 내부 검토 내용을 연결한다.",
+                    "",
+                    "* 후보: Lake 일배치 Iceberg 테이블 20개",
+                    "* 1차 표본: 5개",
+                    "* 내부 Spark writer 버전 확인 완료",
+                    "* Puffin 파일 생성 결과는 writer PoC에서 확인",
+                    "* StarRocks reader·optimizer의 실제 소비 여부는 DL-9202에서 미확인",
+                    "",
+                    "외부 제품 지원 여부는 공식 문서 또는 재현 로그 없이 확정하지 않는다.",
+                ]),
+            ),
+        ]
+        for uid, title, space, ancestors, days_ago, body in pages:
+            self.confluence.setdefault(uid, []).append({
+                "title": title,
+                "space": space,
+                "ancestors": ancestors,
+                "action": "edited",
+                "body": body,
+                "date": d - timedelta(days=days_ago),
+                "time": "16:00",
+            })
+        for uid in {page[0] for page in pages}:
+            self.confluence[uid].sort(key=lambda page: page["date"], reverse=True)
 
     def _build_dataset_docs(self):
         """데이터셋 분석 문서 — 기존 uid 의 문서 목록에 덧붙인다(작성자 = 실 인력).

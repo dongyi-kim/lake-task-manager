@@ -92,8 +92,11 @@ def test_suite_raw_paths_do_not_overwrite_each_other(monkeypatch):
     conversation = E.raw_result_path("conversation", metadata)
     editor = E.raw_result_path("editor", metadata)
     create = E.raw_result_path("create", metadata)
-    assert len({conversation, editor, create}) == 3
-    assert all(path.parent.name == "isolation-group" for path in (conversation, editor, create))
+    meeting = E.raw_result_path("meeting", metadata)
+    context = E.raw_result_path("ctx-chg", metadata)
+    paths = (conversation, editor, create, meeting, context)
+    assert len(set(paths)) == 5
+    assert all(path.parent.name == "isolation-group" for path in paths)
 
 
 def test_raw_attempt_path_is_reserved_and_cannot_be_reused(tmp_path, monkeypatch):
@@ -130,3 +133,12 @@ def test_all_harnesses_declare_case_reset_and_world_verification():
         configure = text.index("configure_process_isolation(", prepare)
         runtime_import = text.index("from app.agent", prepare)
         assert prepare < configure < runtime_import, relative
+
+    shared = (ROOT / "tools/agent_scenario_eval.py").read_text(encoding="utf-8")
+    assert "configure_process_isolation(suite)" in shared
+    assert shared.index("configure_process_isolation(suite)") < \
+        shared.index("from app.agent.workflow import session")
+    assert "begin_case(" in shared and "finish_case(" in shared
+    for relative in ("tools/agent_meeting_eval.py", "tools/agent_context_change_eval.py"):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert "run_scenario_suite(" in text

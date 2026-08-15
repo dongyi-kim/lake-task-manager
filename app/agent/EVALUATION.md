@@ -278,6 +278,10 @@ invalid 처리. `major`·`minor`의 축별 상한은 공통 checklist와 동일
   내부 식별자를 명시
 - 생성·수정 case는 turn별 필수 질문, 보류되어야 할 payload, 최종 type·parent·field·담당자 값을 명시
 - Editor case는 그대로 보존할 seed·수치, 필요한 section, 허용 marker/link, 금지할 중복·발명을 명시
+- Meeting case는 `@이름`·`{{이름:식별자}}`·이름 일부+호칭의 정규화 결과, 모호한 후보, 내부·외부 조사 후에도
+  남은 용어·범위 공백, 인터뷰 전 payload 보류와 답변 후 재개를 turn별로 명시
+- Context change case는 각 turn에서 유효·취소·대체된 목표를 기록하고 final reply/pending에 남아야 할
+  target·action·field와 섞이면 안 되는 과거 entity·수치·근거를 명시
 - 새로운 정답을 사후에 끼워 맞추지 않음. 기대 계약을 바꾸려면 battery version과 manifest를 먼저 변경
 
 ### 예시

@@ -167,6 +167,8 @@ Windows 공용 pytest temp에 권한 문제가 있으면 repository 내부 `--ba
 - Conversation: `tools/agent_lang_ab.py`
 - Compose: `tools/agent_compose_eval.py`
 - Create: `tools/agent_create_suite.py`
+- Meeting: `tools/agent_meeting_eval.py` — 회의록 조사·사람 식별·인터뷰·요약·create/comment/update 초안
+- Context change: `tools/agent_context_change_eval.py` — 대화 중 최신 요청 우선·무관 맥락 배제·pending 교체
 - 사람 관점 판독: `tools/agent_user_review.py`, `tools/agent_quality_read.py`
 - 정량 병목: `tools/agent_perf.py`
 
@@ -184,6 +186,12 @@ p50/p95, token/call/cost, 자동 실패율, 사람 점수와 치명 결함률을
 않는다. 시작·종료 `worldSha256` 또는 `providerStoreSha256`가 다르면 읽기 전용 평가가 fixture를 덮어쓴
 것이므로 case를 실패 처리한다. 초기화·fingerprint 시간은 Agent latency에
 포함하지 않는다. 이 격리를 제거하거나 cache policy를 바꾸면 같은 `comparabilityKey`로 비교하지 않는다.
+
+회의록 battery의 사람 표기는 `@이름`, `{{이름:식별자}}`, 이름 일부+호칭을 모두 다룬다. 내부 roster와
+관련 자료를 조회해도 한 명으로 확정되지 않는 호칭은 후보 인터뷰 후 진행한다. 기술어·내부 약어·히스토리도
+Jira·Confluence·comment와 안전한 외부 검색을 먼저 수행하고, 행동에 필요한 뜻·범위·소유자·기한이 여전히
+불명확할 때만 인터뷰한다. 답변 전에는 추측한 write 초안을 만들지 않고, 답변 후에는 확정된 내용을 다시
+묻지 않은 채 같은 작업을 재개한다.
 
 평가에는 pass/fail뿐 아니라 실제 reply, 질문 form, card/payload, description/comment 전문, role별
 call·token·latency·cost를 포함한다. 정성평가는 LTM LLM이 아닌 Codex 또는 Claude 작업 에이전트가
