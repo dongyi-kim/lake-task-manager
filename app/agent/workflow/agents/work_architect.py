@@ -1727,12 +1727,14 @@ def _normalize_priority(value) -> str:
 def _explicit_meeting_update_fields(state) -> dict:
     """Recover exact meeting field values from the authoritative original request."""
     try:
-        from app.agent.workflow.meeting_context import is_meeting_request, resolved_people
+        from app.agent.workflow.meeting_context import (
+            is_meeting_request, meeting_request_text, resolved_people,
+        )
         if not is_meeting_request(state) or (state.get("intent") or "") != Intent.MODIFY:
             return {}
     except Exception:
         return {}
-    request, latest = request_text(state), last_user_text(state)
+    request, latest = meeting_request_text(state), last_user_text(state)
     fields = {}
 
     def line(label: str) -> str:
@@ -4588,7 +4590,8 @@ _SHAPE_WORDS = (
 
 def shape_hint(state) -> tuple:
     """Return the latest explicit shape, falling back to the pre-interview request."""
-    latest, original = last_user_text(state), request_text(state)
+    from app.agent.workflow.meeting_context import meeting_request_text
+    latest, original = last_user_text(state), meeting_request_text(state)
     for said in (latest, original):
         hint = _shape_hint_text(said)
         if hint[0]:

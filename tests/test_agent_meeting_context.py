@@ -11,6 +11,7 @@ from app.agent.tools.people_tools import set_person_context  # noqa: E402
 from app.agent.workflow.agents.knowledge_curator import KnowledgeCurator  # noqa: E402
 from app.agent.workflow.agents.query_runner import QueryRunner  # noqa: E402
 from app.agent.workflow.agents.query_specialist import QuerySpecialist  # noqa: E402
+from app.agent.workflow.agents.request_architect import RequestArchitect  # noqa: E402
 from app.agent.workflow.agents.result_integrator import (  # noqa: E402
     ResultIntegrator,
     _canonicalize_meeting_reply,
@@ -22,7 +23,11 @@ from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _explicit_meeting_update_fields,
     shape_hint,
 )
-from app.agent.workflow.meeting_context import meeting_subject, unresolved_questions  # noqa: E402
+from app.agent.workflow.meeting_context import (  # noqa: E402
+    meeting_request_text,
+    meeting_subject,
+    unresolved_questions,
+)
 from app.agent.workflow.session import _turn_start_patch  # noqa: E402
 
 
@@ -82,8 +87,11 @@ def test_exact_meeting_task_count_and_singular_task_are_user_selected_shapes():
     resumed = _state(
         "Epic 아래 정확히 Task 3건의 초안을 만들어줘",
         "준서TL은 skcc.x1103 이준서야.",
-        request="Epic 아래 정확히 Task 3건의 초안을 만들어줘",
+        request="준서TL은 skcc.x1103 이준서야.",
     )
+    resumed["turn_continuation"] = True
+    resumed["messages"][0] = HumanMessage(
+        content="회의록 기준 Epic 아래 정확히 Task 3건의 초안을 만들어줘")
     assert shape_hint(resumed)[0] == "multiple_tasks"
 
 
@@ -194,7 +202,8 @@ def test_exact_meeting_update_fields_survive_identity_interview_resume():
 - 준서TL이 RGP 기준의 소유자"""
     answer = ("준서TL은 skcc.x1103 이준서. RGP는 Reader Gate Policy이고 "
               "StarRocks 실제 소비 증거 전에는 운영 반영을 막는 기준이야.")
-    state = {**_state(request, answer, request=request), "intent": "modify"}
+    state = {**_state(request, answer, request=answer), "intent": "modify",
+             "turn_continuation": True}
     fields = _explicit_meeting_update_fields(state)
     assert set(fields) == {"summary", "priority", "duedate", "components", "labels", "description"}
     assert fields["summary"] == "[Catalog] Puffin NDV 검증 기준 및 결과 템플릿"
@@ -203,6 +212,19 @@ def test_exact_meeting_update_fields_survive_identity_interview_resume():
     assert fields["labels"] == ["meeting-fixture", "puffin-ndv", "decision-20260815"]
     assert all(section in fields["description"] for section in ("결정 배경", "작업 범위", "검증 기준"))
     assert "skcc.x1103" in fields["description"]
+
+
+def test_meeting_interview_keeps_original_request_and_comment_intent():
+    request = "회의 결정사항을 DL-9201, DL-9202 두 건의 댓글로 알려줘."
+    answer = "이 회의의 준서TL은 skcc.x1327 임준서야. 계속해줘."
+    state = {**_state(request, answer, request=answer), "turn_continuation": True,
+             "turns": 1, "questions": []}
+    assert meeting_request_text(state) == request
+    patch = RequestArchitect().apply(state, {
+        "intent": "plan_work", "keywords": [], "goal": "댓글 작성", "tasks": [],
+    })
+    assert patch["intent"] == "modify"
+    assert patch["request_text"] == request
 
 
 def test_comment_only_result_contract_never_describes_status_as_a_change():

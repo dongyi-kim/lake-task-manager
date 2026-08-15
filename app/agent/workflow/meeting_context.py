@@ -20,14 +20,31 @@ _KNOWN_TECH = {
 }
 
 
+def meeting_request_text(state) -> str:
+    """Return the original meeting request across a research-interview continuation turn."""
+    current = request_text(state)
+    latest = last_user_text(state)
+    markers = ("회의록", "회의 결정", "회의 후속", "실무회의")
+    direct = [value for value in (current, latest) if any(word in value for word in markers)]
+    if direct:
+        return max(direct, key=len)
+    if not state.get("turn_continuation"):
+        return current
+    human = [str(getattr(message, "content", "") or "").strip()
+             for message in (state.get("messages") or [])
+             if getattr(message, "type", "") == "human"]
+    prior = [value for value in human[:-1] if any(word in value for word in markers)]
+    return prior[-1] if prior else current
+
+
 def is_meeting_request(state) -> bool:
-    text = f"{request_text(state)} {last_user_text(state)}"
+    text = f"{meeting_request_text(state)} {last_user_text(state)}"
     return any(word in text for word in ("회의록", "회의 결정", "회의 후속", "실무회의"))
 
 
 def meeting_subject(state) -> str:
     """Extract the stable technical subject from a titled meeting note when present."""
-    original = request_text(state)
+    original = meeting_request_text(state)
     for line in original.splitlines():
         value = re.sub(r"^\s*#{1,6}\s*", "", line).strip()
         value = re.sub(r"^\d{4}[-./]\d{1,2}[-./]\d{1,2}\s+", "", value)
@@ -89,7 +106,7 @@ def _explicit_user_bindings(latest: str, names: list[str]) -> dict[str, str]:
 
 def resolved_people(state) -> dict[str, str]:
     """Resolve every meeting person that can be resolved without guessing."""
-    original, latest = request_text(state), last_user_text(state)
+    original, latest = meeting_request_text(state), last_user_text(state)
     names = _person_tokens(original)
     bindings = _explicit_user_bindings(latest, names)
     try:
@@ -145,7 +162,7 @@ def _uncertain_terms(text: str) -> list[str]:
 
 def _term_is_defined(term: str, state) -> bool:
     latest = last_user_text(state)
-    original = request_text(state)
+    original = meeting_request_text(state)
     if latest != original:
         match = re.search(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])\s*"
                           rf"(?:은|는|:|=)\s*(.{{3,180}})", latest,
@@ -164,7 +181,7 @@ def prune_resolved_gaps(state, gaps: list[str]) -> list[str]:
     """Remove meeting gaps that the current interview answer already resolved."""
     if not is_meeting_request(state):
         return [str(g) for g in (gaps or []) if str(g).strip()]
-    defined = {term for term in _uncertain_terms(request_text(state))
+    defined = {term for term in _uncertain_terms(meeting_request_text(state))
                if _term_is_defined(term, state)}
     return [str(g) for g in (gaps or [])
             if str(g).strip() and not any(term in str(g) for term in defined)]
@@ -208,7 +225,7 @@ def attendee_mentions(state) -> list[str]:
     """Return unique resolved meeting attendees in their original note order."""
     people = resolved_people(state)
     out: list[str] = []
-    for name in _person_tokens(request_text(state)):
+    for name in _person_tokens(meeting_request_text(state)):
         uid = str(people.get(name) or "").strip()
         if uid and uid not in out:
             out.append(uid)
@@ -219,7 +236,7 @@ def unresolved_questions(state) -> list[dict]:
     """Questions left after internal/external research; empty means the workflow may continue."""
     if not is_meeting_request(state):
         return []
-    original = request_text(state)
+    original = meeting_request_text(state)
     latest = last_user_text(state)
     names = _person_tokens(original)
     resolved = resolved_people(state)
@@ -272,10 +289,10 @@ def needs_research_interview(state) -> bool:
     """Whether a meeting turn must research before it is allowed to draft or answer."""
     if not is_meeting_request(state) or (state.get("situation") or "").strip():
         return False
-    original = request_text(state)
+    original = meeting_request_text(state)
     return bool(_person_tokens(original) or _uncertain_terms(original))
 
 
 __all__ = ["attendee_mentions", "canonicalize_reply_mentions", "is_meeting_request",
-           "meeting_subject", "needs_research_interview", "prune_resolved_gaps",
+           "meeting_request_text", "meeting_subject", "needs_research_interview", "prune_resolved_gaps",
            "resolved_people", "unresolved_questions"]
