@@ -187,7 +187,7 @@ def test_runner_expands_misplaced_full_text_phrase_for_recall():
 def test_runner_strips_korean_particles_and_planner_filler_for_duplicate_recall():
     from app.agent.workflow.agents.query_runner import _jira_where
 
-    jql = _jira_where("", "프로듀서를 Avro로 전환하는 작업을 위한 티켓을 생성한다")
+    jql = _jira_where("", "프로듀서를 Avro로 전환하는 작업을 위한 티켓을 생성한다.")
 
     assert jql == ('text ~ "프로듀서" AND text ~ "Avro" AND text ~ "전환"')
     assert "project = ETL" not in jql

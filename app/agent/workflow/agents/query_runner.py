@@ -15,7 +15,7 @@ _LEXICAL_IGNORED = {
 
 def _search_token(token: str) -> str:
     """Jira text 검색용 최소 어간. 형태소 추측 대신 흔한 조사·서술 접미만 제거한다."""
-    value = str(token or "").strip()
+    value = str(token or "").strip().strip(".,;:!?…")
     # 긴 접미부터 제거. 영문 기술어 뒤의 한국어 조사(`Avro로`)도 같은 규칙을 쓴다.
     for suffix in ("으로부터", "에서는", "전환하는", "생성하는", "위해서", "으로", "에서",
                    "에게", "하는", "한다", "했다", "하며", "하고", "처럼", "까지",

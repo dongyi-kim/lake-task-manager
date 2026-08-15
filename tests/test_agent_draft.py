@@ -1892,6 +1892,14 @@ def test_choose_an_epic_does_not_mean_create_one():
     assert d["items"][0]["type"] != "Epic"
 
 
+def test_delegated_ndv_pipeline_prefers_the_same_module_query_performance_epic():
+    from app.agent.workflow.agents.work_architect import _pick_parent_epic
+
+    got = _pick_parent_epic("[ETL] StarRocks Puffin NDV 통계 파이프라인 개발", "ETL")
+
+    assert got and got["key"] == "DL-102"
+
+
 def test_stripping_orphan_subtasks_never_empties_the_draft():
     """"부모는 나중에" 로 떼어 내는 분기는 **남는 게 있을 때만** 뗀다.
 

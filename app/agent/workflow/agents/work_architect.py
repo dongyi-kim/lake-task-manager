@@ -1168,7 +1168,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 담을 Epic 이 하나도 없으면 격상을 그대로 둔다(그때는 만드는 것이 맞다).
         if (out.get("mode") or "") == "epic" and items and not qs and _re.search(
                 r"(에픽|epic)[^.\n]{0,12}(골라|정해|선택)", conversation(state), _re.I):
-            pick = _pick_parent_epic(str(items[0].get("summary") or ""))
+            component = next((str(c).strip() for c in (items[0].get("components") or [])
+                              if str(c).strip()), "")
+            pick = _pick_parent_epic(str(items[0].get("summary") or ""), component)
             if pick:
                 items[0]["type"] = "Task"
                 items[0]["epic"] = pick["key"]
@@ -4170,7 +4172,7 @@ def _existing_epic_like(summary: str):
     return None
 
 
-def _pick_parent_epic(summary: str):
+def _pick_parent_epic(summary: str, module: str = ""):
     """이 일을 담을 만한 **기존 Epic** 하나 — 낱말이 가장 많이 겹치는 것. 없으면 None.
 
     `_existing_epic_like` 는 "이름이 사실상 같은가"를 보고(중복 격상 방지), 이쪽은
@@ -4179,14 +4181,22 @@ def _pick_parent_epic(summary: str):
     """
     base = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "")).strip()
     words = [w for w in _re.split(r"[\s·,/]+", base) if len(w) >= 2]
+    # NDV·Puffin 통계는 쿼리 옵티마이저가 소비하는 통계정보다. 사용자가 기존 Epic 선택을
+    # 위임했을 때만 쓰이는 보조 어휘이며, 새 Epic을 자동 생성하는 근거로는 사용하지 않는다.
+    if _re.search(r"\b(?:NDV|Puffin|StarRocks)\b|통계", base, _re.I):
+        words += ["쿼리", "성능", "query", "latency"]
     if not words:
         return None
     best, score = None, 0
     try:
         from app.agent.tools.search_tools import find_parent_epic
-        for r in (find_parent_epic.invoke({"query": "", "limit": 25}) or []):
-            if not isinstance(r, dict) or not r.get("key"):
-                continue
+        rows = [r for r in (find_parent_epic.invoke({"query": "", "limit": 25}) or [])
+                if isinstance(r, dict) and r.get("key")]
+        if module and any(str(r.get("module") or "").casefold() == module.casefold()
+                          for r in rows):
+            rows = [r for r in rows
+                    if str(r.get("module") or "").casefold() == module.casefold()]
+        for r in rows:
             other = str(r.get("summary") or "")
             n = sum(1 for w in words if w in other)
             if n > score:
