@@ -345,7 +345,19 @@ def _ticket_progress(state) -> str:
     근거가 특히 잘 누락된다. 반복문으로 되는 일은 코드가 한다.
     """
     from app.agent.workflow.state import Intent as _I
-    keys = [k for k in (state.get("mentioned_keys") or []) if k][:2]
+    # RequestArchitect normally extracts explicit ticket keys, but a context switch may
+    # intentionally clear carried state before rebuilding the latest request.  Progress
+    # lookup must still honor keys written in that latest authoritative utterance rather
+    # than falling through to the generic PMO/WBS path.
+    # Python's Unicode ``\b`` does not split ASCII keys from adjacent Korean particles
+    # (``DL-9090과``), so use ASCII-only boundaries.
+    latest_keys = _re0.findall(
+        r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]*-\d+)(?![A-Za-z0-9])",
+        last_user_text(state), _re0.I,
+    )
+    keys = [str(k).upper() for k in (
+        latest_keys or (state.get("mentioned_keys") or [])
+    ) if k][:2]
     if not keys:
         return ""
     asked = last_user_text(state)

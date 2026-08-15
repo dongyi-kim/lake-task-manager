@@ -448,6 +448,24 @@ def test_an_explicit_modify_request_still_produces_a_change_plan():
     assert r["change_plan"].get("key") == "DL-9090"
 
 
+def test_cancelling_a_comment_does_not_discard_the_replacement_field_change():
+    """The latest request wins even when it names the write operation being cancelled."""
+    text = ("그 댓글도 취소. 최종 요청은 제목만 "
+            "'[Catalog] Puffin NDV 결과 템플릿 정리'로 변경하는 거야. "
+            "다른 변경 없이 승인 전 초안만 보여줘.")
+    out = {"questions": [], "mode": "task", "items": [],
+           "change": {"key": "DL-9203",
+                      "summary": "[Catalog] Puffin NDV 결과 템플릿 정리"},
+           "rationale": ""}
+    r = WorkArchitect().apply(_msg(text, intent=Intent.MODIFY,
+                                   mentioned_keys=["DL-9203"]), out)
+    assert not r["questions"]
+    assert r["change_plan"]["changes"] == {
+        "summary": "[Catalog] Puffin NDV 결과 템플릿 정리",
+    }
+    assert not r["change_plan"].get("comment")
+
+
 def test_promoting_to_an_epic_stops_when_one_of_that_name_already_exists():
     """Epic 은 진척 보고 단위다 — 중복이 생기면 둘 다 영원히 60% 에서 멈춘다."""
     out = {"questions": [], "mode": "epic", "rationale": "",

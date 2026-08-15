@@ -441,7 +441,7 @@ def test_all_primary_batteries_emit_versioned_metadata():
         "tools/agent_compose_eval.py": ('suite="editor"', "2.0.0"),
         "tools/agent_create_suite.py": ('suite="create"', "3.0.0"),
         "tools/agent_meeting_eval.py": ('suite="meeting"', "1.0.0"),
-        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "1.0.0"),
+        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "1.0.1"),
     }
     for relative, (suite_marker, battery_version) in expected.items():
         text = (ROOT / relative).read_text(encoding="utf-8")

@@ -17,7 +17,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "1.0.0"
+BATTERY_VERSION = "1.0.1"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("ctx-chg")
 
 
@@ -70,11 +70,16 @@ def _ctx_flip_flop_ok(output: dict[str, Any], _outputs: list[dict[str, Any]]) ->
 
 def _ctx_return_ok(output: dict[str, Any], _outputs: list[dict[str, Any]]) -> bool:
     pending = _pending(output)
-    keys = [str(key) for key in pending.get("keys") or []]
-    comments = pending.get("comments") or []
+    action = pending.get("action")
+    if action == "update_ticket":
+        keys = [str(pending.get("key") or "")]
+        comments = [pending.get("comment")] if pending.get("comment") else []
+    else:
+        keys = [str(key) for key in pending.get("keys") or []]
+        comments = pending.get("comments") or []
     final = _text({"reply": output.get("reply"), "pending": pending})
     return (
-        pending.get("action") == "update_tickets"
+        action in {"update_ticket", "update_tickets"}
         and keys == ["DL-9095"]
         and not (pending.get("changes") or {})
         and len(comments) == 1

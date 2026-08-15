@@ -3922,8 +3922,8 @@ def _comment_input_missing(state, plan: dict) -> bool:
 def _comment_forbidden(text: str) -> bool:
     """True when the latest instruction explicitly excludes a comment."""
     return bool(_re.search(
-        r"댓글(?:은|을|도)?\s*(?:남기지\s*마|달지\s*마|제외|없이)|"
-        r"코멘트(?:는|를|도)?\s*(?:남기지\s*마|달지\s*마|제외|없이)",
+        r"(?:그\s*)?댓글(?:은|을|도)?\s*(?:남기지\s*마|달지\s*마|제외|없이|취소)|"
+        r"(?:그\s*)?코멘트(?:는|를|도)?\s*(?:남기지\s*마|달지\s*마|제외|없이|취소)",
         str(text or ""), _re.I,
     ))
 

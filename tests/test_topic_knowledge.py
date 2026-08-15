@@ -411,6 +411,13 @@ def test_progress_preaggregation_only_fires_for_progress_questions():
                              "mentioned_keys": [PROG], "intent": Intent.MODIFY}) == ""
 
 
+def test_progress_preaggregation_recovers_explicit_key_after_context_reset():
+    """A new authoritative request can temporarily have no carried mentioned_keys."""
+    material = _ticket_progress({**_msg("DL-9090과 하위 Task의 진행상황과 남은 작업만 알려줘"),
+                                 "mentioned_keys": [], "intent": Intent.PROGRESS})
+    assert all(key in material for key in ("DL-9090", "DL-9093", "DL-9094", "DL-9095"))
+
+
 def test_responder_reports_progress_as_a_story_not_a_status_word():
     from app.agent.workflow.agents.result_integrator import ResultIntegrator
     t = ResultIntegrator().task({**_msg("DL-9090 진척 어때?"), "intent": Intent.PROGRESS,

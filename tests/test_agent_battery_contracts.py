@@ -83,3 +83,14 @@ def test_context_switch_checker_requires_only_the_latest_exact_change():
     }
     assert context_eval._ctx_unrelated_ok(exact, [])
     assert not context_eval._ctx_unrelated_ok(contaminated, [])
+
+
+def test_context_return_checker_accepts_the_canonical_single_ticket_action():
+    output = {
+        "reply": "DL-9095 댓글 승인 초안",
+        "pending": {
+            "action": "update_ticket", "key": "DL-9095", "changes": {},
+            "comment": "2홉 100노드 성능 측정 결과와 원본 로그를 첨부해 주세요",
+        },
+    }
+    assert context_eval._ctx_return_ok(output, [])
