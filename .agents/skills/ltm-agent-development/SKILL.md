@@ -53,10 +53,24 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 4. 실 LLM 배터리는 사용자가 승인한 existing project secret만 사용한다.
 5. prompt 후보 비교에서 main/complex=`gpt-4o`, simple=`gpt-4o-mini` routing과 mock data를 고정한다.
 6. Conversation, Compose, Create의 실제 output 전문과 call·token·latency·cost를 저장한다.
-7. 자동 통과와 별개로 사람이 사실성·완결성·안전성·가독성을 평가한다.
+7. 자동 통과와 별개로 Codex 또는 Claude 작업 에이전트가 raw output을 직접 읽고 인간 관점에서
+   사실성·완결성·안전성·가독성을 평가한다. LTM runtime LLM·내부 Role·동일 production endpoint를
+   evaluator나 LLM-as-judge로 사용하지 않는다.
 8. 결과는 `research/agent-improvement/` 아래에만 저장한다.
+9. 모든 비교는 `app/agent/EVALUATION.md`와 `evaluation_protocol.json`의 versioned 계약을 사용한다.
+10. raw 결과의 `protocolVersion`, `rubricVersion`, `batteryVersion`, manifest, run group, commit,
+    model routing, 반복·선택 정책을 확인한다. 누락된 실행은 qualification 결과로 보고하지 않는다.
+11. focused/closure 성공 결과로 기존 full-run 실패 점수를 교체하지 않는다. 수정 후에는 새 run group의
+    full battery로 다시 비교한다.
+12. 보고서 또는 PR Description에 측정 식별자, 비교 가능성, 집계식, rubric, 실제 출력, 실패·재시도·
+    제한사항을 포함한다. 다른 version·manifest의 절대점수 증감을 계산하지 않는다.
+13. 정성평가자의 agent family/model, direct raw review 여부, LTM LLM judge 미사용, reviewer 수와 blind
+    여부를 기록한다. 자동 도구는 deterministic contract 검사와 산술 집계까지만 수행한다.
+14. 각 rubric 축의 모든 checklist item을 `pass/minor/major/na`로 판정하고 실제 output 근거를 붙인다.
+    축별 rationale과 대표 excerpt를 기록하며 checklist 결과의 score ceiling을 넘기지 않는다.
 
 ## 완료 보고
 
-변경한 계약, PR의 단일 컨텍스트, 검증 결과, 실 LLM 사용 여부, 남은 모호성·위험, 연구 산출물
-경로를 짧게 보고한다. 통계적으로 반복하지 않은 단일 run은 탐색적 결과라고 명시한다.
+변경한 계약, PR의 단일 컨텍스트, 검증 결과, 실 LLM 사용 여부, 평가 protocol/rubric/battery version,
+남은 모호성·위험, 연구 산출물 경로를 짧게 보고한다. 통계적으로 반복하지 않은 단일 run은 탐색적
+결과라고 명시한다.

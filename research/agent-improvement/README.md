@@ -5,6 +5,7 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 ## 디렉터리
 
 - `reports/`: 비교 보고서, 사람 관점 정성평가, 설계·성능 기록
+- `evaluations/`: versioned battery의 경량 채점 보고서. commit·평가 version·manifest와 case별 점수 보존
 - `scripts/`: 당시 실험군을 순차 실행한 보조 스크립트
 
 ## 주요 보고서
@@ -18,3 +19,21 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 실제 답변의 차이, 정량 측정값, 사람 관점 평가는 위 보고서에 통합해 보존한다. 실행 로그와 raw JSON은
 중복·로그성 산출물이므로 저장소에는 두지 않으며 `logs/`, `results/`는 `.gitignore` 대상이다. 필요하면
 `scripts/`와 현재 배터리 도구로 다시 생성한다.
+
+새 비교 실험은 [`app/agent/EVALUATION.md`](../../app/agent/EVALUATION.md)의 versioned 표준을 사용한다.
+보고서와 PR Description에 protocol/rubric/battery version 및 측정 기준을 포함하고, version이 없는
+과거 점수나 closure 결과를 섞은 점수는 현재 qualification 결과와 직접 증감 비교하지 않는다.
+
+실행별 raw response·trace·usage·debug JSON은 `.cache/agent-evaluation/<runGroupId>/`에만 저장하고 git에
+담지 않는다. 같은 run group·suite·repeat의 raw/`.claim`은 덮어쓰지 않고 재실행에 새 식별자를 쓴다.
+Codex/Claude 직접 채점이 끝나면 `research/agent-improvement/evaluations/`에 경량 Markdown을
+반드시 남긴다. 그래야 이후 같은 battery/case만 focused로 재실행해 candidate commit과 version이 일치하는
+과거 결과를 찾을 수 있다.
+
+경량 보고서는 공통 5축 점수만 남기지 않는다. suite·case별 특수 검토요소의 `pass/minor/major/na`,
+실제 근거, `specializedReviewSpecSha256`도 포함한다. 히스토리 case라면 기대 ticket과 사건 순서, 조사
+case라면 내부 source·외부 검색어·URL·검색 실패 한계까지 기록한다. 이 계약이 바뀐 결과를 과거 점수와
+동일 기준으로 직접 비교하지 않는다.
+
+배터리 raw의 `격리` 기록에서 case별 private cache, `worldSha256`, `providerStoreSha256` 보존 여부도
+확인한다. 이전 case의 cache·대화 state·mock write가 다음 case에 남은 실행은 점수화하지 않는다.

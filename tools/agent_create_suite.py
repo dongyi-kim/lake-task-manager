@@ -14,10 +14,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("JIRA_ENV", "mock")
-os.environ["LAKE_AGENT_PROVIDER"] = "openai"
 # 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
-os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
 _raw_args = list(sys.argv[1:])
 OUT = None
 for i, arg in enumerate(_raw_args):
@@ -29,15 +26,35 @@ _args = [a for i, a in enumerate(_raw_args)
          if not a.startswith("-") and not (i and _raw_args[i - 1] == "--out")]
 MODEL = _args[0] if _args and not _args[0].isupper() else "gpt-4o-mini"
 ONLY = {a for a in _args if a.isupper()}
-os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
-os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
-SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
+SIMPLE_MODEL = os.environ.get("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 
-from app.agent.workflow import session  # noqa: E402
+from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
+                                       raw_result_path, reserve_raw_result_path,
+                                       write_raw_result)  # noqa: E402
+from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
+                                         finish_case)  # noqa: E402
+from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
+
+BATTERY_VERSION = "3.0.0"
+SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
+session = None
+
+
+def _prepare_runtime():
+    """Configure the live battery only when executed, never when imported by tests."""
+    global session
+    configure_process_isolation("create")
+    os.environ.setdefault("JIRA_ENV", "mock")
+    os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+    os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
+    os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
+    os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+    from app.agent.workflow import session as runtime_session
+    session = runtime_session
 
 
 def items(o):
@@ -63,6 +80,29 @@ def has_sections(it, *names):
 
 def _owners(rows):
     return [str(r.get("assignee") or "") for r in rows]
+
+
+def _question_text(o) -> str:
+    return json.dumps(o.get("questions") or [], ensure_ascii=False)
+
+
+def _asks_for_bug_identity(o) -> bool:
+    questions = _question_text(o)
+    return bool(o.get("questions")) and any(
+        word in questions for word in ("재현", "DAG", "배치 이름", "어떤 배치", "실행 환경")
+    )
+
+
+def _bug3_ok(o, _outs) -> bool:
+    return not items(o) and ("DL-" in (o.get("reply") or "") or _asks_for_bug_identity(o))
+
+
+def _rule1_ok(o, _outs) -> bool:
+    questions = _question_text(o)
+    asks_legal_shape = any(
+        word in questions for word in ("부모", "상위 Task", "최상위 Task", "Task로")
+    )
+    return bool(o.get("questions")) and not items(o) and asks_legal_shape
 
 
 # ── 본문 품질 게이트 (전 케이스 공통) ─────────────────────────────────────
@@ -147,13 +187,16 @@ def _output_flaws(o) -> list:
         flaws.append("payload가 없는데 reply가 초안 승인을 요청한다")
     if re.search(r"^\s*#{1,3}\s*명령서", reply) or "{{ref:" in reply or "{{mention:" in reply:
         flaws.append("내부 명령서/미렌더링 reference 토큰이 노출됐다")
+    if rows and re.search(r"(?m)^\s*#{1,4}\s*Epic\s*$", reply) \
+            and str(rows[0].get("type") or "").lower() != "epic":
+        flaws.append("reply는 Epic이라지만 첫 payload 타입은 Epic이 아니다")
     return flaws
 
 
 # (ID, 설명, [질의…], 체커(마지막 out, 전체 outs))
 CASES = [
-    # ── 한 줄 요청: 되묻지 않고 기본값으로 끝내야 하는 것들 ──────────
-    ("ONE1", "한 줄 + 알아서 — 되묻지 말고 초안까지", [
+    # ── 한 줄 요청: 필수정보가 있으면 위임된 선택을 되묻지 않는다 ─────
+    ("ONE1", "단순 단건 + 알아서 — 필수정보 충족 시 바로 초안", [
         "Workbench 쿼리 편집기에 단축키 도움말 팝업 추가해줘. 알아서 초안 잡아줘"],
      lambda o, _: len(items(o)) == 1 and not o.get("questions")
      and has_sections(items(o)[0], "배경", "완료 조건")),
@@ -168,25 +211,20 @@ CASES = [
         "메타데이터 미등록 테이블 30개를 등록해야 해. 사람 나눠서 진행하게 만들어줘. 알아서"],
      lambda o, _: len(kids(o)) >= 2 and len({x for x in _owners(kids(o)) if x}) >= 2),
 
-    # ★ 이 케이스는 이제 **두 턴**이다 — 최상위가 갈리는 복합 산출물은 본문 대신 구조도를
-    #   먼저 내고 합의를 받는다(사용자 요청, §5-g). 예전 계약은 "한 턴에 본문까지"를
-    #   기대했는데 그건 **옛 동작**이다. 케이스가 제품을 따라가야 한다.
-    ("STR2", "기능 분화 — 구조 합의 후 모듈이 다르면 Task 를 나눈다", [
+    # 사용자가 `알아서`라고 구조 선택을 위임했고 산출물도 셋을 명시했다. 구조를 다시 묻는 것은
+    # 필수 인터뷰가 아니라 위임된 선택의 재질문이므로 한 턴에 적절한 구조와 초안을 내야 한다.
+    ("STR2", "기능 분화 — 위임된 구조를 재질문하지 않고 모듈별 Task로 분리", [
         "리니지 뷰어 성능 측정하고, 결과에 따라 쿼리 엔진 쪽 인덱스도 손봐야 해. "
-        "그리고 사용 가이드도 써야 하고. 초안 잡아줘. 알아서",
-        "이 구조로 진행한다"],
-     lambda o, outs: (
-         # ① 첫 턴은 **구조 확인**이었다(본문을 미리 쓰지 않았다)
-         bool(outs[0].get("questions"))
-         # ② 합의 뒤에는 본문까지 갖춘 초안이 나온다
-         and len(items(o)) >= 2
-         and len({(i.get("components") or [""])[0] for i in items(o)}) >= 2)),
+        "그리고 사용 가이드도 써야 하고. 초안 잡아줘. 알아서"],
+     lambda o, _: (not o.get("questions") and len(items(o)) >= 2
+                   and len({(i.get("components") or [""])[0] for i in items(o)}) >= 2)),
 
     ("STR3", "Epic 격상 요구를 보수적으로 — 근거 없으면 기존 Epic 아래로", [
         "쿼리 성능 개선을 대대적으로 해보자. 에픽으로 크게 잡아줘",
         "기간은 2주 정도고 ETL 쪽만 손볼 거야. 알아서 진행해"],
-     lambda o, _: pend(o, "structure") != "new_epic"
-     or "보류" in str(pend(o, "rationale") or "")),
+     lambda o, _: (pend(o, "structure") != "new_epic"
+                   or "보류" in str(pend(o, "rationale") or ""))
+     and not o.get("questions")),
 
     # ── 대상·부모를 명시 ─────────────────────────────────────────────
     ("PAR1", "기존 Task 밑에 Sub-Task 를 개별 담당으로", [
@@ -229,34 +267,79 @@ CASES = [
 
     ("PASTE2", "장애 대화록 붙여넣기 → Bug 로", [
         "이거 버그로 등록해줘. 알아서\n\n"
-        "[10:12] 김운영: 야간 배치 또 실패했어요\n"
+        "[10:12] 김운영: prod의 dag_etl_nightly 야간 배치 또 실패했어요\n"
         "[10:13] 이개발: 로그 보니 커넥션 타임아웃이네요. 어제도 같은 시간대\n"
         "[10:15] 김운영: 재실행하면 되긴 하는데 매일 이러면 곤란해요"],
-     lambda o, _: any((i.get("type") or "") == "Bug" for i in items(o))),
+     lambda o, _: any((i.get("type") or "") == "Bug"
+                      and "dag_etl_nightly" in _body(i)
+                      and "prod" in _body(i).lower() for i in items(o))),
 
-    # ── 정보가 모자란 요청: 물어야 한다 ──────────────────────────────
+    # ── 정보가 모자란 요청: `알아서`여도 필수정보는 물어야 한다 ───────
+    ("ASKD1", "위임은 작업 대상을 대신하지 않음 — 필요한 범위를 질문", [
+        "데이터 품질 작업 하나 만들어줘. 나머지는 알아서"],
+     lambda o, _: (bool(o.get("questions")) and not items(o)
+                   and any(w in json.dumps(o.get("questions") or [], ensure_ascii=False)
+                           for w in ("무엇", "대상", "범위", "규칙")))),
+
+    ("ASKD2", "부모만 있고 할 일이 없음 — 질문 후 답을 정확한 Sub-Task로", [
+        "DL-9090 아래에 Sub-Task 하나 만들어줘. 내용은 알아서",
+        "리니지 뷰어 성능 회귀 테스트를 추가해줘"],
+     lambda o, outs: (bool(outs[0].get("questions")) and not items(outs[0])
+                      and any((i.get("parent") or "") == "DL-9090"
+                              and "회귀" in (i.get("summary") or "")
+                              for i in items(o) + kids(o)))),
+
+    ("ASKD3", "댓글 목적·본문 없음 — 위임으로 내용을 발명하지 않고 질문", [
+        "DL-9090에 댓글 남겨줘. 내용은 알아서"],
+     lambda o, _: (bool(o.get("questions")) and not o.get("pending")
+                   and any(w in json.dumps(o.get("questions") or [], ensure_ascii=False)
+                           for w in ("댓글", "내용", "목적", "전달")))),
+
+    ("AMB1", "동명이인 assignee — 알아서 고르지 않고 식별 질문", [
+        "DL-9090 담당자를 동명이로 바꿔줘. 알아서"],
+     lambda o, _: (bool(o.get("questions")) and not o.get("pending")
+                   and "동명이" in json.dumps(o.get("questions") or [], ensure_ascii=False)
+                   and any(uid in json.dumps(o.get("questions") or [], ensure_ascii=False)
+                           for uid in ("test.same01", "test.same02")))),
+
     ("ASK1", "범위가 없으면 되묻는다(무턱대고 만들지 않는다)", [
         "데이터 품질 개선 작업 하나 만들어줘"],
-     lambda o, _: bool(o.get("questions")) and not items(o)),
+     lambda o, _: (bool(o.get("questions")) and not items(o)
+                   and any(w in _question_text(o)
+                           for w in ("대상", "데이터셋", "테이블", "품질 규칙", "어느 데이터")))),
 
-    ("ASK2", "되물은 뒤 답을 반영해 초안으로", [
+    ("ASK2", "필수정보를 여러 turn에 걸쳐 충분히 묻고 답을 반영", [
         "데이터 품질 개선 작업 하나 만들어줘",
-        "널 비율 체크만 이번에 하고, 나머지는 다음에. 이번 주까지. 알아서"],
-     lambda o, outs: bool(outs[0].get("questions")) and len(items(o)) >= 1),
+        "널 비율 체크만 이번에 하고, 나머지는 다음에. 이번 주까지. 알아서",
+        "Lake 배치 적재 테이블 중 신규 등록 30개를 대상으로 해"],
+     lambda o, outs: (bool(outs[0].get("questions")) and not items(outs[0])
+                      and bool(outs[1].get("questions")) and not items(outs[1])
+                      and len(items(o)) == 1 and not o.get("questions")
+                      and all(w in json.dumps(items(o), ensure_ascii=False)
+                              for w in ("널", "30")))),
 
     # ── 중복·기존 것 처리 ────────────────────────────────────────────
     ("DUP1", "이미 있는 일이면 새로 만들지 말고 알린다", [
         "프로듀서를 Avro 로 전환하는 작업을 새로 만들자"],
-     lambda o, _: not items(o) and (bool(o.get("questions"))
-                                    or "DL-9072" in (o.get("reply") or ""))),
+     lambda o, _: (not items(o) and "DL-9072" in (o.get("reply") or "")
+                   and len(o.get("questions") or []) <= 1)),
 
     # ── 속성 지정이 섞인 요청 ────────────────────────────────────────
     ("ATTR1", "우선순위·마감·라벨을 말로 지정", [
-        "적재 지연 알림 임계값 조정 Task 만들어줘. 우선순위 P1, 이번 주 금요일까지, "
+        "적재 지연 알림 임계값을 30분에서 45분으로 조정하는 Task 만들어줘. "
+        "우선순위 P1, 이번 주 금요일까지, "
         "라벨은 hotfix. 알아서"],
      lambda o, _: (lambda i: str(i.get("priority") or "").startswith("P1")
                    and bool(i.get("duedate"))
-                   and "hotfix" in [str(x) for x in (i.get("labels") or [])])(items(o)[0])),
+                   and "hotfix" in [str(x) for x in (i.get("labels") or [])]
+                   and all(w in _body(i) for w in ("30", "45")))(items(o)[0])),
+
+    ("ASKD4", "속성을 채워도 핵심 mutation 값이 없으면 질문", [
+        "적재 지연 알림 임계값 조정 Task 만들어줘. 우선순위 P1, 이번 주 금요일까지. "
+        "나머지는 알아서"],
+     lambda o, _: (bool(o.get("questions")) and not items(o)
+                   and any(w in _question_text(o)
+                           for w in ("임계값", "몇 분", "현재 값", "목표 값")))),
 
     ("ATTR2", "없는 라벨을 요구 — 막지 말고 신규로 표시", [
         "카탈로그 품질 룰 점검 Task 만들고 라벨은 quality-gate 로. 알아서"],
@@ -275,7 +358,10 @@ CASES = [
                    and sum(1 for w in ("starrocks", "puffin", "ndv", "통계")
                            if w in (its[0].get("summary") or "").lower()) >= 2
                    # ② 구조: 다단계 규모 — Sub-Task 로 나뉘었거나 최소한 구조 확인 질문
-                   and (len(kids(o)) >= 2 or bool(o.get("questions")))
+                   and len(kids(o)) >= 2
+                   and not o.get("questions")
+                   # 사용자가 Epic 선택을 맡겼으므로 parent를 비워 두면 안 된다
+                   and bool(its[0].get("epic") or its[0].get("parent"))
                    # ③ 본문 규율: 참고 1벌, 영문 중복 섹션 없음
                    and _body(its[0]).count("<h3>참고</h3>") <= 1
                    and "References" not in _body(its[0])
@@ -307,13 +393,12 @@ CASES = [
 
     ("BUG3", "재현 정보가 없는 동일 증상 요청은 중복·재현 확인 없이 새로 만들지 않는다", [
         "야간 배치가 커넥션 타임아웃으로 실패한다. 버그로 등록해줘"],
-     lambda o, _: not items(o) and (bool(o.get("questions"))
-                                    or "DL-" in (o.get("reply") or ""))),
+     _bug3_ok),
 
     # ── 규칙 위반을 요구 ─────────────────────────────────────────────
     ("RULE1", "Sub-Task 를 최상위로 만들어 달라 — 규칙대로 거절하거나 부모를 묻는다", [
         "서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼"],
-     lambda o, _: bool(o.get("questions")) and not items(o)),
+     _rule1_ok),
 
     ("RULE2", "Story Point 를 넣어 달라 — 생성 시에는 넣지 않는다", [
         "리니지 3홉 확장 Story 만들고 스토리포인트 5로 넣어줘. 알아서"],
@@ -323,27 +408,37 @@ CASES = [
 
 
 RESULTS = []
+EVALUATION_METADATA = None
 
 
 def run(cid, desc, turns, check):
-    t0, tid, outs = time.time(), "", []
+    tid, outs = "", []
+    isolation_start = begin_case(cid)
+    t0 = time.time()
+    isolation = {}
     try:
         for q in turns:
             o = session.ask(q, thread_id=tid)
             tid = o["thread_id"]
+            o["evaluationEvidence"] = session.evaluation_snapshot(tid)
             outs.append(o)
         last = outs[-1]
         ok_struct = bool(check(last, outs))
         flaws = _body_flaws(last) + _output_flaws(last)
         # 구조가 맞아도 본문·최종 답변 계약을 어기면 통과가 아니다.
         ok = ok_struct and not flaws
+        elapsed = round(time.time() - t0, 1)
+        isolation = finish_case(isolation_start)
     except Exception as e:
+        try:
+            isolation = finish_case(isolation_start)
+        except Exception as isolation_error:
+            e = RuntimeError(f"{e}; isolation failure: {isolation_error}")
         print(f"✗ {cid} {desc}: 예외 {str(e)[:160]}")
         RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": False,
                         "초": round(time.time() - t0, 1), "오류": str(e),
-                        "턴": outs})
+                        "턴": outs, "격리": isolation})
         return False, 0
-    elapsed = round(time.time() - t0, 1)
     n = len(items(last))
     print(f"{'✓' if ok else '✗'} {cid} {desc}: 초안 {n}건"
           f"{' + 자식 ' + str(len(kids(last))) if kids(last) else ''}"
@@ -357,8 +452,8 @@ def run(cid, desc, turns, check):
         print(f"    items: {json.dumps(items(last), ensure_ascii=False)[:300]}")
     RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": ok,
                     "구조통과": ok_struct, "본문결함": flaws, "초": elapsed,
-                    "턴": outs})
-    return ok, (last.get("usage") or {}).get("costUsd", 0) or 0
+                    "턴": outs, "격리": isolation})
+    return ok, sum(((turn.get("usage") or {}).get("costUsd") or 0) for turn in outs)
 
 
 def write_checkpoint(hits, total, cost):
@@ -366,29 +461,52 @@ def write_checkpoint(hits, total, cost):
     if not OUT:
         return
     usage = {"calls": 0, "promptTokens": 0, "completionTokens": 0,
-             "totalTokens": 0, "cachedTokens": 0}
+             "totalTokens": 0, "cachedTokens": 0, "costUsd": 0.0}
     for record in RESULTS:
         for turn in record.get("턴") or []:
             turn_usage = turn.get("usage") or {}
-            for key in usage:
+            for key in ("calls", "promptTokens", "completionTokens", "totalTokens",
+                        "cachedTokens"):
                 usage[key] += turn_usage.get(key) or 0
+            usage["costUsd"] += turn_usage.get("costUsd") or 0
+    usage["costUsd"] = round(usage["costUsd"], 6)
     payload = {"model": MODEL, "simpleModel": SIMPLE_MODEL,
-               "promptVersion": PROMPT_VERSION,
+               "promptVersion": PROMPT_VERSION, "evaluation": EVALUATION_METADATA,
                "실행완료": len(RESULTS) == total,
+               "metrics": quantitative_metrics(
+                   attempts=len(RESULTS),
+                   duration_seconds=round(sum(r["초"] for r in RESULTS), 1),
+                   calls=usage["calls"], prompt_tokens=usage["promptTokens"],
+                   completion_tokens=usage["completionTokens"],
+                   total_tokens=usage["totalTokens"], cached_tokens=usage["cachedTokens"],
+                   cost_usd=usage["costUsd"],
+               ),
                "합계": {"통과": hits, "완료": len(RESULTS), "전체": total,
-                        "비용USD": round(cost, 6),
+                        "비용USD": usage["costUsd"],
                         "초": round(sum(r["초"] for r in RESULTS), 1),
-                        **usage},
+                        **{k: v for k, v in usage.items() if k != "costUsd"}},
                "케이스": RESULTS}
-    tmp = OUT + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=1, default=str)
-    os.replace(tmp, OUT)
+    write_raw_result(OUT, payload)
 
 
 if __name__ == "__main__":
+    _prepare_runtime()
     hits, cost = 0, 0.0
     run_cases = [c for c in CASES if not ONLY or c[0] in ONLY]
+    EVALUATION_METADATA = build_run_metadata(
+        suite="create",
+        battery_version=BATTERY_VERSION,
+        cases=CASES,
+        selected_case_ids=[case[0] for case in run_cases],
+        model=MODEL,
+        simple_model=SIMPLE_MODEL,
+        prompt_version=PROMPT_VERSION,
+        suite_review_elements=SUITE_REVIEW_ELEMENTS,
+        case_review_specs=CASE_REVIEW_SPECS,
+    )
+    OUT = str(reserve_raw_result_path(
+        raw_result_path("create", EVALUATION_METADATA, requested=OUT),
+    ))
     for cid, desc, turns, check in run_cases:
         ok, c = run(cid, desc, turns, check)
         hits += 1 if ok else 0

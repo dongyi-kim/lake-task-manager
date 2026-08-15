@@ -8,9 +8,8 @@
 #   ② 계약 — 코드가 잴 수 있는 최소선(초안 항목·표·참조·근거 위반·후검증)
 #   ③ 정성 — **답변 전문**과 승인 카드. 보고서에 그대로 실어 사람이 비교한다.
 #
-# 실행: python -X utf8 -u tools/agent_lang_ab.py <출력.json> [모델] [시나리오 ID...]
-#       (브랜치별 워크트리에서 각각 돌리고 두 json 을 비교한다)
-import io
+# 실행: python -X utf8 -u tools/agent_lang_ab.py [모델] [시나리오 ID...] [--out .cache/...json]
+#       raw 결과는 기본적으로 .cache/agent-evaluation/<runGroupId>/ 아래에 저장한다.
 import json
 import os
 import re
@@ -21,20 +20,41 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
 os.environ["LAKE_AGENT_PROVIDER"] = "openai"
 os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"      # 사람이 없는 실행 — 설정 확인 게이트 면제
-OUT = sys.argv[1] if len(sys.argv) > 1 else "lang-ab.json"
-MODEL = sys.argv[2] if len(sys.argv) > 2 else "gpt-4o-mini"
-ONLY = {x.upper() for x in sys.argv[3:]}
+_raw_args = list(sys.argv[1:])
+REQUESTED_OUT = None
+for i, arg in enumerate(_raw_args):
+    if arg.startswith("--out="):
+        REQUESTED_OUT = arg.split("=", 1)[1]
+    elif arg == "--out" and i + 1 < len(_raw_args):
+        REQUESTED_OUT = _raw_args[i + 1]
+_args = [a for i, a in enumerate(_raw_args)
+         if not a.startswith("-") and not (i and _raw_args[i - 1] == "--out")]
+if _args and not _args[0].upper().startswith("S"):
+    MODEL, _scenario_args = _args[0], _args[1:]
+else:
+    MODEL, _scenario_args = "gpt-4o-mini", _args
+ONLY = {x.upper() for x in _scenario_args if x.upper().startswith("S")}
 os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
 # 언어/프롬프트 비교에서도 production routing을 유지한다. 모델을 하나로
 # 평준화하면 프롬프트뿐 아니라 실행 환경까지 바뀌어 주 비교 결과가 무효가 된다.
 os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
 
+from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
+                                         finish_case)  # noqa: E402
+configure_process_isolation("conversation")
 from app.agent.workflow import session          # noqa: E402
+from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
+                                       raw_result_path, reserve_raw_result_path,
+                                       write_raw_result)  # noqa: E402
+from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
+
+BATTERY_VERSION = "2.0.0"
+SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("conversation")
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
 #    (인터뷰 → 초안이 이 도구의 핵심 갈래다).
@@ -49,6 +69,8 @@ SCENARIOS = [
     ("S4-사람", ["이다은 책임이 지금 맡고 있는 일 알려줘"]),
     ("S5-내일", ["지금 무슨 업무를 시작해야 할까"]),
     ("S6-진척", ["DL-9090 지금 어디까지 진행됐어?"]),
+    ("S7-내외부조사", ["우리 프로젝트의 Iceberg Puffin NDV 적용 가능성을 내부 작업 이력과 "
+                       "외부 공식 자료를 함께 조사해줘"]),
 ]
 
 _KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
@@ -101,10 +123,29 @@ def _checks(out: dict, user_text: str = "") -> dict:
 
 
 def run():
+    selected_ids = [
+        sid for sid, _ in SCENARIOS
+        if not ONLY or sid.split("-", 1)[0].upper() in ONLY or sid.upper() in ONLY
+    ]
+    evaluation = build_run_metadata(
+        suite="conversation",
+        battery_version=BATTERY_VERSION,
+        cases=SCENARIOS,
+        selected_case_ids=selected_ids,
+        model=MODEL,
+        simple_model=SIMPLE_MODEL,
+        prompt_version=PROMPT_VERSION,
+        suite_review_elements=SUITE_REVIEW_ELEMENTS,
+        case_review_specs=CASE_REVIEW_SPECS,
+    )
+    out_path = reserve_raw_result_path(
+        raw_result_path("conversation", evaluation, requested=REQUESTED_OUT),
+    )
     rows = []
     for sid, turns in SCENARIOS:
         if ONLY and sid.split("-", 1)[0].upper() not in ONLY and sid.upper() not in ONLY:
             continue
+        isolation_start = begin_case(sid)
         tid, per = "", []
         for q in turns:
             t0 = time.time()
@@ -114,6 +155,7 @@ def run():
                 per.append({"질문": q, "오류": str(e)[:200]})
                 continue
             tid = out.get("thread_id") or tid
+            evaluation_evidence = session.evaluation_snapshot(tid)
             u = out.get("usage") or {}
             per.append({
                 "질문": q,
@@ -121,6 +163,7 @@ def run():
                 "LLM호출": u.get("calls"), "프롬프트토큰": u.get("promptTokens"),
                 "완성토큰": u.get("completionTokens"), "총토큰": u.get("totalTokens"),
                 "캐시토큰": u.get("cachedTokens", 0),
+                "비용USD": u.get("costUsd"),
                 "역할별": u.get("byNode") or {},
                 "검사": _checks(out, q),
                 "답변": out.get("reply") or "",
@@ -134,15 +177,17 @@ def run():
                              ((out.get("pending") or {}).get("items")
                               or (out.get("draft") or {}).get("items") or [])[:4])],
                 "질문폼": [q2.get("question") for q2 in (out.get("questions") or [])],
+                "평가근거": evaluation_evidence,
             })
             print(f"  {sid} · {per[-1].get('초')}s · {per[-1].get('총토큰')}tok", flush=True)
-        rows.append({"시나리오": sid, "턴": per})
+        rows.append({"시나리오": sid, "턴": per,
+                     "격리": finish_case(isolation_start)})
         print(f"✔ {sid} 완료", flush=True)
 
     tot = {"턴수": 0, "초": 0.0, "총토큰": 0, "프롬프트토큰": 0, "완성토큰": 0,
            "캐시토큰": 0, "LLM호출": 0, "근거위반": 0, "후검증위반": 0,
            "종결어미줄": 0, "맺음상투구": 0, "요구구조불일치": 0,
-           "응답카드불일치": 0}
+           "응답카드불일치": 0, "비용USD": 0.0}
     for r in rows:
         for t in r["턴"]:
             if "오류" in t:
@@ -150,6 +195,7 @@ def run():
             tot["턴수"] += 1
             for k in ("초", "총토큰", "프롬프트토큰", "완성토큰", "캐시토큰", "LLM호출"):
                 tot[k] += (t.get(k) or 0)
+            tot["비용USD"] += (t.get("비용USD") or 0)
             ck = t.get("검사") or {}
             tot["근거위반"] += (ck.get("근거위반") or 0)
             tot["후검증위반"] += len(ck.get("후검증위반") or [])
@@ -158,13 +204,18 @@ def run():
             tot["요구구조불일치"] += 1 if ck.get("요구구조불일치") else 0
             tot["응답카드불일치"] += 1 if ck.get("응답카드불일치") else 0
     tot["초"] = round(tot["초"], 1)
-    io.open(OUT, "w", encoding="utf-8", newline="\n").write(
-        json.dumps({"model": MODEL, "simpleModel": SIMPLE_MODEL,
-                    "promptVersion": PROMPT_VERSION,
-                    "합계": tot, "시나리오": rows},
-                   ensure_ascii=False, indent=1))
+    tot["비용USD"] = round(tot["비용USD"], 6)
+    metrics = quantitative_metrics(
+        attempts=tot["턴수"], duration_seconds=tot["초"], calls=tot["LLM호출"],
+        prompt_tokens=tot["프롬프트토큰"], completion_tokens=tot["완성토큰"],
+        total_tokens=tot["총토큰"], cached_tokens=tot["캐시토큰"],
+        cost_usd=tot["비용USD"],
+    )
+    write_raw_result(out_path, {"model": MODEL, "simpleModel": SIMPLE_MODEL,
+                                "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
+                                "metrics": metrics, "합계": tot, "시나리오": rows})
     print(json.dumps(tot, ensure_ascii=False), flush=True)
-    print(f"→ {OUT}", flush=True)
+    print(f"→ {out_path}", flush=True)
 
 
 if __name__ == "__main__":

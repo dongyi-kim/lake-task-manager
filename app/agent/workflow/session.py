@@ -318,6 +318,38 @@ def snapshot(thread_id: str) -> dict:
     return _shape(thread_id, dict(st.values or {}), st)
 
 
+def evaluation_snapshot(thread_id: str) -> dict:
+    """Return retrieval/research evidence for ignored local battery raw results.
+
+    The user-facing API intentionally exposes only the shaped answer. A qualitative
+    reviewer also needs to know what was searched: planned sources and queries,
+    internal result artifacts, external attempts/URLs, and the claims ultimately used.
+    This function is called only by manual evaluation harnesses; it omits messages,
+    approval tokens, secrets, and provider configuration.
+    """
+    try:
+        st = get_graph().get_state(_config(thread_id))
+        data = as_dict(dict(st.values or {}))
+    except Exception:
+        return {}
+    fields = {
+        "requestPlan": "request_plan",
+        "queryPlan": "query_plan",
+        "queryResults": "query_results",
+        "queryArtifacts": "query_artifacts",
+        "preSurvey": "pre_survey",
+        "seedMap": "seed_map",
+        "webContext": "web_context",
+        "topicDossier": "topic_dossier",
+        "evidence": "evidence",
+        "relatedDocs": "related_docs",
+        "knowledgeBrief": "knowledge_brief",
+        "trace": "trace",
+    }
+    return {public: data.get(internal) for public, internal in fields.items()
+            if data.get(internal) not in (None, "", [], {})}
+
+
 def _shape(thread_id: str, state: dict, snap=None) -> dict:
     """State → 화면이 쓰는 모양. **비밀도 원본 메시지도 싣지 않는다.**"""
     if snap is None:

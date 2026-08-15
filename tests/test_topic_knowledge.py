@@ -94,6 +94,19 @@ def test_analysis_document_is_reachable_from_its_ticket():
     assert docs[0]["url"] == w._conf_url(title)
 
 
+def test_internal_external_research_fixture_keeps_facts_and_gaps_separate():
+    w = _w()
+    issue = w.issues["DL-7001"]
+    comments = " ".join(comment["body"] for comment in issue["comments"])
+    assert "일배치 테이블 20개" in issue["description"]
+    assert "실제 구현 PoC는 아직" in issue["description"]
+    assert "StarRocks" in comments and "확인되지 않았습니다" in comments
+    pages = [page for owner_pages in w.confluence.values() for page in owner_pages
+             if page.get("title") == "[Lake] Iceberg Puffin NDV 적용 검토 노트"]
+    assert len(pages) == 1
+    assert "외부 확인 필요" in pages[0]["body"]
+
+
 # ── 도구·취합 층 ───────────────────────────────────────────────────
 pytest.importorskip("langchain_core", reason="requirements-agent.txt 미설치")
 
@@ -124,6 +137,7 @@ def test_search_finds_a_dotted_table_name():
 def test_search_ladder_still_rejects_unrelated_tickets():
     """core 토큰에 `_` 를 넣은 뒤에도 무관성 차단이 살아 있어야 한다(연관성 규율 회귀)."""
     r = BY_NAME["search_work_history"].invoke({"query": "Iceberg Puffin NDV 통계", "limit": 8})
+    assert any(x["key"] == "DL-7001" for x in r["jira"]), r["jira"]
     assert not any(x["key"].startswith("DL-904") for x in r["jira"]), r["jira"]
 
 

@@ -34,3 +34,5 @@ Observability:
 TEST:
   - test.ui01
   - test.ui02
+  - test.same01
+  - test.same02

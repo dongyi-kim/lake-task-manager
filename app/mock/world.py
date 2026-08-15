@@ -37,6 +37,7 @@ SUBTASK_TYPE = "Sub-Task"
 FIX_MODULE = "TEST"
 # TEST 모듈 인력(= config/people.yaml 의 TEST). 실 인력과 섞이지 않게 별도 id.
 FIX_USERS = ["test.ui01", "test.ui02"]
+AMBIGUOUS_USERS = ["test.same01", "test.same02"]
 _STORYLIKE = {"Story", "Task", "Improvement", "New Feature"}   # SP 보유 + subtask 가능
 _CHILD_TYPES = ["Story", "Task", "Bug", "Improvement", "New Feature"]
 _VIT_ROOT_TYPES = ["Epic", "Task", "Story", "Improvement"]
@@ -136,8 +137,13 @@ class World:
         for i, uid in enumerate(FIX_USERS):
             users[uid] = {"name": uid, "realName": f"UI픽스처{i + 1:02d}", "company": "TEST",
                           "displayName": f"UI픽스처{i + 1:02d} TEST"}
+        # Agent 인터뷰 회귀용 동명이인. `알아서`는 두 식별자 중 임의 선택 권한이 아니다.
+        for uid in AMBIGUOUS_USERS:
+            users[uid] = {"name": uid, "realName": "동명이", "company": "TEST",
+                          "displayName": "동명이 TEST"}
         taken = {"정한울"}                       # 본명 중복 방지(데모 가독성) — id 정렬로 결정적
-        for uid in sorted({u for ids in self.people.values() for u in ids} - set(FIX_USERS)):
+        fixed = set(FIX_USERS) | set(AMBIGUOUS_USERS)
+        for uid in sorted({u for ids in self.people.values() for u in ids} - fixed):
             h = _shash(uid)
             g = h // 7
             nm = _SURNAMES[h % len(_SURNAMES)] + _GIVEN[g % len(_GIVEN)]
@@ -1163,6 +1169,27 @@ class World:
            description="JSON 직렬화 프로듀서를 Avro + Schema Registry 로 전환한다. "
                        "전체 9개 토픽 중 6개 완료, 3개 남았다.")
 
+        # ── 기술 조사 — 내부 사실과 외부 일반 지식을 분리해야 하는 fixture ──
+        # 같은 단어를 가진 구현 티켓이 아니라 사전 조사 티켓이다. 생성 배터리에서는 중복으로
+        # 오인하지 않아야 하고, 조사 배터리에서는 Jira 본문·댓글·Confluence를 모두 찾아야 한다.
+        t8 = "iceberg-statistics"
+        fx("DL-7001", "Task", "[Lake] Iceberg 테이블 통계 메타데이터 표준 조사", t8,
+           module="Lake", component="Lake", assignee="skcc.i2011", reporter="skcc.x1103",
+           statusCategory="done", statusName="Resolved",
+           created=d - timedelta(days=72), resolved=d - timedelta(days=61),
+           tresolved="17:20", updated=d - timedelta(days=58),
+           description="\n".join([
+               "Lake 배치적재 Iceberg 테이블의 NDV 통계를 파일 메타데이터로 전달할 수 있는지 조사한다.",
+               "내부 1차 대상은 일배치 테이블 20개이며 실제 구현 PoC는 아직 생성하지 않았다.",
+               "Puffin 파일 적용 여부와 reader 호환성은 외부 공식 문서 확인이 필요하다.",
+           ]),
+           comments=[
+               self._cmt("skcc.i2011", "내부 Spark writer 버전은 확인했습니다. Puffin 통계 파일 "
+                                       "작성 지원 범위는 외부 공식 문서로 다시 검증해야 합니다.", 60, "10:30"),
+               self._cmt("skcc.x1103", "StarRocks reader가 Puffin NDV를 실제 optimizer 통계로 "
+                                       "소비하는지는 확인되지 않았습니다. 완료 사실로 쓰면 안 됩니다.", 58, "15:10"),
+           ])
+
         # ── ⑤ wip.wip_lot_track_hist — **담당 이관 + 폐기 예정**(다른 실패 유형) ──
         # 함정: 최초 담당(skcc.x1103)이 인수인계됐다. 옛 담당을 현재 담당으로 답하면 오답이다.
         #       "아직 쓰는 테이블이냐"의 답(폐기 예정)은 문서에만 있다.
@@ -1339,6 +1366,22 @@ class World:
                  "",
                  "h2. 관련 티켓",
                  "DL-9042(Job 개발), DL-9044(주기 변경), DL-9045(스키마 변경)",
+             ])),
+            ("skcc.i2011", "[Lake] Iceberg Puffin NDV 적용 검토 노트", "DL",
+             ["엔지니어링", "파이프라인"], 18, "\n".join([
+                 "DL-7001의 내부 조사 결과와 미확인 항목을 기록한다.",
+                 "",
+                 "h2. 내부 확인",
+                 "* 후보 대상: Lake 일배치 Iceberg 테이블 20개",
+                 "* 내부 Spark writer 버전 확인 완료",
+                 "* 실제 Puffin NDV 생성 PoC는 아직 수행하지 않음",
+                 "",
+                 "h2. 외부 확인 필요",
+                 "* 현재 Iceberg spec의 Puffin statistics/NDV 구조",
+                 "* 사용 중인 writer의 작성 지원 범위",
+                 "* StarRocks reader·optimizer의 실제 소비 지원 여부",
+                 "",
+                 "이 문서의 미확인 항목을 외부 공식 자료 없이 지원 완료로 단정하지 않는다.",
              ])),
             ("skcc.i2044", "[데이터카탈로그] yms_lot_yield_daily 산출 로직", "DL",
              ["표준·정책", "데이터 거버넌스"], 25, "\n".join([

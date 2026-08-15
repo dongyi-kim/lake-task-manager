@@ -41,7 +41,7 @@ def test_fixture_data_actually_present():
 def test_fixtures_reachable_from_all_three_dashboards():
     """찾기 쉬워야 한다 — WBS(TEST 모듈)·현안(PMO_VIT)·워크로드(TEST 인력) 세 경로 모두에서 도달 가능."""
     from app.infra.settings import load_people, load_wbs_config
-    from app.mock.world import FIX_MODULE, FIX_USERS
+    from app.mock.world import AMBIGUOUS_USERS, FIX_MODULE, FIX_USERS
 
     plan = load_wbs_config()
     assert FIX_MODULE in plan["modules"], "WBS 에 TEST 모듈이 없음"
@@ -51,7 +51,8 @@ def test_fixtures_reachable_from_all_three_dashboards():
     assert "PMO_VIT" in _w().issues["DL-9000"]["labels"], "픽스처 Epic 이 현안에 안 뜸"
 
     people = load_people() or {}
-    assert set(people.get(FIX_MODULE) or []) == set(FIX_USERS), "워크로드 TEST 모듈 인력 불일치"
+    assert set(people.get(FIX_MODULE) or []) == set(FIX_USERS + AMBIGUOUS_USERS), \
+        "워크로드 TEST 모듈 인력 불일치"
 
 
 def test_test_module_contains_only_fixtures():
