@@ -479,6 +479,27 @@ def test_delegated_duplicate_epic_uses_the_existing_epic_without_reasking():
     assert "epic_name" not in r["draft"]["items"][0]
 
 
+def test_delegated_epic_with_stale_issue_type_cannot_become_epic_under_epic():
+    """STR3 actual: a repaired Task was reverted by stale `issue_type=Epic` at finalization."""
+    out = {"questions": [], "mode": "task", "rationale": "",
+           "structure": "new_epic", "structure_source": "user_specified",
+           "items": [{"summary": "[ETL] 쿼리 성능 개선", "type": "Epic",
+                      "issue_type": "Epic", "tier": "epic", "epic": "DL-102",
+                      "epic_name": "쿼리개선", "components": ["ETL"],
+                      "description": ("<h3>배경</h3><p>ETL 쿼리 성능 개선</p>"
+                                      "<h3>작업 범위</h3><ul><li>포함: ETL 쿼리 개선</li>"
+                                      "<li>제외: ETL 외 모듈</li></ul>"
+                                      "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                                      "<li data-checked=\"false\">측정 결과를 기록한다</li></ul>")}]}
+    r = WorkArchitect().apply(
+        _msg("쿼리 성능 개선을 에픽으로 크게 잡아줘. 기간은 2주고 ETL만. 알아서"), out)
+    item = r["draft"]["items"][0]
+    assert r["draft"]["mode"] == "task"
+    assert item["type"] == item["issue_type"] == "Task"
+    assert item["tier"] == "task" and item["epic"] == "DL-102"
+    assert "epic_name" not in item
+
+
 def test_followup_delegation_keeps_the_original_pipeline_multistage_signal():
     """STARR1: 둘째 턴의 `알아서`가 첫 요청의 pipeline 구조 신호를 지우지 않는다."""
     from langchain_core.messages import AIMessage, HumanMessage
@@ -2225,7 +2246,7 @@ def test_parentless_subtask_asks_for_a_valid_hierarchy_before_content():
         _msg("서브태스크 하나만 딱 만들어줘. 부모는 없어도 돼"), out)
 
     assert not got["draft"]["items"]
-    assert len(got["questions"]) == 2  # 계층 선택 + 코드가 붙이는 자유 의견
+    assert len(got["questions"]) == 1  # 유효한 계층 선택만 — 선택형 자유 의견은 중복 질문
     first = got["questions"][0]
     assert first["field"] == "parent"
     assert "부모 없이 만들 수 없습니다" in first["question"]
@@ -2684,6 +2705,31 @@ def test_pasted_voc_uses_reported_screen_symptom_instead_of_wrapper_or_placehold
     assert R._ASK_REPORTER not in body, body
     assert "조회 화면" in body and "컬럼 설명" in body
     assert "티켓으로 만들어줘" not in body and "---" not in body
+
+
+def test_existing_bug_sections_replace_placeholder_actual_with_reported_symptom(monkeypatch):
+    """PASTE2/BUG2: headings alone are not a pass when the user already supplied the actual result."""
+    from app.agent.workflow.agents import work_architect as R
+    monkeypatch.setattr("app.agent.config.get_llm",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no llm")))
+    state = _msg("운영에서 배치를 실행하면 connection timeout으로 실패한다. 버그로 등록해줘")
+    items = [{"summary": "[ETL] 배치 connection timeout", "type": "Bug",
+              "description": ("<h3>재현 경로</h3><p>운영 배치 실행</p>"
+                              "<h3>기대 동작</h3><p>배치 완료</p>"
+                              "<h3>실제 동작</h3><p>확인 필요</p>")}]
+    R._fill_thin_bodies(state, items, repair=True)
+    R._repair_bug_facts_from_report(state, items)
+    body = items[0]["description"]
+    assert "connection timeout으로 실패" in body
+    assert "<h3>실제 동작</h3><p>확인 필요" not in body
+
+
+def test_adjacent_repeated_title_phrase_is_collapsed_only_once():
+    from app.agent.workflow.agents.work_architect import _collapse_repeated_summary
+    assert _collapse_repeated_summary(
+        "[Workbench] 데이터 리니지 뷰어 리니지 뷰어 성능 회귀 테스트") == \
+        "[Workbench] 데이터 리니지 뷰어 성능 회귀 테스트"
+    assert _collapse_repeated_summary("[ETL] 설계 구현 검증") == "[ETL] 설계 구현 검증"
 
 
 def test_a_plain_task_still_gets_the_task_template(monkeypatch):

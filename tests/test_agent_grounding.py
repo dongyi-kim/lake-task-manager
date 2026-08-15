@@ -214,6 +214,33 @@ def test_responder_does_not_ask_to_approve_a_missing_draft():
     assert "현재 승인할 티켓 초안은 없습니다" in text
 
 
+def test_question_only_reply_uses_required_reason_not_speculative_ticket_context():
+    """ASKD4/BUG1: no draft means the prose must not invent an Epic, module, or ticket."""
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+    state = {"messages": [], "intent": "plan_work", "draft": {"items": []},
+             "questions": [{"question": "임계값을 어떤 값으로 바꿀까요?", "kind": "text",
+                            "required_input": True,
+                            "why_required": "변경 payload에 넣을 정확한 새 임계값이 없음"}]}
+    got = ResultIntegrator().apply(
+        state, {"text": "Runtime Epic JIRA820-1 아래 새 Bug를 만들겠습니다."})["reply"]
+    assert "정확한 새 임계값" in got
+    assert "JIRA820-1" not in got and "Runtime" not in got and "새 Bug" not in got
+    assert "아래 입력란" in got
+
+
+def test_task_linked_to_epic_is_not_described_as_a_new_epic_draft():
+    """STARR1: a valid parent Epic must not disable draft-type contradiction checks."""
+    from app.agent.workflow.agents.result_integrator import _align_draft_claims
+    state = {"draft": {"items": [{"summary": "[ETL] Puffin NDV 파이프라인 1차 구현",
+                                      "type": "Story", "epic": "DL-102"}]}}
+    got = _align_draft_claims(
+        "### Epic 초안\n\n새로운 Epic을 생성하고 Epic Name을 설정합니다.\n\n"
+        "상위 Epic DL-102 아래에 배치합니다.\n\n### 승인 요청\n승인해 주세요.", state)
+    assert "새로운 Epic" not in got and "Epic Name" not in got
+    assert "**실제 티켓 초안**: Story" in got and "DL-102" in got
+    assert "상위 Epic" in got
+
+
 def test_fabricated_uid_with_real_suffix_is_caught():
     """etl.x1001 — 접두만 바꾼 날조 사번. 접미(x1001)가 실존 사번(skcc.x1001)과 겹쳐도
     전체 id 가 실재하지 않으면 위반이다(실측: 접미 검색만 해서 통과했다)."""

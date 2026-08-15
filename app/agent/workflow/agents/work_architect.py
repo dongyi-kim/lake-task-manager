@@ -525,6 +525,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         for item in items:
             if item.get("issue_type") and not item.get("type"):
                 item["type"] = item["issue_type"]
+            elif item.get("type"):
+                # `type` is the canonical creation field.  Keeping an older model-produced
+                # `issue_type=Epic` beside a repaired `type=Task` made the final normalizer
+                # silently turn the item back into an Epic (STR3).
+                item["issue_type"] = item["type"]
         mode = out.get("mode") or "task"
         # 조사까지 끝난 명시적 "기존 Task 아래 A와 B Sub-Task 추가" 요청에서 모델이
         # interpretation만 내고 items를 비우는 변동이 있다. 대상·부모·산출물이 모두 사용자
@@ -576,6 +581,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             qs = [{"question": "지목한 티켓은 Sub-Task의 부모가 될 수 없습니다. "
                                "어떤 방식으로 바꿀까요?",
                    "kind": "choice", "field": "",
+                   "required_input": True,
+                   "why_required": "Sub-Task 생성에는 Task-tier 부모 또는 별도 Task 전환 결정이 필요함",
                    "options": ["실제 상위 Task 아래에 형제 Sub-Task로 만든다 (권장)",
                                "별도의 최상위 Task로 만든다", "이번에는 만들지 않는다"]}]
             model_questions = False         # 코드가 만든 안전 대안이며, 초안은 이미 비웠다
@@ -590,6 +597,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                   "Sub-Task 초안을 제외하고 생성 요청을 보류했다)").strip()
             qs = [{"question": "Sub-Task는 부모 없이 만들 수 없습니다. 어떤 방식으로 바꿀까요?",
                    "kind": "choice", "field": "parent",
+                   "required_input": True,
+                   "why_required": "Sub-Task 생성에는 Task-tier 부모가 필수임",
                    "options": ["별도의 최상위 Task로 만든다 (권장)",
                                "부모 Task를 지정한다", "이번에는 만들지 않는다"]}]
             model_questions = False
@@ -606,7 +615,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         explicit_new_tree = shape_hint(state)[0] == "task_with_subtasks" and not named
         if explicit_new_tree and mode == "subtask" and items:
             for i in items:
-                i["type"] = "Task"
+                _force_item_type(i, "Task", "task")
                 i.pop("parent", None)
             mode = "task"
             out["mode"] = "task"
@@ -661,7 +670,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         for i in items:
             if (i.get("type") or "").lower().startswith("sub") and _is_epic(i.get("parent")):
                 i["epic"] = i.pop("parent")
-                i["type"] = "Task"
+                _force_item_type(i, "Task", "task")
                 out["rationale"] = ((out.get("rationale") or "")
                                     + f"\n({i['epic']} 이 Epic 이라 Sub-Task 대신 그 아래 "
                                       "Task 로 뒀다 — Epic 밑에는 Sub-Task 를 달 수 없다)").strip()
@@ -690,7 +699,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                           f"붙인다: {names})").strip()
                 else:
                     for i in subs:
-                        i["type"] = "Task"
+                        _force_item_type(i, "Task", "task")
                         i.pop("parent", None)
                     out["rationale"] = ((out.get("rationale") or "")
                                         + "\n(부모로 삼을 티켓이 없어 Sub-Task 가 아니라 Task 로 "
@@ -712,7 +721,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 and not any(_can_parent_subtask(i.get("parent")) for i in items):
             epic_parent = any(_ticket_exists(i.get("parent")) for i in items)
             for i in items:
-                i["type"] = "Task"
+                _force_item_type(i, "Task", "task")
                 i.pop("parent", None)
             mode = "task"
             out["mode"] = "task"
@@ -1130,6 +1139,28 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # Epic 은 진척 보고 단위라 중복이 생기면 둘 다 영원히 60% 에서 멈춘다. 사용자가
         # "에픽으로 크게 잡아줘" 라고 해도, 담을 Epic 이 이미 있으면 그걸 쓰는 게 맞다
         # (knowledge/04 의 격상 조건 ③ '담을 기존 Epic 이 없다'를 코드가 확인한다).
+        if items and str(items[0].get("type") or items[0].get("issue_type") or "").lower() == "epic" \
+                and str(items[0].get("epic") or "").strip():
+            # An Epic cannot itself be placed under another Epic.  Under delegated defaults,
+            # the inferred parent is useful evidence of the safer intent: create a Task in that
+            # existing reporting unit.  Without delegation, retain the explicitly requested new
+            # Epic but drop the invalid parent link.
+            item = items[0]
+            parent_epic = str(item.get("epic") or "").strip()
+            if _said_defaults(state):
+                _force_item_type(item, "Task", "task")
+                item.pop("epic_name", None)
+                mode = out["mode"] = draft["mode"] = "task"
+                structure = out["structure"] = draft["structure"] = "single_task"
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(Epic 아래 Epic은 허용되지 않아 {parent_epic} 아래 "
+                                      "Task로 정리했다)").strip()
+            else:
+                item.pop("epic", None)
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n({parent_epic} Epic 연결을 제거했다 — Epic은 다른 "
+                                      "Epic 아래에 둘 수 없다)").strip()
+
         if (out.get("mode") or "") == "epic" and items:
             twin = _existing_epic_like(items[0].get("summary") or "")
             if twin:
@@ -1138,7 +1169,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                     # 선택하라는 위임이다. 검증된 동일 Epic이 하나면 중복 생성 여부를 다시
                     # 물을 필수정보가 없다. 기존 Epic 아래 Task가 되돌리기 쉬운 기본값이다.
                     item = items[0]
-                    item["type"] = "Task"
+                    _force_item_type(item, "Task", "task")
                     item["epic"] = twin["key"]
                     item.pop("epic_name", None)
                     mode = out["mode"] = draft["mode"] = "task"
@@ -1172,8 +1203,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                               if str(c).strip()), "")
             pick = _pick_parent_epic(str(items[0].get("summary") or ""), component)
             if pick:
-                items[0]["type"] = "Task"
+                _force_item_type(items[0], "Task", "task")
                 items[0]["epic"] = pick["key"]
+                items[0].pop("epic_name", None)
                 # ★ `draft` 는 이 위에서 이미 조립됐다 — `out` 만 고치면 승인 카드는 여전히
                 #   Epic 이다(items 는 참조로 공유돼 항목만 바뀐 채 mode 는 epic). 코드가
                 #   만든 값이 소비하는 쪽에 안 닿는 §5-f 의 그 부류라, 두 벌 다 쓴다.
@@ -1342,7 +1374,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 it["children"] = stay
                 for c in moved:
                     c.pop("parent", None)
-                    c["type"] = "Task"
+                    _force_item_type(c, "Task", "task")
                     c["components"] = [modules_in_text(str(c.get("summary") or ""))[0]]
                     c.setdefault("priority", it.get("priority"))
                     if it.get("epic"):
@@ -1479,6 +1511,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                            "작성 지시 placeholder를 실제 최소 본문으로 바꿨다)")
                     ).strip()
             _fill_thin_bodies(state, items, repair=not qs)
+            _repair_bug_facts_from_report(state, items)
             # 모델은 구체적 변경만 받은 경우에도 "사용자 편의성", "운영 효율성", "성능·안정성"
             # 같은 그럴듯한 효과를 배경·범위·DoD에 보탠다. 문장은 자연스럽지만 검증된 사실은
             # 아니다. 원 요청에 없는 품질 차원을 안전한 요청/검증 문장으로 되돌린다.
@@ -1642,7 +1675,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # tier와 issue_type을 분리해 downstream/보고서가 Bug를 별도 계층으로 오해하지 않게 한다.
         # 기존 write adapter가 쓰는 `type`은 호환을 위해 함께 유지한다.
         for item in items:
-            issue_type = str(item.get("issue_type") or item.get("type") or "Task").strip()
+            item["summary"] = _collapse_repeated_summary(item.get("summary"))
+            issue_type = str(item.get("type") or item.get("issue_type") or "Task").strip()
             tier = str(item.get("tier") or "").strip().lower()
             if not tier:
                 tier = "epic" if issue_type.lower() == "epic" or mode == "epic" else \
@@ -1651,8 +1685,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             item["tier"], item["issue_type"], item["type"] = tier, issue_type, issue_type
             for child in (item.get("children") or []):
                 if isinstance(child, dict):
-                    child_type = str(child.get("issue_type") or child.get("type") or "Sub-Task")
-                    child["tier"], child["issue_type"] = "subtask", child_type
+                    child["summary"] = _collapse_repeated_summary(child.get("summary"))
+                    child_type = str(child.get("type") or child.get("issue_type") or "Sub-Task")
+                    child["tier"], child["issue_type"], child["type"] = \
+                        "subtask", child_type, child_type
 
         return {"questions": qs, "draft": draft, "change_plan": plan, "turns": turns,
                 "interpretation": interp, **st_out,
@@ -2374,6 +2410,35 @@ def _is_bug_item(it) -> bool:
     return str((it or {}).get("type") or "").strip().lower() == "bug"
 
 
+def _force_item_type(item: dict, issue_type: str, tier: str) -> None:
+    """Keep the three compatibility fields atomic when a guard changes hierarchy."""
+    item["type"] = issue_type
+    item["issue_type"] = issue_type
+    item["tier"] = tier
+
+
+def _collapse_repeated_summary(summary: str) -> str:
+    """Collapse an immediately repeated word phrase without rewriting the title.
+
+    A model produced `데이터 리니지 뷰어 리니지 뷰어 성능 회귀 테스트` after
+    combining the parent subject and a child title.  The duplicate is mechanical: delete
+    only an adjacent, exactly equal token span and preserve every other word.
+    """
+    tokens = str(summary or "").split()
+    changed = True
+    while changed and len(tokens) >= 2:
+        changed = False
+        for width in range(len(tokens) // 2, 0, -1):
+            for start in range(0, len(tokens) - 2 * width + 1):
+                if tokens[start:start + width] == tokens[start + width:start + 2 * width]:
+                    del tokens[start + width:start + 2 * width]
+                    changed = True
+                    break
+            if changed:
+                break
+    return " ".join(tokens)
+
+
 def _bug_grade_body(body) -> bool:
     """Bug 본문의 최소선 — **재현 경로·기대 동작·실제 동작**이 다 있나.
 
@@ -2382,7 +2447,12 @@ def _bug_grade_body(body) -> bool:
     나오는가" 셋이다.
     """
     b = str(body or "")
-    return len(b) >= 60 and all(s in b for s in ("재현", "기대", "실제"))
+    actual = _re.search(r"<h3>\s*실제\s*동작\s*</h3>\s*<p>(.*?)</p>", b,
+                        _re.I | _re.S)
+    actual_text = _re.sub(r"<[^>]+>", "", actual.group(1)).strip() if actual else ""
+    return (len(b) >= 60 and all(s in b for s in ("재현", "기대", "실제"))
+            and bool(actual_text) and _ASK_REPORTER not in actual_text
+            and "확인 필요" not in actual_text)
 
 
 _ASK_REPORTER = "확인 필요 — 신고자에게 물을 것"
@@ -2404,8 +2474,35 @@ def _report_sentences(text: str) -> list[str]:
 def _reported_symptom(text: str) -> str:
     """원문에 명시된 실제 증상 한 문장. 없으면 빈 문자열 — 추측하지 않는다."""
     bad = _re.compile(r"안\s*(?:보|되|떠|열|나오)|보이지\s*않|되지\s*않|실패|오류|"
-                      r"에러|타임아웃|빈(?:다|다\b|화면)|깨(?:진|짐)|곤란")
+                      r"에러|타임아웃|timeout|connection\s+(?:failed|error)|"
+                      r"빈(?:다|다\b|화면)|깨(?:진|짐)|곤란", _re.I)
     return next((s for s in _report_sentences(text) if bad.search(s)), "")
+
+
+def _repair_bug_facts_from_report(state, items) -> bool:
+    """Replace a placeholder actual result with the observed symptom already in the report."""
+    said = (request_text(state) + "\n" + conversation(state)).strip()
+    symptom = _reported_symptom(said)
+    if not symptom:
+        return False
+    changed = False
+    for item in items or []:
+        targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
+        for target in targets:
+            if not _is_bug_item(target):
+                continue
+            body = str(target.get("description") or "")
+            match = _re.search(r"(<h3>\s*실제\s*동작\s*</h3>\s*<p>)(.*?)(</p>)", body,
+                               _re.I | _re.S)
+            if not match:
+                continue
+            current = _re.sub(r"<[^>]+>", "", match.group(2)).strip()
+            if current and _ASK_REPORTER not in current and "확인 필요" not in current:
+                continue
+            target["description"] = (body[:match.start(2)] + _esc(symptom)
+                                     + body[match.end(2):])
+            changed = True
+    return changed
 
 
 def _reported_expectation(text: str) -> str:

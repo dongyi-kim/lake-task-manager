@@ -276,6 +276,13 @@ class ResultIntegrator(TextAgent):
         # 노출하는 것은 내용 문제가 아니라 렌더링 계약 위반이다. grounding 전에 정규화해
         # 검사와 사용자 화면이 같은 문자열을 보게 한다.
         text = _strip_instruction_echo(text)
+        _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
+        # A question-only turn has no executable payload for the prose model to summarize.
+        # Letting it narrate the surrounding research produced invented Epic/module claims in
+        # ASKD4 and BUG1.  The structured form owns the question; prose only states why input
+        # is required.
+        if _qs and not _has_executable_payload(state):
+            text = _question_only_reply(state, _qs)
         text = _canonicalize_person_mentions(text, state)
         text = _render_reply_tokens(text)
         text = _align_draft_claims(text, state)
@@ -371,7 +378,6 @@ class ResultIntegrator(TextAgent):
         except Exception:
             pass
 
-        _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         if _qs:
             text = _drop_form_echo(text, _qs)
         # Jira 계층 규칙은 문장 생성의 재량이 아니다. 실측 RULE1에서 WorkArchitect가
@@ -419,6 +425,34 @@ def _requests_parentless_subtask(state) -> bool:
     says_no_parent = bool(_re.search(
         r"(?:부모(?:는|가|티켓은|티켓이)?(?:없|없이|필요없)|최상위(?:로|에))", said))
     return wants_subtask and says_no_parent
+
+
+def _has_executable_payload(state) -> bool:
+    draft = state.get("draft") or {}
+    plan = state.get("change_plan") or {}
+    result = state.get("result") or {}
+    return bool(draft.get("items") or draft.get("structure_tree")
+                or plan.get("key") or plan.get("keys") or result)
+
+
+def _question_only_reply(state, questions: list[dict]) -> str:
+    """Render only verified reasons for a form-only turn; never summarize speculative context."""
+    interpretation = str(state.get("interpretation") or "").strip()
+    reasons = []
+    for question in questions:
+        reason = str(question.get("why_required") or "").strip().rstrip(".。")
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    if not reasons:
+        reasons = ["요청을 확정하려면 사용자 입력 필요"]
+    prompt = ("아래 입력란에 필요한 내용을 적어 주세요"
+              if all(str(q.get("kind") or "text") == "text" for q in questions)
+              else "아래에서 선택해 주세요")
+    blocks = []
+    if interpretation:
+        blocks += ["### 제가 이해한 바", "", interpretation, ""]
+    blocks += ["### 확인 필요", "", "\n".join(f"- {reason}" for reason in reasons), "", prompt]
+    return "\n".join(blocks).strip()
 
 
 # 맺음말·상투구 — **끝에 붙는 빈 문장**. common.md 가 이미 금지하는데 실사용 리뷰에서
@@ -893,6 +927,12 @@ def _drop_false_epic_claims(text: str, items: list) -> str:
     """draft에 없는 Epic 연결/포함 주장을 문장에서 제거한다."""
     actual = {str(i.get("epic") or "").upper() for i in items if str(i.get("epic") or "")}
     actual_epics = [i for i in items if str(i.get("type") or "").lower() == "epic"]
+    had_false_type = bool(not actual_epics and _re.search(
+        r"(?:새(?:로운)?\s*)?(?:Epic|에픽)(?:\s*(?:티켓|초안))?[^.\n]{0,40}"
+        r"(?:생성|만들)|(?:Epic|에픽)\s*초안", str(text or ""), _re.I))
+    if not actual_epics:
+        text = _re.sub(r"(?mi)^(#{1,4}\s*)(?:Epic|에픽)\s*초안\s*$", r"\1티켓 초안",
+                       str(text or ""))
     # 모델이 카드의 실제 유형보다 한 단계 크게 소개하는 경우가 있다. 단건 카드의 명시적
     # 유형 줄은 버리지 말고 payload 유형으로 고쳐 제목을 보존한다.
     if not actual and not actual_epics and len(items) == 1:
@@ -918,8 +958,14 @@ def _drop_false_epic_claims(text: str, items: list) -> str:
             false_key = bool(epic_keys and not (epic_keys & actual))
             false_generic = not actual and positive
             mentions_epic = bool(_re.search(r"Epic|에픽", sentence, _re.I))
-            false_draft_type = bool(not actual and not actual_epics and mentions_epic
-                                    and _re.search(r"초안|생성되지|만들", sentence))
+            # A Task/Story linked to an existing Epic may truthfully mention its *parent* Epic,
+            # but it must never be introduced as a newly created Epic.  The old condition used
+            # `not actual`, so merely having a valid Epic link disabled this protection (STARR1).
+            false_draft_type = bool(not actual_epics and mentions_epic
+                                    and _re.search(r"(?:새(?:로운)?\s*)?(?:Epic|에픽)"
+                                                   r"(?:\s*(?:티켓|초안))?[^.\n]{0,36}"
+                                                   r"(?:생성|만들)|(?:Epic|에픽)\s*초안",
+                                                   sentence, _re.I))
             if false_draft_type or (not negative and (
                     (false_key and mentions_epic) or (positive and false_generic))):
                 continue
@@ -928,6 +974,13 @@ def _drop_false_epic_claims(text: str, items: list) -> str:
         if joined:
             lines.append(joined)
     out = "\n".join(lines)
+    if had_false_type and len(items) == 1:
+        item = items[0]
+        issue_type = str(item.get("type") or "Task")
+        identity = f"**실제 티켓 초안**: {issue_type} · {item.get('summary')}"
+        if item.get("epic"):
+            identity += f" · 상위 Epic {item['epic']}"
+        out = identity + ("\n\n" + out.strip() if out.strip() else "")
     if items and "승인" not in out:
         out = out.rstrip() + "\n\n이 티켓 초안은 아직 생성되지 않았습니다. 승인 카드에서 확인해 주세요."
     return out
