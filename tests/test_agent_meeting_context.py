@@ -8,8 +8,10 @@ from langchain_core.messages import HumanMessage
 os.environ.setdefault("JIRA_ENV", "mock")
 
 from app.agent.tools.people_tools import set_person_context  # noqa: E402
+from app.agent.workflow.agents.knowledge_curator import KnowledgeCurator  # noqa: E402
 from app.agent.workflow.agents.query_runner import QueryRunner  # noqa: E402
 from app.agent.workflow.agents.query_specialist import QuerySpecialist  # noqa: E402
+from app.agent.workflow.agents.result_integrator import _canonicalize_meeting_reply  # noqa: E402
 from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _apply_named_assignees,
     _canonicalize_meeting_mentions,
@@ -124,3 +126,32 @@ def test_blank_comment_query_is_removed_and_runner_rejects_defense_in_depth():
     output = QueryRunner()._run({"query_plan": raw, "messages": [HumanMessage(content="회의록")]})
     result = output["query_results"][0]["result"]
     assert result["returned"] == 0 and "허용되지" in result["error"]
+
+
+def test_meeting_reply_repairs_alias_tokens_and_lists_every_resolved_attendee():
+    set_person_context("meeting-reply", ["DL-9200"])
+    request = ("회의록 참석: @이다은, {{최민서:1042}}, 하은님, 현우차장, 준서TL. "
+               "담당·기한을 정리해줘.")
+    answer = "준서TL은 skcc.x1103 이준서야."
+    state = {**_state(request, answer, request=request), "intent": "ask", "questions": []}
+    raw = ("### 결정사항\n\n정리\n\n### 담당·기한\n\n"
+           "| 작업 | 담당 | 기한 |\n|---|---|---|\n"
+           "| writer | {{mention:이다은}} | 2026-08-22 |\n"
+           "| reader | 하은님 | 2026-08-25 |\n"
+           "| 기준 | {{mention:최민서:1042}} | 2026-08-28 |")
+    got = _canonicalize_meeting_reply(raw, state)
+    for uid in ("skcc.i2011", "skcc.x1042", "skcc.x1402", "skcc.x1560", "skcc.x1103"):
+        assert f"{{{{mention:{uid}}}}}" in got
+    assert "{{mention:이다은}}" not in got and "하은님" not in got
+    assert "### 참석자" in got
+
+
+def test_curator_drops_only_meeting_terms_defined_by_interview():
+    request = "회의 후속 정리. PSR 뜻은 기록에 없으니 조사 후 물어봐."
+    answer = "PSR은 PoC Success Review이고 5개 모두 오차 5% 이내여야 해."
+    state = _state(request, answer, request=request)
+    out = KnowledgeCurator().apply(state, {
+        "concepts": [], "our_context": "PSR 정의 확인", "references": [],
+        "gaps": ["PSR의 정확한 정의와 적용 방법 확인 필요", "reader 진행 상황 확인 필요"],
+    })
+    assert out["knowledge_brief"]["gaps"] == ["reader 진행 상황 확인 필요"]

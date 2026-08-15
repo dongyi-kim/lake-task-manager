@@ -27,18 +27,21 @@ def is_meeting_request(state) -> bool:
 
 def _person_tokens(text: str) -> list[str]:
     found: list[str] = []
+    located: list[tuple[int, str]] = []
 
     def add(value: str) -> None:
         value = str(value or "").strip()
         if value and value not in found:
             found.append(value)
 
-    for name, _number in re.findall(r"\{\{\s*([가-힣A-Za-z]{1,20})\s*:\s*(\d+)\s*\}\}", text):
-        add(name)
-    for name in re.findall(r"(?<![\w@])@([가-힣]{2,5})(?![\w])", text):
-        add(name)
-    for name in re.findall(
-            rf"(?<![가-힣])([가-힣]{{1,5}})\s*{_TITLE}(?=\s|은|는|이|가|을|를|:|,|$)", text):
+    for match in re.finditer(r"\{\{\s*([가-힣A-Za-z]{1,20})\s*:\s*(\d+)\s*\}\}", text):
+        located.append((match.start(), match.group(1)))
+    for match in re.finditer(r"(?<![\w@])@([가-힣]{2,5})(?![\w])", text):
+        located.append((match.start(), match.group(1)))
+    for match in re.finditer(
+            rf"(?<![가-힣])([가-힣]{{1,5}})\s*{_TITLE}(?=\s|은|는|이|가|을|를|:|[,.;!?)]|$)", text):
+        located.append((match.start(), match.group(1)))
+    for _position, name in sorted(located):
         add(name)
     return found
 
@@ -140,6 +143,61 @@ def _term_is_defined(term: str, state) -> bool:
     return bool(match and not re.search(r"확인\s*필요|정의가?\s*필요|미정|없", match.group(1)[:80]))
 
 
+def prune_resolved_gaps(state, gaps: list[str]) -> list[str]:
+    """Remove meeting gaps that the current interview answer already resolved."""
+    if not is_meeting_request(state):
+        return [str(g) for g in (gaps or []) if str(g).strip()]
+    defined = {term for term in _uncertain_terms(request_text(state))
+               if _term_is_defined(term, state)}
+    return [str(g) for g in (gaps or [])
+            if str(g).strip() and not any(term in str(g) for term in defined)]
+
+
+def canonicalize_reply_mentions(state, text: str) -> str:
+    """Convert every resolved meeting-person spelling into one canonical mention token."""
+    out = str(text or "")
+    people = resolved_people(state)
+    if not people:
+        return out
+
+    for name in sorted(people, key=len, reverse=True):
+        uid = str(people[name] or "").strip()
+        alias = str(name or "").strip()
+        if not uid or not alias:
+            continue
+        token = f"{{{{mention:{uid}}}}}"
+        out = re.sub(
+            rf"\{{\{{\s*mention\s*:\s*{re.escape(alias)}(?:\s*:\s*\d+)?\s*\}}\}}",
+            token, out, flags=re.I,
+        )
+        out = re.sub(
+            rf"\{{\{{\s*{re.escape(alias)}\s*:\s*\d+\s*\}}\}}",
+            token, out,
+        )
+        person = rf"@?{re.escape(alias)}(?:\s*{_TITLE})?"
+        boundary = (r"(?=(?:에게|께서|으로|은|는|이|가|을|를|의|과|와|도|만|로)?"
+                    r"(?:\s|[,.):;]|$))")
+        out = re.sub(rf"(?<![가-힣A-Za-z0-9_.]){person}{boundary}", token, out)
+
+    for uid in dict.fromkeys(str(v) for v in people.values() if str(v).strip()):
+        token = re.escape(f"{{{{mention:{uid}}}}}")
+        rendered = re.escape(f"[~{uid}]")
+        out = re.sub(rf"(?:{token}|{rendered})(?:[ \t]*(?:{token}|{rendered}))+",
+                     f"{{{{mention:{uid}}}}}", out)
+    return out
+
+
+def attendee_mentions(state) -> list[str]:
+    """Return unique resolved meeting attendees in their original note order."""
+    people = resolved_people(state)
+    out: list[str] = []
+    for name in _person_tokens(request_text(state)):
+        uid = str(people.get(name) or "").strip()
+        if uid and uid not in out:
+            out.append(uid)
+    return out
+
+
 def unresolved_questions(state) -> list[dict]:
     """Questions left after internal/external research; empty means the workflow may continue."""
     if not is_meeting_request(state):
@@ -201,5 +259,6 @@ def needs_research_interview(state) -> bool:
     return bool(_person_tokens(original) or _uncertain_terms(original))
 
 
-__all__ = ["is_meeting_request", "needs_research_interview", "resolved_people",
+__all__ = ["attendee_mentions", "canonicalize_reply_mentions", "is_meeting_request",
+           "needs_research_interview", "prune_resolved_gaps", "resolved_people",
            "unresolved_questions"]

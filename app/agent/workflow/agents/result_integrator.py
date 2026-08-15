@@ -190,7 +190,8 @@ class ResultIntegrator(TextAgent):
             if is_meeting_request(state) and (state.get("intent") or "") == Intent.ASK:
                 goal = (
                     "Write a compact Korean meeting brief from the Original Request, Current User Message, and "
-                    "verified research. Start with `### 결정사항`. Then use `### 담당·기한` and a "
+                    "verified research. Start with `### 결정사항`. Add `### 참석자` with every resolved "
+                    "person from the note, using mention tokens only. Then use `### 담당·기한` and a "
                     "`| 작업 | 담당 | 기한 |` table containing every explicitly named owner and deadline. "
                     "Use a verified mention token for every person. Follow with `### 조사로 보강한 맥락` for "
                     "only directly relevant internal history and external official findings, and `### 미결·검증` "
@@ -301,6 +302,7 @@ class ResultIntegrator(TextAgent):
         # is required.
         if _qs and not _has_executable_payload(state):
             text = _question_only_reply(state, _qs)
+        text = _canonicalize_meeting_reply(text, state)
         text = _canonicalize_person_mentions(text, state)
         text = _render_reply_tokens(text)
         text = _align_draft_claims(text, state)
@@ -419,6 +421,8 @@ class ResultIntegrator(TextAgent):
 
         # 최종 사용자 말투는 prompt 권고로 끝내지 않는다. 모델·fallback·후처리 어느 경로에서
         # 왔든 같은 간결한 업무 브리프 문법으로 정규화한다. 질문·인용·code는 예외.
+        text = _canonicalize_meeting_reply(text, state)
+        text = _render_reply_tokens(text)
         text = _canonicalize_person_mentions(text, state)
         text = _enforce_reply_style(text)
 
@@ -528,6 +532,29 @@ def _render_reply_tokens(text: str) -> str:
     out = _re.sub(r"\{\{+ref:([A-Za-z0-9_.:-]+)\}+\}", ref, str(text or ""))
     out = _re.sub(r"\{\{+mention:([A-Za-z0-9_.:-]+)\}+\}", r"[~\1]", out)
     return out
+
+
+def _canonicalize_meeting_reply(text: str, state) -> str:
+    """Apply confirmed meeting identities and guarantee a complete attendee badge section."""
+    from app.agent.workflow.meeting_context import (
+        attendee_mentions, canonicalize_reply_mentions, is_meeting_request,
+    )
+
+    out = canonicalize_reply_mentions(state, text)
+    if not is_meeting_request(state) or (state.get("intent") or "") != Intent.ASK \
+            or state.get("questions"):
+        return out
+    attendees = attendee_mentions(state)
+    if not attendees:
+        return out
+    block = "### 참석자\n\n" + " ".join(f"{{{{mention:{uid}}}}}" for uid in attendees)
+    pattern = r"(?ms)^###\s*참석자\s*\n.*?(?=^###\s|\Z)"
+    if _re.search(pattern, out):
+        return _re.sub(pattern, block + "\n\n", out, count=1)
+    anchor = _re.search(r"(?m)^###\s*담당[·ㆍ\s-]*기한\s*$", out)
+    if anchor:
+        return out[:anchor.start()].rstrip() + "\n\n" + block + "\n\n" + out[anchor.start():]
+    return out.rstrip() + "\n\n" + block
 
 
 def _canonicalize_person_mentions(text: str, state) -> str:

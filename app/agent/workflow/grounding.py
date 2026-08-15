@@ -218,7 +218,7 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
         names += [m.group(1).strip() for m in TABLE_NAME_RE.finditer(text)]
         # 상태·시간 낱말은 사람이 아니다 — "DL-9090: 현재 2/3 완료" 의 '현재'가 인물로
         # 걸렸다(실측 오탐). 이 목록은 오탐이 관측될 때마다 늘린다.
-        _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감",
+        _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감", "기한",
                       "상태", "예정", "검토", "확인", "미정", "없음", "전체", "작업"}
         for name in names:
             if (not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES

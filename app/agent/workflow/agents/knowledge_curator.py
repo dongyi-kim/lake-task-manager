@@ -89,11 +89,13 @@ Organize the supplied evidence into a Korean knowledge brief with concepts, inte
         return SCHEMA
 
     def apply(self, state, out):
+        from app.agent.workflow.meeting_context import prune_resolved_gaps
+
         brief = {
             "concepts": [c for c in (out.get("concepts") or []) if isinstance(c, dict)][:5],
             "our_context": out.get("our_context") or "",
             "references": [r for r in (out.get("references") or []) if isinstance(r, dict)][:8],
-            "gaps": [str(g) for g in (out.get("gaps") or []) if str(g).strip()][:6],
+            "gaps": prune_resolved_gaps(state, out.get("gaps") or [])[:6],
         }
         return {"knowledge_brief": brief,
                 "trace": note(state, self.name,

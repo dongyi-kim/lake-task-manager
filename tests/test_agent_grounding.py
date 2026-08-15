@@ -112,6 +112,11 @@ def test_plain_hangul_words_are_not_mistaken_for_names():
     assert g["fake_people"] == []
 
 
+def test_person_table_header_does_not_treat_due_column_as_a_name():
+    g = grounding.check("| 작업 | 담당 | 기한 |\n|---|---|---|\n| writer | skcc.i2011 | 2026-08-22 |")
+    assert "기한" not in g["fake_people"]
+
+
 def test_role_match_does_not_cross_a_newline_into_the_next_label():
     """`1건 담당\n- **대안**:`에서 '대안'은 사람 이름이 아니다(S1 실측 오탐)."""
     g = grounding.check("- 유사 업무 1건 담당\n- **대안**:\n  - skcc.x1042")
