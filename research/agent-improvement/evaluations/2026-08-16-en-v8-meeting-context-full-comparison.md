@@ -5,6 +5,14 @@
 > 특히 신규 `meeting`은 2.44→4.18, `ctx-chg`는 3.30→4.25로 개선. 다만 기존 44 case는 4.48→4.31로 낮아졌고,
 > 이번 결과는 1회 exploratory run이므로 통계적 qualification이나 무조건적인 배포 우위 판정으로 사용하지 않음.
 
+## 변경 내용
+
+- 회의 요약·Task 생성·결정 댓글·티켓 수정·후속 Task를 다루는 `meeting` 5-case battery와 특수 평가 기준 추가
+- 무관 주제 전환·정보 공유 후 새 요청·요청 취소·이전 주제 복귀를 다루는 `ctx-chg` 4-case battery 추가
+- 모든 회의록에서 사람·호칭·회의 한정 용어를 내부/외부 조사한 뒤에도 미해결일 때만 인터뷰하는 공통 계약 적용
+- 인터뷰 전 write 보류, 인터뷰 뒤 회의 결정 보존, 최신 요청 우선·취소된 action 제거, passive memory turn 조기 종료 개선
+- mock world·격리 검사·checker·pytest를 보강하고 기존 44 case에 신규 9 case를 연결한 53-case 기준선·비교 결과 기록
+
 ## 측정 식별자
 
 | 항목 | 값 |
