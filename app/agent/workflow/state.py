@@ -225,6 +225,22 @@ def request_text(state: AgentState) -> str:
     return (state.get("request_text") or "").strip() or last_user_text(state)
 
 
+def is_memory_only_request(state: AgentState) -> bool:
+    """Whether the user explicitly asked for acknowledgement without action or research.
+
+    Keep this deliberately narrow.  A message that both shares context and asks for work
+    must continue through the normal workflow; only an explicit "not now, just remember"
+    instruction qualifies.
+    """
+    text = last_user_text(state).strip()
+    return bool(re.search(
+        r"(?:지금은|당장은|우선은)[^.!?\n]{0,40}"
+        r"(?:답하지\s*말|조사하지\s*말|처리하지\s*말)[^.!?\n]{0,40}"
+        r"(?:이\s*)?(?:정보|내용)만\s*(?:기억|참고)",
+        text,
+    ))
+
+
 def conversation(state: AgentState, limit: int = 12) -> str:
     """최근 대화를 프롬프트에 실을 수 있는 형태로. 되묻기 맥락이 여기서 온다."""
     rows: list[str] = []

@@ -260,6 +260,38 @@ def test_running_task_bullets_are_normalized_to_detail_badges_without_duplicate_
     assert "### 연표" in got
 
 
+def test_progress_reply_gets_a_compact_complete_child_snapshot_when_model_omits_it():
+    from app.agent.workflow.agents.result_integrator import _ensure_progress_child_coverage
+
+    state = {
+        "intent": "progress",
+        "ticket_progress": (
+            '하위 Sub-Task 2/3 완료:\n'
+            '  - DL-9093 "렌더" 완료 (담당 A)\n'
+            '  - DL-9094 "업스트림" 완료 (담당 B)\n'
+            '  - DL-9095 "다운스트림" 진행중 (담당 B)'
+        ),
+    }
+    got = _ensure_progress_child_coverage(
+        "### 진행 상황\n\n현재 진행 중인 작업은 {{ticket-inline:DL-9095}}\n\n### 근거\n",
+        state,
+    )
+    assert all(f"{{{{ticket-list:{key}}}}}" in got for key in ("DL-9093", "DL-9094"))
+    assert "{{ticket-list:DL-9095}}" in got
+    assert got.index("### 하위 작업 현황") < got.index("### 근거")
+
+
+def test_progress_child_snapshot_is_not_duplicated_when_every_key_is_present():
+    from app.agent.workflow.agents.result_integrator import _ensure_progress_child_coverage
+
+    state = {
+        "intent": "progress",
+        "ticket_progress": '- DL-2 "끝" 완료\n- DL-3 "남음" 진행중',
+    }
+    source = "완료 {{ticket-list:DL-2}}, 진행 중 {{ticket-list:DL-3}}"
+    assert _ensure_progress_child_coverage(source, state) == source
+
+
 def test_task_linked_to_epic_is_not_described_as_a_new_epic_draft():
     """STARR1: a valid parent Epic must not disable draft-type contradiction checks."""
     from app.agent.workflow.agents.result_integrator import _align_draft_claims

@@ -20,7 +20,7 @@ from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
-                                      request_text)
+                                      is_memory_only_request, request_text)
 
 
 class ResultIntegrator(TextAgent):
@@ -39,6 +39,8 @@ class ResultIntegrator(TextAgent):
         completion = state.get("assignment_completion") or {}
         if completion.get("kind") == "incomplete_assignees":
             return self.apply(state, {"text": _assignment_completion_reply(completion)})
+        if is_memory_only_request(state):
+            return self.apply(state, {"text": "확인. 이 대화의 후속 요청에 필요한 경우에만 참고"})
         return super()._run(state)
 
     def task(self, state):
@@ -313,6 +315,7 @@ class ResultIntegrator(TextAgent):
             text = _question_only_reply(state, _qs)
         text = _canonicalize_meeting_reply(text, state)
         text = _canonicalize_person_mentions(text, state)
+        text = _ensure_progress_child_coverage(text, state)
         text = _render_reply_tokens(text)
         text = _align_draft_claims(text, state)
         text = _ensure_research_status(text, state)
@@ -461,6 +464,45 @@ def _requests_parentless_subtask(state) -> bool:
     says_no_parent = bool(_re.search(
         r"(?:부모(?:는|가|티켓은|티켓이)?(?:없|없이|필요없)|최상위(?:로|에))", said))
     return wants_subtask and says_no_parent
+
+
+def _ensure_progress_child_coverage(text: str, state) -> str:
+    """Expose every verified child when a progress answer silently drops some of them.
+
+    The LLM usually summarizes completed children and names only the open one.  That loses
+    the evidence behind the aggregate ``2/3`` count.  The pre-aggregator already has exact
+    child keys and states, so append a compact canonical badge snapshot only when coverage
+    is incomplete.  ``ticket-list`` is the intentionally small multi-ticket badge.
+    """
+    if (state.get("intent") or "") != Intent.PROGRESS:
+        return str(text or "")
+    material = str(state.get("ticket_progress") or "")
+    children: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for match in _re.finditer(
+        r"(?m)^\s*-\s+([A-Z][A-Z0-9]*-\d+)\s+\"[^\"]*\"\s+(완료|진행중)\b",
+        material,
+    ):
+        key, status = match.group(1), match.group(2)
+        if key not in seen:
+            seen.add(key)
+            children.append((key, status))
+    if not children or all(key in str(text or "") for key, _status in children):
+        return str(text or "")
+
+    rows = ["### 하위 작업 현황", ""]
+    for status, label in (("완료", "완료"), ("진행중", "진행 중")):
+        keys = [key for key, current in children if current == status]
+        if keys:
+            rows.append(f"- {label}: " + " ".join(
+                f"{{{{ticket-list:{key}}}}}" for key in keys
+            ))
+    block = "\n".join(rows)
+    source = str(text or "").rstrip()
+    anchor = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", source)
+    if anchor:
+        return source[:anchor.start()].rstrip() + "\n\n" + block + "\n\n" + source[anchor.start():]
+    return source + "\n\n" + block
 
 
 def _has_executable_payload(state) -> bool:

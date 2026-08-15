@@ -54,7 +54,7 @@ from app.agent.workflow.agents.work_architect import WorkArchitect
 from app.agent.workflow.agents.result_integrator import ResultIntegrator
 from app.agent.workflow.agents.auditor import Auditor
 from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node,
-                                      reads_as_bug, request_text)
+                                      is_memory_only_request, reads_as_bug, request_text)
 
 _compiled = {"graph": None}
 
@@ -74,6 +74,11 @@ def route_after_request_architect(state: AgentState) -> str:
     """
     intent = state.get("intent") or ""
     if intent == Intent.CHITCHAT:
+        return "respond"
+    # "지금은 답하지 말고 이 정보만 기억"은 조회 요청이 아니다.  검색·웹 조사를
+    # 시작하면 사용자가 명시적으로 금지한 일을 수행하고, 약어를 외부 동명이의어와 섞으며,
+    # 후속 요청에 쓸 필요도 없는 토큰을 소비한다. 대화 메시지는 checkpointer가 보존한다.
+    if is_memory_only_request(state):
         return "respond"
     # RequestArchitect can settle a cheap structure choice before any Jira/web lookup. Questions are a
     # terminal result for this turn; sending them through research wastes calls and cannot improve them.
