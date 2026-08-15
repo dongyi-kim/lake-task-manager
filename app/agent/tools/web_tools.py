@@ -25,7 +25,7 @@ from __future__ import annotations
 import html
 import re
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from langchain_core.tools import tool
 
@@ -43,6 +43,66 @@ _OFFICIAL_FALLBACKS = (
      "https://docs.starrocks.io/docs/sql-reference/System_variable/#enable_iceberg_column_statistics",
      ("enable_iceberg_column_statistics", "ndv", "puffin")),
 )
+
+
+def _ca_bundle() -> str:
+    """Use a file CA bundle instead of the Windows user certificate store.
+
+    The former ``duckduckgo-search`` transport uses ``primp`` on Windows.  In a
+    restricted process it tries to open the current-user native certificate store,
+    emits ``failed to load native root certificate: access denied``, and can leave a
+    search call waiting for minutes.  httpx + certifi has the same TLS verification
+    semantics without depending on that OS-global store.
+    """
+    import certifi
+    return certifi.where()
+
+
+def _public_search(query: str, limit: int) -> list[dict]:
+    """Search DuckDuckGo's HTML endpoint through the project's deterministic TLS path."""
+    import httpx
+
+    response = httpx.get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; LakeTaskManager/1.0)"},
+        follow_redirects=True,
+        timeout=_TIMEOUT,
+        verify=_ca_bundle(),
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"search endpoint HTTP {response.status_code}")
+
+    body = response.text
+    links = re.findall(
+        r'<a[^>]+class=["\']result__a["\'][^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+        body, re.I | re.S,
+    )
+    snippets = re.findall(
+        r'<(?:a|div)[^>]+class=["\']result__snippet["\'][^>]*>(.*?)</(?:a|div)>',
+        body, re.I | re.S,
+    )
+    rows = []
+    for index, (href, title_html) in enumerate(links[:max(1, min(int(limit or 5), 8))]):
+        url = html.unescape(href)
+        parsed = urlparse(url)
+        if parsed.hostname and parsed.hostname.endswith("duckduckgo.com"):
+            redirect = (parse_qs(parsed.query).get("uddg") or [""])[0]
+            if redirect:
+                url = unquote(redirect)
+        title = re.sub(r"<[^>]+>", " ", html.unescape(title_html))
+        snippet_html = snippets[index] if index < len(snippets) else ""
+        snippet = re.sub(r"<[^>]+>", " ", html.unescape(snippet_html))
+        rows.append(compact({
+            "title": trim(re.sub(r"\s+", " ", title).strip(), 120),
+            "url": url,
+            "snippet": trim(re.sub(r"\s+", " ", snippet).strip(), 260),
+            "official": _official_source(url),
+        }))
+    if not rows:
+        raise RuntimeError("search endpoint returned no parseable results")
+    rows.sort(key=lambda row: 0 if row.get("official") else 1)
+    return rows
 
 
 def _official_source(url: str) -> bool:
@@ -63,7 +123,7 @@ def _official_fallback(query: str) -> list[dict]:
         try:
             import httpx
             response = httpx.get(url, headers={"User-Agent": "lake-task-manager-agent"},
-                                 follow_redirects=True, timeout=5)
+                                 follow_redirects=True, timeout=5, verify=_ca_bundle())
             response.raise_for_status()
             body = re.sub(r"(?is)<(?:script|style).*?>.*?</(?:script|style)>", " ", response.text)
             plain = re.sub(r"<[^>]+>", " ", html.unescape(body))
@@ -95,9 +155,7 @@ def search_web(query: str, limit: int = 5) -> dict:
     if not q:
         return {"error": "검색어가 비었습니다."}
     try:
-        from duckduckgo_search import DDGS
-        with DDGS(timeout=_TIMEOUT) as ddgs:
-            rows = list(ddgs.text(q, max_results=max(1, min(int(limit or 5), 8))))
+        normalized = _public_search(q, limit)
     except Exception as e:
         fallback = _official_fallback(q)
         if fallback:
@@ -106,15 +164,6 @@ def search_web(query: str, limit: int = 5) -> dict:
         return {"query": q, "attempted": True, "results": [],
                 "error": f"웹 검색이 막혀 있거나 실패했습니다({str(e)[:120]}). "
                          "사내 조사만으로 진행하세요."}
-    normalized = [compact({
-        "title": trim(r.get("title"), 120),
-        "url": r.get("href") or r.get("url"),
-        "snippet": trim(r.get("body"), 260),
-        "official": _official_source(r.get("href") or r.get("url") or ""),
-    }) for r in rows]
-    # Applicability claims should prefer first-party product and standards documentation.
-    # Stable sorting preserves search relevance inside each group.
-    normalized.sort(key=lambda row: 0 if row.get("official") else 1)
     return {"query": q, "attempted": True, "results": normalized}
 
 
@@ -139,7 +188,7 @@ def search_github(query: str, limit: int = 5) -> dict:
                               "per_page": max(1, min(int(limit or 5), 8))},
                       headers={"Accept": "application/vnd.github+json",
                                "User-Agent": "lake-task-manager-agent"},
-                      timeout=_TIMEOUT)
+                      timeout=_TIMEOUT, verify=_ca_bundle())
         r.raise_for_status()
         items = (r.json() or {}).get("items") or []
     except Exception as e:

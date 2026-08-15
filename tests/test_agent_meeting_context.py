@@ -188,6 +188,61 @@ def test_meeting_comment_mentions_are_repaired_to_confirmed_identities():
     assert "skcc.i2101" not in plan["comment"]
 
 
+def test_meeting_comment_preserves_markdown_and_drops_excluded_scope_metadata():
+    set_person_context("meeting-comment-format", ["DL-9201", "DL-9202", "DL-7001"])
+    request = ("회의 결정사항을 DL-9201, DL-9202 댓글로 알려줘. writer는 @이다은. "
+               "배경 이력은 DL-7001이지만 그 티켓에는 댓글을 달지 않음. 준서TL이 검토")
+    answer = "준서TL은 skcc.x1327 임준서야."
+    state = _state(request, answer, request=request)
+    plan = {"comment": ("### 회의 결정사항 - 1차 PoC 대상 5개\n- 최종 검토는 "
+                        "[~skcc.x1327] 임준서님이 담당합니다. ### 참고\n"
+                        "- 배경 이력은 DL-7001에 기록되어 있습니다"), "comments": []}
+    _canonicalize_meeting_mentions(state, plan)
+    body = plan["comment"]
+    assert "### 회의 결정사항\n\n- 1차" in body
+    assert "[~skcc.x1327]" in body and "임준서님" not in body
+    assert "DL-7001" not in body and "### 참고" not in body
+    assert "\n- 최종" in body
+
+
+def test_same_field_value_treats_list_order_as_a_noop():
+    from app.agent.workflow.agents.work_architect import _same_field_value
+
+    assert _same_field_value(["Catalog"], ["Catalog"])
+    assert _same_field_value(["a", "b"], ["b", "a"])
+    assert not _same_field_value(["a"], ["a", "b"])
+
+
+def test_bulk_meeting_comment_keeps_role_mentions_and_markdown(monkeypatch):
+    from app.agent.workflow.agents import work_architect as module
+
+    monkeypatch.setattr(module, "_client_issue", lambda key: {"fields": {
+        "summary": key, "assignee": {"name": "skcc.owner"}}})
+    rows = module._bulk_comment_preview(
+        ["DL-1"],
+        "### 회의 결정사항\n\n- writer: [~skcc.writer]\n- 최종 검토: [~skcc.reviewer]",
+    )
+    body = rows[0]["body"]
+    assert body.startswith("### 회의 결정사항\n\n- 알림: [~skcc.owner]")
+    assert "[~skcc.writer]" in body and "[~skcc.reviewer]" in body
+
+
+def test_meeting_comment_is_built_from_authoritative_decision_bullets():
+    from app.agent.workflow.agents.work_architect import _meeting_decision_comment
+
+    state = _state(
+        "회의 결정사항을 DL-1, DL-2 댓글로 알려줘.\n\n"
+        "- 1차 대상은 5개\n"
+        "- writer 결과는 @이다은이 공유\n"
+        "- 준서TL이 최종 검토\n"
+        "- 배경 이력은 DL-9지만 그 티켓에는 댓글을 달지 않음"
+    )
+    body = _meeting_decision_comment(state, "")
+    assert body.startswith("### 회의 결정사항")
+    assert "5개" in body and "@이다은" in body and "준서TL" in body
+    assert "DL-9" not in body
+
+
 def test_meeting_mentions_collapse_duplicate_badges_and_full_name_username_pair():
     set_person_context("meeting-full-name", ["DL-9200"])
     request = "회의 후속 Task. 준서TL이 PSR 증빙 담당."

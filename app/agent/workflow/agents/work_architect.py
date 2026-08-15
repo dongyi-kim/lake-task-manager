@@ -1868,6 +1868,8 @@ def _change_plan(state, out, items, qs):
         cmt = (change.get("comment") or "").strip()
         if _comment_forbidden(_said):
             cmt = ""
+        else:
+            cmt = _meeting_decision_comment(state, cmt)
         # 댓글만 남기는 것도 유효한 계획이다 — "이 내용 DL-x 에 댓글로 남겨줘"가 실사용에 있다.
         if fields or cmt:
             plan = {"key": str(change["key"]).strip(), "changes": fields,
@@ -1879,6 +1881,22 @@ def _change_plan(state, out, items, qs):
                 cur = T.BY_NAME["get_ticket"].invoke({"key": plan["key"]}) or {}
                 if not cur.get("error"):
                     plan["before"] = {k: (cur.get(k) or "") for k in fields}
+                    # 이미 같은 값은 write payload에서 제거한다. 회의록처럼 모든 필드를
+                    # 재기술한 요청에서도 실제 변경만 승인하게 해 불필요한 update와 audit
+                    # noise를 막는다. 목록형 필드는 순서가 아니라 집합이 값이다.
+                    noops = [k for k, value in fields.items()
+                             if _same_field_value(plan["before"].get(k), value)]
+                    for field in noops:
+                        fields.pop(field, None)
+                        plan["before"].pop(field, None)
+                    plan["changes"] = fields
+                    if noops:
+                        actual = ", ".join(fields) or "없음"
+                        out["rationale"] = (
+                            f"실제 변경 필드: {actual}. "
+                            f"이미 같은 {', '.join(noops)} 값은 변경에서 제외"
+                        )
+                        plan["why"] = out["rationale"]
                     # ── 말과 방향이 어긋나면 짚는다 ─────────────────────────
                     # 실측: "DL-101 마감을 다음 주 금요일로 **미뤄** 줘" 에 8-27 → 8-14
                     # (오히려 당기는 것)를 아무 말 없이 카드에 올렸다. 사용자가 현재
@@ -4122,6 +4140,10 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
         # token을 payload에 남기면 에디터에서는 뱃지처럼 보여도 Jira 알림이 동작하지 않는다.
         value = _re.sub(r"\{\{mention:([^}]+)\}\}", r"[~\1]", value)
         value = _re.sub(r"(?:\[~([^\]]+)\])(?:\s*\[~\1\])+", r"[~\1]", value)
+        # mention badge가 이미 사람을 표시하므로 full name/title을 곁들이지 않는다.
+        value = _re.sub(
+            r"(\[~[^\]]+\])(?:\s+[가-힣]{2,5})?(?:TL|님|차장|책임|매니저)",
+            r"\1", value)
         # 대상에서 제외한 티켓 설명은 승인 범위 메타이지 실제 댓글 내용이 아니다.
         # "DL-7001에는 댓글을 달지 않음"을 대상 댓글마다 게시하던 회귀를 제거한다.
         value = _re.sub(
@@ -4129,13 +4151,67 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
             r"[^.!?\n]{0,40}(?:댓글|코멘트)(?:을|는|도)?\s*(?:달지|남기지)\s*않(?:음|는다|습니다)?[.!?]?",
             "", value, flags=_re.I,
         )
-        return _re.sub(r"\s{2,}", " ", value).strip(" .")
+        # 제외 대상으로 명시한 ticket은 댓글의 범위 설명일 뿐 게시할 결정 내용이 아니다.
+        excluded = _re.findall(
+            # Korean postpositions are Unicode word characters, so ``\b`` after a
+            # ticket key misses ordinary forms such as ``DL-7001에는``.
+            r"(?<![A-Z0-9-])([A-Z][A-Z0-9]*-\d+)(?!\d)[^.\n]{0,80}"
+            r"(?:댓글|코멘트)(?:을|는|도)?\s*"
+            r"(?:달지|남기지)\s*않", request_text(state), _re.I)
+        for key in excluded:
+            value = _re.sub(
+                rf"(?mi)^.*(?<![A-Z0-9-]){_re.escape(key)}(?!\d).*$", "", value)
+        # Markdown heading과 첫 bullet을 한 줄에 합친 모델 출력을 안정적인 comment 본문으로 정리.
+        value = _re.sub(r"(?m)^(#{1,6}\s*회의\s*결정사항)\s*[-—:]\s*", r"\1\n\n- ", value)
+        value = _re.sub(r"\s*(#{1,6}\s*참고)\s*", r"\n\n\1\n\n", value)
+        value = _re.sub(r"(?m)^#{1,6}\s*참고\s*$\n(?:\s*\n)*(?=\Z)", "", value)
+        value = _re.sub(r"[ \t]{2,}", " ", value)
+        value = _re.sub(r"\n{3,}", "\n\n", value)
+        return value.strip(" .\n")
 
     if "comment" in plan:
         plan["comment"] = canonical(plan.get("comment") or "")
     for row in plan.get("comments") or []:
         if isinstance(row, dict):
             row["body"] = canonical(row.get("body") or "")
+
+
+def _meeting_decision_comment(state, fallback: str) -> str:
+    """Build a meeting comment from explicit decision bullets in the original request.
+
+    The minutes are the authoritative write input.  A model occasionally returned an empty
+    comment on the resumed identity-interview turn, or omitted the reviewer.  Copying explicit
+    bullets is safer and cheaper than asking another model to reconstruct them.  Scope-control
+    bullets (for example, a background ticket that must not receive a comment) are instructions
+    about the write and must never become comment content.
+    """
+    original = request_text(state)
+    if not (_re.search(r"회의|미팅", original, _re.I)
+            and _re.search(r"댓글|코멘트", original, _re.I)):
+        return fallback
+    decisions = []
+    for raw in original.splitlines():
+        match = _re.match(r"^\s*[-*]\s+(.+?)\s*$", raw)
+        if not match:
+            continue
+        line = match.group(1).strip()
+        if _re.search(r"(?:댓글|코멘트).{0,30}(?:달지|남기지)\s*않", line, _re.I):
+            continue
+        if _re.search(r"^(?:배경|참고|대상\s*제외)\s*[:：]?", line, _re.I):
+            continue
+        decisions.append(line.rstrip(" ."))
+    if not decisions:
+        return fallback
+    return "### 회의 결정사항\n\n" + "\n".join(f"- {line}" for line in decisions)
+
+
+def _same_field_value(before, after) -> bool:
+    """Jira field의 표현 차이를 무시하고 의미상 no-op인지 판정한다."""
+    if isinstance(before, (list, tuple, set)) or isinstance(after, (list, tuple, set)):
+        left = {str(value).strip() for value in (before or []) if str(value).strip()}
+        right = {str(value).strip() for value in (after or []) if str(value).strip()}
+        return left == right
+    return str(before or "").strip() == str(after or "").strip()
 
 
 def _human_request_text(state) -> str:
@@ -4718,14 +4794,19 @@ def _bulk_comment_preview(keys: list, body: str) -> list:
         except Exception:
             f = {}
         who = ((f.get("assignee") or {}).get("name") or "").strip()
-        # ★ **멘션은 티켓마다 그 티켓의 담당이어야 한다.** 모델은 대상 담당자를 전부 모아
-        #   한 문장에 넣는다(실측 CMTB1: 두 티켓의 코멘트가 똑같이
-        #   "[~skcc.x1042] [~skcc.i2011]" 였다) — 그러면 남의 티켓 알림이 모두에게 간다.
-        #   그래서 본문의 멘션을 **전부 걷어내고** 이 티켓의 담당만 앞에 붙인다.
-        text = _re.sub(r"\[~[^\]]*\]", "", body)
-        text = _re.sub(r"\s{2,}", " ", text).strip(" ,·")
+        # 티켓별 알림 대상과 회의 결정의 owner/reviewer는 서로 다른 의미다. 예전에는
+        # 본문의 멘션을 전부 지워 티켓 담당만 남겼고, 그 결과 회의에서 확정한 검토자가
+        # 사라졌다. 모델이 앞에 나열한 수신자 mention만 제거하고 본문 속 역할 mention은
+        # 보존한다. Markdown 줄바꿈도 payload의 일부이므로 공백으로 접지 않는다.
+        text = _re.sub(r"^\s*(?:\[~[^\]]+\]\s*)+", "", body)
+        text = _re.sub(r"[ \t]{2,}", " ", text).strip(" ,·\n")
         if who:
-            text = f"[~{who}] " + text        # 담당자에게 알리는 것이 이 코멘트의 목적이다
+            alert = f"- 알림: [~{who}]"
+            heading = _re.match(r"^(#{1,6}\s+[^\n]+)(?:\n+|$)", text)
+            if heading:
+                text = f"{heading.group(1)}\n\n{alert}\n" + text[heading.end():].lstrip()
+            else:
+                text = f"{alert}\n\n{text}"
         rows.append({"key": k, "title": str(f.get("summary") or ""),
                      "assignee": who, "body": text})
     return rows

@@ -567,7 +567,9 @@ def _approval_reply(state) -> str:
                       for c in comments}
             for key in keys:
                 body = by_key.get(key) or comment
-                rows += [f"- {{{{ticket-detail:{key}}}}}", f"  > {body}", ""]
+                quoted = "\n".join(f"  > {line}" if line else "  >"
+                                   for line in body.splitlines())
+                rows += [f"- {{{{ticket-detail:{key}}}}}", quoted, ""]
             rows += ["### 승인", "", "아래 카드에서 대상과 댓글 전문 확인 후 게시 승인"]
             return "\n".join(rows).strip()
 

@@ -51,6 +51,9 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 2. prompt·role·tool 변경이면 `test_agent_prompt_integrity`를 반드시 포함한다.
 3. 성공 후 임시 basetemp만 안전하게 제거한다.
 4. 실 LLM 배터리는 사용자가 승인한 existing project secret만 사용한다.
+   승인 후에는 제한된 sandbox의 외부 socket/Windows native certificate store 경로를 거치지 말고
+   network-enabled local process로 실행한다. 실패한 묶음 전체를 반복하지 말고 미완료 case만 새
+   raw attempt 경로에서 재개한다.
 5. prompt 후보 비교에서 main/complex=`gpt-4o`, simple=`gpt-4o-mini` routing과 mock data를 고정한다.
 6. Conversation, Compose, Create의 실제 output 전문과 call·token·latency·cost를 저장한다.
 7. 자동 통과와 별개로 Codex 또는 Claude 작업 에이전트가 raw output을 직접 읽고 인간 관점에서

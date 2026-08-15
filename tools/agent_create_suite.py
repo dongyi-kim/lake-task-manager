@@ -39,7 +39,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "4.0.0"
+BATTERY_VERSION = "4.0.1"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
@@ -201,6 +201,16 @@ def _output_flaws(o) -> list:
     return flaws
 
 
+def _duplicate_decision_ok(output: dict, _outputs=None) -> bool:
+    """Question form owns duplicate decisions; prose must not echo the same form."""
+    questions = output.get("questions") or []
+    blob = json.dumps(questions, ensure_ascii=False)
+    return (not items(output) and len(questions) == 1
+            and all(value in blob for value in (
+                "DL-9072", "프로듀서 Avro 직렬화 전환", "근거",
+                "범위를 추가", "별도 티켓")))
+
+
 # (ID, 설명, [질의…], 체커(마지막 out, 전체 outs))
 CASES = [
     # ── 한 줄 요청: 필수정보가 있으면 위임된 선택을 되묻지 않는다 ─────
@@ -329,8 +339,7 @@ CASES = [
     # ── 중복·기존 것 처리 ────────────────────────────────────────────
     ("DUP1", "이미 있는 일이면 새로 만들지 말고 알린다", [
         "프로듀서를 Avro 로 전환하는 작업을 새로 만들자"],
-     lambda o, _: (not items(o) and "DL-9072" in (o.get("reply") or "")
-                   and len(o.get("questions") or []) <= 1)),
+     _duplicate_decision_ok),
 
     # ── 속성 지정이 섞인 요청 ────────────────────────────────────────
     ("ATTR1", "우선순위·마감·라벨을 말로 지정", [

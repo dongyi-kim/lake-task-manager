@@ -17,7 +17,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "2.0.0"
+BATTERY_VERSION = "2.0.1"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("meeting")
 
 
@@ -118,7 +118,9 @@ def _meeting_comment_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -
 def _meeting_update_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> bool:
     pending = _pending(output)
     changes = pending.get("changes") or {}
-    expected_fields = {"summary", "priority", "duedate", "components", "labels", "description"}
+    # component is explicitly requested but already Catalog in the fixture.  A safe update
+    # payload contains actual changes only; unchanged values belong in rationale, not Jira audit.
+    expected_fields = {"summary", "priority", "duedate", "labels", "description"}
     body = str(changes.get("description") or "")
     return (
         _interview_then_resume(outputs, "RGP")
@@ -128,10 +130,10 @@ def _meeting_update_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) ->
         and changes.get("summary") == "[Catalog] Puffin NDV 검증 기준 및 결과 템플릿"
         and changes.get("priority") == "P1-Critical"
         and str(changes.get("duedate") or "") == "2026-08-29"
-        and changes.get("components") == ["Catalog"]
         and changes.get("labels") == ["meeting-fixture", "puffin-ndv", "decision-20260815"]
         and all(section in body for section in ("결정 배경", "작업 범위", "검증 기준"))
         and ("skcc.x1103" in body or "이준서" in body)
+        and "components" in str(pending.get("rationale") or "")
         and not pending.get("comment")
     )
 

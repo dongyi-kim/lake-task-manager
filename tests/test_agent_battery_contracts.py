@@ -55,6 +55,17 @@ def test_create_question_checkers_require_bug_identity_and_legal_parent_choice()
     assert create_eval._rule1_ok(exact_parent, [])
 
 
+def test_duplicate_checker_reads_the_structured_form_without_requiring_prose_echo():
+    exact = {"reply": "아래에서 선택해 주세요", "questions": [{
+        "question": ('DL-9072 "[ETL] 프로듀서 Avro 직렬화 전환"에서 같은 작업을 진행 중. '
+                     "근거: 동일 전환 범위. 기존 티켓에 범위를 추가할지 선택"),
+        "options": ["DL-9072에 범위를 추가", "별도 티켓으로 분리"],
+    }]}
+    assert create_eval._duplicate_decision_ok(exact)
+    assert not create_eval._duplicate_decision_ok({
+        "reply": "DL-9072 중복", "questions": [{"question": "어떻게 할까요?"}]})
+
+
 def test_meeting_interview_checker_rejects_draft_before_ambiguous_identity_is_resolved():
     question = {
         "questions": [{"question": "준서TL과 PSR을 확인해 주세요", "options": [

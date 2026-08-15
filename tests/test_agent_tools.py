@@ -281,12 +281,33 @@ def test_web_tools_are_read_only_and_registered():
 
 def test_web_search_fails_soft_when_blocked(monkeypatch):
     """채점 샌드박스는 폐쇄망일 수 있다 — 예외가 아니라 '막혀 있다'는 사실을 돌려준다."""
-    import duckduckgo_search
+    import httpx
     def boom(*a, **k):
         raise OSError("network unreachable")
-    monkeypatch.setattr(duckduckgo_search, "DDGS", boom)
+    monkeypatch.setattr(httpx, "get", boom)
     r = _run(T.BY_NAME["search_web"], query="CDC trade-offs")
     assert "error" in r and "사내 조사" in r["error"]
+
+
+def test_web_search_uses_file_ca_bundle_and_parses_results(monkeypatch):
+    import certifi
+    import httpx
+
+    seen = {}
+
+    class Response:
+        status_code = 200
+        text = ('<a class="result__a" href="https://apache.org/docs">Apache docs</a>'
+                '<div class="result__snippet">Official reference</div>')
+
+    def fake_get(*args, **kwargs):
+        seen.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    r = _run(T.BY_NAME["search_web"], query="Apache docs")
+    assert seen["verify"] == certifi.where()
+    assert r["results"][0]["url"] == "https://apache.org/docs"
 
 
 def test_github_search_fails_soft_when_blocked(monkeypatch):

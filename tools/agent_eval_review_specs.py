@@ -372,12 +372,13 @@ CASE_REVIEW_SPECS = {
             _element(
                 "mtg4_exact_update",
                 "contract_actionability",
-                "제목·priority·due·component·labels 전체값·세 본문 section만 정확히 반영하고 댓글과 다른 필드를 제외했는가",
-                "지정값 오류, 추가 field 변경, labels 병합, 댓글 생성 또는 미확인 StarRocks 지원 확정",
+                "제목·priority·due·labels 전체값·세 본문 section만 실제 변경하고, 이미 같은 component는 제외했는가",
+                "지정값 오류, 동일값 component 재기록, 추가 field 변경, labels 병합, 댓글 생성 또는 미확인 StarRocks 지원 확정",
                 _REPLY,
                 {
                     "target": "DL-9203",
-                    "exactFields": ["summary", "priority", "duedate", "components", "labels", "description"],
+                    "exactFields": ["summary", "priority", "duedate", "labels", "description"],
+                    "unchangedFields": ["components"],
                     "forbidComment": True,
                     "owner": "skcc.x1103",
                 },

@@ -323,6 +323,15 @@ def test_external_research_section_excludes_internal_urls_and_relabels_pending_r
     assert "외부 조사 범위" in got and "외부 확인 필요" not in got
 
 
+def test_comment_approval_quotes_every_markdown_line():
+    from app.agent.workflow.agents.result_integrator import _approval_reply
+
+    state = {"change_plan": {"keys": ["DL-1"], "changes": {},
+                              "comments": [{"key": "DL-1", "body": "### 결정\n\n- 항목 A"}]}}
+    got = _approval_reply(state)
+    assert "  > ### 결정\n  >\n  > - 항목 A" in got
+
+
 def test_progress_reply_gets_a_compact_complete_child_snapshot_when_model_omits_it():
     from app.agent.workflow.agents.result_integrator import _ensure_progress_child_coverage
 
