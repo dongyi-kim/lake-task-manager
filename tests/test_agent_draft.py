@@ -2044,8 +2044,11 @@ def test_functionally_different_tasks_are_not_collapsed():
            "items": [{"summary": "[Workbench] 성능 측정 리포트 작성", "type": "Task", "description": ""},
                      {"summary": "[Runtime] 쿼리 인덱스 조정", "type": "Task", "description": ""},
                      {"summary": "[Catalog] 사용 가이드 작성", "type": "Task", "description": ""}]}
-    r = WorkArchitect().apply(_msg("성능 측정하고 인덱스도 손보고 가이드도. 알아서"), out)
+    r = WorkArchitect().apply(
+        _msg("성능 측정하고 인덱스도 손보고 가이드도. 알아서", situation="조사 완료"), out)
     assert len(r["draft"]["items"]) == 3
+    assert not r["questions"]
+    assert all(i.get("description") for i in r["draft"]["items"])
 
 
 def test_relative_due_is_computed_by_code_not_the_model():

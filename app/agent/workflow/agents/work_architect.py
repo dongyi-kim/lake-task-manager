@@ -1415,6 +1415,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         #   라고 한 사람에게 "이 구조로 할까요?"를 다시 묻는 것은 취조다 — 그 요청 자체가
         #   구조 지시였다(실측 STR1: 이것 때문에 본문 없는 초안이 카드에 올라갔다).
         if items and not qs and mode != "subtask" and not said_shape \
+                and not _said_defaults(state) \
                 and (state.get("intent") or "") != Intent.MODIFY \
                 and (state.get("situation") or "").strip() \
                 and is_composite(items) and not state.get("structure_ok"):
