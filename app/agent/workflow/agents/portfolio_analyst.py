@@ -68,7 +68,7 @@ def _current_person_work(state) -> dict:
             query = "skcc." + query
     else:
         found = (_re0.search(r"@([가-힣]{2,5})", asked)
-                 or _re0.search(r"([가-힣]{2,5}?)(?:님|TL|M|차장|책임|매니저)?(?:이|가|은|는)?\s*"
+                 or _re0.search(r"([가-힣]{2,5}?)\s*(?:님|TL|M|차장|책임|매니저)?(?:이|가|은|는)?\s*"
                                 r"(?:지금|현재).{0,15}(?:맡|담당|할당)", asked, _re0.I))
         query = found.group(1) if found else ""
     if not query:

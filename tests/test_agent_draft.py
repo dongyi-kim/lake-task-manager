@@ -1055,6 +1055,20 @@ def test_mvp_development_request_does_not_gain_an_unrequested_production_deploym
     assert "테스트 리포트 또는 결과 보고서" in items[0]["description"]
 
 
+def test_poc_development_request_drops_an_unrequested_deployment_child():
+    from app.agent.workflow.agents.work_architect import _drop_unrequested_deployment_dod
+    items = [{"summary": "NDV 통계정보 생성 PoC", "type": "Task", "children": [
+        {"summary": "Batch Job 설계", "description": ""},
+        {"summary": "Batch Job 구현", "description": ""},
+        {"summary": "Batch Job 테스트", "description": ""},
+        {"summary": "Batch Job 배포", "description": ""},
+    ]}]
+    assert _drop_unrequested_deployment_dod(
+        _msg("1차 PoC 범위로 Batch Job 구현 작업을 만들어줘"), items)
+    assert [child["summary"] for child in items[0]["children"]] == [
+        "Batch Job 설계", "Batch Job 구현", "Batch Job 테스트"]
+
+
 def test_child_titles_keep_the_parent_technical_topic():
     from app.agent.workflow.agents.work_architect import _preserve_parent_topic_in_children
     items = [{"summary": "[ETL] StarRocks Puffin NDV 통계정보 파이프라인 개발",

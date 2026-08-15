@@ -2918,7 +2918,7 @@ def _dod_rows(body) -> list:
 
 
 def _drop_unrequested_deployment_dod(state, items) -> bool:
-    """개발·MVP 요청을 운영 배포 약속으로 확대하지 않는다."""
+    """개발·MVP 요청을 별도 배포 작업이나 운영 배포 약속으로 확대하지 않는다."""
     import re
     req = request_text(state)
     if re.search(r"배포|릴리(?:스|즈)|운영\s*반영|production|prod\b", req, re.I):
@@ -2927,6 +2927,13 @@ def _drop_unrequested_deployment_dod(state, items) -> bool:
     for item in items:
         if not isinstance(item, dict):
             continue
+        children = [child for child in (item.get("children") or []) if isinstance(child, dict)]
+        kept = [child for child in children
+                if not re.search(r"(?:^|\s|\])(?:운영\s*)?배포(?:\s|$)",
+                                 str(child.get("summary") or ""), re.I)]
+        if len(kept) != len(children):
+            item["children"] = kept
+            changed = True
         targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
         for target in targets:
             body = str(target.get("description") or "")

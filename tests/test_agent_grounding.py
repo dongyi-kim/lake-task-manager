@@ -274,6 +274,29 @@ def test_inline_badge_drops_immediately_repeated_title_and_detail_suffix():
     assert "[1] {{ticket-detail:DL-9095}}" in got
 
 
+def test_known_plain_ticket_mentions_become_badges_without_duplicate_titles():
+    from app.agent.workflow.agents.result_integrator import _badgeify_known_ticket_mentions
+
+    state = {"mentioned_keys": ["DL-9090"],
+             "ticket_progress": 'DL-9095 "[Workbench] 다운스트림 조회 연동" 진행중'}
+    got = _badgeify_known_ticket_mentions(
+        'DL-9090 "[Workbench] 데이터 리니지 뷰어"의 남은 작업은 '
+        'DL-9095 "[Workbench] 다운스트림 조회 연동"', state)
+    assert got == ("{{ticket-inline:DL-9090}}의 남은 작업은 "
+                   "{{ticket-inline:DL-9095}}")
+
+
+def test_external_research_flags_a_conflict_visible_only_in_the_final_answer():
+    from app.agent.workflow.agents.result_integrator import _ensure_external_research_coverage
+    from langchain_core.messages import HumanMessage
+
+    state = {"messages": [HumanMessage(content="내부 외부 자료 조사해줘")],
+             "topic_dossier": "Puffin 검토 자료", "pre_survey": ""}
+    got = _ensure_external_research_coverage(
+        "PoC 수행 완료 기록\n\n현재 실제 PoC는 아직 수행하지 않음", state)
+    assert "내부 기록 상충" in got and "확정 불가" in got
+
+
 def test_progress_reply_gets_a_compact_complete_child_snapshot_when_model_omits_it():
     from app.agent.workflow.agents.result_integrator import _ensure_progress_child_coverage
 

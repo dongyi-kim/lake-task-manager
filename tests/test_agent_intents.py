@@ -430,6 +430,26 @@ def test_latest_person_work_request_overrides_previous_ticket_context(monkeypatc
     assert [row["key"] for row in snapshot["tickets"]] == ["DL-9201"]
 
 
+def test_person_name_with_spaced_title_resolves_the_name_not_the_title(monkeypatch):
+    from types import SimpleNamespace
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.portfolio_analyst import _current_person_work
+    import app.agent.tools.people_tools as people_tools
+
+    seen = {}
+    fake = SimpleNamespace(invoke=lambda args: (
+        seen.update(args) or {
+            "resolved": "skcc.i2011", "ambiguous": False,
+            "assigned": {"count": 1, "tickets": [{"key": "DL-9201", "summary": "writer PoC"}]},
+        }))
+    monkeypatch.setattr(people_tools, "find_person", fake)
+    state = {"messages": [HumanMessage(content="이다은 책임이 지금 맡고 있는 일 알려줘")],
+             "intent": Intent.ACTIVITY}
+    snapshot = _current_person_work(state)
+    assert seen["name"] == "이다은"
+    assert snapshot["user_id"] == "skcc.i2011"
+
+
 def test_daily_priority_snapshot_and_reply_keep_exactly_one_primary_ticket():
     from app.agent.workflow.agents.portfolio_analyst import _daily_priority_snapshot
     from app.agent.workflow.agents.result_integrator import ResultIntegrator

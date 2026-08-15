@@ -376,6 +376,7 @@ class ResultIntegrator(TextAgent):
 
         # 전용 진행 Task bullet은 detail badge 하나로 기계화한다. 모델이 raw key+제목을
         # 출력해도 최종 문자열은 badge가 가진 정보를 중복하지 않는다.
+        text = _badgeify_known_ticket_mentions(text, state)
         text = _normalize_ticket_detail_sections(text)
         text = _normalize_badge_repetitions(text)
         # 근거 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
@@ -1631,17 +1632,46 @@ def _normalize_badge_repetitions(text: str) -> str:
     )
     detail = _re.compile(r"^(\s*(?:\[\d+\]\s*)?(?:[-*+]\s*)?"
                          r"\{\{ticket-detail:[A-Z][A-Z0-9]*-\d+\}\})"
-                         r"\s*(?:[—·|-]\s*)?(.+)$", _re.I)
+                         r"\s*(?:[—·|:-]\s*)?(.+)$", _re.I)
     duplicate_prefix = _re.compile(
         r"^\s*(?:담당|assignee|상태|status|진행\s*중\s*$|완료\s*$|할당\s*$|"
         r"reopen(?:ed)?\s*$|우선순위|마감|기한|\[[A-Za-z]+\]|[\"“])", _re.I)
     for line in str(text or "").splitlines():
         line = inline_title.sub(r"\1", line)
         matched = detail.match(line)
-        if matched and duplicate_prefix.search(matched.group(2)):
-            line = matched.group(1)
+        if matched:
+            suffix = matched.group(2)
+            # 제목만 바로 반복한 뒤 새로운 근거 사실이 이어지는 경우에는 사실까지 버리지 않는다.
+            suffix = _re.sub(r'^\s*["“][^"”\n]+["”]\s*(?:[—·|,:-]\s*)?', '', suffix)
+            if not suffix or duplicate_prefix.search(suffix):
+                line = matched.group(1)
+            elif suffix != matched.group(2):
+                line = matched.group(1) + " — " + suffix
         out.append(line.rstrip())
     return "\n".join(out)
+
+
+def _badgeify_known_ticket_mentions(text: str, state) -> str:
+    """검증된 티켓의 평문 key를 용도에 맞는 최소 inline badge로 기계화한다.
+
+    이미 typed token 안에 든 key는 건드리지 않는다. 제목이 바로 이어지면 badge 자체의
+    hover 정보와 중복되므로 제목도 함께 접는다.
+    """
+    known = {str(key).upper() for key in (state.get("mentioned_keys") or [])
+             if _re.match(r"^[A-Z][A-Z0-9]*-\d+$", str(key), _re.I)}
+    for evidence in (state.get("evidence") or []):
+        if isinstance(evidence, dict):
+            key = str(evidence.get("key") or "").upper()
+            if _re.match(r"^[A-Z][A-Z0-9]*-\d+$", key):
+                known.add(key)
+    known.update(_re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", str(state.get("ticket_progress") or "")))
+    value = str(text or "")
+    for key in sorted(known, key=len, reverse=True):
+        # ':' 앞은 {{ticket-*:KEY}} 내부이므로 제외. 영숫자/하이픈 경계도 엄격히 유지.
+        pattern = (rf"(?<![:A-Z0-9-]){_re.escape(key)}(?![A-Z0-9-])"
+                   r"(?:\s*[\"“][^\"”\n]{1,160}[\"”])?")
+        value = _re.sub(pattern, f"{{{{ticket-inline:{key}}}}}", value)
+    return value
 
 
 def _ensure_external_research_coverage(text: str, state) -> str:
@@ -1672,8 +1702,10 @@ def _ensure_external_research_coverage(text: str, state) -> str:
         value += "\n\n" + "\n".join(lines)
 
     material = " ".join(str(state.get(k) or "") for k in ("topic_dossier", "pre_survey"))
-    if ("PoC" in material and _re.search(r"PoC[^\n]{0,50}(?:완료|수행 완료)", material)
-            and _re.search(r"PoC[^\n]{0,50}(?:아직\s*수행하지\s*않|미수행)", material)
+    conflict_material = material + " " + value
+    if ("PoC" in conflict_material
+            and _re.search(r"PoC[^\n]{0,80}(?:완료|수행 완료)", conflict_material)
+            and _re.search(r"PoC[^\n]{0,80}(?:아직\s*수행하지\s*않|미수행)", conflict_material)
             and "내부 기록 상충" not in value):
         value += ("\n\n### 확인 필요\n\n- 내부 기록 상충: 한 기록은 PoC 완료, 다른 기록은 미수행으로 기술. "
                   "대상 범위와 갱신 시점 확인 전 현재 완료 여부 확정 불가")

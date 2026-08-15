@@ -275,7 +275,7 @@ Classify what the user wants from the conversation, construct an atomic task pla
         if (_re.search(r"(?:지금|현재).{0,15}(?:맡|담당|할당).{0,8}(?:업무|일|티켓|태스크)", _req)
                 and (_re.search(r"@[가-힣]{2,5}", _req)
                      or _re.search(r"(?:skcc\.)?[a-z]{1,2}\d{2,6}", _req, _re.I)
-                     or _re.search(r"[가-힣]{2,5}(?:님|TL|M|차장|책임|매니저)?(?:이|가|은|는)?\s*"
+                     or _re.search(r"[가-힣]{2,5}?\s*(?:님|TL|M|차장|책임|매니저)?(?:이|가|은|는)?\s*"
                                    r"(?:지금|현재)", _req, _re.I))):
             intent = patch["intent"] = Intent.ACTIVITY
             patch["mentioned_keys"] = []
