@@ -2732,9 +2732,13 @@ def _drop_unneeded_meeting_questions(state, questions: list[dict]) -> list[dict]
         "components": ("component", "components", "컴포넌트", "모듈"),
         "labels": ("label", "labels", "라벨", "태그"),
     }
+    recoverable_scope = bool(_recover_decided_meeting_tasks(state))
     kept = []
     for question in questions:
         material = f"{question.get('field', '')} {question.get('question', '')}".casefold()
+        if recoverable_scope and (str(question.get("field") or "").casefold() == "scope"
+                                  or "작업 범위" in material):
+            continue
         optional = next((key for key, words in aliases.items()
                          if any(word.casefold() in material for word in words)), "")
         if optional and not decisions[optional]:

@@ -164,6 +164,9 @@ StarRocks reader 운영 판정 자료 정리 by ... 2026-08-26까지
     assert items[0]["assignee"] == "skcc.i2011"
     assert "assignee" not in items[1] and items[1]["assignee_source"] == "user_unassigned"
     assert [item["duedate"] for item in items] == ["2026-08-23", "2026-08-26"]
+    scope_question = [{"question": "각 Task의 작업 범위를 구체적으로 알려주세요.",
+                       "field": "scope", "kind": "text", "required_input": True}]
+    assert _drop_unneeded_meeting_questions(state, scope_question) == []
 
 
 def test_meeting_created_task_bodies_do_not_repeat_sibling_titles_as_exclusions():
