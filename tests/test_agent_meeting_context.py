@@ -174,7 +174,7 @@ def test_meeting_created_task_bodies_do_not_repeat_sibling_titles_as_exclusions(
     items = [
         {"summary": "writer 증빙", "description":
          "<h3>작업 범위</h3><ul><li>포함: writer 증빙</li>"
-         "<li>제외(별도 ticket): reader 검증</li></ul>"},
+         "<li>제외: reader 증빙 패키지</li></ul>"},
         {"summary": "reader 검증", "description":
          "<h3>작업 범위</h3><ul><li>포함: reader 검증</li>"
          "<li>제외(별도 ticket): writer 증빙</li></ul>"},

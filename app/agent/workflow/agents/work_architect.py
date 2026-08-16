@@ -2586,7 +2586,7 @@ def _ensure_meeting_background_attribution(state, items: list) -> None:
         return
     try:
         from app.agent.workflow.meeting_context import (
-            is_meeting_request, meeting_requester_instructors,
+            canonicalize_reply_mentions, is_meeting_request, meeting_requester_instructors,
         )
         if not is_meeting_request(state):
             return
@@ -2599,8 +2599,9 @@ def _ensure_meeting_background_attribution(state, items: list) -> None:
         context += f" · 요청·지시자: {mentions}"
     paragraph = f"<p>{context}</p>"
     for item in items:
-        body = str(item.get("description") or "")
+        body = canonicalize_reply_mentions(state, str(item.get("description") or ""))
         if "회의" in body and (not instructors or all(uid in body for uid in instructors)):
+            item["description"] = body
             continue
         heading = _re.search(r"<h3>\s*배경\s*</h3>", body, _re.I)
         if heading:
@@ -2841,12 +2842,28 @@ def _drop_meeting_sibling_exclusions(state, items: list) -> None:
             return
     except Exception:
         return
-    for item in items:
+    noise = {"catalog", "작업", "개발", "작성", "정리", "결과", "검증", "패키지", "증빙", "체크리스트"}
+    summaries = [str(item.get("summary") or "") for item in items]
+    token_sets = [
+        {token.casefold() for token in _re.findall(r"[가-힣A-Za-z0-9_.-]{2,}", summary)
+         if token.casefold() not in noise}
+        for summary in summaries
+    ]
+    for index, item in enumerate(items):
         body = str(item.get("description") or "")
         body = _re.sub(
             r"<li>\s*제외\s*\(\s*별도\s*(?:ticket|티켓)\s*\)\s*:[\s\S]*?</li>",
             "", body, flags=_re.I,
         )
+        sibling_terms = set().union(*(terms for pos, terms in enumerate(token_sets)
+                                      if pos != index))
+        if sibling_terms:
+            body = _re.sub(
+                r"<li>\s*제외\s*:[\s\S]*?</li>",
+                lambda match: "" if any(term in match.group(0).casefold()
+                                         for term in sibling_terms) else match.group(0),
+                body, flags=_re.I,
+            )
         body = _re.sub(r"<ul>\s*</ul>", "", body, flags=_re.I)
         item["description"] = body
 
