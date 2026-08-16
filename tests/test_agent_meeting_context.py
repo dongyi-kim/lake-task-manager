@@ -22,6 +22,7 @@ from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _canonicalize_meeting_mentions,
     _comment_input_missing,
     _drop_unrequested_meeting_create_fields,
+    _ensure_meeting_background_attribution,
     _ensure_meeting_reviewers,
     _explicit_parent_epic,
     _explicit_meeting_update_fields,
@@ -34,6 +35,8 @@ from app.agent.workflow.agents.people_advisor import (  # noqa: E402
 from app.agent.workflow.meeting_context import (  # noqa: E402
     canonicalize_meeting_owner_table,
     canonicalize_reply_mentions,
+    is_meeting_request,
+    meeting_owner_records,
     meeting_request_text,
     meeting_subject,
     resolved_people,
@@ -60,6 +63,59 @@ def test_every_meeting_case_interviews_ambiguous_person_and_local_term_after_res
     assert "skcc.x1103" in text and "skcc.x1327" in text
     assert "PSR" in text
     assert "이다은" not in text and "하은" not in text
+
+
+def test_heterogeneous_meeting_labels_are_recognized_and_attachment_filename_is_not_the_subject():
+    request = ("첨부 회의 메모를 정리해줘. from: @이다은\n"
+               "Puffin 결과 확인 by 하은님\n최하은: StarRocks reader 검증")
+    state = _state(request)
+    assert is_meeting_request(state)
+    assert meeting_subject(state) == "Puffin StarRocks"
+
+
+def test_meeting_owner_records_support_by_colon_aliases_and_explicit_unassigned():
+    set_person_context("meeting-attribution-forms", ["DL-9200"])
+    request = """비정형 회의 기록에서 Task 3건을 만들어줘.
+@이다은: writer 증빙은 제가 맡음 — 2026-08-22
+reader 검증 결과 정리는 by 하은님, 2026-08-25
+최하은: 실행계획도 포함
+로그 마스킹 체크리스트 — 담당자는 정하지 못함. 미할당, 2026-08-27"""
+    records = meeting_owner_records(_state(request))
+    writer = next(row for row in records if "writer" in row["work"])
+    reader = next(row for row in records if "reader" in row["work"])
+    masking = next(row for row in records if "마스킹" in row["work"])
+    assert (writer["owner"], writer["due"]) == ("skcc.i2011", "2026-08-22")
+    assert (reader["owner"], reader["due"]) == ("skcc.x1402", "2026-08-25")
+    assert (masking["owner"], masking["due"]) == ("", "2026-08-27")
+    assert not any("배경에는 회의 논의" in row["work"] for row in records)
+
+
+def test_meeting_create_background_keeps_discussion_and_requester_without_assigning_them():
+    set_person_context("meeting-background-attribution", ["DL-9200"])
+    request = ("회의 기록으로 Task 생성. from: {{최민서:1042}}\n"
+               "민서M의 지시: writer 증빙을 분리\n@이다은 — writer 증빙, 2026-08-22")
+    state = _state(request)
+    items = [{"summary": "writer 증빙", "assignee": "skcc.i2011",
+              "description": "<h3>배경</h3><p>증빙 정리 요청</p><h3>작업 범위</h3>범위<h3>완료 조건</h3>완료"}]
+    _ensure_meeting_background_attribution(state, items)
+    assert "회의 논의" in items[0]["description"] and "skcc.x1042" in items[0]["description"]
+    assert items[0]["assignee"] == "skcc.i2011"
+
+
+def test_meeting_interview_asks_for_missing_owner_or_unassigned_but_skips_rejected_opinion_actor():
+    set_person_context("meeting-minimum-interview", ["DL-9200"])
+    request = """첨부 회의 메모로 Task 1건을 만들어줘.
+StarRocks reader 운영 판정 자료 정리 by ... 2026-08-26까지
+준서TL의 의견: scratch 라벨 제안 → 채택하지 않음, 신원은 이번 변경에 필요 없음"""
+    state = {**_state(request), "situation": "관련 기록 조사 완료"}
+    questions = unresolved_questions(state)
+    text = str(questions)
+    assert "reader 운영 판정" in text and "미할당" in text
+    assert "준서TL" not in text and "skcc.x1103" not in text
+
+    answered = {**_state(request, "reader 운영 판정 자료는 미할당으로 만들어.", request=request),
+                "situation": "관련 기록 조사 완료", "turn_continuation": True}
+    assert unresolved_questions(answered) == []
 
 
 def test_meeting_interview_answer_binds_person_and_term_without_reasking():
@@ -157,6 +213,17 @@ def test_all_user_fixed_assignees_skip_recommendation_without_losing_alignment()
     assert all(row["reasons"] == ["사용자 지정 담당자"] for row in rows)
     draft["items"][1].pop("assignee_source")
     assert not _all_assignees_user_specified(draft)
+
+
+def test_explicit_unassigned_is_a_user_assignment_decision_not_a_recommendation_gap():
+    draft = {"items": [
+        {"summary": "writer", "assignee": "skcc.i2011", "assignee_source": "user"},
+        {"summary": "reader", "assignee": "", "assignee_source": "user_unassigned"},
+    ]}
+    assert _all_assignees_user_specified(draft)
+    rows = _user_fixed_assignments(draft)
+    assert rows[1]["user"] == ""
+    assert rows[1]["reasons"] == ["사용자 지정 미할당"]
 
 
 def test_assignment_renderer_removes_every_stale_owner_section():
@@ -381,6 +448,22 @@ def test_meeting_reply_owner_table_uses_explicit_deadline_assignments():
     assert "UI픽스처01" not in got
 
 
+def test_meeting_owner_table_never_rewrites_type_or_value_columns_without_an_owner_header():
+    set_person_context("meeting-table-shape", ["DL-9200"])
+    request = "회의 기록: @이다은 — writer 정리, 2026-08-22"
+    state = _state(request)
+    approval = """| # | 유형 | 제목 | 상위 | 담당 | 기한 |
+|---:|---|---|---|---|---|
+| 1 | Task | writer 정리 | DL-9200 | skcc.x1210 | 2026-08-22 |"""
+    got = canonicalize_meeting_owner_table(state, approval)
+    assert "| 1 | Task | writer 정리 | DL-9200 | {{mention:skcc.i2011}} | 2026-08-22 |" in got
+
+    summary = """| 항목 | 값 | 근거 |
+|---|---|---|
+| 20개 전체 확대 | 이번 결정 아님 | [1] |"""
+    assert canonicalize_meeting_owner_table(state, summary) == summary
+
+
 def test_meeting_reply_preserves_explicit_background_ticket_in_combined_evidence():
     set_person_context("meeting-reply-explicit-source", ["DL-7001"])
     request = ("회의록을 조사해 요약해줘. 참석: @이다은. "
@@ -465,6 +548,23 @@ def test_exact_meeting_update_fields_survive_identity_interview_resume():
     assert "회의에서 확정된 변경 사항 반영" not in fields["description"]
     assert "기준이야" not in fields["description"]
     assert "확정하지 않기로 결정" in fields["description"]
+
+
+def test_exact_meeting_update_body_preserves_each_labelled_decision_without_duplication():
+    set_person_context("meeting-update-labelled-body", ["DL-9203"])
+    request = """회의 기록에서 마지막 합의만 DL-9203 수정 초안에 반영해줘.
+- 제목: [Catalog] Puffin 증거 패키지 정리
+- due: 2026-08-30
+- 본문 전체 교체: `결정 배경`, `작업 범위`, `완료 조건`. 결정 배경에 이 회의와 요청·지시자 {{최민서:1042}}를 기록. 작업 범위는 5개 표본의 writer 결과와 StarRocks 실제 소비 증거를 한 패키지로 정리. 완료 조건은 내부 결과와 외부 근거를 구분하고 미확인 지원을 확정처럼 쓰지 않는 것
+- priority/component/labels는 변경하지 않음"""
+    state = {**_state(request), "intent": "modify"}
+    description = _explicit_meeting_update_fields(state)["description"]
+    assert description.count("요청·지시자") == 1
+    assert description.count("5개 표본") == 1
+    assert description.count("미확인 지원") == 1
+    assert "## 결정 배경\n이 회의와 요청·지시자" in description
+    assert "## 작업 범위\n5개 표본" in description
+    assert "## 완료 조건\n내부 결과" in description
 
 
 def test_meeting_interview_keeps_original_request_and_comment_intent():

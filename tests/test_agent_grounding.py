@@ -14,6 +14,7 @@ os.environ.setdefault("JIRA_ENV", "mock")
 pytest.importorskip("langchain_core", reason="requirements-agent.txt 미설치")
 
 from app.agent.workflow import grounding                    # noqa: E402
+from app.agent.workflow.agents.result_integrator import _drop_direct_input_source_rows  # noqa: E402
 
 
 def _real_key_and_title():
@@ -31,6 +32,16 @@ def test_existing_key_and_faithful_title_pass():
 def test_nonexistent_key_is_flagged():
     g = grounding.check("관련 티켓은 ZZZZ-99999 입니다.")
     assert g["fake_keys"] == ["ZZZZ-99999"] and not g["ok"]
+
+
+def test_attached_excerpt_filename_never_becomes_a_fake_verified_source_link():
+    text = ("### 결론\n\n5개 표본 확인\n\n### 근거\n\n"
+            "[1] [puffin-followup-notes.docx](verified URL)\n"
+            "- [1-a] 첨부 발췌에서 5개 표본 언급\n"
+            "[2] [공식 문서](https://example.com/spec)")
+    got = _drop_direct_input_source_rows(text)
+    assert "puffin-followup-notes.docx" not in got and "verified URL" not in got
+    assert "https://example.com/spec" in got
 
 
 def test_swapped_title_is_flagged():

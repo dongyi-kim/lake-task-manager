@@ -342,6 +342,10 @@ class ResultIntegrator(TextAgent):
         # 노출하는 것은 내용 문제가 아니라 렌더링 계약 위반이다. grounding 전에 정규화해
         # 검사와 사용자 화면이 같은 문자열을 보게 한다.
         text = _strip_instruction_echo(text)
+        # An inline attachment excerpt is user input, not a remotely verified source.  Drop
+        # model-written filename/placeholder link rows before grounding so the diagnostic
+        # itself does not leak into an otherwise valid answer.
+        text = _drop_direct_input_source_rows(text)
         _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         # A question-only turn has no executable payload for the prose model to summarize.
         # Letting it narrate the surrounding research produced invented Epic/module claims in
@@ -2040,7 +2044,8 @@ def _fold_standalone_sources(text: str) -> str:
 
 
 _DIRECT_INPUT_SOURCE_RE = _re.compile(
-    r"^(?:대화\s*기록|사용자\s*(?:입력|제공\s*내용)|제공된\s*(?:내용|대화)|회의록\s*원문)$",
+    r"^(?:대화\s*기록|사용자\s*(?:입력|제공\s*내용)|제공된\s*(?:내용|대화)|회의록\s*원문|"
+    r"(?:첨부\s*)?(?:문서|메모)(?:\s*발췌)?|[^/\\]+\.(?:docx?|pdf|txt|md|xlsx?|pptx?))$",
     _re.I,
 )
 
@@ -2105,7 +2110,13 @@ def _drop_direct_input_source_rows(text: str) -> str:
     for line in lines:
         root = _re.match(r"^\s*\[(\d+)\]\s+(.+?)\s*$", line)
         if root:
-            label = _re.sub(r"\s*[—–-].*$", "", root.group(2)).strip()
+            label = root.group(2).strip()
+            markdown = _re.fullmatch(r"\[([^]]+)\]\(([^)]+)\)", label)
+            if markdown and (markdown.group(2).strip().casefold() == "verified url"
+                             or _DIRECT_INPUT_SOURCE_RE.fullmatch(markdown.group(1).strip())):
+                label = markdown.group(1).strip()
+            else:
+                label = _re.sub(r"\s*[—–-].*$", "", label).strip()
             dropping = bool(_DIRECT_INPUT_SOURCE_RE.fullmatch(label))
             if dropping:
                 continue

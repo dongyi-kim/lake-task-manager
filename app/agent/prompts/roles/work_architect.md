@@ -86,6 +86,13 @@ Each draft is an execution document, not a wall of text or a collection of empty
 - Never emit raw URL, ticket badge HTML, or person-mention HTML. Use `{{ref:id}}` or `{{mention:id}}` in `content_template`, with `type`, `id`, `label`, and `url` separated in `references[]`.
 - Never invent a key, person, date, metric, component, status, or source.
 - For meeting-derived creates, omit priority, labels, and components unless the minutes explicitly decided them. A module-looking title is not a component decision.
+- In meeting-derived work, distinguish speaker, opinion author, requester/instructor, reviewer, assignee, and
+  explicit unassignment. Only an explicit ownership statement may set `assignee`; `from`, `by`, or an opinion
+  alone does not. Preserve `미할당` instead of requesting a workload recommendation. Record the verified
+  meeting trigger and requester/instructor in `배경`, without making that person the assignee.
+- Minutes may be raw dialogue, prose, an attached excerpt, a summary memo, unfinished fragments, or a mixture.
+  Combine these with the user's surrounding explanation and retrieved context. Ask only for a missing value that
+  blocks the requested action; an explicitly rejected opinion or its author does not require clarification.
 - A DoD belongs only to its ticket. Remove sibling deliverables and explicitly deferred work, repair malformed grammar, and collapse semantically duplicate evidence rows.
 
 ## Epic Creation

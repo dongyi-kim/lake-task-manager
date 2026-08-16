@@ -249,6 +249,37 @@ def test_create_plan_adds_scoped_internal_duplicate_search_when_model_only_used_
     assert all(term in jira["query"] for term in ("프로듀서", "Avro", "전환"))
 
 
+def test_meeting_query_plan_preserves_explicit_ticket_and_replaces_generic_note_search():
+    from app.agent.workflow.agents.query_specialist import _normalize_meeting_research_queries
+    from app.agent.workflow.state import Intent
+
+    state = {
+        "intent": Intent.ASK,
+        "request_text": ("회의 메모를 Jira·Confluence·comment와 외부 공식 자료로 보강해줘. "
+                         "DL-7001 Puffin StarRocks reader"),
+        "mentioned_keys": ["DL-7001"],
+    }
+    plan = {"queries": [
+        {"id": "jira-note", "source": "jira", "query": "회의 메모", "where": "",
+         "fields": [], "order_by": "", "completeness": "all", "page_size": 50,
+         "depends_on": []},
+        {"id": "conf-note", "source": "confluence", "query": "회의 메모", "where": "",
+         "fields": [], "order_by": "", "completeness": "all", "page_size": 50,
+         "depends_on": []},
+        {"id": "comments", "source": "comments", "query": "회의 메모", "where": "",
+         "fields": [], "order_by": "", "completeness": "all", "page_size": 50,
+         "depends_on": []},
+    ], "joins": [], "uncertainty": []}
+    _normalize_meeting_research_queries(state, plan)
+    assert plan["queries"][0]["where"] == "key in (DL-7001)"
+    assert any(q["source"] == "jira" and "Puffin StarRocks" in q["query"]
+               for q in plan["queries"])
+    assert any(q["source"] == "confluence" and q["query"] == "Puffin StarRocks"
+               for q in plan["queries"])
+    comments = next(q for q in plan["queries"] if q["source"] == "comments")
+    assert comments["where"] == "key in (DL-7001)"
+
+
 def test_query_specialist_drops_unresolved_jql_placeholder():
     from app.agent.workflow.agents.query_specialist import _normalize_model_jira_query
 

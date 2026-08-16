@@ -1646,6 +1646,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 
         # A meeting record is an authoritative decision record.  Preserve reviewers in the
         # ticket body and remove optional create fields that the minutes never decided.
+        _ensure_meeting_background_attribution(state, items)
         _ensure_meeting_reviewers(state, items)
         _drop_unrequested_meeting_create_fields(state, items)
         if not any(item.get("labels") for item in items):
@@ -1927,7 +1928,20 @@ def _explicit_meeting_update_fields(state) -> dict:
                       if name in request and _re.search(
                           rf"{_re.escape(name)}(?:TL|님|차장|책임)?.{{0,30}}(?:소유자|기준)",
                           request)), "")
-        values = [
+        labelled: dict[str, str] = {}
+        section_stems = [r"\s*".join(_re.escape(part) for part in heading.split())
+                         for heading in sections]
+        next_section = "|".join(section_stems)
+        for heading in sections:
+            stem = r"\s*".join(_re.escape(part) for part in heading.split())
+            found = _re.search(
+                rf"{stem}\s*(?:에는|은|는|에)?\s*[:：]?\s*(.+?)"
+                rf"(?=(?:{next_section})\s*(?:에는|은|는|에)?\s*[:：]?|$)",
+                body_facts, _re.I | _re.S,
+            )
+            if found:
+                labelled[heading] = found.group(1).strip(" .")
+        defaults = [
             decision_facts or "회의에서 확정된 변경 사항 반영",
             scope_facts or "회의에서 지정한 범위만 반영",
             "\n".join(value for value in (
@@ -1935,6 +1949,8 @@ def _explicit_meeting_update_fields(state) -> dict:
                 f"기준 소유자: {{{{mention:{owner}}}}}" if owner else "",
             ) if value) or "회의에서 지정한 검증 기준 적용",
         ]
+        values = [labelled.get(heading) or defaults[index]
+                  for index, heading in enumerate(sections)]
         fields["description"] = "\n\n".join(
             f"## {heading}\n{values[index] if index < len(values) else body_facts}"
             for index, heading in enumerate(sections)
@@ -2522,52 +2538,62 @@ def _apply_named_assignees(state, items: list) -> None:
     # 회의록은 ``@이름 — 작업``, ``이름TL이 작업 담당``처럼 자연어로 담당을 쓴다.
     # 조사/인터뷰에서 확정한 identity만 사용하고, 제목과 가장 많이 겹치는 한 항목에 강제한다.
     try:
-        from app.agent.workflow.meeting_context import is_meeting_request, resolved_people
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_owner_records
         if not is_meeting_request(state):
             return
-        people = resolved_people(state)
+        records = meeting_owner_records(state)
     except Exception:
         return
-    title_re = (r"(?:TL|PL|PM|PO|EM|M|파트장|그룹장|본부장|팀장|실장|부장|차장|과장|대리|"
-                r"선임|책임|수석|매니저|리더|님|씨)")
-    records = []
-    for line in text.splitlines():
-        clean = _re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
-        # Numbered/bulleted ``person — deliverable`` records are explicit ownership.
-        dash = _re.match(
-            rf"(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{title_re}?\s*[—–-]\s*(.+)",
-            clean, _re.I,
-        )
-        if dash:
-            records.append((dash.group(1), dash.group(2)))
-            continue
-        # Without a dash, require the explicit word 담당 so a reviewer is not made assignee.
-        owner = _re.match(
-            rf"(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{title_re}?\s*(?:은|는|이|가)\s*"
-            r"(.+?)\s*담당(?:\s|$)", clean, _re.I,
-        )
-        if owner:
-            records.append((owner.group(1), owner.group(2)))
-    for name, phrase in records:
-        try:
-            from app.agent.tools.people_tools import strip_title
-            name = strip_title(name)
-        except Exception:
-            pass
-        uid = people.get(name)
-        if not uid:
-            continue
+    used: set[int] = set()
+    for record in records:
+        phrase = str(record.get("work") or "")
+        uid = str(record.get("owner") or "")
         pterms = {w.casefold() for w in _re.findall(r"[가-힣A-Za-z0-9_.-]{2,}", phrase)
                   if w not in ("기한", "까지", "담당")}
         ranked = sorted(
             ((len(pterms & {w.casefold() for w in _re.findall(
                 r"[가-힣A-Za-z0-9_.-]{2,}", str(row.get("summary") or ""))}), index, row)
-             for index, row in enumerate(rows)),
+             for index, row in enumerate(rows) if index not in used),
             key=lambda value: (-value[0], value[1]),
         )
         if ranked and (ranked[0][0] > 0 or len(rows) == 1):
-            ranked[0][2]["assignee"] = uid
-            ranked[0][2]["assignee_source"] = "user"
+            _score, row_index, row = ranked[0]
+            used.add(row_index)
+            row["assignee"] = uid
+            row["assignee_source"] = "user" if uid else "user_unassigned"
+            due = str(record.get("due") or "")
+            if due:
+                row["duedate"] = due
+
+
+def _ensure_meeting_background_attribution(state, items: list) -> None:
+    """Keep meeting provenance and confirmed requester/instructor in every created Task."""
+    if not items:
+        return
+    try:
+        from app.agent.workflow.meeting_context import (
+            is_meeting_request, meeting_requester_instructors,
+        )
+        if not is_meeting_request(state):
+            return
+        instructors = meeting_requester_instructors(state)
+    except Exception:
+        return
+    mentions = " ".join(f"{{{{mention:{uid}}}}}" for uid in instructors)
+    context = "회의 논의에서 확정된 후속 작업"
+    if mentions:
+        context += f" · 요청·지시자: {mentions}"
+    paragraph = f"<p>{context}</p>"
+    for item in items:
+        body = str(item.get("description") or "")
+        if "회의" in body and (not instructors or all(uid in body for uid in instructors)):
+            continue
+        heading = _re.search(r"<h3>\s*배경\s*</h3>", body, _re.I)
+        if heading:
+            body = body[:heading.end()] + paragraph + body[heading.end():]
+        else:
+            body = "<h3>배경</h3>" + paragraph + body
+        item["description"] = body
 
 
 def _ensure_meeting_reviewers(state, items: list) -> None:

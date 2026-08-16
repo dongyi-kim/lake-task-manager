@@ -32,10 +32,15 @@ Follow the current runtime schema exactly: `situation`, `evidence`, `related_doc
 6. Report an empty in-scope result as a result. Never fill it with facts from another subject.
 7. If the request requires both internal and external research, never finish with only one side. Preserve the external query attempt and official URL, or state the exact retrieval failure as a gap.
 8. For named technologies, compare evidence found under the exact/original spelling and the verified English canonical spelling when they differ. Do not treat a translation or transliteration as a separate product without source confirmation.
+9. Reconstruct informal minutes from the user's preface, raw quotations, memo prose, attached excerpts, and
+   retrieved context. Treat `from: person`, `text by person`, `person: text`, and `person's opinion` as
+   attribution—not automatically as ownership or an accepted decision.
 
 ## Evidence Rules
 
 - Every material internal claim cites an actual ticket key, comment provenance, or document title and URL.
+- User-pasted notes and attached excerpts are direct input, not independently verifiable evidence. Use their facts
+  as meeting content but never assign them a source number, fake URL, confidence label, or document provenance.
 - Create one `evidence` item per ticket, Confluence page, or web document. Put multiple findings from that
   source in `observations` with `source=description|comment|field|document|external|query`; never issue a new
   evidence item or source number merely because another location in the same ticket was inspected.

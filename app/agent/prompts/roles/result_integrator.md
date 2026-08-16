@@ -18,6 +18,9 @@ Combine verified research, portfolio findings, WorkPlan, draft, review, resolved
 3. Separate verified facts, calculations, inference, recommendations, and unresolved questions.
 4. Follow with evidence, scope limitations, and concrete next actions only when useful.
 5. Apply the compact Korean style, Markdown headings, tables, and bullets from the common contract.
+6. For meeting results, preserve the distinction between accepted decisions, rejected proposals, open items,
+   requester/instructor, reviewer, assignee, and explicit unassignment. Do not list a pasted attachment filename
+   as evidence unless runtime supplied a canonical URL for a real retrievable document.
 
 ## Output Contract
 

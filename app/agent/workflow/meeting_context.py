@@ -18,28 +18,37 @@ _KNOWN_TECH = {
     "API", "CDC", "DAG", "DL", "ETL", "HTML", "HTTP", "HTTPS", "JIRA", "JSON",
     "LAKE", "LTM", "NDV", "POC", "SQL", "TL", "PL", "PM", "PO", "EM", "UI", "URL", "UX",
 }
+_MEETING_RE = re.compile(r"회의(?:록|\s*기록|\s*메모|\s*결정|\s*후속|\s*내용|\s*요약)?|실무회의|미팅", re.I)
+_PERSON_LABEL_NOISE = {
+    "사용자", "메모", "사용자메모", "결정", "결정메모", "정리", "정리메모", "첨부", "첨부문서",
+    "본문", "제목", "배경", "작업범위", "완료조건", "담당", "기한", "요청", "회의", "회의록",
+}
+_MEETING_TOPIC_NOISE = {
+    "comment", "component", "confluence", "description", "docx", "document", "due", "epic", "external", "fields",
+    "from", "jira", "labels", "meeting", "memo", "notes", "official", "optimizer", "priority", "reader",
+    "summary", "task", "ticket", "writer",
+}
 
 
 def meeting_request_text(state) -> str:
     """Return the original meeting request across a research-interview continuation turn."""
     current = request_text(state)
     latest = last_user_text(state)
-    markers = ("회의록", "회의 결정", "회의 후속", "실무회의")
-    direct = [value for value in (current, latest) if any(word in value for word in markers)]
-    if direct:
-        return max(direct, key=len)
-    if not state.get("turn_continuation"):
-        return current
     human = [str(getattr(message, "content", "") or "").strip()
              for message in (state.get("messages") or [])
              if getattr(message, "type", "") == "human"]
-    prior = [value for value in human[:-1] if any(word in value for word in markers)]
-    return prior[-1] if prior else current
+    prior = [value for value in human[:-1] if _MEETING_RE.search(value)]
+    if state.get("turn_continuation") and prior:
+        return prior[-1]
+    direct = [value for value in (current, latest) if _MEETING_RE.search(value)]
+    if direct:
+        return max(direct, key=len)
+    return current
 
 
 def is_meeting_request(state) -> bool:
     text = f"{meeting_request_text(state)} {last_user_text(state)}"
-    return any(word in text for word in ("회의록", "회의 결정", "회의 후속", "실무회의"))
+    return bool(_MEETING_RE.search(text))
 
 
 def meeting_subject(state) -> str:
@@ -55,7 +64,21 @@ def meeting_subject(state) -> str:
         )
         if match:
             return match.group(1).strip()
-    return ""
+    # Informal minutes often have no title and may contain an attachment filename.  A file
+    # name is transport metadata, not the meeting topic: using ``notes.docx`` as a search
+    # subject previously pulled an unrelated attachment UI fixture.  Keep only public-looking
+    # technology terms in their original spelling and preserve their first-seen order.
+    material = re.sub(r"(?i)\b[^\s`/\\]+\.(?:docx?|pdf|txt|md|xlsx?|pptx?)\b", " ", original)
+    material = re.sub(r"\b[A-Z][A-Z0-9]*-\d+\b|\bskcc\.[a-z]\d+\b", " ", material, flags=re.I)
+    terms: list[str] = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9.+-]{2,}", material):
+        low = token.lower().strip(".+-")
+        if low in _MEETING_TOPIC_NOISE or low in {value.lower() for value in _KNOWN_TECH}:
+            if token.upper() not in {"NDV", "CDC"}:
+                continue
+        if token not in terms:
+            terms.append(token)
+    return " ".join(terms[:3])
 
 
 def _person_tokens(text: str) -> list[str]:
@@ -72,11 +95,33 @@ def _person_tokens(text: str) -> list[str]:
     for match in re.finditer(r"(?<![\w@])@([가-힣]{2,5})(?![\w])", text):
         located.append((match.start(), match.group(1)))
     for match in re.finditer(
-            rf"(?<![가-힣])([가-힣]{{1,5}})\s*{_TITLE}(?=\s|은|는|이|가|을|를|:|[,.;!?)]|$)", text):
+            rf"(?<![가-힣])([가-힣]{{1,5}})\s*{_TITLE}(?=\s|의|은|는|이|가|을|를|:|[,.;!?)]|$)", text):
         located.append((match.start(), match.group(1)))
+    attribution_patterns = (
+        rf"(?im)^\s*from\s*[:：]\s*(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{_TITLE}?",
+        rf"(?i)\bby\s+(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{_TITLE}?",
+        rf"(?m)^\s*(?:[-*]\s*)?(?:@|\{{\{{)?([가-힣]{{2,5}})(?::\d+\}}\}})?\s*{_TITLE}?\s*[:：]",
+        rf"(?<![가-힣])([가-힣]{{1,5}})\s*{_TITLE}?\s*(?:의\s*)?의견(?=\s|[:：—–-]|$)",
+    )
+    for pattern in attribution_patterns:
+        for match in re.finditer(pattern, text):
+            located.append((match.start(), match.group(1)))
     for _position, name in sorted(located):
-        add(name)
+        if re.sub(r"\s+", "", name) not in _PERSON_LABEL_NOISE:
+            add(name)
     return found
+
+
+def _person_requires_resolution(text: str, name: str) -> bool:
+    """Return false when every occurrence is an explicitly rejected, irrelevant opinion."""
+    lines = [line for line in str(text or "").splitlines() if name in line]
+    if not lines:
+        return True
+    rejected = re.compile(
+        r"(?:의견|제안|안건).{0,100}(?:보류|채택하지|결론\s*안|결정하지|반영하지|제외|필요\s*없)|"
+        r"(?:신원|누구인지).{0,40}(?:필요\s*없|무관)", re.I,
+    )
+    return not all(rejected.search(line) for line in lines)
 
 
 def _explicit_user_bindings(latest: str, names: list[str]) -> dict[str, str]:
@@ -122,17 +167,30 @@ def _explicit_user_bindings(latest: str, names: list[str]) -> dict[str, str]:
 def resolved_people(state) -> dict[str, str]:
     """Resolve every meeting person that can be resolved without guessing."""
     original, latest = meeting_request_text(state), last_user_text(state)
-    names = _person_tokens(original)
+    names = [name for name in _person_tokens(original)
+             if _person_requires_resolution(original, name)]
     bindings = _explicit_user_bindings(latest, names)
     try:
-        from app.agent.tools.people_tools import find_person, remember_person
+        from app.agent.tools.people_tools import find_person, recall_person, remember_person
     except Exception:
         return bindings
 
     for name, uid in bindings.items():
         remember_person(name, uid)
-    for name in names:
+    def alias_binding(name: str) -> str:
+        matches = {uid for alias, uid in bindings.items()
+                   if alias == name or alias.endswith(name) or name.endswith(alias)}
+        return next(iter(matches)) if len(matches) == 1 else ""
+
+    # Resolve longer full names before partial aliases.  ``최하은`` can safely establish
+    # ``하은``; the reverse order costs a second directory query and is less specific.
+    for name in sorted(names, key=lambda value: (-len(value), names.index(value))):
         if name in bindings:
+            continue
+        cached = recall_person(name) or alias_binding(name)
+        if cached:
+            bindings[name] = cached
+            remember_person(name, cached)
             continue
         try:
             result = find_person.invoke({"name": name}) or {}
@@ -156,6 +214,11 @@ def resolved_people(state) -> dict[str, str]:
                 continue
         if uid and not result.get("ambiguous"):
             bindings[name] = uid
+            remember_person(name, uid)
+            for alias in names:
+                if alias not in bindings and (name.endswith(alias) or alias.endswith(name)):
+                    bindings[alias] = uid
+                    remember_person(alias, uid)
     return bindings
 
 
@@ -308,19 +371,59 @@ def meeting_owner_records(state) -> list[dict[str, str]]:
     clauses without a deadline are excluded so a reviewer never becomes owner.
     """
     original = meeting_request_text(state)
+    latest = last_user_text(state)
     people = resolved_people(state)
-    names = _person_tokens(original)
+    names = [name for name in _person_tokens(original + "\n" + latest)
+             if _person_requires_resolution(original + "\n" + latest, name)]
     records: list[dict[str, str]] = []
-    for raw in original.splitlines():
+
+    def clean_work(segment: str, person_end: int | None = None) -> str:
+        value = segment
+        by = re.search(r"\s+by\s+(?:@|\{\{)?[가-힣]{1,5}", value, re.I)
+        if by:
+            value = value[:by.start()]
+        elif person_end is not None:
+            value = value[person_end:]
+        value = re.split(r"(?<!\d)20\d{2}-\d{2}-\d{2}(?!\d)", value, maxsplit=1)[0]
+        value = re.split(r"\s+[—–-]\s+담당|(?:은|는)?\s*(?:아직\s*)?담당(?:자|은|는|이|가)?", value, maxsplit=1)[0]
+        value = re.sub(r"^\s*(?:은|는|이|가|을|를|의\s*의견)?\s*[:：—–-]?\s*", "", value)
+        value = re.sub(r"\s*(?:까지|제가\s*맡음|제가\s*맡겠습니다|담당)$", "", value)
+        return value.strip(" `.,:：-—–")
+
+    sources = [original]
+    if state.get("turn_continuation") and latest and latest != original:
+        sources.append(latest)
+    for raw in "\n".join(sources).splitlines():
         line = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", raw).strip()
         heading = re.search(r"담당[·ㆍ\s-]*기한\s*[:：]\s*", line)
         owner_heading = bool(heading)
         if heading:
             line = line[heading.end():]
-        for segment in re.split(r"\s*[,;]\s*", line):
+        # Split a dense assignment line only when the next clause starts with another
+        # person.  ``work by 하은님, 2026-08-25`` must stay one clause.
+        segments = re.split(
+            rf"\s*[,;]\s*(?=(?:@|\{{\{{)?[가-힣]{{1,5}}(?::\d+\}}\}})?\s*{_TITLE}?(?:은|는|이|가|\s*[—–:-]))",
+            line,
+        )
+        for segment in segments:
             due = re.search(r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)", segment)
             dash_owner = bool(re.search(r"\s[—–-]\s", segment))
-            if not (due or owner_heading or dash_owner or "담당" in segment):
+            explicitly_unassigned = bool(re.search(
+                r"미할당|담당(?:자|은|는|이|가)?.{0,24}(?:정하지\s*못|미정|없음|정해지지\s*않)",
+                segment, re.I,
+            ))
+            if explicitly_unassigned:
+                # Policy prose such as "담당이 정해지지 않은 일은 미할당으로" is not an
+                # assignment row.  Require a concrete phrase before an ownership separator.
+                if (not re.search(r"\s[—–-]\s", segment)
+                        and re.search(r"담당.{0,30}(?:일|작업)(?:은|는)", segment)):
+                    continue
+                work = clean_work(segment)
+                if work:
+                    records.append({"owner": "", "work": work,
+                                    "due": due.group(1) if due else ""})
+                continue
+            if not (due or owner_heading or dash_owner or "담당" in segment or re.search(r"\bby\b", segment, re.I)):
                 continue
             hits = []
             for name in names:
@@ -337,10 +440,18 @@ def meeting_owner_records(state) -> list[dict[str, str]]:
             if not hits:
                 continue
             _start, _length, hit, uid = sorted(hits)[0]
-            tail = segment[hit.end():]
-            tail = re.sub(r"^\s*(?:은|는|이|가|을|를)?\s*(?:[—–-]\s*)?", "", tail)
-            tail = re.split(r"(?<!\d)20\d{2}-\d{2}-\d{2}(?!\d)", tail, maxsplit=1)[0]
-            work = tail.strip(" .:-—–")
+            before = segment[:hit.start()]
+            after = segment[hit.end():]
+            by_owner = bool(re.search(r"\bby\s*$", before, re.I) and due)
+            clause_prefix = re.sub(
+                r"^.*?(?:회의(?:록|\s*기록|\s*메모)?\s*[:：]|from\s*[:：])\s*",
+                "", before, flags=re.I,
+            )
+            starts_clause = not clause_prefix.strip(" @{{")
+            explicit_language = bool(re.search(r"제가\s*맡|\b담당\b|담당자", segment, re.I))
+            if not (owner_heading or by_owner or (starts_clause and (due or dash_owner or explicit_language))):
+                continue
+            work = clean_work(segment, None if by_owner else hit.end())
             if not work or (re.search(r"리뷰|검토", work) and not due and not dash_owner):
                 continue
             records.append({"owner": uid, "work": work,
@@ -362,16 +473,32 @@ def canonicalize_meeting_owner_table(state, text: str) -> str:
     if not records:
         return str(text or "")
     lines = str(text or "").splitlines()
+    columns: dict[str, int] | None = None
     for index, line in enumerate(lines):
         if not re.match(r"^\s*\|.*\|\s*$", line):
+            columns = None
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) < 3 or all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+        if len(cells) < 3:
             continue
-        if any(value in cells[0].lower() for value in ("작업", "task", "담당")):
+        if all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
             continue
-        task = cells[0]
-        due = next((cell for cell in cells[2:] if re.fullmatch(r"20\d{2}-\d{2}-\d{2}", cell)), "")
+        owner_index = next((pos for pos, cell in enumerate(cells)
+                            if re.search(r"담당|assignee|owner", cell, re.I)), -1)
+        if owner_index >= 0:
+            task_index = next((pos for pos, cell in enumerate(cells)
+                               if re.search(r"작업|task|제목|summary|티켓", cell, re.I)
+                               and pos != owner_index), 0)
+            due_index = next((pos for pos, cell in enumerate(cells)
+                              if re.search(r"기한|due|마감", cell, re.I)), -1)
+            columns = {"task": task_index, "owner": owner_index, "due": due_index}
+            continue
+        if columns is None or max(columns.values()) >= len(cells):
+            continue
+        task = cells[columns["task"]]
+        due = cells[columns["due"]] if columns["due"] >= 0 else ""
+        if not re.fullmatch(r"20\d{2}-\d{2}-\d{2}", due):
+            due = ""
         candidates = [row for row in records if due and row["due"] == due]
         if not candidates:
             task_terms = {value.casefold() for value in re.findall(
@@ -385,7 +512,8 @@ def canonicalize_meeting_owner_table(state, text: str) -> str:
             candidates = [ranked[0][2]] if ranked and ranked[0][0] > 0 else []
         if len(candidates) != 1:
             continue
-        cells[1] = f"{{{{mention:{candidates[0]['owner']}}}}}"
+        owner = candidates[0]["owner"]
+        cells[columns["owner"]] = f"{{{{mention:{owner}}}}}" if owner else "미할당"
         lines[index] = "| " + " | ".join(cells) + " |"
     return "\n".join(lines)
 
@@ -401,13 +529,81 @@ def attendee_mentions(state) -> list[str]:
     return out
 
 
+def meeting_requester_instructors(state) -> list[str]:
+    """Return confirmed requester/instructor identities, never speakers by position alone."""
+    material = meeting_request_text(state)
+    latest = last_user_text(state)
+    if state.get("turn_continuation") and latest != material:
+        material += "\n" + latest
+    people = resolved_people(state)
+    out: list[str] = []
+    for line in material.splitlines():
+        if not re.search(r"요청[·ㆍ\s/-]*지시자|요청자|지시자|(?:의\s*)?지시\s*[:：]", line):
+            continue
+        for name, uid in people.items():
+            if name in line and uid and uid not in out:
+                out.append(uid)
+        for uid in re.findall(r"\bskcc\.[a-z]\d{2,8}\b", line, re.I):
+            if uid not in out:
+                out.append(uid)
+    return out
+
+
+def _create_from_meeting(text: str, state) -> bool:
+    intent = str(state.get("intent") or "")
+    return bool(
+        ("plan_work" in intent or re.search(r"(?:Task|티켓|테스크).{0,30}(?:만들|생성|초안)", text, re.I)
+         or re.search(r"(?:만들|생성).{0,30}(?:Task|티켓|테스크)", text, re.I))
+    )
+
+
+def _missing_owner_questions(state) -> list[dict]:
+    """Find deadline-bearing work whose owner was omitted from unfinished minutes."""
+    original = meeting_request_text(state)
+    if not _create_from_meeting(original, state):
+        return []
+    latest = last_user_text(state)
+    resolved = resolved_people(state)
+    questions: list[dict] = []
+    for raw in original.splitlines():
+        line = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", raw).strip()
+        due = re.search(r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)", line)
+        missing_marker = re.search(
+            r"\bby\s*(?:\.{2,}|…)|담당.{0,30}(?:쓰다|누락|없|미정|정하지\s*못|정해지지\s*않)",
+            line, re.I,
+        )
+        if not due or not missing_marker or re.search(r"미할당", line):
+            continue
+        has_owner = any(name in line and uid for name, uid in resolved.items())
+        if has_owner:
+            continue
+        work = re.split(r"\s+by\s*|\s+[—–-]\s+담당|(?:은|는)?\s*담당", line,
+                        maxsplit=1, flags=re.I)[0]
+        work = re.split(r"(?<!\d)20\d{2}-\d{2}-\d{2}(?!\d)", work, maxsplit=1)[0]
+        work = work.strip(" `.,:：-—–")
+        terms = [term for term in re.findall(r"[가-힣A-Za-z0-9.+-]{2,}", work)
+                 if term not in ("자료", "정리", "작업")]
+        latest_matches = sum(1 for term in terms if term in latest) >= max(1, min(2, len(terms)))
+        if latest_matches and ("미할당" in latest or any(uid in latest for uid in resolved.values())):
+            continue
+        questions.append({
+            "question": (f"'{work}'의 담당자가 회의록에 없습니다. 담당 username을 지정하거나 "
+                         "미할당으로 둘지 알려 주세요."),
+            "kind": "choice", "field": f"owner:{work}",
+            "options": ["미할당으로 생성"], "required_input": True,
+            "why_required": "Task 담당자를 임의 추천하면 회의 결정과 다른 책임이 기록됨",
+        })
+    return questions
+
+
 def unresolved_questions(state) -> list[dict]:
     """Questions left after internal/external research; empty means the workflow may continue."""
     if not is_meeting_request(state):
         return []
     original = meeting_request_text(state)
     latest = last_user_text(state)
-    names = _person_tokens(original)
+    names = [name for name in _person_tokens(original)
+             if _person_requires_resolution(original, name)]
     resolved = resolved_people(state)
     questions: list[dict] = []
 
@@ -451,6 +647,7 @@ def unresolved_questions(state) -> list[dict]:
             "required_input": True,
             "why_required": "회의에서만 쓰는 기준을 추측하면 요약·댓글·티켓 내용이 달라짐",
         })
+    questions.extend(_missing_owner_questions(state))
     return questions[:3]
 
 
@@ -464,5 +661,6 @@ def needs_research_interview(state) -> bool:
 
 __all__ = ["attendee_mentions", "canonicalize_meeting_owner_table",
            "canonicalize_reply_mentions", "is_meeting_request", "meeting_owner_records",
-           "meeting_request_text", "meeting_subject", "needs_research_interview", "prune_resolved_gaps",
+           "meeting_request_text", "meeting_requester_instructors", "meeting_subject",
+           "needs_research_interview", "prune_resolved_gaps",
            "resolved_people", "unresolved_questions"]

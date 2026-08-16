@@ -135,18 +135,22 @@ def _roster_load(state) -> str:
 
 
 def _all_assignees_user_specified(draft: dict) -> bool:
-    """Whether every item and child already carries an explicit user assignment."""
+    """Whether every item and child has a user-decided assignee or explicit unassignment."""
     items = [item for item in (draft.get("items") or []) if isinstance(item, dict)]
     if not items:
         return False
     for item in items:
-        if item.get("assignee_source") != "user" or not str(item.get("assignee") or "").strip():
+        if item.get("assignee_source") not in ("user", "user_unassigned"):
+            return False
+        if item.get("assignee_source") == "user" and not str(item.get("assignee") or "").strip():
             return False
         for child in (item.get("children") or []):
             if not isinstance(child, dict):
                 continue
-            if child.get("assignee_source") != "user" \
-                    or not str(child.get("assignee") or "").strip():
+            if child.get("assignee_source") not in ("user", "user_unassigned"):
+                return False
+            if child.get("assignee_source") == "user" \
+                    and not str(child.get("assignee") or "").strip():
                 return False
     return True
 
@@ -163,10 +167,11 @@ def _user_fixed_assignments(draft: dict) -> list[dict]:
             for child_index, child in enumerate(item.get("children") or [])
             if isinstance(child, dict) and str(child.get("assignee") or "").strip()
         ]
+        explicitly_unassigned = item.get("assignee_source") == "user_unassigned"
         rows.append({
             "index": index,
             "user": str(item.get("assignee") or "").strip(),
-            "reasons": ["사용자 지정 담당자"],
+            "reasons": ["사용자 지정 미할당" if explicitly_unassigned else "사용자 지정 담당자"],
             "children": children,
             "alternates": [],
         })
@@ -586,7 +591,7 @@ def merge_assignments(draft: dict, assignments: list) -> dict:
         if a.get("user") and a.get("reasons"):
             # 사용자가 입으로 지정한 담당("성능 측정은 x1402")은 추천이 못 덮는다 —
             # 지정은 결정이고 추천은 제안이다(실측: 추천이 지정 3건을 전부 한 사람으로 뭉갬).
-            if items[i].get("assignee_source") != "user":
+            if items[i].get("assignee_source") not in ("user", "user_unassigned"):
                 items[i] = dict(items[i], assignee=a["user"])
         kids = [dict(c) for c in (items[i].get("children") or []) if isinstance(c, dict)]
         if not kids:
@@ -595,7 +600,7 @@ def merge_assignments(draft: dict, assignments: list) -> dict:
         for c in a.get("children") or []:
             j, who = c.get("index"), str(c.get("user") or "").strip()
             if isinstance(j, int) and 0 <= j < len(kids) and who \
-                    and kids[j].get("assignee_source") != "user":
+                    and kids[j].get("assignee_source") not in ("user", "user_unassigned"):
                 kids[j]["assignee"] = who
                 touched = True
         if touched:

@@ -121,6 +121,9 @@ def test_explicit_external_research_gets_a_sanitized_web_query_even_when_model_o
         "Iceberg Puffin NDV official documentation"
     assert _public_external_query("Iceberg Puffin NDV Confluence marker") == \
         "Iceberg Puffin NDV official documentation"
+    assert _public_external_query(
+        "comment from writer Puffin StarRocks reader optimizer priority component labels"
+    ) == "Puffin StarRocks official documentation"
 
 
 def test_explicit_comment_evidence_gets_a_scoped_comment_query_when_model_omits_it():

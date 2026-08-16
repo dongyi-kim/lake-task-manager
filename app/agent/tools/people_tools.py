@@ -68,6 +68,11 @@ def remember_person(name: str, user_id: str) -> None:
         _pctx["known"][n] = str(user_id)
 
 
+def recall_person(name: str) -> str:
+    """Return a thread-local confirmed identity without recording another tool call."""
+    return str(_pctx["known"].get(strip_title(name), "") or "")
+
+
 def _related_people(keys) -> set:
     """② 최근 확인한 Task 에 얽힌 사람들 — 담당·보고·코멘트 작성자."""
     out = set()

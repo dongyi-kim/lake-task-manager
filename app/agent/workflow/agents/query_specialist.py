@@ -22,6 +22,10 @@ _INTERNAL_LATIN = {"etl", "catalog", "runtime", "workbench", "dataops", "observa
                    "voc", "our", "project", "internal", "external", "official", "documentation",
                    "confluence", "wiki", "marker", "citation",
                    "hotfix", "poc", "p0", "p1", "p2", "p3", "p4", "critical", "major", "minor",
+                   # Meeting-note scaffolding and Jira field labels are not public technologies.
+                   "comment", "comments", "component", "components", "description", "docx", "fields",
+                   "from", "labels", "meeting", "memo", "notes", "optimizer", "priority", "reader",
+                   "summary", "writer",
                    # Deployment environments are internal context, not public technologies.
                    "prod", "production", "stage", "staging", "qa", "dev", "development"}
 
@@ -338,6 +342,54 @@ def _ensure_explicit_comment_query(state, plan: dict) -> None:
     plan["queries"].insert(position, companion)
 
 
+def _normalize_meeting_research_queries(state, plan: dict) -> None:
+    """Bind informal meeting research to its technical topic and explicit sources.
+
+    Models tend to search the format words ``회의 메모`` or an attachment filename.  Those
+    are not the subject and once matched an unrelated attachment UI fixture.  For ASK-style
+    meeting research, code owns three invariants: explicit ticket keys are opened, generic
+    note searches use the reconstructed topic, and comment lookup stays on those keys.
+    """
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_subject
+        if not is_meeting_request(state) or (state.get("intent") or "") != Intent.ASK:
+            return
+        topic = meeting_subject(state)
+    except Exception:
+        return
+    keys = [str(key).upper() for key in (state.get("mentioned_keys") or [])
+            if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).upper())]
+    generic = re.compile(r"회의|미팅|meeting|memo|notes?", re.I)
+    for query in plan.get("queries") or []:
+        source = str(query.get("source") or "")
+        material = " ".join(str(query.get(key) or "") for key in ("query", "where"))
+        if source in ("jira", "confluence") and topic and generic.search(material):
+            query["query"], query["where"] = topic, ""
+        elif source == "comments" and keys:
+            query["query"], query["where"] = "", "key in (" + ", ".join(keys) + ")"
+
+    if keys and not any(
+            q.get("source") == "jira" and any(key in " ".join(
+                str(q.get(field) or "") for field in ("query", "where")) for key in keys)
+            for q in plan.get("queries") or []):
+        plan.setdefault("queries", []).insert(0, {
+            "id": "meeting-explicit-tickets", "source": "jira", "query": "",
+            "where": "key in (" + ", ".join(keys) + ")", "order_by": "",
+            "fields": ["key", "summary", "description", "status", "assignee", "duedate", "comment"],
+            "completeness": "all", "page_size": min(50, max(1, len(keys))), "depends_on": [],
+        })
+    if topic:
+        for source in ("jira", "confluence"):
+            if any(q.get("source") == source and topic.casefold() in str(q.get("query") or "").casefold()
+                   for q in plan.get("queries") or []):
+                continue
+            plan.setdefault("queries", []).append({
+                "id": f"meeting-topic-{source}", "source": source, "query": topic, "where": "",
+                "order_by": "updated DESC", "fields": [], "completeness": "all",
+                "page_size": 25, "depends_on": [],
+            })
+
+
 def _ensure_creation_duplicate_query(state, plan: dict) -> None:
     """Every create plan checks scoped Jira history before proposing a new ticket.
 
@@ -414,6 +466,7 @@ class QuerySpecialist(StructuredAgent):
         # Source coverage is a user contract, not a model preference.
         _ensure_creation_duplicate_query(state, plan)
         _ensure_explicit_comment_query(state, plan)
+        _normalize_meeting_research_queries(state, plan)
         # 빈 comment query + 빈 JQL은 "모든 댓글"이라는 위험한 의미가 된다. 회의록 한 건에서
         # 2천여 댓글을 읽은 실측이 있었고, 관련성도 비용도 망가졌다. 대상/검색어가 하나도
         # 없으면 실행하지 않고 계획의 불확실성으로 남긴다.
@@ -490,6 +543,7 @@ class QuerySpecialist(StructuredAgent):
 
 __all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_query",
            "_safe_model_external_query", "_ensure_explicit_comment_query",
+           "_normalize_meeting_research_queries",
            "_known_user_tokens", "_strip_known_user_tokens", "_jira_query_is_only_people",
            "_normalize_model_jira_query", "_normalize_query_fields",
            "_dedupe_equivalent_queries", "_ensure_creation_duplicate_query"]
