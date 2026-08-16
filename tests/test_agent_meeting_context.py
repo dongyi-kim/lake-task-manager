@@ -441,6 +441,9 @@ def test_exact_meeting_update_fields_survive_identity_interview_resume():
     assert fields["labels"] == ["meeting-fixture", "puffin-ndv", "decision-20260815"]
     assert all(section in fields["description"] for section in ("결정 배경", "작업 범위", "검증 기준"))
     assert "skcc.x1103" in fields["description"]
+    assert "회의에서 확정된 변경 사항 반영" not in fields["description"]
+    assert "기준이야" not in fields["description"]
+    assert "확정하지 않기로 결정" in fields["description"]
 
 
 def test_meeting_interview_keeps_original_request_and_comment_intent():

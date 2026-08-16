@@ -1608,6 +1608,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             _repair_statistics_generation_semantics(state, items)
             _ensure_child_descriptions(items)
             _drop_self_exclusions(items)
+            _preserve_explicit_value_transition(state, items)
             # 본문 보정은 위의 참고 불릿 가드 **뒤에서** 새 HTML을 만든다. 생산자 뒤에서
             # 다시 검사하지 않으면 보정 호출이 만든 출처 없는 참고가 그대로 승인 카드로 간다
             # (PASTE1/PASTE2 실측). 같은 함수로 한 번 더 보며 규칙은 복제하지 않는다.
@@ -1902,21 +1903,27 @@ def _explicit_meeting_update_fields(state) -> dict:
     if body and sections:
         body_facts = _re.sub(r"`[^`]+`(?:\s*,\s*|\s*(?:세|두)\s*section\.?)?", " ", body)
         body_facts = _re.sub(r"\s+", " ", body_facts).strip(" .")
+        scope_facts = _re.sub(r"(?:이라는|라는)\s*내용$", "", body_facts).strip()
+        decision_facts = scope_facts.replace("기록하되", "기록하고")
+        decision_facts = _re.sub(
+            r"확정하지\s*않(?:는|음)$", "확정하지 않기로 결정", decision_facts)
         term = next((name for name in ("RGP", "PSR")
                      if name in request and name in latest), "")
         definition = ""
         if term:
             found = _re.search(rf"{term}\s*(?:은|는|:|=)\s*(.+?)(?:[.!?]|$)", latest)
             if found:
-                definition = f"{term}: {found.group(1).strip()}"
+                definition_text = _re.sub(
+                    r"\s*(?:이야|야|이에요|예요|입니다|이다)$", "", found.group(1).strip())
+                definition = f"{term}: {definition_text}"
         people = resolved_people(state)
         owner = next((uid for name, uid in people.items()
                       if name in request and _re.search(
                           rf"{_re.escape(name)}(?:TL|님|차장|책임)?.{{0,30}}(?:소유자|기준)",
                           request)), "")
         values = [
-            "회의에서 확정된 변경 사항 반영",
-            body_facts or "회의에서 지정한 범위만 반영",
+            decision_facts or "회의에서 확정된 변경 사항 반영",
+            scope_facts or "회의에서 지정한 범위만 반영",
             "\n".join(value for value in (
                 definition,
                 f"기준 소유자: {{{{mention:{owner}}}}}" if owner else "",
@@ -3394,6 +3401,55 @@ def _repair_malformed_dod(state, items) -> bool:
             r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
             fix, body, flags=_re.S | _re.I)
     return changed
+
+
+_EXPLICIT_VALUE_TRANSITION = _re.compile(
+    r"(?P<before>\d+(?:\.\d+)?\s*(?:ms|초|분|시간|일|주|개월|년|%|퍼센트|건|개|회|"
+    r"KB|MB|GB|TB)?)\s*(?:에서|부터|→|->|=>)\s*"
+    r"(?P<after>\d+(?:\.\d+)?\s*(?:ms|초|분|시간|일|주|개월|년|%|퍼센트|건|개|회|"
+    r"KB|MB|GB|TB)?)\s*(?:으로|로)?",
+    _re.I,
+)
+
+
+def _preserve_explicit_value_transition(state, items) -> bool:
+    """Keep a literal before/after setting in a single-ticket body.
+
+    A model can correctly retain only the target value (for example, ``45분``) while
+    dropping the user's current value (``30분``). That loses the rollback and validation
+    baseline even though both values are authoritative input. For one-ticket requests,
+    append only the literal pair to the scope; multiple-ticket allocation still belongs to
+    the model because the code cannot know which pair belongs to which deliverable.
+    """
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    if len(rows) != 1:
+        return False
+    asked = (last_user_text(state) or request_text(state)).strip()
+    pairs = []
+    for match in _EXPLICIT_VALUE_TRANSITION.finditer(asked):
+        pair = (match.group("before").strip(), match.group("after").strip())
+        if pair[0] != pair[1] and pair not in pairs:
+            pairs.append(pair)
+    if len(pairs) != 1:
+        return False
+    item = rows[0]
+    body = str(item.get("description") or "")
+    plain = _re.sub(r"<[^>]+>", " ", body)
+    before, after = pairs[0]
+    if before.replace(" ", "") in plain.replace(" ", "") \
+            and after.replace(" ", "") in plain.replace(" ", ""):
+        return False
+    fact = f"변경 전 값: {before} / 변경 후 값: {after}"
+    scope = _re.search(
+        r"(<h3>\s*작업 범위\s*</h3>\s*<ul\b[^>]*>)(.*?)(</ul>)",
+        body, _re.S | _re.I,
+    )
+    if scope:
+        body = body[:scope.end(2)] + f"<li>{_esc(fact)}</li>" + body[scope.end(2):]
+    else:
+        body += f"<h3>작업 범위</h3><ul><li>{_esc(fact)}</li></ul>"
+    item["description"] = body
+    return True
 
 
 def _action_specific_proof(state, summary: str) -> str:

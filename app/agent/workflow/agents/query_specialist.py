@@ -9,7 +9,8 @@ from app.agent.prompts.roles import SYSTEM_QUERY_SPECIALIST
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.contracts import QueryPlan
 from app.agent.workflow.prompts import persona
-from app.agent.workflow.state import AgentState, Node, conversation, note, request_text
+from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
+                                      last_user_text, note, request_text)
 
 
 _EXTERNAL_WORDS = ("외부 조사", "외부 검색", "외부 자료", "웹 검색", "인터넷", "github", "오픈소스",
@@ -335,6 +336,52 @@ def _ensure_explicit_comment_query(state, plan: dict) -> None:
     plan["queries"].insert(position, companion)
 
 
+def _ensure_creation_duplicate_query(state, plan: dict) -> None:
+    """Every create plan checks scoped Jira history before proposing a new ticket.
+
+    Public technology lookup is useful background, but it cannot answer whether the work
+    already exists in this organization.  The planner occasionally emitted only a web query
+    for a named technology (DUP1: Avro), bypassing the duplicate guard entirely.  Add one
+    internal, paginated read when no Jira source exists; configured projects remain enforced
+    by ``run_jql_v2``.
+    """
+    if (state.get("intent") or "") != Intent.PLAN_WORK:
+        return
+    if any(query.get("source") == "jira" for query in plan.get("queries") or []):
+        return
+    ignored = {
+        "작업", "티켓", "생성", "추가", "신규", "만들자", "만들어", "요청",
+        "기능", "개선", "알아서", "task", "ticket", "create", "issue",
+    }
+    terms = []
+    material = [str(value).strip() for value in (state.get("keywords") or [])
+                if str(value).strip()]
+    if not material:
+        material = re.findall(
+            r"[A-Za-z][A-Za-z0-9_.+-]{2,}|[가-힣]{2,}",
+            request_text(state) or last_user_text(state),
+        )
+    for value in material:
+        clean = re.sub(r"[\"'`]+", "", value).strip()
+        if not clean or clean.casefold() in ignored or clean.casefold() in _INTERNAL_LATIN:
+            continue
+        if clean.casefold() not in {term.casefold() for term in terms}:
+            terms.append(clean)
+    if not terms:
+        return
+    plan.setdefault("queries", []).insert(0, {
+        "id": "internal-duplicate-check",
+        "source": "jira",
+        "query": " ".join(terms[:5]),
+        "where": "",
+        "order_by": "updated DESC",
+        "fields": ["key", "summary", "status", "issuetype", "assignee", "updated"],
+        "completeness": "all",
+        "page_size": 50,
+        "depends_on": [],
+    })
+
+
 class QuerySpecialist(StructuredAgent):
     name = Node.QUERY_SPECIALIST
     temperature = 0.0
@@ -359,6 +406,7 @@ class QuerySpecialist(StructuredAgent):
     def apply(self, state, out):
         plan = QueryPlan.model_validate(out).model_dump()
         # Source coverage is a user contract, not a model preference.
+        _ensure_creation_duplicate_query(state, plan)
         _ensure_explicit_comment_query(state, plan)
         # 빈 comment query + 빈 JQL은 "모든 댓글"이라는 위험한 의미가 된다. 회의록 한 건에서
         # 2천여 댓글을 읽은 실측이 있었고, 관련성도 비용도 망가졌다. 대상/검색어가 하나도
@@ -438,4 +486,4 @@ __all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_qu
            "_safe_model_external_query", "_ensure_explicit_comment_query",
            "_known_user_tokens", "_strip_known_user_tokens", "_jira_query_is_only_people",
            "_normalize_model_jira_query", "_normalize_query_fields",
-           "_dedupe_equivalent_queries"]
+           "_dedupe_equivalent_queries", "_ensure_creation_duplicate_query"]

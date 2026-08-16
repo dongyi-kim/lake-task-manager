@@ -1876,6 +1876,27 @@ def test_explicit_singular_task_drops_model_generated_stage_children():
     assert not item.get("children") and not got["questions"]
 
 
+def test_explicit_before_after_value_is_preserved_in_single_task_body():
+    body = ("<h3>배경</h3><p>적재 지연 알림 임계값 조정 요청</p>"
+            "<h3>작업 범위</h3><ul><li>포함: 임계값을 45분으로 조정</li>"
+            "<li>제외: 알림 채널 변경</li></ul>"
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">45분 경계 전후 알림 발생 여부를 실행 로그로 확인한다</li>'
+            "</ul>")
+    got = WorkArchitect().apply(
+        _msg("적재 지연 알림 임계값을 30분에서 45분으로 조정하는 Task 만들어줘. "
+             "우선순위 P1, 이번 주 금요일까지, 라벨은 hotfix. 알아서"),
+        {"questions": [], "mode": "task", "rationale": "", "items": [{
+            "summary": "[DataOps] 적재 지연 알림 임계값 조정", "type": "Task",
+            "components": ["DataOps"], "description": body,
+            "priority": "P1-Critical", "labels": ["hotfix"]}]},
+    )
+
+    description = got["draft"]["items"][0]["description"]
+    assert "변경 전 값: 30분 / 변경 후 값: 45분" in description
+    assert got["draft"]["items"][0]["priority"] == "P1-Critical"
+
+
 def test_story_point_is_removed_from_create_payload_and_rationale():
     body = ("<h3>배경</h3><p>리니지 3홉 조회 범위를 확장한다.</p>"
             "<h3>작업 범위</h3><ul><li>포함: 3홉 조회</li><li>제외: 4홉 이상</li></ul>"

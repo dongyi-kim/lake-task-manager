@@ -233,6 +233,22 @@ def test_query_specialist_drops_mutation_phrase_from_read_plan():
     assert not _normalize_model_jira_query(query)
 
 
+def test_create_plan_adds_scoped_internal_duplicate_search_when_model_only_used_web():
+    from app.agent.workflow.agents.query_specialist import _ensure_creation_duplicate_query
+
+    state = {
+        "intent": "plan_work",
+        "request_text": "프로듀서를 Avro로 전환하는 작업을 새로 만들자",
+        "keywords": ["프로듀서", "Avro", "전환"],
+    }
+    plan = {"queries": [{"id": "external", "source": "web", "query": "Avro docs"}]}
+    _ensure_creation_duplicate_query(state, plan)
+
+    jira = plan["queries"][0]
+    assert jira["source"] == "jira" and jira["completeness"] == "all"
+    assert all(term in jira["query"] for term in ("프로듀서", "Avro", "전환"))
+
+
 def test_query_specialist_drops_unresolved_jql_placeholder():
     from app.agent.workflow.agents.query_specialist import _normalize_model_jira_query
 
