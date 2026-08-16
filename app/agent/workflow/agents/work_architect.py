@@ -1660,6 +1660,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         _ensure_meeting_background_attribution(state, items)
         _ensure_meeting_reviewers(state, items)
         _preserve_defined_meeting_terms(state, items)
+        _seal_meeting_item_mentions(state, items)
         _drop_meeting_sibling_exclusions(state, items)
         _drop_unrequested_meeting_create_fields(state, items)
         if not any(item.get("labels") for item in items):
@@ -2915,6 +2916,33 @@ def _preserve_defined_meeting_terms(state, items: list) -> None:
                 item["description"] = body.replace(definition, f"{term} ({definition})", 1)
             else:
                 item["description"] = (body + f"<p>회의 정의: {term} — {_esc(definition)}</p>").strip()
+
+
+def _seal_meeting_item_mentions(state, items: list) -> None:
+    """Normalize malformed model mention tokens to confirmed meeting identities."""
+    if not items:
+        return
+    try:
+        from app.agent.workflow.meeting_context import (
+            canonicalize_reply_mentions, is_meeting_request, resolved_people,
+        )
+        if not is_meeting_request(state):
+            return
+        people = resolved_people(state)
+    except Exception:
+        return
+    uids = list(dict.fromkeys(str(uid) for uid in people.values() if str(uid).strip()))
+
+    def repair(match) -> str:
+        inner = _re.sub(r"[^A-Za-z0-9_.-]", "", str(match.group(1) or ""))
+        uid = next((candidate for candidate in uids
+                    if candidate.casefold() in inner.casefold()), "")
+        return f"{{{{mention:{uid}}}}}" if uid else match.group(0)
+
+    for item in items:
+        body = _re.sub(r"\{\{\s*mention\s*:\s*([^}]+)\}\}", repair,
+                       str(item.get("description") or ""), flags=_re.I)
+        item["description"] = canonicalize_reply_mentions(state, body)
 
 
 def _fill_owners(item: dict, kids: list) -> None:

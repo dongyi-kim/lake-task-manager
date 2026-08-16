@@ -30,6 +30,7 @@ from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _explicit_meeting_update_fields,
     _meeting_unchanged_fields,
     _preserve_defined_meeting_terms,
+    _seal_meeting_item_mentions,
     _recover_decided_meeting_tasks,
     shape_hint,
 )
@@ -206,6 +207,17 @@ def test_confirmed_local_meeting_acronym_is_preserved_with_its_expansion_in_draf
               "description": "<h3>배경</h3><p>PoC Success Review 증빙 작업</p>"}]
     _preserve_defined_meeting_terms(state, items)
     assert "PSR (PoC Success Review)" in items[0]["description"]
+
+
+def test_malformed_meeting_mention_token_is_sealed_to_confirmed_username():
+    set_person_context("meeting-seal-mention", ["DL-9200"])
+    request = "회의 후속 Task. {{최민서:1042}}가 리뷰"
+    state = _state(request)
+    items = [{"summary": "PSR 증빙", "description":
+              "<h3>리뷰</h3><p>{{mention:TL (skcc).x1042}} — 결과 리뷰</p>"}]
+    _seal_meeting_item_mentions(state, items)
+    assert "{{mention:skcc.x1042}}" in items[0]["description"]
+    assert "TL (skcc)" not in items[0]["description"]
 
 
 def test_negative_gate_condition_is_a_definition_not_an_unknown_term():
