@@ -17,7 +17,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "2.0.0"
+BATTERY_VERSION = "2.0.1"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("ctx-chg")
 
 
@@ -36,7 +36,7 @@ def _ctx_unrelated_ok(output: dict[str, Any], _outputs: list[dict[str, Any]]) ->
     return (
         pending.get("action") == "update_ticket"
         and pending.get("key") == "DL-9203"
-        and changes == {"priority": "P2-Major"}
+        and changes == {"priority": "P4-Trivial"}
         and "fdc_trace_summary_ic" not in final.lower()
         and "DL-904" not in final
     )
@@ -98,7 +98,7 @@ CASES = [
         "완전히 다른 요청으로 전환되면 이전 조사 맥락을 폐기하고 최신 변경만 초안화",
         [
             "fdc.fdc_trace_summary_ic 데이터 히스토리와 현재 상태를 조사해줘.",
-            "이건 그만. 완전히 다른 요청이야. DL-9203의 priority만 P2-Major로 바꾸는 승인 전 초안을 만들어줘. 다른 필드는 건드리지 마.",
+            "이건 그만. 완전히 다른 요청이야. DL-9203의 priority만 P4-Trivial로 바꾸는 승인 전 초안을 만들어줘. 다른 필드는 건드리지 마.",
         ],
         _ctx_unrelated_ok,
     ),

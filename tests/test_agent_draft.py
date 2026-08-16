@@ -448,6 +448,21 @@ def test_an_explicit_modify_request_still_produces_a_change_plan():
     assert r["change_plan"].get("key") == "DL-9090"
 
 
+def test_exact_current_turn_mutation_replaces_stale_creation_draft():
+    stale = {"questions": [], "mode": "task", "rationale": "이전 조사 기반",
+             "items": [{"summary": "[ETL] 이전 fdc 조사 작업", "type": "Bug"}],
+             "change": {}}
+    state = _msg(
+        "이건 그만. DL-9203의 priority만 P4-Trivial로 바꾸는 승인 전 초안을 보여줘.",
+        intent=Intent.MODIFY, mentioned_keys=["DL-9203"],
+    )
+    result = WorkArchitect().apply(state, stale)
+
+    assert not result["draft"]["items"]
+    assert result["change_plan"]["key"] == "DL-9203"
+    assert result["change_plan"]["changes"] == {"priority": "P4-Trivial"}
+
+
 def test_cancelling_a_comment_does_not_discard_the_replacement_field_change():
     """The latest request wins even when it names the write operation being cancelled."""
     text = ("그 댓글도 취소. 최종 요청은 제목만 "

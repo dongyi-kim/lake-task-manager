@@ -503,6 +503,19 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
         model_questions = bool(qs)
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        # An exact single-ticket update in the current human turn is authoritative.  A
+        # long previous research turn can bias the model into returning a creation draft
+        # even though RequestArchitect correctly classified the new intent as MODIFY
+        # (CTX1: an fdc investigation leaked into a DL-9203 priority-only request).
+        # Recover only literal, typed values; free-form bodies and inferred fields remain
+        # model/interview territory.
+        exact_change = _explicit_single_mutation_from_request(state)
+        if exact_change and (state.get("intent") or "") == Intent.MODIFY:
+            out["change"] = exact_change
+            out["items"] = []
+            items = []
+            qs = []
+            model_questions = False
         # A complete pasted incident/VoC already contains the information that a
         # reproduction interview would request.  Some models still return only a
         # generic question and no item.  Recover the report into a conservative Bug
@@ -1810,6 +1823,39 @@ def _normalize_priority(value) -> str:
     raw = str(value or "").strip()
     match = _re.match(r"^P([0-4])(?:\b|-)", raw, _re.I)
     return _PRI.get("P" + match.group(1), raw) if match else _PRI.get(raw.upper(), raw)
+
+
+def _explicit_single_mutation_from_request(state) -> dict:
+    """Parse a conservative field-only update from the latest user turn.
+
+    This is a context-boundary guard, not a general natural-language parser.  It accepts
+    one literal Jira key and only values whose field names are present in the same current
+    message.  Therefore an earlier research topic can never supply the target or payload.
+    """
+    said = (last_user_text(state) or request_text(state) or "").strip()
+    keys = list(dict.fromkeys(_re.findall(
+        r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])", said, _re.I)))
+    if len(keys) != 1:
+        return {}
+    fields = {}
+    if _re.search(r"우선순위|priority", said, _re.I):
+        priority = _re.search(r"(?<![0-9A-Za-z])P([0-4])(?:-[A-Za-z]+)?(?![0-9A-Za-z])",
+                              said, _re.I)
+        if priority:
+            fields["priority"] = _PRI["P" + priority.group(1)]
+    if _re.search(r"기한|마감|due(?:date)?", said, _re.I):
+        due = _re.search(r"\b(\d{4}-\d{2}-\d{2})\b", said)
+        if due:
+            fields["duedate"] = due.group(1)
+    if _re.search(r"제목|summary|title", said, _re.I):
+        summary = _re.search(
+            r"(?:제목|summary|title)(?:만|을|를)?\s*(?:은|는|을|를|:)?\s*"
+            r"['\"“‘]([^'\"”’\n]{2,240})['\"”’]",
+            said, _re.I,
+        )
+        if summary:
+            fields["summary"] = summary.group(1).strip()
+    return {"key": keys[0].upper(), **fields} if fields else {}
 
 
 def _explicit_meeting_update_fields(state) -> dict:

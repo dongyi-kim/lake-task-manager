@@ -471,10 +471,10 @@ CASE_REVIEW_SPECS = {
             _element(
                 "ctx1_unrelated_switch",
                 "request_fulfillment",
-                "최종 payload가 DL-9203 priority=P2-Major 하나뿐이고 fdc·DL-904x 맥락을 출력하지 않는가",
+                "최종 payload가 DL-9203 priority=P4-Trivial 하나뿐이고 fdc·DL-904x 맥락을 출력하지 않는가",
                 "이전 데이터셋 조사 내용 또는 추가 변경 field가 최종 결과에 남음",
                 _REPLY,
-                {"target": "DL-9203", "exactChanges": {"priority": "P2-Major"}, "forbidden": ["fdc_trace_summary_ic", "DL-904"]},
+                {"target": "DL-9203", "exactChanges": {"priority": "P4-Trivial"}, "forbidden": ["fdc_trace_summary_ic", "DL-904"]},
             ),
         ),
         "CTX2": _case(
