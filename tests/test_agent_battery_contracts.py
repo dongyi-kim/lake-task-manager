@@ -78,6 +78,36 @@ def test_meeting_interview_checker_rejects_draft_before_ambiguous_identity_is_re
     ], "PSR")
 
 
+def test_heterogeneous_meeting_create_checker_requires_explicit_unassigned_and_instructor_background():
+    rows = [
+        {"type": "Task", "summary": "writer", "epic": "DL-9200",
+         "assignee": "skcc.i2011", "duedate": "2026-08-22",
+         "description": "배경 회의 skcc.x1042\n작업 범위\n완료 조건"},
+        {"type": "Task", "summary": "reader", "epic": "DL-9200",
+         "assignee": "skcc.x1402", "duedate": "2026-08-25",
+         "description": "배경 회의 skcc.x1042\n작업 범위\n완료 조건"},
+        {"type": "Task", "summary": "로그 마스킹", "epic": "DL-9200",
+         "assignee": "", "duedate": "2026-08-27",
+         "description": "배경 회의 skcc.x1042\n작업 범위\n완료 조건"},
+    ]
+    output = {"pending": {"action": "create_tickets", "items": rows}, "questions": []}
+    assert meeting_eval._meeting_fragment_create_ok(output, [output])
+    rows[-1]["assignee"] = "skcc.x1042"
+    assert not meeting_eval._meeting_fragment_create_ok(output, [output])
+
+
+def test_incomplete_meeting_checker_requires_owner_or_unassigned_interview_before_draft():
+    question = {"questions": [{"question": "reader 담당자를 정할까요, 미할당으로 둘까요?"}]}
+    final = {"questions": [], "pending": {"action": "create_tickets", "items": [
+        {"summary": "writer", "assignee": "skcc.i2011", "due": "2026-08-23",
+         "description": "회의 배경 skcc.x1042"},
+        {"summary": "reader", "assignee": "", "due": "2026-08-26",
+         "description": "회의 배경 skcc.x1042"},
+    ]}}
+    assert meeting_eval._meeting_missing_owner_ok(final, [question, final])
+    assert not meeting_eval._meeting_missing_owner_ok(final, [{**question, "pending": {"action": "create_ticket"}}, final])
+
+
 def test_context_switch_checker_requires_only_the_latest_exact_change():
     exact = {
         "reply": "DL-9203 priority 변경 초안",

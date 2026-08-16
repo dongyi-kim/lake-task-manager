@@ -98,6 +98,29 @@ SUITE_REVIEW_ELEMENTS = {
             _REPLY + ["evaluationEvidence.requestPlan", "evaluationEvidence.queryPlan"],
             {"rule": "결정표와 pending action·target·field·value를 대조", "execute": False},
         ),
+        _element(
+            "meeting_heterogeneous_note_reconstruction",
+            "request_fulfillment",
+            "대화 인용·정리문·첨부 문서 발췌·요약 메모·쓰다 만 문장이 섞여도 앞뒤 사용자 설명과 조사 근거를 함께 사용해 회의 맥락을 재구성했는가",
+            "정돈된 bullet만 읽고 from/by/콜론/의견 표기 또는 첨부·앞뒤 설명의 핵심 결정을 누락",
+            _REPLY + _RETRIEVAL,
+            {
+                "recognizedForms": ["raw dialogue", "memo", "document excerpt", "mixed", "unfinished text"],
+                "contextSources": ["user preface", "meeting body", "attached excerpt", "internal evidence", "safe external evidence"],
+            },
+        ),
+        _element(
+            "meeting_actor_role_separation",
+            "contract_actionability",
+            "같은 사람의 가변 표기를 하나로 묶고 화자·의견자·지시자·검토자·실행 담당·미할당을 구분해 Task 담당과 배경에 정확히 반영했는가",
+            "from/by/의견을 곧바로 assignee로 간주하거나 지시자·검토자를 담당자로 바꾸거나 미정 담당을 임의 배정",
+            _REPLY + ["evaluationEvidence.requestPlan"],
+            {
+                "attributionForms": ["from: person", "text by person", "person: text", "person opinion"],
+                "roles": ["speaker", "decision maker", "requester/instructor", "reviewer", "assignee", "unassigned"],
+                "rule": "assignee requires an explicit assignment; requester/instructor belongs in task background",
+            },
+        ),
     ],
     "ctx-chg": [
         _element(
@@ -461,6 +484,76 @@ CASE_REVIEW_SPECS = {
                     "noDraftBeforeChoice": True,
                     "finalAssignee": "skcc.x1103",
                     "reviewer": "skcc.x1042",
+                },
+            ),
+        ),
+        "MTG6": _case(
+            "앞뒤 설명·첨부 발췌·메신저 인용을 결합해 조사된 결정·담당·기한·미확인을 요약",
+            _element(
+                "mtg6_fragment_context_and_evidence",
+                "factual_grounding",
+                "5개 표본·writer 완료·reader 미확인·운영 반영 보류를 DL-7001·Puffin 문서·관련 댓글·외부 공식 자료와 연결했는가",
+                "20개 후보를 이번 확정 범위로 바꾸거나 StarRocks 소비를 확정하거나 내부·외부 조사 시도를 누락",
+                _REPLY + _RETRIEVAL,
+                {
+                    "requiredTicketKeys": ["DL-7001"],
+                    "requiredDocumentTitles": ["[Lake] Iceberg Puffin NDV 적용 검토 노트"],
+                    "requiredFacts": ["five-sample scope", "writer evidence", "reader unconfirmed", "production hold"],
+                    "attributionAliases": {
+                        "skcc.i2011": ["@이다은", "이다은", "다은님"],
+                        "skcc.x1402": ["최하은", "하은님"],
+                        "skcc.x1042": ["{{최민서:1042}}"],
+                    },
+                },
+            ),
+        ),
+        "MTG7": _case(
+            "비정형 발언을 세 Task로 변환하되 담당 두 명·미할당 한 건과 지시자 배경을 보존",
+            _element(
+                "mtg7_actor_assignment_and_background",
+                "contract_actionability",
+                "writer=skcc.i2011, reader=skcc.x1402, 마스킹=미할당을 유지하고 세 본문의 배경에 회의 및 지시자 skcc.x1042를 기록했는가",
+                "화자·지시자를 assignee로 바꿈, 미할당 임의 배정, 기한·parent 오류, 배경의 논의·지시자 누락",
+                _REPLY,
+                {
+                    "itemCount": 3, "parent": "DL-9200",
+                    "assignments": ["skcc.i2011", "skcc.x1402", "unassigned"],
+                    "dueDates": ["2026-08-22", "2026-08-25", "2026-08-27"],
+                    "backgroundRequires": ["meeting discussion", "requester/instructor skcc.x1042"],
+                    "forbiddenAssignee": "skcc.x1042",
+                },
+            ),
+        ),
+        "MTG8": _case(
+            "Task 생성에 필수인 누락 담당만 인터뷰하고 미할당 답변 뒤 두 Task 초안 재개",
+            _element(
+                "mtg8_minimal_required_interview",
+                "safety_uncertainty",
+                "reader 담당 또는 미할당을 구체적으로 물으며 첫 turn에는 초안을 보류하고, 답변 뒤 writer 담당·reader 미할당·지시자 배경을 반영했는가",
+                "누락 담당을 추측·임의 추천하거나 불필요한 정보를 묻거나 답변 전 pending 생성",
+                _REPLY + _RETRIEVAL,
+                {
+                    "requiredQuestion": "reader owner or explicitly unassigned",
+                    "noDraftBeforeAnswer": True,
+                    "finalAssignments": ["skcc.i2011", "unassigned"],
+                    "requesterInstructor": "skcc.x1042",
+                },
+            ),
+        ),
+        "MTG9": _case(
+            "보류 의견의 사람 식별을 요구하지 않고 마지막 합의의 세 필드만 DL-9203에 반영",
+            _element(
+                "mtg9_decision_opinion_boundary",
+                "contract_actionability",
+                "채택된 summary·duedate·description만 변경하고 보류된 priority·component·labels 및 무관한 준서TL 신원 질문을 제외했는가",
+                "의견·제안을 변경값으로 사용하거나 이번 행동에 불필요한 화자 신원을 인터뷰하거나 댓글 생성",
+                _REPLY,
+                {
+                    "target": "DL-9203",
+                    "exactFields": ["summary", "duedate", "description"],
+                    "forbiddenFields": ["priority", "components", "labels"],
+                    "irrelevantAmbiguousActor": "준서TL",
+                    "requesterInstructor": "skcc.x1042",
                 },
             ),
         ),

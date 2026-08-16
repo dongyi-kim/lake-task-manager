@@ -18,7 +18,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "2.0.3"
+BATTERY_VERSION = "3.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("meeting")
 
 
@@ -158,6 +158,95 @@ def _meeting_identity_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) 
     )
 
 
+def _meeting_fragment_summary_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> bool:
+    reply = str(output.get("reply") or "")
+    evidence = _text(output.get("evaluationEvidence") or {})
+    required = ("5개", "2026-08-22", "2026-08-25", "skcc.i2011", "skcc.x1402", "skcc.x1042")
+    return (
+        len(outputs) == 1
+        and not output.get("questions")
+        and not _pending(output)
+        and all(value in reply for value in required)
+        and bool(re.search(r"운영\s*반영(?:은|는|이|가|을|를)?\s*보류", reply))
+        and any(value in reply for value in ("미확인", "확인 필요", "검증 전"))
+        and "DL-7001" in evidence
+        and "Iceberg Puffin NDV 적용 검토 노트" in evidence
+        and any(token in evidence for token in ("http://", "https://", "search_web", "webContext", "error"))
+    )
+
+
+def _meeting_fragment_create_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> bool:
+    pending = _pending(output)
+    rows = pending_items(output)
+    if len(outputs) != 1 or output.get("questions"):
+        return False
+    if pending.get("action") != "create_tickets" or len(rows) != 3:
+        return False
+    if any((row.get("epic") or row.get("epicKey") or "") != "DL-9200" for row in rows):
+        return False
+    writer = next((row for row in rows if "writer" in _text(row).lower()), {})
+    reader = next((row for row in rows if "reader" in _text(row).lower()), {})
+    masking = next((row for row in rows if "마스킹" in _text(row)), {})
+    expected = (
+        (writer, "skcc.i2011", "2026-08-22"),
+        (reader, "skcc.x1402", "2026-08-25"),
+        (masking, "", "2026-08-27"),
+    )
+    for row, owner, due in expected:
+        if not row or str(row.get("assignee") or "") != owner:
+            return False
+        if str(row.get("duedate") or row.get("due") or "") != due:
+            return False
+        body = str(row.get("description") or "")
+        if not all(section in body for section in ("배경", "작업 범위", "완료 조건")):
+            return False
+        if "skcc.x1042" not in body or "회의" not in body:
+            return False
+    return all(str(row.get("assignee") or "") != "skcc.x1042" for row in rows)
+
+
+def _meeting_missing_owner_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> bool:
+    if len(outputs) != 2:
+        return False
+    first_text = _text(outputs[0].get("questions") or [])
+    if (not outputs[0].get("questions") or _pending(outputs[0])
+            or "담당" not in first_text or "미할당" not in first_text):
+        return False
+    pending = _pending(output)
+    rows = pending_items(output)
+    if pending.get("action") != "create_tickets" or len(rows) != 2 or output.get("questions"):
+        return False
+    writer = next((row for row in rows if "writer" in _text(row).lower()), {})
+    reader = next((row for row in rows if "reader" in _text(row).lower()), {})
+    if str(writer.get("assignee") or "") != "skcc.i2011":
+        return False
+    if str(reader.get("assignee") or ""):
+        return False
+    if str(writer.get("duedate") or writer.get("due") or "") != "2026-08-23":
+        return False
+    if str(reader.get("duedate") or reader.get("due") or "") != "2026-08-26":
+        return False
+    return all("skcc.x1042" in str(row.get("description") or "") for row in rows)
+
+
+def _meeting_fragment_update_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> bool:
+    pending = _pending(output)
+    changes = pending.get("changes") or {}
+    body = str(changes.get("description") or "")
+    return (
+        len(outputs) == 1
+        and not output.get("questions")
+        and pending.get("action") == "update_ticket"
+        and pending.get("key") == "DL-9203"
+        and set(changes) == {"summary", "duedate", "description"}
+        and changes.get("summary") == "[Catalog] Puffin 증거 패키지 정리"
+        and str(changes.get("duedate") or "") == "2026-08-30"
+        and all(section in body for section in ("결정 배경", "작업 범위", "완료 조건"))
+        and "skcc.x1042" in body
+        and not pending.get("comment")
+    )
+
+
 CASES = [
     (
         "MTG1",
@@ -247,6 +336,86 @@ PSR의 뜻은 회의록에 없고, 준서TL도 성만 생략된 호칭이야. �
             "준서TL은 skcc.x1103 이준서. PSR은 PoC Success Review이고 증빙에는 테이블별 NDV 오차와 StarRocks 실제 소비 로그를 포함해야 해. Task 초안을 계속해줘.",
         ],
         _meeting_identity_ok,
+    ),
+    (
+        "MTG6",
+        "대화 인용·첨부 메모·요약문이 섞인 비정형 회의록을 조사 근거와 함께 정리",
+        [
+            """앞뒤 설명과 첨부 문서 발췌, 메신저 인용이 뒤섞인 회의 메모야. 단순히 줄을 줄이지 말고 관련 Jira·Confluence·comment와 필요한 외부 공식 자료를 확인해 결정·담당·기한·미확인을 정리해줘. Task는 만들지 마.
+
+## 사용자 메모
+DL-7001에서 20개 후보를 얘기했던 것 같은데 이번 회의 범위는 다를 수 있음.
+
+## 첨부 문서 `puffin-followup-notes.docx`에서 추출된 쓰다 만 글
+2026-08-15 후속 회의? 참석자는 다은님, 최하은, {{최민서:1042}}
+from: @이다은
+writer 쪽은 5개 표본 Puffin 파일을 만들었음. StarRocks가 읽는지는 아직.
+
+최하은: reader/optimizer 소비 검증은 제가 2026-08-25까지 확인
+`운영 반영은 reader 증거가 나온 뒤` by {{최민서:1042}}
+이다은의 의견: 20개 전체 확대는 이번 결정 아님. 다은님은 writer 증빙을 2026-08-22까지 정리
+하은님 의견 — 실제 소비가 확인되기 전에는 지원된다고 쓰면 안 됨
+
+결정 메모: 1차 범위 5개. 운영 반영 보류. ... 이하 작성 중단""",
+        ],
+        _meeting_fragment_summary_ok,
+    ),
+    (
+        "MTG7",
+        "from/by/콜론/의견 표기와 같은 사람의 가변 이름을 정규화해 담당·미할당 Task 생성",
+        [
+            """아래 비정형 회의 기록에서 확정된 일만 Epic DL-9200 아래 Task 3건으로 만들어 승인 전 초안을 보여줘. 각 본문은 `배경`, `작업 범위`, `완료 조건`으로 구성하고, 배경에는 회의 논의와 지시자 정보를 남겨. 담당이 정해지지 않은 일은 임의 배정하지 말고 미할당으로 둬.
+
+[메신저 인용]
+from: {{최민서:1042}}
+민서M의 지시: writer/reader 증빙과 로그 마스킹을 각각 분리. 이 회의가 작업 배경임.
+@이다은: writer 증빙 패키지는 제가 맡음 — 2026-08-22
+다은님 의견: 테이블별 NDV 오차와 생성 파일 경로 포함
+reader 검증 결과 정리는 by 하은님, 2026-08-25
+최하은: 실행계획과 실제 소비 로그까지 포함하겠음
+로그 마스킹 체크리스트 — 담당자는 회의에서 정하지 못함. 미할당, 2026-08-27
+
+[정리 메모]
+- 요청·지시자: {{최민서:1042}}
+- 위 세 작업 외 priority/component/labels는 결정하지 않음""",
+        ],
+        _meeting_fragment_create_ok,
+    ),
+    (
+        "MTG8",
+        "쓰다 만 회의록의 필수 담당 공백만 인터뷰하고 명시적 미할당으로 Task 초안 재개",
+        [
+            """첨부 회의 메모를 바탕으로 Epic DL-9200 아래 Task 2건을 만들어줘. 관련 자료를 먼저 찾아 문맥을 보강하되, Task 생성에 꼭 필요한 정보가 여전히 없으면 한 번에 물어봐. 추측한 초안은 먼저 만들지 마.
+
+## 첨부 메모 발췌
+from: {{최민서:1042}}
+@이다은 — writer 증빙 패키지 정리, 2026-08-23까지
+다은님: 기존 5개 표본 결과를 재사용 가능
+StarRocks reader 운영 판정 자료 정리 by ... 2026-08-26까지
+담당 얘기를 쓰다가 회의 종료. 요청·지시자는 최민서M. 각 본문에는 회의 배경과 완료 조건 필요.""",
+            "reader 운영 판정 자료 정리는 아직 담당자를 정하지 못했어. 미할당으로 만들어. 요청·지시자는 skcc.x1042 최민서가 맞아. 나머지는 회의 메모 그대로 진행해.",
+        ],
+        _meeting_missing_owner_ok,
+    ),
+    (
+        "MTG9",
+        "대화 속 보류 의견은 제외하고 최종 합의된 제목·기한·본문만 기존 Task에 반영",
+        [
+            """아래 회의 기록에서 마지막에 합의된 내용만 DL-9203 수정 승인 초안에 반영해줘. 발언·의견·제안만 있고 채택되지 않은 값은 제외하고, 댓글은 남기지 마.
+
+from: {{최민서:1042}}
+민서M 의견: priority를 P1-Critical로 올릴까? → 결론 안 냄
+@이다은: component를 Workbench로 옮기는 건 어떨까요? → 보류
+준서TL의 의견: scratch 라벨을 붙여보자 → 채택하지 않음, 신원도 이번 변경에는 필요 없음
+제목은 `[Catalog] Puffin 증거 패키지 정리`로 하자는 안건 by 최하은
+
+[회의 종료 직전 합의]
+- 제목: [Catalog] Puffin 증거 패키지 정리
+- due: 2026-08-30
+- 본문 전체 교체: `결정 배경`, `작업 범위`, `완료 조건`. 결정 배경에 이 회의와 요청·지시자 {{최민서:1042}}를 기록. 작업 범위는 5개 표본의 writer 결과와 StarRocks 실제 소비 증거를 한 패키지로 정리. 완료 조건은 내부 결과와 외부 근거를 구분하고 미확인 지원을 확정처럼 쓰지 않는 것
+- priority/component/labels는 변경하지 않음""",
+        ],
+        _meeting_fragment_update_ok,
     ),
 ]
 

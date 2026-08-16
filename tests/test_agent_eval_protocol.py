@@ -440,7 +440,7 @@ def test_all_primary_batteries_emit_versioned_metadata():
         "tools/agent_lang_ab.py": ('suite="conversation"', "3.2.0"),
         "tools/agent_compose_eval.py": ('suite="editor"', "3.0.0"),
         "tools/agent_create_suite.py": ('suite="create"', "4.0.2"),
-        "tools/agent_meeting_eval.py": ('suite="meeting"', "2.0.3"),
+        "tools/agent_meeting_eval.py": ('suite="meeting"', "3.0.0"),
         "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.0.1"),
     }
     for relative, (suite_marker, battery_version) in expected.items():
@@ -547,11 +547,19 @@ def test_meeting_and_context_change_cases_have_concrete_review_evidence():
     suite_ids = {item["id"] for item in meeting_suite}
     assert "meeting_identity_normalization" in suite_ids
     assert "meeting_research_then_interview" in suite_ids
+    assert "meeting_heterogeneous_note_reconstruction" in suite_ids
+    assert "meeting_actor_role_separation" in suite_ids
     mtg5 = {item["id"]: item for item in meeting["MTG5"]["elements"]}
     expected = mtg5["mtg5_research_gap_interview"]["expected"]
     assert expected["requiredCandidates"] == ["skcc.x1103", "skcc.x1327"]
     assert expected["unresolvedTerm"] == "PSR"
     assert expected["noDraftBeforeChoice"] is True
+    assert meeting["MTG7"]["elements"][0]["expected"]["assignments"] == [
+        "skcc.i2011", "skcc.x1402", "unassigned",
+    ]
+    assert meeting["MTG9"]["elements"][0]["expected"]["forbiddenFields"] == [
+        "priority", "components", "labels",
+    ]
 
     context_suite, context = review_specs("ctx-chg")
     assert {item["id"] for item in context_suite} >= {
