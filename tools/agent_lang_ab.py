@@ -53,7 +53,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "3.0.0"
+BATTERY_VERSION = "3.1.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("conversation")
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
@@ -71,6 +71,12 @@ SCENARIOS = [
     ("S6-진척", ["DL-9090 지금 어디까지 진행됐어?"]),
     ("S7-내외부조사", ["우리 프로젝트의 Iceberg Puffin NDV 적용 가능성을 내부 작업 이력과 "
                        "외부 공식 자료를 함께 조사해줘"]),
+    ("S8-복합근거품질", [
+        "우리 프로젝트의 Iceberg Puffin NDV 운영 적용 여부를 판단할 수 있도록 Jira 티켓·댓글, "
+        "Confluence 설계 문서, 외부 공식 문서를 함께 조사해 근거 중심 의사결정 메모를 작성해줘. "
+        "각 핵심 결론을 근거 marker로 연결하고, 같은 출처의 본문·댓글 등 여러 발견은 하나의 "
+        "출처 번호 아래에서 구분해줘. 확인되지 않은 사항과 출처별 신뢰도·요청 적합성도 판단해줘."
+    ]),
 ]
 
 _KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
@@ -112,6 +118,19 @@ def _checks(out: dict, user_text: str = "") -> dict:
             re.search(r"https?://", text)
             and re.search(r"내부|Jira|Confluence|티켓|문서", text, re.I)
             and re.search(r"외부|공식", text)
+        )
+    if "근거 중심 의사결정" in (user_text or ""):
+        # Human review owns truth/quality, but the harness records the minimum persisted
+        # grammar that the real UI renderer consumes.  Visual usability is reviewed from
+        # an actual local-UI screenshot under the S8 specialized contract.
+        roots = re.findall(r"^\[(\d+)\]\s+.+$", text, re.M)
+        c["복합근거단일인덱스"] = bool(
+            len(re.findall(r"^#{1,4}\s+근거\s*$", text, re.M)) == 1
+            and not re.search(r"^#{1,4}\s+(?:참조|관련 문서)\s*$", text, re.M)
+            and len(roots) >= 3
+            and len(roots) == len(set(roots))
+            and re.search(r"^\s*-\s+\[\d+-a\]", text, re.M)
+            and re.search(r"^\s*-\s+\[\d+-b\]", text, re.M)
         )
     if re.search(r"지금\s*맡|현재\s*맡", user_text or ""):
         c["현재업무범위"] = bool(

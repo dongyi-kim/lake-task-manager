@@ -506,6 +506,113 @@ def test_reference_section_is_canonicalized_as_one_evidence_section():
     assert "{{ticket-detail:DL-9044}}" in got
 
 
+def test_same_source_findings_share_one_reference_and_get_subnumbers():
+    """티켓 하나의 본문·댓글 발견을 별도 source 번호로 부풀리지 않는다."""
+    from app.agent.workflow.agents.result_integrator import _dedupe_refs
+
+    source = (
+        "현재 주기는 30분 [2]. 운영상 주의점은 별도 확인 [5]. "
+        "문서 절차도 동일 [7], [8].\n\n"
+        "### 참조\n"
+        "[2] {{ticket-detail:DL-73737}} — 본문에서 30분 적재 주기 언급\n"
+        "[5] DL-73737 코멘트 (skcc.x1042, 2026-08-15) — "
+        "댓글에서 중복 적재 확인 절차 첨부\n"
+        "[7] [운영 절차](https://wiki.example/spaces/DL/pages/7/runbook) — "
+        "문서 본문에서 재처리 순서 확인\n"
+        "[8] https://wiki.example/spaces/DL/pages/7/runbook — "
+        "문서 본문에서 승인 조건 확인"
+    )
+    got = _dedupe_refs(source)
+
+    assert got.count("{{ticket-detail:DL-73737}}") == 1
+    assert got.count("https://wiki.example/spaces/DL/pages/7/runbook") == 1
+    assert "[1] {{ticket-detail:DL-73737}}" in got
+    assert "- [1-a] 본문에서 30분 적재 주기 언급" in got
+    assert "- [1-b] 댓글" in got and "중복 적재 확인 절차 첨부" in got
+    assert "[2] [운영 절차](https://wiki.example/spaces/DL/pages/7/runbook)" in got
+    assert "- [2-a] 문서 본문에서 재처리 순서 확인" in got
+    assert "- [2-b] 문서 본문에서 승인 조건 확인" in got
+    assert "[1-a]" in got.split("### 근거", 1)[0]
+    assert "[1-b]" in got.split("### 근거", 1)[0]
+    assert "[2-a]" in got.split("### 근거", 1)[0]
+    assert "[2-b]" in got.split("### 근거", 1)[0]
+
+
+def test_structured_evidence_is_merged_into_the_single_source_index():
+    """별도 시스템 근거 state도 답변의 canonical 근거 목록에 합쳐진다."""
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    state = {
+        "evidence": [{
+            "key": "DL-73737",
+            "title": "자동 컴팩션 잡 개발",
+            "why": "현재 운영 방식의 직접 근거",
+            "observations": [
+                {"source": "description", "text": "본문에서 30분 주기를 명시"},
+                {"source": "comment", "text": "댓글에서 운영 체크리스트를 첨부"},
+            ],
+        }],
+        "related_docs": [{
+            "title": "LTM 사용 가이드", "url": "#/home",
+        }],
+    }
+    got = _merge_evidence_index("현재 운영 방식 확인", state)
+
+    assert "### 근거" in got
+    assert got.count("{{ticket-detail:DL-73737}}") == 1
+    assert "[1-a]" in got and "[1-b]" in got
+    assert "LTM 사용 가이드" not in got  # 답에 쓰이지 않은 client-only 문서는 근거가 아님
+
+
+def test_adjacent_citations_are_merged_and_orphans_never_remain_dead_markers():
+    from app.agent.workflow.agents.result_integrator import _dedupe_refs
+
+    source = (
+        "결론은 세 출처가 일치 [4] [5], [10]. 미확인 주장 [99].\n\n"
+        "### 근거\n"
+        "[4] DL-9044 — 주기 변경\n"
+        "[5] [운영 문서](https://wiki.example/pages/5) — 운영 절차\n"
+        "[10] [공식 문서](https://example.org/spec) — 표준 동작\n"
+    )
+    got = _dedupe_refs(source)
+
+    assert "일치 [1][2][3]" in got
+    assert "[99]" not in got and "미확인 주장 (근거 확인 필요)" in got
+    assert got.count("### 근거") == 1
+
+
+def test_same_source_child_citations_share_one_bracket():
+    from app.agent.workflow.agents.result_integrator import _dedupe_refs
+
+    source = (
+        "변경 배경과 운영 확인 [4] [5].\n\n### 근거\n"
+        "[4] DL-9044 — 본문에서 변경 배경\n"
+        "[5] DL-9044 댓글 (skcc.x1103) — 운영 확인\n"
+    )
+    got = _dedupe_refs(source)
+
+    assert "[1-a][1-b]" in got
+    assert got.count("{{ticket-detail:DL-9044}}") == 1
+
+
+def test_assignment_completion_reply_does_not_expose_raw_jql_predicates():
+    """사용자에게 필요한 것은 판정 의미이며 내부 조회식은 아님."""
+    from app.agent.workflow.agents.result_integrator import _assignment_completion_reply
+
+    got = _assignment_completion_reply({
+        "topic": "보안 필수교육",
+        "parents": [{"key": "DL-3671", "total": 14, "done": 13,
+                     "incomplete": [{"key": "DL-3685"}]}],
+        "people": [{"id": "skcc.x1042", "name": "최민서",
+                    "tickets": [{"key": "DL-3685"}]}],
+        "unassigned": [], "incompleteSubtasks": 1, "totalSubtasks": 14,
+        "doneSubtasks": 13,
+    })
+
+    assert "완료 상태가 아닌 직계 Sub-Task" in got
+    assert "statusCategory" not in got and "!= done" not in got
+
+
 # ── 탐지와 교정을 분리한다 (실측: 위반이 잡혔는데 경고도 재작성도 없이 나갔다) ──────
 def test_a_failed_rewrite_still_attaches_the_warning(monkeypatch):
     """재작성은 시스템 프롬프트 전체 + 답 전문을 다시 보내는 **두 번째 LLM 호출**이라
@@ -519,7 +626,9 @@ def test_a_failed_rewrite_still_attaches_the_warning(monkeypatch):
            "[1] DL-9044 — 적재주기 변경\n"
            "[2] [데이터카탈로그] 테이블 특성 분석 — 스키마 정보\n")
     out = r.apply({"messages": [], "intent": "ask"}, {"text": bad})
-    assert "자동 검증 경고" in (out.get("reply") or ""), out.get("reply")
+    reply = out.get("reply") or ""
+    assert "자동 검증 경고" in reply, reply
+    assert reply.index("자동 검증 경고") < reply.index("### 근거"), reply
 
 
 def test_a_rewrite_that_guts_the_answer_is_rejected():

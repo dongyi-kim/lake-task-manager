@@ -312,6 +312,67 @@ CASE_REVIEW_SPECS = {
                 {"requiredSections": ["내부 근거", "외부 근거", "판단", "확인 필요"]},
             ),
         ),
+        "S8-복합근거품질": _case(
+            "Jira ticket/comment·Confluence·외부 공식 문서를 함께 조사한 의사결정 근거의 결과·신뢰도·적합성·실제 렌더링을 평가",
+            _element(
+                "s8_source_results",
+                "factual_grounding",
+                "각 source에서 무엇을 발견했으며 그 발견이 DL-7001·Puffin 검토 문서·관련 댓글·외부 공식 문서의 실제 내용과 일치하는가",
+                "핵심 source class를 누락하거나 source에 없는 결과를 만들어 운영 적용 판단을 바꿈",
+                _REPLY + _RETRIEVAL,
+                {
+                    "requiredSourceClasses": ["jira-ticket", "jira-comment", "confluence", "official-web"],
+                    "requiredTicketKeys": ["DL-7001"],
+                    "requiredDocumentTitles": ["[Lake] Iceberg Puffin NDV 적용 검토 노트"],
+                    "requiredFindings": [
+                        "candidate tables 20", "writer version checked", "PoC not run",
+                        "StarRocks consumption unconfirmed", "official Puffin/NDV behavior",
+                    ],
+                },
+            ),
+            _element(
+                "s8_source_confidence_and_fitness",
+                "safety_uncertainty",
+                "출처의 직접성·권위·최신성·내부 적용 범위를 근거로 신뢰도와 요청 적합성을 과신 없이 평가했는가",
+                "외부 일반론을 내부 구현 증거로 취급하거나 단일·간접·오래된 source를 확정 근거로 과신",
+                _REPLY + _RETRIEVAL,
+                {
+                    "confidenceFactors": ["authority", "directness", "recency", "corroboration"],
+                    "fitnessFactors": ["claim coverage", "internal applicability", "decision impact"],
+                    "requiredOpenFacts": ["PoC result", "StarRocks actual consumption"],
+                    "forbiddenInference": "external specification proves internal production readiness",
+                },
+            ),
+            _element(
+                "s8_single_source_index",
+                "communication_rendering",
+                "본문 marker와 하나의 `### 근거` 인덱스가 연결되고 같은 source의 여러 발견은 같은 정수 아래 `[n-a]`·`[n-b]`로 묶였는가",
+                "근거·참조·관련 문서가 별도 영역으로 갈라지거나 같은 source가 여러 번호를 받아 claim-source 관계를 추적할 수 없음",
+                _REPLY,
+                {
+                    "exactEvidenceHeadings": 1,
+                    "forbiddenHeadings": ["참조", "관련 문서", "시스템 근거"],
+                    "oneIntegerPerSource": True,
+                    "multipleFindingsUse": ["[n-a]", "[n-b]"],
+                    "citationClusters": "multiple sources at one location use [4][5][10]",
+                    "everyCitationBracketHyperlinked": True,
+                    "sourceKinds": ["ticket-detail badge", "Confluence link", "web link"],
+                },
+            ),
+            _element(
+                "s8_visual_rendering",
+                "communication_rendering",
+                "실제 LTM UI에서 source index·하위 발견·ticket detail badge·문서/웹 link·본문 marker가 겹침이나 파손 없이 읽히고 동작하는가",
+                "raw Markdown은 맞아도 실제 화면에서 badge/code 중첩, 중복 panel, 끊긴 link, 잘못된 marker 이동으로 근거를 확인할 수 없음",
+                ["output.reply", "manualUi.desktopScreenshot", "manualUi.narrowScreenshot", "manualUi.interactionNotes"],
+                {
+                    "requiredViewports": ["desktop", "narrow-with-agent-side-panel"],
+                    "requiredInteractions": ["marker jump/highlight", "ticket badge detail", "document/web link"],
+                    "forbiddenRendering": ["duplicate evidence panel", "badge-code overlap", "orphan marker", "clipped source text"],
+                    "artifactPolicy": "screenshots stay under ignored .cache; concise findings go in the evaluation report",
+                },
+            ),
+        ),
     },
     "meeting": {
         "MTG1": _case(

@@ -41,7 +41,12 @@ Combine verified research, portfolio findings, WorkPlan, draft, review, resolved
 - Use `{{ticket-inline:KEY}}` for one or two short ticket mentions inside a sentence.
 - When one or two tickets require detailed identification, write the Korean cue `다음의` or `아래의`, then put each `{{ticket-detail:KEY}}` on the following bullet list. A dedicated ticket-list heading such as `### 현재 진행 중인 Task` also requires one detail token per bullet. Never place a long detail badge in running prose.
 - In a Korean `근거` section, every ticket source must use `{{ticket-detail:KEY}}`. Never substitute `ticket-list`, `ticket-inline`, a raw key, or a Jira link.
-- Use `### 근거` as the single source-index heading connected to body `[n]` markers. Do not add a separate `참조` section.
+- Use `### 근거` as the single source-index heading connected to body markers. Assign one integer `[n]` to
+  each real ticket, Confluence page, or web document. If one source supports multiple distinct findings, list
+  them below that source as `[n-a]`, `[n-b]` and cite the matching child marker in the body. Ticket body,
+  comments, and field history remain one source. Do not add separate `참조` or `관련 문서` sections.
+- Compact citations that occupy the same sentence, clause, or table cell as `[4][5][10]`, with no spaces or
+  commas. Every complete bracket must resolve to its own source hyperlink.
 - After any token, do not repeat fields already displayed by its badge. In particular, after `ticket-detail`, add only the supported fact, calculation, or judgment—not key, title, assignee, or status.
 - Do not use more than one badge format for the same ticket occurrence.
 - Never mention a ticket that was inspected and rejected as irrelevant, including in evidence, caveats, or an exclusion list.
@@ -58,6 +63,7 @@ Combine verified research, portfolio findings, WorkPlan, draft, review, resolved
 - The first section directly answers the user's actual plural, scope, and subject.
 - Every atomic task is complete or explicitly unresolved.
 - All people and ticket mentions use the correct typed token.
+- Every source appears once; multiple findings under it use stable lettered child references.
 - No badge information or irrelevant excluded item is repeated.
 - No user-unverified claim about performance, stability, usability, efficiency, accuracy, security, or other benefit was added while summarizing a draft.
 - Scope, pagination, partial failures, and uncertainty are visible where applicable.

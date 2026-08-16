@@ -437,7 +437,7 @@ def test_historical_base_report_keeps_its_declared_v1_contract():
 
 def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
-        "tools/agent_lang_ab.py": ('suite="conversation"', "3.0.0"),
+        "tools/agent_lang_ab.py": ('suite="conversation"', "3.1.0"),
         "tools/agent_compose_eval.py": ('suite="editor"', "3.0.0"),
         "tools/agent_create_suite.py": ('suite="create"', "4.0.2"),
         "tools/agent_meeting_eval.py": ('suite="meeting"', "2.0.3"),
@@ -520,6 +520,26 @@ def test_history_and_external_research_cases_name_concrete_review_evidence():
     assert research["s7_internal_external_separation"]["expected"]["requiredSections"] == [
         "내부 근거", "외부 근거", "판단", "확인 필요",
     ]
+
+    evidence_quality = {
+        item["id"]: item for item in conversation["S8-복합근거품질"]["elements"]
+    }
+    assert evidence_quality["s8_source_results"]["expected"]["requiredSourceClasses"] == [
+        "jira-ticket", "jira-comment", "confluence", "official-web",
+    ]
+    confidence = evidence_quality["s8_source_confidence_and_fitness"]["expected"]
+    assert set(confidence["confidenceFactors"]) == {
+        "authority", "directness", "recency", "corroboration",
+    }
+    renderer = evidence_quality["s8_visual_rendering"]
+    assert "manualUi.desktopScreenshot" in renderer["evidenceSources"]
+    assert renderer["expected"]["requiredViewports"] == [
+        "desktop", "narrow-with-agent-side-panel",
+    ]
+    source_index = evidence_quality["s8_single_source_index"]["expected"]
+    assert source_index["citationClusters"] == \
+        "multiple sources at one location use [4][5][10]"
+    assert source_index["everyCitationBracketHyperlinked"] is True
 
 
 def test_meeting_and_context_change_cases_have_concrete_review_evidence():

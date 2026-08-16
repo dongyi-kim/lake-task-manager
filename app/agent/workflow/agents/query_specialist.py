@@ -12,7 +12,7 @@ from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import AgentState, Node, conversation, note, request_text
 
 
-_EXTERNAL_WORDS = ("외부 조사", "외부 자료", "웹 검색", "인터넷", "github", "오픈소스",
+_EXTERNAL_WORDS = ("외부 조사", "외부 검색", "외부 자료", "웹 검색", "인터넷", "github", "오픈소스",
                    "시장 사례", "업계 사례", "기술 비교", "리서치", "논문", "공식 문서")
 _INTERNAL_LATIN = {"etl", "catalog", "runtime", "workbench", "dataops", "observability",
                    "devops", "epic", "task", "story", "bug", "jira", "ltm", "lake",
@@ -24,6 +24,7 @@ _INTERNAL_LATIN = {"etl", "catalog", "runtime", "workbench", "dataops", "observa
 _PRIVATE_EXTERNAL_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
     r"(?<![A-Za-z0-9])skcc\.[a-z]\d+(?![A-Za-z0-9])|https?://\S+|"
+    r"(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*(?![A-Za-z0-9_.])|"
     r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+(?![A-Za-z0-9])",
     re.I,
 )
@@ -86,9 +87,7 @@ def _external_research_allowed(state) -> bool:
     low = text.lower()
     if any(w in low for w in _EXTERNAL_WORDS):
         return True
-    scrubbed = re.sub(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
-                      r"(?<![A-Za-z0-9])skcc\.[a-z]\d+(?![A-Za-z0-9])|https?://\S+", " ", text,
-                      flags=re.I)
+    scrubbed = _PRIVATE_EXTERNAL_PATTERN.sub(" ", text)
     latin = {x.lower() for x in re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", scrubbed)}
     return bool(latin - _INTERNAL_LATIN)
 

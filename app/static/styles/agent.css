@@ -259,7 +259,7 @@
 
 /* 우측 채널 — **화면 이분할**(오버레이 아님). 내용은 TicketDialog(mode=page) 재활용.
    flex 형제라 패널이 열리면 대화(agent-main)가 자연히 좁아진다. */
-.agent-side { flex:0 0 min(760px, 48vw); min-width:380px; height:100%;
+.agent-side { flex:0 0 clamp(480px, 42vw, 640px); min-width:420px; height:100%;
   display:flex; flex-direction:column; background:var(--bg);
   border-left:1px solid var(--border-hi); }
 .agent-side-h { display:flex; align-items:center; justify-content:space-between;
@@ -389,7 +389,9 @@
 .agent-warn { margin:0 14px 8px; padding:8px 11px; border-radius:7px;
   background:color-mix(in srgb, var(--warn) 10%, transparent);
   color:var(--warn); font-size:12px; line-height:1.6; }
-.agent-card-act { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border); }
+.agent-card-act { display:flex; align-items:center; flex-wrap:wrap; gap:8px;
+  padding:12px 14px; border-top:1px solid var(--border); }
+.agent-card-act .ag-ok, .agent-card-act .ag-cancel { flex:0 0 auto; white-space:nowrap; }
 
 /* ── 되묻기 폼 — 타이핑 대신 버튼·자동완성으로 답한다 ─────────────
  * 에이전트의 질문(kind/options/field)을 그대로 폼으로 그린다. 제출하면 "질문 → 답" 문장이
@@ -634,7 +636,8 @@
   border-radius:6px; background:var(--panel); color:var(--text); }
 .ai-edit-desc { flex-basis:100%; }
 .ai-edit-desc-h { font-size:11px; color:var(--muted-2); margin-bottom:4px; }
-.agent-card-hint { font-size:11px; color:var(--muted-2); font-style:normal; margin-left:8px; }
+.agent-card-hint { flex:1 1 260px; min-width:0; font-size:11px; color:var(--muted-2);
+  font-style:normal; margin-left:0; line-height:1.5; }
 
 /* 함께 만들 Sub-Task 목록 — 카드에 안 보이면 부모 하나만 승인한 줄 안다 */
 .ai-kids { margin:6px 0 2px; padding:6px 10px; border-left:2px solid var(--border-hi); }
@@ -649,6 +652,7 @@
 .agent-md .ref-mark { color:var(--accent); font-weight:700; font-size:11px; text-decoration:none;
   vertical-align:super; line-height:1; padding:0 1px; cursor:pointer; }
 .agent-md .ref-mark:hover { text-decoration:underline; }
+.agent-md .ref-citations { color:var(--muted-2); white-space:nowrap; }
 .agent-md details.agent-refs { margin-top:12px; border-top:1px solid var(--border); padding-top:8px; }
 .agent-md .agent-refs summary { cursor:pointer; font-size:12px; font-weight:600;
   color:var(--muted); list-style:none; user-select:none; }
@@ -688,8 +692,11 @@
 .agent-md .agent-ref-item:first-child { border-top:0; }
 .agent-md .agent-ref-item .ref-no { color:var(--muted-2); font-weight:700; font-size:11px; }
 .agent-md .agent-ref-item .ref-src { min-width:0; overflow-wrap:anywhere; }
-.agent-md .agent-ref-item .ref-why { grid-column:2; color:var(--muted); font-size:11.5px;
-  line-height:1.5; }
+.agent-md .ref-observations { grid-column:2; margin:2px 0 4px; padding:0; list-style:none; }
+.agent-md .ref-observation { display:grid; grid-template-columns:auto minmax(0, 1fr); gap:6px;
+  padding:2px 0; color:var(--muted); font-size:11.5px; line-height:1.55; }
+.agent-md .ref-subno { color:var(--accent); font-size:10.5px; font-weight:700; }
+.agent-md .ref-observation.flash { animation:refflash 1.6s ease-out; }
 .agent-md .agent-ref-item .jira-badge-detail { max-width:100%; }
 
 /* ── 좌/우 패널 폭 조절·접기 ────────────────────────────────────────
@@ -741,6 +748,19 @@
 /* 좁은 화면에선 접기·폭조절이 무의미하다 — 손잡이를 감춘다(티켓 쪽과 같은 판단) */
 @media (max-width: 1100px) {
   .ag-grip, .ag-hide, .ag-show.stub { display:none; }
+}
+
+/* 대화+미리보기의 최소 읽기 폭이 확보되지 않으면 미리보기를 오른쪽 drawer로 겹친다.
+ * 작은 화면에서 세 열을 억지로 나누면 승인 버튼이 한 글자 폭으로 붕괴했다. */
+@media (max-width: 1180px) {
+  .agentview { position:relative; }
+  .agent-side, .agent-side[style*="--side-w"] {
+    position:absolute; z-index:25; top:0; right:0; bottom:0;
+    width:min(680px, calc(100vw - 40px)) !important;
+    max-width:calc(100vw - 40px); min-width:0; height:100%; flex:none !important;
+    box-shadow:-10px 0 28px rgba(0,0,0,.22);
+  }
+  .agent-side .ag-hide.side { display:flex; }
 }
 
 /* 참조 마커 호버 상자 — 하단 참조 목록과 **같은 모양**이어야 한다(브라우저 기본 노란 상자는

@@ -1717,7 +1717,9 @@ def test_workload_only_assignment_uses_the_actual_lower_load_candidate():
         "children": [],
         "alternates": [{"user": "skcc.i2130", "why": "진행중 6건으로 부하가 높음"}]})
     assert got["user"] == "skcc.i2130"
-    assert got["reasons"] == ["진행중 6건으로 후보 중 현재 부하가 가장 낮음"]
+    assert got["reasons"] == [
+        "검증된 관련 이력 근거 없음 · 진행중 6건으로 후보 중 현재 부하가 가장 낮아 임시 추천"
+    ]
     assert got["alternates"][0]["user"] == "skcc.i2101"
     assert "8건" in got["alternates"][0]["why"] and "높음" in got["alternates"][0]["why"]
 
@@ -2863,6 +2865,9 @@ def test_pasted_voc_uses_reported_screen_symptom_instead_of_wrapper_or_placehold
                                 "type": "Bug"})
     assert R._ASK_REPORTER not in body, body
     assert "조회 화면" in body and "컬럼 설명" in body
+    assert "컬럼 설명을 바로 확인할 수 있음" in body
+    assert "담당자에게 별도로 확인 중" in body
+    assert "봤으면 좋겠습니다" not in body and "묻고 있습니다" not in body
     assert "티켓으로 만들어줘" not in body and "---" not in body
 
 

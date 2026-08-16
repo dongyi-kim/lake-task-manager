@@ -21,6 +21,12 @@ import { sigColor, initialOf } from "./colors.js";
 const KEY_RE = /(?<![0-9A-Za-z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Za-z-])/g;
 const TICKET_TOKEN_RE = /\{\{ticket-(list|inline|detail):([A-Z][A-Z0-9]*-\d+)\}\}/g;
 const MENTION_RE = /\[~([A-Za-z0-9_.:-]+)\]/g;
+const CITATION_TOKEN_SRC = "\\d+(?:-[a-z])?";
+const CITATION_RE = new RegExp(
+  `\\[((?:${CITATION_TOKEN_SRC})(?:\\s*,\\s*${CITATION_TOKEN_SRC})*)\\](?!\\()`, "gi");
+const CITATION_RUN_RE = new RegExp(
+  `\\[(?:${CITATION_TOKEN_SRC})(?:\\s*,\\s*${CITATION_TOKEN_SRC})*\\]` +
+  `(?:\\s*,?\\s*\\[(?:${CITATION_TOKEN_SRC})(?:\\s*,\\s*${CITATION_TOKEN_SRC})*\\])+`, "gi");
 // 키 뒤에 모델이 붙인 따옴표 제목(`DL-118 "CDC 도입"`)은 뱃지가 실제 제목을 보여 주므로
 // 중복이다 — 뱃지 렌더에서만 접는다(표 셀의 슬림 링크에서는 제목이 정보라 남긴다).
 // 입력은 이미 esc() 를 거쳤으므로 곧은따옴표는 &quot; 로 온다.
@@ -45,6 +51,22 @@ function esc(s) {
 
 // 렌더 한 번 동안의 사번→본명 지도(서버 people). 모듈 전역이지만 렌더는 동기라 안전하다.
 let PEOPLE = {};
+
+function citationTokens(value) {
+  return String(value || "").split(",").map((token) => token.trim().toLowerCase()).filter(Boolean);
+}
+
+function citationHtml(value) {
+  const links = citationTokens(value).map((n) => {
+    const ref = REFS[n];
+    if (!ref) return "";
+    const tip = esc(ref).replace(/"/g, "&quot;");
+    return `<a href="#" class="ref-mark" data-ref="${n}" data-tip="${tip}">[${n}]</a>`;
+  }).filter(Boolean);
+  return links.length
+    ? `<span class="ref-citations">${links.join("")}</span>`
+    : "근거 확인 필요";
+}
 
 /** 문서/웹 링크 → 뱃지. Confluence 는 conf-link(문서 제목), 그 외는 web-badge(favicon). */
 function linkBadge(title, url, slim) {
@@ -118,20 +140,9 @@ function inline(s, slim, ticketMode) {
   s = s
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, "$1<i>$2</i>")
-    // [n] 참조 마커 — 클릭하면 참조 칸으로 점프+하이라이트, 호버(title)로 문헌 미리보기.
-    .replace(/\[(\d{1,2})\](?!\()/g, (mm, n) => {
-      const ref = REFS[n];
-      if (!ref) return mm;
-      // 툴팁은 **평문**이어야 한다. escape 하고 따옴표까지 실체참조로 바꾼다.
-      const tip = esc(ref).replace(/"/g, "&quot;");
-      // ★ 결과를 스태시한다 — 그러지 않으면 아래 티켓 키·사번 치환이 **속성 안의 글자까지**
-      //   뱃지 HTML 로 바꿔 속성이 조기 종료되고, 남은 조각이 본문에 새어 나온다
-      //   (실측: `… 근거">[3]` 이 글자로 보였다).
-      // ★ `title` 이 아니라 `data-tip` 이다 — 브라우저 기본 툴팁(노란 상자)은 하단 참조
-      //   목록과 생김새가 따로 놀고, 뜨는 데 1초 넘게 걸리며, 줄바꿈도 못 준다(사용자 지적).
-      //   화면 쪽에서 같은 모양의 커스텀 상자로 띄운다(AgentView.refTip).
-      return keep(`<a href="#" class="ref-mark" data-ref="${n}" data-tip="${tip}">[${n}]</a>`);
-    })
+    // 연속 citation — `[4][5]`의 각 대괄호 전체가 독립 링크다.
+    // 결과를 스태시해 tooltip 속성 안의 ticket key가 badge로 다시 치환되지 않게 한다.
+    .replace(CITATION_RE, (_, refs) => keep(citationHtml(refs)))
     // 티켓 키는 클릭하면 티켓 다이얼로그가 열린다 — 근거를 바로 확인할 수 있어야 믿을 수 있다.
     // `.tkt[data-key]` 는 **앱 전역 위임 처리기**가 잡는 관례다(app-root).
     // 표 밖에서는 본문 뱃지와 같은 모양(jira-badge)으로 — plain text 금지(사용자 지시).
@@ -155,24 +166,233 @@ function inline(s, slim, ticketMode) {
 // [n] 마커가 가리키는 근거 지도(n → 근거 한 줄의 평문). 렌더 한 번 동안만 유효.
 let REFS = {};
 
-export function renderMarkdown(text, people) {
+const REF_HEADING_RE = /(?:^|\n)(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*\n/;
+const REF_ROOT_RE = /^\s*(?:-\s*)?(?:\[(\d+)(?:-([a-z]))?\]|(\d+)[.)])\s*(.*?)\s*$/i;
+const REF_CHILD_RE = /^\s*-\s*(?:\[(\d+)-([a-z])\]\s*)?(.*?)\s*$/i;
+const REF_MARK_RE = CITATION_RE;
+
+function compactAdjacentCitations(text) {
+  return String(text || "").replace(CITATION_RUN_RE, (run) => {
+    const merged = [];
+    for (const match of run.matchAll(new RegExp(CITATION_RE.source, "gi"))) {
+      citationTokens(match[1]).forEach((token) => {
+        if (!merged.includes(token)) merged.push(token);
+      });
+    }
+    return merged.map((token) => `[${token}]`).join("");
+  });
+}
+
+function evidenceParts(text) {
+  const value = String(text || "");
+  const match = REF_HEADING_RE.exec(value);
+  if (!match) return { body: value.trimEnd(), lines: [], tail: "" };
+  const start = match.index + match[0].length;
+  const next = /(?:^|\n)#{1,4}\s+/g;
+  next.lastIndex = start;
+  const following = next.exec(value);
+  const end = following ? following.index + (value[following.index] === "\n" ? 1 : 0) : value.length;
+  return { body: value.slice(0, match.index).trimEnd(),
+           lines: value.slice(start, end).split("\n"), tail: value.slice(end).trimStart() };
+}
+
+function cleanUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/$/, "");
+    return parsed.toString();
+  } catch (e) { return String(url || "").replace(/\/$/, ""); }
+}
+
+function sourceObservation(text, source) {
+  let value = String(text || "").replace(/^\s*(?:—|–|--|:)\s*/, "").trim();
+  if (!value) return "";
+  if (/^(?:본문|댓글|코멘트|변경 이력|문서 본문|웹 문서|조회 결과)에서(?:\s|$)/.test(value))
+    return value.replace(/^코멘트에서/, "댓글에서");
+  const labels = { description:"본문에서", body:"본문에서", comment:"댓글에서",
+    comments:"댓글에서", field:"변경 이력에서", change:"변경 이력에서",
+    history:"변경 이력에서", document:"문서 본문에서", confluence:"문서 본문에서",
+    external:"웹 문서에서", web:"웹 문서에서", query:"조회 결과에서" };
+  return ((labels[String(source || "").toLowerCase()] || "") + " " + value).trim();
+}
+
+function evidenceSource(raw) {
+  const value = String(raw || "").trim();
+  const cut = /^(.*?)\s+(?:—|–|--)\s+(.*)$/.exec(value);
+  const left = (cut ? cut[1] : value).trim(), why = (cut ? cut[2] : "").trim();
+  const token = /\{\{ticket-(?:list|inline|detail):([A-Z][A-Z0-9]*-\d+)\}\}/.exec(left);
+  const key = token || /(?<![0-9A-Za-z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Za-z-])/.exec(left);
+  if (key) {
+    const ticketKey = key[1].toUpperCase();
+    const tail = left.slice(key.index + key[0].length);
+    const comment = /(?:코멘트|댓글)\s*(\([^)]*\))?/i.exec(tail);
+    const observation = comment
+      ? `댓글${comment[1] || ""}에서 ${why.replace(/^(?:댓글|코멘트)에서\s*/, "")}`.trim()
+      : sourceObservation(why, "description");
+    return { id:`ticket:${ticketKey}`, source:`{{ticket-detail:${ticketKey}}}`, observation };
+  }
+  const legacyLink = /^(.+?)\s+\((https?:\/\/[^\s)]+)\)$/.exec(left);
+  if (legacyLink) {
+    const href = legacyLink[2];
+    return { id:`url:${cleanUrl(href)}`, source:`[${legacyLink[1]}](${href})`,
+             observation:sourceObservation(why, CONF_RE.test(href) ? "document" : "external") };
+  }
+  const link = /\[([^\n]+?)\]\((https?:\/\/[^\s)]+)\)/.exec(left);
+  const url = link || /(https?:\/\/[^\s)>]+)/i.exec(left);
+  if (url) {
+    const href = (link ? link[2] : url[1]).replace(/[.,;:!?]+$/, "");
+    return { id:`url:${cleanUrl(href)}`, source:link ? `[${link[1]}](${href})` : href,
+             observation:sourceObservation(why, CONF_RE.test(href) ? "document" : "external") };
+  }
+  return { id:`text:${left.toLowerCase()}`, source:left, observation:sourceObservation(why, "") };
+}
+
+/** Merge model-written references and structured server provenance into one persisted grammar.
+ * New server replies already arrive canonical; this also migrates saved legacy conversations at render/copy time. */
+export function mergeEvidenceMarkdown(text, systemEvidence, relatedDocs) {
+  const parts = evidenceParts(text);
+  // Canonical contract keeps the source index last.  A legacy section followed by another
+  // heading is migrated by moving that tail back into the answer body.
+  if (parts.tail) { parts.body = [parts.body, parts.tail].filter(Boolean).join("\n\n"); parts.tail = ""; }
+  const groups = new Map(), rows = [];
+  let current = null;
+  const ensure = (parsed) => {
+    let group = groups.get(parsed.id);
+    if (!group) {
+      group = { id:parsed.id, source:parsed.source, observations:[], rows:[] };
+      groups.set(parsed.id, group);
+    } else if (/^https?:/i.test(group.source) && /^\[/.test(parsed.source)) group.source = parsed.source;
+    return group;
+  };
+  const addObservation = (group, value) => {
+    const observation = String(value || "").trim();
+    if (!observation) return null;
+    const found = group.observations.findIndex((x) => x.replace(/\s+/g, " ").toLowerCase()
+      === observation.replace(/\s+/g, " ").toLowerCase());
+    if (found >= 0) return found;
+    group.observations.push(observation);
+    return group.observations.length - 1;
+  };
+
+  parts.lines.forEach((raw) => {
+    const line = raw.trim();
+    if (!line) return;
+    const root = REF_ROOT_RE.exec(line);
+    if (root && !root[2]) {
+      const parsed = evidenceSource(root[4]);
+      current = ensure(parsed);
+      const row = { old:root[1] || root[3], id:parsed.id,
+                    observation:addObservation(current, parsed.observation) };
+      current.rows.push(row); rows.push(row); return;
+    }
+    const child = REF_CHILD_RE.exec(line);
+    if (child && current) {
+      const row = { old:child[1] ? `${child[1]}-${child[2].toLowerCase()}` : "",
+                    id:current.id, observation:addObservation(current, sourceObservation(child[3], "")) };
+      if (row.old) { current.rows.push(row); rows.push(row); }
+    }
+  });
+
+  (systemEvidence || []).forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const key = String(item.key || "").trim(), title = String(item.title || "").trim();
+    const url = String(item.url || "").trim();
+    let parsed;
+    if (/^[A-Z][A-Z0-9]*-\d+$/.test(key.toUpperCase()))
+      parsed = { id:`ticket:${key.toUpperCase()}`, source:`{{ticket-detail:${key.toUpperCase()}}}` };
+    else if (/^https?:\/\//i.test(url || key)) {
+      const href = url || key;
+      parsed = { id:`url:${cleanUrl(href)}`, source:title ? `[${title}](${href})` : href };
+    } else if (key || title) parsed = { id:`text:${(title || key).toLowerCase()}`, source:title || key };
+    if (!parsed) return;
+    const group = ensure(parsed), observations = Array.isArray(item.observations) ? item.observations : [];
+    observations.forEach((obs) => addObservation(group,
+      typeof obs === "string" ? sourceObservation(obs, "")
+        : sourceObservation(obs && obs.text, obs && obs.source)));
+    if (!observations.length && !group.observations.length)
+      addObservation(group, sourceObservation(item.why, "query"));
+  });
+
+  // Retrieval candidates are not automatically evidence.  A related document only hydrates a source
+  // already cited/used in the answer; client-only fragments such as #/home never become provenance.
+  (relatedDocs || []).forEach((doc) => {
+    const title = String((doc && doc.title) || "").trim();
+    const href = String((doc && doc.url) || "").trim();
+    if (!title || !/^https?:\/\//i.test(href)) return;
+    const id = `url:${cleanUrl(href)}`, group = groups.get(id);
+    if (group) group.source = `[${title}](${href})`;
+    else if (parts.body.includes(title) || parts.body.includes(href))
+      ensure({ id, source:`[${title}](${href})` });
+  });
+  if (!groups.size) {
+    const orphanSafe = parts.lines.length
+      ? parts.body.replace(new RegExp(CITATION_RE.source, "gi"), "근거 확인 필요")
+      : parts.body;
+    return [orphanSafe, parts.tail].filter(Boolean).join("\n\n").trim();
+  }
+
+  const byOld = new Map(rows.filter((r) => r.old).map((r) => [r.old, r]));
+  const order = [];
+  for (const match of parts.body.matchAll(new RegExp(CITATION_RE.source, "gi"))) {
+    citationTokens(match[1]).forEach((old) => {
+      const row = byOld.get(old) || byOld.get(old.split("-", 1)[0]);
+      if (row && !order.includes(row.id)) order.push(row.id);
+    });
+  }
+  groups.forEach((group, id) => { if (!order.includes(id)) order.push(id); });
+  const number = new Map(order.map((id, i) => [id, i + 1])), markerMap = new Map();
+  rows.forEach((row) => {
+    const group = groups.get(row.id), base = String(number.get(row.id));
+    markerMap.set(row.old, row.observation !== null && group.observations.length > 1
+      ? `${base}-${String.fromCharCode(97 + row.observation)}` : base);
+  });
+  const body = compactAdjacentCitations(parts.body.replace(
+    new RegExp(REF_MARK_RE.source, "gi"), (all, refs) => {
+      const mapped = [], unresolved = [];
+      citationTokens(refs).forEach((old) => {
+        const current = markerMap.get(old) || markerMap.get(old.split("-", 1)[0]);
+        if (current && !mapped.includes(current)) mapped.push(current);
+        else if (!current) unresolved.push(old);
+      });
+      const citation = mapped.map((current) => `[${current}]`).join("");
+      return citation + (unresolved.length ? `${citation ? " " : ""}(근거 확인 필요)` : "");
+    }));
+  const output = [];
+  order.forEach((id) => {
+    const group = groups.get(id), n = number.get(id);
+    output.push(`[${n}] ${group.source}`);
+    group.observations.forEach((obs, i) => output.push(group.observations.length > 1
+      ? `- [${n}-${String.fromCharCode(97 + i)}] ${obs}` : `- ${obs}`));
+  });
+  return body.trimEnd() + "\n\n### 근거\n\n" + output.join("\n")
+    + (parts.tail ? "\n\n" + parts.tail : "");
+}
+
+export function renderMarkdown(text, people, systemEvidence, relatedDocs) {
   PEOPLE = people || {};
   REFS = {};
+  const merged = mergeEvidenceMarkdown(text, systemEvidence, relatedDocs);
   // ── 근거 섹션 분리 — 본문 marker와 하나의 **접이식 영역**으로 연결한다.
   //    canonical `### 근거`와 과거 출력의 `참조` heading을 모두 읽는다.
-  const m = /(?:^|\n)(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*\n([\s\S]+)$/.exec(text || "");
-  let body = text || "", refItems = [];
+  const m = /(?:^|\n)(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*\n([\s\S]+)$/.exec(merged || "");
+  let body = merged || "", refItems = [];
   if (m) {
     const lines = m[1].split("\n").map((l) => l.trim()).filter(Boolean);
     // ★ **번호 목록 형태도 받는다.** `[1] DL-9045` 만 인식하던 탓에 모델이
     //   `1. DL-9045 — …` 로 내면 참조 섹션이 통째로 본문에 남아 **접기·하이퍼링크·2층
     //   표시가 전부 안 걸렸다**(실사용 지적). 같은 뜻을 두 표기로 쓰는 것은 모델의
     //   자유이고, 그걸 받아 주는 것이 화면의 일이다.
-    const rows = lines.map((l) => /^-?\s*(?:\[(\d{1,2})\]|(\d{1,2})[.)])\s*(.*)$/.exec(l))
-                      .filter(Boolean)
-                      .map((r) => ({ n: r[1] || r[2], text: r[3] }));
+    const rows = [];
+    let current = null;
+    lines.forEach((line) => {
+      const root = /^-?\s*(?:\[(\d{1,2})\]|(\d{1,2})[.)])\s*(.*)$/.exec(line);
+      if (root) { current = { n:root[1] || root[2], text:root[3], observations:[] }; rows.push(current); return; }
+      const child = /^-\s*(?:\[(\d{1,2}-[a-z])\]\s*)?(.*)$/i.exec(line);
+      if (child && current) current.observations.push({ subRef:(child[1] || "").toLowerCase(), text:child[2] });
+    });
     if (rows.length) {
-      body = text.slice(0, m.index);
+      body = merged.slice(0, m.index);
       // ★ **같은 출처를 두 번 싣지 않는다** — 모델이 표의 근거 칸마다 번호를 새로 매겨
       //   DL-9044 가 [2] 와 [6] 으로 두 번 나왔다(실사용 지적: "근거랑 중복되지 말라").
       //   먼저 나온 번호를 남기고, 뒤엣것은 그 번호로 접어 준다.
@@ -185,7 +405,11 @@ export function renderMarkdown(text, people) {
         bySrc.set(src, r);
         refItems.push(r);
       });
-      refItems.forEach((r) => { REFS[r.n] = r.text; });
+      refItems.forEach((r) => {
+        const details = r.observations.map((x) => x.text);
+        REFS[r.n] = [r.text, ...details].join("\n");
+        r.observations.forEach((x) => { if (x.subRef) REFS[x.subRef] = `${r.text}\n${x.text}`; });
+      });
     }
   }
   let html = _render(body);
@@ -223,10 +447,17 @@ function refRow(r) {
   const srcHtml = ticketKeys.length
     ? ticketKeys.map((ticketKey) => keyBadge(ticketKey, "detail")).join(" ")
     : inline(esc(src), true);
+  const observations = [...(r.observations || [])];
+  if (why2) observations.unshift({ subRef:"", text:why2 });
+  const obsHtml = observations.length
+    ? `<ul class="ref-observations">${observations.map((obs) =>
+        `<li class="ref-observation"${obs.subRef ? ` data-ref="${obs.subRef}"` : ""}>` +
+        (obs.subRef ? `<span class="ref-subno">[${obs.subRef}]</span>` : "") +
+        `${inline(esc(obs.text), true)}</li>`).join("")}</ul>` : "";
   return `<div class="agent-ref-item" data-ref="${r.n}">` +
          `<span class="ref-no">[${r.n}]</span>` +
          `<span class="ref-src">${srcHtml}</span>` +
-         (why2 ? `<div class="ref-why">${inline(esc(why2), true)}</div>` : "") +
+         obsHtml +
          `</div>`;
 }
 

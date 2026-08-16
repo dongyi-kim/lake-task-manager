@@ -37,7 +37,24 @@ SCHEMA = {
             "items": {"type": "object", "properties": {
                 "key": {"type": "string", "description": "Exact ticket key or document title."},
                 "title": {"type": "string"},
-                "why": {"type": "string", "description": "One Korean sentence explaining direct relevance."}}},
+                "why": {"type": "string", "description": "One Korean sentence explaining direct relevance."},
+                "url": {"type": "string", "description": "Verified document or web URL, otherwise empty."},
+                "observations": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {
+                        "source": {
+                            "type": "string",
+                            "enum": ["description", "comment", "field", "document",
+                                     "external", "query"],
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Concise Korean fact observed at that location.",
+                        },
+                    }, "required": ["source", "text"]},
+                    "description": ("Distinct facts actually used from this same source. Keep body, comment, "
+                                    "field history, and document observations under one source item."),
+                }}},
             "description": "At most eight sources actually inspected and used for situation.",
         },
         "related_docs": {
@@ -1264,6 +1281,9 @@ Investigate the history related to the work request and establish the verified c
 ## Constraints
 
 - Ground every claim in an exact ticket key or document title. Write no unsupported sentence.
+- Keep one `evidence` item per real ticket, Confluence page, or web document. Put every distinct fact from
+  that source in `observations`; use `description`, `comment`, `field`, `document`, `external`, or `query`
+  to identify where it was observed. Never create separate evidence items for a ticket body and its comments.
 - Distinguish ongoing, stopped, and already-decided work. For stopped work, inspect comments for the verified reason.
 - Lead with an existing ticket when it already performs materially the same work.
 - Do not repeat the same search more than twice with paraphrases. After two empty attempts, treat the in-scope result as empty and spend remaining steps opening a promising ticket through `get_ticket` or supplementing named public technology through `search_web`.

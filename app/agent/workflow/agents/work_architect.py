@@ -2824,6 +2824,38 @@ def _reported_steps(text: str, symptom: str) -> list[str]:
     return [f"{place}에서 {subject} 표시 여부를 확인한다."]
 
 
+def _korean_object(value: str) -> str:
+    """Attach 을/를 without changing an identifier or inventing a noun."""
+    word = str(value or "").strip()
+    if not word:
+        return word
+    code = ord(word[-1])
+    has_final = 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0
+    return word + ("을" if has_final else "를")
+
+
+def _professional_bug_expected(value: str, steps: list[str]) -> str:
+    """Turn a supplied wish into an actionable expected state without adding facts."""
+    text = str(value or "").strip().rstrip(". ")
+    if not text:
+        return ""
+    if _re.search(r"(?:봤으면|보이면)\s*좋겠|바로\s*(?:보|확인)", text):
+        match = _re.match(r"(.+?)에서\s+(.+?)\s+표시 여부를 확인", steps[0]) if steps else None
+        if match:
+            return f"{match.group(1).strip()}에서 {_korean_object(match.group(2))} 바로 확인할 수 있음"
+    return text
+
+
+def _professional_bug_actual(value: str) -> str:
+    """Compact only wording present in the report; preserve the reported symptom and actor."""
+    text = str(value or "").strip().rstrip(". ")
+    text = _re.sub(r"(?:이|가)?\s*안\s*보여서", "이 표시되지 않아", text)
+    text = _re.sub(r"(?:이|가)?\s*보이지\s*않아서", "이 표시되지 않아", text)
+    text = text.replace("담당자한테", "담당자에게")
+    text = _re.sub(r"(?:물어보고|묻고)\s*있습니다", "별도로 확인 중", text)
+    return text
+
+
 def _looks_like_report_wrapper(text: str) -> bool:
     value = str(text or "")
     return bool("---" in value or len(value) > 300
@@ -2888,6 +2920,8 @@ def _bug_body_for(state, it) -> str:
         expected = _reported_expectation(said)
     if not steps:
         steps = _reported_steps(said, symptom)
+    expected = _professional_bug_expected(expected, steps)
+    actual = _professional_bug_actual(actual)
     html = ["<h3>재현 경로</h3>"]
     if steps:
         html.append("<ol>" + "".join(f"<li>{_esc(x)}</li>" for x in steps) + "</ol>")

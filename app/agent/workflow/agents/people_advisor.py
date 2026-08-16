@@ -541,7 +541,10 @@ def _normalize_workload_choice(row: dict) -> dict:
     old_user = str(row.get("user") or "")
     new = dict(row)
     new["user"] = str(alt.get("user") or "")
-    new["reasons"] = [f"진행중 {alt_load}건으로 후보 중 현재 부하가 가장 낮음"]
+    new["reasons"] = [
+        f"검증된 관련 이력 근거 없음 · 진행중 {alt_load}건으로 후보 중 "
+        "현재 부하가 가장 낮아 임시 추천"
+    ]
     alts[idx] = {"user": old_user, "why": f"진행중 {primary_load}건으로 1순위보다 부하가 높음"}
     new["alternates"] = alts
     return new

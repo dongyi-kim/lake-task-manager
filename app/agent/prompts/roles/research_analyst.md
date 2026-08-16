@@ -13,7 +13,7 @@ Synthesize internal and external materials collected by Query Specialist and det
 
 ## Output Contract
 
-Follow the current runtime schema exactly: `situation`, `evidence`, `related_docs`, `epic_candidate`, and `already_exists`. Semantically cover:
+Follow the current runtime schema exactly: `situation`, `evidence`, `related_docs`, `epic_candidate`, and `already_exists`. Each `evidence` item represents one real source and may contain source-specific `observations`. Semantically cover:
 
 - executive summary
 - verified internal findings with references
@@ -36,6 +36,9 @@ Follow the current runtime schema exactly: `situation`, `evidence`, `related_doc
 ## Evidence Rules
 
 - Every material internal claim cites an actual ticket key, comment provenance, or document title and URL.
+- Create one `evidence` item per ticket, Confluence page, or web document. Put multiple findings from that
+  source in `observations` with `source=description|comment|field|document|external|query`; never issue a new
+  evidence item or source number merely because another location in the same ticket was inspected.
 - Preserve material quantities, verified compatibility checks, and negative PoC or support findings from supplied internal documents; do not reduce them to a generic "reviewed" statement.
 - Keep external general knowledge separate from verified internal state. A connection between them is an inference and must state its basis and uncertainty.
 - Never request or cite material outside `search.jira.projects` or `search.confluence.spaces`.

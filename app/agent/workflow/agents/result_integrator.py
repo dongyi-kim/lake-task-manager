@@ -18,6 +18,7 @@ import re as _re
 from app.agent.workflow.agents.base import TextAgent
 from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
+from app.agent.workflow.evidence_index import canonicalize_evidence_index
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
                                       is_memory_only_request, request_text)
@@ -198,9 +199,12 @@ class ResultIntegrator(TextAgent):
                     "4. Preserve a supplied list such as all schema columns without omission.\n"
                     "5. For a value actually asked but absent, use `확인된 기록 없음` in one or two sentences. "
                     "Do not list unrelated absent fields or transfer a value from a similar asset.\n"
-                    "6. Use `[1]`, `[2]` in the body and put `### 근거` last, with one non-bulleted indexed "
-                    "line per source. A ticket source uses `{{ticket-detail:KEY}}`; a document uses its verified "
-                    "URL. Reuse an index for the same source.\n"
+                    "6. Put `### 근거` last and assign one integer index to each real source. A ticket source "
+                    "uses `{{ticket-detail:KEY}}`; a document uses its verified title and URL. When one source "
+                    "supports multiple findings, list them as `[n-a]`, `[n-b]` below the source and cite those "
+                    "child markers in the body. Ticket body, comments, and field history share one source.\n"
+                    "   Compact citations in one sentence, clause, or table cell as `[4][5][10]`, with no "
+                    "spaces or commas; every bracket must resolve to its own source.\n"
                     "7. Under `### 현재 진행 중인 Task`, use one `{{ticket-detail:KEY}}` bullet per ticket and "
                     "do not repeat key, title, assignee, status, or start date beside the badge.\n"
                     "8. Use inline code for identifiers, values, and Job names; Korean `###` headings for real "
@@ -346,6 +350,7 @@ class ResultIntegrator(TextAgent):
         #   재작성은 시스템 프롬프트 전체 + 답 전문을 다시 보내는 **두 번째 LLM 호출**이라
         #   레이트리밋·길이로 죽을 수 있다. 그건 교정의 실패이지 탐지의 무효가 아니다.
         from app.agent.workflow import grounding
+        grounding_warnings = []
         try:
             g = ({"ok": True} if state.get("_deterministic_reply") else
                  grounding.check(text, allowed_people=_dialogue_speakers(request_text(state))))
@@ -372,7 +377,10 @@ class ResultIntegrator(TextAgent):
                 use2 = bool(g2) and _violations(g2) < _violations(g) \
                     and _kept_substance(text, text2)
                 better, gb = (text2, g2) if use2 else (text, g)
-                text = better + grounding.warning_block(gb)
+                text = better
+                warning = grounding.warning_block(gb).strip()
+                if warning:
+                    grounding_warnings.append(warning)
 
         # 전용 진행 Task bullet은 detail badge 하나로 기계화한다. 모델이 raw key+제목을
         # 출력해도 최종 문자열은 badge가 가진 정보를 중복하지 않는다.
@@ -421,6 +429,11 @@ class ResultIntegrator(TextAgent):
         #   그 제목에 붙이는 것은 **지어내는 것이 아니라 옮기는 것**이라 코드가 할 수 있다.
         text = _attach_known_doc_urls(text, state)
         text = _ensure_external_research_coverage(text, state)
+        # Persist one canonical source index in the reply itself.  Research state and
+        # model-written references used to be rendered as separate UI blocks, causing
+        # duplicate counts and divergent formats.  The server owns numbering and grouping;
+        # the browser only renders this canonical Markdown (with a legacy-read fallback).
+        text = _merge_evidence_index(text, state)
         # ★ 여기서 **한 번 더** 본다. 위의 후처리들은 접지 검사 **뒤에** 돌기 때문에,
         #   후처리가 만든 결함은 검사를 통과한 셈이 된다. 실측: 대괄호 정리가 문서 링크를
         #   먹어 참조가 URL 없는 제목만 남았는데 아무도 못 잡았다. 마지막에 다시 보고,
@@ -428,7 +441,9 @@ class ResultIntegrator(TextAgent):
         try:
             _late = grounding._unlinked_refs(text)
             if _late and (not g or not g.get("unlinked_refs")):
-                text += grounding.warning_block({"unlinked_refs": _late})
+                warning = grounding.warning_block({"unlinked_refs": _late}).strip()
+                if warning and warning not in grounding_warnings:
+                    grounding_warnings.append(warning)
         except Exception:
             pass
 
@@ -456,6 +471,17 @@ class ResultIntegrator(TextAgent):
         text = _render_reply_tokens(text)
         text = _canonicalize_person_mentions(text, state)
         text = _enforce_reply_style(text)
+        # Grounding diagnostics are not provenance.  Insert them before the already-built
+        # evidence index; otherwise a legacy reference parser can absorb warning bullets as
+        # observations, while appending after the index would violate the index-last contract.
+        if grounding_warnings:
+            warning_text = "\n\n".join(grounding_warnings)
+            evidence_heading = _re.search(r"(?m)^### 근거\s*$", text)
+            if evidence_heading:
+                text = (text[:evidence_heading.start()].rstrip() + "\n\n" + warning_text
+                        + "\n\n" + text[evidence_heading.start():].lstrip())
+            else:
+                text = text.rstrip() + "\n\n" + warning_text
 
         # ── 후검증 — **플레이북별 최소선**(사용자 지시: 주요 태스크는 결과도 검증)
         # 프롬프트에 적어 두면 '대체로' 지켜진다. 문제는 그 '대체로'다 — 같은 요청이
@@ -873,7 +899,7 @@ def _assignment_completion_reply(data: dict) -> str:
         lines.append(f"- {{{{ticket-detail:{parent.get('key')}}}}} — "
                      f"직계 Sub-Task {parent.get('total')}건 중 "
                      f"완료 {parent.get('done')}건, 미완료 {len(parent.get('incomplete') or [])}건")
-    lines += ["", "판정 기준: 직계 Sub-Task의 `statusCategory != done`"]
+    lines += ["", "판정 기준: 완료 상태가 아닌 직계 Sub-Task"]
     return "\n".join(lines)
 
 
@@ -1809,73 +1835,17 @@ def _is_external_source_url(url: str) -> bool:
 
 
 def _dedupe_refs(text: str) -> str:
-    """canonical `### 근거` 섹션의 중복 출처를 병합하고 번호를 다시 매긴다.
+    """Legacy-compatible wrapper around the single evidence-index owner."""
+    return canonicalize_evidence_index(text)
 
-    출처 정체성: 코멘트(키+괄호 출처) > 문서(URL) > 티켓(키 집합) > 문구.
-    같은 티켓의 '티켓 참조'와 '코멘트 참조'는 다른 출처다(내용이 다르다).
-    본문에서 안 쓰인 근거는 떨군다. legacy `참조` heading은 canonical `근거`로 바꾼다."""
-    import re as _re
-    canonical = _re.sub(
-        r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$",
-        "### 근거", str(text or ""))
-    m = _re.search(r"(?m)^### 근거\s*\n((?:\s*-?\s*\[\d+\][^\n]*\n?)+)", canonical)
-    if not m:
-        return canonical
-    head, block, tail = canonical[:m.start(1)], m.group(1), canonical[m.end(1):]
-    body = head + tail
 
-    def _sig(desc: str):
-        keys = tuple(_re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", desc))
-        com = _re.search(r"코멘트\s*\(([^)]*)\)", desc)
-        if com:
-            return ("comment", keys, com.group(1).strip())
-        url = _re.search(r"\((https?://[^)]+)\)", desc)
-        if url and not keys:
-            return ("doc", url.group(1))
-        if keys:
-            return ("ticket", keys)
-        return ("text", desc.strip().lower()[:60])
-
-    rows = [(n, d) for n, d in
-            _re.findall(r"(?:^|\n)\s*-?\s*\[(\d+)\]\s*([^\n]*)", block)
-            if "…" not in d and "<실제 문서" not in d]   # 프롬프트 형식 예시 복사 차단(실측)
-    survivors, alias = [], {}          # [(old, desc)], old→대표 old
-    seen = {}
-    for old, desc in rows:
-        s = _sig(desc)
-        if s in seen:
-            alias[old] = seen[s]
-        else:
-            seen[s] = old
-            alias[old] = old
-            survivors.append((old, desc))
-    # 본문에 실제로 인용된 대표만 남기고 1..k 재부여(본문 등장 순서).
-    cited = _re.findall(r"\[(\d+)\](?!\()", body)
-    order, used = [], set()
-    for c in cited:
-        rep = alias.get(c)
-        if rep and rep not in used:
-            used.add(rep)
-            order.append(rep)
-    if not order:
-        return canonical
-    newno = {rep: str(i + 1) for i, rep in enumerate(order)}
-    mapping = {old: newno[rep] for old, rep in alias.items() if rep in newno}
-    if not mapping:
-        return canonical
-    # 병합할 게 없어도 계속 간다 — 불릿 제거·문서 중복 표기 정리는 항상 적용된다.
-    out_body = _re.sub(r"\[(\d+)\](?!\()",
-                       lambda mm: f"[{mapping.get(mm.group(1), mm.group(1))}]", body)
-    # 불릿 없이 — `[n]` 자체가 마커라 `- [n]` 은 이중 표식이다(실측 지적). 문서 참조는
-    # "제목 (URL)" 중복 표기를 URL 만 남긴다 — 뱃지가 제목을 보여 준다.
-    def _clean_desc(d: str) -> str:
-        return _re.sub(r"^([^—\n]*?)\s*\((https?://[^\s)]+)\)", r"\2", d.strip())
-    lines = [f"[{newno[old]}] {_clean_desc(desc)}" for old, desc in survivors if old in newno]
-    lines.sort(key=lambda ln: int(_re.match(r"\[(\d+)\]", ln).group(1)))
-    # 근거 섹션을 원래 자리(head 끝)에 다시 꽂는다.
-    ref_block = "\n".join(lines) + "\n"
-    cut = len(head)
-    return out_body[:cut] + ref_block + out_body[cut:]
+def _merge_evidence_index(text: str, state) -> str:
+    """Union model references and structured research provenance in the persisted reply."""
+    return canonicalize_evidence_index(
+        text,
+        evidence=state.get("evidence") or [],
+        related_docs=state.get("related_docs") or [],
+    )
 
 
 def _prune_empty_rows(text: str) -> str:

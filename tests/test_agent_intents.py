@@ -501,19 +501,22 @@ def test_description_change_survives_the_token_fingerprint():
 
 def test_reference_index_duplicates_are_merged():
     """같은 출처가 두 번호를 받으면 코드가 접는다([1]·[3] 같은 티켓 — 실측).
-    티켓 참조와 그 티켓의 코멘트 참조는 다른 출처라 남는다."""
+    티켓 본문·필드·댓글은 같은 실제 출처 아래 하위 발견으로 남는다."""
     from app.agent.workflow.agents.result_integrator import _dedupe_refs
     t = ("주기 [1]. 잡 [3]. 담당 [4].\n\n**참조**\n"
          "- [1] DL-9044 — 주기 변경 근거\n"
          "- [3] DL-9044 — 같은 티켓 다른 설명\n"
          "- [4] DL-9044 코멘트 (skcc.x1103, 2026-08-06) — 담당\n")
     out = _dedupe_refs(t)
-    assert "잡 [1]" in out and out.count("[1] DL-9044") >= 1
-    assert "\n[2] DL-9044 코멘트" in out
-    assert "- [" not in out, "불릿과 [n] 이중 표식 금지(실측 지적)"
+    assert "잡 [1-b]" in out and "담당 [1-c]" in out
+    assert out.count("[1] {{ticket-detail:DL-9044}}") == 1
+    assert "- [1-a] 본문에서 주기 변경 근거" in out
+    assert "- [1-c] 댓글(skcc.x1103, 2026-08-06)에서 담당" in out
+    assert "[2]" not in out
     assert _dedupe_refs("참조 없는 답") == "참조 없는 답"
-    # 문서 참조의 "제목 (URL)" 중복 표기는 URL 만 남긴다 — 뱃지가 제목을 보여 준다
+    # 문서는 canonical Markdown link 한 개로 보존해 UI와 복사본 모두에서 제목과 URL을 제공한다.
     t2 = ("값 [1].\n\n**참조**\n"
           "- [1] [데이터카탈로그] 특성 분석 (http://x/pages/1/문서) — 스키마 근거\n")
     o2 = _dedupe_refs(t2)
-    assert "[1] http://x/pages/1/문서 — 스키마 근거" in o2, o2
+    assert "[1] [[데이터카탈로그] 특성 분석](http://x/pages/1/문서)" in o2, o2
+    assert "- 문서 본문에서 스키마 근거" in o2, o2

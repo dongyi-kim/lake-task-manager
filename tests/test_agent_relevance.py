@@ -158,6 +158,32 @@ def test_internal_code_identifier_is_neither_translated_nor_sent_to_public_searc
     assert "privacy-safe canonical technology name" in got["uncertainty"][0]
 
 
+def test_schema_qualified_internal_identifier_does_not_trigger_external_research():
+    identifier = "fdc.fdc_trace_summary_ic"
+    state = {"request_text": f"{identifier} 데이터 히스토리", "messages": []}
+    assert not _external_research_allowed(state)
+    assert _public_external_query(state["request_text"]) == ""
+
+    got = QuerySpecialist().apply(state, {"queries": [
+        {"id": "internal", "source": "jira", "query": identifier},
+        {"id": "wrong-web", "source": "web", "query": "fdc official documentation"},
+    ]})["query_plan"]["queries"]
+    assert [query["source"] for query in got] == ["jira"]
+
+
+def test_research_evidence_preserves_source_specific_observations():
+    state = {"request_text": "DL-73737 운영 방식", "mentioned_keys": ["DL-73737"]}
+    evidence = [{
+        "key": "DL-73737", "title": "자동 컴팩션 잡 개발", "why": "직접 근거",
+        "observations": [
+            {"source": "description", "text": "30분 주기"},
+            {"source": "comment", "text": "운영 체크리스트 첨부"},
+        ],
+    }]
+    got = ResearchAnalyst().apply(state, {"situation": "확인", "evidence": evidence})
+    assert got["evidence"][0]["observations"] == evidence[0]["observations"]
+
+
 def test_prefetched_web_result_preserves_official_url_and_failed_attempt():
     ctx = _prefetched_external_context([{
         "id": "external-official", "source": "web", "result": {

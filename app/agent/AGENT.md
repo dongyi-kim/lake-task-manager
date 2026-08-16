@@ -57,9 +57,16 @@
   `{{ticket-detail:KEY}}`(`다음의`/`아래의` 뒤 또는 전용 ticket 목록 heading 아래 bullet) typed token으로 기계화한다. HTML을 prompt가
   직접 만들지 않는다. detail은 key/title/assignee/status를 포함하며, badge가 포함한 field를
   token 뒤 텍스트에 중복하지 않는다.
-- source index는 `### 근거` 하나로 통일하고 본문·표의 `[n]` marker와 연결한다. 별도 `참조` 섹션을 만들지 않는다.
+- source index는 `### 근거` 하나로 통일하고 본문·표의 marker와 연결한다. 실제 source 하나에는
+  정수 번호 하나만 부여한다. 같은 ticket의 본문·comment·field history 또는 같은 Confluence/web
+  문서에서 여러 사실을 썼다면 `[n-a]`, `[n-b]` 하위번호로 source 아래에 나열하고 본문도 그 번호를
+  인용한다. 별도 `참조`·`관련 문서` 섹션이나 시스템 근거 패널을 만들지 않는다.
+  한 문장·표 셀·같은 위치에서 여러 source를 인용하면 `[4][5][10]`처럼 공백 없이 붙여 쓴다.
+  renderer는 각 대괄호 전체를 해당 source로 이동하는 독립 hyperlink로 만들어야 하며 고아 번호를
+  평문 marker로 남기지 않는다.
   `근거` 섹션의 ticket 출처는 항상 `ticket-detail`로 렌더링한다. raw key, 다른 typed token,
-  Jira markdown link가 들어와도 renderer가 key를 식별해 detail badge로 정규화한다.
+  Jira markdown link가 들어와도 server canonicalizer가 source identity를 식별해 detail badge 하나로
+  정규화한다. Confluence와 web 문서도 같은 번호/하위번호 계층을 사용한다.
 - function/tool name, parameter, JSON key/schema/enum, Jira field/type, code, SQL/JQL, HTML tag, ticket key, user ID, URL은 번역하지 않는다.
 - 자연어 지시와 사용자 대면 출력은 한국어로 작성한다.
 - 최종 reply는 직접 인용·질문·구술형 안내를 제외하고 짧은 명사형·서술형으로 종결한다.
@@ -232,6 +239,8 @@ focused/closure 재실행은 보조 증거이며 full-run primary 점수를 교�
 - 고유명사·기술명 외부 조사: 요청의 원어 표기와 검증된 canonical English name을 병행 검색한다. code/table/column/API/parameter/ticket key/user ID/private name은 번역하거나 외부 검색어로 보내지 않는다. canonical name이 불확실하면 추측하지 않고 확인 필요로 남긴다.
 - 생성·수정: turn별 필수 질문, payload 보류 경계, 최종 type·parent·field·담당자
 - Editor: 보존할 seed·수치, 필수 section, 올바른 marker/link, 금지할 발명·중복
+- 복합 근거 품질: source별 실제 발견·신뢰도·요청 적합성, 같은 source의 하위 발견 번호, 실제 desktop/좁은
+  Agent UI에서의 marker·badge·link 렌더링. 화면 캡처는 ignored `.cache`에만 저장하고 보고서에는 판정 요약
 
 하네스는 답변뿐 아니라 `evaluationEvidence`의 `requestPlan`, `queryPlan`, `queryResults`,
 `queryArtifacts`, `webContext`, `evidence`, `relatedDocs`, `trace`를 ignored raw JSON에 저장한다. 특수 요소는

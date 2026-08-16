@@ -151,7 +151,7 @@ class AgentState(TypedDict, total=False):
     # ── ResearchAnalyst ──
     bulk_targets: list              # 조건 일괄 수정 대상(코드 JQL 조회 — "전부" 요청의 집합)
     situation: str                  # "현재 상황" 서술 — 사용자에게 그대로 보인다
-    evidence: list                  # [{"key","title","why"}] 근거. 출처 없는 서술은 금지
+    evidence: list                  # [{key,title,why,url,observations:[{source,text}]}], 소스당 한 항목
     related_docs: list              # [{"title","url"}]
     epic_candidate: str             # 붙일 만한 상위 Epic
     already_exists: bool            # 사실상 같은 일을 하는 티켓이 이미 있다 — 새로 만들지 말라는 신호
