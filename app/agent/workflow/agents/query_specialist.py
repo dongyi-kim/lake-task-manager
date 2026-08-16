@@ -354,19 +354,23 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
         "기능", "개선", "알아서", "task", "ticket", "create", "issue",
     }
     terms = []
-    material = [str(value).strip() for value in (state.get("keywords") or [])
-                if str(value).strip()]
-    if not material:
-        material = re.findall(
+    def collect(material) -> None:
+        for value in material:
+            clean = re.sub(r"[\"'`]+", "", str(value)).strip()
+            if not clean or clean.casefold() in ignored or clean.casefold() in _INTERNAL_LATIN:
+                continue
+            if clean.casefold() not in {term.casefold() for term in terms}:
+                terms.append(clean)
+
+    collect(state.get("keywords") or [])
+    # Request Architect can return only a module keyword such as ``ETL``.  It is present
+    # but intentionally filtered above, so ``if not material`` is insufficient: retry from
+    # the literal request when no searchable subject survived the privacy/noise filter.
+    if not terms:
+        collect(re.findall(
             r"[A-Za-z][A-Za-z0-9_.+-]{2,}|[가-힣]{2,}",
             request_text(state) or last_user_text(state),
-        )
-    for value in material:
-        clean = re.sub(r"[\"'`]+", "", value).strip()
-        if not clean or clean.casefold() in ignored or clean.casefold() in _INTERNAL_LATIN:
-            continue
-        if clean.casefold() not in {term.casefold() for term in terms}:
-            terms.append(clean)
+        ))
     if not terms:
         return
     plan.setdefault("queries", []).insert(0, {

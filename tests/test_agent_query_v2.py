@@ -239,7 +239,7 @@ def test_create_plan_adds_scoped_internal_duplicate_search_when_model_only_used_
     state = {
         "intent": "plan_work",
         "request_text": "프로듀서를 Avro로 전환하는 작업을 새로 만들자",
-        "keywords": ["프로듀서", "Avro", "전환"],
+        "keywords": ["ETL"],
     }
     plan = {"queries": [{"id": "external", "source": "web", "query": "Avro docs"}]}
     _ensure_creation_duplicate_query(state, plan)
