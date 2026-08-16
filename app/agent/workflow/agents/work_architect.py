@@ -513,6 +513,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         if exact_change and (state.get("intent") or "") == Intent.MODIFY:
             out["change"] = exact_change
             out["items"] = []
+            exact_fields = ", ".join(key for key in exact_change if key != "key")
+            out["rationale"] = (
+                f"{exact_change['key']}의 {exact_fields}만 현재 요청의 리터럴 값으로 변경"
+            )
             items = []
             qs = []
             model_questions = False

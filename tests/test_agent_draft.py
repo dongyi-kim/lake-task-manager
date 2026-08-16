@@ -461,6 +461,8 @@ def test_exact_current_turn_mutation_replaces_stale_creation_draft():
     assert not result["draft"]["items"]
     assert result["change_plan"]["key"] == "DL-9203"
     assert result["change_plan"]["changes"] == {"priority": "P4-Trivial"}
+    assert "fdc" not in result["change_plan"]["why"].lower()
+    assert "priority" in result["change_plan"]["why"]
 
 
 def test_cancelling_a_comment_does_not_discard_the_replacement_field_change():
