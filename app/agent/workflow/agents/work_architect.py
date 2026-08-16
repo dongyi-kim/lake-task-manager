@@ -1449,6 +1449,18 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                     + "\n(같은 산출물의 중복 초안을 합쳤다: "
                                     + ", ".join(removed[:4]) + ")").strip()
 
+        # Several named deliverables are already the complete top-level work plan.
+        # Do not turn one of them into an accidental mini-project unless the user
+        # explicitly requested stages/Sub-Tasks/splitting.  This is a hierarchy
+        # authorization rule, not a case-specific item-count rule.
+        if mode == "task" and len(items) > 1:
+            removed_children = _drop_unrequested_nested_work(state, items)
+            if removed_children:
+                structure = out["structure"] = draft["structure"] = "multiple_tasks"
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(요청하지 않은 하위 작업은 추가하지 않았다: "
+                                    + ", ".join(removed_children[:4]) + ")").strip()
+
         # 서로 다른 Task로 나눴으면 각 본문도 자기 deliverable만 소유해야 한다. sibling의
         # 고유어가 작업 범위에 들어간 본문은 잘못 복사된 것으로 보고, 확인된 summary와
         # sibling 목록만 사용한 최소 본문으로 되돌린다. 그 뒤 모든 Task에 "별도 ticket"
@@ -1542,6 +1554,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 _repair_malformed_dod(state, items)
                 _dedupe_dod_rows(items)
                 _drop_unrequested_deployment_dod(state, items)
+                # Later normalizers can themselves introduce a quality dimension.
+                # Seal the user's requested scope at the end, then collapse any
+                # conservative evidence row produced by that final normalization.
+                _remove_unrequested_quality_claims(state, items)
+                _dedupe_dod_rows(items)
 
         # A meeting record is an authoritative decision record.  Preserve reviewers in the
         # ticket body and remove optional create fields that the minutes never decided.
@@ -2920,12 +2937,16 @@ DOD_VAGUE = ("테스트 완료", "정상 동작", "잘 동작", "이상 없음",
               "성공적으로 완료", "완료됨", "구현 완료", "설계 완료", "검증 완료",
               "작성 완료", "성능 개선 확인", "성능 기준 충족", "문서 검토 완료", "문서화 완료",
               "검토 완료", "결과 검토 완료", "결과 검토 및 승인 완료", "초안 작성", "피드백 반영",
-              "정상적으로 구현", "성공적으로 구현", "기능이 검증", "정상적으로 작동")
+              "정상적으로 구현", "성공적으로 구현", "성공적으로 추가", "추가됨",
+              "기능이 검증", "정상적으로 작동", "정상적으로 표시", "정상 표시",
+              "후속 조치 필요 여부 평가")
 
 
 def _vague_dod(rows) -> list:
     """판정 방법이 없는 완료 조건 줄들. 짧고 뭉뚱그린 것만 — 길게 쓴 것은 방법이 들어 있다."""
-    evidence = _re.compile(r"로그|결과|기록|링크|측정값|리포트|보고서|스크린샷|"
+    # Bare `결과` in `결과 검토 완료` is not an evidence location or a decision
+    # method.  Logs, records, links, reports, and concrete measurements are.
+    evidence = _re.compile(r"로그|기록|링크|측정값|리포트|보고서|스크린샷|"
                            r"실행\s*계획|테스트\s*케이스|리뷰")
     return [d for d in rows if any(v in d for v in DOD_VAGUE) and not evidence.search(d)]
 
@@ -2962,7 +2983,14 @@ def _drop_unrequested_deployment_dod(state, items) -> bool:
             for old in rows:
                 if not re.search(r"운영\s*환경|production|prod\b|배포", old, re.I):
                     continue
-                fresh = "검증 결과가 테스트 리포트 또는 결과 보고서로 확인됨"
+                summary = str(target.get("summary") or "")
+                if any(word in summary for word in ("가이드", "문서", "매뉴얼")):
+                    fresh = "산출물 링크와 내부 리뷰 결과를 parent ticket에 기록해 확인한다"
+                elif any(word in summary for word in ("성능", "부하", "벤치마크")):
+                    fresh = ("측정 지표·측정값·판정 결과를 티켓에 기록해 "
+                             "담당 리뷰로 확인한다")
+                else:
+                    fresh = "실행 로그와 테스트 결과를 티켓에 기록해 담당 리뷰로 확인한다"
                 body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
                 changed = True
             target["description"] = body
@@ -3044,10 +3072,31 @@ def _dedupe_dod_rows(items) -> bool:
         targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
         for target in targets:
             body, seen = str(target.get("description") or ""), set()
+            all_rows = _dod_rows(body)
+
+            def evidence_shape(value: str) -> tuple[str, set[str]]:
+                subject = next((name for name in (
+                    "가이드", "문서", "보고서", "측정", "테스트", "로그", "스크린샷"
+                ) if name in value), "")
+                proof = {word for word in (
+                    "링크", "리뷰", "결과", "기록", "로그", "측정값", "리포트", "보고서",
+                    "스크린샷"
+                ) if word in value}
+                return subject, proof
 
             def keep(match):
                 nonlocal changed
                 plain = _re.sub(r"<[^>]+>", "", match.group(1)).strip()
+                subject, proof_set = evidence_shape(plain)
+                concrete = {"링크", "기록", "로그", "측정값", "리포트", "보고서", "스크린샷"}
+                if subject and "리뷰" in proof_set and not (proof_set & concrete):
+                    # A generic "result reflected, reviewer confirmed" row adds no
+                    # closure information when the same deliverable already names a
+                    # link, record, measurement, report, log, or screenshot.
+                    if any(other != plain and evidence_shape(other)[0] == subject
+                           and evidence_shape(other)[1] & concrete for other in all_rows):
+                        changed = True
+                        return ""
                 key = _re.sub(r"\s+", " ", plain)
                 # 같은 산출물·증거를 표현만 달리한 행도 한 번만. 실측에서
                 # `가이드 초안 — 링크·리뷰 기록`과 `가이드 링크·리뷰 결과 기록`이 나란히 섰다.
@@ -3164,14 +3213,17 @@ def _sharpen_dod(state, items) -> bool:
         if not isinstance(child, dict):
             continue
         body = str(child.get("description") or "")
+        subject = _re.sub(
+            r"^\s*\[[^\]]+\]\s*", "", str(child.get("summary") or "작업")
+        ).strip()
         for old in _vague_dod(_dod_rows(body)):
-            if any(w in old for w in ("성능", "정확", "검증")):
+            if any(w in old for w in ("성능", "측정", "정확", "검증")):
                 proof = "검증 기준·측정값·판정 결과를 parent ticket에 기록해 확인한다"
             elif any(w in old for w in ("테스트", "구현", "코드")):
                 proof = "실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다"
             else:
                 proof = "산출물 링크와 리뷰 결과를 parent ticket에 기록해 확인한다"
-            body = body.replace(f">{old}</li>", f">{_esc(old)} — {_esc(proof)}</li>")
+            body = body.replace(f">{old}</li>", f">{_esc(subject)} {_esc(proof)}</li>")
             hit = True
         child["description"] = body
     for it in items[:6]:
@@ -3185,19 +3237,27 @@ def _sharpen_dod(state, items) -> bool:
         bad = _vague_dod(_dod_rows(body))
         for old in bad:
             stem = _re.sub(
-                r"(?:테스트\s*완료|검토\s*완료|검증\s*완료|구현\s*완료|작성\s*완료|"
+                r"(?:(?:측정\s*)?결과에\s*대한\s*)?검토\s*완료|"
+                r"(?:테스트\s*완료|검증\s*완료|구현\s*완료|작성\s*완료|"
                 r"설계\s*완료|완료됨?|성능\s*개선\s*확인|성능\s*기준\s*충족|"
-                r"정상(?:적으로)?\s*(?:동작|작동|구현)(?:함|됨)?|"
+                r"성공적으로\s*추가됨?|추가됨|후속\s*조치\s*필요\s*여부\s*평가|"
+                r"정상(?:적으로)?\s*(?:동작|작동|구현|표시)(?:함|됨)?|"
                 r"문서화\s*완료|이상\s*없음|문제\s*없음)",
                 "", old, flags=_re.I).strip(" -·:;")
             # `정상적으로 작동해야 할 것`에서 vague phrase를 떼면 `해야 할 것` 또는
             # `할 것`이 조사처럼 남을 수 있다. Evidence 문장에 그 찌꺼기를 이어 붙이지 않는다.
             stem = _re.sub(r"(?:이|가)?\s*(?:해야\s*)?(?:함|됨|할\s*것|한다)?\s*$", "", stem)
-            subject = stem or _re.sub(
-                r"^\s*\[[^\]]+\]\s*", "", str(it.get("summary") or "작업")).strip()
-            if any(w in old for w in ("성능", "정확", "검증", "기준")):
+            summary_subject = _re.sub(
+                r"^\s*\[[^\]]+\]\s*", "", str(it.get("summary") or "작업")
+            ).strip()
+            # Partial deletion from a state phrase can leave broken Korean such as
+            # `팝업이 되고 작동`.  Use the verified title for boilerplate states.
+            subject = (summary_subject if _re.search(
+                r"정상|성공적으로|추가됨|검토\s*완료|후속\s*조치", old
+            ) else (stem or summary_subject))
+            if any(w in old for w in ("성능", "측정", "정확", "검증", "기준")):
                 fresh = f"{subject} 검증 기준·측정값·판정 결과를 티켓에 기록해 확인한다"
-            elif any(w in old for w in ("테스트", "구현", "코드", "동작", "작동")):
+            elif any(w in old for w in ("테스트", "구현", "코드", "동작", "작동", "표시", "추가")):
                 fresh = f"{subject} 실행 로그와 테스트 결과를 티켓에 기록해 확인한다"
             else:
                 fresh = f"{subject} 산출물 링크와 리뷰 결과를 티켓에 기록해 확인한다"
@@ -3397,7 +3457,7 @@ _QUALITY_DIMENSIONS = (
     r"운영\s*효율성|업무\s*효율성|효율성|생산성|efficien(?:cy|t)|productivity",
     r"성능|처리량|응답\s*속도|performance|throughput|latency",
     r"안정성|신뢰(?:성|할)|가용성|stable|stability|reliability|availability",
-    r"정확(?:성|한|도)?|정합성|품질\s*(?:향상|개선)|accuracy|correctness",
+    r"정확(?:성|한|도)?|정합성|품질\s*(?:향상|개선|검증|점검|기준|룰)|accuracy|correctness",
     r"보안성|보안\s*(?:강화|향상|개선)|개인정보|노출\s*(?:감소|방지)|security|privacy",
     r"유지보수성|확장성|scalability|maintainability",
     r"비용\s*(?:절감|감소|최적화)|cost\s*(?:saving|reduction|optimization)",
@@ -3488,19 +3548,33 @@ def _drop_self_exclusions(items: list) -> bool:
         title = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "")).strip()
         title_key = _re.sub(r"[^0-9A-Za-z가-힣]+", "", title).casefold()
         body = str(item.get("description") or "")
+        exclusion_count = sum(
+            1 for row in _re.findall(r"<li\b[^>]*>(.*?)</li>", body, _re.I | _re.S)
+            if _re.match(r"^\s*제외(?:\s*\([^)]*\))?\s*:",
+                         _re.sub(r"<[^>]+>", "", row).strip())
+        )
 
         def keep(match):
             nonlocal changed
-            plain = _re.sub(r"<[^>]+>", "", match.group(1)).strip()
+            plain = _re.sub(r"<[^>]+>", "", match.group(2)).strip()
+            if not _re.match(r"^\s*제외(?:\s*\([^)]*\))?\s*:", plain):
+                return match.group(0)
             excluded = _re.sub(r"^\s*제외(?:\s*\([^)]*\))?\s*:\s*", "", plain)
             excluded = _re.sub(r"^\s*\[[^]]+\]\s*", "", excluded).strip()
             key = _re.sub(r"[^0-9A-Za-z가-힣]+", "", excluded).casefold()
             if len(title_key) >= 6 and (key == title_key or key in title_key):
                 changed = True
-                return ""
+                if exclusion_count > 1:
+                    return ""
+                return (match.group(1)
+                        + "제외: 요청에 명시되지 않은 연관 기능 변경"
+                        + match.group(3))
             return match.group(0)
 
-        item["description"] = _re.sub(r"<li\b[^>]*>(.*?제외.*?)</li>", keep, body,
+        # Each list item is inspected independently.  Starting the match at an earlier
+        # `포함` bullet allowed DOTALL to consume through the following `제외` bullet,
+        # so the prefix check and title comparison never saw the exclusion itself.
+        item["description"] = _re.sub(r"(<li\b[^>]*>)(.*?)(</li>)", keep, body,
                                       flags=_re.I | _re.S)
     return changed
 
@@ -4309,6 +4383,44 @@ def _semantic_terms(text: str) -> set:
     return {w for w in words if w not in _SEMANTIC_STOP and not w.isdigit()}
 
 
+def _explicit_nested_structure(state) -> bool:
+    """Whether the user explicitly authorized child/stage decomposition.
+
+    Multiple deliverables do not implicitly authorize another level of generated work.
+    A nested hierarchy is retained only when the user actually asks for Sub-Tasks,
+    stages, splitting, or distributed execution.
+    """
+    said = (request_text(state) + "\n" + _human_request_text(state)).strip()
+    return bool(_re.search(
+        r"sub[- ]?tasks?|서브\s*태스크|하위\s*(?:티켓|작업)|"
+        r"단계별|각\s*단계|단계로|쪼개|나눠|분할|분담",
+        said, _re.I,
+    ))
+
+
+def _drop_unrequested_nested_work(state, items: list) -> list[str]:
+    """Remove model-invented children beneath several independent deliverables.
+
+    The user's named deliverables are the authoritative work units.  When several
+    top-level Tasks already represent them, silently adding design/implementation/
+    verification children expands scope and distorts workload.  Explicit hierarchy
+    language always wins and preserves the children.
+    """
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    # Two-deliverable plans can legitimately retain a detailed execution branch
+    # (for example one measured area plus a separate engine change).  At three or
+    # more independent top-level deliverables, an extra unsolicited hierarchy is
+    # already a second planning layer and requires explicit authorization.
+    if len(rows) < 3 or _explicit_nested_structure(state):
+        return []
+    removed = []
+    for item in rows:
+        children = [child for child in (item.get("children") or []) if isinstance(child, dict)]
+        removed.extend(str(child.get("summary") or "").strip() for child in children)
+        item.pop("children", None)
+    return [title for title in removed if title]
+
+
 def _best_item_for_request(state, items: list) -> dict:
     """과분해를 접을 때 원 요청과 가장 가까운 항목을 보존한다."""
     req_terms = _semantic_terms(request_text(state))
@@ -4400,8 +4512,16 @@ def _dedupe_semantic_items(state, items: list) -> list:
         for group in groups:
             base = group[0][1]
             union = terms | base
-            if terms == base or (len(terms & base) >= 2 and union
-                                 and len(terms & base) / len(union) >= 0.67):
+            shared = terms & base
+            # A model often expands a direct requested action into an unrequested
+            # "necessity assessment" plus the action itself.  The latter's semantic
+            # core is then a subset of the former, so Jaccard alone (3/5) misses the
+            # duplicate.  Three shared domain terms are enough only when one set is a
+            # complete subset; genuinely different deliverables keep distinct terms.
+            subset_duplicate = (len(shared) >= 3
+                                and (shared == terms or shared == base))
+            if terms == base or subset_duplicate or (len(shared) >= 2 and union
+                                                      and len(shared) / len(union) >= 0.67):
                 target = group
                 break
         if target is None:
@@ -4421,12 +4541,23 @@ def _dedupe_semantic_items(state, items: list) -> list:
         core_text = _re.sub(r"^\s*\[[^\]]+\]\s*", "",
                             str(group[0][0].get("summary") or ""))
         wanted = set(modules_in_text(core_text))
+        request = request_text(state)
 
         def score(pair):
             it, terms = pair
             comp = resolve_module(((it.get("components") or [""])[0]))
+            title = str(it.get("summary") or "")
+            unrequested_planning = bool(
+                _re.search(r"필요성|평가|분석|검토|조사", title)
+                and not _re.search(r"필요성|평가|분석|검토|조사", request)
+            )
+            direct_action = bool(
+                _re.search(r"손봐|고쳐|수정|개선|최적화|조정", request)
+                and _re.search(r"수정|개선|최적화|조정", title)
+            )
             return (5 if comp and comp in wanted else 0,
-                    len(_semantic_terms(request_text(state)) & terms))
+                    len(_semantic_terms(request) & terms),
+                    (2 if direct_action else 0) - (3 if unrequested_planning else 0))
         chosen = max(group, key=score)[0]
         keep.append(chosen)
         removed.extend(str(it.get("summary") or "") for it, _ in group if it is not chosen)

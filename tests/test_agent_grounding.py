@@ -332,6 +332,18 @@ def test_comment_approval_quotes_every_markdown_line():
     assert "  > ### 결정\n  >\n  > - 항목 A" in got
 
 
+def test_person_work_reply_summarizes_instead_of_dumping_every_badge():
+    from app.agent.workflow.agents.result_integrator import _person_work_reply
+
+    tickets = [{"key": f"DL-{index}", "status": "Open", "priority": "P2-Major",
+                "duedate": "2026-08-30"} for index in range(1, 8)]
+    got = _person_work_reply({"user_id": "skcc.i2011", "tickets": tickets})
+    assert "{{mention:skcc.i2011}}" in got and "미완료 7건" in got
+    assert "| 상태 | Open 7건 |" in got and "외 2건" in got
+    assert "{{ticket-inline:DL-5}}" in got
+    assert "DL-6" not in got and "DL-7" not in got
+
+
 def test_progress_reply_gets_a_compact_complete_child_snapshot_when_model_omits_it():
     from app.agent.workflow.agents.result_integrator import _ensure_progress_child_coverage
 

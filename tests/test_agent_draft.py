@@ -1052,7 +1052,7 @@ def test_mvp_development_request_does_not_gain_an_unrequested_production_deploym
                               "</li></ul>")}]
     assert _drop_unrequested_deployment_dod(_msg("NDV 파이프라인 MVP 개발"), items)
     assert "운영 환경" not in items[0]["description"] and "배포 로그" not in items[0]["description"]
-    assert "테스트 리포트 또는 결과 보고서" in items[0]["description"]
+    assert "실행 로그와 테스트 결과" in items[0]["description"]
 
 
 def test_poc_development_request_drops_an_unrequested_deployment_child():
@@ -2230,14 +2230,96 @@ def test_functionally_different_tasks_are_not_collapsed():
     """기능 분화(모듈·산출물이 다른 Task)는 접지 않는다 — 접으면 STR2 가 망가진다."""
     out = {"questions": [], "mode": "task", "rationale": "",
            "structure": "multiple_tasks", "structure_source": "user_specified",
-           "items": [{"summary": "[Workbench] 성능 측정 리포트 작성", "type": "Task", "description": ""},
+           "items": [{"summary": "[Workbench] 성능 측정 리포트 작성", "type": "Task", "description": "",
+                      "children": [{"summary": "설계"}, {"summary": "구현"}]},
                      {"summary": "[Runtime] 쿼리 인덱스 조정", "type": "Task", "description": ""},
                      {"summary": "[Catalog] 사용 가이드 작성", "type": "Task", "description": ""}]}
     r = WorkArchitect().apply(
         _msg("성능 측정하고 인덱스도 손보고 가이드도. 알아서", situation="조사 완료"), out)
     assert len(r["draft"]["items"]) == 3
+    assert not any(i.get("children") for i in r["draft"]["items"])
     assert not r["questions"]
     assert all(i.get("description") for i in r["draft"]["items"])
+
+
+def test_semantic_dedupe_prefers_direct_action_over_unrequested_assessment():
+    from app.agent.workflow.agents.work_architect import _dedupe_semantic_items
+
+    state = _msg("쿼리 엔진 쪽 인덱스도 손봐야 해. 알아서")
+    rows = [
+        {"summary": "[Runtime] 쿼리 엔진 인덱스 개선 필요성 평가",
+         "components": ["Runtime"]},
+        {"summary": "[Runtime] 쿼리 엔진 인덱스 최적화",
+         "components": ["Runtime"]},
+    ]
+
+    removed = _dedupe_semantic_items(state, rows)
+
+    assert len(rows) == 1
+    assert "최적화" in rows[0]["summary"]
+    assert any("필요성 평가" in title for title in removed)
+
+
+def test_explicit_stage_request_keeps_nested_work_in_multi_task_plan():
+    from app.agent.workflow.agents.work_architect import _drop_unrequested_nested_work
+
+    state = _msg("성능 측정과 가이드 작성을 각각 Task로 만들고 측정은 단계별 Sub-Task로 나눠줘")
+    rows = [
+        {"summary": "성능 측정", "children": [{"summary": "설계"}, {"summary": "검증"}]},
+        {"summary": "가이드 작성"},
+    ]
+
+    assert _drop_unrequested_nested_work(state, rows) == []
+    assert len(rows[0]["children"]) == 2
+
+
+def test_self_exclusion_is_removed_without_consuming_the_previous_include_bullet():
+    from app.agent.workflow.agents.work_architect import _drop_self_exclusions
+
+    rows = [{
+        "summary": "[ETL] StarRocks Puffin NDV 통계 파이프라인 개발",
+        "description": ("<h3>작업 범위</h3><ul>"
+                        "<li>포함: 데이터 수집 로직 구현</li>"
+                        "<li>제외: [ETL] StarRocks Puffin NDV 통계 파이프라인 개발</li>"
+                        "</ul>"),
+    }]
+
+    assert _drop_self_exclusions(rows)
+    assert "포함: 데이터 수집 로직 구현" in rows[0]["description"]
+    assert "제외: 요청에 명시되지 않은 연관 기능 변경" in rows[0]["description"]
+    assert "제외: [ETL]" not in rows[0]["description"]
+
+
+def test_self_exclusion_is_dropped_when_another_scope_boundary_exists():
+    from app.agent.workflow.agents.work_architect import _drop_self_exclusions
+
+    rows = [{
+        "summary": "[Runtime] 쿼리 엔진 인덱스 조정",
+        "description": ("<ul><li>포함: 인덱스 조정</li>"
+                        "<li>제외: [Runtime] 쿼리 엔진 인덱스 조정</li>"
+                        "<li>제외(별도 ticket): 사용 가이드 작성</li></ul>"),
+    }]
+
+    assert _drop_self_exclusions(rows)
+    body = rows[0]["description"]
+    assert "제외: [Runtime]" not in body
+    assert "제외(별도 ticket): 사용 가이드 작성" in body
+    assert "요청에 명시되지 않은" not in body
+
+
+def test_removed_deployment_dod_uses_deliverable_specific_evidence():
+    from app.agent.workflow.agents.work_architect import _drop_unrequested_deployment_dod
+
+    rows = [{
+        "summary": "[Catalog] 리니지 뷰어 사용 가이드 작성",
+        "description": ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                        '<li data-checked="false">운영 환경 배포 완료</li></ul>'),
+    }]
+
+    assert _drop_unrequested_deployment_dod(_msg("사용 가이드 작성해줘"), rows)
+    body = rows[0]["description"]
+    assert "산출물 링크" in body and "내부 리뷰" in body
+    assert "테스트 리포트" not in body and "배포" not in body
 
 
 def test_relative_due_is_computed_by_code_not_the_model():
@@ -2830,6 +2912,8 @@ def test_self_exclusion_and_unverified_performance_cause_are_removed():
 def test_long_subject_does_not_hide_a_vague_completion_condition():
     from app.agent.workflow.agents.work_architect import _sharpen_dod, _vague_dod
     assert _vague_dod(["StarRocks Puffin NDV 통계정보 생성 파이프라인이 정상적으로 작동함"])
+    assert _vague_dod(["측정 결과에 대한 검토 완료"])
+    assert _vague_dod(["도움말 팝업이 정상적으로 표시됨"])
     assert not _vague_dod(["NDV 생성 결과와 테스트 로그를 티켓에 기록함"])
     item = {"summary": "[ETL] StarRocks Puffin NDV 통계정보 생성 파이프라인 개발",
             "type": "Task", "description": (
@@ -2839,6 +2923,47 @@ def test_long_subject_does_not_hide_a_vague_completion_condition():
     assert _sharpen_dod(_msg("NDV 파이프라인 개발"), [item])
     assert "작동해야" not in item["description"] and "문서화 완료" not in item["description"]
     assert "함 실행" not in item["description"] and "할 것 실행" not in item["description"]
+
+
+def test_vague_subtask_dod_is_replaced_instead_of_repeated_before_evidence():
+    from app.agent.workflow.agents.work_architect import _sharpen_dod
+
+    item = {"summary": "[Workbench] 데이터 리니지 뷰어 성능 측정", "type": "Sub-Task",
+            "description": ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                            '<li data-checked="false">측정 결과에 대한 검토 완료</li></ul>')}
+
+    assert _sharpen_dod(_msg("성능 측정 서브태스크"), [item])
+    body = item["description"]
+    assert "측정 결과에 대한 검토 완료" not in body
+    assert "검증 기준·측정값·판정 결과" in body
+
+
+def test_specific_artifact_dod_supersedes_generic_review_row():
+    from app.agent.workflow.agents.work_architect import _dedupe_dod_rows
+
+    item = {"summary": "[Catalog] 사용 가이드 작성", "description": (
+        '<ul data-type="taskList">'
+        '<li data-checked="false">사용 가이드 작성 결과가 반영되었음을 담당 리뷰로 확인한다</li>'
+        '<li data-checked="false">가이드 링크와 내부 리뷰 결과를 parent ticket에 기록한다</li>'
+        '</ul>')}
+
+    assert _dedupe_dod_rows([item])
+    body = item["description"]
+    assert "결과가 반영되었음을" not in body
+    assert "가이드 링크와 내부 리뷰 결과" in body
+
+
+def test_late_normalizers_cannot_reintroduce_an_unrequested_quality_dimension():
+    from app.agent.workflow.agents import work_architect as R
+
+    item = {"summary": "[ETL] NDV 통계 파이프라인 구축", "type": "Task",
+            "description": ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                            '<li data-checked="false">성능 측정 지표와 목표값은 담당팀 확인 필요 — '
+                            '확정 후 측정값과 판정 결과를 티켓에 기록한다</li></ul>')}
+
+    assert R._remove_unrequested_quality_claims(_msg("NDV 통계 파이프라인 구축"), [item])
+    assert "성능 측정" not in item["description"]
+    assert "검증 기록" in item["description"] and "담당 리뷰" in item["description"]
 
 
 def test_a_plain_task_still_gets_the_task_template(monkeypatch):

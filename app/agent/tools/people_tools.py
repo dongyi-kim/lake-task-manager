@@ -317,15 +317,32 @@ def find_person(name: str) -> dict:
         return {"query": q, "candidates": [], "error": str(e)[:150]}
     roster = load_people() or {}
     mod_of = {uid: mod for mod, ids in roster.items() for uid in (ids or [])}
-    cands = []
-    for u in raw:
-        uid = u.get("name") or u.get("key") or ""
-        if not uid:
-            continue
-        disp = u.get("displayName") or uid
-        cands.append(compact({"id": uid, "display": disp, "name": _real(disp),
-                              "email": u.get("emailAddress") or "",
-                              "module": mod_of.get(uid, "")}))
+    def candidates(rows):
+        found = []
+        for u in rows or []:
+            uid = u.get("name") or u.get("key") or ""
+            if not uid:
+                continue
+            disp = u.get("displayName") or uid
+            found.append(compact({"id": uid, "display": disp, "name": _real(disp),
+                                  "email": u.get("emailAddress") or "",
+                                  "module": mod_of.get(uid, "")}))
+        return found
+
+    cands = candidates(raw)
+    # Korean postpositions are often attached directly to a mention: ``@이다은이``.
+    # Search the full spelling first so legitimate names ending in the same syllable are
+    # preserved.  Only a zero-result lookup may retry after stripping one postposition.
+    if not cands and len(q) >= 3 and q[-1:] in ("은", "는", "이", "가", "을", "를"):
+        trimmed = q[:-1]
+        try:
+            retry_raw = c.provider.get_json(
+                "/rest/api/2/user/search", params={"username": trimmed, "maxResults": 10}) or []
+        except Exception:
+            retry_raw = []
+        retry_candidates = candidates(retry_raw)
+        if retry_candidates:
+            q, cands = trimmed, retry_candidates
     out = {"query": q, "candidates": cands, "resolved": "", "ambiguous": len(cands) > 1}
     if not cands:
         out["note"] = (f"'{q}' 은(는) 우리 Jira 사용자 디렉토리에 없다 — **존재하지 않는 "

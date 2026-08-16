@@ -624,14 +624,38 @@ def _approval_reply(state) -> str:
 
 
 def _person_work_reply(data: dict) -> str:
+    from collections import Counter
+
     uid = str(data.get("user_id") or "").strip()
     tickets = [t for t in (data.get("tickets") or []) if isinstance(t, dict) and t.get("key")]
     who = f"{{{{mention:{uid}}}}}" if uid else "해당 사용자"
     if not tickets:
         return f"### 현재 담당 업무\n\n**{who}의 미완료 할당 티켓 없음**"
-    badges = " ".join(f"{{{{ticket-list:{t['key']}}}}}" for t in tickets)
-    return (f"### 현재 담당 업무\n\n**{who} · 미완료 {len(tickets)}건**\n\n{badges}\n\n"
-            "최근 활동 로그가 아니라 현재 담당자로 지정된 미완료 티켓 기준")
+    statuses = Counter(str(t.get("status") or "미분류") for t in tickets)
+    priorities = Counter(str(t.get("priority") or "미지정") for t in tickets)
+    status_summary = " · ".join(f"{key} {value}건" for key, value in statuses.most_common())
+    priority_summary = " · ".join(f"{key} {value}건" for key, value in priorities.most_common())
+    rows = [
+        "### 현재 담당 업무", "",
+        f"**{who} · 미완료 {len(tickets)}건**", "",
+        "| 구분 | 요약 |", "|---|---|",
+        f"| 상태 | {status_summary} |",
+        f"| 우선순위 | {priority_summary} |", "",
+        "### 최근 갱신 업무", "",
+        "| 티켓 | 상태 | 우선순위 | 기한 |", "|---|---|---|---|",
+    ]
+    # execute_jql_all already returns updated DESC.  A summary should expose a useful
+    # sample, not dump dozens of compact badges in one unreadable line.
+    for ticket in tickets[:5]:
+        rows.append(
+            f"| {{{{ticket-inline:{ticket['key']}}}}} | {_cell(ticket.get('status'))} | "
+            f"{_cell(ticket.get('priority'))} | {_cell(ticket.get('duedate'))} |"
+        )
+    remaining = len(tickets) - 5
+    if remaining > 0:
+        rows += ["", f"최근 갱신 순 5건 표시 · 외 {remaining}건"]
+    rows += ["", "현재 담당자로 지정된 미완료 티켓 기준 · 최근 활동 로그와 구분"]
+    return "\n".join(rows)
 
 
 def _daily_priority_reply(data: dict) -> str:

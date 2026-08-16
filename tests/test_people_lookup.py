@@ -58,6 +58,31 @@ def test_an_unknown_name_is_reported_as_nonexistent():
     assert "존재하지 않는" in (r.get("note") or "")
 
 
+def test_a_postposition_attached_to_a_mention_retries_only_after_an_exact_miss(monkeypatch):
+    from app.agent.tools import people_tools as P
+
+    seen = []
+
+    class Provider:
+        def get_json(self, _path, params=None):
+            query = (params or {}).get("username")
+            seen.append(query)
+            return ([{"name": "skcc.i2011", "displayName": "이다은 SKCC"}]
+                    if query == "이다은" else [])
+
+    class Client:
+        provider = Provider()
+
+    monkeypatch.setattr(P, "client", lambda: Client())
+    monkeypatch.setattr(P, "_assigned_now", lambda uid: {"count": 1, "tickets": []})
+    monkeypatch.setattr("app.infra.settings.load_people", lambda *a, **k: {
+        "ETL": ["skcc.i2011"]})
+    P.set_person_context("particle-mention", [])
+    result = P.find_person.invoke({"name": "이다은이"})
+    assert seen == ["이다은이", "이다은"]
+    assert result["query"] == "이다은" and result["resolved"] == "skcc.i2011"
+
+
 def test_assigned_work_is_not_the_activity_log():
     """'담당한 일'과 '최근 활동'은 다르다 — 이 둘을 섞은 것이 사고의 절반이었다."""
     a = find_person.invoke({"name": "이다은"}).get("assigned") or {}

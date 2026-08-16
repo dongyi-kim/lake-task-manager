@@ -39,7 +39,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "4.0.1"
+BATTERY_VERSION = "4.0.2"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
@@ -234,8 +234,11 @@ CASES = [
     ("STR2", "기능 분화 — 위임된 구조를 재질문하지 않고 모듈별 Task로 분리", [
         "리니지 뷰어 성능 측정하고, 결과에 따라 쿼리 엔진 쪽 인덱스도 손봐야 해. "
         "그리고 사용 가이드도 써야 하고. 초안 잡아줘. 알아서"],
-     lambda o, _: (not o.get("questions") and len(items(o)) >= 2
-                   and len({(i.get("components") or [""])[0] for i in items(o)}) >= 2)),
+     lambda o, _: (not o.get("questions") and len(items(o)) == 3 and not kids(o)
+                   and len({(i.get("components") or [""])[0] for i in items(o)}) >= 2
+                   and sum("성능" in str(i.get("summary") or "") for i in items(o)) == 1
+                   and sum("인덱스" in str(i.get("summary") or "") for i in items(o)) == 1
+                   and sum("가이드" in str(i.get("summary") or "") for i in items(o)) == 1)),
 
     ("STR3", "Epic 격상 요구를 보수적으로 — 근거 없으면 기존 Epic 아래로", [
         "쿼리 성능 개선을 대대적으로 해보자. 에픽으로 크게 잡아줘",
