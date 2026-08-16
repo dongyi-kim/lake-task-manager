@@ -747,10 +747,12 @@ def _render_reply_tokens(text: str) -> str:
 def _canonicalize_meeting_reply(text: str, state) -> str:
     """Apply confirmed meeting identities and guarantee a complete attendee badge section."""
     from app.agent.workflow.meeting_context import (
-        attendee_mentions, canonicalize_reply_mentions, is_meeting_request,
+        attendee_mentions, canonicalize_meeting_owner_table,
+        canonicalize_reply_mentions, is_meeting_request,
     )
 
     out = canonicalize_reply_mentions(state, text)
+    out = canonicalize_meeting_owner_table(state, out)
     if not is_meeting_request(state) or (state.get("intent") or "") != Intent.ASK \
             or state.get("questions"):
         return out

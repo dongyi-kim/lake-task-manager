@@ -2866,6 +2866,29 @@ def test_pasted_voc_uses_reported_screen_symptom_instead_of_wrapper_or_placehold
     assert "티켓으로 만들어줘" not in body and "---" not in body
 
 
+def test_complete_pasted_voc_recovers_bug_draft_instead_of_reasking_reproduction(monkeypatch):
+    """A complete report must survive a model response containing only a generic question."""
+    from app.agent.workflow.agents import work_architect as R
+
+    monkeypatch.setattr("app.agent.config.get_llm",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no llm")))
+    state = _msg(
+        "아래 VoC 그대로 티켓으로 만들어줘. 알아서\n\n---\n"
+        "데이터 조회할 때 컬럼 설명이 안 보여서 담당자에게 묻고 있습니다. "
+        "카탈로그에 설명이 있다는데 화면에서는 안 보입니다. "
+        "조회 화면에서 바로 봤으면 좋겠습니다."
+    )
+    out = {"questions": [{"question": "재현 경로를 알려 주세요", "kind": "text",
+                           "required_input": True, "why_required": "재현 정보 필요"}],
+           "mode": "task", "rationale": "", "items": []}
+    result = WorkArchitect().apply(state, out)
+    rows = result["draft"]["items"]
+    assert len(rows) == 1 and rows[0]["type"] == "Bug"
+    assert not result["questions"]
+    assert "컬럼 설명" in rows[0]["summary"]
+    assert all(value in rows[0]["description"] for value in ("재현 경로", "기대 동작", "실제 동작"))
+
+
 def test_existing_bug_sections_replace_placeholder_actual_with_reported_symptom(monkeypatch):
     """PASTE2/BUG2: headings alone are not a pass when the user already supplied the actual result."""
     from app.agent.workflow.agents import work_architect as R

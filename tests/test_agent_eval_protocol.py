@@ -440,7 +440,7 @@ def test_all_primary_batteries_emit_versioned_metadata():
         "tools/agent_lang_ab.py": ('suite="conversation"', "3.0.0"),
         "tools/agent_compose_eval.py": ('suite="editor"', "3.0.0"),
         "tools/agent_create_suite.py": ('suite="create"', "4.0.2"),
-        "tools/agent_meeting_eval.py": ('suite="meeting"', "2.0.1"),
+        "tools/agent_meeting_eval.py": ('suite="meeting"', "2.0.2"),
         "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.0.0"),
     }
     for relative, (suite_marker, battery_version) in expected.items():

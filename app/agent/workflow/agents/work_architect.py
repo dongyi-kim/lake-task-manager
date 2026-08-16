@@ -503,6 +503,20 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
         model_questions = bool(qs)
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        # A complete pasted incident/VoC already contains the information that a
+        # reproduction interview would request.  Some models still return only a
+        # generic question and no item.  Recover the report into a conservative Bug
+        # draft before hierarchy/placement/body guards run; do not invent missing facts.
+        if not items and (state.get("intent") or Intent.PLAN_WORK) == Intent.PLAN_WORK:
+            recovered_bug = _complete_bug_draft_from_report(state)
+            if recovered_bug:
+                items = out["items"] = [recovered_bug]
+                out["mode"] = "task"
+                qs = []
+                model_questions = False
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(신고 내용에 재현 경로·기대·실제 동작이 있어 "
+                                      "중복 질문 없이 Bug 초안으로 정리했다)").strip()
         # 규칙/측정 방법만 있고 적용할 데이터 대상이 없으면 실행 가능한 초안이 아니다.
         # `널 비율 체크`만 받은 두 번째 턴에서 조기 초안을 낸 ASK2 회귀를 결정적으로 막는다.
         if _missing_data_quality_target(state):
@@ -1982,6 +1996,15 @@ def _change_plan(state, out, items, qs):
                              "relation": str(lk.get("relation") or "Relates").strip()},
                     "comment": "", "why": out.get("rationale") or ""}
     # 조건 일괄 수정 — keys 복수. 실재하는 키만 남긴다(조사에서 온 것이지만 한 번 더).
+    # 단건 경로와 마찬가지로 회의록의 명시적 결정 bullet이 authoritative comment body다.
+    # 예전에는 bulk 경로만 model의 얇은 `알림: 담당자`를 그대로 사용해 결정 내용 전체가
+    # 사라졌다. 여기서 한 번 조립해 이하의 조건·preview가 모두 같은 body를 보게 한다.
+    bulk_comment = str(change.get("comment") or "").strip()
+    bulk_said = request_text(state) + " " + last_user_text(state)
+    if _comment_forbidden(bulk_said):
+        bulk_comment = ""
+    else:
+        bulk_comment = _meeting_decision_comment(state, bulk_comment)
     bulk_keys = [str(k).strip() for k in (change.get("keys") or []) if str(k).strip()]
     # 코드가 확정한 대상(bulk_targets)이 있는데 모델이 keys 를 빠뜨리거나 일부만 담았으면
     # **전부로 강제한다** — 일부 누락은 조용한 미수정이다(실측: 대상 없음 오답 2회).
@@ -1993,7 +2016,7 @@ def _change_plan(state, out, items, qs):
                                       or change.get("duedate") is not None
                                       or change.get("priority") is not None
                                       or change.get("labels") is not None
-                                      or str(change.get("comment") or "").strip()
+                                      or bulk_comment
                                       or bulk_keys):
         bulk_keys = [str(k) for k in state["bulk_targets"]]
     if bulk_keys and not plan:
@@ -2012,15 +2035,15 @@ def _change_plan(state, out, items, qs):
             out["rationale"] = ((out.get("rationale") or "")
                                 + f"\n(실재하지 않아 제외: {', '.join(gone[:5])})").strip()
         # 필드가 없어도 **코멘트가 있으면** 일괄이다(위 주석 참조).
-        if real and (fields or str(change.get("comment") or "").strip()):
+        if real and (fields or bulk_comment):
             if len(real) == 1:
                 # 단건이면 단건 카드다 — 일괄 카드는 대상이 여럿일 때만.
                 plan = {"key": real[0], "changes": fields,
-                        "comment": (change.get("comment") or "").strip(),
+                        "comment": bulk_comment,
                         "why": out.get("rationale") or ""}
             else:
                 plan = {"keys": real, "changes": fields,
-                        "comment": (change.get("comment") or "").strip(),
+                        "comment": bulk_comment,
                         "why": out.get("rationale") or ""}
                 # ★ **티켓별 코멘트를 코드가 미리 조립한다**(사용자 요청).
                 #   "담당자를 멘션해서 상태 점검을 요청" 같은 일괄 코멘트는 **티켓마다 문구가
@@ -2869,6 +2892,41 @@ def _bug_body_for(state, it) -> str:
         html.append("<h3>환경 및 추가 정보</h3><ul>"
                     + "".join(f"<li>{_esc(x)}</li>" for x in notes) + "</ul>")
     return "".join(html)
+
+
+def _complete_bug_draft_from_report(state) -> dict:
+    """Recover a no-item model response when the report already supplies Bug facts.
+
+    This is deliberately stricter than ``reads_as_bug``: a draft is returned only
+    when a reported symptom, an explicit expectation, and a reproducible screen or
+    execution step can all be extracted. Otherwise the normal interview remains.
+    """
+    said = (request_text(state) + "\n" + conversation(state)).strip()
+    if not reads_as_bug(said) or _missing_bug_reproduction(said):
+        return {}
+    symptom = _reported_symptom(said)
+    expected = _reported_expectation(said)
+    steps = _reported_steps(said, symptom)
+    if not (symptom and expected and steps):
+        return {}
+
+    match = _re.match(r"(.+?)에서\s+(.+?)\s+표시 여부", steps[0])
+    if match:
+        subject = f"{match.group(1).strip()} {match.group(2).strip()} 미표시"
+    else:
+        subject = _re.sub(r"[.!?]+$", "", symptom)[:70]
+    components = []
+    try:
+        from app.infra.settings import modules_in_text
+        components = modules_in_text(said)[:1]
+    except Exception:
+        pass
+    prefix = f"[{components[0]}] " if components else ""
+    item = {"summary": prefix + subject, "type": "Bug", "issue_type": "Bug"}
+    if components:
+        item["components"] = components
+    item["description"] = _bug_body_for(state, item)
+    return item
 
 
 def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
@@ -4104,7 +4162,7 @@ def _normalize_duplicate_and_bug_questions(state, questions: list, *, items=None
                 "required_input": True,
                 "why_required": "중복 업무를 새로 만들기 전에 관리 단위를 결정해야 함",
             }]
-    if reads_as_bug(said) and not (items or plan):
+    if reads_as_bug(said) and _missing_bug_reproduction(said) and not (items or plan):
         if "리니지" in said or "뷰어" in said:
             prompt = ("리니지 뷰어 문제가 재현되는 화면 경로·브라우저/환경과 "
                       "발생 조건 또는 빈도를 알려 주세요. 실제 증상은 ‘가끔 표시되지 않음’으로 기록합니다.")

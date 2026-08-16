@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from typing import Any
 
@@ -17,7 +18,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "2.0.1"
+BATTERY_VERSION = "2.0.2"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("meeting")
 
 
@@ -46,7 +47,7 @@ def _interview_then_resume(outputs: list[dict[str, Any]], *terms: str) -> bool:
 def _meeting_summary_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -> bool:
     reply = output.get("reply") or ""
     evidence = _text(output.get("evaluationEvidence") or {})
-    required = ("5개", "운영 반영 보류", "StarRocks", "2026-08-22", "2026-08-25")
+    required = ("5개", "StarRocks", "2026-08-22", "2026-08-25")
     people = (
         ("skcc.i2011", "이다은"),
         ("skcc.x1042", "최민서"),
@@ -58,6 +59,7 @@ def _meeting_summary_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -
         _interview_then_resume(outputs, "PSR")
         and not _pending(output)
         and all(value in reply for value in required)
+        and bool(re.search(r"운영\s*반영(?:을)?\s*보류", reply))
         and all(any(candidate in reply for candidate in pair) for pair in people)
         and "DL-7001" in evidence
         and "Iceberg Puffin NDV 적용 검토 노트" in evidence

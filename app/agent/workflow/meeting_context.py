@@ -258,6 +258,95 @@ def canonicalize_reply_mentions(state, text: str) -> str:
     return out
 
 
+def meeting_owner_records(state) -> list[dict[str, str]]:
+    """Extract explicit owner/work/deadline records from authoritative minutes.
+
+    A deadline-bearing assignment is safe to align mechanically. Review-only
+    clauses without a deadline are excluded so a reviewer never becomes owner.
+    """
+    original = meeting_request_text(state)
+    people = resolved_people(state)
+    names = _person_tokens(original)
+    records: list[dict[str, str]] = []
+    for raw in original.splitlines():
+        line = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", raw).strip()
+        heading = re.search(r"담당[·ㆍ\s-]*기한\s*[:：]\s*", line)
+        owner_heading = bool(heading)
+        if heading:
+            line = line[heading.end():]
+        for segment in re.split(r"\s*[,;]\s*", line):
+            due = re.search(r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)", segment)
+            dash_owner = bool(re.search(r"\s[—–-]\s", segment))
+            if not (due or owner_heading or dash_owner or "담당" in segment):
+                continue
+            hits = []
+            for name in names:
+                patterns = (
+                    rf"@\s*{re.escape(name)}",
+                    rf"\{{\{{\s*{re.escape(name)}\s*:\s*\d+\s*\}}\}}",
+                    rf"(?<![가-힣]){re.escape(name)}\s*{_TITLE}?",
+                )
+                hit = next((re.search(pattern, segment, re.I) for pattern in patterns
+                            if re.search(pattern, segment, re.I)), None)
+                uid = str(people.get(name) or "").strip()
+                if hit and uid:
+                    hits.append((hit.start(), -len(name), hit, uid))
+            if not hits:
+                continue
+            _start, _length, hit, uid = sorted(hits)[0]
+            tail = segment[hit.end():]
+            tail = re.sub(r"^\s*(?:은|는|이|가|을|를)?\s*(?:[—–-]\s*)?", "", tail)
+            tail = re.split(r"(?<!\d)20\d{2}-\d{2}-\d{2}(?!\d)", tail, maxsplit=1)[0]
+            work = tail.strip(" .:-—–")
+            if not work or (re.search(r"리뷰|검토", work) and not due and not dash_owner):
+                continue
+            records.append({"owner": uid, "work": work,
+                            "due": due.group(1) if due else ""})
+    # Repeated full-name aliases in an interview can point to the same source clause.
+    unique = []
+    seen = set()
+    for row in records:
+        key = (row["owner"], row["work"], row["due"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(row)
+    return unique
+
+
+def canonicalize_meeting_owner_table(state, text: str) -> str:
+    """Align Markdown owner cells with explicit meeting assignments."""
+    records = meeting_owner_records(state)
+    if not records:
+        return str(text or "")
+    lines = str(text or "").splitlines()
+    for index, line in enumerate(lines):
+        if not re.match(r"^\s*\|.*\|\s*$", line):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 3 or all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+            continue
+        if any(value in cells[0].lower() for value in ("작업", "task", "담당")):
+            continue
+        task = cells[0]
+        due = next((cell for cell in cells[2:] if re.fullmatch(r"20\d{2}-\d{2}-\d{2}", cell)), "")
+        candidates = [row for row in records if due and row["due"] == due]
+        if not candidates:
+            task_terms = {value.casefold() for value in re.findall(
+                r"[가-힣A-Za-z0-9_.-]{2,}", task)}
+            ranked = sorted(
+                ((len(task_terms & {value.casefold() for value in re.findall(
+                    r"[가-힣A-Za-z0-9_.-]{2,}", row["work"])}), pos, row)
+                 for pos, row in enumerate(records)),
+                key=lambda value: (-value[0], value[1]),
+            )
+            candidates = [ranked[0][2]] if ranked and ranked[0][0] > 0 else []
+        if len(candidates) != 1:
+            continue
+        cells[1] = f"{{{{mention:{candidates[0]['owner']}}}}}"
+        lines[index] = "| " + " | ".join(cells) + " |"
+    return "\n".join(lines)
+
+
 def attendee_mentions(state) -> list[str]:
     """Return unique resolved meeting attendees in their original note order."""
     people = resolved_people(state)
@@ -330,6 +419,7 @@ def needs_research_interview(state) -> bool:
     return bool(_person_tokens(original) or _uncertain_terms(original))
 
 
-__all__ = ["attendee_mentions", "canonicalize_reply_mentions", "is_meeting_request",
+__all__ = ["attendee_mentions", "canonicalize_meeting_owner_table",
+           "canonicalize_reply_mentions", "is_meeting_request", "meeting_owner_records",
            "meeting_request_text", "meeting_subject", "needs_research_interview", "prune_resolved_gaps",
            "resolved_people", "unresolved_questions"]

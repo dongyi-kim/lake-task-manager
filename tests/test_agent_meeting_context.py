@@ -32,6 +32,7 @@ from app.agent.workflow.agents.people_advisor import (  # noqa: E402
     _user_fixed_assignments,
 )
 from app.agent.workflow.meeting_context import (  # noqa: E402
+    canonicalize_meeting_owner_table,
     canonicalize_reply_mentions,
     meeting_request_text,
     meeting_subject,
@@ -227,6 +228,35 @@ def test_bulk_meeting_comment_keeps_role_mentions_and_markdown(monkeypatch):
     assert "[~skcc.writer]" in body and "[~skcc.reviewer]" in body
 
 
+def test_bulk_change_plan_uses_all_authoritative_meeting_decisions(monkeypatch):
+    from app.agent.workflow.agents import work_architect as module
+
+    set_person_context("meeting-bulk-decision", ["DL-9201", "DL-9202", "DL-7001"])
+    request = """회의 결정사항을 관련 Task DL-9201, DL-9202 두 건의 댓글로 알려줘.
+- 1차 PoC 대상은 5개 테이블
+- StarRocks reader 검증 전 운영 반영 보류
+- writer 결과는 @이다은, reader 결과는 하은님이 공유
+- 준서TL이 최종 검토
+- 배경 이력은 DL-7001이지만 그 티켓에는 댓글을 달지 않음"""
+    answer = "이 회의의 준서TL은 skcc.x1327 임준서야. 댓글 초안을 계속해줘."
+    state = {**_state(request, answer, request=request), "intent": "modify",
+             "bulk_targets": ["DL-9201", "DL-9202"]}
+    monkeypatch.setattr(module, "_ticket_exists", lambda key: key in ("DL-9201", "DL-9202"))
+    monkeypatch.setattr(module, "_client_issue", lambda key: {"fields": {
+        "summary": key, "assignee": {"name": "skcc.owner"}}})
+
+    plan, questions = module._change_plan(
+        state, {"change": {"keys": ["DL-9201", "DL-9202"],
+                            "comment": "담당자에게 알림"}, "rationale": ""}, [], [])
+    module._canonicalize_meeting_mentions(state, plan)
+    assert not questions and plan["keys"] == ["DL-9201", "DL-9202"]
+    assert all(value in plan["comment"] for value in ("5개", "StarRocks", "운영 반영 보류"))
+    assert "DL-7001" not in plan["comment"]
+    assert all("5개" in row["body"] and "StarRocks" in row["body"]
+               for row in plan["comments"])
+    assert "[~skcc.i2011]" in plan["comment"] and "[~skcc.x1327]" in plan["comment"]
+
+
 def test_meeting_comment_is_built_from_authoritative_decision_bullets():
     from app.agent.workflow.agents.work_architect import _meeting_decision_comment
 
@@ -308,6 +338,24 @@ def test_meeting_reply_repairs_alias_tokens_and_lists_every_resolved_attendee():
         assert f"{{{{mention:{uid}}}}}" in got
     assert "{{mention:이다은}}" not in got and "하은님" not in got
     assert "### 참석자" in got
+
+
+def test_meeting_reply_owner_table_uses_explicit_deadline_assignments():
+    set_person_context("meeting-reply-owner-alignment", ["DL-9200"])
+    request = ("회의록 참석: @이다은, {{최민서:1042}}, 하은님. "
+               "담당·기한: @이다은은 writer PoC를 2026-08-22까지, "
+               "하은님은 StarRocks reader 검증을 2026-08-25까지, "
+               "{{최민서:1042}}는 검증 기준 초안을 2026-08-28까지 작성")
+    state = {**_state(request), "intent": "ask", "questions": []}
+    raw = ("| 작업 | 담당 | 기한 |\n|---|---|---|\n"
+           "| writer PoC | {{mention:UI픽스처01}} | 2026-08-22 |\n"
+           "| StarRocks reader 검증 | {{mention:UI픽스처01}} | 2026-08-25 |\n"
+           "| 검증 기준 초안 | {{mention:UI픽스처01}} | 2026-08-28 |")
+    got = canonicalize_meeting_owner_table(state, raw)
+    assert "| writer PoC | {{mention:skcc.i2011}} | 2026-08-22 |" in got
+    assert "| StarRocks reader 검증 | {{mention:skcc.x1402}} | 2026-08-25 |" in got
+    assert "| 검증 기준 초안 | {{mention:skcc.x1042}} | 2026-08-28 |" in got
+    assert "UI픽스처01" not in got
 
 
 def test_curator_drops_only_meeting_terms_defined_by_interview():
