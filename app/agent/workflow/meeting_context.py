@@ -424,7 +424,8 @@ def meeting_owner_records(state) -> list[dict[str, str]]:
                 work = clean_work(segment)
                 if work:
                     records.append({"owner": "", "work": work,
-                                    "due": due.group(1) if due else ""})
+                                    "due": due.group(1) if due else "",
+                                    "owner_decision": "unassigned"})
                 continue
             if not (due or owner_heading or dash_owner or "담당" in segment or re.search(r"\bby\b", segment, re.I)):
                 continue
@@ -458,12 +459,39 @@ def meeting_owner_records(state) -> list[dict[str, str]]:
             if not work or (re.search(r"리뷰|검토", work) and not due and not dash_owner):
                 continue
             records.append({"owner": uid, "work": work,
-                            "due": due.group(1) if due else ""})
+                            "due": due.group(1) if due else "",
+                            "owner_decision": "assigned"})
+    # A continuation answer may decide only the missing owner (``미할당으로``) while
+    # the unfinished original line carries the deadline and fuller deliverable spelling.
+    # Merge those two fragments by work-term overlap instead of asking for the date again.
+    original_due_rows: list[tuple[str, str]] = []
+    for raw in original.splitlines():
+        due = re.search(r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)", raw)
+        if not due:
+            continue
+        work = clean_work(re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", raw).strip())
+        if work:
+            original_due_rows.append((work, due.group(1)))
+    for row in records:
+        if row.get("due"):
+            continue
+        terms = {term.casefold() for term in re.findall(r"[가-힣A-Za-z0-9_.-]{2,}", row["work"])}
+        ranked = sorted(
+            ((len(terms & {term.casefold() for term in re.findall(
+                r"[가-힣A-Za-z0-9_.-]{2,}", work)}), len(work), work, due)
+             for work, due in original_due_rows),
+            reverse=True,
+        )
+        if ranked and ranked[0][0] >= max(1, min(2, len(terms))):
+            _score, _length, work, due = ranked[0]
+            row["due"] = due
+            if len(work) > len(row["work"]):
+                row["work"] = work
     # Repeated full-name aliases in an interview can point to the same source clause.
     unique = []
     seen = set()
     for row in records:
-        key = (row["owner"], row["work"], row["due"])
+        key = (row["owner"], row["work"], row["due"], row.get("owner_decision", ""))
         if key not in seen:
             seen.add(key)
             unique.append(row)

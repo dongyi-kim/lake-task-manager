@@ -504,6 +504,16 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
         model_questions = bool(qs)
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        if not items and not qs:
+            recovered_meeting = _recover_decided_meeting_tasks(state)
+            if recovered_meeting:
+                items = out["items"] = recovered_meeting
+                out["mode"] = "task"
+                out["interpretation"] = ""
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(회의록과 보완 답변에 담당·미할당·기한이 확정되어 "
+                                      "추가 질문 없이 Task 초안을 복원했다)").strip()
+                model_questions = False
         # An exact single-ticket update in the current human turn is authoritative.  A
         # long previous research turn can bias the model into returning a creation draft
         # even though RequestArchitect correctly classified the new intent as MODIFY
@@ -1649,6 +1659,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # ticket body and remove optional create fields that the minutes never decided.
         _ensure_meeting_background_attribution(state, items)
         _ensure_meeting_reviewers(state, items)
+        _drop_meeting_sibling_exclusions(state, items)
         _drop_unrequested_meeting_create_fields(state, items)
         if not any(item.get("labels") for item in items):
             draft.pop("new_labels", None)
@@ -2765,6 +2776,75 @@ def _meeting_unchanged_fields(state) -> set[str]:
             for key in fields:
                 status[key] = True
     return {key for key, accepted in status.items() if not accepted}
+
+
+def _recover_decided_meeting_tasks(state) -> list[dict]:
+    """Build conservative Tasks after an interview closes every ownership slot.
+
+    This is a fallback for model question-loops, not a general meeting-to-ticket parser.  It
+    activates only when the user requested an exact Task count and the reconstructed minutes
+    contain that many deliverables with deadlines and explicit assigned/unassigned decisions.
+    """
+    try:
+        from app.agent.workflow.meeting_context import (
+            is_meeting_request, meeting_owner_records, meeting_request_text,
+        )
+        if not is_meeting_request(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
+            return []
+        original = meeting_request_text(state)
+        count_match = _re.search(r"(?:Task|티켓|테스크)\s*([1-9]\d*)\s*건", original, _re.I)
+        records = meeting_owner_records(state)
+        if not count_match or len(records) != int(count_match.group(1)):
+            return []
+        if any(not row.get("due") or row.get("owner_decision") not in ("assigned", "unassigned")
+               for row in records):
+            return []
+    except Exception:
+        return []
+    epic_match = _re.search(r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)", original, _re.I)
+    if not epic_match:
+        return []
+    epic = epic_match.group(1).upper()
+    items = []
+    for row in records:
+        work = str(row.get("work") or "").strip()
+        safe_work = _esc(work)
+        item = {
+            "summary": work,
+            "type": "Task",
+            "epic": epic,
+            "duedate": str(row.get("due") or ""),
+            "assignee_source": ("user" if row.get("owner") else "user_unassigned"),
+            "description": (
+                "<h3>배경</h3><p>회의에서 확정한 후속 작업을 실행 단위로 관리한다.</p>"
+                f"<h3>작업 범위</h3><ul><li>{safe_work}</li></ul>"
+                "<h3>완료 조건</h3><ul data-type=\"taskList\">"
+                f"<li data-checked=\"false\">{safe_work} 결과와 확인 근거를 티켓에 기록한다.</li>"
+                "</ul>"
+            ),
+        }
+        if row.get("owner"):
+            item["assignee"] = str(row["owner"])
+        items.append(item)
+    return items
+
+
+def _drop_meeting_sibling_exclusions(state, items: list) -> None:
+    """Do not repeat sibling-ticket titles inside every meeting-created Task body."""
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request
+        if not is_meeting_request(state) or len(items) < 2:
+            return
+    except Exception:
+        return
+    for item in items:
+        body = str(item.get("description") or "")
+        body = _re.sub(
+            r"<li>\s*제외\s*\(\s*별도\s*(?:ticket|티켓)\s*\)\s*:[\s\S]*?</li>",
+            "", body, flags=_re.I,
+        )
+        body = _re.sub(r"<ul>\s*</ul>", "", body, flags=_re.I)
+        item["description"] = body
 
 
 def _fill_owners(item: dict, kids: list) -> None:

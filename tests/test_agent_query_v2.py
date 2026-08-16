@@ -274,10 +274,10 @@ def test_meeting_query_plan_preserves_explicit_ticket_and_replaces_generic_note_
     assert plan["queries"][0]["where"] == "key in (DL-7001)"
     assert any(q["source"] == "jira" and "Puffin StarRocks" in q["query"]
                for q in plan["queries"])
-    assert any(q["source"] == "confluence" and q["query"] == "Puffin StarRocks"
+    assert any(q["source"] == "confluence" and q["query"] == "Puffin"
                for q in plan["queries"])
     comments = next(q for q in plan["queries"] if q["source"] == "comments")
-    assert comments["query"] == "Puffin StarRocks" and not comments["where"]
+    assert comments["query"] == "Puffin" and not comments["where"]
 
 
 def test_query_specialist_drops_unresolved_jql_placeholder():

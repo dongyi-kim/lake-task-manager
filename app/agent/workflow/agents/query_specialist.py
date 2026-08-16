@@ -360,21 +360,24 @@ def _normalize_meeting_research_queries(state, plan: dict) -> None:
     keys = [str(key).upper() for key in (state.get("mentioned_keys") or [])
             if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).upper())]
     generic = re.compile(r"회의|미팅|meeting|memo|notes?", re.I)
+    topic_terms = [term for term in topic.split() if len(term) >= 3]
+    internal_topic = topic_terms[0] if topic_terms else topic
     for query in plan.get("queries") or []:
         source = str(query.get("source") or "")
         material = " ".join(str(query.get(key) or "") for key in ("query", "where"))
         if source == "confluence" and topic:
-            query["query"], query["where"] = topic, ""
+            query["query"], query["where"] = internal_topic, ""
         elif source == "comments" and topic:
-            query["query"], query["where"] = topic, ""
+            query["query"], query["where"] = internal_topic, ""
         elif source == "web" and topic:
             query["query"], query["where"] = f"{topic} official documentation", ""
         elif source == "jira" and topic and generic.search(material):
             query["query"], query["where"] = topic, ""
 
     if keys and not any(
-            q.get("source") == "jira" and any(key in " ".join(
-                str(q.get(field) or "") for field in ("query", "where")) for key in keys)
+            q.get("source") == "jira" and any(re.search(
+                rf"(?:^|\bin\s*\([^)]*){re.escape(key)}(?:\b|\))",
+                str(q.get("where") or ""), re.I) for key in keys)
             for q in plan.get("queries") or []):
         plan.setdefault("queries", []).insert(0, {
             "id": "meeting-explicit-tickets", "source": "jira", "query": "",
@@ -500,8 +503,14 @@ class QuerySpecialist(StructuredAgent):
             plan["queries"] = [q for q in plan["queries"]
                                if q.get("source") not in ("web", "github")]
         else:
-            public_query = _public_external_query(
-                (request_text(state) + " " + conversation(state)).strip())
+            try:
+                from app.agent.workflow.meeting_context import is_meeting_request, meeting_subject
+                meeting_query = meeting_subject(state) if is_meeting_request(state) else ""
+            except Exception:
+                meeting_query = ""
+            public_query = (f"{meeting_query} official documentation" if meeting_query else
+                            _public_external_query(
+                                (request_text(state) + " " + conversation(state)).strip()))
             web = [q for q in plan["queries"] if q.get("source") == "web"]
             candidates = [public_query]
             original_terms = set(_query_identity(public_query).split()) - {

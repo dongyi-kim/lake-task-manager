@@ -22,12 +22,14 @@ from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _canonicalize_meeting_mentions,
     _comment_input_missing,
     _drop_unneeded_meeting_questions,
+    _drop_meeting_sibling_exclusions,
     _drop_unrequested_meeting_create_fields,
     _ensure_meeting_background_attribution,
     _ensure_meeting_reviewers,
     _explicit_parent_epic,
     _explicit_meeting_update_fields,
     _meeting_unchanged_fields,
+    _recover_decided_meeting_tasks,
     shape_hint,
 )
 from app.agent.workflow.agents.people_advisor import (  # noqa: E402
@@ -142,6 +144,41 @@ StarRocks reader 운영 판정 자료 정리 by ... 2026-08-26까지
     answered = {**_state(request, "reader 운영 판정 자료는 미할당으로 만들어.", request=request),
                 "situation": "관련 기록 조사 완료", "turn_continuation": True}
     assert unresolved_questions(answered) == []
+
+
+def test_meeting_owner_followup_merges_original_deadline_and_recovers_exact_task_count():
+    set_person_context("meeting-owner-resume-recovery", ["DL-9200"])
+    request = """첨부 회의 메모를 바탕으로 Epic DL-9200 아래 Task 2건을 만들어줘.
+@이다은 — writer 증빙 패키지 정리, 2026-08-23까지
+StarRocks reader 운영 판정 자료 정리 by ... 2026-08-26까지
+담당 얘기를 쓰다가 회의 종료. 요청·지시자는 최민서M."""
+    answer = ("reader 운영 판정 자료 정리는 아직 담당자를 정하지 못했어. 미할당으로 만들어. "
+              "요청·지시자는 skcc.x1042 최민서가 맞아.")
+    state = {**_state(request, answer, request=answer), "intent": "plan_work",
+             "turn_continuation": True, "situation": "관련 자료 조사 완료"}
+    records = meeting_owner_records(state)
+    reader = next(row for row in records if "reader" in row["work"])
+    assert reader["due"] == "2026-08-26" and reader["owner_decision"] == "unassigned"
+    items = _recover_decided_meeting_tasks(state)
+    assert len(items) == 2
+    assert items[0]["assignee"] == "skcc.i2011"
+    assert "assignee" not in items[1] and items[1]["assignee_source"] == "user_unassigned"
+    assert [item["duedate"] for item in items] == ["2026-08-23", "2026-08-26"]
+
+
+def test_meeting_created_task_bodies_do_not_repeat_sibling_titles_as_exclusions():
+    state = _state("회의 기록으로 Epic DL-9200 아래 Task 2건을 만들어줘")
+    items = [
+        {"summary": "writer 증빙", "description":
+         "<h3>작업 범위</h3><ul><li>포함: writer 증빙</li>"
+         "<li>제외(별도 ticket): reader 검증</li></ul>"},
+        {"summary": "reader 검증", "description":
+         "<h3>작업 범위</h3><ul><li>포함: reader 검증</li>"
+         "<li>제외(별도 ticket): writer 증빙</li></ul>"},
+    ]
+    _drop_meeting_sibling_exclusions(state, items)
+    assert "reader 검증" not in items[0]["description"]
+    assert "writer 증빙" not in items[1]["description"]
 
 
 def test_meeting_interview_answer_binds_person_and_term_without_reasking():
