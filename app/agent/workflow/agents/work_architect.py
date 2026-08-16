@@ -514,7 +514,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 out["mode"] = "task"
                 qs = []
                 model_questions = False
-                out["rationale"] = ((out.get("rationale") or "")
+                rationale = _re.sub(
+                    r"[^.\n]*(?:재현\s*(?:경로|정보)[^.\n]{0,80}(?:필요|요청)|"
+                    r"추가\s*정보[^.\n]{0,40}요청)[^.\n]*(?:\.|$)",
+                    "", str(out.get("rationale") or ""), flags=_re.I,
+                ).strip()
+                out["rationale"] = (rationale
                                     + "\n(신고 내용에 재현 경로·기대·실제 동작이 있어 "
                                       "중복 질문 없이 Bug 초안으로 정리했다)").strip()
         # 규칙/측정 방법만 있고 적용할 데이터 대상이 없으면 실행 가능한 초안이 아니다.
@@ -923,7 +928,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 refs.append((k, f"<li>{k} — {why}</li>" if why else f"<li>{k}</li>"))
         for d in (state.get("related_docs") or [])[:3]:
             t, u = (d.get("title") or "").strip(), (d.get("url") or "").strip()
-            if t and u:
+            # A client-side navigation fragment such as ``#/home`` is not a durable
+            # source that Jira readers can open. Keep it in the LTM answer UI, but do
+            # not persist it as ticket evidence.
+            if t and u.startswith(("http://", "https://")):
                 refs.append((u, f'<li><a href="{u}">{t}</a></li>'))
         for it in items:
             it["description"] = _merge_refs(it.get("description") or "", refs)
@@ -940,7 +948,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                             (state.get("evidence") or []) if isinstance(e, dict)}
         allowed_ref_keys |= {str(k).upper() for k in (state.get("mentioned_keys") or [])}
         allowed_ref_urls = {str(d.get("url") or "").strip() for d in
-                            (state.get("related_docs") or []) if isinstance(d, dict)}
+                            (state.get("related_docs") or []) if isinstance(d, dict)
+                            and str(d.get("url") or "").strip().startswith(("http://", "https://"))}
         unverified = []
         for it in items:
             it["description"], gone = _drop_unverified_refs(

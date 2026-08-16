@@ -757,16 +757,45 @@ def _canonicalize_meeting_reply(text: str, state) -> str:
             or state.get("questions"):
         return out
     attendees = attendee_mentions(state)
-    if not attendees:
+    if attendees:
+        block = "### 참석자\n\n" + " ".join(f"{{{{mention:{uid}}}}}" for uid in attendees)
+        pattern = r"(?ms)^###\s*참석자\s*\n.*?(?=^###\s|\Z)"
+        if _re.search(pattern, out):
+            out = _re.sub(pattern, block + "\n\n", out, count=1)
+        else:
+            anchor = _re.search(r"(?m)^###\s*담당[·ㆍ\s-]*기한\s*$", out)
+            if anchor:
+                out = (out[:anchor.start()].rstrip() + "\n\n" + block
+                       + "\n\n" + out[anchor.start():])
+            else:
+                out = out.rstrip() + "\n\n" + block
+    return _ensure_explicit_meeting_ticket_sources(out, state)
+
+
+def _ensure_explicit_meeting_ticket_sources(text: str, state) -> str:
+    """Keep every ticket explicitly cited by the minutes in the combined evidence section."""
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        original = meeting_request_text(state)
+    except Exception:
+        return str(text or "")
+    # Korean particles are commonly attached directly (``DL-7001에서``), so a
+    # Unicode word boundary after the number would miss the key.
+    keys = list(dict.fromkeys(_re.findall(
+        r"(?<![A-Z0-9-])([A-Z][A-Z0-9]*-\d+)(?!\d)", original)))
+    out = str(text or "")
+    missing = [key for key in keys if not _re.search(
+        rf"(?:ticket-(?:detail|inline|compact):{_re.escape(key)}|"
+        rf"\[{_re.escape(key)}(?:\s|\]))", out, _re.I)]
+    if not missing:
         return out
-    block = "### 참석자\n\n" + " ".join(f"{{{{mention:{uid}}}}}" for uid in attendees)
-    pattern = r"(?ms)^###\s*참석자\s*\n.*?(?=^###\s|\Z)"
-    if _re.search(pattern, out):
-        return _re.sub(pattern, block + "\n\n", out, count=1)
-    anchor = _re.search(r"(?m)^###\s*담당[·ㆍ\s-]*기한\s*$", out)
-    if anchor:
-        return out[:anchor.start()].rstrip() + "\n\n" + block + "\n\n" + out[anchor.start():]
-    return out.rstrip() + "\n\n" + block
+    bullets = "\n".join(f"- {{{{ticket-detail:{key}}}}}" for key in missing)
+    section = _re.search(r"(?m)^###\s*(?:근거|참고)\s*$", out)
+    if not section:
+        return out.rstrip() + "\n\n### 근거\n\n" + bullets
+    next_heading = _re.search(r"(?m)^###\s+", out[section.end():])
+    end = section.end() + (next_heading.start() if next_heading else len(out[section.end():]))
+    return out[:end].rstrip() + "\n" + bullets + "\n\n" + out[end:].lstrip()
 
 
 def _canonicalize_person_mentions(text: str, state) -> str:

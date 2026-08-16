@@ -358,6 +358,18 @@ def test_meeting_reply_owner_table_uses_explicit_deadline_assignments():
     assert "UI픽스처01" not in got
 
 
+def test_meeting_reply_preserves_explicit_background_ticket_in_combined_evidence():
+    set_person_context("meeting-reply-explicit-source", ["DL-7001"])
+    request = ("회의록을 조사해 요약해줘. 참석: @이다은. "
+               "배경은 DL-7001에서 후보를 정했고 운영 반영은 보류하기로 결정.")
+    state = {**_state(request), "intent": "ask", "questions": []}
+    raw = ("### 결정사항\n\n운영 반영 보류\n\n### 근거\n\n"
+           "- [회의록](https://confluence.example/minutes)\n\n### 외부 공식 근거\n\n- 문서")
+    got = _canonicalize_meeting_reply(raw, state)
+    assert "{{ticket-detail:DL-7001}}" in got
+    assert got.index("{{ticket-detail:DL-7001}}") < got.index("### 외부 공식 근거")
+
+
 def test_curator_drops_only_meeting_terms_defined_by_interview():
     request = "회의 후속 정리. PSR 뜻은 기록에 없으니 조사 후 물어봐."
     answer = "PSR은 PoC Success Review이고 5개 모두 오차 5% 이내여야 해."

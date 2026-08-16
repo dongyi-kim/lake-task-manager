@@ -2876,17 +2876,21 @@ def test_complete_pasted_voc_recovers_bug_draft_instead_of_reasking_reproduction
         "아래 VoC 그대로 티켓으로 만들어줘. 알아서\n\n---\n"
         "데이터 조회할 때 컬럼 설명이 안 보여서 담당자에게 묻고 있습니다. "
         "카탈로그에 설명이 있다는데 화면에서는 안 보입니다. "
-        "조회 화면에서 바로 봤으면 좋겠습니다."
+        "조회 화면에서 바로 봤으면 좋겠습니다.",
+        related_docs=[{"title": "LTM 사용 가이드", "url": "#/home"}],
     )
     out = {"questions": [{"question": "재현 경로를 알려 주세요", "kind": "text",
                            "required_input": True, "why_required": "재현 정보 필요"}],
-           "mode": "task", "rationale": "", "items": []}
+           "mode": "task", "rationale": "재현 경로가 필요하여 추가 정보를 요청합니다.",
+           "items": []}
     result = WorkArchitect().apply(state, out)
     rows = result["draft"]["items"]
     assert len(rows) == 1 and rows[0]["type"] == "Bug"
     assert not result["questions"]
     assert "컬럼 설명" in rows[0]["summary"]
     assert all(value in rows[0]["description"] for value in ("재현 경로", "기대 동작", "실제 동작"))
+    assert "LTM 사용 가이드" not in rows[0]["description"] and "#/home" not in rows[0]["description"]
+    assert "추가 정보를 요청" not in result["draft"]["rationale"]
 
 
 def test_existing_bug_sections_replace_placeholder_actual_with_reported_symptom(monkeypatch):
