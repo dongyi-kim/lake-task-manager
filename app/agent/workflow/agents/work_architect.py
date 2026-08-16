@@ -1659,6 +1659,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # ticket body and remove optional create fields that the minutes never decided.
         _ensure_meeting_background_attribution(state, items)
         _ensure_meeting_reviewers(state, items)
+        _preserve_defined_meeting_terms(state, items)
         _drop_meeting_sibling_exclusions(state, items)
         _drop_unrequested_meeting_create_fields(state, items)
         if not any(item.get("labels") for item in items):
@@ -2875,6 +2876,45 @@ def _drop_meeting_sibling_exclusions(state, items: list) -> None:
             )
         body = _re.sub(r"<ul>\s*</ul>", "", body, flags=_re.I)
         item["description"] = body
+
+
+def _preserve_defined_meeting_terms(state, items: list) -> None:
+    """Keep a locally defined meeting acronym beside its confirmed expansion once."""
+    if not items:
+        return
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
+        if not is_meeting_request(state):
+            return
+        original = meeting_request_text(state)
+    except Exception:
+        return
+    latest = last_user_text(state)
+    for term in dict.fromkeys(_re.findall(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9-]{1,9})(?![A-Za-z0-9])", original)):
+        found = _re.search(
+            rf"(?<![A-Za-z0-9]){_re.escape(term)}(?![A-Za-z0-9])\s*"
+            r"(?:은|는|:|=)\s*(.+?)(?=\s*(?:이고|이며|이고요|입니다|이다)[,.]?|[.;\n]|$)",
+            latest, _re.I,
+        )
+        if not found:
+            continue
+        definition = found.group(1).strip(" `.,")
+        if not definition:
+            continue
+        candidates = [item for item in items if definition.casefold() in (
+            str(item.get("summary") or "") + " " + str(item.get("description") or "")
+        ).casefold()]
+        if not candidates and len(items) == 1:
+            candidates = items
+        for item in candidates:
+            body = str(item.get("description") or "")
+            hay = str(item.get("summary") or "") + " " + body
+            if _re.search(rf"(?<![A-Za-z0-9]){_re.escape(term)}(?![A-Za-z0-9])", hay):
+                continue
+            if definition in body:
+                item["description"] = body.replace(definition, f"{term} ({definition})", 1)
+            else:
+                item["description"] = (body + f"<p>회의 정의: {term} — {_esc(definition)}</p>").strip()
 
 
 def _fill_owners(item: dict, kids: list) -> None:

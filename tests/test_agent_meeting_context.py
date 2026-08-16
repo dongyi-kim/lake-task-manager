@@ -29,6 +29,7 @@ from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _explicit_parent_epic,
     _explicit_meeting_update_fields,
     _meeting_unchanged_fields,
+    _preserve_defined_meeting_terms,
     _recover_decided_meeting_tasks,
     shape_hint,
 )
@@ -195,6 +196,16 @@ def test_meeting_interview_answer_binds_person_and_term_without_reasking():
     state = {**_state(request, answer, request=request), "situation": "조사 완료",
              "topic_dossier": "PSR 정의 확인 필요"}
     assert unresolved_questions(state) == []
+
+
+def test_confirmed_local_meeting_acronym_is_preserved_with_its_expansion_in_draft():
+    request = "회의 후속 Task. 준서TL이 PSR 증빙 원본 추출 담당."
+    answer = "준서TL은 skcc.x1103 이준서. PSR은 PoC Success Review이고 증빙을 추출해."
+    state = {**_state(request, answer, request=request), "turn_continuation": True}
+    items = [{"summary": "PoC Success Review 증빙 원본 추출",
+              "description": "<h3>배경</h3><p>PoC Success Review 증빙 작업</p>"}]
+    _preserve_defined_meeting_terms(state, items)
+    assert "PSR (PoC Success Review)" in items[0]["description"]
 
 
 def test_negative_gate_condition_is_a_definition_not_an_unknown_term():
