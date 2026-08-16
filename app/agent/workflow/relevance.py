@@ -7,7 +7,9 @@ import re
 _NEGATIVE = re.compile(
     r"관련(?:이|은|성(?:이)?)?\s*(?:없|낮)|직접(?:적(?:인)?)?\s*관련[^.\n]{0,12}(?:없|아니)|"
     r"무관|연관(?:이|은|성(?:이)?)?\s*(?:없|낮)|관련되지\s*않|"
-    r"다른\s*(?:주제|작업|방향|방향성)")
+    r"다른\s*(?:주제|작업|방향|방향성)|"
+    r"(?:검색|조회)\s*결과(?:에서)?[^.\n]{0,30}(?:찾을\s*수\s*없|정보(?:가)?\s*없)|"
+    r"구체적인\s*정보[^.\n]{0,24}찾을\s*수\s*없")
 
 _GENERIC = {"epic", "task", "story", "bug", "jira", "ltm", "lake", "manager",
             "etl", "catalog", "runtime", "workbench", "dataops", "observability", "devops",

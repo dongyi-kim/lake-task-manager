@@ -86,7 +86,17 @@ def _jira_where(where: str, query: str) -> str:
     if re.search(r"\b(?:text|summary|description)\s*~", base, re.I):
         return base
     terms = _lexical_terms(query)
-    lexical = " AND ".join(f'text ~ "{term}"' for term in terms[:4])
+    clauses = [f'text ~ "{term}"' for term in terms[:4]]
+    # Public technology queries commonly contain umbrella / feature / metric. Requiring
+    # all three loses relevant tickets that omit only the umbrella name. Keep the narrow
+    # all-Latin three-term form at a 2-of-3 boundary; work phrases retain strict AND.
+    if len(clauses) == 3 and all(re.fullmatch(r"[A-Za-z][A-Za-z0-9.+-]*", term)
+                                 for term in terms):
+        lexical = "(" + " OR ".join(
+            f"({clauses[left]} AND {clauses[right]})"
+            for left, right in ((0, 1), (0, 2), (1, 2))) + ")"
+    else:
+        lexical = " AND ".join(clauses)
     if not lexical:
         return base
     return f"({base}) AND ({lexical})" if base else lexical
@@ -158,6 +168,13 @@ class QueryRunner:
                     else:
                         raw = T.BY_NAME["search_documents"].invoke(args)
                 elif source == "comments":
+                    if not str(spec.get("query") or "").strip() \
+                            and not str(spec.get("where") or "").strip():
+                        raw = {"error": "빈 댓글 전수조회는 허용되지 않습니다.",
+                               "comments": [], "returned": 0}
+                        artifacts[qid] = raw
+                        results.append({"id": qid, "source": source, "result": raw})
+                        continue
                     args = {"query": spec.get("query") or "", "jql_where": spec.get("where") or "",
                             "page_size": min(spec.get("page_size") or 20, 25)}
                     if complete == "all":

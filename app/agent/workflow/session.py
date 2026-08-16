@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import re as _re
+import copy as _copy
 
 import logging
 import uuid
@@ -63,7 +64,7 @@ _IDENTITY_TTL = 300        # 사용자·모듈 소속은 대화 중에 안 바�
 
 
 def _identity() -> str:
-    """'내가 누구인가' — 현재 사용자 정체 한 줄. 모든 역할의 시스템 프롬프트에 실린다.
+    """'내가 누구인가' — 검증된 최소 정체성만 모든 역할의 시스템 프롬프트에 실린다.
 
     "내 모듈", "나한테 맞는 일" 같은 말은 정체를 알아야 해석된다. 매 역할이 whoami 를
     부르게 하는 대신 세션 시작에 코드가 한 번 해석해 State 로 준다(사용자 요청).
@@ -75,23 +76,18 @@ def _identity() -> str:
     if _IDENTITY_CACHE["val"] is not None and _t.time() - _IDENTITY_CACHE["at"] < _IDENTITY_TTL:
         return _IDENTITY_CACHE["val"]
     try:
-        from app.agent.tools._ctx import client, settings
-        from app.domain.search import search_users
-        from app.infra.settings import is_manager, load_people
+        from app.agent.tools._ctx import client
+        from app.infra.settings import load_people
         me = (client().current_user() or {})
         uid = me.get("name") or me.get("key") or ""
         if not uid:
             return ""
-        name = ""
-        for u in (search_users(client(), settings(), uid, 5) or []):
-            if str(u.get("id") or "") == uid:
-                name = u.get("name") or ""
-                break
         mods = [m for m, ids in (load_people() or {}).items() if uid in (ids or [])]
-        mgr = bool(is_manager(settings(), me))
-        val = (f"The current user is {name or uid} ({uid})"
-               + (f", member of module(s): {', '.join(mods)}" if mods else "")
-               + (", and IS a manager." if mgr else ", not a manager."))
+        val = ("## Verified Current User Context\n"
+               f"- user_id: `{uid}`\n"
+               f"- modules: {', '.join(mods) if mods else 'not configured'}\n"
+               "Use this only for self-references. Render any user-facing person occurrence as "
+               f"`{{{{mention:{uid}}}}}`; do not echo a display name plus ID.")
         import time as _t2
         _IDENTITY_CACHE.update(at=_t2.time(), val=val)
         return val
@@ -137,6 +133,64 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             "trace": [TRACE_RESET], "change_plan": {}, "questions": []}
 
 
+_CONTEXT_SWITCH = _re.compile(
+    r"(?:이건|이거|그건|그거).{0,8}(?:그만|취소)|완전히\s*다른|"
+    r"잠깐\s*다른|최종\s*요청|(?:댓글|변경|요청).{0,8}(?:도\s*)?취소|"
+    r"(?:대신|다시\s+.+?돌아갈)", _re.I,
+)
+
+_TURN_DERIVED_EMPTY = {
+    "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
+    "sufficient": False, "answer_depth": "", "request_plan": {},
+    "query_plan": {}, "query_results": [], "query_artifacts": {},
+    "assignment_completion": {}, "bulk_targets": [],
+    "pre_survey": "", "seed_map": "", "web_context": "", "topic_dossier": "",
+    "situation": "", "evidence": [], "related_docs": [], "epic_candidate": "",
+    "already_exists": False, "pmo_findings": [], "group_activity": "",
+    "ticket_progress": "", "person_work_snapshot": {}, "daily_priority_snapshot": {},
+    "knowledge_brief": {}, "pmo_caution": "",
+    "interpretation": "", "structure_plan": [], "structure_ok": False,
+    "structure_notes": [], "draft": {}, "assignments": [], "review": {},
+    "reply": "", "error": "", "turns": 0,
+}
+
+
+def _is_interview_continuation(text: str, prior: dict) -> bool:
+    """Keep expensive research only for an actual answer to our unresolved question."""
+    asked = [q for q in (prior.get("questions") or []) if isinstance(q, dict)]
+    if not asked or _CONTEXT_SWITCH.search(str(text or "")):
+        return False
+    # A full new request with a new explicit ticket is not an answer merely because the last turn asked.
+    old_keys = set(prior.get("mentioned_keys") or [])
+    new_keys = set(_recent_keys(text))
+    if new_keys and old_keys and not new_keys.issubset(old_keys):
+        return False
+    return True
+
+
+def _turn_start_patch(text: str, prior: dict) -> dict:
+    """Separate per-turn working memory from durable conversation messages.
+
+    LangGraph merges new input into the checkpoint.  Without explicit empty values, a new request inherits the
+    previous topic dossier, draft, approval review, and PMO result.  Preserve research only while answering a
+    blocking interview; every other turn receives a clean working set and a new request root.
+    """
+    continuation = _is_interview_continuation(text, prior)
+    patch = _copy.deepcopy(_TURN_DERIVED_EMPTY)
+    patch.update(turn_continuation=continuation,
+                 turn_reset_reason="interview-answer" if continuation else "new-or-revised-request")
+    if continuation:
+        for key in ("request_text", "pre_survey", "seed_map", "web_context", "topic_dossier",
+                    "situation", "evidence", "related_docs", "epic_candidate", "already_exists",
+                    "bulk_targets", "structure_plan", "structure_ok", "structure_notes", "draft",
+                    "turns"):
+            if key in prior:
+                patch[key] = prior[key]
+    else:
+        patch["request_text"] = str(text or "").strip()
+    return patch
+
+
 def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") -> dict:
     """한 턴 굴린다. 승인이 필요한 지점에서 멈추면 `pending` 이 채워져 돌아온다."""
     tid = thread_id or new_thread()
@@ -145,7 +199,14 @@ def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") 
         return {"thread_id": tid, "ok": False, "reply": too_long, "error": too_long, "trace": []}
     log.info("[%s] Q: %s", tid, (text or "")[:500])
     meter = _usage.Meter()
-    state = get_graph().invoke(_initial(tid, text, user_role, user_id), _config(tid, meter))
+    graph = get_graph()
+    try:
+        prior = dict((graph.get_state(_config(tid)).values or {}))
+    except Exception:
+        prior = {}
+    initial = _initial(tid, text, user_role, user_id)
+    initial.update(_turn_start_patch(text, prior))
+    state = graph.invoke(initial, _config(tid, meter))
     out = _shape(tid, state)
     out["usage"] = meter.snapshot()
     log.info("[%s] A: %s", tid, (out.get("reply") or "")[:1000])
@@ -389,13 +450,19 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
             # ★ 코멘트도 함께 싣는다 — **코멘트만 남기는 일괄**이 있고(사용자 요청),
             #   그때 카드에 아무것도 안 보이면 무엇을 승인하는지 알 수 없다.
             #   `comments` 는 티켓별 미리보기(멘션이 티켓마다 다르다).
-            out["pending"] = {"token": data["approval_token"], "action": "update_tickets",
+            comment_only = not (plan.get("changes") or {}) and bool(
+                plan.get("comments") or str(plan.get("comment") or "").strip())
+            out["pending"] = {"token": data["approval_token"],
+                              "action": "add_ticket_comments" if comment_only else "update_tickets",
                               "keys": plan["keys"], "changes": plan.get("changes") or {},
                               "comment": plan.get("comment") or "",
                               "comments": plan.get("comments") or [],
                               "rationale": plan.get("why") or ""}
         elif plan.get("key"):
-            out["pending"] = {"token": data["approval_token"], "action": "update_ticket",
+            comment_only = not (plan.get("changes") or {}) and bool(
+                str(plan.get("comment") or "").strip())
+            out["pending"] = {"token": data["approval_token"],
+                              "action": "add_ticket_comment" if comment_only else "update_ticket",
                               "key": plan["key"], "changes": plan.get("changes") or {},
                               "comment": plan.get("comment") or "",
                               "rationale": plan.get("why") or ""}

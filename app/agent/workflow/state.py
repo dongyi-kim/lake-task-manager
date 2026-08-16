@@ -131,6 +131,8 @@ class AgentState(TypedDict, total=False):
     sufficient: bool                # 되묻지 않고 진행해도 되나
     answer_depth: str               # "brief"(값·결론만) | "explain"(개념·배경까지)
     request_plan: dict              # Request Architect의 원자 작업 DAG
+    turn_continuation: bool         # 직전 확인 질문에 대한 답변인가(새 요청의 stale state와 구분)
+    turn_reset_reason: str          # local debug/evaluation용 턴 경계 판정 근거
 
     # ── Query Specialist / deterministic Query Runner ──
     query_plan: dict
@@ -149,7 +151,7 @@ class AgentState(TypedDict, total=False):
     # ── ResearchAnalyst ──
     bulk_targets: list              # 조건 일괄 수정 대상(코드 JQL 조회 — "전부" 요청의 집합)
     situation: str                  # "현재 상황" 서술 — 사용자에게 그대로 보인다
-    evidence: list                  # [{"key","title","why"}] 근거. 출처 없는 서술은 금지
+    evidence: list                  # [{key,title,why,url,observations:[{source,text}]}], 소스당 한 항목
     related_docs: list              # [{"title","url"}]
     epic_candidate: str             # 붙일 만한 상위 Epic
     already_exists: bool            # 사실상 같은 일을 하는 티켓이 이미 있다 — 새로 만들지 말라는 신호
@@ -158,6 +160,8 @@ class AgentState(TypedDict, total=False):
     pmo_findings: list              # [{"key","point","action"}] 조회에서 확인한 사실
     group_activity: str             # PMO — 로스터 전원 활동 사전 취합(그룹 질의의 3층 자료)
     ticket_progress: str            # PMO — 티켓 한 건의 진척 근거 4갈래 사전 취합
+    person_work_snapshot: dict      # 특정 사람의 현재 미완료 할당 티켓 결정적 조회
+    daily_priority_snapshot: dict   # 본인 열린 업무의 deadline+priority 결정적 1순위
     knowledge_brief: dict           # KnowledgeCurator — {concepts, our_context, references, gaps}
     pmo_caution: str                # 읽을 때의 주의(활동 적음 ≠ 태만 등)
 
@@ -221,6 +225,22 @@ def request_text(state: AgentState) -> str:
     원 요청("starrocks puffin ndv …")이 사라지고 답변("기한은 9/30")만 남는다 — 그 틈에
     Epic 본문의 주제가 제목·본문을 잠식했다(실측). RequestArchitect 가 첫 요청 턴에 고정해 둔다."""
     return (state.get("request_text") or "").strip() or last_user_text(state)
+
+
+def is_memory_only_request(state: AgentState) -> bool:
+    """Whether the user explicitly asked for acknowledgement without action or research.
+
+    Keep this deliberately narrow.  A message that both shares context and asks for work
+    must continue through the normal workflow; only an explicit "not now, just remember"
+    instruction qualifies.
+    """
+    text = last_user_text(state).strip()
+    return bool(re.search(
+        r"(?:지금은|당장은|우선은)[^.!?\n]{0,40}"
+        r"(?:답하지\s*말|조사하지\s*말|처리하지\s*말)[^.!?\n]{0,40}"
+        r"(?:이\s*)?(?:정보|내용)만\s*(?:기억|참고)",
+        text,
+    ))
 
 
 def conversation(state: AgentState, limit: int = 12) -> str:

@@ -263,3 +263,154 @@ network 실행에서 19.7초로 성공. 실패를 품질·비용 합계에 섞�
   token -11.74%, cost -11.34%
 - 배포 판단: **개선 방향은 승인 가능**, 단 이 문서는 qualification이 아님. 정식 승격 판단에는 final commit에서
   full battery 5회 이상, 후보 순서 counterbalance, 동일 네트워크 조건의 별도 qualification 실행 필요
+
+---
+
+## 2026-08-16 확장 기준선 — Meeting·Context change 추가
+
+> 기존 44-case English v6 closure composite에 신규 `meeting` 5건과 `ctx-chg` 4건을 이어 붙인
+> **53-case 전체 배터리 개선 전 기준선**. 신규 9건의 사람 품질은 **2.82/5**, 결합 기준선은 **4.20/5**.
+> 신규 suite에서 회의 인터뷰·명시 담당자 보존·대화 전환이 구조적으로 무너져, 기존 배터리만의 4.48이
+> 새 기능 범위를 대표하지 못함을 확인
+
+### 측정 식별자와 비교 가능성
+
+| 항목 | 값 |
+|---|---|
+| protocolVersion / rubricVersion | `2.0.0` / `2.0.0` |
+| 신규 runKind | `exploratory`, 1회 |
+| 신규 runGroupId | `baseline-main-meeting-ctx-20260816` |
+| 신규 candidateCommit | `5f343c50098d68b64652e25e99c2f5ed29d2acae` |
+| Agent runtime 기준 | PR #8 병합 main `8662d6e27ccb3531dcd38935600791fb1e0c5d73`와 동일 |
+| promptVersion | `en-role-contract-v7` |
+| model routing | complex `gpt-4o`, simple `gpt-4o-mini` |
+| dataManifestSha256 | `87e592d3cc136e62e135e5d81c76c91121da0e85d18fdc0b74bd0304f0521621` |
+| selection / retry | `complete-run-no-substitution` / `no-silent-retry` |
+| cache / process | case별 cold private cache / suite별 별도 process |
+| qualitative evaluator | Codex 직접 raw 전문 판독, LTM LLM judge 미사용 |
+| reviewer / blind | 1명 / non-blind |
+| qualificationEligible | `false` — 신규 suite 1회 및 기존 44건과 다른 commit·data manifest의 composite |
+
+| Suite | version | batteryManifestSha256 | specializedReviewSpecSha256 | comparabilityKey |
+|---|---|---|---|---|
+| meeting | `1.0.0` | `4eef1d8e848d6dc13d9e6b1978889199e5e9b1b9eecccc4049696ff74288cfd3` | `d5d24bf1aac3bb40117824721807a19e3ce49bbe872d4d0ade74c03ad47c6e83` | `a12001ab10ce974be41ab7ab98d9095fda774e41a5dc3a927f4057ea00957022` |
+| ctx-chg | `1.0.0` | `b775a2e64ad5a89426678fa28348e37fc66aa65f6b45f40070cd83fa5210bb30` | `63858d0bb8086270c302225817b70df970c9cc84716a98a4c7d4dbb0aeed20fc` | `70cfcee9247c22ef0d99496ba0f2064e1bb345f3494e44c6cb094e1e3379d45e` |
+
+기존 44건은 위 문서 앞부분의 selective closure composite이고 신규 9건은 한 clean commit의 full suite 실행.
+따라서 53-case 점수는 이후 개선 범위를 정하는 **상정 기준선**이며 단일 commit qualification으로 해석 금지.
+이후 개선본은 5개 suite를 한 commit·동일 data manifest에서 모두 다시 실행해 별도 비교
+
+### 확장 배터리와 실행 격리
+
+| Suite | case | 공통 검토 계약 |
+|---|---:|---|
+| meeting | 5 | 회의 요약·Task 생성·결정 댓글·필드/본문 수정·후속 Task. 모든 case가 사람 표기 정규화, 내부/외부 조사 후 미해결 인터뷰, 답변 전 write 보류를 다중 turn으로 검증 |
+| ctx-chg | 4 | 완전한 주제 전환, 정보 공유 후 다른 요청, write 요청 반복 취소·대체, 잠깐 다른 주제를 거친 뒤 이전 대상 복귀 |
+
+- 사람 표기: `@이다은`, `{{최민서:1042}}`, `하은님`, `현우차장`, `준서TL`
+- 모호 후보: `skcc.x1103` 이준서 / `skcc.x1327` 임준서. 단일 후보로 확정되지 않으면 질문 필수
+- 기술 공백: PSR·RGP는 Jira·Confluence·comment에도 정의되지 않음. 내부 조사 후 사용자 인터뷰 필수
+- write는 모두 승인 전 pending까지만. meeting·ctx-chg 9/9에서 world와 provider Store fingerprint 불변,
+  suite process `9724` / `28204`와 private cache 분리
+
+### 신규 정량 결과와 53-case 상정 기준선
+
+| Suite | 자동 결과 | 시간 | p50 / p95 | calls | prompt / completion / total token | cached | costUsd |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| meeting | 0/5 | 247.0s | 42.8 / 85.2s | 52 | 304,827 / 16,000 / 320,827 | 141,568 | 0.922067 |
+| ctx-chg | 0/4 | 91.7s | 20.9 / 33.4s | 32 | 151,423 / 6,409 / 157,832 | 86,656 | 0.442646 |
+| **신규 9건** | **0/9** | **338.7s** | — | **84** | **456,250 / 22,409 / 478,659** | **228,224** | **1.364713** |
+| 기존 44건 EN v6 closure | 44/44 | 708.0s | — | 217 | 974,569 / 49,876 / 1,024,445 | 649,984 | 2.935185 |
+| **53-case 상정 기준선** | **44/53** | **1,046.7s** | — | **301** | **1,430,819 / 72,285 / 1,503,104** | **878,208** | **4.299898** |
+
+신규 case당 평균 53,184 token으로 기존 44건 평균 22,765 token의 2.34배. 주요 원인은 MTG1 turn 2의
+빈 comment query가 2,316건을 반환한 것, MTG3에서 Research Analyst를 5회 호출한 것, 이미 명시된 action-only
+회의 요청에도 Jira·web·people workload 조사가 중복 실행된 것
+
+### 신규 사람 품질과 결합 점수
+
+| Suite | F 요청 | G 근거 | C 계약 | S 안전·질문 | R 표현 | 종합 |
+|---|---:|---:|---:|---:|---:|---:|
+| meeting | 2.60 | 2.50 | 2.10 | 1.70 | 3.30 | **2.44** |
+| ctx-chg | 2.75 | 3.50 | 3.38 | 3.25 | 3.63 | **3.30** |
+| **신규 9건** | **2.67** | **2.94** | **2.67** | **2.39** | **3.44** | **2.82** |
+| 기존 44건 EN v6 closure | 4.64 | 4.42 | 4.44 | 4.62 | 4.30 | **4.48** |
+| **53-case 상정 기준선** | **4.31** | **4.17** | **4.14** | **4.24** | **4.16** | **4.20** |
+
+점수는 공통 5축 각 20%, 0.5 간격. 신규 case는 suite 공통 3개와 case 고유 특수요소를 기존 축에
+합산해 ceiling 적용. `P/m/M/n`은 pass/minor/major/not-applicable
+
+### 공통 checklist 전수 판정
+
+열 안의 순서는 고정
+
+- F: `intent/scope/compound/constraints/relevance/closure`
+- G: `entity_resolution/field_accuracy/counts_completeness/temporal/source_conflict/fact_inference_boundary`
+- C: `cross_output_consistency/schema_validity/domain_legality/approval_fidelity/query_execution/operational_specificity`
+- S: `required_input_interview/question_economy/material_ambiguity/confidence_calibration/side_effect_control/protected_invariants/untrusted_data/failure_transparency`
+- R: `answer_first/structure/conciseness/ticket_rendering/person_document_rendering/list_scaling`
+
+| Case | F | G | C | S | R | 실제 근거 요약 |
+|---|---|---|---|---|---|---|
+| MTG1 | `M/M/M/M/M/M` | `M/M/m/M/M/M` | `M/n/n/n/m/M` | `M/M/M/M/P/n/P/M` | `m/P/M/m/M/m` | 첫 turn 질문 없음. 둘째 turn은 준서 개인의 DL-5515 등 무관 8건을 회의 연표로 출력하고 PoC 상태도 “미수행/완료” 충돌 |
+| MTG2 | `m/m/M/M/m/M` | `M/M/P/P/m/m` | `M/P/P/P/m/M` | `M/M/M/M/P/P/n/P` | `P/P/M/m/M/P` | 구조가 이미 3 Task로 확정됐는데 재질문. 최종 담당자를 i2044/x1210/i2044로 덮어쓰고 P3·Catalog·label을 발명 |
+| MTG3 | `P/P/P/M/m/P` | `M/P/P/n/n/m` | `M/P/P/P/m/M` | `M/M/M/M/P/P/n/P` | `M/m/m/P/M/P` | 인터뷰 전 댓글 pending 생성. 답변 후 x1327을 준서뿐 아니라 이다은 mention에도 잘못 사용 |
+| MTG4 | `M/P/P/m/P/P` | `M/P/P/P/P/m` | `M/P/P/P/P/m` | `M/M/M/m/P/P/n/m` | `P/P/m/P/m/P` | “댓글을 남기지 마”인데 댓글 내용을 질문. 둘째 turn 필드값은 대체로 정확하나 RGP 소유자 x1103을 본문에서 누락 |
+| MTG5 | `M/M/m/M/P/M` | `m/m/M/P/n/m` | `M/n/P/P/m/M` | `M/M/M/m/P/P/n/m` | `m/m/m/P/M/P` | PSR만 묻고 준서 동명이인은 누락. 단일 Task 요청을 리뷰/증빙 두 Task로 바꾼 뒤 다시 구조 질문, pending 없음 |
+| CTX1 | `M/m/n/P/M/M` | `m/P/n/P/P/M` | `M/P/P/P/n/P` | `n/P/n/m/P/P/n/P` | `M/P/M/m/n/m` | priority-only pending은 정확하지만 reply 전체가 취소된 fdc 현재상태·참조·남은 공백 |
+| CTX2 | `P/P/P/P/P/m` | `P/P/m/P/P/P` | `P/P/P/P/P/P` | `n/P/n/P/P/P/n/P` | `P/P/m/P/n/P` | DL-9090 3개 중 2개 완료·DL-9095 남음·성능/문서 정확. 완료 child key를 생략했지만 현재/남은 요청에는 충분 |
+| CTX3 | `M/M/M/M/M/M` | `n/m/n/n/n/m` | `M/n/P/P/n/M` | `n/M/M/M/P/P/n/m` | `M/m/m/m/n/P` | priority/due와 댓글을 모두 취소했는데 마지막에 다시 댓글 내용 질문. 최신 제목 pending 없음 |
+| CTX4 | `M/m/P/P/m/M` | `m/P/P/P/m/m` | `m/P/P/P/P/P` | `n/M/M/m/P/P/n/P` | `m/P/m/P/m/P` | turn 2의 이다은 업무 요청을 무시하고 DL-9090을 반복. final DL-9095 comment-only pending 자체는 정확 |
+
+### suite·case 특수요소 판정
+
+| Case | suite 공통 3개 | case 고유 | 판정 근거 |
+|---|---|---|---|
+| MTG1 | `M/M/M` | `mtg1_source_coverage=m`, `mtg1_decision_summary=M` | 내부·외부 조회는 했으나 첫 turn 인터뷰 없음, 최종 관련 entity와 담당·기한 붕괴 |
+| MTG2 | `M/M/M` | `mtg2_task_mapping=M` | 3건·parent·due는 유지했지만 세 명 담당 모두 오배정 |
+| MTG3 | `M/M/M` | `mtg3_comment_scope=M` | 대상/comment-only는 맞아도 인터뷰 전 draft와 사람 mention 오류 |
+| MTG4 | `M/M/m` | `mtg4_exact_update=M` | exact field set은 맞지만 필요한 인터뷰 대신 금지된 comment 질문, owner 누락 |
+| MTG5 | `M/M/M` | `mtg5_research_gap_interview=M` | 두 후보를 제시하지 않았고 답변 후에도 단일 Task로 재개 실패 |
+| CTX1 | `M/M/P` | `ctx1_unrelated_switch=M` | final pending 교체는 성공, 사용자 표시 답변은 과거 topic으로 오염 |
+| CTX2 | `P/P/P` | `ctx2_shared_info_boundary=P` | 공유한 fdc 정보를 새 조회에 섞지 않음 |
+| CTX3 | `M/M/M` | `ctx3_superseded_writes=M` | 취소된 comment intent가 최종 request를 덮어씀 |
+| CTX4 | `M/M/P` | `ctx4_return_to_prior_topic=m` | final target은 맞지만 중간 topic 전환 실패 |
+
+### 신규 case별 실제 출력과 Codex 평가
+
+| Case | 점수 | F/G/C/S/R | 실제 출력 핵심 | Codex 직접 평가 |
+|---|---:|---|---|---|
+| MTG1 | 1.90 | 2/1.5/2/1.5/2.5 | “현재 진행 중인 Task: DL-5515, DL-5510” | 모호성 질문을 생략하고 이준서의 개인 업무를 회의 이력으로 오염. “PoC 미수행”과 “완료”도 충돌해 사용 불가 |
+| MTG2 | 2.30 | 2.5/2.5/1.5/1.5/3.5 | 실제 담당자 `skcc.i2044 / skcc.x1210 / skcc.i2044` | 회의에서 확정된 i2011/x1402/x1103을 People Advisor가 전부 대체. 불필요한 구조 질문과 필드 발명 |
+| MTG3 | 2.30 | 3/2/2/1.5/3 | `{{mention:skcc.x1327}} 이다은님` | comment-only와 두 target은 맞지만 사람 identity를 훼손하고 인터뷰 전에 이미 draft 생성 |
+| MTG4 | 3.30 | 3.5/3.5/3.5/2/4 | “남길 댓글의 내용… 알려 주세요” | 금지한 댓글을 질문하는 context 오류. 최종 필드는 대부분 정확하지만 소유자 mention 누락 |
+| MTG5 | 2.40 | 2/3/1.5/2/3.5 | “두 개의 Task… 이 형태로 진행할까요?” | 한 Task라는 요청을 두 건으로 바꾸고 준서 동명이인은 끝까지 질문하지 않음 |
+| CTX1 | 3.20 | 2.5/3/3.5/4/3 | exact priority pending + fdc 설명 전체 | 실행 payload는 안전하지만 사용자가 보는 답변이 완전히 이전 topic이라 승인 판단 방해 |
+| CTX2 | 4.60 | 4.5/4.5/4.5/5/4.5 | “하위 3개 중 2개 완료… DL-9095… 성능 측정과 문서 정리” | 정보 공유와 새 조회를 올바르게 분리. 자동 checker가 불필요하게 완료 child key를 요구한 false negative |
+| CTX3 | 2.10 | 1.5/3/1.5/1.5/3 | “남길 댓글의 내용이나 전달 목적” | 댓글 취소와 title-only 최종 요청을 무시. pending도 없어 최신 request precedence 실패 |
+| CTX4 | 3.30 | 2.5/3.5/4/2.5/4 | turn 2에도 DL-9090 반복, final DL-9095 댓글은 정확 | 아예 다른 사람 업무 요청을 무시한 major. 복귀 후 최종 action은 실사용 가능 |
+
+### 자동 checker와 사람 판정 불일치
+
+| 유형 | Case | 자동 | 사람 | 판단 |
+|---|---|---:|---:|---|
+| false negative | CTX2 | fail | 4.60 | 현재/남은 작업 요청에 완료 child key DL-9093/9094 전문 나열까지 요구한 checker가 과도 |
+| false negative 일부 | CTX4 | fail | 3.30 | final 단일 대상의 합법적 `update_ticket/key`를 checker가 `update_tickets/keys`만 허용. 다만 중간 turn 실패 때문에 case red 자체는 유지 |
+| aligned red | MTG1–5, CTX1, CTX3 | fail | 1.90–3.30 | 인터뷰·identity·최신 context·reply↔payload의 실제 major 결함 |
+
+### 신규 기준선에서 도출한 개선 우선순위
+
+1. 최신 turn이 새 목표 또는 취소를 선언하면 과거 situation·evidence·pending intent를 답변 생성 context에서 제외
+2. 회의록 사람 표기를 먼저 canonical identity로 정규화. 명시 담당자는 People Advisor가 재추천하거나 덮어쓰지 않음
+3. 한 명으로 확정되지 않는 부분 이름+호칭과 내부 조사 후에도 남는 행동 핵심 용어를 한 번의 인터뷰로 묶고 write 보류
+4. 사용자가 item count·구조를 확정했으면 `Task 여러 개/하나/Sub-Task` 구조 질문 금지
+5. comment-only / no-comment / exact-fields 제약을 Work Architect보다 앞선 deterministic contract로 보존
+6. 빈 comment query 금지, result cap과 artifact 요약 적용, 동일 role·동일 entity 반복 조회 제거
+
+### Raw evidence
+
+- `.cache/agent-evaluation/baseline-main-meeting-ctx-20260816/meeting-b1.0.0-r01.json`
+- `.cache/agent-evaluation/baseline-main-meeting-ctx-20260816/ctx-chg-b1.0.0-r01.json`
+
+raw에는 모든 input/reply/question/pending/evaluationEvidence/usage와 case별 world·provider fingerprint를 보존.
+Git에는 포함하지 않음

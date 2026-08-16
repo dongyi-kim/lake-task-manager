@@ -40,6 +40,8 @@ LTM 이 사용자 PC 에서 도는 단일 프로세스 앱이고, 앱을 껐다 
 
 from __future__ import annotations
 
+import re
+
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.workflow.agents.people_advisor import PeopleAdvisor, merge_assignments
@@ -54,7 +56,7 @@ from app.agent.workflow.agents.work_architect import WorkArchitect
 from app.agent.workflow.agents.result_integrator import ResultIntegrator
 from app.agent.workflow.agents.auditor import Auditor
 from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node,
-                                      reads_as_bug, request_text)
+                                      is_memory_only_request, reads_as_bug, request_text)
 
 _compiled = {"graph": None}
 
@@ -71,14 +73,29 @@ def route_after_request_architect(state: AgentState) -> str:
 
     my_day·progress·activity 를 ResearchAnalyst 에 태우지 않는 이유: 그 요청들은 과거 발굴이 아니라
     **지금 상태의 집계**다. 검색-열람-링크추적은 낭비이고, 느린 데다 답도 더 나빠진다.
-    """
+"""
     intent = state.get("intent") or ""
     if intent == Intent.CHITCHAT:
+        return "respond"
+    # "지금은 답하지 말고 이 정보만 기억"은 조회 요청이 아니다.  검색·웹 조사를
+    # 시작하면 사용자가 명시적으로 금지한 일을 수행하고, 약어를 외부 동명이의어와 섞으며,
+    # 후속 요청에 쓸 필요도 없는 토큰을 소비한다. 대화 메시지는 checkpointer가 보존한다.
+    if is_memory_only_request(state):
         return "respond"
     # RequestArchitect can settle a cheap structure choice before any Jira/web lookup. Questions are a
     # terminal result for this turn; sending them through research wastes calls and cannot improve them.
     if state.get("questions"):
         return "respond"
+    # 회의록의 사람·로컬 약어는 먼저 관련 자료를 찾고, 그래도 확정되지 않을 때 인터뷰한다.
+    # 정확한 티켓 변경 요청이라도 이 검증 전에는 WorkArchitect로 단축하지 않는다.
+    from app.agent.workflow.meeting_context import needs_research_interview
+    if needs_research_interview(state):
+        return "investigate"
+    # 직전 조사 후의 인터뷰 답변은 같은 자료를 다시 검색하지 않는다. 조회/웹 결과를 보존한
+    # 채 지식 정리 또는 초안 작성으로 이어서 호출 수와 stale 검색 위험을 함께 줄인다.
+    if state.get("turn_continuation") and (state.get("situation") or "").strip():
+        if intent == Intent.ASK:
+            return "curate"
     # 분담형 Task의 미완료자 조회는 Query Specialist의 자유 JQL이나 Portfolio ReAct가
     # 아니라 parent 탐색→직계 Sub-Task 전수 집계라는 고정 join이다.
     from app.agent.workflow.assignment_completion import asks_incomplete_assignees
@@ -315,6 +332,24 @@ def _propose(state: AgentState) -> dict:
     # modify 갈래 — 변경 승인. 토큰은 update_ticket 도구가 만들 payload 와 **같은 모양**이어야
     # 지문이 맞는다(도구는 kwargs 를 compact 해서 {"key","changes"} 로 만든다).
     plan = state.get("change_plan") or {}
+    # Defense in depth: an explicit comment-only request must never inherit model-produced
+    # field edits.  WorkArchitect already enforces this in normal runs, but approval staging
+    # is the last boundary before a real write and must independently protect the payload.
+    said = request_text(state)
+    comment_only = bool((plan.get("comment") or plan.get("comments"))
+                        and re.search(r"댓글|코멘트", said, re.I)
+                        and re.search(r"댓글\s*(?:만|남겨|달아|작성)|코멘트\s*(?:만|남겨|달아|작성)",
+                                      said, re.I)
+                        and not re.search(r"우선순위|priority|마감|due|담당자|assignee|제목|summary|"
+                                          r"본문|description|라벨|label|component|상태|transition",
+                                          said, re.I))
+    if comment_only and plan.get("changes"):
+        plan = {**plan, "changes": {}}
+    if comment_only:
+        literal = re.search(r"['\"“‘]([^'\"”’]{2,1000})['\"”’]\s*(?:이라고|라는|라고)?\s*"
+                            r"(?:댓글|코멘트)", said, re.I | re.S)
+        if literal:
+            plan = {**plan, "comment": literal.group(1).strip()}
     # 상태 전이 — 지문은 transition_ticket 도구의 payload 와 같은 모양(comment 없을 때).
     if plan.get("key") and (plan.get("transition") or {}).get("id"):
         p = {"key": plan["key"], "transition": str(plan["transition"]["id"])}
@@ -347,7 +382,8 @@ def _propose(state: AgentState) -> dict:
                     for k in plan["keys"] if str(k).strip()])
         if rows:
             return {"approval_token": approval.stage(tid, "add_ticket_comments",
-                                                     {"items": rows})}
+                                                     {"items": rows}),
+                    "change_plan": plan}
     if plan.get("key") and (plan.get("changes") or (plan.get("comment") or "").strip()):
         cmt = (plan.get("comment") or "").strip()
         if plan.get("changes"):
@@ -360,7 +396,8 @@ def _propose(state: AgentState) -> dict:
             return out
         # 댓글만 — 그 토큰이 곧 승인 토큰이다(변경 필드가 없으니 update 토큰은 없다).
         return {"approval_token": approval.stage(tid, "add_ticket_comment",
-                                                 {"key": plan["key"], "body": cmt})}
+                                                 {"key": plan["key"], "body": cmt}),
+                "change_plan": plan}
 
     draft = state.get("draft") or {}
     # epic 모드 — 지문은 create_epic 도구의 payload 와 같은 모양(epic_payload 가 정의).
@@ -406,6 +443,7 @@ def build(checkpointer=None):
                             {"investigate": Node.QUERY_SPECIALIST,
                              Node.QUERY_RUNNER: Node.QUERY_RUNNER,
                              Node.PORTFOLIO_ANALYST: Node.PORTFOLIO_ANALYST,
+                             "curate": Node.KNOWLEDGE_CURATOR,
                              "refine": Node.WORK_ARCHITECT, "respond": Node.RESULT_INTEGRATOR})
     g.add_edge(Node.QUERY_SPECIALIST, Node.QUERY_RUNNER)
     g.add_conditional_edges(Node.QUERY_RUNNER, route_after_query_runner,

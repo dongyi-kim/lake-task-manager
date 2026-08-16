@@ -39,7 +39,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "3.0.0"
+BATTERY_VERSION = "4.0.2"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
@@ -94,7 +94,10 @@ def _asks_for_bug_identity(o) -> bool:
 
 
 def _bug3_ok(o, _outs) -> bool:
-    return not items(o) and ("DL-" in (o.get("reply") or "") or _asks_for_bug_identity(o))
+    q = _question_text(o)
+    return (not items(o) and len(o.get("questions") or []) == 1
+            and any(word in q for word in ("DAG", "Job", "배치 이름"))
+            and "환경" in q and any(word in q for word in ("로그", "발생 시각", "재현")))
 
 
 def _rule1_ok(o, _outs) -> bool:
@@ -159,6 +162,11 @@ def _body_flaws(o) -> list:
             vague = [d for d in dods if any(v in d for v in _DOD_VAGUE) and len(d) < 24]
             if len(vague) * 2 > len(dods):
                 flaws.append(f"[{i}] DoD 절반 이상이 판정 방법 없음: {vague[:2]}")
+            malformed = [d for d in dods if re.search(
+                r"(?:이|가)\s+(?:을|를)\s*확인|(?:이|가)\s+하여|기능이\s+을|"
+                r"사용자가.{0,20}(?:쉽게|편리하게)\s*확인\s*가능", d)]
+            if malformed:
+                flaws.append(f"[{i}] 문법이 깨진 DoD: {malformed[:2]}")
         # 링크도 키도 없는 **참고 섹션 안의** 불릿은 날조로 취급한다. 예전의 앞 400자
         # 탐색은 뒤의 '환경 및 추가 정보'까지 참고로 오인했다 — HTML 섹션 경계를 직접 본다.
         for sec in re.finditer(
@@ -193,6 +201,16 @@ def _output_flaws(o) -> list:
     return flaws
 
 
+def _duplicate_decision_ok(output: dict, _outputs=None) -> bool:
+    """Question form owns duplicate decisions; prose must not echo the same form."""
+    questions = output.get("questions") or []
+    blob = json.dumps(questions, ensure_ascii=False)
+    return (not items(output) and len(questions) == 1
+            and all(value in blob for value in (
+                "DL-9072", "프로듀서 Avro 직렬화 전환", "근거",
+                "범위를 추가", "별도 티켓")))
+
+
 # (ID, 설명, [질의…], 체커(마지막 out, 전체 outs))
 CASES = [
     # ── 한 줄 요청: 필수정보가 있으면 위임된 선택을 되묻지 않는다 ─────
@@ -216,8 +234,11 @@ CASES = [
     ("STR2", "기능 분화 — 위임된 구조를 재질문하지 않고 모듈별 Task로 분리", [
         "리니지 뷰어 성능 측정하고, 결과에 따라 쿼리 엔진 쪽 인덱스도 손봐야 해. "
         "그리고 사용 가이드도 써야 하고. 초안 잡아줘. 알아서"],
-     lambda o, _: (not o.get("questions") and len(items(o)) >= 2
-                   and len({(i.get("components") or [""])[0] for i in items(o)}) >= 2)),
+     lambda o, _: (not o.get("questions") and len(items(o)) == 3 and not kids(o)
+                   and len({(i.get("components") or [""])[0] for i in items(o)}) >= 2
+                   and sum("성능" in str(i.get("summary") or "") for i in items(o)) == 1
+                   and sum("인덱스" in str(i.get("summary") or "") for i in items(o)) == 1
+                   and sum("가이드" in str(i.get("summary") or "") for i in items(o)) == 1)),
 
     ("STR3", "Epic 격상 요구를 보수적으로 — 근거 없으면 기존 Epic 아래로", [
         "쿼리 성능 개선을 대대적으로 해보자. 에픽으로 크게 잡아줘",
@@ -321,8 +342,7 @@ CASES = [
     # ── 중복·기존 것 처리 ────────────────────────────────────────────
     ("DUP1", "이미 있는 일이면 새로 만들지 말고 알린다", [
         "프로듀서를 Avro 로 전환하는 작업을 새로 만들자"],
-     lambda o, _: (not items(o) and "DL-9072" in (o.get("reply") or "")
-                   and len(o.get("questions") or []) <= 1)),
+     _duplicate_decision_ok),
 
     # ── 속성 지정이 섞인 요청 ────────────────────────────────────────
     ("ATTR1", "우선순위·마감·라벨을 말로 지정", [
@@ -374,7 +394,7 @@ CASES = [
     #   ③ 버그를 Sub-Task 로 쪼개 관리 단위를 흩뜨린다
     ("BUG1", "재현 경로가 없으면 만들지 말고 묻는다", [
         "리니지 뷰어가 가끔 안 뜬다. 버그로 올려줘"],
-     lambda o, _: (bool(o.get("questions"))
+     lambda o, _: (len(o.get("questions") or []) == 1
                    # 재현·조건을 묻는다(그냥 "더 알려주세요"가 아니라)
                    and any(w in json.dumps(o.get("questions") or [], ensure_ascii=False)
                            for w in ("재현", "언제", "어떤 경우", "조건", "빈도"))

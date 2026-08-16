@@ -36,6 +36,30 @@ def test_chitchat_skips_investigation():
     assert G.route_after_request_architect({"intent": Intent.CHITCHAT}) == "respond"
 
 
+def test_memory_only_context_is_acknowledged_without_research():
+    from langchain_core.messages import HumanMessage
+
+    state = {
+        "intent": Intent.ASK,
+        "messages": [HumanMessage(content=(
+            "참고로 다음 주 점검이 예정돼 있어. 지금은 답하지 말고 이 정보만 기억해줘."
+        ))],
+    }
+    assert G.route_after_request_architect(state) == "respond"
+
+
+def test_shared_context_with_an_actual_request_still_uses_the_normal_route():
+    from langchain_core.messages import HumanMessage
+
+    state = {
+        "intent": Intent.ASK,
+        "messages": [HumanMessage(content=(
+            "참고로 다음 주 점검이 예정돼 있어. 이 정보만 기억하고 DL-9090 현황도 알려줘."
+        ))],
+    }
+    assert G.route_after_request_architect(state) == "investigate"
+
+
 def test_everything_else_investigates_first():
     """조사를 건너뛰고 티켓을 만들어 주는 어시스턴트는 중복 티켓 생성기다.
     plan_work 는 요청이 구체적(sufficient)일 때 조사부터 — 막연하면 해석 확인이 먼저다."""

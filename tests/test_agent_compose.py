@@ -25,7 +25,16 @@ def fake(monkeypatch, tmp_path):
     monkeypatch.setenv("LAKE_AGENT_PROVIDER", "fake")
     import app.infra.settings as S
     monkeypatch.setattr(S, "CACHE_DIR", tmp_path)
+    # The hot-reload dev server may be using the repository cache at the same time as
+    # pytest. Bind an in-memory client so a cached child list from the UI cannot alter
+    # this deterministic fixture (and vice versa).
+    from app.agent.tools import _ctx
+    from app.infra.cache import Cache
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+    _ctx.bind(JiraClient(get_settings(), Cache(":memory:")), get_settings())
     yield
+    _ctx.bind()
 
 
 # ── 맥락 수집: 화면이 아는 것(어느 티켓·무엇을 쓰는 중)에서 나머지를 끌어온다 ──
@@ -51,6 +60,25 @@ def test_a_brand_new_ticket_has_no_context_instead_of_an_error():
     assert C._ticket_context("__new__", "description") == ""
     assert C._ticket_context("", "comment") == ""
     assert C._ticket_context("DL-99999", "comment") == ""
+
+
+def test_unfinished_comparison_seed_is_preserved_without_inventing_direction():
+    seed = "<p>오늘 성능 측정을 돌렸는데, p95 가 생각보다</p>"
+    got = C._preserve_ambiguous_seed(
+        "<p>p95가 생각보다 높았습니다.</p>", seed, "이어서 완성해줘")
+    assert "p95 가 생각보다" in got
+    assert "확인 필요" in got and "높았습니다" not in got
+
+
+def test_review_request_uses_verified_metric_and_document_link():
+    context = ("명시적 미완료: 성능 측정(2홉 100 노드 기준)\n"
+               "관련 문서 「[설계] 리니지 뷰어 1차」 "
+               "https://confluence.example/spaces/DL/pages/1")
+    got = C._ensure_review_context(
+        "<p>[~skcc.x1402] 검토해 주세요.</p>",
+        "담당자를 멘션해서 성능 측정 결과 검토 요청 코멘트 써줘", context)
+    assert "2홉 100 노드 기준" in got
+    assert "https://confluence.example/spaces/DL/pages/1" in got
 
 
 def test_context_is_capped_so_the_cursor_does_not_freeze():
@@ -216,6 +244,58 @@ def test_generic_editor_closer_is_removed_only_at_the_end():
     mixed = ("<p>설계 문서에서 결과 확인 가능. "
              "추가적인 업데이트가 필요하면 말씀해 주세요.</p>")
     assert _drop_generic_editor_closer(mixed) == "<p>설계 문서에서 결과 확인 가능.</p>"
+    assert _drop_generic_editor_closer(
+        "성능 측정은 예정\n\n추가 업데이트가 필요하면 말씀해 주세요."
+    ) == "성능 측정은 예정"
+
+
+def test_unrelated_information_question_returns_to_the_open_ticket(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "NEED_INFO: 김치찌개 레시피 중 재료와 조리법 중 무엇이 필요한가요?"
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: (
+        '[DL-9090] "데이터 리니지 뷰어" — In Progress'))
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose(PROG, "comment", "김치찌개 레시피 알려줘")
+
+    assert result["ok"] is False and result["needsInfo"] is True
+    assert "현재 티켓과 무관" in result["error"]
+    assert "레시피 중" not in result["error"]
+
+
+def test_editor_person_mentions_are_limited_to_verified_context_people():
+    from app.agent.editor_author import _ground_editor_person_mentions
+
+    source = ('[DL-9090] "리니지" — In Progress · 담당 [~skcc.x1402]\n'
+              '최근 코멘트: [~skcc.x1450]')
+    wrong = ('<p>담당자 <span data-type="mention" data-id="skcc.x1042">'
+             '@skcc.x1042</span>께 업데이트를 요청합니다.</p>')
+    assert _ground_editor_person_mentions(wrong, "상태 공유", source) == ""
+
+    corrected = _ground_editor_person_mentions(
+        wrong, "담당자를 멘션해서 검토 요청", source)
+    assert 'data-id="skcc.x1402"' in corrected
+    assert "skcc.x1042" not in corrected
+
+
+def test_status_comment_unfinished_checklist_does_not_read_as_completed():
+    from app.agent.editor_author import _normalize_unfinished_checklist_labels
+
+    html = ('<ul data-type="taskList">'
+            '<li data-checked="false">성능 측정 완료</li>'
+            '<li data-checked="false">문서 정리 완료</li></ul>')
+    context = "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 문서 정리"
+    got = _normalize_unfinished_checklist_labels(html, context)
+    assert "성능 측정 진행 필요" in got and "문서 정리 진행 필요" in got
+    assert "성능 측정 완료" not in got and "문서 정리 완료" not in got
 
 
 def test_unrequested_editor_quality_claim_is_removed_but_verified_one_stays():
@@ -278,6 +358,24 @@ def test_dangling_editor_connective_is_completed():
 
     html = "<p>성능 측정 결과를 검토해 주시고,</p>"
     assert _repair_dangling_editor_ending(html) == "<p>성능 측정 결과를 검토 부탁드립니다.</p>"
+    assert _repair_dangling_editor_ending("<li>결과를 기록한다할 것</li>") == \
+        "<li>결과를 기록할 것</li>"
+    truncated = ("<p>성능 측정과 문서 정리 작업이 남아 있습니다.</p>"
+                 "<p>담당자께서는 남은 작업을 완료하는 데 필요한</p>")
+    assert _repair_dangling_editor_ending(truncated) == \
+        "<p>성능 측정과 문서 정리 작업이 남아 있습니다.</p>"
+
+
+def test_editor_description_replaces_generic_dod_with_observable_evidence():
+    from app.agent.editor_author import _sharpen_editor_dod
+
+    html = ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">결과와 검증 기록을 담당 리뷰로 확인</li></ul>')
+    context = '[DL-9095] "[Workbench] 다운스트림 조회 연동" — In Progress'
+    got = _sharpen_editor_dod(html, context, "본문을 보강해줘")
+
+    assert "결과와 검증 기록을 담당 리뷰" not in got
+    assert "다운스트림 조회 연동 실행 로그와 테스트 결과" in got
 
 
 def test_unverified_relative_editor_deadline_is_removed():

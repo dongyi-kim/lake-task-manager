@@ -193,6 +193,48 @@ def test_agent_evidence_renderer_accepts_canonical_and_legacy_headings():
     assert 'keyBadge(ticketKey, "detail")' in md
 
 
+def test_agent_evidence_has_one_hierarchical_renderer_without_system_duplicate_panels():
+    """답변/시스템 근거를 한 source index로 합치고 소스별 발견은 하위번호로 그린다."""
+    md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
+    view = (STATIC / "components" / "views" / "AgentView.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
+
+    assert "export function mergeEvidenceMarkdown" in md
+    assert "systemEvidence" in md and "relatedDocs" in md
+    assert "ref-observation" in md and "subRef" in md
+    assert "CITATION_RE" in md and "CITATION_RUN_RE" in md
+    assert "compactAdjacentCitations" in md
+    assert "ref-citations" in md and 'links.join("")' in md
+    assert '">[${n}]</a>' in md
+    assert "md(t) { return renderMarkdown(t.text, t.people, t.evidence, t.docs); }" in view
+    assert 'v-html="md(t)"' in view
+    assert 'class="agent-ev"' not in view
+    assert 'class="agent-docs"' not in view
+    assert ".ref-observation" in css
+    assert ".ref-citations" in css
+    assert '.ref-observation[data-ref="' in view
+
+
+def test_agent_source_quality_table_keeps_readable_columns_in_narrow_chat():
+    """출처 평가 detail badge가 판정·한계 열을 한 글자 폭으로 밀어내지 않는다."""
+    md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
+
+    assert 'class="agent-source-quality"' in md
+    assert 'class="agent-source-quality-scroll"' in md
+    assert ".agent-source-quality-scroll" in css
+    assert "min-width:620px" in css
+    assert ".agent-source-quality td:nth-child(2)" in css
+
+
+def test_agent_approval_card_actions_remain_readable_with_preview_open():
+    css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
+    assert ".agent-card-act" in css and "flex-wrap:wrap" in css
+    assert ".agent-card-act .ag-ok" in css and "white-space:nowrap" in css
+    assert "@media (max-width: 1180px)" in css
+    assert ".agent-side" in css and "position:absolute" in css
+
+
 def test_agent_ticket_badges_never_nest_inside_inline_code():
     """`DL-123`은 badge 하나, `key = DL-123`은 code 하나로 렌더해야 한다."""
     md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")

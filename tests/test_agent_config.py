@@ -22,6 +22,12 @@ def clean_env(monkeypatch):
             monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(C, "_pref", lambda key, default=None: default)
     monkeypatch.setattr(S, "load", lambda: {})
+    # Unit tests must not inherit the developer's persisted named config.  Tests that
+    # exercise named profiles install their own temporary profile store explicitly.
+    monkeypatch.setattr(C._profiles, "list_all", lambda: [])
+    monkeypatch.setattr(C._profiles, "active", lambda: None)
+    monkeypatch.setattr(C._profiles, "legacy_candidate", lambda: None)
+    monkeypatch.setattr(C._profiles, "legacy_candidates", lambda: [])
     return monkeypatch
 
 
@@ -299,7 +305,7 @@ def test_fake_provider_is_refused_in_prod(monkeypatch):
 
 
 
-def test_compat_base_url_gets_the_v1_path_when_the_user_typed_only_the_host(monkeypatch):
+def test_compat_base_url_gets_the_v1_path_when_the_user_typed_only_the_host(clean_env):
     """호환 엔드포인트에 경로가 없으면 `/v1` 을 붙인다.
 
     OpenAI SDK 는 base_url 뒤에 `/models`·`/chat/completions` 를 **상대로** 붙인다.
@@ -308,13 +314,13 @@ def test_compat_base_url_gets_the_v1_path_when_the_user_typed_only_the_host(monk
     이미 경로가 있으면 손대지 않는다(`/openai/v1` 같은 배치도 있다).
     """
     import app.agent.config as C
-    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "https://llm.example")
+    clean_env.setenv("LAKE_AGENT_COMPAT_BASE", "https://llm.example")
     assert C.compat_base() == "https://llm.example/v1"
-    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "https://llm.example/")
+    clean_env.setenv("LAKE_AGENT_COMPAT_BASE", "https://llm.example/")
     assert C.compat_base() == "https://llm.example/v1"
     for typed in ("https://llm.example/v1", "https://llm.example/openai/v1",
                   "https://llm.example/api/v1"):
-        monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", typed)
+        clean_env.setenv("LAKE_AGENT_COMPAT_BASE", typed)
         assert C.compat_base() == typed, typed
 
 

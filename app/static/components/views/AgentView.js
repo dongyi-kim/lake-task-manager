@@ -17,7 +17,7 @@ import Avatar from "../ui/Avatar.js";
 import CommentEditor from "../ui/CommentEditor.js";
 import FieldEdit from "../ui/FieldEdit.js";
 import { agentApi } from "../../lib/agentApi.js";
-import { renderMarkdown } from "../../lib/agentMd.js";
+import { mergeEvidenceMarkdown, renderMarkdown } from "../../lib/agentMd.js";
 import { TYPE_BG, typeIconSvg, initialOf } from "../../lib/colors.js";
 import { api } from "../../lib/api.js";
 import { pushToast } from "../../lib/toast.js";
@@ -150,7 +150,6 @@ export default {
       previewOn: {},          // 초안 항목별 티켓 미리보기 토글(i → bool)
       epicTrees: {},          // 생성 카드의 계보 컨텍스트(epicKey → children[])
       priorities: [],
-      evOpen: {},             // 근거 목록 펼침(턴 ti → bool). 기본 접힘 — 검증할 때만 편다
       sideDraft: -1,          // 우측 패널에 미리보는 **초안 항목 번호**(-1=닫힘). 초안 전용
       convos: [],             // 최근 대화(localStorage) — 좌측 사이드바
       pickedAssignee: {},     // 승인 카드에서 고른 담당자(항목 i → uid)
@@ -256,7 +255,8 @@ export default {
      *  잘못 잡으면 그 상태가 저장돼 다음에도 그대로 뜬다). */
     resetNavW() { this.navW = 0; saveLS(NAV_W_KEY, 0); },
     resetSideW() { this.sideW = 0; saveLS(SIDE_W_KEY, 0); },
-    md(t, people) { return renderMarkdown(t, people); },
+    md(t) { return renderMarkdown(t.text, t.people, t.evidence, t.docs); },
+    evidenceText(t) { return mergeEvidenceMarkdown(t.text, t.evidence, t.docs); },
     /** [n] 마커 호버 — **하단 참조 목록과 같은 모양의** 커스텀 상자를 띄운다.
      *
      *  브라우저 기본 툴팁(title)을 쓰지 않는 이유가 셋이다: ①노란 기본 상자가 하단 참조
@@ -295,7 +295,8 @@ export default {
       if (!md) return;
       const det = md.querySelector("details.agent-refs");
       if (det) det.open = true;
-      const item = md.querySelector(`.agent-ref-item[data-ref="${mark.dataset.ref}"]`);
+      const item = md.querySelector(`.agent-ref-item[data-ref="${mark.dataset.ref}"], ` +
+                                    `.ref-observation[data-ref="${mark.dataset.ref}"]`);
       if (!item) return;
       item.scrollIntoView({ behavior: "smooth", block: "center" });
       item.classList.remove("flash");
@@ -832,12 +833,6 @@ export default {
     },
 
     isTicketKey(k) { return /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(k || "")); },
-    /** 답변이 **참조** 영역을 갖고 있는가 — 그러면 근거·관련문서 블록은 같은 말이다
-     *  (사용자 지적: "근거랑 참조문헌이 상당히 중복"). 참조는 번호 인용까지 달려 있어
-     *  더 정확한 상위 표현이다. */
-    hasRefs(t) {
-      return /\n\*\*참조\*\*\s*\n\s*-?\s*\[\d/.test(String((t && t.text) || ""));
-    },
     /** 대화 제목 — 첫 사용자 발화. 사이드바 목록과 같은 규칙이라 헷갈리지 않는다. */
     convoTitle() {
       const first = this.turns.find((t) => t.who === "user");
@@ -849,7 +844,7 @@ export default {
       const L = [];
       this.turns.forEach((t) => {
         if (t.who === "user") { L.push(`Q: ${t.text}`); return; }
-        L.push(`A: ${t.text || "(본문 없음)"}`);
+        L.push(`A: ${this.evidenceText(t) || "(본문 없음)"}`);
         (t.questions || []).forEach((q) => L.push(`  [질문:${q.kind}${q.field ? "/" + q.field : ""}] ${q.question}`
           + ((q.options || []).length ? ` — 보기: ${q.options.join(" | ")}` : "")));
         const items = (t.pending && t.pending.items) || t.draftItems || [];
@@ -1181,7 +1176,7 @@ export default {
           <div v-else class="agent-bubble agent">
             <!-- tkt-desc 를 함께 단다 — 헤딩·인용·콜아웃·표·뱃지·멘션을 티켓 본문/댓글과
                  **같은 CSS** 로 그린다(사용자 지시: 렌더 체계는 하나여야 한다). -->
-            <div v-if="t.text" class="agent-md tkt-desc" v-html="md(t.text, t.people)"></div>
+            <div v-if="t.text" class="agent-md tkt-desc" v-html="md(t)"></div>
             <div v-else-if="busy && ti === turns.length - 1" class="agent-thinking">
               <span class="dot"></span><span class="dot"></span><span class="dot"></span>
             </div>
@@ -1200,31 +1195,6 @@ export default {
                    달러 기호는 머스태시 안에서 문자열로 만든다. -->
               LLM {{ t.usage.calls }}회 · {{ t.usage.totalTokens.toLocaleString() }} 토큰<template
                 v-if="t.usage.costUsd"> · {{ '$' + t.usage.costUsd.toFixed(4) }}</template>
-            </div>
-
-            <!-- 근거: 눌러서 확인할 수 있어야 믿을 수 있다. **기본은 접힘**(사용자 요청) —
-                 본문이 이미 키+제목을 담고 있어서 근거 목록은 검증하고 싶을 때만 펼친다. -->
-            <!-- 근거 — 티켓 키만 클릭 가능. PMO 조회의 근거에는 모듈명("ETL")처럼 티켓이
-                 아닌 항목이 섞이는데, 그걸 버튼으로 만들면 눌렀을 때 '없는 티켓'이 뜬다(실측). -->
-            <div v-if="t.evidence && t.evidence.length && !hasRefs(t)" class="agent-ev">
-              <button class="agent-ev-h agent-ev-toggle" @click="evOpen[ti] = !evOpen[ti]">
-                {{ evOpen[ti] ? '▾' : '▸' }} 근거 {{ t.evidence.length }}건</button>
-              <template v-if="evOpen[ti]">
-                <template v-for="e in t.evidence" :key="e.key">
-                  <button v-if="isTicketKey(e.key)" class="agent-ev-row"
-                          @click="openTicket(e.key)" :title="e.why">
-                    <b>{{ e.key }}</b><span>{{ e.title }}</span><em>{{ e.why }}</em>
-                  </button>
-                  <div v-else class="agent-ev-row plain" :title="e.why">
-                    <b>{{ e.key }}</b><span>{{ e.title }}</span><em>{{ e.why }}</em>
-                  </div>
-                </template>
-              </template>
-            </div>
-            <div v-if="t.docs && t.docs.length && !hasRefs(t)" class="agent-docs">
-              <div class="agent-ev-h">관련 문서</div>
-              <a v-for="d in t.docs" :key="d.url || d.title" :href="d.url || '#'"
-                 target="_blank" rel="noopener">{{ d.title }}</a>
             </div>
 
             <!-- 실행 결과: 실패를 눈에 띄게. 조용히 넘어가면 다 만들어진 줄 안다 -->
@@ -1318,11 +1288,12 @@ export default {
                  create(티켓 생성)와 update(기존 티켓 변경) 두 모양이 있다. -->
             <div v-if="t.pending && ti === turns.length - 1" class="agent-card">
               <!-- 변경 카드 -->
-              <template v-if="t.pending.action === 'update_ticket' || t.pending.action === 'update_tickets'">
+              <template v-if="['update_ticket', 'update_tickets', 'add_ticket_comment', 'add_ticket_comments'].includes(t.pending.action)">
                 <div class="agent-card-h">
-                  <b v-if="t.pending.keys">일괄 변경 {{ t.pending.keys.length }}건</b>
-                  <b v-else><a href="#" class="tkt" :data-key="t.pending.key">{{ t.pending.key }}</a> 변경</b>
-                  <em>아직 바뀌지 않았습니다 — 확인 후 승인하세요</em>
+                  <b v-if="t.pending.keys">{{ t.pending.action === 'add_ticket_comments' ? '댓글 게시' : '일괄 변경' }} {{ t.pending.keys.length }}건</b>
+                  <b v-else><a href="#" class="tkt" :data-key="t.pending.key">{{ t.pending.key }}</a>
+                    {{ t.pending.action === 'add_ticket_comment' ? '댓글 게시' : '변경' }}</b>
+                  <em>{{ t.pending.action.startsWith('add_ticket_comment') ? '아직 게시되지 않았습니다' : '아직 바뀌지 않았습니다' }} — 확인 후 승인하세요</em>
                 </div>
                 <!-- 일괄 대상 — 전부 보여야 승인이 의미 있다(각 키 클릭 검증 가능) -->
                 <div v-if="t.pending.keys" class="agent-chg-keys">
@@ -1357,7 +1328,8 @@ export default {
                 </details>
                 <div class="agent-card-act">
                   <button class="ag-ok" :disabled="approving" @click="approve">
-                    {{ approving ? '변경 중…' : '이대로 변경' }}</button>
+                    {{ approving ? (t.pending.action.startsWith('add_ticket_comment') ? '게시 중…' : '변경 중…')
+                                  : (t.pending.action.startsWith('add_ticket_comment') ? '댓글 게시' : '이대로 변경') }}</button>
                   <button class="ag-cancel" :disabled="approving" @click="cancelPending">취소</button>
                 </div>
               </template>

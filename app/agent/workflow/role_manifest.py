@@ -42,7 +42,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "query_specialist": RoleSpec(
         "query_specialist", "Query Specialist", "simple",
         "Translates atomic read tasks into a typed QueryPlan without executing retrieval.",
-        ("request_plan", "keywords", "mentioned_keys", "messages"),
+        ("request_plan", "request_text", "keywords", "mentioned_keys", "messages"),
         ("query_plan",),
     ),
     "query_runner": RoleSpec(
@@ -55,8 +55,8 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "research_analyst": RoleSpec(
         "research_analyst", "Research Analyst", "complex",
         "Synthesizes internal and external evidence while separating facts, inference, and gaps.",
-        ("request_plan", "query_plan", "query_results", "pre_survey", "seed_map",
-         "topic_dossier", "web_context"),
+        ("messages", "request_text", "request_plan", "query_plan", "query_results",
+         "query_artifacts", "pre_survey", "seed_map", "topic_dossier", "web_context"),
         ("situation", "evidence", "related_docs", "epic_candidate", "already_exists"),
         ("search", "web"),
     ),
@@ -69,14 +69,16 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "portfolio_analyst": RoleSpec(
         "portfolio_analyst", "Portfolio Analyst", "complex",
         "Interprets progress, workload, staleness, and activity as PMO risks and priorities.",
-        ("intent", "mentioned_keys", "module", "group_activity", "ticket_progress"),
-        ("pmo_findings", "pmo_caution"),
+        ("messages", "intent", "mentioned_keys", "module", "user_id", "user_role",
+         "pre_survey", "query_results", "group_activity", "ticket_progress"),
+        ("pmo_findings", "pmo_caution", "person_work_snapshot", "daily_priority_snapshot"),
         ("pmo", "people"),
     ),
     "work_architect": RoleSpec(
         "work_architect", "Work Architect", "complex",
         "Converts verified findings into Epic-to-Task-to-SubTask structures and mutation drafts.",
-        ("request_text", "situation", "evidence", "query_artifacts", "structure_plan",
+        ("messages", "request_text", "intent", "mentioned_keys", "situation", "evidence",
+         "related_docs", "pre_survey", "query_artifacts", "structure_plan",
          "structure_notes", "draft", "change_plan"),
         ("interpretation", "structure_plan", "structure_ok", "questions", "draft", "change_plan"),
         effect="draft",
@@ -101,8 +103,11 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "result_integrator": RoleSpec(
         "result_integrator", "Result Integrator", "complex",
         "Integrates verified results and unresolved items into one Korean user response.",
-        ("request_plan", "situation", "knowledge_brief", "pmo_findings", "draft", "review",
-         "approval_token", "result", "error"),
+        ("messages", "request_text", "intent", "answer_depth", "request_plan", "situation",
+         "evidence", "related_docs", "pre_survey", "topic_dossier", "knowledge_brief",
+         "pmo_findings", "pmo_caution", "group_activity", "ticket_progress",
+         "person_work_snapshot", "daily_priority_snapshot", "interpretation", "questions",
+         "draft", "assignments", "change_plan", "review", "approval_token", "result", "error"),
         ("reply",), effect="respond",
     ),
     "editor_author": RoleSpec(

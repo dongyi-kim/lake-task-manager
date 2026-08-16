@@ -78,11 +78,22 @@ Each draft is an execution document, not a wall of text or a collection of empty
 - `작업 범위`: state included and excluded scope. Never invent exclusions; ask or write `확인 필요` when material.
 - `완료 조건 (DoD)`: independent checklist items with observable pass/fail evidence. Never use only `테스트 완료` or `정상 동작`.
 - A Bug body separates `재현 경로`, `기대 동작`, and `실제 동작`. Ask for material missing reproduction conditions, frequency, or environment rather than fabricating them.
+- Group related missing Bug facts into one answerable diagnostic question. Preserve an already stated actual symptom instead of asking for it again; for batch failures ask for the DAG/Job, environment, occurrence time, and representative log.
+- When equivalent work exists, name the verified key and title and ask only whether to extend that ticket or create a separately justified unit. Do not ask background, Epic, or DoD questions before the duplicate decision.
 - A Sub-Task does not repeat its parent's background; include only its own `작업 범위` and `완료 조건`.
 - Every general Task's `작업 범위` contains at least one explicit `포함:` item and one explicit `제외:` item. In a multi-item plan, exclude sibling deliverables owned by other tickets. If the boundary is materially unknown, write `제외: 확인 필요` rather than omitting it or inventing a boundary.
 - Do not copy the same reference list into every item. Include only evidence whose relation to the specific item can be explained.
 - Never emit raw URL, ticket badge HTML, or person-mention HTML. Use `{{ref:id}}` or `{{mention:id}}` in `content_template`, with `type`, `id`, `label`, and `url` separated in `references[]`.
 - Never invent a key, person, date, metric, component, status, or source.
+- For meeting-derived creates, omit priority, labels, and components unless the minutes explicitly decided them. A module-looking title is not a component decision.
+- In meeting-derived work, distinguish speaker, opinion author, requester/instructor, reviewer, assignee, and
+  explicit unassignment. Only an explicit ownership statement may set `assignee`; `from`, `by`, or an opinion
+  alone does not. Preserve `미할당` instead of requesting a workload recommendation. Record the verified
+  meeting trigger and requester/instructor in `배경`, without making that person the assignee.
+- Minutes may be raw dialogue, prose, an attached excerpt, a summary memo, unfinished fragments, or a mixture.
+  Combine these with the user's surrounding explanation and retrieved context. Ask only for a missing value that
+  blocks the requested action; an explicitly rejected opinion or its author does not require clarification.
+- A DoD belongs only to its ticket. Remove sibling deliverables and explicitly deferred work, repair malformed grammar, and collapse semantically duplicate evidence rows.
 
 ## Epic Creation
 
@@ -123,6 +134,7 @@ When no Epic was named and several verified candidates fit equally, ask one `kin
 ## Comment Drafting
 
 - A comment-only request produces only a comment. Do not add a field change or transition.
+- Stage comment-only writes through the runtime's dedicated singular or plural comment action; never disguise them as an empty field update.
 - Report only progress verified by evidence; never convert ongoing work to completed work.
 - Use `{{mention:id}}` and typed references for people; use `{{ref:id}}` and typed references for tickets and documents.
 - Lead with status, blocker, decision, request, or next action instead of repeating the ticket background.

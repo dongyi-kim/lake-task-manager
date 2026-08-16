@@ -68,6 +68,11 @@ def remember_person(name: str, user_id: str) -> None:
         _pctx["known"][n] = str(user_id)
 
 
+def recall_person(name: str) -> str:
+    """Return a thread-local confirmed identity without recording another tool call."""
+    return str(_pctx["known"].get(strip_title(name), "") or "")
+
+
 def _related_people(keys) -> set:
     """② 최근 확인한 Task 에 얽힌 사람들 — 담당·보고·코멘트 작성자."""
     out = set()
@@ -317,15 +322,32 @@ def find_person(name: str) -> dict:
         return {"query": q, "candidates": [], "error": str(e)[:150]}
     roster = load_people() or {}
     mod_of = {uid: mod for mod, ids in roster.items() for uid in (ids or [])}
-    cands = []
-    for u in raw:
-        uid = u.get("name") or u.get("key") or ""
-        if not uid:
-            continue
-        disp = u.get("displayName") or uid
-        cands.append(compact({"id": uid, "display": disp, "name": _real(disp),
-                              "email": u.get("emailAddress") or "",
-                              "module": mod_of.get(uid, "")}))
+    def candidates(rows):
+        found = []
+        for u in rows or []:
+            uid = u.get("name") or u.get("key") or ""
+            if not uid:
+                continue
+            disp = u.get("displayName") or uid
+            found.append(compact({"id": uid, "display": disp, "name": _real(disp),
+                                  "email": u.get("emailAddress") or "",
+                                  "module": mod_of.get(uid, "")}))
+        return found
+
+    cands = candidates(raw)
+    # Korean postpositions are often attached directly to a mention: ``@이다은이``.
+    # Search the full spelling first so legitimate names ending in the same syllable are
+    # preserved.  Only a zero-result lookup may retry after stripping one postposition.
+    if not cands and len(q) >= 3 and q[-1:] in ("은", "는", "이", "가", "을", "를"):
+        trimmed = q[:-1]
+        try:
+            retry_raw = c.provider.get_json(
+                "/rest/api/2/user/search", params={"username": trimmed, "maxResults": 10}) or []
+        except Exception:
+            retry_raw = []
+        retry_candidates = candidates(retry_raw)
+        if retry_candidates:
+            q, cands = trimmed, retry_candidates
     out = {"query": q, "candidates": cands, "resolved": "", "ambiguous": len(cands) > 1}
     if not cands:
         out["note"] = (f"'{q}' 은(는) 우리 Jira 사용자 디렉토리에 없다 — **존재하지 않는 "
@@ -437,15 +459,16 @@ def _assigned_now(uid: str) -> dict:
     "담당한 테스크"는 활동 로그(최근 며칠 무엇을 만졌나)가 아니라 **할당된 티켓**이다.
     이 둘을 섞어서 "최근 3일 활동 기록이 없습니다"로 답한 것이 실사용 사고였다.
     """
-    from app.agent.tools.search_tools import run_jql
+    from app.agent.tools.query_tools import execute_jql_all
     try:
         # ★ 반환 키는 `tickets` 다(`issues` 가 아니다) — 처음 `issues` 로 읽어 **8건 있는
         #   사람을 0건으로** 돌려줬다. 도구 계약을 눈으로 확인하지 않고 이름을 짐작한 탓이다.
-        r = run_jql.invoke({
-            "jql": f'assignee = "{uid}" AND statusCategory in (new, indeterminate) '
-                   "ORDER BY updated DESC", "limit": 40}) or {}
+        r = execute_jql_all(
+            where=f'assignee = "{uid}" AND statusCategory in (new, indeterminate)',
+            order_by="updated DESC", page_size=100) or {}
         rows = r.get("tickets") or []
-        return {"jql": r.get("jql"), "count": len(rows), "tickets": rows[:40],
+        return {"jql": r.get("canonicalJql"), "count": len(rows), "tickets": rows,
+                "pages": r.get("pages"), "scopeProjects": r.get("scopeProjects"),
                 "note": "할당된 **미완료** 티켓 전부다(모듈로 좁히지 않았다). "
                         "'최근 활동'과 다른 것이다 — 활동은 며칠간 무엇을 만졌나이고, "
                         "이건 지금 손에 들고 있는 일이다."}

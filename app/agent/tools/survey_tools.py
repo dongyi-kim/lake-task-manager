@@ -157,12 +157,14 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
         return {"error": f"{seed} 티켓을 찾을 수 없습니다."}
     f = raw.get("fields") or {}
     st = (f.get("status") or {})
+    assignee = f.get("assignee") or {}
     out = {
         "key": seed, "title": f.get("summary") or "",
         "status": st.get("name") or "",
         "done": ((st.get("statusCategory") or {}).get("key") == "done"),
-        "assignee": ((f.get("assignee") or {}).get("name")
-                     or (f.get("assignee") or {}).get("key") or ""),
+        "assignee": (assignee.get("displayName") or assignee.get("name")
+                     or assignee.get("key") or ""),
+        "assigneeId": assignee.get("name") or assignee.get("key") or "",
         "due": f.get("duedate") or "", "updated": str(f.get("updated") or "")[:10],
     }
 
@@ -196,9 +198,17 @@ def progress_report(key: str, comment_limit: int = 10) -> dict:
         for ch in (c.ticket_children(seed) or []):
             d = (ch.get("statusCat") or ch.get("statusCategory")) == "done"
             kdone += 1 if d else 0
+            # ``ticket_children`` is a long-lived SWR cache.  Rows cached by older LTM
+            # versions predate ``assigneeId``; recover it from the independent light
+            # issue cache instead of leaking a display name into an agent reply.
+            assignee_id = ch.get("assigneeId")
+            if not assignee_id and ch.get("key"):
+                refreshed = c.ticket_badge(ch["key"]) or {}
+                assignee_id = refreshed.get("assigneeId")
             kids.append(compact({"key": ch.get("key"), "title": ch.get("summary"),
                                  "status": ch.get("status"), "done": d,
                                  "assignee": ch.get("assignee"),
+                                 "assigneeId": assignee_id,
                                  "updated": str(ch.get("updated") or "")[:10]}))
         return kids, kdone
 

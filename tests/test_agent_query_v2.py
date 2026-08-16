@@ -6,7 +6,7 @@ import pytest
 
 from app.agent.tools import _ctx
 from app.agent.tools.query_tools import (execute_jql_all, run_jql_v2,
-                                         search_documents, set_thread)
+                                         query_people, search_documents, set_thread)
 from app.agent.tools.search_tools import find_parent_epic
 from app.agent.tools.people_tools import scoped_person_workload
 from app.agent.workflow.agents.query_runner import QueryRunner
@@ -157,6 +157,17 @@ def test_runner_combines_jira_query_terms_with_where_instead_of_silently_droppin
     assert jql.startswith('project in ("AAA", "BBB") AND (')
 
 
+def test_three_public_technology_terms_use_two_of_three_recall_without_becoming_single_term_or():
+    from app.agent.workflow.agents.query_runner import _jira_where
+
+    jql = _jira_where("", "Iceberg Puffin NDV")
+
+    assert all(f'text ~ "{term}"' in jql for term in ("Iceberg", "Puffin", "NDV"))
+    assert jql.count(" AND ") == 3
+    assert jql.count(" OR ") == 2
+    assert '(text ~ "Puffin" AND text ~ "NDV")' in jql
+
+
 def test_runner_recovers_jql_misplaced_in_query_and_removes_model_project_placeholder():
     fake = _Client(3)
     _ctx.bind(fake, _settings(["AAA", "BBB"]))
@@ -205,6 +216,101 @@ def test_runner_repairs_subtask_parent_jql_misplaced_in_query():
     assert 'issuetype = Sub-Task' in jql
 
 
+def test_query_specialist_turns_human_title_in_project_clause_into_summary_search():
+    from app.agent.workflow.agents.query_specialist import _normalize_model_jira_query
+
+    query = {"source": "jira", "query": 'issueType = Epic AND project = "최소 기능 1차 구현"',
+             "where": ""}
+    assert _normalize_model_jira_query(query)
+    assert "project" not in query["query"].lower()
+    assert 'summary ~ "최소 기능 1차 구현"' in query["query"]
+
+
+def test_query_specialist_drops_mutation_phrase_from_read_plan():
+    from app.agent.workflow.agents.query_specialist import _normalize_model_jira_query
+
+    query = {"source": "jira", "query": "create issue", "where": ""}
+    assert not _normalize_model_jira_query(query)
+
+
+def test_create_plan_adds_scoped_internal_duplicate_search_when_model_only_used_web():
+    from app.agent.workflow.agents.query_specialist import _ensure_creation_duplicate_query
+
+    state = {
+        "intent": "plan_work",
+        "request_text": "프로듀서를 Avro로 전환하는 작업을 새로 만들자",
+        "keywords": ["ETL"],
+    }
+    plan = {"queries": [{"id": "external", "source": "web", "query": "Avro docs"}]}
+    _ensure_creation_duplicate_query(state, plan)
+
+    jira = plan["queries"][0]
+    assert jira["source"] == "jira" and jira["completeness"] == "all"
+    assert all(term in jira["query"] for term in ("프로듀서", "Avro", "전환"))
+
+
+def test_meeting_query_plan_preserves_explicit_ticket_and_replaces_generic_note_search():
+    from app.agent.workflow.agents.query_specialist import _normalize_meeting_research_queries
+    from app.agent.workflow.state import Intent
+
+    state = {
+        "intent": Intent.ASK,
+        "request_text": ("회의 메모를 Jira·Confluence·comment와 외부 공식 자료로 보강해줘. "
+                         "DL-7001 Puffin StarRocks reader"),
+        "mentioned_keys": ["DL-7001"],
+    }
+    plan = {"queries": [
+        {"id": "jira-note", "source": "jira", "query": "회의 메모", "where": "",
+         "fields": [], "order_by": "", "completeness": "all", "page_size": 50,
+         "depends_on": []},
+        {"id": "conf-note", "source": "confluence", "query": "회의 메모", "where": "",
+         "fields": [], "order_by": "", "completeness": "all", "page_size": 50,
+         "depends_on": []},
+        {"id": "comments", "source": "comments", "query": "회의 메모", "where": "",
+         "fields": [], "order_by": "", "completeness": "all", "page_size": 50,
+         "depends_on": []},
+    ], "joins": [], "uncertainty": []}
+    _normalize_meeting_research_queries(state, plan)
+    assert plan["queries"][0]["where"] == "key in (DL-7001)"
+    assert any(q["source"] == "jira" and "Puffin StarRocks" in q["query"]
+               for q in plan["queries"])
+    assert any(q["source"] == "confluence" and q["query"] == "Puffin"
+               for q in plan["queries"])
+    comments = next(q for q in plan["queries"] if q["source"] == "comments")
+    assert comments["query"] == "Puffin" and not comments["where"]
+
+
+def test_query_specialist_drops_unresolved_jql_placeholder():
+    from app.agent.workflow.agents.query_specialist import _normalize_model_jira_query
+
+    query = {"source": "jira", "query": '"Epic Link" = {Epic Key}', "where": ""}
+    assert not _normalize_model_jira_query(query)
+
+
+def test_query_specialist_removes_non_field_descriptions_from_jira_projection():
+    from app.agent.workflow.agents.query_specialist import _normalize_query_fields
+
+    query = {"source": "jira",
+             "fields": ["summary", "성능 측정 방법론 정의", "Epic Link", "customfield_10018"]}
+    _normalize_query_fields(query)
+    assert query["fields"] == ["summary", "customfield_10018"]
+
+
+def test_query_specialist_keeps_narrower_epic_search_for_same_summary_and_repairs_dependencies():
+    from app.agent.workflow.agents.query_specialist import _dedupe_equivalent_queries
+
+    plan = {"queries": [
+        {"id": "broad", "source": "jira", "query": 'summary ~ "최소 기능"',
+         "where": "", "fields": [], "page_size": 50, "depends_on": []},
+        {"id": "epic", "source": "jira",
+         "query": 'issueType = Epic AND summary ~ "최소 기능"',
+         "where": "", "fields": [], "page_size": 50, "depends_on": ["broad"]},
+    ]}
+    _dedupe_equivalent_queries(plan)
+    assert [query["id"] for query in plan["queries"]] == ["epic"]
+    assert plan["queries"][0]["depends_on"] == []
+
+
 def test_people_workload_uses_scoped_paginated_jql_not_primary_project_aggregate():
     fake = _Client(137)
     _ctx.bind(fake, _settings(["AAA", "BBB"]))
@@ -214,6 +320,37 @@ def test_people_workload_uses_scoped_paginated_jql_not_primary_project_aggregate
     assert all(call["jql"].startswith('project in ("AAA", "BBB") AND (assignee = ')
                for call in fake.calls)
     assert all("PRIMARY" not in call["jql"] for call in fake.calls)
+
+
+def test_people_name_query_filters_before_paginated_workload_enrichment(monkeypatch):
+    """A two-person ambiguity must not enrich the whole roster again on every page."""
+    import app.infra.settings as settings_module
+
+    class PeopleProvider:
+        def get_json(self, path, params=None):
+            if path.endswith("/user/search"):
+                assert params["username"] == "준서"
+                return [
+                    {"name": "skcc.x1103", "displayName": "이준서 SKCC"},
+                    {"name": "skcc.x1327", "displayName": "임준서 SKCC"},
+                ]
+            return {"name": (params or {}).get("username", "")}
+
+    fake = _Client(0)
+    fake.provider = PeopleProvider()
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+    monkeypatch.setattr(settings_module, "load_people", lambda: {
+        "ETL": ["skcc.x1103"], "Runtime": ["skcc.x1327"],
+        "Catalog": [f"skcc.x{n}" for n in range(2000, 2020)],
+    })
+
+    first = query_people.invoke({"name": "준서TL", "page_size": 1})
+    assert first["total"] == 2 and first["returned"] == 1 and first["hasMore"]
+    assert len(fake.calls) == 3  # one candidate × open/in-progress/done, one page each
+    second = query_people.invoke({
+        "name": "@준서", "page_size": 1, "cursor": first["nextCursor"]})
+    assert second["total"] == 2 and second["returned"] == 1 and not second["hasMore"]
+    assert len(fake.calls) == 6  # second candidate only; first one was not enriched again
 
 
 def test_cursor_is_bound_to_query_and_thread():

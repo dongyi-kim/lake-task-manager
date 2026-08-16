@@ -299,6 +299,16 @@ def test_modify_end_to_end_updates_the_real_ticket(monkeypatch):
         "questions": [], "change_plan": dict(plan), "turns": 1, "draft": {}}))
     G.reset()
 
+    out = session.ask(f"{key} 에 '회의 결정: 다음 릴리스로 미룸' 이라고 댓글 남겨줘")
+    assert out.get("pending"), out.get("reply")
+    assert out["pending"]["comment"] and not out["pending"]["changes"]
+
+    done = session.resume(out["thread_id"], out["pending"]["token"])
+    assert (done.get("result") or {}).get("updated"), done
+    got = T.BY_NAME["get_ticket"].invoke({"key": key, "comment_limit": 20})
+    assert any("다음 릴리스로 미룸" in (c.get("body") or "") for c in got.get("comments") or [])
+    G.reset()
+
     out = session.ask(f"{key} 마감을 11월 11일로 미루고 사유도 코멘트로 남겨줘")
     assert out.get("pending"), out.get("reply")
     assert out["pending"]["action"] == "update_ticket"
@@ -374,16 +384,104 @@ def test_comment_only_change_plan_goes_through_approval(monkeypatch):
         "questions": [], "change_plan": dict(plan), "turns": 1, "draft": {}}))
     G.reset()
 
-    out = session.ask(f"{key} 에 '회의 결정: 다음 릴리스로 미룸' 이라고 댓글 남겨줘")
-    assert out.get("pending"), out.get("reply")
-    assert out["pending"]["comment"] and not out["pending"]["changes"]
 
-    done = session.resume(out["thread_id"], out["pending"]["token"])
-    assert (done.get("result") or {}).get("updated"), done
-    got = T.BY_NAME["get_ticket"].invoke({"key": key, "comment_limit": 20})
-    assert any("다음 릴리스로 미룸" in (c.get("body") or "") for c in got.get("comments") or [])
-    G.reset()
+def test_comment_only_pending_uses_comment_action_semantics():
+    from types import SimpleNamespace
+    from app.agent.workflow.session import _shape
 
+    base = {"approval_token": "token", "reply": "", "trace": [],
+            "change_plan": {"key": "DL-9201", "changes": {}, "comment": "결정 공유"}}
+    one = _shape("t", base, SimpleNamespace(next=("action_executor",)))
+    assert one["pending"]["action"] == "add_ticket_comment"
+
+    base["change_plan"] = {
+        "keys": ["DL-9201", "DL-9202"], "changes": {}, "comment": "결정 공유",
+        "comments": [{"key": "DL-9201", "body": "A"}, {"key": "DL-9202", "body": "B"}],
+    }
+    many = _shape("t", base, SimpleNamespace(next=("action_executor",)))
+    assert many["pending"]["action"] == "add_ticket_comments"
+
+
+def test_latest_person_work_request_overrides_previous_ticket_context(monkeypatch):
+    from types import SimpleNamespace
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.portfolio_analyst import _current_person_work
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    import app.agent.tools.people_tools as people_tools
+
+    state = {
+        "messages": [HumanMessage(content="DL-9090 진행상황 알려줘"),
+                     HumanMessage(content="잠깐 다른 얘기. @이다은이 지금 맡은 업무를 요약해줘")],
+        "mentioned_keys": ["DL-9090"], "intent": Intent.PROGRESS,
+    }
+    patch = RequestArchitect().apply(state, {
+        "intent": Intent.PROGRESS, "keywords": ["DL-9090"], "mentioned_keys": ["DL-9090"],
+    })
+    assert patch["intent"] == Intent.ACTIVITY
+    assert patch["mentioned_keys"] == []
+
+    fake = SimpleNamespace(invoke=lambda _args: {
+        "resolved": "skcc.i2011", "ambiguous": False,
+        "assigned": {"count": 1, "tickets": [{"key": "DL-9201", "summary": "writer PoC"}]},
+    })
+    monkeypatch.setattr(people_tools, "find_person", fake)
+    snapshot = _current_person_work({**state, "intent": Intent.ACTIVITY})
+    assert snapshot["user_id"] == "skcc.i2011"
+    assert [row["key"] for row in snapshot["tickets"]] == ["DL-9201"]
+
+
+def test_person_name_with_spaced_title_resolves_the_name_not_the_title(monkeypatch):
+    from types import SimpleNamespace
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.portfolio_analyst import _current_person_work
+    import app.agent.tools.people_tools as people_tools
+
+    seen = {}
+    fake = SimpleNamespace(invoke=lambda args: (
+        seen.update(args) or {
+            "resolved": "skcc.i2011", "ambiguous": False,
+            "assigned": {"count": 1, "tickets": [{"key": "DL-9201", "summary": "writer PoC"}]},
+        }))
+    monkeypatch.setattr(people_tools, "find_person", fake)
+    state = {"messages": [HumanMessage(content="이다은 책임이 지금 맡고 있는 일 알려줘")],
+             "intent": Intent.ACTIVITY}
+    snapshot = _current_person_work(state)
+    assert seen["name"] == "이다은"
+    assert snapshot["user_id"] == "skcc.i2011"
+
+
+def test_runtime_identity_is_minimal_verified_context_without_display_name(monkeypatch):
+    from types import SimpleNamespace
+    from app.agent.workflow import session
+    from app.agent.tools import _ctx
+    import app.infra.settings as settings
+
+    session._IDENTITY_CACHE.update(at=0.0, val=None)
+    monkeypatch.setattr(_ctx, "client", lambda: SimpleNamespace(
+        current_user=lambda: {"name": "skcc.i2011", "displayName": "이다은 책임"}))
+    monkeypatch.setattr(settings, "load_people", lambda: {"ETL": ["skcc.i2011"]})
+    got = session._identity()
+    assert "user_id: `skcc.i2011`" in got and "modules: ETL" in got
+    assert "{{mention:skcc.i2011}}" in got
+    assert "이다은" not in got
+    session._IDENTITY_CACHE.update(at=0.0, val=None)
+
+
+def test_daily_priority_snapshot_and_reply_keep_exactly_one_primary_ticket():
+    from app.agent.workflow.agents.portfolio_analyst import _daily_priority_snapshot
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    material = """[권장 1순위] DL-9028 — 마감 구간과 Jira 우선순위를 함께 적용한 첫 항목
+- DL-9028 "[ETL] Schema Registry 장애 대응" (To Do, 우선 P1-Critical, 마감 2026-08-14 · 마감 지남)
+- DL-9029 "[ETL] 다음 후보" (To Do, 우선 P2-Major, 마감 2026-08-15)"""
+    snapshot = _daily_priority_snapshot(material)
+    assert snapshot == {
+        "key": "DL-9028", "title": "[ETL] Schema Registry 장애 대응", "status": "To Do",
+        "priority": "P1-Critical", "due": "2026-08-14", "overdue": True,
+    }
+    reply = ResultIntegrator()._run({"daily_priority_snapshot": snapshot})["reply"]
+    assert "DL-9028" in reply and "DL-9029" not in reply
+    assert "P1-Critical" in reply and "마감 2026-08-14" in reply
 
 def test_description_change_survives_the_token_fingerprint():
     """본문 수정 — propose 가 만드는 payload 와 도구가 만드는 payload 의 지문이 같아야 한다."""
@@ -403,19 +501,22 @@ def test_description_change_survives_the_token_fingerprint():
 
 def test_reference_index_duplicates_are_merged():
     """같은 출처가 두 번호를 받으면 코드가 접는다([1]·[3] 같은 티켓 — 실측).
-    티켓 참조와 그 티켓의 코멘트 참조는 다른 출처라 남는다."""
+    티켓 본문·필드·댓글은 같은 실제 출처 아래 하위 발견으로 남는다."""
     from app.agent.workflow.agents.result_integrator import _dedupe_refs
     t = ("주기 [1]. 잡 [3]. 담당 [4].\n\n**참조**\n"
          "- [1] DL-9044 — 주기 변경 근거\n"
          "- [3] DL-9044 — 같은 티켓 다른 설명\n"
          "- [4] DL-9044 코멘트 (skcc.x1103, 2026-08-06) — 담당\n")
     out = _dedupe_refs(t)
-    assert "잡 [1]" in out and out.count("[1] DL-9044") >= 1
-    assert "\n[2] DL-9044 코멘트" in out
-    assert "- [" not in out, "불릿과 [n] 이중 표식 금지(실측 지적)"
+    assert "잡 [1-b]" in out and "담당 [1-c]" in out
+    assert out.count("[1] {{ticket-detail:DL-9044}}") == 1
+    assert "- [1-a] 본문에서 주기 변경 근거" in out
+    assert "- [1-c] 댓글(skcc.x1103, 2026-08-06)에서 담당" in out
+    assert "[2]" not in out
     assert _dedupe_refs("참조 없는 답") == "참조 없는 답"
-    # 문서 참조의 "제목 (URL)" 중복 표기는 URL 만 남긴다 — 뱃지가 제목을 보여 준다
+    # 문서는 canonical Markdown link 한 개로 보존해 UI와 복사본 모두에서 제목과 URL을 제공한다.
     t2 = ("값 [1].\n\n**참조**\n"
           "- [1] [데이터카탈로그] 특성 분석 (http://x/pages/1/문서) — 스키마 근거\n")
     o2 = _dedupe_refs(t2)
-    assert "[1] http://x/pages/1/문서 — 스키마 근거" in o2, o2
+    assert "[1] [[데이터카탈로그] 특성 분석](http://x/pages/1/문서)" in o2, o2
+    assert "- 문서 본문에서 스키마 근거" in o2, o2

@@ -355,9 +355,15 @@ def query_people(name: str = "", user_id: str = "", module: str = "",
     coverage and preserve evidence and workload fields without inferring skill or performance.
     """
     from app.infra.settings import load_people
-    from app.agent.tools.people_tools import scoped_person_workload
+    from app.agent.tools.people_tools import scoped_person_workload, strip_title
 
     roster = load_people() or {}
+    name_query = strip_title(str(name or "").lstrip("@").strip())
+    titled = re.sub(
+        r"\s*(?:TL|PL|PM|PO|EM|M|파트장|그룹장|본부장|팀장|실장|부장|차장|과장|대리|"
+        r"선임|책임|수석|매니저|리더|님|씨)$", "", name_query, flags=re.I).strip()
+    if len(titled) >= 2:
+        name_query = titled
     rows = []
     for mod, ids in roster.items():
         if module and str(mod).casefold() != str(module).casefold():
@@ -366,24 +372,31 @@ def query_people(name: str = "", user_id: str = "", module: str = "",
             if user_id and str(uid).casefold() != str(user_id).casefold():
                 continue
             rows.append({"id": str(uid), "module": mod, "evidence": [f"roster:{mod}"]})
-    if name and not user_id:
+    if name_query and not user_id:
+        # A name query is a directory lookup, not an instruction to return the whole roster.
+        # Keeping all roster rows made three meeting names expand to 20 people each and then
+        # compute 60 full workload bundles before asking one ambiguity question.
+        roster_module = {str(uid): mod for mod, ids in roster.items() for uid in (ids or [])}
+        matched = []
         try:
             users = client().provider.get_json(
-                "/rest/api/2/user/search", params={"username": name, "maxResults": 100}) or []
-            known = {r["id"]: r for r in rows}
+                "/rest/api/2/user/search", params={"username": name_query, "maxResults": 100}) or []
+            known = {}
             for raw in users:
                 uid = raw.get("name") or raw.get("key")
                 display = raw.get("displayName") or uid or ""
-                if not uid or name.casefold() not in display.casefold():
+                if not uid or name_query.casefold() not in display.casefold():
                     continue
-                row = known.get(uid) or {"id": uid, "module": "", "evidence": []}
+                row = known.get(uid) or {
+                    "id": uid, "module": roster_module.get(str(uid), ""), "evidence": []}
                 row["name"] = display
                 row["email"] = raw.get("emailAddress") or ""
                 row["evidence"].append("jira:user-directory")
                 if uid not in known:
-                    rows.append(row); known[uid] = row
+                    matched.append(row); known[uid] = row
+            rows = matched
         except Exception:
-            rows = [r for r in rows if name.casefold() in r["id"].casefold()]
+            rows = [r for r in rows if name_query.casefold() in r["id"].casefold()]
     if participated_ticket:
         key = participated_ticket.strip().upper()
         allowed = {p.upper() for p in search_projects()}
@@ -394,8 +407,20 @@ def query_people(name: str = "", user_id: str = "", module: str = "",
         rows = [r for r in rows if r["id"] in participants]
         for row in rows:
             row["evidence"].append(f"ticket-participant:{key}")
+    canonical = json.dumps({"name": name_query, "user_id": user_id, "module": module,
+                            "participated_ticket": participated_ticket,
+                            "max_in_progress": max_in_progress}, ensure_ascii=False, sort_keys=True)
+    try:
+        start = _decode_cursor(cursor, "people", canonical)
+    except Exception as exc:
+        return {"error": str(exc), "people": []}
+    size = max(1, min(int(page_size or 50), 100))
+    # A workload ceiling requires enriching every candidate before filtering.  Without that
+    # filter, enrich only this page; otherwise each cursor page repeats the same expensive
+    # workload calls for every candidate already returned on earlier pages.
+    candidates = rows if max_in_progress >= 0 else rows[start:start + size]
     enriched = []
-    for row in rows:
+    for row in candidates:
         try:
             bundle = scoped_person_workload(row["id"], 28)
             def count(bucket):
@@ -411,17 +436,10 @@ def query_people(name: str = "", user_id: str = "", module: str = "",
         if max_in_progress >= 0 and row.get("workload", {}).get("inProgress", 10 ** 9) > max_in_progress:
             continue
         enriched.append(row)
-    canonical = json.dumps({"name": name, "user_id": user_id, "module": module,
-                            "participated_ticket": participated_ticket,
-                            "max_in_progress": max_in_progress}, ensure_ascii=False, sort_keys=True)
-    try:
-        start = _decode_cursor(cursor, "people", canonical)
-    except Exception as exc:
-        return {"error": str(exc), "people": []}
-    size = max(1, min(int(page_size or 50), 100))
-    page = enriched[start:start + size]
-    more = start + len(page) < len(enriched)
-    return {"total": len(enriched), "returned": len(page), "hasMore": more,
+    filtered = enriched if max_in_progress >= 0 else rows
+    page = enriched[start:start + size] if max_in_progress >= 0 else enriched
+    more = start + len(page) < len(filtered)
+    return {"total": len(filtered), "returned": len(page), "hasMore": more,
             "nextCursor": _encode_cursor("people", canonical, start + len(page)) if more else None,
             "people": page}
 

@@ -62,6 +62,15 @@ def test_invalid_plain_json_gets_one_format_repair(monkeypatch):
     assert fake.invocations == 2
 
 
+def test_model_schema_value_error_does_not_poison_provider_capability():
+    assert not base._capability_is_unsupported(
+        RuntimeError("'높음' is not one of ['high', 'medium', 'low']"), "json_schema")
+    assert not base._capability_is_unsupported(
+        RuntimeError("Invalid schema for response_format"), "json_schema")
+    assert base._capability_is_unsupported(
+        RuntimeError("response_format json_schema is not supported"), "json_schema")
+
+
 @tool
 def _probe_echo(value: str) -> str:
     """Return a harmless value for fallback tool execution tests."""

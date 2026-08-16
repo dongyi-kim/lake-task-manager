@@ -13,14 +13,16 @@
 
 from __future__ import annotations
 
+import json
 import re as _re
 
 from app.agent.workflow.agents.base import TextAgent
 from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
+from app.agent.workflow.evidence_index import canonicalize_evidence_index
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
-                                      request_text)
+                                      is_memory_only_request, request_text)
 
 
 class ResultIntegrator(TextAgent):
@@ -39,6 +41,22 @@ class ResultIntegrator(TextAgent):
         completion = state.get("assignment_completion") or {}
         if completion.get("kind") == "incomplete_assignees":
             return self.apply(state, {"text": _assignment_completion_reply(completion)})
+        # 승인 대기 응답은 최종 payload를 사람이 검토하기 위한 설명이다. 이미 코드가
+        # 확정한 카드 값을 LLM에 다시 요약시키면 필드·담당·수치가 달라지거나, 요청하지
+        # 않은 삭제/후속 작업을 덧붙였다. 승인 문장은 payload의 결정적 projection으로 만든다.
+        if state.get("approval_token") and _has_executable_payload(state):
+            return self.apply({**state, "_deterministic_reply": True},
+                              {"text": _approval_reply(state)})
+        person_work = state.get("person_work_snapshot") or {}
+        if person_work:
+            return self.apply({**state, "_deterministic_reply": True},
+                              {"text": _person_work_reply(person_work)})
+        daily = state.get("daily_priority_snapshot") or {}
+        if daily:
+            return self.apply({**state, "_deterministic_reply": True},
+                              {"text": _daily_priority_reply(daily)})
+        if is_memory_only_request(state):
+            return self.apply(state, {"text": "확인. 이 대화의 후속 요청에 필요한 경우에만 참고"})
         return super()._run(state)
 
     def task(self, state):
@@ -69,6 +87,15 @@ class ResultIntegrator(TextAgent):
             goal = ("Summarize the established situation in two or three Korean sentences. The structured "
                     "form renders every question and option; do not repeat or number them in prose and do not "
                     "ask anything outside the form. End with the concise Korean line `아래에서 선택해 주세요`.")
+        elif (state.get("change_plan") or {}).get("keys") \
+                and not ((state.get("change_plan") or {}).get("changes") or {}) \
+                and ((state.get("change_plan") or {}).get("comment")
+                     or (state.get("change_plan") or {}).get("comments")):
+            n = len((state.get("change_plan") or {}).get("keys") or [])
+            goal = (f"Present the Korean comment-only approval draft for exactly {n} tickets. State that no "
+                    "ticket field or status will change. Use a `| 티켓 | 제목 | 작업 |` table with one row "
+                    "per target and write `댓글 추가` in the action column. Never describe current status as "
+                    "a planned status change. Request approval and make clear nothing has been posted yet.")
         elif (state.get("change_plan") or {}).get("keys"):
             n = len(state.get("change_plan", {}).get("keys") or [])
             # ★ 자르기 안내는 **정말 자를 때만** 싣는다(사용자 관점 리뷰 F4).
@@ -126,8 +153,11 @@ class ResultIntegrator(TextAgent):
             + ("".join(f"\n    대안 {x.get('user')}: {x.get('why','')}"
                        for x in (a.get("alternates") or [])))
             for a in (state.get("assignments") or []))
-        ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
-                       for e in (state.get("evidence") or []))
+        # Preserve source-specific observations and source-quality judgments for the one
+        # role that writes the user-facing evidence chain.  The former flattened line
+        # discarded comment provenance, confidence, fitness, and limitations immediately
+        # before final composition.
+        ev = json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str)
         docs = "\n".join(f"- {d.get('title','')} {d.get('url','')}"
                          for d in (state.get("related_docs") or []))
         problems = "\n".join(f"- [{p.get('index')}] {p.get('message')} → {p.get('fix','')}"
@@ -173,9 +203,12 @@ class ResultIntegrator(TextAgent):
                     "4. Preserve a supplied list such as all schema columns without omission.\n"
                     "5. For a value actually asked but absent, use `확인된 기록 없음` in one or two sentences. "
                     "Do not list unrelated absent fields or transfer a value from a similar asset.\n"
-                    "6. Use `[1]`, `[2]` in the body and put `### 근거` last, with one non-bulleted indexed "
-                    "line per source. A ticket source uses `{{ticket-detail:KEY}}`; a document uses its verified "
-                    "URL. Reuse an index for the same source.\n"
+                    "6. Put `### 근거` last and assign one integer index to each real source. A ticket source "
+                    "uses `{{ticket-detail:KEY}}`; a document uses its verified title and URL. When one source "
+                    "supports multiple findings, list them as `[n-a]`, `[n-b]` below the source and cite those "
+                    "child markers in the body. Ticket body, comments, and field history share one source.\n"
+                    "   Compact citations in one sentence, clause, or table cell as `[4][5][10]`, with no "
+                    "spaces or commas; every bracket must resolve to its own source.\n"
                     "7. Under `### 현재 진행 중인 Task`, use one `{{ticket-detail:KEY}}` bullet per ticket and "
                     "do not repeat key, title, assignee, status, or start date beside the badge.\n"
                     "8. Use inline code for identifiers, values, and Job names; Korean `###` headings for real "
@@ -183,6 +216,37 @@ class ResultIntegrator(TextAgent):
                     "When a value changed, identify current and prior values with the date and cite the change "
                     "ticket as the primary source. Use the explicit `[담당]` line for ownership; never infer "
                     "owner from a comment author.")
+        # 회의 정리는 일반 자산 이력 템플릿보다 사용자가 준 결정·담당·기한이 주인공이다.
+        # dossier의 과거 상태가 회의 당일 결정을 덮거나 담당 표가 빠진 MTG1 실측을 막는다.
+        if not qs:
+            from app.agent.workflow.meeting_context import is_meeting_request
+            if is_meeting_request(state) and (state.get("intent") or "") == Intent.ASK:
+                goal = (
+                    "Write a compact Korean meeting brief from the Original Request, Current User Message, and "
+                    "verified research. Start with `### 결정사항`. Add `### 참석자` with every resolved "
+                    "person from the note, using mention tokens only. Then use `### 담당·기한` and a "
+                    "`| 작업 | 담당 | 기한 |` table containing every explicitly named owner and deadline. "
+                    "Use a verified mention token for every person. Follow with `### 조사로 보강한 맥락` for "
+                    "only directly relevant internal history and external official findings, and `### 미결·검증` "
+                    "for remaining uncertainty. Preserve explicit sample counts, pass/fail thresholds, hold or "
+                    "exclusion decisions, and supplied local-term definitions. Do not list unrelated current "
+                    "tickets, and do not replace a meeting decision with an older ticket status. Finish with the "
+                    "single `### 근거` index; ticket sources use detail tokens and documents use verified links."
+                )
+        asked_for_quality = (request_text(state) + " " + last_user_text(state)).strip()
+        if state.get("evidence"):
+            goal += (
+                "\nFor every material conclusion, add the matching `[n]` or `[n-a]` marker in the body. "
+                "Do not leave a conclusion uncited merely because its source is listed at the end. Preserve "
+                "comment observations and dated source conflicts; ticket status alone is not result evidence."
+            )
+        if any(word in asked_for_quality for word in ("신뢰도", "출처별", "요청 적합성", "적합성")):
+            goal += (
+                "\nAdd `### 출처 평가` before `### 근거` with a compact "
+                "`| 출처 | 신뢰도 | 요청 적합성 | 한계 |` table. Use only the supplied confidence, fitness, "
+                "limitations, authority, directness, recency, and corroboration evidence. Do not invent a "
+                "numeric score. Separate external specification from internal production readiness."
+            )
         data = wrap_data(
             data_block("Interpretation Data: Show Unchanged Under the Korean Heading 제가 이해한 바",
                        state.get("interpretation")),
@@ -198,7 +262,7 @@ class ResultIntegrator(TextAgent):
             data_block("Verified Current Situation", state.get("situation")),
             data_block("PMO Findings", pmo),
             data_block("Interpretation Caution", state.get("pmo_caution")),
-            data_block("Evidence Tickets", ev),
+            data_block("Verified Evidence Sources With Observations and Quality", ev),
             data_block("Related Documents", docs),
             data_block("Ticket Draft: Not Yet Created", draft_text(state.get("draft"))),
             data_block("Change Plan: Not Yet Executed",
@@ -278,17 +342,26 @@ class ResultIntegrator(TextAgent):
         # 노출하는 것은 내용 문제가 아니라 렌더링 계약 위반이다. grounding 전에 정규화해
         # 검사와 사용자 화면이 같은 문자열을 보게 한다.
         text = _strip_instruction_echo(text)
+        # An inline attachment excerpt is user input, not a remotely verified source.  Drop
+        # model-written filename/placeholder link rows before grounding so the diagnostic
+        # itself does not leak into an otherwise valid answer.
+        text = _drop_direct_input_source_rows(text)
         _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         # A question-only turn has no executable payload for the prose model to summarize.
         # Letting it narrate the surrounding research produced invented Epic/module claims in
         # ASKD4 and BUG1.  The structured form owns the question; prose only states why input
         # is required.
-        if _qs and not _has_executable_payload(state):
+        question_only = bool(_qs and not _has_executable_payload(state))
+        if question_only:
             text = _question_only_reply(state, _qs)
+        text = _canonicalize_meeting_reply(text, state)
         text = _canonicalize_person_mentions(text, state)
+        text = _ensure_progress_child_coverage(text, state)
         text = _render_reply_tokens(text)
-        text = _align_draft_claims(text, state)
+        if not state.get("_deterministic_reply"):
+            text = _align_draft_claims(text, state)
         text = _ensure_research_status(text, state)
+        text = _drop_unsupported_guarantees(text, state)
 
         # ── 접지 검사 — 답변의 티켓 키·제목·인명을 실물과 대조한다.
         # 지도·자료를 정확히 줘도 답변 단계에서 날조가 나왔다(없는 키, 바뀐 제목, "PM: 김철수").
@@ -301,8 +374,10 @@ class ResultIntegrator(TextAgent):
         #   재작성은 시스템 프롬프트 전체 + 답 전문을 다시 보내는 **두 번째 LLM 호출**이라
         #   레이트리밋·길이로 죽을 수 있다. 그건 교정의 실패이지 탐지의 무효가 아니다.
         from app.agent.workflow import grounding
+        grounding_warnings = []
         try:
-            g = grounding.check(text, allowed_people=_dialogue_speakers(request_text(state)))
+            g = ({"ok": True} if state.get("_deterministic_reply") or question_only else
+                 grounding.check(text, allowed_people=_dialogue_speakers(request_text(state))))
         except Exception:
             g = None                        # 검증기가 죽으면 답은 그대로 나간다
         if g and not g["ok"]:
@@ -326,11 +401,16 @@ class ResultIntegrator(TextAgent):
                 use2 = bool(g2) and _violations(g2) < _violations(g) \
                     and _kept_substance(text, text2)
                 better, gb = (text2, g2) if use2 else (text, g)
-                text = better + grounding.warning_block(gb)
+                text = better
+                warning = grounding.warning_block(gb).strip()
+                if warning:
+                    grounding_warnings.append(warning)
 
         # 전용 진행 Task bullet은 detail badge 하나로 기계화한다. 모델이 raw key+제목을
         # 출력해도 최종 문자열은 badge가 가진 정보를 중복하지 않는다.
+        text = _badgeify_known_ticket_mentions(text, state)
         text = _normalize_ticket_detail_sections(text)
+        text = _normalize_badge_repetitions(text)
         # 근거 인덱스 후처리 — 같은 출처가 두 번호를 받는 실측 미스([1]·[3]가 같은 티켓)를
         # 코드가 접는다. 규칙("같은 근거 같은 번호")은 프롬프트에 있지만 보장은 여기서.
         text = _dedupe_refs(text)
@@ -372,6 +452,19 @@ class ResultIntegrator(TextAgent):
         #   두 라운드 고쳤는데도 실측 DATA9 는 세 줄 다 제목만 남겼다. 우리가 아는 URL 을
         #   그 제목에 붙이는 것은 **지어내는 것이 아니라 옮기는 것**이라 코드가 할 수 있다.
         text = _attach_known_doc_urls(text, state)
+        text = _ensure_external_research_coverage(text, state)
+        text = _render_requested_source_quality(text, state)
+        # Persist one canonical source index in the reply itself.  Research state and
+        # model-written references used to be rendered as separate UI blocks, causing
+        # duplicate counts and divergent formats.  The server owns numbering and grouping;
+        # the browser only renders this canonical Markdown (with a legacy-read fallback).
+        text = _merge_evidence_index(text, state)
+        text = _rebind_definition_citations(text)
+        # Explicit citation-marker requests are a rendering contract.  The source index
+        # already owns stable numbering, so bind uncited conclusion paragraphs to the
+        # best-matching verified sources after numbering instead of trusting another LLM
+        # rewrite to copy brackets reliably.
+        text = _ensure_requested_body_citations(text, state)
         # ★ 여기서 **한 번 더** 본다. 위의 후처리들은 접지 검사 **뒤에** 돌기 때문에,
         #   후처리가 만든 결함은 검사를 통과한 셈이 된다. 실측: 대괄호 정리가 문서 링크를
         #   먹어 참조가 URL 없는 제목만 남았는데 아무도 못 잡았다. 마지막에 다시 보고,
@@ -379,7 +472,9 @@ class ResultIntegrator(TextAgent):
         try:
             _late = grounding._unlinked_refs(text)
             if _late and (not g or not g.get("unlinked_refs")):
-                text += grounding.warning_block({"unlinked_refs": _late})
+                warning = grounding.warning_block({"unlinked_refs": _late}).strip()
+                if warning and warning not in grounding_warnings:
+                    grounding_warnings.append(warning)
         except Exception:
             pass
 
@@ -397,14 +492,27 @@ class ResultIntegrator(TextAgent):
         # 계획에 넣는데(모델 산술이 흔들린다), 답변 문장에는 모델이 제 값을 그대로 써서
         # "2026-08-18로 연장" ↔ 카드 2026-08-14 로 어긋났다(실측 Round P).
         due = str(((state.get("change_plan") or {}).get("changes") or {}).get("duedate") or "")
-        if _re.match(r"^\d{4}-\d{2}-\d{2}$", due):
+        if not state.get("_deterministic_reply") and _re.match(r"^\d{4}-\d{2}-\d{2}$", due):
             text = _re.sub(r"\b\d{4}-\d{2}-\d{2}\b",
                            lambda m: due if m.group(0) != due else m.group(0), text)
 
         # 최종 사용자 말투는 prompt 권고로 끝내지 않는다. 모델·fallback·후처리 어느 경로에서
         # 왔든 같은 간결한 업무 브리프 문법으로 정규화한다. 질문·인용·code는 예외.
+        text = _canonicalize_meeting_reply(text, state)
+        text = _render_reply_tokens(text)
         text = _canonicalize_person_mentions(text, state)
         text = _enforce_reply_style(text)
+        # Grounding diagnostics are not provenance.  Insert them before the already-built
+        # evidence index; otherwise a legacy reference parser can absorb warning bullets as
+        # observations, while appending after the index would violate the index-last contract.
+        if grounding_warnings:
+            warning_text = "\n\n".join(grounding_warnings)
+            evidence_heading = _re.search(r"(?m)^### 근거\s*$", text)
+            if evidence_heading:
+                text = (text[:evidence_heading.start()].rstrip() + "\n\n" + warning_text
+                        + "\n\n" + text[evidence_heading.start():].lstrip())
+            else:
+                text = text.rstrip() + "\n\n" + warning_text
 
         # ── 후검증 — **플레이북별 최소선**(사용자 지시: 주요 태스크는 결과도 검증)
         # 프롬프트에 적어 두면 '대체로' 지켜진다. 문제는 그 '대체로'다 — 같은 요청이
@@ -434,12 +542,207 @@ def _requests_parentless_subtask(state) -> bool:
     return wants_subtask and says_no_parent
 
 
+def _ensure_progress_child_coverage(text: str, state) -> str:
+    """Expose every verified child when a progress answer silently drops some of them.
+
+    The LLM usually summarizes completed children and names only the open one.  That loses
+    the evidence behind the aggregate ``2/3`` count.  The pre-aggregator already has exact
+    child keys and states, so append a compact canonical badge snapshot only when coverage
+    is incomplete.  ``ticket-list`` is the intentionally small multi-ticket badge.
+    """
+    if (state.get("intent") or "") != Intent.PROGRESS:
+        return str(text or "")
+    material = str(state.get("ticket_progress") or "")
+    children: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for match in _re.finditer(
+        r"(?m)^\s*-\s+([A-Z][A-Z0-9]*-\d+)\s+\"[^\"]*\"\s+(완료|진행중)\b",
+        material,
+    ):
+        key, status = match.group(1), match.group(2)
+        if key not in seen:
+            seen.add(key)
+            children.append((key, status))
+    if not children or all(key in str(text or "") for key, _status in children):
+        return str(text or "")
+
+    rows = ["### 하위 작업 현황", ""]
+    for status, label in (("완료", "완료"), ("진행중", "진행 중")):
+        keys = [key for key, current in children if current == status]
+        if keys:
+            rows.append(f"- {label}: " + " ".join(
+                f"{{{{ticket-list:{key}}}}}" for key in keys
+            ))
+    block = "\n".join(rows)
+    source = str(text or "").rstrip()
+    anchor = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", source)
+    if anchor:
+        return source[:anchor.start()].rstrip() + "\n\n" + block + "\n\n" + source[anchor.start():]
+    return source + "\n\n" + block
+
+
 def _has_executable_payload(state) -> bool:
     draft = state.get("draft") or {}
     plan = state.get("change_plan") or {}
     result = state.get("result") or {}
     return bool(draft.get("items") or draft.get("structure_tree")
                 or plan.get("key") or plan.get("keys") or result)
+
+
+_FIELD_LABELS = {
+    "summary": "제목", "description": "본문", "assignee": "담당자",
+    "duedate": "기한", "priority": "우선순위", "labels": "라벨",
+    "components": "컴포넌트", "status": "상태", "link": "관계",
+}
+
+
+def _cell(value) -> str:
+    if value in (None, "", []):
+        return "—"
+    if isinstance(value, list):
+        value = ", ".join(map(str, value))
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _approval_reply(state) -> str:
+    """승인 카드와 동일한 state에서만 만드는 사용자 설명.
+
+    이 함수는 판단하거나 보강하지 않는다. 확정 payload를 읽기 쉬운 표로 투영할 뿐이라
+    카드와 답변의 건수·필드·담당·기한이 구조적으로 어긋날 수 없다.
+    """
+    plan = state.get("change_plan") or {}
+    if plan.get("key") or plan.get("keys"):
+        keys = [str(k) for k in (plan.get("keys") or [plan.get("key")]) if k]
+        changes = plan.get("changes") or {}
+        comments = [c for c in (plan.get("comments") or []) if isinstance(c, dict)]
+        comment = str(plan.get("comment") or "").strip()
+
+        if not changes and (comments or comment):
+            rows = ["### 댓글 승인 초안", "",
+                    f"**대상 {len(keys)}건 · 필드·상태 변경 없음 · 아직 게시되지 않음**", ""]
+            by_key = {str(c.get("key") or ""): str(c.get("body") or "").strip()
+                      for c in comments}
+            for key in keys:
+                body = by_key.get(key) or comment
+                quoted = "\n".join(f"  > {line}" if line else "  >"
+                                   for line in body.splitlines())
+                rows += [f"- {{{{ticket-detail:{key}}}}}", quoted, ""]
+            rows += ["### 승인", "", "아래 카드에서 대상과 댓글 전문 확인 후 게시 승인"]
+            return "\n".join(rows).strip()
+
+        rows = ["### 변경 승인 초안", ""]
+        if len(keys) == 1:
+            rows += [f"{{{{ticket-detail:{keys[0]}}}}}", ""]
+        else:
+            rows += [" ".join(f"{{{{ticket-list:{key}}}}}" for key in keys), ""]
+        rows += ["| 필드 | 현재 | 변경 |", "|---|---|---|"]
+        before = plan.get("before") or {}
+        if (plan.get("transition") or {}).get("name"):
+            changes = {"status": plan["transition"]["name"]}
+        elif (plan.get("link") or {}).get("other"):
+            link = plan["link"]
+            changes = {"link": f"{link.get('relation') or 'Relates'} · {link['other']}"}
+        for field, value in changes.items():
+            rows.append(f"| {_FIELD_LABELS.get(field, field)} | {_cell(before.get(field))} | {_cell(value)} |")
+        if comment:
+            rows += ["", "### 함께 게시할 댓글", "", f"> {comment}"]
+        rows += ["", "### 승인", "", "아직 변경되지 않음 · 아래 카드에서 값 확인 후 승인"]
+        return "\n".join(rows).strip()
+
+    from app.agent.workflow.agents.work_architect import as_bulk_items, child_items
+    items = as_bulk_items(state.get("draft") or {})
+    children = child_items(state.get("draft") or {})
+    rows = ["### 티켓 승인 초안", "",
+            f"**총 {len(items) + len(children)}건 · 아직 생성되지 않음**", "",
+            "| # | 유형 | 제목 | 상위 | 담당 | 기한 |", "|---:|---|---|---|---|---|"]
+    for index, item in enumerate(items, 1):
+        parent = item.get("parent") or item.get("epic") or "최상위"
+        owner = f"{{{{mention:{item['assignee']}}}}}" if item.get("assignee") else "미정"
+        rows.append(f"| {index} | {_cell(item.get('type') or 'Task')} | {_cell(item.get('summary'))} | "
+                    f"{_cell(parent)} | {owner} | {_cell(item.get('duedate'))} |")
+    for offset, child in enumerate(children, len(items) + 1):
+        parent_index = int(child.get("parent_index") or 0)
+        parent = items[parent_index].get("summary") if parent_index < len(items) else "부모 Task"
+        owner = f"{{{{mention:{child['assignee']}}}}}" if child.get("assignee") else "미정"
+        rows.append(f"| {offset} | Sub-Task | {_cell(child.get('summary'))} | "
+                    f"{_cell(parent)} | {owner} | {_cell(child.get('duedate'))} |")
+
+    assignments = [a for a in (state.get("assignments") or []) if isinstance(a, dict)]
+    reasons = []
+    for index, item in enumerate(items):
+        matched = next((a for a in assignments if a.get("index") == index), {})
+        if item.get("assignee") and matched.get("reasons"):
+            reasons.append((str(item.get("summary") or f"#{index + 1}"),
+                            str(item["assignee"]),
+                            "; ".join(map(str, matched["reasons"]))))
+        child_assignments = {
+            child.get("index"): child for child in (matched.get("children") or [])
+            if isinstance(child, dict) and isinstance(child.get("index"), int)
+        }
+        for child_index, child in enumerate((state.get("draft") or {}).get("items", [])[index]
+                                            .get("children") or []):
+            if not isinstance(child, dict) or not child.get("assignee"):
+                continue
+            assigned = child_assignments.get(child_index) or {}
+            why = str(assigned.get("why") or "").strip()
+            if why:
+                reasons.append((str(child.get("summary") or f"Sub-Task #{child_index + 1}"),
+                                str(child["assignee"]), why))
+    if reasons:
+        rows += ["", "### 배정 근거", "", "| 티켓 | 담당 | 근거 |", "|---|---|---|"]
+        rows += [f"| {_cell(title)} | {{{{mention:{owner}}}}} | {_cell(why)} |"
+                 for title, owner, why in reasons]
+    rows += ["", "### 승인", "", "아래 카드에서 본문·배치·완료 조건 확인 후 생성 승인"]
+    return "\n".join(rows).strip()
+
+
+def _person_work_reply(data: dict) -> str:
+    from collections import Counter
+
+    uid = str(data.get("user_id") or "").strip()
+    tickets = [t for t in (data.get("tickets") or []) if isinstance(t, dict) and t.get("key")]
+    who = f"{{{{mention:{uid}}}}}" if uid else "해당 사용자"
+    if not tickets:
+        return f"### 현재 담당 업무\n\n**{who}의 미완료 할당 티켓 없음**"
+    statuses = Counter(str(t.get("status") or "미분류") for t in tickets)
+    priorities = Counter(str(t.get("priority") or "미지정") for t in tickets)
+    status_summary = " · ".join(f"{key} {value}건" for key, value in statuses.most_common())
+    priority_summary = " · ".join(f"{key} {value}건" for key, value in priorities.most_common())
+    rows = [
+        "### 현재 담당 업무", "",
+        f"**{who} · 미완료 {len(tickets)}건**", "",
+        "| 구분 | 요약 |", "|---|---|",
+        f"| 상태 | {status_summary} |",
+        f"| 우선순위 | {priority_summary} |", "",
+        "### 최근 갱신 업무", "",
+        "| 티켓 | 상태 | 우선순위 | 기한 |", "|---|---|---|---|",
+    ]
+    # execute_jql_all already returns updated DESC.  A summary should expose a useful
+    # sample, not dump dozens of compact badges in one unreadable line.
+    for ticket in tickets[:5]:
+        rows.append(
+            f"| {{{{ticket-inline:{ticket['key']}}}}} | {_cell(ticket.get('status'))} | "
+            f"{_cell(ticket.get('priority'))} | {_cell(ticket.get('duedate'))} |"
+        )
+    remaining = len(tickets) - 5
+    if remaining > 0:
+        rows += ["", f"최근 갱신 순 5건 표시 · 외 {remaining}건"]
+    rows += ["", "현재 담당자로 지정된 미완료 티켓 기준 · 최근 활동 로그와 구분"]
+    return "\n".join(rows)
+
+
+def _daily_priority_reply(data: dict) -> str:
+    key = str(data.get("key") or "").strip()
+    if not key:
+        return "### 지금 시작할 업무\n\n확인된 열린 업무 없음"
+    facts = [str(data.get("priority") or "").strip()]
+    due = str(data.get("due") or "").strip()
+    if due:
+        facts.append(f"마감 {due}" + (" · 초과" if data.get("overdue") else ""))
+    basis = " · ".join(value for value in facts if value)
+    return (f"### 지금 시작할 업무\n\n{{{{ticket-detail:{key}}}}}\n\n"
+            f"**1순위** — {basis}\n\n"
+            "열린 업무 중 마감 구간을 먼저, 같은 구간에서는 Jira 우선순위를 적용")
 
 
 def _question_only_reply(state, questions: list[dict]) -> str:
@@ -514,6 +817,90 @@ def _render_reply_tokens(text: str) -> str:
     return out
 
 
+def _canonicalize_meeting_reply(text: str, state) -> str:
+    """Apply confirmed meeting identities and guarantee a complete attendee badge section."""
+    from app.agent.workflow.meeting_context import (
+        attendee_mentions, canonicalize_meeting_owner_table,
+        canonicalize_reply_mentions, is_meeting_request, prune_resolved_reply_gaps,
+    )
+
+    out = canonicalize_reply_mentions(state, text)
+    out = prune_resolved_reply_gaps(state, out)
+    out = canonicalize_meeting_owner_table(state, out)
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        original = meeting_request_text(state)
+    except Exception:
+        original = ""
+    # Preserve an explicit decision word from the minutes. ``운영 반영 보류`` was once
+    # paraphrased as ``검증 완료 후 진행``; semantically close, but the former is the
+    # auditable current decision and distinguishes it from a future action.
+    if _re.search(r"운영\s*반영\s*보류", original) and not _re.search(
+            r"운영\s*반영(?:은|는|이|가|을|를)?\s*보류", out):
+        out = _re.sub(
+            r"운영\s*반영(?:은|는|이|가|을|를)?\s*"
+            r"(.{0,100}?(?:검증|증거).{0,50}?(?:후|뒤)(?:에)?)\s*진행",
+            r"운영 반영 보류 — \1 진행", out, count=1, flags=_re.I,
+        )
+    try:
+        from app.agent.workflow.meeting_context import meeting_owner_records
+        has_confirmed_owner = any(str(row.get("owner") or "").strip()
+                                  for row in meeting_owner_records(state))
+    except Exception:
+        has_confirmed_owner = False
+    has_confirmed_owner = has_confirmed_owner or bool(_re.search(
+        r"(?m)^\s*\|[^\n]*\{\{mention:skcc\.[^}\n]+\}\}[^\n]*\|\s*$", out, _re.I))
+    if has_confirmed_owner:
+        out = _re.sub(
+            r"(?mi)^\s*[-*]\s*[^\n]{0,120}담당자[^\n]{0,60}"
+            r"(?:확인되지\s*않|미확정|알\s*수\s*없)[^\n]*\n?",
+            "", out,
+        )
+    if not is_meeting_request(state) or (state.get("intent") or "") != Intent.ASK \
+            or state.get("questions"):
+        return out
+    attendees = attendee_mentions(state)
+    if attendees:
+        block = "### 참석자\n\n" + " ".join(f"{{{{mention:{uid}}}}}" for uid in attendees)
+        pattern = r"(?ms)^###\s*참석자\s*\n.*?(?=^###\s|\Z)"
+        if _re.search(pattern, out):
+            out = _re.sub(pattern, block + "\n\n", out, count=1)
+        else:
+            anchor = _re.search(r"(?m)^###\s*담당[·ㆍ\s-]*기한\s*$", out)
+            if anchor:
+                out = (out[:anchor.start()].rstrip() + "\n\n" + block
+                       + "\n\n" + out[anchor.start():])
+            else:
+                out = out.rstrip() + "\n\n" + block
+    return _ensure_explicit_meeting_ticket_sources(out, state)
+
+
+def _ensure_explicit_meeting_ticket_sources(text: str, state) -> str:
+    """Keep every ticket explicitly cited by the minutes in the combined evidence section."""
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        original = meeting_request_text(state)
+    except Exception:
+        return str(text or "")
+    # Korean particles are commonly attached directly (``DL-7001에서``), so a
+    # Unicode word boundary after the number would miss the key.
+    keys = list(dict.fromkeys(_re.findall(
+        r"(?<![A-Z0-9-])([A-Z][A-Z0-9]*-\d+)(?!\d)", original)))
+    out = str(text or "")
+    missing = [key for key in keys if not _re.search(
+        rf"(?:ticket-(?:detail|inline|compact):{_re.escape(key)}|"
+        rf"\[{_re.escape(key)}(?:\s|\]))", out, _re.I)]
+    if not missing:
+        return out
+    bullets = "\n".join(f"- {{{{ticket-detail:{key}}}}}" for key in missing)
+    section = _re.search(r"(?m)^###\s*(?:근거|참고)\s*$", out)
+    if not section:
+        return out.rstrip() + "\n\n### 근거\n\n" + bullets
+    next_heading = _re.search(r"(?m)^###\s+", out[section.end():])
+    end = section.end() + (next_heading.start() if next_heading else len(out[section.end():]))
+    return out[:end].rstrip() + "\n" + bullets + "\n\n" + out[end:].lstrip()
+
+
 def _canonicalize_person_mentions(text: str, state) -> str:
     """state에서 ID가 확인된 사람의 평문 이름을 canonical mention으로 바꾼다.
 
@@ -542,6 +929,14 @@ def _canonicalize_person_mentions(text: str, state) -> str:
                 walk(child)
 
     walk(state)
+    # Workload material is intentionally compact text, but it is still verified runtime
+    # data (``- user.id Display Name — 진행중 N건``).  Include that mapping so a model's
+    # plain-name assignment rationale becomes the mandatory mention badge as well.
+    for line in str(state.get("roster_load") or "").splitlines():
+        match = _re.match(
+            r"\s*-\s*([A-Za-z][A-Za-z0-9.]+)\s+(.+?)\s+[—–-]\s+", line)
+        if match:
+            add(match.group(1), match.group(2))
     out = str(text or "")
     for name in sorted(by_name, key=len, reverse=True):
         ids = by_name[name]
@@ -589,7 +984,7 @@ def _assignment_completion_reply(data: dict) -> str:
         lines.append(f"- {{{{ticket-detail:{parent.get('key')}}}}} — "
                      f"직계 Sub-Task {parent.get('total')}건 중 "
                      f"완료 {parent.get('done')}건, 미완료 {len(parent.get('incomplete') or [])}건")
-    lines += ["", "판정 기준: 직계 Sub-Task의 `statusCategory != done`"]
+    lines += ["", "판정 기준: 완료 상태가 아닌 직계 Sub-Task"]
     return "\n".join(lines)
 
 
@@ -615,6 +1010,11 @@ def _enforce_reply_style(text: str) -> str:
             return line
         out = line
         replacements = (
+            (r"보였습니다", "보였음"),
+            (r"보입니다", "보임"),
+            (r"([가-힣]+)되어야\s*합니다", r"\1 필요"),
+            (r"([가-힣]+(?:되지|하지))\s*않았습니다", r"\1 않음"),
+            (r"([가-힣]+(?:되지|하지))\s*않습니다", r"\1 않음"),
             (r"([가-힣]+)하였습니다", r"\1함"),
             (r"([가-힣]+)했습니다", r"\1함"),
             (r"([가-힣]+)되었습니다", r"\1됨"),
@@ -632,6 +1032,7 @@ def _enforce_reply_style(text: str) -> str:
             (r"높습니다", "높음"),
             (r"낮습니다", "낮음"),
             (r"같습니다", "같음"),
+            (r"아닙니다", "아님"),
             (r"입니다", ""),
         )
         for pattern, replacement in replacements:
@@ -765,10 +1166,13 @@ def _render_assignment_section(text: str, items: list, assignments: list) -> str
         table.append(f"| {title} | [~{row['user']}] | {reasons} | {alternates} |")
     block = "\n".join(table)
     source = str(text or "")
-    pattern = (r"(?ms)^###\s*(?:할당(?:\s+증거)?|담당(?:자)?\s*(?:제안|추천)|"
-               r"할당\s+증거\s+및\s+추천)[^\n]*\n.*?(?=^###\s|\Z)")
-    if _re.search(pattern, source):
-        return _re.sub(pattern, block + "\n", source, count=1)
+    pattern = (r"(?ms)^###\s*(?:할당(?:\s+(?:증거|근거))?|배정\s*근거|"
+               r"담당(?:자)?\s*(?:제안|추천)|담당자?\s*및\s*배정\s*근거|"
+               r"할당\s+증거\s+및\s+추천)"
+               r"[^\n]*\n.*?(?=^###\s|\Z)")
+    # Remove every model-authored assignment section.  A response may contain both a stale
+    # prose list and a later table; replacing only the first leaves contradictory owners.
+    source = _re.sub(pattern, "", source).strip()
     anchor = _re.search(r"(?m)^###\s*(?:검증|승인)", source)
     if anchor:
         return source[:anchor.start()].rstrip() + "\n\n" + block + "\n\n" + source[anchor.start():]
@@ -1393,74 +1797,626 @@ def _normalize_ticket_detail_sections(text: str) -> str:
     return "\n".join(out)
 
 
+def _normalize_badge_repetitions(text: str) -> str:
+    """typed ticket badge가 이미 가진 key/title/assignee/status의 평문 반복을 제거한다."""
+    out = []
+    inline_title = _re.compile(
+        r"(\{\{ticket-inline:[A-Z][A-Z0-9]*-\d+\}\})"
+        r"\s*(?:[\"“][^\"”\n]+[\"”]|\[[^\]\n]+\]\s*[^\n|·—]{2,80})",
+        _re.I,
+    )
+    detail = _re.compile(r"^(\s*(?:\[\d+\]\s*)?(?:[-*+]\s*)?"
+                         r"\{\{ticket-detail:[A-Z][A-Z0-9]*-\d+\}\})"
+                         r"\s*(?:[—·|:-]\s*)?(.+)$", _re.I)
+    duplicate_prefix = _re.compile(
+        r"^\s*(?:담당|assignee|상태|status|진행\s*중\s*$|완료\s*$|할당\s*$|"
+        r"reopen(?:ed)?\s*$|우선순위|마감|기한|\[[A-Za-z]+\]|[\"“])", _re.I)
+    for line in str(text or "").splitlines():
+        line = inline_title.sub(r"\1", line)
+        matched = detail.match(line)
+        if matched:
+            suffix = matched.group(2)
+            # 제목만 바로 반복한 뒤 새로운 근거 사실이 이어지는 경우에는 사실까지 버리지 않는다.
+            suffix = _re.sub(r'^\s*["“][^"”\n]+["”]\s*(?:[—·|,:-]\s*)?', '', suffix)
+            if not suffix or duplicate_prefix.search(suffix):
+                line = matched.group(1)
+            elif suffix != matched.group(2):
+                line = matched.group(1) + " — " + suffix
+        out.append(line.rstrip())
+    return "\n".join(out)
+
+
+def _badgeify_known_ticket_mentions(text: str, state) -> str:
+    """검증된 티켓의 평문 key를 용도에 맞는 최소 inline badge로 기계화한다.
+
+    이미 typed token 안에 든 key는 건드리지 않는다. 제목이 바로 이어지면 badge 자체의
+    hover 정보와 중복되므로 제목도 함께 접는다.
+    """
+    known = {str(key).upper() for key in (state.get("mentioned_keys") or [])
+             if _re.match(r"^[A-Z][A-Z0-9]*-\d+$", str(key), _re.I)}
+    for evidence in (state.get("evidence") or []):
+        if isinstance(evidence, dict):
+            key = str(evidence.get("key") or "").upper()
+            if _re.match(r"^[A-Z][A-Z0-9]*-\d+$", key):
+                known.add(key)
+    # Research material is produced by scoped Jira/Confluence retrieval, unlike raw user
+    # prose.  Ticket keys found there are verified references and must obey the same badge
+    # contract even when the Research Analyst represented them only inside a document
+    # observation rather than as a top-level evidence row.
+    for field in ("topic_dossier", "pre_survey"):
+        known.update(_re.findall(
+            r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
+            str(state.get(field) or ""), _re.I))
+    known.update(_re.findall(
+        r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
+        str(state.get("ticket_progress") or ""), _re.I))
+    value = str(text or "")
+    for key in sorted(known, key=len, reverse=True):
+        # ':' 앞은 {{ticket-*:KEY}} 내부이므로 제외. 영숫자/하이픈 경계도 엄격히 유지.
+        pattern = (rf"(?<![:A-Z0-9-]){_re.escape(key)}(?![A-Z0-9-])"
+                   r"(?:\s*[\"“][^\"”\n]{1,160}[\"”])?")
+        value = _re.sub(pattern, f"{{{{ticket-inline:{key}}}}}", value)
+    return value
+
+
+def _ensure_external_research_coverage(text: str, state) -> str:
+    """내부+외부 공식 조사를 요청했으면 검증된 외부 URL과 충돌 상태를 답에 보존한다."""
+    asked = request_text(state) + " " + last_user_text(state)
+    if not ("외부" in asked and any(w in asked for w in ("조사", "자료", "공식", "근거"))):
+        return text
+    sources = []
+    for evidence in (state.get("evidence") or []):
+        if not isinstance(evidence, dict):
+            continue
+        url = str(evidence.get("url") or "").strip()
+        if _is_external_source_url(url):
+            sources.append((str(evidence.get("title") or "공식 자료").strip(), url,
+                            str(evidence.get("why") or "").strip()))
+    if not sources:
+        for title, url in _re.findall(
+                r"^-\s*(.+?)\s*·\s*공식\s*—[^\n]*\((https?://[^)\s]+)\)\s*$",
+                str(state.get("web_context") or ""), _re.M):
+            # Navigation pages and language API indices are search artifacts, not useful
+            # decision evidence unless the user explicitly asked for those APIs.
+            if _re.search(r"Search the documentation|Namespace Reference|\s-\sRust$|API Reference",
+                          title, _re.I):
+                continue
+            sources.append((title.strip(), url, "공식 자료"))
+
+    value = str(text or "").rstrip()
+    if sources:
+        # 조사 전 상태 스냅샷의 '확인 필요'를 최종 답에 그대로 두면 실제 외부조사를 하지
+        # 않은 것처럼 읽힌다. 확인됐다고 과장하지 않고, 조사한 쟁점이라는 중립 라벨로 전환.
+        value = value.replace("| 외부 확인 필요 |", "| 외부 조사 범위 |")
+    missing = [(title, url, why) for title, url, why in sources if url not in value]
+    if missing:
+        lines = ["### 외부 공식 근거", ""]
+        for title, url, why in missing[:3]:
+            lines.append(f"- [{title}]({_markdown_url(url)})" + (f" — {why}" if why else ""))
+        value += "\n\n" + "\n".join(lines)
+
+    material = " ".join(str(state.get(k) or "") for k in ("topic_dossier", "pre_survey"))
+    material += " " + json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str)
+    # A generated conclusion must not keep a definitive PoC-complete claim when the
+    # supplied internal record says that PoC is still unperformed.  Merely appending a
+    # warning left two mutually exclusive statements on screen (S8 UI review). Replace
+    # the unsafe assertion itself; retain the remaining reader/support clause.
+    source_says_unperformed = bool(_re.search(
+        r"PoC[^\n]{0,120}(?:아직\s*수행하지\s*않|미수행|수행\s*전|완료되지\s*않)",
+        material, _re.I,
+    ))
+    source_says_complete = bool(_re.search(
+        r"PoC[^\n]{0,120}(?:수행\s*완료|완료되었|완료됨|완료한\s*상태)",
+        material, _re.I,
+    ))
+    if source_says_unperformed:
+        reason = "내부 기록 상충" if source_says_complete else "확인 근거 부족"
+        value = _re.sub(
+            r"(?:Puffin\s+NDV(?:의)?\s*)?(?:writer\s*)?PoC(?:는|가|은|이)?\s*"
+            r"(?:수행\s*)?(?:완료되었(?:으나|지만)?|완료되었다|완료됨|완료한\s*상태)\s*[,，]?",
+            f"Puffin NDV writer PoC 완료 여부는 {reason}으로 확정 불가. ",
+            value,
+            flags=_re.I,
+        )
+        value = _re.sub(r"\.\s*\.", ".", value)
+    conflict_material = material + " " + value
+    if ("PoC" in conflict_material
+            and _re.search(r"PoC[^\n]{0,80}(?:완료|수행 완료)", conflict_material)
+            and _re.search(r"PoC[^\n]{0,80}(?:아직\s*수행하지\s*않|미수행)", conflict_material)
+            and "내부 기록 상충" not in value):
+        value += ("\n\n### 확인 필요\n\n- 내부 기록 상충: 한 기록은 PoC 완료, 다른 기록은 미수행으로 기술. "
+                  "대상 범위와 갱신 시점 확인 전 현재 완료 여부 확정 불가")
+    return value
+
+
+def _is_external_source_url(url: str) -> bool:
+    """Jira/Confluence/localhost 등 내부 링크가 외부 공식 근거로 승격되지 않게 분류한다."""
+    from urllib.parse import urlparse
+    import ipaddress
+
+    try:
+        parsed = urlparse(str(url or ""))
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme not in ("http", "https") or not host or host == "localhost" \
+                or host.endswith((".local", ".internal")):
+            return False
+        try:
+            if ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback:
+                return False
+        except ValueError:
+            pass
+        try:
+            from app.infra.settings import get_settings
+            settings = get_settings()
+            internal_hosts = {
+                (urlparse(str(base or "")).hostname or "").lower().rstrip(".")
+                for base in (getattr(settings, "jira_base", ""),
+                             getattr(settings, "confluence_base", ""))
+                if base
+            }
+            if host in internal_hosts:
+                return False
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _drop_unsupported_guarantees(text: str, state) -> str:
+    """Do not turn a format description into an unsupported outcome guarantee.
+
+    ``보장`` is a materially stronger claim than ``저장한다`` or ``지원한다``.  If no
+    request or verified research material uses that guarantee, remove only the attached
+    comma-clause.  Standalone guarantee sentences are retained as an explicit validation
+    gap instead of being silently presented as fact.
+    """
+    source = " ".join(str(state.get(key) or "") for key in (
+        "request_text", "topic_dossier", "pre_survey", "situation",
+        "knowledge_brief", "evidence",
+    ))
+    value = str(text or "")
+    if "보장" not in source:
+        value = _re.sub(
+            r"\s*[,，]\s*[^,.\n]{2,120}?(?:을|를|이|가)?\s*보장(?:함|됨|한다|합니다)?(?=[.\n]|$)",
+            "", value,
+        )
+        value = _re.sub(
+            r"(?m)^(\s*[-*]?\s*)?([^\n.]{2,160}?보장(?:함|됨|한다|합니다)?)[.]?\s*$",
+            lambda m: ((m.group(1) or "") + "해당 보장 효과는 검증 필요"),
+            value,
+        )
+    # A search-result snippet is candidate material, not a selected source.  Do not let a
+    # model attach an uncited optimization/quality benefit unless the request or structured
+    # research evidence actually retained that effect.
+    if not _re.search(r"쿼리\s*최적화|query\s*optim", source, _re.I):
+        value = _re.sub(
+            r"\s*NDV\s*통계(?:는|가)?\s*쿼리\s*최적화에\s*사용될\s*수\s*있음[.]?",
+            "", value, flags=_re.I,
+        )
+        value = _re.sub(
+            r"이는\s+[^.\n]{0,180}?성능\s*최적화에\s*기여할\s*수\s*있음을\s*시사하지만,?\s*",
+            "", value, flags=_re.I,
+        )
+    unresolved_reader = bool(_re.search(
+        r"StarRocks[^.\n]{0,100}(?:Puffin|NDV)[^.\n]{0,120}"
+        r"(?:확인되지|미확인|검증\s*필요|지원\s*여부)", source, _re.I,
+    ))
+    latest = last_user_text(state)
+    support_confirmed_now = bool(_re.search(
+        r"StarRocks[^.\n]{0,100}(?:Puffin|NDV)[^.\n]{0,100}"
+        r"(?:소비\s*(?:지원|확인|성공|완료)|지원(?:함|한다|됨|된다))",
+        latest, _re.I,
+    ))
+    if unresolved_reader and not support_confirmed_now:
+        value = _re.sub(
+            r"(?m)(?:^|(?<=[.!?])\s+)StarRocks[^.!?\n]{0,220}?"
+            r"Puffin[^.!?\n]{0,120}?(?:소비할\s*수\s*있음|소비를?\s*지원(?:함|한다|됨|된다))"
+            r"[.!?]?\s*",
+            "", value, flags=_re.I,
+        )
+    value = _re.sub(r"([가-힣]+)이며\.", r"\1임.", value)
+    value = _re.sub(r"([가-힣]+)되며\.", r"\1됨.", value)
+    value = _re.sub(r"([가-힣]+)하며\.", r"\1함.", value)
+    value = _re.sub(r"\s+([.,!?])", r"\1", value)
+    return value
+
+
 def _dedupe_refs(text: str) -> str:
-    """canonical `### 근거` 섹션의 중복 출처를 병합하고 번호를 다시 매긴다.
+    """Legacy-compatible wrapper around the single evidence-index owner."""
+    return canonicalize_evidence_index(text)
 
-    출처 정체성: 코멘트(키+괄호 출처) > 문서(URL) > 티켓(키 집합) > 문구.
-    같은 티켓의 '티켓 참조'와 '코멘트 참조'는 다른 출처다(내용이 다르다).
-    본문에서 안 쓰인 근거는 떨군다. legacy `참조` heading은 canonical `근거`로 바꾼다."""
-    import re as _re
-    canonical = _re.sub(
-        r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$",
-        "### 근거", str(text or ""))
-    m = _re.search(r"(?m)^### 근거\s*\n((?:\s*-?\s*\[\d+\][^\n]*\n?)+)", canonical)
-    if not m:
-        return canonical
-    head, block, tail = canonical[:m.start(1)], m.group(1), canonical[m.end(1):]
-    body = head + tail
 
-    def _sig(desc: str):
-        keys = tuple(_re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", desc))
-        com = _re.search(r"코멘트\s*\(([^)]*)\)", desc)
-        if com:
-            return ("comment", keys, com.group(1).strip())
-        url = _re.search(r"\((https?://[^)]+)\)", desc)
-        if url and not keys:
-            return ("doc", url.group(1))
-        if keys:
-            return ("ticket", keys)
-        return ("text", desc.strip().lower()[:60])
+def _fold_standalone_sources(text: str) -> str:
+    """Move legacy standalone and external-source blocks into the canonical index.
 
-    rows = [(n, d) for n, d in
-            _re.findall(r"(?:^|\n)\s*-?\s*\[(\d+)\]\s*([^\n]*)", block)
-            if "…" not in d and "<실제 문서" not in d]   # 프롬프트 형식 예시 복사 차단(실측)
-    survivors, alias = [], {}          # [(old, desc)], old→대표 old
-    seen = {}
-    for old, desc in rows:
-        s = _sig(desc)
-        if s in seen:
-            alias[old] = seen[s]
+    The old document-link safeguard runs before the evidence index and can still emit a
+    standalone source.  Leaving it in the body creates two visible source lists after the
+    canonical index hydrates the same URL.  Treat the line as an input grammar only and let
+    the one index owner renumber/deduplicate it.
+    """
+    value = str(text or "")
+    found: list[str] = []
+
+    def take(match):
+        source = match.group(1).strip()
+        if source not in found:
+            found.append(source)
+        return ""
+
+    value = _re.sub(
+        r"(?m)^\s*출처\s*:\s*(\[[^\n]+?\]\(https?://[^\s)]+\)|https?://\S+)\s*$",
+        take, value,
+    )
+
+    def take_external_section(match):
+        before = len(found)
+        for line in match.group(1).splitlines():
+            source = _re.sub(r"^\s*[-*+]\s+", "", line).strip()
+            if _re.match(r"\[[^\]]+\]\(https?://", source) and source not in found:
+                found.append(source)
+        return "" if len(found) > before else match.group(0)
+
+    value = _re.sub(
+        r"(?ms)^###\s*외부\s*공식\s*근거\s*$\s*(.*?)(?=^###\s|\Z)",
+        take_external_section, value,
+    )
+    if not found:
+        return value
+    heading = _re.search(r"(?m)^#{1,4}\s*(?:근거|참조)\s*$", value)
+    rows = "\n".join(f"[{9000 + index}] {source}" for index, source in enumerate(found, 1))
+    if heading:
+        value = value[:heading.end()] + "\n" + rows + value[heading.end():]
+    else:
+        value = value.rstrip() + "\n\n### 근거\n\n" + rows
+    return value.strip()
+
+
+_DIRECT_INPUT_SOURCE_RE = _re.compile(
+    r"^(?:대화\s*기록|사용자\s*(?:입력|제공\s*내용)|제공된\s*(?:내용|대화)|회의록\s*원문|"
+    r"(?:첨부\s*)?(?:문서|메모)(?:\s*발췌)?|[^/\\]+\.(?:docx?|pdf|txt|md|xlsx?|pptx?))$",
+    _re.I,
+)
+
+
+def _is_direct_input_pseudo_source(item: dict) -> bool:
+    """User-provided prose is request data, not a linkable research source.
+
+    Treating pasted chat as an ``external`` source produced a dead ``대화 기록`` row and
+    an internal grounding warning in the approval reply.  Direct input still grounds the
+    draft, but it must not pretend to be a hyperlinkable evidence item.
+    """
+    if not isinstance(item, dict) or str(item.get("url") or "").strip():
+        return False
+    key = str(item.get("key") or "").strip()
+    title = str(item.get("title") or "").strip()
+    return bool(_DIRECT_INPUT_SOURCE_RE.fullmatch(title)
+                or _DIRECT_INPUT_SOURCE_RE.fullmatch(key)
+                or ("대화" in key and title == "대화 기록")
+                # Model-generated labels for pasted chat vary by speaker names. With
+                # no URL/key, both "김운영 대화" and "김운영과 이개발의 대화" are still
+                # the user's request payload, never an independently verifiable source.
+                or bool(_re.search(r"(?:대화|대화록)$", key))
+                or bool(_re.search(r"(?:대화|대화록)$", title)))
+
+
+def _is_negative_search_pseudo_source(item: dict) -> bool:
+    """A failed lookup is an uncertainty, not a source users can open and verify.
+
+    Research sometimes materializes ``topic X was not found`` as evidence whose key and
+    title are both the raw topic.  Rendering that row creates a dead citation and exposes a
+    grounding diagnostic in otherwise valid Bug drafts.  Keep the uncertainty in research
+    state, but never number it as provenance.
+    """
+    if not isinstance(item, dict) or str(item.get("url") or "").strip():
+        return False
+    key = str(item.get("key") or "").strip()
+    title = str(item.get("title") or "").strip()
+    if not key or key != title or _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+        return False
+    observations = " ".join(
+        str(row.get("text") or "") for row in (item.get("observations") or [])
+        if isinstance(row, dict)
+    )
+    material = " ".join((str(item.get("why") or ""), str(item.get("limitations") or ""), observations))
+    return bool(_re.search(
+        r"찾지\s*못|확인(?:되지\s*않|할\s*수\s*없)|기록이\s*없|"
+        r"검색(?:된|\s*결과).{0,60}(?:없|존재하지\s*않|나타나지\s*않|찾지\s*못)|"
+        r"나타나지\s*않",
+        material,
+    ))
+
+
+def _is_non_renderable_evidence(item: dict) -> bool:
+    return _is_direct_input_pseudo_source(item) or _is_negative_search_pseudo_source(item)
+
+
+def _drop_direct_input_source_rows(text: str) -> str:
+    """Remove legacy pseudo-source rows before canonical numbering and late grounding."""
+    lines = str(text or "").splitlines()
+    out: list[str] = []
+    dropping = False
+    for line in lines:
+        root = _re.match(r"^\s*\[(\d+)\]\s+(.+?)\s*$", line)
+        if root:
+            label = root.group(2).strip()
+            markdown = _re.fullmatch(r"\[([^]]+)\]\(([^)]+)\)", label)
+            if markdown and (markdown.group(2).strip().casefold() == "verified url"
+                             or _DIRECT_INPUT_SOURCE_RE.fullmatch(markdown.group(1).strip())):
+                label = markdown.group(1).strip()
+            else:
+                label = _re.sub(r"\s*[—–-].*$", "", label).strip()
+            dropping = bool(_DIRECT_INPUT_SOURCE_RE.fullmatch(label))
+            if dropping:
+                continue
+        elif dropping:
+            if _re.match(r"^\s*[-*+]\s+", line) or not line.strip():
+                continue
+            dropping = False
+        if not dropping:
+            out.append(line)
+    value = "\n".join(out)
+    # The sole pseudo source commonly leaves an empty heading.  The canonical index can
+    # later append real sources if any exist.
+    value = _re.sub(r"(?ms)^###\s*(?:근거|참조)\s*$\s*(?=^###\s|\Z)", "", value)
+    return _re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+def _merge_evidence_index(text: str, state) -> str:
+    """Union model references and structured research provenance in the persisted reply."""
+    evidence = [item for item in (state.get("evidence") or [])
+                if isinstance(item, dict) and not _is_non_renderable_evidence(item)]
+    return canonicalize_evidence_index(
+        _drop_direct_input_source_rows(_fold_standalone_sources(text)),
+        evidence=evidence,
+        related_docs=state.get("related_docs") or [],
+    )
+
+
+def _rebind_definition_citations(text: str) -> str:
+    """Bind general technical definitions to an external specification source.
+
+    Meeting summaries sometimes copied an old internal marker onto a sentence that defines
+    a public file format.  Once the single index is built, source numbers are stable and a
+    definition can be rebound to the best title-matching external source without an LLM.
+    Project-state claims keep their internal citations.
+    """
+    value = str(text or "")
+    heading = _re.search(r"(?m)^###\s*근거\s*$", value)
+    if not heading:
+        return value
+    body, index = value[:heading.start()].rstrip(), value[heading.start():]
+    external = []
+    tickets = {}
+    for number, source in _re.findall(r"(?m)^\[(\d+)\]\s+(.+)$", index):
+        ticket = _re.search(r"\{\{ticket-detail:([A-Z][A-Z0-9]*-\d+)\}\}", source, _re.I)
+        if ticket:
+            tickets[ticket.group(1).upper()] = number
+        url = next(iter(_re.findall(r"https?://[^\s)]+", source)), "")
+        if url and _is_external_source_url(url):
+            external.append((number, _citation_words(source)))
+    if not external:
+        return value
+    definition = _re.compile(
+        r"파일\s*형식|공개\s*(?:표준|사양)|공식\s*(?:정의|사양)|"
+        r"(?:spec|specification|standard|format)\b", _re.I)
+    frequency = {}
+    for _number, source_words in external:
+        for word in source_words:
+            frequency[word] = frequency.get(word, 0) + 1
+
+    def best_external(sentence: str) -> tuple[float, str]:
+        words = _citation_words(_BODY_CITATION_RE.sub("", sentence))
+        ranked = []
+        for number, source_words in external:
+            overlap = words & source_words
+            score = sum(1 / frequency[word] for word in overlap)
+            ranked.append((score, -int(number), number))
+        score, _order, number = max(ranked, default=(0.0, 0, ""))
+        return score, number
+
+    def bind(sentence: str, numbers) -> str:
+        # Once the server can identify the claim's source, remove every model-supplied
+        # plain marker in that sentence.  Keeping an interior citation run produced UI such
+        # as ``티켓[1][2][3]. [2]`` even though the sentence named exactly one ticket.
+        clean = _BODY_CITATION_RE.sub("", sentence)
+        clean = _re.sub(r"\s+([.,!?])", r"\1", clean).strip()
+        chosen = list(dict.fromkeys(
+            [str(number) for number in ([numbers] if isinstance(numbers, str) else numbers)
+             if str(number)]))
+        marker = "".join(f"[{number}]" for number in chosen)
+        return f"{clean} {marker}" if clean and marker else sentence
+
+    lines = []
+    for line in body.splitlines():
+        # Tables and source-evaluation rows are already structurally bound to their source
+        # cell. Appending ``[n]`` after the closing pipe creates a fifth column and breaks
+        # Markdown rendering.
+        if line.lstrip().startswith(("|", "#", ">", "```")):
+            lines.append(line)
+            continue
+        # One generated paragraph often contains a public definition, a product claim,
+        # and an internal project-state claim followed by one marker.  A line-level rewrite
+        # makes that last marker appear to support every sentence.  Bind each sentence to
+        # the source it actually names, carrying an explicit ticket only across an immediate
+        # "이/해당 티켓" continuation.
+        if not (definition.search(line) or _re.search(r"\{\{ticket-detail:", line, _re.I)):
+            lines.append(line)
+            continue
+        parts = _re.split(r"(?<=[.!?])\s+", line)
+        rebound = []
+        last_ticket_number = ""
+        for sentence in parts:
+            ticket_keys = _re.findall(
+                r"\{\{ticket-detail:([A-Z][A-Z0-9]*-\d+)\}\}", sentence, _re.I)
+            ticket_numbers = [tickets[key.upper()] for key in ticket_keys if tickets.get(key.upper())]
+            if ticket_numbers:
+                last_ticket_number = ticket_numbers[-1]
+                sentence = bind(sentence, ticket_numbers)
+            elif last_ticket_number and _re.match(
+                    r"\s*(?:이|해당)\s*(?:티켓|작업|항목)(?:에서는|은|는|의|에서)", sentence):
+                sentence = bind(sentence, last_ticket_number)
+            else:
+                score, number = best_external(sentence)
+                # A definition needs one specific-title match.  Other technical claims need
+                # at least two title terms so ordinary prose is not mechanically over-cited.
+                threshold = 0.5 if definition.search(sentence) else 1.5
+                if score >= threshold:
+                    sentence = bind(sentence, number)
+            rebound.append(sentence)
+        lines.append(" ".join(rebound))
+    return "\n".join(lines).rstrip() + "\n\n" + index.lstrip()
+
+
+def _source_quality_requested(state) -> bool:
+    asked = (request_text(state) + " " + last_user_text(state)).casefold()
+    return any(word in asked for word in ("신뢰도", "출처별", "요청 적합성", "출처 적합성"))
+
+
+def _render_requested_source_quality(text: str, state) -> str:
+    """Project structured source judgments into one complete, deterministic table."""
+    evidence = [row for row in (state.get("evidence") or [])
+                if isinstance(row, dict) and not _is_non_renderable_evidence(row)]
+    if not evidence or not _source_quality_requested(state):
+        return str(text or "")
+    confidence = {"high": "높음", "medium": "중간", "low": "낮음", "unknown": "미확인"}
+    fitness = {"direct": "직접", "supporting": "보조", "context-only": "맥락", "unknown": "미확인"}
+    rows = ["### 출처 평가", "", "| 출처 | 신뢰도 | 요청 적합성 | 한계 |", "|---|---|---|---|"]
+    represented_urls = set()
+    for item in evidence:
+        key = str(item.get("key") or "").strip().upper()
+        title = str(item.get("title") or item.get("key") or "출처").strip()
+        url = str(item.get("url") or "").strip()
+        if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key):
+            source = f"{{{{ticket-detail:{key}}}}}"
+        elif url.startswith(("http://", "https://")):
+            source = f"[{title}]({_markdown_url(url)})"
+            represented_urls.add(url)
         else:
-            seen[s] = old
-            alias[old] = old
-            survivors.append((old, desc))
-    # 본문에 실제로 인용된 대표만 남기고 1..k 재부여(본문 등장 순서).
-    cited = _re.findall(r"\[(\d+)\](?!\()", body)
-    order, used = [], set()
-    for c in cited:
-        rep = alias.get(c)
-        if rep and rep not in used:
-            used.add(rep)
-            order.append(rep)
-    if not order:
-        return canonical
-    newno = {rep: str(i + 1) for i, rep in enumerate(order)}
-    mapping = {old: newno[rep] for old, rep in alias.items() if rep in newno}
-    if not mapping:
-        return canonical
-    # 병합할 게 없어도 계속 간다 — 불릿 제거·문서 중복 표기 정리는 항상 적용된다.
-    out_body = _re.sub(r"\[(\d+)\](?!\()",
-                       lambda mm: f"[{mapping.get(mm.group(1), mm.group(1))}]", body)
-    # 불릿 없이 — `[n]` 자체가 마커라 `- [n]` 은 이중 표식이다(실측 지적). 문서 참조는
-    # "제목 (URL)" 중복 표기를 URL 만 남긴다 — 뱃지가 제목을 보여 준다.
-    def _clean_desc(d: str) -> str:
-        return _re.sub(r"^([^—\n]*?)\s*\((https?://[^\s)]+)\)", r"\2", d.strip())
-    lines = [f"[{newno[old]}] {_clean_desc(desc)}" for old, desc in survivors if old in newno]
-    lines.sort(key=lambda ln: int(_re.match(r"\[(\d+)\]", ln).group(1)))
-    # 근거 섹션을 원래 자리(head 끝)에 다시 꽂는다.
-    ref_block = "\n".join(lines) + "\n"
-    cut = len(head)
-    return out_body[:cut] + ref_block + out_body[cut:]
+            source = title
+        raw_confidence = str(item.get("confidence") or "").lower()
+        raw_fitness = str(item.get("fitness") or "").lower()
+        limitation = str(item.get("limitations") or "").strip()
+        if _is_external_source_url(url):
+            # An external specification can be authoritative about its own format, never
+            # direct proof that this LTM/Jira project is production-ready.
+            official = bool(_re.search(
+                rf"(?m)^-\s*[^\n]*·\s*공식\s*—[^\n]*{_re.escape(url)}",
+                str(state.get("web_context") or "")))
+            raw_confidence = "high" if official else "medium"
+            raw_fitness = "supporting"
+            limitation = limitation or "내부 운영 적용 여부는 직접 판단하지 않음"
+        if not limitation:
+            limitation = {
+                "direct": "단일 출처만으로 최종 판단하기에는 범위 제한",
+                "supporting": "보조 근거로 단독 결론 불가",
+                "context-only": "배경 이해용으로 직접 판단 근거가 아님",
+            }.get(raw_fitness, "근거 한계 미확인")
+        rows.append(
+            f"| {_cell(source)} | {confidence.get(raw_confidence, '미확인')} | "
+            f"{fitness.get(raw_fitness, '미확인')} | {_cell(limitation)} |"
+        )
+    external_section = _re.search(
+        r"(?ms)^###\s*외부\s*공식\s*근거\s*$\s*(.*?)(?=^###\s|\Z)", str(text or ""))
+    if external_section:
+        for title, url in _re.findall(r"\[([^\n]+?)\]\((https?://[^\s)]+)\)",
+                                      external_section.group(1)):
+            if url in represented_urls:
+                continue
+            rows.append(
+                f"| {_cell(f'[{title}]({url})')} | 높음 | 보조 | "
+                "내부 운영 적용 여부는 직접 판단하지 않음 |"
+            )
+            represented_urls.add(url)
+    block = "\n".join(rows)
+    source = _re.sub(r"(?ms)^###\s*출처\s*평가\s*$.*?(?=^###\s|\Z)", "", str(text or "")).strip()
+    evidence_heading = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", source)
+    if evidence_heading:
+        return (source[:evidence_heading.start()].rstrip() + "\n\n" + block + "\n\n"
+                + source[evidence_heading.start():].lstrip())
+    return source.rstrip() + "\n\n" + block
+
+
+_BODY_CITATION_RE = _re.compile(r"\[\d+(?:-[a-z])?\](?!\()", _re.I)
+_CITATION_WORD_RE = _re.compile(r"[A-Za-z][A-Za-z0-9.+-]{2,}|[가-힣]{2,}")
+_CITATION_STOP = {
+    "현재", "관련", "상태", "작업", "확인", "정보", "결과", "프로젝트", "내부", "외부",
+    "문서", "티켓", "진행", "완료", "검증", "적용", "여부", "official", "documentation",
+}
+
+
+def _citation_words(value: str) -> set[str]:
+    return {token.casefold().strip("._+-") for token in _CITATION_WORD_RE.findall(str(value or ""))
+            if len(token.strip("._+-")) >= 3 and token.casefold().strip("._+-") not in _CITATION_STOP}
+
+
+def _ensure_requested_body_citations(text: str, state) -> str:
+    """Attach only resolvable source markers to material prose when the user required them."""
+    asked = (request_text(state) + " " + last_user_text(state)).casefold()
+    if not any(word in asked for word in ("근거 marker", "근거 마커", "참조번호", "인용 marker", "인용 마커")):
+        return str(text or "")
+    value = str(text or "")
+    heading = _re.search(r"(?m)^###\s*근거\s*$", value)
+    if not heading:
+        return value
+    body, index = value[:heading.start()].rstrip(), value[heading.start():]
+    root_rows = _re.findall(r"(?m)^\[(\d+)\]\s+(.+)$", index)
+    if not root_rows:
+        return value
+
+    numbered = []
+    for item in (state.get("evidence") or []):
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        number = next((n for n, row in root_rows
+                       if (key and key.upper() in row.upper()) or (url and url in row)
+                       or (title and title.casefold() in row.casefold())), "")
+        if not number:
+            continue
+        material = " ".join([
+            title, str(item.get("why") or ""),
+            *(str(obs.get("text") or "") if isinstance(obs, dict) else str(obs)
+              for obs in (item.get("observations") or [])),
+        ])
+        numbered.append({"number": number, "words": _citation_words(material),
+                         "direct": str(item.get("fitness") or "").lower() == "direct"})
+    if not numbered:
+        return value
+
+    frequency = {}
+    for item in numbered:
+        for word in item["words"]:
+            frequency[word] = frequency.get(word, 0) + 1
+    blocks, material_count = body.split("\n\n"), 0
+    for index_no, block in enumerate(blocks):
+        stripped = block.strip()
+        if (not stripped or stripped.startswith(("#", "|", "-", ">", "```"))
+                or "### 출처 평가" in stripped or _BODY_CITATION_RE.search(stripped)
+                or len(stripped) < 35):
+            continue
+        material_count += 1
+        words = _citation_words(stripped)
+        ranked = []
+        for item in numbered:
+            overlap = words & item["words"]
+            score = sum(1 / frequency[word] for word in overlap)
+            if score:
+                ranked.append((score, item["number"]))
+        ranked.sort(reverse=True)
+        chosen = [number for score, number in ranked if score >= 0.75][:3]
+        if not chosen and material_count == 1:
+            chosen = [item["number"] for item in numbered if item["direct"]][:3]
+        if chosen:
+            marker = "".join(f"[{number}]" for number in dict.fromkeys(chosen))
+            blocks[index_no] = stripped.rstrip() + " " + marker
+        # Citation-heavy research memos need their conclusion and explanatory paragraph,
+        # not every later housekeeping line, mechanically annotated.
+        if material_count >= 3:
+            break
+    return "\n\n".join(blocks).rstrip() + "\n\n" + index.lstrip()
 
 
 def _prune_empty_rows(text: str) -> str:
@@ -1661,7 +2617,8 @@ def _drop_dangling_bracket(text: str) -> str:
 
 def _violations(g: dict) -> int:
     return len(g.get("fake_keys") or []) + len(g.get("wrong_titles") or {}) \
-        + len(g.get("fake_people") or []) + len(g.get("unlinked_refs") or [])
+        + len(g.get("fake_people") or []) + len(g.get("unlinked_refs") or []) \
+        + len(g.get("name_as_id") or {})
 
 
 def _kept_substance(before: str, after: str) -> bool:

@@ -134,6 +134,50 @@ def _roster_load(state) -> str:
     return "\n".join(rows)
 
 
+def _all_assignees_user_specified(draft: dict) -> bool:
+    """Whether every item and child has a user-decided assignee or explicit unassignment."""
+    items = [item for item in (draft.get("items") or []) if isinstance(item, dict)]
+    if not items:
+        return False
+    for item in items:
+        if item.get("assignee_source") not in ("user", "user_unassigned"):
+            return False
+        if item.get("assignee_source") == "user" and not str(item.get("assignee") or "").strip():
+            return False
+        for child in (item.get("children") or []):
+            if not isinstance(child, dict):
+                continue
+            if child.get("assignee_source") not in ("user", "user_unassigned"):
+                return False
+            if child.get("assignee_source") == "user" \
+                    and not str(child.get("assignee") or "").strip():
+                return False
+    return True
+
+
+def _user_fixed_assignments(draft: dict) -> list[dict]:
+    """Build advisor-shaped rows without re-evaluating user decisions."""
+    rows = []
+    for index, item in enumerate(draft.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        children = [
+            {"index": child_index, "user": str(child.get("assignee") or "").strip(),
+             "why": "사용자 지정 담당자"}
+            for child_index, child in enumerate(item.get("children") or [])
+            if isinstance(child, dict) and str(child.get("assignee") or "").strip()
+        ]
+        explicitly_unassigned = item.get("assignee_source") == "user_unassigned"
+        rows.append({
+            "index": index,
+            "user": str(item.get("assignee") or "").strip(),
+            "reasons": ["사용자 지정 미할당" if explicitly_unassigned else "사용자 지정 담당자"],
+            "children": children,
+            "alternates": [],
+        })
+    return rows
+
+
 class PeopleAdvisor(StructuredAgent):
     """★ 도구를 쓰지 않는다 — 후보 재료(유사 이력·로스터·부하)를 코드가 미리 조회한다.
 
@@ -149,6 +193,16 @@ class PeopleAdvisor(StructuredAgent):
         base = super().node()
 
         def run(state):
+            # Every assignee is already a user decision.  Re-running roster history and
+            # workload search cannot improve that decision and used ~99 seconds in MTG2.
+            # Keep the fan-out/join shape, but return deterministic aligned rows without an
+            # LLM or tool call so the approval prose still reflects the exact payload.
+            if _all_assignees_user_specified(state.get("draft") or {}):
+                rows = _user_fixed_assignments(state.get("draft") or {})
+                return {
+                    "assignments": rows,
+                    "trace": note(state, self.name, f"{len(rows)}건 사용자 지정 담당 유지"),
+                }
             # 두 조회는 독립 — 병렬로. prod 는 호출당 수백 ms~수 초다.
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=2) as ex:
@@ -240,7 +294,7 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
                     refs = _ticket_keys(reason)
                     if not own_hist or (refs and not any(k in own_hist for k in refs)):
                         continue
-                cleaned = _ground_assignment_reason(reason, own_hist)
+                cleaned = _ground_assignment_reason(reason, own_hist, state.get("roster_load"))
                 if cleaned:
                     clean_reasons.append(cleaned)
             reasons = clean_reasons
@@ -256,7 +310,8 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
                 child_hist = next((line for line in
                                    str(state.get("similar_history") or "").splitlines()
                                    if line.lstrip().startswith(f"- {child_user} ")), "")
-                why = _ground_assignment_reason(str(c.get("why") or "").strip(), child_hist)
+                why = _ground_assignment_reason(
+                    str(c.get("why") or "").strip(), child_hist, state.get("roster_load"))
                 if not why:
                     why = _workload_reason(state.get("roster_load"), child_user)
                     if not any(ch.isdigit() for ch in why):
@@ -275,7 +330,8 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
                 alt_hist = next((line for line in
                                  str(state.get("similar_history") or "").splitlines()
                                  if line.lstrip().startswith(f"- {alt_user} ")), "")
-                why = _ground_assignment_reason(str(x.get("why") or "").strip(), alt_hist)
+                why = _ground_assignment_reason(
+                    str(x.get("why") or "").strip(), alt_hist, state.get("roster_load"))
                 if not why:
                     why = _workload_reason(state.get("roster_load"), alt_user)
                     if not any(ch.isdigit() for ch in why):
@@ -318,10 +374,28 @@ def _ticket_keys(text: str) -> list[str]:
     return re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", str(text or ""))
 
 
-def _ground_assignment_reason(reason: str, own_history: str) -> str:
+def _roster_display_names(roster_load) -> set[str]:
+    """Extract verified display names from the human-readable workload material."""
+    import re
+    names = set()
+    for line in str(roster_load or "").splitlines():
+        match = re.match(r"\s*-\s*[A-Za-z][A-Za-z0-9.]+\s+(.+?)\s+[—–-]\s+", line)
+        if match:
+            name = match.group(1).strip()
+            if name:
+                names.add(name)
+    return names
+
+
+def _ground_assignment_reason(reason: str, own_history: str, roster_load="") -> str:
     """담당 이력 표에 없는 티켓·경험 주장을 지우고 측정된 workload 절은 보존한다."""
     import re
     text = str(reason or "").strip()
+    # Reasons are rendered next to the typed assignee identity.  A model-written plain
+    # display name is both redundant and unsafe: one measured run attributed another
+    # person's ticket to the selected user.  Fall back to measured workload instead.
+    if any(name in text for name in _roster_display_names(roster_load)):
+        return ""
     refs = _ticket_keys(text)
     if refs and (not own_history or any(key not in own_history for key in refs)):
         return ""
@@ -492,7 +566,10 @@ def _normalize_workload_choice(row: dict) -> dict:
     old_user = str(row.get("user") or "")
     new = dict(row)
     new["user"] = str(alt.get("user") or "")
-    new["reasons"] = [f"진행중 {alt_load}건으로 후보 중 현재 부하가 가장 낮음"]
+    new["reasons"] = [
+        f"검증된 관련 이력 근거 없음 · 진행중 {alt_load}건으로 후보 중 "
+        "현재 부하가 가장 낮아 임시 추천"
+    ]
     alts[idx] = {"user": old_user, "why": f"진행중 {primary_load}건으로 1순위보다 부하가 높음"}
     new["alternates"] = alts
     return new
@@ -514,7 +591,7 @@ def merge_assignments(draft: dict, assignments: list) -> dict:
         if a.get("user") and a.get("reasons"):
             # 사용자가 입으로 지정한 담당("성능 측정은 x1402")은 추천이 못 덮는다 —
             # 지정은 결정이고 추천은 제안이다(실측: 추천이 지정 3건을 전부 한 사람으로 뭉갬).
-            if items[i].get("assignee_source") != "user":
+            if items[i].get("assignee_source") not in ("user", "user_unassigned"):
                 items[i] = dict(items[i], assignee=a["user"])
         kids = [dict(c) for c in (items[i].get("children") or []) if isinstance(c, dict)]
         if not kids:
@@ -523,7 +600,7 @@ def merge_assignments(draft: dict, assignments: list) -> dict:
         for c in a.get("children") or []:
             j, who = c.get("index"), str(c.get("user") or "").strip()
             if isinstance(j, int) and 0 <= j < len(kids) and who \
-                    and kids[j].get("assignee_source") != "user":
+                    and kids[j].get("assignee_source") not in ("user", "user_unassigned"):
                 kids[j]["assignee"] = who
                 touched = True
         if touched:

@@ -69,3 +69,11 @@ def test_required_redesigned_capabilities_have_dedicated_roles():
     required = {"request_architect", "query_specialist", "research_analyst",
                 "people_advisor", "editor_author", "auditor", "action_executor"}
     assert required <= set(ROLE_SPECS)
+
+
+def test_role_manifest_documents_cross_turn_and_final_response_inputs():
+    assert {"messages", "request_text"} <= set(ROLE_SPECS["query_specialist"].input_keys)
+    assert {"query_artifacts", "topic_dossier", "web_context"} <= \
+        set(ROLE_SPECS["research_analyst"].input_keys)
+    assert {"group_activity", "ticket_progress", "person_work_snapshot", "daily_priority_snapshot",
+            "change_plan", "questions"} <= set(ROLE_SPECS["result_integrator"].input_keys)

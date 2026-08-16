@@ -58,7 +58,7 @@ SCHEMA = {
             "type": "string",
             "enum": ["", "epic_create", "task_create", "bug_report", "subtask_bulk",
                      "find_people", "find_tickets", "knowledge", "history", "workload",
-                     "assign_fit", "asset_lookup"],
+                     "assign_fit", "asset_lookup", "topic_research"],
             "description": "The matching standard playbook for a recognizable pattern; otherwise empty.",
         },
         "answer_depth": {
@@ -163,6 +163,9 @@ Classify what the user wants from the conversation, construct an atomic task pla
 
 ## Constraints
 
+- `Current User Message` is authoritative for this turn. Use older conversation only to resolve
+  explicit anaphora or an interview answer; never preserve an old intent, entity, or write target
+  when the latest message starts or temporarily switches to another request.
 - Keywords are retrieval noun phrases. Remove filler such as `해야 한다` and `관련해서`.
 - Copy only ticket keys explicitly written by the user.
 - Select a module only with strong evidence.
@@ -215,7 +218,11 @@ Classify what the user wants from the conversation, construct an atomic task pla
 
 ## Conversation Data
 
-{conversation(state)}"""
+{conversation(state)}
+
+## Current User Message
+
+{last_user_text(state)}"""
 
     def schema(self):
         return SCHEMA
@@ -251,6 +258,36 @@ Classify what the user wants from the conversation, construct an atomic task pla
         # 분류되어 Epic 배치 인터뷰까지 갔다(실측). '만들어줘'의 대상이 글이면 ask.
         from app.agent.workflow.state import last_user_text as _lut
         _req = _lut(state)
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
+        _meeting_request = meeting_request_text(state)
+        if is_meeting_request(state):
+            # Commenting on or editing existing tickets is mutation, not new-work planning.
+            # Keep this stable after the user answers an identity/term interview.
+            if (_re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", _meeting_request)
+                    and ("댓글" in _meeting_request or "코멘트" in _meeting_request)
+                    and _re.search(r"알려|남겨|달아|작성", _meeting_request)):
+                intent = patch["intent"] = Intent.MODIFY
+            elif (_re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", _meeting_request)
+                  and _re.search(r"수정|바꿔|변경|교체", _meeting_request)):
+                intent = patch["intent"] = Intent.MODIFY
+        # 특정 사람의 "지금 맡은 업무"는 과거 티켓 주제와 무관한 현재 할당 조회다.
+        # 대화 전문을 본 분류기가 직전 progress 대상을 유지한 CTX4 회귀를 최신 발화로 고정한다.
+        if (_re.search(r"(?:지금|현재).{0,15}(?:맡|담당|할당).{0,8}(?:업무|일|티켓|태스크)", _req)
+                and (_re.search(r"@[가-힣]{2,5}", _req)
+                     or _re.search(r"(?:skcc\.)?[a-z]{1,2}\d{2,6}", _req, _re.I)
+                     or _re.search(r"[가-힣]{2,5}?\s*(?:님|TL|M|차장|책임|매니저)?(?:이|가|은|는)?\s*"
+                                   r"(?:지금|현재)", _req, _re.I))):
+            intent = patch["intent"] = Intent.ACTIVITY
+            patch["mentioned_keys"] = []
+            patch["module"] = ""
+            patch["playbook"] = "find_people"
+            patch["request_plan"] = {
+                "goal": "지목한 사람의 현재 미완료 할당 업무를 확인한다",
+                "tasks": [{"id": "current-person-work", "kind": "query", "instruction": _req,
+                           "depends_on": [], "write_intent": False,
+                           "completion_criteria": ["사람을 정확히 식별한다", "현재 미완료 할당만 제시한다"]}],
+                "blocking_questions": [], "assumptions": [],
+            }
         # "보안교육 Task 누가 미완료했나"는 사람의 최근 활동(workload)이 아니라
         # 주제와 일치하는 parent Task → 직계 Sub-Task 전수 집계다. 분류가 activity/progress로
         # 흔들리면 Query Runner 자체를 못 지나므로, 낱말로 확정 가능한 이 유형은 코드가 고정한다.
@@ -342,6 +379,11 @@ Classify what the user wants from the conversation, construct an atomic task pla
             #   비어 있을 때만 채운다 — 대화 도중 주제가 바뀌어도 대상은 식별자·핵심어가
             #   따라가고, 여기서 남는 것은 "무엇을 묻는 대화인가"뿐이다.
             patch["request_text"] = last_user_text(state)
+
+        # Identity/term interview answers refine the same meeting action.  Never replace its
+        # exact target, field list, ticket shape, or comment boundary with the short answer.
+        if is_meeting_request(state) and _meeting_request:
+            patch["request_text"] = _meeting_request
 
         # A multi-stage new build whose ticket shape is still open should not trigger Jira/web research
         # merely to ask the same structure preference afterward. Ask that cheap, reversible choice first;

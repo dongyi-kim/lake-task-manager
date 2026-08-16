@@ -448,6 +448,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 - Split independent deliverables into Tasks. Split one deliverable shared across stages, targets, or owners into real Sub-Task `children`.
 - If equivalent work already exists, ask how to proceed unless the user delegated with `알아서`; under delegation, draft safely and record the overlap in Korean `rationale`.
 - A request to create new work must not become a `change` to a similar existing ticket. Use that ticket only as relevant evidence.{force_rule}
+- For meeting notes, preserve the exact requested item count and distinguish an owner from a reviewer. A named
+  owner is an instruction, not an assignee recommendation; never replace it with a lower-workload candidate.
 
 ## Conversation Data
 
@@ -496,11 +498,58 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 있었으므로, 코드가 실제 blocker(대상·정확한 변경값·계층·사람·댓글·재현)를 확인한다.
         if delegated:
             qs = [q for q in qs if _delegated_question_is_blocking(state, q)]
+        qs = _drop_unneeded_meeting_questions(state, qs)
         # 모델이 낸 질문은 **초안을 만들기 전에 답이 필요한 질문**이다. 뒤에서 코드가
         # 붙이는 구조 확인 질문과 구분해 둔다 — 전자는 초안과 함께 내면 사용자가 무엇을
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
         model_questions = bool(qs)
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        if not items and not qs:
+            recovered_meeting = _recover_decided_meeting_tasks(state)
+            if recovered_meeting:
+                items = out["items"] = recovered_meeting
+                out["mode"] = "task"
+                out["interpretation"] = ""
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(회의록과 보완 답변에 담당·미할당·기한이 확정되어 "
+                                      "추가 질문 없이 Task 초안을 복원했다)").strip()
+                model_questions = False
+        # An exact single-ticket update in the current human turn is authoritative.  A
+        # long previous research turn can bias the model into returning a creation draft
+        # even though RequestArchitect correctly classified the new intent as MODIFY
+        # (CTX1: an fdc investigation leaked into a DL-9203 priority-only request).
+        # Recover only literal, typed values; free-form bodies and inferred fields remain
+        # model/interview territory.
+        exact_change = _explicit_single_mutation_from_request(state)
+        if exact_change and (state.get("intent") or "") == Intent.MODIFY:
+            out["change"] = exact_change
+            out["items"] = []
+            exact_fields = ", ".join(key for key in exact_change if key != "key")
+            out["rationale"] = (
+                f"{exact_change['key']}의 {exact_fields}만 현재 요청의 리터럴 값으로 변경"
+            )
+            items = []
+            qs = []
+            model_questions = False
+        # A complete pasted incident/VoC already contains the information that a
+        # reproduction interview would request.  Some models still return only a
+        # generic question and no item.  Recover the report into a conservative Bug
+        # draft before hierarchy/placement/body guards run; do not invent missing facts.
+        if not items and (state.get("intent") or Intent.PLAN_WORK) == Intent.PLAN_WORK:
+            recovered_bug = _complete_bug_draft_from_report(state)
+            if recovered_bug:
+                items = out["items"] = [recovered_bug]
+                out["mode"] = "task"
+                qs = []
+                model_questions = False
+                rationale = _re.sub(
+                    r"[^.\n]*(?:재현\s*(?:경로|정보)[^.\n]{0,80}(?:필요|요청)|"
+                    r"추가\s*정보[^.\n]{0,40}요청)[^.\n]*(?:\.|$)",
+                    "", str(out.get("rationale") or ""), flags=_re.I,
+                ).strip()
+                out["rationale"] = (rationale
+                                    + "\n(신고 내용에 재현 경로·기대·실제 동작이 있어 "
+                                      "중복 질문 없이 Bug 초안으로 정리했다)").strip()
         # 규칙/측정 방법만 있고 적용할 데이터 대상이 없으면 실행 가능한 초안이 아니다.
         # `널 비율 체크`만 받은 두 번째 턴에서 조기 초안을 낸 ASK2 회귀를 결정적으로 막는다.
         if _missing_data_quality_target(state):
@@ -897,8 +946,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         #   섹션은 '참고' 하나이고, 없던 키·링크만 그 ul 에 이어 붙인다(_merge_refs).
         refs = []
         for e in (state.get("evidence") or [])[:5]:
-            from app.agent.workflow.relevance import evidence_is_relevant
-            if not evidence_is_relevant(e):
+            from app.agent.workflow.relevance import evidence_is_relevant, matches_focus
+            if not evidence_is_relevant(e) or not matches_focus(
+                    f"{e.get('title', '')} {e.get('why', '')}", state.get("keywords") or []):
                 continue
             k, why = (e.get("key") or "").strip(), (e.get("why") or e.get("title") or "").strip()
             # 티켓 키 모양만 — PMO 근거에는 "ETL" 같은 모듈명이 섞이는데 그건 참고가 아니다.
@@ -906,7 +956,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 refs.append((k, f"<li>{k} — {why}</li>" if why else f"<li>{k}</li>"))
         for d in (state.get("related_docs") or [])[:3]:
             t, u = (d.get("title") or "").strip(), (d.get("url") or "").strip()
-            if t and u:
+            # A client-side navigation fragment such as ``#/home`` is not a durable
+            # source that Jira readers can open. Keep it in the LTM answer UI, but do
+            # not persist it as ticket evidence.
+            if t and u.startswith(("http://", "https://")):
                 refs.append((u, f'<li><a href="{u}">{t}</a></li>'))
         for it in items:
             it["description"] = _merge_refs(it.get("description") or "", refs)
@@ -923,7 +976,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                             (state.get("evidence") or []) if isinstance(e, dict)}
         allowed_ref_keys |= {str(k).upper() for k in (state.get("mentioned_keys") or [])}
         allowed_ref_urls = {str(d.get("url") or "").strip() for d in
-                            (state.get("related_docs") or []) if isinstance(d, dict)}
+                            (state.get("related_docs") or []) if isinstance(d, dict)
+                            and str(d.get("url") or "").strip().startswith(("http://", "https://"))}
         unverified = []
         for it in items:
             it["description"], gone = _drop_unverified_refs(
@@ -1195,6 +1249,33 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                         + f"\n(Epic 격상 보류 — {twin['key']} 와 이름이 겹친다)").strip()
                     structure = "single_task"
 
+        # A literal "make it an Epic" does not waive the four reporting-unit criteria.
+        # If duration/scale evidence is insufficient, choose the reversible Task placement
+        # even when no near-duplicate Epic title was found.
+        if (out.get("mode") or "") == "epic" and items and request_text(state).strip():
+            unmet = _new_epic_unmet_criteria(state)
+            if unmet:
+                item = items[0]
+                component = next((str(value).strip() for value in
+                                  (item.get("components") or []) if str(value).strip()), "")
+                pick = _pick_parent_epic(str(item.get("summary") or ""), component)
+                _force_item_type(item, "Task", "task")
+                item.pop("epic_name", None)
+                if pick:
+                    item["epic"] = pick["key"]
+                    placement = f"기존 Epic {pick['key']} 아래 Task"
+                else:
+                    item.pop("epic", None)
+                    placement = "최상위 Task"
+                mode = out["mode"] = draft["mode"] = "task"
+                structure = out["structure"] = draft["structure"] = "single_task"
+                why = out["structure_why"] = draft["structure_why"] = \
+                    f"Epic 조건 미충족({', '.join(unmet)})으로 {placement}로 보수화"
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(Epic 격상 보류 — {', '.join(unmet)}; "
+                                      f"{placement}로 정리했다)").strip()
+                draft["rationale"] = out["rationale"]
+
         # ── "Epic 은 네가 골라줘" 는 **고르라는 말이지 만들라는 말이 아니다** ──────
         # 실측 STARR1: "Epic 은 네가 골라줘. … 알아서 진행해" 에 모델이 **새 Epic** 을
         # 만들었다(본문도 빈 채로). 위임은 선택을 맡긴 것이지 격상 권한을 준 것이 아닌데,
@@ -1267,8 +1348,13 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             if len(fix) >= 2:
                 kept = [c for c in (items[0].get("children") or []) if isinstance(c, dict)]
                 have = {str(c.get("summary") or "") for c in kept}
+                covered_stages = {_execution_stage(c.get("summary")) for c in kept}
+                covered_stages.discard("")
                 items[0]["children"] = kept + [c for c in fix
-                                               if str(c.get("summary") or "") not in have]
+                                               if str(c.get("summary") or "") not in have
+                                               and (not _execution_stage(c.get("summary"))
+                                                    or _execution_stage(c.get("summary"))
+                                                    not in covered_stages)]
                 _fill_owners(items[0], items[0]["children"])   # 자식 담당 채움 가드는 이미 지나갔다
                 out["rationale"] = ((out.get("rationale") or "")
                                     + "\n(구조 판단대로 단계별 Sub-Task 를 채웠다 — "
@@ -1446,6 +1532,18 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                     + "\n(같은 산출물의 중복 초안을 합쳤다: "
                                     + ", ".join(removed[:4]) + ")").strip()
 
+        # Several named deliverables are already the complete top-level work plan.
+        # Do not turn one of them into an accidental mini-project unless the user
+        # explicitly requested stages/Sub-Tasks/splitting.  This is a hierarchy
+        # authorization rule, not a case-specific item-count rule.
+        if mode == "task" and len(items) > 1:
+            removed_children = _drop_unrequested_nested_work(state, items)
+            if removed_children:
+                structure = out["structure"] = draft["structure"] = "multiple_tasks"
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(요청하지 않은 하위 작업은 추가하지 않았다: "
+                                    + ", ".join(removed_children[:4]) + ")").strip()
+
         # 서로 다른 Task로 나눴으면 각 본문도 자기 deliverable만 소유해야 한다. sibling의
         # 고유어가 작업 범위에 들어간 본문은 잘못 복사된 것으로 보고, 확인된 summary와
         # sibling 목록만 사용한 최소 본문으로 되돌린다. 그 뒤 모든 Task에 "별도 ticket"
@@ -1515,12 +1613,19 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                            "작성 지시 placeholder를 실제 최소 본문으로 바꿨다)")
                     ).strip()
             _fill_thin_bodies(state, items, repair=not qs)
+            # User IDs are typed owner metadata. They must never be reinterpreted as a
+            # model, device, or technical target inside the authored ticket body.
+            _remove_assignee_semantic_drift(state, items)
+            _drop_unrequested_requester_attribution(state, items)
             _repair_bug_facts_from_report(state, items)
             # 모델은 구체적 변경만 받은 경우에도 "사용자 편의성", "운영 효율성", "성능·안정성"
             # 같은 그럴듯한 효과를 배경·범위·DoD에 보탠다. 문장은 자연스럽지만 검증된 사실은
             # 아니다. 원 요청에 없는 품질 차원을 안전한 요청/검증 문장으로 되돌린다.
             _remove_unrequested_quality_claims(state, items)
+            _repair_statistics_generation_semantics(state, items)
+            _ensure_child_descriptions(items)
             _drop_self_exclusions(items)
+            _preserve_explicit_value_transition(state, items)
             # 본문 보정은 위의 참고 불릿 가드 **뒤에서** 새 HTML을 만든다. 생산자 뒤에서
             # 다시 검사하지 않으면 보정 호출이 만든 출처 없는 참고가 그대로 승인 카드로 간다
             # (PASTE1/PASTE2 실측). 같은 함수로 한 번 더 보며 규칙은 복제하지 않는다.
@@ -1535,8 +1640,31 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             if not qs:
                 _sharpen_dod(state, items)
                 _mark_unspecified_acceptance_criteria(state, items)
+                _drop_cross_item_dod(state, items)
+                _repair_malformed_dod(state, items)
                 _dedupe_dod_rows(items)
                 _drop_unrequested_deployment_dod(state, items)
+                # Later normalizers can themselves introduce a quality dimension.
+                # Seal the user's requested scope at the end, then collapse any
+                # conservative evidence row produced by that final normalization.
+                _remove_unrequested_quality_claims(state, items)
+                _repair_statistics_generation_semantics(state, items)
+                # Scope sealing can itself introduce a conservative evidence sentence.
+                # Pass it through the same DoD source of truth once more so no late
+                # generic review wording escapes into the approval payload.
+                _sharpen_dod(state, items)
+                _dedupe_dod_rows(items)
+
+        # A meeting record is an authoritative decision record.  Preserve reviewers in the
+        # ticket body and remove optional create fields that the minutes never decided.
+        _ensure_meeting_background_attribution(state, items)
+        _ensure_meeting_reviewers(state, items)
+        _preserve_defined_meeting_terms(state, items)
+        _seal_meeting_item_mentions(state, items)
+        _drop_meeting_sibling_exclusions(state, items)
+        _drop_unrequested_meeting_create_fields(state, items)
+        if not any(item.get("labels") for item in items):
+            draft.pop("new_labels", None)
 
         # 우선순위 표기 정규화 — 모델은 "P3" 라고 줄여 쓰고 Jira 는 "P3-Minor" 만 받는다.
         # Auditor 가 반려하면 재작성 왕복 하나가 통째로 날아가고, 한도 소진이면 그 지적이
@@ -1558,6 +1686,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 
         # 변경 계획(modify)은 갈래가 통째로 다르다 — `_change_plan` 이 맡는다.
         plan, qs = _change_plan(state, out, items, qs)
+        _canonicalize_meeting_mentions(state, plan)
+        qs = _normalize_duplicate_and_bug_questions(state, qs, items=items, plan=plan)
         # ★ 바꿀 값을 **정확히 말한** 수정 요청에는 되묻지 않는다. 계획이 이미 섰으면
         #   승인 카드가 곧 확인 단계다(work_architect.md: "NEVER ask permission to proceed").
         #   실측(MOD8): "라벨 data-quality 추가하고 컴포넌트를 Catalog 로" 처럼 값을 다 준
@@ -1721,6 +1851,127 @@ def _normalize_priority(value) -> str:
     return _PRI.get("P" + match.group(1), raw) if match else _PRI.get(raw.upper(), raw)
 
 
+def _explicit_single_mutation_from_request(state) -> dict:
+    """Parse a conservative field-only update from the latest user turn.
+
+    This is a context-boundary guard, not a general natural-language parser.  It accepts
+    one literal Jira key and only values whose field names are present in the same current
+    message.  Therefore an earlier research topic can never supply the target or payload.
+    """
+    said = (last_user_text(state) or request_text(state) or "").strip()
+    keys = list(dict.fromkeys(_re.findall(
+        r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])", said, _re.I)))
+    if len(keys) != 1:
+        return {}
+    fields = {}
+    if _re.search(r"우선순위|priority", said, _re.I):
+        priority = _re.search(r"(?<![0-9A-Za-z])P([0-4])(?:-[A-Za-z]+)?(?![0-9A-Za-z])",
+                              said, _re.I)
+        if priority:
+            fields["priority"] = _PRI["P" + priority.group(1)]
+    if _re.search(r"기한|마감|due(?:date)?", said, _re.I):
+        due = _re.search(r"\b(\d{4}-\d{2}-\d{2})\b", said)
+        if due:
+            fields["duedate"] = due.group(1)
+    if _re.search(r"제목|summary|title", said, _re.I):
+        summary = _re.search(
+            r"(?:제목|summary|title)(?:만|을|를)?\s*(?:은|는|을|를|:)?\s*"
+            r"['\"“‘]([^'\"”’\n]{2,240})['\"”’]",
+            said, _re.I,
+        )
+        if summary:
+            fields["summary"] = summary.group(1).strip()
+    return {"key": keys[0].upper(), **fields} if fields else {}
+
+
+def _explicit_meeting_update_fields(state) -> dict:
+    """Recover exact meeting field values from the authoritative original request."""
+    try:
+        from app.agent.workflow.meeting_context import (
+            is_meeting_request, meeting_request_text, resolved_people,
+        )
+        if not is_meeting_request(state) or (state.get("intent") or "") != Intent.MODIFY:
+            return {}
+    except Exception:
+        return {}
+    request, latest = meeting_request_text(state), last_user_text(state)
+    fields = {}
+
+    def line(label: str) -> str:
+        match = _re.search(rf"(?mi)^\s*-\s*{label}\s*[:：]\s*(.+?)\s*$", request)
+        return match.group(1).strip() if match else ""
+
+    summary = line(r"(?:제목|summary)")
+    if summary:
+        fields["summary"] = summary.strip("` ")
+    priority = line(r"(?:priority|우선순위)")
+    if priority:
+        fields["priority"] = _normalize_priority(priority)
+    due = line(r"(?:due|duedate|마감|기한)")
+    date = _re.search(r"\b\d{4}-\d{2}-\d{2}\b", due)
+    if date:
+        fields["duedate"] = date.group(0)
+    component = line(r"(?:component|컴포넌트|모듈)")
+    if component:
+        fields["components"] = [component.strip("` ")]
+    labels = line(r"(?:labels?(?:\s*전체값)?|라벨(?:\s*전체값)?)")
+    if labels:
+        fields["labels"] = [value.strip("` ") for value in labels.split(",")
+                            if value.strip("` ")]
+
+    body = line(r"본문\s*전체\s*교체")
+    sections = _re.findall(r"`([^`]{2,30})`", body)
+    if body and sections:
+        body_facts = _re.sub(r"`[^`]+`(?:\s*,\s*|\s*(?:세|두)\s*section\.?)?", " ", body)
+        body_facts = _re.sub(r"\s+", " ", body_facts).strip(" .")
+        scope_facts = _re.sub(r"(?:이라는|라는)\s*내용$", "", body_facts).strip()
+        decision_facts = scope_facts.replace("기록하되", "기록하고")
+        decision_facts = _re.sub(
+            r"확정하지\s*않(?:는|음)$", "확정하지 않기로 결정", decision_facts)
+        term = next((name for name in ("RGP", "PSR")
+                     if name in request and name in latest), "")
+        definition = ""
+        if term:
+            found = _re.search(rf"{term}\s*(?:은|는|:|=)\s*(.+?)(?:[.!?]|$)", latest)
+            if found:
+                definition_text = _re.sub(
+                    r"\s*(?:이야|야|이에요|예요|입니다|이다)$", "", found.group(1).strip())
+                definition = f"{term}: {definition_text}"
+        people = resolved_people(state)
+        owner = next((uid for name, uid in people.items()
+                      if name in request and _re.search(
+                          rf"{_re.escape(name)}(?:TL|님|차장|책임)?.{{0,30}}(?:소유자|기준)",
+                          request)), "")
+        labelled: dict[str, str] = {}
+        section_stems = [r"\s*".join(_re.escape(part) for part in heading.split())
+                         for heading in sections]
+        next_section = "|".join(section_stems)
+        for heading in sections:
+            stem = r"\s*".join(_re.escape(part) for part in heading.split())
+            found = _re.search(
+                rf"{stem}\s*(?:에는|은|는|에)?\s*[:：]?\s*(.+?)"
+                rf"(?=(?:{next_section})\s*(?:에는|은|는|에)?\s*[:：]?|$)",
+                body_facts, _re.I | _re.S,
+            )
+            if found:
+                labelled[heading] = found.group(1).strip(" .")
+        defaults = [
+            decision_facts or "회의에서 확정된 변경 사항 반영",
+            scope_facts or "회의에서 지정한 범위만 반영",
+            "\n".join(value for value in (
+                definition,
+                f"기준 소유자: {{{{mention:{owner}}}}}" if owner else "",
+            ) if value) or "회의에서 지정한 검증 기준 적용",
+        ]
+        values = [labelled.get(heading) or defaults[index]
+                  for index, heading in enumerate(sections)]
+        fields["description"] = "\n\n".join(
+            f"## {heading}\n{values[index] if index < len(values) else body_facts}"
+            for index, heading in enumerate(sections)
+        )
+    return fields
+
+
 def _change_plan(state, out, items, qs):
     """modify 갈래 — **기존 티켓 변경 계획**을 확정한다. `(plan, qs)` 를 돌려준다.
 
@@ -1744,6 +1995,12 @@ def _change_plan(state, out, items, qs):
         fields = {k: change[k] for k in ("assignee", "duedate", "priority", "summary",
                                          "labels", "components", "description")
                   if k in change and change[k] is not None}
+        # A meeting update often reaches this node after an identity/term interview.  The
+        # original request is authoritative and may enumerate exact fields even when the
+        # model returns only one of them on the resumed turn.
+        fields.update(_explicit_meeting_update_fields(state))
+        for unchanged in _meeting_unchanged_fields(state):
+            fields.pop(unchanged, None)
         # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
         # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
         # 떴다. 담당 해제("assignee": "")만 예외로 인정한다(사용자가 뗄 때 쓴다).
@@ -1781,6 +2038,10 @@ def _change_plan(state, out, items, qs):
                                       "코드가 계산한다)").strip()
             fields["duedate"] = rel
         cmt = (change.get("comment") or "").strip()
+        if _comment_forbidden(_said):
+            cmt = ""
+        else:
+            cmt = _meeting_decision_comment(state, cmt)
         # 댓글만 남기는 것도 유효한 계획이다 — "이 내용 DL-x 에 댓글로 남겨줘"가 실사용에 있다.
         if fields or cmt:
             plan = {"key": str(change["key"]).strip(), "changes": fields,
@@ -1792,6 +2053,22 @@ def _change_plan(state, out, items, qs):
                 cur = T.BY_NAME["get_ticket"].invoke({"key": plan["key"]}) or {}
                 if not cur.get("error"):
                     plan["before"] = {k: (cur.get(k) or "") for k in fields}
+                    # 이미 같은 값은 write payload에서 제거한다. 회의록처럼 모든 필드를
+                    # 재기술한 요청에서도 실제 변경만 승인하게 해 불필요한 update와 audit
+                    # noise를 막는다. 목록형 필드는 순서가 아니라 집합이 값이다.
+                    noops = [k for k, value in fields.items()
+                             if _same_field_value(plan["before"].get(k), value)]
+                    for field in noops:
+                        fields.pop(field, None)
+                        plan["before"].pop(field, None)
+                    plan["changes"] = fields
+                    if noops:
+                        actual = ", ".join(fields) or "없음"
+                        out["rationale"] = (
+                            f"실제 변경 필드: {actual}. "
+                            f"이미 같은 {', '.join(noops)} 값은 변경에서 제외"
+                        )
+                        plan["why"] = out["rationale"]
                     # ── 말과 방향이 어긋나면 짚는다 ─────────────────────────
                     # 실측: "DL-101 마감을 다음 주 금요일로 **미뤄** 줘" 에 8-27 → 8-14
                     # (오히려 당기는 것)를 아무 말 없이 카드에 올렸다. 사용자가 현재
@@ -1860,6 +2137,15 @@ def _change_plan(state, out, items, qs):
                              "relation": str(lk.get("relation") or "Relates").strip()},
                     "comment": "", "why": out.get("rationale") or ""}
     # 조건 일괄 수정 — keys 복수. 실재하는 키만 남긴다(조사에서 온 것이지만 한 번 더).
+    # 단건 경로와 마찬가지로 회의록의 명시적 결정 bullet이 authoritative comment body다.
+    # 예전에는 bulk 경로만 model의 얇은 `알림: 담당자`를 그대로 사용해 결정 내용 전체가
+    # 사라졌다. 여기서 한 번 조립해 이하의 조건·preview가 모두 같은 body를 보게 한다.
+    bulk_comment = str(change.get("comment") or "").strip()
+    bulk_said = request_text(state) + " " + last_user_text(state)
+    if _comment_forbidden(bulk_said):
+        bulk_comment = ""
+    else:
+        bulk_comment = _meeting_decision_comment(state, bulk_comment)
     bulk_keys = [str(k).strip() for k in (change.get("keys") or []) if str(k).strip()]
     # 코드가 확정한 대상(bulk_targets)이 있는데 모델이 keys 를 빠뜨리거나 일부만 담았으면
     # **전부로 강제한다** — 일부 누락은 조용한 미수정이다(실측: 대상 없음 오답 2회).
@@ -1871,7 +2157,7 @@ def _change_plan(state, out, items, qs):
                                       or change.get("duedate") is not None
                                       or change.get("priority") is not None
                                       or change.get("labels") is not None
-                                      or str(change.get("comment") or "").strip()
+                                      or bulk_comment
                                       or bulk_keys):
         bulk_keys = [str(k) for k in state["bulk_targets"]]
     if bulk_keys and not plan:
@@ -1890,15 +2176,15 @@ def _change_plan(state, out, items, qs):
             out["rationale"] = ((out.get("rationale") or "")
                                 + f"\n(실재하지 않아 제외: {', '.join(gone[:5])})").strip()
         # 필드가 없어도 **코멘트가 있으면** 일괄이다(위 주석 참조).
-        if real and (fields or str(change.get("comment") or "").strip()):
+        if real and (fields or bulk_comment):
             if len(real) == 1:
                 # 단건이면 단건 카드다 — 일괄 카드는 대상이 여럿일 때만.
                 plan = {"key": real[0], "changes": fields,
-                        "comment": (change.get("comment") or "").strip(),
+                        "comment": bulk_comment,
                         "why": out.get("rationale") or ""}
             else:
                 plan = {"keys": real, "changes": fields,
-                        "comment": (change.get("comment") or "").strip(),
+                        "comment": bulk_comment,
                         "why": out.get("rationale") or ""}
                 # ★ **티켓별 코멘트를 코드가 미리 조립한다**(사용자 요청).
                 #   "담당자를 멘션해서 상태 점검을 요청" 같은 일괄 코멘트는 **티켓마다 문구가
@@ -2265,6 +2551,399 @@ def _apply_named_assignees(state, items: list) -> None:
                 r["assignee"] = uid
                 r["assignee_source"] = "user"
 
+    # 회의록은 ``@이름 — 작업``, ``이름TL이 작업 담당``처럼 자연어로 담당을 쓴다.
+    # 조사/인터뷰에서 확정한 identity만 사용하고, 제목과 가장 많이 겹치는 한 항목에 강제한다.
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_owner_records
+        if not is_meeting_request(state):
+            return
+        records = meeting_owner_records(state)
+    except Exception:
+        return
+    used: set[int] = set()
+    for record in records:
+        phrase = str(record.get("work") or "")
+        uid = str(record.get("owner") or "")
+        pterms = {w.casefold() for w in _re.findall(r"[가-힣A-Za-z0-9_.-]{2,}", phrase)
+                  if w not in ("기한", "까지", "담당")}
+        ranked = sorted(
+            ((len(pterms & {w.casefold() for w in _re.findall(
+                r"[가-힣A-Za-z0-9_.-]{2,}", str(row.get("summary") or ""))}), index, row)
+             for index, row in enumerate(rows) if index not in used),
+            key=lambda value: (-value[0], value[1]),
+        )
+        if ranked and (ranked[0][0] > 0 or len(rows) == 1):
+            _score, row_index, row = ranked[0]
+            used.add(row_index)
+            row["assignee"] = uid
+            row["assignee_source"] = "user" if uid else "user_unassigned"
+            due = str(record.get("due") or "")
+            if due:
+                row["duedate"] = due
+
+
+def _ensure_meeting_background_attribution(state, items: list) -> None:
+    """Keep meeting provenance and confirmed requester/instructor in every created Task."""
+    if not items:
+        return
+    try:
+        from app.agent.workflow.meeting_context import (
+            canonicalize_reply_mentions, is_meeting_request, meeting_requester_instructors,
+        )
+        if not is_meeting_request(state):
+            return
+        instructors = meeting_requester_instructors(state)
+    except Exception:
+        return
+    mentions = " ".join(f"{{{{mention:{uid}}}}}" for uid in instructors)
+    context = "회의 논의에서 확정된 후속 작업"
+    if mentions:
+        context += f" · 요청·지시자: {mentions}"
+    paragraph = f"<p>{context}</p>"
+    for item in items:
+        body = canonicalize_reply_mentions(state, str(item.get("description") or ""))
+        if "회의" in body and (not instructors or all(uid in body for uid in instructors)):
+            item["description"] = body
+            continue
+        heading = _re.search(r"<h3>\s*배경\s*</h3>", body, _re.I)
+        if heading:
+            body = body[:heading.end()] + paragraph + body[heading.end():]
+        else:
+            body = "<h3>배경</h3>" + paragraph + body
+        item["description"] = body
+
+
+def _ensure_meeting_reviewers(state, items: list) -> None:
+    """Preserve explicit meeting reviewers in the closest ticket description.
+
+    A reviewer is deliberately not an assignee.  The model therefore cannot encode the
+    decision in the assignee field, but dropping it altogether also changes the meeting
+    decision.  This adds one compact review section with a confirmed mention identity.
+    """
+    if not items:
+        return
+    try:
+        from app.agent.workflow.meeting_context import (
+            canonicalize_reply_mentions, is_meeting_request, meeting_request_text,
+            resolved_people,
+        )
+        if not is_meeting_request(state):
+            return
+        original = meeting_request_text(state)
+        people = resolved_people(state)
+    except Exception:
+        return
+
+    title_re = (r"(?:TL|PL|PM|PO|EM|M|파트장|그룹장|본부장|팀장|실장|부장|차장|과장|대리|"
+                r"선임|책임|수석|매니저|리더|님|씨)")
+    records: list[tuple[int, str, str]] = []
+    for position, line in enumerate(original.splitlines()):
+        clean = _re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+        match = _re.search(
+            rf"(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{title_re}?\s*"
+            r"(?:은|는|이|가)?\s*(.+?\s*)?(?:리뷰|검토)(?:\s|$)",
+            clean, _re.I,
+        )
+        if match:
+            records.append((position, match.group(1), (match.group(2) or "결과물").strip()))
+    if not records:
+        return
+
+    for _position, name, subject in records:
+        uid = str(people.get(name) or "").strip()
+        if not uid:
+            continue
+        token = f"{{{{mention:{uid}}}}}"
+        # Review lines nested under an enumerated ticket normally have no useful subject
+        # words (``최민서가 리뷰``); in that case the nearest preceding item is the last one.
+        terms = {value.casefold() for value in _re.findall(
+            r"[가-힣A-Za-z0-9_.-]{2,}", subject) if value not in ("결과물", "담당")}
+        ranked = sorted(
+            ((len(terms & {value.casefold() for value in _re.findall(
+                r"[가-힣A-Za-z0-9_.-]{2,}", str(item.get("summary") or ""))}), index, item)
+             for index, item in enumerate(items)),
+            key=lambda value: (-value[0], -value[1]),
+        )
+        target = ranked[0][2]
+        body = str(target.get("description") or "")
+        if uid in body:
+            continue
+        review_text = canonicalize_reply_mentions(
+            state, f"{token} — {subject} 리뷰")
+        section = f"<h3>리뷰</h3><p>{review_text}</p>"
+        target["description"] = (body.rstrip() + "\n\n" + section).strip()
+
+
+def _drop_unrequested_meeting_create_fields(state, items: list) -> None:
+    """Do not convert model defaults into decisions absent from meeting minutes."""
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
+        if not is_meeting_request(state):
+            return
+        said = meeting_request_text(state)
+    except Exception:
+        return
+    decisions = _meeting_optional_field_decisions(said)
+    allow_priority = decisions["priority"]
+    allow_labels = decisions["labels"]
+    allow_components = decisions["components"]
+    for item in items:
+        if not allow_priority:
+            item.pop("priority", None)
+        if not allow_labels:
+            item.pop("labels", None)
+        if not allow_components:
+            item.pop("components", None)
+
+
+def _meeting_optional_field_decisions(text: str) -> dict[str, bool]:
+    """Return only optional create fields positively decided by the meeting.
+
+    A line such as ``priority/component/labels는 결정하지 않음`` names three fields but
+    explicitly leaves all three unset.  Presence-only checks inverted that decision and let
+    model defaults leak into approval payloads.
+    """
+    said = str(text or "")
+    patterns = {
+        "priority": r"우선순위|priority|\bP[0-4](?:-[A-Za-z]+)?\b",
+        "labels": r"라벨|labels?|태그",
+        "components": r"컴포넌트|components?|모듈\s*[:：]",
+    }
+    decided = {key: bool(_re.search(pattern, said, _re.I))
+               for key, pattern in patterns.items()}
+    negative = r"결정하지\s*않|정하지\s*않|미정|지정하지\s*않|없(?:음|다)"
+    for raw in said.splitlines():
+        if not _re.search(negative, raw, _re.I):
+            continue
+        for key, pattern in patterns.items():
+            if _re.search(pattern, raw, _re.I):
+                decided[key] = False
+    return decided
+
+
+def _drop_unneeded_meeting_questions(state, questions: list[dict]) -> list[dict]:
+    """Remove interviews for optional Jira fields that the meeting did not decide."""
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
+        if not is_meeting_request(state):
+            return questions
+        decisions = _meeting_optional_field_decisions(meeting_request_text(state))
+    except Exception:
+        return questions
+    aliases = {
+        "priority": ("priority", "우선순위"),
+        "components": ("component", "components", "컴포넌트", "모듈"),
+        "labels": ("label", "labels", "라벨", "태그"),
+    }
+    recoverable_scope = bool(_recover_decided_meeting_tasks(state))
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        explicit_epics = {key.upper() for key in _re.findall(
+            r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)", meeting_request_text(state), _re.I)}
+    except Exception:
+        explicit_epics = set()
+    kept = []
+    for question in questions:
+        material = f"{question.get('field', '')} {question.get('question', '')}".casefold()
+        if str(question.get("field") or "").casefold() == "duplicate" and any(
+                key.casefold() in material for key in explicit_epics):
+            continue
+        if recoverable_scope and (str(question.get("field") or "").casefold() == "scope"
+                                  or "작업 범위" in material):
+            continue
+        optional = next((key for key, words in aliases.items()
+                         if any(word.casefold() in material for word in words)), "")
+        if optional and not decisions[optional]:
+            continue
+        kept.append(question)
+    return kept
+
+
+def _meeting_unchanged_fields(state) -> set[str]:
+    """Recover fields explicitly rejected or kept unchanged in the final decision block."""
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
+        if not is_meeting_request(state):
+            return set()
+        text = meeting_request_text(state)
+    except Exception:
+        return set()
+    marker = _re.search(r"\[(?:회의\s*)?(?:종료\s*직전\s*)?(?:최종\s*)?합의\]", text, _re.I)
+    material = text[marker.end():] if marker else text
+    patterns = {
+        "priority": r"priority|우선순위",
+        "components": r"components?|컴포넌트|모듈",
+        "labels": r"labels?|라벨|태그",
+        "summary": r"summary|제목",
+        "duedate": r"due(?:date)?|기한|마감",
+        "description": r"description|본문|설명",
+    }
+    status: dict[str, bool] = {}
+    negative = r"변경하지\s*않|유지|보류|채택하지\s*않|결론\s*안|결정하지\s*않"
+    positive = r"합의|확정|결정|전체\s*교체|^\s*-\s*[^:：]+[:：]"
+    for raw in material.splitlines():
+        fields = [key for key, pattern in patterns.items() if _re.search(pattern, raw, _re.I)]
+        if not fields:
+            continue
+        if _re.search(negative, raw, _re.I):
+            for key in fields:
+                status[key] = False
+        elif _re.search(positive, raw, _re.I):
+            for key in fields:
+                status[key] = True
+    return {key for key, accepted in status.items() if not accepted}
+
+
+def _recover_decided_meeting_tasks(state) -> list[dict]:
+    """Build conservative Tasks after an interview closes every ownership slot.
+
+    This is a fallback for model question-loops, not a general meeting-to-ticket parser.  It
+    activates only when the user requested an exact Task count and the reconstructed minutes
+    contain that many deliverables with deadlines and explicit assigned/unassigned decisions.
+    """
+    try:
+        from app.agent.workflow.meeting_context import (
+            is_meeting_request, meeting_owner_records, meeting_request_text,
+        )
+        if not is_meeting_request(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
+            return []
+        original = meeting_request_text(state)
+        count_match = _re.search(r"(?:Task|티켓|테스크)\s*([1-9]\d*)\s*건", original, _re.I)
+        records = meeting_owner_records(state)
+        if not count_match or len(records) != int(count_match.group(1)):
+            return []
+        if any(not row.get("due") or row.get("owner_decision") not in ("assigned", "unassigned")
+               for row in records):
+            return []
+    except Exception:
+        return []
+    epic_match = _re.search(r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)", original, _re.I)
+    if not epic_match:
+        return []
+    epic = epic_match.group(1).upper()
+    items = []
+    for row in records:
+        work = str(row.get("work") or "").strip()
+        safe_work = _esc(work)
+        item = {
+            "summary": work,
+            "type": "Task",
+            "epic": epic,
+            "duedate": str(row.get("due") or ""),
+            "assignee_source": ("user" if row.get("owner") else "user_unassigned"),
+            "description": (
+                "<h3>배경</h3><p>회의에서 확정한 후속 작업을 실행 단위로 관리한다.</p>"
+                f"<h3>작업 범위</h3><ul><li>{safe_work}</li></ul>"
+                "<h3>완료 조건</h3><ul data-type=\"taskList\">"
+                f"<li data-checked=\"false\">{safe_work} 결과와 확인 근거를 티켓에 기록한다.</li>"
+                "</ul>"
+            ),
+        }
+        if row.get("owner"):
+            item["assignee"] = str(row["owner"])
+        items.append(item)
+    return items
+
+
+def _drop_meeting_sibling_exclusions(state, items: list) -> None:
+    """Do not repeat sibling-ticket titles inside every meeting-created Task body."""
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request
+        if not is_meeting_request(state) or len(items) < 2:
+            return
+    except Exception:
+        return
+    noise = {"catalog", "작업", "개발", "작성", "정리", "결과", "검증", "패키지", "증빙", "체크리스트"}
+    summaries = [str(item.get("summary") or "") for item in items]
+    token_sets = [
+        {token.casefold() for token in _re.findall(r"[가-힣A-Za-z0-9_.-]{2,}", summary)
+         if token.casefold() not in noise}
+        for summary in summaries
+    ]
+    for index, item in enumerate(items):
+        body = str(item.get("description") or "")
+        body = _re.sub(
+            r"<li>\s*제외\s*\(\s*별도\s*(?:ticket|티켓)\s*\)\s*:[\s\S]*?</li>",
+            "", body, flags=_re.I,
+        )
+        sibling_terms = set().union(*(terms for pos, terms in enumerate(token_sets)
+                                      if pos != index))
+        if sibling_terms:
+            body = _re.sub(
+                r"<li>\s*제외\s*:[\s\S]*?</li>",
+                lambda match: "" if any(term in match.group(0).casefold()
+                                         for term in sibling_terms) else match.group(0),
+                body, flags=_re.I,
+            )
+        body = _re.sub(r"<ul>\s*</ul>", "", body, flags=_re.I)
+        item["description"] = body
+
+
+def _preserve_defined_meeting_terms(state, items: list) -> None:
+    """Keep a locally defined meeting acronym beside its confirmed expansion once."""
+    if not items:
+        return
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
+        if not is_meeting_request(state):
+            return
+        original = meeting_request_text(state)
+    except Exception:
+        return
+    latest = last_user_text(state)
+    for term in dict.fromkeys(_re.findall(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9-]{1,9})(?![A-Za-z0-9])", original)):
+        found = _re.search(
+            rf"(?<![A-Za-z0-9]){_re.escape(term)}(?![A-Za-z0-9])\s*"
+            r"(?:은|는|:|=)\s*(.+?)(?=\s*(?:이고|이며|이고요|입니다|이다)[,.]?|[.;\n]|$)",
+            latest, _re.I,
+        )
+        if not found:
+            continue
+        definition = found.group(1).strip(" `.,")
+        if not definition:
+            continue
+        candidates = [item for item in items if definition.casefold() in (
+            str(item.get("summary") or "") + " " + str(item.get("description") or "")
+        ).casefold()]
+        if not candidates and len(items) == 1:
+            candidates = items
+        for item in candidates:
+            body = str(item.get("description") or "")
+            hay = str(item.get("summary") or "") + " " + body
+            if _re.search(rf"(?<![A-Za-z0-9]){_re.escape(term)}(?![A-Za-z0-9])", hay):
+                continue
+            if definition in body:
+                item["description"] = body.replace(definition, f"{term} ({definition})", 1)
+            else:
+                item["description"] = (body + f"<p>회의 정의: {term} — {_esc(definition)}</p>").strip()
+
+
+def _seal_meeting_item_mentions(state, items: list) -> None:
+    """Normalize malformed model mention tokens to confirmed meeting identities."""
+    if not items:
+        return
+    try:
+        from app.agent.workflow.meeting_context import (
+            canonicalize_reply_mentions, is_meeting_request, resolved_people,
+        )
+        if not is_meeting_request(state):
+            return
+        people = resolved_people(state)
+    except Exception:
+        return
+    uids = list(dict.fromkeys(str(uid) for uid in people.values() if str(uid).strip()))
+
+    def repair(match) -> str:
+        inner = _re.sub(r"[^A-Za-z0-9_.-]", "", str(match.group(1) or ""))
+        uid = next((candidate for candidate in uids
+                    if candidate.casefold() in inner.casefold()), "")
+        return f"{{{{mention:{uid}}}}}" if uid else match.group(0)
+
+    for item in items:
+        body = _re.sub(r"\{\{\s*mention\s*:\s*([^}]+)\}\}", repair,
+                       str(item.get("description") or ""), flags=_re.I)
+        item["description"] = canonicalize_reply_mentions(state, body)
+
 
 def _fill_owners(item: dict, kids: list) -> None:
     """빈 자식 담당을 모듈 로스터로 돌려 채운다 — 자식 담당 채움 가드보다 늦게 만들어진
@@ -2491,7 +3170,7 @@ def _reported_symptom(text: str) -> str:
 def _repair_bug_facts_from_report(state, items) -> bool:
     """Replace a placeholder actual result with the observed symptom already in the report."""
     said = (request_text(state) + "\n" + conversation(state)).strip()
-    symptom = _reported_symptom(said)
+    symptom = _reported_runtime_actual(said) or _reported_symptom(said)
     if not symptom:
         return False
     changed = False
@@ -2517,7 +3196,53 @@ def _repair_bug_facts_from_report(state, items) -> bool:
 def _reported_expectation(text: str) -> str:
     """신고자가 직접 말한 희망/기대 문장만 반환한다."""
     want = _re.compile(r"좋겠|원(?:합니다|해요|한다)|기대|해야\s*한다|바로\s*(?:보|확인)")
-    return next((s for s in _report_sentences(text) if want.search(s)), "")
+    explicit = next((s for s in _report_sentences(text) if want.search(s)), "")
+    if explicit:
+        return explicit
+    # 메신저/회의록에 붙은 실행 장애는 별도의 "기대" 문장 없이도 대상·환경과
+    # 실패 사실이 완결되어 있는 경우가 많다. 이때 정상 완료는 새 요구사항이 아니라
+    # 실패의 직접적인 반대 상태다. 구체적인 SLA나 복구 방법은 추론하지 않는다.
+    target, environment = _reported_runtime_context(text)
+    if target and _reported_symptom(text):
+        where = f"{environment} 환경의 " if environment else ""
+        return f"{where}{target} 실행이 오류 없이 정상 완료됨"
+    return ""
+
+
+def _reported_runtime_context(text: str) -> tuple[str, str]:
+    """Return a literal executable target and environment from an incident report.
+
+    Identifiers and environment names are copied from the report.  This deliberately
+    avoids guessing a Jira component, owner, schedule, or repair procedure.
+    """
+    joined = " ".join(_report_sentences(text))
+    target_match = _re.search(
+        r"`([^`]{2,100})`|\b((?:[A-Za-z][A-Za-z0-9]*_){1,}[A-Za-z0-9_]+)\b",
+        joined,
+    )
+    target = next((value for value in (target_match.groups() if target_match else ()) if value), "")
+    env_match = _re.search(
+        r"(?<![A-Za-z0-9])(prod(?:uction)?|stage|staging|qa|dev(?:elopment)?)(?![A-Za-z0-9])|"
+        r"운영(?:\s*환경)?",
+        joined, _re.I,
+    )
+    environment = env_match.group(0).strip() if env_match else ""
+    return target, environment
+
+
+def _reported_runtime_actual(text: str) -> str:
+    """Preserve adjacent runtime-failure facts from a pasted dialogue or meeting note."""
+    target, _ = _reported_runtime_context(text)
+    if not target:
+        return ""
+    signal = _re.compile(
+        r"실패|오류|에러|타임아웃|timeout|재실행|재시도|반복|매일|어제|같은\s*시간|곤란",
+        _re.I,
+    )
+    facts = [row for row in _report_sentences(text) if signal.search(row)]
+    # A short contiguous incident transcript is more useful than selecting just its
+    # first symptom: it can retain the error, recurrence, and retry outcome together.
+    return ". ".join(fact.rstrip(". ") for fact in facts[:4])
 
 
 def _reported_steps(text: str, symptom: str) -> list[str]:
@@ -2529,13 +3254,49 @@ def _reported_steps(text: str, symptom: str) -> list[str]:
     subjects = _re.findall(
         r"([가-힣A-Za-z0-9_.-]+(?:\s+[가-힣A-Za-z0-9_.-]+){0,2})(?:이|가)\s*"
         r"(?:안\s*보|보이지\s*않|안\s*나오|나오지\s*않)", symptom)
-    if not places or not subjects:
-        return []
-    place = places[-1].strip()
-    subject = subjects[-1].strip()
-    if "때 " in subject:
-        subject = subject.split("때 ", 1)[1].strip()
-    return [f"{place}에서 {subject} 표시 여부를 확인한다."]
+    if places and subjects:
+        place = places[-1].strip()
+        subject = subjects[-1].strip()
+        if "때 " in subject:
+            subject = subject.split("때 ", 1)[1].strip()
+        return [f"{place}에서 {subject} 표시 여부를 확인한다."]
+    target, environment = _reported_runtime_context(text)
+    if target and symptom:
+        where = f"{environment} 환경에서 " if environment else ""
+        return [f"{where}{target} 실행 결과를 확인한다."]
+    return []
+
+
+def _korean_object(value: str) -> str:
+    """Attach 을/를 without changing an identifier or inventing a noun."""
+    word = str(value or "").strip()
+    if not word:
+        return word
+    code = ord(word[-1])
+    has_final = 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0
+    return word + ("을" if has_final else "를")
+
+
+def _professional_bug_expected(value: str, steps: list[str]) -> str:
+    """Turn a supplied wish into an actionable expected state without adding facts."""
+    text = str(value or "").strip().rstrip(". ")
+    if not text:
+        return ""
+    if _re.search(r"(?:봤으면|보이면)\s*좋겠|바로\s*(?:보|확인)", text):
+        match = _re.match(r"(.+?)에서\s+(.+?)\s+표시 여부를 확인", steps[0]) if steps else None
+        if match:
+            return f"{match.group(1).strip()}에서 {_korean_object(match.group(2))} 바로 확인할 수 있음"
+    return text
+
+
+def _professional_bug_actual(value: str) -> str:
+    """Compact only wording present in the report; preserve the reported symptom and actor."""
+    text = str(value or "").strip().rstrip(". ")
+    text = _re.sub(r"(?:이|가)?\s*안\s*보여서", "이 표시되지 않아", text)
+    text = _re.sub(r"(?:이|가)?\s*보이지\s*않아서", "이 표시되지 않아", text)
+    text = text.replace("담당자한테", "담당자에게")
+    text = _re.sub(r"(?:물어보고|묻고)\s*있습니다", "별도로 확인 중", text)
+    return text
 
 
 def _looks_like_report_wrapper(text: str) -> bool:
@@ -2595,13 +3356,18 @@ def _bug_body_for(state, it) -> str:
     # 붙여넣기 wrapper 전체가 actual로 돌아오는 것은 증상이 아니다(PASTE1 실측). 원문에
     # 화면·증상·희망이 명시돼 있으면 그 문장만 사용한다. 없는 칸은 여전히 확인 필요로
     # 남겨 두므로, 이 보정은 정보를 만들어내지 않는다.
-    symptom = _reported_symptom(said)
-    if not actual or _looks_like_report_wrapper(actual):
+    runtime_actual = _reported_runtime_actual(said)
+    symptom = runtime_actual or _reported_symptom(said)
+    if runtime_actual:
+        actual = runtime_actual
+    elif not actual or _looks_like_report_wrapper(actual):
         actual = symptom or _ASK_REPORTER
     if not expected:
         expected = _reported_expectation(said)
     if not steps:
         steps = _reported_steps(said, symptom)
+    expected = _professional_bug_expected(expected, steps)
+    actual = _professional_bug_actual(actual)
     html = ["<h3>재현 경로</h3>"]
     if steps:
         html.append("<ol>" + "".join(f"<li>{_esc(x)}</li>" for x in steps) + "</ol>")
@@ -2615,6 +3381,41 @@ def _bug_body_for(state, it) -> str:
         html.append("<h3>환경 및 추가 정보</h3><ul>"
                     + "".join(f"<li>{_esc(x)}</li>" for x in notes) + "</ul>")
     return "".join(html)
+
+
+def _complete_bug_draft_from_report(state) -> dict:
+    """Recover a no-item model response when the report already supplies Bug facts.
+
+    This is deliberately stricter than ``reads_as_bug``: a draft is returned only
+    when a reported symptom, an explicit expectation, and a reproducible screen or
+    execution step can all be extracted. Otherwise the normal interview remains.
+    """
+    said = (request_text(state) + "\n" + conversation(state)).strip()
+    if not reads_as_bug(said) or _missing_bug_reproduction(said):
+        return {}
+    symptom = _reported_symptom(said)
+    expected = _reported_expectation(said)
+    steps = _reported_steps(said, symptom)
+    if not (symptom and expected and steps):
+        return {}
+
+    match = _re.match(r"(.+?)에서\s+(.+?)\s+표시 여부", steps[0])
+    if match:
+        subject = f"{match.group(1).strip()} {match.group(2).strip()} 미표시"
+    else:
+        subject = _re.sub(r"[.!?]+$", "", symptom)[:70]
+    components = []
+    try:
+        from app.infra.settings import modules_in_text
+        components = modules_in_text(said)[:1]
+    except Exception:
+        pass
+    prefix = f"[{components[0]}] " if components else ""
+    item = {"summary": prefix + subject, "type": "Bug", "issue_type": "Bug"}
+    if components:
+        item["components"] = components
+    item["description"] = _bug_body_for(state, item)
+    return item
 
 
 def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
@@ -2683,14 +3484,29 @@ DOD_VAGUE = ("테스트 완료", "정상 동작", "잘 동작", "이상 없음",
               "성공적으로 완료", "완료됨", "구현 완료", "설계 완료", "검증 완료",
               "작성 완료", "성능 개선 확인", "성능 기준 충족", "문서 검토 완료", "문서화 완료",
               "검토 완료", "결과 검토 완료", "결과 검토 및 승인 완료", "초안 작성", "피드백 반영",
-              "정상적으로 구현", "성공적으로 구현", "기능이 검증", "정상적으로 작동")
+              "정상적으로 구현", "성공적으로 구현", "성공적으로 추가", "추가됨",
+              "기능이 검증", "정상적으로 작동", "정상적으로 표시", "정상 표시",
+              "후속 조치 필요 여부 평가", "리뷰 완료", "피드백 수집")
 
 
 def _vague_dod(rows) -> list:
     """판정 방법이 없는 완료 조건 줄들. 짧고 뭉뚱그린 것만 — 길게 쓴 것은 방법이 들어 있다."""
-    evidence = _re.compile(r"로그|결과|기록|링크|측정값|리포트|보고서|스크린샷|"
-                           r"실행\s*계획|테스트\s*케이스|리뷰")
-    return [d for d in rows if any(v in d for v in DOD_VAGUE) and not evidence.search(d)]
+    # Bare `결과` in `결과 검토 완료` is not an evidence location or a decision
+    # method.  Logs, records, links, reports, and concrete measurements are.
+    evidence = _re.compile(r"로그|기록|링크|측정값|리포트|보고서|스크린샷|"
+                           r"실행\s*계획|테스트\s*케이스")
+    # Passive states do not define how completion can be judged. They remain vague
+    # even when the sentence contains the bare word `기록`.
+    state_only = _re.compile(
+        r"(?:성공적으로\s*)?(?:체크|확인|검토|기록|첨부|공유|문서화).*(?:됨|완료)[.。]?$|"
+        r"결과가.{0,80}(?:기록|첨부|공유|검토).*(?:됨|완료)[.。]?$|"
+        r"(?:계산|측정|체크).{0,80}(?:보고|공유)됨[.。]?$|"
+        r"문서화되어.{0,80}공유됨[.。]?$", _re.I)
+    return [d for d in rows
+            if (state_only.search(d)
+                or ((any(v in d for v in DOD_VAGUE)
+                     or _re.search(r"(?:체크|조정|승인|확인)?\s*완료[.。]?$", d))
+                    and not evidence.search(d)))]
 
 
 def _dod_rows(body) -> list:
@@ -2699,7 +3515,7 @@ def _dod_rows(body) -> list:
 
 
 def _drop_unrequested_deployment_dod(state, items) -> bool:
-    """개발·MVP 요청을 운영 배포 약속으로 확대하지 않는다."""
+    """개발·MVP 요청을 별도 배포 작업이나 운영 배포 약속으로 확대하지 않는다."""
     import re
     req = request_text(state)
     if re.search(r"배포|릴리(?:스|즈)|운영\s*반영|production|prod\b", req, re.I):
@@ -2708,6 +3524,13 @@ def _drop_unrequested_deployment_dod(state, items) -> bool:
     for item in items:
         if not isinstance(item, dict):
             continue
+        children = [child for child in (item.get("children") or []) if isinstance(child, dict)]
+        kept = [child for child in children
+                if not re.search(r"(?:^|\s|\])(?:운영\s*)?배포(?:\s|$)",
+                                 str(child.get("summary") or ""), re.I)]
+        if len(kept) != len(children):
+            item["children"] = kept
+            changed = True
         targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
         for target in targets:
             body = str(target.get("description") or "")
@@ -2718,7 +3541,14 @@ def _drop_unrequested_deployment_dod(state, items) -> bool:
             for old in rows:
                 if not re.search(r"운영\s*환경|production|prod\b|배포", old, re.I):
                     continue
-                fresh = "검증 결과가 테스트 리포트 또는 결과 보고서로 확인됨"
+                summary = str(target.get("summary") or "")
+                if any(word in summary for word in ("가이드", "문서", "매뉴얼")):
+                    fresh = "산출물 링크와 내부 리뷰 결과를 parent ticket에 기록해 확인한다"
+                elif any(word in summary for word in ("성능", "부하", "벤치마크")):
+                    fresh = ("측정 지표·측정값·판정 결과를 티켓에 기록해 "
+                             "담당 리뷰로 확인한다")
+                else:
+                    fresh = "실행 로그와 테스트 결과를 티켓에 기록해 담당 리뷰로 확인한다"
                 body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
                 changed = True
             target["description"] = body
@@ -2752,8 +3582,13 @@ def _mark_unspecified_acceptance_criteria(state, items) -> bool:
                 if not fresh and (("품질" in context and _re.search(r"품질\s*룰.*점검\s*완료|모든\s*품질\s*룰", old))
                         or (_re.search(r"품질\s*기준", old)
                             and _re.search(r"점검|확인|충족|만족", old))):
-                    fresh = ("점검 대상 품질 룰과 항목별 통과 기준은 담당팀 확인 필요 — "
-                             "확정된 기준별 점검 결과를 티켓에 기록한다")
+                    if _re.search(r"(?:null|널)\s*(?:ratio|비율)", req, _re.I):
+                        # The user already narrowed this round to measurement only. Do
+                        # not re-open the excluded quality-rule scope as a second DoD.
+                        fresh = _action_specific_proof(state, target.get("summary") or "널 비율 체크")
+                    else:
+                        fresh = ("점검 대상 품질 룰과 항목별 통과 기준은 담당팀 확인 필요 — "
+                                 "확정된 기준별 점검 결과를 티켓에 기록한다")
                 elif not fresh and "품질" in context and _re.search(r"점검\s*결과\s*보고서.*(?:작성|공유)", old):
                     fresh = "점검 대상·결과·미충족 항목을 포함한 보고서 링크를 티켓에 기록한다"
                 elif (not fresh and not has_metric
@@ -2800,11 +3635,42 @@ def _dedupe_dod_rows(items) -> bool:
         targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
         for target in targets:
             body, seen = str(target.get("description") or ""), set()
+            all_rows = _dod_rows(body)
+
+            def evidence_shape(value: str) -> tuple[str, set[str]]:
+                subject = next((name for name in (
+                    "가이드", "문서", "보고서", "측정", "테스트", "로그", "스크린샷"
+                ) if name in value), "")
+                proof = {word for word in (
+                    "링크", "리뷰", "결과", "기록", "로그", "측정값", "리포트", "보고서",
+                    "스크린샷"
+                ) if word in value}
+                return subject, proof
 
             def keep(match):
                 nonlocal changed
                 plain = _re.sub(r"<[^>]+>", "", match.group(1)).strip()
+                subject, proof_set = evidence_shape(plain)
+                concrete = {"링크", "기록", "로그", "측정값", "리포트", "보고서", "스크린샷"}
+                if subject and "리뷰" in proof_set and not (proof_set & concrete):
+                    # A generic "result reflected, reviewer confirmed" row adds no
+                    # closure information when the same deliverable already names a
+                    # link, record, measurement, report, log, or screenshot.
+                    if any(other != plain and evidence_shape(other)[0] == subject
+                           and evidence_shape(other)[1] & concrete for other in all_rows):
+                        changed = True
+                        return ""
                 key = _re.sub(r"\s+", " ", plain)
+                # 같은 산출물·증거를 표현만 달리한 행도 한 번만. 실측에서
+                # `가이드 초안 — 링크·리뷰 기록`과 `가이드 링크·리뷰 결과 기록`이 나란히 섰다.
+                semantic = ""
+                for subject in ("가이드", "보고서", "측정", "테스트", "로그", "스크린샷"):
+                    if subject in key:
+                        proof = "+".join(word for word in ("링크", "리뷰", "결과", "기록")
+                                         if word in key)
+                        semantic = f"{subject}:{proof}"
+                        break
+                key = semantic or key
                 if key in seen:
                     changed = True
                     return ""
@@ -2815,6 +3681,156 @@ def _dedupe_dod_rows(items) -> bool:
                 r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
                 keep, body, flags=_re.S | _re.I)
     return changed
+
+
+def _drop_cross_item_dod(state, items) -> bool:
+    """독립 Task의 완료조건에 형제 산출물이나 명시적 제외 범위를 섞지 않는다."""
+    changed = False
+    request = request_text(state)
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    sibling_markers = ("가이드", "문서", "인덱스", "성능 측정", "리포트", "대시보드")
+    for item in rows:
+        own = str(item.get("summary") or "")
+        foreign = {marker for other in rows if other is not item
+                   for marker in sibling_markers
+                   if marker in str(other.get("summary") or "") and marker not in own}
+        body = str(item.get("description") or "")
+
+        def keep(match):
+            nonlocal changed
+            plain = _re.sub(r"<[^>]+>", " ", match.group(1))
+            if any(marker in plain for marker in foreign):
+                changed = True
+                return ""
+            # `널 비율만, 나머지는 다음`처럼 범위를 명시적으로 닫았으면 권고·개선
+            # 구현을 완료조건으로 확장하지 않는다. 측정 결과 기록까지만 이번 일이다.
+            if (_re.search(r"만[^.\n]{0,30}(?:나머지|다음)", request)
+                    and _re.search(r"개선\s*(?:권고|제안|구현)|권고사항", plain)):
+                changed = True
+                return ""
+            return match.group(0)
+
+        item["description"] = _re.sub(
+            r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+            keep, body, flags=_re.S | _re.I)
+    return changed
+
+
+def _repair_malformed_dod(state, items) -> bool:
+    """모델 문장에서 조사·서술어가 탈락한 DoD를 관찰 가능한 문장으로 교체한다."""
+    changed = False
+    request = request_text(state) + " " + last_user_text(state)
+    malformed = _re.compile(
+        r"(?:이|가)\s+(?:을|를)\s*확인|(?:이|가)\s+하여|(?:이|가)\s+하는지\s*(?:실행|테스트)|"
+        r"기능이\s+을|사용자가[^<]{0,20}(?:쉽게|편리하게)\s*확인\s*가능",
+        _re.I,
+    )
+    values = _re.findall(r"\d+(?:\.\d+)?\s*(?:분|초|시간|%|건|개)", request)
+    for item in (items or []):
+        if not isinstance(item, dict):
+            continue
+        body = str(item.get("description") or "")
+        summary = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "작업")).strip()
+
+        def fix(match):
+            nonlocal changed
+            plain = _re.sub(r"<[^>]+>", " ", match.group(1)).strip()
+            if not malformed.search(plain):
+                return match.group(0)
+            changed = True
+            if "알림" in summary and values:
+                evidence = f"{values[-1]} 경계 전후 알림 발생 여부를 실행 로그와 테스트 결과로 확인한다"
+            elif "CDC" in summary or "배치" in summary:
+                evidence = f"{summary}의 성공·실패 경로를 회귀 테스트 결과로 확인한다"
+            elif any(word in summary for word in ("팝업", "체크박스", "필터", "화면", "UI")):
+                evidence = f"{summary} 동작을 테스트 결과와 화면 증빙으로 확인한다"
+            else:
+                evidence = f"{summary} 실행 결과와 테스트 결과를 티켓에 기록해 확인한다"
+            return (match.group(0)[:match.group(0).find(">") + 1]
+                    + _esc(evidence) + "</li>")
+
+        item["description"] = _re.sub(
+            r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+            fix, body, flags=_re.S | _re.I)
+    return changed
+
+
+_EXPLICIT_VALUE_TRANSITION = _re.compile(
+    r"(?P<before>\d+(?:\.\d+)?\s*(?:ms|초|분|시간|일|주|개월|년|%|퍼센트|건|개|회|"
+    r"KB|MB|GB|TB)?)\s*(?:에서|부터|→|->|=>)\s*"
+    r"(?P<after>\d+(?:\.\d+)?\s*(?:ms|초|분|시간|일|주|개월|년|%|퍼센트|건|개|회|"
+    r"KB|MB|GB|TB)?)\s*(?:으로|로)?",
+    _re.I,
+)
+
+
+def _preserve_explicit_value_transition(state, items) -> bool:
+    """Keep a literal before/after setting in a single-ticket body.
+
+    A model can correctly retain only the target value (for example, ``45분``) while
+    dropping the user's current value (``30분``). That loses the rollback and validation
+    baseline even though both values are authoritative input. For one-ticket requests,
+    append only the literal pair to the scope; multiple-ticket allocation still belongs to
+    the model because the code cannot know which pair belongs to which deliverable.
+    """
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    if len(rows) != 1:
+        return False
+    asked = (last_user_text(state) or request_text(state)).strip()
+    pairs = []
+    for match in _EXPLICIT_VALUE_TRANSITION.finditer(asked):
+        pair = (match.group("before").strip(), match.group("after").strip())
+        if pair[0] != pair[1] and pair not in pairs:
+            pairs.append(pair)
+    if len(pairs) != 1:
+        return False
+    item = rows[0]
+    body = str(item.get("description") or "")
+    plain = _re.sub(r"<[^>]+>", " ", body)
+    before, after = pairs[0]
+    if before.replace(" ", "") in plain.replace(" ", "") \
+            and after.replace(" ", "") in plain.replace(" ", ""):
+        return False
+    fact = f"변경 전 값: {before} / 변경 후 값: {after}"
+    scope = _re.search(
+        r"(<h3>\s*작업 범위\s*</h3>\s*<ul\b[^>]*>)(.*?)(</ul>)",
+        body, _re.S | _re.I,
+    )
+    if scope:
+        body = body[:scope.end(2)] + f"<li>{_esc(fact)}</li>" + body[scope.end(2):]
+    else:
+        body += f"<h3>작업 범위</h3><ul><li>{_esc(fact)}</li></ul>"
+    item["description"] = body
+    return True
+
+
+def _action_specific_proof(state, summary: str) -> str:
+    """Return observable evidence for recurring action families, without inventing facts."""
+    subject = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "작업")).strip()
+    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    if any(word in subject for word in ("도움말", "단축키", "팝업", "체크박스")):
+        return (f"{subject}의 열기·닫기 동작과 표시 항목을 UI 테스트 결과 및 "
+                "화면 증빙으로 확인한다")
+    if "인덱스" in subject:
+        return (f"{subject} 적용 전·후 실행 계획과 측정값, 회귀 테스트 결과를 "
+                "티켓에 기록해 확인한다")
+    if _re.search(r"(?:null|널)\s*(?:ratio|비율)", subject, _re.I):
+        amount = next(iter(_re.findall(r"(?<!\d)(\d{1,4})\s*(?:개|건)?", asked)), "")
+        target = f"요청한 {amount}개 대상별 " if amount else "대상별 "
+        return f"{target}null ratio 측정값과 실패·제외 목록을 티켓에 기록해 확인한다"
+    if any(word in subject for word in ("회귀", "Regression")):
+        return f"{subject} 실행 케이스와 실패 로그, 판정 결과를 티켓에 기록해 확인한다"
+    # A verification *template/document* is an authored artifact even when its title
+    # contains 검증/성능. Artifact evidence (link + review) takes precedence over metric evidence.
+    if any(word in subject for word in ("가이드", "문서", "템플릿")):
+        return f"{subject} 산출물 링크와 리뷰 결과를 티켓에 기록한다"
+    if any(word in subject for word in ("성능", "측정", "정확", "검증")):
+        return f"{subject} 검증 기준·측정값·판정 결과를 티켓에 기록해 확인한다"
+    if any(word in subject for word in ("배치", "Job", "파이프라인", "API")):
+        return f"{subject}의 성공·실패 경로를 실행 로그와 회귀 테스트 결과로 확인한다"
+    if any(word in subject for word in ("팝업", "필터", "화면", "UI")):
+        return f"{subject}의 사용자 동작과 표시 결과를 UI 테스트 및 화면 증빙으로 확인한다"
+    return f"{subject} 실행 로그와 테스트 결과를 티켓에 기록해 확인한다"
 
 
 def _sharpen_dod(state, items) -> bool:
@@ -2838,14 +3854,31 @@ def _sharpen_dod(state, items) -> bool:
         if not isinstance(child, dict):
             continue
         body = str(child.get("description") or "")
-        for old in _vague_dod(_dod_rows(body)):
-            if any(w in old for w in ("성능", "정확", "검증")):
+        subject = _re.sub(
+            r"^\s*\[[^\]]+\]\s*", "", str(child.get("summary") or "작업")
+        ).strip()
+        bad = _vague_dod(_dod_rows(body))
+        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달", request_text(state), _re.I):
+            bad += [row for row in _dod_rows(body)
+                    if _re.search(r"보고서|리포트", row, _re.I)]
+        if any(word in subject for word in ("가이드", "문서", "템플릿")):
+            bad += [row for row in _dod_rows(body)
+                    if _re.search(r"실행\s*로그|테스트\s*결과|측정값|판정\s*결과", row, _re.I)]
+        if any(word in subject for word in ("회귀", "Regression")):
+            bad += [row for row in _dod_rows(body)
+                    if not _re.search(r"테스트\s*케이스|실패\s*로그|판정\s*결과", row, _re.I)]
+        for old in dict.fromkeys(bad):
+            if any(word in subject for word in
+                   ("가이드", "문서", "템플릿", "회귀", "Regression")):
+                proof = _action_specific_proof(state, subject)
+            elif any(w in old for w in ("성능", "측정", "정확", "검증")):
                 proof = "검증 기준·측정값·판정 결과를 parent ticket에 기록해 확인한다"
             elif any(w in old for w in ("테스트", "구현", "코드")):
                 proof = "실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다"
             else:
-                proof = "산출물 링크와 리뷰 결과를 parent ticket에 기록해 확인한다"
-            body = body.replace(f">{old}</li>", f">{_esc(old)} — {_esc(proof)}</li>")
+                proof = _action_specific_proof(state, subject)
+            fresh = proof if proof.startswith(subject) else f"{subject} {proof}"
+            body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
             hit = True
         child["description"] = body
     for it in items[:6]:
@@ -2856,28 +3889,109 @@ def _sharpen_dod(state, items) -> bool:
         if not isinstance(it, dict) or str(it.get("type") or "").lower().startswith("sub"):
             continue
         body = str(it.get("description") or "")
-        bad = _vague_dod(_dod_rows(body))
+        summary_subject = _re.sub(
+            r"^\s*\[[^\]]+\]\s*", "", str(it.get("summary") or "작업")
+        ).strip()
+        all_dod = _dod_rows(body)
+        generic_review = [row for row in all_dod if _re.search(
+            r"결과와\s*검증\s*기록.{0,40}담당\s*리뷰|"
+            r"검증\s*기록.{0,40}리뷰로\s*확인|"
+            r"결과가\s*반영.{0,40}담당\s*리뷰", row, _re.I)]
+        bad = list(dict.fromkeys([*_vague_dod(all_dod), *generic_review]))
         for old in bad:
+            if old in generic_review:
+                if "필터" in summary_subject:
+                    fresh = (f"{summary_subject} 선택·해제 시 대상 목록과 복원 결과를 "
+                             "UI 테스트 및 화면 증빙으로 확인한다")
+                else:
+                    fresh = _action_specific_proof(state, summary_subject)
+                body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
+                hit = True
+                continue
             stem = _re.sub(
-                r"(?:테스트\s*완료|검토\s*완료|검증\s*완료|구현\s*완료|작성\s*완료|"
+                r"(?:(?:측정\s*)?결과에\s*대한\s*)?검토\s*완료|"
+                r"(?:테스트\s*완료|검증\s*완료|구현\s*완료|작성\s*완료|"
                 r"설계\s*완료|완료됨?|성능\s*개선\s*확인|성능\s*기준\s*충족|"
-                r"정상(?:적으로)?\s*(?:동작|작동|구현)(?:함|됨)?|"
+                r"성공적으로\s*추가됨?|추가됨|후속\s*조치\s*필요\s*여부\s*평가|"
+                r"정상(?:적으로)?\s*(?:동작|작동|구현|표시)(?:함|됨)?|"
                 r"문서화\s*완료|이상\s*없음|문제\s*없음)",
                 "", old, flags=_re.I).strip(" -·:;")
             # `정상적으로 작동해야 할 것`에서 vague phrase를 떼면 `해야 할 것` 또는
             # `할 것`이 조사처럼 남을 수 있다. Evidence 문장에 그 찌꺼기를 이어 붙이지 않는다.
             stem = _re.sub(r"(?:이|가)?\s*(?:해야\s*)?(?:함|됨|할\s*것|한다)?\s*$", "", stem)
-            subject = stem or _re.sub(
-                r"^\s*\[[^\]]+\]\s*", "", str(it.get("summary") or "작업")).strip()
-            if any(w in old for w in ("성능", "정확", "검증", "기준")):
-                fresh = f"{subject} 검증 기준·측정값·판정 결과를 티켓에 기록해 확인한다"
-            elif any(w in old for w in ("테스트", "구현", "코드", "동작", "작동")):
-                fresh = f"{subject} 실행 로그와 테스트 결과를 티켓에 기록해 확인한다"
+            # Partial deletion from a state phrase can leave broken Korean such as
+            # `팝업이 되고 작동`.  Use the verified title for boilerplate states.
+            subject = (summary_subject if _re.search(
+                r"정상|성공적으로|추가됨|검토\s*완료|후속\s*조치", old
+            ) else (stem or summary_subject))
+            if any(w in old for w in ("성능", "측정", "정확", "검증", "기준")):
+                fresh = _action_specific_proof(state, subject)
+            elif any(w in old for w in ("테스트", "구현", "코드", "동작", "작동", "표시", "추가")):
+                fresh = _action_specific_proof(state, subject)
             else:
-                fresh = f"{subject} 산출물 링크와 리뷰 결과를 티켓에 기록해 확인한다"
+                fresh = _action_specific_proof(state, subject)
             body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
             hit = True
         it["description"] = body
+        # A model may write an otherwise fluent but unrequested "report delivery" DoD.
+        # Reporting is a separate deliverable; if the user did not ask for one, replace the
+        # row with evidence of the actual action instead of silently expanding scope.
+        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달", request_text(state), _re.I):
+            replacement = _action_specific_proof(state, it.get("summary") or "")
+
+            def replace_report(match):
+                nonlocal hit
+                plain = _re.sub(r"<[^>]+>", " ", match.group(1))
+                if not _re.search(r"보고서|리포트", plain, _re.I):
+                    return match.group(0)
+                hit = True
+                return (match.group(0)[:match.group(0).find(">") + 1]
+                        + _esc(replacement) + "</li>")
+
+            it["description"] = _re.sub(
+                r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+                replace_report, it["description"], flags=_re.S | _re.I)
+        if any(word in summary_subject for word in ("가이드", "문서", "템플릿")):
+            replacement = _action_specific_proof(state, summary_subject)
+
+            def replace_mismatched_document_proof(match):
+                nonlocal hit
+                plain = _re.sub(r"<[^>]+>", " ", match.group(1))
+                if not _re.search(r"실행\s*로그|테스트\s*결과|측정값|판정\s*결과", plain, _re.I):
+                    return match.group(0)
+                hit = True
+                return (match.group(0)[:match.group(0).find(">") + 1]
+                        + _esc(replacement) + "</li>")
+
+            it["description"] = _re.sub(
+                r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+                replace_mismatched_document_proof, it["description"], flags=_re.S | _re.I)
+        # For measurement/check actions, a generic pipeline success path is not the
+        # acceptance criterion. Null-ratio requests varied between "checked", "reported",
+        # and "reviewed" across identical runs, so rebuild that DoD from one observable
+        # contract and preserve only a threshold the user literally supplied.
+        if _re.search(r"(?:null|널)\s*(?:ratio|비율)", summary_subject, _re.I):
+            replacement = _action_specific_proof(state, summary_subject)
+            asked = (request_text(state) + " " + last_user_text(state)).strip()
+            explicit_values = {
+                value.replace(" ", "") for value in _re.findall(
+                    r"\d+(?:\.\d+)?\s*(?:%|퍼센트|이하|이상|미만|초과)", asked, _re.I)
+            }
+            preserved = []
+            for row in _dod_rows(it["description"]):
+                compact = row.replace(" ", "")
+                if any(value in compact for value in explicit_values):
+                    preserved.append(row)
+            rows = [replacement, *[row for row in preserved if row != replacement]]
+            rendered = "".join(
+                f'<li data-checked="false">{_esc(row)}</li>' for row in rows)
+            replaced, count = _re.subn(
+                r"(<ul\b[^>]*data-type=[\"']taskList[\"'][^>]*>).*?(</ul>)",
+                lambda match: match.group(1) + rendered + match.group(2),
+                it["description"], count=1, flags=_re.S | _re.I)
+            if count and replaced != it["description"]:
+                it["description"] = replaced
+                hit = True
     return hit
 
 
@@ -3070,8 +4184,9 @@ _QUALITY_DIMENSIONS = (
     r"접근성|accessibility",
     r"운영\s*효율성|업무\s*효율성|효율성|생산성|efficien(?:cy|t)|productivity",
     r"성능|처리량|응답\s*속도|performance|throughput|latency",
+    r"쿼리\s*최적화|query\s*optim(?:ization|isation|ize|ise)",
     r"안정성|신뢰(?:성|할)|가용성|stable|stability|reliability|availability",
-    r"정확(?:성|한|도)?|정합성|품질\s*(?:향상|개선)|accuracy|correctness",
+    r"정확(?:성|한|도)?|정합성|품질\s*(?:향상|개선|검증|점검|기준|룰)|accuracy|correctness",
     r"보안성|보안\s*(?:강화|향상|개선)|개인정보|노출\s*(?:감소|방지)|security|privacy",
     r"유지보수성|확장성|scalability|maintainability",
     r"비용\s*(?:절감|감소|최적화)|cost\s*(?:saving|reduction|optimization)",
@@ -3100,7 +4215,12 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
             continue
         summary = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(item.get("summary") or "작업")).strip()
         safe = _esc(summary or "요청한 작업")
-        method_terms = (r"인덱스", r"캐시", r"파티션", r"쿼리\s*재작성")
+        method_terms = (r"인덱스", r"캐시", r"파티션", r"쿼리\s*재작성",
+                        r"데이터\s*수집", r"수집\s*로직", r"저장\s*구조",
+                        r"데이터\s*변환", r"데이터\s*처리", r"데이터\s*수정",
+                        r"통계\s*(?:수집|처리)", r"모니터링", r"대시보드",
+                        r"적재\s*프로세스",
+                        r"데이터베이스(?:에|로|\s*저장)?")
 
         def has_unrequested_method(value: str) -> bool:
             return any(_re.search(term, value or "", _re.I)
@@ -3115,7 +4235,12 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
         unsupported_problem = bool(bg and not _re.search(
             r"저하|느리|지연|병목|오래\s*걸", request, _re.I)
             and _re.search(r"저하|속도가\s*느|지연|병목", bg.group(2), _re.I))
+        unsupported_mutation_benefit = bool(
+            bg and _re.search(r"\d+\s*\S{0,5}에서\s*\d+\s*\S{0,5}(?:으)?로", request)
+            and _re.search(r"이\s*변경(?:은|으로).{0,100}(?:위해|목적)", bg.group(2), _re.I)
+        )
         if bg and (has_forbidden(bg.group(2)) or unsupported_problem
+                   or unsupported_mutation_benefit
                    or has_unrequested_method(bg.group(2))):
             body = body[:bg.start(2)] + f"<p>{safe} 요청됨.</p>" + body[bg.end(2):]
             changed = True
@@ -3153,6 +4278,195 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
     return changed
 
 
+def _repair_statistics_generation_semantics(state: dict, items: list) -> bool:
+    """Keep a statistics-*generation* request from turning into a generic ETL project.
+
+    ``generation`` is not interchangeable with collecting source data, transforming it,
+    publishing a report, or deploying infrastructure.  A full-battery output made every
+    one of those substitutions while retaining the right title.  This repair activates
+    only when the user explicitly asks to generate statistics and the body contains an
+    unrequested method, then rebuilds the body from the verified title/request boundary.
+    """
+    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    if not (_re.search(r"통계\s*정보.{0,30}생성|NDV.{0,30}생성", asked, _re.I)
+            or _re.search(r"generat\w*.{0,30}(?:NDV|statistic)|"
+                          r"(?:NDV|statistic).{0,30}generat\w*", asked, _re.I)):
+        return False
+    drift_patterns = (
+        r"데이터\s*(?:소스\s*)?(?:수집|변환|분석|처리|수정)",
+        r"통계\s*정보(?:를|의)?\s*(?:수집|처리)",
+        r"통계\s*(?:수집|처리)",
+        r"데이터\s*소스\s*연결",
+        r"배포\s*(?:환경|계획|및)|운영\s*환경",
+        r"분석\s*(?:및|·)\s*보고|보고서\s*(?:작성|산출)",
+    )
+    changed = False
+    for item in items or []:
+        if not isinstance(item, dict) or _is_bug_item(item):
+            continue
+        summary = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "")).strip()
+        if not _re.search(r"NDV|통계", summary, _re.I):
+            continue
+        body = str(item.get("description") or "")
+        bad = [pattern for pattern in drift_patterns
+               if _re.search(pattern, body, _re.I) and not _re.search(pattern, asked, _re.I)]
+        if not bad:
+            continue
+        subject = _esc(summary or "요청한 통계정보 생성 파이프라인")
+        reference = ""
+        ref = _re.search(r"(<h3>\s*참고\s*</h3>.*)$", body, _re.S | _re.I)
+        if ref:
+            reference = ref.group(1)
+        item["description"] = (
+            f"<h3>배경</h3><p>{subject} 요청됨.</p>"
+            "<h3>작업 범위</h3><ul>"
+            f"<li>포함: {subject}</li>"
+            "<li>제외: 요청에 명시되지 않은 데이터 수집·변환·배포 및 보고서 작성</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            f"<li data-checked=\"false\">{subject}의 실행 성공·실패 로그와 테스트 결과를 티켓에 기록한다</li>"
+            "<li data-checked=\"false\">생성된 NDV 통계정보의 산출 여부와 검증 결과를 티켓에 기록한다</li>"
+            "</ul>" + reference
+        )
+        changed = True
+    return changed
+
+
+def _ensure_child_descriptions(items: list) -> bool:
+    """Give generated Sub-Tasks executable scope and evidence when the model omitted it."""
+    changed = False
+    for parent in items or []:
+        if not isinstance(parent, dict):
+            continue
+        parent_subject = _re.sub(
+            r"^\s*\[[^]]+\]\s*", "", str(parent.get("summary") or "상위 작업")
+        ).strip()
+        for child in parent.get("children") or []:
+            if not isinstance(child, dict) or str(child.get("description") or "").strip():
+                continue
+            subject = _re.sub(
+                r"^\s*\[[^]]+\]\s*", "", str(child.get("summary") or "세부 작업")
+            ).strip()
+            base_subject = _re.sub(
+                r"\s*[—–-]\s*(?:설계|기획|구현|개발|적용|검증|테스트|측정)\s*$",
+                "", subject,
+            ).strip() or parent_subject
+            if _re.search(r"설계|기획", subject):
+                scope = f"{parent_subject}의 입력·출력, 처리 경계, 검증 방법 설계"
+                proof = f"{subject} 산출물 링크와 리뷰 결과를 parent ticket에 기록한다"
+            elif _re.search(r"구현|개발|적용", subject):
+                scope = f"설계된 경계에 따라 {base_subject} 구현"
+                proof = f"{subject} 성공·실패 로그와 테스트 결과를 parent ticket에 기록한다"
+            elif _re.search(r"검증|테스트|측정", subject):
+                scope = f"{base_subject} 결과 검증"
+                proof = f"{subject} 기준·측정값·판정 결과를 parent ticket에 기록한다"
+            else:
+                scope = subject
+                proof = f"{subject} 산출물 링크와 확인 결과를 parent ticket에 기록한다"
+            child["description"] = (
+                f"<h3>작업 범위</h3><ul><li>포함: {_esc(scope)}</li>"
+                "<li>제외: parent ticket 범위 밖 변경</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                f"<li data-checked=\"false\">{_esc(proof)}</li></ul>"
+            )
+            changed = True
+    return changed
+
+
+def _execution_stage(summary) -> str:
+    """Return a broad execution stage only when a child title explicitly names one."""
+    value = str(summary or "")
+    for canonical, words in (
+        ("design", ("설계", "기획")),
+        ("implementation", ("구현", "개발", "적용")),
+        ("validation", ("검증", "테스트", "측정")),
+        ("deployment", ("배포", "전환")),
+        ("operation", ("모니터링", "운영")),
+        ("documentation", ("문서화", "가이드")),
+    ):
+        if any(word in value for word in words):
+            return canonical
+    return ""
+
+
+def _drop_unrequested_requester_attribution(state: dict, items: list) -> bool:
+    """Remove a fabricated generic requester sentence from ticket descriptions.
+
+    The logged-in display name is useful session metadata, not automatically the business
+    reason for every ticket.  Keep an attribution only when the user actually mentioned
+    that identity in the request.
+    """
+    asked = (request_text(state) + " " + _human_request_text(state)).strip()
+    changed = False
+    targets = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        targets.append(item)
+        targets.extend(child for child in (item.get("children") or []) if isinstance(child, dict))
+    pattern = _re.compile(
+        r"\s*(\{\{mention:([^}]+)\}\}|\[~([^\]]+)\])의\s*요청에\s*따라\s*진행(?:됩니다|함|한다)?[.]?",
+        _re.I,
+    )
+    for item in targets:
+        body = str(item.get("description") or "")
+
+        def remove(match):
+            identity = str(match.group(2) or match.group(3) or "").strip()
+            return match.group(0) if identity and identity in asked else ""
+
+        cleaned = pattern.sub(remove, body)
+        cleaned = _re.sub(r"<p>\s*</p>", "", cleaned, flags=_re.I)
+        if cleaned != body:
+            item["description"] = cleaned
+            changed = True
+    return changed
+
+
+def _remove_assignee_semantic_drift(state: dict, items: list) -> bool:
+    """Keep usernames as owner metadata instead of letting them become task subjects.
+
+    A measured failure turned ``skcc.x1402`` into the technical phrase ``X1402 모델``
+    inside a Sub-Task body.  Mention tokens used for an explicit reviewer are preserved;
+    raw IDs and their suffixes are removed from prose because people must be represented
+    by typed mentions or the assignee field.
+    """
+    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    changed = False
+    targets = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        targets.append(item)
+        targets.extend(child for child in (item.get("children") or []) if isinstance(child, dict))
+    for item in targets:
+        uid = str(item.get("assignee") or "").strip()
+        if not uid or not _re.fullmatch(r"[a-z]+\.[a-z]\d+", uid, _re.I):
+            continue
+        body = str(item.get("description") or "")
+        protected = {}
+
+        def hold(match):
+            key = f"@@LTM_MENTION_{len(protected)}@@"
+            protected[key] = match.group(0)
+            return key
+
+        value = _re.sub(
+            rf"\{{\{{mention:{_re.escape(uid)}\}}\}}|\[~{_re.escape(uid)}\]",
+            hold, body, flags=_re.I)
+        suffix = uid.split(".", 1)[1]
+        cleaned = _re.sub(rf"(?<![\w.])(?:{_re.escape(uid)}|{_re.escape(suffix)})(?!\w)",
+                          "", value, flags=_re.I)
+        if "모델" not in asked and _re.search(r"다른\s*모델", cleaned):
+            cleaned = _re.sub(r"다른\s*모델(?:의)?\s*", "요청에 명시되지 않은 연관 ", cleaned)
+        cleaned = _re.sub(r"[ \t]{2,}", " ", cleaned)
+        for key, token in protected.items():
+            cleaned = cleaned.replace(key, token)
+        if cleaned != body:
+            item["description"] = cleaned
+            changed = True
+    return changed
+
+
 def _drop_self_exclusions(items: list) -> bool:
     """Remove an exclusion bullet that merely repeats the ticket's own title."""
     changed = False
@@ -3162,19 +4476,33 @@ def _drop_self_exclusions(items: list) -> bool:
         title = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "")).strip()
         title_key = _re.sub(r"[^0-9A-Za-z가-힣]+", "", title).casefold()
         body = str(item.get("description") or "")
+        exclusion_count = sum(
+            1 for row in _re.findall(r"<li\b[^>]*>(.*?)</li>", body, _re.I | _re.S)
+            if _re.match(r"^\s*제외(?:\s*\([^)]*\))?\s*:",
+                         _re.sub(r"<[^>]+>", "", row).strip())
+        )
 
         def keep(match):
             nonlocal changed
-            plain = _re.sub(r"<[^>]+>", "", match.group(1)).strip()
+            plain = _re.sub(r"<[^>]+>", "", match.group(2)).strip()
+            if not _re.match(r"^\s*제외(?:\s*\([^)]*\))?\s*:", plain):
+                return match.group(0)
             excluded = _re.sub(r"^\s*제외(?:\s*\([^)]*\))?\s*:\s*", "", plain)
             excluded = _re.sub(r"^\s*\[[^]]+\]\s*", "", excluded).strip()
             key = _re.sub(r"[^0-9A-Za-z가-힣]+", "", excluded).casefold()
             if len(title_key) >= 6 and (key == title_key or key in title_key):
                 changed = True
-                return ""
+                if exclusion_count > 1:
+                    return ""
+                return (match.group(1)
+                        + "제외: 요청에 명시되지 않은 연관 기능 변경"
+                        + match.group(3))
             return match.group(0)
 
-        item["description"] = _re.sub(r"<li\b[^>]*>(.*?제외.*?)</li>", keep, body,
+        # Each list item is inspected independently.  Starting the match at an earlier
+        # `포함` bullet allowed DOTALL to consume through the following `제외` bullet,
+        # so the prefix check and title comparison never saw the exclusion itself.
+        item["description"] = _re.sub(r"(<li\b[^>]*>)(.*?)(</li>)", keep, body,
                                       flags=_re.I | _re.S)
     return changed
 
@@ -3318,7 +4646,23 @@ def _topic_drift(state, items: list) -> str:
                "test", "data", "table", "api", "the", "and", "pipeline", "with",
                "for", "this"}
     terms |= {w for w in _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{3,}", req)
-              if w.lower() not in _COMMON}
+              if w.lower().rstrip(".,;:()[]") not in _COMMON}
+    # The Latin-token regex intentionally accepts dots for identifiers, which also captures
+    # sentence punctuation (``hotfix.``).  Normalize both identifier sources before comparing
+    # them with labels/attributes; otherwise a correctly populated label becomes a false topic
+    # drift warning merely because it ended the sentence.
+    terms = {str(t).strip().rstrip(".,;:()[]") for t in terms if str(t).strip()}
+    # Ticket keys and configured user IDs are routing/ownership metadata, not the work
+    # subject.  Treating ``DL-9090`` or shorthand ``x1402`` as a missing topic produced a
+    # false approval warning even when parent and assignee fields were exactly correct.
+    try:
+        from app.agent.workflow.agents.query_specialist import _known_user_tokens
+        people = _known_user_tokens()
+    except Exception:
+        people = set()
+    terms = {t for t in terms
+             if not _re.fullmatch(r"[A-Za-z][A-Za-z0-9]*-\d+", t)
+             and t.casefold() not in people}
     # priority/label 같은 배치 속성은 주제가 아니다. 제목·본문에 label이 없다는 이유로
     # topic drift를 띄우면 단건 자동 검증도 불필요하게 우회한다(ATTR1: hotfix.).
     labels = {str(x).strip().lower() for i in items for x in (i.get("labels") or [])}
@@ -3676,6 +5020,67 @@ def _missing_bug_reproduction(text: str) -> bool:
     return not (has_condition and has_observed)
 
 
+def _normalize_duplicate_and_bug_questions(state, questions: list, *, items=None, plan=None) -> list:
+    """Replace generic interviews with one decision-ready, request-specific question.
+
+    A duplicate decision needs the actual candidate, not an abstract warning.  A Bug
+    interview should ask only for facts that are still absent from the report and group
+    closely related diagnostic fields into one answerable prompt.
+    """
+    said = (request_text(state) + " " + last_user_text(state)).strip()
+    if state.get("already_exists"):
+        candidates = [row for row in (state.get("evidence") or [])
+                      if isinstance(row, dict) and str(row.get("key") or "").strip()]
+        if candidates:
+            row = candidates[0]
+            key = str(row.get("key") or "").strip()
+            placement_keys = {
+                str(value).strip().upper()
+                for item in (items or []) if isinstance(item, dict)
+                for value in (item.get("epic"), item.get("parent")) if str(value or "").strip()
+            }
+            placement_keys.update(key.upper() for key in _re.findall(
+                r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)", said, _re.I))
+            if key.upper() in placement_keys:
+                # A parent Epic describes the same initiative by design. It is the
+                # destination of the child Task, not a duplicate of that child.
+                return [question for question in questions
+                        if not _re.search(r"중복|같은\s*(?:작업|증상)|이미",
+                                          str(question.get("question") or ""), _re.I)]
+            title = str(row.get("title") or "").strip()
+            label = f'{key} "{title}"' if title else key
+            why = str(row.get("why") or "").strip()
+            reason = f" 근거: {why}" if why else ""
+            return [{
+                "question": (f"{label}에서 같은 작업을 진행 중입니다.{reason} "
+                             "기존 티켓에 범위를 추가할지, 별도 티켓으로 분리할지 선택해 주세요."),
+                "kind": "choice",
+                "options": [f"{key}에 범위를 추가한다 (권장)",
+                            "별도 티켓으로 분리한다 — 분리 사유 입력"],
+                "field": "duplicate",
+                "required_input": True,
+                "why_required": "중복 업무를 새로 만들기 전에 관리 단위를 결정해야 함",
+            }]
+    if reads_as_bug(said) and _missing_bug_reproduction(said) and not (items or plan):
+        if "리니지" in said or "뷰어" in said:
+            prompt = ("리니지 뷰어 문제가 재현되는 화면 경로·브라우저/환경과 "
+                      "발생 조건 또는 빈도를 알려 주세요. 실제 증상은 ‘가끔 표시되지 않음’으로 기록합니다.")
+        elif "배치" in said or "타임아웃" in said:
+            prompt = ("실패한 DAG/Job 이름, 실행 환경, 최근 발생 시각과 대표 오류 로그를 "
+                      "알려 주세요. 실제 증상은 ‘커넥션 타임아웃으로 실패’로 기록합니다.")
+        else:
+            prompt = "재현 경로·실행 환경·발생 조건과 기대 동작을 알려 주세요."
+        return [{
+            "question": prompt,
+            "kind": "text",
+            "options": [],
+            "field": "reproduction",
+            "required_input": True,
+            "why_required": "재현 가능한 Bug 초안에 필요한 진단 정보가 없음",
+        }]
+    return questions
+
+
 def _legal_parent_is_known(state, text: str) -> bool:
     keys = state.get("mentioned_keys") or _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", text)
     return any(_can_parent_subtask(k) for k in keys)
@@ -3692,6 +5097,8 @@ def _explicit_comment_body(text: str) -> bool:
 def _comment_input_missing(state, plan: dict) -> bool:
     original = request_text(state)
     latest = last_user_text(state).strip()
+    if _comment_forbidden(original + " " + latest):
+        return False
     delegated_placeholder = bool(_re.search(
         r"(?:내용|목적)(?:은|도)?\s*(?:알아서|아무거나|적당히)", original,
     ))
@@ -3703,6 +5110,142 @@ def _comment_input_missing(state, plan: dict) -> bool:
     if delegated_placeholder:
         return True
     return not str((plan or {}).get("comment") or "").strip()
+
+
+def _comment_forbidden(text: str) -> bool:
+    """True when the latest instruction explicitly excludes a comment."""
+    return bool(_re.search(
+        r"(?:그\s*)?댓글(?:은|을|도)?\s*(?:남기지\s*마|달지\s*마|제외|없이|취소)|"
+        r"(?:그\s*)?코멘트(?:는|를|도)?\s*(?:남기지\s*마|달지\s*마|제외|없이|취소)",
+        str(text or ""), _re.I,
+    ))
+
+
+def _canonicalize_meeting_mentions(state, plan: dict) -> None:
+    """Bind human names in meeting comments to the identities confirmed in this thread."""
+    if not plan:
+        return
+    try:
+        from app.agent.workflow.meeting_context import (
+            canonicalize_reply_mentions, is_meeting_request, resolved_people,
+        )
+        if not is_meeting_request(state):
+            return
+        people = resolved_people(state)
+    except Exception:
+        return
+
+    def canonical(body: str) -> str:
+        value = canonicalize_reply_mentions(state, str(body or ""))
+        for name, uid in sorted(people.items(), key=lambda row: -len(row[0])):
+            badge = f"{{{{mention:{uid}}}}}"
+            # Repair a badge already paired with the wrong human-readable name.
+            value = _re.sub(
+                rf"\{{\{{mention:[^}}]+\}}\}}\s*{_re.escape(name)}(?:TL|님|차장|책임|매니저)?",
+                badge, value, flags=_re.I,
+            )
+            value = _re.sub(
+                rf"(?<![가-힣A-Za-z0-9_.}}])@?{_re.escape(name)}(?:TL|님|차장|책임|매니저)?",
+                badge, value,
+            )
+        # If a model substitutes another valid user ID without retaining the display name,
+        # repair role clauses from the explicit meeting note (writer/reader result owner).
+        original = request_text(state)
+        for role in ("writer", "reader"):
+            owner = _re.search(
+                rf"{role}\s*결과(?:는|를|은)?\s*(?:@|\{{\{{)?([가-힣]{{1,5}})",
+                original, _re.I,
+            )
+            uid = people.get(owner.group(1)) if owner else ""
+            if not uid:
+                continue
+            value = _re.sub(
+                rf"({role}\s*결과(?:는|를|은)?\s*)"
+                r"(?:\{\{mention:[^}]+\}\}|\[~[^\]]+\]|@[가-힣]+|[가-힣]{1,5}(?:님|TL)?)",
+                rf"\1{{{{mention:{uid}}}}}", value, flags=_re.I,
+            )
+        # Role repair can place the right badge beside an already canonical badge.  Run the
+        # same deterministic canonicalizer once more to collapse that duplicate.
+        value = canonicalize_reply_mentions(state, value)
+        # 댓글 저장 API의 canonical mention은 Jira `[~username]`이다. 답변 전용 typed
+        # token을 payload에 남기면 에디터에서는 뱃지처럼 보여도 Jira 알림이 동작하지 않는다.
+        value = _re.sub(r"\{\{mention:([^}]+)\}\}", r"[~\1]", value)
+        value = _re.sub(r"(?:\[~([^\]]+)\])(?:\s*\[~\1\])+", r"[~\1]", value)
+        # mention badge가 이미 사람을 표시하므로 full name/title을 곁들이지 않는다.
+        value = _re.sub(
+            r"(\[~[^\]]+\])(?:\s+[가-힣]{2,5})?(?:TL|님|차장|책임|매니저)",
+            r"\1", value)
+        # 대상에서 제외한 티켓 설명은 승인 범위 메타이지 실제 댓글 내용이 아니다.
+        # "DL-7001에는 댓글을 달지 않음"을 대상 댓글마다 게시하던 회귀를 제거한다.
+        value = _re.sub(
+            r"(?:^|(?<=[.!?]))\s*[^.!?\n]{0,100}(?:그\s*티켓|[A-Z][A-Z0-9]*-\d+)"
+            r"[^.!?\n]{0,40}(?:댓글|코멘트)(?:을|는|도)?\s*(?:달지|남기지)\s*않(?:음|는다|습니다)?[.!?]?",
+            "", value, flags=_re.I,
+        )
+        # 제외 대상으로 명시한 ticket은 댓글의 범위 설명일 뿐 게시할 결정 내용이 아니다.
+        excluded = _re.findall(
+            # Korean postpositions are Unicode word characters, so ``\b`` after a
+            # ticket key misses ordinary forms such as ``DL-7001에는``.
+            r"(?<![A-Z0-9-])([A-Z][A-Z0-9]*-\d+)(?!\d)[^.\n]{0,80}"
+            r"(?:댓글|코멘트)(?:을|는|도)?\s*"
+            r"(?:달지|남기지)\s*않", request_text(state), _re.I)
+        for key in excluded:
+            value = _re.sub(
+                rf"(?mi)^.*(?<![A-Z0-9-]){_re.escape(key)}(?!\d).*$", "", value)
+        # Markdown heading과 첫 bullet을 한 줄에 합친 모델 출력을 안정적인 comment 본문으로 정리.
+        value = _re.sub(r"(?m)^(#{1,6}\s*회의\s*결정사항)\s*[-—:]\s*", r"\1\n\n- ", value)
+        value = _re.sub(r"\s*(#{1,6}\s*참고)\s*", r"\n\n\1\n\n", value)
+        value = _re.sub(r"(?m)^#{1,6}\s*참고\s*$\n(?:\s*\n)*(?=\Z)", "", value)
+        value = _re.sub(r"[ \t]{2,}", " ", value)
+        value = _re.sub(r"\n{3,}", "\n\n", value)
+        return value.strip(" .\n")
+
+    if "comment" in plan:
+        plan["comment"] = canonical(plan.get("comment") or "")
+    changes = plan.get("changes") if isinstance(plan.get("changes"), dict) else {}
+    if changes.get("description"):
+        changes["description"] = canonical(changes["description"])
+    for row in plan.get("comments") or []:
+        if isinstance(row, dict):
+            row["body"] = canonical(row.get("body") or "")
+
+
+def _meeting_decision_comment(state, fallback: str) -> str:
+    """Build a meeting comment from explicit decision bullets in the original request.
+
+    The minutes are the authoritative write input.  A model occasionally returned an empty
+    comment on the resumed identity-interview turn, or omitted the reviewer.  Copying explicit
+    bullets is safer and cheaper than asking another model to reconstruct them.  Scope-control
+    bullets (for example, a background ticket that must not receive a comment) are instructions
+    about the write and must never become comment content.
+    """
+    original = request_text(state)
+    if not (_re.search(r"회의|미팅", original, _re.I)
+            and _re.search(r"댓글|코멘트", original, _re.I)):
+        return fallback
+    decisions = []
+    for raw in original.splitlines():
+        match = _re.match(r"^\s*[-*]\s+(.+?)\s*$", raw)
+        if not match:
+            continue
+        line = match.group(1).strip()
+        if _re.search(r"(?:댓글|코멘트).{0,30}(?:달지|남기지)\s*않", line, _re.I):
+            continue
+        if _re.search(r"^(?:배경|참고|대상\s*제외)\s*[:：]?", line, _re.I):
+            continue
+        decisions.append(line.rstrip(" ."))
+    if not decisions:
+        return fallback
+    return "### 회의 결정사항\n\n" + "\n".join(f"- {line}" for line in decisions)
+
+
+def _same_field_value(before, after) -> bool:
+    """Jira field의 표현 차이를 무시하고 의미상 no-op인지 판정한다."""
+    if isinstance(before, (list, tuple, set)) or isinstance(after, (list, tuple, set)):
+        left = {str(value).strip() for value in (before or []) if str(value).strip()}
+        right = {str(value).strip() for value in (after or []) if str(value).strip()}
+        return left == right
+    return str(before or "").strip() == str(after or "").strip()
 
 
 def _human_request_text(state) -> str:
@@ -3800,6 +5343,44 @@ def _semantic_terms(text: str) -> set:
     return {w for w in words if w not in _SEMANTIC_STOP and not w.isdigit()}
 
 
+def _explicit_nested_structure(state) -> bool:
+    """Whether the user explicitly authorized child/stage decomposition.
+
+    Multiple deliverables do not implicitly authorize another level of generated work.
+    A nested hierarchy is retained only when the user actually asks for Sub-Tasks,
+    stages, splitting, or distributed execution.
+    """
+    said = (request_text(state) + "\n" + _human_request_text(state)).strip()
+    return bool(_re.search(
+        r"sub[- ]?tasks?|서브\s*태스크|하위\s*(?:티켓|작업)|"
+        r"단계별|각\s*단계|단계로|쪼개|나눠|분할|분담",
+        said, _re.I,
+    ))
+
+
+def _drop_unrequested_nested_work(state, items: list) -> list[str]:
+    """Remove model-invented children beneath several independent deliverables.
+
+    The user's named deliverables are the authoritative work units.  When several
+    top-level Tasks already represent them, silently adding design/implementation/
+    verification children expands scope and distorts workload.  Explicit hierarchy
+    language always wins and preserves the children.
+    """
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    # Two-deliverable plans can legitimately retain a detailed execution branch
+    # (for example one measured area plus a separate engine change).  At three or
+    # more independent top-level deliverables, an extra unsolicited hierarchy is
+    # already a second planning layer and requires explicit authorization.
+    if len(rows) < 3 or _explicit_nested_structure(state):
+        return []
+    removed = []
+    for item in rows:
+        children = [child for child in (item.get("children") or []) if isinstance(child, dict)]
+        removed.extend(str(child.get("summary") or "").strip() for child in children)
+        item.pop("children", None)
+    return [title for title in removed if title]
+
+
 def _best_item_for_request(state, items: list) -> dict:
     """과분해를 접을 때 원 요청과 가장 가까운 항목을 보존한다."""
     req_terms = _semantic_terms(request_text(state))
@@ -3819,13 +5400,20 @@ def _best_item_for_request(state, items: list) -> dict:
 
 def _explicit_parent_epic(state) -> str:
     """사용자가 키와 Epic/상위 관계를 직접 말한 경우만 반환한다."""
-    said = request_text(state) + " " + last_user_text(state)
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        original = meeting_request_text(state)
+    except Exception:
+        original = request_text(state)
+    said = original + " " + last_user_text(state)
     relation = bool(_re.search(r"에픽|epic|아래|밑에|상위", said, _re.I))
     if not relation:
         return ""
-    for key in state.get("mentioned_keys") or []:
-        if str(key) in said and _is_epic(key):
-            return str(key)
+    keys = _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", said, _re.I)
+    keys += [str(key) for key in (state.get("mentioned_keys") or []) if str(key) in said]
+    for key in dict.fromkeys(value.upper() for value in keys):
+        if _is_epic(key):
+            return key
     return ""
 
 
@@ -3884,8 +5472,16 @@ def _dedupe_semantic_items(state, items: list) -> list:
         for group in groups:
             base = group[0][1]
             union = terms | base
-            if terms == base or (len(terms & base) >= 2 and union
-                                 and len(terms & base) / len(union) >= 0.67):
+            shared = terms & base
+            # A model often expands a direct requested action into an unrequested
+            # "necessity assessment" plus the action itself.  The latter's semantic
+            # core is then a subset of the former, so Jaccard alone (3/5) misses the
+            # duplicate.  Three shared domain terms are enough only when one set is a
+            # complete subset; genuinely different deliverables keep distinct terms.
+            subset_duplicate = (len(shared) >= 3
+                                and (shared == terms or shared == base))
+            if terms == base or subset_duplicate or (len(shared) >= 2 and union
+                                                      and len(shared) / len(union) >= 0.67):
                 target = group
                 break
         if target is None:
@@ -3905,12 +5501,23 @@ def _dedupe_semantic_items(state, items: list) -> list:
         core_text = _re.sub(r"^\s*\[[^\]]+\]\s*", "",
                             str(group[0][0].get("summary") or ""))
         wanted = set(modules_in_text(core_text))
+        request = request_text(state)
 
         def score(pair):
             it, terms = pair
             comp = resolve_module(((it.get("components") or [""])[0]))
+            title = str(it.get("summary") or "")
+            unrequested_planning = bool(
+                _re.search(r"필요성|평가|분석|검토|조사", title)
+                and not _re.search(r"필요성|평가|분석|검토|조사", request)
+            )
+            direct_action = bool(
+                _re.search(r"손봐|고쳐|수정|개선|최적화|조정", request)
+                and _re.search(r"수정|개선|최적화|조정", title)
+            )
             return (5 if comp and comp in wanted else 0,
-                    len(_semantic_terms(request_text(state)) & terms))
+                    len(_semantic_terms(request) & terms),
+                    (2 if direct_action else 0) - (3 if unrequested_planning else 0))
         chosen = max(group, key=score)[0]
         keep.append(chosen)
         removed.extend(str(it.get("summary") or "") for it, _ in group if it is not chosen)
@@ -4278,14 +5885,19 @@ def _bulk_comment_preview(keys: list, body: str) -> list:
         except Exception:
             f = {}
         who = ((f.get("assignee") or {}).get("name") or "").strip()
-        # ★ **멘션은 티켓마다 그 티켓의 담당이어야 한다.** 모델은 대상 담당자를 전부 모아
-        #   한 문장에 넣는다(실측 CMTB1: 두 티켓의 코멘트가 똑같이
-        #   "[~skcc.x1042] [~skcc.i2011]" 였다) — 그러면 남의 티켓 알림이 모두에게 간다.
-        #   그래서 본문의 멘션을 **전부 걷어내고** 이 티켓의 담당만 앞에 붙인다.
-        text = _re.sub(r"\[~[^\]]*\]", "", body)
-        text = _re.sub(r"\s{2,}", " ", text).strip(" ,·")
+        # 티켓별 알림 대상과 회의 결정의 owner/reviewer는 서로 다른 의미다. 예전에는
+        # 본문의 멘션을 전부 지워 티켓 담당만 남겼고, 그 결과 회의에서 확정한 검토자가
+        # 사라졌다. 모델이 앞에 나열한 수신자 mention만 제거하고 본문 속 역할 mention은
+        # 보존한다. Markdown 줄바꿈도 payload의 일부이므로 공백으로 접지 않는다.
+        text = _re.sub(r"^\s*(?:\[~[^\]]+\]\s*)+", "", body)
+        text = _re.sub(r"[ \t]{2,}", " ", text).strip(" ,·\n")
         if who:
-            text = f"[~{who}] " + text        # 담당자에게 알리는 것이 이 코멘트의 목적이다
+            alert = f"- 알림: [~{who}]"
+            heading = _re.match(r"^(#{1,6}\s+[^\n]+)(?:\n+|$)", text)
+            if heading:
+                text = f"{heading.group(1)}\n\n{alert}\n" + text[heading.end():].lstrip()
+            else:
+                text = f"{alert}\n\n{text}"
         rows.append({"key": k, "title": str(f.get("summary") or ""),
                      "assignee": who, "body": text})
     return rows
@@ -4304,6 +5916,33 @@ def _known_components() -> set:
         return {c for c in got if c not in _FIXTURE_COMPONENTS}
     except Exception:
         return set()
+
+
+def _new_epic_unmet_criteria(state) -> list[str]:
+    """Return missing criteria for a new reporting Epic from literal user evidence."""
+    asked = conversation(state) or request_text(state)
+    if not str(asked or "").strip():
+        return []
+    unmet = []
+    durations = [int(value) for value in _re.findall(r"(?<!\d)(\d{1,2})\s*주", asked)]
+    if not durations or max(durations) < 4:
+        unmet.append("4주 이상 기간 근거 없음")
+
+    requested_tasks = [int(value) for value in _re.findall(
+        r"(?<!\d)(\d{1,3})\s*(?:개|건)?\s*(?:의\s*)?(?:Task|태스크|테스크)", asked, _re.I)]
+    requested_tasks += [int(value) for value in _re.findall(
+        r"(?:Task|태스크|테스크)\s*(?<!\d)(\d{1,3})\s*(?:개|건)", asked, _re.I)]
+    modules = {name for name in _known_components()
+               if _re.search(rf"(?<![A-Za-z0-9]){_re.escape(name)}(?![A-Za-z0-9])", asked, _re.I)}
+    people = set(_re.findall(r"(?<![A-Za-z0-9.])(?:skcc\.)?[a-z]\d{3,6}(?![A-Za-z0-9])",
+                             asked, _re.I))
+    scale = bool(requested_tasks and max(requested_tasks) >= 3
+                 and (len(modules) >= 2 or len(people) >= 3))
+    if not scale:
+        unmet.append("서로 다른 모듈·담당의 Task 3건 근거 없음")
+    if not _re.search(r"에픽|epic|별도\s*(?:진척|보고)\s*단위", asked, _re.I):
+        unmet.append("독립 보고 단위 의도 없음")
+    return unmet
 
 
 def _existing_epic_like(summary: str):
@@ -4381,7 +6020,8 @@ def _explicit_parentless_subtask(state) -> bool:
 # 열려 있으면 우리가 판단하되 **갈림이 크면 확인을 받는** 것이 맞다. 이 판정을 모델에게
 # 맡기면 흔들리므로(같은 문장에 다른 답), 낱말로 하는 판정은 코드가 한다.
 _SHAPE_WORDS = (
-    ("new_epic", ("에픽으로", "epic 으로", "에픽 만들", "에픽으로 크게", "이니셔티브")),
+    ("new_epic", ("에픽으로", "epic으로", "epic 으로", "에픽 만들", "epic 만들",
+                  "에픽으로 크게", "이니셔티브")),
     # 새 일의 "단계별 Sub-Task"는 **Task 하나 + children**이다. 기존 코드에서는 아래의
     # generic `subtask`에 먼저 걸려, 사용자가 구조를 말했는데도 single_task 산출을 고치지
     # 못했다. 기존 부모 키를 지목한 경우는 shape_hint 의 선행 분기가 mode=subtask 로 본다.
@@ -4400,9 +6040,23 @@ _SHAPE_WORDS = (
 
 
 def shape_hint(state) -> tuple:
-    """(사용자가 말한 형태 | "", 근거 낱말). 말하지 않았으면 열려 있는 것이다."""
-    said = last_user_text(state)
+    """Return the latest explicit shape, falling back to the pre-interview request."""
+    from app.agent.workflow.meeting_context import meeting_request_text
+    latest, original = last_user_text(state), meeting_request_text(state)
+    for said in (latest, original):
+        hint = _shape_hint_text(said)
+        if hint[0]:
+            return hint
+    return "", ""
+
+
+def _shape_hint_text(said: str) -> tuple:
+    """Parse one human message for an explicit ticket shape."""
     said_l = said.lower()
+    exact_tasks = _re.search(
+        r"(?:정확히\s*)?(?:task|태스크|테스크)\s*([2-9][0-9]{0,2})\s*건", said_l, _re.I)
+    if exact_tasks:
+        return "multiple_tasks", f"Task {exact_tasks.group(1)}건 명시"
     # 실재/지목 부모 아래에 붙이는 요청은 새 Task+children 구조가 아니라 Sub-Task 배치다.
     # "DL-9090을 단계별로 쪼개줘"도 이쪽이므로 구체적인 새-일 패턴보다 먼저 판정한다.
     if _re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", said, _re.I) and any(
@@ -4419,7 +6073,7 @@ def shape_hint(state) -> tuple:
         return "task_with_subtasks", f"{amount.group(0)} · {split_word}"
     # issue type을 단수로 지목해 "Task/Story/Bug 만들어줘"라고 한 것은 형태 지정이다.
     # 복수·분할 신호가 함께 있을 때만 아래의 더 구체적인 규칙에 맡긴다.
-    if (_re.search(r"(?<![A-Za-z])(?:task|story|bug|태스크|테스크)\s*(?:로\s*)?"
+    if (_re.search(r"(?<![A-Za-z])(?:task|story|bug|태스크|테스크)\s*(?:를|을|로)?\s*"
                    r"(?:만들|생성|등록|올려)", said_l, _re.I)
             and not any(w in said_l for w in
                         ("여러", "각각", "단계", "서브", "sub-task", "나눠", "쪼개"))):

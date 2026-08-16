@@ -32,6 +32,11 @@ _ROLE = r"(?:PM|리더|담당자?|개발자|디자이너|리포터|작성자|검
 NAME_RE = re.compile(
     rf"{_ROLE}[\*_]*[ \t]*[:\-–][ \t]*[\*_]*([가-힣]{{2,4}})\b|"
     rf"([가-힣]{{2,4}})[ \t]*님\b")
+# Natural prose also names people without punctuation: ``담당자는 안하준``.  Keeping
+# this separate preserves the stable capture groups of ``NAME_RE`` and lets the
+# non-name allowlist filter ordinary phrases such as ``담당 작업``.
+ROLE_NAME_SENTENCE_RE = re.compile(
+    rf"{_ROLE}(?:은|는|이|가)?[ \t]+[\*_]*([가-힣]{{2,4}})\b")
 UID_RE = re.compile(r"^[a-z]+\.[a-z]\d+$")
 # 답변 속 사번 꼴 토큰 — 실재 검증 대상. NNNN 같은 자리표시자는 그 자체로 위반이다
 # (재작성 지시문의 예시 표기를 답에 그대로 복사한 실측 사고).
@@ -214,14 +219,19 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
         # 역할 문맥 + 키→사람 매핑("**DL-123**: 김철수") 두 꼴 모두 본다 —
         # 후자는 역할 낱말이 제목 줄에만 있고 항목 줄엔 없어서 NAME_RE 가 놓쳤다(실측).
         names = [(m.group(1) or m.group(2) or "").strip() for m in NAME_RE.finditer(text)]
+        names += [m.group(1).strip() for m in ROLE_NAME_SENTENCE_RE.finditer(text)]
         names += [m.group(1).strip() for m in KEY_NAME_RE.finditer(text)]
         names += [m.group(1).strip() for m in TABLE_NAME_RE.finditer(text)]
         # 상태·시간 낱말은 사람이 아니다 — "DL-9090: 현재 2/3 완료" 의 '현재'가 인물로
         # 걸렸다(실측 오탐). 이 목록은 오탐이 관측될 때마다 늘린다.
-        _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감",
-                      "상태", "예정", "검토", "확인", "미정", "없음", "전체", "작업"}
+        _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감", "기한",
+                      "상태", "예정", "검토", "확인", "미정", "없음", "전체", "작업", "근거",
+                      "후보", "후보는", "업무", "내용", "분야", "조직", "모듈", "티켓", "범위",
+                      "확인되지"}
+        _NOT_NAME_SUFFIXES = ("에는", "에서는", "으로는", "부터는", "까지는", "보다도")
         for name in names:
             if (not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES
+                    or name.endswith(_NOT_NAME_SUFFIXES)
                     or name in allowed_people):
                 continue
             seen.add(name)

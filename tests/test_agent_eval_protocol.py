@@ -437,17 +437,21 @@ def test_historical_base_report_keeps_its_declared_v1_contract():
 
 def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
-        "tools/agent_lang_ab.py": ('suite="conversation"', "2.0.0"),
-        "tools/agent_compose_eval.py": ('suite="editor"', "2.0.0"),
-        "tools/agent_create_suite.py": ('suite="create"', "3.0.0"),
+        "tools/agent_lang_ab.py": ('suite="conversation"', "3.2.0"),
+        "tools/agent_compose_eval.py": ('suite="editor"', "3.0.0"),
+        "tools/agent_create_suite.py": ('suite="create"', "4.0.2"),
+        "tools/agent_meeting_eval.py": ('suite="meeting"', "3.0.0"),
+        "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.0.1"),
     }
     for relative, (suite_marker, battery_version) in expected.items():
         text = (ROOT / relative).read_text(encoding="utf-8")
         assert f'BATTERY_VERSION = "{battery_version}"' in text, relative
-        assert "build_run_metadata(" in text and suite_marker in text, relative
+        assert ("build_run_metadata(" in text or "run_scenario_suite(" in text), relative
+        assert suite_marker in text, relative
         assert "suite_review_elements=SUITE_REVIEW_ELEMENTS" in text, relative
         assert "case_review_specs=CASE_REVIEW_SPECS" in text, relative
-        assert '"evaluation"' in text, relative
+        if "run_scenario_suite(" not in text:
+            assert '"evaluation"' in text, relative
 
 
 def _assigned_case_ids(relative, assignment_name):
@@ -473,6 +477,8 @@ def test_every_primary_case_has_an_exact_specialized_review_contract():
         "conversation": ("tools/agent_lang_ab.py", "SCENARIOS"),
         "editor": ("tools/agent_compose_eval.py", "CASES"),
         "create": ("tools/agent_create_suite.py", "CASES"),
+        "meeting": ("tools/agent_meeting_eval.py", "CASES"),
+        "ctx-chg": ("tools/agent_context_change_eval.py", "CASES"),
     }
     for suite, (relative, assignment) in declarations.items():
         case_ids = _assigned_case_ids(relative, assignment)
@@ -514,6 +520,56 @@ def test_history_and_external_research_cases_name_concrete_review_evidence():
     assert research["s7_internal_external_separation"]["expected"]["requiredSections"] == [
         "내부 근거", "외부 근거", "판단", "확인 필요",
     ]
+
+    evidence_quality = {
+        item["id"]: item for item in conversation["S8-복합근거품질"]["elements"]
+    }
+    assert evidence_quality["s8_source_results"]["expected"]["requiredSourceClasses"] == [
+        "jira-ticket", "jira-comment", "confluence", "official-web",
+    ]
+    confidence = evidence_quality["s8_source_confidence_and_fitness"]["expected"]
+    assert set(confidence["confidenceFactors"]) == {
+        "authority", "directness", "recency", "corroboration",
+    }
+    renderer = evidence_quality["s8_visual_rendering"]
+    assert "manualUi.desktopScreenshot" in renderer["evidenceSources"]
+    assert renderer["expected"]["requiredViewports"] == [
+        "desktop", "narrow-with-agent-side-panel",
+    ]
+    source_index = evidence_quality["s8_single_source_index"]["expected"]
+    assert source_index["citationClusters"] == \
+        "multiple sources at one location use [4][5][10]"
+    assert source_index["everyCitationBracketHyperlinked"] is True
+
+
+def test_meeting_and_context_change_cases_have_concrete_review_evidence():
+    meeting_suite, meeting = review_specs("meeting")
+    suite_ids = {item["id"] for item in meeting_suite}
+    assert "meeting_identity_normalization" in suite_ids
+    assert "meeting_research_then_interview" in suite_ids
+    assert "meeting_heterogeneous_note_reconstruction" in suite_ids
+    assert "meeting_actor_role_separation" in suite_ids
+    mtg5 = {item["id"]: item for item in meeting["MTG5"]["elements"]}
+    expected = mtg5["mtg5_research_gap_interview"]["expected"]
+    assert expected["requiredCandidates"] == ["skcc.x1103", "skcc.x1327"]
+    assert expected["unresolvedTerm"] == "PSR"
+    assert expected["noDraftBeforeChoice"] is True
+    assert meeting["MTG7"]["elements"][0]["expected"]["assignments"] == [
+        "skcc.i2011", "skcc.x1402", "unassigned",
+    ]
+    assert meeting["MTG9"]["elements"][0]["expected"]["forbiddenFields"] == [
+        "priority", "components", "labels",
+    ]
+
+    context_suite, context = review_specs("ctx-chg")
+    assert {item["id"] for item in context_suite} >= {
+        "ctx_latest_request_precedence", "ctx_relevant_memory_selection",
+        "ctx_pending_replacement",
+    }
+    ctx3 = {item["id"]: item for item in context["CTX3"]["elements"]}
+    assert ctx3["ctx3_superseded_writes"]["expected"]["exactChanges"] == {
+        "summary": "[Catalog] Puffin NDV 결과 템플릿 정리",
+    }
 
 
 def test_rubric_scores_question_judgment_not_the_presence_of_questions():

@@ -40,7 +40,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "2.0.0"
+BATTERY_VERSION = "3.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("editor")
 CP = None
 
@@ -105,8 +105,10 @@ CASES = [
     ("CMP3", "시드 이어쓰기 — 쓰던 글의 내용을 버리지 않는다", dict(
         ticket_key="DL-9090", kind="comment", prompt="이어서 완성해줘",
         seed_html="<p>오늘 리니지 뷰어 성능 측정을 돌렸는데, p95 가 생각보다</p>"),
-     lambda r: _seed_preserved(
-         r, "<p>오늘 리니지 뷰어 성능 측정을 돌렸는데, p95 가 생각보다</p>")),
+     lambda r: (_seed_preserved(
+         r, "<p>오늘 리니지 뷰어 성능 측정을 돌렸는데, p95 가 생각보다</p>")
+         and "확인 필요" in _txt(r.get("html") or "")
+         and not re.search(r"생각보다\s*(?:높|낮)", _txt(r.get("html") or "")))),
 
     ("CMP4", "모호 — 새 티켓·빈 시드·내용 없는 지시어는 보완 요청(NEED_INFO)이 정답", dict(
         ticket_key="", kind="description", prompt="잘 좀 써줘"),
@@ -121,7 +123,9 @@ CASES = [
     ("CMP6", "멘션·키 — 담당 멘션은 뱃지 마크업, 키는 앵커(뱃지 렌더)로", dict(
         ticket_key="DL-9090", kind="comment",
         prompt="담당자를 멘션해서 성능 측정 결과 검토 요청 코멘트 써줘"),
-     lambda r: r.get("ok") and 'data-type="mention"' in r["html"]),
+     lambda r: (r.get("ok") and 'data-type="mention"' in r["html"]
+                and all(value in _txt(r["html"]) for value in ("2홉", "100 노드"))
+                and "confluence" in r["html"].lower())),
 
     ("CMP7", "무관 요청 — 티켓과 무관한 글은 짓지 말고 보완 요청 또는 맥락 확인", dict(
         ticket_key="DL-9090", kind="comment", prompt="김치찌개 레시피 알려줘"),

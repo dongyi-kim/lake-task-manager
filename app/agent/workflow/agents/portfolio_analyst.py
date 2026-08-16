@@ -47,6 +47,60 @@ SCHEMA = {
 _MODULES = ("ETL", "Catalog", "Runtime", "Workbench", "DataOps", "DevOps")
 
 
+def _current_person_work(state) -> dict:
+    """Resolve one explicitly requested person and return current unfinished assignments.
+
+    This is a fixed join (person directory -> assigned unfinished tickets), not an open-ended
+    activity investigation. Keeping it deterministic prevents a previous ticket topic from
+    replacing the person named in the latest message.
+    """
+    if (state.get("intent") or "") != Intent.ACTIVITY:
+        return {}
+    asked = last_user_text(state).strip()
+    if not (_re0.search(r"(?:지금|현재).{0,15}(?:맡|담당|할당).{0,8}(?:업무|일|티켓|태스크)", asked)
+            or _re0.search(r"(?:맡|담당|할당).{0,8}(?:업무|일|티켓|태스크).{0,8}(?:요약|알려|뭐)", asked)):
+        return {}
+
+    uid = _re0.search(r"(?:skcc\.)?[a-z]{1,2}\d{2,6}", asked, _re0.I)
+    if uid:
+        query = uid.group(0)
+        if "." not in query:
+            query = "skcc." + query
+    else:
+        found = (_re0.search(r"@([가-힣]{2,5})", asked)
+                 or _re0.search(r"([가-힣]{2,5}?)\s*(?:님|TL|M|차장|책임|매니저)?(?:이|가|은|는)?\s*"
+                                r"(?:지금|현재).{0,15}(?:맡|담당|할당)", asked, _re0.I))
+        query = found.group(1) if found else ""
+    if not query:
+        return {"questions": [{"question": "현재 담당 업무를 확인할 사람의 이름이나 username을 알려 주세요.",
+                                "kind": "text", "options": [], "field": "person",
+                                "required_input": True,
+                                "why_required": "사람을 특정하지 않으면 다른 사람의 업무를 조회할 수 있음"}]}
+
+    from app.agent.tools.people_tools import find_person
+    try:
+        result = find_person.invoke({"name": query}) or {}
+    except Exception as exc:
+        return {"error": str(exc)[:160]}
+    resolved = str(result.get("resolved") or "").strip()
+    if not resolved:
+        options = []
+        for candidate in (result.get("candidates") or [])[:5]:
+            candidate_id = str(candidate.get("id") or "").strip()
+            if candidate_id:
+                options.append(f"{candidate.get('display') or candidate.get('name') or candidate_id} "
+                               f"({candidate_id})")
+        return {"questions": [{
+            "question": f"'{query}'을 한 사람으로 확정할 수 없습니다. 정확한 사용자를 알려 주세요.",
+            "kind": "choice" if options else "text", "options": options, "field": "person",
+            "required_input": True, "why_required": "동명이인 또는 미등록 이름을 추측할 수 없음",
+        }]}
+    assigned = result.get("assigned") or {}
+    return {"user_id": resolved, "query": query,
+            "tickets": [row for row in (assigned.get("tickets") or []) if isinstance(row, dict)],
+            "count": int(assigned.get("count") or 0), "jql": assigned.get("jql") or ""}
+
+
 def _group_activity(state) -> str:
     """그룹 활동 질의의 사전 취합 — 로스터 전원의 활동을 **코드가** 조회해 자료로 만든다.
 
@@ -261,6 +315,31 @@ def _my_day(state) -> str:
             + "\n".join(rows)) if rows else ""
 
 
+def _daily_priority_snapshot(material: str) -> dict:
+    """Project the deterministic first row into a stable user-answer contract."""
+    first = _re0.search(r"\[권장 1순위\]\s*([A-Z][A-Z0-9]*-\d+)", material or "")
+    if not first:
+        return {}
+    key = first.group(1)
+    row = _re0.search(
+        rf"^-\s*{_re0.escape(key)}\s+\"([^\"]+)\"\s*\(([^)]*)\)",
+        material or "", _re0.M,
+    )
+    if not row:
+        return {"key": key}
+    facts = row.group(2)
+    priority_match = _re0.search(r"우선\s*([^,·)]+)", facts)
+    due_match = _re0.search(r"마감\s*([^,·)]+)", facts)
+    return {
+        "key": key,
+        "title": row.group(1),
+        "status": facts.split(",", 1)[0].strip(),
+        "priority": priority_match.group(1).strip() if priority_match else "",
+        "due": due_match.group(1).strip() if due_match else "",
+        "overdue": "마감 지남" in facts,
+    }
+
+
 def _self_report(state) -> str:
     """주간보고류("내가 이번 주 한 일 정리") 사전 취합 — **본인 활동**을 코드가 조회한다.
 
@@ -345,7 +424,19 @@ def _ticket_progress(state) -> str:
     근거가 특히 잘 누락된다. 반복문으로 되는 일은 코드가 한다.
     """
     from app.agent.workflow.state import Intent as _I
-    keys = [k for k in (state.get("mentioned_keys") or []) if k][:2]
+    # RequestArchitect normally extracts explicit ticket keys, but a context switch may
+    # intentionally clear carried state before rebuilding the latest request.  Progress
+    # lookup must still honor keys written in that latest authoritative utterance rather
+    # than falling through to the generic PMO/WBS path.
+    # Python's Unicode ``\b`` does not split ASCII keys from adjacent Korean particles
+    # (``DL-9090과``), so use ASCII-only boundaries.
+    latest_keys = _re0.findall(
+        r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]*-\d+)(?![A-Za-z0-9])",
+        last_user_text(state), _re0.I,
+    )
+    keys = [str(k).upper() for k in (
+        latest_keys or (state.get("mentioned_keys") or [])
+    ) if k][:2]
     if not keys:
         return ""
     asked = last_user_text(state)
@@ -402,13 +493,15 @@ def _ticket_progress(state) -> str:
         if eb:
             blocks.append(eb)
         rows = [f'[{r["key"]}] "{r.get("title", "")}" — 상태 {r.get("status")}'
-                f' · 담당 {r.get("assignee") or "없음"} · 마감 {r.get("due") or "없음"}'
+                f' · 담당 {"[~" + r["assigneeId"] + "]" if r.get("assigneeId") else "없음"}'
+                f' · 마감 {r.get("due") or "없음"}'
                 f' · 최근 갱신 {r.get("updated")}']
         if r.get("children"):
             rows.append(f'하위 Sub-Task {r.get("children_done")} 완료:')
             rows += [f'  - {c["key"]} "{c.get("title", "")}" '
                      f'{"완료" if c.get("done") else "진행중"}'
-                     f' (담당 {c.get("assignee") or "없음"})' for c in r["children"]]
+                     f' (담당 {"[~" + c["assigneeId"] + "]" if c.get("assigneeId") else "없음"})'
+                     for c in r["children"]]
             # ★ **'지금 무엇을 하고 있나'를 따로 짚어 준다.** 위 목록에 진행중 표시가 있는데도
             #   모델은 **끝난 것만** 옮겨 적었다(실측 PROG1: 완료된 DL-9093·9094 만 쓰고,
             #   정작 열려 있는 DL-9095 를 한 번도 언급하지 않았다). 게다가 그 티켓이 하는 일을
@@ -419,7 +512,8 @@ def _ticket_progress(state) -> str:
             if open_kids:
                 rows.append("★ **지금 진행 중인 하위 작업 — 답에 반드시 키와 제목으로 넣는다**:")
                 rows += [f'  - {c["key"]} "{c.get("title", "")}"'
-                         f' (담당 {c.get("assignee") or "없음"})' for c in open_kids]
+                         f' (담당 {"[~" + c["assigneeId"] + "]" if c.get("assigneeId") else "없음"})'
+                         for c in open_kids]
                 rows.append("★ 위 티켓이 맡은 일은 **아직 안 끝났다**. 결과 문서나 연결 티켓에 "
                             "그 주제가 나온다고 해서 '완료'라고 쓰지 마라 — 티켓이 열려 있는 "
                             "것이 사실이고, 문서는 설계·계획일 수 있다.")
@@ -465,6 +559,14 @@ class PortfolioAnalyst(ToolAgent):
                                                    "어느 티켓을 말씀하시는 건가요? (키 또는 제목)",
                                        "kind": "text", "options": [], "field": ""}],
                         "trace": note(state, self.name, "지시어 대상 없음 — 확인 질문")}
+            current = _current_person_work(state)
+            if current.get("questions"):
+                return {"questions": current["questions"],
+                        "trace": note(state, self.name, "현재 담당자 식별 필요 — 확인 질문")}
+            if current.get("user_id"):
+                return {"person_work_snapshot": current,
+                        "trace": note(state, self.name,
+                                      f"현재 미완료 할당 {len(current.get('tickets') or [])}건 결정적 조회")}
             # ── ★ 모듈을 못 풀면 **되묻는다** — 짐작해서 남의 모듈을 답하지 않는다.
             #    config 에 소속이 안 적힌 사람이 있고(사용자 지적), "우리 모듈"이 그런
             #    사용자에게서 오면 풀 길이 없다. 그때 조용히 넘어가면 ReAct 가 아무 데이터나
@@ -518,6 +620,13 @@ class PortfolioAnalyst(ToolAgent):
             if day_blk:
                 state = {**state, "ticket_progress":
                          ((state.get("ticket_progress") or "") + "\n\n" + day_blk).strip()}
+                daily = _daily_priority_snapshot(day_blk)
+                if daily and not _re0.search(
+                        r"미배정|담당자\s*(?:가\s*)?없|주인\s*없|안\s*맡|집을|집고|맡을\s*(?:만한|일)",
+                        last_user_text(state)):
+                    return {"daily_priority_snapshot": daily, "ticket_progress": day_blk,
+                            "trace": note(state, self.name,
+                                          "오늘 1순위 deadline+priority 결정적 선정")}
             try:
                 cmp_blk = _module_compare(state)
             except Exception:
@@ -685,4 +794,4 @@ Explicit ticket keys: {', '.join(state.get('mentioned_keys') or []) or 'none'}{g
                 "trace": note(state, self.name, f"발견 {len(finds)}건")}
 
 
-__all__ = ["PortfolioAnalyst", "_my_day", "_my_day_rank"]
+__all__ = ["PortfolioAnalyst", "_daily_priority_snapshot", "_my_day", "_my_day_rank"]

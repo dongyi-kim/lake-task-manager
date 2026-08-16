@@ -278,6 +278,10 @@ invalid 처리. `major`·`minor`의 축별 상한은 공통 checklist와 동일
   내부 식별자를 명시
 - 생성·수정 case는 turn별 필수 질문, 보류되어야 할 payload, 최종 type·parent·field·담당자 값을 명시
 - Editor case는 그대로 보존할 seed·수치, 필요한 section, 허용 marker/link, 금지할 중복·발명을 명시
+- Meeting case는 `@이름`·`{{이름:식별자}}`·이름 일부+호칭의 정규화 결과, 모호한 후보, 내부·외부 조사 후에도
+  남은 용어·범위 공백, 인터뷰 전 payload 보류와 답변 후 재개를 turn별로 명시
+- Context change case는 각 turn에서 유효·취소·대체된 목표를 기록하고 final reply/pending에 남아야 할
+  target·action·field와 섞이면 안 되는 과거 entity·수치·근거를 명시
 - 새로운 정답을 사후에 끼워 맞추지 않음. 기대 계약을 바꾸려면 battery version과 manifest를 먼저 변경
 
 ### 예시
@@ -289,6 +293,15 @@ invalid 처리. `major`·`minor`의 축별 상한은 공통 checklist와 동일
 `S7-내외부조사`는 Jira와 Confluence/comment 내부 검색, `Apache Iceberg`, `Puffin`, `NDV statistics`
 외부 검색 시도, URL과 핵심 주장, 내부 식별자 외부 전송 금지, 최종 답변의 내부 근거·외부 근거·적용 판단·확인
 필요 분리를 검사. 네트워크 차단도 검색 시도와 한계를 남기면 증거로 인정하지만 외부 확인 완료로 채점하지 않음
+
+`S8-복합근거품질`은 같은 복합 조사 결과를 source 단위로 다시 검토. Jira ticket/comment·Confluence·공식 web
+각각의 실제 발견, 권위·직접성·최신성·교차검증에 따른 신뢰도, 현재 의사결정에 대한 적합성을 판정하고,
+같은 source의 여러 발견이 하나의 정수 번호와 `[n-a]`·`[n-b]` 하위 번호로 묶이는지 확인.
+같은 위치의 복수 인용이 `[4][5][10]`으로 붙어 표시되고 각 대괄호 전체가 해당 source hyperlink로
+동작하는지도 확인. 정성 평가자는
+raw Markdown만 읽고 렌더링을 추정하지 않으며 실제 LTM의 desktop과 Agent side panel이 열린 좁은 화면에서
+marker 이동·ticket detail·문서/web link를 직접 확인. 캡처 원본은 ignored `.cache`에 두고 보고서에는 판정과
+필요한 축약 캡처 경로만 기록
 
 수동 하네스는 사용자용 응답 외에 `evaluationEvidence`에 `requestPlan`, `queryPlan`, `queryResults`,
 `queryArtifacts`, `webContext`, `evidence`, `relatedDocs`, `trace`를 가능한 범위에서 저장. 메시지 전문,

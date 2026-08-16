@@ -53,7 +53,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "2.0.0"
+BATTERY_VERSION = "3.2.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("conversation")
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
@@ -71,13 +71,19 @@ SCENARIOS = [
     ("S6-진척", ["DL-9090 지금 어디까지 진행됐어?"]),
     ("S7-내외부조사", ["우리 프로젝트의 Iceberg Puffin NDV 적용 가능성을 내부 작업 이력과 "
                        "외부 공식 자료를 함께 조사해줘"]),
+    ("S8-복합근거품질", [
+        "우리 프로젝트의 Iceberg Puffin NDV 운영 적용 여부를 판단할 수 있도록 Jira 티켓·댓글, "
+        "Confluence 설계 문서, 외부 공식 문서를 함께 조사해 근거 중심 의사결정 메모를 작성해줘. "
+        "각 핵심 결론을 근거 marker로 연결하고, 같은 출처의 본문·댓글 등 여러 발견은 하나의 "
+        "출처 번호 아래에서 구분해줘. 확인되지 않은 사항과 출처별 신뢰도·요청 적합성도 판단해줘."
+    ]),
 ]
 
 _KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 _TABLE = re.compile(r"^\s*\|.+\|\s*$", re.M)
 
 
-def _checks(out: dict, user_text: str = "") -> dict:
+def _checks(out: dict, user_text: str = "", evaluation_evidence: dict | None = None) -> dict:
     """코드가 **잴 수 있는 것**만. 문장의 좋고 나쁨은 사람이 본다."""
     text = out.get("reply") or ""
     pending = out.get("pending") or {}
@@ -107,11 +113,62 @@ def _checks(out: dict, user_text: str = "") -> dict:
     c["요구구조불일치"] = bool(wants_kids and items and not out.get("questions")
                              and c["자식합계"] < 2)
     c["응답카드불일치"] = bool(claims_kids and items and c["자식합계"] == 0)
+    if "외부 공식" in (user_text or ""):
+        c["내외부조사완결"] = bool(
+            re.search(r"https?://", text)
+            and re.search(r"내부|Jira|Confluence|티켓|문서", text, re.I)
+            and re.search(r"외부|공식", text)
+        )
+    if "근거 중심 의사결정" in (user_text or ""):
+        # Human review owns truth/quality, but the harness records the minimum persisted
+        # grammar that the real UI renderer consumes.  Visual usability is reviewed from
+        # an actual local-UI screenshot under the S8 specialized contract.
+        roots = re.findall(r"^\[(\d+)\]\s+.+$", text, re.M)
+        evidence_match = re.search(r"(?m)^#{1,4}\s+근거\s*$", text)
+        body = text[:evidence_match.start()] if evidence_match else text
+        body_citations = re.findall(r"\[(\d+)(?:-[a-z])?\](?!\()", body, re.I)
+        source_sections = re.split(r"(?m)^\[(\d+)\]\s+.+$", text.split("### 근거", 1)[-1])
+        grouped_ok = True
+        for pos in range(1, len(source_sections), 2):
+            number = source_sections[pos]
+            observations = [line for line in source_sections[pos + 1].splitlines()
+                            if line.strip().startswith("-")]
+            if len(observations) > 1 and not all(
+                    re.match(rf"^\s*-\s*\[{number}-[a-z]\]", line, re.I)
+                    for line in observations):
+                grouped_ok = False
+        source_rows = re.findall(r"^\[(\d+)\]\s+(.+)$", text.split("### 근거", 1)[-1], re.M)
+        linked_sources = all("{{ticket-detail:" in row or re.search(r"\]\(https?://", row)
+                             for _number, row in source_rows)
+        planned_sources = {
+            str(query.get("source") or "") for query in
+            (((evaluation_evidence or {}).get("queryPlan") or {}).get("queries") or [])
+            if isinstance(query, dict)
+        }
+        c["복합근거단일인덱스"] = bool(
+            len(re.findall(r"^#{1,4}\s+근거\s*$", text, re.M)) == 1
+            and not re.search(r"^#{1,4}\s+(?:참조|관련 문서)\s*$", text, re.M)
+            and len(roots) >= 3
+            and len(roots) == len(set(roots))
+            and grouped_ok and linked_sources
+        )
+        c["본문근거연결"] = bool(body_citations and set(body_citations) <= set(roots))
+        c["복합자료조회"] = {"jira", "comments", "confluence", "web"} <= planned_sources
+        c["출처평가완결"] = bool(
+            re.search(r"(?m)^###\s+출처 평가\s*$", text)
+            and "| 출처 | 신뢰도 | 요청 적합성 | 한계 |" in text
+            and "명시된 한계 없음" not in text
+        )
+    if re.search(r"지금\s*맡|현재\s*맡", user_text or ""):
+        c["현재업무범위"] = bool(
+            re.search(r"mention:|\[~|data-(?:uid|id)", text)
+            and not re.search(r"(?<!미)완료(?:된|한|\s*작업|\s*티켓)", text)
+        )
     try:
         from app.agent.workflow import grounding
         g = grounding.check(text) or {}
         c["근거위반"] = (len(g.get("fake_keys") or []) + len(g.get("wrong_titles") or {})
-                       + len(g.get("fake_people") or []))
+                       + len(g.get("fake_people") or []) + len(g.get("name_as_id") or {}))
     except Exception:
         c["근거위반"] = None
     try:
@@ -165,7 +222,7 @@ def run():
                 "캐시토큰": u.get("cachedTokens", 0),
                 "비용USD": u.get("costUsd"),
                 "역할별": u.get("byNode") or {},
-                "검사": _checks(out, q),
+                "검사": _checks(out, q, evaluation_evidence),
                 "답변": out.get("reply") or "",
                 "카드": [{"타입": i.get("type"), "제목": i.get("summary"),
                           "본문": (i.get("description") or "")[:900],

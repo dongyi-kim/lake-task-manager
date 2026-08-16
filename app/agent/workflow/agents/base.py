@@ -101,6 +101,23 @@ def _validate_output(value, schema: dict) -> dict:
     return out
 
 
+def _capability_is_unsupported(exc: Exception, capability: str) -> bool:
+    """Cache only a protocol rejection, never a bad model value or transient failure."""
+    value = " ".join(str(exc or "").casefold().split())
+    protocol = {
+        "json_schema": ("response_format", "json_schema", "structured output"),
+        "json_object": ("response_format", "json_object", "json mode"),
+        "tools": ("tools", "tool_calls", "function calling"),
+    }.get(capability, (capability,))
+    rejection = any(phrase in value for phrase in (
+        "unsupported", "not supported", "does not support", "unknown parameter",
+        "unrecognized parameter", "extra inputs are not permitted",
+    ))
+    # ``Invalid schema`` proves the endpoint understood the feature; our schema/value needs
+    # correction and must not poison every later role in this process.
+    return rejection and any(token in value for token in protocol) and "invalid schema" not in value
+
+
 def invoke_schema(schema: dict, messages: list, tier: str = "complex",
                   temperature: float = 0.0, name: str = "AdhocOutput") -> dict:
     """Role 밖의 보정 호출도 공통 structured-output fallback을 사용하게 한다."""
@@ -127,7 +144,8 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
             return out
         except Exception as exc:
             errors.append(f"{capability}: {str(exc)[:160]}")
-            capabilities.record(tier, capability, False, str(exc))
+            if _capability_is_unsupported(exc, capability):
+                capabilities.record(tier, capability, False, str(exc))
     try:
         raw = _cfg.get_llm(temperature=temperature, tier=tier).invoke(
             list(messages) + [HumanMessage(content=(
@@ -228,7 +246,8 @@ class Agent(ABC):
                 return out
             except Exception as exc:
                 errors.append(f"{capability}: {str(exc)[:180]}")
-                capabilities.record(self.tier, capability, False, str(exc))
+                if _capability_is_unsupported(exc, capability):
+                    capabilities.record(self.tier, capability, False, str(exc))
 
         # response_format을 전혀 지원하지 않는 서버: plain chat에 schema를 명시한다.
         schema_text = json.dumps(self.schema(), ensure_ascii=False)

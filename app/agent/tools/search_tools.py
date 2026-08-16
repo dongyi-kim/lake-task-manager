@@ -22,6 +22,7 @@ def _issue_brief(raw: dict, sp_field: str = None) -> dict:
     f = (raw or {}).get("fields") or {}
     st = f.get("status") or {}
     a = f.get("assignee") or {}
+    priority = f.get("priority") or {}
     return compact({
         "key": raw.get("key"),
         "type": (f.get("issuetype") or {}).get("name"),
@@ -31,6 +32,7 @@ def _issue_brief(raw: dict, sp_field: str = None) -> dict:
         "assignee": a.get("name"),
         "components": [c.get("name") for c in (f.get("components") or []) if c.get("name")],
         "labels": f.get("labels") or [],
+        "priority": priority.get("name") if isinstance(priority, dict) else priority,
         "duedate": f.get("duedate"),
         "sp": f.get(sp_field) if sp_field else None,
         "created": (f.get("created") or "")[:10],
@@ -148,8 +150,8 @@ def get_ticket(key: str, comment_limit: int = 5) -> dict:
     and comment authors can support assignee analysis. Each call is a separate round trip, so open
     only the most relevant tickets, usually two to four.
 
-    Returns summary, status, assignee, components, labels, due date, SP, a shortened description,
-    and recent comments.
+    Returns summary, status, assignee, components, labels, priority, due date, SP, a shortened
+    description, and recent comments.
     """
     if not jira_key_allowed(key):
         return {"error": "티켓이 search.jira.projects 범위 밖이거나 검색 범위가 비어 있습니다."}
