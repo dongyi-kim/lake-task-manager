@@ -662,11 +662,16 @@ def test_meeting_interview_keeps_original_request_and_comment_intent():
 
 
 def test_meeting_summary_preserves_explicit_operational_hold_decision_word():
-    request = "회의 결정: StarRocks reader 검증 전 운영 반영 보류"
+    request = ("회의 결정: StarRocks reader 검증 전 운영 반영 보류. "
+               "reader 검증은 하은님이 2026-08-25까지 담당")
     state = {**_state(request), "intent": "ask", "questions": []}
     reply = _canonicalize_meeting_reply(
-        "### 결정사항\n- 운영 반영은 StarRocks reader 검증이 완료된 후 진행한다", state)
-    assert "운영 반영 보류" in reply and "검증이 완료된 후 진행" in reply
+        "### 결정사항\n- 운영 반영은 reader 소비 증거가 나온 뒤에 진행한다\n\n"
+        "### 담당·기한\n| 작업 | 담당 | 기한 |\n|---|---|---|\n"
+        "| reader 검증 | {{mention:skcc.x1402}} | 2026-08-25 |\n\n"
+        "### 미결·검증\n- 구체적인 담당자가 확인되지 않음", state)
+    assert "운영 반영 보류" in reply and "증거가 나온 뒤에 진행" in reply
+    assert "담당자가 확인되지" not in reply
 
 
 def test_comment_only_result_contract_never_describes_status_as_a_change():

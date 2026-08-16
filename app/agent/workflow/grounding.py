@@ -226,7 +226,8 @@ def check(reply: str, allowed_people: set[str] | None = None) -> dict:
         # 걸렸다(실측 오탐). 이 목록은 오탐이 관측될 때마다 늘린다.
         _NOT_NAMES = {"현재", "이번", "오늘", "내일", "진행", "완료", "지연", "마감", "기한",
                       "상태", "예정", "검토", "확인", "미정", "없음", "전체", "작업", "근거",
-                      "후보", "후보는", "업무", "내용", "분야", "조직", "모듈", "티켓", "범위"}
+                      "후보", "후보는", "업무", "내용", "분야", "조직", "모듈", "티켓", "범위",
+                      "확인되지"}
         _NOT_NAME_SUFFIXES = ("에는", "에서는", "으로는", "부터는", "까지는", "보다도")
         for name in names:
             if (not name or name in seen or UID_RE.match(name) or name in _NOT_NAMES

@@ -839,8 +839,22 @@ def _canonicalize_meeting_reply(text: str, state) -> str:
             r"운영\s*반영(?:은|는|이|가|을|를)?\s*보류", out):
         out = _re.sub(
             r"운영\s*반영(?:은|는|이|가|을|를)?\s*"
-            r"(.{0,100}?(?:검증|증거).{0,50}?후(?:에)?)\s*진행",
+            r"(.{0,100}?(?:검증|증거).{0,50}?(?:후|뒤)(?:에)?)\s*진행",
             r"운영 반영 보류 — \1 진행", out, count=1, flags=_re.I,
+        )
+    try:
+        from app.agent.workflow.meeting_context import meeting_owner_records
+        has_confirmed_owner = any(str(row.get("owner") or "").strip()
+                                  for row in meeting_owner_records(state))
+    except Exception:
+        has_confirmed_owner = False
+    has_confirmed_owner = has_confirmed_owner or bool(_re.search(
+        r"(?m)^\s*\|[^\n]*\{\{mention:skcc\.[^}\n]+\}\}[^\n]*\|\s*$", out, _re.I))
+    if has_confirmed_owner:
+        out = _re.sub(
+            r"(?mi)^\s*[-*]\s*[^\n]{0,120}담당자[^\n]{0,60}"
+            r"(?:확인되지\s*않|미확정|알\s*수\s*없)[^\n]*\n?",
+            "", out,
         )
     if not is_meeting_request(state) or (state.get("intent") or "") != Intent.ASK \
             or state.get("questions"):
