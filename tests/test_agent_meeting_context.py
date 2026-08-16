@@ -167,6 +167,9 @@ StarRocks reader 운영 판정 자료 정리 by ... 2026-08-26까지
     scope_question = [{"question": "각 Task의 작업 범위를 구체적으로 알려주세요.",
                        "field": "scope", "kind": "text", "required_input": True}]
     assert _drop_unneeded_meeting_questions(state, scope_question) == []
+    duplicate_parent = [{"question": "DL-9200에서 같은 작업을 진행 중입니다.",
+                         "field": "duplicate", "kind": "choice", "required_input": True}]
+    assert _drop_unneeded_meeting_questions(state, duplicate_parent) == []
 
 
 def test_meeting_created_task_bodies_do_not_repeat_sibling_titles_as_exclusions():
@@ -656,6 +659,14 @@ def test_meeting_interview_keeps_original_request_and_comment_intent():
     })
     assert patch["intent"] == "modify"
     assert patch["request_text"] == request
+
+
+def test_meeting_summary_preserves_explicit_operational_hold_decision_word():
+    request = "회의 결정: StarRocks reader 검증 전 운영 반영 보류"
+    state = {**_state(request), "intent": "ask", "questions": []}
+    reply = _canonicalize_meeting_reply(
+        "### 결정사항\n- 운영 반영은 StarRocks reader 검증이 완료된 후 진행한다", state)
+    assert "운영 반영 보류" in reply and "검증이 완료된 후 진행" in reply
 
 
 def test_comment_only_result_contract_never_describes_status_as_a_change():

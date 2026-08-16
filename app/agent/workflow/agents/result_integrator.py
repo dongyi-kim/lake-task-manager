@@ -827,6 +827,21 @@ def _canonicalize_meeting_reply(text: str, state) -> str:
     out = canonicalize_reply_mentions(state, text)
     out = prune_resolved_reply_gaps(state, out)
     out = canonicalize_meeting_owner_table(state, out)
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        original = meeting_request_text(state)
+    except Exception:
+        original = ""
+    # Preserve an explicit decision word from the minutes. ``운영 반영 보류`` was once
+    # paraphrased as ``검증 완료 후 진행``; semantically close, but the former is the
+    # auditable current decision and distinguishes it from a future action.
+    if _re.search(r"운영\s*반영\s*보류", original) and not _re.search(
+            r"운영\s*반영(?:은|는|이|가|을|를)?\s*보류", out):
+        out = _re.sub(
+            r"운영\s*반영(?:은|는|이|가|을|를)?\s*"
+            r"(.{0,100}?(?:검증|증거).{0,50}?후(?:에)?)\s*진행",
+            r"운영 반영 보류 — \1 진행", out, count=1, flags=_re.I,
+        )
     if not is_meeting_request(state) or (state.get("intent") or "") != Intent.ASK \
             or state.get("questions"):
         return out

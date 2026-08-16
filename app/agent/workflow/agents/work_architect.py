@@ -2734,9 +2734,18 @@ def _drop_unneeded_meeting_questions(state, questions: list[dict]) -> list[dict]
         "labels": ("label", "labels", "라벨", "태그"),
     }
     recoverable_scope = bool(_recover_decided_meeting_tasks(state))
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        explicit_epics = {key.upper() for key in _re.findall(
+            r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)", meeting_request_text(state), _re.I)}
+    except Exception:
+        explicit_epics = set()
     kept = []
     for question in questions:
         material = f"{question.get('field', '')} {question.get('question', '')}".casefold()
+        if str(question.get("field") or "").casefold() == "duplicate" and any(
+                key.casefold() in material for key in explicit_epics):
+            continue
         if recoverable_scope and (str(question.get("field") or "").casefold() == "scope"
                                   or "작업 범위" in material):
             continue
@@ -4962,6 +4971,8 @@ def _normalize_duplicate_and_bug_questions(state, questions: list, *, items=None
                 for item in (items or []) if isinstance(item, dict)
                 for value in (item.get("epic"), item.get("parent")) if str(value or "").strip()
             }
+            placement_keys.update(key.upper() for key in _re.findall(
+                r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)", said, _re.I))
             if key.upper() in placement_keys:
                 # A parent Epic describes the same initiative by design. It is the
                 # destination of the child Task, not a duplicate of that child.
