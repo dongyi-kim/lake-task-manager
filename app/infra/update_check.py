@@ -17,11 +17,11 @@
 """
 import os
 import re
-import ssl
 import threading
 import time
 import urllib.request
 
+from app.infra.public_tls import public_ssl_context
 from app.infra.version import code_rev, pinned_rev
 
 RELEASES_LATEST = "https://github.com/dongyi-kim/lake-task-manager/releases/latest"
@@ -39,19 +39,12 @@ def latest_tag(timeout=12):
     url = RELEASES_LATEST + "?_=%d" % (int(time.time()) // 300)
     req = urllib.request.Request(url, headers={"User-Agent": "lake-task-manager"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            m = _TAG_RE.search(r.geturl() or "")
-            return m.group(1) if m else None
-    except Exception:
-        pass
-    # 사내 TLS 프록시가 가로채면 위가 인증서 오류로 죽는다 — 그러면 **버전 확인만** 못 하게 되고
-    # 유저는 업데이트가 있는 줄도 모른다(런처는 이미 우회하는데 앱만 못 보는 상태가 된다).
-    # 리다이렉트 주소만 읽는 조회라 검증을 끄고 한 번 더 본다. 받아 오는 건 태그 문자열뿐이다.
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+        # Never let urllib construct its Windows-native default context here.
+        # Restricted processes cannot always open the current-user certificate
+        # store. The explicit certifi context stays fully verified and also
+        # removes the former insecure CERT_NONE retry.
+        with urllib.request.urlopen(
+                req, timeout=timeout, context=public_ssl_context()) as r:
             m = _TAG_RE.search(r.geturl() or "")
             return m.group(1) if m else None
     except Exception:

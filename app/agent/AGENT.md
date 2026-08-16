@@ -167,8 +167,10 @@ Windows 공용 pytest temp에 권한 문제가 있으면 repository 내부 `--ba
 - 실제 API 호출이 제한된 sandbox에서는 인증서·socket 재시도를 기다리지 않는다. 사용자가 승인한
   배터리는 처음부터 network-enabled local process로 실행한다. 중단되면 같은 묶음을 반복하지 않고
   완료되지 않은 case ID만 새 attempt 경로에서 재개한다.
-- Agent의 public web client는 Windows current-user native certificate store에 의존하지 않는다.
-  `httpx`와 명시적 `certifi` CA bundle을 사용하고, 폐쇄망·차단은 짧은 fail-soft 결과로 반환한다.
+- 앱의 public Internet client(Agent 웹 조사, GitHub 업데이트 확인 등)는 Windows current-user
+  native certificate store에 의존하지 않는다. `app.infra.public_tls`의 명시적 `certifi` CA
+  bundle/context를 사용하고, 폐쇄망·차단은 짧은 fail-soft 결과로 반환한다. 공용 HTTPS 경로를
+  추가할 때 기본 `urllib` SSL context나 Windows native trust-store transport를 사용하지 않는다.
 
 - Conversation: `tools/agent_lang_ab.py`
 - Compose: `tools/agent_compose_eval.py`

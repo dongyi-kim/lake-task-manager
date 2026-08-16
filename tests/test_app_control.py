@@ -112,6 +112,56 @@ def test_update_check_latest_means_not_pinned():
     assert pinned_rev(os.path.join(d, "없는폴더")) == ""      # 파일 없음 → 고정 아님
 
 
+def test_update_check_uses_explicit_public_tls_context(monkeypatch):
+    """GitHub 조회가 Windows 사용자 인증서 저장소를 암묵적으로 열면 안 된다."""
+    import app.infra.update_check as update_check
+
+    sentinel = object()
+    seen = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def geturl(self):
+            return "https://github.com/dongyi-kim/lake-task-manager/releases/tag/v2026.08.16"
+
+    def fake_urlopen(request, *, timeout, context):
+        seen.append((request.full_url, timeout, context))
+        return Response()
+
+    monkeypatch.setattr(update_check, "public_ssl_context", lambda: sentinel)
+    monkeypatch.setattr(update_check.urllib.request, "urlopen", fake_urlopen)
+
+    assert update_check.latest_tag(timeout=3) == "v2026.08.16"
+    assert len(seen) == 1
+    assert seen[0][1:] == (3, sentinel)
+
+
+def test_public_tls_context_loads_only_the_file_ca_bundle(monkeypatch):
+    """Explicit cafile keeps create_default_context from loading native roots."""
+    import app.infra.public_tls as public_tls
+
+    sentinel = object()
+    seen = []
+
+    def fake_context(*, cafile):
+        seen.append(cafile)
+        return sentinel
+
+    public_tls.public_ssl_context.cache_clear()
+    monkeypatch.setattr(public_tls.ssl, "create_default_context", fake_context)
+    monkeypatch.setattr(public_tls, "public_ca_bundle", lambda: "project-ca.pem")
+    try:
+        assert public_tls.public_ssl_context() is sentinel
+        assert seen == ["project-ca.pem"]
+    finally:
+        public_tls.public_ssl_context.cache_clear()
+
+
 def test_assets_endpoint_lists_module_graph():
     """자가복구 새로고침(index.html 감시자)이 캐시를 갈아끼울 대상 목록.
 

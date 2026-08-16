@@ -30,6 +30,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from langchain_core.tools import tool
 
 from app.agent.tools._ctx import compact, trim
+from app.infra.public_tls import public_ca_bundle
 
 _TIMEOUT = 8        # 외부는 느릴 수 있다 — 조사 한 걸음이 대화를 오래 잡으면 안 된다
 _OFFICIAL_DOC_HOSTS = (
@@ -54,8 +55,7 @@ def _ca_bundle() -> str:
     search call waiting for minutes.  httpx + certifi has the same TLS verification
     semantics without depending on that OS-global store.
     """
-    import certifi
-    return certifi.where()
+    return public_ca_bundle()
 
 
 def _public_search(query: str, limit: int) -> list[dict]:
