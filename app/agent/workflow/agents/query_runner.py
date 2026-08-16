@@ -86,7 +86,17 @@ def _jira_where(where: str, query: str) -> str:
     if re.search(r"\b(?:text|summary|description)\s*~", base, re.I):
         return base
     terms = _lexical_terms(query)
-    lexical = " AND ".join(f'text ~ "{term}"' for term in terms[:4])
+    clauses = [f'text ~ "{term}"' for term in terms[:4]]
+    # Public technology queries commonly contain umbrella / feature / metric. Requiring
+    # all three loses relevant tickets that omit only the umbrella name. Keep the narrow
+    # all-Latin three-term form at a 2-of-3 boundary; work phrases retain strict AND.
+    if len(clauses) == 3 and all(re.fullmatch(r"[A-Za-z][A-Za-z0-9.+-]*", term)
+                                 for term in terms):
+        lexical = "(" + " OR ".join(
+            f"({clauses[left]} AND {clauses[right]})"
+            for left, right in ((0, 1), (0, 2), (1, 2))) + ")"
+    else:
+        lexical = " AND ".join(clauses)
     if not lexical:
         return base
     return f"({base}) AND ({lexical})" if base else lexical

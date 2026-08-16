@@ -39,6 +39,10 @@ Follow the current runtime schema exactly: `situation`, `evidence`, `related_doc
 - Create one `evidence` item per ticket, Confluence page, or web document. Put multiple findings from that
   source in `observations` with `source=description|comment|field|document|external|query`; never issue a new
   evidence item or source number merely because another location in the same ticket was inspected.
+- Set `confidence=high|medium|low|unknown` from authority, directness, recency, and corroboration. Set
+  `fitness=direct|supporting|context-only|unknown` from claim coverage and internal applicability, and preserve
+  one decisive `limitations` statement. Ticket status alone never proves a technical result or completed DoD;
+  require a result body, attachment, or comment observation. Preserve dated provenance on conflicts.
 - Preserve material quantities, verified compatibility checks, and negative PoC or support findings from supplied internal documents; do not reduce them to a generic "reviewed" statement.
 - Keep external general knowledge separate from verified internal state. A connection between them is an inference and must state its basis and uncertainty.
 - Never request or cite material outside `search.jira.projects` or `search.confluence.spaces`.

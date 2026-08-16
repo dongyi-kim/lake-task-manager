@@ -71,6 +71,12 @@ def test_get_ticket_opens_body_and_comments():
         assert (cm.get("body") or "").strip(), f"빈 코멘트 본문: {cm}"
 
 
+def test_get_ticket_exposes_current_priority_for_safe_change_previews():
+    r = _run(T.BY_NAME["get_ticket"], key="DL-9203")
+
+    assert r["priority"] == "P2-Major"
+
+
 def test_get_ticket_reports_missing_key_instead_of_raising():
     """도구는 예외로 그래프를 죽이지 않는다 — 모델이 읽고 다음 수를 두게 한다."""
     r = _run(T.BY_NAME["get_ticket"], key="NOPE-99999")

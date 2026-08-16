@@ -175,6 +175,17 @@ def test_assignment_renderer_removes_every_stale_owner_section():
     assert "[~skcc.i2011]" in got and "[~skcc.x1402]" in got
 
 
+def test_assignment_renderer_replaces_bare_assignment_reason_heading():
+    items = [{"summary": "NDV 생성", "assignee": "skcc.x1103"}]
+    assignments = [{"index": 0, "user": "skcc.x1103", "reasons": ["진행중 8건"]}]
+    got = _render_assignment_section(
+        "### 배정 근거\n- 최하은이 예전에 해봄\n\n### 승인 요청\n승인해 주세요.",
+        items, assignments)
+    assert "최하은" not in got
+    assert got.count("### 담당 제안") == 1
+    assert "[~skcc.x1103]" in got
+
+
 def test_meeting_comment_mentions_are_repaired_to_confirmed_identities():
     set_person_context("meeting-comments", ["DL-9201", "DL-9202"])
     request = "회의 결정 댓글: writer 결과는 @이다은, reader는 하은님, 준서TL이 검토"

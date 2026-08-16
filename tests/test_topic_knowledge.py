@@ -387,6 +387,8 @@ def test_progress_fixture_spreads_evidence_across_four_places():
 def test_progress_report_gathers_all_four_kinds_of_evidence():
     r = progress_report(PROG)
     assert r["children_done"] == "2/3", r.get("children")
+    assert r["assigneeId"].startswith("skcc."), r
+    assert all(c.get("assigneeId", "").startswith("skcc.") for c in r["children"])
     assert any(c["field"] == "마감" for c in r["changes"]), "마감 연기는 진척 사건이다"
     assert any("DL-9092" in (m.get("text") or "") for m in r["comments"])
     assert any(x["key"] == "DL-9092" and x["done"] for x in r["links"]), "막던 티켓의 해소"
@@ -416,6 +418,8 @@ def test_progress_preaggregation_recovers_explicit_key_after_context_reset():
     material = _ticket_progress({**_msg("DL-9090과 하위 Task의 진행상황과 남은 작업만 알려줘"),
                                  "mentioned_keys": [], "intent": Intent.PROGRESS})
     assert all(key in material for key in ("DL-9090", "DL-9093", "DL-9094", "DL-9095"))
+    assert "담당 [~skcc." in material
+    assert "담당 안하준" not in material
 
 
 def test_responder_reports_progress_as_a_story_not_a_status_word():

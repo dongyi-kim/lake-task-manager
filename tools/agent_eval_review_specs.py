@@ -325,7 +325,9 @@ CASE_REVIEW_SPECS = {
                     "requiredTicketKeys": ["DL-7001"],
                     "requiredDocumentTitles": ["[Lake] Iceberg Puffin NDV 적용 검토 노트"],
                     "requiredFindings": [
-                        "candidate tables 20", "writer version checked", "PoC not run",
+                        "candidate tables 20 and writer version in the older design note",
+                        "newer writer result for five samples in a Jira comment",
+                        "older PoC-not-run note preserved as a dated conflict rather than current truth",
                         "StarRocks consumption unconfirmed", "official Puffin/NDV behavior",
                     ],
                 },

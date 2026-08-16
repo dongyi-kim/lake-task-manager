@@ -493,13 +493,15 @@ def _ticket_progress(state) -> str:
         if eb:
             blocks.append(eb)
         rows = [f'[{r["key"]}] "{r.get("title", "")}" — 상태 {r.get("status")}'
-                f' · 담당 {r.get("assignee") or "없음"} · 마감 {r.get("due") or "없음"}'
+                f' · 담당 {"[~" + r["assigneeId"] + "]" if r.get("assigneeId") else "없음"}'
+                f' · 마감 {r.get("due") or "없음"}'
                 f' · 최근 갱신 {r.get("updated")}']
         if r.get("children"):
             rows.append(f'하위 Sub-Task {r.get("children_done")} 완료:')
             rows += [f'  - {c["key"]} "{c.get("title", "")}" '
                      f'{"완료" if c.get("done") else "진행중"}'
-                     f' (담당 {c.get("assignee") or "없음"})' for c in r["children"]]
+                     f' (담당 {"[~" + c["assigneeId"] + "]" if c.get("assigneeId") else "없음"})'
+                     for c in r["children"]]
             # ★ **'지금 무엇을 하고 있나'를 따로 짚어 준다.** 위 목록에 진행중 표시가 있는데도
             #   모델은 **끝난 것만** 옮겨 적었다(실측 PROG1: 완료된 DL-9093·9094 만 쓰고,
             #   정작 열려 있는 DL-9095 를 한 번도 언급하지 않았다). 게다가 그 티켓이 하는 일을
@@ -510,7 +512,8 @@ def _ticket_progress(state) -> str:
             if open_kids:
                 rows.append("★ **지금 진행 중인 하위 작업 — 답에 반드시 키와 제목으로 넣는다**:")
                 rows += [f'  - {c["key"]} "{c.get("title", "")}"'
-                         f' (담당 {c.get("assignee") or "없음"})' for c in open_kids]
+                         f' (담당 {"[~" + c["assigneeId"] + "]" if c.get("assigneeId") else "없음"})'
+                         for c in open_kids]
                 rows.append("★ 위 티켓이 맡은 일은 **아직 안 끝났다**. 결과 문서나 연결 티켓에 "
                             "그 주제가 나온다고 해서 '완료'라고 쓰지 마라 — 티켓이 열려 있는 "
                             "것이 사실이고, 문서는 설계·계획일 수 있다.")

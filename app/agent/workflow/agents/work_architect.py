@@ -1221,6 +1221,33 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                         + f"\n(Epic 격상 보류 — {twin['key']} 와 이름이 겹친다)").strip()
                     structure = "single_task"
 
+        # A literal "make it an Epic" does not waive the four reporting-unit criteria.
+        # If duration/scale evidence is insufficient, choose the reversible Task placement
+        # even when no near-duplicate Epic title was found.
+        if (out.get("mode") or "") == "epic" and items and request_text(state).strip():
+            unmet = _new_epic_unmet_criteria(state)
+            if unmet:
+                item = items[0]
+                component = next((str(value).strip() for value in
+                                  (item.get("components") or []) if str(value).strip()), "")
+                pick = _pick_parent_epic(str(item.get("summary") or ""), component)
+                _force_item_type(item, "Task", "task")
+                item.pop("epic_name", None)
+                if pick:
+                    item["epic"] = pick["key"]
+                    placement = f"기존 Epic {pick['key']} 아래 Task"
+                else:
+                    item.pop("epic", None)
+                    placement = "최상위 Task"
+                mode = out["mode"] = draft["mode"] = "task"
+                structure = out["structure"] = draft["structure"] = "single_task"
+                why = out["structure_why"] = draft["structure_why"] = \
+                    f"Epic 조건 미충족({', '.join(unmet)})으로 {placement}로 보수화"
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n(Epic 격상 보류 — {', '.join(unmet)}; "
+                                      f"{placement}로 정리했다)").strip()
+                draft["rationale"] = out["rationale"]
+
         # ── "Epic 은 네가 골라줘" 는 **고르라는 말이지 만들라는 말이 아니다** ──────
         # 실측 STARR1: "Epic 은 네가 골라줘. … 알아서 진행해" 에 모델이 **새 Epic** 을
         # 만들었다(본문도 빈 채로). 위임은 선택을 맡긴 것이지 격상 권한을 준 것이 아닌데,
@@ -1553,11 +1580,16 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                            "작성 지시 placeholder를 실제 최소 본문으로 바꿨다)")
                     ).strip()
             _fill_thin_bodies(state, items, repair=not qs)
+            # User IDs are typed owner metadata. They must never be reinterpreted as a
+            # model, device, or technical target inside the authored ticket body.
+            _remove_assignee_semantic_drift(state, items)
             _repair_bug_facts_from_report(state, items)
             # 모델은 구체적 변경만 받은 경우에도 "사용자 편의성", "운영 효율성", "성능·안정성"
             # 같은 그럴듯한 효과를 배경·범위·DoD에 보탠다. 문장은 자연스럽지만 검증된 사실은
             # 아니다. 원 요청에 없는 품질 차원을 안전한 요청/검증 문장으로 되돌린다.
             _remove_unrequested_quality_claims(state, items)
+            _repair_statistics_generation_semantics(state, items)
+            _ensure_child_descriptions(items)
             _drop_self_exclusions(items)
             # 본문 보정은 위의 참고 불릿 가드 **뒤에서** 새 HTML을 만든다. 생산자 뒤에서
             # 다시 검사하지 않으면 보정 호출이 만든 출처 없는 참고가 그대로 승인 카드로 간다
@@ -1581,6 +1613,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 # Seal the user's requested scope at the end, then collapse any
                 # conservative evidence row produced by that final normalization.
                 _remove_unrequested_quality_claims(state, items)
+                _repair_statistics_generation_semantics(state, items)
+                # Scope sealing can itself introduce a conservative evidence sentence.
+                # Pass it through the same DoD source of truth once more so no late
+                # generic review wording escapes into the approval payload.
+                _sharpen_dod(state, items)
                 _dedupe_dod_rows(items)
 
         # A meeting record is an authoritative decision record.  Preserve reviewers in the
@@ -3040,7 +3077,7 @@ DOD_VAGUE = ("테스트 완료", "정상 동작", "잘 동작", "이상 없음",
               "검토 완료", "결과 검토 완료", "결과 검토 및 승인 완료", "초안 작성", "피드백 반영",
               "정상적으로 구현", "성공적으로 구현", "성공적으로 추가", "추가됨",
               "기능이 검증", "정상적으로 작동", "정상적으로 표시", "정상 표시",
-              "후속 조치 필요 여부 평가")
+              "후속 조치 필요 여부 평가", "리뷰 완료", "피드백 수집")
 
 
 def _vague_dod(rows) -> list:
@@ -3048,8 +3085,19 @@ def _vague_dod(rows) -> list:
     # Bare `결과` in `결과 검토 완료` is not an evidence location or a decision
     # method.  Logs, records, links, reports, and concrete measurements are.
     evidence = _re.compile(r"로그|기록|링크|측정값|리포트|보고서|스크린샷|"
-                           r"실행\s*계획|테스트\s*케이스|리뷰")
-    return [d for d in rows if any(v in d for v in DOD_VAGUE) and not evidence.search(d)]
+                           r"실행\s*계획|테스트\s*케이스")
+    # Passive states do not define how completion can be judged. They remain vague
+    # even when the sentence contains the bare word `기록`.
+    state_only = _re.compile(
+        r"(?:성공적으로\s*)?(?:체크|확인|검토|기록|첨부|공유|문서화).*(?:됨|완료)[.。]?$|"
+        r"결과가.{0,80}(?:기록|첨부|공유|검토).*(?:됨|완료)[.。]?$|"
+        r"(?:계산|측정|체크).{0,80}(?:보고|공유)됨[.。]?$|"
+        r"문서화되어.{0,80}공유됨[.。]?$", _re.I)
+    return [d for d in rows
+            if (state_only.search(d)
+                or ((any(v in d for v in DOD_VAGUE)
+                     or _re.search(r"(?:체크|조정|승인|확인)?\s*완료[.。]?$", d))
+                    and not evidence.search(d)))]
 
 
 def _dod_rows(body) -> list:
@@ -3125,8 +3173,13 @@ def _mark_unspecified_acceptance_criteria(state, items) -> bool:
                 if not fresh and (("품질" in context and _re.search(r"품질\s*룰.*점검\s*완료|모든\s*품질\s*룰", old))
                         or (_re.search(r"품질\s*기준", old)
                             and _re.search(r"점검|확인|충족|만족", old))):
-                    fresh = ("점검 대상 품질 룰과 항목별 통과 기준은 담당팀 확인 필요 — "
-                             "확정된 기준별 점검 결과를 티켓에 기록한다")
+                    if _re.search(r"(?:null|널)\s*(?:ratio|비율)", req, _re.I):
+                        # The user already narrowed this round to measurement only. Do
+                        # not re-open the excluded quality-rule scope as a second DoD.
+                        fresh = _action_specific_proof(state, target.get("summary") or "널 비율 체크")
+                    else:
+                        fresh = ("점검 대상 품질 룰과 항목별 통과 기준은 담당팀 확인 필요 — "
+                                 "확정된 기준별 점검 결과를 티켓에 기록한다")
                 elif not fresh and "품질" in context and _re.search(r"점검\s*결과\s*보고서.*(?:작성|공유)", old):
                     fresh = "점검 대상·결과·미충족 항목을 포함한 보고서 링크를 티켓에 기록한다"
                 elif (not fresh and not has_metric
@@ -3293,6 +3346,35 @@ def _repair_malformed_dod(state, items) -> bool:
     return changed
 
 
+def _action_specific_proof(state, summary: str) -> str:
+    """Return observable evidence for recurring action families, without inventing facts."""
+    subject = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "작업")).strip()
+    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    if any(word in subject for word in ("도움말", "단축키", "팝업", "체크박스")):
+        return (f"{subject}의 열기·닫기 동작과 표시 항목을 UI 테스트 결과 및 "
+                "화면 증빙으로 확인한다")
+    if "인덱스" in subject:
+        return (f"{subject} 적용 전·후 실행 계획과 측정값, 회귀 테스트 결과를 "
+                "티켓에 기록해 확인한다")
+    if _re.search(r"(?:null|널)\s*(?:ratio|비율)", subject, _re.I):
+        amount = next(iter(_re.findall(r"(?<!\d)(\d{1,4})\s*(?:개|건)?", asked)), "")
+        target = f"요청한 {amount}개 대상별 " if amount else "대상별 "
+        return f"{target}null ratio 측정값과 실패·제외 목록을 티켓에 기록해 확인한다"
+    if any(word in subject for word in ("회귀", "Regression")):
+        return f"{subject} 실행 케이스와 실패 로그, 판정 결과를 티켓에 기록해 확인한다"
+    # A verification *template/document* is an authored artifact even when its title
+    # contains 검증/성능. Artifact evidence (link + review) takes precedence over metric evidence.
+    if any(word in subject for word in ("가이드", "문서", "템플릿")):
+        return f"{subject} 산출물 링크와 리뷰 결과를 티켓에 기록한다"
+    if any(word in subject for word in ("성능", "측정", "정확", "검증")):
+        return f"{subject} 검증 기준·측정값·판정 결과를 티켓에 기록해 확인한다"
+    if any(word in subject for word in ("배치", "Job", "파이프라인", "API")):
+        return f"{subject}의 성공·실패 경로를 실행 로그와 회귀 테스트 결과로 확인한다"
+    if any(word in subject for word in ("팝업", "필터", "화면", "UI")):
+        return f"{subject}의 사용자 동작과 표시 결과를 UI 테스트 및 화면 증빙으로 확인한다"
+    return f"{subject} 실행 로그와 테스트 결과를 티켓에 기록해 확인한다"
+
+
 def _sharpen_dod(state, items) -> bool:
     """완료 조건이 "테스트 완료" 수준이면 **무엇을 보고 끝났다고 하는지**로 다시 쓴다.
 
@@ -3317,14 +3399,28 @@ def _sharpen_dod(state, items) -> bool:
         subject = _re.sub(
             r"^\s*\[[^\]]+\]\s*", "", str(child.get("summary") or "작업")
         ).strip()
-        for old in _vague_dod(_dod_rows(body)):
-            if any(w in old for w in ("성능", "측정", "정확", "검증")):
+        bad = _vague_dod(_dod_rows(body))
+        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달", request_text(state), _re.I):
+            bad += [row for row in _dod_rows(body)
+                    if _re.search(r"보고서|리포트", row, _re.I)]
+        if any(word in subject for word in ("가이드", "문서", "템플릿")):
+            bad += [row for row in _dod_rows(body)
+                    if _re.search(r"실행\s*로그|테스트\s*결과|측정값|판정\s*결과", row, _re.I)]
+        if any(word in subject for word in ("회귀", "Regression")):
+            bad += [row for row in _dod_rows(body)
+                    if not _re.search(r"테스트\s*케이스|실패\s*로그|판정\s*결과", row, _re.I)]
+        for old in dict.fromkeys(bad):
+            if any(word in subject for word in
+                   ("가이드", "문서", "템플릿", "회귀", "Regression")):
+                proof = _action_specific_proof(state, subject)
+            elif any(w in old for w in ("성능", "측정", "정확", "검증")):
                 proof = "검증 기준·측정값·판정 결과를 parent ticket에 기록해 확인한다"
             elif any(w in old for w in ("테스트", "구현", "코드")):
                 proof = "실행 로그와 테스트 결과를 parent ticket에 기록해 확인한다"
             else:
-                proof = "산출물 링크와 리뷰 결과를 parent ticket에 기록해 확인한다"
-            body = body.replace(f">{old}</li>", f">{_esc(subject)} {_esc(proof)}</li>")
+                proof = _action_specific_proof(state, subject)
+            fresh = proof if proof.startswith(subject) else f"{subject} {proof}"
+            body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
             hit = True
         child["description"] = body
     for it in items[:6]:
@@ -3335,8 +3431,25 @@ def _sharpen_dod(state, items) -> bool:
         if not isinstance(it, dict) or str(it.get("type") or "").lower().startswith("sub"):
             continue
         body = str(it.get("description") or "")
-        bad = _vague_dod(_dod_rows(body))
+        summary_subject = _re.sub(
+            r"^\s*\[[^\]]+\]\s*", "", str(it.get("summary") or "작업")
+        ).strip()
+        all_dod = _dod_rows(body)
+        generic_review = [row for row in all_dod if _re.search(
+            r"결과와\s*검증\s*기록.{0,40}담당\s*리뷰|"
+            r"검증\s*기록.{0,40}리뷰로\s*확인|"
+            r"결과가\s*반영.{0,40}담당\s*리뷰", row, _re.I)]
+        bad = list(dict.fromkeys([*_vague_dod(all_dod), *generic_review]))
         for old in bad:
+            if old in generic_review:
+                if "필터" in summary_subject:
+                    fresh = (f"{summary_subject} 선택·해제 시 대상 목록과 복원 결과를 "
+                             "UI 테스트 및 화면 증빙으로 확인한다")
+                else:
+                    fresh = _action_specific_proof(state, summary_subject)
+                body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
+                hit = True
+                continue
             stem = _re.sub(
                 r"(?:(?:측정\s*)?결과에\s*대한\s*)?검토\s*완료|"
                 r"(?:테스트\s*완료|검증\s*완료|구현\s*완료|작성\s*완료|"
@@ -3348,23 +3461,79 @@ def _sharpen_dod(state, items) -> bool:
             # `정상적으로 작동해야 할 것`에서 vague phrase를 떼면 `해야 할 것` 또는
             # `할 것`이 조사처럼 남을 수 있다. Evidence 문장에 그 찌꺼기를 이어 붙이지 않는다.
             stem = _re.sub(r"(?:이|가)?\s*(?:해야\s*)?(?:함|됨|할\s*것|한다)?\s*$", "", stem)
-            summary_subject = _re.sub(
-                r"^\s*\[[^\]]+\]\s*", "", str(it.get("summary") or "작업")
-            ).strip()
             # Partial deletion from a state phrase can leave broken Korean such as
             # `팝업이 되고 작동`.  Use the verified title for boilerplate states.
             subject = (summary_subject if _re.search(
                 r"정상|성공적으로|추가됨|검토\s*완료|후속\s*조치", old
             ) else (stem or summary_subject))
             if any(w in old for w in ("성능", "측정", "정확", "검증", "기준")):
-                fresh = f"{subject} 검증 기준·측정값·판정 결과를 티켓에 기록해 확인한다"
+                fresh = _action_specific_proof(state, subject)
             elif any(w in old for w in ("테스트", "구현", "코드", "동작", "작동", "표시", "추가")):
-                fresh = f"{subject} 실행 로그와 테스트 결과를 티켓에 기록해 확인한다"
+                fresh = _action_specific_proof(state, subject)
             else:
-                fresh = f"{subject} 산출물 링크와 리뷰 결과를 티켓에 기록해 확인한다"
+                fresh = _action_specific_proof(state, subject)
             body = body.replace(f">{old}</li>", f">{_esc(fresh)}</li>")
             hit = True
         it["description"] = body
+        # A model may write an otherwise fluent but unrequested "report delivery" DoD.
+        # Reporting is a separate deliverable; if the user did not ask for one, replace the
+        # row with evidence of the actual action instead of silently expanding scope.
+        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달", request_text(state), _re.I):
+            replacement = _action_specific_proof(state, it.get("summary") or "")
+
+            def replace_report(match):
+                nonlocal hit
+                plain = _re.sub(r"<[^>]+>", " ", match.group(1))
+                if not _re.search(r"보고서|리포트", plain, _re.I):
+                    return match.group(0)
+                hit = True
+                return (match.group(0)[:match.group(0).find(">") + 1]
+                        + _esc(replacement) + "</li>")
+
+            it["description"] = _re.sub(
+                r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+                replace_report, it["description"], flags=_re.S | _re.I)
+        if any(word in summary_subject for word in ("가이드", "문서", "템플릿")):
+            replacement = _action_specific_proof(state, summary_subject)
+
+            def replace_mismatched_document_proof(match):
+                nonlocal hit
+                plain = _re.sub(r"<[^>]+>", " ", match.group(1))
+                if not _re.search(r"실행\s*로그|테스트\s*결과|측정값|판정\s*결과", plain, _re.I):
+                    return match.group(0)
+                hit = True
+                return (match.group(0)[:match.group(0).find(">") + 1]
+                        + _esc(replacement) + "</li>")
+
+            it["description"] = _re.sub(
+                r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
+                replace_mismatched_document_proof, it["description"], flags=_re.S | _re.I)
+        # For measurement/check actions, a generic pipeline success path is not the
+        # acceptance criterion. Null-ratio requests varied between "checked", "reported",
+        # and "reviewed" across identical runs, so rebuild that DoD from one observable
+        # contract and preserve only a threshold the user literally supplied.
+        if _re.search(r"(?:null|널)\s*(?:ratio|비율)", summary_subject, _re.I):
+            replacement = _action_specific_proof(state, summary_subject)
+            asked = (request_text(state) + " " + last_user_text(state)).strip()
+            explicit_values = {
+                value.replace(" ", "") for value in _re.findall(
+                    r"\d+(?:\.\d+)?\s*(?:%|퍼센트|이하|이상|미만|초과)", asked, _re.I)
+            }
+            preserved = []
+            for row in _dod_rows(it["description"]):
+                compact = row.replace(" ", "")
+                if any(value in compact for value in explicit_values):
+                    preserved.append(row)
+            rows = [replacement, *[row for row in preserved if row != replacement]]
+            rendered = "".join(
+                f'<li data-checked="false">{_esc(row)}</li>' for row in rows)
+            replaced, count = _re.subn(
+                r"(<ul\b[^>]*data-type=[\"']taskList[\"'][^>]*>).*?(</ul>)",
+                lambda match: match.group(1) + rendered + match.group(2),
+                it["description"], count=1, flags=_re.S | _re.I)
+            if count and replaced != it["description"]:
+                it["description"] = replaced
+                hit = True
     return hit
 
 
@@ -3587,7 +3756,12 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
             continue
         summary = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(item.get("summary") or "작업")).strip()
         safe = _esc(summary or "요청한 작업")
-        method_terms = (r"인덱스", r"캐시", r"파티션", r"쿼리\s*재작성")
+        method_terms = (r"인덱스", r"캐시", r"파티션", r"쿼리\s*재작성",
+                        r"데이터\s*수집", r"수집\s*로직", r"저장\s*구조",
+                        r"데이터\s*변환", r"데이터\s*처리", r"데이터\s*수정",
+                        r"통계\s*(?:수집|처리)", r"모니터링", r"대시보드",
+                        r"적재\s*프로세스",
+                        r"데이터베이스(?:에|로|\s*저장)?")
 
         def has_unrequested_method(value: str) -> bool:
             return any(_re.search(term, value or "", _re.I)
@@ -3602,7 +3776,12 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
         unsupported_problem = bool(bg and not _re.search(
             r"저하|느리|지연|병목|오래\s*걸", request, _re.I)
             and _re.search(r"저하|속도가\s*느|지연|병목", bg.group(2), _re.I))
+        unsupported_mutation_benefit = bool(
+            bg and _re.search(r"\d+\s*\S{0,5}에서\s*\d+\s*\S{0,5}(?:으)?로", request)
+            and _re.search(r"이\s*변경(?:은|으로).{0,100}(?:위해|목적)", bg.group(2), _re.I)
+        )
         if bg and (has_forbidden(bg.group(2)) or unsupported_problem
+                   or unsupported_mutation_benefit
                    or has_unrequested_method(bg.group(2))):
             body = body[:bg.start(2)] + f"<p>{safe} 요청됨.</p>" + body[bg.end(2):]
             changed = True
@@ -3637,6 +3816,145 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
             r"<li\b[^>]*data-checked=[\"'][^\"']*[\"'][^>]*>(.*?)</li>",
             clean_dod, body, flags=_re.S | _re.I)
         item["description"] = body
+    return changed
+
+
+def _repair_statistics_generation_semantics(state: dict, items: list) -> bool:
+    """Keep a statistics-*generation* request from turning into a generic ETL project.
+
+    ``generation`` is not interchangeable with collecting source data, transforming it,
+    publishing a report, or deploying infrastructure.  A full-battery output made every
+    one of those substitutions while retaining the right title.  This repair activates
+    only when the user explicitly asks to generate statistics and the body contains an
+    unrequested method, then rebuilds the body from the verified title/request boundary.
+    """
+    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    if not (_re.search(r"통계\s*정보.{0,30}생성|NDV.{0,30}생성", asked, _re.I)
+            or _re.search(r"generat\w*.{0,30}(?:NDV|statistic)|"
+                          r"(?:NDV|statistic).{0,30}generat\w*", asked, _re.I)):
+        return False
+    drift_patterns = (
+        r"데이터\s*(?:소스\s*)?(?:수집|변환|분석|처리|수정)",
+        r"통계\s*정보(?:를|의)?\s*(?:수집|처리)",
+        r"통계\s*(?:수집|처리)",
+        r"데이터\s*소스\s*연결",
+        r"배포\s*(?:환경|계획|및)|운영\s*환경",
+        r"분석\s*(?:및|·)\s*보고|보고서\s*(?:작성|산출)",
+    )
+    changed = False
+    for item in items or []:
+        if not isinstance(item, dict) or _is_bug_item(item):
+            continue
+        summary = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "")).strip()
+        if not _re.search(r"NDV|통계", summary, _re.I):
+            continue
+        body = str(item.get("description") or "")
+        bad = [pattern for pattern in drift_patterns
+               if _re.search(pattern, body, _re.I) and not _re.search(pattern, asked, _re.I)]
+        if not bad:
+            continue
+        subject = _esc(summary or "요청한 통계정보 생성 파이프라인")
+        reference = ""
+        ref = _re.search(r"(<h3>\s*참고\s*</h3>.*)$", body, _re.S | _re.I)
+        if ref:
+            reference = ref.group(1)
+        item["description"] = (
+            f"<h3>배경</h3><p>{subject} 요청됨.</p>"
+            "<h3>작업 범위</h3><ul>"
+            f"<li>포함: {subject}</li>"
+            "<li>제외: 요청에 명시되지 않은 데이터 수집·변환·배포 및 보고서 작성</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            f"<li data-checked=\"false\">{subject}의 실행 성공·실패 로그와 테스트 결과를 티켓에 기록한다</li>"
+            "<li data-checked=\"false\">생성된 NDV 통계정보의 산출 여부와 검증 결과를 티켓에 기록한다</li>"
+            "</ul>" + reference
+        )
+        changed = True
+    return changed
+
+
+def _ensure_child_descriptions(items: list) -> bool:
+    """Give generated Sub-Tasks executable scope and evidence when the model omitted it."""
+    changed = False
+    for parent in items or []:
+        if not isinstance(parent, dict):
+            continue
+        parent_subject = _re.sub(
+            r"^\s*\[[^]]+\]\s*", "", str(parent.get("summary") or "상위 작업")
+        ).strip()
+        for child in parent.get("children") or []:
+            if not isinstance(child, dict) or str(child.get("description") or "").strip():
+                continue
+            subject = _re.sub(
+                r"^\s*\[[^]]+\]\s*", "", str(child.get("summary") or "세부 작업")
+            ).strip()
+            base_subject = _re.sub(
+                r"\s*[—–-]\s*(?:설계|기획|구현|개발|적용|검증|테스트|측정)\s*$",
+                "", subject,
+            ).strip() or parent_subject
+            if _re.search(r"설계|기획", subject):
+                scope = f"{parent_subject}의 입력·출력, 처리 경계, 검증 방법 설계"
+                proof = f"{subject} 산출물 링크와 리뷰 결과를 parent ticket에 기록한다"
+            elif _re.search(r"구현|개발|적용", subject):
+                scope = f"설계된 경계에 따라 {base_subject} 구현"
+                proof = f"{subject} 성공·실패 로그와 테스트 결과를 parent ticket에 기록한다"
+            elif _re.search(r"검증|테스트|측정", subject):
+                scope = f"{base_subject} 결과 검증"
+                proof = f"{subject} 기준·측정값·판정 결과를 parent ticket에 기록한다"
+            else:
+                scope = subject
+                proof = f"{subject} 산출물 링크와 확인 결과를 parent ticket에 기록한다"
+            child["description"] = (
+                f"<h3>작업 범위</h3><ul><li>포함: {_esc(scope)}</li>"
+                "<li>제외: parent ticket 범위 밖 변경</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                f"<li data-checked=\"false\">{_esc(proof)}</li></ul>"
+            )
+            changed = True
+    return changed
+
+
+def _remove_assignee_semantic_drift(state: dict, items: list) -> bool:
+    """Keep usernames as owner metadata instead of letting them become task subjects.
+
+    A measured failure turned ``skcc.x1402`` into the technical phrase ``X1402 모델``
+    inside a Sub-Task body.  Mention tokens used for an explicit reviewer are preserved;
+    raw IDs and their suffixes are removed from prose because people must be represented
+    by typed mentions or the assignee field.
+    """
+    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    changed = False
+    targets = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        targets.append(item)
+        targets.extend(child for child in (item.get("children") or []) if isinstance(child, dict))
+    for item in targets:
+        uid = str(item.get("assignee") or "").strip()
+        if not uid or not _re.fullmatch(r"[a-z]+\.[a-z]\d+", uid, _re.I):
+            continue
+        body = str(item.get("description") or "")
+        protected = {}
+
+        def hold(match):
+            key = f"@@LTM_MENTION_{len(protected)}@@"
+            protected[key] = match.group(0)
+            return key
+
+        value = _re.sub(
+            rf"\{{\{{mention:{_re.escape(uid)}\}}\}}|\[~{_re.escape(uid)}\]",
+            hold, body, flags=_re.I)
+        suffix = uid.split(".", 1)[1]
+        cleaned = _re.sub(rf"(?<![\w.])(?:{_re.escape(uid)}|{_re.escape(suffix)})(?!\w)",
+                          "", value, flags=_re.I)
+        if "모델" not in asked and _re.search(r"다른\s*모델", cleaned):
+            cleaned = _re.sub(r"다른\s*모델(?:의)?\s*", "요청에 명시되지 않은 연관 ", cleaned)
+        cleaned = _re.sub(r"[ \t]{2,}", " ", cleaned)
+        for key, token in protected.items():
+            cleaned = cleaned.replace(key, token)
+        if cleaned != body:
+            item["description"] = cleaned
+            changed = True
     return changed
 
 
@@ -3819,7 +4137,23 @@ def _topic_drift(state, items: list) -> str:
                "test", "data", "table", "api", "the", "and", "pipeline", "with",
                "for", "this"}
     terms |= {w for w in _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{3,}", req)
-              if w.lower() not in _COMMON}
+              if w.lower().rstrip(".,;:()[]") not in _COMMON}
+    # The Latin-token regex intentionally accepts dots for identifiers, which also captures
+    # sentence punctuation (``hotfix.``).  Normalize both identifier sources before comparing
+    # them with labels/attributes; otherwise a correctly populated label becomes a false topic
+    # drift warning merely because it ended the sentence.
+    terms = {str(t).strip().rstrip(".,;:()[]") for t in terms if str(t).strip()}
+    # Ticket keys and configured user IDs are routing/ownership metadata, not the work
+    # subject.  Treating ``DL-9090`` or shorthand ``x1402`` as a missing topic produced a
+    # false approval warning even when parent and assignee fields were exactly correct.
+    try:
+        from app.agent.workflow.agents.query_specialist import _known_user_tokens
+        people = _known_user_tokens()
+    except Exception:
+        people = set()
+    terms = {t for t in terms
+             if not _re.fullmatch(r"[A-Za-z][A-Za-z0-9]*-\d+", t)
+             and t.casefold() not in people}
     # priority/label 같은 배치 속성은 주제가 아니다. 제목·본문에 label이 없다는 이유로
     # topic drift를 띄우면 단건 자동 검증도 불필요하게 우회한다(ATTR1: hotfix.).
     labels = {str(x).strip().lower() for i in items for x in (i.get("labels") or [])}
@@ -4191,6 +4525,17 @@ def _normalize_duplicate_and_bug_questions(state, questions: list, *, items=None
         if candidates:
             row = candidates[0]
             key = str(row.get("key") or "").strip()
+            placement_keys = {
+                str(value).strip().upper()
+                for item in (items or []) if isinstance(item, dict)
+                for value in (item.get("epic"), item.get("parent")) if str(value or "").strip()
+            }
+            if key.upper() in placement_keys:
+                # A parent Epic describes the same initiative by design. It is the
+                # destination of the child Task, not a duplicate of that child.
+                return [question for question in questions
+                        if not _re.search(r"중복|같은\s*(?:작업|증상)|이미",
+                                          str(question.get("question") or ""), _re.I)]
             title = str(row.get("title") or "").strip()
             label = f'{key} "{title}"' if title else key
             why = str(row.get("why") or "").strip()
@@ -5059,6 +5404,33 @@ def _known_components() -> set:
         return set()
 
 
+def _new_epic_unmet_criteria(state) -> list[str]:
+    """Return missing criteria for a new reporting Epic from literal user evidence."""
+    asked = conversation(state) or request_text(state)
+    if not str(asked or "").strip():
+        return []
+    unmet = []
+    durations = [int(value) for value in _re.findall(r"(?<!\d)(\d{1,2})\s*주", asked)]
+    if not durations or max(durations) < 4:
+        unmet.append("4주 이상 기간 근거 없음")
+
+    requested_tasks = [int(value) for value in _re.findall(
+        r"(?<!\d)(\d{1,3})\s*(?:개|건)?\s*(?:의\s*)?(?:Task|태스크|테스크)", asked, _re.I)]
+    requested_tasks += [int(value) for value in _re.findall(
+        r"(?:Task|태스크|테스크)\s*(?<!\d)(\d{1,3})\s*(?:개|건)", asked, _re.I)]
+    modules = {name for name in _known_components()
+               if _re.search(rf"(?<![A-Za-z0-9]){_re.escape(name)}(?![A-Za-z0-9])", asked, _re.I)}
+    people = set(_re.findall(r"(?<![A-Za-z0-9.])(?:skcc\.)?[a-z]\d{3,6}(?![A-Za-z0-9])",
+                             asked, _re.I))
+    scale = bool(requested_tasks and max(requested_tasks) >= 3
+                 and (len(modules) >= 2 or len(people) >= 3))
+    if not scale:
+        unmet.append("서로 다른 모듈·담당의 Task 3건 근거 없음")
+    if not _re.search(r"에픽|epic|별도\s*(?:진척|보고)\s*단위", asked, _re.I):
+        unmet.append("독립 보고 단위 의도 없음")
+    return unmet
+
+
 def _existing_epic_like(summary: str):
     """제목이 사실상 같은 Epic 이 이미 있나 — 모듈 접두와 조사를 걷어내고 비교한다."""
     base = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "")).strip()
@@ -5134,7 +5506,8 @@ def _explicit_parentless_subtask(state) -> bool:
 # 열려 있으면 우리가 판단하되 **갈림이 크면 확인을 받는** 것이 맞다. 이 판정을 모델에게
 # 맡기면 흔들리므로(같은 문장에 다른 답), 낱말로 하는 판정은 코드가 한다.
 _SHAPE_WORDS = (
-    ("new_epic", ("에픽으로", "epic 으로", "에픽 만들", "에픽으로 크게", "이니셔티브")),
+    ("new_epic", ("에픽으로", "epic으로", "epic 으로", "에픽 만들", "epic 만들",
+                  "에픽으로 크게", "이니셔티브")),
     # 새 일의 "단계별 Sub-Task"는 **Task 하나 + children**이다. 기존 코드에서는 아래의
     # generic `subtask`에 먼저 걸려, 사용자가 구조를 말했는데도 single_task 산출을 고치지
     # 못했다. 기존 부모 키를 지목한 경우는 shape_hint 의 선행 분기가 mode=subtask 로 본다.

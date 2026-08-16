@@ -45,6 +45,10 @@ Combine verified research, portfolio findings, WorkPlan, draft, review, resolved
   each real ticket, Confluence page, or web document. If one source supports multiple distinct findings, list
   them below that source as `[n-a]`, `[n-b]` and cite the matching child marker in the body. Ticket body,
   comments, and field history remain one source. Do not add separate `참조` or `관련 문서` sections.
+- Every material conclusion in the body must carry its matching `[n]` or `[n-a]` marker. Listing a source only
+  under `### 근거` does not ground an uncited conclusion. When the user requests source confidence or request
+  fitness, add one `### 출처 평가` table from supplied authority, directness, recency, corroboration,
+  confidence, fitness, and limitations data; never equate an external specification with internal readiness.
 - Compact citations that occupy the same sentence, clause, or table cell as `[4][5][10]`, with no spaces or
   commas. Every complete bracket must resolve to its own source hyperlink.
 - After any token, do not repeat fields already displayed by its badge. In particular, after `ticket-detail`, add only the supported fact, calculation, or judgment—not key, title, assignee, or status.

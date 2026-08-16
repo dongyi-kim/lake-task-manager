@@ -63,8 +63,9 @@ def _ticket_context(key: str, kind: str) -> str:
         r = progress_report(key, comment_limit=6)
         if r.get("error"):
             return ""
+        owner = f'[~{r["assigneeId"]}]' if r.get("assigneeId") else "없음"
         parts.append(f'[{r["key"]}] "{r.get("title", "")}" — {r.get("status")}'
-                     f' · 담당 {r.get("assignee") or "없음"}'
+                     f' · 담당 {owner}'
                      f' · 마감 {r.get("due") or "없음"}')
         remaining = _remaining_items("\n".join(
             [str(m.get("text") or "") for m in (r.get("comments") or [])]
@@ -120,6 +121,15 @@ def _ticket_context(key: str, kind: str) -> str:
                         pass
                 parts.append(f"상위 Epic: {ek} \"{et}\" — 배경은 이 이니셔티브에 잇되 "
                              "Epic 본문을 복사하지 말고 키 참조로")
+            ancestors = client().ticket_ancestors(key) or []
+            direct = next((a for a in reversed(ancestors)
+                           if str(a.get("type") or "") != "Epic"), None)
+            if direct:
+                parts.append(
+                    f'직접 상위 {direct.get("type") or "Task"}: {direct.get("key")} '
+                    f'"{direct.get("summary") or ""}" — 현재 티켓의 가장 가까운 업무 배경과 '
+                    "참고 출처로 우선 사용"
+                )
     except Exception:
         pass
     return "\n\n".join(parts)[:MAX_CONTEXT]
@@ -202,6 +212,7 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
 - An unfinished seed can be ambiguous. Preserve it verbatim and mark the missing direction or value as `확인 필요`; never complete `높다/낮다`, a cause, or a result from grammar alone.
 - A review request must name the review target and any verified criterion and source document present in ticket context. Do not say only "검토해 주세요" when those facts are available.
 - When child Sub-Tasks or a split plan exist, the parent description owns the overall why, scope, and DoD. Do not repeat every child summary as parent execution detail; keep the parent scope consistent with its children.
+- For a Sub-Task description, explain its purpose through the direct parent Task before the broader Epic. Prefer the closest relevant source in `참고`; do not cite a broad Epic merely because it exists.
 
 ## User Request Data
 
@@ -257,6 +268,9 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     html = _legacy_reference_tokens(html)
     html = _badgeify(html)
     source = "\n".join((prompt, seed, ctx))
+    html = _ground_editor_person_mentions(html, prompt, source)
+    if kind != "description":
+        html = _normalize_unfinished_checklist_labels(html, ctx)
     # The editor may mention only entities supplied by the user or the verified ticket context.
     # Existence alone is insufficient: a real but unrelated ticket is still unsupported evidence.
     html = _drop_unverified_editor_ticket_claims(html, source)
@@ -264,6 +278,7 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     if kind == "description":
         html = _drop_unrequested_description_quality_claims(html, source)
         html = _drop_parent_child_execution_repetition(html, ctx)
+        html = _sharpen_editor_dod(html, ctx, prompt)
         html = _dedupe_editor_list_items(html)
     html = _drop_generic_editor_closer(html)
     html = _drop_unverified_editor_dates(html, source)
@@ -385,6 +400,68 @@ def _drop_generic_editor_closer(rendered: str) -> str:
                r"(?:업데이트하겠습니다|공유하겠습니다|말씀해\s*주세요|알려\s*주세요)"
                r"[^<]{0,20}</p>\s*$")
     return re.sub(pattern, "", out, flags=re.I | re.S).rstrip()
+
+
+def _ground_editor_person_mentions(rendered: str, prompt: str, source: str) -> str:
+    """Keep only verified people from editor context and use the primary assignee when asked.
+
+    Existence is insufficient: a model once selected a real but unrelated user for a status
+    comment.  The ticket context already carries canonical ids, so enforce that boundary after
+    badge rendering.  When the user explicitly requests an assignee mention, an unsupported id
+    is replaced with the ticket's verified primary assignee; otherwise its whole prose block is
+    removed rather than leaving a broken ``담당자 께서는`` fragment.
+    """
+    out = str(rendered or "")
+    allowed = set(re.findall(r"\[~([A-Za-z0-9._-]+)\]", source or ""))
+    primary_match = re.search(
+        r'^\[[A-Z][A-Z0-9]*-\d+\].*?·\s*담당\s+\[~([A-Za-z0-9._-]+)\]',
+        source or "", re.M,
+    )
+    primary = primary_match.group(1) if primary_match else ""
+    asks_assignee = bool(re.search(r"멘션|담당자|담당\s*(?:을|에게|한테)", prompt or ""))
+    pattern = (r'<span\b[^>]*data-type="mention"[^>]*data-id="([^"]+)"[^>]*>'
+               r'.*?</span>')
+
+    unsupported = {m.group(1) for m in re.finditer(pattern, out, re.I | re.S)
+                   if m.group(1) not in allowed}
+    if not unsupported:
+        return out
+    if asks_assignee and primary:
+        for uid in unsupported:
+            out = re.sub(
+                pattern.replace('([^\"]+)', re.escape(uid)),
+                f'<span data-type="mention" data-id="{primary}">@{primary}</span>',
+                out, flags=re.I | re.S,
+            )
+        return out
+
+    def drop_block(match):
+        block = match.group(0)
+        return "" if any(f'data-id="{uid}"' in block for uid in unsupported) else block
+
+    out = re.sub(r'<(?:p|li)\b[^>]*>.*?</(?:p|li)>', drop_block, out,
+                 flags=re.I | re.S)
+    return out
+
+
+def _normalize_unfinished_checklist_labels(rendered: str, context: str) -> str:
+    """An unchecked ``X 완료`` item is visually ambiguous in a status comment.
+
+    Descriptions use that wording as a future DoD, but comments describe the present.  When
+    deterministic context marks X as unfinished, render the unchecked item as ``X 진행 필요``.
+    """
+    marker = re.search(r"명시적 미완료\(완료로 쓰지 말 것\):\s*([^\n]+)", context or "")
+    if not marker:
+        return str(rendered or "")
+    topics = [part.strip() for part in marker.group(1).split("|") if part.strip()]
+    out = str(rendered or "")
+    for topic in topics:
+        escaped = re.escape(topic)
+        out = re.sub(
+            rf'(<li\b[^>]*data-checked="false"[^>]*>\s*)({escaped})\s*완료(?=\s*</li>)',
+            rf'\1\2 진행 필요', out, flags=re.I,
+        )
+    return out
 
 
 def _drop_unrequested_description_quality_claims(rendered: str, source: str) -> str:
@@ -578,9 +655,25 @@ def _drop_parent_child_execution_repetition(rendered: str, context: str) -> str:
 def _repair_dangling_editor_ending(rendered: str) -> str:
     """마지막 connective(`검토해 주시고,`)로 잘린 editor 결과를 완결한다."""
     out = str(rendered or "").rstrip()
+    out = re.sub(r"(기록|확인|정리|첨부|공유|검증)한다\s*할\s*것",
+                 r"\1할 것", out)
     out = re.sub(r"(검토|확인|공유)해\s*주시고\s*,?\s*</p>\s*$",
                  r"\1 부탁드립니다.</p>", out)
     return re.sub(r",\s*</p>\s*$", ".</p>", out)
+
+
+def _sharpen_editor_dod(rendered: str, context: str, prompt: str) -> str:
+    """Apply the same observable-evidence DoD contract used by ticket drafts."""
+    title = re.search(r'^\[[A-Z][A-Z0-9]*-\d+\]\s+"([^"]+)"',
+                      str(context or ""), re.M)
+    summary = title.group(1).strip() if title else "요청한 작업"
+    item = {"summary": summary, "type": "Task", "description": str(rendered or "")}
+    try:
+        from app.agent.workflow.agents.work_architect import _sharpen_dod
+        _sharpen_dod({"request_text": str(prompt or ""), "messages": []}, [item])
+    except Exception:
+        return str(rendered or "")
+    return str(item.get("description") or rendered or "")
 
 
 def _drop_unverified_editor_dates(rendered: str, source: str) -> str:

@@ -289,7 +289,7 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
                     refs = _ticket_keys(reason)
                     if not own_hist or (refs and not any(k in own_hist for k in refs)):
                         continue
-                cleaned = _ground_assignment_reason(reason, own_hist)
+                cleaned = _ground_assignment_reason(reason, own_hist, state.get("roster_load"))
                 if cleaned:
                     clean_reasons.append(cleaned)
             reasons = clean_reasons
@@ -305,7 +305,8 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
                 child_hist = next((line for line in
                                    str(state.get("similar_history") or "").splitlines()
                                    if line.lstrip().startswith(f"- {child_user} ")), "")
-                why = _ground_assignment_reason(str(c.get("why") or "").strip(), child_hist)
+                why = _ground_assignment_reason(
+                    str(c.get("why") or "").strip(), child_hist, state.get("roster_load"))
                 if not why:
                     why = _workload_reason(state.get("roster_load"), child_user)
                     if not any(ch.isdigit() for ch in why):
@@ -324,7 +325,8 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
                 alt_hist = next((line for line in
                                  str(state.get("similar_history") or "").splitlines()
                                  if line.lstrip().startswith(f"- {alt_user} ")), "")
-                why = _ground_assignment_reason(str(x.get("why") or "").strip(), alt_hist)
+                why = _ground_assignment_reason(
+                    str(x.get("why") or "").strip(), alt_hist, state.get("roster_load"))
                 if not why:
                     why = _workload_reason(state.get("roster_load"), alt_user)
                     if not any(ch.isdigit() for ch in why):
@@ -367,10 +369,28 @@ def _ticket_keys(text: str) -> list[str]:
     return re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", str(text or ""))
 
 
-def _ground_assignment_reason(reason: str, own_history: str) -> str:
+def _roster_display_names(roster_load) -> set[str]:
+    """Extract verified display names from the human-readable workload material."""
+    import re
+    names = set()
+    for line in str(roster_load or "").splitlines():
+        match = re.match(r"\s*-\s*[A-Za-z][A-Za-z0-9.]+\s+(.+?)\s+[—–-]\s+", line)
+        if match:
+            name = match.group(1).strip()
+            if name:
+                names.add(name)
+    return names
+
+
+def _ground_assignment_reason(reason: str, own_history: str, roster_load="") -> str:
     """담당 이력 표에 없는 티켓·경험 주장을 지우고 측정된 workload 절은 보존한다."""
     import re
     text = str(reason or "").strip()
+    # Reasons are rendered next to the typed assignee identity.  A model-written plain
+    # display name is both redundant and unsafe: one measured run attributed another
+    # person's ticket to the selected user.  Fall back to measured workload instead.
+    if any(name in text for name in _roster_display_names(roster_load)):
+        return ""
     refs = _ticket_keys(text)
     if refs and (not own_history or any(key not in own_history for key in refs)):
         return ""

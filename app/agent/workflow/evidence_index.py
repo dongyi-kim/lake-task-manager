@@ -139,9 +139,20 @@ def _append_observation(group: dict, value: str) -> int | None:
     obs = str(value or "").strip()
     if not obs:
         return None
-    key = re.sub(r"\s+", " ", obs).casefold()
+    def comparison_key(text: str) -> str:
+        # The model sometimes writes the same finding once as plain prose and once as
+        # ``본문에서 ...``/``댓글에서 ...``.  Provenance belongs on the one surviving
+        # observation; the prefix must not manufacture a second finding.
+        normalized = re.sub(
+            r"^(?:본문|댓글|코멘트|변경\s*이력|문서\s*본문|웹\s*문서|조회\s*결과)에서\s*",
+            "", str(text or "").strip(), flags=re.I,
+        )
+        normalized = re.sub(r"[\s\"'“”‘’.,;:!?]+", " ", normalized).strip()
+        return normalized.casefold()
+
+    key = comparison_key(obs)
     for index, current in enumerate(group["observations"]):
-        if re.sub(r"\s+", " ", current).casefold() == key:
+        if comparison_key(current) == key:
             return index
     group["observations"].append(obs)
     return len(group["observations"]) - 1
@@ -185,6 +196,34 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             # Prefer a human title over a bare URL when either legacy path supplied one.
             group["source"] = source
         return group
+
+    def promote_alias(alias: str, identity: str, source: str) -> dict:
+        """Upgrade a model-written bare title to the runtime-verified URL source."""
+        if alias == identity or alias not in groups:
+            return ensure(identity, source)
+        alias_group = groups[alias]
+        target = groups.get(identity)
+        merged = {
+            "identity": identity,
+            "source": source,
+            "observations": [],
+            "rows": [*(alias_group.get("rows") or []),
+                     *((target or {}).get("rows") or [])],
+        }
+        for observation in [*(alias_group.get("observations") or []),
+                            *((target or {}).get("observations") or [])]:
+            _append_observation(merged, observation)
+        for row in merged["rows"]:
+            row["identity"] = identity
+        rebuilt: OrderedDict[str, dict] = OrderedDict()
+        for key, value in groups.items():
+            if key == alias:
+                rebuilt[identity] = merged
+            elif key != identity:
+                rebuilt[key] = value
+        groups.clear()
+        groups.update(rebuilt)
+        return merged
 
     for raw_line in lines:
         line = raw_line.strip()
@@ -230,7 +269,9 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             identity = f"text:{source.casefold()}"
         else:
             continue
-        group = ensure(identity, source)
+        alias = f"text:{(title or key).casefold()}" if (title or key) else ""
+        group = promote_alias(alias, identity, source) if _valid_url(url or key) \
+            else ensure(identity, source)
         observations = item.get("observations") or []
         for obs in observations:
             if isinstance(obs, dict):
@@ -250,7 +291,9 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         if not title or not _valid_url(url):
             continue
         identity = f"url:{_clean_url(url)}"
-        group = groups.get(identity)
+        alias = f"text:{title.casefold()}"
+        group = promote_alias(alias, identity, f"[{title}]({url})") \
+            if alias in groups else groups.get(identity)
         if group:
             group["source"] = f"[{title}]({url})"
         elif title in body or url in body:

@@ -157,6 +157,17 @@ def test_runner_combines_jira_query_terms_with_where_instead_of_silently_droppin
     assert jql.startswith('project in ("AAA", "BBB") AND (')
 
 
+def test_three_public_technology_terms_use_two_of_three_recall_without_becoming_single_term_or():
+    from app.agent.workflow.agents.query_runner import _jira_where
+
+    jql = _jira_where("", "Iceberg Puffin NDV")
+
+    assert all(f'text ~ "{term}"' in jql for term in ("Iceberg", "Puffin", "NDV"))
+    assert jql.count(" AND ") == 3
+    assert jql.count(" OR ") == 2
+    assert '(text ~ "Puffin" AND text ~ "NDV")' in jql
+
+
 def test_runner_recovers_jql_misplaced_in_query_and_removes_model_project_placeholder():
     fake = _Client(3)
     _ctx.bind(fake, _settings(["AAA", "BBB"]))
@@ -203,6 +214,54 @@ def test_runner_repairs_subtask_parent_jql_misplaced_in_query():
     jql = fake.calls[0]["jql"]
     assert "text ~" not in jql and 'parent = DL-9090' in jql
     assert 'issuetype = Sub-Task' in jql
+
+
+def test_query_specialist_turns_human_title_in_project_clause_into_summary_search():
+    from app.agent.workflow.agents.query_specialist import _normalize_model_jira_query
+
+    query = {"source": "jira", "query": 'issueType = Epic AND project = "최소 기능 1차 구현"',
+             "where": ""}
+    assert _normalize_model_jira_query(query)
+    assert "project" not in query["query"].lower()
+    assert 'summary ~ "최소 기능 1차 구현"' in query["query"]
+
+
+def test_query_specialist_drops_mutation_phrase_from_read_plan():
+    from app.agent.workflow.agents.query_specialist import _normalize_model_jira_query
+
+    query = {"source": "jira", "query": "create issue", "where": ""}
+    assert not _normalize_model_jira_query(query)
+
+
+def test_query_specialist_drops_unresolved_jql_placeholder():
+    from app.agent.workflow.agents.query_specialist import _normalize_model_jira_query
+
+    query = {"source": "jira", "query": '"Epic Link" = {Epic Key}', "where": ""}
+    assert not _normalize_model_jira_query(query)
+
+
+def test_query_specialist_removes_non_field_descriptions_from_jira_projection():
+    from app.agent.workflow.agents.query_specialist import _normalize_query_fields
+
+    query = {"source": "jira",
+             "fields": ["summary", "성능 측정 방법론 정의", "Epic Link", "customfield_10018"]}
+    _normalize_query_fields(query)
+    assert query["fields"] == ["summary", "customfield_10018"]
+
+
+def test_query_specialist_keeps_narrower_epic_search_for_same_summary_and_repairs_dependencies():
+    from app.agent.workflow.agents.query_specialist import _dedupe_equivalent_queries
+
+    plan = {"queries": [
+        {"id": "broad", "source": "jira", "query": 'summary ~ "최소 기능"',
+         "where": "", "fields": [], "page_size": 50, "depends_on": []},
+        {"id": "epic", "source": "jira",
+         "query": 'issueType = Epic AND summary ~ "최소 기능"',
+         "where": "", "fields": [], "page_size": 50, "depends_on": ["broad"]},
+    ]}
+    _dedupe_equivalent_queries(plan)
+    assert [query["id"] for query in plan["queries"]] == ["epic"]
+    assert plan["queries"][0]["depends_on"] == []
 
 
 def test_people_workload_uses_scoped_paginated_jql_not_primary_project_aggregate():

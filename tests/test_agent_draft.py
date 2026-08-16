@@ -497,6 +497,26 @@ def test_delegated_duplicate_epic_uses_the_existing_epic_without_reasking():
     assert "epic_name" not in r["draft"]["items"][0]
 
 
+def test_epic_request_without_duration_and_scale_evidence_is_downgraded_even_without_a_twin(monkeypatch):
+    import app.agent.workflow.agents.work_architect as module
+    monkeypatch.setattr(module, "_existing_epic_like", lambda _summary: None)
+    monkeypatch.setattr(module, "_pick_parent_epic", lambda *_args: {
+        "key": "DL-102", "summary": "쿼리 성능 개선", "module": "ETL"})
+    out = {"questions": [], "mode": "epic", "rationale": "",
+           "structure": "new_epic", "structure_source": "user_specified",
+           "items": [{"summary": "[쿼리 성능] 대대적 개선", "type": "Epic",
+                      "epic_name": "쿼리성능", "components": ["ETL"],
+                      "description": "<h3>배경</h3><p>개선</p>"}]}
+
+    got = WorkArchitect().apply(_msg(
+        "쿼리 성능 개선을 에픽으로 크게 잡아줘. 기간은 2주고 ETL만. 알아서"), out)
+
+    item = got["draft"]["items"][0]
+    assert got["draft"]["mode"] == "task" and item["type"] == "Task"
+    assert item["epic"] == "DL-102" and "epic_name" not in item
+    assert "Epic 격상 보류" in got["draft"]["rationale"]
+
+
 def test_delegated_epic_with_stale_issue_type_cannot_become_epic_under_epic():
     """STR3 actual: a repaired Task was reverted by stale `issue_type=Epic` at finalization."""
     out = {"questions": [], "mode": "task", "rationale": "",
@@ -1528,6 +1548,23 @@ def test_user_supplied_performance_metric_is_not_replaced_by_an_open_fact():
     assert "담당팀 확인 필요" not in items[0]["description"]
 
 
+def test_null_ratio_only_request_does_not_reopen_other_quality_rules_as_open_fact():
+    from app.agent.workflow.agents.work_architect import (
+        _dedupe_dod_rows, _mark_unspecified_acceptance_criteria,
+    )
+
+    items = [{"summary": "[ETL] 신규 30개 테이블 널 비율 체크", "description": (
+        '<ul data-type="taskList">'
+        '<li data-checked="false">요청한 30개 대상별 null ratio 측정값과 실패·제외 목록을 티켓에 기록해 확인한다</li>'
+        '<li data-checked="false">모든 품질 룰 점검 완료</li></ul>')}]
+    assert _mark_unspecified_acceptance_criteria(
+        _msg("신규 30개 테이블은 널 비율만 체크해줘"), items)
+    _dedupe_dod_rows(items)
+    body = items[0]["description"]
+    assert "품질 룰과 항목별 통과 기준" not in body
+    assert body.count("null ratio 측정값") == 1
+
+
 def test_workload_words_follow_the_actual_rank_not_the_model_claim():
     from app.agent.workflow.agents.result_integrator import _align_workload_claims
 
@@ -1751,6 +1788,23 @@ def test_assigner_removes_experience_not_backed_by_the_history_table():
     assert got["reasons"] == ["진행중 8건"]
     assert got["children"][0]["why"] == "진행중 12건"
     assert got["alternates"][0]["why"] == "진행중 12건"
+
+
+def test_assigner_drops_plain_roster_names_from_reasons_and_uses_measured_load():
+    from app.agent.workflow.agents.people_advisor import PeopleAdvisor
+    state = {"trace": [], "draft": {"items": [{
+        "summary": "[ETL] NDV 통계 생성", "components": ["ETL"]}]},
+        "similar_history": "",
+        "roster_load": ("[ETL 로스터·부하]\n"
+                        "- skcc.x1103 한지우 — 진행중 8건\n"
+                        "- skcc.i2011 최하은 — 진행중 12건")}
+    out = {"assignments": [{"index": 0, "user": "skcc.x1103",
+                            "reasons": ["최하은이 DL-9202를 맡아 본 경험이 있음"]}]}
+
+    got = PeopleAdvisor().apply(state, out)["assignments"][0]
+
+    assert got["reasons"] == ["진행중 8건"]
+    assert "최하은" not in str(got)
 
 
 def test_assigner_replaces_a_cross_module_candidate_with_verified_roster():
@@ -2062,6 +2116,20 @@ def test_topic_kept_produces_no_drift_warning():
                       "type": "Task", "description": ""}]}
     r = WorkArchitect().apply(st, out)
     assert not r["draft"].get("topic_drift")
+
+
+def test_label_with_sentence_punctuation_is_not_treated_as_missing_topic():
+    from app.agent.workflow.agents.work_architect import _topic_drift
+
+    state = _msg(
+        "적재 지연 알림 임계값을 45분으로 조정하는 Task 만들어줘. 라벨은 hotfix. 알아서"
+    )
+    items = [{
+        "summary": "[Observability] 적재 지연 알림 임계값 조정",
+        "description": "<p>임계값을 45분으로 조정</p>",
+        "labels": ["hotfix"],
+    }]
+    assert _topic_drift(state, items) == ""
 
 
 def test_unlinked_reference_bullets_are_dropped_from_the_body():
@@ -2452,16 +2520,30 @@ def test_unrequested_user_testing_is_removed_but_explicit_request_is_preserved()
     assert explicit[0]["description"] == body
 
 
-def test_epic_typed_items_promote_the_mode_to_epic():
+def test_epic_typed_items_promote_the_mode_to_epic(monkeypatch):
     """"새 Epic 만들어줘"에 모델이 type=Epic 항목을 내면서 mode 를 task 로 두면 —
     epic 경로를 못 타 validate_bulk 가 거부하고 승인 카드 없이 죽었다(실측 Round K)."""
+    monkeypatch.setattr(
+        "app.agent.workflow.agents.work_architect._existing_epic_like", lambda _summary: None)
     out = {"questions": [], "mode": "task", "rationale": "",
            "structure": "new_epic", "structure_source": "user_specified",
            "items": [{"summary": "[DataOps] 데이터 품질 모니터링", "type": "Epic",
                       "epic_name": "품질모니터링", "description": ""}]}
-    r = WorkArchitect().apply(_msg("데이터 품질 모니터링 Epic 만들어줘. 알아서"), out)
+    r = WorkArchitect().apply(_msg(
+        "6주 동안 ETL, Catalog, DataOps의 skcc.x1103, skcc.x1327, skcc.x1402가 "
+        "맡을 3건의 Task를 독립 진척 단위인 "
+        "데이터 품질 모니터링 Epic으로 만들어줘. 알아서"), out)
     assert r["draft"]["mode"] == "epic"
     assert len(r["draft"]["items"]) == 1
+
+
+def test_epic_scale_recognizes_task_count_after_the_word_task():
+    from app.agent.workflow.agents.work_architect import _new_epic_unmet_criteria
+
+    state = _msg(
+        "6주 동안 skcc.x1103, skcc.x1327, skcc.x1402가 맡을 Task 3건을 "
+        "독립 진척 단위인 데이터 품질 Epic으로 만들어줘")
+    assert _new_epic_unmet_criteria(state) == []
 
 
 def test_adding_one_more_item_keeps_the_pending_draft_items():
@@ -2532,6 +2614,19 @@ def test_duplicate_question_names_the_real_candidate_and_asks_only_the_decision(
     assert len(questions) == 1
     assert "DL-9072" in questions[0]["question"]
     assert "프로듀서 Avro 직렬화 전환" in questions[0]["question"]
+
+
+def test_intended_parent_epic_is_not_treated_as_a_duplicate_child_task():
+    from app.agent.workflow.agents.work_architect import _normalize_duplicate_and_bug_questions
+
+    state = _msg("DL-9200 아래 PSR 증빙 추출 Task를 만들어줘", already_exists=True,
+                 evidence=[{"key": "DL-9200", "title": "Iceberg Puffin NDV 도입",
+                            "why": "같은 이니셔티브"}])
+    items = [{"summary": "[Catalog] PSR 증빙 원본 추출", "type": "Task",
+              "epic": "DL-9200"}]
+    questions = _normalize_duplicate_and_bug_questions(
+        state, [{"question": "같은 작업이 이미 있습니다"}], items=items)
+    assert questions == []
 
 
 def test_bug_interview_groups_only_missing_diagnostic_facts():
@@ -2946,6 +3041,11 @@ def test_long_subject_does_not_hide_a_vague_completion_condition():
     assert _vague_dod(["StarRocks Puffin NDV 통계정보 생성 파이프라인이 정상적으로 작동함"])
     assert _vague_dod(["측정 결과에 대한 검토 완료"])
     assert _vague_dod(["도움말 팝업이 정상적으로 표시됨"])
+    assert _vague_dod(["신규 테이블의 널 비율이 성공적으로 체크됨"])
+    assert _vague_dod(["체크 결과가 문서화되어 관련 팀에 공유됨"])
+    assert _vague_dod(["회귀 테스트 결과가 기록되고 검토됨"])
+    assert _vague_dod(["테스트 결과가 관련 문서에 첨부됨"])
+    assert _vague_dod(["신규 테이블의 널 비율이 계산되어 보고됨"])
     assert not _vague_dod(["NDV 생성 결과와 테스트 로그를 티켓에 기록함"])
     item = {"summary": "[ETL] StarRocks Puffin NDV 통계정보 생성 파이프라인 개발",
             "type": "Task", "description": (
@@ -3009,6 +3109,237 @@ def test_a_plain_task_still_gets_the_task_template(monkeypatch):
     R._fill_thin_bodies(st, items, repair=True)
     assert "배경" in items[0]["description"]
     assert "재현" not in items[0]["description"]
+
+
+def test_assignee_ids_never_become_technical_subjects_in_ticket_body():
+    from app.agent.workflow.agents import work_architect as R
+
+    state = _msg(
+        "DL-9090 아래 성능 측정은 skcc.x1402, 가이드는 skcc.x1450에게 Sub-Task로 맡겨줘"
+    )
+    items = [{
+        "summary": "[Workbench] 데이터 리니지 뷰어 성능 측정",
+        "type": "Sub-Task", "parent": "DL-9090", "assignee": "skcc.x1402",
+        "description": (
+            "<h3>작업 범위</h3><ul><li>포함: X1402 성능 측정 수행</li>"
+            "<li>제외: 다른 모델의 성능 측정</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            "<li data-checked=\"false\">X1402 측정 결과 검토</li></ul>"
+        ),
+    }]
+
+    assert R._remove_assignee_semantic_drift(state, items)
+    body = items[0]["description"]
+    assert "X1402" not in body and "skcc.x1402" not in body
+    assert "다른 모델" not in body
+    assert "성능 측정" in body
+
+
+def test_unrequested_collection_and_storage_do_not_replace_statistics_generation_semantics():
+    from app.agent.workflow.agents import work_architect as R
+
+    state = _msg("starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해")
+    items = [{
+        "summary": "[ETL] StarRocks Puffin NDV 통계정보 생성 파이프라인 개발",
+        "type": "Task", "components": ["ETL"],
+        "description": (
+            "<h3>배경</h3><p>데이터 수집 및 저장 기능이 필요합니다.</p>"
+            "<h3>작업 범위</h3><ul><li>포함: 데이터 수집 로직 개발</li>"
+            "<li>포함: 데이터베이스 저장 구조 설계</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            "<li data-checked=\"false\">수집 데이터가 데이터베이스에 저장됨</li></ul>"
+        ),
+    }]
+
+    assert R._remove_unrequested_quality_claims(state, items)
+    body = items[0]["description"]
+    assert "데이터 수집" not in body and "데이터베이스" not in body
+    assert "통계정보 생성 파이프라인" in body
+
+
+def test_statistics_generation_is_not_expanded_to_collection_transform_deploy_and_reporting():
+    from app.agent.workflow.agents import work_architect as R
+
+    state = _msg("StarRocks Puffin NDV 통계정보를 생성하는 파이프라인을 개발해야해")
+    item = {
+        "summary": "[ETL] StarRocks Puffin NDV 통계정보 생성 파이프라인 개발",
+        "type": "Task", "components": ["ETL"],
+        "description": (
+            "<h3>배경</h3><p>StarRocks Puffin의 NDV 통계정보를 수집하고 처리한다.</p>"
+            "<h3>작업 범위</h3><ul><li>데이터 소스 연결</li><li>데이터 변환</li>"
+            "<li>배포 및 운영 환경 구성</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            "<li data-checked=\"false\">데이터 분석 및 보고서 작성</li></ul>"),
+    }
+
+    assert R._repair_statistics_generation_semantics(state, [item])
+    body = item["description"]
+    assert "통계정보를 수집" not in body
+    assert "데이터 소스 연결" not in body and "데이터 변환" not in body
+    assert "운영 환경 구성" not in body
+    assert '<li data-checked="false">데이터 분석 및 보고서 작성' not in body
+    assert "제외: 요청에 명시되지 않은 데이터 수집·변환·배포 및 보고서 작성" in body
+    assert "생성된 NDV 통계정보" in body and "실행 성공·실패 로그" in body
+
+
+def test_statistics_generation_drops_unrequested_monitoring_dashboard():
+    from app.agent.workflow.agents import work_architect as R
+
+    state = _msg("StarRocks Puffin NDV 통계정보 생성 파이프라인을 개발해줘")
+    item = {"summary": "[ETL] StarRocks Puffin NDV 통계 파이프라인 개발", "type": "Task",
+            "description": ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                            '<li data-checked="false">모니터링 대시보드에서 실시간 데이터 흐름 확인</li>'
+                            '</ul>')}
+    assert R._remove_unrequested_quality_claims(state, [item])
+    R._sharpen_dod(state, [item])
+    assert "모니터링" not in item["description"] and "대시보드" not in item["description"]
+    assert "실행 로그와 회귀 테스트 결과" in item["description"]
+
+
+def test_generated_stage_children_receive_executable_scope_and_evidence():
+    from app.agent.workflow.agents import work_architect as R
+
+    items = [{
+        "summary": "[ETL] NDV 통계정보 생성 파이프라인", "type": "Task",
+        "children": [
+            {"summary": "NDV 생성 구조 설계"},
+            {"summary": "NDV 생성 로직 구현"},
+            {"summary": "NDV 생성 결과 검증"},
+        ],
+    }]
+
+    assert R._ensure_child_descriptions(items)
+    bodies = [child["description"] for child in items[0]["children"]]
+    assert all("작업 범위" in body and "완료 조건" in body for body in bodies)
+    assert "산출물 링크와 리뷰 결과" in bodies[0]
+    assert "성공·실패 로그와 테스트 결과" in bodies[1]
+    assert "기준·측정값·판정 결과" in bodies[2]
+
+
+def test_ticket_keys_and_assignee_ids_do_not_trigger_topic_drift_warning():
+    from app.agent.workflow.agents.work_architect import _topic_drift
+
+    state = _msg("DL-9090 아래 팝업 작업은 x1402에게 만들어줘")
+    items = [{"summary": "[Workbench] 도움말 팝업 추가", "type": "Sub-Task",
+              "parent": "DL-9090", "assignee": "skcc.x1402",
+              "description": "<h3>작업 범위</h3><p>도움말 팝업 추가</p>"}]
+
+    assert _topic_drift(state, items) == ""
+
+
+def test_action_family_dod_uses_observable_evidence_and_drops_unrequested_report():
+    from app.agent.workflow.agents.work_architect import _sharpen_dod
+
+    items = [{"summary": "[Runtime] 쿼리 인덱스 개선", "type": "Task",
+              "description": ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                              '<li data-checked="false">성능 테스트 완료</li>'
+                              '<li data-checked="false">결과 보고서 공유</li></ul>')}]
+
+    assert _sharpen_dod(_msg("쿼리 인덱스 개선 Task 만들어줘"), items)
+    body = items[0]["description"]
+    assert "적용 전·후 실행 계획" in body and "측정값" in body
+    assert "결과 보고서 공유" not in body
+
+
+def test_subtask_dod_uses_artifact_matching_the_action_family():
+    from app.agent.workflow.agents.work_architect import _sharpen_dod
+
+    parent = {"summary": "[Workbench] 리니지 뷰어", "type": "Task", "children": [
+        {"summary": "[Workbench] 리니지 뷰어 가이드 작성", "type": "Sub-Task",
+         "description": ('<ul data-type="taskList">'
+                         '<li data-checked="false">내부 리뷰 및 피드백 반영 실행 로그와 테스트 결과를 기록</li>'
+                         '</ul>')},
+        {"summary": "[Workbench] 리니지 뷰어 회귀 테스트", "type": "Sub-Task",
+         "description": ('<ul data-type="taskList">'
+                         '<li data-checked="false">회귀 테스트 결과가 기록되고 검토됨</li>'
+                         '<li data-checked="false">테스트 결과가 관련 문서에 첨부됨</li>'
+                         '</ul>')},
+    ]}
+
+    assert _sharpen_dod(_msg("가이드 작성과 회귀 테스트 Sub-Task 만들어줘"), [parent])
+    guide, regression = [child["description"] for child in parent["children"]]
+    assert "산출물 링크와 리뷰 결과" in guide and "실행 로그" not in guide
+    assert "실행 케이스와 실패 로그, 판정 결과" in regression
+    assert "관련 문서에 첨부" not in regression
+
+
+def test_template_dod_uses_link_and_review_instead_of_test_or_measurement_evidence():
+    from app.agent.workflow.agents.work_architect import _dedupe_dod_rows, _sharpen_dod
+
+    item = {"summary": "[Catalog] RGP 검증 기준 및 결과 템플릿", "type": "Task",
+            "description": ('<ul data-type="taskList">'
+                            '<li data-checked="false">내부·외부 근거 분리 실행 로그와 테스트 결과를 기록</li>'
+                            '<li data-checked="false">절차와 호환성 기록 검증 기준·측정값·판정 결과를 기록</li>'
+                            '</ul>')}
+    assert _sharpen_dod(_msg("RGP 검증 기준 및 결과 템플릿을 작성해줘"), [item])
+    _dedupe_dod_rows([item])
+    body = item["description"]
+    assert "산출물 링크와 리뷰 결과" in body
+    assert "실행 로그" not in body and "측정값" not in body
+
+
+def test_null_ratio_dod_records_each_requested_target_instead_of_generic_pipeline_success():
+    from app.agent.workflow.agents.work_architect import _sharpen_dod
+
+    item = {"summary": "[ETL] Lake 배치 적재 테이블 널 비율 체크", "type": "Task",
+            "description": ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                            '<li data-checked="false">결과가 반영되었음을 담당 리뷰로 확인한다</li>'
+                            '<li data-checked="false">성공·실패 경로를 회귀 테스트로 확인한다</li>'
+                            '</ul>')}
+
+    assert _sharpen_dod(_msg("신규 30개 테이블 널 비율 체크 Task"), [item])
+    body = item["description"]
+    assert "요청한 30개 대상별 null ratio 측정값" in body
+    assert "성공·실패 경로" not in body
+
+
+def test_null_ratio_dod_is_deterministic_across_calculate_review_and_report_wording():
+    from app.agent.workflow.agents.work_architect import _dod_rows, _sharpen_dod
+
+    item = {"summary": "[ETL] 신규 등록 테이블 널 비율 체크", "type": "Task",
+            "description": ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+                            '<li data-checked="false">신규 테이블의 널 비율을 산출</li>'
+                            '<li data-checked="false">산출된 널 비율을 검토 및 보고</li>'
+                            '</ul>')}
+    assert _sharpen_dod(_msg("신규 등록 30개 테이블의 널 비율만 체크해줘"), [item])
+    assert _dod_rows(item["description"]) == [
+        "요청한 30개 대상별 null ratio 측정값과 실패·제외 목록을 티켓에 기록해 확인한다"
+    ]
+
+
+def test_literal_numeric_mutation_does_not_gain_an_unverified_business_benefit():
+    from app.agent.workflow.agents import work_architect as R
+
+    item = {"summary": "[ETL] 적재 지연 알림 임계값 조정", "type": "Task",
+            "description": ("<h3>배경</h3><p>30분에서 45분으로 조정 요청. 이 변경은 "
+                            "유연성을 높이고 불필요한 알림을 줄이기 위해 필요합니다.</p>"
+                            "<h3>작업 범위</h3><ul><li>포함: 45분 변경</li>"
+                            "<li>제외: 다른 알림</li></ul>"
+                            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                            "<li data-checked=\"false\">45분 설정 확인</li></ul>")}
+
+    assert R._remove_unrequested_quality_claims(
+        _msg("적재 지연 알림 임계값을 30분에서 45분으로 조정"), [item])
+    assert "유연성" not in item["description"] and "불필요한 알림" not in item["description"]
+
+
+def test_generic_review_record_dod_is_replaced_with_action_specific_evidence():
+    from app.agent.workflow.agents import work_architect as R
+
+    state = _msg("카탈로그 화면에 '내 모듈만' 필터를 추가해줘")
+    items = [{
+        "summary": "[Catalog] 내 모듈만 필터 추가", "type": "Task",
+        "description": (
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            "<li data-checked=\"false\">필터 추가 결과와 검증 기록이 티켓에 남고 담당 리뷰로 확인됨</li>"
+            "</ul>"
+        ),
+    }]
+
+    assert R._sharpen_dod(state, items)
+    body = items[0]["description"]
+    assert "결과와 검증 기록" not in body and "담당 리뷰" not in body
+    assert "필터" in body and ("화면" in body or "테스트" in body)
 
 def test_boilerplate_closers_are_stripped_by_code_not_asked_for():
     """맺음말 상투구는 **버릇**이라 프롬프트로 안 잡힌다 — 코드가 지운다.

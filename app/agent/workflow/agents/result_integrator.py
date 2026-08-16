@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import re as _re
 
 from app.agent.workflow.agents.base import TextAgent
@@ -152,8 +153,11 @@ class ResultIntegrator(TextAgent):
             + ("".join(f"\n    대안 {x.get('user')}: {x.get('why','')}"
                        for x in (a.get("alternates") or [])))
             for a in (state.get("assignments") or []))
-        ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
-                       for e in (state.get("evidence") or []))
+        # Preserve source-specific observations and source-quality judgments for the one
+        # role that writes the user-facing evidence chain.  The former flattened line
+        # discarded comment provenance, confidence, fitness, and limitations immediately
+        # before final composition.
+        ev = json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str)
         docs = "\n".join(f"- {d.get('title','')} {d.get('url','')}"
                          for d in (state.get("related_docs") or []))
         problems = "\n".join(f"- [{p.get('index')}] {p.get('message')} → {p.get('fix','')}"
@@ -229,6 +233,20 @@ class ResultIntegrator(TextAgent):
                     "tickets, and do not replace a meeting decision with an older ticket status. Finish with the "
                     "single `### 근거` index; ticket sources use detail tokens and documents use verified links."
                 )
+        asked_for_quality = (request_text(state) + " " + last_user_text(state)).strip()
+        if state.get("evidence"):
+            goal += (
+                "\nFor every material conclusion, add the matching `[n]` or `[n-a]` marker in the body. "
+                "Do not leave a conclusion uncited merely because its source is listed at the end. Preserve "
+                "comment observations and dated source conflicts; ticket status alone is not result evidence."
+            )
+        if any(word in asked_for_quality for word in ("신뢰도", "출처별", "요청 적합성", "적합성")):
+            goal += (
+                "\nAdd `### 출처 평가` before `### 근거` with a compact "
+                "`| 출처 | 신뢰도 | 요청 적합성 | 한계 |` table. Use only the supplied confidence, fitness, "
+                "limitations, authority, directness, recency, and corroboration evidence. Do not invent a "
+                "numeric score. Separate external specification from internal production readiness."
+            )
         data = wrap_data(
             data_block("Interpretation Data: Show Unchanged Under the Korean Heading 제가 이해한 바",
                        state.get("interpretation")),
@@ -244,7 +262,7 @@ class ResultIntegrator(TextAgent):
             data_block("Verified Current Situation", state.get("situation")),
             data_block("PMO Findings", pmo),
             data_block("Interpretation Caution", state.get("pmo_caution")),
-            data_block("Evidence Tickets", ev),
+            data_block("Verified Evidence Sources With Observations and Quality", ev),
             data_block("Related Documents", docs),
             data_block("Ticket Draft: Not Yet Created", draft_text(state.get("draft"))),
             data_block("Change Plan: Not Yet Executed",
@@ -429,11 +447,18 @@ class ResultIntegrator(TextAgent):
         #   그 제목에 붙이는 것은 **지어내는 것이 아니라 옮기는 것**이라 코드가 할 수 있다.
         text = _attach_known_doc_urls(text, state)
         text = _ensure_external_research_coverage(text, state)
+        text = _render_requested_source_quality(text, state)
         # Persist one canonical source index in the reply itself.  Research state and
         # model-written references used to be rendered as separate UI blocks, causing
         # duplicate counts and divergent formats.  The server owns numbering and grouping;
         # the browser only renders this canonical Markdown (with a legacy-read fallback).
         text = _merge_evidence_index(text, state)
+        text = _rebind_definition_citations(text)
+        # Explicit citation-marker requests are a rendering contract.  The source index
+        # already owns stable numbering, so bind uncited conclusion paragraphs to the
+        # best-matching verified sources after numbering instead of trusting another LLM
+        # rewrite to copy brackets reliably.
+        text = _ensure_requested_body_citations(text, state)
         # ★ 여기서 **한 번 더** 본다. 위의 후처리들은 접지 검사 **뒤에** 돌기 때문에,
         #   후처리가 만든 결함은 검사를 통과한 셈이 된다. 실측: 대괄호 정리가 문서 링크를
         #   먹어 참조가 URL 없는 제목만 남았는데 아무도 못 잡았다. 마지막에 다시 보고,
@@ -461,7 +486,7 @@ class ResultIntegrator(TextAgent):
         # 계획에 넣는데(모델 산술이 흔들린다), 답변 문장에는 모델이 제 값을 그대로 써서
         # "2026-08-18로 연장" ↔ 카드 2026-08-14 로 어긋났다(실측 Round P).
         due = str(((state.get("change_plan") or {}).get("changes") or {}).get("duedate") or "")
-        if _re.match(r"^\d{4}-\d{2}-\d{2}$", due):
+        if not state.get("_deterministic_reply") and _re.match(r"^\d{4}-\d{2}-\d{2}$", due):
             text = _re.sub(r"\b\d{4}-\d{2}-\d{2}\b",
                            lambda m: due if m.group(0) != due else m.group(0), text)
 
@@ -641,10 +666,26 @@ def _approval_reply(state) -> str:
     for index, item in enumerate(items):
         matched = next((a for a in assignments if a.get("index") == index), {})
         if item.get("assignee") and matched.get("reasons"):
-            reasons.append(f"- {{{{mention:{item['assignee']}}}}}: "
-                           + "; ".join(map(str, matched["reasons"])))
+            reasons.append((str(item.get("summary") or f"#{index + 1}"),
+                            str(item["assignee"]),
+                            "; ".join(map(str, matched["reasons"]))))
+        child_assignments = {
+            child.get("index"): child for child in (matched.get("children") or [])
+            if isinstance(child, dict) and isinstance(child.get("index"), int)
+        }
+        for child_index, child in enumerate((state.get("draft") or {}).get("items", [])[index]
+                                            .get("children") or []):
+            if not isinstance(child, dict) or not child.get("assignee"):
+                continue
+            assigned = child_assignments.get(child_index) or {}
+            why = str(assigned.get("why") or "").strip()
+            if why:
+                reasons.append((str(child.get("summary") or f"Sub-Task #{child_index + 1}"),
+                                str(child["assignee"]), why))
     if reasons:
-        rows += ["", "### 배정 근거", ""] + reasons
+        rows += ["", "### 배정 근거", "", "| 티켓 | 담당 | 근거 |", "|---|---|---|"]
+        rows += [f"| {_cell(title)} | {{{{mention:{owner}}}}} | {_cell(why)} |"
+                 for title, owner, why in reasons]
     rows += ["", "### 승인", "", "아래 카드에서 본문·배치·완료 조건 확인 후 생성 승인"]
     return "\n".join(rows).strip()
 
@@ -852,6 +893,14 @@ def _canonicalize_person_mentions(text: str, state) -> str:
                 walk(child)
 
     walk(state)
+    # Workload material is intentionally compact text, but it is still verified runtime
+    # data (``- user.id Display Name — 진행중 N건``).  Include that mapping so a model's
+    # plain-name assignment rationale becomes the mandatory mention badge as well.
+    for line in str(state.get("roster_load") or "").splitlines():
+        match = _re.match(
+            r"\s*-\s*([A-Za-z][A-Za-z0-9.]+)\s+(.+?)\s+[—–-]\s+", line)
+        if match:
+            add(match.group(1), match.group(2))
     out = str(text or "")
     for name in sorted(by_name, key=len, reverse=True):
         ids = by_name[name]
@@ -1076,8 +1125,9 @@ def _render_assignment_section(text: str, items: list, assignments: list) -> str
         table.append(f"| {title} | [~{row['user']}] | {reasons} | {alternates} |")
     block = "\n".join(table)
     source = str(text or "")
-    pattern = (r"(?ms)^###\s*(?:할당(?:\s+증거)?|담당(?:자)?\s*(?:제안|추천)|"
-               r"담당자?\s*및\s*배정\s*근거|할당\s+증거\s+및\s+추천)"
+    pattern = (r"(?ms)^###\s*(?:할당(?:\s+(?:증거|근거))?|배정\s*근거|"
+               r"담당(?:자)?\s*(?:제안|추천)|담당자?\s*및\s*배정\s*근거|"
+               r"할당\s+증거\s+및\s+추천)"
                r"[^\n]*\n.*?(?=^###\s|\Z)")
     # Remove every model-authored assignment section.  A response may contain both a stale
     # prose list and a later table; replacing only the first leaves contradictory owners.
@@ -1748,7 +1798,17 @@ def _badgeify_known_ticket_mentions(text: str, state) -> str:
             key = str(evidence.get("key") or "").upper()
             if _re.match(r"^[A-Z][A-Z0-9]*-\d+$", key):
                 known.add(key)
-    known.update(_re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", str(state.get("ticket_progress") or "")))
+    # Research material is produced by scoped Jira/Confluence retrieval, unlike raw user
+    # prose.  Ticket keys found there are verified references and must obey the same badge
+    # contract even when the Research Analyst represented them only inside a document
+    # observation rather than as a top-level evidence row.
+    for field in ("topic_dossier", "pre_survey"):
+        known.update(_re.findall(
+            r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
+            str(state.get(field) or ""), _re.I))
+    known.update(_re.findall(
+        r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
+        str(state.get("ticket_progress") or ""), _re.I))
     value = str(text or "")
     for key in sorted(known, key=len, reverse=True):
         # ':' 앞은 {{ticket-*:KEY}} 내부이므로 제외. 영숫자/하이픈 경계도 엄격히 유지.
@@ -1839,13 +1899,297 @@ def _dedupe_refs(text: str) -> str:
     return canonicalize_evidence_index(text)
 
 
+def _fold_standalone_sources(text: str) -> str:
+    """Move legacy standalone and external-source blocks into the canonical index.
+
+    The old document-link safeguard runs before the evidence index and can still emit a
+    standalone source.  Leaving it in the body creates two visible source lists after the
+    canonical index hydrates the same URL.  Treat the line as an input grammar only and let
+    the one index owner renumber/deduplicate it.
+    """
+    value = str(text or "")
+    found: list[str] = []
+
+    def take(match):
+        source = match.group(1).strip()
+        if source not in found:
+            found.append(source)
+        return ""
+
+    value = _re.sub(
+        r"(?m)^\s*출처\s*:\s*(\[[^\n]+?\]\(https?://[^\s)]+\)|https?://\S+)\s*$",
+        take, value,
+    )
+
+    def take_external_section(match):
+        before = len(found)
+        for line in match.group(1).splitlines():
+            source = _re.sub(r"^\s*[-*+]\s+", "", line).strip()
+            if _re.match(r"\[[^\]]+\]\(https?://", source) and source not in found:
+                found.append(source)
+        return "" if len(found) > before else match.group(0)
+
+    value = _re.sub(
+        r"(?ms)^###\s*외부\s*공식\s*근거\s*$\s*(.*?)(?=^###\s|\Z)",
+        take_external_section, value,
+    )
+    if not found:
+        return value
+    heading = _re.search(r"(?m)^#{1,4}\s*(?:근거|참조)\s*$", value)
+    rows = "\n".join(f"[{9000 + index}] {source}" for index, source in enumerate(found, 1))
+    if heading:
+        value = value[:heading.end()] + "\n" + rows + value[heading.end():]
+    else:
+        value = value.rstrip() + "\n\n### 근거\n\n" + rows
+    return value.strip()
+
+
 def _merge_evidence_index(text: str, state) -> str:
     """Union model references and structured research provenance in the persisted reply."""
     return canonicalize_evidence_index(
-        text,
+        _fold_standalone_sources(text),
         evidence=state.get("evidence") or [],
         related_docs=state.get("related_docs") or [],
     )
+
+
+def _rebind_definition_citations(text: str) -> str:
+    """Bind general technical definitions to an external specification source.
+
+    Meeting summaries sometimes copied an old internal marker onto a sentence that defines
+    a public file format.  Once the single index is built, source numbers are stable and a
+    definition can be rebound to the best title-matching external source without an LLM.
+    Project-state claims keep their internal citations.
+    """
+    value = str(text or "")
+    heading = _re.search(r"(?m)^###\s*근거\s*$", value)
+    if not heading:
+        return value
+    body, index = value[:heading.start()].rstrip(), value[heading.start():]
+    external = []
+    tickets = {}
+    for number, source in _re.findall(r"(?m)^\[(\d+)\]\s+(.+)$", index):
+        ticket = _re.search(r"\{\{ticket-detail:([A-Z][A-Z0-9]*-\d+)\}\}", source, _re.I)
+        if ticket:
+            tickets[ticket.group(1).upper()] = number
+        url = next(iter(_re.findall(r"https?://[^\s)]+", source)), "")
+        if url and _is_external_source_url(url):
+            external.append((number, _citation_words(source)))
+    if not external:
+        return value
+    definition = _re.compile(
+        r"파일\s*형식|공개\s*(?:표준|사양)|공식\s*(?:정의|사양)|"
+        r"(?:spec|specification|standard|format)\b", _re.I)
+    frequency = {}
+    for _number, source_words in external:
+        for word in source_words:
+            frequency[word] = frequency.get(word, 0) + 1
+
+    def best_external(sentence: str) -> tuple[float, str]:
+        words = _citation_words(_BODY_CITATION_RE.sub("", sentence))
+        ranked = []
+        for number, source_words in external:
+            overlap = words & source_words
+            score = sum(1 / frequency[word] for word in overlap)
+            ranked.append((score, -int(number), number))
+        score, _order, number = max(ranked, default=(0.0, 0, ""))
+        return score, number
+
+    def bind(sentence: str, numbers) -> str:
+        # Once the server can identify the claim's source, remove every model-supplied
+        # plain marker in that sentence.  Keeping an interior citation run produced UI such
+        # as ``티켓[1][2][3]. [2]`` even though the sentence named exactly one ticket.
+        clean = _BODY_CITATION_RE.sub("", sentence)
+        clean = _re.sub(r"\s+([.,!?])", r"\1", clean).strip()
+        chosen = list(dict.fromkeys(
+            [str(number) for number in ([numbers] if isinstance(numbers, str) else numbers)
+             if str(number)]))
+        marker = "".join(f"[{number}]" for number in chosen)
+        return f"{clean} {marker}" if clean and marker else sentence
+
+    lines = []
+    for line in body.splitlines():
+        # One generated paragraph often contains a public definition, a product claim,
+        # and an internal project-state claim followed by one marker.  A line-level rewrite
+        # makes that last marker appear to support every sentence.  Bind each sentence to
+        # the source it actually names, carrying an explicit ticket only across an immediate
+        # "이/해당 티켓" continuation.
+        if not (definition.search(line) or _re.search(r"\{\{ticket-detail:", line, _re.I)):
+            lines.append(line)
+            continue
+        parts = _re.split(r"(?<=[.!?])\s+", line)
+        rebound = []
+        last_ticket_number = ""
+        for sentence in parts:
+            ticket_keys = _re.findall(
+                r"\{\{ticket-detail:([A-Z][A-Z0-9]*-\d+)\}\}", sentence, _re.I)
+            ticket_numbers = [tickets[key.upper()] for key in ticket_keys if tickets.get(key.upper())]
+            if ticket_numbers:
+                last_ticket_number = ticket_numbers[-1]
+                sentence = bind(sentence, ticket_numbers)
+            elif last_ticket_number and _re.match(
+                    r"\s*(?:이|해당)\s*(?:티켓|작업|항목)(?:에서는|은|는|의|에서)", sentence):
+                sentence = bind(sentence, last_ticket_number)
+            else:
+                score, number = best_external(sentence)
+                # A definition needs one specific-title match.  Other technical claims need
+                # at least two title terms so ordinary prose is not mechanically over-cited.
+                threshold = 0.5 if definition.search(sentence) else 1.5
+                if score >= threshold:
+                    sentence = bind(sentence, number)
+            rebound.append(sentence)
+        lines.append(" ".join(rebound))
+    return "\n".join(lines).rstrip() + "\n\n" + index.lstrip()
+
+
+def _source_quality_requested(state) -> bool:
+    asked = (request_text(state) + " " + last_user_text(state)).casefold()
+    return any(word in asked for word in ("신뢰도", "출처별", "요청 적합성", "출처 적합성"))
+
+
+def _render_requested_source_quality(text: str, state) -> str:
+    """Project structured source judgments into one complete, deterministic table."""
+    evidence = [row for row in (state.get("evidence") or []) if isinstance(row, dict)]
+    if not evidence or not _source_quality_requested(state):
+        return str(text or "")
+    confidence = {"high": "높음", "medium": "중간", "low": "낮음", "unknown": "미확인"}
+    fitness = {"direct": "직접", "supporting": "보조", "context-only": "맥락", "unknown": "미확인"}
+    rows = ["### 출처 평가", "", "| 출처 | 신뢰도 | 요청 적합성 | 한계 |", "|---|---|---|---|"]
+    represented_urls = set()
+    for item in evidence:
+        key = str(item.get("key") or "").strip().upper()
+        title = str(item.get("title") or item.get("key") or "출처").strip()
+        url = str(item.get("url") or "").strip()
+        if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key):
+            source = f"{{{{ticket-detail:{key}}}}}"
+        elif url.startswith(("http://", "https://")):
+            source = f"[{title}]({_markdown_url(url)})"
+            represented_urls.add(url)
+        else:
+            source = title
+        raw_confidence = str(item.get("confidence") or "").lower()
+        raw_fitness = str(item.get("fitness") or "").lower()
+        limitation = str(item.get("limitations") or "").strip()
+        if _is_external_source_url(url):
+            # An external specification can be authoritative about its own format, never
+            # direct proof that this LTM/Jira project is production-ready.
+            official = bool(_re.search(
+                rf"(?m)^-\s*[^\n]*·\s*공식\s*—[^\n]*{_re.escape(url)}",
+                str(state.get("web_context") or "")))
+            raw_confidence = "high" if official else "medium"
+            raw_fitness = "supporting"
+            limitation = limitation or "내부 운영 적용 여부는 직접 판단하지 않음"
+        if not limitation:
+            limitation = {
+                "direct": "단일 출처만으로 최종 판단하기에는 범위 제한",
+                "supporting": "보조 근거로 단독 결론 불가",
+                "context-only": "배경 이해용으로 직접 판단 근거가 아님",
+            }.get(raw_fitness, "근거 한계 미확인")
+        rows.append(
+            f"| {_cell(source)} | {confidence.get(raw_confidence, '미확인')} | "
+            f"{fitness.get(raw_fitness, '미확인')} | {_cell(limitation)} |"
+        )
+    external_section = _re.search(
+        r"(?ms)^###\s*외부\s*공식\s*근거\s*$\s*(.*?)(?=^###\s|\Z)", str(text or ""))
+    if external_section:
+        for title, url in _re.findall(r"\[([^\n]+?)\]\((https?://[^\s)]+)\)",
+                                      external_section.group(1)):
+            if url in represented_urls:
+                continue
+            rows.append(
+                f"| {_cell(f'[{title}]({url})')} | 높음 | 보조 | "
+                "내부 운영 적용 여부는 직접 판단하지 않음 |"
+            )
+            represented_urls.add(url)
+    block = "\n".join(rows)
+    source = _re.sub(r"(?ms)^###\s*출처\s*평가\s*$.*?(?=^###\s|\Z)", "", str(text or "")).strip()
+    evidence_heading = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", source)
+    if evidence_heading:
+        return (source[:evidence_heading.start()].rstrip() + "\n\n" + block + "\n\n"
+                + source[evidence_heading.start():].lstrip())
+    return source.rstrip() + "\n\n" + block
+
+
+_BODY_CITATION_RE = _re.compile(r"\[\d+(?:-[a-z])?\](?!\()", _re.I)
+_CITATION_WORD_RE = _re.compile(r"[A-Za-z][A-Za-z0-9.+-]{2,}|[가-힣]{2,}")
+_CITATION_STOP = {
+    "현재", "관련", "상태", "작업", "확인", "정보", "결과", "프로젝트", "내부", "외부",
+    "문서", "티켓", "진행", "완료", "검증", "적용", "여부", "official", "documentation",
+}
+
+
+def _citation_words(value: str) -> set[str]:
+    return {token.casefold().strip("._+-") for token in _CITATION_WORD_RE.findall(str(value or ""))
+            if len(token.strip("._+-")) >= 3 and token.casefold().strip("._+-") not in _CITATION_STOP}
+
+
+def _ensure_requested_body_citations(text: str, state) -> str:
+    """Attach only resolvable source markers to material prose when the user required them."""
+    asked = (request_text(state) + " " + last_user_text(state)).casefold()
+    if not any(word in asked for word in ("근거 marker", "근거 마커", "참조번호", "인용 marker", "인용 마커")):
+        return str(text or "")
+    value = str(text or "")
+    heading = _re.search(r"(?m)^###\s*근거\s*$", value)
+    if not heading:
+        return value
+    body, index = value[:heading.start()].rstrip(), value[heading.start():]
+    root_rows = _re.findall(r"(?m)^\[(\d+)\]\s+(.+)$", index)
+    if not root_rows:
+        return value
+
+    numbered = []
+    for item in (state.get("evidence") or []):
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        number = next((n for n, row in root_rows
+                       if (key and key.upper() in row.upper()) or (url and url in row)
+                       or (title and title.casefold() in row.casefold())), "")
+        if not number:
+            continue
+        material = " ".join([
+            title, str(item.get("why") or ""),
+            *(str(obs.get("text") or "") if isinstance(obs, dict) else str(obs)
+              for obs in (item.get("observations") or [])),
+        ])
+        numbered.append({"number": number, "words": _citation_words(material),
+                         "direct": str(item.get("fitness") or "").lower() == "direct"})
+    if not numbered:
+        return value
+
+    frequency = {}
+    for item in numbered:
+        for word in item["words"]:
+            frequency[word] = frequency.get(word, 0) + 1
+    blocks, material_count = body.split("\n\n"), 0
+    for index_no, block in enumerate(blocks):
+        stripped = block.strip()
+        if (not stripped or stripped.startswith(("#", "|", "-", ">", "```"))
+                or "### 출처 평가" in stripped or _BODY_CITATION_RE.search(stripped)
+                or len(stripped) < 35):
+            continue
+        material_count += 1
+        words = _citation_words(stripped)
+        ranked = []
+        for item in numbered:
+            overlap = words & item["words"]
+            score = sum(1 / frequency[word] for word in overlap)
+            if score:
+                ranked.append((score, item["number"]))
+        ranked.sort(reverse=True)
+        chosen = [number for score, number in ranked if score >= 0.75][:3]
+        if not chosen and material_count == 1:
+            chosen = [item["number"] for item in numbered if item["direct"]][:3]
+        if chosen:
+            marker = "".join(f"[{number}]" for number in dict.fromkeys(chosen))
+            blocks[index_no] = stripped.rstrip() + " " + marker
+        # Citation-heavy research memos need their conclusion and explanatory paragraph,
+        # not every later housekeeping line, mechanically annotated.
+        if material_count >= 3:
+            break
+    return "\n\n".join(blocks).rstrip() + "\n\n" + index.lstrip()
 
 
 def _prune_empty_rows(text: str) -> str:
@@ -2046,7 +2390,8 @@ def _drop_dangling_bracket(text: str) -> str:
 
 def _violations(g: dict) -> int:
     return len(g.get("fake_keys") or []) + len(g.get("wrong_titles") or {}) \
-        + len(g.get("fake_people") or []) + len(g.get("unlinked_refs") or [])
+        + len(g.get("fake_people") or []) + len(g.get("unlinked_refs") or []) \
+        + len(g.get("name_as_id") or {})
 
 
 def _kept_substance(before: str, after: str) -> bool:

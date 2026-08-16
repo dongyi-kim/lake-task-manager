@@ -237,6 +237,33 @@ def test_generic_editor_closer_is_removed_only_at_the_end():
     assert _drop_generic_editor_closer(mixed) == "<p>설계 문서에서 결과 확인 가능.</p>"
 
 
+def test_editor_person_mentions_are_limited_to_verified_context_people():
+    from app.agent.editor_author import _ground_editor_person_mentions
+
+    source = ('[DL-9090] "리니지" — In Progress · 담당 [~skcc.x1402]\n'
+              '최근 코멘트: [~skcc.x1450]')
+    wrong = ('<p>담당자 <span data-type="mention" data-id="skcc.x1042">'
+             '@skcc.x1042</span>께 업데이트를 요청합니다.</p>')
+    assert _ground_editor_person_mentions(wrong, "상태 공유", source) == ""
+
+    corrected = _ground_editor_person_mentions(
+        wrong, "담당자를 멘션해서 검토 요청", source)
+    assert 'data-id="skcc.x1402"' in corrected
+    assert "skcc.x1042" not in corrected
+
+
+def test_status_comment_unfinished_checklist_does_not_read_as_completed():
+    from app.agent.editor_author import _normalize_unfinished_checklist_labels
+
+    html = ('<ul data-type="taskList">'
+            '<li data-checked="false">성능 측정 완료</li>'
+            '<li data-checked="false">문서 정리 완료</li></ul>')
+    context = "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 문서 정리"
+    got = _normalize_unfinished_checklist_labels(html, context)
+    assert "성능 측정 진행 필요" in got and "문서 정리 진행 필요" in got
+    assert "성능 측정 완료" not in got and "문서 정리 완료" not in got
+
+
 def test_unrequested_editor_quality_claim_is_removed_but_verified_one_stays():
     from app.agent.editor_author import _drop_unrequested_description_quality_claims
 
@@ -297,6 +324,20 @@ def test_dangling_editor_connective_is_completed():
 
     html = "<p>성능 측정 결과를 검토해 주시고,</p>"
     assert _repair_dangling_editor_ending(html) == "<p>성능 측정 결과를 검토 부탁드립니다.</p>"
+    assert _repair_dangling_editor_ending("<li>결과를 기록한다할 것</li>") == \
+        "<li>결과를 기록할 것</li>"
+
+
+def test_editor_description_replaces_generic_dod_with_observable_evidence():
+    from app.agent.editor_author import _sharpen_editor_dod
+
+    html = ('<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">결과와 검증 기록을 담당 리뷰로 확인</li></ul>')
+    context = '[DL-9095] "[Workbench] 다운스트림 조회 연동" — In Progress'
+    got = _sharpen_editor_dod(html, context, "본문을 보강해줘")
+
+    assert "결과와 검증 기록을 담당 리뷰" not in got
+    assert "다운스트림 조회 연동 실행 로그와 테스트 결과" in got
 
 
 def test_unverified_relative_editor_deadline_is_removed():

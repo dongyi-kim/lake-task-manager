@@ -39,6 +39,20 @@ SCHEMA = {
                 "title": {"type": "string"},
                 "why": {"type": "string", "description": "One Korean sentence explaining direct relevance."},
                 "url": {"type": "string", "description": "Verified document or web URL, otherwise empty."},
+                "confidence": {
+                    "type": "string",
+                    "description": ("Confidence based on authority, directness, recency, and corroboration; "
+                                    "use exactly high, medium, low, or unknown; never a generic optimism score."),
+                },
+                "fitness": {
+                    "type": "string",
+                    "description": ("How directly this source covers the user's decision claim; use exactly "
+                                    "direct, supporting, context-only, or unknown."),
+                },
+                "limitations": {
+                    "type": "string",
+                    "description": "One concise unresolved limitation or empty string.",
+                },
                 "observations": {
                     "type": "array",
                     "items": {"type": "object", "properties": {
@@ -400,6 +414,30 @@ def _relevant_only(state, ev: list) -> list:
         if any(t.lower() in hay for t in terms):
             keep.append(e)
     return keep
+
+
+def _normalize_evidence_quality(item: dict) -> dict:
+    """Accept localized model labels, then keep one stable machine contract downstream."""
+    confidence = {
+        "high": "high", "높음": "high", "높은": "high",
+        "medium": "medium", "중간": "medium", "보통": "medium",
+        "low": "low", "낮음": "low", "낮은": "low",
+        "unknown": "unknown", "미확인": "unknown", "알수없음": "unknown",
+    }
+    fitness = {
+        "direct": "direct", "직접": "direct", "직접적": "direct",
+        "supporting": "supporting", "보조": "supporting", "보조적": "supporting",
+        "context-only": "context-only", "context only": "context-only",
+        "맥락": "context-only", "맥락만": "context-only",
+        "unknown": "unknown", "미확인": "unknown", "알수없음": "unknown",
+    }
+    out = dict(item or {})
+    c = str(out.get("confidence") or "unknown").strip().casefold().replace(" ", "")
+    f = str(out.get("fitness") or "unknown").strip().casefold()
+    out["confidence"] = confidence.get(c, "unknown")
+    out["fitness"] = fitness.get(f, "unknown")
+    out["limitations"] = str(out.get("limitations") or "").strip()
+    return out
 
 
 def _ltm_guide() -> str:
@@ -1284,6 +1322,10 @@ Investigate the history related to the work request and establish the verified c
 - Keep one `evidence` item per real ticket, Confluence page, or web document. Put every distinct fact from
   that source in `observations`; use `description`, `comment`, `field`, `document`, `external`, or `query`
   to identify where it was observed. Never create separate evidence items for a ticket body and its comments.
+- Set `confidence` from source authority, directness, recency, and corroboration. Set `fitness` from claim
+  coverage and internal applicability, and record the decisive `limitations` value. A resolved ticket status is
+  workflow metadata, not proof that its DoD or technical result succeeded; require a result body, attachment,
+  or comment observation. When sources conflict, preserve both dates and provenance instead of silently choosing.
 - Distinguish ongoing, stopped, and already-decided work. For stopped work, inspect comments for the verified reason.
 - Lead with an existing ticket when it already performs materially the same work.
 - Do not repeat the same search more than twice with paraphrases. After two empty attempts, treat the in-scope result as empty and spend remaining steps opening a promising ticket through `get_ticket` or supplementing named public technology through `search_web`.
@@ -1332,7 +1374,8 @@ Original request: {last_user_text(state)}
         return SCHEMA
 
     def apply(self, state, out):
-        raw_ev = [e for e in (out.get("evidence") or []) if isinstance(e, dict)][:8]
+        raw_ev = [_normalize_evidence_quality(e) for e in (out.get("evidence") or [])
+                  if isinstance(e, dict)][:8]
         from app.agent.workflow.relevance import evidence_is_relevant
         named = {str(k).upper() for k in (state.get("mentioned_keys") or [])}
         raw_ev = [e for e in raw_ev if str(e.get("key") or "").upper() in named
