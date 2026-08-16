@@ -1,6 +1,8 @@
-# English Agent v13 — 비정형 회의록 재구성 품질·효율 비교
+# English Agent v13 — PR 버전별 full battery와 비정형 회의록 품질·효율 비교
 
-> 결론: 같은 meeting battery `3.0.0`과 같은 mock world에서 EN v12 기준선은 자동 계약 **5/9**, Codex 직접 정성평가 **3.63/5**. 비정형 회의록 재구성·사람 역할 분리·최소 인터뷰·최종 결정 경계를 공통 구조로 보강한 EN v13은 자동 계약 **9/9**, Codex 직접 정성평가 **4.76/5**. 동시에 실행 시간 **15.4%**, 전체 token **2.1%**, 비캐시 prompt token **37.0%** 감소.
+> 결론: PR의 single-commit primary full run 사람 품질은 EN v8 **4.30/5** → EN v12 **4.42/5** → EN v13 **4.66/5**. EN v10 primary는 사람 점수를 따로 산출하지 않아 빈칸으로 유지. focused closure까지 포함한 운영 개선선은 EN v8 **4.30** → EN v10 **4.56** → EN v12 **4.71**이며, 현재 EN v13 full primary는 closure가 아닌 최초 전체 실행이라 v12 closure보다 **0.05 낮고** v12 primary보다 **0.24 높음**.
+>
+> 같은 meeting battery `3.0.0`과 같은 mock world만 떼어 비교하면 EN v12 기준선은 자동 계약 **5/9**, Codex 직접 정성평가 **3.63/5**. 비정형 회의록 재구성·사람 역할 분리·최소 인터뷰·최종 결정 경계를 보강한 안정 실행은 자동 계약 **9/9**, Codex 직접 정성평가 **4.76/5**. 실행 시간 **15.4%**, 전체 token **2.1%**, 비캐시 prompt token **41.3%** 감소.
 >
 > 이 결과는 실제 OpenAI API를 사용한 1회 exploratory 비교. qualification을 위한 5회 반복·무작위 후보 순서는 수행하지 않았으므로 통계적 우월성 판정이 아니라 구조적 개선의 회귀·사람 품질 근거로 사용.
 
@@ -57,6 +59,106 @@ Raw 결과는 git 제외 경로에 보존.
 
 - 기준선: `.cache/agent-evaluation/2026-08-16-en-v12-meeting-v3-baseline-r01/meeting-b3.0.0-r01.json`
 - 개선 후: `.cache/agent-evaluation/2026-08-16-en-v13-meeting-v3-final-r04/meeting-b3.0.0-r01.json`
+- v13 58-case primary full: `.cache/agent-evaluation/2026-08-16-en-v13-full-quality-r02/`
+
+## PR 내 버전별 full battery 점수 추이
+
+### Single-commit primary full run만 비교
+
+focused 성공으로 실패를 교체하지 않은 최초 전체 실행. 사람 점수가 실제로 산출된 값만 표시하며, 없는 값은 추정하지 않음.
+
+| v13 full 식별자 | 값 |
+|---|---|
+| runGroupId | `2026-08-16-en-v13-full-quality-r02` |
+| candidateCommit | `e68d2ea76c6cce75ca26c8612ad7123813b241d1` |
+| promptVersion | `en-role-contract-v13` |
+| runKind / repetitions | `exploratory` / `1` |
+| model / simpleModel | `gpt-4o` / `gpt-4o-mini` |
+| dataManifestSha256 | `87e592d3cc136e62e135e5d81c76c91121da0e85d18fdc0b74bd0304f0521621` |
+| selectionPolicy | `complete-run-no-substitution` |
+| cachePolicy / processIsolation | `cold-private-cache-each-case` / `separate-process-private-cache` |
+| qualificationEligible | `false` — exploratory 1회, 최소 5회 반복 미충족 |
+
+| Suite | batteryVersion | batteryManifestSha256 | specializedReviewSpecSha256 |
+|---|---|---|---|
+| conversation | `3.2.0` | `dce890630ce3a1321bdb07e5ec9337776ebc77a6858c0442851b61cae01c230a` | `cbfec43c80dbe83bc9a52e9aebb19904fdc5fb68b2920112059b44aeb1912ecf` |
+| editor | `3.0.0` | `93c51fdfd97a571fcd4c8acbb52c49f0dbd267afca712c3ca0093fce29843a7f` | `61030118c370d5d795ec0a15a4d8ce1a8ceb646b9a39c1eced588cc236f8ed40` |
+| create | `4.0.2` | `be136915fca70e233ddf0fc360007076f9d633d46175b11ff90c548468707ee5` | `39fcbea7f3c527ff8bb76f9d1252b06769ae2f0d522943a08e8acd89a8eaaa0d` |
+| meeting | `3.0.0` | `d68d5f91299971b333942ee8c06b0e378db010a600b9231e570c9d1b00d42512` | `0c8f46d8a2b723763613252a0f2fc80ba52259c0280fecc70ca590e1cc8877ef` |
+| ctx-chg | `2.0.1` | `087c0b2aae0739922f7d4b3a5330e54e8aff3c78410593bcd4fda0002696d248` | `5318ddd5311701f890306c3322807297832b4f4aac080ca59163274803d1b1ff` |
+
+| 버전 | 범위 | 자동 계약 | 자동 통과율 | Codex 사람 품질 | 시간 | calls | total tokens | costUsd |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| EN v8 | 53 | 52/53 | 98.1% | **4.30** | 930.3s | 295 | 1,496,344 | 4.260553 |
+| EN v10 primary | 53 | 50/53 | 94.3% | — | **766.8s** | **254** | **1,366,198** | **3.802792** |
+| EN v12 primary | 54 | 51/54 | 94.4% | **4.42** | 1,005.7s | 325 | 1,740,368 | 4.726132 |
+| **EN v13 primary** | **58** | **54/58** | **93.1%** | **4.66** | **1,161.7s** | **356** | **1,981,752** | **5.577984** |
+
+v13 자동 실패 4건:
+
+- `S2`: 근거 observation에서 plain person name 사용
+- `S8`: 본문 citation이 source claim과 정확히 연결되지 않고 두 web source가 hyperlink 없는 root로 중복
+- `STR2`: 명시된 3 Task를 만들면서 불필요한 구조 질문과 미렌더링 mention token 노출
+- `MTG5`: `준서` 후보는 질문했지만 함께 미확정이던 `PSR` 의미를 첫 turn에 묻지 않음
+
+v13은 v12보다 case가 4건 늘었으므로 절대 시간·token만으로 효율을 비교하면 왜곡. case당 비교는 다음과 같음.
+
+| 지표 | EN v12 primary | EN v13 primary | case당 변화 |
+|---|---:|---:|---:|
+| 시간/case | 18.62s | 20.03s | +7.5% |
+| calls/case | 6.02 | 6.14 | +2.0% |
+| total tokens/case | 32,229 | 34,168 | +6.0% |
+| cost/case | $0.08752 | $0.09617 | +9.9% |
+
+즉, v13 full primary의 사람 품질은 v12 primary보다 개선됐지만 전체 효율은 악화. `STR2` 단일 case가 150초를 사용한 것이 시간 증가의 주요 outlier이며, meeting-only 안정 실행의 효율 개선을 전체 suite 개선으로 일반화할 수 없음.
+
+### 개발 단계별 최종 운영 확인값
+
+각 버전에서 당시 보고서가 “최종 채택”한 값. primary와 focused closure composite가 섞여 있으므로 배포 후보 간 qualification 비교가 아니라 개선 진행 방향 확인용.
+
+| 단계 | 결과 구성 | 범위 | 자동 계약 | Codex 사람 품질 | 이전 단계 대비 |
+|---|---|---:|---:|---:|---:|
+| EN v7 확장 기준선 | 기존 44 closure + 신규 9 full | 53 | 44/53 | 4.20 | — |
+| EN v8 | single-commit primary | 53 | 52/53 | 4.30 | +0.10 |
+| EN v10 | 실패 3건 focused closure composite | 53 | 53/53 | 4.56 | +0.26 |
+| EN v12 | full·실 UI 피드백 focused closure composite | 54 | 54/54 | **4.71** | +0.15 |
+| EN v13 | single-commit primary | 58 | 54/58 | **4.66** | -0.05 vs v12 closure / **+0.24 vs v12 primary** |
+| EN v13 meeting 안정 실행 | meeting-only primary | 9 | 9/9 | **4.76** | v12 meeting 4.68 대비 +0.08 방향성 |
+
+핵심 해석:
+
+- v7 → v8: 새 meeting/context 실패를 우선 복구
+- v8 → v10: 품질 +0.26과 함께 시간·calls·token 감소
+- v10 → v12: 근거/citation, UI renderer, 질문·최신 context 품질 상승. 다만 primary full은 4.42로 흔들렸고 closure에서 4.71
+- v12 → v13: 비정형 meeting 4건을 추가한 58-case primary에서 4.66. meeting 품질은 유지했지만 S8/STR2 회귀와 전체 효율 악화가 남음
+
+### v13 full primary 사람 품질
+
+정성평가 주체는 Codex. current raw의 reply·question·pending payload·근거를 직접 읽고 rubric `2.0.0`의 다섯 축으로 재평가.
+
+| Suite | case | 자동 | F | G | C | S | R | 사람 품질 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| conversation | 8 | 6/8 | 4.63 | 4.13 | 4.44 | 4.75 | 4.31 | **4.45** |
+| editor | 9 | 9/9 | 4.78 | 4.67 | 4.61 | 4.83 | 4.56 | **4.69** |
+| create | 28 | 27/28 | 4.75 | 4.64 | 4.73 | 4.68 | 4.51 | **4.66** |
+| meeting | 9 | 8/9 | 4.89 | 4.44 | 4.89 | 4.89 | 4.39 | **4.70** |
+| ctx-chg | 4 | 4/4 | 5.00 | 4.88 | 4.88 | 4.88 | 4.63 | **4.85** |
+| **전체 58** | **58** | **54/58** | **4.78** | **4.56** | **4.71** | **4.76** | **4.48** | **4.66** |
+
+대표 사람 판정:
+
+| Case | 점수 | 판정 |
+|---|---:|---|
+| S8 | 3.8 | 내부 상태 판단은 유용하지만 `[1]`이 여러 다른 주장에 재사용되고 출처 표·근거 root 일부가 hyperlink 없이 중복. 사용자가 반복 지적한 citation/UI 계약 회귀 |
+| STR2 | 2.5 | 세 Task 초안 일부는 유용하나 명시 구조를 다시 묻고 `{{mention:UI픽스처01}}` 노출. 승인 가능한 상태 아님 |
+| MTG5 | 4.3 | 최종 Task payload는 정확하나 첫 turn에서 사람과 함께 물어야 할 PSR 의미를 누락. 사용자가 후속 답변에서 자발적으로 제공해 최종 결과가 복구됨 |
+| MTG6~9 | 4.7~4.8 | 혼합 회의록·가변 사람 표기·미할당·최종 합의 경계는 안정적 |
+
+자동 checker와 사람 판정의 중요한 차이:
+
+- `MTG5`는 자동 fail이 타당하지만 최종 payload 자체는 좋으므로 사람 점수 4.3. checker 실패를 곧바로 “답변 전체 사용 불가”로 보지 않음.
+- `S8`은 자동 citation 계약과 사람 가독성·신뢰성 모두 실패해 실제 품질 회귀.
+- editor/ctx는 자동 만점과 사람 4.69/4.85. generic 문구·polite ending 같은 minor 때문에 사람 만점은 아님.
 
 ## 비교 가능성 및 evidence 선택
 
@@ -288,10 +390,11 @@ reader Task 담당자를 지정할까요, 아니면 미할당으로 둘까요?
 
 ## 자동 checker와 사람 판정 불일치
 
-- EN v13은 자동 9/9이지만 사람 평가는 4.76. 자동 checker는 exact action/target/field/assignee·필수 문구를 보장하지만 문장 반복, generic DoD, source root 중첩, stale rationale까지 완전하게 판정하지 않음.
+- EN v13 meeting 안정 실행은 자동 9/9이지만 사람 평가는 4.76. 자동 checker는 exact action/target/field/assignee·필수 문구를 보장하지만 문장 반복, generic DoD, source root 중첩, stale rationale까지 완전하게 판정하지 않음.
 - MTG6은 자동 pass지만 첨부 파일명 평문, ticket observation 중첩, 외부 근거의 구체성 부족으로 G/R 각 4.0.
 - MTG9은 exact payload 자동 pass지만 rationale에 이전 field 이름이 남아 R 4.5.
 - 반대로 MTG1의 내부 자료 상충 고지는 자동 checker의 단순 happy path보다 안전한 동작. 불확실성을 숨기지 않았으므로 감점하지 않음.
+- v13 58-case full에서는 MTG5가 자동 fail이어도 최종 payload는 실사용 가능. 반대로 S8은 자동·사람 평가 모두 실패해 실제 citation/UI 회귀로 판정.
 
 ## 검증
 
@@ -318,8 +421,9 @@ warning은 LangGraph/Starlette deprecation 2건과 Windows의 `.pytest_cache` �
 
 - 기준선 MTG6~9 실패 후 구조 개선을 수행하고 focused case로 원인을 닫은 다음 9건 전체 primary를 새 commit에서 재실행. 최종 보고 수치는 마지막 complete run만 사용.
 - 개발 중 모델 변동으로 개별 focused/full 시도에서 MTG5~8이 간헐 실패한 raw도 ignored cache에 보존. 성공 결과만 골라 primary를 합성하지 않음.
-- final primary는 1회라 평균·표준편차·신뢰구간이 없음. 비용 snapshot도 raw에 `unrecorded`라 절대 비용은 실행 시 provider usage 기록에 의존.
-- 이전 54-case full 결과의 피드백을 설계에 사용했지만, 이번 실 API 재측정 범위는 강화된 meeting 9건. 다른 suite의 새 prompt 회귀는 PR offline full CI와 다음 multi-suite API round에서 별도 확인 필요.
+- v13 full `r01`은 shell 제한 시간을 잘못 10초로 둬 conversation 실행 중 중단. 결과 파일을 만들지 못했으며 집계에서 제외. `r02`에서 58건 전체를 처음부터 clean run으로 실행.
+- v13 full primary와 meeting 안정 primary 모두 1회라 평균·표준편차·신뢰구간이 없음. 비용 snapshot도 raw에 `unrecorded`라 절대 비용은 실행 시 provider usage 기록에 의존.
+- PR 버전마다 battery case·manifest가 늘거나 바뀌었고 v10/v12 최종값에는 focused closure composite가 포함. 표의 0.1점 차이는 qualification 우열이 아니라 개발 진행 방향으로만 해석.
 - 이번 round는 브라우저 시각 회귀를 새로 수행하지 않았고 기존 실 UI 피드백, renderer contract, raw marker와 관련 unit test로 확인.
 
 ### 남은 개선 후보
@@ -328,4 +432,7 @@ warning은 LangGraph/Starlette deprecation 2건과 Windows의 `.pytest_cache` �
 - evidence root 아래 다른 ticket badge를 observation으로 넣지 않고 독립 source root로 승격
 - MTG7·8의 generic `실행 로그와 테스트 결과` DoD를 산출물별 검증 기준으로 더 구체화
 - update rationale을 final payload의 실제 key에서 다시 생성해 MTG9의 오래된 field 이름 잔존 제거
+- S8의 본문 claim-citation binding과 web/document source root hyperlink를 다시 구조적으로 고정
+- STR2의 명시된 복수 Task 요청에서 불필요한 구조 재질문과 unsealed mention token 차단
+- MTG5에서 서로 독립적인 사람·로컬 약어 공백을 한 번의 interview에 모두 포함
 - qualification 비교가 필요하면 같은 두 후보를 후보 순서 교차, case별 cold cache, 5회 이상 반복해 평균·표준편차·95% CI와 paired delta 산출
