@@ -83,13 +83,13 @@ def test_context_switch_checker_requires_only_the_latest_exact_change():
         "reply": "DL-9203 priority 변경 초안",
         "pending": {
             "action": "update_ticket", "key": "DL-9203",
-            "changes": {"priority": "P2-Major"},
+            "changes": {"priority": "P4-Trivial"},
         },
     }
     contaminated = {
         **exact,
         "pending": {**exact["pending"], "changes": {
-            "priority": "P2-Major", "duedate": "2026-08-31",
+            "priority": "P4-Trivial", "duedate": "2026-08-31",
         }},
     }
     assert context_eval._ctx_unrelated_ok(exact, [])

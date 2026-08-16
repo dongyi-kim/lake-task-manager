@@ -25,7 +25,16 @@ def fake(monkeypatch, tmp_path):
     monkeypatch.setenv("LAKE_AGENT_PROVIDER", "fake")
     import app.infra.settings as S
     monkeypatch.setattr(S, "CACHE_DIR", tmp_path)
+    # The hot-reload dev server may be using the repository cache at the same time as
+    # pytest. Bind an in-memory client so a cached child list from the UI cannot alter
+    # this deterministic fixture (and vice versa).
+    from app.agent.tools import _ctx
+    from app.infra.cache import Cache
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+    _ctx.bind(JiraClient(get_settings(), Cache(":memory:")), get_settings())
     yield
+    _ctx.bind()
 
 
 # ── 맥락 수집: 화면이 아는 것(어느 티켓·무엇을 쓰는 중)에서 나머지를 끌어온다 ──

@@ -323,10 +323,12 @@ local debug copy 기능에서만 복사 대상. 실제 브라우저 test tab은 
 | `tests/test_agent_draft.py` | 251 passed |
 | `tests/test_agent_relevance.py` | 21 passed |
 | `tests/test_static_assets.py` | 401 passed |
-| **합계** | **842 passed** |
+| 변경 영역 격리 합계 | **842 passed** |
+| CI 동일 전체 `pytest` | **1,713 passed, 1 skipped** |
 
-한 번의 combined run에서 mock cache 순서 오염으로 compose 1건이 거짓 실패한 적이 있어 파일별 unique
-`--basetemp`와 cacheprovider 비활성으로 재검증. 개별 격리 실행은 모두 통과.
+초기 combined run은 실행 중인 local dev와 pytest가 repository SQLite cache를 공유해 progress fixture의
+child 목록을 오염시키는 문제를 재현. compose/topic test가 매 test마다 in-memory Jira client를 bind하도록
+격리한 뒤, local dev를 그대로 실행한 상태에서 CI와 같은 전체 suite **1,713 passed, 1 skipped** 확인.
 
 ## 남은 한계
 
@@ -343,4 +345,3 @@ local debug copy 기능에서만 복사 대상. 실제 브라우저 test tab은 
 - final ambiguity closure: `.cache/agent-evaluation/2026-08-16-en-v12-focused-r14-warning-closure/`
 - final Bug dialogue closure: `.cache/agent-evaluation/2026-08-16-en-v12-focused-r19-runtime-bug-final/`
 - final S8 conflict closure: `.cache/agent-evaluation/2026-08-16-en-v12-focused-r25-s8-conflict-final/`
-

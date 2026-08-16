@@ -23,6 +23,19 @@ TABLE = "fdc.fdc_trace_summary_ic"
 UNKNOWN = "mes.mes_wip_move_hist"
 
 
+@pytest.fixture(autouse=True)
+def isolated_agent_client(monkeypatch):
+    """Keep topic aggregation independent from the running dev server's SQLite cache."""
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "fake")
+    from app.agent.tools import _ctx
+    from app.infra.cache import Cache
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+    _ctx.bind(JiraClient(get_settings(), Cache(":memory:")), get_settings())
+    yield
+    _ctx.bind()
+
+
 def _w():
     return get_world()
 
