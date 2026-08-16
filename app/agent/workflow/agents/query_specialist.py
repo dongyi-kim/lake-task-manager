@@ -363,10 +363,14 @@ def _normalize_meeting_research_queries(state, plan: dict) -> None:
     for query in plan.get("queries") or []:
         source = str(query.get("source") or "")
         material = " ".join(str(query.get(key) or "") for key in ("query", "where"))
-        if source in ("jira", "confluence") and topic and generic.search(material):
+        if source == "confluence" and topic:
             query["query"], query["where"] = topic, ""
-        elif source == "comments" and keys:
-            query["query"], query["where"] = "", "key in (" + ", ".join(keys) + ")"
+        elif source == "comments" and topic:
+            query["query"], query["where"] = topic, ""
+        elif source == "web" and topic:
+            query["query"], query["where"] = f"{topic} official documentation", ""
+        elif source == "jira" and topic and generic.search(material):
+            query["query"], query["where"] = topic, ""
 
     if keys and not any(
             q.get("source") == "jira" and any(key in " ".join(

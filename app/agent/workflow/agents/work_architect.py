@@ -498,6 +498,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 있었으므로, 코드가 실제 blocker(대상·정확한 변경값·계층·사람·댓글·재현)를 확인한다.
         if delegated:
             qs = [q for q in qs if _delegated_question_is_blocking(state, q)]
+        qs = _drop_unneeded_meeting_questions(state, qs)
         # 모델이 낸 질문은 **초안을 만들기 전에 답이 필요한 질문**이다. 뒤에서 코드가
         # 붙이는 구조 확인 질문과 구분해 둔다 — 전자는 초안과 함께 내면 사용자가 무엇을
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
@@ -1985,6 +1986,8 @@ def _change_plan(state, out, items, qs):
         # original request is authoritative and may enumerate exact fields even when the
         # model returns only one of them on the resumed turn.
         fields.update(_explicit_meeting_update_fields(state))
+        for unchanged in _meeting_unchanged_fields(state):
+            fields.pop(unchanged, None)
         # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
         # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
         # 떴다. 담당 해제("assignee": "")만 예외로 인정한다(사용자가 뗄 때 쓴다).
@@ -2666,9 +2669,10 @@ def _drop_unrequested_meeting_create_fields(state, items: list) -> None:
         said = meeting_request_text(state)
     except Exception:
         return
-    allow_priority = bool(_re.search(r"우선순위|priority|\bP[0-4](?:-[A-Za-z]+)?\b", said, _re.I))
-    allow_labels = bool(_re.search(r"라벨|labels?|태그", said, _re.I))
-    allow_components = bool(_re.search(r"컴포넌트|components?|모듈\s*[:：]", said, _re.I))
+    decisions = _meeting_optional_field_decisions(said)
+    allow_priority = decisions["priority"]
+    allow_labels = decisions["labels"]
+    allow_components = decisions["components"]
     for item in items:
         if not allow_priority:
             item.pop("priority", None)
@@ -2676,6 +2680,91 @@ def _drop_unrequested_meeting_create_fields(state, items: list) -> None:
             item.pop("labels", None)
         if not allow_components:
             item.pop("components", None)
+
+
+def _meeting_optional_field_decisions(text: str) -> dict[str, bool]:
+    """Return only optional create fields positively decided by the meeting.
+
+    A line such as ``priority/component/labels는 결정하지 않음`` names three fields but
+    explicitly leaves all three unset.  Presence-only checks inverted that decision and let
+    model defaults leak into approval payloads.
+    """
+    said = str(text or "")
+    patterns = {
+        "priority": r"우선순위|priority|\bP[0-4](?:-[A-Za-z]+)?\b",
+        "labels": r"라벨|labels?|태그",
+        "components": r"컴포넌트|components?|모듈\s*[:：]",
+    }
+    decided = {key: bool(_re.search(pattern, said, _re.I))
+               for key, pattern in patterns.items()}
+    negative = r"결정하지\s*않|정하지\s*않|미정|지정하지\s*않|없(?:음|다)"
+    for raw in said.splitlines():
+        if not _re.search(negative, raw, _re.I):
+            continue
+        for key, pattern in patterns.items():
+            if _re.search(pattern, raw, _re.I):
+                decided[key] = False
+    return decided
+
+
+def _drop_unneeded_meeting_questions(state, questions: list[dict]) -> list[dict]:
+    """Remove interviews for optional Jira fields that the meeting did not decide."""
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
+        if not is_meeting_request(state):
+            return questions
+        decisions = _meeting_optional_field_decisions(meeting_request_text(state))
+    except Exception:
+        return questions
+    aliases = {
+        "priority": ("priority", "우선순위"),
+        "components": ("component", "components", "컴포넌트", "모듈"),
+        "labels": ("label", "labels", "라벨", "태그"),
+    }
+    kept = []
+    for question in questions:
+        material = f"{question.get('field', '')} {question.get('question', '')}".casefold()
+        optional = next((key for key, words in aliases.items()
+                         if any(word.casefold() in material for word in words)), "")
+        if optional and not decisions[optional]:
+            continue
+        kept.append(question)
+    return kept
+
+
+def _meeting_unchanged_fields(state) -> set[str]:
+    """Recover fields explicitly rejected or kept unchanged in the final decision block."""
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
+        if not is_meeting_request(state):
+            return set()
+        text = meeting_request_text(state)
+    except Exception:
+        return set()
+    marker = _re.search(r"\[(?:회의\s*)?(?:종료\s*직전\s*)?(?:최종\s*)?합의\]", text, _re.I)
+    material = text[marker.end():] if marker else text
+    patterns = {
+        "priority": r"priority|우선순위",
+        "components": r"components?|컴포넌트|모듈",
+        "labels": r"labels?|라벨|태그",
+        "summary": r"summary|제목",
+        "duedate": r"due(?:date)?|기한|마감",
+        "description": r"description|본문|설명",
+    }
+    status: dict[str, bool] = {}
+    negative = r"변경하지\s*않|유지|보류|채택하지\s*않|결론\s*안|결정하지\s*않"
+    positive = r"합의|확정|결정|전체\s*교체|^\s*-\s*[^:：]+[:：]"
+    for raw in material.splitlines():
+        fields = [key for key, pattern in patterns.items() if _re.search(pattern, raw, _re.I)]
+        if not fields:
+            continue
+        if _re.search(negative, raw, _re.I):
+            for key in fields:
+                status[key] = False
+        elif _re.search(positive, raw, _re.I):
+            for key in fields:
+                status[key] = True
+    return {key for key, accepted in status.items() if not accepted}
 
 
 def _fill_owners(item: dict, kids: list) -> None:
@@ -4933,6 +5022,9 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
 
     if "comment" in plan:
         plan["comment"] = canonical(plan.get("comment") or "")
+    changes = plan.get("changes") if isinstance(plan.get("changes"), dict) else {}
+    if changes.get("description"):
+        changes["description"] = canonical(changes["description"])
     for row in plan.get("comments") or []:
         if isinstance(row, dict):
             row["body"] = canonical(row.get("body") or "")

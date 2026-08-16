@@ -21,11 +21,13 @@ from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _apply_named_assignees,
     _canonicalize_meeting_mentions,
     _comment_input_missing,
+    _drop_unneeded_meeting_questions,
     _drop_unrequested_meeting_create_fields,
     _ensure_meeting_background_attribution,
     _ensure_meeting_reviewers,
     _explicit_parent_epic,
     _explicit_meeting_update_fields,
+    _meeting_unchanged_fields,
     shape_hint,
 )
 from app.agent.workflow.agents.people_advisor import (  # noqa: E402
@@ -73,6 +75,17 @@ def test_heterogeneous_meeting_labels_are_recognized_and_attachment_filename_is_
     assert meeting_subject(state) == "Puffin StarRocks"
 
 
+def test_meeting_person_parsing_does_not_interview_particles_or_the_word_not_decided():
+    set_person_context("meeting-person-boundaries", ["DL-9200"])
+    request = ("회의 메모. 참석자는 다은님, 최하은, {{최민서:1042}}\n"
+               "from: @이다은\n최하은: reader 검증\n"
+               "이다은의 의견: 확대는 이번 결정 아님\n"
+               "하은님 의견 — 실제 소비 전에는 지원이라고 쓰지 않음")
+    state = {**_state(request), "situation": "관련 자료 조사 완료"}
+    assert unresolved_questions(state) == []
+    assert set(resolved_people(state).values()) == {"skcc.i2011", "skcc.x1402", "skcc.x1042"}
+
+
 def test_meeting_owner_records_support_by_colon_aliases_and_explicit_unassigned():
     set_person_context("meeting-attribution-forms", ["DL-9200"])
     request = """비정형 회의 기록에서 Task 3건을 만들어줘.
@@ -100,6 +113,19 @@ def test_meeting_create_background_keeps_discussion_and_requester_without_assign
     _ensure_meeting_background_attribution(state, items)
     assert "회의 논의" in items[0]["description"] and "skcc.x1042" in items[0]["description"]
     assert items[0]["assignee"] == "skcc.i2011"
+
+
+def test_meeting_optional_fields_left_undecided_are_dropped_without_followup_interview():
+    request = ("회의 기록으로 Task를 만들어줘. writer 증빙은 @이다은 담당. "
+               "priority/component/labels는 결정하지 않음")
+    state = _state(request)
+    items = [{"summary": "writer 증빙", "priority": "P3-Minor",
+              "components": ["Catalog"], "labels": ["puffin"]}]
+    _drop_unrequested_meeting_create_fields(state, items)
+    assert set(items[0]) == {"summary"}
+    questions = [{"question": "각 Task의 컴포넌트를 선택해 주세요.",
+                  "field": "component", "kind": "choice"}]
+    assert _drop_unneeded_meeting_questions(state, questions) == []
 
 
 def test_meeting_interview_asks_for_missing_owner_or_unassigned_but_skips_rejected_opinion_actor():
@@ -567,6 +593,18 @@ def test_exact_meeting_update_body_preserves_each_labelled_decision_without_dupl
     assert "## 완료 조건\n내부 결과" in description
 
 
+def test_final_meeting_decision_block_excludes_rejected_optional_field_changes():
+    request = """회의 기록에서 마지막 합의만 DL-9203 수정 초안에 반영해줘.
+민서M 의견: priority를 P1-Critical로 올릴까? → 결론 안 냄
+[회의 종료 직전 합의]
+- 제목: [Catalog] Puffin 증거 패키지 정리
+- due: 2026-08-30
+- 본문 전체 교체: 결정 배경과 완료 조건
+- priority/component/labels는 변경하지 않음"""
+    state = {**_state(request), "intent": "modify"}
+    assert _meeting_unchanged_fields(state) == {"priority", "components", "labels"}
+
+
 def test_meeting_interview_keeps_original_request_and_comment_intent():
     request = "회의 결정사항을 DL-9201, DL-9202 두 건의 댓글로 알려줘."
     answer = "이 회의의 준서TL은 skcc.x1327 임준서야. 계속해줘."
@@ -623,3 +661,14 @@ def test_meeting_comment_storage_uses_jira_mentions_and_drops_scope_meta():
     assert "[~skcc.i2011]" in body
     assert "{{mention:" not in body
     assert "댓글을 달지" not in body
+
+
+def test_meeting_update_description_uses_canonical_jira_mention():
+    set_person_context("meeting-update-description-mention", ["DL-9203"])
+    state = _state("회의 최종 결정. 요청·지시자 {{최민서:1042}}를 본문에 기록")
+    plan = {"key": "DL-9203", "changes": {
+        "description": "## 결정 배경\n요청·지시자 {{최민서:1042}}를 기록",
+    }}
+    _canonicalize_meeting_mentions(state, plan)
+    body = plan["changes"]["description"]
+    assert "[~skcc.x1042]" in body and "{{최민서:1042}}" not in body

@@ -69,7 +69,10 @@ def meeting_subject(state) -> str:
     # subject previously pulled an unrelated attachment UI fixture.  Keep only public-looking
     # technology terms in their original spelling and preserve their first-seen order.
     material = re.sub(r"(?i)\b[^\s`/\\]+\.(?:docx?|pdf|txt|md|xlsx?|pptx?)\b", " ", original)
-    material = re.sub(r"\b[A-Z][A-Z0-9]*-\d+\b|\bskcc\.[a-z]\d+\b", " ", material, flags=re.I)
+    material = re.sub(
+        r"(?<![A-Z0-9-])[A-Z][A-Z0-9]*-\d+(?!\d)|\bskcc\.[a-z]\d+\b",
+        " ", material, flags=re.I,
+    )
     terms: list[str] = []
     for token in re.findall(r"[A-Za-z][A-Za-z0-9.+-]{2,}", material):
         low = token.lower().strip(".+-")
@@ -95,13 +98,13 @@ def _person_tokens(text: str) -> list[str]:
     for match in re.finditer(r"(?<![\w@])@([가-힣]{2,5})(?![\w])", text):
         located.append((match.start(), match.group(1)))
     for match in re.finditer(
-            rf"(?<![가-힣])([가-힣]{{1,5}})\s*{_TITLE}(?=\s|의|은|는|이|가|을|를|:|[,.;!?)]|$)", text):
+            rf"(?<![가-힣])([가-힣]{{2,5}})\s*{_TITLE}(?=\s|의|은|는|이|가|을|를|:|[,.;!?)]|$)", text):
         located.append((match.start(), match.group(1)))
     attribution_patterns = (
         rf"(?im)^\s*from\s*[:：]\s*(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{_TITLE}?",
         rf"(?i)\bby\s+(?:@|\{{\{{)?([가-힣]{{1,5}})(?::\d+\}}\}})?\s*{_TITLE}?",
         rf"(?m)^\s*(?:[-*]\s*)?(?:@|\{{\{{)?([가-힣]{{2,5}})(?::\d+\}}\}})?\s*{_TITLE}?\s*[:：]",
-        rf"(?<![가-힣])([가-힣]{{1,5}})\s*{_TITLE}?\s*(?:의\s*)?의견(?=\s|[:：—–-]|$)",
+        rf"(?<![가-힣])([가-힣]{{1,5}}?)\s*{_TITLE}?\s*(?:의\s*)?의견(?=\s|[:：—–-]|$)",
     )
     for pattern in attribution_patterns:
         for match in re.finditer(pattern, text):
