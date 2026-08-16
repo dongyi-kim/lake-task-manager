@@ -18,7 +18,7 @@ except ImportError:
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
 
-BATTERY_VERSION = "2.0.2"
+BATTERY_VERSION = "2.0.3"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("meeting")
 
 
@@ -59,7 +59,7 @@ def _meeting_summary_ok(output: dict[str, Any], outputs: list[dict[str, Any]]) -
         _interview_then_resume(outputs, "PSR")
         and not _pending(output)
         and all(value in reply for value in required)
-        and bool(re.search(r"운영\s*반영(?:을)?\s*보류", reply))
+        and bool(re.search(r"운영\s*반영(?:은|는|이|가|을|를)?\s*보류", reply))
         and all(any(candidate in reply for candidate in pair) for pair in people)
         and "DL-7001" in evidence
         and "Iceberg Puffin NDV 적용 검토 노트" in evidence

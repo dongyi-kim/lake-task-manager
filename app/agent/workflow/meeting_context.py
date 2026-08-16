@@ -255,6 +255,16 @@ def canonicalize_reply_mentions(state, text: str) -> str:
                      f"{{{{mention:{uid}}}}}", out)
         out = re.sub(rf"(?:{token}|{rendered})\s*\(\s*(?:{token}|{rendered})\s*\)",
                      f"{{{{mention:{uid}}}}}", out)
+        # The model can carry a pre-interview ambiguity sentence into the resumed
+        # answer even after the identity is confirmed. Remove only identity-specific
+        # stale warnings; uncertainty about the person's work or evidence remains.
+        out = re.sub(
+            rf"(?mi)^\s*[-*]?\s*(?:{token}|{rendered})[^\n]{{0,80}}"
+            rf"(?:정확한\s*)?(?:신원|동명이인|누구인지)[^\n]{{0,60}}"
+            rf"(?:확인\s*필요|미확정|확정[^\n]{{0,12}}못)[^.\n]*\.?\s*$\n?",
+            "", out,
+        )
+    out = re.sub(r"(?ms)^###\s*미결[·ㆍ\s/-]*검증\s*\n\s*(?=^###\s|\Z)", "", out)
     return out
 
 

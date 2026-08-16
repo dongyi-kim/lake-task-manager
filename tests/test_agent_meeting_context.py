@@ -287,6 +287,18 @@ def test_meeting_mentions_collapse_duplicate_badges_and_full_name_username_pair(
     assert "이준서" not in got and "(skcc.x1103)" not in got
 
 
+def test_resolved_meeting_identity_drops_only_stale_identity_warning():
+    set_person_context("meeting-stale-identity-warning", ["DL-9200"])
+    request = "회의 후속 정리. 하은님이 reader 검증."
+    state = _state(request)
+    got = canonicalize_reply_mentions(
+        state,
+        "### 미결·검증\n- 하은님의 정확한 신원 확인 필요\n- reader 실제 소비 여부 확인 필요",
+    )
+    assert "신원 확인 필요" not in got
+    assert "reader 실제 소비 여부 확인 필요" in got
+
+
 def test_explicit_meeting_epic_survives_interview_and_overrides_component_inference():
     request = "회의 결정에 따라 Epic DL-9200 아래 정확히 Task 3건을 만들어줘."
     answer = "준서TL은 skcc.x1103 이준서야. 초안을 계속해줘."
