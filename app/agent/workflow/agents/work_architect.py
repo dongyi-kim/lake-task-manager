@@ -1337,8 +1337,13 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             if len(fix) >= 2:
                 kept = [c for c in (items[0].get("children") or []) if isinstance(c, dict)]
                 have = {str(c.get("summary") or "") for c in kept}
+                covered_stages = {_execution_stage(c.get("summary")) for c in kept}
+                covered_stages.discard("")
                 items[0]["children"] = kept + [c for c in fix
-                                               if str(c.get("summary") or "") not in have]
+                                               if str(c.get("summary") or "") not in have
+                                               and (not _execution_stage(c.get("summary"))
+                                                    or _execution_stage(c.get("summary"))
+                                                    not in covered_stages)]
                 _fill_owners(items[0], items[0]["children"])   # 자식 담당 채움 가드는 이미 지나갔다
                 out["rationale"] = ((out.get("rationale") or "")
                                     + "\n(구조 판단대로 단계별 Sub-Task 를 채웠다 — "
@@ -1600,6 +1605,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             # User IDs are typed owner metadata. They must never be reinterpreted as a
             # model, device, or technical target inside the authored ticket body.
             _remove_assignee_semantic_drift(state, items)
+            _drop_unrequested_requester_attribution(state, items)
             _repair_bug_facts_from_report(state, items)
             # 모델은 구체적 변경만 받은 경우에도 "사용자 편의성", "운영 효율성", "성능·안정성"
             # 같은 그럴듯한 효과를 배경·범위·DoD에 보탠다. 문장은 자연스럽지만 검증된 사실은
@@ -2871,7 +2877,7 @@ def _reported_symptom(text: str) -> str:
 def _repair_bug_facts_from_report(state, items) -> bool:
     """Replace a placeholder actual result with the observed symptom already in the report."""
     said = (request_text(state) + "\n" + conversation(state)).strip()
-    symptom = _reported_symptom(said)
+    symptom = _reported_runtime_actual(said) or _reported_symptom(said)
     if not symptom:
         return False
     changed = False
@@ -2897,7 +2903,53 @@ def _repair_bug_facts_from_report(state, items) -> bool:
 def _reported_expectation(text: str) -> str:
     """신고자가 직접 말한 희망/기대 문장만 반환한다."""
     want = _re.compile(r"좋겠|원(?:합니다|해요|한다)|기대|해야\s*한다|바로\s*(?:보|확인)")
-    return next((s for s in _report_sentences(text) if want.search(s)), "")
+    explicit = next((s for s in _report_sentences(text) if want.search(s)), "")
+    if explicit:
+        return explicit
+    # 메신저/회의록에 붙은 실행 장애는 별도의 "기대" 문장 없이도 대상·환경과
+    # 실패 사실이 완결되어 있는 경우가 많다. 이때 정상 완료는 새 요구사항이 아니라
+    # 실패의 직접적인 반대 상태다. 구체적인 SLA나 복구 방법은 추론하지 않는다.
+    target, environment = _reported_runtime_context(text)
+    if target and _reported_symptom(text):
+        where = f"{environment} 환경의 " if environment else ""
+        return f"{where}{target} 실행이 오류 없이 정상 완료됨"
+    return ""
+
+
+def _reported_runtime_context(text: str) -> tuple[str, str]:
+    """Return a literal executable target and environment from an incident report.
+
+    Identifiers and environment names are copied from the report.  This deliberately
+    avoids guessing a Jira component, owner, schedule, or repair procedure.
+    """
+    joined = " ".join(_report_sentences(text))
+    target_match = _re.search(
+        r"`([^`]{2,100})`|\b((?:[A-Za-z][A-Za-z0-9]*_){1,}[A-Za-z0-9_]+)\b",
+        joined,
+    )
+    target = next((value for value in (target_match.groups() if target_match else ()) if value), "")
+    env_match = _re.search(
+        r"(?<![A-Za-z0-9])(prod(?:uction)?|stage|staging|qa|dev(?:elopment)?)(?![A-Za-z0-9])|"
+        r"운영(?:\s*환경)?",
+        joined, _re.I,
+    )
+    environment = env_match.group(0).strip() if env_match else ""
+    return target, environment
+
+
+def _reported_runtime_actual(text: str) -> str:
+    """Preserve adjacent runtime-failure facts from a pasted dialogue or meeting note."""
+    target, _ = _reported_runtime_context(text)
+    if not target:
+        return ""
+    signal = _re.compile(
+        r"실패|오류|에러|타임아웃|timeout|재실행|재시도|반복|매일|어제|같은\s*시간|곤란",
+        _re.I,
+    )
+    facts = [row for row in _report_sentences(text) if signal.search(row)]
+    # A short contiguous incident transcript is more useful than selecting just its
+    # first symptom: it can retain the error, recurrence, and retry outcome together.
+    return ". ".join(fact.rstrip(". ") for fact in facts[:4])
 
 
 def _reported_steps(text: str, symptom: str) -> list[str]:
@@ -2909,13 +2961,17 @@ def _reported_steps(text: str, symptom: str) -> list[str]:
     subjects = _re.findall(
         r"([가-힣A-Za-z0-9_.-]+(?:\s+[가-힣A-Za-z0-9_.-]+){0,2})(?:이|가)\s*"
         r"(?:안\s*보|보이지\s*않|안\s*나오|나오지\s*않)", symptom)
-    if not places or not subjects:
-        return []
-    place = places[-1].strip()
-    subject = subjects[-1].strip()
-    if "때 " in subject:
-        subject = subject.split("때 ", 1)[1].strip()
-    return [f"{place}에서 {subject} 표시 여부를 확인한다."]
+    if places and subjects:
+        place = places[-1].strip()
+        subject = subjects[-1].strip()
+        if "때 " in subject:
+            subject = subject.split("때 ", 1)[1].strip()
+        return [f"{place}에서 {subject} 표시 여부를 확인한다."]
+    target, environment = _reported_runtime_context(text)
+    if target and symptom:
+        where = f"{environment} 환경에서 " if environment else ""
+        return [f"{where}{target} 실행 결과를 확인한다."]
+    return []
 
 
 def _korean_object(value: str) -> str:
@@ -3007,8 +3063,11 @@ def _bug_body_for(state, it) -> str:
     # 붙여넣기 wrapper 전체가 actual로 돌아오는 것은 증상이 아니다(PASTE1 실측). 원문에
     # 화면·증상·희망이 명시돼 있으면 그 문장만 사용한다. 없는 칸은 여전히 확인 필요로
     # 남겨 두므로, 이 보정은 정보를 만들어내지 않는다.
-    symptom = _reported_symptom(said)
-    if not actual or _looks_like_report_wrapper(actual):
+    runtime_actual = _reported_runtime_actual(said)
+    symptom = runtime_actual or _reported_symptom(said)
+    if runtime_actual:
+        actual = runtime_actual
+    elif not actual or _looks_like_report_wrapper(actual):
         actual = symptom or _ASK_REPORTER
     if not expected:
         expected = _reported_expectation(said)
@@ -3832,6 +3891,7 @@ _QUALITY_DIMENSIONS = (
     r"접근성|accessibility",
     r"운영\s*효율성|업무\s*효율성|효율성|생산성|efficien(?:cy|t)|productivity",
     r"성능|처리량|응답\s*속도|performance|throughput|latency",
+    r"쿼리\s*최적화|query\s*optim(?:ization|isation|ize|ise)",
     r"안정성|신뢰(?:성|할)|가용성|stable|stability|reliability|availability",
     r"정확(?:성|한|도)?|정합성|품질\s*(?:향상|개선|검증|점검|기준|룰)|accuracy|correctness",
     r"보안성|보안\s*(?:강화|향상|개선)|개인정보|노출\s*(?:감소|방지)|security|privacy",
@@ -4015,6 +4075,56 @@ def _ensure_child_descriptions(items: list) -> bool:
                 "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
                 f"<li data-checked=\"false\">{_esc(proof)}</li></ul>"
             )
+            changed = True
+    return changed
+
+
+def _execution_stage(summary) -> str:
+    """Return a broad execution stage only when a child title explicitly names one."""
+    value = str(summary or "")
+    for canonical, words in (
+        ("design", ("설계", "기획")),
+        ("implementation", ("구현", "개발", "적용")),
+        ("validation", ("검증", "테스트", "측정")),
+        ("deployment", ("배포", "전환")),
+        ("operation", ("모니터링", "운영")),
+        ("documentation", ("문서화", "가이드")),
+    ):
+        if any(word in value for word in words):
+            return canonical
+    return ""
+
+
+def _drop_unrequested_requester_attribution(state: dict, items: list) -> bool:
+    """Remove a fabricated generic requester sentence from ticket descriptions.
+
+    The logged-in display name is useful session metadata, not automatically the business
+    reason for every ticket.  Keep an attribution only when the user actually mentioned
+    that identity in the request.
+    """
+    asked = (request_text(state) + " " + _human_request_text(state)).strip()
+    changed = False
+    targets = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        targets.append(item)
+        targets.extend(child for child in (item.get("children") or []) if isinstance(child, dict))
+    pattern = _re.compile(
+        r"\s*(\{\{mention:([^}]+)\}\}|\[~([^\]]+)\])의\s*요청에\s*따라\s*진행(?:됩니다|함|한다)?[.]?",
+        _re.I,
+    )
+    for item in targets:
+        body = str(item.get("description") or "")
+
+        def remove(match):
+            identity = str(match.group(2) or match.group(3) or "").strip()
+            return match.group(0) if identity and identity in asked else ""
+
+        cleaned = pattern.sub(remove, body)
+        cleaned = _re.sub(r"<p>\s*</p>", "", cleaned, flags=_re.I)
+        if cleaned != body:
+            item["description"] = cleaned
             changed = True
     return changed
 

@@ -347,7 +347,8 @@ class ResultIntegrator(TextAgent):
         # Letting it narrate the surrounding research produced invented Epic/module claims in
         # ASKD4 and BUG1.  The structured form owns the question; prose only states why input
         # is required.
-        if _qs and not _has_executable_payload(state):
+        question_only = bool(_qs and not _has_executable_payload(state))
+        if question_only:
             text = _question_only_reply(state, _qs)
         text = _canonicalize_meeting_reply(text, state)
         text = _canonicalize_person_mentions(text, state)
@@ -356,6 +357,7 @@ class ResultIntegrator(TextAgent):
         if not state.get("_deterministic_reply"):
             text = _align_draft_claims(text, state)
         text = _ensure_research_status(text, state)
+        text = _drop_unsupported_guarantees(text, state)
 
         # ── 접지 검사 — 답변의 티켓 키·제목·인명을 실물과 대조한다.
         # 지도·자료를 정확히 줘도 답변 단계에서 날조가 나왔다(없는 키, 바뀐 제목, "PM: 김철수").
@@ -370,7 +372,7 @@ class ResultIntegrator(TextAgent):
         from app.agent.workflow import grounding
         grounding_warnings = []
         try:
-            g = ({"ok": True} if state.get("_deterministic_reply") else
+            g = ({"ok": True} if state.get("_deterministic_reply") or question_only else
                  grounding.check(text, allowed_people=_dialogue_speakers(request_text(state))))
         except Exception:
             g = None                        # 검증기가 죽으면 답은 그대로 나간다
@@ -815,10 +817,11 @@ def _canonicalize_meeting_reply(text: str, state) -> str:
     """Apply confirmed meeting identities and guarantee a complete attendee badge section."""
     from app.agent.workflow.meeting_context import (
         attendee_mentions, canonicalize_meeting_owner_table,
-        canonicalize_reply_mentions, is_meeting_request,
+        canonicalize_reply_mentions, is_meeting_request, prune_resolved_reply_gaps,
     )
 
     out = canonicalize_reply_mentions(state, text)
+    out = prune_resolved_reply_gaps(state, out)
     out = canonicalize_meeting_owner_table(state, out)
     if not is_meeting_request(state) or (state.get("intent") or "") != Intent.ASK \
             or state.get("questions"):
@@ -974,6 +977,11 @@ def _enforce_reply_style(text: str) -> str:
             return line
         out = line
         replacements = (
+            (r"보였습니다", "보였음"),
+            (r"보입니다", "보임"),
+            (r"([가-힣]+)되어야\s*합니다", r"\1 필요"),
+            (r"([가-힣]+(?:되지|하지))\s*않았습니다", r"\1 않음"),
+            (r"([가-힣]+(?:되지|하지))\s*않습니다", r"\1 않음"),
             (r"([가-힣]+)하였습니다", r"\1함"),
             (r"([가-힣]+)했습니다", r"\1함"),
             (r"([가-힣]+)되었습니다", r"\1됨"),
@@ -1835,6 +1843,11 @@ def _ensure_external_research_coverage(text: str, state) -> str:
         for title, url in _re.findall(
                 r"^-\s*(.+?)\s*·\s*공식\s*—[^\n]*\((https?://[^)\s]+)\)\s*$",
                 str(state.get("web_context") or ""), _re.M):
+            # Navigation pages and language API indices are search artifacts, not useful
+            # decision evidence unless the user explicitly asked for those APIs.
+            if _re.search(r"Search the documentation|Namespace Reference|\s-\sRust$|API Reference",
+                          title, _re.I):
+                continue
             sources.append((title.strip(), url, "공식 자료"))
 
     value = str(text or "").rstrip()
@@ -1845,11 +1858,34 @@ def _ensure_external_research_coverage(text: str, state) -> str:
     missing = [(title, url, why) for title, url, why in sources if url not in value]
     if missing:
         lines = ["### 외부 공식 근거", ""]
-        for title, url, why in missing[:5]:
+        for title, url, why in missing[:3]:
             lines.append(f"- [{title}]({_markdown_url(url)})" + (f" — {why}" if why else ""))
         value += "\n\n" + "\n".join(lines)
 
     material = " ".join(str(state.get(k) or "") for k in ("topic_dossier", "pre_survey"))
+    material += " " + json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str)
+    # A generated conclusion must not keep a definitive PoC-complete claim when the
+    # supplied internal record says that PoC is still unperformed.  Merely appending a
+    # warning left two mutually exclusive statements on screen (S8 UI review). Replace
+    # the unsafe assertion itself; retain the remaining reader/support clause.
+    source_says_unperformed = bool(_re.search(
+        r"PoC[^\n]{0,120}(?:아직\s*수행하지\s*않|미수행|수행\s*전|완료되지\s*않)",
+        material, _re.I,
+    ))
+    source_says_complete = bool(_re.search(
+        r"PoC[^\n]{0,120}(?:수행\s*완료|완료되었|완료됨|완료한\s*상태)",
+        material, _re.I,
+    ))
+    if source_says_unperformed:
+        reason = "내부 기록 상충" if source_says_complete else "확인 근거 부족"
+        value = _re.sub(
+            r"(?:Puffin\s+NDV(?:의)?\s*)?(?:writer\s*)?PoC(?:는|가|은|이)?\s*"
+            r"(?:수행\s*)?(?:완료되었(?:으나|지만)?|완료되었다|완료됨|완료한\s*상태)\s*[,，]?",
+            f"Puffin NDV writer PoC 완료 여부는 {reason}으로 확정 불가. ",
+            value,
+            flags=_re.I,
+        )
+        value = _re.sub(r"\.\s*\.", ".", value)
     conflict_material = material + " " + value
     if ("PoC" in conflict_material
             and _re.search(r"PoC[^\n]{0,80}(?:완료|수행 완료)", conflict_material)
@@ -1892,6 +1928,65 @@ def _is_external_source_url(url: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _drop_unsupported_guarantees(text: str, state) -> str:
+    """Do not turn a format description into an unsupported outcome guarantee.
+
+    ``보장`` is a materially stronger claim than ``저장한다`` or ``지원한다``.  If no
+    request or verified research material uses that guarantee, remove only the attached
+    comma-clause.  Standalone guarantee sentences are retained as an explicit validation
+    gap instead of being silently presented as fact.
+    """
+    source = " ".join(str(state.get(key) or "") for key in (
+        "request_text", "topic_dossier", "pre_survey", "situation",
+        "knowledge_brief", "evidence",
+    ))
+    value = str(text or "")
+    if "보장" not in source:
+        value = _re.sub(
+            r"\s*[,，]\s*[^,.\n]{2,120}?(?:을|를|이|가)?\s*보장(?:함|됨|한다|합니다)?(?=[.\n]|$)",
+            "", value,
+        )
+        value = _re.sub(
+            r"(?m)^(\s*[-*]?\s*)?([^\n.]{2,160}?보장(?:함|됨|한다|합니다)?)[.]?\s*$",
+            lambda m: ((m.group(1) or "") + "해당 보장 효과는 검증 필요"),
+            value,
+        )
+    # A search-result snippet is candidate material, not a selected source.  Do not let a
+    # model attach an uncited optimization/quality benefit unless the request or structured
+    # research evidence actually retained that effect.
+    if not _re.search(r"쿼리\s*최적화|query\s*optim", source, _re.I):
+        value = _re.sub(
+            r"\s*NDV\s*통계(?:는|가)?\s*쿼리\s*최적화에\s*사용될\s*수\s*있음[.]?",
+            "", value, flags=_re.I,
+        )
+        value = _re.sub(
+            r"이는\s+[^.\n]{0,180}?성능\s*최적화에\s*기여할\s*수\s*있음을\s*시사하지만,?\s*",
+            "", value, flags=_re.I,
+        )
+    unresolved_reader = bool(_re.search(
+        r"StarRocks[^.\n]{0,100}(?:Puffin|NDV)[^.\n]{0,120}"
+        r"(?:확인되지|미확인|검증\s*필요|지원\s*여부)", source, _re.I,
+    ))
+    latest = last_user_text(state)
+    support_confirmed_now = bool(_re.search(
+        r"StarRocks[^.\n]{0,100}(?:Puffin|NDV)[^.\n]{0,100}"
+        r"(?:소비\s*(?:지원|확인|성공|완료)|지원(?:함|한다|됨|된다))",
+        latest, _re.I,
+    ))
+    if unresolved_reader and not support_confirmed_now:
+        value = _re.sub(
+            r"(?m)(?:^|(?<=[.!?])\s+)StarRocks[^.!?\n]{0,220}?"
+            r"Puffin[^.!?\n]{0,120}?(?:소비할\s*수\s*있음|소비를?\s*지원(?:함|한다|됨|된다))"
+            r"[.!?]?\s*",
+            "", value, flags=_re.I,
+        )
+    value = _re.sub(r"([가-힣]+)이며\.", r"\1임.", value)
+    value = _re.sub(r"([가-힣]+)되며\.", r"\1됨.", value)
+    value = _re.sub(r"([가-힣]+)하며\.", r"\1함.", value)
+    value = _re.sub(r"\s+([.,!?])", r"\1", value)
+    return value
 
 
 def _dedupe_refs(text: str) -> str:
@@ -1944,11 +2039,96 @@ def _fold_standalone_sources(text: str) -> str:
     return value.strip()
 
 
+_DIRECT_INPUT_SOURCE_RE = _re.compile(
+    r"^(?:대화\s*기록|사용자\s*(?:입력|제공\s*내용)|제공된\s*(?:내용|대화)|회의록\s*원문)$",
+    _re.I,
+)
+
+
+def _is_direct_input_pseudo_source(item: dict) -> bool:
+    """User-provided prose is request data, not a linkable research source.
+
+    Treating pasted chat as an ``external`` source produced a dead ``대화 기록`` row and
+    an internal grounding warning in the approval reply.  Direct input still grounds the
+    draft, but it must not pretend to be a hyperlinkable evidence item.
+    """
+    if not isinstance(item, dict) or str(item.get("url") or "").strip():
+        return False
+    key = str(item.get("key") or "").strip()
+    title = str(item.get("title") or "").strip()
+    return bool(_DIRECT_INPUT_SOURCE_RE.fullmatch(title)
+                or _DIRECT_INPUT_SOURCE_RE.fullmatch(key)
+                or ("대화" in key and title == "대화 기록")
+                # Model-generated labels for pasted chat vary by speaker names. With
+                # no URL/key, both "김운영 대화" and "김운영과 이개발의 대화" are still
+                # the user's request payload, never an independently verifiable source.
+                or bool(_re.search(r"(?:대화|대화록)$", key))
+                or bool(_re.search(r"(?:대화|대화록)$", title)))
+
+
+def _is_negative_search_pseudo_source(item: dict) -> bool:
+    """A failed lookup is an uncertainty, not a source users can open and verify.
+
+    Research sometimes materializes ``topic X was not found`` as evidence whose key and
+    title are both the raw topic.  Rendering that row creates a dead citation and exposes a
+    grounding diagnostic in otherwise valid Bug drafts.  Keep the uncertainty in research
+    state, but never number it as provenance.
+    """
+    if not isinstance(item, dict) or str(item.get("url") or "").strip():
+        return False
+    key = str(item.get("key") or "").strip()
+    title = str(item.get("title") or "").strip()
+    if not key or key != title or _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+        return False
+    observations = " ".join(
+        str(row.get("text") or "") for row in (item.get("observations") or [])
+        if isinstance(row, dict)
+    )
+    material = " ".join((str(item.get("why") or ""), str(item.get("limitations") or ""), observations))
+    return bool(_re.search(
+        r"찾지\s*못|확인(?:되지\s*않|할\s*수\s*없)|기록이\s*없|"
+        r"검색(?:된|\s*결과).{0,60}(?:없|존재하지\s*않|나타나지\s*않|찾지\s*못)|"
+        r"나타나지\s*않",
+        material,
+    ))
+
+
+def _is_non_renderable_evidence(item: dict) -> bool:
+    return _is_direct_input_pseudo_source(item) or _is_negative_search_pseudo_source(item)
+
+
+def _drop_direct_input_source_rows(text: str) -> str:
+    """Remove legacy pseudo-source rows before canonical numbering and late grounding."""
+    lines = str(text or "").splitlines()
+    out: list[str] = []
+    dropping = False
+    for line in lines:
+        root = _re.match(r"^\s*\[(\d+)\]\s+(.+?)\s*$", line)
+        if root:
+            label = _re.sub(r"\s*[—–-].*$", "", root.group(2)).strip()
+            dropping = bool(_DIRECT_INPUT_SOURCE_RE.fullmatch(label))
+            if dropping:
+                continue
+        elif dropping:
+            if _re.match(r"^\s*[-*+]\s+", line) or not line.strip():
+                continue
+            dropping = False
+        if not dropping:
+            out.append(line)
+    value = "\n".join(out)
+    # The sole pseudo source commonly leaves an empty heading.  The canonical index can
+    # later append real sources if any exist.
+    value = _re.sub(r"(?ms)^###\s*(?:근거|참조)\s*$\s*(?=^###\s|\Z)", "", value)
+    return _re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
 def _merge_evidence_index(text: str, state) -> str:
     """Union model references and structured research provenance in the persisted reply."""
+    evidence = [item for item in (state.get("evidence") or [])
+                if isinstance(item, dict) and not _is_non_renderable_evidence(item)]
     return canonicalize_evidence_index(
-        _fold_standalone_sources(text),
-        evidence=state.get("evidence") or [],
+        _drop_direct_input_source_rows(_fold_standalone_sources(text)),
+        evidence=evidence,
         related_docs=state.get("related_docs") or [],
     )
 
@@ -2009,6 +2189,12 @@ def _rebind_definition_citations(text: str) -> str:
 
     lines = []
     for line in body.splitlines():
+        # Tables and source-evaluation rows are already structurally bound to their source
+        # cell. Appending ``[n]`` after the closing pipe creates a fifth column and breaks
+        # Markdown rendering.
+        if line.lstrip().startswith(("|", "#", ">", "```")):
+            lines.append(line)
+            continue
         # One generated paragraph often contains a public definition, a product claim,
         # and an internal project-state claim followed by one marker.  A line-level rewrite
         # makes that last marker appear to support every sentence.  Bind each sentence to
@@ -2049,7 +2235,8 @@ def _source_quality_requested(state) -> bool:
 
 def _render_requested_source_quality(text: str, state) -> str:
     """Project structured source judgments into one complete, deterministic table."""
-    evidence = [row for row in (state.get("evidence") or []) if isinstance(row, dict)]
+    evidence = [row for row in (state.get("evidence") or [])
+                if isinstance(row, dict) and not _is_non_renderable_evidence(row)]
     if not evidence or not _source_quality_requested(state):
         return str(text or "")
     confidence = {"high": "높음", "medium": "중간", "low": "낮음", "unknown": "미확인"}

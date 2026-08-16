@@ -240,6 +240,20 @@ def test_schema_qualified_internal_identifier_does_not_trigger_external_research
     assert [query["source"] for query in got] == ["jira"]
 
 
+def test_runtime_environment_and_job_identifier_do_not_trigger_public_research():
+    request = "prod의 dag_etl_nightly 야간 배치가 커넥션 타임아웃으로 실패했다. 버그로 등록"
+    state = {"request_text": request, "messages": []}
+    assert not _external_research_allowed(state)
+    assert _public_external_query(request) == ""
+    assert _safe_model_external_query("prod official documentation") == ""
+
+    got = QuerySpecialist().apply(state, {"queries": [
+        {"id": "internal", "source": "jira", "query": "dag_etl_nightly"},
+        {"id": "wrong-web", "source": "web", "query": "prod official documentation"},
+    ]})["query_plan"]["queries"]
+    assert [query["source"] for query in got] == ["jira"]
+
+
 def test_roster_user_suffixes_are_neither_public_technology_nor_jira_issue_keys():
     asked = "x1402 x1450 x1042 담당으로 팝업 작업 만들어줘"
     assert _public_external_query(asked) == ""

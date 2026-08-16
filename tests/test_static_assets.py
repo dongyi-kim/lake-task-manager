@@ -215,6 +215,18 @@ def test_agent_evidence_has_one_hierarchical_renderer_without_system_duplicate_p
     assert '.ref-observation[data-ref="' in view
 
 
+def test_agent_source_quality_table_keeps_readable_columns_in_narrow_chat():
+    """출처 평가 detail badge가 판정·한계 열을 한 글자 폭으로 밀어내지 않는다."""
+    md = (STATIC / "lib" / "agentMd.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
+
+    assert 'class="agent-source-quality"' in md
+    assert 'class="agent-source-quality-scroll"' in md
+    assert ".agent-source-quality-scroll" in css
+    assert "min-width:620px" in css
+    assert ".agent-source-quality td:nth-child(2)" in css
+
+
 def test_agent_approval_card_actions_remain_readable_with_preview_open():
     css = (STATIC / "styles" / "agent.css").read_text(encoding="utf-8")
     assert ".agent-card-act" in css and "flex-wrap:wrap" in css

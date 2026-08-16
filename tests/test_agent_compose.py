@@ -235,6 +235,31 @@ def test_generic_editor_closer_is_removed_only_at_the_end():
     mixed = ("<p>설계 문서에서 결과 확인 가능. "
              "추가적인 업데이트가 필요하면 말씀해 주세요.</p>")
     assert _drop_generic_editor_closer(mixed) == "<p>설계 문서에서 결과 확인 가능.</p>"
+    assert _drop_generic_editor_closer(
+        "성능 측정은 예정\n\n추가 업데이트가 필요하면 말씀해 주세요."
+    ) == "성능 측정은 예정"
+
+
+def test_unrelated_information_question_returns_to_the_open_ticket(monkeypatch):
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = "NEED_INFO: 김치찌개 레시피 중 재료와 조리법 중 무엇이 필요한가요?"
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: (
+        '[DL-9090] "데이터 리니지 뷰어" — In Progress'))
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose(PROG, "comment", "김치찌개 레시피 알려줘")
+
+    assert result["ok"] is False and result["needsInfo"] is True
+    assert "현재 티켓과 무관" in result["error"]
+    assert "레시피 중" not in result["error"]
 
 
 def test_editor_person_mentions_are_limited_to_verified_context_people():
@@ -326,6 +351,10 @@ def test_dangling_editor_connective_is_completed():
     assert _repair_dangling_editor_ending(html) == "<p>성능 측정 결과를 검토 부탁드립니다.</p>"
     assert _repair_dangling_editor_ending("<li>결과를 기록한다할 것</li>") == \
         "<li>결과를 기록할 것</li>"
+    truncated = ("<p>성능 측정과 문서 정리 작업이 남아 있습니다.</p>"
+                 "<p>담당자께서는 남은 작업을 완료하는 데 필요한</p>")
+    assert _repair_dangling_editor_ending(truncated) == \
+        "<p>성능 측정과 문서 정리 작업이 남아 있습니다.</p>"
 
 
 def test_editor_description_replaces_generic_dod_with_observable_evidence():

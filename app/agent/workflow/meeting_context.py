@@ -216,6 +216,39 @@ def prune_resolved_gaps(state, gaps: list[str]) -> list[str]:
             if str(g).strip() and not any(term in str(g) for term in defined)]
 
 
+def prune_resolved_reply_gaps(state, text: str) -> str:
+    """Remove only stale unresolved bullets for terms defined in the interview answer.
+
+    Source limitations may still truthfully say that a document omitted the definition;
+    this function touches only user-facing ``미결·검증``/``확인 필요`` sections.  Other
+    unresolved work in the same section remains intact.
+    """
+    if not is_meeting_request(state):
+        return str(text or "")
+    defined = {term for term in _uncertain_terms(meeting_request_text(state))
+               if _term_is_defined(term, state)}
+    if not defined:
+        return str(text or "")
+    value = str(text or "")
+    pattern = re.compile(
+        r"(?ms)^(###\s*(?:미결[·ㆍ\s/-]*검증|확인\s*필요)\s*$\n)(.*?)(?=^###\s|\Z)")
+
+    def clean(match: re.Match) -> str:
+        kept = []
+        for line in match.group(2).splitlines():
+            stale = any(term in line for term in defined) and bool(re.search(
+                r"뜻|정의|기록.{0,12}없|확인\s*필요|미확정|확정.{0,12}못|알\s*수\s*없",
+                line, re.I,
+            ))
+            if not stale:
+                kept.append(line)
+        if not any(line.strip() for line in kept):
+            return ""
+        return match.group(1) + "\n".join(kept).strip() + "\n\n"
+
+    return re.sub(r"\n{3,}", "\n\n", pattern.sub(clean, value)).strip()
+
+
 def canonicalize_reply_mentions(state, text: str) -> str:
     """Convert every resolved meeting-person spelling into one canonical mention token."""
     out = str(text or "")

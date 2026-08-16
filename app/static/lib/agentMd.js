@@ -486,7 +486,15 @@ function _render(text) {
     if (!tbl) return;
     const h = tbl.header.map((c) => `<th>${inline(c, true)}</th>`).join("");
     const b = tbl.rows.map((r) => "<tr>" + r.map((c) => `<td>${inline(c, true)}</td>`).join("") + "</tr>").join("");
-    out.push(`<table><thead><tr>${h}</tr></thead><tbody>${b}</tbody></table>`);
+    const sourceQuality = tbl.header.length === 4 &&
+      tbl.header[0].includes("출처") && tbl.header[1].includes("신뢰도") &&
+      tbl.header[2].includes("요청 적합성") && tbl.header[3].includes("한계");
+    const table = `<table${sourceQuality ? ' class="agent-source-quality"' : ""}>` +
+      `<thead><tr>${h}</tr></thead><tbody>${b}</tbody></table>`;
+    // 출처 평가의 첫 열에는 detail badge가 들어가므로 일반 표의 shrink-to-fit을 적용하면
+    // 나머지 세 열이 한 글자 폭까지 압축된다. 이 표만 자체 가로 스크롤 영역으로 격리해
+    // 대화 전체를 밀지 않고, 각 평가 열은 사람이 읽을 수 있는 최소 폭을 유지한다.
+    out.push(sourceQuality ? `<div class="agent-source-quality-scroll">${table}</div>` : table);
     tbl = null;
   };
 

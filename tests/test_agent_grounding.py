@@ -138,6 +138,12 @@ def test_role_sentence_filter_does_not_treat_work_as_a_person():
     assert "작업" not in g["name_as_id"]
 
 
+def test_role_sentence_filter_does_not_treat_a_grammatical_phrase_as_a_person():
+    g = grounding.check("담당자 변경에는 하나의 exact username이 필요함")
+    assert "변경에는" not in g["fake_people"]
+    assert "변경에는" not in g["name_as_id"]
+
+
 def test_role_match_does_not_cross_a_newline_into_the_next_label():
     """`1건 담당\n- **대안**:`에서 '대안'은 사람 이름이 아니다(S1 실측 오탐)."""
     g = grounding.check("- 유사 업무 1건 담당\n- **대안**:\n  - skcc.x1042")
@@ -169,6 +175,24 @@ def test_responder_appends_warning_when_rewrite_cannot_fix(monkeypatch):
     out = r.apply({"trace": []}, {"text": "담당자: 김철수 가 맡고 있습니다."})
     assert "자동 검증 경고" in out["reply"]
     assert "김철수" in out["reply"]
+
+
+def test_question_only_reply_never_exposes_internal_grounding_diagnostics():
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    state = {"trace": [], "questions": [{
+        "question": "담당자를 골라 주세요.",
+        "kind": "choice",
+        "field": "assignee",
+        "options": ["동명이 TEST · test.same01", "동명이 TEST · test.same02"],
+        "required_input": True,
+        "why_required": "담당자 변경에는 하나의 exact username이 필요함",
+    }]}
+    reply = ResultIntegrator().apply(state, {"text": "담당자: 변경에는"})["reply"]
+
+    assert "exact username" in reply
+    assert "자동 검증 경고" not in reply
+    assert "확인되지 않는 인물" not in reply
 
 
 def test_responder_removes_internal_heading_and_renders_reference_tokens():
@@ -240,6 +264,21 @@ def test_responder_style_normalizes_negative_polite_ending():
 
     got = _enforce_reply_style("### 결과\n\n이 문제는 더 이상 블로커가 아닙니다")
     assert got.endswith("블로커가 아님")
+    assert _enforce_reply_style("### 판단\n\n운영 반영이 가능할 것으로 보입니다.").endswith(
+        "가능할 것으로 보임")
+
+
+def test_responder_style_compacts_obligation_and_unfinished_polite_endings():
+    from app.agent.workflow.agents.result_integrator import _enforce_reply_style
+
+    got = _enforce_reply_style(
+        "### 판단\n\n운영 반영은 보류되어야 합니다. "
+        "reader 검증은 완료되지 않았습니다."
+    )
+
+    assert "보류 필요" in got
+    assert "완료되지 않음" in got
+    assert "합니다" not in got
 
 
 def test_responder_uses_the_payload_when_reply_claims_creation_is_impossible():
@@ -348,6 +387,26 @@ def test_external_research_flags_a_conflict_visible_only_in_the_final_answer():
     got = _ensure_external_research_coverage(
         "PoC 수행 완료 기록\n\n현재 실제 PoC는 아직 수행하지 않음", state)
     assert "내부 기록 상충" in got and "확정 불가" in got
+
+
+def test_unperformed_poc_source_replaces_a_definitive_completion_claim():
+    from app.agent.workflow.agents.result_integrator import _ensure_external_research_coverage
+    from langchain_core.messages import HumanMessage
+
+    state = {
+        "messages": [HumanMessage(content="내부 외부 공식 자료를 조사해줘")],
+        "evidence": [{"key": "DL-9201", "title": "writer PoC",
+                       "observations": [{"source": "document",
+                                         "text": "실제 Puffin NDV 생성 PoC는 아직 수행하지 않음"}]}],
+    }
+    got = _ensure_external_research_coverage(
+        "Puffin NDV의 writer PoC는 완료되었으나, StarRocks reader 검증은 완료되지 않음.",
+        state,
+    )
+
+    assert "PoC는 완료되었" not in got
+    assert "PoC 완료 여부는 확인 근거 부족으로 확정 불가" in got
+    assert "StarRocks reader 검증은 완료되지 않음" in got
 
 
 def test_external_research_section_excludes_internal_urls_and_relabels_pending_rows():
@@ -725,6 +784,123 @@ def test_external_official_source_block_is_folded_into_the_single_evidence_index
     assert "{{ticket-detail:DL-9200}}" in got
 
 
+def test_pasted_conversation_is_request_data_not_an_unlinked_evidence_source():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+    from app.agent.workflow.grounding import _unlinked_refs
+
+    state = {"evidence": [{
+        "key": "김운영과 이개발의 대화", "title": "대화 기록", "url": "",
+        "why": "운영 배치 실패 제보",
+        "observations": [{"source": "external", "text": "connection timeout"}],
+    }], "related_docs": []}
+    source = ("Bug 초안\n\n### 근거\n\n[1] 대화 기록\n"
+              "- 웹 문서에서 connection timeout")
+
+    got = _merge_evidence_index(source, state)
+
+    assert "대화 기록" not in got and "웹 문서에서" not in got
+    assert "### 근거" not in got
+    assert _unlinked_refs(got) == []
+
+
+def test_named_pasted_dialogue_is_not_rendered_as_an_external_source():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    title = "김운영과 이개발의 대화"
+    got = _merge_evidence_index("Bug 초안", {"evidence": [{
+        "key": title, "title": title, "url": "",
+        "observations": [{"source": "external", "text": "야간 배치 실패 제보"}],
+    }], "related_docs": []})
+
+    assert title not in got
+    assert "### 근거" not in got
+
+    mismatched_labels = _merge_evidence_index("Bug 초안", {"evidence": [{
+        "key": "김운영 대화", "title": "김운영과 이개발의 대화", "url": "",
+        "observations": [{"source": "external", "text": "야간 배치 실패 제보"}],
+    }], "related_docs": []})
+    assert "김운영" not in mismatched_labels
+    assert "### 근거" not in mismatched_labels
+
+
+def test_negative_lookup_is_not_rendered_as_a_dead_evidence_source():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    got = _merge_evidence_index("### 티켓 승인 초안\n\n초안 1건", {"evidence": [{
+        "key": "dag_etl_nightly",
+        "title": "dag_etl_nightly",
+        "url": "",
+        "why": "사내 티켓이나 문서에서 확인되지 않았음을 보여줌",
+        "limitations": "사내 기록에서 존재를 확인할 수 없음",
+        "observations": [{"source": "query", "text": "사내 어디에서도 찾지 못했다"}],
+    }], "related_docs": []})
+
+    assert "dag_etl_nightly" not in got
+    assert "### 근거" not in got
+
+    web_miss = _merge_evidence_index("Bug 초안", {"evidence": [{
+        "key": "prod official documentation",
+        "title": "prod official documentation",
+        "url": "",
+        "observations": [{"source": "web", "text":
+                          "웹 문서에서 prod 관련 공식 문서가 검색 결과에 나타나지 않았습니다"}],
+    }], "related_docs": []})
+    assert "official documentation" not in web_miss
+    assert "### 근거" not in web_miss
+
+
+def test_external_format_description_cannot_invent_an_outcome_guarantee():
+    from app.agent.workflow.agents.result_integrator import _drop_unsupported_guarantees
+
+    state = {"request_text": "Puffin 운영 적용 여부 조사",
+             "evidence": [{"url": "https://iceberg.apache.org/puffin-spec/",
+                           "observations": [{"text": "통계와 인덱스를 저장한다"}]}]}
+    raw = ("Puffin은 통계와 인덱스를 저장하는 형식이며, "
+           "NDV 통계의 일관성과 신선도를 보장.")
+
+    got = _drop_unsupported_guarantees(raw, state)
+
+    assert got == "Puffin은 통계와 인덱스를 저장하는 형식임."
+    assert "보장" not in got
+
+    benefit = ("Puffin은 통계를 저장하는 형식. NDV 통계는 쿼리 최적화에 사용될 수 있음. "
+               "이는 운영 적용이 성능 최적화에 기여할 수 있음을 시사하지만, "
+               "reader 검증 전에는 적용할 수 없음.")
+    got = _drop_unsupported_guarantees(benefit, state)
+    assert "최적화" not in got
+    assert "reader 검증 전에는 적용할 수 없음" in got
+
+    reader_state = {
+        "request_text": "회의록 조사",
+        "topic_dossier": "StarRocks reader의 Puffin NDV 실제 소비 지원 여부는 미확인",
+        "evidence": [],
+    }
+    reader = ("StarRocks는 Iceberg와 함께 사용되는 데이터베이스. "
+              "StarRocks는 Puffin 통계와 인덱스를 소비할 수 있음. "
+              "실제 지원 여부는 검증 필요.")
+    got = _drop_unsupported_guarantees(reader, reader_state)
+    assert "소비할 수 있음" not in got
+    assert "실제 지원 여부는 검증 필요" in got
+
+
+def test_definition_citation_rebinding_does_not_add_a_fifth_table_column():
+    from app.agent.workflow.agents.result_integrator import _rebind_definition_citations
+
+    source = (
+        "### 출처 평가\n\n"
+        "| 출처 | 신뢰도 | 요청 적합성 | 한계 |\n|---|---|---|---|\n"
+        "| {{ticket-detail:DL-9200}} | 높음 | 직접 | 파일 형식 검증 필요 |\n\n"
+        "Puffin은 통계 파일 형식.\n\n### 근거\n\n"
+        "[1] {{ticket-detail:DL-9200}}\n"
+        "[2] [Puffin Spec](https://iceberg.apache.org/puffin-spec/)"
+    )
+    got = _rebind_definition_citations(source)
+    table_row = next(line for line in got.splitlines() if "ticket-detail:DL-9200" in line
+                     and line.startswith("|"))
+    assert table_row.endswith("|") and not table_row.endswith("| [1]")
+    assert "Puffin은 통계 파일 형식. [2]" in got
+
+
 def test_public_format_definition_is_rebound_from_internal_ticket_to_external_spec():
     from app.agent.workflow.agents.result_integrator import (
         _merge_evidence_index, _rebind_definition_citations,
@@ -795,6 +971,46 @@ def test_near_duplicate_observations_differing_only_by_source_prefix_are_collaps
 
     assert got.count("파일 생성 결과 확보") == 1
     assert "[1-a]" not in got and "[1-b]" not in got
+
+
+def test_encoded_and_decoded_confluence_urls_share_one_source_and_findings_collapse():
+    """S8 실측: 같은 페이지 URL·같은 본문 사실이 표기 차이만으로 두 벌이 됐다."""
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    encoded = ("http://wiki.example/spaces/DL/pages/2548961256/"
+               "%5B%ED%9A%8C%EC%9D%98%EB%A1%9D%5D+Puffin+NDV")
+    decoded = ("http://wiki.example/spaces/DL/pages/2548961256/"
+               "[회의록]+Puffin+NDV")
+    got = canonicalize_evidence_index(
+        "### 근거\n\n"
+        f"[1] [회의록]({encoded})\n"
+        "- 검증 전 운영 반영은 금지한다는 내용이 포함되어 있음\n"
+        f"[2] [회의록]({decoded})\n"
+        "- 문서 본문에서 검증 전 운영 반영은 금지한다"
+    )
+
+    assert got.count("http://wiki.example") == 1
+    assert got.count("검증 전 운영 반영은 금지") == 1
+    assert "\n[2] " not in got
+
+
+def test_related_document_link_nested_under_ticket_is_promoted_to_its_own_source():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    title = "[회의록] Puffin NDV 실무회의"
+    url = "http://wiki.example/spaces/DL/pages/12/[회의록]+Puffin+NDV"
+    got = canonicalize_evidence_index(
+        "### 근거\n\n[1] {{ticket-detail:DL-7001}}\n"
+        f"- [1-a] {title} {url}\n"
+        "- [1-b] 댓글에서 reader 지원은 미확인",
+        related_docs=[{"title": title, "url": url}],
+    )
+
+    assert got.count(url) == 1
+    assert f"[{title}]({url})" in got
+    ticket_block = got.split("{{ticket-detail:DL-7001}}", 1)[1].split(f"[{title}]", 1)[0]
+    assert url not in ticket_block
+    assert "reader 지원은 미확인" in ticket_block
 
 
 def test_explicit_source_quality_and_marker_contract_is_completed_from_structured_evidence():

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 
 _HEADING_RE = re.compile(
@@ -53,7 +53,13 @@ def _clean_url(url: str) -> str:
     """Normalize only identity-safe URL parts; preserve the displayed source URL."""
     try:
         p = urlsplit(str(url or "").strip())
-        return urlunsplit((p.scheme.lower(), p.netloc.lower(), p.path.rstrip("/"), p.query, ""))
+        # Confluence emits both an encoded URL (``%5B회의록%5D+...``) and a decoded
+        # browser URL (``[회의록]+...``) for the same page.  Identity comparison must
+        # decode both percent escapes and the legacy ``+`` space spelling, while the
+        # original source URL remains untouched for display and navigation.
+        path = re.sub(r"/{2,}", "/", unquote_plus(p.path)).rstrip("/")
+        query = unquote_plus(p.query)
+        return urlunsplit((p.scheme.lower(), p.netloc.lower(), path, query, ""))
     except Exception:
         return str(url or "").strip().rstrip("/")
 
@@ -147,6 +153,26 @@ def _append_observation(group: dict, value: str) -> int | None:
             r"^(?:본문|댓글|코멘트|변경\s*이력|문서\s*본문|웹\s*문서|조회\s*결과)에서\s*",
             "", str(text or "").strip(), flags=re.I,
         )
+        # Research summaries often restate the same observation as
+        # ``X한다는 내용이 기록되어 있음`` while structured evidence carries ``X한다``.
+        # These reporting suffixes add no finding or provenance, so compare the
+        # underlying proposition instead of manufacturing a second child marker.
+        normalized = re.sub(
+            r"(?:다는|라는)\s*내용(?:이)?\s*(?:기록|포함)되어\s*(?:있음|있다|있습니다)\.?$",
+            "다", normalized, flags=re.I,
+        )
+        normalized = re.sub(
+            r"([가-힣]+)한다고\s*(?:명시|기록|언급)(?:되어\s*)?(?:있음|있다|됨)?\.?$",
+            r"\1한다", normalized,
+        )
+        normalized = re.sub(r"(?:되어\s*)?(?:있음|있다|있습니다)\.?$", "", normalized)
+        # Compare common report-style endings by their proposition stem.  This is
+        # intentionally last-position only: ``진행 중임`` and ``확인한다`` remain
+        # distinct findings, while ``금지됨``/``금지한다`` collapse.
+        normalized = re.sub(
+            r"(?:되었다|되었습니다|되어\s*있음|됨|하였다|했습니다|한다|하다|함)\.?$",
+            "", normalized,
+        ).strip()
         normalized = re.sub(r"[\s\"'“”‘’.,;:!?]+", " ", normalized).strip()
         return normalized.casefold()
 
@@ -292,12 +318,40 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             continue
         identity = f"url:{_clean_url(url)}"
         alias = f"text:{title.casefold()}"
+        mentioned_in_observation = False
+        carried: list[str] = []
+        # A model can place a related-document link under a ticket as if the link itself
+        # were a ticket finding. Promote that link to its own source root; keep only any
+        # actual prose finding after the URL under the document source.
+        for existing in list(groups.values()):
+            if existing.get("identity") == identity:
+                continue
+            kept = []
+            for observation in existing.get("observations") or []:
+                urls = _URL_RE.findall(str(observation or ""))
+                same_url = any(_clean_url(found.rstrip(".,;:!?")) == _clean_url(url)
+                               for found in urls)
+                link_only = same_url or (title in str(observation or "") and bool(urls))
+                if not link_only:
+                    kept.append(observation)
+                    continue
+                mentioned_in_observation = True
+                remainder = str(observation or "")
+                remainder = _MD_LINK_RE.sub("", remainder)
+                remainder = _URL_RE.sub("", remainder)
+                remainder = remainder.replace(title, "").strip(" []()—–-:;,.\t")
+                if len(remainder) >= 8:
+                    carried.append(_observation(remainder, "document"))
+            existing["observations"] = kept
         group = promote_alias(alias, identity, f"[{title}]({url})") \
             if alias in groups else groups.get(identity)
         if group:
             group["source"] = f"[{title}]({url})"
-        elif title in body or url in body:
-            ensure(identity, f"[{title}]({url})")
+        elif title in body or url in body or mentioned_in_observation:
+            group = ensure(identity, f"[{title}]({url})")
+        if group:
+            for observation in carried:
+                _append_observation(group, observation)
 
     if not groups:
         # Remove only an empty legacy heading.  Never invent a source index.

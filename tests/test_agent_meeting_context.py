@@ -404,6 +404,27 @@ def test_curator_drops_only_meeting_terms_defined_by_interview():
     assert out["knowledge_brief"]["gaps"] == ["reader 진행 상황 확인 필요"]
 
 
+def test_final_meeting_reply_drops_only_resolved_term_gap():
+    from app.agent.workflow.meeting_context import prune_resolved_reply_gaps
+
+    request = "회의 후속 정리. PSR 뜻은 기록에 없으니 조사 후 물어봐."
+    answer = "PSR은 PoC Success Review이고 5개 모두 오차 5% 이내여야 해."
+    state = _state(request, answer, request=request)
+    raw = ("### 미결·검증\n\n"
+           "- PSR 정의는 관련 문서에 없어 확인 필요\n"
+           "- StarRocks reader 실제 소비 여부 확인 필요\n\n"
+           "### 근거\n\n"
+           "[1] [회의록](https://wiki.example/minutes)\n"
+           "- 문서 본문에서 PSR 정의가 기록되지 않음")
+
+    got = prune_resolved_reply_gaps(state, raw)
+
+    unresolved = got.split("### 근거", 1)[0]
+    assert "PSR" not in unresolved
+    assert "reader 실제 소비" in unresolved
+    assert "PSR 정의가 기록되지 않음" in got  # source limitation remains true
+
+
 def test_titled_meeting_uses_full_technical_subject_instead_of_one_action_keyword():
     state = _state("## 2026-08-15 Iceberg Puffin NDV 도입 실무회의\n- StarRocks reader 검증")
     assert meeting_subject(state) == "Iceberg Puffin NDV"

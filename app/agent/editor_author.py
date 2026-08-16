@@ -251,8 +251,10 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     #    UI 는 팝업을 유지한 채 이 문구를 보여 주고 프롬프트·시드 보완을 유도한다.
     ask = _need_info(html)
     if ask:
-        if ctx and re.search(r"(?:티켓.{0,30}관련|관련.{0,30}티켓)", ask):
-            ask = "현재 티켓에 작성할 코멘트 또는 본문의 목적을 한 줄로 적어 주세요"
+        if ctx and (re.search(r"(?:티켓.{0,30}관련|관련.{0,30}티켓)", ask)
+                    or _unrelated_information_request(prompt, ctx)):
+            ask = ("현재 티켓과 무관한 요청입니다 — 이 티켓에 남길 댓글의 목적이나 "
+                   "전달 내용을 알려 주세요")
         return {"ok": False, "needsInfo": True,
                 "error": "이대로는 정확한 글을 쓸 수 없습니다 — " + ask,
                 "usage": llm_usage}
@@ -399,7 +401,36 @@ def _drop_generic_editor_closer(rendered: str) -> str:
     pattern = (r"\s*<p\b[^>]*>\s*(?:추가(?:적인)?|그 밖의)[^<]{0,90}"
                r"(?:업데이트하겠습니다|공유하겠습니다|말씀해\s*주세요|알려\s*주세요)"
                r"[^<]{0,20}</p>\s*$")
-    return re.sub(pattern, "", out, flags=re.I | re.S).rstrip()
+    out = re.sub(pattern, "", out, flags=re.I | re.S).rstrip()
+    # Some compatible providers ignore the HTML-only contract and return plain text.
+    # Apply the same terminal-only rule there; concrete next actions remain untouched.
+    plain_pattern = (r"(?:\s|^)(?:추가(?:적인)?|그 밖의)[^\n.!?]{0,90}"
+                     r"(?:업데이트하겠습니다|공유하겠습니다|말씀해\s*주세요|알려\s*주세요)"
+                     r"[.!?]?\s*$")
+    return re.sub(plain_pattern, "", out, flags=re.I).rstrip()
+
+
+def _unrelated_information_request(prompt: str, context: str) -> bool:
+    """Recognize a topic switch that asks for information, not editor content.
+
+    A comment composer once answered ``김치찌개 레시피`` with a recipe-detail
+    interview.  The correct recovery is to return to the open ticket and ask what the
+    user intended to post.  New content instructions (``…라고 댓글 남겨줘``) remain
+    valid even when their words are absent from the existing ticket.
+    """
+    request = str(prompt or "").strip()
+    if not request or re.search(
+            r"댓글|본문|코멘트|남겨|작성|써\s*줘|추가|수정|반영|기록|공유|전달|안내",
+            request, re.I):
+        return False
+    if not re.search(r"알려|설명|추천|어떻게|무엇|뭐|왜|레시피", request, re.I):
+        return False
+    stop = {"알려줘", "알려", "설명", "추천", "어떻게", "무엇", "뭐", "왜", "관련",
+            "현재", "티켓", "작업", "내용", "결과", "요청", "주세요"}
+    words = {word.casefold() for word in re.findall(r"[0-9A-Za-z가-힣_.-]{2,}", request)
+             if word.casefold() not in stop}
+    haystack = re.sub(r"\s+", "", str(context or "")).casefold()
+    return bool(words and not any(re.sub(r"\s+", "", word) in haystack for word in words))
 
 
 def _ground_editor_person_mentions(rendered: str, prompt: str, source: str) -> str:
@@ -659,7 +690,17 @@ def _repair_dangling_editor_ending(rendered: str) -> str:
                  r"\1할 것", out)
     out = re.sub(r"(검토|확인|공유)해\s*주시고\s*,?\s*</p>\s*$",
                  r"\1 부탁드립니다.</p>", out)
-    return re.sub(r",\s*</p>\s*$", ".</p>", out)
+    out = re.sub(r",\s*</p>\s*$", ".</p>", out)
+    # A provider can stop after an attributive connective (``…하는 데 필요한``).
+    # When useful content already precedes that final paragraph, dropping the fragment is
+    # safer than inventing its missing object or action.
+    paragraphs = list(re.finditer(r"(?s)<p\b[^>]*>.*?</p>", out))
+    last = paragraphs[-1] if paragraphs and not out[paragraphs[-1].end():].strip() else None
+    if last and last.start() > 0:
+        plain = _plain_text(last.group(0)).strip()
+        if re.search(r"(?:필요한|위한|대한|통해|있으며|하며|하고|그리고|또는|및)\s*$", plain):
+            out = out[:last.start()].rstrip()
+    return out
 
 
 def _sharpen_editor_dod(rendered: str, context: str, prompt: str) -> str:

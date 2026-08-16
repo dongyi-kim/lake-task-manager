@@ -114,6 +114,21 @@
 .agent-md.tkt-desc > :first-child { margin-top:0; }
 /* 답변의 표는 폭이 들쭉날쭉하다 — 내용만큼만 차지하되 넘치면 그 안에서 스크롤 */
 .agent-md.tkt-desc table { width:auto; max-width:100%; }
+/* 복합 조사 답변의 출처 평가는 detail badge + 짧은 판정 2열 + 한계 설명으로 구성된다.
+   첫 열의 badge 고유 폭 때문에 나머지 열이 세로쓰기처럼 찌그러지지 않도록 표에만 최소 폭을
+   주고, 스크롤은 대화 전체가 아니라 이 래퍼가 소유한다. */
+.agent-md .agent-source-quality-scroll { width:100%; max-width:100%; overflow:auto hidden;
+  margin:0 0 12px; }
+.agent-md.tkt-desc .agent-source-quality-scroll table.agent-source-quality {
+  display:table; width:100%; min-width:620px; max-width:none; margin:0; table-layout:fixed; }
+.agent-md .agent-source-quality th:nth-child(1),
+.agent-md .agent-source-quality td:nth-child(1) { width:46%; }
+.agent-md .agent-source-quality th:nth-child(2),
+.agent-md .agent-source-quality td:nth-child(2) { width:11%; white-space:nowrap; }
+.agent-md .agent-source-quality th:nth-child(3),
+.agent-md .agent-source-quality td:nth-child(3) { width:13%; white-space:nowrap; }
+.agent-md .agent-source-quality th:nth-child(4),
+.agent-md .agent-source-quality td:nth-child(4) { width:30%; }
 
 /* 답변이 오기 전 — 멈춘 게 아니라는 신호 */
 .agent-thinking { display:flex; gap:5px; padding:4px 0; }

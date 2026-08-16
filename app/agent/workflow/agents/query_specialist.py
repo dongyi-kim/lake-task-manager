@@ -21,7 +21,9 @@ _INTERNAL_LATIN = {"etl", "catalog", "runtime", "workbench", "dataops", "observa
                    "point", "batch", "job", "sql", "jql", "cql", "json", "html", "pmo",
                    "voc", "our", "project", "internal", "external", "official", "documentation",
                    "confluence", "wiki", "marker", "citation",
-                   "hotfix", "poc", "p0", "p1", "p2", "p3", "p4", "critical", "major", "minor"}
+                   "hotfix", "poc", "p0", "p1", "p2", "p3", "p4", "critical", "major", "minor",
+                   # Deployment environments are internal context, not public technologies.
+                   "prod", "production", "stage", "staging", "qa", "dev", "development"}
 
 _PRIVATE_EXTERNAL_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"

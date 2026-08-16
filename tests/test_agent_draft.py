@@ -3048,12 +3048,72 @@ def test_existing_bug_sections_replace_placeholder_actual_with_reported_symptom(
     assert "<h3>실제 동작</h3><p>확인 필요" not in body
 
 
+def test_pasted_runtime_incident_preserves_environment_target_and_retry_facts(monkeypatch):
+    """PASTE2: a complete chat incident is executable evidence, not an empty Bug form."""
+    from app.agent.workflow.agents import work_architect as R
+    monkeypatch.setattr("app.agent.config.get_llm",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no llm")))
+    state = _msg(
+        "이거 버그로 등록해줘. 알아서\n\n"
+        "[10:12] 김운영: prod의 dag_etl_nightly 야간 배치 또 실패했어요\n"
+        "[10:13] 이개발: 로그 보니 커넥션 타임아웃이네요. 어제도 같은 시간대\n"
+        "[10:15] 김운영: 재실행하면 되긴 하는데 매일 이러면 곤란해요"
+    )
+    body = R._bug_body_for(state, {"summary": "[ETL] 야간 배치 실패", "type": "Bug"})
+    for section in ("재현 경로", "기대 동작", "실제 동작"):
+        assert section in body
+    for literal in ("prod", "dag_etl_nightly", "커넥션 타임아웃", "재실행", "매일"):
+        assert literal in body, (literal, body)
+    assert R._ASK_REPORTER not in body
+
+
 def test_adjacent_repeated_title_phrase_is_collapsed_only_once():
     from app.agent.workflow.agents.work_architect import _collapse_repeated_summary
     assert _collapse_repeated_summary(
         "[Workbench] 데이터 리니지 뷰어 리니지 뷰어 성능 회귀 테스트") == \
         "[Workbench] 데이터 리니지 뷰어 성능 회귀 테스트"
     assert _collapse_repeated_summary("[ETL] 설계 구현 검증") == "[ETL] 설계 구현 검증"
+
+
+def test_explicit_implementation_child_covers_the_generic_implementation_stage():
+    from app.agent.workflow.agents.work_architect import _execution_stage
+
+    assert _execution_stage("Puffin NDV 통계 생성 Batch Job 구현") == "implementation"
+    assert _execution_stage("Puffin NDV PoC — 구현") == "implementation"
+    assert _execution_stage("Puffin NDV PoC — 검증") == "validation"
+
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+    state = _msg("Puffin NDV Batch Job 구현을 단계별 Sub-Task로 나눠줘. 알아서")
+    out = {"mode": "task", "structure": "task_with_subtasks", "items": [{
+        "summary": "[ETL] Puffin NDV PoC",
+        "type": "Task",
+        "components": ["ETL"],
+        "description": ("<h3>배경</h3><p>Puffin NDV PoC 요청</p>"
+                        "<h3>작업 범위</h3><ul><li>포함: 배치 Job 구현</li>"
+                        "<li>제외: 운영 배포</li></ul>"
+                        "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                        "<li data-checked=\"false\">PoC 결과 기록</li></ul>"),
+        "children": [{"summary": "Puffin NDV 통계 생성 Batch Job 구현"}],
+    }]}
+    result = WorkArchitect().apply(state, out)
+    summaries = [row["summary"] for row in result["draft"]["items"][0]["children"]]
+    assert sum(_execution_stage(value) == "implementation" for value in summaries) == 1
+    assert {_execution_stage(value) for value in summaries} >= {"design", "validation"}
+
+
+def test_unmentioned_logged_in_user_is_not_invented_as_the_ticket_requester():
+    from app.agent.workflow.agents import work_architect as R
+
+    state = _msg("Iceberg Puffin NDV 배치 Job을 구현해줘")
+    items = [{
+        "summary": "[ETL] Puffin NDV 배치 Job 구현",
+        "description": ("<h3>배경</h3><p>배치 Job 구현 요청. "
+                        "{{mention:UI픽스처01}}의 요청에 따라 진행됩니다.</p>"),
+    }]
+
+    assert R._drop_unrequested_requester_attribution(state, items) is True
+    assert "UI픽스처01" not in items[0]["description"]
+    assert "배치 Job 구현 요청" in items[0]["description"]
 
 
 def test_self_exclusion_and_unverified_performance_cause_are_removed():
