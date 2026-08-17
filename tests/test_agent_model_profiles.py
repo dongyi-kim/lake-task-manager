@@ -62,6 +62,53 @@ def test_qwen_structured_contract_uses_semantic_role_transport_budget():
     assert "model_contract_profile" in row.sources
 
 
+def test_qwen35_typed_projection_has_work_draft_budget_on_same_model_lane():
+    row = profiles.resolve(
+        "ltm-qwen3.6-35b-a3b", "openai_compat", "fast_structured",
+        output_contract="typed_projection", semantic_profile="fast_structured",
+    )
+    assert row.model_profile == "qwen3.6-35b-a3b"
+    assert row.parameters["temperature"] == 0.0
+    assert row.parameters["presence_penalty"] == 0.0
+    assert row.parameters["max_tokens"] == 3072
+    assert row.parameters["extra_body"]["chat_template_kwargs"] == {
+        "enable_thinking": False}
+    assert "model_contract_profile" in row.sources
+
+
+def test_qwen35_typed_projection_correction_reuses_bounded_family_budget():
+    row = profiles.resolve(
+        "ltm-qwen3.6-35b-a3b", "openai_compat", "fast_structured",
+        output_contract="typed_projection_correction",
+        semantic_profile="fast_structured",
+    )
+    assert row.model_profile == "qwen3.6-35b-a3b"
+    assert row.parameters["temperature"] == 0.0
+    assert row.parameters["max_tokens"] == 3072
+    assert "model_contract_profile" in row.sources
+
+
+def test_typed_projection_correction_family_fallback_does_not_leak_to_openai():
+    row = profiles.resolve(
+        "gpt-4o", "openai", "fast_structured",
+        output_contract="typed_projection_correction",
+        semantic_profile="fast_structured",
+    )
+    assert row.model_profile == "openai-gpt4o"
+    assert row.parameters["max_tokens"] == 2048
+    assert "model_contract_profile" not in row.sources
+
+
+def test_qwen35_typed_projection_budget_does_not_change_openai_profile():
+    row = profiles.resolve(
+        "gpt-4o", "openai", "fast_structured",
+        output_contract="typed_projection", semantic_profile="fast_structured",
+    )
+    assert row.model_profile == "openai-gpt4o"
+    assert row.parameters["max_tokens"] == 2048
+    assert "model_contract_profile" not in row.sources
+
+
 def test_qwen_simple_structured_contract_has_room_for_query_plan_json():
     row = profiles.resolve(
         "/models/Qwen3.5-4B-4bit", "openai_compat", "fast_structured",

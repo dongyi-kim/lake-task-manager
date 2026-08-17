@@ -60,7 +60,8 @@ from app.agent.workflow.agents.work_architect import WorkArchitect
 from app.agent.workflow.agents.result_integrator import ResultIntegrator
 from app.agent.workflow.agents.auditor import Auditor
 from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node,
-                                      is_memory_only_request, reads_as_bug, request_text)
+                                      is_memory_only_request, reads_as_bug, request_text,
+                                      verified_parent_epic_candidates)
 
 _compiled = {"graph": None}
 
@@ -72,6 +73,23 @@ def _node(agent):
 
 
 # ── 라우터: State 만 보고 결정한다(부작용 없음) ──────────────────────
+def _needs_delegated_parent_retrieval(state: AgentState) -> bool:
+    """Refresh retrieval when a continuation newly delegates an unverified parent choice."""
+    from app.agent.workflow.agents.work_architect import _delegates_existing_epic_choice
+
+    ledger = state.get("materialized_ticket_sources") or {}
+    search_completed = (
+        isinstance(ledger, dict)
+        and ledger.get("parentCandidateSearchAttempted") is True
+    )
+    return (
+        (state.get("intent") or "") in Intent.DRAFTS_TICKETS
+        and _delegates_existing_epic_choice(state)
+        and not verified_parent_epic_candidates(state)
+        and not search_completed
+    )
+
+
 def route_after_request_architect(state: AgentState) -> str:
     """세 갈래 — 조사(research_analyst) / 현황 직행(portfolio_analyst) / 답(result_integrator).
 
@@ -102,6 +120,11 @@ def route_after_request_architect(state: AgentState) -> str:
         if intent == Intent.ASK:
             return "curate"
         if intent in Intent.DRAFTS_TICKETS:
+            # Earlier research may have opened related tickets without running a structural
+            # parent-candidate query. A later "choose an existing Epic" refinement needs one
+            # bounded refresh before Work can safely auto-place the draft.
+            if _needs_delegated_parent_retrieval(state):
+                return "investigate"
             return "refine"
     # 분담형 Task의 미완료자 조회는 Query Specialist의 자유 JQL이나 Portfolio ReAct가
     # 아니라 parent 탐색→직계 Sub-Task 전수 집계라는 고정 join이다.

@@ -115,6 +115,13 @@ def _response_shape(raw, text: str) -> str:
             f"ends_object={value.endswith('}')}, finish={finish}")
 
 
+def _length_truncated(raw) -> bool:
+    """Whether the provider explicitly stopped this response at its output ceiling."""
+    metadata = getattr(raw, "response_metadata", None) or {}
+    finish = str(metadata.get("finish_reason") or metadata.get("stop_reason") or "").lower()
+    return finish in {"length", "max_tokens", "max_output_tokens"}
+
+
 def _validate_output(value, schema: dict) -> dict:
     """관대한 추출 뒤에는 반드시 동일한 JSON Schema로 엄격 검증한다."""
     from jsonschema import validate
@@ -166,7 +173,7 @@ def _validation_diagnostic(exc: Exception) -> dict[str, str]:
 
 def _raise_unrepairable_structured_output(errors: list[str], reason: str,
                                           exc: Exception | None = None) -> None:
-    """Fail without a repair call when there is no model output to repair."""
+    """Fail without a repair call when there is no safe bounded repair input."""
     details = list(errors) + [f"repair 생략: {reason}"]
     error = RuntimeError("structured output 실패 — " + " | ".join(details))
     if exc is not None:
@@ -613,6 +620,17 @@ class Agent(ABC):
             validation_error = str(exc)[:1000]
             validation_diagnostic = _validation_diagnostic(exc)
             errors.append(f"prompt_json: {str(exc)[:180]}")
+
+        # A length-truncated object is missing semantic payload, not merely malformed JSON.
+        # Repeating the projection repair with the same model-profile budget reproduced the
+        # same 1,024-token truncation in STARR1 and doubled latency without a valid object.
+        # Model profiles own a sufficient projection ceiling; if that ceiling is still hit,
+        # fail closed instead of disguising a second full projection as format repair.
+        if output_contract.startswith("typed_projection") and _length_truncated(raw):
+            _raise_unrepairable_structured_output(
+                errors,
+                "모델 출력이 길이 한도에서 잘려 동일 예산의 format repair를 반복하지 않습니다.",
+            )
 
         # repair는 원 업무를 다시 판단시키는 호출이 아니라 형식만 교정하는 1회 호출이다.
         if not wire_available():

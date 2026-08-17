@@ -2199,8 +2199,19 @@ def _is_negative_search_pseudo_source(item: dict) -> bool:
                    for row in (item.get("observations") or []) if isinstance(row, dict)))
 
 
-def _is_non_renderable_evidence(item: dict) -> bool:
-    return _is_direct_input_pseudo_source(item) or _is_negative_search_pseudo_source(item)
+def _external_evidence_context(state) -> str:
+    # Generic navigation becomes renderable only when the human explicitly requested that
+    # navigation target. Model/query text is evidence provenance, not user authorization.
+    return "\n".join(value for value in (request_text(state), last_user_text(state))
+                     if str(value or "").strip())
+
+
+def _is_non_renderable_evidence(item: dict, state=None) -> bool:
+    return (_is_direct_input_pseudo_source(item)
+            or _is_negative_search_pseudo_source(item)
+            or _is_generic_external_source(
+                item, _external_evidence_context(state or {}),
+            ))
 
 
 _APPROVAL_RELEVANCE_WORD_RE = _re.compile(
@@ -2276,52 +2287,37 @@ def _approval_source_material(item: dict) -> str:
                      str(item.get("url") or ""), *observations))
 
 
-def _is_generic_approval_external_source(item: dict) -> bool:
-    """Reject navigation and contribution pages from a write-approval source list.
+def _is_generic_external_source(item: dict, context: str = "") -> bool:
+    """Reject navigation and contribution pages from every visible evidence list.
 
     Search engines frequently rank a product homepage, a documentation search shell, or
     ``docs/README.md`` ahead of the requested feature specification. Those pages can be
-    official and repeat the product name, but they do not support the draft decision. This
-    filter is deliberately approval-only; a broad research answer may still report the full
-    acquired source set.
+    official and repeat the product name, but they do not support a research conclusion or
+    draft decision. Raw QueryRunner artifacts retain them for diagnostics; user-visible
+    evidence keeps only direct topic documents.
     """
-    from urllib.parse import unquote, urlsplit
-
     url = str(item.get("url") or "").strip()
     if not _is_external_source_url(url):
         return False
-    try:
-        parsed = urlsplit(url)
-        host = (parsed.hostname or "").casefold()
-        path = unquote(parsed.path or "/").rstrip("/").casefold()
-    except Exception:
-        return False
-    if path in ("", "/") or _re.search(r"(?:^|/)search(?:/|$)", path):
-        return True
-    if host == "github.com" or host.endswith(".github.com"):
-        # A repository landing README is navigation-level evidence. Do not reject every
-        # nested README, however: a component README can itself be the direct feature spec.
-        if (_re.fullmatch(
-                r"/[^/]+/[^/]+/(?:blob/[^/]+/)?readme(?:\.[a-z0-9_-]+)?(?:\.md)?",
-                path, _re.I)
-                or _re.search(
-                    r"/(?:contributing|code_of_conduct|pull_request_template)"
-                    r"(?:\.[a-z0-9_-]+)?(?:\.md)?$", path, _re.I)):
-            return True
-        if _re.search(r"/tree/[^/]+/(?:docs?|documentation)$", path, _re.I):
-            return True
-    material = " ".join((
-        str(item.get("title") or ""), str(item.get("key") or ""),
-        *(str(observation.get("text") or "")
-          for observation in (item.get("observations") or [])
-          if isinstance(observation, dict) and observation.get("source") != "query"),
-    ))
-    return bool(_re.search(
-        r"contributor\s+license\s+agreement|\bCLA\b.{0,80}Markdown|"
-        r"documentation\s+(?:contribution|contributing|writing\s+process|templates?)|"
-        r"thank\s+you.{0,80}contribut(?:e|ing).{0,80}documentation",
-        material, _re.I,
-    ))
+    # Keep one policy implementation for both the QueryRunner compact view and the final
+    # source index. This prevents a source approved as a direct intro/home/repository target
+    # from being silently discarded during final rendering.
+    from app.agent.workflow.agents.query_runner import _is_generic_external_hit
+    return _is_generic_external_hit({
+        "title": item.get("title") or item.get("key"),
+        "name": item.get("key") or item.get("title"),
+        "url": url,
+        "snippet": " ".join(
+            str(observation.get("text") or "")
+            for observation in (item.get("observations") or [])
+            if isinstance(observation, dict) and observation.get("source") != "query"
+        ),
+    }, context)
+
+
+def _is_generic_approval_external_source(item: dict, state=None) -> bool:
+    """Backward-compatible name for approval relevance callers and focused tests."""
+    return _is_generic_external_source(item, _external_evidence_context(state or {}))
 
 
 def _without_query_provenance(item: dict) -> dict:
@@ -2476,7 +2472,7 @@ def _approval_source_is_relevant(item: dict, state) -> bool:
     payload = _approval_focus_material(state)
     key = str(item.get("key") or "").strip().upper()
     url = str(item.get("url") or "").strip()
-    if _is_generic_approval_external_source(item):
+    if _is_generic_approval_external_source(item, state):
         return False
     if not url and any(
         isinstance(observation, dict) and observation.get("source") in {"external", "web"}
@@ -2575,7 +2571,7 @@ def _approval_display_evidence(state) -> list[dict]:
     seen: set[str] = set()
     materialized = _approval_materialized_payload_sources(state)
     for item in (state.get("evidence") or []):
-        if not isinstance(item, dict) or _is_non_renderable_evidence(item):
+        if not isinstance(item, dict) or _is_non_renderable_evidence(item, state):
             continue
         key = str(item.get("key") or "").strip().upper()
         candidate = (_merge_display_source(item, materialized[key])
@@ -2730,7 +2726,7 @@ def _merge_evidence_index(text: str, state) -> str:
     approval_display = _approval_display_mode(state)
     evidence = (_approval_display_evidence(state) if approval_display else
                 [_without_query_provenance(item) for item in (state.get("evidence") or [])
-                 if isinstance(item, dict) and not _is_non_renderable_evidence(item)])
+                 if isinstance(item, dict) and not _is_non_renderable_evidence(item, state)])
     value = _drop_direct_input_source_rows(_fold_standalone_sources(text))
     related_docs = state.get("related_docs") or []
     if approval_display:
@@ -2913,7 +2909,7 @@ def _render_requested_source_quality(text: str, state) -> str:
     approval_display = _approval_display_mode(state)
     evidence = (_approval_display_evidence(state) if approval_display else
                 [row for row in (state.get("evidence") or [])
-                 if isinstance(row, dict) and not _is_non_renderable_evidence(row)])
+                 if isinstance(row, dict) and not _is_non_renderable_evidence(row, state)])
     if not evidence or not _source_quality_requested(state):
         return str(text or "")
     confidence = {"high": "높음", "medium": "중간", "low": "낮음", "unknown": "미확인"}

@@ -1077,12 +1077,13 @@ def test_approval_evidence_reports_search_limit_without_a_direct_official_source
     assert got.index("### 조사 한계") < got.index("### 근거")
 
 
-def test_research_answer_evidence_keeps_full_cross_source_coverage():
-    """S7/S8 조사 답변에는 승인 화면용 relevance 압축을 적용하지 않는다."""
+def test_research_answer_evidence_keeps_direct_cross_source_coverage_only():
+    """Research keeps cross-source facts but never renders navigation pages as evidence."""
     from app.agent.workflow.agents.result_integrator import _merge_evidence_index
 
     generic_search = "https://docs.starrocks.io/search/"
     direct_spec = "https://iceberg.apache.org/puffin-spec/"
+    component_readme = "https://github.com/apache/iceberg/blob/main/puffin/README.md"
     state = {
         "intent": "ask",
         "request_text": "내부 기록과 외부 자료를 함께 조사해줘",
@@ -1101,6 +1102,13 @@ def test_research_answer_evidence_keeps_full_cross_source_coverage():
                 "key": "Puffin Spec", "title": "Puffin Spec", "url": direct_spec,
                 "observations": [{"source": "external", "text": "Puffin file format"}],
             },
+            {
+                "key": "Puffin component specification",
+                "title": "Puffin component specification", "url": component_readme,
+                "observations": [{
+                    "source": "external", "text": "Puffin NDV binary layout and validation",
+                }],
+            },
         ],
         "related_docs": [],
     }
@@ -1108,8 +1116,112 @@ def test_research_answer_evidence_keeps_full_cross_source_coverage():
     got = _merge_evidence_index("조사 결과", state)
 
     assert "{{ticket-detail:DL-7001}}" in got
-    assert generic_search in got and direct_spec in got
+    assert generic_search not in got
+    assert direct_spec in got and component_readme in got
     assert "### 조사 한계" not in got
+
+
+def test_result_integrator_does_not_redrop_query_runner_approved_direct_intro():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    intro = "https://docs.starrocks.io/docs/introduction/StarRocks_intro/"
+    state = {
+        "intent": "ask", "request_text": "StarRocks가 뭐야",
+        "evidence": [{
+            "key": "StarRocks introduction", "title": "StarRocks introduction",
+            "url": intro,
+            "observations": [{
+                "source": "external", "text": "StarRocks is an analytical database",
+            }],
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("StarRocks 개요", state)
+
+    assert intro in got
+
+
+def test_result_integrator_filters_product_intro_for_feature_specific_create():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    intro = "https://docs.starrocks.io/docs/introduction/StarRocks_intro/"
+    state = {
+        "intent": "plan_work",
+        "request_text": "StarRocks Puffin NDV writer pipeline Task 생성",
+        "evidence": [{
+            "key": "StarRocks introduction", "title": "StarRocks introduction",
+            "url": intro,
+            "observations": [{
+                "source": "external", "text": "StarRocks is an analytical database",
+            }],
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("기능 초안", state)
+
+    assert intro not in got
+
+
+@pytest.mark.parametrize(("prompt_text", "title", "url", "observation"), [
+    (
+        "StarRocks 공식 홈페이지 알려줘", "StarRocks",
+        "https://www.starrocks.io/", "Official StarRocks homepage",
+    ),
+    (
+        "StarRocks 공식 문서 링크 알려줘", "StarRocks Documentation",
+        "https://docs.starrocks.io/docs/", "Official StarRocks documentation",
+    ),
+    (
+        "Qwen 공식 GitHub 저장소 찾아줘", "QwenLM/Qwen3 - GitHub",
+        "https://github.com/QwenLM/Qwen3", "Official Qwen model repository",
+    ),
+])
+def test_result_integrator_keeps_explicitly_requested_official_navigation_target(
+        prompt_text, title, url, observation):
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    state = {
+        "intent": "ask", "request_text": prompt_text,
+        "evidence": [{
+            "key": title, "title": title, "url": url,
+            "observations": [{"source": "external", "text": observation}],
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("공식 링크", state)
+
+    assert url in got
+
+
+@pytest.mark.parametrize(("prompt_text", "title", "url", "observation"), [
+    (
+        "StarRocks Puffin NDV writer pipeline Task 생성", "StarRocks",
+        "https://www.starrocks.io/", "Official StarRocks homepage",
+    ),
+    (
+        "Qwen structured output 동작 분석", "QwenLM/Qwen3 - GitHub",
+        "https://github.com/QwenLM/Qwen3", "Official Qwen model repository",
+    ),
+])
+def test_result_integrator_filters_navigation_target_for_feature_specific_work(
+        prompt_text, title, url, observation):
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    state = {
+        "intent": "plan_work", "request_text": prompt_text,
+        "evidence": [{
+            "key": title, "title": title, "url": url,
+            "observations": [{"source": "external", "text": observation}],
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("기능 검토", state)
+
+    assert url not in got
 
 
 def test_change_approval_keeps_the_exact_target_ticket_source():

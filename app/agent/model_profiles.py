@@ -187,8 +187,16 @@ def resolve(model: str, provider: str, task_profile: TaskProfile = "balanced", *
     # Semantic work and its wire-format contract are independent. A reasoning Role
     # still needs low-variance, non-thinking JSON emission on providers that cannot
     # separate reasoning from the final payload. Model profiles own that translation.
-    contract_row = (((model_row.get("contracts") or {}).get(output_contract) or {}).get(
-        semantic_profile or task_profile) or {})
+    contracts = model_row.get("contracts") or {}
+    contract_profiles = contracts.get(output_contract) or {}
+    # Typed projection repair/correction calls are the same bounded literal transport
+    # family as the first projection. Reuse a model's explicitly qualified family profile
+    # when a narrower suffix has no override; profiles without that contract (OpenAI/native)
+    # keep their existing defaults.
+    if (not contract_profiles and output_contract.startswith("typed_projection_")
+            and isinstance(contracts.get("typed_projection"), dict)):
+        contract_profiles = contracts["typed_projection"]
+    contract_row = (contract_profiles.get(semantic_profile or task_profile) or {})
 
     params: dict = {}
     sources: list[str] = []

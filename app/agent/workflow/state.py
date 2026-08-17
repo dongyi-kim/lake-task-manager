@@ -122,6 +122,41 @@ class MaterializedTicketSources(TypedDict, total=False):
 
     ticketDetails: list[dict[str, Any]]
     parentCandidateKeys: list[str]
+    parentCandidateSearchAttempted: bool
+
+
+def verified_parent_epic_candidates(state: "AgentState") -> list[dict[str, Any]]:
+    """Return the successfully opened Epics authorized for automatic placement.
+
+    A search hit is discovery, not write authority. Automatic parent selection therefore
+    uses only the ordered intersection of the structural parent query and successful ticket
+    detail materialization. Keeping this invariant in State gives routing, Work, and Audit
+    one definition instead of three subtly different interpretations of the same ledger.
+    """
+    ledger = state.get("materialized_ticket_sources") or {}
+    if not isinstance(ledger, dict):
+        return []
+    allowed: list[str] = []
+    for value in ledger.get("parentCandidateKeys") or []:
+        key = str(value or "").strip().upper()
+        if key and key not in allowed:
+            allowed.append(key)
+    if not allowed:
+        return []
+    details: dict[str, dict[str, Any]] = {}
+    for row in ledger.get("ticketDetails") or []:
+        if not isinstance(row, dict) or row.get("error"):
+            continue
+        key = str(row.get("key") or "").strip().upper()
+        issue_type = (row.get("fields") or {}).get("issuetype") or {}
+        kind = str(
+            row.get("type") or row.get("issuetype")
+            or (issue_type.get("name") if isinstance(issue_type, dict) else issue_type)
+            or ""
+        ).strip().casefold()
+        if key and kind == "epic":
+            details[key] = row
+    return [details[key] for key in allowed if key in details]
 
 
 class AgentState(TypedDict, total=False):

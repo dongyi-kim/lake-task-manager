@@ -147,7 +147,11 @@ def test_verified_related_same_module_epic_choice_survives_delegation():
            "structure": "single_task", "structure_source": "inferred"}
     state = {"messages": [HumanMessage(
         content="쿼리 성능 개선 자동화 Task 개발. Epic은 네가 골라줘. 알아서")],
-        "situation": "verified candidates supplied"}
+        "situation": "verified candidates supplied",
+        "materialized_ticket_sources": {
+            "parentCandidateKeys": ["DL-102"],
+            "ticketDetails": [{"key": "DL-102", "type": "Epic"}],
+        }}
     got = WorkArchitect().apply(state, out)
     assert got["draft"]["items"][0]["epic"] == "DL-102"
 
@@ -169,6 +173,13 @@ def test_verified_related_cross_module_epic_survives_delegated_choice(monkeypatc
 
     got = WorkArchitect().apply(_msg(
         "AcmeDB DeltaSketch pipeline Task를 만들어줘. Epic은 네가 골라줘. 알아서",
+        materialized_ticket_sources={
+            "parentCandidateKeys": ["DL-9303"],
+            "ticketDetails": [{
+                "key": "DL-9303", "type": "Epic",
+                "summary": "[Platform] AcmeDB DeltaSketch adoption",
+            }],
+        },
     ), out)
 
     assert got["draft"]["items"][0]["epic"] == "DL-9303"
@@ -2562,6 +2573,42 @@ def test_delegated_epic_replaces_rejected_model_placement(monkeypatch):
     assert item["epic"] == "PX-RIGHT"
 
 
+def test_delegated_model_parent_is_cleared_when_not_in_opened_candidate_ledger(monkeypatch):
+    from app.agent.workflow.agents import work_architect as R
+
+    monkeypatch.setattr(R, "_is_epic", lambda _key: True)
+    monkeypatch.setattr(R, "_inferred_epic_rejection", lambda *_args, **_kwargs: "")
+    state = _msg(
+        "AcmeDB DeltaSketch Task를 만들어줘. 기존 Epic은 네가 골라줘. 알아서",
+        request_text="AcmeDB DeltaSketch Task를 만들어줘",
+        situation="관련 이력 확인 완료",
+        materialized_ticket_sources={
+            "parentCandidateKeys": [],
+            "ticketDetails": [{"key": "PX-OLD", "type": "Epic"}],
+        },
+    )
+    out = {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_source": "inferred", "rationale": "", "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch 구현", "type": "Task",
+            "epic": "PX-OLD", "components": ["Runtime"],
+            "description": (
+                "<h3>배경</h3><p>구현 요청</p><h3>작업 범위</h3>"
+                "<ul><li>포함: 구현</li><li>제외: 요청 외 변경</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                "<li data-checked=\"false\">테스트 결과 기록</li></ul>"
+            ),
+        }],
+    }
+
+    result = WorkArchitect().apply(state, out)["draft"]
+
+    assert not result["items"][0].get("epic")
+    assert "상세 확인된 기존 Epic 후보" in result["rationale"]
+    assert "존재하지" not in result["rationale"]
+    assert "Epic 이 아니다" not in result["rationale"]
+
+
 def test_stripping_orphan_subtasks_never_empties_the_draft():
     """"부모는 나중에" 로 떼어 내는 분기는 **남는 게 있을 때만** 뗀다.
 
@@ -2907,6 +2954,79 @@ def test_user_anchors_are_sealed_in_child_titles_and_bodies():
     child = items[0]["children"][0]
     assert "1차" in child["summary"] and " pipeline 차" not in child["summary"]
     assert "1차" in child["description"] and " pipeline 차" not in child["description"]
+
+
+def test_multiple_request_ordinals_preserve_each_explicit_child_phase():
+    from copy import deepcopy
+    from app.agent.workflow.agents.work_architect import _preserve_required_user_anchors
+
+    state = _msg(
+        "StarRocks Puffin NDV 1차 구현 Task 아래 2차 검증 Sub-Task를 만들어줘",
+    )
+    items = [{
+        "summary": "[ETL] StarRocks Puffin NDV 1차 구현",
+        "description": (
+            "<h3>작업 범위</h3><ul><li>포함: StarRocks Puffin NDV 1차 구현</li></ul>"
+        ),
+        "children": [{
+            "summary": "[ETL] StarRocks Puffin NDV 2차 — 검증",
+            "description": (
+                "<h3>작업 범위</h3><ul>"
+                "<li>포함: StarRocks Puffin NDV 2차 검증</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                "<li data-checked=\"false\">StarRocks Puffin NDV 2차 검증 결과 기록</li>"
+                "</ul>"
+            ),
+        }],
+    }]
+    original = deepcopy(items)
+
+    _preserve_required_user_anchors(state, items)
+
+    assert "1차" in items[0]["summary"]
+    assert "2차" in items[0]["children"][0]["summary"]
+    assert "1차" not in items[0]["children"][0]["summary"]
+    assert "2차" in items[0]["children"][0]["description"]
+    assert "1차" not in items[0]["children"][0]["description"]
+    assert items == original
+
+
+def test_multiple_request_ordinals_repair_swapped_visible_hierarchy_only():
+    from app.agent.workflow.agents.work_architect import _preserve_required_user_anchors
+
+    state = _msg(
+        "StarRocks Puffin NDV 1차 구현 Task 아래 2차 검증 Sub-Task를 만들어줘",
+    )
+    root_body = "<p>배경: 1차 구현 후 2차 검증을 수행</p>"
+    child_body = "<p>배경: 1차 구현 결과를 받아 2차 검증</p>"
+    items = [{
+        "summary": "[ETL] StarRocks Puffin NDV 2차 구현",
+        "description": root_body,
+        "children": [{
+            "summary": "[ETL] StarRocks Puffin NDV 1차 검증",
+            "description": child_body,
+        }],
+    }]
+
+    assert _preserve_required_user_anchors(state, items)
+    assert "1차 구현" in items[0]["summary"]
+    assert "2차 검증" in items[0]["children"][0]["summary"]
+    # Background prose can mention both phases and is not blanket-rewritten.
+    assert items[0]["description"] == root_body
+    assert items[0]["children"][0]["description"] == child_body
+
+    # A Korean-only subject has no protected Latin anchor, but explicit root/child issue
+    # tiers still make the two phase scopes deterministic.
+    korean_state = _msg(
+        "통계 파이프라인 1차 구현 Task 아래 2차 검증 Sub-Task를 만들어줘",
+    )
+    korean_items = [{
+        "summary": "통계 파이프라인 2차 구현", "description": "",
+        "children": [{"summary": "통계 파이프라인 1차 검증", "description": ""}],
+    }]
+    assert _preserve_required_user_anchors(korean_state, korean_items)
+    assert "1차 구현" in korean_items[0]["summary"]
+    assert "2차 검증" in korean_items[0]["children"][0]["summary"]
 
 
 def test_korean_only_single_ordinal_is_restored_without_a_latin_subject_anchor():

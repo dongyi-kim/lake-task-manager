@@ -310,6 +310,31 @@ def test_interview_continuation_keeps_only_bounded_typed_ticket_sources_and_prio
     assert fresh["materialized_ticket_sources"] == {}
 
 
+def test_zero_hit_parent_candidate_search_marker_survives_an_interview_turn():
+    prior = {
+        "intent": "plan_work",
+        "request_text": "Puffin NDV Task를 만들고 기존 Epic은 네가 골라줘",
+        "request_plan": {"tasks": [{"write_intent": True}]},
+        "questions": [{"field": "due", "question": "마감일은 언제인가요?"}],
+        "situation": "관련 이력과 기존 Epic 후보 조회 완료",
+        "materialized_ticket_sources": {
+            "parentCandidateSearchAttempted": True,
+            "parentCandidateKeys": [],
+            "ticketDetails": [],
+        },
+    }
+
+    continued = _turn_start_patch("마감은 2026-09-30으로 해줘", prior)
+
+    assert continued["turn_continuation"]
+    assert continued["request_text"] == prior["request_text"]
+    assert continued["materialized_ticket_sources"] == {
+        "parentCandidateSearchAttempted": True,
+        "parentCandidateKeys": [],
+        "ticketDetails": [],
+    }
+
+
 def test_multi_field_draft_refinement_keeps_original_request_without_an_interview():
     prior = {
         "request_text": "StarRocks Puffin NDV 1차 검증 Task를 구성해줘",
@@ -328,6 +353,108 @@ def test_multi_field_draft_refinement_keeps_original_request_without_an_intervie
     assert continued["request_text"] == prior["request_text"]
     assert continued["topic_dossier"] == prior["topic_dossier"]
     assert continued["draft"] == prior["draft"]
+
+
+def test_multi_field_refinement_continues_an_incomplete_plan_with_verified_evidence():
+    """A failed Work projection must not turn field-only answers into a new subject."""
+    original_plan = {
+        "goal": "StarRocks Puffin NDV 파이프라인 구현",
+        "tasks": [{
+            "id": "create-task", "kind": "ticket", "write_intent": True,
+            "instruction": "조사 결과를 바탕으로 구현 Task 초안 작성",
+        }],
+    }
+    prior = {
+        "intent": "plan_work",
+        "request_text": "StarRocks Puffin NDV 파이프라인 구현 Task를 구성해줘",
+        "request_plan": original_plan,
+        "questions": [],
+        "situation": "관련 PoC와 구현 이력 조사 완료",
+        "draft": {},
+        "structure_plan": [],
+        "error": "structured output projection failed",
+        "materialized_ticket_sources": {
+            "ticketDetails": [
+                {"key": "DL-9200", "type": "Epic", "summary": "Puffin NDV 도입"},
+                {"key": "DL-9999", "type": "Epic", "error": "permission denied"},
+            ],
+            "parentCandidateKeys": [],
+        },
+        "turns": 0,
+    }
+
+    continued = _turn_start_patch(
+        "기존 Epic은 네가 골라서 연결하고 범위는 1차, 마감은 2026-09-30으로 해줘",
+        prior,
+    )
+
+    assert continued["turn_continuation"]
+    assert continued["request_text"] == prior["request_text"]
+    assert continued["request_plan"] == original_plan
+    assert continued["situation"] == prior["situation"]
+    assert continued["materialized_ticket_sources"] == {
+        "ticketDetails": [
+            {"key": "DL-9200", "type": "Epic", "summary": "Puffin NDV 도입"},
+        ],
+        "parentCandidateKeys": [],
+    }
+
+
+def test_incomplete_plan_does_not_inherit_verified_evidence_for_a_new_subject():
+    prior = {
+        "intent": "plan_work",
+        "request_text": "StarRocks Puffin NDV 파이프라인 구현 Task를 구성해줘",
+        "request_plan": {"tasks": [{"write_intent": True}]},
+        "questions": [],
+        "situation": "관련 조사 완료",
+        "error": "structured output projection failed",
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200", "type": "Epic"}],
+            "parentCandidateKeys": ["DL-9200"],
+        },
+    }
+
+    fresh = _turn_start_patch(
+        "Kafka CDC 전환 범위는 1차, 마감은 2026-10-15로 정리해줘", prior,
+    )
+
+    assert not fresh["turn_continuation"]
+    assert fresh["request_text"].startswith("Kafka CDC")
+    assert fresh["request_plan"] == {}
+    assert fresh["materialized_ticket_sources"] == {}
+
+
+def test_incomplete_plan_field_refinement_rejects_a_new_task_creation_speech_act():
+    prior = {
+        "intent": "plan_work",
+        "request_text": "StarRocks Puffin NDV 파이프라인 Task를 구성해줘",
+        "request_plan": {"tasks": [{"write_intent": True}]},
+        "questions": [],
+        "situation": "관련 이력 조사 완료",
+        "error": "structured output projection failed",
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200", "type": "Epic"}],
+            "parentCandidateKeys": [],
+        },
+    }
+
+    explicit_new = _turn_start_patch(
+        "새 결제 UI 범위는 MVP, 마감은 2026-10-01 Task 만들어줘", prior,
+    )
+    korean_only_subject = _turn_start_patch(
+        "새 결제 화면 범위는 최소, 마감은 2026-10-01 Task 만들어줘", prior,
+    )
+    field_only = _turn_start_patch(
+        "Epic은 네가 골라줘. 범위는 1차, 마감은 2026-09-30으로 해줘", prior,
+    )
+
+    for fresh in (explicit_new, korean_only_subject):
+        assert not fresh["turn_continuation"]
+        assert fresh["request_plan"] == {}
+        assert fresh["materialized_ticket_sources"] == {}
+    assert field_only["turn_continuation"]
+    assert field_only["request_text"] == prior["request_text"]
+    assert field_only["materialized_ticket_sources"]["ticketDetails"][0]["key"] == "DL-9200"
 
 
 def test_explicit_new_work_never_inherits_a_previous_draft_even_with_multiple_fields():
@@ -467,6 +594,42 @@ def test_pending_due_interview_rejects_independent_declarative_topics():
     assert exact_due["request_text"] == prior["request_text"]
     assert relative_due["turn_continuation"]
     assert relative_due["request_text"] == prior["request_text"]
+
+
+def test_pending_parent_interview_rejects_unrecognized_korean_noun_requests():
+    prior = {
+        "intent": "plan_work",
+        "request_text": "StarRocks Puffin NDV 검증 Task를 만들어줘",
+        "request_plan": {"tasks": [{
+            "id": "ticket", "kind": "ticket", "write_intent": True,
+            "instruction": "StarRocks Puffin NDV 검증 Task 생성",
+        }]},
+        "questions": [{
+            "field": "parent", "question": "어느 기존 Epic 아래에 둘까요?",
+            "options": ["DL-9200", "최상위 Task"],
+        }],
+        "situation": "Puffin 관련 조사 완료",
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200", "type": "Epic"}],
+            "parentCandidateKeys": ["DL-9200"],
+        },
+    }
+
+    security = _turn_start_patch("보안 교육 현황 파악 부탁", prior)
+    vacation = _turn_start_patch("오늘 휴가 공지 공유", prior)
+    exact_choice = _turn_start_patch("DL-9200으로 연결해줘", prior)
+    top_level = _turn_start_patch("최상위 Task로 진행해줘", prior)
+
+    for fresh, text in (
+        (security, "보안 교육 현황 파악 부탁"),
+        (vacation, "오늘 휴가 공지 공유"),
+    ):
+        assert not fresh["turn_continuation"]
+        assert fresh["request_text"] == text
+        assert fresh["request_plan"] == {}
+        assert fresh["materialized_ticket_sources"] == {}
+    assert exact_choice["turn_continuation"]
+    assert top_level["turn_continuation"]
 
 
 def test_pending_interview_keeps_typed_outcome_refinement_and_field_shaped_answers():

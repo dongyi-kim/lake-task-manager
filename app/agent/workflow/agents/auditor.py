@@ -27,6 +27,7 @@ from app.agent.workflow.agents.work_architect import (
     _authoritative_explicit_due, _explicit_due_instruction_status,
     _current_request_boundary_text, _global_exact_due_for_roots,
     _delegates_existing_epic_choice, _explicit_parent_epic,
+    _explicit_hierarchical_ordinal_contract,
     _expected_due_dates_by_root, _expected_parent_epics_by_root,
     as_bulk_items, draft_full_text,
 )
@@ -36,7 +37,10 @@ from app.agent.workflow.anchors import (
     validate_draft_outcome_contract,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
-from app.agent.workflow.state import AgentState, Node, last_user_text, note, request_text
+from app.agent.workflow.state import (
+    AgentState, Node, last_user_text, note, request_text,
+    verified_parent_epic_candidates,
+)
 
 SCHEMA = {
     "type": "object",
@@ -204,7 +208,9 @@ The draft must preserve this subject; subject drift is a blocking request-covera
         advisory_warnings = [{"index": p.get("index", -1),
                               "message": "품질 참고(비차단): " + str(p.get("message") or "")}
                              for p in advice]
-        summary = str(out.get("summary") or "")
+        summary = _normalize_delegated_parent_summary(
+            state, str(out.get("summary") or "")
+        )
         if ok and advice:
             summary = (f"정책·근거 검증 통과. 편집 제안 {len(advice)}건은 "
                        "비차단 참고로 남겼다.")
@@ -239,6 +245,11 @@ def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, 
                       or any(w in req for w in ("단계별 Sub-Task", "사람 나눠서")))
     blocking, advice, seen = [], [], set()
     for problem in problems:
+        if _unverified_delegated_parent_claim(state, problem):
+            # A model cannot turn absence from the bounded candidate ledger into proof that
+            # a Jira key does not exist, nor recommend a search hit whose Epic detail was not
+            # opened. Deterministic validation emits the actionable parent error below.
+            continue
         if _problem_contradicts_authoritative_state(state, problem):
             continue
         msg = str(problem.get("message") or "")
@@ -269,6 +280,59 @@ def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, 
             advisory = True
         (advice if advisory else blocking).append(problem)
     return blocking, advice
+
+
+def _unverified_delegated_parent_claim(state: AgentState, problem: dict) -> bool:
+    """Reject model-only parent existence claims and unverified replacement keys."""
+    if not _delegates_existing_epic_choice(state):
+        return False
+    text = " ".join(str(problem.get(key) or "") for key in ("message", "fix"))
+    folded = text.casefold()
+    parent_language = any(
+        token in folded for token in (
+            "parent", "상위", "부모", "연결", "배치", "아래", "하위",
+        )
+    )
+    candidates = {
+        str(row.get("key") or "").strip().upper()
+        for row in verified_parent_epic_candidates(state)
+    }
+    mentioned = {
+        match.group(1).upper()
+        for match in _re.finditer(
+            r"(?<![A-Z0-9])([A-Z][A-Z0-9]*-\d+)(?![A-Z0-9])", text, _re.I,
+        )
+    }
+    unsupported_key = bool(mentioned - candidates)
+    unsupported_existence = any(token in folded for token in (
+        "존재하지", "실재하지", "찾을 수 없", "검색 결과에", "확인되지 않",
+    ))
+    # A terse summary can omit the word Epic while retaining the same unsupported
+    # ``DL-x does not exist; use DL-y`` assertion. Ticket keys plus an existence claim are
+    # enough to identify that model-only parent conclusion inside a delegated-parent audit.
+    return (parent_language and unsupported_key) or (unsupported_existence and bool(mentioned))
+
+
+def _normalize_delegated_parent_summary(state: AgentState, summary: str) -> str:
+    """Replace epistemically invalid model wording with the candidate-ledger contract."""
+    text = str(summary or "")
+    if not _unverified_delegated_parent_claim(
+            state, {"message": text, "fix": ""}):
+        return text
+    candidates = [
+        str(row.get("key") or "").strip().upper()
+        for row in verified_parent_epic_candidates(state)
+        if str(row.get("key") or "").strip()
+    ]
+    if candidates:
+        return (
+            "상위 Epic 자동 선택은 현재 조회에서 상세 확인된 기존 Epic 후보("
+            + ", ".join(candidates) + ")만 사용할 수 있다."
+        )
+    return (
+        "현재 조회에서 상세 확인된 기존 Epic 후보가 없어 parent를 비우거나 "
+        "후보 조회를 갱신해야 한다."
+    )
 
 
 def _request_parent_action(state: AgentState) -> str:
@@ -552,6 +616,7 @@ def _deterministic_request_field_errors(state: AgentState, roots: list[dict]) ->
     ordinals = [value for value in required_user_anchors(state) if is_ordinal(value)]
     if len(roots) == 1 and len(ordinals) == 1:
         expected = ordinals[0]
+        expected_number = _re.match(r"(\d+)", expected).group(1)
         rows = [roots[0], *[
             child for child in (roots[0].get("children") or []) if isinstance(child, dict)
         ]]
@@ -562,13 +627,60 @@ def _deterministic_request_field_errors(state: AgentState, roots: list[dict]) ->
                 r"<[^>]+>", " ",
                 f"{row.get('summary') or ''} {row.get('description') or ''}",
             ))
-            if bare.search(visible) or expected not in visible:
+            explicit_numbers = set(_re.findall(r"(?<!\d)(\d{1,3})\s*차", visible))
+            conflicts = sorted(number for number in explicit_numbers
+                               if number != expected_number)
+            if bare.search(visible):
                 errors.append({
                     "index": index,
                     "field": "ordinal",
-                    "message": (f"사용자 지정 범위 {expected}가 root/child 표시에서 "
-                                "누락되거나 bare '차'로 손상됐다"),
+                    "message": (f"사용자 지정 범위 {expected}에서 숫자 없는 bare '차'가 "
+                                "root/child 표시에 사용됐다"),
                 })
+            elif conflicts:
+                rendered = ", ".join(f"{number}차" for number in conflicts)
+                errors.append({
+                    "index": index,
+                    "field": "ordinal",
+                    "message": (f"사용자 지정 범위 {expected}와 충돌하는 {rendered}가 "
+                                "root/child 표시에 사용됐다"),
+                })
+            elif index == 0 and expected_number not in explicit_numbers:
+                errors.append({
+                    "index": 0,
+                    "field": "ordinal",
+                    "message": f"root 표시에 사용자 지정 범위 {expected}가 누락됐다",
+                })
+
+    hierarchy_ordinals = _explicit_hierarchical_ordinal_contract(state)
+    if len(roots) == 1 and hierarchy_ordinals:
+        hierarchy_rows = [("root", 0, roots[0], hierarchy_ordinals["root"])]
+        hierarchy_rows.extend(
+            ("child", index, child, hierarchy_ordinals["child"])
+            for index, child in enumerate((roots[0].get("children") or []), start=1)
+            if isinstance(child, dict)
+        )
+        bare = _re.compile(
+            r"(?<![0-9A-Za-z가-힣_])차(?=\s|[—–\-:·,.;!?()\[\]{}]|$)", _re.I)
+        for tier, index, row, expected in hierarchy_rows:
+            # The summary is the issue's visible phase ownership label. Descriptions may
+            # legitimately mention both phases as background/dependencies, so they are not
+            # used to infer ownership here.
+            summary = unescape(_re.sub(r"<[^>]+>", " ", str(row.get("summary") or "")))
+            explicit = {
+                f"{int(number)}차"
+                for number in _re.findall(r"(?<!\d)(\d{1,3})\s*차", summary)
+            }
+            conflicts = sorted(value for value in explicit if value != expected)
+            if bare.search(summary):
+                message = f"{tier} 표시에 숫자 없는 bare '차'가 사용됐다"
+            elif expected not in explicit or conflicts:
+                actual = ", ".join(sorted(explicit)) or "비어 있음"
+                message = (f"{tier} 표시는 사용자 지정 범위 {expected}여야 하나 "
+                           f"초안은 {actual}")
+            else:
+                continue
+            errors.append({"index": index, "field": "ordinal", "message": message})
 
     for index, expected_type in _expected_issue_types_by_root(state, roots).items():
         row = roots[index]
@@ -600,9 +712,11 @@ def _deterministic_request_field_errors(state: AgentState, roots: list[dict]) ->
                     "message": f"사용자 지정 상위 Epic은 {explicit_parent}이나 초안은 {actual or '비어 있음'}",
                 })
     elif _delegates_existing_epic_choice(state) and "materialized_ticket_sources" in state:
-        ledger = state.get("materialized_ticket_sources") or {}
-        candidates = {str(key or "").strip().upper()
-                      for key in (ledger.get("parentCandidateKeys") or []) if str(key or "").strip()}
+        candidates = {
+            str(row.get("key") or "").strip().upper()
+            for row in verified_parent_epic_candidates(state)
+            if str(row.get("key") or "").strip()
+        }
         for index, row in enumerate(roots):
             actual = str(row.get("epic") or row.get("parent") or "").strip().upper()
             invalid = (actual not in candidates if candidates else bool(actual))
@@ -610,10 +724,11 @@ def _deterministic_request_field_errors(state: AgentState, roots: list[dict]) ->
                 errors.append({
                     "index": index, "field": "parent",
                     "message": (
-                        f"자동 선택 상위 Epic {actual}이 QueryRunner가 상세 확인한 "
+                        f"초안 parent {actual}은 현재 조회에서 상세 확인된 기존 Epic "
                         f"후보({', '.join(sorted(candidates))})에 포함되지 않는다"
                         if candidates else
-                        f"검증된 상위 Epic 후보가 없는데 불투명한 parent {actual}이 지정됐다"
+                        f"현재 조회에서 상세 확인된 기존 Epic 후보가 없어 초안 parent "
+                        f"{actual}의 연결 근거를 확인할 수 없다"
                     ),
                 })
     return errors

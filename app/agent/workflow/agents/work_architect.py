@@ -29,7 +29,7 @@ from app.agent.workflow.agents.base import StructuredAgent, invoke_schema
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
                                       conversation, last_user_text, note, reads_as_bug,
-                                      request_text)
+                                      request_text, verified_parent_epic_candidates)
 
 # 신규 구축 규모의 신호 — **프롬프트 넛지와 하향 편향 가드가 같은 목록을 본다.**
 # 갈라지면 "프롬프트는 시키는데 코드는 안 막는" 상태가 되고, 그건 이 저장소가 반복해서
@@ -1519,6 +1519,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         explicit_epic = _explicit_parent_epic(state)
         explicit_epics = _expected_parent_epics_by_root(state, items)
         delegated_epic_choice = _delegates_existing_epic_choice(state)
+        verified_parent_keys = ({
+            str(row.get("key") or "").strip().upper()
+            for row in verified_parent_epic_candidates(state)
+        } if delegated_epic_choice else set())
         if explicit_epic and mode != "subtask":
             for it in items:
                 if not str(it.get("type") or "").lower().startswith("sub"):
@@ -1547,7 +1551,26 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                         + "\n(관련성이 검증된 기존 Epic 후보가 없어 "
                                           "최상위 Task로 보수적으로 배치했다)").strip()
                 continue
-            if not _is_epic(ek):
+            if delegated_epic_choice and ek.upper() not in verified_parent_keys:
+                replacement = _delegated_parent_epic(state, it, rejected_key=ek)
+                if replacement:
+                    it["epic"] = str(replacement["key"])
+                    message = (
+                        f"초안 parent {ek}은 현재 조회에서 상세 확인된 기존 Epic 후보가 "
+                        f"아니어서 {replacement['key']}으로 대체했다"
+                    )
+                else:
+                    it.pop("epic", None)
+                    message = (
+                        f"초안 parent {ek}은 현재 조회에서 상세 확인된 기존 Epic 후보가 "
+                        "아니어서 연결을 비우고 최상위 Task로 뒀다"
+                    )
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + f"\n({message})").strip()
+                continue
+            # The successful opened detail already proves a delegated candidate's type.
+            # Other parent paths retain the live Jira type guard.
+            if not delegated_epic_choice and not _is_epic(ek):
                 replacement = _delegated_parent_epic(state, it, rejected_key=ek) \
                     if delegated_epic_choice else None
                 it["epic"] = str(replacement["key"]) if replacement else ""
@@ -5521,6 +5544,67 @@ def _visible_body_text(value: str) -> str:
     return " ".join(visible)
 
 
+_HIERARCHY_ISSUE_TIER = _re.compile(
+    r"(?i)(?P<child>Sub[\s_-]*Task|Subtask|서브\s*(?:태스크|테스크))|"
+    r"(?P<root>Task|Epic|Story|Bug|Feature|Improvement|"
+    r"태스크|테스크|에픽|스토리|버그|피처|임프로브먼트)"
+)
+
+
+def _explicit_hierarchical_ordinal_contract(state) -> dict[str, str]:
+    """Bind explicit request ordinals to their nearest root/child issue tier.
+
+    Multiple phase ordinals cannot be propagated globally: ``1차 … Task 아래 2차 …
+    Sub-Task`` owns two different visible scopes.  Bind each ordinal to the nearest
+    explicit issue-type token (preferring the following token on an exact tie, as Korean
+    modifiers normally precede their noun).  Ambiguous or incomplete material deliberately
+    returns no contract and remains semantic-review work.
+    """
+    material = _current_request_boundary_text(state)
+    ordinal_rows = [
+        (match.start(), match.end(), f"{int(match.group(1))}차")
+        for match in _re.finditer(r"(?<!\d)(\d{1,3})\s*차", material)
+    ]
+    if len({value for _, _, value in ordinal_rows}) < 2:
+        return {}
+    tier_rows = [
+        (match.start(), match.end(), "child" if match.group("child") else "root")
+        for match in _HIERARCHY_ISSUE_TIER.finditer(material)
+    ]
+    if not tier_rows:
+        return {}
+
+    bound: dict[str, set[str]] = {"root": set(), "child": set()}
+    for ordinal_start, ordinal_end, value in ordinal_rows:
+        candidates = []
+        for tier_start, tier_end, tier in tier_rows:
+            if ordinal_end <= tier_start:
+                gap, direction = tier_start - ordinal_end, 0
+            elif tier_end <= ordinal_start:
+                gap, direction = ordinal_start - tier_end, 1
+            else:
+                gap, direction = 0, 0
+            # A wider match is a different clause/outcome, not an ordinal/type binding.
+            if gap <= 32:
+                candidates.append((gap, direction, tier_start, tier))
+        if not candidates:
+            continue
+        candidates.sort()
+        best = candidates[0]
+        # Same-position ambiguity should not be resolved by regex declaration order.
+        if len(candidates) > 1 and candidates[1][:3] == best[:3]:
+            return {}
+        bound[best[3]].add(value)
+
+    if len(bound["root"]) != 1 or len(bound["child"]) != 1:
+        return {}
+    root = next(iter(bound["root"]))
+    child = next(iter(bound["child"]))
+    if root == child:
+        return {}
+    return {"root": root, "child": child}
+
+
 def _preserve_required_user_anchors(state, items: list) -> bool:
     """Restore precise request anchors without attempting general title rewriting.
 
@@ -5536,13 +5620,15 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
     anchors = required_user_anchors(state, include_latest=True)
     subjects = [value for value in anchors if not is_ordinal(value)]
     ordinals = [value for value in anchors if is_ordinal(value)]
+    hierarchy_ordinals = _explicit_hierarchical_ordinal_contract(state)
     rows = [item for item in (items or []) if isinstance(item, dict)]
     if not rows or not (subjects or ordinals):
         return False
     # An ordinal-only Korean request has no Latin subject anchor. It is still safe to seal
     # one root with one exact phase, but spreading one phase over several deliverables or
     # choosing among several explicit phases would change semantics.
-    if not subjects and (len(rows) != 1 or len(ordinals) != 1):
+    if not subjects and (
+            len(rows) != 1 or (len(ordinals) != 1 and not hierarchy_ordinals)):
         return False
 
     def contains(text: str, value: str) -> bool:
@@ -5570,6 +5656,15 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
 
     def body_contains(body: str, value: str) -> bool:
         return contains(_visible_body_text(body), value)
+
+    def repair_hierarchy_summary(text: str, tier: str) -> str:
+        """Correct one misplaced visible phase without rewriting descriptive prose."""
+        expected = hierarchy_ordinals.get(tier)
+        matches = list(_re.finditer(r"(?<!\d)\d{1,3}\s*차", str(text or "")))
+        if not expected or len(matches) != 1 or contains(text, expected):
+            return text
+        match = matches[0]
+        return text[:match.start()] + expected + text[match.end():]
 
     ordinal_follow = (
         r"[—–-]|설계|기획|구현|개발|구축|적용|전환|검증|테스트|측정|배포|"
@@ -5619,7 +5714,8 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
     changed = False
     for item in rows:
         old_summary = str(item.get("summary") or "").strip()
-        summary = old_summary
+        summary = repair_hierarchy_summary(old_summary, "root")
+        changed = changed or summary != old_summary
         if not summary:
             continue
         hay = summary + " " + _visible_body_text(str(item.get("description") or ""))
@@ -5675,6 +5771,24 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
                 continue
             child_summary = str(child.get("summary") or "").strip()
             old_child_summary = child_summary
+            child_summary = repair_hierarchy_summary(child_summary, "child")
+            if child_summary != old_child_summary:
+                child["summary"] = child_summary
+                changed = True
+            child_visible = (
+                child_summary + " "
+                + _visible_body_text(str(child.get("description") or ""))
+            )
+            child_explicit_ordinals = _re.findall(
+                r"(?<!\d)\d{1,3}\s*차", child_visible,
+            )
+            # An explicit child phase is authored scope, even when it conflicts with the
+            # parent. Never silently rewrite ``2차`` to the parent's ``1차``. Likewise, a
+            # multi-phase request has no single ordinal safe to propagate into every child;
+            # preserve the literal draft and let deterministic/semantic review resolve any
+            # ambiguity. Single-ordinal children with a missing/bare phase still inherit.
+            if child_explicit_ordinals or len(ordinals) != 1:
+                continue
             stage = _re.search(
                 r"[—–-]\s*(설계|기획|구현|개발|적용|검증|테스트|측정|배포|모니터링)\s*$",
                 child_summary,
@@ -6994,30 +7108,7 @@ def _delegated_parent_epic(state, item: dict, *, rejected_key: str = ""):
 
 def _materialized_parent_epic_candidates(state: dict) -> list[dict]:
     """Return successful Epic details in QueryRunner's candidate order."""
-    ledger = state.get("materialized_ticket_sources") or {}
-    if not isinstance(ledger, dict):
-        return []
-    allowed = []
-    for value in ledger.get("parentCandidateKeys") or []:
-        key = str(value or "").strip().upper()
-        if key and key not in allowed:
-            allowed.append(key)
-    if not allowed:
-        return []
-    details = {}
-    for row in ledger.get("ticketDetails") or []:
-        if not isinstance(row, dict) or row.get("error"):
-            continue
-        key = str(row.get("key") or "").strip().upper()
-        issue_type = (row.get("fields") or {}).get("issuetype") or {}
-        kind = str(
-            row.get("type") or row.get("issuetype")
-            or (issue_type.get("name") if isinstance(issue_type, dict) else issue_type)
-            or ""
-        ).strip().casefold()
-        if key and kind == "epic":
-            details[key] = row
-    return [details[key] for key in allowed if key in details]
+    return verified_parent_epic_candidates(state)
 
 
 def _dedupe_semantic_items(state, items: list) -> list:

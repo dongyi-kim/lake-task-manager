@@ -295,6 +295,76 @@ def test_ordinal_type_and_materialized_parent_mismatches_are_machine_blockers():
     assert {"ordinal", "type", "parent"}.issubset(fields)
 
 
+def test_single_root_ordinal_scopes_children_without_repeated_title_noise():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _deterministic_request_field_errors
+
+    state = {
+        "request_text": "StarRocks Puffin NDV 파이프라인 1차 구현 Task를 만들어줘",
+        "messages": [HumanMessage(content=(
+            "StarRocks Puffin NDV 파이프라인 1차 구현 Task를 만들어줘"
+        ))],
+    }
+    root = {
+        "summary": "[ETL] StarRocks Puffin NDV 파이프라인 1차 구현",
+        "description": "<p>1차 구현 범위</p>",
+        "type": "Task",
+        "children": [
+            {"summary": "파이프라인 코드 구현", "type": "Sub-Task"},
+            {"summary": "회귀 테스트 수행", "type": "Sub-Task"},
+        ],
+    }
+
+    assert not [row for row in _deterministic_request_field_errors(state, [root])
+                if row.get("field") == "ordinal"]
+
+    conflicting = {**root, "children": [
+        {"summary": "파이프라인 2차 구현", "type": "Sub-Task"},
+    ]}
+    conflict_errors = [
+        row for row in _deterministic_request_field_errors(state, [conflicting])
+        if row.get("field") == "ordinal"
+    ]
+    assert len(conflict_errors) == 1
+    assert "2차" in conflict_errors[0]["message"] and "1차" in conflict_errors[0]["message"]
+
+    bare = {**root, "children": [
+        {"summary": "파이프라인 차 구현", "type": "Sub-Task"},
+    ]}
+    bare_errors = [row for row in _deterministic_request_field_errors(state, [bare])
+                   if row.get("field") == "ordinal"]
+    assert len(bare_errors) == 1 and "bare '차'" in bare_errors[0]["message"]
+
+
+def test_multi_phase_hierarchy_binds_each_ordinal_to_its_explicit_issue_tier():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _deterministic_request_field_errors
+
+    request = "StarRocks Puffin NDV 1차 구현 Task 아래 2차 검증 Sub-Task를 만들어줘"
+    state = {"request_text": request, "messages": [HumanMessage(content=request)]}
+    valid = [{
+        "summary": "[ETL] StarRocks Puffin NDV 1차 구현", "type": "Task",
+        "children": [{
+            "summary": "[ETL] StarRocks Puffin NDV 2차 검증", "type": "Sub-Task",
+        }],
+    }]
+    swapped = [{
+        **valid[0],
+        "summary": "[ETL] StarRocks Puffin NDV 2차 구현",
+        "children": [{
+            "summary": "[ETL] StarRocks Puffin NDV 1차 검증", "type": "Sub-Task",
+        }],
+    }]
+
+    assert not [row for row in _deterministic_request_field_errors(state, valid)
+                if row.get("field") == "ordinal"]
+    errors = [row for row in _deterministic_request_field_errors(state, swapped)
+              if row.get("field") == "ordinal"]
+    assert {row["index"] for row in errors} == {0, 1}
+    assert any("root" in row["message"] and "1차" in row["message"] for row in errors)
+    assert any("child" in row["message"] and "2차" in row["message"] for row in errors)
+
+
 def test_multi_outcome_issue_types_are_checked_against_each_bound_root():
     from langchain_core.messages import HumanMessage
     from app.agent.workflow.agents.auditor import (
@@ -451,6 +521,75 @@ def test_delegated_parent_with_no_materialized_candidates_allows_only_top_level(
     errors = [row for row in _deterministic_request_field_errors(base, opaque)
               if row.get("field") == "parent"]
     assert len(errors) == 1 and "DL-9999" in errors[0]["message"]
+
+
+def test_parent_candidate_requires_a_successfully_opened_epic_detail():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _deterministic_request_field_errors
+
+    request = "NDV Task를 만들고 기존 Epic은 네가 골라줘"
+    state = {
+        "request_text": request,
+        "messages": [HumanMessage(content=request)],
+        "materialized_ticket_sources": {
+            "parentCandidateKeys": ["DL-9200", "DL-7001", "DL-9300"],
+            "ticketDetails": [
+                {"key": "DL-9200", "type": "Epic", "error": "permission denied"},
+                {"key": "DL-7001", "type": "Task"},
+                {"key": "DL-9300", "type": "Epic"},
+            ],
+        },
+    }
+
+    valid = [{"summary": "NDV 통계 검증", "type": "Task", "epic": "DL-9300"}]
+    invalid = [{"summary": "NDV 통계 검증", "type": "Task", "epic": "DL-7001"}]
+
+    assert not [row for row in _deterministic_request_field_errors(state, valid)
+                if row.get("field") == "parent"]
+    errors = [row for row in _deterministic_request_field_errors(state, invalid)
+              if row.get("field") == "parent"]
+    assert len(errors) == 1
+    assert "DL-9300" in errors[0]["message"] and "DL-7001" in errors[0]["message"]
+
+
+def test_auditor_never_repeats_unverified_parent_nonexistence_or_recommendation():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import Auditor
+
+    request = "NDV Task를 만들고 기존 Epic은 네가 골라줘"
+    state = {
+        "request_text": request,
+        "messages": [HumanMessage(content=request)],
+        "materialized_ticket_sources": {"parentCandidateKeys": [], "ticketDetails": []},
+        "draft": {"mode": "task", "items": [{
+            "summary": "NDV 통계 검증", "type": "Task", "epic": "DL-9200",
+            "description": (
+                "<h3>배경</h3><p>NDV 검증</p><h3>작업 범위</h3>"
+                "<ul><li>포함: 검증</li><li>제외: 요청 외 변경</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul><li>검증 결과 기록</li></ul>"
+            ),
+        }]},
+    }
+    model = {
+        "grounded": False, "rule_compliant": True, "answers_request": True,
+        "problems": [{
+            "index": 0, "check": "grounded",
+            "message": "DL-9200은 존재하지 않으며 검색 결과에는 DL-7001만 있습니다.",
+            "fix": "DL-7001을 상위 Epic으로 연결하세요.",
+        }],
+        "summary": "DL-9200이 존재하지 않으므로 DL-7001을 연결해야 합니다.",
+    }
+
+    review = Auditor().apply(state, model)["review"]
+    rendered = " ".join(
+        [review.get("summary", "")]
+        + [str(row.get("message") or "") + " " + str(row.get("fix") or "")
+           for row in review.get("problems") or []]
+        + [str(row.get("message") or "") for row in review.get("errors") or []]
+    )
+    assert "존재하지" not in rendered
+    assert "DL-7001" not in rendered
+    assert "상세 확인된 기존 Epic 후보" in rendered
 
 
 def test_auditor_maps_parent_and_due_per_outcome_and_blocks_swaps(monkeypatch):
@@ -1326,6 +1465,47 @@ def test_fast_paths_skip_historian_when_safe():
                                   "mentioned_keys": ["DL-101"]}) == "refine"
     # modify 인데 키가 없으면 여전히 조사(어느 티켓인지 찾아야 한다)
     assert G.route_after_request_architect({"intent": Intent.MODIFY}) == "investigate"
+
+
+def test_continuation_refreshes_retrieval_before_delegated_parent_selection():
+    from langchain_core.messages import HumanMessage
+
+    base = {
+        "intent": Intent.PLAN_WORK,
+        "turns": 0,
+        "turn_continuation": True,
+        "request_text": "StarRocks Puffin NDV 구현 Task를 구성해줘",
+        "messages": [HumanMessage(content=(
+            "기존 Epic은 네가 골라서 연결하고 범위는 1차, 마감은 2026-09-30"
+        ))],
+        "situation": "관련 PoC와 구현 이력 조사 완료",
+    }
+    missing = {
+        **base,
+        "materialized_ticket_sources": {
+            "parentCandidateKeys": [],
+            "ticketDetails": [{"key": "DL-9200", "type": "Epic"}],
+        },
+    }
+    opened = {
+        **base,
+        "materialized_ticket_sources": {
+            "parentCandidateKeys": ["DL-9200"],
+            "ticketDetails": [{"key": "DL-9200", "type": "Epic"}],
+        },
+    }
+    completed_zero_hit = {
+        **base,
+        "materialized_ticket_sources": {
+            "parentCandidateSearchAttempted": True,
+            "parentCandidateKeys": [],
+            "ticketDetails": [],
+        },
+    }
+
+    assert G.route_after_request_architect(missing) == "investigate"
+    assert G.route_after_request_architect(opened) == "refine"
+    assert G.route_after_request_architect(completed_zero_hit) == "refine"
 
 
 def test_trace_reducer_appends_deltas_and_resets_on_sentinel():

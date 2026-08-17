@@ -145,6 +145,292 @@ def test_runner_preserves_full_page_as_artifact_but_caps_llm_context():
     assert compact["contextTruncated"] and compact["artifactId"] == "all-open"
 
 
+def test_runner_filters_generic_web_navigation_before_evidence_but_keeps_raw_artifact(
+        monkeypatch):
+    from app.agent import tools as T
+
+    generic = [
+        {"title": "Search the documentation - StarRocks",
+         "url": "https://docs.starrocks.io/search/", "snippet": "Search the documentation"},
+        {"title": "StarRocks", "url": "https://www.starrocks.io/",
+         "snippet": "High-performance analytical database"},
+        {"title": "StarRocks intro",
+         "url": "https://docs.starrocks.io/docs/introduction/StarRocks_intro/",
+         "snippet": "Product introduction"},
+        {"title": "README", "url":
+         "https://github.com/StarRocks/starrocks/blob/main/docs/README.md",
+         "snippet": "Contributor License Agreement and Markdown checks"},
+    ]
+    component_readme = {
+        "title": "Puffin component specification",
+        "url": "https://github.com/apache/iceberg/blob/main/puffin/README.md",
+        "snippet": "Puffin NDV binary layout and validation rules", "official": True,
+    }
+    direct = {"title": "Apache Iceberg Puffin specification",
+              "url": "https://iceberg.apache.org/puffin-spec/",
+              "snippet": "Puffin files store NDV statistics", "official": True}
+    monkeypatch.setitem(T.BY_NAME, "search_web", SimpleNamespace(invoke=lambda _args: {
+        "query": "StarRocks Puffin NDV official documentation",
+        "attempted": True, "results": [*generic, component_readme, direct],
+    }))
+
+    got = QueryRunner()._run({"query_plan": {"queries": [{
+        "id": "external-official", "source": "web",
+        "query": "StarRocks Puffin NDV official documentation", "page_size": 5,
+    }]}})
+
+    assert got["query_results"][0]["result"]["results"] == [component_readme, direct]
+    assert got["query_results"][0]["result"]["genericResultsFiltered"] == 4
+    assert got["query_artifacts"]["external-official"]["results"] == [
+        *generic, component_readme, direct,
+    ]
+
+
+def test_runner_keeps_direct_official_intro_for_definition_request(monkeypatch):
+    from app.agent import tools as T
+
+    intro = {
+        "title": "StarRocks introduction",
+        "url": "https://docs.starrocks.io/docs/introduction/StarRocks_intro/",
+        "snippet": "StarRocks is an analytical database", "official": True,
+    }
+    monkeypatch.setitem(T.BY_NAME, "search_web", SimpleNamespace(invoke=lambda _args: {
+        "query": "StarRocks official documentation", "attempted": True,
+        "results": [intro],
+    }))
+
+    got = QueryRunner()._run({
+        "intent": "ask", "request_text": "StarRocks가 뭐야",
+        "messages": [HumanMessage(content="StarRocks가 뭐야")],
+        "query_plan": {"queries": [{
+            "id": "overview", "source": "web",
+            "query": "StarRocks official documentation", "page_size": 5,
+        }]},
+    })
+
+    result = got["query_results"][0]["result"]
+    assert result["results"] == [intro]
+    assert "genericResultsFiltered" not in result
+
+
+def test_runner_drops_unrelated_product_intro_for_other_subject_explanation(monkeypatch):
+    from app.agent import tools as T
+
+    intro = {
+        "title": "StarRocks introduction",
+        "url": "https://docs.starrocks.io/docs/introduction/StarRocks_intro/",
+        "snippet": "StarRocks is an analytical database", "official": True,
+    }
+    monkeypatch.setitem(T.BY_NAME, "search_web", SimpleNamespace(invoke=lambda _args: {
+        "query": "Puffin NDV official documentation", "attempted": True,
+        "results": [intro],
+    }))
+
+    got = QueryRunner()._run({
+        "intent": "ask", "request_text": "Puffin NDV 설명해줘",
+        "messages": [HumanMessage(content="Puffin NDV 설명해줘")],
+        "query_plan": {"queries": [{
+            "id": "definition", "source": "web",
+            "query": "Puffin NDV official documentation", "page_size": 5,
+        }]},
+    })
+
+    result = got["query_results"][0]["result"]
+    assert result["results"] == []
+    assert result["genericResultsFiltered"] == 1
+
+
+@pytest.mark.parametrize(("source", "prompt_text", "hit"), [
+    (
+        "web", "StarRocks 공식 홈페이지 알려줘",
+        {"title": "StarRocks", "url": "https://www.starrocks.io/",
+         "snippet": "Official StarRocks homepage"},
+    ),
+    (
+        "web", "StarRocks 공식 문서 링크 알려줘",
+        {"title": "StarRocks Documentation", "url": "https://docs.starrocks.io/docs/",
+         "snippet": "Official StarRocks documentation"},
+    ),
+    (
+        "github", "Qwen 공식 GitHub 저장소 찾아줘",
+        {"title": "QwenLM/Qwen3 - GitHub", "url": "https://github.com/QwenLM/Qwen3",
+         "snippet": "Official Qwen model repository"},
+    ),
+])
+def test_runner_keeps_explicitly_requested_official_navigation_target(
+        monkeypatch, source, prompt_text, hit):
+    from app.agent import tools as T
+
+    monkeypatch.setitem(T.BY_NAME, "search_" + source, SimpleNamespace(invoke=lambda _args: {
+        "query": prompt_text, "attempted": True, "results": [hit],
+    }))
+    got = QueryRunner()._run({
+        "intent": "ask", "request_text": prompt_text,
+        "messages": [HumanMessage(content=prompt_text)],
+        "query_plan": {"queries": [{
+            "id": "official-navigation", "source": source,
+            "query": prompt_text, "page_size": 5,
+        }]},
+    })
+
+    result = got["query_results"][0]["result"]
+    assert result["results"] == [hit]
+    assert "genericResultsFiltered" not in result
+
+
+@pytest.mark.parametrize(("source", "prompt_text", "hit"), [
+    (
+        "web", "StarRocks Puffin NDV writer pipeline을 분석해줘",
+        {"title": "StarRocks", "url": "https://www.starrocks.io/",
+         "snippet": "Official StarRocks homepage"},
+    ),
+    (
+        "github", "Qwen structured output 동작을 분석해줘",
+        {"title": "QwenLM/Qwen3 - GitHub", "url": "https://github.com/QwenLM/Qwen3",
+         "snippet": "Official Qwen model repository"},
+    ),
+])
+def test_runner_filters_navigation_target_for_feature_specific_research(
+        monkeypatch, source, prompt_text, hit):
+    from app.agent import tools as T
+
+    monkeypatch.setitem(T.BY_NAME, "search_" + source, SimpleNamespace(invoke=lambda _args: {
+        "query": prompt_text, "attempted": True, "results": [hit],
+    }))
+    got = QueryRunner()._run({
+        "intent": "ask", "request_text": prompt_text,
+        "messages": [HumanMessage(content=prompt_text)],
+        "query_plan": {"queries": [{
+            "id": "feature-research", "source": source,
+            "query": prompt_text, "page_size": 5,
+        }]},
+    })
+
+    result = got["query_results"][0]["result"]
+    assert result["results"] == []
+    assert result["genericResultsFiltered"] == 1
+
+
+def test_materialized_ticket_ledger_merges_only_for_true_continuation():
+    from app.agent.workflow.agents.query_runner import _merge_materialized_ticket_sources
+
+    prior = {
+        "ticketDetails": [{"key": "DL-9200", "type": "Epic"},
+                          {"key": "DL-9201", "type": "Task"}],
+        "parentCandidateKeys": [],
+        "parentCandidateSearchAttempted": True,
+    }
+    current = {
+        "ticketDetails": [{"key": "DL-9202", "type": "Task"}],
+        "parentCandidateKeys": [],
+    }
+
+    continued = _merge_materialized_ticket_sources(
+        {"turn_continuation": True, "materialized_ticket_sources": prior}, current,
+    )
+    fresh = _merge_materialized_ticket_sources(
+        {"turn_continuation": False, "materialized_ticket_sources": prior}, current,
+    )
+
+    assert [row["key"] for row in continued["ticketDetails"]] == [
+        "DL-9202", "DL-9200", "DL-9201",
+    ]
+    assert [row["key"] for row in fresh["ticketDetails"]] == ["DL-9202"]
+    assert continued["parentCandidateSearchAttempted"] is True
+    assert "parentCandidateSearchAttempted" not in fresh
+
+
+def test_materialized_ticket_ledger_reserves_current_non_parent_inside_full_cap():
+    from app.agent.workflow.agents.query_runner import _merge_materialized_ticket_sources
+
+    prior = {
+        "ticketDetails": [
+            {"key": f"DL-{index}", "type": "Task", "summary": "prior history"}
+            for index in range(1, 9)
+        ],
+        "parentCandidateKeys": [],
+    }
+    current = {
+        "ticketDetails": [{
+            "key": "DL-100", "type": "Task", "summary": "current exact target",
+        }],
+        "parentCandidateKeys": [],
+    }
+
+    got = _merge_materialized_ticket_sources(
+        {"turn_continuation": True, "materialized_ticket_sources": prior}, current,
+    )
+
+    assert len(got["ticketDetails"]) == 8
+    assert got["ticketDetails"][0] == {
+        "key": "DL-100", "type": "Task", "summary": "current exact target",
+    }
+    assert "DL-8" not in {row["key"] for row in got["ticketDetails"]}
+
+
+def test_materialized_ticket_ledger_reserves_new_exact_parent_inside_full_cap():
+    from app.agent.workflow.agents.query_runner import _merge_materialized_ticket_sources
+
+    prior = {
+        "ticketDetails": [
+            {"key": f"DL-{index}", "type": "Task", "summary": "old"}
+            for index in range(1, 8)
+        ] + [{"key": "DL-99", "type": "Epic", "summary": "stale"}],
+        "parentCandidateKeys": [],
+    }
+    current = {
+        "ticketDetails": [
+            {"key": "DL-100", "type": "Epic", "summary": "new exact parent"},
+            {"key": "DL-99", "type": "Epic", "summary": "fresh exact detail"},
+        ],
+        "parentCandidateKeys": ["DL-100", "DL-99"],
+    }
+
+    got = _merge_materialized_ticket_sources(
+        {"turn_continuation": True, "materialized_ticket_sources": prior}, current,
+    )
+
+    assert len(got["ticketDetails"]) == 8
+    assert got["parentCandidateKeys"] == ["DL-100", "DL-99"]
+    assert got["ticketDetails"][0] == {
+        "key": "DL-100", "type": "Epic", "summary": "new exact parent",
+    }
+    assert got["ticketDetails"][1] == {
+        "key": "DL-99", "type": "Epic", "summary": "fresh exact detail",
+    }
+
+
+def test_runner_marks_successful_zero_hit_parent_candidate_search_as_attempted():
+    fake = _Client(0)
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+
+    got = QueryRunner()._run({"query_plan": {"queries": [{
+        "id": "parent-candidate-check", "source": "jira",
+        "query": "NoSuchPublicTopic", "where": "issueType = Epic",
+        "page_size": 50, "completeness": "all",
+    }]}})
+
+    result = got["query_results"][0]["result"]
+    assert result["tickets"] == [] and not result.get("error")
+    assert got["materialized_ticket_sources"] == {
+        "parentCandidateSearchAttempted": True,
+    }
+
+
+def test_runner_does_not_mark_failed_parent_candidate_search_as_attempted():
+    fake = _Client(0)
+    _ctx.bind(fake, _settings([]))
+
+    got = QueryRunner()._run({"query_plan": {"queries": [{
+        "id": "parent-candidate-check", "source": "jira",
+        "query": "NoSuchPublicTopic", "where": "issueType = Epic",
+        "page_size": 50, "completeness": "all",
+    }]}})
+
+    assert got["query_results"][0]["result"].get("error")
+    assert "parentCandidateSearchAttempted" not in got["materialized_ticket_sources"]
+
+
 def test_research_query_runner_materializes_ticket_and_document_bodies(monkeypatch):
     """One-pass synthesis receives the body/comment evidence that ReAct used to open later."""
     from app.agent import tools as T
@@ -180,6 +466,98 @@ def test_research_query_runner_materializes_ticket_and_document_bodies(monkeypat
     assert docs["documentBodies"][0]["text"] == "full design body"
     assert got["query_artifacts"]["evidence-materialization"]["tickets"] == 3
     assert got["query_artifacts"]["evidence-materialization"]["documents"] == 1
+
+
+def test_runner_keeps_full_materialized_raw_but_bounds_llm_and_continuation_projection(
+        monkeypatch):
+    """Row caps do not protect prompts when every opened comment/body is multi-kilobyte."""
+    import json
+
+    from app.agent import tools as T
+
+    fake = _Client(1)
+    _ctx.bind(fake, _settings(["AAA"]))
+    # Match the real get_ticket ceiling: 1,200 description chars plus eight 500-char comments.
+    long_description = (("오래된 일반 기록 " * 150)
+                        + " StarRocks Puffin NDV 상위 Epic의 reader 검증 범위 확정")[-1200:]
+    long_comments = [
+        {"author": f"user-{index}", "created": f"2026-08-{index + 1:02d}",
+         "body": (("일반 코멘트 " * 80) + f" comment-{index}")[-500:]}
+        for index in range(7)
+    ]
+    long_comments.append({
+        "author": "decision-owner", "created": "2026-08-18",
+        "body": (("부가 설명 " * 80)
+                 + " StarRocks Puffin NDV reader 결정 근거")[-500:],
+    })
+
+    def ticket(args):
+        return {
+            "key": args["key"], "type": "Epic", "status": "Open",
+            "summary": "StarRocks Puffin NDV 도입", "parentKey": "AAA-ROOT",
+            "description": long_description, "comments": long_comments,
+        }
+
+    monkeypatch.setitem(T.BY_NAME, "get_ticket", SimpleNamespace(invoke=ticket))
+    request = "StarRocks Puffin NDV 상위 Epic과 reader 결정 근거를 조사해줘"
+    got = QueryRunner()._run({
+        "intent": "ask", "request_text": request,
+        "messages": [HumanMessage(content=request)],
+        "request_plan": {"tasks": [{"id": "r1", "kind": "research"}]},
+        "query_plan": {"queries": [{
+            "id": "jira", "source": "jira", "query": "StarRocks Puffin NDV",
+            "page_size": 10,
+        }]},
+    })
+
+    raw = got["query_artifacts"]["evidence-materialization"]["ticketDetails"][0]
+    compact = got["query_results"][0]["result"]["ticketDetails"][0]
+    ledger = got["materialized_ticket_sources"]["ticketDetails"][0]
+    assert raw["description"] == long_description
+    assert raw["comments"] == long_comments
+    assert {"key", "type", "status", "summary", "parentKey"} <= set(compact)
+    assert compact["key"] == ledger["key"] == "AAA-1"
+    assert len(compact["description"]) <= 360
+    assert "StarRocks Puffin NDV" in compact["description"]
+    assert len(compact["comments"]) == 2
+    assert any("StarRocks Puffin NDV" in row["body"] for row in compact["comments"])
+    assert len(json.dumps(compact, ensure_ascii=False)) < 1800
+    assert len(json.dumps(ledger, ensure_ascii=False)) < 1800
+    rendered = json.dumps({"query_results": got["query_results"],
+                           "ledger": got["materialized_ticket_sources"]},
+                          ensure_ascii=False)
+    assert len(rendered) < 4000
+    assert len(json.dumps(raw, ensure_ascii=False)) > len(rendered) * 2
+
+
+def test_continuation_reprojects_legacy_oversized_ticket_ledger_around_current_subject():
+    import json
+
+    from app.agent.workflow.agents.query_runner import _merge_materialized_ticket_sources
+
+    request = "StarRocks Puffin NDV parent 결정 근거를 이어서 정리해줘"
+    prior = {
+        "ticketDetails": [{
+            "key": "DL-9200", "type": "Epic", "status": "Open",
+            "summary": "StarRocks Puffin NDV 도입", "epicKey": "DL-9200",
+            "description": ("이전 일반 본문 " * 1200)
+            + " StarRocks Puffin NDV parent 결정 근거 LEGACY-RAW-TAIL",
+            "comments": [{"author": "owner", "body": "댓글 " * 3000}],
+        }],
+        "parentCandidateKeys": ["DL-9200"],
+    }
+
+    got = _merge_materialized_ticket_sources({
+        "turn_continuation": True, "request_text": request,
+        "messages": [HumanMessage(content=request)],
+        "materialized_ticket_sources": prior,
+    }, {})
+
+    detail = got["ticketDetails"][0]
+    assert got["parentCandidateKeys"] == ["DL-9200"]
+    assert detail["type"] == "Epic" and detail["epicKey"] == "DL-9200"
+    assert "StarRocks Puffin NDV" in detail["description"]
+    assert len(json.dumps(got, ensure_ascii=False)) < 1800
 
 
 def test_runner_reserves_parent_materialization_after_more_than_eight_duplicate_hits(monkeypatch):
@@ -437,7 +815,10 @@ def test_public_technology_create_plan_is_compiled_without_query_model(monkeypat
 
     queries = QuerySpecialist().node()(state)["query_plan"]["queries"]
 
-    assert [query["source"] for query in queries] == ["jira", "jira", "web"]
+    # Public disclosure is authorized by the current utterance only. The frozen public
+    # subject still drives internal Jira retrieval, but a control-only follow-up does not
+    # silently repeat a web search.
+    assert [query["source"] for query in queries] == ["jira", "jira"]
     jira = queries[0]["query"]
     assert jira == "Apache Iceberg Puffin"
     assert not any(term.casefold() in jira.casefold()
@@ -484,7 +865,92 @@ def test_delegated_existing_epic_selection_uses_real_deterministic_recovery(monk
                   if row["id"] == "parent-candidate-check")
     assert parent["query"] == "StarRocks Puffin NDV"
     assert parent["where"] == "issueType = Epic" and parent["completeness"] == "all"
-    assert any(row["source"] == "web" for row in result["query_plan"]["queries"])
+    assert all(row["source"] != "web" for row in result["query_plan"]["queries"])
+
+
+def test_r23_continuation_retains_human_subject_merges_opened_ledger_and_revalidates_epic(
+        monkeypatch):
+    """STARR1-shaped regression across Query Specialist → Runner continuation state.
+
+    The first turn opens the topic records. A later control-only answer may select an
+    existing Epic, but it must neither search for ``은 차 구현`` nor discard those opened
+    records. The previously opened relevant Epic is exact-read and promoted only after its
+    type is revalidated.
+    """
+    from app.agent import tools as T
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+    from app.infra.cache import Cache
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+
+    settings = get_settings()
+    _ctx.bind(JiraClient(settings, Cache(":memory:")), settings)
+    monkeypatch.setitem(T.BY_NAME, "search_web", SimpleNamespace(invoke=lambda _args: {
+        "query": "StarRocks Puffin NDV official documentation",
+        "attempted": True,
+        "results": [],
+    }))
+
+    original = "starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해"
+    first_state = {
+        "intent": "plan_work",
+        "request_text": original,
+        "messages": [HumanMessage(content=original)],
+        "keywords": ["StarRocks", "Puffin", "NDV"],
+        "request_plan": {"tasks": [{"kind": "plan", "instruction": original,
+                                     "write_intent": True}]},
+    }
+    first_plan = QuerySpecialist().apply(
+        first_state, {"queries": [], "joins": [], "uncertainty": []},
+    )["query_plan"]
+    first = QueryRunner()._run({**first_state, "query_plan": first_plan})
+    opened_first = {row["key"] for row in
+                    first["materialized_ticket_sources"]["ticketDetails"]}
+    assert {"DL-9200", "DL-9201", "DL-9202"}.issubset(opened_first)
+
+    follow_up = (
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+    continued_state = {
+        "intent": "plan_work",
+        # Reproduce a checkpoint whose nominal frozen field contains only the refinement.
+        "request_text": follow_up,
+        "turn_continuation": True,
+        "messages": [
+            HumanMessage(content=original),
+            AIMessage(content="상위 Epic과 범위를 정해 주세요"),
+            HumanMessage(content=follow_up),
+        ],
+        "keywords": ["기존 Epic", "1차 구현"],
+        "request_plan": {"goal": "기존 Epic 선택 및 1차 구현", "tasks": [{
+            "kind": "plan", "instruction": follow_up, "write_intent": True,
+        }]},
+        "materialized_ticket_sources": first["materialized_ticket_sources"],
+    }
+    second_plan = QuerySpecialist().apply(
+        continued_state, {"queries": [], "joins": [], "uncertainty": []},
+    )["query_plan"]
+
+    duplicate = next(row for row in second_plan["queries"]
+                     if row["id"] == "internal-duplicate-check")
+    parent = next(row for row in second_plan["queries"]
+                  if row["id"] == "parent-candidate-check")
+    assert duplicate["query"] == "starrocks puffin ndv"
+    assert parent["query"] == "starrocks puffin ndv"
+    assert parent["parent_reference_keys"] == ["DL-9200"]
+    assert all(row["source"] != "web" for row in second_plan["queries"])
+
+    second = QueryRunner()._run({**continued_state, "query_plan": second_plan})
+    parent_result = next(row["result"] for row in second["query_results"]
+                         if row["id"] == "parent-candidate-check")
+    assert parent_result["parentResolution"] == "referenced-ticket-hierarchy"
+    assert [row["key"] for row in parent_result["tickets"]] == ["DL-9200"]
+    merged = second["materialized_ticket_sources"]
+    assert merged["parentCandidateKeys"] == ["DL-9200"]
+    assert merged["parentCandidateSearchAttempted"] is True
+    assert {"DL-9200", "DL-9201", "DL-9202"}.issubset(
+        {row["key"] for row in merged["ticketDetails"]})
 
 
 def test_related_ticket_key_does_not_suppress_delegated_parent_candidate_query():
@@ -922,6 +1388,113 @@ def test_past_web_permission_never_authorizes_a_new_topic_or_leaks_its_identifie
     assert "Qwen" not in str(out["query_plan"])
 
 
+def test_explicit_external_followup_reuses_only_the_frozen_public_subject():
+    from app.agent.workflow.agents.query_specialist import (
+        QuerySpecialist, _external_research_allowed, _public_query_subject_text,
+    )
+    from app.agent.workflow.state import Intent
+
+    original = "Qwen structured output 기능을 검토해줘"
+    follow_up = "공식 문서도 찾아줘"
+    state = {
+        "intent": Intent.ASK,
+        "request_text": original,
+        "turn_continuation": True,
+        "messages": [HumanMessage(content=original), HumanMessage(content=follow_up)],
+    }
+
+    assert _external_research_allowed(state) is True
+    assert "Qwen" in _public_query_subject_text(state)
+    out = QuerySpecialist().apply(
+        state, {"queries": [], "joins": [], "uncertainty": []},
+    )
+    web = [row for row in out["query_plan"]["queries"] if row["source"] == "web"]
+    assert len(web) == 1
+    assert web[0]["query"].startswith("Qwen")
+    assert web[0]["query"].endswith("official documentation")
+
+
+def test_github_followup_uses_current_authorization_and_frozen_public_subject():
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+    from app.agent.workflow.state import Intent
+
+    original = "Qwen structured output 기능을 검토해줘"
+    follow_up = "GitHub에서도 공식 자료를 찾아줘"
+    state = {
+        "intent": Intent.ASK,
+        "request_text": original,
+        "turn_continuation": True,
+        "messages": [HumanMessage(content=original), HumanMessage(content=follow_up)],
+    }
+
+    out = QuerySpecialist().apply(
+        state, {"queries": [], "joins": [], "uncertainty": []},
+    )
+
+    github = [row for row in out["query_plan"]["queries"] if row["source"] == "github"]
+    assert len(github) == 1
+    assert github[0]["query"].startswith("Qwen")
+    assert "official" not in github[0]["query"].casefold()
+    assert "documentation" not in github[0]["query"].casefold()
+
+
+def test_github_model_query_cannot_leak_private_frozen_subject_on_continuation():
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+    from app.agent.workflow.state import Intent
+
+    private = "secret_client_code"
+    follow_up = "GitHub에서도 찾아줘"
+    state = {
+        "intent": Intent.ASK,
+        "request_text": f"{private} 개선",
+        "turn_continuation": True,
+        "messages": [
+            HumanMessage(content=f"{private} 개선"),
+            HumanMessage(content=follow_up),
+        ],
+    }
+    out = QuerySpecialist().apply(state, {
+        "queries": [{
+            "id": "unsafe-github", "source": "github",
+            "query": f"{private} Qwen", "where": "", "order_by": "",
+            "fields": [], "completeness": "page", "page_size": 5,
+            "depends_on": [],
+        }],
+        "joins": [], "uncertainty": [],
+    })
+
+    assert all(row["source"] != "github" for row in out["query_plan"]["queries"])
+    assert private not in str(out["query_plan"])
+
+
+def test_non_continuation_never_reuses_prior_public_subject_or_permission():
+    from app.agent.workflow.agents.query_specialist import (
+        QuerySpecialist, _external_research_allowed, _public_query_subject_text,
+    )
+    from app.agent.workflow.state import Intent
+
+    current = "secret_client_code 성능 Task 생성해"
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": current,
+        "turn_continuation": False,
+        "messages": [
+            HumanMessage(content="Qwen 공식 문서를 찾아줘"),
+            AIMessage(content="확인 완료"),
+            HumanMessage(content=current),
+        ],
+    }
+
+    assert _external_research_allowed(state) is False
+    assert _public_query_subject_text(state) == current
+    out = QuerySpecialist().apply(
+        state, {"queries": [], "joins": [], "uncertainty": []},
+    )
+    assert all(row["source"] not in {"web", "github"}
+               for row in out["query_plan"]["queries"])
+    assert "Qwen" not in str(out["query_plan"])
+
+
 def test_meeting_query_plan_preserves_explicit_ticket_and_replaces_generic_note_search():
     from app.agent.workflow.agents.query_specialist import _normalize_meeting_research_queries
     from app.agent.workflow.state import Intent
@@ -951,6 +1524,66 @@ def test_meeting_query_plan_preserves_explicit_ticket_and_replaces_generic_note_
                for q in plan["queries"])
     comments = next(q for q in plan["queries"] if q["source"] == "comments")
     assert comments["query"] == "Puffin" and not comments["where"]
+
+
+@pytest.mark.parametrize(("private_subject", "split_model_query"), [
+    ("secret_client_code", "secret client code official documentation"),
+    ("skcc.x1402", "x1402 official documentation"),
+])
+def test_meeting_external_plan_never_transmits_split_private_identifier(
+        private_subject, split_model_query):
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+    from app.agent.workflow.state import Intent
+
+    request = (
+        f"회의록\n{private_subject} 개선 논의\n"
+        "외부 공식 자료와 GitHub 저장소도 조사해줘"
+    )
+    state = {
+        "intent": Intent.ASK, "request_text": request,
+        "messages": [HumanMessage(content=request)], "mentioned_keys": [],
+    }
+    plan = QuerySpecialist().apply(state, {
+        "queries": [
+            {"id": "meeting-web", "source": "web", "query": split_model_query,
+             "where": "", "order_by": "", "fields": [], "completeness": "page",
+             "page_size": 5, "depends_on": []},
+            {"id": "meeting-github", "source": "github",
+             "query": split_model_query.replace(" official documentation", ""),
+             "where": "", "order_by": "", "fields": [], "completeness": "page",
+             "page_size": 5, "depends_on": []},
+        ],
+        "joins": [], "uncertainty": [],
+    })["query_plan"]
+
+    # Private terms remain valid for scoped Jira/Confluence retrieval. The disclosure
+    # boundary applies only to public sources; no split spelling may survive there.
+    external = [row for row in plan["queries"] if row["source"] in {"web", "github"}]
+    assert external == []
+
+
+def test_meeting_external_plan_preserves_safe_public_technology_subject():
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+    from app.agent.workflow.state import Intent
+
+    request = (
+        "회의록\nStarRocks Puffin NDV reader 검증 논의\n"
+        "외부 공식 자료와 GitHub 저장소도 조사해줘"
+    )
+    state = {
+        "intent": Intent.ASK, "request_text": request,
+        "messages": [HumanMessage(content=request)], "mentioned_keys": [],
+    }
+    plan = QuerySpecialist().apply(
+        state, {"queries": [], "joins": [], "uncertainty": []},
+    )["query_plan"]
+
+    external = [row for row in plan["queries"] if row["source"] in {"web", "github"}]
+    assert {row["source"] for row in external} == {"web", "github"}
+    for row in external:
+        query = row["query"].casefold()
+        assert all(term in query for term in ("starrocks", "puffin", "ndv"))
+        assert "reader" not in query
 
 
 def test_query_specialist_drops_unresolved_jql_placeholder():

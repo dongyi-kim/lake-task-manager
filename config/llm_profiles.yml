@@ -212,6 +212,29 @@ model_profiles:
           top_k: 20
           presence_penalty: 0.0
           max_tokens: 4096
+      # The quality-first local topology can route both semantic and projection layers to
+      # this same 35B endpoint. WorkDraft's nested item/child JSON exceeded the generic
+      # 1,024-token fast profile in STARR1, so the literal projection transport needs its
+      # own bounded budget. The terminal marker still stops a normally closed object early.
+      typed_projection:
+        fast_structured:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        balanced:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        reasoning:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
 
   # Keep this exact profile before the generic GPT-4o row: model-profile capability,
   # not a Role/model-name branch, preserves the cloud GPT-4o + GPT-4o-mini mixed lane.

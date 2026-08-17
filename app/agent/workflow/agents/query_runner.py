@@ -3,14 +3,364 @@
 from __future__ import annotations
 
 import re
+from html import unescape
+from urllib.parse import unquote, urlsplit
 
-from app.agent.workflow.state import Node, note
+from app.agent.workflow.state import Node, last_user_text, note, request_text
 
 
 _LEXICAL_IGNORED = {
     "task", "ticket", "jira", "작업", "티켓", "이력", "조회", "검색",
     "위한", "위해", "관련", "새로", "만들자", "만들기", "생성", "생성한다",
 }
+
+_PROJECTION_NOISE = {
+    "about", "all", "and", "comment", "comments", "create", "detail", "find", "for",
+    "from", "issue", "jira", "meeting", "official", "please", "research", "search",
+    "task", "ticket", "with", "검토", "검색", "공식", "근거", "댓글", "만들어", "생성",
+    "요청", "작업", "조사", "태스크", "티켓", "회의록", "확인",
+}
+
+
+def _projection_focus_terms(value: str) -> list[str]:
+    """Extract bounded literal anchors used only to choose excerpts from opened evidence."""
+    terms: list[str] = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9._+-]{2,}|[가-힣]{2,}", str(value or "")):
+        folded = token.casefold().strip("._+-")
+        if folded in _PROJECTION_NOISE or folded in {term.casefold() for term in terms}:
+            continue
+        terms.append(token)
+    return terms[:16]
+
+
+def _plain_projection_text(value, limit: int, focus_terms=()) -> str:
+    """Return a readable, focus-aware excerpt with an absolute character budget."""
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", unescape(str(value or "")))).strip()
+    bound = max(0, int(limit or 0))
+    if len(text) <= bound:
+        return text
+    if bound <= 1:
+        return text[:bound]
+    folded = text.casefold()
+    positions = [folded.find(str(term).casefold()) for term in focus_terms if str(term).strip()]
+    positions = [position for position in positions if position >= 0]
+    # Keep a small leading observation for context and reserve most of the budget for the
+    # requested identifier/technology when it occurs later in a long body.
+    if positions and min(positions) > bound // 2:
+        head = max(40, bound // 4)
+        remaining = bound - head - 3
+        start = max(0, min(positions) - remaining // 3)
+        tail = text[start:start + remaining].strip()
+        return (text[:head].rstrip() + " … " + tail)[:bound].rstrip()
+    return (text[:bound - 1].rstrip() + "…")[:bound]
+
+
+def _scalar_projection(value, limit: int = 240) -> str:
+    if isinstance(value, dict):
+        value = (value.get("displayName") or value.get("name") or value.get("key")
+                 or value.get("value") or "")
+    return _plain_projection_text(value, limit)
+
+
+def _project_comment_observation(row: dict, focus_terms=()) -> dict:
+    """Project one Jira comment/search hit without carrying its full rich-text payload."""
+    if not isinstance(row, dict):
+        return {}
+    out: dict = {}
+    for field, limit in (
+        ("ticketKey", 40), ("key", 40), ("ticketSummary", 240), ("summary", 240),
+        ("author", 100), ("created", 40), ("date", 40), ("updated", 40), ("url", 500),
+    ):
+        if row.get(field) not in (None, ""):
+            out[field] = _scalar_projection(row[field], limit)
+    for field in ("body", "text", "html", "snippet"):
+        if row.get(field) not in (None, ""):
+            # Normalize every rich-text variant into the conventional body field. Existing
+            # consumers already read body first and no raw HTML should enter an LLM prompt.
+            out["body"] = _plain_projection_text(row[field], 180, focus_terms)
+            break
+    return out
+
+
+def _project_ticket_detail(row: dict, focus_terms=()) -> dict:
+    """Typed ticket projection for model input and cross-turn continuation.
+
+    Full ``get_ticket`` output stays in ``query_artifacts``. This row contains only stable
+    identity/hierarchy fields plus bounded description and at most two relevant comments.
+    """
+    if not isinstance(row, dict):
+        return {}
+    out: dict = {}
+    for field, limit in (
+        ("key", 40), ("type", 80), ("issuetype", 80), ("status", 100),
+        ("summary", 240), ("title", 240),
+        ("parentKey", 40), ("epicKey", 40), ("assignee", 100), ("priority", 80),
+        ("duedate", 40), ("created", 40), ("updated", 40), ("resolution", 80),
+        ("url", 500), ("self", 500), ("error", 240),
+    ):
+        if row.get(field) not in (None, ""):
+            out[field] = _scalar_projection(row[field], limit)
+    if "done" in row:
+        out["done"] = bool(row.get("done"))
+    if row.get("sp") not in (None, ""):
+        out["sp"] = row["sp"] if isinstance(row["sp"], (int, float)) \
+            else _scalar_projection(row["sp"], 40)
+    for field in ("components", "labels"):
+        values = row.get(field)
+        if isinstance(values, list):
+            projected = [_scalar_projection(value, 80) for value in values[:8]]
+            out[field] = [value for value in projected if value]
+    description = _plain_projection_text(row.get("description"), 360, focus_terms)
+    if description:
+        out["description"] = description
+    comments = [comment for comment in (row.get("comments") or []) if isinstance(comment, dict)]
+    if comments:
+        anchors = {str(term).casefold() for term in focus_terms}
+        ranked = sorted(enumerate(comments), key=lambda pair: (
+            -sum(1 for term in anchors if term in str(pair[1]).casefold()), pair[0],
+        ))
+        chosen = [comments[index] for index, _comment in ranked[:2]]
+        projected_comments = [_project_comment_observation(comment, focus_terms)
+                              for comment in chosen]
+        out["comments"] = [comment for comment in projected_comments if comment]
+    elif "comments" in row:
+        out["comments"] = []
+    if row.get("comments_error"):
+        out["comments_error"] = _scalar_projection(row["comments_error"], 160)
+    return out
+
+
+def _project_document_body(row: dict, focus_terms=()) -> dict:
+    """Typed Confluence projection; retain the full body only in query artifacts."""
+    if not isinstance(row, dict):
+        return {}
+    out: dict = {}
+    for field, limit in (("id", 120), ("title", 300), ("url", 700),
+                         ("space", 80), ("updated", 40), ("error", 240)):
+        if row.get(field) not in (None, ""):
+            out[field] = _scalar_projection(row[field], limit)
+    for field in ("text", "body"):
+        if row.get(field) not in (None, ""):
+            out[field] = _plain_projection_text(row[field], 900, focus_terms)
+            break
+    return out
+
+
+_EXTERNAL_SUBJECT_NOISE = {
+    "about", "create", "definition", "docs", "documentation", "document", "explain",
+    "feature", "github", "homepage", "intro", "introduction", "is", "link", "official",
+    "overview", "repo", "repository", "search", "site", "task", "ticket", "url",
+    "website", "what",
+    "개요", "검색", "공식", "기능", "링크", "리포지토리", "만들어", "문서", "뭐야",
+    "사이트", "설명", "소개", "저장소", "정의", "주소", "찾아줘", "태스크", "티켓",
+    "홈페이지",
+}
+
+
+def _external_subject_terms(value: str) -> list[str]:
+    terms: list[str] = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9.+-]{1,}|[가-힣]{2,}", str(value or "")):
+        folded = token.casefold().strip(".+-")
+        if folded in _EXTERNAL_SUBJECT_NOISE or folded in {term.casefold() for term in terms}:
+            continue
+        terms.append(token)
+    return terms[:8]
+
+
+def _is_direct_intro_for_context(hit: dict, context: str) -> bool:
+    """Retain an intro when the user asked for an overview or it covers the whole subject."""
+    overview_requested = bool(re.search(
+        r"뭐야|무엇|정의|개요|소개|설명해|what\s+is|overview|introduction|define",
+        str(context or ""), re.I,
+    ))
+    subject = _external_subject_terms(context)
+    if not subject:
+        return False
+    material = " ".join(str(hit.get(key) or "") for key in (
+        "title", "name", "url", "snippet", "description",
+    )).casefold()
+    overlap = sum(1 for term in subject if term.casefold() in material)
+    if overview_requested:
+        # The intent verb alone is insufficient: `Puffin NDV 설명해줘` must not make a
+        # generic StarRocks introduction relevant. At least one requested subject anchor
+        # must actually occur in the intro page.
+        return overlap >= 1
+    required = 1 if len(subject) == 1 else max(2, (len(subject) * 2 + 2) // 3)
+    return overlap >= required
+
+
+def _external_target_matches_subject(hit: dict, context: str) -> bool:
+    """Require a navigation request to identify the same public subject as the hit."""
+    subject = _external_subject_terms(context)
+    if not subject:
+        return False
+    material = " ".join(str(hit.get(key) or "") for key in (
+        "title", "name", "url", "snippet", "description",
+    )).casefold()
+    return any(term.casefold() in material for term in subject)
+
+
+def _explicit_home_or_link_request(context: str) -> bool:
+    value = str(context or "")
+    return bool(re.search(
+        r"(?:공식\s*)?(?:홈\s*페이지|웹\s*사이트)|공식.{0,10}(?:사이트|링크|주소)|"
+        r"(?:official\s+)?(?:home\s?page|website)|official.{0,12}(?:site|link|url)",
+        value, re.I,
+    ))
+
+
+def _explicit_github_repository_request(context: str) -> bool:
+    value = str(context or "")
+    return bool(re.search(
+        r"github.{0,18}(?:저장소|리포지토리|repo(?:sitory)?)|"
+        r"(?:저장소|리포지토리|repo(?:sitory)?).{0,18}github",
+        value, re.I,
+    ))
+
+
+def _is_generic_external_hit(hit: dict, context: str = "") -> bool:
+    """Reject navigation/contribution hits before they enter evidence synthesis.
+
+    Search pages, product landing/intro pages, repository README files, and contribution
+    policy pages can be official while proving nothing about the requested feature. Keep the
+    complete provider response in ``query_artifacts`` for diagnostics, but expose only direct
+    topic documents to Research and Result Integrator.
+    """
+    if not isinstance(hit, dict):
+        return True
+    url = str(hit.get("url") or "").strip()
+    title = str(hit.get("title") or hit.get("name") or "").strip()
+    detail = str(hit.get("snippet") or hit.get("description") or "").strip()
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").casefold()
+        path = unquote(parsed.path or "/").rstrip("/").casefold()
+    except Exception:
+        host, path = "", ""
+    material = " ".join((title, detail))
+    search_page = bool(re.search(r"(?:^|/)search(?:/|$)", path))
+    contribution_page = bool(re.search(
+        r"(?:^|/)(?:contributing|code_of_conduct|pull_request_template|cla)"
+        r"(?:\.[a-z0-9_-]+)?(?:\.md)?$", path,
+    ))
+    root_or_docs_landing = path in ("", "/") or bool(re.search(
+        r"(?:^|/)(?:docs?|documentation|introduction)(?:/|$)$", path,
+    ))
+    direct_navigation_target = (
+        _explicit_home_or_link_request(context)
+        and _external_target_matches_subject(hit, context)
+    )
+    if url and (search_page or contribution_page
+                or (root_or_docs_landing and not direct_navigation_target)):
+        return True
+    intro_page = bool(re.search(
+        r"(?:^|/)(?:introduction|overview)/[^/]*(?:intro|overview)?[^/]*$|"
+        r"(?:^|/)[^/]*(?:_intro|_overview)(?:\.[a-z0-9]+)?$",
+        path,
+    ))
+    if intro_page and not _is_direct_intro_for_context(hit, context):
+        return True
+    if re.search(r"(?:^|/)readme(?:\.[a-z0-9_-]+)?(?:\.md)?$", path):
+        segments = [segment for segment in path.split("/") if segment]
+        component = segments[-2] if len(segments) >= 2 else ""
+        generic_components = {"blob", "main", "master", "docs", "doc", "documentation"}
+        direct_component_spec = (
+            len(component) >= 3 and component not in generic_components
+            and bool(re.search(rf"(?<![a-z0-9]){re.escape(component)}(?![a-z0-9])",
+                               material, re.I))
+        )
+        if not direct_component_spec:
+            return True
+    if re.search(
+            r"search\s+the\s+documentation|contributor\s+license\s+agreement|"
+            r"\bCLA\b.{0,80}Markdown|documentation\s+(?:contribution|contributing|"
+            r"writing\s+process|templates?)|thank\s+you.{0,80}contribut(?:e|ing)",
+            material, re.I):
+        return True
+    # GitHub repository roots are navigation, even when the search API represents them as
+    # a repository result rather than an explicit README URL.
+    if host == "github.com" and re.fullmatch(r"/[^/]+/[^/]+", path or ""):
+        direct_repository_target = (
+            _explicit_github_repository_request(context)
+            and _external_target_matches_subject(hit, context)
+        )
+        if not direct_repository_target:
+            return True
+    return False
+
+
+def _merge_materialized_ticket_sources(state, current: dict, *, cap: int = 8) -> dict:
+    """Merge verified ticket details across one true continuation boundary.
+
+    Query results and full artifacts remain per-turn. The small ``get_ticket`` ledger is the
+    durable authority used by Work/Auditor/Result Integrator, so replacing it with a thin
+    follow-up query loses facts that were already opened. New requests never inherit it;
+    Session owns that boundary through ``turn_continuation``.
+    """
+    prior = state.get("materialized_ticket_sources") or {} \
+        if state.get("turn_continuation") else {}
+    if not isinstance(prior, dict):
+        prior = {}
+    if not isinstance(current, dict):
+        current = {}
+
+    prior_order: list[str] = []
+    current_order: list[str] = []
+    details: dict[str, dict] = {}
+    focus_terms = _projection_focus_terms("\n".join(value for value in (
+        request_text(state).strip(), last_user_text(state).strip(),
+    ) if value))
+    for source, source_order in ((prior, prior_order), (current, current_order)):
+        for row in source.get("ticketDetails") or []:
+            if not isinstance(row, dict) or row.get("error"):
+                continue
+            key = str(row.get("key") or "").strip().upper()
+            if not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key):
+                continue
+            if key not in source_order:
+                source_order.append(key)
+            # Current exact reads intentionally overwrite stale fields from the durable
+            # ledger. Ordering is computed separately so that a newly verified parent can
+            # be reserved inside the eight-detail cap.
+            # Re-project both current and legacy prior rows here. Session's row cap alone
+            # cannot protect a continuation created before this projection existed.
+            details[key] = {**_project_ticket_detail(row, focus_terms), "key": key}
+
+    current_parents = [
+        str(value or "").strip().upper()
+        for value in current.get("parentCandidateKeys") or []
+        if str(value or "").strip().upper() in current_order
+    ]
+    prior_parents = [
+        str(value or "").strip().upper()
+        for value in prior.get("parentCandidateKeys") or []
+        if str(value or "").strip().upper() in prior_order
+    ]
+    ordered: list[str] = []
+    # Every current row is a successful exact materialization from this turn and must win
+    # over historical context inside the bounded ledger. Parent candidates come first so
+    # Work/Auditor cannot lose the newly verified structural choice; remaining current rows
+    # then precede all prior history. Duplicate keys retain the current payload above.
+    for key in (*current_parents, *current_order, *prior_parents, *prior_order):
+        if key in details and key not in ordered:
+            ordered.append(key)
+    ordered = ordered[:max(0, int(cap or 0))]
+    attempted = (current.get("parentCandidateSearchAttempted") is True
+                 or prior.get("parentCandidateSearchAttempted") is True)
+    if not ordered:
+        return {"parentCandidateSearchAttempted": True} if attempted else {}
+
+    parents: list[str] = []
+    for key in (*current_parents, *prior_parents):
+        if key in ordered and key not in parents:
+            parents.append(key)
+    merged = {
+        "ticketDetails": [details[key] for key in ordered],
+        "parentCandidateKeys": parents,
+    }
+    if attempted:
+        merged["parentCandidateSearchAttempted"] = True
+    return merged
 
 
 def _search_token(token: str) -> str:
@@ -212,7 +562,7 @@ def _materialization_ticket_selection(results: list[dict], *, cap: int = 8,
     return selected, [key for key in selected if key in parent_candidates]
 
 
-def _materialize_evidence(results: list[dict]) -> dict:
+def _materialize_evidence(results: list[dict], *, focus: str = "") -> dict:
     """Open selected Jira and Confluence hits without another LLM routing loop.
 
     Search order is already the QueryPlan's relevance/order contract. Preserve order within each
@@ -254,6 +604,14 @@ def _materialize_evidence(results: list[dict]) -> dict:
         ticket_details = list(pool.map(open_ticket, ticket_keys)) if ticket_keys else []
         document_bodies = list(pool.map(open_document, document_refs)) if document_refs else []
 
+    focus_terms = _projection_focus_terms(" ".join((
+        str(focus or ""),
+        *(str((row.get("result") or {}).get("query") or "") for row in results
+          if isinstance(row, dict)),
+    )))
+    ticket_projection = [_project_ticket_detail(row, focus_terms) for row in ticket_details]
+    document_projection = [_project_document_body(row, focus_terms) for row in document_bodies]
+
     errors = [str(row.get("error")) for row in ticket_details + document_bodies
               if isinstance(row, dict) and row.get("error")]
     ticket_target = next((row for row in results if row.get("source") == "jira"), None) \
@@ -261,12 +619,14 @@ def _materialize_evidence(results: list[dict]) -> dict:
     document_target = next((row for row in results if row.get("source") == "confluence"), None)
     if ticket_target is not None and ticket_details:
         ticket_target["result"] = dict(ticket_target.get("result") or {},
-                                       ticketDetails=ticket_details)
+                                       ticketDetails=ticket_projection,
+                                       detailProjection="ticket-detail.v1")
         if errors:
             ticket_target["result"]["materializationErrors"] = errors
     if document_target is not None and document_bodies:
         document_target["result"] = dict(document_target.get("result") or {},
-                                          documentBodies=document_bodies)
+                                          documentBodies=document_projection,
+                                          bodyProjection="document-body.v1")
         if errors:
             document_target["result"]["materializationErrors"] = errors
     # Keep the structural candidate row self-describing so Work can intersect its choices
@@ -281,6 +641,8 @@ def _materialize_evidence(results: list[dict]) -> dict:
     return {
         "tickets": len(ticket_details), "documents": len(document_bodies),
         "ticketDetails": ticket_details, "documentBodies": document_bodies,
+        "projectedTicketDetails": ticket_projection,
+        "projectedDocumentBodies": document_projection,
         "ticketKeys": ticket_keys, "parentCandidateKeys": materialized_parents,
         "errors": errors,
     }
@@ -327,6 +689,7 @@ class QueryRunner:
 
         results, artifacts = [], {}
         materialized_ticket_sources = {}
+        parent_candidate_search_attempted = False
         # 이 유형은 LLM이 만든 단일 JQL만으로 끝낼 수 없다. 제목 검색 결과에서 parent를
         # 고른 뒤 그 parent의 직계 Sub-Task를 전수 조회해야 하므로 deterministic join을 먼저 돈다.
         from app.agent.workflow.assignment_completion import (
@@ -423,9 +786,43 @@ class QueryRunner:
                     raw = {"error": f"지원하지 않는 source: {source}"}
             except Exception as exc:
                 raw = {"error": str(exc)[:240]}
+            if (source == "jira" and isinstance(raw, dict) and not raw.get("error")
+                    and _is_parent_candidate_result({"source": "jira", "result": raw})):
+                parent_candidate_search_attempted = True
             # full target set은 state artifact에 보존하되 LLM에는 각 source 앞부분만 전달한다.
             artifacts[qid] = raw
             compact = dict(raw)
+            focus_terms = _projection_focus_terms("\n".join(value for value in (
+                request_text(state).strip(), last_user_text(state).strip(),
+                str(spec.get("query") or "").strip(),
+            ) if value))
+            # Exact hierarchy resolution can already contain opened ticket details before
+            # the shared materializer runs. Project that path too; raw stays in artifacts.
+            if isinstance(compact.get("ticketDetails"), list):
+                compact["ticketDetails"] = [
+                    _project_ticket_detail(row, focus_terms)
+                    for row in compact["ticketDetails"] if isinstance(row, dict)
+                ]
+                compact["detailProjection"] = "ticket-detail.v1"
+            if isinstance(compact.get("documentBodies"), list):
+                compact["documentBodies"] = [
+                    _project_document_body(row, focus_terms)
+                    for row in compact["documentBodies"] if isinstance(row, dict)
+                ]
+                compact["bodyProjection"] = "document-body.v1"
+            if source in ("web", "github") and isinstance(compact.get("results"), list):
+                candidates = list(compact["results"])
+                # Navigation pages are useful only when the *human request* explicitly
+                # asks for a homepage/link/repository. A model-authored query must not
+                # upgrade a generic landing page into evidence by adding those words.
+                external_context = "\n".join(value for value in (
+                    request_text(state).strip(), last_user_text(state).strip(),
+                ) if value)
+                compact["results"] = [row for row in candidates
+                                      if not _is_generic_external_hit(row, external_context)]
+                removed = len(candidates) - len(compact["results"])
+                if removed:
+                    compact["genericResultsFiltered"] = removed
             # 전체 집합은 artifact에 보존한다. LLM에는 정렬된 앞부분과 total만 싣는다.
             # 50건을 그대로 주입하면 생성 한 건에서도 Research Analyst 입력이 14k tokens까지
             # 불었다(PASTE1 실측). source별로 사람이 한 화면에서 검토할 양만 남긴다.
@@ -438,15 +835,23 @@ class QueryRunner:
                     compact["artifactId"] = qid
             results.append({"id": qid, "source": source, "result": compact})
         if _needs_evidence_materialization(state, results):
-            materialized = _materialize_evidence(results)
+            materialized = _materialize_evidence(results, focus="\n".join(value for value in (
+                request_text(state).strip(), last_user_text(state).strip(),
+            ) if value))
             if materialized["tickets"] or materialized["documents"] or materialized["errors"]:
                 artifacts["evidence-materialization"] = materialized
-            successful_details = [dict(row) for row in materialized.get("ticketDetails") or []
+            successful_details = [dict(row) for row in
+                                  materialized.get("projectedTicketDetails") or []
                                   if isinstance(row, dict) and not row.get("error")][:8]
             materialized_ticket_sources = {
                 "ticketDetails": successful_details,
                 "parentCandidateKeys": list(materialized.get("parentCandidateKeys") or []),
             } if successful_details else {}
+        if parent_candidate_search_attempted:
+            materialized_ticket_sources["parentCandidateSearchAttempted"] = True
+        materialized_ticket_sources = _merge_materialized_ticket_sources(
+            state, materialized_ticket_sources,
+        )
         return {"query_results": results, "query_artifacts": artifacts,
                 "materialized_ticket_sources": materialized_ticket_sources,
                 "assignment_completion": artifacts.get("incomplete-assignees") or {},
@@ -456,4 +861,5 @@ class QueryRunner:
 __all__ = ["QueryRunner", "_jira_where", "_needs_evidence_materialization",
            "_is_parent_candidate_result", "_resolve_parent_reference_candidates",
            "_materialization_ticket_selection",
-           "_materialize_evidence"]
+           "_materialize_evidence", "_is_generic_external_hit",
+           "_merge_materialized_ticket_sources"]

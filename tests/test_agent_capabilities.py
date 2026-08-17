@@ -548,6 +548,44 @@ def test_projection_qualified_same_endpoint_keeps_two_stage_semantic_projection(
     assert len(memo.messages) == 1 and len(projector.messages) == 1
 
 
+def test_same_endpoint_length_truncated_projection_skips_identical_budget_repair(monkeypatch):
+    """A capped Qwen projection must not pay for the same capped generation twice."""
+    from app.agent import capabilities
+    from app.agent.providers import ModelDefinition
+
+    monkeypatch.setattr(capabilities, "get", lambda *_args, **_kwargs: {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base._cfg, "typed_projection_tier", lambda _tier: "")
+    monkeypatch.setattr(
+        base._cfg, "chat_definition",
+        lambda tier="complex": ModelDefinition(
+            "openai_compat", "ltm-qwen3.6-35b-a3b", "http://same:18080/v1"),
+    )
+
+    memo = _SequenceLLM("verified value=ok " + base.SEMANTIC_MEMO_END_TOKEN)
+    projector = _SequenceLLM(AIMessage(
+        content='{"value":"partial',
+        response_metadata={"finish_reason": "length"},
+    ))
+    requested = []
+    agent = _SemanticProjectionAgent()
+
+    def llm(**kwargs):
+        requested.append(dict(kwargs))
+        return memo if kwargs.get("output_contract") == "semantic_memo" else projector
+
+    monkeypatch.setattr(agent, "llm", llm)
+
+    with pytest.raises(RuntimeError, match="repair 생략.*길이 한도"):
+        agent.invoke_structured({}, [HumanMessage(content="original")])
+
+    assert [row["output_contract"] for row in requested] == [
+        "semantic_memo", "typed_projection"]
+    assert len(memo.messages) == 1
+    assert len(projector.messages) == 1
+
+
 def test_unqualified_same_endpoint_does_not_gain_projection_by_model_name_guess(monkeypatch):
     from app.agent import capabilities
     from app.agent.providers import ModelDefinition

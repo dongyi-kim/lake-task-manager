@@ -179,6 +179,31 @@ _EXPLICIT_NEW_WORK = _re.compile(
     _re.I,
 )
 
+# A failed PLAN_WORK turn has no draft/question to prove that the next speech act belongs to
+# it.  In that narrow state, ``Task 만들어줘`` is an independent creation request even when
+# the same sentence also happens to carry two field-shaped values.
+_INDEPENDENT_WORK_CREATION = _re.compile(
+    r"(?:Epic|에픽|Task|태스크|테스크|티켓|작업)(?:은|는|이|가|을|를|으로|로)?"
+    r"[^.!?\n]{0,24}(?:만들|생성|등록|발행)|"
+    r"(?:만들|생성|등록|발행)[^.!?\n]{0,24}"
+    r"(?:Epic|에픽|Task|태스크|테스크|티켓|작업)",
+    _re.I,
+)
+
+_FIELD_ONLY_REFINEMENT_START = _re.compile(
+    r"^\s*(?:(?:그리고|그럼|그러면|알아서|계속)\s*)*(?:기존\s*)?"
+    r"(?:상위|부모|Epic|에픽|범위|단계|phase|stage|마감|기한|due(?:\s*date)?|"
+    r"담당(?:자)?|배정|assignee|owner|우선순위|priority|제목|본문|설명|"
+    r"완료\s*조건|DoD|acceptance\s+criteria)",
+    _re.I,
+)
+
+_NON_FIELD_REQUEST = _re.compile(
+    r"(?:알려\s*줘|조회(?:해|해줘)|검색(?:해|해줘)|찾아\s*줘|요약(?:해|해줘)|"
+    r"설명(?:해|해줘)|분석(?:해|해줘)|누가|왜|어떻게)",
+    _re.I,
+)
+
 _INDEPENDENT_REQUEST = _re.compile(
     r"(?:해\s*줘|해주세요|해줘|해봐|알려\s*줘|보여\s*줘|찾아\s*줘|추천(?:해|해줘)|"
     r"조회(?:해|해줘)|정리(?:해|해줘)|설명(?:해|해줘)|만들(?:어|어줘)|생성(?:해|해줘)|"
@@ -266,9 +291,10 @@ def _looks_like_answer_to_questions(utterance: str, asked: list[dict]) -> bool:
     if _re.fullmatch(r"\s*[^?!\n]{1,60}(?:로|으로)\s*"
                      r"(?:(?:선택|지정|배정|구성|진행)?해줘)[.!]?\s*", text):
         return True
-    # Legacy questions may omit a field. Compact information without a new-request speech act
-    # is safer to preserve; an explicit request sentence must start a clean turn.
-    return len(text) <= 160 and not bool(_INDEPENDENT_REQUEST.search(text))
+    # A legacy question without a typed field provides no safe way to distinguish a terse
+    # answer from an unrelated Korean noun-style request. Fail closed as a new turn instead
+    # of executing the stale write plan; typed field/choice shapes above remain continuations.
+    return False
 
 
 _REFINEMENT_GENERIC_ANCHORS = {
@@ -277,13 +303,13 @@ _REFINEMENT_GENERIC_ANCHORS = {
 }
 
 
-def _draft_refinement_changes_subject(text: str, prior: dict) -> bool:
-    """Return true when a supposed field refinement introduces a different named topic."""
+def _draft_refinement_subject_sets(text: str, prior: dict) -> tuple[set[str], set[str]]:
+    """Return comparable high-precision subject anchors for a refinement boundary."""
     from app.agent.workflow.anchors import required_user_anchors
 
     original = str(prior.get("request_text") or "").strip()
     if not original:
-        return False
+        return set(), set()
     old = {value.casefold() for value in required_user_anchors(
         {"request_text": original, "messages": []}, include_latest=False)}
     new = {value.casefold() for value in required_user_anchors(
@@ -292,9 +318,21 @@ def _draft_refinement_changes_subject(text: str, prior: dict) -> bool:
            if value not in _REFINEMENT_GENERIC_ANCHORS and not _re.fullmatch(r"\d+차", value)}
     new = {value for value in new
            if value not in _REFINEMENT_GENERIC_ANCHORS and not _re.fullmatch(r"\d+차", value)}
+    return old, new
+
+
+def _draft_refinement_changes_subject(text: str, prior: dict) -> bool:
+    """Return true when a supposed field refinement introduces a different named topic."""
+    old, new = _draft_refinement_subject_sets(text, prior)
     # A constraint-only follow-up may have no named subject.  Once it names a subject,
     # however, at least one stable original anchor must agree before stale work is inherited.
     return bool(new and not (new & old))
+
+
+def _draft_refinement_repeats_subject(text: str, prior: dict) -> bool:
+    old, new = _draft_refinement_subject_sets(text, prior)
+    return bool(old and new and (old & new))
+
 
 _TURN_DERIVED_EMPTY = {
     "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
@@ -322,10 +360,11 @@ def _bounded_materialized_ticket_sources(value) -> dict:
     replay, and retain parent keys only when their opened detail is present.
     """
     raw = value if isinstance(value, dict) else {}
+    parent_search_attempted = raw.get("parentCandidateSearchAttempted") is True
     details: list[dict] = []
     seen: set[str] = set()
     for row in raw.get("ticketDetails") or []:
-        if not isinstance(row, dict):
+        if not isinstance(row, dict) or row.get("error"):
             continue
         key = str(row.get("key") or "").strip().upper()
         if not key or key in seen:
@@ -336,14 +375,17 @@ def _bounded_materialized_ticket_sources(value) -> dict:
         seen.add(key)
         if len(details) >= 8:
             break
-    if not details:
+    if not details and not parent_search_attempted:
         return {}
     parents: list[str] = []
     for raw_key in raw.get("parentCandidateKeys") or []:
         key = str(raw_key or "").strip().upper()
         if key in seen and key not in parents:
             parents.append(key)
-    return {"ticketDetails": details, "parentCandidateKeys": parents}
+    bounded = {"ticketDetails": details, "parentCandidateKeys": parents}
+    if parent_search_attempted:
+        bounded["parentCandidateSearchAttempted"] = True
+    return bounded
 
 
 def _is_interview_continuation(text: str, prior: dict) -> bool:
@@ -388,7 +430,10 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
         # contains neither an explicit cancellation nor a new Jira key.
         if _INDEPENDENT_REQUEST.search(utterance):
             return False
-        return True
+        # Unrecognized short text is not automatically an interview answer. Korean requests
+        # commonly omit a verb (``보안 교육 현황 파악 부탁``), so preserving stale state here
+        # is more dangerous than routing the utterance as a fresh request.
+        return False
 
     # When the previous turn already produced a draft/structure, preserve it only for a compact,
     # multi-field refinement.  Explicitly asking for separate/new work always wins.
@@ -400,12 +445,43 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
     # before that guard can run.
     if prior.get("request_plan") and _OUTCOME_REFINEMENT.search(utterance):
         return True
-    if not (prior.get("draft") or prior.get("structure_plan")):
-        return False
     if _draft_refinement_changes_subject(utterance, prior):
         return False
     matched_fields = sum(bool(pattern.search(utterance)) for pattern in _DRAFT_REFINEMENT_FIELDS)
-    return matched_fields >= 2
+    if matched_fields < 2:
+        return False
+    if prior.get("draft") or prior.get("structure_plan"):
+        return True
+
+    # With no draft/question, accept only a field-shaped continuation. A full Task creation
+    # speech act or an unrelated answer/query remains a new turn even if it embeds scope and
+    # due-date values. A repeated stable technical subject is also safe; otherwise the utterance
+    # must begin with a recognized field label (``Epic... 범위... 마감...``).
+    if (_INDEPENDENT_WORK_CREATION.search(utterance)
+            or _NON_FIELD_REQUEST.search(utterance)):
+        return False
+    if (not _FIELD_ONLY_REFINEMENT_START.search(utterance)
+            and not _draft_refinement_repeats_subject(utterance, prior)):
+        return False
+
+    # Work can fail after Research has already materialized authoritative evidence (for
+    # example, a structured projection exhausts its output budget). A compact multi-field
+    # answer is still a refinement of that frozen write request even though no draft/question
+    # survived. Require both a typed write plan and at least one successful bounded detail;
+    # this keeps unrelated work from inheriting stale evidence merely because it also names
+    # a date and scope.
+    tasks = (prior.get("request_plan") or {}).get("tasks") or []
+    has_write_intent = any(
+        isinstance(task, dict) and bool(task.get("write_intent")) for task in tasks
+    )
+    ledger = _bounded_materialized_ticket_sources(
+        prior.get("materialized_ticket_sources")
+    )
+    return (
+        str(prior.get("intent") or "") == "plan_work"
+        and has_write_intent
+        and bool(ledger.get("ticketDetails"))
+    )
 
 
 def _turn_start_patch(text: str, prior: dict) -> dict:
