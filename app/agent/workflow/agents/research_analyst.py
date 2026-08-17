@@ -28,17 +28,22 @@ SCHEMA = {
     "properties": {
         "situation": {
             "type": "string",
+            "maxLength": 1600,
             "description": ("Three to six Korean sentences describing the verified current situation. "
                             "Distinguish ongoing, stopped, and decided work. Cite a ticket key or document "
                             "title for every claim. If no result exists, state that directly in Korean."),
         },
         "evidence": {
             "type": "array",
+            "maxItems": 8,
             "items": {"type": "object", "properties": {
-                "key": {"type": "string", "description": "Exact ticket key or document title."},
-                "title": {"type": "string"},
-                "why": {"type": "string", "description": "One Korean sentence explaining direct relevance."},
-                "url": {"type": "string", "description": "Verified document or web URL, otherwise empty."},
+                "key": {"type": "string", "maxLength": 240,
+                        "description": "Exact ticket key or document title."},
+                "title": {"type": "string", "maxLength": 300},
+                "why": {"type": "string", "maxLength": 360,
+                        "description": "One Korean sentence explaining direct relevance."},
+                "url": {"type": "string", "maxLength": 1000,
+                        "description": "Verified document or web URL, otherwise empty."},
                 "confidence": {
                     "type": "string",
                     "description": ("Confidence based on authority, directness, recency, and corroboration; "
@@ -51,10 +56,12 @@ SCHEMA = {
                 },
                 "limitations": {
                     "type": "string",
+                    "maxLength": 360,
                     "description": "One concise unresolved limitation or empty string.",
                 },
                 "observations": {
                     "type": "array",
+                    "maxItems": 4,
                     "items": {"type": "object", "properties": {
                         "source": {
                             "type": "string",
@@ -63,10 +70,12 @@ SCHEMA = {
                         },
                         "text": {
                             "type": "string",
+                            "maxLength": 420,
                             "description": "Concise Korean fact observed at that location.",
                         },
                         "observed_at": {
                             "type": "string",
+                            "maxLength": 80,
                             "description": ("Exact source date or timestamp when present, otherwise empty. "
                                             "Use it to distinguish historical state from current state."),
                         },
@@ -78,12 +87,15 @@ SCHEMA = {
         },
         "related_docs": {
             "type": "array",
+            "maxItems": 6,
             "items": {"type": "object", "properties": {
-                "title": {"type": "string"}, "url": {"type": "string"}}},
+                "title": {"type": "string", "maxLength": 300},
+                "url": {"type": "string", "maxLength": 1000}}},
             "description": "Relevant Confluence documents actually returned by research.",
         },
         "epic_candidate": {
             "type": "string",
+            "maxLength": 40,
             "description": "Verified suitable parent Epic key, or empty. Never force an unrelated Epic.",
         },
         "already_exists": {
@@ -151,6 +163,26 @@ def _query_plan_is_complete(state) -> bool:
         if not isinstance(result, dict) or result.get("error") or result.get("materializationErrors"):
             return False
     return True
+
+
+def _prefetched_creation_passthrough() -> dict:
+    """Preserve acquired creation evidence when optional LLM synthesis cannot format JSON.
+
+    Work Architect receives the original ``query_results``, ``pre_survey`` and
+    ``web_context`` independently. Re-running the same searches cannot repair a formatting
+    failure; it only multiplies latency and tokens. Keep this fallback deliberately
+    non-interpretive so it cannot turn an unreviewed candidate into a duplicate claim.
+    """
+    return {
+        "situation": (
+            "범위 내 사전 조회를 완료했다. 중복 여부와 기술 배경은 아래에 전달된 "
+            "원본 조회 자료를 기준으로 초안 단계에서 판단한다."
+        ),
+        "evidence": [],
+        "related_docs": [],
+        "epic_candidate": "",
+        "already_exists": False,
+    }
 
 
 def _research_outside(agent, asked: str) -> str:
@@ -443,6 +475,48 @@ def _relevant_only(state, ev: list) -> list:
         if any(t.lower() in hay for t in terms):
             keep.append(e)
     return keep
+
+
+def _work_action_kind(text: str) -> str:
+    """Classify only coarse deliverable shape for duplicate-claim validation."""
+    value = str(text or "")
+    if _re.search(r"구현|개발|구축|도입|전환|적용|생성|추가", value, _re.I):
+        return "implement"
+    if _re.search(r"버그|오류|에러|실패|장애|수정|해결|복구", value, _re.I):
+        return "fix"
+    if _re.search(r"조사|검토|분석|표준|설계|PoC", value, _re.I):
+        return "research"
+    if _re.search(r"문서|가이드|보고서|매뉴얼", value, _re.I):
+        return "document"
+    return ""
+
+
+def _material_duplicate_exists(state, evidence: list[dict]) -> bool:
+    """Require evidence of the same deliverable, not merely the same technology topic."""
+    requested = request_text(state) or last_user_text(state)
+    request_kind = _work_action_kind(requested)
+    for row in evidence or []:
+        observations = " ".join(
+            str(obs.get("text") or "") for obs in (row.get("observations") or [])
+            if isinstance(obs, dict)
+        )
+        material = " ".join(str(row.get(key) or "") for key in (
+            "title", "why", "limitations")) + " " + observations
+        # Direct statements that the requested implementation/result does not yet
+        # exist are decisive. A related research ticket remains evidence, not a duplicate.
+        if _re.search(
+            r"(?:아직|현재)[^.!\n]{0,40}(?:생성|구현|개발|적용|완료)(?:하지|되지|못|전)|"
+            r"(?:구현|개발|적용|완료)[^.!\n]{0,25}(?:없|미완|아니)|"
+            r"확인되지\s*않|완료\s*사실로\s*쓰면\s*안",
+            material, _re.I,
+        ):
+            continue
+        candidate_kind = _work_action_kind(str(row.get("title") or ""))
+        if request_kind and candidate_kind and request_kind != candidate_kind:
+            continue
+        if str(row.get("fitness") or "") in ("direct", "supporting", ""):
+            return True
+    return False
 
 
 def _normalize_evidence_quality(item: dict) -> dict:
@@ -1327,8 +1401,16 @@ class ResearchAnalyst(ToolAgent):
                         {"node": self.name, "label": "과거 이력 조사",
                          "note": "사전 조회 결과로 바로 정리(도구 재호출 생략)"}]
                     return out
-                except Exception:
-                    pass          # 최적화 실패는 기존 ReAct로 복구한다
+                except Exception as exc:
+                    # Acquisition is already complete. A second search loop repeats the
+                    # same tools and cannot fix malformed synthesis JSON. Pass the original
+                    # artifacts through; Work Architect still sees every raw result.
+                    out = self.apply(state, _prefetched_creation_passthrough())
+                    out["trace"] = (out.get("trace") or []) + [{
+                        "node": self.name, "label": "과거 이력 조사",
+                        "note": "요약 형식화 실패 → 사전 조회 원문 전달: " + str(exc)[:120],
+                    }]
+                    return out
 
             out = react(state)
             asked = last_user_text(state)
@@ -1392,7 +1474,7 @@ class ResearchAnalyst(ToolAgent):
         # full common prompt가 필요 없다. 역할 계약과 절대 안전 규칙만 담은 lite persona를
         # 사용해 정적 입력도 줄인다. 실제 탐색(ReAct) 경로는 기존 full persona를 유지한다.
         return persona(state, SYSTEM_RESEARCH_ANALYST,
-                       lite=bool(state.get("_research_analyst_prefetched")))
+                       lite=bool(state.get("_research_analyst_prefetched")), role_id=self.name)
 
     def task(self, state):
         kws = ", ".join(state.get("keywords") or []) or last_user_text(state)
@@ -1482,7 +1564,8 @@ Original request: {last_user_text(state)}
         situation = out.get("situation") or ""
         if removed_all:
             situation = "현재 요청의 고유 개념과 직접 일치하는 내부 이력은 확인되지 않았다."
-        exists = bool(out.get("already_exists")) and (bool(ev) or not removed_all)
+        exists = (bool(out.get("already_exists")) and (bool(ev) or not removed_all)
+                  and _material_duplicate_exists(state, ev))
         result = {
             "situation": situation,
             "evidence": ev,

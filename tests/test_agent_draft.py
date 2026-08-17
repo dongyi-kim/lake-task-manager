@@ -362,6 +362,25 @@ def test_delegation_preserves_required_input_questions_and_withholds_the_draft()
     assert not r["draft"]["items"], "필수 입력 전의 임의 payload는 승인 카드에 오르면 안 된다"
 
 
+def test_delegated_new_task_with_children_drops_epic_and_risk_preference_questions():
+    """새 Task를 단계별로 나누는 요청은 기존 부모나 잠재 리스크 확인이 없어도 초안 가능."""
+    out = {"questions": [
+        {"question": "이 작업을 어느 Epic 아래에 배치할까요?", "kind": "choice",
+         "options": ["DL-100", "최상위 Task"], "field": "epic", "required_input": True,
+         "why_required": "상위 컨텍스트와 보고 단위가 필요"},
+        {"question": "기술적 리스크 검증이 끝났나요?", "kind": "text", "options": [],
+         "field": "risk", "required_input": True,
+         "why_required": "잠재 리스크를 완료 조건에 반영할지 확인 필요"},
+    ], "mode": "task", "rationale": "", "structure": "task_with_subtasks",
+        "structure_source": "user_specified", "items": [dict(_draft()["items"][0])]}
+    state = _msg("Puffin NDV Batch Job 구현 Task를 단계별 Sub-Task로 나눠줘. 알아서")
+
+    result = WorkArchitect().apply(state, out)
+
+    assert not result["questions"]
+    assert result["draft"]["items"]
+
+
 def test_delegated_subtask_without_a_deliverable_asks_then_converges_to_one_child():
     """ASKD2: 부모와 개수만으로는 실행할 일이 없다. `알아서`도 내용을 발명할 권한이 아니다."""
     from langchain_core.messages import HumanMessage
@@ -2471,6 +2490,26 @@ def test_question_turn_never_claims_a_parentless_subtask_can_be_created():
     assert "부모 없이 서브태스크를 생성" not in got
 
 
+def test_question_only_turn_skips_the_text_llm(monkeypatch):
+    from app.agent.workflow.agents.base import TextAgent
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    def unexpected_llm(*_args, **_kwargs):
+        raise AssertionError("질문 폼 전용 턴에서 텍스트 LLM을 호출하면 안 됨")
+
+    monkeypatch.setattr(TextAgent, "_run", unexpected_llm)
+    state = _msg("정확한 변경 대상을 알려줘")
+    state["questions"] = [{
+        "question": "어느 티켓을 변경할까요?", "kind": "text", "options": [],
+        "required_input": True, "why_required": "변경할 티켓을 식별할 수 없음",
+    }]
+
+    reply = ResultIntegrator()._run(state)["reply"]
+
+    assert "### 확인 필요" in reply
+    assert "변경할 티켓을 식별할 수 없음" in reply
+
+
 def test_parentless_subtask_asks_for_a_valid_hierarchy_before_content():
     out = {"questions": [
         {"question": "배경은 무엇인가요?", "kind": "text", "options": []},
@@ -3467,3 +3506,87 @@ def test_boilerplate_closers_are_stripped_by_code_not_asked_for():
                  "DL-9044 를 확인해 주세요.",
                  "**참조**\n[1] DL-9044 — 적재주기 변경"):
         assert keep.splitlines()[-1] in f("결론 한 줄\n\n" + keep), keep
+
+
+def test_delegated_creation_retries_questionless_empty_result_once(monkeypatch):
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.base import StructuredAgent
+
+    calls = []
+    outputs = [
+        {"questions": [], "draft": {"items": []}, "change_plan": {}},
+        {"questions": [], "draft": {"items": [
+            {"summary": "NDV 배치 Job 구현", "type": "Task"},
+        ]}, "change_plan": {}},
+    ]
+
+    def fake_node(_self):
+        def run(_state):
+            calls.append(WorkArchitect._force_draft)
+            return outputs.pop(0)
+        return run
+
+    monkeypatch.setattr(StructuredAgent, "node", fake_node)
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "messages": [HumanMessage(content="NDV 배치 Job Task 만들어줘. 알아서")],
+    }
+    result = WorkArchitect().node()(state)
+
+    assert calls == [False, True]
+    assert result["draft"]["items"][0]["summary"] == "NDV 배치 Job 구현"
+
+
+def test_creation_contract_uses_semantic_body_parts_and_runtime_renders_html():
+    from app.agent.workflow.agents.work_architect import CREATE_SCHEMA
+
+    item_schema = CREATE_SCHEMA["properties"]["items"]["items"]
+    assert "description" not in item_schema["properties"]
+    state = _msg("NDV 배치 Job Task와 단계별 Sub-Task 만들어줘. 알아서")
+    output = {
+        "questions": [], "mode": "task", "structure": "task_with_subtasks",
+        "items": [{
+            "summary": "[ETL] Puffin NDV 배치 Job 구현", "type": "Task",
+            "background": "PoC 구현 요청됨",
+            "scope_in": ["Iceberg 배치 테이블에 NDV 통계 생성"],
+            "scope_out": ["실시간 적재"],
+            "dod": ["Batch Job 실행 성공", "Puffin 통계 파일 확인"],
+            "children": [{
+                "summary": "NDV writer 구현",
+                "scope_in": ["Puffin writer 로직 구현"],
+                "dod": ["writer 단위 테스트 통과"],
+            }],
+        }],
+    }
+    result = WorkArchitect().apply(state, output)
+    item = result["draft"]["items"][0]
+
+    assert "<h3>배경</h3>" in item["description"]
+    assert 'data-checked="false"' in item["description"]
+    assert "실시간 적재" in item["description"]
+    assert "<h3>작업 범위</h3>" in item["children"][0]["description"]
+    assert "background" not in item and "scope_in" not in item and "dod" not in item
+
+
+def test_creation_renderer_drops_scope_contradiction_and_links_ticket_references():
+    state = _msg("Puffin NDV Batch Job PoC를 1차 목표로 만들어줘. 알아서")
+    state["evidence"] = [{"key": "DL-7001", "title": "Iceberg 통계 조사",
+                          "why": "PoC의 선행 조사", "fitness": "direct"}]
+    output = {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "items": [{
+            "summary": "[ETL] Puffin NDV Batch Job PoC", "type": "Task",
+            "background": "DL-7001 조사 결과를 반영한 PoC 요청",
+            "scope_in": ["Puffin NDV Batch Job 구현"],
+            "scope_out": ["Puffin NDV Batch Job 구현"],
+            "dod": ["Job 실행 성공", "Puffin 통계 파일 확인"],
+            "references": ["DL-7001 Iceberg 통계 조사"],
+        }],
+    }
+
+    result = WorkArchitect().apply(state, output)
+    body = result["draft"]["items"][0]["description"]
+
+    assert body.count("Puffin NDV Batch Job 구현") == 1
+    assert "운영 배포 및 전체 대상 확대" in body
+    assert '<a href="/browse/DL-7001" data-ticket-key="DL-7001">DL-7001</a>' in body

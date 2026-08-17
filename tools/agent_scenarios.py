@@ -274,9 +274,8 @@ CASES = [
 
     ("CHIP2", "추천 칩 — 버그 제보", [
         "버그를 제보하고 싶어"],
-     # ★ 기대 의도는 report_bug 다 — 처음에 plan_work 로 적었다가 실측에서 틀린 것이
-     #   **케이스 쪽**임을 확인했다(Intent.REPORT_BUG 는 정식 갈래다).
-     "report_bug", lambda o, _: (lambda r: (
+     # Bug is a Task-tier issue_type under plan_work, not a separate routing intent.
+     "plan_work", lambda o, _: (lambda r: (
          bool(o.get("questions"))
          # 버그라는 것을 알아듣고 **재현·증상·범위** 같은 버그의 재료를 묻는다
          and any(w in (r + json.dumps(o.get("questions") or [], ensure_ascii=False))

@@ -684,7 +684,7 @@ class PortfolioAnalyst(ToolAgent):
                               T.BY_NAME["get_ticket_participants"]]  # 특정 티켓 유관자 대상 질의
 
     def system(self, state):
-        return persona(state, SYSTEM_PORTFOLIO_ANALYST)
+        return persona(state, SYSTEM_PORTFOLIO_ANALYST, role_id=self.name)
 
     def task(self, state):
         intent = state.get("intent") or ""

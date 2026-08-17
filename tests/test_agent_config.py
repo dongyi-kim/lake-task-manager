@@ -591,6 +591,106 @@ def test_embedding_connection_can_be_split_from_chat(monkeypatch):
     assert embedding.model == "BAAI/bge-m3"
 
 
+def test_simple_chat_connection_can_be_split_from_complex_chat(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://192.168.55.173:18080/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "complex-key")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "ltm-qwen3.6-35b-a3b")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE", "Qwen3.5-4B-4bit")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_BASE", "http://192.168.55.173:18083/v1")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_KEY", "simple-key")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_HEADERS", '{"X-Role":"simple"}')
+
+    complex_chat = C.chat_definition("complex")
+    simple_chat = C.chat_definition("simple")
+    assert complex_chat.base_url == "http://192.168.55.173:18080/v1"
+    assert complex_chat.api_key == "complex-key"
+    assert simple_chat.base_url == "http://192.168.55.173:18083/v1"
+    assert simple_chat.api_key == "simple-key"
+    assert simple_chat.model == "Qwen3.5-4B-4bit"
+    assert simple_chat.headers == {"X-Role": "simple"}
+
+
+def test_qwen_complex_structured_contract_delegates_to_split_simple_endpoint(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_SKIP_VERIFY", "1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://complex:18080/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "complex-key")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "ltm-qwen3.6-35b-a3b")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE", "Qwen3.5-4B-4bit")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_BASE", "http://simple:18083/v1")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_KEY", "simple-key")
+    captured = {}
+
+    class Adapter:
+        def chat(self, definition, parameters):
+            captured.update(definition=definition, parameters=parameters)
+            return object()
+
+    monkeypatch.setattr(C, "_provider_adapter", lambda _provider: Adapter())
+    C.get_llm(tier="complex", profile="reasoning", output_contract="structured")
+
+    definition = captured["definition"]
+    assert definition.model == "Qwen3.5-4B-4bit"
+    assert definition.base_url == "http://simple:18083/v1"
+    assert definition.api_key == "simple-key"
+    assert captured["parameters"]["max_tokens"] == 4096
+
+
+def test_qwen_complex_free_text_stays_on_large_endpoint(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_SKIP_VERIFY", "1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://complex:18080/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "complex-key")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "ltm-qwen3.6-35b-a3b")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE", "Qwen3.5-4B-4bit")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_BASE", "http://simple:18083/v1")
+    captured = {}
+
+    class Adapter:
+        def chat(self, definition, parameters):
+            captured["definition"] = definition
+            return object()
+
+    monkeypatch.setattr(C, "_provider_adapter", lambda _provider: Adapter())
+    C.get_llm(tier="complex", profile="balanced")
+
+    assert captured["definition"].model == "ltm-qwen3.6-35b-a3b"
+    assert captured["definition"].base_url == "http://complex:18080/v1"
+
+
+def test_split_simple_model_catalog_uses_its_own_endpoint(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setattr(C, "chat_definition", lambda tier="complex", **kwargs:
+                        C.ModelDefinition("openai_compat", "simple-configured", "http://simple/v1")
+                        if tier == "simple" else
+                        C.ModelDefinition("openai_compat", "complex", "http://complex/v1"))
+
+    class Model:
+        def __init__(self, model_id):
+            self.id = model_id
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            assert kwargs["base_url"] == "http://simple/v1"
+            self.models = self
+
+        def list(self):
+            return [Model("simple-discovered")]
+
+    monkeypatch.setattr("openai.OpenAI", Client)
+    result = C._with_split_simple_models(
+        {"chat": ["complex"], "simple": [], "embed": [], "error": ""}, 1)
+    assert result["simple"] == ["simple-configured", "simple-discovered"]
+
+
 def test_split_embedding_model_catalog_uses_its_own_endpoint(monkeypatch):
     import app.agent.config as C
 

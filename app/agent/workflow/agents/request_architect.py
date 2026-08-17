@@ -32,7 +32,8 @@ SCHEMA = {
                 "modify=change an existing ticket; chitchat=no work request"),
         },
         "keywords": {
-            "type": "array", "items": {"type": "string"},
+            "type": "array", "maxItems": 5,
+            "items": {"type": "string", "maxLength": 120},
             "description": "Two to five noun phrases for retrieval, not a copy of the full request. Include "
                            "an acronym and its Korean expansion when useful. Preserve identifiers such as a "
                            "table, Job, or product name as one exact token; never split "
@@ -67,25 +68,33 @@ SCHEMA = {
                 "Requested answer depth. brief=the value, conclusion, count, owner, date, location, or list; "
                 "explain=concept, background, mechanism, rationale, or history. Default to brief."),
         },
-        "goal": {"type": "string", "description": "One sentence covering the compound request's end result."},
+        "goal": {"type": "string", "maxLength": 240,
+                 "description": "One sentence covering the compound request's end result."},
         "tasks": {
-            "type": "array", "items": {"type": "object", "properties": {
-                "id": {"type": "string"},
+            "type": "array", "minItems": 1, "maxItems": 6,
+            "items": {"type": "object", "properties": {
+                "id": {"type": "string", "maxLength": 60},
                 "kind": {"type": "string", "enum": [
                     "query", "research", "analyze", "plan", "ticket", "comment", "write", "respond"]},
-                "instruction": {"type": "string"},
-                "depends_on": {"type": "array", "items": {"type": "string"}},
+                "instruction": {"type": "string", "maxLength": 280},
+                "depends_on": {"type": "array", "maxItems": 5,
+                               "items": {"type": "string", "maxLength": 60}},
                 "write_intent": {"type": "boolean"},
-                "completion_criteria": {"type": "array", "items": {"type": "string"}},
+                "completion_criteria": {"type": "array", "minItems": 1, "maxItems": 3,
+                                        "items": {"type": "string", "maxLength": 160}},
             }, "required": ["id", "kind", "instruction", "depends_on", "write_intent",
                             "completion_criteria"], "additionalProperties": False},
-            "description": "An executable atomic-task DAG. A simple request still has one task.",
+            "description": ("User-requested deliverables/actions only, not the Agent's internal research, "
+                            "analysis, validation, approval, or response stages. A simple request has exactly "
+                            "one task; decompose only genuinely compound requests."),
         },
-        "blocking_questions": {"type": "array", "items": {"type": "string"},
+        "blocking_questions": {"type": "array", "maxItems": 3,
+                               "items": {"type": "string", "maxLength": 240},
                                "description": "Only questions whose answers materially change the result."},
-        "assumptions": {"type": "array", "items": {"type": "string"}},
+        "assumptions": {"type": "array", "maxItems": 5,
+                        "items": {"type": "string", "maxLength": 200}},
         "plan": {
-            "type": "string",
+            "type": "string", "maxLength": 200,
             "description": "One concise Korean progress line with two to four steps joined by arrows.",
         },
     },
@@ -119,6 +128,11 @@ def _carry_depth(state, out) -> str:
     **올리는 쪽으로만 붙인다.** explain 이 과했으면 사용자가 다음 턴에 좁히면 되지만,
     brief 로 떨어지면 물어본 것이 아예 답에서 사라진다 — 되돌릴 기회가 없다.
     """
+    asked = last_user_text(state)
+    # These forms explicitly request rationale, mechanism, or history.  A smaller routing
+    # model occasionally returned brief even though no judgment is needed to detect them.
+    if _re.search(r"왜|원인|어떻게|히스토리|이력|뭐고|무엇이고|설명해|배경", asked, _re.I):
+        return "explain"
     now = out.get("answer_depth") or "brief"
     return "explain" if "explain" in (now, str(state.get("answer_depth") or "")) else "brief"
 
@@ -145,6 +159,60 @@ def _carry_keys(state, out) -> list:
     return []
 
 
+def _explicit_user_effects(text: str) -> set[str]:
+    """Return independently visible outcomes explicitly requested by the user.
+
+    The Request Architect model occasionally described our internal pipeline (query ->
+    analysis -> draft -> response) as four user tasks.  Those are execution stages, not
+    four deliverables.  This small lexical boundary does not plan the work; it only tells
+    us whether preserving a multi-task model DAG is justified by multiple visible effects.
+    """
+    patterns = {
+        "research": r"조사|리서치|검색|찾아|확인|분석|비교|히스토리|이력",
+        "ticket": r"(?:티켓|태스크|테스크|이슈|에픽|Epic|Task).{0,18}(?:생성|만들|등록|산출|올려)",
+        "comment": r"(?:댓글|코멘트).{0,18}(?:작성|남겨|달아|알려)",
+        "modify": r"(?:제목|필드|본문|설명|담당자|마감|기한|상태).{0,18}(?:수정|변경|바꿔|교체)",
+        "document": r"(?:문서|보고서|회의록|요약|브리핑).{0,18}(?:작성|정리|만들|산출)",
+    }
+    return {name for name, pattern in patterns.items() if _re.search(pattern, text, _re.I)}
+
+
+def _compact_request_tasks(out: dict, user_text: str, intent: str) -> list[dict]:
+    """Keep a model DAG only for genuinely compound, independently checkable outcomes."""
+    tasks = [task for task in (out.get("tasks") or []) if isinstance(task, dict)]
+    effects = _explicit_user_effects(user_text)
+    if len(tasks) <= 1 or len(effects) >= 2:
+        return tasks
+
+    write_intent = intent in Intent.DRAFTS_TICKETS or bool(
+        effects & {"ticket", "comment", "modify"})
+    if "comment" in effects:
+        kind = "comment"
+    elif effects & {"ticket", "modify"}:
+        kind = "ticket"
+    elif "document" in effects:
+        kind = "write"
+    elif effects & {"research"}:
+        kind = "research"
+    elif intent == Intent.PLAN_WORK:
+        kind = "plan"
+    elif intent in Intent.NEEDS_RESEARCH:
+        kind = "query"
+    else:
+        kind = "respond"
+    goal = str(out.get("goal") or user_text).strip()
+    return [{
+        "id": "task-1",
+        "kind": kind,
+        "instruction": user_text,
+        "depends_on": [],
+        "write_intent": write_intent,
+        "completion_criteria": [
+            (goal[:120] + "에 필요한 결과를 확인 가능한 형태로 제시한다")[:160],
+        ],
+    }]
+
+
 class RequestArchitect(StructuredAgent):
     name = Node.REQUEST_ARCHITECT
     tier = "simple"            # Few-shot 8예시가 실려서 분류는 저렴한 모델로 충분하다
@@ -168,6 +236,11 @@ Classify what the user wants from the conversation, construct an atomic task pla
 - Keywords are retrieval noun phrases. Remove filler such as `해야 한다` and `관련해서`.
 - Copy only ticket keys explicitly written by the user.
 - Select a module only with strong evidence.
+- `tasks` describe only distinct outcomes or mutations explicitly requested by the user. Do not
+  restate the Agent pipeline as separate query, research, analysis, validation, approval, or response tasks.
+- A single request has exactly one task. Split only a genuinely compound request with independently
+  checkable deliverables, and keep at most three concise completion criteria per task.
+- Do not ask for technical details that Jira, Confluence, comments, or external research can recover.
 - Write `goal`, `instruction`, `completion_criteria`, `blocking_questions`, `assumptions`, and `plan` in Korean because they are user-visible or preserve the Korean request.
 
 ## Intent Examples
@@ -228,7 +301,9 @@ Classify what the user wants from the conversation, construct an atomic task pla
 
     def apply(self, state, out):
         intent = out.get("intent") or Intent.PLAN_WORK
+        asked = last_user_text(state)
         kws = [k for k in (out.get("keywords") or []) if str(k).strip()]
+        planned_tasks = _compact_request_tasks(out, asked, intent)
         patch = {
             "intent": intent,
             "keywords": kws,
@@ -238,10 +313,10 @@ Classify what the user wants from the conversation, construct an atomic task pla
             "playbook": out.get("playbook") or "",
             "answer_depth": _carry_depth(state, out),
             "request_plan": {
-                "goal": out.get("goal") or last_user_text(state),
-                "tasks": out.get("tasks") or [{
+                "goal": out.get("goal") or asked,
+                "tasks": planned_tasks or [{
                     "id": "task-1", "kind": "query" if intent in Intent.NEEDS_RESEARCH else "respond",
-                    "instruction": last_user_text(state), "depends_on": [],
+                    "instruction": asked, "depends_on": [],
                     "write_intent": intent in Intent.DRAFTS_TICKETS,
                     "completion_criteria": ["사용자 요청에 직접 답한다"],
                 }],
@@ -269,6 +344,18 @@ Classify what the user wants from the conversation, construct an atomic task pla
             elif (_re.search(r"\b[A-Z][A-Z0-9]+-\d+\b", _meeting_request)
                   and _re.search(r"수정|바꿔|변경|교체", _meeting_request)):
                 intent = patch["intent"] = Intent.MODIFY
+        # Current-population audits are progress queries even when a small model mistakes
+        # the action-like wording ("없는 것들") for new work.
+        if intent in (Intent.ASK, Intent.PLAN_WORK) \
+                and _re.search(r"진행\s*중", _req, _re.I) \
+                and _re.search(r"업데이트|오래|며칠|기한|마감|미할당|담당자\s*없", _req, _re.I):
+            intent = patch["intent"] = Intent.PROGRESS
+            patch["playbook"] = "find_tickets"
+        # A defect is still plan_work (Bug is a Task-tier issue_type, not an intent), but
+        # pin the playbook when the user supplied a concrete failure symptom.
+        if intent == Intent.PLAN_WORK \
+                and _re.search(r"실패|오류|에러|깨짐|빈다|안\s*됨|동작하지", _req, _re.I):
+            patch["playbook"] = "bug_report"
         # 특정 사람의 "지금 맡은 업무"는 과거 티켓 주제와 무관한 현재 할당 조회다.
         # 대화 전문을 본 분류기가 직전 progress 대상을 유지한 CTX4 회귀를 최신 발화로 고정한다.
         if (_re.search(r"(?:지금|현재).{0,15}(?:맡|담당|할당).{0,8}(?:업무|일|티켓|태스크)", _req)

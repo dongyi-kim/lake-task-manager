@@ -29,6 +29,8 @@ FIELDS = (
     "aoaiEndpoint", "aoaiApiKey",
     "openaiApiKey",
     "compatBaseUrl", "compatApiKey", "compatHeaders",   # compatHeaders = JSON 문자열
+    # OpenAI-compatible simple Role model may live on another local/LAN server.
+    "simpleBaseUrl", "simpleApiKey", "simpleHeaders",
     # named config에서 embedding endpoint를 chat endpoint와 분리할 때 사용한다.
     "embeddingBaseUrl", "embeddingApiKey", "embeddingHeaders",
     "langfusePublicKey", "langfuseSecretKey", "langfuseHost",
@@ -36,6 +38,7 @@ FIELDS = (
 
 # 화면에 돌려줄 때 **절대 원문을 실어 보내지 않는** 필드
 SECRET_FIELDS = ("aoaiApiKey", "openaiApiKey", "compatApiKey", "compatHeaders",
+                 "simpleApiKey", "simpleHeaders",
                  "embeddingApiKey", "embeddingHeaders",
                  "langfuseSecretKey")
 
@@ -155,6 +158,9 @@ ENV_NAMES = {
     "compatBaseUrl": ("LAKE_AGENT_COMPAT_BASE",),
     "compatApiKey": ("LAKE_AGENT_COMPAT_KEY",),
     "compatHeaders": ("LAKE_AGENT_COMPAT_HEADERS",),
+    "simpleBaseUrl": ("LAKE_AGENT_SIMPLE_BASE",),
+    "simpleApiKey": ("LAKE_AGENT_SIMPLE_KEY",),
+    "simpleHeaders": ("LAKE_AGENT_SIMPLE_HEADERS",),
     "embeddingBaseUrl": ("LAKE_AGENT_EMBED_BASE",),
     "embeddingApiKey": ("LAKE_AGENT_EMBED_KEY",),
     "embeddingHeaders": ("LAKE_AGENT_EMBED_HEADERS",),

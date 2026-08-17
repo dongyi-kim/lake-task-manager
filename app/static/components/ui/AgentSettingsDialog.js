@@ -30,7 +30,7 @@ export default {
       form: { name: "", provider: "", chatModel: "", chatModelSimple: "", embedModel: "", apiVersion: "",
         chatModelProfile: "", embeddingProvider: "", embeddingApiVersion: "",
         embedRevision: "", embedPrecision: "", embedDimension: "", embedNormalization: "" },
-      models: { chat: [], embed: [], total: 0, error: "" },
+      models: { chat: [], simple: [], embed: [], total: 0, error: "" },
       comboOpen: "", comboAll: false, authEdit: null, authProbe: null, probe: null,
       verify: null, verifyBusy: false, addOpen: false, addName: "", addProvider: "openai",
       userPrompt: "", showProjPrompt: false, index: null,
@@ -44,6 +44,10 @@ export default {
     cur() { return PROVIDERS.find((x) => x.k === this.form.provider) || PROVIDERS[0]; },
     authFields() {
       const rows = [...this.cur.fields];
+      if (this.form.provider === "openai_compat") rows.push(
+        ["simpleBaseUrl", "간단한 역할 Base URL (선택)", "http://192.168.55.173:18083/v1", false],
+        ["simpleApiKey", "간단한 역할 API 키 (선택)", "", true],
+        ["simpleHeaders", "간단한 역할 추가 헤더 (JSON)", '{"X-Auth":"..."}', true]);
       if (this.form.embeddingProvider) rows.push(
         ["embeddingBaseUrl", "임베딩 Base URL", "http://127.0.0.1:18081/v1", false],
         ["embeddingApiKey", "임베딩 API 키 (선택)", "", true],
@@ -89,7 +93,7 @@ export default {
         embeddingApiVersion: row.embeddingApiVersion || "", embedRevision: row.embedRevision || "",
         embedPrecision: row.embedPrecision || "", embedDimension: row.embedDimension || "",
         embedNormalization: row.embedNormalization || "" };
-      this.models = { chat: [], embed: [], total: 0, error: "" };
+      this.models = { chat: [], simple: [], embed: [], total: 0, error: "" };
       this.authProbe = null; this.probe = null; this.verify = null; this.err = "";
       if (row.authOk || row.provider === "fake") this.loadModels();
     },
@@ -150,12 +154,13 @@ export default {
       if (!this.selected || this.busy) return;
       this.busy = true; this.verify = null;
       try { this.models = await agentApi.configModels(this.selected.id); }
-      catch (e) { this.models = { chat: [], embed: [], total: 0, error: (e && e.message) || "조회 실패" }; }
+      catch (e) { this.models = { chat: [], simple: [], embed: [], total: 0, error: (e && e.message) || "조회 실패" }; }
       finally { this.busy = false; }
     },
     comboVal(kind) { return kind === "chat" ? this.form.chatModel : kind === "simple" ? this.form.chatModelSimple : this.form.embedModel; },
     comboOpts(kind) {
-      let rows = kind === "embed" ? this.models.embed : this.models.chat;
+      let rows = kind === "embed" ? this.models.embed
+        : kind === "simple" && (this.models.simple || []).length ? this.models.simple : this.models.chat;
       if (kind !== "embed" && this.verify && (this.verify.ok || []).length)
         rows = rows.filter((x) => this.verify.ok.includes(x));
       const q = this.comboVal(kind).trim().toLowerCase();
@@ -275,13 +280,14 @@ export default {
               <label class="ag-f"><span>채팅 모델 프로파일 (선택)</span><input v-model="form.chatModelProfile" placeholder="비우면 모델명으로 자동 선택"></label>
               <label class="ag-f"><span>임베딩 연결</span><select v-model="form.embeddingProvider"><option value="">채팅 연결과 동일 (기존 동작)</option><option v-for="p in providers" :key="'embed-'+p.k" :value="p.k">{{ p.label }}</option></select></label>
               <div v-if="form.embeddingProvider" class="ag-hint">임베딩 endpoint와 인증은 위 인증 정보 변경에서 별도로 입력. 채팅 endpoint와 공유하지 않음</div>
+              <div v-if="form.provider === 'openai_compat' && form.chatModelSimple" class="ag-hint">간단한 역할 Base URL을 입력하면 complex 모델과 다른 서버 사용. 비우면 기본 채팅 endpoint 공유</div>
               <label v-if="form.embeddingProvider === 'aoai'" class="ag-f"><span>임베딩 api-version</span><input v-model="form.embeddingApiVersion"></label>
               <div class="ag-f"><span>임베딩 메타데이터</span><div class="ag-inline-fields"><input v-model="form.embedRevision" placeholder="revision"><input v-model="form.embedPrecision" placeholder="fp16"><input v-model="form.embedDimension" placeholder="dimension"><input v-model="form.embedNormalization" placeholder="l2"></div></div>
               <label v-if="form.provider === 'aoai'" class="ag-f"><span>api-version</span><input v-model="form.apiVersion"></label>
               <div v-if="models.total" class="ag-hint">서버 {{ models.total }}개 · 채팅 {{ models.chat.length }} · 임베딩 {{ models.embed.length }}</div>
               <div v-if="models.error" class="ag-hint">목록 조회 실패 — {{ models.error }}</div>
               <div v-if="verify" class="ag-hint">{{ verify.error || ('사용 가능 ' + (verify.ok || []).length + '개 · 제외 ' + Object.keys(verify.denied || {}).length + '개') }}</div>
-              <div v-if="probe" class="ag-probe"><div class="ag-row" :class="probe.chat && probe.chat.ok ? 'ok' : 'no'"><b>채팅</b><span>{{ probe.chat && probe.chat.ok ? '정상' : '실패' }}</span><em>{{ probe.chat && (probe.chat.error || probe.chat.ms + 'ms') }}</em></div><div class="ag-row" :class="probe.embeddings && probe.embeddings.ok ? 'ok' : 'no'"><b>임베딩</b><span>{{ probe.embeddings && probe.embeddings.ok ? '정상' : '실패' }}</span><em>{{ probe.embeddings && (probe.embeddings.error || probe.embeddings.ms + 'ms') }}</em></div></div>
+              <div v-if="probe" class="ag-probe"><div class="ag-row" :class="probe.chat && probe.chat.ok ? 'ok' : 'no'"><b>채팅</b><span>{{ probe.chat && probe.chat.ok ? '정상' : '실패' }}</span><em>{{ probe.chat && (probe.chat.error || probe.chat.ms + 'ms') }}</em></div><div v-if="probe.simple" class="ag-row" :class="probe.simple.ok ? 'ok' : 'no'"><b>간단한 역할</b><span>{{ probe.simple.ok ? '정상' : '실패' }}</span><em>{{ probe.simple.error || probe.simple.ms + 'ms' }}</em></div><div class="ag-row" :class="probe.embeddings && probe.embeddings.ok ? 'ok' : 'no'"><b>임베딩</b><span>{{ probe.embeddings && probe.embeddings.ok ? '정상' : '실패' }}</span><em>{{ probe.embeddings && (probe.embeddings.error || probe.embeddings.ms + 'ms') }}</em></div></div>
               <button class="ag-ok inline" :disabled="saving" @click="saveModels">{{ saving ? '확인 중…' : '저장하고 모델 확인' }}</button>
             </section>
 

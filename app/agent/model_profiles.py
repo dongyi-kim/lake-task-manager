@@ -147,7 +147,8 @@ class EffectiveConfig:
 
 def resolve(model: str, provider: str, task_profile: TaskProfile = "balanced", *,
             explicit_model_profile: str = "", role_parameters: dict | None = None,
-            explicit: dict | None = None, runtime_capabilities: dict | None = None) -> EffectiveConfig:
+            explicit: dict | None = None, runtime_capabilities: dict | None = None,
+            output_contract: str = "", semantic_profile: str = "") -> EffectiveConfig:
     """Resolve effective config with explicit > role/task > model > provider precedence."""
     if task_profile not in TASK_PROFILES:
         raise ValueError(f"알 수 없는 task profile: {task_profile}")
@@ -155,6 +156,11 @@ def resolve(model: str, provider: str, task_profile: TaskProfile = "balanced", *
     profile_name, model_row = model_profile(model, explicit_model_profile)
     caps = _merge(model_row.get("capabilities") or {}, runtime_capabilities or {})
     task_row = (data.get("task_profiles") or {})[task_profile]
+    # Semantic work and its wire-format contract are independent. A reasoning Role
+    # still needs low-variance, non-thinking JSON emission on providers that cannot
+    # separate reasoning from the final payload. Model profiles own that translation.
+    contract_row = (((model_row.get("contracts") or {}).get(output_contract) or {}).get(
+        semantic_profile or task_profile) or {})
 
     params: dict = {}
     sources: list[str] = []
@@ -162,6 +168,7 @@ def resolve(model: str, provider: str, task_profile: TaskProfile = "balanced", *
         ("provider_default", (data.get("provider_defaults") or {}).get(provider) or {}),
         ("model_profile", model_row.get("defaults") or {}),
         ("model_task_profile", (model_row.get("profiles") or {}).get(task_profile) or {}),
+        ("model_contract_profile", contract_row),
         ("task_profile", task_row.get("parameters") or {}),
         ("role_profile", role_parameters or {}),
         ("explicit_override", explicit or {}),

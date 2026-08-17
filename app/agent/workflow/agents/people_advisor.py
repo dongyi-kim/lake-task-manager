@@ -26,33 +26,35 @@ SCHEMA = {
     "type": "object",
     "properties": {
         "assignments": {
-            "type": "array",
+            "type": "array", "maxItems": 30,
             "items": {
                 "type": "object",
                 "properties": {
                     "index": {"type": "integer", "description": "Zero-based draft item index."},
                     "user": {"type": "string", "description": "Jira user ID in skcc.x1042 form; empty if unresolved."},
                     "reasons": {
-                        "type": "array", "items": {"type": "string"},
+                        "type": "array", "minItems": 1, "maxItems": 3,
+                        "items": {"type": "string", "maxLength": 180},
                         "description": ("Korean recommendation reasons grounded in the supplied evidence. "
                                         "Each reason includes a metric or ticket key, for example similar "
                                         "tickets, relevant comments, or current in-progress count. Never use "
                                         "a generic claim such as 적합해 보임."),
                     },
                     "alternates": {
-                        "type": "array",
+                        "type": "array", "maxItems": 2,
                         "items": {"type": "object", "properties": {
                             "user": {"type": "string"},
-                            "why": {"type": "string", "description": "Korean explanation of both evidence and limitation."}}},
+                            "why": {"type": "string", "maxLength": 180,
+                                    "description": "Korean explanation of both evidence and limitation."}}},
                         "description": "One or two alternatives, including why each is not first choice.",
                     },
                     # 자식 담당도 **여기서** 정한다 — 사람을 고르는 일은 한 역할의 것이다.
                     "children": {
-                        "type": "array",
+                        "type": "array", "maxItems": 30,
                         "items": {"type": "object", "properties": {
                             "index": {"type": "integer", "description": "Zero-based child index within this item."},
                             "user": {"type": "string", "description": "Jira user id"},
-                            "why": {"type": "string",
+                            "why": {"type": "string", "maxLength": 180,
                                     "description": "Korean assignment reason containing a metric or ticket key."}}},
                         "description": ("Assignments for each child Sub-Task. Do not assign a person whom "
                                         "your own analysis rejected for excessive workload. Empty when there "
@@ -63,7 +65,7 @@ SCHEMA = {
             },
         },
         "caution": {
-            "type": "string",
+            "type": "string", "maxLength": 240,
             "description": "Korean assignment caution such as overload or role mismatch; empty when none.",
         },
     },
@@ -224,7 +226,7 @@ class PeopleAdvisor(StructuredAgent):
         return run
 
     def system(self, state):
-        return persona(state, SYSTEM_PEOPLE_ADVISOR)
+        return persona(state, SYSTEM_PEOPLE_ADVISOR, role_id=self.name)
 
     def task(self, state):
         from app.agent.workflow.relevance import evidence_is_relevant

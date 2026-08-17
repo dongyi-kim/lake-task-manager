@@ -34,15 +34,18 @@ SCHEMA = {
         "rule_compliant": {"type": "boolean", "description": "Whether the draft follows ticket rules."},
         "answers_request": {"type": "boolean", "description": "Whether the draft covers the user's request."},
         "problems": {
-            "type": "array",
+            "type": "array", "maxItems": 6,
             "items": {"type": "object", "properties": {
                 "index": {"type": "integer", "description": "Zero-based item index, or -1 for the whole draft."},
                 "check": {"type": "string", "enum": ["grounded", "rule", "request"]},
-                "message": {"type": "string", "description": "One Korean sentence describing what is wrong and why."},
-                "fix": {"type": "string", "description": "A precise Korean repair instruction."}}},
+                "message": {"type": "string", "maxLength": 220,
+                            "description": "One Korean sentence describing what is wrong and why."},
+                "fix": {"type": "string", "maxLength": 220,
+                        "description": "A precise Korean repair instruction."}}},
             "description": "Blocking semantic problems only; empty when none. Never invent a defect.",
         },
-        "summary": {"type": "string", "description": "One or two Korean sentences visible to the user."},
+        "summary": {"type": "string", "maxLength": 280,
+                    "description": "One or two Korean sentences visible to the user."},
     },
     "required": ["grounded", "rule_compliant", "answers_request", "problems"],
 }
@@ -86,7 +89,7 @@ class Auditor(StructuredAgent):
         return run
 
     def system(self, state):
-        return persona(state, SYSTEM_AUDITOR)
+        return persona(state, SYSTEM_AUDITOR, role_id=self.name)
 
     def task(self, state):
         auto = _machine_check(state)

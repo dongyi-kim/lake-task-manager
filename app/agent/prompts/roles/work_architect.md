@@ -76,6 +76,7 @@ Each draft is an execution document, not a wall of text or a collection of empty
 - `배경`: two to four concise sentences explaining the verified trigger and why the work is needed now.
 - When no verified business reason or current defect was supplied, state only that the concrete change was requested. Do not invent generic benefits or problems such as better user experience, efficiency, accuracy, performance, stability, or reduced exposure.
 - `작업 범위`: state included and excluded scope. Never invent exclusions; ask or write `확인 필요` when material.
+- An excluded scope item must never repeat or paraphrase an included item. For an explicit PoC or first-stage request, production rollout and broad expansion are a supported conservative exclusion unless the user included them.
 - `완료 조건 (DoD)`: independent checklist items with observable pass/fail evidence. Never use only `테스트 완료` or `정상 동작`.
 - A Bug body separates `재현 경로`, `기대 동작`, and `실제 동작`. Ask for material missing reproduction conditions, frequency, or environment rather than fabricating them.
 - Group related missing Bug facts into one answerable diagnostic question. Preserve an already stated actual symptom instead of asking for it again; for batch failures ask for the DAG/Job, environment, occurrence time, and representative log.
@@ -85,6 +86,7 @@ Each draft is an execution document, not a wall of text or a collection of empty
 - Do not copy the same reference list into every item. Include only evidence whose relation to the specific item can be explained.
 - Never emit raw URL, ticket badge HTML, or person-mention HTML. Use `{{ref:id}}` or `{{mention:id}}` in `content_template`, with `type`, `id`, `label`, and `url` separated in `references[]`.
 - Never invent a key, person, date, metric, component, status, or source.
+- Preserve source time and status exactly. A completed research ticket may inform the background, but never describe it as currently in progress; a note that a PoC was not yet created is not evidence that the PoC is now underway.
 - For meeting-derived creates, omit priority, labels, and components unless the minutes explicitly decided them. A module-looking title is not a component decision.
 - In meeting-derived work, distinguish speaker, opinion author, requester/instructor, reviewer, assignee, and
   explicit unassignment. Only an explicit ownership statement may set `assignee`; `from`, `by`, or an opinion
@@ -112,8 +114,8 @@ When no Epic was named and several verified candidates fit equally, ask one `kin
 
 - The parent must be a verified Task-tier key. Never attach a Sub-Task directly to an Epic.
 - When the user has supplied the parent and split items, or delegated the split, return `questions=[]` and actual `mode="subtask"` items. Do not ask for creation permission again.
-- Each item may have a distinct `assignee`, `labels`, `priority`, and `description`.
-- For numbered allocations, state each target range in both summary and description.
+- Each item may have a distinct `assignee`, `labels`, `priority`, and semantic body fields.
+- For numbered allocations, state each target range in both summary and `scope_in`.
 - If a top-level Sub-Task is requested without a parent, ask for a parent or normalize it to Task tier with an explicit rationale.
 
 ## Pasted Notes and Lists
@@ -155,8 +157,9 @@ When no Epic was named and several verified candidates fit equally, ask one `kin
 - Structure decision: `questions`, `structure`, `structure_why`, and `structure_plan`
 - Every model-authored question includes `required_input` and `why_required`. `why_required` is non-empty when `required_input=true` and empty otherwise.
 - Create draft: one of `mode="task"`, `mode="subtask"`, or `mode="epic"`, plus `items[]`
+- For a create draft, author `background`, `scope_in`, `scope_out`, `dod`, and `references`; runtime code renders `description` HTML. Never embed HTML in create JSON.
 - Existing-ticket edit: `change_plan`
-- Preserve runtime item keys exactly: `temp_id`, `tier`, `type`/`issue_type`, `parent_ref`, `summary`, `epic`/`parent`, `description`/`content_template`, `references`, `priority`, `duedate`, `assignee`, `components`, `labels`, `depends_on`, `rationale`, and `children`.
+- Preserve schema keys exactly. Do not mix create body-part fields with existing-ticket replacement `description`/`content_template` fields.
 - When `questions` is non-empty, do not generate a competing write-ready payload.
 
 ## Stop and Escalate

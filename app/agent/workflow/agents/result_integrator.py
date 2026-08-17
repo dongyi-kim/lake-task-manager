@@ -29,7 +29,7 @@ class ResultIntegrator(TextAgent):
     name = Node.RESULT_INTEGRATOR
 
     def system(self, state):
-        return persona(state, SYSTEM_RESULT_INTEGRATOR)
+        return persona(state, SYSTEM_RESULT_INTEGRATOR, role_id=self.name)
 
     def _run(self, state):
         """완전한 deterministic 집계는 다시 LLM에 요약시키지 않는다.
@@ -40,6 +40,14 @@ class ResultIntegrator(TextAgent):
         completion = state.get("assignment_completion") or {}
         if completion.get("kind") == "incomplete_assignees":
             return self.apply(state, {"text": _assignment_completion_reply(completion)})
+        # 질문 폼만 있는 턴은 구조화된 질문과 필수 사유가 이미 최종 데이터다. 예전에는
+        # 35B 모델에 이 데이터를 다시 서술시킨 뒤 apply()에서 그 답을 전부 버리고
+        # `_question_only_reply`로 교체했다. 사용자에게 보이지도 않는 호출이 로컬 MLX에서
+        # 2분 이상 걸렸으므로, 같은 결정적 renderer를 호출 전에 사용한다.
+        questions = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
+        if questions and not _has_executable_payload(state):
+            return self.apply({**state, "_deterministic_reply": True},
+                              {"text": _question_only_reply(state, questions)})
         # 승인 대기 응답은 최종 payload를 사람이 검토하기 위한 설명이다. 이미 코드가
         # 확정한 카드 값을 LLM에 다시 요약시키면 필드·담당·수치가 달라지거나, 요청하지
         # 않은 삭제/후속 작업을 덧붙였다. 승인 문장은 payload의 결정적 projection으로 만든다.

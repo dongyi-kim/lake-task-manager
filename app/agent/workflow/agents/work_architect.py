@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re as _re
+from html import escape as _escape_html
 
 from app.agent.prompts.roles import SYSTEM_WORK_ARCHITECT
 from app.agent.workflow.agents.base import StructuredAgent, invoke_schema
@@ -192,6 +193,165 @@ SCHEMA = {
 }
 
 
+# Prompt-only compatible providers are substantially more reliable when they do not
+# have to escape Jira HTML inside JSON string values. The model returns semantic body
+# parts and deterministic code below renders the established HTML contract.
+CREATE_CHILD = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string", "maxLength": 180},
+        "scope_in": {"type": "array", "minItems": 1, "maxItems": 6,
+                     "items": {"type": "string", "maxLength": 320}},
+        "dod": {"type": "array", "minItems": 1, "maxItems": 5,
+                "items": {"type": "string", "maxLength": 320}},
+        "assignee": {"type": "string", "maxLength": 80},
+        "duedate": {"type": "string", "maxLength": 20},
+    },
+    "required": ["summary", "scope_in", "dod"],
+}
+
+CREATE_ITEM = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string", "maxLength": 180},
+        "tier": {"type": "string", "enum": ["epic", "task", "subtask"]},
+        "issue_type": {"type": "string", "maxLength": 80},
+        "type": {"type": "string", "maxLength": 80},
+        "epic": {"type": "string", "maxLength": 40},
+        "epic_name": {"type": "string", "maxLength": 80},
+        "parent": {"type": "string", "maxLength": 40},
+        "background": {"type": "string", "maxLength": 1000},
+        "reproduction": {"type": "array", "maxItems": 6,
+                         "items": {"type": "string", "maxLength": 360}},
+        "expected": {"type": "string", "maxLength": 700},
+        "actual": {"type": "string", "maxLength": 700},
+        "scope_in": {"type": "array", "minItems": 1, "maxItems": 8,
+                     "items": {"type": "string", "maxLength": 360}},
+        "scope_out": {"type": "array", "maxItems": 6,
+                      "items": {"type": "string", "maxLength": 320}},
+        "dod": {"type": "array", "minItems": 2, "maxItems": 6,
+                "items": {"type": "string", "maxLength": 360}},
+        "references": {"type": "array", "maxItems": 6,
+                       "items": {"type": "string", "maxLength": 500}},
+        "children": {"type": "array", "maxItems": 30, "items": CREATE_CHILD},
+        "components": {"type": "array", "maxItems": 3,
+                       "items": {"type": "string", "maxLength": 80}},
+        "labels": {"type": "array", "maxItems": 8,
+                   "items": {"type": "string", "maxLength": 80}},
+        "priority": {"type": "string", "maxLength": 80},
+        "duedate": {"type": "string", "maxLength": 20},
+    },
+    "required": ["summary", "type", "background", "scope_in", "dod"],
+}
+
+CREATE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "interpretation": {"type": "string", "maxLength": 600},
+        "questions": {"type": "array", "maxItems": 3, "items": QUESTION},
+        "mode": {"type": "string", "enum": ["task", "subtask", "epic"]},
+        "structure": {"type": "string", "enum": [
+            "single_task", "task_with_subtasks", "multiple_tasks", "new_epic"]},
+        "structure_source": {"type": "string", "enum": ["user_specified", "inferred"]},
+        "structure_why": {"type": "string", "maxLength": 500},
+        "items": {"type": "array", "maxItems": 12, "items": CREATE_ITEM},
+        "rationale": {"type": "string", "maxLength": 800},
+    },
+    "required": ["questions", "mode", "items"],
+}
+
+
+def _html_list(values, *, checklist: bool = False) -> str:
+    rows = [str(value).strip() for value in (values or []) if str(value).strip()]
+    if not rows:
+        return ""
+    attr = ' data-type="taskList"' if checklist else ""
+    item_attr = ' data-checked="false"' if checklist else ""
+    return f"<ul{attr}>" + "".join(
+        f"<li{item_attr}>{_escape_html(value)}</li>" for value in rows
+    ) + "</ul>"
+
+
+def _scope_identity(value: str) -> str:
+    return _re.sub(r"[^0-9A-Za-z가-힣]+", "", str(value or "")).casefold()
+
+
+def _reference_html_list(values) -> str:
+    """Render persisted ticket references as real links, never bare Jira keys."""
+    rows = []
+    for value in (values or []):
+        escaped = _escape_html(str(value).strip())
+        if not escaped:
+            continue
+        escaped = _re.sub(
+            r"\b([A-Z][A-Z0-9]*-\d+)\b",
+            lambda match: (f'<a href="/browse/{match.group(1)}" '
+                           f'data-ticket-key="{match.group(1)}">{match.group(1)}</a>'),
+            escaped,
+        )
+        rows.append(escaped)
+    return "<ul>" + "".join(f"<li>{row}</li>" for row in rows) + "</ul>" if rows else ""
+
+
+def _materialize_creation_parts(out: dict, state: dict | None = None) -> None:
+    """Render structured ticket body parts into the existing Jira HTML payload."""
+    request = ((request_text(state or {}) + " " + last_user_text(state or {})).strip()
+               if state is not None else "")
+    for item in (out.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        if not str(item.get("description") or "").strip():
+            background = str(item.pop("background", "") or "").strip()
+            reproduction = item.pop("reproduction", []) or []
+            expected = str(item.pop("expected", "") or "").strip()
+            actual = str(item.pop("actual", "") or "").strip()
+            included = item.pop("scope_in", []) or []
+            excluded = item.pop("scope_out", []) or []
+            # An exclusion that repeats included scope is a contradiction, not a boundary.
+            # Qwen produced this exact failure for every row of a PoC draft.  Compare the
+            # semantic values before HTML rendering so the older prose guards cannot miss
+            # the separate ``제외`` block.
+            included_ids = {_scope_identity(value) for value in included if _scope_identity(value)}
+            excluded = [value for value in excluded
+                        if _scope_identity(value) not in included_ids]
+            # A literal PoC/first-stage request gives one supported conservative boundary:
+            # production rollout and broad expansion are not part of this first stage.
+            if not excluded and _re.search(r"\bPoC\b|1\s*차|1차", request, _re.I):
+                excluded = ["운영 배포 및 전체 대상 확대"]
+            dod = item.pop("dod", []) or []
+            refs = item.pop("references", []) or []
+            scope = _html_list(included)
+            if excluded:
+                scope += "<p><strong>제외</strong></p>" + _html_list(excluded)
+            is_bug = str(item.get("type") or item.get("issue_type") or "").casefold() == "bug"
+            if is_bug and (reproduction or expected or actual):
+                body = (
+                    "<h3>배경</h3><p>" + _escape_html(background or "오류 신고됨") + "</p>"
+                    "<h3>재현 경로</h3>" + _html_list(reproduction)
+                    + "<h3>기대 동작</h3><p>" + _escape_html(expected or "확인 필요") + "</p>"
+                    + "<h3>실제 동작</h3><p>" + _escape_html(actual or "확인 필요") + "</p>"
+                    + "<h3>완료 조건 (DoD)</h3>" + _html_list(dod, checklist=True)
+                )
+            else:
+                body = (
+                    "<h3>배경</h3><p>" + _escape_html(background or "요청됨") + "</p>"
+                    "<h3>작업 범위</h3>" + (scope or "<p>요청 범위 확인 필요</p>")
+                    + "<h3>완료 조건 (DoD)</h3>" + _html_list(dod, checklist=True)
+                )
+            if refs:
+                body += "<h3>참고</h3>" + _reference_html_list(refs)
+            item["description"] = body
+        for child in (item.get("children") or []):
+            if not isinstance(child, dict) or str(child.get("description") or "").strip():
+                continue
+            included = child.pop("scope_in", []) or []
+            dod = child.pop("dod", []) or []
+            child["description"] = (
+                "<h3>작업 범위</h3>" + _html_list(included)
+                + "<h3>완료 조건 (DoD)</h3>" + _html_list(dod, checklist=True)
+            )
+
+
 class WorkArchitect(StructuredAgent):
     """★ 도구를 쓰지 않는다 — 필요한 재료는 **코드가 전부 미리 조회**한다.
 
@@ -233,6 +393,16 @@ class WorkArchitect(StructuredAgent):
                     and bool((state.get("draft") or {}).get("items"))
                     and not ((out.get("draft") or {}).get("items"))
                     and not (cp0.get("key") or cp0.get("keys")))
+                # A delegated creation that returns neither a draft nor a question is
+                # worse than an explicit refusal: the user has no next action and older
+                # battery checks silently treated it as green. Retry once with the same
+                # verified material and the existing Required Draft Recovery contract.
+                dodged = dodged or (
+                    (state.get("intent") or "") == Intent.PLAN_WORK
+                    and _said_defaults(state)
+                    and not (out.get("questions") or [])
+                    and not ((out.get("draft") or {}).get("items"))
+                    and not (cp0.get("key") or cp0.get("keys")))
             except Exception:
                 dodged = False
             if dodged and not WorkArchitect._force_draft:
@@ -269,7 +439,7 @@ class WorkArchitect(StructuredAgent):
         # ★ 경로에 안 쓰이는 절은 싣지 않는다. 기존 티켓의 필드를 바꾸는 턴에 '어떻게
         #   쪼갤 것인가'·'본문 4섹션'·'Epic 생성' 지시는 판단에 쓰이지 않으면서 매 호출
         #   2천 토큰을 태운다(work_architect system 4.2k tok 중 절반이 생성 전용이었다).
-        return persona(state, _role_md(state) + extra)
+        return persona(state, _role_md(state) + extra, role_id=self.name)
 
     def task(self, state):
         # "알아서/기본값" 은 선택 재량만 위임한다. 이전 계약은 질문을 전부 금지해 target·parent·
@@ -440,7 +610,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 - The subject of every summary and body is Original Request Data. Epic bodies, comments, and related tickets provide placement or evidence only. Preserve unique request terms such as product, technology, table, asset, and symptom.
 - Write each Korean summary as `[Module]` plus a distinct action phrase for one deliverable.
 - In `배경`, state only the verified trigger or the fact that the concrete change was requested. Never invent generic benefits or current problems such as improved user experience, efficiency, accuracy, performance, stability, or reduced exposure.
-- Write a structured HTML body with the correct Korean sections. Use independently testable task-list DoD items. Use a comparison table or verified link only when needed; never return one wall-of-text paragraph.
+- For creation items, fill semantic body fields: Korean `background`, `scope_in`, `scope_out`, `dod`, and `references`. Do not emit HTML or a `description`; deterministic code renders the Jira HTML contract. Keep DoD items independently testable.
 - Select an Epic independently for each Task from Verified Placement Values. If no candidate fits, choose an intentional top-level Task. Ask an Epic choice only when materially different verified candidates remain and the user did not delegate the choice.
 - Use exactly one verified component per item. Split independent cross-module deliverables to avoid double-counted workload.
 - Prefer existing verified labels. Do not create a typo or synonym; a truly new label must remain visible as new on the approval card.
@@ -465,7 +635,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
     def schema(self):
         return SCHEMA
 
+    def schema_for(self, state):
+        return SCHEMA if (state.get("intent") or "") == Intent.MODIFY else CREATE_SCHEMA
+
     def apply(self, state, out):
+        if (state.get("intent") or "") != Intent.MODIFY:
+            _materialize_creation_parts(out, state)
         # 문자열로 오면(구모델·fake) 구조로 승격한다 — 화면은 dict 만 다루면 된다.
         # 한 번에 필요한 질문은 3개까지 묶는다. 이후 턴에도 필수 입력이 남으면 계속 묻되,
         # 질문 수 상한을 필수값 추측 허가로 바꾸지 않는다.
@@ -4990,7 +5165,11 @@ def _delegated_question_is_blocking(state, question) -> bool:
         return any(w in qtext for w in ("임계", "값", "몇", "현재", "목표"))
     if reads_as_bug(said) and _missing_bug_reproduction(said):
         return any(w in qtext for w in ("재현", "언제", "경로", "환경", "조건", "빈도", "기대"))
-    if _re.search(r"Sub-?Task|서브\s*태스크", said, _re.I) and not _legal_parent_is_known(state, said):
+    # "단계별 Sub-Task로"는 새 Task의 children 구조를 지정한 것이지 기존 Jira 부모를
+    # 지정한 요청이 아니다. 명시한 기존 티켓 아래에 추가하려는 경우에만 legal-parent
+    # 인터뷰가 필수다. 그렇지 않으면 모델이 모든 신설 Task+Sub-Task 요청에 Epic/상위
+    # 티켓 선택을 강제로 되묻는다.
+    if _requests_existing_parent_subtask(said) and not _legal_parent_is_known(state, said):
         return any(w in qtext for w in ("부모", "상위", "task", "티켓"))
     if _re.search(r"중복|같은\s*(?:작업|증상)|이미", qtext):
         return True
@@ -5083,6 +5262,28 @@ def _normalize_duplicate_and_bug_questions(state, questions: list, *, items=None
 def _legal_parent_is_known(state, text: str) -> bool:
     keys = state.get("mentioned_keys") or _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", text)
     return any(_can_parent_subtask(k) for k in keys)
+
+
+def _requests_existing_parent_subtask(text: str) -> bool:
+    """Whether the user wants children under an already-existing ticket.
+
+    A bare decomposition phrase (``단계별 Sub-Task로``) describes the shape of a new
+    draft.  Existing-parent semantics require an explicit ticket key or a referential
+    phrase such as ``그 Task 아래``/``해당 티켓에``.
+    """
+    said = str(text or "")
+    child = r"(?:Sub-?Task|서브\s*태스크)"
+    key_parent = _re.search(
+        rf"\b[A-Z][A-Z0-9]*-\d+\b.{{0,30}}(?:아래|밑|하위|에).{{0,30}}{child}|"
+        rf"\b[A-Z][A-Z0-9]*-\d+\b.{{0,30}}{child}.{{0,20}}(?:추가|생성|만들)",
+        said, _re.I,
+    )
+    referential_parent = _re.search(
+        rf"(?:그|이|해당|기존)\s*(?:Task|태스크|티켓).{{0,25}}(?:아래|밑|하위|에)"
+        rf".{{0,25}}{child}",
+        said, _re.I,
+    )
+    return bool(key_parent or referential_parent)
 
 
 def _explicit_comment_body(text: str) -> bool:
