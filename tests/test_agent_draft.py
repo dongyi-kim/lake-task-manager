@@ -421,6 +421,18 @@ def test_concrete_delegated_work_skips_the_model_and_keeps_runtime_guards(monkey
     assert "내 모듈만" in result["draft"]["items"][0]["summary"]
 
 
+def test_compound_delegated_request_is_not_collapsed_by_literal_single_task_recovery():
+    from app.agent.workflow.agents.work_architect import _recover_delegated_creation
+
+    state = _msg(
+        "리니지 뷰어 성능 측정하고, 결과 따라 쿼리 엔진 인덱스도 손봐야 해. "
+        "그리고 사용 가이드도 써야 하고. 알아서 초안 잡아줘",
+        situation="직접 일치하는 내부 이력 없음", intent=Intent.PLAN_WORK,
+    )
+
+    assert _recover_delegated_creation(state) == []
+
+
 def test_empty_model_result_reuses_normal_volume_partitioning_for_delegated_work():
     state = _msg("메타데이터 미등록 테이블 30개를 등록해야 해. 사람 나눠서 진행하게 만들어줘. 알아서",
                  situation="직접 일치하는 내부 이력 없음", intent=Intent.PLAN_WORK)

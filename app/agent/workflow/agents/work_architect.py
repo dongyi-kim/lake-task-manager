@@ -5354,6 +5354,16 @@ def _recover_delegated_creation(state) -> list[dict]:
     if not _said_defaults(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
         return []
     said = (request_text(state) + " " + last_user_text(state)).strip()
+    volume_partition = bool(
+        _re.search(r"[2-9][0-9]{0,3}\s*(?:개|건)", said)
+        and any(word in said for word in
+                ("사람 나눠", "담당 나눠", "나눠 맡", "나눠서 진행"))
+    )
+    # This recovery owns one literal Task (or one volume-partitioned Task tree), not
+    # compound cross-module planning. Treating `measure, tune, and write a guide` as one
+    # title forced later repair code to guess missing siblings and lost the guide entirely.
+    if not _simple_delegated_request(state) and not volume_partition:
+        return []
     if (not _has_concrete_work_target(said)
             or state.get("already_exists")
             or _missing_data_quality_target(state)

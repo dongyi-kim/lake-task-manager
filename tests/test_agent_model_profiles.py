@@ -51,7 +51,7 @@ def test_qwen_simple_structured_contract_has_room_for_query_plan_json():
         "/models/Qwen3.5-4B-4bit", "openai_compat", "fast_structured",
         output_contract="structured", semantic_profile="fast_structured",
     )
-    assert row.parameters["max_tokens"] == 2048
+    assert row.parameters["max_tokens"] == 3072
     assert row.parameters["temperature"] == 0.0
 
 
