@@ -64,8 +64,12 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "request_architect": RoleSpec(
         "request_architect", "Request Architect", "complex", "fast_structured",
         "Decomposes single and compound requests into an atomic task DAG and routing intent.",
-        ("messages", "user_identity", "request_plan", "draft", "approval_token"),
-        ("intent", "keywords", "module", "mentioned_keys", "request_plan", "request_text"),
+        ("messages", "user_identity", "intent", "request_text", "request_plan", "playbook",
+         "keywords", "module", "mentioned_keys", "sufficient", "answer_depth",
+         "turn_continuation", "situation", "evidence", "materialized_ticket_sources",
+         "structure_plan", "draft", "questions", "approval_token"),
+        ("intent", "keywords", "module", "mentioned_keys", "sufficient", "playbook",
+         "answer_depth", "request_plan", "request_text", "trace"),
         execution_layer="lightweight_semantic",
     ),
     "query_specialist": RoleSpec(

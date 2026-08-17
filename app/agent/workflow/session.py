@@ -397,6 +397,12 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
     Conversely, one generic field such as a date is not enough to inherit stale context.
     """
     utterance = str(text or "")
+    # RequestArchitect owns the exact typed-add grammar. Reuse it here so the session boundary
+    # and outcome projection cannot disagree about whether ``Task 하나 더`` extends the current
+    # plan. The import is local because Session already imports the assembled graph at startup.
+    from app.agent.workflow.agents.request_architect import _continuation_outcome_additions
+    adds_typed_outcome = bool(prior.get("request_plan")
+                              and _continuation_outcome_additions(utterance))
     # A typed ``댓글 대신 ...`` can be an in-plan outcome edit, but an explicit whole-topic
     # switch must always clear stale work even when that phrase happens to begin with an
     # outcome label.
@@ -418,6 +424,8 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
             str(question.get("field") or "").strip().casefold() in {"parent", "epic"}
             for question in asked
         ) and bool(_PARENT_CREATION_ANSWER.search(utterance))
+        if adds_typed_outcome:
+            return True
         if _EXPLICIT_NEW_WORK.search(utterance):
             # "새 Epic을 만들까요?"에 대한 답은 기존 interview의 continuation이다.
             # 다른 target/question을 버리고 별도 work를 명령한 경우에는 stale state를 잇지 않는다.
@@ -437,6 +445,8 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
 
     # When the previous turn already produced a draft/structure, preserve it only for a compact,
     # multi-field refinement.  Explicitly asking for separate/new work always wins.
+    if adds_typed_outcome:
+        return True
     if _EXPLICIT_NEW_WORK.search(utterance):
         return False
     # A typed edit to an already planned user-visible outcome is itself a continuation even
@@ -445,6 +455,12 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
     # before that guard can run.
     if prior.get("request_plan") and _OUTCOME_REFINEMENT.search(utterance):
         return True
+    # A complete create/register speech act is a new work root even when an old draft or
+    # structure exists and the sentence happens to include two refinement-shaped fields.
+    # Check this before the materialized-draft shortcut; otherwise ``Task 하나 만들어줘``
+    # silently edits stale work merely because it also supplies scope and a due date.
+    if _INDEPENDENT_WORK_CREATION.search(utterance):
+        return False
     if _draft_refinement_changes_subject(utterance, prior):
         return False
     matched_fields = sum(bool(pattern.search(utterance)) for pattern in _DRAFT_REFINEMENT_FIELDS)
@@ -457,8 +473,7 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
     # speech act or an unrelated answer/query remains a new turn even if it embeds scope and
     # due-date values. A repeated stable technical subject is also safe; otherwise the utterance
     # must begin with a recognized field label (``Epic... 범위... 마감...``).
-    if (_INDEPENDENT_WORK_CREATION.search(utterance)
-            or _NON_FIELD_REQUEST.search(utterance)):
+    if _NON_FIELD_REQUEST.search(utterance):
         return False
     if (not _FIELD_ONLY_REFINEMENT_START.search(utterance)
             and not _draft_refinement_repeats_subject(utterance, prior)):
@@ -496,7 +511,13 @@ def _turn_start_patch(text: str, prior: dict) -> dict:
     patch.update(turn_continuation=continuation,
                  turn_reset_reason="interview-answer" if continuation else "new-or-revised-request")
     if continuation:
-        for key in ("intent", "request_text", "request_plan",
+        # RequestArchitect owns these bounded planning fields.  A true continuation keeps
+        # them so a deterministic field-only fast path can reuse the already classified
+        # request without reconstructing its subject from the short answer.  Query plans and
+        # query results deliberately stay in ``_TURN_DERIVED_EMPTY``: a changed parent/scope/
+        # due field may require a fresh bounded query, and graph routing decides that below.
+        for key in ("intent", "request_text", "request_plan", "playbook", "keywords",
+                    "module", "mentioned_keys", "sufficient", "answer_depth",
                     "pre_survey", "seed_map", "web_context", "topic_dossier",
                     "situation", "evidence", "related_docs", "epic_candidate", "already_exists",
                     "bulk_targets", "materialized_ticket_sources", "structure_plan", "structure_ok",

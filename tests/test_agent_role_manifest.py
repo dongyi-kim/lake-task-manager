@@ -81,6 +81,11 @@ def test_required_redesigned_capabilities_have_dedicated_roles():
 
 
 def test_role_manifest_documents_cross_turn_and_final_response_inputs():
+    assert {"intent", "request_text", "request_plan", "turn_continuation", "situation",
+            "materialized_ticket_sources"} <= set(
+                ROLE_SPECS["request_architect"].input_keys)
+    assert {"sufficient", "playbook", "answer_depth", "trace"} <= set(
+        ROLE_SPECS["request_architect"].output_keys)
     assert {"messages", "request_text"} <= set(ROLE_SPECS["query_specialist"].input_keys)
     assert {"query_artifacts", "materialized_ticket_sources", "topic_dossier", "web_context"} <= \
         set(ROLE_SPECS["research_analyst"].input_keys)

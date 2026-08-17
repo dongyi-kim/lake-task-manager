@@ -298,15 +298,75 @@ def _merge_assignments(state: AgentState) -> dict:
         spread_volume_split,
     )
     spread_volume_split(draft.get("items") or [])
+    assignment_errors = []
+
+    def assignee_error(user: str, *, index: int, child_index=None,
+                       unavailable: bool = False) -> None:
+        error = {
+            "index": index,
+            "field": "assignee",
+            "message": (f"담당자 {user}의 존재 검증을 수행하지 못했다"
+                        if unavailable else
+                        f"사용자가 지정한 담당자 {user}의 존재를 확인할 수 없다"),
+        }
+        if child_index is not None:
+            error["child_index"] = child_index
+        assignment_errors.append(error)
+
     try:
         from app.agent.tools._ctx import client
         exists = client().bulk_lookup().user_exists
-        for it in draft.get("items") or []:
-            u = (it.get("assignee") or "").strip()
-            if u and not exists(u):
-                it["assignee"] = _resolve_user(u, exists)
+
+        def validate(row: dict, *, index: int, child_index=None) -> None:
+            user = str(row.get("assignee") or "").strip()
+            if not user:
+                return
+            try:
+                known = exists(user)
+            except Exception:
+                # Identity authority is unavailable. Preserve what the user will see, but
+                # never let an unverified root or child owner reach an approval payload.
+                assignee_error(user, index=index, child_index=child_index,
+                               unavailable=True)
+                return
+            if known:
+                return
+            resolved = _resolve_user(user, exists)
+            if resolved:
+                row["assignee"] = resolved
+                return
+            if str(row.get("assignee_source") or "") == "user":
+                # A literal user decision may not be silently turned into unassigned work.
+                # Keep it visible and block approval until the identity can be corrected.
+                assignee_error(user, index=index, child_index=child_index)
+                return
+            # Model/PeopleAdvisor recommendations have no identity authority. Unknown
+            # accounts are removed at the final payload join, at both hierarchy tiers.
+            row.pop("assignee", None)
+
+        for index, item in enumerate(draft.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            validate(item, index=index)
+            for child_index, child in enumerate(item.get("children") or []):
+                if isinstance(child, dict):
+                    validate(child, index=index, child_index=child_index)
     except Exception:
-        pass                              # lookup 실패가 초안 자체를 버리게 하면 안 된다
+        # Keep the draft visible but fail closed: without the identity authority neither a
+        # root nor child assignee is safe to stage for approval.
+        for index, item in enumerate(draft.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            user = str(item.get("assignee") or "").strip()
+            if user:
+                assignee_error(user, index=index, unavailable=True)
+            for child_index, child in enumerate(item.get("children") or []):
+                if not isinstance(child, dict):
+                    continue
+                user = str(child.get("assignee") or "").strip()
+                if user:
+                    assignee_error(user, index=index, child_index=child_index,
+                                   unavailable=True)
     # WorkArchitect and PeopleAdvisor run as a fan-out.  Their join may retain assignment
     # metadata from the newer branch while taking a stale pre-normalization title/body from
     # the other.  Re-seal immutable user anchors at the actual pending-payload boundary.
@@ -316,7 +376,25 @@ def _merge_assignments(state: AgentState) -> dict:
     # approval reply or staged payload rationale.
     draft = _normalize_resolved_assignment_rationale(draft)
     assignments = _align_assignments_to_draft(state.get("assignments") or [], draft)
-    return {"draft": draft, "assignments": assignments}
+    result = {"draft": draft, "assignments": assignments}
+    if assignment_errors:
+        review = dict(state.get("review") or {})
+        errors = [dict(row) for row in (review.get("errors") or [])
+                  if isinstance(row, dict)]
+        fingerprints = {
+            (row.get("index"), row.get("child_index"), row.get("field"), row.get("message"))
+            for row in errors
+        }
+        for error in assignment_errors:
+            fingerprint = (error.get("index"), error.get("child_index"),
+                           error.get("field"), error.get("message"))
+            if fingerprint not in fingerprints:
+                errors.append(error)
+                fingerprints.add(fingerprint)
+        review["ok"] = False
+        review["errors"] = errors
+        result["review"] = review
+    return result
 
 
 def _align_assignments_to_draft(assignments: list, draft: dict) -> list:
@@ -342,10 +420,11 @@ def _align_assignments_to_draft(assignments: list, draft: dict) -> list:
                 continue
             actual_child = str(child.get("assignee") or "")
             child_row = child_rows.get(child_index)
-            if child_row is not None and actual_child \
+            if child_row is not None \
                     and actual_child != str(child_row.get("user") or ""):
                 child_row["user"] = actual_child
-                child_row["why"] = "사용자 지정 또는 승인 payload에 확정된 담당자"
+                child_row["why"] = ("사용자 지정 또는 승인 payload에 확정된 담당자"
+                                    if actual_child else "")
                 child_rows[child_index] = child_row
         if child_rows:
             row["children"] = [child_rows[k] for k in sorted(child_rows)]

@@ -192,6 +192,14 @@ def _task_outcome_effect(task: dict) -> str:
     return ""
 
 
+def _task_outcome_signature(task: dict) -> tuple[str, str]:
+    """Return the stable semantic identity used only to suppress echoed outcomes."""
+    return (
+        _task_outcome_effect(task),
+        " ".join(str((task or {}).get("instruction") or "").casefold().split()),
+    )
+
+
 _PARALLEL_OUTCOMES = _re.compile(r"(?:각각|각\s*(?:한|1)\s*(?:건|개|곳))", _re.I)
 _TYPED_ARTIFACT = _re.compile(
     r"(?<![A-Za-z])(?:Bug|Story|Feature|Improvement|Task|Sub-?Task|Epic)"
@@ -340,16 +348,53 @@ _OUTCOME_LABELS = {
 }
 _OUTCOME_REMOVE_ACTION = r"(?:빼|제외|취소|삭제|없애|하지\s*마|안\s*(?:해|할))"
 _OUTCOME_CHANGE_ACTION = r"(?:바꿔|수정|변경|교체)"
+_OUTCOME_ADD_COUNT = r"(?:하나|한\s*(?:건|개)|1\s*(?:건|개)?)"
+_OUTCOME_ADD_ACTION = r"(?:만들|생성|등록|작성|남겨|달아|산출|올려)"
+
+
+def _continuation_outcome_additions(text: str) -> list[str]:
+    """Return ordered, explicitly typed outcome effects that the user wants to add.
+
+    ``더`` alone is only an adverb and must never inherit a stale plan. Addition requires a
+    visible artifact plus a singular count and either the additive particle ``도`` with a
+    creation action, or ``하나 더`` ending at an action/punctuation/field boundary. The latter
+    boundary rejects ambiguous prose such as ``Task 하나 더 자세히 설명해줘``.
+    """
+    value = str(text or "")
+    matches: list[tuple[int, str]] = []
+    field_boundary = (
+        r"(?:범위|단계|phase|stage|마감|기한|due(?:\s*date)?|deadline|"
+        r"담당(?:자)?|assignee|owner|우선순위|priority|제목|본문|설명|완료\s*조건)"
+    )
+    for effect, label in _OUTCOME_LABELS.items():
+        one_more = _re.finditer(
+            fr"(?:{label})(?:은|는|이|가|을|를)?\s*{_OUTCOME_ADD_COUNT}\s*더"
+            fr"(?=\s*(?:$|[,.!?;:\n]|{_OUTCOME_ADD_ACTION}|{field_boundary}))",
+            value, _re.I,
+        )
+        also_create = _re.finditer(
+            fr"(?:{label})\s*도\s*{_OUTCOME_ADD_COUNT}\s*(?:더\s*)?"
+            fr"{_OUTCOME_ADD_ACTION}",
+            value, _re.I,
+        )
+        matches.extend((match.start(), effect) for match in one_more)
+        matches.extend((match.start(), effect) for match in also_create)
+    ordered: list[str] = []
+    for _, effect in sorted(matches):
+        if effect not in ordered:
+            ordered.append(effect)
+    return ordered
 
 
 def _continuation_outcome_directive(text: str) -> dict:
-    """Parse only explicit, typed outcome removal/replacement instructions.
+    """Parse only explicit, typed outcome addition/removal/replacement instructions.
 
     Pronouns such as ``그건 빼줘`` intentionally produce no directive: mapping one pronoun to
     one of several writes is semantic and the authoritative prior plan must win when ambiguous.
     """
     value = str(text or "")
     remove, only, change = set(), set(), set()
+    add = _continuation_outcome_additions(value)
     for effect, label in _OUTCOME_LABELS.items():
         explicit_remove = _re.search(
             fr"(?:{label})(?:은|는|을|를)?(?:\s|내용|대상|작업)*.{{0,24}}"
@@ -364,8 +409,8 @@ def _continuation_outcome_directive(text: str) -> dict:
                 and _re.search(fr"(?:{label})(?:\s*(?:내용|대상|범위|결론|제목))?(?:은|는|을|를)?"
                                fr".{{0,40}}{_OUTCOME_CHANGE_ACTION}", value, _re.I)):
             change.add(effect)
-    return {"remove": remove, "only": only, "change": change} \
-        if remove or only or change else {}
+    return {"remove": remove, "only": only, "change": change, "add": add} \
+        if remove or only or change or add else {}
 
 
 def _authoritative_continuation_plan(state: dict) -> dict:
@@ -436,6 +481,7 @@ def _project_followup_outcomes(state: dict, tasks: list[dict], intent: str) -> t
     remove = set(directive.get("remove") or [])
     only = set(directive.get("only") or [])
     change = set(directive.get("change") or []) - remove
+    add = list(dict.fromkeys(directive.get("add") or []))
     projected = []
     for task in prior_tasks:
         effect = _task_outcome_effect(task)
@@ -474,6 +520,34 @@ def _project_followup_outcomes(state: dict, tasks: list[dict], intent: str) -> t
         if len(replacements) == 1 and len(projected) < 6:
             projected.append(_copy.deepcopy(replacements[0]))
             changed = True
+
+    # An explicit ``Task 하나 더`` / ``Task도 하나 만들어줘`` adds one independently visible
+    # outcome after the preserved DAG. The semantic model authors only the new outcome; code
+    # owns stable prior ids/order and rejects ambiguous, duplicate, or over-capacity additions.
+    for effect in add:
+        existing_signatures = {_task_outcome_signature(task) for task in projected
+                               if isinstance(task, dict)}
+        replacements = [task for task in tasks[:6]
+                        if (isinstance(task, dict)
+                            and _task_outcome_effect(task) == effect
+                            and _task_outcome_signature(task) not in existing_signatures)]
+        if len(replacements) != 1 or len(projected) >= 6:
+            continue
+        candidate = _copy.deepcopy(replacements[0])
+        if not _task_outcome_signature(candidate)[1]:
+            continue
+        existing_ids = {str(task.get("id") or "").strip()
+                        for task in projected if isinstance(task, dict)}
+        candidate_id = str(candidate.get("id") or "").strip() or f"followup-{effect}"
+        if candidate_id in existing_ids:
+            base = candidate_id
+            suffix = 2
+            while f"{base}-{suffix}" in existing_ids:
+                suffix += 1
+            candidate_id = f"{base}-{suffix}"
+        candidate["id"] = candidate_id
+        projected.append(candidate)
+        changed = True
 
     if not projected and (remove or only):
         projected = [{
@@ -525,6 +599,178 @@ _EPIC_CREATION_PHRASE = _re.compile(
     r"(?:새로\s*)?(?:생성(?:하기|해|함)?|만들(?:기|어|어야|자)?|등록(?:하기|해|함)?)",
     _re.I,
 )
+
+
+# A continuation may contain only typed execution fields whose meaning is already fixed by
+# code. In that narrow case re-running RequestArchitect asks the model to rediscover the
+# authoritative RequestPlan from a short control message, adding latency and sometimes losing
+# its subject. These patterns intentionally cover only parent placement, an exact ISO due date,
+# and a numeric phase ordinal. Free-form scope, relative dates, owners, titles, descriptions,
+# and outcome mutations still need semantic classification.
+_FAST_PARENT_SELECTION_FIELD = _re.compile(
+    r"(?:(?:관련|적합한|기존)\s+)*(?:상위\s+)?(?:Epic|에픽)\s*(?:은|는|을|를)?\s*"
+    r"(?:네가\s*)?(?:알아서\s*)?(?:골라|선택|찾아|정해)(?:\s*(?:줘|주세요|해줘))?",
+    _re.I,
+)
+_FAST_EXACT_PARENT_FIELD = _re.compile(
+    r"(?:부모|상위)\s*(?:Epic|에픽)\s*(?:은|는|을|를|로|:|=)?\s*"
+    r"(?P<key>(?<![A-Z0-9])[A-Z][A-Z0-9]{1,9}-\d+(?![A-Z0-9]))"
+    r"\s*(?:으로|로|을|를|에)?\s*"
+    r"(?:연결|지정|선택|붙여)(?:\s*(?:해줘|해주세요|줘))?",
+    _re.I,
+)
+_FAST_TOP_LEVEL_FIELD = _re.compile(
+    r"(?:최상위\s*(?:Task|태스크|테스크)(?:로|으로)?(?:\s*(?:진행|구성))?"
+    r"|(?:부모|상위\s*(?:Epic|에픽)|Epic|에픽)\s*(?:은|는|을|를)?\s*"
+    r"(?:없음|없이|빼|제외))(?:\s*(?:해줘|해주세요|진행해줘))?",
+    _re.I,
+)
+_FAST_DUE_FIELD = _re.compile(
+    r"(?:(?:마감(?:일)?|기한|due(?:\s*date)?|deadline)\s*"
+    r"(?:은|는|을|를|로|:|=)?\s*(?P<prefix>\d{4}-\d{2}-\d{2})\s*(?:까지|으로|로)?"
+    r"|(?P<suffix>\d{4}-\d{2}-\d{2})\s*(?:까지|를?\s*마감(?:일)?로|를?\s*기한으로))",
+    _re.I,
+)
+_FAST_PHASE_FIELD = _re.compile(
+    r"(?:(?:범위|단계|phase|stage)\s*(?:은|는|을|를|로|:|=)?\s*)?"
+    r"(?:(?:최소|우선)\s*)?(?:기능\s*)?(?P<ordinal>\d{1,3}\s*차)\s*"
+    r"(?:구현|개발|검증|적용|배포|범위|단계)?\s*(?:까지|로)?",
+    _re.I,
+)
+_FAST_REFINEMENT_GLUE = _re.compile(
+    r"(?:[\s,.;:!?/()\[\]{}]+|그리고|그럼|그러면|또|추가로|알아서|"
+    r"이대로|그대로|계속|진행(?:해주세요|해줘|해)?|부탁(?:드립니다|해줘|해)?)",
+    _re.I,
+)
+
+
+def _valid_iso_date(value: str) -> bool:
+    try:
+        from datetime import date
+        date.fromisoformat(str(value or ""))
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _typed_continuation_refinement(text: str) -> dict:
+    """Return a completely parsed field-only refinement, otherwise an empty dict.
+
+    Every non-punctuation character must belong to one recognized field or harmless discourse
+    glue. Conflicting/duplicate values fail closed. Requiring at least two distinct fields
+    mirrors Session's no-question continuation boundary and prevents a stray date or ``1차``
+    from inheriting an old write request.
+    """
+    value = str(text or "").strip()
+    if not value or len(value) > 320 or _continuation_outcome_directive(value):
+        return {}
+
+    spans: list[tuple[int, int, str, str]] = []
+    for match in _FAST_PARENT_SELECTION_FIELD.finditer(value):
+        spans.append((match.start(), match.end(), "parent", "select_existing"))
+    for match in _FAST_EXACT_PARENT_FIELD.finditer(value):
+        spans.append((match.start(), match.end(), "parent", match.group("key").upper()))
+    for match in _FAST_TOP_LEVEL_FIELD.finditer(value):
+        spans.append((match.start(), match.end(), "parent", "top_level"))
+    for match in _FAST_DUE_FIELD.finditer(value):
+        due = match.group("prefix") or match.group("suffix") or ""
+        if not _valid_iso_date(due):
+            return {}
+        spans.append((match.start(), match.end(), "duedate", due))
+    for match in _FAST_PHASE_FIELD.finditer(value):
+        ordinal = _re.sub(r"\s+", "", match.group("ordinal") or "")
+        spans.append((match.start(), match.end(), "phase", ordinal))
+
+    spans.sort(key=lambda row: (row[0], row[1]))
+    fields: dict[str, str] = {}
+    covered = [False] * len(value)
+    for start, end, field, parsed in spans:
+        if any(covered[start:end]):
+            return {}
+        if field in fields:  # repeated fields can conceal alternatives or contradictions
+            return {}
+        fields[field] = parsed
+        for index in range(start, end):
+            covered[index] = True
+
+    if len(fields) < 2:
+        return {}
+    remainder = "".join(" " if covered[index] else char for index, char in enumerate(value))
+    remainder = _FAST_REFINEMENT_GLUE.sub("", remainder)
+    if remainder.strip():
+        return {}
+    return fields
+
+
+def _has_verified_prior_work_context(state: dict) -> bool:
+    """Require material work context before bypassing a semantic request classification."""
+    ledger = state.get("materialized_ticket_sources") or {}
+    if isinstance(ledger, dict) and any(
+            isinstance(row, dict) and not row.get("error") and str(row.get("key") or "").strip()
+            for row in ledger.get("ticketDetails") or []):
+        return True
+    draft = state.get("draft") or {}
+    return bool((isinstance(draft, dict) and draft.get("items"))
+                or isinstance(state.get("structure_plan"), list)
+                and state.get("structure_plan"))
+
+
+def _field_refinement_fast_patch(state: dict) -> dict:
+    """Reuse a verified PLAN_WORK contract for a fully typed continuation without an LLM."""
+    if (state.get("turn_continuation") is not True
+            or str(state.get("intent") or "") != Intent.PLAN_WORK
+            or not str(state.get("request_text") or "").strip()
+            or not _has_verified_prior_work_context(state)):
+        return {}
+    prior_plan = _authoritative_continuation_plan(state)
+    if not prior_plan:
+        return {}
+
+    asked = last_user_text(state).strip()
+    fields = _typed_continuation_refinement(asked)
+    if not fields:
+        return {}
+    # Replacing an explicitly requested new Epic with existing-Epic selection changes the
+    # requested action; that is semantic even though both phrases look like a parent field.
+    original = str(state.get("request_text") or "").strip()
+    if fields.get("parent") and _EPIC_CREATION.search(original):
+        return {}
+    if (fields.get("parent") == "top_level"
+            and _re.search(r"Sub-?Task|서브\s*태스크", original, _re.I)):
+        return {}
+    # The typed task DAG is the downstream outcome identity. If an older plan itself says
+    # "create an Epic", selecting an existing parent is not a field overlay; classify the
+    # action change semantically rather than rewriting a contract under the same ids.
+    if (fields.get("parent") in {"select_existing", "top_level"}
+            and _EPIC_CREATION.search(str(prior_plan))):
+        return {}
+
+    request_plan = _copy.deepcopy(prior_plan)
+    raw_mentioned = state.get("mentioned_keys") or []
+    mentioned = [str(key).strip().upper() for key in (
+                 raw_mentioned if isinstance(raw_mentioned, (list, tuple)) else [])
+                 if _re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", str(key).strip(), _re.I)]
+    parent = str(fields.get("parent") or "")
+    if _re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", parent, _re.I) and parent not in mentioned:
+        mentioned.append(parent.upper())
+    labels = ", ".join(f"{name}={value}" for name, value in fields.items())
+    raw_keywords = state.get("keywords") or []
+    keywords = [str(value) for value in (
+        raw_keywords if isinstance(raw_keywords, (list, tuple)) else []) if str(value).strip()]
+    depth = str(state.get("answer_depth") or "brief")
+    return {
+        "intent": Intent.PLAN_WORK,
+        "keywords": _copy.deepcopy(keywords),
+        "module": str(state.get("module") or ""),
+        "mentioned_keys": mentioned,
+        "sufficient": bool(state.get("sufficient")),
+        "playbook": str(state.get("playbook") or ""),
+        "answer_depth": depth if depth in {"brief", "explain"} else "brief",
+        "request_plan": request_plan,
+        "request_text": original,
+        "trace": note(state, Node.REQUEST_ARCHITECT,
+                      f"의도={Intent.PLAN_WORK} · 검증된 필드 보정({labels}) · 모델 호출 생략"),
+    }
 
 
 def _selection_is_not_creation(text: str) -> bool:
@@ -599,6 +845,12 @@ def _ground_request_assumptions(assumptions: list, grounded_request: str) -> lis
 class RequestArchitect(StructuredAgent):
     name = Node.REQUEST_ARCHITECT
 
+    def _run(self, state: AgentState) -> dict:
+        fast = _field_refinement_fast_patch(state)
+        if fast:
+            return fast
+        return super()._run(state)
+
     def system(self, state):
         return persona(state, SYSTEM_REQUEST_ARCHITECT, lite=True)   # 분류엔 축약판 — 호출당 1k+ 토큰 절감
 
@@ -620,6 +872,9 @@ Classify what the user wants from the conversation, construct an atomic task pla
 - Select a module only with strong evidence.
 - `tasks` describe only distinct outcomes or mutations explicitly requested by the user. Do not
   restate the Agent pipeline as separate query, research, analysis, validation, approval, or response tasks.
+- On a continuation that explicitly asks for one more typed artifact (`Task 하나 더`,
+  `검증 Task도 하나 만들어줘`), return only that newly requested semantic outcome. Runtime
+  appends it to the authoritative prior DAG; do not echo the prior outcomes as new tasks.
 - A single request has exactly one task. Split only a genuinely compound request with independently
   checkable deliverables, and keep at most three concise completion criteria per task.
 - Do not ask for technical details that Jira, Confluence, comments, or external research can recover.
@@ -686,7 +941,14 @@ Classify what the user wants from the conversation, construct an atomic task pla
         fallback_intent = out.get("intent") or Intent.PLAN_WORK
         asked = last_user_text(state)
         kws = [k for k in (out.get("keywords") or []) if str(k).strip()]
-        current_tasks = _compact_request_tasks(out, asked, fallback_intent)
+        # For an additive continuation, keep the bounded raw model tasks until projection can
+        # remove exact echoes of prior outcomes. Generic compaction would merge an echoed old
+        # Task and the genuinely new Task into one synthetic ``task-1`` and lose the new id.
+        if prior_write_plan and _continuation_outcome_additions(asked):
+            current_tasks = [task for task in (out.get("tasks") or [])[:6]
+                             if isinstance(task, dict)]
+        else:
+            current_tasks = _compact_request_tasks(out, asked, fallback_intent)
         planned_tasks, outcomes_changed = _project_followup_outcomes(
             state, current_tasks, fallback_intent)
         if prior_write_plan and (not outcomes_changed

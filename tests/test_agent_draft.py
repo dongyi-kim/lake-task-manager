@@ -10,6 +10,8 @@
 
 문장 품질(본문 4섹션·참조 관계 설명)은 `tools/agent_draft_eval.py` 가 실 LLM 으로 본다.
 """
+import copy
+import json
 import os
 import sys
 
@@ -259,14 +261,16 @@ def test_user_named_child_owners_survive_the_respread():
     assert {c["assignee"] for c in items[0]["children"]} == {"skcc.x1210"}
 
 
-def test_functional_subtasks_keep_their_own_owners():
-    """기능이 다른 일은 각자 그 일의 사람에게 — 골고루 규칙이 이걸 헤집으면 안 된다."""
+def test_functional_subtasks_get_runtime_roster_owners_not_projected_owners():
+    """Model-supplied child ids are discarded; runtime/People assignment owns the result."""
     kids = [{"summary": "스키마 호환성 검증 스크립트 작성", "assignee": "skcc.x1042"},
             {"summary": "컨슈머 모니터링 대시보드 추가", "assignee": "skcc.i2011"},
             {"summary": "전환 후 회귀 테스트", "assignee": "skcc.x1103"}]
     r = _applied(item={"components": ["ETL"], "children": [dict(k) for k in kids]})
-    assert [c["assignee"] for c in r["draft"]["items"][0]["children"]] == \
-        [k["assignee"] for k in kids]
+    assigned = r["draft"]["items"][0]["children"]
+    from app.infra.settings import load_people
+    assert all(child.get("assignee") in load_people()["ETL"] for child in assigned)
+    assert all(child.get("assignee_source") != "user" for child in assigned)
 
 
 # ── 구조 판단은 드러나 있어야 한다 ──────────────────────────────────
@@ -345,6 +349,383 @@ def test_named_assignee_remains_authoritative_inside_the_same_continuation():
     _apply_named_assignees(state, rows)
 
     assert rows[0]["assignee"] == "skcc.x1402"
+
+
+def test_create_projection_leaves_runtime_owned_structure_source_and_root_owner_out():
+    """Projection must not guess fields owned by deterministic runtime/PeopleAdvisor."""
+    state = _msg("AcmeDB DeltaSketch 통계 파이프라인을 만들어줘")
+    schema = WorkArchitect().schema_for(state)
+
+    assert "structure_source" not in schema["properties"]
+    root = schema["properties"]["items"]["items"]
+    assert "assignee" not in root["properties"]
+    assert "assignee" not in root["properties"]["children"]["items"]["properties"]
+    assert "structure_source" not in WorkArchitect().task(state)
+
+
+def test_model_cannot_fabricate_child_owner_but_exact_user_owner_is_restored():
+    """Assignee projection is never authority; a literal current-request mapping is."""
+    projected = {
+        "questions": [], "mode": "task", "structure": "task_with_subtasks",
+        "structure_why": "구현과 측정이 분리됨", "rationale": "",
+        "items": [{
+            "summary": "[ETL] AcmeDB 처리량 개선", "type": "Task",
+            "background": "처리량 개선 요청됨", "scope_in": ["처리량 개선"],
+            "scope_out": [], "dod": ["변경을 적용한다", "결과를 확인한다"],
+            "components": ["ETL"],
+            "children": [{
+                "summary": "성능 측정", "scope_in": ["성능 측정"],
+                "dod": ["측정 결과를 기록한다"], "assignee": "skcc.fabricated",
+            }],
+        }],
+    }
+
+    unowned = WorkArchitect().apply(
+        _msg("AcmeDB 처리량 개선 작업을 단계별 Sub-Task로 만들어줘", situation="조사 완료"),
+        copy.deepcopy(projected),
+    )["draft"]["items"][0]["children"][0]
+    assert unowned.get("assignee") != "skcc.fabricated"
+    assert unowned.get("assignee_source") != "user"
+
+    owned = WorkArchitect().apply(
+        _msg("AcmeDB 처리량 개선에서 성능 측정은 x1402가 맡게 단계별 Sub-Task로 만들어줘",
+             situation="조사 완료"),
+        copy.deepcopy(projected),
+    )["draft"]["items"][0]["children"][0]
+    assert owned["assignee"] == "skcc.x1402"
+    assert owned["assignee_source"] == "user"
+
+
+def test_runtime_derives_structure_source_instead_of_accepting_model_enum_text():
+    """r24: `user_request` was a model-owned enum failure with a deterministic answer."""
+    out = {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_source": "user_request", "structure_why": "단일 산출물",
+        "rationale": "", "items": [dict(_draft()["items"][0])],
+    }
+
+    result = WorkArchitect().apply(
+        _msg("AcmeDB DeltaSketch 통계 파이프라인을 만들어줘", situation="조사 완료"),
+        out,
+    )
+
+    assert result["draft"]["structure_source"] == "inferred"
+
+
+def test_generic_proceed_text_without_an_authoritative_plan_is_not_structure_approval():
+    """`그냥 진행해줘` cannot approve a structure tree that was never presented."""
+    result = WorkArchitect().apply(
+        _msg("그냥 진행해줘", request_text="AcmeDB 인덱스 작업", situation="조사 완료",
+             structure_plan=[]),
+        {
+            "questions": [], "mode": "task", "structure": "task_with_subtasks",
+            "structure_why": "구현과 검증 단계 분리", "rationale": "",
+            "items": [{
+                "summary": "[Catalog] AcmeDB 인덱스 작업", "type": "Task",
+                "background": "AcmeDB 인덱스 작업 요청됨", "scope_in": ["인덱스 구현"],
+                "scope_out": [], "dod": ["구현한다", "검증한다"], "components": ["Catalog"],
+                "children": [{"summary": "AcmeDB 인덱스 검증", "scope_in": ["검증"],
+                              "dod": ["결과를 기록한다"]}],
+            }],
+        },
+    )
+
+    assert result["draft"]["structure_source"] == "inferred"
+
+
+def _verified_pipeline_evidence_state():
+    """r24-like producer/artifact/consumer evidence without runtime case special-casing."""
+    return _msg(
+        "AcmeDB DeltaSketch 통계 생성 파이프라인을 최소 기능 1차까지 만들어줘. 알아서",
+        request_text="AcmeDB DeltaSketch 통계 생성 파이프라인을 만들어줘",
+        turn_continuation=True,
+        situation="관련 완료 작업, 진행 중 dependency, rollout gate를 조사함",
+        keywords=["AcmeDB", "DeltaSketch", "통계", "생성", "파이프라인"],
+        evidence=[
+            {
+                "key": "DL-9201", "title": "[ETL] DeltaSketch writer PoC",
+                "why": "요청 주제의 writer baseline",
+                "observations": [{
+                    "source": "comment",
+                    "text": ("AcmeWriter가 DeltaSketch 파일을 생성해 5개 표본 결과를 "
+                             "확보했습니다. AcmeReader 소비 여부는 별도 검증이 필요합니다."),
+                }],
+            },
+            {
+                "key": "DL-9202", "title": "[Runtime] DeltaSketch reader 검증",
+                "why": "요청 주제의 진행 중 consumer dependency",
+                "observations": [
+                    {"source": "description",
+                     "text": ("AcmeWriter가 만든 DeltaSketch를 AcmeReader와 Optimizer가 실제로 "
+                              "소비하는지 확인한다. 실제 소비 증거 전에는 운영 반영을 승인하지 않는다.")},
+                    {"source": "comment",
+                     "text": ("AcmeReader 경로와 Optimizer 실행계획을 확인 중이며 지원 여부는 "
+                              "아직 확정하지 않았습니다.")},
+                ],
+            },
+            {
+                "key": "DL-9203", "title": "[Catalog] DeltaSketch 검증 기준 초안",
+                "why": "이미 진행 중인 검증 기준 작업",
+                "observations": [{"source": "description",
+                                  "text": "절차·성능·호환성 검증 기준 초안을 작성 중이다."}],
+            },
+        ],
+        materialized_ticket_sources={
+            "ticketDetails": [
+                {"key": "DL-9201", "type": "Task", "status": "Resolved", "done": True,
+                 "summary": "[ETL] DeltaSketch writer PoC", "updated": "2026-08-15",
+                 "comments": [{"created": "2026-08-15", "body":
+                    ("AcmeWriter가 DeltaSketch 파일을 생성해 5개 표본 결과를 확보했습니다. "
+                     "AcmeReader 소비 여부는 별도 검증이 필요합니다.")}]},
+                {"key": "DL-9202", "type": "Task", "status": "In Progress", "done": False,
+                 "summary": "[Runtime] DeltaSketch reader 검증", "updated": "2026-08-17",
+                 "description": ("AcmeWriter가 만든 DeltaSketch를 AcmeReader와 Optimizer가 "
+                                 "실제로 소비하는지 확인한다. 실제 소비 증거 전에는 운영 "
+                                 "반영을 승인하지 않는다."),
+                 "comments": [{"created": "2026-08-17", "body":
+                    ("AcmeReader 경로와 Optimizer 실행계획을 확인 중이며 지원 여부는 "
+                     "아직 확정하지 않았습니다.")}]},
+                {"key": "DL-9203", "type": "Task", "status": "Open", "done": False,
+                 "summary": "[Catalog] DeltaSketch 검증 기준 초안", "updated": "2026-08-16",
+                 "description": "절차·성능·호환성 검증 기준 초안을 작성 중이다."},
+            ],
+            "parentCandidateKeys": [],
+        },
+    )
+
+
+def test_verified_evidence_becomes_bounded_execution_obligations_in_the_draft():
+    """Completed baseline, unconfirmed consumer, gate, and existing validation all survive."""
+    out = {
+        "questions": [], "mode": "task", "structure": "task_with_subtasks",
+        "structure_why": "구현과 검증 단계가 분리됨", "rationale": "",
+        "items": [{
+            "summary": "[ETL] AcmeDB DeltaSketch 통계 생성 파이프라인 1차 구현",
+            "type": "Task", "background": "통계 생성 파이프라인 요청됨",
+            "scope_in": ["최소 기능 1차 구현"], "scope_out": ["운영 반영"],
+            "dod": ["실행 로그를 기록한다", "산출 결과를 확인한다"],
+            "components": ["ETL"],
+            "children": [{
+                "summary": "[ETL] DeltaSketch 결과 검증", "scope_in": ["결과 검증"],
+                "dod": ["검증 기준과 판정 결과를 기록한다"],
+            }],
+        }],
+    }
+
+    result = WorkArchitect().apply(_verified_pipeline_evidence_state(), out)
+    draft = result["draft"]
+    contract = draft.get("evidence_obligations") or []
+    visible = " ".join(
+        [str(draft["items"][0].get("description") or "")]
+        + [str(child.get("description") or "")
+           for child in draft["items"][0].get("children") or []]
+    )
+
+    assert {row["kind"] for row in contract} >= {
+        "completed_baseline", "unconfirmed_dependency", "approval_gate",
+        "reuse_existing_validation",
+    }
+    assert "5개 표본 결과를 확보했습니다" in visible
+    assert "지원 여부는 아직 확정하지 않았습니다" in visible
+    assert ("AcmeWriter가 만든 DeltaSketch를 AcmeReader와 Optimizer가 실제로 "
+            "소비하는지 확인한다") in visible
+    assert "실제 소비 증거 전에는 운영 반영을 승인하지 않는다" in visible
+    assert "DL-9203" in visible and "재사용" in visible and "중복" in visible
+    assert "AcmeWriter" in visible and "AcmeReader" in visible and "Optimizer" in visible
+
+
+def test_evidence_obligations_use_only_canonical_materialized_ticket_text():
+    """A model-authored evidence observation cannot become a Jira draft fact."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch reader 검증 작업을 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "reader", "검증"],
+        evidence=[{
+            "key": "DL-9301", "title": "[Runtime] DeltaSketch reader 검증",
+            "why": "요청과 직접 관련",
+            "observations": [{"source": "comment", "text":
+                              ("AcmeReader의 DeltaSketch 소비는 FABRICATED-999 표본에서 "
+                               "아직 확정하지 않았고 운영 승인을 받지 못했다.")}],
+        }],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9301", "type": "Task", "status": "In Progress", "done": False,
+            "summary": "[Runtime] DeltaSketch reader 검증", "updated": "2026-08-17",
+            "description": "AcmeReader의 DeltaSketch 소비 지원 여부를 확인한다.",
+            "comments": [{"created": "2026-08-17", "body":
+                          "AcmeReader의 DeltaSketch 소비 지원 여부는 아직 확정하지 않았습니다."}],
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+    serialized = json.dumps(contract, ensure_ascii=False)
+
+    assert "FABRICATED-999" not in serialized
+    assert "운영 승인을 받지 못했다" not in serialized
+    assert "AcmeReader의 DeltaSketch 소비 지원 여부는 아직 확정하지 않았습니다" in serialized
+    assert any(row["kind"] == "unconfirmed_dependency" for row in contract)
+
+
+def test_later_direct_completion_supersedes_older_uncertainty_for_same_relation():
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch reader 검증 작업을 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "reader", "검증"],
+        evidence=[{"key": "DL-9302", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9302", "type": "Task", "status": "In Progress", "done": False,
+            "summary": "[Runtime] DeltaSketch reader 검증", "updated": "2026-08-18",
+            "comments": [
+                {"created": "2026-08-16T09:00:00+09:00", "body":
+                 "AcmeReader의 DeltaSketch 소비 지원 여부는 아직 확정하지 않았습니다."},
+                {"created": "2026-08-18T10:00:00+09:00", "body":
+                 "AcmeReader의 DeltaSketch 소비 지원 검증을 완료했습니다."},
+            ],
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+
+    completed = [row for row in contract
+                 if row["kind"] == "completed_baseline" and "완료했습니다" in row["fact"]]
+    assert completed
+    assert "AcmeReader" in completed[0]["fact_relation"]["actors"]
+    assert completed[0]["fact_relation"]["actions"]
+    assert not any(row["kind"] == "unconfirmed_dependency" for row in contract)
+
+
+def test_ambiguous_same_time_completion_and_uncertainty_preserve_explicit_conflict():
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch reader 검증 작업을 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "reader", "검증"],
+        evidence=[{"key": "DL-9303", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9303", "type": "Task", "status": "Resolved", "done": True,
+            "summary": "[Runtime] DeltaSketch reader 검증", "updated": "2026-08-18",
+            "comments": [
+                {"created": "2026-08-18", "body":
+                 "AcmeReader의 DeltaSketch 소비 지원 여부는 아직 확정하지 않았습니다."},
+                {"created": "2026-08-18", "body":
+                 "AcmeReader의 DeltaSketch 소비 지원 검증을 완료했습니다."},
+            ],
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+    uncertain = [row for row in contract if row["kind"] == "unconfirmed_dependency"]
+
+    assert any(row["kind"] == "completed_baseline" for row in contract)
+    assert uncertain and uncertain[0].get("temporal_conflict_with")
+
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "단일 검증 산출물", "rationale": "",
+        "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch reader 검증", "type": "Task",
+            "background": "reader 검증 요청됨", "scope_in": ["소비 지원 검증"],
+            "scope_out": [], "dod": ["검증한다", "결과를 기록한다"],
+            "components": ["Runtime"],
+        }],
+    })
+    assert "검증 상태 충돌" in result["draft"]["items"][0]["description"]
+
+
+def test_done_status_without_a_direct_positive_fact_is_not_a_completed_baseline():
+    """A tracker status is not evidence of what material result was completed."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch 검증 작업을 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "검증"],
+        evidence=[{"key": "DL-9401", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9401", "type": "Task", "status": "Resolved", "done": True,
+            "summary": "[Runtime] AcmeDB DeltaSketch 검증", "updated": "2026-08-18",
+            "description": "AcmeDB DeltaSketch의 검증 범위와 대상 표본을 정의한다.",
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+
+    assert not any(row["kind"] == "completed_baseline" for row in contract)
+
+
+def test_negative_completion_is_uncertain_and_never_a_completed_baseline():
+    """Negative completion language wins before positive-token classification."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch 검증 작업을 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "검증"],
+        evidence=[{"key": "DL-9402", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9402", "type": "Task", "status": "Resolved", "done": True,
+            "summary": "[Runtime] AcmeDB DeltaSketch 검증", "updated": "2026-08-18",
+            "comments": [{"created": "2026-08-18T10:00:00+09:00", "body":
+                          "AcmeDB DeltaSketch의 검증이 완료되지 않았습니다."}],
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+
+    assert not any(row["kind"] == "completed_baseline" for row in contract)
+    assert [row for row in contract if row["kind"] == "unconfirmed_dependency"]
+
+
+def test_later_completed_and_approved_fact_satisfies_an_older_rollout_gate():
+    """A later direct completion+approval for the same relation closes the old gate."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch 운영 검증 작업을 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "운영", "검증"],
+        evidence=[{"key": "DL-9403", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9403", "type": "Task", "status": "Resolved", "done": True,
+            "summary": "[Runtime] AcmeDB DeltaSketch 운영 검증", "updated": "2026-08-18",
+            "comments": [
+                {"created": "2026-08-16T09:00:00+09:00", "body":
+                 "AcmeDB DeltaSketch 검증 완료 전에는 운영 반영을 승인하지 않는다."},
+                {"created": "2026-08-18T10:00:00+09:00", "body":
+                 "AcmeDB DeltaSketch 검증을 완료했고 운영 반영을 승인했습니다."},
+            ],
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+
+    completed = [row for row in contract if row["kind"] == "completed_baseline"]
+    assert completed and completed[0].get("satisfies")
+    assert not any(row["kind"] == "approval_gate" for row in contract)
+
+
+def test_undated_completion_and_gate_preserve_an_explicit_temporal_conflict():
+    """Without comparable time, a completion must not silently erase a gate."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch 운영 검증 작업을 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "운영", "검증"],
+        evidence=[{"key": "DL-9404", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9404", "type": "Task", "status": "Resolved", "done": True,
+            "summary": "[Runtime] AcmeDB DeltaSketch 운영 검증",
+            "comments": [
+                {"body": "AcmeDB DeltaSketch 검증 완료 전에는 운영 반영을 승인하지 않는다."},
+                {"body": "AcmeDB DeltaSketch 검증을 완료했고 운영 반영을 승인했습니다."},
+            ],
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+    gates = [row for row in contract if row["kind"] == "approval_gate"]
+
+    assert gates and gates[0].get("temporal_conflict_with")
+    assert any(row.get("temporal_conflict_with")
+               for row in contract if row["kind"] == "completed_baseline")
 
 
 def test_saying_it_will_split_without_children_is_flagged():

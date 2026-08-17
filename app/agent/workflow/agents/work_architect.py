@@ -18,7 +18,8 @@ from __future__ import annotations
 import copy
 import json
 import re as _re
-from html import escape as _escape_html
+from datetime import datetime
+from html import escape as _escape_html, unescape as _unescape_html
 
 from app.agent.prompts.roles import SYSTEM_WORK_ARCHITECT
 from app.agent.workflow.anchors import (
@@ -77,7 +78,6 @@ ITEM = {
                     "summary": {"type": "string", "description": "Distinct Korean child summary; do not copy the parent title."},
                     "description": {"type": "string",
                                     "description": "Korean HTML with only this child's 작업 범위 and 완료 조건 (DoD); do not copy parent background."},
-                    "assignee": {"type": "string", "description": "Verified user ID, or empty."},
                     "duedate": {"type": "string", "description": "YYYY-MM-DD, or empty when unknown."},
                 },
                 "required": ["summary"],
@@ -146,12 +146,6 @@ SCHEMA = {
                 "least two sprints, at least three cross-module or cross-owner Tasks, no suitable verified "
                 "existing Epic, and an explicit independent reporting intent."),
         },
-        "structure_source": {
-            "type": "string", "enum": ["user_specified", "inferred"],
-            "description": (
-                "Who selected the structure. user_specified means the user explicitly named it; inferred "
-                "means the agent selected it from the work shape."),
-        },
         "structure_why": {
             "type": "string",
             "description": "One Korean sentence citing the factual signal behind the structure decision.",
@@ -209,7 +203,6 @@ CREATE_CHILD = {
                      "items": {"type": "string", "maxLength": 320}},
         "dod": {"type": "array", "minItems": 1, "maxItems": 5,
                 "items": {"type": "string", "maxLength": 320}},
-        "assignee": {"type": "string", "maxLength": 80},
         "duedate": {"type": "string", "maxLength": 20},
     },
     "required": ["summary", "scope_in", "dod"],
@@ -257,7 +250,6 @@ CREATE_SCHEMA = {
         "mode": {"type": "string", "enum": ["task", "subtask", "epic"]},
         "structure": {"type": "string", "enum": [
             "single_task", "task_with_subtasks", "multiple_tasks", "new_epic"]},
-        "structure_source": {"type": "string", "enum": ["user_specified", "inferred"]},
         "structure_why": {"type": "string", "maxLength": 500},
         "items": {"type": "array", "maxItems": 12, "items": CREATE_ITEM},
         "rationale": {"type": "string", "maxLength": 800},
@@ -355,6 +347,641 @@ def _materialize_creation_parts(out: dict, state: dict | None = None) -> None:
                 "<h3>작업 범위</h3>" + _html_list(included)
                 + "<h3>완료 조건 (DoD)</h3>" + _html_list(dod, checklist=True)
             )
+
+
+def _discard_projected_assignees(items: list[dict]) -> None:
+    """Remove model-authored ownership before deterministic/user/People assignment.
+
+    A syntactically plausible account id is not proof that the user assigned that person.
+    Runtime recovery paths set ``_construction`` and already derive owners from literal
+    request data; ordinary semantic projection has no authority over this field.
+    """
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        item.pop("assignee", None)
+        item.pop("assignee_source", None)
+        for child in item.get("children") or []:
+            if isinstance(child, dict):
+                child.pop("assignee", None)
+                child.pop("assignee_source", None)
+
+
+_EVIDENCE_UNCONFIRMED = _re.compile(
+    r"확인\s*중|진행\s*중|검증\s*중|미확정|"
+    r"(?:지원\s*여부|사실|결과|동작).{0,36}(?:확정|확인)(?:하지|되지)\s*않|"
+    r"아직.{0,36}(?:확정|확인)(?:하지|되지)\s*않|"
+    r"not\s+(?:yet\s+)?(?:confirmed|verified)|unconfirmed|pending",
+    _re.I,
+)
+_EVIDENCE_GATE = _re.compile(
+    r"(?:검증|확인|증거|승인|조건).{0,36}(?:전|전에는|전까지).{0,80}"
+    r"(?:금지|보류|승인하지|반영하지|진행하지|허용하지)|"
+    r"(?:금지|보류|승인하지|반영하지|진행하지|허용하지).{0,80}"
+    r"(?:검증|확인|증거|승인|조건)|"
+    r"(?:do\s+not|must\s+not|cannot).{0,60}(?:rollout|deploy|release|approve)",
+    _re.I,
+)
+_EVIDENCE_COMPLETED_RESULT = _re.compile(
+    r"완료(?:했|되|함)|확보(?:했|되|함)|확정(?:했|되|함)|"
+    r"성공(?:했|함)|첨부(?:했|되|함)|적용(?:했|되|함)|구축(?:했|되|함)|"
+    r"(?:has|was|were)\s+(?:completed|verified|attached|secured)",
+    _re.I,
+)
+_EVIDENCE_NEGATIVE_COMPLETION = _re.compile(
+    r"미\s*완료|"
+    r"(?:완료|확보|확정|성공|첨부|적용|구축|검증|확인)"
+    r".{0,24}(?:되지\s*않|하지\s*않|못하|못했|아니(?:다|었)|전(?:에는|까지|이라도)?\b)|"
+    r"\b(?:incomplete|not\s+(?:yet\s+)?completed|has\s+not\s+been\s+completed|"
+    r"did\s+not\s+(?:complete|verify)|before\s+(?:completion|verification))\b",
+    _re.I,
+)
+_EVIDENCE_GATE_SATISFIED = _re.compile(
+    r"(?:운영\s*반영|배포|출시|rollout|deploy(?:ment)?|release)"
+    r".{0,48}(?:승인(?:했|되|함)|허용(?:했|되|함)|approved|allowed)|"
+    r"(?:승인(?:했|되|함)|허용(?:했|되|함)|approved|allowed)"
+    r".{0,48}(?:운영\s*반영|배포|출시|rollout|deploy(?:ment)?|release)",
+    _re.I,
+)
+_EVIDENCE_VALIDATION = _re.compile(
+    r"검증|테스트|검토|validation|verification|test|review", _re.I,
+)
+_EVIDENCE_REPEAT_REQUEST = _re.compile(
+    r"다시|재수행|재실행|재검증|재검토|재작성|반복|redo|rerun|repeat", _re.I,
+)
+_EVIDENCE_RELATION_ACTION = _re.compile(
+    r"생성|만든|작성|산출|소비|읽(?:기|는|어|는다)?|활용|확인|검증|승인|완료|"
+    r"generate|produce|write|create|consume|read|use|verify|validate|approve|complete",
+    _re.I,
+)
+
+
+def _is_unconfirmed_evidence_fact(value: str) -> bool:
+    """Classify uncertainty before any overlapping positive lifecycle token."""
+    return bool(_EVIDENCE_NEGATIVE_COMPLETION.search(str(value or ""))
+                or _EVIDENCE_UNCONFIRMED.search(str(value or "")))
+
+
+def _is_direct_positive_completion(value: str) -> bool:
+    """Require an explicit positive result; issue status alone is not factual content."""
+    text = str(value or "")
+    return bool(_EVIDENCE_COMPLETED_RESULT.search(text)
+                and not _is_unconfirmed_evidence_fact(text))
+
+
+def _is_direct_gate_satisfaction(value: str) -> bool:
+    """A gate closes only on a direct positive completion-and-approval observation."""
+    text = str(value or "")
+    return bool(_is_direct_positive_completion(text)
+                and _EVIDENCE_GATE_SATISFIED.search(text))
+
+
+def _ticket_detail_done(detail: dict) -> bool:
+    if detail.get("done") is True:
+        return True
+    fields = detail.get("fields") or {}
+    if not isinstance(fields, dict):
+        fields = {}
+    status = fields.get("status")
+    nested_category = status.get("statusCategory") if isinstance(status, dict) else {}
+    category = (detail.get("statusCategory") or fields.get("statusCategory")
+                or nested_category or {})
+    if isinstance(category, dict):
+        category = category.get("key") or category.get("name") or ""
+    return str(category or "").strip().casefold() in {"done", "complete", "completed"}
+
+
+def _canonical_detail_observations(detail: dict) -> list[dict]:
+    """Return bounded Jira facts with source timestamps from the materialized detail only.
+
+    ``state.evidence[].observations`` is a model-authored research projection.  A matching
+    materialized key proves that the ticket exists; it does not authenticate arbitrary text
+    attached to that key by the model.  Therefore facts are compiled exclusively from the
+    canonical ticket description/comments/status snapshot.  Evidence rows remain useful for
+    relevance and deterministic key order, but never become draft prose.
+    """
+    out: list[dict] = []
+
+    def append(value, *, source: str, observed_at="") -> None:
+        text = _re.sub(r"\bh[1-6]\.\s*", "", str(value or "").strip(), flags=_re.I)
+        if not text:
+            return
+        for fragment in _re.split(r"(?<=[.!?。])\s+|[\r\n]+", text):
+            compact = " ".join(fragment.split()).strip()
+            if not compact:
+                continue
+            row = {
+                "text": compact[:420],
+                "source": source,
+                "observed_at": str(observed_at or "").strip()[:80],
+            }
+            if not any(existing["text"] == row["text"]
+                       and existing["observed_at"] == row["observed_at"] for existing in out):
+                out.append(row)
+
+    append(detail.get("description"), source="description",
+           observed_at=detail.get("updated"))
+    for comment in (detail.get("comments") or [])[:8]:
+        if not isinstance(comment, dict):
+            continue
+        append(comment.get("body") or comment.get("text"), source="comment",
+               observed_at=comment.get("created") or comment.get("updated"))
+    return out[:24]
+
+
+_RELATION_STATE_STOP = {
+    "아직", "여부", "확인", "확정", "검증", "완료", "진행", "지원", "결과",
+    "상태", "작업", "현재", "별도", "필요", "않았습니다", "했습니다", "한다",
+    "not", "yet", "confirmed", "verified", "pending", "complete", "completed",
+    "verification", "status", "result", "support",
+}
+
+
+def _material_relation_terms(value: str) -> set[str]:
+    """Extract conservative subject/relation terms for temporal supersession."""
+    terms: set[str] = set()
+    for raw in _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{1,}|[가-힣]{2,}", str(value or "")):
+        term = raw.casefold()
+        if _re.fullmatch(r"[가-힣]+", term):
+            term = _re.sub(r"(?:으로|에서|에게|까지|부터|처럼|보다|의|은|는|이|가|을|를)$",
+                           "", term)
+        if len(term) >= 2 and term not in _RELATION_STATE_STOP:
+            terms.add(term)
+    return terms
+
+
+def _typed_evidence_relation(value: str) -> dict | None:
+    """Extract a generic actor/action/object memo without a product or role vocabulary."""
+    text = " ".join(str(value or "").split()).strip()
+    actions = list(dict.fromkeys(
+        match.group(0).casefold() for match in _EVIDENCE_RELATION_ACTION.finditer(text)
+    ))
+    terms = sorted(_material_relation_terms(text))
+    if not actions or len(terms) < 2:
+        return None
+    actors = []
+    for match in _re.finditer(
+            r"([A-Za-z][A-Za-z0-9_.-]{1,}|[가-힣]{2,20}?)(?=(?:의|가|이|는|은|와|과)\s*)",
+            text):
+        actor = match.group(1).strip()
+        if actor.casefold() not in {value.casefold() for value in actors}:
+            actors.append(actor)
+    actor_keys = {value.casefold() for value in actors}
+    objects = [term for term in terms if term not in actor_keys]
+    return {
+        "fact": text[:420],
+        "actors": actors[:6],
+        "actions": actions[:6],
+        "objects": objects[:10],
+    }
+
+
+def _obligation_relation_terms(obligation: dict) -> set[str]:
+    return _material_relation_terms(str(obligation.get("fact") or ""))
+
+
+def _same_material_relation(left: dict, right: dict) -> bool:
+    left_actors = {
+        str(value).casefold() for value in
+        ((left.get("fact_relation") or {}).get("actors") or []) if str(value)
+    }
+    right_actors = {
+        str(value).casefold() for value in
+        ((right.get("fact_relation") or {}).get("actors") or []) if str(value)
+    }
+    if left_actors and right_actors and not (left_actors & right_actors):
+        return False
+    common = _obligation_relation_terms(left) & _obligation_relation_terms(right)
+    # Two shared material terms are intentionally required.  A single shared product name
+    # must not let one actor's completion erase another relation's uncertainty.
+    return len(common) >= 2
+
+
+def _observation_timestamp(value) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _latest_observation(rows: list[dict]) -> dict | None:
+    if not rows:
+        return None
+    return max(enumerate(rows), key=lambda pair: (
+        _observation_timestamp(pair[1].get("observed_at")) is not None,
+        _observation_timestamp(pair[1].get("observed_at")) or float("-inf"),
+        pair[0],
+    ))[1]
+
+
+def _reconcile_evidence_temporality(collected: dict[str, list[dict]]) -> None:
+    """Drop only an older uncertainty directly superseded for the same relation.
+
+    Equal/missing/inverted timestamps are not enough to choose a winner.  Both facts remain
+    in the contract and are explicitly linked as a temporal conflict for human/Auditor review.
+    """
+    completed = collected.get("completed_baseline") or []
+    retained = []
+    for uncertain in collected.get("unconfirmed_dependency") or []:
+        related = [row for row in completed if _same_material_relation(uncertain, row)]
+        if not related:
+            retained.append(uncertain)
+            continue
+        uncertain_at = _observation_timestamp(uncertain.get("observed_at"))
+        later = [row for row in related
+                 if uncertain_at is not None
+                 and _observation_timestamp(row.get("observed_at")) is not None
+                 and _observation_timestamp(row.get("observed_at")) > uncertain_at]
+        if later:
+            for row in later:
+                row.setdefault("supersedes", []).append(uncertain["id"])
+            continue
+        conflict_ids = [row["id"] for row in related]
+        uncertain["temporal_conflict_with"] = conflict_ids
+        for row in related:
+            row.setdefault("temporal_conflict_with", []).append(uncertain["id"])
+        retained.append(uncertain)
+    collected["unconfirmed_dependency"] = retained
+
+    # A historical rollout/approval constraint remains authoritative until a *later*,
+    # canonical observation directly records both completion and approval for the same
+    # typed material relation. Missing/equal timestamps cannot establish ordering and are
+    # surfaced as a conflict instead of silently choosing a winner.
+    retained_gates = []
+    for gate in collected.get("approval_gate") or []:
+        satisfied = [row for row in completed
+                     if _is_direct_gate_satisfaction(str(row.get("fact") or ""))
+                     and _same_material_relation(gate, row)]
+        if not satisfied:
+            retained_gates.append(gate)
+            continue
+        gate_at = _observation_timestamp(gate.get("observed_at"))
+        later = [row for row in satisfied
+                 if gate_at is not None
+                 and _observation_timestamp(row.get("observed_at")) is not None
+                 and _observation_timestamp(row.get("observed_at")) > gate_at]
+        if later:
+            for row in later:
+                row.setdefault("satisfies", []).append(gate["id"])
+            continue
+        conflict_ids = [row["id"] for row in satisfied]
+        gate["temporal_conflict_with"] = conflict_ids
+        for row in satisfied:
+            row.setdefault("temporal_conflict_with", []).append(gate["id"])
+        retained_gates.append(gate)
+    collected["approval_gate"] = retained_gates
+
+
+def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
+    """Compile material Jira facts into a bounded, typed drafting contract.
+
+    Search hits alone are never authority.  Only successfully materialized internal ticket
+    details may create an obligation.  The contract says *how* a verified fact must affect
+    a new draft: completed work is a baseline, an uncertain dependency stays uncertain,
+    a gate is explicit, and an existing validation artifact is reused instead of cloned.
+    Product names and ticket ids come entirely from runtime evidence; the classifier owns
+    only generic lifecycle/relationship semantics.
+    """
+    ledger = state.get("materialized_ticket_sources") or {}
+    if not isinstance(ledger, dict):
+        return []
+    details = {
+        str(row.get("key") or "").strip().upper(): row
+        for row in (ledger.get("ticketDetails") or [])
+        if isinstance(row, dict) and not row.get("error")
+        and _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+",
+                          str(row.get("key") or "").strip().upper())
+    }
+    if not details:
+        return []
+
+    from app.agent.workflow.relevance import evidence_is_relevant, matches_focus
+
+    collected: dict[str, list[dict]] = {
+        "completed_baseline": [],
+        "unconfirmed_dependency": [],
+        "approval_gate": [],
+        "reuse_existing_validation": [],
+    }
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, *, key: str, title: str, fact_row: dict,
+            observations: list[dict]) -> None:
+        fingerprint = (kind, key)
+        if fingerprint in seen or len(collected[kind]) >= 2:
+            return
+        seen.add(fingerprint)
+        protected = []
+        fact = str(fact_row.get("text") or "").strip()
+        fragment_texts = [str(row.get("text") or "") for row in observations]
+        joined = " ".join([title, fact, *fragment_texts])
+        for raw in state.get("keywords") or []:
+            term = str(raw or "").strip()
+            if len(term) >= 2 and term.casefold() in joined.casefold() and term not in protected:
+                protected.append(term)
+        relationship_facts = []
+        relations = []
+        direct_relation = None
+        if kind in {"completed_baseline", "unconfirmed_dependency", "approval_gate"}:
+            direct_relation = _typed_evidence_relation(fact)
+            direct = [fact] if direct_relation else []
+            compatible = [
+                value for value in fragment_texts
+                if value not in direct
+                and _typed_evidence_relation(value)
+                and (not _is_unconfirmed_evidence_fact(value)
+                     if kind == "completed_baseline"
+                     else (not _is_direct_positive_completion(value)
+                           if kind == "unconfirmed_dependency" else True))
+            ]
+            relationship_facts = (direct + compatible)[:2]
+            relations = [row for row in (
+                _typed_evidence_relation(value) for value in relationship_facts
+            ) if row]
+            for relation in relations:
+                for term in [*relation.get("actors", []), *relation.get("objects", [])]:
+                    if (len(term) >= 2
+                            and term.casefold() not in {
+                                value.casefold() for value in protected
+                            }):
+                        protected.append(term)
+        collected[kind].append({
+            "id": f"evidence:{key}:{kind}",
+            "kind": kind,
+            "source_key": key,
+            "source_title": title[:180],
+            "fact": fact[:420],
+            "observed_at": str(fact_row.get("observed_at") or "")[:80],
+            "relationship_facts": relationship_facts,
+            "fact_relation": direct_relation,
+            "relations": relations,
+            "protected_terms": protected[:10],
+        })
+
+    for evidence in state.get("evidence") or []:
+        if not isinstance(evidence, dict) or not evidence_is_relevant(evidence):
+            continue
+        key = str(evidence.get("key") or "").strip().upper()
+        detail = details.get(key)
+        if not detail:
+            continue
+        # Title and every factual sentence come from the canonical materialized snapshot.
+        # The evidence row contributes only its key/order and relevance judgment.
+        title = str(detail.get("summary") or key).strip()
+        observations = _canonical_detail_observations(detail)
+        fragment_texts = [str(row.get("text") or "") for row in observations]
+        focus_text = " ".join([title, *fragment_texts])
+        if not matches_focus(focus_text, state.get("keywords") or []):
+            continue
+        done = _ticket_detail_done(detail)
+        direct_completion = _latest_observation([
+            row for row in observations
+            if _is_direct_positive_completion(row["text"])
+        ])
+        if direct_completion:
+            add("completed_baseline", key=key, title=title, fact_row=direct_completion,
+                observations=observations)
+        uncertain = _latest_observation([
+            row for row in observations if _is_unconfirmed_evidence_fact(row["text"])
+        ])
+        if uncertain:
+            add("unconfirmed_dependency", key=key, title=title, fact_row=uncertain,
+                observations=observations)
+        gate = _latest_observation([
+            row for row in observations if _EVIDENCE_GATE.search(row["text"])
+        ])
+        if gate:
+            add("approval_gate", key=key, title=title, fact_row=gate,
+                observations=observations)
+        if not done and _EVIDENCE_VALIDATION.search(title):
+            status = str(detail.get("status") or "").strip() or "진행 상태"
+            add("reuse_existing_validation", key=key, title=title,
+                fact_row={"text": f"{title} ({status})",
+                          "observed_at": str(detail.get("updated") or ""),
+                          "source": "status"}, observations=observations)
+
+    _reconcile_evidence_temporality(collected)
+    ordered = [
+        *collected["completed_baseline"],
+        *collected["unconfirmed_dependency"],
+        *collected["approval_gate"],
+        *collected["reuse_existing_validation"],
+    ]
+    return ordered[:max(0, cap)]
+
+
+def _obligation_item_indexes(obligation: dict, items: list[dict]) -> list[int]:
+    roots = [row for row in (items or []) if isinstance(row, dict)]
+    if not roots:
+        return []
+    if len(roots) == 1:
+        return [0]
+    tokens = {
+        value.casefold() for value in (obligation.get("protected_terms") or [])
+        if len(str(value or "").strip()) >= 2
+    }
+    if not tokens:
+        return []
+    scores = []
+    for index, row in enumerate(roots):
+        visible = (str(row.get("summary") or "") + " "
+                   + str(row.get("description") or "")).casefold()
+        scores.append((sum(1 for token in tokens if token in visible), index))
+    best = max(score for score, _index in scores)
+    # When several sibling Tasks share the same strongest product/relationship match, the
+    # constraint applies to each of them.  Dropping an obligation merely because the roots
+    # tie made multi-deliverable requests less grounded than single-Task requests.
+    return [index for score, index in scores if score == best and score > 0]
+
+
+def _has_obligation_marker(body: str, obligation_id: str) -> bool:
+    marker = _re.escape(_escape_html(obligation_id, quote=True))
+    return bool(_re.search(
+        rf"data-evidence-obligation\s*=\s*(['\"]){marker}\1", str(body or ""), _re.I,
+    ))
+
+
+def _append_obligation_background(body: str, obligation_id: str, text: str) -> str:
+    if _has_obligation_marker(body, obligation_id):
+        return body
+    marker = _escape_html(obligation_id, quote=True)
+    block = (f'<p data-evidence-obligation="{marker}">'
+             f'{_escape_html(text)}</p>')
+    match = _re.search(r"(<h3>\s*배경\s*</h3>)(.*?)(?=<h3>|$)",
+                       body, _re.S | _re.I)
+    if match:
+        return body[:match.end(2)] + block + body[match.end(2):]
+    return f"<h3>배경</h3>{block}" + body
+
+
+def _append_obligation_list(body: str, heading: str, obligation_id: str,
+                            text: str, *, checklist: bool = False) -> str:
+    if _has_obligation_marker(body, obligation_id):
+        return body
+    marker = _escape_html(obligation_id, quote=True)
+    li = (f'<li data-evidence-obligation="{marker}"'
+          + (' data-checked="false"' if checklist else '')
+          + f'>{_escape_html(text)}</li>')
+    pattern = (rf"(<h3>\s*{_re.escape(heading)}(?:\s*\(DoD\))?\s*</h3>\s*"
+               rf"<ul\b[^>]*>)(.*?)(</ul>)")
+    match = _re.search(pattern, body, _re.S | _re.I)
+    if match:
+        return body[:match.end(2)] + li + body[match.end(2):]
+    section = (f"<h3>{heading}</h3><ul"
+               + (' data-type="taskList"' if checklist else '')
+               + f">{li}</ul>")
+    if heading == "작업 범위":
+        before_dod = _re.search(r"<h3>\s*완료 조건", body, _re.I)
+        if before_dod:
+            return body[:before_dod.start()] + section + body[before_dod.start():]
+    return body + section
+
+
+def _apply_verified_evidence_obligations(state: dict, items: list[dict]) -> list[dict]:
+    """Materialize typed evidence obligations into the applicable Task execution contract."""
+    obligations = copy.deepcopy(_verified_evidence_obligations(state))
+    if not obligations:
+        return []
+    request = _current_request_boundary_text(state)
+    explicit_repeat = bool(_EVIDENCE_REPEAT_REQUEST.search(request))
+    for obligation in obligations:
+        indexes = [
+            index for index in _obligation_item_indexes(obligation, items)
+            if not _is_bug_item(items[index])
+            and str(items[index].get("type") or "").casefold() != "epic"
+        ]
+        obligation["item_indexes"] = indexes
+        key = str(obligation.get("source_key") or "")
+        fact = str(obligation.get("fact") or "")
+        kind = str(obligation.get("kind") or "")
+        for index in indexes:
+            item = items[index]
+            if _is_bug_item(item) or str(item.get("type") or "").casefold() == "epic":
+                continue
+            body = str(item.get("description") or "")
+            oid = str(obligation.get("id") or "")
+            for relation_index, relation in enumerate(
+                    obligation.get("relationship_facts") or []):
+                if relation and relation.casefold() not in body.casefold():
+                    body = _append_obligation_background(
+                        body, f"{oid}:relationship:{relation_index}",
+                        f"검증된 역할 관계: {relation}",
+                    )
+            if kind == "completed_baseline":
+                body = _append_obligation_background(
+                    body, oid,
+                    f"완료된 {key} 결과를 baseline으로 재사용한다: {fact}",
+                )
+                if not explicit_repeat:
+                    body = _append_obligation_list(
+                        body, "작업 범위", oid + ":scope",
+                        f"제외: 완료된 {key} 작업의 재수행 — 기존 결과를 baseline으로 재사용",
+                    )
+            elif kind == "unconfirmed_dependency":
+                conflict = obligation.get("temporal_conflict_with") or []
+                body = _append_obligation_background(
+                    body, oid,
+                    (("검증 상태 충돌(동시점 또는 시점 불명) — "
+                      if conflict else "")
+                     + f"{key}의 미확정 dependency: {fact}"),
+                )
+                body = _append_obligation_list(
+                    body, "작업 범위", oid + ":scope",
+                    f"제외: {key}의 미확정 결과를 완료 사실로 간주하는 범위",
+                )
+            elif kind == "approval_gate":
+                body = _append_obligation_list(
+                    body, "작업 범위", oid,
+                    f"제외: 검증·승인 gate 충족 전 범위 확장 — {key}: {fact}",
+                )
+                body = _append_obligation_list(
+                    body, "완료 조건", oid + ":dod",
+                    f"{key}의 검증·승인 gate 준수 여부를 기록한다: {fact}",
+                    checklist=True,
+                )
+            elif kind == "reuse_existing_validation":
+                body = _append_obligation_list(
+                    body, "작업 범위", oid,
+                    f"제외: 기존 {key} 검증 작업의 중복 수행 — 결과·기준을 재사용",
+                )
+                for child in item.get("children") or []:
+                    if not isinstance(child, dict) or _execution_stage(child.get("summary")) != "validation":
+                        continue
+                    child_body = str(child.get("description") or "")
+                    child_body = _append_obligation_list(
+                        child_body, "작업 범위", oid + ":child-reuse",
+                        f"포함: {key}의 기존 검증 결과·기준을 입력으로 재사용",
+                    )
+                    child_body = _append_obligation_list(
+                        child_body, "작업 범위", oid + ":child-no-duplicate",
+                        f"제외: {key}에서 수행 중인 기존 검증 작업 자체의 중복 수행",
+                    )
+                    child["description"] = child_body
+            item["description"] = body
+    return [row for row in obligations if row.get("item_indexes")]
+
+
+def _evidence_obligation_errors(state: dict, draft: dict) -> list[dict]:
+    """Fail closed when a material verified fact disappears before approval."""
+    items = [row for row in (draft.get("items") or []) if isinstance(row, dict)]
+    if not items or str(draft.get("mode") or "task").casefold() == "epic":
+        return []
+    obligations = copy.deepcopy(draft.get("evidence_obligations") or
+                                _verified_evidence_obligations(state))
+    errors = []
+    for obligation in obligations:
+        indexes = [index for index in (obligation.get("item_indexes") or [])
+                   if isinstance(index, int) and 0 <= index < len(items)]
+        if not indexes:
+            indexes = [
+                index for index in _obligation_item_indexes(obligation, items)
+                if not _is_bug_item(items[index])
+                and str(items[index].get("type") or "").casefold() != "epic"
+            ]
+        kind = str(obligation.get("kind") or "")
+        oid = str(obligation.get("id") or "")
+        def normalized_visible(value) -> str:
+            # Strip actual markup before decoding entities. Browser-visible ``R&D`` is
+            # serialized as ``R&amp;D``; comparing source HTML would report a false omission.
+            without_markup = _re.sub(r"<[^>]+>", " ", str(value or ""))
+            return " ".join(_unescape_html(without_markup).split()).casefold()
+
+        fact = normalized_visible(obligation.get("fact"))
+        relationship_facts = [
+            normalized_visible(value)
+            for value in (obligation.get("relationship_facts") or [])
+            if str(value or "").strip()
+        ]
+        key = str(obligation.get("source_key") or "")
+        for index in indexes:
+            item = items[index]
+            visible = normalized_visible(
+                str(item.get("description") or "") + " "
+                + " ".join(str(child.get("description") or "")
+                            for child in (item.get("children") or [])
+                            if isinstance(child, dict))
+            )
+            body = str(item.get("description") or "")
+            missing = (not _has_obligation_marker(body, oid)
+                       or normalized_visible(key) not in visible)
+            missing = missing or any(value not in visible
+                                     for value in relationship_facts)
+            if kind in {"completed_baseline", "unconfirmed_dependency", "approval_gate"}:
+                missing = missing or (fact and fact not in visible)
+            elif kind == "reuse_existing_validation":
+                missing = missing or not all(word in visible for word in ("재사용", "중복"))
+            if missing:
+                errors.append({
+                    "index": index,
+                    "field": "evidence_obligation",
+                    "obligation_kind": kind,
+                    "message": (f"검증된 근거 의무 {kind}({key})가 초안의 범위·상태·gate에 "
+                                "반영되지 않았다"),
+                })
+    return errors
 
 
 class WorkArchitect(StructuredAgent):
@@ -608,8 +1235,10 @@ class WorkArchitect(StructuredAgent):
                       "specific Korean `why_required`, and no competing payload. Mark optional preference "
                       "questions `required_input=false`; the runtime suppresses them under delegation. Select "
                       "the best supported Epic candidate without asking; use an intentional top-level Task if "
-                      "none fits. Preserve supplied assignee IDs and deadlines; leave optional unspecified "
-                      "fields empty. Record only material defaults or open facts in Korean `rationale`."
+                      "none fits. Preserve all deadlines; leave optional unspecified fields empty. Assignees "
+                      "at every tier are attached after projection from explicit user ownership or PeopleAdvisor "
+                      "evidence; do not emit an `assignee`. Record only "
+                      "material defaults or open facts in Korean `rationale`."
                       if defaults else "")
         # 버그는 새 기능과 초안 규칙이 다르다 — 갈래를 지시문으로 가른다(Prompt Chaining 의 분기).
         # ★ **버그 초안은 의도가 아니라 요청의 낱말로 고른다**(사용자 지적 — "결국 버그
@@ -685,19 +1314,20 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                      "independent deliverable differs from its parent into a sibling Task and remove the "
                      "duplicate child.")
         if shape:
-            goal += (f"\n- The user explicitly selected the shape `{word}` -> `{shape}`. Preserve it, set "
-                     "`structure_source=\"user_specified\"`, and do not recommend a competing shape.")
+            goal += (f"\n- The user explicitly selected the shape `{word}` -> `{shape}`. Preserve it and "
+                     "do not recommend a competing shape. The runtime records who selected it.")
         elif any(w in _current_request_boundary_text(state) for w in BUILD_WORDS):
             # 신규 구축 규모는 하향(단일 Task 뭉개기)이 실측된 실패 모드다 — 넛지를 준다.
             goal += ("\n- This is a new build or pipeline request. When design, implementation, validation, "
                      "and integration have distinct owners or time boundaries, use `task_with_subtasks` and "
                      "real `children`; listing stages as DoD bullets is not decomposition.")
         elif not defaults:
-            goal += ("\n- The user specified work but not shape. Select it, set "
-                     "`structure_source=\"inferred\"`, and do not add a separate structure-confirmation "
+            goal += ("\n- The user specified work but not shape. Select it and do not add a separate "
+                     "structure-confirmation "
                      "question because the runtime adds one when required.")
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')} — {e.get('why','')}"
                        for e in (state.get("evidence") or []))
+        evidence_obligations = _verified_evidence_obligations(state)
         # ★ 후속 턴에는 **지금 고치는 초안 전문**을 준다 — 이게 없으면 모델은 매번 처음부터
         #   다시 쓰고, 그 사이 제목·주제가 흘러간다(실측: 원 요청이 Epic 주제로 둔갑).
         prev = draft_full_text(state.get("draft")) if (state.get("turns") or 0) > 0 else ""
@@ -737,9 +1367,13 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             data_block("Prefetched Research Data and Exact Candidate Keys",
                        (state.get("pre_survey") or "")[:2000]),
             data_block("Verified Evidence Tickets", ev),
+            data_block(
+                "Verified Evidence-to-Draft Obligations: Apply Exactly; Preserve Roles and State",
+                json.dumps(evidence_obligations, ensure_ascii=False, separators=(",", ":")),
+            ),
             # 외부 기술 조사는 지금까지 ResearchAnalyst·KnowledgeCurator 에만 갔다. 그런데 **본문의 배경과
-            # 범위를 쓰는 것은 WorkArchitect** 다 — 그래서 "StarRocks 가 읽는 Iceberg 테이블의
-            # 통계", "플랜 반영 확인" 같은 도메인 관계가 조사에는 있는데 초안에는 안 실렸고,
+            # 범위를 쓰는 것은 WorkArchitect** 다 — 그래서 생산자·artifact·소비자 관계와
+            # 실행 경로 반영 확인 같은 도메인 관계가 조사에는 있는데 초안에는 안 실렸고,
             # Sub-Task 제목이 "설계 완료/테스트 수행" 처럼 일반어로 떨어졌다
             # (DRAFT-COMPARISON 갭 ①). data_block 은 비면 빈 문자열이라, 웹 조사가 돈
             # 턴(신기술 요청)에만 붙는다 — 평소 경로의 토큰은 그대로다.
@@ -765,6 +1399,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 - Write each Korean summary as `[Module]` plus a distinct action phrase for one deliverable.
 - In `배경`, state only the verified trigger or the fact that the concrete change was requested. Never invent generic benefits or current problems such as improved user experience, efficiency, accuracy, performance, stability, or reduced exposure.
 - For creation items, fill semantic body fields: Korean `background`, `scope_in`, `scope_out`, `dod`, and `references`. Do not emit HTML or a `description`; deterministic code renders the Jira HTML contract. Keep DoD items independently testable.
+- Do not emit `assignee` at any tier. Exact user-owned root/child assignments are restored deterministically after projection from the current request or resolved meeting mapping; every recommendation is owned by PeopleAdvisor.
+- Verified Evidence-to-Draft Obligations are typed execution constraints, not optional references. Treat completed results as reusable baselines instead of new work; keep unconfirmed dependencies explicitly unconfirmed; make approval or rollout gates explicit in scope and DoD; and reuse existing validation work rather than duplicating it. Preserve the evidence's producer, artifact, and consumer roles exactly—a consumer under verification must never be rewritten as the artifact's generator.
 - Select an Epic independently for each Task from Verified Placement Values. If no candidate fits, choose an intentional top-level Task. Ask an Epic choice only when materially different verified candidates remain and the user did not delegate the choice.
 - Use exactly one verified component per item. Split independent cross-module deliverables to avoid double-counted workload.
 - Prefer existing verified labels. Do not create a typo or synonym; a truly new label must remain visible as new on the approval card.
@@ -873,6 +1509,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
         model_questions = bool(qs)
         items = [i for i in (out.get("items") or []) if isinstance(i, dict) and i.get("summary")]
+        if not out.get("_construction"):
+            _discard_projected_assignees(items)
         if not items and not qs:
             recovered_meeting = _recover_decided_meeting_tasks(state)
             if recovered_meeting:
@@ -1286,7 +1924,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                          if sum(len(i.get("children") or []) for i in items) else "single_task")
             out["structure"] = structure
         why = (out.get("structure_why") or "").strip()
-        src = out.get("structure_source") or ""
+        # ``structure_source`` is runtime provenance, not semantic model output.  Asking a
+        # projector to classify its own decision produced the invalid enum `user_request`
+        # in r24 and spent a repair call even though request text and accepted state already
+        # determine the answer.  Never trust or normalize a model-provided string here.
+        src = "inferred"
         said_shape, _word = shape_hint(state)
         # 사용자가 새 일의 형태를 "단계별 Sub-Task"로 지정했는데 모델이 single_task 를
         # 내면 `user_specified` 표지만 붙고 산출 구조는 사용자 지정과 달라진다. 표식은
@@ -1308,7 +1950,14 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             items[:] = [best]
             structure = out["structure"] = "single_task"
             why = out["structure_why"] = "사용자가 단일 티켓 타입으로 생성을 요청했다"
-        if said_shape:                      # 사용자가 말한 것은 판단이 아니다 — 코드가 확정한다
+        authoritative_plan = any(
+            isinstance(row, dict) and str(row.get("summary") or "").strip()
+            for row in (state.get("structure_plan") or [])
+        )
+        if said_shape or (authoritative_plan
+                          and (state.get("structure_ok") or structure_accepted(state))):
+            # 실제 형태를 말했거나 화면에 제시된 nonempty 뼈대를 승인한 경우만 사용자
+            # 지정이다. 빈 plan에서 `그냥 진행해줘`의 일반 동사를 승인으로 읽지 않는다.
             src = "user_specified"
         # 사용자는 Epic을 요청했지만 최종 Task 구조는 Epic reporting-unit 기준에 따라
         # Work Architect가 보수적으로 선택했다. 이 구조까지 user_specified로 표시하면
@@ -2355,6 +3004,17 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         elif items and is_composite(items):
             st_out["structure_ok"] = True     # 살을 붙이는 단계로 넘어왔다
 
+        # Evidence fidelity is payload authority, not prose preference.  Apply the bounded
+        # verified contract after every body/grouping normalizer so a late rewrite cannot
+        # silently discard a completed baseline, uncertain dependency, approval gate, or
+        # reusable validation artifact.  The Auditor independently enforces the same typed
+        # contract at the approval boundary.
+        evidence_obligations = _apply_verified_evidence_obligations(state, items)
+        if evidence_obligations:
+            draft["evidence_obligations"] = evidence_obligations
+        else:
+            draft.pop("evidence_obligations", None)
+
         # Late normalizers (stage folding and approved-structure restore) can rewrite titles
         # after the first guard. Seal the same invariant again at the payload boundary.
         _preserve_required_user_anchors(state, items)
@@ -3088,7 +3748,7 @@ def _apply_named_assignees(state, items: list) -> None:
     if not text or not rows:
         return
     for m in _re.finditer(r"([가-힣A-Za-z0-9·/ ]{2,24}?)\s*(?:은|는)\s*(?:skcc\.)?"
-                          r"([a-z]{1,2}\d{2,6})\b", text):
+                          r"([a-z]{1,2}\d{2,6})(?![A-Za-z0-9_])", text):
         phrase, uid = m.group(1).strip(), f"skcc.{m.group(2)}"
         words = [w for w in _re.split(r"\s+", phrase) if len(w) >= 2][-2:]
         if not words:
@@ -3616,8 +4276,8 @@ def _split_into_children(state, item: dict) -> list:
                      f"Body data: {str(item.get('description') or '')[:1200]}\n\n"
                      "Split this Task into two to five Sub-Tasks. Every Korean summary must identify the "
                      "specific work target and outcome. A stage name alone, such as `설계 단계`, `구현 단계`, "
-                     "or `검증 단계`, is invalid. Good examples preserve the target: `Puffin NDV 통계 스키마 "
-                     "설계`, `통계 생성 배치 Job 구현`, `StarRocks 플랜 반영 검증`.")],
+                     "or `검증 단계`, is invalid. Good examples preserve the target: `통계 artifact 스키마 "
+                     "설계`, `통계 생성 배치 Job 구현`, `소비자 실행계획 반영 검증`.")],
             execution_layer="lightweight_semantic", execution_stage="split_children",
             profile="fast_structured", name="split_children", role_id=Node.WORK_ARCHITECT)
         kids = [{"summary": str(c.get("summary") or "").strip()}

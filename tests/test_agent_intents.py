@@ -575,6 +575,232 @@ def test_research_interview_answer_preserves_compound_outcome_dag_and_write_inte
     assert continued["materialized_ticket_sources"]["parentCandidateKeys"] == ["DL-9200"]
 
 
+def test_verified_field_only_continuation_skips_request_model_and_preserves_outcomes(monkeypatch):
+    """A parent/phase/exact-due overlay must not rediscover an authoritative work plan."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    prior_plan = {
+        "goal": "Puffin 이력을 조사하고 후속 Task와 결정 댓글을 작성한다",
+        "tasks": [
+            {"id": "research", "kind": "research", "instruction": "Puffin 적용 이력 조사",
+             "depends_on": [], "write_intent": False, "completion_criteria": ["이력 확인"]},
+            {"id": "ticket", "kind": "ticket", "instruction": "Puffin NDV 후속 Task 생성",
+             "depends_on": ["research"], "write_intent": True,
+             "completion_criteria": ["Task 초안"]},
+            {"id": "comment", "kind": "comment", "instruction": "DL-9090 결정 댓글 작성",
+             "depends_on": ["research"], "write_intent": True,
+             "completion_criteria": ["결정 공유"]},
+        ],
+        "blocking_questions": [], "assumptions": [],
+    }
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "StarRocks Puffin NDV 적용 이력을 조사하고 후속 Task와 댓글을 작성해줘",
+        "request_plan": prior_plan,
+        "turn_continuation": True,
+        "keywords": ["StarRocks", "Puffin", "NDV"],
+        "module": "Runtime", "mentioned_keys": ["DL-9090"],
+        "sufficient": True, "playbook": "task_create", "answer_depth": "explain",
+        "situation": "관련 Jira 이력과 상위 Epic을 확인함",
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200", "fields": {
+                "issuetype": {"name": "Epic"}}}],
+            "parentCandidateKeys": ["DL-9200"],
+        },
+        "messages": [HumanMessage(content=(
+            "Epic은 네가 골라줘. 최소 기능 1차 구현. "
+            "마감은 2026-09-30까지. 알아서."))],
+    }
+    before = requested_outcome_contract(state)
+    agent = RequestArchitect()
+    calls = []
+    monkeypatch.setattr(
+        agent, "invoke_structured",
+        lambda *_args, **_kwargs: calls.append(True) or pytest.fail(
+            "verified typed refinement must not call RequestArchitect LLM"),
+    )
+
+    patch = agent._run(state)
+
+    assert calls == []
+    assert patch["intent"] == Intent.PLAN_WORK
+    assert patch["request_text"] == state["request_text"]
+    assert patch["request_plan"] == prior_plan
+    assert patch["request_plan"] is not prior_plan
+    assert requested_outcome_contract({**state, **patch}) == before
+    assert patch["keywords"] == ["StarRocks", "Puffin", "NDV"]
+    assert patch["mentioned_keys"] == ["DL-9090"]
+    assert "모델 호출 생략" in patch["trace"][0]["note"]
+    assert G.route_after_request_architect({**state, **patch}) == "refine"
+
+
+def test_request_fast_path_does_not_bypass_missing_parent_candidate_retrieval(monkeypatch):
+    """Skipping classification must not turn an unrelated opened ticket into parent authority."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    task = {
+        "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV Task 생성",
+        "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+    }
+    state = {
+        "intent": Intent.PLAN_WORK, "request_text": "Puffin NDV Task를 만들어줘",
+        "request_plan": {"goal": "Puffin NDV Task 생성", "tasks": [task]},
+        "turn_continuation": True,
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9201", "fields": {
+                "issuetype": {"name": "Task"}}}],
+            "parentCandidateKeys": [],
+        },
+        "messages": [HumanMessage(content=(
+            "Epic은 네가 골라줘. 범위는 1차 구현까지. 마감은 2026-09-30까지"))],
+    }
+    agent = RequestArchitect()
+    monkeypatch.setattr(
+        agent, "invoke_structured",
+        lambda *_args, **_kwargs: pytest.fail("typed refinement must not call the model"),
+    )
+
+    patch = agent._run(state)
+
+    assert patch["request_plan"] == state["request_plan"]
+    assert not ({"query_plan", "query_results", "query_artifacts"} & set(patch))
+    assert G.route_after_request_architect({**state, **patch}) == "investigate"
+
+
+@pytest.mark.parametrize("latest", [
+    "Kafka Epic은 네가 골라줘. 1차 구현. 마감은 2026-09-30까지",
+    "Epic은 네가 골라줘. 1차 구현 Task를 새로 만들어줘. 마감은 2026-09-30까지",
+    "Epic은 네가 골라줘. 1차 구현. 댓글도 추가로 남겨줘. 마감은 2026-09-30까지",
+    "댓글은 빼고 Task만 진행해줘",
+    "Epic은 네가 골라줘. 범위는 writer와 reader까지. 마감은 2026-09-30까지",
+    "Epic은 네가 골라줘. 1차 구현. 마감은 2026-09-30 또는 2026-10-07 중 하나",
+    "그걸로 진행해줘",
+    "DL-9200으로 연결해줘. 1차 구현. 마감은 2026-09-30까지",
+], ids=("new-topic", "new-action", "added-outcome", "removed-outcome",
+        "free-form-scope", "ambiguous-due", "ambiguous-answer", "bare-parent-key"))
+def test_request_fast_path_fails_safe_to_semantic_model_for_non_typed_changes(
+        monkeypatch, latest):
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    prior_task = {
+        "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV Task 생성",
+        "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+    }
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin NDV Task를 만들어줘",
+        "request_plan": {"goal": "Puffin NDV Task 생성", "tasks": [prior_task]},
+        "turn_continuation": True,
+        "situation": "관련 이력 조사 완료",
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200"}], "parentCandidateKeys": []},
+        "messages": [HumanMessage(content=latest)],
+    }
+    calls = []
+
+    def semantic_once(_state, _messages):
+        calls.append(True)
+        return {
+            "intent": Intent.PLAN_WORK, "keywords": ["Puffin", "NDV"],
+            "sufficient": True, "goal": "의미 변경 재분류", "tasks": [prior_task],
+        }
+
+    agent = RequestArchitect()
+    monkeypatch.setattr(agent, "invoke_structured", semantic_once)
+
+    agent._run(state)
+
+    assert calls == [True]
+
+
+def test_explicit_parent_field_fast_path_is_visible_to_work_architect(monkeypatch):
+    """Only an explicit parent/Epic clause may skip classification for an exact key."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.agents import work_architect as work
+
+    task = {
+        "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV Task 생성",
+        "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+    }
+    latest = "상위 Epic은 DL-9200으로 연결해줘. 1차 구현. 마감은 2026-09-30까지"
+    state = {
+        "intent": Intent.PLAN_WORK, "request_text": "Puffin NDV Task를 만들어줘",
+        "request_plan": {"goal": "Puffin NDV Task 생성", "tasks": [task]},
+        "turn_continuation": True,
+        "materialized_ticket_sources": {"ticketDetails": [{"key": "DL-9200"}]},
+        "messages": [HumanMessage(content=latest)],
+    }
+    agent = RequestArchitect()
+    monkeypatch.setattr(
+        agent, "invoke_structured",
+        lambda *_args, **_kwargs: pytest.fail("explicit typed parent must use fast path"),
+    )
+    monkeypatch.setattr(work, "_is_epic", lambda key: key == "DL-9200")
+
+    patch = agent._run(state)
+
+    assert patch["mentioned_keys"] == ["DL-9200"]
+    assert work._explicit_parent_epic({**state, **patch}) == "DL-9200"
+
+
+def test_select_existing_and_top_level_fast_fields_remain_typed_and_visible_downstream():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import _typed_continuation_refinement
+    from app.agent.workflow.agents.work_architect import _delegates_existing_epic_choice
+
+    select = "Epic은 네가 골라줘. 1차 구현. 마감은 2026-09-30까지"
+    top_level = "최상위 Task로 진행해줘. 1차 구현. 마감은 2026-09-30까지"
+
+    assert _typed_continuation_refinement(select)["parent"] == "select_existing"
+    assert _typed_continuation_refinement(top_level)["parent"] == "top_level"
+    assert _delegates_existing_epic_choice({
+        "request_text": "Puffin NDV Task를 만들어줘",
+        "turn_continuation": True,
+        "messages": [HumanMessage(content=select)],
+    })
+
+
+@pytest.mark.parametrize("state_change", [
+    {"turn_continuation": False},
+    {"materialized_ticket_sources": {}},
+    {"intent": Intent.MODIFY},
+    {"request_text": "새 Puffin Epic을 만들어줘"},
+], ids=("new-turn", "unverified-context", "different-intent", "changed-epic-action"))
+def test_request_fast_path_requires_authoritative_plan_work_context(monkeypatch, state_change):
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    task = {
+        "id": "ticket", "kind": "ticket", "instruction": "Puffin Task 생성",
+        "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+    }
+    state = {
+        "intent": Intent.PLAN_WORK, "request_text": "Puffin Task를 만들어줘",
+        "request_plan": {"goal": "Puffin Task 생성", "tasks": [task]},
+        "turn_continuation": True,
+        "materialized_ticket_sources": {"ticketDetails": [{"key": "DL-9200"}]},
+        "messages": [HumanMessage(content=(
+            "Epic은 네가 골라줘. 1차 구현. 마감은 2026-09-30까지"))],
+        **state_change,
+    }
+    calls = []
+    agent = RequestArchitect()
+    monkeypatch.setattr(agent, "invoke_structured", lambda *_args, **_kwargs: (
+        calls.append(True) or {
+            "intent": Intent.PLAN_WORK, "keywords": ["Puffin"], "sufficient": True,
+            "goal": "의미 재분류", "tasks": [task],
+        }))
+
+    agent._run(state)
+
+    assert calls == [True]
+
+
 def test_explicit_new_topic_does_not_restore_a_stale_compound_write_plan():
     from langchain_core.messages import HumanMessage
     from app.agent.workflow.agents.request_architect import RequestArchitect
@@ -747,6 +973,125 @@ def test_ambiguous_outcome_removal_keeps_the_authoritative_compound_plan():
 
     assert got["request_plan"]["tasks"] == prior_tasks
     assert got["request_plan"]["goal"] == "Task와 댓글"
+
+
+def test_add_one_more_task_preserves_prior_dag_and_appends_semantic_outcome():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.anchors import requested_outcome_contract
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior_tasks = [
+        {"id": "research", "kind": "research", "instruction": "Puffin 이력 조사",
+         "depends_on": [], "write_intent": False, "completion_criteria": ["이력 확인"]},
+        {"id": "delivery", "kind": "ticket", "instruction": "Puffin 적용 Task 생성",
+         "depends_on": ["research"], "write_intent": True,
+         "completion_criteria": ["적용 Task 초안"]},
+    ]
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 이력을 조사하고 적용 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin 조사와 적용 Task", "tasks": prior_tasks},
+        "draft": {"items": [{"summary": "Puffin 적용"}]},
+        "query_plan": [{"kind": "ticket_search", "params": {"query": "Puffin"}}],
+        "query_results": [{"key": "DL-9200"}],
+        "questions": [],
+    }
+    latest = "Task 하나 더. 범위는 1차로, 마감은 2026-10-15"
+    continued = _turn_start_patch(latest, prior)
+    state = {**continued, "messages": [HumanMessage(content=latest)]}
+    new_task = {
+        "id": "validation", "kind": "ticket", "instruction": "Puffin 1차 검증 Task 생성",
+        "depends_on": ["delivery"], "write_intent": True,
+        "completion_criteria": ["2026-10-15까지 1차 검증 완료"],
+    }
+
+    got = RequestArchitect().apply(state, {
+        "intent": Intent.PLAN_WORK, "keywords": ["Puffin", "1차 검증"],
+        "goal": "검증 Task 한 건 추가", "tasks": [new_task],
+    })
+
+    assert continued["turn_continuation"]
+    assert continued["query_plan"] == {}
+    assert continued["query_results"] == []
+    assert [task["id"] for task in got["request_plan"]["tasks"]] == [
+        "research", "delivery", "validation",
+    ]
+    assert got["request_plan"]["tasks"][:2] == prior_tasks
+    assert got["request_plan"]["tasks"][2] == new_task
+    assert [row["source_task_id"] for row in requested_outcome_contract(
+            {**state, **got})["outcomes"]] == ["delivery", "validation"]
+
+
+def test_additive_task_creation_keeps_existing_outcomes_and_is_idempotent():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior_tasks = [
+        {"id": "delivery", "kind": "ticket", "instruction": "Puffin 적용 Task 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"]},
+        {"id": "decision", "kind": "comment", "instruction": "DL-9090 결정 댓글 작성",
+         "depends_on": ["delivery"], "write_intent": True,
+         "completion_criteria": ["결정 공유"]},
+    ]
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 적용 Task를 만들고 DL-9090에 결정 댓글을 남겨줘",
+        "request_plan": {"goal": "Task와 댓글", "tasks": prior_tasks},
+        "draft": {"items": [{"summary": "Puffin 적용"}]},
+        "questions": [],
+    }
+    latest = "검증 Task도 하나 만들어줘. 범위는 1차로, 마감은 2026-10-15"
+    continued = _turn_start_patch(latest, prior)
+    state = {**continued, "messages": [HumanMessage(content=latest)]}
+    new_task = {
+        "id": "validation", "kind": "ticket", "instruction": "Puffin 검증 Task 생성",
+        "depends_on": ["delivery"], "write_intent": True,
+        "completion_criteria": ["1차 검증 완료"],
+    }
+    model_out = {
+        "intent": Intent.PLAN_WORK, "keywords": ["Puffin", "검증"],
+        "goal": "검증 Task 추가",
+        # A small model may echo one authoritative prior outcome despite the prompt. Runtime
+        # must discard that duplicate and append only the one novel semantic outcome.
+        "tasks": [{**prior_tasks[0], "id": "echo-delivery"}, new_task],
+    }
+
+    first = RequestArchitect().apply(state, model_out)
+    repeated = RequestArchitect().apply(
+        {**state, **first, "turn_continuation": True}, model_out,
+    )
+
+    assert continued["turn_continuation"]
+    assert [task["id"] for task in first["request_plan"]["tasks"]] == [
+        "delivery", "decision", "validation",
+    ]
+    assert first["request_plan"]["tasks"][:2] == prior_tasks
+    assert repeated["request_plan"]["tasks"] == first["request_plan"]["tasks"]
+
+
+def test_non_additive_more_word_does_not_modify_the_prior_outcome_dag():
+    from app.agent.workflow.agents.request_architect import _continuation_outcome_directive
+    from app.agent.workflow.session import _turn_start_patch
+
+    assert not _continuation_outcome_directive("Task를 더 자세히 설명해줘")
+    assert not _continuation_outcome_directive("성능을 더 개선해줘")
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 적용 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin 적용", "tasks": [{
+            "id": "delivery", "kind": "ticket", "instruction": "Puffin 적용 Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        "draft": {"items": [{"summary": "Puffin 적용"}]},
+        "questions": [],
+    }
+
+    fresh = _turn_start_patch("Task를 더 자세히 설명해줘", prior)
+
+    assert not fresh["turn_continuation"]
+    assert fresh["request_plan"] == {}
 
 
 def test_request_plan_preserves_an_explicit_new_epic_creation():

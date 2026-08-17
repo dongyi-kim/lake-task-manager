@@ -160,6 +160,96 @@ def test_reviewer_negative_axes_without_projected_problems_fail_closed():
     }
 
 
+def test_machine_review_fails_closed_when_material_evidence_obligations_are_omitted():
+    """r24 auto-pass missed completed baseline, unconfirmed dependency, and rollout gate."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _machine_check
+
+    state = {
+        "request_text": "AcmeDB DeltaSketch 통계 생성 파이프라인을 만들어줘",
+        "messages": [HumanMessage(content="최소 기능 1차까지만. 알아서")],
+        "turn_continuation": True,
+        "keywords": ["AcmeDB", "DeltaSketch", "통계", "생성", "파이프라인"],
+        "evidence": [
+            {"key": "DL-9201", "title": "[ETL] DeltaSketch writer PoC",
+             "why": "writer baseline", "observations": [{"source": "comment",
+              "text": "AcmeWriter가 DeltaSketch 파일을 생성해 5개 표본 결과를 확보했습니다."}]},
+            {"key": "DL-9202", "title": "[Runtime] DeltaSketch reader 검증",
+             "why": "consumer dependency", "observations": [{"source": "comment",
+              "text": ("AcmeReader와 Optimizer 소비 여부를 확인 중이며 지원 여부는 아직 "
+                       "확정하지 않았습니다. 실제 소비 증거 전에는 운영 반영을 승인하지 않습니다.")}]},
+        ],
+        "materialized_ticket_sources": {"ticketDetails": [
+            {"key": "DL-9201", "type": "Task", "done": True, "status": "Resolved",
+             "summary": "[ETL] DeltaSketch writer PoC", "updated": "2026-08-15",
+             "comments": [{"created": "2026-08-15", "body":
+                           "AcmeWriter가 DeltaSketch 파일을 생성해 5개 표본 결과를 확보했습니다."}]},
+            {"key": "DL-9202", "type": "Task", "done": False,
+             "status": "In Progress", "summary": "[Runtime] DeltaSketch reader 검증",
+             "updated": "2026-08-17", "description":
+             ("AcmeReader와 Optimizer 소비 여부를 확인 중이며 지원 여부는 아직 "
+              "확정하지 않았습니다. 실제 소비 증거 전에는 운영 반영을 승인하지 않습니다.")},
+        ]},
+        "draft": {"mode": "task", "items": [{
+            "summary": "[ETL] AcmeDB DeltaSketch 통계 생성 파이프라인 1차 구현",
+            "type": "Task", "components": ["ETL"],
+            "description": (
+                "<h3>배경</h3><p>통계 생성 파이프라인 요청됨</p>"
+                "<h3>작업 범위</h3><ul><li>포함: 최소 기능 구현</li>"
+                "<li>제외: 운영 반영</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                "<li data-checked=\"false\">실행 로그를 기록한다</li>"
+                "<li data-checked=\"false\">결과를 검토한다</li></ul>"
+            ),
+        }]},
+    }
+
+    review = _machine_check(state)
+
+    assert review["ok"] is False
+    obligation_errors = [row for row in review["errors"]
+                         if row.get("field") == "evidence_obligation"]
+    assert obligation_errors
+    assert {row.get("obligation_kind") for row in obligation_errors} >= {
+        "completed_baseline", "unconfirmed_dependency", "approval_gate",
+    }
+
+
+def test_evidence_audit_compares_html_unescaped_visible_text():
+    """HTML escaping an ampersand must not turn a present canonical fact into 'missing'."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.work_architect import (
+        WorkArchitect, _evidence_obligation_errors,
+    )
+
+    state = {
+        "request_text": "AcmeDB R&D 검증 작업을 만들어줘",
+        "messages": [HumanMessage(content="AcmeDB R&D 검증 작업을 만들어줘")],
+        "keywords": ["AcmeDB", "R&D", "검증"],
+        "evidence": [{"key": "DL-9405", "why": "요청과 직접 관련"}],
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "DL-9405", "type": "Task", "status": "Resolved", "done": True,
+            "summary": "[Runtime] AcmeDB R&D 검증", "updated": "2026-08-18",
+            "comments": [{"created": "2026-08-18", "body":
+                          "AcmeDB R&D 호환성 검증을 완료했습니다."}],
+        }]},
+    }
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "단일 검증 산출물", "rationale": "",
+        "items": [{
+            "summary": "[Runtime] AcmeDB R&D 호환성 검증", "type": "Task",
+            "background": "호환성 검증 요청됨", "scope_in": ["호환성 검증"],
+            "scope_out": [], "dod": ["검증 결과를 기록한다"],
+            "components": ["Runtime"],
+        }],
+    })
+    draft = result["draft"]
+
+    assert "R&amp;D" in draft["items"][0]["description"]
+    assert _evidence_obligation_errors(state, draft) == []
+
+
 def test_reviewer_does_not_treat_selection_intent_as_proof_draft_avoids_epic_creation():
     """A select-existing request is the rule to audit, not proof that the draft obeyed it."""
     from langchain_core.messages import HumanMessage
@@ -816,6 +906,48 @@ def test_small_draft_with_outcome_contract_still_runs_semantic_audit(monkeypatch
     contract = requested_outcome_contract(state)
     state["draft"]["outcome_contract_id"] = contract["id"]
     state["draft"]["items"][0]["outcome_refs"] = [contract["outcomes"][0]["id"]]
+    monkeypatch.setattr(
+        StructuredAgent, "node",
+        lambda self: (lambda _state: {"semantic_audit_ran": True}),
+    )
+
+    assert Auditor().node()(state) == {"semantic_audit_ran": True}
+
+
+def test_small_draft_with_verified_evidence_obligations_runs_semantic_audit(monkeypatch):
+    """Producer/consumer role reversal cannot use the machine-only small-draft shortcut."""
+    from app.agent.workflow.agents.auditor import Auditor
+    from app.agent.workflow.agents.base import StructuredAgent
+
+    state = {
+        "request_text": "AcmeDB DeltaSketch 통계 생성 파이프라인을 만들어줘",
+        "keywords": ["AcmeDB", "DeltaSketch", "통계", "생성", "파이프라인"],
+        "evidence": [{
+            "key": "DL-9202", "title": "[Runtime] DeltaSketch reader 검증",
+            "why": "진행 중 consumer dependency",
+            "observations": [{
+                "source": "description",
+                "text": ("AcmeWriter가 만든 DeltaSketch를 AcmeReader가 실제 소비하는지 "
+                         "확인 중이며 지원 여부는 아직 확정하지 않았습니다."),
+            }],
+        }],
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "DL-9202", "type": "Task", "status": "In Progress",
+            "statusCategory": "indeterminate",
+            "summary": "[Runtime] DeltaSketch reader 검증", "updated": "2026-08-17",
+            "description": ("AcmeWriter가 만든 DeltaSketch를 AcmeReader가 실제 소비하는지 "
+                            "확인 중이며 지원 여부는 아직 확정하지 않았습니다."),
+        }]},
+        "draft": {"mode": "task", "items": [{
+            "summary": "[ETL] AcmeDB DeltaSketch 통계 생성 파이프라인 구현",
+            "type": "Task",
+            "description": (
+                "<h3>배경</h3><p>파이프라인 요청됨</p>"
+                "<h3>작업 범위</h3><ul><li>최소 기능 구현</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul><li>결과 확인</li></ul>"
+            ),
+        }]},
+    }
     monkeypatch.setattr(
         StructuredAgent, "node",
         lambda self: (lambda _state: {"semantic_audit_ran": True}),
@@ -1531,6 +1663,77 @@ def test_merge_join_drops_ghost_assignees():
     assert items[0].get("assignee") == real
     assert not items[1].get("assignee"), "실재하지 않는 사용자 배정은 join 에서 걸러져야 한다"
     assert not out["assignments"][1].get("user"), "ResultIntegrator 상태에도 유령 추천을 남기지 않는다"
+
+
+def test_merge_join_drops_a_fabricated_child_recommendation():
+    """PeopleAdvisor has no authority to introduce an unknown child account id."""
+    real = _any_real_user()
+    draft = {"mode": "task", "items": [{
+        "summary": "a", "assignee": real,
+        "children": [{"summary": "child"}],
+    }]}
+    assignments = [{
+        "index": 0, "user": real, "reasons": ["유사 이력 DL-1"],
+        "children": [{"index": 0, "user": "ghost.x9999", "why": "임의 추천"}],
+    }]
+
+    out = G._merge_assignments({"draft": draft, "assignments": assignments})
+
+    child = out["draft"]["items"][0]["children"][0]
+    assert not child.get("assignee")
+    assert not out["assignments"][0]["children"][0].get("user")
+
+
+def test_merge_join_fails_closed_for_an_explicit_unknown_child_assignee():
+    """An invalid literal user assignment stays visible and blocks approval for correction."""
+    real = _any_real_user()
+    draft = {"mode": "task", "items": [{
+        "summary": "a", "assignee": real,
+        "children": [{
+            "summary": "child", "assignee": "ghost.x9999", "assignee_source": "user",
+        }],
+    }]}
+    assignments = [{"index": 0, "user": real, "reasons": ["유사 이력 DL-1"]}]
+
+    out = G._merge_assignments({"draft": draft, "assignments": assignments})
+
+    assert out["draft"]["items"][0]["children"][0]["assignee"] == "ghost.x9999"
+    assert out["review"]["ok"] is False
+    assert any(row.get("field") == "assignee" and row.get("child_index") == 0
+               for row in out["review"]["errors"])
+
+
+def test_merge_join_fails_closed_for_an_explicit_unknown_root_assignee():
+    """Root and child ownership use the same final identity-authority rule."""
+    draft = {"mode": "task", "items": [{
+        "summary": "a", "assignee": "ghost.x9999", "assignee_source": "user",
+    }]}
+
+    out = G._merge_assignments({"draft": draft, "assignments": []})
+
+    assert out["draft"]["items"][0]["assignee"] == "ghost.x9999"
+    assert out["review"]["ok"] is False
+    assert any(row.get("field") == "assignee" and "child_index" not in row
+               for row in out["review"]["errors"])
+
+
+def test_merge_join_fails_closed_when_identity_authority_is_unavailable(monkeypatch):
+    """A lookup outage preserves the visible draft but cannot authorize its owners."""
+    from app.agent.tools import _ctx
+
+    monkeypatch.setattr(_ctx, "client", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+    draft = {"mode": "task", "items": [{
+        "summary": "a", "assignee": "skcc.x1042",
+        "children": [{"summary": "child", "assignee": "skcc.x1045"}],
+    }]}
+
+    out = G._merge_assignments({"draft": draft, "assignments": []})
+
+    assert out["draft"]["items"][0]["assignee"] == "skcc.x1042"
+    assert out["draft"]["items"][0]["children"][0]["assignee"] == "skcc.x1045"
+    assert out["review"]["ok"] is False
+    assert len([row for row in out["review"]["errors"]
+                if row.get("field") == "assignee"]) == 2
 
 
 def test_merge_join_resolves_suffix_only_ids():

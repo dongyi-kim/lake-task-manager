@@ -764,7 +764,7 @@ def test_native_work_correction_has_bounded_semantic_material_for_real_schema(mo
     }
     recovered = {
         "questions": [], "mode": "task", "structure": "single_task",
-        "structure_source": "inferred", "structure_why": "독립 산출물 1건",
+        "structure_why": "독립 산출물 1건",
         "items": [{
             "summary": "[Catalog] AcmeDB DeltaSketch V2 인덱스 생성",
             "type": "Task", "background": "인덱스 생성 요청됨",

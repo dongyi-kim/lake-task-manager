@@ -60,6 +60,38 @@ def _state(*messages, request=""):
             "turn_continuation": len(messages) > 1}
 
 
+def test_field_continuation_preserves_planner_metadata_but_invalidates_query_work():
+    """Only authoritative planner state crosses the turn; query execution remains per-turn."""
+    prior_plan = {"goal": "Puffin NDV Task 생성", "tasks": [{
+        "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV Task 생성",
+        "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+    }]}
+    prior = {
+        "intent": "plan_work", "request_text": "Puffin NDV Task를 만들어줘",
+        "request_plan": prior_plan, "playbook": "task_create",
+        "keywords": ["Puffin", "NDV"], "module": "Runtime",
+        "mentioned_keys": ["DL-9200"], "sufficient": True, "answer_depth": "explain",
+        "situation": "관련 이력 조사 완료",
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200"}], "parentCandidateKeys": ["DL-9200"]},
+        "query_plan": {"queries": [{"id": "old"}]},
+        "query_results": [{"key": "STALE-1"}],
+        "query_artifacts": {"targets": ["STALE-1"]},
+    }
+
+    patch = _turn_start_patch(
+        "Epic은 네가 골라줘. 범위는 1차 구현까지. 마감은 2026-09-30까지", prior)
+
+    assert patch["turn_continuation"] is True
+    for key in ("intent", "request_text", "request_plan", "playbook", "keywords", "module",
+                "mentioned_keys", "sufficient", "answer_depth"):
+        assert patch[key] == prior[key]
+    assert patch["request_plan"] is not prior_plan
+    assert patch["query_plan"] == {}
+    assert patch["query_results"] == []
+    assert patch["query_artifacts"] == {}
+
+
 def test_every_meeting_case_interviews_ambiguous_person_and_local_term_after_research():
     set_person_context("meeting-interview", ["DL-9200"])
     request = (
@@ -477,6 +509,59 @@ def test_explicit_new_work_never_inherits_a_previous_draft_even_with_multiple_fi
     reversed_word_order = _turn_start_patch(
         "Task를 새로 생성해줘. 범위는 PoC, 완료 조건도 본문에 정리", prior)
     assert not reversed_word_order["turn_continuation"]
+
+
+def test_generic_task_creation_never_inherits_an_old_draft_or_structure():
+    """A complete creation speech act wins over coincidental scope/due field shapes."""
+    base = {
+        "intent": "plan_work",
+        "request_text": "StarRocks Puffin NDV 검증 Task를 만들어줘",
+        "request_plan": {"goal": "old", "tasks": [{
+            "id": "old-ticket", "kind": "ticket", "instruction": "old",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["old"],
+        }]},
+        "topic_dossier": "old dossier",
+        "questions": [],
+        "turns": 1,
+    }
+    for new_request in (
+        "Task 하나 만들어줘. 범위는 1차로, 마감은 2026-09-30으로",
+        "검증 Task 하나 만들어줘. 범위는 1차로, 마감은 2026-09-30으로",
+    ):
+        for materialized in (
+            {"draft": {"items": [{"summary": "old"}]}},
+            {"structure_plan": [{"kind": "Task", "summary": "old"}]},
+        ):
+            fresh = _turn_start_patch(new_request, {**base, **materialized})
+            assert not fresh["turn_continuation"]
+            assert fresh["request_text"] == new_request
+            assert fresh["request_plan"] == {}
+            assert fresh["draft"] == {}
+            assert fresh["structure_plan"] == []
+
+
+def test_true_field_only_refinement_still_inherits_the_current_draft():
+    prior = {
+        "intent": "plan_work",
+        "request_text": "StarRocks Puffin NDV 검증 Task를 만들어줘",
+        "request_plan": {"goal": "current", "tasks": [{
+            "id": "ticket", "kind": "ticket", "instruction": "current",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["current"],
+        }]},
+        "draft": {"items": [{"summary": "current"}]},
+        "questions": [],
+        "turns": 1,
+    }
+
+    continued = _turn_start_patch(
+        "범위는 1차로, 마감은 2026-09-30으로", prior,
+    )
+
+    assert continued["turn_continuation"]
+    assert continued["request_text"] == prior["request_text"]
+    assert continued["request_plan"] == prior["request_plan"]
+    assert continued["draft"] == prior["draft"]
+    assert continued["draft"] is not prior["draft"]
 
 
 def test_multi_field_refinement_with_a_different_named_topic_resets_stale_draft():

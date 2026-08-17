@@ -28,6 +28,7 @@ from app.agent.workflow.agents.work_architect import (
     _current_request_boundary_text, _global_exact_due_for_roots,
     _delegates_existing_epic_choice, _explicit_parent_epic,
     _explicit_hierarchical_ordinal_contract,
+    _evidence_obligation_errors, _verified_evidence_obligations,
     _expected_due_dates_by_root, _expected_parent_epics_by_root,
     as_bulk_items, draft_full_text,
 )
@@ -82,7 +83,11 @@ class Auditor(StructuredAgent):
             items = draft.get("items") or []
             literal_recovery = draft.get("construction") == "literal_delegated"
             outcome_contract = requested_outcome_contract(state)
-            small = (not outcome_contract and
+            # A compact draft can still reverse a verified producer/consumer relation or
+            # turn an uncertain dependency into a capability claim.  Presence checks are
+            # deterministic, but that semantic contradiction is not; keep evidence-bound
+            # drafts on the Auditor path instead of the machine-only latency shortcut.
+            small = (not outcome_contract and not _verified_evidence_obligations(state) and
                      ((len(items) == 1 and not (items[0].get("children"))
                      and (draft.get("mode") or "task") != "epic"
                      # ★ 주제 이탈·확인 필요 경고가 붙은 초안은 우회하지 않는다 —
@@ -143,6 +148,7 @@ Audit the complete ticket draft before it is shown to the user.
 - A Task-tier `Bug` is valid with the Korean sections `재현 경로`, `기대 동작`, and `실제 동작`; do not require generic Task background or DoD as well.
 - A title need not end in a verb. An intentional top-level Task or Story without an Epic is valid.
 - Reuse of one verified reference across multiple payload items is not blocking when it supports each item.
+- Treat `evidence_obligations` as authoritative execution constraints. A completed result is a reusable baseline, not work to repeat; an unconfirmed dependency must remain unconfirmed; an approval or rollout gate must appear in scope and DoD; and existing validation work must be reused rather than duplicated. Preserve producer, artifact, and consumer roles exactly—a consumer under verification is not evidence that the consumer can generate the artifact. Omission or role/state reversal is a blocking `grounded` problem.
 - Treat `requested_outcome_contract` as an authoritative literal result contract. For every `outcome_ref`, compare its exact instruction with the item's title, scope, and DoD. Evidence may refine implementation method or constraints, but omission or replacement of the requested action/object—including an opposite action—is a blocking `request` problem. Never repair it by inventing intent.
 - Audit every child in the authoritative contract too. `applicable_outcome_refs` is explicit when the child maps to another requested outcome and otherwise inherited from its parent. A legitimate design, implementation, validation, or rollout stage need not repeat the parent's action verb; block only a child that replaces/reverses the applicable requested result or introduces an unrelated deliverable.
 - Write `message`, `fix`, and `summary` in Korean.
@@ -442,6 +448,7 @@ def _audit_grounding_contract(state: AgentState) -> dict:
             "parent": str(item.get("parent") or ""),
             "duedate": str(item.get("duedate") or ""),
             "assignee": str(item.get("assignee") or ""),
+            "scope_and_dod": compact_body(item.get("description") or ""),
             "outcome_refs": parent_refs,
             "child_count": len(children),
             "children": children,
@@ -456,6 +463,8 @@ def _audit_grounding_contract(state: AgentState) -> dict:
         "draft_asserts_new_epic_creation": textual_epic,
         "requested_outcome_contract": requested_outcome_contract(state),
         "draft_outcome_contract_id": str(draft.get("outcome_contract_id") or ""),
+        "evidence_obligations": (draft.get("evidence_obligations")
+                                 or _verified_evidence_obligations(state)),
         "items": rows,
     }
 
@@ -742,6 +751,7 @@ def _machine_check(state: AgentState) -> dict:
     due_errors = []
     roots = [item for item in (draft.get("items") or []) if isinstance(item, dict)]
     field_errors = _deterministic_request_field_errors(state, roots)
+    obligation_errors = _evidence_obligation_errors(state, draft)
     per_outcome_due = _expected_due_dates_by_root(state, roots)
     due_status, due_literal = _explicit_due_instruction_status(state)
     expected_due = _authoritative_explicit_due(state)
@@ -783,7 +793,8 @@ def _machine_check(state: AgentState) -> dict:
                             f"{actual_due or '비어 있음'} — exact date를 그대로 보존해야 한다"),
             })
     if not items:
-        return {"ok": False, "errors": contract_errors + due_errors + field_errors, "warnings": [],
+        return {"ok": False, "errors": (contract_errors + due_errors + field_errors
+                                          + obligation_errors), "warnings": [],
                 "text": "초안이 비어 있다."}
     # Epic 은 Bulk 규칙(validate_bulk)의 대상이 아니다 — 요약만 확인하고 통과.
     # (Epic Link·타입·SP 규칙은 전부 자식 티켓 이야기다.)
@@ -791,7 +802,7 @@ def _machine_check(state: AgentState) -> dict:
         ok = bool((items[0].get("summary") or "").strip())
         errors = ([] if ok else [{"index": 0, "field": "summary",
                                   "message": "Epic 요약이 비었다"}]) \
-            + contract_errors + due_errors + field_errors
+            + contract_errors + due_errors + field_errors + obligation_errors
         return {"ok": ok and not errors, "errors": errors,
                 "warnings": [], "text": "Epic 초안 — 기계 검증 대상 아님(요약 확인만)."}
     try:
@@ -801,7 +812,7 @@ def _machine_check(state: AgentState) -> dict:
     except Exception as e:
         return {"ok": False,
                 "errors": ([{"message": str(e)[:200]}] + contract_errors
-                           + due_errors + field_errors),
+                           + due_errors + field_errors + obligation_errors),
                 "warnings": [],
                 "text": f"검증을 수행하지 못했다: {str(e)[:200]}"}
     warnings = list(r.get("warnings") or [])
@@ -838,7 +849,8 @@ def _machine_check(state: AgentState) -> dict:
             warnings.append({"index": i, "message":
                              "완료 조건(DoD)이 없다 — 무엇을 만족하면 끝인지 적어야 한다"})
 
-    errors = list(r.get("errors") or []) + contract_errors + due_errors + field_errors
+    errors = (list(r.get("errors") or []) + contract_errors + due_errors
+              + field_errors + obligation_errors)
     lines = [f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
              for e in errors]
     lines += [f"- (경고) [{w.get('index')}] {w.get('message')}" for w in warnings]
