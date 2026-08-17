@@ -95,35 +95,146 @@ def _needs_evidence_materialization(state, results: list[dict]) -> bool:
     return len(sources & {"jira", "comments", "confluence", "web", "github"}) >= 2
 
 
-def _materialize_evidence(results: list[dict]) -> dict:
-    """Open selected Jira and Confluence hits without another LLM routing loop.
+def _is_parent_candidate_result(row: dict) -> bool:
+    """Identify a structurally bounded Epic-candidate read from its compiled JQL."""
+    if not isinstance(row, dict) or str(row.get("source") or "") != "jira":
+        return False
+    result = row.get("result") or {}
+    if result.get("parentCandidate") is True:
+        return True
+    canonical = str((result.get("canonicalJql") or ""))
+    return bool(re.search(
+        r"\bissuetype\s*(?:=\s*['\"]?epic['\"]?|\bin\s*\(\s*['\"]?epic['\"]?)",
+        canonical, re.I,
+    ))
 
-    Search order is already the QueryPlan's relevance/order contract. Preserve that order, deduplicate
-    identities, and cap materialization to one human-reviewable evidence set. Individual read failures are
-    explicit so Research Analyst can fall back to ReAct instead of silently synthesizing thin evidence.
+
+def _resolve_parent_reference_candidates(reference_keys: list[str]) -> dict:
+    """Resolve child → parent Epic through opened Jira hierarchy fields.
+
+    A child key is not a lexical term that its Epic must repeat. Follow exact ``epicKey``
+    or ``parentKey`` fields instead; for a Sub-Task, open its Task parent once more to find
+    the Epic. Every hop uses the scoped ``get_ticket`` tool and the final candidate is
+    accepted only when its opened issue type is Epic.
     """
-    from concurrent.futures import ThreadPoolExecutor
     from app.agent import tools as T
 
-    ticket_keys, document_refs = [], []
+    opened: dict[str, dict] = {}
+    errors: list[str] = []
+
+    def open_ticket(key) -> dict:
+        normalized = str(key or "").strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", normalized):
+            return {}
+        if normalized in opened:
+            return opened[normalized]
+        try:
+            detail = T.BY_NAME["get_ticket"].invoke({"key": normalized, "comment_limit": 2}) or {}
+        except Exception as exc:
+            detail = {"key": normalized, "error": str(exc)[:240]}
+        opened[normalized] = detail
+        if detail.get("error"):
+            errors.append(f"{normalized}: {str(detail['error'])[:180]}")
+        return detail
+
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    for reference in list(dict.fromkeys(str(key).upper() for key in reference_keys))[:4]:
+        child = open_ticket(reference)
+        if not child or child.get("error"):
+            continue
+        issue_type = str(child.get("type") or "").strip().casefold()
+        epic_key = str(child.get("epicKey") or "").strip().upper()
+        parent_key = str(child.get("parentKey") or "").strip().upper()
+        if issue_type == "epic":
+            epic_key = str(child.get("key") or reference).strip().upper()
+        elif not epic_key and parent_key:
+            parent = open_ticket(parent_key)
+            if str(parent.get("type") or "").strip().casefold() == "epic":
+                epic_key = parent_key
+            else:
+                # Jira may represent Task→Epic with either the legacy Epic Link field or
+                # the modern parent field. The final opened type check below remains the
+                # authority, so following either exact key does not broaden discovery.
+                epic_key = str(parent.get("epicKey") or parent.get("parentKey") or "").strip().upper()
+        if not epic_key or epic_key in seen:
+            continue
+        epic = open_ticket(epic_key)
+        if (not epic or epic.get("error")
+                or str(epic.get("type") or "").strip().casefold() != "epic"):
+            continue
+        seen.add(epic_key)
+        candidates.append(epic)
+
+    return {"candidates": candidates, "errors": errors,
+            "openedKeys": list(opened)}
+
+
+def _materialization_ticket_selection(results: list[dict], *, cap: int = 8,
+                                      parent_reserve: int = 2) -> tuple[list[str], list[str]]:
+    """Reserve bounded evidence slots for structural parent candidates.
+
+    A complete duplicate query may return dozens of newer Tasks before the subsequent
+    ``issueType = Epic`` candidate read. A global ``[:8]`` then made every selected parent
+    unverifiable. Reserve at most two slots for the parent read and keep the remaining six
+    for duplicate/history diversity. Unused slots are filled in original search order.
+    """
+    all_keys: list[str] = []
+    ordinary: list[str] = []
+    parent_candidates: list[str] = []
+
+    def add(target: list[str], value) -> None:
+        key = str(value or "").strip().upper()
+        if key and key not in target:
+            target.append(key)
+
     for row in results:
         if not isinstance(row, dict):
             continue
         result = row.get("result") or {}
+        row_keys: list[str] = []
         for ticket in result.get("tickets") or []:
-            key = str((ticket or {}).get("key") or "").strip().upper()
-            if key and key not in ticket_keys:
-                ticket_keys.append(key)
+            add(row_keys, (ticket or {}).get("key"))
         for comment in result.get("comments") or []:
-            key = str((comment or {}).get("ticketKey") or "").strip().upper()
-            if key and key not in ticket_keys:
-                ticket_keys.append(key)
+            add(row_keys, (comment or {}).get("ticketKey"))
+        for key in row_keys:
+            add(all_keys, key)
+            add(parent_candidates if _is_parent_candidate_result(row) else ordinary, key)
+
+    limit = max(0, int(cap or 0))
+    reserved = parent_candidates[:min(max(0, int(parent_reserve or 0)), limit)]
+    selected = [key for key in ordinary if key not in reserved][:limit - len(reserved)]
+    selected.extend(reserved)
+    for key in all_keys:
+        if len(selected) >= limit:
+            break
+        add(selected, key)
+    return selected, [key for key in selected if key in parent_candidates]
+
+
+def _materialize_evidence(results: list[dict]) -> dict:
+    """Open selected Jira and Confluence hits without another LLM routing loop.
+
+    Search order is already the QueryPlan's relevance/order contract. Preserve order within each
+    evidence purpose, deduplicate identities, reserve bounded structural-parent coverage, and cap
+    materialization to one human-reviewable set. Individual read failures are explicit so Research
+    Analyst can fall back to ReAct instead of silently synthesizing thin evidence.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from app.agent import tools as T
+
+    ticket_keys, parent_candidate_keys = _materialization_ticket_selection(results)
+    document_refs = []
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        result = row.get("result") or {}
         for document in result.get("documents") or []:
             ref = str((document or {}).get("url") or (document or {}).get("id") or "").strip()
             if ref and ref not in document_refs:
                 document_refs.append(ref)
 
-    ticket_keys, document_refs = ticket_keys[:8], document_refs[:4]
+    document_refs = document_refs[:4]
 
     def open_ticket(key: str) -> dict:
         try:
@@ -158,9 +269,19 @@ def _materialize_evidence(results: list[dict]) -> dict:
                                           documentBodies=document_bodies)
         if errors:
             document_target["result"]["materializationErrors"] = errors
+    # Keep the structural candidate row self-describing so Work can intersect its choices
+    # with successfully opened details instead of trusting a lightweight search hit.
+    successful = {str(row.get("key") or "").strip().upper()
+                  for row in ticket_details if isinstance(row, dict) and not row.get("error")}
+    materialized_parents = [key for key in parent_candidate_keys if key in successful]
+    for row in results:
+        if _is_parent_candidate_result(row):
+            row["result"] = dict(row.get("result") or {},
+                                 materializedCandidateKeys=materialized_parents)
     return {
         "tickets": len(ticket_details), "documents": len(document_bodies),
         "ticketDetails": ticket_details, "documentBodies": document_bodies,
+        "ticketKeys": ticket_keys, "parentCandidateKeys": materialized_parents,
         "errors": errors,
     }
 
@@ -205,6 +326,7 @@ class QueryRunner:
         _reject_unsupported_relational_plan(state.get("query_plan") or {})
 
         results, artifacts = [], {}
+        materialized_ticket_sources = {}
         # 이 유형은 LLM이 만든 단일 JQL만으로 끝낼 수 없다. 제목 검색 결과에서 parent를
         # 고른 뒤 그 parent의 직계 Sub-Task를 전수 조회해야 하므로 deterministic join을 먼저 돈다.
         from app.agent.workflow.assignment_completion import (
@@ -222,13 +344,47 @@ class QueryRunner:
             complete = spec.get("completeness") or "page"
             try:
                 if source == "jira":
-                    args = {"where": _jira_where(spec.get("where") or "", spec.get("query") or ""),
-                            "order_by": spec.get("order_by") or "updated DESC",
-                            "fields": spec.get("fields") or [], "page_size": spec.get("page_size") or 50}
-                    if complete == "all":
-                        raw = execute_jql_all(**args)
+                    references = [str(key).strip().upper()
+                                  for key in (spec.get("parent_reference_keys") or [])
+                                  if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+",
+                                                  str(key).strip(), re.I)]
+                    hierarchy = (_resolve_parent_reference_candidates(references)
+                                 if references else {})
+                    candidates = hierarchy.get("candidates") or []
+                    if candidates:
+                        raw = {
+                            "tickets": [{key: detail.get(key) for key in
+                                         ("key", "summary", "type", "status", "assignee", "updated")
+                                         if detail.get(key) not in (None, "")}
+                                        for detail in candidates],
+                            "ticketDetails": candidates,
+                            "returned": len(candidates), "total": len(candidates), "pages": 0,
+                            "parentCandidate": True,
+                            "parentResolution": "referenced-ticket-hierarchy",
+                            "referenceKeys": references,
+                        }
+                    elif not str(spec.get("query") or "").strip() and references:
+                        # Never turn a failed hierarchy resolution into an all-Epic scan.
+                        raw = {
+                            "tickets": [], "returned": 0, "total": 0, "pages": 0,
+                            "parentCandidate": True,
+                            "parentResolution": "unresolved-reference",
+                            "referenceKeys": references,
+                            "error": ("참조 티켓에서 상위 Epic 관계를 확인하지 못했고 "
+                                      "안전한 subject 검색어도 없어 후보 조회를 확대하지 않았습니다."),
+                        }
                     else:
-                        raw = T.BY_NAME["run_jql_v2"].invoke(args)
+                        args = {
+                            "where": _jira_where(spec.get("where") or "",
+                                                 spec.get("query") or ""),
+                            "order_by": spec.get("order_by") or "updated DESC",
+                            "fields": spec.get("fields") or [],
+                            "page_size": spec.get("page_size") or 50,
+                        }
+                        if complete == "all":
+                            raw = execute_jql_all(**args)
+                        else:
+                            raw = T.BY_NAME["run_jql_v2"].invoke(args)
                 elif source == "confluence":
                     args = {"query": spec.get("query") or "", "where": spec.get("where") or "",
                             "page_size": spec.get("page_size") or 50}
@@ -285,10 +441,19 @@ class QueryRunner:
             materialized = _materialize_evidence(results)
             if materialized["tickets"] or materialized["documents"] or materialized["errors"]:
                 artifacts["evidence-materialization"] = materialized
+            successful_details = [dict(row) for row in materialized.get("ticketDetails") or []
+                                  if isinstance(row, dict) and not row.get("error")][:8]
+            materialized_ticket_sources = {
+                "ticketDetails": successful_details,
+                "parentCandidateKeys": list(materialized.get("parentCandidateKeys") or []),
+            } if successful_details else {}
         return {"query_results": results, "query_artifacts": artifacts,
+                "materialized_ticket_sources": materialized_ticket_sources,
                 "assignment_completion": artifacts.get("incomplete-assignees") or {},
                 "trace": note(state, self.name, f"조회 {len(results)}개 실행")}
 
 
 __all__ = ["QueryRunner", "_jira_where", "_needs_evidence_materialization",
+           "_is_parent_candidate_result", "_resolve_parent_reference_candidates",
+           "_materialization_ticket_selection",
            "_materialize_evidence"]

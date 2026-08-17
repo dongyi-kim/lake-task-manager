@@ -139,10 +139,168 @@ _CONTEXT_SWITCH = _re.compile(
     r"(?:대신|다시\s+.+?돌아갈)", _re.I,
 )
 
+_FIELD_REPLACEMENT = _re.compile(
+    r"(?:Epic|에픽|상위|부모|담당(?:자)?|assignee|owner|마감(?:일)?|기한|due(?:\s*date)?|"
+    r"범위|단계|우선순위|priority).{0,40}\s대신(?:\s|$)",
+    _re.I,
+)
+
+_HARD_CONTEXT_SWITCH = _re.compile(
+    r"(?:이건|이거|그건|그거).{0,8}(?:그만|취소)|완전히\s*다른|잠깐\s*다른|"
+    r"최종\s*요청|(?:변경|요청).{0,8}(?:도\s*)?취소|다시\s+.+?돌아갈",
+    _re.I,
+)
+
+_PARENT_CREATION_ANSWER = _re.compile(
+    r"(?:적합|마땅|관련).{0,24}(?:없|없으면).{0,24}(?:새\s*(?:Epic|에픽)|"
+    r"(?:Epic|에픽).{0,8}새)|^\s*새\s*(?:Epic|에픽)(?:을|를|으로|로)?\s*"
+    r"(?:만들|생성|진행|선택)?",
+    _re.I,
+)
+
+_DRAFT_REFINEMENT_FIELDS = (
+    _re.compile(r"(?:상위|부모|기존)\s*(?:Epic|에픽)|(?:Epic|에픽)\s*(?:선택|연결|하위)|"
+                r"(?:Epic|에픽)\s*대신\s*(?:최상위|단일|Task|태스크|테스크)", _re.I),
+    _re.compile(r"(?:범위|단계|phase|stage)\s*(?:은|는|을|를|으로|로|:|=)|"
+                r"\d+\s*차\s*(?:로|까지)", _re.I),
+    _re.compile(r"(?:마감|기한|due(?:\s*date)?|deadline)\s*(?:은|는|을|를|로|:|=)|"
+                r"\d{4}-\d{2}-\d{2}\s*(?:까지|로)", _re.I),
+    _re.compile(r"(?:담당(?:자)?|배정|assignee|owner)\s*(?:은|는|을|를|로|:|=)|"
+                r"미할당\s*(?:으로|로)", _re.I),
+    _re.compile(r"(?:우선순위|priority)\s*(?:은|는|을|를|로|:|=)", _re.I),
+    _re.compile(r"(?:제목|본문|설명|완료\s*조건|DoD|acceptance\s+criteria)\s*"
+                r"(?:은|는|에|을|를|로|:|=).{0,40}(?:추가|수정|바꿔|변경|정리)", _re.I),
+)
+
+_EXPLICIT_NEW_WORK = _re.compile(
+    r"(?:새|별도|다른)\s*(?:Epic|에픽|Task|테스크|티켓|작업).{0,16}(?:만들|생성|추가)|"
+    r"(?:Epic|에픽|Task|테스크|티켓|작업)(?:을|를)?\s*(?:새로|별도로|따로)"
+    r".{0,12}(?:만들|생성|추가)",
+    _re.I,
+)
+
+_INDEPENDENT_REQUEST = _re.compile(
+    r"(?:해\s*줘|해주세요|해줘|해봐|알려\s*줘|보여\s*줘|찾아\s*줘|추천(?:해|해줘)|"
+    r"조회(?:해|해줘)|정리(?:해|해줘)|설명(?:해|해줘)|만들(?:어|어줘)|생성(?:해|해줘)|"
+    r"수정(?:해|해줘)|바꿔\s*줘)|"
+    r"(?:누가|누구|뭐|무엇|어떤|왜|언제|어디|어떻게|몇\s*명|현황|상태)"
+    r".{0,50}(?:\?|궁금|알려|찾|확인|조회|보여|정리)|"
+    # A new topic can be a declarative speech act rather than an imperative. Without these
+    # predicates, ``서울 날씨가 궁금해`` and ``운영회의는 취소됐어`` were mistaken for terse
+    # answers to an unrelated pending field question and inherited the stale request plan.
+    r"[^?!\n]{1,60}(?:은|는|이|가)\s*(?:궁금(?:해|합니다|한데)|"
+    r"(?:취소|연기|변경|완료|종료)(?:됐|되었|했)(?:어|다|습니다|대)?)|"
+    r"(?:있어|없어|됐어|됐나|어때)\s*\?",
+    _re.I,
+)
+
+_SIMPLE_INTERVIEW_ANSWER = _re.compile(
+    r"^\s*(?:응|네|예|아니|아니요|맞아|맞습니다|그대로|없어|없습니다|모르겠|"
+    r"알아서|미할당|그걸로|이걸로|첫\s*번째|두\s*번째|세\s*번째|[1-3]\s*번)"
+    r"(?:\s*(?:해줘|진행해줘|선택해줘))?[.!]?\s*$",
+    _re.I,
+)
+
+_OUTCOME_REFINEMENT = _re.compile(
+    r"^\s*(?:기존\s*)?(?:댓글|코멘트|Bug|Story|Feature|Improvement|Task|Sub-?Task|"
+    r"Epic|버그|스토리|태스크|테스크|서브\s*태스크|에픽|티켓|문서|보고서|조사|리서치)"
+    r"(?:은|는|을|를|\s|내용|대상|범위|제목)*.{0,50}"
+    r"(?:빼|제외|취소|삭제|없애|하지\s*마|말고|대신|바꿔|수정|변경|교체)",
+    _re.I,
+)
+
+
+def _looks_like_answer_to_questions(utterance: str, asked: list[dict]) -> bool:
+    """Recognize bounded answer shapes before treating a pending interview as sticky."""
+    text = str(utterance or "").strip()
+    if not text:
+        return False
+    if _SIMPLE_INTERVIEW_ANSWER.fullmatch(text):
+        return True
+    if any(str(option or "").strip() and str(option).strip().casefold() in text.casefold()
+           for question in asked for option in (question.get("options") or [])):
+        return True
+
+    for question in asked:
+        field = " ".join((str(question.get("field") or ""),
+                          str(question.get("question") or ""))).casefold()
+        if any(token in field for token in ("parent", "epic", "에픽", "상위", "부모")):
+            if (_PARENT_CREATION_ANSWER.search(text)
+                    or _re.search(r"\b[A-Z][A-Z0-9]+-\d+\b|(?:기존|새)\s*(?:Epic|에픽)",
+                                  text, _re.I)):
+                return True
+        if any(token in field for token in ("due", "date", "deadline", "마감", "기한")):
+            if _re.search(r"\d{4}[-./]\d{1,2}[-./]\d{1,2}|(?:월|화|수|목|금|토|일)요일|"
+                          r"(?:마감|기한).{0,12}(?:없|제거|취소)", text, _re.I):
+                return True
+            if _re.fullmatch(
+                    r"\s*(?:오늘|내일|모레|이번\s*주|다음\s*주|다다음\s*주)"
+                    r"(?:\s*(?:월|화|수|목|금|토|일)요일)?(?:까지)?(?:로)?"
+                    r"(?:\s*(?:해줘|진행해줘))?[.!]?\s*", text, _re.I):
+                return True
+        if any(token in field for token in ("structure", "shape", "type", "구조", "유형")):
+            if _re.fullmatch(r"\s*(?:(?:단일|최상위)\s*)?(?:Epic|에픽|Task|태스크|테스크|"
+                             r"Sub-?Task|서브\s*태스크)(?:\s*(?:하나|구조|로|으로))*"
+                             r"(?:\s*(?:구성|선택|진행)?해줘)?[.!]?\s*", text, _re.I):
+                return True
+        if any(token in field for token in ("term", "acronym", "meaning", "용어", "뜻", "약어")):
+            if _re.fullmatch(r"\s*.{1,40}(?:은|는|이란|란)\s*.{1,100}[.!]?\s*", text, _re.S):
+                return True
+        if any(token in field for token in ("person", "assignee", "owner", "reviewer", "담당", "사람", "누구")):
+            if _re.fullmatch(r"\s*(?:@?[가-힣]{2,5}(?:님|TL|M|차장|책임|매니저)?|"
+                             r"(?:skcc\.)?[a-z]{1,3}\d{2,8}|미할당)"
+                             r"(?:\s*(?:이야|입니다|로|으로))?"
+                             r"(?:\s*(?:배정|지정)?해줘)?[.!]?\s*",
+                             text, _re.I):
+                return True
+        if any(token in field for token in ("target", "table", "entity", "document", "ticket",
+                                             "대상", "테이블", "문서", "티켓")):
+            # A target answer is a value-shaped phrase, not another request sentence.  This
+            # accepts identifiers and ``X로 해줘`` while rejecting ``Puffin 이력을 요약해줘``.
+            if (_re.fullmatch(r"\s*[A-Za-z][A-Za-z0-9_.-]{1,119}"
+                              r"(?:\s*(?:이야|입니다|로|으로)(?:\s*(?:해줘|진행해줘))?)?"
+                              r"[.!]?\s*", text, _re.I)
+                    or _re.fullmatch(r"\s*[^?!\n]{1,60}(?:이야|입니다|말한\s*거야|"
+                                     r"(?:로|으로)\s*(?:(?:선택|지정|진행)?해줘))[.!]?\s*", text)):
+                return True
+    if _re.fullmatch(r"\s*[^?!\n]{1,60}(?:로|으로)\s*"
+                     r"(?:(?:선택|지정|배정|구성|진행)?해줘)[.!]?\s*", text):
+        return True
+    # Legacy questions may omit a field. Compact information without a new-request speech act
+    # is safer to preserve; an explicit request sentence must start a clean turn.
+    return len(text) <= 160 and not bool(_INDEPENDENT_REQUEST.search(text))
+
+
+_REFINEMENT_GENERIC_ANCHORS = {
+    "poc", "phase", "stage", "dod", "acceptance", "criteria", "owner", "assignee",
+    "scope", "deadline", "date", "title", "body", "description",
+}
+
+
+def _draft_refinement_changes_subject(text: str, prior: dict) -> bool:
+    """Return true when a supposed field refinement introduces a different named topic."""
+    from app.agent.workflow.anchors import required_user_anchors
+
+    original = str(prior.get("request_text") or "").strip()
+    if not original:
+        return False
+    old = {value.casefold() for value in required_user_anchors(
+        {"request_text": original, "messages": []}, include_latest=False)}
+    new = {value.casefold() for value in required_user_anchors(
+        {"request_text": str(text or ""), "messages": []}, include_latest=False)}
+    old = {value for value in old
+           if value not in _REFINEMENT_GENERIC_ANCHORS and not _re.fullmatch(r"\d+차", value)}
+    new = {value for value in new
+           if value not in _REFINEMENT_GENERIC_ANCHORS and not _re.fullmatch(r"\d+차", value)}
+    # A constraint-only follow-up may have no named subject.  Once it names a subject,
+    # however, at least one stable original anchor must agree before stale work is inherited.
+    return bool(new and not (new & old))
+
 _TURN_DERIVED_EMPTY = {
     "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
     "sufficient": False, "answer_depth": "", "request_plan": {},
     "query_plan": {}, "query_results": [], "query_artifacts": {},
+    "materialized_ticket_sources": {},
     "assignment_completion": {}, "bulk_targets": [],
     "pre_survey": "", "seed_map": "", "web_context": "", "topic_dossier": "",
     "situation": "", "evidence": [], "related_docs": [], "epic_candidate": "",
@@ -155,17 +313,99 @@ _TURN_DERIVED_EMPTY = {
 }
 
 
+def _bounded_materialized_ticket_sources(value) -> dict:
+    """Copy only the verified, bounded ticket ledger across an interview boundary.
+
+    The full query artifacts deliberately reset every turn.  QueryRunner's durable sidecar
+    contains at most eight successful ``get_ticket`` details.  Re-validate that boundary here
+    as well so a legacy/manual checkpoint cannot turn continuation into an unbounded context
+    replay, and retain parent keys only when their opened detail is present.
+    """
+    raw = value if isinstance(value, dict) else {}
+    details: list[dict] = []
+    seen: set[str] = set()
+    for row in raw.get("ticketDetails") or []:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "").strip().upper()
+        if not key or key in seen:
+            continue
+        detail = _copy.deepcopy(row)
+        detail["key"] = key
+        details.append(detail)
+        seen.add(key)
+        if len(details) >= 8:
+            break
+    if not details:
+        return {}
+    parents: list[str] = []
+    for raw_key in raw.get("parentCandidateKeys") or []:
+        key = str(raw_key or "").strip().upper()
+        if key in seen and key not in parents:
+            parents.append(key)
+    return {"ticketDetails": details, "parentCandidateKeys": parents}
+
+
 def _is_interview_continuation(text: str, prior: dict) -> bool:
-    """Keep expensive research only for an actual answer to our unresolved question."""
-    asked = [q for q in (prior.get("questions") or []) if isinstance(q, dict)]
-    if not asked or _CONTEXT_SWITCH.search(str(text or "")):
+    """Preserve prior work only for an interview answer or a bounded draft refinement.
+
+    A draft follow-up commonly supplies several missing fields without repeating the original
+    work request (for example: parent Epic + first-phase scope + due date).  Treating that as a
+    new topic discards the researched subject and lets control words become the new task title.
+    Conversely, one generic field such as a date is not enough to inherit stale context.
+    """
+    utterance = str(text or "")
+    # A typed ``댓글 대신 ...`` can be an in-plan outcome edit, but an explicit whole-topic
+    # switch must always clear stale work even when that phrase happens to begin with an
+    # outcome label.
+    if _HARD_CONTEXT_SWITCH.search(utterance):
         return False
+    if (_CONTEXT_SWITCH.search(utterance)
+            and not _FIELD_REPLACEMENT.search(utterance)
+            and not _OUTCOME_REFINEMENT.search(utterance)):
+        return False
+
+    asked = [q for q in (prior.get("questions") or []) if isinstance(q, dict)]
     # A full new request with a new explicit ticket is not an answer merely because the last turn asked.
     old_keys = set(prior.get("mentioned_keys") or [])
-    new_keys = set(_recent_keys(text))
+    new_keys = set(_recent_keys(utterance))
     if new_keys and old_keys and not new_keys.issubset(old_keys):
         return False
-    return True
+    if asked:
+        parent_choice = any(
+            str(question.get("field") or "").strip().casefold() in {"parent", "epic"}
+            for question in asked
+        ) and bool(_PARENT_CREATION_ANSWER.search(utterance))
+        if _EXPLICIT_NEW_WORK.search(utterance):
+            # "새 Epic을 만들까요?"에 대한 답은 기존 interview의 continuation이다.
+            # 다른 target/question을 버리고 별도 work를 명령한 경우에는 stale state를 잇지 않는다.
+            if not parent_choice:
+                return False
+        if (parent_choice or _OUTCOME_REFINEMENT.search(utterance)
+                or _looks_like_answer_to_questions(utterance, asked)):
+            return True
+        # A complete speech act is a new request even when it reuses the prior subject and
+        # contains neither an explicit cancellation nor a new Jira key.
+        if _INDEPENDENT_REQUEST.search(utterance):
+            return False
+        return True
+
+    # When the previous turn already produced a draft/structure, preserve it only for a compact,
+    # multi-field refinement.  Explicitly asking for separate/new work always wins.
+    if _EXPLICIT_NEW_WORK.search(utterance):
+        return False
+    # A typed edit to an already planned user-visible outcome is itself a continuation even
+    # when the previous turn has not materialized a draft yet.  RequestArchitect applies the
+    # bounded typed diff; resetting here would erase the authoritative compound outcome DAG
+    # before that guard can run.
+    if prior.get("request_plan") and _OUTCOME_REFINEMENT.search(utterance):
+        return True
+    if not (prior.get("draft") or prior.get("structure_plan")):
+        return False
+    if _draft_refinement_changes_subject(utterance, prior):
+        return False
+    matched_fields = sum(bool(pattern.search(utterance)) for pattern in _DRAFT_REFINEMENT_FIELDS)
+    return matched_fields >= 2
 
 
 def _turn_start_patch(text: str, prior: dict) -> dict:
@@ -180,12 +420,15 @@ def _turn_start_patch(text: str, prior: dict) -> dict:
     patch.update(turn_continuation=continuation,
                  turn_reset_reason="interview-answer" if continuation else "new-or-revised-request")
     if continuation:
-        for key in ("request_text", "pre_survey", "seed_map", "web_context", "topic_dossier",
+        for key in ("intent", "request_text", "request_plan",
+                    "pre_survey", "seed_map", "web_context", "topic_dossier",
                     "situation", "evidence", "related_docs", "epic_candidate", "already_exists",
-                    "bulk_targets", "structure_plan", "structure_ok", "structure_notes", "draft",
-                    "turns"):
+                    "bulk_targets", "materialized_ticket_sources", "structure_plan", "structure_ok",
+                    "structure_notes", "draft", "turns"):
             if key in prior:
-                patch[key] = prior[key]
+                patch[key] = (_bounded_materialized_ticket_sources(prior[key])
+                              if key == "materialized_ticket_sources"
+                              else _copy.deepcopy(prior[key]))
     else:
         patch["request_text"] = str(text or "").strip()
     return patch

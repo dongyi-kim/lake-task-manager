@@ -53,7 +53,11 @@ from app.agent.workflow.session import _turn_start_patch  # noqa: E402
 
 def _state(*messages, request=""):
     return {"messages": [HumanMessage(content=value) for value in messages],
-            "request_text": request or (messages[0] if messages else "")}
+            "request_text": request or (messages[0] if messages else ""),
+            # Two supplied turns in this fixture represent an interview continuation.
+            # Production session writes the same typed boundary explicitly; tests that
+            # exercise an unrelated new topic use ``_turn_start_patch`` instead.
+            "turn_continuation": len(messages) > 1}
 
 
 def test_every_meeting_case_interviews_ambiguous_person_and_local_term_after_research():
@@ -256,6 +260,287 @@ def test_new_request_clears_stale_research_and_draft_but_interview_answer_keeps_
     assert continued["request_text"] == prior["request_text"]
     assert continued["topic_dossier"] == "old dossier"
     assert continued["turn_continuation"]
+
+
+def test_interview_continuation_keeps_only_bounded_typed_ticket_sources_and_prior_plan():
+    original_plan = {
+        "goal": "Puffin 결정 반영과 후속 티켓 작성",
+        "tasks": [
+            {"id": "research", "kind": "research", "instruction": "Puffin 이력 조사",
+             "depends_on": [], "write_intent": False, "completion_criteria": ["이력 확인"]},
+            {"id": "ticket", "kind": "ticket", "instruction": "후속 Task 생성",
+             "depends_on": ["research"], "write_intent": True,
+             "completion_criteria": ["Task 초안"]},
+        ],
+        "blocking_questions": [], "assumptions": [],
+    }
+    details = [{"key": f"DL-{9200 + index}", "summary": f"candidate {index}"}
+               for index in range(9)]
+    prior = {
+        "intent": "plan_work",
+        "request_text": "Puffin 이력을 조사하고 후속 Task를 만들어줘",
+        "request_plan": original_plan,
+        "questions": [{"field": "term", "question": "RGP의 뜻은 무엇인가요?"}],
+        "situation": "관련 Jira와 문서 조사 완료",
+        "query_results": [{"id": "large-page"}],
+        "query_artifacts": {"large-page": {"tickets": details * 10}},
+        "materialized_ticket_sources": {
+            "ticketDetails": [*details, details[0], {"summary": "key 없음"}],
+            "parentCandidateKeys": ["dl-9200", "DL-9208", "DL-9999"],
+        },
+        "turns": 0,
+    }
+
+    continued = _turn_start_patch("RGP는 Reader Gate Policy야. 계속해줘", prior)
+
+    assert continued["turn_continuation"]
+    assert continued["intent"] == "plan_work"
+    assert continued["request_plan"] == original_plan
+    assert continued["request_plan"] is not original_plan
+    assert continued["query_results"] == [] and continued["query_artifacts"] == {}
+    sources = continued["materialized_ticket_sources"]
+    assert [row["key"] for row in sources["ticketDetails"]] == [
+        f"DL-{9200 + index}" for index in range(8)]
+    assert sources["parentCandidateKeys"] == ["DL-9200"]
+
+    fresh = _turn_start_patch(
+        "이건 취소하고 완전히 다른 보안 교육 Task를 새로 만들어줘", prior)
+    assert not fresh["turn_continuation"]
+    assert fresh["request_plan"] == {}
+    assert fresh["materialized_ticket_sources"] == {}
+
+
+def test_multi_field_draft_refinement_keeps_original_request_without_an_interview():
+    prior = {
+        "request_text": "StarRocks Puffin NDV 1차 검증 Task를 구성해줘",
+        "topic_dossier": "writer PoC 완료, reader 검증 진행 중",
+        "situation": "관련 이력 조사 완료",
+        "draft": {"items": [{"summary": "기존 초안"}]},
+        "questions": [],
+        "mentioned_keys": [],
+        "turns": 1,
+    }
+
+    continued = _turn_start_patch(
+        "기존 Epic을 골라서 연결하고 범위는 1차, 마감은 2026-09-30으로 해줘", prior)
+
+    assert continued["turn_continuation"]
+    assert continued["request_text"] == prior["request_text"]
+    assert continued["topic_dossier"] == prior["topic_dossier"]
+    assert continued["draft"] == prior["draft"]
+
+
+def test_explicit_new_work_never_inherits_a_previous_draft_even_with_multiple_fields():
+    prior = {
+        "request_text": "StarRocks Puffin NDV 검증 Task",
+        "topic_dossier": "old dossier",
+        "draft": {"items": [{"summary": "old"}]},
+        "questions": [],
+        "turns": 1,
+    }
+
+    fresh = _turn_start_patch(
+        "별도 Task를 새로 만들어줘. 범위는 2차, 마감은 2026-10-15", prior)
+
+    assert not fresh["turn_continuation"]
+    assert fresh["request_text"].startswith("별도 Task")
+    assert fresh["topic_dossier"] == ""
+    assert fresh["draft"] == {}
+
+    reversed_word_order = _turn_start_patch(
+        "Task를 새로 생성해줘. 범위는 PoC, 완료 조건도 본문에 정리", prior)
+    assert not reversed_word_order["turn_continuation"]
+
+
+def test_multi_field_refinement_with_a_different_named_topic_resets_stale_draft():
+    prior = {
+        "request_text": "StarRocks Puffin NDV 검증 Task",
+        "topic_dossier": "old dossier",
+        "draft": {"items": [{"summary": "old"}]},
+        "questions": [],
+        "turns": 1,
+    }
+
+    fresh = _turn_start_patch("Kafka PoC 단계의 완료 조건과 본문을 정리해줘", prior)
+
+    assert not fresh["turn_continuation"]
+    assert fresh["request_text"].startswith("Kafka")
+    assert fresh["topic_dossier"] == ""
+    assert fresh["draft"] == {}
+
+    korean_topic = _turn_start_patch(
+        "데이터 거버넌스 PoC 단계 설명과 완료 조건을 본문에 정리해줘", prior)
+    assert not korean_topic["turn_continuation"]
+
+
+def test_scope_ordinal_change_is_a_refinement_not_a_new_named_topic():
+    prior = {
+        "request_text": "StarRocks Puffin NDV 1차 검증 Task",
+        "topic_dossier": "reader 검증 진행 중",
+        "draft": {"items": [{"summary": "old"}]},
+        "questions": [],
+        "turns": 1,
+    }
+
+    continued = _turn_start_patch("범위는 2차로, due date는 2026-10-15로 바꿔줘", prior)
+
+    assert continued["turn_continuation"]
+    assert continued["request_text"] == prior["request_text"]
+    assert continued["topic_dossier"] == prior["topic_dossier"]
+
+
+def test_new_work_during_an_unrelated_interview_resets_but_parent_choice_answer_continues():
+    prior = {
+        "request_text": "Puffin NDV 검증 Task를 만들어줘",
+        "topic_dossier": "old dossier",
+        "questions": [{"field": "target", "question": "대상 테이블은?"}],
+        "turns": 0,
+    }
+
+    fresh = _turn_start_patch("데이터 품질 Epic을 새로 만들어줘", prior)
+    assert not fresh["turn_continuation"]
+    assert fresh["request_text"].startswith("데이터 품질")
+
+    prior["questions"] = [{"field": "parent", "question": "기존 Epic을 고를까요?"}]
+    continued = _turn_start_patch("적합한 기존 Epic이 없으면 새 Epic을 만들어줘", prior)
+    assert continued["turn_continuation"]
+    assert continued["request_text"] == prior["request_text"]
+
+    unrelated_epic = _turn_start_patch("데이터 품질 Epic을 새로 만들어줘", prior)
+    assert not unrelated_epic["turn_continuation"]
+
+
+def test_pending_interview_rejects_an_unrelated_request_without_cancel_words_or_ticket_keys():
+    prior = {
+        "intent": "plan_work",
+        "request_text": "Puffin NDV 검증 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin NDV 검증", "tasks": [{
+            "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV 검증 Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        "questions": [{"field": "target", "question": "검증 대상 테이블은 무엇인가요?"}],
+        "situation": "Puffin 관련 조사 완료",
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200", "type": "Epic"}],
+            "parentCandidateKeys": ["DL-9200"],
+        },
+        "turns": 0,
+    }
+
+    unrelated = _turn_start_patch("보안 교육 미완료자는 누가 있어?", prior)
+    same_subject_new_request = _turn_start_patch("Puffin 적용 이력을 요약해줘", prior)
+    actual_answer = _turn_start_patch("fdc.fdc_trace_summary_ic로 해줘", prior)
+
+    assert not unrelated["turn_continuation"]
+    assert unrelated["request_text"] == "보안 교육 미완료자는 누가 있어?"
+    assert unrelated["request_plan"] == {}
+    assert unrelated["materialized_ticket_sources"] == {}
+    assert not same_subject_new_request["turn_continuation"]
+    assert actual_answer["turn_continuation"]
+    assert actual_answer["request_text"] == prior["request_text"]
+
+
+def test_pending_due_interview_rejects_independent_declarative_topics():
+    prior = {
+        "intent": "plan_work",
+        "request_text": "Puffin NDV 검증 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin NDV 검증", "tasks": [{
+            "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV 검증 Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        "questions": [{"field": "due", "question": "마감일은 언제인가요?"}],
+        "situation": "Puffin 관련 조사 완료",
+        "turns": 0,
+    }
+
+    weather = _turn_start_patch("서울 날씨가 궁금해", prior)
+    cancelled_meeting = _turn_start_patch("오늘 운영회의는 취소됐어", prior)
+    exact_due = _turn_start_patch("2026-09-30까지로 해줘", prior)
+    relative_due = _turn_start_patch("내일까지로 해줘", prior)
+
+    assert not weather["turn_continuation"]
+    assert weather["request_text"] == "서울 날씨가 궁금해"
+    assert weather["request_plan"] == {}
+    assert not cancelled_meeting["turn_continuation"]
+    assert cancelled_meeting["request_text"] == "오늘 운영회의는 취소됐어"
+    assert exact_due["turn_continuation"]
+    assert exact_due["request_text"] == prior["request_text"]
+    assert relative_due["turn_continuation"]
+    assert relative_due["request_text"] == prior["request_text"]
+
+
+def test_pending_interview_keeps_typed_outcome_refinement_and_field_shaped_answers():
+    prior = {
+        "intent": "plan_work",
+        "request_text": "Puffin 검증 Task를 만들고 DL-9090에 결론 댓글을 남겨줘",
+        "request_plan": {"goal": "Task와 댓글 작성", "tasks": [
+            {"id": "ticket", "kind": "ticket", "instruction": "검증 Task 생성",
+             "depends_on": [], "write_intent": True, "completion_criteria": ["Task"]},
+            {"id": "comment", "kind": "comment", "instruction": "결론 댓글 작성",
+             "depends_on": ["ticket"], "write_intent": True,
+             "completion_criteria": ["댓글"]},
+        ]},
+        "questions": [{"field": "target", "question": "검증 대상은 무엇인가요?"}],
+        "turns": 0,
+    }
+
+    refined = _turn_start_patch("댓글은 빼고 Task만 진행해줘", prior)
+    assert refined["turn_continuation"]
+    assert refined["request_plan"] == prior["request_plan"]
+
+    assignee_prior = {**prior, "questions": [{"field": "assignee", "question": "담당자는?"}]}
+    assignee = _turn_start_patch("김동이님으로 배정해줘", assignee_prior)
+    assert assignee["turn_continuation"]
+
+    structure_prior = {**prior, "questions": [{"field": "structure", "question": "구조는?"}]}
+    structure = _turn_start_patch("Task 하나로 구성해줘", structure_prior)
+    assert structure["turn_continuation"]
+
+
+def test_typed_outcome_refinement_continues_a_prior_plan_without_pending_questions():
+    prior = {
+        "intent": "plan_work",
+        "request_text": "Puffin 검증 Task를 만들고 DL-9090에 결론 댓글을 남겨줘",
+        "request_plan": {"goal": "Task와 댓글 작성", "tasks": [
+            {"id": "ticket", "kind": "ticket", "instruction": "검증 Task 생성",
+             "depends_on": [], "write_intent": True, "completion_criteria": ["Task"]},
+            {"id": "comment", "kind": "comment", "instruction": "결론 댓글 작성",
+             "depends_on": ["ticket"], "write_intent": True,
+             "completion_criteria": ["댓글"]},
+        ]},
+        "questions": [],
+        "turns": 1,
+    }
+
+    refined = _turn_start_patch("댓글 대신 Task만 진행해줘", prior)
+
+    assert refined["turn_continuation"]
+    assert refined["request_text"] == prior["request_text"]
+    assert refined["request_plan"] == prior["request_plan"]
+
+    unrelated = _turn_start_patch(
+        "댓글 대신 완전히 다른 보안 교육 현황을 정리해줘", prior)
+    assert not unrelated["turn_continuation"]
+    assert unrelated["request_text"].startswith("댓글 대신 완전히 다른")
+
+
+def test_field_replacement_with_instead_keeps_draft_but_new_topic_instead_resets():
+    prior = {
+        "request_text": "Puffin NDV 검증 Task를 만들어줘",
+        "topic_dossier": "old dossier",
+        "draft": {"items": [{"summary": "old"}]},
+        "questions": [],
+        "turns": 1,
+    }
+
+    refinement = _turn_start_patch(
+        "Epic 대신 최상위 Task로 바꾸고 마감은 2026-10-02로 해줘", prior)
+    assert refinement["turn_continuation"]
+    assert refinement["draft"] == prior["draft"]
+
+    new_topic = _turn_start_patch("대신 완전히 다른 보안교육 요청을 정리해줘", prior)
+    assert not new_topic["turn_continuation"]
+    assert new_topic["request_text"].startswith("대신 완전히 다른")
 
 
 def test_exact_meeting_task_count_and_singular_task_are_user_selected_shapes():

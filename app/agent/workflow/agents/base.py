@@ -43,14 +43,19 @@ SEMANTIC_MEMO_END_TOKEN = "<END_SEMANTIC_MEMO>"
 
 
 def _call_config(role_id: str, output_contract: str, execution_layer: str = "",
-                 execution_stage: str = "") -> dict:
+                 execution_stage: str = "", validation_diagnostic: dict | None = None) -> dict:
     """Attach non-sensitive per-call labels consumed by :mod:`app.agent.usage`."""
-    return {"metadata": {
+    metadata = {
         "ltm_role_id": str(role_id or ""),
         "ltm_output_contract": str(output_contract or ""),
         "ltm_execution_layer": str(execution_layer or ""),
         "ltm_execution_stage": str(execution_stage or ""),
-    }}
+    }
+    for key in ("category", "keyword", "path", "missing"):
+        value = str((validation_diagnostic or {}).get(key) or "").strip()
+        if value:
+            metadata[f"ltm_validation_{key}"] = value
+    return {"metadata": metadata}
 
 
 def _prompt_json_contract(schema_text: str) -> str:
@@ -118,6 +123,47 @@ def _validate_output(value, schema: dict) -> dict:
     return out
 
 
+def _validation_diagnostic(exc: Exception) -> dict[str, str]:
+    """Return schema coordinates only, never response text or an invalid field value."""
+    validator = str(getattr(exc, "validator", "") or "").strip()
+    if not validator:
+        return {"category": "parse", "keyword": "json_object", "path": "$"}
+
+    schema_path = list(getattr(exc, "absolute_schema_path", ()) or ())
+    schema_properties = {
+        str(schema_path[index + 1])
+        for index, value in enumerate(schema_path[:-1])
+        if value == "properties"
+    }
+    parts = []
+    for value in list(getattr(exc, "absolute_path", ()) or ())[:12]:
+        if isinstance(value, int):
+            parts.append(f"[{value}]")
+        else:
+            # Instance object keys can be model-authored. Expose only names that also occur
+            # as explicit JSON-Schema properties; pattern/additional property keys stay opaque.
+            name = str(value or "")
+            parts.append("." + name if name in schema_properties
+                         else ".?")
+    diagnostic = {
+        "category": "schema",
+        "keyword": validator[:48],
+        "path": "$" + "".join(parts),
+    }
+    if validator == "required":
+        required = list(getattr(exc, "validator_value", ()) or ())
+        instance = getattr(exc, "instance", None)
+        if isinstance(instance, dict):
+            missing = [
+                str(name) for name in required
+                if name not in instance
+                and str(name).replace("_", "").replace("-", "").isalnum()
+            ]
+            if missing:
+                diagnostic["missing"] = ",".join(missing[:8])
+    return diagnostic
+
+
 def _raise_unrepairable_structured_output(errors: list[str], reason: str,
                                           exc: Exception | None = None) -> None:
     """Fail without a repair call when there is no model output to repair."""
@@ -143,6 +189,45 @@ def _capability_is_unsupported(exc: Exception, capability: str) -> bool:
     # ``Invalid schema`` proves the endpoint understood the feature; our schema/value needs
     # correction and must not poison every later role in this process.
     return rejection and any(token in value for token in protocol) and "invalid schema" not in value
+
+
+def _is_nonretryable_transport_failure(exc: Exception) -> bool:
+    """Identify failures for which another wire format cannot produce a response.
+
+    A connection, authentication, or timeout failure is not evidence that json_schema is
+    unsupported. Falling through to json_object/prompt JSON only repeats the same unavailable
+    request and can accidentally turn infrastructure latency into a format-repair metric.
+    """
+    # jsonschema.ValidationError deliberately includes the rejected value and arbitrary
+    # schema descriptions in its message.  A field value such as ``Connection error`` is
+    # still a model/schema failure with a repair path, not evidence that the HTTP request
+    # failed.  Check the exception shape before considering any message fallback.
+    if hasattr(exc, "validator") or type(exc).__module__.startswith("jsonschema"):
+        return False
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    kind = type(exc).__name__.casefold()
+    text = " ".join(str(exc or "").casefold().split())
+    if any(token in kind for token in (
+            "connection", "connecterror", "timeout", "authentication", "permission",
+            "sslerror")):
+        return True
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in {401, 403}:
+        return True
+    # Several OpenAI-compatible adapters collapse provider failures to RuntimeError. Keep
+    # that narrow compatibility boundary, but never classify arbitrary ValueError/schema
+    # exceptions from their prose alone.
+    if not isinstance(exc, RuntimeError):
+        return False
+    return any(phrase in text for phrase in (
+        "connection error", "connection refused", "connection reset",
+        "network is unreachable", "timed out", "request timeout",
+        "401 unauthorized", "403 forbidden", "invalid api key", "authentication failed",
+        "certificate verify failed", "certificate store access denied",
+    ))
 
 
 def invoke_schema(schema: dict, messages: list, tier: str | None = None,
@@ -179,6 +264,7 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
 
     capability_profile = capabilities.get(initial_tier).get("checked") or {}
     errors, raw_text, validation_error = [], "", ""
+    validation_diagnostic: dict[str, str] = {}
     for capability, method in (("json_schema", "json_schema"),
                                ("json_object", "json_mode")):
         if capability_profile.get(capability) is False:
@@ -198,6 +284,11 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
             return out
         except Exception as exc:
             errors.append(f"{capability}: {str(exc)[:160]}")
+            if _is_nonretryable_transport_failure(exc):
+                _raise_unrepairable_structured_output(
+                    errors, "provider 연결·인증·timeout 실패로 다른 형식을 재시도하지 않습니다.",
+                    exc,
+                )
             if _capability_is_unsupported(exc, capability):
                 capabilities.record(initial_tier, capability, False, str(exc))
     try:
@@ -223,6 +314,7 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
         return _validate_output(parsed, schema)
     except Exception as exc:
         validation_error = str(exc)[:1000]
+        validation_diagnostic = _validation_diagnostic(exc)
         errors.append(f"prompt_json: {str(exc)[:160]}")
     try:
         repair_layer = "projection" if initial_layer else ""
@@ -238,7 +330,7 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
                                   + "\n\nOutput to repair:\n" + raw_text[:12000]))],
             stop=[STRUCTURED_END_TOKEN],
             config=_call_config(observed_role, call_label + "_repair",
-                                repair_layer, "repair"),
+                                repair_layer, "repair", validation_diagnostic),
         )
         parsed = _loads_loose(str(getattr(raw, "content", raw) or ""))
         if parsed is None:
@@ -277,6 +369,60 @@ class Agent(ABC):
     def schema_for(self, state: AgentState) -> dict:
         """Return a context-specific output contract when a Role needs one."""
         return self.schema()
+
+    def post_projection_correction(self, state: AgentState, out: dict) -> str:
+        """Return one bounded projection-only correction, or an empty string.
+
+        The semantic memo or bounded native decision context is already authoritative at
+        this point. Subclasses may detect a role-specific *projection* contract violation,
+        but must not ask for another semantic judgment. Original prompts, conversation, and
+        raw evidence are deliberately excluded from the correction call.
+        """
+        return ""
+
+    def post_projection_correction_context(self, state: AgentState, out: dict) -> str:
+        """Return bounded role-owned recovery facts, never the original evidence bundle."""
+        return ""
+
+    def _apply_post_projection_correction(
+            self, state: AgentState, out: dict, *, context_label: str, context: str,
+            capability_tier: str, execution_layer: str, output_contract: str) -> dict:
+        """Apply one role-contract correction without another semantic task invocation."""
+        correction = str(self.post_projection_correction(state, out) or "").strip()
+        if not correction:
+            return out
+        correction = correction[:1200]
+        role_context = str(self.post_projection_correction_context(state, out) or "").strip()
+        bounded_context = context
+        if role_context:
+            bounded_context += "\n\n" + role_context[:12000]
+        bounded_context = bounded_context[:24000]
+        correction_messages = [
+            SystemMessage(content=(
+                "You are correcting a typed projection, not reconsidering the task. Reproject "
+                "only the bounded decision context below to the target JSON Schema. Make only "
+                "the correction named below; preserve every other decision and never add a fact "
+                "absent from that context.")),
+            HumanMessage(content=(
+                context_label + ":\n" + bounded_context
+                + "\n\nProjection contract violation:\n" + correction)),
+        ]
+        corrected = self._invoke_structured_transport(
+            state, correction_messages, output_contract=output_contract,
+            capability_tier=capability_tier, task_profile="fast_structured",
+            repair_context=(bounded_context
+                            + "\n\nProjection contract violation:\n" + correction),
+            execution_layer=execution_layer, execution_stage="projection_correction",
+            max_wire_attempts=2,
+        )
+        remaining = str(self.post_projection_correction(state, corrected) or "").strip()
+        if remaining:
+            # One correction is the hard ceiling. The caller's StructuredAgent boundary
+            # exposes this as error/trace instead of repeating semantic work.
+            raise RuntimeError(
+                f"typed projection correction이 역할 계약을 충족하지 못했습니다: {self.name}"
+            )
+        return corrected
 
     @abstractmethod
     def apply(self, state: AgentState, out: dict) -> dict:
@@ -364,7 +510,8 @@ class Agent(ABC):
                                      task_profile: str = "",
                                      repair_context: str = "",
                                      execution_layer: str = "",
-                                     execution_stage: str = "synthesis") -> dict:
+                                     execution_stage: str = "synthesis",
+                                     max_wire_attempts: int | None = None) -> dict:
         """Execute one structured transport ladder without making semantic decisions.
 
         json_schema → json_object → prompt-only JSON → repair 1회 순서다. repair는 실제
@@ -381,6 +528,20 @@ class Agent(ABC):
             execution_stage, execution_layer=active_layer)
         profile = capabilities.get(transport_tier).get("checked") or {}
         errors, validation_error = [], ""
+        validation_diagnostic: dict[str, str] = {}
+        wire_attempts = 0
+
+        def wire_available() -> bool:
+            return max_wire_attempts is None or wire_attempts < max_wire_attempts
+
+        def fail_wire_ceiling(exc: Exception | None = None):
+            error = RuntimeError(
+                "structured output 실패 — " + " | ".join(
+                    errors + ["transport correction attempt limit reached"])
+            )
+            if exc is not None:
+                raise error from exc
+            raise error
 
         def make_llm(**overrides):
             values = {"output_contract": output_contract}
@@ -394,7 +555,10 @@ class Agent(ABC):
                                    ("json_object", "json_mode")):
             if profile.get(capability) is False:
                 continue
+            if not wire_available():
+                fail_wire_ceiling()
             try:
+                wire_attempts += 1
                 call_messages = list(messages)
                 if method == "json_mode":
                     call_messages.append(HumanMessage(content=(
@@ -409,6 +573,12 @@ class Agent(ABC):
                 return out
             except Exception as exc:
                 errors.append(f"{capability}: {str(exc)[:180]}")
+                if _is_nonretryable_transport_failure(exc):
+                    _raise_unrepairable_structured_output(
+                        errors,
+                        "provider 연결·인증·timeout 실패로 다른 형식을 재시도하지 않습니다.",
+                        exc,
+                    )
                 if _capability_is_unsupported(exc, capability):
                     capabilities.record(transport_tier, capability, False, str(exc))
 
@@ -417,7 +587,10 @@ class Agent(ABC):
         prompt_messages = list(messages) + [HumanMessage(content=
             _prompt_json_contract(schema_text))]
         raw_text = ""
+        if not wire_available():
+            fail_wire_ceiling()
         try:
+            wire_attempts += 1
             raw = make_llm().invoke(
                 prompt_messages, stop=[STRUCTURED_END_TOKEN],
                 config=_call_config(
@@ -438,16 +611,20 @@ class Agent(ABC):
             return _validate_output(parsed, schema)
         except Exception as exc:
             validation_error = str(exc)[:1000]
+            validation_diagnostic = _validation_diagnostic(exc)
             errors.append(f"prompt_json: {str(exc)[:180]}")
 
         # repair는 원 업무를 다시 판단시키는 호출이 아니라 형식만 교정하는 1회 호출이다.
+        if not wire_available():
+            fail_wire_ceiling()
         try:
+            wire_attempts += 1
             repair_source = (("Semantic memo:\n" + repair_context + "\n\n")
                              if repair_context else "")
             repair_layer = "projection"
             repaired = self.llm(
                 execution_layer=repair_layer, execution_stage="repair",
-                profile="fast_structured", output_contract="typed_projection").invoke([
+                profile="fast_structured", output_contract=output_contract).invoke([
                 SystemMessage(content=(
                     "Preserve the output's meaning. Repair only JSON syntax and schema violations. "
                     f"Return raw JSON, then emit {STRUCTURED_END_TOKEN}. The marker is transport "
@@ -457,7 +634,7 @@ class Agent(ABC):
                                       f"\n\nOutput to repair:\n{raw_text[:12000]}"))
                 ], stop=[STRUCTURED_END_TOKEN],
                 config=_call_config(self.name, output_contract + "_repair",
-                                    repair_layer, "repair"))
+                                    repair_layer, "repair", validation_diagnostic))
             parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
             if parsed is None:
                 raise ValueError("repair 결과에서 JSON 객체를 찾지 못했습니다.")
@@ -478,9 +655,32 @@ class Agent(ABC):
         fields = ", ".join(str(k) for k in (schema.get("properties") or {}))
         from app.agent.workflow.anchors import (
             format_anchor_contract, format_requested_outcome_contract,
+            requested_outcome_contract,
         )
         anchor_contract = format_anchor_contract(state)
         outcome_contract = format_requested_outcome_contract(state)
+        outcome = requested_outcome_contract(state)
+        single_outcome = (len(outcome.get("outcomes") or []) == 1
+                          and not outcome.get("omitted_count")
+                          and not (outcome.get("outcomes") or [{}])[0].get("truncated"))
+        if single_outcome:
+            outcome_memo_rule = (
+                outcome_contract + " Preserve the exact requested action and object in the "
+                "memo and identify the root or child artifact that serves it. Opaque binding ids are "
+                "runtime-owned for this single-outcome request; do not make them a projection "
+                "requirement. "
+            )
+        elif outcome_contract:
+            outcome_memo_rule = (
+                outcome_contract + " Treat each requested-outcome instruction as an authoritative "
+                "user result. Copy its contract id, outcome id, source task id, and instruction "
+                "verbatim into the memo. Evidence may refine implementation context but must not "
+                "replace, reverse, or omit the requested action and object. Record which root or "
+                "child item serves each outcome; distinguish a child stage inherited from its "
+                "parent from a child serving a different explicit outcome. "
+            )
+        else:
+            outcome_memo_rule = ""
         memo_instruction = (
             "Produce a compact semantic decision memo for a later typed projection. "
             "Resolve the task using the system instructions and evidence above. Preserve exact "
@@ -489,13 +689,7 @@ class Agent(ABC):
             f"Cover these top-level output fields: {fields or '(schema-defined fields)'}. "
             + ((anchor_contract + " Preserve every listed anchor in the semantic memo; do not "
                 "translate, renumber, singularize, or silently omit it. ") if anchor_contract else "")
-            + ((outcome_contract + " Treat each requested-outcome instruction as an authoritative "
-                "user result. Copy its contract id, outcome id, source task id, and instruction "
-                "verbatim into the memo. Evidence may refine implementation context but must not "
-                "replace, reverse, or omit the requested action and object. Record which root or "
-                "child item serves each outcome; distinguish a child stage inherited from its "
-                "parent from a child serving a different explicit outcome. ")
-               if outcome_contract else "")
+            + outcome_memo_rule
             + f"End the memo with {SEMANTIC_MEMO_END_TOKEN}."
         )
         semantic_layer = self.execution_layer("synthesis")
@@ -518,6 +712,25 @@ class Agent(ABC):
         if not memo:
             raise RuntimeError("semantic memo가 비어 있습니다.")
 
+        if single_outcome:
+            projection_outcome_rule = (
+                "\n\n" + outcome_contract
+                + "\nPreserve its exact requested action and object. The runtime attaches the "
+                  "single opaque outcome binding to the root or child artifact; do not emit "
+                  "fields absent from the target schema."
+            )
+        elif outcome_contract:
+            projection_outcome_rule = (
+                "\n\n" + outcome_contract
+                + "\nWhen the target schema exposes outcome contract fields, copy the contract "
+                  "id and bind every draft item to the applicable opaque outcome id(s). Preserve "
+                  "the requested action and object in title, scope, and acceptance criteria; never "
+                  "substitute an evidence method for the requested result. A nested child stage "
+                  "may inherit its parent's mapping; emit child outcome refs only for a distinct "
+                  "explicit mapping and never copy every contract id to every child."
+            )
+        else:
+            projection_outcome_rule = ""
         projection_messages = [
             SystemMessage(content=(
                 "You are a literal typed projection engine. Convert only the supplied semantic "
@@ -529,24 +742,23 @@ class Agent(ABC):
                              + "\nKeep each listed anchor verbatim in every relevant title, body, "
                                "or requested field; never turn an ordinal into a bare suffix.")
                             if anchor_contract else "")
-                         + (("\n\n" + outcome_contract
-                             + "\nWhen the target schema exposes outcome contract fields, copy the "
-                               "contract id and bind every draft item to the applicable opaque "
-                               "outcome id(s). Preserve the requested action and object in title, "
-                               "scope, and acceptance criteria; never substitute an evidence method "
-                               "for the requested result. A nested child stage may inherit its "
-                               "parent's mapping; emit child outcome refs only for a distinct explicit "
-                               "mapping and never copy every contract id to every child.")
-                            if outcome_contract else "")),
+                         + projection_outcome_rule),
         ]
         repair_context = (memo
                           + (("\n\n" + anchor_contract) if anchor_contract else "")
                           + (("\n\n" + outcome_contract) if outcome_contract else ""))
-        return self._invoke_structured_transport(
+        out = self._invoke_structured_transport(
             state, projection_messages, output_contract="typed_projection",
             capability_tier=projection_tier, task_profile="fast_structured",
             repair_context=repair_context, execution_layer="projection",
             execution_stage="projection",
+        )
+        # The projector receives only the already-decided memo plus the concrete violation;
+        # system prompt, conversation, research evidence, and task payload are not resent.
+        return self._apply_post_projection_correction(
+            state, out, context_label="Semantic memo", context=memo,
+            capability_tier=projection_tier, execution_layer="projection",
+            output_contract="typed_projection_correction",
         )
 
     def invoke_structured(self, state: AgentState, messages: list) -> dict:
@@ -554,7 +766,38 @@ class Agent(ABC):
         projection_tier = self._semantic_projection_tier()
         if projection_tier:
             return self._invoke_semantic_projection(state, messages, projection_tier)
-        return self._invoke_structured_transport(state, messages)
+        out = self._invoke_structured_transport(state, messages)
+        # Native json_schema normally remains one call. Only a schema-valid role-contract
+        # violation gets one bounded correction containing the previous typed output, never
+        # the original prompt/evidence and never a second semantic task invocation.
+        import json
+        from app.agent.workflow.anchors import (
+            format_anchor_contract, format_requested_outcome_contract,
+        )
+        bounded_context = [
+            "Previous typed output:\n"
+            + json.dumps(out, ensure_ascii=False, separators=(",", ":"))[:12000]
+        ]
+        anchor_contract = format_anchor_contract(state)
+        if anchor_contract:
+            bounded_context.append(anchor_contract)
+        outcome_contract = format_requested_outcome_contract(state)
+        if outcome_contract:
+            bounded_context.append(outcome_contract)
+        # Native structured output has no separate semantic memo. A failed Work projection
+        # therefore needs the already-verified situation in order to produce the requested
+        # artifact rather than inventing it from an empty typed result. This is a bounded
+        # state field, not the original system prompt, conversation, or raw evidence bundle.
+        situation = str(state.get("situation") or "").strip()
+        if situation:
+            bounded_context.append("Verified situation summary:\n" + situation[:6000])
+        semantic_layer = self.execution_layer("synthesis")
+        return self._apply_post_projection_correction(
+            state, out, context_label="Bounded typed decision context",
+            context="\n\n".join(bounded_context),
+            capability_tier=self.model_tier("synthesis", execution_layer=semantic_layer),
+            execution_layer=semantic_layer, output_contract="structured_correction",
+        )
 
     @abstractmethod
     def node(self):

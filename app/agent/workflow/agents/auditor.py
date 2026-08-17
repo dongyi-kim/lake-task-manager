@@ -23,10 +23,17 @@ import re as _re
 from html import unescape
 
 from app.agent.workflow.agents.base import StructuredAgent
-from app.agent.workflow.agents.work_architect import as_bulk_items, draft_full_text
+from app.agent.workflow.agents.work_architect import (
+    _authoritative_explicit_due, _explicit_due_instruction_status,
+    _current_request_boundary_text, _global_exact_due_for_roots,
+    _delegates_existing_epic_choice, _explicit_parent_epic,
+    _expected_due_dates_by_root, _expected_parent_epics_by_root,
+    as_bulk_items, draft_full_text,
+)
 from app.agent.prompts.roles import SYSTEM_AUDITOR
 from app.agent.workflow.anchors import (
-    requested_outcome_contract, validate_draft_outcome_contract,
+    is_ordinal, requested_outcome_contract, required_user_anchors,
+    validate_draft_outcome_contract,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, last_user_text, note, request_text
@@ -140,7 +147,7 @@ Audit the complete ticket draft before it is shown to the user.
 
 The draft must preserve this subject; subject drift is a blocking request-coverage problem.
 
-{request_text(state)}
+{_current_request_boundary_text(state)}
 
 ## Complete Draft Under Audit
 
@@ -154,6 +161,23 @@ The draft must preserve this subject; subject drift is a blocking request-covera
         raw_problems = [p for p in (out.get("problems") or [])
                         if isinstance(p, dict) and p.get("message")]
         problems, advice = _partition_model_problems(state, raw_problems)
+        # A schema-valid projection can still lose the model's problem array while retaining
+        # a negative axis boolean. Treating the empty array as authoritative would turn an
+        # explicit semantic failure into review.ok=true. Preserve every negative axis as a
+        # concrete blocking problem; if a corresponding problem survived projection, do not
+        # duplicate it.
+        synthetic = {
+            "grounded": ("grounded", "근거 충족 여부를 확인하지 못했다",
+                         "티켓·사람·날짜·주장을 검증된 근거와 다시 대조하라"),
+            "rule_compliant": ("rule", "티켓 규칙 준수 여부를 확인하지 못했다",
+                               "타입·계층·필수 필드 규칙을 다시 검증하라"),
+            "answers_request": ("request", "사용자 요청 충족 여부를 확인하지 못했다",
+                                "원 요청의 산출물·행동·대상을 초안과 다시 대조하라"),
+        }
+        for axis, (check, message, fix) in synthetic.items():
+            if out.get(axis) is False and not any(p.get("check") == check for p in problems):
+                problems.append({"index": -1, "check": check,
+                                 "message": message, "fix": fix})
         # boolean과 problems가 서로 어긋나는 모델 출력이 있다. 실행 차단은 구체적인
         # problem으로 설명 가능해야 하므로, 해당 축의 blocking problem 유무를 기준으로
         # 정규화한다. 기계 오류는 아래 auto["ok"]가 별도로 이긴다.
@@ -208,7 +232,7 @@ def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, 
     draft = state.get("draft") or {}
     items = [i for i in (draft.get("items") or []) if isinstance(i, dict)]
     has_bug = any(str(i.get("type") or "").strip().lower() == "bug" for i in items)
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     explicit_shape = (draft.get("structure_source") == "user_specified"
                       or bool(state.get("structure_ok"))
                       or "이 구조로 진행" in req
@@ -249,7 +273,7 @@ def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, 
 
 def _request_parent_action(state: AgentState) -> str:
     """Classify only explicit Epic relationship language; never infer from a plan."""
-    said = (request_text(state) + "\n" + last_user_text(state)).strip()
+    said = _current_request_boundary_text(state)
     # RequestArchitect already owns the exact distinction, including the important
     # "choose one; create only if none exists" fallback. Reuse it so audit cannot silently
     # reinterpret a fallback-create request as selection-only.
@@ -411,28 +435,258 @@ def _problem_contradicts_authoritative_state(state: AgentState, problem: dict) -
     return False
 
 
+_ISSUE_TYPE_TOKEN = _re.compile(
+    r"(?<![A-Za-z가-힣])(Bug|버그|Story|스토리|Feature|피처|Improvement|임프로브먼트)"
+    r"(?=$|[^A-Za-z가-힣]|(?:를|을|로|은|는|와|과)(?=\s|[,.;:!?]|$))", _re.I,
+)
+_ISSUE_TYPE_CANONICAL = {
+    "bug": "Bug", "버그": "Bug", "story": "Story", "스토리": "Story",
+    "feature": "Feature", "피처": "Feature",
+    "improvement": "Improvement", "임프로브먼트": "Improvement",
+}
+_CREATE_ACTION = _re.compile(r"만들|생성|등록|올려", _re.I)
+
+
+def _explicit_issue_type_mentions(text: str) -> list[dict]:
+    """Return issue types explicitly participating in a create instruction.
+
+    A lone type is authoritative only when its suffix directly forms a create phrase. In a
+    multi-type list (``Bug 1건과 Story 1건 만들어``), every type token in that create clause
+    is retained so the caller can map them per root instead of applying the first globally.
+    """
+    source = str(text or "")
+    all_mentions = [{
+        "type": _ISSUE_TYPE_CANONICAL[match.group(1).casefold()],
+        "start": match.start(), "end": match.end(),
+    } for match in _ISSUE_TYPE_TOKEN.finditer(source)]
+    if not all_mentions:
+        return []
+    unique = {row["type"] for row in all_mentions}
+    if len(unique) > 1 and _CREATE_ACTION.search(source):
+        return all_mentions
+    direct = []
+    for row in all_mentions:
+        tail = source[row["end"]:row["end"] + 40]
+        if _re.match(
+            r"\s*(?:를|을|로)?\s*(?:\d+\s*건|한\s*건|두\s*건|하나)?\s*"
+            r"(?:만\s*)?(?:만들|생성|등록|올려)", tail, _re.I,
+        ):
+            direct.append(row)
+    return direct
+
+
+def _type_subject_terms(value: str) -> set[str]:
+    stop = {
+        "건과", "건와", "그리고", "각각", "만들고", "만들어", "만들어줘",
+        "생성", "생성해", "등록", "올려", "작업", "티켓", "task",
+        "bug", "story", "feature", "improvement",
+    }
+    return {token.casefold() for token in _re.findall(
+        r"[A-Za-z][A-Za-z0-9_.-]{1,}|[가-힣]{2,}", str(value or ""),
+    ) if token.casefold() not in stop and not token.isdigit()}
+
+
+def _visible_multi_type_mapping(material: str, mentions: list[dict],
+                                roots: list[dict]) -> dict[int, str]:
+    """Map postfixed type clauses to visible root summaries only on a literal bijection."""
+    if len(mentions) != len(roots) or len(mentions) < 2:
+        return {}
+    subjects = []
+    prior_end = 0
+    for mention in mentions:
+        subjects.append(_type_subject_terms(material[prior_end:mention["start"]]))
+        prior_end = mention["end"]
+    root_terms = [_type_subject_terms(str(row.get("summary") or "")) for row in roots]
+    mapping: dict[int, str] = {}
+    used: set[int] = set()
+    for index, terms in enumerate(subjects):
+        siblings = set().union(*(other for pos, other in enumerate(subjects) if pos != index))
+        distinctive = terms - siblings
+        if not distinctive:
+            return {}
+        candidates = [root_index for root_index, values in enumerate(root_terms)
+                      if distinctive <= values]
+        if len(candidates) != 1 or candidates[0] in used:
+            return {}
+        used.add(candidates[0])
+        mapping[candidates[0]] = mentions[index]["type"]
+    return mapping if len(mapping) == len(roots) else {}
+
+
+def _expected_issue_types_by_root(state: AgentState, roots: list[dict]) -> dict[int, str]:
+    """Resolve exact issue types without turning a multi-type request into a global type."""
+    material = _current_request_boundary_text(state)
+    mentions = _explicit_issue_type_mentions(material)
+    unique = {row["type"] for row in mentions}
+    if len(unique) == 1:
+        expected = next(iter(unique))
+        return {index: expected for index in range(len(roots))}
+    if len(unique) < 2:
+        return {}
+
+    contract = requested_outcome_contract(state)
+    outcome_types = {}
+    for outcome in contract.get("outcomes") or []:
+        values = {row["type"] for row in _explicit_issue_type_mentions(
+            str(outcome.get("instruction") or ""))}
+        if len(values) == 1:
+            outcome_types[str(outcome.get("id") or "")] = next(iter(values))
+    mapped = {}
+    for index, root in enumerate(roots):
+        values = {outcome_types[ref] for ref in (
+            str(value) for value in (root.get("outcome_refs") or [])
+        ) if ref in outcome_types}
+        if len(values) == 1:
+            mapped[index] = next(iter(values))
+    if len(mapped) == len(roots):
+        return mapped
+    # Outcome ids may be unavailable in legacy/direct drafts. Fall back only when visible
+    # root subjects establish the same one-to-one literal mapping.
+    return _visible_multi_type_mapping(material, mentions, roots)
+
+
+def _deterministic_request_field_errors(state: AgentState, roots: list[dict]) -> list[dict]:
+    """Check exact user-owned fields that semantic review must never reinterpret."""
+    errors: list[dict] = []
+
+    ordinals = [value for value in required_user_anchors(state) if is_ordinal(value)]
+    if len(roots) == 1 and len(ordinals) == 1:
+        expected = ordinals[0]
+        rows = [roots[0], *[
+            child for child in (roots[0].get("children") or []) if isinstance(child, dict)
+        ]]
+        bare = _re.compile(
+            r"(?<![0-9A-Za-z가-힣_])차(?=\s|[—–\-:·,.;!?()\[\]{}]|$)", _re.I)
+        for index, row in enumerate(rows):
+            visible = unescape(_re.sub(
+                r"<[^>]+>", " ",
+                f"{row.get('summary') or ''} {row.get('description') or ''}",
+            ))
+            if bare.search(visible) or expected not in visible:
+                errors.append({
+                    "index": index,
+                    "field": "ordinal",
+                    "message": (f"사용자 지정 범위 {expected}가 root/child 표시에서 "
+                                "누락되거나 bare '차'로 손상됐다"),
+                })
+
+    for index, expected_type in _expected_issue_types_by_root(state, roots).items():
+        row = roots[index]
+        actual = str(row.get("type") or row.get("issue_type") or "").strip()
+        if actual.casefold() != expected_type.casefold():
+            errors.append({
+                "index": index, "field": "type",
+                "message": f"사용자가 {expected_type}를 지정했으나 초안 타입은 {actual or '비어 있음'}",
+            })
+
+    explicit_parents = _expected_parent_epics_by_root(state, roots)
+    explicit_parent = _explicit_parent_epic(state)
+    if explicit_parents:
+        for index, expected_parent in explicit_parents.items():
+            row = roots[index]
+            actual = str(row.get("epic") or row.get("parent") or "").strip().upper()
+            if actual != expected_parent.upper():
+                errors.append({
+                    "index": index, "field": "parent",
+                    "message": (f"해당 요청 결과의 상위 Epic은 {expected_parent}이나 "
+                                f"초안은 {actual or '비어 있음'}"),
+                })
+    elif explicit_parent:
+        for index, row in enumerate(roots):
+            actual = str(row.get("epic") or row.get("parent") or "").strip().upper()
+            if actual != explicit_parent.upper():
+                errors.append({
+                    "index": index, "field": "parent",
+                    "message": f"사용자 지정 상위 Epic은 {explicit_parent}이나 초안은 {actual or '비어 있음'}",
+                })
+    elif _delegates_existing_epic_choice(state) and "materialized_ticket_sources" in state:
+        ledger = state.get("materialized_ticket_sources") or {}
+        candidates = {str(key or "").strip().upper()
+                      for key in (ledger.get("parentCandidateKeys") or []) if str(key or "").strip()}
+        for index, row in enumerate(roots):
+            actual = str(row.get("epic") or row.get("parent") or "").strip().upper()
+            invalid = (actual not in candidates if candidates else bool(actual))
+            if invalid:
+                errors.append({
+                    "index": index, "field": "parent",
+                    "message": (
+                        f"자동 선택 상위 Epic {actual}이 QueryRunner가 상세 확인한 "
+                        f"후보({', '.join(sorted(candidates))})에 포함되지 않는다"
+                        if candidates else
+                        f"검증된 상위 Epic 후보가 없는데 불투명한 parent {actual}이 지정됐다"
+                    ),
+                })
+    return errors
+
+
 def _machine_check(state: AgentState) -> dict:
     """`domain/bulk.validate_bulk` — 화면의 Bulk 생성과 **같은 규칙**. LLM 을 거치지 않는다."""
     draft = state.get("draft") or {}
     items = as_bulk_items(draft)
     contract_errors = validate_draft_outcome_contract(state, draft)
+    due_errors = []
+    roots = [item for item in (draft.get("items") or []) if isinstance(item, dict)]
+    field_errors = _deterministic_request_field_errors(state, roots)
+    per_outcome_due = _expected_due_dates_by_root(state, roots)
+    due_status, due_literal = _explicit_due_instruction_status(state)
+    expected_due = _authoritative_explicit_due(state)
+    if per_outcome_due:
+        for index, expected in per_outcome_due.items():
+            actual_due = str(roots[index].get("duedate") or "").strip()
+            if actual_due != expected:
+                due_errors.append({
+                    "index": index, "field": "duedate",
+                    "message": (f"해당 요청 결과의 마감일은 {expected}이나 초안은 "
+                                f"{actual_due or '비어 있음'}"),
+                })
+    elif due_status in {"invalid", "ambiguous"}:
+        due_errors.append({
+            "index": 0 if roots else -1,
+            "field": "duedate",
+            "message": (
+                (f"사용자 지정 마감일 {due_literal}은 유효하지 않다"
+                 if due_status == "invalid" and due_literal
+                 else "사용자가 서로 다른 마감일을 지정해 하나로 확정할 수 없다")
+                + " — 유효한 단일 날짜를 확인하기 전에는 승인할 수 없다"
+            ),
+        })
+    elif due_status == "clear" and any(str(row.get("duedate") or "").strip() for row in roots):
+        due_errors.append({
+            "index": 0, "field": "duedate",
+            "message": "사용자가 마감일 제거를 요청했으나 초안에 날짜가 남아 있다",
+        })
+    elif expected_due and (len(roots) == 1
+                           or _global_exact_due_for_roots(state, len(roots))):
+        for index, root in enumerate(roots):
+            actual_due = str(root.get("duedate") or "").strip()
+            if actual_due == expected_due:
+                continue
+            due_errors.append({
+                "index": index,
+                "field": "duedate",
+                "message": (f"사용자 지정 마감일은 {expected_due}이나 초안은 "
+                            f"{actual_due or '비어 있음'} — exact date를 그대로 보존해야 한다"),
+            })
     if not items:
-        return {"ok": False, "errors": contract_errors, "warnings": [],
+        return {"ok": False, "errors": contract_errors + due_errors + field_errors, "warnings": [],
                 "text": "초안이 비어 있다."}
     # Epic 은 Bulk 규칙(validate_bulk)의 대상이 아니다 — 요약만 확인하고 통과.
     # (Epic Link·타입·SP 규칙은 전부 자식 티켓 이야기다.)
     if (draft.get("mode") or "task") == "epic":
         ok = bool((items[0].get("summary") or "").strip())
         errors = ([] if ok else [{"index": 0, "field": "summary",
-                                  "message": "Epic 요약이 비었다"}]) + contract_errors
-        return {"ok": ok and not contract_errors, "errors": errors,
+                                  "message": "Epic 요약이 비었다"}]) \
+            + contract_errors + due_errors + field_errors
+        return {"ok": ok and not errors, "errors": errors,
                 "warnings": [], "text": "Epic 초안 — 기계 검증 대상 아님(요약 확인만)."}
     try:
         from app.agent.tools._ctx import client
         from app.domain.bulk import validate_bulk
         r = validate_bulk(draft.get("mode") or "task", items, client().bulk_lookup())
     except Exception as e:
-        return {"ok": False, "errors": [{"message": str(e)[:200]}] + contract_errors,
+        return {"ok": False,
+                "errors": ([{"message": str(e)[:200]}] + contract_errors
+                           + due_errors + field_errors),
                 "warnings": [],
                 "text": f"검증을 수행하지 못했다: {str(e)[:200]}"}
     warnings = list(r.get("warnings") or [])
@@ -469,11 +723,11 @@ def _machine_check(state: AgentState) -> dict:
             warnings.append({"index": i, "message":
                              "완료 조건(DoD)이 없다 — 무엇을 만족하면 끝인지 적어야 한다"})
 
-    errors = list(r.get("errors") or []) + contract_errors
+    errors = list(r.get("errors") or []) + contract_errors + due_errors + field_errors
     lines = [f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
              for e in errors]
     lines += [f"- (경고) [{w.get('index')}] {w.get('message')}" for w in warnings]
-    return {"ok": bool(r.get("ok")) and not contract_errors, "errors": errors,
+    return {"ok": bool(r.get("ok")) and not errors, "errors": errors,
             "warnings": warnings,
             "text": "\n".join(lines) if lines else "통과 — 형식·실값 오류 없음"}
 

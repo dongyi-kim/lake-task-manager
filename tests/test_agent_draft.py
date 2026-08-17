@@ -300,6 +300,42 @@ def test_explicit_child_owners_are_left_alone():
     assert kids[1]["assignee"] and kids[1]["assignee"] != "skcc.x1042", "빈 것만 채운다"
 
 
+def test_named_assignee_from_an_old_topic_does_not_leak_into_a_new_request():
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.agent.workflow.agents.work_architect import _apply_named_assignees
+
+    state = {
+        "request_text": "성능 측정은 x1402",
+        "turn_continuation": False,
+        "messages": [
+            HumanMessage(content="성능 측정은 x1402"),
+            AIMessage(content="담당을 반영했습니다."),
+            HumanMessage(content="새 주제로 성능 측정 리포트 구조를 검토해줘"),
+        ],
+    }
+    rows = [{"summary": "성능 측정 리포트 구조 검토", "type": "Task"}]
+
+    _apply_named_assignees(state, rows)
+
+    assert not rows[0].get("assignee")
+
+
+def test_named_assignee_remains_authoritative_inside_the_same_continuation():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.work_architect import _apply_named_assignees
+
+    state = {
+        "request_text": "성능 측정은 x1402",
+        "turn_continuation": True,
+        "messages": [HumanMessage(content="제목만 성능 측정 리포트 작성으로 바꿔줘")],
+    }
+    rows = [{"summary": "성능 측정 리포트 작성", "type": "Task"}]
+
+    _apply_named_assignees(state, rows)
+
+    assert rows[0]["assignee"] == "skcc.x1402"
+
+
 def test_saying_it_will_split_without_children_is_flagged():
     """'나눠서 진행한다'고 판단해 놓고 children 이 없으면 그건 판단이 아니라 말뿐이다."""
     r = _applied(structure="task_with_subtasks", structure_why="여러 사람이 나눠서")
@@ -556,11 +592,12 @@ def test_delegated_under_scale_epic_is_downgraded_to_grounded_task_without_model
             HumanMessage(content=original),
             HumanMessage(content="기간은 2주 정도고 ETL 쪽만 손볼 거야. 알아서 진행해"),
         ],
-        # A revised follow-up may become the active request root even though the literal
-        # first turn still owns the requested shape.  The recovery must use message history.
-        "request_text": "기간은 2주 정도고 ETL 쪽만 손볼 거야. 알아서 진행해",
+        # Session freezes the initial request and marks the answer as its continuation.
+        # The current boundary may use both, but unrelated older human turns stay excluded.
+        "request_text": original,
         "situation": "직접 일치하는 내부 이력 없음",
         "intent": Intent.PLAN_WORK,
+        "turn_continuation": True,
         "turns": 1,
     }
 
@@ -840,12 +877,13 @@ def test_followup_delegation_keeps_the_original_pipeline_multistage_signal():
             '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
             '<li data-checked="false">pipeline 동작 확인</li></ul>')
     state = {
-        "request_text": "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지. 알아서 진행해",
+        "request_text": "starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해",
         "messages": [
             HumanMessage(content="starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해"),
             AIMessage(content="여러 단계로 나뉠 수 있습니다. 구조를 선택해 주세요."),
             HumanMessage(content="Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지. 알아서 진행해"),
         ],
+        "turn_continuation": True,
         "turns": 1,
     }
     out = {"questions": [], "mode": "task", "rationale": "",
@@ -2429,6 +2467,65 @@ def test_delegated_epic_selection_does_not_treat_one_short_acronym_as_proof(monk
     ) is None
 
 
+def test_delegated_parent_uses_only_successfully_materialized_candidate(monkeypatch):
+    from app.agent.workflow.agents import work_architect as R
+
+    monkeypatch.setattr(
+        R, "_pick_parent_epic",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("delegated selection must not reopen the global Epic list")
+        ),
+    )
+    monkeypatch.setattr(R, "_inferred_epic_rejection", lambda *_args, **_kwargs: "")
+    state = _msg(
+        "AcmeDB DeltaSketch pipeline Task를 만들어줘. Epic은 네가 골라줘. 알아서",
+    )
+    state["materialized_ticket_sources"] = {
+        "parentCandidateKeys": ["PX-VERIFIED", "PX-FAILED", "PX-SEARCH-ONLY"],
+        "ticketDetails": [
+            {"key": "PX-VERIFIED", "type": "Epic",
+             "summary": "[Runtime] AcmeDB DeltaSketch rollout", "module": "Runtime"},
+            {"key": "PX-FAILED", "type": "Epic", "error": "permission denied"},
+            # Opened as evidence, but not returned by the structural parent query.
+            {"key": "PX-EVIDENCE", "type": "Epic",
+             "summary": "[Runtime] AcmeDB DeltaSketch exact match", "module": "Runtime"},
+        ],
+    }
+    item = {"summary": "[Runtime] AcmeDB DeltaSketch pipeline", "type": "Task",
+            "components": ["Runtime"]}
+
+    got = R._delegated_parent_epic(state, item)
+
+    assert got and got["key"] == "PX-VERIFIED"
+
+
+def test_delegated_parent_without_materialized_candidate_fails_closed(monkeypatch):
+    from app.agent.workflow.agents import work_architect as R
+
+    monkeypatch.setattr(
+        R, "_pick_parent_epic",
+        lambda *_args, **_kwargs: {
+            "key": "PX-UNOPENED", "type": "Epic",
+            "summary": "[Runtime] AcmeDB DeltaSketch pipeline",
+        },
+    )
+    state = _msg(
+        "AcmeDB DeltaSketch pipeline Task를 만들어줘. Epic은 네가 골라줘. 알아서",
+    )
+    state["materialized_ticket_sources"] = {
+        "parentCandidateKeys": ["PX-UNOPENED"],
+        "ticketDetails": [],
+    }
+
+    got = R._delegated_parent_epic(
+        state,
+        {"summary": "[Runtime] AcmeDB DeltaSketch pipeline", "type": "Task",
+         "components": ["Runtime"]},
+    )
+
+    assert got is None
+
+
 def test_delegated_epic_replaces_rejected_model_placement(monkeypatch):
     from app.agent.workflow.agents import work_architect as R
 
@@ -2437,18 +2534,18 @@ def test_delegated_epic_replaces_rejected_model_placement(monkeypatch):
         R, "_inferred_epic_rejection",
         lambda _state, _item, key: "module mismatch" if key == "PX-OLD" else "",
     )
-    monkeypatch.setattr(
-        R, "_pick_parent_epic",
-        lambda _summary, _module="", *, delegated=False: (
-            {"key": "PX-RIGHT", "summary": "[Runtime] Reliability", "module": "Runtime"}
-            if delegated else None
-        ),
-    )
     state = _msg(
         "AcmeDB DeltaSketch 필드 추가 Task를 만들어줘. Epic은 네가 골라줘. 알아서",
         request_text="AcmeDB DeltaSketch 필드 추가 Task를 만들어줘",
         situation="기존 이력 확인 완료",
     )
+    state["materialized_ticket_sources"] = {
+        "parentCandidateKeys": ["PX-RIGHT"],
+        "ticketDetails": [{
+            "key": "PX-RIGHT", "type": "Epic",
+            "summary": "[Runtime] AcmeDB DeltaSketch", "module": "Runtime",
+        }],
+    }
     out = {"questions": [], "mode": "task", "structure": "single_task",
            "structure_source": "inferred", "rationale": "",
            "items": [{
@@ -2812,6 +2909,38 @@ def test_user_anchors_are_sealed_in_child_titles_and_bodies():
     assert "1차" in child["description"] and " pipeline 차" not in child["description"]
 
 
+def test_korean_only_single_ordinal_is_restored_without_a_latin_subject_anchor():
+    from app.agent.workflow.agents.work_architect import _preserve_required_user_anchors
+
+    items = [{
+        "summary": "[ETL] 통계 파이프라인 구현",
+        "description": ("<h3>작업 범위</h3><ul><li>포함: 통계 파이프라인 구현</li></ul>"),
+    }]
+
+    assert _preserve_required_user_anchors(_msg("통계 파이프라인 1차 구현 Task 만들어줘"), items)
+    assert "1차" in items[0]["summary"]
+    assert "1차" in items[0]["description"]
+
+
+def test_ordinal_only_anchor_does_not_spread_across_multiple_roots_or_choose_a_phase():
+    from copy import deepcopy
+    from app.agent.workflow.agents.work_architect import _preserve_required_user_anchors
+
+    multiple_roots = [
+        {"summary": "[ETL] 수집 구현", "description": ""},
+        {"summary": "[Catalog] 조회 구현", "description": ""},
+    ]
+    original_roots = deepcopy(multiple_roots)
+    assert not _preserve_required_user_anchors(
+        _msg("수집과 조회를 1차 범위로 각각 Task 만들어줘"), multiple_roots)
+    assert multiple_roots == original_roots
+
+    multi_phase = [{"summary": "[ETL] 통계 파이프라인 구현", "description": ""}]
+    assert not _preserve_required_user_anchors(
+        _msg("통계 파이프라인 1차와 2차 구현 Task 만들어줘"), multi_phase)
+    assert "1차" not in multi_phase[0]["summary"] and "2차" not in multi_phase[0]["summary"]
+
+
 def test_anchor_sealing_changes_only_visible_related_body_text():
     """HTML attributes, badges, links, and code are opaque to deterministic anchor repair."""
     from app.agent.workflow.agents.work_architect import _preserve_required_user_anchors
@@ -2846,7 +2975,7 @@ def test_action_specific_proof_drops_sentence_punctuation_before_korean_particle
     assert ".의" not in proof
 
 
-def test_work_schema_requires_opaque_outcome_binding_for_create_projection():
+def test_single_outcome_binding_is_runtime_owned_not_model_required():
     from app.agent.workflow.anchors import requested_outcome_contract
 
     state = _msg(
@@ -2861,20 +2990,38 @@ def test_work_schema_requires_opaque_outcome_binding_for_create_projection():
     schema = WorkArchitect().schema_for(state)
     prompt = WorkArchitect().task(state)
 
-    assert "outcome_contract_id" in schema["required"]
-    assert schema["properties"]["outcome_contract_id"]["enum"] == [contract["id"]]
+    assert "outcome_contract_id" not in schema["required"]
+    assert "outcome_contract_id" not in schema["properties"]
     item_schema = schema["properties"]["items"]["items"]
-    assert "outcome_refs" in item_schema["required"]
-    assert item_schema["properties"]["outcome_refs"]["items"]["enum"] == [
-        row["id"] for row in contract["outcomes"]]
+    assert "outcome_refs" not in item_schema["required"]
+    assert "outcome_refs" not in item_schema["properties"]
     child_schema = item_schema["properties"]["children"]["items"]
-    assert "outcome_refs" in child_schema["properties"]
+    assert "outcome_refs" not in child_schema["properties"]
     assert "outcome_refs" not in child_schema["required"]
-    assert child_schema["properties"]["outcome_refs"]["items"]["enum"] == [
-        row["id"] for row in contract["outcomes"]]
     assert contract["id"] in prompt
     assert "create-index" in prompt
     assert "AcmeDB DeltaSketch index 생성" in prompt
+
+
+def test_multiple_outcomes_keep_model_mapping_required():
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    state = _msg(
+        "AcmeDB index와 DeltaSketch 파이프라인을 만들어줘",
+        intent=Intent.PLAN_WORK,
+        request_plan={"tasks": [
+            {"id": "create-index", "kind": "ticket", "write_intent": True,
+             "instruction": "AcmeDB index 생성"},
+            {"id": "create-pipeline", "kind": "ticket", "write_intent": True,
+             "instruction": "DeltaSketch 파이프라인 생성"},
+        ]},
+    )
+    contract = requested_outcome_contract(state)
+    schema = WorkArchitect().schema_for(state)
+
+    assert len(contract["outcomes"]) == 2
+    assert "outcome_contract_id" in schema["required"]
+    assert "outcome_refs" in schema["properties"]["items"]["items"]["required"]
 
 
 def test_work_draft_preserves_typed_outcome_binding_for_auditor():
@@ -2907,6 +3054,102 @@ def test_work_draft_preserves_typed_outcome_binding_for_auditor():
 
     assert draft["outcome_contract_id"] == contract["id"]
     assert draft["items"][0]["outcome_refs"] == [ref]
+
+
+def test_work_draft_injects_single_outcome_binding_deterministically():
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    state = _msg(
+        "AcmeDB DeltaSketch index를 생성해줘",
+        intent=Intent.PLAN_WORK,
+        request_plan={"tasks": [{
+            "id": "create-index", "kind": "ticket", "write_intent": True,
+            "instruction": "AcmeDB DeltaSketch index 생성",
+        }]},
+    )
+    contract = requested_outcome_contract(state)
+    ref = contract["outcomes"][0]["id"]
+    out = {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_source": "user_specified", "rationale": "",
+        "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch index 생성", "type": "Task",
+            "background": "index 생성 요청", "scope_in": ["index 생성"],
+            "scope_out": [], "dod": ["생성 결과 기록", "회귀 테스트 결과 기록"],
+        }],
+    }
+
+    draft = WorkArchitect().apply(state, out)["draft"]
+
+    assert draft["outcome_contract_id"] == contract["id"]
+    assert draft["items"][0]["outcome_refs"] == [ref]
+
+
+@pytest.mark.parametrize("bad_refs", ["swapped", "all-to-all"])
+def test_deterministic_multi_outcome_recovery_rebinds_exact_a_b_roots(bad_refs):
+    from app.agent.workflow.anchors import (
+        requested_outcome_contract, validate_draft_outcome_contract,
+    )
+
+    state = _msg(
+        "AcmeDB index와 DeltaSketch 파이프라인을 각각 생성해줘. 알아서",
+        intent=Intent.PLAN_WORK,
+        request_plan={"tasks": [
+            {"id": "create-index", "kind": "ticket", "write_intent": True,
+             "instruction": "AcmeDB index 생성"},
+            {"id": "create-pipeline", "kind": "ticket", "write_intent": True,
+             "instruction": "DeltaSketch 파이프라인 생성"},
+        ]},
+    )
+    contract = requested_outcome_contract(state)
+    left, right = [row["id"] for row in contract["outcomes"]]
+    refs = ([right], [left]) if bad_refs == "swapped" else ([left, right], [left, right])
+    out = {
+        "questions": [], "mode": "task", "structure": "multiple_tasks",
+        "structure_source": "user_specified", "rationale": "",
+        "outcome_contract_id": contract["id"], "_construction": "literal_delegated",
+        "items": [
+            {"summary": "[Runtime] AcmeDB index 생성", "type": "Task",
+             "description": "", "outcome_refs": refs[0]},
+            {"summary": "[ETL] DeltaSketch 파이프라인 생성", "type": "Task",
+             "description": "", "outcome_refs": refs[1]},
+        ],
+    }
+
+    draft = WorkArchitect().apply(state, out)["draft"]
+
+    assert draft["items"][0]["outcome_refs"] == [left]
+    assert draft["items"][1]["outcome_refs"] == [right]
+    assert validate_draft_outcome_contract(state, draft) == []
+
+
+def test_deterministic_multi_outcome_without_unique_literal_mapping_fails_closed():
+    from app.agent.workflow.anchors import validate_draft_outcome_contract
+
+    state = _msg(
+        "AcmeDB index를 생성하고 검증해줘. 알아서", intent=Intent.PLAN_WORK,
+        request_plan={"tasks": [
+            {"id": "create", "kind": "ticket", "write_intent": True,
+             "instruction": "AcmeDB index 생성"},
+            {"id": "verify", "kind": "ticket", "write_intent": True,
+             "instruction": "AcmeDB index 검증"},
+        ]},
+    )
+    out = {
+        "questions": [], "mode": "task", "structure": "multiple_tasks",
+        "structure_source": "user_specified", "rationale": "",
+        "_construction": "literal_delegated",
+        "items": [
+            {"summary": "[Runtime] AcmeDB index 생성", "type": "Task", "description": ""},
+            {"summary": "[Runtime] AcmeDB index 검증", "type": "Task", "description": ""},
+        ],
+    }
+
+    draft = WorkArchitect().apply(state, out)["draft"]
+
+    assert not draft.get("outcome_contract_id")
+    assert all(not item.get("outcome_refs") for item in draft["items"])
+    assert validate_draft_outcome_contract(state, draft)
 
 
 def test_functionally_different_tasks_are_not_collapsed():
@@ -3094,6 +3337,218 @@ def test_relative_due_overrides_model_date_on_a_single_creation_draft():
     assert r["draft"]["items"][0]["duedate"] == _relative_due("이번 주 금요일까지")
 
 
+def test_explicit_due_overrides_model_date_and_removes_contradictory_reasoning():
+    """A valid exact deadline is user data, not a scheduling suggestion for the model."""
+    out = {"questions": [], "mode": "task", "rationale": (
+               "관련 Epic을 선택했다. 마감은 2026-09-30이 화요일이라 "
+               "2026-09-25 금요일로 조정했다. 구현 범위는 1차까지다."),
+           "structure": "single_task", "structure_source": "user_specified",
+           "items": [{"summary": "[Catalog] 통계 생성 파이프라인 1차 구현", "type": "Task",
+                      "description": "", "duedate": "2026-09-25"}]}
+
+    result = WorkArchitect().apply(
+        _msg("Epic은 골라줘. 마감은 2026-09-30으로 진행해. 알아서",
+             request_text="통계 생성 파이프라인을 개발해줘",
+             turn_continuation=True), out)
+
+    draft = result["draft"]
+    assert draft["items"][0]["duedate"] == "2026-09-30"
+    assert "2026-09-25" not in draft["rationale"]
+    assert "화요일" not in draft["rationale"]
+    assert "사용자 지정 마감일 2026-09-30 그대로 적용." in draft["rationale"]
+
+
+def test_explicit_due_accepts_one_repeated_valid_date_across_request_and_followup():
+    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
+
+    state = _msg(
+        "기한은 2026-09-30으로 확정해",
+        request_text="파이프라인 1차 구현을 2026-09-30까지 완료하는 Task로 만들어줘",
+        turn_continuation=True,
+    )
+
+    assert _authoritative_explicit_due(state) == "2026-09-30"
+
+
+def test_explicit_due_ignores_an_unrelated_history_date_in_the_same_request():
+    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
+
+    state = _msg(
+        "2026-08-15 장애 후속 NDV Task를 만들어줘. 마감은 2026-09-30으로 해",
+        request_text=(
+            "2026-08-15 장애 후속 NDV Task를 만들어줘. "
+            "마감은 2026-09-30으로 해"
+        ),
+    )
+
+    assert _authoritative_explicit_due(state) == "2026-09-30"
+
+
+def test_explicit_due_does_not_choose_between_distinct_or_invalid_dates():
+    from app.agent.workflow.agents.work_architect import (
+        _apply_relative_due_to_single_draft, _authoritative_explicit_due,
+    )
+
+    ambiguous = _msg(
+        "마감은 2026-09-30 또는 기한은 2026-10-07 중 하나야",
+        request_text="파이프라인 Task를 만들어줘",
+        turn_continuation=True,
+    )
+    invalid = _msg(
+        "마감은 2026-02-30으로 해", request_text="파이프라인 Task를 만들어줘",
+        turn_continuation=True,
+    )
+    for state in (ambiguous, invalid):
+        items = [{"summary": "파이프라인 구현", "duedate": "2099-01-01"}]
+        assert _authoritative_explicit_due(state) == ""
+        assert _apply_relative_due_to_single_draft(state, items) == ""
+        assert items[0]["duedate"] == ""
+
+
+@pytest.mark.parametrize("latest", [
+    "마감은 2026-02-30으로 해",
+    "마감은 2026-09-30 또는 2026-10-07 중 하나로 해",
+], ids=("invalid", "ambiguous"))
+def test_invalid_or_ambiguous_current_due_removes_model_date_and_blocks_approval(latest):
+    from app.agent.workflow.agents.auditor import _machine_check
+
+    state = _msg(
+        latest,
+        request_text="NDV 파이프라인 Task를 만들어줘. 알아서",
+        turn_continuation=True,
+        intent=Intent.PLAN_WORK,
+    )
+    out = {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_source": "user_specified", "rationale": "",
+        "items": [{
+            "summary": "[ETL] NDV 파이프라인 구현", "type": "Task",
+            "description": ("<h3>배경</h3><p>구현 요청됨</p>"
+                            "<h3>작업 범위</h3><ul><li>포함: NDV 파이프라인 구현</li>"
+                            "<li>제외: 요청 외 변경</li></ul>"
+                            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                            "<li data-checked=\"false\">테스트 결과 기록</li></ul>"),
+            "duedate": "2099-01-01",
+        }],
+    }
+
+    result = WorkArchitect().apply(state, out)
+
+    assert result["draft"]["items"][0]["duedate"] == ""
+    assert any(question.get("field") == "duedate"
+               and question.get("required_input") is True
+               for question in result["questions"])
+    audit = _machine_check({**state, "draft": result["draft"]})
+    assert not audit["ok"]
+    assert any(error.get("field") == "duedate" for error in audit["errors"])
+
+
+def test_explicit_due_clear_removes_model_date_without_an_interview():
+    state = _msg(
+        "마감 제거해줘",
+        request_text="NDV 파이프라인 Task를 만들어줘. 알아서",
+        turn_continuation=True,
+        intent=Intent.PLAN_WORK,
+    )
+    out = {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_source": "user_specified", "rationale": "",
+        "items": [{
+            "summary": "[ETL] NDV 파이프라인 구현", "type": "Task",
+            "description": "", "duedate": "2099-01-01",
+        }],
+    }
+
+    result = WorkArchitect().apply(state, out)
+
+    assert result["draft"]["items"][0]["duedate"] == ""
+    assert not any(question.get("field") == "duedate" for question in result["questions"])
+
+
+def test_explicit_due_ignores_dates_from_stale_topic_messages():
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
+
+    state = {
+        "request_text": "새 NDV 파이프라인 Task를 만들어줘. 알아서",
+        "turn_continuation": False,
+        "messages": [
+            HumanMessage(content="이전 CDC Task 마감은 2026-08-31로 해줘"),
+            AIMessage(content="CDC Task 초안을 정리했습니다."),
+            HumanMessage(content="새 NDV 파이프라인 Task를 만들어줘. 알아서"),
+        ],
+    }
+
+    assert _authoritative_explicit_due(state) == ""
+
+
+def test_explicit_due_uses_only_frozen_request_and_current_continuation():
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
+
+    state = {
+        "request_text": "NDV 파이프라인 Task를 2026-09-30까지 만들어줘",
+        "turn_continuation": True,
+        "messages": [
+            HumanMessage(content="이전 CDC Task 마감은 2026-08-31로 해줘"),
+            AIMessage(content="CDC Task 초안을 정리했습니다."),
+            HumanMessage(content="NDV 파이프라인 Task를 2026-09-30까지 만들어줘"),
+            AIMessage(content="기한을 2026-09-30으로 확정할까요?"),
+            HumanMessage(content="2026-09-30"),
+        ],
+    }
+
+    assert _authoritative_explicit_due(state) == "2026-09-30"
+
+
+def test_current_followup_due_supersedes_frozen_original_due():
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.agent.workflow.agents.work_architect import _authoritative_explicit_due
+
+    state = {
+        "request_text": "NDV 파이프라인 Task를 2026-09-30까지 만들어줘",
+        "turn_continuation": True,
+        "messages": [
+            HumanMessage(content="NDV 파이프라인 Task를 2026-09-30까지 만들어줘"),
+            AIMessage(content="초안을 만들었습니다."),
+            HumanMessage(content="마감은 2026-10-07로 바꿔줘"),
+        ],
+    }
+
+    assert _authoritative_explicit_due(state) == "2026-10-07"
+
+
+def test_title_only_third_turn_preserves_latest_typed_draft_due_not_frozen_due():
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.agent.workflow.agents.work_architect import (
+        _apply_relative_due_to_single_draft, _authoritative_explicit_due,
+    )
+
+    state = {
+        "request_text": "NDV 파이프라인 Task를 2026-09-30까지 만들어줘",
+        "turn_continuation": True,
+        "draft": {"items": [{
+            "summary": "[ETL] NDV 파이프라인 구현", "type": "Task",
+            "duedate": "2026-10-07",
+        }]},
+        "messages": [
+            HumanMessage(content="NDV 파이프라인 Task를 2026-09-30까지 만들어줘"),
+            AIMessage(content="마감 2026-09-30 초안을 만들었습니다."),
+            HumanMessage(content="마감은 2026-10-07로 바꿔줘"),
+            AIMessage(content="마감을 2026-10-07로 수정했습니다."),
+            HumanMessage(content="제목만 [ETL] NDV 파이프라인 적재 구현으로 바꿔줘"),
+        ],
+    }
+    projected = [{
+        "summary": "[ETL] NDV 파이프라인 적재 구현", "type": "Task",
+        "duedate": "2026-09-30",
+    }]
+
+    assert _authoritative_explicit_due(state) == "2026-10-07"
+    assert _apply_relative_due_to_single_draft(state, projected) == "2026-10-07"
+    assert projected[0]["duedate"] == "2026-10-07"
+
+
 def test_duration_timebox_becomes_a_deterministic_due_date():
     from datetime import date, timedelta
     from app.agent.workflow.agents.work_architect import _relative_due
@@ -3109,6 +3564,25 @@ def test_relative_due_does_not_guess_across_multiple_creation_items():
         _msg("이번 주 금요일까지 A와 B를 각각 만들어줘"), items)
     assert applied == ""
     assert [i["duedate"] for i in items] == ["2099-01-01", "2099-01-02"]
+
+
+def test_global_exact_due_is_applied_to_every_creation_root():
+    request = "로그인 Bug와 검색 Story 둘 다 마감은 2026-09-30으로 해. 알아서"
+    state = _msg(request, request_text=request, intent=Intent.PLAN_WORK)
+    out = {
+        "questions": [], "mode": "task", "structure": "multiple_tasks",
+        "structure_source": "user_specified", "rationale": "",
+        "items": [
+            {"summary": "로그인 오류 수정", "type": "Bug", "description": ""},
+            {"summary": "검색 경험 개선", "type": "Story", "description": ""},
+        ],
+    }
+
+    draft = WorkArchitect().apply(state, out)["draft"]
+
+    assert [item.get("duedate") for item in draft["items"]] == [
+        "2026-09-30", "2026-09-30",
+    ]
 
 
 def test_unrequested_quality_claims_are_removed_from_ticket_body():
@@ -3473,6 +3947,29 @@ def test_the_split_uses_a_stage_rich_dod_before_any_semantic_call(monkeypatch):
         "StarRocks 플랜 반영 연동 검증",
         "실행 절차 문서화",
     ]
+
+
+def test_deterministic_build_split_keeps_numbers_and_ordinals_in_visible_titles(monkeypatch):
+    """The grouping key may erase digits, but payload text must preserve user facts."""
+    from app.agent.workflow.agents import work_architect as R
+
+    monkeypatch.setattr(
+        R, "invoke_schema",
+        lambda *_args, **_kwargs: pytest.fail("deterministic build split must not call a model"),
+    )
+    item = {
+        "summary": "[Runtime] AcmeDB DeltaSketch V2 pipeline 1차 구현",
+        "description": "<h3>완료 조건 (DoD)</h3><ul><li>결과 기록</li></ul>",
+    }
+
+    children = R._split_into_children(
+        _msg("AcmeDB DeltaSketch V2 pipeline을 단계별 Sub-Task로 개발해야 해. 알아서"), item,
+    )
+
+    assert len(children) == 3
+    assert all("V2" in child["summary"] and "1차" in child["summary"]
+               for child in children)
+    assert all(" pipeline 차" not in child["summary"] for child in children)
 
 
 def test_an_ambiguous_split_uses_the_lightweight_semantic_layer(monkeypatch):
@@ -4198,22 +4695,17 @@ def test_boilerplate_closers_are_stripped_by_code_not_asked_for():
         assert keep.splitlines()[-1] in f("결론 한 줄\n\n" + keep), keep
 
 
-def test_delegated_creation_retries_questionless_empty_result_once(monkeypatch):
+def test_delegated_creation_does_not_rerun_the_full_structured_node(monkeypatch):
     from langchain_core.messages import HumanMessage
     from app.agent.workflow.agents.base import StructuredAgent
 
     calls = []
-    outputs = [
-        {"questions": [], "draft": {"items": []}, "change_plan": {}},
-        {"questions": [], "draft": {"items": [
-            {"summary": "NDV 배치 Job 구현", "type": "Task"},
-        ]}, "change_plan": {}},
-    ]
+    output = {"questions": [], "draft": {"items": []}, "change_plan": {}}
 
     def fake_node(_self):
         def run(_state):
-            calls.append(WorkArchitect._force_draft)
-            return outputs.pop(0)
+            calls.append("full-structured-node")
+            return output
         return run
 
     monkeypatch.setattr(StructuredAgent, "node", fake_node)
@@ -4223,8 +4715,111 @@ def test_delegated_creation_retries_questionless_empty_result_once(monkeypatch):
     }
     result = WorkArchitect().node()(state)
 
-    assert calls == [False, True]
-    assert result["draft"]["items"][0]["summary"] == "NDV 배치 Job 구현"
+    assert calls == ["full-structured-node"]
+    assert result == output
+
+
+def test_work_projection_correction_only_targets_optional_delegation_dodge():
+    agent = WorkArchitect()
+    optional_question = {
+        "question": "Epic을 고를까요?", "kind": "choice", "options": ["자동 선택"],
+        "field": "epic", "required_input": False, "why_required": "",
+    }
+    required_question = {
+        "question": "대상 테이블은 무엇인가요?", "kind": "text", "options": [],
+        "field": "target", "required_input": True,
+        "why_required": "작업 대상을 식별할 수 없음",
+    }
+    state = _msg("NDV 배치 Job Task 만들어줘. 알아서", situation="조사 완료")
+
+    correction = agent.post_projection_correction(
+        state, {"questions": [optional_question], "mode": "task", "items": []})
+    assert "optional" in correction.lower() and "complete item" in correction.lower()
+    assert not agent.post_projection_correction(
+        _msg("작업 하나 만들어줘. 알아서", situation="구체 대상 없음"),
+        {"questions": [required_question], "mode": "task", "items": []})
+    assert not agent.post_projection_correction(
+        state, {"questions": [], "mode": "task", "items": [{"summary": "draft"}]})
+    assert not agent.post_projection_correction(
+        _msg("NDV 배치 Job Task 만들어줘", situation="조사 완료"),
+        {"questions": [optional_question], "mode": "task", "items": []})
+    assert "empty artifact" in agent.post_projection_correction(
+        _msg("NDV 배치 Job Task 만들어줘. 알아서"),
+        {"questions": [], "mode": "task", "items": []})
+
+
+def test_work_projection_correction_never_invents_a_vague_delegated_target():
+    agent = WorkArchitect()
+    vague = _msg(
+        "데이터 품질 작업 하나 알아서 만들어줘", intent=Intent.PLAN_WORK,
+        situation="관련 정책은 조회했지만 적용 대상과 행동은 확인되지 않음",
+    )
+    concrete = _msg(
+        "NDV 파이프라인 구현 Task를 알아서 만들어줘", intent=Intent.PLAN_WORK,
+        situation="NDV 파이프라인 구현 대상 확인 완료",
+    )
+
+    assert not agent.post_projection_correction(
+        vague, {"questions": [], "mode": "task", "items": []})
+    assert "complete item" in agent.post_projection_correction(
+        concrete, {"questions": [], "mode": "task", "items": []})
+
+    applied = agent.apply(vague, {
+        "questions": [], "mode": "task", "items": [], "rationale": "",
+    })
+    assert not applied["draft"]["items"]
+    assert any(question.get("field") == "target"
+               and question.get("required_input") is True
+               for question in applied["questions"])
+
+
+def test_default_delegation_does_not_leak_from_an_old_topic():
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.agent.workflow.agents.work_architect import _said_defaults
+
+    state = {
+        "request_text": "이전 NDV 파이프라인은 알아서 만들어줘",
+        "turn_continuation": False,
+        "messages": [
+            HumanMessage(content="이전 NDV 파이프라인은 알아서 만들어줘"),
+            AIMessage(content="초안을 만들었습니다."),
+            HumanMessage(content="새 데이터 품질 작업을 검토해줘"),
+        ],
+    }
+
+    assert not _said_defaults(state)
+    assert "The user delegated optional choices" not in WorkArchitect().task(state)
+
+
+def test_work_projection_correction_preserves_pending_draft_revision_boundary():
+    agent = WorkArchitect()
+    state = _msg(
+        "1번 Sub-Task 제목을 새 제목으로 정리해줘", intent=Intent.MODIFY,
+        draft={"items": [{"summary": "기존 Task", "type": "Task"}]},
+    )
+
+    correction = agent.post_projection_correction(
+        state, {"questions": [], "mode": "task", "items": [], "change": {}})
+
+    assert "complete revised `items`" in correction
+    assert "empty/absent `change`" in correction
+    assert not agent.post_projection_correction(
+        state, {"questions": [], "mode": "task",
+                "items": [{"summary": "수정한 Task", "type": "Task"}], "change": {}})
+    assert "complete revised `items`" in agent.post_projection_correction(
+        state, {"questions": [], "mode": "task",
+                "items": [{"summary": "수정한 Task", "type": "Task"}],
+                "change": {"key": "DL-9203", "summary": "잘못된 Jira 변경"}})
+
+
+def test_work_projection_correction_defers_to_exact_deterministic_mutation():
+    state = _msg(
+        "DL-9203 우선순위를 P1로 변경해줘", intent=Intent.MODIFY,
+        draft={"items": [{"summary": "기존 Task", "type": "Task"}]},
+    )
+
+    assert not WorkArchitect().post_projection_correction(
+        state, {"questions": [], "mode": "task", "items": [], "change": {}})
 
 
 def test_creation_contract_uses_semantic_body_parts_and_runtime_renders_html():
@@ -4280,3 +4875,160 @@ def test_creation_renderer_drops_scope_contradiction_and_links_ticket_references
     assert body.count("Puffin NDV Batch Job 구현") == 1
     assert "운영 배포 및 전체 대상 확대" in body
     assert '<a href="/browse/DL-7001" data-ticket-key="DL-7001">DL-7001</a>' in body
+
+
+def test_new_topic_does_not_inherit_old_bug_goal():
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    state = {
+        "request_text": "로그인 실패 Bug를 만들어줘",
+        "turn_continuation": False,
+        "intent": Intent.PLAN_WORK,
+        "messages": [
+            HumanMessage(content="로그인 실패 Bug를 만들어줘"),
+            AIMessage(content="Bug 초안을 만들었습니다."),
+            HumanMessage(content="검색 결과 즐겨찾기 Story를 만들어줘"),
+        ],
+    }
+
+    prompt = WorkArchitect().task(state)
+
+    assert "Draft one Task-tier `Bug`" not in prompt
+    assert "Confirm interpretation before research" in prompt
+
+
+def test_new_epic_criteria_do_not_use_scale_from_an_old_topic():
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.agent.workflow.agents.work_architect import _new_epic_unmet_criteria
+
+    state = {
+        "request_text": "8주 동안 Task 5건을 x1001 x1002 x1003이 수행할 별도 진척 Epic",
+        "turn_continuation": False,
+        "messages": [
+            HumanMessage(content="8주 동안 Task 5건을 x1001 x1002 x1003이 수행할 별도 진척 Epic"),
+            AIMessage(content="Epic 초안을 만들었습니다."),
+            HumanMessage(content="새 알림 문구 정리 Epic을 만들어줘"),
+        ],
+    }
+
+    unmet = _new_epic_unmet_criteria(state)
+
+    assert "4주 이상 기간 근거 없음" in unmet
+    assert "서로 다른 모듈·담당의 Task 3건 근거 없음" in unmet
+
+
+def test_new_vague_data_quality_topic_does_not_inherit_old_table_target():
+    from langchain_core.messages import AIMessage, HumanMessage
+    from app.agent.workflow.agents.work_architect import _missing_data_quality_target
+
+    state = {
+        "request_text": "orders_daily 테이블 널 비율을 점검해줘",
+        "turn_continuation": False,
+        "messages": [
+            HumanMessage(content="orders_daily 테이블 널 비율을 점검해줘"),
+            AIMessage(content="점검 초안을 만들었습니다."),
+            HumanMessage(content="새 주제로 데이터 품질 작업을 정리해줘"),
+        ],
+    }
+
+    assert _missing_data_quality_target(state)
+
+
+def test_new_threshold_mutation_does_not_reuse_old_numeric_value():
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    state = {
+        "request_text": "DL-9203 임계값을 30분으로 변경해줘",
+        "turn_continuation": False,
+        "intent": Intent.MODIFY,
+        "messages": [
+            HumanMessage(content="DL-9203 임계값을 30분으로 변경해줘"),
+            AIMessage(content="변경 초안을 만들었습니다."),
+            HumanMessage(content="새 요청: DL-9300 임계값을 변경해줘"),
+        ],
+    }
+    output = {
+        "questions": [], "mode": "task", "items": [],
+        "change": {"key": "DL-9300"}, "rationale": "",
+    }
+
+    result = WorkArchitect().apply(state, output)
+
+    assert any(question.get("required_input") is True
+               and "임계값" in question.get("question", "")
+               for question in result["questions"])
+
+
+def test_work_applies_parent_and_due_per_one_to_one_outcome_ref(monkeypatch):
+    import app.agent.workflow.agents.work_architect as work
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    request = (
+        "인증 작업은 DL-100 아래에 마감 2026-09-10으로 만들고, "
+        "검색 작업은 DL-200 아래에 마감 2026-09-20으로 만들어줘"
+    )
+    state = _msg(
+        request, request_text=request, intent=Intent.PLAN_WORK,
+        request_plan={"tasks": [
+            {"id": "auth", "kind": "ticket", "write_intent": True,
+             "instruction": "인증 작업을 DL-100 아래에 마감 2026-09-10으로 생성"},
+            {"id": "search", "kind": "ticket", "write_intent": True,
+             "instruction": "검색 작업을 DL-200 아래에 마감 2026-09-20으로 생성"},
+        ]},
+    )
+    contract = requested_outcome_contract(state)
+    auth_ref, search_ref = [row["id"] for row in contract["outcomes"]]
+    monkeypatch.setattr(work, "_is_epic", lambda key: key in {"DL-100", "DL-200"})
+    output = {
+        "questions": [], "mode": "task", "structure": "multiple_tasks",
+        "structure_source": "user_specified", "rationale": "",
+        "outcome_contract_id": contract["id"],
+        "items": [
+            {"summary": "인증 작업", "type": "Task", "outcome_refs": [auth_ref],
+             "epic": "DL-200", "duedate": "2026-09-20",
+             "background": "인증 작업 요청됨", "scope_in": ["인증 작업"],
+             "scope_out": ["검색 작업"], "dod": ["인증 결과 기록"]},
+            {"summary": "검색 작업", "type": "Task", "outcome_refs": [search_ref],
+             "epic": "DL-100", "duedate": "2026-09-10",
+             "background": "검색 작업 요청됨", "scope_in": ["검색 작업"],
+             "scope_out": ["인증 작업"], "dod": ["검색 결과 기록"]},
+        ],
+    }
+
+    draft = WorkArchitect().apply(state, output)["draft"]
+    by_ref = {row["outcome_refs"][0]: row for row in draft["items"]}
+
+    assert (by_ref[auth_ref]["epic"], by_ref[auth_ref]["duedate"]) == (
+        "DL-100", "2026-09-10")
+    assert (by_ref[search_ref]["epic"], by_ref[search_ref]["duedate"]) == (
+        "DL-200", "2026-09-20")
+
+
+def test_pending_draft_revision_rejects_change_key_from_old_conversation():
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    state = {
+        "request_text": "NDV 통계 검증 Task 초안을 만들어줘",
+        "turn_continuation": True,
+        "intent": Intent.MODIFY,
+        "messages": [
+            HumanMessage(content="예전 DL-777777 상태를 알려줘"),
+            AIMessage(content="DL-777777 상태를 확인했습니다."),
+            HumanMessage(content="NDV 통계 검증 Task 초안을 만들어줘"),
+            AIMessage(content="초안을 만들었습니다."),
+            HumanMessage(content="제목만 NDV 정확성 검증으로 바꿔줘"),
+        ],
+        "draft": {"mode": "task", "items": [{
+            "summary": "NDV 통계 검증", "type": "Task",
+            "description": "<h3>배경</h3><p>검증 요청됨</p>",
+        }]},
+    }
+    output = {
+        "questions": [], "mode": "task", "items": [], "rationale": "",
+        "change": {"key": "DL-777777", "summary": "NDV 정확성 검증"},
+    }
+
+    result = WorkArchitect().apply(state, output)
+
+    assert not result["change_plan"]
+    assert "승인 대기 초안" in result["draft"]["rationale"]

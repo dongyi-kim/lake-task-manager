@@ -62,11 +62,13 @@ def test_shared_context_with_an_actual_request_still_uses_the_normal_route():
 
 def test_everything_else_investigates_first():
     """조사를 건너뛰고 티켓을 만들어 주는 어시스턴트는 중복 티켓 생성기다.
-    plan_work 는 요청이 구체적(sufficient)일 때 조사부터 — 막연하면 해석 확인이 먼저다."""
+    plan_work도 충분성 분류와 무관하게 먼저 조사하고, 남은 blocker만 이후 인터뷰한다."""
     for intent in (Intent.ASK, Intent.MODIFY):
         assert G.route_after_request_architect({"intent": intent}) == "investigate"
     assert G.route_after_request_architect({"intent": Intent.PLAN_WORK,
                                   "sufficient": True}) == "investigate"
+    assert G.route_after_request_architect({"intent": Intent.PLAN_WORK,
+                                  "sufficient": False}) == "investigate"
 
 
 def test_reviewer_keeps_editorial_advice_non_blocking():
@@ -111,7 +113,7 @@ def test_reviewer_discards_findings_contradicted_by_authoritative_draft_state():
         }]},
     }
     model = {
-        "grounded": False, "rule_compliant": False, "answers_request": False,
+        "grounded": True, "rule_compliant": True, "answers_request": True,
         "problems": [
             {"index": -1, "check": "request",
              "message": "사용자가 Epic 생성을 요청했으므로 Task 생성과 충돌합니다.",
@@ -128,6 +130,34 @@ def test_reviewer_discards_findings_contradicted_by_authoritative_draft_state():
     contract = Auditor().task(state)
     assert "select_existing" in contract
     assert "2026-09-30" in contract
+
+
+def test_reviewer_negative_axes_without_projected_problems_fail_closed():
+    from app.agent.workflow.agents.auditor import Auditor
+
+    state = {"draft": {"mode": "task", "items": [{
+        "summary": "NDV 통계 검증", "type": "Task",
+        "description": (
+            "<h3>배경</h3><p>NDV 통계 검증 요청됨</p>"
+            "<h3>작업 범위</h3><ul><li>포함: 통계 검증</li>"
+            "<li>제외: 요청 외 변경</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul><li>검증 결과 기록</li></ul>"
+        ),
+    }]}}
+    model = {
+        "grounded": False, "rule_compliant": False, "answers_request": False,
+        "problems": [], "summary": "projection에서 problem 배열이 유실됨",
+    }
+
+    review = Auditor().apply(state, model)["review"]
+
+    assert review["ok"] is False
+    assert review["checks"] == {
+        "grounded": False, "rule_compliant": False, "answers_request": False,
+    }
+    assert {row.get("check") for row in review["problems"]} == {
+        "grounded", "rule", "request",
+    }
 
 
 def test_reviewer_does_not_treat_selection_intent_as_proof_draft_avoids_epic_creation():
@@ -197,6 +227,281 @@ def test_bug_contract_does_not_require_task_dod():
     review = _machine_check(state)
     assert review["ok"]
     assert not any("완료 조건" in w.get("message", "") for w in review["warnings"])
+
+
+def test_explicit_user_due_mismatch_is_a_machine_blocker():
+    """A semantically wrong but schema-valid date cannot be approved by model opinion."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _machine_check
+
+    state = {
+        "request_text": "AcmeDB DeltaSketch 파이프라인을 만들어줘",
+        "turn_continuation": True,
+        "messages": [HumanMessage(content="마감은 2026-09-30으로 진행해. 알아서")],
+        "draft": {"mode": "task", "items": [{
+            "summary": "[Catalog] AcmeDB DeltaSketch 파이프라인 구현",
+            "type": "Task", "components": ["Catalog"], "duedate": "2026-09-25",
+            "description": (
+                "<h3>배경</h3><p>파이프라인 구현</p>"
+                "<h3>작업 범위</h3><ul><li>포함: 구현</li>"
+                "<li>제외: 요청 외 변경</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul><li>구현 결과 확인</li></ul>"
+            ),
+        }]},
+    }
+
+    review = _machine_check(state)
+
+    assert review["ok"] is False
+    assert any(error.get("field") == "duedate"
+               and "2026-09-30" in error.get("message", "")
+               and "2026-09-25" in error.get("message", "")
+               for error in review["errors"])
+
+
+def test_ordinal_type_and_materialized_parent_mismatches_are_machine_blockers():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _machine_check
+
+    description = (
+        "<h3>배경</h3><p>Puffin NDV 검증</p>"
+        "<h3>작업 범위</h3><ul><li>차 검증 수행</li></ul>"
+        "<h3>완료 조건 (DoD)</h3><ul><li>검증 결과 확인</li></ul>"
+    )
+    state = {
+        "request_text": "Puffin NDV 1차 검증 Bug를 만들어줘",
+        "turn_continuation": True,
+        "messages": [HumanMessage(content=(
+            "기존 Epic은 네가 골라줘. 범위는 1차로 진행해"
+        ))],
+        "materialized_ticket_sources": {
+            "parentCandidateKeys": ["DL-9200"],
+            "ticketDetails": [{"key": "DL-9200", "type": "Epic"}],
+        },
+        "draft": {"mode": "task", "items": [{
+            "summary": "[ETL] Puffin NDV 차 검증", "type": "Task",
+            "epic": "DL-7001", "components": ["ETL"], "description": description,
+            "children": [{
+                "summary": "Puffin NDV 차 검증", "type": "Sub-Task",
+                "description": description,
+            }],
+        }]},
+    }
+
+    review = _machine_check(state)
+
+    assert review["ok"] is False
+    fields = {row.get("field") for row in review["errors"]}
+    assert {"ordinal", "type", "parent"}.issubset(fields)
+
+
+def test_multi_outcome_issue_types_are_checked_against_each_bound_root():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import (
+        _deterministic_request_field_errors, _expected_issue_types_by_root,
+        _explicit_issue_type_mentions,
+    )
+    from app.agent.workflow.agents.work_architect import _current_request_boundary_text
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    state = {
+        "request_text": "로그인 오류 Bug를 만들고 검색 개선 Story를 만들어줘",
+        "messages": [HumanMessage(content=(
+            "로그인 오류 Bug를 만들고 검색 개선 Story를 만들어줘"
+        ))],
+        "request_plan": {"tasks": [
+            {"id": "login-bug", "kind": "ticket", "write_intent": True,
+             "instruction": "로그인 오류 Bug 생성"},
+            {"id": "search-story", "kind": "ticket", "write_intent": True,
+             "instruction": "검색 개선 Story 생성"},
+        ]},
+    }
+    bug_ref, story_ref = [
+        row["id"] for row in requested_outcome_contract(state)["outcomes"]
+    ]
+    correct = [
+        {"summary": "로그인 오류 수정", "type": "Bug", "outcome_refs": [bug_ref]},
+        {"summary": "검색 경험 개선", "type": "Story", "outcome_refs": [story_ref]},
+    ]
+    wrong = [
+        {**correct[0], "type": "Story"},
+        {**correct[1], "type": "Bug"},
+    ]
+
+    assert [[row["type"] for row in _explicit_issue_type_mentions(outcome["instruction"])]
+            for outcome in requested_outcome_contract(state)["outcomes"]] == [
+        ["Bug"], ["Story"],
+    ]
+    assert _current_request_boundary_text(state) == state["request_text"]
+    assert [row["type"] for row in _explicit_issue_type_mentions(
+        _current_request_boundary_text(state))] == ["Bug", "Story"]
+    assert _expected_issue_types_by_root(state, correct) == {0: "Bug", 1: "Story"}
+    assert not [row for row in _deterministic_request_field_errors(state, correct)
+                if row.get("field") == "type"]
+    errors = [row for row in _deterministic_request_field_errors(state, wrong)
+              if row.get("field") == "type"]
+    assert len(errors) == 2
+    assert all(expected in next(row["message"] for row in errors if row["index"] == index)
+               for index, expected in ((0, "Bug"), (1, "Story")))
+
+
+def test_visible_multi_type_roots_are_checked_only_with_a_literal_bijection():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _deterministic_request_field_errors
+
+    request = "로그인 오류 Bug 1건과 검색 개선 Story 1건 만들어줘"
+    state = {"request_text": request, "messages": [HumanMessage(content=request)]}
+    correct = [
+        {"summary": "로그인 오류 수정", "type": "Bug"},
+        {"summary": "검색 경험 개선", "type": "Story"},
+    ]
+    wrong = [{**correct[0], "type": "Story"}, {**correct[1], "type": "Bug"}]
+
+    assert not [row for row in _deterministic_request_field_errors(state, correct)
+                if row.get("field") == "type"]
+    errors = [row for row in _deterministic_request_field_errors(state, wrong)
+              if row.get("field") == "type"]
+    assert {row["index"] for row in errors} == {0, 1}
+
+
+def test_ambiguous_multi_type_request_does_not_apply_the_first_type_to_every_root():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _deterministic_request_field_errors
+
+    request = "Bug 1건과 Story 1건 만들어줘"
+    state = {"request_text": request, "messages": [HumanMessage(content=request)]}
+    roots = [
+        {"summary": "첫 번째 작업", "type": "Task"},
+        {"summary": "두 번째 작업", "type": "Task"},
+    ]
+
+    assert not [row for row in _deterministic_request_field_errors(state, roots)
+                if row.get("field") == "type"]
+
+
+def test_one_explicit_issue_type_still_applies_to_every_created_root():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _deterministic_request_field_errors
+
+    request = "로그인과 검색 오류 Bug 2건 만들어줘"
+    state = {"request_text": request, "messages": [HumanMessage(content=request)]}
+    roots = [
+        {"summary": "로그인 오류", "type": "Bug"},
+        {"summary": "검색 오류", "type": "Story"},
+    ]
+
+    errors = [row for row in _deterministic_request_field_errors(state, roots)
+              if row.get("field") == "type"]
+    assert len(errors) == 1 and errors[0]["index"] == 1
+    assert "Bug" in errors[0]["message"]
+
+
+def test_global_exact_due_is_enforced_for_every_root_but_unscoped_due_is_not():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _machine_check
+
+    body = ("<h3>배경</h3><p>요청됨</p><h3>작업 범위</h3>"
+            "<ul><li>포함: 구현</li><li>제외: 요청 외 변경</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul><li>결과 확인</li></ul>")
+    roots = [
+        {"summary": "로그인 개선", "type": "Task", "description": body,
+         "duedate": "2026-09-30"},
+        {"summary": "검색 개선", "type": "Task", "description": body,
+         "duedate": "2026-09-25"},
+    ]
+    scoped_request = "로그인과 검색 Task 둘 다 마감은 2026-09-30으로 해"
+    scoped = {
+        "request_text": scoped_request,
+        "messages": [HumanMessage(content=scoped_request)],
+        "draft": {"mode": "task", "items": roots},
+    }
+
+    review = _machine_check(scoped)
+
+    due_errors = [row for row in review["errors"] if row.get("field") == "duedate"]
+    assert len(due_errors) == 1 and due_errors[0]["index"] == 1
+    unscoped_request = "로그인과 검색 Task를 만들어줘. 마감은 2026-09-30"
+    unscoped = {
+        **scoped,
+        "request_text": unscoped_request,
+        "messages": [HumanMessage(content=unscoped_request)],
+    }
+    assert not [row for row in _machine_check(unscoped)["errors"]
+                if row.get("field") == "duedate"]
+
+
+def test_delegated_parent_with_no_materialized_candidates_allows_only_top_level():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _deterministic_request_field_errors
+
+    request = "NDV Task를 만들고 기존 Epic은 네가 골라줘"
+    base = {
+        "request_text": request,
+        "messages": [HumanMessage(content=request)],
+        "materialized_ticket_sources": {
+            "parentCandidateKeys": [], "ticketDetails": [],
+        },
+    }
+
+    blank = [{"summary": "NDV 통계 검증", "type": "Task"}]
+    opaque = [{"summary": "NDV 통계 검증", "type": "Task", "epic": "DL-9999"}]
+
+    assert not [row for row in _deterministic_request_field_errors(base, blank)
+                if row.get("field") == "parent"]
+    errors = [row for row in _deterministic_request_field_errors(base, opaque)
+              if row.get("field") == "parent"]
+    assert len(errors) == 1 and "DL-9999" in errors[0]["message"]
+
+
+def test_auditor_maps_parent_and_due_per_outcome_and_blocks_swaps(monkeypatch):
+    from langchain_core.messages import HumanMessage
+    import app.agent.workflow.agents.work_architect as work
+    from app.agent.workflow.agents.auditor import (
+        _deterministic_request_field_errors, _machine_check,
+    )
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    request = (
+        "Bug는 DL-100 아래에 마감 2026-09-10으로 만들고, "
+        "Story는 DL-200 아래에 마감 2026-09-20으로 만들어줘"
+    )
+    state = {
+        "request_text": request, "messages": [HumanMessage(content=request)],
+        "request_plan": {"tasks": [
+            {"id": "bug", "kind": "ticket", "write_intent": True,
+             "instruction": "Bug를 DL-100 아래에 마감 2026-09-10으로 생성"},
+            {"id": "story", "kind": "ticket", "write_intent": True,
+             "instruction": "Story를 DL-200 아래에 마감 2026-09-20으로 생성"},
+        ]},
+    }
+    contract = requested_outcome_contract(state)
+    bug_ref, story_ref = [row["id"] for row in contract["outcomes"]]
+    body = ("<h3>배경</h3><p>요청됨</p><h3>작업 범위</h3>"
+            "<ul><li>포함: 구현</li><li>제외: 요청 외 변경</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul><li>결과 기록</li></ul>")
+    correct = [
+        {"summary": "로그인 오류", "type": "Bug", "outcome_refs": [bug_ref],
+         "epic": "DL-100", "duedate": "2026-09-10", "description": body},
+        {"summary": "검색 경험", "type": "Story", "outcome_refs": [story_ref],
+         "epic": "DL-200", "duedate": "2026-09-20", "description": body},
+    ]
+    swapped = [
+        {**correct[0], "epic": "DL-200", "duedate": "2026-09-20"},
+        {**correct[1], "epic": "DL-100", "duedate": "2026-09-10"},
+    ]
+    monkeypatch.setattr(work, "_is_epic", lambda key: key in {"DL-100", "DL-200"})
+
+    assert not [row for row in _deterministic_request_field_errors(state, correct)
+                if row.get("field") == "parent"]
+    parent_errors = [row for row in _deterministic_request_field_errors(state, swapped)
+                     if row.get("field") == "parent"]
+    assert {row["index"] for row in parent_errors} == {0, 1}
+
+    audited = {**state, "draft": {"mode": "task", "items": swapped,
+                                   "outcome_contract_id": contract["id"]}}
+    due_errors = [row for row in _machine_check(audited)["errors"]
+                  if row.get("field") == "duedate"]
+    assert {row["index"] for row in due_errors} == {0, 1}
 
 
 def test_a_plain_question_stops_after_investigation():
@@ -1000,16 +1305,22 @@ def test_fast_paths_skip_historian_when_safe():
     # 첫 턴(구체적 요청) — 조사부터
     assert G.route_after_request_architect({"intent": Intent.PLAN_WORK, "turns": 0,
                                   "sufficient": True}) == "investigate"
-    # 첫 턴(막연한 요청) — 조사 전에 해석 확인(clarify)으로 WorkArchitect 직행
+    # 첫 턴(막연한 요청) — 내부 이력으로 해소 가능한지 조사한 뒤 필요한 것만 인터뷰
     assert G.route_after_request_architect({"intent": Intent.PLAN_WORK, "turns": 0,
-                                  "sufficient": False}) == "refine"
-    # 막연해도 위임("알아서")이면 묻지 않고 조사부터
+                                  "sufficient": False}) == "investigate"
+    # 위임("알아서")도 동일하게 조사부터; 필수 blocker는 조사 뒤에만 질문
     from langchain_core.messages import HumanMessage
     assert G.route_after_request_architect({"intent": Intent.PLAN_WORK, "turns": 0, "sufficient": False,
                                   "messages": [HumanMessage(content="알아서 해줘")]}) == "investigate"
     # 후속 턴 — situation 보유 시 직행
     assert G.route_after_request_architect({"intent": Intent.PLAN_WORK, "turns": 1,
                                   "situation": "DL-118 에서 검토"}) == "refine"
+    # Research/term interviews can happen before WorkArchitect increments turns. The explicit
+    # session boundary, not the counter, proves this is the same researched work.
+    assert G.route_after_request_architect({
+        "intent": Intent.PLAN_WORK, "turns": 0, "turn_continuation": True,
+        "situation": "DL-118 상세와 기술 근거 조사 완료",
+    }) == "refine"
     # modify + 키 명시 — 직행 (키 확인은 WorkArchitect 의 get_ticket 몫)
     assert G.route_after_request_architect({"intent": Intent.MODIFY,
                                   "mentioned_keys": ["DL-101"]}) == "refine"

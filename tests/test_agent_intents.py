@@ -67,7 +67,7 @@ def test_research_report_request_cannot_drift_into_ticket_creation():
     assert G.route_after_request_architect(got) == "investigate"
 
 
-def test_new_build_shape_is_asked_before_expensive_research():
+def test_new_build_researches_before_interviewing_an_optional_ticket_shape():
     from langchain_core.messages import HumanMessage
     from app.agent.workflow.agents.request_architect import RequestArchitect
 
@@ -77,8 +77,23 @@ def test_new_build_shape_is_asked_before_expensive_research():
         "intent": Intent.PLAN_WORK, "keywords": ["Iceberg", "Puffin", "NDV"],
         "sufficient": True,
     })
-    assert got["questions"][0]["field"] == "structure"
-    assert G.route_after_request_architect(got) == "respond"
+    assert not got.get("questions")
+    assert G.route_after_request_architect(got) == "investigate"
+
+
+def test_insufficient_new_work_researches_before_any_blocking_interview():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    state = {"messages": [HumanMessage(content=(
+        "기존 ETL 파이프라인에 Iceberg Puffin NDV 생성 기능을 추가 구현하고 싶어"))]}
+    got = RequestArchitect().apply(state, {
+        "intent": Intent.PLAN_WORK, "keywords": ["Iceberg", "Puffin", "NDV"],
+        "sufficient": False,
+        "blocking_questions": ["대상 테이블은 무엇인가?"],
+    })
+    assert not got.get("questions")
+    assert G.route_after_request_architect(got) == "investigate"
 
 
 def test_delegated_or_explicit_build_shape_does_not_add_a_preference_question():
@@ -109,10 +124,10 @@ def test_bug_reports_still_go_through_investigation():
     assert not hasattr(Intent, "REPORT_BUG"), "갈래로 되돌리지 마라 — 산출물 유형이다"
     assert G.route_after_request_architect(bug) == "investigate"
     assert G.route_after_research_analyst(bug) == "refine"
-    # ★ sufficient 가 안 붙어도 조사로 간다 — 버그는 "막연한 신규 개발"이 아니다.
-    #   같은 문장에서 낱말이 빠지면(=버그가 아니면) 해석 확인이 먼저다.
+    # sufficient 여부와 무관하게 먼저 조사한다. 내부 이력으로 해소할 수 있는 모호함을
+    # 사용자에게 되묻지 않고, 조사 후에도 남은 사용자 소유 blocker만 인터뷰한다.
     vague = dict(bug, messages=[HumanMessage(content="리니지 뷰어를 개선하고 싶다")])
-    assert G.route_after_request_architect(vague) == "refine"
+    assert G.route_after_request_architect(vague) == "investigate"
 
 
 def test_request_architect_pins_lexically_decidable_bug_progress_and_depth_boundaries():
@@ -336,6 +351,107 @@ def test_request_plan_keeps_genuinely_compound_user_outcomes():
     assert got["request_plan"]["tasks"] == model_tasks
 
 
+def test_request_plan_keeps_explicit_parallel_ticket_outcomes_of_the_same_effect():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    text = "로그인 실패 재현 Bug와 권한 모델 개선 Story를 각각 만들어줘"
+    model_tasks = [
+        {"id": "bug", "kind": "ticket", "instruction": "로그인 실패 재현 Bug 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Bug 초안"]},
+        {"id": "story", "kind": "ticket", "instruction": "권한 모델 개선 Story 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Story 초안"]},
+    ]
+
+    got = RequestArchitect().apply(
+        {"messages": [HumanMessage(content=text)]},
+        {"intent": Intent.PLAN_WORK, "goal": "Bug와 Story 생성", "tasks": model_tasks})
+
+    assert got["request_plan"]["tasks"] == model_tasks
+
+
+def test_request_plan_keeps_repeated_one_item_clauses_with_a_shared_action():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    text = "로그인 재현 Bug 1건과 사용자 안내 Story 1건 만들어줘"
+    model_tasks = [
+        {"id": "bug", "kind": "ticket", "instruction": "로그인 재현 Bug 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Bug 초안"]},
+        {"id": "story", "kind": "ticket", "instruction": "사용자 안내 Story 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Story 초안"]},
+    ]
+
+    got = RequestArchitect().apply(
+        {"messages": [HumanMessage(content=text)]},
+        {"intent": Intent.PLAN_WORK, "goal": "Bug와 Story 생성", "tasks": model_tasks})
+
+    assert got["request_plan"]["tasks"] == model_tasks
+
+
+def test_request_plan_does_not_preserve_more_parallel_tasks_than_the_user_requested():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    text = "로그인 실패 Bug와 사용자 안내 Story를 각각 만들어줘"
+    model_tasks = [
+        {"id": "bug", "kind": "ticket", "instruction": "로그인 실패 Bug 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Bug"]},
+        {"id": "story", "kind": "ticket", "instruction": "사용자 안내 Story 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Story"]},
+        {"id": "extra", "kind": "ticket", "instruction": "추가 Task 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Task"]},
+    ]
+
+    got = RequestArchitect().apply(
+        {"messages": [HumanMessage(content=text)]},
+        {"intent": Intent.PLAN_WORK, "goal": "Bug와 Story 생성", "tasks": model_tasks})
+
+    assert len(got["request_plan"]["tasks"]) == 1
+    assert got["request_plan"]["tasks"][0]["instruction"] == text
+
+
+def test_request_plan_does_not_treat_attribute_count_as_parallel_ticket_count():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    text = "Puffin 검증 Task 완료 조건 2개를 넣어줘"
+    model_tasks = [
+        {"id": "title", "kind": "ticket", "instruction": "Task 제목 작성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["제목"]},
+        {"id": "criteria", "kind": "ticket", "instruction": "완료 조건 작성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["완료 조건"]},
+    ]
+
+    got = RequestArchitect().apply(
+        {"messages": [HumanMessage(content=text)]},
+        {"intent": Intent.PLAN_WORK, "goal": "Task 속성 작성", "tasks": model_tasks})
+
+    assert len(got["request_plan"]["tasks"]) == 1
+    assert got["request_plan"]["tasks"][0]["instruction"] == text
+
+
+def test_request_plan_does_not_false_split_one_compound_ticket_expression():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    text = "로그인 Bug 원인 분석과 수정 방안을 담은 Task를 만들어줘"
+    model_tasks = [
+        {"id": "analysis", "kind": "ticket", "instruction": "로그인 Bug 원인 분석",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["원인"]},
+        {"id": "fix", "kind": "ticket", "instruction": "수정 방안 Task 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["방안"]},
+    ]
+
+    got = RequestArchitect().apply(
+        {"messages": [HumanMessage(content=text)]},
+        {"intent": Intent.PLAN_WORK, "goal": "원인과 수정 방안 Task", "tasks": model_tasks})
+
+    tasks = got["request_plan"]["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["instruction"] == text
+
+
 def test_request_plan_keeps_existing_epic_selection_and_drops_invented_literals():
     """Selection delegation cannot become Epic creation; hard facts stay user-grounded."""
     from langchain_core.messages import HumanMessage
@@ -368,10 +484,269 @@ def test_request_plan_keeps_existing_epic_selection_and_drops_invented_literals(
     rendered = str(plan)
     assert "Epic 생성" not in rendered
     assert "기존 Epic 선택" in rendered
-    assert plan["tasks"][0]["kind"] == "plan"
+    assert plan["tasks"][0]["instruction"] == original
     assert plan["tasks"][0]["write_intent"] is True
-    assert plan["tasks"][0]["instruction"] == followup
+    assert plan["tasks"][0]["kind"] == "plan"
     assert "2026-09-28" not in rendered and "월요일" not in rendered
+
+
+def test_research_interview_answer_preserves_original_write_outcome_before_work_runs():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    original = "Puffin NDV reader 검증 Task를 만들어줘"
+    got = RequestArchitect().apply({
+        "messages": [HumanMessage(content="RGP는 Reader Gate Policy라는 뜻이야")],
+        "request_text": original,
+        "turn_continuation": True,
+        "questions": [],
+        "turns": 0,
+    }, {
+        "intent": Intent.PLAN_WORK,
+        "keywords": ["RGP"],
+        "tasks": [{
+            "id": "t1", "kind": "plan", "instruction": "RGP 의미 반영",
+            "depends_on": [], "write_intent": True,
+            "completion_criteria": ["Task 초안"],
+        }],
+    })
+
+    assert got["request_plan"]["tasks"][0]["instruction"] == original
+    assert got["request_plan"]["tasks"][0]["write_intent"] is True
+    assert got["request_text"] == original
+
+
+def test_research_interview_answer_preserves_compound_outcome_dag_and_write_intent():
+    """The short term answer cannot replace or collapse the prior requested outcomes."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.anchors import requested_outcome_contract
+    from app.agent.workflow.session import _turn_start_patch
+
+    original = "Puffin 이력을 조사하고 후속 Task를 만든 뒤 DL-9090에 결론 댓글도 남겨줘"
+    prior_plan = {
+        "goal": "Puffin 조사 결과를 후속 실행 항목에 반영",
+        "tasks": [
+            {"id": "research", "kind": "research", "instruction": "Puffin 적용 이력 조사",
+             "depends_on": [], "write_intent": False, "completion_criteria": ["이력 확인"]},
+            {"id": "ticket", "kind": "ticket", "instruction": "후속 Task 생성",
+             "depends_on": ["research"], "write_intent": True,
+             "completion_criteria": ["Task 초안"]},
+            {"id": "comment", "kind": "comment", "instruction": "DL-9090에 결론 댓글 작성",
+             "depends_on": ["research"], "write_intent": True,
+             "completion_criteria": ["댓글 초안"]},
+        ],
+        "blocking_questions": [], "assumptions": [],
+    }
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": original,
+        "request_plan": prior_plan,
+        "questions": [{"field": "term", "question": "RGP의 뜻은 무엇인가요?"}],
+        "situation": "내부 이력 조사 완료",
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200", "summary": "Puffin 상위 Epic"}],
+            "parentCandidateKeys": ["DL-9200"],
+        },
+        "turns": 0,
+    }
+    answer = "RGP는 Reader Gate Policy라는 뜻이야"
+    continued = _turn_start_patch(answer, prior)
+    state = {**continued, "messages": [HumanMessage(content=answer)]}
+
+    got = RequestArchitect().apply(state, {
+        # Reproduce the small-model failure: it classifies the answer as a read and emits
+        # one control task instead of the three user-visible outcomes.
+        "intent": Intent.ASK,
+        "keywords": ["RGP"],
+        "goal": "RGP 의미 반영",
+        "tasks": [{
+            "id": "answer", "kind": "respond", "instruction": answer,
+            "depends_on": [], "write_intent": False,
+            "completion_criteria": ["용어 의미 확인"],
+        }],
+    })
+
+    assert got["intent"] == Intent.PLAN_WORK
+    assert got["request_text"] == original
+    assert got["request_plan"]["goal"] == prior_plan["goal"]
+    assert got["request_plan"]["tasks"] == prior_plan["tasks"]
+    assert requested_outcome_contract({**prior, **got}) == requested_outcome_contract(prior)
+    assert continued["materialized_ticket_sources"]["parentCandidateKeys"] == ["DL-9200"]
+
+
+def test_explicit_new_topic_does_not_restore_a_stale_compound_write_plan():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin Task를 만들고 결론 댓글도 남겨줘",
+        "request_plan": {"goal": "old", "tasks": [
+            {"id": "old-ticket", "kind": "ticket", "instruction": "Puffin Task 생성",
+             "depends_on": [], "write_intent": True, "completion_criteria": ["Task"]},
+            {"id": "old-comment", "kind": "comment", "instruction": "결론 댓글",
+             "depends_on": [], "write_intent": True, "completion_criteria": ["댓글"]},
+        ]},
+        "questions": [{"field": "term", "question": "RGP 뜻?"}],
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200"}], "parentCandidateKeys": ["DL-9200"]},
+    }
+    new_request = "이건 취소하고 완전히 다른 보안 교육 Task를 새로 만들어줘"
+    fresh = _turn_start_patch(new_request, prior)
+    got = RequestArchitect().apply(
+        {**fresh, "messages": [HumanMessage(content=new_request)]},
+        {"intent": Intent.PLAN_WORK, "keywords": ["보안 교육"], "goal": "보안 교육 Task 생성",
+         "tasks": [{"id": "new-ticket", "kind": "ticket", "instruction": new_request,
+                    "depends_on": [], "write_intent": True,
+                    "completion_criteria": ["새 Task 초안"]}]})
+
+    assert not fresh["turn_continuation"]
+    assert fresh["materialized_ticket_sources"] == {}
+    assert [task["id"] for task in got["request_plan"]["tasks"]] == ["new-ticket"]
+    assert "Puffin" not in str(got["request_plan"])
+
+
+def test_compound_continuation_applies_an_explicit_typed_outcome_removal():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    prior_plan = {
+        "goal": "Puffin 검증 Task를 만들고 결정 댓글을 남긴다",
+        "tasks": [
+            {"id": "ticket", "kind": "ticket", "instruction": "Puffin 검증 Task 생성",
+             "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"]},
+            {"id": "comment", "kind": "comment", "instruction": "결정 댓글 작성",
+             "depends_on": ["ticket"], "write_intent": True,
+             "completion_criteria": ["댓글 초안"]},
+        ],
+        "blocking_questions": [], "assumptions": [],
+    }
+    answer = "댓글은 빼고 Task만 진행해줘"
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 검증 Task를 만들고 결정 댓글을 남겨줘",
+        "request_plan": prior_plan,
+        "turn_continuation": True,
+        "messages": [HumanMessage(content=answer)],
+    }
+    before = requested_outcome_contract(state)
+    got = RequestArchitect().apply(state, {
+        "intent": Intent.PLAN_WORK, "goal": "Puffin 검증 Task만 진행",
+        "keywords": ["Puffin"],
+        # A small model may still echo both old outcomes. Runtime owns the explicit removal.
+        "tasks": prior_plan["tasks"],
+    })
+
+    assert got["intent"] == Intent.PLAN_WORK
+    assert got["request_plan"]["tasks"] == [prior_plan["tasks"][0]]
+    assert "댓글" not in got["request_plan"]["goal"]
+    after = requested_outcome_contract({**state, **got})
+    assert len(before["outcomes"]) == 2 and len(after["outcomes"]) == 1
+    assert after["outcomes"][0]["source_task_id"] == "ticket"
+
+
+def test_compound_continuation_replaces_only_the_explicitly_changed_outcome():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    prior_tasks = [
+        {"id": "ticket", "kind": "ticket", "instruction": "Puffin 검증 Task 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"]},
+        {"id": "comment", "kind": "comment", "instruction": "검증 시작 결정 댓글 작성",
+         "depends_on": ["ticket"], "write_intent": True,
+         "completion_criteria": ["시작 결정을 알린다"]},
+    ]
+    answer = "댓글 내용은 검증 보류 결정으로 바꿔줘"
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 검증 Task를 만들고 시작 결정 댓글을 남겨줘",
+        "request_plan": {"goal": "Task와 댓글 작성", "tasks": prior_tasks},
+        "turn_continuation": True,
+        "messages": [HumanMessage(content=answer)],
+    }
+    changed_comment = {
+        "id": "model-comment", "kind": "comment", "instruction": "검증 보류 결정 댓글 작성",
+        "depends_on": [], "write_intent": True, "completion_criteria": ["보류 결정을 알린다"],
+    }
+
+    got = RequestArchitect().apply(state, {
+        "intent": Intent.MODIFY, "goal": "Task 생성과 보류 댓글 작성",
+        "tasks": [changed_comment], "keywords": ["Puffin"],
+    })
+
+    tasks = got["request_plan"]["tasks"]
+    assert tasks[0] == prior_tasks[0]
+    assert tasks[1]["id"] == "comment"
+    assert tasks[1]["instruction"] == changed_comment["instruction"]
+    assert tasks[1]["depends_on"] == ["ticket"]
+    assert tasks[1]["completion_criteria"] == changed_comment["completion_criteria"]
+
+
+def test_compound_continuation_treats_instead_inside_comment_content_as_a_change():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    prior_tasks = [
+        {"id": "ticket", "kind": "ticket", "instruction": "Puffin 검증 Task 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Task"]},
+        {"id": "comment", "kind": "comment", "instruction": "검증 시작 결정 댓글 작성",
+         "depends_on": ["ticket"], "write_intent": True,
+         "completion_criteria": ["시작 결정을 알린다"]},
+    ]
+    answer = "댓글 내용은 검증 시작 대신 보류 결정으로 바꿔줘"
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 검증 Task를 만들고 시작 결정 댓글을 남겨줘",
+        "request_plan": {"goal": "Task와 댓글 작성", "tasks": prior_tasks},
+        "turn_continuation": True,
+        "messages": [HumanMessage(content=answer)],
+    }
+    changed_comment = {
+        "id": "model-comment", "kind": "comment", "instruction": "검증 보류 결정 댓글 작성",
+        "depends_on": [], "write_intent": True,
+        "completion_criteria": ["보류 결정을 알린다"],
+    }
+
+    got = RequestArchitect().apply(state, {
+        "intent": Intent.MODIFY, "goal": "Task 생성과 보류 댓글 작성",
+        "tasks": [changed_comment], "keywords": ["Puffin"],
+    })
+
+    tasks = got["request_plan"]["tasks"]
+    assert len(tasks) == 2
+    assert tasks[0] == prior_tasks[0]
+    assert tasks[1]["id"] == "comment"
+    assert tasks[1]["instruction"] == changed_comment["instruction"]
+
+
+def test_ambiguous_outcome_removal_keeps_the_authoritative_compound_plan():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    prior_tasks = [
+        {"id": "ticket", "kind": "ticket", "instruction": "Puffin Task 생성",
+         "depends_on": [], "write_intent": True, "completion_criteria": ["Task"]},
+        {"id": "comment", "kind": "comment", "instruction": "결정 댓글 작성",
+         "depends_on": ["ticket"], "write_intent": True, "completion_criteria": ["댓글"]},
+    ]
+    state = {
+        "intent": Intent.PLAN_WORK, "request_text": "Puffin Task와 댓글을 작성해줘",
+        "request_plan": {"goal": "Task와 댓글", "tasks": prior_tasks},
+        "turn_continuation": True,
+        "messages": [HumanMessage(content="그건 빼고 진행해줘")],
+    }
+    got = RequestArchitect().apply(state, {
+        "intent": Intent.PLAN_WORK, "goal": "하나를 제외", "tasks": [{
+            "id": "guess", "kind": "ticket", "instruction": "Task만 진행",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task"],
+        }],
+    })
+
+    assert got["request_plan"]["tasks"] == prior_tasks
+    assert got["request_plan"]["goal"] == "Task와 댓글"
 
 
 def test_request_plan_preserves_an_explicit_new_epic_creation():

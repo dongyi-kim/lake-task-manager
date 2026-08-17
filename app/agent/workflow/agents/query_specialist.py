@@ -52,9 +52,9 @@ _CREATION_CONTROL_WORDS = {
     "epic", "task", "ticket", "issue", "story", "feature", "improvement",
     "create", "make", "add", "select", "choose", "proceed", "request", "please",
     "에픽", "태스크", "티켓", "작업", "이슈", "스토리", "피처", "임프로브먼트",
-    "생성", "추가", "선택", "진행", "요청", "부탁", "알아서", "신규", "새로",
+    "생성", "추가", "선택", "진행", "요청", "부탁", "알아서", "기존", "신규", "새로",
     "범위", "마감", "최소", "기능", "하나", "한개", "네가", "제가", "우리가",
-    "위한", "위해",
+    "위한", "위해", "참고", "참조",
 }
 
 _CREATION_CONTROL_PATTERN = re.compile(
@@ -295,23 +295,22 @@ def _public_external_query(text: str) -> str:
 
 
 def _user_authored_text(state) -> str:
-    """Return only human-authored text that may authorize an external disclosure.
+    """Return the current human request boundary for public-disclosure decisions.
 
-    ``conversation(state)`` intentionally contains prior assistant replies so Roles can
-    resolve follow-up answers.  It is therefore not a safe provenance boundary for public
-    search: a model-generated DoD or reference label such as ``official documentation``
-    must never become permission to send a new term outside LTM.  Preserve the frozen
-    original request and every human follow-up, while excluding all AI messages.
+    Human authorship alone is insufficient authorization: a prior turn may have allowed a
+    web search and a later, unrelated turn may contain an internal identifier.  Session owns
+    the topic boundary.  A new request contributes only its current text; a genuine
+    continuation contributes the frozen request plus the latest human refinement.  AI text
+    and older human topics are never public-query provenance.
     """
-    rows, seen = [], set()
-    for value in (request_text(state), *(
-            str(getattr(message, "content", "") or "")
-            for message in (state.get("messages") or [])
-            if getattr(message, "type", "") == "human")):
-        text = str(value or "").strip()
-        if text and text not in seen:
-            seen.add(text)
-            rows.append(text)
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    if not state.get("turn_continuation"):
+        return latest or frozen
+    rows = []
+    for value in (frozen, latest):
+        if value and value not in rows:
+            rows.append(value)
     return "\n".join(rows)
 
 
@@ -366,7 +365,7 @@ def _comment_scope_where(state, jira_query: dict) -> str:
 
 def _ensure_explicit_comment_query(state, plan: dict) -> None:
     """Keep an explicit Jira-comment source requirement even when the model omitted it."""
-    asked = (request_text(state) + " " + conversation(state)).casefold()
+    asked = _user_authored_text(state).casefold()
     if not any(word in asked for word in _COMMENT_WORDS):
         return
     if any(query.get("source") == "comments" for query in plan.get("queries") or []):
@@ -449,6 +448,92 @@ def _normalize_meeting_research_queries(state, plan: dict) -> None:
             })
 
 
+def _creation_subject_literals(state) -> list[str]:
+    """Return the frozen creation request followed by the latest human refinement.
+
+    ``request_text`` is the normal frozen authority. Older checkpoints and one
+    pre-research interview path could nevertheless overwrite it with a short answer such
+    as ``Epic은 네가 골라줘``. On an explicit continuation only, recover the closest
+    earlier *human* utterance whose literal technical anchors agree with the typed
+    RequestPlan. The plan is used solely to choose between human strings; it can never
+    introduce a search term. A topic-change turn never scans old conversation.
+    """
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    original = frozen
+    # Session owns the context-boundary decision. Inferring continuation here from stale
+    # questions/structure would let an unrelated new request resurrect an older topic.
+    continuation = bool(state.get("turn_continuation"))
+    if continuation:
+        plan = state.get("request_plan") or {}
+        plan_material = " ".join((
+            str(plan.get("goal") or ""),
+            json.dumps(plan.get("tasks") or [], ensure_ascii=False, default=str),
+            " ".join(str(value) for value in (state.get("keywords") or [])),
+        ))
+        plan_anchors = {value.casefold() for value in _retrieval_anchors(plan_material)}
+        original_anchors = {value.casefold() for value in _retrieval_anchors(original)}
+        best_overlap = len(plan_anchors & original_anchors)
+        humans = [str(getattr(message, "content", "") or "").strip()
+                  for message in (state.get("messages") or [])
+                  if getattr(message, "type", "") == "human"]
+        # The final human row is ``latest``. Search backward so the closest qualifying
+        # pre-interview request wins without pulling an older, unrelated conversation.
+        if humans and latest and humans[-1] == latest:
+            humans = humans[:-1]
+        for candidate in reversed([value for value in humans if value]):
+            anchors = {value.casefold() for value in _retrieval_anchors(candidate)}
+            overlap = len(plan_anchors & anchors)
+            if overlap >= 2 and overlap > best_overlap:
+                original, best_overlap = candidate, overlap
+
+    rows = []
+    for value in (original, latest):
+        if value and value not in rows:
+            rows.append(value)
+    return rows
+
+
+def _explicit_creation_parent_keys(state) -> set[str]:
+    """Return only keys that human text unambiguously assigns as a parent.
+
+    ``mentioned_keys`` is a reference set, not a hierarchy contract. A request may say
+    ``DL-123 참고해서 Epic 골라줘``; treating that related Task as an explicit parent
+    suppresses the very Epic search the user delegated. Keep the boundary syntactic and
+    conservative. Runtime tier validation remains Work/Auditor's responsibility.
+    """
+    text = "\n".join(_creation_subject_literals(state))
+    keys = {
+        value.upper() for value in [
+            *re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", text, re.I),
+            *(str(key) for key in (state.get("mentioned_keys") or [])),
+        ]
+        if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(value).strip(), re.I)
+    }
+    confirmed: set[str] = set()
+    for key in keys:
+        ticket = re.escape(key)
+        patterns = (
+            # `DL-10 아래`, `DL-10 Epic 아래`, `DL-10을 부모 Task로`
+            rf"\b{ticket}\b\s*(?:은|는|이|가|을|를)?\s*"
+            rf"(?:(?:Epic|에픽|상위\s*(?:Epic|에픽|티켓|Task)|부모\s*(?:티켓|Task|태스크)?)\s*)?"
+            rf"(?:아래|밑(?:에)?|하위|under)(?=\s|에|로|$|[,.])",
+            rf"\b{ticket}\b\s*(?:은|는|이|가|을|를)?\s*"
+            rf"(?:상위|부모)\s*(?:Epic|에픽|티켓|Task|태스크)?\s*(?:으로|로)?",
+            # `상위 Epic은 DL-10`, `부모 티켓: DL-10`
+            rf"(?:상위|부모)\s*(?:Epic|에픽|티켓|Task|태스크)?\s*"
+            rf"(?:은|는|이|가|:)?\s*\b{ticket}\b",
+            # `Epic DL-10 아래`, `Epic DL-10에 Task 추가`
+            rf"(?:Epic|에픽)\s*(?:키|티켓)?\s*(?:은|는|:)?\s*\b{ticket}\b\s*"
+            rf"(?:아래|밑(?:에)?|하위|에\s*(?:Task|태스크|티켓))",
+            rf"\b{ticket}\b\s*(?:에|으로)\s*(?:Sub-?Task|서브\s*태스크|Task|태스크|티켓)"
+            rf"[^.\n]{{0,24}}(?:생성|추가|만들|등록)",
+        )
+        if any(re.search(pattern, text, re.I) for pattern in patterns):
+            confirmed.add(key)
+    return confirmed
+
+
 def _creation_subject_terms(state, limit: int = 5) -> list[str]:
     """Compile the duplicate-search subject from user-authored text.
 
@@ -489,41 +574,48 @@ def _creation_subject_terms(state, limit: int = 5) -> list[str]:
                     hinted.add(value.casefold())
         return hinted
 
-    literal = request_text(state) or last_user_text(state)
     hinted = keyword_token_set()
-    candidates = []
-    for index, token in enumerate(re.findall(
-            r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+|\d{4}-\d{2}-\d{2}", literal)):
-        value = normalize_token(token)
-        if not value or value.casefold() in seen:
-            continue
-        seen.add(value.casefold())
-        # Model keywords never introduce text, but overlap with the literal request is a
-        # useful semantic rank. Public/technical identifiers are next. Conversational
-        # lead-ins therefore cannot consume the five-term budget before the actual subject.
-        internal = value.casefold() in _INTERNAL_LATIN
-        is_technical = bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", value)) \
-            and not internal
-        priority = (0 if value.casefold() in hinted else
-                    1 if is_technical else 3 if internal else 2)
-        candidates.append((priority, index, value))
+    for literal in _creation_subject_literals(state):
+        candidates = []
+        local_seen: set[str] = set()
+        for index, token in enumerate(re.findall(
+                r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+|\d{4}-\d{2}-\d{2}", literal)):
+            value = normalize_token(token)
+            if not value or value.casefold() in local_seen:
+                continue
+            local_seen.add(value.casefold())
+            # Model keywords never introduce text, but overlap with the literal request is a
+            # useful semantic rank. Public/technical identifiers are next. Conversational
+            # lead-ins therefore cannot consume the five-term budget before the actual subject.
+            internal = value.casefold() in _INTERNAL_LATIN
+            is_technical = bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", value)) \
+                and not internal
+            priority = (0 if value.casefold() in hinted else
+                        1 if is_technical else 3 if internal else 2)
+            candidates.append((priority, index, value))
 
-    anchors = [index for priority, index, _value in candidates if priority <= 1]
-    if anchors:
-        first_anchor = min(anchors)
-        # Free-form requests often start with an arbitrarily long conversational clause.
-        # Content after the first verified keyword/technical anchor is more likely to finish
-        # that subject; pre-anchor prose remains available only when the budget has room.
-        candidates = [
-            (4 if priority == 2 and index < first_anchor else priority, index, value)
-            for priority, index, value in candidates
-        ]
+        anchors = [index for priority, index, _value in candidates if priority <= 1]
+        if anchors:
+            first_anchor = min(anchors)
+            # Free-form requests often start with an arbitrarily long conversational clause.
+            # Content after the first verified keyword/technical anchor is more likely to finish
+            # that subject; pre-anchor prose remains available only when the budget has room.
+            candidates = [
+                (4 if priority == 2 and index < first_anchor else priority, index, value)
+                for priority, index, value in candidates
+            ]
 
-    # Choose by semantic priority, then restore literal order so the search remains a
-    # recognizable excerpt of what the user actually said.
-    selected = sorted(sorted(candidates, key=lambda row: (row[0], row[1]))[:limit],
-                      key=lambda row: row[1])
-    terms = [value for _priority, _index, value in selected]
+        # Frozen original text has source precedence. The latest interview answer can add a
+        # genuine qualifier only when the original subject did not fill the bounded query.
+        selected = sorted(sorted(candidates, key=lambda row: (row[0], row[1]))[:limit],
+                          key=lambda row: row[1])
+        for _priority, _index, value in selected:
+            if value.casefold() in seen:
+                continue
+            seen.add(value.casefold())
+            terms.append(value)
+            if len(terms) >= limit:
+                return terms
 
     # Only supplement a sparse literal subject. This is deliberately lower precedence:
     # keywords are semantic hints generated by a model, not an authority for user intent.
@@ -684,7 +776,7 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
     """
     if (state.get("intent") or "") != Intent.PLAN_WORK:
         return
-    asked = (request_text(state) + " " + conversation(state)).strip()
+    asked = _user_authored_text(state).strip()
     explicit_comments = any(word in asked.casefold() for word in _COMMENT_WORDS)
     explicit_people = bool(re.search(
         r"담당|할당|배정|누가|사람|인원|멤버|member|assignee", asked, re.I))
@@ -706,11 +798,20 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
     terms = _creation_subject_terms(state)
     if not terms and not explicit_keys:
         return
+    public_technical = [term for term in terms
+                        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", term)
+                        and not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", term, re.I)
+                        and term.casefold() not in _INTERNAL_LATIN]
+    # QueryRunner has an intentional 2-of-3 compiler for public technology triples. Keep
+    # that bounded recall boundary instead of turning five mixed tokens into strict AND:
+    # related writer/reader/validation tickets often omit the umbrella product or Korean
+    # deliverable word, while the exact-duplicate guard still opens and compares each body.
+    duplicate_terms = public_technical[:3] if len(public_technical) >= 3 else terms[:5]
     where = "key in (" + ", ".join(explicit_keys) + ")" if explicit_keys else ""
     plan.setdefault("queries", []).insert(0, {
         "id": "internal-duplicate-check",
         "source": "jira",
-        "query": "" if explicit_keys else " ".join(terms[:5]),
+        "query": "" if explicit_keys else " ".join(duplicate_terms),
         "where": where,
         "order_by": "updated DESC",
         "fields": ["key", "summary", "status", "issuetype", "assignee", "updated"],
@@ -718,6 +819,35 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
         "page_size": 50,
         "depends_on": [],
     })
+    # When the user delegates an existing Epic choice, selection itself needs an opened,
+    # auditable source. Work drafting may choose from the same Jira scope later, but that
+    # service result is not a Research evidence artifact. Acquire a narrow Epic candidate
+    # set here so QueryRunner materializes the selected parent before approval rendering.
+    user_text = "\n".join(_creation_subject_literals(state))
+    delegates_parent = bool(re.search(
+        r"(?:Epic|에픽)[^.\n]{0,32}(?:골라|고르|선택|정해|알아서)|"
+        r"(?:골라|고르|선택|정해)[^.\n]{0,24}(?:Epic|에픽)",
+        user_text, re.I,
+    ))
+    explicit_parent_keys = _explicit_creation_parent_keys(state)
+    if delegates_parent and not explicit_parent_keys:
+        # Three Latin anchors use QueryRunner's stable 2-of-3 lexical boundary. This keeps
+        # a relevant parent that omits an umbrella product name without broad all-Epic reads.
+        non_key_terms = [term for term in terms
+                         if not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", term, re.I)]
+        parent_terms = public_technical[:3] if len(public_technical) >= 2 else non_key_terms[:3]
+        reference_keys = [key for key in explicit_keys if key not in explicit_parent_keys]
+        if parent_terms or reference_keys:
+            plan["queries"].insert(1, {
+                "id": "parent-candidate-check", "source": "jira",
+                "query": " ".join(parent_terms), "where": "issueType = Epic",
+                "order_by": "updated DESC",
+                "fields": ["key", "summary", "status", "issuetype", "assignee", "updated"],
+                "completeness": "all", "page_size": 50, "depends_on": [],
+                # Compiler-owned relationship seed. QueryRunner opens these exact tickets,
+                # follows parent/Epic fields, and runs the lexical query only if none resolve.
+                "parent_reference_keys": reference_keys,
+            })
 
 
 class QuerySpecialist(StructuredAgent):
@@ -865,6 +995,7 @@ __all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_qu
            "_known_user_tokens", "_strip_known_user_tokens", "_jira_query_is_only_people",
            "_normalize_model_jira_query", "_normalize_query_fields",
            "_dedupe_equivalent_queries", "_ensure_creation_duplicate_query",
+           "_creation_subject_literals", "_explicit_creation_parent_keys",
            "_creation_subject_terms", "_compile_compact_query_plan",
            "_compact_request_context", "_bounded_retrieval_excerpt", "_retrieval_anchors",
            "_reject_unsupported_relational_plan", "_deterministic_plan_retrieval"]

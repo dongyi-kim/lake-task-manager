@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re as _re
+from html import unescape
 
 from app.agent.workflow.agents.base import TextAgent, _call_config
 from app.agent.workflow.agents.work_architect import draft_text
@@ -2275,6 +2276,196 @@ def _approval_source_material(item: dict) -> str:
                      str(item.get("url") or ""), *observations))
 
 
+def _is_generic_approval_external_source(item: dict) -> bool:
+    """Reject navigation and contribution pages from a write-approval source list.
+
+    Search engines frequently rank a product homepage, a documentation search shell, or
+    ``docs/README.md`` ahead of the requested feature specification. Those pages can be
+    official and repeat the product name, but they do not support the draft decision. This
+    filter is deliberately approval-only; a broad research answer may still report the full
+    acquired source set.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    url = str(item.get("url") or "").strip()
+    if not _is_external_source_url(url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").casefold()
+        path = unquote(parsed.path or "/").rstrip("/").casefold()
+    except Exception:
+        return False
+    if path in ("", "/") or _re.search(r"(?:^|/)search(?:/|$)", path):
+        return True
+    if host == "github.com" or host.endswith(".github.com"):
+        # A repository landing README is navigation-level evidence. Do not reject every
+        # nested README, however: a component README can itself be the direct feature spec.
+        if (_re.fullmatch(
+                r"/[^/]+/[^/]+/(?:blob/[^/]+/)?readme(?:\.[a-z0-9_-]+)?(?:\.md)?",
+                path, _re.I)
+                or _re.search(
+                    r"/(?:contributing|code_of_conduct|pull_request_template)"
+                    r"(?:\.[a-z0-9_-]+)?(?:\.md)?$", path, _re.I)):
+            return True
+        if _re.search(r"/tree/[^/]+/(?:docs?|documentation)$", path, _re.I):
+            return True
+    material = " ".join((
+        str(item.get("title") or ""), str(item.get("key") or ""),
+        *(str(observation.get("text") or "")
+          for observation in (item.get("observations") or [])
+          if isinstance(observation, dict) and observation.get("source") != "query"),
+    ))
+    return bool(_re.search(
+        r"contributor\s+license\s+agreement|\bCLA\b.{0,80}Markdown|"
+        r"documentation\s+(?:contribution|contributing|writing\s+process|templates?)|"
+        r"thank\s+you.{0,80}contribut(?:e|ing).{0,80}documentation",
+        material, _re.I,
+    ))
+
+
+def _without_query_provenance(item: dict) -> dict:
+    """Project a source for users while retaining JQL/CQL provenance in raw state."""
+    out = dict(item or {})
+    out["observations"] = [
+        dict(observation) if isinstance(observation, dict) else observation
+        for observation in (item.get("observations") or [])
+        if not (isinstance(observation, dict)
+                and str(observation.get("source") or "").strip().casefold() == "query")
+    ]
+    if not out["observations"] and _re.search(
+            r"QueryPlan|\bJQL\b|canonicalJql|canonicalCql", str(out.get("why") or ""), _re.I):
+        out["why"] = ""
+    return out
+
+
+def _approval_payload_ticket_keys(state) -> list[str]:
+    """Return existing ticket keys whose identity is part of the proposed payload."""
+    keys: list[str] = []
+
+    def add(value) -> None:
+        key = str(value or "").strip().upper()
+        if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I) and key not in keys:
+            keys.append(key)
+
+    draft = state.get("draft") or {}
+    for item in [*(draft.get("items") or []), *(draft.get("children") or [])]:
+        if not isinstance(item, dict):
+            continue
+        add(item.get("epic"))
+        add(item.get("parent"))
+    plan = state.get("change_plan") or {}
+    add(plan.get("key"))
+    for key in plan.get("keys") or []:
+        add(key)
+    return keys
+
+
+def _bounded_plain_observation(value, limit: int = 420) -> str:
+    """Turn a materialized Jira rich-text field into one bounded evidence sentence."""
+    text = str(value or "")
+    text = _re.sub(
+        r"</?(?:p|li|h[1-6]|div|br|ul|ol|table|thead|tbody|tr|td|th)[^>]*>",
+        " ", text, flags=_re.I,
+    )
+    text = unescape(_re.sub(r"<[^>]+>", " ", text))
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip(" ,.;:-") + "…"
+
+
+def _approval_materialized_payload_sources(state) -> dict[str, dict]:
+    """Build authoritative display sources only from QueryRunner-opened ticket details."""
+    selected = set(_approval_payload_ticket_keys(state))
+    if not selected:
+        return {}
+    sources: dict[str, dict] = {}
+    # The current turn keeps complete QueryRunner rows. An interview continuation resets
+    # those bulky rows but preserves their bounded, validated detail ledger. Prefer current
+    # rows and use the typed ledger only for identities no longer present there.
+    details: list[dict] = []
+    seen_detail_keys: set[str] = set()
+
+    def add_details(values) -> None:
+        for detail in values or []:
+            if not isinstance(detail, dict) or detail.get("error"):
+                continue
+            key = str(detail.get("key") or "").strip().upper()
+            if not key or key in seen_detail_keys:
+                continue
+            seen_detail_keys.add(key)
+            details.append(detail)
+
+    for row in (state.get("query_results") or []):
+        if not isinstance(row, dict) or row.get("source") != "jira":
+            continue
+        add_details((row.get("result") or {}).get("ticketDetails") or [])
+    ledger = state.get("materialized_ticket_sources") or {}
+    if isinstance(ledger, dict):
+        add_details(ledger.get("ticketDetails") or [])
+
+    for detail in details:
+        key = str(detail.get("key") or "").strip().upper()
+        if key not in selected:
+            continue
+        observations = []
+        description = _bounded_plain_observation(detail.get("description"))
+        if description:
+            observations.append({"source": "description", "text": description})
+        for comment in (detail.get("comments") or [])[:2]:
+            if not isinstance(comment, dict):
+                continue
+            body = _bounded_plain_observation(comment.get("body") or comment.get("text"))
+            author = str(comment.get("author") or "").strip()
+            if body:
+                observations.append({
+                    "source": "comment", "text": f"{author}: {body}" if author else body,
+                })
+        fields = []
+        for label, field in (("유형", "type"), ("상태", "status"), ("담당", "assignee")):
+            if detail.get(field):
+                fields.append(f"{label} {detail[field]}")
+        if fields:
+            observations.append({"source": "field", "text": " · ".join(fields)})
+        # ``ticketDetails`` is the materialization boundary. An empty/error detail is
+        # never upgraded merely because the search hit named the selected parent.
+        if not observations:
+            continue
+        sources[key] = {
+            "key": key,
+            "title": str(detail.get("summary") or detail.get("title") or key).strip(),
+            "url": str(detail.get("url") or detail.get("self") or "").strip(),
+            "why": "승인 초안에서 참조한 기존 티켓의 상세 원본을 확인함",
+            "confidence": "high", "fitness": "supporting",
+            "limitations": "상위·대상 티켓의 맥락 근거이며 신규 작업의 완료를 증명하지 않음",
+            "observations": observations,
+        }
+    return sources
+
+
+def _merge_display_source(primary: dict, materialized: dict) -> dict:
+    """Hydrate a bounded ledger row without mutating either persisted source object."""
+    out = _without_query_provenance(primary)
+    if materialized.get("title"):
+        out["title"] = materialized["title"]
+    if materialized.get("url") and not out.get("url"):
+        out["url"] = materialized["url"]
+    observations = list(out.get("observations") or [])
+    seen = {(str(row.get("source") or ""), str(row.get("text") or ""))
+            for row in observations if isinstance(row, dict)}
+    for observation in materialized.get("observations") or []:
+        identity = (str(observation.get("source") or ""), str(observation.get("text") or ""))
+        if identity not in seen:
+            observations.append(dict(observation))
+            seen.add(identity)
+    out["observations"] = observations
+    for field in ("why", "confidence", "fitness", "limitations"):
+        if materialized.get(field):
+            out[field] = materialized[field]
+    return out
+
+
 def _approval_source_is_relevant(item: dict, state) -> bool:
     """Prove display relevance from exact payload refs or substantive topic overlap.
 
@@ -2285,6 +2476,8 @@ def _approval_source_is_relevant(item: dict, state) -> bool:
     payload = _approval_focus_material(state)
     key = str(item.get("key") or "").strip().upper()
     url = str(item.get("url") or "").strip()
+    if _is_generic_approval_external_source(item):
+        return False
     if not url and any(
         isinstance(observation, dict) and observation.get("source") in {"external", "web"}
         for observation in (item.get("observations") or [])
@@ -2296,8 +2489,16 @@ def _approval_source_is_relevant(item: dict, state) -> bool:
     exact_urls = {found.rstrip(".,;:!?)\"'") for found in _re.findall(
         r"https?://[^\s)\]}]+", payload, _re.I,
     )}
-    if (_re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I) and key in exact_keys) \
-            or (url and url.rstrip("/") in {value.rstrip("/") for value in exact_urls}):
+    if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I) and key in exact_keys:
+        # A search hit is not an authoritative parent/target source until its details were
+        # opened. Query-only observations remain debug metadata and cannot justify selection.
+        return any(
+            isinstance(observation, dict)
+            and str(observation.get("source") or "").strip().casefold() != "query"
+            and str(observation.get("text") or "").strip()
+            for observation in (item.get("observations") or [])
+        )
+    if url and url.rstrip("/") in {value.rstrip("/") for value in exact_urls}:
         return True
 
     focus_words = _approval_relevance_words(payload)
@@ -2372,9 +2573,24 @@ def _approval_display_evidence(state) -> list[dict]:
     """Return a display-only projection; never mutate the research ledger or raw artifacts."""
     visible: list[dict] = []
     seen: set[str] = set()
+    materialized = _approval_materialized_payload_sources(state)
     for item in (state.get("evidence") or []):
-        if (not isinstance(item, dict) or _is_non_renderable_evidence(item)
-                or not _approval_source_is_relevant(item, state)):
+        if not isinstance(item, dict) or _is_non_renderable_evidence(item):
+            continue
+        key = str(item.get("key") or "").strip().upper()
+        candidate = (_merge_display_source(item, materialized[key])
+                     if key in materialized else _without_query_provenance(item))
+        if not _approval_source_is_relevant(candidate, state):
+            continue
+        identity = _approval_evidence_identity(candidate)
+        if identity and identity not in seen:
+            seen.add(identity)
+            visible.append(candidate)
+    # A selected parent can be outside the bounded Research ledger while still appearing in
+    # the complete QueryRunner artifact. Add it only from a materialized ``ticketDetails`` row.
+    for key in _approval_payload_ticket_keys(state):
+        item = materialized.get(key)
+        if not item or not _approval_source_is_relevant(item, state):
             continue
         identity = _approval_evidence_identity(item)
         if identity and identity not in seen:
@@ -2382,13 +2598,14 @@ def _approval_display_evidence(state) -> list[dict]:
             visible.append(item)
     raw_external_added = 0
     for item in _approval_query_hit_evidence(state):
-        if not _approval_source_is_relevant(item, state):
+        candidate = _without_query_provenance(item)
+        if not _approval_source_is_relevant(candidate, state):
             continue
-        identity = _approval_evidence_identity(item)
+        identity = _approval_evidence_identity(candidate)
         if not identity or identity in seen:
             continue
         seen.add(identity)
-        visible.append(item)
+        visible.append(candidate)
         raw_external_added += 1
         if raw_external_added == 3:
             break
@@ -2512,7 +2729,7 @@ def _merge_evidence_index(text: str, state) -> str:
     """Union model references and structured research provenance in the persisted reply."""
     approval_display = _approval_display_mode(state)
     evidence = (_approval_display_evidence(state) if approval_display else
-                [item for item in (state.get("evidence") or [])
+                [_without_query_provenance(item) for item in (state.get("evidence") or [])
                  if isinstance(item, dict) and not _is_non_renderable_evidence(item)])
     value = _drop_direct_input_source_rows(_fold_standalone_sources(text))
     related_docs = state.get("related_docs") or []

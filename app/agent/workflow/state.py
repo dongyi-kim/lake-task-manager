@@ -13,7 +13,9 @@ State 는 대화 하나(=`thread_id`)의 수명을 갖는다. Checkpointer 가 �
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any
+
+from typing_extensions import TypedDict
 
 from langgraph.graph.message import add_messages
 
@@ -109,6 +111,19 @@ def last_value(old, new):
     return new
 
 
+class MaterializedTicketSources(TypedDict, total=False):
+    """Bounded verified Jira details that may safely cross an interview turn.
+
+    Search result pages and execution artifacts are per-turn working data.  Work still needs
+    the successfully opened ticket details—and the exact subset that were structural parent
+    candidates—after a Research/term interview.  Keeping that small typed sidecar separate
+    avoids carrying a complete JQL result or silently re-running retrieval.
+    """
+
+    ticketDetails: list[dict[str, Any]]
+    parentCandidateKeys: list[str]
+
+
 class AgentState(TypedDict, total=False):
     """대화 하나의 전부. `total=False` — 노드가 자기 몫만 채운다."""
 
@@ -138,6 +153,7 @@ class AgentState(TypedDict, total=False):
     query_plan: dict
     query_results: list             # LLM에 전달할 compact 결과
     query_artifacts: dict           # 전체 target key snapshot 등 모델 밖 실행 자료
+    materialized_ticket_sources: MaterializedTicketSources  # 인터뷰 턴을 건너는 검증된 티켓 ledger(최대 8)
     assignment_completion: dict     # 분담형 Task의 미완료 Sub-Task·담당자 deterministic 집계
 
     # ── ResearchAnalyst 사전 취합(코드가 만든 자료) ──

@@ -28,6 +28,7 @@ class _FallbackLLM:
         self.invocations = 0
         self.repair = repair
         self.stop_values = []
+        self.configs = []
 
     def with_structured_output(self, _schema, method="json_schema"):
         self.methods.append(method)
@@ -36,6 +37,7 @@ class _FallbackLLM:
     def invoke(self, messages, **kwargs):
         self.invocations += 1
         self.stop_values.append(kwargs.get("stop"))
+        self.configs.append(kwargs.get("config"))
         if self.repair and self.invocations == 1:
             return AIMessage(content="JSON이 아닌 응답")
         return AIMessage(content='{"value":"ok"}')
@@ -96,6 +98,15 @@ def test_invalid_plain_json_gets_one_format_repair(monkeypatch):
     assert result == {"value": "ok"}
     assert fake.invocations == 2
     assert fake.stop_values == [[base.STRUCTURED_END_TOKEN], [base.STRUCTURED_END_TOKEN]]
+    assert fake.configs[1]["metadata"] == {
+        "ltm_role_id": "AdhocOutput",
+        "ltm_output_contract": "structured_repair",
+        "ltm_execution_layer": "",
+        "ltm_execution_stage": "repair",
+        "ltm_validation_category": "parse",
+        "ltm_validation_keyword": "json_object",
+        "ltm_validation_path": "$",
+    }
 
 
 def test_prompt_json_accepts_only_the_exact_terminal_transport_marker(monkeypatch):
@@ -145,6 +156,31 @@ def test_invoke_schema_does_not_repair_a_transport_failure(monkeypatch, failure)
     assert fake.invocations == 1
 
 
+def test_schema_validation_message_cannot_masquerade_as_transport_failure(monkeypatch):
+    """Model/schema data may literally contain 'Connection error'; it still gets repair."""
+    from jsonschema import ValidationError
+
+    _no_cached_capabilities(monkeypatch)
+    fake = _SequenceLLM({"value": "ok"}, {"value": "ok"})
+    monkeypatch.setattr(base._cfg, "get_llm", lambda **_kwargs: fake)
+    validate = base._validate_output
+    validations = []
+
+    def validation_once(value, schema):
+        validations.append(value)
+        if len(validations) == 1:
+            raise ValidationError("Connection error appears in a model-authored field")
+        return validate(value, schema)
+
+    monkeypatch.setattr(base, "_validate_output", validation_once)
+
+    assert base.invoke_schema(SCHEMA, [HumanMessage(content="value를 반환")]) == {
+        "value": "ok"
+    }
+    assert fake.structured_methods == ["json_schema", "json_mode"]
+    assert len(fake.messages) == 2
+
+
 def test_invoke_schema_does_not_repair_an_empty_model_output(monkeypatch):
     _no_cached_capabilities(monkeypatch)
     fake = _UnavailableOrEmptyLLM("   ")
@@ -175,6 +211,15 @@ class _SemanticProjectionAgent(base.StructuredAgent):
         return out
 
 
+class _CorrectionProjectionAgent(_SemanticProjectionAgent):
+    """Exercise the generic semantic-preserving post-projection hook."""
+
+    def post_projection_correction(self, _state, out):
+        if out.get("value") == "retry":
+            return "The typed projection omitted the memo's required artifact."
+        return ""
+
+
 class _SequenceLLM:
     def __init__(self, *outputs):
         self.outputs = list(outputs)
@@ -188,6 +233,8 @@ class _SequenceLLM:
         self.stop_values.append(kwargs.get("stop"))
         self.configs.append(kwargs.get("config"))
         value = self.outputs.pop(0)
+        if isinstance(value, BaseException):
+            raise value
         if isinstance(value, dict):
             return value
         return value if isinstance(value, AIMessage) else AIMessage(content=value)
@@ -270,6 +317,201 @@ def test_semantic_projection_keeps_original_on_semantic_model_and_repairs_projec
     assert projector.configs[0]["metadata"]["ltm_output_contract"] == "typed_projection"
     assert projector.configs[1]["metadata"]["ltm_output_contract"] == \
         "typed_projection_repair"
+    assert projector.configs[1]["metadata"] == {
+        "ltm_role_id": "work_architect",
+        "ltm_output_contract": "typed_projection_repair",
+        "ltm_execution_layer": "projection",
+        "ltm_execution_stage": "repair",
+        "ltm_validation_category": "parse",
+        "ltm_validation_keyword": "json_object",
+        "ltm_validation_path": "$",
+    }
+    assert "not json" not in json.dumps(projector.configs[1], ensure_ascii=False)
+
+
+def test_post_projection_correction_reuses_one_semantic_memo_without_original_context(
+        monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base._cfg, "typed_projection_tier", lambda _tier: "simple")
+
+    memo = _SequenceLLM("verified artifact=ok " + base.SEMANTIC_MEMO_END_TOKEN)
+    projector = _SequenceLLM('{"value":"retry"}', '{"value":"ok"}')
+    requested = []
+    agent = _CorrectionProjectionAgent()
+
+    def llm(**kwargs):
+        requested.append(dict(kwargs))
+        return memo if kwargs.get("output_contract") == "semantic_memo" else projector
+
+    monkeypatch.setattr(agent, "llm", llm)
+    result = agent.invoke_structured({}, [
+        SystemMessage(content=agent.system({})),
+        HumanMessage(content=agent.task({})),
+    ])
+
+    assert result == {"value": "ok"}
+    assert len(memo.messages) == 1
+    assert len(projector.messages) == 2
+    correction_text = _message_text(projector.messages[1])
+    assert "verified artifact=ok" in correction_text
+    assert "omitted the memo's required artifact" in correction_text
+    assert "ORIGINAL SYSTEM SECRET" not in correction_text
+    assert "ORIGINAL EVIDENCE SECRET" not in correction_text
+    assert [row["output_contract"] for row in requested] == [
+        "semantic_memo", "typed_projection", "typed_projection_correction"]
+    assert [row["execution_stage"] for row in requested] == [
+        "semantic", "projection", "projection_correction"]
+
+
+def test_post_projection_correction_has_at_most_one_transport_repair(monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base._cfg, "typed_projection_tier", lambda _tier: "simple")
+
+    memo = _SequenceLLM("verified artifact=ok " + base.SEMANTIC_MEMO_END_TOKEN)
+    projector = _SequenceLLM(
+        '{"value":"retry"}', "not json", '{"value":"ok"}',
+    )
+    requested = []
+    agent = _CorrectionProjectionAgent()
+
+    def llm(**kwargs):
+        requested.append(dict(kwargs))
+        return memo if kwargs.get("output_contract") == "semantic_memo" else projector
+
+    monkeypatch.setattr(agent, "llm", llm)
+    assert agent.invoke_structured({}, [HumanMessage(content="original")]) == {"value": "ok"}
+
+    assert len(memo.messages) == 1
+    assert len(projector.messages) == 3
+    assert [row["output_contract"] for row in requested] == [
+        "semantic_memo", "typed_projection", "typed_projection_correction",
+        "typed_projection_correction",
+    ]
+    assert [row["execution_stage"] for row in requested] == [
+        "semantic", "projection", "projection_correction", "repair",
+    ]
+
+
+def test_post_projection_correction_does_not_repair_transport_failure(monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base._cfg, "typed_projection_tier", lambda _tier: "simple")
+
+    memo = _SequenceLLM("verified artifact=ok " + base.SEMANTIC_MEMO_END_TOKEN)
+    projector = _SequenceLLM('{"value":"retry"}', ConnectionError("Connection error"))
+    agent = _CorrectionProjectionAgent()
+    monkeypatch.setattr(
+        agent, "llm",
+        lambda **kwargs: memo if kwargs.get("output_contract") == "semantic_memo" else projector,
+    )
+
+    with pytest.raises(RuntimeError, match="repair 생략"):
+        agent.invoke_structured({}, [HumanMessage(content="original")])
+    assert len(memo.messages) == 1
+    assert len(projector.messages) == 2
+
+
+def test_post_projection_correction_fails_closed_when_corrected_value_still_violates_hook(
+        monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base._cfg, "typed_projection_tier", lambda _tier: "simple")
+
+    memo = _SequenceLLM("verified artifact=ok " + base.SEMANTIC_MEMO_END_TOKEN)
+    projector = _SequenceLLM('{"value":"retry"}', '{"value":"retry"}')
+    agent = _CorrectionProjectionAgent()
+    monkeypatch.setattr(
+        agent, "llm",
+        lambda **kwargs: memo if kwargs.get("output_contract") == "semantic_memo" else projector,
+    )
+
+    with pytest.raises(RuntimeError, match="역할 계약"):
+        agent.invoke_structured({}, [HumanMessage(content="original")])
+    assert len(memo.messages) == 1
+    assert len(projector.messages) == 2
+
+
+def test_validation_diagnostic_exposes_schema_coordinates_but_not_instance_values():
+    secret = "CONFIDENTIAL INSTANCE VALUE"
+    schema = {
+        "type": "object",
+        "properties": {
+            "value": {"type": "string"},
+            "private_note": {"type": "string"},
+        },
+        "required": ["value", "private_note"],
+        "additionalProperties": False,
+    }
+
+    with pytest.raises(Exception) as caught:
+        base._validate_output({"value": secret}, schema)
+
+    diagnostic = base._validation_diagnostic(caught.value)
+    assert diagnostic == {
+        "category": "schema",
+        "keyword": "required",
+        "path": "$",
+        "missing": "private_note",
+    }
+    assert secret not in json.dumps(diagnostic, ensure_ascii=False)
+
+
+def test_validation_diagnostic_hides_dynamic_instance_keys():
+    secret_key = "CONFIDENTIAL_MODEL_AUTHORED_KEY"
+    schema = {
+        "type": "object",
+        "patternProperties": {"^.*$": {"type": "integer"}},
+    }
+
+    with pytest.raises(Exception) as caught:
+        base._validate_output({secret_key: "not-an-integer"}, schema)
+
+    diagnostic = base._validation_diagnostic(caught.value)
+    assert diagnostic == {"category": "schema", "keyword": "type", "path": "$.?"}
+    assert secret_key not in json.dumps(diagnostic, ensure_ascii=False)
+
+
+def test_validation_diagnostic_keeps_only_schema_defined_nested_path():
+    schema = {
+        "type": "object",
+        "properties": {"draft": {
+            "type": "object",
+            "properties": {"items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"outcome_refs": {"type": "array"}},
+                    "required": ["outcome_refs"],
+                },
+            }},
+            "required": ["items"],
+        }},
+        "required": ["draft"],
+    }
+
+    with pytest.raises(Exception) as caught:
+        base._validate_output({"draft": {"items": [{}]}}, schema)
+
+    assert base._validation_diagnostic(caught.value) == {
+        "category": "schema",
+        "keyword": "required",
+        "path": "$.draft.items[0]",
+        "missing": "outcome_refs",
+    }
 
 
 def test_projection_qualified_same_endpoint_keeps_two_stage_semantic_projection(monkeypatch):
@@ -413,6 +655,217 @@ def test_native_strict_semantic_role_keeps_existing_single_call(monkeypatch):
     }]
 
 
+def test_native_structured_path_applies_one_bounded_post_projection_correction(monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+
+    native = _SequenceLLM({"value": "retry"}, {"value": "ok"})
+    requested = []
+    agent = _CorrectionProjectionAgent()
+    monkeypatch.setattr(
+        agent, "llm", lambda **kwargs: requested.append(dict(kwargs)) or native,
+    )
+
+    result = agent.invoke_structured({}, [
+        SystemMessage(content=agent.system({})),
+        HumanMessage(content=agent.task({})),
+    ])
+
+    assert result == {"value": "ok"}
+    assert len(native.messages) == 2
+    correction_text = _message_text(native.messages[1])
+    assert '"value":"retry"' in correction_text.replace(" ", "")
+    assert "omitted the memo's required artifact" in correction_text
+    assert "ORIGINAL SYSTEM SECRET" not in correction_text
+    assert "ORIGINAL EVIDENCE SECRET" not in correction_text
+    assert [row["output_contract"] for row in requested] == [
+        "structured", "structured_correction"]
+    assert [row["execution_stage"] for row in requested] == [
+        "synthesis", "projection_correction"]
+
+
+def test_native_correction_allows_only_one_transport_repair(monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+
+    native = _SequenceLLM(
+        {"value": "retry"}, {"wrong": "schema failure"}, {"value": "ok"},
+    )
+    agent = _CorrectionProjectionAgent()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: native)
+
+    assert agent.invoke_structured({}, [HumanMessage(content="original")]) == {"value": "ok"}
+    assert len(native.messages) == 3  # initial + correction + one transport repair
+    assert native.structured_methods == ["json_schema", "json_schema", "json_mode"]
+
+
+def test_native_work_correction_has_bounded_semantic_material_for_real_schema(monkeypatch):
+    """Native Work recovery gets contracts+situation, not the original full prompt."""
+    from app.agent import capabilities
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base._cfg, "typed_projection_tier", lambda *_args, **_kwargs: "")
+
+    optional_only = {
+        "questions": [{
+            "question": "Epic을 고를까요?", "kind": "choice",
+            "options": ["자동 선택", "최상위 Task"], "field": "epic",
+            "required_input": False, "why_required": "",
+        }],
+        "mode": "task", "items": [], "rationale": "",
+    }
+    recovered = {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_source": "inferred", "structure_why": "독립 산출물 1건",
+        "items": [{
+            "summary": "[Catalog] AcmeDB DeltaSketch V2 인덱스 생성",
+            "type": "Task", "background": "인덱스 생성 요청됨",
+            "scope_in": ["AcmeDB DeltaSketch V2 인덱스 생성"],
+            "scope_out": [],
+            "dod": ["인덱스 생성 완료", "검증 쿼리 통과"],
+            "references": [], "children": [], "components": [], "labels": [],
+            "priority": "", "duedate": "",
+        }],
+        "rationale": "검증된 요청 범위로 단일 Task 구성",
+    }
+    native = _SequenceLLM(optional_only, recovered)
+    requested = []
+    agent = WorkArchitect()
+    monkeypatch.setattr(
+        agent, "llm", lambda **kwargs: requested.append(dict(kwargs)) or native,
+    )
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "AcmeDB DeltaSketch V2 인덱스 Task를 알아서 만들어줘",
+        "messages": [HumanMessage(
+            content="AcmeDB DeltaSketch V2 인덱스 Task를 알아서 만들어줘")],
+        "situation": (
+            "내부 조사에서 AcmeDB DeltaSketch V2 인덱스 대상과 생성 요구를 확인함. "
+            "추가 사용자 소유 입력 없음."),
+        "request_plan": {"tasks": [{
+            "id": "create-index", "kind": "ticket", "write_intent": True,
+            "instruction": "AcmeDB DeltaSketch V2 인덱스 생성 Task 작성",
+        }]},
+    }
+
+    result = agent.invoke_structured(state, [
+        SystemMessage(content="ORIGINAL SYSTEM SECRET"),
+        HumanMessage(content="RAW EVIDENCE SECRET"),
+    ])
+
+    assert result["items"][0]["summary"] == recovered["items"][0]["summary"]
+    assert result["items"][0]["scope_in"] and len(result["items"][0]["dod"]) == 2
+    assert len(native.messages) == 2
+    correction_text = _message_text(native.messages[1])
+    assert "Requested outcome contract" in correction_text
+    assert "AcmeDB DeltaSketch V2 인덱스 생성 Task 작성" in correction_text
+    assert "Required user anchors" in correction_text
+    assert "Verified situation summary" in correction_text
+    assert "추가 사용자 소유 입력 없음" in correction_text
+    assert "ORIGINAL SYSTEM SECRET" not in correction_text
+    assert "RAW EVIDENCE SECRET" not in correction_text
+    assert [row["output_contract"] for row in requested] == [
+        "structured", "structured_correction"]
+
+
+def test_native_pending_draft_revision_correction_uses_typed_prior_draft(monkeypatch):
+    from app.agent import capabilities
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base._cfg, "typed_projection_tier", lambda *_args, **_kwargs: "")
+
+    empty = {"questions": [], "mode": "task", "items": [], "change": {}, "rationale": ""}
+    revised = {
+        "questions": [], "mode": "task", "change": {}, "rationale": "제목만 수정",
+        "items": [{
+            "summary": "[ETL] NDV 적재 구현", "type": "Task",
+            "description": "<h3>배경</h3><p>기존 본문</p>",
+            "components": ["ETL"], "labels": ["ndv"], "priority": "High",
+        }],
+    }
+    native = _SequenceLLM(empty, revised)
+    agent = WorkArchitect()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: native)
+    state = {
+        "intent": Intent.MODIFY,
+        "request_text": "NDV Task 초안을 만들어줘",
+        "turn_continuation": True,
+        "messages": [HumanMessage(content="제목만 [ETL] NDV 적재 구현으로 바꿔줘")],
+        "draft": {"mode": "task", "structure": "single_task", "items": [{
+            "summary": "[ETL] NDV 구현", "type": "Task",
+            "description": "<h3>배경</h3><p>기존 본문</p>",
+            "components": ["ETL"], "labels": ["ndv"], "priority": "High",
+        }]},
+    }
+
+    result = agent.invoke_structured(state, [
+        SystemMessage(content="ORIGINAL SYSTEM SECRET"),
+        HumanMessage(content="RAW EVIDENCE SECRET"),
+    ])
+
+    assert result["items"][0]["summary"] == "[ETL] NDV 적재 구현"
+    assert not result.get("change")
+    correction_text = _message_text(native.messages[1])
+    assert "Current pending-draft modification instruction" in correction_text
+    assert "제목만 [ETL] NDV 적재 구현으로 바꿔줘" in correction_text
+    assert "Prior pending draft typed subset" in correction_text
+    assert "기존 본문" in correction_text and '"priority":"High"' in correction_text
+    assert "ORIGINAL SYSTEM SECRET" not in correction_text
+    assert "RAW EVIDENCE SECRET" not in correction_text
+
+
+def test_native_post_projection_correction_fails_closed_after_one_attempt(monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+
+    native = _SequenceLLM({"value": "retry"}, {"value": "retry"})
+    agent = _CorrectionProjectionAgent()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: native)
+
+    with pytest.raises(RuntimeError, match="역할 계약"):
+        agent.invoke_structured({}, [HumanMessage(content="original")])
+    assert len(native.messages) == 2
+
+
+@pytest.mark.parametrize("failure", [
+    ConnectionError("Connection error"),
+    RuntimeError("401 Unauthorized"),
+    TimeoutError("request timed out"),
+], ids=("connection", "auth", "timeout"))
+def test_native_post_projection_correction_does_not_retry_transport_failure(
+        monkeypatch, failure):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+
+    native = _SequenceLLM({"value": "retry"}, failure)
+    agent = _CorrectionProjectionAgent()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: native)
+
+    with pytest.raises(RuntimeError, match="repair 생략"):
+        agent.invoke_structured({}, [HumanMessage(content="original")])
+    assert len(native.messages) == 2
+
+
 def test_base_agent_routes_from_manifest_layer_not_a_class_tier(monkeypatch):
     from app.agent.workflow.agents.request_architect import RequestArchitect
 
@@ -482,6 +935,26 @@ def test_user_anchor_contract_excludes_plain_english_prose_but_keeps_identifiers
     assert not {"investigate", "why", "existing", "sometimes", "fails"} & anchors
     assert {"StarRocks", "Puffin", "NDV", "fdc_summary_trace_ic",
             "mixed-case", "V2", "1차"} <= anchors
+
+
+def test_latest_explicit_ordinal_supersedes_frozen_ordinal_but_keeps_technical_union():
+    from app.agent.workflow.anchors import required_user_anchors
+
+    state = {
+        "request_text": "AcmeDB DeltaSketch 1차 구현 Task를 만들어줘",
+        "messages": [
+            HumanMessage(content="AcmeDB DeltaSketch 1차 구현 Task를 만들어줘"),
+            AIMessage(content="초안을 만들었습니다."),
+            HumanMessage(content="2차 범위로 바꿔줘"),
+            AIMessage(content="2차 범위로 수정했습니다."),
+            HumanMessage(content="Puffin 연동을 포함하고 최종 3차 범위로 수정해줘"),
+        ],
+    }
+
+    anchors = required_user_anchors(state)
+
+    assert {"AcmeDB", "DeltaSketch", "Puffin", "3차"} <= set(anchors)
+    assert "1차" not in anchors and "2차" not in anchors
 
 
 def test_truncated_semantic_memo_fails_before_typed_projection(monkeypatch):

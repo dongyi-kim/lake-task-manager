@@ -86,8 +86,9 @@ def route_after_request_architect(state: AgentState) -> str:
     # 후속 요청에 쓸 필요도 없는 토큰을 소비한다. 대화 메시지는 checkpointer가 보존한다.
     if is_memory_only_request(state):
         return "respond"
-    # RequestArchitect can settle a cheap structure choice before any Jira/web lookup. Questions are a
-    # terminal result for this turn; sending them through research wastes calls and cannot improve them.
+    # A genuinely blocking question produced after the available context was considered is terminal
+    # for this turn.  Optional ticket-shape preferences are never put here: retrieval and the Agent's
+    # conservative default own those choices.
     if state.get("questions"):
         return "respond"
     # 회의록의 사람·로컬 약어는 먼저 관련 자료를 찾고, 그래도 확정되지 않을 때 인터뷰한다.
@@ -100,6 +101,8 @@ def route_after_request_architect(state: AgentState) -> str:
     if state.get("turn_continuation") and (state.get("situation") or "").strip():
         if intent == Intent.ASK:
             return "curate"
+        if intent in Intent.DRAFTS_TICKETS:
+            return "refine"
     # 분담형 Task의 미완료자 조회는 Query Specialist의 자유 JQL이나 Portfolio ReAct가
     # 아니라 parent 탐색→직계 Sub-Task 전수 집계라는 고정 join이다.
     from app.agent.workflow.assignment_completion import asks_incomplete_assignees
@@ -122,21 +125,10 @@ def route_after_request_architect(state: AgentState) -> str:
     if (intent == Intent.MODIFY and not state.get("mentioned_keys")
             and (state.get("draft") or {}).get("items")):
         return "refine"    # approval_token 은 턴마다 리셋되므로 조건에 못 쓴다
-    # ③ 해석 확인 선행 — 막연한 신규 개발 요청은 **조사보다 사용자 확인이 먼저**다.
-    #    실측(STARR NDV): 혼자 오래 조사하고 한 번에 결론을 내니 방향이 틀렸다. 조사 전에
-    #    해석·범위를 2~3문항으로 확인받으면 조사가 짧고 정확해진다(사용자 피드백: 일방적
-    #    호흡이 길다). 위임("알아서")이면 묻지 않는 기존 원칙이 이긴다.
-    #    ★ **버그 신고는 여기 해당 없다** — "2홉 이상 펼치면 화면이 빈다"는 막연한 것이
-    #    아니라 증상이 이미 문장에 있다. 물을 것은 해석이 아니라 재현 경로이고, 그 전에
-    #    **같은 증상의 Bug 가 이미 열려 있는지**를 봐야 한다(중복 티켓). 갈래를 걷어내며
-    #    이 자리가 조용히 넓어졌던 것을 낱말 판정으로 되돌린다(§7 16-b).
-    if intent == Intent.PLAN_WORK and not state.get("sufficient") \
-            and not (state.get("situation") or "").strip() \
-            and not (state.get("turns") or 0) \
-            and not reads_as_bug(request_text(state)):
-        from app.agent.workflow.agents.work_architect import _said_defaults
-        if not _said_defaults(state):
-            return "refine"
+    # 신규 업무의 모호함은 먼저 허용된 Jira/Confluence/web 범위에서 조사한다. 구조·Epic·
+    # 분해 방식처럼 Agent가 안전하게 정할 수 있는 선호를 인터뷰하지 않으며, 조사 뒤에도
+    # 남은 target/action 같은 사용자 소유 blocker만 WorkArchitect가 질문한다. 이 순서를
+    # 뒤집으면 관련 이력이 답할 수 있는 내용을 사용자에게 되묻고 검색 자체가 사라진다.
     if intent in Intent.DIRECT_ANSWER:
         # 데이터 자산 질문("fdc.fdc_trace_summary_ic 적재주기는?")이 progress/activity 로
         # 오분류되면 회복이 불가능하다 — portfolio_analyst에는 검색 도구가 없어서 테이블 이름을

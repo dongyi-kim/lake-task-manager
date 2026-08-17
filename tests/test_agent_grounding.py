@@ -773,6 +773,8 @@ def test_approval_evidence_keeps_decision_sources_and_hides_generic_web_hits():
     generic_search = "https://docs.starrocks.io/search/"
     generic_home = "https://www.starrocks.io/"
     generic_readme = "https://github.com/StarRocks/starrocks/blob/main/README.md"
+    generic_nested_readme = "https://github.com/StarRocks/starrocks/blob/main/docs/README.md"
+    generic_docs_tree = "https://github.com/StarRocks/starrocks/tree/main/docs"
     direct_spec = "https://iceberg.apache.org/puffin-spec/"
     internal_note = "http://127.0.0.1:8080/spaces/DL/pages/44/puffin-ndv"
     state = {
@@ -821,6 +823,25 @@ def test_approval_evidence_keeps_decision_sources_and_hides_generic_web_hits():
                 }],
             },
             {
+                "key": "starrocks/docs/README.md at main - GitHub",
+                "title": "starrocks/docs/README.md at main - GitHub",
+                "url": generic_nested_readme,
+                "observations": [{
+                    "source": "external",
+                    "text": ("Automatic checks verify the Contributor License Agreement (CLA) "
+                             "and whether documentation conforms to Markdown syntax"),
+                }],
+            },
+            {
+                "key": "starrocks/docs at main",
+                "title": "starrocks/docs at main",
+                "url": generic_docs_tree,
+                "observations": [{
+                    "source": "external",
+                    "text": "Contributing documentation tips, writing process, and templates",
+                }],
+            },
+            {
                 "key": "Puffin NDV 설계 회의",
                 "title": "Puffin NDV 설계 회의",
                 "observations": [{
@@ -838,6 +859,19 @@ def test_approval_evidence_keeps_decision_sources_and_hides_generic_web_hits():
                     {"url": generic_search, "official": True},
                     {"url": generic_home, "official": True},
                     {"url": generic_readme, "official": False},
+                    {
+                        "title": "starrocks/docs/README.md at main - GitHub",
+                        "url": generic_nested_readme,
+                        "snippet": ("Contributor License Agreement and Markdown syntax checks "
+                                    "for documentation contributions"),
+                        "official": False,
+                    },
+                    {
+                        "title": "starrocks/docs at main",
+                        "url": generic_docs_tree,
+                        "snippet": "Documentation contribution writing process and templates",
+                        "official": False,
+                    },
                     {
                         "title": "Apache Iceberg Puffin specification",
                         "url": direct_spec,
@@ -859,9 +893,143 @@ def test_approval_evidence_keeps_decision_sources_and_hides_generic_web_hits():
     assert "{{ticket-detail:DL-7001}}" in got
     assert direct_spec in got
     assert internal_note in got
-    assert generic_search not in got and generic_home not in got and generic_readme not in got
+    assert all(url not in got for url in (
+        generic_search, generic_home, generic_readme, generic_nested_readme, generic_docs_tree,
+    ))
     assert "### 조사 한계" not in got
     assert state == before
+
+
+def test_approval_evidence_materializes_selected_parent_and_hides_query_provenance():
+    """Only an opened parent is authoritative; JQL remains debug metadata."""
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    state = {
+        "intent": "plan_work",
+        "approval_token": "approval-parent",
+        "request_text": "Puffin NDV 파이프라인 Task 생성",
+        "draft": {"items": [{
+            "type": "Task", "summary": "Puffin NDV 파이프라인 구현", "epic": "DL-9200",
+        }]},
+        "evidence": [{
+            "key": "DL-9200", "title": "[회의] Iceberg Puffin NDV 도입",
+            "observations": [{
+                "source": "query",
+                "text": ('QueryPlan jira:parent-candidate · canonicalJql=project in ("DL") '
+                         'AND text ~ "Puffin"'),
+            }],
+        }],
+        "query_results": [{
+            "id": "parent-candidate", "source": "jira", "result": {
+                "ticketDetails": [{
+                    "key": "DL-9200", "type": "Epic",
+                    "summary": "[회의] Iceberg Puffin NDV 도입", "status": "Open",
+                    "description": "Puffin NDV 도입 배경과 reader 검증 범위를 논의",
+                    "comments": [],
+                }],
+            },
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("### 티켓 승인 초안\n\n초안 1건", state)
+
+    assert "{{ticket-detail:DL-9200}}" in got
+    assert "Puffin NDV 도입 배경과 reader 검증 범위를 논의" in got
+    assert "QueryPlan" not in got and "canonicalJql" not in got
+
+
+def test_materialized_parent_rich_text_is_plain_and_bounded_in_evidence():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    long_tail = "검증 결과 " * 120
+    state = {
+        "intent": "plan_work",
+        "approval_token": "approval-rich-parent",
+        "request_text": "Puffin NDV 검증 Task 생성",
+        "draft": {"items": [{
+            "type": "Task", "summary": "Puffin NDV 검증", "epic": "DL-9200",
+        }]},
+        "evidence": [],
+        "query_results": [{
+            "id": "parent-candidate-check", "source": "jira", "result": {
+                "ticketDetails": [{
+                    "key": "DL-9200", "type": "Epic", "status": "Open",
+                    "summary": "[Platform] Puffin NDV 도입",
+                    "description": ("<h3>배경</h3><ul><li>Puffin writer PoC 완료</li>"
+                                    f"<li>{long_tail}</li></ul>"),
+                    "comments": [{"author": "skcc.x1103",
+                                  "body": "<p>reader 검증은 진행 중</p>"}],
+                }],
+            },
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("### 티켓 승인 초안\n\n초안 1건", state)
+
+    assert got.count("{{ticket-detail:DL-9200}}") == 1
+    assert "Puffin writer PoC 완료" in got and "reader 검증은 진행 중" in got
+    assert all(tag not in got for tag in ("<h3>", "<ul>", "<li>", "<p>"))
+    description_line = next(line for line in got.splitlines()
+                            if "Puffin writer PoC 완료" in line)
+    assert len(description_line) < 500
+
+
+def test_approval_evidence_does_not_promote_an_unmaterialized_selected_parent():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    state = {
+        "intent": "plan_work",
+        "approval_token": "approval-parent-unverified",
+        "request_text": "Puffin NDV 파이프라인 Task 생성",
+        "draft": {"items": [{
+            "type": "Task", "summary": "Puffin NDV 파이프라인 구현", "epic": "DL-9999",
+        }]},
+        "evidence": [],
+        "query_results": [{
+            "id": "parent-candidate", "source": "jira", "result": {
+                "tickets": [{"key": "DL-9999", "summary": "검색 hit만 있는 Epic"}],
+                "ticketDetails": [],
+            },
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("### 티켓 승인 초안\n\n초안 1건", state)
+
+    assert "{{ticket-detail:DL-9999}}" not in got
+    assert "검색 hit만 있는 Epic" not in got
+
+
+def test_approval_evidence_uses_bounded_materialized_parent_after_interview_reset():
+    """An interview may clear raw query rows, but not the verified parent source."""
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    state = {
+        "intent": "plan_work",
+        "approval_token": "approval-parent-after-interview",
+        "request_text": "Puffin NDV 파이프라인 Task 생성",
+        "draft": {"items": [{
+            "type": "Task", "summary": "Puffin NDV 파이프라인 구현", "epic": "DL-9200",
+        }]},
+        "query_results": [],
+        "evidence": [],
+        "materialized_ticket_sources": {
+            "ticketDetails": [{
+                "key": "DL-9200", "type": "Epic", "status": "Open",
+                "summary": "Puffin NDV 도입", "description": "reader 검증 범위 합의",
+                "comments": [],
+            }],
+            "parentCandidateKeys": ["DL-9200"],
+        },
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("### 티켓 승인 초안\n\n초안 1건", state)
+
+    assert "{{ticket-detail:DL-9200}}" in got
+    assert "reader 검증 범위 합의" in got
 
 
 def test_approval_evidence_reports_search_limit_without_a_direct_official_source():

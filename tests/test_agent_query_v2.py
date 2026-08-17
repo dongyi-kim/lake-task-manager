@@ -182,6 +182,64 @@ def test_research_query_runner_materializes_ticket_and_document_bodies(monkeypat
     assert got["query_artifacts"]["evidence-materialization"]["documents"] == 1
 
 
+def test_runner_reserves_parent_materialization_after_more_than_eight_duplicate_hits(monkeypatch):
+    """A broad bounded history read cannot starve the later structural Epic candidates."""
+    from app.agent import tools as T
+
+    class PurposeAwareClient(_Client):
+        def __init__(self):
+            super().__init__(12)
+            self.rows = [_issue(index, "AAA") for index in range(12)]
+            self.parents = [_issue(900 + index, "AAA") for index in range(2)]
+            for row in self.parents:
+                row["fields"]["issuetype"] = {"name": "Epic", "subtask": False}
+
+        def search_issues_page(self, jql, start_at=0, max_results=100,
+                               fields=None, light=True):
+            self.calls.append({"jql": jql, "startAt": start_at,
+                               "maxResults": max_results, "fields": fields, "light": light})
+            source = self.parents if "issuetype = epic" in jql.casefold() else self.rows
+            rows = source[start_at:start_at + max_results]
+            nxt = start_at + len(rows)
+            more = nxt < len(source)
+            return {"startAt": start_at, "maxResults": max_results, "total": len(source),
+                    "issues": rows, "returned": len(rows), "hasMore": more,
+                    "nextStartAt": nxt if more else None}
+
+    fake = PurposeAwareClient()
+    _ctx.bind(fake, _settings(["AAA"]))
+
+    def ticket(args):
+        key = args["key"]
+        return {"key": key, "summary": f"detail {key}",
+                "type": "Epic" if key in {"AAA-901", "AAA-902"} else "Task",
+                "status": "Open", "description": f"verified {key}", "comments": []}
+
+    monkeypatch.setitem(T.BY_NAME, "get_ticket", SimpleNamespace(invoke=ticket))
+    got = QueryRunner()._run({
+        "intent": "plan_work",
+        "request_plan": {"tasks": [{"kind": "plan", "write_intent": True}]},
+        "query_plan": {"queries": [
+            {"id": "internal-duplicate-check", "source": "jira",
+             "query": "StarRocks Puffin NDV", "where": "",
+             "order_by": "updated DESC", "page_size": 50, "completeness": "all"},
+            {"id": "parent-candidate-check", "source": "jira",
+             "query": "StarRocks Puffin NDV", "where": "issueType = Epic",
+             "order_by": "updated DESC", "page_size": 50, "completeness": "all"},
+        ]},
+    })
+
+    artifact = got["query_artifacts"]["evidence-materialization"]
+    assert len(artifact["ticketKeys"]) == 8
+    assert artifact["parentCandidateKeys"] == ["AAA-901", "AAA-902"]
+    assert len([key for key in artifact["ticketKeys"] if key not in artifact["parentCandidateKeys"]]) == 6
+    details = {row["key"] for row in artifact["ticketDetails"]}
+    assert {"AAA-901", "AAA-902"}.issubset(details)
+    parent = next(row["result"] for row in got["query_results"]
+                  if row["id"] == "parent-candidate-check")
+    assert parent["materializedCandidateKeys"] == ["AAA-901", "AAA-902"]
+
+
 def test_plain_listing_query_does_not_materialize_every_ticket(monkeypatch):
     """A list/count query stays cheap; evidence bodies are reserved for research synthesis."""
     from app.agent import tools as T
@@ -319,7 +377,7 @@ def test_create_plan_collapses_speculative_status_people_and_comment_fanout():
     _ensure_creation_duplicate_query(state, plan)
 
     assert [row["source"] for row in plan["queries"]] == ["jira", "web"]
-    assert plan["queries"][0]["query"] == "Iceberg Puffin NDV 배치 Job"
+    assert plan["queries"][0]["query"] == "Iceberg Puffin NDV"
     assert plan["queries"][0]["completeness"] == "all"
 
 
@@ -368,6 +426,7 @@ def test_public_technology_create_plan_is_compiled_without_query_model(monkeypat
     state = {
         "intent": Intent.PLAN_WORK,
         "request_text": original,
+        "turn_continuation": True,
         "messages": [
             HumanMessage(content=original),
             HumanMessage(content="Epic은 골라줘. 최소 기능 범위까지 알아서 진행해"),
@@ -378,11 +437,14 @@ def test_public_technology_create_plan_is_compiled_without_query_model(monkeypat
 
     queries = QuerySpecialist().node()(state)["query_plan"]["queries"]
 
-    assert [query["source"] for query in queries] == ["jira", "web"]
+    assert [query["source"] for query in queries] == ["jira", "jira", "web"]
     jira = queries[0]["query"]
-    assert all(term in jira for term in ("Apache", "Iceberg", "Puffin", "통계", "파이프라인"))
+    assert jira == "Apache Iceberg Puffin"
     assert not any(term.casefold() in jira.casefold()
                    for term in ("Epic", "생성", "선택", "골라"))
+    assert queries[1]["id"] == "parent-candidate-check"
+    assert queries[1]["query"] == "Apache Iceberg Puffin"
+    assert queries[1]["where"] == "issueType = Epic"
 
 
 def test_delegated_existing_epic_selection_uses_real_deterministic_recovery(monkeypatch):
@@ -398,6 +460,7 @@ def test_delegated_existing_epic_selection_uses_real_deterministic_recovery(monk
     state = {
         "intent": Intent.PLAN_WORK,
         "request_text": original,
+        "turn_continuation": True,
         "messages": [
             HumanMessage(content=original),
             HumanMessage(content=(
@@ -416,8 +479,216 @@ def test_delegated_existing_epic_selection_uses_real_deterministic_recovery(monk
 
     assert "error" not in result
     jira = next(row for row in result["query_plan"]["queries"] if row["source"] == "jira")
-    assert jira["query"] == "StarRocks Puffin NDV 통계정보 파이프라인"
+    assert jira["query"] == "StarRocks Puffin NDV"
+    parent = next(row for row in result["query_plan"]["queries"]
+                  if row["id"] == "parent-candidate-check")
+    assert parent["query"] == "StarRocks Puffin NDV"
+    assert parent["where"] == "issueType = Epic" and parent["completeness"] == "all"
     assert any(row["source"] == "web" for row in result["query_plan"]["queries"])
+
+
+def test_related_ticket_key_does_not_suppress_delegated_parent_candidate_query():
+    from app.agent.workflow.agents.query_specialist import (
+        _ensure_creation_duplicate_query,
+        _explicit_creation_parent_keys,
+    )
+
+    request = (
+        "DL-9201 참고해서 StarRocks Puffin NDV 파이프라인 Task를 만들고 "
+        "기존 Epic은 네가 골라줘"
+    )
+    state = {
+        "intent": "plan_work", "request_text": request,
+        "messages": [HumanMessage(content=request)],
+        "mentioned_keys": ["DL-9201"],
+        "keywords": ["StarRocks", "Puffin", "NDV"],
+    }
+    plan = {"queries": []}
+
+    _ensure_creation_duplicate_query(state, plan)
+
+    assert _explicit_creation_parent_keys(state) == set()
+    parent = next(row for row in plan["queries"] if row["id"] == "parent-candidate-check")
+    assert parent["query"] == "StarRocks Puffin NDV"
+    assert parent["where"] == "issueType = Epic"
+    assert parent["parent_reference_keys"] == ["DL-9201"]
+    duplicate = next(row for row in plan["queries"] if row["id"] == "internal-duplicate-check")
+    assert duplicate["where"] == "key in (DL-9201)"
+
+
+def test_bare_related_ticket_reference_keeps_a_narrow_parent_candidate_read():
+    from app.agent.workflow.agents.query_specialist import _ensure_creation_duplicate_query
+    from app.infra.cache import Cache
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+
+    request = "DL-9201 참고해서 기존 Epic 골라줘"
+    state = {
+        "intent": "plan_work", "request_text": request,
+        "messages": [HumanMessage(content=request)], "mentioned_keys": ["DL-9201"],
+    }
+    plan = {"queries": []}
+
+    _ensure_creation_duplicate_query(state, plan)
+
+    parent = next(row for row in plan["queries"] if row["id"] == "parent-candidate-check")
+    assert parent["query"] == ""
+    assert parent["where"] == "issueType = Epic"
+    assert parent["parent_reference_keys"] == ["DL-9201"]
+
+    settings = get_settings()
+    _ctx.bind(JiraClient(settings, Cache(":memory:")), settings)
+    got = QueryRunner()._run({
+        **state,
+        "request_plan": {"tasks": [{"kind": "plan", "write_intent": True}]},
+        "query_plan": plan,
+    })
+
+    resolved = next(row["result"] for row in got["query_results"]
+                    if row["id"] == "parent-candidate-check")
+    assert resolved["parentResolution"] == "referenced-ticket-hierarchy"
+    assert [row["key"] for row in resolved["tickets"]] == ["DL-9200"]
+    epic = next(row for row in resolved["ticketDetails"] if row["key"] == "DL-9200")
+    assert "DL-9201" not in f'{epic.get("summary", "")} {epic.get("description", "")}'
+    assert "canonicalJql" not in resolved
+    sources = got["materialized_ticket_sources"]
+    assert sources["parentCandidateKeys"] == ["DL-9200"]
+    assert {row["key"] for row in sources["ticketDetails"]} >= {"DL-9200", "DL-9201"}
+
+
+def test_parent_reference_resolution_follows_modern_subtask_task_epic_parent_chain(monkeypatch):
+    from app.agent import tools as T
+    from app.agent.workflow.agents.query_runner import _resolve_parent_reference_candidates
+
+    details = {
+        "DL-9302": {"key": "DL-9302", "type": "Sub-Task", "parentKey": "DL-9301"},
+        "DL-9301": {"key": "DL-9301", "type": "Task", "parentKey": "DL-9300"},
+        "DL-9300": {"key": "DL-9300", "type": "Epic", "summary": "bounded parent"},
+    }
+    monkeypatch.setitem(
+        T.BY_NAME, "get_ticket",
+        SimpleNamespace(invoke=lambda args: details.get(args["key"], {"error": "missing"})),
+    )
+
+    got = _resolve_parent_reference_candidates(["DL-9302"])
+
+    assert [row["key"] for row in got["candidates"]] == ["DL-9300"]
+    assert got["openedKeys"] == ["DL-9302", "DL-9301", "DL-9300"]
+
+
+def test_only_an_unambiguous_parent_relation_suppresses_parent_candidate_search():
+    from app.agent.workflow.agents.query_specialist import (
+        _ensure_creation_duplicate_query,
+        _explicit_creation_parent_keys,
+    )
+
+    request = "StarRocks Puffin NDV Task는 Epic DL-9200 아래에 만들고 알아서 진행해"
+    state = {
+        "intent": "plan_work", "request_text": request,
+        "messages": [HumanMessage(content=request)], "mentioned_keys": ["DL-9200"],
+    }
+    plan = {"queries": []}
+
+    _ensure_creation_duplicate_query(state, plan)
+
+    assert _explicit_creation_parent_keys(state) == {"DL-9200"}
+    assert not any(row["id"] == "parent-candidate-check" for row in plan["queries"])
+
+
+def test_missing_reference_hierarchy_uses_bounded_subject_fallback(monkeypatch):
+    from app.agent import tools as T
+
+    fake = _Client(2)
+    for row in fake.rows:
+        row["fields"]["issuetype"] = {"name": "Epic", "subtask": False}
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+
+    def ticket(args):
+        key = args["key"]
+        if key == "DL-9999":
+            return {"key": key, "type": "Task", "summary": "관계 없는 참조 Task",
+                    "status": "Open", "description": "상위 Epic 없음", "comments": []}
+        return {"key": key, "type": "Epic", "summary": f"candidate {key}",
+                "status": "Open", "description": "subject candidate", "comments": []}
+
+    monkeypatch.setitem(T.BY_NAME, "get_ticket", SimpleNamespace(invoke=ticket))
+    got = QueryRunner()._run({
+        "intent": "plan_work",
+        "request_plan": {"tasks": [{"kind": "plan", "write_intent": True}]},
+        "query_plan": {"queries": [{
+            "id": "parent-candidate-check", "source": "jira",
+            "query": "StarRocks Puffin NDV", "where": "issueType = Epic",
+            "order_by": "updated DESC", "page_size": 50, "completeness": "all",
+            "parent_reference_keys": ["DL-9999"],
+        }]},
+    })
+
+    result = got["query_results"][0]["result"]
+    assert all(f'text ~ "{term}"' in result["canonicalJql"]
+               for term in ("StarRocks", "Puffin", "NDV"))
+    assert "parentResolution" not in result
+    assert fake.calls, "subject fallback must run only after the hierarchy lookup yielded no Epic"
+
+
+def test_missing_reference_hierarchy_never_expands_to_all_epics_without_a_subject(monkeypatch):
+    from app.agent import tools as T
+
+    fake = _Client(2)
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+    monkeypatch.setitem(T.BY_NAME, "get_ticket", SimpleNamespace(invoke=lambda args: {
+        "key": args["key"], "type": "Task", "summary": "상위 Epic 없음",
+        "status": "Open", "description": "관계 필드 없음", "comments": [],
+    }))
+
+    got = QueryRunner()._run({
+        "intent": "plan_work",
+        "request_plan": {"tasks": [{"kind": "plan", "write_intent": True}]},
+        "query_plan": {"queries": [{
+            "id": "parent-candidate-check", "source": "jira", "query": "",
+            "where": "issueType = Epic", "page_size": 50, "completeness": "all",
+            "parent_reference_keys": ["DL-9999"],
+        }]},
+    })
+
+    result = got["query_results"][0]["result"]
+    assert result["parentResolution"] == "unresolved-reference"
+    assert result["tickets"] == [] and result.get("error")
+    assert fake.calls == []
+
+
+def test_public_technology_create_query_collects_related_mock_world_tasks_and_details():
+    """The bounded 2-of-3 query retains writer/reader/criteria records with omitted terms."""
+    from app.agent.workflow.agents.query_specialist import _ensure_creation_duplicate_query
+    from app.infra.cache import Cache
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+
+    settings = get_settings()
+    client = JiraClient(settings, Cache(":memory:"))
+    _ctx.bind(client, settings)
+    original = "StarRocks Puffin NDV 통계정보를 생성하는 파이프라인을 개발해야해"
+    follow_up = "Epic은 네가 골라줘. 최소 기능 1차 구현까지 알아서 진행해"
+    state = {
+        "intent": "plan_work",
+        "request_text": original,
+        "messages": [HumanMessage(content=original), HumanMessage(content=follow_up)],
+        "keywords": ["StarRocks", "Puffin", "NDV"],
+        "request_plan": {"tasks": [{"kind": "plan", "write_intent": True}]},
+    }
+    plan = {"queries": []}
+    _ensure_creation_duplicate_query(state, plan)
+
+    got = QueryRunner()._run({**state, "query_plan": plan})
+
+    internal = next(row["result"] for row in got["query_results"]
+                    if row["id"] == "internal-duplicate-check")
+    found = {row["key"] for row in internal.get("tickets") or []}
+    assert {"DL-9201", "DL-9202", "DL-9203"}.issubset(found)
+    assert all(f'text ~ "{term}"' in internal["canonicalJql"]
+               for term in ("StarRocks", "Puffin", "NDV"))
+    assert internal["canonicalJql"].count(" OR ") >= 2
+    details = {row["key"] for row in internal.get("ticketDetails") or []}
+    assert {"DL-9200", "DL-9201", "DL-9202", "DL-9203"}.issubset(details)
 
 
 def test_creation_subject_is_anchored_to_literal_request_not_polluted_keywords():
@@ -441,6 +712,36 @@ def test_creation_subject_prioritizes_literal_technical_subject_over_generic_lea
         "request_text": ("지금 우리 상황을 봤을 때 StarRocks Puffin NDV 통계정보를 "
                          "생성하는 파이프라인 Task를 만들어줘"),
         "keywords": ["StarRocks Puffin NDV"],
+    }
+
+    assert _creation_subject_terms(state) == [
+        "StarRocks", "Puffin", "NDV", "통계정보", "파이프라인",
+    ]
+
+
+def test_creation_subject_recovers_frozen_literal_anchors_from_a_control_only_followup():
+    """A short interview answer must not replace the technical creation subject."""
+    from app.agent.workflow.agents.query_specialist import _creation_subject_terms
+
+    original = "StarRocks Puffin NDV 통계정보를 생성하는 파이프라인을 개발해야해"
+    follow_up = (
+        "Epic은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+    state = {
+        # Reproduce a legacy/checkpoint state whose nominal frozen field was overwritten.
+        "request_text": follow_up,
+        "turn_continuation": True,
+        "messages": [
+            HumanMessage(content=original),
+            AIMessage(content="티켓 구조를 정해 주세요"),
+            HumanMessage(content=follow_up),
+        ],
+        "request_plan": {
+            "goal": "StarRocks Puffin NDV 통계정보 생성 파이프라인 1차 구현",
+            "tasks": [{"kind": "plan", "instruction": follow_up, "write_intent": True}],
+        },
+        "keywords": ["StarRocks", "Puffin", "NDV", "구현"],
     }
 
     assert _creation_subject_terms(state) == [
@@ -581,7 +882,44 @@ def test_model_generated_terms_never_authorize_external_research():
 
     assert _external_research_allowed(state) is False
     state["messages"].append(HumanMessage(content="외부 공식 문서도 조사해줘"))
+    state["turn_continuation"] = True
     assert _external_research_allowed(state) is True
+
+
+def test_past_web_permission_never_authorizes_a_new_topic_or_leaks_its_identifier():
+    """A public-search grant is scoped to one session request boundary, not all human history."""
+    from app.agent.workflow.agents.query_specialist import (
+        QuerySpecialist, _external_research_allowed, _user_authored_text,
+    )
+    from app.agent.workflow.state import Intent
+
+    current = "secret_client_code 성능 Task 생성해"
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": current,
+        "turn_continuation": False,
+        "messages": [
+            HumanMessage(content="Qwen 공식 문서를 웹 검색해"),
+            AIMessage(content="조사했습니다."),
+            HumanMessage(content=current),
+        ],
+        "mentioned_keys": [],
+    }
+
+    assert _user_authored_text(state) == current
+    assert _external_research_allowed(state) is False
+    out = QuerySpecialist().apply(state, {
+        "queries": [{
+            "id": "model-web", "source": "web",
+            "query": "secret_client_code Qwen official documentation",
+            "where": "", "order_by": "updated DESC", "fields": [],
+            "completeness": "page", "page_size": 5, "depends_on": [],
+        }],
+        "joins": [], "uncertainty": [],
+    })
+    assert all(row.get("source") not in {"web", "github"}
+               for row in out["query_plan"]["queries"])
+    assert "Qwen" not in str(out["query_plan"])
 
 
 def test_meeting_query_plan_preserves_explicit_ticket_and_replaces_generic_note_search():

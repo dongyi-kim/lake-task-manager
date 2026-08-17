@@ -145,7 +145,8 @@ class Meter:
     def add(self, model: str, prompt: int, completion: int,
             node: str = "", seconds: float = 0.0, cached: int = 0,
             output_contract: str = "", finish_reason: str = "",
-            execution_layer: str = "", execution_stage: str = ""):
+            execution_layer: str = "", execution_stage: str = "",
+            validation_diagnostic: dict | None = None):
         with self._lock:
             self.calls += 1
             self.prompt += int(prompt or 0)
@@ -158,7 +159,7 @@ class Meter:
                 row["calls"] += 1
                 row["tokens"] += int(prompt or 0) + int(completion or 0)
                 row["seconds"] = round(row["seconds"] + (seconds or 0.0), 1)
-            self.calls_detail.append({
+            detail = {
                 "node": node,
                 "model": model,
                 "outputContract": output_contract,
@@ -168,7 +169,18 @@ class Meter:
                 "promptTokens": int(prompt or 0),
                 "completionTokens": int(completion or 0),
                 "seconds": round(float(seconds or 0.0), 3),
-            })
+            }
+            labels = {
+                "category": "validationCategory",
+                "keyword": "validationKeyword",
+                "path": "validationPath",
+                "missing": "validationMissing",
+            }
+            for source, target in labels.items():
+                value = str((validation_diagnostic or {}).get(source) or "").strip()
+                if value:
+                    detail[target] = value
+            self.calls_detail.append(detail)
 
     @property
     def total(self) -> int:
@@ -225,7 +237,12 @@ def callback(meter: Meter):
             contract = str(md.get("ltm_output_contract") or "")
             layer = str(md.get("ltm_execution_layer") or "")
             stage = str(md.get("ltm_execution_stage") or "")
-            self._t0[str(run_id)] = (_t.time(), node, contract, layer, stage)
+            validation = {
+                key: str(md.get(f"ltm_validation_{key}") or "")
+                for key in ("category", "keyword", "path", "missing")
+                if md.get(f"ltm_validation_{key}")
+            }
+            self._t0[str(run_id)] = (_t.time(), node, contract, layer, stage, validation)
 
         def on_llm_start(self, serialized, prompts, *, run_id=None, **kwargs):
             self._start(run_id, kwargs)
@@ -247,8 +264,8 @@ def callback(meter: Meter):
                 message = getattr(gen[0], "message", None) if gen else None
                 response_meta = getattr(message, "response_metadata", None) or {}
                 import time as _t
-                t0, node, contract, layer, stage = self._t0.pop(
-                    str(run_id), (None, "", "", "", ""))
+                t0, node, contract, layer, stage, validation = self._t0.pop(
+                    str(run_id), (None, "", "", "", "", {}))
                 secs = (_t.time() - t0) if t0 else 0.0
                 det = usage.get("prompt_tokens_details") or {}
                 cached = det.get("cached_tokens") if isinstance(det, dict) else 0
@@ -264,19 +281,21 @@ def callback(meter: Meter):
                           usage.get("completion_tokens") or 0,
                           node=node, seconds=secs, cached=cached or 0,
                           output_contract=contract, finish_reason=str(finish),
-                          execution_layer=layer, execution_stage=stage)
+                          execution_layer=layer, execution_stage=stage,
+                          validation_diagnostic=validation)
             except Exception:
                 pass
 
         def on_llm_error(self, error, *, run_id=None, **kwargs):
             try:
                 import time as _t
-                t0, node, contract, layer, stage = self._t0.pop(
-                    str(run_id), (None, "", "", "", ""))
+                t0, node, contract, layer, stage, validation = self._t0.pop(
+                    str(run_id), (None, "", "", "", "", {}))
                 meter.add("", 0, 0, node=node,
                           seconds=(_t.time() - t0) if t0 else 0.0,
                           output_contract=contract, finish_reason="error",
-                          execution_layer=layer, execution_stage=stage)
+                          execution_layer=layer, execution_stage=stage,
+                          validation_diagnostic=validation)
             except Exception:
                 pass
 

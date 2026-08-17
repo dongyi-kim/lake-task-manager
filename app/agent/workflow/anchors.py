@@ -17,7 +17,10 @@ from app.agent.workflow.state import AgentState, last_user_text, request_text
 
 
 _TOKEN = re.compile(r"(?<![0-9A-Za-z_.-])([A-Za-z][A-Za-z0-9_.-]{1,79})(?![0-9A-Za-z_.-])")
-_ORDINAL = re.compile(r"(?<!\d)(\d{1,3}\s*차)(?![0-9A-Za-z가-힣])")
+_ORDINAL = re.compile(
+    r"(?<!\d)(\d{1,3}\s*차)"
+    r"(?=$|[\s,.;:!?/()\[\]{}]|(?:와|과|및|부터|까지|로|를|는|은|의)(?=\s|$|[,.;:!?]))"
+)
 _STOP = {
     "a", "an", "and", "api", "all", "any", "as", "at", "by", "create", "data",
     "due", "epic", "feature", "for", "from", "http", "https", "improvement", "in",
@@ -42,19 +45,8 @@ _MAX_REQUESTED_OUTCOME_CHARS = 512
 _WRITE_KINDS = {"ticket", "comment", "write", "plan"}
 
 
-def _anchor_text(state: AgentState, *, include_latest: bool) -> str:
-    original = request_text(state)
-    latest = last_user_text(state) if include_latest else ""
-    return original + (("\n" + latest) if latest and latest != original else "")
-
-
-def required_user_anchors(state: AgentState, *, include_latest: bool = True) -> list[str]:
-    """Return ordered, exact user tokens that must survive semantic projection.
-
-    Ticket keys, dates, priorities, and user ids already have typed fields and are excluded
-    here.  The result is capped so a pasted log cannot become a second prompt payload.
-    """
-    text = _anchor_text(state, include_latest=include_latest)
+def _anchors_from_text(text: str) -> list[str]:
+    """Extract high-precision anchors from one request boundary, without precedence."""
     candidates: list[tuple[int, str]] = []
     for match in _TOKEN.finditer(text):
         value = match.group(1).strip(".,;:()[]{}")
@@ -87,9 +79,44 @@ def required_user_anchors(state: AgentState, *, include_latest: bool = True) -> 
             continue
         seen.add(key)
         ordered.append(value)
-        if len(ordered) >= 12:
-            break
     return ordered
+
+
+def required_user_anchors(state: AgentState, *, include_latest: bool = True) -> list[str]:
+    """Return exact user tokens with field-aware current-turn precedence.
+
+    Technical names accumulate across the frozen request and current user turn. Ordinals
+    are scope fields rather than independent nouns: if the latest turn explicitly says
+    ``2차``, it supersedes frozen ``1차`` instead of forcing both into every title. Ticket
+    keys, dates, priorities, and user ids already have typed fields and are excluded here.
+    The result is capped so a pasted log cannot become a second prompt payload.
+    """
+    original = request_text(state)
+    latest = last_user_text(state) if include_latest else ""
+    original_anchors = _anchors_from_text(original)
+    latest_anchors = (_anchors_from_text(latest)
+                      if latest and latest != original else [])
+    latest_ordinals = [value for value in latest_anchors
+                       if _ORDINAL.fullmatch(value)]
+
+    # Reserve capacity for authoritative latest ordinals. Technical anchors remain a union,
+    # while frozen ordinals survive only when the current turn did not replace that field.
+    ordinal_values = (latest_ordinals if latest_ordinals else [
+        value for value in original_anchors + latest_anchors if _ORDINAL.fullmatch(value)
+    ])
+    technical_values = [
+        value for value in original_anchors + latest_anchors
+        if not _ORDINAL.fullmatch(value)
+    ]
+    ordered, seen = [], set()
+    for value in technical_values[:max(0, 12 - len(ordinal_values[:12]))] \
+            + ordinal_values[:12]:
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(value)
+    return ordered[:12]
 
 
 def format_anchor_contract(state: AgentState, *, include_latest: bool = True) -> str:
@@ -159,6 +186,41 @@ def format_requested_outcome_contract(state: AgentState) -> str:
     return ("Requested outcome contract (authoritative; preserve ids and instructions "
             "verbatim): "
             + json.dumps(contract, ensure_ascii=False, separators=(",", ":")))
+
+
+def single_outcome_binding(state: AgentState) -> tuple[str, str] | None:
+    """Return the one safe runtime-owned outcome binding, if it is unambiguous.
+
+    A single, complete Request Architect outcome has no semantic mapping choice: every root
+    artifact serves that same requested result and child stages inherit it.  Multiple,
+    truncated, or overflowed outcomes still require model mapping plus Auditor validation.
+    """
+    contract = requested_outcome_contract(state)
+    outcomes = contract.get("outcomes") or []
+    if (len(outcomes) != 1 or contract.get("omitted_count")
+            or outcomes[0].get("truncated")):
+        return None
+    return str(contract.get("id") or ""), str(outcomes[0].get("id") or "")
+
+
+def bind_single_outcome_contract(state: AgentState, payload: dict) -> bool:
+    """Attach an unambiguous one-outcome binding without asking the model to copy ids."""
+    binding = single_outcome_binding(state)
+    items = [row for row in (payload.get("items") or []) if isinstance(row, dict)]
+    if not binding or not items:
+        return False
+    contract_id, outcome_id = binding
+    if not contract_id or not outcome_id:
+        return False
+    payload["outcome_contract_id"] = contract_id
+    for item in items:
+        item["outcome_refs"] = [outcome_id]
+        # Child stages inherit their only possible mapping from the parent.  Removing a
+        # model-authored child copy avoids redundant ids while preserving validator meaning.
+        for child in (item.get("children") or []):
+            if isinstance(child, dict):
+                child.pop("outcome_refs", None)
+    return True
 
 
 def validate_draft_outcome_contract(state: AgentState, draft: dict) -> list[dict]:

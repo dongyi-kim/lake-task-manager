@@ -22,7 +22,8 @@ from html import escape as _escape_html
 
 from app.agent.prompts.roles import SYSTEM_WORK_ARCHITECT
 from app.agent.workflow.anchors import (
-    format_requested_outcome_contract, requested_outcome_contract,
+    bind_single_outcome_contract, format_requested_outcome_contract,
+    requested_outcome_contract, single_outcome_binding,
 )
 from app.agent.workflow.agents.base import StructuredAgent, invoke_schema
 from app.agent.workflow.prompts import data_block, persona, wrap_data
@@ -371,7 +372,6 @@ class WorkArchitect(StructuredAgent):
     """
 
     name = Node.WORK_ARCHITECT
-    _force_draft = False       # 질문-도피 재시도 플래그(단일 사용자 앱 — 인스턴스 보관으로 충분)
 
     def node(self):
         base = super().node()
@@ -401,6 +401,11 @@ class WorkArchitect(StructuredAgent):
                         state, self.name, "유효하지 않은 Sub-Task 부모 · 결정적 대안 질문",
                     )
                     return direct
+                outcome = requested_outcome_contract(state)
+                if len(outcome.get("outcomes") or []) > 1:
+                    # Multi-outcome root mapping is semantic. Deterministic recovery lacks
+                    # source provenance, so let the one normal structured call bind it.
+                    return base(state)
                 epic_downgrade = _recover_delegated_epic_downgrade(state)
                 if epic_downgrade:
                     direct = self.apply(state, {
@@ -447,51 +452,10 @@ class WorkArchitect(StructuredAgent):
                         f"결정적 위임 초안 {len((direct.get('draft') or {}).get('items') or [])}건",
                     )
                     return direct
-            out = base(state)
-            # ── 질문-도피 가드: "알아서" 위임인데 질문만 내고 초안 0건이면 **한 번 재시도**.
-            # 프롬프트(force_rule)로 막아도 부하·모델 변덕으로 재발한다(스위트 실측 5건).
-            # 해석 확인 턴(조사 전 — situation 없음)은 질문이 정답이므로 제외.
-            try:
-                dodged = (bool(out.get("questions"))
-                          and not ((out.get("draft") or {}).get("items"))
-                          and not ((out.get("change_plan") or {}).get("key"))
-                          and (_said_defaults(state) or state.get("bulk_targets"))
-                          and not any(_question_requires_input(q)
-                                      for q in (out.get("questions") or []))
-                          and (state.get("situation") or "").strip())
-                # 초안 수정 요청인데 수정본(items)도 유효한 변경 계획도 없다 — 말로만
-                # 설명하고 끝(실측 2회). mentioned_keys 는 오염될 수 있어 조건에 안 쓴다.
-                cp0 = out.get("change_plan") or {}
-                dodged = dodged or (
-                    (state.get("intent") or "") == "modify"
-                    and bool((state.get("draft") or {}).get("items"))
-                    and not ((out.get("draft") or {}).get("items"))
-                    and not (cp0.get("key") or cp0.get("keys")))
-                # A delegated creation that returns neither a draft nor a question is
-                # worse than an explicit refusal: the user has no next action and older
-                # battery checks silently treated it as green. Retry once with the same
-                # verified material and the existing Required Draft Recovery contract.
-                dodged = dodged or (
-                    (state.get("intent") or "") == Intent.PLAN_WORK
-                    and _said_defaults(state)
-                    and not (out.get("questions") or [])
-                    and not ((out.get("draft") or {}).get("items"))
-                    and not (cp0.get("key") or cp0.get("keys")))
-            except Exception:
-                dodged = False
-            if dodged and not WorkArchitect._force_draft:
-                WorkArchitect._force_draft = True
-                try:
-                    out2 = base(state)
-                    if ((out2.get("draft") or {}).get("items")) \
-                            or ((out2.get("change_plan") or {}).get("key")):
-                        out2["trace"] = note(state, self.name,
-                                             f"질문 도피 재시도 → 초안 "
-                                             f"{len((out2.get('draft') or {}).get('items') or [])}건")
-                        return out2
-                finally:
-                    WorkArchitect._force_draft = False
-            return out
+            # Semantic→projection mode owns its bounded correction inside Agent.  Re-running
+            # this whole node would resend the original prompt/evidence and repeat the 35B
+            # semantic judgment, so the outer workflow always invokes it exactly once.
+            return base(state)
 
         return run
 
@@ -504,23 +468,137 @@ class WorkArchitect(StructuredAgent):
                  "required value. Otherwise complete the safest draft from verified information, leave "
                  "optional fields empty, and record a material Korean `확인 필요` in `rationale`."
                  if forced else "")
-        if WorkArchitect._force_draft:
-            extra += ("\n\n## Required Draft Recovery\n\nThe previous attempt omitted the requested artifact. "
-                      "Return `questions=[]` and complete `items`. For a draft-revision request, return the "
-                      "entire revised item set from Current Draft Data, not an explanation. Record unresolved "
-                      "points in Korean in `rationale`.")
         # 정적 지시는 prompts/roles/work_architect.md — 동적 경고(횟수 소진)만 코드가 덧붙인다.
         # ★ 경로에 안 쓰이는 절은 싣지 않는다. 기존 티켓의 필드를 바꾸는 턴에 '어떻게
         #   쪼갤 것인가'·'본문 4섹션'·'Epic 생성' 지시는 판단에 쓰이지 않으면서 매 호출
         #   2천 토큰을 태운다(work_architect system 4.2k tok 중 절반이 생성 전용이었다).
         return persona(state, _role_md(state) + extra, role_id=self.name)
 
+    def post_projection_correction(self, state, out):
+        """Correct only a schema-valid optional-question/empty-artifact projection.
+
+        Required-input interviews remain untouched.  This hook runs while the semantic memo
+        is still available, so it replaces the former full WorkArchitect node retry without
+        re-sending the conversation, research bundle, or system prompt.
+        """
+        pending_draft_revision = (
+            (state.get("intent") or "") == Intent.MODIFY
+            and bool((state.get("draft") or {}).get("items"))
+        )
+        delegated = bool(_said_defaults(state) or state.get("bulk_targets"))
+        if not (pending_draft_revision or delegated):
+            return ""
+        if ((state.get("intent") or Intent.PLAN_WORK) == Intent.PLAN_WORK
+                and not _has_concrete_work_target(_current_request_boundary_text(state))):
+            # A correction context can reproject a verified decision; it cannot invent the
+            # missing work target. Let ``apply`` emit the required target interview instead.
+            return ""
+        questions = [row for row in (out.get("questions") or []) if isinstance(row, dict)]
+        # Before research, an interpretation question can be the correct artifact.  The
+        # former guard excluded that turn, while still recovering a questionless delegated
+        # PLAN_WORK result and any pending draft revision.
+        if questions and not pending_draft_revision \
+                and not (state.get("situation") or "").strip():
+            return ""
+        if any(_delegated_question_is_blocking(state, row) for row in questions):
+            return ""
+        items = [row for row in (out.get("items") or [])
+                 if isinstance(row, dict) and str(row.get("summary") or "").strip()]
+        change = out.get("change") or {}
+        has_change = bool(change.get("key") or change.get("keys")
+                          or any(value not in (None, "", [], {})
+                                 for key, value in change.items()
+                                 if key not in {"key", "keys"}))
+        if pending_draft_revision:
+            if items and not has_change:
+                return ""
+        elif items or has_change:
+            return ""
+        # ``apply`` can recover an exact literal mutation without another model call.  Do
+        # not spend a projection correction on an artifact the deterministic layer owns.
+        if ((state.get("intent") or "") == Intent.MODIFY
+                and _explicit_single_mutation_from_request(state)):
+            return ""
+        if pending_draft_revision:
+            artifact = ("the complete revised `items` set and an empty/absent `change`; "
+                        "this edits the pending approval draft, not Jira")
+        elif (state.get("intent") or "") == Intent.MODIFY:
+            artifact = "a complete `change` object for the requested mutation"
+        else:
+            artifact = "at least one complete item"
+        kind = "only optional questions" if questions else "an empty artifact"
+        return (
+            f"The projection returned {kind} despite sufficient verified "
+            f"context. Preserve the memo's decision, return `questions=[]`, and emit {artifact}. "
+            "Do not invent a value absent from the memo."
+        )
+
+    def post_projection_correction_context(self, state, out):
+        """Supply pending-draft recovery facts without resending research or role prompts."""
+        if not ((state.get("intent") or "") == Intent.MODIFY
+                and (state.get("draft") or {}).get("items")):
+            return ""
+        allowed = {
+            "summary", "tier", "issue_type", "type", "epic", "epic_name", "parent",
+            "description", "children", "components", "labels", "priority", "duedate",
+            "assignee", "assignee_source",
+        }
+
+        def compact_item(row):
+            if not isinstance(row, dict):
+                return {}
+            compact = {key: value for key, value in row.items() if key in allowed}
+            if "description" in compact:
+                compact["description"] = str(compact["description"] or "")[:3000]
+            if isinstance(compact.get("children"), list):
+                compact["children"] = [compact_item(child)
+                                       for child in compact["children"][:30]]
+            return compact
+
+        prior = state.get("draft") or {}
+        typed = {
+            "mode": prior.get("mode") or "task",
+            "structure": prior.get("structure") or "",
+            "items": [compact_item(row) for row in (prior.get("items") or [])[:12]],
+        }
+        instruction = _current_request_boundary_text(state)[:2400]
+        return (
+            "Current pending-draft modification instruction:\n" + instruction
+            + "\n\nPrior pending draft typed subset:\n"
+            + json.dumps(typed, ensure_ascii=False, separators=(",", ":"))[:10000]
+            + "\nReturn complete revised items, preserve every unaffected field, and do not "
+              "emit a Jira `change` plan."
+        )
+
     def task(self, state):
         # "알아서/기본값" 은 선택 재량만 위임한다. 이전 계약은 질문을 전부 금지해 target·parent·
         # 재현 조건처럼 payload 성립에 필요한 값까지 추측하게 만들었다. 필수 입력에는 명시적
         # 표식을 요구하고, 그 외 선호 질문만 억제한다.
-        said = conversation(state)
-        defaults = any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠"))
+        # Delegation is a current-request field, not durable conversation state. An old
+        # topic's `알아서` must not switch a new topic into forced defaulting.
+        defaults = _said_defaults(state)
+        outcome_contract = requested_outcome_contract(state)
+        if single_outcome_binding(state):
+            outcome_rule = (
+                "\n- Preserve the single Authoritative Requested Outcome's exact action and "
+                "object in the title, scope, and DoD. Its opaque contract id and outcome ref "
+                "are attached deterministically by the runtime; do not emit binding fields "
+                "that are absent from the target schema. Research may refine implementation "
+                "context but must never replace or reverse the requested result."
+            )
+        elif outcome_contract:
+            outcome_rule = (
+                "\n- Treat every instruction in the Authoritative Requested Outcome Contract "
+                "as the user's exact result, not as background prose. Bind every item with "
+                "`outcome_refs`, copy `outcome_contract_id` exactly, and preserve each requested "
+                "action and object in the relevant title, scope, and DoD. Research may supply "
+                "a method or constraint but must never replace or reverse the requested result."
+                "\n- A child Sub-Task inherits its parent's applicable `outcome_refs` when it is "
+                "a stage of the same outcome. Set child `outcome_refs` only for a different "
+                "explicit mapping; never attach every contract id to every child by default."
+            )
+        else:
+            outcome_rule = ""
         force_rule = ("\n- The user delegated optional choices; this does not supply required input. Return "
                       "`questions=[]` and at least one complete item when the literal request and verified "
                       "evidence support a valid conservative draft. If user-owned information is indispensable "
@@ -540,7 +618,7 @@ class WorkArchitect(StructuredAgent):
         #   쓰이는 곳이 이 goal 하나뿐이었다 — **갈래가 아니라 산출물 유형**이다.
         #   낱말로 고르면 분류가 흔들려도 본문 규율이 안 바뀐다: "적재 배치가 계속
         #   실패한다"가 어느 갈래로 가든 재현·기대·실제가 유지된다.
-        _said = request_text(state) + " " + conversation(state)
+        _said = _current_request_boundary_text(state)
         _is_bug = reads_as_bug(_said)      # 판정은 state.reads_as_bug 한 곳에만 있다
         if _is_bug and (state.get("intent") or "") in Intent.DRAFTS_TICKETS:
             goal = """Draft one Task-tier `Bug`.
@@ -609,7 +687,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         if shape:
             goal += (f"\n- The user explicitly selected the shape `{word}` -> `{shape}`. Preserve it, set "
                      "`structure_source=\"user_specified\"`, and do not recommend a competing shape.")
-        elif any(w in request_text(state) for w in BUILD_WORDS):
+        elif any(w in _current_request_boundary_text(state) for w in BUILD_WORDS):
             # 신규 구축 규모는 하향(단일 Task 뭉개기)이 실측된 실패 모드다 — 넛지를 준다.
             goal += ("\n- This is a new build or pipeline request. When design, implementation, validation, "
                      "and integration have distinct owners or time boundaries, use `task_with_subtasks` and "
@@ -693,8 +771,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 - Split independent deliverables into Tasks. Split one deliverable shared across stages, targets, or owners into real Sub-Task `children`.
 - If equivalent work already exists, ask how to proceed unless the user delegated with `알아서`; under delegation, draft safely and record the overlap in Korean `rationale`.
 - A request to create new work must not become a `change` to a similar existing ticket. Use that ticket only as relevant evidence.{force_rule}
-- Treat every instruction in the Authoritative Requested Outcome Contract as the user's exact result, not as background prose. Bind every item with `outcome_refs`, copy `outcome_contract_id` exactly, and preserve each requested action and object in the relevant title, scope, and DoD. Research may supply a method or constraint but must never replace or reverse the requested result.
-- A child Sub-Task inherits its parent's applicable `outcome_refs` when it is a design, implementation, test, or rollout stage of the same outcome. Set child `outcome_refs` only when it maps to a different explicit contract outcome; never attach every contract id to every child by default.
+- A child Sub-Task must represent a distinct execution stage, target, or owner rather than duplicate its parent.{outcome_rule}
 - For meeting notes, preserve the exact requested item count and distinguish an owner from a reviewer. A named
   owner is an instruction, not an assignee recommendation; never replace it with a lower-workload candidate.
 
@@ -704,7 +781,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 
 ## Original Request Data
 
-{request_text(state)}
+{_current_request_boundary_text(state)}
 
 ## Current User Message Data
 
@@ -718,6 +795,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             return SCHEMA
         contract = requested_outcome_contract(state)
         if not contract:
+            return CREATE_SCHEMA
+        # With exactly one complete requested outcome there is no mapping choice.  Keeping
+        # opaque ids in the prompt-only provider's required schema caused otherwise valid
+        # Qwen drafts to enter a 30-40 second format-repair call. Runtime injection below is
+        # authoritative; multi-outcome requests retain explicit model mapping and validation.
+        if single_outcome_binding(state):
             return CREATE_SCHEMA
         schema = copy.deepcopy(CREATE_SCHEMA)
         schema["properties"]["outcome_contract_id"] = {
@@ -850,12 +933,23 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                    "required_input": True,
                    "why_required": "부모와 개수만 있고 생성할 Sub-Task의 실행 내용이 없음"}]
             model_questions = True
-        human_request = (request_text(state) + " " + _human_request_text(state)).strip()
+        human_request = _current_request_boundary_text(state)
         if _missing_exact_mutation(human_request):
             qs = [{"question": "임계값을 어떤 값으로 변경할지 알려 주세요.",
                    "kind": "text", "options": [], "field": "",
                    "required_input": True,
                    "why_required": "변경 payload에 넣을 정확한 새 임계값이 없음"}]
+            model_questions = True
+        if ((state.get("intent") or "") == Intent.PLAN_WORK
+                and _said_defaults(state)
+                and not _has_concrete_work_target(_current_request_boundary_text(state))):
+            items.clear()
+            qs = [{
+                "question": "어떤 대상에 무엇을 해야 하는지 구체적인 작업 내용을 알려 주세요.",
+                "kind": "text", "options": [], "field": "target",
+                "required_input": True,
+                "why_required": "티켓의 작업 대상과 실행할 행동을 식별할 수 없음",
+            }]
             model_questions = True
         # A non-native small model can return valid JSON but leave ``items=[]`` even after
         # the user delegated every optional choice.  Repeating the same call produced the
@@ -1134,7 +1228,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 카탈로그 검색 개선 티켓에 `ui-fixture`). 데이터 관리용 표식은 업무 티켓의
         # 라벨이 아니고, 잘못 붙으면 그 필터로 조회하는 화면이 오염된다.
         # 판정은 **딱 이 부류만** — 일반 라벨의 적절성은 사용자가 카드에서 판단한다.
-        said_all = (request_text(state) + " " + last_user_text(state)).lower()
+        said_all = _current_request_boundary_text(state).lower()
         for it in items:
             drop_l = [str(lb) for lb in (it.get("labels") or [])
                       if _re.match(r"^(ui|dataset|test|demo|sample)[-_]?fixture$|^tbl[-_]",
@@ -1225,7 +1319,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 생성 payload는 Story Point를 지원하지 않는다. 모델이 rationale에 "생성 후 할당"
         # 같은 약속을 남겨도 실제 승인 payload와 모순되므로 제거하고 정확한 안내를 남긴다.
         sp = _re.search(r"(?:스토리\s*포인트|Story\s*Points?|\bSP)\s*(?:를|은|:|=)?\s*(\d+)",
-                        request_text(state), _re.I)
+                        _current_request_boundary_text(state), _re.I)
         if sp and items:
             for it in items:
                 for field in ("story_points", "storyPoints", "story_point", "sp"):
@@ -1236,23 +1330,69 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 "", rationale, flags=_re.I).strip(" ;\n")
             out["rationale"] = (rationale + f"\n(Story Point {sp.group(1)}는 생성 payload 미지원 — "
                                 "생성 후 티켓 화면에서 직접 설정)").strip()
-        # 상대 날짜 산술은 모델의 언어 능력이 아니라 런타임 계산으로 확정한다. 생성 배터리
-        # ATTR1에서 같은 날의 "이번 주 금요일"을 다음 주 화요일로 내면서도 형식 검사는
-        # 통과했다. 여러 티켓에 서로 다른 기한이 섞인 경우까지 추측하지 않도록, 현재 사용자
-        # 메시지가 상대 기한을 명시한 단일 초안에만 적용한다.
-        _apply_relative_due_to_single_draft(state, items)
+        # 명시한 ISO 마감일과 상대 날짜 산술은 모델의 언어 능력이 아니라 런타임 계산으로
+        # 확정한다. 형식상 유효한 다른 날짜를 모델이 내도 사용자가 쓴 유일한 exact date가
+        # 우선한다. 여러 루트 티켓이나 여러 날짜의 대응 관계까지 추측하지는 않는다.
+        # A deterministic multi-outcome recovery may have established a literal root
+        # bijection but not yet attached its opaque refs. Bind that proven mapping before
+        # per-outcome scalar fields are compiled; an unproven mapping remains untouched.
+        if out.get("_construction") and requested_outcome_contract(state):
+            _bind_deterministic_multi_outcomes(state, out)
+        per_outcome_due = _expected_due_dates_by_root(state, items)
+        due_status, due_literal = _explicit_due_instruction_status(state)
+        if per_outcome_due:
+            for index, item in enumerate(items):
+                item["duedate"] = per_outcome_due[index]
+        elif due_status in {"invalid", "ambiguous"} and items:
+            for item in items:
+                item["duedate"] = ""
+            if not any(str(question.get("field") or "") == "duedate" for question in qs):
+                detail = (f"'{due_literal}'은 유효한 날짜가 아닙니다. "
+                          if due_status == "invalid" and due_literal else
+                          "서로 다른 마감일이 함께 지정되어 있습니다. ")
+                due_question = {
+                    "question": detail + "적용할 마감일 하나를 YYYY-MM-DD로 알려 주세요.",
+                    "kind": "date", "options": [], "field": "duedate",
+                    "required_input": True,
+                    "why_required": "사용자 지정 마감일을 유효한 단일 날짜로 확정할 수 없음",
+                }
+                qs = [question for question in qs
+                      if _question_requires_input(question)][:2] + [due_question]
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(확인 필요: 마감일이 유효한 단일 날짜로 확정되지 않아 "
+                                  "초안의 임의 날짜를 제거했다)").strip()
+        elif due_status == "clear" and items:
+            for item in items:
+                item["duedate"] = ""
+            out["rationale"] = ((out.get("rationale") or "")
+                                + "\n(사용자 요청에 따라 마감일을 비워 뒀다)").strip()
+        else:
+            applied_due = _apply_relative_due_to_single_draft(state, items)
+            authoritative_due = _authoritative_explicit_due(state)
+            if applied_due and authoritative_due:
+                out["rationale"] = _normalize_due_rationale(
+                    str(out.get("rationale") or ""), authoritative_due)
         outcome_contract = (requested_outcome_contract(state)
                             if (state.get("intent") or "") != Intent.MODIFY else {})
+        # Apply after every deterministic recovery/grouping path has settled ``items``.
+        # Binding the raw model output at method entry misses a meeting/bug/delegation
+        # artifact that code safely reconstructs later in this method.
+        single_binding_payload = {"items": items}
+        if outcome_contract and bind_single_outcome_contract(state, single_binding_payload):
+            out["outcome_contract_id"] = single_binding_payload["outcome_contract_id"]
         # Deterministic literal recovery is itself derived from the authoritative user
         # request, so attach its typed binding here. Normal model output is never silently
         # repaired: a missing/wrong binding remains visible to the Auditor's fail-closed
         # machine check.
-        if outcome_contract and out.get("_construction"):
-            out["outcome_contract_id"] = outcome_contract["id"]
-            all_refs = [row["id"] for row in outcome_contract.get("outcomes") or []]
-            for item in items:
-                if isinstance(item, dict) and not item.get("outcome_refs"):
-                    item["outcome_refs"] = list(all_refs)
+        elif outcome_contract and out.get("_construction"):
+            if not _bind_deterministic_multi_outcomes(state, out):
+                # Never make coverage pass by copying every outcome to every root. Without
+                # a proven one-to-one literal mapping, leave the contract visibly invalid so
+                # Auditor blocks it and the semantic path/user can resolve the ambiguity.
+                out.pop("outcome_contract_id", None)
+                for item in items:
+                    if isinstance(item, dict):
+                        item.pop("outcome_refs", None)
         draft = {"mode": out.get("mode") or "task", "items": items,
                  "structure": structure, "structure_why": why,
                  "structure_source": src,
@@ -1377,12 +1517,17 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 실측: 사용자가 "기존 에픽 중 맞는 걸로 붙여줘"라고 했는데 모델이 Task(DL-9072)를
         # 에픽이라 답하고 초안에는 아예 안 실었다. 타입 확인은 판단이 아니라 조회다.
         explicit_epic = _explicit_parent_epic(state)
+        explicit_epics = _expected_parent_epics_by_root(state, items)
         delegated_epic_choice = _delegates_existing_epic_choice(state)
         if explicit_epic and mode != "subtask":
             for it in items:
                 if not str(it.get("type") or "").lower().startswith("sub"):
                     it["epic"] = explicit_epic
-        for it in items:
+        elif explicit_epics and mode != "subtask":
+            for index, it in enumerate(items):
+                if not str(it.get("type") or "").lower().startswith("sub"):
+                    it["epic"] = explicit_epics[index]
+        for index, it in enumerate(items):
             ek = str(it.get("epic") or "").strip()
             if not ek:
                 replacement = _delegated_parent_epic(state, it) \
@@ -1414,7 +1559,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             # 사용자가 직접 지목한 Epic은 의식적인 선택이므로 그대로 둔다. 모델/검색이 추론한
             # Epic만 write project·모듈·주제 적합성을 검증한다. 부적합하면 최상위 Task가
             # 엉뚱한 진척률을 오염시키는 것보다 연결을 비우는 편이 안전하다.
-            if ek == explicit_epic:
+            if ek == explicit_epic or ek == explicit_epics.get(index):
                 continue
             reason = _inferred_epic_rejection(state, it, ek)
             if reason:
@@ -1620,7 +1765,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # A literal "make it an Epic" does not waive the four reporting-unit criteria.
         # If duration/scale evidence is insufficient, choose the reversible Task placement
         # even when no near-duplicate Epic title was found.
-        if (out.get("mode") or "") == "epic" and items and request_text(state).strip():
+        if (out.get("mode") or "") == "epic" and items \
+                and _current_request_boundary_text(state):
             unmet = _new_epic_unmet_criteria(state)
             if unmet:
                 item = items[0]
@@ -1653,11 +1799,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # 되돌리기 쉬운 최상위 Task로 보수화한다.
         if ((out.get("mode") or "") == "epic" and items and not qs
                 and delegated_epic_choice):
-            component = next((str(c).strip() for c in (items[0].get("components") or [])
-                              if str(c).strip()), "")
-            pick = _pick_parent_epic(
-                str(items[0].get("summary") or ""), component, delegated=True,
-            )
+            # QueryRunner already opened a bounded candidate set. Do not consult a second
+            # global Epic list here: an unopened search hit is not sufficient evidence for
+            # a write-time hierarchy decision.
+            pick = _delegated_parent_epic(state, items[0])
             _force_item_type(items[0], "Task", "task")
             if pick:
                 items[0]["epic"] = pick["key"]
@@ -1767,7 +1912,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                      "PoC", "테스트", "배포") if w in body)
             # request_text가 후속 답변으로 덮이는 회귀가 있더라도 전체 사용자 발화에서
             # 최초 구축 신호를 복원한다(STARR1: 첫 턴 `파이프라인`이 둘째 턴에서 사라짐).
-            building_request = (request_text(state) + " " + _human_request_text(state)).strip()
+            building_request = _current_request_boundary_text(state)
             building = any(w in building_request for w in BUILD_WORDS)
             if dod >= 5 or stages >= 3 or building:
                 if _said_defaults(state):
@@ -1878,7 +2023,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             # 뭉갠 것보다 나쁘다 — 사용자가 시킨 일의 절반이 **없어졌는데** 초안은 멀쩡해
             # 보이고, 제외 문구가 그것을 정당해 보이게 만든다. 모델 자신이 "별도 작업"이라고
             # 판단했으니 남은 것은 그 별도 작업을 **만드는 일**뿐이다.
-            want = modules_in_text(request_text(state))
+            want = modules_in_text(_current_request_boundary_text(state))
             have = {resolve_module((i.get("components") or [""])[0]) for i in items}
             missing = [m for m in want if m not in have]
             if missing and _said_defaults(state) and not qs and len(want) >= 2:
@@ -2054,7 +2199,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # PMO_VIT 는 경영진 보고 현안 전용이고 트리 최상위 하나에만 붙는다 — 그런데 모델이
         # 기존 라벨 목록에서 보고는 신규 티켓 셋에 전부 붙였다(실측). 사용자가 입으로 말했을
         # 때만 남기고, 아니면 기계적으로 뗀다. 규칙 위반 라벨은 검색 노이즈가 된다.
-        asked_all = conversation(state)
+        asked_all = _current_request_boundary_text(state)
         if "PMO_VIT" not in asked_all and "현안" not in asked_all:
             for it in items:
                 if it.get("labels"):
@@ -2238,7 +2383,7 @@ def _explicit_single_mutation_from_request(state) -> dict:
     one literal Jira key and only values whose field names are present in the same current
     message.  Therefore an earlier research topic can never supply the target or payload.
     """
-    said = (last_user_text(state) or request_text(state) or "").strip()
+    said = _current_request_boundary_text(state)
     keys = list(dict.fromkeys(_re.findall(
         r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])", said, _re.I)))
     if len(keys) != 1:
@@ -2266,15 +2411,18 @@ def _explicit_single_mutation_from_request(state) -> dict:
 
 def _explicit_meeting_update_fields(state) -> dict:
     """Recover exact meeting field values from the authoritative original request."""
+    request = _meeting_request_boundary_text(state)
+    if not _re.search(r"회의|미팅", request, _re.I):
+        return {}
     try:
         from app.agent.workflow.meeting_context import (
-            is_meeting_request, meeting_request_text, resolved_people,
+            is_meeting_request, resolved_people,
         )
         if not is_meeting_request(state) or (state.get("intent") or "") != Intent.MODIFY:
             return {}
     except Exception:
         return {}
-    request, latest = meeting_request_text(state), last_user_text(state)
+    latest = last_user_text(state)
     fields = {}
 
     def line(label: str) -> str:
@@ -2384,7 +2532,7 @@ def _change_plan(state, out, items, qs):
         # 빈 문자열은 "안 바꿈"이지 변경이 아니다 — 지원하지 않는 필드를 요청받으면
         # (실측: "스토리포인트 5로") 모델이 나머지를 전부 ""로 채워 **빈 변경 카드**가
         # 떴다. 담당 해제("assignee": "")만 예외로 인정한다(사용자가 뗄 때 쓴다).
-        _said = request_text(state) + " " + last_user_text(state)
+        _said = _current_request_boundary_text(state)
         _wipe = _re.search(r"(담당|assignee)\w*\s*(해제|비워|없애|제거)", _said)
         fields = {k: v for k, v in fields.items()
                   if (isinstance(v, list) and v) or str(v or "").strip()
@@ -2410,7 +2558,7 @@ def _change_plan(state, out, items, qs):
             fields["priority"] = _normalize_priority(fields["priority"])
         # 상대 날짜("다음주 수요일")는 **코드가 계산**한다 — 모델 산술이 흔들렸다
         # (실측: 같은 질문에 8-12(수·정답)와 8-16(일·오답)을 번갈아 냈다).
-        rel = _relative_due(request_text(state) + " " + last_user_text(state))
+        rel = _relative_due(_current_request_boundary_text(state))
         if rel and str(fields.get("duedate") or "") != rel:
             if fields.get("duedate"):
                 out["rationale"] = ((out.get("rationale") or "")
@@ -2476,7 +2624,7 @@ def _change_plan(state, out, items, qs):
         # 사용자 문장의 상태명이 **1차**다 — 모델이 불가능한 목표('리뷰 대기')를 임의로
         # 다른 상태('Open')로 바꿔치기한 실측. 요청과 다르면 요청 쪽을 쓴다.
         mu_t = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
-                          request_text(state) + " " + last_user_text(state))
+                          _current_request_boundary_text(state))
         if mu_t:
             want = mu_t.group(1).strip()
         if k0 and want and not fields and not plan:
@@ -2521,7 +2669,7 @@ def _change_plan(state, out, items, qs):
     # 예전에는 bulk 경로만 model의 얇은 `알림: 담당자`를 그대로 사용해 결정 내용 전체가
     # 사라졌다. 여기서 한 번 조립해 이하의 조건·preview가 모두 같은 body를 보게 한다.
     bulk_comment = str(change.get("comment") or "").strip()
-    bulk_said = request_text(state) + " " + last_user_text(state)
+    bulk_said = _current_request_boundary_text(state)
     if _comment_forbidden(bulk_said):
         bulk_comment = ""
     else:
@@ -2579,7 +2727,7 @@ def _change_plan(state, out, items, qs):
     # 요청에서 상태명을 뽑아 전이를 조립하고 초안을 버린다.
     if not plan and (state.get("intent") or "") == Intent.MODIFY \
             and (state.get("mentioned_keys") or []):
-        req_t = request_text(state) + " " + last_user_text(state)
+        req_t = _current_request_boundary_text(state)
         mt = _re.search(r"([가-힣A-Za-z ]{2,16}?)\s*(?:상태)?\s*로\s*(?:옮겨|바꿔|전이|이동)",
                         req_t)
         if mt:
@@ -2616,7 +2764,7 @@ def _change_plan(state, out, items, qs):
     # ── 링크 최종 보장: "A 가 B 를 막는 관계로 연결" — 키 둘 + 관계 낱말이면 조립.
     # (실측: 모델이 change.link 대신 무의미한 확인 질문 4개를 냈다.)
     if not plan and (state.get("intent") or "") == Intent.MODIFY:
-        req_l = request_text(state) + " " + last_user_text(state)
+        req_l = _current_request_boundary_text(state)
         keys_l = _re.findall(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b", req_l)
         if len(dict.fromkeys(keys_l)) >= 2 and _re.search(r"연결|링크|link", req_l):
             a, b = list(dict.fromkeys(keys_l))[:2]
@@ -2633,7 +2781,7 @@ def _change_plan(state, out, items, qs):
     # 조립**한다 — 모델이 Epic 질문으로 새는 것을 두 번의 프롬프트 교정으로도 못 막았다.
     if not plan and state.get("bulk_targets") \
             and (state.get("intent") or "") == Intent.MODIFY:
-        req = request_text(state)
+        req = _current_request_boundary_text(state)
         fields = {}
         # \b 는 한글 앞에서 안 선다("P1으로") — ASCII 경계만 본다.
         mp = _re.search(r"(?<![0-9A-Za-z])P([0-4])(?![0-9A-Za-z])", req)
@@ -2656,7 +2804,7 @@ def _change_plan(state, out, items, qs):
 
     # 댓글은 사용자가 외부에 남기는 실제 메시지다. 대상만 있고 본문·목적이 없으면 `알아서`를
     # 내용 생성 권한으로 해석하지 않는다(ASKD3). 모델이 questions=[]로 빠져도 코드가 묻는다.
-    _full_request = request_text(state) + " " + last_user_text(state)
+    _full_request = _current_request_boundary_text(state)
     if (state.get("intent") or "") == Intent.MODIFY \
             and _re.search(r"댓글|코멘트", _full_request) \
             and _comment_input_missing(state, plan):
@@ -2765,7 +2913,7 @@ def _change_plan(state, out, items, qs):
     # 막는다: 카드 없이 사유·대안만 답하게 한다.
     if plan and not plan.get("changes") \
             and _re.search(r"삭제|지워\s*줘|없애",
-                           request_text(state) + " " + last_user_text(state)):
+                           _current_request_boundary_text(state)):
         plan = {}
         out["rationale"] = ((out.get("rationale") or "")
                             + "\n(삭제는 지원되지 않는다 — 상태 전이(닫음)나 보관 라벨을 "
@@ -2775,7 +2923,7 @@ def _change_plan(state, out, items, qs):
     #  스토리포인트는 티켓 화면에서 직접, 그것도 Story 에만 설정된다 — 도메인 제약.)
     if not plan and not items and _re.search(
             r"스토리\s*포인트|story\s*point|\bSP\b",
-            request_text(state) + " " + last_user_text(state), _re.I):
+            _current_request_boundary_text(state), _re.I):
         out["rationale"] = ((out.get("rationale") or "")
                             + "\n(스토리포인트는 에이전트가 바꾸지 못한다 — 티켓 화면에서 "
                               "직접 입력해야 하고, 애초에 Story 타입에만 설정된다. "
@@ -2786,9 +2934,7 @@ def _change_plan(state, out, items, qs):
     # 한다(mentioned_keys 는 모델·이월로 오염될 수 있다).
     if plan and plan.get("key") \
             and ((state.get("draft") or {}).get("items")) and not items:
-        said_by_user = " ".join(str(getattr(m, "content", "") or "")
-                                for m in (state.get("messages") or [])
-                                if getattr(m, "type", "") == "human")
+        said_by_user = _current_request_boundary_text(state)
         if plan["key"] not in said_by_user:
             plan = {}
             out["rationale"] = ((out.get("rationale") or "")
@@ -2800,7 +2946,7 @@ def _change_plan(state, out, items, qs):
     # 근거로 승인하는지가 흐려진다. 실측(CMTB1): 일괄 코멘트 계획의 why 가
     # "삭제는 지원되지 않음. 상태를 닫음으로 전이하거나…" 였다 — 삭제 요청이 아니었다.
     # 프롬프트에 적힌 예외 안내(삭제·스토리포인트)를 모델이 아무 데나 옮겨 적는다.
-    said_all = request_text(state) + " " + conversation(state)
+    said_all = _current_request_boundary_text(state)
     for pat, need in ((r"삭제[^)\n]{0,20}지원되지\s*않", ("삭제", "지워", "없애")),
                       (r"스토리\s*포인트[^)\n]{0,20}(?:설정할 수 없|지원)", ("포인트", "SP"))):
         if _re.search(pat, str(out.get("rationale") or "")) \
@@ -2845,8 +2991,8 @@ def _slot_audit(state) -> str:
     모델이 매번 다르게 가리던 것을 표로 굳힌다(knowledge/07 §최소 요건과 같은 룰).
     해석 확인 턴에는 '무엇을 물을지'의 근거가 되고, 초안 턴에는 '무엇을 기본값으로
     채웠는지'의 근거가 된다."""
-    req, conv = request_text(state), conversation(state)
-    text = (req + " " + conv).strip()
+    text = _current_request_boundary_text(state)
+    conv = text
     low = text.lower()
     shape, _w = shape_hint(state)
     comps = _known_components()
@@ -2911,7 +3057,9 @@ def _apply_named_assignees(state, items: list) -> None:
 
     패턴: <작업 문구>(은|는) <사번>. 문구의 핵심 낱말이 제목에 들어 있는 항목(자식 포함)의
     빈 assignee 를 채운다 — 모델이 이미 적은 값은 존중한다(덮지 않는다)."""
-    text = conversation(state) or request_text(state)
+    # Assignee is a user-owned current-request field. Full conversation history can contain
+    # a valid assignment from an unrelated prior topic whose work phrase happens to match.
+    text = _current_request_boundary_text(state)
     rows = list(items) + [c for i in items for c in (i.get("children") or [])
                           if isinstance(c, dict)]
     if not text or not rows:
@@ -3009,7 +3157,7 @@ def _ensure_meeting_reviewers(state, items: list) -> None:
         )
         if not is_meeting_request(state):
             return
-        original = meeting_request_text(state)
+        original = _meeting_request_boundary_text(state)
         people = resolved_people(state)
     except Exception:
         return
@@ -3060,7 +3208,7 @@ def _drop_unrequested_meeting_create_fields(state, items: list) -> None:
         from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
         if not is_meeting_request(state):
             return
-        said = meeting_request_text(state)
+        said = _meeting_request_boundary_text(state)
     except Exception:
         return
     decisions = _meeting_optional_field_decisions(said)
@@ -3107,7 +3255,7 @@ def _drop_unneeded_meeting_questions(state, questions: list[dict]) -> list[dict]
         from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
         if not is_meeting_request(state):
             return questions
-        decisions = _meeting_optional_field_decisions(meeting_request_text(state))
+        decisions = _meeting_optional_field_decisions(_meeting_request_boundary_text(state))
     except Exception:
         return questions
     aliases = {
@@ -3119,7 +3267,8 @@ def _drop_unneeded_meeting_questions(state, questions: list[dict]) -> list[dict]
     try:
         from app.agent.workflow.meeting_context import meeting_request_text
         explicit_epics = {key.upper() for key in _re.findall(
-            r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)", meeting_request_text(state), _re.I)}
+            r"\bEpic\s+([A-Z][A-Z0-9]*-\d+)",
+            _meeting_request_boundary_text(state), _re.I)}
     except Exception:
         explicit_epics = set()
     kept = []
@@ -3145,7 +3294,7 @@ def _meeting_unchanged_fields(state) -> set[str]:
         from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
         if not is_meeting_request(state):
             return set()
-        text = meeting_request_text(state)
+        text = _meeting_request_boundary_text(state)
     except Exception:
         return set()
     marker = _re.search(r"\[(?:회의\s*)?(?:종료\s*직전\s*)?(?:최종\s*)?합의\]", text, _re.I)
@@ -3187,7 +3336,7 @@ def _recover_decided_meeting_tasks(state) -> list[dict]:
         )
         if not is_meeting_request(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
             return []
-        original = meeting_request_text(state)
+        original = _meeting_request_boundary_text(state)
         count_match = _re.search(r"(?:Task|티켓|테스크)\s*([1-9]\d*)\s*건", original, _re.I)
         records = meeting_owner_records(state)
         if not count_match or len(records) != int(count_match.group(1)):
@@ -3267,7 +3416,7 @@ def _preserve_defined_meeting_terms(state, items: list) -> None:
         from app.agent.workflow.meeting_context import is_meeting_request, meeting_request_text
         if not is_meeting_request(state):
             return
-        original = meeting_request_text(state)
+        original = _meeting_request_boundary_text(state)
     except Exception:
         return
     latest = last_user_text(state)
@@ -3418,8 +3567,8 @@ def _split_into_children(state, item: dict) -> list:
     # 이 함수에 도달했다는 것 자체가 이미 "다단계로 나눈다"는 구조 판정이다. 신규 구축을
     # 다시 LLM에 물어 단계명 변동과 한 번의 왕복을 추가하지 말고, 구체적인 parent 대상을
     # 보존한 최소 실행 단위로 결정적으로 분해한다. 국소 수정은 호출 전 가드에서 제외된다.
-    all_human = (request_text(state) + " " + _human_request_text(state)).strip()
-    base = _base_title(str(item.get("summary") or "")).strip()
+    all_human = _current_request_boundary_text(state)
+    base = _display_base_title(str(item.get("summary") or "")).strip()
     if base and any(word in all_human for word in BUILD_WORDS):
         return [{"summary": f"{base} — {stage}"} for stage in ("설계", "구현", "검증")]
     # DoD가 이미 서로 다른 실행 단계를 구체적으로 열거했다면 구조 판단이 끝난 입력이다.
@@ -3439,7 +3588,7 @@ def _split_into_children(state, item: dict) -> list:
         r = invoke_schema(schema, [
             ("system", "You are a PMO ticket architect. Split multi-stage work into Korean Sub-Task "
                        "execution units that one owner can finish within several days. Return JSON only."),
-            ("user", f"Original request: {request_text(state)}\n\n"
+            ("user", f"Original request: {_current_request_boundary_text(state)}\n\n"
                      f"Task summary: {item.get('summary')}\n"
                      f"Body data: {str(item.get('description') or '')[:1200]}\n\n"
                      "Split this Task into two to five Sub-Tasks. Every Korean summary must identify the "
@@ -3464,7 +3613,7 @@ def _split_into_children(state, item: dict) -> list:
     # 폴백이 모두 빈손이 될 수 있다. 구조 판단은 사용자가 이미 했으므로 빈 산출을 허용하지 않는다.
     # 코드가 부모 제목의 대상을 보존한 최소 3단계를 만든다.
     if shape_hint(state)[0] == "task_with_subtasks":
-        base = _base_title(str(item.get("summary") or "")).strip()
+        base = _display_base_title(str(item.get("summary") or "")).strip()
         if base:
             return [{"summary": f"{base} {stage}"} for stage in ("설계", "구현", "검증")]
     return []
@@ -3556,7 +3705,7 @@ def _reported_symptom(text: str) -> str:
 
 def _repair_bug_facts_from_report(state, items) -> bool:
     """Replace a placeholder actual result with the observed symptom already in the report."""
-    said = (request_text(state) + "\n" + conversation(state)).strip()
+    said = _current_request_boundary_text(state)
     symptom = _reported_runtime_actual(said) or _reported_symptom(said)
     if not symptom:
         return False
@@ -3708,7 +3857,7 @@ def _bug_body_for(state, it) -> str:
     사용자가 안 준 칸은 지어내지 않고 "확인 필요"로 남긴다 — 빈 칸이 거짓말보다 낫고,
     질문 갈래(BUG1)가 그 칸을 채우러 간다.
     """
-    said = (request_text(state) + "\n" + conversation(state)).strip()
+    said = _current_request_boundary_text(state)
     symptom0 = _reported_symptom(said)
     expected0 = _reported_expectation(said)
     steps0 = _reported_steps(said, symptom0)
@@ -3778,7 +3927,7 @@ def _complete_bug_draft_from_report(state) -> dict:
     when a reported symptom, an explicit expectation, and a reproducible screen or
     execution step can all be extracted. Otherwise the normal interview remains.
     """
-    said = (request_text(state) + "\n" + conversation(state)).strip()
+    said = _current_request_boundary_text(state)
     if not reads_as_bug(said) or _missing_bug_reproduction(said):
         return {}
     symptom = _reported_symptom(said)
@@ -3834,7 +3983,7 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
         r = invoke_schema(schema, [
             ("system", "You are a PMO ticket architect. Draft one missing deliverable present in the original "
                        "request. Never add unrequested work. Return JSON only."),
-            ("user", f"Original request: {request_text(state)}\n\n"
+            ("user", f"Original request: {_current_request_boundary_text(state)}\n\n"
                      f"Existing sibling draft: {ref.get('summary')}\n"
                      f"Module for this ticket: {mod}\n"
                      + (f"Fixed summary: {want}\n" if want else "")
@@ -3906,7 +4055,7 @@ def _dod_rows(body) -> list:
 def _drop_unrequested_deployment_dod(state, items) -> bool:
     """개발·MVP 요청을 별도 배포 작업이나 운영 배포 약속으로 확대하지 않는다."""
     import re
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     if re.search(r"배포|릴리(?:스|즈)|운영\s*반영|production|prod\b", req, re.I):
         return False
     changed = False
@@ -3946,7 +4095,7 @@ def _drop_unrequested_deployment_dod(state, items) -> bool:
 
 def _mark_unspecified_acceptance_criteria(state, items) -> bool:
     """정의되지 않은 품질·성능 기준을 충족했다고 단정하지 않고 확인 과제로 남긴다."""
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     has_metric = bool(_re.search(
         r"(?:p\d{2}|\d+(?:\.\d+)?\s*(?:ms|초|분|시간|%|건/초|tps|qps|mb|gb))",
         req, _re.I))
@@ -4075,7 +4224,7 @@ def _dedupe_dod_rows(items) -> bool:
 def _drop_cross_item_dod(state, items) -> bool:
     """독립 Task의 완료조건에 형제 산출물이나 명시적 제외 범위를 섞지 않는다."""
     changed = False
-    request = request_text(state)
+    request = _current_request_boundary_text(state)
     rows = [item for item in (items or []) if isinstance(item, dict)]
     sibling_markers = ("가이드", "문서", "인덱스", "성능 측정", "리포트", "대시보드")
     for item in rows:
@@ -4108,7 +4257,7 @@ def _drop_cross_item_dod(state, items) -> bool:
 def _repair_malformed_dod(state, items) -> bool:
     """모델 문장에서 조사·서술어가 탈락한 DoD를 관찰 가능한 문장으로 교체한다."""
     changed = False
-    request = request_text(state) + " " + last_user_text(state)
+    request = _current_request_boundary_text(state)
     malformed = _re.compile(
         r"(?:이|가)\s+(?:을|를)\s*확인|(?:이|가)\s+하여|(?:이|가)\s+하는지\s*(?:실행|테스트)|"
         r"기능이\s+을|사용자가[^<]{0,20}(?:쉽게|편리하게)\s*확인\s*가능",
@@ -4165,7 +4314,7 @@ def _preserve_explicit_value_transition(state, items) -> bool:
     rows = [item for item in (items or []) if isinstance(item, dict)]
     if len(rows) != 1:
         return False
-    asked = (last_user_text(state) or request_text(state)).strip()
+    asked = _current_request_boundary_text(state)
     pairs = []
     for match in _EXPLICIT_VALUE_TRANSITION.finditer(asked):
         pair = (match.group("before").strip(), match.group("after").strip())
@@ -4200,7 +4349,7 @@ def _action_specific_proof(state, summary: str) -> str:
     # ``코드 .의``.  Punctuation is presentation, not part of the evidence subject.
     subject = _re.sub(r"^\s*\[[^\]]+\]\s*", "", str(summary or "작업"))
     subject = subject.strip().rstrip(" .,:;!?。…").strip() or "작업"
-    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    asked = _current_request_boundary_text(state)
     if any(word in subject for word in ("도움말", "단축키", "팝업", "체크박스")):
         return (f"{subject}의 열기·닫기 동작과 표시 항목을 UI 테스트 결과 및 "
                 "화면 증빙으로 확인한다")
@@ -4251,7 +4400,8 @@ def _sharpen_dod(state, items) -> bool:
             r"^\s*\[[^\]]+\]\s*", "", str(child.get("summary") or "작업")
         ).strip()
         bad = _vague_dod(_dod_rows(body))
-        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달", request_text(state), _re.I):
+        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달",
+                          _current_request_boundary_text(state), _re.I):
             bad += [row for row in _dod_rows(body)
                     if _re.search(r"보고서|리포트", row, _re.I)]
         if any(word in subject for word in ("가이드", "문서", "템플릿")):
@@ -4331,7 +4481,8 @@ def _sharpen_dod(state, items) -> bool:
         # A model may write an otherwise fluent but unrequested "report delivery" DoD.
         # Reporting is a separate deliverable; if the user did not ask for one, replace the
         # row with evidence of the actual action instead of silently expanding scope.
-        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달", request_text(state), _re.I):
+        if not _re.search(r"보고서|리포트|문서|가이드|공유|전달",
+                          _current_request_boundary_text(state), _re.I):
             replacement = _action_specific_proof(state, it.get("summary") or "")
 
             def replace_report(match):
@@ -4367,7 +4518,7 @@ def _sharpen_dod(state, items) -> bool:
         # contract and preserve only a threshold the user literally supplied.
         if _re.search(r"(?:null|널)\s*(?:ratio|비율)", summary_subject, _re.I):
             replacement = _action_specific_proof(state, summary_subject)
-            asked = (request_text(state) + " " + last_user_text(state)).strip()
+            asked = _current_request_boundary_text(state)
             explicit_values = {
                 value.replace(" ", "") for value in _re.findall(
                     r"\d+(?:\.\d+)?\s*(?:%|퍼센트|이하|이상|미만|초과)", asked, _re.I)
@@ -4405,7 +4556,7 @@ def _fill_thin_bodies(state, items, repair: bool = True) -> bool:
     # ① 배경 채우기는 **LLM 호출이 없다 — 전 항목에 건다.** 처음엔 아래 보정과 함께 "한 건만"
     #    고치게 뒀는데, 초안이 4건으로 갈린 실행에서 **둘 이상이 얇아** 첫 건만 고쳐진 채
     #    나갔다(실측 STR2: `[2] '배경' 섹션 없음`). 공짜인 수리를 아낄 이유가 없다.
-    req = request_text(state).strip()
+    req = _current_request_boundary_text(state)
     hit = False
     if req:
         for it in tops:
@@ -4519,6 +4670,193 @@ def _children_from_dod(item: dict) -> list:
 
 _WEEKDAYS = {"월": 0, "화": 1, "수": 2, "목": 3, "금": 4, "토": 5, "일": 6}
 
+_ISO_DATE = r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)"
+_DUE_WORD = r"(?:마감(?:일)?|기한|due\s*date|duedate|due)"
+
+
+def _valid_iso_date(value: str) -> bool:
+    """Return whether ``value`` is a real calendar date in canonical ISO form."""
+    from datetime import date
+    try:
+        return date.fromisoformat(str(value or "")).isoformat() == value
+    except (TypeError, ValueError):
+        return False
+
+
+def _explicit_due_candidates(text: str) -> list[str]:
+    """Extract only dates explicitly bound to a deadline, preserving first-seen order.
+
+    Arbitrary dates in background/history are not deadlines. A date qualifies when a due
+    label is in the same short clause, or when the user writes the ordinary deadline form
+    ``YYYY-MM-DD까지``. Invalid calendar dates remain non-authoritative.
+    """
+    source = str(text or "")
+    found: list[tuple[int, str]] = []
+    patterns = (
+        rf"{_DUE_WORD}\s*(?:은|는|이|가|을|를|:|=|로|으로)?\s*{_ISO_DATE}",
+        rf"{_ISO_DATE}\s*(?:을|를|로|으로|까지)?\s*{_DUE_WORD}",
+        rf"{_ISO_DATE}\s*까지(?:로|를|는|은)?",
+    )
+    for pattern in patterns:
+        for match in _re.finditer(pattern, source, _re.I):
+            value = next((group for group in match.groups()
+                          if group and _re.fullmatch(r"20\d{2}-\d{2}-\d{2}", group)), "")
+            if _valid_iso_date(value):
+                found.append((match.start(), value))
+    ordered = []
+    for _position, value in sorted(found):
+        if value not in ordered:
+            ordered.append(value)
+    return ordered
+
+
+def _explicit_due_instruction_status(state: dict) -> tuple[str, str]:
+    """Classify the authoritative current-turn due instruction.
+
+    Returns ``(status, value)`` where status is ``valid``, ``ambiguous``, ``invalid``,
+    ``clear``, or ``absent``. This typed boundary prevents an invalid/ambiguous user-owned
+    field from degrading to an empty helper result that silently preserves a model date.
+    """
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    continuation = bool(state.get("turn_continuation"))
+    source = latest if continuation and latest and latest != frozen else frozen
+    due_labeled = bool(_re.search(_DUE_WORD, source, _re.I))
+    deadline_form = bool(_re.search(rf"{_ISO_DATE}\s*까지", source))
+    if due_labeled and _re.search(
+            r"(?:제거|삭제|없애|비워|미설정|설정하지\s*말|없(?:음|이))|"
+            r"(?:clear|unset|remove)", source, _re.I):
+        return "clear", ""
+    raw_dates = _re.findall(_ISO_DATE, source)
+    # A single labelled deadline clause can contain two alternatives while the narrower
+    # extractor binds only its first value. Detect the alternatives locally; arbitrary
+    # incident/history dates elsewhere in the same request are not competing deadlines.
+    ambiguous_clause = bool(_re.search(
+        rf"{_DUE_WORD}[^.!?\n]{{0,32}}{_ISO_DATE}[^.!?\n]{{0,16}}"
+        rf"(?:\ub610\ub294|\ud639\uc740|\uc911|or|/)\s*{_ISO_DATE}", source, _re.I,
+    ) or _re.search(
+        rf"{_ISO_DATE}[^.!?\n]{{0,16}}(?:\ub610\ub294|\ud639\uc740|or|/)\s*{_ISO_DATE}"
+        rf"[^.!?\n]{{0,32}}{_DUE_WORD}", source, _re.I,
+    ))
+    if ambiguous_clause:
+        return "ambiguous", ""
+
+    values = _explicit_due_candidates(source)
+    if len(values) > 1:
+        return "ambiguous", ""
+    if len(values) == 1:
+        return "valid", values[0]
+
+    if (due_labeled or deadline_form) and raw_dates:
+        # No valid candidate reached this branch, so every literal date was invalid or the
+        # deadline clause itself was malformed.
+        return "invalid", str(raw_dates[0])
+
+    # A bare answer is a due instruction only when it directly answers the current assistant
+    # due question; a date in an unrelated continuation is not a deadline.
+    if continuation and latest:
+        messages = list(state.get("messages") or [])
+        last_human_index = next((index for index in range(len(messages) - 1, -1, -1)
+                                 if getattr(messages[index], "type", "") == "human"), -1)
+        previous = messages[last_human_index - 1] if last_human_index > 0 else None
+        match = _re.fullmatch(_ISO_DATE, latest)
+        if (match and previous is not None
+                and getattr(previous, "type", "") in ("ai", "assistant")
+                and _re.search(_DUE_WORD, str(getattr(previous, "content", "") or ""), _re.I)):
+            value = match.group(1)
+            return ("valid", value) if _valid_iso_date(value) else ("invalid", value)
+    return "absent", ""
+
+
+def _authoritative_explicit_due(state: dict) -> str:
+    """Return the sole explicit deadline inside the current request boundary.
+
+    Repeating the same deadline is unambiguous. Distinct deadlines are deliberately left
+    unresolved because assigning them to one or more draft roots requires user intent.
+    ``request_text`` is the session-frozen authority. Only an explicit continuation may add
+    the latest human answer; older conversation turns are never scanned. A bare ISO answer
+    is accepted only when that current continuation directly follows an assistant deadline
+    question, so a stale topic date cannot silently become a Jira due date.
+    """
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    continuation = bool(state.get("turn_continuation"))
+    status, status_value = _explicit_due_instruction_status(state)
+    if status == "valid":
+        return status_value
+    if status in {"ambiguous", "invalid", "clear"}:
+        return ""
+    frozen_values = _explicit_due_candidates(frozen)
+    messages = list(state.get("messages") or [])
+
+    # A current continuation is authoritative over the frozen first-turn request. This is
+    # field precedence, not a union: "A로 만들어줘" followed by "B로 바꿔" means B. Two
+    # deadlines in the same current answer remain ambiguous and are never guessed.
+    current_followup = continuation and latest and latest != frozen
+    if current_followup:
+        latest_values = _explicit_due_candidates(latest)
+        if len(latest_values) == 1:
+            return latest_values[0]
+        if len(latest_values) > 1:
+            return ""
+
+        last_human_index = next((index for index in range(len(messages) - 1, -1, -1)
+                                 if getattr(messages[index], "type", "") == "human"), -1)
+        answer = (str(getattr(messages[last_human_index], "content", "") or "").strip()
+                  if last_human_index >= 0 else "")
+        match = _re.fullmatch(_ISO_DATE, answer)
+        previous = messages[last_human_index - 1] if last_human_index > 0 else None
+        if (answer == latest and match and previous is not None
+                and getattr(previous, "type", "") in ("ai", "assistant")
+                and _re.search(_DUE_WORD, str(getattr(previous, "content", "") or ""), _re.I)
+                and _valid_iso_date(match.group(1))):
+            return match.group(1)
+
+        prior_items = [row for row in ((state.get("draft") or {}).get("items") or [])
+                       if isinstance(row, dict)]
+        prior_due = (str(prior_items[0].get("duedate") or "").strip()
+                     if len(prior_items) == 1 else "")
+        # A title/body-only refinement carries the already-approved typed due forward. This
+        # prevents turn 3 from reverting B to frozen turn-1 A. A current due instruction
+        # which is invalid, ambiguous, or clears the field must fail closed instead.
+        if not _re.search(_DUE_WORD, latest, _re.I) and _valid_iso_date(prior_due):
+            return prior_due
+        return ""
+
+    return frozen_values[0] if len(frozen_values) == 1 else ""
+
+
+def _global_exact_due_for_roots(state: dict, root_count: int) -> str:
+    """Return one exact date only when the user explicitly scopes it to every root."""
+    if root_count < 2:
+        return ""
+    due = _authoritative_explicit_due(state)
+    if not due:
+        return ""
+    source = _current_request_boundary_text(state)
+    universal = (
+        r"(?:둘\s*다|모두|전부|공통(?:으로|의)?|"
+        r"각\s*(?:Task|태스크|테스크|티켓|항목)|"
+        r"\d+\s*(?:건|개)\s*(?:모두|다))"
+    )
+    scoped = bool(
+        _re.search(rf"{universal}[^.!?\n]{{0,60}}{_DUE_WORD}", source, _re.I)
+        or _re.search(rf"{_DUE_WORD}[^.!?\n]{{0,60}}{universal}", source, _re.I)
+    )
+    return due if scoped else ""
+
+
+def _normalize_due_rationale(rationale: str, due: str) -> str:
+    """Remove model-authored deadline reasoning and append the authoritative user fact."""
+    text = str(rationale or "")
+    text = _re.sub(
+        rf"[^.\n;!?]*(?:{_DUE_WORD}|{_ISO_DATE})[^.\n;!?]*(?:[.\n;!?]|$)",
+        " ", text, flags=_re.I,
+    )
+    text = "\n".join(line.strip() for line in text.splitlines() if line.strip()).strip()
+    canonical = f"사용자 지정 마감일 {due} 그대로 적용."
+    return f"{text}\n{canonical}".strip()
+
 
 def _relative_due(text: str) -> str:
     """"다음주 수요일"·"이번주 금요일"·"내일"·"모레" → YYYY-MM-DD. 못 알아들으면 "".
@@ -4558,18 +4896,38 @@ def _relative_due(text: str) -> str:
 
 
 def _apply_relative_due_to_single_draft(state: dict, items: list) -> str:
-    """현재 메시지의 상대 기한을 단일 생성 초안에 적용하고 확정값을 반환한다.
+    """Apply an exact/relative due only where root scope is deterministic.
 
-    원 요청 전체가 아니라 마지막 사용자 메시지를 우선하는 이유는, 후속 편집에서 이미 바꾼
-    기한을 첫 턴의 상대 표현이 다시 덮지 않게 하기 위해서다. 메시지가 없는 단위 테스트·내부
-    호출만 원 요청을 fallback으로 사용한다.
+    One root is unambiguous. Multiple roots are updated only when the user explicitly scopes
+    one exact date to all of them (for example ``둘 다 마감은 ...``). Root-specific dates,
+    an unscoped global-looking date, and relative dates across several roots remain semantic.
     """
-    if len(items or []) != 1 or not isinstance(items[0], dict):
+    rows = [row for row in (items or []) if isinstance(row, dict)]
+    if not rows or len(rows) != len(items or []):
         return ""
-    source = last_user_text(state) or request_text(state)
+    due_status, _due_value = _explicit_due_instruction_status(state)
+    if due_status in {"ambiguous", "invalid", "clear"}:
+        # Never retain a model-authored or stale date after the current user explicitly
+        # supplied an unusable/cleared due instruction. Work/Auditor decide whether the
+        # status needs an interview; this helper owns the payload safety boundary.
+        if len(rows) == 1:
+            rows[0]["duedate"] = ""
+        return ""
+    due = _authoritative_explicit_due(state)
+    if due and len(rows) == 1:
+        rows[0]["duedate"] = due
+        return due
+    global_due = _global_exact_due_for_roots(state, len(rows))
+    if global_due:
+        for row in rows:
+            row["duedate"] = global_due
+        return global_due
+    if len(rows) != 1:
+        return ""
+    source = _current_request_boundary_text(state)
     due = _relative_due(source)
     if due:
-        items[0]["duedate"] = due
+        rows[0]["duedate"] = due
     return due
 
 
@@ -4596,7 +4954,7 @@ def _remove_unrequested_quality_claims(state: dict, items: list) -> bool:
     좁히면 형식 검사는 통과해도 다른 작업이 된다. 여기서는 사용자 원문에 실제로 등장한
     차원만 허용한다. Bug는 재현/기대/실제 계약이 별도이므로 대상에서 제외한다.
     """
-    request = (request_text(state) + " " + last_user_text(state)).strip()
+    request = _current_request_boundary_text(state)
     forbidden = [p for p in _QUALITY_DIMENSIONS if not _re.search(p, request, _re.I)]
     if not forbidden:
         return False
@@ -4682,7 +5040,7 @@ def _repair_statistics_generation_semantics(state: dict, items: list) -> bool:
     only when the user explicitly asks to generate statistics and the body contains an
     unrequested method, then rebuilds the body from the verified title/request boundary.
     """
-    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    asked = _current_request_boundary_text(state)
     if not (_re.search(r"통계\s*정보.{0,30}생성|NDV.{0,30}생성", asked, _re.I)
             or _re.search(r"generat\w*.{0,30}(?:NDV|statistic)|"
                           r"(?:NDV|statistic).{0,30}generat\w*", asked, _re.I)):
@@ -4790,7 +5148,7 @@ def _drop_unrequested_requester_attribution(state: dict, items: list) -> bool:
     reason for every ticket.  Keep an attribution only when the user actually mentioned
     that identity in the request.
     """
-    asked = (request_text(state) + " " + _human_request_text(state)).strip()
+    asked = _current_request_boundary_text(state)
     changed = False
     targets = []
     for item in items or []:
@@ -4825,7 +5183,7 @@ def _remove_assignee_semantic_drift(state: dict, items: list) -> bool:
     raw IDs and their suffixes are removed from prose because people must be represented
     by typed mentions or the assignee field.
     """
-    asked = (request_text(state) + " " + last_user_text(state)).strip()
+    asked = _current_request_boundary_text(state)
     changed = False
     targets = []
     for item in items or []:
@@ -5037,7 +5395,7 @@ def _topic_drift(state, items: list) -> str:
 
     고유어 = 식별자(테이블명 등) + 영문 기술 토큰(4자↑, 일반어 제외). 판정은 코드가 하고
     고칠지는 사람이 정한다 — 경고는 rationale 로 승인 카드에 노출된다."""
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     if not req or not items:
         return ""
     try:
@@ -5179,7 +5537,12 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
     subjects = [value for value in anchors if not is_ordinal(value)]
     ordinals = [value for value in anchors if is_ordinal(value)]
     rows = [item for item in (items or []) if isinstance(item, dict)]
-    if not rows or not subjects:
+    if not rows or not (subjects or ordinals):
+        return False
+    # An ordinal-only Korean request has no Latin subject anchor. It is still safe to seal
+    # one root with one exact phase, but spreading one phase over several deliverables or
+    # choosing among several explicit phases would change semantics.
+    if not subjects and (len(rows) != 1 or len(ordinals) != 1):
         return False
 
     def contains(text: str, value: str) -> bool:
@@ -5213,18 +5576,19 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
         r"모니터링|작업|진행|결과|산출물|성공|실패"
     )
 
-    def repair_ordinal(text: str) -> str:
+    def repair_ordinal(text: str, owned_subjects: list[str]) -> str:
         """Repair a model-dropped ordinal only in text carrying the protected subject."""
         if len(ordinals) != 1:
             return text
-        if subjects and not any(contains(text, value) for value in subjects):
+        if owned_subjects and not any(contains(text, value) for value in owned_subjects):
             return text
         return _re.sub(
             rf"(?<!\d)차(?=\s*(?:{ordinal_follow})(?:\s|$|[<.,]))",
             ordinals[0], text,
         )
 
-    def seal_body(body: str, old_summary: str, new_summary: str) -> tuple[str, bool]:
+    def seal_body(body: str, old_summary: str, new_summary: str,
+                  owned_subjects: list[str]) -> tuple[str, bool]:
         """Keep the title's protected anchors in the authored scope/DoD body."""
         original = str(body or "")
         if not original:
@@ -5234,12 +5598,13 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
         fresh = original
         if old_subject and new_subject and old_subject != new_subject:
             fresh = replace_visible_subject(fresh, old_subject, new_subject)
-        fresh = _map_visible_body_text(fresh, repair_ordinal)
+        fresh = _map_visible_body_text(
+            fresh, lambda text: repair_ordinal(text, owned_subjects))
 
         # If projection omitted an exact proper noun from the body entirely, add only the
         # missing protected tokens to the existing `포함:` row.  This is a factual copy, not
         # semantic prose generation, and is idempotent across the Work/assignment boundaries.
-        missing = [value for value in subjects if not body_contains(fresh, value)]
+        missing = [value for value in owned_subjects if not body_contains(fresh, value)]
         if len(ordinals) == 1 and not body_contains(fresh, ordinals[0]):
             missing.append(ordinals[0])
         if missing and _re.search(r"<li\b[^>]*>\s*포함\s*[:：]", fresh, _re.I):
@@ -5258,19 +5623,22 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
         if not summary:
             continue
         hay = summary + " " + _visible_body_text(str(item.get("description") or ""))
-        if len(rows) > 1 and not any(contains(hay, value) for value in subjects):
+        owned_subjects = (subjects if len(rows) == 1 else [
+            value for value in subjects if contains(hay, value)
+        ])
+        if len(rows) > 1 and subjects and not owned_subjects:
             continue
-        missing = [value for value in subjects if not contains(summary, value)]
+        missing = [value for value in owned_subjects if not contains(summary, value)]
         if missing:
             module_match = _re.match(r"^\s*(\[[^]]+\])\s*", summary)
             module = module_match.group(1) if module_match else ""
             rest = summary[module_match.end():] if module_match else summary
             # Rebuild only the protected-token prefix in original order. All unprotected
             # authored wording stays byte-for-byte except whitespace collapsed at joins.
-            for value in subjects:
+            for value in owned_subjects:
                 rest = strip_anchor(rest, value)
             rest = _re.sub(r"\s{2,}", " ", rest).strip(" -")
-            summary = " ".join(part for part in (module, " ".join(subjects), rest) if part)
+            summary = " ".join(part for part in (module, " ".join(owned_subjects), rest) if part)
             changed = True
         # A single explicit ordinal is a scope boundary. Multiple ordinals usually describe
         # separate phases and are left for semantic decomposition instead of being glued to
@@ -5292,6 +5660,7 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
         item["summary"] = _re.sub(r"\s{2,}", " ", summary).strip()
         item["description"], body_changed = seal_body(
             str(item.get("description") or ""), old_summary, item["summary"],
+            owned_subjects,
         )
         changed = changed or body_changed
 
@@ -5310,7 +5679,8 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
                 r"[—–-]\s*(설계|기획|구현|개발|적용|검증|테스트|측정|배포|모니터링)\s*$",
                 child_summary,
             )
-            if not stage or not any(contains(child_summary, value) for value in subjects):
+            if not stage or (owned_subjects and not any(
+                    contains(child_summary, value) for value in owned_subjects)):
                 continue
             child_module = _re.match(r"^\s*(\[[^]]+\])\s*", child_summary)
             module = child_module.group(1) if child_module else (
@@ -5320,6 +5690,7 @@ def _preserve_required_user_anchors(state, items: list) -> bool:
             changed = changed or child["summary"] != child_summary
             child["description"], body_changed = seal_body(
                 str(child.get("description") or ""), old_child_summary, child["summary"],
+                owned_subjects,
             )
             changed = changed or body_changed
     return changed
@@ -5575,9 +5946,45 @@ def _epic_options(state) -> list:
         rows.sort(key=lambda r: r.get("module") != mod)
     return rows
 
+def _current_request_boundary_text(state) -> str:
+    """Return only the frozen request and its explicit current continuation.
+
+    Old conversation is evidence/history, not authority for delegation or a new topic's
+    target. If session says this is not a continuation and the two texts differ, the latest
+    human turn wins conservatively instead of inheriting an old ``알아서``.
+    """
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    if state.get("turn_continuation"):
+        rows = [frozen] if frozen else []
+        if latest and latest != frozen:
+            rows.append(latest)
+        return "\n".join(rows)
+    return latest or frozen
+
+
+def _meeting_request_boundary_text(state) -> str:
+    """Return the meeting record only inside its explicit continuation boundary.
+
+    Meeting interviews historically freeze only the latest answer in ``request_text`` and
+    recover the original minutes from typed message history.  That recovery is legitimate
+    only when session marks the turn as a continuation; on a new topic the latest request
+    boundary wins and stale minutes are never consulted.
+    """
+    current = _current_request_boundary_text(state)
+    if not state.get("turn_continuation"):
+        return current
+    try:
+        from app.agent.workflow.meeting_context import meeting_request_text
+        original = str(meeting_request_text(state) or "").strip()
+    except Exception:
+        original = ""
+    return original or current
+
+
 def _said_defaults(state) -> bool:
-    """사용자가 선택 재량을 위임했나. 필수 입력 질문까지 끄는 신호는 아니다."""
-    said = conversation(state)
+    """사용자가 현재 요청에서 선택 재량을 위임했나. 필수 질문은 끄지 않는다."""
+    said = _current_request_boundary_text(state)
     return any(w in said for w in ("알아서", "기본값", "맡길게", "맡기겠", "네가 정해", "아무거나"))
 
 
@@ -5622,7 +6029,7 @@ def _delegated_question_is_blocking(state, question) -> bool:
     """위임 요청에서 모델이 `required_input`으로 표시한 질문을 실제 blocker로 검증."""
     if not _question_requires_input(question):
         return False
-    said = (request_text(state) + " " + conversation(state)).strip()
+    said = _current_request_boundary_text(state)
     qtext = (str(question.get("question") or "") + " "
              + str(question.get("why_required") or "") + " "
              + str(question.get("field") or "")).lower()
@@ -5678,7 +6085,7 @@ def _normalize_duplicate_and_bug_questions(state, questions: list, *, items=None
     interview should ask only for facts that are still absent from the report and group
     closely related diagnostic fields into one answerable prompt.
     """
-    said = (request_text(state) + " " + last_user_text(state)).strip()
+    said = _current_request_boundary_text(state)
     if state.get("already_exists"):
         # The role contract already distinguishes a reversible delegated draft from an
         # unapproved write: when the user said "알아서" and concrete items exist, keep
@@ -5779,13 +6186,15 @@ def _recover_delegated_epic_downgrade(state) -> dict:
     """
     if not _said_defaults(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
         return {}
+    if len((requested_outcome_contract(state).get("outcomes") or [])) > 1:
+        return {}
 
-    human_messages = [
-        str(getattr(message, "content", "") or "").strip()
-        for message in (state.get("messages") or [])
-        if getattr(message, "type", "") == "human"
-    ]
-    candidates = [request_text(state), *human_messages]
+    current_request = _current_request_boundary_text(state)
+    frozen = request_text(state).strip()
+    latest = last_user_text(state).strip()
+    candidates = ([value for value in (frozen, latest) if value]
+                  if state.get("turn_continuation") else
+                  ([current_request] if current_request else []))
     epic_request = next(
         (value for value in candidates if value and _shape_hint_text(value)[0] == "new_epic"),
         "",
@@ -5801,7 +6210,7 @@ def _recover_delegated_epic_downgrade(state) -> dict:
     if not unmet:
         return {}
 
-    all_human = " ".join(value for value in human_messages if value).strip()
+    all_human = current_request
     if (not _has_concrete_work_target(epic_request)
             or reads_as_bug(epic_request)
             or _missing_data_quality_target(state)
@@ -5869,7 +6278,9 @@ def _recover_delegated_creation(state) -> list[dict]:
     """
     if not _said_defaults(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
         return []
-    said = (request_text(state) + " " + last_user_text(state)).strip()
+    if len((requested_outcome_contract(state).get("outcomes") or [])) > 1:
+        return []
+    said = _current_request_boundary_text(state)
     volume_partition = bool(
         _re.search(r"[2-9][0-9]{0,3}\s*(?:개|건)", said)
         and any(word in said for word in
@@ -5893,7 +6304,7 @@ def _recover_delegated_creation(state) -> list[dict]:
         compound = _recover_cross_module_deliverables(state)
         return compound
 
-    literal = (last_user_text(state) or request_text(state)).strip()
+    literal = _current_request_boundary_text(state)
     explicit_epic = _explicit_parent_epic(state)
     # Preserve the action noun while stripping conversational request/delegation suffixes.
     replacements = (
@@ -5982,7 +6393,7 @@ def _recover_cross_module_deliverables(state) -> list[dict]:
     aborts recovery. This handles cross-module ownership as data, while leaving ordinary
     multi-stage planning to Work Architect's semantic model.
     """
-    literal = (request_text(state) or last_user_text(state)).strip()
+    literal = _current_request_boundary_text(state)
     if not literal or not _said_defaults(state):
         return []
     try:
@@ -6057,9 +6468,11 @@ def _explicit_comment_body(text: str) -> bool:
 
 
 def _comment_input_missing(state, plan: dict) -> bool:
-    original = request_text(state)
+    original = (_meeting_request_boundary_text(state)
+                if state.get("turn_continuation") else
+                _current_request_boundary_text(state))
     latest = last_user_text(state).strip()
-    if _comment_forbidden(original + " " + latest):
+    if _comment_forbidden(original):
         return False
     delegated_placeholder = bool(_re.search(
         r"(?:내용|목적)(?:은|도)?\s*(?:알아서|아무거나|적당히)", original,
@@ -6067,7 +6480,7 @@ def _comment_input_missing(state, plan: dict) -> bool:
     # 확인 질문의 다음 턴에 실제 문장을 주면 원 요청의 placeholder보다 그 답이 우선한다.
     followup_body = (latest and latest != original and len(latest) >= 4
                      and not _re.fullmatch(r"(?:알아서|아무거나|적당히|없음|없어)", latest))
-    if followup_body or _explicit_comment_body(original + " " + latest):
+    if followup_body or _explicit_comment_body(original):
         return False
     if delegated_placeholder:
         return True
@@ -6112,7 +6525,7 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
             )
         # If a model substitutes another valid user ID without retaining the display name,
         # repair role clauses from the explicit meeting note (writer/reader result owner).
-        original = request_text(state)
+        original = _meeting_request_boundary_text(state)
         for role in ("writer", "reader"):
             owner = _re.search(
                 rf"{role}\s*결과(?:는|를|은)?\s*(?:@|\{{\{{)?([가-힣]{{1,5}})",
@@ -6150,7 +6563,7 @@ def _canonicalize_meeting_mentions(state, plan: dict) -> None:
             # ticket key misses ordinary forms such as ``DL-7001에는``.
             r"(?<![A-Z0-9-])([A-Z][A-Z0-9]*-\d+)(?!\d)[^.\n]{0,80}"
             r"(?:댓글|코멘트)(?:을|는|도)?\s*"
-            r"(?:달지|남기지)\s*않", request_text(state), _re.I)
+            r"(?:달지|남기지)\s*않", _meeting_request_boundary_text(state), _re.I)
         for key in excluded:
             value = _re.sub(
                 rf"(?mi)^.*(?<![A-Z0-9-]){_re.escape(key)}(?!\d).*$", "", value)
@@ -6181,7 +6594,7 @@ def _meeting_decision_comment(state, fallback: str) -> str:
     bullets (for example, a background ticket that must not receive a comment) are instructions
     about the write and must never become comment content.
     """
-    original = request_text(state)
+    original = _meeting_request_boundary_text(state)
     if not (_re.search(r"회의|미팅", original, _re.I)
             and _re.search(r"댓글|코멘트", original, _re.I)):
         return fallback
@@ -6223,12 +6636,10 @@ def _missing_subtask_deliverable(state) -> bool:
     This intentionally targets explicit placeholders such as ``내용은 알아서``. A later human answer takes
     precedence, so the interview converges instead of preserving a generic first-turn draft.
     """
-    rows = [str(getattr(message, "content", "") or "").strip()
-            for message in (state.get("messages") or [])
-            if getattr(message, "type", "") == "human" and
-            str(getattr(message, "content", "") or "").strip()]
-    original = str(state.get("request_text") or (rows[0] if rows else request_text(state))).strip()
-    latest = rows[-1] if rows else last_user_text(state).strip()
+    boundary = _current_request_boundary_text(state)
+    original = (request_text(state).strip() if state.get("turn_continuation")
+                else boundary)
+    latest = last_user_text(state).strip()
     if not _re.search(r"Sub-?Task|서브\s*태스크", original, _re.I):
         return False
     if not _re.search(r"내용(?:은|도)?\s*(?:알아서|아무거나|적당히)|"
@@ -6241,7 +6652,7 @@ def _missing_subtask_deliverable(state) -> bool:
 
 
 def _missing_data_quality_target(state) -> bool:
-    said = (request_text(state) + " " + _human_request_text(state)).strip()
+    said = _current_request_boundary_text(state)
     if not _re.search(r"데이터\s*품질|널\s*비율|null\s*(?:rate|ratio)", said, _re.I):
         return False
     # 독립 보고 단위 자체를 만드는 명시적 Epic 요청은 broad scope가 산출물이다.
@@ -6274,7 +6685,7 @@ _COMPOSITE_SIGNALS = (
 
 def _simple_delegated_request(state) -> bool:
     """명시적 단일 산출물 + 위임 요청인가. 과분해를 막는 보수적 판정."""
-    req = request_text(state).strip()
+    req = _current_request_boundary_text(state)
     if not req or len(req) > 150 or not _said_defaults(state):
         return False
     if shape_hint(state)[0] or any(w.lower() in req.lower() for w in _COMPOSITE_SIGNALS):
@@ -6305,6 +6716,129 @@ def _semantic_terms(text: str) -> set:
     return {w for w in words if w not in _SEMANTIC_STOP and not w.isdigit()}
 
 
+def _one_to_one_outcome_instructions(state: dict, roots: list[dict]) -> dict[int, str]:
+    """Return root-indexed instructions only for a complete one-to-one typed binding.
+
+    Scalar user-owned fields cannot be copied from the first clause of a multi-outcome
+    request.  The opaque refs are the only safe bridge from each atomic Request Architect
+    instruction to one visible root.  Missing, repeated, unknown, truncated, or all-to-all
+    refs deliberately produce no mapping and leave the decision to semantic review.
+    """
+    contract = requested_outcome_contract(state)
+    outcomes = [row for row in (contract.get("outcomes") or []) if isinstance(row, dict)]
+    rows = [row for row in (roots or []) if isinstance(row, dict)]
+    if (len(outcomes) < 2 or len(rows) != len(outcomes)
+            or contract.get("omitted_count")
+            or any(row.get("truncated") for row in outcomes)):
+        return {}
+    instructions = {str(row.get("id") or ""): str(row.get("instruction") or "")
+                    for row in outcomes if str(row.get("id") or "")}
+    if len(instructions) != len(outcomes):
+        return {}
+    mapped: dict[int, str] = {}
+    used: set[str] = set()
+    for index, row in enumerate(rows):
+        refs = list(dict.fromkeys(
+            str(value or "") for value in (row.get("outcome_refs") or []) if str(value or "")
+        ))
+        if len(refs) != 1 or refs[0] not in instructions or refs[0] in used:
+            return {}
+        used.add(refs[0])
+        mapped[index] = instructions[refs[0]]
+    return mapped if used == set(instructions) else {}
+
+
+def _parent_epic_from_text(text: str) -> str:
+    """Return one verified explicit parent key, never the first key of several clauses."""
+    source = str(text or "")
+    if not _re.search(r"에픽|epic|아래|밑에|상위", source, _re.I):
+        return ""
+    key = r"([A-Z][A-Z0-9]*-\d+)"
+    candidates = []
+    for pattern in (
+        rf"(?:Epic|에픽)(?:은|는|이|가|을|를|으로|로|:)?\s*{key}",
+        rf"{key}\s*(?:Epic|에픽)?\s*(?:아래|밑에?|하위|상위)",
+        rf"(?:아래|밑에?|하위|상위)(?:의|로|는|은)?\s*(?:Epic|에픽)?\s*{key}",
+    ):
+        candidates.extend(match.group(1).upper()
+                          for match in _re.finditer(pattern, source, _re.I))
+    keys = list(dict.fromkeys(candidates))
+    if len(keys) != 1:
+        return ""
+    return keys[0] if _is_epic(keys[0]) else ""
+
+
+def _expected_parent_epics_by_root(state: dict, roots: list[dict]) -> dict[int, str]:
+    """Map exact per-outcome Epic clauses through one-to-one opaque root refs."""
+    instructions = _one_to_one_outcome_instructions(state, roots)
+    if not instructions:
+        return {}
+    mapped = {index: _parent_epic_from_text(instruction)
+              for index, instruction in instructions.items()}
+    return mapped if mapped and all(mapped.values()) else {}
+
+
+def _expected_due_dates_by_root(state: dict, roots: list[dict]) -> dict[int, str]:
+    """Map exact per-outcome deadlines without interpreting a multi-date scalar."""
+    instructions = _one_to_one_outcome_instructions(state, roots)
+    if not instructions:
+        return {}
+    mapped: dict[int, str] = {}
+    for index, instruction in instructions.items():
+        values = _explicit_due_candidates(instruction)
+        if len(values) != 1:
+            return {}
+        mapped[index] = values[0]
+    return mapped
+
+
+def _bind_deterministic_multi_outcomes(state: dict, payload: dict) -> bool:
+    """Bind a deterministic recovery only when literal root mapping is a bijection.
+
+    Coverage alone is insufficient: assigning every outcome id to every root makes swapped
+    A/B work appear valid. Each outcome must have a distinctive literal term absent from all
+    sibling outcomes, and those terms must identify exactly one distinct root. Anything less
+    stays unbound for Auditor/semantic recovery rather than guessing.
+    """
+    contract = requested_outcome_contract(state)
+    outcomes = [row for row in (contract.get("outcomes") or []) if isinstance(row, dict)]
+    items = [row for row in (payload.get("items") or []) if isinstance(row, dict)]
+    if (len(outcomes) < 2 or len(items) != len(outcomes)
+            or contract.get("omitted_count")
+            or any(row.get("truncated") for row in outcomes)):
+        return False
+
+    outcome_terms = [_semantic_terms(str(row.get("instruction") or ""))
+                     for row in outcomes]
+    item_terms = [_semantic_terms(
+        str(row.get("summary") or "") + " "
+        + _visible_body_text(str(row.get("description") or ""))
+    ) for row in items]
+    mapping: dict[int, int] = {}
+    for outcome_index, terms in enumerate(outcome_terms):
+        sibling_terms = set().union(*(
+            values for index, values in enumerate(outcome_terms) if index != outcome_index
+        ))
+        distinctive = terms - sibling_terms
+        if not distinctive:
+            return False
+        candidates = [index for index, values in enumerate(item_terms)
+                      if distinctive <= values]
+        if len(candidates) != 1 or candidates[0] in mapping.values():
+            return False
+        mapping[outcome_index] = candidates[0]
+
+    if len(mapping) != len(items):
+        return False
+    payload["outcome_contract_id"] = str(contract.get("id") or "")
+    for outcome_index, item_index in mapping.items():
+        items[item_index]["outcome_refs"] = [str(outcomes[outcome_index].get("id") or "")]
+        for child in (items[item_index].get("children") or []):
+            if isinstance(child, dict):
+                child.pop("outcome_refs", None)
+    return True
+
+
 def _semantic_overlap_is_related(overlap: set[str]) -> bool:
     """One substantial identifier or two domain terms are minimum placement evidence."""
     return bool(len(overlap) >= 2 or any(len(value) >= 6 for value in overlap))
@@ -6317,7 +6851,7 @@ def _explicit_nested_structure(state) -> bool:
     A nested hierarchy is retained only when the user actually asks for Sub-Tasks,
     stages, splitting, or distributed execution.
     """
-    said = (request_text(state) + "\n" + _human_request_text(state)).strip()
+    said = _current_request_boundary_text(state)
     return bool(_re.search(
         r"sub[- ]?tasks?|서브\s*태스크|하위\s*(?:티켓|작업)|"
         r"단계별|각\s*단계|단계로|쪼개|나눠|분할|분담",
@@ -6350,10 +6884,11 @@ def _drop_unrequested_nested_work(state, items: list) -> list[str]:
 
 def _best_item_for_request(state, items: list) -> dict:
     """과분해를 접을 때 원 요청과 가장 가까운 항목을 보존한다."""
-    req_terms = _semantic_terms(request_text(state))
+    current = _current_request_boundary_text(state)
+    req_terms = _semantic_terms(current)
     try:
         from app.infra.settings import modules_in_text, resolve_module
-        wanted = set(modules_in_text(request_text(state)))
+        wanted = set(modules_in_text(current))
     except Exception:
         wanted, resolve_module = set(), lambda x: ""
 
@@ -6367,21 +6902,12 @@ def _best_item_for_request(state, items: list) -> dict:
 
 def _explicit_parent_epic(state) -> str:
     """사용자가 키와 Epic/상위 관계를 직접 말한 경우만 반환한다."""
-    try:
-        from app.agent.workflow.meeting_context import meeting_request_text
-        original = meeting_request_text(state)
-    except Exception:
-        original = request_text(state)
-    said = original + " " + last_user_text(state)
-    relation = bool(_re.search(r"에픽|epic|아래|밑에|상위", said, _re.I))
-    if not relation:
-        return ""
-    keys = _re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", said, _re.I)
-    keys += [str(key) for key in (state.get("mentioned_keys") or []) if str(key) in said]
-    for key in dict.fromkeys(value.upper() for value in keys):
-        if _is_epic(key):
-            return key
-    return ""
+    said = _current_request_boundary_text(state)
+    if state.get("turn_continuation"):
+        original = _meeting_request_boundary_text(state)
+        if original and original != said:
+            said = original + "\n" + last_user_text(state)
+    return _parent_epic_from_text(said)
 
 
 def _delegates_existing_epic_choice(state) -> bool:
@@ -6394,7 +6920,7 @@ def _delegates_existing_epic_choice(state) -> bool:
     """
     from app.agent.workflow.agents.request_architect import _selection_is_not_creation
 
-    said = (request_text(state) + "\n" + _human_request_text(state)).strip()
+    said = _current_request_boundary_text(state)
     return _selection_is_not_creation(said)
 
 
@@ -6419,7 +6945,8 @@ def _inferred_epic_rejection(state, item: dict, key: str) -> str:
     title = _epic_summary(key)
     delegated_choice = _delegates_existing_epic_choice(state)
     epic_terms = _semantic_terms(title)
-    work_terms = _semantic_terms(str(item.get("summary") or "") + " " + request_text(state))
+    work_terms = _semantic_terms(
+        str(item.get("summary") or "") + " " + _current_request_boundary_text(state))
     overlap = epic_terms & work_terms
     related = _semantic_overlap_is_related(overlap)
 
@@ -6442,18 +6969,55 @@ def _inferred_epic_rejection(state, item: dict, key: str) -> str:
 
 
 def _delegated_parent_epic(state, item: dict, *, rejected_key: str = ""):
-    """Return a verified existing replacement when the user delegated Epic selection."""
+    """Return a materialized existing replacement when Epic selection was delegated.
+
+    Search rows are candidate discovery, not write authority. Only the intersection of
+    QueryRunner's structural candidate keys and successfully opened ticket details may be
+    selected. An empty ledger deliberately yields no parent; downstream policy can keep
+    the Task top-level or ask instead of attaching it to an opaque search hit.
+    """
     if not _delegates_existing_epic_choice(state):
         return None
     component = next((str(value).strip() for value in (item.get("components") or [])
                       if str(value).strip()), "")
-    pick = _pick_parent_epic(str(item.get("summary") or ""), component, delegated=True)
+    pick = _rank_parent_epic_candidates(
+        str(item.get("summary") or ""), component,
+        _materialized_parent_epic_candidates(state),
+    )
     key = str((pick or {}).get("key") or "").strip()
-    if not key or key == str(rejected_key or "").strip() or not _is_epic(key):
+    if not key or key == str(rejected_key or "").strip():
         return None
     if _inferred_epic_rejection(state, item, key):
         return None
     return pick
+
+
+def _materialized_parent_epic_candidates(state: dict) -> list[dict]:
+    """Return successful Epic details in QueryRunner's candidate order."""
+    ledger = state.get("materialized_ticket_sources") or {}
+    if not isinstance(ledger, dict):
+        return []
+    allowed = []
+    for value in ledger.get("parentCandidateKeys") or []:
+        key = str(value or "").strip().upper()
+        if key and key not in allowed:
+            allowed.append(key)
+    if not allowed:
+        return []
+    details = {}
+    for row in ledger.get("ticketDetails") or []:
+        if not isinstance(row, dict) or row.get("error"):
+            continue
+        key = str(row.get("key") or "").strip().upper()
+        issue_type = (row.get("fields") or {}).get("issuetype") or {}
+        kind = str(
+            row.get("type") or row.get("issuetype")
+            or (issue_type.get("name") if isinstance(issue_type, dict) else issue_type)
+            or ""
+        ).strip().casefold()
+        if key and kind == "epic":
+            details[key] = row
+    return [details[key] for key in allowed if key in details]
 
 
 def _dedupe_semantic_items(state, items: list) -> list:
@@ -6501,7 +7065,7 @@ def _dedupe_semantic_items(state, items: list) -> list:
         core_text = _re.sub(r"^\s*\[[^\]]+\]\s*", "",
                             str(group[0][0].get("summary") or ""))
         wanted = set(modules_in_text(core_text))
-        request = request_text(state)
+        request = _current_request_boundary_text(state)
 
         def score(pair):
             it, terms = pair
@@ -6553,7 +7117,7 @@ def _has_placeholder_body(body) -> bool:
 
 def _has_lineage_game_drift(state, item: dict) -> bool:
     """데이터 리니지를 게임 `Lineage` 서사로 해석한 명백한 sense drift를 잡는다."""
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     if "리니지" not in req:
         return False
     game_terms = ("게임", "플레이어", "캐릭터", "클라이맥스", "결말", "몰입감")
@@ -6660,7 +7224,7 @@ def _preserve_existing_parent_topic(items: list) -> bool:
 
 def _recover_explicit_subtasks(state) -> list:
     """기존 Task와 2개 이상의 자식 이름을 명시한 요청의 빈 model output을 복원한다."""
-    req = request_text(state)
+    req = _current_request_boundary_text(state)
     if not _asks_subtasks(state):
         return []
     parents = [str(k) for k in (state.get("mentioned_keys") or [])
@@ -6979,7 +7543,7 @@ def _known_components() -> set:
 
 def _new_epic_unmet_criteria(state) -> list[str]:
     """Return missing criteria for a new reporting Epic from literal user evidence."""
-    asked = conversation(state) or request_text(state)
+    asked = _current_request_boundary_text(state)
     if not str(asked or "").strip():
         return []
     unmet = []
@@ -7026,6 +7590,31 @@ def _existing_epic_like(summary: str):
     return None
 
 
+def _rank_parent_epic_candidates(summary: str, module: str, rows: list[dict]):
+    """Choose one semantically related Epic from an already bounded candidate set."""
+    terms = _semantic_terms(summary)
+    if not terms or not rows:
+        return None
+
+    ranked = []
+    wanted_module = str(module or "").casefold()
+    for index, row in enumerate(rows):
+        fields = row.get("fields") or {}
+        candidate_summary = str(row.get("summary") or fields.get("summary") or "")
+        overlap = terms & _semantic_terms(candidate_summary)
+        components = fields.get("components") or []
+        component = next((str(value.get("name") if isinstance(value, dict) else value)
+                          for value in components if value), "")
+        candidate_module = str(row.get("module") or component or "").casefold()
+        same_module = bool(wanted_module and candidate_module == wanted_module)
+        # Semantic overlap is primary. Module and original ledger order are stable
+        # tiebreakers, never substitutes for subject relevance.
+        ranked.append((len(overlap), max((len(value) for value in overlap), default=0),
+                       int(same_module), -index, row, overlap))
+    best = max(ranked, key=lambda value: value[:4])
+    return best[4] if _semantic_overlap_is_related(best[5]) else None
+
+
 def _pick_parent_epic(summary: str, module: str = "", *, delegated: bool = False):
     """이 일을 담을 만한 **기존 Epic** 하나 — 낱말이 가장 많이 겹치는 것. 없으면 None.
 
@@ -7034,33 +7623,13 @@ def _pick_parent_epic(summary: str, module: str = "", *, delegated: bool = False
     넣으면 그 Epic 의 진척률이 남의 일로 흐려진다. 선택 위임은 관련성 기준을 낮추지 않는다;
     module 일치는 배치 후보의 위치 정보일 뿐 업무 주제가 같다는 근거가 아니다.
     """
-    terms = _semantic_terms(summary)
-    if not terms:
-        return None
     try:
         from app.agent.tools.search_tools import find_parent_epic
         rows = [r for r in (find_parent_epic.invoke({"query": "", "limit": 25}) or [])
                 if isinstance(r, dict) and r.get("key") and not r.get("error")]
     except Exception:
         return None
-    if not rows:
-        return None
-
-    ranked = []
-    wanted_module = str(module or "").casefold()
-    for index, row in enumerate(rows):
-        overlap = terms & _semantic_terms(str(row.get("summary") or ""))
-        same_module = bool(wanted_module and
-                           str(row.get("module") or "").casefold() == wanted_module)
-        # Semantic overlap is the primary signal because a shared Epic may span components.
-        # Module is only a tiebreaker, and original search order is the final stable tiebreak.
-        ranked.append((len(overlap), max((len(value) for value in overlap), default=0),
-                       int(same_module), -index, row))
-    best = max(ranked, key=lambda value: value[:4])
-    best_overlap = terms & _semantic_terms(str(best[4].get("summary") or ""))
-    if _semantic_overlap_is_related(best_overlap):
-        return best[4]
-    return None
+    return _rank_parent_epic_candidates(summary, module, rows)
 
 
 def _asks_subtasks(state) -> bool:
@@ -7072,7 +7641,7 @@ def _asks_subtasks(state) -> bool:
 
 def _explicit_parentless_subtask(state) -> bool:
     """Sub-Task 요청과 부모 부재가 모두 사용자 문장에 명시됐는지 판별한다."""
-    said = (request_text(state) + " " + last_user_text(state)).replace(" ", "")
+    said = _current_request_boundary_text(state).replace(" ", "")
     return _asks_subtasks(state) and bool(_re.search(
         r"(?:부모(?:는|가|티켓은|티켓이)?(?:없|없이|필요없)|최상위(?:로|에))", said))
 
@@ -7103,8 +7672,7 @@ _SHAPE_WORDS = (
 
 def shape_hint(state) -> tuple:
     """Return the latest explicit shape, falling back to the pre-interview request."""
-    from app.agent.workflow.meeting_context import meeting_request_text
-    latest, original = last_user_text(state), meeting_request_text(state)
+    latest, original = last_user_text(state), _meeting_request_boundary_text(state)
     for said in (latest, original):
         hint = _shape_hint_text(said)
         if hint[0]:

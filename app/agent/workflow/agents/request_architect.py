@@ -105,6 +105,7 @@ SCHEMA = {
 # 후속 턴의 지시대명사("그럼 마감 위험은?")는 앞 턴의 대상을 가리킨다. 사용자가 키를
 # 다시 대지 않으므로 mentioned_keys 가 비고, 그러면 조사 대상이 사라져 **프로젝트 전체**를
 # 답한다(실측: DL-9090 진척을 묻고 "마감까지 위험한 건?"에 무관한 티켓 3건을 나열).
+import copy as _copy
 import re as _re
 
 # 지시대명사는 **낱말 경계로** 잡는다 — 맨 "그"로 부분일치를 하면 '카탈로그'가 걸린다(실측).
@@ -177,6 +178,94 @@ def _explicit_user_effects(text: str) -> set[str]:
     return {name for name, pattern in patterns.items() if _re.search(pattern, text, _re.I)}
 
 
+def _task_outcome_effect(task: dict) -> str:
+    """Project a typed atomic task to its independently visible user effect."""
+    kind = str((task or {}).get("kind") or "").strip().casefold()
+    if kind in {"query", "research", "analyze"}:
+        return "research"
+    if kind == "comment":
+        return "comment"
+    if kind == "write":
+        return "document"
+    if kind in {"plan", "ticket", "modify"}:
+        return "ticket"
+    return ""
+
+
+_PARALLEL_OUTCOMES = _re.compile(r"(?:각각|각\s*(?:한|1)\s*(?:건|개|곳))", _re.I)
+_TYPED_ARTIFACT = _re.compile(
+    r"(?<![A-Za-z])(?:Bug|Story|Feature|Improvement|Task|Sub-?Task|Epic)"
+    r"(?=$|[\s,.;:!?()]|[은는이가을를와과및도])|"
+    r"(?:버그|스토리|피처|임프로브먼트|태스크|테스크|서브\s*태스크|에픽|티켓|"
+    r"댓글|코멘트|문서|보고서)",
+    _re.I,
+)
+_OUTCOME_ACTION = _re.compile(r"(?:만들|생성|등록|작성|남겨|달아|산출|올려)", _re.I)
+_EXPLICIT_OUTCOME_COUNT = _re.compile(
+    r"(?P<count>[2-6]|두|세|네|다섯|여섯)\s*(?:건|개)", _re.I)
+_COUNT_VALUE = {"두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6}
+
+
+def _parallel_outcome_count(text: str) -> int:
+    """Return a user-grounded outcome count, or zero when multiplicity is ambiguous."""
+    artifact_matches = list(_TYPED_ARTIFACT.finditer(text))
+    jira_targets = _re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", text)
+    explicit = _EXPLICIT_OUTCOME_COUNT.search(text)
+    if explicit and artifact_matches:
+        # The count must syntactically belong to the artifact (``Task 2건`` or
+        # ``2건의 Task``). A later attribute count such as ``Task 완료 조건 2개`` is not
+        # evidence for two independent tickets.
+        attached = any(
+            (match.end() <= explicit.start()
+             and bool(_re.fullmatch(
+                 r"\s*(?:(?:은|는|이|가|을|를)\s*)?(?:(?:정확히|총)\s*)?",
+                 text[match.end():explicit.start()], _re.I)))
+            or (explicit.end() <= match.start()
+                and bool(_re.fullmatch(r"\s*(?:의\s*)?",
+                                       text[explicit.end():match.start()], _re.I)))
+            for match in artifact_matches)
+        if attached:
+            raw = explicit.group("count")
+            return int(raw) if raw.isdigit() else _COUNT_VALUE.get(raw, 0)
+
+    # ``Bug 1건과 Story 1건 만들어줘`` has one shared action but two independently counted
+    # deliverable clauses.  Count only a unit immediately attached to each typed artifact.
+    per_item = sum(bool(_re.match(
+        r"\s*(?:은|는|이|가|을|를|와|과|및|,)?\s*(?:1|한)\s*(?:건|개)",
+        text[match.end():match.end() + 18], _re.I)) for match in artifact_matches)
+    if per_item >= 2:
+        return per_item
+
+    candidates = max(len(artifact_matches), len(jira_targets))
+    if candidates >= 2 and _PARALLEL_OUTCOMES.search(text):
+        return candidates
+    action_count = len(_OUTCOME_ACTION.findall(text))
+    if candidates >= 2 and action_count >= 2:
+        return min(candidates, action_count)
+    return 0
+
+
+def _has_explicit_parallel_outcomes(user_text: str, tasks: list[dict]) -> bool:
+    """Recognize multiple user-owned outcomes even when their effect type is identical.
+
+    A set of effects cannot distinguish ``Bug + Story`` from one generic ticket. Preserve the
+    model's atomic tasks only when the user also supplied a high-precision multiplicity marker,
+    exact count, or repeated artifact actions. A single compound expression whose analysis and
+    fix are merely content of one Task therefore still collapses.
+    """
+    text = str(user_text or "")
+    if len(tasks) < 2:
+        return False
+    task_effects = {_task_outcome_effect(task) for task in tasks}
+    task_effects.discard("")
+    # This branch exists only for multiple outcomes of one effect type. Mixed-effect plans
+    # must be grounded by the ordinary explicit-effect contract above.
+    if len(task_effects) != 1:
+        return False
+    expected = _parallel_outcome_count(text)
+    return expected >= 2 and len(tasks) == expected
+
+
 def _compact_request_tasks(out: dict, user_text: str, intent: str) -> list[dict]:
     """Keep a model DAG only for genuinely compound, independently checkable outcomes."""
     tasks = [task for task in (out.get("tasks") or []) if isinstance(task, dict)]
@@ -194,7 +283,13 @@ def _compact_request_tasks(out: dict, user_text: str, intent: str) -> list[dict]
             task["write_intent"] = True
             return [task]
         return tasks
-    if len(effects) >= 2:
+    task_effects = {_task_outcome_effect(task) for task in tasks}
+    task_effects.discard("")
+    explicit_task_effects = set(effects)
+    if "modify" in explicit_task_effects:
+        explicit_task_effects.add("ticket")
+    if (len(task_effects & explicit_task_effects) >= 2
+            or _has_explicit_parallel_outcomes(user_text, tasks)):
         return tasks
 
     write_intent = intent in Intent.DRAFTS_TICKETS or bool(
@@ -224,6 +319,190 @@ def _compact_request_tasks(out: dict, user_text: str, intent: str) -> list[dict]
             (goal[:120] + "에 필요한 결과를 확인 가능한 형태로 제시한다")[:160],
         ],
     }]
+
+
+_WRITE_OUTCOME_KINDS = {"plan", "ticket", "write", "comment", "modify"}
+
+
+def _is_write_outcome(task) -> bool:
+    return bool(isinstance(task, dict) and (
+        task.get("write_intent") is True
+        or str(task.get("kind") or "").strip().casefold() in _WRITE_OUTCOME_KINDS
+    ))
+
+
+_OUTCOME_LABELS = {
+    "comment": r"(?:댓글|코멘트)",
+    "ticket": r"(?:Bug|Story|Feature|Improvement|Task|Sub-?Task|Epic|버그|스토리|피처|"
+              r"태스크|테스크|서브\s*태스크|에픽|티켓|이슈)",
+    "research": r"(?:조사|리서치|검색|분석|이력\s*확인)",
+    "document": r"(?:문서|보고서|회의록|브리핑)",
+}
+_OUTCOME_REMOVE_ACTION = r"(?:빼|제외|취소|삭제|없애|하지\s*마|안\s*(?:해|할))"
+_OUTCOME_CHANGE_ACTION = r"(?:바꿔|수정|변경|교체)"
+
+
+def _continuation_outcome_directive(text: str) -> dict:
+    """Parse only explicit, typed outcome removal/replacement instructions.
+
+    Pronouns such as ``그건 빼줘`` intentionally produce no directive: mapping one pronoun to
+    one of several writes is semantic and the authoritative prior plan must win when ambiguous.
+    """
+    value = str(text or "")
+    remove, only, change = set(), set(), set()
+    for effect, label in _OUTCOME_LABELS.items():
+        explicit_remove = _re.search(
+            fr"(?:{label})(?:은|는|을|를)?(?:\s|내용|대상|작업)*.{{0,24}}"
+            fr"{_OUTCOME_REMOVE_ACTION}", value, _re.I)
+        immediate_alternative = _re.search(
+            fr"(?:{label})(?:은|는|을|를)?\s*(?:말고|대신)(?:\s|$)", value, _re.I)
+        if explicit_remove or immediate_alternative:
+            remove.add(effect)
+        if _re.search(fr"(?:{label})(?:은|는|을|를)?\s*만(?:\s|으로|$)", value, _re.I):
+            only.add(effect)
+        if (effect not in remove
+                and _re.search(fr"(?:{label})(?:\s*(?:내용|대상|범위|결론|제목))?(?:은|는|을|를)?"
+                               fr".{{0,40}}{_OUTCOME_CHANGE_ACTION}", value, _re.I)):
+            change.add(effect)
+    return {"remove": remove, "only": only, "change": change} \
+        if remove or only or change else {}
+
+
+def _authoritative_continuation_plan(state: dict) -> dict:
+    """Return the prior user-outcome plan only across an explicit session continuation.
+
+    Research and terminology interviews can stop before WorkArchitect increments ``turns``.
+    The next RequestArchitect call sees a short answer rather than the compound request and a
+    smaller model may replace two requested writes with one control task.  Session's explicit
+    boundary is authoritative here: a new topic/cancellation clears ``turn_continuation`` and
+    ``request_plan`` before this role runs, while a true continuation keeps the whole atomic DAG.
+    """
+    if not state.get("turn_continuation"):
+        return {}
+    plan = state.get("request_plan") or {}
+    tasks = [task for task in (plan.get("tasks") or []) if isinstance(task, dict)] \
+        if isinstance(plan, dict) else []
+    if not tasks or not any(_is_write_outcome(task) for task in tasks):
+        return {}
+    fixed = _copy.deepcopy(plan)
+    fixed["tasks"] = _copy.deepcopy(tasks)
+    return fixed
+
+
+def _continuation_write_intent(state: dict, fallback: str) -> str:
+    """Keep the routing intent paired with an authoritative prior write plan."""
+    plan = _authoritative_continuation_plan(state)
+    if not plan:
+        return fallback
+    prior = str(state.get("intent") or "")
+    if prior in Intent.DRAFTS_TICKETS:
+        return prior
+    # Legacy checkpoints may predate session intent preservation.  A ticket/plan/write outcome
+    # is new-work planning; a comment-only mutation is modification.  Never infer a read intent
+    # from the interview answer because that would strand the preserved write outcomes.
+    kinds = {str(task.get("kind") or "").strip().casefold()
+             for task in plan.get("tasks") or [] if _is_write_outcome(task)}
+    return Intent.PLAN_WORK if kinds & {"plan", "ticket", "write"} else Intent.MODIFY
+
+
+def _legacy_followup_write_outcome(state: dict, tasks: list[dict], intent: str) -> list[dict]:
+    """Repair a legacy continuation that has no prior typed RequestPlan."""
+    established_continuation = bool(state.get("turn_continuation") or state.get("questions"))
+    if intent not in Intent.DRAFTS_TICKETS or not established_continuation:
+        return tasks
+    original = str(state.get("request_text") or "").strip()
+    if not original:
+        return tasks
+    write_indices = [index for index, task in enumerate(tasks or []) if _is_write_outcome(task)]
+    if len(write_indices) != 1:
+        return tasks
+    fixed = [dict(task) if isinstance(task, dict) else task for task in tasks]
+    fixed[write_indices[0]]["instruction"] = original
+    fixed[write_indices[0]]["write_intent"] = True
+    return fixed
+
+
+def _project_followup_outcomes(state: dict, tasks: list[dict], intent: str) -> tuple[list[dict], bool]:
+    """Overlay an explicit bounded typed diff on the authoritative prior outcome DAG."""
+    prior_plan = _authoritative_continuation_plan(state)
+    if not prior_plan:
+        return _legacy_followup_write_outcome(state, tasks, intent), False
+
+    prior_tasks = _copy.deepcopy((prior_plan.get("tasks") or [])[:6])
+    directive = _continuation_outcome_directive(last_user_text(state))
+    if not directive:
+        return prior_tasks, False
+
+    remove = set(directive.get("remove") or [])
+    only = set(directive.get("only") or [])
+    change = set(directive.get("change") or []) - remove
+    projected = []
+    for task in prior_tasks:
+        effect = _task_outcome_effect(task)
+        if effect in remove or (only and effect not in only):
+            continue
+        projected.append(task)
+    changed = projected != prior_tasks
+
+    # A typed replacement updates exactly one matching prior outcome with exactly one matching
+    # current model task. Preserve the stable source id and dependency boundary; otherwise the
+    # mapping is ambiguous and that effect remains unchanged.
+    for effect in change:
+        prior_indexes = [index for index, task in enumerate(projected)
+                         if _task_outcome_effect(task) == effect]
+        replacements = [task for task in tasks[:6]
+                        if isinstance(task, dict) and _task_outcome_effect(task) == effect]
+        if len(prior_indexes) != 1 or len(replacements) != 1:
+            continue
+        index = prior_indexes[0]
+        old = projected[index]
+        replacement = _copy.deepcopy(replacements[0])
+        replacement["id"] = old.get("id")
+        replacement["depends_on"] = _copy.deepcopy(old.get("depends_on") or [])
+        replacement["write_intent"] = bool(old.get("write_intent") or
+                                             _is_write_outcome(replacement))
+        projected[index] = replacement
+        changed = changed or replacement != old
+
+    # ``Task만`` may explicitly replace a comment-only prior plan. Add one model-projected task
+    # only when the requested type and the current typed task are both unambiguous.
+    for effect in only:
+        if any(_task_outcome_effect(task) == effect for task in projected):
+            continue
+        replacements = [task for task in tasks[:6]
+                        if isinstance(task, dict) and _task_outcome_effect(task) == effect]
+        if len(replacements) == 1 and len(projected) < 6:
+            projected.append(_copy.deepcopy(replacements[0]))
+            changed = True
+
+    if not projected and (remove or only):
+        projected = [{
+            "id": "continuation-cancel", "kind": "respond",
+            "instruction": last_user_text(state), "depends_on": [],
+            "write_intent": False, "completion_criteria": ["취소된 산출물을 다시 실행하지 않는다"],
+        }]
+        changed = True
+
+    valid_ids = {str(task.get("id") or "") for task in projected if isinstance(task, dict)}
+    for task in projected:
+        if isinstance(task, dict):
+            task["depends_on"] = [str(value) for value in (task.get("depends_on") or [])
+                                  if str(value) in valid_ids and str(value) != str(task.get("id") or "")]
+    return projected[:6], changed
+
+
+def _preserve_followup_write_outcome(state: dict, tasks: list[dict], intent: str) -> list[dict]:
+    """Keep the prior DAG, except for a high-confidence typed outcome diff.
+
+    A reply such as ``Epic은 골라줘, 마감은 ...`` refines *how* to execute the
+    already-frozen creation request; it is not the requested artifact by itself.  Small
+    models repeatedly replaced the atomic write task with that control-only reply, so the
+    downstream requested-outcome contract no longer contained the object being created.  If
+    the prior typed plan exists, preserve its complete task DAG—including non-write outcomes
+    that a write depends on—rather than trying to remap a short answer semantically.  The
+    original single-write repair remains only for legacy states without a request plan.
+    """
+    return _project_followup_outcomes(state, tasks, intent)[0]
 
 
 _EPIC_SELECTION = _re.compile(
@@ -403,14 +682,31 @@ Classify what the user wants from the conversation, construct an atomic task pla
         return SCHEMA
 
     def apply(self, state, out):
-        intent = out.get("intent") or Intent.PLAN_WORK
+        prior_write_plan = _authoritative_continuation_plan(state)
+        fallback_intent = out.get("intent") or Intent.PLAN_WORK
         asked = last_user_text(state)
         kws = [k for k in (out.get("keywords") or []) if str(k).strip()]
-        planned_tasks = _compact_request_tasks(out, asked, intent)
+        current_tasks = _compact_request_tasks(out, asked, fallback_intent)
+        planned_tasks, outcomes_changed = _project_followup_outcomes(
+            state, current_tasks, fallback_intent)
+        if prior_write_plan and (not outcomes_changed
+                                 or any(_is_write_outcome(task) for task in planned_tasks)):
+            intent = _continuation_write_intent(state, fallback_intent)
+        elif prior_write_plan and outcomes_changed:
+            # Removing the last write is an acknowledgement turn, not a new draft mutation.
+            intent = (fallback_intent if fallback_intent not in Intent.DRAFTS_TICKETS
+                      else Intent.CHITCHAT)
+        else:
+            intent = fallback_intent
         grounded_request = "\n".join(part for part in (
             str(state.get("request_text") or "").strip(), asked.strip()) if part)
+        projected_goal = " · ".join(
+            str(task.get("instruction") or "").strip()
+            for task in planned_tasks if isinstance(task, dict) and task.get("instruction"))[:240]
         request_plan = _repair_delegated_selection_plan({
-            "goal": out.get("goal") or asked,
+            "goal": (projected_goal if prior_write_plan and outcomes_changed else
+                     (prior_write_plan.get("goal") if prior_write_plan else ""))
+                    or out.get("goal") or asked,
             "tasks": planned_tasks or [{
                 "id": "task-1", "kind": "query" if intent in Intent.NEEDS_RESEARCH else "respond",
                 "instruction": asked, "depends_on": [],
@@ -559,8 +855,14 @@ Classify what the user wants from the conversation, construct an atomic task pla
             prior = (state.get("questions") or []) or (state.get("interpretation") or "").strip() \
                 or ((state.get("draft") or {}).get("items") or []) \
                 or (state.get("situation") or "").strip()
-            follow_up = bool(prior) and (state.get("turns") or 0) > 0
-            if not follow_up or not (state.get("request_text") or "").strip():
+            # Session owns the turn boundary. Research/identity interviews can happen before
+            # WorkArchitect increments ``turns``, so that counter cannot decide whether the
+            # short answer replaces the frozen work request.
+            follow_up = bool(state.get("turn_continuation")) \
+                or (bool(prior) and (state.get("turns") or 0) > 0)
+            if follow_up and (state.get("request_text") or "").strip():
+                patch["request_text"] = str(state.get("request_text") or "").strip()
+            else:
                 patch["request_text"] = last_user_text(state)
         elif not (state.get("request_text") or "").strip():
             # ★ 조회 갈래에도 원 요청을 고정한다. 이 장치는 생성 갈래에만 걸려 있었는데,
@@ -578,25 +880,8 @@ Classify what the user wants from the conversation, construct an atomic task pla
         if is_meeting_request(state) and _meeting_request:
             patch["request_text"] = _meeting_request
 
-        # A multi-stage new build whose ticket shape is still open should not trigger Jira/web research
-        # merely to ask the same structure preference afterward. Ask that cheap, reversible choice first;
-        # the next turn keeps the original request and performs research for the selected shape. Delegated
-        # defaults and an explicitly named shape continue without an interview.
-        if intent == Intent.PLAN_WORK and not (state.get("turns") or 0) \
-                and not (state.get("situation") or "").strip() \
-                and not ((state.get("draft") or {}).get("items")):
-            from app.agent.workflow.agents.work_architect import (BUILD_WORDS, _said_defaults,
-                                                                  shape_hint)
-            original = str(patch.get("request_text") or _req)
-            if (any(word in original for word in BUILD_WORDS)
-                    and not shape_hint(state)[0] and not _said_defaults(state)):
-                patch["interpretation"] = (
-                    "신규 구축 요청의 티켓 구조를 먼저 확정한 뒤 관련 이력과 기술 근거를 조사하는 "
-                    "것으로 이해함")
-                patch["questions"] = [{
-                    "question": "여러 단계로 나뉠 수 있는 작업입니다. 어떤 티켓 구조로 진행할까요?",
-                    "kind": "choice", "field": "structure", "required_input": False,
-                    "why_required": "",
-                    "options": ["Task 하나 + 단계별 Sub-Task (권장)", "단일 Task로 구성"],
-                }]
+        # Ticket shape is an Agent-owned, reversible design choice.  Stopping before retrieval
+        # to ask that preference wasted a turn and prevented internal history from answering more
+        # important technical gaps.  Research first; WorkArchitect may interview only for a
+        # user-owned fact that still blocks a truthful payload after the evidence is available.
         return patch
