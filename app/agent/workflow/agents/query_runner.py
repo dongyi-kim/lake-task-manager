@@ -196,6 +196,13 @@ class QueryRunner:
     def _run(self, state):
         from app.agent import tools as T
         from app.agent.tools.query_tools import execute_jql_all
+        from app.agent.workflow.agents.query_specialist import \
+            _reject_unsupported_relational_plan
+
+        # Persisted/manual plans bypass QuerySpecialist.apply. Reject unsupported relational
+        # contracts here too; silently running them independently would return plausible but
+        # semantically wrong evidence.
+        _reject_unsupported_relational_plan(state.get("query_plan") or {})
 
         results, artifacts = [], {}
         # 이 유형은 LLM이 만든 단일 JQL만으로 끝낼 수 없다. 제목 검색 결과에서 parent를

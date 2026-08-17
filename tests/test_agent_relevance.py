@@ -58,7 +58,7 @@ def test_related_research_with_explicit_missing_implementation_is_not_a_duplicat
     assert got["already_exists"] is False
 
 
-def test_direct_same_deliverable_can_still_raise_duplicate_guard():
+def test_model_direct_fitness_without_exact_query_proof_cannot_raise_duplicate_guard():
     state = {"request_text": "Iceberg Puffin NDV Batch Job을 구현해줘"}
     evidence = [{
         "key": "DL-9204", "title": "[ETL] Iceberg Puffin NDV Batch Job 구현",
@@ -69,7 +69,8 @@ def test_direct_same_deliverable_can_still_raise_duplicate_guard():
         "already_exists": True,
     })
 
-    assert got["already_exists"] is True
+    assert got["already_exists"] is False
+    assert "입증되지" in got["situation"] and "동일 구현 진행 중" not in got["situation"]
 
 
 def test_similarity_requires_a_discriminating_request_term():

@@ -18,13 +18,18 @@
 
 from __future__ import annotations
 
+import json
 import re as _re
+from html import unescape
 
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.agents.work_architect import as_bulk_items, draft_full_text
 from app.agent.prompts.roles import SYSTEM_AUDITOR
+from app.agent.workflow.anchors import (
+    requested_outcome_contract, validate_draft_outcome_contract,
+)
 from app.agent.workflow.prompts import data_block, persona, wrap_data
-from app.agent.workflow.state import AgentState, Node, note, request_text
+from app.agent.workflow.state import AgentState, Node, last_user_text, note, request_text
 
 SCHEMA = {
     "type": "object",
@@ -65,7 +70,9 @@ class Auditor(StructuredAgent):
             draft = state.get("draft") or {}
             items = draft.get("items") or []
             literal_recovery = draft.get("construction") == "literal_delegated"
-            small = ((len(items) == 1 and not (items[0].get("children"))
+            outcome_contract = requested_outcome_contract(state)
+            small = (not outcome_contract and
+                     ((len(items) == 1 and not (items[0].get("children"))
                      and (draft.get("mode") or "task") != "epic"
                      # ★ 주제 이탈·확인 필요 경고가 붙은 초안은 우회하지 않는다 —
                      #   작아 보여도 '틀린 작음'일 수 있다(실측: 뭉개진 단일 Task).
@@ -73,7 +80,7 @@ class Auditor(StructuredAgent):
                      and "확인 필요" not in (draft.get("rationale") or ""))
                      # Literal recovery is already built and partitioned by deterministic
                      # code. A second semantic audit only rephrased editorial preferences.
-                     or literal_recovery)
+                     or literal_recovery))
             if small:
                 auto = _machine_check(state)
                 # 완료 조건(DoD)이 없으면 작아도 통과시키지 않는다 — 우회하면 apply 의
@@ -98,12 +105,15 @@ class Auditor(StructuredAgent):
     def task(self, state):
         auto = _machine_check(state)
         rules = _rules_for(state)
+        grounding = _audit_grounding_contract(state)
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')}"
                        for e in (state.get("evidence") or []))
         # 담당자 제안은 여기 없다 — PeopleAdvisor 와 병렬로 돌기 때문. 근거 없는 배정은
         # merge_assignments 의 코드 가드가 걸러내므로 검열 대상에서 뺀다.
         data = wrap_data(
             data_block("Deterministic Validation Results (Authoritative)", auto["text"]),
+            data_block("Authoritative Request and Draft State Contract",
+                       json.dumps(grounding, ensure_ascii=False, default=str)),
             data_block("Applicable Authoring Rules", rules),
             data_block("Tickets Present in Verified Research", ev))
         return f"""\
@@ -114,12 +124,16 @@ Audit the complete ticket draft before it is shown to the user.
 ## Constraints
 
 - Do not repeat defects already found by deterministic validation. Inspect only semantic problems code cannot decide.
+- Treat the authoritative request/draft state contract as facts. A populated field is not missing.
+- `parent_action=select_existing` means select/link an existing Epic, never create a new Epic.
 - Assignment is validated separately; an empty assignee is not an audit defect.
 - Put only execution-blocking policy, grounding, or request-coverage failures in `problems`. Editorial suggestions for a better sentence, title, or DoD are not blocking.
 - Preserve a Task/Sub-Task structure explicitly supplied or previously approved by the user.
 - A Task-tier `Bug` is valid with the Korean sections `재현 경로`, `기대 동작`, and `실제 동작`; do not require generic Task background or DoD as well.
 - A title need not end in a verb. An intentional top-level Task or Story without an Epic is valid.
 - Reuse of one verified reference across multiple payload items is not blocking when it supports each item.
+- Treat `requested_outcome_contract` as an authoritative literal result contract. For every `outcome_ref`, compare its exact instruction with the item's title, scope, and DoD. Evidence may refine implementation method or constraints, but omission or replacement of the requested action/object—including an opposite action—is a blocking `request` problem. Never repair it by inventing intent.
+- Audit every child in the authoritative contract too. `applicable_outcome_refs` is explicit when the child maps to another requested outcome and otherwise inherited from its parent. A legitimate design, implementation, validation, or rollout stage need not repeat the parent's action verb; block only a child that replaces/reverses the applicable requested result or introduces an unrelated deliverable.
 - Write `message`, `fix`, and `summary` in Korean.
 
 ## Original User Request
@@ -170,6 +184,8 @@ The draft must preserve this subject; subject drift is a blocking request-covera
         if ok and advice:
             summary = (f"정책·근거 검증 통과. 편집 제안 {len(advice)}건은 "
                        "비차단 참고로 남겼다.")
+        elif ok and raw_problems and not problems:
+            summary = "권위 상태와 모순된 모델 지적을 제외하고 정책·근거 검증 통과."
         review = {"ok": ok, "checks": checks, "problems": problems,
                   "errors": auto["errors"],
                   "warnings": auto["warnings"] + advisory_warnings,
@@ -197,9 +213,18 @@ def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, 
                       or bool(state.get("structure_ok"))
                       or "이 구조로 진행" in req
                       or any(w in req for w in ("단계별 Sub-Task", "사람 나눠서")))
-    blocking, advice = [], []
+    blocking, advice, seen = [], [], set()
     for problem in problems:
+        if _problem_contradicts_authoritative_state(state, problem):
+            continue
         msg = str(problem.get("message") or "")
+        raw_index = problem.get("index", -1)
+        fingerprint = (str(problem.get("check") or ""),
+                       int(raw_index) if isinstance(raw_index, int) else -1,
+                       " ".join(msg.casefold().split()))
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
         advisory = False
         if has_bug and any(w in msg for w in ("배경", "완료 조건", "DoD")):
             advisory = True
@@ -222,25 +247,193 @@ def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, 
     return blocking, advice
 
 
+def _request_parent_action(state: AgentState) -> str:
+    """Classify only explicit Epic relationship language; never infer from a plan."""
+    said = (request_text(state) + "\n" + last_user_text(state)).strip()
+    # RequestArchitect already owns the exact distinction, including the important
+    # "choose one; create only if none exists" fallback. Reuse it so audit cannot silently
+    # reinterpret a fallback-create request as selection-only.
+    try:
+        from app.agent.workflow.agents.request_architect import (
+            _EPIC_CREATION, _FALLBACK_CREATION, _selection_is_not_creation,
+        )
+        selection_only = _selection_is_not_creation(said)
+        create = bool(_EPIC_CREATION.search(said) or _FALLBACK_CREATION.search(said))
+    except Exception:
+        selection_only = bool(_re.search(
+            r"(?:Epic|에픽)[^.!?\n]{0,32}(?:골라|선택|찾아|정해|붙여|연결)",
+            said, _re.I,
+        ))
+        create = bool(_re.search(
+            r"(?:Epic|에픽)[^.!?\n]{0,24}(?:생성|만들)|"
+            r"(?:생성|만들)[^.!?\n]{0,24}(?:Epic|에픽)", said, _re.I,
+        ))
+    if selection_only:
+        return "select_existing"
+    if create:
+        return "create_new"
+    if _re.search(r"\b[A-Z][A-Z0-9]*-\d+\b", said, _re.I) \
+            and _re.search(r"Epic|에픽|상위|아래|밑에", said, _re.I):
+        return "use_explicit_existing"
+    return "unspecified"
+
+
+def _draft_asserts_new_epic_creation(draft: dict) -> bool:
+    """Detect an authored new-Epic action anywhere in the pending draft.
+
+    ``mode=task`` only proves the payload's current root type; it does not prove that the
+    title/body/rationale obeys a select-existing request.  In particular, treating that
+    typed mode as compliance caused the Auditor to discard a correct finding about prose
+    that promised a new Epic.  Inspect all authored draft text and children before allowing
+    any request-intent contradiction filter to suppress a finding.
+    """
+    values = [str((draft or {}).get("rationale") or "")]
+
+    def collect(item: dict) -> None:
+        values.extend(str(item.get(key) or "") for key in ("summary", "description"))
+        for child in item.get("children") or []:
+            if isinstance(child, dict):
+                collect(child)
+
+    for item in (draft or {}).get("items") or []:
+        if isinstance(item, dict):
+            collect(item)
+    text = "\n".join(values)
+    # HTML block boundaries and sentence boundaries keep a nearby negation from masking a
+    # different positive statement elsewhere in the draft.
+    segments = _re.split(r"(?:</(?:p|li|h[1-6])>|[.!?\n])", text, flags=_re.I)
+    creation = _re.compile(
+        r"(?:새(?:로운)?\s*)?(?:Epic|에픽).{0,36}(?:생성|만들|create|make)"
+        r"|(?:생성|만들|create|make).{0,36}(?:새(?:로운)?\s*)?(?:Epic|에픽)",
+        _re.I,
+    )
+    negated = _re.compile(
+        r"(?:생성|만들)(?:지\s*않|지\s*말|지\s*않기로|\s*안\s*|\s*금지|\s*제외|\s*보류)"
+        r"|(?:do\s+not|don't|not|never|without)\s+(?:create|make)",
+        _re.I,
+    )
+    return any(creation.search(segment) and not negated.search(segment)
+               for segment in segments)
+
+
+def _audit_grounding_contract(state: AgentState) -> dict:
+    """Minimal typed facts that semantic audit may not reinterpret."""
+    draft = state.get("draft") or {}
+    rows = []
+
+    def compact_body(value: str) -> str:
+        plain = unescape(_re.sub(r"<[^>]+>", " ", str(value or "")))
+        return " ".join(plain.split())[:700]
+
+    for index, item in enumerate(draft.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        parent_refs = [str(value) for value in (item.get("outcome_refs") or [])
+                       if str(value)]
+        children = []
+        for child_index, child in enumerate(item.get("children") or []):
+            if not isinstance(child, dict):
+                continue
+            explicit_refs = [str(value) for value in (child.get("outcome_refs") or [])
+                             if str(value)]
+            children.append({
+                "index": child_index,
+                "type": str(child.get("type") or child.get("issue_type") or "Sub-Task"),
+                "summary": str(child.get("summary") or ""),
+                "scope_and_dod": compact_body(child.get("description") or ""),
+                "outcome_refs": explicit_refs,
+                "applicable_outcome_refs": explicit_refs or parent_refs,
+                "outcome_binding_source": ("explicit" if explicit_refs
+                                           else "inherited_from_parent"),
+            })
+        rows.append({
+            "index": index,
+            "type": str(item.get("type") or item.get("issue_type") or ""),
+            "summary": str(item.get("summary") or ""),
+            "epic": str(item.get("epic") or ""),
+            "parent": str(item.get("parent") or ""),
+            "duedate": str(item.get("duedate") or ""),
+            "assignee": str(item.get("assignee") or ""),
+            "outcome_refs": parent_refs,
+            "child_count": len(children),
+            "children": children,
+        })
+    typed_epic = (str(draft.get("mode") or "task").casefold() == "epic"
+                  or any(row["type"].casefold() == "epic" for row in rows))
+    textual_epic = _draft_asserts_new_epic_creation(draft)
+    return {
+        "parent_action": _request_parent_action(state),
+        "draft_mode": str(draft.get("mode") or "task"),
+        "draft_creates_epic": typed_epic or textual_epic,
+        "draft_asserts_new_epic_creation": textual_epic,
+        "requested_outcome_contract": requested_outcome_contract(state),
+        "draft_outcome_contract_id": str(draft.get("outcome_contract_id") or ""),
+        "items": rows,
+    }
+
+
+def _problem_contradicts_authoritative_state(state: AgentState, problem: dict) -> bool:
+    """Drop a semantic finding only when request *and complete draft* disprove it.
+
+    Request intent is an audit rule, never evidence that the draft complied with the rule.
+    """
+    facts = _audit_grounding_contract(state)
+    text = " ".join(str(problem.get(key) or "") for key in ("message", "fix"))
+    folded = " ".join(text.casefold().split())
+    if (facts["parent_action"] == "select_existing"
+            and not facts["draft_creates_epic"]
+            and ("epic" in folded or "에픽" in folded)
+            and any(word in folded for word in ("생성", "만들", "create"))):
+        return True
+
+    rows = facts["items"]
+    index = problem.get("index", -1)
+    has_exact_scope = isinstance(index, int) and 0 <= index < len(rows)
+    scoped = [rows[index]] if has_exact_scope else rows
+
+    def populated(predicate) -> bool:
+        """A global missing claim is disproved only when every root has the field."""
+        values = [bool(predicate(row)) for row in scoped]
+        return bool(values) and (values[0] if has_exact_scope else all(values))
+
+    missing_claim = any(word in folded for word in (
+        "없", "누락", "비어", "명시되어 있지", "설정되지", "not present", "missing",
+    ))
+    if missing_claim and any(word in folded for word in ("마감", "기한", "due")) \
+            and populated(lambda row: row.get("duedate")):
+        return True
+    if missing_claim and ("epic" in folded or "에픽" in folded or "상위" in folded) \
+            and populated(lambda row: row.get("epic") or row.get("parent")):
+        return True
+    if missing_claim and any(word in folded for word in ("제목", "summary", "요약")) \
+            and populated(lambda row: row.get("summary")):
+        return True
+    return False
+
+
 def _machine_check(state: AgentState) -> dict:
     """`domain/bulk.validate_bulk` — 화면의 Bulk 생성과 **같은 규칙**. LLM 을 거치지 않는다."""
     draft = state.get("draft") or {}
     items = as_bulk_items(draft)
+    contract_errors = validate_draft_outcome_contract(state, draft)
     if not items:
-        return {"ok": False, "errors": [], "warnings": [], "text": "초안이 비어 있다."}
+        return {"ok": False, "errors": contract_errors, "warnings": [],
+                "text": "초안이 비어 있다."}
     # Epic 은 Bulk 규칙(validate_bulk)의 대상이 아니다 — 요약만 확인하고 통과.
     # (Epic Link·타입·SP 규칙은 전부 자식 티켓 이야기다.)
     if (draft.get("mode") or "task") == "epic":
         ok = bool((items[0].get("summary") or "").strip())
-        return {"ok": ok, "errors": [] if ok else [{"index": 0, "field": "summary",
-                                                    "message": "Epic 요약이 비었다"}],
+        errors = ([] if ok else [{"index": 0, "field": "summary",
+                                  "message": "Epic 요약이 비었다"}]) + contract_errors
+        return {"ok": ok and not contract_errors, "errors": errors,
                 "warnings": [], "text": "Epic 초안 — 기계 검증 대상 아님(요약 확인만)."}
     try:
         from app.agent.tools._ctx import client
         from app.domain.bulk import validate_bulk
         r = validate_bulk(draft.get("mode") or "task", items, client().bulk_lookup())
     except Exception as e:
-        return {"ok": False, "errors": [{"message": str(e)[:200]}], "warnings": [],
+        return {"ok": False, "errors": [{"message": str(e)[:200]}] + contract_errors,
+                "warnings": [],
                 "text": f"검증을 수행하지 못했다: {str(e)[:200]}"}
     warnings = list(r.get("warnings") or [])
     # ★ 본문 접지 — 챗 답변에만 걸던 grounding 을 **티켓 본문에도** 건다. 없는 키·틀린
@@ -276,10 +469,11 @@ def _machine_check(state: AgentState) -> dict:
             warnings.append({"index": i, "message":
                              "완료 조건(DoD)이 없다 — 무엇을 만족하면 끝인지 적어야 한다"})
 
+    errors = list(r.get("errors") or []) + contract_errors
     lines = [f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
-             for e in (r.get("errors") or [])]
+             for e in errors]
     lines += [f"- (경고) [{w.get('index')}] {w.get('message')}" for w in warnings]
-    return {"ok": bool(r.get("ok")), "errors": r.get("errors") or [],
+    return {"ok": bool(r.get("ok")) and not contract_errors, "errors": errors,
             "warnings": warnings,
             "text": "\n".join(lines) if lines else "통과 — 형식·실값 오류 없음"}
 

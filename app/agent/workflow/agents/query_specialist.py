@@ -7,7 +7,7 @@ import re
 
 from app.agent.prompts.roles import SYSTEM_QUERY_SPECIALIST
 from app.agent.workflow.agents.base import StructuredAgent
-from app.agent.workflow.contracts import QueryPlan
+from app.agent.workflow.contracts import CompactQueryPlan, QueryPlan
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
                                       last_user_text, note, request_text)
@@ -47,6 +47,21 @@ _QUERY_IDENTITY_NOISE = {
     "official", "documentation", "document", "docs", "confluence", "wiki",
     "jira", "ticket", "tickets", "comment", "comments", "marker",
 }
+
+_CREATION_CONTROL_WORDS = {
+    "epic", "task", "ticket", "issue", "story", "feature", "improvement",
+    "create", "make", "add", "select", "choose", "proceed", "request", "please",
+    "에픽", "태스크", "티켓", "작업", "이슈", "스토리", "피처", "임프로브먼트",
+    "생성", "추가", "선택", "진행", "요청", "부탁", "알아서", "신규", "새로",
+    "범위", "마감", "최소", "기능", "하나", "한개", "네가", "제가", "우리가",
+    "위한", "위해",
+}
+
+_CREATION_CONTROL_PATTERN = re.compile(
+    r"^(?:만들|골라|고르|정해|진행해|부탁해|요청해|생성해|추가해|선택해|"
+    r"해야|해주세요|해줘|해주|바랍니다)(?:[가-힣]*)$",
+    re.I,
+)
 
 
 def _known_user_tokens() -> set[str]:
@@ -434,6 +449,230 @@ def _normalize_meeting_research_queries(state, plan: dict) -> None:
             })
 
 
+def _creation_subject_terms(state, limit: int = 5) -> list[str]:
+    """Compile the duplicate-search subject from user-authored text.
+
+    Request Architect keywords are useful hints but are model-authored and can contain a
+    control decision such as ``Epic 생성`` even when the user said to select an existing
+    Epic. The frozen original request is therefore the authority. We strip conversational
+    control/hierarchy words while preserving domain actions such as ``전환`` or ``구축``;
+    those actions can distinguish an implementation ticket from a research ticket.
+    """
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def normalize_token(raw: str, *, keyword_phrase: bool = False) -> str:
+        value = str(raw or "").strip().strip(".,;:!?…()[]{}\"'`")
+        if not value:
+            return ""
+        # Korean particles and connective endings are grammar, not search subjects.
+        for suffix in ("으로부터", "에서는", "으로", "에서", "에게", "까지", "부터",
+                       "하는", "하며", "하고", "해서", "해야해", "해야", "해주세요",
+                       "해줘", "해", "로", "을", "를", "은", "는", "이", "가", "의", "에"):
+            if value.endswith(suffix) and len(value) - len(suffix) >= 2:
+                value = value[:-len(suffix)]
+                break
+        folded = value.casefold()
+        if (not value or folded in _CREATION_CONTROL_WORDS
+                or _CREATION_CONTROL_PATTERN.fullmatch(value)
+                or re.fullmatch(r"\d+(?:차|개|건)?|\d{4}-\d{2}-\d{2}", value)):
+            return ""
+        return value
+
+    def keyword_token_set() -> set[str]:
+        hinted: set[str] = set()
+        for phrase in state.get("keywords") or []:
+            tokens = re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+", str(phrase))
+            for token in tokens:
+                value = normalize_token(token, keyword_phrase=len(tokens) > 1)
+                if value:
+                    hinted.add(value.casefold())
+        return hinted
+
+    literal = request_text(state) or last_user_text(state)
+    hinted = keyword_token_set()
+    candidates = []
+    for index, token in enumerate(re.findall(
+            r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+|\d{4}-\d{2}-\d{2}", literal)):
+        value = normalize_token(token)
+        if not value or value.casefold() in seen:
+            continue
+        seen.add(value.casefold())
+        # Model keywords never introduce text, but overlap with the literal request is a
+        # useful semantic rank. Public/technical identifiers are next. Conversational
+        # lead-ins therefore cannot consume the five-term budget before the actual subject.
+        internal = value.casefold() in _INTERNAL_LATIN
+        is_technical = bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", value)) \
+            and not internal
+        priority = (0 if value.casefold() in hinted else
+                    1 if is_technical else 3 if internal else 2)
+        candidates.append((priority, index, value))
+
+    anchors = [index for priority, index, _value in candidates if priority <= 1]
+    if anchors:
+        first_anchor = min(anchors)
+        # Free-form requests often start with an arbitrarily long conversational clause.
+        # Content after the first verified keyword/technical anchor is more likely to finish
+        # that subject; pre-anchor prose remains available only when the budget has room.
+        candidates = [
+            (4 if priority == 2 and index < first_anchor else priority, index, value)
+            for priority, index, value in candidates
+        ]
+
+    # Choose by semantic priority, then restore literal order so the search remains a
+    # recognizable excerpt of what the user actually said.
+    selected = sorted(sorted(candidates, key=lambda row: (row[0], row[1]))[:limit],
+                      key=lambda row: row[1])
+    terms = [value for _priority, _index, value in selected]
+
+    # Only supplement a sparse literal subject. This is deliberately lower precedence:
+    # keywords are semantic hints generated by a model, not an authority for user intent.
+    if len(terms) < 2:
+        for phrase in state.get("keywords") or []:
+            tokens = re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+", str(phrase))
+            for token in tokens:
+                value = normalize_token(token, keyword_phrase=len(tokens) > 1)
+                if value and value.casefold() not in seen:
+                    seen.add(value.casefold())
+                    terms.append(value)
+                if len(terms) >= limit:
+                    return terms
+    return terms
+
+
+def _compile_compact_query_plan(out: dict) -> dict:
+    """Expand the model's compact retrieval AST into the runtime QueryPlan contract."""
+    compact = CompactQueryPlan.model_validate(out)
+    page_sizes = {"web": 5, "github": 5, "comments": 25}
+    queries = []
+    for index, read in enumerate(compact.reads, 1):
+        queries.append({
+            "id": f"read-{index}-{read.source}",
+            "source": read.source,
+            "query": read.subject.strip(),
+            "where": read.where.strip(),
+            "order_by": "updated DESC",
+            "fields": [],
+            "completeness": "all" if read.exhaustive else "page",
+            "page_size": page_sizes.get(read.source, 50),
+            "depends_on": [],
+        })
+    return QueryPlan(
+        queries=queries, joins=[], uncertainty=compact.uncertainty,
+    ).model_dump()
+
+
+def _compact_request_context(state) -> dict:
+    """Project only authoritative retrieval inputs; omit verbose/stale conversation."""
+    request = request_text(state)
+    latest = last_user_text(state)
+    tasks = []
+    for task in (state.get("request_plan") or {}).get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        tasks.append({
+            "kind": str(task.get("kind") or ""),
+            "instruction": str(task.get("instruction") or "")[:500],
+            "criteria": [str(value)[:240]
+                         for value in (task.get("completion_criteria") or [])[:4]],
+        })
+        if len(tasks) >= 8:
+            break
+    return {
+        "request_excerpt": _bounded_retrieval_excerpt(request, 1800),
+        "latest_user_excerpt": (_bounded_retrieval_excerpt(latest, 900)
+                                if latest and latest != request else ""),
+        "literal_anchors": _retrieval_anchors(f"{request}\n{latest}"),
+        "tasks": tasks,
+        "keywords": [str(value)[:120] for value in (state.get("keywords") or [])[:12]],
+        "ticket_keys": [str(value) for value in (state.get("mentioned_keys") or [])[:20]],
+    }
+
+
+def _bounded_retrieval_excerpt(text: str, limit: int) -> str:
+    """Bound verbose minutes/attachments while retaining both request and final instruction."""
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    head = limit * 3 // 5
+    tail = limit - head
+    omitted = len(value) - limit
+    return f"{value[:head]}\n[… {omitted} chars omitted; see atomic tasks/anchors …]\n{value[-tail:]}"
+
+
+def _retrieval_anchors(text: str, limit: int = 48) -> list[str]:
+    """Extract exact identifiers from the full text, including material outside excerpts."""
+    found, seen = [], set()
+    # Scan strict identifiers first across the entire input. Otherwise dozens of ordinary
+    # English words near the beginning of a long attachment could consume the cap before a
+    # ticket key or table identifier near the middle.
+    patterns = (
+        re.compile(
+            r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
+            r"(?<![A-Za-z0-9_.])(?:skcc\.)?[a-z]\d{3,}(?![A-Za-z0-9_])|"
+            r"(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z0-9]*(?:[_.+-][A-Za-z0-9]+)+(?![A-Za-z0-9_.])",
+            re.I,
+        ),
+        re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]{2,}\b"),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(str(text or "")):
+            value = match.group(0).strip(".,;:!?()[]{}")
+            folded = value.casefold()
+            if not value or folded in seen or folded in _INTERNAL_LATIN:
+                continue
+            seen.add(folded)
+            found.append(value)
+            if len(found) >= limit:
+                return found
+    return found
+
+
+def _reject_unsupported_relational_plan(plan: dict) -> None:
+    """Fail loudly instead of pretending QueryRunner performs cross-read substitution."""
+    joins = [value for value in (plan.get("joins") or []) if str(value).strip()]
+    dependent = [str(row.get("id") or "<unnamed>")
+                 for row in (plan.get("queries") or []) if row.get("depends_on")]
+    if joins or dependent:
+        raise ValueError(
+            "QueryPlan dependencies/joins are unsupported; compile independent reads or add "
+            f"a deterministic domain service (depends_on={dependent}, joins={joins})"
+        )
+
+
+def _deterministic_plan_retrieval(state) -> bool:
+    """Whether a write plan needs only compiler-owned prerequisite retrieval.
+
+    Work Architect's recovery intentionally refuses some complex drafts. Query planning
+    has a narrower decision: a write-only RequestPlan always needs the same scoped Jira
+    duplicate/target read plus any privacy-safe external lookup. It does not need a model
+    to paraphrase that requirement. Explicit research/query/analyze tasks keep the semantic
+    path because they may require additional sources or distinct filters.
+    """
+    if (state.get("intent") or "") != Intent.PLAN_WORK:
+        return False
+    try:
+        from app.agent.workflow.meeting_context import is_meeting_request
+        if is_meeting_request(state):
+            return False
+    except Exception:
+        return False
+
+    try:
+        from app.agent.workflow.agents.work_architect import _recover_delegated_creation
+        if _recover_delegated_creation(state):
+            return True
+    except Exception:
+        pass
+
+    tasks = [task for task in (state.get("request_plan") or {}).get("tasks") or []
+             if isinstance(task, dict)]
+    if not tasks or not any(bool(task.get("write_intent")) for task in tasks):
+        return False
+    semantic_read_kinds = {"query", "research", "analyze"}
+    return not any(str(task.get("kind") or "") in semantic_read_kinds for task in tasks)
+
+
 def _ensure_creation_duplicate_query(state, plan: dict) -> None:
     """Every create plan checks scoped Jira history before proposing a new ticket.
 
@@ -464,28 +703,7 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
         str(key).upper() for key in (state.get("mentioned_keys") or [])
         if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).upper())
     ]
-    ignored = {
-        "작업", "티켓", "생성", "추가", "신규", "만들자", "만들어", "요청",
-        "기능", "개선", "알아서", "task", "ticket", "create", "issue",
-    }
-    terms = []
-    def collect(material) -> None:
-        for value in material:
-            clean = re.sub(r"[\"'`]+", "", str(value)).strip()
-            if not clean or clean.casefold() in ignored or clean.casefold() in _INTERNAL_LATIN:
-                continue
-            if clean.casefold() not in {term.casefold() for term in terms}:
-                terms.append(clean)
-
-    collect(state.get("keywords") or [])
-    # Request Architect can return only a module keyword such as ``ETL``.  It is present
-    # but intentionally filtered above, so ``if not material`` is insufficient: retry from
-    # the literal request when no searchable subject survived the privacy/noise filter.
-    if not terms:
-        collect(re.findall(
-            r"[A-Za-z][A-Za-z0-9_.+-]{2,}|[가-힣]{2,}",
-            request_text(state) or last_user_text(state),
-        ))
+    terms = _creation_subject_terms(state)
     if not terms and not explicit_keys:
         return
     where = "key in (" + ", ".join(explicit_keys) + ")" if explicit_keys else ""
@@ -516,25 +734,15 @@ class QuerySpecialist(StructuredAgent):
             # then spent a second call trying to repair the truncated JSON. Reuse the same
             # scope/pagination normalizer below so this fast path changes neither search
             # coverage nor project scoping.
-            if (state.get("intent") or "") == Intent.PLAN_WORK \
-                    and not _external_research_allowed(state):
-                try:
-                    from app.agent.workflow.agents.work_architect import \
-                        _recover_delegated_creation
-                    from app.agent.workflow.meeting_context import is_meeting_request
-                    deterministic = (not is_meeting_request(state)
-                                     and bool(_recover_delegated_creation(state)))
-                except Exception:
-                    deterministic = False
-                if deterministic:
-                    result = self.apply(state, {
-                        "queries": [], "joins": [], "uncertainty": [],
-                    })
-                    result["trace"] = note(
-                        state, self.name,
-                        f"결정적 중복 조회 {len((result.get('query_plan') or {}).get('queries') or [])}개 설계",
-                    )
-                    return result
+            if _deterministic_plan_retrieval(state):
+                result = self.apply(state, {
+                    "queries": [], "joins": [], "uncertainty": [],
+                })
+                result["trace"] = note(
+                    state, self.name,
+                    f"결정적 선행 조회 {len((result.get('query_plan') or {}).get('queries') or [])}개 설계",
+                )
+                return result
             return model_node(state)
 
         return run
@@ -543,20 +751,31 @@ class QuerySpecialist(StructuredAgent):
         return persona(state, SYSTEM_QUERY_SPECIALIST, lite=True)
 
     def task(self, state):
+        context = json.dumps(
+            _compact_request_context(state), ensure_ascii=False, separators=(",", ":"))
         return (
-            "# Task\n\nConvert Request Architect's plan into an executable QueryPlan. "
-            "Do not answer the user or recommend an action.\n\n"
-            "## Request Plan Data\n\n" + json.dumps(state.get("request_plan") or {}, ensure_ascii=False)
-            + "\n\n## Retrieval Keywords\n\n" + json.dumps(state.get("keywords") or [], ensure_ascii=False)
-            + "\n\n## Explicit Ticket Keys\n\n" + json.dumps(state.get("mentioned_keys") or [], ensure_ascii=False)
-            + "\n\n## Recent Conversation Data\n\n" + conversation(state)
+            "# Task\n\nReturn a compact retrieval AST, not an answer or action. "
+            "Each read contains only source, literal search subject, structural where, and "
+            "whether every page is required. Preserve the user's subject exactly. Never put "
+            "ticket creation, update, selection, or workflow instructions in `subject`; those "
+            "describe the requested action, not evidence to retrieve. Use at most 8 reads; "
+            "keep every subject, where, and uncertainty string within 240 characters.\n\n"
+            "## Authoritative Retrieval Context\n\n" + context
         )
 
     def schema(self):
-        return QueryPlan.model_json_schema()
+        return CompactQueryPlan.model_json_schema()
 
     def apply(self, state, out):
-        plan = QueryPlan.model_validate(out).model_dump()
+        # Direct callers and persisted fixtures may still pass the historical runtime
+        # QueryPlan. Model transport always uses the compact schema above; accepting the
+        # old shape here keeps OpenAI/native callers and stored state migration-safe.
+        plan = (_compile_compact_query_plan(out)
+                if isinstance(out, dict) and "reads" in out
+                else QueryPlan.model_validate(out).model_dump())
+        # Validate the contract before normalization can prune a missing dependency and make
+        # an unsupported relational plan appear independent.
+        _reject_unsupported_relational_plan(plan)
         # Source coverage is a user contract, not a model preference.
         _ensure_creation_duplicate_query(state, plan)
         _ensure_explicit_comment_query(state, plan)
@@ -646,4 +865,7 @@ __all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_qu
            "_normalize_meeting_research_queries",
            "_known_user_tokens", "_strip_known_user_tokens", "_jira_query_is_only_people",
            "_normalize_model_jira_query", "_normalize_query_fields",
-           "_dedupe_equivalent_queries", "_ensure_creation_duplicate_query"]
+           "_dedupe_equivalent_queries", "_ensure_creation_duplicate_query",
+           "_creation_subject_terms", "_compile_compact_query_plan",
+           "_compact_request_context", "_bounded_retrieval_excerpt", "_retrieval_anchors",
+           "_reject_unsupported_relational_plan", "_deterministic_plan_retrieval"]

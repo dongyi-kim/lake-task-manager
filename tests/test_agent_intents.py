@@ -336,6 +336,85 @@ def test_request_plan_keeps_genuinely_compound_user_outcomes():
     assert got["request_plan"]["tasks"] == model_tasks
 
 
+def test_request_plan_keeps_existing_epic_selection_and_drops_invented_literals():
+    """Selection delegation cannot become Epic creation; hard facts stay user-grounded."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    original = "Puffin NDV 통계 파이프라인을 개발해야 해"
+    followup = "Epic은 네가 골라줘. 2026-09-30까지 최소 기능 1차 구현. 알아서"
+    got = RequestArchitect().apply({
+        "messages": [HumanMessage(content=followup)],
+        "request_text": original,
+        "questions": [{"field": "structure"}],
+        "turns": 1,
+    }, {
+        "intent": Intent.PLAN_WORK,
+        "keywords": ["Puffin NDV"],
+        "goal": "Puffin NDV 파이프라인 Epic 생성",
+        "tasks": [{
+            "id": "t1", "kind": "query", "instruction": "Epic 생성을 위한 구조 확인",
+            "depends_on": [], "write_intent": False,
+            "completion_criteria": ["Epic 생성 티켓이 생성됨", "2026-09-30 적용"],
+        }],
+        "blocking_questions": ["Epic 생성 전에 세부 기술을 알려주세요"],
+        "assumptions": [
+            "마감일 2026-09-30은 월요일로 가정합니다.",
+            "내부 검토일은 2026-09-28로 가정합니다.",
+        ],
+    })
+
+    plan = got["request_plan"]
+    rendered = str(plan)
+    assert "Epic 생성" not in rendered
+    assert "기존 Epic 선택" in rendered
+    assert plan["tasks"][0]["kind"] == "plan"
+    assert plan["tasks"][0]["write_intent"] is True
+    assert plan["tasks"][0]["instruction"] == followup
+    assert "2026-09-28" not in rendered and "월요일" not in rendered
+
+
+def test_request_plan_preserves_an_explicit_new_epic_creation():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    text = "데이터 품질 관리 Epic을 새로 만들어줘"
+    got = RequestArchitect().apply({"messages": [HumanMessage(content=text)]}, {
+        "intent": Intent.PLAN_WORK,
+        "keywords": ["데이터 품질"],
+        "goal": "데이터 품질 관리 Epic 생성",
+        "tasks": [{
+            "id": "t1", "kind": "ticket", "instruction": "Epic 생성",
+            "depends_on": [], "write_intent": True,
+            "completion_criteria": ["Epic 생성"],
+        }],
+    })
+
+    assert "Epic 생성" in str(got["request_plan"])
+
+
+def test_request_plan_preserves_create_if_no_existing_epic_fallback():
+    """Existing-first selection and explicit fallback creation are both user outcomes."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    text = "관련 Epic은 네가 골라줘. 적합한 게 없으면 새로 만들어줘"
+    got = RequestArchitect().apply({"messages": [HumanMessage(content=text)]}, {
+        "intent": Intent.PLAN_WORK,
+        "keywords": ["관련 Epic"],
+        "goal": "기존 Epic을 선택하고 없으면 Epic 생성",
+        "tasks": [{
+            "id": "t1", "kind": "plan", "instruction": text,
+            "depends_on": [], "write_intent": True,
+            "completion_criteria": ["기존 Epic을 우선 선택하고 없으면 새 Epic 생성"],
+        }],
+    })
+
+    rendered = str(got["request_plan"])
+    assert "없으면 Epic 생성" in rendered
+    assert "기존 Epic 선택" not in rendered
+
+
 # ── modify 실행 경로 — 변경 계획 → 승인 → update_ticket ────────────
 def test_change_plan_routes_to_approval_not_assignment():
     """변경 계획은 담당자 추천·생성 검증을 지나지 않는다 — 해당이 없는 단계다."""

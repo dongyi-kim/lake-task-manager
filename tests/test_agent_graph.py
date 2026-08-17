@@ -90,6 +90,101 @@ def test_reviewer_keeps_editorial_advice_non_blocking():
     assert len(advice) == 3
 
 
+def test_reviewer_discards_findings_contradicted_by_authoritative_draft_state():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import Auditor
+
+    state = {
+        "request_text": "AcmeDB DeltaSketch 통계 파이프라인을 만들어줘",
+        "messages": [HumanMessage(content=(
+            "Epic은 네가 골라줘. 마감은 2026-09-30으로 진행해"
+        ))],
+        "draft": {"mode": "task", "items": [{
+            "summary": "[Catalog] AcmeDB DeltaSketch 파이프라인 구현",
+            "type": "Task", "epic": "DL-101", "duedate": "2026-09-30",
+            "components": ["Catalog"],
+            "description": ("<h3>배경</h3><p>파이프라인 구현</p>"
+                            "<h3>작업 범위</h3><ul><li>포함: 구현</li>"
+                            "<li>제외: 요청 외 변경</li></ul>"
+                            "<h3>완료 조건 (DoD)</h3><ul>"
+                            "<li>테스트 결과 기록</li><li>리뷰 결과 기록</li></ul>"),
+        }]},
+    }
+    model = {
+        "grounded": False, "rule_compliant": False, "answers_request": False,
+        "problems": [
+            {"index": -1, "check": "request",
+             "message": "사용자가 Epic 생성을 요청했으므로 Task 생성과 충돌합니다.",
+             "fix": "새 Epic 생성 초안으로 변경해야 합니다."},
+            {"index": 0, "check": "request",
+             "message": "초안에는 마감 날짜가 명시되어 있지 않습니다.",
+             "fix": "마감일을 2026-09-30으로 넣어야 합니다."},
+        ],
+        "summary": "Epic과 마감이 누락됨",
+    }
+    result = Auditor().apply(state, model)
+    assert result["review"]["ok"] is True
+    assert result["review"]["problems"] == []
+    contract = Auditor().task(state)
+    assert "select_existing" in contract
+    assert "2026-09-30" in contract
+
+
+def test_reviewer_does_not_treat_selection_intent_as_proof_draft_avoids_epic_creation():
+    """A select-existing request is the rule to audit, not proof that the draft obeyed it."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _partition_model_problems
+
+    state = {
+        "request_text": "AcmeDB DeltaSketch 통계 파이프라인을 만들어줘",
+        "messages": [HumanMessage(content="Epic은 네가 골라줘")],
+        "draft": {"mode": "task", "items": [{
+            "summary": "[Catalog] AcmeDB DeltaSketch 파이프라인 구현",
+            "type": "Task", "epic": "DL-101",
+            "description": (
+                "<h3>배경</h3><p>승인 후 새 Epic을 생성해 작업을 배치한다.</p>"
+                "<h3>작업 범위</h3><ul><li>새 Epic 생성</li></ul>"
+                "<h3>완료 조건 (DoD)</h3><ul><li>Epic 생성 확인</li></ul>"
+            ),
+        }]},
+    }
+    finding = {
+        "index": 0, "check": "request",
+        "message": "기존 Epic 선택 요청과 달리 초안 본문이 새 Epic 생성을 지시합니다.",
+        "fix": "새 Epic 생성 문구를 제거하고 검증된 기존 Epic에 연결합니다.",
+    }
+
+    blocking, advice = _partition_model_problems(state, [finding])
+
+    assert blocking == [finding]
+    assert advice == []
+
+
+def test_reviewer_does_not_hide_global_missing_claim_when_only_one_root_has_field():
+    from app.agent.workflow.agents.auditor import _partition_model_problems
+
+    state = {"draft": {"mode": "task", "items": [
+        {"summary": "AcmeDB 설계", "type": "Task", "duedate": "2026-09-30"},
+        {"summary": "AcmeDB 배포", "type": "Task", "duedate": ""},
+    ]}}
+    finding = {"index": -1, "check": "request",
+               "message": "요청한 마감일이 일부 초안에 누락되어 있습니다.",
+               "fix": "누락된 초안에 마감일을 설정해야 합니다."}
+    blocking, advice = _partition_model_problems(state, [finding])
+    assert blocking == [finding]
+    assert advice == []
+
+
+def test_reviewer_preserves_explicit_fallback_epic_creation_contract():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.auditor import _request_parent_action
+
+    state = {"messages": [HumanMessage(content=(
+        "맞는 Epic을 골라줘. 적합한 Epic이 없으면 새로 만들어줘"
+    ))]}
+    assert _request_parent_action(state) == "create_new"
+
+
 def test_bug_contract_does_not_require_task_dod():
     from app.agent.workflow.agents.auditor import _machine_check
 
@@ -133,21 +228,21 @@ def test_an_empty_draft_does_not_pretend_to_have_one():
 
 
 def test_review_failure_sends_it_back_to_be_rewritten():
-    """재작성은 기계 오류가 있을 때만 — LLM 의견만으로 왕복하면 턴이 200초를 넘겼다."""
+    """검증 가능한 blocking 문제는 한 번 고친 뒤에만 fail-closed 한다."""
     assert G.route_after_auditor({"review": {"ok": False,
                                               "errors": [{"message": "없는 부모"}]},
                                    "revisions": 1}) == "revise"
     assert G.route_after_auditor({"review": {"ok": False, "errors": [],
                                               "problems": [{"message": "의견"}]},
-                                   "revisions": 0}) == "propose"
+                                   "revisions": 0}) == "revise"
 
 
-def test_rewrite_loop_is_bounded_but_humans_still_get_to_judge():
+def test_rewrite_loop_is_bounded_and_failed_review_never_becomes_actionable():
     """상한이 없으면 두 모델이 서로 만족하지 못해 무한히 돈다. 소진 뒤의 갈래:
 
     기계 오류가 남았으면 respond(만들어 봤자 Jira 가 거부한다). **LLM 의견만** 남았으면
-    propose — 검열자가 만족할 때까지 승인을 막으면 사람이 판단할 기회가 사라진다
-    (실제로 멀쩡한 근거를 '불충분'이라 두 번 반려해 승인 카드가 아예 안 떴다).
+    respond — 검토 결과가 거짓이면 먼저 grounding에서 제거해야 한다. 남은 blocking
+    problem을 승인 가능한 payload와 함께 노출하면 review 계약 자체가 무의미해진다.
     """
     exhausted = {"revisions": MAX_REVISIONS}
     assert G.route_after_auditor({**exhausted,
@@ -155,7 +250,249 @@ def test_rewrite_loop_is_bounded_but_humans_still_get_to_judge():
                                               "errors": [{"message": "없는 부모"}]}}) == "respond"
     assert G.route_after_auditor({**exhausted,
                                    "review": {"ok": False, "errors": [],
-                                              "problems": [{"message": "의견"}]}}) == "propose"
+                                              "problems": [{"message": "의견"}]}}) == "respond"
+
+
+def test_proposal_boundary_clears_any_actionable_token_when_review_failed():
+    state = {
+        "thread_id": "blocked-review",
+        "review": {"ok": False, "problems": [{"message": "요청 누락"}]},
+        "draft": {"mode": "task", "items": [{
+            "summary": "[Catalog] 초안", "type": "Task",
+        }]},
+        "approval_token": "stale-token",
+        "comment_token": "stale-comment-token",
+    }
+    assert G._propose(state) == {"approval_token": "", "comment_token": ""}
+
+
+def test_failed_review_renderer_never_asks_for_approval():
+    from app.agent.workflow.agents.result_integrator import _blocked_review_reply
+
+    text = _blocked_review_reply({"review": {"ok": False, "problems": [{
+        "message": "요청의 필수 대상이 빠짐", "fix": "대상을 복원"
+    }]}})
+    assert "실행 대기 카드 없음" in text
+    assert "승인해" not in text and "승인 요청" not in text
+
+
+def test_failed_review_full_result_does_not_append_unrelated_research_evidence():
+    """Review-boundary replies contain only rejection facts, never the earlier research ledger."""
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    out = ResultIntegrator()._run({
+        "review": {"ok": False, "problems": [{
+            "message": "생성 대상의 담당자가 확정되지 않음", "fix": "담당자 확인",
+        }]},
+        "request_text": "회의 결정으로 티켓을 만들어줘",
+        "evidence": [{
+            "key": "DL-777", "title": "무관한 과거 티켓",
+            "url": "https://jira.example/browse/DL-777",
+            "observations": [{"source": "comment", "text": "과거 댓글"}],
+        }],
+        "related_docs": [{
+            "title": "무관한 설계 문서", "url": "https://confluence.example/pages/777",
+        }],
+        "web_context": "https://example.com/unrelated external source",
+        "trace": [],
+    })
+
+    text = out["reply"]
+    assert "검토 보류" in text and "담당자 확인" in text
+    assert "### 근거" not in text
+    assert "DL-777" not in text and "무관한 설계 문서" not in text
+    assert "jira.example" not in text and "confluence.example" not in text
+
+
+def test_assignment_join_reseals_user_anchor_before_pending_boundary():
+    from langchain_core.messages import HumanMessage
+
+    state = {
+        "request_text": "AcmeDB DeltaSketch pipeline을 개발해줘",
+        "messages": [HumanMessage(content="범위는 1차 구현까지. 알아서")],
+        "draft": {"mode": "task", "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch pipeline 1차 구현",
+            "children": [{
+                "summary": "[Runtime] AcmeDB DeltaSketch pipeline 차 — 구현",
+                "description": ("<h3>작업 범위</h3><ul>"
+                                "<li>포함: AcmeDB DeltaSketch pipeline 차 구현</li></ul>"),
+            }],
+        }]},
+        "assignments": [],
+    }
+
+    draft = G._merge_assignments(state)["draft"]
+    child = draft["items"][0]["children"][0]
+    assert "1차" in child["summary"] and " pipeline 차" not in child["summary"]
+    assert "1차" in child["description"] and " pipeline 차" not in child["description"]
+
+
+def test_outcome_contract_mismatch_is_a_machine_blocker():
+    from app.agent.workflow.agents.auditor import _machine_check
+
+    state = {
+        "request_plan": {"tasks": [{
+            "id": "create-index", "kind": "ticket", "write_intent": True,
+            "instruction": "AcmeDB DeltaSketch index 생성",
+        }]},
+        "draft": {"mode": "task", "outcome_contract_id": "requested-outcome:wrong",
+                  "items": [{
+                      "summary": "[Runtime] AcmeDB DeltaSketch index 추출", "type": "Task",
+                      "outcome_refs": ["outcome:wrong"],
+                      "description": ("<h3>배경</h3><p>index 추출</p>"
+                                      "<h3>작업 범위</h3><ul><li>추출</li></ul>"
+                                      "<h3>완료 조건 (DoD)</h3><ul><li>추출 결과 확인</li></ul>"),
+                  }]},
+    }
+
+    result = _machine_check(state)
+
+    assert result["ok"] is False
+    assert any("outcome contract" in str(row.get("message") or "").lower()
+               for row in result["errors"])
+
+
+def test_small_draft_with_outcome_contract_still_runs_semantic_audit(monkeypatch):
+    from app.agent.workflow.agents.auditor import Auditor
+    from app.agent.workflow.agents.base import StructuredAgent
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    state = {
+        "request_plan": {"tasks": [{
+            "id": "create-index", "kind": "ticket", "write_intent": True,
+            "instruction": "AcmeDB DeltaSketch index 생성",
+        }]},
+        "draft": {"mode": "task", "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch index 생성", "type": "Task",
+            "description": ("<h3>배경</h3><p>index 생성</p>"
+                            "<h3>작업 범위</h3><ul><li>index 생성</li></ul>"
+                            "<h3>완료 조건 (DoD)</h3><ul><li>생성 결과 확인</li></ul>"),
+        }]},
+    }
+    contract = requested_outcome_contract(state)
+    state["draft"]["outcome_contract_id"] = contract["id"]
+    state["draft"]["items"][0]["outcome_refs"] = [contract["outcomes"][0]["id"]]
+    monkeypatch.setattr(
+        StructuredAgent, "node",
+        lambda self: (lambda _state: {"semantic_audit_ran": True}),
+    )
+
+    assert Auditor().node()(state) == {"semantic_audit_ran": True}
+
+
+def test_opposite_requested_action_remains_blocking_and_gets_one_revision():
+    from app.agent.workflow.agents.auditor import Auditor
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    state = {
+        "revisions": 0,
+        "request_plan": {"tasks": [{
+            "id": "create-index", "kind": "ticket", "write_intent": True,
+            "instruction": "AcmeDB DeltaSketch index 생성",
+        }]},
+        "draft": {"mode": "task", "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch index 추출", "type": "Task",
+            "description": ("<h3>배경</h3><p>index 추출</p>"
+                            "<h3>작업 범위</h3><ul><li>index 추출</li></ul>"
+                            "<h3>완료 조건 (DoD)</h3><ul><li>추출 결과 확인</li></ul>"),
+        }]},
+    }
+    contract = requested_outcome_contract(state)
+    state["draft"]["outcome_contract_id"] = contract["id"]
+    state["draft"]["items"][0]["outcome_refs"] = [contract["outcomes"][0]["id"]]
+    out = {"grounded": True, "rule_compliant": True, "answers_request": False,
+           "problems": [{
+               "index": 0, "check": "request",
+               "message": "요청한 index 생성이 초안에서 index 추출로 반대로 바뀌었습니다.",
+               "fix": "scope와 DoD를 요청한 index 생성 결과에 맞춥니다.",
+           }]}
+
+    prompt = Auditor().task(state)
+    reviewed = Auditor().apply(state, out)
+
+    assert contract["id"] in prompt
+    assert "AcmeDB DeltaSketch index 생성" in prompt
+    assert reviewed["review"]["ok"] is False
+    assert reviewed["review"]["problems"]
+    assert G.route_after_auditor({**state, **reviewed}) == "revise"
+
+
+def test_normal_stage_child_inherits_parent_requested_outcome_binding():
+    from app.agent.workflow.agents.auditor import _audit_grounding_contract
+    from app.agent.workflow.anchors import (
+        requested_outcome_contract, validate_draft_outcome_contract,
+    )
+
+    state = {
+        "request_plan": {"tasks": [{
+            "id": "create-index", "kind": "ticket", "write_intent": True,
+            "instruction": "AcmeDB DeltaSketch index 생성",
+        }]},
+        "draft": {"mode": "task", "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch index 생성", "type": "Task",
+            "description": "<h3>작업 범위</h3><p>index 생성</p>",
+            "children": [{
+                "summary": "[Runtime] AcmeDB DeltaSketch index 설계", "type": "Sub-Task",
+                "description": ("<h3>작업 범위</h3><p>index 구조 설계</p>"
+                                "<h3>완료 조건 (DoD)</h3><p>설계 리뷰</p>"),
+            }],
+        }]},
+    }
+    contract = requested_outcome_contract(state)
+    ref = contract["outcomes"][0]["id"]
+    state["draft"]["outcome_contract_id"] = contract["id"]
+    state["draft"]["items"][0]["outcome_refs"] = [ref]
+
+    assert validate_draft_outcome_contract(state, state["draft"]) == []
+    child = _audit_grounding_contract(state)["items"][0]["children"][0]
+    assert child["outcome_refs"] == []
+    assert child["applicable_outcome_refs"] == [ref]
+    assert child["outcome_binding_source"] == "inherited_from_parent"
+
+
+def test_opposite_action_child_is_a_blocking_request_finding():
+    from app.agent.workflow.agents.auditor import Auditor, _audit_grounding_contract
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    state = {
+        "revisions": 0,
+        "request_text": "AcmeDB DeltaSketch index를 생성해줘",
+        "request_plan": {"tasks": [{
+            "id": "create-index", "kind": "ticket", "write_intent": True,
+            "instruction": "AcmeDB DeltaSketch index 생성",
+        }]},
+        "draft": {"mode": "task", "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch index 생성", "type": "Task",
+            "description": "<h3>작업 범위</h3><p>index 생성</p>",
+            "children": [{
+                "summary": "[Runtime] AcmeDB DeltaSketch 원천값 추출", "type": "Sub-Task",
+                "description": ("<h3>작업 범위</h3><p>원천값 추출로 대체</p>"
+                                "<h3>완료 조건 (DoD)</h3><p>추출 파일 확인</p>"),
+            }],
+        }]},
+    }
+    contract = requested_outcome_contract(state)
+    ref = contract["outcomes"][0]["id"]
+    state["draft"]["outcome_contract_id"] = contract["id"]
+    state["draft"]["items"][0]["outcome_refs"] = [ref]
+    out = {
+        "grounded": True, "rule_compliant": True, "answers_request": False,
+        "problems": [{
+            "index": 0, "check": "request",
+            "message": "하위 작업이 요청한 index 생성을 원천값 추출로 대체합니다.",
+            "fix": "하위 작업을 index 생성에 기여하는 단계로 수정합니다.",
+        }],
+    }
+
+    child = _audit_grounding_contract(state)["items"][0]["children"][0]
+    prompt = Auditor().task(state)
+    reviewed = Auditor().apply(state, out)
+
+    assert child["applicable_outcome_refs"] == [ref]
+    assert ref in prompt and "원천값 추출" in prompt
+    assert reviewed["review"]["ok"] is False
+    assert out["problems"][0] in reviewed["review"]["problems"]
+    assert G.route_after_auditor({**state, **reviewed}) == "revise"
 
 
 def test_passing_review_goes_to_approval_not_straight_to_execution():
@@ -206,11 +543,17 @@ def test_draft_roles_do_not_use_tools():
         assert not getattr(role, "tools", None), f"{role.name} 이 도구를 갖고 있다"
 
 
-def test_operator_keeps_react_for_creation():
-    """ActionExecutor 의 create 갈래는 여전히 ReAct 서브그래프를 탄다(부분 실패 판단이 실제로 있다)."""
+def test_action_executor_is_deterministic_and_exposes_no_review_tools_to_a_model():
+    """승인 뒤에는 tool 선택 판단이 없으며 review catalog를 LLM에 보낼 이유도 없다."""
     from app.agent.workflow.agents.action_executor import ActionExecutor
-    sub = ActionExecutor().build()
-    assert {"think", "act"} <= set(sub.get_graph().nodes)
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent import tools as T
+
+    executor = ActionExecutor()
+    assert not isinstance(executor, ToolAgent)
+    assert {tool.name for tool in executor.tools} == {tool.name for tool in T.WRITE_TOOLS}
+    assert not ({tool.name for tool in executor.tools} &
+                {tool.name for tool in T.REVIEW_TOOLS})
 
 
 def test_diagram_renders():
@@ -466,12 +809,186 @@ def test_operator_create_is_deterministic_tool_truth():
     tok = approval.stage("t-det", "create_tickets",
                          {"mode": "task", "items": as_bulk_items(draft)})
     approval.approve(tok, "t-det")
-    out = ActionExecutor().node()({"draft": draft, "approval_token": tok,
+    out = ActionExecutor().node()({"thread_id": "t-det", "draft": draft, "approval_token": tok,
                              "change_plan": {}, "trace": []})
     r = out["result"]
     assert r["created"] and r["created"][0]["key"], r
     assert r["failed"] == [], "경고가 실패로 각색되면 안 된다"
     assert r["note"] == ""
+
+
+def test_action_executor_runs_approved_bulk_comments_without_an_llm():
+    """댓글 일괄 승인 payload를 모델의 tool 선택 없이 그대로 실행한다."""
+    from app.agent.tools import _ctx
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    keys = [row["key"] for row in _ctx.client().search_issues(
+        "ORDER BY created DESC", max_results=2,
+    )]
+    rows = [{"key": key, "body": f"{key} 결정사항 공유"} for key in keys]
+    tok = approval.stage("t-comments", "add_ticket_comments", {"items": rows})
+    approval.approve(tok, "t-comments")
+
+    out = ActionExecutor().node()({
+        "thread_id": "t-comments", "approval_token": tok,
+        # A misleading stale plan must not override the approved record.
+        "change_plan": {"key": keys[0], "changes": {"priority": "P1-Critical"}},
+        "trace": [],
+    })
+
+    assert not out["result"]["failed"], out
+    assert {row["key"] for row in out["result"]["updated"]} == set(keys)
+    assert all(row["fields"] == ["comment"] for row in out["result"]["updated"])
+    assert approval.peek(tok) is None, "승인 토큰은 정확히 한 번 소비되어야 한다"
+
+
+def test_action_executor_runs_an_explicitly_approved_document_attachment():
+    """일반 ReAct가 없어도 registry의 승인된 attach action은 deterministic하게 실행된다."""
+    from app.agent.tools import _ctx
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    key = _ctx.client().search_issues("ORDER BY created DESC", max_results=1)[0]["key"]
+    payload = {"key": key, "url": "https://docs.example.test/decision/1",
+               "title": "설계 결정 기록"}
+    tok = approval.stage("t-attach", "attach_document", payload)
+    approval.approve(tok, "t-attach")
+
+    out = ActionExecutor().node()({
+        "thread_id": "t-attach", "approval_token": tok, "trace": [],
+    })
+
+    assert out["result"]["updated"] == [{"key": key, "fields": ["document"]}]
+    assert out["result"]["failed"] == []
+    assert approval.peek(tok) is None
+
+
+def test_action_executor_fails_closed_without_a_supported_approved_action():
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    missing = ActionExecutor().node()({"thread_id": "t-none", "trace": []})
+    assert missing["result"]["failed"]
+    assert not missing["result"]["created"] and not missing["result"]["updated"]
+
+    tok = approval.stage("t-unknown", "delete_ticket", {"key": "DL-1"})
+    approval.approve(tok, "t-unknown")
+    unknown = ActionExecutor().node()({
+        "thread_id": "t-unknown", "approval_token": tok, "trace": [],
+    })
+    assert "지원하지 않는" in unknown["result"]["failed"][0]["error"]
+    assert approval.peek(tok) is None, "지원하지 않는 승인 capability도 폐기해야 한다"
+
+
+def test_action_executor_requires_the_approval_record_thread_on_every_attempt():
+    """A token alone is never authority; checkpoint state must carry the same thread id."""
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    payload = {"key": "DL-1", "body": "결정사항"}
+    tok = approval.stage("t-owner", "add_ticket_comment", payload)
+    approval.approve(tok, "t-owner")
+
+    missing = ActionExecutor().node()({"approval_token": tok, "trace": []})
+    assert "대화 식별자" in missing["result"]["failed"][0]["error"]
+    assert approval.peek(tok) is not None, "실행하지 않은 정상 capability는 임의 폐기하지 않는다"
+
+    foreign = ActionExecutor().node()({
+        "thread_id": "t-foreign", "approval_token": tok, "trace": [],
+    })
+    assert "이 대화" in foreign["result"]["failed"][0]["error"]
+    assert approval.peek(tok) is not None, "다른 대화가 소유자의 capability를 폐기하면 안 된다"
+
+
+def test_action_executor_discards_primary_and_secondary_tokens_after_update_failure(monkeypatch):
+    """One rejected approval-card attempt cannot be replayed later as a field update or comment."""
+    from app.agent import tools as T
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    primary_payload = {"key": "DL-1", "changes": {"summary": "바뀐 제목"}}
+    comment_payload = {"key": "DL-1", "body": "변경 사유"}
+    primary = approval.stage("t-update-fail", "update_ticket", primary_payload)
+    comment = approval.stage("t-update-fail", "add_ticket_comment", comment_payload)
+    approval.approve(primary, "t-update-fail")
+    approval.approve(comment, "t-update-fail")
+
+    class FailingUpdate:
+        name = "update_ticket"
+
+        @staticmethod
+        def invoke(_args):
+            # Mirrors a write-tool pre-validation failure: it returns before consume().
+            return {"ok": False, "error": "Done 티켓은 필드를 변경할 수 없습니다."}
+
+    class ForbiddenComment:
+        name = "add_ticket_comment"
+
+        @staticmethod
+        def invoke(_args):
+            raise AssertionError("primary failure must not post the secondary comment")
+
+    monkeypatch.setitem(T.BY_NAME, "update_ticket", FailingUpdate())
+    monkeypatch.setitem(T.BY_NAME, "add_ticket_comment", ForbiddenComment())
+    out = ActionExecutor().node()({
+        "thread_id": "t-update-fail", "approval_token": primary,
+        "comment_token": comment, "trace": [],
+    })
+
+    assert out["result"]["failed"]
+    assert approval.peek(primary) is None, "실패한 primary capability도 한 번 시도 후 폐기"
+    assert approval.peek(comment) is None, "실행하지 않은 secondary comment도 함께 폐기"
+
+
+def test_action_executor_keeps_field_success_but_discards_invalid_comment_capability(monkeypatch):
+    """A malformed secondary token does not roll back a completed field update or stay reusable."""
+    from app.agent import tools as T
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+
+    primary_payload = {"key": "DL-1", "changes": {"summary": "바뀐 제목"}}
+    primary = approval.stage("t-update-partial", "update_ticket", primary_payload)
+    invalid = approval.stage("t-update-partial", "link_tickets", {
+        "key": "DL-1", "other": "DL-2", "relation": "Relates",
+    })
+    approval.approve(primary, "t-update-partial")
+    approval.approve(invalid, "t-update-partial")
+
+    class SuccessfulUpdate:
+        name = "update_ticket"
+
+        @staticmethod
+        def invoke(args):
+            ok, why = approval.consume(
+                args["approval_token"], "update_ticket", primary_payload,
+            )
+            return ({"ok": True, "updated": ["summary"]} if ok
+                    else {"ok": False, "error": why})
+
+    monkeypatch.setitem(T.BY_NAME, "update_ticket", SuccessfulUpdate())
+    out = ActionExecutor().node()({
+        "thread_id": "t-update-partial", "approval_token": primary,
+        "comment_token": invalid, "trace": [],
+    })
+
+    assert out["result"]["updated"] == [{"key": "DL-1", "fields": ["summary"]}]
+    assert not out["result"]["failed"]
+    assert "코멘트 승인 정보" in out["result"]["note"]
+    assert approval.peek(primary) is None
+    assert approval.peek(invalid) is None, "유효하지 않은 same-thread secondary capability 폐기"
+
+
+def test_action_executor_write_adapter_allowlist_matches_registry_and_fails_on_drift():
+    """A new WRITE_TOOL needs an explicit reviewed executor adapter; registry growth fails closed."""
+    from types import SimpleNamespace
+    from app.agent import tools as T
+    from app.agent.workflow.agents.action_executor import (
+        ActionExecutor, SUPPORTED_WRITE_ACTIONS,
+    )
+
+    registered = {tool.name for tool in T.WRITE_TOOLS}
+    assert registered == SUPPORTED_WRITE_ACTIONS
+    ActionExecutor._validate_action_registry(T)
+
+    with pytest.raises(RuntimeError, match="unreviewed write tools: delete_ticket"):
+        ActionExecutor._validate_action_registry(SimpleNamespace(
+            WRITE_TOOLS=[*T.WRITE_TOOLS, SimpleNamespace(name="delete_ticket")],
+        ))
 
 
 def test_fast_paths_skip_historian_when_safe():

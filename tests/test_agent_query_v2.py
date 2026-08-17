@@ -351,6 +351,199 @@ def test_concrete_delegated_cross_module_plan_uses_deterministic_duplicate_query
     assert result["query_plan"]["queries"][0]["completeness"] == "all"
 
 
+def test_public_technology_create_plan_is_compiled_without_query_model(monkeypatch):
+    """Public docs do not require the model to restate a deterministic create lookup."""
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+    from app.agent.workflow.agents import work_architect
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(work_architect, "_recover_delegated_creation",
+                        lambda _state: [{"summary": "grounded work"}])
+
+    def fail_model(*_args, **_kwargs):
+        raise AssertionError("concrete creation retrieval must be compiled, not generated")
+
+    monkeypatch.setattr(QuerySpecialist, "invoke_structured", fail_model)
+    original = "Apache Iceberg Puffin 통계 파이프라인을 개발해야해"
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": original,
+        "messages": [
+            HumanMessage(content=original),
+            HumanMessage(content="Epic은 골라줘. 최소 기능 범위까지 알아서 진행해"),
+        ],
+        # Simulate an upstream semantic mutation. User-authored text must win.
+        "keywords": ["Apache Iceberg Puffin 통계 파이프라인 구축 Epic 생성"],
+    }
+
+    queries = QuerySpecialist().node()(state)["query_plan"]["queries"]
+
+    assert [query["source"] for query in queries] == ["jira", "web"]
+    jira = queries[0]["query"]
+    assert all(term in jira for term in ("Apache", "Iceberg", "Puffin", "통계", "파이프라인"))
+    assert not any(term.casefold() in jira.casefold()
+                   for term in ("Epic", "생성", "선택", "골라"))
+
+
+def test_delegated_existing_epic_selection_uses_real_deterministic_recovery(monkeypatch):
+    """Regression: choosing an existing Epic must not become an Epic-create search."""
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+    from app.agent.workflow.state import Intent
+
+    def fail_model(*_args, **_kwargs):
+        raise AssertionError("a concrete delegated create plan must not call QuerySpecialist LLM")
+
+    monkeypatch.setattr(QuerySpecialist, "invoke_structured", fail_model)
+    original = "StarRocks Puffin NDV 통계정보를 생성하는 파이프라인을 개발해야해"
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": original,
+        "messages": [
+            HumanMessage(content=original),
+            HumanMessage(content=(
+                "Epic은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+                "마감은 2026-09-30. 알아서 진행해")),
+        ],
+        "keywords": ["StarRocks Puffin NDV 통계 파이프라인 구축 Epic 생성"],
+        "module": "ETL",
+        "request_plan": {"tasks": [{
+            "kind": "plan", "instruction": "기존 Epic을 선택해 1차 구현 범위를 계획",
+            "write_intent": True,
+        }]},
+    }
+
+    result = QuerySpecialist().node()(state)
+
+    assert "error" not in result
+    jira = next(row for row in result["query_plan"]["queries"] if row["source"] == "jira")
+    assert jira["query"] == "StarRocks Puffin NDV 통계정보 파이프라인"
+    assert any(row["source"] == "web" for row in result["query_plan"]["queries"])
+
+
+def test_creation_subject_is_anchored_to_literal_request_not_polluted_keywords():
+    from app.agent.workflow.agents.query_specialist import _creation_subject_terms
+
+    state = {
+        "request_text": "Puffin NDV 통계정보를 생성하는 파이프라인을 개발해야해",
+        "keywords": ["Puffin NDV 통계 파이프라인 구축 Epic 생성"],
+    }
+
+    terms = _creation_subject_terms(state)
+
+    assert terms == ["Puffin", "NDV", "통계정보", "파이프라인", "개발"]
+    assert "Epic" not in terms and "생성" not in terms
+
+
+def test_creation_subject_prioritizes_literal_technical_subject_over_generic_leadin():
+    from app.agent.workflow.agents.query_specialist import _creation_subject_terms
+
+    state = {
+        "request_text": ("지금 우리 상황을 봤을 때 StarRocks Puffin NDV 통계정보를 "
+                         "생성하는 파이프라인 Task를 만들어줘"),
+        "keywords": ["StarRocks Puffin NDV"],
+    }
+
+    assert _creation_subject_terms(state) == [
+        "StarRocks", "Puffin", "NDV", "통계정보", "파이프라인",
+    ]
+
+
+def test_compact_query_ast_compiles_runtime_defaults_and_is_materially_smaller():
+    import json
+
+    from app.agent.workflow.agents.query_specialist import (
+        QuerySpecialist,
+        _compile_compact_query_plan,
+    )
+    from app.agent.workflow.contracts import QueryPlan
+
+    compact_schema = QuerySpecialist().schema()
+    full_schema = QueryPlan.model_json_schema()
+    assert len(json.dumps(compact_schema)) < len(json.dumps(full_schema)) * 0.7
+
+    plan = _compile_compact_query_plan({
+        "reads": [
+            {"source": "jira", "subject": "Puffin NDV", "where": "status != Done",
+             "exhaustive": True},
+            {"source": "web", "subject": "Apache Iceberg Puffin", "exhaustive": False},
+        ],
+        "uncertainty": ["reader version is unknown"],
+    })
+
+    assert [row["id"] for row in plan["queries"]] == ["read-1-jira", "read-2-web"]
+    assert plan["queries"][0]["completeness"] == "all"
+    assert plan["queries"][0]["page_size"] == 50
+    assert plan["queries"][1]["completeness"] == "page"
+    assert plan["queries"][1]["page_size"] == 5
+    assert plan["joins"] == [] and plan["uncertainty"] == ["reader version is unknown"]
+
+
+def test_query_specialist_prompt_uses_compact_authoritative_context_only():
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+
+    state = {
+        "request_text": "Puffin NDV 적용 이력 조사",
+        "messages": [
+            HumanMessage(content="Puffin NDV 적용 이력 조사"),
+            AIMessage(content="STALE_ASSISTANT_SPECULATION_SHOULD_NOT_BE_REUSED"),
+            HumanMessage(content="댓글까지 전부 확인해줘"),
+        ],
+        "request_plan": {
+            "goal": "MODEL_GOAL_IS_NOT_AN_AUTHORITY",
+            "tasks": [{"kind": "research", "instruction": "내부 이력과 댓글 조회",
+                       "completion_criteria": ["관련 댓글 전수 확인"]}],
+            "assumptions": ["VERBOSE_MODEL_ASSUMPTION"],
+        },
+        "keywords": ["Puffin", "NDV"],
+    }
+
+    prompt = QuerySpecialist().task(state)
+
+    assert "Puffin NDV 적용 이력 조사" in prompt
+    assert "댓글까지 전부 확인해줘" in prompt
+    assert "내부 이력과 댓글 조회" in prompt
+    assert "STALE_ASSISTANT_SPECULATION" not in prompt
+    assert "MODEL_GOAL_IS_NOT_AN_AUTHORITY" not in prompt
+    assert "VERBOSE_MODEL_ASSUMPTION" not in prompt
+
+
+def test_query_context_bounds_long_minutes_and_preserves_full_text_identifiers():
+    from app.agent.workflow.agents.query_specialist import _compact_request_context
+
+    request = "회의 시작 " + ("일반 논의 " * 4000) + " DL-9911 fdc_summary_trace_ic " + \
+        ("후속 논의 " * 4000) + "회의 종료 및 Puffin 검증 요청"
+    context = _compact_request_context({
+        "request_text": request,
+        "messages": [HumanMessage(content=request)],
+        "request_plan": {"tasks": [{
+            "kind": "research", "instruction": "Puffin 관련 내부 이력 조사",
+            "completion_criteria": ["DL-9911 연관성 확인"],
+        }]},
+    })
+
+    assert len(context["request_excerpt"]) < 1900
+    assert "회의 시작" in context["request_excerpt"]
+    assert "회의 종료" in context["request_excerpt"]
+    assert {"DL-9911", "fdc_summary_trace_ic"} <= set(context["literal_anchors"])
+    assert context["tasks"][0]["instruction"] == "Puffin 관련 내부 이력 조사"
+
+
+def test_query_specialist_and_runner_fail_loud_on_unsupported_dependencies():
+    from app.agent.workflow.agents.query_runner import QueryRunner
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+
+    legacy = {"queries": [{
+        "id": "child", "source": "comments", "query": "${parent.keys}",
+        "where": "", "order_by": "updated DESC", "fields": [],
+        "completeness": "page", "page_size": 25, "depends_on": ["parent"],
+    }], "joins": [], "uncertainty": []}
+
+    with pytest.raises(ValueError, match="dependencies/joins are unsupported"):
+        QuerySpecialist().apply({"intent": "ask", "messages": []}, legacy)
+    with pytest.raises(ValueError, match="dependencies/joins are unsupported"):
+        QueryRunner()._run({"query_plan": legacy, "trace": []})
+
+
 def test_explicit_parent_create_does_not_publicly_search_ambiguous_technical_acronym():
     """PAR2: internal CDC means Change Data Capture here, not the public-health agency."""
     from app.agent.workflow.agents.query_specialist import _external_research_allowed

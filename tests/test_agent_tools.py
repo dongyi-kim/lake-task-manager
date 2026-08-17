@@ -544,6 +544,486 @@ def test_completed_ask_query_plan_concludes_once_without_presurvey_or_react(monk
     assert any("QueryPlan 근거 묶음" in row.get("note", "") for row in out["trace"])
 
 
+def test_completed_plan_work_query_plan_builds_deterministic_provenance_ledger(monkeypatch):
+    """Creation retrieval is already complete: preserve sources without another model call."""
+    from copy import deepcopy
+    from langchain_core.messages import HumanMessage
+    import app.agent.workflow.agents.research_analyst as mod
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(mod, "_presurvey", lambda _state: (_ for _ in ()).throw(
+        AssertionError("completed QueryPlan must not repeat scoped retrieval")))
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("completed creation QueryPlan must not enter ReAct")))
+    analyst = ResearchAnalyst()
+    monkeypatch.setattr(analyst, "_conclude", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("completed creation QueryPlan must not call structured synthesis")))
+
+    query_results = [
+        {"id": "jira", "source": "jira", "result": {
+            "canonicalJql": 'project in ("DL") AND text ~ "Puffin"',
+            "scopeProjects": ["DL"], "pages": 2, "total": 1,
+            "tickets": [{"key": "DL-401", "summary": "[Catalog] Puffin NDV PoC",
+                         "status": "Done", "updated": "2026-08-10"}],
+            "ticketDetails": [{
+                "key": "DL-401", "summary": "[Catalog] Puffin NDV PoC",
+                "status": "Done", "description": "PoC 범위에서 NDV 파일을 검증했다.",
+                "updated": "2026-08-10",
+                "comments": [{"author": "skcc.x1001", "created": "2026-08-11",
+                              "body": "운영 적용 범위는 별도 결정이 필요하다."}],
+            }],
+        }},
+        {"id": "comments", "source": "comments", "result": {
+            "canonicalJql": 'project in ("DL") AND comment ~ "Puffin"',
+            "scopeProjects": ["DL"], "pages": 1,
+            "comments": [{"ticketKey": "DL-401", "ticketSummary": "[Catalog] Puffin NDV PoC",
+                          "author": "skcc.x1002", "date": "2026-08-12",
+                          "snippet": "Puffin 통계 형식 후보를 검토했다."}],
+        }},
+        {"id": "docs", "source": "confluence", "result": {
+            "canonicalCql": 'space in ("DATA") AND siteSearch ~ "Puffin"',
+            "scopeSpaces": ["DATA"], "pages": 1,
+            "documents": [{"id": "991", "space": "DATA", "title": "Puffin NDV 설계 기록",
+                           "url": "https://confluence.example/pages/991",
+                           "excerpt": "NDV 저장 방식 검토", "modified": "2026-08-13"}],
+            "documentBodies": [{"title": "Puffin NDV 설계 기록",
+                                "url": "https://confluence.example/pages/991",
+                                "updated": "2026-08-13",
+                                "text": "Puffin 파일의 생성과 읽기 제약을 기록했다."}],
+        }},
+        {"id": "web", "source": "web", "result": {
+            "query": "Apache Iceberg Puffin NDV official",
+            "results": [{"title": "Apache Iceberg Puffin specification",
+                         "url": "https://iceberg.apache.org/puffin-spec/", "official": True,
+                         "snippet": "Puffin file format specification."}],
+        }},
+    ]
+    original = deepcopy(query_results)
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "messages": [HumanMessage(content="Puffin NDV 운영 적용 Task 만들어줘")],
+        "request_text": "Puffin NDV 운영 적용 Task 만들어줘",
+        "request_plan": {"tasks": [{
+            "id": "ticket", "kind": "ticket",
+            "instruction": "Puffin NDV 운영 적용 Task를 만든다",
+            "depends_on": [], "write_intent": True,
+            "completion_criteria": ["적용 범위와 검증 기준을 포함"],
+        }]},
+        "keywords": ["Puffin", "NDV"], "mentioned_keys": [],
+        "query_plan": {"queries": [
+            {"id": "jira", "source": "jira", "completeness": "all"},
+            {"id": "comments", "source": "comments", "completeness": "all"},
+            {"id": "docs", "source": "confluence", "completeness": "all"},
+            {"id": "web", "source": "web", "completeness": "page"},
+        ]},
+        "query_results": query_results,
+        "web_context": "RAW WEB CONTEXT FOR WORK ARCHITECT",
+        "trace": [],
+    }
+
+    out = analyst.node()(state)
+
+    assert query_results == original, "deterministic ledger must not consume or rewrite raw results"
+    assert out["web_context"] == "RAW WEB CONTEXT FOR WORK ARCHITECT"
+    assert out["already_exists"] is False, "search candidates are not proven duplicates"
+    evidence = {row["key"]: row for row in out["evidence"]}
+    assert evidence["DL-401"]["title"] == "[Catalog] Puffin NDV PoC"
+    assert {(obs["source"], obs.get("observed_at"), obs["text"])
+            for obs in evidence["DL-401"]["observations"]} >= {
+        ("description", "2026-08-10", "PoC 범위에서 NDV 파일을 검증했다."),
+        ("comment", "2026-08-11", "skcc.x1001: 운영 적용 범위는 별도 결정이 필요하다."),
+        ("comment", "2026-08-12", "skcc.x1002: Puffin 통계 형식 후보를 검토했다."),
+    }
+    jira_query = next(obs["text"] for obs in evidence["DL-401"]["observations"]
+                      if obs["source"] == "query")
+    assert 'scopeProjects=["DL"]' in jira_query and "pages=2" in jira_query
+    assert 'canonicalJql=project in ("DL") AND text ~ "Puffin"' in jira_query
+    doc = evidence["Puffin NDV 설계 기록"]
+    assert doc["url"] == "https://confluence.example/pages/991"
+    assert any(obs["source"] == "document" and obs["observed_at"] == "2026-08-13"
+               and "생성과 읽기" in obs["text"] for obs in doc["observations"])
+    web = evidence["Apache Iceberg Puffin specification"]
+    assert web["url"] == "https://iceberg.apache.org/puffin-spec/"
+    assert {obs["source"] for obs in web["observations"]} == {"external", "query"}
+    assert next(obs["text"] for obs in web["observations"] if obs["source"] == "external") \
+        == "Puffin file format specification."
+    web_query = next(obs["text"] for obs in web["observations"] if obs["source"] == "query")
+    assert "query=Apache Iceberg Puffin NDV official" in web_query and "official=true" in web_query
+    assert out["related_docs"] == [{
+        "title": "Puffin NDV 설계 기록", "url": "https://confluence.example/pages/991"}]
+    assert any("deterministic 근거 장부" in row.get("note", "") for row in out["trace"])
+
+
+def _duplicate_query_state(*, request, title, issue_type="Task", status="In Progress",
+                           status_category="indeterminate", description="same scope",
+                           tier="task", parent=""):
+    ticket = {
+        "key": "DL-9901", "summary": title, "issueType": issue_type, "tier": tier,
+        "status": status, "statusCategory": status_category,
+    }
+    if parent:
+        ticket["parent"] = parent
+    detail = {
+        "key": "DL-9901", "summary": title, "type": issue_type, "status": status,
+        "done": status_category == "done", "description": description,
+    }
+    return {
+        "intent": "plan_work", "request_text": request,
+        "keywords": ["Puffin", "NDV"], "mentioned_keys": [], "trace": [],
+        "query_plan": {"queries": [{"id": "jira", "source": "jira"}]},
+        "query_results": [{"id": "jira", "source": "jira", "result": {
+            "scopeProjects": ["DL"], "canonicalJql": 'project in ("DL")',
+            "tickets": [ticket], "ticketDetails": [detail],
+        }}],
+    }
+
+
+def test_completed_creation_plan_proves_exact_open_task_duplicate_without_llm(monkeypatch):
+    from langchain_core.messages import HumanMessage
+    import app.agent.workflow.agents.research_analyst as mod
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    monkeypatch.setattr(mod, "_research_outside", lambda *_args: "")
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("exact duplicate proof must not enter ReAct")))
+    analyst = ResearchAnalyst()
+    monkeypatch.setattr(analyst, "_conclude", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("exact duplicate proof must not call structured synthesis")))
+    state = _duplicate_query_state(
+        request="Puffin NDV 운영 적용 Task 만들어줘",
+        title="[Catalog] Puffin NDV 운영 적용",
+        description="Puffin NDV 운영 적용 범위를 구현하고 검증하는 기존 작업이다.",
+    )
+    state["messages"] = [HumanMessage(content=state["request_text"])]
+
+    out = analyst.node()(state)
+
+    assert out["already_exists"] is True
+    assert "DL-9901" in out["situation"] and "기존" in out["situation"]
+    assert out["evidence"][0]["key"] == "DL-9901"
+    assert out["evidence"][0]["fitness"] == "direct"
+
+
+def test_completed_creation_plan_proves_exact_open_bug_duplicate():
+    from app.agent.workflow.agents.research_analyst import _exact_creation_duplicate_key
+
+    state = _duplicate_query_state(
+        request="리니지 뷰어 빈 화면 오류를 Bug로 등록해줘",
+        title="[Workbench] 리니지 뷰어 빈 화면 오류 수정",
+        issue_type="Bug",
+        description="리니지 뷰어가 빈 화면으로 열리는 오류를 재현하고 수정하는 작업이다.",
+    )
+
+    assert _exact_creation_duplicate_key(state) == "DL-9901"
+
+
+@pytest.mark.parametrize("overrides", [
+    {
+        "title": "[Catalog] Puffin NDV PoC 검토",
+        "description": "Puffin NDV 기술 PoC만 검토하는 선행 조사이다.",
+    },
+    {"issue_type": "Epic", "tier": "epic"},
+    {"status": "Done", "status_category": "done"},
+    {"status": "Closed", "status_category": ""},
+    {"issue_type": "Bug"},
+    {"title": "[Catalog] Puffin NDV 설계 검토",
+     "description": "Puffin NDV 설계 대안을 조사한다."},
+    {"description": ""},
+])
+def test_completed_creation_plan_rejects_ambiguous_or_non_equivalent_candidates(overrides):
+    from app.agent.workflow.agents.research_analyst import _exact_creation_duplicate_key
+
+    base = {
+        "request": "Puffin NDV 운영 적용 Task 만들어줘",
+        "title": "[Catalog] Puffin NDV 운영 적용",
+        "description": "Puffin NDV 운영 적용 범위를 구현하고 검증하는 기존 작업이다.",
+    }
+    state = _duplicate_query_state(**{**base, **overrides})
+    if overrides.get("description") == "":
+        state["query_results"][0]["result"]["ticketDetails"] = []
+
+    assert _exact_creation_duplicate_key(state) == ""
+
+
+def test_completed_creation_plan_requires_explicit_same_issue_type():
+    from app.agent.workflow.agents.research_analyst import _exact_creation_duplicate_key
+
+    state = _duplicate_query_state(
+        request="Puffin NDV 운영 적용 티켓 만들어줘",
+        title="[Catalog] Puffin NDV 운영 적용",
+        description="Puffin NDV 운영 적용 범위를 구현하고 검증하는 기존 작업이다.",
+    )
+
+    assert _exact_creation_duplicate_key(state) == ""
+
+
+def test_completed_internal_creation_plan_keeps_one_external_safety_net(monkeypatch):
+    """A small planner may omit web; a technical creation request still gets one deterministic supplement."""
+    from langchain_core.messages import HumanMessage
+    import app.agent.workflow.agents.research_analyst as mod
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("completed creation QueryPlan must not enter ReAct")))
+    analyst = ResearchAnalyst()
+    monkeypatch.setattr(analyst, "_conclude", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("completed creation QueryPlan must not call structured synthesis")))
+    calls = []
+
+    def outside(_agent, asked):
+        calls.append(asked)
+        return "Apache Puffin 공식 사양 — https://iceberg.apache.org/puffin-spec/"
+
+    monkeypatch.setattr(mod, "_research_outside", outside)
+    out = analyst.node()({
+        "intent": Intent.PLAN_WORK,
+        "messages": [HumanMessage(content="Puffin NDV 방식 적용 Task 만들어줘")],
+        "request_text": "Puffin NDV 방식 적용 Task 만들어줘",
+        "keywords": ["Puffin", "NDV"], "mentioned_keys": [],
+        "query_plan": {"queries": [{"id": "jira", "source": "jira"}]},
+        "query_results": [{"id": "jira", "source": "jira", "result": {
+            "scopeProjects": ["DL"], "canonicalJql": 'project in ("DL")',
+            "tickets": [], "total": 0,
+        }}],
+        "trace": [],
+    })
+
+    assert calls == ["Puffin NDV 방식 적용 Task 만들어줘"]
+    assert out["web_context"] == "Apache Puffin 공식 사양 — https://iceberg.apache.org/puffin-spec/"
+    assert out["already_exists"] is False
+
+
+def test_deterministic_ledger_does_not_merge_same_title_documents_with_distinct_ids():
+    from app.agent.workflow.agents.research_analyst import _completed_creation_ledger
+
+    state = {"query_results": [{"id": "docs", "source": "confluence", "result": {
+        "scopeSpaces": ["DATA"],
+        "documents": [
+            {"id": "101", "title": "공통 설계", "url": "https://conf/pages/101"},
+            {"id": "202", "title": "공통 설계", "url": "https://conf/pages/202"},
+        ],
+        "documentBodies": [
+            {"title": "공통 설계", "url": "https://conf/pages/101", "text": "첫 번째 본문"},
+            {"title": "공통 설계", "url": "https://conf/pages/202", "text": "두 번째 본문"},
+        ],
+    }}]}
+
+    docs = [row for row in _completed_creation_ledger(state)["evidence"]
+            if row.get("url", "").startswith("https://conf/pages/")]
+    assert {row["url"] for row in docs} == {"https://conf/pages/101", "https://conf/pages/202"}
+    by_url = {row["url"]: row for row in docs}
+    assert by_url["https://conf/pages/101"]["observations"][0]["text"] == "첫 번째 본문"
+    assert by_url["https://conf/pages/202"]["observations"][0]["text"] == "두 번째 본문"
+
+
+def test_deterministic_ledger_cap_keeps_internal_document_and_external_source_diversity():
+    from app.agent.workflow.agents.research_analyst import (
+        ResearchAnalyst, _completed_creation_ledger,
+    )
+
+    tickets = [{"key": f"DL-{number}", "summary": f"Puffin 후보 {number}"}
+               for number in range(1, 9)]
+    details = [{**row, "description": f"후보 {number} 본문"}
+               for number, row in enumerate(tickets, 1)]
+    state = {
+        "request_text": "Puffin 적용 Task 만들어줘", "keywords": ["Puffin"],
+        "mentioned_keys": [], "trace": [],
+        "query_results": [
+            {"id": "jira", "source": "jira", "result": {
+                "scopeProjects": ["DL"], "tickets": tickets, "ticketDetails": details,
+            }},
+            {"id": "docs", "source": "confluence", "result": {
+                "scopeSpaces": ["DATA"],
+                "documents": [{"id": "991", "title": "Puffin 내부 설계",
+                               "url": "https://conf/pages/991"}],
+                "documentBodies": [{"title": "Puffin 내부 설계",
+                                    "url": "https://conf/pages/991", "text": "내부 설계 본문"}],
+            }},
+            {"id": "web", "source": "web", "result": {"results": [{
+                "title": "Puffin specification", "url": "https://iceberg.apache.org/puffin-spec/",
+                "snippet": "official format", "official": True,
+            }]}},
+        ],
+    }
+
+    out = ResearchAnalyst().apply(state, _completed_creation_ledger(state))
+    assert len(out["evidence"]) == 8
+    assert any(row.get("url") == "https://conf/pages/991" for row in out["evidence"])
+    assert any(row.get("url") == "https://iceberg.apache.org/puffin-spec/"
+               for row in out["evidence"])
+
+
+def _compound_research_creation_state():
+    """Completed acquisition for two user-visible outcomes: synthesis and a ticket draft."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.state import Intent
+
+    tickets = [{"key": f"DL-{900 + number}", "summary": f"일반 운영 후보 {number}"}
+               for number in range(1, 9)]
+    tickets.append({"key": "DL-909", "summary": "보존기간 예외정책 비교 결과"})
+    details = [{**ticket, "description": f"{ticket['summary']} 본문"}
+               for ticket in tickets]
+    request = "보존기간 현행기준과 예외정책을 조사·비교해 요약하고 적용 Task도 생성해줘"
+    return {
+        "intent": Intent.PLAN_WORK,
+        "messages": [HumanMessage(content=request)],
+        "request_text": request,
+        "keywords": ["보존기간", "예외정책"],
+        "mentioned_keys": [],
+        "request_plan": {"goal": request, "tasks": [
+            {"id": "research", "kind": "research",
+             "instruction": "보존기간 현행기준과 예외정책을 비교 요약한다",
+             "depends_on": [], "write_intent": False,
+             "completion_criteria": ["내부 결정과 외부 기준의 차이를 출처와 함께 제시"]},
+            {"id": "ticket", "kind": "ticket",
+             "instruction": "검증 가능한 적용 Task를 생성한다",
+             "depends_on": ["research"], "write_intent": True,
+             "completion_criteria": ["조사 결과를 범위와 DoD에 반영"]},
+        ]},
+        "query_plan": {"queries": [
+            {"id": "jira", "source": "jira"},
+            {"id": "docs", "source": "confluence"},
+            {"id": "web", "source": "web"},
+        ]},
+        "query_results": [
+            {"id": "jira", "source": "jira", "result": {
+                "scopeProjects": ["DL"], "tickets": tickets, "ticketDetails": details,
+            }},
+            {"id": "docs", "source": "confluence", "result": {
+                "scopeSpaces": ["DATA"],
+                "documents": [
+                    {"id": "1", "title": "일반 운영 안내", "url": "https://conf/pages/1"},
+                    {"id": "2", "title": "보존기간 현행기준", "url": "https://conf/pages/2"},
+                ],
+                "documentBodies": [
+                    {"id": "1", "title": "일반 운영 안내", "url": "https://conf/pages/1",
+                     "text": "일반 안내"},
+                    {"id": "2", "title": "보존기간 현행기준", "url": "https://conf/pages/2",
+                     "text": "예외정책은 승인 기록과 함께 비교해야 한다."},
+                ],
+            }},
+            {"id": "web", "source": "web", "result": {
+                "query": "retention exception policy official",
+                "results": [{"title": "Retention exception standard",
+                             "url": "https://standards.example/retention",
+                             "snippet": "Official exception comparison criteria.",
+                             "official": True}],
+            }},
+        ],
+        "trace": [],
+    }
+
+
+def test_completed_compound_research_and_creation_synthesizes_once_for_downstream_sources(
+        monkeypatch):
+    """Explicit research is a deliverable, not merely a hidden prerequisite of ticket creation."""
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("completed compound QueryPlan must not repeat retrieval through ReAct")))
+    analyst = ResearchAnalyst()
+    calls = []
+
+    def synthesize(state, messages):
+        rendered = "\n".join(str(getattr(message, "content", "")) for message in messages)
+        calls.append((state, rendered))
+        return {
+            "situation": "보존기간 예외정책은 내부 현행기준과 외부 기준을 함께 비교해야 한다.",
+            "evidence": [{
+                "key": "보존기간 현행기준", "title": "보존기간 현행기준",
+                "url": "https://conf/pages/2", "why": "예외정책의 내부 현행기준을 직접 설명한다.",
+                "confidence": "high", "fitness": "direct", "limitations": "승인 주체는 미확인",
+                "observations": [{"source": "document",
+                                  "text": "예외정책은 승인 기록과 함께 비교해야 한다."}],
+            }],
+            "related_docs": [{"title": "보존기간 현행기준", "url": "https://conf/pages/2"}],
+            "already_exists": False,
+        }
+
+    monkeypatch.setattr(analyst, "invoke_structured", synthesize)
+    state = _compound_research_creation_state()
+
+    out = analyst.node()(state)
+
+    assert len(calls) == 1
+    assert calls[0][0]["_research_analyst_prefetched"] is True
+    assert "DL-909" in calls[0][1] and "보존기간 현행기준과 예외정책을 비교 요약한다" in calls[0][1]
+    assert "Tool Transcript Data" not in calls[0][1]
+    assert out["evidence"][0]["url"] == "https://conf/pages/2"
+    assert any("복합 조사·작성" in row.get("note", "") for row in out["trace"])
+
+    final_prompt = ResultIntegrator().task({**state, **out})
+    assert "https://conf/pages/2" in final_prompt
+    assert "예외정책은 승인 기록과 함께 비교해야 한다" in final_prompt
+
+
+def test_compound_research_synthesis_failure_uses_relevant_bounded_ledger_without_react(
+        monkeypatch):
+    """A formatting failure keeps late relevant discoveries instead of first-hit 5/2/1 truncation."""
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("completed QueryPlan fallback must not repeat retrieval through ReAct")))
+    analyst = ResearchAnalyst()
+    monkeypatch.setattr(analyst, "invoke_structured", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("invalid structured result")))
+
+    out = analyst.node()(_compound_research_creation_state())
+
+    assert len(out["evidence"]) == 8
+    assert any(row.get("key") == "DL-909" for row in out["evidence"]), \
+        "the late source matching the explicit research outcome must survive the bounded fallback"
+    assert any(row.get("url") == "https://conf/pages/2" for row in out["evidence"])
+    assert any(row.get("url") == "https://standards.example/retention"
+               for row in out["evidence"])
+    assert any("관련도 기반" in row.get("note", "") for row in out["trace"])
+
+
+def test_failed_plan_work_query_plan_is_not_treated_as_scoped_zero_result(monkeypatch):
+    """A scope/config error is an acquisition gap, never evidence that no duplicate exists."""
+    from langchain_core.messages import HumanMessage
+    import app.agent.workflow.agents.research_analyst as mod
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(mod, "_completed_creation_ledger", lambda _state: (_ for _ in ()).throw(
+        AssertionError("failed QueryPlan must not use deterministic complete-plan ledger")))
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("prefetched failure handling must not repeat acquisition through ReAct")))
+    analyst = ResearchAnalyst()
+    calls = []
+
+    def conclude(_state, _scratch):
+        calls.append(True)
+        return {"situation": "검색 범위 설정 오류를 확인해야 한다.", "evidence": []}
+
+    monkeypatch.setattr(analyst, "_conclude", conclude)
+    out = analyst.node()({
+        "intent": Intent.PLAN_WORK,
+        "messages": [HumanMessage(content="카탈로그 체크박스 추가 Task 만들어줘")],
+        "keywords": ["카탈로그", "체크박스"], "mentioned_keys": [],
+        "query_plan": {"queries": [{"id": "jira", "source": "jira"}]},
+        "query_results": [{"id": "jira", "source": "jira", "result": {
+            "error": "search.jira.projects 범위를 설정하세요", "tickets": [],
+            "scopeProjects": [],
+        }}],
+        "trace": [],
+    })
+
+    assert calls == [True]
+    assert out["situation"] == "검색 범위 설정 오류를 확인해야 한다."
+    assert not any("QueryPlan 0건" in row.get("note", "") for row in out["trace"])
+
+
 def test_incomplete_ask_query_plan_keeps_react_fallback(monkeypatch):
     """A missing or failed planned source must not be hidden by the one-pass optimization."""
     from langchain_core.messages import HumanMessage
@@ -781,7 +1261,7 @@ def test_epic_mode_flows_through_propose_and_operator(monkeypatch):
     tok = out["approval_token"]
     assert approval.peek(tok)["action"] == "create_epic"
     approval.approve(tok, "t-ep2")
-    res = ActionExecutor().node()({"draft": draft, "approval_token": tok,
+    res = ActionExecutor().node()({"thread_id": "t-ep2", "draft": draft, "approval_token": tok,
                              "change_plan": {}, "trace": []})
     r = res["result"]
     assert r["created"] and r["failed"] == []

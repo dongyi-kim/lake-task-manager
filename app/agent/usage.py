@@ -135,12 +135,16 @@ class Meter:
         self.by_node: dict = {}
         # 도구별 집계 — 벽시계와 LLM 합산의 갭이 여기 있다(수정 25s 중 LLM 14s, 나머지가 도구).
         self.by_tool: dict = {}
+        # Safe per-call diagnostics: labels and counters only, never prompt/response text or
+        # reasoning. This is needed to distinguish semantic, projection, and repair latency.
+        self.calls_detail: list[dict] = []
         # 프롬프트 캐시 히트 — OpenAI 는 1024+ 토큰 공통 prefix 를 자동 캐시한다.
         # 이 값이 낮으면 시스템 프롬프트 앞부분이 매 호출 달라진다는 뜻이다.
         self.cached = 0
 
     def add(self, model: str, prompt: int, completion: int,
-            node: str = "", seconds: float = 0.0, cached: int = 0):
+            node: str = "", seconds: float = 0.0, cached: int = 0,
+            output_contract: str = "", finish_reason: str = ""):
         with self._lock:
             self.calls += 1
             self.prompt += int(prompt or 0)
@@ -153,6 +157,15 @@ class Meter:
                 row["calls"] += 1
                 row["tokens"] += int(prompt or 0) + int(completion or 0)
                 row["seconds"] = round(row["seconds"] + (seconds or 0.0), 1)
+            self.calls_detail.append({
+                "node": node,
+                "model": model,
+                "outputContract": output_contract,
+                "finishReason": finish_reason,
+                "promptTokens": int(prompt or 0),
+                "completionTokens": int(completion or 0),
+                "seconds": round(float(seconds or 0.0), 3),
+            })
 
     @property
     def total(self) -> int:
@@ -171,6 +184,8 @@ class Meter:
             out["byNode"] = dict(self.by_node)
         if self.by_tool:
             out["byTool"] = dict(self.by_tool)
+        if self.calls_detail:
+            out["callsDetail"] = [dict(row) for row in self.calls_detail]
         return out
 
     def add_tool(self, name: str, seconds: float):
@@ -201,8 +216,11 @@ def callback(meter: Meter):
             # 서브그래프 안에서는 노드명이 think/act 다 — 체크포인트 네임스페이스의 부모
             # (research_analyst:.. → research_analyst)로 바꿔야 역할별 집계가 된다.
             ns = str(md.get("langgraph_checkpoint_ns") or "")
-            node = ns.split(":", 1)[0] if ns else str(md.get("langgraph_node") or "")
-            self._t0[str(run_id)] = (_t.time(), node)
+            # Explicit Role metadata wins over subgraph plumbing such as think/act.
+            node = (str(md.get("ltm_role_id") or "")
+                    or (ns.split(":", 1)[0] if ns else str(md.get("langgraph_node") or "")))
+            contract = str(md.get("ltm_output_contract") or "")
+            self._t0[str(run_id)] = (_t.time(), node, contract)
 
         def on_llm_start(self, serialized, prompts, *, run_id=None, **kwargs):
             self._start(run_id, kwargs)
@@ -220,19 +238,36 @@ def callback(meter: Meter):
                     if meta:
                         usage = {"prompt_tokens": meta.get("input_tokens"),
                                  "completion_tokens": meta.get("output_tokens")}
+                gen = (response.generations or [[]])[0]
+                message = getattr(gen[0], "message", None) if gen else None
+                response_meta = getattr(message, "response_metadata", None) or {}
                 import time as _t
-                t0, node = self._t0.pop(str(run_id), (None, ""))
+                t0, node, contract = self._t0.pop(str(run_id), (None, "", ""))
                 secs = (_t.time() - t0) if t0 else 0.0
                 det = usage.get("prompt_tokens_details") or {}
                 cached = det.get("cached_tokens") if isinstance(det, dict) else 0
                 if not cached:      # usage_metadata 경로(스트리밍)
-                    gen = (response.generations or [[]])[0]
-                    meta = getattr(gen[0].message, "usage_metadata", None) if gen else None
+                    meta = getattr(message, "usage_metadata", None) if message else None
                     cached = ((meta or {}).get("input_token_details") or {}).get("cache_read", 0)
-                meter.add(out.get("model_name") or "",
+                model = (out.get("model_name") or response_meta.get("model_name")
+                         or response_meta.get("model") or "")
+                finish = (out.get("finish_reason") or response_meta.get("finish_reason")
+                          or response_meta.get("stop_reason") or "")
+                meter.add(model,
                           usage.get("prompt_tokens") or 0,
                           usage.get("completion_tokens") or 0,
-                          node=node, seconds=secs, cached=cached or 0)
+                          node=node, seconds=secs, cached=cached or 0,
+                          output_contract=contract, finish_reason=str(finish))
+            except Exception:
+                pass
+
+        def on_llm_error(self, error, *, run_id=None, **kwargs):
+            try:
+                import time as _t
+                t0, node, contract = self._t0.pop(str(run_id), (None, "", ""))
+                meter.add("", 0, 0, node=node,
+                          seconds=(_t.time() - t0) if t0 else 0.0,
+                          output_contract=contract, finish_reason="error")
             except Exception:
                 pass
 

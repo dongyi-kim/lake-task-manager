@@ -3,7 +3,8 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-from app.agent.workflow.role_manifest import ROLE_SPECS
+from app.agent.workflow.role_manifest import (ROLE_SPECS, role_specs, tools_for_role,
+                                               validate_role_tool_groups)
 from app.agent.workflow.state import AgentState, Node
 
 
@@ -85,3 +86,99 @@ def test_role_manifest_documents_cross_turn_and_final_response_inputs():
         set(ROLE_SPECS["research_analyst"].input_keys)
     assert {"group_activity", "ticket_progress", "person_work_snapshot", "daily_priority_snapshot",
             "change_plan", "questions"} <= set(ROLE_SPECS["result_integrator"].input_keys)
+
+
+def test_manifest_tool_groups_resolve_to_exact_role_catalogs():
+    """Manifest is the single permission/catalog source for every model-facing tool Role."""
+    from app.agent.workflow.agents.action_executor import ActionExecutor
+    from app.agent.workflow.agents.portfolio_analyst import PortfolioAnalyst
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    validate_role_tool_groups()
+    for role_id, role_class in {
+        "research_analyst": ResearchAnalyst,
+        "portfolio_analyst": PortfolioAnalyst,
+        "action_executor": ActionExecutor,
+    }.items():
+        expected = {tool.name for tool in tools_for_role(role_id, include_dynamic=False)}
+        actual = {tool.name for tool in role_class().tools
+                  if not str(tool.name).startswith("mcp_")}
+        assert actual == expected, (role_id, sorted(actual), sorted(expected))
+
+
+def test_research_model_catalog_is_minimal_read_only_gap_filling_set():
+    from app.agent import tools as T
+
+    names = {tool.name for tool in tools_for_role("research_analyst", include_dynamic=False)}
+    assert names == {
+        "get_ticket", "read_document", "search_documents", "search_comments", "query_people",
+        "list_attachments", "read_attachment", "search_web", "search_github",
+    }
+    assert not (names & {tool.name for tool in T.WRITE_TOOLS})
+    assert len(names) < len({tool.name for tool in
+                             (T.SEARCH_TOOLS + T.WEB_TOOLS + T.PEOPLE_TOOLS + T.RULE_TOOLS)})
+
+
+def test_optional_mcp_catalog_is_granted_only_by_the_manifest(monkeypatch):
+    from types import SimpleNamespace
+    from app.agent import mcp_client
+
+    external = SimpleNamespace(
+        name="mcp_fetch_fetch",
+        metadata={"ltm_source": "mcp", "ltm_capability": "read"},
+    )
+    monkeypatch.setattr(mcp_client, "tools", lambda: [external])
+    assert external in tools_for_role("research_analyst")
+    assert external not in tools_for_role("portfolio_analyst")
+
+
+def test_manifest_denies_unclassified_external_tool_even_when_name_looks_read_only(monkeypatch):
+    from types import SimpleNamespace
+    from app.agent import mcp_client
+
+    monkeypatch.setattr(
+        mcp_client, "tools", lambda: [SimpleNamespace(name="mcp_fetch_read_document")]
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError, match="unclassified external MCP tool denied"):
+        tools_for_role("research_analyst")
+
+
+def test_deterministic_query_capabilities_use_real_read_groups_and_auditor_has_no_catalog():
+    assert "query" not in {group for spec in ROLE_SPECS.values() for group in spec.tool_groups}
+    assert ROLE_SPECS["query_runner"].tool_groups == ("search", "web")
+    assert ROLE_SPECS["auditor"].tool_groups == ()
+
+
+def test_contract_registry_contains_only_canonical_roles():
+    from app.agent.workflow.contracts import ROLE_CONTRACTS
+
+    assert set(ROLE_CONTRACTS) <= set(ROLE_SPECS)
+    assert not ({"ticket_author", "comment_author"} & set(ROLE_CONTRACTS))
+
+
+def test_role_kind_separates_semantic_service_and_guardrail_boundaries():
+    services = {spec.id for spec in ROLE_SPECS.values() if spec.kind == "service"}
+    guardrails = {spec.id for spec in ROLE_SPECS.values() if spec.kind == "guardrail"}
+    semantics = {spec.id for spec in ROLE_SPECS.values() if spec.kind == "semantic"}
+
+    assert services == {"query_runner", "action_executor"}
+    assert guardrails == {"auditor"}
+    assert semantics == set(ROLE_SPECS) - services - guardrails
+    assert all(ROLE_SPECS[role_id].model_tier == "deterministic" for role_id in services)
+    assert all(ROLE_SPECS[role_id].model_tier != "deterministic" for role_id in semantics)
+    assert all(ROLE_SPECS[role_id].effect != "write" for role_id in guardrails)
+
+
+def test_role_specs_api_keeps_manifest_order_and_objects():
+    assert role_specs() == tuple(ROLE_SPECS.values())
+
+
+def test_agent_guide_requires_evidence_before_adding_a_semantic_role():
+    guide = (Path(__file__).resolve().parents[1] / "app/agent/AGENT.md").read_text(
+        encoding="utf-8"
+    )
+    for token in ("`semantic`", "`service`", "`guardrail`", "단계마다 Role을 추가하지 않는다",
+                  "versioned battery", "Role별 regression 없음"):
+        assert token in guide

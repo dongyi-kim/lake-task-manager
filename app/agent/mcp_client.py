@@ -11,11 +11,15 @@
   · **호출마다 새 세션** — stdio 프로세스를 띄우고 한 번 묻고 닫는다. 상주 프로세스를
     스레드 사이에서 공유하면 죽었는지 살았는지 관리가 일이 된다. 느리지만 안전하고,
     조사 한 턴에 외부 도구는 한두 번이다.
+  · **명시적 읽기 allowlist** — 서버가 광고한 도구 이름을 보고 읽기/쓰기를 추측하지
+    않는다. 설정의 ``read_tools`` 에 정확한 원격 도구 이름이 적힌 것만 감싼다. 필드가
+    없거나 잘못되면 해당 서버는 도구를 하나도 노출하지 않는다(fail-closed).
   · 절대 규칙은 그대로 — 사내 식별자를 외부 도구 인자에 넣지 않는 것은 프롬프트
-    (common.md #5)가 지키고, 여기서는 읽기 호출만 감싼다.
+    (common.md #5)가 지킨다. 권한 경계는 프롬프트가 아니라 위 allowlist가 보장한다.
 
 설정 파일(JSON): {"servers": [{"name": "fetch", "command": "uvx",
-                               "args": ["mcp-server-fetch"], "enabled": true}]}
+                               "args": ["mcp-server-fetch"], "read_tools": ["fetch"],
+                               "enabled": true}]}
 위치: 배포 루트 config/ 우선, 없으면 CONFIG_DIR(개발 샘플) — agent-prompt.md 와 같은 규칙.
 """
 
@@ -46,23 +50,65 @@ def _config_path() -> Path | None:
     return None
 
 
+def _validated_server_spec(raw: object) -> dict | None:
+    """Validate one enabled server and its exact read-only tool contract.
+
+    MCP itself does not carry a portable, trustworthy read/write effect declaration.  LTM
+    therefore requires an administrator to classify exact remote tool names.  We deliberately
+    do not infer safety from words such as ``fetch``, ``read`` or ``get`` in a tool name.
+    """
+    if not isinstance(raw, dict) or raw.get("enabled") is not True:
+        return None
+    raw_name, raw_command = raw.get("name"), raw.get("command")
+    name = raw_name.strip() if isinstance(raw_name, str) else ""
+    command = raw_command.strip() if isinstance(raw_command, str) else ""
+    read_tools = raw.get("read_tools")
+    if not name or not command:
+        log.warning("MCP enabled server requires non-empty name and command")
+        return None
+    normalized_read_tools = ([tool_name.strip() for tool_name in read_tools]
+                             if isinstance(read_tools, list)
+                             and all(isinstance(tool_name, str) for tool_name in read_tools)
+                             else [])
+    if (not normalized_read_tools
+            or any(not isinstance(tool_name, str) or not tool_name.strip()
+                   for tool_name in (read_tools or []))
+            or len(set(normalized_read_tools)) != len(normalized_read_tools)):
+        log.warning(
+            "MCP server '%s' disabled: read_tools must be a non-empty unique list of exact names",
+            name,
+        )
+        return None
+    args = raw.get("args") or []
+    env = raw.get("env")
+    scalar = (str, int, float, bool)
+    if (not isinstance(args, list) or any(not isinstance(arg, str) for arg in args)
+            or (env is not None and (not isinstance(env, dict)
+                                     or any(not isinstance(value, scalar)
+                                            for value in env.values())))):
+        log.warning("MCP server '%s' disabled: args/env shape is invalid", name)
+        return None
+    return {
+        "name": name,
+        "command": command,
+        "args": [str(arg) for arg in args],
+        "env": ({str(key): str(value) for key, value in env.items()} if env else None),
+        "read_tools": normalized_read_tools,
+    }
+
+
 def load_config() -> list[dict]:
-    """enabled 인 서버 스펙만. 파일이 없거나 깨졌으면 빈 목록(기본 상태)."""
+    """Return validated enabled server specs; missing capability contracts expose nothing."""
     p = _config_path()
     if not p:
         return []
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        out = []
-        for s in (data.get("servers") or []):
-            if not isinstance(s, dict) or not s.get("enabled"):
-                continue
-            if not (s.get("name") and s.get("command")):
-                continue
-            out.append({"name": str(s["name"]), "command": str(s["command"]),
-                        "args": [str(a) for a in (s.get("args") or [])],
-                        "env": {str(k): str(v) for k, v in (s.get("env") or {}).items()} or None})
-        return out
+        if not isinstance(data, dict) or not isinstance(data.get("servers", []), list):
+            log.warning("agent-mcp.json invalid: servers must be an array")
+            return []
+        return [spec for raw in data.get("servers", [])
+                if (spec := _validated_server_spec(raw)) is not None]
     except Exception as e:
         log.warning("agent-mcp.json 읽기 실패: %s", e)
         return []
@@ -138,7 +184,13 @@ def _wrap(spec: dict, t) -> object:
         " (External MCP tool: never pass internal ticket keys, employee names, or project names.)"
     return StructuredTool.from_function(
         func=call, name=f"mcp_{server}_{name}"[:60], description=desc[:900],
-        args_schema=_pyd_model(server, name, getattr(t, "inputSchema", None) or {}))
+        args_schema=_pyd_model(server, name, getattr(t, "inputSchema", None) or {}),
+        metadata={
+            "ltm_source": "mcp",
+            "ltm_capability": "read",
+            "mcp_server": server,
+            "mcp_tool": name,
+        })
 
 
 def tools(refresh: bool = False) -> list:
@@ -155,8 +207,14 @@ def tools(refresh: bool = False) -> list:
         out = []
         for spec in specs:
             try:
-                for t in _list_tools(spec):
-                    out.append(_wrap(spec, t))
+                advertised = {str(getattr(t, "name", "")): t for t in _list_tools(spec)}
+                for remote_name in spec["read_tools"]:
+                    tool_def = advertised.get(remote_name)
+                    if tool_def is None:
+                        log.warning("MCP server '%s' does not advertise allowed read tool '%s'",
+                                    spec["name"], remote_name)
+                        continue
+                    out.append(_wrap(spec, tool_def))
                 log.info("MCP 서버 '%s' 도구 %d개 연결", spec["name"],
                          sum(1 for x in out if x.name.startswith(f"mcp_{spec['name']}_")))
             except Exception as e:

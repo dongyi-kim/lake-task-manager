@@ -181,7 +181,20 @@ def _compact_request_tasks(out: dict, user_text: str, intent: str) -> list[dict]
     """Keep a model DAG only for genuinely compound, independently checkable outcomes."""
     tasks = [task for task in (out.get("tasks") or []) if isinstance(task, dict)]
     effects = _explicit_user_effects(user_text)
-    if len(tasks) <= 1 or len(effects) >= 2:
+    if len(tasks) <= 1:
+        # A small structured model sometimes describes the Agent's first internal step
+        # (``query`` or ``research``) instead of the user's requested new-work outcome.
+        # One plan_work request is still one writable planning outcome; acquisition remains
+        # an implementation detail of the graph.
+        if intent == Intent.PLAN_WORK and tasks and tasks[0].get("kind") in {
+                "query", "research", "analyze", "respond"}:
+            task = dict(tasks[0])
+            task["kind"] = "plan"
+            task["instruction"] = user_text
+            task["write_intent"] = True
+            return [task]
+        return tasks
+    if len(effects) >= 2:
         return tasks
 
     write_intent = intent in Intent.DRAFTS_TICKETS or bool(
@@ -211,6 +224,97 @@ def _compact_request_tasks(out: dict, user_text: str, intent: str) -> list[dict]
             (goal[:120] + "에 필요한 결과를 확인 가능한 형태로 제시한다")[:160],
         ],
     }]
+
+
+_EPIC_SELECTION = _re.compile(
+    r"(?:Epic|에픽)\s*(?:은|는|을|를)?\s*(?:네가\s*)?(?:골라|선택|찾아|정해)"
+    r"|(?:골라|선택|찾아|정해).{0,12}(?:Epic|에픽)",
+    _re.I,
+)
+_EPIC_CREATION = _re.compile(
+    r"(?:새(?:로운)?\s*)?(?:Epic|에픽)\s*(?:을|를)?\s*"
+    r"(?:새로\s*)?(?:생성|만들|등록)",
+    _re.I,
+)
+_FALLBACK_CREATION = _re.compile(
+    r"(?:없으면|없을\s*경우|찾지\s*못하면|적합한\s*(?:것|Epic|에픽)?이?\s*없으면)"
+    r".{0,24}(?:새로\s*)?(?:생성|만들|등록)",
+    _re.I,
+)
+_EPIC_CREATION_PHRASE = _re.compile(
+    r"(?:새(?:로운)?\s*)?(?:Epic|에픽)\s*(?:을|를)?\s*"
+    r"(?:새로\s*)?(?:생성(?:하기|해|함)?|만들(?:기|어|어야|자)?|등록(?:하기|해|함)?)",
+    _re.I,
+)
+
+
+def _selection_is_not_creation(text: str) -> bool:
+    """Whether the user delegated selection of an existing Epic, not creation of one."""
+    value = str(text or "")
+    explicitly_creates = _EPIC_CREATION.search(value) or _FALLBACK_CREATION.search(value)
+    return bool(_EPIC_SELECTION.search(value)) and not bool(explicitly_creates)
+
+
+def _repair_delegated_selection_plan(plan: dict, grounded_request: str) -> dict:
+    """Keep an existing-entity selection from being promoted to a creation mutation.
+
+    The model may plan internal retrieval, but it cannot upgrade ``choose one for me``
+    into a new Epic. This repair changes only explicit Epic-creation phrases and leaves
+    the requested Task/new-work outcome intact.
+    """
+    if not _selection_is_not_creation(grounded_request):
+        return plan
+
+    def repair(value) -> str:
+        return _EPIC_CREATION_PHRASE.sub("기존 Epic 선택", str(value or ""))
+
+    fixed = dict(plan)
+    fixed["goal"] = repair(fixed.get("goal"))
+    fixed_tasks = []
+    for raw in fixed.get("tasks") or []:
+        if not isinstance(raw, dict):
+            continue
+        task = dict(raw)
+        task["instruction"] = repair(task.get("instruction"))
+        task["completion_criteria"] = [repair(row) for row in
+                                       (task.get("completion_criteria") or [])]
+        fixed_tasks.append(task)
+    fixed["tasks"] = fixed_tasks
+    fixed["blocking_questions"] = [repair(row) for row in
+                                   (fixed.get("blocking_questions") or [])]
+    fixed["assumptions"] = [repair(row) for row in (fixed.get("assumptions") or [])]
+    return fixed
+
+
+_HARD_LITERAL = _re.compile(
+    r"(?:[A-Z][A-Z0-9]{1,9}-\d+|(?:skcc\.)?[a-z]{1,3}\d{3,8}|"
+    r"\d{4}[-./]\d{1,2}[-./]\d{1,2})",
+    _re.I,
+)
+_WEEKDAY = _re.compile(r"(?:월|화|수|목|금|토|일)요일")
+
+
+def _ground_request_assumptions(assumptions: list, grounded_request: str) -> list[str]:
+    """Drop assumptions that invent hard identifiers, dates, users, or weekdays.
+
+    Assumptions may explain a reversible interpretation, but a novel hard literal is not
+    an assumption: downstream roles treat it as a fact. Preserve only rows whose hard
+    literals and weekday labels already occur in human-authored request text.
+    """
+    grounded = str(grounded_request or "").casefold()
+    kept = []
+    for raw in assumptions or []:
+        row = str(raw or "").strip()
+        if not row:
+            continue
+        literals = [match.group(0).casefold() for match in _HARD_LITERAL.finditer(row)]
+        weekdays = [match.group(0) for match in _WEEKDAY.finditer(row)]
+        if any(literal not in grounded for literal in literals):
+            continue
+        if any(weekday not in grounded_request for weekday in weekdays):
+            continue
+        kept.append(row)
+    return kept
 
 
 class RequestArchitect(StructuredAgent):
@@ -304,6 +408,20 @@ Classify what the user wants from the conversation, construct an atomic task pla
         asked = last_user_text(state)
         kws = [k for k in (out.get("keywords") or []) if str(k).strip()]
         planned_tasks = _compact_request_tasks(out, asked, intent)
+        grounded_request = "\n".join(part for part in (
+            str(state.get("request_text") or "").strip(), asked.strip()) if part)
+        request_plan = _repair_delegated_selection_plan({
+            "goal": out.get("goal") or asked,
+            "tasks": planned_tasks or [{
+                "id": "task-1", "kind": "query" if intent in Intent.NEEDS_RESEARCH else "respond",
+                "instruction": asked, "depends_on": [],
+                "write_intent": intent in Intent.DRAFTS_TICKETS,
+                "completion_criteria": ["사용자 요청에 직접 답한다"],
+            }],
+            "blocking_questions": out.get("blocking_questions") or [],
+            "assumptions": _ground_request_assumptions(
+                out.get("assumptions") or [], grounded_request),
+        }, grounded_request)
         patch = {
             "intent": intent,
             "keywords": kws,
@@ -312,17 +430,7 @@ Classify what the user wants from the conversation, construct an atomic task pla
             "sufficient": bool(out.get("sufficient")),
             "playbook": out.get("playbook") or "",
             "answer_depth": _carry_depth(state, out),
-            "request_plan": {
-                "goal": out.get("goal") or asked,
-                "tasks": planned_tasks or [{
-                    "id": "task-1", "kind": "query" if intent in Intent.NEEDS_RESEARCH else "respond",
-                    "instruction": asked, "depends_on": [],
-                    "write_intent": intent in Intent.DRAFTS_TICKETS,
-                    "completion_criteria": ["사용자 요청에 직접 답한다"],
-                }],
-                "blocking_questions": out.get("blocking_questions") or [],
-                "assumptions": out.get("assumptions") or [],
-            },
+            "request_plan": request_plan,
             "trace": note(state, self.name,
                           f"의도={intent}"
                           + (f" · 계획: {str(out.get('plan'))[:80]}" if out.get("plan") else

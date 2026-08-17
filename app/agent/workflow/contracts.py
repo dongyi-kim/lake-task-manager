@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,13 +46,32 @@ class QuerySpec(StrictModel):
     fields: list[str] = Field(default_factory=list)
     completeness: Literal["page", "all", "count"] = "page"
     page_size: int = Field(default=50, ge=1, le=100)
+    # Reserved for persisted legacy plans. QueryRunner currently executes independent reads;
+    # non-empty dependencies are rejected rather than silently ignored.
     depends_on: list[str] = Field(default_factory=list)
 
 
 class QueryPlan(StrictModel):
     queries: list[QuerySpec]
+    # Reserved legacy field; non-empty joins are unsupported and fail before execution.
     joins: list[str] = Field(default_factory=list)
     uncertainty: list[str] = Field(default_factory=list)
+
+
+class QueryIntent(StrictModel):
+    # Model-facing semantic instruction. Operational IDs, projection, ordering and
+    # pagination remain compiler-owned. Cross-read dependencies are not supported.
+    source: Literal["jira", "confluence", "comments", "people", "web", "github"]
+    subject: str = Field(default="", max_length=240)
+    where: str = Field(default="", max_length=240)
+    exhaustive: bool = False
+
+
+class CompactQueryPlan(StrictModel):
+    # Model-facing AST; Query Specialist compiles this to the runtime QueryPlan.
+    reads: list[QueryIntent] = Field(default_factory=list, max_length=8)
+    uncertainty: list[Annotated[str, Field(max_length=240)]] = Field(
+        default_factory=list, max_length=8)
 
 
 class Claim(StrictModel):
@@ -134,13 +153,12 @@ ROLE_CONTRACTS = {
     "research_analyst": ResearchReport,
     "work_architect": WorkPlan,
     "people_advisor": PeopleAdvice,
-    "ticket_author": AuthoredArtifact,
-    "comment_author": AuthoredArtifact,
     "auditor": AuditResult,
     "result_integrator": IntegratedResult,
 }
 
 
 __all__ = ["ArtifactRef", "AtomicTask", "RequestPlan", "QuerySpec", "QueryPlan",
+           "QueryIntent", "CompactQueryPlan",
            "ResearchReport", "WorkPlan", "PeopleAdvice", "AuthoredArtifact",
            "AuditResult", "IntegratedResult", "ROLE_CONTRACTS"]

@@ -744,6 +744,206 @@ def test_structured_evidence_is_merged_into_the_single_source_index():
     assert "LTM 사용 가이드" not in got  # 답에 쓰이지 않은 client-only 문서는 근거가 아님
 
 
+def test_approval_evidence_keeps_decision_sources_and_hides_generic_web_hits():
+    """승인 화면만 압축하고 원본 조사 artifact는 손실하지 않는다."""
+    from copy import deepcopy
+
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    generic_search = "https://docs.starrocks.io/search/"
+    generic_home = "https://www.starrocks.io/"
+    generic_readme = "https://github.com/StarRocks/starrocks/blob/main/README.md"
+    direct_spec = "https://iceberg.apache.org/puffin-spec/"
+    internal_note = "http://127.0.0.1:8080/spaces/DL/pages/44/puffin-ndv"
+    state = {
+        "intent": "plan_work",
+        "approval_token": "approval-1",
+        "request_text": "StarRocks Iceberg Puffin NDV 통계 파이프라인 작업 초안",
+        "draft": {"items": [{
+            "type": "Task",
+            "summary": "StarRocks Puffin NDV 통계 파이프라인 검증",
+            "epic": "DL-7001",
+        }]},
+        "evidence": [
+            {
+                "key": "DL-7001",
+                "title": "Iceberg 통계 수집 도입",
+                "observations": [{
+                    "source": "description",
+                    "text": "StarRocks reader의 Puffin NDV 소비 지원을 검증",
+                }],
+            },
+            {
+                "key": "Search the documentation - StarRocks",
+                "title": "Search the documentation - StarRocks",
+                "url": generic_search,
+                "observations": [
+                    {"source": "external", "text": "Search the documentation"},
+                    {"source": "query", "text": "StarRocks Iceberg Puffin NDV 검색"},
+                ],
+            },
+            {
+                "key": "StarRocks",
+                "title": "StarRocks",
+                "url": generic_home,
+                "observations": [{
+                    "source": "external",
+                    "text": "Open source analytical database product homepage",
+                }],
+            },
+            {
+                "key": "README - StarRocks",
+                "title": "README - StarRocks",
+                "url": generic_readme,
+                "observations": [{
+                    "source": "external",
+                    "text": "StarRocks is a real-time analytical database",
+                }],
+            },
+            {
+                "key": "Puffin NDV 설계 회의",
+                "title": "Puffin NDV 설계 회의",
+                "observations": [{
+                    "source": "document",
+                    "text": "Puffin NDV 파이프라인의 검증 경계를 합의",
+                }],
+            },
+        ],
+        "query_results": [{
+            "source": "web",
+            "result": {
+                "query": "StarRocks Iceberg Puffin NDV",
+                "attempted": True,
+                "results": [
+                    {"url": generic_search, "official": True},
+                    {"url": generic_home, "official": True},
+                    {"url": generic_readme, "official": False},
+                    {
+                        "title": "Apache Iceberg Puffin specification",
+                        "url": direct_spec,
+                        "snippet": "Puffin files store NDV statistics for Iceberg tables",
+                        "official": True,
+                    },
+                ],
+            },
+        }],
+        "query_artifacts": {
+            "external-official": {"body": "complete raw response", "resultCount": 27},
+        },
+        "related_docs": [{"title": "Puffin NDV 설계 회의", "url": internal_note}],
+    }
+    before = deepcopy(state)
+
+    got = _merge_evidence_index("### 티켓 승인 초안\n\n초안 1건", state)
+
+    assert "{{ticket-detail:DL-7001}}" in got
+    assert direct_spec in got
+    assert internal_note in got
+    assert generic_search not in got and generic_home not in got and generic_readme not in got
+    assert "### 조사 한계" not in got
+    assert state == before
+
+
+def test_approval_evidence_reports_search_limit_without_a_direct_official_source():
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator, _approval_reply
+
+    generic_home = "https://www.starrocks.io/"
+    state = {
+        "intent": "plan_work",
+        "approval_token": "approval-2",
+        "request_text": "외부 공식 자료도 조사해서 StarRocks Puffin NDV reader 지원 검증 Task 생성",
+        "draft": {"items": [{
+            "type": "Task", "summary": "Puffin NDV reader 지원 검증", "epic": "DL-7001",
+        }]},
+        "evidence": [
+            {
+                "key": "DL-7001", "title": "Iceberg 통계 도입",
+                "observations": [{"source": "description", "text": "Puffin NDV reader 검증 필요"}],
+            },
+            {
+                "key": "StarRocks", "title": "StarRocks", "url": generic_home,
+                "observations": [{
+                    "source": "external", "text": "Open source analytical database homepage",
+                }],
+            },
+        ],
+        "query_results": [{
+            "source": "web",
+            "result": {
+                "query": "StarRocks Puffin NDV reader",
+                "attempted": True,
+                "results": [{"url": generic_home, "official": True}],
+            },
+        }],
+        "related_docs": [],
+        "messages": [],
+        "trace": [],
+        "_deterministic_reply": True,
+    }
+
+    got = ResultIntegrator().apply(state, {"text": _approval_reply(state)})["reply"]
+
+    assert generic_home not in got
+    assert "### 조사 한계" in got
+    assert "요청 주제를 직접 뒷받침하는 공식 자료는 확인하지 못함" in got
+    assert got.index("### 조사 한계") < got.index("### 근거")
+
+
+def test_research_answer_evidence_keeps_full_cross_source_coverage():
+    """S7/S8 조사 답변에는 승인 화면용 relevance 압축을 적용하지 않는다."""
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    generic_search = "https://docs.starrocks.io/search/"
+    direct_spec = "https://iceberg.apache.org/puffin-spec/"
+    state = {
+        "intent": "ask",
+        "request_text": "내부 기록과 외부 자료를 함께 조사해줘",
+        "evidence": [
+            {
+                "key": "DL-7001", "title": "내부 도입 기록",
+                "observations": [{"source": "comment", "text": "reader 지원은 미확인"}],
+            },
+            {
+                "key": "Search the documentation - StarRocks",
+                "title": "Search the documentation - StarRocks",
+                "url": generic_search,
+                "observations": [{"source": "external", "text": "Search the documentation"}],
+            },
+            {
+                "key": "Puffin Spec", "title": "Puffin Spec", "url": direct_spec,
+                "observations": [{"source": "external", "text": "Puffin file format"}],
+            },
+        ],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("조사 결과", state)
+
+    assert "{{ticket-detail:DL-7001}}" in got
+    assert generic_search in got and direct_spec in got
+    assert "### 조사 한계" not in got
+
+
+def test_change_approval_keeps_the_exact_target_ticket_source():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    state = {
+        "intent": "modify",
+        "approval_token": "approval-3",
+        "request_text": "DL-8123 기한을 다음 주로 변경",
+        "change_plan": {"key": "DL-8123", "changes": {"duedate": "2026-08-24"}},
+        "evidence": [{
+            "key": "DL-8123", "title": "백필 배치 운영",
+            "observations": [{"source": "description", "text": "현재 기한 2026-08-17"}],
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index("### 변경 승인 초안\n\n기한 변경", state)
+
+    assert "{{ticket-detail:DL-8123}}" in got
+
+
 def test_bare_document_reference_is_promoted_to_verified_url_without_duplicate_source():
     """S8 실측: 모델 제목 행과 structured evidence URL이 서로 다른 출처 번호가 됐다.
 

@@ -108,6 +108,7 @@ def test_mcp_client_wraps_external_server_tools(monkeypatch, tmp_path):
     cfg.write_text(_json.dumps({"servers": [{
         "name": "self", "command": _sys.executable,
         "args": ["-m", "app.agent.mcp_server"],
+        "read_tools": ["search_work_history"],
         "env": {**_os.environ, "PYTHONPATH": root, "JIRA_ENV": "mock",
                 "LAKE_AGENT_PROVIDER": "fake"},
         "enabled": True}]}), encoding="utf-8")
@@ -115,7 +116,7 @@ def test_mcp_client_wraps_external_server_tools(monkeypatch, tmp_path):
     tools = mcp_client.tools(refresh=True)
     assert tools, "외부 서버 도구가 하나도 안 붙었다"
     names = {t.name for t in tools}
-    assert any(n.startswith("mcp_self_") for n in names), names
+    assert names == {"mcp_self_search_work_history"}
     # 읽기 도구 하나를 실제로 부른다 — 검색은 mock world 를 상대로 실데이터를 돌려준다
     search = next(t for t in tools if "search" in t.name)
     out = search.invoke({"query": "데이터"})
@@ -130,6 +131,64 @@ def test_mcp_client_is_failsoft_without_config_or_server(monkeypatch, tmp_path):
     assert mcp_client.tools(refresh=True) == []
     bad = tmp_path / "agent-mcp.json"
     bad.write_text(_json.dumps({"servers": [{"name": "ghost", "command": "no-such-binary-xyz",
+                                             "read_tools": ["search_work_history"],
                                              "enabled": True}]}), encoding="utf-8")
     monkeypatch.setattr(mcp_client, "_config_path", lambda: bad)
     assert mcp_client.tools(refresh=True) == []      # 예외가 아니라 빈 목록
+
+
+def test_mcp_client_exposes_only_explicit_exact_read_allowlist(monkeypatch, tmp_path):
+    """A mutation-looking or benign-looking name has no authority without config classification."""
+    import json as _json
+    from types import SimpleNamespace
+    from app.agent import mcp_client
+
+    cfg = tmp_path / "agent-mcp.json"
+    cfg.write_text(_json.dumps({"servers": [{
+        "name": "mixed", "command": "unused", "enabled": True,
+        "read_tools": ["fetch_record"],
+    }]}), encoding="utf-8")
+    advertised = [
+        SimpleNamespace(name="fetch_record", description="fetch", inputSchema={}),
+        SimpleNamespace(name="read_then_delete", description="mutation", inputSchema={}),
+        SimpleNamespace(name="delete_all", description="mutation", inputSchema={}),
+    ]
+    monkeypatch.setattr(mcp_client, "_config_path", lambda: cfg)
+    monkeypatch.setattr(mcp_client, "_list_tools", lambda _spec: advertised)
+
+    wrapped = mcp_client.tools(refresh=True)
+
+    assert [tool.name for tool in wrapped] == ["mcp_mixed_fetch_record"]
+    assert wrapped[0].metadata == {
+        "ltm_source": "mcp", "ltm_capability": "read",
+        "mcp_server": "mixed", "mcp_tool": "fetch_record",
+    }
+
+
+def test_enabled_mcp_without_explicit_read_contract_is_fail_closed(monkeypatch, tmp_path):
+    import json as _json
+    from app.agent import mcp_client
+
+    cfg = tmp_path / "agent-mcp.json"
+    cfg.write_text(_json.dumps({"servers": [{
+        "name": "looks-safe", "command": "unused", "enabled": True,
+    }]}), encoding="utf-8")
+    monkeypatch.setattr(mcp_client, "_config_path", lambda: cfg)
+    monkeypatch.setattr(
+        mcp_client, "_list_tools",
+        lambda _spec: (_ for _ in ()).throw(AssertionError("server must not start")),
+    )
+
+    assert mcp_client.tools(refresh=True) == []
+
+
+def test_mcp_example_conforms_to_versioned_schema():
+    import json as _json
+    from pathlib import Path
+    import jsonschema
+
+    config_dir = Path(__file__).resolve().parents[1] / "config"
+    schema = _json.loads((config_dir / "agent-mcp.schema.json").read_text(encoding="utf-8"))
+    example = _json.loads((config_dir / "agent-mcp.json.example").read_text(encoding="utf-8"))
+
+    jsonschema.Draft202012Validator(schema).validate(example)

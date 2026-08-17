@@ -78,22 +78,26 @@
 `workflow/role_manifest.py`가 유일한 roster다. Role은 alias 없이 canonical id 하나로 식별한다.
 그 id를 graph node, module filename, prompt filename에 그대로 쓰고 class 이름만 PascalCase로 변환한다.
 
-| 역할 | 책임 | 권한·출력 |
-|---|---|---|
-| Request Architect | 복합 요청을 atomic task와 route로 분해 | `intent`, `request_plan`; tool 없음 |
-| Query Specialist | 자연어 조회를 typed `QueryPlan`으로 변환 | query 작성만, 실행 없음 |
-| Query Runner | scope·pagination 계약에 따라 query 실행 | read-only, 전체 artifact 보존 |
-| Research Analyst | Jira·Confluence·comment·people·외부 근거 취합 | 사실·추론·공백 분리, read-only |
-| Knowledge Curator | 조사 결과를 재사용 가능한 전문 brief로 정리 | `knowledge_brief` |
-| Portfolio Analyst | 진척·업무량·정체·활동 해석 | 근거가 있는 finding/caution |
-| Work Architect | 질문, 구조, create/change draft 작성 | draft-only |
-| People Advisor | 실제 roster·이력·workload로 담당 후보 제안 | 근거와 대안, draft-only |
-| Auditor | schema·계층·근거·요청 충족 감사 | blocking error와 warning 분리 |
-| Action Executor | 승인된 exact payload 실행 | 유일한 write 권한 |
-| Result Integrator | 최종 state와 미해결 항목을 한국어로 통합 | 새 조회·write 금지 |
-| Editor Author | 기존 본문을 보존하며 description/comment 초안 작성 | draft-only |
+| 역할 | 종류 | 책임 | 권한·출력 |
+|---|---|---|---|
+| Request Architect | semantic | 복합 요청을 atomic task와 route로 분해 | `intent`, `request_plan`; tool 없음 |
+| Query Specialist | semantic | 자연어 조회를 typed `QueryPlan`으로 변환 | query 작성만, 실행 없음 |
+| Query Runner | service | scope·pagination 계약에 따라 query 실행 | read-only, 전체 artifact 보존 |
+| Research Analyst | semantic | Jira·Confluence·comment·people·외부 근거 취합 | 사실·추론·공백 분리, read-only |
+| Knowledge Curator | semantic | 조사 결과를 재사용 가능한 전문 brief로 정리 | `knowledge_brief` |
+| Portfolio Analyst | semantic | 진척·업무량·정체·활동 해석 | 근거가 있는 finding/caution |
+| Work Architect | semantic | 질문, 구조, create/change draft 작성 | draft-only |
+| People Advisor | semantic | 실제 roster·이력·workload로 담당 후보 제안 | 근거와 대안, draft-only |
+| Auditor | guardrail | schema·계층·근거·요청 충족 감사 | blocking error와 warning 분리 |
+| Action Executor | service | 승인된 exact payload 실행 | 유일한 write 권한 |
+| Result Integrator | semantic | 최종 state와 미해결 항목을 한국어로 통합 | 새 조회·write 금지 |
+| Editor Author | semantic | 기존 본문을 보존하며 description/comment 초안 작성 | draft-only |
 
-역할을 추가하거나 합치기 전에 기존 역할의 I/O와 실패 기준으로 책임을 표현할 수 없는지 확인한다. 역할 수 증가 자체는 목표가 아니다.
+- `semantic`: 모델이 모호한 의미·우선순위·종합을 판단. 소수의 안정적인 Role로 유지하고 각 Role에 필요한 최소 tool allowlist만 제공
+- `service`: typed input을 검증한 코드가 조회·변환·실행. 모델의 ReAct·자유 선택에 안전성과 정확성을 의존하지 않음
+- `guardrail`: 초안·근거·실행 가능성을 수락 또는 차단. 새 사실이나 payload를 작성하거나 write를 실행하지 않음
+
+워크플로 단계마다 Role을 추가하지 않는다. 먼저 기존 semantic Role의 typed I/O, deterministic service, guardrail 검사로 책임을 표현한다. 신규 semantic Role은 분리 전·후를 같은 versioned battery와 evaluator로 비교해 품질 개선을 보이고, token·latency·실패율의 허용 가능한 비용과 기존 Role별 regression 없음을 증명한 뒤에만 추가한다. 증거가 없으면 기존 구조를 유지한다.
 `Planner`, `Historian` 같은 legacy 이름이나 `Portfolio Analyst (PMO)` 같은 alias 표기를 추가하지 않는다.
 호환이 필요해도 alias lookup을 만들지 말고 checkpoint 수명과 외부 API 영향을 검토해 명시적으로 migration한다.
 

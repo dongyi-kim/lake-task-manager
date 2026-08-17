@@ -14,6 +14,7 @@ from app.agent.model_profiles import TaskProfile
 ModelTier = Literal["simple", "complex", "deterministic"]
 Effect = Literal["read", "draft", "write", "respond"]
 SemanticContract = Literal["direct", "semantic_projection"]
+RoleKind = Literal["semantic", "service", "guardrail"]
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,10 @@ class RoleSpec:
     # delegates only the final typed projection when the model profile declares a
     # projection tier.  It is opt-in so each Role can be characterized before migration.
     semantic_contract: SemanticContract = "direct"
+    # ``semantic`` delegates judgment to a model; ``service`` executes a typed deterministic
+    # operation; ``guardrail`` accepts/rejects an artifact without authoring or executing it.
+    # Keep this last with a default so existing positional RoleSpec construction remains compatible.
+    kind: RoleKind = "semantic"
 
     @property
     def prompt_asset(self) -> str:
@@ -57,7 +62,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         "Executes QueryPlan under scope and pagination contracts and preserves complete artifacts.",
         ("query_plan", "thread_id"),
         ("query_results", "query_artifacts", "assignment_completion"),
-        ("query", "web"), has_prompt=False,
+        ("search", "web"), has_prompt=False, kind="service",
     ),
     "research_analyst": RoleSpec(
         "research_analyst", "Research Analyst", "complex", "reasoning",
@@ -65,7 +70,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         ("messages", "request_text", "request_plan", "query_plan", "query_results",
          "query_artifacts", "pre_survey", "seed_map", "topic_dossier", "web_context"),
         ("situation", "evidence", "related_docs", "epic_candidate", "already_exists"),
-        ("search", "web"),
+        ("research", "mcp"),
     ),
     "knowledge_curator": RoleSpec(
         "knowledge_curator", "Knowledge Curator", "complex", "balanced",
@@ -79,12 +84,12 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         ("messages", "intent", "mentioned_keys", "module", "user_id", "user_role",
          "pre_survey", "query_results", "group_activity", "ticket_progress"),
         ("pmo_findings", "pmo_caution", "person_work_snapshot", "daily_priority_snapshot"),
-        ("pmo", "people"),
+        ("portfolio",),
     ),
     "work_architect": RoleSpec(
         "work_architect", "Work Architect", "complex", "reasoning",
         "Converts verified findings into Epic-to-Task-to-SubTask structures and mutation drafts.",
-        ("messages", "request_text", "intent", "mentioned_keys", "situation", "evidence",
+        ("messages", "request_text", "request_plan", "intent", "mentioned_keys", "situation", "evidence",
          "related_docs", "pre_survey", "query_artifacts", "structure_plan",
          "structure_notes", "draft", "change_plan"),
         ("interpretation", "structure_plan", "structure_ok", "questions", "draft", "change_plan"),
@@ -99,13 +104,13 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         "auditor", "Auditor", "complex", "reasoning",
         "Audits schema, hierarchy, evidence, references, and request coverage; separates errors from warnings.",
         ("request_text", "request_plan", "draft", "change_plan", "evidence"),
-        ("review", "revisions"), ("review",), effect="draft",
+        ("review", "revisions"), effect="draft", kind="guardrail",
     ),
     "action_executor": RoleSpec(
         "action_executor", "Action Executor", "deterministic", "fast_structured",
         "Executes exactly once only the write payload that matches the approved fingerprint.",
         ("thread_id", "approval_token", "comment_token", "draft", "change_plan"),
-        ("result",), ("write",), effect="write",
+        ("result",), ("write",), effect="write", kind="service",
     ),
     "result_integrator": RoleSpec(
         "result_integrator", "Result Integrator", "complex", "balanced",
@@ -130,4 +135,71 @@ def role_specs() -> tuple[RoleSpec, ...]:
     return tuple(ROLE_SPECS.values())
 
 
-__all__ = ["RoleSpec", "SemanticContract", "ROLE_SPECS", "role_specs"]
+def tools_for_role(role_id: str, *, include_dynamic: bool = True) -> list:
+    """Resolve one canonical Role's effective tool catalog from ``ROLE_SPECS``.
+
+    Native tool calling and prompt-JSON fallback must receive this same list. Static groups live in
+    :mod:`app.agent.tools`; dynamic external MCP tools are attached only when the manifest explicitly
+    grants the ``mcp`` group. Unknown groups and name collisions fail loudly so a typo cannot silently
+    broaden or empty a Role's runtime permissions.
+    """
+    spec = ROLE_SPECS.get(str(role_id or ""))
+    if spec is None:
+        raise KeyError(f"unknown role id: {role_id}")
+
+    from app.agent import tools as registry
+
+    rows, by_name = [], {}
+
+    def add(group: str, tool_rows) -> None:
+        for tool_obj in tool_rows or []:
+            name = str(getattr(tool_obj, "name", "") or "")
+            if not name:
+                raise RuntimeError(f"unnamed tool in role={spec.id}, group={group}")
+            if group == "mcp":
+                metadata = getattr(tool_obj, "metadata", None)
+                if (not isinstance(metadata, dict)
+                        or metadata.get("ltm_source") != "mcp"
+                        or metadata.get("ltm_capability") != "read"):
+                    raise RuntimeError(
+                        f"unclassified external MCP tool denied for role={spec.id}: {name}"
+                    )
+            previous = by_name.get(name)
+            if previous is not None and previous is not tool_obj:
+                raise RuntimeError(f"tool name collision for role={spec.id}: {name}")
+            if previous is None:
+                by_name[name] = tool_obj
+                rows.append(tool_obj)
+
+    for group in spec.tool_groups:
+        if group == "mcp":
+            if include_dynamic:
+                try:
+                    from app.agent import mcp_client
+                    external = mcp_client.tools()
+                except Exception:
+                    # External read-only MCP is optional and remains fail-soft.
+                    external = []
+                add(group, external)
+            continue
+        if group not in registry.TOOL_GROUPS:
+            raise RuntimeError(f"unknown tool group for role={spec.id}: {group}")
+        add(group, registry.TOOL_GROUPS[group])
+
+    write_names = {tool.name for tool in registry.WRITE_TOOLS}
+    leaked = write_names & set(by_name)
+    if leaked and spec.effect != "write":
+        raise RuntimeError(
+            f"non-write role={spec.id} received write tools: {', '.join(sorted(leaked))}"
+        )
+    return rows
+
+
+def validate_role_tool_groups() -> None:
+    """Validate every static manifest group without starting optional MCP processes."""
+    for spec in ROLE_SPECS.values():
+        tools_for_role(spec.id, include_dynamic=False)
+
+
+__all__ = ["RoleSpec", "RoleKind", "SemanticContract", "ROLE_SPECS", "role_specs",
+           "tools_for_role", "validate_role_tool_groups"]

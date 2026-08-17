@@ -40,6 +40,13 @@ class ResultIntegrator(TextAgent):
         completion = state.get("assignment_completion") or {}
         if completion.get("kind") == "incomplete_assignees":
             return self.apply(state, {"text": _assignment_completion_reply(completion)})
+        # A rejected audit is never an approval turn. Render the blocking facts directly
+        # so a language model cannot accidentally request approval for a payload that the
+        # graph intentionally refused to stage.
+        if (state.get("review") or {}).get("ok") is False:
+            return self.apply({**state, "_deterministic_reply": True,
+                               "_blocked_review_reply": True},
+                              {"text": _blocked_review_reply(state)})
         # 질문 폼만 있는 턴은 구조화된 질문과 필수 사유가 이미 최종 데이터다. 예전에는
         # 35B 모델에 이 데이터를 다시 서술시킨 뒤 apply()에서 그 답을 전부 버리고
         # `_question_only_reply`로 교체했다. 사용자에게 보이지도 않는 호출이 로컬 MLX에서
@@ -358,6 +365,16 @@ class ResultIntegrator(TextAgent):
         # model-written filename/placeholder link rows before grounding so the diagnostic
         # itself does not leak into an otherwise valid answer.
         text = _drop_direct_input_source_rows(text)
+        # A failed authoritative review is an execution-boundary response, not a research
+        # answer.  Running it through the normal evidence merger used to append unrelated Jira,
+        # Confluence, and web sources collected before the draft was rejected.  Keep only safe
+        # token/style rendering and return before any evidence or postcheck augmentation.
+        if state.get("_blocked_review_reply"):
+            text = _render_reply_tokens(text)
+            text = _enforce_reply_style(text)
+            from langchain_core.messages import AIMessage
+            return {"reply": text, "messages": [AIMessage(content=text)],
+                    "trace": note(state, self.name, f"{len(text)}자 · 검토 보류")}
         _qs = [q for q in (state.get("questions") or []) if isinstance(q, dict)]
         # A question-only turn has no executable payload for the prose model to summarize.
         # Letting it narrate the surrounding research produced invented Epic/module claims in
@@ -626,6 +643,31 @@ def _cell(value) -> str:
     if isinstance(value, list):
         value = ", ".join(map(str, value))
     return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _blocked_review_reply(state) -> str:
+    """Non-actionable response for a draft that failed the authoritative review gate."""
+    review = state.get("review") or {}
+    rows = []
+    for error in review.get("errors") or []:
+        if not isinstance(error, dict):
+            continue
+        field = str(error.get("field") or "").strip()
+        message = str(error.get("message") or "").strip()
+        if message:
+            rows.append((field + ": " if field else "") + message)
+    for problem in review.get("problems") or []:
+        if not isinstance(problem, dict):
+            continue
+        message = str(problem.get("message") or "").strip()
+        fix = str(problem.get("fix") or "").strip()
+        if message:
+            rows.append(message + ((" → " + fix) if fix else ""))
+    rows = list(dict.fromkeys(rows))[:6]
+    if not rows:
+        rows = ["검토를 통과하지 못한 항목 확인 필요"]
+    return ("### 검토 보류\n\n- 티켓 생성·변경 실행 없음\n- 실행 대기 카드 없음\n\n"
+            "### 수정 필요\n\n" + "\n".join(f"- {row}" for row in rows))
 
 
 def _approval_reply(state) -> str:
@@ -1906,15 +1948,18 @@ def _ensure_external_research_coverage(text: str, state) -> str:
     asked = request_text(state) + " " + last_user_text(state)
     if not ("외부" in asked and any(w in asked for w in ("조사", "자료", "공식", "근거"))):
         return text
+    approval_display = _approval_display_mode(state)
+    display_evidence = (_approval_display_evidence(state) if approval_display
+                        else (state.get("evidence") or []))
     sources = []
-    for evidence in (state.get("evidence") or []):
+    for evidence in display_evidence:
         if not isinstance(evidence, dict):
             continue
         url = str(evidence.get("url") or "").strip()
         if _is_external_source_url(url):
             sources.append((str(evidence.get("title") or "공식 자료").strip(), url,
                             str(evidence.get("why") or "").strip()))
-    if not sources:
+    if not sources and not approval_display:
         for title, url in _re.findall(
                 r"^-\s*(.+?)\s*·\s*공식\s*—[^\n]*\((https?://[^)\s]+)\)\s*$",
                 str(state.get("web_context") or ""), _re.M):
@@ -2151,6 +2196,281 @@ def _is_non_renderable_evidence(item: dict) -> bool:
     return _is_direct_input_pseudo_source(item) or _is_negative_search_pseudo_source(item)
 
 
+_APPROVAL_RELEVANCE_WORD_RE = _re.compile(
+    r"[A-Za-z][A-Za-z0-9._+-]{1,}|[가-힣]{2,}", _re.I,
+)
+_APPROVAL_RELEVANCE_STOP = {
+    "add", "analytical", "analytics", "bug", "change", "create", "creation", "current",
+    "data", "database", "delete", "docs",
+    "documentation", "document", "draft", "epic", "existing", "github", "home",
+    "homepage", "https", "issue", "modify", "official", "open", "org", "page", "plan",
+    "please", "project", "readme", "result", "results", "review", "search", "source",
+    "story", "support", "system", "task", "technology", "ticket", "update", "validation",
+    "verify", "work",
+    "검토", "결과", "공식", "근거", "기존", "변경", "생성", "수정", "신규", "업무",
+    "요청", "작업", "지원", "초안", "추가", "확인", "필요", "데이터", "문서", "자료",
+    "시스템", "플랫폼", "티켓",
+}
+
+
+def _approval_display_mode(state) -> bool:
+    """Whether the current reply is a create/change payload awaiting approval."""
+    draft = state.get("draft") or {}
+    plan = state.get("change_plan") or {}
+    return bool(state.get("approval_token")
+                and (draft.get("items") or plan.get("key") or plan.get("keys")))
+
+
+def _approval_relevance_words(value) -> set[str]:
+    """Extract stable subject anchors without treating workflow verbs as evidence."""
+    words: set[str] = set()
+    korean_suffixes = (
+        "으로부터", "에게서", "에서는", "으로", "에서", "에게", "에는", "까지", "부터",
+        "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "만",
+    )
+    for match in _APPROVAL_RELEVANCE_WORD_RE.findall(str(value or "")):
+        token = match.casefold().strip("._+-")
+        if (len(token) < 2 or token in _APPROVAL_RELEVANCE_STOP
+                or _re.fullmatch(r"[a-z][a-z0-9]*-\d+", token, _re.I)):
+            continue
+        words.add(token)
+        if _re.fullmatch(r"[a-z0-9._+-]+", token, _re.I):
+            for part in _re.split(r"[._+-]+", token):
+                if len(part) >= 2 and part not in _APPROVAL_RELEVANCE_STOP:
+                    words.add(part)
+        elif _re.fullmatch(r"[가-힣]+", token):
+            for suffix in korean_suffixes:
+                if token.endswith(suffix) and len(token) - len(suffix) >= 2:
+                    stem = token[:-len(suffix)]
+                    if stem not in _APPROVAL_RELEVANCE_STOP:
+                        words.add(stem)
+                    break
+    return words
+
+
+def _approval_focus_material(state) -> str:
+    return " ".join((
+        request_text(state), last_user_text(state),
+        json.dumps(state.get("draft") or {}, ensure_ascii=False, default=str),
+        json.dumps(state.get("change_plan") or {}, ensure_ascii=False, default=str),
+    ))
+
+
+def _approval_source_material(item: dict) -> str:
+    observations = []
+    for observation in item.get("observations") or []:
+        if not isinstance(observation, dict) or observation.get("source") == "query":
+            continue
+        observations.append(str(observation.get("text") or ""))
+    key = str(item.get("key") or "").strip()
+    if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+        key = ""
+    return " ".join((key, str(item.get("title") or ""),
+                     str(item.get("url") or ""), *observations))
+
+
+def _approval_source_is_relevant(item: dict, state) -> bool:
+    """Prove display relevance from exact payload refs or substantive topic overlap.
+
+    Query provenance is intentionally excluded from source material: it repeats the search
+    phrase and made a landing page appear relevant merely because the right words were typed
+    into the search box.
+    """
+    payload = _approval_focus_material(state)
+    key = str(item.get("key") or "").strip().upper()
+    url = str(item.get("url") or "").strip()
+    if not url and any(
+        isinstance(observation, dict) and observation.get("source") in {"external", "web"}
+        for observation in (item.get("observations") or [])
+    ):
+        return False
+    exact_keys = {found.upper() for found in _re.findall(
+        r"(?<![A-Z0-9-])([A-Z][A-Z0-9]*-\d+)(?![A-Z0-9-])", payload, _re.I,
+    )}
+    exact_urls = {found.rstrip(".,;:!?)\"'") for found in _re.findall(
+        r"https?://[^\s)\]}]+", payload, _re.I,
+    )}
+    if (_re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I) and key in exact_keys) \
+            or (url and url.rstrip("/") in {value.rstrip("/") for value in exact_urls}):
+        return True
+
+    focus_words = _approval_relevance_words(payload)
+    source_words = _approval_relevance_words(_approval_source_material(item))
+    observation_words = _approval_relevance_words(" ".join(
+        str(observation.get("text") or "")
+        for observation in (item.get("observations") or [])
+        if isinstance(observation, dict) and observation.get("source") != "query"
+    ))
+    overlap = focus_words & source_words
+    substantive_overlap = focus_words & observation_words
+    if not overlap or not substantive_overlap:
+        return False
+    required = 1 if len(focus_words) <= 1 else 2
+    if len(overlap) >= required:
+        return True
+    # Research synthesis can explicitly record that one narrow source was used for a
+    # decision.  A single matching subject anchor is enough only with that direct/supporting
+    # judgment; unreviewed QueryPlan hits remain ``unknown`` and must meet the stricter test.
+    if _is_external_source_url(url):
+        return False
+    return str(item.get("fitness") or "").strip().lower() in {"direct", "supporting"}
+
+
+def _approval_url_identity(url: str) -> str:
+    from urllib.parse import urlsplit, urlunsplit
+    try:
+        parsed = urlsplit(str(url or "").strip())
+        return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(),
+                           parsed.path.rstrip("/"), parsed.query, ""))
+    except Exception:
+        return str(url or "").strip().rstrip("/").casefold()
+
+
+def _approval_evidence_identity(item: dict) -> str:
+    key = str(item.get("key") or "").strip().upper()
+    if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+        return "ticket:" + key
+    url = str(item.get("url") or "").strip()
+    if url:
+        return "url:" + _approval_url_identity(url)
+    return "text:" + str(item.get("title") or item.get("key") or "").strip().casefold()
+
+
+def _approval_query_hit_evidence(state) -> list[dict]:
+    """Expose directly relevant raw web hits even when the compact ledger kept another hit."""
+    candidates = []
+    for row in (state.get("query_results") or []):
+        if not isinstance(row, dict) or row.get("source") not in ("web", "github"):
+            continue
+        for hit in ((row.get("result") or {}).get("results") or []):
+            if not isinstance(hit, dict):
+                continue
+            title = str(hit.get("title") or hit.get("name") or "").strip()
+            url = str(hit.get("url") or "").strip()
+            detail = str(hit.get("snippet") or hit.get("description") or "").strip()
+            if not url or not detail:
+                continue
+            candidates.append({
+                "key": title or url,
+                "title": title or url,
+                "url": url,
+                "confidence": "high" if hit.get("official") is True else "unknown",
+                "fitness": "unknown",
+                "limitations": "검색 결과이며 내부 적용 상태를 직접 증명하지 않음",
+                "observations": [{"source": "external", "text": detail}],
+            })
+    return candidates
+
+
+def _approval_display_evidence(state) -> list[dict]:
+    """Return a display-only projection; never mutate the research ledger or raw artifacts."""
+    visible: list[dict] = []
+    seen: set[str] = set()
+    for item in (state.get("evidence") or []):
+        if (not isinstance(item, dict) or _is_non_renderable_evidence(item)
+                or not _approval_source_is_relevant(item, state)):
+            continue
+        identity = _approval_evidence_identity(item)
+        if identity and identity not in seen:
+            seen.add(identity)
+            visible.append(item)
+    raw_external_added = 0
+    for item in _approval_query_hit_evidence(state):
+        if not _approval_source_is_relevant(item, state):
+            continue
+        identity = _approval_evidence_identity(item)
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        visible.append(item)
+        raw_external_added += 1
+        if raw_external_added == 3:
+            break
+    return visible
+
+
+def _approval_official_external_urls(state) -> set[str]:
+    official: set[str] = set()
+
+    def visit(value) -> None:
+        if isinstance(value, dict):
+            url = str(value.get("url") or "").strip()
+            if url and (value.get("official") is True
+                        or str(value.get("official") or "").casefold() == "true"):
+                official.add(_approval_url_identity(url))
+            for child in value.values():
+                if isinstance(child, (dict, list, tuple)):
+                    visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    visit(state.get("query_results") or [])
+    for line in str(state.get("web_context") or "").splitlines():
+        if not _re.search(r"(?:·\s*공식\b|official\s*=\s*true)", line, _re.I):
+            continue
+        for url in _re.findall(r"https?://[^\s)\]}]+", line, _re.I):
+            official.add(_approval_url_identity(url.rstrip(".,;:!?")))
+    for item in (state.get("evidence") or []):
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        query_notes = " ".join(
+            str(observation.get("text") or "")
+            for observation in (item.get("observations") or [])
+            if isinstance(observation, dict) and observation.get("source") == "query"
+        )
+        if _re.search(r"official\s*=\s*true", query_notes, _re.I):
+            official.add(_approval_url_identity(item["url"]))
+    return official
+
+
+def _approval_external_search_attempted(state) -> bool:
+    if any(isinstance(row, dict) and row.get("source") in ("web", "github")
+           for row in (state.get("query_results") or [])):
+        return True
+    context = str(state.get("web_context") or "")
+    if _re.search(r"\[(?:web|github)\s*검색\]|웹\s*검색|GitHub\s*검색", context, _re.I):
+        return True
+    for item in (state.get("evidence") or []):
+        if not isinstance(item, dict):
+            continue
+        for observation in item.get("observations") or []:
+            if (isinstance(observation, dict) and observation.get("source") == "query"
+                    and _re.search(r"QueryPlan\s+(?:web|github):",
+                                   str(observation.get("text") or ""), _re.I)):
+                return True
+    return False
+
+
+def _drop_approval_evidence_section(text: str) -> str:
+    """Rebuild deterministic approval provenance from its filtered structured projection."""
+    value = str(text or "")
+    heading = _re.search(r"(?m)^#{1,4}\s*(?:근거|참조)\s*$", value)
+    if not heading:
+        return value.strip()
+    following = _re.search(r"(?m)^#{1,4}\s+", value[heading.end():])
+    end = heading.end() + following.start() if following else len(value)
+    return "\n\n".join(part.strip() for part in (value[:heading.start()], value[end:])
+                         if part.strip())
+
+
+def _add_approval_research_limit(text: str, state, evidence: list[dict]) -> str:
+    if not _approval_external_search_attempted(state):
+        return str(text or "")
+    official = _approval_official_external_urls(state)
+    has_direct_official = any(
+        _is_external_source_url(str(item.get("url") or ""))
+        and _approval_url_identity(str(item.get("url") or "")) in official
+        for item in evidence
+    )
+    value = str(text or "").strip()
+    if has_direct_official or _re.search(r"(?m)^###\s*조사\s*한계\s*$", value):
+        return value
+    block = ("### 조사 한계\n\n"
+             "- 외부 검색은 수행했지만 요청 주제를 직접 뒷받침하는 공식 자료는 확인하지 못함")
+    return value.rstrip() + "\n\n" + block
+
+
 def _drop_direct_input_source_rows(text: str) -> str:
     """Remove legacy pseudo-source rows before canonical numbering and late grounding."""
     lines = str(text or "").splitlines()
@@ -2184,12 +2504,39 @@ def _drop_direct_input_source_rows(text: str) -> str:
 
 def _merge_evidence_index(text: str, state) -> str:
     """Union model references and structured research provenance in the persisted reply."""
-    evidence = [item for item in (state.get("evidence") or [])
-                if isinstance(item, dict) and not _is_non_renderable_evidence(item)]
+    approval_display = _approval_display_mode(state)
+    evidence = (_approval_display_evidence(state) if approval_display else
+                [item for item in (state.get("evidence") or [])
+                 if isinstance(item, dict) and not _is_non_renderable_evidence(item)])
+    value = _drop_direct_input_source_rows(_fold_standalone_sources(text))
+    related_docs = state.get("related_docs") or []
+    if approval_display:
+        # Approval prose is a deterministic payload projection. Rebuild its source tail from
+        # the filtered view so an earlier generic search block cannot survive a second pass.
+        value = _drop_approval_evidence_section(value)
+        value = _add_approval_research_limit(value, state, evidence)
+        visible_urls = {_approval_url_identity(str(item.get("url") or ""))
+                        for item in evidence if item.get("url")}
+        visible_titles = {
+            str(item.get("title") or item.get("key") or "").strip().casefold()
+            for item in evidence
+            if not _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+",
+                                 str(item.get("key") or "").strip(), _re.I)
+        }
+        title_counts: dict[str, int] = {}
+        for doc in related_docs:
+            if isinstance(doc, dict) and doc.get("title"):
+                title = str(doc["title"]).strip().casefold()
+                title_counts[title] = title_counts.get(title, 0) + 1
+        related_docs = [doc for doc in related_docs if isinstance(doc, dict) and (
+            _approval_url_identity(str(doc.get("url") or "")) in visible_urls
+            or (str(doc.get("title") or "").strip().casefold() in visible_titles
+                and title_counts.get(str(doc.get("title") or "").strip().casefold()) == 1)
+        )]
     return canonicalize_evidence_index(
-        _drop_direct_input_source_rows(_fold_standalone_sources(text)),
+        value,
         evidence=evidence,
-        related_docs=state.get("related_docs") or [],
+        related_docs=related_docs,
     )
 
 
@@ -2340,14 +2687,17 @@ def _source_quality_requested(state) -> bool:
 
 def _render_requested_source_quality(text: str, state) -> str:
     """Project structured source judgments into one complete, deterministic table."""
-    evidence = [row for row in (state.get("evidence") or [])
-                if isinstance(row, dict) and not _is_non_renderable_evidence(row)]
+    approval_display = _approval_display_mode(state)
+    evidence = (_approval_display_evidence(state) if approval_display else
+                [row for row in (state.get("evidence") or [])
+                 if isinstance(row, dict) and not _is_non_renderable_evidence(row)])
     if not evidence or not _source_quality_requested(state):
         return str(text or "")
     confidence = {"high": "높음", "medium": "중간", "low": "낮음", "unknown": "미확인"}
     fitness = {"direct": "직접", "supporting": "보조", "context-only": "맥락", "unknown": "미확인"}
     rows = ["### 출처 평가", "", "| 출처 | 신뢰도 | 요청 적합성 | 한계 |", "|---|---|---|---|"]
     represented_urls = set()
+    approval_official = _approval_official_external_urls(state) if approval_display else set()
     for item in evidence:
         key = str(item.get("key") or "").strip().upper()
         title = str(item.get("title") or item.get("key") or "출처").strip()
@@ -2365,9 +2715,10 @@ def _render_requested_source_quality(text: str, state) -> str:
         if _is_external_source_url(url):
             # An external specification can be authoritative about its own format, never
             # direct proof that this LTM/Jira project is production-ready.
-            official = bool(_re.search(
-                rf"(?m)^-\s*[^\n]*·\s*공식\s*—[^\n]*{_re.escape(url)}",
-                str(state.get("web_context") or "")))
+            official = (_approval_url_identity(url) in approval_official
+                        if approval_display else bool(_re.search(
+                            rf"(?m)^-\s*[^\n]*·\s*공식\s*—[^\n]*{_re.escape(url)}",
+                            str(state.get("web_context") or ""))))
             raw_confidence = "high" if official else "medium"
             raw_fitness = "supporting"
             limitation = limitation or "내부 운영 적용 여부는 직접 판단하지 않음"

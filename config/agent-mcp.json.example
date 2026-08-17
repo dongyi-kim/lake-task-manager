@@ -1,11 +1,12 @@
 {
-  "_comment": "외부(public) MCP 서버 목록. agent-mcp.json 으로 복사하면 켜진다. 각 서버의 도구가 조사(ResearchAnalyst) 도구로 합류한다. 서버 실행 파일이 없으면 그 서버만 조용히 빠진다(fail-soft).",
+  "_comment": "외부(public) MCP 서버 목록. agent-mcp.json 으로 복사하면 켜진다. read_tools에 정확히 명시한 읽기 도구만 ResearchAnalyst에 합류한다. 누락/오류 시 해당 서버는 도구를 노출하지 않는다(fail-closed). 서버 실행 실패는 해당 서버만 빠진다(fail-soft).",
   "servers": [
     {
       "_comment": "웹 페이지 본문 열기 — DuckDuckGo 검색은 스니펫만 주므로 본문 정독은 이 도구가 한다. 설치: pip install mcp-server-fetch (또는 uvx)",
       "name": "fetch",
       "command": "python",
       "args": ["-m", "mcp_server_fetch"],
+      "read_tools": ["fetch"],
       "enabled": false
     }
   ]

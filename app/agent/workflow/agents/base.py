@@ -42,6 +42,14 @@ STRUCTURED_END_TOKEN = "<END_JSON>"
 SEMANTIC_MEMO_END_TOKEN = "<END_SEMANTIC_MEMO>"
 
 
+def _call_config(role_id: str, output_contract: str) -> dict:
+    """Attach non-sensitive per-call labels consumed by :mod:`app.agent.usage`."""
+    return {"metadata": {
+        "ltm_role_id": str(role_id or ""),
+        "ltm_output_contract": str(output_contract or ""),
+    }}
+
+
 def _prompt_json_contract(schema_text: str) -> str:
     """Strict JSON contract with a transport stop marker for non-native providers.
 
@@ -110,12 +118,14 @@ def _capability_is_unsupported(exc: Exception, capability: str) -> bool:
 
 def invoke_schema(schema: dict, messages: list, tier: str = "complex",
                   profile: str = "fast_structured", temperature: float | None = None,
-                  name: str = "AdhocOutput", llm_factory=None) -> dict:
+                  name: str = "AdhocOutput", llm_factory=None, role_id: str = "",
+                  call_label: str = "structured") -> dict:
     """Role 밖의 보정 호출도 공통 structured-output fallback을 사용하게 한다."""
     import json
     from app.agent import capabilities
 
     named = _named(schema, name)
+    observed_role = role_id or name
     def make_llm(**overrides):
         values = {"profile": profile, "output_contract": "structured", **overrides}
         if temperature is not None and "temperature" not in values:
@@ -136,7 +146,8 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
                     "Return exactly one JSON object that satisfies this JSON Schema:\n"
                     + json.dumps(schema, ensure_ascii=False))))
             out = make_llm().with_structured_output(
-                named, method=method).invoke(call_messages)
+                named, method=method).invoke(
+                    call_messages, config=_call_config(observed_role, call_label))
             out = _validate_output(out, schema)
             capabilities.record(tier, capability, True)
             return out
@@ -149,6 +160,7 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
             list(messages) + [HumanMessage(content=_prompt_json_contract(
                 json.dumps(schema, ensure_ascii=False)))],
             stop=[STRUCTURED_END_TOKEN],
+            config=_call_config(observed_role, call_label),
         )
         raw_text = str(getattr(raw, "content", raw) or "")
         parsed = _loads_loose(raw_text)
@@ -168,6 +180,7 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
                                   + json.dumps(schema, ensure_ascii=False)
                                   + "\n\nOutput to repair:\n" + raw_text[:12000]))],
             stop=[STRUCTURED_END_TOKEN],
+            config=_call_config(observed_role, call_label + "_repair"),
         )
         parsed = _loads_loose(str(getattr(raw, "content", raw) or ""))
         if parsed is None:
@@ -286,7 +299,8 @@ class Agent(ABC):
                         "Return exactly one JSON object satisfying this JSON Schema:\n"
                         + json.dumps(schema, ensure_ascii=False))))
                 raw = make_llm().with_structured_output(
-                    _named(schema, self.name), method=method).invoke(call_messages)
+                    _named(schema, self.name), method=method).invoke(
+                        call_messages, config=_call_config(self.name, output_contract))
                 out = _validate_output(raw, schema)
                 capabilities.record(transport_tier, capability, True)
                 return out
@@ -302,7 +316,8 @@ class Agent(ABC):
         raw_text = ""
         try:
             raw = make_llm().invoke(
-                prompt_messages, stop=[STRUCTURED_END_TOKEN])
+                prompt_messages, stop=[STRUCTURED_END_TOKEN],
+                config=_call_config(self.name, output_contract))
             raw_text = str(getattr(raw, "content", raw) or "")
             parsed = _loads_loose(raw_text)
             if parsed is None:
@@ -324,7 +339,8 @@ class Agent(ABC):
                 HumanMessage(content=(repair_source + f"Validation error:\n{validation_error}"
                                       f"\n\nJSON Schema:\n{schema_text}"
                                       f"\n\nOutput to repair:\n{raw_text[:12000]}"))
-                ], stop=[STRUCTURED_END_TOKEN])
+                ], stop=[STRUCTURED_END_TOKEN],
+                config=_call_config(self.name, output_contract + "_repair"))
             parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
             if parsed is None:
                 raise ValueError("repair 결과에서 JSON 객체를 찾지 못했습니다.")
@@ -343,17 +359,32 @@ class Agent(ABC):
         """
         schema = self.schema_for(state)
         fields = ", ".join(str(k) for k in (schema.get("properties") or {}))
+        from app.agent.workflow.anchors import (
+            format_anchor_contract, format_requested_outcome_contract,
+        )
+        anchor_contract = format_anchor_contract(state)
+        outcome_contract = format_requested_outcome_contract(state)
         memo_instruction = (
             "Produce a compact semantic decision memo for a later typed projection. "
             "Resolve the task using the system instructions and evidence above. Preserve exact "
             "ticket keys, identifiers, names, quoted facts, hierarchy, and unresolved gaps. "
             "Do not invent a value merely to fill a field. Do not output JSON or Markdown. "
             f"Cover these top-level output fields: {fields or '(schema-defined fields)'}. "
-            f"End the memo with {SEMANTIC_MEMO_END_TOKEN}."
+            + ((anchor_contract + " Preserve every listed anchor in the semantic memo; do not "
+                "translate, renumber, singularize, or silently omit it. ") if anchor_contract else "")
+            + ((outcome_contract + " Treat each requested-outcome instruction as an authoritative "
+                "user result. Copy its contract id, outcome id, source task id, and instruction "
+                "verbatim into the memo. Evidence may refine implementation context but must not "
+                "replace, reverse, or omit the requested action and object. Record which root or "
+                "child item serves each outcome; distinguish a child stage inherited from its "
+                "parent from a child serving a different explicit outcome. ")
+               if outcome_contract else "")
+            + f"End the memo with {SEMANTIC_MEMO_END_TOKEN}."
         )
         raw = self.llm(output_contract="semantic_memo").invoke(
             list(messages) + [HumanMessage(content=memo_instruction)],
             stop=[SEMANTIC_MEMO_END_TOKEN],
+            config=_call_config(self.name, "semantic_memo"),
         )
         metadata = getattr(raw, "response_metadata", None) or {}
         finish = str(metadata.get("finish_reason") or metadata.get("stop_reason") or "").lower()
@@ -374,12 +405,28 @@ class Agent(ABC):
                 "memo to the target JSON Schema. Preserve exact identifiers and facts. Never "
                 "add, reinterpret, or infer information absent from the memo; represent missing "
                 "values only as the schema permits.")),
-            HumanMessage(content="Semantic memo:\n" + memo),
+            HumanMessage(content="Semantic memo:\n" + memo
+                         + (("\n\n" + anchor_contract
+                             + "\nKeep each listed anchor verbatim in every relevant title, body, "
+                               "or requested field; never turn an ordinal into a bare suffix.")
+                            if anchor_contract else "")
+                         + (("\n\n" + outcome_contract
+                             + "\nWhen the target schema exposes outcome contract fields, copy the "
+                               "contract id and bind every draft item to the applicable opaque "
+                               "outcome id(s). Preserve the requested action and object in title, "
+                               "scope, and acceptance criteria; never substitute an evidence method "
+                               "for the requested result. A nested child stage may inherit its "
+                               "parent's mapping; emit child outcome refs only for a distinct explicit "
+                               "mapping and never copy every contract id to every child.")
+                            if outcome_contract else "")),
         ]
+        repair_context = (memo
+                          + (("\n\n" + anchor_contract) if anchor_contract else "")
+                          + (("\n\n" + outcome_contract) if outcome_contract else ""))
         return self._invoke_structured_transport(
             state, projection_messages, output_contract="typed_projection",
             capability_tier=projection_tier, task_profile="fast_structured",
-            repair_context=memo,
+            repair_context=repair_context,
         )
 
     def invoke_structured(self, state: AgentState, messages: list) -> dict:
@@ -424,7 +471,8 @@ class StructuredAgent(Agent):
                     self.task(state)
                     + "\n\n---\n**Required output format:** Return exactly one JSON object satisfying "
                       "the JSON Schema below. Include no prose, preface, or code fence; begin and end with braces.\n"
-                    + json.dumps(self.schema_for(state), ensure_ascii=False)))])
+                    + json.dumps(self.schema_for(state), ensure_ascii=False)))],
+                config=_call_config(self.name, "structured_fallback"))
             return _loads_loose(str(getattr(msg, "content", msg) or ""))
         except Exception:
             return None
@@ -445,7 +493,8 @@ class TextAgent(Agent):
     def _run(self, state: AgentState) -> dict:
         try:
             msg = self.llm().invoke([SystemMessage(content=self.system(state)),
-                                     HumanMessage(content=self.task(state))])
+                                     HumanMessage(content=self.task(state))],
+                                    config=_call_config(self.name, "text"))
             return self.apply(state, {"text": str(getattr(msg, "content", msg) or "").strip()})
         except Exception as e:
             return self.fallback(state, e)
@@ -509,7 +558,7 @@ class ToolAgent(Agent):
             # 병렬 tool call은 probe 결과가 true일 때만 켠다. 모르는 서버에는 보수적으로 false.
             msg = self.llm().bind_tools(
                 self.tools, parallel_tool_calls=profile.get("parallel_tools") is True
-            ).invoke(scratch["messages"])
+            ).invoke(scratch["messages"], config=_call_config(self.name, "tool_decision"))
             capabilities.record(self.tier, "tools", True)
         except Exception as exc:
             capabilities.record(self.tier, "tools", False, str(exc))
@@ -550,7 +599,8 @@ class ToolAgent(Agent):
         parsed = invoke_schema(decision_schema,
                                list(scratch.get("messages") or []) + [instruction],
                                tier=self.tier, profile="fast_structured", name="ToolDecision",
-                               llm_factory=self.llm)
+                               llm_factory=self.llm, role_id=self.name,
+                               call_label="tool_decision")
         calls = []
         for item in parsed.get("tool_calls") or []:
             name = str((item or {}).get("name") or "")

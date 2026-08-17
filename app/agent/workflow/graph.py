@@ -44,7 +44,11 @@ import re
 
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.workflow.agents.people_advisor import PeopleAdvisor, merge_assignments
+from app.agent.workflow.agents.people_advisor import (
+    PeopleAdvisor,
+    _normalize_resolved_assignment_rationale,
+    merge_assignments,
+)
 from app.agent.workflow.agents.knowledge_curator import KnowledgeCurator
 from app.agent.workflow.agents.research_analyst import ResearchAnalyst
 from app.agent.workflow.agents.action_executor import ActionExecutor
@@ -229,19 +233,20 @@ def route_after_auditor(state: AgentState) -> str:
     상한 소진 뒤의 갈래가 중요하다:
       · **기계 검증 오류**(없는 부모·틀린 타입)가 남았으면 → respond. 만들어 봤자 Jira 가
         거부하므로 승인 카드를 줄 이유가 없다.
-      · **LLM 검열 의견만** 남았으면 → propose. 검열 의견은 경고로 카드에 실린다.
-        ★ 검열자가 만족할 때까지 승인 자체를 막으면 **사람이 판단할 기회가 사라진다** —
-        실제로 멀쩡한 근거를 "불충분"이라며 두 번 반려해 사용자가 승인할 길이 없어졌다.
-        최종 판단은 검열자가 아니라 사람이 한다.
+      · **의미 검열 문제**가 남았으면 → respond. 권위 상태와 모순되는 오판은 Auditor가
+        먼저 제거하므로, 여기 남은 blocking problem과 실행 가능한 승인 카드를 동시에
+        노출하지 않는다.
     """
     review = state.get("review") or {}
     if review.get("ok"):
         return "propose"
-    # 재작성은 **기계 오류가 있을 때만** — LLM 의견만으로 왕복하면 한 턴이 200초를 넘겼다
-    # (실측: 반려 1회 = 호출 +4~8회). 의견은 카드에 '검토 의견'으로 실려 사람이 판단한다.
-    if review.get("errors") and (state.get("revisions") or 0) < MAX_REVISIONS:
+    # A genuine blocking problem gets one bounded repair opportunity. Contradicted model
+    # findings were already removed by Auditor grounding, so paying this retry only happens
+    # for an actionable defect. Exhaustion still fails closed with no pending payload.
+    if (review.get("errors") or review.get("problems")) \
+            and (state.get("revisions") or 0) < MAX_REVISIONS:
         return "revise"
-    return "respond" if review.get("errors") else "propose"
+    return "respond"
 
 
 def route_after_result_integrator(state: AgentState) -> str:
@@ -273,7 +278,10 @@ def _merge_assignments(state: AgentState) -> dict:
     #   돌았는데, 자식 담당의 주인이 PeopleAdvisor 로 옮겨 가면서(§5-c) 덮어쓰기 뒤편에 남았다:
     #   실측(생성 스위트 STR1) 테이블 29건이 WorkArchitect 에서 고루 나뉜 뒤 제안으로 전부 한
     #   사람에게 갔다. 규칙은 work_architect.spread_volume_split 한 벌이고, 부르는 자리가 둘이다.
-    from app.agent.workflow.agents.work_architect import spread_volume_split
+    from app.agent.workflow.agents.work_architect import (
+        _preserve_required_user_anchors,
+        spread_volume_split,
+    )
     spread_volume_split(draft.get("items") or [])
     try:
         from app.agent.tools._ctx import client
@@ -284,6 +292,14 @@ def _merge_assignments(state: AgentState) -> dict:
                 it["assignee"] = _resolve_user(u, exists)
     except Exception:
         pass                              # lookup 실패가 초안 자체를 버리게 하면 안 된다
+    # WorkArchitect and PeopleAdvisor run as a fan-out.  Their join may retain assignment
+    # metadata from the newer branch while taking a stale pre-normalization title/body from
+    # the other.  Re-seal immutable user anchors at the actual pending-payload boundary.
+    _preserve_required_user_anchors(state, draft.get("items") or [])
+    # People Advisor runs beside Work Architect. At this final join the assignee fields are
+    # authoritative, so pre-advisor prose such as "담당자는 미정" must not survive into the
+    # approval reply or staged payload rationale.
+    draft = _normalize_resolved_assignment_rationale(draft)
     assignments = _align_assignments_to_draft(state.get("assignments") or [], draft)
     return {"draft": draft, "assignments": assignments}
 
@@ -348,6 +364,12 @@ def _propose(state: AgentState) -> dict:
     """
     from app.agent import approval
     from app.agent.workflow.agents.work_architect import as_bulk_items
+
+    # Defense in depth: routing normally prevents this node from seeing a failed review,
+    # but stale checkpoints and direct callers must not turn a rejected draft into a live
+    # approval token. Empty strings also clear any token retained from an earlier state.
+    if (state.get("review") or {}).get("ok") is False:
+        return {"approval_token": "", "comment_token": ""}
 
     tid = state.get("thread_id") or ""
 

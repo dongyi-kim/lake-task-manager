@@ -90,11 +90,13 @@ class _SequenceLLM:
         self.outputs = list(outputs)
         self.messages = []
         self.stop_values = []
+        self.configs = []
         self.structured_methods = []
 
     def invoke(self, messages, **kwargs):
         self.messages.append(list(messages))
         self.stop_values.append(kwargs.get("stop"))
+        self.configs.append(kwargs.get("config"))
         value = self.outputs.pop(0)
         if isinstance(value, dict):
             return value
@@ -129,14 +131,23 @@ def test_semantic_projection_keeps_original_on_semantic_model_and_repairs_projec
         return memo if kwargs.get("output_contract") == "semantic_memo" else projector
 
     monkeypatch.setattr(agent, "llm", llm)
-    original = [SystemMessage(content=agent.system({})),
-                HumanMessage(content=agent.task({}))]
-    assert agent.invoke_structured({}, original) == {"value": "ok"}
+    state = {
+        "request_text": "AcmeDB DeltaSketch V2 파이프라인 1차 구현",
+        "request_plan": {"tasks": [{
+            "id": "create-pipeline", "kind": "ticket", "write_intent": True,
+            "instruction": "AcmeDB DeltaSketch V2 통계정보를 생성하는 파이프라인 구현",
+        }]},
+    }
+    original = [SystemMessage(content=agent.system(state)),
+                HumanMessage(content=agent.task(state))]
+    assert agent.invoke_structured(state, original) == {"value": "ok"}
 
     assert len(memo.messages) == 1, "projector repair must not rerun semantic judgment"
     assert "ORIGINAL SYSTEM SECRET" in _message_text(memo.messages[0])
     assert "ORIGINAL EVIDENCE SECRET" in _message_text(memo.messages[0])
     assert memo.stop_values == [[base.SEMANTIC_MEMO_END_TOKEN]]
+    assert memo.configs[0]["metadata"] == {
+        "ltm_role_id": "work_architect", "ltm_output_contract": "semantic_memo"}
 
     assert len(projector.messages) == 2
     for messages in projector.messages:
@@ -145,11 +156,25 @@ def test_semantic_projection_keeps_original_on_semantic_model_and_repairs_projec
         assert "ORIGINAL EVIDENCE SECRET" not in text
     assert "verified value=ok" in _message_text(projector.messages[0])
     assert base.SEMANTIC_MEMO_END_TOKEN not in _message_text(projector.messages[0])
+    # The small projector does not receive the original request. User-authored proper
+    # nouns, identifiers, and ordinals therefore need a deterministic sidecar on both
+    # stages or a valid projection can silently erase them.
+    for anchor in ("AcmeDB", "DeltaSketch", "V2", "1차"):
+        assert anchor in _message_text(memo.messages[0])
+        assert anchor in _message_text(projector.messages[0])
+    for text in (_message_text(memo.messages[0]), _message_text(projector.messages[0])):
+        assert "create-pipeline" in text
+        assert "통계정보를 생성하는 파이프라인 구현" in text
+        assert "requested-outcome:" in text
+        assert "child" in text.lower()
     assert "verified value=ok" in _message_text(projector.messages[1])
     assert "Validation error:" in _message_text(projector.messages[1])
     assert [row["output_contract"] for row in requested] == [
         "semantic_memo", "typed_projection", "typed_projection"]
     assert requested[1]["profile"] == requested[2]["profile"] == "fast_structured"
+    assert projector.configs[0]["metadata"]["ltm_output_contract"] == "typed_projection"
+    assert projector.configs[1]["metadata"]["ltm_output_contract"] == \
+        "typed_projection_repair"
 
 
 def test_native_strict_semantic_role_keeps_existing_single_call(monkeypatch):
@@ -168,11 +193,51 @@ def test_native_strict_semantic_role_keeps_existing_single_call(monkeypatch):
         return native
 
     monkeypatch.setattr(agent, "llm", llm)
-    result = agent.invoke_structured({}, [HumanMessage(content="original")])
+    state = {"request_plan": {"tasks": [{
+        "id": "create-one", "kind": "ticket", "write_intent": True,
+        "instruction": "AcmeDB DeltaSketch index 생성",
+    }]}}
+    result = agent.invoke_structured(state, [HumanMessage(content="original")])
     assert result == {"value": "ok"}
     assert native.structured_methods == ["json_schema"]
     assert len(native.messages) == 1
     assert requested == [{"output_contract": "structured"}]
+
+
+def test_requested_outcome_contract_is_bounded_stable_and_write_only():
+    from app.agent.workflow.anchors import requested_outcome_contract
+
+    tasks = [{"id": "research", "kind": "research", "write_intent": False,
+              "instruction": "관련 문서를 조사"}]
+    tasks += [{"id": f"write-{index}", "kind": "ticket", "write_intent": True,
+               "instruction": f"AcmeDB 대상 {index}의 DeltaSketch index 생성"}
+              for index in range(10)]
+    state = {"request_plan": {"tasks": tasks}}
+
+    first = requested_outcome_contract(state)
+    second = requested_outcome_contract(state)
+
+    assert first == second
+    assert first["id"].startswith("requested-outcome:")
+    assert len(first["outcomes"]) == 6
+    assert all(row["source_task_id"].startswith("write-") for row in first["outcomes"])
+    assert "관련 문서를 조사" not in json.dumps(first, ensure_ascii=False)
+    assert len(json.dumps(first, ensure_ascii=False)) < 4000
+
+
+def test_user_anchor_contract_excludes_plain_english_prose_but_keeps_identifiers():
+    from app.agent.workflow.anchors import required_user_anchors
+
+    state = {"request_text": (
+        "investigate why existing pipeline sometimes fails for StarRocks Puffin NDV "
+        "fdc_summary_trace_ic mixed-case V2 1차"
+    )}
+
+    anchors = set(required_user_anchors(state))
+
+    assert not {"investigate", "why", "existing", "sometimes", "fails"} & anchors
+    assert {"StarRocks", "Puffin", "NDV", "fdc_summary_trace_ic",
+            "mixed-case", "V2", "1차"} <= anchors
 
 
 def test_truncated_semantic_memo_fails_before_typed_projection(monkeypatch):

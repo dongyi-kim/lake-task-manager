@@ -168,10 +168,10 @@ def _query_plan_is_complete(state) -> bool:
 def _prefetched_creation_passthrough() -> dict:
     """Preserve acquired creation evidence when optional LLM synthesis cannot format JSON.
 
-    Work Architect receives the original ``query_results``, ``pre_survey`` and
-    ``web_context`` independently. Re-running the same searches cannot repair a formatting
-    failure; it only multiplies latency and tokens. Keep this fallback deliberately
-    non-interpretive so it cannot turn an unreviewed candidate into a duplicate claim.
+    This compatibility path is used only when no completed QueryPlan contract is available.
+    Re-running the same searches cannot repair a formatting failure; it only multiplies latency
+    and tokens. Keep the fallback deliberately non-interpretive so it cannot turn an unreviewed
+    candidate into a duplicate claim.
     """
     return {
         "situation": (
@@ -182,6 +182,441 @@ def _prefetched_creation_passthrough() -> dict:
         "related_docs": [],
         "epic_candidate": "",
         "already_exists": False,
+    }
+
+
+def _ledger_text(value, limit: int = 420) -> str:
+    """Keep deterministic ledger cells compact without interpreting their content."""
+    return _re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
+
+
+def _ledger_date(item: dict) -> str:
+    for field in ("observed_at", "updated", "modified", "created", "date", "published"):
+        value = str((item or {}).get(field) or "").strip()
+        if value:
+            return value[:80]
+    return ""
+
+
+def _query_provenance(row: dict) -> str:
+    """Render the exact QueryRunner scope/query metadata attached to one compact result."""
+    result = (row or {}).get("result") or {}
+    parts = [f"QueryPlan {row.get('source') or 'query'}:{row.get('id') or '-'}"]
+    for field in ("scopeProjects", "scopeSpaces", "pages", "total", "returned", "query",
+                  "canonicalJql", "canonicalCql", "artifactId"):
+        value = result.get(field)
+        if value not in (None, "", []):
+            rendered = json.dumps(value, ensure_ascii=False) if isinstance(value, (list, dict)) \
+                else str(value)
+            parts.append(f"{field}={rendered}")
+    return _ledger_text(" · ".join(parts))
+
+
+def _append_ledger_observation(target: list[dict], source: str, text: str,
+                               observed_at: str = "") -> None:
+    value = _ledger_text(text)
+    if not value:
+        return
+    row = {"source": source, "text": value, "observed_at": str(observed_at or "")[:80]}
+    if not any((old.get("source"), old.get("text"), old.get("observed_at"))
+               == (row["source"], row["text"], row["observed_at"]) for old in target):
+        target.append(row)
+
+
+_SEMANTIC_RESEARCH_KINDS = frozenset({"query", "research", "analyze", "respond"})
+_WRITE_OUTCOME_KINDS = frozenset({"plan", "ticket", "comment", "write"})
+
+
+def _compound_plan_requires_research_synthesis(state) -> bool:
+    """Whether PLAN_WORK contains research as a user-visible outcome.
+
+    RequestPlan tasks describe requested deliverables, not the graph's internal retrieval stages.  A
+    write-only plan can therefore keep the zero-LLM provenance adapter, while an explicit read/analyze
+    outcome must be synthesized before the bounded Research state becomes the only evidence seen by the
+    final response.  This decision deliberately uses the typed plan instead of guessing from prose verbs.
+    """
+    if (state.get("intent") or "") != Intent.PLAN_WORK:
+        return False
+    tasks = [task for task in (state.get("request_plan") or {}).get("tasks") or []
+             if isinstance(task, dict)]
+    has_research = any(str(task.get("kind") or "").strip().lower()
+                       in _SEMANTIC_RESEARCH_KINDS for task in tasks)
+    has_write = any(bool(task.get("write_intent"))
+                    or str(task.get("kind") or "").strip().lower() in _WRITE_OUTCOME_KINDS
+                    for task in tasks)
+    return has_research and has_write
+
+
+def _research_outcome_tasks(state) -> list[dict]:
+    """Project only explicit semantic outcomes into the prefetched synthesis prompt."""
+    rows = []
+    for task in (state.get("request_plan") or {}).get("tasks") or []:
+        if not isinstance(task, dict) or str(task.get("kind") or "").strip().lower() \
+                not in _SEMANTIC_RESEARCH_KINDS:
+            continue
+        rows.append({
+            "id": str(task.get("id") or "")[:80],
+            "kind": str(task.get("kind") or "")[:40],
+            "instruction": str(task.get("instruction") or "")[:500],
+            "completion_criteria": [str(value)[:240]
+                                    for value in (task.get("completion_criteria") or [])[:4]],
+        })
+    return rows[:6]
+
+
+_RESEARCH_LEDGER_STOP = frozenset({
+    "research", "query", "analyze", "analysis", "summary", "summarize", "compare",
+    "조사", "검색", "분석", "비교", "요약", "정리", "확인", "관련", "내부", "외부",
+    "자료", "근거", "결과", "출처", "함께", "제시", "적용", "생성", "작성", "티켓",
+    "태스크", "테스크", "task", "issue", "plan", "기준", "요청", "업무", "검증",
+})
+
+
+def _research_ledger_terms(state) -> list[str]:
+    """Extract stable subject terms from typed research outcomes for failure-only ranking."""
+    texts = []
+    for task in _research_outcome_tasks(state):
+        texts.append(task.get("instruction") or "")
+        texts.extend(task.get("completion_criteria") or [])
+    source = " ".join(texts)
+    if not source:
+        return []
+
+    weighted = []
+    try:
+        from app.agent.tools._ident import find_identifiers
+        weighted.extend(str(value).casefold() for value in find_identifiers(source))
+    except Exception:
+        pass
+    weighted.extend(match.casefold() for match in _re.findall(
+        r"[A-Za-z][A-Za-z0-9_.+-]{2,}|[가-힣]{2,}", source))
+
+    terms = []
+    for raw in weighted:
+        term = raw.strip(".,;:!?()[]{}")
+        if _re.fullmatch(r"[가-힣]+", term):
+            for suffix in ("으로", "에서", "에게", "까지", "부터", "처럼", "하고", "하며",
+                           "한다", "하는", "해야", "해줘", "과", "와", "을", "를", "은",
+                           "는", "이", "가", "의", "에", "로"):
+                if term.endswith(suffix) and len(term) - len(suffix) >= 2:
+                    term = term[:-len(suffix)]
+                    break
+        if len(term) < 2 or term in _RESEARCH_LEDGER_STOP or term in terms:
+            continue
+        terms.append(term)
+    return terms[:32]
+
+
+def _research_ledger_score(row: dict, terms: list[str]) -> int:
+    """Rank a real source without interpreting it or manufacturing a relevance claim."""
+    identity = f"{row.get('key', '')} {row.get('title', '')}".casefold()
+    observations = " ".join(
+        str(observation.get("text") or "")
+        for observation in (row.get("observations") or []) if isinstance(observation, dict)
+    ).casefold()
+    return sum((6 if term in identity else 2 if term in observations else 0) for term in terms)
+
+
+def _bounded_research_ledger(state, groups: tuple, duplicate_key: str) -> list[dict]:
+    """Select eight sources by explicit outcome relevance while retaining source diversity."""
+    terms = _research_ledger_terms(state)
+    ranked_groups = []
+    for group_index, group in enumerate(groups):
+        ranked = sorted(
+            enumerate(group),
+            key=lambda pair: (
+                0 if duplicate_key and pair[1].get("key") == duplicate_key else 1,
+                -_research_ledger_score(pair[1], terms),
+                pair[0],
+            ),
+        )
+        ranked_groups.append([(group_index, index, row) for index, row in ranked])
+
+    selected, identities = [], set()
+
+    def add(entry) -> None:
+        if entry is None:
+            return
+        identity = (entry[0], entry[1])
+        if identity in identities or len(selected) >= 8:
+            return
+        identities.add(identity)
+        selected.append(entry[2])
+
+    # One best source from every available class prevents a long Jira result page from erasing a
+    # materialized internal document or an authoritative public reference.
+    for ranked in ranked_groups:
+        add(ranked[0] if ranked else None)
+
+    remaining = [entry for ranked in ranked_groups for entry in ranked
+                 if (entry[0], entry[1]) not in identities]
+    remaining.sort(key=lambda entry: (
+        0 if duplicate_key and entry[2].get("key") == duplicate_key else 1,
+        -_research_ledger_score(entry[2], terms), entry[0], entry[1],
+    ))
+    for entry in remaining:
+        add(entry)
+    return selected
+
+
+def _completed_creation_ledger(state, *, research_focus: bool = False) -> dict:
+    """Build a non-interpretive ledger from a completed creation QueryPlan.
+
+    QueryRunner has already enforced configured Jira/Confluence scope, exhausted the requested
+    pages, and opened the bounded ticket/document candidates. This adapter retains those real
+    identities and their body/comment provenance without asking a small model to rewrite JSON.
+    Candidate presence is deliberately *not* duplicate proof. The bounded evidence ledger is the
+    downstream source contract; ``research_focus`` ranks it against explicit typed research outcomes.
+    """
+    results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)]
+    duplicate_key = _exact_creation_duplicate_key(state)
+
+    ticket_rows: dict[str, dict] = {}
+    ticket_order: list[str] = []
+
+    def ticket(key, title="", url="") -> dict | None:
+        exact = str(key or "").strip().upper()
+        if not exact:
+            return None
+        if exact not in ticket_rows:
+            ticket_rows[exact] = {
+                "key": exact, "title": _ledger_text(title, 300) or exact,
+                "url": str(url or "").strip()[:1000], "_material": [], "_queries": [],
+            }
+            ticket_order.append(exact)
+        current = ticket_rows[exact]
+        if title and (not current.get("title") or current.get("title") == exact):
+            current["title"] = _ledger_text(title, 300)
+        if url and not current.get("url"):
+            current["url"] = str(url).strip()[:1000]
+        return current
+
+    for query_row in results:
+        result = query_row.get("result") or {}
+        provenance = _query_provenance(query_row)
+        for hit in result.get("tickets") or []:
+            if not isinstance(hit, dict):
+                continue
+            entry = ticket(hit.get("key"), hit.get("summary") or hit.get("title"),
+                           hit.get("url") or hit.get("self"))
+            if entry:
+                entry["_queries"].append(provenance)
+        for detail in result.get("ticketDetails") or []:
+            if not isinstance(detail, dict) or detail.get("error"):
+                continue
+            entry = ticket(detail.get("key"), detail.get("summary") or detail.get("title"),
+                           detail.get("url") or detail.get("self"))
+            if not entry:
+                continue
+            entry["_queries"].append(provenance)
+            _append_ledger_observation(
+                entry["_material"], "description", detail.get("description"),
+                _ledger_date(detail),
+            )
+            for comment in detail.get("comments") or []:
+                if not isinstance(comment, dict):
+                    continue
+                author = _ledger_text(comment.get("author"), 80)
+                body = comment.get("body") or comment.get("html") or comment.get("snippet")
+                text = f"{author}: {body}" if author and body else body
+                _append_ledger_observation(
+                    entry["_material"], "comment", text, _ledger_date(comment),
+                )
+        for comment in result.get("comments") or []:
+            if not isinstance(comment, dict):
+                continue
+            entry = ticket(comment.get("ticketKey") or comment.get("key"),
+                           comment.get("ticketSummary") or comment.get("summary"))
+            if not entry:
+                continue
+            entry["_queries"].append(provenance)
+            author = _ledger_text(comment.get("author"), 80)
+            body = comment.get("snippet") or comment.get("body") or comment.get("html")
+            text = f"{author}: {body}" if author and body else body
+            _append_ledger_observation(
+                entry["_material"], "comment", text, _ledger_date(comment),
+            )
+
+    ticket_evidence = []
+    for key in ticket_order:
+        source = ticket_rows[key]
+        observations = list(source.pop("_material"))[:3]
+        queries = list(dict.fromkeys(source.pop("_queries")))
+        if queries:
+            _append_ledger_observation(observations, "query", " | ".join(queries))
+        is_duplicate = key == duplicate_key
+        ticket_evidence.append({
+            **source,
+            "why": ("요청의 핵심 대상·행동과 issue type이 일치하고 open 상태인 기존 티켓이다."
+                    if is_duplicate else
+                    "설정된 Jira 검색 범위에서 반환된 생성 검토 후보이다."),
+            "confidence": "high" if is_duplicate else "unknown",
+            "fitness": "direct" if is_duplicate else "unknown",
+            "limitations": ("" if is_duplicate else
+                            "검색 일치만으로 요청과 물질적으로 동일한 업무인지 확정하지 않았다."),
+            "observations": observations[:4],
+        })
+
+    document_rows: list[dict] = []
+    document_aliases: dict[str, dict] = {}
+    document_titles: dict[str, list[dict]] = {}
+
+    def document(item: dict) -> dict | None:
+        title = _ledger_text(item.get("title"), 300)
+        url = str(item.get("url") or "").strip()[:1000]
+        doc_id = str(item.get("id") or "").strip()
+        # URL/page id are source identities. A title is only a fallback for materialized bodies
+        # that carry neither; merging two different pages merely because their titles match loses
+        # provenance and can attach one body's facts to the other page.
+        aliases = [f"url:{url}" if url else "", f"id:{doc_id}" if doc_id else ""]
+        current = next((document_aliases[a] for a in aliases if a in document_aliases), None)
+        if current is None and not any(aliases) and title:
+            matches = document_titles.get(title) or []
+            current = matches[0] if len(matches) == 1 else None
+        if current is None:
+            identity = title or doc_id or url
+            if not identity:
+                return None
+            current = {"key": identity, "title": title or identity, "url": url,
+                       "_bodies": [], "_excerpts": [], "_queries": []}
+            document_rows.append(current)
+        elif title and (not current.get("title") or current.get("title") == current.get("key")):
+            current["title"] = title
+            current["key"] = title
+        if url and not current.get("url"):
+            current["url"] = url
+        for alias in aliases:
+            if alias:
+                document_aliases[alias] = current
+        if title and current not in document_titles.setdefault(title, []):
+            document_titles[title].append(current)
+        return current
+
+    for query_row in results:
+        result = query_row.get("result") or {}
+        provenance = _query_provenance(query_row)
+        for hit in result.get("documents") or []:
+            if not isinstance(hit, dict):
+                continue
+            entry = document(hit)
+            if not entry:
+                continue
+            entry["_queries"].append(provenance)
+            _append_ledger_observation(
+                entry["_excerpts"], "document", hit.get("excerpt") or hit.get("snippet"),
+                _ledger_date(hit),
+            )
+        for body in result.get("documentBodies") or []:
+            if not isinstance(body, dict) or body.get("error"):
+                continue
+            entry = document(body)
+            if not entry:
+                continue
+            entry["_queries"].append(provenance)
+            _append_ledger_observation(
+                entry["_bodies"], "document", body.get("text") or body.get("body"),
+                _ledger_date(body),
+            )
+
+    related_docs = []
+    document_evidence = []
+    for source in document_rows:
+        bodies = list(source.pop("_bodies"))
+        observations = (bodies + list(source.pop("_excerpts")))[:3]
+        queries = list(dict.fromkeys(source.pop("_queries")))
+        if queries:
+            _append_ledger_observation(observations, "query", " | ".join(queries))
+        document_evidence.append({
+            **source,
+            "why": ("설정된 Confluence 검색 범위에서 반환되어 본문까지 확인한 문서 후보이다."
+                    if bodies else
+                    "설정된 Confluence 검색 범위에서 반환된 문서 후보이다."),
+            "confidence": "unknown", "fitness": "unknown",
+            "limitations": "문서 내용만으로 요청한 신규 업무의 중복 여부를 확정하지 않았다.",
+            "observations": observations[:4],
+        })
+        related_docs.append({"title": source["title"], "url": source.get("url") or ""})
+
+    external_count = 0
+    external_evidence = []
+    for query_row in results:
+        if query_row.get("source") not in ("web", "github"):
+            continue
+        result = query_row.get("result") or {}
+        for hit in result.get("results") or []:
+            if not isinstance(hit, dict):
+                continue
+            title = _ledger_text(hit.get("title") or hit.get("name"), 300)
+            url = str(hit.get("url") or "").strip()[:1000]
+            identity = title or url
+            if not identity:
+                continue
+            observations = []
+            _append_ledger_observation(
+                observations, "external", hit.get("snippet") or hit.get("description"),
+                _ledger_date(hit),
+            )
+            external_provenance = _query_provenance(query_row)
+            if hit.get("official"):
+                external_provenance += " · official=true"
+            _append_ledger_observation(observations, "query", external_provenance)
+            external_evidence.append({
+                "key": identity, "title": title or identity, "url": url,
+                "why": (f"QueryPlan {query_row.get('source')}:{query_row.get('id') or '-'}에서 "
+                        "반환된 외부 자료이다."),
+                "confidence": "high" if hit.get("official") else "unknown",
+                "fitness": "unknown",
+                "limitations": "외부 자료이며 내부 적용 상태나 기존 업무의 중복을 증명하지 않는다.",
+                "observations": observations,
+            })
+            external_count += 1
+
+    # Keep the stable eight-source state contract while retaining cross-source coverage. Ticket-first
+    # truncation made eight Jira candidates erase the materialized Confluence body and public reference.
+    if duplicate_key:
+        ticket_evidence.sort(key=lambda row: row.get("key") != duplicate_key)
+    groups = ((ticket_evidence, 5), (document_evidence, 2), (external_evidence, 1))
+    if research_focus:
+        evidence = _bounded_research_ledger(
+            state, tuple(group for group, _cap in groups), duplicate_key,
+        )
+    else:
+        evidence = []
+        for group, cap in groups:
+            evidence.extend(group[:cap])
+        if len(evidence) < 8:
+            for group, cap in groups:
+                for row in group[cap:]:
+                    evidence.append(row)
+                    if len(evidence) == 8:
+                        break
+                if len(evidence) == 8:
+                    break
+
+    material_count = len(ticket_order) + len(document_rows) + external_count
+    if duplicate_key:
+        duplicate = next((row for row in ticket_evidence if row.get("key") == duplicate_key), {})
+        situation = (
+            f'{duplicate_key} "{duplicate.get("title") or duplicate_key}"가 요청의 핵심 대상·행동, '
+            "issue type과 일치하고 Done/Closed가 아닌 기존 티켓으로 확인됐다. "
+            "새 중복 티켓을 만들기 전에 이 티켓을 우선한다."
+        )
+    elif material_count:
+        situation = (
+            "설정된 검색 범위와 페이지 조건에 따라 QueryPlan 조회를 완료했고 "
+            f"티켓 {len(ticket_order)}건, 문서 {len(document_rows)}건, 외부 자료 "
+            f"{external_count}건을 원본 출처와 함께 전달한다. 이 항목들은 신규 초안의 "
+            "근거 후보이며, 검색 일치만으로 동일 업무가 이미 존재한다고 확정하지 않았다."
+        )
+    else:
+        situation = (
+            "현재 설정된 검색 범위와 페이지 조건에서 요청과 직접 중복되는 사내 티켓·문서를 "
+            "확인하지 못했다. 신규 초안으로 진행한다."
+        )
+    return {
+        "situation": situation, "evidence": evidence, "related_docs": related_docs,
+        "epic_candidate": "", "already_exists": bool(duplicate_key),
+        "_deterministic_passthrough": True,
     }
 
 
@@ -491,32 +926,217 @@ def _work_action_kind(text: str) -> str:
     return ""
 
 
-def _material_duplicate_exists(state, evidence: list[dict]) -> bool:
-    """Require evidence of the same deliverable, not merely the same technology topic."""
-    requested = request_text(state) or last_user_text(state)
-    request_kind = _work_action_kind(requested)
-    for row in evidence or []:
-        observations = " ".join(
-            str(obs.get("text") or "") for obs in (row.get("observations") or [])
-            if isinstance(obs, dict)
+_DUPLICATE_TYPE_ALIASES = {
+    "task": "task", "태스크": "task", "테스크": "task", "작업": "task",
+    "bug": "bug", "버그": "bug",
+    "story": "story", "스토리": "story",
+    "feature": "feature", "기능": "feature",
+    "improvement": "improvement",
+    "subtask": "sub-task", "sub-task": "sub-task", "sub task": "sub-task",
+    "서브태스크": "sub-task", "서브 태스크": "sub-task", "하위 작업": "sub-task",
+    "epic": "epic", "에픽": "epic",
+}
+
+
+def _duplicate_ticket_type(value) -> str:
+    raw = _re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    compact = raw.replace("_", "-")
+    return _DUPLICATE_TYPE_ALIASES.get(compact,
+                                       _DUPLICATE_TYPE_ALIASES.get(compact.replace("-", ""), ""))
+
+
+def _requested_duplicate_type(text: str) -> str:
+    """Return only an issue type explicitly bound to the requested create action."""
+    pattern = _re.compile(
+        r"(?P<type>sub[\s-]?task|서브\s*태스크|하위\s*작업|task|태스크|테스크|"
+        r"story|스토리|bug|버그|feature|improvement|epic|에픽)"
+        r"\s*(?:를|을|로)?\s*(?:하나\s*)?(?:만들|생성|등록|올려)",
+        _re.I,
+    )
+    matches = list(pattern.finditer(str(text or "")))
+    return _duplicate_ticket_type(matches[-1].group("type")) if matches else ""
+
+
+_DUPLICATE_ANCHOR_STOP = {
+    "task", "태스크", "테스크", "story", "스토리", "bug", "버그", "feature",
+    "improvement", "epic", "에픽", "sub-task", "subtask", "서브태스크",
+    "티켓", "업무", "작업", "요청", "범위", "기존", "신규", "새로", "하나",
+    "만들", "만들어", "만들어줘", "생성", "등록", "올려", "추가", "구현", "개발",
+    "구축", "도입", "전환", "적용", "수정", "해결", "복구", "오류", "에러", "실패",
+    "장애", "조사", "검토", "분석", "설계", "표준", "poc", "문서", "가이드", "보고서",
+    "검증", "수행", "진행", "완료", "필요", "catalog", "runtime", "workbench", "dataops",
+    "observability", "devops", "etl", "jira", "lake", "manager",
+}
+
+
+def _duplicate_anchor_tokens(text: str) -> list[str]:
+    """Extract request-specific subject words, excluding issue/action boilerplate."""
+    value = _re.sub(r"\[[^\]\n]{1,40}\]", " ", str(text or ""))
+    out = []
+    for raw in _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{1,}|[가-힣]{2,}", value):
+        token = raw.casefold()
+        if _re.fullmatch(r"[a-z][a-z0-9]*-\d+", token):
+            continue
+        if _re.search(r"[가-힣]", token):
+            for suffix in ("으로", "에서", "에게", "까지", "부터", "처럼", "하고", "하며",
+                           "하는", "한다", "했다", "해야", "이다", "입니다", "해주세요",
+                           "해줘", "줘", "을", "를", "은", "는", "이", "가", "의", "에",
+                           "로", "와", "과"):
+                if token.endswith(suffix) and len(token) - len(suffix) >= 2:
+                    token = token[:-len(suffix)]
+                    break
+        if len(token) < 2 or token in _DUPLICATE_ANCHOR_STOP or token in out:
+            continue
+        out.append(token)
+    return out
+
+
+def _query_ticket_duplicate_facts(state) -> list[dict]:
+    """Merge QueryRunner search rows and materialized details without losing conflicts."""
+    records: dict[str, dict] = {}
+    order = []
+
+    def add(item, *, detail=False):
+        if not isinstance(item, dict) or item.get("error"):
+            return
+        key = str(item.get("key") or item.get("ticketKey") or "").strip().upper()
+        if not _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key):
+            return
+        if key not in records:
+            records[key] = {
+                "key": key, "titles": [], "types": [], "tiers": [], "statuses": [],
+                "status_categories": [], "done_values": [], "parents": [],
+                "descriptions": [], "materialized": False,
+            }
+            order.append(key)
+        record = records[key]
+        title = _ledger_text(item.get("summary") or item.get("title"), 300)
+        issue_type = _duplicate_ticket_type(
+            item.get("type") or item.get("issueType") or item.get("issuetype")
         )
-        material = " ".join(str(row.get(key) or "") for key in (
-            "title", "why", "limitations")) + " " + observations
-        # Direct statements that the requested implementation/result does not yet
-        # exist are decisive. A related research ticket remains evidence, not a duplicate.
-        if _re.search(
-            r"(?:아직|현재)[^.!\n]{0,40}(?:생성|구현|개발|적용|완료)(?:하지|되지|못|전)|"
-            r"(?:구현|개발|적용|완료)[^.!\n]{0,25}(?:없|미완|아니)|"
-            r"확인되지\s*않|완료\s*사실로\s*쓰면\s*안",
-            material, _re.I,
-        ):
+        tier = str(item.get("tier") or "").strip().casefold()
+        if not tier and issue_type:
+            tier = "epic" if issue_type == "epic" else (
+                "subtask" if issue_type == "sub-task" else "task"
+            )
+        for field, value in (("titles", title), ("types", issue_type), ("tiers", tier),
+                             ("statuses", str(item.get("status") or "").strip()),
+                             ("status_categories",
+                              str(item.get("statusCategory") or "").strip().casefold()),
+                             ("parents", str(item.get("parent") or "").strip().upper())):
+            if value and value not in record[field]:
+                record[field].append(value)
+        if "done" in item and isinstance(item.get("done"), bool) \
+                and item["done"] not in record["done_values"]:
+            record["done_values"].append(item["done"])
+        if detail:
+            record["materialized"] = True
+            description = _ledger_text(item.get("description"), 1200)
+            if description and description not in record["descriptions"]:
+                record["descriptions"].append(description)
+
+    for query_row in (state.get("query_results") or []):
+        if not isinstance(query_row, dict):
             continue
-        candidate_kind = _work_action_kind(str(row.get("title") or ""))
-        if request_kind and candidate_kind and request_kind != candidate_kind:
+        result = query_row.get("result") or {}
+        if not isinstance(result, dict):
             continue
-        if str(row.get("fitness") or "") in ("direct", "supporting", ""):
-            return True
-    return False
+        for item in result.get("tickets") or []:
+            add(item)
+        for item in result.get("ticketDetails") or []:
+            add(item, detail=True)
+    return [records[key] for key in order]
+
+
+def _candidate_is_open(record: dict) -> bool:
+    statuses = {str(value).strip().casefold() for value in record.get("statuses") or []}
+    categories = {str(value).strip().casefold()
+                  for value in record.get("status_categories") or []}
+    if True in (record.get("done_values") or []) or "done" in categories:
+        return False
+    if any(_re.search(r"done|closed|resolved|cancel|완료|종료|취소|폐기", value, _re.I)
+           for value in statuses):
+        return False
+    if categories:
+        return categories <= {"new", "indeterminate"}
+    if False in (record.get("done_values") or []):
+        return True
+    return any(_re.search(r"open|to\s*do|in\s*progress|reopen|진행|착수|대기", value, _re.I)
+               for value in statuses)
+
+
+def _exact_creation_duplicate_key(state) -> str:
+    """Prove one exact open duplicate from completed, materialized QueryRunner facts.
+
+    This intentionally returns an empty string on every ambiguity. Search similarity, model-written
+    ``fitness``, a related PoC, a parent Epic, or a closed ticket cannot block a new creation.
+    """
+    if str(state.get("intent") or "") != Intent.PLAN_WORK or not _query_plan_is_complete(state):
+        return ""
+    requested = request_text(state) or last_user_text(state)
+    requested_type = _requested_duplicate_type(requested)
+    requested_kind = _work_action_kind(requested)
+    if not requested_type or requested_type == "epic" or not requested_kind:
+        return ""
+    requested_tier = "subtask" if requested_type == "sub-task" else "task"
+
+    request_anchors = _duplicate_anchor_tokens(requested)
+    try:
+        from app.agent.tools._ident import find_identifiers, variants
+        identifiers = find_identifiers(requested)
+        identifier_forms = {form.casefold() for ident in identifiers[:1] for form in variants(ident)}
+    except Exception:
+        identifier_forms = set()
+    if not identifier_forms and len(request_anchors) < 2:
+        return ""
+
+    parent_match = _re.search(
+        r"\b([A-Z][A-Z0-9]*-\d+)\b[^.\n]{0,20}(?:아래|하위|under)", requested, _re.I,
+    )
+    requested_parent = parent_match.group(1).upper() if parent_match else ""
+
+    for record in _query_ticket_duplicate_facts(state):
+        if not record.get("materialized") or not record.get("descriptions"):
+            continue
+        types = set(record.get("types") or [])
+        tiers = set(record.get("tiers") or [])
+        if types != {requested_type} or tiers != {requested_tier} or not _candidate_is_open(record):
+            continue
+        if requested_parent and set(record.get("parents") or []) != {requested_parent}:
+            continue
+        titles = list(record.get("titles") or [])
+        normalized_titles = {_re.sub(r"\s+", " ", title).strip().casefold() for title in titles}
+        if len(normalized_titles) != 1:
+            continue
+        title = titles[0]
+        body = " ".join(record.get("descriptions") or [])
+        if _work_action_kind(title) != requested_kind:
+            continue
+        if requested_kind != "research" and _re.search(
+                r"(?:\bPoC\b|조사|검토|분석|설계|표준)", title, _re.I):
+            continue
+
+        title_folded, body_folded = title.casefold(), body.casefold()
+        if identifier_forms:
+            if not any(form in title_folded for form in identifier_forms) \
+                    or not any(form in body_folded for form in identifier_forms):
+                continue
+        else:
+            title_anchors = set(_duplicate_anchor_tokens(title))
+            body_anchors = set(_duplicate_anchor_tokens(body))
+            request_set = set(request_anchors)
+            required = len(request_set) if len(request_set) <= 3 else max(
+                3, (len(request_set) * 3 + 3) // 4,
+            )
+            if len(request_set & title_anchors) < required or not (request_set & body_anchors):
+                continue
+        return record["key"]
+    return ""
+
+
+def _material_duplicate_exists(state, evidence: list[dict]) -> bool:
+    """Use the shared raw-fact proof; model evidence/fitness can never establish a duplicate."""
+    return bool(_exact_creation_duplicate_key(state))
 
 
 def _normalize_evidence_quality(item: dict) -> dict:
@@ -1322,15 +1942,66 @@ class ResearchAnalyst(ToolAgent):
             if external_prefetched and not state.get("web_context"):
                 state = {**state, "web_context": _prefetched_external_context(
                     state.get("query_results") or [])}
+            completed_creation_query = ((state.get("intent") or "") == Intent.PLAN_WORK
+                                        and completed_query_plan)
             if not external_prefetched and (wordy or (thin_internal and techy and not keys0)):
                 ctx = _research_outside(self, asked0)
                 if ctx:
                     state = {**state, "web_context": ctx}
 
-            # A completed creation QueryPlan with zero hits has a deterministic conclusion. An LLM cannot
-            # improve "no in-scope result" and previously spent 7–8k tokens restating it. Preserve failed
-            # external-attempt context as a gap, but skip synthesis unless an actual artifact was returned.
-            if planned_create_query and not _query_results_have_material(state.get("query_results")) \
+            # QueryRunner has already done the configured, paginated acquisition and bounded body
+            # materialization. For a write-only request, a second semantic pass adds no user-visible
+            # deliverable and can erase source identity, so keep the deterministic fast ledger. When the
+            # typed RequestPlan also contains an explicit research/summary outcome, however, the Research
+            # state is the only evidence contract consumed by ResultIntegrator; synthesize that outcome once
+            # rather than silently truncating it to the first 5 Jira/2 document/1 external hits.
+            if completed_creation_query:
+                if _compound_plan_requires_research_synthesis(state):
+                    direct_state = {**state, "_research_analyst_prefetched": True}
+                    try:
+                        out = self.apply(
+                            direct_state,
+                            self._synthesize_prefetched_query_plan(direct_state),
+                        )
+                        out["trace"] = (out.get("trace") or []) + [{
+                            "node": self.name, "label": "과거 이력 조사",
+                            "note": "완료된 복합 조사·작성 QueryPlan을 1회 의미 정리(도구 재호출 생략)",
+                        }]
+                        return out
+                    except Exception:
+                        # Acquisition succeeded; a formatting/provider failure must neither repeat the
+                        # searches nor fall back to first-hit truncation. Keep a deterministic, bounded,
+                        # cross-source ledger ranked only by the typed research outcome's subject terms.
+                        out = self.apply(
+                            state,
+                            _completed_creation_ledger(state, research_focus=True),
+                        )
+                        out["trace"] = (out.get("trace") or []) + [{
+                            "node": self.name, "label": "과거 이력 조사",
+                            "note": "복합 조사 의미 정리 실패 — 관련도 기반 bounded 근거 장부 전달",
+                        }]
+                        return out
+
+                out = self.apply(state, _completed_creation_ledger(state))
+                out["trace"] = (out.get("trace") or []) + [{
+                    "node": self.name, "label": "과거 이력 조사",
+                    "note": "완료된 QueryPlan deterministic 근거 장부 전달(LLM/ReAct 생략)",
+                }]
+                return out
+
+            # Legacy callers can still provide an error-free compact result without a formal QueryPlan.
+            # Preserve their deterministic zero-hit shortcut, but never turn a scope/config/materialization
+            # error into evidence that no duplicate exists.
+            legacy_rows = state.get("query_results") or []
+            legacy_zero_query = (
+                not ((state.get("query_plan") or {}).get("queries") or []) and bool(legacy_rows)
+                and all(isinstance(row, dict) and isinstance(row.get("result"), dict)
+                        and not row["result"].get("error")
+                        and not row["result"].get("materializationErrors")
+                        for row in legacy_rows)
+            )
+            if planned_create_query and (completed_query_plan or legacy_zero_query) \
+                    and not _query_results_have_material(state.get("query_results")) \
                     and not state.get("seed_map") \
                     and (not state.get("topic_dossier")
                          or "찾지 못했다" in state.get("topic_dossier", "")):
@@ -1385,12 +2056,10 @@ class ResearchAnalyst(ToolAgent):
                 except Exception:
                     pass          # 직결이 죽으면 정상 경로로 — 최적화가 답을 막으면 안 된다
 
-            # ── 생성/계획 직결: Query Specialist와 deterministic runner가 조회를 끝냈으면
-            # ResearchAnalyst이 같은 도구를 다시 순회하지 않는다. 생성 배터리에서 ResearchAnalyst 91회가
-            # 144만 토큰(전체 66%)을 썼고, 대부분은 이미 pre_survey/query_results/seed_map에
-            # 있는 티켓을 재검색·재조회한 비용이었다. 이 갈래의 판단은 "무엇을 더 찾을까"가
-            # 아니라 "확정된 자료를 어떻게 요약할까"이므로 structured conclusion 한 번이면 된다.
-            # 자료가 하나도 없거나 외부 기술 조사가 필요한 경우에는 기존 ReAct를 그대로 쓴다.
+            # ── legacy 생성/계획 직결 ─────────────────────────────────────
+            # 정식 완료 QueryPlan은 위 deterministic ledger에서 끝난다. 이전 세션이나 다른 진입점이
+            # pre_survey/seed_map/dossier만 전달한 경우에는 기존 1회 structured conclusion을 유지해
+            # 호환한다. 이 자료까지 없을 때만 ReAct 탐색으로 내려간다.
             prefetched = bool(state.get("query_results") or state.get("pre_survey")
                               or state.get("seed_map") or state.get("topic_dossier"))
             if (state.get("intent") or "") == Intent.PLAN_WORK and prefetched:
@@ -1403,8 +2072,8 @@ class ResearchAnalyst(ToolAgent):
                     return out
                 except Exception as exc:
                     # Acquisition is already complete. A second search loop repeats the
-                    # same tools and cannot fix malformed synthesis JSON. Pass the original
-                    # artifacts through; Work Architect still sees every raw result.
+                    # same tools and cannot fix malformed synthesis JSON. Preserve the
+                    # compatibility response instead of asserting facts from malformed output.
                     out = self.apply(state, _prefetched_creation_passthrough())
                     out["trace"] = (out.get("trace") or []) + [{
                         "node": self.name, "label": "과거 이력 조사",
@@ -1446,28 +2115,36 @@ class ResearchAnalyst(ToolAgent):
 
     @property
     def tools(self):
-        from app.agent import tools as T
-        # get_progress 를 주는 이유 — "X 업무의 히스토리와 진척도"처럼 **복합 질의**가 실사용의
-        # 기본형이다. 진척률 도구가 없으면 "여러 작업이 진행 중"이라는 숫자 없는 서술로 때운다
-        # (실측). 조사와 집계를 한 번의 ReAct 에서 섞을 수 있어야 한다.
-        # 웹·GitHub 도 조사 범위다 — "CDC 방식 비교" 같은 일반 기술 지식은 사내에 없다.
-        # 경계(사내 정보는 검색어에 안 넣는다)는 도구 docstring 과 SYSTEM_RESEARCH_ANALYST 이 지킨다.
-        # 외부 MCP 서버 도구(config/agent-mcp.json)도 조사 도구로 합류한다 — 없으면 빈 목록.
-        try:
-            from app.agent import mcp_client
-            ext = mcp_client.tools()
-        except Exception:
-            ext = []
-        # 사람 도구 — 담당 적합성 판단("DL-x를 A에게?")·"누가 하면 좋을지"에 필요(실측:
-        # 없어서 대답이 개념 강의로 샜다). 규칙 도구 — LTM 사용법·규칙 질문의 1차 출처.
-        # 허용값 도구 — "라벨 목록 보여줘·정리 제안" 같은 관리성 질의에 필요(실측: 없어서
-        # 실값을 코앞에 두고 '확인 불가'로 답했다).
-        # ★ 도구 하나가 곧 비용이다 — 스키마가 **매 think 호출마다** 프롬프트에 실린다
-        #   (실측: 도구 21개 = 4.5k 토큰/호출, 생성 턴에서 research_analyst 만 96k).
-        #   허용값(list_ticket_options)은 관리성 질의 사전취합이 이미 코드로 싣는다 —
-        #   도구로 또 두면 모델이 조사 걸음을 거기에 쓴다(실측: 생성 턴에서 3회 호출).
-        return (T.SEARCH_TOOLS + T.WEB_TOOLS + T.PEOPLE_TOOLS + T.RULE_TOOLS
-                + [T.BY_NAME["get_progress"]] + ext)
+        from app.agent.workflow.role_manifest import tools_for_role
+        return tools_for_role(self.name)
+
+    def _synthesize_prefetched_query_plan(self, state) -> dict:
+        """Synthesize explicit research outcomes once, without an empty tool transcript.
+
+        ``ToolAgent._conclude`` is for a ReAct scratchpad and tells the model to use only that transcript.
+        A completed QueryPlan has no scratchpad: its authoritative material is already embedded once in
+        ``task(state)``. Keeping a separate path prevents both a contradictory empty-transcript instruction
+        and a second copy of the acquired results.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        outcomes = json.dumps(_research_outcome_tasks(state), ensure_ascii=False, default=str)
+        return self.invoke_structured(state, [
+            SystemMessage(content=self.system(state)),
+            HumanMessage(content=(
+                self.task(state)
+                + "\n\n### User-visible Research Outcome Contract\n\n"
+                + outcomes
+                + "\n\nAll scoped acquisition is complete. Do not call or propose another tool. "
+                  "The outcomes above are user-visible deliverables, not hidden preparation for the write. "
+                  "Synthesize their requested comparison, summary, or analysis from Deterministic QueryPlan "
+                  "Results. Select at most eight sources by direct claim coverage, retaining exact source "
+                  "identity, URL, material observations, dates, conflicts, and limitations. Preserve useful "
+                  "internal and external sources when both inform the requested conclusion. Then state only "
+                  "the verified context needed by the downstream write; never infer duplicate work from a "
+                  "search hit alone."
+            )),
+        ])
 
     def system(self, state):
         # 이미 취합된 자료를 한 번 요약하는 직결 경로에는 분류/권한/검색 규칙이 반복된
@@ -1552,20 +2229,38 @@ Original request: {last_user_text(state)}
         return SCHEMA
 
     def apply(self, state, out):
+        deterministic = bool(out.get("_deterministic_passthrough"))
         raw_ev = [_normalize_evidence_quality(_normalize_evidence_identity(e, state))
                   for e in (out.get("evidence") or [])
                   if isinstance(e, dict)][:8]
-        from app.agent.workflow.relevance import evidence_is_relevant
-        named = {str(k).upper() for k in (state.get("mentioned_keys") or [])}
-        raw_ev = [e for e in raw_ev if str(e.get("key") or "").upper() in named
-                  or evidence_is_relevant(e)]
-        ev = _relevant_only(state, raw_ev)
-        removed_all = bool(raw_ev) and not ev and not state.get("mentioned_keys")
+        if deterministic:
+            # QueryPlan rows are an evidence ledger, not model-authored relevance claims. Keep the
+            # bounded real source identities intact. Downstream drafting and response roles consume this
+            # ledger rather than relying on the full raw retrieval artifact.
+            ev = raw_ev
+            removed_all = False
+        else:
+            from app.agent.workflow.relevance import evidence_is_relevant
+            named = {str(k).upper() for k in (state.get("mentioned_keys") or [])}
+            raw_ev = [e for e in raw_ev if str(e.get("key") or "").upper() in named
+                      or evidence_is_relevant(e)]
+            ev = _relevant_only(state, raw_ev)
+            removed_all = bool(raw_ev) and not ev and not state.get("mentioned_keys")
         situation = out.get("situation") or ""
         if removed_all:
             situation = "현재 요청의 고유 개념과 직접 일치하는 내부 이력은 확인되지 않았다."
+        # Both the deterministic ledger and model synthesis use the same raw QueryRunner proof.
+        # A model-authored ``fitness=direct`` is never sufficient, while an exact completed-plan
+        # match remains valid on the no-LLM path.
         exists = (bool(out.get("already_exists")) and (bool(ev) or not removed_all)
                   and _material_duplicate_exists(state, ev))
+        if bool(out.get("already_exists")) and not exists and not removed_all \
+                and _re.search(r"중복|동일[^.\n]{0,24}(?:작업|구현|진행)|이미\s*(?:있|진행)",
+                               situation, _re.I):
+            situation = (
+                "조회 후보는 확인했지만 원본 제목·티켓 유형·진행 상태·본문을 교차 확인해도 "
+                "정확히 같은 업무가 입증되지 않았다. 후보 근거는 신규 초안의 참고 자료로 전달한다."
+            )
         result = {
             "situation": situation,
             "evidence": ev,
@@ -1580,7 +2275,7 @@ Original request: {last_user_text(state)}
             "topic_dossier": state.get("topic_dossier") or "",
             "bulk_targets": state.get("bulk_targets") or [],
             "trace": note(state, self.name,
-                          f"근거 {len(ev)}건" + (" · 중복 의심 티켓 있음" if exists else "")),
+                          f"근거 {len(ev)}건" + (" · 정확 중복 open 티켓 있음" if exists else "")),
         }
         # 회의록의 모호한 사람·내부 약어는 일반적인 조사 공백과 다르다. 내부/외부 조사가
         # 끝난 이 시점에도 확정되지 않은 값만 한 번에 인터뷰하고, 답을 받기 전에는 요약·
@@ -1595,4 +2290,4 @@ Original request: {last_user_text(state)}
 
 
 __all__ = ["ResearchAnalyst", "_prefetched_external_context", "_query_results_have_material",
-           "_query_plan_is_complete", "_relevant_only"]
+           "_query_plan_is_complete", "_exact_creation_duplicate_key", "_relevant_only"]

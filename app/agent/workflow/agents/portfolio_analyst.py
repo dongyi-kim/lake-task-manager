@@ -676,12 +676,8 @@ class PortfolioAnalyst(ToolAgent):
 
     @property
     def tools(self):
-        from app.agent import tools as T
-        # 로스터·팀 워크로드 — 그룹 활동 질문("ETL 인력들 요즘 뭐 해")에 필요하다.
-        return T.PMO_TOOLS + [T.BY_NAME["get_ticket"], T.BY_NAME["get_module_people"],
-                              T.BY_NAME["get_team_workload"],
-                              T.BY_NAME["run_jql"],           # 조건 조합 검색("P1 미배정 진행중")
-                              T.BY_NAME["get_ticket_participants"]]  # 특정 티켓 유관자 대상 질의
+        from app.agent.workflow.role_manifest import tools_for_role
+        return tools_for_role(self.name)
 
     def system(self, state):
         return persona(state, SYSTEM_PORTFOLIO_ANALYST, role_id=self.name)
