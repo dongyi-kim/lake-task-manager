@@ -5390,6 +5390,8 @@ def _recover_delegated_creation(state) -> list[dict]:
     # punctuation folding so `등록해야 해.` becomes the grounded action `등록`.
     subject = _re.sub(r"(?:해야\s*해|해야\s*합니다|하고\s*싶어|원해)"
                       r"(?=\s*[.!?]?(?:\s|$))", "", subject)
+    subject = _re.sub(r"(\d+\s*(?:개|건))(?:을|를)\s+"
+                      r"(등록|처리|검토|수정|확인|이관|전환)", r"\1 \2", subject)
     subject = _re.sub(r"\s+(?:초안|티켓|Task|태스크)\s*(?:생성|작성|잡아)?\s*$", "", subject,
                       flags=_re.I)
     subject = _re.sub(r"([가-힣A-Za-z0-9_])(?:에|에서)\s+(?=[가-힣A-Za-z0-9_'\"])", r"\1 ", subject)

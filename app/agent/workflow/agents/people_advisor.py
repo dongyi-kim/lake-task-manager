@@ -180,6 +180,46 @@ def _user_fixed_assignments(draft: dict) -> list[dict]:
     return rows
 
 
+def _workload_only_assignments(draft: dict, roster_load: str) -> list[dict]:
+    """Choose the measured least-load roster member when no experience signal exists.
+
+    With only workload numbers available, asking a model to narrate the same ordering added
+    latency and sometimes inverted its meaning (for example, calling 16 open tickets "high
+    capacity"). This helper does no semantic ranking: it preserves the configured module
+    roster and sorts the already measured in-progress/open counts.
+    """
+    rows = []
+    for index, item in enumerate((draft or {}).get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        module = next((str(value).strip() for value in (item.get("components") or [])
+                       if str(value).strip()), "")
+        candidates = _module_roster(roster_load, module)
+        if not candidates:
+            return []
+        chosen = candidates[0]
+        reason = (f"{module} 로스터 · 진행중 {chosen['in_progress']}건 · "
+                  f"열림 {chosen['open']}건 · 관련 이력 없음")
+        children = []
+        for child_index, _child in enumerate(item.get("children") or []):
+            person = candidates[child_index % len(candidates)]
+            children.append({
+                "index": child_index, "user": person["user"],
+                "why": (f"{module} 로스터 · 진행중 {person['in_progress']}건 · "
+                        f"열림 {person['open']}건"),
+            })
+        rows.append({
+            "index": index, "user": chosen["user"], "reasons": [reason],
+            "children": children,
+            "alternates": [{
+                "user": person["user"],
+                "why": (f"{module} 로스터 · 진행중 {person['in_progress']}건 · "
+                        f"열림 {person['open']}건"),
+            } for person in candidates[1:3]],
+        })
+    return rows
+
+
 class PeopleAdvisor(StructuredAgent):
     """★ 도구를 쓰지 않는다 — 후보 재료(유사 이력·로스터·부하)를 코드가 미리 조회한다.
 
@@ -221,6 +261,16 @@ class PeopleAdvisor(StructuredAgent):
                 state = {**state, "similar_history": hist}
             if load:
                 state = {**state, "roster_load": load}
+            if ((state.get("draft") or {}).get("construction") == "literal_delegated"
+                    and not hist):
+                rows = _workload_only_assignments(state.get("draft") or {}, load)
+                if rows:
+                    result = self.apply(state, {"assignments": rows, "caution": ""})
+                    result["trace"] = note(
+                        state, self.name,
+                        f"{len(rows)}건 부하 기준 결정적 추천(관련 이력 없음)",
+                    )
+                    return result
             return base(state)
 
         return run
