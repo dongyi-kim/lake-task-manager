@@ -878,6 +878,17 @@ def test_negative_lookup_is_not_rendered_as_a_dead_evidence_source():
     assert "official documentation" not in web_miss
     assert "### 근거" not in web_miss
 
+    synthetic_query_id = _merge_evidence_index("초안 1건", {"evidence": [{
+        "key": "internal-duplicate-check",
+        "title": "Jira 검색 결과 (쿼리 편집기 단축키 도움말)",
+        "url": "", "confidence": "low", "fitness": "context-only",
+        "limitations": "검색 결과가 없으므로 구현 여부 판단 불가",
+        "observations": [{"source": "query", "text": "검색 결과 0건 반환됨"}],
+    }], "related_docs": []})
+    assert "internal-duplicate-check" not in synthetic_query_id
+    assert "Jira 검색 결과" not in synthetic_query_id
+    assert "### 근거" not in synthetic_query_id
+
 
 def test_external_format_description_cannot_invent_an_outcome_guarantee():
     from app.agent.workflow.agents.result_integrator import _drop_unsupported_guarantees

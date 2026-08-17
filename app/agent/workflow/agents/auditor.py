@@ -64,12 +64,16 @@ class Auditor(StructuredAgent):
             # 실제로 잡은 것이 없었고(배터리 실측), 호출 하나가 통째로 낭비였다.
             draft = state.get("draft") or {}
             items = draft.get("items") or []
-            small = (len(items) == 1 and not (items[0].get("children"))
+            literal_recovery = draft.get("construction") == "literal_delegated"
+            small = ((len(items) == 1 and not (items[0].get("children"))
                      and (draft.get("mode") or "task") != "epic"
                      # ★ 주제 이탈·확인 필요 경고가 붙은 초안은 우회하지 않는다 —
                      #   작아 보여도 '틀린 작음'일 수 있다(실측: 뭉개진 단일 Task).
                      and not draft.get("topic_drift")
                      and "확인 필요" not in (draft.get("rationale") or ""))
+                     # Literal recovery is already built and partitioned by deterministic
+                     # code. A second semantic audit only rephrased editorial preferences.
+                     or literal_recovery)
             if small:
                 auto = _machine_check(state)
                 # 완료 조건(DoD)이 없으면 작아도 통과시키지 않는다 — 우회하면 apply 의

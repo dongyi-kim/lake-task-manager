@@ -373,6 +373,27 @@ class WorkArchitect(StructuredAgent):
         base = super().node()
 
         def run(state):
+            # Concrete delegated work has no remaining semantic choice once research and
+            # blocker guards have run. Sending the same ~10K context to a small model first
+            # added 28-69 seconds and frequently returned empty ``items``. Build the literal
+            # conservative draft directly; ``apply`` still owns hierarchy/body/owner guards.
+            if (state.get("situation") or "").strip():
+                recovered = _recover_delegated_creation(state)
+                if recovered:
+                    direct = self.apply(state, {
+                        "questions": [], "mode": "task", "items": recovered,
+                        "structure": shape_hint(state)[0] or "single_task",
+                        "structure_source": (
+                            "user_specified" if shape_hint(state)[0] else "inferred"),
+                        "structure_why": "사용자가 위임한 구체 작업을 최소 실행 범위로 복원",
+                        "rationale": "사용자 리터럴 요청과 안전 기본값으로 초안 구성",
+                        "_construction": "literal_delegated",
+                    })
+                    direct["trace"] = note(
+                        state, self.name,
+                        f"결정적 위임 초안 {len((direct.get('draft') or {}).get('items') or [])}건",
+                    )
+                    return direct
             out = base(state)
             # ── 질문-도피 가드: "알아서" 위임인데 질문만 내고 초안 0건이면 **한 번 재시도**.
             # 프롬프트(force_rule)로 막아도 부하·모델 변덕으로 재발한다(스위트 실측 5건).
@@ -760,8 +781,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 out["structure_source"] = "user_specified" if shape_hint(state)[0] else "inferred"
                 out["structure_why"] = "사용자가 위임한 구체 작업을 최소 실행 범위로 복원"
                 out["interpretation"] = ""
-                out["rationale"] = ((out.get("rationale") or "")
-                                    + "\n(모델의 빈 생성 결과를 사용자 리터럴 작업과 안전 기본값으로 복원했다)").strip()
+                out["rationale"] = "사용자 리터럴 요청과 안전 기본값으로 초안 구성"
+                out["_construction"] = "literal_delegated"
                 model_questions = False
         for item in items:
             if item.get("issue_type") and not item.get("type"):
@@ -1114,6 +1135,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                  "structure": structure, "structure_why": why,
                  "structure_source": src,
                  "rationale": out.get("rationale") or ""}
+        if out.get("_construction"):
+            draft["construction"] = str(out["_construction"])
         # ★ 형태가 **우리 판단**이고 기본값(단일 Task)에서 올라간 것이면 한 번 확인한다.
         #   티켓 하나로 끝날 일을 다섯 개로 쪼개 놓고 승인만 받는 것은 사용자가 원한 게
         #   아닐 수 있다. 사용자가 '알아서'라고 했으면 묻지 않는다(위임이 이긴다).
@@ -4096,7 +4119,9 @@ def _sharpen_dod(state, items) -> bool:
         generic_review = [row for row in all_dod if _re.search(
             r"결과와\s*검증\s*기록.{0,40}담당\s*리뷰|"
             r"검증\s*기록.{0,40}리뷰로\s*확인|"
-            r"결과가\s*반영.{0,40}담당\s*리뷰", row, _re.I)]
+            r"결과가\s*반영.{0,40}담당\s*리뷰|"
+            r"요청한\s*작업이\s*반영.{0,50}검증\s*결과.{0,30}리뷰로\s*확인",
+            row, _re.I)]
         bad = list(dict.fromkeys([*_vague_dod(all_dod), *generic_review]))
         for old in bad:
             if old in generic_review:
@@ -5361,7 +5386,10 @@ def _recover_delegated_creation(state) -> list[dict]:
         "", subject, flags=_re.I,
     )
     subject = _re.sub(r"사람\s*나눠서\s*진행(?:하게)?\s*(?:생성|해|하도록)?", "", subject)
-    subject = _re.sub(r"(?:해야\s*해|하고\s*싶어|원해)\s*$", "", subject)
+    # Conversational endings are not part of a Jira summary. Strip them before final
+    # punctuation folding so `등록해야 해.` becomes the grounded action `등록`.
+    subject = _re.sub(r"(?:해야\s*해|해야\s*합니다|하고\s*싶어|원해)"
+                      r"(?=\s*[.!?]?(?:\s|$))", "", subject)
     subject = _re.sub(r"\s+(?:초안|티켓|Task|태스크)\s*(?:생성|작성|잡아)?\s*$", "", subject,
                       flags=_re.I)
     subject = _re.sub(r"([가-힣A-Za-z0-9_])(?:에|에서)\s+(?=[가-힣A-Za-z0-9_'\"])", r"\1 ", subject)
