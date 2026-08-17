@@ -46,43 +46,19 @@ def _jira_where(where: str, query: str) -> str:
     query = str(query or "").strip()
     if not query:
         return base
-    # Some models put a complete JQL expression in `query` despite the typed contract. Recover its intent
-    # instead of tokenizing `project`, `AND`, and field names as text search terms. Configured search projects
-    # remain the outer scope; model placeholders and project clauses are never honored.
+    # ``query`` is a lexical subject, never raw JQL.  Silently repairing model-authored
+    # pseudo-JQL changed invalid filters into a different lexical search and let Research
+    # treat an empty result as verified absence.  Fail explicitly so the existing
+    # QueryPlan completeness contract can surface the gap; structural conditions belong in
+    # typed ``where`` and configured search projects remain enforced by the executor.
     looks_jql = bool(re.search(
         r"(?:^|\s)(?:project|summary|description|text|status|statusCategory|issueType|issuetype|"
         r"parent|assignee|labels?|component)\s*(?:=|!=|~|\bin\b|\bis\b)", query, re.I))
     if looks_jql:
-        structural = re.sub(r"\bORDER\s+BY\b.*$", "", query, flags=re.I).strip()
-        structural = re.sub(
-            r"^\s*project\s*(?:=\s*[^\s)]+|in\s*\([^)]*\))\s+AND\s+", "", structural,
-            flags=re.I)
-        structural = re.sub(r"\s+AND\s+project\s*(?:=\s*[^\s)]+|in\s*\([^)]*\))", "",
-                            structural, flags=re.I)
-        structural = structural.replace("'", '"')
-        structural = re.sub(r"issueType\s*=\s*SubTask", "issuetype = Sub-Task", structural,
-                            flags=re.I)
-        structural = re.sub(r'"Epic Link"\s*=\s*([A-Z][A-Z0-9]*-\d+)', r"parent = \1",
-                            structural, flags=re.I)
-        # Query planners often quote a bag of keywords as one Jira text phrase. That silently loses
-        # relevant tickets whose words occur in separate fields/sentences. Expand only full-text phrases;
-        # structural and summary phrases keep native JQL semantics. Korean `...정보` also gets a
-        # conservative stem alternative for compound wording.
-        def expand_text(match):
-            phrase = match.group(1).strip()
-            tokens = _lexical_terms(phrase, limit=5)
-            clauses = []
-            for token in tokens[:5]:
-                if token.endswith("정보") and len(token) > 3:
-                    clauses.append(f'(text ~ "{token}" OR text ~ "{token[:-2]}")')
-                else:
-                    clauses.append(f'text ~ "{token}"')
-            return "(" + " AND ".join(clauses) + ")" if len(clauses) > 1 else \
-                (clauses[0] if clauses else match.group(0))
-
-        structural = re.sub(r'text\s*~\s*"([^"\n]+)"', expand_text, structural,
-                            flags=re.I)
-        return f"({base}) AND ({structural})" if base and structural else (structural or base)
+        raise ValueError(
+            "QueryPlan의 query에는 JQL을 넣을 수 없습니다. lexical subject는 query에, "
+            "구조 조건은 where에 분리해야 합니다."
+        )
     if re.search(r"\b(?:text|summary|description)\s*~", base, re.I):
         return base
     terms = _lexical_terms(query)

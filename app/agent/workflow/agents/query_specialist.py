@@ -279,13 +279,34 @@ def _public_external_query(text: str) -> str:
     return " ".join(tokens[:8]) + " official documentation"
 
 
+def _user_authored_text(state) -> str:
+    """Return only human-authored text that may authorize an external disclosure.
+
+    ``conversation(state)`` intentionally contains prior assistant replies so Roles can
+    resolve follow-up answers.  It is therefore not a safe provenance boundary for public
+    search: a model-generated DoD or reference label such as ``official documentation``
+    must never become permission to send a new term outside LTM.  Preserve the frozen
+    original request and every human follow-up, while excluding all AI messages.
+    """
+    rows, seen = [], set()
+    for value in (request_text(state), *(
+            str(getattr(message, "content", "") or "")
+            for message in (state.get("messages") or [])
+            if getattr(message, "type", "") == "human")):
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            rows.append(text)
+    return "\n".join(rows)
+
+
 def _external_research_allowed(state) -> bool:
     """일반 사내 ticket 작업에 임의 웹 검색을 붙이지 않는다.
 
     사용자가 외부 조사를 말했거나 CDC/StarRocks처럼 내부 module명이 아닌 고유 기술 토큰을
     요청에 쓴 경우만 허용한다. ticket key/user id/URL은 기술 토큰으로 세지 않는다.
     """
-    text = (request_text(state) + " " + conversation(state)).strip()
+    text = _user_authored_text(state)
     low = text.lower()
     if any(w in low for w in _EXTERNAL_WORDS):
         return True
@@ -575,8 +596,7 @@ class QuerySpecialist(StructuredAgent):
             except Exception:
                 meeting_query = ""
             public_query = (f"{meeting_query} official documentation" if meeting_query else
-                            _public_external_query(
-                                (request_text(state) + " " + conversation(state)).strip()))
+                            _public_external_query(_user_authored_text(state)))
             web = [q for q in plan["queries"] if q.get("source") == "web"]
             candidates = [public_query]
             original_terms = set(_query_identity(public_query).split()) - {
@@ -621,6 +641,7 @@ class QuerySpecialist(StructuredAgent):
 
 
 __all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_query",
+           "_user_authored_text",
            "_safe_model_external_query", "_ensure_explicit_comment_query",
            "_normalize_meeting_research_queries",
            "_known_user_tokens", "_strip_known_user_tokens", "_jira_query_is_only_people",

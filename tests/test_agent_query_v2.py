@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent.tools import _ctx
 from app.agent.tools.query_tools import (execute_jql_all, run_jql_v2,
@@ -225,21 +225,19 @@ def test_three_public_technology_terms_use_two_of_three_recall_without_becoming_
     assert '(text ~ "Puffin" AND text ~ "NDV")' in jql
 
 
-def test_runner_recovers_jql_misplaced_in_query_and_removes_model_project_placeholder():
+def test_runner_rejects_jql_misplaced_in_lexical_query_instead_of_changing_its_meaning():
     fake = _Client(3)
     _ctx.bind(fake, _settings(["AAA", "BBB"]))
-    QueryRunner()._run({"query_plan": {"queries": [{
+    result = QueryRunner()._run({"query_plan": {"queries": [{
         "id": "misplaced", "source": "jira",
         "query": "project = YOUR_PROJECT_KEY AND summary ~ '적재 지연' AND status != 'Done'",
         "where": "", "page_size": 20,
     }]}})
-    jql = fake.calls[0]["jql"]
-    assert "YOUR_PROJECT_KEY" not in jql and "text ~" not in jql
-    assert 'summary ~ "적재 지연"' in jql and 'status != "Done"' in jql
-    assert jql.startswith('project in ("AAA", "BBB") AND (')
+    assert fake.calls == []
+    assert "query에는 JQL" in result["query_results"][0]["result"]["error"]
 
 
-def test_runner_expands_misplaced_full_text_phrase_for_recall():
+def test_runner_rejects_misplaced_full_text_jql_instead_of_lexical_fallback():
     fake = _Client(3)
     _ctx.bind(fake, _settings(["AAA", "BBB"]))
     QueryRunner()._run({"query_plan": {"queries": [{
@@ -247,9 +245,7 @@ def test_runner_expands_misplaced_full_text_phrase_for_recall():
         "query": "project = ETL AND text ~ 'iceberg puffin ndv' AND text ~ '통계정보'",
         "where": "",
     }]}})
-    jql = fake.calls[0]["jql"]
-    assert all(f'text ~ "{term}"' in jql for term in ("iceberg", "puffin", "ndv"))
-    assert '(text ~ "통계정보" OR text ~ "통계")' in jql
+    assert fake.calls == []
 
 
 def test_runner_strips_korean_particles_and_planner_filler_for_duplicate_recall():
@@ -261,16 +257,14 @@ def test_runner_strips_korean_particles_and_planner_filler_for_duplicate_recall(
     assert "project = ETL" not in jql
 
 
-def test_runner_repairs_subtask_parent_jql_misplaced_in_query():
+def test_runner_rejects_subtask_parent_jql_misplaced_in_query():
     fake = _Client(3)
     _ctx.bind(fake, _settings(["AAA", "BBB"]))
     QueryRunner()._run({"query_plan": {"queries": [{
         "id": "children", "source": "jira",
         "query": 'issueType=SubTask AND "Epic Link"=DL-9090', "where": "",
     }]}})
-    jql = fake.calls[0]["jql"]
-    assert "text ~" not in jql and 'parent = DL-9090' in jql
-    assert 'issuetype = Sub-Task' in jql
+    assert fake.calls == []
 
 
 def test_query_specialist_turns_human_title_in_project_clause_into_summary_search():
@@ -373,6 +367,27 @@ def test_explicit_parent_create_does_not_publicly_search_ambiguous_technical_acr
     assert _external_research_allowed(state) is False
     state["request_text"] += " 외부 공식 문서도 조사해줘"
     state["messages"] = [HumanMessage(content=state["request_text"])]
+    assert _external_research_allowed(state) is True
+
+
+def test_model_generated_terms_never_authorize_external_research():
+    """Only human messages may cross the public-search provenance boundary."""
+    from app.agent.workflow.agents.query_specialist import _external_research_allowed
+    from app.agent.workflow.state import Intent
+
+    request = "DL-101 아래 재처리 배치 개선 Task를 만들어줘"
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": request,
+        "mentioned_keys": ["DL-101"],
+        "messages": [
+            HumanMessage(content=request),
+            AIMessage(content="DoD official documentation을 참고해 초안을 작성하겠습니다."),
+        ],
+    }
+
+    assert _external_research_allowed(state) is False
+    state["messages"].append(HumanMessage(content="외부 공식 문서도 조사해줘"))
     assert _external_research_allowed(state) is True
 
 
