@@ -135,6 +135,74 @@ def _ticket_context(key: str, kind: str) -> str:
     return "\n\n".join(parts)[:MAX_CONTEXT]
 
 
+def _generic_status_share(prompt: str) -> bool:
+    """Whether the user requested a plain current-status comment with no editorial angle."""
+    return bool(re.fullmatch(
+        r"\s*(?:진행\s*상황\s*공유(?:\s*코멘트)?\s*(?:써\s*줘)?|"
+        r"상태\s*공유|진척\s*공유)\s*", str(prompt or ""), re.I,
+    ))
+
+
+def _deterministic_status_comment(ticket_key: str) -> str:
+    """Project verified progress into a concise comment without free-form status invention."""
+    try:
+        from app.agent.tools.survey_tools import progress_report
+        report = progress_report(str(ticket_key or "").strip().upper(), comment_limit=6) or {}
+    except Exception:
+        return ""
+    key = str(report.get("key") or "").strip().upper()
+    if not key or report.get("error"):
+        return ""
+
+    def badge(value: str) -> str:
+        safe = _html.escape(str(value or "").strip().upper())
+        return (f'<a class="jira-badge tkt" data-key="{safe}" '
+                f'href="/browse/{safe}">{safe}</a>')
+
+    status = _html.escape(str(report.get("status") or "상태 미상"))
+    due = _html.escape(str(report.get("due") or "미정"))
+    rows = [f"<p>{badge(key)} 현재 상태 <strong>{status}</strong> · 마감 {due}</p>"]
+    children = [row for row in (report.get("children") or []) if isinstance(row, dict)]
+    done = [row for row in children if row.get("done")]
+    open_rows = [row for row in children if not row.get("done")]
+    if children:
+        rows.append("<ul>")
+        if done:
+            rows.append("<li>완료된 하위 작업: " + " ".join(
+                badge(row.get("key")) for row in done if row.get("key")) + "</li>")
+
+        materials = "\n".join(
+            [str(row.get("text") or "") for row in (report.get("comments") or [])]
+            + [str(row.get("excerpt") or "") for row in (report.get("documents") or [])]
+        )
+        for row in open_rows:
+            title = re.sub(r"^\s*\[[^\]]+\]\s*", "", str(row.get("title") or "")).strip()
+            reported_done = (_topic_matches(title, materials)
+                             and bool(re.search(r"완료|붙였|마쳤|끝났", materials)))
+            if reported_done:
+                rows.append(
+                    f"<li>상태 확인 필요: {badge(row.get('key'))} Jira는 "
+                    f"{_html.escape(str(row.get('status') or '미완료'))}, "
+                    "최근 코멘트·문서는 완료로 보고</li>"
+                )
+            else:
+                rows.append(
+                    f"<li>진행 중: {badge(row.get('key'))} · "
+                    f"{_html.escape(str(row.get('status') or '상태 미상'))}</li>"
+                )
+        rows.append("</ul>")
+
+    material = "\n".join(
+        [str(row.get("text") or "") for row in (report.get("comments") or [])]
+        + [str(row.get("excerpt") or "") for row in (report.get("documents") or [])]
+    )
+    remaining = _remaining_items(material)
+    if remaining:
+        rows.append("<p><strong>남은 확인 항목</strong>: "
+                    + ", ".join(_html.escape(value) for value in remaining) + "</p>")
+    return "\n".join(rows)
+
+
 def _house_rules(kind: str, prompt: str) -> str:
     """사내 작성 규율 — 정적 RAG 에서 끌어온다(프롬프트에 규칙을 복사해 두면 갈라진다)."""
     try:
@@ -186,6 +254,16 @@ def compose(ticket_key: str = "", kind: str = "comment", prompt: str = "",
                           "대상을 한 줄만 적어 주세요 (예: 'CDC 파이프라인 개선 작업 본문')")}
 
     ctx = _ticket_context(ticket_key, kind)
+    # A generic status-sharing comment is a projection of progress_report, not a writing
+    # task.  Free-form generation repeatedly converted explicit remaining work to completed
+    # work and then had to be rejected.  Deterministic rendering is faster and preserves
+    # status conflicts instead of choosing one source.
+    if kind == "comment" and _generic_status_share(prompt):
+        deterministic = _deterministic_status_comment(ticket_key)
+        if deterministic:
+            return {"ok": True, "html": deterministic, "deterministic": True,
+                    "usage": {"calls": 0, "promptTokens": 0,
+                              "completionTokens": 0, "totalTokens": 0}}
     rules = _house_rules(kind, prompt)
     what = {"description": "ticket description", "comment": "comment",
             "transition": "comment accompanying a status transition"}.get(kind, "comment")
@@ -803,24 +881,34 @@ def _qualify_status_conflicts(rendered: str, topics: list[str]) -> str:
     out = str(rendered or "")
     for topic in topics:
         safe = _html.escape(topic)
-        replaced = False
+        replacement = (f"{safe} 항목은 자료상 아직 남음 · Jira 상태 In Progress · "
+                       "현재 진행 상황 확인 필요")
         for tag in ("li", "p"):
             pattern = rf"<{tag}\b[^>]*>.*?</{tag}>"
 
             def qualify(match):
-                nonlocal replaced
                 plain = _plain_text(match.group(0))
                 if (not _topic_matches(topic, plain)
                         or not re.search(r"완료|마쳤|끝났", plain)):
                     return match.group(0)
-                replaced = True
-                return (f"<{tag}>{safe} 항목은 구현 완료 보고가 있으나 Jira 상태가 "
-                        f"In Progress이므로 최종 완료 여부는 확인 필요합니다.</{tag}>")
+                return f"<{tag}>{replacement}</{tag}>"
 
             out = re.sub(pattern, qualify, out, flags=re.S | re.I)
             # 같은 완료 오판이 목록과 이어지는 설명 paragraph에 동시에 나올 수 있다.
             # 첫 tag 종류에서 멈추면 하나를 고치고 다른 하나가 남아 compose 전체가 실패한다.
             # 두 종류를 모두 훑되, 무관한 tag는 qualify()가 그대로 보존한다.
+        # Compatible models sometimes return Markdown/plain text despite the HTML contract.
+        # The safety pass used to inspect only <p>/<li>, so the detector correctly rejected
+        # CMP1/CMP5 but could never repair them. Rewrite only a line that both names this
+        # explicit remaining topic and claims completion; preserve every unrelated line.
+        lines = []
+        for line in out.splitlines():
+            plain = _plain_text(line)
+            if _topic_matches(topic, plain) and re.search(r"완료|마쳤|끝났", plain):
+                lines.append(f"<p>{replacement}</p>")
+            else:
+                lines.append(line)
+        out = "\n".join(lines)
     return out
 
 

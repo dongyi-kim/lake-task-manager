@@ -152,10 +152,38 @@ def test_compose_qualifies_a_status_claim_that_conflicts_with_materials(monkeypa
         "[DL-9090] 작업 — In Progress\n"
         "명시적 미완료(완료로 쓰지 말 것): 성능 측정 | 문서 정리"))
     monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
-    r = C.compose(PROG, "comment", "상태 공유")
+    r = C.compose(PROG, "comment", "현재 진행 상태를 한 줄로 알려줘")
     assert r["ok"] is True
-    assert "성능 측정 항목" in r["html"] and "Jira 상태가 In Progress" in r["html"]
+    assert "성능 측정 항목" in r["html"] and "Jira 상태 In Progress" in r["html"]
+    assert "자료상 아직 남음" in r["html"]
     assert "확인 필요" in r["html"]
+
+
+def test_generic_status_share_uses_verified_progress_without_calling_the_llm(monkeypatch):
+    from app.agent import config as CFG
+    from app.agent.tools import survey_tools
+
+    monkeypatch.setattr(CFG, "llm_ready", lambda: (True, ""))
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kw: (_ for _ in ()).throw(
+        AssertionError("generic status share must not call the LLM")))
+    monkeypatch.setattr(survey_tools, "progress_report", lambda *_a, **_kw: {
+        "key": "DL-9090", "status": "In Progress", "due": "2026-08-24",
+        "children": [
+            {"key": "DL-9093", "title": "그래프 렌더", "status": "Closed", "done": True},
+            {"key": "DL-9095", "title": "다운스트림 조회 연동",
+             "status": "In Progress", "done": False},
+        ],
+        "comments": [{"text": "다운스트림 조회 연동을 붙였습니다. 남은 건 성능 측정입니다."}],
+        "documents": [{"excerpt": "다운스트림 조회 연동: 완료"}],
+    })
+
+    result = C.compose("DL-9090", "comment", "상태 공유")
+
+    assert result["ok"] is True and result["deterministic"] is True
+    assert result["usage"]["calls"] == 0
+    assert "DL-9093" in result["html"]
+    assert "DL-9095" in result["html"] and "상태 확인 필요" in result["html"]
+    assert "남은 확인 항목" in result["html"] and "성능 측정" in result["html"]
 
 
 def test_compose_recognizes_backticked_need_info_as_feedback(monkeypatch):
@@ -425,21 +453,27 @@ def test_conflicting_completion_is_qualified_as_a_specific_open_fact():
     context = "명시적 미완료(완료로 쓰지 말 것): 다운스트림 조회 연동"
     html = "<ul><li>다운스트림 조회 연동 작업은 API 개선 덕분에 완료되었습니다.</li></ul>"
     fixed = _qualify_status_conflicts(html, _status_conflicts(html, context))
-    assert "Jira 상태가 In Progress" in fixed and "확인 필요" in fixed
+    assert "자료상 아직 남음" in fixed and "Jira 상태 In Progress" in fixed and "확인 필요" in fixed
     assert not _status_conflicts(fixed, context)
 
     tagged = ("<ul><li><strong>다운스트림 조회 연동</strong> 작업은 "
               "<code>DL-9092</code> 해결 후 완료되었습니다.</li></ul>")
     fixed_tagged = _qualify_status_conflicts(tagged, _status_conflicts(tagged, context))
-    assert "Jira 상태가 In Progress" in fixed_tagged
+    assert "Jira 상태 In Progress" in fixed_tagged
 
     repeated = ("<ul><li>다운스트림 조회 연동: 완료</li></ul>"
                 "<p>다운스트림 조회 연동 작업도 완료되었습니다.</p>")
     fixed_repeated = _qualify_status_conflicts(
         repeated, _status_conflicts(repeated, context))
-    assert fixed_repeated.count("Jira 상태가 In Progress") == 2
+    assert fixed_repeated.count("Jira 상태 In Progress") == 2
     assert not _status_conflicts(fixed_repeated, context)
     assert not _status_conflicts(fixed_tagged, context)
+
+    markdown = "### 진행 상황\n\n- 다운스트림 조회 연동 작업을 완료했습니다"
+    fixed_markdown = _qualify_status_conflicts(
+        markdown, _status_conflicts(markdown, context))
+    assert "자료상 아직 남음" in fixed_markdown
+    assert not _status_conflicts(fixed_markdown, context)
 
 
 def test_unsupported_metric_is_replaced_but_seed_metric_is_preserved():
