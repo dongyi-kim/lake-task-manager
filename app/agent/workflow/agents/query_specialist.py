@@ -469,6 +469,39 @@ class QuerySpecialist(StructuredAgent):
     name = Node.QUERY_SPECIALIST
     tier = "simple"
 
+    def node(self):
+        model_node = super().node()
+
+        def run(state):
+            # A concrete delegated creation still needs the Jira duplicate check, but it
+            # does not need a small model to restate that single deterministic query. In
+            # local-model measurements the model expanded this one query until max_tokens,
+            # then spent a second call trying to repair the truncated JSON. Reuse the same
+            # scope/pagination normalizer below so this fast path changes neither search
+            # coverage nor project scoping.
+            if (state.get("intent") or "") == Intent.PLAN_WORK \
+                    and not _external_research_allowed(state):
+                try:
+                    from app.agent.workflow.agents.work_architect import \
+                        _recover_delegated_creation
+                    from app.agent.workflow.meeting_context import is_meeting_request
+                    deterministic = (not is_meeting_request(state)
+                                     and bool(_recover_delegated_creation(state)))
+                except Exception:
+                    deterministic = False
+                if deterministic:
+                    result = self.apply(state, {
+                        "queries": [], "joins": [], "uncertainty": [],
+                    })
+                    result["trace"] = note(
+                        state, self.name,
+                        f"결정적 중복 조회 {len((result.get('query_plan') or {}).get('queries') or [])}개 설계",
+                    )
+                    return result
+            return model_node(state)
+
+        return run
+
     def system(self, state):
         return persona(state, SYSTEM_QUERY_SPECIALIST, lite=True)
 

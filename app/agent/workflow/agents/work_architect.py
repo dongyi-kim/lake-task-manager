@@ -5346,10 +5346,12 @@ def _requests_existing_parent_subtask(text: str) -> bool:
 
 
 def _recover_delegated_creation(state) -> list[dict]:
-    """Build one conservative Task from a concrete delegated literal request.
+    """Build conservative Tasks from a concrete delegated literal request.
 
-    This is a no-model recovery, not a general ticket writer.  It deliberately refuses
-    ambiguity that changes the action or creates an irreversible/invalid payload.
+    This is a no-model recovery, not a general ticket writer. It owns either one literal
+    Task, one volume-partitioned Task tree, or an explicit cross-module deliverable list.
+    It deliberately refuses ambiguity that changes the action or creates an
+    irreversible/invalid payload.
     """
     if not _said_defaults(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
         return []
@@ -5359,11 +5361,6 @@ def _recover_delegated_creation(state) -> list[dict]:
         and any(word in said for word in
                 ("사람 나눠", "담당 나눠", "나눠 맡", "나눠서 진행"))
     )
-    # This recovery owns one literal Task (or one volume-partitioned Task tree), not
-    # compound cross-module planning. Treating `measure, tune, and write a guide` as one
-    # title forced later repair code to guess missing siblings and lost the guide entirely.
-    if not _simple_delegated_request(state) and not volume_partition:
-        return []
     if (not _has_concrete_work_target(said)
             or state.get("already_exists")
             or _missing_data_quality_target(state)
@@ -5377,6 +5374,11 @@ def _recover_delegated_creation(state) -> list[dict]:
         # Complete pasted reports have their own Bug-grade deterministic recovery; an
         # incomplete report must stay in the reproduction interview path.
         return []
+
+    simple = _simple_delegated_request(state)
+    if not simple and not volume_partition:
+        compound = _recover_cross_module_deliverables(state)
+        return compound
 
     literal = (last_user_text(state) or request_text(state)).strip()
     # Preserve the action noun while stripping conversational request/delegation suffixes.
@@ -5428,6 +5430,88 @@ def _recover_delegated_creation(state) -> list[dict]:
         item["components"] = [module]
     item["description"] = _minimal_grounded_body(item)
     return [item]
+
+
+_DELEGATED_ACTIONS = {
+    "측정": "측정", "테스트": "테스트", "검증": "검증", "분석": "분석",
+    "손봐": "조정", "조정": "조정", "최적화": "최적화", "개선": "개선",
+    "수정": "수정", "등록": "등록", "구현": "구현", "개발": "개발",
+    "작성": "작성", "써": "작성", "문서화": "문서화", "정리": "정리",
+}
+
+
+def _recover_cross_module_deliverables(state) -> list[dict]:
+    """Recover explicitly named sibling deliverables without guessing a hierarchy.
+
+    The conservative boundary is deliberate: at least two configured modules must be
+    present in the request. A documentation deliverable with no module wording inherits
+    the first subject module because it documents that subject; any other unscoped clause
+    aborts recovery. This handles cross-module ownership as data, while leaving ordinary
+    multi-stage planning to Work Architect's semantic model.
+    """
+    literal = (request_text(state) or last_user_text(state)).strip()
+    if not literal or not _said_defaults(state):
+        return []
+    try:
+        from app.infra.settings import modules_in_text
+        requested_modules = list(dict.fromkeys(modules_in_text(literal)))
+    except Exception:
+        return []
+    if len(requested_modules) < 2:
+        return []
+
+    # Remove only request/delegation wrappers. The work nouns and their literal actions
+    # remain authoritative; this is not free-form summarization.
+    clean = _re.sub(
+        r"(?:초안|티켓|Task|태스크)(?:을|를)?\s*(?:잡아|만들어|작성해)?\s*(?:줘|주세요)?",
+        " ", literal, flags=_re.I,
+    )
+    clean = _re.sub(r"(?:나머지는\s*)?(?:알아서|기본값으로|맡길게|네가\s*정해)",
+                    " ", clean, flags=_re.I)
+    action_pattern = "|".join(sorted(map(_re.escape, _DELEGATED_ACTIONS), key=len,
+                                       reverse=True))
+    matches = list(_re.finditer(
+        rf"(?P<subject>[^,.!?]{{2,90}}?)(?P<action>{action_pattern})"
+        rf"(?:해야\s*해|해야\s*하고|해\s*야|하고|하며|해|할|도)?",
+        clean, _re.I,
+    ))
+    rows: list[tuple[str, str, str]] = []
+    for match in matches:
+        subject = match.group("subject")
+        subject = _re.sub(
+            r"^\s*(?:그리고|동시에|또|결과(?:에)?\s*따라|그\s*결과(?:에)?\s*따라|이후)\s*", "", subject,
+            flags=_re.I,
+        )
+        subject = _re.sub(r"\s*(?:쪽)?(?:을|를|도|은|는)\s*$", "", subject).strip(" -:;")
+        action = _DELEGATED_ACTIONS.get(match.group("action"), match.group("action"))
+        if len(subject) < 2:
+            continue
+        module_hits = list(dict.fromkeys(modules_in_text(subject)))
+        module = module_hits[0] if len(module_hits) == 1 else ""
+        rows.append((subject, action, module))
+
+    if len(rows) < 2 or not any(module for _, _, module in rows):
+        return []
+    primary_module = next((module for _, _, module in rows if module), "")
+    items, seen = [], set()
+    for subject, action, module in rows:
+        if not module and _re.search(r"가이드|문서|매뉴얼", subject, _re.I):
+            module = primary_module
+        if not module:
+            return []
+        title_subject = _re.sub(rf"^\s*{_re.escape(module)}\s+", "", subject, flags=_re.I)
+        summary = _collapse_repeated_summary(f"[{module}] {title_subject} {action}")
+        identity = _base_title(summary).casefold()
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        item = {
+            "summary": summary, "type": "Task", "issue_type": "Task", "tier": "task",
+            "components": [module],
+        }
+        item["description"] = _minimal_grounded_body(item)
+        items.append(item)
+    return items if len(items) >= 2 else []
 
 
 def _explicit_comment_body(text: str) -> bool:

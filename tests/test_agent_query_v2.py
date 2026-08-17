@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import HumanMessage
 
 from app.agent.tools import _ctx
 from app.agent.tools.query_tools import (execute_jql_all, run_jql_v2,
@@ -326,6 +327,34 @@ def test_create_plan_collapses_speculative_status_people_and_comment_fanout():
     assert [row["source"] for row in plan["queries"]] == ["jira", "web"]
     assert plan["queries"][0]["query"] == "Iceberg Puffin NDV 배치 Job"
     assert plan["queries"][0]["completeness"] == "all"
+
+
+def test_concrete_delegated_cross_module_plan_uses_deterministic_duplicate_query(monkeypatch):
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+    from app.agent.workflow.state import Intent
+
+    model_calls = []
+
+    def fail_model(*_args, **_kwargs):
+        model_calls.append(True)
+        raise AssertionError("one deterministic duplicate query must not call the model")
+
+    monkeypatch.setattr(QuerySpecialist, "invoke_structured", fail_model)
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": ("리니지 뷰어 성능 측정하고, 결과에 따라 쿼리 엔진 인덱스도 "
+                         "손봐야 해. 그리고 사용 가이드도 써야 하고. 초안 잡아줘. 알아서"),
+        "messages": [HumanMessage(content=(
+            "리니지 뷰어 성능 측정하고, 결과에 따라 쿼리 엔진 인덱스도 손봐야 해. "
+            "그리고 사용 가이드도 써야 하고. 초안 잡아줘. 알아서"))],
+        "keywords": ["리니지 뷰어", "쿼리 엔진"],
+    }
+
+    result = QuerySpecialist().node()(state)
+
+    assert model_calls == []
+    assert [row["source"] for row in result["query_plan"]["queries"]] == ["jira"]
+    assert result["query_plan"]["queries"][0]["completeness"] == "all"
 
 
 def test_meeting_query_plan_preserves_explicit_ticket_and_replaces_generic_note_search():

@@ -421,7 +421,7 @@ def test_concrete_delegated_work_skips_the_model_and_keeps_runtime_guards(monkey
     assert "내 모듈만" in result["draft"]["items"][0]["summary"]
 
 
-def test_compound_delegated_request_is_not_collapsed_by_literal_single_task_recovery():
+def test_compound_delegated_request_recovers_cross_module_sibling_deliverables():
     from app.agent.workflow.agents.work_architect import _recover_delegated_creation
 
     state = _msg(
@@ -430,7 +430,13 @@ def test_compound_delegated_request_is_not_collapsed_by_literal_single_task_reco
         situation="직접 일치하는 내부 이력 없음", intent=Intent.PLAN_WORK,
     )
 
-    assert _recover_delegated_creation(state) == []
+    rows = _recover_delegated_creation(state)
+    assert [row["summary"] for row in rows] == [
+        "[Catalog] 리니지 뷰어 성능 측정",
+        "[Runtime] 쿼리 엔진 인덱스 조정",
+        "[Catalog] 사용 가이드 작성",
+    ]
+    assert all(row["type"] == "Task" and not row.get("children") for row in rows)
 
 
 def test_empty_model_result_reuses_normal_volume_partitioning_for_delegated_work():
