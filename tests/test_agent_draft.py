@@ -454,7 +454,10 @@ def test_delegated_concrete_draft_keeps_duplicate_as_evidence_instead_of_reinter
 
     assert not result["questions"]
     assert len(result["draft"]["items"]) == 3
+    assert result["draft"]["structure"] == "multiple_tasks"
     assert all("DL-9090" in row["description"] for row in result["draft"]["items"])
+    assert all(row["description"].count("data-checked") >= 2
+               for row in result["draft"]["items"])
 
 
 def test_empty_model_result_reuses_normal_volume_partitioning_for_delegated_work():

@@ -380,9 +380,12 @@ class WorkArchitect(StructuredAgent):
             if (state.get("situation") or "").strip():
                 recovered = _recover_delegated_creation(state)
                 if recovered:
+                    recovered_structure = (shape_hint(state)[0]
+                                           or ("multiple_tasks" if len(recovered) > 1
+                                               else "single_task"))
                     direct = self.apply(state, {
                         "questions": [], "mode": "task", "items": recovered,
-                        "structure": shape_hint(state)[0] or "single_task",
+                        "structure": recovered_structure,
                         "structure_source": (
                             "user_specified" if shape_hint(state)[0] else "inferred"),
                         "structure_why": "사용자가 위임한 구체 작업을 최소 실행 범위로 복원",
@@ -776,7 +779,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             if recovered:
                 items = out["items"] = recovered
                 mode = out["mode"] = "task"
-                inferred_shape = shape_hint(state)[0] or "single_task"
+                inferred_shape = (shape_hint(state)[0]
+                                  or ("multiple_tasks" if len(recovered) > 1
+                                      else "single_task"))
                 out["structure"] = inferred_shape
                 out["structure_source"] = "user_specified" if shape_hint(state)[0] else "inferred"
                 out["structure_why"] = "사용자가 위임한 구체 작업을 최소 실행 범위로 복원"
@@ -1869,6 +1874,7 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 # generic review wording escapes into the approval payload.
                 _sharpen_dod(state, items)
                 _dedupe_dod_rows(items)
+                _ensure_minimum_task_dod(state, items)
 
         # A meeting record is an authoritative decision record.  Preserve reviewers in the
         # ticket body and remove optional create fields that the minutes never decided.
@@ -5491,6 +5497,7 @@ def _recover_cross_module_deliverables(state) -> list[dict]:
             flags=_re.I,
         )
         subject = _re.sub(r"\s*(?:쪽)?(?:을|를|도|은|는)\s*$", "", subject).strip(" -:;")
+        subject = _re.sub(r"\s+쪽(?=\s)", "", subject)
         action = _DELEGATED_ACTIONS.get(match.group("action"), match.group("action"))
         if len(subject) < 2:
             continue
@@ -6022,6 +6029,43 @@ def _minimal_grounded_body(item: dict) -> str:
             "<li>제외: 요청에 명시되지 않은 연관 기능 변경</li></ul>"
             "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
             f"<li data-checked=\"false\">{_esc(dod)}</li></ul>" + refs)
+
+
+def _ensure_minimum_task_dod(state, items: list) -> bool:
+    """Keep the Task body contract at two independently reviewable checks.
+
+    One evidence sentence can prove the result but not that its measurement or authored
+    scope is reproducible. Add a second action-family check only when a non-Bug Task has
+    exactly one DoD row; never replace richer model-authored criteria.
+    """
+    changed = False
+    for item in items or []:
+        if (not isinstance(item, dict) or _is_bug_item(item)
+                or str(item.get("type") or "").lower().startswith("sub")):
+            continue
+        body = str(item.get("description") or "")
+        if len(_dod_rows(body)) != 1:
+            continue
+        subject = _re.sub(r"^\s*\[[^]]+\]\s*", "",
+                          str(item.get("summary") or "작업")).strip()
+        if any(word in subject for word in ("가이드", "문서", "매뉴얼")):
+            second = f"{subject}의 대상·절차·예시가 요청 범위와 일치함을 리뷰 결과로 확인한다"
+        elif any(word in subject for word in ("성능", "측정", "벤치마크")):
+            second = "측정 환경·입력·반복 조건을 함께 기록해 같은 조건에서 재현 가능함을 확인한다"
+        elif "인덱스" in subject:
+            second = "변경 대상 인덱스와 변경 전 상태를 기록해 적용 범위를 리뷰로 확인한다"
+        else:
+            second = "요청 범위와 제외 범위가 승인 내용과 일치함을 리뷰 결과로 확인한다"
+        pattern = r"(<h3>\s*완료 조건(?:\s*\(DoD\))?\s*</h3>\s*<ul\b[^>]*>)(.*?)(</ul>)"
+        match = _re.search(pattern, body, _re.S | _re.I)
+        if not match:
+            continue
+        body = (body[:match.start()] + match.group(1) + match.group(2)
+                + f'<li data-checked="false">{_esc(second)}</li>'
+                + match.group(3) + body[match.end():])
+        item["description"] = body
+        changed = True
+    return changed
 
 
 def _preserve_existing_parent_topic(items: list) -> bool:
