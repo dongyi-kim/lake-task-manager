@@ -50,7 +50,7 @@ class KnowledgeCurator(StructuredAgent):
     name = Node.KNOWLEDGE_CURATOR
 
     def system(self, state):
-        return persona(state, SYSTEM_KNOWLEDGE_CURATOR)
+        return persona(state, SYSTEM_KNOWLEDGE_CURATOR, role_id=self.name)
 
     def task(self, state):
         data = wrap_data(

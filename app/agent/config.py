@@ -24,6 +24,7 @@ import time
 
 from app.agent import secrets as _secrets
 from app.agent import profiles as _profiles
+from app.agent.model_profiles import capabilities_for as _model_capabilities
 from app.agent.model_profiles import profile_for_contract as _profile_for_contract
 from app.agent.model_profiles import resolve as _resolve_model_config
 from app.agent.providers import ModelDefinition, adapter as _provider_adapter
@@ -110,6 +111,9 @@ def _auth_signature(config_id: str = "") -> str:
             compat_base(config_id) if p == "openai_compat" else "")
     parts = [config_id or _active_config_id(), p, base, key or "",
              _secret("compatHeaders", config_id) or "",
+             _secret("simpleBaseUrl", config_id) or "",
+             _secret("simpleApiKey", config_id) or "",
+             _secret("simpleHeaders", config_id) or "",
              api_version(config_id) if p == "aoai" else "",
              embedding_provider(config_id), _secret("embeddingBaseUrl", config_id) or "",
              _secret("embeddingApiKey", config_id) or "",
@@ -173,6 +177,7 @@ def settings_signature(config_id: str = "") -> str:
     parts = [config_id or _active_config_id(), p, base, key or "",
              api_version(config_id) if p == "aoai" else "",
              chat_model("complex", config_id), chat_model("simple", config_id), embed_model(config_id),
+             _secret("simpleBaseUrl", config_id) or "",
              embedding_provider(config_id), _secret("embeddingBaseUrl", config_id) or "",
              str((_profile(config_id) or {}).get("chatModelProfile") or ""),
              str((_profile(config_id) or {}).get("embedRevision") or ""),
@@ -440,8 +445,14 @@ def chat_definition(tier: str = "complex", model_override: str = "",
     if p == "openai":
         return ModelDefinition(p, model, api_key=_secret("openaiApiKey", config_id),
                                model_profile=str(row.get("chatModelProfile") or ""))
-    return ModelDefinition(p, model, compat_base(config_id),
-                           _secret("compatApiKey", config_id) or "unused", headers=_compat_headers(config_id),
+    split_simple = tier == "simple" and bool(_secret("simpleBaseUrl", config_id))
+    base = (_normalise_compat_base(_secret("simpleBaseUrl", config_id))
+            if split_simple else compat_base(config_id))
+    key = (_secret("simpleApiKey", config_id) if split_simple else "") \
+        or _secret("compatApiKey", config_id) or "unused"
+    headers = (_json_headers("simpleHeaders", config_id) if split_simple else {}) \
+        or _compat_headers(config_id)
+    return ModelDefinition(p, model, base, key, headers=headers,
                            model_profile=str(row.get("chatModelProfile") or ""))
 
 
@@ -526,6 +537,21 @@ def get_llm(temperature: float | None = None, tier: str = "complex", model_overr
 
     # model_override 는 '권한 확인'처럼 **특정 모델 하나를 시험**할 때만 쓴다(설정 화면).
     definition = chat_definition(tier, model_override, config_id)
+    # Some compatible endpoints can reason well but cannot constrain JSON. A model
+    # profile may delegate only structured contracts to the configured simple endpoint;
+    # free-form complex synthesis remains on the original model. This is a provider/model
+    # capability decision, never a Role-level ``if model == ...`` branch.
+    if output_contract == "structured" and not model_override:
+        declared = _model_capabilities(definition.model, definition.model_profile)
+        delegate_tier = str(declared.get("structured_delegate_tier") or "").strip()
+        if delegate_tier and delegate_tier != tier:
+            delegated = chat_definition(delegate_tier, config_id=config_id)
+            if delegated.model and delegated.base_url:
+                log.debug(
+                    "structured contract delegated tier=%s->%s model=%s->%s",
+                    tier, delegate_tier, definition.model, delegated.model,
+                )
+                definition = delegated
     model = definition.model
     # ★ **모델 이름이 비었으면 여기서 멈춘다.** 빈 이름으로 부르면 서버는 대개
     #   `404 /v1/chat/completions` 로 답하고(모델을 못 찾았다는 뜻인데 경로가 없다는 말로
@@ -544,6 +570,8 @@ def get_llm(temperature: float | None = None, tier: str = "complex", model_overr
     )
     effective = _resolve_model_config(model, p, effective_profile,
                                       explicit_model_profile=definition.model_profile,
+                                      output_contract=output_contract,
+                                      semantic_profile=profile,
                                       explicit=explicit)
     log.debug("LLM role=%s requestedProfile=%s outputContract=%s definition=%s effective=%s",
               role_id, profile, output_contract, definition.debug(), effective.debug())
@@ -659,6 +687,7 @@ def status() -> dict:
             # 하나 이상의 LLM 연결값이 있는가 — 챗·에디터 AI 버튼의 활성/비활성 근거.
             "llmReady": ready, "llmReason": ready_why,
             "chatModel": chat_model() if show_runtime else "",
+            "simpleTarget": (chat_definition("simple").debug() if show_runtime else {}),
             "embedModel": embed_model() if show_runtime else "",
             "embeddingProvider": embedding_provider() if show_runtime else "",
             "embeddingTarget": (embedding_definition().debug() if show_runtime else {}),
@@ -728,7 +757,7 @@ def probe(timeout: float = 30.0, config_id: str = "") -> dict:
     사용자가 고칠 수 있다. 사내 AOAI 는 개발 PC 에서 403 이 정상이므로 그 문구를 그대로 보인다.
     """
     out = {"provider": provider(config_id), "configId": config_id,
-           "chat": None, "embeddings": None, "ok": False}
+           "chat": None, "simple": None, "embeddings": None, "ok": False}
     ok, why = available()
     if not ok:
         out["error"] = why
@@ -742,6 +771,24 @@ def probe(timeout: float = 30.0, config_id: str = "") -> dict:
                        "sample": str(getattr(msg, "content", msg))[:60]}
     except Exception as e:
         out["chat"] = {"ok": False, "ms": int((time.time() - t0) * 1000), "error": _brief(e)}
+
+    complex_definition = chat_definition("complex", config_id=config_id)
+    simple_definition = chat_definition("simple", config_id=config_id)
+    simple_is_split = (
+        simple_definition.model != complex_definition.model
+        or str(simple_definition.base_url or "").rstrip("/")
+        != str(complex_definition.base_url or "").rstrip("/")
+    )
+    if simple_is_split:
+        ts = time.time()
+        try:
+            msg = get_llm(temperature=0, max_tokens=5, tier="simple",
+                          config_id=config_id).invoke("reply with the single word: pong")
+            out["simple"] = {"ok": True, "ms": int((time.time() - ts) * 1000),
+                             "sample": str(getattr(msg, "content", msg))[:60]}
+        except Exception as e:
+            out["simple"] = {"ok": False, "ms": int((time.time() - ts) * 1000),
+                             "error": _brief(e)}
 
     t1 = time.time()
     try:
@@ -771,7 +818,8 @@ def probe(timeout: float = 30.0, config_id: str = "") -> dict:
             out["capabilities"] = {"error": _brief(e)}
             out["degraded"] = True
 
-    out["ok"] = bool(out["chat"]["ok"] and out["embeddings"]["ok"])
+    out["ok"] = bool(out["chat"]["ok"] and out["embeddings"]["ok"]
+                     and (out["simple"] is None or out["simple"]["ok"]))
     # ★ **둘 다 통과했을 때만** 이 조합을 확인된 것으로 남긴다(사용자 지시: 이중 확인).
     #   채팅만 되고 임베딩이 막힌 상태를 '됐다'로 치면, 색인이 필요한 순간에 다시 터진다.
     if out["ok"]:
@@ -790,7 +838,8 @@ def list_models(timeout: float = 10.0, config_id: str = "") -> dict:
     """
     p = provider(config_id)
     if p == "fake":
-        return {"chat": ["fake-chat"], "embed": ["fake-embed"], "total": 2, "error": ""}
+        return {"chat": ["fake-chat"], "simple": ["fake-chat"],
+                "embed": ["fake-embed"], "total": 2, "error": ""}
     ok, why = available()
     if not ok:
         return {"chat": [], "embed": [], "total": 0, "error": why}
@@ -813,8 +862,10 @@ def list_models(timeout: float = 10.0, config_id: str = "") -> dict:
             pairs = [((d.get("id") or ""), str(d.get("model") or "")) for d in rows]
             is_embed = lambda n, m: "embed" in n.lower() or "embed" in m.lower()  # noqa: E731
             result = {"chat": sorted(n for n, m in pairs if n and not is_embed(n, m)),
+                      "simple": [],
                       "embed": sorted(n for n, m in pairs if n and is_embed(n, m)), "error": ""}
-            return _with_split_embedding_models(result, timeout, config_id)
+            return _with_split_embedding_models(
+                _with_split_simple_models(result, timeout, config_id), timeout, config_id)
 
         from openai import OpenAI
         if p == "openai":
@@ -859,10 +910,50 @@ def list_models(timeout: float = 10.0, config_id: str = "") -> dict:
         # `total` — **서버가 실제로 준 개수**. 우리가 걸러낸 것이 있으면 화면이 그 사실을
         #   말해 줘야 한다(사용자 지적: "직접 /v1/models 날려본 것과 목록이 다르다").
         #   거르는 것 자체는 필요하지만, **몇 개를 거를지는 사용자가 알아야 할 사실**이다.
-        result = {"chat": chat, "embed": embed, "total": len(ids), "error": ""}
-        return _with_split_embedding_models(result, timeout, config_id)
+        result = {"chat": chat, "simple": [], "embed": embed,
+                  "total": len(ids), "error": ""}
+        return _with_split_embedding_models(
+            _with_split_simple_models(result, timeout, config_id), timeout, config_id)
     except Exception as e:
         return {"chat": [], "embed": [], "total": 0, "error": _brief(e)}
+
+
+def _with_split_simple_models(result: dict, timeout: float, config_id: str = "") -> dict:
+    """Load the simple-role model catalog from its independent compatible endpoint."""
+    complex_definition = chat_definition("complex", config_id=config_id)
+    simple = chat_definition("simple", config_id=config_id)
+    same_connection = (
+        simple.provider == complex_definition.provider
+        and str(simple.base_url or "").rstrip("/")
+        == str(complex_definition.base_url or "").rstrip("/")
+    )
+    if same_connection:
+        result["simple"] = list(result.get("chat") or [])
+        return result
+    configured = [simple.model] if str(simple.model or "").strip() else []
+    discovered: list[str] = []
+    warning = ""
+    try:
+        if simple.provider == "fake":
+            discovered = configured or ["fake-chat"]
+        elif simple.provider == "aoai":
+            # A separate AOAI endpoint is not currently configurable; retain direct input only.
+            discovered = configured
+        else:
+            from openai import OpenAI
+            kwargs = {"api_key": simple.api_key or "unused", "timeout": timeout}
+            if simple.provider == "openai_compat":
+                kwargs.update({"base_url": simple.base_url,
+                               "default_headers": simple.headers or None})
+            client = OpenAI(**kwargs)
+            discovered = [str(getattr(model, "id", "") or "")
+                          for model in client.models.list()]
+    except Exception as exc:
+        warning = "simple model catalog: " + _brief(exc)
+    result["simple"] = sorted(dict.fromkeys([*configured, *discovered]))
+    if warning:
+        result.setdefault("warnings", []).append(warning)
+    return result
 
 
 def _with_split_embedding_models(result: dict, timeout: float, config_id: str = "") -> dict:

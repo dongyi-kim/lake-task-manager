@@ -114,10 +114,18 @@ def test_questions_go_back_to_the_user_instead_of_drafting():
                                   "draft": {"items": [{"summary": "x"}]}}) == "respond"
 
 
-def test_a_draft_fans_out_to_assign_and_review_in_parallel():
+def test_a_draft_fans_out_to_assign_and_review_in_parallel(monkeypatch):
     # 초안이 서면 PeopleAdvisor 와 Auditor 가 동시에 돈다 — 직렬이던 스텝을 접은 최적화(P-2).
+    monkeypatch.setattr(G, "_parallel_role_calls_allowed", lambda: True)
     assert G.route_after_work_architect({"questions": [], "draft": {"items": [{"summary": "x"}]}}) \
         == ["assign", "review"]
+
+
+def test_single_queue_model_schedules_assignment_and_audit_sequentially(monkeypatch):
+    monkeypatch.setattr(G, "_parallel_role_calls_allowed", lambda: False)
+    assert G.route_after_work_architect({
+        "questions": [], "draft": {"items": [{"summary": "x"}]},
+    }) == "sequential"
 
 
 def test_an_empty_draft_does_not_pretend_to_have_one():

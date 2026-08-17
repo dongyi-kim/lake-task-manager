@@ -230,7 +230,8 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
         state = {"user_id": user_id or "", "user_identity": ""}
         invoke_config = {"callbacks": [handler]} if handler else {}
         llm = C.get_llm(temperature=0.3)
-        messages = [("system", persona(state, SYSTEM_EDITOR_AUTHOR)), ("user", task)]
+        messages = [("system", persona(state, SYSTEM_EDITOR_AUTHOR, role_id="editor_author")),
+                    ("user", task)]
         try:
             msg = llm.invoke(messages, config=invoke_config)
         except TypeError as exc:

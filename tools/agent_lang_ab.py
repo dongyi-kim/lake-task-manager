@@ -54,7 +54,7 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "3.2.0"
+BATTERY_VERSION = "3.2.1"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("conversation")
 
 # ── 시나리오 — 실사용에서 가장 자주 오는 것들. 여러 턴짜리도 그대로 둔다
@@ -114,6 +114,15 @@ def _checks(out: dict, user_text: str = "", evaluation_evidence: dict | None = N
     c["요구구조불일치"] = bool(wants_kids and items and not out.get("questions")
                              and c["자식합계"] < 2)
     c["응답카드불일치"] = bool(claims_kids and items and c["자식합계"] == 0)
+    wants_creation = bool(re.search(
+        r"(?:추가\s*구현|만들어|생성|등록|올려|버그로|단계별\s*(?:sub-?task|서브\s*태스크))",
+        user_text or "", re.I))
+    # A polished explanation is not a successful creation turn. Keep this separate
+    # from tree-shape checks so a structured-output failure cannot become a silent green
+    # merely because there is no malformed item to inspect.
+    c["요청산출물부재"] = bool(
+        wants_creation and not items and not (out.get("questions") or [])
+    )
     if "외부 공식" in (user_text or ""):
         c["내외부조사완결"] = bool(
             re.search(r"https?://", text)
@@ -180,6 +189,39 @@ def _checks(out: dict, user_text: str = "", evaluation_evidence: dict | None = N
     return c
 
 
+def _summarize(rows):
+    """Build one quantitative block for both case checkpoints and final output."""
+    tot = {"턴수": 0, "초": 0.0, "총토큰": 0, "프롬프트토큰": 0, "완성토큰": 0,
+           "캐시토큰": 0, "LLM호출": 0, "근거위반": 0, "후검증위반": 0,
+           "종결어미줄": 0, "맺음상투구": 0, "요구구조불일치": 0,
+           "응답카드불일치": 0, "요청산출물부재": 0, "비용USD": 0.0}
+    for row in rows:
+        for turn in row["턴"]:
+            if "오류" in turn:
+                continue
+            tot["턴수"] += 1
+            for key in ("초", "총토큰", "프롬프트토큰", "완성토큰", "캐시토큰", "LLM호출"):
+                tot[key] += (turn.get(key) or 0)
+            tot["비용USD"] += (turn.get("비용USD") or 0)
+            checks = turn.get("검사") or {}
+            tot["근거위반"] += (checks.get("근거위반") or 0)
+            tot["후검증위반"] += len(checks.get("후검증위반") or [])
+            tot["종결어미줄"] += checks.get("종결어미줄") or 0
+            tot["맺음상투구"] += 1 if checks.get("맺음상투구") else 0
+            tot["요구구조불일치"] += 1 if checks.get("요구구조불일치") else 0
+            tot["응답카드불일치"] += 1 if checks.get("응답카드불일치") else 0
+            tot["요청산출물부재"] += 1 if checks.get("요청산출물부재") else 0
+    tot["초"] = round(tot["초"], 1)
+    tot["비용USD"] = round(tot["비용USD"], 6)
+    metrics = quantitative_metrics(
+        attempts=tot["턴수"], duration_seconds=tot["초"], calls=tot["LLM호출"],
+        prompt_tokens=tot["프롬프트토큰"], completion_tokens=tot["완성토큰"],
+        total_tokens=tot["총토큰"], cached_tokens=tot["캐시토큰"],
+        cost_usd=tot["비용USD"],
+    )
+    return tot, metrics
+
+
 def run():
     selected_ids = [
         sid for sid, _ in SCENARIOS
@@ -241,37 +283,22 @@ def run():
         rows.append({"시나리오": sid, "턴": per,
                      "격리": finish_case(isolation_start)})
         print(f"✔ {sid} 완료", flush=True)
+        checkpoint_tot, checkpoint_metrics = _summarize(rows)
+        write_raw_result(out_path, {
+            "model": MODEL, "simpleModel": SIMPLE_MODEL, "promptVersion": PROMPT_VERSION,
+            "evaluation": evaluation, "metrics": checkpoint_metrics, "합계": checkpoint_tot,
+            "시나리오": rows,
+            "checkpoint": {"complete": False, "completedCases": len(rows),
+                           "selectedCases": len(selected_ids)},
+        })
 
-    tot = {"턴수": 0, "초": 0.0, "총토큰": 0, "프롬프트토큰": 0, "완성토큰": 0,
-           "캐시토큰": 0, "LLM호출": 0, "근거위반": 0, "후검증위반": 0,
-           "종결어미줄": 0, "맺음상투구": 0, "요구구조불일치": 0,
-           "응답카드불일치": 0, "비용USD": 0.0}
-    for r in rows:
-        for t in r["턴"]:
-            if "오류" in t:
-                continue
-            tot["턴수"] += 1
-            for k in ("초", "총토큰", "프롬프트토큰", "완성토큰", "캐시토큰", "LLM호출"):
-                tot[k] += (t.get(k) or 0)
-            tot["비용USD"] += (t.get("비용USD") or 0)
-            ck = t.get("검사") or {}
-            tot["근거위반"] += (ck.get("근거위반") or 0)
-            tot["후검증위반"] += len(ck.get("후검증위반") or [])
-            tot["종결어미줄"] += ck.get("종결어미줄") or 0
-            tot["맺음상투구"] += 1 if ck.get("맺음상투구") else 0
-            tot["요구구조불일치"] += 1 if ck.get("요구구조불일치") else 0
-            tot["응답카드불일치"] += 1 if ck.get("응답카드불일치") else 0
-    tot["초"] = round(tot["초"], 1)
-    tot["비용USD"] = round(tot["비용USD"], 6)
-    metrics = quantitative_metrics(
-        attempts=tot["턴수"], duration_seconds=tot["초"], calls=tot["LLM호출"],
-        prompt_tokens=tot["프롬프트토큰"], completion_tokens=tot["완성토큰"],
-        total_tokens=tot["총토큰"], cached_tokens=tot["캐시토큰"],
-        cost_usd=tot["비용USD"],
-    )
+    tot, metrics = _summarize(rows)
     write_raw_result(out_path, {"model": MODEL, "simpleModel": SIMPLE_MODEL,
                                 "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
-                                "metrics": metrics, "합계": tot, "시나리오": rows})
+                                "metrics": metrics, "합계": tot, "시나리오": rows,
+                                "checkpoint": {"complete": True,
+                                               "completedCases": len(rows),
+                                               "selectedCases": len(selected_ids)}})
     print(json.dumps(tot, ensure_ascii=False), flush=True)
     print(f"→ {out_path}", flush=True)
 

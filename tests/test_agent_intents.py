@@ -115,6 +115,26 @@ def test_bug_reports_still_go_through_investigation():
     assert G.route_after_request_architect(vague) == "refine"
 
 
+def test_request_architect_pins_lexically_decidable_bug_progress_and_depth_boundaries():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    def classify(text, model_intent=Intent.PLAN_WORK, depth="brief"):
+        return RequestArchitect().apply({"messages": [HumanMessage(content=text)]}, {
+            "intent": model_intent, "keywords": [], "answer_depth": depth,
+            "sufficient": True,
+        })
+
+    bug = classify("적재 배치가 어젯밤부터 계속 실패한다")
+    assert bug["intent"] == Intent.PLAN_WORK
+    assert bug["playbook"] == "bug_report"
+    stale = classify("진행중인 티켓 중 2일 이상 업데이트 없는 것들 있니?")
+    assert stale["intent"] == Intent.PROGRESS
+    assert stale["playbook"] == "find_tickets"
+    assert classify("적재 지연이 왜 났고 어떻게 해결했어?", Intent.ASK)["answer_depth"] == "explain"
+    assert classify("CDC가 뭐고 우리는 어떻게 쓰고 있어?", Intent.ASK)["answer_depth"] == "explain"
+
+
 def test_portfolio_analyst_node_exists_and_flows_to_result_integrator():
     g = G.build().get_graph()
     assert Node.PORTFOLIO_ANALYST in g.nodes
@@ -259,6 +279,61 @@ def test_planner_schema_covers_all_new_intents():
     enum = SCHEMA["properties"]["intent"]["enum"]
     for i in (Intent.PLAN_WORK, Intent.MY_DAY, Intent.PROGRESS, Intent.ACTIVITY):
         assert i in enum
+
+
+def test_request_plan_schema_bounds_decomposition_and_verbosity():
+    from app.agent.workflow.agents.request_architect import SCHEMA
+
+    tasks = SCHEMA["properties"]["tasks"]
+    task = tasks["items"]["properties"]
+    assert tasks["maxItems"] == 6
+    assert task["instruction"]["maxLength"] <= 280
+    assert task["completion_criteria"]["maxItems"] == 3
+    assert SCHEMA["properties"]["blocking_questions"]["maxItems"] == 3
+
+
+def test_request_plan_collapses_model_invented_internal_pipeline_tasks():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    text = "우리 기존 ETL 파이프라인에 Iceberg Puffin NDV 통계 생성 기능을 추가 구현하고 싶어"
+    got = RequestArchitect().apply({"messages": [HumanMessage(content=text)]}, {
+        "intent": Intent.PLAN_WORK,
+        "goal": "Puffin NDV 기능 구현",
+        "keywords": ["Iceberg Puffin NDV"],
+        "tasks": [
+            {"id": "q", "kind": "query", "instruction": "관련 이력 조회", "depends_on": [],
+             "write_intent": False, "completion_criteria": ["이력 확인"]},
+            {"id": "a", "kind": "analyze", "instruction": "구현안 분석", "depends_on": ["q"],
+             "write_intent": False, "completion_criteria": ["구현안 분석"]},
+            {"id": "t", "kind": "ticket", "instruction": "티켓 초안", "depends_on": ["a"],
+             "write_intent": True, "completion_criteria": ["초안 작성"]},
+        ],
+    })
+
+    tasks = got["request_plan"]["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["kind"] == "plan"
+    assert tasks[0]["write_intent"] is True
+    assert tasks[0]["instruction"] == text
+
+
+def test_request_plan_keeps_genuinely_compound_user_outcomes():
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    text = "Puffin 적용 이력을 조사하고 DL-9090에 결론 댓글을 남겨줘"
+    model_tasks = [
+        {"id": "r", "kind": "research", "instruction": "적용 이력 조사", "depends_on": [],
+         "write_intent": False, "completion_criteria": ["이력 확인"]},
+        {"id": "c", "kind": "comment", "instruction": "결론 댓글", "depends_on": ["r"],
+         "write_intent": True, "completion_criteria": ["댓글 초안"]},
+    ]
+    got = RequestArchitect().apply({"messages": [HumanMessage(content=text)]}, {
+        "intent": Intent.MODIFY, "keywords": ["Puffin"], "tasks": model_tasks,
+    })
+
+    assert got["request_plan"]["tasks"] == model_tasks
 
 
 # ── modify 실행 경로 — 변경 계획 → 승인 → update_ticket ────────────

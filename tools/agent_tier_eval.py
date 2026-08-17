@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
-os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
 # 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
 os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
 
@@ -25,7 +25,8 @@ INTENT_CASES = [
     ("실시간 수집 파이프라인에 CDC 방식을 도입해야 한다", "plan_work"),
     ("데이터 거버넌스 에픽 하나 새로 만들자", "plan_work"),
     ("DL-101 밑에 서브태스크 3개 만들어줘", "plan_work"),
-    ("적재 배치가 어젯밤부터 계속 실패한다", "report_bug"),
+    # Bug is a Task-tier issue_type/playbook, not a separate intent.
+    ("적재 배치가 어젯밤부터 계속 실패한다", "plan_work"),
     ("DL-101 어떻게 진행되고 있어?", "progress"),
     ("DL-9090 지금 어디까지 진행됐어?", "progress"),
     ("ETL 모듈 진척률 알려줘", "progress"),
@@ -77,8 +78,14 @@ def eval_simple(models):
     from app.agent.workflow.agents.request_architect import RequestArchitect
     rows = []
     for m in models:
-        os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"] = m
-        os.environ["LAKE_AGENT_OPENAI_CHAT"] = m      # complex 는 이 시험에 안 쓰인다
+        provider = str(os.environ.get("LAKE_AGENT_PROVIDER") or "openai").strip().lower()
+        prefix = {"openai": "LAKE_AGENT_OPENAI_CHAT",
+                  "openai_compat": "LAKE_AGENT_COMPAT_CHAT",
+                  "aoai": "LAKE_AGENT_AOAI_CHAT"}.get(provider)
+        if not prefix:
+            raise ValueError(f"simple tier battery에서 지원하지 않는 provider: {provider}")
+        os.environ[prefix + "_SIMPLE"] = m
+        os.environ[prefix] = m      # complex 는 이 시험에 안 쓰인다
         from app.agent import usage as _usage
         meter = _usage.Meter()
         cb = _usage.callback(meter)
@@ -110,18 +117,19 @@ def eval_simple(models):
 def _classify(agent, text, cb=None):
     """Request Architect 한 건만 돌린다 — 그래프를 태우면 다른 역할의 비용이 섞인다.
 
-    ★ 호출은 **에이전트 자신의 경로**(`structured()`)로 한다. 여기서 LLM 호출을 다시 짜면
-    스키마에 이름을 붙이는 처리가 빠져 `Unsupported function` 으로 전건 실패한다(실측) —
-    운영과 다른 경로로 잰 숫자는 비교에 쓸 수 없다.
+    ★ 호출은 **에이전트 자신의 운영 경로**(`invoke_structured`)로 한다. `structured()`를
+    직접 호출하면 native JSON Schema만 시험하게 되어, prompt JSON fallback을 쓰는 로컬
+    provider의 실제 품질과 실패율을 측정하지 못한다.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
     from app.agent.workflow.agents.base import _as_dict
     state = {"messages": [HumanMessage(content=text)], "thread_id": "tier-eval"}
     try:
-        out = agent.structured().invoke(
+        out = agent.invoke_structured(
+            state,
             [SystemMessage(content=agent.system(state)),
              HumanMessage(content=agent.task(state))],
-            config={"callbacks": [cb]} if cb else None)
+        )
         return agent.apply(state, _as_dict(out))
     except Exception as e:
         return {"intent": f"(오류 {str(e)[:60]})"}

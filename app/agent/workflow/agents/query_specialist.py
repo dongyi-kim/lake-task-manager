@@ -408,8 +408,25 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
     """
     if (state.get("intent") or "") != Intent.PLAN_WORK:
         return
-    if any(query.get("source") == "jira" for query in plan.get("queries") or []):
-        return
+    asked = (request_text(state) + " " + conversation(state)).strip()
+    explicit_comments = any(word in asked.casefold() for word in _COMMENT_WORDS)
+    explicit_people = bool(re.search(
+        r"담당|할당|배정|누가|사람|인원|멤버|member|assignee", asked, re.I))
+    # New-work history needs one scoped duplicate lookup, not a status-by-status fan-out.
+    # The model used to emit five equivalent Jira queries plus speculative people/comments
+    # reads. Apart from latency, pseudo-JQL in those rows could silently return no evidence.
+    # Keep explicitly requested source classes; replace all Jira variants below with one
+    # canonical query that the deterministic runner understands.
+    plan["queries"] = [
+        query for query in (plan.get("queries") or [])
+        if query.get("source") != "jira"
+        and (query.get("source") != "comments" or explicit_comments)
+        and (query.get("source") != "people" or explicit_people)
+    ]
+    explicit_keys = [
+        str(key).upper() for key in (state.get("mentioned_keys") or [])
+        if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).upper())
+    ]
     ignored = {
         "작업", "티켓", "생성", "추가", "신규", "만들자", "만들어", "요청",
         "기능", "개선", "알아서", "task", "ticket", "create", "issue",
@@ -432,13 +449,14 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
             r"[A-Za-z][A-Za-z0-9_.+-]{2,}|[가-힣]{2,}",
             request_text(state) or last_user_text(state),
         ))
-    if not terms:
+    if not terms and not explicit_keys:
         return
+    where = "key in (" + ", ".join(explicit_keys) + ")" if explicit_keys else ""
     plan.setdefault("queries", []).insert(0, {
         "id": "internal-duplicate-check",
         "source": "jira",
-        "query": " ".join(terms[:5]),
-        "where": "",
+        "query": "" if explicit_keys else " ".join(terms[:5]),
+        "where": where,
         "order_by": "updated DESC",
         "fields": ["key", "summary", "status", "issuetype", "assignee", "updated"],
         "completeness": "all",

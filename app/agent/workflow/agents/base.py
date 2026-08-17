@@ -38,6 +38,22 @@ from app.agent import config as _cfg
 from app.agent.workflow.state import AgentState, note
 
 MAX_TOOL_STEPS = 6      # 도구 왕복 상한. 모델이 같은 도구를 맴돌 때 대화를 끝까지 태우지 않는다
+STRUCTURED_END_TOKEN = "<END_JSON>"
+
+
+def _prompt_json_contract(schema_text: str) -> str:
+    """Strict JSON contract with a transport stop marker for non-native providers.
+
+    Some compatible models finish a valid object but do not emit EOS until ``max_tokens``.
+    The server removes the stop marker, so the parser still receives exactly one raw JSON
+    object and the normal schema validation remains authoritative.
+    """
+    return (
+        "Output format: return exactly one JSON object satisfying the JSON Schema below. "
+        "The first output character must be {. Immediately after the object's closing }, emit "
+        f"{STRUCTURED_END_TOKEN}. Do not include prose, a preface, Markdown, or a code fence. "
+        "The stop marker is transport framing and is not part of the JSON.\n" + schema_text
+    )
 
 
 def _loads_loose(text: str):
@@ -55,6 +71,15 @@ def _loads_loose(text: str):
         return v if isinstance(v, dict) else None
     except Exception:
         return None
+
+
+def _response_shape(raw, text: str) -> str:
+    """Return safe parse diagnostics without logging response or reasoning content."""
+    value = (text or "").strip()
+    metadata = getattr(raw, "response_metadata", None) or {}
+    finish = metadata.get("finish_reason") or metadata.get("stop_reason") or "unknown"
+    return (f"chars={len(value)}, starts_object={value.startswith('{')}, "
+            f"ends_object={value.endswith('}')}, finish={finish}")
 
 
 def _validate_output(value, schema: dict) -> dict:
@@ -120,15 +145,14 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
                 capabilities.record(tier, capability, False, str(exc))
     try:
         raw = make_llm().invoke(
-            list(messages) + [HumanMessage(content=(
-                "Return exactly one JSON object satisfying the JSON Schema below. "
-                "The first output character must be { and the last must be }. "
-                "Do not include prose, a preface, Markdown, or a code fence.\n"
-                + json.dumps(schema, ensure_ascii=False)))])
+            list(messages) + [HumanMessage(content=_prompt_json_contract(
+                json.dumps(schema, ensure_ascii=False)))],
+            stop=[STRUCTURED_END_TOKEN],
+        )
         raw_text = str(getattr(raw, "content", raw) or "")
         parsed = _loads_loose(raw_text)
         if parsed is None:
-            raise ValueError("JSON 객체를 찾지 못했습니다.")
+            raise ValueError("JSON 객체를 찾지 못했습니다 (" + _response_shape(raw, raw_text) + ").")
         return _validate_output(parsed, schema)
     except Exception as exc:
         validation_error = str(exc)[:1000]
@@ -137,11 +161,13 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
         raw = make_llm(profile="fast_structured").invoke([
             SystemMessage(content=(
                 "Preserve meaning exactly. Repair only JSON syntax and schema violations. "
-                "Return raw JSON only: the first output character must be { and the last must be }. "
-                "Never use Markdown, a code fence, or an explanation.")),
+                f"Return raw JSON, then emit {STRUCTURED_END_TOKEN}. The marker is transport "
+                "framing, not JSON. Never use Markdown, a code fence, or an explanation.")),
             HumanMessage(content=("Validation error:\n" + validation_error + "\n\nJSON Schema:\n"
                                   + json.dumps(schema, ensure_ascii=False)
-                                  + "\n\nOutput to repair:\n" + raw_text[:12000]))])
+                                  + "\n\nOutput to repair:\n" + raw_text[:12000]))],
+            stop=[STRUCTURED_END_TOKEN],
+        )
         parsed = _loads_loose(str(getattr(raw, "content", raw) or ""))
         if parsed is None:
             raise ValueError("repair JSON 객체를 찾지 못했습니다.")
@@ -179,6 +205,10 @@ class Agent(ABC):
     def schema(self) -> dict:
         """출력 JSON Schema. 파싱하지 않고 스키마로 받는다."""
 
+    def schema_for(self, state: AgentState) -> dict:
+        """Return a context-specific output contract when a Role needs one."""
+        return self.schema()
+
     @abstractmethod
     def apply(self, state: AgentState, out: dict) -> dict:
         """모델 출력 → State 갱신분. 여기서만 State 를 만진다."""
@@ -190,7 +220,7 @@ class Agent(ABC):
         kw.setdefault("role_id", str(self.name))
         return _cfg.get_llm(tier=self.tier, **kw)
 
-    def structured(self, method: str = "json_schema", **kw):
+    def structured(self, method: str = "json_schema", state: AgentState | None = None, **kw):
         """스키마로 받는 모델. **스키마에 이름을 붙여서** 넘긴다.
 
         OpenAI/AOAI 는 구조화 출력을 함수 호출로 구현하므로 스키마가 함수 이름을 가져야 한다.
@@ -198,8 +228,9 @@ class Agent(ABC):
         처음 돌렸을 때 여섯 역할이 전부 여기서 넘어졌다. 역할마다 적어 두면 빠뜨리는 사람이
         생기므로 여기서 한 번에 붙인다.
         """
+        schema = self.schema_for(state or {})
         return self.llm(output_contract="structured", **kw).with_structured_output(
-            _named(self.schema(), self.name), method=method)
+            _named(schema, self.name), method=method)
 
     def invoke_structured(self, state: AgentState, messages: list) -> dict:
         """provider capability에 맞춰 구조화 출력 fallback ladder를 실행한다.
@@ -211,6 +242,7 @@ class Agent(ABC):
         import json
         from app.agent import capabilities
 
+        schema = self.schema_for(state)
         profile = capabilities.get(self.tier).get("checked") or {}
         errors, validation_error = [], ""
         for capability, method in (("json_schema", "json_schema"),
@@ -222,9 +254,9 @@ class Agent(ABC):
                 if method == "json_mode":
                     call_messages.append(HumanMessage(content=(
                         "Return exactly one JSON object satisfying this JSON Schema:\n"
-                        + json.dumps(self.schema(), ensure_ascii=False))))
-                raw = self.structured(method=method).invoke(call_messages)
-                out = _validate_output(raw, self.schema())
+                        + json.dumps(schema, ensure_ascii=False))))
+                raw = self.structured(method=method, state=state).invoke(call_messages)
+                out = _validate_output(raw, schema)
                 capabilities.record(self.tier, capability, True)
                 return out
             except Exception as exc:
@@ -233,35 +265,35 @@ class Agent(ABC):
                     capabilities.record(self.tier, capability, False, str(exc))
 
         # response_format을 전혀 지원하지 않는 서버: plain chat에 schema를 명시한다.
-        schema_text = json.dumps(self.schema(), ensure_ascii=False)
-        prompt_messages = list(messages) + [HumanMessage(content=(
-            "Output format: return exactly one JSON object satisfying the JSON Schema below. "
-            "The first output character must be { and the last must be }. "
-            "Do not include prose, a preface, Markdown, or a code fence.\n" + schema_text))]
+        schema_text = json.dumps(schema, ensure_ascii=False)
+        prompt_messages = list(messages) + [HumanMessage(content=
+            _prompt_json_contract(schema_text))]
         raw_text = ""
         try:
-            raw = self.llm(output_contract="structured").invoke(prompt_messages)
+            raw = self.llm(output_contract="structured").invoke(
+                prompt_messages, stop=[STRUCTURED_END_TOKEN])
             raw_text = str(getattr(raw, "content", raw) or "")
             parsed = _loads_loose(raw_text)
             if parsed is None:
-                raise ValueError("JSON 객체를 찾지 못했습니다.")
-            return _validate_output(parsed, self.schema())
+                raise ValueError("JSON 객체를 찾지 못했습니다 (" + _response_shape(raw, raw_text) + ").")
+            return _validate_output(parsed, schema)
         except Exception as exc:
             validation_error = str(exc)[:1000]
             errors.append(f"prompt_json: {str(exc)[:180]}")
 
         # repair는 원 업무를 다시 판단시키는 호출이 아니라 형식만 교정하는 1회 호출이다.
         try:
-            repaired = self.llm(profile="fast_structured").invoke([
+            repaired = self.llm(profile="fast_structured", output_contract="structured").invoke([
                 SystemMessage(content=(
                     "Preserve the output's meaning. Repair only JSON syntax and schema violations. "
-                    "Return raw JSON only: the first output character must be { and the last must be }. "
-                    "Never use Markdown, a code fence, or an explanation.")),
-                HumanMessage(content=f"Validation error:\n{validation_error}\n\nJSON Schema:\n{schema_text}\n\nOutput to repair:\n{raw_text[:12000]}")])
+                    f"Return raw JSON, then emit {STRUCTURED_END_TOKEN}. The marker is transport "
+                    "framing, not JSON. Never use Markdown, a code fence, or an explanation.")),
+                HumanMessage(content=f"Validation error:\n{validation_error}\n\nJSON Schema:\n{schema_text}\n\nOutput to repair:\n{raw_text[:12000]}")
+                ], stop=[STRUCTURED_END_TOKEN])
             parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
             if parsed is None:
                 raise ValueError("repair 결과에서 JSON 객체를 찾지 못했습니다.")
-            return _validate_output(parsed, self.schema())
+            return _validate_output(parsed, schema)
         except Exception as exc:
             errors.append(f"repair: {str(exc)[:180]}")
             raise RuntimeError("structured output 실패 — " + " | ".join(errors)) from exc
@@ -301,7 +333,7 @@ class StructuredAgent(Agent):
                     self.task(state)
                     + "\n\n---\n**Required output format:** Return exactly one JSON object satisfying "
                       "the JSON Schema below. Include no prose, preface, or code fence; begin and end with braces.\n"
-                    + json.dumps(self.schema(), ensure_ascii=False)))])
+                    + json.dumps(self.schema_for(state), ensure_ascii=False)))])
             return _loads_loose(str(getattr(msg, "content", msg) or ""))
         except Exception:
             return None

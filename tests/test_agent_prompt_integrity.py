@@ -175,7 +175,7 @@ def test_machine_contract_identifiers_survive_korean_refactor():
                                          SYSTEM_ACTION_EXECUTOR, SYSTEM_REQUEST_ARCHITECT,
                                          SYSTEM_WORK_ARCHITECT)
 
-    assert PROMPT_VERSION == "en-role-contract-v14"
+    assert PROMPT_VERSION == "en-role-contract-v16"
     for token in ("approval_token", "statusCategory", "Epic Link", "Story Point",
                   "Sub-Task", "PMO_VIT"):
         assert token in BASE_PERSONA, f"공통 계약에서 식별자 {token!r}가 번역·유실됐다"
@@ -184,9 +184,12 @@ def test_machine_contract_identifiers_survive_korean_refactor():
                   "chitchat", 'playbook="bug_report"'):
         assert token in SYSTEM_REQUEST_ARCHITECT, f"RequestArchitect enum {token!r}가 번역·유실됐다"
 
-    for token in ("destination_project", "temp_id", "tier", "issue_type", "parent_ref",
-                  "structure_plan", 'mode="subtask"', "questions=[]", "summary",
-                  "description", "children", "parent", "rationale"):
+    # The model-facing create contract intentionally uses semantic body parts; internal
+    # execution-only WorkItem fields such as temp_id/parent_ref are materialized later and
+    # no longer belong in the Role prompt.
+    for token in ("destination_project", "issue_type", "structure_plan",
+                  'mode="subtask"', "questions=[]", "summary", "background",
+                  "scope_in", "scope_out", "dod", "references", "children", "rationale"):
         assert token in SYSTEM_WORK_ARCHITECT, f"WorkArchitect schema 식별자 {token!r}가 번역·유실됐다"
 
     for token in ("get_ticket", "read_document", "run_jql_v2", "search_documents",
@@ -240,10 +243,37 @@ def test_result_integrator_uses_machine_ticket_badge_contract():
 
 def test_common_prompt_enforces_compact_structured_reply_style():
     from app.agent.prompts.base import BASE_PERSONA, PROMPT_VERSION
-    assert PROMPT_VERSION == "en-role-contract-v14"
+    assert PROMPT_VERSION == "en-role-contract-v16"
     for token in ("compact Korean", "short noun phrases", "headings", "table", "bullet",
                   "direct quotations", "questions"):
         assert token in BASE_PERSONA
+
+
+def test_role_persona_projects_only_applicable_common_contract_sections():
+    from app.agent.prompts.base import BASE_PERSONA, _scoped_common
+
+    people = _scoped_common("people_advisor")
+    result = _scoped_common("result_integrator")
+    work = _scoped_common("work_architect")
+    assert len(people) < len(BASE_PERSONA) * 0.4
+    assert "## Non-Negotiable Rules" in people
+    assert "## Field and Action Contract" not in people
+    assert "## Korean User Response Contract" in result
+    assert "## Field and Action Contract" in work
+    assert "## Korean User Response Contract" not in work
+    assert _scoped_common("unknown_role") == BASE_PERSONA
+
+
+def test_review_role_schemas_bound_local_generation_without_dropping_evidence():
+    from app.agent.workflow.agents.auditor import SCHEMA as audit_schema
+    from app.agent.workflow.agents.people_advisor import SCHEMA as people_schema
+
+    assignment = people_schema["properties"]["assignments"]["items"]["properties"]
+    assert assignment["reasons"]["minItems"] == 1
+    assert assignment["reasons"]["maxItems"] == 3
+    assert assignment["alternates"]["maxItems"] == 2
+    assert audit_schema["properties"]["problems"]["maxItems"] == 6
+    assert audit_schema["properties"]["summary"]["maxLength"] <= 280
 
 
 def test_prompt_layers_separate_current_request_from_untrusted_retrieved_content():

@@ -147,6 +147,27 @@ CASES = [
 ]
 
 
+def _summary(records, hits):
+    usage = {"calls": 0, "promptTokens": 0, "completionTokens": 0,
+             "totalTokens": 0, "cachedTokens": 0, "costUsd": 0.0}
+    for record in records:
+        current = ((record.get("결과") or {}).get("usage") or {})
+        for key in ("calls", "promptTokens", "completionTokens", "totalTokens",
+                    "cachedTokens"):
+            usage[key] += current.get(key) or 0
+        usage["costUsd"] += current.get("costUsd") or 0
+    usage["costUsd"] = round(usage["costUsd"], 6)
+    total = {"통과": hits, "전체": len(records),
+             "초": round(sum(record["초"] for record in records), 1), **usage}
+    metrics = quantitative_metrics(
+        attempts=len(records), duration_seconds=total["초"], calls=usage["calls"],
+        prompt_tokens=usage["promptTokens"], completion_tokens=usage["completionTokens"],
+        total_tokens=usage["totalTokens"], cached_tokens=usage["cachedTokens"],
+        cost_usd=usage["costUsd"],
+    )
+    return total, metrics
+
+
 if __name__ == "__main__":
     _prepare_runtime()
     hits, records = 0, []
@@ -184,6 +205,13 @@ if __name__ == "__main__":
             records.append({"id": cid, "설명": desc, "입력": kw, "통과": False,
                             "초": round(time.time() - t0, 1), "오류": str(e),
                             "격리": isolation})
+            total, metrics = _summary(records, hits)
+            write_raw_result(OUT, {"model": MODEL, "simpleModel": SIMPLE_MODEL,
+                                   "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
+                                   "metrics": metrics, "합계": total, "케이스": records,
+                                   "checkpoint": {"complete": False,
+                                                  "completedCases": len(records),
+                                                  "selectedCases": len(run)}})
             continue
         print(f"{'✓' if ok else '✗'} {cid} {desc}: {elapsed:.0f}s")
         body = (r.get("html") or r.get("error") or "")
@@ -193,26 +221,19 @@ if __name__ == "__main__":
         records.append({"id": cid, "설명": desc, "입력": kw, "통과": ok,
                         "계약결함": flaws, "초": elapsed, "결과": r, "격리": isolation})
         hits += 1 if ok else 0
+        total, metrics = _summary(records, hits)
+        write_raw_result(OUT, {"model": MODEL, "simpleModel": SIMPLE_MODEL,
+                               "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
+                               "metrics": metrics, "합계": total, "케이스": records,
+                               "checkpoint": {"complete": False,
+                                              "completedCases": len(records),
+                                              "selectedCases": len(run)}})
     print(f"\n{hits}/{len(run)} 통과")
-    usage = {"calls": 0, "promptTokens": 0, "completionTokens": 0,
-             "totalTokens": 0, "cachedTokens": 0, "costUsd": 0.0}
-    for record in records:
-        current = ((record.get("결과") or {}).get("usage") or {})
-        for key in ("calls", "promptTokens", "completionTokens", "totalTokens",
-                    "cachedTokens"):
-            usage[key] += current.get(key) or 0
-        usage["costUsd"] += current.get("costUsd") or 0
-    usage["costUsd"] = round(usage["costUsd"], 6)
-    metrics = quantitative_metrics(
-        attempts=len(records), duration_seconds=round(sum(r["초"] for r in records), 1),
-        calls=usage["calls"], prompt_tokens=usage["promptTokens"],
-        completion_tokens=usage["completionTokens"], total_tokens=usage["totalTokens"],
-        cached_tokens=usage["cachedTokens"], cost_usd=usage["costUsd"],
-    )
+    total, metrics = _summary(records, hits)
     write_raw_result(OUT, {"model": MODEL, "simpleModel": SIMPLE_MODEL,
                            "promptVersion": PROMPT_VERSION, "evaluation": evaluation,
-                           "metrics": metrics,
-                           "합계": {"통과": hits, "전체": len(run),
-                                    "초": round(sum(r["초"] for r in records), 1), **usage},
-                           "케이스": records})
+                           "metrics": metrics, "합계": total, "케이스": records,
+                           "checkpoint": {"complete": True,
+                                          "completedCases": len(records),
+                                          "selectedCases": len(run)}})
     print(f"→ {OUT}")

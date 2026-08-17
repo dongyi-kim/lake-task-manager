@@ -305,6 +305,29 @@ def test_create_plan_adds_scoped_internal_duplicate_search_when_model_only_used_
     assert all(term in jira["query"] for term in ("프로듀서", "Avro", "전환"))
 
 
+def test_create_plan_collapses_speculative_status_people_and_comment_fanout():
+    from app.agent.workflow.agents.query_specialist import _ensure_creation_duplicate_query
+
+    state = {
+        "intent": "plan_work",
+        "request_text": "Iceberg Puffin NDV 배치 Job 구현 Task 만들어줘",
+        "keywords": ["Iceberg Puffin NDV", "배치 Job"],
+        "messages": [],
+    }
+    plan = {"queries": [
+        {"id": "all", "source": "jira", "query": "status = all"},
+        {"id": "todo", "source": "jira", "query": "status = todo"},
+        {"id": "comments", "source": "comments", "query": "NDV"},
+        {"id": "people", "source": "people", "query": "NDV"},
+        {"id": "web", "source": "web", "query": "Iceberg NDV docs"},
+    ]}
+    _ensure_creation_duplicate_query(state, plan)
+
+    assert [row["source"] for row in plan["queries"]] == ["jira", "web"]
+    assert plan["queries"][0]["query"] == "Iceberg Puffin NDV 배치 Job"
+    assert plan["queries"][0]["completeness"] == "all"
+
+
 def test_meeting_query_plan_preserves_explicit_ticket_and_replaces_generic_note_search():
     from app.agent.workflow.agents.query_specialist import _normalize_meeting_research_queries
     from app.agent.workflow.state import Intent

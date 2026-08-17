@@ -198,7 +198,29 @@ def route_after_work_architect(state: AgentState):
     cp = state.get("change_plan") or {}
     if cp.get("key") or cp.get("keys"):
         return "propose"
-    return ["assign", "review"] if (state.get("draft") or {}).get("items") else "respond"
+    if not (state.get("draft") or {}).get("items"):
+        return "respond"
+    # Cloud APIs benefit from graph fan-out. A single-device local server can instead make
+    # two long generations contend for the same queue, so the model profile owns this
+    # scheduling capability. Roles remain model/provider agnostic.
+    if not _parallel_role_calls_allowed():
+        return "sequential"
+    return ["assign", "review"]
+
+
+def _parallel_role_calls_allowed() -> bool:
+    """Whether the active complex model can efficiently serve concurrent Role requests."""
+    try:
+        from app.agent import config as agent_config
+        from app.agent import model_profiles
+        definition = agent_config.chat_definition("complex")
+        capabilities = model_profiles.capabilities_for(
+            definition.model, definition.model_profile,
+        )
+        return capabilities.get("parallel_role_calls") is not False
+    except Exception:
+        # Unknown/legacy profiles retain the established cloud-friendly fan-out behavior.
+        return True
 
 
 def route_after_auditor(state: AgentState) -> str:
@@ -432,6 +454,10 @@ def build(checkpointer=None):
     g.add_node(Node.KNOWLEDGE_CURATOR, _node(KnowledgeCurator()))
     g.add_node(Node.WORK_ARCHITECT, _node(WorkArchitect()))
     g.add_node(Node.PEOPLE_ADVISOR, _node(PeopleAdvisor()))
+    # Same canonical Roles, alternate scheduling only. These node ids are graph plumbing,
+    # not Role aliases: trace, prompt, manifest and model profile still use the canonical ids.
+    g.add_node("people_advisor_serial", _node(PeopleAdvisor()))
+    g.add_node("auditor_serial", _node(Auditor()))
     g.add_node("merge_assignments", _merge_assignments)
     g.add_node(Node.AUDITOR, _node(Auditor()))
     g.add_node("propose", _propose)
@@ -458,9 +484,12 @@ def build(checkpointer=None):
     #   둘 다 끝나야 merge_assignments(join)가 실행되고, 거기서 통과/재작성을 가른다.
     g.add_conditional_edges(Node.WORK_ARCHITECT, route_after_work_architect,
                             {"assign": Node.PEOPLE_ADVISOR, "review": Node.AUDITOR,
+                             "sequential": "people_advisor_serial",
                              "respond": Node.RESULT_INTEGRATOR, "propose": "propose"})
     g.add_edge(Node.PEOPLE_ADVISOR, "merge_assignments")
     g.add_edge(Node.AUDITOR, "merge_assignments")
+    g.add_edge("people_advisor_serial", "auditor_serial")
+    g.add_edge("auditor_serial", "merge_assignments")
     g.add_conditional_edges("merge_assignments", route_after_auditor,
                             {"revise": Node.WORK_ARCHITECT, "propose": "propose",
                              "respond": Node.RESULT_INTEGRATOR})

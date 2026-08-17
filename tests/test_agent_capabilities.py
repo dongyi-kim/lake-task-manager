@@ -26,13 +26,15 @@ class _FallbackLLM:
         self.methods = []
         self.invocations = 0
         self.repair = repair
+        self.stop_values = []
 
     def with_structured_output(self, _schema, method="json_schema"):
         self.methods.append(method)
         return _StructuredFailure()
 
-    def invoke(self, messages):
+    def invoke(self, messages, **kwargs):
         self.invocations += 1
+        self.stop_values.append(kwargs.get("stop"))
         if self.repair and self.invocations == 1:
             return AIMessage(content="JSON이 아닌 응답")
         return AIMessage(content='{"value":"ok"}')
@@ -51,6 +53,7 @@ def test_structured_output_falls_back_from_json_schema_and_json_object_to_plain_
     result = base.invoke_schema(SCHEMA, [HumanMessage(content="value를 반환")], tier="simple")
     assert result == {"value": "ok"}
     assert fake.methods == ["json_schema", "json_mode"]
+    assert fake.stop_values == [[base.STRUCTURED_END_TOKEN]]
 
 
 def test_invalid_plain_json_gets_one_format_repair(monkeypatch):
@@ -60,6 +63,7 @@ def test_invalid_plain_json_gets_one_format_repair(monkeypatch):
     result = base.invoke_schema(SCHEMA, [HumanMessage(content="value를 반환")])
     assert result == {"value": "ok"}
     assert fake.invocations == 2
+    assert fake.stop_values == [[base.STRUCTURED_END_TOKEN], [base.STRUCTURED_END_TOKEN]]
 
 
 def test_prefixed_json_is_not_silently_extracted():
@@ -83,7 +87,7 @@ def _probe_echo(value: str) -> str:
 
 
 class _ToolPlanLLM:
-    def invoke(self, messages):
+    def invoke(self, messages, **_kwargs):
         repairing = any("Validation error:" in str(getattr(m, "content", "")) for m in messages)
         return AIMessage(content=json.dumps({
             "tool_calls": [{"name": "_probe_echo", "args": {"value": "pong"}},

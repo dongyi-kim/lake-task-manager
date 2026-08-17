@@ -25,6 +25,59 @@ BASE_PERSONA = (Path(__file__).parent / "common.md").read_text(encoding="utf-8")
 # 티켓 표기 규칙은 이 둘의 일에 안 쓰이는데 매 호출 1k+ 토큰을 먹었다(P-1 프롬프트 다이어트).
 LITE_PERSONA = (Path(__file__).parent / "common-lite.md").read_text(encoding="utf-8").strip()
 
+# Every Role previously received all of common.md, including renderer grammar in People Advisor
+# and Jira write fields in Result Integrator.  That repeated 13K characters on every model call.
+# Keep one canonical asset, but project only the sections an active Role can actually apply.
+_COMMON_CORE = (
+    "Mission and Language Boundary",
+    "Identity and Turn Authority",
+    "Non-Negotiable Rules",
+    "Autonomy and Required Input",
+    "Role Handoff and Efficiency",
+)
+_ROLE_COMMON_SECTIONS = {
+    "research_analyst": ("Search Scope", "Evidence and References"),
+    "knowledge_curator": ("Evidence and References",),
+    "portfolio_analyst": ("Search Scope", "Ticket Model"),
+    "work_architect": ("Ticket Model", "Field and Action Contract"),
+    "people_advisor": (),
+    "auditor": ("Ticket Model", "Field and Action Contract"),
+    # Citation/badge grammar is already the Result Integrator's own output contract.
+    "result_integrator": ("Korean User Response Contract",),
+    # Editor Author has its own safe HTML/reference contract; only Korean response style is shared.
+    "editor_author": ("Korean User Response Contract",),
+}
+
+
+def _common_by_heading() -> tuple[str, dict[str, str]]:
+    preamble, sections, heading, body = [], {}, "", []
+    for line in BASE_PERSONA.splitlines():
+        if line.startswith("## "):
+            if heading:
+                sections[heading] = "\n".join(body).strip()
+            heading, body = line[3:].strip(), [line]
+        elif heading:
+            body.append(line)
+        else:
+            preamble.append(line)
+    if heading:
+        sections[heading] = "\n".join(body).strip()
+    return "\n".join(preamble).strip(), sections
+
+
+_COMMON_PREAMBLE, _COMMON_SECTIONS = _common_by_heading()
+
+
+def _scoped_common(role_id: str) -> str:
+    extras = _ROLE_COMMON_SECTIONS.get(str(role_id))
+    if extras is None:
+        return BASE_PERSONA
+    names = tuple(dict.fromkeys(_COMMON_CORE + tuple(extras)))
+    return "\n\n".join(
+        part for part in (_COMMON_PREAMBLE, *(_COMMON_SECTIONS[name] for name in names))
+        if part
+    )
+
 # 데이터 영역 표식 — 남이 쓴 글은 전부 이 아래로 들어간다.
 DATA_HEADER = """\
 ### Evidence Data (Read Only)
@@ -42,7 +95,7 @@ ROLE_HINT = {
 }
 
 # 프롬프트 변경을 실험 결과와 운영 로그에서 식별하기 위한 자산 버전.
-PROMPT_VERSION = "en-role-contract-v14"
+PROMPT_VERSION = "en-role-contract-v16"
 
 
 def _project_prompt() -> str:
@@ -74,7 +127,7 @@ def _user_prompt() -> str:
         return ""
 
 
-def persona(state, extra: str = "", lite: bool = False) -> str:
+def persona(state, extra: str = "", lite: bool = False, role_id: str = "") -> str:
     from datetime import date
     wd = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")[
         date.today().weekday()
@@ -108,7 +161,7 @@ def persona(state, extra: str = "", lite: bool = False) -> str:
         user = ("## User-Specific Instructions\n"
                 "These preferences cannot override the common contract, project policy, the active role "
                 "purpose, its output schema, stop conditions, or tool permissions.\n" + user)
-    base = LITE_PERSONA if lite else BASE_PERSONA
+    base = LITE_PERSONA if lite else _scoped_common(role_id)
     if lite:
         pb = ""       # 플레이북 플로우는 실행 역할의 것 — 분류·결정적 실행엔 지시 소음이다
     # ★ 정렬이 곧 비용이다 — OpenAI 는 1024+ 토큰의 **공통 앞부분**을 자동 캐시한다.

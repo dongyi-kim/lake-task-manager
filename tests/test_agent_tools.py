@@ -472,6 +472,29 @@ def test_prefetched_plan_work_concludes_without_react_tool_loop(monkeypatch):
     assert any("도구 재호출 생략" in x.get("note", "") for x in out["trace"])
 
 
+def test_prefetched_plan_work_format_failure_passes_raw_material_without_react(monkeypatch):
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("format failure must not repeat acquisition")))
+    analyst = ResearchAnalyst()
+    monkeypatch.setattr(analyst, "_conclude", lambda _state, _scratch: (_ for _ in ()).throw(
+        RuntimeError("invalid JSON")))
+    out = analyst.node()({
+        "intent": Intent.PLAN_WORK,
+        "messages": [HumanMessage(content="Iceberg NDV Task 만들어줘. 알아서")],
+        "keywords": ["Iceberg NDV"], "mentioned_keys": [],
+        "pre_survey": "DL-1 PoC 완료", "trace": [],
+    })
+
+    assert "사전 조회를 완료" in out["situation"]
+    assert out["pre_survey"]
+    assert any("원문 전달" in row.get("note", "") for row in out["trace"])
+
+
 def test_completed_ask_query_plan_concludes_once_without_presurvey_or_react(monkeypatch):
     """A fully executed QueryPlan is a complete evidence acquisition phase, not a ReAct hint."""
     from langchain_core.messages import HumanMessage

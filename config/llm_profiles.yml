@@ -5,16 +5,14 @@ version: 1
 task_profiles:
   fast_structured:
     reasoning: "off"
-    parameters:
-      max_tokens: 2048
   balanced:
     reasoning: "off"
-    parameters:
-      max_tokens: 4096
   reasoning:
     reasoning: "on"
-    parameters:
-      max_tokens: 16384
+
+# Output size is semantic at the Task Profile boundary but numeric at the Model Profile
+# boundary. A cloud endpoint and a single-device local server do not need the same ceiling;
+# keeping the number in each model profile avoids Role-level model branches.
 
 provider_defaults:
   openai: {}
@@ -22,6 +20,69 @@ provider_defaults:
   openai_compat: {}
 
 model_profiles:
+  qwen3.5-4b:
+    match:
+      - '(?i)qwen3[._-]?5.*4b'
+      - '(?i)ltm-qwen3[._-]?5-4b'
+    capabilities:
+      reasoning: true
+      reasoning_control: qwen_thinking
+      temperature: true
+      top_p: true
+      top_k: true
+      min_p: true
+      presence_penalty: true
+      repetition_penalty: true
+      streaming: true
+      tools: false
+      tool_choice: false
+      json_object: false
+      json_schema: false
+      reasoning_separation: false
+      parallel_role_calls: false
+    defaults:
+      min_p: 0.0
+      repetition_penalty: 1.0
+    profiles:
+      fast_structured:
+        temperature: 0.1
+        top_p: 0.8
+        top_k: 20
+        presence_penalty: 0.0
+        max_tokens: 1024
+      balanced:
+        temperature: 0.7
+        top_p: 0.8
+        top_k: 20
+        presence_penalty: 1.0
+        max_tokens: 2048
+      reasoning:
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 20
+        presence_penalty: 1.0
+        max_tokens: 4096
+    contracts:
+      structured:
+        fast_structured:
+          temperature: 0.1
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 2048
+        balanced:
+          temperature: 0.1
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        reasoning:
+          temperature: 0.1
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 4096
+
   qwen3.6-35b-a3b:
     match:
       - '(?i)qwen3[._-]?6.*35b.*a3b'
@@ -41,6 +102,15 @@ model_profiles:
       json_object: false
       json_schema: false
       reasoning_separation: false
+      # mlx-lm's basic OpenAI server cannot constrain JSON for the large model.
+      # Delegate the wire-format contract to the separately configured 4B endpoint;
+      # free-form Result Integrator synthesis stays on this 35B model.
+      structured_delegate_tier: simple
+      # A single MLX process shares one Metal generation queue. Parallel Role requests
+      # interleave long prefill/generation and made a two-Role review step take over ten
+      # minutes in the local full battery. Keep independent tool I/O parallel, but schedule
+      # model-backed Role review sequentially for this serving profile.
+      parallel_role_calls: false
     defaults:
       min_p: 0.0
       repetition_penalty: 1.0
@@ -52,16 +122,42 @@ model_profiles:
         top_p: 0.8
         top_k: 20
         presence_penalty: 0.0
+        max_tokens: 1024
       balanced:
         temperature: 0.7
         top_p: 0.8
         top_k: 20
         presence_penalty: 1.5
+        max_tokens: 3072
       reasoning:
         temperature: 1.0
         top_p: 0.95
         top_k: 20
         presence_penalty: 1.5
+        max_tokens: 8192
+    # Structured payload generation is a transport contract, not free-form prose.
+    # Keep thinking disabled and give large schemas enough room to close their JSON
+    # object; the transport stop marker ends successful generations early.
+    contracts:
+      structured:
+        fast_structured:
+          temperature: 0.1
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        balanced:
+          temperature: 0.1
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 4096
+        reasoning:
+          temperature: 0.1
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 4096
 
   openai-gpt4o:
     match:
@@ -83,10 +179,13 @@ model_profiles:
     profiles:
       fast_structured:
         temperature: 0.0
+        max_tokens: 2048
       balanced:
         temperature: 0.2
+        max_tokens: 4096
       reasoning:
         temperature: 0.2
+        max_tokens: 16384
 
   openai-reasoning:
     match:
@@ -108,10 +207,13 @@ model_profiles:
     profiles:
       fast_structured:
         reasoning_effort: minimal
+        max_tokens: 2048
       balanced:
         reasoning_effort: low
+        max_tokens: 4096
       reasoning:
         reasoning_effort: medium
+        max_tokens: 16384
 
   default-chat:
     match:
@@ -133,7 +235,10 @@ model_profiles:
     profiles:
       fast_structured:
         temperature: 0.0
+        max_tokens: 2048
       balanced:
         temperature: 0.2
+        max_tokens: 4096
       reasoning:
         temperature: 0.2
+        max_tokens: 16384
