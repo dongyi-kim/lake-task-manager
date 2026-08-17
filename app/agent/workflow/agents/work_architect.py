@@ -5266,6 +5266,15 @@ def _normalize_duplicate_and_bug_questions(state, questions: list, *, items=None
     """
     said = (request_text(state) + " " + last_user_text(state)).strip()
     if state.get("already_exists"):
+        # The role contract already distinguishes a reversible delegated draft from an
+        # unapproved write: when the user said "알아서" and concrete items exist, keep
+        # the overlap as verified ticket evidence on the approval card instead of asking
+        # the user to repeat the delegation. Without concrete items (or without delegated
+        # choice), duplicate handling remains a required interview.
+        if _said_defaults(state) and (items or plan):
+            return [question for question in questions
+                    if not _re.search(r"중복|같은\s*(?:작업|증상)|이미",
+                                      str(question.get("question") or ""), _re.I)]
         candidates = [row for row in (state.get("evidence") or [])
                       if isinstance(row, dict) and str(row.get("key") or "").strip()]
         if candidates:
@@ -5362,7 +5371,6 @@ def _recover_delegated_creation(state) -> list[dict]:
                 ("사람 나눠", "담당 나눠", "나눠 맡", "나눠서 진행"))
     )
     if (not _has_concrete_work_target(said)
-            or state.get("already_exists")
             or _missing_data_quality_target(state)
             or _missing_subtask_deliverable(state)
             or _missing_exact_mutation(said)

@@ -439,6 +439,24 @@ def test_compound_delegated_request_recovers_cross_module_sibling_deliverables()
     assert all(row["type"] == "Task" and not row.get("children") for row in rows)
 
 
+def test_delegated_concrete_draft_keeps_duplicate_as_evidence_instead_of_reinterview():
+    state = _msg(
+        "리니지 뷰어 성능 측정하고, 결과 따라 쿼리 엔진 인덱스도 손봐야 해. "
+        "그리고 사용 가이드도 써야 하고. 알아서 초안 잡아줘",
+        situation="기존 작업과 일부 범위가 겹침", intent=Intent.PLAN_WORK,
+        already_exists=True,
+        evidence=[{"key": "DL-9090", "title": "[Workbench] 데이터 리니지 뷰어 1차 오픈",
+                   "why": "남은 성능 측정과 문서 정리가 언급됨"}],
+        keywords=["리니지", "성능", "가이드"],
+    )
+
+    result = WorkArchitect().node()(state)
+
+    assert not result["questions"]
+    assert len(result["draft"]["items"]) == 3
+    assert all("DL-9090" in row["description"] for row in result["draft"]["items"])
+
+
 def test_empty_model_result_reuses_normal_volume_partitioning_for_delegated_work():
     state = _msg("메타데이터 미등록 테이블 30개를 등록해야 해. 사람 나눠서 진행하게 만들어줘. 알아서",
                  situation="직접 일치하는 내부 이력 없음", intent=Intent.PLAN_WORK)
