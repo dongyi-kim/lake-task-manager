@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
-from app.agent.model_profiles import TaskProfile
+from app.agent.model_profiles import ExecutionLayer, TaskProfile
 
 
 ModelTier = Literal["simple", "complex", "deterministic"]
@@ -35,8 +35,24 @@ class RoleSpec:
     semantic_contract: SemanticContract = "direct"
     # ``semantic`` delegates judgment to a model; ``service`` executes a typed deterministic
     # operation; ``guardrail`` accepts/rejects an artifact without authoring or executing it.
-    # Keep this last with a default so existing positional RoleSpec construction remains compatible.
+    # Defaults remain after required fields so existing positional RoleSpec construction stays compatible.
     kind: RoleKind = "semantic"
+    # Runtime model routing source of truth. ``model_tier`` remains as the conservative
+    # fallback/API compatibility field; qualified fast lanes are resolved from model profiles.
+    execution_layer: ExecutionLayer = "deep_semantic"
+    # ToolAgent may use a cheaper qualified lane to choose tools while keeping evidence
+    # synthesis on ``execution_layer``. None means the main layer is used for both stages.
+    decision_layer: ExecutionLayer | None = None
+
+    def __post_init__(self) -> None:
+        expected = "deterministic" if self.execution_layer == "deterministic" else "complex"
+        if self.model_tier != expected:
+            raise ValueError(
+                f"Role {self.id} model_tier={self.model_tier!r} drifts from "
+                f"execution_layer={self.execution_layer!r}; safe fallback must be {expected!r}."
+            )
+        if self.kind == "service" and self.execution_layer != "deterministic":
+            raise ValueError(f"Service Role {self.id} must be deterministic.")
 
     @property
     def prompt_asset(self) -> str:
@@ -46,16 +62,18 @@ class RoleSpec:
 
 ROLE_SPECS: dict[str, RoleSpec] = {
     "request_architect": RoleSpec(
-        "request_architect", "Request Architect", "simple", "fast_structured",
+        "request_architect", "Request Architect", "complex", "fast_structured",
         "Decomposes single and compound requests into an atomic task DAG and routing intent.",
         ("messages", "user_identity", "request_plan", "draft", "approval_token"),
         ("intent", "keywords", "module", "mentioned_keys", "request_plan", "request_text"),
+        execution_layer="lightweight_semantic",
     ),
     "query_specialist": RoleSpec(
-        "query_specialist", "Query Specialist", "simple", "fast_structured",
+        "query_specialist", "Query Specialist", "complex", "fast_structured",
         "Translates atomic read tasks into a typed QueryPlan without executing retrieval.",
         ("request_plan", "request_text", "keywords", "mentioned_keys", "messages"),
         ("query_plan",),
+        execution_layer="lightweight_semantic",
     ),
     "query_runner": RoleSpec(
         "query_runner", "Query Runner", "deterministic", "fast_structured",
@@ -63,6 +81,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         ("query_plan", "thread_id"),
         ("query_results", "query_artifacts", "assignment_completion"),
         ("search", "web"), has_prompt=False, kind="service",
+        execution_layer="deterministic",
     ),
     "research_analyst": RoleSpec(
         "research_analyst", "Research Analyst", "complex", "reasoning",
@@ -70,7 +89,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         ("messages", "request_text", "request_plan", "query_plan", "query_results",
          "query_artifacts", "pre_survey", "seed_map", "topic_dossier", "web_context"),
         ("situation", "evidence", "related_docs", "epic_candidate", "already_exists"),
-        ("research", "mcp"),
+        ("research", "mcp"), decision_layer="lightweight_semantic",
     ),
     "knowledge_curator": RoleSpec(
         "knowledge_curator", "Knowledge Curator", "complex", "balanced",
@@ -84,7 +103,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         ("messages", "intent", "mentioned_keys", "module", "user_id", "user_role",
          "pre_survey", "query_results", "group_activity", "ticket_progress"),
         ("pmo_findings", "pmo_caution", "person_work_snapshot", "daily_priority_snapshot"),
-        ("portfolio",),
+        ("portfolio",), decision_layer="lightweight_semantic",
     ),
     "work_architect": RoleSpec(
         "work_architect", "Work Architect", "complex", "reasoning",
@@ -111,6 +130,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         "Executes exactly once only the write payload that matches the approved fingerprint.",
         ("thread_id", "approval_token", "comment_token", "draft", "change_plan"),
         ("result",), ("write",), effect="write", kind="service",
+        execution_layer="deterministic",
     ),
     "result_integrator": RoleSpec(
         "result_integrator", "Result Integrator", "complex", "balanced",
@@ -133,6 +153,16 @@ ROLE_SPECS: dict[str, RoleSpec] = {
 
 def role_specs() -> tuple[RoleSpec, ...]:
     return tuple(ROLE_SPECS.values())
+
+
+def execution_layer_for_role(role_id: str, stage: str = "synthesis") -> ExecutionLayer:
+    """Resolve one Role/stage layer and fail loudly for manifest drift or unknown Roles."""
+    spec = ROLE_SPECS.get(str(role_id or ""))
+    if spec is None:
+        raise KeyError(f"알 수 없는 Role manifest id: {role_id}")
+    if stage == "decision" and spec.decision_layer:
+        return spec.decision_layer
+    return spec.execution_layer
 
 
 def tools_for_role(role_id: str, *, include_dynamic: bool = True) -> list:
@@ -201,5 +231,6 @@ def validate_role_tool_groups() -> None:
         tools_for_role(spec.id, include_dynamic=False)
 
 
-__all__ = ["RoleSpec", "RoleKind", "SemanticContract", "ROLE_SPECS", "role_specs",
-           "tools_for_role", "validate_role_tool_groups"]
+__all__ = ["RoleSpec", "RoleKind", "SemanticContract", "ExecutionLayer", "ROLE_SPECS",
+           "role_specs", "execution_layer_for_role", "tools_for_role",
+           "validate_role_tool_groups"]

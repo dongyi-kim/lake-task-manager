@@ -99,6 +99,40 @@ def test_gpt4o_structured_reasoning_profile_is_not_rewritten():
     assert profiles.resolve("gpt-4o", "openai", "fast_structured").parameters["max_tokens"] == 2048
 
 
+def test_execution_layer_qualification_distinguishes_projection_from_semantics():
+    assert profiles.supports_execution_layer("/models/Qwen3.5-4B-4bit", "projection")
+    assert not profiles.supports_execution_layer(
+        "/models/Qwen3.5-4B-4bit", "lightweight_semantic")
+    assert not profiles.supports_execution_layer(
+        "/models/Qwen3.5-4B-4bit", "deep_semantic")
+
+
+def test_qwen_4b_profile_matches_the_parameter_segment_not_quantization_text():
+    """A trailing ``4bit`` quantizer must not classify a 9B/14B model as the 4B projector."""
+    positive = (
+        "/models/Qwen3.5-4B-4bit",
+        "mlx-community/Qwen3.5-4B-Instruct-4bit",
+        "ltm-qwen3.5-4b",
+    )
+    negative = (
+        "/models/Qwen3.5-9B-Instruct-4bit",
+        "/models/Qwen3.5-14B-AWQ-4bit",
+    )
+
+    assert all(profiles.model_profile(model)[0] == "qwen3.5-4b" for model in positive)
+    assert all(profiles.model_profile(model)[0] != "qwen3.5-4b" for model in negative)
+
+
+def test_gpt4o_mini_has_its_own_lightweight_profile_before_gpt4o():
+    name, row = profiles.model_profile("gpt-4o-mini")
+    assert name == "openai-gpt4o-mini"
+    assert "lightweight_semantic" in row["capabilities"]["execution_layers"]
+    assert "deep_semantic" not in row["capabilities"]["execution_layers"]
+    assert profiles.supports_execution_layer("gpt-4o-mini", "projection")
+    assert profiles.supports_execution_layer("gpt-4o-mini", "lightweight_semantic")
+    assert not profiles.supports_execution_layer("gpt-4o-mini", "deep_semantic")
+
+
 def test_explicit_override_wins_without_leaking_unsupported_parameters():
     row = profiles.resolve("gpt-4o", "openai", "reasoning",
                            role_parameters={"temperature": 0.3},

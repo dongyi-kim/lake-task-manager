@@ -105,6 +105,17 @@
 
 LLM 호출은 반드시 `Role → Task Profile → Model Profile → Capability → Provider Adapter → Request`를 거친다.
 
+- `workflow/role_manifest.py`의 execution layer가 모델 라우팅 정본이다.
+  - `deterministic`: 모델 호출 없이 typed service가 실행
+  - `projection`: 이미 결정된 의미를 schema로 옮기는 무판단 변환. 평가로 자격을 얻은 simple model만 허용
+  - `lightweight_semantic`: 분류·조회 설계·tool decision 같은 제한된 의미 판단. simple model profile에
+    `lightweight_semantic` 자격이 없으면 complex model로 fail-safe fallback
+  - `deep_semantic`: 계획·근거 종합·감사·최종 응답 같은 깊은 판단. 항상 complex model 사용
+- `structured`, `json_schema`, native tools 같은 wire-format capability는 모델의 의미 판단 자격이 아니다.
+  포맷 지원 여부로 semantic 호출 endpoint를 변경하지 않는다.
+- ToolAgent는 `decision_layer`와 synthesis layer를 별도로 선언할 수 있지만, 검증된 경량 모델이 없으면
+  둘 다 complex fallback을 사용한다. 신규 9B/simple lane은 versioned battery에서 품질·latency·retry와
+  Role별 regression 없음이 증명된 뒤 `config/llm_profiles.yml`에만 자격을 추가한다.
 - Role은 `fast_structured`, `balanced`, `reasoning` 중 semantic task profile만 선언한다.
 - `temperature`, `top_p`, `top_k`, `min_p`, `enable_thinking`, `reasoning_effort` 숫자·provider parameter를
   Role class나 prompt에 하드코딩하지 않는다. 정본은 `config/llm_profiles.yml`이다.

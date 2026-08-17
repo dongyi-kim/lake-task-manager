@@ -24,9 +24,10 @@ import time
 
 from app.agent import secrets as _secrets
 from app.agent import profiles as _profiles
-from app.agent.model_profiles import capabilities_for as _model_capabilities
+from app.agent.model_profiles import EXECUTION_LAYERS as _EXECUTION_LAYERS
 from app.agent.model_profiles import profile_for_contract as _profile_for_contract
 from app.agent.model_profiles import resolve as _resolve_model_config
+from app.agent.model_profiles import supports_execution_layer as _supports_execution_layer
 from app.agent.providers import ModelDefinition, adapter as _provider_adapter
 
 log = logging.getLogger("agent.config")
@@ -180,6 +181,7 @@ def settings_signature(config_id: str = "") -> str:
              _secret("simpleBaseUrl", config_id) or "",
              embedding_provider(config_id), _secret("embeddingBaseUrl", config_id) or "",
              str((_profile(config_id) or {}).get("chatModelProfile") or ""),
+             str((_profile(config_id) or {}).get("chatModelSimpleProfile") or ""),
              str((_profile(config_id) or {}).get("embedRevision") or ""),
              str((_profile(config_id) or {}).get("embedPrecision") or ""),
              str((_profile(config_id) or {}).get("embedDimension") or ""),
@@ -308,9 +310,9 @@ def provider(config_id: str = "") -> str:
 def chat_model(tier: str = "complex", config_id: str = "") -> str:
     """provider 별 '모델/배포' 이름. AOAI 는 **모델명이 아니라 배포명**이다(흔한 실수).
 
-    `tier="simple"` 은 **간단한 역할 전용 모델** — 의도 분류·결정적 실행처럼 판단이 얕은
-    역할이 쓴다(역할→tier 매핑은 각 Agent 클래스의 `tier` 속성). 설정이 비어 있으면
-    기본 모델로 폴백한다 — 모델 하나로 쓰는 사람에게는 아무 변화가 없다.
+    `tier="simple"` 은 manifest execution layer와 model-profile 자격 검사를 통과한 호출만
+    사용한다. 설정이 비어 있으면 기본 모델로 폴백한다 — 모델 하나로 쓰는 사람에게는
+    아무 변화가 없다.
     """
     row = _profile(config_id)
     p = provider(config_id)
@@ -433,18 +435,44 @@ def _normalise_compat_base(raw: str) -> str:
     return raw
 
 
+def _chat_route_identity(provider_name: str, tier: str, model: str,
+                         config_id: str = "") -> tuple[str, str, str]:
+    """Connection identity used to decide whether two tiers are truly the same lane."""
+    if provider_name == "aoai":
+        base = str(_secret("aoaiEndpoint", config_id) or "").strip().rstrip("/")
+    elif provider_name == "openai_compat":
+        split = tier == "simple" and bool(_secret("simpleBaseUrl", config_id))
+        base = (_normalise_compat_base(_secret("simpleBaseUrl", config_id))
+                if split else compat_base(config_id))
+    else:
+        base = ""
+    return provider_name, str(model or "").strip(), str(base or "").strip().rstrip("/")
+
+
 def chat_definition(tier: str = "complex", model_override: str = "",
                     config_id: str = "") -> ModelDefinition:
     p = provider(config_id)
     model = (model_override or "").strip() or chat_model(tier, config_id)
     row = _profile(config_id) or {}
+    complex_profile = str(row.get("chatModelProfile") or "")
+    simple_profile = str(row.get("chatModelSimpleProfile") or "")
+    if tier == "simple":
+        complex_model = chat_model("complex", config_id)
+        same_lane = _chat_route_identity(p, "simple", model, config_id) == \
+            _chat_route_identity(p, "complex", complex_model, config_id)
+        # Empty preserves old configs: one physical lane inherits the existing explicit
+        # profile, while a distinct model or endpoint auto-matches and fails closed. An
+        # arbitrary AOAI deployment alias can opt in through chatModelSimpleProfile.
+        declared_profile = simple_profile or (complex_profile if same_lane else "")
+    else:
+        declared_profile = complex_profile
     if p == "aoai":
         return ModelDefinition(p, model, _secret("aoaiEndpoint", config_id),
                                _secret("aoaiApiKey", config_id), api_version(config_id),
-                               model_profile=str(row.get("chatModelProfile") or ""))
+                               model_profile=declared_profile)
     if p == "openai":
         return ModelDefinition(p, model, api_key=_secret("openaiApiKey", config_id),
-                               model_profile=str(row.get("chatModelProfile") or ""))
+                               model_profile=declared_profile)
     split_simple = tier == "simple" and bool(_secret("simpleBaseUrl", config_id))
     base = (_normalise_compat_base(_secret("simpleBaseUrl", config_id))
             if split_simple else compat_base(config_id))
@@ -453,7 +481,7 @@ def chat_definition(tier: str = "complex", model_override: str = "",
     headers = (_json_headers("simpleHeaders", config_id) if split_simple else {}) \
         or _compat_headers(config_id)
     return ModelDefinition(p, model, base, key, headers=headers,
-                           model_profile=str(row.get("chatModelProfile") or ""))
+                           model_profile=declared_profile)
 
 
 def embedding_definition(config_id: str = "") -> ModelDefinition:
@@ -511,6 +539,36 @@ def sampling_unsupported(model: str) -> bool:
 
 
 # ── 팩토리 ─────────────────────────────────────────────────────────
+def execution_tier(layer: str, config_id: str = "") -> str:
+    """Resolve a semantic execution layer to an evaluated model tier.
+
+    Deep semantic judgment always stays on the configured complex model. Projection and
+    lightweight semantic work may use the split-simple endpoint only when that endpoint's
+    model profile explicitly qualifies for the requested layer. JSON/tool support is not
+    semantic qualification and therefore never participates in this decision.
+    """
+    if layer not in _EXECUTION_LAYERS:
+        raise ValueError(f"알 수 없는 execution layer: {layer}")
+    if layer == "deterministic":
+        raise ValueError("deterministic execution layer는 LLM을 호출하지 않습니다.")
+    if layer == "deep_semantic":
+        return "complex"
+
+    complex_definition = chat_definition("complex", config_id=config_id)
+    simple_definition = chat_definition("simple", config_id=config_id)
+    complex_identity = (complex_definition.provider, complex_definition.model,
+                        complex_definition.base_url)
+    simple_identity = (simple_definition.provider, simple_definition.model,
+                       simple_definition.base_url)
+    if not simple_definition.model or simple_identity == complex_identity:
+        return "complex"
+    if _supports_execution_layer(
+            simple_definition.model, layer,
+            explicit_model_profile=simple_definition.model_profile):
+        return "simple"
+    return "complex"
+
+
 def typed_projection_tier(tier: str = "complex", config_id: str = "") -> str:
     """Return the configured transport tier for literal typed projection.
 
@@ -518,16 +576,11 @@ def typed_projection_tier(tier: str = "complex", config_id: str = "") -> str:
     lookup separate from :func:`get_llm` lets StructuredAgent decide whether a Role's
     semantic contract calls for a two-stage invocation before it sends any prompt.
     """
-    definition = chat_definition(tier, config_id=config_id)
-    declared = _model_capabilities(definition.model, definition.model_profile)
-    # ``structured_delegate_tier`` is accepted for an older external profile, but the
-    # bundled profile uses the precise name: only typed projection may be delegated.
-    delegate_tier = str(declared.get("typed_projection_tier") or
-                        declared.get("structured_delegate_tier") or "").strip()
+    delegate_tier = execution_tier("projection", config_id)
     if not delegate_tier or delegate_tier == tier:
         return ""
     delegated = chat_definition(delegate_tier, config_id=config_id)
-    return delegate_tier if delegated.model and delegated.base_url else ""
+    return delegate_tier if delegated.model else ""
 
 
 def get_llm(temperature: float | None = None, tier: str = "complex", model_override: str = "",
@@ -556,24 +609,15 @@ def get_llm(temperature: float | None = None, tier: str = "complex", model_overr
 
     # model_override 는 '권한 확인'처럼 **특정 모델 하나를 시험**할 때만 쓴다(설정 화면).
     definition = chat_definition(tier, model_override, config_id)
-    # ``typed_projection`` is the explicit transport-only stage used by opted-in Roles.
-    # ``structured`` retains the legacy one-stage delegation until each remaining Role is
-    # characterized and migrated; changing all complex structured Roles in this patch
-    # would silently move their semantic work from the configured simple endpoint. Both
-    # routes remain capability/profile driven and never branch on a model name.
-    if output_contract in {"structured", "typed_projection"} and not model_override:
-        # A runtime probe can upgrade the declared capability floor. In that case a
-        # native strict ``structured`` call must remain on the semantic tier and keep its
-        # existing one-call path. Explicit ``typed_projection`` has already completed
-        # semantics and intentionally targets the projection tier.
-        from app.agent import capabilities as _runtime_capabilities
-        checked = _runtime_capabilities.get(tier, config_id).get("checked") or {}
-        native_strict = output_contract == "structured" and checked.get("json_schema") is True
-        delegate_tier = "" if native_strict else typed_projection_tier(tier, config_id)
+    # Only a literal typed projection may change endpoints. ``structured`` describes a
+    # wire contract, not the semantic difficulty of the work, so JSON capability must
+    # never silently move Request/Query/People judgment to a smaller model.
+    if output_contract == "typed_projection" and not model_override:
+        delegate_tier = typed_projection_tier(tier, config_id)
         if delegate_tier:
             delegated = chat_definition(delegate_tier, config_id=config_id)
             log.debug(
-                "structured transport delegated contract=%s tier=%s->%s model=%s->%s",
+                "typed projection delegated contract=%s tier=%s->%s model=%s->%s",
                 output_contract, tier, delegate_tier, definition.model, delegated.model,
             )
             definition = delegated

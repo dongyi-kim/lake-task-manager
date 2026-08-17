@@ -722,7 +722,6 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
 
 class QuerySpecialist(StructuredAgent):
     name = Node.QUERY_SPECIALIST
-    tier = "simple"
 
     def node(self):
         model_node = super().node()

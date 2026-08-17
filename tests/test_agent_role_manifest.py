@@ -171,6 +171,33 @@ def test_role_kind_separates_semantic_service_and_guardrail_boundaries():
     assert all(ROLE_SPECS[role_id].effect != "write" for role_id in guardrails)
 
 
+def test_execution_layers_separate_formatting_from_semantic_judgment():
+    expected = {
+        "request_architect": "lightweight_semantic",
+        "query_specialist": "lightweight_semantic",
+        "query_runner": "deterministic",
+        "research_analyst": "deep_semantic",
+        "knowledge_curator": "deep_semantic",
+        "portfolio_analyst": "deep_semantic",
+        "work_architect": "deep_semantic",
+        "people_advisor": "deep_semantic",
+        "auditor": "deep_semantic",
+        "action_executor": "deterministic",
+        "result_integrator": "deep_semantic",
+        "editor_author": "deep_semantic",
+    }
+    assert {role_id: spec.execution_layer for role_id, spec in ROLE_SPECS.items()} == expected
+    assert all(spec.execution_layer != "projection" for spec in ROLE_SPECS.values())
+    assert ROLE_SPECS["research_analyst"].decision_layer == "lightweight_semantic"
+    assert ROLE_SPECS["portfolio_analyst"].decision_layer == "lightweight_semantic"
+
+
+def test_manifest_model_tier_is_the_safe_fallback_not_an_unqualified_simple_route():
+    assert ROLE_SPECS["request_architect"].model_tier == "complex"
+    assert ROLE_SPECS["query_specialist"].model_tier == "complex"
+    assert ROLE_SPECS["work_architect"].model_tier == "complex"
+
+
 def test_role_specs_api_keeps_manifest_order_and_objects():
     assert role_specs() == tuple(ROLE_SPECS.values())
 

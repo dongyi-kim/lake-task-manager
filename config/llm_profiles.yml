@@ -22,9 +22,13 @@ provider_defaults:
 model_profiles:
   qwen3.5-4b:
     match:
-      - '(?i)qwen3[._-]?5.*4b'
-      - '(?i)ltm-qwen3[._-]?5-4b'
+      # Match the immediate parameter-count segment, not a later quantizer such as
+      # ``Qwen3.5-9B-...-4bit``. Only the measured 4B model is a typed projector.
+      - '(?i)(?:^|[/_-])(?:ltm[-_])?qwen3[._-]?5[-_/]4b(?:$|[._/-])'
     capabilities:
+      # Evaluated only as a literal typed projector. Semantic classification/planning
+      # falls back to the complex endpoint until a lightweight lane earns qualification.
+      execution_layers: [projection]
       reasoning: true
       reasoning_control: qwen_thinking
       temperature: true
@@ -116,6 +120,7 @@ model_profiles:
       - '(?i)qwen3[._-]?6.*35b.*a3b'
       - '(?i)ltm-qwen3[._-]?6-35b-a3b'
     capabilities:
+      execution_layers: [projection, lightweight_semantic, deep_semantic]
       reasoning: true
       reasoning_control: qwen_thinking
       temperature: true
@@ -130,10 +135,9 @@ model_profiles:
       json_object: false
       json_schema: false
       reasoning_separation: false
-      # mlx-lm's basic OpenAI server cannot constrain JSON for the large model.
-      # Delegate the wire-format contract to the separately configured 4B endpoint;
-      # free-form Result Integrator synthesis stays on this 35B model.
-      typed_projection_tier: simple
+      # mlx-lm's basic OpenAI server cannot constrain JSON for the large model. The
+      # separately configured simple model is selected only when its own profile carries
+      # the `projection` execution-layer qualification; semantic synthesis stays here.
       # A single MLX process shares one Metal generation queue. Parallel Role requests
       # interleave long prefill/generation and made a two-Role review step take over ten
       # minutes in the local full battery. Keep independent tool I/O parallel, but schedule
@@ -209,10 +213,42 @@ model_profiles:
           presence_penalty: 0.0
           max_tokens: 4096
 
+  # Keep this exact profile before the generic GPT-4o row: model-profile capability,
+  # not a Role/model-name branch, preserves the cloud GPT-4o + GPT-4o-mini mixed lane.
+  openai-gpt4o-mini:
+    match:
+      - '(?i)(^|[/_-])gpt-4o-mini($|[._-])'
+    capabilities:
+      execution_layers: [projection, lightweight_semantic]
+      reasoning: false
+      reasoning_control: none
+      temperature: true
+      top_p: true
+      top_k: false
+      min_p: false
+      presence_penalty: true
+      repetition_penalty: false
+      streaming: true
+      tools: true
+      tool_choice: true
+      json_object: true
+      json_schema: true
+    profiles:
+      fast_structured:
+        temperature: 0.0
+        max_tokens: 2048
+      balanced:
+        temperature: 0.2
+        max_tokens: 4096
+      reasoning:
+        temperature: 0.2
+        max_tokens: 16384
+
   openai-gpt4o:
     match:
       - '(?i)(^|[/_-])gpt-4o($|[._-])'
     capabilities:
+      execution_layers: [projection, lightweight_semantic, deep_semantic]
       reasoning: false
       reasoning_control: none
       temperature: true
@@ -241,6 +277,7 @@ model_profiles:
     match:
       - '(?i)(^|[/_-])(gpt-5|o[134])($|[._-])'
     capabilities:
+      execution_layers: [projection, lightweight_semantic, deep_semantic]
       reasoning: true
       reasoning_control: openai_effort
       temperature: false
@@ -269,6 +306,9 @@ model_profiles:
     match:
       - '.*'
     capabilities:
+      # Unknown models must not silently inherit a semantic fast lane. They remain on
+      # the configured complex endpoint until a measured profile explicitly qualifies.
+      execution_layers: [deep_semantic]
       reasoning: false
       reasoning_control: none
       temperature: true

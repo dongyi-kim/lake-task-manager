@@ -47,12 +47,13 @@ def _brief(exc: Exception) -> str:
     return " ".join(str(exc or "").split())[:240]
 
 
-def native_tools_allowed(config_id: str = "") -> bool:
+def native_tools_allowed(config_id: str = "", *, tier: str = "complex") -> bool:
     """현재 provider에 native tool payload를 보내도 되는가.
 
     운영 LLM gateway는 provider 표기와 무관하게 chat text만 지원한다고 본다. 기능 탐지
     명목으로 ``tools``를 한 번 보내 보는 것 자체가 prod 오류 로그를 만들므로 아예 요청하지
     않는다. local tool은 prompt JSON 계획과 deterministic runner를 통해 계속 실행할 수 있다.
+    ``tier``는 실제 tool-decision 호출 endpoint여야 하며 synthesis tier로 대체하지 않는다.
     """
     from app.agent import config as cfg
     # 운영은 provider 이름과 무관하게 native tool 지원이 0이라고 가정한다. 사내 gateway를
@@ -63,7 +64,7 @@ def native_tools_allowed(config_id: str = "") -> bool:
             return False
     except Exception:
         pass
-    declared = get("complex", config_id).get("checked") or {}
+    declared = get(tier, config_id).get("checked") or {}
     current_provider = cfg.provider(config_id) if config_id else cfg.provider()
     return current_provider != "openai_compat" and declared.get("tools") is not False
 
@@ -116,7 +117,7 @@ def probe_tier(tier: str = "complex", config_id: str = "") -> dict:
         calls = getattr(msg, "tool_calls", None) or []
         if not calls or calls[0].get("name") != "capability_echo":
             raise ValueError("서버가 요청한 tool call을 반환하지 않았습니다.")
-    if native_tools_allowed(config_id):
+    if native_tools_allowed(config_id, tier=tier):
         attempt("tools", one_tool)
     else:
         message = "운영/provider 정책: native tools 요청을 보내지 않음"
@@ -131,7 +132,7 @@ def probe_tier(tier: str = "complex", config_id: str = "") -> dict:
         calls = getattr(msg, "tool_calls", None) or []
         if len(calls) < 2:
             raise ValueError("parallel tool calls를 반환하지 않았습니다.")
-    if native_tools_allowed(config_id):
+    if native_tools_allowed(config_id, tier=tier):
         attempt("parallel_tools", parallel_tools)
     else:
         message = "native tools가 비활성화되어 parallel tools도 사용하지 않음"
@@ -143,19 +144,21 @@ def probe_tier(tier: str = "complex", config_id: str = "") -> dict:
 
 
 def probe_all(config_id: str = "") -> dict:
-    """같은 모델 이름은 한 번만 호출하되 main/simple tier 결과를 모두 표시한다."""
+    """같은 effective endpoint만 한 번 호출하되 main/simple 결과를 모두 표시한다."""
     from app.agent import config as cfg
-    rows, by_model = {}, {}
+    rows, by_identity = {}, {}
     for tier in ("complex", "simple"):
-        model = cfg.chat_model(tier, config_id)
-        if model in by_model:
-            row = dict(by_model[model]); row["tier"] = tier
+        definition = cfg.chat_definition(tier, config_id=config_id)
+        identity = (definition.provider, definition.model, definition.base_url,
+                    definition.api_version)
+        if identity in by_identity:
+            row = dict(by_identity[identity]); row["tier"] = tier
             rows[tier] = row
             for cap, ok in (row.get("checked") or {}).items():
                 record(tier, cap, ok, (row.get("errors") or {}).get(cap, ""), config_id=config_id)
         else:
             row = probe_tier(tier, config_id)
-            rows[tier] = row; by_model[model] = row
+            rows[tier] = row; by_identity[identity] = row
     return rows
 
 

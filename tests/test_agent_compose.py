@@ -110,12 +110,14 @@ def test_editor_author_requests_its_manifest_profile_without_numeric_sampling_ov
     from app.agent.workflow.role_manifest import ROLE_SPECS
 
     requested = {}
+    invoked = {}
 
     class _Reply:
         content = "<p>검토 요청 초안</p>"
 
     class _Llm:
-        def invoke(self, _messages, **_kwargs):
+        def invoke(self, _messages, **kwargs):
+            invoked.update(kwargs)
             return _Reply()
 
     def _get_llm(**kwargs):
@@ -135,6 +137,77 @@ def test_editor_author_requests_its_manifest_profile_without_numeric_sampling_ov
         "profile": spec.task_profile,
         "role_id": spec.id,
     }
+    assert invoked["config"]["metadata"] == {
+        "ltm_role_id": spec.id,
+        "ltm_output_contract": "text",
+        "ltm_execution_layer": "deep_semantic",
+        "ltm_execution_stage": "synthesis",
+    }
+
+
+def test_editor_author_preserves_error_call_usage(monkeypatch):
+    """Provider failures retain the call/stage that explains the empty editor response."""
+    from app.agent import config as CFG
+
+    class _Llm:
+        def invoke(self, _messages, **kwargs):
+            config = kwargs["config"]
+            for handler in config.get("callbacks") or []:
+                handler.on_chat_model_start(
+                    {}, [[]], run_id="editor-error", metadata=config["metadata"])
+                handler.on_llm_error(RuntimeError("connection failed"), run_id="editor-error")
+            raise RuntimeError("connection failed")
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kwargs: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_args: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_args: "")
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is False
+    detail = result["usage"]["callsDetail"]
+    assert result["usage"]["calls"] == 1
+    assert detail[0]["finishReason"] == "error"
+    assert detail[0]["executionLayer"] == "deep_semantic"
+    assert detail[0]["executionStage"] == "synthesis"
+
+
+def test_editor_author_preserves_usage_for_empty_output(monkeypatch):
+    """A completed but empty response is still a measured model call."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+    from app.agent import config as CFG
+
+    class _Reply:
+        content = ""
+
+    class _Llm:
+        def invoke(self, _messages, **kwargs):
+            config = kwargs["config"]
+            message = AIMessage(
+                content="",
+                response_metadata={"finish_reason": "stop", "model_name": "editor-model"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 0,
+                                "total_tokens": 12},
+            )
+            response = LLMResult(
+                generations=[[ChatGeneration(message=message)]], llm_output={})
+            for handler in config.get("callbacks") or []:
+                handler.on_chat_model_start(
+                    {}, [[]], run_id="editor-empty", metadata=config["metadata"])
+                handler.on_llm_end(response, run_id="editor-empty")
+            return _Reply()
+
+    monkeypatch.setattr(CFG, "get_llm", lambda **_kwargs: _Llm())
+    monkeypatch.setattr(C, "_ticket_context", lambda *_args: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_args: "")
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+
+    assert result["ok"] is False
+    assert result["usage"]["calls"] == 1
+    assert result["usage"]["totalTokens"] == 12
+    assert result["usage"]["callsDetail"][0]["executionStage"] == "synthesis"
 
 
 def test_fenced_output_is_unwrapped():

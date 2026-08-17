@@ -3422,6 +3422,12 @@ def _split_into_children(state, item: dict) -> list:
     base = _base_title(str(item.get("summary") or "")).strip()
     if base and any(word in all_human for word in BUILD_WORDS):
         return [{"summary": f"{base} — {stage}"} for stage in ("설계", "구현", "검증")]
+    # DoD가 이미 서로 다른 실행 단계를 구체적으로 열거했다면 구조 판단이 끝난 입력이다.
+    # 동일한 본문을 다시 모델에 보내면 왕복만 늘고 구체적인 사용자 대상을 바꿔 쓸 수 있다.
+    # 이 compiler가 모호하다고 판정한 잔여 입력에만 semantic split을 허용한다.
+    compiled = _children_from_dod(item)
+    if compiled:
+        return compiled
     try:
         schema = {"title": "split_children", "type": "object", "properties": {
             "children": {"type": "array", "items": {
@@ -3440,8 +3446,8 @@ def _split_into_children(state, item: dict) -> list:
                      "specific work target and outcome. A stage name alone, such as `설계 단계`, `구현 단계`, "
                      "or `검증 단계`, is invalid. Good examples preserve the target: `Puffin NDV 통계 스키마 "
                      "설계`, `통계 생성 배치 Job 구현`, `StarRocks 플랜 반영 검증`.")],
-            tier="simple", profile="fast_structured", name="split_children",
-            role_id=Node.WORK_ARCHITECT)
+            execution_layer="lightweight_semantic", execution_stage="split_children",
+            profile="fast_structured", name="split_children", role_id=Node.WORK_ARCHITECT)
         kids = [{"summary": str(c.get("summary") or "").strip()}
                 for c in (r or {}).get("children") or []
                 if str(c.get("summary") or "").strip()]
@@ -3453,14 +3459,6 @@ def _split_into_children(state, item: dict) -> list:
             return kids[:5]
     except Exception:
         pass
-    # ★ 보정 호출이 빈손이면 **DoD 에서 코드가 뽑는다.** 이 호출은 LLM 한 방이라 레이트리밋·
-    #   흔들림으로 그냥 실패하는데, 그러면 다단계 규모가 조용히 단일 Task 로 남았다
-    #   (실측 STARR1: 같은 케이스가 실행마다 통과/실패로 뒤집혔다).
-    #   knowledge/07 이 이미 규정한다 — "DoD 가 5개를 넘고 서로 다른 단계라면 그건 DoD 가
-    #   아니라 **Sub-Task 목록**이다". 규정이 있으니 코드가 그대로 집행한다.
-    fallback = _children_from_dod(item)
-    if fallback:
-        return fallback
     # 사용자가 **새 일의 단계별 Sub-Task 형태를 명시**한 경우에는 빈 리스트로 돌아가면
     # 안 된다. 보정 LLM이 일반적인 단계명만 내어 필터에 걸리고 DoD도 두 줄뿐이면 두
     # 폴백이 모두 빈손이 될 수 있다. 구조 판단은 사용자가 이미 했으므로 빈 산출을 허용하지 않는다.
@@ -3733,8 +3731,8 @@ def _bug_body_for(state, it) -> str:
             ("system", "You are a QA analyst. Extract reproduction steps, expected behavior, and observed "
                        "behavior exactly from the report. Never invent a missing fact; leave it empty. Return JSON only."),
             ("user", f"Bug summary: {it.get('summary')}\n\nReport data:\n{said[:1500]}")],
-            tier="simple", profile="fast_structured", name="bug_body",
-            role_id=Node.WORK_ARCHITECT) or {}
+            execution_layer="lightweight_semantic", execution_stage="bug_body",
+            profile="fast_structured", name="bug_body", role_id=Node.WORK_ARCHITECT) or {}
         steps = [str(x).strip() for x in (r.get("steps") or []) if str(x).strip()]
         expected = str(r.get("expected") or "").strip()
         actual = str(r.get("actual") or "").strip()
@@ -3843,8 +3841,8 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
                      + f"\nDraft only the part owned by module {mod}. Do not overlap the sibling; put sibling-owned "
                      "work in `excludes`. Every DoD item must name observable completion evidence rather than "
                      "a generic phrase such as `테스트 완료`.")],
-            tier="simple", profile="fast_structured", name="module_task",
-            role_id=Node.WORK_ARCHITECT)
+            execution_layer="deep_semantic", execution_stage="module_task",
+            profile="reasoning", name="module_task", role_id=Node.WORK_ARCHITECT)
         r = r or {}
         s = (want or str(r.get("summary") or "")).strip()
         inc = [str(x).strip() for x in (r.get("includes") or []) if str(x).strip()]

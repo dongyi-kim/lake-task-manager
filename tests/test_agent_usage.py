@@ -19,6 +19,8 @@ def test_usage_records_safe_per_call_contract_model_and_finish_reason():
             "langgraph_node": "think",
             "ltm_role_id": "work_architect",
             "ltm_output_contract": "semantic_memo",
+            "ltm_execution_layer": "deep_semantic",
+            "ltm_execution_stage": "semantic",
         },
     )
     message = AIMessage(
@@ -34,6 +36,7 @@ def test_usage_records_safe_per_call_contract_model_and_finish_reason():
     assert detail == [{
         "node": "work_architect", "model": "local-complex",
         "outputContract": "semantic_memo", "finishReason": "stop",
+        "executionLayer": "deep_semantic", "executionStage": "semantic",
         "promptTokens": 120, "completionTokens": 30, "seconds": detail[0]["seconds"],
     }]
     assert "not recorded" not in str(detail)
@@ -46,6 +49,7 @@ def test_evaluation_checkpoint_preserves_per_call_usage(tmp_path, monkeypatch):
     usage = {"calls": 1, "callsDetail": [{
         "node": "work_architect", "model": "local-complex",
         "outputContract": "semantic_memo", "finishReason": "stop",
+        "executionLayer": "deep_semantic", "executionStage": "semantic",
         "promptTokens": 120, "completionTokens": 30, "seconds": 1.25,
     }]}
     path = tmp_path / "create.json"

@@ -12,7 +12,7 @@ from app.infra import prefs
 
 PROVIDERS = ("aoai", "openai", "openai_compat", "fake")
 FIELDS = ("name", "provider", "chatModel", "chatModelSimple", "embedModel", "apiVersion",
-          "chatModelProfile", "embeddingProvider", "embeddingApiVersion",
+          "chatModelProfile", "chatModelSimpleProfile", "embeddingProvider", "embeddingApiVersion",
           "embedRevision", "embedPrecision", "embedDimension", "embedNormalization")
 
 
@@ -57,7 +57,8 @@ def create(name: str, provider: str) -> dict:
            "chatModel": "fake-chat" if p == "fake" else "",
            "chatModelSimple": "", "embedModel": "fake-embed" if p == "fake" else "",
            "apiVersion": "2024-10-21" if p == "aoai" else "",
-           "chatModelProfile": "", "embeddingProvider": "", "embeddingApiVersion": "",
+           "chatModelProfile": "", "chatModelSimpleProfile": "",
+           "embeddingProvider": "", "embeddingApiVersion": "",
            "embedRevision": "", "embedPrecision": "", "embedDimension": "",
            "embedNormalization": ""}
     prefs.save({"agentConfigs": _rows() + [row]})

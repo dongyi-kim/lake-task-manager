@@ -301,15 +301,27 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     data_block("Applicable Internal Authoring Rules", rules))}"""
 
     llm_usage = {}
+    meter = None
     try:
         from app.agent.usage import Meter, callback
         from app.agent.workflow.role_manifest import ROLE_SPECS
         meter = Meter()
         handler = callback(meter)
         state = {"user_id": user_id or "", "user_identity": ""}
-        invoke_config = {"callbacks": [handler]} if handler else {}
         role = ROLE_SPECS[EditorAuthor.name]
-        llm = C.get_llm(tier=role.model_tier, profile=role.task_profile, role_id=role.id)
+        layer = role.execution_layer
+        invoke_config = {
+            "metadata": {
+                "ltm_role_id": role.id,
+                "ltm_output_contract": "text",
+                "ltm_execution_layer": layer,
+                "ltm_execution_stage": "synthesis",
+            }
+        }
+        if handler:
+            invoke_config["callbacks"] = [handler]
+        llm = C.get_llm(tier=C.execution_tier(layer), profile=role.task_profile,
+                        role_id=role.id)
         messages = [("system", persona(state, SYSTEM_EDITOR_AUTHOR, role_id=role.id)),
                     ("user", task)]
         try:
@@ -324,7 +336,12 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
         html = str(getattr(msg, "content", msg) or "").strip()
     except Exception as e:
         from app.agent.workflow.session import _friendly_error
-        return {"ok": False, "error": _friendly_error(str(e))}
+        # The callback records an error call as soon as the provider invocation fails.
+        # Preserve that latency/stage diagnostic instead of dropping the exact call that
+        # explains an editor failure.  A factory/configuration error before invocation is
+        # still represented by the same zero-call snapshot shape as other compose paths.
+        llm_usage = meter.snapshot() if meter is not None else llm_usage
+        return {"ok": False, "error": _friendly_error(str(e)), "usage": llm_usage}
 
     html = _unfence(html)
     html = _preserve_ambiguous_seed(html, seed, prompt)
@@ -340,7 +357,9 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
                 "error": "이대로는 정확한 글을 쓸 수 없습니다 — " + ask,
                 "usage": llm_usage}
     if not html:
-        return {"ok": False, "error": "생성된 내용이 비어 있습니다. 요청을 조금 더 구체적으로 적어 주세요."}
+        return {"ok": False,
+                "error": "생성된 내용이 비어 있습니다. 요청을 조금 더 구체적으로 적어 주세요.",
+                "usage": llm_usage}
     # 언급은 전부 **뱃지**여야 한다(사용자 지시: plain text 금지). 모델이 평문으로 남긴
     # 티켓 키·[~사번] 을 에디터가 뱃지로 파싱하는 마크업으로 바꾼다 — 보장은 코드가 한다.
     # Composer는 아직 plain HTML을 반환하는 legacy adapter다. 새 role contract의

@@ -3432,6 +3432,82 @@ def test_the_split_falls_back_to_the_dod_when_the_llm_call_comes_back_empty():
     assert _children_from_dod({}) == []
 
 
+def test_the_split_uses_a_stage_rich_dod_before_any_semantic_call(monkeypatch):
+    """A DoD that already names distinct execution stages is a deterministic split input.
+
+    Re-sending the same body to a model adds latency and lets a smaller model paraphrase or
+    drop the user's concrete targets.  The compiler must therefore run before the optional
+    semantic split used only for genuinely ambiguous bodies.
+    """
+    from app.agent.workflow.agents import work_architect as R
+
+    calls = []
+
+    def semantic_call_must_not_run(*_args, **_kwargs):
+        calls.append((_args, _kwargs))
+        return {"children": [
+            {"summary": "모델이 다시 쓴 첫 단계"},
+            {"summary": "모델이 다시 쓴 둘째 단계"},
+        ]}
+
+    monkeypatch.setattr(R, "invoke_schema", semantic_call_must_not_run)
+    item = {
+        "summary": "[Catalog] 통계 정책 전환",
+        "description": (
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">대상 테이블 선정 및 수집 범위 설계</li>'
+            '<li data-checked="false">Puffin NDV 통계 생성 job 구현</li>'
+            '<li data-checked="false">StarRocks 플랜 반영 연동 검증</li>'
+            '<li data-checked="false">실행 절차 문서화</li></ul>'
+        ),
+    }
+
+    children = R._split_into_children(
+        _msg("이 작업을 단계별 Sub-Task로 나눠줘. 알아서"), item
+    )
+
+    assert calls == []
+    assert [child["summary"] for child in children] == [
+        "대상 테이블 선정 및 수집 범위 설계",
+        "Puffin NDV 통계 생성 job 구현",
+        "StarRocks 플랜 반영 연동 검증",
+        "실행 절차 문서화",
+    ]
+
+
+def test_an_ambiguous_split_uses_the_lightweight_semantic_layer(monkeypatch):
+    """Only the residual, meaning-bearing split may use the lightweight semantic lane."""
+    from app.agent.workflow.agents import work_architect as R
+
+    seen = {}
+
+    def capture(_schema, _messages, **kwargs):
+        seen.update(kwargs)
+        return {"children": [
+            {"summary": "통계 보존 정책 영향 범위 분석"},
+            {"summary": "통계 보존 정책 적용 결과 검증"},
+        ]}
+
+    monkeypatch.setattr(R, "invoke_schema", capture)
+    item = {
+        "summary": "[Catalog] 통계 보존 정책 전환",
+        "description": (
+            '<h3>완료 조건 (DoD)</h3><ul data-type="taskList">'
+            '<li data-checked="false">운영 확인 결과 기록</li></ul>'
+        ),
+    }
+
+    children = R._split_into_children(
+        _msg("통계 보존 정책 전환을 적절한 Sub-Task로 나눠줘. 알아서"), item
+    )
+
+    assert len(children) == 2
+    assert seen["execution_layer"] == "lightweight_semantic"
+    assert seen["execution_stage"] == "split_children"
+    assert seen["profile"] == "fast_structured"
+    assert "tier" not in seen
+
+
 def test_an_explicit_stage_split_never_falls_back_to_zero_children(monkeypatch):
     """보정 LLM과 얇은 DoD가 모두 빈손이어도 사용자 지정 구조는 실제 카드가 되어야 한다."""
     from app.agent import config as C
@@ -3579,6 +3655,64 @@ def test_a_bug_body_is_never_overwritten_with_the_task_template(monkeypatch):
         assert sec in body, (sec, body)
     # Task 템플릿이 섞여 들어오지 않는다 — 버그에 작업 범위·DoD 는 잡는 데 안 쓰인다
     assert "작업 범위" not in body and "완료 조건" not in body, body
+
+
+def test_incomplete_bug_fact_extraction_uses_the_lightweight_semantic_layer(monkeypatch):
+    """Bounded source extraction is semantic but does not require deep task design."""
+    from app.agent.workflow.agents import work_architect as R
+
+    seen = {}
+
+    def capture(_schema, _messages, **kwargs):
+        seen.update(kwargs)
+        return {
+            "steps": ["운영 배치 실행"],
+            "expected": "배치가 완료됨",
+            "actual": "간헐적으로 실패함",
+            "notes": [],
+        }
+
+    monkeypatch.setattr(R, "invoke_schema", capture)
+    body = R._bug_body_for(
+        _msg("운영 배치가 가끔 실패한다. 버그로 등록해줘"),
+        {"summary": "[ETL] 운영 배치 간헐 실패", "type": "Bug"},
+    )
+
+    assert "간헐적으로 실패" in body
+    assert seen["execution_layer"] == "lightweight_semantic"
+    assert seen["execution_stage"] == "bug_body"
+    assert seen["profile"] == "fast_structured"
+    assert "tier" not in seen
+
+
+def test_missing_module_task_design_uses_the_deep_semantic_layer(monkeypatch):
+    """Designing a missing sibling deliverable is deep judgment, not projection."""
+    from app.agent.workflow.agents import work_architect as R
+
+    seen = {}
+
+    def capture(_schema, _messages, **kwargs):
+        seen.update(kwargs)
+        return {
+            "summary": "[Catalog] lineage 조회 결과 표시",
+            "background": "사용자가 Catalog에서 lineage 조회 결과를 확인할 필요가 있음.",
+            "includes": ["조회 결과 표시"],
+            "excludes": ["ETL 수집 로직 변경"],
+            "dod": ["조회 화면 표시 결과 캡처", "회귀 테스트 결과 기록"],
+        }
+
+    monkeypatch.setattr(R, "invoke_schema", capture)
+    item = R._task_for_module(
+        _msg("ETL lineage 수집과 Catalog 조회 화면 표시 작업을 나눠 만들어줘. 알아서"),
+        "Catalog",
+        {"summary": "[ETL] lineage 수집", "priority": "Medium"},
+    )
+
+    assert item["components"] == ["Catalog"]
+    assert seen["execution_layer"] == "deep_semantic"
+    assert seen["execution_stage"] == "module_task"
+    assert seen["profile"] == "reasoning"
+    assert "tier" not in seen
 
 
 def test_pasted_voc_uses_reported_screen_symptom_instead_of_wrapper_or_placeholder(monkeypatch):

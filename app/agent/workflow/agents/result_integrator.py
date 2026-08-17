@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re as _re
 
-from app.agent.workflow.agents.base import TextAgent
+from app.agent.workflow.agents.base import TextAgent, _call_config
 from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
 from app.agent.workflow.evidence_index import canonicalize_evidence_index
@@ -423,12 +423,18 @@ class ResultIntegrator(TextAgent):
         if g and not g["ok"]:
             text2, g2 = "", None
             try:
-                fixed = self.llm().invoke([
+                repair_layer = self.execution_layer("synthesis")
+                fixed = self.llm(
+                    execution_layer=repair_layer,
+                    execution_stage="grounding_repair",
+                ).invoke([
                     ("system", self.system(state)),
                     ("user", f"The previous Korean answer contains grounding violations. Rewrite the entire "
                              f"answer, correcting only the violations below and preserving all valid content.\n\n"
                              f"### Violations\n\n{grounding.violation_note(g)}\n\n"
-                             f"### Previous Answer\n\n{text}")])
+                             f"### Previous Answer\n\n{text}")],
+                    config=_call_config(
+                        self.name, "text", repair_layer, "grounding_repair"))
                 text2 = str(getattr(fixed, "content", "") or "").strip()
                 if text2:
                     g2 = grounding.check(

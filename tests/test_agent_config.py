@@ -235,18 +235,18 @@ def test_chat_model_tier_splits_when_simple_set(clean_env):
     assert C.chat_model("simple") == "gpt-4o-mini"
 
 
-def test_role_tiers_assigned_to_shallow_judgment_roles(clean_env):
-    """의도 분류·결정적 실행만 simple — 조사·초안·검토·작문은 기본 모델을 유지한다."""
-    from app.agent.workflow.agents.people_advisor import PeopleAdvisor
-    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+def test_role_model_routing_is_manifest_owned_not_class_owned(clean_env):
+    """Role class의 고정 tier가 model-profile capability routing을 우회하지 않는다."""
     from app.agent.workflow.agents.action_executor import ActionExecutor
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
     from app.agent.workflow.agents.request_architect import RequestArchitect
-    from app.agent.workflow.agents.work_architect import WorkArchitect
-    from app.agent.workflow.agents.result_integrator import ResultIntegrator
-    from app.agent.workflow.agents.auditor import Auditor
-    assert RequestArchitect.tier == "simple" and ActionExecutor.tier == "simple"
-    for cls in (ResearchAnalyst, WorkArchitect, PeopleAdvisor, Auditor, ResultIntegrator):
-        assert cls.tier == "complex", cls.__name__
+    from app.agent.workflow.role_manifest import ROLE_SPECS
+
+    assert ROLE_SPECS["request_architect"].execution_layer == "lightweight_semantic"
+    assert ROLE_SPECS["query_specialist"].execution_layer == "lightweight_semantic"
+    assert ROLE_SPECS["action_executor"].execution_layer == "deterministic"
+    for cls in (RequestArchitect, QuerySpecialist, ActionExecutor):
+        assert "tier" not in cls.__dict__, cls.__name__
 
 
 def test_reasoning_models_do_not_receive_temperature(clean_env):
@@ -613,8 +613,8 @@ def test_simple_chat_connection_can_be_split_from_complex_chat(monkeypatch):
     assert simple_chat.headers == {"X-Role": "simple"}
 
 
-def test_qwen_complex_structured_contract_delegates_to_split_simple_endpoint(monkeypatch):
-    """Non-opted-in StructuredAgent Roles retain the characterized one-stage route."""
+def test_qwen_complex_structured_contract_never_changes_semantic_endpoint(monkeypatch):
+    """Wire-format capability cannot silently move semantic work to the projection model."""
     import app.agent.config as C
 
     monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
@@ -636,10 +636,10 @@ def test_qwen_complex_structured_contract_delegates_to_split_simple_endpoint(mon
     C.get_llm(tier="complex", profile="reasoning", output_contract="structured")
 
     definition = captured["definition"]
-    assert definition.model == "Qwen3.5-4B-4bit"
-    assert definition.base_url == "http://simple:18083/v1"
-    assert definition.api_key == "simple-key"
-    assert captured["parameters"]["max_tokens"] == 3072
+    assert definition.model == "ltm-qwen3.6-35b-a3b"
+    assert definition.base_url == "http://complex:18080/v1"
+    assert definition.api_key == "complex-key"
+    assert captured["parameters"]["max_tokens"] == 4096
 
 
 def test_qwen_complex_typed_projection_delegates_to_split_simple_endpoint(monkeypatch):
@@ -669,6 +669,105 @@ def test_qwen_complex_typed_projection_delegates_to_split_simple_endpoint(monkey
     assert definition.base_url == "http://simple:18083/v1"
     assert definition.api_key == "simple-key"
     assert captured["parameters"]["max_tokens"] == 3072
+
+
+def test_local_qwen_4b_is_projection_only_and_lightweight_falls_back_to_complex(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://complex:18080/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "ltm-qwen3.6-35b-a3b")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE", "Qwen3.5-4B-4bit")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_BASE", "http://simple:18083/v1")
+
+    assert C.execution_tier("projection") == "simple"
+    assert C.execution_tier("lightweight_semantic") == "complex"
+    assert C.execution_tier("deep_semantic") == "complex"
+
+
+def test_cloud_mixed_keeps_gpt4o_mini_for_qualified_lightweight_semantics(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai")
+    monkeypatch.setenv("LAKE_AGENT_OPENAI_CHAT", "gpt-4o")
+    monkeypatch.setenv("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+
+    assert C.execution_tier("projection") == "simple"
+    assert C.execution_tier("lightweight_semantic") == "simple"
+    assert C.execution_tier("deep_semantic") == "complex"
+
+
+def test_aoai_arbitrary_deployment_alias_uses_explicit_simple_profile(monkeypatch):
+    row = {
+        "id": "cfg", "provider": "aoai",
+        "chatModel": "corporate-main-slot",
+        "chatModelSimple": "corporate-fast-slot",
+        "chatModelProfile": "openai-gpt4o",
+        "chatModelSimpleProfile": "openai-gpt4o-mini",
+        "apiVersion": "2024-10-21",
+    }
+    monkeypatch.setattr(C, "_profile", lambda _config_id="": row)
+    monkeypatch.setattr(C, "_secret", lambda field, _config_id="": {
+        "aoaiEndpoint": "https://aoai.example",
+        "aoaiApiKey": "secret",
+    }.get(field, ""))
+
+    assert C.chat_definition("complex", config_id="cfg").model_profile == "openai-gpt4o"
+    assert C.chat_definition("simple", config_id="cfg").model_profile == "openai-gpt4o-mini"
+    assert C.execution_tier("lightweight_semantic", config_id="cfg") == "simple"
+
+
+def test_same_model_alias_on_different_endpoint_cannot_inherit_complex_profile(monkeypatch):
+    row = {
+        "id": "cfg", "provider": "openai_compat",
+        "chatModel": "shared-deployment-alias",
+        "chatModelSimple": "shared-deployment-alias",
+        "chatModelProfile": "openai-gpt4o-mini",
+        "chatModelSimpleProfile": "",
+    }
+    monkeypatch.setattr(C, "_profile", lambda _config_id="": row)
+    monkeypatch.setattr(C, "_secret", lambda field, _config_id="": {
+        "compatBaseUrl": "http://complex:18080/v1",
+        "compatApiKey": "complex-key",
+        "simpleBaseUrl": "http://simple:18083/v1",
+        "simpleApiKey": "simple-key",
+    }.get(field, ""))
+
+    complex_definition = C.chat_definition("complex", config_id="cfg")
+    simple_definition = C.chat_definition("simple", config_id="cfg")
+    assert complex_definition.model == simple_definition.model
+    assert complex_definition.base_url != simple_definition.base_url
+    assert complex_definition.model_profile == "openai-gpt4o-mini"
+    assert simple_definition.model_profile == ""
+    assert C.execution_tier("lightweight_semantic", config_id="cfg") == "complex"
+
+
+def test_legacy_single_lane_inherits_existing_complex_profile(monkeypatch):
+    row = {
+        "id": "cfg", "provider": "openai_compat",
+        "chatModel": "shared-deployment-alias", "chatModelSimple": "",
+        "chatModelProfile": "openai-gpt4o-mini",
+    }
+    monkeypatch.setattr(C, "_profile", lambda _config_id="": row)
+    monkeypatch.setattr(C, "_secret", lambda field, _config_id="": {
+        "compatBaseUrl": "http://shared:18080/v1",
+        "compatApiKey": "key",
+    }.get(field, ""))
+
+    assert C.chat_definition("simple", config_id="cfg").model_profile == \
+        "openai-gpt4o-mini"
+
+
+def test_unqualified_simple_profile_cannot_take_semantic_work(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://complex:18080/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "vendor-large")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE", "vendor-small")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_BASE", "http://simple:18083/v1")
+
+    assert C.execution_tier("lightweight_semantic") == "complex"
 
 
 def test_runtime_native_strict_structured_call_stays_on_semantic_endpoint(monkeypatch):

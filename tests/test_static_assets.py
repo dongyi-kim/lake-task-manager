@@ -272,6 +272,8 @@ def test_agent_settings_use_named_configs_instead_of_fixed_provider_tabs():
         assert call in dialog and call in api_src
     assert 'configModels: (id)' in api_src
     assert '/api/agent/configs/' in api_src
+    assert 'chatModelSimpleProfile' in dialog
+    assert '간단한 역할 모델 프로파일 (선택)' in dialog
 
 
 def test_agent_sidebar_identifies_named_environment_and_missing_configs():

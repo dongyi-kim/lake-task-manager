@@ -42,11 +42,14 @@ STRUCTURED_END_TOKEN = "<END_JSON>"
 SEMANTIC_MEMO_END_TOKEN = "<END_SEMANTIC_MEMO>"
 
 
-def _call_config(role_id: str, output_contract: str) -> dict:
+def _call_config(role_id: str, output_contract: str, execution_layer: str = "",
+                 execution_stage: str = "") -> dict:
     """Attach non-sensitive per-call labels consumed by :mod:`app.agent.usage`."""
     return {"metadata": {
         "ltm_role_id": str(role_id or ""),
         "ltm_output_contract": str(output_contract or ""),
+        "ltm_execution_layer": str(execution_layer or ""),
+        "ltm_execution_stage": str(execution_stage or ""),
     }}
 
 
@@ -99,6 +102,16 @@ def _validate_output(value, schema: dict) -> dict:
     return out
 
 
+def _raise_unrepairable_structured_output(errors: list[str], reason: str,
+                                          exc: Exception | None = None) -> None:
+    """Fail without a repair call when there is no model output to repair."""
+    details = list(errors) + [f"repair 생략: {reason}"]
+    error = RuntimeError("structured output 실패 — " + " | ".join(details))
+    if exc is not None:
+        raise error from exc
+    raise error
+
+
 def _capability_is_unsupported(exc: Exception, capability: str) -> bool:
     """Cache only a protocol rejection, never a bad model value or transient failure."""
     value = " ".join(str(exc or "").casefold().split())
@@ -116,24 +129,39 @@ def _capability_is_unsupported(exc: Exception, capability: str) -> bool:
     return rejection and any(token in value for token in protocol) and "invalid schema" not in value
 
 
-def invoke_schema(schema: dict, messages: list, tier: str = "complex",
+def invoke_schema(schema: dict, messages: list, tier: str | None = None,
                   profile: str = "fast_structured", temperature: float | None = None,
                   name: str = "AdhocOutput", llm_factory=None, role_id: str = "",
-                  call_label: str = "structured") -> dict:
+                  call_label: str = "structured", execution_layer: str = "",
+                  execution_stage: str = "") -> dict:
     """Role 밖의 보정 호출도 공통 structured-output fallback을 사용하게 한다."""
     import json
     from app.agent import capabilities
 
     named = _named(schema, name)
     observed_role = role_id or name
-    def make_llm(**overrides):
+    if tier is not None and execution_layer:
+        raise ValueError("tier와 execution_layer를 동시에 지정할 수 없습니다.")
+    initial_layer = execution_layer
+    initial_tier = (_cfg.execution_tier(initial_layer) if initial_layer
+                    else (tier or "complex"))
+
+    def make_llm(*, call_layer: str = "", call_stage: str = "", **overrides):
+        active_layer = call_layer or initial_layer
+        active_stage = call_stage or execution_stage
+        active_tier = (_cfg.execution_tier(active_layer) if active_layer else initial_tier)
         values = {"profile": profile, "output_contract": "structured", **overrides}
         if temperature is not None and "temperature" not in values:
             values["temperature"] = temperature
-        return (llm_factory(**values) if llm_factory else
-                _cfg.get_llm(tier=tier, **values))
+        if llm_factory:
+            if active_layer:
+                values["execution_layer"] = active_layer
+            if active_stage:
+                values["execution_stage"] = active_stage
+            return llm_factory(**values)
+        return _cfg.get_llm(tier=active_tier, **values)
 
-    capability_profile = capabilities.get(tier).get("checked") or {}
+    capability_profile = capabilities.get(initial_tier).get("checked") or {}
     errors, raw_text, validation_error = [], "", ""
     for capability, method in (("json_schema", "json_schema"),
                                ("json_object", "json_mode")):
@@ -147,22 +175,32 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
                     + json.dumps(schema, ensure_ascii=False))))
             out = make_llm().with_structured_output(
                 named, method=method).invoke(
-                    call_messages, config=_call_config(observed_role, call_label))
+                    call_messages, config=_call_config(
+                        observed_role, call_label, initial_layer, execution_stage))
             out = _validate_output(out, schema)
-            capabilities.record(tier, capability, True)
+            capabilities.record(initial_tier, capability, True)
             return out
         except Exception as exc:
             errors.append(f"{capability}: {str(exc)[:160]}")
             if _capability_is_unsupported(exc, capability):
-                capabilities.record(tier, capability, False, str(exc))
+                capabilities.record(initial_tier, capability, False, str(exc))
     try:
         raw = make_llm().invoke(
             list(messages) + [HumanMessage(content=_prompt_json_contract(
                 json.dumps(schema, ensure_ascii=False)))],
             stop=[STRUCTURED_END_TOKEN],
-            config=_call_config(observed_role, call_label),
+            config=_call_config(observed_role, call_label, initial_layer, execution_stage),
         )
-        raw_text = str(getattr(raw, "content", raw) or "")
+    except Exception as exc:
+        errors.append(f"prompt_json: {str(exc)[:160]}")
+        _raise_unrepairable_structured_output(
+            errors, "provider 호출 실패로 교정할 모델 출력이 없습니다.", exc)
+    raw_text = str(getattr(raw, "content", raw) or "")
+    if not raw_text.strip():
+        errors.append("prompt_json: 모델 출력이 비어 있습니다 (chars=0).")
+        _raise_unrepairable_structured_output(
+            errors, "모델 출력이 비어 있어 교정할 내용이 없습니다.")
+    try:
         parsed = _loads_loose(raw_text)
         if parsed is None:
             raise ValueError("JSON 객체를 찾지 못했습니다 (" + _response_shape(raw, raw_text) + ").")
@@ -171,7 +209,10 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
         validation_error = str(exc)[:1000]
         errors.append(f"prompt_json: {str(exc)[:160]}")
     try:
-        raw = make_llm(profile="fast_structured").invoke([
+        repair_layer = "projection" if initial_layer else ""
+        repair_contract = "typed_projection" if repair_layer else "structured"
+        raw = make_llm(call_layer=repair_layer, call_stage="repair",
+                       profile="fast_structured", output_contract=repair_contract).invoke([
             SystemMessage(content=(
                 "Preserve meaning exactly. Repair only JSON syntax and schema violations. "
                 f"Return raw JSON, then emit {STRUCTURED_END_TOKEN}. The marker is transport "
@@ -180,7 +221,8 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
                                   + json.dumps(schema, ensure_ascii=False)
                                   + "\n\nOutput to repair:\n" + raw_text[:12000]))],
             stop=[STRUCTURED_END_TOKEN],
-            config=_call_config(observed_role, call_label + "_repair"),
+            config=_call_config(observed_role, call_label + "_repair",
+                                repair_layer, "repair"),
         )
         parsed = _loads_loose(str(getattr(raw, "content", raw) or ""))
         if parsed is None:
@@ -196,9 +238,6 @@ class Agent(ABC):
 
     name: str = "agent"
     # 숫자 sampling parameter는 Role에 두지 않는다. task profile -> model profile에서 해석한다.
-    # 모델 티어 — simple(판단이 얕은 역할: 의도 분류·결정적 실행)은 저렴한 모델을 쓴다.
-    # 사용자가 설정창에서 '간단한 역할 모델'을 지정했을 때만 갈라지고, 아니면 하나로 돈다.
-    tier: str = "complex"
     # 도구 왕복 상한 — 역할별 재정의 가능. 그룹 질의(로스터 전원 활동 조회)는 6걸음으로
     # 부족했다(실측: 3인 모듈에서 정확히 소진).
     max_steps: int = MAX_TOOL_STEPS
@@ -227,12 +266,35 @@ class Agent(ABC):
     def apply(self, state: AgentState, out: dict) -> dict:
         """모델 출력 → State 갱신분. 여기서만 State 를 만진다."""
 
-    def llm(self, **kw):
+    def _role_spec(self):
         from app.agent.workflow.role_manifest import ROLE_SPECS
         spec = ROLE_SPECS.get(str(self.name))
-        kw.setdefault("profile", spec.task_profile if spec else "balanced")
+        if spec is None:
+            raise RuntimeError(f"Role manifest에 등록되지 않은 runtime Role: {self.name}")
+        for cls in type(self).mro():
+            if cls in {Agent, ABC, object}:
+                continue
+            if "tier" in cls.__dict__:
+                raise RuntimeError(
+                    f"Role {self.name}의 class tier override는 manifest routing과 충돌합니다."
+                )
+        return spec
+
+    def execution_layer(self, stage: str = "synthesis") -> str:
+        from app.agent.workflow.role_manifest import execution_layer_for_role
+        self._role_spec()
+        return execution_layer_for_role(str(self.name), stage)
+
+    def model_tier(self, stage: str = "synthesis", *, execution_layer: str = "") -> str:
+        layer = execution_layer or self.execution_layer(stage)
+        return _cfg.execution_tier(layer)
+
+    def llm(self, *, execution_layer: str = "", execution_stage: str = "synthesis", **kw):
+        spec = self._role_spec()
+        layer = execution_layer or self.execution_layer(execution_stage)
+        kw.setdefault("profile", spec.task_profile)
         kw.setdefault("role_id", str(self.name))
-        return _cfg.get_llm(tier=self.tier, **kw)
+        return _cfg.get_llm(tier=self.model_tier(execution_stage, execution_layer=layer), **kw)
 
     def structured(self, method: str = "json_schema", state: AgentState | None = None,
                    output_contract: str = "structured", **kw):
@@ -255,21 +317,42 @@ class Agent(ABC):
         spec = ROLE_SPECS.get(str(self.name))
         if not spec or spec.semantic_contract != "semantic_projection":
             return ""
-        checked = capabilities.get(self.tier).get("checked") or {}
+        semantic_tier = self.model_tier("synthesis")
+        checked = capabilities.get(semantic_tier).get("checked") or {}
         # Native strict schema keeps the existing single-call path. Runtime probe values
         # override the profile floor inside capabilities.get().
         if checked.get("json_schema") is True:
             return ""
-        return _cfg.typed_projection_tier(self.tier)
+        delegated = _cfg.typed_projection_tier(semantic_tier)
+        if delegated:
+            return delegated
+        # A separate projector endpoint is an optimization, not the semantic/formatting
+        # boundary itself. When complex and simple resolve to the same model/endpoint, keep
+        # the two-stage contract if that model profile is explicitly projection-qualified.
+        # This avoids collapsing WorkArchitect back into one reasoning+JSON call merely
+        # because the quality-first configuration uses the same 35B model for both lanes.
+        try:
+            from app.agent.model_profiles import supports_execution_layer
+            definition = _cfg.chat_definition(semantic_tier)
+            if supports_execution_layer(
+                    definition.model, "projection",
+                    explicit_model_profile=definition.model_profile):
+                return semantic_tier
+        except Exception:
+            pass
+        return ""
 
     def _invoke_structured_transport(self, state: AgentState, messages: list, *,
                                      output_contract: str = "structured",
                                      capability_tier: str | None = None,
                                      task_profile: str = "",
-                                     repair_context: str = "") -> dict:
+                                     repair_context: str = "",
+                                     execution_layer: str = "",
+                                     execution_stage: str = "synthesis") -> dict:
         """Execute one structured transport ladder without making semantic decisions.
 
-        json_schema → json_object → prompt-only JSON → repair 1회 순서다. 성공한 결과도
+        json_schema → json_object → prompt-only JSON → repair 1회 순서다. repair는 실제
+        nonempty 모델 출력의 parse/schema failure에만 허용한다. 성공한 결과도
         로컬 JSON Schema 검증을 통과해야 한다. openai_compat 서버가 response_format이나
         tools를 거부해도 role 전체가 ``Invalid json output``으로 사망하지 않게 한다.
         """
@@ -277,7 +360,9 @@ class Agent(ABC):
         from app.agent import capabilities
 
         schema = self.schema_for(state)
-        transport_tier = capability_tier or self.tier
+        active_layer = execution_layer or self.execution_layer(execution_stage)
+        transport_tier = capability_tier or self.model_tier(
+            execution_stage, execution_layer=active_layer)
         profile = capabilities.get(transport_tier).get("checked") or {}
         errors, validation_error = [], ""
 
@@ -286,7 +371,8 @@ class Agent(ABC):
             if task_profile:
                 values["profile"] = task_profile
             values.update(overrides)
-            return self.llm(**values)
+            return self.llm(execution_layer=active_layer,
+                            execution_stage=execution_stage, **values)
 
         for capability, method in (("json_schema", "json_schema"),
                                    ("json_object", "json_mode")):
@@ -300,7 +386,8 @@ class Agent(ABC):
                         + json.dumps(schema, ensure_ascii=False))))
                 raw = make_llm().with_structured_output(
                     _named(schema, self.name), method=method).invoke(
-                        call_messages, config=_call_config(self.name, output_contract))
+                        call_messages, config=_call_config(
+                            self.name, output_contract, active_layer, execution_stage))
                 out = _validate_output(raw, schema)
                 capabilities.record(transport_tier, capability, True)
                 return out
@@ -317,8 +404,18 @@ class Agent(ABC):
         try:
             raw = make_llm().invoke(
                 prompt_messages, stop=[STRUCTURED_END_TOKEN],
-                config=_call_config(self.name, output_contract))
-            raw_text = str(getattr(raw, "content", raw) or "")
+                config=_call_config(
+                    self.name, output_contract, active_layer, execution_stage))
+        except Exception as exc:
+            errors.append(f"prompt_json: {str(exc)[:180]}")
+            _raise_unrepairable_structured_output(
+                errors, "provider 호출 실패로 교정할 모델 출력이 없습니다.", exc)
+        raw_text = str(getattr(raw, "content", raw) or "")
+        if not raw_text.strip():
+            errors.append("prompt_json: 모델 출력이 비어 있습니다 (chars=0).")
+            _raise_unrepairable_structured_output(
+                errors, "모델 출력이 비어 있어 교정할 내용이 없습니다.")
+        try:
             parsed = _loads_loose(raw_text)
             if parsed is None:
                 raise ValueError("JSON 객체를 찾지 못했습니다 (" + _response_shape(raw, raw_text) + ").")
@@ -331,7 +428,10 @@ class Agent(ABC):
         try:
             repair_source = (("Semantic memo:\n" + repair_context + "\n\n")
                              if repair_context else "")
-            repaired = make_llm(profile="fast_structured").invoke([
+            repair_layer = "projection"
+            repaired = self.llm(
+                execution_layer=repair_layer, execution_stage="repair",
+                profile="fast_structured", output_contract="typed_projection").invoke([
                 SystemMessage(content=(
                     "Preserve the output's meaning. Repair only JSON syntax and schema violations. "
                     f"Return raw JSON, then emit {STRUCTURED_END_TOKEN}. The marker is transport "
@@ -340,7 +440,8 @@ class Agent(ABC):
                                       f"\n\nJSON Schema:\n{schema_text}"
                                       f"\n\nOutput to repair:\n{raw_text[:12000]}"))
                 ], stop=[STRUCTURED_END_TOKEN],
-                config=_call_config(self.name, output_contract + "_repair"))
+                config=_call_config(self.name, output_contract + "_repair",
+                                    repair_layer, "repair"))
             parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
             if parsed is None:
                 raise ValueError("repair 결과에서 JSON 객체를 찾지 못했습니다.")
@@ -381,10 +482,12 @@ class Agent(ABC):
                if outcome_contract else "")
             + f"End the memo with {SEMANTIC_MEMO_END_TOKEN}."
         )
-        raw = self.llm(output_contract="semantic_memo").invoke(
+        semantic_layer = self.execution_layer("synthesis")
+        raw = self.llm(execution_layer=semantic_layer, execution_stage="semantic",
+                       output_contract="semantic_memo").invoke(
             list(messages) + [HumanMessage(content=memo_instruction)],
             stop=[SEMANTIC_MEMO_END_TOKEN],
-            config=_call_config(self.name, "semantic_memo"),
+            config=_call_config(self.name, "semantic_memo", semantic_layer, "semantic"),
         )
         metadata = getattr(raw, "response_metadata", None) or {}
         finish = str(metadata.get("finish_reason") or metadata.get("stop_reason") or "").lower()
@@ -426,7 +529,8 @@ class Agent(ABC):
         return self._invoke_structured_transport(
             state, projection_messages, output_contract="typed_projection",
             capability_tier=projection_tier, task_profile="fast_structured",
-            repair_context=repair_context,
+            repair_context=repair_context, execution_layer="projection",
+            execution_stage="projection",
         )
 
     def invoke_structured(self, state: AgentState, messages: list) -> dict:
@@ -465,14 +569,15 @@ class StructuredAgent(Agent):
         """스키마를 프롬프트로 주고 평문 JSON 을 받아 낸다. 실패하면 None."""
         import json
         try:
-            msg = self.llm().invoke([
+            layer = self.execution_layer("synthesis")
+            msg = self.llm(execution_layer=layer, execution_stage="fallback").invoke([
                 SystemMessage(content=self.system(state)),
                 HumanMessage(content=(
                     self.task(state)
                     + "\n\n---\n**Required output format:** Return exactly one JSON object satisfying "
                       "the JSON Schema below. Include no prose, preface, or code fence; begin and end with braces.\n"
                     + json.dumps(self.schema_for(state), ensure_ascii=False)))],
-                config=_call_config(self.name, "structured_fallback"))
+                config=_call_config(self.name, "structured_fallback", layer, "fallback"))
             return _loads_loose(str(getattr(msg, "content", msg) or ""))
         except Exception:
             return None
@@ -492,9 +597,11 @@ class TextAgent(Agent):
 
     def _run(self, state: AgentState) -> dict:
         try:
-            msg = self.llm().invoke([SystemMessage(content=self.system(state)),
-                                     HumanMessage(content=self.task(state))],
-                                    config=_call_config(self.name, "text"))
+            layer = self.execution_layer("synthesis")
+            msg = self.llm(execution_layer=layer, execution_stage="synthesis").invoke(
+                [SystemMessage(content=self.system(state)),
+                 HumanMessage(content=self.task(state))],
+                config=_call_config(self.name, "text", layer, "synthesis"))
             return self.apply(state, {"text": str(getattr(msg, "content", msg) or "").strip()})
         except Exception as e:
             return self.fallback(state, e)
@@ -549,19 +656,24 @@ class ToolAgent(Agent):
 
     def _think(self, scratch: _Scratch) -> dict:
         from app.agent import capabilities
-        profile = capabilities.get(self.tier).get("checked") or {}
+        decision_layer = self.execution_layer("decision")
+        decision_tier = self.model_tier("decision", execution_layer=decision_layer)
+        profile = capabilities.get(decision_tier).get("checked") or {}
         try:
-            if not capabilities.native_tools_allowed():
+            if not capabilities.native_tools_allowed(tier=decision_tier):
                 raise RuntimeError("provider policy: native tools disabled")
             if profile.get("tools") is False:
                 raise RuntimeError("capability probe: tools unsupported")
             # 병렬 tool call은 probe 결과가 true일 때만 켠다. 모르는 서버에는 보수적으로 false.
-            msg = self.llm().bind_tools(
+            msg = self.llm(execution_layer=decision_layer,
+                           execution_stage="decision",
+                           profile="fast_structured").bind_tools(
                 self.tools, parallel_tool_calls=profile.get("parallel_tools") is True
-            ).invoke(scratch["messages"], config=_call_config(self.name, "tool_decision"))
-            capabilities.record(self.tier, "tools", True)
+            ).invoke(scratch["messages"], config=_call_config(
+                self.name, "tool_decision", decision_layer, "decision"))
+            capabilities.record(decision_tier, "tools", True)
         except Exception as exc:
-            capabilities.record(self.tier, "tools", False, str(exc))
+            capabilities.record(decision_tier, "tools", False, str(exc))
             msg = self._think_without_native_tools(scratch)
         return {"messages": [msg], "steps": (scratch.get("steps") or 0) + 1}
 
@@ -598,7 +710,9 @@ class ToolAgent(Agent):
         }
         parsed = invoke_schema(decision_schema,
                                list(scratch.get("messages") or []) + [instruction],
-                               tier=self.tier, profile="fast_structured", name="ToolDecision",
+                               execution_layer=self.execution_layer("decision"),
+                               execution_stage="decision", profile="fast_structured",
+                               name="ToolDecision",
                                llm_factory=self.llm, role_id=self.name,
                                call_label="tool_decision")
         calls = []
@@ -666,8 +780,9 @@ def _transcript(messages: list, limit: int = 28000) -> str:
         if t == "ai":
             for tc in (getattr(m, "tool_calls", None) or []):
                 rows.append(f"[Tool Call] {tc.get('name')}({_short(tc.get('args'))})")
-            if getattr(m, "content", ""):
-                rows.append(f"[Model Note] {m.content}")
+            # The decision model's prose is routing scratch, not retrieved evidence. Feeding
+            # it to synthesis let an ungrounded/malicious note override the actual tool result.
+            # Only validated tool calls and their returned payloads cross this trust boundary.
         elif t == "tool":
             rows.append(f"[Tool Result] {getattr(m, 'name', '')}: {_short(m.content, 1500)}")
     return "\n".join(rows)[-limit:]

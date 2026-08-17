@@ -1212,7 +1212,8 @@ def test_structured_agent_survives_a_server_without_function_calling(monkeypatch
             return AIMessage(content='{"picked": "ok"}')
 
     class _A(StructuredAgent):
-        name = "tester"
+        # Runtime test doubles still use a canonical manifest id; aliases fail closed.
+        name = "request_architect"
 
         def system(self, state):
             return "sys"

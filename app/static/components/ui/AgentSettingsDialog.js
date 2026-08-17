@@ -28,7 +28,8 @@ export default {
       providers: PROVIDERS,
       st: null, env: "", selectedId: "", err: "", busy: false, saving: false,
       form: { name: "", provider: "", chatModel: "", chatModelSimple: "", embedModel: "", apiVersion: "",
-        chatModelProfile: "", embeddingProvider: "", embeddingApiVersion: "",
+        chatModelProfile: "", chatModelSimpleProfile: "",
+        embeddingProvider: "", embeddingApiVersion: "",
         embedRevision: "", embedPrecision: "", embedDimension: "", embedNormalization: "" },
       models: { chat: [], simple: [], embed: [], total: 0, error: "" },
       comboOpen: "", comboAll: false, authEdit: null, authProbe: null, probe: null,
@@ -89,7 +90,9 @@ export default {
       this.form = { name: row.name || "", provider: row.provider || "",
         chatModel: row.chatModel || "", chatModelSimple: row.chatModelSimple || "",
         embedModel: row.embedModel || "", apiVersion: row.apiVersion || "",
-        chatModelProfile: row.chatModelProfile || "", embeddingProvider: row.embeddingProvider || "",
+        chatModelProfile: row.chatModelProfile || "",
+        chatModelSimpleProfile: row.chatModelSimpleProfile || "",
+        embeddingProvider: row.embeddingProvider || "",
         embeddingApiVersion: row.embeddingApiVersion || "", embedRevision: row.embedRevision || "",
         embedPrecision: row.embedPrecision || "", embedDimension: row.embedDimension || "",
         embedNormalization: row.embedNormalization || "" };
@@ -189,6 +192,7 @@ export default {
           chatModel: this.form.chatModel, chatModelSimple: this.form.chatModelSimple,
           embedModel: this.form.embedModel, apiVersion: this.form.apiVersion,
           chatModelProfile: this.form.chatModelProfile,
+          chatModelSimpleProfile: this.form.chatModelSimpleProfile,
           embeddingProvider: this.form.embeddingProvider,
           embeddingApiVersion: this.form.embeddingApiVersion,
           embedRevision: this.form.embedRevision, embedPrecision: this.form.embedPrecision,
@@ -277,7 +281,8 @@ export default {
                   <div v-if="comboOpen === kind" class="ag-combo-drop"><button v-for="m in comboOpts(kind)" :key="m" @mousedown.prevent="pickModel(kind,m)">{{ m }}</button><div v-if="!comboOpts(kind).length" class="ag-combo-empty">{{ models.error ? '목록 조회 실패 — 직접 입력' : '목록이 비어 있음 — 직접 입력' }}</div></div>
                 </div>
               </div>
-              <label class="ag-f"><span>채팅 모델 프로파일 (선택)</span><input v-model="form.chatModelProfile" placeholder="비우면 모델명으로 자동 선택"></label>
+              <label class="ag-f"><span>기본/복합 채팅 모델 프로파일 (선택)</span><input v-model="form.chatModelProfile" placeholder="비우면 모델명으로 자동 선택"></label>
+              <label class="ag-f"><span>간단한 역할 모델 프로파일 (선택)</span><input v-model="form.chatModelSimpleProfile" placeholder="비우면 모델명으로 자동 선택"></label>
               <label class="ag-f"><span>임베딩 연결</span><select v-model="form.embeddingProvider"><option value="">채팅 연결과 동일 (기존 동작)</option><option v-for="p in providers" :key="'embed-'+p.k" :value="p.k">{{ p.label }}</option></select></label>
               <div v-if="form.embeddingProvider" class="ag-hint">임베딩 endpoint와 인증은 위 인증 정보 변경에서 별도로 입력. 채팅 endpoint와 공유하지 않음</div>
               <div v-if="form.provider === 'openai_compat' && form.chatModelSimple" class="ag-hint">간단한 역할 Base URL을 입력하면 complex 모델과 다른 서버 사용. 비우면 기본 채팅 endpoint 공유</div>

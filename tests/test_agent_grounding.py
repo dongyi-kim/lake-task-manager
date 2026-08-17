@@ -180,12 +180,32 @@ def test_responder_appends_warning_when_rewrite_cannot_fix(monkeypatch):
     os.environ["LAKE_AGENT_PROVIDER"] = "fake"
     from app.agent.workflow.agents.result_integrator import ResultIntegrator
     r = ResultIntegrator()
+    captured = {}
+
+    class _Rewrite:
+        def invoke(self, _messages, **kwargs):
+            captured["invoke"] = kwargs
+            return type("M", (), {"content": "여전히 담당자: 김철수 입니다."})()
+
+    def rewrite_llm(**kwargs):
+        captured["llm"] = kwargs
+        return _Rewrite()
+
     # fake llm 의 재작성도 같은 날조를 담는다고 가정
-    monkeypatch.setattr(r, "llm", lambda **k: type("L", (), {
-        "invoke": lambda self, msgs: type("M", (), {"content": "여전히 담당자: 김철수 입니다."})()})())
+    monkeypatch.setattr(r, "llm", rewrite_llm)
     out = r.apply({"trace": []}, {"text": "담당자: 김철수 가 맡고 있습니다."})
     assert "자동 검증 경고" in out["reply"]
     assert "김철수" in out["reply"]
+    assert captured["llm"] == {
+        "execution_layer": "deep_semantic",
+        "execution_stage": "grounding_repair",
+    }
+    assert captured["invoke"]["config"]["metadata"] == {
+        "ltm_role_id": "result_integrator",
+        "ltm_output_contract": "text",
+        "ltm_execution_layer": "deep_semantic",
+        "ltm_execution_stage": "grounding_repair",
+    }
 
 
 def test_question_only_reply_never_exposes_internal_grounding_diagnostics():

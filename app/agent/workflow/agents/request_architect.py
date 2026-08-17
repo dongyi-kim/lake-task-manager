@@ -319,7 +319,6 @@ def _ground_request_assumptions(assumptions: list, grounded_request: str) -> lis
 
 class RequestArchitect(StructuredAgent):
     name = Node.REQUEST_ARCHITECT
-    tier = "simple"            # Few-shot 8예시가 실려서 분류는 저렴한 모델로 충분하다
 
     def system(self, state):
         return persona(state, SYSTEM_REQUEST_ARCHITECT, lite=True)   # 분류엔 축약판 — 호출당 1k+ 토큰 절감

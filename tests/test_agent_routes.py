@@ -81,6 +81,41 @@ def test_named_configs_allow_multiple_profiles_of_the_same_provider(client):
         ("개인 OpenAI", "openai"), ("팀 OpenAI", "openai")]
 
 
+def test_named_config_persists_independent_complex_and_simple_model_profiles(client):
+    row = client.post(
+        "/api/agent/configs", json={"name": "분리 모델", "provider": "openai"}
+    ).json()["config"]
+    assert row.get("chatModelSimpleProfile", "") == ""
+
+    updated = client.put(f"/api/agent/configs/{row['id']}", json={
+        "chatModel": "corporate-main-slot",
+        "chatModelSimple": "corporate-fast-slot",
+        "chatModelProfile": "openai-gpt4o",
+        "chatModelSimpleProfile": "openai-gpt4o-mini",
+    }).json()["config"]
+
+    assert updated["chatModelProfile"] == "openai-gpt4o"
+    assert updated["chatModelSimpleProfile"] == "openai-gpt4o-mini"
+
+
+def test_changing_simple_model_profile_invalidates_prior_model_verification(client):
+    row = client.post(
+        "/api/agent/configs", json={"name": "검증 지문", "provider": "fake"}
+    ).json()["config"]
+    client.post(f"/api/agent/configs/{row['id']}/probe/auth")
+    assert client.post(f"/api/agent/configs/{row['id']}/probe").json()["ok"]
+    before = next(
+        item for item in client.get("/api/agent/status").json()["configs"]
+        if item["id"] == row["id"]
+    )
+    assert before["modelsOk"] is True
+
+    changed = client.put(f"/api/agent/configs/{row['id']}", json={
+        "chatModelSimpleProfile": "openai-gpt4o-mini",
+    }).json()["config"]
+    assert changed["modelsOk"] is False
+
+
 def test_editing_candidate_does_not_change_active_profile(client):
     first = client.post("/api/agent/configs", json={"name": "현재", "provider": "fake"}).json()["config"]
     client.post(f"/api/agent/configs/{first['id']}/probe/auth")

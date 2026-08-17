@@ -20,6 +20,12 @@ import yaml
 
 TaskProfile = Literal["fast_structured", "balanced", "reasoning"]
 TASK_PROFILES = ("fast_structured", "balanced", "reasoning")
+ExecutionLayer = Literal[
+    "deterministic", "projection", "lightweight_semantic", "deep_semantic",
+]
+EXECUTION_LAYERS = (
+    "deterministic", "projection", "lightweight_semantic", "deep_semantic",
+)
 FINAL_ONLY_CONTRACTS = ("structured", "semantic_memo", "typed_projection")
 log = logging.getLogger("agent.model_profiles")
 _CACHE: dict[str, Any] = {"mtime": None, "data": None}
@@ -73,6 +79,25 @@ def model_profile(model: str, explicit: str = "") -> tuple[str, dict]:
 
 def capabilities_for(model: str, explicit: str = "") -> dict:
     return dict(model_profile(model, explicit)[1].get("capabilities") or {})
+
+
+def supports_execution_layer(model: str, layer: ExecutionLayer, *,
+                             explicit_model_profile: str = "") -> bool:
+    """Return whether a model profile is qualified for one semantic execution layer.
+
+    Qualification is versioned configuration backed by evaluation, never inferred from a
+    model name or from wire-format features such as JSON Schema/tool calling. Deterministic
+    work does not invoke a model and consequently no model can claim that layer.
+    """
+    if layer not in EXECUTION_LAYERS:
+        raise ValueError(f"알 수 없는 execution layer: {layer}")
+    if layer == "deterministic":
+        return False
+    capabilities = capabilities_for(model, explicit_model_profile)
+    declared = capabilities.get("execution_layers") or ()
+    if not isinstance(declared, (list, tuple, set)):
+        raise ValueError("model profile capabilities.execution_layers는 목록이어야 합니다.")
+    return layer in {str(value) for value in declared}
 
 
 def profile_for_contract(model: str, requested: TaskProfile, output_contract: str = "", *,
@@ -190,5 +215,7 @@ def resolve(model: str, provider: str, task_profile: TaskProfile = "balanced", *
     return row
 
 
-__all__ = ["TaskProfile", "TASK_PROFILES", "FINAL_ONLY_CONTRACTS", "EffectiveConfig", "load_profiles", "reset",
-           "model_profile", "capabilities_for", "profile_for_contract", "resolve"]
+__all__ = ["TaskProfile", "TASK_PROFILES", "ExecutionLayer", "EXECUTION_LAYERS",
+           "FINAL_ONLY_CONTRACTS", "EffectiveConfig", "load_profiles", "reset",
+           "model_profile", "capabilities_for", "supports_execution_layer",
+           "profile_for_contract", "resolve"]

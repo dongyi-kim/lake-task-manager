@@ -69,6 +69,7 @@ class _ConfigUpdateBody(BaseModel):
     embedModel: str = None
     apiVersion: str = None
     chatModelProfile: str = None
+    chatModelSimpleProfile: str = None
     embeddingProvider: str = None
     embeddingApiVersion: str = None
     embedRevision: str = None
@@ -169,7 +170,8 @@ def api_config_update(config_id: str, body: _ConfigUpdateBody):
     try:
         patch = {k: getattr(body, k) for k in
                  ("name", "chatModel", "chatModelSimple", "embedModel", "apiVersion",
-                  "chatModelProfile", "embeddingProvider", "embeddingApiVersion",
+                  "chatModelProfile", "chatModelSimpleProfile",
+                  "embeddingProvider", "embeddingApiVersion",
                   "embedRevision", "embedPrecision", "embedDimension", "embedNormalization")
                  if getattr(body, k) is not None}
         _profiles.update(config_id, patch)
