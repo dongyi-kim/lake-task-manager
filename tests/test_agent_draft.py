@@ -394,6 +394,31 @@ def test_empty_model_result_recovers_a_concrete_delegated_single_task():
     assert item["type"] == "Task"
     assert all(section in item["description"] for section in
                ("배경", "작업 범위", "완료 조건"))
+    assert "UI 테스트" in item["description"] and "화면 증빙" in item["description"]
+    assert result["draft"]["construction"] == "literal_delegated"
+
+
+def test_concrete_delegated_work_skips_the_model_and_keeps_runtime_guards(monkeypatch):
+    from app.agent.workflow.agents.base import StructuredAgent
+
+    model_calls = []
+
+    def model_node(_self):
+        def run(_state):
+            model_calls.append(True)
+            raise AssertionError("deterministic delegated work must not call the model")
+        return run
+
+    monkeypatch.setattr(StructuredAgent, "node", model_node)
+    state = _msg("카탈로그 화면 상단 필터에 '내 모듈만' 체크박스 하나 추가. 알아서",
+                 situation="직접 일치하는 내부 이력 없음", intent=Intent.PLAN_WORK)
+
+    result = WorkArchitect().node()(state)
+
+    assert model_calls == []
+    assert not result["questions"]
+    assert result["draft"]["construction"] == "literal_delegated"
+    assert "내 모듈만" in result["draft"]["items"][0]["summary"]
 
 
 def test_empty_model_result_reuses_normal_volume_partitioning_for_delegated_work():
@@ -406,6 +431,7 @@ def test_empty_model_result_reuses_normal_volume_partitioning_for_delegated_work
     assert not result["questions"]
     parent = result["draft"]["items"][0]
     assert "30개" in parent["summary"]
+    assert "해야 해" not in parent["summary"]
     assert len(parent.get("children") or []) >= 2
     assert all(child.get("assignee") for child in parent["children"])
 

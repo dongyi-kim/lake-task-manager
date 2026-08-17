@@ -2123,19 +2123,28 @@ def _is_negative_search_pseudo_source(item: dict) -> bool:
         return False
     key = str(item.get("key") or "").strip()
     title = str(item.get("title") or "").strip()
-    if not key or key != title or _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
+    if not key or _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I):
         return False
     observations = " ".join(
         str(row.get("text") or "") for row in (item.get("observations") or [])
         if isinstance(row, dict)
     )
     material = " ".join((str(item.get("why") or ""), str(item.get("limitations") or ""), observations))
-    return bool(_re.search(
+    negative = bool(_re.search(
         r"찾지\s*못|확인(?:되지\s*않|할\s*수\s*없)|기록이\s*없|"
-        r"검색(?:된|\s*결과).{0,60}(?:없|존재하지\s*않|나타나지\s*않|찾지\s*못)|"
+        r"검색(?:된|\s*결과).{0,80}(?:0\s*(?:건|개)|없|존재하지\s*않|나타나지\s*않|찾지\s*못)|"
         r"나타나지\s*않",
         material,
     ))
+    if not negative:
+        return False
+    # Mismatched synthetic ids such as `internal-duplicate-check` are common for query
+    # artifacts. Low-confidence/context-only misses still are uncertainties, not sources.
+    return (key == title
+            or str(item.get("fitness") or "").strip() == "context-only"
+            or str(item.get("confidence") or "").strip() == "low"
+            or any(str(row.get("source") or "") in {"query", "web"}
+                   for row in (item.get("observations") or []) if isinstance(row, dict)))
 
 
 def _is_non_renderable_evidence(item: dict) -> bool:
