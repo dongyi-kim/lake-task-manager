@@ -472,6 +472,120 @@ def test_prefetched_plan_work_concludes_without_react_tool_loop(monkeypatch):
     assert any("도구 재호출 생략" in x.get("note", "") for x in out["trace"])
 
 
+def test_completed_ask_query_plan_concludes_once_without_presurvey_or_react(monkeypatch):
+    """A fully executed QueryPlan is a complete evidence acquisition phase, not a ReAct hint."""
+    from langchain_core.messages import HumanMessage
+    import app.agent.workflow.agents.research_analyst as mod
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.state import Intent
+
+    monkeypatch.setattr(mod, "_presurvey", lambda _state: (_ for _ in ()).throw(
+        AssertionError("completed QueryPlan must not run a duplicate presurvey")))
+    monkeypatch.setattr(ToolAgent, "node", lambda _self: lambda _state: (_ for _ in ()).throw(
+        AssertionError("completed QueryPlan must not enter ReAct")))
+    analyst = ResearchAnalyst()
+    calls = []
+
+    def conclude(state, scratch):
+        calls.append((state.get("_research_analyst_prefetched"), scratch))
+        return {"situation": "상세 근거 묶음으로 정리", "evidence": []}
+
+    monkeypatch.setattr(analyst, "_conclude", conclude)
+    out = analyst.node()({
+        "intent": Intent.ASK,
+        "messages": [HumanMessage(content="Puffin 적용 근거를 내외부 자료로 조사해줘")],
+        "keywords": ["Puffin"], "mentioned_keys": [],
+        "query_plan": {"queries": [
+            {"id": "jira", "source": "jira"},
+            {"id": "docs", "source": "confluence"},
+            {"id": "web", "source": "web"},
+        ]},
+        "query_results": [
+            {"id": "jira", "source": "jira", "result": {
+                "tickets": [{"key": "DL-1"}],
+                "ticketDetails": [{"key": "DL-1", "description": "검증 결과"}],
+            }},
+            {"id": "docs", "source": "confluence", "result": {
+                "documents": [{"id": "1", "title": "설계"}],
+                "documentBodies": [{"id": "1", "title": "설계", "text": "본문"}],
+            }},
+            {"id": "web", "source": "web", "result": {
+                "results": [{"title": "공식 문서", "url": "https://example.com"}],
+            }},
+        ],
+        "trace": [],
+    })
+    assert calls == [(True, [])]
+    assert out["situation"] == "상세 근거 묶음으로 정리"
+    assert any("QueryPlan 근거 묶음" in row.get("note", "") for row in out["trace"])
+
+
+def test_incomplete_ask_query_plan_keeps_react_fallback(monkeypatch):
+    """A missing or failed planned source must not be hidden by the one-pass optimization."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.base import ToolAgent
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+    from app.agent.workflow.state import Intent
+
+    called = {"react": 0}
+
+    def base_node(_self):
+        def run(_state):
+            called["react"] += 1
+            return {"situation": "fallback 조사", "evidence": []}
+        return run
+
+    monkeypatch.setattr(ToolAgent, "node", base_node)
+    analyst = ResearchAnalyst()
+    out = analyst.node()({
+        "intent": Intent.ASK,
+        "messages": [HumanMessage(content="내외부 자료를 조사해줘")],
+        "keywords": [], "mentioned_keys": [],
+        "query_plan": {"queries": [
+            {"id": "jira", "source": "jira"}, {"id": "web", "source": "web"},
+        ]},
+        "query_results": [
+            {"id": "jira", "source": "jira", "result": {"tickets": []}},
+            {"id": "web", "source": "web", "result": {"error": "blocked"}},
+        ],
+        "trace": [],
+    })
+    assert called["react"] == 1 and out["situation"] == "fallback 조사"
+
+
+def test_query_plan_web_evidence_is_not_duplicated_in_research_task():
+    """The same web snippets must not appear once in QueryPlan and again in web_context."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.research_analyst import ResearchAnalyst
+
+    url = "https://example.com/official"
+    state = {
+        "messages": [HumanMessage(content="기술 조사")],
+        "query_results": [{"id": "web", "source": "web", "result": {
+            "results": [{"title": "공식", "url": url, "snippet": "근거"}]}}],
+        "web_context": f"공식 — 근거 ({url})",
+    }
+    task = ResearchAnalyst().task(state)
+    assert task.count(url) == 1
+
+
+def test_research_evidence_short_title_is_bound_to_unique_verified_ticket_key():
+    from app.agent.workflow.agents.research_analyst import _normalize_evidence_identity
+
+    state = {"query_results": [{"source": "jira", "result": {
+        "ticketDetails": [{"key": "DL-9203", "summary": "[Catalog] 검증 기준 초안"}],
+    }}]}
+    got = _normalize_evidence_identity({
+        "key": "[회의] 검증 기준", "title": "[회의] 검증 기준",
+        "why": "DL-9203에서 검증 기준을 작성함", "url": "",
+        "observations": [{"source": "comment", "text": "기준 초안 작성"}],
+    }, state)
+
+    assert got["key"] == "DL-9203"
+    assert got["title"] == "[Catalog] 검증 기준 초안"
+
+
 def test_empty_plan_work_query_skips_presurvey_and_llm_synthesis(monkeypatch):
     """A scoped zero-result QueryPlan is already a complete duplicate check."""
     from langchain_core.messages import HumanMessage

@@ -102,6 +102,93 @@ def _jira_where(where: str, query: str) -> str:
     return f"({base}) AND ({lexical})" if base else lexical
 
 
+def _needs_evidence_materialization(state, results: list[dict]) -> bool:
+    """Whether search hits must be opened before the single research synthesis pass.
+
+    Listing/count requests intentionally keep lightweight rows. Research and create/duplicate-check
+    requests need the ticket body, comments, and document body that a ReAct loop would otherwise open
+    through several model round trips.
+    """
+    tasks = (state.get("request_plan") or {}).get("tasks") or []
+    if any(str(task.get("kind") or "") == "research" for task in tasks
+           if isinstance(task, dict)):
+        return True
+    if str(state.get("intent") or "") == "plan_work":
+        return True
+    sources = {str(row.get("source") or "") for row in results if isinstance(row, dict)}
+    return len(sources & {"jira", "comments", "confluence", "web", "github"}) >= 2
+
+
+def _materialize_evidence(results: list[dict]) -> dict:
+    """Open selected Jira and Confluence hits without another LLM routing loop.
+
+    Search order is already the QueryPlan's relevance/order contract. Preserve that order, deduplicate
+    identities, and cap materialization to one human-reviewable evidence set. Individual read failures are
+    explicit so Research Analyst can fall back to ReAct instead of silently synthesizing thin evidence.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from app.agent import tools as T
+
+    ticket_keys, document_refs = [], []
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        result = row.get("result") or {}
+        for ticket in result.get("tickets") or []:
+            key = str((ticket or {}).get("key") or "").strip().upper()
+            if key and key not in ticket_keys:
+                ticket_keys.append(key)
+        for comment in result.get("comments") or []:
+            key = str((comment or {}).get("ticketKey") or "").strip().upper()
+            if key and key not in ticket_keys:
+                ticket_keys.append(key)
+        for document in result.get("documents") or []:
+            ref = str((document or {}).get("url") or (document or {}).get("id") or "").strip()
+            if ref and ref not in document_refs:
+                document_refs.append(ref)
+
+    ticket_keys, document_refs = ticket_keys[:8], document_refs[:4]
+
+    def open_ticket(key: str) -> dict:
+        try:
+            value = T.BY_NAME["get_ticket"].invoke({"key": key, "comment_limit": 8}) or {}
+            return value if not value.get("error") else {"key": key, "error": value["error"]}
+        except Exception as exc:
+            return {"key": key, "error": str(exc)[:240]}
+
+    def open_document(ref: str) -> dict:
+        try:
+            value = T.BY_NAME["read_document"].invoke({"url_or_id": ref}) or {}
+            return value if not value.get("error") else {"url": ref, "error": value["error"]}
+        except Exception as exc:
+            return {"url": ref, "error": str(exc)[:240]}
+
+    with ThreadPoolExecutor(max_workers=max(1, min(6, len(ticket_keys) + len(document_refs)))) as pool:
+        ticket_details = list(pool.map(open_ticket, ticket_keys)) if ticket_keys else []
+        document_bodies = list(pool.map(open_document, document_refs)) if document_refs else []
+
+    errors = [str(row.get("error")) for row in ticket_details + document_bodies
+              if isinstance(row, dict) and row.get("error")]
+    ticket_target = next((row for row in results if row.get("source") == "jira"), None) \
+        or next((row for row in results if row.get("source") == "comments"), None)
+    document_target = next((row for row in results if row.get("source") == "confluence"), None)
+    if ticket_target is not None and ticket_details:
+        ticket_target["result"] = dict(ticket_target.get("result") or {},
+                                       ticketDetails=ticket_details)
+        if errors:
+            ticket_target["result"]["materializationErrors"] = errors
+    if document_target is not None and document_bodies:
+        document_target["result"] = dict(document_target.get("result") or {},
+                                          documentBodies=document_bodies)
+        if errors:
+            document_target["result"]["materializationErrors"] = errors
+    return {
+        "tickets": len(ticket_details), "documents": len(document_bodies),
+        "ticketDetails": ticket_details, "documentBodies": document_bodies,
+        "errors": errors,
+    }
+
+
 class QueryRunner:
     name = Node.QUERY_RUNNER
 
@@ -211,9 +298,14 @@ class QueryRunner:
                     compact["contextTruncated"] = True
                     compact["artifactId"] = qid
             results.append({"id": qid, "source": source, "result": compact})
+        if _needs_evidence_materialization(state, results):
+            materialized = _materialize_evidence(results)
+            if materialized["tickets"] or materialized["documents"] or materialized["errors"]:
+                artifacts["evidence-materialization"] = materialized
         return {"query_results": results, "query_artifacts": artifacts,
                 "assignment_completion": artifacts.get("incomplete-assignees") or {},
                 "trace": note(state, self.name, f"조회 {len(results)}개 실행")}
 
 
-__all__ = ["QueryRunner", "_jira_where"]
+__all__ = ["QueryRunner", "_jira_where", "_needs_evidence_materialization",
+           "_materialize_evidence"]

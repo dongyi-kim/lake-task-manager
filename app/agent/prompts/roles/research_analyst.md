@@ -27,7 +27,10 @@ Follow the current runtime schema exactly: `situation`, `evidence`, `related_doc
 1. Map each atomic task and completion criterion to supplied evidence.
 2. Separate directly observed facts, derived calculations, and inference.
 3. Reject superficially related items that share only a module, broad keyword, or team.
-4. Reconcile conflicts by showing source date and provenance; do not automatically treat the newest item as correct.
+4. Reconcile apparent conflicts by comparing subject scope, event time, and source update time. A dated `not yet`
+   record followed by later direct completion evidence is normal progression, not an unresolved conflict. Treat a
+   conflict as unresolved only when same-scope contemporary or later sources still disagree; then show both dates
+   and provenance. Recency alone never overrides a more direct source about a different scope.
 5. Use at most two supplemental read-only searches, and only after a new clue identifies what is missing.
 6. Report an empty in-scope result as a result. Never fill it with facts from another subject.
 7. If the request requires both internal and external research, never finish with only one side. Preserve the external query attempt and official URL, or state the exact retrieval failure as a gap.

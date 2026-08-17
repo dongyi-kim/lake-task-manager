@@ -239,7 +239,10 @@ class ResultIntegrator(TextAgent):
             goal += (
                 "\nFor every material conclusion, add the matching `[n]` or `[n-a]` marker in the body. "
                 "Do not leave a conclusion uncited merely because its source is listed at the end. Preserve "
-                "comment observations and dated source conflicts; ticket status alone is not result evidence."
+                "comment observations and dated source conflicts; ticket status alone is not result evidence. "
+                "Bind each claim only to a source whose supplied `observations[].text` directly supports it; "
+                "`why` explains relevance but is not evidence. Never attribute a ticket-comment result to a "
+                "meeting document merely because both discuss the same topic."
             )
         if any(word in asked_for_quality for word in ("신뢰도", "출처별", "요청 적합성", "적합성")):
             goal += (
@@ -364,6 +367,17 @@ class ResultIntegrator(TextAgent):
         text = _ensure_research_status(text, state)
         text = _drop_unsupported_guarantees(text, state)
 
+        # Normalize verified entities and the source index before grounding.
+        # Previously these deterministic repairs ran only after the checker, so a
+        # valid plain key or Confluence page id triggered a second full LLM rewrite
+        # and still leaked an internal warning. Unknown entities are untouched and
+        # remain visible to the grounding checker.
+        text = _badgeify_known_ticket_mentions(text, state)
+        text = _normalize_ticket_detail_sections(text)
+        text = _normalize_badge_repetitions(text)
+        text = _attach_known_doc_urls(text, state)
+        text = _merge_evidence_index(text, state)
+
         # ── 접지 검사 — 답변의 티켓 키·제목·인명을 실물과 대조한다.
         # 지도·자료를 정확히 줘도 답변 단계에서 날조가 나왔다(없는 키, 바뀐 제목, "PM: 김철수").
         # 프롬프트로 세 번 막아 봤지만 재발 — 이 부류는 부탁할 일이 아니라 **검증할 일**이다.
@@ -461,6 +475,7 @@ class ResultIntegrator(TextAgent):
         # the browser only renders this canonical Markdown (with a legacy-read fallback).
         text = _merge_evidence_index(text, state)
         text = _rebind_definition_citations(text)
+        text = _rebind_explicit_source_citations(text)
         # Explicit citation-marker requests are a rendering contract.  The source index
         # already owns stable numbering, so bind uncited conclusion paragraphs to the
         # best-matching verified sources after numbering instead of trusting another LLM
@@ -813,7 +828,17 @@ def _render_reply_tokens(text: str) -> str:
             return f"[{rid}]({url})"
         return rid                         # 알 수 없는 typed id를 깨진 토큰으로 노출하지 않는다
 
-    out = _re.sub(r"\{\{+ref:([A-Za-z0-9_.:-]+)\}+\}", ref, str(text or ""))
+    out = str(text or "")
+    # Typed UI tokens are rendered by the client. A model sometimes wraps one
+    # in inline-code backticks, making Markdown and the badge renderer overlap.
+    # Remove only backticks whose complete content is one strict typed token;
+    # ordinary inline code remains untouched.
+    out = _re.sub(
+        r"`(\{\{+(?:ticket-(?:list|inline|detail)|ref|mention):"
+        r"[A-Za-z0-9_.:-]+\}+\})`",
+        r"\1", out,
+    )
+    out = _re.sub(r"\{\{+ref:([A-Za-z0-9_.:-]+)\}+\}", ref, out)
     out = _re.sub(r"\{\{+mention:([A-Za-z0-9_.:-]+)\}+\}", r"[~\1]", out)
     return out
 
@@ -1014,6 +1039,7 @@ def _enforce_reply_style(text: str) -> str:
             (r"보였습니다", "보였음"),
             (r"보입니다", "보임"),
             (r"([가-힣]+)되어야\s*합니다", r"\1 필요"),
+            (r"([가-힣]+)해야\s*합니다", r"\1 필요"),
             (r"([가-힣]+(?:되지|하지))\s*않았습니다", r"\1 않음"),
             (r"([가-힣]+(?:되지|하지))\s*않습니다", r"\1 않음"),
             (r"([가-힣]+)하였습니다", r"\1함"),
@@ -1861,7 +1887,14 @@ def _badgeify_known_ticket_mentions(text: str, state) -> str:
 
 
 def _ensure_external_research_coverage(text: str, state) -> str:
-    """내부+외부 공식 조사를 요청했으면 검증된 외부 URL과 충돌 상태를 답에 보존한다."""
+    """내부+외부 공식 조사를 요청했으면 검증된 외부 URL을 답에 보존한다.
+
+    Semantic conflict resolution belongs to Research Analyst, where source
+    scope, dates, and provenance are all present. The former string scanner
+    treated an older ``not yet`` record plus later completion evidence as an
+    unresolved contradiction and rewrote a correct conclusion after synthesis.
+    This rendering guard therefore owns only the deterministic URL contract.
+    """
     asked = request_text(state) + " " + last_user_text(state)
     if not ("외부" in asked and any(w in asked for w in ("조사", "자료", "공식", "근거"))):
         return text
@@ -1896,37 +1929,6 @@ def _ensure_external_research_coverage(text: str, state) -> str:
             lines.append(f"- [{title}]({_markdown_url(url)})" + (f" — {why}" if why else ""))
         value += "\n\n" + "\n".join(lines)
 
-    material = " ".join(str(state.get(k) or "") for k in ("topic_dossier", "pre_survey"))
-    material += " " + json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str)
-    # A generated conclusion must not keep a definitive PoC-complete claim when the
-    # supplied internal record says that PoC is still unperformed.  Merely appending a
-    # warning left two mutually exclusive statements on screen (S8 UI review). Replace
-    # the unsafe assertion itself; retain the remaining reader/support clause.
-    source_says_unperformed = bool(_re.search(
-        r"PoC[^\n]{0,120}(?:아직\s*수행하지\s*않|미수행|수행\s*전|완료되지\s*않)",
-        material, _re.I,
-    ))
-    source_says_complete = bool(_re.search(
-        r"PoC[^\n]{0,120}(?:수행\s*완료|완료되었|완료됨|완료한\s*상태)",
-        material, _re.I,
-    ))
-    if source_says_unperformed:
-        reason = "내부 기록 상충" if source_says_complete else "확인 근거 부족"
-        value = _re.sub(
-            r"(?:Puffin\s+NDV(?:의)?\s*)?(?:writer\s*)?PoC(?:는|가|은|이)?\s*"
-            r"(?:수행\s*)?(?:완료되었(?:으나|지만)?|완료되었다|완료됨|완료한\s*상태)\s*[,，]?",
-            f"Puffin NDV writer PoC 완료 여부는 {reason}으로 확정 불가. ",
-            value,
-            flags=_re.I,
-        )
-        value = _re.sub(r"\.\s*\.", ".", value)
-    conflict_material = material + " " + value
-    if ("PoC" in conflict_material
-            and _re.search(r"PoC[^\n]{0,80}(?:완료|수행 완료)", conflict_material)
-            and _re.search(r"PoC[^\n]{0,80}(?:아직\s*수행하지\s*않|미수행)", conflict_material)
-            and "내부 기록 상충" not in value):
-        value += ("\n\n### 확인 필요\n\n- 내부 기록 상충: 한 기록은 PoC 완료, 다른 기록은 미수행으로 기술. "
-                  "대상 범위와 갱신 시점 확인 전 현재 완료 여부 확정 불가")
     return value
 
 
@@ -2269,6 +2271,51 @@ def _rebind_definition_citations(text: str) -> str:
     return "\n".join(lines).rstrip() + "\n\n" + index.lstrip()
 
 
+def _rebind_explicit_source_citations(text: str) -> str:
+    """Bind an explicitly named source to its own canonical index number.
+
+    A model can correctly name a meeting/document but leave the marker from the
+    adjacent external source. Once the canonical index exists, the exact source
+    title and number are deterministic. Replace only the first citation after
+    one uniquely named source in that sentence; implicit analytical claims stay
+    untouched.
+    """
+    value = str(text or "")
+    heading = _re.search(r"(?m)^###\s*근거\s*$", value)
+    if not heading:
+        return value
+    body, source_index = value[:heading.start()].rstrip(), value[heading.start():]
+    titles = []
+    for number, row in _re.findall(r"(?m)^\[(\d+)\]\s+(.+)$", source_index):
+        link = _re.match(r"\[([^\n]+?)\]\(https?://", row)
+        if link:
+            title = link.group(1).strip()
+            if len(title) >= 3:
+                titles.append((title, number))
+    if not titles:
+        return value
+
+    rendered = []
+    for line in body.splitlines():
+        if line.lstrip().startswith(("|", "#", ">")):
+            rendered.append(line)
+            continue
+        sentences = _re.split(r"(?<=[.!?])\s+", line)
+        fixed = []
+        for sentence in sentences:
+            matches = [(title, number, sentence.find(title))
+                       for title, number in titles if title in sentence]
+            if len(matches) == 1:
+                _title, number, position = matches[0]
+                citation = _BODY_CITATION_RE.search(sentence, position + len(_title))
+                if citation:
+                    sentence = (sentence[:citation.start()] + f"[{number}]"
+                                + sentence[citation.end():])
+            fixed.append(sentence)
+        rendered.append(" ".join(fixed))
+    return "\n".join(rendered).rstrip() + "\n\n" + source_index.lstrip()
+
+
 def _source_quality_requested(state) -> bool:
     asked = (request_text(state) + " " + last_user_text(state)).casefold()
     return any(word in asked for word in ("신뢰도", "출처별", "요청 적합성", "출처 적합성"))
@@ -2308,11 +2355,20 @@ def _render_requested_source_quality(text: str, state) -> str:
             raw_fitness = "supporting"
             limitation = limitation or "내부 운영 적용 여부는 직접 판단하지 않음"
         if not limitation:
-            limitation = {
-                "direct": "단일 출처만으로 최종 판단하기에는 범위 제한",
-                "supporting": "보조 근거로 단독 결론 불가",
-                "context-only": "배경 이해용으로 직접 판단 근거가 아님",
-            }.get(raw_fitness, "근거 한계 미확인")
+            kinds = {str(obs.get("source") or "") for obs in (item.get("observations") or [])
+                     if isinstance(obs, dict)}
+            if raw_fitness == "direct" and "comment" in kinds:
+                limitation = "기록된 결과 이후의 변경·후속 검증은 별도 확인 필요"
+            elif raw_fitness == "direct" and kinds <= {"description", "field"}:
+                limitation = "계획·정책 근거이며 실행 결과는 별도 확인 필요"
+            elif raw_fitness == "direct" and "document" in kinds:
+                limitation = "문서 기록 시점 이후 변경은 반영되지 않을 수 있음"
+            else:
+                limitation = {
+                    "direct": "이 출처가 기록한 범위 밖의 결과는 판단하지 않음",
+                    "supporting": "보조 근거로 단독 결론 불가",
+                    "context-only": "배경 이해용으로 직접 판단 근거가 아님",
+                }.get(raw_fitness, "근거 한계 미확인")
         rows.append(
             f"| {_cell(source)} | {confidence.get(raw_confidence, '미확인')} | "
             f"{fitness.get(raw_fitness, '미확인')} | {_cell(limitation)} |"

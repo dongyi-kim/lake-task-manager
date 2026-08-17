@@ -65,6 +65,11 @@ SCHEMA = {
                             "type": "string",
                             "description": "Concise Korean fact observed at that location.",
                         },
+                        "observed_at": {
+                            "type": "string",
+                            "description": ("Exact source date or timestamp when present, otherwise empty. "
+                                            "Use it to distinguish historical state from current state."),
+                        },
                     }, "required": ["source", "text"]},
                     "description": ("Distinct facts actually used from this same source. Keep body, comment, "
                                     "field history, and document observations under one source item."),
@@ -122,6 +127,30 @@ def _query_results_have_material(query_results) -> bool:
                ("tickets", "documents", "comments", "people", "results")):
             return True
     return False
+
+
+def _query_plan_is_complete(state) -> bool:
+    """Whether every planned source produced a usable deterministic result.
+
+    Empty results are complete evidence of an in-scope miss. Missing rows, source mismatches, query errors,
+    and failed body materialization keep the ReAct fallback available instead of trading quality for speed.
+    """
+    specs = [row for row in ((state.get("query_plan") or {}).get("queries") or [])
+             if isinstance(row, dict)]
+    results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)] \
+        if isinstance(state.get("query_results"), list) else []
+    if not specs or not results:
+        return False
+    by_id = {str(row.get("id") or ""): row for row in results if row.get("id")}
+    for spec in specs:
+        qid = str(spec.get("id") or "")
+        row = by_id.get(qid)
+        if not qid or row is None or str(row.get("source") or "") != str(spec.get("source") or ""):
+            return False
+        result = row.get("result")
+        if not isinstance(result, dict) or result.get("error") or result.get("materializationErrors"):
+            return False
+    return True
 
 
 def _research_outside(agent, asked: str) -> str:
@@ -437,6 +466,47 @@ def _normalize_evidence_quality(item: dict) -> dict:
     out["confidence"] = confidence.get(c, "unknown")
     out["fitness"] = fitness.get(f, "unknown")
     out["limitations"] = str(out.get("limitations") or "").strip()
+    return out
+
+
+def _normalize_evidence_identity(item: dict, state) -> dict:
+    """Bind a model-written evidence row to a verified Query Runner ticket.
+
+    The model occasionally puts a shortened title in ``key`` while its own
+    rationale names the exact ticket key. Do not leave that as an unlinked text
+    source: promote it only when one unique key appears and that key exists in
+    the scoped deterministic query results. URLs remain document/web sources.
+    """
+    out = dict(item or {})
+    key = str(out.get("key") or "").strip().upper()
+    if out.get("url") or _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key):
+        return out
+    verified = {}
+    for row in (state.get("query_results") or []):
+        if not isinstance(row, dict):
+            continue
+        result = row.get("result") or {}
+        for ticket in [*(result.get("tickets") or []), *(result.get("ticketDetails") or [])]:
+            if not isinstance(ticket, dict):
+                continue
+            ticket_key = str(ticket.get("key") or "").strip().upper()
+            title = str(ticket.get("summary") or ticket.get("title") or "").strip()
+            if _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", ticket_key):
+                verified[ticket_key] = title
+    material = " ".join([
+        str(out.get("title") or ""), str(out.get("why") or ""),
+        *(str(obs.get("text") or "") for obs in (out.get("observations") or [])
+          if isinstance(obs, dict)),
+    ])
+    named = list(dict.fromkeys(
+        found.upper() for found in _re.findall(
+            r"(?<![A-Z0-9-])([A-Z][A-Z0-9]*-\d+)(?![A-Z0-9-])", material, _re.I
+        ) if found.upper() in verified
+    ))
+    if len(named) == 1:
+        out["key"] = named[0]
+        if verified[named[0]]:
+            out["title"] = verified[named[0]]
     return out
 
 
@@ -919,10 +989,12 @@ class ResearchAnalyst(ToolAgent):
             # PLAN_WORK already passed a scoped, paginated QueryPlan. Repeating the same keywords through
             # search_work_history + semantic search caused dozens of local comment scans and then injected
             # duplicate context. Keep that broader fallback for open-ended ASK/history routes only.
+            completed_query_plan = _query_plan_is_complete(state)
             planned_create_query = ((state.get("intent") or "") == Intent.PLAN_WORK
                                     and isinstance(state.get("query_results"), list)
                                     and bool(state.get("query_results")))
-            if not keys0 and state.get("keywords") and not planned_create_query:
+            if not keys0 and state.get("keywords") \
+                    and not (planned_create_query or completed_query_plan):
                 try:
                     pre = _presurvey(state)
                 except Exception:
@@ -1199,6 +1271,22 @@ class ResearchAnalyst(ToolAgent):
                 }]
                 return out
 
+            # Query Specialist and Query Runner form the acquisition phase. Once every planned source has
+            # completed and Query Runner has opened selected ticket/document bodies, another model-driven
+            # search loop repeats the same context without adding evidence. Synthesize exactly once. Any
+            # missing/error source is excluded by `_query_plan_is_complete` and retains the ReAct fallback.
+            if (state.get("intent") or "") == Intent.ASK and completed_query_plan:
+                try:
+                    direct_state = {**state, "_research_analyst_prefetched": True}
+                    out = self.apply(direct_state, self._conclude(direct_state, []))
+                    out["trace"] = (out.get("trace") or []) + [{
+                        "node": self.name, "label": "과거 이력 조사",
+                        "note": "완료된 QueryPlan 근거 묶음으로 1회 정리(도구 재호출 생략)",
+                    }]
+                    return out
+                except Exception:
+                    pass          # 최적화 실패는 기존 ReAct로 복구한다
+
             # ── L3a 직결: 주제 자료(dossier)를 **코드가 이미 다 모았으면** 걷지 않는다.
             # ReAct 는 "무엇을 열지 모를 때"의 도구다 — 대상 하나의 조각을 코드가 전부
             # 취합한 자산 질의에서 또 걸으면 같은 것을 도구로 재확인하며 3~4호출을 태운다
@@ -1309,7 +1397,13 @@ class ResearchAnalyst(ToolAgent):
     def task(self, state):
         kws = ", ".join(state.get("keywords") or []) or last_user_text(state)
         keys = ", ".join(state.get("mentioned_keys") or [])
-        web_ctx = state.get("web_context") or ""      # node() 사전 조사가 넣는다
+        query_has_external = any(
+            isinstance(row, dict) and row.get("source") in ("web", "github")
+            for row in (state.get("query_results") or [])
+        ) if isinstance(state.get("query_results"), list) else False
+        # Query Runner의 web/github 결과가 이미 아래 JSON에 포함됐으면 같은 snippet을 다시 싣지 않는다.
+        # web_context 자체는 downstream Result Integrator가 쓸 수 있게 state에 유지한다.
+        web_ctx = "" if query_has_external else (state.get("web_context") or "")
         return f"""\
 # Task
 
@@ -1324,7 +1418,10 @@ Investigate the history related to the work request and establish the verified c
 - Set `confidence` from source authority, directness, recency, and corroboration. Set `fitness` from claim
   coverage and internal applicability, and record the decisive `limitations` value. A resolved ticket status is
   workflow metadata, not proof that its DoD or technical result succeeded; require a result body, attachment,
-  or comment observation. When sources conflict, preserve both dates and provenance instead of silently choosing.
+  or comment observation. Compare scope and dates before declaring a conflict. A dated `not yet` record
+  followed by later direct completion evidence is normal progression, not an unresolved contradiction.
+  Treat a conflict as unresolved only when same-scope contemporary or later sources still disagree; preserve
+  both dates and provenance in that case.
 - Distinguish ongoing, stopped, and already-decided work. For stopped work, inspect comments for the verified reason.
 - Lead with an existing ticket when it already performs materially the same work.
 - Do not repeat the same search more than twice with paraphrases. After two empty attempts, treat the in-scope result as empty and spend remaining steps opening a promising ticket through `get_ticket` or supplementing named public technology through `search_web`.
@@ -1373,7 +1470,8 @@ Original request: {last_user_text(state)}
         return SCHEMA
 
     def apply(self, state, out):
-        raw_ev = [_normalize_evidence_quality(e) for e in (out.get("evidence") or [])
+        raw_ev = [_normalize_evidence_quality(_normalize_evidence_identity(e, state))
+                  for e in (out.get("evidence") or [])
                   if isinstance(e, dict)][:8]
         from app.agent.workflow.relevance import evidence_is_relevant
         named = {str(k).upper() for k in (state.get("mentioned_keys") or [])}
@@ -1414,4 +1512,4 @@ Original request: {last_user_text(state)}
 
 
 __all__ = ["ResearchAnalyst", "_prefetched_external_context", "_query_results_have_material",
-           "_relevant_only"]
+           "_query_plan_is_complete", "_relevant_only"]

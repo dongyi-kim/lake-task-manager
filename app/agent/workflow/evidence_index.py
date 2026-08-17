@@ -44,7 +44,10 @@ _CITATION_RUN_RE = re.compile(
 _KEY_RE = re.compile(r"(?<![0-9A-Za-z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Za-z-])")
 _TOKEN_RE = re.compile(r"\{\{ticket-(?:list|inline|detail):([A-Z][A-Z0-9]*-\d+)\}\}")
 _MD_LINK_RE = re.compile(r"\[([^\n]+?)\]\((https?://[^\s)]+)\)")
-_URL_RE = re.compile(r"https?://[^\s)>]+", re.I)
+# Typed source tokens may be followed immediately by ``}}`` or a Markdown
+# citation marker. Treating those delimiters as URL characters creates a
+# second malformed identity (for example ``.../spec/}}는``).
+_URL_RE = re.compile(r"https?://[^\s)>\]}]+", re.I)
 _CUT_RE = re.compile(r"^(.*?)\s+(?:—|–|--)\s+(.*)$")
 _CONFLUENCE_RE = re.compile(r"confluence|/pages/\d+|/display/|/wiki/", re.I)
 
@@ -70,6 +73,12 @@ def _valid_url(url: str) -> bool:
 
 def _observation(text: str, source: str = "") -> str:
     value = re.sub(r"^\s*(?:—|–|--|:)\s*", "", str(text or "")).strip()
+    # A legacy/model-written observation can carry its old source marker at the
+    # end. The canonical bullet itself receives the new marker, so retaining the
+    # old one produces impossible cross-links such as ``[2-a] ... [3-a]`` after
+    # renumbering. Remove only trailing citation tokens, not bracketed data in the
+    # middle of a finding.
+    value = re.sub(r"(?:\s*\[\d+(?:-[a-z])?\])+\s*$", "", value, flags=re.I).rstrip()
     if not value:
         return ""
     # Already source-qualified: never produce "본문에서 본문에서 ...".
@@ -296,8 +305,21 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         else:
             continue
         alias = f"text:{(title or key).casefold()}" if (title or key) else ""
-        group = promote_alias(alias, identity, source) if _valid_url(url or key) \
-            else ensure(identity, source)
+        if _valid_url(url or key):
+            actual = url or key
+            # Confluence models sometimes emit only the stable page id as a root
+            # source even though Query Runner supplied the verified page URL. Fold
+            # that id into the URL source just like a bare document title.
+            page = re.search(r"/pages/(\d+)(?:/|$)", actual, re.I)
+            page_alias = f"text:{page.group(1).casefold()}" if page else ""
+            if page_alias and page_alias in groups:
+                group = promote_alias(page_alias, identity, source)
+            else:
+                group = ensure(identity, source)
+            if alias and alias in groups and alias != identity:
+                group = promote_alias(alias, identity, source)
+        else:
+            group = ensure(identity, source)
         observations = item.get("observations") or []
         for obs in observations:
             if isinstance(obs, dict):
@@ -353,6 +375,21 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             for observation in carried:
                 _append_observation(group, observation)
 
+    # Drop a model-written source shell that has neither a finding nor a body
+    # citation. Structured evidence with a real finding already received an
+    # observation above. This removes retrieval noise such as an inspected but
+    # unused Confluence page without hiding a source explicitly cited in prose.
+    old_identity = {row["old"]: row["identity"] for row in parsed_rows}
+    cited_identities = set()
+    for citation in _CITATION_RE.finditer(body):
+        for token in _citation_tokens(citation.group(1)):
+            identity = old_identity.get(token) or old_identity.get(token.split("-", 1)[0])
+            if identity:
+                cited_identities.add(identity)
+    for identity in list(groups):
+        if not groups[identity]["observations"] and identity not in cited_identities:
+            del groups[identity]
+
     if not groups:
         # Remove only an empty legacy heading.  Never invent a source index.
         if _HEADING_RE.search(str(text or "")):
@@ -364,13 +401,15 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
     for match in _CITATION_RE.finditer(body):
         for old in _citation_tokens(match.group(1)):
             row = row_by_old.get(old) or row_by_old.get(old.split("-", 1)[0])
-            if row and row["identity"] not in identity_order:
+            if row and row["identity"] in groups and row["identity"] not in identity_order:
                 identity_order.append(row["identity"])
     identity_order.extend(identity for identity in groups if identity not in identity_order)
     number = {identity: index + 1 for index, identity in enumerate(identity_order)}
 
     marker_map: dict[str, str] = {}
     for row in parsed_rows:
+        if row["identity"] not in groups:
+            continue
         group = groups[row["identity"]]
         base = str(number[row["identity"]])
         obs_index = row.get("observation")
