@@ -303,12 +303,14 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     llm_usage = {}
     try:
         from app.agent.usage import Meter, callback
+        from app.agent.workflow.role_manifest import ROLE_SPECS
         meter = Meter()
         handler = callback(meter)
         state = {"user_id": user_id or "", "user_identity": ""}
         invoke_config = {"callbacks": [handler]} if handler else {}
-        llm = C.get_llm(temperature=0.3)
-        messages = [("system", persona(state, SYSTEM_EDITOR_AUTHOR, role_id="editor_author")),
+        role = ROLE_SPECS[EditorAuthor.name]
+        llm = C.get_llm(tier=role.model_tier, profile=role.task_profile, role_id=role.id)
+        messages = [("system", persona(state, SYSTEM_EDITOR_AUTHOR, role_id=role.id)),
                     ("user", task)]
         try:
             msg = llm.invoke(messages, config=invoke_config)

@@ -104,6 +104,39 @@ def test_the_prompt_tells_the_model_which_kind_of_editor_it_is():
     assert "ticket description" in body and "comment" in cmt
 
 
+def test_editor_author_requests_its_manifest_profile_without_numeric_sampling_override(monkeypatch):
+    """Editor Author는 숫자 파라미터 대신 manifest의 semantic profile만 요청한다."""
+    from app.agent import config as CFG
+    from app.agent.workflow.role_manifest import ROLE_SPECS
+
+    requested = {}
+
+    class _Reply:
+        content = "<p>검토 요청 초안</p>"
+
+    class _Llm:
+        def invoke(self, _messages, **_kwargs):
+            return _Reply()
+
+    def _get_llm(**kwargs):
+        requested.update(kwargs)
+        return _Llm()
+
+    monkeypatch.setattr(CFG, "get_llm", _get_llm)
+    monkeypatch.setattr(C, "_ticket_context", lambda *_a: "")
+    monkeypatch.setattr(C, "_house_rules", lambda *_a: "")
+
+    result = C.compose("__new__", "comment", "검토 요청 초안을 작성해 줘")
+    spec = ROLE_SPECS["editor_author"]
+
+    assert result["ok"] is True
+    assert requested == {
+        "tier": spec.model_tier,
+        "profile": spec.task_profile,
+        "role_id": spec.id,
+    }
+
+
 def test_fenced_output_is_unwrapped():
     """```html 로 감싸 오는 모델이 있다 — 그대로 꽂으면 에디터에 백틱이 남는다."""
     assert C._unfence("```html\n<p>안녕</p>\n```") == "<p>안녕</p>"
