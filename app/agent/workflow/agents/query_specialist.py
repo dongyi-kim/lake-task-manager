@@ -289,6 +289,22 @@ def _external_research_allowed(state) -> bool:
     low = text.lower()
     if any(w in low for w in _EXTERNAL_WORDS):
         return True
+    # An explicit existing parent plus a concrete create instruction is already scoped by
+    # verified internal context.  Treating every Latin acronym as a public technology made
+    # `CDC 재처리` search the U.S. Centers for Disease Control and injected unrelated web
+    # results into an otherwise complete Jira draft.  Explicit external-research wording
+    # above still wins, and open-ended technology/meeting research keeps the normal path.
+    keys = [str(key).upper() for key in (state.get("mentioned_keys") or [])
+            if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).upper())]
+    explicit_parent_create = bool(
+        (state.get("intent") or "") == Intent.PLAN_WORK
+        and keys
+        and re.search(r"(?:아래|밑|하위|상위|에픽|epic)", text, re.I)
+        and re.search(r"(?:만들|생성|추가|등록|초안)", text, re.I)
+        and not re.search(r"회의|미팅", text, re.I)
+    )
+    if explicit_parent_create:
+        return False
     scrubbed = _PRIVATE_EXTERNAL_PATTERN.sub(" ", _strip_known_user_tokens(text))
     latin = {x.lower().strip("._+-")
              for x in re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", scrubbed)}

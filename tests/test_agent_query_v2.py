@@ -357,6 +357,25 @@ def test_concrete_delegated_cross_module_plan_uses_deterministic_duplicate_query
     assert result["query_plan"]["queries"][0]["completeness"] == "all"
 
 
+def test_explicit_parent_create_does_not_publicly_search_ambiguous_technical_acronym():
+    """PAR2: internal CDC means Change Data Capture here, not the public-health agency."""
+    from app.agent.workflow.agents.query_specialist import _external_research_allowed
+    from app.agent.workflow.state import Intent
+
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "DL-101 에픽 아래에 CDC 재처리 배치 개선 Task 하나 만들어줘. 알아서",
+        "messages": [HumanMessage(content=(
+            "DL-101 에픽 아래에 CDC 재처리 배치 개선 Task 하나 만들어줘. 알아서"))],
+        "mentioned_keys": ["DL-101"],
+    }
+
+    assert _external_research_allowed(state) is False
+    state["request_text"] += " 외부 공식 문서도 조사해줘"
+    state["messages"] = [HumanMessage(content=state["request_text"])]
+    assert _external_research_allowed(state) is True
+
+
 def test_meeting_query_plan_preserves_explicit_ticket_and_replaces_generic_note_search():
     from app.agent.workflow.agents.query_specialist import _normalize_meeting_research_queries
     from app.agent.workflow.state import Intent

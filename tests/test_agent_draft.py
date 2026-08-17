@@ -439,6 +439,77 @@ def test_compound_delegated_request_recovers_cross_module_sibling_deliverables()
     assert all(row["type"] == "Task" and not row.get("children") for row in rows)
 
 
+def test_delegated_literal_under_explicit_epic_keeps_parent_out_of_title_and_rationale(
+        monkeypatch):
+    """PAR2: an explicit parent is metadata; only the literal deliverable is the title."""
+    from app.agent.workflow.agents.base import StructuredAgent
+
+    def model_node(_self):
+        def run(_state):
+            raise AssertionError("explicit-parent literal creation must not call the model")
+        return run
+
+    monkeypatch.setattr(StructuredAgent, "node", model_node)
+    monkeypatch.setattr(
+        "app.agent.workflow.agents.work_architect._explicit_parent_epic",
+        lambda _state: "DL-101",
+    )
+    monkeypatch.setattr(
+        "app.agent.workflow.agents.work_architect._is_epic",
+        lambda key: key == "DL-101",
+    )
+    monkeypatch.setattr(
+        "app.agent.workflow.agents.work_architect._known_components", lambda: {"ETL"})
+    state = _msg(
+        "DL-101 에픽 아래에 CDC 재처리 배치 개선 Task 하나 만들어줘. 알아서",
+        situation="DL-101은 조회로 검증된 Epic", intent=Intent.PLAN_WORK,
+        mentioned_keys=["DL-101"], module="ETL",
+    )
+
+    result = WorkArchitect().node()(state)
+
+    assert not result["questions"]
+    draft = result["draft"]
+    item = draft["items"][0]
+    assert item["summary"] == "[ETL] CDC 재처리 배치 개선"
+    assert item["epic"] == "DL-101"
+    assert draft["structure_why"] == "사용자가 위임한 구체 작업을 최소 실행 범위로 복원"
+    assert "실시간 처리 안정화" not in draft["structure_why"]
+
+
+def test_invalid_existing_subtask_parent_uses_deterministic_hierarchy_interview(
+        monkeypatch):
+    """SUB1/SUB3: verified ticket tier must not consume a Work model call."""
+    from app.agent.workflow.agents.base import StructuredAgent
+
+    def model_node(_self):
+        def run(_state):
+            raise AssertionError("invalid parent tier is deterministic runtime metadata")
+        return run
+
+    monkeypatch.setattr(StructuredAgent, "node", model_node)
+    monkeypatch.setattr(
+        "app.agent.workflow.agents.work_architect._ticket_exists", lambda _key: True)
+    monkeypatch.setattr(
+        "app.agent.workflow.agents.work_architect._can_parent_subtask", lambda _key: False)
+    monkeypatch.setattr(
+        "app.agent.workflow.agents.work_architect._ticket_kind", lambda _key: "Sub-Task")
+    state = _msg(
+        "DL-9095 이거 혼자 하기엔 커. 단계별로 서브태스크로 쪼개줘. 알아서",
+        situation="DL-9095는 검증된 Sub-Task", intent=Intent.PLAN_WORK,
+        mentioned_keys=["DL-9095"],
+    )
+
+    result = WorkArchitect().node()(state)
+
+    assert not (result.get("draft") or {}).get("items")
+    assert len(result["questions"]) == 1
+    question = result["questions"][0]
+    assert question["required_input"] is True
+    assert "부모가 될 수 없습니다" in question["question"]
+    assert "실제 상위 Task 아래" in question["options"][0]
+
+
 def test_delegated_under_scale_epic_is_downgraded_to_grounded_task_without_model(
         monkeypatch):
     """STR3: explicit Epic wording does not waive the reporting-unit criteria."""
