@@ -5415,12 +5415,6 @@ def _recover_delegated_epic_downgrade(state) -> dict:
     """
     if not _said_defaults(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
         return {}
-    if shape_hint(state)[0] != "new_epic":
-        return {}
-
-    unmet = _new_epic_unmet_criteria(state)
-    if not unmet:
-        return {}
 
     human_messages = [
         str(getattr(message, "content", "") or "").strip()
@@ -5432,8 +5426,19 @@ def _recover_delegated_epic_downgrade(state) -> dict:
         (value for value in candidates if value and _shape_hint_text(value)[0] == "new_epic"),
         "",
     )
+    # ``request_text`` should retain the pre-interview request, but a revised follow-up can
+    # legitimately become the active root.  Shape recovery must therefore inspect literal
+    # human turns as well instead of depending on ``shape_hint``'s current/original pair.
+    # This is conversation state recovery, not a model-specific exception.
+    if not epic_request:
+        return {}
+
+    unmet = _new_epic_unmet_criteria(state)
+    if not unmet:
+        return {}
+
     all_human = " ".join(value for value in human_messages if value).strip()
-    if (not epic_request or not _has_concrete_work_target(epic_request)
+    if (not _has_concrete_work_target(epic_request)
             or reads_as_bug(epic_request)
             or _missing_data_quality_target(state)
             or _missing_exact_mutation(all_human or epic_request)

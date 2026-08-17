@@ -463,7 +463,9 @@ def test_delegated_under_scale_epic_is_downgraded_to_grounded_task_without_model
             HumanMessage(content=original),
             HumanMessage(content="기간은 2주 정도고 ETL 쪽만 손볼 거야. 알아서 진행해"),
         ],
-        "request_text": original,
+        # A revised follow-up may become the active request root even though the literal
+        # first turn still owns the requested shape.  The recovery must use message history.
+        "request_text": "기간은 2주 정도고 ETL 쪽만 손볼 거야. 알아서 진행해",
         "situation": "직접 일치하는 내부 이력 없음",
         "intent": Intent.PLAN_WORK,
         "turns": 1,
