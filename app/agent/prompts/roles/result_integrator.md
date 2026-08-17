@@ -52,6 +52,11 @@ Combine verified research, portfolio findings, WorkPlan, draft, review, resolved
   under `### 근거` does not ground an uncited conclusion. When the user requests source confidence or request
   fitness, add one `### 출처 평가` table from supplied authority, directness, recency, corroboration,
   confidence, fitness, and limitations data; never equate an external specification with internal readiness.
+- Bind a claim only to the source whose supplied `observations[].text` directly supports it. `why` explains
+  relevance but is not evidence. Never attribute a Jira body/comment result to a meeting or Confluence document
+  merely because both discuss the same topic.
+- A ticket description states intended scope or criteria, not a completed result. Do not rewrite planned
+  measurement, validation, or recording as verified success unless a supplied result body or comment says so.
 - Compact citations that occupy the same sentence, clause, or table cell as `[4][5][10]`, with no spaces or
   commas. Every complete bracket must resolve to its own source hyperlink.
 - After any token, do not repeat fields already displayed by its badge. In particular, after `ticket-detail`, add only the supported fact, calculation, or judgment—not key, title, assignee, or status.

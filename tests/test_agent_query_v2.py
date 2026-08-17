@@ -144,6 +144,62 @@ def test_runner_preserves_full_page_as_artifact_but_caps_llm_context():
     assert compact["contextTruncated"] and compact["artifactId"] == "all-open"
 
 
+def test_research_query_runner_materializes_ticket_and_document_bodies(monkeypatch):
+    """One-pass synthesis receives the body/comment evidence that ReAct used to open later."""
+    from app.agent import tools as T
+
+    fake = _Client(3)
+    _ctx.bind(fake, _settings(["AAA", "BBB"], ["SPACE1", "SPACE2"]))
+    opened_tickets, opened_docs = [], []
+
+    def ticket(args):
+        opened_tickets.append(args["key"])
+        return {"key": args["key"], "summary": "ticket detail",
+                "description": "verified body", "comments": [{"body": "decision"}]}
+
+    def document(args):
+        opened_docs.append(args["url_or_id"])
+        return {"title": "allowed", "url": args["url_or_id"], "text": "full design body"}
+
+    monkeypatch.setitem(T.BY_NAME, "get_ticket", SimpleNamespace(invoke=ticket))
+    monkeypatch.setitem(T.BY_NAME, "read_document", SimpleNamespace(invoke=document))
+    got = QueryRunner()._run({
+        "intent": "ask",
+        "request_plan": {"tasks": [{"id": "r1", "kind": "research"}]},
+        "query_plan": {"queries": [
+            {"id": "jira", "source": "jira", "query": "ticket", "page_size": 10},
+            {"id": "docs", "source": "confluence", "query": "design", "page_size": 10},
+        ]},
+    })
+    jira = next(row["result"] for row in got["query_results"] if row["id"] == "jira")
+    docs = next(row["result"] for row in got["query_results"] if row["id"] == "docs")
+    assert opened_tickets == ["AAA-1", "BBB-2", "AAA-3"]
+    assert jira["ticketDetails"][0]["description"] == "verified body"
+    assert opened_docs == ["http://confluence.example/pages/1"]
+    assert docs["documentBodies"][0]["text"] == "full design body"
+    assert got["query_artifacts"]["evidence-materialization"]["tickets"] == 3
+    assert got["query_artifacts"]["evidence-materialization"]["documents"] == 1
+
+
+def test_plain_listing_query_does_not_materialize_every_ticket(monkeypatch):
+    """A list/count query stays cheap; evidence bodies are reserved for research synthesis."""
+    from app.agent import tools as T
+
+    fake = _Client(3)
+    _ctx.bind(fake, _settings(["AAA", "BBB"]))
+    monkeypatch.setitem(T.BY_NAME, "get_ticket", SimpleNamespace(invoke=lambda _args: (_ for _ in ()).throw(
+        AssertionError("plain listing must not open ticket bodies"))))
+    got = QueryRunner()._run({
+        "intent": "ask",
+        "request_plan": {"tasks": [{"id": "q1", "kind": "query"}]},
+        "query_plan": {"queries": [
+            {"id": "jira", "source": "jira", "where": "status = Open", "page_size": 10},
+        ]},
+    })
+    assert "ticketDetails" not in got["query_results"][0]["result"]
+    assert "evidence-materialization" not in got["query_artifacts"]
+
+
 def test_runner_combines_jira_query_terms_with_where_instead_of_silently_dropping_them():
     fake = _Client(3)
     _ctx.bind(fake, _settings(["AAA", "BBB"]))
