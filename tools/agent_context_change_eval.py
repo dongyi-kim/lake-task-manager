@@ -1,4 +1,5 @@
 # tools/agent_context_change_eval.py — 대화 중 요청 컨텍스트 전환 배터리.
+# 실행: python -X utf8 tools/agent_eval_launcher.py context [모델] [케이스ID ...] [--out 결과.json]
 from __future__ import annotations
 
 import json

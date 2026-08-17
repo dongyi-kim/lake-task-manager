@@ -8,7 +8,7 @@
 #   ② 계약 — 코드가 잴 수 있는 최소선(초안 항목·표·참조·근거 위반·후검증)
 #   ③ 정성 — **답변 전문**과 승인 카드. 보고서에 그대로 실어 사람이 비교한다.
 #
-# 실행: python -X utf8 -u tools/agent_lang_ab.py [모델] [시나리오 ID...] [--out .cache/...json]
+# 실행: python -X utf8 -u tools/agent_eval_launcher.py conversation [모델] [시나리오 ID...] [--out .cache/...json]
 #       raw 결과는 기본적으로 .cache/agent-evaluation/<runGroupId>/ 아래에 저장한다.
 import json
 import os
@@ -17,10 +17,14 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.agent_scenario_eval import validate_eval_argv  # noqa: E402
+
 os.environ.setdefault("JIRA_ENV", "mock")
 os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
 os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"      # 사람이 없는 실행 — 설정 확인 게이트 면제
 _raw_args = list(sys.argv[1:])
+if __name__ == "__main__":
+    validate_eval_argv(_raw_args)
 REQUESTED_OUT = None
 for i, arg in enumerate(_raw_args):
     if arg.startswith("--out="):
@@ -42,7 +46,8 @@ from tools.agent_scenario_eval import configure_model_routing  # noqa: E402
 configure_model_routing(MODEL, SIMPLE_MODEL)
 
 from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
-                                         finish_case)  # noqa: E402
+                                         finish_case,
+                                         preflight_evaluation_provider)  # noqa: E402
 configure_process_isolation("conversation")
 from app.agent.workflow import session          # noqa: E402
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
@@ -223,6 +228,8 @@ def _summarize(rows):
 
 
 def run():
+    # Keep imports network-free, but fail before reserving an output path or starting a case.
+    preflight_evaluation_provider()
     selected_ids = [
         sid for sid, _ in SCENARIOS
         if not ONLY or sid.split("-", 1)[0].upper() in ONLY or sid.upper() in ONLY

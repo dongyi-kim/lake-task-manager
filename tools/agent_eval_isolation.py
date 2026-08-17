@@ -14,11 +14,178 @@ import json
 import os
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_CACHE_ROOT = ROOT / ".cache" / "agent-evaluation" / "runtime-cache"
+REAL_LLM_PROVIDERS = frozenset({"openai", "openai_compat", "aoai"})
+NETWORK_PREFLIGHT_MARKER = "LTM_EVAL_NETWORK_PREFLIGHTED"
+_PREFLIGHT: dict[str, Any] = {"suite": "", "identity": "", "passed": False}
+
+
+class EvaluationPreflightError(RuntimeError):
+    """A real-provider battery cannot start safely in the current process."""
+
+    def __init__(self, category: str, provider: str):
+        self.category = str(category or "provider")
+        self.provider = str(provider or "unknown")
+        super().__init__(
+            "evaluation provider preflight failed "
+            f"(provider={self.provider}, category={self.category}); no cases started"
+        )
+
+
+def _failure_category(error: BaseException | str) -> str:
+    """Classify a provider failure without returning its endpoint, response, or secret."""
+    text = str(error or "").casefold()
+    if isinstance(error, TimeoutError) or any(
+            marker in text for marker in ("timeout", "timed out", "readtimeout")):
+        return "timeout"
+    if any(marker in text for marker in (
+            "401", "403", "unauthorized", "forbidden", "authentication",
+            "invalid api key", "incorrect api key", "api-key invalid",
+    )):
+        return "auth"
+    if any(marker in text for marker in (
+            "connection", "connecterror", "connect error", "refused", "unreachable",
+            "name resolution", "dns", "no route", "network", "ssl", "certificate",
+    )):
+        return "connection"
+    if any(marker in text for marker in (
+            "404", "405", "not found", "method not allowed", "not implemented",
+            "unsupported",
+    )):
+        return "unsupported"
+    if not text.strip():
+        return "empty"
+    return "provider"
+
+
+def _provider_context() -> tuple[str, str]:
+    """Return provider plus a non-secret identity for the routed chat endpoints."""
+    from app.agent import config
+
+    provider = str(config.provider() or "").strip().lower()
+    if provider == "fake":
+        return provider, "fake"
+    definitions = [config.chat_definition("complex"), config.chat_definition("simple")]
+    # The digest invalidates a passed probe when routing changes between cases, while neither
+    # endpoint text nor credentials can appear in an exception or raw evaluation artifact.
+    identity_payload = [
+        {
+            "provider": definition.provider,
+            "model": definition.model,
+            "baseUrl": str(definition.base_url or "").rstrip("/"),
+            "apiVersion": definition.api_version,
+            "modelProfile": definition.model_profile,
+        }
+        for definition in definitions
+    ]
+    encoded = json.dumps(identity_payload, sort_keys=True, separators=(",", ":"))
+    return provider, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _tiny_chat_probe(*, tier: str, timeout: float) -> None:
+    """Fallback only for compatible servers that do not implement ``/models``."""
+    from app.agent import config
+
+    message = config.get_llm(
+        temperature=0,
+        tier=tier,
+        profile="fast_structured",
+        role_id="EvaluationPreflight",
+        max_tokens=4,
+        timeout=timeout,
+    ).invoke("Reply only with OK.")
+    if not str(getattr(message, "content", message) or "").strip():
+        raise RuntimeError("empty model response")
+
+
+def _probe_real_provider(provider: str, timeout: float) -> None:
+    """Probe endpoint/auth once; spend a tiny model call only when ``/models`` is absent."""
+    from app.agent import config
+
+    result = config.list_models(timeout=timeout)
+    error = str(result.get("error") or "").strip()
+    if error:
+        category = _failure_category(error)
+        if category != "unsupported":
+            raise RuntimeError(error)
+        _tiny_chat_probe(tier="complex", timeout=timeout)
+        complex_definition = config.chat_definition("complex")
+        simple_definition = config.chat_definition("simple")
+        split_simple = (
+            simple_definition.provider != complex_definition.provider
+            or str(simple_definition.base_url or "").rstrip("/")
+            != str(complex_definition.base_url or "").rstrip("/")
+            or simple_definition.model != complex_definition.model
+        )
+        if split_simple:
+            _tiny_chat_probe(tier="simple", timeout=timeout)
+        return
+
+    # A separately routed simple endpoint is used by the same graph. Its catalog warning must
+    # not be ignored; unsupported /models gets the same bounded chat fallback. Embedding model
+    # catalogs are intentionally excluded because TEI commonly omits /models and this guard is
+    # for the chat-provider battery path.
+    simple_warnings = [
+        str(warning).split(":", 1)[-1].strip()
+        for warning in (result.get("warnings") or [])
+        if str(warning).startswith("simple model catalog:")
+    ]
+    for warning in simple_warnings:
+        category = _failure_category(warning)
+        if category != "unsupported":
+            raise RuntimeError(warning)
+        _tiny_chat_probe(tier="simple", timeout=timeout)
+
+
+def preflight_evaluation_provider(
+    *, timeout: float | None = None,
+    probe: Callable[[str, float], None] | None = None,
+) -> dict[str, Any]:
+    """Verify a real LLM route exactly once before any evaluation case graph starts.
+
+    This is deliberately process-local and is called by :func:`begin_case`, not at module
+    import. Therefore importing a battery remains network-free, while calling a case directly
+    cannot bypass the guard. Provider response bodies, URLs, and credentials are never returned.
+    """
+    if not _PREFLIGHT["suite"]:
+        # Unit graph tests legitimately use the deterministic fake without a battery launcher.
+        provider, _ = _provider_context()
+        if provider == "fake":
+            return {"provider": "fake", "status": "skipped"}
+        raise EvaluationPreflightError("isolation", provider)
+
+    try:
+        provider, identity = _provider_context()
+    except Exception:
+        raise EvaluationPreflightError("configuration", "unknown") from None
+    if provider == "fake":
+        _PREFLIGHT.update(identity=identity, passed=True)
+        return {"provider": provider, "status": "skipped"}
+    if provider not in REAL_LLM_PROVIDERS:
+        raise EvaluationPreflightError("configuration", provider)
+    # The runner itself may be executing in a network-denied sandbox. Never turn a direct
+    # invocation into another misleading connection failure: only the explicit local launcher
+    # may hand off this marker after its own endpoint check succeeds.
+    if os.getenv(NETWORK_PREFLIGHT_MARKER) != "1":
+        raise EvaluationPreflightError("network-authorization", provider)
+    if _PREFLIGHT["passed"] and _PREFLIGHT["identity"] == identity:
+        return {"provider": provider, "status": "cached"}
+
+    raw_timeout = timeout if timeout is not None else os.getenv("LTM_EVAL_PREFLIGHT_TIMEOUT", "10")
+    try:
+        bounded_timeout = max(1.0, min(float(raw_timeout), 60.0))
+    except (TypeError, ValueError):
+        raise EvaluationPreflightError("configuration", provider) from None
+    try:
+        (probe or _probe_real_provider)(provider, bounded_timeout)
+    except Exception as exc:
+        raise EvaluationPreflightError(_failure_category(exc), provider) from None
+    _PREFLIGHT.update(identity=identity, passed=True)
+    return {"provider": provider, "status": "passed"}
 
 
 def configure_process_isolation(suite: str) -> Path:
@@ -26,6 +193,7 @@ def configure_process_isolation(suite: str) -> Path:
     safe_suite = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in suite).strip("-")
     if not safe_suite:
         raise ValueError("evaluation suite name is required")
+    _PREFLIGHT.update(suite=safe_suite, identity="", passed=False)
     RUNTIME_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     requested = str(os.getenv("LTM_EVAL_CACHE_DB_PATH") or "").strip()
     path = Path(requested) if requested else RUNTIME_CACHE_ROOT / f"{safe_suite}-{os.getpid()}.sqlite3"
@@ -91,6 +259,9 @@ def _provider_store_sha256(client: Any) -> tuple[str, int]:
 
 def begin_case(case_id: str) -> dict[str, Any]:
     """Reset cache, mock world, approvals, identity, and graph state for one case."""
+    # This call is intentionally before all graph imports/resets. A connection, authentication,
+    # or timeout failure aborts the whole manual run instead of being misreported as N bad cases.
+    provider_preflight = preflight_evaluation_provider()
     from app.agent import approval
     from app.agent.tools import _ctx
     from app.agent.workflow import graph, session
@@ -134,6 +305,7 @@ def begin_case(case_id: str) -> dict[str, Any]:
         "cachePolicy": "cold-private-cache-each-case",
         "processIsolation": "separate-process-private-cache",
         "backgroundRevalidation": False,
+        "providerPreflight": provider_preflight,
         "worldSha256Before": before,
         "providerStoreSha256Before": provider_before,
         "providerIssueCountBefore": provider_count,

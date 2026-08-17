@@ -1,4 +1,5 @@
 # tools/agent_meeting_eval.py — 회의록 이해·조사·인터뷰·write 초안 배터리.
+# 실행: python -X utf8 tools/agent_eval_launcher.py meeting [모델] [케이스ID ...] [--out 결과.json]
 from __future__ import annotations
 
 import json

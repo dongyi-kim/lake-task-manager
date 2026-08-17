@@ -13,7 +13,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from tools.agent_eval_isolation import begin_case, configure_process_isolation, finish_case
+from tools.agent_eval_isolation import (begin_case, configure_process_isolation, finish_case,
+                                        preflight_evaluation_provider)
 from tools.agent_eval_protocol import (
     build_run_metadata,
     quantitative_metrics,
@@ -25,6 +26,26 @@ from tools.agent_eval_protocol import (
 
 ScenarioCheck = Callable[[dict[str, Any], list[dict[str, Any]]], bool]
 Scenario = tuple[str, str, list[str], ScenarioCheck]
+
+
+def validate_eval_argv(argv: Sequence[str]) -> None:
+    """Reject control-looking arguments before a manual runner can start a battery.
+
+    These scripts historically treated ``--help`` and misspelled options as an omitted model,
+    which silently launched the full default battery. Only the one documented option is valid.
+    """
+    raw = list(argv)
+    for index, arg in enumerate(raw):
+        if arg == "--out":
+            if index + 1 >= len(raw) or raw[index + 1].startswith("-"):
+                raise SystemExit("--out requires a result path; evaluation not started")
+            continue
+        if arg.startswith("--out="):
+            if not arg.split("=", 1)[1].strip():
+                raise SystemExit("--out requires a result path; evaluation not started")
+            continue
+        if arg.startswith("-"):
+            raise SystemExit(f"unsupported evaluation option: {arg}; evaluation not started")
 
 
 def configure_model_routing(model: str, simple_model: str) -> str:
@@ -45,6 +66,7 @@ def parse_scenario_args(
     argv: Sequence[str], *, default_model: str = "gpt-4o",
 ) -> tuple[str, set[str], str | None]:
     raw = list(argv)
+    validate_eval_argv(raw)
     requested_out = None
     for index, arg in enumerate(raw):
         if arg.startswith("--out="):
@@ -139,6 +161,7 @@ def run_scenario_suite(
     os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
     os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
     configure_model_routing(model, simple_model)
+    preflight_evaluation_provider()
 
     # Import only after cache/provider environment is complete.
     from app.agent.workflow import session
@@ -230,5 +253,5 @@ def run_scenario_suite(
 
 __all__ = [
     "Scenario", "parse_scenario_args", "pending_items", "run_scenario_suite",
-    "selected_scenarios",
+    "selected_scenarios", "validate_eval_argv",
 ]

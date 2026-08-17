@@ -215,11 +215,14 @@ repository root나 상위 deploy root에 `.test-tmp-*`, `.pytest-tmp-*`, `.codex
   bundle/context를 사용하고, 폐쇄망·차단은 짧은 fail-soft 결과로 반환한다. 공용 HTTPS 경로를
   추가할 때 기본 `urllib` SSL context나 Windows native trust-store transport를 사용하지 않는다.
 
-- Conversation: `tools/agent_lang_ab.py`
-- Compose: `tools/agent_compose_eval.py`
-- Create: `tools/agent_create_suite.py`
-- Meeting: `tools/agent_meeting_eval.py` — 회의록 조사·사람 식별·인터뷰·요약·create/comment/update 초안
-- Context change: `tools/agent_context_change_eval.py` — 대화 중 최신 요청 우선·무관 맥락 배제·pending 교체
+- Conversation: `tools/agent_eval_launcher.py conversation`
+- Compose: `tools/agent_eval_launcher.py compose`
+- Create: `tools/agent_eval_launcher.py create`
+- Meeting: `tools/agent_eval_launcher.py meeting` — 회의록 조사·사람 식별·인터뷰·요약·create/comment/update 초안
+- Context change: `tools/agent_eval_launcher.py context`
+
+실 provider runner를 직접 실행하면 network handoff marker가 없으므로 socket을 열기 전에 중단한다.
+로컬 Qwen/BGE 전체 preflight는 repository 밖 `.local/ltm-local-llm/tools/` launcher를 우선 사용한다.
 - 사람 관점 판독: `tools/agent_user_review.py`, `tools/agent_quality_read.py`
 - 정량 병목: `tools/agent_perf.py`
 

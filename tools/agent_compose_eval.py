@@ -1,6 +1,6 @@
 # tools/agent_compose_eval.py — Editor AI(compose) 검증 배터리 (실 LLM, 수동 실행).
 #
-# 실행: python -X utf8 tools/agent_compose_eval.py [모델] [케이스ID ...] [--out 결과.json]
+# 실행: python -X utf8 tools/agent_eval_launcher.py compose [모델] [케이스ID ...] [--out 결과.json]
 #
 # 검증 축(사용자 지시):
 #   ① 문맥 적합성 — 티켓 컨텍스트(제목·코멘트·문서)에 맞는 Description/Comment 인가
@@ -15,8 +15,12 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.agent_scenario_eval import validate_eval_argv  # noqa: E402
+
 # 사람이 없는 실행이다 — 설정 화면의 확인 게이트를 면제한다(config._env_supplied).
 _raw_args = list(sys.argv[1:])
+if __name__ == "__main__":
+    validate_eval_argv(_raw_args)
 OUT = None
 for i, arg in enumerate(_raw_args):
     if arg.startswith("--out="):
@@ -33,7 +37,8 @@ from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, reserve_raw_result_path,
                                        write_raw_result)  # noqa: E402
 from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
-                                         finish_case)  # noqa: E402
+                                         finish_case,
+                                         preflight_evaluation_provider)  # noqa: E402
 from tools.agent_eval_review_specs import review_specs  # noqa: E402
 try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
     from app.agent.prompts.base import PROMPT_VERSION  # noqa: E402
@@ -55,6 +60,7 @@ def _prepare_runtime():
     os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
     from tools.agent_scenario_eval import configure_model_routing
     configure_model_routing(MODEL, SIMPLE_MODEL)
+    preflight_evaluation_provider()
     from app.agent import editor_author
     CP = editor_author
 

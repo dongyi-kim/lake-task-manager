@@ -53,9 +53,13 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 3. 성공 후 해당 실행의 고유 basetemp만 안전하게 제거한다. Windows ACL 정리 실패를 피하려고 다른
    root-level 임시 경로로 우회하지 않는다.
 4. 실 LLM 배터리는 사용자가 승인한 existing project secret만 사용한다.
-   승인 후에는 제한된 sandbox의 외부 socket/Windows native certificate store 경로를 거치지 말고
-   network-enabled local process로 실행한다. 실패한 묶음 전체를 반복하지 말고 미완료 case만 새
-   raw attempt 경로에서 재개한다.
+   승인 후에는 **첫 실행부터** network-enabled/escalated local process로 실행한다. `192.168.*`, SSH,
+   OpenAI/AOAI/호환 API를 일반 sandbox에서 먼저 시도하는 것은 금지한다. 같은 권한으로 `/v1/models`와
+   embedding health를 preflight한 뒤 `.local/ltm-local-llm/tools/`의 전용 launcher를 사용한다.
+   real-provider runner를 직접 호출하지 않으며, runner는 launcher가 preflight 성공 후 넘기는
+   `LTM_EVAL_NETWORK_PREFLIGHTED=1` handoff가 없으면 socket을 열기 전에 실패해야 한다.
+   socket/certificate/connection/auth failure는 모델 품질 실패와 분리하고, 실패한 묶음 전체를 반복하지
+   말고 미완료 case만 새 raw attempt 경로에서 재개한다.
 5. prompt 후보 비교에서 main/complex=`gpt-4o`, simple=`gpt-4o-mini` routing과 mock data를 고정한다.
 6. Conversation, Compose, Create의 실제 output 전문과 call·token·latency·cost를 저장한다.
 7. 자동 통과와 별개로 Codex 또는 Claude 작업 에이전트가 raw output을 직접 읽고 인간 관점에서
