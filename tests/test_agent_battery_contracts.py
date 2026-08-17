@@ -184,6 +184,191 @@ def test_create_checker_reads_nested_draft_children_when_review_is_blocked():
     assert create_eval.kids(mirrored) == [child]
 
 
+def _starr1_payload(
+    *,
+    writer="5개 표본의 writer PoC 수행을 완료하고 결과를 확보함",
+    validation="StarRocks reader와 optimizer 소비 검증은 진행 중이며 지원 여부는 미확정",
+    rollout="reader 검증 완료 전까지 운영 반영을 보류함",
+):
+    return {
+        "reply": "",
+        "pending": {
+            "items": [{
+                "type": "Task",
+                "summary": "StarRocks Puffin NDV 통계 파이프라인 1차 구현",
+                "description": (
+                    f"<h3>배경</h3><p>{writer}</p>"
+                    "<h3>작업 범위</h3><ul><li>최소 기능 1차 구현</li>"
+                    "<li>제외: 전체 테이블 확대</li></ul>"
+                    "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                    f"<li data-checked=\"false\">{rollout}</li></ul>"
+                ),
+            }],
+            "children": [{
+                "type": "Sub-Task",
+                "summary": "reader 호환성 검증",
+                "description": (
+                    "<h3>작업 범위</h3><ul>"
+                    f"<li>{validation}</li></ul>"
+                    "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                    "<li data-checked=\"false\">검증 로그와 판정 결과를 기록함</li></ul>"
+                ),
+            }],
+        },
+    }
+
+
+def test_starr1_checker_reads_payload_descriptions_not_reply_or_retrieval_evidence():
+    assert create_eval._starr1_contract_flaws(_starr1_payload()) == []
+
+    prose_only = _starr1_payload(
+        writer="writer PoC 관련 작업",
+        validation="reader 검증 작업",
+        rollout="운영 반영 제외",
+    )
+    prose_only["reply"] = (
+        "5개 표본 writer PoC 완료. reader와 optimizer 소비 검증은 진행 중·미확정. "
+        "reader 검증 완료 전 운영 반영 보류."
+    )
+    prose_only["evaluationEvidence"] = {"evidence": [prose_only["reply"]]}
+
+    flaws = create_eval._starr1_contract_flaws(prose_only)
+    assert len(flaws) == 3
+    assert any("5개 표본 writer PoC 완료" in flaw for flaw in flaws)
+    assert any("진행 중·미확정" in flaw for flaw in flaws)
+    assert any("운영 반영 보류" in flaw for flaw in flaws)
+
+
+@pytest.mark.parametrize(("override", "expected"), [
+    ({"writer": "writer PoC 수행을 완료함"}, "5개 표본 writer PoC 완료"),
+    ({"validation": "reader 소비 검증은 진행 중"}, "진행 중·미확정"),
+    ({"rollout": "운영 반영은 이번 1차 범위에서 제외함"}, "운영 반영 보류"),
+])
+def test_starr1_checker_reports_each_missing_internal_validation_fact(override, expected):
+    flaws = create_eval._starr1_contract_flaws(_starr1_payload(**override))
+    assert any(expected in flaw and "누락" in flaw for flaw in flaws)
+
+
+def test_starr1_writer_completion_is_not_reversed_by_nearby_reader_progress():
+    output = _starr1_payload(writer=(
+        "writer 생성 PoC가 완료되었고 reader 검증은 진행 중임"
+    ))
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert any("5개 표본 writer PoC 완료" in flaw and "누락" in flaw for flaw in flaws)
+    assert not any("writer PoC를 미완료" in flaw for flaw in flaws)
+
+
+def test_starr1_writer_completion_ignores_another_actors_progress_state():
+    output = _starr1_payload(writer=(
+        "5개 표본 writer PoC 완료했고 reader 검증은 진행 중이다"
+    ))
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert not any("writer PoC" in flaw for flaw in flaws)
+
+
+def test_starr1_writer_completion_composes_adjacent_same_subject_facts():
+    output = _starr1_payload(writer=(
+        "writer PoC를 완료했다. writer PoC 대상은 5개 표본이다"
+    ))
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert not any("writer PoC" in flaw for flaw in flaws)
+
+
+def test_starr1_writer_sample_count_must_belong_to_the_writer_completion_fact():
+    output = _starr1_payload(writer=(
+        "writer PoC 완료. 5개 표본은 reader 테스트 대상"
+    ))
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert any("5개 표본 writer PoC 완료" in flaw for flaw in flaws)
+
+
+@pytest.mark.parametrize("planning", ["예정", "계획", "목표"])
+def test_starr1_writer_planned_completion_is_not_completed_evidence(planning):
+    output = _starr1_payload(
+        writer=f"5개 표본 writer PoC 완료 {planning}",
+    )
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert any("5개 표본 writer PoC 완료" in flaw for flaw in flaws)
+
+
+def test_starr1_reader_reversal_is_not_masked_by_optimizer_uncertainty():
+    output = _starr1_payload(validation=(
+        "reader 검증 완료 및 지원 확정. optimizer 검증은 진행 중이며 미확정"
+    ))
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert any("reader/optimizer" in flaw and "완료·확정" in flaw for flaw in flaws)
+
+
+def test_starr1_validation_composes_adjacent_same_actor_pair_facts():
+    output = _starr1_payload(validation=(
+        "reader와 optimizer 소비 검증을 진행 중이다. "
+        "reader와 optimizer 지원 여부는 미확정이다"
+    ))
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert not any(
+        "reader/optimizer" in flaw or "reader와 optimizer" in flaw
+        for flaw in flaws
+    )
+
+
+def test_starr1_validation_does_not_mix_different_actor_predicates():
+    output = _starr1_payload(validation=(
+        "reader 소비 검증은 진행 중이고 optimizer 지원 여부는 미확정"
+    ))
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert any("reader와 optimizer" in flaw and "누락" in flaw for flaw in flaws)
+
+
+def test_starr1_negated_rollout_approval_is_a_valid_hold_not_a_reversal():
+    output = _starr1_payload(rollout=(
+        "운영 반영을 승인하지 않고 reader 검증 완료 전까지 보류"
+    ))
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert not any("운영 반영" in flaw for flaw in flaws)
+
+
+def test_starr1_rollout_hold_composes_an_explicit_adjacent_antecedent():
+    output = _starr1_payload(rollout=(
+        "reader 검증은 아직 완료 전이다. 따라서 운영 반영을 보류한다"
+    ))
+    flaws = create_eval._starr1_contract_flaws(output)
+    assert not any("운영 반영" in flaw for flaw in flaws)
+
+
+@pytest.mark.parametrize(("override", "expected"), [
+    ({"writer": "5개 표본의 writer PoC는 미완료 상태임"}, "미완료·미수행"),
+    ({"validation": "reader와 optimizer 소비 검증 완료, 지원은 확정됨"},
+     "완료·확정 상태"),
+    ({"rollout": "reader 검증 전 운영 반영을 승인해 진행함"},
+     "검증 완료 전에 운영 반영"),
+])
+def test_starr1_checker_reports_each_reversed_internal_validation_fact(override, expected):
+    flaws = create_eval._starr1_contract_flaws(_starr1_payload(**override))
+    assert any(expected in flaw and "뒤집음" in flaw for flaw in flaws)
+
+
+def test_create_checker_keeps_failed_turns_failed_after_a_later_valid_payload():
+    final = _starr1_payload()
+    failed = {
+        "error": "provider-specific secret validation detail",
+        "trace": [{"note": "업무 구체화 실패"}],
+    }
+    flaws = create_eval._all_contract_flaws(
+        final, [], [failed, final], structure_ok=True, case_id="STARR1",
+    )
+    diagnostic = (
+        "turn[0] Agent 실행 오류 또는 structured output 실패 기록 — "
+        "후속 turn 성공과 무관하게 자동 계약 실패"
+    )
+    assert diagnostic in flaws
+    assert "provider-specific" not in " ".join(flaws)
+
+    trace_only = {"error": "", "trace": [{
+        "note": "실패: structured output 실패 — private validation payload",
+    }]}
+    assert create_eval._turn_execution_flaws([trace_only]) == [diagnostic]
+
+
 def test_create_checker_never_reports_an_unexplained_structural_failure():
     assert create_eval._all_contract_flaws(
         {}, ["작업 만들어줘"], [{}], structure_ok=True,

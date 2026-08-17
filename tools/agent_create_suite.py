@@ -13,6 +13,7 @@ import re
 import sys
 import time
 from datetime import date
+from itertools import product
 from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -50,7 +51,10 @@ except ImportError:  # legacy asset에는 version 상수가 없었다.
 # question necessity metadata, and user-facing evidence relevance. Historical
 # v4 automatic pass rates therefore remain v4-only and are not rescored.
 # v5.0.1 fixes nested draft child discovery for blocked/review-failed outputs.
-BATTERY_VERSION = "5.0.1"
+# v5.0.2 detects failed intermediate turns and enforces STARR1's already-versioned
+# internal-validation facts in the actual draft descriptions instead of accepting
+# those facts only in retrieval evidence or user-facing prose.
+BATTERY_VERSION = "5.0.2"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
@@ -453,21 +457,376 @@ def _question_gate_flaws(o: dict) -> list[str]:
     return flaws
 
 
+def _draft_description_fact_groups(o: dict) -> list[list[str]]:
+    """Return sentence facts grouped by the payload description they came from.
+
+    HTML blocks and sentences remain distinct facts.  Limited adjacent composition
+    is allowed only inside the same ticket description and only when the checker
+    confirms the same subject or an explicit causal link.  Reply and retrieval
+    evidence remain deliberately excluded.
+    """
+    roots = _root_payload_items(o)
+    children = [row for row in kids(o) if isinstance(row, dict)]
+    bodies = [_body(row) for row in roots + children]
+    groups: list[list[str]] = []
+    for body in bodies:
+        facts: list[str] = []
+        marked = re.sub(
+            r"</?(?:br|p|li|div|h[1-6]|tr|td|th|section|article)(?:\s[^>]*)?>",
+            "\n",
+            str(body or ""),
+            flags=re.I,
+        )
+        plain = re.sub(r"<[^>]+>", " ", marked)
+        for fact in re.split(r"(?:[.!?]+|[;；]+|\n+)\s*", plain):
+            normalized = re.sub(r"\s+", " ", fact).strip().lower()
+            if normalized:
+                facts.append(normalized)
+        if facts:
+            groups.append(facts)
+    return groups
+
+
+def _fact_terms_near(fact: str, patterns, max_span: int) -> bool:
+    """Return true when every term has a match inside one bounded fact window."""
+    matches = [list(pattern.finditer(fact)) for pattern in patterns]
+    if any(not group for group in matches):
+        return False
+    return any(
+        max(match.end() for match in combination)
+        - min(match.start() for match in combination) <= max_span
+        for combination in product(*matches)
+    )
+
+
+def _subject_scopes(fact: str, subject, other_subjects) -> list[str]:
+    """Bound a subject's predicates before the next explicitly different actor."""
+    other_matches = sorted(
+        (match for pattern in other_subjects for match in pattern.finditer(fact)),
+        key=lambda match: match.start(),
+    )
+    scopes = []
+    for match in subject.finditer(fact):
+        right = next(
+            (other.start() for other in other_matches if other.start() > match.end()),
+            len(fact),
+        )
+        scopes.append(fact[match.start():right])
+    return scopes
+
+
+def _adjacent_fact_pairs(groups: list[list[str]]):
+    """Yield only adjacent facts from the same ticket description."""
+    for group in groups:
+        yield from zip(group, group[1:])
+
+
+def _starr1_contract_flaws(o: dict) -> list[str]:
+    """Check STARR1's fixture facts in the payload that would actually be created.
+
+    The qualitative review spec already names these three facts.  This deterministic
+    checker only detects their omission or reversal in root/child descriptions and DoD;
+    it does not score writing quality and deliberately ignores reply/retrieval evidence.
+    """
+    fact_groups = _draft_description_fact_groups(o)
+    facts = [fact for group in fact_groups for fact in group]
+    adjacent_facts = list(_adjacent_fact_pairs(fact_groups))
+    flaws: list[str] = []
+
+    poc = re.compile(r"(?<![a-z0-9])poc(?![a-z0-9])", re.I)
+    writer = re.compile(r"(?:writer|라이터)", re.I)
+    reader_actor = re.compile(r"(?<![a-z0-9])reader(?![a-z0-9])|리더", re.I)
+    optimizer_actor = re.compile(
+        r"(?<![a-z0-9])optimizer(?![a-z0-9])|옵티마이저", re.I,
+    )
+    five_samples = re.compile(
+        r"(?:5\s*(?:개|건)?\s*(?:표본|샘플|samples?)|(?:표본|샘플|samples?)\s*5\s*(?:개|건)?)",
+        re.I,
+    )
+    writer_sample_facts = [
+        fact for fact in facts
+        if _fact_terms_near(fact, (writer, poc, five_samples), 120)
+    ]
+    writer_subject_facts = [
+        fact for fact in facts if _fact_terms_near(fact, (writer, poc), 80)
+    ]
+    writer_reversal = re.compile(
+        r"(?:미완료|미수행|(?:완료|수행)(?:하지|되지)\s*않|"
+        r"(?:완료|수행)\s*(?:전|까지))",
+        re.I,
+    )
+    writer_progress = re.compile(r"진행\s*중", re.I)
+    writer_noncompletion = re.compile(
+        r"(?:미완료|미수행|(?:완료|수행)(?:하지|되지)\s*않|"
+        r"(?:완료|수행)\s*(?:할|될|하기|되기|을|를)?\s*"
+        r"(?:예정|계획|목표|필요)|(?:예정|계획|목표).{0,18}(?:완료|수행)|"
+        r"(?:완료|수행)\s*(?:전|까지))",
+        re.I,
+    )
+    writer_completion = re.compile(
+        r"(?:(?<!미)완료(?=\s*(?:했|함|됨|되었|됐|하고|하여|된\s*상태|$))|"
+        r"수행(?:을|이|은|는)?\s*(?:했|함|됨|되었|됐)(?=\s|$)|"
+        r"결과.{0,20}확보(?:했|함|됨|되었|됐)?(?=\s|$)|"
+        r"\b(?:done|completed)\b)",
+        re.I,
+    )
+
+    def writer_states(fact: str):
+        return _subject_scopes(fact, writer, (reader_actor, optimizer_actor))
+
+    def writer_has(fact: str, state) -> bool:
+        return any(state.search(scope) for scope in writer_states(fact))
+
+    direct_writer_reversed = any(
+        writer_has(fact, writer_reversal)
+        or (writer_has(fact, writer_progress)
+            and not writer_has(fact, writer_completion))
+        for fact in writer_sample_facts
+    )
+    direct_writer_done = any(
+        writer_has(fact, writer_completion)
+        and not writer_has(fact, writer_noncompletion)
+        for fact in writer_sample_facts
+    )
+    adjacent_writer_evidence = [
+        (left, right)
+        for left, right in adjacent_facts
+        if left in writer_subject_facts and right in writer_subject_facts
+        and (five_samples.search(left) or five_samples.search(right))
+    ]
+    adjacent_writer_reversed = any(
+        writer_has(fact, writer_reversal)
+        or (writer_has(fact, writer_progress)
+            and not writer_has(fact, writer_completion))
+        for pair in adjacent_writer_evidence
+        for fact in pair
+    )
+    adjacent_writer_done = any(
+        any(
+            writer_has(fact, writer_completion)
+            and not writer_has(fact, writer_noncompletion)
+            for fact in pair
+        )
+        for pair in adjacent_writer_evidence
+    )
+    writer_reversed = direct_writer_reversed or adjacent_writer_reversed
+    writer_done = direct_writer_done or adjacent_writer_done
+    if writer_reversed:
+        flaws.append(
+            "STARR1 본문/DoD가 5개 표본 writer PoC를 미완료·미수행 상태로 뒤집음"
+        )
+    elif not writer_done:
+        flaws.append("STARR1 본문/DoD에 '5개 표본 writer PoC 완료' 사실 누락")
+
+    actors = {
+        "reader": reader_actor,
+        "optimizer": optimizer_actor,
+    }
+    actor_pair = re.compile(
+        rf"(?:(?:{reader_actor.pattern})\s*(?:와|과|및|/|,|and)\s*"
+        rf"(?:{optimizer_actor.pattern})|(?:{optimizer_actor.pattern})\s*"
+        rf"(?:와|과|및|/|,|and)\s*(?:{reader_actor.pattern}))",
+        re.I,
+    )
+    validation_in_progress = re.compile(
+        r"(?:진행|확인|검증|검토)\s*중|in\s+progress|under\s+(?:validation|review)",
+        re.I,
+    )
+    validation_unconfirmed = re.compile(
+        r"미확정|확정(?:되지|하지)\s*않|아직.{0,30}확정(?:되지|하지|아님)|"
+        r"지원\s*여부.{0,30}(?:미확정|확인\s*중)|unconfirmed|not\s+confirmed",
+        re.I,
+    )
+    validation_completed = re.compile(
+        r"(?:검증\s*완료(?!\s*(?:전|까지|후|예정|계획|목표|아님|아니|되지|않))|"
+        r"지원(?:\s*여부)?(?:이|은|을|는)?\s*(?<!미)확정"
+        r"(?!\s*(?:되지|하지|아님|아니|않|예정|계획|목표))|"
+        r"소비(?:가|는|를)?\s*(?<!미)확정"
+        r"(?!\s*(?:되지|하지|아님|아니|않|예정|계획|목표)))",
+        re.I,
+    )
+    actor_scopes = {
+        name: [
+            scope
+            for fact in facts
+            for scope in _subject_scopes(
+                fact, pattern,
+                tuple(other for other_name, other in actors.items()
+                      if other_name != name),
+            )
+        ]
+        for name, pattern in actors.items()
+    }
+    validation_reversed = any(
+        _fact_terms_near(scope, (actors[name], validation_completed), 140)
+        for name in actors
+        for scope in actor_scopes[name]
+    )
+    joint_valid = any(
+        _fact_terms_near(
+            fact,
+            (actor_pair, validation_in_progress, validation_unconfirmed),
+            180,
+        )
+        and not validation_completed.search(fact)
+        for fact in facts
+    )
+    adjacent_joint_valid = any(
+        actor_pair.search(left) and actor_pair.search(right)
+        and (
+            (validation_in_progress.search(left)
+             and validation_unconfirmed.search(right))
+            or (validation_unconfirmed.search(left)
+                and validation_in_progress.search(right))
+        )
+        and not validation_completed.search(left)
+        and not validation_completed.search(right)
+        for left, right in adjacent_facts
+    )
+    each_actor_valid = all(any(
+        _fact_terms_near(
+            scope, (actors[name], validation_in_progress, validation_unconfirmed), 140,
+        )
+        and not validation_completed.search(scope)
+        for scope in actor_scopes[name]
+    ) for name in actors)
+    if validation_reversed:
+        flaws.append(
+            "STARR1 본문/DoD가 reader/optimizer 소비 검증을 완료·확정 상태로 뒤집음"
+        )
+    elif not (joint_valid or adjacent_joint_valid or each_actor_valid):
+        flaws.append(
+            "STARR1 본문/DoD에 reader와 optimizer 소비 검증의 '진행 중·미확정' 상태 누락"
+        )
+
+    validation = r"(?:(?:reader|리더|DL-9202).{0,50}(?:검증|확인|validation))"
+    rollout = r"(?:운영\s*(?:반영|배포)|production\s*(?:rollout|deployment))"
+    hold = re.compile(
+        r"(?:보류|금지|승인(?:하지|되지)\s*않|반영(?:하지|되지)\s*않|"
+        r"배포(?:하지|되지)\s*않|\bhold\b|\bblocked?\b)",
+        re.I,
+    )
+    before_validation = re.compile(
+        rf"{validation}.{{0,35}}(?:완료\s*)?(?:전|까지)", re.I,
+    )
+    after_validation_only = re.compile(
+        rf"{validation}.{{0,35}}완료(?:된)?\s*후에만", re.I,
+    )
+    rollout_named = re.compile(rollout, re.I)
+    rollout_positive = re.compile(
+        rf"{rollout}\s*(?:을|은|이|도|를)?\s*"
+        r"(?:승인(?:해|하여|함|했(?:다|음)?|한다|됨|됐|되었)|"
+        r"진행(?:해|하여|함|했(?:다|음)?|한다|됨|됐|되었)|"
+        r"허용(?:해|하여|함|했(?:다|음)?|한다|됨|됐|되었)|"
+        r"실행(?:해|하여|함|했(?:다|음)?|한다|됨|됐|되었)|"
+        r"승인(?=\s*$)|진행(?=\s*$)|허용(?=\s*$)|실행(?=\s*$))",
+        re.I,
+    )
+    causal_link = re.compile(
+        r"^\s*(?:따라서|그러므로|이에\s*따라|그에\s*따라|이\s*때문에|"
+        r"그때까지|therefore|accordingly)",
+        re.I,
+    )
+    rollout_held = any(
+        (
+            _fact_terms_near(
+                fact, (rollout_named, before_validation, hold), 220,
+            )
+            or _fact_terms_near(
+                fact, (rollout_named, after_validation_only), 180,
+            )
+        )
+        for fact in facts
+    )
+    rollout_held = rollout_held or any(
+        before_validation.search(antecedent)
+        and causal_link.search(consequent)
+        and _fact_terms_near(consequent, (rollout_named, hold), 140)
+        and not rollout_positive.search(consequent)
+        for antecedent, consequent in adjacent_facts
+    )
+    rollout_reversed = any(
+        _fact_terms_near(
+            fact, (rollout_named, before_validation, rollout_positive), 220,
+        )
+        for fact in facts
+    )
+    rollout_reversed = rollout_reversed or any(
+        before_validation.search(antecedent)
+        and causal_link.search(consequent)
+        and rollout_positive.search(consequent)
+        for antecedent, consequent in adjacent_facts
+    )
+    if rollout_reversed:
+        flaws.append(
+            "STARR1 본문/DoD가 reader 검증 완료 전에 운영 반영을 진행·승인하도록 뒤집음"
+        )
+    elif not rollout_held:
+        flaws.append(
+            "STARR1 본문/DoD에 'reader 검증 완료 전 운영 반영 보류' 조건 누락"
+        )
+    return flaws
+
+
+CREATE_CASE_CONTRACT_FLAW_CHECKERS = {
+    "STARR1": _starr1_contract_flaws,
+}
+
+
+def _case_specific_contract_flaws(case_id: str, o: dict) -> list[str]:
+    checker = CREATE_CASE_CONTRACT_FLAW_CHECKERS.get(str(case_id or ""))
+    return checker(o) if checker else []
+
+
+_STRUCTURED_FAILURE_RE = re.compile(
+    r"structured\s+(?:output\s+)?(?:실패|fail(?:ed|ure)?|error)", re.I,
+)
+
+
+def _turn_execution_flaws(outs: list[dict]) -> list[str]:
+    """Fail automatic contracts on any visible Agent/structured turn failure.
+
+    Diagnostics intentionally omit provider text, prompts, and validation payloads.  A
+    later successful turn must not erase the fact that the scenario itself had failed.
+    """
+    flaws = []
+    for index, output in enumerate(outs):
+        if not isinstance(output, dict):
+            continue
+        error = output.get("error")
+        has_error = bool(error.strip()) if isinstance(error, str) else bool(error)
+        evidence = output.get("evaluationEvidence") or {}
+        traces = list(output.get("trace") or [])
+        if isinstance(evidence, dict):
+            traces.extend(evidence.get("trace") or [])
+        trace_text = "\n".join(
+            str(row.get("note") or "") if isinstance(row, dict) else str(row or "")
+            for row in traces
+        )
+        if has_error or _STRUCTURED_FAILURE_RE.search(trace_text):
+            flaws.append(
+                f"turn[{index}] Agent 실행 오류 또는 structured output 실패 기록 — "
+                "후속 turn 성공과 무관하게 자동 계약 실패"
+            )
+    return flaws
+
+
 def _creation_contract_flaws(o: dict, turns: list[str]) -> list[str]:
     """Automatic contract failures only; this is never a human-quality score."""
     return _explicit_field_flaws(o, turns) + _approved_evidence_flaws(o)
 
 
 def _all_contract_flaws(last: dict, turns: list[str], outs: list[dict],
-                        *, structure_ok: bool) -> list[str]:
+                        *, structure_ok: bool, case_id: str = "") -> list[str]:
     """Return diagnosable failures for shared and case-specific contracts."""
-    turn_flaws = [
+    turn_flaws = _turn_execution_flaws(outs) + [
         f"turn[{index}] {flaw}"
         for index, output in enumerate(outs)
         for flaw in _question_gate_flaws(output)
     ]
     flaws = (_body_flaws(last) + _output_flaws(last)
-             + _creation_contract_flaws(last, turns) + turn_flaws)
+             + _creation_contract_flaws(last, turns)
+             + _case_specific_contract_flaws(case_id, last) + turn_flaws)
     if not structure_ok:
         # A false result with an empty defect list looks like a harness error. The detailed
         # predicate remains in the versioned case review spec, but the raw result must expose
@@ -497,6 +856,11 @@ CREATE_CHECKER_DEPENDENCIES = (
     _root_payload_items, _payload_due, _visible_row_text, _latest_explicit_ordinals,
     _explicit_field_flaws, _evidence_section, _generic_direct_source,
     _approved_evidence_flaws, _question_gate_flaws, _creation_contract_flaws,
+    _draft_description_fact_groups, _fact_terms_near,
+    _subject_scopes, _adjacent_fact_pairs,
+    _starr1_contract_flaws,
+    CREATE_CASE_CONTRACT_FLAW_CHECKERS, _case_specific_contract_flaws,
+    _STRUCTURED_FAILURE_RE, _turn_execution_flaws,
     _all_contract_flaws, _duplicate_decision_ok,
 )
 
@@ -734,7 +1098,9 @@ def run(cid, desc, turns, check):
             outs.append(o)
         last = outs[-1]
         ok_struct = bool(check(last, outs))
-        flaws = _all_contract_flaws(last, turns, outs, structure_ok=ok_struct)
+        flaws = _all_contract_flaws(
+            last, turns, outs, structure_ok=ok_struct, case_id=cid,
+        )
         # 구조가 맞아도 본문·최종 답변 계약을 어기면 통과가 아니다.
         ok = ok_struct and not flaws
         elapsed = round(time.time() - t0, 1)
