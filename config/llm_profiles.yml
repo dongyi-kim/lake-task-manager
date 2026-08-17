@@ -71,7 +71,9 @@ model_profiles:
           top_p: 0.8
           top_k: 20
           presence_penalty: 0.0
-          max_tokens: 2048
+          # QueryPlan JSON reached the 2K finish=length boundary on a three-deliverable
+          # create request. 3K closes the schema without invoking the repair call.
+          max_tokens: 3072
         balanced:
           temperature: 0.0
           top_p: 0.8
