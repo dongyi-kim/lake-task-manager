@@ -430,7 +430,7 @@ def test_empty_model_result_reuses_normal_volume_partitioning_for_delegated_work
 
     assert not result["questions"]
     parent = result["draft"]["items"][0]
-    assert "30개" in parent["summary"]
+    assert "30개 등록" in parent["summary"]
     assert "해야 해" not in parent["summary"]
     assert len(parent.get("children") or []) >= 2
     assert all(child.get("assignee") for child in parent["children"])
@@ -1850,6 +1850,26 @@ def test_workload_only_assignment_uses_the_actual_lower_load_candidate():
     ]
     assert got["alternates"][0]["user"] == "skcc.i2101"
     assert "8건" in got["alternates"][0]["why"] and "높음" in got["alternates"][0]["why"]
+
+
+def test_literal_recovery_uses_deterministic_workload_assignment_without_inverting_counts():
+    from app.agent.workflow.agents.people_advisor import _workload_only_assignments
+
+    draft = {"construction": "literal_delegated", "items": [{
+        "summary": "[Catalog] 미등록 테이블 30개 등록", "components": ["Catalog"],
+        "children": [{"summary": "묶음 1"}, {"summary": "묶음 2"}],
+    }]}
+    load = ("[Catalog 로스터·부하]\n"
+            "- skcc.x1210 A — 진행중 10건 · 열림 9건 · 최근 완료 4건\n"
+            "- skcc.i2044 B — 진행중 13건 · 열림 13건 · 최근 완료 3건")
+
+    got = _workload_only_assignments(draft, load)[0]
+
+    assert got["user"] == "skcc.x1210"
+    assert got["reasons"] == [
+        "Catalog 로스터 · 진행중 10건 · 열림 9건 · 관련 이력 없음"]
+    assert [child["user"] for child in got["children"]] == [
+        "skcc.x1210", "skcc.i2044"]
 
 
 def test_recent_completion_count_is_not_recast_as_relevant_experience():
