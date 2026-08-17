@@ -21,6 +21,22 @@
 
 실험 결과와 보고서는 `research/agent-improvement/`에만 보관한다. 프로덕션 개발 지침과 과거 실험 결론을 섞지 않는다.
 
+## 작업공간 임시 산출물 규칙
+
+- pytest `--basetemp`는 `.cache/test-tmp/<고유 실행 ID>`만 사용한다. repository root나 상위
+  deploy root에 `.test-tmp-*`, `.pytest-tmp-*`, `.codex-test-temp*`를 만들지 않는다. Windows ACL
+  정리 실패가 발생해도 다른 root-level 임시 경로로 우회하지 않고 해당 실행 디렉터리만 다룬다.
+- linked worktree는 상위 deploy repository의 `.cache/worktrees/<작업명>` 아래에 만든다. 이 경로는
+  일반 cache 일괄 정리 대상이 아니며, 이동·제거에는 파일시스템 명령이 아니라 `git worktree move`와
+  `git worktree remove`를 사용한다.
+- worktree를 이동·제거하기 전에 branch와 commit, `git status`, tracked·untracked·ignored 파일,
+  해당 경로를 사용하는 process를 확인한다. dirty 변경은 commit·stash·patch로 보존하고, 실 LLM raw
+  결과는 `.cache/agent-evaluation/<runGroupId>/`에 유지한다. 보존 확인 없이 `--force`로 제거하거나
+  ignored 산출물을 삭제하지 않는다.
+- 이동 후 `git worktree list`, branch와 `git status`를 다시 확인한다. 부분 이동이 실패하면 source,
+  destination과 worktree metadata를 일관된 상태로 복구하기 전 `git worktree prune`을 실행하지 않는다.
+  검증이 끝난 뒤에도 이번 실행의 고유 test cache만 정리한다.
+
 ## PR 구성 원칙
 
 - 하나의 PR은 하나의 주된 변경 컨텍스트만 가진다. PR 제목을 한 문장으로 설명할 때 독립적인
