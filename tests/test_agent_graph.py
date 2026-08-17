@@ -667,11 +667,10 @@ def test_structured_agent_survives_a_server_without_function_calling(monkeypatch
 
     실사용 사고: 자체 LLM 으로 붙이면 "Invalid json output" 이 반복됐다. langchain 의
     `with_structured_output` 은 기본적으로 OpenAI 의 **함수 호출**로 스키마를 강제하는데,
-    사내 게이트웨이나 자체 서빙(vLLM·TGI 등)은 그 기능이 없거나 반쪽이라 모델이 평문이나
-    ```json 으로 감싼 텍스트를 그대로 뱉는다 — 그러면 파서가 죽고 그 역할이 통째로 실패한다.
+    사내 게이트웨이나 자체 서빙(vLLM·TGI 등)은 그 기능이 없거나 반쪽일 수 있다.
 
     우리가 원하는 건 '함수 호출'이 아니라 **JSON 한 덩이**다. 한 번 더 묻되 스키마를 말로
-    주고, 형식 맞추는 일만 코드가 받아 낸다(판단은 그대로 모델이 한다).
+    주고 정확한 JSON object를 받는다. code fence나 prefix를 잘라 성공 처리하지 않는다.
     """
     from langchain_core.messages import AIMessage
 
@@ -684,8 +683,8 @@ def test_structured_agent_survives_a_server_without_function_calling(monkeypatch
                     raise ValueError("Invalid json output: 여기 결과입니다 ...")
             return _S()
 
-        def invoke(self, *a, **k):      # 평문으로는 잘 답한다(코드펜스까지 씌워서)
-            return AIMessage(content='```json\n{"picked": "ok"}\n```')
+        def invoke(self, *a, **k):      # prompt JSON 계약은 정확한 객체 한 개로 답한다
+            return AIMessage(content='{"picked": "ok"}')
 
     class _A(StructuredAgent):
         name = "tester"

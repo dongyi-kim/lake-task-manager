@@ -41,56 +41,20 @@ MAX_TOOL_STEPS = 6      # 도구 왕복 상한. 모델이 같은 도구를 맴�
 
 
 def _loads_loose(text: str):
-    """모델이 뱉은 텍스트에서 **JSON 한 덩이**를 건져 낸다. 못 건지면 None.
+    """정확히 하나의 JSON object만 수용한다.
 
-    구조화 출력을 지원하지 않는 서버에서는 답이 이런 꼴로 온다:
-        ```json
-{...}
-```        /        여기 결과입니다: {...}
-    엄격한 파서는 둘 다 거부한다 — 그런데 **안에 든 것은 우리가 원하던 그 JSON** 이다.
-    관대하게 받아 내되, 지어내지는 않는다(못 찾으면 None 을 돌려 원래 실패 경로로 간다).
+    이름은 이전 import 호환을 위해 유지하지만 동작은 의도적으로 strict하다. code fence,
+    설명 prefix, balanced-brace 추출을 성공 처리하면 provider의 parse 실패율을 숨기므로 금지한다.
     """
     import json
-    import re as _re
     t = (text or "").strip()
     if not t:
         return None
-    m = _re.search(r"```(?:json)?\s*(.+?)```", t, _re.S)     # 코드펜스 안이 우선
-    if m:
-        t = m.group(1).strip()
     try:
         v = json.loads(t)
         return v if isinstance(v, dict) else None
     except Exception:
-        pass
-    # 앞뒤에 말이 붙은 경우 — 처음 여는 중괄호부터 **짝이 맞는** 자리까지만 떼어 낸다.
-    i = t.find("{")
-    if i < 0:
         return None
-    depth, in_str, esc = 0, False, False
-    for j in range(i, len(t)):
-        c = t[j]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == "\\":
-                esc = True
-            elif c == '"':
-                in_str = False
-            continue
-        if c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    v = json.loads(t[i:j + 1])
-                    return v if isinstance(v, dict) else None
-                except Exception:
-                    return None
-    return None
 
 
 def _validate_output(value, schema: dict) -> dict:
@@ -119,17 +83,25 @@ def _capability_is_unsupported(exc: Exception, capability: str) -> bool:
 
 
 def invoke_schema(schema: dict, messages: list, tier: str = "complex",
-                  temperature: float = 0.0, name: str = "AdhocOutput") -> dict:
+                  profile: str = "fast_structured", temperature: float | None = None,
+                  name: str = "AdhocOutput", llm_factory=None) -> dict:
     """Role 밖의 보정 호출도 공통 structured-output fallback을 사용하게 한다."""
     import json
     from app.agent import capabilities
 
     named = _named(schema, name)
-    profile = capabilities.get(tier).get("checked") or {}
-    errors, raw_text = [], ""
+    def make_llm(**overrides):
+        values = {"profile": profile, "output_contract": "structured", **overrides}
+        if temperature is not None and "temperature" not in values:
+            values["temperature"] = temperature
+        return (llm_factory(**values) if llm_factory else
+                _cfg.get_llm(tier=tier, **values))
+
+    capability_profile = capabilities.get(tier).get("checked") or {}
+    errors, raw_text, validation_error = [], "", ""
     for capability, method in (("json_schema", "json_schema"),
                                ("json_object", "json_mode")):
-        if profile.get(capability) is False:
+        if capability_profile.get(capability) is False:
             continue
         try:
             call_messages = list(messages)
@@ -137,7 +109,7 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
                 call_messages.append(HumanMessage(content=(
                     "Return exactly one JSON object that satisfies this JSON Schema:\n"
                     + json.dumps(schema, ensure_ascii=False))))
-            out = _cfg.get_llm(temperature=temperature, tier=tier).with_structured_output(
+            out = make_llm().with_structured_output(
                 named, method=method).invoke(call_messages)
             out = _validate_output(out, schema)
             capabilities.record(tier, capability, True)
@@ -147,9 +119,11 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
             if _capability_is_unsupported(exc, capability):
                 capabilities.record(tier, capability, False, str(exc))
     try:
-        raw = _cfg.get_llm(temperature=temperature, tier=tier).invoke(
+        raw = make_llm().invoke(
             list(messages) + [HumanMessage(content=(
-                "Return exactly one JSON object satisfying the JSON Schema below. Do not include prose or a code fence.\n"
+                "Return exactly one JSON object satisfying the JSON Schema below. "
+                "The first output character must be { and the last must be }. "
+                "Do not include prose, a preface, Markdown, or a code fence.\n"
                 + json.dumps(schema, ensure_ascii=False)))])
         raw_text = str(getattr(raw, "content", raw) or "")
         parsed = _loads_loose(raw_text)
@@ -157,11 +131,16 @@ def invoke_schema(schema: dict, messages: list, tier: str = "complex",
             raise ValueError("JSON 객체를 찾지 못했습니다.")
         return _validate_output(parsed, schema)
     except Exception as exc:
+        validation_error = str(exc)[:1000]
         errors.append(f"prompt_json: {str(exc)[:160]}")
     try:
-        raw = _cfg.get_llm(temperature=0, tier=tier).invoke([
-            SystemMessage(content="Preserve meaning exactly. Repair only JSON syntax and schema violations."),
-            HumanMessage(content=(json.dumps(schema, ensure_ascii=False)
+        raw = make_llm(profile="fast_structured").invoke([
+            SystemMessage(content=(
+                "Preserve meaning exactly. Repair only JSON syntax and schema violations. "
+                "Return raw JSON only: the first output character must be { and the last must be }. "
+                "Never use Markdown, a code fence, or an explanation.")),
+            HumanMessage(content=("Validation error:\n" + validation_error + "\n\nJSON Schema:\n"
+                                  + json.dumps(schema, ensure_ascii=False)
                                   + "\n\nOutput to repair:\n" + raw_text[:12000]))])
         parsed = _loads_loose(str(getattr(raw, "content", raw) or ""))
         if parsed is None:
@@ -176,7 +155,7 @@ class Agent(ABC):
     """역할 하나. `name` 은 그래프 노드명과 같아야 한다(State.Node 의 상수를 쓴다)."""
 
     name: str = "agent"
-    temperature: float = 0.2
+    # 숫자 sampling parameter는 Role에 두지 않는다. task profile -> model profile에서 해석한다.
     # 모델 티어 — simple(판단이 얕은 역할: 의도 분류·결정적 실행)은 저렴한 모델을 쓴다.
     # 사용자가 설정창에서 '간단한 역할 모델'을 지정했을 때만 갈라지고, 아니면 하나로 돈다.
     tier: str = "complex"
@@ -205,7 +184,11 @@ class Agent(ABC):
         """모델 출력 → State 갱신분. 여기서만 State 를 만진다."""
 
     def llm(self, **kw):
-        return _cfg.get_llm(temperature=self.temperature, tier=self.tier, **kw)
+        from app.agent.workflow.role_manifest import ROLE_SPECS
+        spec = ROLE_SPECS.get(str(self.name))
+        kw.setdefault("profile", spec.task_profile if spec else "balanced")
+        kw.setdefault("role_id", str(self.name))
+        return _cfg.get_llm(tier=self.tier, **kw)
 
     def structured(self, method: str = "json_schema", **kw):
         """스키마로 받는 모델. **스키마에 이름을 붙여서** 넘긴다.
@@ -215,7 +198,7 @@ class Agent(ABC):
         처음 돌렸을 때 여섯 역할이 전부 여기서 넘어졌다. 역할마다 적어 두면 빠뜨리는 사람이
         생기므로 여기서 한 번에 붙인다.
         """
-        return self.llm(**kw).with_structured_output(
+        return self.llm(output_contract="structured", **kw).with_structured_output(
             _named(self.schema(), self.name), method=method)
 
     def invoke_structured(self, state: AgentState, messages: list) -> dict:
@@ -229,7 +212,7 @@ class Agent(ABC):
         from app.agent import capabilities
 
         profile = capabilities.get(self.tier).get("checked") or {}
-        errors = []
+        errors, validation_error = [], ""
         for capability, method in (("json_schema", "json_schema"),
                                    ("json_object", "json_mode")):
             if profile.get(capability) is False:
@@ -253,23 +236,28 @@ class Agent(ABC):
         schema_text = json.dumps(self.schema(), ensure_ascii=False)
         prompt_messages = list(messages) + [HumanMessage(content=(
             "Output format: return exactly one JSON object satisfying the JSON Schema below. "
-            "Do not include prose, a preface, or a Markdown code fence.\n" + schema_text))]
+            "The first output character must be { and the last must be }. "
+            "Do not include prose, a preface, Markdown, or a code fence.\n" + schema_text))]
         raw_text = ""
         try:
-            raw = self.llm().invoke(prompt_messages)
+            raw = self.llm(output_contract="structured").invoke(prompt_messages)
             raw_text = str(getattr(raw, "content", raw) or "")
             parsed = _loads_loose(raw_text)
             if parsed is None:
                 raise ValueError("JSON 객체를 찾지 못했습니다.")
             return _validate_output(parsed, self.schema())
         except Exception as exc:
+            validation_error = str(exc)[:1000]
             errors.append(f"prompt_json: {str(exc)[:180]}")
 
         # repair는 원 업무를 다시 판단시키는 호출이 아니라 형식만 교정하는 1회 호출이다.
         try:
-            repaired = self.llm().invoke([
-                SystemMessage(content="Preserve the output's meaning. Repair only JSON syntax and schema violations."),
-                HumanMessage(content=f"JSON Schema:\n{schema_text}\n\nOutput to repair:\n{raw_text[:12000]}")])
+            repaired = self.llm(profile="fast_structured").invoke([
+                SystemMessage(content=(
+                    "Preserve the output's meaning. Repair only JSON syntax and schema violations. "
+                    "Return raw JSON only: the first output character must be { and the last must be }. "
+                    "Never use Markdown, a code fence, or an explanation.")),
+                HumanMessage(content=f"Validation error:\n{validation_error}\n\nJSON Schema:\n{schema_text}\n\nOutput to repair:\n{raw_text[:12000]}")])
             parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
             if parsed is None:
                 raise ValueError("repair 결과에서 JSON 객체를 찾지 못했습니다.")
@@ -426,13 +414,28 @@ class ToolAgent(Agent):
             "When more retrieval is needed, return tool_calls. When evidence is sufficient, return an empty "
             "array and answer. Never invent an unregistered name.\n\nRegistered tools:\n"
             + json.dumps(catalog, ensure_ascii=False)))
-        raw = self.llm().invoke(list(scratch.get("messages") or []) + [instruction])
-        parsed = _loads_loose(str(getattr(raw, "content", raw) or "")) or {}
+        decision_schema = {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "tool_calls": {"type": "array", "items": {"type": "object",
+                    "additionalProperties": False, "properties": {
+                        "name": {"type": "string", "enum": sorted(owned)},
+                        "args": {"type": "object"}}, "required": ["name", "args"]}},
+                "answer": {"type": "string"}},
+            "required": ["tool_calls", "answer"],
+        }
+        parsed = invoke_schema(decision_schema,
+                               list(scratch.get("messages") or []) + [instruction],
+                               tier=self.tier, profile="fast_structured", name="ToolDecision",
+                               llm_factory=self.llm)
         calls = []
         for item in parsed.get("tool_calls") or []:
             name = str((item or {}).get("name") or "")
             args = (item or {}).get("args") or {}
             if name in owned and isinstance(args, dict):
+                schema_model = getattr(owned[name], "args_schema", None)
+                if schema_model is not None:
+                    args = schema_model.model_validate(args).model_dump()
                 calls.append({"name": name, "args": args, "id": "fallback_" + uuid.uuid4().hex[:12]})
         return AIMessage(content=str(parsed.get("answer") or "") if not calls else "",
                          tool_calls=calls)

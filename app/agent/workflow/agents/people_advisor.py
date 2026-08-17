@@ -187,7 +187,6 @@ class PeopleAdvisor(StructuredAgent):
     """
 
     name = Node.PEOPLE_ADVISOR
-    temperature = 0.2
 
     def node(self):
         base = super().node()

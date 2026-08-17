@@ -11,7 +11,9 @@ from app.agent import secrets
 from app.infra import prefs
 
 PROVIDERS = ("aoai", "openai", "openai_compat", "fake")
-FIELDS = ("name", "provider", "chatModel", "chatModelSimple", "embedModel", "apiVersion")
+FIELDS = ("name", "provider", "chatModel", "chatModelSimple", "embedModel", "apiVersion",
+          "chatModelProfile", "embeddingProvider", "embeddingApiVersion",
+          "embedRevision", "embedPrecision", "embedDimension", "embedNormalization")
 
 
 def _rows() -> list[dict]:
@@ -54,7 +56,10 @@ def create(name: str, provider: str) -> dict:
     row = {"id": uuid.uuid4().hex, "name": _validate_name(name), "provider": p,
            "chatModel": "fake-chat" if p == "fake" else "",
            "chatModelSimple": "", "embedModel": "fake-embed" if p == "fake" else "",
-           "apiVersion": "2024-10-21" if p == "aoai" else ""}
+           "apiVersion": "2024-10-21" if p == "aoai" else "",
+           "chatModelProfile": "", "embeddingProvider": "", "embeddingApiVersion": "",
+           "embedRevision": "", "embedPrecision": "", "embedDimension": "",
+           "embedNormalization": ""}
     prefs.save({"agentConfigs": _rows() + [row]})
     return row
 
@@ -76,6 +81,11 @@ def update(config_id: str, patch: dict) -> dict:
                 raise ValueError("지원하지 않는 연결 방식입니다.")
             if value != row.get("provider"):
                 raise ValueError("연결 방식은 만든 뒤 바꿀 수 없습니다. 새 설정을 추가하세요.")
+        if key == "embeddingProvider" and value and value not in PROVIDERS:
+            raise ValueError("지원하지 않는 임베딩 연결 방식입니다.")
+        if key == "embedDimension" and value:
+            if not value.isdigit() or int(value) <= 0:
+                raise ValueError("임베딩 dimension은 양의 정수여야 합니다.")
         clean[key] = value
     updated = {**row, **clean}
     prefs.save({"agentConfigs": [updated if x["id"] == row["id"] else x for x in _rows()]})

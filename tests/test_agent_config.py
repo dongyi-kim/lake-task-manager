@@ -568,3 +568,71 @@ def test_embeddings_do_not_reach_out_to_tiktoken(monkeypatch):
         assert len(C.get_embeddings().embed_query("hi")) == 8
     finally:
         srv.shutdown()
+
+
+def test_embedding_connection_can_be_split_from_chat(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://127.0.0.1:18080/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "chat-key")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "ltm-qwen3.6-35b-a3b")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_EMBED", "BAAI/bge-m3")
+    monkeypatch.setenv("LAKE_AGENT_EMBED_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_EMBED_BASE", "http://127.0.0.1:18081/v1")
+    monkeypatch.setenv("LAKE_AGENT_EMBED_KEY", "embed-key")
+
+    chat = C.chat_definition()
+    embedding = C.embedding_definition()
+    assert chat.base_url == "http://127.0.0.1:18080/v1"
+    assert chat.api_key == "chat-key"
+    assert embedding.base_url == "http://127.0.0.1:18081/v1"
+    assert embedding.api_key == "embed-key"
+    assert embedding.model == "BAAI/bge-m3"
+
+
+def test_split_embedding_model_catalog_uses_its_own_endpoint(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setattr(C, "chat_definition", lambda **kwargs:
+                        C.ModelDefinition("openai_compat", "chat", "http://chat/v1"))
+    monkeypatch.setattr(C, "embedding_definition", lambda *args, **kwargs:
+                        C.ModelDefinition("openai_compat", "BAAI/bge-m3", "http://embed/v1"))
+
+    class Model:
+        def __init__(self, model_id):
+            self.id = model_id
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            assert kwargs["base_url"] == "http://embed/v1"
+            self.models = self
+
+        def list(self):
+            return [Model("BAAI/bge-m3"), Model("irrelevant-chat-model")]
+
+    monkeypatch.setattr("openai.OpenAI", Client)
+    result = C._with_split_embedding_models({"chat": ["chat"], "embed": [], "error": ""}, 1)
+    assert result["embed"] == ["BAAI/bge-m3"]
+    assert result["total"] == 2
+
+
+def test_split_embedding_catalog_keeps_configured_model_when_models_api_is_absent(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setattr(C, "chat_definition", lambda **kwargs:
+                        C.ModelDefinition("openai_compat", "chat", "http://chat/v1"))
+    monkeypatch.setattr(C, "embedding_definition", lambda *args, **kwargs:
+                        C.ModelDefinition("openai_compat", "BAAI/bge-m3", "http://tei/v1"))
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            self.models = self
+
+        def list(self):
+            raise RuntimeError("404 models")
+
+    monkeypatch.setattr("openai.OpenAI", Client)
+    result = C._with_split_embedding_models({"chat": ["chat"], "embed": [], "error": ""}, 1)
+    assert result["embed"] == ["BAAI/bge-m3"]
+    assert result["warnings"] and not result["error"]

@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.agent import config as _cfg
@@ -36,7 +38,8 @@ _cached = {"sig": None, "store": None}
 
 
 def embed_sig() -> str:
-    return f"{_cfg.provider()}|{_cfg.embed_model()}"
+    raw = json.dumps(_cfg.embedding_identity(chunking_version="text-v1"), sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
 def index_dir() -> Path:
@@ -70,7 +73,10 @@ def _save(store):
     d = index_dir()
     d.mkdir(parents=True, exist_ok=True)
     store.save_local(str(d))
-    (d / "meta.json").write_text(json.dumps({"embedSig": embed_sig()}, ensure_ascii=False),
+    (d / "meta.json").write_text(json.dumps({"embedSig": embed_sig(),
+                                              **_cfg.embedding_identity(chunking_version="text-v1"),
+                                              "created_at": datetime.now(timezone.utc).isoformat()},
+                                             ensure_ascii=False, indent=2),
                                  encoding="utf-8")
     _cached.update(sig=embed_sig(), store=store)
 

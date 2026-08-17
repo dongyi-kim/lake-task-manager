@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+from app.agent.model_profiles import TaskProfile
 
 
 ModelTier = Literal["simple", "complex", "deterministic"]
@@ -19,6 +20,7 @@ class RoleSpec:
     id: str
     name: str
     model_tier: ModelTier
+    task_profile: TaskProfile
     purpose: str
     input_keys: tuple[str, ...]
     output_keys: tuple[str, ...]
@@ -34,26 +36,26 @@ class RoleSpec:
 
 ROLE_SPECS: dict[str, RoleSpec] = {
     "request_architect": RoleSpec(
-        "request_architect", "Request Architect", "simple",
+        "request_architect", "Request Architect", "simple", "fast_structured",
         "Decomposes single and compound requests into an atomic task DAG and routing intent.",
         ("messages", "user_identity", "request_plan", "draft", "approval_token"),
         ("intent", "keywords", "module", "mentioned_keys", "request_plan", "request_text"),
     ),
     "query_specialist": RoleSpec(
-        "query_specialist", "Query Specialist", "simple",
+        "query_specialist", "Query Specialist", "simple", "fast_structured",
         "Translates atomic read tasks into a typed QueryPlan without executing retrieval.",
         ("request_plan", "request_text", "keywords", "mentioned_keys", "messages"),
         ("query_plan",),
     ),
     "query_runner": RoleSpec(
-        "query_runner", "Query Runner", "deterministic",
+        "query_runner", "Query Runner", "deterministic", "fast_structured",
         "Executes QueryPlan under scope and pagination contracts and preserves complete artifacts.",
         ("query_plan", "thread_id"),
         ("query_results", "query_artifacts", "assignment_completion"),
         ("query", "web"), has_prompt=False,
     ),
     "research_analyst": RoleSpec(
-        "research_analyst", "Research Analyst", "complex",
+        "research_analyst", "Research Analyst", "complex", "reasoning",
         "Synthesizes internal and external evidence while separating facts, inference, and gaps.",
         ("messages", "request_text", "request_plan", "query_plan", "query_results",
          "query_artifacts", "pre_survey", "seed_map", "topic_dossier", "web_context"),
@@ -61,13 +63,13 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         ("search", "web"),
     ),
     "knowledge_curator": RoleSpec(
-        "knowledge_curator", "Knowledge Curator", "complex",
+        "knowledge_curator", "Knowledge Curator", "complex", "balanced",
         "Curates research into a reusable brief of concepts, internal context, sources, and gaps.",
         ("situation", "evidence", "related_docs", "web_context", "topic_dossier"),
         ("knowledge_brief",),
     ),
     "portfolio_analyst": RoleSpec(
-        "portfolio_analyst", "Portfolio Analyst", "complex",
+        "portfolio_analyst", "Portfolio Analyst", "complex", "reasoning",
         "Interprets progress, workload, staleness, and activity as PMO risks and priorities.",
         ("messages", "intent", "mentioned_keys", "module", "user_id", "user_role",
          "pre_survey", "query_results", "group_activity", "ticket_progress"),
@@ -75,7 +77,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         ("pmo", "people"),
     ),
     "work_architect": RoleSpec(
-        "work_architect", "Work Architect", "complex",
+        "work_architect", "Work Architect", "complex", "reasoning",
         "Converts verified findings into Epic-to-Task-to-SubTask structures and mutation drafts.",
         ("messages", "request_text", "intent", "mentioned_keys", "situation", "evidence",
          "related_docs", "pre_survey", "query_artifacts", "structure_plan",
@@ -84,24 +86,24 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         effect="draft",
     ),
     "people_advisor": RoleSpec(
-        "people_advisor", "People Advisor", "complex",
+        "people_advisor", "People Advisor", "complex", "balanced",
         "Recommends assignment candidates and alternatives from verified roster, history, and workload.",
         ("draft", "evidence", "query_results"), ("assignments",), effect="draft",
     ),
     "auditor": RoleSpec(
-        "auditor", "Auditor", "complex",
+        "auditor", "Auditor", "complex", "reasoning",
         "Audits schema, hierarchy, evidence, references, and request coverage; separates errors from warnings.",
         ("request_text", "request_plan", "draft", "change_plan", "evidence"),
         ("review", "revisions"), ("review",), effect="draft",
     ),
     "action_executor": RoleSpec(
-        "action_executor", "Action Executor", "deterministic",
+        "action_executor", "Action Executor", "deterministic", "fast_structured",
         "Executes exactly once only the write payload that matches the approved fingerprint.",
         ("thread_id", "approval_token", "comment_token", "draft", "change_plan"),
         ("result",), ("write",), effect="write",
     ),
     "result_integrator": RoleSpec(
-        "result_integrator", "Result Integrator", "complex",
+        "result_integrator", "Result Integrator", "complex", "balanced",
         "Integrates verified results and unresolved items into one Korean user response.",
         ("messages", "request_text", "intent", "answer_depth", "request_plan", "situation",
          "evidence", "related_docs", "pre_survey", "topic_dossier", "knowledge_brief",
@@ -111,7 +113,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         ("reply",), effect="respond",
     ),
     "editor_author": RoleSpec(
-        "editor_author", "Editor Author", "complex",
+        "editor_author", "Editor Author", "complex", "balanced",
         "Drafts a description or comment while preserving existing editor content and ticket context.",
         ("ticket_key", "kind", "prompt", "seed_html", "user_id"),
         ("html", "note", "references"), effect="draft",

@@ -207,7 +207,6 @@ class WorkArchitect(StructuredAgent):
     """
 
     name = Node.WORK_ARCHITECT
-    temperature = 0.3          # 초안은 약간의 폭이 필요하다
     _force_draft = False       # 질문-도피 재시도 플래그(단일 사용자 앱 — 인스턴스 보관으로 충분)
 
     def node(self):
@@ -3052,7 +3051,7 @@ def _split_into_children(state, item: dict) -> list:
                      "specific work target and outcome. A stage name alone, such as `설계 단계`, `구현 단계`, "
                      "or `검증 단계`, is invalid. Good examples preserve the target: `Puffin NDV 통계 스키마 "
                      "설계`, `통계 생성 배치 Job 구현`, `StarRocks 플랜 반영 검증`.")],
-            tier="simple", temperature=0.1, name="split_children")
+            tier="simple", profile="fast_structured", name="split_children")
         kids = [{"summary": str(c.get("summary") or "").strip()}
                 for c in (r or {}).get("children") or []
                 if str(c.get("summary") or "").strip()]
@@ -3344,7 +3343,7 @@ def _bug_body_for(state, it) -> str:
             ("system", "You are a QA analyst. Extract reproduction steps, expected behavior, and observed "
                        "behavior exactly from the report. Never invent a missing fact; leave it empty. Return JSON only."),
             ("user", f"Bug summary: {it.get('summary')}\n\nReport data:\n{said[:1500]}")],
-            tier="simple", temperature=0.1, name="bug_body") or {}
+            tier="simple", profile="fast_structured", name="bug_body") or {}
         steps = [str(x).strip() for x in (r.get("steps") or []) if str(x).strip()]
         expected = str(r.get("expected") or "").strip()
         actual = str(r.get("actual") or "").strip()
@@ -3453,7 +3452,7 @@ def _task_for_module(state, mod: str, ref: dict, want: str = "") -> dict:
                      + f"\nDraft only the part owned by module {mod}. Do not overlap the sibling; put sibling-owned "
                      "work in `excludes`. Every DoD item must name observable completion evidence rather than "
                      "a generic phrase such as `테스트 완료`.")],
-            tier="simple", temperature=0.1, name="module_task")
+            tier="simple", profile="fast_structured", name="module_task")
         r = r or {}
         s = (want or str(r.get("summary") or "")).strip()
         inc = [str(x).strip() for x in (r.get("includes") or []) if str(x).strip()]

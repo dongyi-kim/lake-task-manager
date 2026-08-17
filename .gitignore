@@ -45,3 +45,6 @@ dev-server.log
 dev-server.log.err
 compose-run.txt
 user-review-run.txt
+
+# 개인 장비의 로컬 LLM runtime·운영 문서 — LTM 제품 코드/PR 범위 밖
+.local/ltm-local-llm/

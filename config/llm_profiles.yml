@@ -1,0 +1,139 @@
+version: 1
+
+# Role은 아래 semantic task profile 이름만 요청한다. 실제 API parameter는 model profile이
+# provider capability에 맞게 번역하며 Role 코드에는 model 이름이나 숫자 parameter를 두지 않는다.
+task_profiles:
+  fast_structured:
+    reasoning: "off"
+    parameters:
+      max_tokens: 2048
+  balanced:
+    reasoning: "off"
+    parameters:
+      max_tokens: 4096
+  reasoning:
+    reasoning: "on"
+    parameters:
+      max_tokens: 16384
+
+provider_defaults:
+  openai: {}
+  aoai: {}
+  openai_compat: {}
+
+model_profiles:
+  qwen3.6-35b-a3b:
+    match:
+      - '(?i)qwen3[._-]?6.*35b.*a3b'
+      - '(?i)ltm-qwen3[._-]?6-35b-a3b'
+    capabilities:
+      reasoning: true
+      reasoning_control: qwen_thinking
+      temperature: true
+      top_p: true
+      top_k: true
+      min_p: true
+      presence_penalty: true
+      repetition_penalty: true
+      streaming: true
+      tools: false
+      tool_choice: false
+      json_object: false
+      json_schema: false
+      reasoning_separation: false
+    defaults:
+      min_p: 0.0
+      repetition_penalty: 1.0
+    profiles:
+      fast_structured:
+        # LTM's strict tool-schema fixture: 0.0-0.2 all reached 100% exact JSON and tool
+        # selection, while the general-generation 0.7 setting regressed selection to 83.3%.
+        temperature: 0.1
+        top_p: 0.8
+        top_k: 20
+        presence_penalty: 0.0
+      balanced:
+        temperature: 0.7
+        top_p: 0.8
+        top_k: 20
+        presence_penalty: 1.5
+      reasoning:
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 20
+        presence_penalty: 1.5
+
+  openai-gpt4o:
+    match:
+      - '(?i)(^|[/_-])gpt-4o($|[._-])'
+    capabilities:
+      reasoning: false
+      reasoning_control: none
+      temperature: true
+      top_p: true
+      top_k: false
+      min_p: false
+      presence_penalty: true
+      repetition_penalty: false
+      streaming: true
+      tools: true
+      tool_choice: true
+      json_object: true
+      json_schema: true
+    profiles:
+      fast_structured:
+        temperature: 0.0
+      balanced:
+        temperature: 0.2
+      reasoning:
+        temperature: 0.2
+
+  openai-reasoning:
+    match:
+      - '(?i)(^|[/_-])(gpt-5|o[134])($|[._-])'
+    capabilities:
+      reasoning: true
+      reasoning_control: openai_effort
+      temperature: false
+      top_p: false
+      top_k: false
+      min_p: false
+      presence_penalty: false
+      repetition_penalty: false
+      streaming: true
+      tools: true
+      tool_choice: true
+      json_object: true
+      json_schema: true
+    profiles:
+      fast_structured:
+        reasoning_effort: minimal
+      balanced:
+        reasoning_effort: low
+      reasoning:
+        reasoning_effort: medium
+
+  default-chat:
+    match:
+      - '.*'
+    capabilities:
+      reasoning: false
+      reasoning_control: none
+      temperature: true
+      top_p: true
+      top_k: false
+      min_p: false
+      presence_penalty: true
+      repetition_penalty: false
+      streaming: true
+      tools: probe
+      tool_choice: probe
+      json_object: probe
+      json_schema: probe
+    profiles:
+      fast_structured:
+        temperature: 0.0
+      balanced:
+        temperature: 0.2
+      reasoning:
+        temperature: 0.2

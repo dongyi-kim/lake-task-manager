@@ -49,10 +49,11 @@ def _prepare_runtime():
     global session
     configure_process_isolation("create")
     os.environ.setdefault("JIRA_ENV", "mock")
-    os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+    os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
     os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
-    os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
     os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
+    from tools.agent_scenario_eval import configure_model_routing
+    configure_model_routing(MODEL, SIMPLE_MODEL)
     from app.agent.workflow import session as runtime_session
     session = runtime_session
 
