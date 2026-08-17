@@ -47,9 +47,11 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 
 ## 검증
 
-1. 관련 pytest를 repository 내부 `--basetemp`로 실행한다.
+1. 관련 pytest를 `--basetemp=.cache/test-tmp/<고유 실행 ID>`로 실행한다. repository root나 상위
+   deploy root에 `.test-tmp-*`, `.pytest-tmp-*`, `.codex-test-temp*`를 만들지 않는다.
 2. prompt·role·tool 변경이면 `test_agent_prompt_integrity`를 반드시 포함한다.
-3. 성공 후 임시 basetemp만 안전하게 제거한다.
+3. 성공 후 해당 실행의 고유 basetemp만 안전하게 제거한다. Windows ACL 정리 실패를 피하려고 다른
+   root-level 임시 경로로 우회하지 않는다.
 4. 실 LLM 배터리는 사용자가 승인한 existing project secret만 사용한다.
    승인 후에는 제한된 sandbox의 외부 socket/Windows native certificate store 경로를 거치지 말고
    network-enabled local process로 실행한다. 실패한 묶음 전체를 반복하지 말고 미완료 case만 새

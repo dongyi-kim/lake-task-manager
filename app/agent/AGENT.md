@@ -151,7 +151,7 @@
 변경한 영역에 필요한 test만 선택해 실행한다. 전체 매핑은 [`docs/TESTING.md`](../../docs/TESTING.md):
 
 ```powershell
-..\.venv\Scripts\python.exe -m pytest -q --basetemp .test-tmp-agent `
+..\.venv\Scripts\python.exe -m pytest -q --basetemp .cache/test-tmp/agent-<고유-실행-ID> `
   tests/test_agent_prompt_integrity.py `
   tests/test_agent_draft.py `
   tests/test_agent_graph.py `
@@ -162,8 +162,10 @@
   tests/test_ticket_actions.py
 ```
 
-Windows 공용 pytest temp에 권한 문제가 있으면 repository 내부 `--basetemp`를 사용하고 성공 후
-해당 임시 디렉터리만 삭제한다. 전체 suite는 GitHub Actions의 `Code tests`가 실행한다.
+Windows 공용 pytest temp를 사용하지 않는다. repository 내부
+`.cache/test-tmp/<고유 실행 ID>`를 `--basetemp`로 사용하고 성공 후 해당 실행 디렉터리만 삭제한다.
+repository root나 상위 deploy root에 `.test-tmp-*`, `.pytest-tmp-*`, `.codex-test-temp*`를 만들지
+않는다. 전체 suite는 GitHub Actions의 `Code tests`가 실행한다.
 
 ### 실 LLM 배터리
 
