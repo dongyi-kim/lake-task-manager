@@ -56,6 +56,10 @@ class QueryPlan(StrictModel):
     # Reserved legacy field; non-empty joins are unsupported and fail before execution.
     joins: list[str] = Field(default_factory=list)
     uncertainty: list[str] = Field(default_factory=list)
+    # Runtime compiler provenance. CompactQueryPlan deliberately cannot emit this field;
+    # QuerySpecialist strips it from legacy/runtime inputs and sets it only after applying
+    # deterministic creation-subject guards.
+    compiler_guard: Literal["creation_target_required"] | None = None
 
 
 class QueryIntent(StrictModel):

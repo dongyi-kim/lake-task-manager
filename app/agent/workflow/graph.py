@@ -167,6 +167,12 @@ def route_after_request_architect(state: AgentState) -> str:
 def route_after_query_runner(state: AgentState) -> str:
     """결정적 집계만으로 답이 완성된 요청은 일반 Research ReAct를 건너뛴다."""
     completion = state.get("assignment_completion") or {}
+    guard = (state.get("query_artifacts") or {}).get("creation-subject-guard") or {}
+    if (guard.get("kind") == "creation_target_required"
+            and guard.get("targetRequired") is True):
+        # Work owns required-input questions. Skip Research because the acquisition compiler
+        # has already proved there is no safe subject to investigate.
+        return "refine"
     return "respond" if completion.get("kind") == "incomplete_assignees" else "investigate"
 
 
@@ -212,6 +218,8 @@ def route_after_work_architect(state: AgentState):
     **변경 계획(modify)은 승인으로 직행**한다 — 담당자 추천(새 티켓용)도, validate_bulk
     (생성 검증)도 여기엔 해당이 없다. 안전장치는 승인 카드와 editmeta(편집 불가 필드 거부)다.
     """
+    if str(state.get("error") or "").startswith(f"[{Node.WORK_ARCHITECT}]"):
+        return "respond"
     if state.get("questions"):
         return "respond"
     cp = state.get("change_plan") or {}
@@ -462,7 +470,8 @@ def _propose(state: AgentState) -> dict:
     # Defense in depth: routing normally prevents this node from seeing a failed review,
     # but stale checkpoints and direct callers must not turn a rejected draft into a live
     # approval token. Empty strings also clear any token retained from an earlier state.
-    if (state.get("review") or {}).get("ok") is False:
+    work_failed = str(state.get("error") or "").startswith(f"[{Node.WORK_ARCHITECT}]")
+    if work_failed or (state.get("review") or {}).get("ok") is False:
         return {"approval_token": "", "comment_token": ""}
 
     tid = state.get("thread_id") or ""
@@ -590,6 +599,7 @@ def build(checkpointer=None):
     g.add_edge(Node.QUERY_SPECIALIST, Node.QUERY_RUNNER)
     g.add_conditional_edges(Node.QUERY_RUNNER, route_after_query_runner,
                             {"investigate": Node.RESEARCH_ANALYST,
+                             "refine": Node.WORK_ARCHITECT,
                              "respond": Node.RESULT_INTEGRATOR})
     g.add_edge(Node.PORTFOLIO_ANALYST, Node.RESULT_INTEGRATOR)
     g.add_conditional_edges(Node.RESEARCH_ANALYST, route_after_research_analyst,

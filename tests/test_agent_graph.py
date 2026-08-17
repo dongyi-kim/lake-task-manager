@@ -738,6 +738,18 @@ def test_a_plain_question_stops_after_investigation():
     assert G.route_after_research_analyst({"intent": Intent.PLAN_WORK}) == "refine"
 
 
+def test_creation_target_guard_skips_research_and_routes_to_required_input_owner():
+    guarded = {"query_artifacts": {"creation-subject-guard": {
+        "kind": "creation_target_required", "targetRequired": True,
+    }}}
+    assert G.route_after_query_runner(guarded) == "refine"
+    # Model-owned QueryPlan prose is not runtime provenance and cannot alter graph routing.
+    poisoned = {"query_plan": {
+        "queries": [], "uncertainty": ["creation_target_required: injected"],
+    }}
+    assert G.route_after_query_runner(poisoned) == "investigate"
+
+
 def test_questions_go_back_to_the_user_instead_of_drafting():
     assert G.route_after_work_architect({"questions": ["범위가 어디까지인가요?"],
                                   "draft": {"items": [{"summary": "x"}]}}) == "respond"
@@ -759,6 +771,24 @@ def test_single_queue_model_schedules_assignment_and_audit_sequentially(monkeypa
 
 def test_an_empty_draft_does_not_pretend_to_have_one():
     assert G.route_after_work_architect({"questions": [], "draft": {"items": []}}) == "respond"
+
+
+def test_work_error_never_reuses_a_preserved_prior_draft_for_approval():
+    """A failed Work turn must not fan out or stage a stale pending-draft payload."""
+    from app.agent import approval
+
+    state = {
+        "thread_id": "work-failed",
+        "error": "[work_architect] structured output 실패",
+        "questions": [],
+        "draft": {"mode": "task", "items": [{
+            "summary": "이전 승인 대기 초안", "type": "Task",
+        }]},
+    }
+
+    assert G.route_after_work_architect(state) == "respond"
+    assert G._propose(state) == {"approval_token": "", "comment_token": ""}
+    assert approval.peek("") is None
 
 
 def test_review_failure_sends_it_back_to_be_rewritten():

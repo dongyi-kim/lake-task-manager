@@ -816,6 +816,115 @@ def test_native_work_correction_has_bounded_semantic_material_for_real_schema(mo
         "structured", "structured_correction"]
 
 
+def _work_projection_with_model_owned_fields():
+    return {
+        "interpretation": "사용하지 않는 긴 해석 " * 80,
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_source": "user_specified", "structure_why": "독립 산출물 1건",
+        "items": [{
+            "summary": "[Runtime] 성능 측정", "type": "Task",
+            "assignee": "ghost.x9999", "assignee_source": "model",
+            "background": "성능 측정 요청됨", "scope_in": ["성능 측정"],
+            "scope_out": [], "dod": ["측정 결과 기록", "결과 검토"],
+            "children": [{
+                "summary": "[Runtime] 가이드 작성", "assignee": "ghost.x9998",
+                "assignee_source": "model", "scope_in": ["가이드 작성"],
+                "dod": ["가이드 검토"],
+            }],
+        }],
+        "rationale": "단일 Task 구성",
+    }
+
+
+def _work_creation_state():
+    from app.agent.workflow.state import Intent
+    return {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "성능 측정은 x1402가 하고 가이드를 작성해줘",
+        "messages": [HumanMessage(content="성능 측정은 x1402가 하고 가이드를 작성해줘")],
+        "situation": "내부 조사에서 성능 측정과 가이드 작성 산출물을 확인함.",
+    }
+
+
+def test_work_authority_cleanup_precedes_native_strict_validation(monkeypatch):
+    """Known runtime-owned fields do not spend a repair; literal user ownership wins later."""
+    from app.agent import capabilities
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    native = _SequenceLLM(_work_projection_with_model_owned_fields())
+    agent = WorkArchitect()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: native)
+
+    state = _work_creation_state()
+    projected = agent.invoke_structured(state, [HumanMessage(content="original")])
+
+    assert len(native.messages) == 1, "runtime-owned projection fields must not trigger repair"
+    assert projected["interpretation"] == ""
+    assert "structure_source" not in projected
+    assert "assignee" not in projected["items"][0]
+    assert "assignee" not in projected["items"][0]["children"][0]
+    applied = agent.apply(state, projected)
+    assert applied["draft"]["items"][0]["assignee"] == "skcc.x1402"
+    child = applied["draft"]["items"][0]["children"][0]
+    assert child.get("assignee") != "ghost.x9998"
+    assert child.get("assignee_source") != "model"
+
+
+@pytest.mark.parametrize("needs_repair", [False, True], ids=("prompt_initial", "repair"))
+def test_work_authority_cleanup_is_shared_by_prompt_and_repair_paths(monkeypatch, needs_repair):
+    from app.agent import capabilities
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    payload = json.dumps(_work_projection_with_model_owned_fields(), ensure_ascii=False)
+    outputs = ("not-json", payload) if needs_repair else (payload,)
+    transport = _SequenceLLM(*outputs)
+    agent = WorkArchitect()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: transport)
+
+    projected = agent._invoke_structured_transport(
+        _work_creation_state(), [HumanMessage(content="original")],
+        capability_tier="complex", execution_layer="deep_semantic",
+    )
+
+    assert projected["interpretation"] == ""
+    assert "structure_source" not in projected
+    assert "assignee_source" not in projected["items"][0]["children"][0]
+    assert len(transport.messages) == (2 if needs_repair else 1)
+
+
+def test_work_projection_does_not_drop_an_unrelated_unknown_property(monkeypatch):
+    """The role hook is an authority boundary, never generic string/unknown-field repair."""
+    from app.agent import capabilities
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    invalid = _work_projection_with_model_owned_fields()
+    invalid["items"][0]["fabricated_property"] = "must fail strict validation"
+    valid = _work_projection_with_model_owned_fields()
+    transport = _SequenceLLM(
+        json.dumps(invalid, ensure_ascii=False), json.dumps(valid, ensure_ascii=False),
+    )
+    agent = WorkArchitect()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: transport)
+
+    projected = agent._invoke_structured_transport(
+        _work_creation_state(), [HumanMessage(content="original")],
+        capability_tier="complex", execution_layer="deep_semantic",
+    )
+
+    assert len(transport.messages) == 2, "unknown property must enter strict repair"
+    assert "Validation error:" in _message_text(transport.messages[1])
+    assert "fabricated_property" not in projected["items"][0]
+
+
 def test_native_pending_draft_revision_correction_uses_typed_prior_draft(monkeypatch):
     from app.agent import capabilities
     from app.agent.workflow.agents.work_architect import WorkArchitect

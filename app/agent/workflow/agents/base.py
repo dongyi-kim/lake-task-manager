@@ -377,6 +377,17 @@ class Agent(ABC):
         """Return a context-specific output contract when a Role needs one."""
         return self.schema()
 
+    def pre_validate_structured_output(
+            self, state: AgentState, out: dict, *, output_contract: str,
+            execution_stage: str) -> dict:
+        """Normalize only explicitly runtime-owned Role fields before strict validation.
+
+        The default is an identity function. A Role override must be a narrow authority
+        boundary, not a generic unknown-field filter or JSON repair: every property it does
+        not explicitly own remains for the unchanged JSON Schema validator to reject.
+        """
+        return out
+
     def post_projection_correction(self, state: AgentState, out: dict) -> str:
         """Return one bounded projection-only correction, or an empty string.
 
@@ -538,6 +549,14 @@ class Agent(ABC):
         validation_diagnostic: dict[str, str] = {}
         wire_attempts = 0
 
+        def validate_output(value) -> dict:
+            candidate = _as_dict(value)
+            candidate = self.pre_validate_structured_output(
+                state, candidate, output_contract=output_contract,
+                execution_stage=execution_stage,
+            )
+            return _validate_output(candidate, schema)
+
         def wire_available() -> bool:
             return max_wire_attempts is None or wire_attempts < max_wire_attempts
 
@@ -575,7 +594,7 @@ class Agent(ABC):
                     _named(schema, self.name), method=method).invoke(
                         call_messages, config=_call_config(
                             self.name, output_contract, active_layer, execution_stage))
-                out = _validate_output(raw, schema)
+                out = validate_output(raw)
                 capabilities.record(transport_tier, capability, True)
                 return out
             except Exception as exc:
@@ -615,7 +634,7 @@ class Agent(ABC):
             parsed = _loads_loose(raw_text)
             if parsed is None:
                 raise ValueError("JSON 객체를 찾지 못했습니다 (" + _response_shape(raw, raw_text) + ").")
-            return _validate_output(parsed, schema)
+            return validate_output(parsed)
         except Exception as exc:
             validation_error = str(exc)[:1000]
             validation_diagnostic = _validation_diagnostic(exc)
@@ -656,7 +675,7 @@ class Agent(ABC):
             parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
             if parsed is None:
                 raise ValueError("repair 결과에서 JSON 객체를 찾지 못했습니다.")
-            return _validate_output(parsed, schema)
+            return validate_output(parsed)
         except Exception as exc:
             errors.append(f"repair: {str(exc)[:180]}")
             raise RuntimeError("structured output 실패 — " + " | ".join(errors)) from exc

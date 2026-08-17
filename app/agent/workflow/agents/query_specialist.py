@@ -63,6 +63,35 @@ _CREATION_CONTROL_PATTERN = re.compile(
     re.I,
 )
 
+# Query planning needs a separate, stricter notion of a *material subject*.  Words such as
+# ``구현`` and ``1차`` are useful in a ticket title, so ``_creation_subject_terms`` keeps them
+# available after a real topic.  On their own, however, they are only execution controls and
+# must not compile into a project-wide ``text ~ 구현`` lookup.  Keep this guard vocabulary
+# separate so normal subject ranking and ASK/navigation queries do not change.
+_CREATION_SUBJECT_GUARD_MARKER = "creation_target_required"
+_CREATION_TARGET_REQUIRED_REASON = (
+    "생성/중복 조회에 사용할 구체적인 기술·업무 대상이 없고, "
+    "parent·범위·단계·마감 같은 실행 필드만 있어 조회를 생략함"
+)
+_CREATION_SUBJECT_GUARD_CONTROLS = _CREATION_CONTROL_WORDS | {
+    "parent", "top", "level", "scope", "phase", "stage", "due", "deadline",
+    "existing", "current", "first", "mvp", "implement", "implementation",
+    "develop", "development", "deploy", "deployment", "validate", "validation",
+    "build", "change", "fix", "improve", "improvement", "optimize", "optimization",
+    "refactor", "refactoring", "update", "upgrade", "migrate", "migration",
+    "work", "plan", "finish", "complete", "completion", "execute", "execution", "run",
+    "enhance", "enhancement", "service", "system", "process", "application", "app",
+    "module", "code", "data",
+    "i", "me", "my", "you", "your",
+    "은", "는", "이", "가", "을", "를", "에", "로", "차",
+    "나", "내", "저", "제", "너", "네",
+    "부모", "상위", "최상위", "단계", "기한", "마감일", "연결", "지정",
+    "구현", "개발", "적용", "배포", "검증", "완료", "개선", "변경", "수정",
+    "구축", "최적화", "리팩터링", "마이그레이션", "전환", "업데이트",
+    "서비스", "시스템", "프로세스", "애플리케이션", "앱", "모듈", "코드", "데이터", "화면",
+    "선택해", "진행해",
+}
+
 
 def _known_user_tokens() -> set[str]:
     """Return configured user IDs and their shorthand suffixes.
@@ -543,6 +572,112 @@ def _creation_subject_literals(state) -> list[str]:
     return rows
 
 
+def _creation_guard_token(raw: str) -> str:
+    """Return one authoritative material token, or empty for execution-only control text."""
+    value = str(raw or "").strip().strip(".,;:!?…()[]{}\"'`")
+    if not value:
+        return ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}|\d+(?:차|개|건)?", value):
+        return ""
+    # Normalize only common grammar suffixes.  This is not a semantic stemmer: it merely
+    # lets ``범위는`` and ``구현까지`` meet their explicit control vocabulary below.
+    for suffix in ("으로부터", "에서는", "으로", "에서", "에게", "까지", "부터",
+                   "하는", "하며", "하고", "해서", "해야해", "해야", "해주세요",
+                   "해줘", "로", "을", "를", "은", "는", "이", "가", "의", "에"):
+        if value.endswith(suffix) and len(value) - len(suffix) >= 1:
+            value = value[:-len(suffix)]
+            break
+    folded = value.casefold()
+    if (not value or folded in _CREATION_SUBJECT_GUARD_CONTROLS
+            or _CREATION_CONTROL_PATTERN.fullmatch(value)):
+        return ""
+    return value
+
+
+def _authoritative_creation_material_anchors(state) -> list[str]:
+    """Extract subject anchors only from the current/frozen human creation request.
+
+    RequestArchitect keywords are intentionally excluded: after a context-boundary mistake a
+    model can remember the old topic, but that recollection is not authoritative retrieval
+    permission.  A true continuation already exposes its frozen human request through
+    ``_creation_subject_literals``.
+    """
+    anchors: list[str] = []
+    seen: set[str] = set()
+    authored = "\n".join(_creation_subject_literals(state))
+    for raw in re.findall(
+            r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-\d+(?![A-Za-z0-9])|"
+            r"[A-Za-z][A-Za-z0-9_.+-]{1,}|[가-힣]+|\d+차|\d{4}-\d{2}-\d{2}",
+            authored, re.I):
+        # Exact ticket identities are handled structurally by ``mentioned_keys``/``where``;
+        # they are not lexical subject terms.
+        if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", raw, re.I):
+            continue
+        value = _creation_guard_token(raw)
+        folded = value.casefold()
+        if value and folded not in seen:
+            seen.add(folded)
+            anchors.append(value)
+    return anchors
+
+
+def _creation_anchor_specificity(value: str) -> int:
+    """Classify one non-control subject anchor without a corpus-dependent rarity guess.
+
+    Structured identifiers and technical Latin names are independently specific enough for
+    a duplicate lookup (``fdc.table_id``, ``DeltaSketch``). A Korean domain noun of three or more
+    syllables is also a usable target. Short ordinary nouns need a second independent anchor.
+    """
+    token = str(value or "").strip()
+    if not token:
+        return 0
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", token):
+        if re.search(r"[0-9_.+-]", token):
+            return 3
+        # Product-style casing/acronyms are identifier-shaped. A longer lowercase token is
+        # a conservative rarity proxy; short generic English nouns still need a partner.
+        identifier_cased = (
+            token.isupper() or token[:1].isupper()
+            or any(character.isupper() for character in token[1:])
+        )
+        return 2 if identifier_cased or len(token) >= 6 else 1
+    if re.fullmatch(r"[가-힣]+", token):
+        return 2 if len(token) >= 3 else 1
+    return 1
+
+
+def _creation_target_required_reason(state, explicit_keys: list[str] | None = None) -> str:
+    """Return a fail-loud marker only for demonstrably control-only PLAN_WORK text.
+
+    One high-information identifier/technical anchor is sufficient; two weaker independent
+    nouns are also sufficient. Exact referenced ticket keys remain safe structural reads. The
+    r25 failure (``Epic ... 1차 구현 ... 마감``) contains only execution controls and is
+    rejected before Jira execution.
+    """
+    if str(state.get("intent") or "") != Intent.PLAN_WORK:
+        return ""
+    literals = "\n".join(_creation_subject_literals(state)).strip()
+    if not literals:
+        return ""
+    exact = [str(key).strip().upper() for key in (explicit_keys or [])
+             if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).strip(), re.I)]
+    if exact or re.search(r"\b[A-Z][A-Z0-9]*-\d+\b", literals, re.I):
+        return ""
+    anchors = _authoritative_creation_material_anchors(state)
+    if len(anchors) >= 2 or any(_creation_anchor_specificity(value) >= 2
+                                for value in anchors):
+        return ""
+    return _CREATION_TARGET_REQUIRED_REASON
+
+
+def _query_plan_creation_target_required(plan: dict) -> str:
+    """Trust only compiler provenance paired with the no-executable-read invariant."""
+    if ((plan or {}).get("compiler_guard") == _CREATION_SUBJECT_GUARD_MARKER
+            and not ((plan or {}).get("queries") or [])):
+        return _CREATION_TARGET_REQUIRED_REASON
+    return ""
+
+
 def _explicit_creation_parent_keys(state) -> set[str]:
     """Return only keys that human text unambiguously assigns as a parent.
 
@@ -741,7 +876,7 @@ def _compile_compact_query_plan(out: dict) -> dict:
         })
     return QueryPlan(
         queries=queries, joins=[], uncertainty=compact.uncertainty,
-    ).model_dump()
+    ).model_dump(exclude={"compiler_guard"})
 
 
 def _compact_request_context(state) -> dict:
@@ -866,6 +1001,7 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
     """
     if (state.get("intent") or "") != Intent.PLAN_WORK:
         return
+    plan.pop("compiler_guard", None)
     asked = _internal_user_request_text(state).strip()
     explicit_comments = any(word in asked.casefold() for word in _COMMENT_WORDS)
     explicit_people = bool(re.search(
@@ -885,6 +1021,15 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
         str(key).upper() for key in (state.get("mentioned_keys") or [])
         if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", str(key).upper())
     ]
+    target_required = _creation_target_required_reason(state, explicit_keys)
+    if target_required:
+        # This field is absent from CompactQueryPlan and is reset at ``apply`` entry, so only
+        # this deterministic compiler can establish the runtime no-read provenance.
+        plan["compiler_guard"] = _CREATION_SUBJECT_GUARD_MARKER
+        plan["queries"] = []
+        if target_required not in plan.setdefault("uncertainty", []):
+            plan["uncertainty"].append(target_required)
+        return
     terms = _creation_subject_terms(state)
     if not terms and not explicit_keys:
         return
@@ -995,6 +1140,15 @@ class QuerySpecialist(StructuredAgent):
         plan = (_compile_compact_query_plan(out)
                 if isinstance(out, dict) and "reads" in out
                 else QueryPlan.model_validate(out).model_dump())
+        # ``uncertainty`` is model-owned prose and cannot claim compiler provenance. Legacy
+        # runtime plans may carry the typed field, but re-applying QuerySpecialist must
+        # recompute it from the current/frozen human authority rather than trust the input.
+        plan.pop("compiler_guard", None)
+        plan["uncertainty"] = [
+            str(value) for value in (plan.get("uncertainty") or [])
+            if not str(value or "").strip().startswith(
+                _CREATION_SUBJECT_GUARD_MARKER + ":")
+        ]
         # Validate the contract before normalization can prune a missing dependency and make
         # an unsupported relational plan appear independent.
         _reject_unsupported_relational_plan(plan)
@@ -1128,6 +1282,11 @@ class QuerySpecialist(StructuredAgent):
                 if not github_variants:
                     plan.setdefault("uncertainty", []).append(
                         "GitHub research was requested, but no privacy-safe public subject was available.")
+        # Normalization can deterministically rebuild public/comment rows after the creation
+        # compiler runs. A target-required plan is terminal for acquisition, so reassert the
+        # exact no-executable-read half of the provenance invariant at the final boundary.
+        if plan.get("compiler_guard") == _CREATION_SUBJECT_GUARD_MARKER:
+            plan["queries"] = []
         return {"query_plan": plan,
                 "trace": note(state, self.name, f"조회 {len(plan['queries'])}개 설계")}
 
@@ -1141,7 +1300,9 @@ __all__ = ["QuerySpecialist", "_external_research_allowed", "_public_external_qu
            "_normalize_model_jira_query", "_normalize_query_fields",
            "_dedupe_equivalent_queries", "_ensure_creation_duplicate_query",
            "_creation_subject_literals", "_explicit_creation_parent_keys",
-           "_creation_subject_terms", "_materialized_parent_reference_keys",
+           "_creation_subject_terms", "_authoritative_creation_material_anchors",
+           "_creation_target_required_reason", "_query_plan_creation_target_required",
+           "_materialized_parent_reference_keys",
            "_compile_compact_query_plan",
            "_compact_request_context", "_bounded_retrieval_excerpt", "_retrieval_anchors",
            "_reject_unsupported_relational_plan", "_deterministic_plan_retrieval"]

@@ -728,6 +728,244 @@ def test_undated_completion_and_gate_preserve_an_explicit_temporal_conflict():
                for row in contract if row["kind"] == "completed_baseline")
 
 
+def test_same_comment_uncertainty_composes_all_typed_relation_facts_once():
+    """Sibling actor progress plus an uncertainty sentence form one visible dependency."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch 소비 검증 Task를 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "소비", "검증"],
+        evidence=[{"key": "DL-9501", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9501", "type": "Task", "status": "In Progress", "done": False,
+            "summary": "[Runtime] AcmeDB DeltaSketch 소비 검증", "updated": "2026-08-18",
+            "comments": [{"created": "2026-08-18T10:00:00+09:00", "body": (
+                "AcmeReader가 DeltaSketch 소비 경로를 확인 중입니다. "
+                "AcmeOptimizer가 DeltaSketch 실행계획 반영을 진행 중입니다. "
+                "DeltaSketch 소비 지원 여부는 아직 확정하지 않았습니다.") }],
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+    uncertain = [row for row in contract if row["kind"] == "unconfirmed_dependency"]
+
+    assert len(uncertain) == 1
+    assert all(value in uncertain[0]["fact"] for value in (
+        "AcmeReader가 DeltaSketch 소비 경로를 확인 중입니다",
+        "AcmeOptimizer가 DeltaSketch 실행계획 반영을 진행 중입니다",
+        "DeltaSketch 소비 지원 여부는 아직 확정하지 않았습니다",
+    ))
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "소비 검증 산출물 1건", "rationale": "",
+        "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch 소비 검증", "type": "Task",
+            "background": "소비 검증 요청됨", "scope_in": ["소비 검증"],
+            "scope_out": [], "dod": ["소비 경로를 확인한다", "결과를 기록한다"],
+            "components": ["Runtime"],
+        }],
+    })
+    visible = result["draft"]["items"][0]["description"]
+    assert all(value in visible for value in ("AcmeReader", "AcmeOptimizer", "미확정 dependency"))
+    assert visible.count("미확정 dependency") == 1
+    assert visible.count("AcmeReader가 DeltaSketch 소비 경로를 확인 중입니다") == 1
+    assert visible.count("AcmeOptimizer가 DeltaSketch 실행계획 반영을 진행 중입니다") == 1
+
+
+def test_same_comment_uncertainty_composes_only_materially_related_siblings():
+    """An unrelated actor/artifact sentence in one comment must not enter the dependency."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB Delta consumption support Task를 만들어줘",
+        keywords=["AcmeDB", "Delta", "consumption", "support"],
+        evidence=[{"key": "DL-9503", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9503", "type": "Task", "status": "In Progress", "done": False,
+            "summary": "[Runtime] AcmeDB Delta consumption support", "updated": "2026-08-18",
+            "comments": [{"created": "2026-08-18T10:00:00+09:00", "body": (
+                "AcmeReader consumes Delta. "
+                "BillingWriter generates Delta invoices. "
+                "Delta consumption support is unconfirmed.") }],
+        }]},
+    )
+
+    uncertain = [row for row in _verified_evidence_obligations(state)
+                 if row["kind"] == "unconfirmed_dependency"]
+
+    assert len(uncertain) == 1
+    assert "Delta consumption support is unconfirmed" in uncertain[0]["fact"]
+    assert "BillingWriter" not in str(uncertain[0])
+    assert "invoice" not in str(uncertain[0]).casefold()
+
+
+def test_later_completion_by_a_different_english_actor_does_not_supersede_uncertainty():
+    """Shared artifact words cannot erase a different actor's open dependency."""
+    from app.agent.workflow.agents.work_architect import (
+        _typed_evidence_relation, _verified_evidence_obligations,
+    )
+
+    reader = _typed_evidence_relation(
+        "AcmeReader Delta consumption support is not yet confirmed")
+    writer = _typed_evidence_relation(
+        "AcmeWriter Delta consumption support was completed")
+    assert reader and reader["actors"] == ["AcmeReader"]
+    assert writer and writer["actors"] == ["AcmeWriter"]
+    assert "read" not in reader["actions"]
+    assert "write" not in writer["actions"]
+
+    state = _msg(
+        "AcmeDB Delta consumption support Task를 만들어줘",
+        keywords=["AcmeDB", "Delta", "consumption", "support"],
+        evidence=[{"key": "DL-9504", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9504", "type": "Task", "status": "In Progress", "done": False,
+            "summary": "[Runtime] AcmeDB Delta consumption support",
+            "comments": [
+                {"created": "2026-08-17T10:00:00+09:00", "body":
+                 "AcmeReader Delta consumption support is not yet confirmed."},
+                {"created": "2026-08-18T10:00:00+09:00", "body":
+                 "AcmeWriter Delta consumption support was completed."},
+            ],
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+
+    assert {row["kind"] for row in contract} >= {
+        "completed_baseline", "unconfirmed_dependency",
+    }
+    assert any("AcmeReader" in row["fact"] for row in contract
+               if row["kind"] == "unconfirmed_dependency")
+
+
+@pytest.mark.parametrize("description", ["", "검증이 필요합니다."])
+def test_open_validation_title_without_verified_material_does_not_create_reuse(description):
+    """A title/status is not proof that reusable criteria, procedure, or results exist."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "Acme validation Task를 만들어줘",
+        keywords=["Acme", "validation"],
+        evidence=[{"key": "DL-9505", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9505", "type": "Task", "status": "Open", "done": False,
+            "summary": "[Security] Acme validation", "updated": "2026-08-18",
+            "description": description,
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+
+    assert not any(row["kind"] == "reuse_existing_validation" for row in contract)
+
+
+@pytest.mark.parametrize("description", [
+    "Validation criteria must be written.",
+    "Validation criteria will be written.",
+    "Validation criteria are required.",
+    "We need to write the validation procedure.",
+    "검증 기준을 작성해야 한다.",
+    "검증 기준 필요",
+    "검증 기준 작성이 필요하다.",
+    "검증 절차를 작성할 예정이다.",
+])
+def test_planned_validation_material_is_not_an_existing_reusable_artifact(description):
+    """A future obligation to author criteria is not a canonical reusable criterion."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "Acme validation Task를 만들어줘",
+        keywords=["Acme", "validation"],
+        evidence=[{"key": "DL-9506", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9506", "type": "Task", "status": "Open", "done": False,
+            "summary": "[Security] Acme validation criteria", "updated": "2026-08-18",
+            "description": description,
+        }]},
+    )
+
+    assert not any(
+        row["kind"] == "reuse_existing_validation"
+        for row in _verified_evidence_obligations(state)
+    )
+
+
+@pytest.mark.parametrize("description", [
+    "Validation criteria: all 5 samples must pass.",
+    "검증 기준: 5개 표본이 모두 통과해야 한다.",
+])
+def test_normative_validation_predicate_is_existing_reusable_material(description):
+    """A modal governs the pass predicate, not an instruction to create the criteria."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "Acme validation Task를 만들어줘",
+        keywords=["Acme", "validation"],
+        evidence=[{"key": "DL-9507", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9507", "type": "Task", "status": "Open", "done": False,
+            "summary": "[Security] Acme validation criteria", "updated": "2026-08-18",
+            "description": description,
+        }]},
+    )
+
+    reuse = [
+        row for row in _verified_evidence_obligations(state)
+        if row["kind"] == "reuse_existing_validation"
+    ]
+    assert len(reuse) == 1
+    assert reuse[0]["fact"] == description
+
+
+def test_gate_only_observation_does_not_duplicate_as_uncertainty():
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch 운영 반영 정책 Task를 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "운영", "반영"],
+        evidence=[{"key": "DL-9502", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9502", "type": "Task", "status": "Open", "done": False,
+            "summary": "[Release] AcmeDB DeltaSketch 운영 반영 정책",
+            "comments": [{"created": "2026-08-18", "body":
+                          "AcmeDB DeltaSketch 검증 완료 전에는 운영 반영을 승인하지 않는다."}],
+        }]},
+    )
+
+    contract = _verified_evidence_obligations(state)
+
+    assert [row["kind"] for row in contract] == ["approval_gate"]
+    assert contract[0]["relationship_facts"] == []
+
+
+def test_existing_validation_reuse_is_enforced_in_scope_and_dod():
+    state = _verified_pipeline_evidence_state()
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "파이프라인 산출물 1건", "rationale": "",
+        "items": [{
+            "summary": "[ETL] AcmeDB DeltaSketch 파이프라인 구현", "type": "Task",
+            "background": "파이프라인 구현 요청됨", "scope_in": ["파이프라인 구현"],
+            "scope_out": [], "dod": ["실행 결과를 기록한다", "산출물을 확인한다"],
+            "components": ["ETL"],
+        }],
+    })
+    draft = result["draft"]
+    body = draft["items"][0]["description"]
+    reuse = [row for row in draft["evidence_obligations"]
+             if row["kind"] == "reuse_existing_validation"]
+
+    assert reuse
+    for row in reuse:
+        oid = row["id"]
+        assert f'data-evidence-obligation="{oid}"' in body
+        assert f'data-evidence-obligation="{oid}:dod"' in body
+    dod = body.split("완료 조건", 1)[1]
+    assert "기존 검증 기준" in dod and "재사용" in dod and "중복" in dod
+    assert "재사용했으며" not in dod
+
+
 def test_saying_it_will_split_without_children_is_flagged():
     """'나눠서 진행한다'고 판단해 놓고 children 이 없으면 그건 판단이 아니라 말뿐이다."""
     r = _applied(structure="task_with_subtasks", structure_why="여러 사람이 나눠서")
@@ -2144,8 +2382,20 @@ def test_an_inferred_split_asks_the_user_to_confirm_the_shape():
     r = WorkArchitect().apply(_msg("리니지 성능 개선이 필요해"), out)
     q = r["questions"][0]
     assert q["kind"] == "choice" and "이 형태로 진행할까요" in q["question"]
+    assert q["field"] == "structure"
+    assert q["required_input"] is False and q["why_required"] == ""
     assert "추천" in q["options"][0] and len(q["options"]) >= 2
     assert r["draft"]["items"], "확인을 받되 초안은 그대로 보여 준다"
+
+
+def test_structure_question_field_is_part_of_the_typed_question_contract():
+    from app.agent.workflow.agents.work_architect import QUESTION, structure_question
+
+    assert "structure" in QUESTION["properties"]["field"]["enum"]
+    question = structure_question([{"summary": "a"}, {"summary": "b"}])
+    assert question["field"] == "structure"
+    assert question["required_input"] is False
+    assert question["why_required"] == ""
 
 
 def test_a_shape_the_user_named_is_not_questioned():
@@ -3218,6 +3468,9 @@ def test_understructured_single_task_gets_a_shape_question():
                       "description": body}]}
     r = WorkArchitect().apply(_msg("통계 파이프라인 개발해야 해"), out)
     assert r["questions"] and "Sub-Task" in str(r["questions"][0].get("options"))
+    assert r["questions"][0]["field"] == "structure"
+    assert r["questions"][0]["required_input"] is False
+    assert r["questions"][0]["why_required"] == ""
 
 
 def test_a_thin_body_does_not_let_a_new_build_slip_through_as_one_task():
@@ -5218,6 +5471,87 @@ def test_delegated_creation_does_not_rerun_the_full_structured_node(monkeypatch)
 
     assert calls == ["full-structured-node"]
     assert result == output
+
+
+def test_successful_work_turn_clears_only_a_prior_work_error(monkeypatch):
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.base import StructuredAgent
+
+    output = {"questions": [], "draft": {"items": [{"summary": "fresh"}]}}
+    monkeypatch.setattr(StructuredAgent, "node", lambda _self: lambda _state: output)
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "messages": [HumanMessage(content="새 초안을 만들어줘")],
+        "error": "[work_architect] previous projection failure",
+    }
+
+    result = WorkArchitect().node()(state)
+
+    assert result["draft"]["items"][0]["summary"] == "fresh"
+    assert result["error"] == ""
+
+
+@pytest.mark.parametrize("delegated", [False, True], ids=("plain", "delegated"))
+@pytest.mark.parametrize("guard_source", ["plan", "artifact"])
+def test_compiler_creation_target_guard_blocks_model_invented_work_before_approval(
+        delegated, guard_source):
+    """Query's typed no-target proof outranks a plausible model-authored creation draft."""
+    request = ("Epic은 네가 골라줘. 1차 구현까지. 마감 2026-08-31."
+               if delegated else "1차 구현. 마감 2026-08-31.")
+    state = _msg(request, intent=Intent.PLAN_WORK)
+    if guard_source == "plan":
+        state["query_plan"] = {
+            "queries": [], "joins": [], "uncertainty": [],
+            "compiler_guard": "creation_target_required",
+        }
+    else:
+        state["query_artifacts"] = {"creation-subject-guard": {
+            "kind": "creation_target_required", "targetRequired": True,
+            "queriesSkipped": 0, "reason": "compiler-owned target guard",
+        }}
+    output = {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "단일 산출물", "rationale": "",
+        "items": [{
+            "summary": "[ETL] data pipeline", "type": "Task",
+            "background": "1차 구현 요청", "scope_in": ["data pipeline 구현"],
+            "scope_out": [], "dod": ["구현 결과 기록", "실행 결과 확인"],
+        }],
+    }
+
+    result = WorkArchitect().apply(state, output)
+
+    assert result["draft"]["items"] == []
+    assert len(result["questions"]) == 1
+    question = result["questions"][0]
+    assert question["field"] == "target" and question["required_input"] is True
+    assert question["why_required"]
+    assert G.route_after_work_architect(result) == "respond"
+
+
+def test_only_typed_plan_work_creation_guard_can_block_work():
+    """Model uncertainty text, executable plans, ASK, and MODIFY never acquire guard authority."""
+    from app.agent.workflow.agents.work_architect import _creation_target_guard_reason
+
+    uncertainty_only = _msg("1차 구현", intent=Intent.PLAN_WORK)
+    uncertainty_only["query_plan"] = {
+        "queries": [], "uncertainty": ["creation_target_required"],
+    }
+    assert _creation_target_guard_reason(uncertainty_only) == ""
+
+    executable = _msg("1차 구현", intent=Intent.PLAN_WORK)
+    executable["query_plan"] = {
+        "queries": [{"id": "model-row"}],
+        "compiler_guard": "creation_target_required",
+    }
+    assert _creation_target_guard_reason(executable) == ""
+
+    for intent in (Intent.ASK, Intent.MODIFY):
+        other = _msg("1차 구현", intent=intent)
+        other["query_plan"] = {
+            "queries": [], "compiler_guard": "creation_target_required",
+        }
+        assert _creation_target_guard_reason(other) == ""
 
 
 def test_work_projection_correction_only_targets_optional_delegation_dodge():

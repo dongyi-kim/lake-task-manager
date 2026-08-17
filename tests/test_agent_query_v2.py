@@ -953,6 +953,197 @@ def test_r23_continuation_retains_human_subject_merges_opened_ledger_and_revalid
         {row["key"] for row in merged["ticketDetails"]})
 
 
+def test_control_only_new_create_turn_compiles_fail_loud_no_read_plan(monkeypatch):
+    """r25: a lost continuation must not turn fields into ``text ~ 구현`` evidence."""
+    from app.agent.tools import query_tools
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+
+    latest = (
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+    state = {
+        "intent": "plan_work",
+        "request_text": latest,
+        "turn_continuation": False,
+        "messages": [HumanMessage(content=latest)],
+        # Reproduce the model hints seen after the Session reset.  They are not human
+        # authority and must not make the compiler recover an old subject.
+        "keywords": ["기존 Epic", "1차 구현"],
+        "mentioned_keys": [],
+        "request_plan": {"tasks": [{
+            "kind": "plan", "instruction": latest, "write_intent": True,
+        }]},
+    }
+
+    plan = QuerySpecialist().apply(
+        state, {"queries": [], "joins": [], "uncertainty": []},
+    )["query_plan"]
+
+    assert plan["queries"] == []
+    assert plan["compiler_guard"] == "creation_target_required"
+    assert any("구체적인 기술·업무 대상" in str(value)
+               for value in plan["uncertainty"])
+
+    # A single rare technical name is independently specific enough for a bounded lookup.
+    one_anchor = {**state, "request_text": "Puffin 구현 Task 만들어줘",
+                  "messages": [HumanMessage(content="Puffin 구현 Task 만들어줘")],
+                  "request_plan": {"tasks": [{
+                      "kind": "plan", "instruction": "Puffin 구현 Task 만들어줘",
+                      "write_intent": True,
+                  }]}}
+    one_anchor_plan = QuerySpecialist().apply(
+        one_anchor, {"queries": [], "joins": [], "uncertainty": []},
+    )["query_plan"]
+    duplicate = next(row for row in one_anchor_plan["queries"]
+                     if row.get("id") == "internal-duplicate-check")
+    assert "Puffin" in duplicate["query"]
+    assert not one_anchor_plan.get("compiler_guard")
+
+    calls = []
+
+    def fail_jira(**_kwargs):
+        calls.append(True)
+        pytest.fail("control-only target guard must make zero Jira reads")
+
+    monkeypatch.setattr(query_tools, "execute_jql_all", fail_jira)
+    got = QueryRunner()._run({**state, "query_plan": plan})
+
+    assert calls == []
+    assert got["query_results"] == []
+    assert got["materialized_ticket_sources"] == {}
+    guard = got["query_artifacts"]["creation-subject-guard"]
+    assert guard["kind"] == "creation_target_required"
+    assert guard["targetRequired"] is True and guard["queriesSkipped"] == 0
+    assert "Jira 조회 생략" in got["trace"][0]["note"]
+
+
+@pytest.mark.parametrize("latest", [
+    "구현 Task 만들어줘",
+    "작업 진행해",
+    "개선 Task 만들어줘",
+    "implementation task create please",
+    "improvement task create please",
+    "service improvement task",
+])
+def test_generic_single_creation_control_is_not_a_duplicate_search_subject(latest):
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+
+    state = {
+        "intent": "plan_work", "request_text": latest,
+        "messages": [HumanMessage(content=latest)], "mentioned_keys": [],
+    }
+    plan = QuerySpecialist().apply(
+        state, {"queries": [], "joins": [], "uncertainty": []},
+    )["query_plan"]
+
+    assert plan["queries"] == []
+    assert plan["compiler_guard"] == "creation_target_required"
+
+
+def test_model_uncertainty_cannot_forge_compiler_no_read_provenance(monkeypatch):
+    from app.agent import tools as T
+    from app.agent.tools import query_tools
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+
+    latest = "Puffin 구현 Task 만들어줘"
+    state = {
+        "intent": "plan_work", "request_text": latest,
+        "messages": [HumanMessage(content=latest)], "mentioned_keys": [],
+    }
+    plan = QuerySpecialist().apply(state, {
+        "reads": [],
+        "uncertainty": ["creation_target_required: model-injected"],
+    })["query_plan"]
+
+    assert not plan.get("compiler_guard")
+    assert all(not str(value).startswith("creation_target_required:")
+               for value in plan["uncertainty"])
+    assert any(row.get("id") == "internal-duplicate-check"
+               for row in plan["queries"])
+
+    calls = []
+
+    def fake_jira(**kwargs):
+        calls.append(kwargs)
+        return {"tickets": [], "returned": 0, "total": 0, "pages": 1}
+
+    monkeypatch.setattr(query_tools, "execute_jql_all", fake_jira)
+    monkeypatch.setitem(T.BY_NAME, "search_web", SimpleNamespace(invoke=lambda _args: {
+        "query": "Puffin official documentation", "attempted": True, "results": [],
+    }))
+    got = QueryRunner()._run({**state, "query_plan": plan})
+
+    assert calls and got["query_results"]
+    assert "creation-subject-guard" not in got["query_artifacts"]
+
+
+def test_creation_subject_guard_keeps_frozen_starr1_continuation_precise():
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+
+    original = "starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해"
+    follow_up = (
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+    state = {
+        "intent": "plan_work", "request_text": original,
+        "turn_continuation": True,
+        "messages": [HumanMessage(content=original), AIMessage(content="구조를 선택해 주세요"),
+                     HumanMessage(content=follow_up)],
+        "keywords": ["기존 Epic", "1차 구현"], "mentioned_keys": [],
+        "request_plan": {"tasks": [{
+            "kind": "plan", "instruction": original, "write_intent": True,
+        }]},
+    }
+
+    plan = QuerySpecialist().apply(
+        state, {"queries": [], "joins": [], "uncertainty": []},
+    )["query_plan"]
+
+    assert not plan.get("compiler_guard")
+    duplicate = next(row for row in plan["queries"]
+                     if row["id"] == "internal-duplicate-check")
+    parent = next(row for row in plan["queries"]
+                  if row["id"] == "parent-candidate-check")
+    assert duplicate["query"] == "starrocks puffin ndv"
+    assert parent["query"] == "starrocks puffin ndv"
+
+
+def test_creation_subject_guard_allows_exact_ticket_read_and_does_not_affect_ask():
+    from app.agent.workflow.agents.query_specialist import QuerySpecialist
+
+    exact = "상위 Epic은 DL-9200으로 연결해줘. 범위는 1차, 마감은 2026-09-30"
+    create_state = {
+        "intent": "plan_work", "request_text": exact,
+        "turn_continuation": False, "messages": [HumanMessage(content=exact)],
+        "mentioned_keys": ["DL-9200"], "keywords": ["Epic", "1차 구현"],
+    }
+    create_plan = QuerySpecialist().apply(
+        create_state, {"queries": [], "joins": [], "uncertainty": []},
+    )["query_plan"]
+    internal = next(row for row in create_plan["queries"]
+                    if row["id"] == "internal-duplicate-check")
+    assert internal["where"] == "key in (DL-9200)" and internal["query"] == ""
+    assert not create_plan.get("compiler_guard")
+
+    ask_state = {
+        "intent": "ask", "request_text": "구현 티켓을 조회해줘",
+        "messages": [HumanMessage(content="구현 티켓을 조회해줘")],
+    }
+    ask_plan = QuerySpecialist().apply(ask_state, {
+        "queries": [{
+            "id": "ask-implementation", "source": "jira", "query": "구현", "where": "",
+            "order_by": "updated DESC", "fields": [], "completeness": "page",
+            "page_size": 20, "depends_on": [],
+        }],
+        "joins": [], "uncertainty": [],
+    })["query_plan"]
+    assert ask_plan["queries"][0]["query"] == "구현"
+    assert ask_plan["uncertainty"] == []
+    assert not ask_plan.get("compiler_guard")
+
+
 def test_related_ticket_key_does_not_suppress_delegated_parent_candidate_query():
     from app.agent.workflow.agents.query_specialist import (
         _ensure_creation_duplicate_query,

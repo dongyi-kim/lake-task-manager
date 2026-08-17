@@ -106,7 +106,8 @@ QUESTION = {
                     "description": "Two to five Korean options for choice, with the recommended option first and an optional short reason."},
         "field": {"type": "string",
                   "enum": ["", "assignee", "epic", "priority", "duedate", "component",
-                           "target", "parent", "scope", "background", "acceptance", "reproduction"],
+                           "target", "parent", "scope", "background", "acceptance",
+                           "reproduction", "structure"],
                   "description": "Ticket field being asked; the UI supplies field-specific autocomplete."},
         "required_input": {
             "type": "boolean",
@@ -406,20 +407,69 @@ _EVIDENCE_GATE_SATISFIED = _re.compile(
 _EVIDENCE_VALIDATION = _re.compile(
     r"검증|테스트|검토|validation|verification|test|review", _re.I,
 )
+_EVIDENCE_VALIDATION_MATERIAL = _re.compile(
+    r"기준|절차|방법|시나리오|테스트\s*케이스|체크\s*리스트|판정\s*결과|"
+    r"측정\s*결과|실행\s*결과|로그|지표|"
+    r"\b(?:criteria|procedure|scenario|test\s*case|checklist|fixture|"
+    r"validation\s*result|verification\s*result|test\s*result|metric|log)\b",
+    _re.I,
+)
+_EVIDENCE_VALIDATION_MATERIAL_ABSENT = _re.compile(
+    r"(?:기준|절차|방법|시나리오|테스트\s*케이스|결과).{0,20}"
+    r"(?:없|미정|미작성|확보(?:하지|되지)\s*않)|"
+    r"\b(?:no|without|missing|unavailable)\s+(?:criteria|procedure|result|fixture)\b",
+    _re.I,
+)
+_EVIDENCE_VALIDATION_MATERIAL_PLANNED = _re.compile(
+    # Korean: the modal/future governs creation of the criteria artifact itself.
+    r"(?:검증|테스트)?\s*(?:기준|절차|방법|시나리오|케이스|체크\s*리스트)"
+    r".{0,32}(?:작성|수립|정의|마련|기록|생성).{0,12}"
+    r"(?:해야|하여야|필요|예정|계획)|"
+    r"(?:검증|테스트)?\s*(?:기준|절차|방법|시나리오|케이스|체크\s*리스트)"
+    r"\s+(?:필요|예정|계획)(?:하|이|입|함|\s*$)|"
+    # English: an artifact + authoring modal, or a modal + authoring action + artifact.
+    r"\b(?:validation\s+|verification\s+|test\s+)?(?:criteria|procedure|"
+    r"scenario|checklist|fixture)\b.{0,32}"
+    r"\b(?:must|should|shall|will|need(?:s|ed)?(?:\s+to)?|"
+    r"plan(?:s|ned|ning)?\s+to|scheduled\s+to)\b.{0,24}"
+    r"\b(?:be\s+)?(?:written|defined|created|documented)\b|"
+    r"\b(?:must|should|shall|will|need(?:s|ed)?(?:\s+to)?|"
+    r"plan(?:s|ned|ning)?\s+to|scheduled\s+to)\b.{0,24}"
+    r"\b(?:write|define|create|document)\b.{0,48}"
+    r"\b(?:validation\s+|verification\s+|test\s+)?(?:criteria|procedure|"
+    r"scenario|checklist|fixture)\b|"
+    r"\b(?:validation\s+|verification\s+|test\s+)?(?:criteria|procedure|"
+    r"scenario|checklist|fixture)\b\s+(?:(?:is|are)\s+)?"
+    r"(?:required|needed|planned|scheduled)\b",
+    _re.I,
+)
 _EVIDENCE_REPEAT_REQUEST = _re.compile(
     r"다시|재수행|재실행|재검증|재검토|재작성|반복|redo|rerun|repeat", _re.I,
 )
 _EVIDENCE_RELATION_ACTION = _re.compile(
-    r"생성|만든|작성|산출|소비|읽(?:기|는|어|는다)?|활용|확인|검증|승인|완료|"
-    r"generate|produce|write|create|consume|read|use|verify|validate|approve|complete",
+    r"생성|만든|작성|산출|소비|읽(?:기|는|어|는다)?|활용|확인|검증|승인|완료|진행|지원|"
+    r"(?<![A-Za-z0-9_])(?:generat(?:e|es|ed|ing|ion)|"
+    r"produc(?:e|es|ed|ing|tion)|writ(?:e|es|ing|ten)|"
+    r"creat(?:e|es|ed|ing|ion)|consum(?:e|es|ed|ing|ption)|"
+    r"read(?:s|ing)?|us(?:e|es|ed|ing)|verif(?:y|ies|ied|ying|ication)|"
+    r"validat(?:e|es|ed|ing|ion)|approv(?:e|es|ed|ing|al)|"
+    r"complet(?:e|es|ed|ing|ion)|progress(?:es|ed|ing)?|"
+    r"support(?:s|ed|ing)?)(?![A-Za-z0-9_])",
     _re.I,
 )
 
 
 def _is_unconfirmed_evidence_fact(value: str) -> bool:
     """Classify uncertainty before any overlapping positive lifecycle token."""
-    return bool(_EVIDENCE_NEGATIVE_COMPLETION.search(str(value or ""))
-                or _EVIDENCE_UNCONFIRMED.search(str(value or "")))
+    text = str(value or "")
+    explicit_uncertainty = bool(_EVIDENCE_UNCONFIRMED.search(text))
+    negative_completion = bool(_EVIDENCE_NEGATIVE_COMPLETION.search(text))
+    # A pure "before verification, do not roll out" sentence is a gate, not a second
+    # dependency. If the same sentence also explicitly says support is unconfirmed, both
+    # contracts are material and remain separate.
+    if _EVIDENCE_GATE.search(text) and negative_completion and not explicit_uncertainty:
+        return False
+    return explicit_uncertainty or negative_completion
 
 
 def _is_direct_positive_completion(value: str) -> bool:
@@ -462,7 +512,7 @@ def _canonical_detail_observations(detail: dict) -> list[dict]:
     """
     out: list[dict] = []
 
-    def append(value, *, source: str, observed_at="") -> None:
+    def append(value, *, source: str, observed_at="", observation_group="") -> None:
         text = _re.sub(r"\bh[1-6]\.\s*", "", str(value or "").strip(), flags=_re.I)
         if not text:
             return
@@ -474,26 +524,31 @@ def _canonical_detail_observations(detail: dict) -> list[dict]:
                 "text": compact[:420],
                 "source": source,
                 "observed_at": str(observed_at or "").strip()[:80],
+                "observation_group": str(observation_group or source).strip()[:80],
             }
             if not any(existing["text"] == row["text"]
                        and existing["observed_at"] == row["observed_at"] for existing in out):
                 out.append(row)
 
     append(detail.get("description"), source="description",
-           observed_at=detail.get("updated"))
-    for comment in (detail.get("comments") or [])[:8]:
+           observed_at=detail.get("updated"), observation_group="description")
+    for comment_index, comment in enumerate((detail.get("comments") or [])[:8]):
         if not isinstance(comment, dict):
             continue
         append(comment.get("body") or comment.get("text"), source="comment",
-               observed_at=comment.get("created") or comment.get("updated"))
+               observed_at=comment.get("updated") or comment.get("created"),
+               observation_group=f"comment:{comment_index}")
     return out[:24]
 
 
 _RELATION_STATE_STOP = {
     "아직", "여부", "확인", "확정", "검증", "완료", "진행", "지원", "결과",
-    "상태", "작업", "현재", "별도", "필요", "않았습니다", "했습니다", "한다",
-    "not", "yet", "confirmed", "verified", "pending", "complete", "completed",
-    "verification", "status", "result", "support",
+    "상태", "작업", "현재", "별도", "필요", "증거", "조건", "운영", "반영", "배포", "출시",
+    "전", "전에", "전까지", "후", "후에", "이후",
+    "않았습니다", "했습니다", "한다",
+    "not", "yet", "confirmed", "unconfirmed", "verified", "pending", "complete",
+    "completed", "verification", "status", "result", "support", "is", "are", "was",
+    "were", "be", "been", "being",
 }
 
 
@@ -501,13 +556,68 @@ def _material_relation_terms(value: str) -> set[str]:
     """Extract conservative subject/relation terms for temporal supersession."""
     terms: set[str] = set()
     for raw in _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{1,}|[가-힣]{2,}", str(value or "")):
-        term = raw.casefold()
+        # Dots/hyphens are legal *inside* technical identifiers, but sentence punctuation
+        # at the token edge is not identity (``Delta.`` must equal ``Delta``).
+        term = raw.strip("._-").casefold()
         if _re.fullmatch(r"[가-힣]+", term):
             term = _re.sub(r"(?:으로|에서|에게|까지|부터|처럼|보다|의|은|는|이|가|을|를)$",
                            "", term)
         if len(term) >= 2 and term not in _RELATION_STATE_STOP:
             terms.add(term)
     return terms
+
+
+def _evidence_actor_identities(value: str) -> list[str]:
+    """Extract bounded grammatical actor identities without a role-name vocabulary.
+
+    English product/role identifiers frequently use CamelCase (or digits/separators), while
+    ordinary artifacts such as ``Delta`` do not. Direct finite-verb subjects are also safe.
+    This keeps actor identity available to temporal matching without treating ``read`` inside
+    ``AcmeReader`` or ``write`` inside ``AcmeWriter`` as an action.
+    """
+    text = " ".join(str(value or "").split()).strip()
+    actors = []
+
+    def add(raw: str) -> None:
+        actor = str(raw or "").strip()
+        key = actor.casefold()
+        if (not actor or key in _RELATION_STATE_STOP
+                or _EVIDENCE_RELATION_ACTION.fullmatch(actor)
+                or key in {value.casefold() for value in actors}):
+            return
+        actors.append(actor)
+
+    # Technical identities joined to Korean particles remain unambiguous (``AcmeReader가``).
+    # A bare Korean noun plus a subject particle is not: gate prose such as ``증거 전에는``
+    # and ``경로와`` otherwise become invented people/actors. Preserve those nouns as material
+    # context instead of assigning identity semantics to them.
+    for match in _re.finditer(
+            r"([A-Za-z][A-Za-z0-9_.-]{1,})(?=(?:의|가|이|는|은|와|과)\s*)",
+            text):
+        add(match.group(1))
+    direct = _re.match(
+        r"^\s*([A-Za-z][A-Za-z0-9_.-]{1,})\s+"
+        r"(?:generates?|produces?|writes?|creates?|consumes?|reads?|uses?|"
+        r"verifies?|validates?|approves?|completes?|supports|supported|supporting|"
+        r"progresses?)\b",
+        text, _re.I,
+    )
+    if direct:
+        add(direct.group(1))
+    by_actor = _re.search(r"\bby\s+([A-Za-z][A-Za-z0-9_.-]{1,})\b", text, _re.I)
+    if by_actor:
+        add(by_actor.group(1))
+    first_pair = _re.match(
+        r"^\s*([A-Za-z][A-Za-z0-9_.-]{1,})\s+([A-Z][A-Za-z0-9_.-]{1,})\b",
+        text,
+    )
+    if first_pair and not _re.search(r"[가-힣]", text):
+        token = first_pair.group(1)
+        composite_identity = (any(char.isupper() for char in token[1:])
+                              or bool(_re.search(r"[0-9_.-]", token)))
+        if composite_identity and _EVIDENCE_RELATION_ACTION.search(text):
+            add(token)
+    return actors[:6]
 
 
 def _typed_evidence_relation(value: str) -> dict | None:
@@ -517,15 +627,9 @@ def _typed_evidence_relation(value: str) -> dict | None:
         match.group(0).casefold() for match in _EVIDENCE_RELATION_ACTION.finditer(text)
     ))
     terms = sorted(_material_relation_terms(text))
+    actors = _evidence_actor_identities(text)
     if not actions or len(terms) < 2:
         return None
-    actors = []
-    for match in _re.finditer(
-            r"([A-Za-z][A-Za-z0-9_.-]{1,}|[가-힣]{2,20}?)(?=(?:의|가|이|는|은|와|과)\s*)",
-            text):
-        actor = match.group(1).strip()
-        if actor.casefold() not in {value.casefold() for value in actors}:
-            actors.append(actor)
     actor_keys = {value.casefold() for value in actors}
     objects = [term for term in terms if term not in actor_keys]
     return {
@@ -540,16 +644,114 @@ def _obligation_relation_terms(obligation: dict) -> set[str]:
     return _material_relation_terms(str(obligation.get("fact") or ""))
 
 
+def _composition_material_terms(value: str) -> set[str]:
+    """Return exact artifact/context terms, excluding actor, action, and lifecycle noise."""
+    actor_keys = {actor.casefold() for actor in _evidence_actor_identities(value)}
+    return {
+        term for term in _material_relation_terms(value)
+        if term not in actor_keys
+        and term not in _RELATION_STATE_STOP
+        and not _EVIDENCE_RELATION_ACTION.fullmatch(term)
+    }
+
+
+def _same_observation_relation(anchor: str, sibling: str) -> bool:
+    """Allow same-comment composition only for a shared actor/material relation."""
+    sibling_relation = _typed_evidence_relation(sibling)
+    if not sibling_relation:
+        return False
+    anchor_actors = {value.casefold() for value in _evidence_actor_identities(anchor)}
+    sibling_actors = {value.casefold() for value in _evidence_actor_identities(sibling)}
+    if anchor_actors and sibling_actors and not (anchor_actors & sibling_actors):
+        return False
+    return bool(_composition_material_terms(anchor) & _composition_material_terms(sibling))
+
+
+_COMPOSITION_GENERIC_MATERIAL = {
+    "support", "validation", "verification", "consumption", "consume", "consumes",
+    "지원", "검증", "확인", "소비", "여부", "결과", "상태",
+}
+
+
+def _select_same_group_relation_siblings(
+        fact_row: dict, observations: list[dict], focus_terms: set[str]) -> list[dict]:
+    """Select only siblings demonstrably belonging to an uncertainty relation.
+
+    An actorless lifecycle sentence is common in operational comments. One shared product
+    keyword is not enough to attach every sentence in that comment: unrelated billing and
+    runtime facts often share it. Independently uncertain siblings remain material when they
+    share an artifact. Positive siblings require the same explicit actor or at least two
+    non-focus material terms; an actorless anchor accepts only one unique best such match.
+    """
+    fact = str(fact_row.get("text") or "").strip()
+    group = str(fact_row.get("observation_group") or "")
+    anchor_actors = {value.casefold() for value in _evidence_actor_identities(fact)}
+    anchor_material = _composition_material_terms(fact)
+    excluded = {value.casefold() for value in focus_terms} | _COMPOSITION_GENERIC_MATERIAL
+    candidates: list[tuple[int, dict, set[str], set[str]]] = []
+    for index, row in enumerate(observations):
+        if row is fact_row or str(row.get("observation_group") or "") != group:
+            continue
+        value = str(row.get("text") or "").strip()
+        if not value or _EVIDENCE_GATE.search(value) or not _typed_evidence_relation(value):
+            continue
+        sibling_actors = {item.casefold() for item in _evidence_actor_identities(value)}
+        common = anchor_material & _composition_material_terms(value)
+        if not common:
+            continue
+        candidates.append((index, row, sibling_actors, common))
+
+    selected: list[dict] = []
+    selected_ids: set[int] = set()
+
+    def select(row: dict) -> None:
+        identity = id(row)
+        if identity not in selected_ids:
+            selected_ids.add(identity)
+            selected.append(row)
+
+    # These are direct uncertainty facts themselves, not inferred positive context. Keep
+    # every materially overlapping one (reader/optimizer progress in a single comment).
+    for _index, row, _actors, common in candidates:
+        if common and _is_unconfirmed_evidence_fact(str(row.get("text") or "")):
+            select(row)
+
+    scored: list[tuple[int, int, dict]] = []
+    for index, row, sibling_actors, common in candidates:
+        if id(row) in selected_ids:
+            continue
+        if anchor_actors and sibling_actors and anchor_actors & sibling_actors:
+            select(row)
+            continue
+        discriminative = {term for term in common if term not in excluded}
+        if len(discriminative) >= 2:
+            scored.append((len(discriminative), index, row))
+
+    if anchor_actors:
+        for _score, _index, row in scored:
+            select(row)
+    elif scored:
+        best = max(score for score, _index, _row in scored)
+        best_rows = [(index, row) for score, index, row in scored if score == best]
+        # Materially tied actorless relations are ambiguous; proximity must not manufacture
+        # certainty. If the material match itself is unique, retain that closest row.
+        if len(best_rows) == 1:
+            select(best_rows[0][1])
+
+    return sorted(selected, key=lambda row: observations.index(row))
+
+
 def _same_material_relation(left: dict, right: dict) -> bool:
     left_actors = {
-        str(value).casefold() for value in
-        ((left.get("fact_relation") or {}).get("actors") or []) if str(value)
+        value.casefold() for value in _evidence_actor_identities(left.get("fact") or "")
     }
     right_actors = {
-        str(value).casefold() for value in
-        ((right.get("fact_relation") or {}).get("actors") or []) if str(value)
+        value.casefold() for value in _evidence_actor_identities(right.get("fact") or "")
     }
-    if left_actors and right_actors and not (left_actors & right_actors):
+    # If either canonical fact names an actor, supersession needs the same named actor on
+    # both sides. A later writer completion cannot silently close a reader dependency.
+    if (left_actors or right_actors) and not (
+            left_actors and right_actors and left_actors & right_actors):
         return False
     common = _obligation_relation_terms(left) & _obligation_relation_terms(right)
     # Two shared material terms are intentionally required.  A single shared product name
@@ -676,6 +878,27 @@ def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
         seen.add(fingerprint)
         protected = []
         fact = str(fact_row.get("text") or "").strip()
+        selected_group_values: set[str] = set()
+        if kind == "unconfirmed_dependency":
+            group = str(fact_row.get("observation_group") or "")
+            if group:
+                focus_terms = set()
+                for raw in state.get("keywords") or []:
+                    focus_terms.update(_material_relation_terms(str(raw or "")))
+                selected_rows = _select_same_group_relation_siblings(
+                    fact_row, observations, focus_terms,
+                )
+                selected_group_values = {
+                    str(row.get("text") or "").strip() for row in selected_rows
+                }
+                parts = [
+                    str(row.get("text") or "").strip()
+                    for row in selected_rows if str(row.get("text") or "").strip()
+                ]
+                if fact not in parts:
+                    parts.append(fact)
+                if len(parts) > 1:
+                    fact = " / ".join(parts)[:420]
         fragment_texts = [str(row.get("text") or "") for row in observations]
         joined = " ".join([title, fact, *fragment_texts])
         for raw in state.get("keywords") or []:
@@ -687,20 +910,52 @@ def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
         direct_relation = None
         if kind in {"completed_baseline", "unconfirmed_dependency", "approval_gate"}:
             direct_relation = _typed_evidence_relation(fact)
-            direct = [fact] if direct_relation else []
-            compatible = [
-                value for value in fragment_texts
-                if value not in direct
-                and _typed_evidence_relation(value)
-                and (not _is_unconfirmed_evidence_fact(value)
-                     if kind == "completed_baseline"
-                     else (not _is_direct_positive_completion(value)
-                           if kind == "unconfirmed_dependency" else True))
-            ]
-            relationship_facts = (direct + compatible)[:2]
-            relations = [row for row in (
-                _typed_evidence_relation(value) for value in relationship_facts
-            ) if row]
+            if kind == "approval_gate":
+                # The typed relation is already present in the obligation fact rendered as
+                # dependency/gate prose. Rendering it again as a generic relationship block
+                # duplicates the same canonical observation in the visible ticket.
+                relationship_facts = []
+                relations = [direct_relation] if direct_relation else []
+            elif kind == "unconfirmed_dependency":
+                # Preserve a materially different producer/artifact/consumer relation from
+                # another canonical description, while the co-comment progress fragments
+                # already composed into ``fact`` are never rendered a second time.
+                relation_anchor = " ".join([title, fact])
+                relationship_facts = []
+                fact_group = str(fact_row.get("observation_group") or "")
+                for row in observations:
+                    value = str(row.get("text") or "").strip()
+                    same_group = str(row.get("observation_group") or "") == fact_group
+                    if (not value or value.casefold() in fact.casefold()
+                            or _EVIDENCE_GATE.search(value)
+                            or not _typed_evidence_relation(value)
+                            or _is_direct_positive_completion(value)):
+                        continue
+                    if same_group and value not in selected_group_values:
+                        continue
+                    if not _same_observation_relation(relation_anchor, value):
+                        continue
+                    relationship_facts.append(value)
+                    if len(relationship_facts) >= 2:
+                        break
+                relations = ([direct_relation] if direct_relation else []) + [
+                    row for row in (
+                        _typed_evidence_relation(value) for value in relationship_facts
+                    ) if row
+                ]
+            else:
+                direct = [fact] if direct_relation else []
+                compatible = [
+                    value for value in fragment_texts
+                    if value not in direct
+                    and value.casefold() not in fact.casefold()
+                    and _typed_evidence_relation(value)
+                    and not _is_unconfirmed_evidence_fact(value)
+                ]
+                relationship_facts = (direct + compatible)[:2]
+                relations = [row for row in (
+                    _typed_evidence_relation(value) for value in relationship_facts
+                ) if row]
             for relation in relations:
                 for term in [*relation.get("actors", []), *relation.get("objects", [])]:
                     if (len(term) >= 2
@@ -756,12 +1011,16 @@ def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
         if gate:
             add("approval_gate", key=key, title=title, fact_row=gate,
                 observations=observations)
-        if not done and _EVIDENCE_VALIDATION.search(title):
-            status = str(detail.get("status") or "").strip() or "진행 상태"
+        reusable_validation = _latest_observation([
+            row for row in observations
+            if _EVIDENCE_VALIDATION_MATERIAL.search(row["text"])
+            and not _EVIDENCE_VALIDATION_MATERIAL_ABSENT.search(row["text"])
+            and not _EVIDENCE_VALIDATION_MATERIAL_PLANNED.search(row["text"])
+        ])
+        if (not done and reusable_validation
+                and _EVIDENCE_VALIDATION.search(" ".join([title, *fragment_texts]))):
             add("reuse_existing_validation", key=key, title=title,
-                fact_row={"text": f"{title} ({status})",
-                          "observed_at": str(detail.get("updated") or ""),
-                          "source": "status"}, observations=observations)
+                fact_row=reusable_validation, observations=observations)
 
     _reconcile_evidence_temporality(collected)
     ordered = [
@@ -907,6 +1166,12 @@ def _apply_verified_evidence_obligations(state: dict, items: list[dict]) -> list
                     body, "작업 범위", oid,
                     f"제외: 기존 {key} 검증 작업의 중복 수행 — 결과·기준을 재사용",
                 )
+                body = _append_obligation_list(
+                    body, "완료 조건", oid + ":dod",
+                    (f"{key}의 기존 검증 기준·결과를 재사용하고 검증 작업이 "
+                     "중복되지 않도록 확인한다"),
+                    checklist=True,
+                )
                 for child in item.get("children") or []:
                     if not isinstance(child, dict) or _execution_stage(child.get("summary")) != "validation":
                         continue
@@ -918,6 +1183,11 @@ def _apply_verified_evidence_obligations(state: dict, items: list[dict]) -> list
                     child_body = _append_obligation_list(
                         child_body, "작업 범위", oid + ":child-no-duplicate",
                         f"제외: {key}에서 수행 중인 기존 검증 작업 자체의 중복 수행",
+                    )
+                    child_body = _append_obligation_list(
+                        child_body, "완료 조건", oid + ":child-dod",
+                        f"{key}의 기존 검증 기준·결과 재사용 여부를 확인한다",
+                        checklist=True,
                     )
                     child["description"] = child_body
             item["description"] = body
@@ -972,7 +1242,9 @@ def _evidence_obligation_errors(state: dict, draft: dict) -> list[dict]:
             if kind in {"completed_baseline", "unconfirmed_dependency", "approval_gate"}:
                 missing = missing or (fact and fact not in visible)
             elif kind == "reuse_existing_validation":
-                missing = missing or not all(word in visible for word in ("재사용", "중복"))
+                missing = (missing
+                           or not _has_obligation_marker(body, oid + ":dod")
+                           or not all(word in visible for word in ("재사용", "중복")))
             if missing:
                 errors.append({
                     "index": index,
@@ -982,6 +1254,35 @@ def _evidence_obligation_errors(state: dict, draft: dict) -> list[dict]:
                                 "반영되지 않았다"),
                 })
     return errors
+
+
+_CREATION_TARGET_GUARD = "creation_target_required"
+_CREATION_TARGET_GUARD_WHY = "생성할 티켓의 작업 대상과 실행 행동을 식별할 수 없음"
+
+
+def _creation_target_guard_reason(state: dict) -> str:
+    """Return a blocker only from Query's typed deterministic provenance.
+
+    ``uncertainty`` is model-facing prose and has no authority here. The plan marker is
+    compiler-only and valid only with an empty executable read set; the runner artifact is
+    likewise accepted only with its exact kind and boolean proof. ASK and MODIFY never use a
+    creation guard, even if stale state contains one of these values.
+    """
+    if str(state.get("intent") or "") != Intent.PLAN_WORK:
+        return ""
+    plan = state.get("query_plan") or {}
+    plan_guard = (
+        isinstance(plan, dict)
+        and plan.get("compiler_guard") == _CREATION_TARGET_GUARD
+        and not (plan.get("queries") or [])
+    )
+    artifact = (state.get("query_artifacts") or {}).get("creation-subject-guard") or {}
+    artifact_guard = (
+        isinstance(artifact, dict)
+        and artifact.get("kind") == _CREATION_TARGET_GUARD
+        and artifact.get("targetRequired") is True
+    )
+    return _CREATION_TARGET_GUARD_WHY if plan_guard or artifact_guard else ""
 
 
 class WorkArchitect(StructuredAgent):
@@ -1004,6 +1305,18 @@ class WorkArchitect(StructuredAgent):
         base = super().node()
 
         def run(state):
+            def finish(result: dict) -> dict:
+                result = dict(result or {})
+                # ``error`` uses a last-value reducer. A successful Work turn must clear a
+                # prior Work failure so the graph can distinguish current failure from stale
+                # state; an actual fallback keeps its ``[work_architect]`` error intact.
+                prior_work_error = str(state.get("error") or "").startswith(
+                    f"[{self.name}]"
+                )
+                if prior_work_error and not str(result.get("error") or "").strip():
+                    result["error"] = ""
+                return result
+
             # Concrete delegated work has no remaining semantic choice once research and
             # blocker guards have run. Sending the same ~10K context to a small model first
             # added 28-69 seconds and frequently returned empty ``items``. Build the literal
@@ -1027,12 +1340,12 @@ class WorkArchitect(StructuredAgent):
                     direct["trace"] = note(
                         state, self.name, "유효하지 않은 Sub-Task 부모 · 결정적 대안 질문",
                     )
-                    return direct
+                    return finish(direct)
                 outcome = requested_outcome_contract(state)
                 if len(outcome.get("outcomes") or []) > 1:
                     # Multi-outcome root mapping is semantic. Deterministic recovery lacks
                     # source provenance, so let the one normal structured call bind it.
-                    return base(state)
+                    return finish(base(state))
                 epic_downgrade = _recover_delegated_epic_downgrade(state)
                 if epic_downgrade:
                     direct = self.apply(state, {
@@ -1044,7 +1357,7 @@ class WorkArchitect(StructuredAgent):
                     direct["trace"] = note(
                         state, self.name, "Epic 기준 미충족 · 결정적 Task 초안 1건",
                     )
-                    return direct
+                    return finish(direct)
                 subtasks = _recover_explicit_subtasks(state)
                 if subtasks:
                     direct = self.apply(state, {
@@ -1059,7 +1372,7 @@ class WorkArchitect(StructuredAgent):
                         state, self.name,
                         f"결정적 Sub-Task 초안 {len((direct.get('draft') or {}).get('items') or [])}건",
                     )
-                    return direct
+                    return finish(direct)
                 recovered = _recover_delegated_creation(state)
                 if recovered:
                     recovered_structure = (shape_hint(state)[0]
@@ -1078,11 +1391,11 @@ class WorkArchitect(StructuredAgent):
                         state, self.name,
                         f"결정적 위임 초안 {len((direct.get('draft') or {}).get('items') or [])}건",
                     )
-                    return direct
+                    return finish(direct)
             # Semantic→projection mode owns its bounded correction inside Agent.  Re-running
             # this whole node would resend the original prompt/evidence and repeat the 35B
             # semantic judgment, so the outer workflow always invokes it exactly once.
-            return base(state)
+            return finish(base(state))
 
         return run
 
@@ -1469,6 +1782,46 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         }
         return schema
 
+    def pre_validate_structured_output(
+            self, state, out, *, output_contract: str, execution_stage: str):
+        """Remove only runtime-owned fields from a creation projection.
+
+        Creation assignees belong to literal user mapping and PeopleAdvisor, while structure
+        provenance belongs to runtime request/accepted-state inspection. Qwen may still emit
+        those plausible fields even though the strict CREATE schema intentionally excludes
+        them. Removing this exact authority set before validation avoids a pointless format
+        repair; every unrelated unknown property remains and is rejected normally.
+        """
+        if (state.get("intent") or Intent.PLAN_WORK) != Intent.PLAN_WORK \
+                or not isinstance(out, dict):
+            return out
+        cleaned = copy.deepcopy(out)
+
+        def strip_runtime_authority(value) -> None:
+            if isinstance(value, dict):
+                value.pop("assignee", None)
+                value.pop("assignee_source", None)
+                value.pop("structure_source", None)
+                for child in value.values():
+                    strip_runtime_authority(child)
+            elif isinstance(value, list):
+                for child in value:
+                    strip_runtime_authority(child)
+
+        strip_runtime_authority(cleaned)
+        if "interpretation" in cleaned:
+            interpretation = " ".join(str(cleaned.get("interpretation") or "").split())
+            has_draft = any(isinstance(row, dict) for row in (cleaned.get("items") or []))
+            if (state.get("situation") or "").strip() or has_draft:
+                # Interpretation is a pre-research artifact only. Once research or a draft
+                # exists, it is unused and must not consume the CREATE maxLength budget.
+                interpretation = ""
+            elif len(interpretation) > 600:
+                prefix = interpretation[:597].rsplit(" ", 1)[0].strip()
+                interpretation = (prefix or interpretation[:597]).rstrip() + "..."
+            cleaned["interpretation"] = interpretation
+        return cleaned
+
     def apply(self, state, out):
         if (state.get("intent") or "") != Intent.MODIFY:
             _materialize_creation_parts(out, state)
@@ -1587,6 +1940,21 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 "kind": "text", "options": [], "field": "target",
                 "required_input": True,
                 "why_required": "티켓의 작업 대상과 실행할 행동을 식별할 수 없음",
+            }]
+            model_questions = True
+        # Query's deterministic compiler has already proved that this PLAN_WORK turn has
+        # only execution controls and no creation subject. This typed provenance outranks a
+        # plausible model-invented item regardless of delegation; no downstream recovery or
+        # approval path may turn ``[ETL] data pipeline``-style filler into a live draft.
+        target_guard_reason = _creation_target_guard_reason(state)
+        if target_guard_reason:
+            items.clear()
+            out["items"] = []
+            qs = [{
+                "question": "어떤 대상에 무엇을 해야 하는지 구체적인 작업 내용을 알려 주세요.",
+                "kind": "text", "options": [], "field": "target",
+                "required_input": True,
+                "why_required": target_guard_reason,
             }]
             model_questions = True
         # A non-native small model can return valid JSON but leave ``items=[]`` even after
@@ -2056,9 +2424,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         if (src == "inferred" and structure in ("task_with_subtasks", "multiple_tasks",
                                                 "new_epic")
                 and items and not qs and not _said_defaults(state)):
-            qs = [{"question": _shape_question(structure, items),
-                   "kind": "choice", "field": "",
-                   "options": _shape_options(structure)}]
+            qs = [_optional_structure_question(
+                _shape_question(structure, items), _shape_options(structure),
+            )]
         if draft_new_labels:
             draft["new_labels"] = draft_new_labels
         # (구조: …) 줄은 **맨 끝에서 한 번만** 붙인다 — 여기서도 붙이던 것을 뺐다.
@@ -2607,11 +2975,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                                             + "\n(확인 필요: 설계·구현·검증처럼 단계가 나뉘는 "
                                               "규모로 보이는데 단일 Task 다 — Sub-Task 분할 검토)").strip()
                 else:
-                    qs = [{"question": "작업이 여러 단계(설계·구현·검증 등)로 나뉘는 규모로 "
-                                       "보입니다. 어떻게 만들까요?",
-                           "kind": "choice", "field": "",
-                           "options": ["Task 하나 + 단계별 Sub-Task (권장 — 단계·담당이 나뉜다)",
-                                       "단일 Task 로 둔다"]}]
+                    qs = [_optional_structure_question(
+                        "작업이 여러 단계(설계·구현·검증 등)로 나뉘는 규모로 "
+                        "보입니다. 어떻게 만들까요?",
+                        ["Task 하나 + 단계별 Sub-Task (권장 — 단계·담당이 나뉜다)",
+                         "단일 Task 로 둔다"],
+                    )]
 
         # ── 모듈이 갈리는 자식은 **형제 Task 로 올린다** ─────────────────────────
         # knowledge/03: 요청이 두 모듈에 걸치면 컴포넌트를 둘 다 넣지 말고 **티켓을 나눠서
@@ -8491,6 +8860,23 @@ def _shape_options(structure) -> list:
     return opts
 
 
+def _optional_structure_question(question: str, options: list[str]) -> dict:
+    """Return the single typed contract for deterministic shape preferences.
+
+    Structure confirmation has a safe current default—the visible draft—so it is never a
+    required-input interview. Keeping this constructor shared prevents late deterministic
+    questions from bypassing the model-facing QUESTION contract.
+    """
+    return {
+        "question": str(question or "").strip(),
+        "kind": "choice",
+        "field": "structure",
+        "options": [str(value).strip() for value in (options or []) if str(value).strip()],
+        "required_input": False,
+        "why_required": "",
+    }
+
+
 # ── 구조 합의 단계 (사용자 요청) ───────────────────────────────────────────
 # 왜 나누나: 복합 산출물을 **본문까지 다 써서** 한 번에 내밀면, 구조가 틀렸을 때 사용자가
 # 고칠 것이 너무 많다. 티켓 넷의 배경·범위·DoD 를 다 읽고 나서야 "2번은 1번에 합쳐야지"를
@@ -8569,7 +8955,8 @@ def structure_question(items) -> dict:
     k = sum(len([c for c in (i.get("children") or []) if isinstance(c, dict)])
             for i in (items or []) if isinstance(i, dict))
     made = f"Task {n}건" + (f" · Sub-Task {k}건" if k else "")
-    return {"question": f"이 구조로 진행할까요? ({made}) — 고칠 것이 있으면 그대로 "
-                        "말씀해 주세요(합치기·나누기·추가·삭제·이름 변경).",
-            "kind": "choice", "field": "",
-            "options": ["이 구조로 진행한다", "고칠 것이 있다 (아래에 적는다)"]}
+    return _optional_structure_question(
+        f"이 구조로 진행할까요? ({made}) — 고칠 것이 있으면 그대로 "
+        "말씀해 주세요(합치기·나누기·추가·삭제·이름 변경).",
+        ["이 구조로 진행한다", "고칠 것이 있다 (아래에 적는다)"],
+    )

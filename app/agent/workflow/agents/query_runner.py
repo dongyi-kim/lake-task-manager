@@ -679,13 +679,41 @@ class QueryRunner:
     def _run(self, state):
         from app.agent import tools as T
         from app.agent.tools.query_tools import execute_jql_all
-        from app.agent.workflow.agents.query_specialist import \
-            _reject_unsupported_relational_plan
+        from app.agent.workflow.agents.query_specialist import (
+            _query_plan_creation_target_required,
+            _reject_unsupported_relational_plan,
+        )
 
         # Persisted/manual plans bypass QuerySpecialist.apply. Reject unsupported relational
         # contracts here too; silently running them independently would return plausible but
         # semantically wrong evidence.
-        _reject_unsupported_relational_plan(state.get("query_plan") or {})
+        query_plan = state.get("query_plan") or {}
+        _reject_unsupported_relational_plan(query_plan)
+        # Only PLAN_WORK's creation compiler owns this typed marker. The helper also requires
+        # an empty executable-read set; model-authored uncertainty text is never provenance.
+        # ASK/navigation plans therefore cannot inherit the no-read behavior.
+        target_required = (_query_plan_creation_target_required(query_plan)
+                           if str(state.get("intent") or "") == "plan_work" else "")
+        if target_required:
+            # This is a compiler-owned fail-loud no-read plan, not evidence of an in-scope
+            # miss.  Preserve a bounded diagnostic artifact and make zero tool calls.  A true
+            # continuation may still carry its already verified sidecar; a new turn inherits
+            # nothing because the merge boundary is owned by Session.
+            materialized_ticket_sources = _merge_materialized_ticket_sources(state, {})
+            return {
+                "query_results": [],
+                "query_artifacts": {
+                    "creation-subject-guard": {
+                        "kind": "creation_target_required",
+                        "targetRequired": True,
+                        "queriesSkipped": len(query_plan.get("queries") or []),
+                        "reason": target_required,
+                    },
+                },
+                "materialized_ticket_sources": materialized_ticket_sources,
+                "assignment_completion": {},
+                "trace": note(state, self.name, "생성 대상 anchor 부족 · Jira 조회 생략"),
+            }
 
         results, artifacts = [], {}
         materialized_ticket_sources = {}

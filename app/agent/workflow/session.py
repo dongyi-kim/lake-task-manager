@@ -234,6 +234,61 @@ _OUTCOME_REFINEMENT = _re.compile(
     _re.I,
 )
 
+_LEGACY_STRUCTURE_QUESTION = _re.compile(
+    r"(?:단일|여러|복수|다수|최상위)\s*(?:Task|태스크|테스크)|"
+    r"(?:Task|태스크|테스크).{0,16}(?:Sub-?Task|서브\s*태스크|서브\s*테스크)|"
+    r"(?:Epic|에픽)\s*(?:으로|아래|하위|상위|부모)|"
+    r"(?:티켓|이슈|Task|태스크|테스크)\s*(?:계층|구조|형태)|"
+    r"(?:구조|형태)(?:를|로)\s*.{0,16}(?:진행|나누|나눠|분할|쪼개|합치|합쳐|통합)",
+    _re.I,
+)
+_LEGACY_STRUCTURE_OPTION = _re.compile(
+    r"(?:단일|하나의?)\s*(?:Task|태스크|테스크)|"
+    r"(?:여러|복수|다수|최상위|\d+\s*(?:건|개)?)\s*(?:Task|태스크|테스크)|"
+    r"(?:Task|태스크|테스크)\s*(?:하나\s*)?(?:\+|와|과|/|또는)\s*"
+    r"(?:단계별\s*)?(?:Sub-?Task|서브\s*태스크|서브\s*테스크)|"
+    r"(?:Sub-?Task|서브\s*태스크|서브\s*테스크)\s*(?:\+|와|과|/)\s*"
+    r"(?:Task|태스크|테스크)|"
+    r"(?:^|\s)(?:Epic|에픽)(?:\s|$|으로|로)",
+    _re.I,
+)
+
+
+def _legacy_blank_structure_choice(question: dict) -> bool:
+    """Recognize only the bounded pre-metadata structure preference card."""
+    if (str(question.get("field") or "").strip()
+            or "required_input" in question
+            or str(question.get("why_required") or "").strip()):
+        return False
+    text = str(question.get("question") or "").strip()
+    options = [str(value or "").strip() for value in (question.get("options") or [])
+               if str(value or "").strip()]
+    is_choice = str(question.get("kind") or "").strip().casefold() == "choice"
+    option_shapes = [value for value in options if _LEGACY_STRUCTURE_OPTION.search(value)]
+    return bool((is_choice or options) and (
+        _LEGACY_STRUCTURE_QUESTION.search(text)
+        or (len(options) >= 2 and len(option_shapes) == len(options))
+    ))
+
+
+def _pending_questions_are_optional(asked: list[dict]) -> bool:
+    """Return true only when every pending prompt is explicitly or structurally optional.
+
+    Current cards must explicitly set ``required_input=false``. Legacy structure-preference
+    cards used an empty field and omitted the flag, so accept only their bounded question/option
+    grammar. A blank field by itself conveys no ownership or optionality and fails closed.
+    """
+    if not asked:
+        return False
+    for question in asked:
+        required = question.get("required_input")
+        if required is True or str(question.get("why_required") or "").strip():
+            return False
+        if required is False or _legacy_blank_structure_choice(question):
+            continue
+        return False
+    return True
+
 
 def _looks_like_answer_to_questions(utterance: str, asked: list[dict]) -> bool:
     """Recognize bounded answer shapes before treating a pending interview as sticky."""
@@ -400,7 +455,10 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
     # RequestArchitect owns the exact typed-add grammar. Reuse it here so the session boundary
     # and outcome projection cannot disagree about whether ``Task 하나 더`` extends the current
     # plan. The import is local because Session already imports the assembled graph at startup.
-    from app.agent.workflow.agents.request_architect import _continuation_outcome_additions
+    from app.agent.workflow.agents.request_architect import (
+        _continuation_outcome_additions,
+        _typed_continuation_refinement,
+    )
     adds_typed_outcome = bool(prior.get("request_plan")
                               and _continuation_outcome_additions(utterance))
     # A typed ``댓글 대신 ...`` can be an in-plan outcome edit, but an explicit whole-topic
@@ -431,6 +489,13 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
             # 다른 target/question을 버리고 별도 work를 명령한 경우에는 stale state를 잇지 않는다.
             if not parent_choice:
                 return False
+        # A fully parsed execution-field answer can close an optional legacy structure prompt
+        # without asking RequestArchitect to rediscover the frozen plan. Required target/person/
+        # term questions always win, including checkpoints whose answer matcher would otherwise
+        # mistake ``Epic 은 네가 골라줘`` for a term definition.
+        typed_fields = _typed_continuation_refinement(utterance)
+        if typed_fields:
+            return _pending_questions_are_optional(asked)
         if (parent_choice or _OUTCOME_REFINEMENT.search(utterance)
                 or _looks_like_answer_to_questions(utterance, asked)):
             return True

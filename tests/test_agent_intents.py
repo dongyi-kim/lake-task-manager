@@ -765,6 +765,235 @@ def test_select_existing_and_top_level_fast_fields_remain_typed_and_visible_down
     })
 
 
+@pytest.mark.parametrize("optional_marker", [
+    {},
+    {"required_input": False},
+], ids=("required-input-absent", "required-input-false"))
+def test_exact_optional_structure_question_uses_zero_call_typed_continuation(
+        monkeypatch, optional_marker):
+    """r25 raw shape: an optional structure preference must not reclassify a complete answer."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior_plan = {"goal": "Puffin 최소 기능 Task 생성", "tasks": [{
+        "id": "delivery", "kind": "ticket", "instruction": "Puffin 최소 기능 Task 생성",
+        "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+    }]}
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin NDV 적용 이력을 반영한 최소 기능 Task를 만들어줘",
+        "request_plan": prior_plan,
+        "draft": {"mode": "task", "items": [{"summary": "Puffin 최소 기능"}]},
+        "situation": "관련 이력과 상위 Epic 후보 조사 완료",
+        "materialized_ticket_sources": {
+            "ticketDetails": [
+                {"key": "DL-9200", "type": "Epic"},
+                {"key": "DL-9202", "type": "Task"},
+                {"key": "DL-9203", "type": "Task"},
+                {"key": "DL-9201", "type": "Task"},
+                {"key": "DL-7001", "type": "Epic"},
+            ],
+            "parentCandidateKeys": ["DL-9200", "DL-7001"],
+            "parentCandidateSearchAttempted": True,
+        },
+        "questions": [{
+            "question": "작업이 여러 단계로 보이는데 어떻게 만들까요?",
+            "kind": "choice", "field": "",
+            "options": [
+                "Task 하나 + 단계별 Sub-Task (권장 — 단계·담당이 나뉜다)",
+                "단일 Task 로 둔다",
+            ],
+            **optional_marker,
+        }],
+    }
+    latest = (
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+
+    continued = _turn_start_patch(latest, prior)
+    state = {**continued, "messages": [HumanMessage(content=latest)]}
+    agent = RequestArchitect()
+    calls = []
+    monkeypatch.setattr(
+        agent, "invoke_structured",
+        lambda *_args, **_kwargs: calls.append(True) or pytest.fail(
+            "complete typed answer to an optional question must not call the model"),
+    )
+
+    patch = agent._run(state)
+
+    assert continued["turn_continuation"]
+    assert continued["request_text"] == prior["request_text"]
+    assert continued["request_plan"] == prior_plan
+    assert continued["draft"] == prior["draft"]
+    assert [row["key"] for row in continued["materialized_ticket_sources"][
+        "ticketDetails"]] == ["DL-9200", "DL-9202", "DL-9203", "DL-9201", "DL-7001"]
+    assert calls == []
+    assert patch["request_plan"] == prior_plan
+    assert patch["request_text"] == prior["request_text"]
+    assert G.route_after_request_architect({**state, **patch}) == "refine"
+
+
+@pytest.mark.parametrize("question", [
+    {"field": "target", "required_input": True},
+    {"field": "person", "required_input": True},
+    {"field": "term", "required_input": True},
+    {"field": "", "required_input": True},
+], ids=("target", "person", "term", "blank-but-required"))
+def test_typed_fields_do_not_bypass_a_required_pending_question(question):
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 검증 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin 검증", "tasks": [{
+            "id": "delivery", "kind": "ticket", "instruction": "Puffin 검증 Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        "draft": {"items": [{"summary": "Puffin 검증"}]},
+        "questions": [{
+            "question": "필수 정보를 알려주세요", "kind": "text", "options": [], **question,
+        }],
+    }
+    latest = (
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+
+    fresh = _turn_start_patch(latest, prior)
+
+    assert not fresh["turn_continuation"]
+    assert fresh["request_plan"] == {}
+    assert fresh["draft"] == {}
+
+
+def test_typed_fields_do_not_fast_bypass_a_required_due_question():
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 검증 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin 검증", "tasks": [{
+            "id": "delivery", "kind": "ticket", "instruction": "Puffin 검증 Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        "questions": [{
+            "question": "마감일은 언제인가요?", "kind": "text", "field": "due",
+            "options": [], "required_input": True,
+        }],
+    }
+    latest = (
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+
+    fresh = _turn_start_patch(latest, prior)
+
+    assert not fresh["turn_continuation"]
+    assert fresh["request_plan"] == {}
+
+
+@pytest.mark.parametrize("question", [
+    {"question": "검증 대상 테이블을 알려주세요", "kind": "text", "options": []},
+    {"question": "누구를 담당자로 배정할까요?", "kind": "text", "options": []},
+    {"question": "RGP 뜻을 알려주세요", "kind": "text", "options": []},
+], ids=("legacy-target", "legacy-person", "legacy-term"))
+def test_blank_legacy_research_question_is_not_optional_from_missing_metadata(question):
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 검증 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin 검증", "tasks": [{
+            "id": "delivery", "kind": "ticket", "instruction": "Puffin 검증 Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        "draft": {"items": [{"summary": "Puffin 검증"}]},
+        # Legacy/current producer omitted both field and required_input.
+        "questions": [question],
+    }
+    latest = (
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+
+    fresh = _turn_start_patch(latest, prior)
+
+    assert not fresh["turn_continuation"]
+    assert fresh["request_text"] == latest
+    assert fresh["request_plan"] == {}
+    assert fresh["draft"] == {}
+    assert prior["questions"] == [question]
+
+
+def test_explicit_optional_structure_field_accepts_the_complete_typed_answer():
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 검증 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin 검증", "tasks": [{
+            "id": "delivery", "kind": "ticket", "instruction": "Puffin 검증 Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        "questions": [{
+            "question": "어떤 구조로 만들까요?", "kind": "choice", "field": "structure",
+            "options": ["단일 Task", "Task + Sub-Task"], "required_input": False,
+        }],
+    }
+    latest = (
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+
+    continued = _turn_start_patch(latest, prior)
+
+    assert continued["turn_continuation"]
+    assert continued["request_plan"] == prior["request_plan"]
+
+
+@pytest.mark.parametrize("question", [
+    {
+        "question": "어떤 구성 요소를 만들어야 할까요?", "kind": "choice",
+        "field": "", "options": ["reader", "writer"],
+    },
+    {
+        "question": "어떤 형태의 데이터를 대상으로 할까요?", "kind": "choice",
+        "field": "", "options": ["정형 데이터", "비정형 데이터"],
+    },
+    {
+        "question": "어떤 구조체를 사용할까요?", "kind": "choice",
+        "field": "", "options": ["배열", "맵"],
+    },
+], ids=("component-target", "data-shape", "data-structure"))
+def test_domain_shape_words_are_not_legacy_ticket_hierarchy_choices(question):
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin 검증 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin 검증", "tasks": [{
+            "id": "delivery", "kind": "ticket", "instruction": "Puffin 검증 Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        "draft": {"items": [{"summary": "Puffin 검증"}]},
+        # Blank field and absent required_input are legacy metadata, not optionality proof.
+        "questions": [question],
+    }
+    latest = (
+        "Epic 은 네가 골라줘. 범위는 최소 기능 1차 구현까지, "
+        "마감은 2026-09-30. 알아서 진행해"
+    )
+
+    fresh = _turn_start_patch(latest, prior)
+
+    assert not fresh["turn_continuation"]
+    assert fresh["request_plan"] == {}
+    assert fresh["draft"] == {}
+
+
 @pytest.mark.parametrize("state_change", [
     {"turn_continuation": False},
     {"materialized_ticket_sources": {}},
