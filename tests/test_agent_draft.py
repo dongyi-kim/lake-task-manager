@@ -381,6 +381,35 @@ def test_delegated_new_task_with_children_drops_epic_and_risk_preference_questio
     assert result["draft"]["items"]
 
 
+def test_empty_model_result_recovers_a_concrete_delegated_single_task():
+    state = _msg("Workbench 쿼리 편집기에 단축키 도움말 팝업 추가해줘. 알아서 초안 잡아줘",
+                 situation="직접 일치하는 내부 이력 없음", intent=Intent.PLAN_WORK)
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "items": [], "rationale": "",
+    })
+
+    assert not result["questions"]
+    item = result["draft"]["items"][0]
+    assert "단축키 도움말 팝업" in item["summary"]
+    assert item["type"] == "Task"
+    assert all(section in item["description"] for section in
+               ("배경", "작업 범위", "완료 조건"))
+
+
+def test_empty_model_result_reuses_normal_volume_partitioning_for_delegated_work():
+    state = _msg("메타데이터 미등록 테이블 30개를 등록해야 해. 사람 나눠서 진행하게 만들어줘. 알아서",
+                 situation="직접 일치하는 내부 이력 없음", intent=Intent.PLAN_WORK)
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "items": [], "rationale": "",
+    })
+
+    assert not result["questions"]
+    parent = result["draft"]["items"][0]
+    assert "30개" in parent["summary"]
+    assert len(parent.get("children") or []) >= 2
+    assert all(child.get("assignee") for child in parent["children"])
+
+
 def test_delegated_subtask_without_a_deliverable_asks_then_converges_to_one_child():
     """ASKD2: 부모와 개수만으로는 실행할 일이 없다. `알아서`도 내용을 발명할 권한이 아니다."""
     from langchain_core.messages import HumanMessage

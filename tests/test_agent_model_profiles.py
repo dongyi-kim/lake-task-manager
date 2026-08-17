@@ -39,7 +39,7 @@ def test_qwen_structured_contract_uses_semantic_role_transport_budget():
         output_contract="structured", semantic_profile="reasoning",
     )
     assert row.task_profile == "balanced"
-    assert row.parameters["temperature"] == 0.1
+    assert row.parameters["temperature"] == 0.0
     assert row.parameters["presence_penalty"] == 0.0
     assert row.parameters["max_tokens"] == 4096
     assert row.parameters["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
@@ -52,7 +52,18 @@ def test_qwen_simple_structured_contract_has_room_for_query_plan_json():
         output_contract="structured", semantic_profile="fast_structured",
     )
     assert row.parameters["max_tokens"] == 2048
-    assert row.parameters["temperature"] == 0.1
+    assert row.parameters["temperature"] == 0.0
+
+
+def test_qwen_simple_reasoning_contract_is_deterministic_and_bounded():
+    row = profiles.resolve(
+        "/models/Qwen3.5-4B-4bit", "openai_compat", "balanced",
+        output_contract="structured", semantic_profile="reasoning",
+    )
+    assert row.parameters["temperature"] == 0.0
+    assert row.parameters["max_tokens"] == 3072
+    assert row.parameters["extra_body"]["chat_template_kwargs"] == {
+        "enable_thinking": False}
 
 
 def test_gpt4o_structured_reasoning_profile_is_not_rewritten():

@@ -745,6 +745,24 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                    "required_input": True,
                    "why_required": "변경 payload에 넣을 정확한 새 임계값이 없음"}]
             model_questions = True
+        # A non-native small model can return valid JSON but leave ``items=[]`` even after
+        # the user delegated every optional choice.  Repeating the same call produced the
+        # same empty object and a generic "만들 수 있는 티켓 없음" interview.  Recover only
+        # from the literal request when all real blocker guards above are clear; the normal
+        # hierarchy, decomposition, assignment, body, and Auditor passes still run below.
+        if not items and not qs and state.get("situation"):
+            recovered = _recover_delegated_creation(state)
+            if recovered:
+                items = out["items"] = recovered
+                mode = out["mode"] = "task"
+                inferred_shape = shape_hint(state)[0] or "single_task"
+                out["structure"] = inferred_shape
+                out["structure_source"] = "user_specified" if shape_hint(state)[0] else "inferred"
+                out["structure_why"] = "사용자가 위임한 구체 작업을 최소 실행 범위로 복원"
+                out["interpretation"] = ""
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(모델의 빈 생성 결과를 사용자 리터럴 작업과 안전 기본값으로 복원했다)").strip()
+                model_questions = False
         for item in items:
             if item.get("issue_type") and not item.get("type"):
                 item["type"] = item["issue_type"]
@@ -3156,9 +3174,17 @@ def _volume_partition_children(state, item: dict) -> list:
     # 계산 전 숫자는 제거하고 자식 제목의 계산된 분량만 source-of-truth로 둔다.
     subject = _re.sub(r"\s*[-–—]?\s*\d*\s*개씩\s*(?:분담|배분|처리|등록)?\s*$", "",
                       subject).strip(" -–—")
-    base = _base_title(subject).strip() or "요청 대상 처리"
+    # `_base_title` intentionally removes every number for *comparison*.  Reusing it as
+    # the visible title silently changed a grounded request (`30개`) into a dangling
+    # `개`.  Keep the literal quantity in the parent title and remove it only from the
+    # repeated child/body stem.
+    base = _display_base_title(subject).strip() or "요청 대상 처리"
+    work_base = _re.sub(
+        rf"\s*{total}\s*{_re.escape(unit)}(?:을|를)?(?=\s|$)", " ", base,
+    )
+    work_base = _re.sub(r"\s{2,}", " ", work_base).strip() or "요청 대상 처리"
     item["summary"] = f"{prefix} {base}".strip()
-    safe_base = _esc(base)
+    safe_base = _esc(work_base)
     item["description"] = (
         f"<h3>배경</h3><p>{safe_base} 대상 {total}{unit}를 여러 담당자가 중복 없이 "
         "나누어 처리해야 한다.</p>"
@@ -3175,7 +3201,7 @@ def _volume_partition_children(state, item: dict) -> list:
         size = quotient + (1 if idx < remainder else 0)
         label = f"담당 묶음 {idx + 1}/{groups}"
         child = {
-            "summary": f"{base} — {label} ({size}{unit})",
+            "summary": f"{work_base} — {label} ({size}{unit})",
             "description": (
                 f"<h3>작업 범위</h3><ul><li>parent의 확정 대상 목록 중 {_esc(label)}에 "
                 f"배정된 {size}{unit}를 처리한다.</li></ul>"
@@ -4692,6 +4718,14 @@ def _base_title(s: str) -> str:
     return _re.sub(r"\s{2,}", " ", s).strip(" -–—:#")
 
 
+def _display_base_title(s: str) -> str:
+    """Visible counterpart of `_base_title`: strip stage suffixes, retain facts/numbers."""
+    s = str(s or "").strip()
+    s = _re.sub(r"\s*[-–—:]?\s*(?:설계|구현|검증|테스트|연동|모니터링|문서화|배포|개발)"
+                r"(?:\s*단계)?\s*$", "", s).strip()
+    return _re.sub(r"\s{2,}", " ", s).strip(" -–—:#")
+
+
 def draft_full_text(draft: dict, cap: int = 4000) -> str:
     """초안 **전문** — 후속 턴 WorkArchitect 와 Auditor 가 본다.
 
@@ -5284,6 +5318,76 @@ def _requests_existing_parent_subtask(text: str) -> bool:
         said, _re.I,
     )
     return bool(key_parent or referential_parent)
+
+
+def _recover_delegated_creation(state) -> list[dict]:
+    """Build one conservative Task from a concrete delegated literal request.
+
+    This is a no-model recovery, not a general ticket writer.  It deliberately refuses
+    ambiguity that changes the action or creates an irreversible/invalid payload.
+    """
+    if not _said_defaults(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
+        return []
+    said = (request_text(state) + " " + last_user_text(state)).strip()
+    if (not _has_concrete_work_target(said)
+            or state.get("already_exists")
+            or _missing_data_quality_target(state)
+            or _missing_subtask_deliverable(state)
+            or _missing_exact_mutation(said)
+            or _explicit_parentless_subtask(state)
+            or _requests_existing_parent_subtask(said)
+            or _re.search(r"(?:새|신규)\s*(?:Epic|에픽)|(?:Epic|에픽)\s*(?:생성|만들)", said, _re.I)):
+        return []
+    if reads_as_bug(said):
+        # Complete pasted reports have their own Bug-grade deterministic recovery; an
+        # incomplete report must stay in the reproduction interview path.
+        return []
+
+    literal = (last_user_text(state) or request_text(state)).strip()
+    # Preserve the action noun while stripping conversational request/delegation suffixes.
+    replacements = (
+        (r"추가\s*(?:해\s*)?(?:줘|주세요)", "추가"),
+        (r"개선\s*(?:해\s*)?(?:줘|주세요)", "개선"),
+        (r"등록\s*(?:해\s*)?(?:줘|주세요)", "등록"),
+        (r"구현\s*(?:해\s*)?(?:줘|주세요)", "구현"),
+        (r"만들어\s*(?:줘|주세요)", "생성"),
+    )
+    subject = literal
+    for pattern, value in replacements:
+        subject = _re.sub(pattern, value, subject, flags=_re.I)
+    subject = _re.sub(
+        r"(?:나머지는\s*)?(?:알아서|기본값으로|맡길게|네가\s*정해)"
+        r"(?:\s*(?:초안|진행))?(?:\s*(?:잡아|해))?(?:\s*줘)?",
+        "", subject, flags=_re.I,
+    )
+    subject = _re.sub(r"사람\s*나눠서\s*진행(?:하게)?\s*(?:생성|해|하도록)?", "", subject)
+    subject = _re.sub(r"(?:해야\s*해|하고\s*싶어|원해)\s*$", "", subject)
+    subject = _re.sub(r"\s+(?:초안|티켓|Task|태스크)\s*(?:생성|작성|잡아)?\s*$", "", subject,
+                      flags=_re.I)
+    subject = _re.sub(r"([가-힣A-Za-z0-9_])(?:에|에서)\s+(?=[가-힣A-Za-z0-9_'\"])", r"\1 ", subject)
+    subject = _re.sub(r"\s+", " ", subject).strip(" .,:;-")
+    if len(subject) < 3:
+        return []
+
+    try:
+        from app.infra.settings import modules_in_text
+        module = next(iter(modules_in_text(subject)), "")
+    except Exception:
+        module = ""
+    if module:
+        subject = _re.sub(rf"^\s*{_re.escape(module)}\s+", "", subject, flags=_re.I)
+    issue_type = "Task"
+    for candidate in ("Story", "Improvement", "Feature"):
+        if _re.search(rf"\b{candidate}\b", said, _re.I):
+            issue_type = candidate
+            break
+    summary = f"[{module}] {subject}" if module else subject
+    item = {"summary": _collapse_repeated_summary(summary), "type": issue_type,
+            "issue_type": issue_type, "tier": "task"}
+    if module and module in _known_components():
+        item["components"] = [module]
+    item["description"] = _minimal_grounded_body(item)
+    return [item]
 
 
 def _explicit_comment_body(text: str) -> bool:
