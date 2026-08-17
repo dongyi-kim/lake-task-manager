@@ -69,7 +69,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
          "turn_continuation", "situation", "evidence", "materialized_ticket_sources",
          "structure_plan", "draft", "questions", "approval_token"),
         ("intent", "keywords", "module", "mentioned_keys", "sufficient", "playbook",
-         "answer_depth", "request_plan", "request_text", "trace"),
+         "answer_depth", "request_plan", "request_refinement", "request_text", "trace"),
         execution_layer="lightweight_semantic",
     ),
     "query_specialist": RoleSpec(
@@ -82,7 +82,8 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "query_runner": RoleSpec(
         "query_runner", "Query Runner", "deterministic", "fast_structured",
         "Executes QueryPlan under scope and pagination contracts and preserves complete artifacts.",
-        ("query_plan", "thread_id"),
+        ("messages", "intent", "request_text", "request_plan", "query_plan", "keywords",
+         "turn_continuation", "materialized_ticket_sources", "thread_id"),
         ("query_results", "query_artifacts", "materialized_ticket_sources",
          "assignment_completion"),
         ("search", "web"), has_prompt=False, kind="service",
@@ -116,7 +117,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         "Converts verified findings into Epic-to-Task-to-SubTask structures and mutation drafts.",
         ("messages", "request_text", "request_plan", "intent", "mentioned_keys", "situation", "evidence",
          "related_docs", "pre_survey", "query_artifacts", "materialized_ticket_sources", "structure_plan",
-         "structure_notes", "draft", "change_plan"),
+         "structure_notes", "request_refinement", "draft", "change_plan"),
         ("interpretation", "structure_plan", "structure_ok", "questions", "draft", "change_plan"),
         effect="draft", semantic_contract="semantic_projection",
     ),
@@ -128,7 +129,9 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "auditor": RoleSpec(
         "auditor", "Auditor", "complex", "reasoning",
         "Audits schema, hierarchy, evidence, references, and request coverage; separates errors from warnings.",
-        ("request_text", "request_plan", "draft", "change_plan", "evidence"),
+        ("messages", "request_text", "request_plan", "keywords", "turn_continuation",
+         "materialized_ticket_sources", "structure_ok", "draft", "change_plan", "evidence",
+         "revisions"),
         ("review", "revisions"), effect="draft", kind="guardrail",
     ),
     "action_executor": RoleSpec(

@@ -11,8 +11,10 @@
 문장 품질(본문 4섹션·참조 관계 설명)은 `tools/agent_draft_eval.py` 가 실 LLM 으로 본다.
 """
 import copy
+from html import unescape
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -69,7 +71,8 @@ def test_children_are_flattened_with_their_parent_index():
 def test_approval_fingerprint_covers_the_children():
     """화면에 보인 것과 만들어지는 것이 어긋나면 HITL 이 무의미하다 — 지문에 자식도 들어간다."""
     d = _draft(item={"children": [{"summary": "topic-a 전환"}]})
-    tok = G._propose({"thread_id": "t1", "draft": d})["approval_token"]
+    tok = G._propose({"thread_id": "t1", "review": {"ok": True},
+                      "draft": d})["approval_token"]
     rec = approval.peek(tok)
     assert len(rec["payload"].get("children") or []) == 1
     assert rec["fp"] == approval.fingerprint(
@@ -83,7 +86,8 @@ def test_one_approval_creates_the_whole_tree():
     d = _draft(item={"epic": "DL-101", "children": [
         {"summary": "topic-a 전환", "assignee": "skcc.x1042"},
         {"summary": "topic-b 전환", "assignee": "skcc.x1103"}]})
-    tok = G._propose({"thread_id": "t-tree", "draft": d})["approval_token"]
+    tok = G._propose({"thread_id": "t-tree", "review": {"ok": True},
+                      "draft": d})["approval_token"]
     approval.approve(tok, "t-tree")
     r = T.BY_NAME["create_tickets"].invoke(
         {"mode": "task", "items": as_bulk_items(d), "children": child_items(d),
@@ -98,7 +102,8 @@ def test_one_approval_creates_the_whole_tree():
 def test_children_are_not_created_when_the_parent_failed():
     """부모가 없으면 자식도 만들지 않는다 — Jira 에는 롤백이 없어 반쯤 만든 트리가 가장 나쁘다."""
     d = _draft(item={"type": "없는타입", "children": [{"summary": "topic-a 전환"}]})
-    tok = G._propose({"thread_id": "t-bad", "draft": d})["approval_token"]
+    tok = G._propose({"thread_id": "t-bad", "review": {"ok": True},
+                      "draft": d})["approval_token"]
     approval.approve(tok, "t-bad")
     from app.agent import tools as T
     r = T.BY_NAME["create_tickets"].invoke(
@@ -494,6 +499,139 @@ def _verified_pipeline_evidence_state():
     )
 
 
+def _r26_split_pipeline_evidence_state():
+    """The real r26 shape: subject, relation, state, and gate live in adjacent fragments."""
+    return _msg(
+        "StarRocks Puffin NDV 통계 생성 파이프라인을 최소 기능 1차까지 만들어줘",
+        request_text="StarRocks Puffin NDV 통계 생성 파이프라인을 만들어줘",
+        turn_continuation=True,
+        situation="writer baseline, reader dependency, rollout gate 조사 완료",
+        keywords=["StarRocks", "Puffin", "NDV", "통계", "생성", "파이프라인"],
+        evidence=[
+            {"key": "DL-9201", "title": "[ETL] Iceberg Puffin NDV writer PoC",
+             "why": "요청 주제의 완료된 writer baseline"},
+            {"key": "DL-9202", "title": "[Workbench] StarRocks Puffin NDV reader 검증",
+             "why": "요청 주제의 진행 중 consumer dependency와 rollout gate"},
+        ],
+        materialized_ticket_sources={"ticketDetails": [
+            {
+                "key": "DL-9201", "type": "Task", "status": "Resolved", "done": True,
+                "summary": "[ETL] Iceberg Puffin NDV writer PoC", "updated": "2026-08-15",
+                "description": (
+                    "5개 표본으로 writer PoC를 수행한다. Puffin statistics 파일 생성 여부와 "
+                    "테이블별 NDV 오차를 기록한다."
+                ),
+                "comments": [{"created": "2026-08-15", "body": (
+                    "5개 표본의 Puffin 파일 생성 결과를 확보했습니다. "
+                    "StarRocks 소비 여부는 별도 reader 검증이 필요합니다."
+                )}],
+            },
+            {
+                "key": "DL-9202", "type": "Task", "status": "In Progress", "done": False,
+                "summary": "[Workbench] StarRocks Puffin NDV reader 검증",
+                "updated": "2026-08-17",
+                "description": (
+                    "writer가 생성한 Puffin NDV를 StarRocks reader와 optimizer가 실제로 "
+                    "소비하는지 확인한다. 실제 소비 증거를 확보하기 전에는 운영 반영을 "
+                    "승인하지 않는다."
+                ),
+                "comments": [{"created": "2026-08-17", "body": (
+                    "reader 경로와 optimizer 실행계획을 함께 확인 중입니다. "
+                    "지원 여부는 아직 확정하지 않았습니다."
+                )}],
+            },
+        ]},
+    )
+
+
+def _marked_visible_block(body: str, obligation_id: str) -> str:
+    pattern = re.compile(
+        rf'<(?P<tag>p|li)\b(?=[^>]*data-evidence-obligation="{re.escape(obligation_id)}")'
+        rf'[^>]*>(?P<body>.*?)</(?P=tag)>',
+        re.I | re.S,
+    )
+    match = pattern.search(body)
+    assert match, f"missing obligation marker block: {obligation_id}"
+    return " ".join(unescape(re.sub(r"<[^>]+>", " ", match.group("body"))).split())
+
+
+def test_r26_split_evidence_is_compiled_and_rendered_as_atomic_typed_obligations():
+    """Subject/relation/state may be adjacent sentences, but each marker must be self-contained."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _r26_split_pipeline_evidence_state()
+    obligations = _verified_evidence_obligations(state)
+    by_kind = {row["kind"]: row for row in obligations}
+
+    completed = by_kind["completed_baseline"]
+    uncertain = by_kind["unconfirmed_dependency"]
+    gate = by_kind["approval_gate"]
+    assert completed.get("source_subject") == "[ETL] Iceberg Puffin NDV writer PoC"
+    assert all(token in str(uncertain.get("constraint_context") or "")
+               for token in ("reader", "optimizer", "확인 중"))
+    assert all(token in str(gate.get("constraint_context") or "")
+               for token in ("writer", "StarRocks reader", "optimizer", "소비"))
+
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "단일 파이프라인 산출물", "rationale": "",
+        "items": [{
+            "summary": "[ETL] StarRocks Puffin NDV 통계 생성 파이프라인 1차 구현",
+            "type": "Task", "background": "통계 생성 파이프라인 요청됨",
+            "scope_in": ["최소 기능 1차 구현"], "scope_out": ["운영 반영"],
+            "dod": ["실행 로그를 기록한다", "산출 결과를 확인한다"],
+            "components": ["ETL"],
+        }],
+    })
+    body = result["draft"]["items"][0]["description"]
+
+    completed_block = _marked_visible_block(body, completed["id"])
+    assert all(token in completed_block
+               for token in ("writer PoC", "5개 표본", "Puffin 파일", "확보"))
+    uncertain_block = _marked_visible_block(body, uncertain["id"])
+    assert all(token in uncertain_block
+               for token in ("reader", "optimizer", "확인 중", "확정하지 않았"))
+    for marker in (gate["id"], gate["id"] + ":dod"):
+        gate_block = _marked_visible_block(body, marker)
+        assert all(token in gate_block for token in (
+            "writer", "StarRocks reader", "optimizer", "실제 소비 증거", "승인하지 않는다",
+        ))
+
+
+def test_a_draft_obligation_subset_cannot_hide_canonical_material_obligations():
+    """The payload list is a cache; deleting derived ids must not weaken final audit."""
+    from app.agent.workflow.agents.work_architect import (
+        _evidence_obligation_errors, _obligation_marker_block,
+    )
+
+    state = _r26_split_pipeline_evidence_state()
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "단일 파이프라인 산출물", "rationale": "",
+        "items": [{
+            "summary": "[ETL] 통계 생성 파이프라인 1차 구현", "type": "Task",
+            "background": "통계 생성 파이프라인 요청됨",
+            "scope_in": ["최소 기능 1차 구현"], "scope_out": ["운영 반영"],
+            "dod": ["실행 로그를 기록한다", "산출 결과를 확인한다"],
+            "components": ["ETL"],
+        }],
+    })
+    full = result["draft"]
+    baseline = next(row for row in full["evidence_obligations"]
+                    if row["kind"] == "completed_baseline")
+    baseline_block = _obligation_marker_block(
+        full["items"][0]["description"], baseline["id"],
+    )
+    weakened = copy.deepcopy(full)
+    weakened["evidence_obligations"] = [baseline]
+    weakened["items"][0]["description"] = baseline_block
+
+    errors = _evidence_obligation_errors(state, weakened)
+    kinds = {row.get("obligation_kind") for row in errors}
+
+    assert {"unconfirmed_dependency", "approval_gate"} <= kinds
+
+
 def test_verified_evidence_becomes_bounded_execution_obligations_in_the_draft():
     """Completed baseline, unconfirmed consumer, gate, and existing validation all survive."""
     out = {
@@ -799,6 +937,58 @@ def test_same_comment_uncertainty_composes_only_materially_related_siblings():
     assert "invoice" not in str(uncertain[0]).casefold()
 
 
+def test_unique_adjacent_actorless_uncertainty_rejects_a_relation_outside_source_focus():
+    """Adjacency alone cannot attach an unrelated billing relation to a search source."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeSearch VectorIndex 지원 검증 Task를 만들어줘",
+        keywords=["AcmeSearch", "VectorIndex", "지원", "검증"],
+        evidence=[{"key": "ACME-41", "why": "VectorIndex 지원 검증 자료"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "ACME-41", "type": "Task", "status": "In Progress", "done": False,
+            "summary": "[Search] AcmeSearch VectorIndex", "updated": "2026-08-18",
+            "comments": [{"created": "2026-08-18T10:00:00+09:00", "body": (
+                "VectorIndex support is unconfirmed. "
+                "BillingSink generates Delta invoices while export support is unconfirmed."
+            )}],
+        }]},
+    )
+
+    uncertain = [row for row in _verified_evidence_obligations(state)
+                 if row["kind"] == "unconfirmed_dependency"]
+
+    assert len(uncertain) == 1
+    assert "VectorIndex support is unconfirmed" in uncertain[0]["fact"]
+    assert "BillingSink" not in str(uncertain[0])
+    assert "invoice" not in str(uncertain[0]).casefold()
+
+
+def test_unique_adjacent_actorless_uncertainty_keeps_a_source_related_reader_relation():
+    """A unique neighbour remains usable when its material overlaps title/focus."""
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeDB DeltaSketch reader 지원 검증 Task를 만들어줘",
+        keywords=["AcmeDB", "DeltaSketch", "reader", "지원", "검증"],
+        evidence=[{"key": "ACME-42", "why": "reader 지원 검증 자료"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "ACME-42", "type": "Task", "status": "In Progress", "done": False,
+            "summary": "[Runtime] AcmeDB DeltaSketch reader", "updated": "2026-08-18",
+            "comments": [{"created": "2026-08-18T10:00:00+09:00", "body": (
+                "Reader support is unconfirmed. "
+                "AcmeReader consumes DeltaSketch while reader status is unconfirmed."
+            )}],
+        }]},
+    )
+
+    uncertain = [row for row in _verified_evidence_obligations(state)
+                 if row["kind"] == "unconfirmed_dependency"]
+
+    assert len(uncertain) == 1
+    assert "AcmeReader consumes DeltaSketch" in uncertain[0]["fact"]
+
+
 def test_later_completion_by_a_different_english_actor_does_not_supersede_uncertainty():
     """Shared artifact words cannot erase a different actor's open dependency."""
     from app.agent.workflow.agents.work_architect import (
@@ -939,6 +1129,55 @@ def test_gate_only_observation_does_not_duplicate_as_uncertainty():
     assert contract[0]["relationship_facts"] == []
 
 
+def test_gate_context_rejects_an_unrelated_adjacent_relation():
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    state = _msg(
+        "AcmeSearch VectorIndex 운영 검증 Task를 만들어줘",
+        keywords=["AcmeSearch", "VectorIndex", "운영", "검증"],
+        evidence=[{"key": "DL-9508", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9508", "type": "Task", "status": "Open", "done": False,
+            "summary": "[Search] AcmeSearch VectorIndex 운영 검증",
+            "comments": [{"created": "2026-08-18", "body": (
+                "BillingSink generates Delta invoices. "
+                "실제 증거 전에는 운영 반영을 승인하지 않는다."
+            )}],
+        }]},
+    )
+
+    gates = [row for row in _verified_evidence_obligations(state)
+             if row["kind"] == "approval_gate"]
+
+    assert len(gates) == 1
+    assert gates[0]["constraint_context"] == ""
+    assert "BillingSink" not in json.dumps(gates, ensure_ascii=False)
+
+
+def test_gate_context_keeps_an_adjacent_relation_matching_source_and_focus():
+    from app.agent.workflow.agents.work_architect import _verified_evidence_obligations
+
+    related = "AcmeSearch generates VectorIndex snapshots."
+    state = _msg(
+        "AcmeSearch VectorIndex 운영 검증 Task를 만들어줘",
+        keywords=["AcmeSearch", "VectorIndex", "운영", "검증"],
+        evidence=[{"key": "DL-9509", "why": "요청과 직접 관련"}],
+        materialized_ticket_sources={"ticketDetails": [{
+            "key": "DL-9509", "type": "Task", "status": "Open", "done": False,
+            "summary": "[Search] AcmeSearch VectorIndex 운영 검증",
+            "comments": [{"created": "2026-08-18", "body": (
+                f"{related} 실제 증거 전에는 운영 반영을 승인하지 않는다."
+            )}],
+        }]},
+    )
+
+    gates = [row for row in _verified_evidence_obligations(state)
+             if row["kind"] == "approval_gate"]
+
+    assert len(gates) == 1
+    assert gates[0]["constraint_context"] == related
+
+
 def test_existing_validation_reuse_is_enforced_in_scope_and_dod():
     state = _verified_pipeline_evidence_state()
     result = WorkArchitect().apply(state, {
@@ -1020,6 +1259,27 @@ def test_blocking_questions_suppress_the_competing_draft():
     r = WorkArchitect().apply(_msg("데이터 품질 개선 작업 하나 만들어줘"), out)
     assert r["questions"]
     assert not r["draft"]["items"], "질문에 답하기 전 임의 초안은 승인 카드에 오르면 안 된다"
+
+
+def test_model_structure_preference_never_enters_the_required_blocker_channel():
+    """Even a model-marked `required` shape preference yields to the one real blocker."""
+    out = {"questions": [
+        {"question": "Task 하나와 Sub-Task 중 무엇으로 할까요?", "kind": "choice",
+         "options": ["Task 하나", "Task + Sub-Task"], "field": "structure",
+         "required_input": True, "why_required": "모델이 구조 선호를 필수라고 판단"},
+        {"question": "어느 데이터셋의 품질 규칙을 바꿀까요?", "kind": "text",
+         "options": [], "field": "target", "required_input": True,
+         "why_required": "변경 대상을 식별할 수 없음"},
+    ], "mode": "task", "rationale": "", "structure": "task_with_subtasks",
+        "structure_source": "inferred", "items": [dict(_draft()["items"][0])]}
+
+    result = WorkArchitect().apply(_msg("데이터 품질 규칙을 개선해줘"), out)
+
+    assert len(result["questions"]) == 1
+    assert result["questions"][0]["field"] != "structure"
+    assert result["questions"][0]["required_input"] is True
+    assert result["questions"][0]["why_required"]
+    assert not result["draft"]["items"]
 
 
 def test_delegation_keeps_the_draft_and_suppresses_optional_questions():
@@ -1107,6 +1367,138 @@ def test_concrete_delegated_work_skips_the_model_and_keeps_runtime_guards(monkey
     assert not result["questions"]
     assert result["draft"]["construction"] == "literal_delegated"
     assert "내 모듈만" in result["draft"]["items"][0]["summary"]
+
+
+def test_typed_field_only_refinement_clones_the_prior_draft_and_uses_zero_work_calls(
+        monkeypatch):
+    """A parsed parent/phase/due answer overlays the reviewed draft instead of rewriting it."""
+    from app.agent.workflow.agents.base import StructuredAgent
+    from app.agent.workflow.agents import work_architect as work
+
+    model_calls = []
+
+    def model_node(_self):
+        def run(_state):
+            model_calls.append(True)
+            raise AssertionError("typed field-only refinement must not call the Work model")
+        return run
+
+    monkeypatch.setattr(StructuredAgent, "node", model_node)
+    monkeypatch.setattr(work, "_is_epic", lambda key: key == "DL-101")
+    monkeypatch.setattr(work, "_epic_module", lambda _key: "ETL")
+    prior_children = [{
+        "summary": "Puffin NDV 파이프라인 검증",
+        "type": "Sub-Task",
+        "description": (
+            "<h3>작업 범위</h3><ul><li>포함: reader 검증</li>"
+            "<li>제외: 운영 반영</li></ul><h3>완료 조건 (DoD)</h3>"
+            '<ul data-type="taskList"><li data-checked="false">검증 결과 기록</li></ul>'
+        ),
+        "labels": ["keep-child"],
+    }]
+    prior = {
+        "mode": "task", "structure": "task_with_subtasks",
+        "structure_source": "inferred", "structure_why": "구현과 검증 분리",
+        "rationale": "기존 검토 완료 초안",
+        "items": [{
+            "summary": "[ETL] StarRocks Puffin NDV 파이프라인 구현",
+            "type": "Task", "epic": "", "duedate": "",
+            "components": ["ETL"], "labels": ["keep-root"],
+            "priority": "P2-Major", "children": copy.deepcopy(prior_children),
+            "description": (
+                "<h3>배경</h3><p>REVIEWED-BODY-SENTINEL 파이프라인 요청</p>"
+                "<h3>작업 범위</h3><ul><li>포함: StarRocks Puffin NDV 구현</li>"
+                "<li>제외: 운영 반영</li></ul><h3>완료 조건 (DoD)</h3>"
+                '<ul data-type="taskList"><li data-checked="false">실행 결과 기록</li>'
+                '<li data-checked="false">리뷰 결과 기록</li></ul>'
+            ),
+        }],
+    }
+    state = _msg(
+        "Epic은 네가 골라줘. 범위는 최소 기능 1차 구현까지, 마감은 2026-09-30. 알아서",
+        intent=Intent.PLAN_WORK,
+        request_text="StarRocks Puffin NDV 파이프라인 Task를 만들어줘",
+        request_plan={"goal": "StarRocks Puffin NDV 파이프라인 Task 생성", "tasks": [{
+            "id": "delivery", "kind": "ticket", "instruction": "파이프라인 Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        turn_continuation=True,
+        situation="관련 이력과 상위 Epic 후보 조사 완료",
+        request_refinement={
+            "parent": "select_existing", "phase": "1차", "duedate": "2026-09-30",
+        },
+        materialized_ticket_sources={
+            "parentCandidateKeys": ["DL-101"],
+            "parentCandidateSearchAttempted": True,
+            "ticketDetails": [{"key": "DL-101", "type": "Epic"}],
+        },
+        draft=copy.deepcopy(prior),
+    )
+
+    result = WorkArchitect().node()(state)
+
+    assert model_calls == []
+    assert not result.get("error") and not result["questions"]
+    item = result["draft"]["items"][0]
+    assert item["epic"] == "DL-101"
+    assert item["duedate"] == "2026-09-30"
+    assert "1차" in item["summary"] and "1차" in item["description"]
+    assert "REVIEWED-BODY-SENTINEL" in item["description"]
+    assert item["components"] == ["ETL"]
+    assert item["labels"] == ["keep-root"]
+    assert item["priority"] == "P2-Major"
+    assert item["children"] == prior_children
+
+
+def test_generic_top_level_phase_and_due_refinement_overlays_only_typed_fields():
+    from app.agent.workflow.agents.work_architect import _request_refinement_projection
+
+    child = {"summary": "VectorIndex 검증", "type": "Sub-Task",
+             "labels": ["preserve-child"]}
+    state = _msg(
+        "최상위 Task로 2차, 마감 2026-10-15",
+        intent=Intent.PLAN_WORK, turn_continuation=True,
+        request_refinement={
+            "parent": "top_level", "phase": "2차", "duedate": "2026-10-15",
+        },
+        draft={"mode": "task", "structure": "task_with_subtasks", "items": [{
+            "summary": "[Search] AcmeSearch VectorIndex 구현", "type": "Task",
+            "epic": "ACME-100", "priority": "P2-Major", "children": [copy.deepcopy(child)],
+            "description": ("<h3>배경</h3><p>VectorIndex 구현 요청됨</p>"
+                            "<h3>작업 범위</h3><ul><li>인덱스 구현</li></ul>"),
+        }]},
+    )
+
+    projection = _request_refinement_projection(state)
+    item = projection["items"][0]
+
+    assert not item.get("epic") and not item.get("parent")
+    assert item["duedate"] == "2026-10-15"
+    assert "2차" in item["summary"] and "2차" in item["description"]
+    assert item["priority"] == "P2-Major" and item["children"] == [child]
+
+
+@pytest.mark.parametrize("patch", [
+    {"draft": {}},
+    {"request_refinement": {}},
+    {"error": "[work_architect] prior draft validation failed"},
+], ids=("no-prior-draft", "no-typed-overlay", "prior-work-error"))
+def test_typed_refinement_fast_projection_fails_closed_without_its_full_contract(patch):
+    from app.agent.workflow.agents.work_architect import _request_refinement_projection
+
+    state = _msg(
+        "최상위 Task로 2차, 마감 2026-10-15",
+        intent=Intent.PLAN_WORK, turn_continuation=True,
+        request_refinement={
+            "parent": "top_level", "phase": "2차", "duedate": "2026-10-15",
+        },
+        draft={"mode": "task", "items": [{
+            "summary": "[Search] AcmeSearch VectorIndex 구현", "type": "Task",
+        }]},
+    )
+    state.update(patch)
+
+    assert _request_refinement_projection(state) == {}
 
 
 def test_compound_delegated_request_recovers_cross_module_sibling_deliverables():
@@ -1435,6 +1827,8 @@ def test_promoting_to_an_epic_stops_when_one_of_that_name_already_exists():
     assert not r["draft"]["items"], "중복 Epic 을 그대로 만들면 안 된다"
     q = r["questions"][0]
     assert q["kind"] == "choice" and q["field"] == "epic"
+    assert q["required_input"] is True
+    assert q["why_required"], "중복 Epic 대안 선택은 실행 전에 풀어야 하는 실제 blocker다"
     assert "Epic 격상 보류" in r["draft"]["rationale"]
 
 
@@ -2051,6 +2445,50 @@ def test_poc_development_request_drops_an_unrequested_deployment_child():
         "Batch Job 설계", "Batch Job 구현", "Batch Job 테스트"]
 
 
+def test_minimum_scope_removes_an_unrequested_production_build_claim_from_background():
+    from app.agent.workflow.agents.work_architect import _drop_unrequested_deployment_dod
+
+    items = [{"summary": "NDV 통계 생성 1차", "type": "Task",
+              "description": (
+                  "<h3>배경</h3><p>기존 writer PoC 결과는 완료되어 재사용한다. "
+                  "PoC를 넘어선 프로덕션 파이프라인 구축이 요청되었다.</p>"
+                  "<h3>작업 범위</h3><ul><li>최소 기능 1차 구현</li></ul>"
+                  "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+                  "<li data-checked=\"false\">실행 결과를 기록한다</li></ul>"
+              )}]
+
+    assert _drop_unrequested_deployment_dod(_msg("NDV 통계 생성 최소 기능 1차 구현"), items)
+    body = items[0]["description"]
+    assert "기존 writer PoC 결과는 완료되어 재사용한다" in body
+    assert "프로덕션" not in body and "production" not in body.casefold()
+
+
+def test_deterministic_obligation_replaces_an_exact_unmarked_model_duplicate():
+    from app.agent.workflow.agents.work_architect import (
+        _obligation_atomic_clause, _verified_evidence_obligations,
+    )
+
+    state = _verified_pipeline_evidence_state()
+    completed = next(row for row in _verified_evidence_obligations(state)
+                     if row["kind"] == "completed_baseline")
+    atomic = _obligation_atomic_clause(completed)
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "단일 산출물", "rationale": "",
+        "items": [{
+            "summary": "[ETL] AcmeDB DeltaSketch 통계 생성 1차", "type": "Task",
+            "background": atomic, "scope_in": ["최소 기능 구현"],
+            "scope_out": ["운영 반영"],
+            "dod": ["실행 결과를 기록한다", "검토 결과를 기록한다"],
+            "components": ["ETL"],
+        }],
+    })
+    body = result["draft"]["items"][0]["description"]
+
+    assert body.count(f'data-evidence-obligation="{completed["id"]}"') == 1
+    assert unescape(body).count(atomic) == 1
+
+
 def test_child_titles_keep_the_parent_technical_topic():
     from app.agent.workflow.agents.work_architect import _preserve_parent_topic_in_children
     items = [{"summary": "[ETL] StarRocks Puffin NDV 통계정보 파이프라인 개발",
@@ -2283,6 +2721,52 @@ def test_done_change_plan_requires_reopen_as_a_separate_approval(monkeypatch):
     assert "새 승인" in questions[0]["options"][0]
 
 
+def test_impossible_transition_keeps_its_required_status_choice_through_apply(monkeypatch):
+    """Runtime transition choices are blockers, not optional model preferences."""
+
+    class _OpenClient:
+        def ticket_badge(self, key):
+            return {"key": key, "type": "Task", "status": "Open",
+                    "statusCategory": "todo"}
+
+        def transitions(self, key):
+            return [
+                {"id": "2", "name": "Start Progress", "to": "In Progress"},
+                {"id": "3", "name": "Close", "to": "Closed"},
+            ]
+
+        def get_issue(self, key):
+            return {"key": key, "fields": {
+                "issuetype": {"name": "Task", "subtask": False},
+                "status": {"name": "Open", "statusCategory": {"key": "todo"}},
+                "summary": "검색 인덱스 작업",
+            }}
+
+        def issue_comments(self, key, limit):
+            return []
+
+    cli = _OpenClient()
+    monkeypatch.setattr("app.agent.tools._ctx.client", lambda: cli)
+    monkeypatch.setattr("app.agent.tools.search_tools.client", lambda: cli)
+    monkeypatch.setattr("app.agent.tools.write_tools.client", lambda: cli)
+    state = _msg("ACME-9를 Review 상태로 옮겨줘", intent=Intent.MODIFY,
+                 mentioned_keys=["ACME-9"])
+
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "items": [], "rationale": "",
+        "change": {"key": "ACME-9", "status": "Review"},
+    })
+
+    assert not result["change_plan"]
+    assert len(result["questions"]) == 1
+    question = result["questions"][0]
+    assert question["field"] == "status"
+    assert question["options"] == ["In Progress", "Closed"]
+    assert question["required_input"] is True
+    assert question["why_required"]
+    assert "만들 수 있는 티켓" not in question["question"]
+
+
 def test_done_comment_only_change_plan_is_allowed(monkeypatch):
     class _DoneClient:
         def ticket_badge(self, key):
@@ -2374,18 +2858,16 @@ def test_split_tasks_cannot_own_sibling_scope_and_all_get_exclusions():
     assert "포함: 쿼리 엔진 인덱스" not in scope0
 
 
-def test_an_inferred_split_asks_the_user_to_confirm_the_shape():
-    """티켓 하나로 끝날 일을 다섯 개로 쪼개 놓고 승인만 받는 것은 사용자가 원한 게 아닐 수 있다."""
+def test_an_inferred_composite_is_kept_as_an_editable_safe_default_without_a_question():
+    """A reversible inferred shape is advice on the card, never a blocking interview."""
     out = {"questions": [], "mode": "task", "rationale": "",
            "structure": "multiple_tasks", "structure_source": "inferred",
            "items": [dict(_draft()["items"][0]), dict(_draft()["items"][0])]}
     r = WorkArchitect().apply(_msg("리니지 성능 개선이 필요해"), out)
-    q = r["questions"][0]
-    assert q["kind"] == "choice" and "이 형태로 진행할까요" in q["question"]
-    assert q["field"] == "structure"
-    assert q["required_input"] is False and q["why_required"] == ""
-    assert "추천" in q["options"][0] and len(q["options"]) >= 2
-    assert r["draft"]["items"], "확인을 받되 초안은 그대로 보여 준다"
+    assert not r["questions"]
+    assert len(r["draft"]["items"]) == 2, "안전한 현재 초안은 그대로 보여 준다"
+    assert "안전 기본값" in r["draft"]["rationale"]
+    assert "승인 화면" in r["draft"]["rationale"]
 
 
 def test_structure_question_field_is_part_of_the_typed_question_contract():
@@ -2930,10 +3412,15 @@ def test_draft_reply_drops_ticket_keys_not_in_evidence_user_or_payload_relation(
     assert "DL-123" not in got
 
 
-def test_model_questions_plus_free_opinion_never_exceed_three():
-    qs = [{"question": f"질문 {n}", "kind": "text", "options": []} for n in range(5)]
-    r = WorkArchitect().apply({}, {"questions": qs, "mode": "task", "rationale": "", "items": []})
-    assert len(r["questions"]) == 3
+def test_model_optional_questions_are_all_suppressed():
+    qs = [{"question": f"질문 {n}", "kind": "text", "options": [],
+           "required_input": False, "why_required": ""} for n in range(5)]
+    out = {"questions": qs, "mode": "task", "rationale": "",
+           "structure": "single_task", "structure_source": "inferred",
+           "items": [dict(_draft()["items"][0])]}
+    r = WorkArchitect().apply(_msg("체크박스 하나 추가 Task를 만들어줘"), out)
+    assert not r["questions"], "선택 입력은 승인 가능한 초안을 막는 인터뷰가 아니다"
+    assert r["draft"]["items"], "선택 질문을 버리되 안전한 초안은 계속 보여 줘야 한다"
 
 
 def _kids(*kids, **over):
@@ -3288,7 +3775,7 @@ def test_subtasks_hung_off_an_epic_are_demoted_to_tasks():
         "왜 Task 로 냈는지 사용자가 읽을 수 있어야 한다"
 
 
-def test_a_lone_task_labelled_new_epic_is_still_treated_as_lumped():
+def test_a_lone_task_labelled_new_epic_gets_deterministic_children_without_a_question():
     """구조 **이름**이 아니라 산출물 **모양**으로 판정한다.
 
     실측 STARR1: 같은 요청이 실행마다 `single_task` / `new_epic` 으로 갈렸고, 가드가
@@ -3300,8 +3787,12 @@ def test_a_lone_task_labelled_new_epic_is_still_treated_as_lumped():
            "items": [{"summary": "통계 파이프라인 개발", "type": "Task",
                       "description": "<h3>배경</h3><p>x</p>"}]}
     r = WorkArchitect().apply(_msg("통계정보를 생성하는 파이프라인을 개발해야해"), out)
-    # 위임을 안 했으니 물어야 한다 — 뭉갠 채로 조용히 통과하면 안 된다
-    assert r["questions"], "구조 이름이 new_epic 이어도 뭉갠 것은 뭉갠 것이다"
+    assert not r["questions"], "가역적인 구조 선택은 승인 카드의 안전 기본값이어야 한다"
+    assert r["draft"]["structure"] == "task_with_subtasks"
+    children = r["draft"]["items"][0].get("children") or []
+    assert len(children) == 3
+    assert [child["summary"].split()[-1] for child in children] == ["설계", "구현", "검증"]
+    assert "안전 기본값" in r["draft"]["rationale"]
 
 
 def test_a_plain_single_task_is_not_questioned():
@@ -3456,9 +3947,8 @@ def test_a_scope_that_states_exclusions_is_not_flagged():
     assert "하지 않는 것" not in r["draft"]["rationale"]
 
 
-def test_understructured_single_task_gets_a_shape_question():
-    """설계·구현·검증이 다 든 단일 Task(하향 편향)는 확인 질문을 받는다 — 실측: 파이프라인
-    신규 구축이 DoD 6불릿짜리 한 덩어리로 나왔다."""
+def test_understructured_single_task_gets_deterministic_children_without_a_question():
+    """A multi-stage build gets a reversible execution split without another round trip."""
     body = ("<h3>배경</h3><p>파이프라인 설계 후 구현하고 연동 검증과 모니터링까지</p>"
             "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
             + "".join(f'<li data-checked="false">단계 {i}</li>' for i in range(6)) + "</ul>")
@@ -3467,13 +3957,15 @@ def test_understructured_single_task_gets_a_shape_question():
            "items": [{"summary": "[ETL] 통계 파이프라인 개발", "type": "Task",
                       "description": body}]}
     r = WorkArchitect().apply(_msg("통계 파이프라인 개발해야 해"), out)
-    assert r["questions"] and "Sub-Task" in str(r["questions"][0].get("options"))
-    assert r["questions"][0]["field"] == "structure"
-    assert r["questions"][0]["required_input"] is False
-    assert r["questions"][0]["why_required"] == ""
+    assert not r["questions"]
+    assert r["draft"]["structure"] == "task_with_subtasks"
+    children = r["draft"]["items"][0].get("children") or []
+    assert len(children) == 3
+    assert [child["summary"].split()[-1] for child in children] == ["설계", "구현", "검증"]
+    assert "안전 기본값" in r["draft"]["rationale"]
 
 
-def test_a_thin_body_does_not_let_a_new_build_slip_through_as_one_task():
+def test_a_thin_new_build_still_gets_deterministic_children_without_a_question():
     """본문 신호만 보면 **모델이 본문을 얇게 쓸수록 가드가 헐거워진다** — 뭉갠 초안은 대개
     본문도 얇으니 거꾸로 된 판정이다. 실측(생성 스위트 STARR1 재발): 파이프라인 신규 구축이
     DoD 2불릿·단계낱말 0으로 나와 위 가드를 그대로 통과했다. 원 요청은 모델이 못 바꾼다."""
@@ -3487,7 +3979,11 @@ def test_a_thin_body_does_not_let_a_new_build_slip_through_as_one_task():
                       "description": body}]}
     assert body.count("data-checked") < 5, "본문 신호로는 안 걸리는 초안이어야 의미가 있다"
     r = WorkArchitect().apply(_msg("실시간 수집 파이프라인을 개발해야 해"), out)
-    assert r["questions"] and "Sub-Task" in str(r["questions"][0].get("options"))
+    assert not r["questions"]
+    assert r["draft"]["structure"] == "task_with_subtasks"
+    children = r["draft"]["items"][0].get("children") or []
+    assert len(children) == 3
+    assert all("실시간 수집 파이프라인" in child["summary"] for child in children)
 
 
 def test_numbered_volume_split_tasks_are_collapsed_into_children():
@@ -5257,7 +5753,47 @@ def test_statistics_generation_is_not_expanded_to_collection_transform_deploy_an
     assert "운영 환경 구성" not in body
     assert '<li data-checked="false">데이터 분석 및 보고서 작성' not in body
     assert "제외: 요청에 명시되지 않은 데이터 수집·변환·배포 및 보고서 작성" in body
-    assert "생성된 NDV 통계정보" in body and "실행 성공·실패 로그" in body
+    assert "NDV" in body and "생성된 결과" in body and "실행 성공·실패 로그" in body
+
+
+def test_generic_statistics_generation_repair_never_invents_ndv():
+    from app.agent.workflow.agents import work_architect as R
+
+    state = _msg("고객 이용 통계정보 생성 파이프라인을 개발해줘")
+    item = {
+        "summary": "[Analytics] 고객 이용 통계정보 생성 파이프라인 개발",
+        "type": "Task",
+        "description": (
+            "<h3>배경</h3><p>고객 이용 데이터를 수집하고 처리한다.</p>"
+            "<h3>작업 범위</h3><ul><li>데이터 소스 연결</li><li>데이터 변환</li></ul>"
+            "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
+            "<li data-checked=\"false\">분석 보고서를 작성한다</li></ul>"
+        ),
+    }
+
+    assert R._repair_statistics_generation_semantics(state, [item])
+    body = item["description"]
+
+    assert "NDV" not in body
+    assert "고객 이용 통계정보" in body
+    assert "생성된 결과" in body and "검증 결과" in body
+
+
+def test_statistics_generation_repair_preserves_an_explicit_literal_qualifier():
+    from app.agent.workflow.agents import work_architect as R
+
+    state = _msg("AcmeDB NDV 통계정보 생성 파이프라인을 개발해줘")
+    item = {
+        "summary": "[Analytics] AcmeDB NDV 통계정보 생성 파이프라인 개발",
+        "type": "Task",
+        "description": (
+            "<h3>배경</h3><p>데이터를 수집하고 처리한다.</p>"
+            "<h3>작업 범위</h3><ul><li>데이터 소스 연결</li></ul>"
+        ),
+    }
+
+    assert R._repair_statistics_generation_semantics(state, [item])
+    assert "NDV" in item["description"]
 
 
 def test_statistics_generation_drops_unrequested_monitoring_dashboard():

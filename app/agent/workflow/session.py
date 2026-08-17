@@ -391,7 +391,7 @@ def _draft_refinement_repeats_subject(text: str, prior: dict) -> bool:
 
 _TURN_DERIVED_EMPTY = {
     "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
-    "sufficient": False, "answer_depth": "", "request_plan": {},
+    "sufficient": False, "answer_depth": "", "request_plan": {}, "request_refinement": {},
     "query_plan": {}, "query_results": [], "query_artifacts": {},
     "materialized_ticket_sources": {},
     "assignment_completion": {}, "bulk_targets": [],

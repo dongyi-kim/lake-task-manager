@@ -553,10 +553,17 @@ def _propose(state: AgentState) -> dict:
         p = epic_payload(draft)
         if not p.get("summary"):
             return {}
+        # Creation is the Auditor-owned branch. A stale checkpoint or direct caller with
+        # no explicit passing verdict must never mint a live create token. Change plans are
+        # intentionally handled above under their separate deterministic contract.
+        if (state.get("review") or {}).get("ok") is not True:
+            return {"approval_token": "", "comment_token": ""}
         return {"approval_token": approval.stage(tid, "create_epic", p)}
     items = as_bulk_items(draft)
     if not items:
         return {}
+    if (state.get("review") or {}).get("ok") is not True:
+        return {"approval_token": "", "comment_token": ""}
     payload = {"mode": draft.get("mode") or "task", "items": items}
     # 트리 초안 — Sub-Task 는 부모 키가 있어야 만들어지므로 **부모 생성 뒤 연쇄**로 실행된다.
     # 승인 지문에는 자식까지 넣는다: 화면에 보인 것과 실행되는 것이 어긋나면 HITL 이 무의미하다.

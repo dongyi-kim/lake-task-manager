@@ -250,6 +250,141 @@ def test_evidence_audit_compares_html_unescaped_visible_text():
     assert _evidence_obligation_errors(state, draft) == []
 
 
+def test_auditor_rejects_relation_and_state_scattered_outside_the_obligation_marker():
+    """A marker on one fragment must not launder its required relation from another block."""
+    from app.agent.workflow.agents.auditor import _machine_check
+
+    oid = "evidence:DL-9501:unconfirmed_dependency"
+    fact = "DeltaSketch consumption support is unconfirmed."
+    relation = "AcmeReader consumes DeltaSketch while AcmeOptimizer validates the plan."
+    obligation = {
+        "id": oid,
+        "kind": "unconfirmed_dependency",
+        "source_key": "DL-9501",
+        "source_subject": "[Runtime] DeltaSketch reader validation",
+        "constraint_context": relation,
+        "fact": fact,
+        "relationship_facts": [relation],
+        "fact_relation": {"fact": fact, "actors": [], "actions": ["support"],
+                          "objects": ["deltasketch", "consumption"]},
+        "relations": [{"fact": relation, "actors": ["AcmeReader", "AcmeOptimizer"],
+                       "actions": ["consumes", "validates"],
+                       "objects": ["deltasketch", "plan"]}],
+        "item_indexes": [0],
+    }
+    description = (
+        "<h3>배경</h3>"
+        f'<p data-evidence-obligation="{oid}">DL-9501의 미확정 dependency: {fact}</p>'
+        f"<p>{relation}</p>"
+        "<h3>작업 범위</h3><ul><li>포함: reader 검증</li>"
+        "<li>제외: 운영 반영</li></ul><h3>완료 조건 (DoD)</h3>"
+        '<ul data-type="taskList"><li data-checked="false">검증 결과를 기록한다.</li>'
+        '<li data-checked="false">리뷰 결과를 기록한다.</li></ul>'
+    )
+    state = {"draft": {"mode": "task", "evidence_obligations": [obligation], "items": [{
+        "summary": "[Runtime] DeltaSketch reader validation", "type": "Task",
+        "components": ["Runtime"], "description": description,
+    }]}}
+
+    review = _machine_check(state)
+    obligation_errors = [row for row in review["errors"]
+                         if row.get("field") == "evidence_obligation"]
+
+    assert obligation_errors, "the complete typed relation must be inside its marked block"
+    assert obligation_errors[0].get("obligation_kind") == "unconfirmed_dependency"
+
+
+def test_auditor_rejects_unmarked_model_prose_that_reverses_a_canonical_actor_role():
+    """Canonical consumer evidence cannot coexist with model prose recasting it as producer."""
+    from app.agent.workflow.agents.auditor import _machine_check
+
+    oid = "evidence:DL-9502:unconfirmed_dependency"
+    fact = "DeltaSketch consumption support is unconfirmed."
+    relation = "AcmeReader consumes DeltaSketch."
+    obligation = {
+        "id": oid,
+        "kind": "unconfirmed_dependency",
+        "source_key": "DL-9502",
+        "source_subject": "[Runtime] DeltaSketch reader validation",
+        "constraint_context": relation,
+        "fact": fact,
+        "relationship_facts": [relation],
+        "fact_relation": {"fact": fact, "actors": [], "actions": ["support"],
+                          "objects": ["deltasketch", "consumption"]},
+        "relations": [{"fact": relation, "actors": ["AcmeReader"],
+                       "actions": ["consumes"], "objects": ["deltasketch"]}],
+        "item_indexes": [0],
+    }
+    atomic = (
+        "[Runtime] DeltaSketch reader validation — DL-9502: "
+        f"{relation} {fact}"
+    )
+    description = (
+        "<h3>배경</h3><p>AcmeReader generates DeltaSketch.</p>"
+        f'<p data-evidence-obligation="{oid}">{atomic}</p>'
+        "<h3>작업 범위</h3><ul><li>포함: reader 검증</li>"
+        "<li>제외: 운영 반영</li></ul><h3>완료 조건 (DoD)</h3>"
+        '<ul data-type="taskList"><li data-checked="false">검증 결과를 기록한다.</li>'
+        '<li data-checked="false">리뷰 결과를 기록한다.</li></ul>'
+    )
+    state = {"draft": {"mode": "task", "evidence_obligations": [obligation], "items": [{
+        "summary": "[Runtime] DeltaSketch reader validation", "type": "Task",
+        "components": ["Runtime"], "description": description,
+    }]}}
+
+    review = _machine_check(state)
+    obligation_errors = [row for row in review["errors"]
+                         if row.get("field") == "evidence_obligation"]
+
+    assert obligation_errors, "unmarked actor/action reversal must fail closed"
+    assert obligation_errors[0].get("obligation_kind") == "unconfirmed_dependency"
+
+
+def test_auditor_role_reversal_check_is_independent_of_atomic_marker_presence():
+    """A complete generated marker still fails if separate prose reverses the actor role."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.work_architect import (
+        WorkArchitect, _evidence_obligation_errors,
+    )
+
+    state = {
+        "request_text": "AcmeDB DeltaSketch consumer 검증 Task를 만들어줘",
+        "messages": [HumanMessage(content="AcmeDB DeltaSketch consumer 검증 Task를 만들어줘")],
+        "keywords": ["AcmeDB", "DeltaSketch", "consumer", "검증"],
+        "evidence": [{"key": "DL-9601", "why": "consumer 관계가 직접 관련"}],
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "DL-9601", "type": "Task", "status": "In Progress", "done": False,
+            "summary": "[Runtime] AcmeDB DeltaSketch consumer 검증",
+            "comments": [{"created": "2026-08-18", "body":
+                          ("AcmeReader consumes DeltaSketch but consumption support "
+                           "is unconfirmed.")}],
+        }]},
+    }
+    result = WorkArchitect().apply(state, {
+        "questions": [], "mode": "task", "structure": "single_task",
+        "structure_why": "단일 검증 산출물", "rationale": "",
+        "items": [{
+            "summary": "[Runtime] AcmeDB DeltaSketch consumer 검증", "type": "Task",
+            "background": "consumer 검증 요청됨", "scope_in": ["소비 지원 검증"],
+            "scope_out": ["운영 반영"],
+            "dod": ["소비 결과를 기록한다", "검토 결과를 기록한다"],
+            "components": ["Runtime"],
+        }],
+    })
+    draft = result["draft"]
+    assert _evidence_obligation_errors(state, draft) == []
+
+    body = draft["items"][0]["description"]
+    draft["items"][0]["description"] = body.replace(
+        "<h3>배경</h3>",
+        "<h3>배경</h3><p>AcmeReader generates DeltaSketch.</p>",
+        1,
+    )
+    errors = _evidence_obligation_errors(state, draft)
+
+    assert errors and "producer/consumer" in errors[0]["message"]
+
+
 def test_reviewer_does_not_treat_selection_intent_as_proof_draft_avoids_epic_creation():
     """A select-existing request is the rule to audit, not proof that the draft obeyed it."""
     from langchain_core.messages import HumanMessage
@@ -1174,7 +1309,8 @@ def test_interrupt_needs_a_checkpointer():
 # ── 승인 게이트 ────────────────────────────────────────────────────
 def _staged(thread="t1", items=None):
     items = items or [{"summary": "CDC 도입 검토", "type": "Task", "epic": None}]
-    state = {"thread_id": thread, "draft": {"mode": "task", "items": items}}
+    state = {"thread_id": thread, "review": {"ok": True},
+             "draft": {"mode": "task", "items": items}}
     return G._propose(state)["approval_token"], items
 
 
@@ -1183,6 +1319,23 @@ def test_propose_issues_a_token_bound_to_the_draft():
     rec = approval.peek(tok)
     assert rec["action"] == "create_tickets" and rec["approved"] is False
     assert rec["fp"] == approval.fingerprint({"mode": "task", "items": items})
+
+
+@pytest.mark.parametrize(("draft", "action"), [
+    ({"mode": "task", "items": [{"summary": "검토 Task", "type": "Task"}]},
+     "create_tickets"),
+    ({"mode": "epic", "items": [{"summary": "검토 Epic", "type": "Epic",
+                                    "epic_name": "검토"}]},
+     "create_epic"),
+])
+def test_create_proposal_requires_an_explicit_passing_review(draft, action):
+    blocked = G._propose({"thread_id": "review-gate", "review": {}, "draft": draft})
+    assert blocked == {"approval_token": "", "comment_token": ""}
+
+    staged = G._propose({
+        "thread_id": "review-gate", "review": {"ok": True}, "draft": draft,
+    })
+    assert approval.peek(staged["approval_token"])["action"] == action
 
 
 def test_propose_issues_nothing_for_an_empty_draft():

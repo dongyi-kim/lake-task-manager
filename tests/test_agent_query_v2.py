@@ -186,6 +186,133 @@ def test_runner_filters_generic_web_navigation_before_evidence_but_keeps_raw_art
     ]
 
 
+def test_runner_filters_zero_anchor_external_hit_but_keeps_raw_artifact(monkeypatch):
+    """A non-navigation GitHub file is still noise when it has zero public-subject anchors."""
+    from app.agent import tools as T
+
+    unrelated = {
+        "title": "ARLtoAWVS/domain_2w.txt at main · InsBug/ARLtoAWVS · GitHub",
+        "url": "https://github.com/InsBug/ARLtoAWVS/blob/main/domain_2w.txt",
+        "snippet": ("ARL与AWVS联动，实现自动化扫描并推送结果. Contribute to "
+                    "InsBug/ARLtoAWVS development by creating an account on GitHub"),
+    }
+    direct = {
+        "title": "Apache Iceberg Puffin specification",
+        "url": "https://iceberg.apache.org/puffin-spec/",
+        "snippet": "Puffin files store NDV statistics", "official": True,
+    }
+    monkeypatch.setitem(T.BY_NAME, "search_web", SimpleNamespace(invoke=lambda _args: {
+        "query": "starrocks puffin ndv official documentation",
+        "attempted": True, "results": [unrelated, direct],
+    }))
+
+    state = {
+        "intent": "plan_work",
+        "request_text": "starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해",
+        "messages": [HumanMessage(
+            content="starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해")],
+        "query_plan": {"queries": [{
+            "id": "external-official", "source": "web",
+            "query": "starrocks puffin ndv official documentation", "page_size": 5,
+        }]},
+    }
+    got = QueryRunner()._run(state)
+
+    compact = got["query_results"][0]["result"]
+    assert compact["results"] == [direct]
+    assert compact["irrelevantResultsFiltered"] == 1
+    assert got["query_artifacts"]["external-official"]["results"] == [unrelated, direct]
+
+
+def test_runner_keeps_direct_numbered_standard_when_subject_uses_its_public_name(monkeypatch):
+    """A formal document number can be the direct source for a differently named standard."""
+    from app.agent import tools as T
+
+    direct = {
+        "title": "N3096",
+        "url": "https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3096.pdf",
+        "snippet": "WG14 working draft N3096",
+    }
+    monkeypatch.setitem(T.BY_NAME, "search_web", SimpleNamespace(invoke=lambda _args: {
+        "query": "C23 specification official documentation",
+        "attempted": True, "results": [direct],
+    }))
+    state = {
+        "intent": "ask", "request_text": "C23 specification을 외부 조사해줘",
+        "messages": [HumanMessage(content="C23 specification을 외부 조사해줘")],
+        "query_plan": {"queries": [{
+            "id": "external-spec", "source": "web",
+            "query": "C23 specification official documentation", "page_size": 5,
+        }]},
+    }
+
+    got = QueryRunner()._run(state)
+
+    assert got["query_results"][0]["result"]["results"] == [direct]
+
+
+def test_runner_rejects_official_numbered_document_from_an_unrelated_identifier_family(
+        monkeypatch):
+    """Official status cannot make a different numbered-document family relevant."""
+    from app.agent import tools as T
+
+    unrelated = {
+        "title": "RFC9999",
+        "url": "https://www.ietf.org/archive/id/rfc9999.pdf",
+        "snippet": "Internet Standard RFC9999",
+        "official": True,
+    }
+    monkeypatch.setitem(T.BY_NAME, "search_web", SimpleNamespace(invoke=lambda _args: {
+        "query": "C23 specification official documentation",
+        "attempted": True, "results": [unrelated],
+    }))
+
+    got = QueryRunner()._run({
+        "intent": "ask", "request_text": "C23 specification을 외부 조사해줘",
+        "messages": [HumanMessage(content="C23 specification을 외부 조사해줘")],
+        "query_plan": {"queries": [{
+            "id": "external-spec", "source": "web",
+            "query": "C23 specification official documentation", "page_size": 5,
+        }]},
+    })
+
+    compact = got["query_results"][0]["result"]
+    assert compact["results"] == []
+    assert compact["irrelevantResultsFiltered"] == 1
+    assert got["query_artifacts"]["external-spec"]["results"] == [unrelated]
+
+
+def test_runner_relevance_uses_frozen_public_subject_on_explicit_navigation_followup(
+        monkeypatch):
+    from app.agent import tools as T
+
+    direct_repo = {
+        "title": "QwenLM/Qwen3 - GitHub", "url": "https://github.com/QwenLM/Qwen3",
+        "snippet": "Official Qwen model repository",
+    }
+    unrelated = {
+        "title": "ARLtoAWVS/domain_2w.txt",
+        "url": "https://github.com/InsBug/ARLtoAWVS/blob/main/domain_2w.txt",
+        "snippet": "Automated web vulnerability scanning domain list",
+    }
+    monkeypatch.setitem(T.BY_NAME, "search_github", SimpleNamespace(invoke=lambda _args: {
+        "query": "Qwen", "attempted": True, "results": [unrelated, direct_repo],
+    }))
+
+    got = QueryRunner()._run({
+        "intent": "ask", "turn_continuation": True,
+        "request_text": "Qwen structured output 동작을 분석해줘",
+        "messages": [HumanMessage(content="GitHub 저장소도 찾아줘")],
+        "query_plan": {"queries": [{
+            "id": "external-github", "source": "github", "query": "Qwen", "page_size": 5,
+        }]},
+    })
+
+    result = got["query_results"][0]["result"]
+    assert result["results"] == [direct_repo]
+    assert result["irrelevantResultsFiltered"] == 1
+
+
 def test_runner_keeps_direct_official_intro_for_definition_request(monkeypatch):
     from app.agent import tools as T
 

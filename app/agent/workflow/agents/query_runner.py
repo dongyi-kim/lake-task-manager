@@ -147,24 +147,151 @@ def _project_document_body(row: dict, focus_terms=()) -> dict:
 
 
 _EXTERNAL_SUBJECT_NOISE = {
-    "about", "create", "definition", "docs", "documentation", "document", "explain",
-    "feature", "github", "homepage", "intro", "introduction", "is", "link", "official",
-    "overview", "repo", "repository", "search", "site", "task", "ticket", "url",
-    "website", "what",
-    "개요", "검색", "공식", "기능", "링크", "리포지토리", "만들어", "문서", "뭐야",
-    "사이트", "설명", "소개", "저장소", "정의", "주소", "찾아줘", "태스크", "티켓",
-    "홈페이지",
+    "about", "analysis", "analyze", "build", "create", "definition", "develop",
+    "development", "docs", "documentation", "document", "explain", "feature", "github",
+    "homepage", "implement", "implementation", "intro", "introduction", "is", "link",
+    "official", "overview", "pipeline", "please", "repo", "repository", "research",
+    "search", "site", "task", "ticket", "url", "website", "what", "work",
+    "개발", "개요", "검색", "공식", "구현", "기능", "기록", "내부", "링크",
+    "리포지토리", "만들어", "문서", "뭐야", "분석", "사이트", "설명", "소개",
+    "외부", "자료", "저장소", "정의", "조사", "조사해줘", "주소", "찾아줘", "태스크",
+    "티켓", "파이프라인", "함께", "홈페이지",
 }
+
+_COMPILED_EXTERNAL_SUBJECT_RE = re.compile(
+    r"(?m)^<ltm-public-subject>(.*?)</ltm-public-subject>$",
+)
 
 
 def _external_subject_terms(value: str) -> list[str]:
+    context = str(value or "")
+    compiled = _COMPILED_EXTERNAL_SUBJECT_RE.search(context)
+    # When QuerySpecialist could not compile a privacy-safe public subject, do not treat
+    # Korean workflow prose ("외부 자료를 조사해줘") as a topic anchor. Direct callers that
+    # pass plain context keep the legacy extraction behavior used by focused unit tests.
+    source = compiled.group(1) if compiled else context
     terms: list[str] = []
-    for token in re.findall(r"[A-Za-z][A-Za-z0-9.+-]{1,}|[가-힣]{2,}", str(value or "")):
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9.+-]{1,}|[가-힣]{2,}", source):
         folded = token.casefold().strip(".+-")
         if folded in _EXTERNAL_SUBJECT_NOISE or folded in {term.casefold() for term in terms}:
             continue
         terms.append(token)
     return terms[:8]
+
+
+def _external_evidence_context(state) -> str:
+    """Return the current/frozen human-authorized public subject used by every sink.
+
+    Query text is model/compiler output and therefore cannot make its own result relevant.
+    QuerySpecialist already owns the continuation and privacy boundary; reuse that exact
+    projection here so QueryRunner and ResultIntegrator cannot disagree about the subject.
+    """
+    from app.agent.workflow.agents.query_specialist import (
+        _public_external_query, _public_query_subject_text,
+    )
+
+    authored = _public_query_subject_text(state).strip()
+    canonical = _public_external_query(authored).strip()
+    # Keep the literal human wording beside the canonical Latin projection: explicit
+    # homepage/repository authorization is expressed there, while subject extraction gives
+    # the canonical public terms first priority.
+    return f"<ltm-public-subject>{canonical}</ltm-public-subject>\n{authored}"
+
+
+def _committee_draft_alias_matches(
+        *, stem: str, filename: str, path: str, host: str,
+        metadata: str, context: str) -> bool:
+    """Relate an edition-style standard name to an opaque committee draft id.
+
+    A query subject and a result filename may use different identifiers.  That is safe only
+    for a typed authority family: a short edition designator in the human subject, an opaque
+    one-letter draft serial, and a hierarchical technical-committee path whose working-group
+    id is repeated by the result metadata.  Named identifier namespaces are deliberately not
+    interchangeable merely because both documents are official.
+    """
+    subject_has_edition_designator = any(re.fullmatch(
+        r"(?:[a-z]{1,3}|[a-z]\+{1,2})\d{2}", term.casefold().strip(".+-"),
+    ) for term in _external_subject_terms(context))
+    opaque_draft_serial = bool(re.fullmatch(r"[a-z]\d{3,7}", stem, re.I))
+    committee_ids = [segment.casefold() for segment in path.split("/")[:-1]
+                     if re.fullmatch(r"(?:j?tc|sc|wg)\d{1,5}", segment, re.I)]
+    has_committee_hierarchy = (
+        len(set(committee_ids)) >= 2
+        and any(identity.startswith("wg") for identity in committee_ids)
+    )
+    working_group_matches = any(
+        identity.startswith("wg") and re.search(
+            rf"(?<![a-z0-9]){re.escape(identity)}(?![a-z0-9])", metadata, re.I,
+        )
+        for identity in committee_ids
+    )
+    working_draft = bool(re.search(
+        r"\b(?:working\s+draft|committee\s+draft|draft\s+standard)\b", metadata, re.I,
+    ))
+    authority_host = bool(re.search(
+        r"(?:^|[.-])(?:std|standards?|specs?)(?:[.-]|$)", host, re.I,
+    ))
+    return bool(
+        subject_has_edition_designator
+        and opaque_draft_serial
+        and filename.casefold().endswith(".pdf")
+        and has_committee_hierarchy
+        and working_group_matches
+        and working_draft
+        and authority_host
+    )
+
+
+def _external_hit_has_direct_document_identity(hit: dict, context: str) -> bool:
+    """Recognize a direct publication related by a typed document-authority family.
+
+    Search indexes can resolve a human-facing standard edition to a numbered committee draft,
+    so literal subject overlap alone is incomplete.  The escape is intentionally narrower
+    than ``official``: the URL filename and metadata must agree on one document id, and the
+    request/result pair must satisfy the generic committee-draft alias contract.
+    """
+    if not isinstance(hit, dict) or not re.search(
+            r"\b(?:specification|standard|working\s+draft|technical\s+report)\b|표준|규격|사양",
+            str(context or ""), re.I):
+        return False
+    try:
+        parsed = urlsplit(str(hit.get("url") or ""))
+        path = unquote(parsed.path or "")
+        host = (parsed.hostname or "").casefold()
+    except Exception:
+        return False
+    filename = path.rstrip("/").rsplit("/", 1)[-1].casefold()
+    stem = re.sub(r"\.(?:pdf|html?)$", "", filename)
+    if not re.fullmatch(r"(?=.{4,40}$)(?=[a-z0-9._-]*\d)[a-z][a-z0-9._-]+", stem):
+        return False
+    metadata = " ".join(str(hit.get(key) or "") for key in (
+        "title", "name", "snippet", "description",
+    ))
+    if not re.search(rf"(?<![a-z0-9]){re.escape(stem)}(?![a-z0-9])", metadata, re.I):
+        return False
+    return _committee_draft_alias_matches(
+        stem=stem, filename=filename, path=path, host=host,
+        metadata=metadata, context=context,
+    )
+
+
+def _external_hit_matches_subject(hit: dict, context: str) -> bool:
+    """Keep a hit only when its own metadata contains a public-subject anchor.
+
+    An empty subject is a legacy/diagnostic state: the existing navigation filter still
+    applies, but this guard does not guess a subject and erase an already-curated direct
+    source. Executable external plans normally always carry a compiled public subject.
+    """
+    if not isinstance(hit, dict):
+        return False
+    subject = _external_subject_terms(context)
+    if not subject:
+        return True
+    material = " ".join(str(hit.get(key) or "") for key in (
+        "title", "name", "url", "snippet", "description",
+    )).casefold()
+    return (any(term.casefold() in material for term in subject)
+            or _external_hit_has_direct_document_identity(hit, context))
 
 
 def _is_direct_intro_for_context(hit: dict, context: str) -> bool:
@@ -287,6 +414,12 @@ def _is_generic_external_hit(hit: dict, context: str = "") -> bool:
         if not direct_repository_target:
             return True
     return False
+
+
+def _external_hit_is_relevant(hit: dict, context: str = "") -> bool:
+    """Shared external-evidence admission policy for compact and rendered outputs."""
+    return (not _is_generic_external_hit(hit, context)
+            and _external_hit_matches_subject(hit, context))
 
 
 def _merge_materialized_ticket_sources(state, current: dict, *, cap: int = 8) -> dict:
@@ -843,14 +976,22 @@ class QueryRunner:
                 # Navigation pages are useful only when the *human request* explicitly
                 # asks for a homepage/link/repository. A model-authored query must not
                 # upgrade a generic landing page into evidence by adding those words.
-                external_context = "\n".join(value for value in (
-                    request_text(state).strip(), last_user_text(state).strip(),
-                ) if value)
-                compact["results"] = [row for row in candidates
-                                      if not _is_generic_external_hit(row, external_context)]
-                removed = len(candidates) - len(compact["results"])
-                if removed:
-                    compact["genericResultsFiltered"] = removed
+                external_context = _external_evidence_context(state)
+                generic_removed = 0
+                irrelevant_removed = 0
+                kept = []
+                for row in candidates:
+                    if _is_generic_external_hit(row, external_context):
+                        generic_removed += 1
+                    elif not _external_hit_matches_subject(row, external_context):
+                        irrelevant_removed += 1
+                    else:
+                        kept.append(row)
+                compact["results"] = kept
+                if generic_removed:
+                    compact["genericResultsFiltered"] = generic_removed
+                if irrelevant_removed:
+                    compact["irrelevantResultsFiltered"] = irrelevant_removed
             # 전체 집합은 artifact에 보존한다. LLM에는 정렬된 앞부분과 total만 싣는다.
             # 50건을 그대로 주입하면 생성 한 건에서도 Research Analyst 입력이 14k tokens까지
             # 불었다(PASTE1 실측). source별로 사람이 한 화면에서 검토할 양만 남긴다.
@@ -890,4 +1031,5 @@ __all__ = ["QueryRunner", "_jira_where", "_needs_evidence_materialization",
            "_is_parent_candidate_result", "_resolve_parent_reference_candidates",
            "_materialization_ticket_selection",
            "_materialize_evidence", "_is_generic_external_hit",
+           "_external_hit_is_relevant", "_external_evidence_context",
            "_merge_materialized_ticket_sources"]

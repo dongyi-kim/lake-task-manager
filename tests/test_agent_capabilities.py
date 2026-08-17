@@ -925,6 +925,47 @@ def test_work_projection_does_not_drop_an_unrelated_unknown_property(monkeypatch
     assert "fabricated_property" not in projected["items"][0]
 
 
+@pytest.mark.parametrize("explicit_priority", [False, True], ids=("unspecified", "user-specified"))
+def test_work_nonstring_priority_is_dropped_only_when_the_user_did_not_specify_priority(
+        monkeypatch, explicit_priority):
+    """A provider-shaped priority object is ignorable only when it has no user authority."""
+    from app.agent import capabilities
+    from app.agent.workflow.agents.work_architect import WorkArchitect
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    invalid = json.loads(json.dumps(
+        _work_projection_with_model_owned_fields(), ensure_ascii=False))
+    invalid["items"][0]["priority"] = {"name": "P1-Critical"}
+    repaired = json.loads(json.dumps(
+        _work_projection_with_model_owned_fields(), ensure_ascii=False))
+    repaired["items"][0]["priority"] = "P1-Critical"
+    transport = _SequenceLLM(
+        json.dumps(invalid, ensure_ascii=False), json.dumps(repaired, ensure_ascii=False),
+    )
+    agent = WorkArchitect()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: transport)
+    state = _work_creation_state()
+    if explicit_priority:
+        request = "성능 측정 Task를 우선순위 P1-Critical로 만들어줘"
+        state["request_text"] = request
+        state["messages"] = [HumanMessage(content=request)]
+
+    projected = agent._invoke_structured_transport(
+        state, [HumanMessage(content="original")],
+        capability_tier="complex", execution_layer="deep_semantic",
+    )
+
+    if explicit_priority:
+        assert len(transport.messages) == 2, "user-owned priority must remain strict and repair"
+        assert projected["items"][0]["priority"] == "P1-Critical"
+        assert "Validation error:" in _message_text(transport.messages[1])
+    else:
+        assert len(transport.messages) == 1, "unrequested malformed priority must not spend a repair"
+        assert "priority" not in projected["items"][0]
+
+
 def test_native_pending_draft_revision_correction_uses_typed_prior_draft(monkeypatch):
     from app.agent import capabilities
     from app.agent.workflow.agents.work_architect import WorkArchitect

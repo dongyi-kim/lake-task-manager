@@ -1257,7 +1257,8 @@ def test_epic_mode_flows_through_propose_and_operator(monkeypatch):
     from app.agent.workflow.agents.action_executor import ActionExecutor
     draft = {"mode": "epic", "items": [{"summary": "실시간 품질 관제 체계", "type": "Epic",
                                        "epic_name": "품질관제"}]}
-    out = G._propose({"thread_id": "t-ep2", "draft": draft})
+    out = G._propose({"thread_id": "t-ep2", "review": {"ok": True},
+                      "draft": draft})
     tok = out["approval_token"]
     assert approval.peek(tok)["action"] == "create_epic"
     approval.approve(tok, "t-ep2")

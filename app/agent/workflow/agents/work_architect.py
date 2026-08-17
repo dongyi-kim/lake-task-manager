@@ -107,7 +107,7 @@ QUESTION = {
         "field": {"type": "string",
                   "enum": ["", "assignee", "epic", "priority", "duedate", "component",
                            "target", "parent", "scope", "background", "acceptance",
-                           "reproduction", "structure"],
+                           "reproduction", "structure", "status"],
                   "description": "Ticket field being asked; the UI supplies field-specific autocomplete."},
         "required_input": {
             "type": "boolean",
@@ -545,7 +545,7 @@ _RELATION_STATE_STOP = {
     "아직", "여부", "확인", "확정", "검증", "완료", "진행", "지원", "결과",
     "상태", "작업", "현재", "별도", "필요", "증거", "조건", "운영", "반영", "배포", "출시",
     "전", "전에", "전까지", "후", "후에", "이후",
-    "않았습니다", "했습니다", "한다",
+    "않았습니다", "했습니다", "한다", "확정하지", "중입니다", "중이며", "함께",
     "not", "yet", "confirmed", "unconfirmed", "verified", "pending", "complete",
     "completed", "verification", "status", "result", "support", "is", "are", "was",
     "were", "be", "been", "being",
@@ -631,13 +631,63 @@ def _typed_evidence_relation(value: str) -> dict | None:
     if not actions or len(terms) < 2:
         return None
     actor_keys = {value.casefold() for value in actors}
-    objects = [term for term in terms if term not in actor_keys]
+    # Keep the relation payload semantic: conjugated action tokens are already represented
+    # by ``actions`` and must not inflate the material-overlap threshold used by the Auditor.
+    objects = [
+        term for term in terms
+        if term not in actor_keys
+        and term not in _RELATION_STATE_STOP
+        and not _EVIDENCE_RELATION_ACTION.fullmatch(term)
+    ]
     return {
         "fact": text[:420],
         "actors": actors[:6],
         "actions": actions[:6],
         "objects": objects[:10],
+        "actor_roles": _relation_actor_roles(text),
     }
+
+
+def _evidence_action_role(action: str) -> str:
+    value = str(action or "").casefold()
+    if _re.search(r"생성|만든|작성|산출|generat|produc|writ|creat", value):
+        return "producer"
+    if _re.search(r"소비|읽|활용|consum|read|\buse", value):
+        return "consumer"
+    return ""
+
+
+def _relation_actor_roles(value: str) -> dict[str, list[str]]:
+    """Bind explicit technical actors to nearby producer/consumer actions."""
+    text = " ".join(str(value or "").split()).strip()
+    actors = _evidence_actor_identities(text)
+    if not actors:
+        return {}
+    actor_hits = sorted(
+        (match.start(), actor)
+        for actor in actors
+        for match in [_re.search(rf"(?<![A-Za-z0-9_.-]){_re.escape(actor)}"
+                                 r"(?![A-Za-z0-9_.-])", text, _re.I)]
+        if match
+    )
+    action_hits = [
+        (match.start(), _evidence_action_role(match.group(0)))
+        for match in _EVIDENCE_RELATION_ACTION.finditer(text)
+        if _evidence_action_role(match.group(0))
+    ]
+    out: dict[str, list[str]] = {}
+    previous_action = -1
+    for action_at, role in action_hits:
+        candidates = [actor for actor_at, actor in actor_hits
+                      if previous_action < actor_at < action_at]
+        if not candidates:
+            candidates = [actor for actor_at, actor in actor_hits if actor_at < action_at][-1:]
+        for actor in candidates:
+            roles = out.setdefault(actor, [])
+            if role not in roles:
+                roles.append(role)
+        previous_action = action_at
+    return out
 
 
 def _obligation_relation_terms(obligation: dict) -> set[str]:
@@ -673,8 +723,75 @@ _COMPOSITION_GENERIC_MATERIAL = {
 }
 
 
+def _discriminative_relation_terms(value: str) -> set[str]:
+    """Return source-comparable actor/material terms, excluding lifecycle vocabulary."""
+    return {
+        term for term in _material_relation_terms(value)
+        if term not in _COMPOSITION_GENERIC_MATERIAL
+        and term not in _RELATION_STATE_STOP
+        and not _EVIDENCE_RELATION_ACTION.fullmatch(term)
+    }
+
+
+def _source_relation_terms(source_subject: str, focus_terms: set[str]) -> set[str]:
+    return _discriminative_relation_terms(source_subject) | {
+        term.casefold() for term in focus_terms
+        if term.casefold() not in _COMPOSITION_GENERIC_MATERIAL
+        and term.casefold() not in _RELATION_STATE_STOP
+        and not _EVIDENCE_RELATION_ACTION.fullmatch(term)
+    }
+
+
+def _relation_overlaps_source(
+        value: str, source_subject: str, focus_terms: set[str]) -> bool:
+    source_terms = _source_relation_terms(source_subject, focus_terms)
+    relation_terms = _discriminative_relation_terms(value)
+    if source_terms & relation_terms:
+        return True
+    # Technical actor names commonly qualify the role/material token in a title
+    # (``AcmeReader`` vs ``reader``). Match only substantial contained tokens; action
+    # detection remains boundary-based and is deliberately not inferred here.
+    return any(
+        min(len(source), len(relation)) >= 4
+        and (source in relation or relation in source)
+        for source in source_terms for relation in relation_terms
+    )
+
+
+def _uncertainty_matches_source(
+        fact_row: dict, observations: list[dict], source_subject: str,
+        focus_terms: set[str]) -> bool:
+    """Keep an uncertainty only when its relation is grounded in source/focus.
+
+    A pure lifecycle sentence may borrow one adjacent relation in the same canonical
+    comment, but that relation must itself overlap the source title or requested focus.
+    Rich off-topic facts never win merely because they are the newest sentence.
+    """
+    fact = str(fact_row.get("text") or "").strip()
+    if _relation_overlaps_source(fact, source_subject, focus_terms):
+        return True
+    if _discriminative_relation_terms(fact):
+        return False
+    group = str(fact_row.get("observation_group") or "")
+    if not group:
+        return False
+    anchor_index = observations.index(fact_row)
+    related = [
+        row for index, row in enumerate(observations)
+        if row is not fact_row
+        and str(row.get("observation_group") or "") == group
+        and abs(index - anchor_index) == 1
+        and _typed_evidence_relation(str(row.get("text") or ""))
+        and _relation_overlaps_source(
+            str(row.get("text") or ""), source_subject, focus_terms,
+        )
+    ]
+    return len(related) == 1
+
+
 def _select_same_group_relation_siblings(
-        fact_row: dict, observations: list[dict], focus_terms: set[str]) -> list[dict]:
+        fact_row: dict, observations: list[dict], focus_terms: set[str],
+        source_subject: str = "") -> list[dict]:
     """Select only siblings demonstrably belonging to an uncertainty relation.
 
     An actorless lifecycle sentence is common in operational comments. One shared product
@@ -697,8 +814,6 @@ def _select_same_group_relation_siblings(
             continue
         sibling_actors = {item.casefold() for item in _evidence_actor_identities(value)}
         common = anchor_material & _composition_material_terms(value)
-        if not common:
-            continue
         candidates.append((index, row, sibling_actors, common))
 
     selected: list[dict] = []
@@ -715,6 +830,24 @@ def _select_same_group_relation_siblings(
     for _index, row, _actors, common in candidates:
         if common and _is_unconfirmed_evidence_fact(str(row.get("text") or "")):
             select(row)
+
+    # Operational comments often put the relation and its status in adjacent sentences:
+    # ``Actor A/Actor B 확인 중. 지원 여부는 미확정.``  The status sentence has no actor or
+    # artifact token to overlap. Compose it only when there is exactly one adjacent typed
+    # uncertainty sibling in the same source group; multiple candidates stay unbound.
+    if not anchor_actors:
+        anchor_index = observations.index(fact_row)
+        adjacent_uncertain = [
+            (index, row) for index, row, _actors, common in candidates
+            if not common
+            and _is_unconfirmed_evidence_fact(str(row.get("text") or ""))
+            and abs(index - anchor_index) == 1
+            and _relation_overlaps_source(
+                str(row.get("text") or ""), source_subject, focus_terms,
+            )
+        ]
+        if len(adjacent_uncertain) == 1:
+            select(adjacent_uncertain[0][1])
 
     scored: list[tuple[int, int, dict]] = []
     for index, row, sibling_actors, common in candidates:
@@ -739,6 +872,32 @@ def _select_same_group_relation_siblings(
             select(best_rows[0][1])
 
     return sorted(selected, key=lambda row: observations.index(row))
+
+
+def _unique_adjacent_relation_context(
+        fact_row: dict, observations: list[dict],
+        source_subject: str, focus_terms: set[str]) -> str:
+    """Return one source-related adjacent relation, or nothing when ambiguous."""
+    group = str(fact_row.get("observation_group") or "")
+    if not group:
+        return ""
+    anchor_index = observations.index(fact_row)
+    candidates = []
+    for index, row in enumerate(observations):
+        if row is fact_row or str(row.get("observation_group") or "") != group:
+            continue
+        text = str(row.get("text") or "").strip()
+        if (not text or _EVIDENCE_GATE.search(text)
+                or _is_direct_positive_completion(text)
+                or not _typed_evidence_relation(text)):
+            continue
+        distance = abs(index - anchor_index)
+        if (distance == 1
+                and _relation_overlaps_source(text, source_subject, focus_terms)):
+            candidates.append((distance, index, text))
+    if len(candidates) != 1:
+        return ""
+    return candidates[0][2][:420]
 
 
 def _same_material_relation(left: dict, right: dict) -> bool:
@@ -878,15 +1037,16 @@ def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
         seen.add(fingerprint)
         protected = []
         fact = str(fact_row.get("text") or "").strip()
+        constraint_context = ""
         selected_group_values: set[str] = set()
+        focus_terms = set()
+        for raw in state.get("keywords") or []:
+            focus_terms.update(_material_relation_terms(str(raw or "")))
         if kind == "unconfirmed_dependency":
             group = str(fact_row.get("observation_group") or "")
             if group:
-                focus_terms = set()
-                for raw in state.get("keywords") or []:
-                    focus_terms.update(_material_relation_terms(str(raw or "")))
                 selected_rows = _select_same_group_relation_siblings(
-                    fact_row, observations, focus_terms,
+                    fact_row, observations, focus_terms, title,
                 )
                 selected_group_values = {
                     str(row.get("text") or "").strip() for row in selected_rows
@@ -895,6 +1055,7 @@ def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
                     str(row.get("text") or "").strip()
                     for row in selected_rows if str(row.get("text") or "").strip()
                 ]
+                constraint_context = " / ".join(parts)[:420]
                 if fact not in parts:
                     parts.append(fact)
                 if len(parts) > 1:
@@ -911,6 +1072,9 @@ def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
         if kind in {"completed_baseline", "unconfirmed_dependency", "approval_gate"}:
             direct_relation = _typed_evidence_relation(fact)
             if kind == "approval_gate":
+                constraint_context = _unique_adjacent_relation_context(
+                    fact_row, observations, title, focus_terms,
+                )
                 # The typed relation is already present in the obligation fact rendered as
                 # dependency/gate prose. Rendering it again as a generic relationship block
                 # duplicates the same canonical observation in the visible ticket.
@@ -968,6 +1132,8 @@ def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
             "kind": kind,
             "source_key": key,
             "source_title": title[:180],
+            "source_subject": title[:180],
+            "constraint_context": constraint_context[:420],
             "fact": fact[:420],
             "observed_at": str(fact_row.get("observed_at") or "")[:80],
             "relationship_facts": relationship_facts,
@@ -999,8 +1165,15 @@ def _verified_evidence_obligations(state: dict, *, cap: int = 8) -> list[dict]:
         if direct_completion:
             add("completed_baseline", key=key, title=title, fact_row=direct_completion,
                 observations=observations)
+        focus_terms = set()
+        for raw in state.get("keywords") or []:
+            focus_terms.update(_material_relation_terms(str(raw or "")))
         uncertain = _latest_observation([
-            row for row in observations if _is_unconfirmed_evidence_fact(row["text"])
+            row for row in observations
+            if _is_unconfirmed_evidence_fact(row["text"])
+            and _uncertainty_matches_source(
+                row, observations, title, focus_terms,
+            )
         ])
         if uncertain:
             add("unconfirmed_dependency", key=key, title=title, fact_row=uncertain,
@@ -1063,9 +1236,87 @@ def _has_obligation_marker(body: str, obligation_id: str) -> bool:
     ))
 
 
+def _visible_normalized(value) -> str:
+    without_markup = _re.sub(r"<[^>]+>", " ", str(value or ""))
+    visible = _unescape_html(without_markup)
+    return _re.sub(r"[^0-9A-Za-z가-힣_.-]+", " ", visible).strip().casefold()
+
+
+def _obligation_atomic_clause(obligation: dict) -> str:
+    """One bounded visible clause that keeps source, relation, state, and constraint together."""
+    key = str(obligation.get("source_key") or "").strip()
+    subject = str(obligation.get("source_subject")
+                  or obligation.get("source_title") or key).strip()
+    fact = str(obligation.get("fact") or "").strip()
+    context = str(obligation.get("constraint_context") or "").strip()
+    if context and _visible_normalized(context) not in _visible_normalized(fact):
+        material = f"{context} / {fact}" if fact else context
+    else:
+        material = fact or context
+    source = " ".join(value for value in (key, subject) if value)
+    kind = str(obligation.get("kind") or "")
+    conflict = obligation.get("temporal_conflict_with") or []
+    if kind == "completed_baseline":
+        return f"{source}의 완료된 결과를 baseline으로 재사용한다 — {material}"[:1000]
+    if kind == "unconfirmed_dependency":
+        prefix = "검증 상태 충돌 — " if conflict else ""
+        return f"{prefix}{source}의 미확정 dependency — {material}"[:1000]
+    if kind == "approval_gate":
+        return f"{source}의 검증·승인 gate — {material}"[:1000]
+    if kind == "reuse_existing_validation":
+        return f"{source}의 기존 검증 기준·결과를 재사용한다 — {material}"[:1000]
+    return f"{source} — {material}"[:1000]
+
+
+def _drop_unmarked_equivalent_block(body: str, text: str) -> str:
+    """Remove only an exact browser-visible duplicate that lacks authority metadata."""
+    wanted = _visible_normalized(text)
+    if not wanted:
+        return body
+    wanted_tokens = set(wanted.split())
+    wanted_keys = set(_re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", str(text or ""), _re.I))
+    obligation_words = {
+        "baseline", "재사용", "미확정", "dependency", "gate", "승인", "중복",
+        "unconfirmed", "reuse", "approval",
+    }
+
+    def replace(match) -> str:
+        block = match.group(0)
+        if "data-evidence-obligation" in block.casefold():
+            return block
+        candidate = _visible_normalized(block)
+        if candidate == wanted:
+            return ""
+        candidate_tokens = set(candidate.split())
+        candidate_keys = set(_re.findall(
+            r"\b[A-Z][A-Z0-9]*-\d+\b", _unescape_html(block), _re.I,
+        ))
+        common = wanted_tokens & candidate_tokens
+        same_obligation = (
+            bool(wanted_keys & candidate_keys)
+            and bool(common & obligation_words)
+            and len(common) / max(1, min(len(wanted_tokens), len(candidate_tokens))) >= .65
+        )
+        return "" if same_obligation else block
+
+    return _re.sub(r"<(?:p|li)\b[^>]*>[\s\S]*?</(?:p|li)>", replace,
+                   str(body or ""), flags=_re.I)
+
+
+def _obligation_marker_block(body: str, obligation_id: str) -> str:
+    marker = _re.escape(_escape_html(obligation_id, quote=True))
+    match = _re.search(
+        rf"<(p|li)\b[^>]*data-evidence-obligation\s*=\s*(['\"]){marker}\2"
+        rf"[^>]*>([\s\S]*?)</\1>",
+        str(body or ""), _re.I,
+    )
+    return match.group(0) if match else ""
+
+
 def _append_obligation_background(body: str, obligation_id: str, text: str) -> str:
     if _has_obligation_marker(body, obligation_id):
         return body
+    body = _drop_unmarked_equivalent_block(body, text)
     marker = _escape_html(obligation_id, quote=True)
     block = (f'<p data-evidence-obligation="{marker}">'
              f'{_escape_html(text)}</p>')
@@ -1080,6 +1331,7 @@ def _append_obligation_list(body: str, heading: str, obligation_id: str,
                             text: str, *, checklist: bool = False) -> str:
     if _has_obligation_marker(body, obligation_id):
         return body
+    body = _drop_unmarked_equivalent_block(body, text)
     marker = _escape_html(obligation_id, quote=True)
     li = (f'<li data-evidence-obligation="{marker}"'
           + (' data-checked="false"' if checklist else '')
@@ -1114,25 +1366,17 @@ def _apply_verified_evidence_obligations(state: dict, items: list[dict]) -> list
         ]
         obligation["item_indexes"] = indexes
         key = str(obligation.get("source_key") or "")
-        fact = str(obligation.get("fact") or "")
         kind = str(obligation.get("kind") or "")
+        atomic = _obligation_atomic_clause(obligation)
         for index in indexes:
             item = items[index]
             if _is_bug_item(item) or str(item.get("type") or "").casefold() == "epic":
                 continue
             body = str(item.get("description") or "")
             oid = str(obligation.get("id") or "")
-            for relation_index, relation in enumerate(
-                    obligation.get("relationship_facts") or []):
-                if relation and relation.casefold() not in body.casefold():
-                    body = _append_obligation_background(
-                        body, f"{oid}:relationship:{relation_index}",
-                        f"검증된 역할 관계: {relation}",
-                    )
             if kind == "completed_baseline":
                 body = _append_obligation_background(
-                    body, oid,
-                    f"완료된 {key} 결과를 baseline으로 재사용한다: {fact}",
+                    body, oid, atomic,
                 )
                 if not explicit_repeat:
                     body = _append_obligation_list(
@@ -1140,12 +1384,8 @@ def _apply_verified_evidence_obligations(state: dict, items: list[dict]) -> list
                         f"제외: 완료된 {key} 작업의 재수행 — 기존 결과를 baseline으로 재사용",
                     )
             elif kind == "unconfirmed_dependency":
-                conflict = obligation.get("temporal_conflict_with") or []
                 body = _append_obligation_background(
-                    body, oid,
-                    (("검증 상태 충돌(동시점 또는 시점 불명) — "
-                      if conflict else "")
-                     + f"{key}의 미확정 dependency: {fact}"),
+                    body, oid, atomic,
                 )
                 body = _append_obligation_list(
                     body, "작업 범위", oid + ":scope",
@@ -1154,17 +1394,17 @@ def _apply_verified_evidence_obligations(state: dict, items: list[dict]) -> list
             elif kind == "approval_gate":
                 body = _append_obligation_list(
                     body, "작업 범위", oid,
-                    f"제외: 검증·승인 gate 충족 전 범위 확장 — {key}: {fact}",
+                    f"제외: {atomic} 충족 전 범위 확장",
                 )
                 body = _append_obligation_list(
                     body, "완료 조건", oid + ":dod",
-                    f"{key}의 검증·승인 gate 준수 여부를 기록한다: {fact}",
+                    f"{atomic}의 충족 여부와 판정 근거를 기록한다",
                     checklist=True,
                 )
             elif kind == "reuse_existing_validation":
                 body = _append_obligation_list(
                     body, "작업 범위", oid,
-                    f"제외: 기존 {key} 검증 작업의 중복 수행 — 결과·기준을 재사용",
+                    f"제외: {atomic}; 기존 검증 작업 자체의 중복 수행",
                 )
                 body = _append_obligation_list(
                     body, "완료 조건", oid + ":dod",
@@ -1194,13 +1434,57 @@ def _apply_verified_evidence_obligations(state: dict, items: list[dict]) -> list
     return [row for row in obligations if row.get("item_indexes")]
 
 
+def _unmarked_relation_reversal(body: str, obligation: dict) -> bool:
+    """Detect an explicit model-authored producer/consumer reversal outside markers."""
+    unmarked = _re.sub(
+        r"<(p|li)\b[^>]*data-evidence-obligation\s*=\s*(['\"])[^'\"]+\2"
+        r"[^>]*>[\s\S]*?</\1>", " ", str(body or ""), flags=_re.I,
+    )
+    visible = _unescape_html(_re.sub(r"<[^>]+>", ". ", unmarked))
+    projected = [relation for relation in (
+        _typed_evidence_relation(fragment)
+        for fragment in _re.split(r"(?<=[.!?。])\s+|[\r\n]+", visible)
+    ) if relation]
+    canonical = [row for row in (
+        obligation.get("relations") or [obligation.get("fact_relation")]
+    ) if isinstance(row, dict)]
+    for expected in canonical:
+        expected_roles = (expected.get("actor_roles")
+                          or _relation_actor_roles(expected.get("fact") or ""))
+        expected_objects = set(expected.get("objects") or [])
+        for actual in projected:
+            actual_roles = actual.get("actor_roles") or {}
+            actual_objects = set(actual.get("objects") or [])
+            common_objects = expected_objects & actual_objects
+            required_overlap = 1 if min(len(expected_objects), len(actual_objects)) <= 1 else 2
+            if len(common_objects) < required_overlap:
+                continue
+            for expected_actor, roles in expected_roles.items():
+                actual_key = next((actor for actor in actual_roles
+                                   if actor.casefold() == expected_actor.casefold()), "")
+                if not actual_key:
+                    continue
+                expected_set = set(roles)
+                actual_set = set(actual_roles.get(actual_key) or [])
+                if (("producer" in expected_set and "consumer" in actual_set)
+                        or ("consumer" in expected_set and "producer" in actual_set)):
+                    return True
+    return False
+
+
 def _evidence_obligation_errors(state: dict, draft: dict) -> list[dict]:
     """Fail closed when a material verified fact disappears before approval."""
     items = [row for row in (draft.get("items") or []) if isinstance(row, dict)]
     if not items or str(draft.get("mode") or "task").casefold() == "epic":
         return []
-    obligations = copy.deepcopy(draft.get("evidence_obligations") or
-                                _verified_evidence_obligations(state))
+    # Canonical materialized sources are the authority. ``draft.evidence_obligations`` is
+    # only a rendered provenance/cache copy and may be incomplete or model-mutated. Falling
+    # back to that copy is useful for isolated legacy/manual audit payloads only when no
+    # canonical obligation can be derived at all.
+    derived = _verified_evidence_obligations(state)
+    obligations = copy.deepcopy(
+        derived if derived else (draft.get("evidence_obligations") or [])
+    )
     errors = []
     for obligation in obligations:
         indexes = [index for index in (obligation.get("item_indexes") or [])
@@ -1213,45 +1497,41 @@ def _evidence_obligation_errors(state: dict, draft: dict) -> list[dict]:
             ]
         kind = str(obligation.get("kind") or "")
         oid = str(obligation.get("id") or "")
-        def normalized_visible(value) -> str:
-            # Strip actual markup before decoding entities. Browser-visible ``R&D`` is
-            # serialized as ``R&amp;D``; comparing source HTML would report a false omission.
-            without_markup = _re.sub(r"<[^>]+>", " ", str(value or ""))
-            return " ".join(_unescape_html(without_markup).split()).casefold()
-
-        fact = normalized_visible(obligation.get("fact"))
-        relationship_facts = [
-            normalized_visible(value)
-            for value in (obligation.get("relationship_facts") or [])
-            if str(value or "").strip()
-        ]
         key = str(obligation.get("source_key") or "")
+        atomic = _visible_normalized(_obligation_atomic_clause(obligation))
         for index in indexes:
             item = items[index]
-            visible = normalized_visible(
-                str(item.get("description") or "") + " "
-                + " ".join(str(child.get("description") or "")
-                            for child in (item.get("children") or [])
-                            if isinstance(child, dict))
-            )
             body = str(item.get("description") or "")
-            missing = (not _has_obligation_marker(body, oid)
-                       or normalized_visible(key) not in visible)
-            missing = missing or any(value not in visible
-                                     for value in relationship_facts)
-            if kind in {"completed_baseline", "unconfirmed_dependency", "approval_gate"}:
-                missing = missing or (fact and fact not in visible)
-            elif kind == "reuse_existing_validation":
-                missing = (missing
-                           or not _has_obligation_marker(body, oid + ":dod")
-                           or not all(word in visible for word in ("재사용", "중복")))
-            if missing:
+            primary = _obligation_marker_block(body, oid)
+            primary_visible = _visible_normalized(primary)
+            missing = not primary or not atomic or atomic not in primary_visible
+            if kind in {"approval_gate", "reuse_existing_validation"}:
+                dod = _obligation_marker_block(body, oid + ":dod")
+                dod_visible = _visible_normalized(dod)
+                missing = missing or not dod
+                if kind == "approval_gate":
+                    missing = missing or atomic not in dod_visible
+                else:
+                    missing = missing or not all(
+                        word in dod_visible for word in ("재사용", "중복")
+                    )
+            combined = body + " " + " ".join(
+                str(child.get("description") or "")
+                for child in (item.get("children") or []) if isinstance(child, dict)
+            )
+            reversal = _unmarked_relation_reversal(combined, obligation)
+            if missing or reversal:
                 errors.append({
                     "index": index,
                     "field": "evidence_obligation",
                     "obligation_kind": kind,
-                    "message": (f"검증된 근거 의무 {kind}({key})가 초안의 범위·상태·gate에 "
-                                "반영되지 않았다"),
+                    "message": (
+                        f"검증된 근거 의무 {kind}({key})의 source·relation·state가 하나의 "
+                        "표시 블록에 보존되지 않았다"
+                        if missing else
+                        f"검증된 근거 의무 {kind}({key})와 반대로 producer/consumer 역할을 "
+                        "서술했다"
+                    ),
                 })
     return errors
 
@@ -1285,6 +1565,91 @@ def _creation_target_guard_reason(state: dict) -> str:
     return _CREATION_TARGET_GUARD_WHY if plan_guard or artifact_guard else ""
 
 
+def _request_refinement_projection(state: dict) -> dict:
+    """Clone a complete pending draft and apply RequestArchitect's typed field overlay.
+
+    ``request_refinement`` is emitted only by RequestArchitect's exact field-only
+    continuation path. WorkArchitect must not reinterpret the user's sentence or resend a
+    settled draft to the model. The prior payload remains authoritative; only the three
+    bounded fields in the typed handoff may change.
+    """
+    refinement = state.get("request_refinement") or {}
+    prior = state.get("draft") or {}
+    if (str(state.get("intent") or "") != Intent.PLAN_WORK
+            or not state.get("turn_continuation")
+            or str(state.get("error") or "").startswith(f"[{Node.WORK_ARCHITECT}]")
+            or not isinstance(refinement, dict)
+            or not any(str(refinement.get(key) or "").strip()
+                       for key in ("parent", "phase", "duedate"))
+            or not isinstance(prior, dict)):
+        return {}
+    items = copy.deepcopy([
+        row for row in (prior.get("items") or [])
+        if isinstance(row, dict) and str(row.get("summary") or "").strip()
+    ])
+    if not items:
+        return {}
+
+    parent = str(refinement.get("parent") or "").strip()
+    phase = str(refinement.get("phase") or "").strip()
+    due = str(refinement.get("duedate") or "").strip()
+    if parent == "top_level":
+        for item in items:
+            item.pop("epic", None)
+            item.pop("parent", None)
+    elif parent == "select_existing":
+        verified = [row for row in verified_parent_epic_candidates(state)
+                    if str((row or {}).get("key") or "").strip()]
+        for item in items:
+            item.pop("parent", None)
+            selected = (verified[0] if len(verified) == 1
+                        else _delegated_parent_epic(state, item))
+            if selected:
+                item["epic"] = str(selected.get("key") or "").strip()
+            else:
+                item.pop("epic", None)
+    elif _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", parent, _re.I):
+        for item in items:
+            if str(item.get("type") or "").casefold() != "epic":
+                item.pop("parent", None)
+                item["epic"] = parent.upper()
+
+    if due:
+        for item in items:
+            item["duedate"] = due
+    if phase:
+        for item in items:
+            summary = str(item.get("summary") or "").strip()
+            if phase not in summary:
+                item["summary"] = f"{summary} — {phase}"
+            body = str(item.get("description") or "")
+            if body and phase not in _unescape_html(_re.sub(r"<[^>]+>", " ", body)):
+                phase_block = (
+                    f'<p data-request-refinement="phase">적용 단계: '
+                    f'{_escape_html(phase)}</p>'
+                )
+                scope = _re.search(r"<h3>\s*작업 범위\s*</h3>", body, _re.I)
+                if scope:
+                    item["description"] = body[:scope.end()] + phase_block + body[scope.end():]
+                else:
+                    item["description"] = body + phase_block
+
+    rationale = str(prior.get("rationale") or "").strip()
+    changed = [key for key, value in (
+        ("parent", parent), ("phase", phase), ("duedate", due),
+    ) if value]
+    return {
+        "questions": [],
+        "mode": str(prior.get("mode") or "task"),
+        "structure": str(prior.get("structure") or ""),
+        "structure_why": str(prior.get("structure_why") or ""),
+        "items": items,
+        "rationale": (rationale + "\n(검증된 후속 필드만 기존 초안에 반영: "
+                      + ", ".join(changed) + ")").strip(),
+        "_construction": "request_refinement",
+    }
+
+
 class WorkArchitect(StructuredAgent):
     """★ 도구를 쓰지 않는다 — 필요한 재료는 **코드가 전부 미리 조회**한다.
 
@@ -1316,6 +1681,26 @@ class WorkArchitect(StructuredAgent):
                 if prior_work_error and not str(result.get("error") or "").strip():
                     result["error"] = ""
                 return result
+
+            refinement = _request_refinement_projection(state)
+            if refinement:
+                # This handoff is a field overlay on an already reviewed payload, not a
+                # fresh draft. Re-running ``apply`` would redistribute owners, normalize
+                # children, and otherwise mutate fields the user did not ask to change.
+                # Preserve the prior draft byte-for-byte outside parent/phase/due.
+                prior = copy.deepcopy(state.get("draft") or {})
+                prior["items"] = refinement["items"]
+                prior["rationale"] = refinement.get("rationale") or prior.get("rationale") or ""
+                direct = {
+                    "questions": [], "draft": prior, "change_plan": {},
+                    "turns": (state.get("turns") or 0) + 1,
+                    "interpretation": "",
+                    "structure_notes": list(state.get("structure_notes") or [])[-8:],
+                    "trace": note(
+                        state, self.name, "기존 초안 · 검증된 후속 필드 결정적 반영",
+                    ),
+                }
+                return finish(direct)
 
             # Concrete delegated work has no remaining semantic choice once research and
             # blocker guards have run. Sending the same ~10K context to a small model first
@@ -1796,12 +2181,23 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 or not isinstance(out, dict):
             return out
         cleaned = copy.deepcopy(out)
+        priority_was_requested = bool(_re.search(
+            r"우선순위|\bpriority\b|(?<![0-9A-Za-z])P[0-4](?![0-9A-Za-z])",
+            _current_request_boundary_text(state), _re.I,
+        ))
 
         def strip_runtime_authority(value) -> None:
             if isinstance(value, dict):
                 value.pop("assignee", None)
                 value.pop("assignee_source", None)
                 value.pop("structure_source", None)
+                # Qwen occasionally emits a numeric default for this optional string. If
+                # the user never requested priority, it has no semantic authority and may
+                # be omitted before strict validation. An explicit priority remains strict:
+                # coercing or dropping it would hide a materially wrong payload.
+                if ("priority" in value and not isinstance(value.get("priority"), str)
+                        and not priority_was_requested):
+                    value.pop("priority", None)
                 for child in value.values():
                     strip_runtime_authority(child)
             elif isinstance(value, list):
@@ -1857,6 +2253,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         if delegated:
             qs = [q for q in qs if _delegated_question_is_blocking(state, q)]
         qs = _drop_unneeded_meeting_questions(state, qs)
+        # Questions are an execution-blocker channel, not a preference survey. A safe
+        # structure/default remains editable on the approval card and must not suspend the
+        # graph. Structure preferences are never blockers, even if a model labels one so.
+        qs = [q for q in qs
+              if str(q.get("field") or "").casefold() != "structure"
+              and _question_requires_input(q)]
         # 모델이 낸 질문은 **초안을 만들기 전에 답이 필요한 질문**이다. 뒤에서 코드가
         # 붙이는 구조 확인 질문과 구분해 둔다 — 전자는 초안과 함께 내면 사용자가 무엇을
         # 승인해야 할지 모순되고, 후자는 초안의 모양을 보여 주려고 일부러 함께 낸다.
@@ -2217,18 +2619,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             out["rationale"] = ((out.get("rationale") or "")
                                 + "\n(답이 필요한 질문이 남아 있어 임의 초안은 보류했다)"
                                 ).strip()
-        # 초안 관련 인터뷰의 마지막엔 항상 **자유 의견** 질문 하나를 붙인다(사용자 요청) —
-        # 객관식 보기가 못 담는 계획·우려를 받아낼 출구. 코드가 붙이므로 모델이 잊지 못한다.
-        # ★ 이미 넷 이상 물었으면 **자유 의견 칸은 붙이지 않는다.** 슬롯이 늘어(배경·완료
-        #   조건·분할) 질문이 6개까지 나왔는데(실측 ASK1·DUP1·RULE1), 그쯤 되면 출구가
-        #   하나 더 있는 것이 아니라 **취조로 읽힌다.** 자유 의견은 물을 것이 적을 때
-        #   객관식이 못 담는 말을 받으려던 장치다 — 많이 물었으면 이미 받은 것이다.
-        if qs and len(qs) < 3 \
-                and not any(_question_requires_input(q) for q in qs) \
-                and not any(q.get("kind") == "text" and "자유" in q.get("question", "") for q in qs):
-            qs.append({"question": "그 밖에 반영할 의견이나 원하는 진행 방식이 있으면 자유롭게 "
-                                   "적어 주세요 (없으면 건너뛰어도 됩니다)",
-                       "kind": "text", "options": [], "field": ""})
+        # Optional feedback belongs on the approval surface. ``questions`` carries only
+        # values without which a truthful executable payload cannot be formed.
         # ── 시스템·픽스처 라벨은 사람이 붙이는 것이 아니다 ────────────────
         # 배치 재료로 기존 라벨 **목록**을 주니 모델이 거기서 아무거나 집었다(실측:
         # 카탈로그 검색 개선 티켓에 `ui-fixture`). 데이터 관리용 표식은 업무 티켓의
@@ -2262,7 +2654,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # "체크박스 하나 추가, 알아서" 같은 요청이 조사 문맥의 단계어를 주워 Epic+Sub-Task
         # 다섯 건으로 부풀었다. 단일 산출물·짧은 요청·전권 위임이 동시에 확인된 경우에만
         # 적용하며, 사용자가 분할/단계/복수 산출물을 말한 요청은 건드리지 않는다.
-        if mode == "task" and items and _simple_delegated_request(state):
+        if (mode == "task" and items and _simple_delegated_request(state)
+                and out.get("_construction") != "request_refinement"):
             best = _best_item_for_request(state, items)
             changed = len(items) > 1 or bool(best.get("children"))
             best.pop("children", None)
@@ -2310,7 +2703,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                     ("사람 나눠", "담당 나눠", "나눠 맡", "나눠서 진행")):
                 why = "같은 반복 대상을 module roster에 분량으로 나누라는 요청이다"
                 out["structure_why"] = why
-        elif said_shape == "single_task" and mode == "task" and items:
+        elif (said_shape == "single_task" and mode == "task" and items
+              and out.get("_construction") != "request_refinement"):
             # `Task 만들어줘`처럼 issue type을 단수로 지정했으면 모델이 임의로 붙인
             # 설계/구현/검증 children을 접는다. 사용자 지정 형태는 권고가 아니라 결정이다.
             best = _best_item_for_request(state, items)
@@ -2424,9 +2818,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         if (src == "inferred" and structure in ("task_with_subtasks", "multiple_tasks",
                                                 "new_epic")
                 and items and not qs and not _said_defaults(state)):
-            qs = [_optional_structure_question(
-                _shape_question(structure, items), _shape_options(structure),
-            )]
+            out["rationale"] = (
+                (out.get("rationale") or "")
+                + "\n(구조는 실행 단위와 현재 초안에 맞춘 안전 기본값이다 — 승인 화면에서 "
+                  "Task/하위 작업 구성을 조정할 수 있다)"
+            ).strip()
         if draft_new_labels:
             draft["new_labels"] = draft_new_labels
         # (구조: …) 줄은 **맨 끝에서 한 번만** 붙인다 — 여기서도 붙이던 것을 뺐다.
@@ -2600,6 +2996,12 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             # Epic만 write project·모듈·주제 적합성을 검증한다. 부적합하면 최상위 Task가
             # 엉뚱한 진척률을 오염시키는 것보다 연결을 비우는 편이 안전하다.
             if ek == explicit_epic or ek == explicit_epics.get(index):
+                continue
+            if (out.get("_construction") == "request_refinement"
+                    and delegated_epic_choice and ek.upper() in verified_parent_keys):
+                # The typed continuation selected from QueryRunner's already-materialized
+                # candidate set. Do not re-open or semantically reinterpret it during a
+                # zero-call field overlay.
                 continue
             reason = _inferred_epic_rejection(state, it, ek)
             if reason:
@@ -2793,6 +3195,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                         "question": f"{twin['key']} \"{twin.get('summary', '')}\" 가 이미 있습니다. "
                                     "여기에 Task 로 붙일까요, 그래도 새 Epic 을 만들까요?",
                         "kind": "choice", "field": "epic",
+                        "required_input": True,
+                        "why_required": "명시한 새 Epic 생성과 기존 동일 보고 단위 재사용이 충돌함",
                         "options": [f"{twin['key']} 아래 Task 로 (권장 — 중복 Epic 은 진척 집계를 흐린다)",
                                     "새 Epic 을 만든다"]}]
                     # draft 는 이 위에서 이미 조립됐고 items 를 **참조로** 공유한다 —
@@ -2955,32 +3359,25 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             building_request = _current_request_boundary_text(state)
             building = any(w in building_request for w in BUILD_WORDS)
             if dod >= 5 or stages >= 3 or building:
-                if _said_defaults(state):
-                    # 위임받았으면 묻지 않고 **나눠서** 낸다 — 보정 호출 1회로 단계를
-                    # children 으로 뽑는다(실측: 위임 케이스에서 단일 Task 뭉개기가 반복).
-                    fix = _split_into_children(state, items[0])
-                    if fix:
-                        items[0]["children"] = fix
-                        _fill_owners(items[0], fix)
-                        structure = "task_with_subtasks"
-                        why = ("설계·구현·검증처럼 단계가 나뉘고 담당이 갈릴 규모라 "
-                               "단계별 Sub-Task 로 나눴다")
-                        out["structure"], out["structure_why"] = structure, why
-                        draft["structure"], draft["structure_why"] = structure, why
-                        out["rationale"] = ((out.get("rationale") or "")
-                                            + "\n(다단계 규모라 단계별 Sub-Task 로 나눴다 — "
-                                              "위임에 따라 자동. 승인 화면에서 고칠 수 있다)").strip()
-                    else:
-                        out["rationale"] = ((out.get("rationale") or "")
-                                            + "\n(확인 필요: 설계·구현·검증처럼 단계가 나뉘는 "
-                                              "규모로 보이는데 단일 Task 다 — Sub-Task 분할 검토)").strip()
+                # An understructured build has a deterministic conservative shape: keep
+                # the requested deliverable as its parent and expose execution stages as
+                # children. The approval card remains the reversible editing boundary.
+                fix = _split_into_children(state, items[0])
+                if fix:
+                    items[0]["children"] = fix
+                    _fill_owners(items[0], fix)
+                    structure = "task_with_subtasks"
+                    why = ("설계·구현·검증처럼 단계가 나뉘고 담당이 갈릴 규모라 "
+                           "단계별 Sub-Task 로 나눴다")
+                    out["structure"], out["structure_why"] = structure, why
+                    draft["structure"], draft["structure_why"] = structure, why
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + "\n(다단계 규모라 단계별 Sub-Task 로 나눈 안전 "
+                                          "기본값이다 — 승인 화면에서 고칠 수 있다)").strip()
                 else:
-                    qs = [_optional_structure_question(
-                        "작업이 여러 단계(설계·구현·검증 등)로 나뉘는 규모로 "
-                        "보입니다. 어떻게 만들까요?",
-                        ["Task 하나 + 단계별 Sub-Task (권장 — 단계·담당이 나뉜다)",
-                         "단일 Task 로 둔다"],
-                    )]
+                    out["rationale"] = ((out.get("rationale") or "")
+                                        + "\n(구조 권고: 다단계 규모이지만 근거 있는 하위 실행 "
+                                          "단위를 결정적으로 만들 수 없어 현재 Task를 유지했다)").strip()
 
         # ── 모듈이 갈리는 자식은 **형제 Task 로 올린다** ─────────────────────────
         # knowledge/03: 요청이 두 모듈에 걸치면 컴포넌트를 둘 다 넣지 말고 **티켓을 나눠서
@@ -3142,16 +3539,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             if structure_accepted(state) and (state.get("structure_plan") or []):
                 pass                      # 사용자가 방금 승인했다 — 이번 턴부터 살을 붙인다
             else:
-                struct_stage = True
-                for it in items:          # 뼈대 단계에서는 본문을 만들지 않는다
-                    it.pop("description", None)
-                    for c in (it.get("children") or []):
-                        if isinstance(c, dict):
-                            c.pop("description", None)
-                qs = [structure_question(items)]
+                # Optional structure preference must not suspend an otherwise complete
+                # draft. Preserve bodies and show the inferred shape as editable advice.
                 out["rationale"] = ((out.get("rationale") or "")
-                                    + "\n(먼저 **구조**를 맞춥니다 — 이 뼈대가 확정되면 각 "
-                                      "티켓의 배경·범위·완료 조건을 채웁니다)").strip()
+                                    + "\n(구조 권고: 독립 실행 단위가 여러 개라 현재 복합 초안을 "
+                                      "유지했다 — 승인 화면에서 합치거나 나눌 수 있다)").strip()
 
         # ★ **질문이 붙는 턴에도 초안은 화면에 보인다** — 되묻는 턴이라고 본문을 방치하면
         #   그 얇은 본문이 그대로 사용자에게 간다("확인을 받되 초안은 그대로 보여 준다"가
@@ -3250,6 +3642,9 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         plan, qs = _change_plan(state, out, items, qs)
         _canonicalize_meeting_mentions(state, plan)
         qs = _normalize_duplicate_and_bug_questions(state, qs, items=items, plan=plan)
+        qs = [q for q in qs
+              if str(q.get("field") or "").casefold() != "structure"
+              and _question_requires_input(q)]
         # ★ 바꿀 값을 **정확히 말한** 수정 요청에는 되묻지 않는다. 계획이 이미 섰으면
         #   승인 카드가 곧 확인 단계다(work_architect.md: "NEVER ask permission to proceed").
         #   실측(MOD8): "라벨 data-quality 추가하고 컴포넌트를 Catalog 로" 처럼 값을 다 준
@@ -3342,6 +3737,8 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             qs = [{"question": "요청하신 내용으로는 만들 수 있는 티켓이 없었습니다. "
                                "어떻게 할까요?",
                        "kind": "choice", "field": "",
+                       "required_input": True,
+                       "why_required": "검증을 통과한 생성 payload가 남아 있지 않음",
                        "options": ["범위를 다시 알려주면 그것으로 다시 잡는다",
                                    "부모/Epic 을 지정해 그 아래로 만든다",
                                    "이번엔 만들지 않는다"]}]
@@ -3705,7 +4102,9 @@ def _change_plan(state, out, items, qs):
                     qs = [{"question": f"{k0} 를 '{want}' 상태로 옮길 수는 없습니다. "
                                        "지금 갈 수 있는 상태는 다음뿐입니다 — 고르시면 "
                                        "그대로 변경 카드를 만들어 드립니다.",
-                           "kind": "choice", "field": "",
+                           "kind": "choice", "field": "status",
+                           "required_input": True,
+                           "why_required": "요청한 상태 전이가 없어 유효한 도착 상태 선택이 필요함",
                            "options": opts[:5]}]
             except Exception:
                 pass
@@ -3806,7 +4205,9 @@ def _change_plan(state, out, items, qs):
                     # 모델이 낸 잡질문("제목을 알려주실…")은 버린다 — 정확한 choice 하나가 답이다.
                     qs = [{"question": f"{k_t} 를 '{want_t}' 로 옮길 전이가 없습니다. "
                                        "가능한 전이 중에서 골라 주세요.",
-                           "kind": "choice", "field": "",
+                           "kind": "choice", "field": "status",
+                           "required_input": True,
+                           "why_required": "요청한 상태 전이가 없어 유효한 도착 상태 선택이 필요함",
                            "options": [str(t.get("to") or t.get("name"))
                                        for t in cands_t][:5]}]
                     items.clear()
@@ -5124,6 +5525,20 @@ def _drop_unrequested_deployment_dod(state, items) -> bool:
         targets = [item] + [c for c in (item.get("children") or []) if isinstance(c, dict)]
         for target in targets:
             body = str(target.get("description") or "")
+            if _re.search(r"\bPoC\b|MVP|최소\s*기능|1\s*차|1차", req, _re.I):
+                # A minimal/first-stage request cannot be rewritten in model prose as a
+                # production build. Remove only the sentence carrying that unauthorized
+                # expansion; verified rollout gates are appended later with typed markers.
+                body, n = _re.subn(
+                    r"(?:(?<=<p>)|(?<=[.!?]\s))[^<.!?]{0,180}"
+                    r"(?:프로덕션|production)[^<.!?]{0,140}"
+                    r"(?:파이프라인\s*)?(?:구축|개발|전환|build(?:ing)?)[^<.!?]*"
+                    r"(?:[.!?]|(?=</p>))",
+                    "", body, flags=_re.I,
+                )
+                if n:
+                    body = _re.sub(r"<p>\s*</p>", "", body, flags=_re.I)
+                    changed = True
             # 범위에 끼어든 배포도 같은 의미 확장이다. 구현 자체는 유지한다.
             body, n = _re.subn(r"코드\s*작성\s*및\s*배포", "코드 작성 및 테스트 환경 검증", body)
             changed = changed or bool(n)
@@ -6093,10 +6508,12 @@ def _repair_statistics_generation_semantics(state: dict, items: list) -> bool:
     unrequested method, then rebuilds the body from the verified title/request boundary.
     """
     asked = _current_request_boundary_text(state)
-    if not (_re.search(r"통계\s*정보.{0,30}생성|NDV.{0,30}생성", asked, _re.I)
-            or _re.search(r"generat\w*.{0,30}(?:NDV|statistic)|"
-                          r"(?:NDV|statistic).{0,30}generat\w*", asked, _re.I)):
+    # The invariant is the requested *generation* outcome, not one particular statistics
+    # technology. Product/domain qualifiers flow from the request and item summary; this
+    # repair must never inject a qualifier absent from both.
+    if not _re.search(r"생성|산출|generat\w*|produc\w*", asked, _re.I):
         return False
+    requested_terms = _discriminative_relation_terms(asked)
     drift_patterns = (
         r"데이터\s*(?:소스\s*)?(?:수집|변환|분석|처리|수정)",
         r"통계\s*정보(?:를|의)?\s*(?:수집|처리)",
@@ -6110,7 +6527,10 @@ def _repair_statistics_generation_semantics(state: dict, items: list) -> bool:
         if not isinstance(item, dict) or _is_bug_item(item):
             continue
         summary = _re.sub(r"^\s*\[[^]]+\]\s*", "", str(item.get("summary") or "")).strip()
-        if not _re.search(r"NDV|통계", summary, _re.I):
+        summary_terms = _discriminative_relation_terms(summary)
+        common = requested_terms & summary_terms
+        required_overlap = 1 if min(len(requested_terms), len(summary_terms)) <= 1 else 2
+        if len(common) < required_overlap:
             continue
         body = str(item.get("description") or "")
         bad = [pattern for pattern in drift_patterns
@@ -6129,7 +6549,7 @@ def _repair_statistics_generation_semantics(state: dict, items: list) -> bool:
             "<li>제외: 요청에 명시되지 않은 데이터 수집·변환·배포 및 보고서 작성</li></ul>"
             "<h3>완료 조건 (DoD)</h3><ul data-type=\"taskList\">"
             f"<li data-checked=\"false\">{subject}의 실행 성공·실패 로그와 테스트 결과를 티켓에 기록한다</li>"
-            "<li data-checked=\"false\">생성된 NDV 통계정보의 산출 여부와 검증 결과를 티켓에 기록한다</li>"
+            f"<li data-checked=\"false\">{subject} 실행으로 생성된 결과의 산출 여부와 검증 결과를 티켓에 기록한다</li>"
             "</ul>" + reference
         )
         changed = True
@@ -8569,7 +8989,7 @@ def _can_parent_subtask(key) -> bool:
     """그 티켓이 **Sub-Task 의 부모가 될 수 있나** — 실재하는 Task tier여야 한다.
 
     실재 여부만 보던 자리들이 있었는데, Jira 에서 **Epic 밑에는 Sub-Task 를 못 단다**
-    (Epic 의 자식은 Story/Task 다). 실측 STR1: 모델이 Epic DL-5982 를 부모로 지목한
+    (Epic 의 자식은 Story/Task 다). 실측 회귀에서는 모델이 검증된 Epic을 부모로 지목한
     Sub-Task 10건을 냈고 — 답변에서 스스로 "Epic이라 부모로 적합하지 않다"고 적으면서도
     초안에는 그대로 실었다. 실재 검사는 통과하니 강등 가드도 안 걸렸다.
     같은 규칙을 BULK3 케이스에서 이미 확인했다(그때는 **케이스가** 틀렸었다 — §8).

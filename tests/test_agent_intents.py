@@ -586,7 +586,7 @@ def test_verified_field_only_continuation_skips_request_model_and_preserves_outc
         "tasks": [
             {"id": "research", "kind": "research", "instruction": "Puffin 적용 이력 조사",
              "depends_on": [], "write_intent": False, "completion_criteria": ["이력 확인"]},
-            {"id": "ticket", "kind": "ticket", "instruction": "Puffin NDV 후속 Task 생성",
+            {"id": "ticket", "kind": "ticket", "instruction": "Puffin NDV 후속 구현 Task 생성",
              "depends_on": ["research"], "write_intent": True,
              "completion_criteria": ["Task 초안"]},
             {"id": "comment", "kind": "comment", "instruction": "DL-9090 결정 댓글 작성",
@@ -597,7 +597,7 @@ def test_verified_field_only_continuation_skips_request_model_and_preserves_outc
     }
     state = {
         "intent": Intent.PLAN_WORK,
-        "request_text": "StarRocks Puffin NDV 적용 이력을 조사하고 후속 Task와 댓글을 작성해줘",
+        "request_text": "StarRocks Puffin NDV 적용 이력을 조사하고 후속 구현 Task와 댓글을 작성해줘",
         "request_plan": prior_plan,
         "turn_continuation": True,
         "keywords": ["StarRocks", "Puffin", "NDV"],
@@ -636,18 +636,132 @@ def test_verified_field_only_continuation_skips_request_model_and_preserves_outc
     assert G.route_after_request_architect({**state, **patch}) == "refine"
 
 
+def test_typed_phase_action_change_falls_back_to_semantic_request_architect(monkeypatch):
+    """An ordinal parser must not erase a newly requested execution stage."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    prior_task = {
+        "id": "delivery", "kind": "ticket",
+        "instruction": "VectorIndex 구현 Task 생성",
+        "depends_on": [], "write_intent": True,
+        "completion_criteria": ["VectorIndex 구현 초안"],
+    }
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "VectorIndex 구현 Task를 만들어줘",
+        "request_plan": {"goal": "VectorIndex 구현", "tasks": [prior_task]},
+        "turn_continuation": True,
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200"}],
+            "parentCandidateKeys": ["DL-9200"],
+        },
+        "request_refinement": {
+            "parent": "select_existing", "phase": "기존", "duedate": "2026-08-31",
+        },
+        "messages": [HumanMessage(content=(
+            "Epic은 네가 골라줘. 범위는 1차 검증까지, 마감은 2026-09-30"))],
+    }
+    calls = []
+    agent = RequestArchitect()
+    monkeypatch.setattr(agent, "invoke_structured", lambda *_args, **_kwargs: (
+        calls.append(True) or {
+            "intent": Intent.PLAN_WORK, "keywords": ["VectorIndex", "검증"],
+            "sufficient": True, "goal": "VectorIndex 1차 검증",
+            "tasks": [{**prior_task, "instruction": "VectorIndex 1차 검증 Task 생성"}],
+        }))
+
+    patch = agent._run(state)
+
+    assert calls == [True]
+    assert patch["request_refinement"] == {}
+
+
+def test_typed_phase_action_without_prior_action_identity_falls_back(monkeypatch):
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    prior_task = {
+        "id": "delivery", "kind": "ticket", "instruction": "VectorIndex Task 생성",
+        "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+    }
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "VectorIndex Task를 만들어줘",
+        "request_plan": {"goal": "VectorIndex Task 생성", "tasks": [prior_task]},
+        "turn_continuation": True,
+        "materialized_ticket_sources": {"ticketDetails": [{"key": "DL-9200"}]},
+        "messages": [HumanMessage(content=(
+            "Epic은 네가 골라줘. 범위는 1차 검증까지, 마감은 2026-09-30"))],
+    }
+    calls = []
+    agent = RequestArchitect()
+    monkeypatch.setattr(agent, "invoke_structured", lambda *_args, **_kwargs: (
+        calls.append(True) or {
+            "intent": Intent.PLAN_WORK, "keywords": ["VectorIndex", "검증"],
+            "sufficient": True, "goal": "VectorIndex 검증",
+            "tasks": [{**prior_task, "instruction": "VectorIndex 검증 Task 생성"}],
+        }))
+
+    patch = agent._run(state)
+
+    assert calls == [True]
+    assert patch["request_refinement"] == {}
+
+
+@pytest.mark.parametrize(("prior_action", "phase_clause"), [
+    ("개발", "범위는 1차 구현까지"),
+    ("기획", "범위는 1차 설계까지"),
+    ("개발", "범위는 1차까지"),
+], ids=("same-implementation-family", "same-design-family", "ordinal-only"))
+def test_typed_phase_same_or_unspecified_action_keeps_zero_call_fast_path(
+        monkeypatch, prior_action, phase_clause):
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.request_architect import RequestArchitect
+
+    prior_task = {
+        "id": "delivery", "kind": "ticket",
+        "instruction": f"VectorIndex {prior_action} Task 생성",
+        "depends_on": [], "write_intent": True,
+        "completion_criteria": [f"VectorIndex {prior_action} 초안"],
+    }
+    state = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": f"VectorIndex {prior_action} Task를 만들어줘",
+        "request_plan": {"goal": f"VectorIndex {prior_action}", "tasks": [prior_task]},
+        "turn_continuation": True,
+        "materialized_ticket_sources": {
+            "ticketDetails": [{"key": "DL-9200"}],
+            "parentCandidateKeys": ["DL-9200"],
+        },
+        "messages": [HumanMessage(content=(
+            f"Epic은 네가 골라줘. {phase_clause}, 마감은 2026-09-30"))],
+    }
+    agent = RequestArchitect()
+    monkeypatch.setattr(
+        agent, "invoke_structured",
+        lambda *_args, **_kwargs: pytest.fail("compatible typed refinement must stay zero-call"),
+    )
+
+    patch = agent._run(state)
+
+    assert patch["request_refinement"] == {
+        "parent": "select_existing", "phase": "1차", "duedate": "2026-09-30",
+    }
+
+
 def test_request_fast_path_does_not_bypass_missing_parent_candidate_retrieval(monkeypatch):
     """Skipping classification must not turn an unrelated opened ticket into parent authority."""
     from langchain_core.messages import HumanMessage
     from app.agent.workflow.agents.request_architect import RequestArchitect
 
     task = {
-        "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV Task 생성",
+        "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV 구현 Task 생성",
         "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
     }
     state = {
-        "intent": Intent.PLAN_WORK, "request_text": "Puffin NDV Task를 만들어줘",
-        "request_plan": {"goal": "Puffin NDV Task 생성", "tasks": [task]},
+        "intent": Intent.PLAN_WORK, "request_text": "Puffin NDV 구현 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin NDV 구현 Task 생성", "tasks": [task]},
         "turn_continuation": True,
         "materialized_ticket_sources": {
             "ticketDetails": [{"key": "DL-9201", "fields": {
@@ -698,6 +812,10 @@ def test_request_fast_path_fails_safe_to_semantic_model_for_non_typed_changes(
         "situation": "관련 이력 조사 완료",
         "materialized_ticket_sources": {
             "ticketDetails": [{"key": "DL-9200"}], "parentCandidateKeys": []},
+        # A prior fast turn must never leak its execution-field overlay into a semantic turn.
+        "request_refinement": {
+            "parent": "select_existing", "phase": "1차", "duedate": "2026-08-31",
+        },
         "messages": [HumanMessage(content=latest)],
     }
     calls = []
@@ -712,9 +830,10 @@ def test_request_fast_path_fails_safe_to_semantic_model_for_non_typed_changes(
     agent = RequestArchitect()
     monkeypatch.setattr(agent, "invoke_structured", semantic_once)
 
-    agent._run(state)
+    patch = agent._run(state)
 
     assert calls == [True]
+    assert patch["request_refinement"] == {}
 
 
 def test_explicit_parent_field_fast_path_is_visible_to_work_architect(monkeypatch):
@@ -724,13 +843,13 @@ def test_explicit_parent_field_fast_path_is_visible_to_work_architect(monkeypatc
     from app.agent.workflow.agents import work_architect as work
 
     task = {
-        "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV Task 생성",
+        "id": "ticket", "kind": "ticket", "instruction": "Puffin NDV 구현 Task 생성",
         "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
     }
     latest = "상위 Epic은 DL-9200으로 연결해줘. 1차 구현. 마감은 2026-09-30까지"
     state = {
-        "intent": Intent.PLAN_WORK, "request_text": "Puffin NDV Task를 만들어줘",
-        "request_plan": {"goal": "Puffin NDV Task 생성", "tasks": [task]},
+        "intent": Intent.PLAN_WORK, "request_text": "Puffin NDV 구현 Task를 만들어줘",
+        "request_plan": {"goal": "Puffin NDV 구현 Task 생성", "tasks": [task]},
         "turn_continuation": True,
         "materialized_ticket_sources": {"ticketDetails": [{"key": "DL-9200"}]},
         "messages": [HumanMessage(content=latest)],
@@ -776,13 +895,13 @@ def test_exact_optional_structure_question_uses_zero_call_typed_continuation(
     from app.agent.workflow.agents.request_architect import RequestArchitect
     from app.agent.workflow.session import _turn_start_patch
 
-    prior_plan = {"goal": "Puffin 최소 기능 Task 생성", "tasks": [{
-        "id": "delivery", "kind": "ticket", "instruction": "Puffin 최소 기능 Task 생성",
+    prior_plan = {"goal": "Puffin 최소 기능 구현", "tasks": [{
+        "id": "delivery", "kind": "ticket", "instruction": "Puffin 최소 기능 구현 Task 생성",
         "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
     }]}
     prior = {
         "intent": Intent.PLAN_WORK,
-        "request_text": "Puffin NDV 적용 이력을 반영한 최소 기능 Task를 만들어줘",
+        "request_text": "Puffin NDV 적용 이력을 반영한 최소 기능을 개발해야 해",
         "request_plan": prior_plan,
         "draft": {"mode": "task", "items": [{"summary": "Puffin 최소 기능"}]},
         "situation": "관련 이력과 상위 Epic 후보 조사 완료",
@@ -825,6 +944,7 @@ def test_exact_optional_structure_question_uses_zero_call_typed_continuation(
     patch = agent._run(state)
 
     assert continued["turn_continuation"]
+    assert continued["request_refinement"] == {}
     assert continued["request_text"] == prior["request_text"]
     assert continued["request_plan"] == prior_plan
     assert continued["draft"] == prior["draft"]
@@ -833,7 +953,34 @@ def test_exact_optional_structure_question_uses_zero_call_typed_continuation(
     assert calls == []
     assert patch["request_plan"] == prior_plan
     assert patch["request_text"] == prior["request_text"]
+    assert patch["request_refinement"] == {
+        "parent": "select_existing",
+        "phase": "1차",
+        "duedate": "2026-09-30",
+    }
     assert G.route_after_request_architect({**state, **patch}) == "refine"
+
+
+def test_new_turn_clears_stale_typed_request_refinement():
+    from app.agent.workflow.session import _turn_start_patch
+
+    prior = {
+        "intent": Intent.PLAN_WORK,
+        "request_text": "Puffin NDV Task를 만들어줘",
+        "request_plan": {"goal": "Puffin NDV Task 생성", "tasks": [{
+            "id": "delivery", "kind": "ticket", "instruction": "Puffin NDV Task 생성",
+            "depends_on": [], "write_intent": True, "completion_criteria": ["Task 초안"],
+        }]},
+        "request_refinement": {
+            "parent": "DL-9200", "phase": "1차", "duedate": "2026-09-30",
+        },
+        "draft": {"items": [{"summary": "Puffin NDV Task"}]},
+    }
+
+    fresh = _turn_start_patch("완전히 다른 보안 교육 현황을 알려줘", prior)
+
+    assert not fresh["turn_continuation"]
+    assert fresh["request_refinement"] == {}
 
 
 @pytest.mark.parametrize("question", [

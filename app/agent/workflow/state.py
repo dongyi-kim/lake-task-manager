@@ -125,6 +125,22 @@ class MaterializedTicketSources(TypedDict, total=False):
     parentCandidateSearchAttempted: bool
 
 
+class RequestRefinement(TypedDict, total=False):
+    """Fully parsed execution-field overlay for the current request turn.
+
+    This sidecar is populated only by RequestArchitect's deterministic continuation lane.
+    It is deliberately separate from ``request_plan``: the plan remains the authoritative
+    outcome DAG, while these values say how WorkArchitect should place and constrain that
+    already-known outcome.  ``parent`` is either an exact Jira key or the bounded sentinel
+    ``select_existing``/``top_level``; ``phase`` is a normalized ordinal such as ``1차``;
+    ``duedate`` is a validated ISO date.
+    """
+
+    parent: str
+    phase: str
+    duedate: str
+
+
 def verified_parent_epic_candidates(state: "AgentState") -> list[dict[str, Any]]:
     """Return the successfully opened Epics authorized for automatic placement.
 
@@ -181,6 +197,7 @@ class AgentState(TypedDict, total=False):
     sufficient: bool                # 되묻지 않고 진행해도 되나
     answer_depth: str               # "brief"(값·결론만) | "explain"(개념·배경까지)
     request_plan: dict              # Request Architect의 원자 작업 DAG
+    request_refinement: RequestRefinement  # 현재 턴의 검증된 parent/phase/duedate overlay
     turn_continuation: bool         # 직전 확인 질문에 대한 답변인가(새 요청의 stale state와 구분)
     turn_reset_reason: str          # local debug/evaluation용 턴 경계 판정 근거
 

@@ -1164,6 +1164,125 @@ def test_result_integrator_filters_product_intro_for_feature_specific_create():
     assert intro not in got
 
 
+def test_result_integrator_filters_zero_anchor_external_evidence():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    unrelated = "https://github.com/InsBug/ARLtoAWVS/blob/main/domain_2w.txt"
+    direct = "https://iceberg.apache.org/puffin-spec/"
+    state = {
+        "intent": "plan_work",
+        "request_text": "starrocks puffin ndv 통계정보를 생성하는 파이프라인을 개발해야해",
+        "evidence": [
+            {
+                "key": "ARLtoAWVS/domain_2w.txt", "title": "ARLtoAWVS/domain_2w.txt",
+                "url": unrelated,
+                "observations": [{
+                    "source": "external",
+                    "text": "ARL与AWVS联动，实现自动化扫描并推送结果",
+                }],
+            },
+            {
+                "key": "Puffin Spec", "title": "Apache Iceberg Puffin specification",
+                "url": direct,
+                "observations": [{
+                    "source": "external", "text": "Puffin files store NDV statistics",
+                }],
+            },
+        ],
+        "related_docs": [],
+    }
+
+    model_reply = (
+        "기능 초안\n\n### 근거\n\n"
+        f"[6] [ARLtoAWVS/domain_2w.txt]({unrelated})\n"
+        "- [6-a] 웹 문서에서 ARL与AWVS联动，实现自动化扫描并推送结果\n"
+        f"[7] [Apache Iceberg Puffin specification]({direct})\n"
+        "- [7-a] 웹 문서에서 Puffin files store NDV statistics"
+    )
+    got = _merge_evidence_index(model_reply, state)
+
+    assert unrelated not in got
+    assert direct in got
+
+
+def test_result_integrator_keeps_direct_numbered_standard_for_public_name_alias():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    direct = "https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3096.pdf"
+    state = {
+        "intent": "ask",
+        "request_text": "C23 specification을 외부 조사해줘",
+        "evidence": [{
+            "key": "N3096", "title": "N3096", "url": direct,
+            "observations": [{"source": "external", "text": "WG14 working draft N3096"}],
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index(
+        f"조사 결과\n\n### 근거\n\n[1] [N3096]({direct})\n"
+        "- [1-a] WG14 working draft N3096",
+        state,
+    )
+
+    assert direct in got
+
+
+def test_result_integrator_filters_official_numbered_document_from_unrelated_family():
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    unrelated = "https://www.ietf.org/archive/id/rfc9999.pdf"
+    state = {
+        "intent": "ask",
+        "request_text": "C23 specification을 외부 조사해줘",
+        "evidence": [{
+            "key": "RFC9999", "title": "RFC9999", "url": unrelated,
+            "observations": [{"source": "external", "text": "Internet Standard RFC9999"}],
+        }],
+        "related_docs": [],
+    }
+
+    got = _merge_evidence_index(
+        f"조사 결과\n\n### 근거\n\n[1] [RFC9999]({unrelated})\n"
+        "- [1-a] Internet Standard RFC9999",
+        state,
+    )
+
+    assert unrelated not in got
+
+
+def test_ticket_description_evidence_dedupes_only_canonical_exact_duplicate():
+    """Badge/plain ticket spellings may duplicate one description; distinct facts must survive."""
+    from app.agent.workflow.agents.result_integrator import _merge_evidence_index
+
+    repeated = ("h2. 배경 DL-7001에서 정리한 20개 후보 중 5개 표본으로 writer PoC를 "
+                "수행한다. h2. 완료 조건 5개 표본의 실행 로그와 결과표를 첨부한다")
+    state = {
+        "request_text": "StarRocks Puffin NDV writer PoC 기록 확인",
+        "evidence": [{
+            "key": "DL-9201", "title": "Iceberg Puffin NDV writer PoC",
+            "observations": [
+                {"source": "description", "text": repeated.replace(
+                    "DL-7001", "{{ticket-inline:DL-7001}}")},
+                {"source": "comment", "text": "5개 표본의 Puffin 파일 생성 결과를 확보함"},
+                {"source": "description", "text": repeated},
+                {"source": "description", "text": "NDV 오차를 별도 결과표에 기록한다"},
+            ],
+        }],
+        "related_docs": [],
+    }
+    model_reply = (
+        "PoC 기록\n\n### 근거\n\n[4] {{ticket-detail:DL-9201}}\n"
+        f"- [4-a] 본문에서 {repeated.replace('DL-7001', '{{ticket-inline:DL-7001}}')}"
+    )
+
+    got = _merge_evidence_index(model_reply, state)
+
+    assert got.count("20개 후보 중 5개 표본으로 writer PoC") == 1
+    assert "5개 표본의 Puffin 파일 생성 결과를 확보함" in got
+    assert "NDV 오차를 별도 결과표에 기록한다" in got
+
+
 @pytest.mark.parametrize(("prompt_text", "title", "url", "observation"), [
     (
         "StarRocks 공식 홈페이지 알려줘", "StarRocks",

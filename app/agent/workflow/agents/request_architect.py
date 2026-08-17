@@ -634,7 +634,8 @@ _FAST_DUE_FIELD = _re.compile(
 _FAST_PHASE_FIELD = _re.compile(
     r"(?:(?:범위|단계|phase|stage)\s*(?:은|는|을|를|로|:|=)?\s*)?"
     r"(?:(?:최소|우선)\s*)?(?:기능\s*)?(?P<ordinal>\d{1,3}\s*차)\s*"
-    r"(?:구현|개발|검증|적용|배포|범위|단계)?\s*(?:까지|로)?",
+    r"(?P<action>설계|기획|구현|개발|적용|검증|테스트|측정|배포|전환|범위|단계)?"
+    r"\s*(?:까지|로)?",
     _re.I,
 )
 _FAST_REFINEMENT_GLUE = _re.compile(
@@ -702,6 +703,55 @@ def _typed_continuation_refinement(text: str) -> dict:
     return fields
 
 
+_EXECUTION_ACTION_FAMILIES = (
+    ("design", ("설계", "기획")),
+    ("implementation", ("구현", "개발", "적용")),
+    ("validation", ("검증", "테스트", "측정")),
+    ("deployment", ("배포", "전환")),
+)
+
+
+def _execution_action_families(text: str) -> set[str]:
+    """Return generic execution-stage families explicitly named in outcome text."""
+    value = str(text or "")
+    return {
+        family
+        for family, words in _EXECUTION_ACTION_FAMILIES
+        if any(word in value for word in words)
+    }
+
+
+def _phase_action_family(text: str) -> str:
+    """Return the explicit action attached to a typed phase clause, if any."""
+    matches = list(_FAST_PHASE_FIELD.finditer(str(text or "")))
+    if len(matches) != 1:
+        return ""
+    families = _execution_action_families(matches[0].group("action") or "")
+    return next(iter(families)) if len(families) == 1 else ""
+
+
+def _request_plan_action_families(plan: dict) -> set[str]:
+    """Read action identity from the authoritative non-comment write outcomes.
+
+    A phase overlay applies to planned artifacts, not to an accompanying notification comment.
+    Missing or mixed action identity is intentionally not guessed: an explicit new stage must go
+    through semantic RequestArchitect in that case.
+    """
+    families: set[str] = set()
+    eligible = []
+    for task in (plan.get("tasks") or []) if isinstance(plan, dict) else []:
+        if not _is_write_outcome(task):
+            continue
+        if str(task.get("kind") or "").strip().casefold() == "comment":
+            continue
+        eligible.append(task)
+        task_families = _execution_action_families(task.get("instruction") or "")
+        if len(task_families) != 1:
+            return set()
+        families.update(task_families)
+    return families if eligible else set()
+
+
 def _has_verified_prior_work_context(state: dict) -> bool:
     """Require material work context before bypassing a semantic request classification."""
     ledger = state.get("materialized_ticket_sources") or {}
@@ -729,6 +779,13 @@ def _field_refinement_fast_patch(state: dict) -> dict:
     asked = last_user_text(state).strip()
     fields = _typed_continuation_refinement(asked)
     if not fields:
+        return {}
+    # ``1차 검증`` is not just an ordinal when the authoritative outcome is ``구현``.
+    # The typed overlay intentionally stores only the ordinal, so bypass the model only when
+    # the explicit stage belongs to the same generic action family as every affected outcome.
+    # An ordinal-only clause (``1차까지``) carries no action change and remains fast.
+    phase_action = _phase_action_family(asked)
+    if phase_action and _request_plan_action_families(prior_plan) != {phase_action}:
         return {}
     # Replacing an explicitly requested new Epic with existing-Epic selection changes the
     # requested action; that is semantic even though both phrases look like a parent field.
@@ -767,6 +824,7 @@ def _field_refinement_fast_patch(state: dict) -> dict:
         "playbook": str(state.get("playbook") or ""),
         "answer_depth": depth if depth in {"brief", "explain"} else "brief",
         "request_plan": request_plan,
+        "request_refinement": _copy.deepcopy(fields),
         "request_text": original,
         "trace": note(state, Node.REQUEST_ARCHITECT,
                       f"의도={Intent.PLAN_WORK} · 검증된 필드 보정({labels}) · 모델 호출 생략"),
@@ -849,7 +907,12 @@ class RequestArchitect(StructuredAgent):
         fast = _field_refinement_fast_patch(state)
         if fast:
             return fast
-        return super()._run(state)
+        # Per-turn overlays are valid only when the deterministic grammar parsed the whole
+        # continuation.  A semantic fallback—including an error patch—must explicitly clear
+        # any value present in a legacy/directly-invoked state rather than inheriting it.
+        patch = super()._run(state)
+        patch["request_refinement"] = {}
+        return patch
 
     def system(self, state):
         return persona(state, SYSTEM_REQUEST_ARCHITECT, lite=True)   # 분류엔 축약판 — 호출당 1k+ 토큰 절감

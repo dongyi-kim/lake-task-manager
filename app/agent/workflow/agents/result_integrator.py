@@ -2200,10 +2200,10 @@ def _is_negative_search_pseudo_source(item: dict) -> bool:
 
 
 def _external_evidence_context(state) -> str:
-    # Generic navigation becomes renderable only when the human explicitly requested that
-    # navigation target. Model/query text is evidence provenance, not user authorization.
-    return "\n".join(value for value in (request_text(state), last_user_text(state))
-                     if str(value or "").strip())
+    # Keep the final renderer on QueryRunner's exact current/frozen public-subject boundary.
+    # Model/query text is evidence provenance, never relevance authority.
+    from app.agent.workflow.agents.query_runner import _external_evidence_context as shared
+    return shared(state)
 
 
 def _is_non_renderable_evidence(item: dict, state=None) -> bool:
@@ -2288,13 +2288,12 @@ def _approval_source_material(item: dict) -> str:
 
 
 def _is_generic_external_source(item: dict, context: str = "") -> bool:
-    """Reject navigation and contribution pages from every visible evidence list.
+    """Reject generic or zero-subject-overlap hits from every visible evidence list.
 
     Search engines frequently rank a product homepage, a documentation search shell, or
-    ``docs/README.md`` ahead of the requested feature specification. Those pages can be
-    official and repeat the product name, but they do not support a research conclusion or
-    draft decision. Raw QueryRunner artifacts retain them for diagnostics; user-visible
-    evidence keeps only direct topic documents.
+    ``docs/README.md`` ahead of the requested feature specification, and can also return an
+    arbitrary file with no request anchor at all. Raw QueryRunner artifacts retain those
+    results for diagnostics; user-visible evidence keeps only direct topic documents.
     """
     url = str(item.get("url") or "").strip()
     if not _is_external_source_url(url):
@@ -2302,8 +2301,8 @@ def _is_generic_external_source(item: dict, context: str = "") -> bool:
     # Keep one policy implementation for both the QueryRunner compact view and the final
     # source index. This prevents a source approved as a direct intro/home/repository target
     # from being silently discarded during final rendering.
-    from app.agent.workflow.agents.query_runner import _is_generic_external_hit
-    return _is_generic_external_hit({
+    from app.agent.workflow.agents.query_runner import _external_hit_is_relevant
+    return not _external_hit_is_relevant({
         "title": item.get("title") or item.get("key"),
         "name": item.get("key") or item.get("title"),
         "url": url,
@@ -2333,6 +2332,128 @@ def _without_query_provenance(item: dict) -> dict:
             r"QueryPlan|\bJQL\b|canonicalJql|canonicalCql", str(out.get("why") or ""), _re.I):
         out["why"] = ""
     return out
+
+
+_EVIDENCE_TICKET_TOKEN_RE = _re.compile(
+    r"\{\{ticket-(?:inline|detail|list):([A-Z][A-Z0-9]*-\d+)\}\}", _re.I,
+)
+
+
+def _ticket_description_identity(value: str) -> str:
+    """Canonicalize only presentation-equivalent ticket references for exact dedupe."""
+    text = _EVIDENCE_TICKET_TOKEN_RE.sub(r"\1", str(value or ""))
+    text = unescape(_re.sub(r"<[^>]+>", " ", text))
+    return " ".join(text.split()).casefold()
+
+
+def _dedupe_ticket_description_observations(item: dict) -> dict:
+    """Drop only canonical-exact duplicate descriptions inside one verified ticket source.
+
+    Comments and non-identical description findings remain separate. This deliberately does
+    not attempt semantic similarity: deleting two independently worded facts is not safe.
+    """
+    out = dict(item or {})
+    key = str(out.get("key") or "").strip().upper()
+    observations = list(out.get("observations") or [])
+    if not _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key, _re.I) or not observations:
+        return out
+    seen: set[str] = set()
+    kept = []
+    for observation in observations:
+        if not isinstance(observation, dict) \
+                or str(observation.get("source") or "").strip().casefold() != "description":
+            kept.append(dict(observation) if isinstance(observation, dict) else observation)
+            continue
+        normalized = dict(observation)
+        normalized["text"] = _EVIDENCE_TICKET_TOKEN_RE.sub(
+            r"\1", str(observation.get("text") or ""),
+        )
+        identity = _ticket_description_identity(normalized["text"])
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
+        kept.append(normalized)
+    out["observations"] = kept
+    return out
+
+
+def _normalize_rendered_evidence_ticket_tokens(value: str) -> str:
+    """Make typed/plain ticket spellings comparable only inside a legacy source tail.
+
+    Canonical evidence rendering recreates every root ``ticket-detail`` token. Normalizing
+    child observation spellings here therefore removes a presentation-only duplicate without
+    touching actionable badges in the answer body.
+    """
+    text = str(value or "")
+    heading = _re.search(
+        r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$", text,
+    )
+    if not heading:
+        return text
+    return text[:heading.end()] + _EVIDENCE_TICKET_TOKEN_RE.sub(
+        r"\1", text[heading.end():],
+    )
+
+
+_LEGACY_EVIDENCE_ROOT_RE = _re.compile(
+    r"^\s*(?:-\s*)?(?:\[(\d+)\]|(\d+)[.)])\s+(.+?)\s*$",
+)
+
+
+def _drop_irrelevant_rendered_external_sources(value: str, state) -> str:
+    """Apply the shared hit policy to model-written legacy evidence roots as well.
+
+    QueryRunner prevents new noise from reaching synthesis, but cached/legacy replies can
+    already contain a numbered external row. Buffer one root and its child observations,
+    then remove only external URL blocks that fail the same current/frozen subject policy.
+    """
+    text = str(value or "")
+    heading = _re.search(
+        r"(?m)^(?:#{1,4}\s*(?:근거|참조)|\*\*(?:근거|참조)\*\*)\s*$", text,
+    )
+    if not heading:
+        return text
+    section_start = heading.end()
+    following = _re.search(r"(?m)^#{1,4}\s+", text[section_start:])
+    section_end = section_start + following.start() if following else len(text)
+    lines = text[section_start:section_end].splitlines()
+    context = _external_evidence_context(state)
+    kept: list[str] = []
+    index = 0
+    while index < len(lines):
+        root = _LEGACY_EVIDENCE_ROOT_RE.match(lines[index])
+        if not root:
+            kept.append(lines[index])
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and not _LEGACY_EVIDENCE_ROOT_RE.match(lines[end]):
+            end += 1
+        block = lines[index:end]
+        label = root.group(3)
+        markdown = _re.search(r"\[([^\]]+)]\((https?://[^\s)]+)\)", label, _re.I)
+        bare = _re.search(r"https?://[^\s)>\]}]+", label, _re.I)
+        url = (markdown.group(2) if markdown else (bare.group(0) if bare else ""))
+        if url and _is_external_source_url(url):
+            title = markdown.group(1) if markdown else label
+            observations = []
+            for child in block[1:]:
+                detail = _re.sub(
+                    r"^\s*[-*+]\s*(?:\[\d+-[a-z]]\s*)?", "", child, flags=_re.I,
+                ).strip()
+                if detail:
+                    observations.append({"source": "external", "text": detail})
+            item = {
+                "key": title, "title": title, "url": url, "observations": observations,
+            }
+            if _is_generic_external_source(item, context):
+                index = end
+                continue
+        kept.extend(block)
+        index = end
+    section = "\n".join(kept)
+    return text[:section_start] + section + text[section_end:]
 
 
 def _approval_payload_ticket_keys(state) -> list[str]:
@@ -2727,7 +2848,11 @@ def _merge_evidence_index(text: str, state) -> str:
     evidence = (_approval_display_evidence(state) if approval_display else
                 [_without_query_provenance(item) for item in (state.get("evidence") or [])
                  if isinstance(item, dict) and not _is_non_renderable_evidence(item, state)])
-    value = _drop_direct_input_source_rows(_fold_standalone_sources(text))
+    evidence = [_dedupe_ticket_description_observations(item) for item in evidence]
+    value = _normalize_rendered_evidence_ticket_tokens(
+        _drop_direct_input_source_rows(_fold_standalone_sources(text)),
+    )
+    value = _drop_irrelevant_rendered_external_sources(value, state)
     related_docs = state.get("related_docs") or []
     if approval_display:
         # Approval prose is a deterministic payload projection. Rebuild its source tail from

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.agent.workflow.role_manifest import (ROLE_SPECS, role_specs, tools_for_role,
                                                validate_role_tool_groups)
-from app.agent.workflow.state import AgentState, Node
+from app.agent.workflow.state import AgentState, Node, RequestRefinement
 
 
 def test_role_ids_names_and_prompt_assets_are_canonical_and_unique():
@@ -86,11 +86,22 @@ def test_role_manifest_documents_cross_turn_and_final_response_inputs():
                 ROLE_SPECS["request_architect"].input_keys)
     assert {"sufficient", "playbook", "answer_depth", "trace"} <= set(
         ROLE_SPECS["request_architect"].output_keys)
+    assert set(RequestRefinement.__annotations__) == {"parent", "phase", "duedate"}
+    assert "request_refinement" in ROLE_SPECS["request_architect"].output_keys
+    assert "request_refinement" in ROLE_SPECS["work_architect"].input_keys
+    assert [spec.id for spec in ROLE_SPECS.values()
+            if "request_refinement" in spec.output_keys] == ["request_architect"]
     assert {"messages", "request_text"} <= set(ROLE_SPECS["query_specialist"].input_keys)
+    assert {"messages", "intent", "request_text", "request_plan", "query_plan", "keywords",
+            "turn_continuation", "materialized_ticket_sources"} <= set(
+                ROLE_SPECS["query_runner"].input_keys)
     assert {"query_artifacts", "materialized_ticket_sources", "topic_dossier", "web_context"} <= \
         set(ROLE_SPECS["research_analyst"].input_keys)
     assert "materialized_ticket_sources" in ROLE_SPECS["query_runner"].output_keys
     assert "materialized_ticket_sources" in ROLE_SPECS["work_architect"].input_keys
+    assert {"messages", "request_text", "request_plan", "keywords", "turn_continuation",
+            "materialized_ticket_sources", "structure_ok", "draft", "evidence", "revisions"} <= \
+        set(ROLE_SPECS["auditor"].input_keys)
     assert {"group_activity", "ticket_progress", "person_work_snapshot", "daily_priority_snapshot",
             "change_plan", "questions"} <= set(ROLE_SPECS["result_integrator"].input_keys)
 
