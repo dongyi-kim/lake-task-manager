@@ -68,14 +68,30 @@ def _prompt_json_contract(schema_text: str) -> str:
     )
 
 
+def _deframe_structured_output(text: str) -> str:
+    """Remove only LTM's exact terminal JSON transport marker.
+
+    Some OpenAI-compatible servers accept ``stop`` but return the requested marker as a
+    literal suffix instead of consuming it.  The marker is framing that LTM itself asked
+    the model to emit, so removing that one exact terminal token is not JSON recovery.
+    Prefix prose, a marker in the middle, trailing prose, and partial objects remain
+    invalid and are rejected by the strict whole-document parser below.
+    """
+    value = (text or "").strip()
+    if value.endswith(STRUCTURED_END_TOKEN):
+        return value[:-len(STRUCTURED_END_TOKEN)].rstrip()
+    return value
+
+
 def _loads_loose(text: str):
     """정확히 하나의 JSON object만 수용한다.
 
-    이름은 이전 import 호환을 위해 유지하지만 동작은 의도적으로 strict하다. code fence,
-    설명 prefix, balanced-brace 추출을 성공 처리하면 provider의 parse 실패율을 숨기므로 금지한다.
+    이름은 이전 import 호환을 위해 유지하지만 동작은 의도적으로 strict하다. LTM이 요청한
+    exact terminal transport marker만 제거하며 code fence, 설명 prefix, balanced-brace 추출을
+    성공 처리하면 provider의 parse 실패율을 숨기므로 금지한다.
     """
     import json
-    t = (text or "").strip()
+    t = _deframe_structured_output(text)
     if not t:
         return None
     try:

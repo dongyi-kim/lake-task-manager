@@ -56,6 +56,22 @@ class _UnavailableOrEmptyLLM:
         return AIMessage(content=self.outcome)
 
 
+class _LiteralStopMarkerLLM:
+    """Compatible transport that accepts ``stop`` but returns its marker literally."""
+
+    def __init__(self, first='{"value":"ok"}<END_JSON>', second=None):
+        self.responses = [first] + ([second] if second is not None else [])
+        self.invocations = 0
+
+    def with_structured_output(self, _schema, method="json_schema"):
+        return _StructuredFailure()
+
+    def invoke(self, _messages, **_kwargs):
+        response = self.responses[self.invocations]
+        self.invocations += 1
+        return AIMessage(content=response, response_metadata={"finish_reason": "stop"})
+
+
 def _no_cached_capabilities(monkeypatch):
     from app.agent import capabilities
     monkeypatch.setattr(capabilities, "get", lambda _tier="complex": {"checked": {}})
@@ -80,6 +96,35 @@ def test_invalid_plain_json_gets_one_format_repair(monkeypatch):
     assert result == {"value": "ok"}
     assert fake.invocations == 2
     assert fake.stop_values == [[base.STRUCTURED_END_TOKEN], [base.STRUCTURED_END_TOKEN]]
+
+
+def test_prompt_json_accepts_only_the_exact_terminal_transport_marker(monkeypatch):
+    """mlx-lm may return LTM's requested stop marker instead of consuming it."""
+    _no_cached_capabilities(monkeypatch)
+    fake = _LiteralStopMarkerLLM()
+    monkeypatch.setattr(base._cfg, "get_llm", lambda **_kwargs: fake)
+
+    assert base.invoke_schema(SCHEMA, [HumanMessage(content="value를 반환")]) == {"value": "ok"}
+    assert fake.invocations == 1
+
+
+@pytest.mark.parametrize("content", [
+    'prefix {"value":"ok"}<END_JSON>',
+    '{"value":"ok"}<END_JSON> trailing prose',
+    '{"value":"<END_JSON>"}<END_JSON> trailing prose',
+    '{"value":"ok"<END_JSON>',
+], ids=("prefix", "trailing-prose", "middle-marker", "partial-object"))
+def test_transport_deframing_does_not_recover_non_terminal_or_partial_json(content):
+    assert base._loads_loose(content) is None
+
+
+def test_format_repair_accepts_an_exact_literal_transport_suffix(monkeypatch):
+    _no_cached_capabilities(monkeypatch)
+    fake = _LiteralStopMarkerLLM(first="not json", second='{"value":"ok"}<END_JSON>')
+    monkeypatch.setattr(base._cfg, "get_llm", lambda **_kwargs: fake)
+
+    assert base.invoke_schema(SCHEMA, [HumanMessage(content="value를 반환")]) == {"value": "ok"}
+    assert fake.invocations == 2
 
 
 @pytest.mark.parametrize("failure", [
@@ -317,6 +362,24 @@ def test_structured_transport_does_not_repair_an_empty_model_output(monkeypatch)
         )
 
     assert "repair 생략" in str(caught.value) and "비어" in str(caught.value)
+    assert fake.invocations == 1
+
+
+def test_agent_structured_transport_deframes_an_exact_literal_stop_suffix(monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda *_args, **_kwargs: {
+        "checked": {"json_schema": False, "json_object": False}})
+    fake = _LiteralStopMarkerLLM()
+    agent = _SemanticProjectionAgent()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: fake)
+
+    result = agent._invoke_structured_transport(
+        {}, [HumanMessage(content="original")], capability_tier="complex",
+        execution_layer="deep_semantic",
+    )
+
+    assert result == {"value": "ok"}
     assert fake.invocations == 1
 
 
