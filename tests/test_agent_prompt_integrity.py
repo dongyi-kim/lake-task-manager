@@ -329,6 +329,7 @@ def test_work_architect_questions_classify_required_input_explicitly():
     properties = QUESTION["properties"]
     assert "required_input" in properties and "why_required" in properties
     assert {"required_input", "why_required"}.issubset(QUESTION["required"])
+    assert "background" in QUESTION["properties"]["field"]["enum"]
 
 
 def test_evaluation_harnesses_preserve_production_model_routing():

@@ -475,6 +475,29 @@ def test_empty_model_result_reuses_normal_volume_partitioning_for_delegated_work
     assert all(child.get("assignee") for child in parent["children"])
 
 
+def test_named_existing_parent_subtasks_skip_model_and_keep_each_assignee(monkeypatch):
+    from app.agent.workflow.agents.base import StructuredAgent
+
+    def model_node(_self):
+        def run(_state):
+            raise AssertionError("explicit parent, deliverables, and assignees need no model")
+        return run
+
+    monkeypatch.setattr(StructuredAgent, "node", model_node)
+    state = _msg(
+        "DL-9090 밑에 서브태스크 3개 만들어줘: 성능 측정은 x1402, "
+        "가이드 작성은 x1450, 회귀 테스트는 x1042. 알아서",
+        situation="DL-9090 확인", intent=Intent.PLAN_WORK, mentioned_keys=["DL-9090"],
+    )
+
+    result = WorkArchitect().node()(state)
+    rows = result["draft"]["items"]
+
+    assert not result["questions"] and len(rows) == 3
+    assert [row["parent"] for row in rows] == ["DL-9090"] * 3
+    assert [row["assignee"] for row in rows] == ["skcc.x1402", "skcc.x1450", "skcc.x1042"]
+
+
 def test_delegated_subtask_without_a_deliverable_asks_then_converges_to_one_child():
     """ASKD2: 부모와 개수만으로는 실행할 일이 없다. `알아서`도 내용을 발명할 권한이 아니다."""
     from langchain_core.messages import HumanMessage

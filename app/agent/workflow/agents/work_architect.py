@@ -101,7 +101,7 @@ QUESTION = {
                     "description": "Two to five Korean options for choice, with the recommended option first and an optional short reason."},
         "field": {"type": "string",
                   "enum": ["", "assignee", "epic", "priority", "duedate", "component",
-                           "target", "parent", "scope", "acceptance", "reproduction"],
+                           "target", "parent", "scope", "background", "acceptance", "reproduction"],
                   "description": "Ticket field being asked; the UI supplies field-specific autocomplete."},
         "required_input": {
             "type": "boolean",
@@ -378,6 +378,21 @@ class WorkArchitect(StructuredAgent):
             # added 28-69 seconds and frequently returned empty ``items``. Build the literal
             # conservative draft directly; ``apply`` still owns hierarchy/body/owner guards.
             if (state.get("situation") or "").strip():
+                subtasks = _recover_explicit_subtasks(state)
+                if subtasks:
+                    direct = self.apply(state, {
+                        "questions": [], "mode": "subtask", "items": subtasks,
+                        "structure": "multiple_tasks",
+                        "structure_source": "user_specified",
+                        "structure_why": "기존 Task와 Sub-Task 산출물·담당을 사용자가 명시",
+                        "rationale": "명시된 부모·산출물·담당으로 Sub-Task 초안 구성",
+                        "_construction": "literal_delegated",
+                    })
+                    direct["trace"] = note(
+                        state, self.name,
+                        f"결정적 Sub-Task 초안 {len((direct.get('draft') or {}).get('items') or [])}건",
+                    )
+                    return direct
                 recovered = _recover_delegated_creation(state)
                 if recovered:
                     recovered_structure = (shape_hint(state)[0]
@@ -6110,12 +6125,31 @@ def _recover_explicit_subtasks(state) -> list:
                if _can_parent_subtask(k)]
     if not parents:
         return []
-    m = _re.search(r"(?:에|아래|밑에)\s*(.+?)\s*(?:서브\s*태스크|sub-?task)", req, _re.I)
-    if not m:
-        return []
-    names = [_re.sub(r"^(?:각각|추가로)\s*|\s*(?:작업|항목)$", "", x).strip(" .")
-             for x in _re.split(r"\s*(?:이랑|랑|와|과|및|,)\s*", m.group(1))]
-    names = [x for x in names if len(x) >= 2 and not _re.fullmatch(r"\d+개", x)]
+    named_rows: list[tuple[str, str]] = []
+    colon = _re.search(
+        r"(?:서브\s*태스크|sub-?task)\s*\d*\s*(?:개|건)?\s*"
+        r"(?:만들|생성|추가)[^:：\n]*[:：]\s*(.+)$", req, _re.I | _re.S,
+    )
+    if colon:
+        for raw in _re.split(r"\s*[,;]\s*", colon.group(1)):
+            row = _re.sub(r"(?:나머지는\s*)?알아서.*$", "", raw).strip(" .")
+            match = _re.match(
+                r"(.+?)\s*(?:은|는)\s*((?:skcc\.)?[a-z]{1,2}\d{2,6})\b", row, _re.I,
+            )
+            if match:
+                named_rows.append((match.group(1).strip(),
+                                   "skcc." + match.group(2).split(".")[-1]))
+            elif row:
+                named_rows.append((row, ""))
+        names = [name for name, _uid in named_rows]
+    else:
+        m = _re.search(r"(?:에|아래|밑에)\s*(.+?)\s*(?:서브\s*태스크|sub-?task)", req, _re.I)
+        if not m:
+            return []
+        names = [_re.sub(r"^(?:각각|추가로)\s*|\s*(?:작업|항목)$", "", x).strip(" .")
+                 for x in _re.split(r"\s*(?:이랑|랑|와|과|및|,)\s*", m.group(1))]
+        names = [x for x in names if len(x) >= 2 and not _re.fullmatch(r"\d+개", x)]
+        named_rows = [(name, "") for name in names]
     if not 2 <= len(names) <= 6:
         return []
     parent = parents[0]
@@ -6128,7 +6162,7 @@ def _recover_explicit_subtasks(state) -> list:
     except Exception:
         component = ""
     out = []
-    for name in names:
+    for name, assignee in named_rows:
         title = name
         if any(w in name for w in ("성능", "테스트", "검증")) and not _re.search(r"수행|실행|완료$", name):
             title += " 수행"
@@ -6144,6 +6178,9 @@ def _recover_explicit_subtasks(state) -> list:
                 f"<li data-checked=\"false\">{_esc(dod)}</li></ul>")
         item = {"summary": summary, "type": "Sub-Task", "parent": parent,
                 "description": body, "priority": "P3-Minor"}
+        if assignee:
+            item["assignee"] = assignee
+            item["assignee_source"] = "user"
         if component:
             item["components"] = [component]
         out.append(item)
