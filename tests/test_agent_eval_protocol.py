@@ -142,6 +142,12 @@ def test_battery_manifest_covers_inputs_and_checker_source():
     def passes_two(value):
         return value == 2
 
+    def helper_one(value):
+        return value > 0
+
+    def helper_two(value):
+        return value >= 0
+
     first = [("CASE1", "설명", ["입력"], passes_one)]
     same = [("CASE1", "설명", ["입력"], passes_one)]
     changed_input = [("CASE1", "설명", ["다른 입력"], passes_one)]
@@ -157,6 +163,35 @@ def test_battery_manifest_covers_inputs_and_checker_source():
     assert E.battery_manifest_sha256(first) != E.battery_manifest_sha256(changed_checker)
     assert E.battery_manifest_sha256(first, registry) != E.battery_manifest_sha256(
         first, changed_registry,
+    )
+    with_helper = E.battery_manifest_sha256(
+        first, registry, checker_dependencies=(helper_one,),
+    )
+    assert with_helper == E.battery_manifest_sha256(
+        first, registry, checker_dependencies=(helper_one,),
+    )
+    assert with_helper != E.battery_manifest_sha256(
+        first, registry, checker_dependencies=(helper_two,),
+    )
+
+
+def test_create_battery_manifest_fingerprints_shared_checker_dependencies():
+    import tools.agent_create_suite as create
+
+    registry = E.normalize_specialized_review_specs(
+        create.CASES, create.SUITE_REVIEW_ELEMENTS, create.CASE_REVIEW_SPECS,
+    )
+    lambda_only = E.battery_manifest_sha256(create.CASES, registry)
+    complete = E.battery_manifest_sha256(
+        create.CASES, registry,
+        checker_dependencies=create.CREATE_CHECKER_DEPENDENCIES,
+    )
+
+    assert create.BATTERY_VERSION == "5.0.1"
+    assert complete != lambda_only
+    assert complete == E.battery_manifest_sha256(
+        create.CASES, registry,
+        checker_dependencies=create.CREATE_CHECKER_DEPENDENCIES,
     )
 
 
@@ -439,7 +474,7 @@ def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
         "tools/agent_lang_ab.py": ('suite="conversation"', "3.2.1"),
         "tools/agent_compose_eval.py": ('suite="editor"', "3.0.0"),
-        "tools/agent_create_suite.py": ('suite="create"', "5.0.0"),
+        "tools/agent_create_suite.py": ('suite="create"', "5.0.1"),
         "tools/agent_meeting_eval.py": ('suite="meeting"', "3.0.0"),
         "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.0.1"),
     }

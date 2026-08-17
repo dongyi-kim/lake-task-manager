@@ -60,11 +60,22 @@ def _json_hash(value: Any) -> str:
 
 def battery_manifest_sha256(
     cases: Sequence[Any], specialized_review: Mapping[str, Any] | None = None,
+    checker_dependencies: Sequence[Any] = (),
 ) -> str:
-    """Hash case inputs/checkers and their qualitative review contract."""
+    """Hash case inputs/checkers, designated helpers, and qualitative review contract.
+
+    A case lambda's source does not include the implementation of globals it calls. Suites
+    with shared automatic gates must explicitly pass those helper functions so changing a
+    gate cannot retain the old battery manifest merely because every lambda stayed textually
+    identical.
+    """
     payload: Any = cases
-    if specialized_review is not None:
-        payload = {"cases": cases, "specializedReview": specialized_review}
+    if specialized_review is not None or checker_dependencies:
+        payload = {"cases": cases}
+        if specialized_review is not None:
+            payload["specializedReview"] = specialized_review
+        if checker_dependencies:
+            payload["checkerDependencies"] = list(checker_dependencies)
     return _json_hash(payload)
 
 
@@ -212,6 +223,7 @@ def build_run_metadata(
     prompt_version: str,
     suite_review_elements: Sequence[Mapping[str, Any]] = (),
     case_review_specs: Mapping[str, Mapping[str, Any]] | None = None,
+    checker_dependencies: Sequence[Any] = (),
 ) -> dict[str, Any]:
     """Create the immutable identity and comparability record for one harness invocation."""
     protocol = load_protocol()
@@ -221,7 +233,9 @@ def build_run_metadata(
         cases, suite_review_elements, case_review_specs or {},
     )
     review_spec_hash = _json_hash(review_registry)
-    manifest = battery_manifest_sha256(cases, review_registry)
+    manifest = battery_manifest_sha256(
+        cases, review_registry, checker_dependencies=checker_dependencies,
+    )
     data_hash = data_manifest_sha256()
     git = git_snapshot()
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

@@ -142,6 +142,58 @@ def test_create_common_checker_rejects_bare_ordinal_damage_in_root_tree():
     assert create_eval._creation_contract_flaws(output, turns) == []
 
 
+def test_create_common_checker_inherits_root_ordinal_without_child_repetition():
+    turns = ["최소 기능 1차 구현까지 만들어줘"]
+    output = {"draft_items": [{
+        "type": "Task",
+        "summary": "NDV 파이프라인 1차 구현",
+        "description": "1차 범위",
+        "children": [{
+            "type": "Sub-Task",
+            "summary": "reader 호환성 검증",
+            "description": "검증 결과 기록",
+        }],
+    }]}
+    assert create_eval._creation_contract_flaws(output, turns) == []
+
+    output["draft_items"][0]["children"][0]["summary"] = "reader 2차 호환성 검증"
+    assert any("충돌하는 ordinal" in flaw
+               for flaw in create_eval._creation_contract_flaws(output, turns))
+
+
+def test_create_checker_reads_nested_draft_children_when_review_is_blocked():
+    child = {
+        "type": "Sub-Task",
+        "summary": "NDV 파이프라인 1차 검증",
+        "description": "<h3>작업 범위</h3><p>1차 검증</p>",
+    }
+    blocked = {
+        "pending": {},
+        "draft_items": [{
+            "type": "Task",
+            "summary": "NDV 파이프라인 1차 구현",
+            "children": [child],
+        }],
+    }
+    assert create_eval.kids(blocked) == [child]
+
+    mirrored = {
+        "pending": {"items": blocked["draft_items"], "children": [child]},
+        "draft_items": blocked["draft_items"],
+    }
+    assert create_eval.kids(mirrored) == [child]
+
+
+def test_create_checker_never_reports_an_unexplained_structural_failure():
+    assert create_eval._all_contract_flaws(
+        {}, ["작업 만들어줘"], [{}], structure_ok=True,
+    ) == []
+    flaws = create_eval._all_contract_flaws(
+        {}, ["작업 만들어줘"], [{}], structure_ok=False,
+    )
+    assert flaws == ["케이스별 구조 계약 실패 — 해당 case review spec과 payload를 대조"]
+
+
 def test_create_common_checker_uses_the_latest_explicit_ordinal_turn():
     turns = [
         "최소 기능 1차 구현까지 만들어줘",
@@ -165,7 +217,8 @@ def test_create_common_checker_uses_the_latest_explicit_ordinal_turn():
     output["pending"]["children"][0]["description"] = "1차 구현 설계"
     flaws = create_eval._creation_contract_flaws(output, turns)
     assert flaws
-    assert all("원문 ordinal '2차' 누락" in flaw for flaw in flaws)
+    assert any("원문 ordinal '2차'와 충돌" in flaw for flaw in flaws)
+    assert any("root 범위 '2차'와 충돌" in flaw for flaw in flaws)
 
 
 def test_create_common_checker_rejects_debug_and_generic_pages_only_in_user_facing_evidence():

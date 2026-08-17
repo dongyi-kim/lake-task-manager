@@ -49,7 +49,8 @@ except ImportError:  # legacy asset에는 version 상수가 없었다.
 # v5 major: deterministic pass now enforces explicit single-root due/ordinal,
 # question necessity metadata, and user-facing evidence relevance. Historical
 # v4 automatic pass rates therefore remain v4-only and are not rescored.
-BATTERY_VERSION = "5.0.0"
+# v5.0.1 fixes nested draft child discovery for blocked/review-failed outputs.
+BATTERY_VERSION = "5.0.1"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
@@ -75,7 +76,30 @@ def items(o):
 
 
 def kids(o):
-    return ((o.get("pending") or {}).get("children")) or []
+    """Return every child regardless of approval/rendering state.
+
+    Approved cards historically expose children at ``pending.children`` while a blocked
+    Auditor result keeps them nested under ``draft_items[*].children``.  Looking at only
+    the former made a blocked Task with three real Sub-Tasks appear structurally empty and
+    also hid child-level contract defects.  Preserve source order and collapse the same
+    child when a renderer mirrors it in both shapes.
+    """
+    rows = []
+    seen = set()
+    pending = o.get("pending") or {}
+    candidates = list(pending.get("children") or [])
+    for root in items(o):
+        if isinstance(root, dict):
+            candidates.extend(root.get("children") or [])
+    for child in candidates:
+        if not isinstance(child, dict):
+            continue
+        identity = json.dumps(child, ensure_ascii=False, sort_keys=True, default=str)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        rows.append(child)
+    return rows
 
 
 def pend(o, k, d=None):
@@ -307,15 +331,31 @@ def _explicit_field_flaws(o: dict, turns: list[str]) -> list[str]:
                     )
                     break
 
-        # 하나의 root tree와 하나의 source ordinal이면 root와 모든 child가 같은
-        # 범위에 속한다. 각 visible row에서 그 ordinal을 잃지 않아야 한다.
+        # 하나의 root tree와 하나의 source ordinal이면 root가 그 범위를 소유하고
+        # children은 계층적으로 상속한다. 매 child 제목에 같은 `1차`를 반복할 필요는
+        # 없지만, 명시했다면 bare/충돌 ordinal이어서는 안 된다.
         if len(roots) == 1 and len(ordinals) == 1:
             expected = ordinals[0]
-            ordinal_re = re.compile(rf"(?<![0-9]){re.escape(expected)}\s*차")
-            for index, row in enumerate(rows):
-                if not ordinal_re.search(_visible_row_text(row)):
+            expected_number = re.match(r"(\d+)", expected).group(1)
+            ordinal_re = re.compile(rf"(?<![0-9]){re.escape(expected_number)}\s*차")
+            root_visible = _visible_row_text(roots[0])
+            root_numbers = set(re.findall(r"(?<!\d)(\d{1,3})\s*차", root_visible))
+            root_conflicts = sorted(value for value in root_numbers
+                                    if value != expected_number)
+            if root_conflicts:
+                flaws.append(
+                    f"draft[0] 원문 ordinal '{expected_number}차'와 충돌하는 ordinal "
+                    + ", ".join(f"{value}차" for value in root_conflicts)
+                )
+            elif not ordinal_re.search(root_visible):
+                flaws.append(f"draft[0] 원문 ordinal '{expected_number}차' 누락")
+            for index, row in enumerate(rows[1:], 1):
+                actual = set(re.findall(r"(?<!\d)(\d{1,3})\s*차", _visible_row_text(row)))
+                conflicts = sorted(value for value in actual if value != expected_number)
+                if conflicts:
                     flaws.append(
-                        f"draft[{index}] 원문 ordinal '{expected}차' 누락"
+                        f"draft[{index}] root 범위 '{expected_number}차'와 충돌하는 ordinal "
+                        + ", ".join(f"{value}차" for value in conflicts)
                     )
     return flaws
 
@@ -418,6 +458,24 @@ def _creation_contract_flaws(o: dict, turns: list[str]) -> list[str]:
     return _explicit_field_flaws(o, turns) + _approved_evidence_flaws(o)
 
 
+def _all_contract_flaws(last: dict, turns: list[str], outs: list[dict],
+                        *, structure_ok: bool) -> list[str]:
+    """Return diagnosable failures for shared and case-specific contracts."""
+    turn_flaws = [
+        f"turn[{index}] {flaw}"
+        for index, output in enumerate(outs)
+        for flaw in _question_gate_flaws(output)
+    ]
+    flaws = (_body_flaws(last) + _output_flaws(last)
+             + _creation_contract_flaws(last, turns) + turn_flaws)
+    if not structure_ok:
+        # A false result with an empty defect list looks like a harness error. The detailed
+        # predicate remains in the versioned case review spec, but the raw result must expose
+        # which contract family failed.
+        flaws.insert(0, "케이스별 구조 계약 실패 — 해당 case review spec과 payload를 대조")
+    return flaws
+
+
 def _duplicate_decision_ok(output: dict, _outputs=None) -> bool:
     """Question form owns duplicate decisions; prose must not echo the same form."""
     questions = output.get("questions") or []
@@ -426,6 +484,21 @@ def _duplicate_decision_ok(output: dict, _outputs=None) -> bool:
             and all(value in blob for value in (
                 "DL-9072", "프로듀서 Avro 직렬화 전환", "근거",
                 "범위를 추가", "별도 티켓")))
+
+
+# Case lambdas and the shared post-check call these globals by name. ``inspect.getsource``
+# on a lambda cannot see through that reference, so the evaluation manifest must fingerprint
+# the designated dependency set explicitly. Keep this list limited to functions whose source
+# changes automatic pass/fail behavior; runtime/output plumbing does not belong here.
+CREATE_CHECKER_DEPENDENCIES = (
+    items, kids, pend, _body, has_sections, _owners, _question_text,
+    _asks_for_bug_identity, _bug3_ok, _rule1_ok,
+    _body_flaws, _output_flaws, _valid_iso_date, _unique_explicit_due,
+    _root_payload_items, _payload_due, _visible_row_text, _latest_explicit_ordinals,
+    _explicit_field_flaws, _evidence_section, _generic_direct_source,
+    _approved_evidence_flaws, _question_gate_flaws, _creation_contract_flaws,
+    _all_contract_flaws, _duplicate_decision_ok,
+)
 
 
 # (ID, 설명, [질의…], 체커(마지막 out, 전체 outs))
@@ -661,13 +734,7 @@ def run(cid, desc, turns, check):
             outs.append(o)
         last = outs[-1]
         ok_struct = bool(check(last, outs))
-        turn_flaws = [
-            f"turn[{index}] {flaw}"
-            for index, output in enumerate(outs)
-            for flaw in _question_gate_flaws(output)
-        ]
-        flaws = (_body_flaws(last) + _output_flaws(last)
-                 + _creation_contract_flaws(last, turns) + turn_flaws)
+        flaws = _all_contract_flaws(last, turns, outs, structure_ok=ok_struct)
         # 구조가 맞아도 본문·최종 답변 계약을 어기면 통과가 아니다.
         ok = ok_struct and not flaws
         elapsed = round(time.time() - t0, 1)
@@ -748,6 +815,7 @@ if __name__ == "__main__":
         prompt_version=PROMPT_VERSION,
         suite_review_elements=SUITE_REVIEW_ELEMENTS,
         case_review_specs=CASE_REVIEW_SPECS,
+        checker_dependencies=CREATE_CHECKER_DEPENDENCIES,
     )
     OUT = str(reserve_raw_result_path(
         raw_result_path("create", EVALUATION_METADATA, requested=OUT),
