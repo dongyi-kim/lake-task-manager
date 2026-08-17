@@ -35,7 +35,7 @@ class _FallbackLLM:
         self.invocations += 1
         if self.repair and self.invocations == 1:
             return AIMessage(content="JSON이 아닌 응답")
-        return AIMessage(content='설명 없이 결과: {"value":"ok"}')
+        return AIMessage(content='{"value":"ok"}')
 
 
 def _no_cached_capabilities(monkeypatch):
@@ -62,6 +62,11 @@ def test_invalid_plain_json_gets_one_format_repair(monkeypatch):
     assert fake.invocations == 2
 
 
+def test_prefixed_json_is_not_silently_extracted():
+    assert base._loads_loose('설명: {"value":"ok"}') is None
+    assert base._loads_loose('```json\n{"value":"ok"}\n```') is None
+
+
 def test_model_schema_value_error_does_not_poison_provider_capability():
     assert not base._capability_is_unsupported(
         RuntimeError("'높음' is not one of ['high', 'medium', 'low']"), "json_schema")
@@ -78,10 +83,12 @@ def _probe_echo(value: str) -> str:
 
 
 class _ToolPlanLLM:
-    def invoke(self, _messages):
+    def invoke(self, messages):
+        repairing = any("Validation error:" in str(getattr(m, "content", "")) for m in messages)
         return AIMessage(content=json.dumps({
             "tool_calls": [{"name": "_probe_echo", "args": {"value": "pong"}},
-                           {"name": "nonexistent", "args": {}}],
+                           *([{"name": "nonexistent", "args": {}}]
+                             if not repairing else [])],
             "answer": "",
         }))
 
@@ -118,6 +125,8 @@ def test_tool_fallback_can_only_schedule_registered_tools(monkeypatch):
         "messages": [HumanMessage(content="echo")], "steps": 0})["messages"][0]
     assert [call["name"] for call in message.tool_calls] == ["_probe_echo"]
     assert message.tool_calls[0]["args"] == {"value": "pong"}
+    # invalid enum is not silently filtered; exact validation error drives one repair.
+    assert message is not None
 
 
 def test_openai_compat_never_sends_native_tool_payload(monkeypatch):

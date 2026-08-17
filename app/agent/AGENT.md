@@ -97,6 +97,25 @@
 `Planner`, `Historian` 같은 legacy 이름이나 `Portfolio Analyst (PMO)` 같은 alias 표기를 추가하지 않는다.
 호환이 필요해도 alias lookup을 만들지 말고 checkpoint 수명과 외부 API 영향을 검토해 명시적으로 migration한다.
 
+### 모델 runtime 경계
+
+LLM 호출은 반드시 `Role → Task Profile → Model Profile → Capability → Provider Adapter → Request`를 거친다.
+
+- Role은 `fast_structured`, `balanced`, `reasoning` 중 semantic task profile만 선언한다.
+- `temperature`, `top_p`, `top_k`, `min_p`, `enable_thinking`, `reasoning_effort` 숫자·provider parameter를
+  Role class나 prompt에 하드코딩하지 않는다. 정본은 `config/llm_profiles.yml`이다.
+- parameter 우선순위는 `explicit request override > Role/Task profile > Model profile > Provider default`다.
+- Qwen/OpenAI/MLX/vLLM 분기를 Role에 넣지 않는다. capability와 provider adapter에서만 변환한다.
+- chat과 embedding은 서로 다른 provider/base URL/key를 사용할 수 있다. 빈 embedding override만 기존
+  chat 연결로 fallback하며, 한 base URL을 공유시키기 위한 reverse proxy를 만들지 않는다.
+- native `json_schema`/tool calling은 HTTP 2xx가 아니라 실제 schema/tool contract 준수로 probe한다.
+  미지원 모델은 prompt JSON → strict parse → JSON Schema/Pydantic validation → validation error를 포함한
+  1회 regenerate로 처리한다. code fence/brace extraction/regex/문자열 치환으로 parse failure를 숨기지 않는다.
+- tool catalog는 해당 Role의 등록 tool만 expose하고, tool 이름 enum과 각 tool의 Pydantic args schema를
+  통과한 호출만 실행한다. reasoning trace와 API key는 debug log에 기록하지 않는다.
+- embedding index metadata에는 model/revision/precision/dimension/normalization/chunking/config version을
+  포함한다. identity가 다른 vector는 기존 namespace에 append하지 않고 index를 교체한다.
+
 ## 4. prompt와 tool contract 작성법
 
 ### 네 계층

@@ -23,6 +23,7 @@ _PERSON_LABEL_NOISE = {
     "사용자", "메모", "사용자메모", "결정", "결정메모", "정리", "정리메모", "첨부", "첨부문서",
     "본문", "제목", "배경", "작업범위", "완료조건", "담당", "기한", "요청", "회의", "회의록",
 }
+_PERSON_LABEL_NOISE.update({"참석", "참석자"})
 _MEETING_TOPIC_NOISE = {
     "comment", "component", "confluence", "description", "docx", "document", "due", "epic", "external", "fields",
     "from", "jira", "labels", "meeting", "memo", "notes", "official", "optimizer", "priority", "reader",
@@ -540,8 +541,12 @@ def canonicalize_meeting_owner_table(state, text: str) -> str:
                  for pos, row in enumerate(records)),
                 key=lambda value: (-value[0], value[1]),
             )
-            candidates = [ranked[0][2]] if ranked and ranked[0][0] > 0 else []
+            required_overlap = max(1, min(2, len(task_terms)))
+            candidates = [ranked[0][2]] if ranked and ranked[0][0] >= required_overlap else []
         if len(candidates) != 1:
+            # An owner row without one explicit assignment changes accountability. Drop it
+            # instead of preserving a model-invented reviewer/requester assignment.
+            lines[index] = ""
             continue
         owner = candidates[0]["owner"]
         cells[columns["owner"]] = f"{{{{mention:{owner}}}}}" if owner else "미할당"

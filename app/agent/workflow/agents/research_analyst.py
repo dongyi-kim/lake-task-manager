@@ -778,7 +778,6 @@ def _topic_dossier(term: str, history: bool = False) -> str:
 
 class ResearchAnalyst(ToolAgent):
     name = Node.RESEARCH_ANALYST
-    temperature = 0.1
     # 조각을 모아야 하는 질문은 걸음이 더 든다(티켓 열기 3~4 + 문서 읽기 + 확인).
     # 상속값 6 으로는 결론 단계 전에 소진됐다. 사전 취합(_dataset_dossier)이 재료를 미리
     # 실어 주므로 PMO 의 12 까지는 필요 없다.

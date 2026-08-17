@@ -568,6 +568,9 @@
 .ag-f input { flex:1; min-width:0; padding:7px 10px; font:inherit; font-size:12.5px;
   color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; }
 .ag-f input:focus { outline:none; border-color:var(--accent); }
+.ag-inline-fields { display:grid; grid-template-columns:2fr 1fr 1fr 1fr; gap:6px; flex:1; min-width:0; }
+.ag-inline-fields input { width:100%; }
+@media (max-width:760px) { .ag-inline-fields { grid-template-columns:1fr 1fr; } }
 
 .ag-combo { position:relative; flex:1; min-width:0; display:flex; }
 .ag-combo input { flex:1; min-width:0; padding:7px 30px 7px 10px; font:inherit; font-size:12.5px;

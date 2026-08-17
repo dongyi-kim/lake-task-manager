@@ -29,11 +29,14 @@ FIELDS = (
     "aoaiEndpoint", "aoaiApiKey",
     "openaiApiKey",
     "compatBaseUrl", "compatApiKey", "compatHeaders",   # compatHeaders = JSON 문자열
+    # named config에서 embedding endpoint를 chat endpoint와 분리할 때 사용한다.
+    "embeddingBaseUrl", "embeddingApiKey", "embeddingHeaders",
     "langfusePublicKey", "langfuseSecretKey", "langfuseHost",
 )
 
 # 화면에 돌려줄 때 **절대 원문을 실어 보내지 않는** 필드
 SECRET_FIELDS = ("aoaiApiKey", "openaiApiKey", "compatApiKey", "compatHeaders",
+                 "embeddingApiKey", "embeddingHeaders",
                  "langfuseSecretKey")
 
 
@@ -152,6 +155,9 @@ ENV_NAMES = {
     "compatBaseUrl": ("LAKE_AGENT_COMPAT_BASE",),
     "compatApiKey": ("LAKE_AGENT_COMPAT_KEY",),
     "compatHeaders": ("LAKE_AGENT_COMPAT_HEADERS",),
+    "embeddingBaseUrl": ("LAKE_AGENT_EMBED_BASE",),
+    "embeddingApiKey": ("LAKE_AGENT_EMBED_KEY",),
+    "embeddingHeaders": ("LAKE_AGENT_EMBED_HEADERS",),
     "langfusePublicKey": ("LANGFUSE_PUBLIC_KEY",),
     "langfuseSecretKey": ("LANGFUSE_SECRET_KEY",),
     "langfuseHost": ("LANGFUSE_HOST",),

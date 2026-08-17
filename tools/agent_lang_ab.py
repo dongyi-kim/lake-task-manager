@@ -18,7 +18,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JIRA_ENV", "mock")
-os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
 os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"      # 사람이 없는 실행 — 설정 확인 게이트 면제
 _raw_args = list(sys.argv[1:])
 REQUESTED_OUT = None
@@ -34,11 +34,12 @@ if _args and not _args[0].upper().startswith("S"):
 else:
     MODEL, _scenario_args = "gpt-4o-mini", _args
 ONLY = {x.upper() for x in _scenario_args if x.upper().startswith("S")}
-os.environ["LAKE_AGENT_OPENAI_CHAT"] = MODEL
 # 언어/프롬프트 비교에서도 production routing을 유지한다. 모델을 하나로
 # 평준화하면 프롬프트뿐 아니라 실행 환경까지 바뀌어 주 비교 결과가 무효가 된다.
 os.environ.setdefault("LAKE_AGENT_OPENAI_CHAT_SIMPLE", "gpt-4o-mini")
 SIMPLE_MODEL = os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"]
+from tools.agent_scenario_eval import configure_model_routing  # noqa: E402
+configure_model_routing(MODEL, SIMPLE_MODEL)
 
 from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
                                          finish_case)  # noqa: E402

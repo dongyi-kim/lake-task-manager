@@ -48,7 +48,6 @@ SCHEMA = {
 
 class KnowledgeCurator(StructuredAgent):
     name = Node.KNOWLEDGE_CURATOR
-    temperature = 0.2
 
     def system(self, state):
         return persona(state, SYSTEM_KNOWLEDGE_CURATOR)
@@ -80,6 +79,8 @@ Organize the supplied evidence into a Korean knowledge brief with concepts, inte
 - For meeting notes, user-written decisions, named owners, deadlines, exclusions, and a definition supplied in
   the interview are primary evidence. Preserve every one in `our_context`; internal tickets and external sources
   supplement them and must not replace them with an older status.
+- Preserve modality: a pass threshold or validation rule is a criterion, not evidence that the test passed.
+  Keep speakers, reviewers, requesters, and explicitly assigned owners as separate roles.
 
 ## User Question
 

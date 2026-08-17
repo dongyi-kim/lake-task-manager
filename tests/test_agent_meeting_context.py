@@ -751,3 +751,28 @@ def test_meeting_update_description_uses_canonical_jira_mention():
     _canonicalize_meeting_mentions(state, plan)
     body = plan["changes"]["description"]
     assert "[~skcc.x1042]" in body and "{{최민서:1042}}" not in body
+
+
+def test_meeting_attendee_label_is_not_treated_as_a_person():
+    set_person_context("meeting-attendee-label", ["DL-9200"])
+    request = "회의록. 참석: @이다은, {{최민서:1042}}, 하은님. 결정 내용을 정리해줘."
+    state = {**_state(request), "situation": "관련 자료 조사 완료"}
+    assert unresolved_questions(state) == []
+    assert set(resolved_people(state).values()) == {"skcc.i2011", "skcc.x1042", "skcc.x1402"}
+
+
+def test_meeting_owner_table_drops_unassigned_review_row_invented_by_model():
+    set_person_context("meeting-reply-owner-review", ["DL-9200"])
+    request = ("회의록 참석: @이다은, {{최민서:1042}}, 준서TL. "
+               "담당·기한: @이다은은 writer PoC를 2026-08-22까지, "
+               "{{최민서:1042}}는 검증 기준 초안을 2026-08-28까지 작성. "
+               "준서TL은 PSR 기준을 반영하라고 검토 의견을 냄.")
+    answer = "준서TL은 skcc.x1103 이준서야."
+    state = {**_state(request, answer, request=request), "intent": "ask", "questions": []}
+    raw = ("| 작업 | 담당 | 기한 |\n|---|---|---|\n"
+           "| writer PoC | {{mention:skcc.i2011}} | 2026-08-22 |\n"
+           "| 검증 기준 초안 | {{mention:skcc.x1042}} | 2026-08-28 |\n"
+           "| PSR 최종 검토 | {{mention:skcc.x1042}} | - |")
+    got = canonicalize_meeting_owner_table(state, raw)
+    assert "writer PoC" in got and "검증 기준 초안" in got
+    assert "PSR 최종 검토" not in got

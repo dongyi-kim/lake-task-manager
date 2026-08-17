@@ -27,6 +27,20 @@ ScenarioCheck = Callable[[dict[str, Any], list[dict[str, Any]]], bool]
 Scenario = tuple[str, str, list[str], ScenarioCheck]
 
 
+def configure_model_routing(model: str, simple_model: str) -> str:
+    """Respect an explicitly injected provider while preserving cloud defaults."""
+    provider = str(os.environ.get("LAKE_AGENT_PROVIDER") or "openai").strip().lower()
+    os.environ["LAKE_AGENT_PROVIDER"] = provider
+    prefix = {"openai": "LAKE_AGENT_OPENAI_CHAT",
+              "openai_compat": "LAKE_AGENT_COMPAT_CHAT",
+              "aoai": "LAKE_AGENT_AOAI_CHAT"}.get(provider)
+    if not prefix:
+        raise ValueError(f"battery에서 지원하지 않는 provider: {provider}")
+    os.environ[prefix] = model
+    os.environ[prefix + "_SIMPLE"] = simple_model
+    return provider
+
+
 def parse_scenario_args(
     argv: Sequence[str], *, default_model: str = "gpt-4o",
 ) -> tuple[str, set[str], str | None]:
@@ -122,10 +136,9 @@ def run_scenario_suite(
     configure_process_isolation(suite)
     # A manual quality battery must never inherit a caller's production Jira mode.
     os.environ["JIRA_ENV"] = "mock"
-    os.environ["LAKE_AGENT_PROVIDER"] = "openai"
+    os.environ.setdefault("LAKE_AGENT_PROVIDER", "openai")
     os.environ["LAKE_AGENT_SKIP_VERIFY"] = "1"
-    os.environ["LAKE_AGENT_OPENAI_CHAT"] = model
-    os.environ["LAKE_AGENT_OPENAI_CHAT_SIMPLE"] = simple_model
+    configure_model_routing(model, simple_model)
 
     # Import only after cache/provider environment is complete.
     from app.agent.workflow import session

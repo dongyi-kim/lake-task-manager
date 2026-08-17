@@ -27,7 +27,6 @@ from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, 
 
 class ResultIntegrator(TextAgent):
     name = Node.RESULT_INTEGRATOR
-    temperature = 0.4          # 사람에게 보일 문장이라 약간의 자연스러움이 필요하다
 
     def system(self, state):
         return persona(state, SYSTEM_RESULT_INTEGRATOR)
@@ -229,7 +228,9 @@ class ResultIntegrator(TextAgent):
                     "Use a verified mention token for every person. Follow with `### 조사로 보강한 맥락` for "
                     "only directly relevant internal history and external official findings, and `### 미결·검증` "
                     "for remaining uncertainty. Preserve explicit sample counts, pass/fail thresholds, hold or "
-                    "exclusion decisions, and supplied local-term definitions. Do not list unrelated current "
+                    "exclusion decisions, and supplied local-term definitions. A pass criterion is not a passed "
+                    "result. Keep speaker, requester, reviewer, and explicit assignee separate; never add a "
+                    "responsibility row from an instruction or review statement. Do not list unrelated current "
                     "tickets, and do not replace a meeting decision with an older ticket status. Finish with the "
                     "single `### 근거` index; ticket sources use detail tokens and documents use verified links."
                 )

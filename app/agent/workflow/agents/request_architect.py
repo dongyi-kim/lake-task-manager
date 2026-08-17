@@ -147,7 +147,6 @@ def _carry_keys(state, out) -> list:
 
 class RequestArchitect(StructuredAgent):
     name = Node.REQUEST_ARCHITECT
-    temperature = 0.0          # 분류는 흔들리면 안 된다
     tier = "simple"            # Few-shot 8예시가 실려서 분류는 저렴한 모델로 충분하다
 
     def system(self, state):

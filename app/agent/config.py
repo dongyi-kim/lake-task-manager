@@ -18,11 +18,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 
 from app.agent import secrets as _secrets
 from app.agent import profiles as _profiles
+from app.agent.model_profiles import profile_for_contract as _profile_for_contract
+from app.agent.model_profiles import resolve as _resolve_model_config
+from app.agent.providers import ModelDefinition, adapter as _provider_adapter
+
+log = logging.getLogger("agent.config")
 
 PROVIDERS = ("aoai", "openai", "openai_compat", "fake")
 DEFAULT_PROVIDER = "aoai"
@@ -104,7 +110,10 @@ def _auth_signature(config_id: str = "") -> str:
             compat_base(config_id) if p == "openai_compat" else "")
     parts = [config_id or _active_config_id(), p, base, key or "",
              _secret("compatHeaders", config_id) or "",
-             api_version(config_id) if p == "aoai" else ""]
+             api_version(config_id) if p == "aoai" else "",
+             embedding_provider(config_id), _secret("embeddingBaseUrl", config_id) or "",
+             _secret("embeddingApiKey", config_id) or "",
+             _secret("embeddingHeaders", config_id) or ""]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
 
 
@@ -163,7 +172,13 @@ def settings_signature(config_id: str = "") -> str:
             compat_base(config_id) if p == "openai_compat" else "")
     parts = [config_id or _active_config_id(), p, base, key or "",
              api_version(config_id) if p == "aoai" else "",
-             chat_model("complex", config_id), chat_model("simple", config_id), embed_model(config_id)]
+             chat_model("complex", config_id), chat_model("simple", config_id), embed_model(config_id),
+             embedding_provider(config_id), _secret("embeddingBaseUrl", config_id) or "",
+             str((_profile(config_id) or {}).get("chatModelProfile") or ""),
+             str((_profile(config_id) or {}).get("embedRevision") or ""),
+             str((_profile(config_id) or {}).get("embedPrecision") or ""),
+             str((_profile(config_id) or {}).get("embedDimension") or ""),
+             str((_profile(config_id) or {}).get("embedNormalization") or "")]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
 
 
@@ -336,6 +351,15 @@ def embed_model(config_id: str = "") -> str:
     return "fake-embed"
 
 
+def embedding_provider(config_id: str = "") -> str:
+    """Embedding provider. 비어 있으면 기존 chat provider를 그대로 사용한다."""
+    row = _profile(config_id)
+    value = (os.getenv("LAKE_AGENT_EMBED_PROVIDER") or
+             (row or {}).get("embeddingProvider") or provider(config_id))
+    value = str(value or "").strip().lower()
+    return value if value in PROVIDERS else provider(config_id)
+
+
 def api_version(config_id: str = "") -> str:
     row = _profile(config_id)
     return (os.getenv("AOAI_API_VERSION") or (row or {}).get("apiVersion")
@@ -380,6 +404,88 @@ def _compat_headers(config_id: str = "") -> dict:
         return {}
 
 
+def _json_headers(field: str, config_id: str = "") -> dict:
+    raw = _secret(field, config_id)
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+        return {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _normalise_compat_base(raw: str) -> str:
+    raw = str(raw or "").strip().rstrip("/")
+    if not raw:
+        return raw
+    try:
+        from urllib.parse import urlsplit
+        if not urlsplit(raw).path:
+            return raw + "/v1"
+    except Exception:
+        pass
+    return raw
+
+
+def chat_definition(tier: str = "complex", model_override: str = "",
+                    config_id: str = "") -> ModelDefinition:
+    p = provider(config_id)
+    model = (model_override or "").strip() or chat_model(tier, config_id)
+    row = _profile(config_id) or {}
+    if p == "aoai":
+        return ModelDefinition(p, model, _secret("aoaiEndpoint", config_id),
+                               _secret("aoaiApiKey", config_id), api_version(config_id),
+                               model_profile=str(row.get("chatModelProfile") or ""))
+    if p == "openai":
+        return ModelDefinition(p, model, api_key=_secret("openaiApiKey", config_id),
+                               model_profile=str(row.get("chatModelProfile") or ""))
+    return ModelDefinition(p, model, compat_base(config_id),
+                           _secret("compatApiKey", config_id) or "unused", headers=_compat_headers(config_id),
+                           model_profile=str(row.get("chatModelProfile") or ""))
+
+
+def embedding_definition(config_id: str = "") -> ModelDefinition:
+    """Resolve the independent embedding connection, with legacy chat fallback."""
+    p = embedding_provider(config_id)
+    # Keep the no-argument call path for older integrations/tests that override ``embed_model``.
+    model = embed_model(config_id) if config_id else embed_model()
+    row = _profile(config_id) or {}
+    split_base = (_secret("embeddingBaseUrl", config_id) or "").strip()
+    split_key = _secret("embeddingApiKey", config_id)
+    split_headers = _json_headers("embeddingHeaders", config_id)
+    version = (os.getenv("LAKE_AGENT_EMBED_API_VERSION") or
+               row.get("embeddingApiVersion") or api_version(config_id))
+    if p == "aoai":
+        return ModelDefinition(p, model, split_base or _secret("aoaiEndpoint", config_id),
+                               split_key or _secret("aoaiApiKey", config_id), str(version or ""))
+    if p == "openai":
+        return ModelDefinition(p, model, api_key=split_key or _secret("openaiApiKey", config_id))
+    if p == "fake":
+        return ModelDefinition(p, model)
+    return ModelDefinition(p, model,
+                           _normalise_compat_base(split_base) or compat_base(config_id),
+                           split_key or _secret("compatApiKey", config_id) or "unused",
+                           headers=split_headers or _compat_headers(config_id))
+
+
+def embedding_identity(config_id: str = "", chunking_version: str = "v1") -> dict:
+    """Stable vector namespace identity. Different identities must never share an index."""
+    row = _profile(config_id) or {}
+    definition = embedding_definition(config_id)
+    return {
+        "embedding_model": definition.model,
+        "provider": definition.provider,
+        "model_revision": str(row.get("embedRevision") or "unknown"),
+        "precision": str(row.get("embedPrecision") or "unknown"),
+        "dimension": int(row["embedDimension"]) if str(row.get("embedDimension") or "").isdigit() else None,
+        "normalization": str(row.get("embedNormalization") or "unknown"),
+        "chunking_version": chunking_version,
+        "source_commit": os.getenv("LTM_BUILD_SHA") or "unknown",
+        "config_version": 1,
+    }
+
+
 def sampling_unsupported(model: str) -> bool:
     """이 모델이 temperature 등 샘플링 파라미터를 거부하는가.
 
@@ -394,8 +500,9 @@ def sampling_unsupported(model: str) -> bool:
 
 
 # ── 팩토리 ─────────────────────────────────────────────────────────
-def get_llm(temperature: float = 0.2, tier: str = "complex", model_override: str = "",
-            config_id: str = "", **kwargs):
+def get_llm(temperature: float | None = None, tier: str = "complex", model_override: str = "",
+            config_id: str = "", profile: str = "balanced", role_id: str = "",
+            output_contract: str = "", **kwargs):
     """provider 에 맞는 chat 모델. 나머지 코드는 이 함수만 부른다.
 
     `tier` 로 역할별 모델을 가른다 — simple(의도 분류·결정적 실행)은 저렴한 모델,
@@ -418,7 +525,8 @@ def get_llm(temperature: float = 0.2, tier: str = "complex", model_override: str
     kwargs.setdefault("stream_usage", True)
 
     # model_override 는 '권한 확인'처럼 **특정 모델 하나를 시험**할 때만 쓴다(설정 화면).
-    model = (model_override or "").strip() or chat_model(tier, config_id)
+    definition = chat_definition(tier, model_override, config_id)
+    model = definition.model
     # ★ **모델 이름이 비었으면 여기서 멈춘다.** 빈 이름으로 부르면 서버는 대개
     #   `404 /v1/chat/completions` 로 답하고(모델을 못 찾았다는 뜻인데 경로가 없다는 말로
     #   읽힌다), 사용자는 주소·키를 의심하며 시간을 버린다(실사용 지적).
@@ -428,29 +536,18 @@ def get_llm(temperature: float = 0.2, tier: str = "complex", model_override: str
     # ★ reasoning 계열(gpt-5*, o1/o3/o4*)은 temperature 를 못 받는다 — 실측:
     #   "'temperature' does not support 0.4 ... Only the default (1)" 400 으로 전 역할 사망.
     #   역할별 temperature 는 그 계열에선 의미가 없으니 **아예 넘기지 않는다**.
-    if sampling_unsupported(model):
-        temp_kw = {}
-    else:
-        temp_kw = {"temperature": temperature}
-
-    if p == "aoai":
-        from langchain_openai import AzureChatOpenAI
-        return AzureChatOpenAI(
-            azure_endpoint=_secret("aoaiEndpoint", config_id),
-            api_key=_secret("aoaiApiKey", config_id),
-            azure_deployment=model,                  # ★ 모델명이 아니라 배포명
-            api_version=api_version(config_id),
-            **temp_kw, **kwargs)
-
-    from langchain_openai import ChatOpenAI
-    if p == "openai":
-        return ChatOpenAI(api_key=_secret("openaiApiKey", config_id),
-                          model=model, **temp_kw, **kwargs)
-    # openai_compat — base_url + 커스텀 헤더. 인증이 표준과 달라도 여기서 흡수한다.
-    return ChatOpenAI(api_key=_secret("compatApiKey", config_id) or "unused",
-                      base_url=compat_base(config_id),
-                      model=model, **temp_kw,
-                      default_headers=_compat_headers(config_id) or None, **kwargs)
+    explicit = dict(kwargs)
+    if temperature is not None:
+        explicit["temperature"] = temperature
+    effective_profile = _profile_for_contract(
+        model, profile, output_contract, explicit_model_profile=definition.model_profile,
+    )
+    effective = _resolve_model_config(model, p, effective_profile,
+                                      explicit_model_profile=definition.model_profile,
+                                      explicit=explicit)
+    log.debug("LLM role=%s requestedProfile=%s outputContract=%s definition=%s effective=%s",
+              role_id, profile, output_contract, definition.debug(), effective.debug())
+    return _provider_adapter(p).chat(definition, effective.parameters)
 
 
 def _no_model_msg(p: str, tier: str = "complex", embed: bool = False) -> str:
@@ -480,7 +577,8 @@ def get_embeddings(config_id: str = "", **kwargs):
       호출부가 명시적으로 넘기면 그 값을 존중한다(kwargs 우선).
     """
     kwargs.setdefault("check_embedding_ctx_length", False)
-    p = provider(config_id)
+    definition = embedding_definition(config_id)
+    p = definition.provider
     if p == "fake":
         from app.agent.fake import FakeEmbeddings
         return FakeEmbeddings()
@@ -489,28 +587,9 @@ def get_embeddings(config_id: str = "", **kwargs):
     if not ok:
         raise RuntimeError(why)
 
-    if not str(embed_model(config_id) or "").strip():
+    if not str(definition.model or "").strip():
         raise RuntimeError(_no_model_msg(p, embed=True))
-
-    if p == "aoai":
-        from langchain_openai import AzureOpenAIEmbeddings
-        return AzureOpenAIEmbeddings(
-            azure_endpoint=_secret("aoaiEndpoint", config_id),
-            api_key=_secret("aoaiApiKey", config_id),
-            model=embed_model(config_id), openai_api_version=api_version(config_id), **kwargs)
-
-    from langchain_openai import OpenAIEmbeddings
-    if p == "openai":
-        return OpenAIEmbeddings(api_key=_secret("openaiApiKey", config_id),
-                                model=embed_model(config_id), **kwargs)
-    # ★ **추가 헤더를 여기도 보낸다.** 채팅·모델목록에는 실리는데 임베딩에만 안 실려 있었다
-    #   (실측: 스텁 서버가 받은 헤더를 찍어 보고 발견). 게이트웨이가 X-Auth 같은 헤더로
-    #   팀을 가르는 환경이면 **채팅은 되는데 임베딩만 401/403** 이 나고, 그 증상은 모델
-    #   권한 문제로 읽힌다. 같은 인증은 같은 provider 의 모든 호출에 똑같이 걸려야 한다.
-    return OpenAIEmbeddings(api_key=_secret("compatApiKey", config_id) or "unused",
-                            base_url=compat_base(config_id),
-                            default_headers=_compat_headers(config_id) or None,
-                            model=embed_model(config_id), **kwargs)
+    return _provider_adapter(p).embeddings(definition, kwargs)
 
 
 def get_langfuse_handler(session_id: str = None):
@@ -581,6 +660,8 @@ def status() -> dict:
             "llmReady": ready, "llmReason": ready_why,
             "chatModel": chat_model() if show_runtime else "",
             "embedModel": embed_model() if show_runtime else "",
+            "embeddingProvider": embedding_provider() if show_runtime else "",
+            "embeddingTarget": (embedding_definition().debug() if show_runtime else {}),
             # 간단한 역할(의도 분류·결정적 실행) 전용 모델 — **설정된 값만**(폴백 없이) 보여
             # 준다. 폴백값을 보여 주면 화면에서 "따로 설정돼 있다"로 오해된다.
             "chatModelSimple": (str((active or {}).get("chatModelSimple") or "") if active else
@@ -665,7 +746,17 @@ def probe(timeout: float = 30.0, config_id: str = "") -> dict:
     t1 = time.time()
     try:
         vec = get_embeddings(config_id=config_id).embed_query("연결 테스트")
+        import math
+        norm = math.sqrt(sum(float(x) * float(x) for x in vec))
+        embedding_meta = _profile(config_id) or {}
+        expected_dim = str(embedding_meta.get("embedDimension") or "")
+        expected_norm = str(embedding_meta.get("embedNormalization") or "").casefold()
+        if expected_dim.isdigit() and len(vec) != int(expected_dim):
+            raise ValueError(f"임베딩 dimension 불일치: expected={expected_dim}, actual={len(vec)}")
+        if expected_norm == "l2" and not 0.98 <= norm <= 1.02:
+            raise ValueError(f"임베딩 L2 normalization 불일치: norm={norm:.6f}")
         out["embeddings"] = {"ok": True, "ms": int((time.time() - t1) * 1000), "dim": len(vec)}
+        out["embeddings"]["l2Norm"] = round(norm, 6)
     except Exception as e:
         out["embeddings"] = {"ok": False, "ms": int((time.time() - t1) * 1000), "error": _brief(e)}
 
@@ -674,7 +765,7 @@ def probe(timeout: float = 30.0, config_id: str = "") -> dict:
     if out["chat"]["ok"]:
         try:
             from app.agent.capabilities import probe_all
-            out["capabilities"] = probe_all()
+            out["capabilities"] = probe_all(config_id)
             out["degraded"] = any(x.get("degraded") for x in out["capabilities"].values())
         except Exception as e:
             out["capabilities"] = {"error": _brief(e)}
@@ -721,8 +812,9 @@ def list_models(timeout: float = 10.0, config_id: str = "") -> dict:
             rows = r.json().get("data") or []
             pairs = [((d.get("id") or ""), str(d.get("model") or "")) for d in rows]
             is_embed = lambda n, m: "embed" in n.lower() or "embed" in m.lower()  # noqa: E731
-            return {"chat": sorted(n for n, m in pairs if n and not is_embed(n, m)),
-                    "embed": sorted(n for n, m in pairs if n and is_embed(n, m)), "error": ""}
+            result = {"chat": sorted(n for n, m in pairs if n and not is_embed(n, m)),
+                      "embed": sorted(n for n, m in pairs if n and is_embed(n, m)), "error": ""}
+            return _with_split_embedding_models(result, timeout, config_id)
 
         from openai import OpenAI
         if p == "openai":
@@ -767,9 +859,67 @@ def list_models(timeout: float = 10.0, config_id: str = "") -> dict:
         # `total` — **서버가 실제로 준 개수**. 우리가 걸러낸 것이 있으면 화면이 그 사실을
         #   말해 줘야 한다(사용자 지적: "직접 /v1/models 날려본 것과 목록이 다르다").
         #   거르는 것 자체는 필요하지만, **몇 개를 거를지는 사용자가 알아야 할 사실**이다.
-        return {"chat": chat, "embed": embed, "total": len(ids), "error": ""}
+        result = {"chat": chat, "embed": embed, "total": len(ids), "error": ""}
+        return _with_split_embedding_models(result, timeout, config_id)
     except Exception as e:
         return {"chat": [], "embed": [], "total": 0, "error": _brief(e)}
+
+
+def _with_split_embedding_models(result: dict, timeout: float, config_id: str = "") -> dict:
+    """Load a dedicated embedding catalog without making ``/models`` mandatory.
+
+    TEI guarantees ``/v1/embeddings`` but deployments can omit ``/v1/models``. In that case the
+    configured embedding model remains selectable and the later embedding probe is authoritative.
+    """
+    chat = chat_definition(config_id=config_id)
+    embedding = embedding_definition(config_id)
+    same_connection = (
+        embedding.provider == chat.provider
+        and str(embedding.base_url or "").rstrip("/") == str(chat.base_url or "").rstrip("/")
+    )
+    if same_connection:
+        return result
+
+    configured = [embedding.model] if str(embedding.model or "").strip() else []
+    discovered: list[str] = []
+    warning = ""
+    try:
+        if embedding.provider == "fake":
+            discovered = configured or ["fake-embed"]
+        elif embedding.provider == "aoai":
+            import httpx
+            base = str(embedding.base_url or "").rstrip("/")
+            response = httpx.get(
+                f"{base}/openai/deployments",
+                params={"api-version": "2023-03-15-preview"},
+                headers={"api-key": embedding.api_key},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            rows = response.json().get("data") or []
+            discovered = [str(row.get("id") or "") for row in rows
+                          if "embed" in str(row.get("id") or row.get("model") or "").casefold()]
+        else:
+            from openai import OpenAI
+            kwargs = {"api_key": embedding.api_key or "unused", "timeout": timeout}
+            if embedding.provider == "openai_compat":
+                kwargs.update(base_url=embedding.base_url,
+                              default_headers=embedding.headers or None)
+            client = OpenAI(**kwargs)
+            ids = [str(getattr(model, "id", "") or "") for model in client.models.list()]
+            markers = ("embed", "bge", "e5-", "gte-", "jina", "minilm", "nomic")
+            discovered = [model for model in ids if any(marker in model.casefold() for marker in markers)]
+            if not discovered and len(ids) == 1:
+                discovered = ids
+    except Exception as exc:
+        warning = "embedding /models unavailable; configured model retained: " + _brief(exc)
+
+    merged = sorted(dict.fromkeys([*configured, *discovered]))
+    out = {**result, "embed": merged}
+    out["total"] = len(set(out.get("chat") or [])) + len(set(merged))
+    if warning:
+        out["warnings"] = [*(out.get("warnings") or []), warning]
+    return out
 
 
 def _model_denied(d: dict) -> bool:

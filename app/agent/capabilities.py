@@ -8,17 +8,29 @@ import time
 _CACHE: dict[tuple[str, str], dict] = {}
 
 
-def _key(tier: str) -> tuple[str, str]:
+def _key(tier: str, config_id: str = "") -> tuple[str, str]:
     from app.agent import config as cfg
-    return cfg.settings_signature(), str(tier or "complex")
+    return cfg.settings_signature(config_id), str(tier or "complex")
 
 
-def get(tier: str = "complex") -> dict:
-    return dict(_CACHE.get(_key(tier)) or {})
+def get(tier: str = "complex", config_id: str = "") -> dict:
+    row = dict(_CACHE.get(_key(tier, config_id)) or {})
+    # Versioned model profile is the pre-probed floor. Runtime probe results override it.
+    try:
+        from app.agent import config as cfg
+        from app.agent.model_profiles import capabilities_for
+        definition = cfg.chat_definition(tier, config_id=config_id)
+        declared = capabilities_for(definition.model, definition.model_profile)
+        checked = {k: v for k, v in declared.items() if isinstance(v, bool)}
+        checked.update(row.get("checked") or {})
+        row["checked"] = checked
+    except Exception:
+        pass
+    return row
 
 
-def record(tier: str, capability: str, supported: bool, error: str = "") -> None:
-    key = _key(tier)
+def record(tier: str, capability: str, supported: bool, error: str = "", config_id: str = "") -> None:
+    key = _key(tier, config_id)
     row = _CACHE.setdefault(key, {"tier": tier, "checked": {}, "errors": {}})
     row["checked"][capability] = bool(supported)
     if error:
@@ -35,7 +47,7 @@ def _brief(exc: Exception) -> str:
     return " ".join(str(exc or "").split())[:240]
 
 
-def native_tools_allowed() -> bool:
+def native_tools_allowed(config_id: str = "") -> bool:
     """현재 provider에 native tool payload를 보내도 되는가.
 
     운영 LLM gateway는 provider 표기와 무관하게 chat text만 지원한다고 본다. 기능 탐지
@@ -51,10 +63,12 @@ def native_tools_allowed() -> bool:
             return False
     except Exception:
         pass
-    return cfg.provider() != "openai_compat"
+    declared = get("complex", config_id).get("checked") or {}
+    current_provider = cfg.provider(config_id) if config_id else cfg.provider()
+    return current_provider != "openai_compat" and declared.get("tools") is not False
 
 
-def probe_tier(tier: str = "complex") -> dict:
+def probe_tier(tier: str = "complex", config_id: str = "") -> dict:
     """프로젝트 정보 없이 JSON mode와 tool-calling 지원 여부만 검사한다."""
     from langchain_core.tools import tool
     from app.agent import config as cfg
@@ -65,7 +79,7 @@ def probe_tier(tier: str = "complex") -> dict:
         "properties": {"value": {"type": "string", "enum": ["pong"]}},
         "required": ["value"], "additionalProperties": False,
     }
-    result = {"tier": tier, "model": cfg.chat_model(tier), "checked": {}, "errors": {}}
+    result = {"tier": tier, "model": cfg.chat_model(tier, config_id), "checked": {}, "errors": {}}
 
     def attempt(name, fn):
         started = time.time()
@@ -73,20 +87,20 @@ def probe_tier(tier: str = "complex") -> dict:
             fn()
             result["checked"][name] = True
             result.setdefault("latencyMs", {})[name] = int((time.time() - started) * 1000)
-            record(tier, name, True)
+            record(tier, name, True, config_id=config_id)
         except Exception as exc:
             message = _brief(exc)
             result["checked"][name] = False
             result["errors"][name] = message
             result.setdefault("latencyMs", {})[name] = int((time.time() - started) * 1000)
-            record(tier, name, False, message)
+            record(tier, name, False, message, config_id=config_id)
 
-    attempt("plain_chat", lambda: cfg.get_llm(temperature=0, tier=tier, max_tokens=8)
+    attempt("plain_chat", lambda: cfg.get_llm(temperature=0, tier=tier, max_tokens=8, config_id=config_id)
             .invoke("Return only the word pong."))
-    attempt("json_schema", lambda: cfg.get_llm(temperature=0, tier=tier, max_tokens=32)
+    attempt("json_schema", lambda: cfg.get_llm(temperature=0, tier=tier, max_tokens=32, config_id=config_id)
             .with_structured_output(schema, method="json_schema")
             .invoke("Return value=pong."))
-    attempt("json_object", lambda: cfg.get_llm(temperature=0, tier=tier, max_tokens=32)
+    attempt("json_object", lambda: cfg.get_llm(temperature=0, tier=tier, max_tokens=32, config_id=config_id)
             .with_structured_output(schema, method="json_mode")
             .invoke("Return one JSON object with value=pong."))
 
@@ -96,51 +110,51 @@ def probe_tier(tier: str = "complex") -> dict:
         return value
 
     def one_tool():
-        msg = cfg.get_llm(temperature=0, tier=tier, max_tokens=64).bind_tools(
+        msg = cfg.get_llm(temperature=0, tier=tier, max_tokens=64, config_id=config_id).bind_tools(
             [capability_echo], tool_choice="capability_echo", parallel_tool_calls=False).invoke(
                 "Call capability_echo once with value=pong.")
         calls = getattr(msg, "tool_calls", None) or []
         if not calls or calls[0].get("name") != "capability_echo":
             raise ValueError("서버가 요청한 tool call을 반환하지 않았습니다.")
-    if native_tools_allowed():
+    if native_tools_allowed(config_id):
         attempt("tools", one_tool)
     else:
         message = "운영/provider 정책: native tools 요청을 보내지 않음"
         result["checked"]["tools"] = False
         result["errors"]["tools"] = message
-        record(tier, "tools", False, message)
+        record(tier, "tools", False, message, config_id=config_id)
 
     def parallel_tools():
-        msg = cfg.get_llm(temperature=0, tier=tier, max_tokens=96).bind_tools(
+        msg = cfg.get_llm(temperature=0, tier=tier, max_tokens=96, config_id=config_id).bind_tools(
             [capability_echo], parallel_tool_calls=True).invoke(
                 "Call capability_echo twice independently, with value=one and value=two.")
         calls = getattr(msg, "tool_calls", None) or []
         if len(calls) < 2:
             raise ValueError("parallel tool calls를 반환하지 않았습니다.")
-    if native_tools_allowed():
+    if native_tools_allowed(config_id):
         attempt("parallel_tools", parallel_tools)
     else:
         message = "native tools가 비활성화되어 parallel tools도 사용하지 않음"
         result["checked"]["parallel_tools"] = False
         result["errors"]["parallel_tools"] = message
-        record(tier, "parallel_tools", False, message)
+        record(tier, "parallel_tools", False, message, config_id=config_id)
     result["degraded"] = not all(result["checked"].values())
     return result
 
 
-def probe_all() -> dict:
+def probe_all(config_id: str = "") -> dict:
     """같은 모델 이름은 한 번만 호출하되 main/simple tier 결과를 모두 표시한다."""
     from app.agent import config as cfg
     rows, by_model = {}, {}
     for tier in ("complex", "simple"):
-        model = cfg.chat_model(tier)
+        model = cfg.chat_model(tier, config_id)
         if model in by_model:
             row = dict(by_model[model]); row["tier"] = tier
             rows[tier] = row
             for cap, ok in (row.get("checked") or {}).items():
-                record(tier, cap, ok, (row.get("errors") or {}).get(cap, ""))
+                record(tier, cap, ok, (row.get("errors") or {}).get(cap, ""), config_id=config_id)
         else:
-            row = probe_tier(tier)
+            row = probe_tier(tier, config_id)
             rows[tier] = row; by_model[model] = row
     return rows
 

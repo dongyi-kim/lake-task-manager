@@ -449,7 +449,6 @@ def _ensure_creation_duplicate_query(state, plan: dict) -> None:
 
 class QuerySpecialist(StructuredAgent):
     name = Node.QUERY_SPECIALIST
-    temperature = 0.0
     tier = "simple"
 
     def system(self, state):

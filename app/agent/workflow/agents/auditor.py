@@ -50,7 +50,6 @@ SCHEMA = {
 
 class Auditor(StructuredAgent):
     name = Node.AUDITOR
-    temperature = 0.0          # 검열은 흔들리면 안 된다
 
     def node(self):
         base_run = super().node()
