@@ -378,6 +378,18 @@ class WorkArchitect(StructuredAgent):
             # added 28-69 seconds and frequently returned empty ``items``. Build the literal
             # conservative draft directly; ``apply`` still owns hierarchy/body/owner guards.
             if (state.get("situation") or "").strip():
+                epic_downgrade = _recover_delegated_epic_downgrade(state)
+                if epic_downgrade:
+                    direct = self.apply(state, {
+                        "questions": [],
+                        **epic_downgrade,
+                        "_construction": "literal_delegated",
+                        "_epic_downgrade": True,
+                    })
+                    direct["trace"] = note(
+                        state, self.name, "Epic 기준 미충족 · 결정적 Task 초안 1건",
+                    )
+                    return direct
                 subtasks = _recover_explicit_subtasks(state)
                 if subtasks:
                     direct = self.apply(state, {
@@ -790,8 +802,20 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # from the literal request when all real blocker guards above are clear; the normal
         # hierarchy, decomposition, assignment, body, and Auditor passes still run below.
         if not items and not qs and state.get("situation"):
-            recovered = _recover_delegated_creation(state)
-            if recovered:
+            epic_downgrade = _recover_delegated_epic_downgrade(state)
+            recovered = ([] if epic_downgrade else _recover_delegated_creation(state))
+            if epic_downgrade:
+                items = out["items"] = epic_downgrade["items"]
+                mode = out["mode"] = epic_downgrade["mode"]
+                out["structure"] = epic_downgrade["structure"]
+                out["structure_source"] = epic_downgrade["structure_source"]
+                out["structure_why"] = epic_downgrade["structure_why"]
+                out["interpretation"] = ""
+                out["rationale"] = epic_downgrade["rationale"]
+                out["_construction"] = "literal_delegated"
+                out["_epic_downgrade"] = True
+                model_questions = False
+            elif recovered:
                 items = out["items"] = recovered
                 mode = out["mode"] = "task"
                 inferred_shape = (shape_hint(state)[0]
@@ -1131,6 +1155,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             why = out["structure_why"] = "사용자가 단일 티켓 타입으로 생성을 요청했다"
         if said_shape:                      # 사용자가 말한 것은 판단이 아니다 — 코드가 확정한다
             src = "user_specified"
+        # 사용자는 Epic을 요청했지만 최종 Task 구조는 Epic reporting-unit 기준에 따라
+        # Work Architect가 보수적으로 선택했다. 이 구조까지 user_specified로 표시하면
+        # 승인 카드가 실제 사용자 선택과 반대로 설명한다.
+        if out.get("_epic_downgrade"):
+            src = "inferred"
 
         # 생성 payload는 Story Point를 지원하지 않는다. 모델이 rationale에 "생성 후 할당"
         # 같은 약속을 남겨도 실제 승인 payload와 모순되므로 제거하고 정확한 안내를 남긴다.
@@ -5373,6 +5402,92 @@ def _requests_existing_parent_subtask(text: str) -> bool:
         said, _re.I,
     )
     return bool(key_parent or referential_parent)
+
+
+def _recover_delegated_epic_downgrade(state) -> dict:
+    """Build a grounded Task when a delegated new-Epic request misses Epic criteria.
+
+    The ordinary Epic guard runs after a model has returned an Epic item.  A small local
+    model can instead return an empty item list or an optional preference question, so that
+    guard is never reached.  This recovery applies the same reporting-unit criteria before
+    the model call.  It only uses an explicit Epic-shaped request, a concrete literal work
+    target, and a verified configured module; it never invents a KPI, owner, or deadline.
+    """
+    if not _said_defaults(state) or (state.get("intent") or "") != Intent.PLAN_WORK:
+        return {}
+    if shape_hint(state)[0] != "new_epic":
+        return {}
+
+    unmet = _new_epic_unmet_criteria(state)
+    if not unmet:
+        return {}
+
+    human_messages = [
+        str(getattr(message, "content", "") or "").strip()
+        for message in (state.get("messages") or [])
+        if getattr(message, "type", "") == "human"
+    ]
+    candidates = [request_text(state), *human_messages]
+    epic_request = next(
+        (value for value in candidates if value and _shape_hint_text(value)[0] == "new_epic"),
+        "",
+    )
+    all_human = " ".join(value for value in human_messages if value).strip()
+    if (not epic_request or not _has_concrete_work_target(epic_request)
+            or reads_as_bug(epic_request)
+            or _missing_data_quality_target(state)
+            or _missing_exact_mutation(all_human or epic_request)
+            or _requests_existing_parent_subtask(all_human)):
+        return {}
+
+    # Remove only the requested container and conversational scale wording.  The literal
+    # work noun remains the Task subject (for example, ``쿼리 성능 개선``).
+    subject = _re.sub(
+        r"(?:(?:새|신규)\s*)?(?:Epic|에픽)(?:으로|을|를)?"
+        r"[^.!?\n]{0,50}(?:잡아|만들|생성|구성)[^.!?\n]*",
+        " ", epic_request, flags=_re.I,
+    )
+    subject = _re.sub(r"\b대대적으로\b", " ", subject)
+    subject = _re.sub(
+        r"(?:한번\s*)?(?:해\s*보자|해보자|진행하자|하자)(?=\s*[.!?]?(?:\s|$))",
+        " ", subject,
+    )
+    subject = _re.sub(r"[.!?]+", " ", subject)
+    subject = _re.sub(r"\s+", " ", subject).strip(" .,:;-")
+    subject = _re.sub(r"(?:을|를|은|는)\s*$", "", subject).strip()
+    if len(subject) < 3:
+        return {}
+
+    try:
+        from app.infra.settings import modules_in_text
+        module = next(iter(modules_in_text(all_human or epic_request)), "")
+    except Exception:
+        module = ""
+    summary = _collapse_repeated_summary(f"[{module}] {subject}" if module else subject)
+    item = {
+        "summary": summary,
+        "type": "Task",
+        "issue_type": "Task",
+        "tier": "task",
+    }
+    if module and module in _known_components():
+        item["components"] = [module]
+    pick = _pick_parent_epic(summary, module)
+    if pick:
+        item["epic"] = str(pick["key"])
+        placement = f"기존 Epic {pick['key']} 아래 Task"
+    else:
+        placement = "최상위 Task"
+    item["description"] = _minimal_grounded_body(item)
+    criteria = ", ".join(unmet)
+    return {
+        "mode": "task",
+        "items": [item],
+        "structure": "single_task",
+        "structure_source": "inferred",
+        "structure_why": f"Epic 조건 미충족({criteria})으로 {placement}로 보수화",
+        "rationale": f"Epic 격상 보류 — {criteria}; {placement}로 정리",
+    }
 
 
 def _recover_delegated_creation(state) -> list[dict]:

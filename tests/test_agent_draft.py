@@ -439,6 +439,52 @@ def test_compound_delegated_request_recovers_cross_module_sibling_deliverables()
     assert all(row["type"] == "Task" and not row.get("children") for row in rows)
 
 
+def test_delegated_under_scale_epic_is_downgraded_to_grounded_task_without_model(
+        monkeypatch):
+    """STR3: explicit Epic wording does not waive the reporting-unit criteria."""
+    from langchain_core.messages import HumanMessage
+    from app.agent.workflow.agents.base import StructuredAgent
+
+    def model_node(_self):
+        def run(_state):
+            raise AssertionError("deterministic Epic downgrade must not call the model")
+        return run
+
+    monkeypatch.setattr(StructuredAgent, "node", model_node)
+    monkeypatch.setattr(
+        "app.agent.workflow.agents.work_architect._known_components", lambda: {"ETL"})
+    monkeypatch.setattr(
+        "app.agent.workflow.agents.work_architect._pick_parent_epic",
+        lambda _summary, _module="": None,
+    )
+    original = "쿼리 성능 개선을 대대적으로 해보자. 에픽으로 크게 잡아줘"
+    state = {
+        "messages": [
+            HumanMessage(content=original),
+            HumanMessage(content="기간은 2주 정도고 ETL 쪽만 손볼 거야. 알아서 진행해"),
+        ],
+        "request_text": original,
+        "situation": "직접 일치하는 내부 이력 없음",
+        "intent": Intent.PLAN_WORK,
+        "turns": 1,
+    }
+
+    result = WorkArchitect().node()(state)
+
+    assert not result["questions"]
+    draft = result["draft"]
+    assert draft["mode"] == "task" and draft["structure"] == "single_task"
+    assert draft["structure_source"] == "inferred"
+    assert "Epic 격상 보류" in draft["rationale"]
+    assert "4주 이상 기간 근거 없음" in draft["rationale"]
+    item = draft["items"][0]
+    assert item["type"] == "Task" and item["tier"] == "task"
+    assert item["summary"] == "[ETL] 쿼리 성능 개선"
+    assert item["components"] == ["ETL"]
+    assert not item.get("assignee")
+    assert all(token not in item["description"] for token in ("%", "ms", "초 이내"))
+
+
 def test_delegated_concrete_draft_keeps_duplicate_as_evidence_instead_of_reinterview():
     state = _msg(
         "리니지 뷰어 성능 측정하고, 결과 따라 쿼리 엔진 인덱스도 손봐야 해. "
