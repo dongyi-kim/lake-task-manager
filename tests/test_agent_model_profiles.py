@@ -33,6 +33,22 @@ def test_qwen_reasoning_structured_contract_falls_back_to_balanced():
     ) == "reasoning"
 
 
+def test_qwen_semantic_memo_is_bounded_and_disables_unseparated_reasoning():
+    assert profiles.profile_for_contract(
+        "ltm-qwen3.6-35b-a3b", "reasoning", "semantic_memo"
+    ) == "balanced"
+    row = profiles.resolve(
+        "ltm-qwen3.6-35b-a3b", "openai_compat", "balanced",
+        output_contract="semantic_memo", semantic_profile="reasoning",
+    )
+    assert row.parameters["temperature"] == 0.2
+    assert row.parameters["presence_penalty"] == 0.0
+    assert row.parameters["max_tokens"] == 2048
+    assert row.parameters["extra_body"]["chat_template_kwargs"] == {
+        "enable_thinking": False}
+    assert "model_contract_profile" in row.sources
+
+
 def test_qwen_structured_contract_uses_semantic_role_transport_budget():
     row = profiles.resolve(
         "ltm-qwen3.6-35b-a3b", "openai_compat", "balanced",
@@ -61,6 +77,18 @@ def test_qwen_simple_reasoning_contract_is_deterministic_and_bounded():
         output_contract="structured", semantic_profile="reasoning",
     )
     assert row.parameters["temperature"] == 0.0
+    assert row.parameters["max_tokens"] == 3072
+    assert row.parameters["extra_body"]["chat_template_kwargs"] == {
+        "enable_thinking": False}
+
+
+def test_qwen_simple_typed_projection_is_deterministic_and_bounded():
+    row = profiles.resolve(
+        "/models/Qwen3.5-4B-4bit", "openai_compat", "fast_structured",
+        output_contract="typed_projection", semantic_profile="fast_structured",
+    )
+    assert row.parameters["temperature"] == 0.0
+    assert row.parameters["presence_penalty"] == 0.0
     assert row.parameters["max_tokens"] == 3072
     assert row.parameters["extra_body"]["chat_template_kwargs"] == {
         "enable_thinking": False}

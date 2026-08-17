@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from langchain_core.messages import AIMessage, HumanMessage
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
 from app.agent.workflow.agents import base
@@ -64,6 +65,138 @@ def test_invalid_plain_json_gets_one_format_repair(monkeypatch):
     assert result == {"value": "ok"}
     assert fake.invocations == 2
     assert fake.stop_values == [[base.STRUCTURED_END_TOKEN], [base.STRUCTURED_END_TOKEN]]
+
+
+class _SemanticProjectionAgent(base.StructuredAgent):
+    """Small schema with WorkArchitect's canonical id and manifest contract."""
+
+    name = "work_architect"
+
+    def system(self, _state):
+        return "ORIGINAL SYSTEM SECRET"
+
+    def task(self, _state):
+        return "ORIGINAL EVIDENCE SECRET"
+
+    def schema(self):
+        return SCHEMA
+
+    def apply(self, _state, out):
+        return out
+
+
+class _SequenceLLM:
+    def __init__(self, *outputs):
+        self.outputs = list(outputs)
+        self.messages = []
+        self.stop_values = []
+        self.structured_methods = []
+
+    def invoke(self, messages, **kwargs):
+        self.messages.append(list(messages))
+        self.stop_values.append(kwargs.get("stop"))
+        value = self.outputs.pop(0)
+        if isinstance(value, dict):
+            return value
+        return value if isinstance(value, AIMessage) else AIMessage(content=value)
+
+    def with_structured_output(self, _schema, method="json_schema"):
+        self.structured_methods.append(method)
+        return self
+
+
+def _message_text(messages):
+    return "\n".join(str(getattr(message, "content", message) or "") for message in messages)
+
+
+def test_semantic_projection_keeps_original_on_semantic_model_and_repairs_projector_only(
+        monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base._cfg, "typed_projection_tier", lambda _tier: "simple")
+
+    memo = _SequenceLLM(
+        "verified value=ok " + base.SEMANTIC_MEMO_END_TOKEN)
+    projector = _SequenceLLM("not json", '{"value":"ok"}')
+    requested = []
+    agent = _SemanticProjectionAgent()
+
+    def llm(**kwargs):
+        requested.append(dict(kwargs))
+        return memo if kwargs.get("output_contract") == "semantic_memo" else projector
+
+    monkeypatch.setattr(agent, "llm", llm)
+    original = [SystemMessage(content=agent.system({})),
+                HumanMessage(content=agent.task({}))]
+    assert agent.invoke_structured({}, original) == {"value": "ok"}
+
+    assert len(memo.messages) == 1, "projector repair must not rerun semantic judgment"
+    assert "ORIGINAL SYSTEM SECRET" in _message_text(memo.messages[0])
+    assert "ORIGINAL EVIDENCE SECRET" in _message_text(memo.messages[0])
+    assert memo.stop_values == [[base.SEMANTIC_MEMO_END_TOKEN]]
+
+    assert len(projector.messages) == 2
+    for messages in projector.messages:
+        text = _message_text(messages)
+        assert "ORIGINAL SYSTEM SECRET" not in text
+        assert "ORIGINAL EVIDENCE SECRET" not in text
+    assert "verified value=ok" in _message_text(projector.messages[0])
+    assert base.SEMANTIC_MEMO_END_TOKEN not in _message_text(projector.messages[0])
+    assert "verified value=ok" in _message_text(projector.messages[1])
+    assert "Validation error:" in _message_text(projector.messages[1])
+    assert [row["output_contract"] for row in requested] == [
+        "semantic_memo", "typed_projection", "typed_projection"]
+    assert requested[1]["profile"] == requested[2]["profile"] == "fast_structured"
+
+
+def test_native_strict_semantic_role_keeps_existing_single_call(monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": True, "json_object": True}})
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+
+    native = _SequenceLLM({"value": "ok"})
+    requested = []
+    agent = _SemanticProjectionAgent()
+
+    def llm(**kwargs):
+        requested.append(dict(kwargs))
+        return native
+
+    monkeypatch.setattr(agent, "llm", llm)
+    result = agent.invoke_structured({}, [HumanMessage(content="original")])
+    assert result == {"value": "ok"}
+    assert native.structured_methods == ["json_schema"]
+    assert len(native.messages) == 1
+    assert requested == [{"output_contract": "structured"}]
+
+
+def test_truncated_semantic_memo_fails_before_typed_projection(monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex": {
+        "checked": {"json_schema": False, "json_object": False}})
+    monkeypatch.setattr(base._cfg, "typed_projection_tier", lambda _tier: "simple")
+
+    memo = _SequenceLLM(AIMessage(
+        content="partial semantic decision",
+        response_metadata={"finish_reason": "length"},
+    ))
+    projector = _SequenceLLM('{"value":"must not run"}')
+    agent = _SemanticProjectionAgent()
+    monkeypatch.setattr(
+        agent, "llm",
+        lambda **kwargs: memo if kwargs.get("output_contract") == "semantic_memo" else projector,
+    )
+
+    with pytest.raises(RuntimeError, match="출력 길이 한도"):
+        agent.invoke_structured({}, [HumanMessage(content="original")])
+    assert len(memo.messages) == 1
+    assert projector.messages == []
 
 
 def test_prefixed_json_is_not_silently_extracted():

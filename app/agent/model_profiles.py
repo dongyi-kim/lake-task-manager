@@ -20,6 +20,7 @@ import yaml
 
 TaskProfile = Literal["fast_structured", "balanced", "reasoning"]
 TASK_PROFILES = ("fast_structured", "balanced", "reasoning")
+FINAL_ONLY_CONTRACTS = ("structured", "semantic_memo", "typed_projection")
 log = logging.getLogger("agent.model_profiles")
 _CACHE: dict[str, Any] = {"mtime": None, "data": None}
 
@@ -79,10 +80,12 @@ def profile_for_contract(model: str, requested: TaskProfile, output_contract: st
     """Adapt a semantic profile only when a provider cannot safely return the contract.
 
     A thinking model that does not separate reasoning from the final answer can exhaust its
-    output budget before emitting structured JSON. LTM therefore keeps the semantic ``reasoning``
-    role assignment, but uses the non-thinking balanced profile for that structured invocation.
+    output budget before emitting a bounded memo or structured JSON. LTM therefore keeps the
+    semantic ``reasoning`` Role assignment, but uses the non-thinking balanced profile for
+    final-only transport contracts. The original semantic profile still selects the contract
+    row in ``resolve``.
     """
-    if output_contract != "structured" or requested != "reasoning":
+    if output_contract not in FINAL_ONLY_CONTRACTS or requested != "reasoning":
         return requested
     capabilities = capabilities_for(model, explicit_model_profile)
     if capabilities.get("reasoning") is True and capabilities.get("reasoning_separation") is False:
@@ -187,5 +190,5 @@ def resolve(model: str, provider: str, task_profile: TaskProfile = "balanced", *
     return row
 
 
-__all__ = ["TaskProfile", "TASK_PROFILES", "EffectiveConfig", "load_profiles", "reset",
+__all__ = ["TaskProfile", "TASK_PROFILES", "FINAL_ONLY_CONTRACTS", "EffectiveConfig", "load_profiles", "reset",
            "model_profile", "capabilities_for", "profile_for_contract", "resolve"]

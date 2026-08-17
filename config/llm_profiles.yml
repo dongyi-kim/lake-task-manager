@@ -88,6 +88,28 @@ model_profiles:
           top_k: 20
           presence_penalty: 0.0
           max_tokens: 3072
+      # This contract is used only after a complex semantic model has produced a memo.
+      # It must project that memo literally, with deterministic sampling and enough room
+      # for WorkDraft's nested item schema.
+      typed_projection:
+        fast_structured:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        balanced:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
+        reasoning:
+          temperature: 0.0
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 3072
 
   qwen3.6-35b-a3b:
     match:
@@ -111,7 +133,7 @@ model_profiles:
       # mlx-lm's basic OpenAI server cannot constrain JSON for the large model.
       # Delegate the wire-format contract to the separately configured 4B endpoint;
       # free-form Result Integrator synthesis stays on this 35B model.
-      structured_delegate_tier: simple
+      typed_projection_tier: simple
       # A single MLX process shares one Metal generation queue. Parallel Role requests
       # interleave long prefill/generation and made a two-Role review step take over ten
       # minutes in the local full battery. Keep independent tool I/O parallel, but schedule
@@ -145,6 +167,28 @@ model_profiles:
     # Keep thinking disabled and give large schemas enough room to close their JSON
     # object; the transport stop marker ends successful generations early.
     contracts:
+      # The complex model sees the original Role prompt and evidence exactly once and
+      # emits this bounded, final-only memo. Numeric sampling/output limits live here,
+      # never in Role code.
+      semantic_memo:
+        fast_structured:
+          temperature: 0.1
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 1024
+        balanced:
+          temperature: 0.2
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 1536
+        reasoning:
+          temperature: 0.2
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 0.0
+          max_tokens: 2048
       structured:
         fast_structured:
           temperature: 0.0

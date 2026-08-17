@@ -39,6 +39,7 @@ from app.agent.workflow.state import AgentState, note
 
 MAX_TOOL_STEPS = 6      # 도구 왕복 상한. 모델이 같은 도구를 맴돌 때 대화를 끝까지 태우지 않는다
 STRUCTURED_END_TOKEN = "<END_JSON>"
+SEMANTIC_MEMO_END_TOKEN = "<END_SEMANTIC_MEMO>"
 
 
 def _prompt_json_contract(schema_text: str) -> str:
@@ -220,7 +221,8 @@ class Agent(ABC):
         kw.setdefault("role_id", str(self.name))
         return _cfg.get_llm(tier=self.tier, **kw)
 
-    def structured(self, method: str = "json_schema", state: AgentState | None = None, **kw):
+    def structured(self, method: str = "json_schema", state: AgentState | None = None,
+                   output_contract: str = "structured", **kw):
         """스키마로 받는 모델. **스키마에 이름을 붙여서** 넘긴다.
 
         OpenAI/AOAI 는 구조화 출력을 함수 호출로 구현하므로 스키마가 함수 이름을 가져야 한다.
@@ -229,11 +231,30 @@ class Agent(ABC):
         생기므로 여기서 한 번에 붙인다.
         """
         schema = self.schema_for(state or {})
-        return self.llm(output_contract="structured", **kw).with_structured_output(
+        return self.llm(output_contract=output_contract, **kw).with_structured_output(
             _named(schema, self.name), method=method)
 
-    def invoke_structured(self, state: AgentState, messages: list) -> dict:
-        """provider capability에 맞춰 구조화 출력 fallback ladder를 실행한다.
+    def _semantic_projection_tier(self) -> str:
+        """Return a projection tier only for an opted-in, non-native Role invocation."""
+        from app.agent import capabilities
+        from app.agent.workflow.role_manifest import ROLE_SPECS
+
+        spec = ROLE_SPECS.get(str(self.name))
+        if not spec or spec.semantic_contract != "semantic_projection":
+            return ""
+        checked = capabilities.get(self.tier).get("checked") or {}
+        # Native strict schema keeps the existing single-call path. Runtime probe values
+        # override the profile floor inside capabilities.get().
+        if checked.get("json_schema") is True:
+            return ""
+        return _cfg.typed_projection_tier(self.tier)
+
+    def _invoke_structured_transport(self, state: AgentState, messages: list, *,
+                                     output_contract: str = "structured",
+                                     capability_tier: str | None = None,
+                                     task_profile: str = "",
+                                     repair_context: str = "") -> dict:
+        """Execute one structured transport ladder without making semantic decisions.
 
         json_schema → json_object → prompt-only JSON → repair 1회 순서다. 성공한 결과도
         로컬 JSON Schema 검증을 통과해야 한다. openai_compat 서버가 response_format이나
@@ -243,8 +264,17 @@ class Agent(ABC):
         from app.agent import capabilities
 
         schema = self.schema_for(state)
-        profile = capabilities.get(self.tier).get("checked") or {}
+        transport_tier = capability_tier or self.tier
+        profile = capabilities.get(transport_tier).get("checked") or {}
         errors, validation_error = [], ""
+
+        def make_llm(**overrides):
+            values = {"output_contract": output_contract}
+            if task_profile:
+                values["profile"] = task_profile
+            values.update(overrides)
+            return self.llm(**values)
+
         for capability, method in (("json_schema", "json_schema"),
                                    ("json_object", "json_mode")):
             if profile.get(capability) is False:
@@ -255,14 +285,15 @@ class Agent(ABC):
                     call_messages.append(HumanMessage(content=(
                         "Return exactly one JSON object satisfying this JSON Schema:\n"
                         + json.dumps(schema, ensure_ascii=False))))
-                raw = self.structured(method=method, state=state).invoke(call_messages)
+                raw = make_llm().with_structured_output(
+                    _named(schema, self.name), method=method).invoke(call_messages)
                 out = _validate_output(raw, schema)
-                capabilities.record(self.tier, capability, True)
+                capabilities.record(transport_tier, capability, True)
                 return out
             except Exception as exc:
                 errors.append(f"{capability}: {str(exc)[:180]}")
                 if _capability_is_unsupported(exc, capability):
-                    capabilities.record(self.tier, capability, False, str(exc))
+                    capabilities.record(transport_tier, capability, False, str(exc))
 
         # response_format을 전혀 지원하지 않는 서버: plain chat에 schema를 명시한다.
         schema_text = json.dumps(schema, ensure_ascii=False)
@@ -270,7 +301,7 @@ class Agent(ABC):
             _prompt_json_contract(schema_text))]
         raw_text = ""
         try:
-            raw = self.llm(output_contract="structured").invoke(
+            raw = make_llm().invoke(
                 prompt_messages, stop=[STRUCTURED_END_TOKEN])
             raw_text = str(getattr(raw, "content", raw) or "")
             parsed = _loads_loose(raw_text)
@@ -283,12 +314,16 @@ class Agent(ABC):
 
         # repair는 원 업무를 다시 판단시키는 호출이 아니라 형식만 교정하는 1회 호출이다.
         try:
-            repaired = self.llm(profile="fast_structured", output_contract="structured").invoke([
+            repair_source = (("Semantic memo:\n" + repair_context + "\n\n")
+                             if repair_context else "")
+            repaired = make_llm(profile="fast_structured").invoke([
                 SystemMessage(content=(
                     "Preserve the output's meaning. Repair only JSON syntax and schema violations. "
                     f"Return raw JSON, then emit {STRUCTURED_END_TOKEN}. The marker is transport "
                     "framing, not JSON. Never use Markdown, a code fence, or an explanation.")),
-                HumanMessage(content=f"Validation error:\n{validation_error}\n\nJSON Schema:\n{schema_text}\n\nOutput to repair:\n{raw_text[:12000]}")
+                HumanMessage(content=(repair_source + f"Validation error:\n{validation_error}"
+                                      f"\n\nJSON Schema:\n{schema_text}"
+                                      f"\n\nOutput to repair:\n{raw_text[:12000]}"))
                 ], stop=[STRUCTURED_END_TOKEN])
             parsed = _loads_loose(str(getattr(repaired, "content", repaired) or ""))
             if parsed is None:
@@ -297,6 +332,62 @@ class Agent(ABC):
         except Exception as exc:
             errors.append(f"repair: {str(exc)[:180]}")
             raise RuntimeError("structured output 실패 — " + " | ".join(errors)) from exc
+
+    def _invoke_semantic_projection(self, state: AgentState, messages: list,
+                                    projection_tier: str) -> dict:
+        """Run complex semantic judgment once, then project its memo to the Role schema.
+
+        The projector never receives the original prompt/evidence. A projector parse or
+        validation failure is repaired inside ``_invoke_structured_transport`` and never
+        reruns the semantic model.
+        """
+        schema = self.schema_for(state)
+        fields = ", ".join(str(k) for k in (schema.get("properties") or {}))
+        memo_instruction = (
+            "Produce a compact semantic decision memo for a later typed projection. "
+            "Resolve the task using the system instructions and evidence above. Preserve exact "
+            "ticket keys, identifiers, names, quoted facts, hierarchy, and unresolved gaps. "
+            "Do not invent a value merely to fill a field. Do not output JSON or Markdown. "
+            f"Cover these top-level output fields: {fields or '(schema-defined fields)'}. "
+            f"End the memo with {SEMANTIC_MEMO_END_TOKEN}."
+        )
+        raw = self.llm(output_contract="semantic_memo").invoke(
+            list(messages) + [HumanMessage(content=memo_instruction)],
+            stop=[SEMANTIC_MEMO_END_TOKEN],
+        )
+        metadata = getattr(raw, "response_metadata", None) or {}
+        finish = str(metadata.get("finish_reason") or metadata.get("stop_reason") or "").lower()
+        if finish in {"length", "max_tokens", "max_output_tokens"}:
+            # A truncated memo is more dangerous than malformed JSON: the projector can
+            # produce perfectly valid JSON that silently omits the tail of the decision.
+            # Fail before projection so callers surface the incomplete semantic stage.
+            raise RuntimeError("semantic memo가 출력 길이 한도에서 잘렸습니다.")
+        memo = str(getattr(raw, "content", raw) or "").strip()
+        if SEMANTIC_MEMO_END_TOKEN in memo:
+            memo = memo.split(SEMANTIC_MEMO_END_TOKEN, 1)[0].rstrip()
+        if not memo:
+            raise RuntimeError("semantic memo가 비어 있습니다.")
+
+        projection_messages = [
+            SystemMessage(content=(
+                "You are a literal typed projection engine. Convert only the supplied semantic "
+                "memo to the target JSON Schema. Preserve exact identifiers and facts. Never "
+                "add, reinterpret, or infer information absent from the memo; represent missing "
+                "values only as the schema permits.")),
+            HumanMessage(content="Semantic memo:\n" + memo),
+        ]
+        return self._invoke_structured_transport(
+            state, projection_messages, output_contract="typed_projection",
+            capability_tier=projection_tier, task_profile="fast_structured",
+            repair_context=memo,
+        )
+
+    def invoke_structured(self, state: AgentState, messages: list) -> dict:
+        """Choose native/direct or semantic→typed projection from capabilities + manifest."""
+        projection_tier = self._semantic_projection_tier()
+        if projection_tier:
+            return self._invoke_semantic_projection(state, messages, projection_tier)
+        return self._invoke_structured_transport(state, messages)
 
     @abstractmethod
     def node(self):

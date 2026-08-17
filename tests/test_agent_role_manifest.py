@@ -65,6 +65,14 @@ def test_only_action_executor_has_write_tools_and_write_effect():
     assert writers == ["action_executor"]
 
 
+def test_semantic_projection_is_explicit_and_initially_limited_to_work_architect():
+    projected = [spec.id for spec in ROLE_SPECS.values()
+                 if spec.semantic_contract == "semantic_projection"]
+    assert projected == ["work_architect"]
+    assert all(spec.semantic_contract in {"direct", "semantic_projection"}
+               for spec in ROLE_SPECS.values())
+
+
 def test_required_redesigned_capabilities_have_dedicated_roles():
     required = {"request_architect", "query_specialist", "research_analyst",
                 "people_advisor", "editor_author", "auditor", "action_executor"}

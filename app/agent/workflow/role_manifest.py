@@ -13,6 +13,7 @@ from app.agent.model_profiles import TaskProfile
 
 ModelTier = Literal["simple", "complex", "deterministic"]
 Effect = Literal["read", "draft", "write", "respond"]
+SemanticContract = Literal["direct", "semantic_projection"]
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,10 @@ class RoleSpec:
     tool_groups: tuple[str, ...] = ()
     effect: Effect = "read"
     has_prompt: bool = True
+    # ``semantic_projection`` keeps semantic judgment on the Role's complex model and
+    # delegates only the final typed projection when the model profile declares a
+    # projection tier.  It is opt-in so each Role can be characterized before migration.
+    semantic_contract: SemanticContract = "direct"
 
     @property
     def prompt_asset(self) -> str:
@@ -83,7 +88,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
          "related_docs", "pre_survey", "query_artifacts", "structure_plan",
          "structure_notes", "draft", "change_plan"),
         ("interpretation", "structure_plan", "structure_ok", "questions", "draft", "change_plan"),
-        effect="draft",
+        effect="draft", semantic_contract="semantic_projection",
     ),
     "people_advisor": RoleSpec(
         "people_advisor", "People Advisor", "complex", "balanced",
@@ -125,4 +130,4 @@ def role_specs() -> tuple[RoleSpec, ...]:
     return tuple(ROLE_SPECS.values())
 
 
-__all__ = ["RoleSpec", "ROLE_SPECS", "role_specs"]
+__all__ = ["RoleSpec", "SemanticContract", "ROLE_SPECS", "role_specs"]

@@ -614,6 +614,7 @@ def test_simple_chat_connection_can_be_split_from_complex_chat(monkeypatch):
 
 
 def test_qwen_complex_structured_contract_delegates_to_split_simple_endpoint(monkeypatch):
+    """Non-opted-in StructuredAgent Roles retain the characterized one-stage route."""
     import app.agent.config as C
 
     monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
@@ -638,7 +639,96 @@ def test_qwen_complex_structured_contract_delegates_to_split_simple_endpoint(mon
     assert definition.model == "Qwen3.5-4B-4bit"
     assert definition.base_url == "http://simple:18083/v1"
     assert definition.api_key == "simple-key"
-    assert captured["parameters"]["max_tokens"] == 4096
+    assert captured["parameters"]["max_tokens"] == 3072
+
+
+def test_qwen_complex_typed_projection_delegates_to_split_simple_endpoint(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_SKIP_VERIFY", "1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://complex:18080/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "complex-key")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "ltm-qwen3.6-35b-a3b")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE", "Qwen3.5-4B-4bit")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_BASE", "http://simple:18083/v1")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_KEY", "simple-key")
+    captured = {}
+
+    class Adapter:
+        def chat(self, definition, parameters):
+            captured.update(definition=definition, parameters=parameters)
+            return object()
+
+    monkeypatch.setattr(C, "_provider_adapter", lambda _provider: Adapter())
+    C.get_llm(tier="complex", profile="fast_structured",
+              output_contract="typed_projection")
+
+    definition = captured["definition"]
+    assert definition.model == "Qwen3.5-4B-4bit"
+    assert definition.base_url == "http://simple:18083/v1"
+    assert definition.api_key == "simple-key"
+    assert captured["parameters"]["max_tokens"] == 3072
+
+
+def test_runtime_native_strict_structured_call_stays_on_semantic_endpoint(monkeypatch):
+    import app.agent.config as C
+    from app.agent import capabilities
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_SKIP_VERIFY", "1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://complex:18080/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "complex-key")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "ltm-qwen3.6-35b-a3b")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE", "Qwen3.5-4B-4bit")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_BASE", "http://simple:18083/v1")
+    monkeypatch.setattr(capabilities, "get", lambda tier="complex", config_id="": {
+        "checked": {"json_schema": True}})
+    captured = {}
+
+    class Adapter:
+        def chat(self, definition, parameters):
+            captured.update(definition=definition, parameters=parameters)
+            return object()
+
+    monkeypatch.setattr(C, "_provider_adapter", lambda _provider: Adapter())
+    C.get_llm(tier="complex", profile="reasoning", output_contract="structured")
+
+    assert captured["definition"].model == "ltm-qwen3.6-35b-a3b"
+    assert captured["definition"].base_url == "http://complex:18080/v1"
+
+
+def test_qwen_complex_semantic_memo_stays_on_large_endpoint(monkeypatch):
+    import app.agent.config as C
+
+    monkeypatch.setenv("LAKE_AGENT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LAKE_AGENT_SKIP_VERIFY", "1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_BASE", "http://complex:18080/v1")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_KEY", "complex-key")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT", "ltm-qwen3.6-35b-a3b")
+    monkeypatch.setenv("LAKE_AGENT_COMPAT_CHAT_SIMPLE", "Qwen3.5-4B-4bit")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_BASE", "http://simple:18083/v1")
+    monkeypatch.setenv("LAKE_AGENT_SIMPLE_KEY", "simple-key")
+    captured = {}
+
+    class Adapter:
+        def chat(self, definition, parameters):
+            captured.update(definition=definition, parameters=parameters)
+            return object()
+
+    monkeypatch.setattr(C, "_provider_adapter", lambda _provider: Adapter())
+    C.get_llm(tier="complex", profile="reasoning", output_contract="semantic_memo")
+
+    definition = captured["definition"]
+    assert definition.model == "ltm-qwen3.6-35b-a3b"
+    assert definition.base_url == "http://complex:18080/v1"
+    assert definition.api_key == "complex-key"
+    # Non-separated reasoning is disabled, while the original semantic profile selects
+    # the bounded memo contract row.
+    assert captured["parameters"]["max_tokens"] == 2048
+    assert captured["parameters"]["temperature"] == 0.2
+    assert captured["parameters"]["extra_body"]["chat_template_kwargs"] == {
+        "enable_thinking": False}
 
 
 def test_qwen_complex_free_text_stays_on_large_endpoint(monkeypatch):

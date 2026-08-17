@@ -511,6 +511,25 @@ def sampling_unsupported(model: str) -> bool:
 
 
 # ── 팩토리 ─────────────────────────────────────────────────────────
+def typed_projection_tier(tier: str = "complex", config_id: str = "") -> str:
+    """Return the configured transport tier for literal typed projection.
+
+    The model profile, not a model-name branch, owns this capability.  Keeping the
+    lookup separate from :func:`get_llm` lets StructuredAgent decide whether a Role's
+    semantic contract calls for a two-stage invocation before it sends any prompt.
+    """
+    definition = chat_definition(tier, config_id=config_id)
+    declared = _model_capabilities(definition.model, definition.model_profile)
+    # ``structured_delegate_tier`` is accepted for an older external profile, but the
+    # bundled profile uses the precise name: only typed projection may be delegated.
+    delegate_tier = str(declared.get("typed_projection_tier") or
+                        declared.get("structured_delegate_tier") or "").strip()
+    if not delegate_tier or delegate_tier == tier:
+        return ""
+    delegated = chat_definition(delegate_tier, config_id=config_id)
+    return delegate_tier if delegated.model and delegated.base_url else ""
+
+
 def get_llm(temperature: float | None = None, tier: str = "complex", model_override: str = "",
             config_id: str = "", profile: str = "balanced", role_id: str = "",
             output_contract: str = "", **kwargs):
@@ -537,21 +556,27 @@ def get_llm(temperature: float | None = None, tier: str = "complex", model_overr
 
     # model_override 는 '권한 확인'처럼 **특정 모델 하나를 시험**할 때만 쓴다(설정 화면).
     definition = chat_definition(tier, model_override, config_id)
-    # Some compatible endpoints can reason well but cannot constrain JSON. A model
-    # profile may delegate only structured contracts to the configured simple endpoint;
-    # free-form complex synthesis remains on the original model. This is a provider/model
-    # capability decision, never a Role-level ``if model == ...`` branch.
-    if output_contract == "structured" and not model_override:
-        declared = _model_capabilities(definition.model, definition.model_profile)
-        delegate_tier = str(declared.get("structured_delegate_tier") or "").strip()
-        if delegate_tier and delegate_tier != tier:
+    # ``typed_projection`` is the explicit transport-only stage used by opted-in Roles.
+    # ``structured`` retains the legacy one-stage delegation until each remaining Role is
+    # characterized and migrated; changing all complex structured Roles in this patch
+    # would silently move their semantic work from the configured simple endpoint. Both
+    # routes remain capability/profile driven and never branch on a model name.
+    if output_contract in {"structured", "typed_projection"} and not model_override:
+        # A runtime probe can upgrade the declared capability floor. In that case a
+        # native strict ``structured`` call must remain on the semantic tier and keep its
+        # existing one-call path. Explicit ``typed_projection`` has already completed
+        # semantics and intentionally targets the projection tier.
+        from app.agent import capabilities as _runtime_capabilities
+        checked = _runtime_capabilities.get(tier, config_id).get("checked") or {}
+        native_strict = output_contract == "structured" and checked.get("json_schema") is True
+        delegate_tier = "" if native_strict else typed_projection_tier(tier, config_id)
+        if delegate_tier:
             delegated = chat_definition(delegate_tier, config_id=config_id)
-            if delegated.model and delegated.base_url:
-                log.debug(
-                    "structured contract delegated tier=%s->%s model=%s->%s",
-                    tier, delegate_tier, definition.model, delegated.model,
-                )
-                definition = delegated
+            log.debug(
+                "structured transport delegated contract=%s tier=%s->%s model=%s->%s",
+                output_contract, tier, delegate_tier, definition.model, delegated.model,
+            )
+            definition = delegated
     model = definition.model
     # ★ **모델 이름이 비었으면 여기서 멈춘다.** 빈 이름으로 부르면 서버는 대개
     #   `404 /v1/chat/completions` 로 답하고(모델을 못 찾았다는 뜻인데 경로가 없다는 말로
