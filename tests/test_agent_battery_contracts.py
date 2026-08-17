@@ -66,6 +66,176 @@ def test_duplicate_checker_reads_the_structured_form_without_requiring_prose_ech
         "reply": "DL-9072 중복", "questions": [{"question": "어떻게 할까요?"}]})
 
 
+def test_create_common_checker_preserves_one_explicit_iso_due_on_root_payload():
+    turns = ["범위는 최소 기능까지, 마감은 2026-09-30. 알아서 진행해"]
+    exact = {"pending": {"items": [{
+        "type": "Task", "summary": "파이프라인", "duedate": "2026-09-30",
+    }]}}
+    assert create_eval._creation_contract_flaws(exact, turns) == []
+
+    changed = {"pending": {"items": [{
+        "type": "Task", "summary": "파이프라인", "duedate": "2026-09-25",
+    }]}}
+    assert any("명시 마감일 불일치" in flaw
+               for flaw in create_eval._creation_contract_flaws(changed, turns))
+
+    missing = {"pending": {"items": [{"type": "Task", "summary": "파이프라인"}]}}
+    assert any("payload 없음" in flaw
+               for flaw in create_eval._creation_contract_flaws(missing, turns))
+
+
+def test_create_common_checker_does_not_invent_a_due_contract_from_unrelated_or_ambiguous_dates():
+    output = {"pending": {"items": [{"type": "Task", "summary": "파이프라인"}]}}
+    assert create_eval._creation_contract_flaws(
+        output, ["회의는 2026-09-30에 열렸고 초안을 만들어줘"],
+    ) == []
+    assert create_eval._creation_contract_flaws(
+        output, ["A 마감은 2026-09-30, B 기한은 2026-10-02"],
+    ) == []
+    multiple_roots = {"pending": {"items": [
+        {"type": "Task", "summary": "A", "duedate": "2026-09-30"},
+        {"type": "Task", "summary": "B"},
+    ]}}
+    assert create_eval._creation_contract_flaws(
+        multiple_roots, ["마감은 2026-09-30"],
+    ) == []
+
+
+def test_create_common_checker_uses_the_latest_explicit_due_turn():
+    turns = [
+        "마감은 2026-09-30으로 진행해",
+        "마감일을 2026-10-02로 변경해줘",
+    ]
+    latest = {"pending": {"items": [{
+        "type": "Task", "summary": "파이프라인", "duedate": "2026-10-02",
+    }]}}
+    assert create_eval._creation_contract_flaws(latest, turns) == []
+
+    stale = {"pending": {"items": [{
+        "type": "Task", "summary": "파이프라인", "duedate": "2026-09-30",
+    }]}}
+    assert any("명시 마감일 불일치" in flaw
+               for flaw in create_eval._creation_contract_flaws(stale, turns))
+
+    # One latest turn assigning two different due dates is ambiguous and stays a human check.
+    assert create_eval._creation_contract_flaws(
+        latest, [*turns, "A 마감은 2026-10-03, B 기한은 2026-10-05"],
+    ) == []
+
+
+def test_create_common_checker_rejects_bare_ordinal_damage_in_root_tree():
+    turns = ["최소 기능 1차 구현까지 만들어줘"]
+    output = {"pending": {
+        "items": [{
+            "type": "Task", "summary": "NDV 파이프라인 1차 구현",
+            "description": "1차 구현 범위",
+        }],
+        "children": [{
+            "type": "Sub-Task", "summary": "NDV 파이프라인 차 — 설계",
+            "description": "1차 구현 설계",
+        }],
+    }}
+    flaws = create_eval._creation_contract_flaws(output, turns)
+    assert any("bare '차'" in flaw for flaw in flaws)
+
+    output["pending"]["children"][0]["summary"] = "NDV 파이프라인 1차 — 설계"
+    assert create_eval._creation_contract_flaws(output, turns) == []
+
+
+def test_create_common_checker_uses_the_latest_explicit_ordinal_turn():
+    turns = [
+        "최소 기능 1차 구현까지 만들어줘",
+        "범위를 2차 구현까지로 변경해줘",
+    ]
+    output = {"pending": {
+        "items": [{
+            "type": "Task", "summary": "NDV 파이프라인 2차 구현",
+            "description": "2차 구현 범위",
+        }],
+        "children": [{
+            "type": "Sub-Task", "summary": "NDV 파이프라인 2차 — 설계",
+            "description": "2차 구현 설계",
+        }],
+    }}
+    assert create_eval._creation_contract_flaws(output, turns) == []
+
+    output["pending"]["items"][0]["summary"] = "NDV 파이프라인 1차 구현"
+    output["pending"]["items"][0]["description"] = "1차 구현 범위"
+    output["pending"]["children"][0]["summary"] = "NDV 파이프라인 1차 — 설계"
+    output["pending"]["children"][0]["description"] = "1차 구현 설계"
+    flaws = create_eval._creation_contract_flaws(output, turns)
+    assert flaws
+    assert all("원문 ordinal '2차' 누락" in flaw for flaw in flaws)
+
+
+def test_create_common_checker_rejects_debug_and_generic_pages_only_in_user_facing_evidence():
+    base = {"pending": {"items": [{"type": "Task", "summary": "NDV 파이프라인"}]}}
+    debug = {**base, "reply": (
+        "### 근거\n\n[1-a] 조회 결과 QueryPlan jira · pages=1 · returned=1 · "
+        "canonicalJql=project in (DL)"
+    )}
+    assert any("debug 관측" in flaw
+               for flaw in create_eval._creation_contract_flaws(debug, []))
+
+    generic = {**base, "reply": (
+        "### 근거\n\n[1] [starrocks/docs/README.md]("
+        "https://github.com/StarRocks/starrocks/blob/main/docs/README.md)\n"
+        "- Contributor License Agreement (CLA)와 Markdown syntax 안내"
+    )}
+    assert any("generic search/home" in flaw
+               for flaw in create_eval._creation_contract_flaws(generic, []))
+
+    direct = {**base, "reply": (
+        "### 근거\n\n[1] [Iceberg catalog]("
+        "https://docs.starrocks.io/docs/data_source/catalog/iceberg/iceberg_catalog/)"
+    )}
+    assert create_eval._creation_contract_flaws(direct, []) == []
+
+    # Raw retrieval evidence may contain rejected candidates for reviewer inspection;
+    # only promoting them into the user-facing source index is an automatic defect.
+    internal_only = {**direct, "evaluationEvidence": {
+        "webContext": "Search the documentation / docs/README.md / CLA",
+    }}
+    assert create_eval._creation_contract_flaws(internal_only, []) == []
+
+    debug_after_evidence = {**base, "reply": direct["reply"] + (
+        "\n\n### Local debug\n\nQueryPlan · canonicalJql=project in (DL)"
+    )}
+    assert create_eval._creation_contract_flaws(debug_after_evidence, []) == []
+
+
+def test_create_question_gate_rejects_optional_structure_stop_and_vague_required_reason():
+    optional_structure = {
+        "reply": "### 확인 필요\n\n- 요청을 확정하려면 사용자 입력 필요",
+        "questions": [{
+            "question": "어떤 티켓 구조로 진행할까요?",
+            "field": "structure",
+            "required_input": False,
+            "why_required": "",
+        }],
+    }
+    flaws = create_eval._question_gate_flaws(optional_structure)
+    assert any("required_input=false" in flaw for flaw in flaws)
+    assert any("optional 구조 선호" in flaw for flaw in flaws)
+
+    vague_required = {"questions": [{
+        "question": "대상 테이블은 무엇인가요?",
+        "field": "target",
+        "required_input": True,
+        "why_required": "확인 필요",
+    }]}
+    assert any("why_required" in flaw
+               for flaw in create_eval._question_gate_flaws(vague_required))
+
+    concrete_required = {"questions": [{
+        "question": "대상 테이블은 무엇인가요?",
+        "field": "target",
+        "required_input": True,
+        "why_required": "대상 테이블 없이는 생성할 파이프라인 범위와 완료 조건이 달라짐",
+    }]}
+    assert create_eval._question_gate_flaws(concrete_required) == []
+
+
 def test_meeting_interview_checker_rejects_draft_before_ambiguous_identity_is_resolved():
     question = {
         "questions": [{"question": "준서TL과 PSR을 확인해 주세요", "options": [

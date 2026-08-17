@@ -439,7 +439,7 @@ def test_all_primary_batteries_emit_versioned_metadata():
     expected = {
         "tools/agent_lang_ab.py": ('suite="conversation"', "3.2.1"),
         "tools/agent_compose_eval.py": ('suite="editor"', "3.0.0"),
-        "tools/agent_create_suite.py": ('suite="create"', "4.0.2"),
+        "tools/agent_create_suite.py": ('suite="create"', "5.0.0"),
         "tools/agent_meeting_eval.py": ('suite="meeting"', "3.0.0"),
         "tools/agent_context_change_eval.py": ('suite="ctx-chg"', "2.0.1"),
     }
@@ -594,6 +594,33 @@ def test_create_battery_covers_required_and_delegated_question_boundaries():
     for token in ("Lake 배치 적재 테이블 중 신규 등록 30개", "배치 이름", "상위 Task",
                   "30분에서 45분", "bool(its[0].get(\"epic\") or its[0].get(\"parent\"))"):
         assert token in text
+
+
+def test_create_v5_review_contract_names_field_source_and_auditor_false_positives():
+    suite, create = review_specs("create")
+    suite_by_id = {item["id"]: item for item in suite}
+    request_expected = suite_by_id["create_request_to_payload"]["expected"]
+    assert "YYYY-MM-DD" in request_expected["exactDueRule"]
+    assert "bare 차" in request_expected["ordinalRule"]
+    interview_expected = suite_by_id["create_interview_boundary"]["expected"]
+    assert interview_expected["requiredQuestionContract"] == [
+        "required_input=true", "concrete why_required",
+    ]
+
+    starr = {item["id"]: item for item in create["STARR1"]["elements"]}
+    assert set(starr) == {
+        "starr1_cross_output", "starr1_internal_validation_state",
+        "starr1_direct_source_relevance", "starr1_auditor_field_fidelity",
+    }
+    assert starr["starr1_internal_validation_state"]["expected"][
+        "requiredTicketKeys"
+    ] == ["DL-9200", "DL-9201", "DL-9202"]
+    assert "docs/README.md" in starr["starr1_direct_source_relevance"][
+        "expected"
+    ]["forbiddenDirectSources"]
+    assert starr["starr1_auditor_field_fidelity"]["expected"][
+        "auditorFalsePassForbidden"
+    ] is True
 
 
 def test_editor_battery_rejects_seed_loss_and_reference_renderer_contradictions():

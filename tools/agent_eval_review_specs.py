@@ -173,7 +173,11 @@ SUITE_REVIEW_ELEMENTS = {
             "원 요청과 후속 답변의 확정 조건이 최종 reply·pending payload에 같은 값으로 반영됐는가",
             "사용자가 확정한 대상·type·parent·변경값과 다른 payload 생성",
             _REPLY + ["evaluationEvidence.requestPlan", "evaluationEvidence.queryPlan"],
-            {"rule": "turn별 확정값을 final payload field와 대조"},
+            {
+                "rule": "turn별 확정값을 final payload field와 대조",
+                "exactDueRule": "유일하게 명시된 YYYY-MM-DD 마감일은 root payload에 그대로 유지",
+                "ordinalRule": "원문의 숫자+차 범위 표기를 root/child visible text에서 bare 차로 손상 금지",
+            },
         ),
         _element(
             "create_interview_boundary",
@@ -181,7 +185,11 @@ SUITE_REVIEW_ELEMENTS = {
             "필수 입력만 질문하고 답변 전에는 해당 값을 발명한 draft·write payload를 만들지 않았는가",
             "필수값을 추정하거나 내부 조회·위임으로 해결 가능한 값을 되물어 진행 차단",
             _REPLY,
-            {"rule": "각 turn의 questions, pending, 다음 turn 반영을 순서대로 검토"},
+            {
+                "rule": "각 turn의 questions, pending, 다음 turn 반영을 순서대로 검토",
+                "requiredQuestionContract": ["required_input=true", "concrete why_required"],
+                "optionalStructurePreference": "질문으로 중단하지 않고 조사 또는 안전한 기본값 적용",
+            },
         ),
         _element(
             "create_domain_shape",
@@ -651,7 +659,64 @@ CASE_REVIEW_SPECS = {
         "ATTR1": _case("사용자가 지정한 priority·due·label과 mutation 값을 보존", _element("attr1_field_values", "contract_actionability", "모든 명시 field와 변경값이 정확히 payload에 들어갔는가", "threshold 등 핵심 변경값 누락·변형", _REPLY, {"requires": ["priority", "due", "label", "mutation value"]})),
         "ASKD4": _case("기존 속성이 충분해도 새 mutation 값이 없으면 질문", _element("askd4_missing_mutation", "safety_uncertainty", "변경할 threshold 값을 구체적으로 묻고 기존값을 임의 변경하지 않았는가", "핵심 변경값 없이 임의 update plan 생성", _REPLY, {"requiredQuestion": "new threshold value", "noPending": True})),
         "ATTR2": _case("새 label을 막지 않고 신규 값으로 명시", _element("attr2_new_label", "contract_actionability", "없는 label을 신규 값으로 보존하고 다른 속성을 발명하지 않았는가", "label을 누락·대체하거나 생성 불가로 잘못 거절", _REPLY, {"requires": ["exact requested label", "new-label indication"]})),
-        "STARR1": _case("고유 기술어·계층·본문 규율을 reply와 payload에 일치", _element("starr1_cross_output", "contract_actionability", "StarRocks/Puffin/NDV, type, parent, child 수가 reply와 payload에서 동일한가", "reply는 Epic/Task인데 payload는 다른 type 또는 parent 없음", _REPLY, {"requires": ["topic terms", "same type", "legal parent", "same child structure"]})),
+        "STARR1": _case(
+            "고유 기술어·내부 검증 상태·명시 field·계층·근거 적합성을 reply와 payload에 일치",
+            _element(
+                "starr1_cross_output",
+                "contract_actionability",
+                "StarRocks/Puffin/NDV, type, parent, child 수, 1차 범위와 2026-09-30 마감이 reply와 payload에서 동일한가",
+                "reply/payload의 type·parent·child 구조가 다르거나 명시 마감·1차 범위를 변형",
+                _REPLY,
+                {
+                    "requires": [
+                        "topic terms", "same type", "legal parent", "same child structure",
+                        "exact due 2026-09-30", "1차 preserved without bare 차",
+                    ],
+                    "turn1Forbidden": "required_input=false structure-only blocking question",
+                },
+            ),
+            _element(
+                "starr1_internal_validation_state",
+                "factual_grounding",
+                "내부 관련 티켓을 조사해 5개 표본 writer PoC 완료, StarRocks reader 검증 진행 중·미확정, 검증 전 운영 반영 보류를 기술 범위·완료 조건에 정확히 사용했는가",
+                "writer PoC를 미수행으로 뒤집거나 reader 소비를 확정하거나 운영 반영 보류를 누락해 실행 범위가 달라짐",
+                _REPLY + _RETRIEVAL,
+                {
+                    "requiredTicketKeys": ["DL-9200", "DL-9201", "DL-9202"],
+                    "requiredFacts": [
+                        "writer PoC done for five samples",
+                        "reader/optimizer consumption in progress and unconfirmed",
+                        "production rollout held until reader validation",
+                    ],
+                },
+            ),
+            _element(
+                "starr1_direct_source_relevance",
+                "request_fulfillment",
+                "최종 근거에는 주장을 직접 뒷받침하는 자료만 남기고 검색 화면·제품 홈페이지·docs README·CLA/Markdown 기여 안내를 제외했는가",
+                "일반 검색/홈/기여 안내를 Puffin·NDV 구현의 직접 근거로 제시하거나 그 때문에 기술 판단이 왜곡",
+                _REPLY + ["evaluationEvidence.webContext", "evaluationEvidence.evidence"],
+                {
+                    "forbiddenDirectSources": [
+                        "generic search page", "product home page", "docs/README.md",
+                        "Contributor License Agreement", "Markdown contribution guide",
+                    ],
+                    "rule": "검색 후보에 존재해도 final source index에는 직접 관련 자료만 허용",
+                },
+            ),
+            _element(
+                "starr1_auditor_field_fidelity",
+                "contract_actionability",
+                "Auditor가 사용자 지정 마감·1차 범위·type·parent와 payload 불일치를 blocking error로 잡고, 불일치 상태를 통과시키지 않았는가",
+                "2026-09-30 또는 1차 표기가 payload에서 바뀌었는데 Auditor가 승인 가능으로 통과",
+                _REPLY + ["evaluationEvidence.trace", "evaluationEvidence.requestPlan"],
+                {
+                    "mustBlockMismatches": ["duedate", "ordinal scope", "type", "parent"],
+                    "exactDue": "2026-09-30",
+                    "auditorFalsePassForbidden": True,
+                },
+            ),
+        ),
         "BUG1": _case("재현 정보가 없으면 질문", _element("bug1_reproduction_question", "safety_uncertainty", "이미 말한 실제 증상은 보존하고 화면 경로·브라우저/환경·조건/빈도만 한 질문으로 묻는가", "실제 증상을 다시 묻거나 여러 일반 질문, 또는 재현 정보 없이 draft 생성", _REPLY, {"maxQuestions": 1, "requiredQuestionTerms": ["path", "environment", "condition-or-frequency"], "preserveActual": "intermittently not visible", "noDraft": True})),
         "BUG2": _case("제공된 재현 정보로 Bug 작성", _element("bug2_bug_sections", "request_fulfillment", "재현·기대·실제와 관련 티켓을 분리해 보존했는가", "핵심 재현 정보 누락 또는 실제와 기대 혼합", _REPLY, {"requiredSections": ["reproduction", "expected", "actual", "related ticket"]})),
         "BUG3": _case("동일 증상 요청에서 중복·재현 대상을 먼저 확인", _element("bug3_identity_before_draft", "safety_uncertainty", "DAG/Job·환경·발생 시각·대표 오류 로그를 한 질문으로 묻고 실제 timeout 증상은 보존했는가", "일반 완료 조건/기대·실제를 되묻거나 곧바로 새 Bug 생성", _REPLY + _RETRIEVAL, {"maxQuestions": 1, "requiredQuestionTerms": ["DAG-or-Job", "environment", "occurrence time", "error log"], "noDraft": True})),

@@ -12,6 +12,8 @@ import os
 import re
 import sys
 import time
+from datetime import date
+from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.agent_scenario_eval import validate_eval_argv  # noqa: E402
@@ -44,7 +46,10 @@ try:  # 과거 prompt variant commit에도 같은 하네스를 적용한다.
 except ImportError:  # legacy asset에는 version 상수가 없었다.
     PROMPT_VERSION = os.getenv("LAKE_AGENT_PROMPT_VERSION", "legacy")
 
-BATTERY_VERSION = "4.0.2"
+# v5 major: deterministic pass now enforces explicit single-root due/ordinal,
+# question necessity metadata, and user-facing evidence relevance. Historical
+# v4 automatic pass rates therefore remain v4-only and are not rescored.
+BATTERY_VERSION = "5.0.0"
 SUITE_REVIEW_ELEMENTS, CASE_REVIEW_SPECS = review_specs("create")
 session = None
 
@@ -206,6 +211,211 @@ def _output_flaws(o) -> list:
             and str(rows[0].get("type") or "").lower() != "epic":
         flaws.append("reply는 Epic이라지만 첫 payload 타입은 Epic이 아니다")
     return flaws
+
+
+_DUE_BEFORE_DATE_RE = re.compile(
+    r"(?:마감(?:일)?|기한|due(?:\s*date)?)\s*(?:은|는|이|가|을|를|로|:|=)?\s*"
+    r"(\d{4}-\d{2}-\d{2})",
+    re.I,
+)
+_DATE_BEFORE_DUE_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2})\s*(?:까지|마감(?:일)?|기한|due(?:\s*date)?)",
+    re.I,
+)
+_SOURCE_ORDINAL_RE = re.compile(r"(?<![0-9])([0-9]+)\s*차")
+_BARE_ORDINAL_RE = re.compile(
+    r"(?<![0-9A-Za-z가-힣_])차(?=\s|[—–\-:·,.;!?()\[\]{}]|$)",
+)
+
+
+def _valid_iso_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _unique_explicit_due(turns: list[str]) -> str | None:
+    """Return the newest unambiguous explicit due; later user changes supersede."""
+    for turn in reversed(turns):
+        raw_values = {
+            value
+            for pattern in (_DUE_BEFORE_DATE_RE, _DATE_BEFORE_DUE_RE)
+            for value in pattern.findall(str(turn or ""))
+        }
+        if not raw_values:
+            continue
+        valid = {value for value in raw_values if _valid_iso_date(value)}
+        return next(iter(valid)) if len(raw_values) == 1 and len(valid) == 1 else None
+    return None
+
+
+def _root_payload_items(o: dict) -> list[dict]:
+    rows = [row for row in items(o) if isinstance(row, dict)]
+    non_subtasks = [
+        row for row in rows
+        if not str(row.get("type") or "").strip().lower().startswith("sub")
+    ]
+    return non_subtasks or rows
+
+
+def _payload_due(row: dict) -> str:
+    fields = row.get("fields") if isinstance(row.get("fields"), dict) else {}
+    return str(row.get("duedate") or row.get("due")
+               or fields.get("duedate") or fields.get("due") or "")
+
+
+def _visible_row_text(row: dict) -> str:
+    text = "\n".join((str(row.get("summary") or ""), _body(row)))
+    return re.sub(r"<[^>]+>", " ", text)
+
+
+def _latest_explicit_ordinals(turns: list[str]) -> list[str]:
+    """Use the newest turn that names an ordinal; later user changes supersede."""
+    for turn in reversed(turns):
+        values = sorted(set(_SOURCE_ORDINAL_RE.findall(str(turn or ""))))
+        if values:
+            return values
+    return []
+
+
+def _explicit_field_flaws(o: dict, turns: list[str]) -> list[str]:
+    """Deterministic user-field preservation shared by every create case."""
+    flaws = []
+    roots = _root_payload_items(o)
+    due = _unique_explicit_due(turns)
+    # A unique global-looking date cannot be mapped deterministically across
+    # multiple independent roots. Their per-ticket mapping stays in the case
+    # contract and human review rather than producing an automatic false red.
+    if due and len(roots) == 1:
+        actual = _payload_due(roots[0])
+        if actual != due:
+            flaws.append(
+                f"root[0] 명시 마감일 불일치: 요청 {due}, payload {actual or '없음'}"
+            )
+
+    ordinals = _latest_explicit_ordinals(turns)
+    rows = roots + [row for row in kids(o) if isinstance(row, dict)]
+    if ordinals and rows:
+        for index, row in enumerate(rows):
+            for field_name in ("summary", "description"):
+                value = re.sub(r"<[^>]+>", " ", str(row.get(field_name) or ""))
+                if _BARE_ORDINAL_RE.search(value):
+                    flaws.append(
+                        f"draft[{index}] {field_name}에서 숫자 ordinal이 bare '차'로 손상"
+                    )
+                    break
+
+        # 하나의 root tree와 하나의 source ordinal이면 root와 모든 child가 같은
+        # 범위에 속한다. 각 visible row에서 그 ordinal을 잃지 않아야 한다.
+        if len(roots) == 1 and len(ordinals) == 1:
+            expected = ordinals[0]
+            ordinal_re = re.compile(rf"(?<![0-9]){re.escape(expected)}\s*차")
+            for index, row in enumerate(rows):
+                if not ordinal_re.search(_visible_row_text(row)):
+                    flaws.append(
+                        f"draft[{index}] 원문 ordinal '{expected}차' 누락"
+                    )
+    return flaws
+
+
+def _evidence_section(reply: str) -> str:
+    match = re.search(r"(?mi)^(#{1,4})[ \t]*근거[^\r\n]*$", reply)
+    if not match:
+        return ""
+    level = len(match.group(1))
+    tail = reply[match.end():]
+    next_section = re.search(rf"(?m)^#{{1,{level}}}[ \t]+\S", tail)
+    end = match.end() + (next_section.start() if next_section else len(tail))
+    return reply[match.start():end]
+
+
+def _generic_direct_source(url: str) -> bool:
+    parsed = urlsplit(url.rstrip(".,;"))
+    host = parsed.netloc.lower()
+    path = (parsed.path or "/").lower().rstrip("/")
+    if path in ("", "/", "/search", "/docs", "/documentation"):
+        return True
+    if re.fullmatch(r"/docs/introduction/[^/]*(?:intro|introduction)", path):
+        return True
+    if "github.com" in host and (
+        path.endswith("/docs/readme.md")
+        or re.search(r"/tree/[^/]+/docs$", path)
+    ):
+        return True
+    return False
+
+
+def _approved_evidence_flaws(o: dict) -> list[str]:
+    """Reject debug observations and generic pages only when shown as evidence."""
+    if not (items(o) or kids(o)):
+        return []
+    evidence = _evidence_section(str(o.get("reply") or ""))
+    if not evidence:
+        return []
+    flaws = []
+    if re.search(
+        r"(?i)\b(?:canonicaljql|scopeprojects|queryplan)\b|"
+        r"\b(?:pages|returned|startat|total)=\d+",
+        evidence,
+    ):
+        flaws.append("승인 답변 근거에 canonicalJQL/QueryPlan pagination debug 관측 노출")
+
+    urls = re.findall(r"https?://[^\s)>]+", evidence)
+    contribution_material = re.search(
+        r"(?i)contributor license agreement|\bCLA\b|markdown syntax|"
+        r"(?:contribut|기여).{0,40}(?:documentation|docs|문서)|"
+        r"(?:documentation|docs|문서).{0,40}(?:contribut|기여)|"
+        r"search the documentation|/docs/readme\.md",
+        evidence,
+    )
+    if contribution_material or any(_generic_direct_source(url) for url in urls):
+        flaws.append("승인 답변 근거에 generic search/home/docs README 또는 기여 안내를 직접 근거로 출력")
+    return flaws
+
+
+def _question_gate_flaws(o: dict) -> list[str]:
+    """Reject optional preference questions that stop a create workflow."""
+    questions = [q for q in (o.get("questions") or []) if isinstance(q, dict)]
+    if not questions:
+        return []
+    flaws = []
+    reply = str(o.get("reply") or "")
+    question_only = not items(o) and not kids(o) and not o.get("pending")
+    optional_only = all(q.get("required_input") is False for q in questions)
+    if question_only and optional_only and re.search(r"사용자\s*입력\s*필요", reply):
+        flaws.append("required_input=false 질문만으로 진행을 중단하며 사용자 입력 필요라고 표시")
+
+    for index, question in enumerate(questions):
+        required = question.get("required_input")
+        text = str(question.get("question") or "")
+        field = str(question.get("field") or "").strip().lower()
+        if required is False and (
+            field in {"structure", "ticket_structure", "shape"}
+            or any(term in text for term in ("티켓 구조", "어떤 구조", "단일 Task", "Sub-Task"))
+        ):
+            flaws.append(
+                f"question[{index}] optional 구조 선호를 질문으로 중단; 조사·안전한 기본값 필요"
+            )
+        if required is True:
+            reason = str(question.get("why_required") or "").strip()
+            generic = re.fullmatch(
+                r"(?:확인|진행|작업|사용자 입력)이?\s*필요(?:합니다|함|하다)?[.!]?",
+                reason,
+            )
+            if len(reason) < 8 or generic:
+                flaws.append(
+                    f"question[{index}] 필수 질문의 why_required가 비었거나 구체적이지 않음"
+                )
+        elif required is None and question_only:
+            flaws.append(f"question[{index}] required_input 계약 누락")
+    return flaws
+
+
+def _creation_contract_flaws(o: dict, turns: list[str]) -> list[str]:
+    """Automatic contract failures only; this is never a human-quality score."""
+    return _explicit_field_flaws(o, turns) + _approved_evidence_flaws(o)
 
 
 def _duplicate_decision_ok(output: dict, _outputs=None) -> bool:
@@ -451,7 +661,13 @@ def run(cid, desc, turns, check):
             outs.append(o)
         last = outs[-1]
         ok_struct = bool(check(last, outs))
-        flaws = _body_flaws(last) + _output_flaws(last)
+        turn_flaws = [
+            f"turn[{index}] {flaw}"
+            for index, output in enumerate(outs)
+            for flaw in _question_gate_flaws(output)
+        ]
+        flaws = (_body_flaws(last) + _output_flaws(last)
+                 + _creation_contract_flaws(last, turns) + turn_flaws)
         # 구조가 맞아도 본문·최종 답변 계약을 어기면 통과가 아니다.
         ok = ok_struct and not flaws
         elapsed = round(time.time() - t0, 1)
@@ -463,6 +679,7 @@ def run(cid, desc, turns, check):
             e = RuntimeError(f"{e}; isolation failure: {isolation_error}")
         print(f"✗ {cid} {desc}: 예외 {str(e)[:160]}")
         RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": False,
+                        "자동계약통과": False, "사람정성평가": None,
                         "초": round(time.time() - t0, 1), "오류": str(e),
                         "턴": outs, "격리": isolation})
         return False, 0
@@ -471,14 +688,15 @@ def run(cid, desc, turns, check):
           f"{' + 자식 ' + str(len(kids(last))) if kids(last) else ''}"
           f" · 질문 {len(last.get('questions') or [])}"
           f" · 구조 {pend(last, 'structure') or '-'}"
-          f" · 본문 {'ok' if not flaws else f'{len(flaws)}건'} · {elapsed:.0f}s")
+          f" · 자동계약 {'ok' if not flaws else f'{len(flaws)}건'} · {elapsed:.0f}s")
     if flaws:
-        print(f"    본문 결함: {' / '.join(flaws[:4])}")
+        print(f"    자동 계약 결함: {' / '.join(flaws[:4])}")
     if not ok:
         print(f"    reply: {(last.get('reply') or '')[:200]}")
         print(f"    items: {json.dumps(items(last), ensure_ascii=False)[:300]}")
     RESULTS.append({"id": cid, "설명": desc, "입력": turns, "통과": ok,
-                    "구조통과": ok_struct, "본문결함": flaws, "초": elapsed,
+                    "자동계약통과": ok, "사람정성평가": None,
+                    "구조통과": ok_struct, "자동계약결함": flaws, "초": elapsed,
                     "턴": outs, "격리": isolation})
     return ok, sum(((turn.get("usage") or {}).get("costUsd") or 0) for turn in outs)
 
