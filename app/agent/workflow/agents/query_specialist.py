@@ -7,7 +7,12 @@ import re
 
 from app.agent.prompts.roles import SYSTEM_QUERY_SPECIALIST
 from app.agent.workflow.agents.base import StructuredAgent
-from app.agent.workflow.contracts import CompactQueryPlan, QueryPlan
+from app.agent.workflow.contracts import (
+    CompactQueryPlan,
+    QueryPlan,
+    role_output_schema,
+    validate_role_output,
+)
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
                                       last_user_text, note, request_text)
@@ -1164,15 +1169,16 @@ class QuerySpecialist(StructuredAgent):
         )
 
     def schema(self):
-        return CompactQueryPlan.model_json_schema()
+        return role_output_schema(self.name)
 
     def apply(self, state, out):
         # Direct callers and persisted fixtures may still pass the historical runtime
         # QueryPlan. Model transport always uses the compact schema above; accepting the
         # old shape here keeps OpenAI/native callers and stored state migration-safe.
-        plan = (_compile_compact_query_plan(out)
-                if isinstance(out, dict) and "reads" in out
-                else QueryPlan.model_validate(out).model_dump())
+        compact_wire = (isinstance(out, CompactQueryPlan)
+                        or isinstance(out, dict) and "queries" not in out)
+        plan = (_compile_compact_query_plan(validate_role_output(self.name, out))
+                if compact_wire else QueryPlan.model_validate(out).model_dump())
         # ``uncertainty`` is model-owned prose and cannot claim compiler provenance. Legacy
         # runtime plans may carry the typed field, but re-applying QuerySpecialist must
         # recompute it from the current/frozen human authority rather than trust the input.

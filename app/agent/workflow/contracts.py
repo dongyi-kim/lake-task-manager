@@ -433,15 +433,25 @@ ROLE_OUTPUT_MODELS = {
     "result_integrator": IntegratedResult,
 }
 ROLE_CONTRACTS = ROLE_OUTPUT_MODELS  # compatibility name; do not create a second registry
-PYDANTIC_WIRE_ROLES = frozenset({"people_advisor", "knowledge_curator"})
-_ROLE_OUTPUT_ADAPTERS = {
-    role_id: TypeAdapter(ROLE_OUTPUT_MODELS[role_id]) for role_id in PYDANTIC_WIRE_ROLES
+
+# Model-facing wire shapes are not necessarily the persisted/runtime state shape.  Query
+# Specialist deliberately emits a compact semantic AST and the server compiles it to QueryPlan;
+# keeping that distinction explicit prevents a model from authoring ids, paging or compiler
+# provenance merely because QueryPlan remains the runtime compatibility contract above.
+ROLE_WIRE_MODELS = {
+    "query_specialist": CompactQueryPlan,
+    "people_advisor": PeopleAdvice,
+    "knowledge_curator": KnowledgeBrief,
+}
+PYDANTIC_WIRE_ROLES = frozenset(ROLE_WIRE_MODELS)
+_ROLE_WIRE_ADAPTERS = {
+    role_id: TypeAdapter(model) for role_id, model in ROLE_WIRE_MODELS.items()
 }
 
 
 def _role_output_adapter(role_id: str) -> TypeAdapter:
     try:
-        return _ROLE_OUTPUT_ADAPTERS[role_id]
+        return _ROLE_WIRE_ADAPTERS[role_id]
     except KeyError as exc:
         raise ValueError(f"공용 Pydantic wire boundary 미등록 role: {role_id}") from exc
 
@@ -451,7 +461,12 @@ def role_output_schema(role_id: str) -> dict:
 
 
 def validate_role_output(role_id: str, value: object) -> dict:
-    model = _role_output_adapter(role_id).validate_python(value, strict=True)
+    # Pydantic trusts an instance of the target model by default.  A model_construct() or
+    # persistence boundary can therefore carry unvalidated nested values despite ``strict``.
+    # Class identity is not wire authority: project public model data, then revalidate it.
+    candidate = (value.model_dump(exclude_unset=True, warnings="none")
+                 if isinstance(value, BaseModel) else value)
+    model = _role_output_adapter(role_id).validate_python(candidate, strict=True)
     return model.model_dump(exclude_unset=True)
 
 
@@ -465,5 +480,5 @@ __all__ = ["ArtifactRef", "AtomicTask", "RequestQuestion", "RequestedUpdateEffec
            "ResearchReport", "WorkPlan", "PeopleAdvice", "KnowledgeConcept",
            "KnowledgeReference", "KnowledgeBrief", "AuthoredArtifact",
            "AuditResult", "IntegratedResult", "ROLE_OUTPUT_MODELS", "ROLE_CONTRACTS",
-           "PYDANTIC_WIRE_ROLES",
+           "ROLE_WIRE_MODELS", "PYDANTIC_WIRE_ROLES",
            "role_output_schema", "validate_role_output"]
