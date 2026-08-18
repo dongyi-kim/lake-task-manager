@@ -217,6 +217,7 @@ class _SequenceLLM:
         self.stop_values = []
         self.configs = []
         self.structured_methods = []
+        self.structured_schemas = []
 
     def invoke(self, messages, **kwargs):
         self.messages.append(list(messages))
@@ -231,11 +232,150 @@ class _SequenceLLM:
 
     def with_structured_output(self, _schema, method="json_schema"):
         self.structured_methods.append(method)
+        self.structured_schemas.append(_schema)
         return self
 
 
 def _message_text(messages):
     return "\n".join(str(getattr(message, "content", message) or "") for message in messages)
+
+
+def _explicit_schema_text(messages):
+    """Return the exact JSON document following the transport's schema label."""
+    text = _message_text(messages)
+    for marker in (
+            "JSON Schema:\n",
+            "Return exactly one JSON object satisfying this JSON Schema:\n",
+            "Return exactly one JSON object that satisfies this JSON Schema:\n",
+            "The stop marker is transport framing and is not part of the JSON.\n"):
+        if marker in text:
+            return text.split(marker, 1)[1].split("\n\nOutput to repair:", 1)[0]
+    raise AssertionError("explicit JSON Schema prompt was not found")
+
+
+def test_invoke_schema_compacts_and_memoizes_every_explicit_schema_pass(monkeypatch):
+    """A cold fallback+repair keeps four calls but serializes one exact schema string."""
+    _no_cached_capabilities(monkeypatch)
+    fake = _SequenceLLM(
+        RuntimeError("response_format json_schema is not supported"),
+        RuntimeError("response_format json_object is not supported"),
+        "not-json",
+        '{"value":"ok"}',
+    )
+    monkeypatch.setattr(base._cfg, "get_llm", lambda **_kwargs: fake)
+    original = base._compact_schema_text
+    serialized = []
+
+    def observed(schema):
+        text = original(schema)
+        serialized.append(text)
+        return text
+
+    monkeypatch.setattr(base, "_compact_schema_text", observed)
+
+    assert base.invoke_schema(
+        SCHEMA, [HumanMessage(content="value를 반환")], tier="simple",
+    ) == {"value": "ok"}
+
+    assert fake.structured_methods == ["json_schema", "json_mode"]
+    assert fake.structured_schemas == [
+        {**SCHEMA, "title": "AdhocOutput"},
+        {**SCHEMA, "title": "AdhocOutput"},
+    ]
+    assert len(fake.messages) == 4
+    assert len(serialized) == 1
+    for call_index in (1, 2, 3):
+        transported = _explicit_schema_text(fake.messages[call_index])
+        assert transported == serialized[0]
+        assert json.loads(transported) == SCHEMA
+    assert [row["metadata"]["ltm_output_contract"] for row in fake.configs] == [
+        "structured", "structured", "structured", "structured_repair",
+    ]
+    assert [row["metadata"]["ltm_execution_stage"] for row in fake.configs] == [
+        "", "", "", "repair",
+    ]
+
+
+def test_agent_transport_compacts_and_memoizes_every_explicit_schema_pass(monkeypatch):
+    """The Role transport shares the same compact text without changing wire accounting."""
+    _no_cached_capabilities(monkeypatch)
+    fake = _SequenceLLM(
+        RuntimeError("response_format json_schema is not supported"),
+        RuntimeError("response_format json_object is not supported"),
+        "not-json",
+        '{"value":"ok"}',
+    )
+    agent = _SemanticProjectionAgent()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: fake)
+    original = base._compact_schema_text
+    serialized = []
+
+    def observed(schema):
+        text = original(schema)
+        serialized.append(text)
+        return text
+
+    monkeypatch.setattr(base, "_compact_schema_text", observed)
+
+    assert agent._invoke_structured_transport(
+        {}, [HumanMessage(content="original")], capability_tier="complex",
+        execution_layer="deep_semantic",
+    ) == {"value": "ok"}
+
+    assert fake.structured_methods == ["json_schema", "json_mode"]
+    assert fake.structured_schemas == [
+        {**SCHEMA, "title": "work_architect"},
+        {**SCHEMA, "title": "work_architect"},
+    ]
+    assert len(fake.messages) == 4
+    assert len(serialized) == 1
+    for call_index in (1, 2, 3):
+        transported = _explicit_schema_text(fake.messages[call_index])
+        assert transported == serialized[0]
+        assert json.loads(transported) == SCHEMA
+    assert [row["metadata"]["ltm_output_contract"] for row in fake.configs] == [
+        "structured", "structured", "structured", "structured_repair",
+    ]
+    assert [row["metadata"]["ltm_execution_stage"] for row in fake.configs] == [
+        "synthesis", "synthesis", "synthesis", "repair",
+    ]
+
+
+def test_native_schema_success_never_serializes_an_explicit_schema_prompt(monkeypatch):
+    from app.agent import capabilities
+
+    monkeypatch.setattr(capabilities, "get", lambda _tier="complex": {
+        "checked": {"json_schema": True, "json_object": True},
+    })
+    monkeypatch.setattr(capabilities, "record", lambda *_args, **_kwargs: None)
+    fake = _SequenceLLM({"value": "ok"})
+    agent = _SemanticProjectionAgent()
+    monkeypatch.setattr(agent, "llm", lambda **_kwargs: fake)
+    original = base._compact_schema_text
+    serialized = []
+
+    def observed(schema):
+        serialized.append(schema)
+        return original(schema)
+
+    monkeypatch.setattr(base, "_compact_schema_text", observed)
+
+    original_messages = [HumanMessage(content="original")]
+    assert agent._invoke_structured_transport(
+        {}, original_messages, capability_tier="complex",
+        execution_layer="deep_semantic",
+    ) == {"value": "ok"}
+
+    assert serialized == []
+    assert fake.structured_methods == ["json_schema"]
+    assert fake.structured_schemas == [{**SCHEMA, "title": "work_architect"}]
+    assert fake.messages == [original_messages]
+    assert fake.configs[0]["metadata"] == {
+        "ltm_role_id": "work_architect",
+        "ltm_output_contract": "structured",
+        "ltm_execution_layer": "deep_semantic",
+        "ltm_execution_stage": "synthesis",
+    }
 
 
 def test_semantic_projection_keeps_original_on_semantic_model_and_repairs_projector_only(

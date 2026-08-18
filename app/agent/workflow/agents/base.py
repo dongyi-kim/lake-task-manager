@@ -27,6 +27,7 @@ State 가 반환값이 되어 부모의 리듀서(`add_messages`)에 통째로 �
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from typing import Annotated, TypedDict
 
@@ -40,6 +41,17 @@ from app.agent.workflow.state import AgentState, note
 MAX_TOOL_STEPS = 6      # 도구 왕복 상한. 모델이 같은 도구를 맴돌 때 대화를 끝까지 태우지 않는다
 STRUCTURED_END_TOKEN = "<END_JSON>"
 SEMANTIC_MEMO_END_TOKEN = "<END_SEMANTIC_MEMO>"
+
+
+def _compact_schema_text(schema: dict) -> str:
+    """Serialize one JSON Schema without changing its JSON value or property order.
+
+    ``allow_nan=False`` keeps this transport fail-closed: a non-JSON value must not be
+    silently normalized into a different schema merely to produce a shorter prompt.
+    """
+    return json.dumps(
+        schema, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+    )
 
 
 def _call_config(role_id: str, output_contract: str, execution_layer: str = "",
@@ -229,10 +241,17 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
                   call_label: str = "structured", execution_layer: str = "",
                   execution_stage: str = "") -> dict:
     """Role 밖의 보정 호출도 공통 structured-output fallback을 사용하게 한다."""
-    import json
     from app.agent import capabilities
 
     named = _named(schema, name)
+    schema_text_cache: str | None = None
+
+    def explicit_schema_text() -> str:
+        nonlocal schema_text_cache
+        if schema_text_cache is None:
+            schema_text_cache = _compact_schema_text(schema)
+        return schema_text_cache
+
     observed_role = role_id or name
     if tier is not None and execution_layer:
         raise ValueError("tier와 execution_layer를 동시에 지정할 수 없습니다.")
@@ -266,7 +285,7 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
             if method == "json_mode":
                 call_messages.append(HumanMessage(content=(
                     "Return exactly one JSON object that satisfies this JSON Schema:\n"
-                    + json.dumps(schema, ensure_ascii=False))))
+                    + explicit_schema_text())))
             out = make_llm().with_structured_output(
                 named, method=method).invoke(
                     call_messages, config=_call_config(
@@ -284,7 +303,7 @@ def invoke_schema(schema: dict, messages: list, tier: str | None = None,
             if _capability_is_unsupported(exc, capability):
                 capabilities.record(initial_tier, capability, False, str(exc))
     from app.agent import instructor_adapter
-    schema_text = json.dumps(schema, ensure_ascii=False)
+    schema_text = explicit_schema_text()
 
     def initial_call():
         return make_llm().invoke(
@@ -489,10 +508,17 @@ class Agent(ABC):
         로컬 JSON Schema 검증을 통과해야 한다. openai_compat 서버가 response_format이나
         tools를 거부해도 role 전체가 ``Invalid json output``으로 사망하지 않게 한다.
         """
-        import json
         from app.agent import capabilities
 
         schema = self.schema_for(state)
+        schema_text_cache: str | None = None
+
+        def explicit_schema_text() -> str:
+            nonlocal schema_text_cache
+            if schema_text_cache is None:
+                schema_text_cache = _compact_schema_text(schema)
+            return schema_text_cache
+
         active_layer = execution_layer or self.execution_layer(execution_stage)
         transport_tier = capability_tier or self.model_tier(
             execution_stage, execution_layer=active_layer)
@@ -541,7 +567,7 @@ class Agent(ABC):
                 if method == "json_mode":
                     call_messages.append(HumanMessage(content=(
                         "Return exactly one JSON object satisfying this JSON Schema:\n"
-                        + json.dumps(schema, ensure_ascii=False))))
+                        + explicit_schema_text())))
                 raw = make_llm().with_structured_output(
                     _named(schema, self.name), method=method).invoke(
                         call_messages, config=_call_config(
@@ -561,7 +587,7 @@ class Agent(ABC):
                     capabilities.record(transport_tier, capability, False, str(exc))
 
         # response_format을 전혀 지원하지 않는 서버: plain chat에 schema를 명시한다.
-        schema_text = json.dumps(schema, ensure_ascii=False)
+        schema_text = explicit_schema_text()
         prompt_messages = list(messages) + [HumanMessage(content=
             _prompt_json_contract(schema_text))]
 
