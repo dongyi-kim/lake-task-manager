@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 
@@ -138,6 +139,10 @@ class Meter:
         # Safe per-call diagnostics: labels and counters only, never prompt/response text or
         # reasoning. This is needed to distinguish semantic, projection, and repair latency.
         self.calls_detail: list[dict] = []
+        # Versioned custom events are stored separately from actual LLM calls. They contain
+        # registered scalar identifiers only; the raw callback run id is never persisted.
+        self.fast_path_events: list[dict] = []
+        self.fast_path_invalid_events = 0
         # 프롬프트 캐시 히트 — OpenAI 는 1024+ 토큰 공통 prefix 를 자동 캐시한다.
         # 이 값이 낮으면 시스템 프롬프트 앞부분이 매 호출 달라진다는 뜻이다.
         self.cached = 0
@@ -146,7 +151,8 @@ class Meter:
             node: str = "", seconds: float = 0.0, cached: int = 0,
             output_contract: str = "", finish_reason: str = "",
             execution_layer: str = "", execution_stage: str = "",
-            validation_diagnostic: dict | None = None):
+            validation_diagnostic: dict | None = None,
+            fast_path_scope_id: str = ""):
         with self._lock:
             self.calls += 1
             self.prompt += int(prompt or 0)
@@ -180,7 +186,17 @@ class Meter:
                 value = str((validation_diagnostic or {}).get(source) or "").strip()
                 if value:
                     detail[target] = value
+            if fast_path_scope_id:
+                detail["fastPathScopeId"] = fast_path_scope_id
             self.calls_detail.append(detail)
+
+    def add_fast_path_event(self, event: dict, scope_id: str):
+        with self._lock:
+            self.fast_path_events.append({**event, "scopeId": scope_id})
+
+    def reject_fast_path_event(self):
+        with self._lock:
+            self.fast_path_invalid_events += 1
 
     @property
     def total(self) -> int:
@@ -199,8 +215,12 @@ class Meter:
             out["byNode"] = dict(self.by_node)
         if self.by_tool:
             out["byTool"] = dict(self.by_tool)
-        if self.calls_detail:
+        if self.calls_detail or self.fast_path_events:
             out["callsDetail"] = [dict(row) for row in self.calls_detail]
+        if self.fast_path_events:
+            out["fastPathEvents"] = [dict(row) for row in self.fast_path_events]
+        if self.fast_path_invalid_events:
+            out["fastPathInvalidEvents"] = self.fast_path_invalid_events
         return out
 
     def add_tool(self, name: str, seconds: float):
@@ -224,6 +244,103 @@ def callback(meter: Meter):
     class _Handler(BaseCallbackHandler):
         def __init__(self):
             self._t0 = {}
+            self._state_lock = threading.RLock()
+            self._active_chains: set[str] = set()
+            self._parents: dict[str, str] = {}
+            self._fast_path_scopes: dict[str, str] = {}
+            self._chain_nodes: dict[str, str] = {}
+
+        @staticmethod
+        def _safe_scope_id(run_id) -> str:
+            return hashlib.sha256(str(run_id).encode("utf-8")).hexdigest()[:24]
+
+        def _scope_for(self, run_id) -> str:
+            current = str(run_id or "")
+            visited = set()
+            while current and current not in visited:
+                visited.add(current)
+                scope = self._fast_path_scopes.get(current)
+                if scope:
+                    return scope
+                current = self._parents.get(current, "")
+            return ""
+
+        @staticmethod
+        def _node_from_metadata(metadata) -> str:
+            md = metadata if isinstance(metadata, dict) else {}
+            ns = str(md.get("langgraph_checkpoint_ns") or "")
+            return (
+                str(md.get("ltm_role_id") or "")
+                or (ns.split(":", 1)[0] if ns else str(md.get("langgraph_node") or ""))
+            )
+
+        def on_chain_start(
+            self, serialized, inputs, *, run_id=None, parent_run_id=None, **kwargs,
+        ):
+            current = str(run_id or "")
+            if not current:
+                return
+            with self._state_lock:
+                self._active_chains.add(current)
+                parent = str(parent_run_id or "")
+                if parent_run_id is not None:
+                    self._parents[current] = parent
+                node = self._node_from_metadata(kwargs.get("metadata"))
+                parent_node = self._chain_nodes.get(parent, "")
+                if not node:
+                    node = parent_node
+                self._chain_nodes[current] = node
+                parent_scope = self._fast_path_scopes.get(parent, "")
+                self._fast_path_scopes[current] = (
+                    parent_scope if parent_scope and node == parent_node
+                    else self._safe_scope_id(current)
+                )
+
+        def _end_chain(self, run_id):
+            current = str(run_id or "")
+            with self._state_lock:
+                self._active_chains.discard(current)
+                self._parents.pop(current, None)
+                self._fast_path_scopes.pop(current, None)
+                self._chain_nodes.pop(current, None)
+
+        def on_chain_end(self, outputs, *, run_id=None, **kwargs):
+            self._end_chain(run_id)
+
+        def on_chain_error(self, error, *, run_id=None, **kwargs):
+            self._end_chain(run_id)
+
+        def on_custom_event(
+            self, name, data, *, run_id=None, tags=None, metadata=None, **kwargs,
+        ):
+            try:
+                from app.agent.workflow.typed_fast_path import (
+                    TYPED_FAST_PATH_EVENT_NAME,
+                    parse_typed_fast_path_event,
+                    typed_fast_path_registry,
+                )
+                if name != TYPED_FAST_PATH_EVENT_NAME:
+                    return
+                current = str(run_id or "")
+                with self._state_lock:
+                    if not current or current not in self._active_chains:
+                        meter.reject_fast_path_event()
+                        return
+                    event = parse_typed_fast_path_event(data)
+                    if event is None:
+                        meter.reject_fast_path_event()
+                        return
+                    spec = typed_fast_path_registry().get(event.path_id) or {}
+                    if self._chain_nodes.get(current) != spec.get("ownerNode"):
+                        meter.reject_fast_path_event()
+                        return
+                    scope = self._fast_path_scopes.get(current, "")
+                    if not scope:
+                        meter.reject_fast_path_event()
+                        return
+                    meter.add_fast_path_event(event.as_dict(), scope)
+            except Exception:
+                meter.reject_fast_path_event()
 
         def _start(self, run_id, kwargs):
             import time as _t
@@ -242,7 +359,11 @@ def callback(meter: Meter):
                 for key in ("category", "keyword", "path", "missing")
                 if md.get(f"ltm_validation_{key}")
             }
-            self._t0[str(run_id)] = (_t.time(), node, contract, layer, stage, validation)
+            with self._state_lock:
+                scope = self._scope_for(kwargs.get("parent_run_id"))
+                self._t0[str(run_id)] = (
+                    _t.time(), node, contract, layer, stage, validation, scope,
+                )
 
         def on_llm_start(self, serialized, prompts, *, run_id=None, **kwargs):
             self._start(run_id, kwargs)
@@ -264,8 +385,11 @@ def callback(meter: Meter):
                 message = getattr(gen[0], "message", None) if gen else None
                 response_meta = getattr(message, "response_metadata", None) or {}
                 import time as _t
-                t0, node, contract, layer, stage, validation = self._t0.pop(
-                    str(run_id), (None, "", "", "", "", {}))
+                with self._state_lock:
+                    started = self._t0.pop(
+                        str(run_id), (None, "", "", "", "", {}, ""),
+                    )
+                t0, node, contract, layer, stage, validation, scope = started
                 secs = (_t.time() - t0) if t0 else 0.0
                 det = usage.get("prompt_tokens_details") or {}
                 cached = det.get("cached_tokens") if isinstance(det, dict) else 0
@@ -282,20 +406,25 @@ def callback(meter: Meter):
                           node=node, seconds=secs, cached=cached or 0,
                           output_contract=contract, finish_reason=str(finish),
                           execution_layer=layer, execution_stage=stage,
-                          validation_diagnostic=validation)
+                          validation_diagnostic=validation,
+                          fast_path_scope_id=scope)
             except Exception:
                 pass
 
         def on_llm_error(self, error, *, run_id=None, **kwargs):
             try:
                 import time as _t
-                t0, node, contract, layer, stage, validation = self._t0.pop(
-                    str(run_id), (None, "", "", "", "", {}))
+                with self._state_lock:
+                    started = self._t0.pop(
+                        str(run_id), (None, "", "", "", "", {}, ""),
+                    )
+                t0, node, contract, layer, stage, validation, scope = started
                 meter.add("", 0, 0, node=node,
                           seconds=(_t.time() - t0) if t0 else 0.0,
                           output_contract=contract, finish_reason="error",
                           execution_layer=layer, execution_stage=stage,
-                          validation_diagnostic=validation)
+                          validation_diagnostic=validation,
+                          fast_path_scope_id=scope)
             except Exception:
                 pass
 

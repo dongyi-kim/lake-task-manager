@@ -47,6 +47,7 @@ from tools.agent_eval_isolation import (begin_case, configure_process_isolation,
                                          preflight_evaluation_provider)  # noqa: E402
 from tools.agent_eval_protocol import (build_run_metadata, quantitative_metrics,
                                        raw_result_path, reserve_raw_result_path,
+                                       typed_fast_path_metrics,
                                        write_raw_result)  # noqa: E402
 from tools.agent_eval_contracts import (  # noqa: E402
     AUTOMATIC_CONTRACT_DEPENDENCIES,
@@ -388,6 +389,16 @@ def _summarize(rows):
         total_tokens=tot["총토큰"], cached_tokens=tot["캐시토큰"],
         cost_usd=tot["비용USD"],
     )
+    try:
+        from app.agent.workflow.typed_fast_path import typed_fast_path_registry
+        path_specs = typed_fast_path_registry()
+    except Exception:
+        path_specs = {}
+    metrics["typedFastPath"] = typed_fast_path_metrics(
+        [turn["usage"] if "usage" in turn else {}
+         for row in rows for turn in row.get("턴", []) if "오류" not in turn],
+        path_specs=path_specs,
+    )
     return tot, metrics
 
 
@@ -433,6 +444,7 @@ def run():
             u = out.get("usage") or {}
             per.append({
                 "질문": q,
+                "usage": u,
                 "초": round(time.time() - t0, 1),
                 "LLM호출": u.get("calls"), "프롬프트토큰": u.get("promptTokens"),
                 "완성토큰": u.get("completionTokens"), "총토큰": u.get("totalTokens"),

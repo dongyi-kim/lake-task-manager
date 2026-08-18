@@ -5,8 +5,13 @@ import json
 
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
+from langchain_core.runnables import RunnableLambda
 
 from app.agent.usage import Meter, callback
+from app.agent.workflow.typed_fast_path import (
+    evaluate_typed_fast_path,
+    typed_fast_path_note,
+)
 
 
 def test_usage_records_safe_per_call_contract_model_and_finish_reason():
@@ -100,3 +105,166 @@ def test_evaluation_checkpoint_preserves_per_call_usage(tmp_path, monkeypatch):
     suite.write_checkpoint(hits=1, total=1, cost=0.0)
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["케이스"][0]["턴"][0]["usage"]["callsDetail"] == usage["callsDetail"]
+
+
+def test_public_custom_event_records_evaluated_and_committed_in_one_safe_scope():
+    meter = Meter()
+    handler = callback(meter)
+
+    def _fast(_value):
+        decision = evaluate_typed_fast_path(
+            "result.structure_tree.v1",
+            checks={"tree": True, "stage_authority": True,
+                    "tree_seal": True, "render_safe": True},
+        )
+        typed_fast_path_note({}, "result_integrator", "deterministic", decision)
+        return "ok"
+
+    assert RunnableLambda(_fast).invoke(
+        None, config={"callbacks": [handler], "metadata": {"ltm_role_id": "result_integrator"}},
+    ) == "ok"
+    usage = meter.snapshot()
+    events = usage["fastPathEvents"]
+
+    assert [event["phase"] for event in events] == ["evaluated", "committed"]
+    assert len({event["scopeId"] for event in events}) == 1
+    assert usage["calls"] == 0
+    assert usage["callsDetail"] == []
+    assert "deterministic" not in json.dumps(events, ensure_ascii=False)
+
+
+def test_meter_binds_nested_llm_call_to_active_fast_path_scope_only():
+    meter = Meter()
+    handler = callback(meter)
+    chain_id, llm_id = uuid.uuid4(), uuid.uuid4()
+    handler.on_chain_start(
+        {}, {}, run_id=chain_id, metadata={"ltm_role_id": "result_integrator"},
+    )
+    handler.on_custom_event(
+        "ltm.typed_fast_path",
+        {
+            "contract": "typed-fast-path-event.v1", "phase": "evaluated",
+            "pathId": "result.structure_tree.v1",
+            "authority": "work_architect.structure_stage",
+            "eligible": False, "estimatedSavedCalls": 0,
+        },
+        run_id=chain_id,
+    )
+    handler.on_chat_model_start({}, [[]], run_id=llm_id, parent_run_id=chain_id)
+    handler.on_llm_end(
+        LLMResult(generations=[[]], llm_output={
+            "token_usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        }),
+        run_id=llm_id,
+    )
+    handler.on_chain_end({}, run_id=chain_id)
+
+    usage = meter.snapshot()
+    assert usage["callsDetail"][0]["fastPathScopeId"] == usage["fastPathEvents"][0]["scopeId"]
+
+
+def test_meter_rejects_forged_or_late_event_without_leaking_payload():
+    meter = Meter()
+    handler = callback(meter)
+    run_id = uuid.uuid4()
+    handler.on_chain_start(
+        {}, {}, run_id=run_id, metadata={"ltm_role_id": "result_integrator"},
+    )
+    handler.on_custom_event(
+        "ltm.typed_fast_path",
+        {
+            "contract": "typed-fast-path-event.v1", "phase": "evaluated",
+            "pathId": "result.structure_tree.v1",
+            "authority": "work_architect.structure_stage",
+            "eligible": True, "estimatedSavedCalls": 1,
+            "prompt": "PRIVATE PROMPT",
+        },
+        run_id=run_id,
+    )
+    handler.on_chain_end({}, run_id=run_id)
+    handler.on_custom_event(
+        "ltm.typed_fast_path",
+        {
+            "contract": "typed-fast-path-event.v1", "phase": "evaluated",
+            "pathId": "result.structure_tree.v1",
+            "authority": "work_architect.structure_stage",
+            "eligible": True, "estimatedSavedCalls": 1,
+        },
+        run_id=run_id,
+    )
+
+    usage = meter.snapshot()
+    assert usage["fastPathInvalidEvents"] == 2
+    assert "fastPathEvents" not in usage
+    assert "PRIVATE PROMPT" not in json.dumps(usage, ensure_ascii=False)
+
+
+def test_meter_scopes_llm_call_that_finishes_before_fast_path_events():
+    meter = Meter()
+    handler = callback(meter)
+    chain_id, llm_id = uuid.uuid4(), uuid.uuid4()
+    handler.on_chain_start(
+        {}, {}, run_id=chain_id, metadata={"ltm_role_id": "result_integrator"},
+    )
+    handler.on_chat_model_start({}, [[]], run_id=llm_id, parent_run_id=chain_id)
+    handler.on_llm_end(
+        LLMResult(generations=[[]], llm_output={
+            "token_usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }),
+        run_id=llm_id,
+    )
+    for phase in ("evaluated", "committed"):
+        handler.on_custom_event(
+            "ltm.typed_fast_path",
+            {
+                "contract": "typed-fast-path-event.v1", "phase": phase,
+                "pathId": "result.structure_tree.v1",
+                "authority": "work_architect.structure_stage",
+                "eligible": True, "estimatedSavedCalls": 1,
+            },
+            run_id=chain_id,
+        )
+    handler.on_chain_end({}, run_id=chain_id)
+
+    usage = meter.snapshot()
+    assert usage["callsDetail"][0]["fastPathScopeId"] == usage["fastPathEvents"][0]["scopeId"]
+
+
+def test_meter_rejects_registered_event_from_wrong_role_scope():
+    meter = Meter()
+    handler = callback(meter)
+
+    def _wrong_role(_value):
+        decision = evaluate_typed_fast_path(
+            "result.structure_tree.v1",
+            checks={"tree": True, "stage_authority": True,
+                    "tree_seal": True, "render_safe": True},
+        )
+        typed_fast_path_note({}, "result_integrator", "deterministic", decision)
+
+    RunnableLambda(_wrong_role).invoke(
+        None,
+        config={"callbacks": [handler], "metadata": {"ltm_role_id": "research_analyst"}},
+    )
+
+    usage = meter.snapshot()
+    assert usage["fastPathInvalidEvents"] == 2
+    assert "fastPathEvents" not in usage
+
+
+def test_telemetry_dispatch_failure_never_changes_fast_path_decision(monkeypatch):
+    from app.agent.workflow import typed_fast_path
+
+    monkeypatch.setattr(
+        typed_fast_path, "_dispatch_custom_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("telemetry unavailable")),
+    )
+    decision = evaluate_typed_fast_path(
+        "result.structure_tree.v1",
+        checks={"tree": True, "stage_authority": True,
+                "tree_seal": True, "render_safe": True},
+    )
+    trace = typed_fast_path_note({}, "result_integrator", "deterministic", decision)
+
+    assert decision.complete is True
+    assert trace[0]["fastPath"]["savedCalls"] == 1

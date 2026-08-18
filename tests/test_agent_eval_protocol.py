@@ -930,6 +930,240 @@ def test_primary_battery_metrics_have_one_canonical_schema():
         assert '"metrics"' in text, relative
 
 
+def _fast_path_specs():
+    return {
+        "result.structure_tree.v1": {
+            "authority": "work_architect.structure_stage",
+            "ownerNode": "result_integrator", "savedCalls": 1,
+        },
+        "research.single_bounded_query": {
+            "authority": "request-plan.v1+query-plan.v1+query-results.v1",
+            "ownerNode": "research_analyst",
+            "savedCalls": 1,
+        },
+    }
+
+
+def _fast_path_event(phase, *, path="result.structure_tree.v1", eligible=True,
+                     scope="a" * 24):
+    spec = _fast_path_specs()[path]
+    return {
+        "contract": "typed-fast-path-event.v1", "phase": phase,
+        "pathId": path, "authority": spec["authority"], "eligible": eligible,
+        "estimatedSavedCalls": spec["savedCalls"] if eligible else 0,
+        "scopeId": scope,
+    }
+
+
+def test_typed_fast_path_metrics_separate_opportunity_commit_and_verified_savings():
+    usage = {
+        "calls": 1,
+        "callsDetail": [{"node": "research_analyst", "fastPathScopeId": "b" * 24}],
+        "fastPathEvents": [
+            _fast_path_event("evaluated", scope="a" * 24),
+            _fast_path_event("committed", scope="a" * 24),
+            _fast_path_event("evaluated", path="research.single_bounded_query",
+                             eligible=False, scope="b" * 24),
+            _fast_path_event("evaluated", scope="c" * 24),
+        ],
+    }
+
+    metrics = E.typed_fast_path_metrics([usage], path_specs=_fast_path_specs())
+
+    assert metrics == {
+        "contract": "typed-fast-path-metrics.v1",
+        "opportunities": 3,
+        "hits": 2,
+        "misses": 1,
+        "committed": 1,
+        "eligibleNotCommitted": 1,
+        "estimatedSavedCalls": 1,
+        "verifiedSavedCalls": 1,
+        "parityFailures": 0,
+        "byPath": {
+            "research.single_bounded_query": {
+                "opportunities": 1, "hits": 0, "misses": 1, "committed": 0,
+                "eligibleNotCommitted": 0, "estimatedSavedCalls": 0,
+                "verifiedSavedCalls": 0, "parityFailures": 0,
+            },
+            "result.structure_tree.v1": {
+                "opportunities": 2, "hits": 2, "misses": 0, "committed": 1,
+                "eligibleNotCommitted": 1, "estimatedSavedCalls": 1,
+                "verifiedSavedCalls": 1, "parityFailures": 0,
+            },
+        },
+    }
+    assert metrics["opportunities"] == metrics["hits"] + metrics["misses"]
+
+
+def test_typed_fast_path_metrics_fail_closed_on_scope_calls_and_event_parity():
+    usage = {
+        "calls": 2,
+        "callsDetail": [
+            {"fastPathScopeId": "a" * 24},
+            {"fastPathScopeId": "z" * 24},
+        ],
+        "fastPathInvalidEvents": 1,
+        "fastPathEvents": [
+            _fast_path_event("evaluated", scope="a" * 24),
+            _fast_path_event("committed", scope="a" * 24),
+            _fast_path_event("committed", scope="a" * 24),
+            _fast_path_event("committed", scope="b" * 24),
+        ],
+    }
+
+    metrics = E.typed_fast_path_metrics([usage], path_specs=_fast_path_specs())
+
+    assert metrics["opportunities"] == 0
+    assert metrics["committed"] == 0
+    assert metrics["estimatedSavedCalls"] == 0
+    assert metrics["verifiedSavedCalls"] == 0
+    assert metrics["parityFailures"] >= 4
+    assert metrics["byPath"]["result.structure_tree.v1"]["parityFailures"] >= 3
+
+
+def test_typed_fast_path_metrics_do_not_verify_commit_with_actual_scoped_call():
+    usage = {
+        "calls": 1,
+        "callsDetail": [{"fastPathScopeId": "a" * 24}],
+        "fastPathEvents": [
+            _fast_path_event("evaluated"),
+            _fast_path_event("committed"),
+        ],
+    }
+
+    metrics = E.typed_fast_path_metrics([usage], path_specs=_fast_path_specs())
+
+    assert metrics["committed"] == 1
+    assert metrics["estimatedSavedCalls"] == 1
+    assert metrics["verifiedSavedCalls"] == 0
+    assert metrics["parityFailures"] == 1
+
+
+def test_typed_fast_path_metrics_do_not_verify_when_any_call_scope_is_unknown():
+    metrics = E.typed_fast_path_metrics([{
+        "calls": 1,
+        "callsDetail": [{}],
+        "fastPathEvents": [
+            _fast_path_event("evaluated"),
+            _fast_path_event("committed"),
+        ],
+    }], path_specs=_fast_path_specs())
+
+    assert metrics["estimatedSavedCalls"] == 1
+    assert metrics["verifiedSavedCalls"] == 0
+    assert metrics["parityFailures"] == 1
+
+
+def test_typed_fast_path_metrics_do_not_verify_valid_pair_beside_rejected_event():
+    metrics = E.typed_fast_path_metrics([{
+        "calls": 0,
+        "callsDetail": [],
+        "fastPathInvalidEvents": 1,
+        "fastPathEvents": [
+            _fast_path_event("evaluated"),
+            _fast_path_event("committed"),
+        ],
+    }], path_specs=_fast_path_specs())
+
+    assert metrics["committed"] == 1
+    assert metrics["estimatedSavedCalls"] == 1
+    assert metrics["verifiedSavedCalls"] == 0
+    assert metrics["parityFailures"] == 1
+
+
+def test_typed_fast_path_metrics_require_calls_detail_cardinality_for_verification():
+    usage = {
+        "calls": 1,
+        "callsDetail": [],
+        "fastPathEvents": [
+            _fast_path_event("evaluated"),
+            _fast_path_event("committed"),
+        ],
+    }
+
+    metrics = E.typed_fast_path_metrics([usage], path_specs=_fast_path_specs())
+
+    assert metrics["estimatedSavedCalls"] == 1
+    assert metrics["verifiedSavedCalls"] == 0
+    assert metrics["parityFailures"] >= 1
+
+
+def test_typed_fast_path_metrics_accept_meter_zero_call_snapshot_without_detail_rows():
+    metrics = E.typed_fast_path_metrics([{
+        "calls": 0,
+        "fastPathEvents": [
+            _fast_path_event("evaluated"),
+            _fast_path_event("committed"),
+        ],
+    }], path_specs=_fast_path_specs())
+
+    assert metrics["estimatedSavedCalls"] == 1
+    assert metrics["verifiedSavedCalls"] == 1
+    assert metrics["parityFailures"] == 0
+
+
+def test_typed_fast_path_metrics_reject_invalid_falsy_shapes_and_duplicate_evaluation():
+    valid = [_fast_path_event("evaluated"), _fast_path_event("committed")]
+    for usage in (
+        {"calls": 0, "callsDetail": [], "fastPathEvents": {}},
+        {"calls": 0, "callsDetail": {}, "fastPathEvents": valid},
+        {"callsDetail": [], "fastPathEvents": valid},
+    ):
+        metrics = E.typed_fast_path_metrics([usage], path_specs=_fast_path_specs())
+        assert metrics["verifiedSavedCalls"] == 0
+        assert metrics["parityFailures"] >= 1
+
+    duplicate = E.typed_fast_path_metrics([{
+        "calls": 0, "callsDetail": [],
+        "fastPathEvents": [
+            _fast_path_event("evaluated"), _fast_path_event("evaluated"),
+            _fast_path_event("committed"),
+        ],
+    }], path_specs=_fast_path_specs())
+    assert duplicate["opportunities"] == 0
+    assert duplicate["hits"] == 0
+    assert duplicate["committed"] == 0
+    assert duplicate["verifiedSavedCalls"] == 0
+    assert duplicate["parityFailures"] >= 1
+
+
+def test_typed_fast_path_metrics_have_stable_zero_schema_without_events():
+    metrics = E.typed_fast_path_metrics(
+        [{"calls": 0}], path_specs=_fast_path_specs(),
+    )
+
+    assert metrics == {
+        "contract": "typed-fast-path-metrics.v1",
+        "opportunities": 0, "hits": 0, "misses": 0, "committed": 0,
+        "eligibleNotCommitted": 0, "estimatedSavedCalls": 0,
+        "verifiedSavedCalls": 0, "parityFailures": 0, "byPath": {},
+    }
+
+
+def test_conversation_summary_preserves_safe_usage_and_aggregates_by_path():
+    from tools import agent_lang_ab as suite
+
+    usage = {
+        "calls": 0,
+        "callsDetail": [],
+        "fastPathEvents": [
+            _fast_path_event("evaluated"),
+            _fast_path_event("committed"),
+        ],
+    }
+    rows = [{"시나리오": "S", "턴": [{
+        "usage": usage, "초": 0.1, "총토큰": 0, "프롬프트토큰": 0,
+        "완성토큰": 0, "캐시토큰": 0, "LLM호출": 0, "비용USD": 0,
+        "검사": {},
+    }]}]
+
+    _totals, metrics = suite._summarize(rows)
+
+    assert metrics["typedFastPath"]["verifiedSavedCalls"] == 1
+    assert rows[0]["턴"][0]["usage"] == usage
+
+
 def test_protocol_json_and_human_document_stay_in_sync():
     protocol = json.loads((ROOT / "app/agent/evaluation_protocol.json").read_text(encoding="utf-8"))
     guide = (ROOT / "app/agent/EVALUATION.md").read_text(encoding="utf-8")

@@ -7,10 +7,17 @@ from typing import Annotated, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
+try:
+    from langchain_core.callbacks.manager import dispatch_custom_event as _dispatch_custom_event
+except Exception:  # pragma: no cover - optional instrumentation must not block the workflow
+    _dispatch_custom_event = None
+
 from app.agent.workflow.state import AgentState, note
 
 
 TYPED_FAST_PATH_CONTRACT = "typed-fast-path.v1"
+TYPED_FAST_PATH_EVENT_CONTRACT = "typed-fast-path-event.v1"
+TYPED_FAST_PATH_EVENT_NAME = "ltm.typed_fast_path"
 TYPED_CHECK_RESULT_CONTRACT = "typed-check-result.v1"
 TYPED_REPAIR_BUDGET_CONTRACT = "typed-repair-budget.v1"
 
@@ -32,8 +39,13 @@ FastPathAuthority = Literal[
     "action-executor.approved-dispatch.v1",
     "work_architect.structure_stage",
 ]
+FastPathOwnerNode = Literal[
+    "auditor", "portfolio_analyst", "request_architect", "research_analyst",
+    "result_integrator", "work_architect",
+]
 TypedCheckAuthority = Literal["auditor.machine-check.v1"]
 RepairLane = Literal["semantic", "machine"]
+FastPathEventPhase = Literal["evaluated", "committed"]
 Sha256Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 SavedCallCount = Annotated[int, Field(ge=1, le=8)]
@@ -46,6 +58,7 @@ class _StrictFrozenModel(BaseModel):
 class TypedFastPathSpec(_StrictFrozenModel):
     path_id: FastPathId
     authority: FastPathAuthority
+    owner_node: FastPathOwnerNode
     required_checks: frozenset[str]
     saved_calls: SavedCallCount = 1
 
@@ -54,6 +67,7 @@ _SPECS = (
     TypedFastPathSpec(
         path_id="auditor.machine_negative.v1",
         authority="auditor.machine-check.v1",
+        owner_node="auditor",
         required_checks=frozenset({
             "structured_result", "validation_complete", "negative_verdict",
             "structured_blockers", "semantic_obligations_absent",
@@ -62,6 +76,7 @@ _SPECS = (
     TypedFastPathSpec(
         path_id="portfolio.intermediate.v1",
         authority="portfolio_analyst.raw_tool_snapshot",
+        owner_node="portfolio_analyst",
         required_checks=frozenset({
             "typed_material", "all_material_complete", "legacy_material_absent",
             "requested_targets_complete", "non_jql_request",
@@ -70,6 +85,7 @@ _SPECS = (
     TypedFastPathSpec(
         path_id="request.question_answer_receipt.v1",
         authority="session.question-answer-receipt.v1",
+        owner_node="request_architect",
         required_checks=frozenset({
             "typed_projection", "current_plan_binding",
             "current_continuation_binding", "complete_answer_set",
@@ -80,6 +96,7 @@ _SPECS = (
     TypedFastPathSpec(
         path_id="research.single_bounded_query",
         authority="request-plan.v1+query-plan.v1+query-results.v1",
+        owner_node="research_analyst",
         required_checks=frozenset({
             "ask_intent", "one_query_outcome", "query_plan_complete",
             "exact_result_binding", "ledger_result_shape", "bounded_without_omission",
@@ -88,6 +105,7 @@ _SPECS = (
     TypedFastPathSpec(
         path_id="result.execution_receipt.v1",
         authority="action-executor.approved-dispatch.v1",
+        owner_node="result_integrator",
         required_checks=frozenset({
             "typed_receipt", "current_thread", "current_capability",
             "exact_approval", "exact_outcomes", "safe_renderable",
@@ -96,6 +114,7 @@ _SPECS = (
     TypedFastPathSpec(
         path_id="result.structure_tree.v1",
         authority="work_architect.structure_stage",
+        owner_node="result_integrator",
         required_checks=frozenset({
             "tree", "stage_authority", "tree_seal", "render_safe",
         }),
@@ -103,6 +122,7 @@ _SPECS = (
     TypedFastPathSpec(
         path_id="work.exact_single_ticket_update",
         authority="request-plan.requested-effects.v1+continuation.v1",
+        owner_node="work_architect",
         required_checks=frozenset({
             "typed_update_contract", "single_target", "single_outcome",
             "typed_effect_mapping", "supported_request_surface", "supported_scalar_set",
@@ -130,6 +150,39 @@ class TypedFastPathDecision(_StrictFrozenModel):
             "authority": self.authority,
             "savedCalls": self.saved_calls,
             "missing": list(self.missing),
+        }
+
+
+class TypedFastPathEvent(_StrictFrozenModel):
+    """PII-free measurement event whose authority and savings come from the registry."""
+
+    contract: Literal["typed-fast-path-event.v1"] = TYPED_FAST_PATH_EVENT_CONTRACT
+    phase: FastPathEventPhase
+    path_id: FastPathId
+    authority: FastPathAuthority
+    eligible: bool
+    estimated_saved_calls: NonNegativeInt
+
+    @model_validator(mode="after")
+    def _matches_registered_spec(self):
+        spec = TYPED_FAST_PATH_SPECS.get(self.path_id)
+        if spec is None or self.authority != spec.authority:
+            raise ValueError("typed fast-path event authority must match the registry")
+        expected_calls = spec.saved_calls if self.eligible else 0
+        if self.estimated_saved_calls != expected_calls:
+            raise ValueError("typed fast-path event savings must match the registry")
+        if self.phase == "committed" and not self.eligible:
+            raise ValueError("an ineligible fast path cannot be committed")
+        return self
+
+    def as_dict(self) -> dict:
+        return {
+            "contract": self.contract,
+            "phase": self.phase,
+            "pathId": self.path_id,
+            "authority": self.authority,
+            "eligible": self.eligible,
+            "estimatedSavedCalls": self.estimated_saved_calls,
         }
 
 
@@ -199,10 +252,63 @@ class TypedRepairBudget(_StrictFrozenModel):
 
 
 _CHECK_RESULT_ADAPTER = TypeAdapter(TypedCheckResult)
+_FAST_PATH_EVENT_ADAPTER = TypeAdapter(TypedFastPathEvent)
 _REPAIR_BUDGET_ADAPTER = TypeAdapter(TypedRepairBudget)
 _CHECKS_ADAPTER = TypeAdapter(dict[str, bool])
 _LANE_ADAPTER = TypeAdapter(RepairLane)
 _COUNT_ADAPTER = TypeAdapter(NonNegativeInt)
+_FAST_PATH_EVENT_KEYS = frozenset({
+    "contract", "phase", "pathId", "authority", "eligible", "estimatedSavedCalls",
+})
+
+
+def typed_fast_path_registry() -> dict[str, dict]:
+    """Return the safe scalar registry projection used by offline measurement."""
+    return {
+        path_id: {
+            "authority": spec.authority,
+            "ownerNode": spec.owner_node,
+            "savedCalls": spec.saved_calls,
+        }
+        for path_id, spec in sorted(TYPED_FAST_PATH_SPECS.items())
+    }
+
+
+def parse_typed_fast_path_event(value) -> TypedFastPathEvent | None:
+    """Accept only the exact public event shape and registered scalar values."""
+    if not isinstance(value, Mapping) or frozenset(value) != _FAST_PATH_EVENT_KEYS:
+        return None
+    try:
+        return _FAST_PATH_EVENT_ADAPTER.validate_python({
+            "contract": value.get("contract"),
+            "phase": value.get("phase"),
+            "path_id": value.get("pathId"),
+            "authority": value.get("authority"),
+            "eligible": value.get("eligible"),
+            "estimated_saved_calls": value.get("estimatedSavedCalls"),
+        }, strict=True)
+    except Exception:
+        return None
+
+
+def _emit_typed_fast_path_event(
+    decision: TypedFastPathDecision,
+    phase: FastPathEventPhase,
+) -> None:
+    """Dispatch best-effort telemetry; instrumentation can never alter role behavior."""
+    try:
+        if not callable(_dispatch_custom_event):
+            return
+        event = TypedFastPathEvent(
+            phase=phase,
+            path_id=decision.path_id,
+            authority=decision.authority,
+            eligible=decision.complete,
+            estimated_saved_calls=decision.saved_calls,
+        )
+        _dispatch_custom_event(TYPED_FAST_PATH_EVENT_NAME, event.as_dict())
+    except Exception:
+        return
 
 
 def evaluate_typed_fast_path(
@@ -222,13 +328,15 @@ def evaluate_typed_fast_path(
         raise ValueError("typed fast path check set does not match its registered specification")
     missing = tuple(sorted(name for name, passed in normalized.items() if not passed))
     complete = not missing
-    return TypedFastPathDecision(
+    decision = TypedFastPathDecision(
         path_id=spec.path_id,
         authority=spec.authority,
         complete=complete,
         missing=missing,
         saved_calls=spec.saved_calls if complete else 0,
     )
+    _emit_typed_fast_path_event(decision, "evaluated")
+    return decision
 
 
 def make_typed_check_result(
@@ -333,6 +441,8 @@ def typed_fast_path_note(
     decision: TypedFastPathDecision,
 ) -> list[dict]:
     """Return one normal trace row with a machine-readable fast-path sidecar."""
+    if decision.complete:
+        _emit_typed_fast_path_event(decision, "committed")
     row = note(state, node, text)[0]
     row["fastPath"] = decision.as_dict()
     return [row]

@@ -600,6 +600,205 @@ def quantitative_metrics(
     }
 
 
+_TYPED_FAST_PATH_EVENT_KEYS = frozenset({
+    "contract", "phase", "pathId", "authority", "eligible",
+    "estimatedSavedCalls", "scopeId",
+})
+_TYPED_FAST_PATH_SCOPE = re.compile(r"^[0-9a-f]{24}$")
+_TYPED_FAST_PATH_EVENT_CONTRACT = "typed-fast-path-event.v1"
+_TYPED_FAST_PATH_METRICS_CONTRACT = "typed-fast-path-metrics.v1"
+_TYPED_FAST_PATH_COUNTERS = (
+    "opportunities", "hits", "misses", "committed", "eligibleNotCommitted",
+    "estimatedSavedCalls", "verifiedSavedCalls", "parityFailures",
+)
+
+
+def _empty_typed_fast_path_counts() -> dict[str, int]:
+    return {name: 0 for name in _TYPED_FAST_PATH_COUNTERS}
+
+
+def _strict_nonnegative_int(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _typed_fast_path_specs(path_specs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict]:
+    normalized = {}
+    for raw_path, raw_spec in path_specs.items():
+        if not isinstance(raw_path, str) or not raw_path or len(raw_path) > 120:
+            continue
+        if (not isinstance(raw_spec, Mapping)
+                or set(raw_spec) != {"authority", "ownerNode", "savedCalls"}):
+            continue
+        authority = raw_spec.get("authority")
+        owner_node = raw_spec.get("ownerNode")
+        saved_calls = raw_spec.get("savedCalls")
+        if (not isinstance(authority, str) or not authority or len(authority) > 240
+                or not isinstance(owner_node, str) or not owner_node or len(owner_node) > 80
+                or type(saved_calls) is not int or not 1 <= saved_calls <= 8):
+            continue
+        normalized[raw_path] = {
+            "authority": authority, "ownerNode": owner_node, "savedCalls": saved_calls,
+        }
+    return normalized
+
+
+def typed_fast_path_metrics(
+    usages: Iterable[Mapping[str, Any]],
+    *,
+    path_specs: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Reconcile registered two-phase bypass events with actual LLM call detail.
+
+    ``estimatedSavedCalls`` is the registry's audited counterfactual for committed paths.
+    ``verifiedSavedCalls`` is a stricter observed zero-call lower bound. Neither is a causal
+    A/B estimate from a single run; causal claims still require a paired baseline.
+    """
+    specs = _typed_fast_path_specs(path_specs)
+    total = _empty_typed_fast_path_counts()
+    by_path: dict[str, dict[str, int]] = {}
+
+    def counts(path: str) -> dict[str, int]:
+        return by_path.setdefault(path, _empty_typed_fast_path_counts())
+
+    def fail(path: str | None = None, amount: int = 1):
+        total["parityFailures"] += amount
+        if path is not None:
+            counts(path)["parityFailures"] += amount
+
+    for raw_usage in usages:
+        if not isinstance(raw_usage, Mapping):
+            fail()
+            continue
+        raw_events = raw_usage.get("fastPathEvents", [])
+        event_parity = True
+        if not isinstance(raw_events, list):
+            fail()
+            event_parity = False
+            raw_events = []
+        invalid_count = _strict_nonnegative_int(raw_usage.get("fastPathInvalidEvents", 0))
+        fail(amount=invalid_count if invalid_count is not None else 1)
+        if invalid_count is None or invalid_count:
+            event_parity = False
+
+        raw_calls = raw_usage.get("calls")
+        calls = _strict_nonnegative_int(raw_calls)
+        raw_details = raw_usage.get("callsDetail", [])
+        details_valid = isinstance(raw_details, list) and all(
+            isinstance(detail, Mapping) for detail in raw_details
+        )
+        details = raw_details if details_valid else []
+        call_parity = (
+            calls is not None and details_valid and calls == len(details)
+            and (
+                (calls == 0 and (
+                    "callsDetail" not in raw_usage or raw_details == []
+                ))
+                or (calls > 0 and "callsDetail" in raw_usage)
+            )
+        )
+        scoped_calls: set[str] = set()
+        if details_valid:
+            for detail in details:
+                scope = detail.get("fastPathScopeId")
+                if scope is None:
+                    if raw_events:
+                        call_parity = False
+                    continue
+                if isinstance(scope, str) and _TYPED_FAST_PATH_SCOPE.fullmatch(scope):
+                    scoped_calls.add(scope)
+                else:
+                    call_parity = False
+
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        observed_paths: set[str] = set()
+        for raw_event in raw_events:
+            if not isinstance(raw_event, Mapping) or set(raw_event) != _TYPED_FAST_PATH_EVENT_KEYS:
+                fail()
+                event_parity = False
+                continue
+            path = raw_event.get("pathId")
+            spec = specs.get(path) if isinstance(path, str) else None
+            phase = raw_event.get("phase")
+            eligible = raw_event.get("eligible")
+            saved_calls = raw_event.get("estimatedSavedCalls")
+            scope = raw_event.get("scopeId")
+            valid = (
+                raw_event.get("contract") == _TYPED_FAST_PATH_EVENT_CONTRACT
+                and spec is not None
+                and raw_event.get("authority") == spec["authority"]
+                and phase in {"evaluated", "committed"}
+                and type(eligible) is bool
+                and type(saved_calls) is int
+                and saved_calls == (spec["savedCalls"] if eligible else 0)
+                and isinstance(scope, str)
+                and _TYPED_FAST_PATH_SCOPE.fullmatch(scope) is not None
+                and not (phase == "committed" and not eligible)
+            )
+            if not valid:
+                fail(path if spec is not None else None)
+                event_parity = False
+                continue
+            observed_paths.add(path)
+            group = groups.setdefault((scope, path), {
+                "evaluated": [], "committed": [], "spec": spec,
+            })
+            group[phase].append(raw_event)
+
+        if observed_paths and not call_parity:
+            total["parityFailures"] += 1
+            for path in observed_paths:
+                counts(path)["parityFailures"] += 1
+
+        for (scope, path), group in groups.items():
+            evaluated = group["evaluated"]
+            committed_events = group["committed"]
+            group_clean = True
+            if len(evaluated) > 1:
+                fail(path)
+                group_clean = False
+            if len(committed_events) > 1:
+                fail(path)
+                group_clean = False
+            if not evaluated and committed_events:
+                fail(path)
+                group_clean = False
+            row = counts(path)
+            if (len(evaluated) == 1 and committed_events
+                    and not evaluated[0]["eligible"]):
+                fail(path)
+                group_clean = False
+            if not group_clean or len(evaluated) != 1:
+                continue
+            eligible = evaluated[0]["eligible"]
+            total["opportunities"] += 1
+            row["opportunities"] += 1
+            lane = "hits" if eligible else "misses"
+            total[lane] += 1
+            row[lane] += 1
+            paired = int(eligible and len(committed_events) == 1 and group_clean)
+            uncommitted = int(eligible and not paired)
+            saved_calls = group["spec"]["savedCalls"] * paired
+            for key, value in (
+                ("committed", paired),
+                ("eligibleNotCommitted", uncommitted),
+                ("estimatedSavedCalls", saved_calls),
+            ):
+                total[key] += value
+                row[key] += value
+            if paired and scope in scoped_calls:
+                fail(path)
+                group_clean = False
+            if paired and group_clean and call_parity and event_parity:
+                total["verifiedSavedCalls"] += saved_calls
+                row["verifiedSavedCalls"] += saved_calls
+
+    return {
+        "contract": _TYPED_FAST_PATH_METRICS_CONTRACT,
+        **total,
+        "byPath": {path: by_path[path] for path in sorted(by_path)},
+    }
+
+
 def _score_ceiling(counts: Mapping[str, int]) -> float:
     ceilings = load_protocol()["humanRubric"]["checklistScoreCeilings"]
     if counts.get("major", 0) >= 2:

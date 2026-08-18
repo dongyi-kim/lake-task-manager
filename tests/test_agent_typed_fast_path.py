@@ -4,11 +4,14 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent.workflow.typed_fast_path import (
+    TYPED_FAST_PATH_EVENT_CONTRACT,
     TYPED_FAST_PATH_CONTRACT,
     advance_typed_repair_budget,
     evaluate_typed_fast_path,
     make_typed_check_result,
+    parse_typed_fast_path_event,
     parse_typed_check_result,
+    typed_fast_path_registry,
     typed_fast_path_note,
     typed_repair_budget,
     typed_repair_retry_allowed,
@@ -67,6 +70,39 @@ def test_typed_fast_path_trace_keeps_existing_shape_with_registered_sidecar():
     assert trace[0]["node"] == "result_integrator"
     assert trace[0]["note"] == "deterministic render"
     assert trace[0]["fastPath"] == decision.as_dict()
+
+
+def test_typed_fast_path_event_contract_is_registry_owned_and_pii_free():
+    registry = typed_fast_path_registry()
+    spec = registry["result.structure_tree.v1"]
+    event = parse_typed_fast_path_event({
+        "contract": TYPED_FAST_PATH_EVENT_CONTRACT,
+        "phase": "evaluated",
+        "pathId": "result.structure_tree.v1",
+        "authority": spec["authority"],
+        "eligible": True,
+        "estimatedSavedCalls": spec["savedCalls"],
+    })
+
+    assert event is not None
+    assert event.as_dict() == {
+        "contract": "typed-fast-path-event.v1",
+        "phase": "evaluated",
+        "pathId": "result.structure_tree.v1",
+        "authority": "work_architect.structure_stage",
+        "eligible": True,
+        "estimatedSavedCalls": 1,
+    }
+    for forged in (
+        {**event.as_dict(), "pathId": "unknown.path"},
+        {**event.as_dict(), "authority": "caller-minted"},
+        {**event.as_dict(), "estimatedSavedCalls": 8},
+        {**event.as_dict(), "prompt": "private prompt"},
+        {**event.as_dict(), "eligible": 1},
+        {**event.as_dict(), "phase": "committed", "eligible": False,
+         "estimatedSavedCalls": 0},
+    ):
+        assert parse_typed_fast_path_event(forged) is None
 
 
 @pytest.mark.parametrize(
