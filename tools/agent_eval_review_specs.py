@@ -786,6 +786,24 @@ CASE_REVIEW_SPECS["user-review"] = {
     ),
 }
 
+SUITE_REVIEW_ELEMENTS["perf"] = [
+    _element(
+        "perf_terminal_quality_boundary",
+        "request_fulfillment",
+        "latency·token 수치와 함께 terminal reply가 실제 요청을 충족했는지 직접 확인했는가",
+        "빠른 실패·빈 답변·잘못된 route를 성능 개선으로 집계",
+        _REPLY + ["output.usage.callsDetail", "turn.timeToFirstTokenSeconds"],
+        {"requires": ["terminal reply", "callsDetail", "TTFT", "total latency", "token usage"]},
+    ),
+]
+
+CASE_REVIEW_SPECS["perf"] = {
+    "P1": _case("현재 근거에 기반한 업무 추천 latency", _element("p1_advice_result", "request_fulfillment", "현재 사용자 업무를 근거로 구체적인 시작 항목을 답했는가", "generic 조언·다른 사람 업무·빈 답변의 빠른 반환", _REPLY + _RETRIEVAL, {"requires": ["concrete work", "evidence", "next action"]})),
+    "P2": _case("개념과 내부 현황 결합 답변 latency", _element("p2_knowledge_result", "factual_grounding", "일반 개념과 내부 수행 사실을 출처 경계와 함께 구분했는가", "외부 개념을 내부 완료 사실로 바꾸거나 내부 현황 누락", _REPLY + _RETRIEVAL, {"requires": ["concept", "internal context", "evidence boundary"]})),
+    "P3": _case("생성 첫 turn latency", _element("p3_create_boundary", "safety_uncertainty", "필수 입력이 부족하면 발명 없이 질문하고 충분하면 승인 전 초안만 제시했는가", "필수값 발명, 승인 없는 write 또는 빈 흐름의 빠른 종료", _REPLY, {"requires": ["question-or-draft", "no write", "actionable next step"]})),
+    "P4": _case("exact 단일 수정 latency", _element("p4_exact_update", "contract_actionability", "DL-101 priority 변경만 exact approval payload로 제시했는가", "다른 target/field/value를 변경하거나 실행 완료로 허위 표시", _REPLY, {"target": "DL-101", "field": "priority", "value": "P2-Major", "execute": False})),
+}
+
 
 def review_specs(suite: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Return the immutable suite elements and per-case review contracts."""

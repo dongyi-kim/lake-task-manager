@@ -50,6 +50,7 @@ EVALUATION_HARNESS_INPUTS = tuple(
         "agent_meeting_eval.py",
         "agent_context_change_eval.py",
         "agent_user_review.py",
+        "agent_perf.py",
     )
 )
 RAW_RESULT_ROOT = ROOT / ".cache" / "agent-evaluation"

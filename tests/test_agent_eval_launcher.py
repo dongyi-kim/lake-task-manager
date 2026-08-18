@@ -14,6 +14,7 @@ from tools.agent_eval_isolation import (
     NETWORK_PREFLIGHT_MARKER,
 )
 from tools.agent_scenario_eval import parse_scenario_args, validate_eval_argv
+from tools import agent_scenario_eval as scenario
 
 
 @pytest.fixture(autouse=True)
@@ -146,3 +147,69 @@ def test_user_review_is_an_authorized_versioned_capture_not_an_llm_judge(monkeyp
     assert captured["suite"] == "user-review"
     assert captured["selected"] == {"F3"}
     assert captured["battery_version"] == "1.0.0"
+
+
+def test_perf_is_an_authorized_versioned_streaming_suite(monkeypatch):
+    assert L.RUNNERS.get("perf") == ("agent_perf.py", "gpt-4o-mini")
+    text = (L.ROOT / "tools" / "agent_perf.py").read_text(encoding="utf-8")
+    tree = ast.parse(text)
+    top_level_imports = {
+        node.module or ""
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+    }
+    assert "run_scenario_suite" in text
+    assert "streaming=True" in text
+    assert not any(name.startswith("app.agent") for name in top_level_imports)
+    assert "session.stream" not in text
+
+    from tools import agent_perf as perf
+
+    assert {case[0] for case in perf.CASES} == set(perf.CASE_REVIEW_SPECS)
+    captured = {}
+    monkeypatch.setattr(perf, "run_scenario_suite", lambda **kwargs: captured.update(kwargs))
+    assert perf.main(["P4"]) == 0
+    assert captured["suite"] == "perf"
+    assert captured["selected"] == {"P4"}
+    assert captured["streaming"] is True
+
+
+def test_shared_streaming_turn_captures_ttft_and_normalizes_final_event(monkeypatch):
+    class FakeSession:
+        @staticmethod
+        def stream(_prompt, *, thread_id):
+            assert thread_id == "prior-thread"
+            yield {"type": "start", "thread_id": "current-thread"}
+            yield {"type": "token", "text": "첫"}
+            yield {
+                "type": "final",
+                "thread_id": "current-thread",
+                "ok": True,
+                "reply": "완료",
+                "usage": {"calls": 1, "totalTokens": 12},
+            }
+
+    ticks = iter((10.0, 10.25))
+    monkeypatch.setattr(scenario.time, "perf_counter", lambda: next(ticks))
+    output, thread_id, ttft = scenario.invoke_scenario_turn(
+        FakeSession(), "질문", "prior-thread", streaming=True,
+    )
+    assert output == {
+        "thread_id": "current-thread",
+        "ok": True,
+        "reply": "완료",
+        "usage": {"calls": 1, "totalTokens": 12},
+    }
+    assert thread_id == "current-thread"
+    assert ttft == 0.25
+
+
+def test_shared_streaming_turn_requires_a_final_event():
+    class IncompleteSession:
+        @staticmethod
+        def stream(_prompt, *, thread_id):
+            yield {"type": "start", "thread_id": thread_id}
+            yield {"type": "token", "text": "중간"}
+
+    with pytest.raises(RuntimeError, match="without a final event"):
+        scenario.invoke_scenario_turn(IncompleteSession(), "질문", "thread", streaming=True)

@@ -99,6 +99,34 @@ def selected_scenarios(cases: Sequence[Scenario], selected: set[str]) -> list[Sc
     return [case for case in cases if case[0].upper() in selected]
 
 
+def invoke_scenario_turn(
+    session: Any, prompt: str, thread_id: str, *, streaming: bool = False,
+) -> tuple[dict[str, Any], str, float | None]:
+    """Run one scenario turn through ask or stream with one normalized output contract."""
+    if not streaming:
+        output = dict(session.ask(prompt, thread_id=thread_id) or {})
+        return output, str(output.get("thread_id") or thread_id), None
+
+    started = time.perf_counter()
+    first_token: float | None = None
+    current_thread = thread_id
+    output: dict[str, Any] | None = None
+    for event in session.stream(prompt, thread_id=thread_id):
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type == "start":
+            current_thread = str(event.get("thread_id") or current_thread)
+        elif event_type == "token" and first_token is None:
+            first_token = time.perf_counter() - started
+        elif event_type == "final":
+            output = {key: value for key, value in event.items() if key != "type"}
+            current_thread = str(output.get("thread_id") or current_thread)
+    if output is None:
+        raise RuntimeError("stream ended without a final event")
+    return output, current_thread, first_token
+
+
 def _usage(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     total = {
         "calls": 0,
@@ -159,6 +187,7 @@ def run_scenario_suite(
     case_review_specs: dict[str, dict[str, Any]], selected: set[str] | None = None,
     requested_out: str | os.PathLike[str] | None = None,
     checker_dependencies: Sequence[Any] = (),
+    streaming: bool = False,
 ) -> Path:
     configure_process_isolation(suite)
     # A manual quality battery must never inherit a caller's production Jira mode.
@@ -201,15 +230,19 @@ def run_scenario_suite(
             outputs: list[dict[str, Any]] = []
             for prompt in prompts:
                 turn_started = time.time()
-                output = session.ask(prompt, thread_id=thread_id)
-                thread_id = output.get("thread_id") or thread_id
+                output, thread_id, time_to_first_token = invoke_scenario_turn(
+                    session, prompt, thread_id, streaming=streaming,
+                )
                 output["evaluationEvidence"] = session.evaluation_snapshot(thread_id)
                 outputs.append(output)
-                turns.append({
+                turn_record = {
                     "input": prompt,
                     "durationSeconds": round(time.time() - turn_started, 1),
                     "output": output,
-                })
+                }
+                if time_to_first_token is not None:
+                    turn_record["timeToFirstTokenSeconds"] = round(time_to_first_token, 3)
+                turns.append(turn_record)
             automatic_flaws = automatic_contract_flaws(outputs)
             automatic_pass = bool(checker(outputs[-1], outputs) and not automatic_flaws)
             isolation = finish_case(isolation_start)
@@ -261,6 +294,6 @@ def run_scenario_suite(
 
 
 __all__ = [
-    "Scenario", "parse_scenario_args", "pending_items", "run_scenario_suite",
+    "Scenario", "invoke_scenario_turn", "parse_scenario_args", "pending_items", "run_scenario_suite",
     "selected_scenarios", "validate_eval_argv",
 ]
