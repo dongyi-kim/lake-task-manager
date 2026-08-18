@@ -153,24 +153,48 @@ def _query_results_have_material(query_results) -> bool:
     return False
 
 
+def _planned_query_result_binding(state) -> tuple[list[dict], list[dict], bool]:
+    """Bind every result to one unique planned ``(id, source)`` identity."""
+    raw_specs = (state.get("query_plan") or {}).get("queries") or []
+    raw_results = state.get("query_results") or []
+    if (not isinstance(raw_specs, list) or not isinstance(raw_results, list)
+            or not all(isinstance(row, dict) for row in raw_specs + raw_results)):
+        return [], [], False
+    specs = list(raw_specs)
+    results = list(raw_results)
+
+    def identity(row: dict) -> tuple[str, str]:
+        return (str(row.get("id") or "").strip(),
+                str(row.get("source") or "").strip().casefold())
+
+    planned = [identity(row) for row in specs]
+    materialized = [identity(row) for row in results]
+    planned_ids = [qid for qid, _source in planned]
+    result_ids = [qid for qid, _source in materialized]
+    exact = (
+        bool(planned)
+        and all(qid and source for qid, source in planned + materialized)
+        and len(planned) == len(materialized)
+        and len(set(planned_ids)) == len(planned_ids)
+        and len(set(result_ids)) == len(result_ids)
+        and set(planned) == set(materialized)
+    )
+    if not exact:
+        return specs, [], False
+    by_identity = {identity(row): row for row in results}
+    return specs, [by_identity[key] for key in planned], True
+
+
 def _query_plan_is_complete(state) -> bool:
     """Whether every planned source produced a usable deterministic result.
 
     Empty results are complete evidence of an in-scope miss. Missing rows, source mismatches, query errors,
     and failed body materialization keep the ReAct fallback available instead of trading quality for speed.
     """
-    specs = [row for row in ((state.get("query_plan") or {}).get("queries") or [])
-             if isinstance(row, dict)]
-    results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)] \
-        if isinstance(state.get("query_results"), list) else []
-    if not specs or not results:
+    specs, results, exact = _planned_query_result_binding(state)
+    if not exact:
         return False
-    by_id = {str(row.get("id") or ""): row for row in results if row.get("id")}
-    for spec in specs:
-        qid = str(spec.get("id") or "")
-        row = by_id.get(qid)
-        if not qid or row is None or str(row.get("source") or "") != str(spec.get("source") or ""):
-            return False
+    for row in results:
         result = row.get("result")
         if (not isinstance(result, dict) or result.get("error")
                 or result.get("incomplete") or result.get("complete") is False
@@ -205,7 +229,7 @@ def _query_ledger_result_shape(source: str, result: dict) -> tuple[bool, int]:
         valid = (
             len(body_ids) == len(bodies)
             and len(candidate_ids) == len(candidates)
-            and candidate_ids.issubset(body_ids)
+            and candidate_ids == body_ids
         )
         return valid, len(body_ids)
     if source in {"web", "github"}:
@@ -235,16 +259,12 @@ def _single_query_fast_path_decision(state):
     """
     tasks = [row for row in (state.get("request_plan") or {}).get("tasks") or []
              if isinstance(row, dict)]
-    specs = [row for row in (state.get("query_plan") or {}).get("queries") or []
-             if isinstance(row, dict)]
-    results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)] \
-        if isinstance(state.get("query_results"), list) else []
-    by_id = {str(row.get("id") or ""): row for row in results if row.get("id")}
-    supported = bool(specs)
+    specs, results, exact_binding = _planned_query_result_binding(state)
+    supported = exact_binding and len(specs) == 1
     material_rows = 0
-    for spec in specs:
+    for spec, row in zip(specs, results):
         source = str(spec.get("source") or "").strip().casefold()
-        result = (by_id.get(str(spec.get("id") or "")) or {}).get("result")
+        result = row.get("result")
         valid, count = _query_ledger_result_shape(source, result)
         material_rows += count
         if not valid:
@@ -252,7 +272,6 @@ def _single_query_fast_path_decision(state):
             break
     return evaluate_typed_fast_path(
         "research.single_bounded_query",
-        authority="request-plan.v1+query-plan.v1+query-results.v1",
         checks={
             "ask_intent": str(state.get("intent") or "") == Intent.ASK,
             "one_query_outcome": (
@@ -261,10 +280,10 @@ def _single_query_fast_path_decision(state):
                 and tasks[0].get("write_intent") is not True
             ),
             "query_plan_complete": _query_plan_is_complete(state),
+            "exact_result_binding": exact_binding and len(specs) == 1,
             "ledger_result_shape": supported,
             "bounded_without_omission": material_rows <= 8,
         },
-        saved_calls=1,
     )
 
 
@@ -663,7 +682,15 @@ def _completed_write_ledger(state, *, research_focus: bool = False,
 
 def _completed_query_ledger(state) -> dict:
     """Project a complete retrieval-only QueryPlan without semantic interpretation."""
-    results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)]
+    specs, results, exact_binding = _planned_query_result_binding(state)
+    if exact_binding:
+        exact_binding = all(
+            _query_ledger_result_shape(
+                str(spec.get("source") or "").strip().casefold(), row.get("result"),
+            )[0]
+            for spec, row in zip(specs, results)
+        )
+    results = results if exact_binding else []
     sidecar = state.get("materialized_ticket_sources") or {}
     sidecar_details = [dict(row) for row in (sidecar.get("ticketDetails") or [])
                        if isinstance(row, dict) and not row.get("error")] \

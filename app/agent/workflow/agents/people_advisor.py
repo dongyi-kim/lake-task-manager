@@ -16,17 +16,14 @@
 
 from __future__ import annotations
 
-from pydantic import TypeAdapter
-
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_PEOPLE_ADVISOR
-from app.agent.workflow.contracts import PeopleAdvice
+from app.agent.workflow.contracts import role_output_schema, validate_role_output
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, note
 
-PEOPLE_ADVICE_ADAPTER = TypeAdapter(PeopleAdvice)
-SCHEMA = PEOPLE_ADVICE_ADAPTER.json_schema()
+SCHEMA = role_output_schema(Node.PEOPLE_ADVISOR)
 
 
 def _similar_history(state) -> str:
@@ -281,7 +278,7 @@ Inferred module: {state.get('module') or 'unknown'}{data}"""
         return SCHEMA
 
     def pre_validate_structured_output(self, state, out, *, output_contract: str, execution_stage: str) -> dict:
-        return PEOPLE_ADVICE_ADAPTER.validate_python(out).model_dump(exclude_unset=True)
+        return validate_role_output(self.name, out)
 
     def apply(self, state, out):
         # 초안에 없는 항목 번호는 버린다 — 실 모델이 1건짜리 초안에 [0]~[5]를 낸 적이 있다.

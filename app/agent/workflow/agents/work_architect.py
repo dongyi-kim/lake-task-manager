@@ -1678,7 +1678,6 @@ def _request_refinement_projection(state: dict) -> dict:
 
 _EXACT_UPDATE_FIELDS = frozenset({"priority", "duedate", "summary"})
 _EXACT_UPDATE_FAST_PATH_ID = "work.exact_single_ticket_update"
-_EXACT_UPDATE_AUTHORITY = "request-plan.requested-effects.v1+continuation.v1"
 
 
 def _exact_single_update_fast_path(state: dict):
@@ -1699,7 +1698,6 @@ def _exact_single_update_fast_path(state: dict):
     current = last_user_text(state).strip()
     decision = evaluate_typed_fast_path(
         _EXACT_UPDATE_FAST_PATH_ID,
-        authority=_EXACT_UPDATE_AUTHORITY,
         checks={
             "typed_update_contract": contract.get("action") == "update",
             "single_target": len(_typed_target_keys(state)) == 1 and bool(target),
@@ -1716,7 +1714,6 @@ def _exact_single_update_fast_path(state: dict):
                 and effects == expected_effects
             ),
         },
-        saved_calls=1,
     )
     return decision, ({"key": target, **changes} if decision.complete else {})
 

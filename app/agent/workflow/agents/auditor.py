@@ -77,6 +77,17 @@ from app.agent.workflow.state import (
     AgentState, Node, last_user_text, note, request_text,
     verified_parent_epic_candidates,
 )
+from app.agent.workflow.typed_fast_path import (
+    advance_typed_repair_budget,
+    evaluate_typed_fast_path,
+    make_typed_check_result,
+    parse_typed_check_result,
+    typed_fast_path_note,
+)
+
+
+AUDITOR_MACHINE_AUTHORITY = "auditor.machine-check.v1"
+_MACHINE_RESULT_KEY = "_auditor_machine_check_result"
 
 SCHEMA = {
     "type": "object",
@@ -912,7 +923,7 @@ def final_authority_review(state: AgentState, *,
                 "index": -1, "field": "review", "source": "final_authority",
                 "message": "create effect에는 명시적인 pre-merge review.ok=true가 필요하다",
             })
-        auto = _machine_check(view)
+        auto = _safe_machine_check(view)
         errors.extend({**dict(row), "source": "final_authority"}
                       for row in (auto.get("errors") or []) if isinstance(row, dict))
         warnings = _dedupe_errors([*warnings, *(auto.get("warnings") or [])])
@@ -958,6 +969,66 @@ def final_authority_review(state: AgentState, *,
     })
 
 
+def _safe_machine_check(state: AgentState) -> dict:
+    """Convert an unexpected validator crash into typed, incomplete, fail-closed evidence."""
+    try:
+        return _machine_check(state)
+    except Exception as exc:
+        return make_typed_check_result(
+            authority=AUDITOR_MACHINE_AUTHORITY,
+            payload_digest=payload_digest(state),
+            complete=False,
+            ok=False,
+            errors=[{
+                "index": -1,
+                "field": "validation",
+                "source": "machine",
+                "message": f"기계 검증을 완료하지 못했다: {str(exc)[:160]}",
+            }],
+            warnings=[],
+            text=f"검증을 수행하지 못했다: {str(exc)[:200]}",
+        ).as_dict()
+
+
+def _machine_result(state: AgentState) -> dict:
+    """Reuse one common payload-bound check result within a semantic Auditor run."""
+    cached = parse_typed_check_result(
+        state.get(_MACHINE_RESULT_KEY),
+        authority=AUDITOR_MACHINE_AUTHORITY,
+        payload_digest=payload_digest(state),
+    )
+    return cached.as_dict() if cached else _safe_machine_check(state)
+
+
+def _semantic_obligations_absent(state: AgentState) -> bool:
+    """Fail closed when the semantic-obligation extractor is unavailable."""
+    try:
+        return not _verified_evidence_obligations(state)
+    except Exception:
+        return False
+
+
+def _machine_negative_decision(state: AgentState, result: dict):
+    """Bypass semantics only for a completed validator with concrete blocking rows."""
+    checked = parse_typed_check_result(
+        result,
+        authority=AUDITOR_MACHINE_AUTHORITY,
+        payload_digest=payload_digest(state),
+    )
+    return evaluate_typed_fast_path(
+        "auditor.machine_negative.v1",
+        checks={
+            "structured_result": checked is not None,
+            "validation_complete": bool(checked and checked.complete),
+            "negative_verdict": bool(checked and checked.ok is False),
+            "structured_blockers": bool(checked and checked.errors),
+            # Presence/state checks can be machine-authored, but producer/artifact/consumer
+            # role contradictions remain semantic and must retain the Auditor judgment pass.
+            "semantic_obligations_absent": _semantic_obligations_absent(state),
+        },
+    )
+
+
 class Auditor(StructuredAgent):
     name = Node.AUDITOR
 
@@ -965,46 +1036,36 @@ class Auditor(StructuredAgent):
         base_run = super().node()
 
         def run(state):
-            # ── L3b: **작은 초안은 기계 검증만으로 통과**시킨다.
-            # LLM 검열이 잡는 것(근거 없는 서술·과잉 분해·요청 불일치)은 항목이 여럿이거나
-            # 트리가 클 때의 병이다. 단건·자식 없음·기계검증 통과인 초안에서 LLM 검열이
-            # 실제로 잡은 것이 없었고(배터리 실측), 호출 하나가 통째로 낭비였다.
-            draft = state.get("draft") or {}
-            items = draft.get("items") or []
-            literal_recovery = draft.get("construction") == "literal_delegated"
-            outcome_contract = requested_outcome_contract(state)
-            # A compact draft can still reverse a verified producer/consumer relation or
-            # turn an uncertain dependency into a capability claim.  Presence checks are
-            # deterministic, but that semantic contradiction is not; keep evidence-bound
-            # drafts on the Auditor path instead of the machine-only latency shortcut.
-            small = (not outcome_contract and not _verified_evidence_obligations(state) and
-                     ((len(items) == 1 and not (items[0].get("children"))
-                     and (draft.get("mode") or "task") != "epic"
-                     # ★ 주제 이탈·확인 필요 경고가 붙은 초안은 우회하지 않는다 —
-                     #   작아 보여도 '틀린 작음'일 수 있다(실측: 뭉개진 단일 Task).
-                     and not draft.get("topic_drift")
-                     and "확인 필요" not in (draft.get("rationale") or ""))
-                     # Literal recovery is already built and partitioned by deterministic
-                     # code. A second semantic audit only rephrased editorial preferences.
-                     or literal_recovery))
-            if small:
-                auto = _machine_check(state)
-                # 완료 조건(DoD)이 없으면 작아도 통과시키지 않는다 — 우회하면 apply 의
-                # 재작성 요구가 아예 안 걸린다(실측: 단건 초안이 DoD 없이 카드까지 갔다).
-                blocking_content = any(
-                    "완료 조건" in str(w.get("message") or "")
-                    or "Bug 필수 섹션" in str(w.get("message") or "")
-                    for w in auto["warnings"])
-                if auto["ok"] and not blocking_content:
-                    review = _typed_review_contract(state, {
-                        "ok": True, "checks": {}, "problems": [],
-                        "errors": [], "warnings": auto["warnings"],
-                        "summary": "단건 초안 — 기계 검증 통과(자동)",
-                    })
-                    return {"review": review,
-                            "revisions": (state.get("revisions") or 0) + 1,
-                            "trace": note(state, self.name, "통과(기계 검증만 — 단건 초안)")}
-            return base_run(state)
+            auto = _safe_machine_check(state)
+            machine_negative = _machine_negative_decision(state, auto)
+            if machine_negative.complete:
+                repair_budget = advance_typed_repair_budget(state, "machine")
+                review = _typed_review_contract(state, {
+                    "ok": False,
+                    "checks": {"machine_valid": False},
+                    "repair_lane": "machine",
+                    "problems": [],
+                    "errors": [dict(row) for row in auto["errors"]],
+                    "warnings": [dict(row) for row in (auto.get("warnings") or [])
+                                 if isinstance(row, dict)],
+                    "summary": f"기계 검증 보류 — 오류 {len(auto['errors'])}건",
+                })
+                return {
+                    "review": review,
+                    # This repair is driven entirely by typed machine findings. Preserve the
+                    # semantic Auditor budget for the repaired payload's judgment pass.
+                    "revisions": state.get("revisions") or 0,
+                    **({"repair_budget": repair_budget.as_dict()}
+                       if repair_budget is not None else {}),
+                    "trace": typed_fast_path_note(
+                        state, self.name, "보류(확정 기계 오류 · 의미 검열 호출 생략)",
+                        machine_negative,
+                    ),
+                }
+            # A machine-valid draft is not proof of request coverage.  The former compact
+            # positive shortcut could approve a structurally valid draft that performed the
+            # opposite action, so only concrete negative findings bypass semantic judgment.
+            return base_run({**state, _MACHINE_RESULT_KEY: auto})
 
         return run
 
@@ -1012,7 +1073,7 @@ class Auditor(StructuredAgent):
         return persona(state, SYSTEM_AUDITOR, role_id=self.name)
 
     def task(self, state):
-        auto = _machine_check(state)
+        auto = _machine_result(state)
         rules = _rules_for(state)
         grounding = _audit_grounding_contract(state)
         ev = "\n".join(f"- {e.get('key','')} {e.get('title','')}"
@@ -1063,7 +1124,7 @@ The draft must preserve this subject; subject drift is a blocking request-covera
         return SCHEMA
 
     def apply(self, state, out):
-        auto = _machine_check(state)
+        auto = _machine_result(state)
         raw_problems = [p for p in (out.get("problems") or [])
                         if isinstance(p, dict) and p.get("message")]
         disproved_checks = {
@@ -1126,13 +1187,18 @@ The draft must preserve this subject; subject drift is a blocking request-covera
         elif ok and raw_problems and not problems:
             summary = "권위 상태와 모순된 모델 지적을 제외하고 정책·근거 검증 통과."
         review = _typed_review_contract(state, {
-            "ok": ok, "checks": checks, "problems": problems,
+            "ok": ok, "checks": checks, "repair_lane": "semantic",
+            "problems": problems,
             "errors": auto["errors"],
             "warnings": auto["warnings"] + advisory_warnings,
             "summary": summary,
         })
         failed = [k for k, v in checks.items() if not v]
-        return {"review": review, "revisions": (state.get("revisions") or 0) + 1,
+        repair_budget = advance_typed_repair_budget(state, "semantic")
+        return {"review": review,
+                "revisions": (state.get("revisions") or 0) + 1,
+                **({"repair_budget": repair_budget.as_dict()}
+                   if repair_budget is not None else {}),
                 "trace": note(state, self.name,
                               "통과" if ok else
                               f"보류 — 자동 {len(auto['errors'])}건 · 판단 {len(problems)}건"
@@ -1757,6 +1823,26 @@ def _deterministic_request_field_errors(state: AgentState, roots: list[dict]) ->
     return errors
 
 
+def _machine_check_output(
+    state: AgentState,
+    *,
+    complete: bool,
+    ok: bool,
+    errors,
+    warnings,
+    text: str,
+) -> dict:
+    return make_typed_check_result(
+        authority=AUDITOR_MACHINE_AUTHORITY,
+        payload_digest=payload_digest(state),
+        complete=complete,
+        ok=ok,
+        errors=errors,
+        warnings=warnings,
+        text=text,
+    ).as_dict()
+
+
 def _machine_check(state: AgentState) -> dict:
     """`domain/bulk.validate_bulk` — 화면의 Bulk 생성과 **같은 규칙**. LLM 을 거치지 않는다."""
     draft = state.get("draft") or {}
@@ -1808,10 +1894,12 @@ def _machine_check(state: AgentState) -> dict:
                             f"{actual_due or '비어 있음'} — exact date를 그대로 보존해야 한다"),
             })
     if not items:
-        return {"ok": False, "errors": (contract_errors + due_errors + field_errors
-                                          + obligation_errors + assignment_errors),
-                "warnings": [],
-                "text": "초안이 비어 있다."}
+        return _machine_check_output(
+            state, complete=True, ok=False,
+            errors=(contract_errors + due_errors + field_errors
+                    + obligation_errors + assignment_errors),
+            warnings=[], text="초안이 비어 있다.",
+        )
     # Epic 은 Bulk 규칙(validate_bulk)의 대상이 아니다 — 요약만 확인하고 통과.
     # (Epic Link·타입·SP 규칙은 전부 자식 티켓 이야기다.)
     if (draft.get("mode") or "task") == "epic":
@@ -1820,19 +1908,22 @@ def _machine_check(state: AgentState) -> dict:
                                   "message": "Epic 요약이 비었다"}]) \
             + contract_errors + due_errors + field_errors + obligation_errors \
             + assignment_errors
-        return {"ok": ok and not errors, "errors": errors,
-                "warnings": [], "text": "Epic 초안 — 기계 검증 대상 아님(요약 확인만)."}
+        return _machine_check_output(
+            state, complete=True, ok=ok and not errors, errors=errors, warnings=[],
+            text="Epic 초안 — 기계 검증 대상 아님(요약 확인만).",
+        )
     try:
         from app.agent.tools._ctx import client
         from app.domain.bulk import validate_bulk
         r = validate_bulk(draft.get("mode") or "task", items, client().bulk_lookup())
     except Exception as e:
-        return {"ok": False,
-                "errors": ([{"message": str(e)[:200]}] + contract_errors
-                           + due_errors + field_errors + obligation_errors
-                           + assignment_errors),
-                "warnings": [],
-                "text": f"검증을 수행하지 못했다: {str(e)[:200]}"}
+        return _machine_check_output(
+            state, complete=False, ok=False,
+            errors=([{"index": -1, "field": "validation", "message": str(e)[:200]}]
+                    + contract_errors + due_errors + field_errors + obligation_errors
+                    + assignment_errors),
+            warnings=[], text=f"검증을 수행하지 못했다: {str(e)[:200]}",
+        )
     warnings = list(r.get("warnings") or [])
     # ★ 본문 접지 — 챗 답변에만 걸던 grounding 을 **티켓 본문에도** 건다. 없는 키·틀린
     #   제목이 티켓에 박제되면 동적 RAG 가 그 날조를 다음 조사에서 다시 수확한다(실측:
@@ -1872,9 +1963,11 @@ def _machine_check(state: AgentState) -> dict:
     lines = [f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
              for e in errors]
     lines += [f"- (경고) [{w.get('index')}] {w.get('message')}" for w in warnings]
-    return {"ok": bool(r.get("ok")) and not errors, "errors": errors,
-            "warnings": warnings,
-            "text": "\n".join(lines) if lines else "통과 — 형식·실값 오류 없음"}
+    return _machine_check_output(
+        state, complete=True, ok=bool(r.get("ok")) and not errors,
+        errors=errors, warnings=warnings,
+        text="\n".join(lines) if lines else "통과 — 형식·실값 오류 없음",
+    )
 
 
 def _rules_for(state: AgentState) -> str:

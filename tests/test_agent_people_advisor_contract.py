@@ -4,16 +4,15 @@ import pytest
 from jsonschema import Draft202012Validator, ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError as PydanticValidationError
 
-from app.agent.workflow.agents.people_advisor import (
-    PEOPLE_ADVICE_ADAPTER,
-    PeopleAdvisor,
-)
+from app.agent.workflow.agents.people_advisor import PeopleAdvisor, SCHEMA
+from app.agent.workflow.contracts import role_output_schema, validate_role_output
 
 
 def test_people_advisor_contract_drives_prompt_schema_and_typed_wire_projection():
-    schema = PEOPLE_ADVICE_ADAPTER.json_schema()
+    schema = role_output_schema("people_advisor")
     Draft202012Validator.check_schema(schema)
     assert schema["title"] == "people_advisor"
+    assert SCHEMA == schema
 
     agent = PeopleAdvisor()
     assert agent.schema() == schema
@@ -34,7 +33,7 @@ def test_people_advisor_contract_drives_prompt_schema_and_typed_wire_projection(
 
     # The old JSON Schema allowed extensions and did not synthesize omitted optional fields.
     assert projected == wire
-    assert PEOPLE_ADVICE_ADAPTER.validate_python(projected).assignments[0].index == 0
+    assert validate_role_output("people_advisor", projected)["assignments"][0]["index"] == 0
 
 
 @pytest.mark.parametrize(
@@ -47,7 +46,7 @@ def test_people_advisor_contract_drives_prompt_schema_and_typed_wire_projection(
 )
 def test_people_advisor_contract_strictly_rejects_the_same_invalid_wire_shapes(invalid):
     with pytest.raises(JsonSchemaValidationError):
-        Draft202012Validator(PEOPLE_ADVICE_ADAPTER.json_schema()).validate(invalid)
+        Draft202012Validator(role_output_schema("people_advisor")).validate(invalid)
     with pytest.raises(PydanticValidationError):
         PeopleAdvisor().pre_validate_structured_output(
             {}, invalid, output_contract="structured", execution_stage="synthesis",

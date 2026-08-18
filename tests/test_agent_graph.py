@@ -163,7 +163,7 @@ def test_reviewer_negative_axes_without_projected_problems_fail_closed():
 def test_machine_review_fails_closed_when_material_evidence_obligations_are_omitted():
     """r24 auto-pass missed completed baseline, unconfirmed dependency, and rollout gate."""
     from langchain_core.messages import HumanMessage
-    from app.agent.workflow.agents.auditor import _machine_check
+    from app.agent.workflow.agents.auditor import _machine_check, final_authority_review
 
     state = {
         "request_text": "AcmeDB DeltaSketch 통계 생성 파이프라인을 만들어줘",
@@ -211,6 +211,17 @@ def test_machine_review_fails_closed_when_material_evidence_obligations_are_omit
                          if row.get("field") == "evidence_obligation"]
     assert obligation_errors
     assert {row.get("obligation_kind") for row in obligation_errors} >= {
+        "completed_baseline", "unconfirmed_dependency", "approval_gate",
+    }
+
+    # The deterministic approval fan-in consumes the same typed finding schema.  A bounded
+    # obligation row must remain actionable there instead of escaping as a schema exception.
+    state["review"] = {"ok": True, "errors": [], "warnings": [], "problems": []}
+    final = final_authority_review(state, require_effect=True)
+    final_obligations = [row for row in final["errors"]
+                         if row.get("field") == "evidence_obligation"]
+    assert final["ok"] is False
+    assert {row.get("obligation_kind") for row in final_obligations} >= {
         "completed_baseline", "unconfirmed_dependency", "approval_gate",
     }
 

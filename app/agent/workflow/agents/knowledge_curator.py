@@ -12,38 +12,9 @@ from __future__ import annotations
 
 from app.agent.prompts.roles import SYSTEM_KNOWLEDGE_CURATOR
 from app.agent.workflow.agents.base import StructuredAgent
+from app.agent.workflow.contracts import role_output_schema, validate_role_output
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import AgentState, Node, last_user_text, note, request_text
-
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "concepts": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "term": {"type": "string"},
-                "explanation": {"type": "string",
-                                "description": "One concise Korean sentence: what it is and why it matters here."}}},
-            "description": "Two to five concepts required to understand the subject.",
-        },
-        "our_context": {
-            "type": "string",
-            "description": "Verified internal work, decisions, and attempts. Cite a ticket key or document "
-                           "title for each claim. If absent, write the Korean phrase 사내 이력 없음.",
-        },
-        "references": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "ref": {"type": "string", "description": "Only a ticket key, document title, or URL in the input."},
-                "why": {"type": "string", "description": "Why this source is worth opening."}}},
-        },
-        "gaps": {
-            "type": "array", "items": {"type": "string"},
-            "description": "Unknown or undecided points and the follow-up verification needed.",
-        },
-    },
-    "required": ["concepts", "our_context", "gaps"],
-}
 
 
 class KnowledgeCurator(StructuredAgent):
@@ -87,11 +58,12 @@ Organize the supplied evidence into a Korean knowledge brief with concepts, inte
 {last_user_text(state)}{data}"""
 
     def schema(self):
-        return SCHEMA
+        return role_output_schema(self.name)
 
     def apply(self, state, out):
         from app.agent.workflow.meeting_context import prune_resolved_gaps
 
+        out = validate_role_output(self.name, out)
         brief = {
             "concepts": [c for c in (out.get("concepts") or []) if isinstance(c, dict)][:5],
             "our_context": out.get("our_context") or "",

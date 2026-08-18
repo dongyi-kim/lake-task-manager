@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 
 import pytest
 from langchain_core.messages import HumanMessage
@@ -125,3 +126,62 @@ def test_query_fast_path_fails_closed_outside_exact_contract(monkeypatch, mutati
 
     assert len(calls) == 1
     assert out["situation"] == "semantic fallback"
+
+
+@pytest.mark.parametrize("mutation", ["extra", "duplicate", "source-mismatch"])
+def test_query_fast_path_rejects_non_unique_or_unplanned_result_identity(mutation):
+    from app.agent.workflow.agents.research_analyst import (
+        _completed_query_ledger,
+        _single_query_fast_path_decision,
+    )
+
+    state = _state()
+    rogue = deepcopy(state["query_results"][0])
+    if mutation == "extra":
+        rogue["id"] = "unplanned"
+        rogue["result"]["documents"][0]["url"] = "https://docs.test/unplanned"
+        rogue["result"]["documentBodies"][0]["url"] = "https://docs.test/unplanned"
+        state["query_results"].append(rogue)
+    elif mutation == "duplicate":
+        state["query_results"].append(rogue)
+    else:
+        state["query_results"][0]["source"] = "web"
+        state["query_results"][0]["result"] = {
+            "results": [{"id": "doc-71", "url": "https://docs.test/mismatch",
+                         "snippet": "wrong source"}],
+            "complete": True,
+        }
+
+    decision = _single_query_fast_path_decision(state)
+    projected = _completed_query_ledger(state)
+
+    assert decision.complete is False
+    assert "exact_result_binding" in decision.missing
+    assert "docs.test" not in json.dumps(projected, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("mutation", ["extra-body", "duplicate-candidate", "duplicate-body"])
+def test_query_fast_path_requires_exact_unique_document_body_identity(mutation):
+    from app.agent.workflow.agents.research_analyst import (
+        _completed_query_ledger,
+        _single_query_fast_path_decision,
+    )
+
+    state = _state()
+    result = state["query_results"][0]["result"]
+    if mutation == "extra-body":
+        result["documentBodies"].append({
+            "id": "stale", "title": "stale", "url": "https://docs.test/stale",
+            "text": "stale body that was not planned",
+        })
+    elif mutation == "duplicate-candidate":
+        result["documents"].append(deepcopy(result["documents"][0]))
+    else:
+        result["documentBodies"].append(deepcopy(result["documentBodies"][0]))
+
+    decision = _single_query_fast_path_decision(state)
+    projected = _completed_query_ledger(state)
+
+    assert decision.complete is False
+    assert "ledger_result_shape" in decision.missing
+    assert "docs.test" not in json.dumps(projected, ensure_ascii=False)

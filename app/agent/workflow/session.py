@@ -36,6 +36,7 @@ from app.agent.workflow.continuation import (
     merge_continuation_decisions,
 )
 from app.agent.workflow.state import TRACE_RESET, Node, Role, as_dict
+from app.agent.workflow.typed_fast_path import zero_typed_repair_budget
 
 log = logging.getLogger("agent.chat")
 
@@ -139,6 +140,7 @@ def _initial(thread_id, text, user_role, user_id) -> dict:
             # 새 턴이 시작되면 지난 턴의 승인·실행 결과는 지운다 — 안 지우면 옛 토큰으로
             # result_integrator 가 다시 '승인 대기'로 흘러간다.
             "approval_token": "", "comment_token": "", "result": {}, "revisions": 0,
+            "repair_budget": zero_typed_repair_budget(),
             # trace 는 리듀서 필드라 [] 대입으로는 안 비워진다 — 리셋 신호를 앞에 싣는다.
             "trace": [TRACE_RESET], "change_plan": {}, "questions": []}
 
@@ -441,6 +443,7 @@ _TURN_DERIVED_EMPTY = {
     "interpretation": "", "structure_plan": [], "structure_ok": False,
     "structure_notes": [], "draft": {}, "assignments": [], "review": {},
     "reply": "", "error": "", "turns": 0,
+    "repair_budget": zero_typed_repair_budget(),
 }
 
 

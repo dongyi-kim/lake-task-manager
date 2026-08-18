@@ -817,14 +817,13 @@ class PortfolioAnalyst(ToolAgent):
             prefetched = bool(prog or pre or vit_blk)
             if prefetched:
                 fast_path_decision = evaluate_typed_fast_path(
-                    "portfolio.intermediate.v1", authority="portfolio_analyst.raw_tool_snapshot",
+                    "portfolio.intermediate.v1",
                     checks={"typed_material": bool(machine_projects),
                             "all_material_complete": bool(machine_projects) and all(
                                 row.get("complete") is True for row in machine_projects),
                             "legacy_material_absent": not legacy_only_material,
                             "requested_targets_complete": not progress_missing,
-                            "non_jql_request": "JQL" not in last_user_text(state).upper()},
-                    saved_calls=1)
+                            "non_jql_request": "JQL" not in last_user_text(state).upper()})
             if ((prog or pre or vit_blk) and not progress_missing
                     and "JQL" not in last_user_text(state).upper()):
                 if fast_path_decision.complete:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 
 class StrictModel(BaseModel):
@@ -263,6 +263,33 @@ class PeopleAdvice(_ExtensibleRoleModel):
     caution: str = Field(default_factory=str, max_length=240, description="Korean assignment caution such as overload or role mismatch; empty when none.")
 
 
+class KnowledgeConcept(_ExtensibleRoleModel):
+    term: str = Field(default_factory=str)
+    explanation: str = Field(
+        default_factory=str,
+        description="One concise Korean sentence: what it is and why it matters here.")
+
+
+class KnowledgeReference(_ExtensibleRoleModel):
+    ref: str = Field(
+        default_factory=str,
+        description="Only a ticket key, document title, or URL in the input.")
+    why: str = Field(
+        default_factory=str, description="Why this source is worth opening.")
+
+
+class KnowledgeBrief(_ExtensibleRoleModel):
+    model_config = ConfigDict(title="knowledge_curator")
+    concepts: list[KnowledgeConcept] = Field(
+        description="Two to five concepts required to understand the subject.")
+    our_context: str = Field(description=(
+        "Verified internal work, decisions, and attempts. Cite a ticket key or document "
+        "title for each claim. If absent, write the Korean phrase 사내 이력 없음."))
+    references: list[KnowledgeReference] = Field(default_factory=list)
+    gaps: list[str] = Field(
+        description="Unknown or undecided points and the follow-up verification needed.")
+
+
 class AuthoredArtifact(StrictModel):
     target_id: str
     summary: str = ""
@@ -290,20 +317,45 @@ class IntegratedResult(StrictModel):
     blocking_questions: list[str] = Field(default_factory=list)
 
 
-ROLE_CONTRACTS = {
+ROLE_OUTPUT_MODELS = {
     "request_architect": RequestPlan,
     "query_specialist": QueryPlan,
     "research_analyst": ResearchReport,
     "work_architect": WorkPlan,
     "people_advisor": PeopleAdvice,
+    "knowledge_curator": KnowledgeBrief,
     "auditor": AuditResult,
     "result_integrator": IntegratedResult,
 }
+ROLE_CONTRACTS = ROLE_OUTPUT_MODELS  # compatibility name; do not create a second registry
+PYDANTIC_WIRE_ROLES = frozenset({"people_advisor", "knowledge_curator"})
+_ROLE_OUTPUT_ADAPTERS = {
+    role_id: TypeAdapter(ROLE_OUTPUT_MODELS[role_id]) for role_id in PYDANTIC_WIRE_ROLES
+}
+
+
+def _role_output_adapter(role_id: str) -> TypeAdapter:
+    try:
+        return _ROLE_OUTPUT_ADAPTERS[role_id]
+    except KeyError as exc:
+        raise ValueError(f"공용 Pydantic wire boundary 미등록 role: {role_id}") from exc
+
+
+def role_output_schema(role_id: str) -> dict:
+    return _role_output_adapter(role_id).json_schema()
+
+
+def validate_role_output(role_id: str, value: object) -> dict:
+    model = _role_output_adapter(role_id).validate_python(value, strict=True)
+    return model.model_dump(exclude_unset=True)
 
 
 __all__ = ["ArtifactRef", "AtomicTask", "RequestQuestion", "RequestedUpdateEffect",
            "RequestPlan", "ContinuationDecision",
            "ContinuationContract", "QuestionContract", "ResolvedSlot", "QuerySpec", "QueryPlan",
            "QueryIntent", "CompactQueryPlan",
-           "ResearchReport", "WorkPlan", "PeopleAdvice", "AuthoredArtifact",
-           "AuditResult", "IntegratedResult", "ROLE_CONTRACTS"]
+           "ResearchReport", "WorkPlan", "PeopleAdvice", "KnowledgeConcept",
+           "KnowledgeReference", "KnowledgeBrief", "AuthoredArtifact",
+           "AuditResult", "IntegratedResult", "ROLE_OUTPUT_MODELS", "ROLE_CONTRACTS",
+           "PYDANTIC_WIRE_ROLES",
+           "role_output_schema", "validate_role_output"]

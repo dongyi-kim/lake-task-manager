@@ -113,7 +113,7 @@ def _structure_fast_path_decision(state: dict):
     plan = state.get("structure_plan")
     sealed = _sealed_structure_tree(state)
     return evaluate_typed_fast_path(
-        "result.structure_tree.v1", authority="work_architect.structure_stage", saved_calls=1,
+        "result.structure_tree.v1",
         checks={
             "tree": _text(tree),
             "stage_authority": state.get("structure_ok") is False

@@ -72,9 +72,11 @@ from app.agent.workflow.effect_contract import (
     project_final_authority_state,
 )
 from app.agent.workflow.resolved_slots import parent_selection_authority
-from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node,
+from app.agent.workflow.state import (MAX_MACHINE_REVISIONS, MAX_REVISIONS,
+                                      MAX_TOTAL_REPAIR_ATTEMPTS, AgentState, Intent, Node,
                                       is_memory_only_request, reads_as_bug, request_text,
                                       verified_parent_epic_candidates)
+from app.agent.workflow.typed_fast_path import typed_repair_retry_allowed
 
 _compiled = {"graph": None}
 
@@ -302,8 +304,14 @@ def route_after_auditor(state: AgentState) -> str:
     # A genuine blocking problem gets one bounded repair opportunity. Contradicted model
     # findings were already removed by Auditor grounding, so paying this retry only happens
     # for an actionable defect. Exhaustion still fails closed with no pending payload.
+    repair_lane = str(review.get("repair_lane") or "semantic")
     if (review.get("errors") or review.get("problems")) \
-            and (state.get("revisions") or 0) < MAX_REVISIONS:
+            and typed_repair_retry_allowed(
+                state, repair_lane,
+                semantic_limit=MAX_REVISIONS,
+                machine_limit=MAX_MACHINE_REVISIONS,
+                total_limit=MAX_TOTAL_REPAIR_ATTEMPTS,
+            ):
         return "revise"
     return "respond"
 

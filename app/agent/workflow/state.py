@@ -97,6 +97,8 @@ class Stage:
 
 MAX_REFINE_TURNS = 4       # 되묻기 상한. 넘으면 아는 것만으로 초안을 만든다
 MAX_REVISIONS = 2          # Auditor↔WorkArchitect 왕복 상한. 안 걸면 무한 루프가 된다
+MAX_MACHINE_REVISIONS = 2  # deterministic repair lane 상한 — semantic 예산과 분리한다
+MAX_TOTAL_REPAIR_ATTEMPTS = MAX_REVISIONS + MAX_MACHINE_REVISIONS
 
 TRACE_RESET = {"reset": True}    # 턴 시작에 trace 를 비우는 신호 — 리듀서엔 "대입"이 없다
 
@@ -262,6 +264,7 @@ class AgentState(TypedDict, total=False):
     # ── Auditor ──
     review: dict                    # {"ok","errors","warnings","critique"}
     revisions: int
+    repair_budget: dict             # typed-repair-budget.v1 semantic/machine/total sidecar
 
     # ── ActionExecutor (승인 후) ──
     approval_token: str
