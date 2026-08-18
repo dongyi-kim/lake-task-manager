@@ -673,7 +673,8 @@ def _turn_start_patch(
     continuation = typed_receipt or receipt_bound or _is_interview_continuation(text, prior)
     patch = _copy.deepcopy(_TURN_DERIVED_EMPTY)
     patch.update(turn_continuation=continuation,
-                 turn_reset_reason="interview-answer" if continuation else "new-or-revised-request")
+                 turn_reset_reason="interview-answer" if continuation else "new-or-revised-request",
+                 turn_attempt_id=uuid.uuid4().hex)
     if continuation:
         # RequestArchitect owns these bounded planning fields.  A true continuation keeps
         # them so a deterministic field-only fast path can reuse the already classified
@@ -718,6 +719,19 @@ def _turn_start_patch(
             patch["continuation_contract"] = merge_continuation_decisions(
                 contract, decisions,
             )
+        # ``bulk_targets`` is executable state consumed directly by WorkArchitect.  A
+        # continuation may carry it only while the rebuilt typed contract independently
+        # re-proves the same keys through the current write DAG/scoped decision.  Merely
+        # copying an old list would let a background read key bypass the contract split.
+        allowed_targets = {
+            str(key or "").strip().upper()
+            for key in (patch.get("continuation_contract") or {}).get("target_keys") or []
+        }
+        patch["bulk_targets"] = [
+            str(key or "").strip().upper()
+            for key in patch.get("bulk_targets") or []
+            if str(key or "").strip().upper() in allowed_targets
+        ]
     else:
         patch["request_text"] = str(text or "").strip()
     return patch
@@ -849,29 +863,33 @@ def resume(thread_id: str, token: str, overrides: dict = None) -> dict:
     추천을 그대로 받는 게 아니라 후보 중 고르거나 직접 지정할 수 있어야 한다(사용자 요청).
     승인 전에 스테이징 내용과 State 를 **같이** 고쳐 지문을 다시 묶는다.
     """
-    err = _apply_overrides(thread_id, token, overrides)
-    if err:
-        return {"thread_id": thread_id, "ok": False, "error": err}
-    if not approval.approve(token, thread_id):
-        return {"thread_id": thread_id, "ok": False,
-                "error": "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다. 다시 요청하세요."}
-    # 변경 카드에 코멘트가 함께 보였다면 그 토큰도 같은 승인에 묶인다(내용은 카드에 있었다).
-    try:
-        vals = get_graph().get_state(_config(thread_id)).values or {}
-        if vals.get("comment_token"):
-            approval.approve(vals["comment_token"], thread_id)
-    except Exception:
-        pass
-    from app.agent.tools import set_thread
-    set_thread(thread_id)
-    log.info("[%s] 승인됨 — 실행 시작", thread_id)
-    meter = _usage.Meter()
-    # None = 멈춘 자리(ActionExecutor 앞)에서 이어서
-    state = get_graph().invoke(None, _config(thread_id, meter))
-    out = _shape(thread_id, state)
-    out["usage"] = meter.snapshot()
-    log.info("[%s] 실행 결과: %s", thread_id, out.get("result"))
-    return out
+    # Approval resumes and new chat turns mutate the same checkpoint.  Serialize the whole
+    # capability transaction with ask/stream so an old paused branch cannot race a fresh
+    # turn and restore its prior turn nonce/artifacts after the new request has started.
+    with question_turn_lock(thread_id):
+        err = _apply_overrides(thread_id, token, overrides)
+        if err:
+            return {"thread_id": thread_id, "ok": False, "error": err}
+        if not approval.approve(token, thread_id):
+            return {"thread_id": thread_id, "ok": False,
+                    "error": "승인 토큰이 이 대화의 것이 아니거나 만료되었습니다. 다시 요청하세요."}
+        # 변경 카드에 코멘트가 함께 보였다면 그 토큰도 같은 승인에 묶인다(내용은 카드에 있었다).
+        try:
+            vals = get_graph().get_state(_config(thread_id)).values or {}
+            if vals.get("comment_token"):
+                approval.approve(vals["comment_token"], thread_id)
+        except Exception:
+            pass
+        from app.agent.tools import set_thread
+        set_thread(thread_id)
+        log.info("[%s] 승인됨 — 실행 시작", thread_id)
+        meter = _usage.Meter()
+        # None = 멈춘 자리(ActionExecutor 앞)에서 이어서
+        state = get_graph().invoke(None, _config(thread_id, meter))
+        out = _shape(thread_id, state)
+        out["usage"] = meter.snapshot()
+        log.info("[%s] 실행 결과: %s", thread_id, out.get("result"))
+        return out
 
 
 # 카드에서 편집 가능한 항목 필드 — 여기 없는 키는 조용히 버린다(클라이언트를 믿지 않는다).

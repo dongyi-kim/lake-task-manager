@@ -206,6 +206,7 @@ class AgentState(TypedDict, total=False):
     question_receipt_projection: dict  # Session-owned, non-secret one-turn answer projection
     turn_continuation: bool         # 직전 확인 질문에 대한 답변인가(새 요청의 stale state와 구분)
     turn_reset_reason: str          # local debug/evaluation용 턴 경계 판정 근거
+    turn_attempt_id: str            # Session-owned per-turn nonce; typed receipt에는 digest만 저장
 
     # ── Query Specialist / deterministic Query Runner ──
     query_plan: dict

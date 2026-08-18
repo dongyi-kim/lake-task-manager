@@ -847,6 +847,188 @@ def _materialize_evidence(results: list[dict], *, focus: str = "",
     }
 
 
+def _exact_comment_coverage(query_plan: dict, results: list[dict]) -> dict[str, bool]:
+    """Project per-key ``all comments`` coverage from the independent ticket/comment ledgers."""
+    from app.agent.workflow.exact_mention_materialization import exact_comment_all_keys
+
+    required = exact_comment_all_keys(query_plan)
+    if not required:
+        return {}
+    coverage = {key: False for key in required}
+    specs = {str(row.get("id") or ""): row for row in query_plan.get("queries") or []
+             if isinstance(row, dict) and row.get("source") == "comments"
+             and row.get("completeness") == "all"}
+    for row in results:
+        spec = specs.get(str(row.get("id") or ""))
+        result = row.get("result") if isinstance(row, dict) else None
+        if not spec or not isinstance(result, dict):
+            continue
+        from app.agent.workflow.exact_mention_materialization import exact_where_key
+        key = exact_where_key(spec.get("where") or "", "comments")
+        ticket_coverage = result.get("candidateCoverage")
+        comment_coverage = result.get("commentCoverage")
+        comments = result.get("comments")
+        comment_ids = [str(item.get("id") or "") for item in comments or []
+                       if isinstance(item, dict)] if isinstance(comments, list) else []
+        exact_comment_rows = (
+            isinstance(comments, list)
+            and len(comment_ids) == len(comments)
+            and all(comment_ids)
+            and len(comment_ids) == len(set(comment_ids))
+            and all(str(item.get("ticketKey") or "").strip().upper() == key
+                    and type(item.get("snippet")) is str
+                    and item.get("bodyTruncated") is not True
+                    for item in comments)
+        )
+        exact_candidate_coverage = (
+            isinstance(ticket_coverage, dict)
+            and ticket_coverage.get("complete") is True
+            and type(ticket_coverage.get("returned")) is int
+            and type(ticket_coverage.get("total")) is int
+            and ticket_coverage.get("returned") == 1
+            and ticket_coverage.get("total") == 1
+            and ticket_coverage.get("hasMore") is False
+            and ticket_coverage.get("keys") == [key]
+        )
+        exact_comment_cardinality = (
+            isinstance(comment_coverage, dict)
+            and comment_coverage.get("complete") is True
+            and type(comment_coverage.get("tickets")) is int
+            and comment_coverage.get("tickets") == 1
+            and type(comment_coverage.get("comments")) is int
+            and type(result.get("returned")) is int
+            and comment_coverage.get("comments") == result.get("returned") == len(comments or [])
+            and comment_coverage.get("remaining") == 0
+            and comment_coverage.get("resultRemaining") == 0
+            and comment_coverage.get("resultTruncated") is False
+            and not comment_coverage.get("incompleteTickets")
+        )
+        coverage[key] = bool(
+            key in coverage
+            and result.get("complete") is True
+            and exact_candidate_coverage
+            and exact_comment_cardinality
+            and result.get("contextTruncated") is not True
+            and exact_comment_rows
+        )
+    return coverage
+
+
+def _exact_detail_error(expected_key: str, value) -> str:
+    if not isinstance(value, dict):
+        return "invalid_detail"
+    if value.get("error"):
+        text = str(value.get("error") or "").casefold()
+        if "permission" in text or "forbidden" in text or "권한" in text:
+            return "permission"
+        if "not found" in text or "없" in text or "404" in text:
+            return "not_found"
+        return "provider_error"
+    returned_value = value.get("key")
+    returned = returned_value.strip().upper() if type(returned_value) is str else ""
+    if returned != expected_key:
+        return "wrong_key"
+    from app.agent.workflow.exact_mention_materialization import (
+        validate_and_digest_exact_ticket_detail,
+    )
+    return "" if validate_and_digest_exact_ticket_detail(value, expected_key) else "invalid_detail"
+
+
+def _produce_exact_mention_artifact(
+    state,
+    results: list[dict],
+    materialized: dict,
+) -> tuple[dict | None, list[dict]]:
+    """Fetch missing exact reads and mint one current-attempt context receipt.
+
+    Generic materialization runs first.  Its requested-key/result pairing is preserved so a
+    wrong-but-valid returned key is an error rather than an excuse to issue a duplicate GET.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from app.agent import tools as T
+    from app.agent.workflow.exact_mention_materialization import (
+        ExactMentionOutcomeV1,
+        exact_mention_plan_keys,
+        exact_mention_request,
+        exact_ticket_detail_prompt_complete,
+        issue_exact_mention_receipt,
+        validate_and_digest_exact_ticket_detail,
+    )
+
+    request = exact_mention_request(state)
+    if request is None or exact_mention_plan_keys(request, state.get("query_plan")) is None:
+        return None, []
+
+    attempted: dict[str, dict] = {}
+    selected = [str(key or "").strip().upper()
+                for key in materialized.get("ticketKeys") or []]
+    values = materialized.get("ticketDetails") or []
+    if isinstance(values, list):
+        for key, value in zip(selected, values):
+            if key in request.keys and key not in attempted:
+                attempted[key] = value if isinstance(value, dict) else {}
+
+    missing = [key for key in request.keys if key not in attempted]
+
+    def open_ticket(key: str) -> tuple[str, dict]:
+        try:
+            value = T.BY_NAME["get_ticket"].invoke({"key": key, "comment_limit": 8}) or {}
+            return key, value if isinstance(value, dict) else {}
+        except Exception as exc:
+            return key, {"key": key, "error": str(exc)[:240]}
+
+    if missing:
+        with ThreadPoolExecutor(max_workers=min(4, len(missing))) as pool:
+            for key, value in pool.map(open_ticket, missing):
+                attempted[key] = value
+
+    coverage = _exact_comment_coverage(state.get("query_plan") or {}, results)
+    focus_terms = _projection_focus_terms("\n".join(value for value in (
+        request_text(state).strip(), last_user_text(state).strip(),
+    ) if value))
+    outcomes = []
+    details = []
+    for key in request.keys:
+        raw = attempted.get(key) or {}
+        error_kind = _exact_detail_error(key, raw)
+        if not error_kind and key in coverage and not coverage[key]:
+            error_kind = "comments_incomplete"
+        if not error_kind:
+            error_kind = ("" if exact_ticket_detail_prompt_complete(
+                raw, comments_proven=coverage.get(key) is True,
+            ) else "partial")
+        if error_kind:
+            outcomes.append(ExactMentionOutcomeV1(
+                key=key, status="error", error_kind=error_kind,
+            ))
+            continue
+        validated_raw = validate_and_digest_exact_ticket_detail(raw, key)
+        projected = _project_ticket_detail(validated_raw[0], focus_terms) \
+            if validated_raw is not None else {}
+        validated_projection = validate_and_digest_exact_ticket_detail(projected, key)
+        if validated_projection is None:
+            outcomes.append(ExactMentionOutcomeV1(
+                key=key, status="error", error_kind="invalid_detail",
+            ))
+            continue
+        projected, projection_digest = validated_projection
+        details.append(projected)
+        outcomes.append(ExactMentionOutcomeV1(
+            key=key, status="success", returned_key=key,
+            detail_digest=projection_digest,
+        ))
+
+    receipt = issue_exact_mention_receipt(
+        request, state.get("query_plan"), outcomes,
+        thread_id=state.get("thread_id") or "",
+        attempt_id=state.get("turn_attempt_id") or "",
+        query_results=results,
+    )
+    if receipt is None:
+        return None, []
+    return {"receipt": receipt, "details": details}, details
+
+
 class QueryRunner:
     name = Node.QUERY_RUNNER
 
@@ -857,13 +1039,32 @@ class QueryRunner:
     def _all_pages(tool_obj, args: dict) -> tuple[list, dict]:
         pager = PaginationAccumulator(max_pages=200)
         meta = {}
+        comment_coverage = []
+        candidate_coverage = []
         while True:
             payload = dict(args, cursor=pager.cursor)
-            result = tool_obj.invoke(payload) or {}
+            result = (tool_obj.invoke(payload) if hasattr(tool_obj, "invoke")
+                      else tool_obj(payload)) or {}
             meta = meta or {k: result.get(k) for k in (
                 "canonicalJql", "canonicalCql", "scopeProjects", "scopeSpaces", "total")}
+            if isinstance(result.get("commentCoverage"), dict):
+                comment_coverage.append(dict(result["commentCoverage"]))
+            if isinstance(result.get("candidateCoverage"), dict):
+                candidate_coverage.append(dict(result["candidateCoverage"]))
             bucket = result.get("tickets") or result.get("documents") \
                 or result.get("comments") or result.get("people") or []
+            if isinstance(result.get("commentCoverage"), dict):
+                from app.agent.tools.query_tools import COMMENT_SEARCH_RESULT_CAP
+                remaining = max(0, COMMENT_SEARCH_RESULT_CAP - len(pager.rows))
+                if len(bucket) > remaining:
+                    omitted = len(bucket) - remaining
+                    bucket = list(bucket)[:remaining]
+                    comment_coverage[-1]["complete"] = False
+                    comment_coverage[-1]["resultTruncated"] = True
+                    comment_coverage[-1]["resultRemaining"] = (
+                        int(comment_coverage[-1].get("resultRemaining") or 0) + omitted
+                    )
+                    pager.incomplete_reason = "result_cap"
             if not pager.add_page(bucket):
                 break
             if result.get("error"):
@@ -876,7 +1077,60 @@ class QueryRunner:
             ):
                 break
         meta.update(pager.metadata())
-        meta["complete"] = not bool(meta.get("error") or meta.get("incomplete"))
+        comment_complete = all(row.get("complete") is True for row in comment_coverage)
+        if comment_coverage:
+            meta["commentCoverage"] = {
+                "tickets": sum(int(row.get("tickets") or 0) for row in comment_coverage),
+                "comments": sum(int(row.get("comments") or 0) for row in comment_coverage),
+                "complete": comment_complete,
+                "incompleteTickets": sorted({
+                    str(key) for row in comment_coverage
+                    for key in (row.get("incompleteTickets") or []) if str(key)
+                }),
+                "remaining": (
+                    sum(int(row.get("remaining") or 0) for row in comment_coverage)
+                    if all(type(row.get("remaining")) is int for row in comment_coverage)
+                    else None
+                ),
+                "resultTruncated": any(bool(row.get("resultTruncated"))
+                                       for row in comment_coverage),
+                "resultRemaining": sum(int(row.get("resultRemaining") or 0)
+                                       for row in comment_coverage),
+            }
+        if candidate_coverage:
+            exact_totals = [row.get("total") for row in candidate_coverage]
+            totals = set(exact_totals) if all(type(value) is int for value in exact_totals) else set()
+            candidate_total = next(iter(totals)) if len(totals) == 1 else None
+            candidate_returned = sum(
+                int(row.get("returned") or 0) for row in candidate_coverage)
+            candidate_keys = [str(key or "").strip().upper()
+                              for row in candidate_coverage
+                              for key in (row.get("keys") or [])]
+            candidate_complete = (
+                type(candidate_total) is int
+                and candidate_returned == candidate_total
+                and candidate_returned == len(candidate_keys)
+                and len(candidate_keys) == len(set(candidate_keys))
+                and all(re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key)
+                        for key in candidate_keys)
+                and candidate_coverage[-1].get("hasMore") is False
+            )
+            meta["candidateCoverage"] = {
+                "returned": candidate_returned, "total": candidate_total,
+                "hasMore": bool(candidate_coverage[-1].get("hasMore")),
+                "complete": candidate_complete,
+                "keys": candidate_keys,
+            }
+        else:
+            candidate_complete = True
+        if comment_coverage and not candidate_complete:
+            meta["commentCoverage"]["remaining"] = None
+            meta["commentCoverage"]["resultRemaining"] = None
+        meta["complete"] = (
+            not bool(meta.get("error") or meta.get("incomplete"))
+            and (not comment_coverage or comment_complete)
+            and candidate_complete
+        )
         return pager.rows, meta
 
     def _run(self, state):
@@ -919,6 +1173,10 @@ class QueryRunner:
             }
 
         results, artifacts = [], {}
+        materialized = {
+            "ticketKeys": [], "ticketDetails": [], "projectedTicketDetails": [],
+            "documentBodies": [], "projectedDocumentBodies": [], "errors": [],
+        }
         materialized_ticket_sources = {}
         parent_candidate_search_attempted = False
         # 이 유형은 LLM이 만든 단일 JQL만으로 끝낼 수 없다. 제목 검색 결과에서 parent를
@@ -998,7 +1256,38 @@ class QueryRunner:
                     args = {"query": spec.get("query") or "", "jql_where": spec.get("where") or "",
                             "page_size": min(spec.get("page_size") or 20, 25)}
                     if complete == "all":
-                        rows, meta = self._all_pages(T.BY_NAME["search_comments"], args)
+                        from app.agent.workflow.exact_mention_materialization import (
+                            exact_mention_plan_keys,
+                            exact_mention_request,
+                            exact_where_key,
+                        )
+                        exact_request = exact_mention_request(state)
+                        exact_key = exact_where_key(spec.get("where") or "", "comments")
+                        full_snapshot_allowed = bool(
+                            exact_request is not None
+                            and exact_mention_plan_keys(
+                                exact_request, state.get("query_plan")) is not None
+                            and not str(spec.get("query") or "").strip()
+                            and exact_key in exact_request.keys
+                        )
+                        if full_snapshot_allowed:
+                            from app.agent.tools.query_tools import search_comments_complete_page
+                            rows, meta = self._all_pages(search_comments_complete_page, args)
+                        else:
+                            bounded = T.BY_NAME["search_comments"].invoke(args) or {}
+                            rows = bounded.get("comments") or []
+                            meta = {key: bounded.get(key) for key in (
+                                "canonicalJql", "scopeProjects", "hasMore", "nextCursor",
+                            )}
+                            meta.update(
+                                complete=False, incomplete=True,
+                                incompleteReason="unproven_comment_coverage",
+                                commentCoverage={
+                                    "tickets": 0, "comments": len(rows), "complete": False,
+                                    "incompleteTickets": [], "remaining": None,
+                                    "resultTruncated": False, "resultRemaining": None,
+                                },
+                            )
                         raw = dict(meta, comments=rows, returned=len(rows))
                     else:
                         raw = T.BY_NAME["search_comments"].invoke(args)
@@ -1091,6 +1380,35 @@ class QueryRunner:
                 "ticketDetails": successful_details,
                 "parentCandidateKeys": list(materialized.get("parentCandidateKeys") or []),
             } if successful_details else {}
+        exact_artifact, exact_details = _produce_exact_mention_artifact(
+            state, results, materialized,
+        )
+        if exact_artifact is not None:
+            from app.agent.workflow.exact_mention_materialization import EXACT_MENTION_ARTIFACT
+            artifacts[EXACT_MENTION_ARTIFACT] = exact_artifact
+            if exact_details:
+                target = next((row for row in results if row.get("source") == "jira"), None) \
+                    or next((row for row in results if row.get("source") == "comments"), None)
+                if target is not None:
+                    projected = [row for row in
+                                 ((target.get("result") or {}).get("ticketDetails") or [])
+                                 if isinstance(row, dict)]
+                    by_key = {str(row.get("key") or "").strip().upper(): row
+                              for row in projected if row.get("key")}
+                    for row in exact_details:
+                        by_key[str(row.get("key") or "").strip().upper()] = row
+                    target["result"] = dict(
+                        target.get("result") or {}, ticketDetails=list(by_key.values()),
+                        detailProjection="ticket-detail.v1",
+                    )
+                current = [row for row in
+                           (materialized_ticket_sources.get("ticketDetails") or [])
+                           if isinstance(row, dict)]
+                by_key = {str(row.get("key") or "").strip().upper(): row
+                          for row in current if row.get("key")}
+                for row in exact_details:
+                    by_key[str(row.get("key") or "").strip().upper()] = row
+                materialized_ticket_sources["ticketDetails"] = list(by_key.values())[:8]
         if parent_candidate_search_attempted:
             materialized_ticket_sources["parentCandidateSearchAttempted"] = True
         materialized_ticket_sources = _merge_materialized_ticket_sources(

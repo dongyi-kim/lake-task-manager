@@ -540,6 +540,31 @@ def _completed_typed_write_action(state) -> str:
                for key in (contract.get("target_keys") or []) if str(key or "").strip()}
     if action in {"comment", "update"} and not targets:
         return ""
+    # Explicit/read-continuation Jira keys use a current-attempt read receipt.  This is a
+    # context gate only: mutation targets remain the validated ContinuationContract set and
+    # a background key can never be promoted by acquisition.
+    from app.agent.workflow.exact_mention_materialization import (
+        exact_comment_all_keys,
+        exact_mention_request,
+        verified_exact_mention_keys,
+    )
+    read_request = exact_mention_request(state)
+    if (read_request is not None
+            and str(state.get("turn_attempt_id") or "").strip()
+            and _compound_plan_requires_research_synthesis(state)):
+        # r37 removes only the repeated acquisition decisions for a compound
+        # research+write outcome.  A write-only path has a different deterministic ledger
+        # and retains its established authority contract unchanged. Checkpoints created
+        # before the generic turn nonce existed also retain the legacy completed-plan path;
+        # every new Session turn carries ``turn_attempt_id`` and must present the receipt.
+        if not _exact_compound_prompt_is_complete(state):
+            return ""
+        verified_reads = verified_exact_mention_keys(state)
+        if verified_reads != set(read_request.keys) or not targets.issubset(verified_reads):
+            return ""
+        if action == "comment" and not targets.issubset(
+                exact_comment_all_keys(state.get("query_plan"))):
+            return ""
     # A named create target is commonly an existing parent or source ticket.  It must be opened just
     # like a comment/update target; a search hit alone cannot authorize the zero-call path.
     if targets and not targets.issubset(_materialized_ticket_keys(state)):
@@ -592,6 +617,158 @@ def _compound_plan_requires_research_synthesis(state) -> bool:
         for task in tasks
     )
     return has_research and has_write
+
+
+def _exact_compound_prompt_is_complete(state) -> bool:
+    """Prove the one synthesis call sees every bounded r37 acquisition observation."""
+    rows = [row for row in (state.get("query_results") or []) if isinstance(row, dict)]
+    if not rows:
+        return False
+    from app.agent.workflow.exact_mention_materialization import exact_where_key
+    jira_specs = {
+        str(spec.get("id") or ""): exact_where_key(spec.get("where") or "", "jira")
+        for spec in (state.get("query_plan") or {}).get("queries") or []
+        if isinstance(spec, dict) and spec.get("source") == "jira"
+    }
+    # Confluence full-body projection has a separate 900-character materializer contract;
+    # exact Jira mention receipts do not prove it lossless.  Any compact truncation likewise
+    # keeps the original ReAct acquisition path.
+    for row in rows:
+        if row.get("source") not in {"jira", "comments", "web", "github"}:
+            return False
+        result = row.get("result")
+        if not isinstance(result, dict) or result.get("contextTruncated") is True:
+            return False
+        if row.get("source") == "jira":
+            expected_key = jira_specs.get(str(row.get("id") or ""))
+            tickets = result.get("tickets")
+            if (not expected_key or not isinstance(tickets, list)
+                    or len(tickets) > 1):
+                return False
+            ticket_keys = []
+            for ticket in tickets:
+                key = (str(ticket.get("key") or "").strip().upper()
+                       if isinstance(ticket, dict) else "")
+                if not _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", key):
+                    return False
+                ticket_keys.append(key)
+            if len(ticket_keys) != len(set(ticket_keys)) or any(
+                    key != expected_key for key in ticket_keys):
+                return False
+        elif row.get("source") in {"web", "github"}:
+            hits = result.get("results")
+            if (not isinstance(hits, list) or len(hits) > 8
+                    or any(not isinstance(hit, dict) for hit in hits)):
+                return False
+            identities = []
+            for hit in hits:
+                url = str(hit.get("url") or "").strip()
+                identity = url or str(hit.get("id") or "").strip()
+                if not identity or (url and not _re.fullmatch(r"https?://[^\s]+", url, _re.I)):
+                    return False
+                identities.append(identity)
+            if len(identities) != len(set(identities)):
+                return False
+    from app.agent.workflow.exact_mention_materialization import (
+        validate_and_digest_exact_ticket_detail,
+        verified_exact_mention_details,
+    )
+    verified = verified_exact_mention_details(state)
+    if not verified:
+        return False
+    visible: dict[str, list[dict]] = {}
+    for row in rows:
+        result = row.get("result") or {}
+        for detail in result.get("ticketDetails") or []:
+            if not isinstance(detail, dict):
+                return False
+            key = str(detail.get("key") or "").strip().upper()
+            visible.setdefault(key, []).append(detail)
+    if set(visible) != set(verified) or any(len(group) != 1 for group in visible.values()):
+        return False
+    for key, expected in verified.items():
+        current = validate_and_digest_exact_ticket_detail(visible[key][0], key)
+        canonical = validate_and_digest_exact_ticket_detail(expected, key)
+        if current is None or canonical is None or current[1] != canonical[1]:
+            return False
+    return True
+
+
+def _exact_compound_synthesis_state(state) -> dict:
+    """Build the r37 prompt only from structurally allowlisted evidence projections."""
+    if (not str(state.get("turn_attempt_id") or "").strip()
+            or not _compound_plan_requires_research_synthesis(state)):
+        return state
+    specs = {
+        (str(spec.get("id") or ""), str(spec.get("source") or "")): spec
+        for spec in (state.get("query_plan") or {}).get("queries") or []
+        if isinstance(spec, dict)
+    }
+    projected = []
+    for row in state.get("query_results") or []:
+        if not isinstance(row, dict):
+            continue
+        identity = (str(row.get("id") or ""), str(row.get("source") or ""))
+        source = identity[1]
+        raw_result = row.get("result") if isinstance(row.get("result"), dict) else {}
+        copied = {"id": identity[0], "source": source}
+        if source == "jira":
+            # The lightweight candidate row is useful before opening a ticket but becomes
+            # a second, weaker scalar authority afterwards.  Exact receipt-bound
+            # ``ticketDetails`` is the sole Jira material shown to synthesis.
+            result = {
+                "ticketDetails": list(raw_result.get("ticketDetails") or []),
+                "detailProjection": "ticket-detail.v1",
+            }
+        elif source == "comments":
+            # Candidate summary and arbitrary provider metadata are weaker authorities.
+            # Preserve only the receipt-digested comment evidence and exact detail ledger.
+            comment_fields = {"id", "ticketKey", "author", "date", "snippet"}
+            comments = [
+                {key: value for key, value in comment.items() if key in comment_fields}
+                for comment in raw_result.get("comments") or [] if isinstance(comment, dict)
+            ]
+            candidate_fields = {"returned", "total", "hasMore", "complete", "keys"}
+            comment_coverage_fields = {
+                "tickets", "comments", "complete", "incompleteTickets", "remaining",
+                "resultTruncated", "resultRemaining",
+            }
+            result = {
+                "comments": comments,
+                "returned": raw_result.get("returned"),
+                "complete": raw_result.get("complete"),
+                "candidateCoverage": {
+                    key: value for key, value in
+                    (raw_result.get("candidateCoverage") or {}).items()
+                    if key in candidate_fields
+                },
+                "commentCoverage": {
+                    key: value for key, value in
+                    (raw_result.get("commentCoverage") or {}).items()
+                    if key in comment_coverage_fields
+                },
+            }
+            if raw_result.get("ticketDetails"):
+                result["ticketDetails"] = list(raw_result["ticketDetails"])
+                result["detailProjection"] = "ticket-detail.v1"
+        else:  # web/github are bounded by QueryRunner relevance filtering above.
+            hit_fields = {
+                "id", "title", "name", "url", "snippet", "description", "official",
+                "published", "updated", "source",
+            }
+            result = {
+                "query": str((specs.get(identity) or {}).get("query") or ""),
+                "results": [
+                    {key: value for key, value in hit.items() if key in hit_fields}
+                    for hit in raw_result.get("results") or [] if isinstance(hit, dict)
+                ],
+            }
+            for field in ("attempted", "genericResultsFiltered", "irrelevantResultsFiltered"):
+                if field in raw_result:
+                    result[field] = raw_result[field]
+        copied["result"] = result
+        projected.append(copied)
+    return {**state, "query_results": projected}
 
 
 def _research_outcome_tasks(state) -> list[dict]:
@@ -1650,13 +1827,13 @@ class ResearchAnalyst(ToolAgent):
         every named mutation target has been opened, Research Analyst either passes the bounded factual
         ledger through unchanged or performs exactly one synthesis for an explicit semantic deliverable.
         """
-        direct_state = state
+        direct_state = _exact_compound_synthesis_state(state)
         if not state.get("web_context") and any(
                 isinstance(row, dict) and row.get("source") in {"web", "github"}
                 for row in (state.get("query_results") or [])):
             external = _prefetched_external_context(state.get("query_results") or [])[:6000]
             if external:
-                direct_state = {**state, "web_context": external}
+                direct_state = {**direct_state, "web_context": external}
 
         if _compound_plan_requires_research_synthesis(direct_state):
             synthesis_state = {**direct_state, "_research_analyst_prefetched": True}

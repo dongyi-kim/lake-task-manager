@@ -16,7 +16,7 @@ from app.agent.workflow.contracts import ContinuationContract
 # Korean case particles are Unicode ``\w`` characters, so ``\b`` does not match in common
 # forms such as ``DL-9201과``.  Bound the ASCII Jira token itself instead.
 _KEY_RE = re.compile(
-    r"(?<![A-Z0-9])[A-Z][A-Z0-9]{1,9}-\d+(?![A-Z0-9-])", re.I,
+    r"(?<![A-Z0-9-])[A-Z][A-Z0-9]{1,9}-\d+(?![A-Z0-9-])", re.I,
 )
 _USERNAME_RE = re.compile(
     r"(?<![A-Z0-9_.])skcc\.[a-z]\d{2,8}(?![A-Z0-9_.])", re.I,
@@ -199,11 +199,15 @@ def _latest_scalar_replacement(text: str, family: str) -> str:
     return latest or source
 
 
-def _task_action(intent: str, tasks: list[dict]) -> str:
-    writes = [task for task in tasks if isinstance(task, dict) and (
+def _is_write_task(task) -> bool:
+    return isinstance(task, dict) and (
         task.get("write_intent") is True
         or str(task.get("kind") or "").strip().casefold() in _WRITE_KINDS
-    )]
+    )
+
+
+def _task_action(intent: str, tasks: list[dict]) -> str:
+    writes = [task for task in tasks if _is_write_task(task)]
     if not writes:
         return "read" if intent in _READ_INTENTS else "respond"
     kinds = {str(task.get("kind") or "").strip().casefold() for task in writes}
@@ -219,7 +223,7 @@ def _task_action(intent: str, tasks: list[dict]) -> str:
 def _instruction_target_keys(tasks: list[dict]) -> list[str]:
     result: list[str] = []
     for task in tasks:
-        if not isinstance(task, dict):
+        if not _is_write_task(task):
             continue
         instruction = str(task.get("instruction") or "")
         for match in _KEY_RE.finditer(instruction):
@@ -257,12 +261,32 @@ def build_continuation_contract(state: dict, *, existing=None) -> dict:
     explicit_targets = [str(key or "").strip().upper()
                         for key in (state.get("bulk_targets") or []) if _KEY_RE.fullmatch(
                             str(key or "").strip())]
-    task_targets = _instruction_target_keys(tasks)
+    write_tasks = [task for task in tasks if _is_write_task(task)]
+    task_targets = _instruction_target_keys(write_tasks)
     mentioned = [str(key or "").strip().upper()
                  for key in (state.get("mentioned_keys") or []) if _KEY_RE.fullmatch(
                      str(key or "").strip())]
-    prior_targets = (carried.get("target_keys") or []) if continuation else []
-    derived_targets = explicit_targets or task_targets or mentioned
+    if write_tasks:
+        # On a continuation ``bulk_targets`` is inherited execution state, not fresh user
+        # authority.  Re-prove it through exact current write-task instructions; a keyless
+        # write task must return empty and let semantic target resolution run again.
+        current_write_targets = (
+            task_targets if continuation
+            else (explicit_targets or task_targets)
+        )
+    else:
+        current_write_targets = explicit_targets
+    current_write_set = set(current_write_targets)
+    # Persisted contracts may predate the read/write target split.  Retain only targets
+    # independently re-proven by the current write DAG; a background query key must not
+    # survive merely because it was present in an old target list.
+    prior_targets = [
+        str(key).strip().upper() for key in (carried.get("target_keys") or [])
+        if continuation and str(key).strip().upper() in current_write_set
+    ]
+    # A typed write task with no exact key is ambiguous.  Global mentioned keys contain
+    # read/background identities too, so fail closed instead of promoting all of them.
+    derived_targets = current_write_targets or ([] if write_tasks else mentioned)
     outcome_ids = _ordered_unique(
         [str(task.get("id") or "").strip() for task in tasks], limit=6)
     target_decisions = [

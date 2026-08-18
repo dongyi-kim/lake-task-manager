@@ -1261,6 +1261,34 @@ class JiraClient:
     # get_ticket(5건)이 먼저 돌면 RAG 색인·본문 검색이 조용히 5건만 받았다. 그래서
     # 조회는 항상 이 수로 하고, 자르는 것은 **읽는 쪽**이 한다(왕복 수는 그대로).
     CACHE_COMMENTS = 20
+    # Read-only evidence acquisition has a different contract from the UI cache above.  It
+    # may prove complete coverage, but it must never turn an unbounded comment history into
+    # an LLM payload.  Callers receive an explicit incomplete ledger once this cap is hit.
+    COMMENT_SNAPSHOT_CAP = 200
+    COMMENT_SNAPSHOT_PAGE_SIZE = 50
+
+    def _project_comment_row(self, comment, *, proxy_media=True):
+        """Normalize one provider comment for both cached UI and evidence snapshots."""
+        c = comment if isinstance(comment, dict) else {}
+        rb = c.get("renderedBody")
+        html = sanitize_html(_revive_checkboxes(rb)) \
+            if rb and str(rb).strip() else text_to_html(c.get("body") or "")
+        html = tidy_html(html)
+        html = _sync_checkboxes(html, c.get("body"))
+        html = shorten_mention_names(html)
+        # Evidence snapshots are consumed as plain text and deliberately avoid environment-
+        # dependent media rewriting.  The cached UI path keeps its historical behavior.
+        if proxy_media:
+            html = self._proxy_media(html)
+        return {
+            "id": str(c.get("id") or ""),
+            "date": c.get("created") or "",
+            "updated": c.get("updated") or "",
+            "author": real_name((c.get("author") or {}).get("displayName")
+                                or (c.get("author") or {}).get("name")),
+            "authorId": (c.get("author") or {}).get("name"),
+            "html": html,
+        }
 
     def _issue_comments(self, key, limit=5):
         """코멘트 — `comments:{env}:{key}` 로 티켓 단위 캐시(항상 CACHE_COMMENTS 건 보관)."""
@@ -1271,26 +1299,121 @@ class JiraClient:
                 f"/rest/api/2/issue/{key}/comment",
                 params={"maxResults": self.CACHE_COMMENTS, "orderBy": "-created",
                         "expand": "renderedBody"})
-            out = []
-            for c in data.get("comments", [])[:self.CACHE_COMMENTS]:
-                rb = c.get("renderedBody")
-                html = sanitize_html(_revive_checkboxes(rb)) if rb and str(rb).strip() else text_to_html(c.get("body") or "")
-                html = tidy_html(html)              # 빈 문단·앞뒤 공백 정리(과도 여백 제거)
-                html = _sync_checkboxes(html, c.get("body"))   # 체크박스 상태·id 는 raw 원문 기준
-                html = shorten_mention_names(html)  # 맨션은 본명만(에디터 표기와 일치)
-                html = self._proxy_media(html)      # prod: 코멘트 내 이미지도 프록시
-                out.append({
-                    "id": str(c.get("id") or ""),       # 수정/삭제용
-                    "date": c.get("created") or "",     # 전체 datetime(프론트에서 yy.mm.dd hh:mm 포맷)
-                    "updated": c.get("updated") or "",  # 수정 표시용(created 와 다르면 '수정됨')
-                    "author": real_name((c.get("author") or {}).get("displayName")
-                                        or (c.get("author") or {}).get("name")),
-                    "authorId": (c.get("author") or {}).get("name"),   # 프로필 이미지·본인 판정용
-                    "html": html,       # 정화된 코멘트 HTML (맨션·링크·서식 포함)
-                })
-            return out
+            return [self._project_comment_row(c)
+                    for c in (data.get("comments") or [])[:self.CACHE_COMMENTS]]
         rows = self.cache.get_or_set(f"comments:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
         return rows[:want]
+
+    def comment_snapshot(self, key, *, cap=None, page_size=None):
+        """Return a bounded, pagination-proven comment snapshot for evidence acquisition.
+
+        This deliberately bypasses the 20-row UI cache.  ``complete`` means the provider
+        supplied a stable integer total no larger than the configured cap and every ordered
+        page through that total was observed exactly once.  Missing totals, repeated or
+        non-advancing pages, provider errors and cap overflow remain explicit incomplete
+        evidence rather than being misreported as an empty/full history.
+        """
+        try:
+            if ((cap is not None and type(cap) is not int)
+                    or (page_size is not None and type(page_size) is not int)):
+                raise ValueError("comment snapshot bounds must be integers")
+            maximum = min(
+                self.COMMENT_SNAPSHOT_CAP,
+                max(1, cap if cap is not None else self.COMMENT_SNAPSHOT_CAP),
+            )
+            size = min(
+                self.COMMENT_SNAPSHOT_PAGE_SIZE,
+                maximum,
+                max(1, page_size if page_size is not None
+                    else self.COMMENT_SNAPSHOT_PAGE_SIZE),
+            )
+        except (TypeError, ValueError):
+            return {
+                "key": str(key or "").strip().upper(), "total": None,
+                "returned": 0, "pages": 0, "complete": False, "hasMore": True,
+                "remaining": None, "comments": [], "incompleteReason": "invalid_bounds",
+            }
+        start = 0
+        total = None
+        rows = []
+        seen_ids = set()
+        pages = 0
+        reason = ""
+        error = ""
+        try:
+            while len(rows) < maximum:
+                data = self.provider.get_json(
+                    f"/rest/api/2/issue/{key}/comment",
+                    params={"startAt": start, "maxResults": min(size, maximum - len(rows)),
+                            "orderBy": "-created", "expand": "renderedBody"},
+                ) or {}
+                if not isinstance(data, dict):
+                    reason = "invalid_page"
+                    break
+                page_start = data.get("startAt")
+                page_total = data.get("total")
+                if type(page_start) is not int or page_start != start:
+                    reason = "non_advancing"
+                    break
+                if type(page_total) is not int or page_total < 0:
+                    reason = "total_missing"
+                    break
+                if total is None:
+                    total = page_total
+                elif page_total != total:
+                    reason = "total_changed"
+                    break
+                raw_page = data.get("comments")
+                if not isinstance(raw_page, list) or any(
+                        not isinstance(comment, dict) for comment in raw_page):
+                    reason = "invalid_page"
+                    break
+                pages += 1
+                duplicate = False
+                for comment in raw_page:
+                    comment_id = str(comment.get("id") or "")
+                    if not comment_id or comment_id in seen_ids:
+                        duplicate = True
+                        break
+                    seen_ids.add(comment_id)
+                    rows.append(self._project_comment_row(comment, proxy_media=False))
+                    if len(rows) >= maximum:
+                        break
+                if duplicate:
+                    reason = "duplicate_page"
+                    break
+                next_start = start + len(raw_page)
+                if next_start >= total:
+                    start = next_start
+                    break
+                if not raw_page or next_start <= start:
+                    reason = "non_advancing"
+                    break
+                start = next_start
+            if not reason:
+                if total is None:
+                    reason = "total_missing"
+                elif total > maximum:
+                    reason = "cap_exceeded"
+                elif len(rows) != total or start < total:
+                    reason = "coverage_mismatch"
+        except Exception as exc:
+            reason = "provider_error"
+            error = str(exc)[:300]
+        complete = not reason and total is not None and len(rows) == total
+        remaining = max(0, total - len(rows)) if type(total) is int else None
+        return {
+            "key": str(key or "").strip().upper(),
+            "total": total,
+            "returned": len(rows),
+            "pages": pages,
+            "complete": complete,
+            "hasMore": not complete,
+            "remaining": remaining,
+            "comments": rows,
+            **({"incompleteReason": reason} if reason else {}),
+            **({"error": error} if error else {}),
+        }
 
     # ── 범용 단일 리소스 (env 무관 — /api/issue·/api/epic 리소스 엔드포인트용) ──
     def issue_detail(self, key):

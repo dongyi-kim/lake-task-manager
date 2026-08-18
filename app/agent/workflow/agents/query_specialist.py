@@ -1205,6 +1205,10 @@ class QuerySpecialist(StructuredAgent):
                 plan.setdefault("uncertainty", []).append(
                     "담당자 ID를 티켓 키로 해석한 Jira 조회는 실행하지 않음")
                 continue
+            from app.agent.workflow.exact_mention_materialization import (
+                normalize_exact_key_echo,
+            )
+            normalize_exact_key_echo(state, query)
             if not _normalize_model_jira_query(query):
                 continue
             _normalize_internal_document_query(query)
