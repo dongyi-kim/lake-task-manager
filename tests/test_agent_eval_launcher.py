@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 
 import pytest
@@ -100,3 +101,48 @@ def test_all_modern_runner_headers_point_to_authorized_launcher():
         text = (L.ROOT / "tools" / script[0]).read_text(encoding="utf-8")
         assert "agent_eval_launcher.py" in text, script[0]
         assert "validate_eval_argv(" in text or "parse_scenario_args(" in text, script[0]
+
+
+def test_user_review_is_an_authorized_versioned_capture_not_an_llm_judge(monkeypatch):
+    definition = L.RUNNERS.get("user-review")
+    assert definition == ("agent_user_review.py", "gpt-4o-mini")
+
+    path = L.ROOT / "tools" / "agent_user_review.py"
+    text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text)
+    imported_modules = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module or ""
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+    }
+    assert not any(name.startswith("app.agent") for name in imported_modules)
+    assert "run_scenario_suite" in text
+    assert "build_run_metadata" not in text  # shared runner owns the metadata authority
+    assert "get_llm(" not in text
+    assert "with_structured_output" not in text
+    assert "research/agent-improvement/reports" not in text
+    assert "direct-raw-output-review" in text
+    assert not (L.ROOT / "tools" / "agent_quality_read.py").exists()
+
+    from tools import agent_user_review as user_review
+
+    case_ids = {case[0] for case in user_review.CASES}
+    assert case_ids == {f"F{index}" for index in range(1, 9)}
+    assert case_ids == set(user_review.CASE_REVIEW_SPECS)
+    assert user_review.BATTERY_VERSION == "1.0.0"
+
+    captured = {}
+    monkeypatch.setattr(
+        user_review,
+        "run_scenario_suite",
+        lambda **kwargs: captured.update(kwargs),
+    )
+    assert user_review.main(["F3"]) == 0
+    assert captured["suite"] == "user-review"
+    assert captured["selected"] == {"F3"}
+    assert captured["battery_version"] == "1.0.0"

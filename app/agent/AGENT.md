@@ -223,7 +223,7 @@ repository root나 상위 deploy root에 `.test-tmp-*`, `.pytest-tmp-*`, `.codex
 
 실 provider runner를 직접 실행하면 network handoff marker가 없으므로 socket을 열기 전에 중단한다.
 로컬 Qwen/BGE 전체 preflight는 repository 밖 `.local/ltm-local-llm/tools/` launcher를 우선 사용한다.
-- 사람 관점 판독: `tools/agent_user_review.py`, `tools/agent_quality_read.py`
+- 사용자 화면 raw 수집: `tools/agent_eval_launcher.py user-review`; 이후 Codex/Claude가 raw를 직접 판독
 - 정량 병목: `tools/agent_perf.py`
 
 production routing 비교의 기본은 main/complex=`gpt-4o`, simple=`gpt-4o-mini`다. 모든 후보에서

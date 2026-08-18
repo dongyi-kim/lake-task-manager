@@ -570,6 +570,10 @@ def test_harness_tree_changes_the_benchmark_not_the_candidate(monkeypatch):
     assert first["candidateKey"] == second["candidateKey"]
 
 
+def test_harness_fingerprint_covers_the_user_view_capture_runner():
+    assert E.ROOT / "tools" / "agent_user_review.py" in E.EVALUATION_HARNESS_INPUTS
+
+
 def test_report_block_contains_versioned_criteria_and_validates(monkeypatch):
     monkeypatch.setenv("LTM_EVAL_RUN_GROUP_ID", "group-1")
     suite_elements, case_specs = specialized_contract(("S1",))

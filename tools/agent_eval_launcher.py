@@ -39,11 +39,13 @@ RUNNERS = {
     "compose": ("agent_compose_eval.py", "gpt-4o-mini"),
     "meeting": ("agent_meeting_eval.py", "gpt-4o"),
     "context": ("agent_context_change_eval.py", "gpt-4o"),
+    "user-review": ("agent_user_review.py", "gpt-4o-mini"),
 }
 STRUCTURED_FALLBACK_POLICY_ENV = "LTM_AGENT_STRUCTURED_OUTPUT_FALLBACK"
 USAGE = (
     "usage: python -X utf8 tools/agent_eval_launcher.py "
-    "{conversation|create|compose|meeting|context} [model] [case ...] [--out PATH]"
+    "{conversation|create|compose|meeting|context|user-review} "
+    "[model] [case ...] [--out PATH]"
 )
 
 

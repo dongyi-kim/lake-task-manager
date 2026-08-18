@@ -726,6 +726,67 @@ CASE_REVIEW_SPECS = {
 }
 
 
+# The user-view suite is a candidate-output capture, not a second model judge. These
+# contracts tell the direct Codex/Claude reviewer which visible behavior to inspect while the
+# common rubric remains the scoring authority.
+SUITE_REVIEW_ELEMENTS["user-review"] = [
+    _element(
+        "user_view_whole_surface",
+        "communication_rendering",
+        "reply뿐 아니라 질문 form·승인 card/payload·badge/link를 한 사용자 화면으로 검토했는가",
+        "reply만 읽어 실제 승인 payload 불일치나 깨진 reference를 놓침",
+        _REPLY + _RETRIEVAL,
+        {"requires": ["reply", "questions", "pending payload", "retrieval evidence", "usage"]},
+    ),
+    _element(
+        "user_view_no_candidate_judge",
+        "safety_uncertainty",
+        "후보 LTM 모델이 자기 출력을 채점하지 않고 Codex/Claude가 raw output을 직접 검토했는가",
+        "candidate model 또는 동일 production endpoint의 별도 LLM 호출을 judge로 사용",
+        ["output", "evaluation.run", "metrics"],
+        {
+            "evaluator": "codex-or-claude-direct-raw-output-review",
+            "forbidden": ["candidate-model judge", "ltm-runtime-llm judge"],
+        },
+    ),
+]
+
+CASE_REVIEW_SPECS["user-review"] = {
+    "F1": _case(
+        "기술 요청을 필요한 인터뷰 후 실행 가능한 계층과 승인 초안으로 전환",
+        _element("f1_ticket_shape", "contract_actionability", "PoC·Batch Job·Epic·단계별 Sub-Task와 구체 DoD가 reply와 payload에 같은가", "핵심 범위 누락, 무의미한 자식 이름, 불법 hierarchy 또는 reply/payload 불일치", _REPLY + _RETRIEVAL, {"requires": ["PoC", "Batch Job", "DL-102", "meaningful Sub-Tasks", "testable DoD"]}),
+    ),
+    "F2": _case(
+        "선택한 자산의 현재 상태와 시간순 이력을 근거와 함께 설명",
+        _element("f2_asset_history", "factual_grounding", "선택 전에는 대상을 확인하고 선택 후에는 현재 값·변경 사건·근거를 빠짐없이 연결했는가", "다른 자산 값을 전이하거나 현재 상태·핵심 사건·근거를 누락", _REPLY + _RETRIEVAL, {"requires": ["selected asset only", "current state", "chronology", "source markers"]}),
+    ),
+    "F3": _case(
+        "호칭이 붙은 사람을 식별하고 현재 미완료 업무를 실제 조회",
+        _element("f3_person_work", "factual_grounding", "이다은 책임을 검증된 user로 연결하고 실제 미완료 티켓을 누락 없이 설명했는가", "사람을 못 찾거나 활동 기록 부재를 미완료 업무 부재로 오인", _REPLY + _RETRIEVAL, {"requires": ["verified mention", "open assigned work", "no activity/work conflation"]}),
+    ),
+    "F4": _case(
+        "정체 조건을 충족한 전체 티켓의 exact 댓글 승인 payload 작성",
+        _element("f4_stale_comment_scope", "contract_actionability", "pagination 후 전체 대상·담당 mention·댓글 전문이 reply와 approval payload에서 일치하는가", "일부 page 누락, 담당/대상 오결속, 필드 변경 혼입 또는 댓글 전문 불일치", _REPLY + _RETRIEVAL, {"requires": ["all stale targets", "verified mentions", "comment-only", "exact payload"]}),
+    ),
+    "F5": _case(
+        "사용자 제공 재현 정보를 보존한 Bug 승인 초안 작성",
+        _element("f5_bug_fidelity", "request_fulfillment", "Chrome·2홉·빈 화면·기대 그래프를 재현/실제/기대로 분리하고 발명 없이 보존했는가", "이미 준 재현 정보를 다시 묻거나 핵심 조건 누락·발명", _REPLY, {"requires": ["Chrome", "2 hops", "blank actual", "graph expected", "Bug"]}),
+    ),
+    "F6": _case(
+        "현재 사용자와 업무 근거에 기반한 구체적 다음 일 추천",
+        _element("f6_priority_advice", "request_fulfillment", "실제 담당·우선순위·기한·blocker를 근거로 지금 시작할 한 일을 제시했는가", "generic 권고, 다른 사람 업무 추천 또는 근거 없는 우선순위", _REPLY + _RETRIEVAL, {"requires": ["one concrete recommendation", "verified user work", "reason", "next action"]}),
+    ),
+    "F7": _case(
+        "모듈 전체 roster의 최근 7일 활동을 사람별 근거로 보고",
+        _element("f7_roster_activity", "factual_grounding", "전체 roster·기간·사람별 ticket/comment/document 활동과 생략 범위를 정확히 표시했는가", "일부 사람이나 source를 전체처럼 표현하거나 7일 밖 활동 혼입", _REPLY + _RETRIEVAL, {"requires": ["complete roster", "7-day window", "per-person evidence", "coverage disclosure"]}),
+    ),
+    "F8": _case(
+        "부모 티켓의 자식 집계·충돌·남은 작업·마감 위험 설명",
+        _element("f8_progress_conflict", "factual_grounding", "완료 자식 수와 진행 중 자식, Jira와 문서/댓글 충돌, 남은 일과 기한을 정확히 구분했는가", "부분 집계를 전체로 오인하거나 문서 완료를 Jira 완료로 승격", _REPLY + _RETRIEVAL, {"requires": ["child count", "in-progress child", "source conflict", "remaining work", "deadline risk"]}),
+    ),
+}
+
+
 def review_specs(suite: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Return the immutable suite elements and per-case review contracts."""
     return SUITE_REVIEW_ELEMENTS[suite], CASE_REVIEW_SPECS[suite]
