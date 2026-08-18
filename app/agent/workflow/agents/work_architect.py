@@ -53,6 +53,7 @@ from app.agent.workflow.effect_contract import (
     PENDING_RATIONALE_CONTRACT,
     materialize_requested_update_effects,
     project_pending_rationale,
+    requested_update_effect_authority,
     seal_requested_effect_contract,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
@@ -64,6 +65,10 @@ from app.agent.workflow.resolved_slots import (
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
                                       conversation, last_user_text, note, reads_as_bug,
                                       request_text, verified_parent_epic_candidates)
+from app.agent.workflow.typed_fast_path import (
+    evaluate_typed_fast_path,
+    typed_fast_path_note,
+)
 
 # 신규 구축 규모의 신호 — **프롬프트 넛지와 하향 편향 가드가 같은 목록을 본다.**
 # 갈라지면 "프롬프트는 시키는데 코드는 안 막는" 상태가 되고, 그건 이 저장소가 반복해서
@@ -1671,6 +1676,51 @@ def _request_refinement_projection(state: dict) -> dict:
     return projection
 
 
+_EXACT_UPDATE_FIELDS = frozenset({"priority", "duedate", "summary"})
+_EXACT_UPDATE_FAST_PATH_ID = "work.exact_single_ticket_update"
+_EXACT_UPDATE_AUTHORITY = "request-plan.requested-effects.v1+continuation.v1"
+
+
+def _exact_single_update_fast_path(state: dict):
+    """Prove one complete scalar update from RequestArchitect-issued effects only."""
+    contract = _typed_continuation_contract(state)
+    typed_effects, typed_error = requested_update_effect_authority(state)
+    materialized = materialize_requested_update_effects(state, {})
+    changes = (materialized.get("changes")
+               if isinstance(materialized.get("changes"), dict) else {})
+    target = str(materialized.get("key") or "").strip().upper()
+    snapshot = materialized.get("requested_effects") or {}
+    effects = {
+        (str(row.get("target") or "").strip().upper(),
+         str(row.get("field") or ""), str(row.get("value") or ""))
+        for row in (snapshot.get("effects") or []) if isinstance(row, dict)
+    } if isinstance(snapshot, dict) else set()
+    expected_effects = {(row.target, row.field, row.value) for row in typed_effects}
+    current = last_user_text(state).strip()
+    decision = evaluate_typed_fast_path(
+        _EXACT_UPDATE_FAST_PATH_ID,
+        authority=_EXACT_UPDATE_AUTHORITY,
+        checks={
+            "typed_update_contract": contract.get("action") == "update",
+            "single_target": len(_typed_target_keys(state)) == 1 and bool(target),
+            "single_outcome": len(contract.get("outcome_ids") or []) == 1,
+            "typed_effect_mapping": not typed_error and bool(typed_effects),
+            "supported_request_surface": not _unsupported_exact_update_field(current),
+            "supported_scalar_set": bool(changes)
+            and set(changes).issubset(_EXACT_UPDATE_FIELDS),
+            "current_turn_boundary": bool(current)
+            and current == str(contract.get("root_request") or "").strip(),
+            "requested_effects_sealed": (
+                materialized.get("effect_contract") == "requested-effects.v1"
+                and snapshot.get("contract") == "requested-effects.v1"
+                and effects == expected_effects
+            ),
+        },
+        saved_calls=1,
+    )
+    return decision, ({"key": target, **changes} if decision.complete else {})
+
+
 class WorkArchitect(StructuredAgent):
     """★ 도구를 쓰지 않는다 — 필요한 재료는 **코드가 전부 미리 조회**한다.
 
@@ -1702,6 +1752,16 @@ class WorkArchitect(StructuredAgent):
                 if prior_work_error and not str(result.get("error") or "").strip():
                     result["error"] = ""
                 return result
+
+            fast_path, exact_change = _exact_single_update_fast_path(state)
+            if fast_path.complete:
+                direct = self.apply(state, {
+                    "questions": [], "change": exact_change, "rationale": "",
+                })
+                direct["trace"] = typed_fast_path_note(
+                    state, self.name, "정확 단일 티켓 변경 · 모델 호출 생략", fast_path,
+                )
+                return finish(direct)
 
             refinement = _request_refinement_projection(state)
             if refinement:
@@ -1901,7 +1961,7 @@ class WorkArchitect(StructuredAgent):
         allowed = {
             "summary", "tier", "issue_type", "type", "epic", "epic_name", "parent",
             "description", "children", "components", "labels", "priority", "duedate",
-            "assignee", "assignee_source",
+            "assignee", "assignee_source", "meeting_assignment_ref",
         }
 
         def compact_item(row):
@@ -2081,6 +2141,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
             data_block("Authoritative Requested Outcome Contract: Preserve Action and Object",
                        (format_requested_outcome_contract(state)
                         if _is_create_action(state) else "")),
+            data_block(
+                "Authoritative Meeting Assignment Sources: Copy One Record Id Per Root",
+                _meeting_assignment_catalog_json(state),
+            ),
             data_block("Current Draft Data: Preserve Unaffected Items and Children; Append Only New Requested Items", prev),
             data_block("Verified Bulk-Change Target Snapshot: Put Every Key in change.keys",
                        ", ".join(state.get("bulk_targets") or [])),
@@ -2147,6 +2211,10 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
 - A child Sub-Task must represent a distinct execution stage, target, or owner rather than duplicate its parent.{outcome_rule}
 - For meeting notes, preserve the exact requested item count and distinguish an owner from a reviewer. A named
   owner is an instruction, not an assignee recommendation; never replace it with a lower-workload candidate.
+- When Authoritative Meeting Assignment Sources is present, copy exactly one listed `record_id` to each
+  corresponding root's `meeting_assignment_ref`, and consume every listed record exactly once. Use
+  `meeting-source:none` only for a surplus root that has no explicit assignment source record. Never reuse
+  a ref or infer it from output order or a shortened/common title; copy the matching bounded record whole.
 
 ## Conversation Data
 
@@ -2217,6 +2285,21 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 "Preserve it during a repair; runtime verifies and re-seals it."
             ),
         }
+        meeting_sources = _meeting_assignment_catalog(state)
+        if meeting_sources:
+            from app.agent.workflow.meeting_context import NO_MEETING_ASSIGNMENT_REF
+            item_schema["properties"]["meeting_assignment_ref"] = {
+                "type": "string", "maxLength": 80,
+                "enum": [*[row["record_id"] for row in meeting_sources],
+                         NO_MEETING_ASSIGNMENT_REF],
+                "description": (
+                    "Exact opaque record_id copied from Authoritative Meeting Assignment "
+                    "Sources for this root, or meeting-source:none only when this root has "
+                    "no explicit source record. Consume every real record_id exactly once. "
+                    "Never select or repair it from output order or shared title terms."
+                ),
+            }
+            item_schema["required"].append("meeting_assignment_ref")
         child_schema = item_schema["properties"]["children"]["items"]
         child_schema["properties"]["outcome_refs"] = {
             "type": "array", "minItems": 1, "maxItems": 6,
@@ -4001,10 +4084,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                     child["tier"], child["issue_type"], child["type"] = \
                         "subtask", child_type, child_type
 
-        # RequestPlan outcome identity and exact requested fields are runtime authority.
+        # Typed outcome/source identity and exact requested fields are runtime authority.
         # Seal them only after every body/hierarchy normalizer has finished, and carry the
         # prior immutable effect snapshot across an Auditor repair instead of recomputing it
         # from mutable prose.
+        _apply_source_bound_meeting_assignments(state, items)
         seal_work_item_identities(state, draft)
         bind_resolved_slot_item_ids(draft)
         seal_requested_effect_contract(
@@ -4054,37 +4138,36 @@ def _normalize_priority(value) -> str:
     return _PRI.get("P" + match.group(1), raw) if match else _PRI.get(raw.upper(), raw)
 
 
-def _explicit_single_mutation_from_request(state) -> dict:
-    """Parse a conservative field-only update from the latest user turn.
+def _unsupported_exact_update_field(text: str) -> bool:
+    """Whether the same request names an effect outside the scalar fast-path contract."""
+    outside_quotes = _re.sub(r"['\"“‘][^'\"”’\n]{2,240}['\"”’]", " ", str(text or ""))
+    return bool(_re.search(
+        r"\bbody\b|\bdescription\b|\bcomment\b|\blabels?\b|\bcomponents?\b|"
+        r"\bassignee\b|\bowner\b|\bstatus\b|\btransition\b|\blink\b|"
+        r"\bparent\b|\bepic\b|\bstory\s*points?\b|\bfix\s*versions?\b|"
+        r"본문|설명(?:은|는|을|를|만|:)|댓글|코멘트|라벨|태그|컴포넌트|"
+        r"담당|배정|할당|상태|전이|링크|부모|에픽|스토리\s*포인트|해결\s*버전|"
+        r"이슈\s*유형|티켓\s*유형|issue\s*type",
+        outside_quotes, _re.I,
+    ))
 
-    This is a context-boundary guard, not a general natural-language parser.  It accepts
-    one literal Jira key and only values whose field names are present in the same current
-    message.  Therefore an earlier research topic can never supply the target or payload.
-    """
+
+def _explicit_single_mutation_from_request(state) -> dict:
+    """Project only RequestArchitect-issued effects; semantic prose is never reparsed here."""
     said = _current_request_boundary_text(state)
+    if _unsupported_exact_update_field(said):
+        return {}
     keys = list(dict.fromkeys(_re.findall(
         r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])", said, _re.I)))
     if len(keys) != 1:
         return {}
-    fields = {}
-    if _re.search(r"우선순위|priority", said, _re.I):
-        priority = _re.search(r"(?<![0-9A-Za-z])P([0-4])(?:-[A-Za-z]+)?(?![0-9A-Za-z])",
-                              said, _re.I)
-        if priority:
-            fields["priority"] = _PRI["P" + priority.group(1)]
-    if _re.search(r"기한|마감|due(?:date)?", said, _re.I):
-        due = _re.search(r"\b(\d{4}-\d{2}-\d{2})\b", said)
-        if due:
-            fields["duedate"] = due.group(1)
-    if _re.search(r"제목|summary|title", said, _re.I):
-        summary = _re.search(
-            r"(?:제목|summary|title)(?:만|을|를)?\s*(?:은|는|을|를|:)?\s*"
-            r"['\"“‘]([^'\"”’\n]{2,240})['\"”’]",
-            said, _re.I,
-        )
-        if summary:
-            fields["summary"] = summary.group(1).strip()
-    return {"key": keys[0].upper(), **fields} if fields else {}
+    typed, typed_error = requested_update_effect_authority(state)
+    targets = {row.target for row in typed}
+    fields = {row.field: row.value for row in typed}
+    if (typed_error or targets != {keys[0].upper()} or not fields
+            or not set(fields).issubset(_EXACT_UPDATE_FIELDS)):
+        return {}
+    return {"key": keys[0].upper(), **fields}
 
 
 def _explicit_meeting_update_fields(state) -> dict:
@@ -4802,11 +4885,128 @@ def _slot_audit(state) -> str:
     return "\n".join(rows)
 
 
-def _apply_named_assignees(state, items: list) -> None:
-    """"성능 측정은 x1402, 가이드 작성은 x1450" 식의 **입으로 지정한 담당**을 초안에 강제한다.
+def _meeting_assignment_records(state) -> list[dict]:
+    """Return only source-derived meeting assignments inside a meeting boundary."""
+    from app.agent.workflow.meeting_context import is_meeting_request, meeting_owner_records
+    return (meeting_owner_records(state) if is_meeting_request(state) else [])
 
-    패턴: <작업 문구>(은|는) <사번>. 문구의 핵심 낱말이 제목에 들어 있는 항목(자식 포함)의
-    빈 assignee 를 채운다 — 모델이 이미 적은 값은 존중한다(덮지 않는다)."""
+
+def _meeting_assignment_catalog(state) -> list[dict[str, object]]:
+    """Return the copy catalog whenever the typed wire has a selection decision."""
+    from app.agent.workflow.meeting_context import meeting_assignment_source_catalog
+    rows = meeting_assignment_source_catalog(state)
+    expected_roots = len(requested_outcome_contract(state).get("outcomes") or [])
+    return rows if rows and (len(rows) > 1 or expected_roots > 1) else []
+
+
+def _meeting_assignment_catalog_json(state) -> str:
+    return (json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+            if (rows := _meeting_assignment_catalog(state)) else "")
+
+
+def _separate_typed_meeting_scalars(state: dict, items: list[dict]) -> dict[int, dict]:
+    """Return exact non-meeting scalar authority for source-unbound meeting roots."""
+    rows = [row for row in (items or []) if isinstance(row, dict)]
+    authority: dict[int, dict] = {index: {} for index in range(len(rows))}
+    per_outcome_due = _expected_due_dates_by_root(state, rows)
+    global_due = _global_exact_due_for_roots(state, len(rows))
+    for index in range(len(rows)):
+        due = per_outcome_due.get(index) or global_due
+        if due:
+            authority[index]["duedate"] = due
+
+    continuation = (state or {}).get("continuation_contract") or {}
+    if not isinstance(continuation, dict) or continuation.get("version") != "continuation.v1":
+        return {index: value for index, value in authority.items() if value}
+
+    def exact_assignment(decision: dict | None) -> dict:
+        kind, value = parse_assignee_decision(str((decision or {}).get("value") or ""))
+        if kind == "user_id":
+            return {"assignee": value, "assignee_source": "user"}
+        if kind == "unassigned":
+            return {"assignee": "", "assignee_source": "user_unassigned"}
+        return {}
+
+    global_assignment: dict = {}
+    for decision in continuation.get("decisions") or []:
+        if not isinstance(decision, dict):
+            continue
+        field = str(decision.get("field") or "").strip().casefold()
+        if ":" not in field and field in {"owner", "assignee"}:
+            global_assignment = exact_assignment(decision)
+    if global_assignment:
+        for value in authority.values():
+            value.update(global_assignment)
+
+    contract = requested_outcome_contract(state)
+    aliases = {
+        alias.casefold(): opaque
+        for outcome in (contract.get("outcomes") or []) if isinstance(outcome, dict)
+        if (opaque := str(outcome.get("id") or "").strip())
+        for alias in (opaque, str(outcome.get("source_task_id") or "").strip()) if alias
+    }
+    canonical_refs = []
+    for row in rows:
+        raw = [str(value or "").strip() for value in (row.get("outcome_refs") or [])
+               if str(value or "").strip()]
+        canonical_refs.append(aliases.get(raw[0].casefold(), "") if len(raw) == 1 else "")
+    scoped = scoped_continuation_decisions(state)
+    for index, outcome_ref in enumerate(canonical_refs):
+        if not outcome_ref or canonical_refs.count(outcome_ref) != 1:
+            continue
+        assignment = exact_assignment((scoped.get(outcome_ref) or {}).get("assignee"))
+        if assignment:
+            authority[index].update(assignment)
+    return {index: value for index, value in authority.items() if value}
+
+
+def _apply_source_bound_meeting_assignments(state, items: list[dict]) -> bool:
+    """Project owner/due through exact source identity; ambiguity stays unresolved."""
+    records = _meeting_assignment_records(state)
+    roots = [row for row in (items or []) if isinstance(row, dict)]
+    if not records or not roots:
+        return bool(records)
+    from app.agent.workflow.meeting_context import meeting_assignment_source_mapping
+    mapping, _issues = meeting_assignment_source_mapping(roots, records)
+    separate_authority = _separate_typed_meeting_scalars(state, roots)
+    for index, item in enumerate(roots):
+        record_index = mapping.get(index)
+        if record_index is None:
+            item.pop("assignee", None)
+            item.pop("assignee_source", None)
+            item.pop("duedate", None)
+            typed = separate_authority.get(index) or {}
+            if "assignee" in typed:
+                if typed["assignee"]:
+                    item["assignee"] = typed["assignee"]
+                item["assignee_source"] = typed["assignee_source"]
+            if typed.get("duedate"):
+                item["duedate"] = typed["duedate"]
+            continue
+        record = records[record_index]
+        decision = str(record.get("owner_decision") or "").strip()
+        owner = str(record.get("owner") or "").strip()
+        item.pop("assignee", None)
+        if decision == "assigned" and owner:
+            item["assignee"] = owner
+            item["assignee_source"] = "user"
+        elif decision == "unassigned":
+            item["assignee_source"] = "user_unassigned"
+        else:
+            item.pop("assignee_source", None)
+        due = str(record.get("due") or "").strip()
+        if due:
+            item["duedate"] = due
+        else:
+            item.pop("duedate", None)
+    return True
+
+
+def _apply_named_assignees(state, items: list) -> None:
+    """Apply meeting refs or exact non-meeting account-id shorthand."""
+    if _apply_source_bound_meeting_assignments(state, items):
+        return
+
     # Assignee is a user-owned current-request field. Full conversation history can contain
     # a valid assignment from an unrelated prior topic whose work phrase happens to match.
     text = _current_request_boundary_text(state)
@@ -4828,36 +5028,6 @@ def _apply_named_assignees(state, items: list) -> None:
                 # 표식을 남겨 PeopleAdvisor 의 merge 가 다시 덮지 못하게 한다(2차 뭉갬 실측).
                 r["assignee"] = uid
                 r["assignee_source"] = "user"
-
-    # 회의록은 ``@이름 — 작업``, ``이름TL이 작업 담당``처럼 자연어로 담당을 쓴다.
-    # 조사/인터뷰에서 확정한 identity만 사용하고, 제목과 가장 많이 겹치는 한 항목에 강제한다.
-    try:
-        from app.agent.workflow.meeting_context import is_meeting_request, meeting_owner_records
-        if not is_meeting_request(state):
-            return
-        records = meeting_owner_records(state)
-    except Exception:
-        return
-    used: set[int] = set()
-    for record in records:
-        phrase = str(record.get("work") or "")
-        uid = str(record.get("owner") or "")
-        pterms = {w.casefold() for w in _re.findall(r"[가-힣A-Za-z0-9_.-]{2,}", phrase)
-                  if w not in ("기한", "까지", "담당")}
-        ranked = sorted(
-            ((len(pterms & {w.casefold() for w in _re.findall(
-                r"[가-힣A-Za-z0-9_.-]{2,}", str(row.get("summary") or ""))}), index, row)
-             for index, row in enumerate(rows) if index not in used),
-            key=lambda value: (-value[0], value[1]),
-        )
-        if ranked and (ranked[0][0] > 0 or len(rows) == 1):
-            _score, row_index, row = ranked[0]
-            used.add(row_index)
-            row["assignee"] = uid
-            row["assignee_source"] = "user" if uid else "user_unassigned"
-            due = str(record.get("due") or "")
-            if due:
-                row["duedate"] = due
 
 
 def _apply_scoped_continuation_decisions(state: dict, items: list[dict], mode: str,
@@ -5277,6 +5447,11 @@ def _recover_decided_meeting_tasks(state) -> list[dict]:
                 "</ul>"
             ),
         }
+        evidence = row.get("source_evidence")
+        source_ref = (str(evidence.get("record_id") or "").strip()
+                      if isinstance(evidence, dict) else "")
+        if source_ref:
+            item["meeting_assignment_ref"] = source_ref
         if row.get("owner"):
             item["assignee"] = str(row["owner"])
         items.append(item)

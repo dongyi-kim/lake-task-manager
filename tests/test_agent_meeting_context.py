@@ -2,7 +2,9 @@
 """Meeting interviews and abrupt context changes are deterministic workflow boundaries."""
 
 import os
+from itertools import permutations
 
+from jsonschema import Draft202012Validator
 from langchain_core.messages import HumanMessage
 
 os.environ.setdefault("JIRA_ENV", "mock")
@@ -18,6 +20,7 @@ from app.agent.workflow.agents.result_integrator import (  # noqa: E402
     _render_assignment_section,
 )
 from app.agent.workflow.agents.work_architect import (  # noqa: E402
+    WorkArchitect,
     _apply_named_assignees,
     _canonicalize_meeting_mentions,
     _comment_input_missing,
@@ -34,14 +37,19 @@ from app.agent.workflow.agents.work_architect import (  # noqa: E402
     _recover_decided_meeting_tasks,
     shape_hint,
 )
+from app.agent.workflow.agents import work_architect as work_architect_module  # noqa: E402
+from app.agent.workflow import meeting_context as meeting_context_module  # noqa: E402
 from app.agent.workflow.agents.people_advisor import (  # noqa: E402
     _all_assignees_user_specified,
     _user_fixed_assignments,
 )
+from app.agent.workflow.anchors import requested_outcome_contract  # noqa: E402
 from app.agent.workflow.meeting_context import (  # noqa: E402
+    NO_MEETING_ASSIGNMENT_REF,
     canonicalize_meeting_owner_table,
     canonicalize_reply_mentions,
     is_meeting_request,
+    meeting_assignment_source_catalog,
     meeting_owner_records,
     meeting_request_text,
     meeting_subject,
@@ -830,7 +838,7 @@ def test_exact_meeting_task_count_and_singular_task_are_user_selected_shapes():
     assert shape_hint(resumed)[0] == "multiple_tasks"
 
 
-def test_meeting_owner_lines_override_recommendations_but_reviewer_does_not():
+def test_meeting_owner_lines_override_recommendations_but_reviewer_does_not(monkeypatch):
     set_person_context("meeting-owner", ["DL-9200"])
     request = """회의 후속 Task 3건을 만들어줘.
 1. @이다은 — Iceberg Puffin NDV writer PoC
@@ -844,12 +852,279 @@ def test_meeting_owner_lines_override_recommendations_but_reviewer_does_not():
         {"summary": "[Workbench] StarRocks reader 검증", "assignee": "skcc.x1210"},
         {"summary": "[Catalog] RGP 검증 기준 및 결과 템플릿", "assignee": "skcc.i2044"},
     ]
+    records = meeting_owner_records(state)
+    outcomes = {
+        owner: f"outcome:{index}" for index, owner in enumerate(
+            ("skcc.i2011", "skcc.x1402", "skcc.x1103"), 1)
+    }
+    for record in records:
+        record["outcome_ref"] = outcomes[record["owner"]]
+    monkeypatch.setattr(
+        meeting_context_module, "meeting_owner_records", lambda _state: list(records),
+    )
+    source_refs = {
+        row["owner"]: row["source_evidence"]["record_id"]
+        for row in records
+    }
+    for item, owner in zip(items, ("skcc.i2011", "skcc.x1402", "skcc.x1103")):
+        item["meeting_assignment_ref"] = source_refs[owner]
+        item["outcome_refs"] = [outcomes[owner]]
     _apply_named_assignees(state, items)
     assert [row["assignee"] for row in items] == ["skcc.i2011", "skcc.x1402", "skcc.x1103"]
     assert all(row["assignee_source"] == "user" for row in items)
     _ensure_meeting_reviewers(state, items)
     assert "skcc.x1042" not in (items[0].get("description") or "")
     assert "skcc.x1042" in items[-1]["description"]
+
+
+def test_multi_meeting_wire_requires_opaque_source_refs_but_other_wires_do_not():
+    set_person_context("meeting-source-wire", ["DL-9200"])
+    request = """회의 기록에서 Task 2건을 만들어줘.
+@이다은 — Shared follow-up alpha, 2031-04-11
+하은님 — Shared follow-up beta, 2031-04-12"""
+    state = {
+        **_state(request),
+        "intent": "plan_work",
+        "request_plan": {"tasks": [
+            {"id": "alpha", "kind": "ticket", "write_intent": True,
+             "instruction": "Shared follow-up alpha Task 생성",
+             "completion_criteria": ["alpha 생성"]},
+            {"id": "beta", "kind": "ticket", "write_intent": True,
+             "instruction": "Shared follow-up beta Task 생성",
+             "completion_criteria": ["beta 생성"]},
+        ]},
+    }
+    catalog = meeting_assignment_source_catalog(state)
+    root_schema = WorkArchitect().schema_for(state)["properties"]["items"]["items"]
+
+    assert len(catalog) == 2
+    assert "meeting_assignment_ref" in root_schema["required"]
+    assert set(root_schema["properties"]["meeting_assignment_ref"]["enum"]) == {
+        *(row["record_id"] for row in catalog), NO_MEETING_ASSIGNMENT_REF,
+    }
+    prompt = WorkArchitect().task(state)
+    assert "Authoritative Meeting Assignment Sources" in prompt
+    assert all(row["record_id"] in prompt for row in catalog)
+
+    nonmeeting = {
+        **state,
+        "request_text": "Shared follow-up alpha와 beta Task 2건을 만들어줘",
+        "messages": [HumanMessage(
+            content="Shared follow-up alpha와 beta Task 2건을 만들어줘")],
+    }
+    nonmeeting_root = WorkArchitect().schema_for(nonmeeting)["properties"]["items"]["items"]
+    assert "meeting_assignment_ref" not in nonmeeting_root["properties"]
+
+    single = {
+        **_state("회의 기록에서 Task를 만들어줘. @이다은 — Shared follow-up, 2031-04-11"),
+        "intent": "plan_work",
+        "request_plan": {"tasks": [{
+            "id": "only", "kind": "ticket", "write_intent": True,
+            "instruction": "Shared follow-up Task 생성",
+            "completion_criteria": ["Task 생성"],
+        }]},
+    }
+    single_root = WorkArchitect().schema_for(single)["properties"]["items"]["items"]
+    assert "meeting_assignment_ref" not in single_root["properties"]
+
+
+def test_one_assignment_for_two_roots_requires_explicit_no_source_ref(monkeypatch):
+    """A singleton source is schema-free only when the typed result is also singleton."""
+    set_person_context("meeting-source-partial-wire", ["DL-9200"])
+    request = """회의 기록에서 Task 2건을 만들어줘.
+@이다은 — Shared follow-up, 2031-04-11"""
+    state = {
+        **_state(request),
+        "intent": "plan_work",
+        "request_plan": {"tasks": [
+            {"id": "owned", "kind": "ticket", "write_intent": True,
+             "instruction": "Shared follow-up 담당 작업 생성"},
+            {"id": "unowned", "kind": "ticket", "write_intent": True,
+             "instruction": "Shared follow-up 미할당 작업 생성"},
+        ]},
+    }
+    outcomes = {
+        row["source_task_id"]: row["id"]
+        for row in requested_outcome_contract(state)["outcomes"]
+    }
+    records = meeting_owner_records(state)
+    records[0]["outcome_ref"] = outcomes["owned"]
+    monkeypatch.setattr(
+        meeting_context_module, "meeting_owner_records", lambda _state: list(records),
+    )
+    catalog = meeting_assignment_source_catalog(state)
+    root_schema = WorkArchitect().schema_for(state)["properties"]["items"]["items"]
+
+    assert len(catalog) == 1
+    assert "meeting_assignment_ref" in root_schema["required"]
+    assert set(root_schema["properties"]["meeting_assignment_ref"]["enum"]) == {
+        catalog[0]["record_id"], NO_MEETING_ASSIGNMENT_REF,
+    }
+
+    items = [
+        {"summary": "Shared follow-up",
+         "outcome_refs": [outcomes["owned"]],
+         "meeting_assignment_ref": catalog[0]["record_id"]},
+        {"summary": "Shared follow-up",
+         "outcome_refs": [outcomes["unowned"]],
+         "meeting_assignment_ref": NO_MEETING_ASSIGNMENT_REF},
+    ]
+    _apply_named_assignees(state, items)
+
+    assert (items[0]["assignee"], items[0]["duedate"]) == (
+        "skcc.i2011", "2031-04-11",
+    )
+    assert "assignee" not in items[1] and "duedate" not in items[1]
+
+
+def test_no_source_sentinel_strips_untyped_meeting_scalars(monkeypatch):
+    records = [{
+        "work": "Shared follow-up", "owner": "acct.a", "due": "2031-04-11",
+        "owner_decision": "assigned", "outcome_ref": "outcome:a",
+        "source_evidence": {"record_id": "meeting-source:a"},
+    }]
+    monkeypatch.setattr(
+        work_architect_module, "_meeting_assignment_records", lambda _state: records,
+    )
+    items = [
+        {"summary": "Shared follow-up", "outcome_refs": ["outcome:a"],
+         "meeting_assignment_ref": "meeting-source:a"},
+        {"summary": "Shared follow-up", "outcome_refs": ["outcome:b"],
+         "meeting_assignment_ref": NO_MEETING_ASSIGNMENT_REF,
+         "assignee": "acct.invented", "assignee_source": "user",
+         "duedate": "2099-01-01"},
+    ]
+
+    _apply_named_assignees({}, items)
+
+    assert (items[0]["assignee"], items[0]["duedate"]) == ("acct.a", "2031-04-11")
+    assert not ({"assignee", "assignee_source", "duedate"} & items[1].keys())
+
+
+def test_empty_source_due_strips_model_due(monkeypatch):
+    records = [{
+        "work": "Shared follow-up", "owner": "acct.a", "due": "",
+        "owner_decision": "assigned", "outcome_ref": "outcome:a",
+        "source_evidence": {"record_id": "meeting-source:a"},
+    }]
+    monkeypatch.setattr(
+        work_architect_module, "_meeting_assignment_records", lambda _state: records,
+    )
+    items = [{
+        "summary": "Shared follow-up", "outcome_refs": ["outcome:a"],
+        "meeting_assignment_ref": "meeting-source:a", "duedate": "2099-01-01",
+    }]
+
+    _apply_named_assignees({}, items)
+
+    assert items[0]["assignee"] == "acct.a"
+    assert "duedate" not in items[0]
+
+
+def test_source_refs_project_same_title_owner_and_due_without_order_matching(monkeypatch):
+    set_person_context("meeting-source-projection", ["DL-9200"])
+    request = """회의 기록에서 Task 2건을 만들어줘.
+@이다은 — Shared follow-up, 2031-04-11
+하은님 — Shared follow-up, 2031-04-12"""
+    state = _state(request)
+    records = meeting_owner_records(state)
+    outcomes = {"skcc.i2011": "outcome:producer", "skcc.x1402": "outcome:consumer"}
+    for record in records:
+        record["outcome_ref"] = outcomes[record["owner"]]
+    monkeypatch.setattr(
+        meeting_context_module, "meeting_owner_records", lambda _state: list(records),
+    )
+    by_owner = {
+        row["owner"]: row["source_evidence"]["record_id"] for row in records
+    }
+    items = [
+        {"summary": "Shared follow-up", "outcome_refs": [outcomes["skcc.x1402"]],
+         "meeting_assignment_ref": by_owner["skcc.x1402"]},
+        {"summary": "Shared follow-up", "outcome_refs": [outcomes["skcc.i2011"]],
+         "meeting_assignment_ref": by_owner["skcc.i2011"]},
+    ]
+
+    _apply_named_assignees(state, items)
+
+    assert [(row["assignee"], row["duedate"]) for row in items] == [
+        ("skcc.x1402", "2031-04-12"),
+        ("skcc.i2011", "2031-04-11"),
+    ]
+    assert all(row["assignee_source"] == "user" for row in items)
+
+    duplicate = [
+        {"summary": "Shared follow-up", "meeting_assignment_ref": by_owner["skcc.i2011"],
+         "assignee": "invented", "assignee_source": "user", "duedate": "2099-01-01"},
+        {"summary": "Shared follow-up", "meeting_assignment_ref": by_owner["skcc.i2011"],
+         "assignee": "invented", "assignee_source": "user", "duedate": "2099-01-01"},
+    ]
+    _apply_named_assignees(state, duplicate)
+    assert all("assignee" not in row and "duedate" not in row for row in duplicate)
+
+
+def test_work_wire_uses_bounded_catalog_across_item_and_source_permutations(monkeypatch):
+    """The complete Work boundary preserves source identity across both list orders."""
+    set_person_context("meeting-source-work-wire", ["DL-9200"])
+    sources = (
+        ("skcc.i2011", "@이다은 — Shared follow-up, 2031-04-11"),
+        ("skcc.x1402", "하은님 — Shared follow-up, 2031-04-12"),
+    )
+    owner_contract = {
+        "skcc.i2011": ("producer", "2031-04-11"),
+        "skcc.x1402": ("consumer", "2031-04-12"),
+    }
+    for source_order in permutations(sources):
+        request = "회의 기록에서 Task 2건을 만들어줘.\n" + "\n".join(
+            row[1] for row in source_order
+        )
+        state = {
+            **_state(request), "intent": "plan_work", "situation": "회의 source 확인 완료",
+            "request_plan": {"tasks": [
+                {"id": task_id, "kind": "ticket", "write_intent": True,
+                 "instruction": f"{owner} 담당 Shared follow-up, {due} 생성"}
+                for owner, (task_id, due) in owner_contract.items()
+            ]},
+        }
+        contract = requested_outcome_contract(state)
+        outcomes = {row["source_task_id"]: row["id"] for row in contract["outcomes"]}
+        records = meeting_owner_records(state)
+        for record in records:
+            record["outcome_ref"] = outcomes[owner_contract[record["owner"]][0]]
+        monkeypatch.setattr(
+            meeting_context_module, "meeting_owner_records",
+            lambda _state, rows=records: list(rows),
+        )
+        catalog = meeting_assignment_source_catalog(state)
+        records_by_owner = {row["owner_id"]: row for row in catalog}
+
+        assert [row["owner_id"] for row in catalog] == [row[0] for row in source_order]
+        assert all(set(row) == {
+            "record_id", "work", "owner_decision", "owner_id", "due", "outcome_refs",
+        } for row in catalog)
+        for item_order in permutations(owner_contract):
+            output = {
+                "questions": [], "mode": "task", "structure": "multiple_tasks",
+                "structure_source": "user_specified", "structure_why": "",
+                "outcome_contract_id": contract["id"], "rationale": "",
+                "items": [{
+                    "summary": "Shared follow-up", "type": "Task",
+                    "background": "회의에서 합의된 후속 작업",
+                    "scope_in": ["Shared follow-up"], "scope_out": ["추가 범위"],
+                    "dod": ["결과 기록", "검증 결과 기록"],
+                    "outcome_refs": [outcomes[owner_contract[owner][0]]],
+                    "meeting_assignment_ref": records_by_owner[owner]["record_id"],
+                } for owner in item_order],
+            }
+            architect = WorkArchitect()
+            wire = architect.pre_validate_structured_output(
+                state, output, output_contract="structured", execution_stage="synthesis",
+            )
+            Draft202012Validator(architect.schema_for(state)).validate(wire)
+            draft_items = architect.apply(state, wire)["draft"]["items"]
+            by_outcome = {row["outcome_refs"][0]: row for row in draft_items}
+            for owner, (task_id, due) in owner_contract.items():
+                assert (by_outcome[outcomes[task_id]]["assignee"],
+                        by_outcome[outcomes[task_id]]["duedate"]) == (owner, due)
 
 
 def test_all_user_fixed_assignees_skip_recommendation_without_losing_alignment():
@@ -1334,3 +1609,23 @@ def test_meeting_owner_table_drops_unassigned_review_row_invented_by_model():
     got = canonicalize_meeting_owner_table(state, raw)
     assert "writer PoC" in got and "검증 기준 초안" in got
     assert "PSR 최종 검토" not in got
+
+
+def test_meeting_owner_table_never_tie_breaks_equal_summaries_by_source_order():
+    set_person_context("meeting-reply-equal-summary", ["DL-9200"])
+    request = (
+        "회의 기록에서 담당을 정리해줘.\n"
+        "@이다은 — Shared follow-up\n"
+        "하은님 — Shared follow-up"
+    )
+    state = {**_state(request), "intent": "ask", "questions": []}
+    raw = (
+        "| 작업 | 담당 | 기한 |\n|---|---|---|\n"
+        "| Shared follow-up | {{mention:invented.a}} | - |\n"
+        "| Shared follow-up | {{mention:invented.b}} | - |"
+    )
+
+    got = canonicalize_meeting_owner_table(state, raw)
+
+    assert "Shared follow-up" not in got
+    assert "invented.a" not in got and "invented.b" not in got

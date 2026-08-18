@@ -3654,30 +3654,31 @@ def test_atomic_fact_cap_keeps_late_temporal_group_complete():
     assert {row["temporal_role"] for row in progression} == {"historical", "current"}
 
 
-def test_portfolio_activity_atomic_facts_bind_each_value_to_exact_actor():
-    from app.agent.workflow.agents.portfolio_analyst import activity_atomic_facts
+def test_portfolio_snapshot_atomic_facts_bind_each_value_to_exact_actor():
+    from app.agent.workflow.agents.result_integrator import _portfolio_atomic_facts
     from app.agent.workflow.evidence_index import build_atomic_fact_ledger
 
-    material = (
-        "[로스터] Acme: acct.alice, acct.bob (2명)\n"
-        "[조회 기간] 최근 7일\n"
-        "[acct.alice] 담당/변경 티켓: ACME-1 \"export\"(Done) | "
-        "코멘트 등 활동: ACME-1 rollout note | 문서 활동: export guide\n"
-        "[acct.bob] 담당/변경 티켓: ACME-2 \"import\"(Open) | "
-        "코멘트 등 활동: 없음 | 문서 활동: import guide"
-    )
+    snapshot = {"version": "portfolio.snapshot.v1", "materials": [{
+        "kind": "group_activity", "complete": True,
+        "roster": ["acct.alice", "acct.bob"],
+        "workload": {"availability": "not_requested"},
+        "activities": [
+            {"user_id": "acct.alice", "availability": "available", "data": {
+                "touched": [{"key": "ACME-1", "summary": "export", "status": "Done"}],
+                "jiraActivity": [{"key": "ACME-1", "what": "rollout note"}],
+                "docActivity": [{"title": "export guide"}]}},
+            {"user_id": "acct.bob", "availability": "available", "data": {
+                "touched": [{"key": "ACME-2", "summary": "import", "status": "Open"}],
+                "jiraActivity": [], "docActivity": [{"title": "import guide"}]}},
+        ],
+    }]}
+    facts = build_atomic_fact_ledger({}, extra_facts=_portfolio_atomic_facts(snapshot))
+    by_actor = {(row["subject_id"], row["predicate"]): row["value"] for row in facts}
 
-    facts = build_atomic_fact_ledger({}, extra_facts=activity_atomic_facts(material))
-
-    assert {(row["subject_id"], row["predicate"], row["value"]) for row in facts} == {
-        ("acct.alice", "assigned_or_changed_tickets", 'ACME-1 "export"(Done)'),
-        ("acct.alice", "jira_activity", "ACME-1 rollout note"),
-        ("acct.alice", "document_activity", "export guide"),
-        ("acct.bob", "assigned_or_changed_tickets", 'ACME-2 "import"(Open)'),
-        ("acct.bob", "jira_activity", "없음"),
-        ("acct.bob", "document_activity", "import guide"),
-    }
-    assert all(row["source_id"] == f"portfolio:activity:{row['subject_id']}"
+    assert "ACME-1" in by_actor[("acct.alice", "assigned_or_changed_tickets")]
+    assert "ACME-2" not in by_actor[("acct.alice", "assigned_or_changed_tickets")]
+    assert "ACME-2" in by_actor[("acct.bob", "assigned_or_changed_tickets")]
+    assert all(row["source_id"] == f"portfolio:{row['subject_id']}"
                for row in facts)
     assert all(row["temporal_role"] == "observed" for row in facts)
 

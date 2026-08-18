@@ -1916,13 +1916,24 @@ def test_an_explicit_modify_request_still_produces_a_change_plan():
 
 
 def test_exact_current_turn_mutation_replaces_stale_creation_draft():
+    from app.agent.workflow.effect_contract import issue_requested_update_effects
+
     stale = {"questions": [], "mode": "task", "rationale": "이전 조사 기반",
              "items": [{"summary": "[ETL] 이전 fdc 조사 작업", "type": "Bug"}],
              "change": {}}
-    state = _msg(
-        "이건 그만. DL-9203의 priority만 P4-Trivial로 바꾸는 승인 전 초안을 보여줘.",
-        intent=Intent.MODIFY, mentioned_keys=["DL-9203"],
-    )
+    text = "이건 그만. DL-9203의 priority만 P4-Trivial로 바꾸는 승인 전 초안을 보여줘."
+    state = _msg(text, intent=Intent.MODIFY, mentioned_keys=["DL-9203"])
+    state["continuation_contract"] = {
+        "version": "continuation.v1", "action": "update",
+        "root_request": text, "target_keys": ["DL-9203"],
+        "outcome_ids": ["update-one"], "decisions": [],
+    }
+    state["request_plan"] = {
+        "requested_effects": issue_requested_update_effects([{
+            "target": "DL-9203", "field": "priority",
+            "value": "P4-Trivial", "literal": "P4-Trivial",
+        }], ["DL-9203"], text),
+    }
     result = WorkArchitect().apply(state, stale)
 
     assert not result["draft"]["items"]

@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """Direct meeting identity and Auditor contracts; no graph/effect execution involved."""
 
+from itertools import permutations
+
 from app.agent.workflow.agents import auditor
-from app.agent.workflow.meeting_context import meeting_assignment_bindings
+from app.agent.workflow.meeting_context import (
+    meeting_assignment_bindings, meeting_assignment_source_mapping,
+)
 
 
 def _three_outcome_fixture():
@@ -13,12 +17,16 @@ def _three_outcome_fixture():
             "duedate": "2031-04-12",
             "assignee": "acct.consumer",
             "assignee_source": "user",
+            "meeting_assignment_ref": "decision-2",
+            "outcome_refs": ["outcome:consumer"],
         },
         {
             "item_id": "work-item:privacy",
             "summary": "Acme privacy checklist",
             "duedate": "2031-04-13",
             "assignee_source": "user_unassigned",
+            "meeting_assignment_ref": "decision-3",
+            "outcome_refs": ["outcome:privacy"],
         },
         {
             "item_id": "work-item:producer",
@@ -26,6 +34,8 @@ def _three_outcome_fixture():
             "duedate": "2031-04-11",
             "assignee": "acct.producer",
             "assignee_source": "user",
+            "meeting_assignment_ref": "decision-1",
+            "outcome_refs": ["outcome:producer"],
         },
     ]
     records = [
@@ -34,6 +44,7 @@ def _three_outcome_fixture():
             "work": "Acme producer evidence",
             "due": "2031-04-11",
             "owner_decision": "assigned",
+            "outcome_ref": "outcome:producer",
             "source_evidence": {"kind": "meeting_minutes", "record_id": "decision-1"},
         },
         {
@@ -41,6 +52,7 @@ def _three_outcome_fixture():
             "work": "Acme consumer verification",
             "due": "2031-04-12",
             "owner_decision": "assigned",
+            "outcome_ref": "outcome:consumer",
             "source_evidence": {"kind": "meeting_minutes", "record_id": "decision-2"},
         },
         {
@@ -48,6 +60,7 @@ def _three_outcome_fixture():
             "work": "Acme privacy checklist",
             "due": "2031-04-13",
             "owner_decision": "unassigned",
+            "outcome_ref": "outcome:privacy",
             "source_evidence": {"kind": "meeting_minutes", "record_id": "decision-3"},
         },
     ]
@@ -149,6 +162,234 @@ def test_explicit_outcome_reference_precedes_misleading_work_terms():
         "work-item:privacy": "",
         "work-item:producer": "acct.producer",
     }
+
+
+def test_same_summary_assignments_bind_by_stable_source_ref_across_permutations():
+    """Mutable titles and collection order can never select another sibling's scalars."""
+    items, records, people = _three_outcome_fixture()
+    source_refs = {
+        "work-item:consumer": "meeting-source:consumer",
+        "work-item:privacy": "meeting-source:privacy",
+        "work-item:producer": "meeting-source:producer",
+    }
+    record_refs = (
+        "meeting-source:producer",
+        "meeting-source:consumer",
+        "meeting-source:privacy",
+    )
+    for item in items:
+        item["summary"] = "Shared release follow-up"
+        item["meeting_assignment_ref"] = source_refs[item["item_id"]]
+    for record, source_ref in zip(records, record_refs):
+        record["work"] = "Shared release follow-up"
+        record["source_evidence"] = {
+            "kind": "meeting_minutes", "record_id": source_ref,
+        }
+
+    expected = {
+        "work-item:consumer": ("acct.consumer", "2031-04-12"),
+        "work-item:privacy": ("", "2031-04-13"),
+        "work-item:producer": ("acct.producer", "2031-04-11"),
+    }
+    for item_order in permutations(items):
+        for record_order in permutations(records):
+            bindings = meeting_assignment_bindings(item_order, record_order, people)
+            assert {
+                row["item_id"]: (row["owner_id"], row["due"])
+                for row in bindings
+            } == expected
+
+
+def test_same_summary_without_explicit_identity_is_fail_closed(monkeypatch):
+    items, records, people = _three_outcome_fixture()
+    for item in items:
+        item["summary"] = "Shared release follow-up"
+        item.pop("meeting_assignment_ref")
+        item.pop("outcome_refs")
+    for record in records:
+        record["work"] = "Shared release follow-up"
+        record.pop("outcome_ref")
+
+    bindings = meeting_assignment_bindings(items, records, people)
+    errors = auditor._meeting_assignment_errors(
+        _runtime_state(monkeypatch, items, records, people),
+    )
+
+    assert bindings == []
+    assert {row["index"] for row in errors if row["index"] >= 0} == {0, 1, 2}
+    assert all(row["source"] == "meeting_assignment" for row in errors)
+
+
+def test_same_summary_model_cannot_swap_a_source_bound_sibling_owner(monkeypatch):
+    items, records, people = _three_outcome_fixture()
+    for row in [*items, *records]:
+        row["summary" if "summary" in row else "work"] = "Shared release follow-up"
+    false_swap = {
+        "index": 0, "check": "request", "finding_kind": "field_mismatch",
+        "field": "assignee", "expected": "acct.producer",
+        "actual": "acct.consumer",
+        "message": "두 번째 sibling을 첫 번째 source owner로 바꿔야 합니다.",
+        "fix": "acct.producer로 변경하세요.",
+    }
+
+    blocking, advice = auditor._partition_model_problems(
+        _runtime_state(monkeypatch, items, records, people), [false_swap],
+    )
+
+    assert blocking == [] and advice == []
+
+
+def test_swapped_source_refs_conflict_with_explicit_upstream_outcome_identity():
+    """When upstream carries the relation, the source wire rejects a unique-but-wrong ref."""
+    items = [
+        {"summary": "Shared follow-up", "outcome_refs": ["outcome:a"],
+         "meeting_assignment_ref": "meeting-source:b"},
+        {"summary": "Shared follow-up", "outcome_refs": ["outcome:b"],
+         "meeting_assignment_ref": "meeting-source:a"},
+    ]
+    records = [
+        {"work": "Shared follow-up", "owner": "acct.a", "due": "2031-04-11",
+         "owner_decision": "assigned", "outcome_ref": "outcome:a",
+         "source_evidence": {"record_id": "meeting-source:a"}},
+        {"work": "Shared follow-up", "owner": "acct.b", "due": "2031-04-12",
+         "owner_decision": "assigned", "outcome_ref": "outcome:b",
+         "source_evidence": {"record_id": "meeting-source:b"}},
+    ]
+
+    mapping, issues = meeting_assignment_source_mapping(items, records)
+
+    assert mapping == {}
+    assert {row["index"] for row in issues if row["index"] >= 0} == {0, 1}
+    assert all("outcome identity" in row["message"] for row in issues if row["index"] >= 0)
+
+
+def test_valid_source_ref_permutation_without_upstream_relation_is_untrusted():
+    """Opaque ids prove record existence, not which indistinguishable sibling selected it."""
+    items = [
+        {"summary": "Shared follow-up", "outcome_refs": ["outcome:a"],
+         "meeting_assignment_ref": "meeting-source:b"},
+        {"summary": "Shared follow-up", "outcome_refs": ["outcome:b"],
+         "meeting_assignment_ref": "meeting-source:a"},
+    ]
+    records = [
+        {"work": "Shared follow-up", "owner": "acct.a", "due": "2031-04-11",
+         "owner_decision": "assigned",
+         "source_evidence": {"record_id": "meeting-source:a"}},
+        {"work": "Shared follow-up", "owner": "acct.b", "due": "2031-04-12",
+         "owner_decision": "assigned",
+         "source_evidence": {"record_id": "meeting-source:b"}},
+    ]
+
+    mapping, issues = meeting_assignment_source_mapping(items, records)
+
+    assert mapping == {}
+    assert {row["index"] for row in issues if row["index"] >= 0} == {0, 1}
+    assert all("typed outcome/item identity" in row["message"]
+               for row in issues if row["index"] >= 0)
+
+
+def test_overlapping_outcome_sets_cannot_authorize_swapped_source_refs():
+    """Set overlap is not sibling identity; only the exact non-empty set may bind."""
+    items = [
+        {"outcome_refs": ["outcome:a"], "meeting_assignment_ref": "meeting-source:b"},
+        {"outcome_refs": ["outcome:b"], "meeting_assignment_ref": "meeting-source:a"},
+    ]
+    records = [
+        {"outcome_refs": ["outcome:a", "outcome:b"],
+         "source_evidence": {"record_id": "meeting-source:a"}},
+        {"outcome_refs": ["outcome:a", "outcome:b"],
+         "source_evidence": {"record_id": "meeting-source:b"}},
+    ]
+
+    mapping, issues = meeting_assignment_source_mapping(items, records)
+
+    assert mapping == {}
+    assert {row["index"] for row in issues if row["index"] >= 0} == {0, 1}
+
+
+def test_single_root_single_record_remains_legacy_unambiguous():
+    record = {"owner": "acct.a", "owner_decision": "assigned",
+              "source_evidence": {"record_id": "meeting-source:a"}}
+
+    assert meeting_assignment_source_mapping([{}], [record]) == ({0: 0}, [])
+    assert meeting_assignment_source_mapping(
+        [{"meeting_assignment_ref": "meeting-source:a"}], [record],
+    ) == ({0: 0}, [])
+    mapping, issues = meeting_assignment_source_mapping(
+        [{"meeting_assignment_ref": "meeting-source:unknown"}], [record],
+    )
+    assert mapping == {} and issues
+
+
+def test_empty_source_due_is_authoritative_absence_for_auditor(monkeypatch):
+    item = {
+        "item_id": "work-item:a", "summary": "Shared follow-up",
+        "outcome_refs": ["outcome:a"], "meeting_assignment_ref": "meeting-source:a",
+        "assignee": "acct.a", "assignee_source": "user", "duedate": "2099-01-01",
+    }
+    record = {
+        "work": "Shared follow-up", "owner": "acct.a", "due": "",
+        "owner_decision": "assigned", "outcome_ref": "outcome:a",
+        "source_evidence": {"record_id": "meeting-source:a"},
+    }
+
+    errors = auditor._meeting_assignment_errors(
+        _runtime_state(monkeypatch, [item], [record], {"Owner A": "acct.a"}),
+    )
+
+    assert any(row["field"] == "duedate" and row["expected"] == "empty"
+               and row["actual"] == "2099-01-01" for row in errors)
+
+
+def test_no_source_sentinel_rejects_untyped_meeting_scalars_at_auditor(monkeypatch):
+    items = [
+        {"item_id": "work-item:a", "summary": "Shared follow-up",
+         "outcome_refs": ["outcome:a"], "meeting_assignment_ref": "meeting-source:a",
+         "assignee": "acct.a", "assignee_source": "user", "duedate": "2031-04-11"},
+        {"item_id": "work-item:b", "summary": "Shared follow-up",
+         "outcome_refs": ["outcome:b"], "meeting_assignment_ref": "meeting-source:none",
+         "assignee": "acct.invented", "assignee_source": "user",
+         "duedate": "2099-01-01"},
+    ]
+    record = {
+        "work": "Shared follow-up", "owner": "acct.a", "due": "2031-04-11",
+        "owner_decision": "assigned", "outcome_ref": "outcome:a",
+        "source_evidence": {"record_id": "meeting-source:a"},
+    }
+
+    errors = auditor._meeting_assignment_errors(
+        _runtime_state(monkeypatch, items, [record], {"Owner A": "acct.a"}),
+    )
+
+    assert {(row["index"], row["field"]) for row in errors} >= {
+        (1, "assignee"), (1, "duedate"),
+    }
+
+
+def test_no_source_sentinel_accepts_exact_separate_typed_scalars(monkeypatch):
+    request = "회의 기록에서 Task 2건을 만들고 둘 다 마감은 2031-04-12"
+    items = [
+        {"item_id": "work-item:a", "outcome_refs": ["outcome:a"],
+         "meeting_assignment_ref": "meeting-source:a", "assignee": "acct.a",
+         "assignee_source": "user", "duedate": "2031-04-11"},
+        {"item_id": "work-item:b", "outcome_refs": ["outcome:b"],
+         "meeting_assignment_ref": "meeting-source:none", "assignee": "skcc.b1234",
+         "assignee_source": "user", "duedate": "2031-04-12"},
+    ]
+    record = {
+        "owner": "acct.a", "due": "2031-04-11", "owner_decision": "assigned",
+        "outcome_ref": "outcome:a",
+        "source_evidence": {"record_id": "meeting-source:a"},
+    }
+    state = _runtime_state(monkeypatch, items, [record], {"Owner A": "acct.a"})
+    state["request_text"] = request
+    state["continuation_contract"] = {
+        "version": "continuation.v1", "action": "create", "root_request": request,
+        "decisions": [{"field": "assignee", "value": "skcc.b1234"}],
+    }
+
+    assert not [row for row in auditor._meeting_assignment_errors(state)
+                if row.get("index") == 1 and row.get("field") in {"assignee", "duedate"}]
 
 
 def test_grounding_contract_bounds_people_to_assignment_authority(monkeypatch):

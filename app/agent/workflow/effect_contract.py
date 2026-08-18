@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.agent.workflow.contracts import RequestedUpdateEffect
 from app.agent.workflow.state import AgentState, Node
 
 
@@ -85,6 +86,10 @@ _PRIORITY_NAMES = {
     "0": "P0-Blocker", "1": "P1-Critical", "2": "P2-Major",
     "3": "P3-Minor", "4": "P4-Trivial",
 }
+_AMBIGUOUS_UPDATE = re.compile(
+    r"(?:아니라|아닌|말고|잘못|하지\s*마|취소|제외|"
+    r"\bnot\b|\binstead\b|\bexcept\b|\bcancel\b)", re.I,
+)
 
 _FIELD_LABELS = {
     "summary": "제목",
@@ -241,17 +246,21 @@ def _literal_requested_values(text: str) -> dict[str, str]:
     """
     source = " ".join(str(text or "").split())
     values: dict[str, str] = {}
-    priority = _PRIORITY.search(source)
-    if priority and re.search(r"우선순위|\bpriority\b", source, re.I):
-        values["priority"] = _PRIORITY_NAMES[priority.group(1)]
-    due = _DATE.search(source)
-    if due and re.search(r"마감|기한|due(?:date)?|deadline", source, re.I):
-        values["duedate"] = due.group(1)
+    priorities = list(_PRIORITY.finditer(source))
+    if len(priorities) == 1 and re.search(
+            r"우선순위|(?<![A-Za-z])priority(?![A-Za-z])", source, re.I):
+        values["priority"] = _PRIORITY_NAMES[priorities[0].group(1)]
+    dates = list(_DATE.finditer(source))
+    if len(dates) == 1 and re.search(r"마감|기한|due(?:date)?|deadline", source, re.I):
+        values["duedate"] = dates[0].group(1)
     if re.search(r"담당|배정|할당|assignee|owner", source, re.I):
-        account = _ACCOUNT.search(source)
-        if account:
-            values["assignee"] = account.group(1).casefold()
-        elif re.search(r"미\s*할당|담당(?:자)?\s*(?:없음|없이)|unassigned", source, re.I):
+        accounts = list(_ACCOUNT.finditer(source))
+        unassigned = list(re.finditer(
+            r"미\s*할당|담당(?:자)?\s*(?:없음|없이)|unassigned", source, re.I,
+        ))
+        if len(accounts) == 1 and not unassigned:
+            values["assignee"] = accounts[0].group(1).casefold()
+        elif len(unassigned) == 1 and not accounts:
             values["assignee"] = ""
     if re.search(r"상위|부모|parent|Epic|에픽|아래", source, re.I):
         parent = _KEY.search(source)
@@ -259,14 +268,73 @@ def _literal_requested_values(text: str) -> dict[str, str]:
             values["parent"] = parent.group(1).upper()
         elif re.search(r"최상위|top[- ]?level|parent\s*(?:none|없음)", source, re.I):
             values["parent"] = ""
-    summary = re.search(
+    summaries = list(re.finditer(
         r"(?:제목|summary|title)(?:만|을|를)?\s*(?:은|는|:)?\s*"
         r"['\"“‘]([^'\"”’\n]{2,240})['\"”’]",
         source, re.I,
-    )
-    if summary:
-        values["summary"] = summary.group(1).strip()
+    ))
+    if len(summaries) == 1:
+        values["summary"] = summaries[0].group(1).strip()
     return values
+
+
+def _current_message_digest(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def _canonical_update_literal(field: str, literal: str) -> str:
+    """Canonicalize one exact value span without interpreting update intent."""
+    value = str(literal or "").strip()
+    if field == "priority":
+        match = _PRIORITY.fullmatch(value)
+        return _PRIORITY_NAMES[match.group(1)] if match else ""
+    if field == "duedate":
+        return value if _DATE.fullmatch(value) else ""
+    if field == "summary":
+        return value
+    return ""
+
+
+def issue_requested_update_effects(value, allowed_targets, current_text: str) -> list[dict]:
+    """Ground model-proposed rows to one unambiguous current-turn literal mapping.
+
+    The model proposes the semantic destination, but runtime issues the persisted envelope:
+    every row must reproduce an exact raw value span and the complete unique scalar mapping.
+    The server-owned digest prevents a valid-looking row from being replayed on another turn.
+    """
+    if not isinstance(value, list) or not value or len(value) > 3:
+        return []
+    text = str(current_text or "")
+    targets = {
+        str(target or "").strip().upper() for target in allowed_targets or []
+        if _KEY.fullmatch(str(target or "").strip())
+    }
+    if not targets or _AMBIGUOUS_UPDATE.search(text):
+        return []
+    digest = _current_message_digest(text)
+    rows: list[RequestedUpdateEffect] = []
+    try:
+        for raw in value:
+            if (not isinstance(raw, dict) or "source_digest" in raw
+                    or set(raw) != {"target", "field", "value", "literal"}):
+                return []
+            row = RequestedUpdateEffect.model_validate({**raw, "source_digest": digest})
+            if (row.literal not in text
+                    or _canonical_update_literal(row.field, row.literal) != row.value):
+                return []
+            rows.append(row)
+    except Exception:
+        return []
+    identities = [(row.target, row.field) for row in rows]
+    decoded = {
+        field: value for field, value in _literal_requested_values(text).items()
+        if field in {"priority", "duedate", "summary"}
+    }
+    proposed = {row.field: row.value for row in rows}
+    if (len(identities) != len(set(identities)) or {row.target for row in rows} != targets
+            or not decoded or proposed != decoded):
+        return []
+    return [row.model_dump() for row in rows]
 
 
 def _requested_effect_digest(effects: list[dict]) -> str:
@@ -353,9 +421,51 @@ def _create_requested_effects(state: AgentState, draft: dict) -> list[RequestedE
     return effects
 
 
-def _typed_update_scalar_authority(
+def requested_update_effect_authority(
+        state: AgentState) -> tuple[list[RequestedEffect], str]:
+    """Verify the runtime-issued target→field→value envelope against its source turn."""
+    plan = state.get("request_plan") or {}
+    if not isinstance(plan, dict) or "requested_effects" not in plan:
+        return [], "missing"
+    raw_rows = plan.get("requested_effects")
+    if not isinstance(raw_rows, list) or not raw_rows or len(raw_rows) > 3:
+        return [], "missing" if raw_rows == [] else "invalid_typed_effects"
+    contract = state.get("continuation_contract") or {}
+    if (not isinstance(contract, dict) or contract.get("version") != "continuation.v1"
+            or contract.get("action") not in {"update", "mixed"}):
+        return [], "invalid_typed_effects"
+    targets = {
+        str(value or "").strip().upper() for value in contract.get("target_keys") or []
+        if _KEY.fullmatch(str(value or "").strip())
+    }
+    source = str(contract.get("root_request") or "")
+    if not source or _AMBIGUOUS_UPDATE.search(source):
+        return [], "unverified_current_literal"
+    try:
+        typed = [RequestedUpdateEffect.model_validate(row) for row in raw_rows]
+    except Exception:
+        return [], "invalid_typed_effects"
+    identities = [(row.target, row.field) for row in typed]
+    if (not targets or len(identities) != len(set(identities))
+            or {row.target for row in typed} != targets):
+        return [], "invalid_typed_effects"
+    digest = _current_message_digest(source)
+    decoded = {
+        field: value for field, value in _literal_requested_values(source).items()
+        if field in {"priority", "duedate", "summary"}
+    }
+    proposed = {row.field: row.value for row in typed}
+    if (not decoded or proposed != decoded
+            or any(row.source_digest != digest or row.literal not in source
+                   or _canonical_update_literal(row.field, row.literal) != row.value
+                   for row in typed)):
+        return [], "unverified_current_literal"
+    return [RequestedEffect(row.target, row.field, row.value) for row in typed], ""
+
+
+def _legacy_update_scalar_authority(
         state: AgentState) -> tuple[list[str], dict[str, str], str]:
-    """Decode one frozen update request once into canonical target/scalar authority."""
+    """Compatibility codec for semantic updates; never grants fast-path authority."""
     contract = state.get("continuation_contract") or {}
     if (not isinstance(contract, dict)
             or contract.get("version") != "continuation.v1"
@@ -371,18 +481,55 @@ def _typed_update_scalar_authority(
 
 
 def materialize_requested_update_effects(state: AgentState, plan: dict | None) -> dict:
-    """Compile immutable scalar leaves into Work's update plan before semantic repair.
-
-    This is a field codec over the frozen typed request, not another intent classifier.  It
-    restores exact editable scalars omitted by model projection and binds them to the target
-    snapshot already owned by ``ContinuationContract``. Unsupported/non-scalar mutations stay
-    on the existing fail-closed path.
-    """
-    targets, decoded, _text = _typed_update_scalar_authority(state)
-    values = {
-        field: value for field, value in decoded.items()
-        if field in UPDATE_SCALAR_FIELDS
-    }
+    """Compile RequestPlan effects, with a non-fast legacy codec for old checkpoints."""
+    typed, typed_error = requested_update_effect_authority(state)
+    raw_typed = isinstance(state.get("request_plan"), dict) \
+        and "requested_effects" in state["request_plan"]
+    if raw_typed and typed_error not in {"", "missing"}:
+        materialized = dict(plan or {})
+        materialized.pop("effect_contract", None)
+        materialized.pop("requested_effects", None)
+        materialized["requested_effects_error"] = {
+            "contract": "requested-effects-error.v1", "kind": typed_error,
+        }
+        return materialized
+    if typed:
+        targets = list(dict.fromkeys(effect.target for effect in typed))
+        per_target = {
+            target: {effect.field: effect.value for effect in typed if effect.target == target}
+            for target in targets
+        }
+        if len(targets) > 1 and len({_canonical_value(value)
+                                     for value in per_target.values()}) != 1:
+            materialized = dict(plan or {})
+            materialized.pop("effect_contract", None)
+            materialized.pop("requested_effects", None)
+            materialized["requested_effects_error"] = {
+                "contract": "requested-effects-error.v1",
+                "kind": "per_target_plan_required", "targets": targets,
+            }
+            return materialized
+        values = per_target[targets[0]]
+    else:
+        targets, decoded, legacy_text = _legacy_update_scalar_authority(state)
+        values = {field: value for field, value in decoded.items()
+                  if field in UPDATE_SCALAR_FIELDS}
+        if len(targets) > 1 and not values:
+            candidate_fields = []
+            if (_PRIORITY.search(legacy_text)
+                    and re.search(r"우선순위|\bpriority\b", legacy_text, re.I)):
+                candidate_fields.append("priority")
+            if (_DATE.search(legacy_text)
+                    and re.search(r"마감|기한|due(?:date)?|deadline", legacy_text, re.I)):
+                candidate_fields.append("duedate")
+            if candidate_fields:
+                materialized = dict(plan or {})
+                materialized["requested_effects_error"] = {
+                    "contract": "requested-effects-error.v1",
+                    "kind": "per_target_mapping_required", "targets": targets,
+                    "fields": candidate_fields,
+                }
+                return materialized
     if not targets or not values:
         return plan if isinstance(plan, dict) else {}
 
@@ -390,7 +537,7 @@ def materialize_requested_update_effects(state: AgentState, plan: dict | None) -
     # target→field→value mapping.  Applying one scalar parse to every target would turn
     # ``A due X, B due Y`` into a Cartesian update using X.  Until Request Architect emits
     # typed per-target effects, multi-target scalar requests must remain fail-closed.
-    if len(targets) > 1:
+    if len(targets) > 1 and not typed:
         materialized = dict(plan or {})
         materialized.pop("effect_contract", None)
         materialized.pop("requested_effects", None)
@@ -404,27 +551,38 @@ def materialize_requested_update_effects(state: AgentState, plan: dict | None) -
 
     materialized = dict(plan or {})
     materialized.pop("requested_effects_error", None)
-    materialized["key"] = targets[0]
-    materialized.pop("keys", None)
+    if len(targets) == 1:
+        materialized["key"] = targets[0]
+        materialized.pop("keys", None)
+    else:
+        materialized["keys"] = targets
+        materialized.pop("key", None)
     changes = dict(materialized.get("changes") or {})
     for field, value in values.items():
         changes[field] = value
     materialized["changes"] = changes
     materialized.setdefault("comment", "")
     materialized.setdefault("why", "typed requested scalar fields")
-    snapshot = _effect_snapshot([
+    snapshot = _effect_snapshot(typed or [
         RequestedEffect(target, field, _canonical_value(value))
-        for target in targets for field, value in values.items()
-    ])
+        for target in targets for field, value in values.items()])
     materialized["effect_contract"] = "requested-effects.v1"
     materialized["requested_effects"] = snapshot
     return materialized
 
 
 def _update_requested_effects(state: AgentState, plan: dict) -> list[RequestedEffect]:
-    targets, values, text = _typed_update_scalar_authority(state)
-    if len(targets) > 1 and values:
-        return []
+    typed, _typed_error = requested_update_effect_authority(state)
+    if typed:
+        targets = list(dict.fromkeys(effect.target for effect in typed))
+        values = {(effect.target, effect.field): effect.value for effect in typed}
+        text = str((state.get("continuation_contract") or {}).get("root_request") or "")
+    else:
+        targets, decoded, text = _legacy_update_scalar_authority(state)
+        if len(targets) > 1 and decoded:
+            return []
+        values = {(target, field): value for target in targets
+                  for field, value in decoded.items()}
     changes = plan.get("changes") if isinstance(plan.get("changes"), dict) else {}
     # Exact list/body values may already have been compiled by Work even when their literal
     # grammar is not scalar. Seal only fields explicitly named by the immutable request.
@@ -434,18 +592,16 @@ def _update_requested_effects(state: AgentState, plan: dict) -> list[RequestedEf
     }
     for field, pattern in aliases.items():
         if field in changes and re.search(pattern, text, re.I):
-            values.setdefault(field, _canonical_value(changes[field]))
+            for target in targets:
+                values.setdefault((target, field), _canonical_value(changes[field]))
     if not targets:
         targets = [
             str(value or "").strip().upper()
             for value in [*(plan.get("keys") or []), plan.get("key")]
             if _KEY.fullmatch(str(value or "").strip())
         ]
-    return [
-        RequestedEffect(target, field, _canonical_value(value))
-        for target in list(dict.fromkeys(targets))
-        for field, value in values.items()
-    ]
+    return [RequestedEffect(target, field, _canonical_value(value))
+            for (target, field), value in values.items()]
 
 
 def derive_requested_effect_contract(
@@ -551,8 +707,19 @@ def validate_requested_effect_contract(state: AgentState) -> list[dict]:
             "evidence": ["continuation target set has multiple scalar destinations"],
             "message": "다중 대상 scalar 변경의 target별 값을 확정할 수 없다",
         }]
-    targets, decoded, _text = _typed_update_scalar_authority(view)
-    if len(targets) > 1 and any(field in UPDATE_SCALAR_FIELDS for field in decoded):
+    typed, typed_error = requested_update_effect_authority(view)
+    raw_typed = isinstance(view.get("request_plan"), dict) \
+        and "requested_effects" in view["request_plan"]
+    if raw_typed and typed_error not in {"", "missing"}:
+        return [{
+            "index": -1, "field": "requested_effects", "source": "final_authority",
+            "expected": "valid RequestPlan target-field-value mapping",
+            "actual": typed_error, "evidence": ["typed RequestPlan requested_effects"],
+            "message": "RequestPlan의 exact requested effects가 유효하지 않다",
+        }]
+    targets, decoded, _text = _legacy_update_scalar_authority(view)
+    if not typed and len(targets) > 1 \
+            and any(field in UPDATE_SCALAR_FIELDS for field in decoded):
         return [{
             "index": -1, "field": "requested_effects", "source": "final_authority",
             "expected": "typed target-field-value mapping",
@@ -850,8 +1017,9 @@ __all__ = [
     "capture_user_field_locks", "continuation_action", "current_work_failed",
     "defect_signature", "defect_signature_set", "derive_requested_effect_contract",
     "final_effect", "finding_signature_key",
-    "materialize_requested_update_effects",
-    "payload_digest", "project_final_authority_state", "seal_requested_effect_contract",
+    "issue_requested_update_effects", "materialize_requested_update_effects",
+    "payload_digest", "project_final_authority_state", "requested_update_effect_authority",
+    "seal_requested_effect_contract",
     "parse_defect_signature_set", "recurrent_finding_signature_keys",
     "typed_audit_findings", "validate_requested_effect_contract",
 ]

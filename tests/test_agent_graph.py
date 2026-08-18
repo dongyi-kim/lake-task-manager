@@ -1878,6 +1878,91 @@ def test_evaluation_snapshot_exposes_retrieval_evidence_without_secrets():
     assert not ({"messages", "token", "apiKey", "providerConfig"} & set(evidence))
 
 
+def test_evaluation_snapshot_uses_canonical_evidence_without_mutating_state(monkeypatch):
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    from app.agent.workflow import session
+
+    inconsistent = "기간은 2026-08-01부터 2026-08-20까지 1주 기간입니다."
+    state = {
+        "evidence": [{
+            "key": "ACME-901",
+            "title": "Atlas 일정 검토",
+            "observations": [{
+                "source": "description", "text": inconsistent, "direct": True,
+            }],
+        }],
+        "materialized_ticket_sources": {"ticketDetails": [{
+            "key": "ACME-901", "summary": "Atlas 일정 검토",
+            "description": inconsistent,
+        }]},
+    }
+    before = deepcopy(state)
+    graph = SimpleNamespace(get_state=lambda _config: SimpleNamespace(values=state))
+    monkeypatch.setattr(session, "get_graph", lambda: graph)
+    monkeypatch.setattr(session, "_config", lambda _thread_id: {})
+
+    evidence = session.evaluation_snapshot("eval-thread")["evidence"]
+
+    assert state == before
+    assert evidence[0]["_source_id"] == "ticket:ACME-901"
+    observation = evidence[0]["observations"][0]
+    assert "정확히 19일" in observation["text"]
+    assert observation["authority"] == "research_projection"
+    assert observation["direct"] is False
+
+
+def test_evaluation_snapshot_does_not_fall_back_to_rejected_raw_evidence(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.agent.workflow import session
+    from app.agent.workflow.agents import result_integrator
+
+    state = {"evidence": [{"key": "ACME-902", "title": "model-only claim"}]}
+    graph = SimpleNamespace(get_state=lambda _config: SimpleNamespace(values=state))
+    monkeypatch.setattr(session, "get_graph", lambda: graph)
+    monkeypatch.setattr(session, "_config", lambda _thread_id: {})
+    monkeypatch.setattr(result_integrator, "canonical_evaluation_evidence", lambda _state: [])
+
+    snapshot = session.evaluation_snapshot("eval-thread")
+
+    assert "evidence" not in snapshot
+
+
+def test_evaluation_snapshot_hydrates_selected_docs_only_from_query_authority(monkeypatch):
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    from app.agent.workflow import session
+
+    state = {
+        "query_results": [{
+            "id": "docs", "source": "confluence",
+            "result": {"documentBodies": [{
+                "title": "Atlas plan", "url": "https://docs.example.test/atlas",
+                "text": "canonical decision", "updated": "2026-08-18",
+            }]},
+        }],
+        "related_docs": [{
+            "title": "Atlas plan", "url": "https://docs.example.test/atlas",
+            "text": "model-authored replacement", "updated": "2099-01-01",
+        }],
+    }
+    before = deepcopy(state)
+    graph = SimpleNamespace(get_state=lambda _config: SimpleNamespace(values=state))
+    monkeypatch.setattr(session, "get_graph", lambda: graph)
+    monkeypatch.setattr(session, "_config", lambda _thread_id: {})
+
+    related = session.evaluation_snapshot("eval-thread")["relatedDocs"]
+
+    assert state == before
+    assert related == [{
+        "title": "Atlas plan", "url": "https://docs.example.test/atlas",
+        "text": "canonical decision", "updated": "2026-08-18",
+    }]
+
+
 def test_evaluation_case_reset_drops_the_previous_graph_thread():
     from app.agent.workflow import session
     from tools.agent_eval_isolation import begin_case, finish_case

@@ -161,6 +161,55 @@ def _source_result_hit_count(source_class: str, result: dict) -> int:
     return max(counts or [0])
 
 
+def _materialization_failures(source_class: str, result: dict) -> tuple[list[str], list[str]]:
+    """Return opened-source failures separately from lightweight search coverage.
+
+    A search hit proves only that a candidate was listed.  When QueryRunner then fails to
+    open the selected ticket or document, that candidate cannot become claim evidence even
+    though the search phase itself returned rows.
+    """
+    if not isinstance(result, dict):
+        return [], []
+    errors = [str(value or "").strip() for value in result.get("materializationErrors") or []
+              if str(value or "").strip()]
+    fields = {
+        "jira": ("ticketDetails",),
+        "comments": ("ticketDetails",),
+        "confluence": ("documentBodies",),
+    }.get(source_class, ())
+    identities: list[str] = []
+    for field in fields:
+        for row in result.get(field) or []:
+            if not isinstance(row, dict) or not row.get("error"):
+                continue
+            errors.append(str(row.get("error") or "").strip())
+            identity = str(
+                row.get("key") or row.get("id") or row.get("title") or ""
+            ).strip()
+            identity = _re.sub(r"[\r\n{}]+", " ", identity)[:120]
+            if identity and identity not in identities:
+                identities.append(identity)
+    return list(dict.fromkeys(error for error in errors if error)), identities[:8]
+
+
+def _materialized_hit_count(source_class: str, result: dict) -> int | None:
+    """Count usable exact-open rows, or ``None`` when no materialization was attempted."""
+    if not isinstance(result, dict):
+        return None
+    if source_class in {"jira", "comments"} and isinstance(result.get("ticketDetails"), list):
+        return sum(
+            1 for row in result["ticketDetails"]
+            if isinstance(row, dict) and not row.get("error") and row.get("key")
+        )
+    if source_class == "confluence" and isinstance(result.get("documentBodies"), list):
+        return sum(
+            1 for row in result["documentBodies"]
+            if isinstance(row, dict) and not row.get("error")
+            and str(row.get("text") or row.get("body") or "").strip()
+        )
+    return None
+
+
 def _source_result_candidate_count(source_class: str, result: dict) -> int:
     """Count returned public candidates before an official-provenance gate."""
     if source_class not in _OFFICIAL_EXTERNAL_SOURCE_COVERAGE_CLASSES \
@@ -251,6 +300,20 @@ def _requested_source_coverage(state) -> list[dict]:
         errors = [str((row.get("result") or {}).get("error") or "")
                   for row in executed if isinstance(row.get("result"), dict)
                   and (row.get("result") or {}).get("error")]
+        materialization_errors: list[str] = []
+        materialization_failures: list[str] = []
+        materialized_counts: list[int] = []
+        for row in executed:
+            result = row.get("result") or {}
+            failed, identities = _materialization_failures(source_class, result)
+            materialization_errors.extend(failed)
+            for identity in identities:
+                if identity not in materialization_failures:
+                    materialization_failures.append(identity)
+            count = _materialized_hit_count(source_class, result)
+            if count is not None:
+                materialized_counts.append(count)
+        errors.extend(materialization_errors)
         incomplete_results = [row.get("result") or {} for row in executed
                               if isinstance(row.get("result"), dict)
                               and ((row.get("result") or {}).get("incomplete") is True
@@ -299,6 +362,14 @@ def _requested_source_coverage(state) -> list[dict]:
                if source_class in _OFFICIAL_EXTERNAL_SOURCE_COVERAGE_CLASSES else {}),
             "usable_as_evidence": status == "covered",
             **({
+                "materialized_hits": sum(materialized_counts),
+                "materialization_complete": not materialization_errors,
+            } if materialized_counts or materialization_errors else {}),
+            **({
+                "materialization_failure_count": len(materialization_errors),
+                "materialization_failed_identities": materialization_failures,
+            } if materialization_errors else {}),
+            **({
                 # Source pagination and entity traversal answer different questions. A
                 # green Jira row proves the scoped JQL completed; bounded child/link
                 # expansion remains explicitly non-complete unless its own provider says so.
@@ -308,7 +379,9 @@ def _requested_source_coverage(state) -> list[dict]:
                 "entity_selected": sum(len(row.get("selectedKeys") or []) for row in entity_rows),
                 "entity_truncated": any(row.get("truncated") is True for row in entity_rows),
             } if entity_rows else {}),
-            **({"incomplete_reason": incomplete_reason} if incomplete_reason else {}),
+            **({"incomplete_reason": (
+                "materialization_failed" if materialization_errors else incomplete_reason
+            )} if materialization_errors or incomplete_reason else {}),
             **({"missing_query_ids": missing_query_ids} if missing_query_ids else {}),
         })
     return coverage[:len(_SOURCE_COVERAGE_ORDER)]

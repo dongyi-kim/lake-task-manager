@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import re
+
 from langchain_core.tools import tool
 
 from app.agent import approval
@@ -91,6 +93,45 @@ def _denied(why: str) -> dict:
     return {"ok": False, "needsApproval": True, "error": why}
 
 
+_TICKET_KEY = re.compile(r"^[A-Z][A-Z0-9]*-\d+$", re.I)
+
+
+def _bind_children_to_created_parents(
+        children: list, created: list, *, parent_count: int) -> tuple[list[dict], list[dict]]:
+    """Bind children by the original parent result index, never success-list position."""
+    keys_by_index: dict[int, list[str]] = {}
+    for receipt in created or []:
+        if not isinstance(receipt, dict):
+            continue
+        index, key = receipt.get("index"), str(receipt.get("key") or "").strip().upper()
+        if (not isinstance(index, int) or isinstance(index, bool)
+                or not 0 <= index < parent_count or not _TICKET_KEY.fullmatch(key)):
+            continue
+        keys_by_index.setdefault(index, []).append(key)
+
+    rows, failed = [], []
+    for child_index, child in enumerate(children or []):
+        if not isinstance(child, dict):
+            continue
+        parent_index = child.get("parent_index")
+        parent_keys = (keys_by_index.get(parent_index, [])
+                       if isinstance(parent_index, int) and not isinstance(parent_index, bool)
+                       and 0 <= parent_index < parent_count else [])
+        if len(parent_keys) != 1:
+            failed.append({
+                "index": child_index,
+                "summary": str(child.get("summary") or ""),
+                "error": (f"상위 항목 index {parent_index}가 생성되지 않아 "
+                          "Sub-Task를 만들지 않았습니다."),
+            })
+            continue
+        row = {key: value for key, value in child.items() if key != "parent_index"}
+        row["type"] = "Sub-Task"
+        row["parent"] = parent_keys[0]
+        rows.append(row)
+    return rows, failed
+
+
 @tool
 def create_tickets(mode: str, items: list, approval_token: str, children: list = None) -> dict:
     """Create a validated ticket batch after explicit user approval.
@@ -129,16 +170,12 @@ def create_tickets(mode: str, items: list, approval_token: str, children: list =
         return r
 
     # ── 2단계: 만들어진 부모 키로 Sub-Task 를 붙인다 ──────────────────
-    made = [x for x in (r.get("created") or []) if isinstance(x, dict) and x.get("key")]
-    rows = []
-    for ch in kids:
-        i = ch.get("parent_index")
-        if not isinstance(i, int) or not (0 <= i < len(made)):
-            continue                      # 부모가 안 만들어졌으면 자식도 만들지 않는다
-        row = {k: v for k, v in ch.items() if k != "parent_index"}
-        row["type"] = "Sub-Task"
-        row["parent"] = made[i]["key"]
-        rows.append(row)
+    rows, unbound = _bind_children_to_created_parents(
+        kids, r.get("created") or [], parent_count=len(items or []),
+    )
+    if unbound:
+        r.setdefault("failed", []).extend(unbound)
+        r["ok"] = False
     if not rows:
         return r
     sub = validate_bulk("subtask", rows, c.bulk_lookup())

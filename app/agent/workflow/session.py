@@ -887,6 +887,16 @@ def evaluation_snapshot(thread_id: str) -> dict:
         data = as_dict(dict(st.values or {}))
     except Exception:
         return {}
+    # The reviewer must see the same final evidence selection and deterministic
+    # normalization as the rendered reply.  Keep the checkpoint itself immutable:
+    # ``canonical_evaluation_evidence`` returns a bounded projection and never grants
+    # model-authored prose source authority.
+    from app.agent.workflow.agents.result_integrator import canonical_evaluation_evidence
+    from app.agent.workflow.evidence_index import canonical_related_documents
+    data["evidence"] = canonical_evaluation_evidence(data)
+    data["related_docs"] = canonical_related_documents(
+        data, data.get("related_docs") or [],
+    )
     fields = {
         "requestPlan": "request_plan",
         "queryPlan": "query_plan",

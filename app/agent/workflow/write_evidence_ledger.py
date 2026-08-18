@@ -16,6 +16,7 @@ _ACTION_LABELS = {
     "create": "생성",
     "comment": "댓글 작성",
     "update": "필드 변경",
+    "query": "조회",
 }
 
 
@@ -428,6 +429,13 @@ def _situation(*, duplicate_key: str, duplicate: dict, ticket_count: int,
             "새 중복 티켓을 만들기 전에 이 티켓을 우선한다."
         )
     if ticket_count + document_count + external_count:
+        if action == "query":
+            return (
+                "설정된 검색 범위와 페이지 조건에 따라 QueryPlan 조회를 완료했고 "
+                f"티켓 {ticket_count}건, 문서 {document_count}건, 외부 자료 "
+                f"{external_count}건을 원본 출처와 함께 전달한다. 각 행은 조회된 관찰이며 "
+                "검색 일치만으로 별도 결론이나 현재 상태를 추론하지 않았다."
+            )
         return (
             "설정된 검색 범위와 페이지 조건에 따라 QueryPlan 조회를 완료했고 "
             f"티켓 {ticket_count}건, 문서 {document_count}건, 외부 자료 "
@@ -438,6 +446,11 @@ def _situation(*, duplicate_key: str, duplicate: dict, ticket_count: int,
         return (
             "현재 설정된 검색 범위와 페이지 조건에서 요청과 직접 중복되는 사내 티켓·문서를 "
             "확인하지 못했다. 신규 초안으로 진행한다."
+        )
+    if action == "query":
+        return (
+            "설정된 검색 범위와 페이지 조건의 QueryPlan은 완료됐지만 전달할 원본 행은 "
+            "확인되지 않았다. 이 결과를 범위 밖 자료의 부재로 확대 해석하지 않는다."
         )
     return (
         f"설정된 검색 범위에서 {action_label} 대상의 검증된 원본을 확보하지 못했다. "

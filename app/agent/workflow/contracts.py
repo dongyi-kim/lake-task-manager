@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
@@ -37,12 +38,46 @@ class RequestQuestion(StrictModel):
     field: Literal["target", "action", "scope", "acceptance", "other"]
 
 
+class RequestedUpdateEffect(StrictModel):
+    """One exact scalar mutation grounded to the current user turn by runtime code."""
+
+    target: str = Field(pattern=r"^[A-Z][A-Z0-9]{1,9}-\d+$", max_length=32)
+    field: Literal["priority", "duedate", "summary"]
+    value: str = Field(min_length=1, max_length=240)
+    literal: str = Field(min_length=1, max_length=240)
+    source_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_field_value(self):
+        if self.field == "priority" and self.value not in {
+                "P0-Blocker", "P1-Critical", "P2-Major", "P3-Minor", "P4-Trivial"}:
+            raise ValueError("priority must use one canonical Jira value")
+        if self.field == "duedate":
+            try:
+                parsed = date.fromisoformat(self.value)
+            except ValueError as exc:
+                raise ValueError("duedate must be one valid ISO date") from exc
+            if parsed.isoformat() != self.value:
+                raise ValueError("duedate must use YYYY-MM-DD")
+        if self.value != self.value.strip() or self.literal != self.literal.strip():
+            raise ValueError("requested effect values and literals must be trimmed")
+        return self
+
+
 class RequestPlan(StrictModel):
     goal: str
     tasks: list[AtomicTask]
     request_questions: list[RequestQuestion] = Field(default_factory=list, max_length=3)
     blocking_questions: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+    requested_effects: list[RequestedUpdateEffect] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def unique_requested_effects(self):
+        identities = [(row.target, row.field) for row in self.requested_effects]
+        if len(identities) != len(set(identities)):
+            raise ValueError("requested effects must be unique by target and field")
+        return self
 
 
 class ContinuationDecision(StrictModel):
@@ -266,7 +301,8 @@ ROLE_CONTRACTS = {
 }
 
 
-__all__ = ["ArtifactRef", "AtomicTask", "RequestQuestion", "RequestPlan", "ContinuationDecision",
+__all__ = ["ArtifactRef", "AtomicTask", "RequestQuestion", "RequestedUpdateEffect",
+           "RequestPlan", "ContinuationDecision",
            "ContinuationContract", "QuestionContract", "ResolvedSlot", "QuerySpec", "QueryPlan",
            "QueryIntent", "CompactQueryPlan",
            "ResearchReport", "WorkPlan", "PeopleAdvice", "AuthoredArtifact",

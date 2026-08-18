@@ -231,6 +231,7 @@ class AgentState(TypedDict, total=False):
     pmo_findings: list              # [{"key","point","action"}] 조회에서 확인한 사실
     group_activity: str             # PMO — 로스터 전원 활동 사전 취합(그룹 질의의 3층 자료)
     ticket_progress: str            # PMO — 티켓 한 건의 진척 근거 4갈래 사전 취합
+    portfolio_snapshot: dict        # Portfolio의 bounded raw progress/activity 정본
     person_work_snapshot: dict      # 특정 사람의 현재 미완료 할당 티켓 결정적 조회
     daily_priority_snapshot: dict   # 본인 열린 업무의 deadline+priority 결정적 1순위
     knowledge_brief: dict           # KnowledgeCurator — {concepts, our_context, references, gaps}

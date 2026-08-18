@@ -31,6 +31,7 @@ from app.agent.workflow.agents.work_architect import (
     _explicit_hierarchical_ordinal_contract,
     _evidence_obligation_errors, _verified_evidence_obligations,
     _expected_due_dates_by_root, _expected_parent_epics_by_root,
+    _separate_typed_meeting_scalars,
     as_bulk_items, draft_full_text,
 )
 from app.agent.prompts.roles import SYSTEM_AUDITOR
@@ -63,8 +64,10 @@ from app.agent.workflow.effect_contract import (
     validate_requested_effect_contract,
 )
 from app.agent.workflow.meeting_context import (
+    NO_MEETING_ASSIGNMENT_REF,
     is_meeting_request,
     meeting_assignment_bindings,
+    meeting_assignment_source_mapping,
     meeting_owner_records,
     meeting_requester_instructors,
     resolved_people,
@@ -694,8 +697,42 @@ def _meeting_assignment_errors(state: AgentState) -> list[dict]:
     items = [row for row in ((state.get("draft") or {}).get("items") or [])
              if isinstance(row, dict)]
     bindings = {row["item_id"]: row for row in authority["bindings"]}
-    errors: list[dict] = []
+    errors: list[dict] = meeting_assignment_source_mapping(items, records)[1]
+    separate_authority = _separate_typed_meeting_scalars(state, items)
+    unresolved_identity_indexes = {
+        row.get("index") for row in errors
+        if isinstance(row.get("index"), int) and row.get("index") >= 0
+    }
     for index, item in enumerate(items):
+        if index in unresolved_identity_indexes:
+            continue
+        if (str(item.get("meeting_assignment_ref") or "").strip()
+                == NO_MEETING_ASSIGNMENT_REF):
+            # A no-source sentinel rejects model/recommender scalars. Only a separately
+            # typed current-request field can populate this root.
+            expected = separate_authority.get(index) or {}
+            expected_owner = str(expected.get("assignee") or "").strip()
+            expected_source = str(expected.get("assignee_source") or "").strip()
+            actual_owner = str(item.get("assignee") or "").strip()
+            actual_source = str(item.get("assignee_source") or "").strip()
+            if (actual_owner.casefold(), actual_source) != (
+                    expected_owner.casefold(), expected_source):
+                errors.append({
+                    "index": index, "field": "assignee", "source": "meeting_assignment",
+                    "expected": expected_owner or "empty", "actual": actual_owner or "empty",
+                    "evidence": [NO_MEETING_ASSIGNMENT_REF],
+                    "message": "no-source meeting root에 별도 typed 권위 없는 담당자가 남아 있다",
+                })
+            expected_due = str(expected.get("duedate") or "").strip()
+            actual_due = str(item.get("duedate") or "").strip()
+            if actual_due != expected_due:
+                errors.append({
+                    "index": index, "field": "duedate", "source": "meeting_assignment",
+                    "expected": expected_due or "empty", "actual": actual_due or "empty",
+                    "evidence": [NO_MEETING_ASSIGNMENT_REF],
+                    "message": "no-source meeting root에 별도 typed 권위 없는 기한이 남아 있다",
+                })
+            continue
         source = str(item.get("assignee_source") or "").strip()
         if source not in {"user", "user_unassigned"}:
             continue
@@ -734,10 +771,10 @@ def _meeting_assignment_errors(state: AgentState) -> list[dict]:
             })
         expected_due = str(binding.get("due") or "").strip()
         actual_due = str(item.get("duedate") or "").strip()
-        if expected_due and actual_due != expected_due:
+        if actual_due != expected_due:
             errors.append({
                 "index": index, "item_id": item_id, "field": "duedate",
-                "source": "meeting_assignment", "expected": expected_due,
+                "source": "meeting_assignment", "expected": expected_due or "empty",
                 "actual": actual_due or "missing", "evidence": evidence,
                 "message": (f"회의 source 기한은 {expected_due}이나 최종 payload는 "
                             f"{actual_due or '비어 있음'}"),

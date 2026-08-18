@@ -18,7 +18,10 @@ from app.agent.workflow.continuation import (
     has_typed_continuation_contract,
     merge_continuation_decisions,
 )
-from app.agent.workflow.contracts import QuestionContract, RequestQuestion
+from app.agent.workflow.contracts import (
+    QuestionContract, RequestQuestion,
+)
+from app.agent.workflow.effect_contract import issue_requested_update_effects
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
                                       last_user_text, note)
@@ -102,7 +105,26 @@ SCHEMA = {
             "type": "array", "maxItems": 3,
             "items": RequestQuestion.model_json_schema(),
             "description": ("Missing inputs: target/action only when the object/operation is "
-                            "absent; scope/acceptance/other never block."),
+                             "absent; scope/acceptance/other never block."),
+        },
+        "requested_effects": {
+            "type": "array", "maxItems": 3, "uniqueItems": True,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "pattern": r"^[A-Z][A-Z0-9]{1,9}-\d+$"},
+                    "field": {"type": "string", "enum": ["priority", "duedate", "summary"]},
+                    "value": {"type": "string", "minLength": 1, "maxLength": 240},
+                    "literal": {"type": "string", "minLength": 1, "maxLength": 240},
+                },
+                "required": ["target", "field", "value", "literal"],
+                "additionalProperties": False,
+            },
+            "description": (
+                "Exact scalar mutations only for modify requests. Emit final canonical values "
+                "and copy its exact raw value span into literal for explicit current-user "
+                "targets; omit ambiguous, inferred, unsupported, or multi-valued fields."
+            ),
         },
         "assumptions": {"type": "array", "maxItems": 5,
                         "items": {"type": "string", "maxLength": 200}},
@@ -111,7 +133,8 @@ SCHEMA = {
             "description": "One concise Korean progress line with two to four steps joined by arrows.",
         },
     },
-    "required": ["intent", "keywords", "sufficient", "request_questions"],
+    "required": ["intent", "keywords", "sufficient", "request_questions",
+                 "requested_effects"],
 }
 
 
@@ -974,6 +997,11 @@ def _validated_request_questions(value) -> list[dict]:
     return rows
 
 
+def _validated_requested_effects(value, allowed_targets, current_text: str) -> list[dict]:
+    """Accept only the complete runtime-grounded mapping; partial authority is unsafe."""
+    return issue_requested_update_effects(value, allowed_targets, current_text)
+
+
 def _single_required_request_question(state: dict, request_plan: dict, *,
                                       intent: str, sufficient: bool) -> dict:
     """Project exactly one unresolved target/action on an atomic write plan."""
@@ -1050,6 +1078,10 @@ Classify what the user wants from the conversation, construct an atomic task pla
   checkable deliverables, and keep at most three concise completion criteria per task.
 - A task instruction represents only the user's requested outcome and explicit constraints. Never
   turn an assumption, example, default, or delegated implementation choice into a required outcome.
+- Always return `requested_effects`. For `modify`, emit a row only when the current user explicitly
+  supplied one exact target and final canonical `priority`, ISO `duedate`, or quoted `summary` value.
+  Copy the exact value substring from `Current User Message` into `literal`. Return `[]` for
+  corrections, negation, multiple candidates, unclear targets, or inferred/unsupported fields.
 - Always return `request_questions`: `target` only if the object is absent, `action` only if the
   operation is absent. A named concrete object means target is present. Classify optional boundaries,
   success details, and preferences as `scope`, `acceptance`, or `other`; never relabel them as
@@ -1225,6 +1257,21 @@ Classify what the user wants from the conversation, construct an atomic task pla
                 and carried_contract.get("action") in {"read", "comment", "update", "mixed"}
                 and carried_contract.get("target_keys")):
             mentioned_keys = _copy.deepcopy(carried_contract["target_keys"])
+        current_targets = {
+            match.group(0).upper() for match in _re.finditer(
+                r"(?<![A-Z0-9-])[A-Z][A-Z0-9]{1,9}-\d+(?![A-Z0-9-])", asked, _re.I,
+            )
+        }
+        if state.get("turn_continuation") and carried_contract:
+            current_targets.update(str(value).upper()
+                                   for value in carried_contract.get("target_keys") or [])
+        requested_effects = (_validated_requested_effects(
+            out.get("requested_effects"), current_targets, asked,
+        ) if intent == Intent.MODIFY else [])
+        if requested_effects:
+            request_plan["requested_effects"] = requested_effects
+        else:
+            request_plan.pop("requested_effects", None)
         patch = {
             "intent": intent,
             "keywords": kws,

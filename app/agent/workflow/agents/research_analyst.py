@@ -30,6 +30,10 @@ from app.agent.workflow.write_evidence_ledger import (
     build_completed_write_ledger,
     ledger_text as _ledger_text,
 )
+from app.agent.workflow.typed_fast_path import (
+    evaluate_typed_fast_path,
+    typed_fast_path_note,
+)
 
 SCHEMA = {
     "type": "object",
@@ -173,6 +177,95 @@ def _query_plan_is_complete(state) -> bool:
                 or result.get("materializationErrors")):
             return False
     return True
+
+
+def _query_row_identity(row: dict) -> str:
+    """Return an exact provider-owned identity; display titles are not identities."""
+    url = str(row.get("url") or "").strip()
+    if _re.fullmatch(r"https?://[^\s]+", url, _re.I):
+        return f"url:{url}"
+    value = str(row.get("id") or "").strip()
+    return f"id:{value}" if value else ""
+
+
+def _query_ledger_result_shape(source: str, result: dict) -> tuple[bool, int]:
+    """Validate the lossless result shapes supported by the no-Research-call lane."""
+    if not isinstance(result, dict) or result.get("materializationErrors"):
+        return False, 0
+    if source == "confluence":
+        candidates = result.get("documents", [])
+        bodies = result.get("documentBodies", [])
+        if not isinstance(candidates, list) or not isinstance(bodies, list):
+            return False, 0
+        if any(not isinstance(row, dict) or row.get("error") for row in candidates + bodies):
+            return False, 0
+        body_ids = {_query_row_identity(row) for row in bodies
+                    if _query_row_identity(row) and str(row.get("text") or row.get("body") or "").strip()}
+        candidate_ids = {_query_row_identity(row) for row in candidates if _query_row_identity(row)}
+        valid = (
+            len(body_ids) == len(bodies)
+            and len(candidate_ids) == len(candidates)
+            and candidate_ids.issubset(body_ids)
+        )
+        return valid, len(body_ids)
+    if source in {"web", "github"}:
+        rows = result.get("results")
+        if not isinstance(rows, list):
+            return False, 0
+        valid = all(
+            isinstance(row, dict)
+            and not row.get("error")
+            and bool(_query_row_identity(row))
+            and bool(str(row.get("snippet") or row.get("description") or "").strip())
+            for row in rows
+        )
+        return valid, len(rows)
+    # Jira lightweight search rows omit current scalar/detail authority in the Research
+    # evidence contract. Keep them on the semantic path until a lossless typed snapshot exists.
+    return False, 0
+
+
+def _single_query_fast_path_decision(state):
+    """Allow a zero-Research-call lane only for one typed retrieval outcome.
+
+    QueryRunner has already acquired and bounded the rows.  The final Result role still owns
+    explanation; this path only replaces Research's second semantic pass with the same typed
+    evidence ledger used by completed writes.  Unsupported result shapes fail closed so list
+    options, people resolution, comparisons, and other semantic tools retain the normal path.
+    """
+    tasks = [row for row in (state.get("request_plan") or {}).get("tasks") or []
+             if isinstance(row, dict)]
+    specs = [row for row in (state.get("query_plan") or {}).get("queries") or []
+             if isinstance(row, dict)]
+    results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)] \
+        if isinstance(state.get("query_results"), list) else []
+    by_id = {str(row.get("id") or ""): row for row in results if row.get("id")}
+    supported = bool(specs)
+    material_rows = 0
+    for spec in specs:
+        source = str(spec.get("source") or "").strip().casefold()
+        result = (by_id.get(str(spec.get("id") or "")) or {}).get("result")
+        valid, count = _query_ledger_result_shape(source, result)
+        material_rows += count
+        if not valid:
+            supported = False
+            break
+    return evaluate_typed_fast_path(
+        "research.single_bounded_query",
+        authority="request-plan.v1+query-plan.v1+query-results.v1",
+        checks={
+            "ask_intent": str(state.get("intent") or "") == Intent.ASK,
+            "one_query_outcome": (
+                len(tasks) == 1
+                and str(tasks[0].get("kind") or "").strip().casefold() == "query"
+                and tasks[0].get("write_intent") is not True
+            ),
+            "query_plan_complete": _query_plan_is_complete(state),
+            "ledger_result_shape": supported,
+            "bounded_without_omission": material_rows <= 8,
+        },
+        saved_calls=1,
+    )
 
 
 _RESEARCH_PROVENANCE_FIELD = "_research_provenance_v1"
@@ -565,6 +658,24 @@ def _completed_write_ledger(state, *, research_focus: bool = False,
         action=action,
         research_focus=research_focus,
         research_terms=_research_ledger_terms(state) if research_focus else (),
+    )
+
+
+def _completed_query_ledger(state) -> dict:
+    """Project a complete retrieval-only QueryPlan without semantic interpretation."""
+    results = [row for row in (state.get("query_results") or []) if isinstance(row, dict)]
+    sidecar = state.get("materialized_ticket_sources") or {}
+    sidecar_details = [dict(row) for row in (sidecar.get("ticketDetails") or [])
+                       if isinstance(row, dict) and not row.get("error")] \
+        if isinstance(sidecar, dict) else []
+    return build_completed_write_ledger(
+        results,
+        materialized_ticket_details=sidecar_details,
+        target_keys=set(),
+        duplicate_key="",
+        action="query",
+        research_focus=True,
+        research_terms=_research_ledger_terms(state),
     )
 
 
@@ -1582,6 +1693,21 @@ class ResearchAnalyst(ToolAgent):
                 completed = self._from_completed_typed_write(state, completed_write_action)
                 if completed is not None:
                     return completed
+
+            query_fast_path = _single_query_fast_path_decision(state)
+            if query_fast_path.complete:
+                try:
+                    out = self.apply(state, _completed_query_ledger(state))
+                except Exception:
+                    pass
+                else:
+                    out["trace"] = (out.get("trace") or []) + typed_fast_path_note(
+                        state,
+                        self.name,
+                        "완료된 단일 QueryPlan 근거 장부 전달(Research LLM 생략)",
+                        query_fast_path,
+                    )
+                    return out
 
             # ── 사전 취합: 사용자가 티켓을 지목했으면 그 주변 지도(계보·라벨·컴포넌트·링크·
             # 참여자)를 **코드가** 만들어 자료로 준다. 모델이 검색을 반복하며 더듬는 대신

@@ -49,6 +49,8 @@ class ClaimBinding(TypedDict, total=False):
     citation_occurrence_id: str
     citation_token: str
     citation_token_index: int
+    supplemental_source_id: str
+    supplemental_observation_ordinal: int
 
 
 class ClaimProvenanceGraph(TypedDict):
@@ -89,13 +91,20 @@ EVIDENCE_HEADING_RE = re.compile(
 _COMPLETION_ASSERTION_RE = re.compile(
     r"(?:완료(?:되었|됐|했|함|됨|된|하였|되었습니다|됐습니다|했습니다|하였습니다)?|"
     r"성공(?:했|함|했습니다|하였다|하였습니다)?|"
+    r"(?:배포|반영|적용)(?:되었|됐|됨|된|했|함|하였다|되었습니다|됐습니다|했습니다|하였습니다)|"
+    r"(?:검증을\s*)?통과(?:했|함|했습니다|하였다|하였습니다)|"
+    r"(?:장애(?:가|를)?\s*)?해결(?:되었|됐|됨|된|했|함|되었습니다|됐습니다|했습니다)|"
     r"결과(?:를|가)?\s*(?:확보|생성)(?:했|함|됨|했습니다)?|"
-    r"\b(?:completed|complete|succeeded|successful)\b)", re.I,
+    r"\b(?:completed|complete|succeeded|successful|deployed|released|shipped|"
+    r"passed|resolved|fixed)\b)", re.I,
 )
 _NEGATED_COMPLETION_RE = re.compile(
     r"(?:미완료|완료(?:되지\s*않|하지\s*않|하지\s*못)|아직.{0,24}완료|"
     r"완료\s*(?:조건|기준|계획|예정|목표|여부)|"
+    r"(?:미배포|미반영|미적용)|"
+    r"(?:배포|반영|적용|통과|해결)(?:되지\s*않|하지\s*않|하지\s*못|\s*(?:계획|예정|목표|여부))|"
     r"\b(?:not|never)\s+(?:yet\s+)?(?:completed|complete|performed|run)\b|"
+    r"\b(?:not|never)\s+(?:yet\s+)?(?:deployed|released|shipped|passed|resolved|fixed)\b|"
     r"\b(?:planned|planning|pending|in\s+progress)\b)", re.I,
 )
 _CLAIM_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9._:-]{2,}|[가-힣]{2,}")
@@ -324,7 +333,16 @@ def citation_claim_span(value: str, start: int, end: int) -> tuple[int, int]:
     text = str(value or "")
     prior = list(_CLAIM_SENTENCE_BOUNDARY_RE.finditer(text, 0, max(0, start)))
     following = _CLAIM_SENTENCE_BOUNDARY_RE.search(text, max(0, end))
-    left = prior[-1].end() if prior else 0
+    # Markdown citations commonly follow terminal punctuation (``claim. [1]``).  When the
+    # punctuation-to-marker gap is whitespace only, the marker belongs to that immediately
+    # preceding sentence rather than to an empty synthetic claim.
+    trailing_boundary = bool(
+        prior and not text[prior[-1].end():max(0, start)].strip()
+    )
+    if trailing_boundary:
+        left = prior[-2].end() if len(prior) > 1 else 0
+    else:
+        left = prior[-1].end() if prior else 0
     right = following.end() if following else len(text)
     return left, right
 
@@ -340,6 +358,33 @@ def _without_negated_completion(value: str) -> str:
 
 def _is_completion_claim(value: str) -> bool:
     return bool(_COMPLETION_ASSERTION_RE.search(_without_negated_completion(value)))
+
+
+def _typed_completion_subject(value: str) -> tuple[str, bool]:
+    """Return ``(unique typed subject, is_compound)`` for a completion assertion.
+
+    The existing completion grammar owns semantics; this helper only intersects it with exact
+    typed ticket aliases. Multiple subjects before a completion assertion fail closed. A
+    distinct alias after that assertion marks a compound claim whose other support must stay.
+    """
+    text = str(value or "")
+    negated = [match.span() for match in _NEGATED_COMPLETION_RE.finditer(text)]
+    tokens = list(_TYPED_CITATION_ALIAS_RE.finditer(text))
+    identities = {token.group(1).upper() for token in tokens}
+    if not identities:
+        return "", False
+    subjects: set[str] = set()
+    for completion in _COMPLETION_ASSERTION_RE.finditer(text):
+        if any(start <= completion.start() and completion.end() <= end
+               for start, end in negated):
+            continue
+        prior = [token for token in tokens if token.end() <= completion.start()]
+        if len(prior) != 1:
+            return "", False
+        subjects.add(prior[0].group(1).upper())
+    if len(subjects) != 1:
+        return "", False
+    return next(iter(subjects)), len(identities) > 1
 
 
 def _observation_supports_completion(observation: dict) -> bool:
@@ -438,6 +483,7 @@ def build_claim_provenance_graph(text: str, evidence, *, claim_facts=(),
     observations: list[ProvenanceObservation] = []
     by_ordinal: dict[int, tuple[ProvenanceSource, list[ProvenanceObservation]]] = {}
     observation_ids_seen: set[str] = set()
+    source_scope_observations: dict[str, ProvenanceObservation] = {}
     typed_observation_by_id = {
         row["observation_id"]: row for row in (
             _typed_observation_fact(raw) for raw in (observation_facts or [])
@@ -454,6 +500,18 @@ def build_claim_provenance_graph(text: str, evidence, *, claim_facts=(),
             source_class=item["_source_class"],
             internal_readiness_authority=bool(item["_internal_readiness_authority"]),
         )
+        scope_id = f"{source['source_id']}#observation:source-scope"
+        scope_fact = typed_observation_by_id.get(scope_id, {})
+        if scope_fact:
+            scope = _typed_observation(
+                source["source_id"], 0,
+                {"source": "field", "text": scope_fact.get("normalized_text") or ""},
+                scope_id, scope_fact,
+            )
+            source_scope_observations[source["source_id"]] = scope
+            if scope_id not in observation_ids_seen:
+                observation_ids_seen.add(scope_id)
+                observations.append(scope)
         source_observations: list[ProvenanceObservation] = []
         for observation_ordinal, observation in enumerate(item.get("observations") or [], 1):
             if not isinstance(observation, dict):
@@ -539,10 +597,11 @@ def build_claim_provenance_graph(text: str, evidence, *, claim_facts=(),
                 observation_id = f"{source['source_id']}#observation:source-scope"
                 if observation_id not in source_scope_ids:
                     source_scope_ids.add(observation_id)
-                    observations.append(ProvenanceObservation(
-                        observation_id=observation_id, source_id=source["source_id"],
-                        ordinal=0, source="source_scope", text="", observed_at="",
-                    ))
+                    if source["source_id"] not in source_scope_observations:
+                        observations.append(ProvenanceObservation(
+                            observation_id=observation_id, source_id=source["source_id"],
+                            ordinal=0, source="source_scope", text="", observed_at="",
+                        ))
             claims.append(ClaimBinding(
                 **common, source_id=source["source_id"], observation_id=observation_id,
                 entailment="unvalidated",
@@ -558,10 +617,44 @@ def build_claim_provenance_graph(text: str, evidence, *, claim_facts=(),
                 continue
             candidate_ids.add(row["observation_id"])
             candidate_rows.append(row)
+    for row in source_scope_observations.values():
+        if row["observation_id"] in candidate_ids:
+            continue
+        candidate_ids.add(row["observation_id"])
+        candidate_rows.append(row)
+
+    # A compound sentence may need sources for several clauses.  Assign one citation
+    # binding to carry supplemental completion support so the other clause citations are
+    # preserved instead of all being rebound to the completed ticket.
+    claims_by_occurrence: dict[str, list[ClaimBinding]] = {}
+    for claim in claims:
+        occurrence_id = str(claim.get("citation_occurrence_id") or "")
+        if occurrence_id:
+            claims_by_occurrence.setdefault(occurrence_id, []).append(claim)
+    compound_subject_by_claim_id: dict[str, str] = {}
+    for occurrence_claims in claims_by_occurrence.values():
+        owner = max(
+            occurrence_claims,
+            key=lambda row: int(row.get("citation_token_index") or 0),
+        )
+        claim_text = claim_text_by_id.get(str(owner.get("claim_id") or ""), "")
+        subject, is_compound = _typed_completion_subject(claim_text)
+        if subject and is_compound:
+            compound_subject_by_claim_id[str(owner.get("claim_id") or "")] = subject
+    compound_occurrence_ids = {
+        str(claim.get("citation_occurrence_id") or "")
+        for claim in claims
+        if str(claim.get("claim_id") or "") in compound_subject_by_claim_id
+    }
 
     for claim in claims:
         claim_text = claim_text_by_id.get(claim["claim_id"], "")
         typed_claim = typed_claim_by_id.get(claim["claim_id"], {})
+        if (str(claim.get("citation_occurrence_id") or "") in compound_occurrence_ids
+                and str(claim.get("claim_id") or "")
+                not in compound_subject_by_claim_id):
+            claim["entailment"] = "not_applicable"
+            continue
         is_completion = (
             typed_claim.get("claim_kind") == "completion"
             and typed_claim.get("value") in _COMPLETION_VALUES
@@ -569,6 +662,17 @@ def build_claim_provenance_graph(text: str, evidence, *, claim_facts=(),
         if not is_completion:
             claim["entailment"] = "not_applicable"
             continue
+        parsed_subject, parsed_compound = (
+            _typed_completion_subject(claim_text) if not typed_claim else ("", False)
+        )
+        atomic_completion_subject = parsed_subject if not parsed_compound else ""
+        compound_completion_subject = (
+            compound_subject_by_claim_id.get(str(claim.get("claim_id") or ""), "")
+            if not typed_claim else ""
+        )
+        typed_completion_subject = (
+            atomic_completion_subject or compound_completion_subject
+        )
         current = observation_by_id.get(claim["observation_id"])
         current_source = source_by_id.get(claim["source_id"])
         words = _claim_words(claim_text)
@@ -576,14 +680,19 @@ def build_claim_provenance_graph(text: str, evidence, *, claim_facts=(),
         if (current and current_source
                 and current_source.get("internal_readiness_authority")
                 and _observation_supports_completion(current)
+                and (not typed_completion_subject
+                     or current.get("subject_id") == typed_completion_subject)
                 and (typed_claim or current_overlap >= 2)):
             claim["entailment"] = "direct"
             continue
 
         expected_subject = str(
-            typed_claim.get("subject_id") or (current or {}).get("subject_id") or "")
+            typed_claim.get("subject_id") or typed_completion_subject
+            or (current or {}).get("subject_id") or "")
         expected_predicate = str(
-            typed_claim.get("predicate") or (current or {}).get("predicate") or "")
+            typed_claim.get("predicate")
+            or ("done" if typed_completion_subject else "")
+            or (current or {}).get("predicate") or "")
         ranked = []
         for candidate in candidate_rows:
             source_node = source_by_id.get(candidate["source_id"])
@@ -606,7 +715,7 @@ def build_claim_provenance_graph(text: str, evidence, *, claim_facts=(),
             # not enough: actor/name swaps often retain the same generic predicate. Require
             # two distinctive shared terms. A product-owned typed claim may match by exact
             # subject+predicate without reparsing its display prose.
-            if typed_claim:
+            if typed_claim or typed_completion_subject:
                 if not exact_relation:
                     continue
             elif overlap < 2:
@@ -631,6 +740,13 @@ def build_claim_provenance_graph(text: str, evidence, *, claim_facts=(),
             continue
         replacement = ranked[0][-1]
         target_source = source_by_id[replacement["source_id"]]
+        if compound_completion_subject:
+            claim.update(
+                supplemental_source_id=replacement["source_id"],
+                supplemental_observation_ordinal=replacement["ordinal"],
+                entailment="supplemented",
+            )
+            continue
         claim.update(
             source_id=replacement["source_id"],
             observation_id=replacement["observation_id"],

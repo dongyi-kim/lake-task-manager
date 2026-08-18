@@ -65,6 +65,7 @@ _MD_LINK_RE = re.compile(r"\[([^\n]+?)\]\((https?://[^\s)]+)\)")
 _URL_RE = re.compile(r"https?://[^\s)>\]}]+", re.I)
 _CUT_RE = re.compile(r"^(.*?)\s+(?:—|–|--)\s+(.*)$")
 _CONFLUENCE_RE = re.compile(r"confluence|/pages/\d+|/display/|/wiki/", re.I)
+_SOURCE_LEDGER_DISCLOSURE_PREFIX = "- 조회된 추가 출처 "
 
 
 class AtomicFact(TypedDict):
@@ -190,17 +191,58 @@ def _atomic_timestamp(value: str) -> float | None:
 
 
 def _projected_document_rows(state: dict) -> list[dict]:
+    """Return canonical QueryRunner document projections in acquisition order.
+
+    ``query_results`` carries the compact ``documentBodies`` view consumed by roles, while
+    ``query_artifacts[evidence-materialization]`` can retain both that bounded projection and
+    the raw document body used to create it.  The projection is authoritative whenever it is
+    present; the raw body is only a compatibility fallback.  Treating both representations as
+    independent rows would turn an intentional truncation into a false payload conflict.
+    """
     rows: list[dict] = []
+    seen: set[tuple[str, str, str, str]] = set()
+
+    def add(values) -> None:
+        for raw in values or []:
+            if not isinstance(raw, dict) or not raw.get("text"):
+                continue
+            row = dict(raw)
+            signature = (
+                str(row.get("title") or "").strip().casefold(),
+                _clean_url(str(row.get("url") or "").strip()),
+                _atomic_text(row.get("text"), 1200),
+                _atomic_text(row.get("updated"), 80),
+            )
+            if signature in seen:
+                continue
+            seen.add(signature)
+            rows.append(row)
+
+    def add_projection(container: dict) -> None:
+        projected = container.get("projectedDocumentBodies")
+        if isinstance(projected, list):
+            add(projected)
+            return
+        add(container.get("documentBodies") or [])
+
     for query in state.get("query_results") or []:
         if not isinstance(query, dict):
             continue
         result = query.get("result") or {}
         if not isinstance(result, dict):
             continue
-        for item in result.get("projectedDocumentBodies") or []:
-            if isinstance(item, dict) and item.get("text"):
-                rows.append(dict(item))
+        add_projection(result)
+    artifacts = state.get("query_artifacts") or {}
+    if isinstance(artifacts, dict):
+        materialized = artifacts.get("evidence-materialization") or {}
+        if isinstance(materialized, dict):
+            add_projection(materialized)
     return rows
+
+
+def canonical_materialized_documents(state: dict) -> list[dict]:
+    """Expose immutable canonical document rows for evaluation/rendering projections."""
+    return [dict(row) for row in _projected_document_rows(state)]
 
 
 def canonical_related_documents(state: dict, related_docs: Iterable[dict]) -> list[dict]:
@@ -674,6 +716,48 @@ def canonical_observation_facts(state: dict, evidence: Iterable[dict]) -> list[d
     return facts
 
 
+def canonical_source_scope_facts(state: dict, evidence: Iterable[dict]) -> list[dict]:
+    """Project canonical ticket workflow state onto typed source-scope observations.
+
+    A materialized ``done`` field establishes only Jira workflow state.  It cannot prove that
+    a validation, rollout, or other technical outcome succeeded.  Keeping ``claim_kind`` as
+    ``state`` prevents free-text completion claims from borrowing that narrower authority.
+    """
+    bound = bind_evidence_provenance(evidence or [])
+    labels = {
+        str(item.get("_source_id") or ""): _atomic_text(
+            item.get("title") or item.get("key"), 240,
+        )
+        for item in bound if isinstance(item, dict)
+    }
+    facts: list[dict] = []
+    for row in build_atomic_fact_ledger(state):
+        source_id = str(row.get("source_id") or "")
+        if (source_id not in labels or row.get("predicate") != "done"
+                or row.get("authority") != "materialized_ticket_sources"
+                or row.get("temporal_role") != "current"):
+            continue
+        completed = str(row.get("value") or "").casefold() == "true"
+        facts.append({
+            "fact_id": f"source-scope:{source_id}:done",
+            "observation_id": f"{source_id}#observation:source-scope",
+            "source_id": source_id,
+            "subject_id": str(row.get("subject_id") or ""),
+            "predicate": "done",
+            "value": "done" if completed else "not_done",
+            "claim_kind": "state",
+            "observed_at": str(row.get("observed_at") or ""),
+            "normalized_text": labels[source_id],
+            "provenance": str(row.get("provenance") or ""),
+            "direct": True,
+            "typed": True,
+            "authority": "materialized_match",
+            "state": "done" if completed else "not_done",
+            "temporal_role": "current",
+        })
+    return facts
+
+
 def atomic_fact_sidecar(state: dict, *, extra_facts: Iterable[dict] = (),
                         limit: int = 24) -> list[dict]:
     """Return only typed facts for the LLM; raw/untyped evidence stays in its original block."""
@@ -887,7 +971,8 @@ def normalize_evidence_summaries(evidence: Iterable[dict]) -> list[dict]:
     materialized ticket rows, and related document bodies are intentionally not accepted by
     this helper, so their raw observations stay immutable.  A changed summary loses any
     model-supplied normalization hint; downstream authority must be rebound from the original
-    canonical source rather than inherited from that hint.
+    canonical source rather than inherited from that hint. Source titles are identities,
+    not claims, and therefore remain byte-for-byte unchanged here.
     """
     projected: list[dict] = []
     for raw in evidence or ():
@@ -1150,6 +1235,17 @@ def _observation(text: str, source: str = "") -> str:
     return f"{prefix} {value}".strip()
 
 
+def _dated_observation(value: str, row: dict) -> str:
+    """Display the source-owned observation time without interpreting its prose."""
+    observed_at = _atomic_text((row or {}).get("observed_at")
+                               or (row or {}).get("updated"), 80)
+    rendered = str(value or "").strip()
+    if not rendered or not observed_at:
+        return rendered
+    prefix = f"{observed_at} 기준 · "
+    return rendered if rendered.startswith(prefix) else prefix + rendered
+
+
 def _source_parts(raw: str) -> tuple[str, str, str]:
     """Return ``(identity, canonical source, observation)`` for a legacy root row."""
     value = str(raw or "").strip()
@@ -1353,7 +1449,8 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
                                 related_docs: list | None = None,
                                 claim_facts: list | None = None,
                                 observation_facts: list | None = None,
-                                quantity_relations: Iterable[QuantityRelation] = ()) -> str:
+                                quantity_relations: Iterable[QuantityRelation] = (),
+                                *, trusted_observation_dates: bool = False) -> str:
     """Merge every evidence channel into one stable, hierarchical source index."""
     # Related documents participate in the same provisional source order only when the
     # reply names them. Appending them preserves every Research ordinal while allowing a
@@ -1407,7 +1504,8 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         group = groups.get(identity)
         if group is None:
             group = {"identity": identity, "source": source, "observations": [],
-                     "rows": [], "explicit": False}
+                     "rows": [], "explicit": False, "selection": "", "coverage": {},
+                     "conflict": False}
             groups[identity] = group
         elif group["source"].startswith("http") and source.startswith("["):
             # Prefer a human title over a bare URL when either legacy path supplied one.
@@ -1427,7 +1525,17 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             "rows": [*(alias_group.get("rows") or []),
                      *((target or {}).get("rows") or [])],
             "explicit": bool(alias_group.get("explicit")
-                             or (target or {}).get("explicit")),
+                              or (target or {}).get("explicit")),
+            "selection": (
+                "selected" if "selected" in {
+                    alias_group.get("selection"), (target or {}).get("selection"),
+                } else str(alias_group.get("selection")
+                           or (target or {}).get("selection") or "")
+            ),
+            "coverage": dict(alias_group.get("coverage")
+                             or (target or {}).get("coverage") or {}),
+            "conflict": bool(alias_group.get("conflict")
+                             or (target or {}).get("conflict")),
         }
         for observation in [*(alias_group.get("observations") or []),
                             *((target or {}).get("observations") or [])]:
@@ -1447,6 +1555,8 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
+            continue
+        if line.startswith(_SOURCE_LEDGER_DISCLOSURE_PREFIX):
             continue
         root = _ROOT_RE.match(line)
         # ``[5-a]`` is a child observation, not another source.
@@ -1515,12 +1625,29 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
                 group = promote_alias(alias, identity, source)
         else:
             group = ensure(identity, source)
-        observations = item.get("observations") or []
+        selection = str(item.get("_selection") or "selected").strip()
+        if selection == "selected" or not group.get("selection"):
+            group["selection"] = selection
+        if selection == "inspected_not_selected":
+            group["explicit"] = True
+        if item.get("_conflict"):
+            group["conflict"] = True
+            group["explicit"] = True
+            group["observations"] = []
+            group.pop("_observation_keys", None)
+        coverage = item.get("_coverage") or {}
+        if isinstance(coverage, dict) and coverage.get("remainingCount"):
+            group["coverage"] = dict(coverage)
+        observations = ([] if group.get("conflict") else item.get("observations") or [])
         for obs in observations:
             if isinstance(obs, dict):
                 rendered_observation = _enforce_exact_date_math(
                     _observation(obs.get("text"), obs.get("source")),
                 )
+                if trusted_observation_dates:
+                    rendered_observation = _dated_observation(
+                        rendered_observation, obs,
+                    )
                 normalized_observation = _enforce_exact_date_math(_observation(
                     obs.get("normalized_text") or obs.get("canonical_text")
                     or obs.get("text"), obs.get("source"),
@@ -1534,10 +1661,20 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
                     group, _enforce_exact_date_math(_observation(obs)),
                 )
         if not observations and not group["observations"]:
-            _append_observation(
-                group,
-                _enforce_exact_date_math(_observation(item.get("why"), "query")),
-            )
+            if group.get("conflict"):
+                _append_observation(
+                    group,
+                    "동일 source identity의 canonical payload가 상충해 본문 근거를 제외함",
+                )
+            elif selection == "inspected_not_selected":
+                _append_observation(
+                    group, "조회 범위에 포함됐지만 최종 결론 근거로 선택하지 않음",
+                )
+            else:
+                _append_observation(
+                    group,
+                    _enforce_exact_date_math(_observation(item.get("why"), "query")),
+                )
 
     # Related docs hydrate a title/URL already used by the reply or evidence.  They are not
     # appended merely because retrieval returned them: rejected/guide noise must stay internal.
@@ -1592,8 +1729,14 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             if mentioned_in_observation:
                 group["explicit"] = True
             canonical_text = _atomic_text(doc.get("text"), 1200)
-            if canonical_text:
-                _append_observation(group, _observation(canonical_text, "document"))
+            if (canonical_text and group.get("selection") != "inspected_not_selected"
+                    and not group.get("conflict")):
+                rendered_document = _observation(canonical_text, "document")
+                if trusted_observation_dates:
+                    rendered_document = _dated_observation(rendered_document, doc)
+                _append_observation(
+                    group, rendered_document,
+                )
 
     # Drop a model-written source shell that has neither a finding nor a body
     # citation. Structured evidence with a real finding already received an
@@ -1655,6 +1798,7 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         if group is None or identity not in number:
             continue
         base = str(number[identity])
+        graph_marker_by_target[(identity, 0)] = base
         marker_map.setdefault(str(ordinal), base)
         for observation_ordinal in range(1, 27):
             observation_node = graph_observations.get((identity, observation_ordinal))
@@ -1662,6 +1806,9 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
                 break
             rendered_observation = _observation(
                 observation_node.get("text"), observation_node.get("source"),
+            )
+            rendered_observation = _dated_observation(
+                rendered_observation, observation_node,
             )
             if identity in projected_source_ids:
                 rendered_observation = _enforce_exact_date_math(rendered_observation)
@@ -1729,6 +1876,14 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
                 mapped.append(current)
             elif not current:
                 unresolved = True
+            supplemental = ""
+            if claim and claim.get("entailment") == "supplemented":
+                supplemental = graph_marker_by_target.get((
+                    str(claim.get("supplemental_source_id") or ""),
+                    int(claim.get("supplemental_observation_ordinal") or 0),
+                ), "")
+            if supplemental and supplemental not in mapped:
+                mapped.append(supplemental)
             if claim and claim.get("claim_id") in unsupported_claim_ids:
                 unsupported = True
         citation = "".join(f"[{current}]" for current in mapped)
@@ -1758,6 +1913,16 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             )
             marker = f" [{base}-{chr(97 + index)}]" if len(observations) > 1 else ""
             rendered.append(f"-{marker} {obs}".replace("-  ", "- "))
+    remaining_count = max(
+        (int((group.get("coverage") or {}).get("remainingCount") or 0)
+         for group in groups.values()),
+        default=0,
+    )
+    if remaining_count:
+        rendered.append(
+            f"{_SOURCE_LEDGER_DISCLOSURE_PREFIX}{remaining_count}건은 "
+            "bounded 검토 ledger 상한으로 인덱스에서 생략"
+        )
 
     result = body.rstrip() + "\n\n### 근거\n\n" + "\n".join(rendered)
     if tail:
@@ -1769,7 +1934,8 @@ __all__ = [
     "AtomicFact", "QuantityRelation", "QuantityTerm", "atomic_fact_sidecar",
     "build_atomic_fact_ledger",
     "build_claim_provenance_graph", "canonicalize_evidence_index",
-    "canonical_observation_facts", "canonical_quantity_relations",
+    "canonical_materialized_documents", "canonical_observation_facts",
+    "canonical_quantity_relations", "canonical_source_scope_facts",
     "canonical_related_documents", "enforce_atomic_fact_boundaries",
     "normalize_evidence_heading_boundary", "normalize_evidence_summaries",
     "rebind_atomic_fact_citations",

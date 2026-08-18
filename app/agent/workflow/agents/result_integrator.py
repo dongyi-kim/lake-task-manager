@@ -28,12 +28,14 @@ from app.agent.workflow.claim_provenance import (
 )
 from app.agent.workflow.evidence_index import (
     atomic_fact_sidecar, build_atomic_fact_ledger, build_claim_provenance_graph,
-    canonical_observation_facts, canonical_quantity_relations,
+    canonical_materialized_documents, canonical_observation_facts,
+    canonical_quantity_relations, canonical_source_scope_facts,
     canonical_related_documents, canonicalize_evidence_index,
     enforce_atomic_fact_boundaries, normalize_evidence_heading_boundary,
     normalize_evidence_summaries, rebind_atomic_fact_citations,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
+from app.agent.workflow.continuation import jira_keys
 from app.agent.workflow.source_coverage import (
     _EXTERNAL_SOURCE_COVERAGE_CLASSES,
     _EXTERNAL_SOURCE_QUERY_CLASSES,
@@ -52,6 +54,192 @@ from app.agent.workflow.source_coverage import (
 )
 from app.agent.workflow.state import (AgentState, Intent, Node, last_user_text, note,
                                       is_memory_only_request, request_text)
+from app.agent.workflow.typed_fast_path import (
+    evaluate_typed_fast_path, typed_fast_path_note,
+)
+
+
+def _text(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _jira_key(value) -> bool:
+    return isinstance(value, str) and jira_keys(value, limit=2) == [value]
+
+
+def _keyed_rows(rows) -> bool:
+    return (isinstance(rows, list) and all(
+        isinstance(row, dict) and _jira_key(row.get("key")) for row in rows))
+
+
+def _bounded_key_rows(rows, aggregate) -> bool:
+    if not _keyed_rows(rows) or not isinstance(aggregate, dict):
+        return False
+    total, done = aggregate.get("total"), aggregate.get("done")
+    returned, remaining = aggregate.get("returned"), aggregate.get("remainingCount")
+    return (all(type(value) is int and value >= 0
+                for value in (total, done, returned, remaining))
+            and returned == len(rows) and total == returned + remaining and done <= total)
+
+
+def _bounded_epic_tree(tree) -> bool:
+    if not isinstance(tree, dict) or tree.get("availability") == "not_applicable":
+        return isinstance(tree, dict) and tree.get("availability") == "not_applicable"
+    coverage = tree.get("coverage")
+    if tree.get("availability") != "available" or not isinstance(coverage, dict):
+        return False
+    return _bounded_key_rows(tree.get("children"), {
+        "total": tree.get("total"), "done": tree.get("done"), **coverage,
+    })
+
+
+def _sealed_structure_tree(state: dict) -> str:
+    from app.agent.workflow.agents.work_architect import structure_tree
+    plan = state.get("structure_plan")
+    if (not isinstance(plan, list) or any(
+            not isinstance(row, dict) or not isinstance(row.get("children"), list)
+            or not isinstance(row.get("components"), list)
+            or any(not _text(child) for child in row["children"])
+            or any(not _text(component) for component in row["components"])
+            for row in plan)):
+        return ""
+    items = [{**row, "children": [{"summary": child} for child in row.get("children") or []]}
+             for row in plan if isinstance(row, dict)]
+    return structure_tree(items) if len(items) == len(plan) else ""
+
+
+def _structure_fast_path_decision(state: dict):
+    tree = (state.get("draft") or {}).get("structure_tree")
+    plan = state.get("structure_plan")
+    sealed = _sealed_structure_tree(state)
+    return evaluate_typed_fast_path(
+        "result.structure_tree.v1", authority="work_architect.structure_stage", saved_calls=1,
+        checks={
+            "tree": _text(tree),
+            "stage_authority": state.get("structure_ok") is False
+            and not state.get("approval_token") and isinstance(plan, list) and bool(plan)
+            and all(isinstance(row, dict) and _text(row.get("summary")) for row in plan),
+            "tree_seal": _text(sealed) and tree == sealed,
+            "render_safe": _text(sealed) and "```" not in sealed
+            and all(character in "\n\t" or ord(character) >= 32 for character in sealed),
+        })
+
+
+def _structure_reply(tree: str) -> str:
+    return ("### 구조 제안\n\n```\n" + tree + "\n```\n\n"
+            "항목은 합치기·나누기·추가·제거·이름 변경이 가능합니다.")
+
+
+def _complete_portfolio_snapshot(snapshot) -> bool:
+    if not isinstance(snapshot, dict) or snapshot.get("version") != "portfolio.snapshot.v1":
+        return False
+    materials = snapshot.get("materials")
+    if not isinstance(materials, list) or not materials:
+        return False
+    for material in materials:
+        if not isinstance(material, dict) or material.get("complete") is not True:
+            return False
+        if material.get("kind") == "group_activity":
+            roster, activities = material.get("roster"), material.get("activities")
+            workload = material.get("workload") or {}
+            if (workload.get("availability") not in {"available", "not_requested"}
+                    or not isinstance(roster, list) or not roster or not isinstance(activities, list)
+                    or len(roster) != len(activities) or any(
+                    not isinstance(row, dict) or row.get("availability") != "available"
+                    or row.get("user_id") != roster[index]
+                    or not all(isinstance((row.get("data") or {}).get(field), list)
+                               for field in ("touched", "jiraActivity", "docActivity"))
+                    or not all(_keyed_rows((row.get("data") or {}).get(field))
+                               for field in ("touched", "jiraActivity"))
+                    for index, row in enumerate(activities))):
+                return False
+        elif material.get("kind") == "ticket_progress":
+            requested, tickets = material.get("requested_keys"), material.get("tickets")
+            if (not isinstance(requested, list) or not requested or not isinstance(tickets, list)
+                    or len(requested) != len(set(requested))
+                    or not all(_jira_key(key) for key in requested)
+                    or material.get("remainingCount") != 0
+                    or material.get("missingKeys") != []
+                    or material.get("requestedTotal") != len(requested)
+                    or len(requested) != len(tickets) or any(
+                    not isinstance(row, dict) or row.get("availability") != "available"
+                    or row.get("key") != requested[index] or not _text(row.get("title"))
+                    or not _text(row.get("status"))
+                    or not all(isinstance(row.get(field), list)
+                               for field in ("children", "changes", "comments", "links", "documents"))
+                    or not _bounded_key_rows(row.get("children"), row.get("childrenAggregate"))
+                    or not _keyed_rows(row.get("links"))
+                    or not _bounded_epic_tree(row.get("epic_tree"))
+                    for index, row in enumerate(tickets))):
+                return False
+        else:
+            return False
+    return True
+
+
+def _portfolio_prompt_material(snapshot) -> str:
+    return (json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), default=str)
+            if _complete_portfolio_snapshot(snapshot) else "")
+
+
+def _portfolio_ticket_rows(snapshot):
+    for material in (snapshot.get("materials") or []) if isinstance(snapshot, dict) else []:
+        if isinstance(material, dict) and material.get("kind") == "ticket_progress":
+            for ticket in material.get("tickets") or []:
+                if isinstance(ticket, dict):
+                    yield ticket
+                    yield from (row for field in ("children", "links")
+                                for row in (ticket.get(field) or []) if isinstance(row, dict))
+
+
+def _portfolio_atomic_facts(snapshot) -> list[dict]:
+    if not _complete_portfolio_snapshot(snapshot):
+        return []
+    facts = []
+
+    def add(subject, predicate, value, provenance, observed_at=""):
+        if not subject or value is None:
+            return
+        rendered = (json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+                    if isinstance(value, (list, dict)) else
+                    "true" if value is True else "false" if value is False else str(value))
+        facts.append({
+            "fact_id": f"portfolio:{subject}:{predicate}", "subject_id": str(subject),
+            "predicate": predicate, "value": rendered,
+            "state": rendered if predicate in {"status", "done"} else "",
+            "observed_at": str(observed_at or ""), "source_id": f"portfolio:{subject}",
+            "provenance": provenance, "direct": True, "authority": "portfolio_snapshot",
+        })
+
+    for index, material in enumerate(snapshot["materials"]):
+        if material["kind"] == "group_activity":
+            for activity in material.get("activities") or []:
+                uid, data = activity.get("user_id"), activity.get("data") or {}
+                for field, predicate in (("touched", "assigned_or_changed_tickets"),
+                                         ("jiraActivity", "jira_activity"),
+                                         ("docActivity", "document_activity")):
+                    add(uid, predicate, data.get(field), f"portfolio_snapshot.materials[{index}].{field}")
+            workload = (material.get("workload") or {}).get("data") or {}
+            for person in workload.get("people") or []:
+                for field, predicate in (("inProgress", "in_progress_count"),
+                                         ("open", "open_count"), ("done28d", "completed_count")):
+                    add(person.get("id"), predicate, person.get(field),
+                        f"portfolio_snapshot.materials[{index}].workload.{field}")
+        else:
+            for row in _portfolio_ticket_rows({"materials": [material]}):
+                key = row.get("key")
+                for field, predicate in (("status", "status"), ("done", "done"),
+                                         ("assigneeId", "assignee"), ("due", "duedate")):
+                    add(key, predicate, row.get(field),
+                        f"portfolio_snapshot.materials[{index}].tickets[{key}].{field}",
+                        row.get("updated"))
+    return facts
+
+
+def _result_atomic_ledger(state):
+    return build_atomic_fact_ledger(
+        state, extra_facts=_portfolio_atomic_facts(state.get("portfolio_snapshot") or {}),
+    )
 
 
 class ResultIntegrator(TextAgent):
@@ -66,6 +254,7 @@ class ResultIntegrator(TextAgent):
         사람·티켓 목록을 이미 코드가 확정했는데 마지막 모델이 일부를 생략하거나 무관 티켓을
         덧붙이는 것이 이번 실패의 직접 원인이었다. 이 갈래는 아래 renderer가 곧 최종 답이다.
         """
+        misses = []
         completion = state.get("assignment_completion") or {}
         if completion.get("kind") == "incomplete_assignees":
             return self.apply(state, {"text": _assignment_completion_reply(completion)})
@@ -102,6 +291,16 @@ class ResultIntegrator(TextAgent):
         if projected.get("approval_token") and _has_executable_payload(projected):
             return self.apply({**projected, "_deterministic_reply": True},
                               {"text": _approval_reply(projected)})
+        tree = (projected.get("draft") or {}).get("structure_tree")
+        if tree is not None:
+            decision = _structure_fast_path_decision(projected)
+            if decision.complete:
+                return self.apply({**projected, "_deterministic_reply": True,
+                                   "_typed_terminal_reply": True,
+                                   "_fast_path_decision": decision,
+                                   "_fast_path_note": "구조 트리 결정적 렌더링"},
+                                  {"text": _structure_reply(_sealed_structure_tree(projected))})
+            misses.append((decision, "구조 stage authority 불완전 · 기존 합성 사용"))
         effect = final_effect(projected)
         if (continuation_action(projected) in {"create", "comment", "update", "mixed"}
                 and not questions and not projected.get("result")
@@ -120,12 +319,22 @@ class ResultIntegrator(TextAgent):
                               {"text": _daily_priority_reply(daily)})
         if is_memory_only_request(state):
             return self.apply(state, {"text": "확인. 이 대화의 후속 요청에 필요한 경우에만 참고"})
-        return super()._run(state)
+        out = super()._run(state)
+        for decision, label in misses:
+            out["trace"] = [*(out.get("trace") or []),
+                            *typed_fast_path_note(state, self.name, label, decision)]
+        return out
 
     def task(self, state):
         intent = state.get("intent") or Intent.PLAN_WORK
         result, review = state.get("result") or {}, state.get("review") or {}
         qs = state.get("questions") or []
+        portfolio = state.get("portfolio_snapshot") or {}
+        portfolio_data = _portfolio_prompt_material(portfolio)
+        portfolio_kinds = {row.get("kind") for row in (portfolio.get("materials") or [])
+                           if isinstance(row, dict)} if portfolio_data else set()
+        portfolio_missing = [key for row in (portfolio.get("materials") or [])
+                             if isinstance(row, dict) for key in (row.get("missingKeys") or [])]
 
         if result:
             goal = ("Report execution in three to five concise Korean sentences. List each created item on "
@@ -183,14 +392,15 @@ class ResultIntegrator(TextAgent):
                     + ("\nFor multiple draft items, show every item in a `| # | 제목 | 모듈 | Epic | 마감 |` "
                        "table; never describe only the first item."
                        if n_items > 1 else ""))
-        elif state.get("ticket_progress"):
+        elif "ticket_progress" in portfolio_kinds or state.get("ticket_progress"):
             # 진척 질문에 "In Progress 입니다"는 답이 아니다 — 무엇이 끝났고 무엇이 남았는지를
             # 근거(코멘트·변동·하위 티켓·결과 문서)와 함께 시간순으로 서술한다.
             goal = ("Report ticket progress in Korean: current completion including child counts and completed "
                     "items; supporting events from progress comments, ticket changes, cleared blockers, or "
                     "updated result documents; and remaining work plus deadline risk. Do not return only a "
                     "status name. Preserve stated remaining work and attach exact ticket or document evidence.")
-        elif intent in Intent.DIRECT_ANSWER and state.get("group_activity"):
+        elif (intent in Intent.DIRECT_ANSWER
+              and ("group_activity" in portfolio_kinds or state.get("group_activity"))):
             goal = ("Write a Korean three-layer group-activity narrative without a table: one paragraph "
                     "covering the full roster; two or three sentences on the module's combined contribution; "
                     "and one `###` section per person with verified ticket, comment, and document evidence. "
@@ -220,14 +430,11 @@ class ResultIntegrator(TextAgent):
         # role that writes the user-facing evidence chain.  The former flattened line
         # discarded comment provenance, confidence, fitness, and limitations immediately
         # before final composition.
-        ev = json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str)
-        from app.agent.workflow.agents.portfolio_analyst import activity_atomic_facts
-        atomic_facts = atomic_fact_sidecar(
-            state, extra_facts=activity_atomic_facts(state.get("group_activity") or ""),
-        )
-        quantity_relations = [
-            relation.as_dict() for relation in canonical_quantity_relations(state)
-        ]
+        ev = ("" if portfolio_data else
+              json.dumps(state.get("evidence") or [], ensure_ascii=False, default=str))
+        atomic_facts = [] if portfolio_data else atomic_fact_sidecar(state)
+        quantity_relations = ([] if portfolio_data else [
+            relation.as_dict() for relation in canonical_quantity_relations(state)])
         if atomic_facts:
             goal += (
                 "\nUse the Typed Atomic Fact Ledger as a binding boundary. Never transfer a value across "
@@ -235,8 +442,17 @@ class ResultIntegrator(TextAgent):
                 "and every `conflict` row remains unresolved with both provenances. Untyped source prose is "
                 "context, not authority for rebinding a field."
             )
-        docs = "\n".join(f"- {d.get('title','')} {d.get('url','')}"
-                         for d in (state.get("related_docs") or []))
+        if portfolio_data:
+            goal += ("\nPortfolio Snapshot Data is the sole portfolio authority. Preserve each nested "
+                     "user_id and ticket key relation; do not transfer an activity, count, state, or child "
+                     "between subjects. A nonzero remainingCount is explicit omitted coverage: disclose it "
+                     "and never describe the bounded child rows as the complete population.")
+        elif portfolio_missing:
+            goal += ("\nThe portfolio prefetch is incomplete. Explicitly disclose these uninspected targets "
+                     "and never describe the visible first batch as the complete result: "
+                     + ", ".join(portfolio_missing) + ".")
+        docs = ("" if portfolio_data else "\n".join(
+            f"- {d.get('title','')} {d.get('url','')}" for d in (state.get("related_docs") or [])))
         problems = "\n".join(f"- [{p.get('index')}] {p.get('message')} → {p.get('fix','')}"
                              for p in (review.get("problems") or []))
         errors = "\n".join(f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
@@ -313,7 +529,7 @@ class ResultIntegrator(TextAgent):
                     "single `### 근거` index; ticket sources use detail tokens and documents use verified links."
                 )
         asked_for_quality = (request_text(state) + " " + last_user_text(state)).strip()
-        if state.get("evidence"):
+        if state.get("evidence") and not portfolio_data:
             provenance_graph = build_claim_provenance_graph("", state.get("evidence") or [])
             # Evidence rows already carry observation text and ids. Keep the authority graph
             # structural so the same prose is not sent to the local model twice.
@@ -367,10 +583,14 @@ class ResultIntegrator(TextAgent):
             data_block("Interpretation Data: Show Unchanged Under the Korean Heading 제가 이해한 바",
                        state.get("interpretation")),
             data_block("Knowledge Brief Data", brief),
+            data_block("Portfolio Snapshot Data: Sole Model-Visible Portfolio Authority",
+                       portfolio_data),
+            data_block("Portfolio Coverage Gap Data: Uninspected Requested Keys",
+                       ", ".join(portfolio_missing)),
             data_block("Complete Roster Activity Data",
-                       state.get("group_activity")),
+                       "" if portfolio_data else state.get("group_activity")),
             data_block("Prefetched Ticket Progress: Changes, Comments, Children, and Documents",
-                       state.get("ticket_progress")),
+                       "" if portfolio_data else state.get("ticket_progress")),
             # 주제 조사 원본 — 결론 문장(situation)만 실으면 조각의 출처(코멘트 작성자·
             # 변경 일자)가 사라져 "근거를 대라"는 요구를 만족시킬 수 없다.
             data_block("Topic Dossier: Missing Requested Values Must Be Reported as 확인된 기록 없음",
@@ -382,7 +602,8 @@ class ResultIntegrator(TextAgent):
             data_block("Typed Claim Provenance Graph: Source and Observation Authority",
                        json.dumps(provenance_graph, ensure_ascii=False, default=str)),
             data_block("Typed Atomic Fact Ledger: Current, Historical, and Conflict Sidecar",
-                       json.dumps(atomic_facts, ensure_ascii=False, default=str)),
+                       (json.dumps(atomic_facts, ensure_ascii=False, default=str)
+                        if atomic_facts else "")),
             data_block("Typed Quantity Relations: Immutable Canonical Source Spans",
                        (json.dumps(quantity_relations, ensure_ascii=False, default=str)
                         if quantity_relations else "")),
@@ -463,6 +684,12 @@ class ResultIntegrator(TextAgent):
 
     def apply(self, state, out):
         text = out.get("text") or ""
+        if state.get("_typed_terminal_reply"):
+            decision = state["_fast_path_decision"]
+            from langchain_core.messages import AIMessage
+            return {"reply": text, "messages": [AIMessage(content=text)],
+                    "trace": typed_fast_path_note(
+                        state, self.name, state.get("_fast_path_note") or f"{len(text)}자", decision)}
         # 모델이 내부 task wrapper를 답변으로 복창하거나 reference placeholder를 그대로
         # 노출하는 것은 내용 문제가 아니라 렌더링 계약 위반이다. grounding 전에 정규화해
         # 검사와 사용자 화면이 같은 문자열을 보게 한다.
@@ -499,7 +726,7 @@ class ResultIntegrator(TextAgent):
             text = _align_draft_claims(text, state)
         text = _ensure_research_status(text, state)
         text = _drop_unsupported_guarantees(text, state)
-        text = enforce_atomic_fact_boundaries(text, build_atomic_fact_ledger(state))
+        text = enforce_atomic_fact_boundaries(text, _result_atomic_ledger(state))
 
         # Normalize verified entities and the source index before grounding.
         # Previously these deterministic repairs ran only after the checker, so a
@@ -591,7 +818,7 @@ class ResultIntegrator(TextAgent):
         text = _render_requested_source_quality(text, state)
         # A grounding rewrite or later renderer may reintroduce a copied parent field. Repeat
         # the same exact typed check before rebuilding the immutable evidence index.
-        text = enforce_atomic_fact_boundaries(text, build_atomic_fact_ledger(state))
+        text = enforce_atomic_fact_boundaries(text, _result_atomic_ledger(state))
         # Persist one canonical source index in the reply itself.  Research state and
         # model-written references used to be rendered as separate UI blocks, causing
         # duplicate counts and divergent formats.  The server owns numbering and grouping;
@@ -692,17 +919,31 @@ def _ensure_progress_child_coverage(text: str, state) -> str:
     """
     if (state.get("intent") or "") != Intent.PROGRESS:
         return str(text or "")
-    material = str(state.get("ticket_progress") or "")
     children: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for match in _re.finditer(
-        r"(?m)^\s*-\s+([A-Z][A-Z0-9]*-\d+)\s+\"[^\"]*\"\s+(완료|진행중)\b",
-        material,
-    ):
-        key, status = match.group(1), match.group(2)
-        if key not in seen:
-            seen.add(key)
-            children.append((key, status))
+    snapshot = state.get("portfolio_snapshot") or {}
+    for material in snapshot.get("materials") or []:
+        if not isinstance(material, dict) or material.get("kind") != "ticket_progress":
+            continue
+        for ticket in material.get("tickets") or []:
+            if not isinstance(ticket, dict) or ticket.get("availability") != "available":
+                continue
+            for child in ticket.get("children") or []:
+                if not isinstance(child, dict):
+                    continue
+                key = str(child.get("key") or "")
+                if _jira_key(key) and key not in seen:
+                    seen.add(key)
+                    children.append((key, "완료" if child.get("done") else "진행중"))
+    # Old checkpoints and non-snapshot legacy lanes keep their established repair contract.
+    if not isinstance(snapshot.get("materials"), list):
+        for match in _re.finditer(
+                r"(?m)^\s*-\s+([A-Z][A-Z0-9]*-\d+)\s+\"[^\"]*\"\s+(완료|진행중)\b",
+                str(state.get("ticket_progress") or "")):
+            key, status = match.group(1), match.group(2)
+            if _jira_key(key) and key not in seen:
+                seen.add(key)
+                children.append((key, status))
     if not children or all(key in str(text or "") for key, _status in children):
         return str(text or "")
 
@@ -2056,9 +2297,14 @@ def _badgeify_known_ticket_mentions(text: str, state) -> str:
         known.update(_re.findall(
             r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
             str(state.get(field) or ""), _re.I))
-    known.update(_re.findall(
-        r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
-        str(state.get("ticket_progress") or ""), _re.I))
+    snapshot = state.get("portfolio_snapshot") or {}
+    if isinstance(snapshot.get("materials"), list):
+        known.update(str(row.get("key") or "").upper()
+                     for row in _portfolio_ticket_rows(snapshot) if _jira_key(row.get("key")))
+    else:
+        known.update(_re.findall(
+            r"(?<![0-9A-Z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Z-])",
+            str(state.get("ticket_progress") or ""), _re.I))
     value = str(text or "")
     for key in sorted(known, key=len, reverse=True):
         # ':' 앞은 {{ticket-*:KEY}} 내부이므로 제외. 영숫자/하이픈 경계도 엄격히 유지.
@@ -2125,10 +2371,30 @@ def _materialized_internal_source_rows(state, *, cap: int | None = 8) -> list[di
         result = query.get("result") or {}
         if isinstance(result, dict):
             add(result.get("ticketDetails") or [])
+    artifacts = state.get("query_artifacts") or {}
+    materialized = artifacts.get("evidence-materialization") or {} \
+        if isinstance(artifacts, dict) else {}
+    if isinstance(materialized, dict):
+        add(materialized.get("projectedTicketDetails")
+            or materialized.get("ticketDetails") or [])
     ledger = state.get("materialized_ticket_sources") or {}
     if isinstance(ledger, dict):
         add(ledger.get("ticketDetails") or [])
     return rows if cap is None else rows[:max(0, int(cap or 0))]
+
+
+def _has_canonical_evidence_manifest(state) -> bool:
+    """Whether QueryRunner emitted the bounded multi-source materialization contract."""
+    artifacts = state.get("query_artifacts") or {}
+    if not isinstance(artifacts, dict):
+        return False
+    materialized = artifacts.get("evidence-materialization") or {}
+    return isinstance(materialized, dict) and any(
+        materialized.get(key) for key in (
+            "projectedTicketDetails", "ticketDetails",
+            "projectedDocumentBodies", "documentBodies",
+        )
+    )
 
 
 def _ensure_internal_source_coverage_disclosure(
@@ -2213,6 +2479,11 @@ def _ensure_requested_source_coverage(text: str, state) -> str:
                 "missing_query_result": "계획된 조회 결과 누락",
             }.get(str(row.get("incomplete_reason") or ""), "완결성 metadata 불충족")
             limitation += f"({reason})"
+        failed = [str(value or "").strip()
+                  for value in row.get("materialization_failed_identities") or []
+                  if str(value or "").strip()]
+        if failed:
+            limitation += " (실물 열기 실패: " + ", ".join(failed[:8]) + ")"
         lines.append(
             f"- **{row.get('label')}** — {limitation}. 해당 출처는 결론 근거에 사용하지 않음"
         )
@@ -3221,11 +3492,10 @@ def _authority_safe_evidence(rows) -> list[dict]:
 def canonical_evaluation_evidence(state) -> list[dict]:
     """Project final evidence without mutating or granting authority to model prose.
 
-    Source identity comes from the same final selection used by the reply.  Exact Jira
-    description/comment cells are rebound to a materialized QueryRunner row; every other
-    observation remains an explicitly indirect research projection.  Opened but unselected
-    ticket identities are retained in a bounded coverage ledger with no observations, so
-    acquisition is visible without presenting an omitted source as conclusion evidence.
+    Source identity comes from the same final selection used by the reply. Exact Jira
+    description/comment and selected document cells are rebound to materialized QueryRunner
+    rows; every other observation remains an explicitly indirect research projection. Opened
+    but unselected ticket/document identities remain visible with no conclusion observations.
     """
     selected_input = _authority_safe_evidence(_selected_final_evidence(state))
     display_rows = normalize_evidence_summaries(selected_input)
@@ -3236,6 +3506,21 @@ def canonical_evaluation_evidence(state) -> list[dict]:
     materialized = _materialized_internal_source_rows(state, cap=None)
     materialized_by_source = {
         f"ticket:{row['key']}": row for row in materialized
+    }
+    materialized_documents = canonical_materialized_documents(state)
+    document_groups: dict[str, list[dict]] = {}
+    for document in materialized_documents:
+        if document.get("url"):
+            document_groups.setdefault(evidence_source_id(document), []).append(document)
+    documents_by_source = {
+        source_id: rows[0] for source_id, rows in document_groups.items()
+        if len(rows) == 1
+    }
+    conflicting_document_sources = {
+        source_id for source_id, rows in document_groups.items() if len(rows) != 1
+    }
+    document_identity_by_source = {
+        source_id: rows[0] for source_id, rows in document_groups.items()
     }
     authority_state = dict(state or {})
     authority_state["materialized_ticket_sources"] = {
@@ -3260,9 +3545,14 @@ def canonical_evaluation_evidence(state) -> list[dict]:
         raw_item = selected_input[index]
         source_id = str(bound_item.get("_source_id") or evidence_source_id(raw_item))
         materialized_row = materialized_by_source.get(source_id)
+        materialized_document = documents_by_source.get(source_id)
         source_authority = "research_projection"
         if materialized_row:
             source_authority = "materialized_ticket_sources"
+        elif materialized_document:
+            source_authority = "materialized_document_sources"
+        elif source_id in conflicting_document_sources:
+            source_authority = "materialized_document_conflict"
         elif source_id.startswith("url:") and _research_url_provenance(
                 state, str(display_item.get("url") or "")):
             # This proves acquisition and URL identity only.  Observation prose below stays
@@ -3274,6 +3564,9 @@ def canonical_evaluation_evidence(state) -> list[dict]:
         if materialized_row:
             title = str(materialized_row.get("summary") or title).strip()
             url = str(materialized_row.get("url") or url).strip()
+        elif materialized_document:
+            title = str(materialized_document.get("title") or title).strip()
+            url = str(materialized_document.get("url") or url).strip()
         row = {
             "key": str(display_item.get("key") or "").strip(),
             "title": title,
@@ -3283,6 +3576,8 @@ def canonical_evaluation_evidence(state) -> list[dict]:
             "_authority": source_authority,
             "observations": [],
         }
+        if source_id in conflicting_document_sources:
+            row["_conflict"] = "canonical_document_payload_conflict"
         if url:
             row["url"] = url
         why = str(display_item.get("why") or "").strip()
@@ -3297,8 +3592,9 @@ def canonical_evaluation_evidence(state) -> list[dict]:
             if isinstance(binding, dict)
         }
         raw_observations = raw_item.get("observations") or []
-        for ordinal, display_observation in enumerate(
-                display_item.get("observations") or [], 1):
+        display_observations = ([] if source_id in conflicting_document_sources
+                                else display_item.get("observations") or [])
+        for ordinal, display_observation in enumerate(display_observations, 1):
             observation_id = observation_ids.get(ordinal, "")
             if isinstance(display_observation, dict):
                 observation = {
@@ -3324,6 +3620,30 @@ def canonical_evaluation_evidence(state) -> list[dict]:
                     observation.update({
                         field: trusted[field] for field in trusted_fields if field in trusted
                     })
+                elif materialized_document and unchanged and isinstance(raw_observation, dict):
+                    canonical_text = " ".join(
+                        str(materialized_document.get("text") or "").split()
+                    ).strip()
+                    raw_text = " ".join(
+                        str(raw_observation.get("text") or "").split()
+                    ).strip()
+                    location = str(raw_observation.get("source") or "").strip().casefold()
+                    if (canonical_text and raw_text == canonical_text
+                            and location in {"document", "confluence"}):
+                        observation.update({
+                            "observed_at": str(
+                                materialized_document.get("updated") or ""
+                            ).strip(),
+                            "normalized_text": canonical_text,
+                            "provenance": (
+                                "materialized_document_sources["
+                                + source_id + "].text"
+                            ),
+                            "direct": True,
+                            "typed": False,
+                            "authority": "materialized_document_sources",
+                            "temporal_role": "observed",
+                        })
                 row["observations"].append(observation)
             elif isinstance(display_observation, str):
                 row["observations"].append({
@@ -3351,14 +3671,64 @@ def canonical_evaluation_evidence(state) -> list[dict]:
                 seen_observations.add(identity)
                 existing["observations"].append(observation)
 
-    # Eight identities are enough for reviewer visibility while keeping snapshots bounded.
-    # They intentionally carry no observations or conclusion authority.
-    omitted_count = 0
-    for materialized_row in materialized:
-        source_id = f"ticket:{materialized_row['key']}"
+    # ``related_docs`` is the selected document channel. Hydrate it from exact QueryRunner
+    # projections even when Research omitted the duplicate evidence row.
+    for document in canonical_related_documents(state, state.get("related_docs") or []):
+        source_id = evidence_source_id(document)
         if source_id in result_by_source:
             continue
-        result.append({
+        if source_id in conflicting_document_sources:
+            identity = document_identity_by_source[source_id]
+            selected_conflict = {
+                "key": str(identity.get("url") or "").strip(),
+                "title": str(identity.get("url") or "").strip(),
+                "url": str(identity.get("url") or "").strip(),
+                "_source_id": source_id,
+                "_source_class": "internal_document",
+                "_selection": "selected",
+                "_authority": "materialized_document_conflict",
+                "_conflict": "canonical_document_payload_conflict",
+                "observations": [],
+            }
+            result_by_source[source_id] = selected_conflict
+            result.append(selected_conflict)
+            continue
+        if source_id not in documents_by_source:
+            continue
+        canonical = documents_by_source[source_id]
+        canonical_text = " ".join(str(canonical.get("text") or "").split()).strip()
+        observation = {
+            "source": "document", "text": canonical_text,
+            "observed_at": str(canonical.get("updated") or "").strip(),
+            "normalized_text": canonical_text,
+            "provenance": f"materialized_document_sources[{source_id}].text",
+            "direct": True, "typed": False,
+            "authority": "materialized_document_sources",
+            "temporal_role": "observed",
+        }
+        selected_document = {
+            "key": str(canonical.get("title") or "").strip(),
+            "title": str(canonical.get("title") or "").strip(),
+            "url": str(canonical.get("url") or "").strip(),
+            "_source_id": source_id,
+            "_source_class": "internal_document",
+            "_selection": "selected",
+            "_authority": "materialized_document_sources",
+            "observations": [observation] if canonical_text else [],
+        }
+        result_by_source[source_id] = selected_document
+        result.append(selected_document)
+
+    # Tickets and documents share one bounded inspected-source ledger. Selected sources above
+    # are never capped; only identity-only coverage rows consume this reviewer budget.
+    omitted_candidates: list[dict] = []
+    omitted_source_ids: set[str] = set()
+    for materialized_row in materialized:
+        source_id = f"ticket:{materialized_row['key']}"
+        if source_id in result_by_source or source_id in omitted_source_ids:
+            continue
+        omitted_source_ids.add(source_id)
+        omitted_candidates.append({
             "key": materialized_row["key"],
             "title": str(materialized_row.get("summary") or "").strip(),
             "_source_id": source_id,
@@ -3367,16 +3737,51 @@ def canonical_evaluation_evidence(state) -> list[dict]:
             "_authority": "materialized_ticket_sources",
             "observations": [],
         })
-        omitted_count += 1
-        if omitted_count >= 8:
-            break
+    for canonical in materialized_documents:
+        source_id = evidence_source_id(canonical)
+        if source_id in result_by_source or source_id in omitted_source_ids:
+            continue
+        omitted_source_ids.add(source_id)
+        conflict = source_id in conflicting_document_sources
+        omitted_candidates.append({
+            "key": str(canonical.get("url") if conflict
+                       else canonical.get("title") or "").strip(),
+            "title": str(canonical.get("url") if conflict
+                         else canonical.get("title") or "").strip(),
+            "url": str(canonical.get("url") or "").strip(),
+            "_source_id": source_id,
+            "_source_class": "internal_document",
+            "_selection": "inspected_not_selected",
+            "_authority": ("materialized_document_conflict" if conflict
+                           else "materialized_document_sources"),
+            **({"_conflict": "canonical_document_payload_conflict"}
+               if conflict else {}),
+            "observations": [],
+        })
+    inspected_limit = 8
+    included = omitted_candidates[:inspected_limit]
+    remaining = max(0, len(omitted_candidates) - len(included))
+    if remaining and included:
+        included[-1]["_coverage"] = {
+            "kind": "inspected_source_ledger",
+            "limit": inspected_limit,
+            "remainingCount": remaining,
+        }
+    for omitted in included:
+        source_id = str(omitted.get("_source_id") or "")
+        result_by_source[source_id] = omitted
+        result.append(omitted)
     return result
 
 
 def _merge_evidence_index(text: str, state) -> str:
     """Union model references and structured research provenance in the persisted reply."""
     approval_display = _approval_display_mode(state)
-    evidence = _selected_final_evidence(state)
+    canonical_manifest = (
+        not approval_display and _has_canonical_evidence_manifest(state)
+    )
+    evidence = (canonical_evaluation_evidence(state) if canonical_manifest
+                else _selected_final_evidence(state))
     value = _normalize_rendered_evidence_ticket_tokens(
         _drop_direct_input_source_rows(_fold_standalone_sources(text)),
     )
@@ -3408,14 +3813,25 @@ def _merge_evidence_index(text: str, state) -> str:
                 and title_counts.get(str(doc.get("title") or "").strip().casefold()) == 1)
         )]
     else:
-        value = _ensure_internal_source_coverage_disclosure(value, state, evidence)
+        if not canonical_manifest:
+            value = _ensure_internal_source_coverage_disclosure(value, state, evidence)
+    observation_facts = [
+        *canonical_observation_facts(state, evidence),
+        *canonical_source_scope_facts(state, evidence),
+    ]
     rendered = canonicalize_evidence_index(
         value,
         evidence=evidence,
         related_docs=related_docs,
-        observation_facts=canonical_observation_facts(state, evidence),
+        observation_facts=observation_facts,
         quantity_relations=canonical_quantity_relations(state),
+        trusted_observation_dates=canonical_manifest,
     )
+    if canonical_manifest:
+        # The canonical claim graph already owns typed observation and source-scope facts.
+        # Re-running the legacy exact-literal pass would collapse citations belonging to
+        # other clauses in a compound sentence.
+        return rendered
     return rebind_atomic_fact_citations(
         rendered, build_atomic_fact_ledger(state),
     )
