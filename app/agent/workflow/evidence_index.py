@@ -20,13 +20,16 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 import re
 from typing import Any, Iterable, TypedDict
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from app.agent.workflow.claim_provenance import (
-    build_claim_provenance_graph, normalize_citation_wrappers,
+    CITATION_GROUP_RE, CITATION_OCCURRENCE_RE, CITATION_TOKEN_PATTERN,
+    bind_evidence_provenance, build_claim_provenance_graph,
+    citation_occurrences, citation_tokens, normalize_citation_wrappers,
 )
 
 
@@ -39,13 +42,10 @@ _ROOT_RE = re.compile(
     re.I,
 )
 _CHILD_RE = re.compile(r"^\s*-\s*(?:\[(\d+)-([a-z])\]\s*)?(.*?)\s*$", re.I)
-_CITATION_TOKEN = r"\d+(?:-[a-z])?"
-_CITATION_RE = re.compile(
-    rf"\[((?:{_CITATION_TOKEN})(?:\s*,\s*{_CITATION_TOKEN})*)\](?!\()", re.I,
-)
+_CITATION_RE = CITATION_GROUP_RE
 _CITATION_RUN_RE = re.compile(
-    rf"\[(?:{_CITATION_TOKEN})(?:\s*,\s*{_CITATION_TOKEN})*\]"
-    rf"(?:\s*,?\s*\[(?:{_CITATION_TOKEN})(?:\s*,\s*{_CITATION_TOKEN})*\])+",
+    rf"\[(?:{CITATION_TOKEN_PATTERN})(?:\s*,\s*{CITATION_TOKEN_PATTERN})*\]"
+    rf"(?:\s*,?\s*\[(?:{CITATION_TOKEN_PATTERN})(?:\s*,\s*{CITATION_TOKEN_PATTERN})*\])+",
     re.I,
 )
 _KEY_RE = re.compile(r"(?<![0-9A-Za-z-])([A-Z][A-Z0-9]*-\d+)(?![0-9A-Za-z-])")
@@ -181,6 +181,48 @@ def _atomic_timestamp(value: str) -> float | None:
         return None
 
 
+def _materialized_observation_catalog(
+        state: dict) -> dict[tuple[str, str, str], list[tuple[str, str]]]:
+    """Index exact Jira description/comment cells without interpreting their prose."""
+    catalog: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+    ledger = state.get("materialized_ticket_sources") or {}
+    if not isinstance(ledger, dict):
+        return catalog
+    for row in ledger.get("ticketDetails") or []:
+        if not isinstance(row, dict) or row.get("error"):
+            continue
+        key = str(row.get("key") or "").strip().upper()
+        if not _ATOMIC_TICKET_RE.fullmatch(key):
+            continue
+        observed_at = _atomic_text(row.get("updated") or row.get("created"), 80)
+        description = _atomic_text(row.get("description"), 420)
+        if description:
+            catalog.setdefault((key, "description", description), []).append((
+                observed_at,
+                f"materialized_ticket_sources.ticketDetails[{key}].description",
+            ))
+        for comment_index, comment in enumerate(row.get("comments") or []):
+            if not isinstance(comment, dict):
+                continue
+            comment_text = _atomic_text(
+                comment.get("body") or comment.get("text") or comment.get("html")
+                or comment.get("snippet") or comment.get("comment"), 420,
+            )
+            if not comment_text:
+                continue
+            comment_date = _atomic_text(
+                comment.get("observed_at") or comment.get("updated")
+                or comment.get("modified") or comment.get("created")
+                or comment.get("date"), 80,
+            )
+            catalog.setdefault((key, "comment", comment_text), []).append((
+                comment_date,
+                (f"materialized_ticket_sources.ticketDetails[{key}]"
+                 f".comments[{comment_index}]"),
+            ))
+    return catalog
+
+
 def _resolve_atomic_temporality(facts: Iterable[AtomicFact]) -> list[AtomicFact]:
     """Resolve time only inside an exact typed ``subject_id + predicate`` group.
 
@@ -264,8 +306,24 @@ def _cap_atomic_facts(rows: list[AtomicFact], cap: int) -> list[AtomicFact]:
         0 if rows[index].get("typed") else 2,
         roles.get(rows[index].get("temporal_role", ""), 9),
         fields.get(rows[index].get("predicate", ""), 20), index,
-    ))[:limit]
-    selected = set(ranked)
+    ))
+    selected: set[int] = set()
+    # A temporal progression is useful only as a pair/set. Select an entire exact
+    # subject+predicate group when it fits; never spend the last slot on half a history.
+    for key in sorted(temporal_groups, key=lambda group: min(
+            ranked.index(index) for index, row in enumerate(rows)
+            if (row["subject_id"], row["predicate"]) == group)):
+        group_indices = [index for index, row in enumerate(rows)
+                         if (row["subject_id"], row["predicate"]) == key]
+        if len(selected) + len(group_indices) <= limit:
+            selected.update(group_indices)
+    for index in ranked:
+        if len(selected) >= limit:
+            break
+        key = (rows[index]["subject_id"], rows[index]["predicate"])
+        if key in temporal_groups and index not in selected:
+            continue
+        selected.add(index)
     return [row for index, row in enumerate(rows) if index in selected]
 
 
@@ -281,9 +339,7 @@ def build_atomic_fact_ledger(state: dict, *, extra_facts: Iterable[dict] = (),
     """
     facts: list[AtomicFact] = []
     canonical_fields: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
-    canonical_observations: dict[
-        tuple[str, str, str], list[tuple[str, str]]
-    ] = {}
+    canonical_observations = _materialized_observation_catalog(state)
 
     ledger = state.get("materialized_ticket_sources") or {}
     if isinstance(ledger, dict):
@@ -318,36 +374,6 @@ def build_atomic_fact_ledger(state: dict, *, extra_facts: Iterable[dict] = (),
                 canonical_fields.setdefault((key, predicate, value), []).append((
                     observed_at,
                     f"materialized_ticket_sources.ticketDetails[{key}].{field}",
-                ))
-
-            description = _atomic_text(row.get("description"), 420)
-            if description:
-                canonical_observations.setdefault(
-                    (key, "description", description), [],
-                ).append((
-                    observed_at,
-                    f"materialized_ticket_sources.ticketDetails[{key}].description",
-                ))
-            for comment_index, comment in enumerate(row.get("comments") or []):
-                if not isinstance(comment, dict):
-                    continue
-                comment_text = _atomic_text(
-                    comment.get("body") or comment.get("text") or comment.get("html")
-                    or comment.get("snippet") or comment.get("comment"), 420,
-                )
-                if not comment_text:
-                    continue
-                comment_date = _atomic_text(
-                    comment.get("observed_at") or comment.get("updated")
-                    or comment.get("modified") or comment.get("created")
-                    or comment.get("date"), 80,
-                )
-                canonical_observations.setdefault(
-                    (key, "comment", comment_text), [],
-                ).append((
-                    comment_date,
-                    (f"materialized_ticket_sources.ticketDetails[{key}]"
-                     f".comments[{comment_index}]"),
                 ))
 
     for item_index, item in enumerate(state.get("evidence") or []):
@@ -391,23 +417,17 @@ def build_atomic_fact_ledger(state: dict, *, extra_facts: Iterable[dict] = (),
                 typed = direct = True
                 authority = "materialized_match"
             else:
-                # For free-form descriptions/comments, the complete normalized observation
-                # must equal a canonical source cell. A separately supplied semantic value is
-                # not trusted: only the full canonical text may become the fact value.
+                # For free-form descriptions/comments, exact text proves provenance only.
+                # A model-declared predicate/value cannot create a temporal relation, so each
+                # canonical cell receives its own opaque relation identity.
                 canonical_location = "comment" if location in {"comment", "comments"} else location
                 text_matches = canonical_observations.get(
                     (subject, canonical_location, _atomic_text(text, 420)), [],
-                ) if (declared_typed and text
-                      and declared_predicate not in _MATERIALIZED_ATOMIC_PREDICATES
-                      and _atomic_evidence_claims_source(observation, default_subject)
-                      and not observation.get("actor_id")
-                      and explicit_value in (None, "")) else []
-                if supplied_observed_at and len(text_matches) > 1:
-                    text_matches = [match for match in text_matches
-                                    if match[0] == supplied_observed_at]
+                ) if (text and canonical_location in {"comment", "description"}) else []
                 if len(text_matches) == 1:
                     observed_at, canonical_provenance = text_matches[0]
-                    predicate = declared_predicate
+                    digest = sha256(canonical_provenance.encode("utf-8")).hexdigest()[:16]
+                    predicate = f"canonical_observation:{digest}"
                     value = _atomic_text(text, 420)
                     typed = direct = True
                     authority = "materialized_match"
@@ -457,6 +477,55 @@ def build_atomic_fact_ledger(state: dict, *, extra_facts: Iterable[dict] = (),
     return _cap_atomic_facts(_resolve_atomic_temporality(facts), cap)
 
 
+def canonical_observation_facts(state: dict, evidence: Iterable[dict]) -> list[dict]:
+    """Build semantic overlays only for unique exact materialized Jira observations.
+
+    Research evidence remains display data. Neither its ``direct`` flag nor its semantic
+    fields are trusted. A description/comment receives authority only when its complete
+    normalized text occurs exactly once under the same materialized ticket.
+    """
+    catalog = _materialized_observation_catalog(state)
+    facts: list[dict] = []
+    for item_index, item in enumerate(bind_evidence_provenance(evidence or [])):
+        key = str(item.get("key") or "").strip().upper()
+        if not _ATOMIC_TICKET_RE.fullmatch(key) or item.get("_source_id") != f"ticket:{key}":
+            continue
+        sidecar = item.get("_provenance") or {}
+        observation_ids = {
+            int(row.get("ordinal") or 0): str(row.get("observation_id") or "")
+            for row in (sidecar.get("observations") or []) if isinstance(row, dict)
+        }
+        for ordinal, observation in enumerate(item.get("observations") or [], 1):
+            if not isinstance(observation, dict):
+                continue
+            location = str(observation.get("source") or "").strip().casefold()
+            location = "comment" if location in {"comment", "comments"} else location
+            if location not in {"comment", "description"}:
+                continue
+            text = _atomic_text(observation.get("text"), 420)
+            matches = catalog.get((key, location, text), []) if text else []
+            # Duplicate canonical cells are ambiguous even if model payload metadata happens
+            # to name one timestamp; supplied metadata cannot select authority.
+            if len(matches) != 1 or not observation_ids.get(ordinal):
+                continue
+            observed_at, provenance = matches[0]
+            facts.append({
+                "fact_id": f"canonical-observation:{item_index}:{ordinal}",
+                "observation_id": observation_ids[ordinal],
+                "source_id": f"ticket:{key}", "subject_id": key,
+                # Exact text proves where an observation came from, not what it entails.
+                # Give every free-text cell its own relation so an unrelated later comment
+                # cannot supersede it, and never promote prose to a completion event.
+                "predicate": f"canonical_observation:{observation_ids[ordinal]}",
+                "value": text, "claim_kind": "observation", "observed_at": observed_at,
+                "normalized_text": text, "provenance": provenance,
+                "direct": True, "typed": True, "authority": "materialized_match",
+                "state": "",
+                "temporal_role": "observed",
+            })
+    return facts
+
+
 def atomic_fact_sidecar(state: dict, *, extra_facts: Iterable[dict] = (),
                         limit: int = 24) -> list[dict]:
     """Return only typed facts for the LLM; raw/untyped evidence stays in its original block."""
@@ -499,6 +568,118 @@ def atomic_fact_sidecar(state: dict, *, extra_facts: Iterable[dict] = (),
     return compact
 
 
+_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
+_DATED_WEEKDAY_RE = re.compile(
+    r"(?<!\d)(\d{4}-\d{2}-\d{2})\s*(?:\(\s*([월화수목금토일])요일?\s*\)|"
+    r"([월화수목금토일])요일)", re.I,
+)
+_RELATIVE_DURATION_RE = re.compile(
+    r"(?<![0-9A-Za-z가-힣])((?:한|두|세|네|\d+)\s*주(?:일)?|일주일|\d+\s*일)"
+    r"(?![0-9A-Za-z])",
+)
+_ACTION_FROM_DATE_RE = re.compile(
+    r"(?:권고|추천|착수|배포|출시|승인|진행(?:하|해)|실행(?:하|해)|"
+    r"recommend|deploy|release|approve|proceed)", re.I,
+)
+_DATE_MATH_CLAUSE_SPLIT_RE = re.compile(
+    r"([.!?;]+(?:[ \t]+|$)|[ \t]*\|[ \t]*)",
+)
+_DATE_INTERVAL_CONNECTOR_RE = re.compile(
+    r"(?:\s*(?:부터|에서)\s*|\s*[~～]\s*|\s+(?:-|–|—)\s+|"
+    r"\s+(?:to|through)\s+)", re.I,
+)
+_DATE_DURATION_BRIDGE_RE = re.compile(
+    r"\s*(?:\([월화수목금토일]요일\))?\s*(?:까지(?:의)?\s*)?"
+    r"(?:(?:총|정확히|약|for)\s*)?(?:기간(?:은|이|:)?\s*)?",
+    re.I,
+)
+
+
+def _duration_days(value: str) -> int | None:
+    compact = re.sub(r"\s+", "", str(value or ""))
+    if compact == "일주일" or compact.startswith("한주"):
+        return 7
+    words = {"두": 2, "세": 3, "네": 4}
+    week = re.fullmatch(r"(두|세|네|\d+)주(?:일)?", compact)
+    if week:
+        count = words.get(week.group(1), int(week.group(1)) if week.group(1).isdigit() else 0)
+        return count * 7
+    day = re.fullmatch(r"(\d+)일", compact)
+    return int(day.group(1)) if day else None
+
+
+def _enforce_exact_date_math(value: str) -> str:
+    weekdays = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
+
+    def correct_weekday(match: re.Match) -> str:
+        try:
+            parsed = datetime.strptime(match.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            return match.group(0)
+        return f"{match.group(1)}({weekdays[parsed.weekday()]})"
+
+    def repair_clause(clause: str) -> str:
+        """Compare dates and relative duration only inside one structural clause."""
+        dates = list(_ISO_DATE_RE.finditer(clause))
+        durations = list(_RELATIVE_DURATION_RE.finditer(clause))
+        if len(dates) < 2 or not durations:
+            return clause
+        # A shared sentence is not evidence that its dates and duration describe the same
+        # fact. Require an explicit interval connector *and* a bounded bridge from the
+        # interval end to the duration. If more than one relation fits, fail closed.
+        relations: list[tuple[re.Match, re.Match, re.Match]] = []
+        for start_match, end_match in zip(dates, dates[1:]):
+            connector = clause[start_match.end():end_match.start()]
+            if not _DATE_INTERVAL_CONNECTOR_RE.fullmatch(connector):
+                continue
+            for duration_match in durations:
+                if duration_match.start() < end_match.end():
+                    continue
+                bridge = clause[end_match.end():duration_match.start()]
+                if _DATE_DURATION_BRIDGE_RE.fullmatch(bridge):
+                    relations.append((start_match, end_match, duration_match))
+                break
+        if len(relations) != 1:
+            return clause
+        start_match, end_match, mismatch = relations[0]
+        try:
+            start = datetime.strptime(start_match.group(1), "%Y-%m-%d").date()
+            end = datetime.strptime(end_match.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            return clause
+        exact_days = abs((end - start).days)
+        if _duration_days(mismatch.group(1)) in (None, exact_days):
+            return clause
+        relative = mismatch.group(1)
+        conflict = f"정확히 {exact_days}일(상대 표현 '{relative}'와 불일치)"
+        fixed = clause[:mismatch.start()] + conflict + clause[mismatch.end():]
+        # Preserve the useful dated statement. Remove only a downstream action whose
+        # premise is the false duration, and leave an explicit deterministic boundary.
+        action_clause = re.search(
+            r"(?:이므로|이어서|이기\s*때문에|때문에|따라서|그러므로|so|therefore)"
+            r"[^.!?]*(?:권고|추천|착수|배포|출시|승인|진행|실행|"
+            r"recommend|deploy|release|approve|proceed)[^.!?]*[.!?]?",
+            fixed, re.I,
+        )
+        if action_clause and _ACTION_FROM_DATE_RE.search(action_clause.group(0)):
+            fixed = (fixed[:action_clause.start()].rstrip(" ,;:")
+                     + " 날짜 산술 불일치에 근거한 조치 문구는 제외함")
+        return fixed
+
+    corrected = _DATED_WEEKDAY_RE.sub(correct_weekday, str(value or ""))
+    rendered = []
+    for line in corrected.splitlines():
+        # Sentence punctuation, semicolons, and Markdown table cells are minimum safe
+        # relation boundaries when no typed interval id is available.  Never borrow a
+        # duration from a neighboring claim merely because both appear on one line.
+        parts = _DATE_MATH_CLAUSE_SPLIT_RE.split(line)
+        rendered.append("".join(
+            part if index % 2 else repair_clause(part)
+            for index, part in enumerate(parts)
+        ))
+    return "\n".join(rendered)
+
+
 def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> str:
     """Repair only exact, mechanically provable subject-field leakage in reply prose.
 
@@ -509,6 +690,7 @@ def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> st
     value = str(text or "")
     heading = re.search(r"(?m)^###\s*근거\s*$", value)
     body, tail = (value[:heading.start()], value[heading.start():]) if heading else (value, "")
+    body = _enforce_exact_date_math(body)
     rows = list(facts)
     due_by_subject: dict[str, set[str]] = {}
     for row in rows:
@@ -517,6 +699,11 @@ def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> st
                 and row.get("temporal_role") == "current"):
             due_by_subject.setdefault(row["subject_id"], set()).add(row["value"])
     all_due = {due for values in due_by_subject.values() for due in values}
+    status_by_subject: dict[str, str] = {}
+    for row in rows:
+        if (row.get("typed") and row.get("predicate") == "status"
+                and row.get("temporal_role") == "current" and row.get("value")):
+            status_by_subject[row["subject_id"]] = row["value"]
     due_pattern = re.compile(
         r"(?:마감(?:일)?|기한|due\s*date)\s*(?:은|는|이|가|:)?\s*"
         r"(\d{4}-\d{2}-\d{2})", re.I,
@@ -533,6 +720,28 @@ def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> st
             allowed = due_by_subject.get(subject, set())
             if date in all_due and date not in allowed:
                 line = due_pattern.sub("마감 확인되지 않음", line, count=1)
+        def repair_status_clause(clause: str) -> str:
+            clause_keys = sorted({match.upper() for match in re.findall(
+                r"(?<![A-Za-z0-9-])([A-Z][A-Z0-9]*-\d+)(?![A-Za-z0-9-])",
+                clause, re.I,
+            ) if match.upper() in status_by_subject})
+            if len(clause_keys) < 2 or not re.search(
+                    r"(?:Jira\s*)?(?:상태|status)\b", clause, re.I):
+                return clause
+            ledger = "; ".join(
+                f"{key}={status_by_subject[key]}" for key in clause_keys
+            )
+            values = {status_by_subject[key].casefold() for key in clause_keys}
+            if len(values) == 1 and next(iter(values)) in clause.casefold():
+                return clause
+            indent = re.match(r"^\s*(?:[-*+]\s+)?", clause).group(0)
+            return f"{indent}티켓별 Jira 상태: {ledger}"
+
+        status_parts = _DATE_MATH_CLAUSE_SPLIT_RE.split(line)
+        line = "".join(
+            part if index % 2 else repair_status_clause(part)
+            for index, part in enumerate(status_parts)
+        )
         repaired.append(line)
     body = "\n".join(repaired)
 
@@ -570,7 +779,7 @@ def enforce_atomic_fact_boundaries(text: str, facts: Iterable[AtomicFact]) -> st
                 rewritten.append(line)
                 continue
             stamp = matched_history.get("observed_at") or "시점 미상"
-            rewritten.append(f"이전 기록({stamp}): {line}")
+            rewritten.append(f"이전 기록({stamp}) [과거·보조 근거]: {line}")
             changed = True
         if changed:
             body = "\n".join(rewritten)
@@ -683,7 +892,7 @@ def _split(text: str) -> tuple[str, list[str], str]:
     return value[:heading.start()].rstrip(), value[start:end].splitlines(), value[end:].lstrip()
 
 
-def _append_observation(group: dict, value: str) -> int | None:
+def _append_observation(group: dict, value: str, *, normalized_value: str = "") -> int | None:
     obs = str(value or "").strip()
     if not obs:
         return None
@@ -718,16 +927,21 @@ def _append_observation(group: dict, value: str) -> int | None:
         normalized = re.sub(r"[\s\"'“”‘’.,;:!?]+", " ", normalized).strip()
         return normalized.casefold()
 
-    key = comparison_key(obs)
-    for index, current in enumerate(group["observations"]):
-        if comparison_key(current) == key:
+    keys = group.get("_observation_keys")
+    if not isinstance(keys, list) or len(keys) != len(group["observations"]):
+        keys = [comparison_key(current) for current in group["observations"]]
+        group["_observation_keys"] = keys
+    key = comparison_key(normalized_value or obs)
+    for index, current_key in enumerate(keys):
+        if current_key == key:
             return index
     group["observations"].append(obs)
+    keys.append(key)
     return len(group["observations"]) - 1
 
 
 def _citation_tokens(value: str) -> list[str]:
-    return [token.strip().lower() for token in str(value or "").split(",") if token.strip()]
+    return list(citation_tokens(value))
 
 
 def _compact_adjacent_citations(text: str) -> str:
@@ -742,13 +956,30 @@ def _compact_adjacent_citations(text: str) -> str:
     return _CITATION_RUN_RE.sub(merge, str(text or ""))
 
 
+def normalize_evidence_heading_boundary(value: str) -> str:
+    """Separate a glued evidence heading without matching inside an existing hash run."""
+    return re.sub(
+        r"(?<=[^\n#])(#{1,4}\s*(?:근거|참조)\s*)(?=\r?\n)",
+        r"\n\n\1", str(value or ""),
+    )
+
+
 def canonicalize_evidence_index(text: str, evidence: list | None = None,
-                                related_docs: list | None = None) -> str:
+                                related_docs: list | None = None,
+                                claim_facts: list | None = None,
+                                observation_facts: list | None = None) -> str:
     """Merge every evidence channel into one stable, hierarchical source index."""
     # Bind model ordinals to structured Research sources before any source dedupe or
     # renumbering.  ``[[1-b]]`` is presentation noise, not a different identifier.
     value = normalize_citation_wrappers(text)
-    provenance_graph = build_claim_provenance_graph(value, evidence or [])
+    # Style normalization may glue a canonical heading to the preceding sentence. Restore
+    # the structural boundary before parsing so stale bare source rows cannot survive beside
+    # the rebuilt index and trigger a false late grounding warning.
+    value = normalize_evidence_heading_boundary(value)
+    provenance_graph = build_claim_provenance_graph(
+        value, evidence or [], claim_facts=claim_facts or [],
+        observation_facts=observation_facts or [],
+    )
     body, lines, tail = _split(value)
     # The canonical source index is always the last section.  Legacy replies sometimes put
     # another heading after references; preserve that content by moving it before the index.
@@ -860,7 +1091,13 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         observations = item.get("observations") or []
         for obs in observations:
             if isinstance(obs, dict):
-                _append_observation(group, _observation(obs.get("text"), obs.get("source")))
+                _append_observation(
+                    group, _observation(obs.get("text"), obs.get("source")),
+                    normalized_value=_observation(
+                        obs.get("normalized_text") or obs.get("canonical_text")
+                        or obs.get("text"), obs.get("source"),
+                    ),
+                )
             elif isinstance(obs, str):
                 _append_observation(group, _observation(obs))
         if not observations and not group["observations"]:
@@ -902,6 +1139,7 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
                 if len(remainder) >= 8:
                     carried.append(_observation(remainder, "document"))
             existing["observations"] = kept
+            existing.pop("_observation_keys", None)
         group = promote_alias(alias, identity, f"[{title}]({url})") \
             if alias in groups else groups.get(identity)
         if group:
@@ -963,6 +1201,7 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
         (row["source_id"], row["ordinal"]): row
         for row in provenance_graph["observations"]
     }
+    graph_marker_by_target: dict[tuple[str, int], str] = {}
     for ordinal, source_node in graph_sources.items():
         identity = source_node["source_id"]
         group = groups.get(identity)
@@ -977,27 +1216,63 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
             rendered_observation = _observation(
                 observation_node.get("text"), observation_node.get("source"),
             )
-            observation_index = _append_observation(group, rendered_observation)
+            observation_index = _append_observation(
+                group, rendered_observation,
+                normalized_value=_observation(
+                    observation_node.get("normalized_text")
+                    or observation_node.get("text"), observation_node.get("source"),
+                ),
+            )
             marker = base
             if observation_index is not None and len(group["observations"]) > 1:
                 marker = f"{base}-{chr(97 + observation_index)}"
             marker_map.setdefault(f"{ordinal}-{chr(96 + observation_ordinal)}", marker)
+            graph_marker_by_target[(identity, observation_ordinal)] = marker
+
+    claims_by_occurrence: dict[str, list[dict]] = {}
+    for claim in provenance_graph["claims"]:
+        occurrence_id = str(claim.get("citation_occurrence_id") or "")
+        if occurrence_id:
+            claims_by_occurrence.setdefault(occurrence_id, []).append(claim)
+    for rows in claims_by_occurrence.values():
+        rows.sort(key=lambda row: int(row.get("citation_token_index") or 0))
+    unsupported_claim_ids = set(provenance_graph.get("unsupported_claim_ids") or [])
+    body_occurrence_ids = {
+        (match.start(), match.end()): occurrence_id
+        for occurrence_id, match, _tokens in citation_occurrences(body)
+    }
 
     def replace_citation(match: re.Match) -> str:
         mapped: list[str] = []
         unresolved = False
-        for old in _citation_tokens(match.group(1)):
-            current = marker_map.get(old) or marker_map.get(old.split("-", 1)[0])
+        unsupported = False
+        occurrence_id = body_occurrence_ids.get((match.start(), match.end()), "")
+        bindings = claims_by_occurrence.get(occurrence_id) or []
+        by_index = {int(row.get("citation_token_index") or 0): row for row in bindings}
+        for token_index, old in enumerate(_citation_tokens(match.group(0)), 1):
+            claim = by_index.get(token_index)
+            current = ""
+            if claim and claim.get("entailment") in {"direct", "rebound"}:
+                current = graph_marker_by_target.get((
+                    str(claim.get("source_id") or ""),
+                    int(claim.get("observation_ordinal") or 0),
+                ), "")
+            if not current:
+                current = marker_map.get(old) or marker_map.get(old.split("-", 1)[0]) or ""
             if current and current not in mapped:
                 mapped.append(current)
             elif not current:
                 unresolved = True
+            if claim and claim.get("claim_id") in unsupported_claim_ids:
+                unsupported = True
         citation = "".join(f"[{current}]" for current in mapped)
+        if unsupported:
+            citation += (" " if citation else "") + "(직접 완료 근거 확인 필요)"
         if unresolved:
             citation += (" " if citation else "") + "(근거 확인 필요)"
         return citation
 
-    body = _compact_adjacent_citations(_CITATION_RE.sub(replace_citation, body))
+    body = _compact_adjacent_citations(CITATION_OCCURRENCE_RE.sub(replace_citation, body))
     rendered: list[str] = []
     for identity in identity_order:
         group = groups[identity]
@@ -1017,5 +1292,6 @@ def canonicalize_evidence_index(text: str, evidence: list | None = None,
 __all__ = [
     "AtomicFact", "atomic_fact_sidecar", "build_atomic_fact_ledger",
     "build_claim_provenance_graph", "canonicalize_evidence_index",
-    "enforce_atomic_fact_boundaries",
+    "canonical_observation_facts", "enforce_atomic_fact_boundaries",
+    "normalize_evidence_heading_boundary",
 ]

@@ -87,6 +87,31 @@ class QuestionContract(StrictModel):
     fallback: str = Field(default="", max_length=500)
 
 
+class ResolvedSlot(StrictModel):
+    """One runtime-resolved execution slot with immutable decision provenance.
+
+    A semantic role may request retrieval, but only verified runtime material can populate
+    this envelope.  It deliberately carries opaque outcome/item identities instead of prose
+    matching so graph routing, Work projection and final-effect sealing share one authority.
+    """
+
+    contract: Literal["resolved-slot.v1"] = "resolved-slot.v1"
+    field: Literal["parent"]
+    outcome_id: str = Field(default="", max_length=120)
+    item_id: str = Field(default="", max_length=120)
+    request: Literal["select_existing"]
+    required: bool
+    status: Literal["resolved", "unresolved"]
+    value: str = Field(default="", max_length=120)
+    resolution: Literal["verified_candidate", "top_level", "unresolved"]
+    provenance: Literal[
+        "materialized_parent_candidates", "explicit_safe_fallback"
+    ]
+    evidence: list[Annotated[str, Field(max_length=240)]] = Field(
+        default_factory=list, max_length=8)
+    decision_digest: str = Field(min_length=64, max_length=64)
+
+
 class QuerySpec(StrictModel):
     id: str
     source: Literal["jira", "confluence", "comments", "people", "web", "github"]
@@ -213,7 +238,7 @@ ROLE_CONTRACTS = {
 
 
 __all__ = ["ArtifactRef", "AtomicTask", "RequestPlan", "ContinuationDecision",
-           "ContinuationContract", "QuestionContract", "QuerySpec", "QueryPlan",
+           "ContinuationContract", "QuestionContract", "ResolvedSlot", "QuerySpec", "QueryPlan",
            "QueryIntent", "CompactQueryPlan",
            "ResearchReport", "WorkPlan", "PeopleAdvice", "AuthoredArtifact",
            "AuditResult", "IntegratedResult", "ROLE_CONTRACTS"]

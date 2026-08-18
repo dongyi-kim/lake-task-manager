@@ -115,8 +115,9 @@ def test_role_manifest_documents_cross_turn_and_final_response_inputs():
     assert {"messages", "request_text", "request_plan", "keywords", "turn_continuation",
             "materialized_ticket_sources", "structure_ok", "draft", "evidence", "revisions"} <= \
         set(ROLE_SPECS["auditor"].input_keys)
-    assert {"group_activity", "ticket_progress", "person_work_snapshot", "daily_priority_snapshot",
-            "change_plan", "questions"} <= set(ROLE_SPECS["result_integrator"].input_keys)
+    assert {"query_plan", "query_results", "group_activity", "ticket_progress",
+            "person_work_snapshot", "daily_priority_snapshot", "change_plan", "questions"} <= \
+        set(ROLE_SPECS["result_integrator"].input_keys)
 
 
 def test_manifest_tool_groups_resolve_to_exact_role_catalogs():

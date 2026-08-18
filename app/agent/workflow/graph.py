@@ -69,6 +69,7 @@ from app.agent.workflow.effect_contract import (
     final_effect,
     project_final_authority_state,
 )
+from app.agent.workflow.resolved_slots import parent_selection_authority
 from app.agent.workflow.state import (MAX_REVISIONS, AgentState, Intent, Node,
                                       is_memory_only_request, reads_as_bug, request_text,
                                       verified_parent_epic_candidates)
@@ -85,8 +86,26 @@ def _node(agent):
 # ── 라우터: State 만 보고 결정한다(부작용 없음) ──────────────────────
 def _needs_delegated_parent_retrieval(state: AgentState) -> bool:
     """Refresh retrieval when a continuation newly delegates an unverified parent choice."""
-    from app.agent.workflow.agents.work_architect import _delegates_existing_epic_choice
+    authority = parent_selection_authority(state)
+    if authority:
+        # The durable ledger can predate the current continuation decision. Its historical
+        # ``attempted`` bit and even materialized candidates are therefore not proof that a
+        # subject-compatible structural read ran for this new delegation. The graph reaches
+        # this router only once before QueryRunner on the current turn, so always refreshing
+        # the new typed decision is bounded by topology rather than a mutable string marker.
+        return True
 
+    contract = state.get("continuation_contract") or {}
+    if (state.get("turn_continuation") is True
+            and isinstance(contract, dict)
+            and contract.get("version") == "continuation.v1"):
+        # A typed continuation that did not carry parent authority must not be upgraded by
+        # reparsing display text in Graph or Work.
+        return False
+
+    # Legacy/direct callers without a validated continuation envelope retain the old path.
+    # This compatibility branch is deliberately unreachable for the typed r30 boundary.
+    from app.agent.workflow.agents.work_architect import _delegates_existing_epic_choice
     ledger = state.get("materialized_ticket_sources") or {}
     search_completed = (
         isinstance(ledger, dict)

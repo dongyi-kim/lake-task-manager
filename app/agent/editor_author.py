@@ -84,6 +84,11 @@ def _ticket_context(key: str, kind: str) -> str:
                 f'{c["key"]} "{c.get("title", "")}"'
                 f'{"(완료)" if c.get("done") else "(미완료: " + str(c.get("status") or "상태 미상") + ")"}'
                 for c in r["children"][:6]))
+            # A prose conjunction must never turn two independent Jira fields into one
+            # shared state claim. Keep an exact key→status ledger beside the narrative form.
+            parts.append("티켓별 현재 상태: " + " | ".join(
+                f'{c.get("key")}={c.get("status") or "상태 미상"}'
+                for c in r["children"][:6] if c.get("key")))
         if remaining:
             parts.append("명시적 미완료(완료로 쓰지 말 것): " + " | ".join(remaining))
         if r.get("links"):
@@ -402,6 +407,7 @@ Write a Korean {what}. The result is inserted directly into the user's editor. R
     html = _drop_unverified_editor_dates(html, source)
     html = _repair_dangling_editor_ending(html)
     html = _qualify_non_done_ticket_claims(html, ctx)
+    html = _bind_ticket_status_claims(html, ctx)
 
     # 의미 후검증 — 자료가 명시적으로 '남은 일'이라고 한 대상을 완료로 뒤집은 문장은
     # 사용자가 자기 이름으로 게시하기 전에 차단한다. 경고만 띄우고 삽입하면 토스트를 놓친
@@ -1015,6 +1021,67 @@ def _qualify_non_done_ticket_claims(rendered: str, context: str) -> str:
 
         out = claim.sub(qualify, out)
     return out
+
+
+def _ticket_status_ledger(context: str) -> dict[str, str]:
+    """Read only exact key-bound status fields from deterministic editor context."""
+    out: dict[str, str] = {}
+    marker = re.search(r"티켓별 현재 상태:\s*([^\n]+)", str(context or ""))
+    if marker:
+        for chunk in marker.group(1).split("|"):
+            match = re.fullmatch(
+                r"\s*([A-Z][A-Z0-9]*-\d+)\s*=\s*(.+?)\s*", chunk, re.I,
+            )
+            if match:
+                out[match.group(1).upper()] = match.group(2).strip()
+    # Backward-compatible deterministic context used by older callers and focused tests.
+    for match in re.finditer(
+            r'\b([A-Z][A-Z0-9]*-\d+)\s+"[^"]*"\('
+            r'(?:완료(?::\s*([^)]+))?|미완료:\s*([^)]+))\)',
+            str(context or ""), re.I):
+        key = match.group(1).upper()
+        out.setdefault(key, (match.group(2) or match.group(3) or "완료").strip())
+    return out
+
+
+def _bind_ticket_status_claims(rendered: str, context: str) -> str:
+    """Give every ticket in a multi-ticket status sentence its own exact field value."""
+    ledger = _ticket_status_ledger(context)
+    if not ledger:
+        return str(rendered or "")
+    out = str(rendered or "")
+    block_re = re.compile(r"<(p|li)\b[^>]*>.*?</\1>", re.S | re.I)
+    anchor_re = re.compile(
+        r'(<a\b[^>]*data-key=["\']([A-Z][A-Z0-9]*-\d+)["\'][^>]*>.*?</a>)',
+        re.S | re.I,
+    )
+
+    def bind_block(match: re.Match) -> str:
+        block = match.group(0)
+        anchors = [item for item in anchor_re.finditer(block)
+                   if item.group(2).upper() in ledger]
+        keys = list(dict.fromkeys(item.group(2).upper() for item in anchors))
+        if len(keys) < 2 or not re.search(
+                r"(?:Jira\s*)?(?:상태|status)\b", _plain_text(block), re.I):
+            return block
+        values = {ledger[key].casefold() for key in keys}
+        if len(values) == 1 and next(iter(values)) in _plain_text(block).casefold():
+            return block
+        # Remove only the bounded shared status assertion; keep mentions, rationale, and
+        # following sentences in the same HTML block. Exact status is then attached to each
+        # ticket anchor independently.
+        block = re.sub(
+            r"(?:은|는|이|가)?\s*(?:Jira\s*)?(?:상태|status)\s+[^<.!?]{1,100}"
+            r"(?=[.!?]|<)", "", block, count=1, flags=re.I,
+        )
+
+        def annotate(anchor: re.Match) -> str:
+            key = anchor.group(2).upper()
+            return anchor.group(1) + f" · Jira 상태 {_html.escape(ledger[key])}"
+
+        return anchor_re.sub(annotate, block)
+
+    return block_re.sub(bind_block, out)
 
 
 def _topic_matches(topic: str, sentence: str) -> bool:

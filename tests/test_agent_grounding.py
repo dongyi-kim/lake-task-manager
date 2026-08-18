@@ -23,6 +23,34 @@ def _real_key_and_title():
     return it["key"], (it.get("fields") or {}).get("summary") or ""
 
 
+def _trusted_observation_facts(evidence):
+    """Test producer for the server-owned observation-fact interface."""
+    from app.agent.workflow.claim_provenance import bind_evidence_provenance
+
+    facts = []
+    for item in bind_evidence_provenance(evidence):
+        source_id = item["_source_id"]
+        ids = {
+            row["ordinal"]: row["observation_id"]
+            for row in item["_provenance"]["observations"]
+        }
+        for ordinal, observation in enumerate(item.get("observations") or [], 1):
+            if not isinstance(observation, dict) or not observation.get("claim_kind"):
+                continue
+            facts.append({
+                "observation_id": ids[ordinal], "source_id": source_id,
+                "subject_id": observation.get("subject_id"),
+                "predicate": observation.get("predicate"),
+                "value": observation.get("value"),
+                "claim_kind": observation.get("claim_kind"),
+                "observed_at": observation.get("observed_at") or "",
+                "temporal_role": observation.get("temporal_role") or "observed",
+                "normalized_text": observation.get("text") or "",
+                "direct": True, "authority": "materialized_match",
+            })
+    return facts
+
+
 def test_existing_key_and_faithful_title_pass():
     key, title = _real_key_and_title()
     g = grounding.check(f"{key} ({title}) 는 진행 중입니다.")
@@ -175,37 +203,19 @@ def test_warning_block_is_visible_not_silent():
     assert "승인하지 말고" in w and "무시하고" not in w
 
 
-def test_responder_appends_warning_when_rewrite_cannot_fix(monkeypatch):
-    """재작성으로도 못 고치면 경고가 **보이게** 붙는다 — 조용히 넘어가지 않는다."""
+def test_responder_warns_without_a_second_llm_repair(monkeypatch):
+    """Result 검증은 이미 생성된 답을 다시 LLM에 넣지 않고 deterministic하게 끝낸다."""
     os.environ["LAKE_AGENT_PROVIDER"] = "fake"
     from app.agent.workflow.agents.result_integrator import ResultIntegrator
     r = ResultIntegrator()
-    captured = {}
-
-    class _Rewrite:
-        def invoke(self, _messages, **kwargs):
-            captured["invoke"] = kwargs
-            return type("M", (), {"content": "여전히 담당자: 김철수 입니다."})()
-
-    def rewrite_llm(**kwargs):
-        captured["llm"] = kwargs
-        return _Rewrite()
-
-    # fake llm 의 재작성도 같은 날조를 담는다고 가정
-    monkeypatch.setattr(r, "llm", rewrite_llm)
+    monkeypatch.setattr(
+        r, "llm",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("grounding must not trigger a second Result call")),
+    )
     out = r.apply({"trace": []}, {"text": "담당자: 김철수 가 맡고 있습니다."})
     assert "자동 검증 경고" in out["reply"]
     assert "김철수" in out["reply"]
-    assert captured["llm"] == {
-        "execution_layer": "deep_semantic",
-        "execution_stage": "grounding_repair",
-    }
-    assert captured["invoke"]["config"]["metadata"] == {
-        "ltm_role_id": "result_integrator",
-        "ltm_output_contract": "text",
-        "ltm_execution_layer": "deep_semantic",
-        "ltm_execution_stage": "grounding_repair",
-    }
 
 
 def test_question_only_reply_never_exposes_internal_grounding_diagnostics():
@@ -2798,10 +2808,8 @@ def test_assignment_completion_reply_does_not_expose_raw_jql_predicates():
 
 
 # ── 탐지와 교정을 분리한다 (실측: 위반이 잡혔는데 경고도 재작성도 없이 나갔다) ──────
-def test_a_failed_rewrite_still_attaches_the_warning(monkeypatch):
-    """재작성은 시스템 프롬프트 전체 + 답 전문을 다시 보내는 **두 번째 LLM 호출**이라
-    레이트리밋·길이로 죽을 수 있다. 그건 교정의 실패이지 탐지의 무효가 아니다 —
-    예전엔 둘이 한 try 안에 있어 재작성이 죽으면 탐지 결과까지 통째로 버려졌다."""
+def test_grounding_violation_attaches_warning_without_a_result_rewrite(monkeypatch):
+    """탐지 결과는 두 번째 Result LLM 호출 없이 deterministic warning으로 남는다."""
     from app.agent.workflow.agents.result_integrator import ResultIntegrator
     r = ResultIntegrator()
     monkeypatch.setattr(ResultIntegrator, "llm",
@@ -2812,7 +2820,8 @@ def test_a_failed_rewrite_still_attaches_the_warning(monkeypatch):
     out = r.apply({"messages": [], "intent": "ask"}, {"text": bad})
     reply = out.get("reply") or ""
     assert "자동 검증 경고" in reply, reply
-    assert reply.index("자동 검증 경고") < reply.index("### 근거"), reply
+    if "### 근거" in reply:
+        assert reply.index("자동 검증 경고") < reply.index("### 근거"), reply
 
 
 def test_a_rewrite_that_guts_the_answer_is_rejected():
@@ -3056,8 +3065,14 @@ def test_structured_claim_provenance_binds_source_and_observation_before_renumbe
 
     evidence = [
         {"key": "ACME-12", "title": "AcmeWriter validation", "observations": [
-            {"source": "description", "text": "AcmeWriter output validation plan"},
-            {"source": "comment", "text": "AcmeWriter output generation completed"},
+            {"source": "description", "text": "AcmeWriter output validation plan",
+             "subject_id": "component:acme-writer", "predicate": "generation_state",
+             "value": "planned", "claim_kind": "state", "temporal_role": "historical",
+             "direct": True},
+            {"source": "comment", "text": "AcmeWriter output generation completed",
+             "subject_id": "component:acme-writer", "predicate": "generation_state",
+             "value": "completed", "claim_kind": "completion", "temporal_role": "current",
+             "direct": True},
         ]},
         {"key": "HTTPS://SPEC.example/acme-format/",
          "title": "Acme format specification", "observations": [
@@ -3072,7 +3087,10 @@ def test_structured_claim_provenance_binds_source_and_observation_before_renumbe
     bound = bind_evidence_provenance(evidence)
     assert bound[0]["observations"] == evidence[0]["observations"]
     assert bound[0]["_provenance"]["observations"][1]["observation_id"]
-    graph = build_claim_provenance_graph(source, evidence)
+    observation_facts = _trusted_observation_facts(evidence)
+    graph = build_claim_provenance_graph(
+        source, evidence, observation_facts=observation_facts,
+    )
     assert len(graph["claims"]) == 2
     assert {row["source_id"] for row in graph["claims"]} == {
         "ticket:ACME-12", "url:https://spec.example/acme-format",
@@ -3089,6 +3107,7 @@ def test_structured_claim_provenance_binds_source_and_observation_before_renumbe
 
     reordered = build_claim_provenance_graph(
         "AcmeWriter output generation completed [2-b].", [evidence[1], evidence[0]],
+        observation_facts=observation_facts,
     )
     assert reordered["claims"][0]["claim_id"] == writer["claim_id"]
     assert reordered["claims"][0]["source_id"] == writer["source_id"]
@@ -3099,7 +3118,9 @@ def test_structured_claim_provenance_binds_source_and_observation_before_renumbe
     assert any(row["observation_id"] == source_claim["observation_id"]
                for row in source_scope["observations"])
 
-    rendered = canonicalize_evidence_index(source, evidence=evidence)
+    rendered = canonicalize_evidence_index(
+        source, evidence=evidence, observation_facts=observation_facts,
+    )
     assert "근거 확인 필요" not in rendered
     assert "[[" not in rendered
     assert "completed [1-b]" in rendered
@@ -3288,7 +3309,7 @@ def test_canonical_matching_evidence_is_typed_without_displacing_snapshot():
     assert matching["authority"] == "materialized_match"
 
 
-def test_canonical_comment_matches_supply_trusted_timestamp_for_progression():
+def test_canonical_comment_matches_supply_provenance_not_model_temporal_relation():
     from app.agent.workflow.evidence_index import build_atomic_fact_ledger
 
     state = {
@@ -3313,15 +3334,16 @@ def test_canonical_comment_matches_supply_trusted_timestamp_for_progression():
     }
 
     facts = [row for row in build_atomic_fact_ledger(state)
-             if row["predicate"] == "validation_state"]
+             if row["authority"] == "materialized_match"]
 
     assert [(row["value"], row["observed_at"], row["temporal_role"])
             for row in facts] == [
-        ("validation not run", "2026-08-01T09:00:00Z", "historical"),
-        ("validation completed", "2026-08-10T18:00:00Z", "current"),
+        ("validation not run", "2026-08-01T09:00:00Z", "observed"),
+        ("validation completed", "2026-08-10T18:00:00Z", "observed"),
     ]
     assert all(row["authority"] == "materialized_match" for row in facts)
     assert all(row["state"] == "" for row in facts)
+    assert len({row["predicate"] for row in facts}) == 2
     assert all("fabricated:other-actor" not in row["provenance"] for row in facts)
     assert len({row["provenance"] for row in facts}) == 2
 
@@ -3348,12 +3370,16 @@ def test_canonical_comment_match_does_not_authorize_fabricated_value_or_actor():
     }
 
     model_rows = [row for row in build_atomic_fact_ledger(state)
-                  if row["authority"] == "evidence"]
+                  if row["authority"] == "materialized_match"]
 
     assert len(model_rows) == 2
     assert all(row["subject_id"] == "ACME-24" for row in model_rows)
-    assert all(row["predicate"] == "untyped" for row in model_rows)
-    assert all(row["typed"] is False and row["direct"] is False for row in model_rows)
+    assert all(row["predicate"].startswith("canonical_observation:")
+               for row in model_rows)
+    assert all(row["value"] == "Alice started validation" for row in model_rows)
+    assert all(row["typed"] is True and row["direct"] is True for row in model_rows)
+    assert not any(row["predicate"] in {"completed_count", "assignee"}
+                   for row in model_rows)
 
 
 def test_atomic_fact_ledger_preserves_contemporary_conflict_provenance():
@@ -3397,7 +3423,7 @@ def test_atomic_fact_boundary_drops_foreign_parent_due_from_child_claim():
     assert "마감 확인되지 않음" in got
 
 
-def test_atomic_fact_boundary_labels_stale_state_as_history_and_restores_current():
+def test_atomic_fact_boundary_does_not_infer_progression_from_free_text_comments():
     from app.agent.workflow.evidence_index import (
         build_atomic_fact_ledger, enforce_atomic_fact_boundaries,
     )
@@ -3422,9 +3448,8 @@ def test_atomic_fact_boundary_labels_stale_state_as_history_and_restores_current
         source, build_atomic_fact_ledger(state),
     )
 
-    assert "이전 기록(2026-08-01)" in got
-    assert "현재 기록(2026-08-10)" in got and "completed" in got
-    assert not got.startswith("{{ticket-inline:ACME-41}} validation not run")
+    assert got == source
+    assert "이전 기록" not in got and "현재 기록" not in got
 
 
 def test_result_integrator_receives_bounded_atomic_fact_sidecar():
@@ -3451,8 +3476,9 @@ def test_result_integrator_receives_bounded_atomic_fact_sidecar():
     task = ResultIntegrator().task(state)
 
     assert "Typed Atomic Fact Ledger" in task
-    assert '"temporal_role": "historical"' in task
-    assert '"temporal_role": "current"' in task
+    assert '"temporal_role": "historical"' not in task
+    assert '"predicate": "canonical_observation:' in task
+    assert '"temporal_role": "observed"' in task
     assert '"authority": "materialized_ticket_sources"' in task
     assert 'materialized_ticket_sources.ticketDetails[ACME-41].comments[0]' in task
     assert "Never transfer a value across subject_id or predicate" in task
@@ -3484,7 +3510,15 @@ def test_atomic_fact_cap_keeps_late_temporal_group_complete():
         ]}],
     }
 
-    sidecar = atomic_fact_sidecar(state)
+    trusted_progression = [
+        {"subject_id": "ACME-8", "predicate": "validation_state",
+         "value": "not run", "observed_at": "2026-08-01", "direct": True,
+         "source_id": "ticket:ACME-8#comment:1", "authority": "query_runner"},
+        {"subject_id": "ACME-8", "predicate": "validation_state",
+         "value": "completed", "observed_at": "2026-08-10", "direct": True,
+         "source_id": "ticket:ACME-8#comment:2", "authority": "query_runner"},
+    ]
+    sidecar = atomic_fact_sidecar(state, extra_facts=trusted_progression)
     progression = [row for row in sidecar if row["predicate"] == "validation_state"]
 
     assert len(sidecar) <= 24
@@ -3517,3 +3551,490 @@ def test_portfolio_activity_atomic_facts_bind_each_value_to_exact_actor():
     assert all(row["source_id"] == f"portfolio:activity:{row['subject_id']}"
                for row in facts)
     assert all(row["temporal_role"] == "observed" for row in facts)
+
+
+def test_exact_date_math_corrects_weekday_and_exposes_relative_conflict_without_action():
+    from app.agent.workflow.evidence_index import enforce_atomic_fact_boundaries
+
+    source = (
+        "2026-08-11부터 2026-08-25(금요일)까지 한 주이므로 즉시 배포를 권고합니다."
+    )
+
+    got = enforce_atomic_fact_boundaries(source, [])
+
+    assert "2026-08-25(화요일)" in got
+    assert "정확히 14일" in got and "한 주" in got and "불일치" in got
+    assert "배포를 권고" not in got
+    assert got.startswith("2026-08-11부터"), "유용한 exact-date 문맥은 보존해야 함"
+
+
+def test_completion_claim_rebinds_to_current_direct_typed_observation():
+    from app.agent.workflow.claim_provenance import build_claim_provenance_graph
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": "ACME-71", "title": "AtlasWriter validation", "observations": [{
+            "source": "description", "text": "AtlasWriter generation is planned",
+            "subject_id": "component:atlas-writer", "predicate": "generation_state",
+            "value": "planned", "claim_kind": "state", "temporal_role": "historical",
+            "direct": True, "observed_at": "2026-08-01T09:00:00Z",
+        }, {
+            "source": "comment", "text": "AtlasWriter generation completed",
+            "subject_id": "component:atlas-writer", "predicate": "generation_state",
+            "value": "completed", "claim_kind": "completion", "temporal_role": "current",
+            "direct": True, "observed_at": "2026-08-10T09:00:00Z",
+        }],
+    }]
+    source = "AtlasWriter generation completed [1-a]."
+    claim_facts = [{
+        "citation_index": 1, "subject_id": "component:atlas-writer",
+        "predicate": "generation_state", "value": "completed",
+        "claim_kind": "completion", "direct": True,
+        "authority": "result_claim_sidecar",
+    }]
+
+    observation_facts = _trusted_observation_facts(evidence)
+    graph = build_claim_provenance_graph(
+        source, evidence, observation_facts=observation_facts,
+        claim_facts=claim_facts,
+    )
+    rendered = canonicalize_evidence_index(
+        source, evidence=evidence, observation_facts=observation_facts,
+        claim_facts=claim_facts,
+    )
+
+    assert graph["claims"][0]["entailment"] == "rebound"
+    assert graph["claims"][0]["observation_ordinal"] == 2
+    assert graph["unsupported_claim_ids"] == []
+    assert "completed [1-b]" in rendered
+    assert "직접 완료 근거 확인 필요" not in rendered
+
+
+def test_completion_claim_is_qualified_when_only_plan_or_noncompletion_exists():
+    from app.agent.workflow.claim_provenance import build_claim_provenance_graph
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": "ACME-72", "title": "AcmeReader validation", "observations": [{
+            "source": "description", "text": "AcmeReader validation plan",
+            "subject_id": "component:acme-reader", "predicate": "validation_state",
+            "value": "planned", "claim_kind": "state", "temporal_role": "historical",
+            "direct": True, "observed_at": "2026-08-01T09:00:00Z",
+        }, {
+            "source": "comment", "text": "AcmeReader validation not completed",
+            "subject_id": "component:acme-reader", "predicate": "validation_state",
+            "value": "in_progress", "claim_kind": "state", "temporal_role": "current",
+            "direct": True, "observed_at": "2026-08-10T09:00:00Z",
+        }],
+    }]
+    source = "AcmeReader validation completed [1-a]."
+
+    observation_facts = _trusted_observation_facts(evidence)
+    graph = build_claim_provenance_graph(
+        source, evidence, observation_facts=observation_facts,
+    )
+    rendered = canonicalize_evidence_index(
+        source, evidence=evidence, observation_facts=observation_facts,
+    )
+
+    assert graph["unsupported_claim_ids"] == [graph["claims"][0]["claim_id"]]
+    assert "직접 완료 근거 확인 필요" in rendered
+
+
+def test_normalized_observation_identity_dedupes_verified_presentation_variants():
+    from app.agent.workflow.claim_provenance import bind_evidence_provenance
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": "ACME-73", "title": "Acme review", "observations": [{
+            "source": "comment", "text": "[~acct.x17] approved the rollout",
+            "normalized_text": "person:acct.x17 approved the rollout",
+            "observed_at": "2026-08-10T09:00:00Z",
+        }, {
+            "source": "comment", "text": "@Reviewer approved the rollout",
+            "normalized_text": "person:acct.x17 approved the rollout",
+            "observed_at": "2026-08-10T09:00:00Z",
+        }],
+    }]
+
+    bound = bind_evidence_provenance(evidence)
+    ids = [row["observation_id"] for row in bound[0]["_provenance"]["observations"]]
+    rendered = canonicalize_evidence_index("Review recorded [1].", evidence=evidence)
+
+    assert len(set(ids)) == 1
+    assert rendered.count("approved the rollout") == 1
+
+
+def test_incomplete_entity_coverage_is_disclosed_even_when_source_query_is_green():
+    from app.agent.workflow.agents.result_integrator import _ensure_entity_coverage_disclosure
+
+    state = {
+        "intent": "ask", "request_text": "Jira 근거를 조사해줘",
+        "query_plan": {"queries": [{"id": "jira", "source": "jira", "query": "Atlas"}]},
+        "query_results": [{"id": "jira", "source": "jira", "result": {
+            "tickets": [{"key": "ACME-70"}], "returned": 1, "total": 1,
+            "complete": True, "entityCoverage": {
+                "rootKeys": ["ACME-70"], "selectedKeys": ["ACME-71"],
+                "complete": False, "truncated": False,
+            },
+        }}],
+    }
+
+    got = _ensure_entity_coverage_disclosure("결론\n\n### 근거\n\n[1] ACME-70", state)
+
+    assert "전체 관련 엔티티를 확인한 것은 아님" in got
+    assert got.index("전체 관련 엔티티") < got.index("### 근거")
+
+
+def test_plain_common_noun_grounding_candidate_does_not_trigger_result_repair(monkeypatch):
+    from app.agent.workflow import grounding
+    from app.agent.workflow.agents.result_integrator import ResultIntegrator
+
+    calls = {"check": 0}
+
+    def false_person(_text, allowed_people=None):
+        calls["check"] += 1
+        return {"fake_keys": [], "wrong_titles": {}, "fake_people": ["하위"],
+                "real_titles": {}, "unlinked_refs": [], "name_as_id": {},
+                "person_findings": [{
+                    "candidate": "하위", "context_kind": "common_noun",
+                    "verdict": "non_person",
+                }], "ok": False}
+
+    monkeypatch.setattr(grounding, "check", false_person)
+    integrator = ResultIntegrator()
+    monkeypatch.setattr(
+        integrator, "llm",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("plain noun must not trigger a second Result call")),
+    )
+
+    got = integrator.apply(
+        {"messages": [], "intent": "ask", "trace": []},
+        {"text": "하위 작업의 현재 상태를 정리했습니다."},
+    )["reply"]
+
+    assert calls["check"] == 1
+    assert "자동 검증 경고" not in got
+
+
+def test_bare_person_assertion_is_not_suppressed_as_a_common_noun():
+    from app.agent.workflow.agents.result_integrator import _filter_plain_person_candidates
+
+    checked = {
+        "fake_keys": [], "wrong_titles": {}, "fake_people": ["김철수"],
+        "unlinked_refs": [], "name_as_id": {}, "ok": False,
+    }
+
+    got = _filter_plain_person_candidates(checked, "김철수가 진행 담당을 맡았습니다.")
+
+    assert got["fake_people"] == ["김철수"] and got["ok"] is False
+
+
+@pytest.mark.parametrize("text", [
+    "담당자는 김철수 입니다.",
+    "담당자: 김철수",
+    "담당자 - 김철수",
+    "| 담당자 | 김철수 |",
+    "김철수가 진행 담당을 맡았습니다.",
+])
+def test_structural_person_grammar_keeps_fabricated_names_enforceable(text):
+    got = grounding.check(text)
+
+    assert "김철수" in got["fake_people"]
+    finding = next(row for row in got["person_findings"]
+                   if row["candidate"] == "김철수")
+    assert finding["context_kind"] != "common_noun"
+
+
+@pytest.mark.parametrize("text", ["담당 성능", "담당 기능", "담당 일정"])
+def test_bare_responsibility_noun_is_not_parsed_as_a_person(text):
+    got = grounding.check(text)
+
+    assert not got["fake_people"] and got["ok"] is True
+
+
+def test_completion_rebind_does_not_swap_subjects_that_share_a_predicate():
+    from app.agent.workflow.claim_provenance import build_claim_provenance_graph
+
+    evidence = [{
+        "key": "ACME-90", "observations": [{
+            "source": "description", "text": "AtlasWriter generation planned",
+            "subject_id": "component:atlas-writer", "predicate": "generation_state",
+            "value": "planned", "claim_kind": "state", "temporal_role": "historical",
+            "direct": True, "observed_at": "2026-08-01T09:00:00Z",
+        }, {
+            "source": "comment", "text": "AtlasWriter generation completed",
+            "subject_id": "component:atlas-writer", "predicate": "generation_state",
+            "value": "completed", "claim_kind": "completion", "temporal_role": "current",
+            "direct": True, "observed_at": "2026-08-10T09:00:00Z",
+        }],
+    }]
+
+    graph = build_claim_provenance_graph(
+        "AcmeReader generation completed [1-a].", evidence,
+        observation_facts=_trusted_observation_facts(evidence),
+    )
+
+    assert graph["claims"][0]["entailment"] == "unsupported"
+    assert graph["unsupported_claim_ids"] == [graph["claims"][0]["claim_id"]]
+
+
+def test_completion_rebind_tie_fails_closed():
+    from app.agent.workflow.claim_provenance import build_claim_provenance_graph
+
+    evidence = [{
+        "key": "ACME-90", "observations": [{
+            "source": "description", "text": "AtlasWriter generation plan",
+            "observed_at": "2026-08-01T09:00:00Z",
+        }],
+    }] + [{
+        "key": key, "observations": [{
+            "source": "comment", "text": "AtlasWriter generation completed",
+            "subject_id": f"component:{key.casefold()}", "predicate": "generation_state",
+            "value": "completed", "claim_kind": "completion", "temporal_role": "current",
+            "direct": True, "observed_at": "2026-08-10T09:00:00Z",
+        }],
+    } for key in ("ACME-91", "ACME-92")]
+
+    graph = build_claim_provenance_graph(
+        "AtlasWriter generation completed [1].", evidence,
+        observation_facts=_trusted_observation_facts(evidence),
+    )
+
+    assert graph["claims"][0]["entailment"] == "unsupported"
+    assert graph["unsupported_claim_ids"] == [graph["claims"][0]["claim_id"]]
+
+
+def test_multi_ticket_status_sentence_gets_an_exact_subject_field_ledger():
+    from app.agent.workflow.evidence_index import (
+        build_atomic_fact_ledger, enforce_atomic_fact_boundaries,
+    )
+
+    state = {"materialized_ticket_sources": {"ticketDetails": [
+        {"key": "ACME-81", "status": "Closed", "updated": "2026-08-10"},
+        {"key": "ACME-82", "status": "In Progress", "updated": "2026-08-10"},
+    ]}}
+
+    got = enforce_atomic_fact_boundaries(
+        "ACME-81 및 ACME-82는 Jira 상태 In Progress입니다.",
+        build_atomic_fact_ledger(state),
+    )
+
+    assert got == "티켓별 Jira 상태: ACME-81=Closed; ACME-82=In Progress."
+    assert "ACME-81 및 ACME-82는 Jira 상태 In Progress" not in got
+
+
+def test_multi_ticket_shared_status_is_preserved_when_every_binding_matches():
+    from app.agent.workflow.evidence_index import (
+        build_atomic_fact_ledger, enforce_atomic_fact_boundaries,
+    )
+
+    state = {"materialized_ticket_sources": {"ticketDetails": [
+        {"key": "ACME-83", "status": "Closed", "updated": "2026-08-10"},
+        {"key": "ACME-84", "status": "Closed", "updated": "2026-08-10"},
+    ]}}
+    source = "ACME-83 및 ACME-84는 Jira 상태 Closed입니다."
+
+    got = enforce_atomic_fact_boundaries(source, build_atomic_fact_ledger(state))
+
+    assert got == source
+
+
+@pytest.mark.parametrize("separator", [". ", "; ", " | "])
+def test_status_replacement_preserves_an_unrelated_neighboring_fact(separator):
+    from app.agent.workflow.evidence_index import (
+        build_atomic_fact_ledger, enforce_atomic_fact_boundaries,
+    )
+
+    state = {"materialized_ticket_sources": {"ticketDetails": [
+        {"key": "ACME-85", "status": "Closed", "updated": "2026-08-10"},
+        {"key": "ACME-86", "status": "Open", "updated": "2026-08-10"},
+    ]}}
+    source = (
+        "ACME-85 및 ACME-86는 Jira 상태 Open입니다"
+        + separator + "검토 창은 금요일입니다."
+    )
+
+    got = enforce_atomic_fact_boundaries(source, build_atomic_fact_ledger(state))
+
+    assert "티켓별 Jira 상태: ACME-85=Closed; ACME-86=Open" in got
+    assert "검토 창은 금요일입니다." in got
+
+
+@pytest.mark.parametrize("marker", ["[1, 2]", "[1][2]"])
+def test_combined_completion_citations_preserve_unsupported_qualification(marker):
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": key, "observations": [{
+            "source": "description", "text": "AtlasWriter generation plan",
+        }],
+    } for key in ("ACME-101", "ACME-102")]
+
+    got = canonicalize_evidence_index(
+        f"AtlasWriter generation completed {marker}.", evidence=evidence,
+    )
+
+    body = got.split("### 근거", 1)[0]
+    assert "[1][2]" in body
+    assert body.count("직접 완료 근거 확인 필요") == 1
+
+
+def test_combined_child_citations_keep_each_typed_observation_binding():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": "ACME-103", "observations": [
+            {"source": "description", "text": "export plan"},
+            {"source": "comment", "text": "export result"},
+        ],
+    }, {
+        "key": "ACME-104", "observations": [
+            {"source": "description", "text": "import plan"},
+            {"source": "comment", "text": "import result"},
+        ],
+    }]
+
+    got = canonicalize_evidence_index(
+        "Selected facts [1-a, 2-b].", evidence=evidence,
+    )
+
+    assert "Selected facts [1-a][2-b]." in got.split("### 근거", 1)[0]
+
+
+def test_invalid_citation_does_not_shift_later_occurrence_bindings():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{
+        "key": "ACME-105", "observations": [
+            {"source": "description", "text": "export plan"},
+            {"source": "comment", "text": "export result"},
+        ],
+    }, {
+        "key": "ACME-106", "observations": [
+            {"source": "description", "text": "import plan"},
+            {"source": "comment", "text": "import result"},
+        ],
+    }]
+
+    got = canonicalize_evidence_index(
+        "Unknown context [99]. Selected facts [1-a, 2-b].", evidence=evidence,
+    )
+    body = got.split("### 근거", 1)[0]
+
+    assert "Unknown context (근거 확인 필요)" in body
+    assert "Selected facts [1-a][2-b]." in body
+
+
+@pytest.mark.parametrize("separator", [
+    ". ", "; ", " | ", ", AcmeReader는 ", " 그리고 AcmeReader는 ",
+    "이고 AcmeReader는 ",
+])
+def test_date_math_never_borrows_a_duration_from_an_unrelated_clause(separator):
+    from app.agent.workflow.evidence_index import enforce_atomic_fact_boundaries
+
+    source = (
+        "A 일정: 2026-01-01부터 2026-01-08까지"
+        + separator + "별도 B 작업은 3주 소요된다."
+    )
+
+    got = enforce_atomic_fact_boundaries(source, [])
+
+    assert "3주 소요" in got
+    assert "불일치" not in got and "정확히 7일" not in got
+
+
+def test_canonical_evidence_heading_is_idempotent_and_glued_heading_is_separated():
+    from app.agent.workflow.evidence_index import canonicalize_evidence_index
+
+    evidence = [{"key": "ACME-107", "observations": [
+        {"source": "description", "text": "Atlas context"},
+    ]}]
+    canonical = canonicalize_evidence_index(
+        "Atlas context [1].\n\n### 근거\n[1] ACME-107", evidence=evidence,
+    )
+    glued = canonicalize_evidence_index(
+        "Atlas context [1].### 근거\n[1] ACME-107", evidence=evidence,
+    )
+
+    for got in (canonical, glued):
+        assert got.count("### 근거") == 1
+        assert "\n#\n\n## 근거" not in got
+
+
+def test_exact_materialized_free_text_proves_provenance_but_not_completion():
+    from app.agent.workflow.evidence_index import (
+        canonical_observation_facts, canonicalize_evidence_index,
+    )
+
+    text = "Atlas rollout은 검증 완료 후 실행 예정"
+    state = {"materialized_ticket_sources": {"ticketDetails": [{
+        "key": "ACME-108", "comments": [
+            {"created": "2026-08-10T09:00:00Z", "body": text},
+        ],
+    }]}}
+    evidence = [{"key": "ACME-108", "observations": [{
+        "source": "comment", "text": text,
+        # These model-supplied semantic fields must carry no authority.
+        "subject_id": "component:atlas", "predicate": "rollout_state",
+        "value": "completed", "claim_kind": "completion", "direct": True,
+    }]}]
+    facts = canonical_observation_facts(state, evidence)
+
+    got = canonicalize_evidence_index(
+        "Atlas rollout 검증을 완료했습니다 [1-a].", evidence=evidence,
+        observation_facts=facts,
+    )
+
+    assert len(facts) == 1 and facts[0]["claim_kind"] == "observation"
+    assert facts[0]["subject_id"] == "ACME-108"
+    assert "직접 완료 근거 확인 필요" in got
+
+
+def test_unrelated_materialized_comments_never_temporally_supersede_each_other():
+    from app.agent.workflow.evidence_index import canonical_observation_facts
+
+    evidence = [{"key": "ACME-109", "observations": [
+        {"source": "comment", "text": "AtlasReader validation completed"},
+        {"source": "comment", "text": "AcmeWriter deployment planned"},
+    ]}]
+    state = {"materialized_ticket_sources": {"ticketDetails": [{
+        "key": "ACME-109", "comments": [
+            {"created": "2026-08-01T09:00:00Z",
+             "body": "AtlasReader validation completed"},
+            {"created": "2026-08-10T09:00:00Z",
+             "body": "AcmeWriter deployment planned"},
+        ],
+    }]}}
+
+    facts = canonical_observation_facts(state, evidence)
+
+    assert len(facts) == 2
+    assert {row["temporal_role"] for row in facts} == {"observed"}
+    assert len({row["predicate"] for row in facts}) == 2
+
+
+def test_materialized_observation_overlay_fails_closed_on_duplicate_or_other_ticket():
+    from app.agent.workflow.evidence_index import canonical_observation_facts
+
+    text = "Atlas validation result recorded"
+    state = {"materialized_ticket_sources": {"ticketDetails": [
+        {"key": "ACME-110", "comments": [
+            {"created": "2026-08-01T09:00:00Z", "body": text},
+            {"created": "2026-08-02T09:00:00Z", "body": text},
+        ]},
+        {"key": "ACME-111", "comments": [
+            {"created": "2026-08-03T09:00:00Z", "body": "Acme other result"},
+        ]},
+    ]}}
+    duplicate = [{"key": "ACME-110", "observations": [
+        {"source": "comment", "text": text,
+         "observed_at": "2026-08-01T09:00:00Z"},
+    ]}]
+    swapped = [{"key": "ACME-110", "observations": [
+        {"source": "comment", "text": "Acme other result"},
+    ]}]
+
+    assert canonical_observation_facts(state, duplicate) == []
+    assert canonical_observation_facts(state, swapped) == []

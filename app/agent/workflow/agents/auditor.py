@@ -51,12 +51,22 @@ from app.agent.workflow.effect_contract import (
     capture_user_field_locks,
     continuation_action,
     current_work_failed,
-    defect_signature,
+    defect_signature_set,
     final_effect,
+    finding_signature_key,
     payload_digest,
+    parse_defect_signature_set,
     project_final_authority_state,
+    recurrent_finding_signature_keys,
     typed_audit_findings,
     validate_requested_effect_contract,
+)
+from app.agent.workflow.meeting_context import (
+    is_meeting_request,
+    meeting_assignment_bindings,
+    meeting_owner_records,
+    meeting_requester_instructors,
+    resolved_people,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.state import (
@@ -76,6 +86,24 @@ SCHEMA = {
             "items": {"type": "object", "properties": {
                 "index": {"type": "integer", "description": "Zero-based item index, or -1 for the whole draft."},
                 "check": {"type": "string", "enum": ["grounded", "rule", "request"]},
+                "finding_kind": {
+                    "type": "string",
+                    "enum": ["field_mismatch", "missing_requirement", "contradiction",
+                             "policy_violation", "request_coverage"],
+                    "description": "Machine-readable defect relation, independent of prose wording.",
+                },
+                "field": {
+                    "type": "string", "maxLength": 80,
+                    "description": "Affected payload field; use assignee for an owner identity claim.",
+                },
+                "expected": {
+                    "type": "string", "maxLength": 160,
+                    "description": "Exact expected field value; empty when not a field comparison.",
+                },
+                "actual": {
+                    "type": "string", "maxLength": 160,
+                    "description": "Exact observed field value; empty when not a field comparison.",
+                },
                 "message": {"type": "string", "maxLength": 220,
                             "description": "One Korean sentence describing what is wrong and why."},
                 "fix": {"type": "string", "maxLength": 220,
@@ -614,6 +642,108 @@ def _cardinality_errors(state: AgentState) -> list[dict]:
     return []
 
 
+def _meeting_assignment_authority(state: AgentState) -> dict:
+    """Project only source-backed meeting owners into a bounded typed authority."""
+    if not is_meeting_request(state):
+        return {
+            "bindings": [], "identity_map": {}, "source_records": [],
+            "canonical_people": {},
+        }
+    records = meeting_owner_records(state)
+    people = resolved_people(state) if records else {}
+    items = [row for row in ((state.get("draft") or {}).get("items") or [])
+             if isinstance(row, dict)]
+    bindings = meeting_assignment_bindings(items, records, people)
+    canonical_ids = {
+        spelling.casefold(): owner_id.casefold()
+        for label, owner_id in people.items()
+        for spelling in (str(label or "").strip(), str(owner_id or "").strip())
+        if spelling and str(owner_id or "").strip()
+    }
+    relevant_ids = {
+        canonical_ids.get(str(row.get("owner") or "").strip().casefold(), "")
+        for row in records if str(row.get("owner") or "").strip()
+    }
+    relevant_ids.discard("")
+    if records and is_meeting_request(state):
+        relevant_ids.update(
+            str(value or "").strip().casefold()
+            for value in meeting_requester_instructors(state)
+            if str(value or "").strip()
+        )
+    identity_map = {
+        label: owner_id
+        for label, owner_id in sorted(people.items(), key=lambda row: row[0].casefold())
+        if owner_id.casefold() in relevant_ids
+    }
+    return {
+        "bindings": bindings,
+        "identity_map": identity_map,
+        "source_records": records,
+        "canonical_people": people,
+    }
+
+
+def _meeting_assignment_errors(state: AgentState) -> list[dict]:
+    """Reject a final user-owned owner/due that differs from meeting source authority."""
+    authority = _meeting_assignment_authority(state)
+    records = authority["source_records"]
+    if not records:
+        return []
+    items = [row for row in ((state.get("draft") or {}).get("items") or [])
+             if isinstance(row, dict)]
+    bindings = {row["item_id"]: row for row in authority["bindings"]}
+    errors: list[dict] = []
+    for index, item in enumerate(items):
+        source = str(item.get("assignee_source") or "").strip()
+        if source not in {"user", "user_unassigned"}:
+            continue
+        item_id = str(item.get("item_id") or "").strip()
+        if not item_id:
+            errors.append({
+                "index": index, "field": "item_id", "source": "meeting_assignment",
+                "expected": "stable authored item identity", "actual": "missing",
+                "evidence": ["source-backed meeting assignment"],
+                "message": "회의 담당 결정을 검증할 stable item_id가 최종 payload에 없다",
+            })
+            continue
+        binding = bindings.get(item_id)
+        if not binding:
+            errors.append({
+                "index": index, "field": "assignee", "source": "meeting_assignment",
+                "expected": "one canonical source assignment", "actual": (
+                    str(item.get("assignee") or "").strip() or "unassigned"
+                ),
+                "evidence": ["bounded meeting assignment records"],
+                "message": "사용자 지정 담당자를 회의 source assignment 하나와 연결할 수 없다",
+            })
+            continue
+        expected_owner = str(binding.get("owner_id") or "").strip()
+        actual_owner = str(item.get("assignee") or "").strip()
+        expected_source = "user" if expected_owner else "user_unassigned"
+        evidence = [json.dumps(binding.get("source_evidence") or {}, ensure_ascii=False,
+                               sort_keys=True)]
+        if source != expected_source or actual_owner.casefold() != expected_owner.casefold():
+            errors.append({
+                "index": index, "item_id": item_id, "field": "assignee",
+                "source": "meeting_assignment", "expected": expected_owner or "unassigned",
+                "actual": actual_owner or "unassigned", "evidence": evidence,
+                "message": (f"회의 source 담당자는 {expected_owner or '미할당'}이나 "
+                            f"최종 payload는 {actual_owner or '미할당'}"),
+            })
+        expected_due = str(binding.get("due") or "").strip()
+        actual_due = str(item.get("duedate") or "").strip()
+        if expected_due and actual_due != expected_due:
+            errors.append({
+                "index": index, "item_id": item_id, "field": "duedate",
+                "source": "meeting_assignment", "expected": expected_due,
+                "actual": actual_due or "missing", "evidence": evidence,
+                "message": (f"회의 source 기한은 {expected_due}이나 최종 payload는 "
+                            f"{actual_due or '비어 있음'}"),
+            })
+    return errors
+
+
 def _dedupe_errors(rows) -> list[dict]:
     result, seen = [], set()
     for raw in rows or []:
@@ -629,25 +759,55 @@ def _dedupe_errors(rows) -> list[dict]:
     return result
 
 
+def _typed_findings(state: AgentState, errors: list[dict],
+                    problems: list[dict]) -> list[dict]:
+    """Give every machine/model finding an order-independent authority-aware identity."""
+    findings: list[dict] = []
+    seen: set[str] = set()
+    for rows, default_authority, accepts_typed_source in (
+            (errors, "machine", True),
+            (problems, "semantic_auditor", False)):
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            projected = typed_audit_findings(state, [raw])
+            if not projected:
+                continue
+            finding = dict(projected[0])
+            finding["authority"] = (
+                str(raw.get("source") or default_authority)
+                if accepts_typed_source else default_authority
+            )
+            key = finding_signature_key(finding)
+            finding["finding_signature"] = f"finding:{key}"
+            if finding["finding_signature"] in seen:
+                continue
+            seen.add(finding["finding_signature"])
+            findings.append(finding)
+    return findings
+
+
 def _typed_review_contract(state: AgentState, review: dict) -> dict:
     """Attach stable finding identity and detect a repeated repair defect."""
     sealed = dict(review or {})
-    rows = [
-        *[row for row in (sealed.get("errors") or []) if isinstance(row, dict)],
-        *[row for row in (sealed.get("problems") or []) if isinstance(row, dict)],
-    ]
-    findings = typed_audit_findings(state, rows)
-    signature = defect_signature(findings)
+    errors = [row for row in (sealed.get("errors") or []) if isinstance(row, dict)]
+    problems = [row for row in (sealed.get("problems") or []) if isinstance(row, dict)]
+    findings = _typed_findings(state, errors, problems)
+    signature = defect_signature_set(findings)
     action = continuation_action(state)
     container = ((state.get("draft") or {}) if action == "create"
                  else (state.get("change_plan") or {}))
     attempt = container.get("repair_attempt") if isinstance(container, dict) else {}
     prior_signature = str((attempt or {}).get("defect_signature") or "")
+    current_keys = parse_defect_signature_set(signature)
+    repeated_keys = recurrent_finding_signature_keys(findings, prior_signature)
+    for finding in findings:
+        finding["repeated"] = finding_signature_key(finding) in repeated_keys
     sealed["findings"] = findings
     sealed["payload_digest"] = payload_digest(state)
     sealed["defect_signature"] = signature
-    sealed["repeated_defect"] = bool(signature and prior_signature == signature)
-    sealed["finding_contract"] = "audit-finding.v1"
+    sealed["repeated_defect"] = bool(current_keys and current_keys == repeated_keys)
+    sealed["finding_contract"] = "audit-finding.v2"
     return sealed
 
 
@@ -838,6 +998,9 @@ Audit the complete ticket draft before it is shown to the user.
 - Treat the authoritative request/draft state contract as facts. A populated field is not missing.
 - `parent_action=select_existing` means select/link an existing Epic, never create a new Epic.
 - Assignment is validated separately; an empty assignee is not an audit defect.
+- If reporting an assignment identity mismatch, set `finding_kind=field_mismatch`,
+  `field=assignee`, and copy the exact expected/actual values. A display name and account id
+  mapped to the same identity in `bounded_identity_map` are equal and must not be reported.
 - Put only execution-blocking policy, grounding, or request-coverage failures in `problems`. Editorial suggestions for a better sentence, title, or DoD are not blocking.
 - Preserve a Task/Sub-Task structure explicitly supplied or previously approved by the user.
 - A Task-tier `Bug` is valid with the Korean sections `재현 경로`, `기대 동작`, and `실제 동작`; do not require generic Task background or DoD as well.
@@ -865,6 +1028,11 @@ The draft must preserve this subject; subject drift is a blocking request-covera
         auto = _machine_check(state)
         raw_problems = [p for p in (out.get("problems") or [])
                         if isinstance(p, dict) and p.get("message")]
+        disproved_checks = {
+            str(problem.get("check") or "")
+            for problem in raw_problems
+            if _canonical_identity_false_finding(state, problem)
+        }
         problems, advice = _partition_model_problems(state, raw_problems)
         # A schema-valid projection can still lose the model's problem array while retaining
         # a negative axis boolean. Treating the empty array as authoritative would turn an
@@ -880,7 +1048,8 @@ The draft must preserve this subject; subject drift is a blocking request-covera
                                 "원 요청의 산출물·행동·대상을 초안과 다시 대조하라"),
         }
         for axis, (check, message, fix) in synthetic.items():
-            if out.get(axis) is False and not any(p.get("check") == check for p in problems):
+            if (out.get(axis) is False and check not in disproved_checks
+                    and not any(p.get("check") == check for p in problems)):
                 problems.append({"index": -1, "check": check,
                                  "message": message, "fix": fix})
         # boolean과 problems가 서로 어긋나는 모델 출력이 있다. 실행 차단은 구체적인
@@ -931,6 +1100,48 @@ The draft must preserve this subject; subject drift is a blocking request-covera
                               + (f" ({', '.join(failed)})" if failed else ""))}
 
 
+def _canonical_identity_false_finding(state: AgentState, problem: dict) -> bool:
+    """Reject a typed display/account mismatch disproved by canonical assignment facts."""
+    if (problem.get("finding_kind") != "field_mismatch"
+            or problem.get("field") != "assignee"):
+        return False
+    expected = str(problem.get("expected") or "").strip()
+    actual = str(problem.get("actual") or "").strip()
+    if not expected or not actual:
+        return False
+    authority = _meeting_assignment_authority(state)
+    bindings = authority["bindings"]
+    identity_map = authority["identity_map"]
+    if not bindings or not identity_map:
+        return False
+    index = problem.get("index", -1)
+    items = [row for row in ((state.get("draft") or {}).get("items") or [])
+             if isinstance(row, dict)]
+    if not isinstance(index, int) or not 0 <= index < len(items):
+        return False
+    item = items[index]
+    if str(item.get("assignee_source") or "") != "user":
+        return False
+    item_id = str(item.get("item_id") or "")
+    binding = next((row for row in bindings if row["item_id"] == item_id), None)
+    if not binding or any(
+            row.get("index") == index and row.get("field") == "assignee"
+            for row in _meeting_assignment_errors(state)):
+        return False
+    equivalents = {
+        str(label).strip().casefold(): str(owner_id).strip().casefold()
+        for label, owner_id in identity_map.items()
+    }
+    equivalents.update({owner_id: owner_id for owner_id in equivalents.values()})
+    expected_id = equivalents.get(expected.casefold(), "")
+    actual_id = equivalents.get(actual.casefold(), "")
+    authored_id = str(item.get("assignee") or "").strip().casefold()
+    bound_id = str(binding.get("owner_id") or "").strip().casefold()
+    return bool(
+        expected_id and expected_id == actual_id == authored_id == bound_id
+    )
+
+
 def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, list]:
     """정책 차단과 편집 조언을 나눈다.
 
@@ -948,6 +1159,8 @@ def _partition_model_problems(state: AgentState, problems: list) -> tuple[list, 
                       or any(w in req for w in ("단계별 Sub-Task", "사람 나눠서")))
     blocking, advice, seen = [], [], set()
     for problem in problems:
+        if _canonical_identity_false_finding(state, problem):
+            continue
         if _unverified_delegated_parent_claim(state, problem):
             # A model cannot turn absence from the bounded candidate ledger into proof that
             # a Jira key does not exist, nor recommend a search hit whose Epic detail was not
@@ -1139,12 +1352,14 @@ def _audit_grounding_contract(state: AgentState) -> dict:
             })
         rows.append({
             "index": index,
+            "item_id": str(item.get("item_id") or ""),
             "type": str(item.get("type") or item.get("issue_type") or ""),
             "summary": str(item.get("summary") or ""),
             "epic": str(item.get("epic") or ""),
             "parent": str(item.get("parent") or ""),
             "duedate": str(item.get("duedate") or ""),
             "assignee": str(item.get("assignee") or ""),
+            "assignee_source": str(item.get("assignee_source") or ""),
             "scope_and_dod": compact_body(item.get("description") or ""),
             "outcome_refs": parent_refs,
             "child_count": len(children),
@@ -1153,6 +1368,7 @@ def _audit_grounding_contract(state: AgentState) -> dict:
     typed_epic = (str(draft.get("mode") or "task").casefold() == "epic"
                   or any(row["type"].casefold() == "epic" for row in rows))
     textual_epic = _draft_asserts_new_epic_creation(draft)
+    meeting_authority = _meeting_assignment_authority(state)
     return {
         "parent_action": _request_parent_action(state),
         "draft_mode": str(draft.get("mode") or "task"),
@@ -1162,6 +1378,8 @@ def _audit_grounding_contract(state: AgentState) -> dict:
         "draft_outcome_contract_id": str(draft.get("outcome_contract_id") or ""),
         "evidence_obligations": (draft.get("evidence_obligations")
                                  or _verified_evidence_obligations(state)),
+        "meeting_assignment_bindings": meeting_authority["bindings"],
+        "bounded_identity_map": meeting_authority["identity_map"],
         "items": rows,
     }
 
@@ -1449,6 +1667,7 @@ def _machine_check(state: AgentState) -> dict:
     roots = [item for item in (draft.get("items") or []) if isinstance(item, dict)]
     field_errors = _deterministic_request_field_errors(state, roots)
     obligation_errors = _evidence_obligation_errors(state, draft)
+    assignment_errors = _meeting_assignment_errors(state)
     per_outcome_due = _expected_due_dates_by_root(state, roots)
     due_status, due_literal = _explicit_due_instruction_status(state)
     expected_due = _authoritative_explicit_due(state)
@@ -1491,7 +1710,8 @@ def _machine_check(state: AgentState) -> dict:
             })
     if not items:
         return {"ok": False, "errors": (contract_errors + due_errors + field_errors
-                                          + obligation_errors), "warnings": [],
+                                          + obligation_errors + assignment_errors),
+                "warnings": [],
                 "text": "초안이 비어 있다."}
     # Epic 은 Bulk 규칙(validate_bulk)의 대상이 아니다 — 요약만 확인하고 통과.
     # (Epic Link·타입·SP 규칙은 전부 자식 티켓 이야기다.)
@@ -1499,7 +1719,8 @@ def _machine_check(state: AgentState) -> dict:
         ok = bool((items[0].get("summary") or "").strip())
         errors = ([] if ok else [{"index": 0, "field": "summary",
                                   "message": "Epic 요약이 비었다"}]) \
-            + contract_errors + due_errors + field_errors + obligation_errors
+            + contract_errors + due_errors + field_errors + obligation_errors \
+            + assignment_errors
         return {"ok": ok and not errors, "errors": errors,
                 "warnings": [], "text": "Epic 초안 — 기계 검증 대상 아님(요약 확인만)."}
     try:
@@ -1509,7 +1730,8 @@ def _machine_check(state: AgentState) -> dict:
     except Exception as e:
         return {"ok": False,
                 "errors": ([{"message": str(e)[:200]}] + contract_errors
-                           + due_errors + field_errors + obligation_errors),
+                           + due_errors + field_errors + obligation_errors
+                           + assignment_errors),
                 "warnings": [],
                 "text": f"검증을 수행하지 못했다: {str(e)[:200]}"}
     warnings = list(r.get("warnings") or [])
@@ -1547,7 +1769,7 @@ def _machine_check(state: AgentState) -> dict:
                              "완료 조건(DoD)이 없다 — 무엇을 만족하면 끝인지 적어야 한다"})
 
     errors = (list(r.get("errors") or []) + contract_errors + due_errors
-              + field_errors + obligation_errors)
+              + field_errors + obligation_errors + assignment_errors)
     lines = [f"- [{e.get('index')}] {e.get('field')}: {e.get('message')}"
              for e in errors]
     lines += [f"- (경고) [{w.get('index')}] {w.get('message')}" for w in warnings]

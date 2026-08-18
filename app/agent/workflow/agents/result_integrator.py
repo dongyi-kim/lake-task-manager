@@ -17,7 +17,7 @@ import json
 import re as _re
 from html import unescape
 
-from app.agent.workflow.agents.base import TextAgent, _call_config
+from app.agent.workflow.agents.base import TextAgent
 from app.agent.workflow.agents.work_architect import draft_text
 from app.agent.prompts.roles import SYSTEM_RESULT_INTEGRATOR
 from app.agent.workflow.claim_grounding import (
@@ -25,7 +25,8 @@ from app.agent.workflow.claim_grounding import (
 )
 from app.agent.workflow.evidence_index import (
     atomic_fact_sidecar, build_atomic_fact_ledger, build_claim_provenance_graph,
-    canonicalize_evidence_index, enforce_atomic_fact_boundaries,
+    canonical_observation_facts, canonicalize_evidence_index,
+    enforce_atomic_fact_boundaries, normalize_evidence_heading_boundary,
 )
 from app.agent.workflow.prompts import data_block, persona, wrap_data
 from app.agent.workflow.source_coverage import (
@@ -316,7 +317,7 @@ class ResultIntegrator(TextAgent):
                     )}
                     for row in provenance_graph["observations"]
                 ],
-                "claims": [], "unbound_claim_ids": [],
+                "claims": [], "unbound_claim_ids": [], "unsupported_claim_ids": [],
             }
             goal += (
                 "\nFor every material conclusion, add the matching `[n]` or `[n-a]` marker in the body. "
@@ -331,7 +332,7 @@ class ResultIntegrator(TextAgent):
             )
         else:
             provenance_graph = {"sources": [], "observations": [], "claims": [],
-                                "unbound_claim_ids": []}
+                                "unbound_claim_ids": [], "unsupported_claim_ids": []}
         if any(word in asked_for_quality for word in ("신뢰도", "출처별", "요청 적합성", "적합성")):
             goal += (
                 "\nAdd `### 출처 평가` before `### 근거` with a compact "
@@ -515,39 +516,17 @@ class ResultIntegrator(TextAgent):
         try:
             g = ({"ok": True} if state.get("_deterministic_reply") or question_only else
                  grounding.check(text, allowed_people=_dialogue_speakers(request_text(state))))
+            if g:
+                g = _filter_plain_person_candidates(g, text)
         except Exception:
             g = None                        # 검증기가 죽으면 답은 그대로 나간다
         if g and not g["ok"]:
-            text2, g2 = "", None
-            try:
-                repair_layer = self.execution_layer("synthesis")
-                fixed = self.llm(
-                    execution_layer=repair_layer,
-                    execution_stage="grounding_repair",
-                ).invoke([
-                    ("system", self.system(state)),
-                    ("user", f"The previous Korean answer contains grounding violations. Rewrite the entire "
-                             f"answer, correcting only the violations below and preserving all valid content.\n\n"
-                             f"### Violations\n\n{grounding.violation_note(g)}\n\n"
-                             f"### Previous Answer\n\n{text}")],
-                    config=_call_config(
-                        self.name, "text", repair_layer, "grounding_repair"))
-                text2 = str(getattr(fixed, "content", "") or "").strip()
-                if text2:
-                    g2 = grounding.check(
-                        text2, allowed_people=_dialogue_speakers(request_text(state)))
-            except Exception:
-                text2, g2 = "", None        # 교정 실패 — 아래에서 원문 + 경고로 간다
-            if g2 and g2["ok"] and _kept_substance(text, text2):
-                text = text2
-            else:                           # 못 고침 — 덜 틀린 쪽에 **반드시 경고를 단다**
-                use2 = bool(g2) and _violations(g2) < _violations(g) \
-                    and _kept_substance(text, text2)
-                better, gb = (text2, g2) if use2 else (text, g)
-                text = better
-                warning = grounding.warning_block(gb).strip()
-                if warning:
-                    grounding_warnings.append(warning)
+            # Result is the final ownership boundary. A second full-model rewrite is both
+            # expensive and capable of changing already-valid claims/citations. Preserve the
+            # detected answer and expose the deterministic diagnostic in this same pass.
+            warning = grounding.warning_block(g).strip()
+            if warning:
+                grounding_warnings.append(warning)
 
         # 전용 진행 Task bullet은 detail badge 하나로 기계화한다. 모델이 raw key+제목을
         # 출력해도 최종 문자열은 badge가 가진 정보를 중복하지 않는다.
@@ -597,6 +576,7 @@ class ResultIntegrator(TextAgent):
         text = _attach_known_doc_urls(text, state)
         text = _ensure_external_research_coverage(text, state)
         text = _ensure_requested_source_coverage(text, state)
+        text = _ensure_entity_coverage_disclosure(text, state)
         text = _render_requested_source_quality(text, state)
         # A grounding rewrite or later renderer may reintroduce a copied parent field. Repeat
         # the same exact typed check before rebuilding the immutable evidence index.
@@ -650,6 +630,7 @@ class ResultIntegrator(TextAgent):
         text = _render_reply_tokens(text)
         text = _canonicalize_person_mentions(text, state)
         text = _enforce_reply_style(text)
+        text = normalize_evidence_heading_boundary(text)
         # Grounding diagnostics are not provenance.  Insert them before the already-built
         # evidence index; otherwise a legacy reference parser can absorb warning bullets as
         # observations, while appending after the index would violate the index-last contract.
@@ -2128,6 +2109,41 @@ def _ensure_requested_source_coverage(text: str, state) -> str:
     return _re.sub(r"\n{3,}", "\n\n", value).strip()
 
 
+def _ensure_entity_coverage_disclosure(text: str, state) -> str:
+    """Disclose bounded entity traversal independently of green source pagination."""
+    value = _re.sub(
+        r"(?ms)^###\s*연관\s*엔티티\s*조사\s*한계\s*$.*?(?=^###\s|\Z)",
+        "", str(text or ""),
+    ).strip()
+    rows = []
+    for query in (state.get("query_results") or []):
+        if not isinstance(query, dict) or not isinstance(query.get("result"), dict):
+            continue
+        coverage = (query.get("result") or {}).get("entityCoverage")
+        if isinstance(coverage, dict) and (
+                coverage.get("complete") is not True
+                or coverage.get("truncated") is True):
+            rows.append(coverage)
+    if not rows:
+        return value
+    roots = sum(len(row.get("rootKeys") or []) for row in rows)
+    selected = sum(len(row.get("selectedKeys") or []) for row in rows)
+    truncated = any(row.get("truncated") is True for row in rows)
+    scope = f"루트 {roots}건·확장 {selected}건"
+    if truncated:
+        scope += "·상한 도달"
+    block = (
+        "### 연관 엔티티 조사 한계\n\n"
+        f"- 연관 엔티티 탐색은 설정된 범위({scope})까지만 수행했으며, "
+        "전체 관련 엔티티를 확인한 것은 아님"
+    )
+    anchor = _re.search(r"(?m)^###\s*(?:근거|참조)\s*$", value)
+    if anchor:
+        return (value[:anchor.start()].rstrip() + "\n\n" + block + "\n\n"
+                + value[anchor.start():].lstrip())
+    return value.rstrip() + "\n\n" + block
+
+
 def _ensure_external_research_coverage(text: str, state) -> str:
     """명시적으로 요청한 외부 조사의 검증된 URL만 답에 보존한다.
 
@@ -3085,6 +3101,7 @@ def _merge_evidence_index(text: str, state) -> str:
         value,
         evidence=evidence,
         related_docs=related_docs,
+        observation_facts=canonical_observation_facts(state, evidence),
     )
 
 
@@ -3592,6 +3609,31 @@ def _violations(g: dict) -> int:
     return len(g.get("fake_keys") or []) + len(g.get("wrong_titles") or {}) \
         + len(g.get("fake_people") or []) + len(g.get("unlinked_refs") or []) \
         + len(g.get("name_as_id") or {})
+
+
+def _filter_plain_person_candidates(result: dict, text: str) -> dict:
+    """Suppress only upstream findings explicitly typed as non-person common nouns.
+
+    Result must not run a second person grammar over checker output. Legacy/untyped findings
+    remain enforceable; only the authoritative structured finding can exclude a candidate.
+    """
+    out = dict(result or {})
+    suppress = {
+        str(finding.get("candidate") or "").strip()
+        for finding in (out.get("person_findings") or [])
+        if isinstance(finding, dict)
+        and finding.get("context_kind") == "common_noun"
+        and finding.get("verdict") == "non_person"
+    }
+    out["fake_people"] = [
+        candidate for candidate in (out.get("fake_people") or [])
+        if str(candidate).split(" (", 1)[0].strip() not in suppress
+    ]
+    out["ok"] = not (
+        out.get("fake_keys") or out.get("wrong_titles") or out.get("fake_people")
+        or out.get("unlinked_refs") or out.get("name_as_id")
+    )
+    return out
 
 
 def _kept_substance(before: str, after: str) -> bool:

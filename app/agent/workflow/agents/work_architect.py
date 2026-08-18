@@ -49,8 +49,16 @@ from app.agent.workflow.evidence_relations import (
     relation_terms,
     same_relation,
 )
-from app.agent.workflow.effect_contract import seal_requested_effect_contract
+from app.agent.workflow.effect_contract import (
+    materialize_requested_update_effects,
+    seal_requested_effect_contract,
+)
 from app.agent.workflow.prompts import data_block, persona, wrap_data
+from app.agent.workflow.resolved_slots import (
+    bind_resolved_slot_item_ids,
+    parent_selection_authority,
+    resolve_parent_slot,
+)
 from app.agent.workflow.state import (MAX_REFINE_TURNS, AgentState, Intent, Node,
                                       conversation, last_user_text, note, reads_as_bug,
                                       request_text, verified_parent_epic_candidates)
@@ -413,6 +421,68 @@ def _typed_decision_values(state: dict, *families: str) -> list[str]:
         if field in wanted and value:
             result.append(value)
     return result
+
+
+def _apply_typed_parent_resolution(state: dict, items: list[dict]) -> list[dict]:
+    """Apply one typed parent authority using only verified materialized Epic details.
+
+    Candidate acquisition and semantic drafting remain in their existing graph roles.  This
+    leaf binds those outputs: the typed continuation authorizes selection, State verifies
+    candidate type/materialization, and the existing generic ranker supplies compatibility.
+    No user sentence is reparsed here.
+    """
+    authority = parent_selection_authority(state)
+    rows = [row for row in (items or []) if isinstance(row, dict)]
+    if not authority or not rows:
+        return []
+    candidates = verified_parent_epic_candidates(state)
+    slots: list[dict] = []
+    for item in rows:
+        issue_type = str(item.get("type") or item.get("issue_type") or "").casefold()
+        outcome_refs = list(dict.fromkeys(
+            str(value or "").strip() for value in (item.get("outcome_refs") or [])
+            if str(value or "").strip()
+        ))
+        outcome_id = outcome_refs[0] if len(outcome_refs) == 1 else ""
+        if issue_type == "epic":
+            selected = None
+        else:
+            component = next((
+                str(value or "").strip() for value in (item.get("components") or [])
+                if str(value or "").strip()
+            ), "")
+            selected = _rank_parent_epic_candidates(
+                str(item.get("summary") or ""), component, candidates,
+            )
+        slot = resolve_parent_slot(
+            authority, outcome_id=outcome_id,
+            item_id=str(item.get("item_id") or ""), selected=selected,
+        )
+        slots.append(slot.model_dump())
+        if slot.status == "resolved" and slot.resolution == "verified_candidate":
+            item.pop("parent", None)
+            item["epic"] = slot.value
+            item["parent_source"] = "resolved_slot"
+        elif slot.status == "resolved" and slot.resolution == "top_level":
+            item.pop("parent", None)
+            item.pop("epic", None)
+            item["parent_source"] = "resolved_slot_top_level"
+        else:
+            item.pop("parent", None)
+            item.pop("epic", None)
+    return slots
+
+
+def _required_parent_resolution_question() -> dict:
+    return QuestionContract(
+        question=("검증된 호환 상위 Epic 후보가 없습니다. 정확한 기존 Epic을 지정하거나 "
+                  "최상위 Task로 둘지 알려 주세요."),
+        kind="text", options=[], field="parent_resolution",
+        ownership="user_required", required_input=True,
+        why_required=("요청한 기존 parent 연결을 충족할 검증된 호환 후보가 없어 "
+                      "실행 가능한 parent 값이 필요함"),
+        fallback="",
+    ).model_dump()
 
 
 def _bounded_explanation(value, limit: int):
@@ -1518,21 +1588,17 @@ def _request_refinement_projection(state: dict) -> dict:
     parent = str(refinement.get("parent") or "").strip()
     phase = str(refinement.get("phase") or "").strip()
     due = str(refinement.get("duedate") or "").strip()
+    resolved_slots: list[dict] = []
+    questions: list[dict] = []
     if parent == "top_level":
         for item in items:
             item.pop("epic", None)
             item.pop("parent", None)
     elif parent == "select_existing":
-        verified = [row for row in verified_parent_epic_candidates(state)
-                    if str((row or {}).get("key") or "").strip()]
-        for item in items:
-            item.pop("parent", None)
-            selected = (verified[0] if len(verified) == 1
-                        else _delegated_parent_epic(state, item))
-            if selected:
-                item["epic"] = str(selected.get("key") or "").strip()
-            else:
-                item.pop("epic", None)
+        resolved_slots = _apply_typed_parent_resolution(state, items)
+        if any(row.get("status") != "resolved" for row in resolved_slots):
+            items.clear()
+            questions = [_required_parent_resolution_question()]
     elif _re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", parent, _re.I):
         for item in items:
             if str(item.get("type") or "").casefold() != "epic":
@@ -1564,13 +1630,14 @@ def _request_refinement_projection(state: dict) -> dict:
         ("parent", parent), ("phase", phase), ("duedate", due),
     ) if value]
     return {
-        "questions": [],
+        "questions": questions,
         "mode": str(prior.get("mode") or "task"),
         "structure": str(prior.get("structure") or ""),
         "structure_why": str(prior.get("structure_why") or ""),
         "items": items,
         "rationale": (rationale + "\n(검증된 후속 필드만 기존 초안에 반영: "
                       + ", ".join(changed) + ")").strip(),
+        **({"resolved_slots": resolved_slots} if resolved_slots else {}),
         "_construction": "request_refinement",
     }
 
@@ -1616,8 +1683,16 @@ class WorkArchitect(StructuredAgent):
                 prior = copy.deepcopy(state.get("draft") or {})
                 prior["items"] = refinement["items"]
                 prior["rationale"] = refinement.get("rationale") or prior.get("rationale") or ""
+                if "resolved_slots" in refinement:
+                    prior["resolved_slots"] = copy.deepcopy(refinement["resolved_slots"])
+                seal_work_item_identities(state, prior)
+                bind_resolved_slot_item_ids(prior)
+                seal_requested_effect_contract(
+                    state, draft=prior, change_plan={}, force_refresh=True,
+                )
                 direct = {
-                    "questions": [], "draft": prior, "change_plan": {},
+                    "questions": list(refinement.get("questions") or []),
+                    "draft": prior, "change_plan": {},
                     "turns": (state.get("turns") or 0) + 1,
                     "interpretation": "",
                     "structure_notes": list(state.get("structure_notes") or [])[-8:],
@@ -2978,9 +3053,26 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # ── Epic Link 는 **실재하고 관련 있는 write-project Epic** 이어야 한다 ─────
         # 실측: 사용자가 "기존 에픽 중 맞는 걸로 붙여줘"라고 했는데 모델이 Task(DL-9072)를
         # 에픽이라 답하고 초안에는 아예 안 실었다. 타입 확인은 판단이 아니라 조회다.
+        typed_parent_authority = parent_selection_authority(state)
+        typed_parent_slots = _apply_typed_parent_resolution(state, items)
+        if typed_parent_slots:
+            draft["resolved_slots"] = typed_parent_slots
+            if any(row.get("status") != "resolved" for row in typed_parent_slots):
+                items.clear()
+                qs.append(_required_parent_resolution_question())
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(요청한 기존 parent에 검증된 호환 후보가 없어 "
+                                      "실행 초안을 차단했다)").strip()
+            else:
+                selected_keys = [str(row.get("value") or "")
+                                 for row in typed_parent_slots if row.get("value")]
+                out["rationale"] = ((out.get("rationale") or "")
+                                    + "\n(typed parent 결정을 검증된 후보에 결속: "
+                                    + ", ".join(selected_keys) + ")").strip()
         explicit_epic = _explicit_parent_epic(state)
         explicit_epics = _expected_parent_epics_by_root(state, items)
-        delegated_epic_choice = _delegates_existing_epic_choice(state)
+        delegated_epic_choice = bool(typed_parent_authority) \
+            or _delegates_existing_epic_choice(state)
         verified_parent_keys = ({
             str(row.get("key") or "").strip().upper()
             for row in verified_parent_epic_candidates(state)
@@ -3051,6 +3143,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
                 # The typed continuation selected from QueryRunner's already-materialized
                 # candidate set. Do not re-open or semantically reinterpret it during a
                 # zero-call field overlay.
+                continue
+            if (str(it.get("parent_source") or "") == "resolved_slot"
+                    and typed_parent_authority and ek.upper() in verified_parent_keys):
+                # The shared ResolvedSlot already binds typed authority, materialized type
+                # proof and semantic compatibility. Do not reopen/reinterpret it here.
                 continue
             reason = _inferred_epic_rejection(state, it, ek)
             if reason:
@@ -3879,7 +3976,11 @@ Return the complete revised `items` set from Current Draft Data, preserving ever
         # prior immutable effect snapshot across an Auditor repair instead of recomputing it
         # from mutable prose.
         seal_work_item_identities(state, draft)
-        seal_requested_effect_contract(state, draft=draft, change_plan=plan)
+        bind_resolved_slot_item_ids(draft)
+        seal_requested_effect_contract(
+            state, draft=draft, change_plan=plan,
+            force_refresh=bool(typed_parent_slots),
+        )
         previous_review = state.get("review") or {}
         prior_signature = str(previous_review.get("defect_signature") or "")
         if previous_review.get("ok") is False and prior_signature:
@@ -4384,6 +4485,12 @@ def _change_plan(state, out, items, qs):
                               "코드가 확정했다)").strip()}
             qs = []
             items.clear()          # 수정 요청에 초안을 만들었어도 계획이 이긴다(참조 공유)
+
+    # Exact scalar leaves belong to the immutable typed request, not to semantic projection.
+    # Materialize them before person/Done/editability guards so omitted sibling fields do not
+    # require an Auditor regeneration and cannot bypass the ordinary safety checks.
+    if update_allowed:
+        plan = materialize_requested_update_effects(state, plan)
 
     # 댓글은 사용자가 외부에 남기는 실제 메시지다. 대상만 있고 본문·목적이 없으면 `알아서`를
     # 내용 생성 권한으로 해석하지 않는다(ASKD3). 모델이 questions=[]로 빠져도 코드가 묻는다.
@@ -8880,6 +8987,14 @@ def _delegates_existing_epic_choice(state) -> bool:
     Only human-authored request turns are inspected; model rationale mentioning creation
     must not revoke or invent the delegation.
     """
+    if parent_selection_authority(state):
+        return True
+    contract = state.get("continuation_contract") or {}
+    if (state.get("turn_continuation") is True
+            and isinstance(contract, dict)
+            and contract.get("version") == "continuation.v1"):
+        return False
+
     from app.agent.workflow.agents.request_architect import _selection_is_not_creation
 
     said = _current_request_boundary_text(state)

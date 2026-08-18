@@ -845,3 +845,36 @@ def test_compose_preserves_source_verified_official_link_and_rejects_invented_ur
 
     assert rejected["ok"] is False and rejected.get("contentConflict") is True
     assert invented in rejected["error"]
+
+
+def test_each_ticket_keeps_its_own_status_when_one_sentence_mentions_two_tickets():
+    context = (
+        '하위 1/2 완료: ACME-81 "Atlas export"(완료: Closed), '
+        'ACME-82 "Atlas import"(미완료: In Progress)\n'
+        '티켓별 현재 상태: ACME-81=Closed | ACME-82=In Progress'
+    )
+    html = (
+        '<p><a class="jira-badge tkt" data-key="ACME-81" '
+        'href="/browse/ACME-81">ACME-81</a> export 및 '
+        '<a class="jira-badge tkt" data-key="ACME-82" '
+        'href="/browse/ACME-82">ACME-82</a> import는 Jira 상태 In Progress입니다.</p>'
+    )
+
+    got = C._bind_ticket_status_claims(html, context)
+
+    assert 'ACME-81</a> · Jira 상태 Closed' in got
+    assert 'ACME-82</a> · Jira 상태 In Progress' in got
+    assert got.count("Jira 상태 Closed") == 1
+    assert "export 및" in got
+    assert "import는 Jira 상태 In Progress입니다" not in got
+
+
+def test_shared_editor_status_is_preserved_when_both_exact_bindings_match():
+    context = "티켓별 현재 상태: ACME-83=Closed | ACME-84=Closed"
+    html = (
+        '<p><a data-key="ACME-83" href="/browse/ACME-83">ACME-83</a> 및 '
+        '<a data-key="ACME-84" href="/browse/ACME-84">ACME-84</a>는 '
+        'Jira 상태 Closed입니다.</p>'
+    )
+
+    assert C._bind_ticket_status_claims(html, context) == html

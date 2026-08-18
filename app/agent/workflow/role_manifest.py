@@ -145,7 +145,8 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "result_integrator": RoleSpec(
         "result_integrator", "Result Integrator", "complex", "balanced",
         "Integrates verified results and unresolved items into one Korean user response.",
-        ("messages", "request_text", "intent", "answer_depth", "request_plan", "situation",
+        ("messages", "request_text", "intent", "answer_depth", "request_plan", "query_plan",
+         "query_results", "situation",
          "evidence", "related_docs", "pre_survey", "topic_dossier", "knowledge_brief",
          "materialized_ticket_sources", "pmo_findings", "pmo_caution", "group_activity", "ticket_progress",
          "person_work_snapshot", "daily_priority_snapshot", "interpretation", "questions",

@@ -1486,10 +1486,23 @@ def test_typed_field_only_refinement_clones_the_prior_draft_and_uses_zero_work_c
         request_refinement={
             "parent": "select_existing", "phase": "1차", "duedate": "2026-09-30",
         },
+        continuation_contract={
+            "version": "continuation.v1",
+            "root_request": "StarRocks Puffin NDV 파이프라인 Task를 만들어줘",
+            "intent": "plan_work", "action": "create",
+            "target_keys": [], "outcome_ids": ["delivery"],
+            "decisions": [{
+                "field": "parent", "value": "select_existing",
+                "source": "explicit_refinement",
+            }],
+        },
         materialized_ticket_sources={
             "parentCandidateKeys": ["DL-101"],
             "parentCandidateSearchAttempted": True,
-            "ticketDetails": [{"key": "DL-101", "type": "Epic"}],
+            "ticketDetails": [{
+                "key": "DL-101", "type": "Epic",
+                "summary": "StarRocks Puffin NDV 파이프라인 프로그램",
+            }],
         },
         draft=copy.deepcopy(prior),
     )

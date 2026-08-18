@@ -9,6 +9,7 @@ only the still-unresolved values into one compact interview.
 from __future__ import annotations
 
 import re
+from typing import Mapping, Sequence, TypedDict
 
 from app.agent.workflow.state import last_user_text, request_text
 
@@ -29,6 +30,226 @@ _MEETING_TOPIC_NOISE = {
     "from", "jira", "labels", "meeting", "memo", "notes", "official", "optimizer", "priority", "reader",
     "summary", "task", "ticket", "writer",
 }
+
+
+class MeetingAssignmentBinding(TypedDict):
+    """One source-backed assignment bound to a stable authored work item."""
+
+    item_id: str
+    owner_id: str
+    due: str
+    source_evidence: dict[str, str]
+
+
+_ASSIGNMENT_EVIDENCE_KEYS = (
+    "kind", "record_id", "source_id", "item_id", "outcome_ref", "outcome_id",
+    "owner_label", "owner_decision", "work",
+)
+
+
+def _assignment_terms(value: object) -> set[str]:
+    """Return domain-neutral comparison terms for an assignment deliverable."""
+    return {
+        token.casefold()
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_.-]{1,}|[가-힣]{2,}", str(value or ""))
+        if token.casefold() not in {"task", "ticket", "작업", "담당", "기한", "까지"}
+    }
+
+
+def _bounded_assignment_evidence(record: Mapping[str, object]) -> dict[str, str]:
+    raw = record.get("source_evidence")
+    source = raw if isinstance(raw, Mapping) else {}
+    evidence = {
+        key: str(source.get(key) or record.get(key) or "").strip()
+        for key in _ASSIGNMENT_EVIDENCE_KEYS
+        if str(source.get(key) or record.get(key) or "").strip()
+    }
+    evidence.setdefault("kind", "meeting_minutes")
+    evidence.setdefault("work", str(record.get("work") or "").strip())
+    evidence.setdefault(
+        "owner_decision", str(record.get("owner_decision") or "").strip(),
+    )
+    return {key: value[:240] for key, value in evidence.items() if value}
+
+
+def _assignment_refs(row: Mapping[str, object]) -> set[str]:
+    """Return only explicit stable outcome references carried by a typed row."""
+    raw_refs = row.get("outcome_refs")
+    refs = {
+        str(value or "").strip()
+        for value in (raw_refs if isinstance(raw_refs, Sequence)
+                      and not isinstance(raw_refs, (str, bytes)) else ())
+        if str(value or "").strip()
+    }
+    refs.update(
+        str(row.get(key) or "").strip()
+        for key in ("outcome_ref", "outcome_id")
+        if str(row.get(key) or "").strip()
+    )
+    evidence = row.get("source_evidence")
+    if isinstance(evidence, Mapping):
+        evidence_refs = evidence.get("outcome_refs")
+        if (isinstance(evidence_refs, Sequence)
+                and not isinstance(evidence_refs, (str, bytes))):
+            refs.update(
+                str(value or "").strip() for value in evidence_refs
+                if str(value or "").strip()
+            )
+        refs.update(
+            str(evidence.get(key) or "").strip()
+            for key in ("outcome_ref", "outcome_id")
+            if str(evidence.get(key) or "").strip()
+        )
+    return refs
+
+
+def _assignment_item_id(row: Mapping[str, object]) -> str:
+    """Return an explicit source item identity, including bounded evidence envelopes."""
+    item_id = str(row.get("item_id") or "").strip()
+    evidence = row.get("source_evidence")
+    if not item_id and isinstance(evidence, Mapping):
+        item_id = str(evidence.get("item_id") or "").strip()
+    return item_id
+
+
+def _commit_unique_assignment_matches(
+        proposals: Mapping[int, Sequence[int]], chosen: dict[int, int],
+        used_records: set[int]) -> bool:
+    """Commit only one-to-one proposals; ambiguous identities remain unbound."""
+    singletons = {
+        item_index: candidates[0]
+        for item_index, candidates in proposals.items()
+        if len(candidates) == 1 and item_index not in chosen
+        and candidates[0] not in used_records
+    }
+    record_counts: dict[int, int] = {}
+    for record_index in singletons.values():
+        record_counts[record_index] = record_counts.get(record_index, 0) + 1
+    committed = False
+    for item_index, record_index in singletons.items():
+        if record_counts[record_index] != 1:
+            continue
+        chosen[item_index] = record_index
+        used_records.add(record_index)
+        committed = True
+    return committed
+
+
+def meeting_assignment_bindings(
+        items: Sequence[Mapping[str, object]],
+        source_records: Sequence[Mapping[str, object]],
+        canonical_people: Mapping[str, str]) -> list[MeetingAssignmentBinding]:
+    """Bind canonical meeting assignments to stable item ids without product knowledge.
+
+    The function is deliberately pure: callers provide authored items, source-derived
+    assignment records, and the already-resolved display-name-to-account map.  Exact source
+    item ids win, followed by an exact outcome reference and finally a mutual unique maximum
+    deliverable-term overlap.  Authored assignee and deadline values are never used to choose
+    a source record: both remain observable verification values for the Auditor.
+    """
+    canonical_ids: dict[str, str] = {}
+    for label, raw_id in canonical_people.items():
+        owner_id = str(raw_id or "").strip()
+        if not owner_id:
+            continue
+        canonical_ids[owner_id.casefold()] = owner_id
+        if str(label or "").strip():
+            canonical_ids[str(label).strip().casefold()] = owner_id
+    records = [record for record in source_records if isinstance(record, Mapping)]
+    eligible = [
+        (index, item)
+        for index, item in enumerate(items)
+        if isinstance(item, Mapping)
+        and str(item.get("assignee_source") or "").strip()
+        in {"user", "user_unassigned"}
+        and str(item.get("item_id") or "").strip()
+    ]
+    chosen: dict[int, int] = {}
+    used_records: set[int] = set()
+
+    # Stable source identity has highest authority.  Do not use mutable authored values here.
+    _commit_unique_assignment_matches({
+        item_index: [
+            record_index for record_index, record in enumerate(records)
+            if _assignment_item_id(record)
+            == str(item.get("item_id") or "").strip()
+        ]
+        for item_index, item in eligible
+    }, chosen, used_records)
+
+    # An opaque outcome reference is also an identity, provided the relation is one-to-one.
+    _commit_unique_assignment_matches({
+        item_index: [
+            record_index for record_index, record in enumerate(records)
+            if record_index not in used_records
+            and bool(_assignment_refs(item) & _assignment_refs(record))
+        ]
+        for item_index, item in eligible if item_index not in chosen
+    }, chosen, used_records)
+
+    # Legacy meeting rows have no opaque reference.  Accept only mutual unique work matches;
+    # shared product/topic words therefore cannot bind two outcomes by iteration order.
+    while True:
+        remaining_items = [(index, item) for index, item in eligible if index not in chosen]
+        remaining_records = [(index, record) for index, record in enumerate(records)
+                             if index not in used_records]
+        if not remaining_items or not remaining_records:
+            break
+        scores = {
+            (item_index, record_index): len(
+                _assignment_terms(item.get("summary"))
+                & _assignment_terms(record.get("work"))
+            )
+            for item_index, item in remaining_items
+            for record_index, record in remaining_records
+        }
+        proposals: dict[int, list[int]] = {}
+        for item_index, _item in remaining_items:
+            ranked = sorted(
+                ((scores[(item_index, record_index)], record_index)
+                 for record_index, _record in remaining_records),
+                reverse=True,
+            )
+            if (not ranked or ranked[0][0] <= 0
+                    or (len(ranked) > 1 and ranked[0][0] == ranked[1][0])):
+                continue
+            score, record_index = ranked[0]
+            reverse = sorted(
+                [scores[(other_index, record_index)]
+                 for other_index, _other in remaining_items],
+                reverse=True,
+            )
+            if len(reverse) > 1 and score == reverse[0] == reverse[1]:
+                continue
+            if score != reverse[0]:
+                continue
+            proposals[item_index] = [record_index]
+        if not _commit_unique_assignment_matches(
+                proposals, chosen, used_records):
+            break
+
+    bindings: list[MeetingAssignmentBinding] = []
+    for item_index, item in eligible:
+        record_index = chosen.get(item_index)
+        if record_index is None:
+            continue
+        record = records[record_index]
+        item_id = str(item.get("item_id") or "").strip()
+        decision = str(record.get("owner_decision") or "").strip()
+        raw_owner = str(record.get("owner") or "").strip()
+        if decision == "unassigned":
+            owner_id = ""
+        elif decision == "assigned" and raw_owner.casefold() in canonical_ids:
+            owner_id = canonical_ids[raw_owner.casefold()]
+        else:
+            continue
+        bindings.append({
+            "item_id": item_id,
+            "owner_id": owner_id,
+            "due": str(record.get("due") or "").strip(),
+            "source_evidence": _bounded_assignment_evidence(record),
+        })
+    return bindings
 
 
 def meeting_request_text(state) -> str:
@@ -699,7 +920,8 @@ def needs_research_interview(state) -> bool:
 
 
 __all__ = ["attendee_mentions", "canonicalize_meeting_owner_table",
-           "canonicalize_reply_mentions", "is_meeting_request", "meeting_owner_records",
+           "canonicalize_reply_mentions", "is_meeting_request",
+           "meeting_assignment_bindings", "meeting_owner_records",
            "meeting_request_text", "meeting_requester_instructors", "meeting_subject",
            "needs_research_interview", "prune_resolved_gaps",
            "resolved_people", "unresolved_questions"]
