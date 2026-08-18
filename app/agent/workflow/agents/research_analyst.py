@@ -2376,7 +2376,10 @@ class ResearchAnalyst(ToolAgent):
             if (state.get("intent") or "") == Intent.ASK and completed_query_plan:
                 try:
                     direct_state = {**state, "_research_analyst_prefetched": True}
-                    out = self.apply(direct_state, self._conclude(direct_state, []))
+                    out = self.apply(
+                        direct_state,
+                        self._synthesize_prefetched_query_plan(direct_state),
+                    )
                     out["trace"] = (out.get("trace") or []) + [{
                         "node": self.name, "label": "과거 이력 조사",
                         "note": "완료된 QueryPlan 근거 묶음으로 1회 정리(도구 재호출 생략)",

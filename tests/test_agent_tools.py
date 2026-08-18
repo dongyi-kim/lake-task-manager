@@ -520,11 +520,13 @@ def test_completed_ask_query_plan_concludes_once_without_presurvey_or_react(monk
     analyst = ResearchAnalyst()
     calls = []
 
-    def conclude(state, scratch):
-        calls.append((state.get("_research_analyst_prefetched"), scratch))
+    def synthesize(state):
+        calls.append(state.get("_research_analyst_prefetched"))
         return {"situation": "상세 근거 묶음으로 정리", "evidence": []}
 
-    monkeypatch.setattr(analyst, "_conclude", conclude)
+    monkeypatch.setattr(analyst, "_conclude", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("completed QueryPlan must not build an empty ReAct transcript")))
+    monkeypatch.setattr(analyst, "_synthesize_prefetched_query_plan", synthesize)
     out = analyst.node()({
         "intent": Intent.ASK,
         "messages": [HumanMessage(content="Puffin 적용 근거를 내외부 자료로 조사해줘")],
@@ -549,7 +551,7 @@ def test_completed_ask_query_plan_concludes_once_without_presurvey_or_react(monk
         ],
         "trace": [],
     })
-    assert calls == [(True, [])]
+    assert calls == [True]
     assert out["situation"] == "상세 근거 묶음으로 정리"
     assert any("QueryPlan 근거 묶음" in row.get("note", "") for row in out["trace"])
 
