@@ -130,6 +130,111 @@ class QuestionContract(StrictModel):
     fallback: str = Field(default="", max_length=500)
 
 
+class _StrictReceiptModel(StrictModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+QuestionIdentity = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class QuestionAnswer(_StrictReceiptModel):
+    """One opaque question identity and user-authored value on the public wire."""
+
+    question_id: QuestionIdentity
+    value: (
+        Annotated[str, Field(min_length=1, max_length=1000)]
+        | Annotated[
+            list[Annotated[str, Field(min_length=1, max_length=240)]],
+            Field(min_length=1, max_length=5),
+        ]
+    )
+
+    @model_validator(mode="after")
+    def bounded_literal_value(self):
+        values = self.value if isinstance(self.value, list) else [self.value]
+        if isinstance(self.value, list) and not (1 <= len(self.value) <= 5):
+            raise ValueError("multi answer must contain one to five values")
+        if len(values) != len(set(values)):
+            raise ValueError("answer values must be unique")
+        if any(value != value.strip() or any(ord(char) < 32 for char in value)
+               for value in values):
+            raise ValueError("answer values must be trimmed control-free literals")
+        return self
+
+
+class QuestionAnswerReceipt(_StrictReceiptModel):
+    """Client transport only; field/kind/required authority stays on the server."""
+
+    contract: Literal["question_answer.receipt.v1"]
+    challenge_id: str = Field(pattern=r"^[A-Za-z0-9_-]{32,96}$")
+    answers: list[QuestionAnswer] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def unique_question_answers(self):
+        identities = [row.question_id for row in self.answers]
+        if len(identities) != len(set(identities)):
+            raise ValueError("question answers must be unique by identity")
+        return self
+
+
+class QuestionChallengeIdentity(_StrictReceiptModel):
+    question_id: QuestionIdentity
+
+
+class QuestionAnswerChallenge(_StrictReceiptModel):
+    contract: Literal["question-answer-challenge.v1"] = "question-answer-challenge.v1"
+    challenge_id: str = Field(pattern=r"^[A-Za-z0-9_-]{32,96}$")
+    questions: list[QuestionChallengeIdentity] = Field(min_length=1, max_length=3)
+    expires_at: int = Field(gt=0)
+
+
+class QuestionReceiptProjectedAnswer(_StrictReceiptModel):
+    question_id: QuestionIdentity
+    field: Literal["duedate", "phase"]
+    value: str = Field(min_length=1, max_length=1000)
+
+
+class QuestionReceiptProjection(_StrictReceiptModel):
+    """Non-secret, turn-derived authority consumed only by RequestArchitect."""
+
+    contract: Literal["question-answer-projection.v1"]
+    authority: Literal["session.question-answer-receipt.v1"]
+    checkpoint_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    continuation_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    answered: list[QuestionReceiptProjectedAnswer] = Field(min_length=1, max_length=3)
+    remaining: list[QuestionIdentity] = Field(default_factory=list, max_length=3)
+    complete: Literal[True]
+    request_refinement: dict[Literal["duedate", "phase"], str]
+
+    @model_validator(mode="after")
+    def exact_projector_coverage(self):
+        answer_ids = [row.question_id for row in self.answered]
+        if len(answer_ids) != len(set(answer_ids)):
+            raise ValueError("projected answer identities must be unique")
+        if len(self.remaining) != len(set(self.remaining)) or set(answer_ids) & set(self.remaining):
+            raise ValueError("remaining identities must be unique and disjoint")
+        if self.remaining:
+            raise ValueError("a complete projection cannot have remaining questions")
+        projected = {row.field: row.value for row in self.answered}
+        if len(projected) != len(self.answered) or projected != self.request_refinement:
+            raise ValueError("request refinement must exactly equal projected answers")
+        due = projected.get("duedate", "")
+        if due:
+            try:
+                parsed_due = date.fromisoformat(due)
+            except ValueError as exc:
+                raise ValueError("duedate must be one canonical ISO date") from exc
+            if parsed_due.isoformat() != due:
+                raise ValueError("duedate must be one canonical ISO date")
+        phase = projected.get("phase", "")
+        ordinal = phase[:-1] if phase.endswith("차") else ""
+        if phase and (not ordinal.isdecimal() or not 1 <= int(ordinal) <= 999
+                      or phase != f"{int(ordinal)}차"):
+            raise ValueError("phase must be one canonical numeric ordinal")
+        return self
+
+
 class ResolvedSlot(StrictModel):
     """One runtime-resolved execution slot with immutable decision provenance.
 
@@ -352,7 +457,10 @@ def validate_role_output(role_id: str, value: object) -> dict:
 
 __all__ = ["ArtifactRef", "AtomicTask", "RequestQuestion", "RequestedUpdateEffect",
            "RequestPlan", "ContinuationDecision",
-           "ContinuationContract", "QuestionContract", "ResolvedSlot", "QuerySpec", "QueryPlan",
+           "ContinuationContract", "QuestionContract", "QuestionAnswer",
+           "QuestionAnswerReceipt", "QuestionAnswerChallenge",
+           "QuestionChallengeIdentity", "QuestionReceiptProjectedAnswer",
+           "QuestionReceiptProjection", "ResolvedSlot", "QuerySpec", "QueryPlan",
            "QueryIntent", "CompactQueryPlan",
            "ResearchReport", "WorkPlan", "PeopleAdvice", "KnowledgeConcept",
            "KnowledgeReference", "KnowledgeBrief", "AuthoredArtifact",

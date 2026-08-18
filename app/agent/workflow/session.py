@@ -17,6 +17,7 @@ from __future__ import annotations
 import re as _re
 import copy as _copy
 
+from dataclasses import dataclass
 import logging
 import uuid
 
@@ -37,6 +38,14 @@ from app.agent.workflow.continuation import (
 )
 from app.agent.workflow.state import TRACE_RESET, Node, Role, as_dict
 from app.agent.workflow.typed_fast_path import zero_typed_repair_budget
+from app.agent.workflow.question_receipt import (
+    ReceiptClaim,
+    claim_question_receipt,
+    finish_question_receipt,
+    issue_question_challenge,
+    question_turn_lock,
+    release_question_receipt,
+)
 
 log = logging.getLogger("agent.chat")
 
@@ -432,7 +441,7 @@ def _draft_refinement_repeats_subject(text: str, prior: dict) -> bool:
 _TURN_DERIVED_EMPTY = {
     "intent": "", "playbook": "", "keywords": [], "module": "", "mentioned_keys": [],
     "sufficient": False, "answer_depth": "", "request_plan": {}, "request_refinement": {},
-    "continuation_contract": {},
+    "continuation_contract": {}, "question_receipt_projection": {},
     "query_plan": {}, "query_results": [], "query_artifacts": {},
     "materialized_ticket_sources": {},
     "assignment_completion": {}, "bulk_targets": [],
@@ -646,14 +655,22 @@ def _is_interview_continuation(text: str, prior: dict) -> bool:
     )
 
 
-def _turn_start_patch(text: str, prior: dict) -> dict:
+def _turn_start_patch(
+    text: str,
+    prior: dict,
+    *,
+    question_receipt_projection: dict | None = None,
+    receipt_continuation_contract: dict | None = None,
+    receipt_bound: bool = False,
+) -> dict:
     """Separate per-turn working memory from durable conversation messages.
 
     LangGraph merges new input into the checkpoint.  Without explicit empty values, a new request inherits the
     previous topic dossier, draft, approval review, and PMO result.  Preserve research only while answering a
     blocking interview; every other turn receives a clean working set and a new request root.
     """
-    continuation = _is_interview_continuation(text, prior)
+    typed_receipt = bool(question_receipt_projection)
+    continuation = typed_receipt or receipt_bound or _is_interview_continuation(text, prior)
     patch = _copy.deepcopy(_TURN_DERIVED_EMPTY)
     patch.update(turn_continuation=continuation,
                  turn_reset_reason="interview-answer" if continuation else "new-or-revised-request")
@@ -677,7 +694,24 @@ def _turn_start_patch(text: str, prior: dict) -> dict:
             {**prior, "turn_continuation": True},
             existing=prior.get("continuation_contract"),
         )
-        if contract:
+        if typed_receipt:
+            # The receipt boundary already projected and validated this contract exactly once.
+            # Do not feed its bounded message back through the prose continuation parser.
+            patch["continuation_contract"] = _copy.deepcopy(
+                receipt_continuation_contract or {}
+            )
+            patch["question_receipt_projection"] = _copy.deepcopy(
+                question_receipt_projection or {}
+            )
+        elif receipt_bound:
+            # An authentic receipt proves this is the pending interview turn, but a field
+            # without a lossless projector still belongs to semantic RequestArchitect.
+            patch["continuation_contract"] = _copy.deepcopy(
+                receipt_continuation_contract
+                if receipt_continuation_contract is not None
+                else prior.get("continuation_contract") or {}
+            )
+        elif contract:
             decisions = capture_continuation_decisions(
                 text, [q for q in (prior.get("questions") or []) if isinstance(q, dict)],
             )
@@ -689,23 +723,118 @@ def _turn_start_patch(text: str, prior: dict) -> dict:
     return patch
 
 
-def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "") -> dict:
+def _checkpoint_revision(snapshot) -> str:
+    config = getattr(snapshot, "config", None) or {}
+    configurable = config.get("configurable") if isinstance(config, dict) else {}
+    return str((configurable or {}).get("checkpoint_id") or "").strip()
+
+
+@dataclass(frozen=True)
+class _PreparedTurn:
+    initial: dict
+    claim: ReceiptClaim | None
+    checkpoint_revision: str
+    error: str = ""
+
+
+def _prepare_turn(
+    graph,
+    *,
+    thread_id: str,
+    text: str,
+    user_role: str,
+    user_id: str,
+    question_receipt=None,
+) -> _PreparedTurn:
+    """Build one ask/stream input from the same checkpoint and turn-reset boundary."""
+    try:
+        prior_snapshot = graph.get_state(_config(thread_id))
+        prior = dict(prior_snapshot.values or {})
+    except Exception:
+        prior_snapshot, prior = None, {}
+    revision = _checkpoint_revision(prior_snapshot)
+    claim: ReceiptClaim | None = None
+    message_text = str(text or "")
+    if question_receipt is not None:
+        claim = claim_question_receipt(
+            question_receipt, thread_id=thread_id, checkpoint_revision=revision,
+            request_plan=prior.get("request_plan") or {},
+            continuation_contract=prior.get("continuation_contract") or {},
+        )
+        if claim.status == "rejected":
+            return _PreparedTurn(
+                initial={}, claim=claim, checkpoint_revision=revision,
+                error=("질문 답변이 만료되었거나 이미 제출되었습니다. "
+                       "현재 질문을 다시 확인해 주세요."),
+            )
+        message_text = claim.message_text
+    try:
+        initial = _initial(thread_id, message_text, user_role, user_id)
+        if claim and claim.owns_lease:
+            initial.update(_turn_start_patch(
+                message_text, prior,
+                question_receipt_projection=(claim.projection
+                                             if claim.status == "fast" else None),
+                receipt_continuation_contract=claim.continuation_contract,
+                receipt_bound=True,
+            ))
+        else:
+            initial.update(_turn_start_patch(message_text, prior))
+    except Exception:
+        if claim and claim.owns_lease:
+            release_question_receipt(claim)
+        raise
+    return _PreparedTurn(
+        initial=initial, claim=claim, checkpoint_revision=revision,
+    )
+
+
+def _finish_receipt(graph, thread_id: str, prepared: _PreparedTurn, *, success: bool) -> None:
+    if not prepared.claim or not prepared.claim.owns_lease:
+        return
+    try:
+        revision = _checkpoint_revision(graph.get_state(_config(thread_id)))
+    except Exception:
+        # Once graph execution was attempted, an unreadable checkpoint cannot prove that
+        # nothing advanced.  A distinct sentinel makes finish fail closed to consumed.
+        revision = "unknown-after-graph"
+    finish_question_receipt(
+        prepared.claim, success=success, checkpoint_revision=revision,
+    )
+
+
+def ask(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
+        question_receipt=None) -> dict:
     """한 턴 굴린다. 승인이 필요한 지점에서 멈추면 `pending` 이 채워져 돌아온다."""
     tid = thread_id or new_thread()
+    if question_receipt is not None and str(text or "").strip():
+        return {"thread_id": tid, "ok": False, "reply": "",
+                "error": "질문 답변과 새 메시지를 함께 보낼 수 없습니다.", "trace": []}
     too_long = _guard(text)
     if too_long:
         return {"thread_id": tid, "ok": False, "reply": too_long, "error": too_long, "trace": []}
     log.info("[%s] Q: %s", tid, (text or "")[:500])
     meter = _usage.Meter()
     graph = get_graph()
-    try:
-        prior = dict((graph.get_state(_config(tid)).values or {}))
-    except Exception:
-        prior = {}
-    initial = _initial(tid, text, user_role, user_id)
-    initial.update(_turn_start_patch(text, prior))
-    state = graph.invoke(initial, _config(tid, meter))
-    out = _shape(tid, state)
+    with question_turn_lock(tid):
+        prepared = _prepare_turn(
+            graph, thread_id=tid, text=text, user_role=user_role, user_id=user_id,
+            question_receipt=question_receipt,
+        )
+        if prepared.error:
+            return {"thread_id": tid, "ok": False, "reply": "",
+                    "error": prepared.error, "trace": []}
+        try:
+            state = graph.invoke(prepared.initial, _config(tid, meter))
+        except Exception:
+            _finish_receipt(graph, tid, prepared, success=False)
+            raise
+        _finish_receipt(graph, tid, prepared, success=True)
+        try:
+            snap = graph.get_state(_config(tid))
+        except Exception:
+            snap = None
+        out = _shape(tid, state, snap)
     out["usage"] = meter.snapshot()
     log.info("[%s] A: %s", tid, (out.get("reply") or "")[:1000])
     log.info("[%s] 사용량: %s", tid, out["usage"])
@@ -942,6 +1071,22 @@ def _shape(thread_id: str, state: dict, snap=None) -> dict:
            "review": data.get("review") or {}, "result": public_result,
            "error": data.get("error") or ""}
 
+    challenge = issue_question_challenge(
+        thread_id=thread_id,
+        checkpoint_revision=_checkpoint_revision(snap),
+        request_plan=data.get("request_plan") or {},
+        continuation_contract=data.get("continuation_contract") or {},
+        questions=data.get("questions") or [],
+    )
+    if challenge:
+        identities = challenge.get("questions") or []
+        out["questions"] = [
+            {**dict(question), "question_id": identity.get("question_id", "")}
+            for question, identity in zip(out["questions"], identities)
+            if isinstance(question, dict) and isinstance(identity, dict)
+        ]
+        out["questionReceipt"] = challenge
+
     # 승인 카드 — 무엇을 승인하는지가 화면과 토큰에 **같은 내용**으로 담겨야 한다.
     if waiting and data.get("approval_token"):
         plan = data.get("change_plan") or {}
@@ -1099,13 +1244,20 @@ def request_stop(thread_id: str) -> bool:
     return True
 
 
-def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = ""):
+def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "",
+           question_receipt=None):
     """진행 상황을 흘려보낸다. 조사에 십수 초가 걸리는데 빈 화면을 보여 줄 수는 없다.
 
     `subgraphs=True` 를 쓰는 이유 — 역할 안에서 도구를 부르는 중이라는 것까지 보여야
     "멈춘 것"과 "일하는 중"이 구분된다.
     """
     tid = thread_id or new_thread()
+    if question_receipt is not None and str(text or "").strip():
+        yield {"type": "start", "thread_id": tid}
+        message = "질문 답변과 새 메시지를 함께 보낼 수 없습니다."
+        yield {"type": "final", "thread_id": tid, "ok": False, "reply": "",
+               "error": message, "trace": []}
+        return
     too_long = _guard(text)
     if too_long:
         yield {"type": "start", "thread_id": tid}
@@ -1114,45 +1266,57 @@ def stream(text: str, thread_id: str = "", user_role: str = "", user_id: str = "
         return
     log.info("[%s] Q(stream): %s", tid, (text or "")[:500])
     meter = _usage.Meter()
-    _STOP.discard(tid)          # 새 턴은 깨끗한 상태에서 — 지난 중단 신호를 물려받지 않는다
     yield {"type": "start", "thread_id": tid}
-    try:
-        # updates(진행) + messages(토큰) 를 함께 받는다 — 최종 답이 통째로 도착하기를
-        # 기다리면 ResultIntegrator 생성 시간(2~7초)이 전부 침묵이 된다. ResultIntegrator 의 토큰만
-        # 흘리는 이유: 중간 역할(think·conclude)의 글은 사용자용 문장이 아니다.
-        for item in get_graph().stream(_initial(tid, text, user_role, user_id),
-                                       _config(tid, meter),
-                                       stream_mode=["updates", "messages"], subgraphs=True):
-            # subgraphs=True + 리스트 모드 → (ns, mode, payload)
-            ns, mode, payload = (item if len(item) == 3 else ("", item[0], item[1]))
-            # 중단 — 사용자가 멈추라고 했다. 지금 노드가 끝나는 경계에서 빠져나간다.
-            if tid in _STOP:
-                _STOP.discard(tid)
-                log.info("[%s] 중단됨", tid)
-                yield {"type": "stopped", "thread_id": tid,
-                       "message": "요청하신 대로 중단했습니다. 여기까지 진행된 내용은 "
-                                  "남아 있어 이어서 물으면 그 지점부터 계속합니다."}
-                return
-            if mode == "messages":
-                msg, meta = payload
-                node = str((meta or {}).get("langgraph_node") or "")
-                piece = getattr(msg, "content", "") or ""
-                # ★ Chunk 타입만 — 스트림이 끝나면 **완성 메시지**가 한 번 더 흘러온다
-                #   (실측: 같은 답이 두 번 조립됐다). 조각과 완성본을 둘 다 받으면 두 배가 된다.
-                if (node == Node.RESULT_INTEGRATOR and piece
-                        and type(msg).__name__.endswith("Chunk")):
-                    yield {"type": "token", "text": piece}
-                continue
-            for ev in _events(ns, payload):
-                yield ev
-    except Exception as e:
-        log.exception("[%s] 그래프 실패", tid)
-        yield {"type": "error", "message": str(e)[:300]}
-    final = _shape(tid, dict((get_graph().get_state(_config(tid)).values or {})))
-    final["usage"] = meter.snapshot()
-    log.info("[%s] A(stream): %s", tid, (final.get("reply") or "")[:1000])
-    log.info("[%s] 사용량: %s", tid, final["usage"])
-    yield {"type": "final", **final}
+    with question_turn_lock(tid):
+        _STOP.discard(tid)      # 같은 thread의 이전 turn이 끝난 뒤에만 stop 신호를 초기화한다
+        graph = get_graph()
+        prepared = _prepare_turn(
+            graph, thread_id=tid, text=text, user_role=user_role, user_id=user_id,
+            question_receipt=question_receipt,
+        )
+        if prepared.error:
+            yield {"type": "final", "thread_id": tid, "ok": False, "reply": "",
+                   "error": prepared.error, "trace": []}
+            return
+        completed = False
+        try:
+            # updates(진행) + messages(토큰) 를 함께 받는다 — 최종 답이 통째로 도착하기를
+            # 기다리면 ResultIntegrator 생성 시간(2~7초)이 전부 침묵이 된다.
+            for item in graph.stream(
+                    prepared.initial, _config(tid, meter),
+                    stream_mode=["updates", "messages"], subgraphs=True):
+                ns, mode, payload = (item if len(item) == 3 else ("", item[0], item[1]))
+                if tid in _STOP:
+                    _STOP.discard(tid)
+                    log.info("[%s] 중단됨", tid)
+                    yield {"type": "stopped", "thread_id": tid,
+                           "message": "요청하신 대로 중단했습니다. 여기까지 진행된 내용은 "
+                                      "남아 있어 이어서 물으면 그 지점부터 계속합니다."}
+                    return
+                if mode == "messages":
+                    msg, meta = payload
+                    node = str((meta or {}).get("langgraph_node") or "")
+                    piece = getattr(msg, "content", "") or ""
+                    if (node == Node.RESULT_INTEGRATOR and piece
+                            and type(msg).__name__.endswith("Chunk")):
+                        yield {"type": "token", "text": piece}
+                    continue
+                for ev in _events(ns, payload):
+                    yield ev
+            completed = True
+        except GeneratorExit:
+            raise
+        except Exception as e:
+            log.exception("[%s] 그래프 실패", tid)
+            yield {"type": "error", "message": str(e)[:300]}
+        finally:
+            _finish_receipt(graph, tid, prepared, success=completed)
+        snap = graph.get_state(_config(tid))
+        final = _shape(tid, dict((snap.values or {})), snap)
+        final["usage"] = meter.snapshot()
+        log.info("[%s] A(stream): %s", tid, (final.get("reply") or "")[:1000])
+        log.info("[%s] 사용량: %s", tid, final["usage"])
+        yield {"type": "final", **final}
 
 
 _TOOL_KO = {  # 도구명 → 사람이 읽는 라벨. "도구 사용 중"만으로는 어디서 느린지 모른다(사용자 지적)

@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from pydantic import TypeAdapter, ValidationError
+
 from app.agent.workflow.agents.base import StructuredAgent
 from app.agent.prompts.roles import SYSTEM_REQUEST_ARCHITECT
 from app.agent.workflow.continuation import (
@@ -19,12 +21,17 @@ from app.agent.workflow.continuation import (
     merge_continuation_decisions,
 )
 from app.agent.workflow.contracts import (
-    QuestionContract, RequestQuestion,
+    QuestionContract, QuestionReceiptProjection, RequestQuestion,
 )
 from app.agent.workflow.effect_contract import issue_requested_update_effects
 from app.agent.workflow.prompts import persona
 from app.agent.workflow.state import (AgentState, Intent, Node, conversation,
                                       last_user_text, note)
+from app.agent.workflow.typed_fast_path import (
+    evaluate_typed_fast_path,
+    typed_fast_path_note,
+)
+from app.agent.workflow.question_receipt import digest_value
 
 SCHEMA = {
     "type": "object",
@@ -826,6 +833,29 @@ def _request_plan_action_families(plan: dict) -> set[str]:
     return families if eligible else set()
 
 
+def _refinement_compatible_with_plan(
+    state: dict,
+    fields: dict,
+    prior_plan: dict,
+    *,
+    phase_action: str = "",
+) -> bool:
+    """Shared semantic guard for prose- and receipt-derived field overlays."""
+    if phase_action and _request_plan_action_families(prior_plan) != {phase_action}:
+        return False
+    parent = str(fields.get("parent") or "")
+    if not parent:
+        return True
+    original = str(state.get("request_text") or "").strip()
+    if _EPIC_CREATION.search(original):
+        return False
+    if parent == "top_level" and _re.search(r"Sub-?Task|서브\s*태스크", original, _re.I):
+        return False
+    if parent in {"select_existing", "top_level"} and _EPIC_CREATION.search(str(prior_plan)):
+        return False
+    return True
+
+
 def _has_verified_prior_work_context(state: dict) -> bool:
     """Require material work context before bypassing a semantic request classification."""
     ledger = state.get("materialized_ticket_sources") or {}
@@ -837,6 +867,73 @@ def _has_verified_prior_work_context(state: dict) -> bool:
     return bool((isinstance(draft, dict) and draft.get("items"))
                 or isinstance(state.get("structure_plan"), list)
                 and state.get("structure_plan"))
+
+
+_QUESTION_RECEIPT_PROJECTION = TypeAdapter(QuestionReceiptProjection)
+_QUESTION_RECEIPT_FAST_PATH_ID = "request.question_answer_receipt.v1"
+
+
+def _question_receipt_fast_patch(state: dict) -> dict:
+    """Apply only receipt fields with an existing lossless Work projector."""
+    raw = state.get("question_receipt_projection")
+    try:
+        projection = _QUESTION_RECEIPT_PROJECTION.validate_python(raw, strict=True)
+    except ValidationError:
+        return {}
+    prior_plan = _authoritative_continuation_plan(state)
+    refinement = projection.request_refinement
+    try:
+        current_plan_digest = digest_value(prior_plan)
+        current_continuation_digest = digest_value(
+            state.get("continuation_contract") or {}
+        )
+    except (TypeError, ValueError):
+        return {}
+    decision = evaluate_typed_fast_path(
+        _QUESTION_RECEIPT_FAST_PATH_ID,
+        checks={
+            "typed_projection": projection.authority
+            == "session.question-answer-receipt.v1",
+            "current_plan_binding": bool(prior_plan)
+            and projection.request_plan_digest == current_plan_digest,
+            "current_continuation_binding": projection.continuation_digest
+            == current_continuation_digest,
+            "complete_answer_set": projection.complete and not projection.remaining,
+            "eligible_field_projectors": bool(refinement)
+            and set(refinement).issubset({"duedate", "phase"}),
+            "continuation_turn": state.get("turn_continuation") is True
+            and str(state.get("intent") or "") == Intent.PLAN_WORK,
+            "verified_work_context": bool(str(state.get("request_text") or "").strip())
+            and _has_verified_prior_work_context(state),
+        },
+    )
+    if not decision.complete:
+        return {}
+
+    mentioned = [str(value) for value in (state.get("mentioned_keys") or [])
+                 if str(value).strip()]
+    keywords = [str(value) for value in (state.get("keywords") or [])
+                if str(value).strip()]
+    depth = str(state.get("answer_depth") or "brief")
+    labels = ", ".join(f"{key}={value}" for key, value in refinement.items())
+    return {
+        "intent": Intent.PLAN_WORK,
+        "keywords": _copy.deepcopy(keywords),
+        "module": str(state.get("module") or ""),
+        "mentioned_keys": mentioned,
+        "sufficient": bool(state.get("sufficient")),
+        "playbook": str(state.get("playbook") or ""),
+        "answer_depth": depth if depth in {"brief", "explain"} else "brief",
+        "request_plan": _copy.deepcopy(prior_plan),
+        "request_refinement": projection.request_refinement,
+        "request_text": str(state.get("request_text") or "").strip(),
+        "continuation_contract": _copy.deepcopy(state.get("continuation_contract") or {}),
+        "questions": [],
+        "trace": typed_fast_path_note(
+            state, Node.REQUEST_ARCHITECT,
+            f"검증된 질문 답변 필드 보정({labels}) · 모델 호출 생략", decision,
+        ),
+    }
 
 
 def _field_refinement_fast_patch(state: dict) -> dict:
@@ -859,22 +956,10 @@ def _field_refinement_fast_patch(state: dict) -> dict:
     # the explicit stage belongs to the same generic action family as every affected outcome.
     # An ordinal-only clause (``1차까지``) carries no action change and remains fast.
     phase_action = _phase_action_family(asked)
-    if phase_action and _request_plan_action_families(prior_plan) != {phase_action}:
+    if not _refinement_compatible_with_plan(
+            state, fields, prior_plan, phase_action=phase_action):
         return {}
-    # Replacing an explicitly requested new Epic with existing-Epic selection changes the
-    # requested action; that is semantic even though both phrases look like a parent field.
     original = str(state.get("request_text") or "").strip()
-    if fields.get("parent") and _EPIC_CREATION.search(original):
-        return {}
-    if (fields.get("parent") == "top_level"
-            and _re.search(r"Sub-?Task|서브\s*태스크", original, _re.I)):
-        return {}
-    # The typed task DAG is the downstream outcome identity. If an older plan itself says
-    # "create an Epic", selecting an existing parent is not a field overlay; classify the
-    # action change semantically rather than rewriting a contract under the same ids.
-    if (fields.get("parent") in {"select_existing", "top_level"}
-            and _EPIC_CREATION.search(str(prior_plan))):
-        return {}
 
     request_plan = _copy.deepcopy(prior_plan)
     raw_mentioned = state.get("mentioned_keys") or []
@@ -1040,6 +1125,9 @@ class RequestArchitect(StructuredAgent):
     name = Node.REQUEST_ARCHITECT
 
     def _run(self, state: AgentState) -> dict:
+        receipt = _question_receipt_fast_patch(state)
+        if receipt:
+            return receipt
         fast = _field_refinement_fast_patch(state)
         if fast:
             return fast

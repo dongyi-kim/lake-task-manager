@@ -17,6 +17,7 @@ TYPED_REPAIR_BUDGET_CONTRACT = "typed-repair-budget.v1"
 FastPathId = Literal[
     "auditor.machine_negative.v1",
     "portfolio.intermediate.v1",
+    "request.question_answer_receipt.v1",
     "research.single_bounded_query",
     "result.execution_receipt.v1",
     "result.structure_tree.v1",
@@ -25,6 +26,7 @@ FastPathId = Literal[
 FastPathAuthority = Literal[
     "auditor.machine-check.v1",
     "portfolio_analyst.raw_tool_snapshot",
+    "session.question-answer-receipt.v1",
     "request-plan.v1+query-plan.v1+query-results.v1",
     "request-plan.requested-effects.v1+continuation.v1",
     "action-executor.approved-dispatch.v1",
@@ -63,6 +65,16 @@ _SPECS = (
         required_checks=frozenset({
             "typed_material", "all_material_complete", "legacy_material_absent",
             "requested_targets_complete", "non_jql_request",
+        }),
+    ),
+    TypedFastPathSpec(
+        path_id="request.question_answer_receipt.v1",
+        authority="session.question-answer-receipt.v1",
+        required_checks=frozenset({
+            "typed_projection", "current_plan_binding",
+            "current_continuation_binding", "complete_answer_set",
+            "eligible_field_projectors", "continuation_turn",
+            "verified_work_context",
         }),
     ),
     TypedFastPathSpec(
