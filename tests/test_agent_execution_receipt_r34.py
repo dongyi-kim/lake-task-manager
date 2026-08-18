@@ -1151,3 +1151,15 @@ def test_invalid_receipt_without_result_cannot_bypass_review_authority(monkeypat
     }
     output = ResultIntegrator()._run(state)
     assert output.get("fallback") is not True and output.get("reply")
+
+
+def test_execution_receipt_reexports_common_safe_scalar_renderer():
+    from app.agent.workflow.execution_receipt import sanitize_external_scalar as receipt_safe
+    from app.agent.workflow.safe_render import sanitize_external_scalar as common_safe
+
+    assert receipt_safe is common_safe
+    rendered = common_safe("<script> # {{typed}} [link] \\ \u202e", limit=200)
+    assert "<script>" not in rendered
+    assert "{{typed}}" not in rendered
+    assert "[link]" not in rendered
+    assert "\u202e" not in rendered

@@ -31,7 +31,7 @@ from app.agent.workflow.typed_fast_path import (
     evaluate_typed_fast_path,
     typed_fast_path_note,
 )
-from app.agent.workflow.question_receipt import digest_value
+from app.agent.workflow.canonical_digest import digest_value
 
 SCHEMA = {
     "type": "object",

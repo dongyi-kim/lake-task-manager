@@ -681,3 +681,15 @@ def test_frontend_submits_only_question_identity_and_answer():
     assert '{ text: questionReceipt ? "" : text' in source
     assert "question: q.question" not in source
     assert "field: q.field" not in source
+
+
+def test_question_receipt_reuses_common_canonical_digest_exactly():
+    from app.agent.workflow.canonical_digest import digest_value as common_digest
+    from app.agent.workflow.question_receipt import digest_value as receipt_digest
+
+    assert receipt_digest is common_digest
+    assert common_digest({"b": [2, 3], "a": "한글"}) == common_digest(
+        {"a": "한글", "b": [2, 3]},
+    )
+    with pytest.raises(ValueError):
+        common_digest({"unsafe": float("nan")})

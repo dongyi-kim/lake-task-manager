@@ -11,7 +11,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 import hashlib
-import json
 import secrets
 import threading
 import time
@@ -25,6 +24,7 @@ from app.agent.workflow.contracts import (
     QuestionContract,
     QuestionReceiptProjection,
 )
+from app.agent.workflow.canonical_digest import digest_value
 from app.agent.workflow.continuation import merge_continuation_decisions
 
 
@@ -34,15 +34,6 @@ _TURN_LOCK_STRIPES = 64
 _QUESTION_ADAPTER = TypeAdapter(QuestionContract)
 _RECEIPT_ADAPTER = TypeAdapter(QuestionAnswerReceipt)
 _PROJECTION_ADAPTER = TypeAdapter(QuestionReceiptProjection)
-
-
-def digest_value(value) -> str:
-    """Canonical JSON SHA-256 used for checkpoint-adjacent typed bindings."""
-    wire = json.dumps(
-        value if value is not None else {}, ensure_ascii=False, sort_keys=True,
-        separators=(",", ":"), allow_nan=False,
-    )
-    return hashlib.sha256(wire.encode("utf-8")).hexdigest()
 
 
 def checkpoint_digest(revision: str) -> str:

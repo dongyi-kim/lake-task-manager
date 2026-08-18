@@ -13,11 +13,12 @@ import hashlib
 import hmac
 import json
 import secrets
-import unicodedata
 from copy import deepcopy
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
+
+from app.agent.workflow.safe_render import sanitize_external_scalar
 
 
 EXECUTION_RECEIPT_CONTRACT = "execution-receipt.v1"
@@ -272,25 +273,6 @@ def bind_single_execution_result(raw, *, action: str, payload: dict) -> dict:
                    target_id=execution_target_id(action, "item", 0),
                    effect_digest=digest)
     return out
-
-
-def sanitize_external_scalar(value, *, limit: int = 1000, secrets_to_remove=()) -> str:
-    """Bound one external scalar and neutralize controls, bidi and active Markdown tokens."""
-    rendered = str(value or "")
-    for secret in secrets_to_remove or ():
-        secret = str(secret or "")
-        if secret:
-            rendered = rendered.replace(secret, "redacted")
-    mapped = {"#": "＃", "|": "｜", "{": "｛", "}": "｝", "[": "［", "]": "］",
-              "<": "＜", ">": "＞", "`": "", "\\": "＼"}
-    chars = []
-    for character in rendered:
-        category = unicodedata.category(character)
-        if category in {"Cc", "Cf"}:
-            chars.append(" " if character in "\r\n\t" else "")
-            continue
-        chars.append(mapped.get(character, character))
-    return " ".join("".join(chars).split())[:limit].strip()
 
 
 def scrub_execution_sidecars(result: dict, *, secrets_to_remove=()) -> dict:
